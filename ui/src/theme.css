@@ -1,0 +1,1575 @@
+/* 管理面板全局主题：品牌深色底 + Element Plus 暗色变量覆写 + 面板动效。
+   配色沿用零构建版的鲸蓝基调（accent #4f8cff、鲸眼红 #ff2d30）。 */
+
+:root {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --bg-soft: #121831;
+  --card: rgba(255, 255, 255, 0.04);
+  --border: rgba(255, 255, 255, 0.1);
+  --text: #e8ecf7;
+  --muted: #9aa4bf;
+  --accent: #4f8cff;
+  --accent-2: #22d3ee;
+  --good: #34d399;
+  --bad: #f87171;
+  --warn: #fbbf24;
+  --whale-eye: #ff2d30;
+  --whale-eye-bright: #ff5a5e;
+  --whale-eye-soft: #ffd9d9;
+  /* release 顶部色带的 Gitea brand 绿：与 dev 构建的鲸眼红呈现对称。
+     取自 Gitea `--color-logo #609926`（web_src/css/themes/theme-gitea-{dark,light}.css，
+     go-gitea/gitea PR #34639 引入）。状态胶囊的呼吸点继续用 --good #34d399，
+     不被这枚新的 token 污染——前者是运行态语义，后者是版本构建的视觉标识。 */
+  --gitea-green: #609926;
+  --radius: 14px;
+}
+
+/* Element Plus 暗色覆写：把组件库融进品牌底色。 */
+html.dark {
+  --el-color-white: #ffffff;
+  --el-color-black: #000000;
+  --el-color-primary: #4f8cff;
+  --el-color-primary-light-3: #6ba0ff;
+  --el-color-primary-light-5: #35507f;
+  --el-color-primary-light-7: #2a3d66;
+  --el-color-primary-light-8: #22304f;
+  --el-color-primary-light-9: #1b2540;
+  --el-color-primary-dark-2: #3f76e0;
+  --el-color-success: #34d399;
+  --el-color-warning: #fbbf24;
+  --el-color-danger: #f87171;
+  --el-color-error: #f87171;
+  --el-color-info: #9aa4bf;
+  --el-bg-color: #141b36;
+  --el-bg-color-page: #0b1020;
+  --el-bg-color-overlay: #161e3d;
+  --el-text-color-primary: #e8ecf7;
+  --el-text-color-regular: #c3cbe2;
+  --el-text-color-secondary: #9aa4bf;
+  --el-text-color-placeholder: #6b7492;
+  --el-border-color: rgba(255, 255, 255, 0.14);
+  --el-border-color-light: rgba(255, 255, 255, 0.1);
+  --el-border-color-lighter: rgba(255, 255, 255, 0.07);
+  --el-border-color-extra-light: rgba(255, 255, 255, 0.05);
+  --el-fill-color: rgba(255, 255, 255, 0.08);
+  --el-fill-color-light: rgba(255, 255, 255, 0.05);
+  --el-fill-color-lighter: rgba(255, 255, 255, 0.03);
+  --el-fill-color-blank: transparent;
+  --el-mask-color: rgba(4, 8, 20, 0.6);
+  --el-box-shadow: 0 8px 28px rgba(2, 6, 18, 0.55);
+  --el-box-shadow-light: 0 4px 16px rgba(2, 6, 18, 0.4);
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 999px;
+  --el-font-size-base: 13px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  /* html 故意不写 background（默认透明），否则官方对话的拉绳 webview
+     即便 commands.rs 设了 background_color(Color(0,0,0,0))，html 这层
+     的深色 --bg 还是会画出来，让 launcher 看起来是个不透明深色方块。
+     body 单独承担管理面板的可见背景；launcher 路由再覆盖为透明。 */
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+body {
+  background: var(--bg);
+  overflow: hidden;
+}
+
+#app {
+  height: 100%;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+code {
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+/* 细滚动条：面板 / 日志区 / 侧签列共用。 */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* --- 整体布局：左侧菜单 + 右侧面板 --- */
+
+.layout {
+  display: flex;
+  height: 100%;
+}
+
+.sidebar {
+  flex-shrink: 0;
+  width: 208px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 18px 14px;
+  background: var(--bg-soft);
+  border-right: 1px solid var(--border);
+}
+
+/* dev 构建（tauri dev）：自侧栏顶部（品牌区）向下铺一层鲸眼红淡出渐变，与正式壳
+   一眼可辨。渐变是 .sidebar 的背景层（非覆盖层）——内容（品牌/菜单）画在渐变之上，
+   不会被「糊一层」。覆盖侧栏顶部 50% 高度——顶端 α=0.25，线性淡出至 50% 窗高处
+   归 0（50% 以下回归纯 --bg-soft 底，不留拖尾）；幅度与 release 构建的 Gitea 绿
+   背景渐变对齐，保留对称关系。 */
+body.dev-build .sidebar {
+  background-image: linear-gradient(
+    to bottom,
+    rgba(255, 45, 48, 0.25) 0%,
+    rgba(255, 45, 48, 0) 50%
+  );
+}
+
+/* release 构建：自窗口顶部向下铺一层 Gitea brand 绿（--gitea-green #609926）的
+   淡出渐变，常亮标识「这是正式版」。作为「背景」而非覆盖层，且只画在 body 一层
+   上——绿渐变是 body 的 background-image，#app/.layout/main 均透明，能一路透出
+   到整窗。关键在「单一底色」：若 sidebar 仍留自身的 --bg-soft（比 body 的 --bg
+   浅），同一片绿叠两种底色会合成出两段不同的绿、被侧栏/主区边界切成两块，失去
+   整体感；故 release 期 sidebar 去掉自身填充（见下条规则），与 body 共用同一底
+   色，绿叠同一底色即一片连贯地贯穿侧栏→主区。内容（卡片/菜单/文案）一律画在渐
+   变之上，不糊。body 不滚动（overflow:hidden），渐变天然钉在视口顶部。覆盖整窗
+   顶部 50% 高度——顶端 α=0.25，线性淡出至 50% 窗高处归 0；幅度与 dev 构建的鲸
+   眼红侧栏渐变对齐，保留对称关系。rel-build 由首个状态帧落下后设置
+   （store.js:applyBuildClass）；dev 调试面板可临时覆盖该类以便在 dev 期预览——
+   见 DebugPanel.vue 的 setReleasePreview()。 */
+body.rel-build {
+  background-image: linear-gradient(
+    to bottom,
+    rgba(96, 153, 38, 0.25) 0%,
+    rgba(96, 153, 38, 0) 50%
+  );
+}
+
+/* release 期侧栏去掉 --bg-soft 填充、改透明，让 body 那片绿贯穿侧栏→主区不
+   分段（同一底色 = 同一合成结果 = 一个整体）；侧栏与主区的结构分隔仍由
+   border-right 承担。dev 构建不受影响——仍保留 --bg-soft + 鲸眼红。 */
+body.rel-build .sidebar {
+  background: transparent;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 0 6px;
+}
+
+.brand img {
+  width: 64px;
+  height: 64px;
+  display: block;
+}
+
+.brand h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  line-height: 1.05;
+}
+
+.brand div > p:not(.subtitle) {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.subtitle {
+  display: block;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* 状态胶囊：运行中时呼吸点带脉动光圈。 */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  transition: border-color 0.3s ease, color 0.3s ease;
+}
+
+.status-pill .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: background 0.3s ease;
+}
+
+.status-pill .dot.ok {
+  background: var(--good);
+  animation: status-breathe 2.4s ease-in-out infinite;
+}
+
+.status-pill .dot.bad {
+  background: var(--bad);
+}
+
+/* 品牌区「更新」入口：与状态胶囊同排的轻量文字按钮，
+   尺寸向胶囊看齐，颜色/悬停交给 Element 默认态。 */
+.brand-update {
+  height: auto;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+@keyframes status-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(52, 211, 153, 0);
+  }
+}
+
+/* 侧栏菜单：active 项左侧指示条 + 背景渐入，切换带轻微滑动。 */
+.menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.menu-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.12s ease;
+}
+
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.menu-item:active {
+  transform: scale(0.98);
+}
+
+.menu-item.active {
+  background: linear-gradient(90deg, rgba(79, 140, 255, 0.18), rgba(79, 140, 255, 0.05));
+  color: var(--text);
+}
+
+.menu-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 22%;
+  bottom: 22%;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: menu-indicator-in 0.22s ease;
+}
+
+@keyframes menu-indicator-in {
+  from {
+    transform: scaleY(0.2);
+    opacity: 0;
+  }
+  to {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+.menu-item .el-icon {
+  font-size: 16px;
+}
+
+.menu-badge {
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.16);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  color: var(--warn);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.safety-notice {
+  margin-top: auto;
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(251, 191, 36, 0.07);
+  border: 1px solid rgba(251, 191, 36, 0.18);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.safety-notice .el-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--warn);
+}
+
+.safety-notice p {
+  margin: 0;
+}
+
+/* --- 主区域与卡片 --- */
+
+main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 18px;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 面板切换动效：轻淡入 + 8px 上浮，切换时旧面板先离场。 */
+.panel-enter-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+.panel-leave-active {
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+.panel-enter-from {
+  opacity: 0;
+  transform: translateY(10px);
+}
+.panel-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.card h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* 卡片头与下方内容的分隔：底线 + 留白，让「标题 + 操作区」读起来是一个
+   独立的头部区块。裸 h2 的卡片（概览 / 设置）与 card-head 结构同待遇。 */
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.card > h2 {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.head-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-divider {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 概览 kv 栅格。 */
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.kv dt {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.kv dd {
+  margin: 0;
+  min-width: 0;
+  word-break: break-all;
+}
+
+.kv-with-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kv-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* el-button 轻微按压反馈。 */
+.el-button {
+  transition: transform 0.12s ease, background-color 0.18s ease,
+    border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+.el-button:not(.is-loading):active {
+  transform: scale(0.96);
+}
+
+/* 官方对话按钮的颜色随其动作语义切换：
+   - chat 未开（label = "打开官方对话"，带 .official-chat-closed）：鲸鱼蓝
+     --accent #4f8cff（品牌主色，open 动作）。原本依赖 Element 文字按钮默认色
+     = --el-color-primary = #4f8cff 即可，但显式声明以脱离对 Element 默认色键的
+     隐式依赖（避免上游色键变动时被无声改色）。
+   - chat 已开（label = "关闭官方对话"，带 .official-chat-open）：--whale-eye
+     #ff2d30 红眼（危险/停止动作语义，与 open 的蓝形成红↔蓝对照；原先用 --good
+     绿易被误读为「运行中」状态，故改为红眼）。 */
+.el-button.official-chat-closed {
+  color: var(--accent);
+}
+
+.el-button.official-chat-open,
+.el-button.official-chat-open:hover,
+.el-button.official-chat-open:focus-visible {
+  color: var(--whale-eye);
+}
+
+/* 首次运行 / 容错横幅。 */
+.callout {
+  display: flex;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.callout-firstrun {
+  border-color: rgba(79, 140, 255, 0.4);
+  background: linear-gradient(135deg, rgba(79, 140, 255, 0.14), rgba(34, 211, 238, 0.06));
+  animation: callout-in 0.35s ease;
+}
+
+@keyframes callout-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.callout-icon {
+  flex-shrink: 0;
+  font-size: 20px;
+  color: var(--warn);
+  margin-top: 2px;
+}
+
+.callout-firstrun .callout-icon {
+  color: var(--accent);
+}
+
+.callout-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.callout-body h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.callout-body p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* --- 列表行（内核版本 / 插件 / 技能共用） --- */
+
+.updates-lists {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.list-group {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.list-head-with-logo,
+.card-head-with-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brand-logo {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.installed-list,
+.release-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.installed-row,
+.release-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.installed-row:hover,
+.release-row:hover {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: var(--border);
+}
+
+.release-ver {
+  font-weight: 600;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.release-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.plugin-row {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.plugin-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.plugin-meta {
+  color: var(--muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.quarantine-note {
+  color: var(--warn);
+}
+
+.plugin-actions {
+  margin-top: 4px;
+  justify-content: flex-start;
+}
+
+.skill-row-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+/* 行内标签动画：新增 / 变化时轻弹一下。 */
+.el-tag {
+  transition: transform 0.15s ease;
+}
+
+/* --- 手动安装输入行 --- */
+
+.install-row {
+  display: flex;
+  gap: 8px;
+}
+
+.install-row .el-input,
+.install-row .el-select {
+  flex: 1;
+}
+
+/* --- 插件中心 --- */
+
+.catalog-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease, transform 0.12s ease;
+}
+
+.cat-chip:hover {
+  color: var(--text);
+  border-color: rgba(79, 140, 255, 0.5);
+}
+
+.cat-chip:active {
+  transform: scale(0.95);
+}
+
+.cat-chip.active {
+  background: rgba(79, 140, 255, 0.16);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.cat-count {
+  font-size: 10.5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.catalog-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.catalog-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.catalog-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(79, 140, 255, 0.45);
+  box-shadow: 0 6px 18px rgba(2, 6, 18, 0.35);
+}
+
+.catalog-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.catalog-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.catalog-name {
+  font-weight: 700;
+  font-size: 13.5px;
+}
+
+.catalog-stats {
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.catalog-desc {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.catalog-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.catalog-tags {
+  display: inline-flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.catalog-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+/* 目录卡片入场：交错淡入上浮（--i 由模板按序号写入，封顶 12 档）。 */
+.catalog-enter-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  transition-delay: calc(min(var(--i, 0), 12) * 22ms);
+}
+.catalog-enter-from {
+  opacity: 0;
+  transform: translateY(10px);
+}
+.catalog-leave-active {
+  transition: opacity 0.12s ease;
+}
+.catalog-leave-to {
+  opacity: 0;
+}
+
+.catalog-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+/* --- 进度浮层 --- */
+
+.progress-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: rgba(4, 8, 20, 0.55);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  animation: overlay-in 0.18s ease;
+}
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.progress-body {
+  width: min(720px, 92vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 22px;
+  background: #0d1428;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--el-box-shadow);
+  animation: progress-pop 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+@keyframes progress-pop {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.progress-text {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.install-log {
+  max-height: 46vh;
+  overflow-y: auto;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.28);
+  padding: 10px 12px;
+}
+
+.install-log pre,
+.log-content,
+.incident-body pre {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--muted);
+}
+
+/* 卡片底部安装脉冲：鲸眼红扫光，与标题栏脉冲同一节拍。 */
+.progress-pulse {
+  position: relative;
+  width: 100%;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 45, 48, 0.08);
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255, 45, 48, 0.06);
+}
+
+.progress-pulse::before,
+.progress-pulse::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 38%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 45, 48, 0.55) 30%,
+    var(--whale-eye-bright) 50%,
+    rgba(255, 45, 48, 0.55) 70%,
+    transparent 100%
+  );
+  filter: blur(0.4px);
+  border-radius: 999px;
+  animation: titlebar-pulse-sweep 7.68s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  box-shadow: 0 0 8px rgba(255, 45, 48, 0.45);
+}
+
+.progress-pulse::after {
+  animation-delay: 3.84s;
+}
+
+/* 外壳所有鲸眼脉冲共用的扫光帧：标题栏双道与进度条双道同节拍。
+   帧名与 packages/client/web/src/base.css 保持一致。 */
+@keyframes titlebar-pulse-sweep {
+  0% {
+    transform: translateX(-120%);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(360%);
+    opacity: 0;
+  }
+}
+
+/* 标题栏鲸眼脉冲：业务活动指示器。默认隐藏（opacity 0、无动画），
+   仅当按钮触发的 IO / 启动编排进行中（body.pulse-active，由 App.vue
+   按 loading.js 的 ioActive + store.starting 驱动）时两道扫光开跑，
+   全部结束后动画摘除、脉冲淡出消失。两道扫光错开半周期保持连续。 */
+body::after {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 3px;
+  width: 38%;
+  z-index: 1000;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 90, 94, 0.55) 30%,
+    var(--whale-eye-bright) 50%,
+    rgba(255, 90, 94, 0.55) 70%,
+    transparent 100%
+  );
+  filter: blur(0.4px);
+  border-radius: 999px;
+  box-shadow: 0 0 8px rgba(255, 45, 48, 0.45);
+}
+
+/* 第二道扫光：与 body::after 错开半周期，节点在 ui/index.html。 */
+body > [data-titlebar-pulse='2'] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 3px;
+  width: 38%;
+  z-index: 1000;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 90, 94, 0.55) 30%,
+    var(--whale-eye-bright) 50%,
+    rgba(255, 90, 94, 0.55) 70%,
+    transparent 100%
+  );
+  filter: blur(0.4px);
+  border-radius: 999px;
+  box-shadow: 0 0 8px rgba(255, 45, 48, 0.45);
+}
+
+body.pulse-active::after {
+  animation: titlebar-pulse-sweep 7.68s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+body.pulse-active > [data-titlebar-pulse='2'] {
+  animation: titlebar-pulse-sweep 7.68s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation-delay: 3.84s;
+}
+
+/* --- 日志面板（顶部贴合的弹层） --- */
+
+.log-dialog .el-dialog__body {
+  padding-top: 8px;
+}
+
+.log-main {
+  display: flex;
+  gap: 10px;
+  height: calc(100vh - 190px);
+  min-height: 320px;
+}
+
+/* 独立日志阅读窗口（index.html?log=<name>，LogViewerWindow.vue）：
+   可缩放 OS 窗口，页头 = 文件名 + 刷新 / 关闭，正文贴满剩余空间。 */
+.logwin {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.logwin-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+
+.logwin-title {
+  font-weight: 700;
+  font-size: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.logwin-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 12px 16px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.28);
+  padding: 12px 14px;
+}
+
+.log-tabs {
+  flex-shrink: 0;
+  width: 168px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: width 0.2s ease;
+}
+
+/* 收缩态：细轨只留展开按钮，宽度让位给日志正文。 */
+.log-tabs.collapsed {
+  width: 34px;
+  align-items: center;
+  overflow: hidden;
+}
+
+.rail-toggle {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+}
+
+.rail-toggle:hover {
+  color: var(--text);
+  border-color: rgba(79, 140, 255, 0.5);
+}
+
+.rail-toggle:active {
+  transform: scale(0.92);
+}
+
+.log-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 侧栏收缩时正文上方标注当前日志文件名。 */
+.log-active-name {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.log-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  word-break: break-all;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.log-tab:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.log-tab[aria-selected='true'] {
+  background: rgba(79, 140, 255, 0.14);
+  border-color: rgba(79, 140, 255, 0.4);
+  color: var(--text);
+}
+
+.log-tab-size {
+  font-size: 10.5px;
+  opacity: 0.7;
+}
+
+.log-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.28);
+  padding: 12px 14px;
+}
+
+/* --- 事故面板 --- */
+
+.incident-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+
+.suspect-item {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.suspect-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.suspect-name {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.suspect-evidence pre {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+  padding: 8px 10px;
+  margin-top: 6px;
+}
+
+.suspect-actions {
+  align-items: center;
+}
+
+.incident-trail summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.incident-trail pre {
+  margin-top: 6px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+/* --- ElMessage / ElMessageBox 微调 --- */
+
+.el-message {
+  border-radius: 10px;
+}
+
+.el-overlay-dialog .el-dialog {
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.el-dialog {
+  --el-dialog-bg-color: #0d1428;
+}
+
+.el-message-box {
+  --el-messagebox-title-color: var(--text);
+  border-radius: var(--radius);
+}
+
+/* 输入聚焦微光。 */
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+  transition: box-shadow 0.18s ease;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--accent) inset, 0 0 12px rgba(79, 140, 255, 0.18);
+}
+
+/* 窄窗口（≤760px；应用窗口固定 480px，恒命中）：侧栏折叠为顶部横向
+   chrome 栏——品牌区在上，菜单沉底，安全提示做横向条幅；主面板独立滚动。 */
+@media (max-width: 760px) {
+  body {
+    overflow: hidden;
+  }
+  .layout {
+    flex-direction: column;
+    height: 100%;
+  }
+  .sidebar {
+    flex: 0 0 auto;
+    width: auto;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 12px 14px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand {
+    flex: 0 0 auto;
+  }
+  /* 状态胶囊别到品牌行右缘。 */
+  .status-pill {
+    margin-left: auto;
+    font-size: 12px;
+    padding: 5px 10px;
+  }
+  .menu {
+    flex-direction: row;
+    flex-wrap: wrap;
+    flex: 0 0 auto;
+    margin-top: auto;
+  }
+  .menu-item {
+    width: auto;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  /* 窄布局菜单激活态：只用文字高亮（品牌蓝 + 加粗），不要底线与背景。 */
+  .menu-item.active {
+    background: transparent;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .menu-item.active::before {
+    display: none;
+  }
+  .menu-badge {
+    margin-left: 2px;
+  }
+  .safety-notice {
+    margin-top: 0;
+    padding: 8px 12px;
+    font-size: 11px;
+    align-items: center;
+  }
+  .safety-notice p {
+    line-height: 1.4;
+  }
+  main {
+    overflow-y: auto;
+    padding: 16px;
+  }
+  /* kv：窄值列压缩标签列宽，保住 URL / 路径可读性。 */
+  .kv {
+    grid-template-columns: minmax(86px, 110px) 1fr;
+    gap: 6px 12px;
+  }
+  .updates-lists {
+    grid-template-columns: 1fr;
+  }
+  .list-group .release-list,
+  .list-group .installed-list,
+  .installed-list {
+    max-height: 42vh;
+    overflow-y: auto;
+  }
+  /* 卡片头在 480px 下让右侧 meta 掉到第二行并右对齐。 */
+  .card-head {
+    flex-wrap: wrap;
+  }
+  .head-meta {
+    flex: 1 1 auto;
+    justify-content: flex-end;
+  }
+  /* 安装行：输入框独占首行，下拉与按钮分第二行。 */
+  .install-row {
+    flex-wrap: wrap;
+  }
+  .install-row .el-input {
+    flex: 1 1 100%;
+  }
+  .install-row .el-select {
+    min-width: 96px;
+    flex: 1 1 auto;
+  }
+  .card .btn-row .el-button {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+}
+
+/* --- dev 调试按钮（DebugPanel.vue） ------------------------------------------
+   仅 dev 构建渲染（v-if=isDev），故选择器不需带 .dev-build 前缀。
+   浮按钮 36×36 圆形置右下，弹层向上展开；与 .btn-row 等业务按钮共用色键不冲突。 */
+
+.debug-fab-wrap {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.debug-fab {
+  pointer-events: auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(79, 140, 255, 0.16);
+  border: 1px solid rgba(79, 140, 255, 0.45);
+  color: var(--accent);
+  font-size: 16px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  box-shadow: 0 8px 22px rgba(2, 6, 18, 0.5);
+  transition:
+    transform 0.12s ease,
+    background 0.18s ease,
+    border-color 0.18s ease;
+}
+.debug-fab:hover {
+  background: rgba(79, 140, 255, 0.26);
+  border-color: var(--accent);
+}
+.debug-fab:active {
+  transform: scale(0.94);
+}
+.debug-fab.open {
+  background: rgba(79, 140, 255, 0.32);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.debug-panel {
+  pointer-events: auto;
+  width: min(380px, calc(100vw - 28px));
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 14px 16px 16px;
+  background: #0d1428;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--el-box-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: debug-panel-in 0.18s ease;
+}
+@keyframes debug-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.debug-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.debug-panel h3 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 700;
+}
+.debug-panel h4 {
+  margin: 4px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.debug-hint {
+  color: var(--muted);
+  font-size: 11px;
+  flex: 1;
+  text-align: right;
+}
+.debug-close {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.debug-close:hover {
+  color: var(--text);
+  border-color: rgba(79, 140, 255, 0.5);
+}
+
+.debug-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.debug-row label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.debug-row input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.debug-meta {
+  display: block;
+  margin: 4px 0 0 22px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.debug-meta code {
+  font-size: 10.5px;
+  padding: 1px 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  color: var(--text);
+}
+
+.debug-hooks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.debug-hooks li {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border);
+}
+.debug-hooks code {
+  font-size: 10.5px;
+  padding: 1px 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  color: var(--text);
+  margin-right: 6px;
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.debug-foot {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}

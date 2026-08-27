@@ -1,0 +1,71 @@
+{
+  "permission": [
+    {
+      "identifier": "allow-focus-main-shell",
+      "description": "Allow raising the shell's main management window. Granted to both remote webviews (the harness workbench at http://127.0.0.1:<port> and the DeepSeek official chat at https://chat.deepseek.com) so the injected pull-string launcher can bring the panel to the foreground on either surface; tauri-build only exposes app commands to capabilities through an app-level permission file like src-tauri/permissions/app-commands.json, so an explicit allow-list is required for any remote webview to invoke the command.",
+      "commands": {
+        "allow": ["focus_main_shell"]
+      }
+    },
+    {
+      "identifier": "allow-local-commands",
+      "description": "Allow every app command from the shell's own local windows (the management panel). Defining ANY app-level permission flips Tauri from 'app commands are open to local windows' to 'app commands require an explicit grant', so this permission restores the pre-existing behavior for the local UI. Maintenance: every command added to `tauri::generate_handler!` in lib.rs must be listed here, or its invoke from the panel fails with 'not allowed. Command not found'.",
+      "commands": {
+        "allow": [
+          "get_status",
+          "detect_node",
+          "save_settings",
+          "get_kernel_log",
+          "list_log_files",
+          "read_log_file",
+          "open_data_dir",
+          "check_shell_update",
+          "install_shell_update",
+          "fetch_releases",
+          "install_kernel",
+          "activate_version",
+          "remove_version",
+          "start_kernel",
+          "stop_kernel",
+          "open_harness",
+          "open_log_window",
+          "open_official_chat",
+          "close_official_chat",
+          "official_chat_tabs",
+          "switch_official_chat_tab",
+          "focus_main_shell",
+          "plugin_status",
+          "plugin_install",
+          "plugin_update",
+          "plugin_uninstall",
+          "plugin_sync",
+          "plugin_set_mode",
+          "plugin_check_updates",
+          "plugin_catalog",
+          "plugin_resolve",
+          "skill_status",
+          "skill_install",
+          "skill_update",
+          "skill_uninstall",
+          "skill_set_enabled",
+          "skill_check_updates",
+          "confirm_close_shell"
+        ]
+      }
+    },
+    {
+      "identifier": "allow-official-chat-tabs",
+      "description": "Tab-control commands plus the pull-string lamp's focus raise for the official-chat window's local strip webview (label \"official-chat-strip\", the index.html?chatstrip=1 SPA route). The strip renders the tab bar and calls the tab commands to read the fixed tab list and switch the active content webview; the lamp (pullstring-launcher.js, injected straight into the strip because a separate launcher webview can't be made transparent on this Tauri 2.11 / wry 0.55.1 stack) calls focus_main_shell to raise the management panel over the cursor. Granted only to the local strip webview — the remote content webviews (chat.deepseek.com / www.qianwen.com / agent.minimaxi.com) never get them because chat-fingerprint.js deletes window.__TAURI__ there, and the capability has no remote matcher.",
+      "commands": {
+        "allow": ["official_chat_tabs", "switch_official_chat_tab", "focus_main_shell"]
+      }
+    },
+    {
+      "identifier": "allow-log-viewer",
+      "description": "Read-only log access for the standalone log viewer window (label \"log-viewer\", opened by open_log_window). The window renders one file's tail via read_log_file and nothing else; the panel keeps the full command set via allow-local-commands.",
+      "commands": {
+        "allow": ["read_log_file"]
+      }
+    }
+  ]
+}

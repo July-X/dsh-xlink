@@ -1,0 +1,87 @@
+# Build and publish the dsh-desktop shell for the supported desktop targets.
+# Releases are built from the independent project's main branch.
+
+name: Desktop release (dsh-xlink)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'desktop-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-15-intel
+          - platform: windows-latest
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verify the tag matches the app version and sits on main
+        id: meta
+        shell: pwsh
+        run: |
+          # Releases ship only from main: a tag must name a commit that is
+          # reachable from origin/main, and a manual dispatch must select main.
+          if ($env:GITHUB_REF_TYPE -eq 'branch' -and $env:GITHUB_REF_NAME -ne 'main') {
+            throw "desktop releases only run on main; dispatched ref was $env:GITHUB_REF_NAME"
+          }
+          git fetch --depth=100 origin main
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) {
+            throw "tag $env:GITHUB_REF_NAME does not point at a commit on main"
+          }
+
+          $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($conf.version -ne $pkg.version) {
+            throw "version mismatch: tauri.conf.json ($($conf.version)) != package.json ($($pkg.version))"
+          }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "desktop-v$($conf.version)") {
+            throw "tag $env:GITHUB_REF_NAME does not match desktop version $($conf.version)"
+          }
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install the Tauri CLI
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: .
+          tagName: desktop-v__VERSION__
+          releaseName: 'dsh-xlink v__VERSION__'
+          releaseBody: |
+            ## dsh-xlink v__VERSION__
+
+            支持平台：
+            - Intel macOS（.dmg）
+            - Windows x86_64（NSIS 安装包 .exe）
+
+            使用方式：安装后在「内核版本」页安装并切换 DeepSeek Harness 内核版本即可使用。
+          # Keep both flags false so the updater's latest endpoint resolves.
+          releaseDraft: false
+          prerelease: false

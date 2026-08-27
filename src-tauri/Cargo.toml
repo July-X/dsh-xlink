@@ -1,0 +1,38 @@
+[package]
+name = "dsh-desktop"
+version = "0.1.0"
+description = "DeepSeek Harness desktop shell: kernel version management and the bundled web UI"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `unstable` exposes `WebviewBuilder` / `WindowBuilder` (bare window) /
+# `Window::add_child` — the multi-webview-per-window primitives the tabbed
+# official-chat window needs (one chrome-strip webview + N content webviews
+# in a single window). Pinned to tauri 2.11.x, so the unstable-API churn
+# risk is bounded to a tauri bump.
+tauri = { version = "2", features = ["unstable"] }
+tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Explicit re-export of the URL crate that Tauri 2.x pulls in via
+# `tauri::Url`; pinned here so `Url::parse` resolves unambiguously.
+url = "2"
+# HTTPS via rustls (ureq 3.x feature name is `rustls`, not `tls`): no system
+# TLS dependencies, so cross compiling for the Intel-macOS and Windows CI
+# runners works without a C toolchain.
+ureq = { version = "3", default-features = false, features = ["json", "gzip", "rustls"] }
+thiserror = "2"
+tokio = { version = "1", features = ["time"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

@@ -1,0 +1,6 @@
+# 本仓库是独立桌面交付物，不加入其他仓库的 pnpm workspace（见 AGENTS.md）。
+# 本文件让 pnpm 将仓库根目录作为独立项目；pnpm 10+ 默认拒绝依赖的
+# 安装脚本（strictDepBuilds），所以 esbuild（Vite 依赖的原生二进制）
+# 必须在本项目内单独放行。
+allowBuilds:
+  esbuild: true
