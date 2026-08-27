@@ -1,7 +1,8 @@
 // Keep this emergency render path aligned with OFFICIAL_CHAT_TABS in commands.rs.
 export const DEFAULT_OFFICIAL_CHAT_TABS = Object.freeze([
   Object.freeze({ index: 0, title: 'DeepSeek' }),
-  Object.freeze({ index: 1, title: '智谱 BigModel' }),
+  Object.freeze({ index: 1, title: '千问' }),
+  Object.freeze({ index: 2, title: 'MiniMax' }),
 ]);
 
 /**

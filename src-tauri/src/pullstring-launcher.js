@@ -5,10 +5,8 @@
  *   over `http://127.0.0.1:<port>`).
  * - `open_official_chat`'s strip webview (label `official-chat-strip`, the
  *   local SPA route `index.html?chatstrip=1` that renders the tab bar).
- *   The lamp is hosted by the SAME strip HWND; the SVG is now a compact
- *   24x38 desk-lamp that fits inside the natural 38px tab-bar height, so
- *   the strip does not need to be inflated (an earlier 66px SVG forced
- *   the strip up to 66px and left a dark-blue empty band under the tabs).
+ *   The lamp is hosted by the same strip HWND as a compact 24x38 desk lamp,
+ *   fitting inside the natural 38px tab-bar height.
  *
  * Both webviews keep `window.__TAURI__` intact — neither has its IPC
  * surface neutered — so the lamp talks straight to the global and the
@@ -51,16 +49,10 @@
   }
 
   // Surface selection: the official-chat strip webview (loaded at
-  // `?chatstrip=1`) uses the DeepSeek-blue right-edge chrome; the
-  // dsh web workbench has no such param and uses the Gitea-green left
-  // anchor beside the sidebar-collapse button. Detecting by query keeps
-  // the lamp purely local and means we never have to special-case
-  // third-party origins here. (The lamp was briefly hosted by a separate
-  // `?chatlauncher=1` webview, but WebView2 child HWND transparency
-  // isn't reliable on this Tauri 2.11 stack so the lamp moved back into
-  // the strip — `chatlauncher` is no longer a route, but the substring
-  // check is kept as a no-cost safety net in case any old URL ever
-  // leaks into the launcher route.)
+  // `?chatstrip=1`) uses the DeepSeek-blue right-edge chrome; the dsh web
+  // workbench uses the Gitea-green left anchor beside the sidebar-collapse
+  // button. The legacy `chatlauncher=1` check remains harmless for stale
+  // URLs, while current official-chat chrome is owned by the strip webview.
   var search = window.location.search;
   var isOfficial =
     search.indexOf("chatstrip=1") !== -1 ||
@@ -116,10 +108,8 @@
     '<rect class="dsh-launcher-base" x="3" y="30" width="18" height="6" rx="1.5"/>',
     "</svg>",
   ].join("");
-  // The original 66px pull-string lamp — long cord hanging from the
-  // top edge, screw base, large bulb with a visible filament zigzag
-  // inside. Reads as a classic Edison-bulb pull-string on the workbench,
-  // where the 66px height has no constraint.
+  // The workbench variant uses a 66px pull-string lamp: its longer cord,
+  // screw base, bulb, and filament fit the taller workbench chrome.
   var SVG_PULL = [
     '<svg viewBox="0 0 24 66" width="24" height="66" aria-hidden="true">',
     /* The string, hanging from the top edge of the viewport. */
@@ -235,10 +225,8 @@
     }
 
     // Pulled: cord + body travel down together, springing back on
-    // release. Magnitude is variant-specific: 3px on the compact
-    // 38px desk lamp (proportional to its height), 6px on the taller
-    // 66px pull-string lamp (reads as a real "press" against the
-    // taller chrome).
+    // release. The compact 38px desk lamp moves 3px; the taller 66px
+    // workbench lamp moves 6px.
     rules.push(
       "#" + ROOT_ID + " .dsh-launcher-btn.dsh-launcher-pulled svg {",
       "  transform: translateY(" + PULL_TRANSLATE_PX + ");",
