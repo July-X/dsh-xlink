@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "dsh-desktop",
+  "version": "0.1.1-rc.9",
+  "identifier": "com.zhongxingxing.dsh-desktop",
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev:ui",
+    "beforeBuildCommand": "npm run build:ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "DeepSeek Harness 桌面端",
+        "width": 480,
+        "height": 800,
+        "minWidth": 480,
+        "minHeight": 600,
+        "center": true,
+        "resizable": false
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg", "nsis"],
+    "createUpdaterArtifacts": true,
+    "category": "DeveloperTool",
+    "shortDescription": "DeepSeek Harness desktop shell",
+    "longDescription": "Desktop shell that runs the DeepSeek Harness web UI with kernel version management and updates.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.13"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIyMThFOUY4OUI0MkNGNDEKUldSQnowS2IrT2tZSWlTQUo4TXhJTVJZRGhKZWJ6SmVOTXFtZzBWcXhVYmNGamlHNldYOFBCb1YK",
+      "endpoints": [
+        "https://github.com/July-X/dsh-xlink/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

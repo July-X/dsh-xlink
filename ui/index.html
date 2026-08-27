@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DeepSeek Harness 桌面端</title>
+</head>
+<body>
+  <!-- 第二条标题栏脉冲：与全局 CSS 里 body::after 的扫光错开半个周期（3.84s），
+       让顶部扫光连续而不是单点划过后留空白。作为 body 直接子节点挂载，
+       命中 theme.css 的 data-titlebar-pulse 选择器。 -->
+  <div data-titlebar-pulse="2" aria-hidden="true"></div>
+  <div id="app"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "identifier": "official-chat-strip",
+  "description": "The local tab-strip webview (label \"official-chat-strip\") renders the official-chat window's tab bar from the SPA route index.html?chatstrip=1. It keeps window.__TAURI__ — chat-fingerprint.js is not injected here — so it can invoke official_chat_tabs to read the fixed tab list and switch_official_chat_tab to switch the active content webview. No remote matcher, so only this local webview in the official-chat window gets the grant; the remote content webviews (chat.deepseek.com / www.qianwen.com / agent.minimaxi.com) keep needing official-chat-remote.json instead.",
+  "windows": ["official-chat"],
+  "permissions": ["core:default", "allow-official-chat-tabs"]
+}

@@ -1,0 +1,6 @@
+{
+  "identifier": "log-viewer",
+  "description": "The standalone log viewer window (opened by the log panel's「全屏」button via open_log_window) loads the local SPA at index.html?log=<name>. It only reads one log file and closes itself — no write or lifecycle commands.",
+  "windows": ["log-viewer"],
+  "permissions": ["core:default", "core:window:allow-close", "allow-log-viewer"]
+}
