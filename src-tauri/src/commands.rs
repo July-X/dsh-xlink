@@ -85,6 +85,8 @@ const OFFICIAL_CHAT_WINDOW_LABEL: &str = "official-chat";
 const OFFICIAL_CHAT_STRIP_LABEL: &str = "official-chat-strip";
 /// Logical height of the pinned tab strip. The compact 24x38 desk-lamp SVG
 /// fits inside the natural 38px tab-bar height.
+const OFFICIAL_CHAT_INITIAL_WIDTH: f64 = 1366.0;
+const OFFICIAL_CHAT_INITIAL_HEIGHT: f64 = 768.0;
 const OFFICIAL_CHAT_STRIP_HEIGHT: f64 = 38.0;
 
 /// Shared shell state installed as a Tauri managed state.
@@ -821,35 +823,58 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
         .name("dsh-open-official-chat".into())
         .spawn(move || {
             let result: Result<(), String> = (|| {
-                let window = WindowBuilder::new(&handle, OFFICIAL_CHAT_WINDOW_LABEL)
-                    .title("DeepSeek 官方对话")
-                    .inner_size(1366.0, 768.0)
-                    .resizable(true)
-                    // Keep the window hidden until all child WebViews exist.
-                    .visible(false)
-                    .build()
-                    .map_err(|e| format!("无法创建官方对话窗口：{e}"))?;
+                let window = {
+                    let mut builder = WindowBuilder::new(&handle, OFFICIAL_CHAT_WINDOW_LABEL)
+                        .title("DeepSeek 官方对话")
+                        .inner_size(OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT)
+                        .resizable(true)
+                        // Let AppKit establish the parent content frame before
+                        // child WebViews are attached; the post-show pass
+                        // reapplies every child frame after registration.
+                        .visible(true);
+                    // Default `TitleBarStyle::Visible` enables
+                    // `NSWindowStyleMask::FullSizeContentView` on macOS, which
+                    // extends the window's content view UNDER the title bar
+                    // (tauri-runtime-wry/src/lib.rs:1200-1205). The tab-strip
+                    // child WebView sits at logical (0, 0) and was therefore
+                    // occluded by the ~28pt title bar — the three tabs
+                    // (`DeepSeek`/`千问`/`MiniMax`) showed only a few pixels
+                    // tall, exactly the user-reported symptom. `Transparent`
+                    // keeps the title bar visible but disables
+                    // `fullsize_content_view`, so the content view starts
+                    // BELOW the title bar; the strip is no longer hidden.
+                    // `title_bar_style` only exists on macOS (`WindowBuilder`
+                    // wraps it under `#[cfg(target_os = "macos")]`) — Windows
+                    // and Linux keep the platform default behavior untouched.
+                    #[cfg(target_os = "macos")]
+                    {
+                        builder = builder.title_bar_style(tauri::TitleBarStyle::Transparent);
+                    }
+                    builder
+                        .build()
+                        .map_err(|e| format!("无法创建官方对话窗口：{e}"))?
+                };
                 let _ = fs::create_dir_all(&profile_dir);
                 let scale = window.scale_factor().unwrap_or(1.0);
-                // inner_size() can read 0 before the window is shown on some
-                // backends; fall back to the requested 1366x768 logical so the
-                // content webviews get a sane initial size before the first
-                // Resized event relayouts with the real geometry.
+                // AppKit can briefly report a tiny provisional client size while
+                // it finishes laying out the newly created content view.
                 let phys = window.inner_size().unwrap_or_default();
-                let (mut w, mut h) =
-                    logical_window_size(phys.width, phys.height, scale).unwrap_or_default();
-                if w <= 0.0 || h <= 0.0 {
-                    w = 1366.0;
-                    h = 768.0;
-                }
+                let (w, h) = official_chat_initial_size(phys.width, phys.height, scale);
                 let layout = official_chat_layout(w, h);
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "dsh-desktop: official-chat created — inner={}x{}px scale={scale} → logical={w}x{h}pt",
+                    phys.width, phys.height
+                );
 
-                // Register before child creation so a focus event emitted while
-                // the window becomes visible cannot be missed. The focused pass
-                // reads the final content-view size after macOS finishes layout.
+                // Register before child creation so geometry or focus events
+                // emitted during attachment are handled. The focused pass reads
+                // the final content-view size after AppKit finishes its layout.
                 let app_for_layout = handle.clone();
                 window.on_window_event(move |event| {
                     if should_relayout_official_chat(event) {
+                        #[cfg(debug_assertions)]
+                        eprintln!("dsh-desktop: official-chat event {event:?} — relayout");
                         relayout_official_chat(&app_for_layout);
                     }
                 });
@@ -900,21 +925,33 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                     )
                     .map_err(|e| format!("无法创建官方对话页签栏：{e}"))?;
 
-                // Showing a hidden NSWindow can trigger another AppKit layout pass
-                // for its child views. Queue the authoritative bounds pass after
-                // show returns; geometry events cover later resize and scale changes.
+                // Keep an idempotent show call in the queued main-thread pass,
+                // then relayout after all child views are registered. The second
+                // queued task runs after the show message and avoids observing a
+                // provisional AppKit frame during child creation.
                 let app_for_post_show = handle.clone();
                 let window_for_show = window.clone();
                 let _ = window.run_on_main_thread(move || {
                     let _ = window_for_show.show();
                     let window_for_relayout = window_for_show.clone();
-                    let _ = std::thread::Builder::new()
-                        .name("dsh-official-chat-post-show-layout".into())
-                        .spawn(move || {
-                            let _ = window_for_relayout.run_on_main_thread(move || {
-                                relayout_official_chat(&app_for_post_show);
-                            });
-                        });
+                    let _ = window_for_relayout.run_on_main_thread(move || {
+                        relayout_official_chat(&app_for_post_show);
+                    });
+                });
+
+                // AppKit can keep reporting the provisional client size through the
+                // post-show pass, and the real frame settles without a
+                // subsequent `Resized` event. The delayed pass reapplies the
+                // settled layout so the window cannot stay stuck on the
+                // provisional size; idempotent and a no-op if the window is
+                // already closed or the layout was already applied.
+                let app_for_settle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    let app = app_for_settle.clone();
+                    let _ = app_for_settle.run_on_main_thread(move || {
+                        relayout_official_chat(&app);
+                    });
                 });
                 Ok(())
             })();
@@ -947,7 +984,14 @@ fn logical_window_size(width: u32, height: u32, scale: f64) -> Option<(f64, f64)
     Some((width, height))
 }
 
-/// Geometry shared by the strip and every official-chat content webview.
+fn official_chat_initial_size(width: u32, height: u32, scale: f64) -> (f64, f64) {
+    logical_window_size(width, height, scale)
+        .filter(|(width, height)| {
+            *width >= OFFICIAL_CHAT_STRIP_HEIGHT && *height >= OFFICIAL_CHAT_STRIP_HEIGHT
+        })
+        .unwrap_or((OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct OfficialChatLayout {
     width: f64,
@@ -967,6 +1011,16 @@ fn official_chat_layout(width: f64, height: f64) -> OfficialChatLayout {
         content_y: OFFICIAL_CHAT_STRIP_HEIGHT.min(height),
         content_height: (height - OFFICIAL_CHAT_STRIP_HEIGHT).max(0.0),
     }
+}
+
+/// Whether a logical layout is plausible enough to apply to the child
+/// webviews. AppKit can report a tiny provisional client size right after
+/// a macOS window is created; applying such a layout would re-shrink the
+/// strip and content webviews on every relayout. Mirrors the initial-size
+/// fallback in [`official_chat_initial_size`]; the real layout bug fix is
+/// the title-bar style on the window builder (see `open_official_chat`).
+fn official_chat_layout_plausible(layout: OfficialChatLayout) -> bool {
+    layout.width >= OFFICIAL_CHAT_STRIP_HEIGHT && layout.height >= OFFICIAL_CHAT_STRIP_HEIGHT
 }
 
 /// Events that can invalidate the native child-view frames.
@@ -1008,9 +1062,27 @@ fn relayout_official_chat(app: &AppHandle) {
         return;
     };
     let layout = official_chat_layout(w, h);
+    if !official_chat_layout_plausible(layout) {
+        // AppKit still reports the provisional client size right after
+        // creation; keep the child frames created at open time and wait for
+        // a later pass with the settled size (one is queued above, plus the
+        // 1.5s settle fallback). This is cheap defense, not a fix for the
+        // user-visible bug — the real bug is the title-bar overlap below.
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "dsh-desktop: official-chat provisional inner={}x{}px scale={scale} → {w}x{h}pt; keeping existing child frames",
+            phys.width, phys.height
+        );
+        return;
+    }
     if layout.width <= 0.0 || layout.height <= 0.0 {
         return;
     }
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "dsh-desktop: official-chat relayout — inner={}x{}px scale={scale} → {w}x{h}pt, strip={}pt, content={}pt",
+        phys.width, phys.height, layout.strip_height, layout.content_height
+    );
     if let Some(strip) = app.get_webview(OFFICIAL_CHAT_STRIP_LABEL) {
         let _ = strip.set_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
@@ -1470,6 +1542,19 @@ mod official_chat_layout_tests {
     }
 
     #[test]
+    fn ignores_tiny_provisional_window_metrics_for_initial_layout() {
+        assert_eq!(
+            official_chat_initial_size(1366, 6, 1.0),
+            (OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT),
+        );
+        assert_eq!(
+            official_chat_initial_size(6, 768, 1.0),
+            (OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT),
+        );
+        assert_eq!(official_chat_initial_size(2732, 1536, 2.0), (1366.0, 768.0),);
+    }
+
+    #[test]
     fn reserves_the_strip_once_for_content() {
         let layout = official_chat_layout(1366.0, 768.0);
 
@@ -1489,6 +1574,24 @@ mod official_chat_layout_tests {
         assert_eq!(layout.strip_height, 24.0);
         assert_eq!(layout.content_y, 24.0);
         assert_eq!(layout.content_height, 0.0);
+    }
+
+    #[test]
+    fn relayout_rejects_tiny_provisional_layouts_that_collapse_macos_windows() {
+        // AppKit reports a few-pixel provisional client size right after
+        // window creation on macOS; applying it collapses the strip and
+        // content webviews to that sliver. The relayout must keep the
+        // last good frames instead.
+        assert!(!official_chat_layout_plausible(official_chat_layout(
+            1366.0, 3.0,
+        )));
+        assert!(!official_chat_layout_plausible(official_chat_layout(
+            4.0, 768.0,
+        )));
+        // A real window is always at least as large as the tab strip.
+        assert!(official_chat_layout_plausible(official_chat_layout(
+            1366.0, 768.0,
+        )));
     }
 
     #[test]
