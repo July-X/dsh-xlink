@@ -23,3 +23,6 @@ coverage/
 
 # OS files
 .DS_Store
+
+.key
+.tauri
