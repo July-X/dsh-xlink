@@ -36,6 +36,24 @@ export const store = reactive({
 // （启动编排自己会 toast）；初始化为 null，首轮轮询不提示。
 let lastRunning = null;
 
+// get_status 可能同时被动作完成后的 refreshAll 与后台轮询调用。只允许最近
+// 发出的请求提交快照，避免恢复动作已经清掉隔离记录后，较早的轮询响应又把
+// 旧 quarantined / last_incident 写回界面。
+let statusRequestSeq = 0;
+function beginStatusRequest() {
+  statusRequestSeq += 1;
+  return statusRequestSeq;
+}
+
+function applyStatus(view, requestSeq) {
+  if (requestSeq !== statusRequestSeq) return false;
+  store.view = view;
+  lastRunning = view.kernel.running;
+  store.lastIncident = view.last_incident || null;
+  applyBuildClass();
+  return true;
+}
+
 // 把 body 上的 dev-build / rel-build 类同步独立成函数：refreshAll 与 2.5s 轮询
 // 都会调用，避免用户的 releasePreview 调试覆盖被下一次轮询清掉。
 // dev_build=true 表示 tauri dev 调试构建；releasePreview 是 dev 期临时覆盖，
@@ -65,11 +83,9 @@ export function showIncident(incident) {
 
 export async function refreshAll() {
   try {
+    const requestSeq = beginStatusRequest();
     const view = await invoke('get_status');
-    store.view = view;
-    lastRunning = view.kernel.running;
-    store.lastIncident = view.last_incident || null;
-    applyBuildClass();
+    if (!applyStatus(view, requestSeq)) return;
     await Promise.all([refreshPlugins(), refreshSkills()]);
   } catch (e) {
     toastError('读取状态失败：' + e);
@@ -80,12 +96,11 @@ export async function refreshAll() {
 export async function pollStatus() {
   if (document.hidden) return;
   try {
+    const requestSeq = beginStatusRequest();
     const view = await invoke('get_status');
-    const changed = lastRunning !== null && view.kernel.running !== lastRunning;
-    lastRunning = view.kernel.running;
-    store.view = view;
-    store.lastIncident = view.last_incident || null;
-    applyBuildClass();
+    const previousRunning = lastRunning;
+    if (!applyStatus(view, requestSeq)) return;
+    const changed = previousRunning !== null && view.kernel.running !== previousRunning;
     if (changed && view.kernel.running && !store.starting) {
       toastSuccess('内核已就绪', 2500);
     }
