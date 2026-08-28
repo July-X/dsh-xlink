@@ -17,3 +17,4 @@
 | Windows 任务栏图标不更新 | `tauri-build` 默认不发 `cargo:rerun-if-changed`，需要 `Stop-Process dsh-desktop` 后再 `cargo build`；重启 Explorer（`ie4uinit.exe -show`）清任务栏缓存。详见 [icon-design.md](icon-design.md) |
 | macOS Dock 图标不更新 | 杀掉 Dock（`killall Dock`）或重启应用清缓存 |
 | 卸载插件后工作台无法启动，内核日志报 `cannot resolve profile bundle "<包名>"` | 托管 spec 曾按目录名子串 `desktop/kernels/` 判定，dev 壳（`desktop-dev/`）接线的插件卸载后依赖与 bundle 层残留在 profile manifest，内核沿悬空符号链接解析失败 —— 现改为按 `kernels/<version>/plugins/<id>` 尾部路径结构判定（与壳的数据目录名无关）；手工恢复：删掉 `~/.dsh/profiles/<profile>/package.json` 里该插件的 dependencies 与 bundles 条目，删 `node_modules/` 下悬空链接后 `pnpm install` |
+| 启动容错面板中移除插件后告警仍显示 | 若上次卸载已删除中央库记录但留下 `quarantine.json`，重新点击「移除插件」会按隔离记录完成幂等清理；若正在运行旧版 dev shell，需要重启并重新构建 Rust 端后再操作 | |

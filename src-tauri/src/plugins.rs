@@ -2736,6 +2736,12 @@ pub fn update(
 }
 
 /// Remove a plugin everywhere: store, kernel materializations, profile wiring.
+///
+/// Removal is retryable after a partial cleanup: if the central-store row is
+/// already gone, the request is accepted only when the quarantine registry
+/// still names the same plugin. That lets the incident action finish cleaning
+/// stale quarantine/profile state without making an arbitrary missing id a
+/// successful uninstall.
 pub fn uninstall(
     data_dir: &Path,
     settings: &settings::Settings,
@@ -2743,7 +2749,18 @@ pub fn uninstall(
     id: &str,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(), AppError> {
-    store_item(data_dir, id).ok_or_else(|| AppError::Plugin("插件不在中央库中".into()))?;
+    let has_store_item = store_item(data_dir, id).is_some();
+    if !has_store_item
+        && !quarantine::load(data_dir)
+            .items
+            .iter()
+            .any(|item| item.id == id)
+    {
+        return Err(AppError::Plugin("插件不在中央库中".into()));
+    }
+    if !has_store_item {
+        on_progress("正在清理插件残留");
+    }
     // Delete the store dir FIRST: on Windows a file locked by the running
     // kernel makes remove_dir_all fail, and failing here leaves every other
     // piece of state untouched so the user can close the workbench and
@@ -4043,6 +4060,62 @@ mod tests {
         quarantine::remove(&data_dir, "bad-plugin").expect("remove");
         let view = status(&data_dir, &settings::Settings::default());
         assert!(view.rows[0].quarantined.is_none());
+    }
+
+    #[test]
+    fn uninstall_cleans_stale_quarantine_when_store_item_is_missing() {
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        let id = "dsh-flowglass";
+        fs::create_dir_all(&data_dir).expect("data dir");
+        quarantine::add_all(
+            &data_dir,
+            &[quarantine::QuarantineItem {
+                id: id.into(),
+                name: id.into(),
+                reason: "启动失败".into(),
+                evidence: "Error: missing dependency".into(),
+                at: 1,
+            }],
+        )
+        .expect("quarantine");
+
+        // This is the partial-cleanup state reported by the dev shell: the
+        // store row and profile wiring are already gone, while an old
+        // quarantine record remains to be cleared.
+        let profile = profile_dir(&data_dir, "web");
+        fs::create_dir_all(profile.join("node_modules")).expect("node_modules");
+        let manifest = serde_json::json!({
+            "name": "dsh-profile-web",
+            "private": true,
+            "dependencies": {},
+            "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"] } }
+        });
+        fs::write(
+            profile.join("package.json"),
+            serde_json::to_string_pretty(&manifest).expect("manifest") + "\n",
+        )
+        .expect("write manifest");
+
+        let mut noop = |_: &str| {};
+        uninstall(
+            &data_dir,
+            &settings::Settings::default(),
+            Path::new("pnpm"),
+            id,
+            &mut noop,
+        )
+        .expect("stale quarantine should be removable");
+
+        assert!(quarantine::load(&data_dir).items.is_empty());
+        let cleaned: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(profile.join("package.json")).expect("cleaned manifest"),
+        )
+        .expect("cleaned json");
+        let bundles = cleaned["dsh"]["profile"]["bundles"]
+            .as_array()
+            .expect("bundles");
+        assert!(!bundles.iter().any(|bundle| bundle.as_str() == Some(id)));
     }
 
     /// Helper: stamp a `.dsh-id` marker inside a staging dir so the
