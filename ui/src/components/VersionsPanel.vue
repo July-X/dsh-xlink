@@ -1,9 +1,20 @@
 <script setup>
-// 内核版本：左列已安装（切换 / 删除），右列 npm 发布（安装 / 切换）。
+// 内核版本：左列已安装（切换 / 删除），右列 npm 发布（仅安装）。
+// 「切换」必须基于本地已安装版本，避免误把尚未安装的远端版本当成可立刻启用的内核。
 // 「检查更新」从 npm registry 拉取版本列表。
-import { computed } from 'vue';
+//
+// 面板挂载时主动调一次 refreshAll()，让「已安装」列表在用户进到这一页时就是最新的，
+// 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
+import { computed, onMounted } from 'vue';
 import { Refresh, Download, Promotion, Delete } from '@element-plus/icons-vue';
-import { store, checkUpdates, installVersion, activateVersion, removeVersion } from '../store.js';
+import {
+  store,
+  refreshAll,
+  checkUpdates,
+  installVersion,
+  activateVersion,
+  removeVersion,
+} from '../store.js';
 import { globalBusy, isLoading } from '../loading.js';
 
 const kernel = computed(() => store.view && store.view.kernel);
@@ -14,6 +25,12 @@ const installedVersions = computed(() => {
     kernel.value.installed.forEach((v) => set.add(v.version));
   }
   return set;
+});
+
+// 进版本面板就重新扫描本地内核列表，与 npm 发布列解耦——
+// 即便用户从来没点过「检查更新」，左列也会显示当前已安装的所有版本。
+onMounted(() => {
+  refreshAll();
 });
 </script>
 
@@ -41,27 +58,37 @@ const installedVersions = computed(() => {
               <span class="release-ver">{{ v.version }}</span>
               <span class="release-actions">
                 <el-tag v-if="v.active" type="success" size="small" effect="dark">当前使用</el-tag>
-                <el-popconfirm
-                  v-else
-                  title="确认删除该版本？"
-                  confirm-button-text="删除"
-                  cancel-button-text="取消"
-                  width="200"
-                  @confirm="removeVersion(v.version)"
-                >
-                  <template #reference>
-                    <el-button
-                      size="small"
-                      type="danger"
-                      plain
-                      :icon="Delete"
-                      :loading="isLoading('remove:' + v.version)"
-                      :disabled="globalBusy"
-                    >
-                      删除
-                    </el-button>
-                  </template>
-                </el-popconfirm>
+                <template v-else>
+                  <el-button
+                    size="small"
+                    :icon="Promotion"
+                    :loading="isLoading('activate:' + v.version)"
+                    :disabled="globalBusy"
+                    @click="activateVersion(v.version)"
+                  >
+                    切换
+                  </el-button>
+                  <el-popconfirm
+                    title="确认删除该版本？"
+                    confirm-button-text="删除"
+                    cancel-button-text="取消"
+                    width="200"
+                    @confirm="removeVersion(v.version)"
+                  >
+                    <template #reference>
+                      <el-button
+                        size="small"
+                        type="danger"
+                        plain
+                        :icon="Delete"
+                        :loading="isLoading('remove:' + v.version)"
+                        :disabled="globalBusy"
+                      >
+                        删除
+                      </el-button>
+                    </template>
+                  </el-popconfirm>
+                </template>
               </span>
             </div>
           </div>
@@ -79,10 +106,7 @@ const installedVersions = computed(() => {
             <div v-for="r in store.releases" :key="r.version" class="release-row">
               <span class="release-ver">{{ r.version }}</span>
               <span class="release-actions">
-                <el-tag v-if="kernel && kernel.active === r.version" type="success" size="small" effect="dark">
-                  当前使用
-                </el-tag>
-                <el-tag v-else-if="installedVersions.has(r.version)" size="small" effect="plain">已安装</el-tag>
+                <el-tag v-if="installedVersions.has(r.version)" size="small" effect="plain">已安装</el-tag>
                 <el-button
                   v-if="!installedVersions.has(r.version)"
                   size="small"
@@ -92,16 +116,6 @@ const installedVersions = computed(() => {
                   @click="installVersion(r.version)"
                 >
                   安装
-                </el-button>
-                <el-button
-                  v-else-if="!kernel || kernel.active !== r.version"
-                  size="small"
-                  :icon="Promotion"
-                  :loading="isLoading('activate:' + r.version)"
-                  :disabled="globalBusy"
-                  @click="activateVersion(r.version)"
-                >
-                  切换
                 </el-button>
                 <el-tag v-if="r.prerelease" type="info" size="small" effect="plain">预发布</el-tag>
               </span>
