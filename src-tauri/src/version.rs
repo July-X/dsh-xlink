@@ -1,12 +1,9 @@
-//! Version comparison shared by the kernel release list (`releases`) and the
-//! community-plugin update checks (`plugins`).
+//! 内核发布列表（`releases`）与社区插件更新检查（`plugins`）共用的版本比较函数。
 
 use std::cmp::Ordering;
 
-/// Semver-ish comparison tolerant of the community's tag shapes: optional v
-/// prefix, dot-separated numeric core, optional prerelease after a dash.
-/// Release > prerelease; prerelease segments compare numerically when both
-/// numeric, lexically otherwise.
+/// 兼容社区 tag 形态的类 semver 比较：可选的 v 前缀、点分数字主体、短横线后的可选预发布段。
+/// 发布版大于预发布版；预发布段若两端都是数字则按数值比较，否则按字典序比较。
 pub fn cmp_versions(a: &str, b: &str) -> Ordering {
     fn core(v: &str) -> (Vec<u64>, &str) {
         let stripped = v.strip_prefix('v').unwrap_or(v);
@@ -63,7 +60,7 @@ mod tests {
         assert_eq!(cmp_versions("v1.2.3", "1.2.3"), Ordering::Equal);
         assert_eq!(cmp_versions("1.2.3-rc.1", "1.2.3"), Ordering::Less);
         assert_eq!(cmp_versions("1.2.3-rc.2", "1.2.3-rc.1"), Ordering::Greater);
-        // Numeric prerelease segments compare numerically, not lexically.
+        // 数字形式的预发布段按数值比较，而不是按字典序比较。
         assert_eq!(cmp_versions("0.1.1-rc.10", "0.1.1-rc.2"), Ordering::Greater);
         assert_eq!(cmp_versions("1.10.0", "1.9.9"), Ordering::Greater);
         assert_eq!(cmp_versions("0.1.66", "0.1.70"), Ordering::Less);
@@ -72,11 +69,11 @@ mod tests {
             cmp_versions("1.2.3-alpha.1", "1.2.3-alpha.2"),
             Ordering::Less
         );
-        // HEAD hash vs a semver tag: the semver parses as [n,n,n] and the
-        // hash parses as empty, so the hash sorts as Less — i.e. `latest =
-        // "0.16.0"` reports as newer than `installed = "head"`.  The fix in
-        // `plugins::update` clears `latest_version` after install so this
-        // comparison never runs against a stale semver.
+        // HEAD 哈希与 semver tag 比较：semver 解析为 [n,n,n]，哈希解析为空，
+        // 因此哈希被排为 Less —— 也就是说 `latest = "0.16.0"` 会被报告为
+        // 比 `installed = "head"` 更新的版本。`plugins::update` 中的修
+        // 复是在安装完成后清空 `latest_version`，从而避免对陈旧的 semver
+        // 执行这次比较。
         assert_eq!(cmp_versions("0.16.0", "head"), Ordering::Greater);
         assert_eq!(cmp_versions("head", "head"), Ordering::Equal);
     }

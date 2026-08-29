@@ -1,9 +1,8 @@
-//! Tauri commands backing the management UI.
+//! 支撑管理面板 UI 的 Tauri 命令。
 //!
-//! All commands operate against the shared [`AppState`] (data directory plus
-//! the running kernel child) and the persisted `settings.json`. Long-running
-//! work (kernel install) runs off the main thread and reports progress over a
-//! `tauri::ipc::Channel`.
+//! 所有命令都针对共享的 [`AppState`]（数据目录加上正在运行的内核子
+//! 进程）以及持久化的 `settings.json` 工作。长时间运行的操作（内核
+//! 安装）会放到主线程之外，并通过 `tauri::ipc::Channel` 汇报进度。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -160,8 +159,8 @@ pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<St
     .map_err(|e| e.to_string())
 }
 
-/// Resolve the Node runtime through the per-app cache; only a changed
-/// `node_path` setting triggers a fresh probe.
+/// 通过 per-app 缓存解析 Node 运行时；只有 `node_path` 设置发生变化
+/// 时才会触发一次新的探测。
 fn cached_node(state: &AppState, settings: &settings::Settings) -> node::NodeInfo {
     let key = settings.node_path.clone();
     let mut guard = crate::lock(&state.node_cache);
@@ -177,11 +176,10 @@ fn cached_node(state: &AppState, settings: &settings::Settings) -> node::NodeInf
 
 #[tauri::command]
 pub async fn detect_node(state: State<'_, AppState>) -> Result<node::NodeInfo, String> {
-    // Detection ignores any configured path: it reports what the
-    // environment has, so the UI can pre-fill the setting. Resolving may
-    // spawn one child per environment candidate (PATH + nvm-managed
-    // installs + system locations) — keep those process spawns off the
-    // Tauri main thread.
+    // 检测会忽略任何已配置的路径：它报告的是环境自身的探测结果，这样
+    // UI 就能据它预填设置。解析过程对每个环境候选（PATH + nvm 管理的
+    // 安装 + 系统位置）可能派生一个子进程——把这些进程派生放到 Tauri
+    // 主线程之外。
     let data_dir = state.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut s = settings::load(&data_dir);
@@ -252,8 +250,11 @@ pub async fn list_log_files(state: State<'_, AppState>) -> Result<Vec<LogFileEnt
             })
             .collect();
 
-        // Newest first so the live `kernel.log` (touched on every status tick)
-        // lands at index 0 — the modal's default tab.
+        // 命名规则会在每个文件上盖一个构建类型和递减日期，因此字典序的
+        // 逆序排序会把最新的 `release-kernel-<today>.log` 排到列表头
+        // 部。老式的裸 `kernel.log`（如果更老的 Shell 写过的话）按字
+        // 母序排；如果它真的出现在头部，一次性清理会把它清掉——见下
+        // 面的 `cleanup_legacy_logs`。
         out.sort_by(|a, b| b.name.cmp(&a.name));
         Ok(out)
     })
@@ -261,12 +262,11 @@ pub async fn list_log_files(state: State<'_, AppState>) -> Result<Vec<LogFileEnt
     .map_err(|e| e.to_string())?
 }
 
-/// Read the tail of a named log file under the logs directory.
+/// 读取 logs 目录下指定日志文件的尾部。
 ///
-/// `name` must be a bare filename with no path separators; the function
-/// refuses anything else to keep the UI's tab list from escaping the
-/// logs directory. The same 16 KiB tail bound used by `get_kernel_log`
-/// keeps the modal responsive on large install logs.
+/// `name` 必须是纯文件名，不允许任何路径分隔符；本函数会拒绝其它形
+/// 式以避免 UI 的页签列表越过 logs 目录。和 `get_kernel_log` 一样以
+/// 16 KiB 作为尾部上限，使面板在面对大型安装日志时仍然保持响应。
 #[tauri::command]
 pub async fn read_log_file(state: State<'_, AppState>, name: String) -> Result<String, String> {
     if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
@@ -282,17 +282,16 @@ pub async fn read_log_file(state: State<'_, AppState>, name: String) -> Result<S
         .map_err(|e| e.to_string())
 }
 
-/// Reveal the shell's data directory in the OS file manager.
+/// 在操作系统文件管理器中显示 Shell 的数据目录。
 ///
-/// The path comes from `AppState.data_dir`, which `lib::setup` resolves
-/// from `kernel::data_dir` and creates on first launch, so the directory
-/// always exists at runtime. Going through the server side (instead of
-/// letting the UI call `opener.open_path` directly) bypasses the opener
-/// plugin's IPC scope check — `opener:default` only grants `open_url` /
-/// `reveal_item_in_dir` / default URLs, not `open_path`. The `open` crate
-/// that backs the plugin dispatches per-OS: `open` on macOS launches
-/// Finder with the directory selected in its parent, `cmd /C start ""` on
-/// Windows opens File Explorer on the directory itself.
+/// 路径来源于 `AppState.data_dir`，由 `lib::setup` 通过 `kernel::data_dir`
+/// 解析并在首次启动时创建，因此该目录在运行时始终存在。改成走服务
+/// 端（而不是让 UI 直接调 `opener.open_path`）可以绕开 opener 插件的
+/// IPC scope 检查——`opener:default` 只授予 `open_url` /
+/// `reveal_item_in_dir` / 默认 URL，并不包括 `open_path`。作为插件底
+/// 层的 `open` crate 按平台分发：macOS 上 `open` 启动 Finder 并选中
+/// 父目录中的目标项；Windows 上 `cmd /C start ""` 直接打开该目录对应
+/// 的资源管理器。
 #[tauri::command]
 pub async fn open_data_dir(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
@@ -306,15 +305,15 @@ pub async fn open_data_dir(app: AppHandle, state: State<'_, AppState>) -> Result
     .map_err(|e| e.to_string())?
 }
 
-// --- shell self-update -----------------------------------------------------
+// --- Shell 自我更新 ---------------------------------------------------------
 
-/// Check GitHub for a newer shell release (manual「检查更新」button).
+/// 从 GitHub 检查是否有新的 Shell 发行版（手动的「检查更新」按钮）。
 #[tauri::command]
 pub async fn check_shell_update(app: AppHandle) -> Result<updater::ShellUpdateInfo, String> {
     updater::check(&app).await.map_err(|e| e.to_string())
 }
 
-/// Download, verify, and install the pending shell update, then restart.
+/// 下载、校验、安装挂起的 Shell 更新，然后重启。
 #[tauri::command]
 pub async fn install_shell_update(app: AppHandle, on_event: Channel<String>) -> Result<(), String> {
     updater::install(&app, move |line| {
@@ -324,21 +323,20 @@ pub async fn install_shell_update(app: AppHandle, on_event: Channel<String>) -> 
     .map_err(|e| e.to_string())
 }
 
-// --- releases --------------------------------------------------------------
+// --- 发行版 ------------------------------------------------------------------
 
-/// Fetch the official kernel release list for the update menu.
+/// 为更新菜单获取官方内核发行版列表。
 #[tauri::command]
 pub async fn fetch_releases() -> Result<releases::ReleaseList, String> {
-    // ureq is synchronous; keep the blocking HTTPS fetch off the main thread.
+    // ureq 是同步的；把这步会阻塞的 HTTPS 请求放到主线程之外。
     tauri::async_runtime::spawn_blocking(releases::list_releases)
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
 }
 
-/// Resolve pnpm against an already-probed node (the caller's cached
-/// `node::NodeInfo`), auto-installing pnpm via npm when missing. Returns
-/// (node_path, pnpm_exe).
+/// 针对已经探测好的 node（调用方缓存的 `node::NodeInfo`）来解析
+/// pnpm，缺失时通过 npm 自动安装。返回 (node_path, pnpm_exe)。
 pub fn promise_pnpm(
     data_dir: &Path,
     node_info: &node::NodeInfo,
@@ -389,11 +387,12 @@ pub async fn install_kernel(
             };
             let (node_path, pnpm_exe) =
                 promise_pnpm(&dir_for_install, &node_info_for_install, &mut send)?;
-            // `node_dir` is the directory of the validated `node` executable.
-            // Install children need it on PATH so pnpm's `#!/usr/bin/env node`
-            // shebang and any lifecycle script that shells out to `node` resolve
-            // it even when the GUI process inherited a launchd-only PATH (macOS
-            // .app bundles) — the common case for nvm-managed installs.
+            // `node_dir` 是已校验的 `node` 可执行文件所在目录。安装派生出的子
+            // 进程需要它出现在 PATH 上，这样 pnpm 的
+            // `#!/usr/bin/env node` shebang 以及任何 shell-out 调
+            // `node` 的 lifecycle 脚本都能解析到它，即便 GUI 进程继承
+            // 到的只是 macOS .app 包那种 launchd-only PATH——这是 nvm 管
+            // 理的安装里很常见的场景。
             let node_dir = node_path
                 .parent()
                 .map(|p| p.to_path_buf())
@@ -413,20 +412,20 @@ pub async fn install_kernel(
         .await
         .map_err(|e| e.to_string())??;
 
-    // First kernel installed becomes active automatically; later installs
-    // leave the current active version untouched.
+    // 首次安装的内核会自动设为活动版本，之后的安装不再改动当前活动版
+    // 本。
     if kernel::read_active(&data_dir).is_none() {
         kernel::set_active(&data_dir, &version).map_err(|e| e.to_string())?;
         let _ = on_event.send(format!("已切换到版本 {version}"));
     }
     if !kernel::port_open(settings::load(&data_dir).port) {
         let _ = on_event.send("正在启动内核…".to_string());
-        // Same guarded boot the「启动工作台」button uses: a freshly wired
-        // plugin that breaks the kernel must land in the quarantine flow,
-        // not leave the user with a crashed workbench after an install.
+        // 与「启动工作台」按钮共用同一条受防护的启动流程：刚装好的
+        // 插件若把内核搞坏必须落进隔离流程，而不是让用户在安装之后
+        // 面对一个崩溃的工作台。
         let dir_for_start = data_dir.clone();
-        // The channel stays with the outer function for the closing status
-        // messages; the guarded-start worker gets its own clone.
+        // 通道与外层函数一起用于尾部状态消息；guarded-start worker 拿到自
+        // 己的克隆。
         let on_event_for_start = on_event.clone();
         let pnpm_exe_for_start = pnpm_exe.clone();
         let mut send = move |msg: &str| {
@@ -466,11 +465,10 @@ pub async fn install_kernel(
 #[tauri::command]
 pub async fn activate_version(app: AppHandle, version: String) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
-    // Wiring runs pnpm against the store; keep the whole switch off the
-    // main thread.
+    // 接线会用 pnpm 跑插件商店；把整个切换放到主线程之外。
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        // The switch takes effect on the next start; a running kernel keeps
-        // serving until the user restarts it.
+        // 切换在下一次启动时生效；正在运行的内核会继续提供服务，直
+        // 到用户重启它。
         kernel::set_active(&data_dir, &version).map_err(|e| e.to_string())?;
         // 重新接线插件到新活动内核（失败不阻断切换，原因进入插件卡片警告）
         let settings = settings::load(&data_dir);
@@ -486,8 +484,8 @@ pub async fn activate_version(app: AppHandle, version: String) -> Result<(), Str
 #[tauri::command]
 pub async fn remove_version(state: State<'_, AppState>, version: String) -> Result<(), String> {
     let data_dir = state.data_dir.clone();
-    // remove_dir_all on a kernel tree (node_modules included) can take
-    // seconds on Windows; never on the main thread.
+    // 对内核目录（包括 node_modules）的 remove_dir_all 在 Windows 上
+    // 可能耗时数秒；绝对不能在主线程上做。
     tauri::async_runtime::spawn_blocking(move || {
         kernel::uninstall(&data_dir, &version).map_err(|e| app_err(&data_dir, e))
     })
@@ -495,33 +493,32 @@ pub async fn remove_version(state: State<'_, AppState>, version: String) -> Resu
     .map_err(|e| e.to_string())?
 }
 
-// --- kernel lifecycle -------------------------------------------------------
+// --- 内核生命周期 -----------------------------------------------------------
 
-/// Register a successfully started kernel child: record its pid for later
-/// teardown from a restarted shell and hold the handle in app state.
+/// 为成功启动的内核子进程做注册：记录其 pid 以便后续重启后的 Shell
+/// 回收，并把句柄保存在应用状态中。
 fn register_child(state: &AppState, data_dir: &Path, child: Child) {
     kernel::write_pid(data_dir, child.id());
     crate::lock(&state.running).replace(child);
 }
 
-/// Start the active kernel under the boot guard. Idempotent: if the port
-/// already answers this is a no-op report.
+/// 在启动防护下启动当前活动的内核。幂等：如果端口已经有应答则返回
+/// 一份 no-op 报告。
 ///
-/// The guard watches the spawned process until the port is ready; on a boot
-/// failure it attributes the crash to installed plugins from the kernel log,
-/// quarantines suspects (then, if needed, every third-party plugin), rewires
-/// the profile between attempts, and reports an [`guard::Incident`] either
-/// way so the UI can ask the user what to keep or remove. Progress messages
-/// stream over `on_event` because guarded retries include pnpm runs and can
-/// take a couple of minutes in the worst case.
+/// 防护会一直监听派生出的进程直至端口就绪；发生启动失败时，它会基于
+/// 内核日志把崩溃归因到已安装的插件，隔离可疑项（必要时隔离所有第
+/// 三方插件），在两次尝试之间重新接线，并无论如何都上报一份
+/// [`guard::Incident`]，让 UI 能询问用户保留或移除哪些项。进度消息通
+/// 过 `on_event` 流式推送，因为受防护的重试里会包含 pnpm 步骤，最坏
+/// 情况下可能耗时几分钟。
 #[tauri::command]
 pub async fn start_kernel(
     app: AppHandle,
     on_event: Channel<String>,
 ) -> Result<guard::StartReport, String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
-    // Wiring and the child spawn both block (pnpm, process creation); run
-    // them on a blocking worker rather than the Tauri main thread.
+    // 接线和子进程派生都是阻塞的（pnpm、进程创建）；把它们放到 blocking
+    // worker 上，而不是 Tauri 的主线程。
     tauri::async_runtime::spawn_blocking(move || -> Result<guard::StartReport, String> {
         let settings = settings::load(&data_dir);
         let state = app.state::<AppState>();
@@ -533,8 +530,8 @@ pub async fn start_kernel(
         let mut send = |msg: &str| {
             let _ = on_event.send(msg.to_string());
         };
-        // Guarded retries rewire plugins through pnpm; resolve it up front so
-        // a missing toolchain fails before any attempt rather than mid-flow.
+        // 受防护的重试会通过 pnpm 重新接线插件；预先解析 pnpm，使得工具链
+        // 缺失时能在第一次尝试前就失败，而不是在流程中途才报错。
         let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, &mut send)?;
         let deps = guard::GuardDeps {
             data_dir: &data_dir,
@@ -552,25 +549,24 @@ pub async fn start_kernel(
     .map_err(|e| e.to_string())?
 }
 
-/// Stop the kernel and close the harness window, so the UI's「关闭工作台」
-/// tears down the whole workbench rather than leaving a dead webview behind.
-/// When the shell restarted since it spawned the kernel, the in-memory child
-/// is gone but the pid file still names the process to reap.
+/// 停止内核并关闭工作台窗口，让 UI 的「关闭工作台」能拆掉整个工作台，
+/// 而不是留下一个死掉的 webview。如果 Shell 在派生该内核之后又重启
+/// 过，内存中的子进程句柄已经不在了，但 pid 文件里还记录着要回收的
+/// 进程。
 ///
-/// The harness window is created with `closable(false)` (see `open_harness`),
-/// so the OS title-bar close button is disabled and an accidental click on
-/// it cannot drop the user's session. The deliberate path back through this
-/// command still has to work, so the window goes through `destroy()` —
-/// which forces the OS to close without honoring the closable flag — rather
-/// than `close()`, which would be blocked by the same flag it set.
+/// 工作台窗口在创建时使用 `closable(false)`（见 `open_harness`），
+/// 因此系统标题栏的关闭按钮是禁用的，在任务中途意外点击不会打断用户
+/// 的会话。但通过这条命令显式回到关闭路径仍然必须工作，所以窗口走
+/// `destroy()`——强制让系统关掉窗口，而不理会 closable 标志——而不
+/// 是 `close()`，后者会被它自己设置的标志挡住。
 #[tauri::command]
 pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("harness") {
         let _ = window.destroy();
     }
     let data_dir = app.state::<AppState>().data_dir.clone();
-    // kernel::stop waits for the child to exit (up to its kill timeout);
-    // keep that wait off the main thread.
+    // kernel::stop 会等待子进程退出（最多等满它的 kill 超时），把这
+    // 段等待放到主线程之外。
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         {
@@ -581,13 +577,11 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
         }
         let port = settings::load(&data_dir).port;
         if kernel::port_open(port) {
-            // First try the pid file — the in-memory handle is gone
-            // across a shell restart, but a previous shell wrote a
-            // pid to <data_dir>/kernel.pid and the kernel it spawned
-            // is still bound to this port. kill_pid already validates
-            // that the pid still points at a dsh kernel before sending
-            // signals, so a pid recycled to an unrelated process is
-            // a no-op.
+            // 先尝试 pid 文件——内存中的句柄已经在 Shell 重启后丢失了，但之
+            // 前的 Shell 已经把 pid 写到了 <data_dir>/kernel.pid，且它
+            // 派生的内核仍然绑在该端口上。kill_pid 在发信号前会先校
+            // 验 pid 仍指向一个 dsh 内核，因此被回收给无关进程的 pid
+            // 是一个 no-op。
             let mut killed = false;
             if let Some(pid) = kernel::read_pid(&data_dir) {
                 if kernel::pid_is_kernel(pid, Some(port)) {
@@ -595,15 +589,12 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
                     killed = true;
                 }
             }
-            // Fallback: when the dev/release shells run side-by-side
-            // and the in-memory child + pid file are both missing
-            // (e.g. start_maybe skipped the launch because the port
-            // was already bound by the other shell's kernel), the
-            // shell has no in-record way to find the listener. Walk
-            // the listening port to recover its pid, then run it
-            // through the same pid_is_kernel guard so a recycled
-            // pid that happens to point at an unrelated process still
-            // is left alone.
+            // 兜底：当 dev/release Shell 并存，且内存中的子进程和 pid 文件都
+            // 不存在时（例如 start_maybe 因端口已被另一个 Shell 的内
+            // 核占用而跳过启动），Shell 在自身记录中找不到监听者。
+            // 通过端口反查拿到它的 pid，再用同样的 pid_is_kernel 防
+            // 护过滤一遍，这样即便回收到的 pid 恰好指向一个无关进
+            // 程，也仍然不会被误杀。
             if !killed {
                 if let Some(pid) = kernel::port_listen_pid(port) {
                     if kernel::pid_is_kernel(pid, Some(port)) {
@@ -619,9 +610,9 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Receive a one-shot health report from the harness webview and attribute it
-/// against the current kernel log. The returned incident is also emitted to the
-/// management panel so a white page cannot fail silently.
+/// 接收来自 harness webview 的一次性健康报告，并按当前内核日志对其进
+/// 行归因。返回的故障也会发送给管理面板，这样空白页面不会再无声失
+/// 败。
 #[tauri::command]
 pub async fn report_harness_fault(
     app: AppHandle,
@@ -791,21 +782,19 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Open a log file in a dedicated, resizable viewer window.
+/// 在专属的可调大小查看器窗口中打开日志文件。
 ///
-/// The management window is fixed at 480×800 (tauri.conf.json), so the log
-/// panel's「全屏」按钮 hands reading to its own OS window instead of
-/// stretching an in-page dialog. Construction mirrors `open_harness`: the
-/// webview is built on a fresh thread because doing so on the main thread
-/// deadlocks on Windows. An existing viewer is destroyed and recreated so
-/// opening another file needs no cross-window messaging; the window is
-/// read-only, so a dropped viewer loses nothing.
+/// 管理窗口被固定为 480×800（tauri.conf.json），所以日志面板的「全
+/// 屏」按钮把阅读工作交给它自己的 OS 窗口，而不是把页面内的对话框拉
+/// 大。构造过程与 `open_harness` 一致：webview 在新线程上构建，因为
+/// 在主线程上做这件事会在 Windows 上死锁。已有的查看器会被销毁并重
+/// 建，这样打开另一个文件时不需要跨窗口消息；而该窗口是只读的，丢
+/// 掉一个查看器也不会损失任何东西。
 ///
-/// The page is the same SPA: `ui/src/main.js` mounts the standalone viewer
-/// instead of the management shell when `?log=<name>` is present, and the
-/// viewer calls `read_log_file` itself (capability `log-viewer.json` grants
-/// only that command). The name gets `read_log_file`'s validation here too,
-/// so a bad name fails before a window appears.
+/// 页面是同一个 SPA：`ui/src/main.js` 在 `?log=<name>` 出现时挂载
+/// 的是独立查看器，而不是管理面板；查看器自己调用 `read_log_file`
+/// （capability `log-viewer.json` 仅授予该命令）。名称在这里也会经
+/// 过 `read_log_file` 的校验，所以错误的名字在窗口出现前就被拒掉。
 #[tauri::command]
 pub fn open_log_window(app: AppHandle, name: String) -> Result<(), String> {
     if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
@@ -829,39 +818,35 @@ pub fn open_log_window(app: AppHandle, name: String) -> Result<(), String> {
             .resizable(true)
             .build();
             if let Err(e) = result {
-                eprintln!("dsh-desktop: failed to open log viewer window: {e}");
+                eprintln!("dsh-xlink: failed to open log viewer window: {e}");
             }
         })
         .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Raise the shell's main management window above the current desktop.
+/// 把 Shell 的主管理窗口提到当前桌面之上。
 ///
-/// Invoked from the pull-string lamp injected into the workbench webview
-/// (`pullstring-launcher.js`) over `window.__TAURI__.core.invoke`, so it
-/// works regardless of which kernel version the workbench is running
-/// against. `show` + `unminimize` recover the window from a hidden or
-/// minimized state before `set_focus` moves it to the foreground; the
-/// window is configured non-resizable and always exists (tauri.conf.json),
-/// so a missing window is an internal error worth surfacing to the
-/// webview's console.
+/// 由注入到工作台 webview 的拉绳小台灯（`pullstring-launcher.js`）
+/// 通过 `window.__TAURI__.core.invoke` 调用，所以无论工作台运行在哪
+/// 个内核版本下都能工作。`show` + `unminimize` 把窗口从隐藏或最小化
+/// 状态恢复之后，再由 `set_focus` 把它放到前台；窗口被设置为不可调
+/// 整大小且始终存在（tauri.conf.json），所以窗口丢失属于应当冒出来
+/// 写到 webview 控制台的内部错误。
 ///
-/// The always-on-top toggle before `set_focus` is the Windows
-/// foreground-lock workaround: `SetForegroundWindow` is silently ignored
-/// when the OS decides the process may not steal foreground (focus
-/// arriving over IPC rather than a direct input event), leaving the panel
-/// raised-but-behind. Pinning the window topmost and immediately releasing
-/// it forces it to the head of the normal z-order regardless; on
-/// macOS/Linux the toggle is a harmless no-op raise.
+/// `set_focus` 之前的 always-on-top 切换是 Windows 前台锁的对策：当
+/// 系统判断某个进程不能抢占前台（焦点是通过 IPC 到达，而不是直接的
+/// 输入事件带来的）时，`SetForegroundWindow` 会被静默忽略，导致窗口
+/// 「提到前面但仍藏在背后」。把窗口置顶再立即解除，会强制让它出现在
+/// 正常 z-order 的最前面；在 macOS/Linux 上这次切换只是一个无害的
+/// no-op 提升操作。
 ///
-/// `x`/`y` are the click's screen coordinates in CSS pixels
-/// (`MouseEvent.screenX/Y`); when present the panel is first repositioned so
-/// the click's x lands at the window's horizontal center while the top sits
-/// just below the click's y (clamped to keep the window fully on the
-/// containing monitor), so the user never has to hunt for it on another
-/// monitor. They are optional so an older injected script that invokes
-/// without arguments still raises the window in place.
+/// `x`/`y` 是点击事件发生位置的屏幕坐标（CSS 像素，对应
+/// `MouseEvent.screenX/Y`）；如果给到，窗口会先被重定位，使点击位置
+/// 的 x 落在窗口的水平中心，窗口顶部则位于点击的 y 下方一点（被夹
+/// 在所在显示器范围内，确保窗口完整可见），这样用户不必再到其它显示
+/// 器上寻找它。两者都是可选的，所以旧版注入脚本即便不带参数调用也
+/// 仍能把窗口提到原位置。
 #[tauri::command]
 pub fn focus_main_shell(app: AppHandle, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
     let Some(window) = app.get_webview_window("main") else {
@@ -919,9 +904,8 @@ fn add_official_chat_tab(
     Ok(())
 }
 
-/// Lazily create a requested content tab on a worker thread. `Window::add_child`
-/// synchronously dispatches to the event-loop thread, so calling it directly
-/// from a command can deadlock on Windows.
+/// 在 worker 线程上惰性创建所请求的内容页签。`Window::add_child` 会同
+/// 步分发到事件循环线程，所以从命令里直接调用会在 Windows 上死锁。
 fn ensure_official_chat_tab(
     app: &AppHandle,
     index: usize,
@@ -954,41 +938,39 @@ fn ensure_official_chat_tab(
         .map_err(|_| "官方对话页签创建线程已结束，未返回结果".to_string())?
 }
 
-/// Open the DeepSeek official chat in a tabbed window.
+/// 在带页签的窗口中打开 DeepSeek 官方对话。
 ///
-/// One bare `tauri::Window` (label [`OFFICIAL_CHAT_WINDOW_LABEL`]) hosts a
-/// pinned tab-strip webview ([`OFFICIAL_CHAT_STRIP_LABEL`], the local SPA
-/// route `index.html?chatstrip=1`) plus one lazily-created content webview per
-/// entry in [`OFFICIAL_CHAT_TABS`]. The default content webview is created on
-/// open; other remote pages are attached when selected. Only the active
-/// content webview is shown, and attached pages keep their state across tab
-/// switches. [`relayout_official_chat`] keeps the strip pinned to the top and
-/// the content webviews filling the area below on every resize.
+/// 一个裸露的 `tauri::Window`（label [`OFFICIAL_CHAT_WINDOW_LABEL`]）
+/// 承载一个钉在顶部的页签栏 webview（[`OFFICIAL_CHAT_STRIP_LABEL`]，
+/// 本地 SPA 路由 `index.html?chatstrip=1`），再加上 [`OFFICIAL_CHAT_TABS`]
+/// 中每个条目对应的一个惰性创建的内容 webview。默认的内容 webview 在
+/// 打开时即创建；其它远程页面在被选中时挂载。只有处于激活状态的内容
+/// webview 会被显示，已挂载的页面在页签切换之间会保留其状态。
+/// [`relayout_official_chat`] 在每次 resize 时把页签栏钉在顶部，让内
+/// 容 webview 填满其下方的区域。
 ///
-/// Built on a fresh OS thread (same Windows-deadlock reasoning as
-/// [`open_harness`]); the `Result<(), String>` ships back over an `mpsc`
-/// channel so the `async` command only resolves after the window and every
-/// child webview is registered. `Window::add_child` dispatches webview
-/// creation to the main thread internally, so it must run off the Tauri
-/// command thread — the dedicated builder thread satisfies that.
+/// 在一个全新的 OS 线程上构建（与 [`open_harness`] 相同的 Windows 死
+/// 锁考量）；`Result<(), String>` 通过 `mpsc` 通道回传，因此 `async`
+/// 命令只有在窗口以及每个子 webview 都注册完成之后才会 resolve。
+/// `Window::add_child` 会在内部把 webview 创建派发到主线程，因此它
+/// 必须从 Tauri 命令线程之外执行——专门的 builder 线程刚好满足这点。
 ///
-/// Login persistence is unchanged from the single-window era: every content
-/// webview shares the `<data_dir>/webview-official-chat` user-data folder
-/// (Windows) / [`OFFICIAL_CHAT_DATA_STORE_IDENTIFIER`] (macOS), so cookies,
-/// localStorage, and IndexedDB survive shell restarts. Storage is
-/// origin-scoped by the browser, so the DeepSeek and Qianwen tabs do not
-/// collide even though they share one store. WebView2 also requires
-/// identical environment options per user-data folder; every content
-/// webview passes the same [`OFFICIAL_CHAT_BROWSER_ARGS`], so the
-/// shared-folder constraint holds. The strip webview is local SPA content,
-/// so it is exempt from `chat-fingerprint.js` and keeps
-/// `window.__TAURI__` for invoking [`official_chat_tabs`] /
-/// [`switch_official_chat_tab`].
+/// 登录持久化沿用单窗口时代的策略：每个内容 webview 共享
+/// `<data_dir>/webview-official-chat`（Windows 上的 user-data 文件
+/// 夹）/ [`OFFICIAL_CHAT_DATA_STORE_IDENTIFIER`]（macOS），所以
+/// cookies、localStorage、IndexedDB 都能跨 Shell 重启保留。存储由浏览
+/// 器按 origin 隔离，因此即便共享同一个存储，DeepSeek 与千问页签也
+/// 不会相互冲突。WebView2 还要求同一个 user-data 目录下的所有环境配
+/// 置完全一致；每个内容 webview 都传入相同的
+/// [`OFFICIAL_CHAT_BROWSER_ARGS`]，所以「共享文件夹」这条约束是成立
+/// 的。strip webview 是本地 SPA 内容，所以它豁免
+/// `chat-fingerprint.js` 的注入，保留 `window.__TAURI__` 以便调用
+/// [`official_chat_tabs`] / [`switch_official_chat_tab`]。
 ///
-/// The window is **not** `closable(false)`: a webview to a third-party
-/// origin has no kernel session to protect, so the OS chrome close button
-/// should keep working. Repeat clicks reuse the existing window via
-/// `app.get_window(OFFICIAL_CHAT_WINDOW_LABEL)` and re-focus it.
+/// 该窗口**不**设置 `closable(false)`：第三方源的 webview 没有内核
+/// 会话需要保护，所以系统的 chrome 关闭按钮应继续工作。重复点击会通
+/// 过 `app.get_window(OFFICIAL_CHAT_WINDOW_LABEL)` 复用已有窗口并重
+/// 新聚焦。
 #[tauri::command]
 pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
     let handle = app.clone();
@@ -1004,9 +986,9 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                     let _ = existing.set_focus();
                     return Ok(());
                 }
-                // WebView2 requires every environment on a user-data folder to
-                // share identical options. The official-chat content webviews
-                // therefore use a dedicated profile directory.
+                // WebView2 要求同一个 user-data 目录下的所有环境必须使用完全一致
+                // 的选项。官方对话的内容 webview 因此使用一个专门的
+                // profile 目录。
                 let profile_dir = {
                     let state = handle.state::<AppState>();
                     state.data_dir.join("webview-official-chat")
@@ -1018,24 +1000,24 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                         .title("DeepSeek 官方对话")
                         .inner_size(OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT)
                         .resizable(true)
-                        // Let AppKit establish the parent content frame before
-                        // child WebViews are attached; the post-show pass
-                        // reapplies every child frame after registration.
+                        // 让 AppKit 在挂载子 WebView 之前先把父内容视图的 frame 确定下来；
+                        // post-show 那一轮再根据注册结果重新设置每个子视
+                        // 图的 frame。
                         .visible(true);
-                    // Default `TitleBarStyle::Visible` enables
-                    // `NSWindowStyleMask::FullSizeContentView` on macOS, which
-                    // extends the window's content view UNDER the title bar
-                    // (tauri-runtime-wry/src/lib.rs:1200-1205). The tab-strip
-                    // child WebView sits at logical (0, 0) and was therefore
-                    // occluded by the ~28pt title bar — the three tabs
-                    // (`DeepSeek`/`千问`/`MiniMax`) showed only a few pixels
-                    // tall, exactly the user-reported symptom. `Transparent`
-                    // keeps the title bar visible but disables
-                    // `fullsize_content_view`, so the content view starts
-                    // BELOW the title bar; the strip is no longer hidden.
-                    // `title_bar_style` only exists on macOS (`WindowBuilder`
-                    // wraps it under `#[cfg(target_os = "macos")]`) — Windows
-                    // and Linux keep the platform default behavior untouched.
+                    // 默认的 `TitleBarStyle::Visible` 在 macOS 上会启用
+                    // `NSWindowStyleMask::FullSizeContentView`，把窗口
+                    // 的 content view 延伸到标题栏之下
+                    // （tauri-runtime-wry/src/lib.rs:1200-1205）。页签
+                    // 栏子 WebView 位于逻辑 (0, 0)，因此被约 28pt 高
+                    // 的标题栏遮挡——三个页签（`DeepSeek` / `千问` /
+                    // `MiniMax`）只剩几像素高，正好是用户反馈的现象。
+                    // `Transparent` 保留标题栏的可见，但禁用了
+                    // `fullsize_content_view`，于是 content view 从
+                    // 标题栏下方开始；页签栏不再被遮住。
+                    // `title_bar_style` 只在 macOS 上存在
+                    // （`WindowBuilder` 把它包在
+                    // `#[cfg(target_os = "macos")]` 下）——Windows 和
+                    // Linux 上的平台默认行为保持不变。
                     #[cfg(target_os = "macos")]
                     {
                         builder = builder.title_bar_style(tauri::TitleBarStyle::Transparent);
@@ -1045,39 +1027,39 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                         .map_err(|e| format!("无法创建官方对话窗口：{e}"))?
                 };
                 let scale = window.scale_factor().unwrap_or(1.0);
-                // AppKit can briefly report a tiny provisional client size while
-                // it finishes laying out the newly created content view.
+                // AppKit 在完成刚创建 content view 的布局之前，可能短暂回报一个
+                // 非常小的临时 client size。
                 let phys = window.inner_size().unwrap_or_default();
                 let (w, h) = official_chat_initial_size(phys.width, phys.height, scale);
                 let layout = official_chat_layout(w, h);
                 #[cfg(debug_assertions)]
                 eprintln!(
-                    "dsh-desktop: official-chat created — inner={}x{}px scale={scale} → logical={w}x{h}pt",
+                    "dsh-xlink: official-chat created — inner={}x{}px scale={scale} → logical={w}x{h}pt",
                     phys.width, phys.height
                 );
 
-                // Register before child creation so geometry or focus events
-                // emitted during attachment are handled. The focused pass reads
-                // the final content-view size after AppKit finishes its layout.
+                // 在挂载子视图前先注册窗口，这样挂载期间发出的几何或焦点事件都可
+                // 以被处理。聚焦那一轮会在 AppKit 完成布局之后读取最终
+                // 的 content view 大小。
                 let app_for_layout = handle.clone();
                 window.on_window_event(move |event| {
                     if should_relayout_official_chat(event) {
                         #[cfg(debug_assertions)]
-                        eprintln!("dsh-desktop: official-chat event {event:?} — relayout");
+                        eprintln!("dsh-xlink: official-chat event {event:?} — relayout");
                         relayout_official_chat(&app_for_layout);
                     }
                 });
 
-                // Create only the default content tab on open. Other remote
-                // pages are attached by switch_official_chat_tab on demand;
-                // once attached they keep the same persistent profile and
-                // remain mounted for the lifetime of this window.
+                // 打开时仅创建默认的内容页签。其它远程页面在被选中时由
+                // switch_official_chat_tab 按需挂载；一旦挂载，它们保
+                // 持同一份持久 profile，并在该窗口的生命周期内一直挂
+                // 着。
                 add_official_chat_tab(&window, 0, layout, &profile_dir)?;
 
-                // Tab strip: local SPA route renders the tab bar and keeps
-                // `window.__TAURI__` so it can invoke the tab commands. The
-                // pull-string lamp is rendered in this same 38px WebView. The
-                // strip is added after all content views so it remains topmost.
+                // 页签栏：本地 SPA 路由渲染页签栏并保留 `window.__TAURI__`，使其能
+                // 调用页签命令。拉绳小台灯也由这个 38px 高的 WebView 渲
+                // 染。strip 在所有内容视图之后再添加，因此它始终位于
+                // 最上层。
                 let strip_builder = WebviewBuilder::new(
                     OFFICIAL_CHAT_STRIP_LABEL,
                     WebviewUrl::App("index.html?chatstrip=1".into()),
@@ -1091,10 +1073,10 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                     )
                     .map_err(|e| format!("无法创建官方对话页签栏：{e}"))?;
 
-                // Keep an idempotent show call in the queued main-thread pass,
-                // then relayout after all child views are registered. The second
-                // queued task runs after the show message and avoids observing a
-                // provisional AppKit frame during child creation.
+                // 把一条幂等的 show 调用放到排队到主线程的任务里，再在所有子视图
+                // 注册完成后做一次 relayout。第二个排队的任务在 show 消
+                // 息之后执行，从而避免在子视图创建过程中观察到
+                // AppKit 的临时 frame。
                 let app_for_post_show = handle.clone();
                 let window_for_show = window.clone();
                 let _ = window.run_on_main_thread(move || {
@@ -1105,12 +1087,10 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                     });
                 });
 
-                // AppKit can keep reporting the provisional client size through the
-                // post-show pass, and the real frame settles without a
-                // subsequent `Resized` event. The delayed pass reapplies the
-                // settled layout so the window cannot stay stuck on the
-                // provisional size; idempotent and a no-op if the window is
-                // already closed or the layout was already applied.
+                // AppKit 在 post-show 阶段之后仍可能持续上报临时 client size，而
+                // 且不会再触发后续的 `Resized` 事件。延迟一轮重新应用稳
+                // 定后的布局，使窗口不至于被卡在临时尺寸上；如果窗口
+                // 已经关闭或者布局已经应用过，它是幂等的 no-op。
                 let app_for_settle = handle.clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
@@ -1122,7 +1102,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                 Ok(())
             })();
             if let Err(ref e) = result {
-                eprintln!("dsh-desktop: failed to open official chat window: {e}");
+                eprintln!("dsh-xlink: failed to open official chat window: {e}");
             }
             let _ = tx.send(result);
         })
@@ -1137,7 +1117,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
     }
 }
 
-/// Convert Tao's physical client-area dimensions to logical points.
+/// 把 Tao 的物理 client-area 尺寸转换为逻辑点。
 fn logical_window_size(width: u32, height: u32, scale: f64) -> Option<(f64, f64)> {
     if !scale.is_finite() || scale <= 0.0 {
         return None;
@@ -1179,17 +1159,17 @@ fn official_chat_layout(width: f64, height: f64) -> OfficialChatLayout {
     }
 }
 
-/// Whether a logical layout is plausible enough to apply to the child
-/// webviews. AppKit can report a tiny provisional client size right after
-/// a macOS window is created; applying such a layout would re-shrink the
-/// strip and content webviews on every relayout. Mirrors the initial-size
-/// fallback in [`official_chat_initial_size`]; the real layout bug fix is
-/// the title-bar style on the window builder (see `open_official_chat`).
+/// 判断某个逻辑布局是否合理到可以应用到子 webview。AppKit 在刚创建
+/// 完一个 macOS 窗口之后可能立刻报告一个极小的临时 client size；把这
+/// 种布局应用上去会在每次 relayout 时把 strip 和内容 webview 都缩回去。
+/// 该判断与 [`official_chat_initial_size`] 中的初始尺寸兜底相互呼应；
+/// 真正的布局 bug 修复落在 window builder 的 title-bar style 上（见
+/// `open_official_chat`）。
 fn official_chat_layout_plausible(layout: OfficialChatLayout) -> bool {
     layout.width >= OFFICIAL_CHAT_STRIP_HEIGHT && layout.height >= OFFICIAL_CHAT_STRIP_HEIGHT
 }
 
-/// Events that can invalidate the native child-view frames.
+/// 能使原生子视图 frame 失效的事件。
 #[derive(Clone, Copy)]
 enum OfficialChatRelayoutTrigger {
     Geometry,
@@ -1204,7 +1184,7 @@ fn should_relayout_for_trigger(trigger: OfficialChatRelayoutTrigger) -> bool {
     )
 }
 
-/// Return whether a native window event can change the child-view geometry.
+/// 判断某个原生 window 事件是否会改变子视图的几何信息。
 fn should_relayout_official_chat(event: &WindowEvent) -> bool {
     let trigger = match event {
         WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
@@ -1229,14 +1209,13 @@ fn relayout_official_chat(app: &AppHandle) {
     };
     let layout = official_chat_layout(w, h);
     if !official_chat_layout_plausible(layout) {
-        // AppKit still reports the provisional client size right after
-        // creation; keep the child frames created at open time and wait for
-        // a later pass with the settled size (one is queued above, plus the
-        // 1.5s settle fallback). This is cheap defense, not a fix for the
-        // user-visible bug — the real bug is the title-bar overlap below.
+        // AppKit 在创建后仍然上报临时 client size；保留打开时建好的子视
+        // 图 frame，等之后那一轮（上面排队的那一轮，加上 1.5 秒
+        // 后备那一轮）拿到稳定的尺寸再做处理。这是廉价的兜底，不是
+        // 用户可见 bug 的修复——真正的 bug 是下面提到的标题栏重叠。
         #[cfg(debug_assertions)]
         eprintln!(
-            "dsh-desktop: official-chat provisional inner={}x{}px scale={scale} → {w}x{h}pt; keeping existing child frames",
+            "dsh-xlink: official-chat provisional inner={}x{}px scale={scale} → {w}x{h}pt; keeping existing child frames",
             phys.width, phys.height
         );
         return;
@@ -1246,7 +1225,7 @@ fn relayout_official_chat(app: &AppHandle) {
     }
     #[cfg(debug_assertions)]
     eprintln!(
-        "dsh-desktop: official-chat relayout — inner={}x{}px scale={scale} → {w}x{h}pt, strip={}pt, content={}pt",
+        "dsh-xlink: official-chat relayout — inner={}x{}px scale={scale} → {w}x{h}pt, strip={}pt, content={}pt",
         phys.width, phys.height, layout.strip_height, layout.content_height
     );
     if let Some(strip) = app.get_webview(OFFICIAL_CHAT_STRIP_LABEL) {
@@ -1265,17 +1244,17 @@ fn relayout_official_chat(app: &AppHandle) {
     }
 }
 
-/// One tab in the official-chat tab strip, as the strip webview renders it.
+/// strip webview 渲染的官方对话页签栏里的一项。
 #[derive(Serialize)]
 pub struct OfficialChatTab {
     pub index: usize,
     pub title: String,
 }
 
-/// Return the fixed tab list for the strip webview to render. Read-only:
-/// the strip calls this on mount, then [`switch_official_chat_tab`] on
-/// click. Defined as a command (not a compile-time constant the SPA would
-/// have to duplicate) so the tab list lives in one place.
+/// 返回 strip webview 渲染所用的固定页签列表。只读：strip 在挂载时调
+/// 用它，页签点击时再调 [`switch_official_chat_tab`]。这里被定义为
+/// 一条命令（而不是一份需要被 SPA 复制的编译期常量），使页签列表只
+/// 存在一处。
 #[tauri::command]
 pub fn official_chat_tabs() -> Vec<OfficialChatTab> {
     OFFICIAL_CHAT_TABS
@@ -1288,11 +1267,11 @@ pub fn official_chat_tabs() -> Vec<OfficialChatTab> {
         .collect()
 }
 
-/// Switch the active tab in the official-chat window.
+/// 切换官方对话窗口中的激活页签。
 ///
-/// A tab is created on first selection. Creation happens before any existing
-/// tab is hidden, so a failed WebView initialization leaves the current page
-/// usable. The lifecycle lock serializes open, switch, and close operations.
+/// 页签在首次选中时被创建。创建发生在任何已有页签被隐藏之前，因此即
+/// 便某个 WebView 初始化失败也不会影响当前页面的可用性。生命周期锁
+/// 把打开、切换、关闭三组操作串行化。
 #[tauri::command]
 pub async fn switch_official_chat_tab(app: AppHandle, index: usize) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || switch_official_chat_tab_blocking(app, index))
@@ -1334,14 +1313,12 @@ fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<(),
     Ok(())
 }
 
-/// Close the DeepSeek official chat window (and all its tab webviews) if it
-/// is currently open. Returns an error when the window was never opened (or
-/// was already torn down by the OS chrome close button) so the panel's
-/// toggle can surface a sensible message instead of silently no-op'ing.
-/// Destroying the bare window tears down its child webviews; the persistent
-/// data store survives, so the next open reuses the saved login. The button
-/// label flips back to "打开官方对话" on the next status poll once the
-/// window is gone.
+/// 如果 DeepSeek 官方对话窗口当前已打开，则关闭它（以及其全部页签
+/// webview）。当窗口从未被打开过（或者已经被系统 chrome 关闭按钮提前
+/// 拆解）时返回错误，让面板上的开关按钮能因此弹出一条合理的提示，
+/// 而不会静默 no-op。销毁裸窗口会顺带拆解它所有的子 webview；持久
+/// 化的数据存储会保留下来，因此下次打开时仍能复用已保存的登录。窗
+/// 口消失后下一次状态轮询会让按钮文案重新变成「打开官方对话」。
 #[tauri::command]
 pub async fn close_official_chat(app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || close_official_chat_blocking(app))
@@ -1359,21 +1336,19 @@ fn close_official_chat_blocking(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Tear down the whole shell after the user confirmed a full quit from the
-/// request-quit-confirm prompt. The window-close interceptor in `lib::run`
-/// calls `prevent_close()` first so this `destroy()` is the only thing
-/// that lets the OS X button actually close the management panel; the
-/// `RunEvent::Exit` handler then reaps any kernel leftovers via pid file.
+/// 在用户从「确认退出」提示中确认完全退出后，拆解整个 Shell。
+/// `lib::run` 中的窗口关闭拦截器会先调用 `prevent_close()`，因此这个
+/// `destroy()` 才是真正让系统 X 按钮能关闭掉管理面板的唯一动作；之
+/// 后 `RunEvent::Exit` 处理器会通过 pid 文件回收任何残留的内核。
 ///
-/// The confirmed quit must close **every** window itself rather than
-/// delegating to the `RunEvent::Exit` handler: that event only fires once
-/// the whole event loop terminates, which on Windows/Linux requires the
-/// last window to be gone and on macOS happens only on an explicit quit
-/// (closing all windows keeps the app alive). Leaving `official-chat` (or
-/// any transient window) for the Exit branch would strand it — and with it
-/// the whole app on macOS — after the panel is already gone. So destroy
-/// the transient windows first, then the main window, then exit the loop
-/// itself so the Exit branch still runs on every platform.
+/// 已确认的退出必须**自己**关闭每一个窗口，而不是把这件事交给
+/// `RunEvent::Exit` 处理器——该事件要等到整个事件循环结束才会触发，
+/// 在 Windows / Linux 上这要求最后一个窗口已经消失，在 macOS 上则
+/// 只有显式退出才会发生（关掉所有窗口并不会让 app 退出）。如果把
+/// `official-chat`（或任何临时窗口）丢给 Exit 分支去处理，就会在面
+/// 板已经消失后把它——连同整个 macOS 上的 app——留在一侧。所以先销
+/// 毁临时窗口，再到主窗口，再退出事件循环本身，这样在每个平台上
+/// Exit 分支都能正常跑起来。
 #[tauri::command]
 pub async fn confirm_close_shell(app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || confirm_close_shell_blocking(app))
@@ -1398,13 +1373,11 @@ fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Move `window` so its top-left corner sits just below-right of the
-/// logical screen point `(x, y)`, clamped inside the monitor containing
-/// the point so the panel never lands off-screen. Monitor geometry is
-/// converted to logical units per monitor (`position`/`size` are physical,
-/// `scale_factor` bridges the two); when no monitor contains the point —
-/// stale coordinates after a display change — the primary monitor (or the
-/// first enumerated one) is used instead.
+/// 移动 `window` 使其左上角位于逻辑屏幕点 `(x, y)` 的右下方一点，并
+/// 夹在包含该点的显示器范围内，避免面板落到屏幕外。显示器几何按显
+/// 示器换算成逻辑单位（`position` / `size` 是物理量，`scale_factor`
+/// 在两者之间桥接）；当没有任何显示器包含该点（显示变更后坐标已过
+/// 期）时，回退到主显示器（或第一个枚举到的显示器）。
 fn reposition_near(app: &AppHandle, window: &tauri::WebviewWindow, x: f64, y: f64) {
     let Ok(monitors) = app.available_monitors() else {
         return;
@@ -1436,21 +1409,20 @@ fn reposition_near(app: &AppHandle, window: &tauri::WebviewWindow, x: f64, y: f6
         .outer_size()
         .unwrap_or(tauri::PhysicalSize::new(480, 800));
     let (ww, wh) = (win.width as f64 / s, win.height as f64 / s);
-    // Center the panel horizontally on the click's x so the pull lands at
-    // the window's horizontal middle; keep the vertical anchor as before —
-    // the top sits ~12px below the click (clear of the cursor) — so the
-    // window drops down from the lamp rather than straddling it vertically.
-    // The `.clamp(..)` keeps the window fully on the containing monitor when
-    // the click is near an edge; the `.max(m*)` guards against windows wider
-    // or taller than the monitor (an otherwise inverted clamp range).
+    // 让面板在水平方向上以点击的 x 为中心，让拉动点落在窗口的水平中
+    // 部；垂直锚点与原来一致——顶部位于点击位置下方约 12 像素处
+    // （避开光标），让窗口从小台灯的下方垂下来，而不是纵向跨越台
+    // 灯。`.clamp(..)` 在点击位置靠近边缘时仍保证窗口完整落在所在
+    // 显示器内；`.max(m*)` 防御窗口比显示器更宽或更高的情况（不然
+    // clamp 区间会反掉）。
     let nx = (x - ww / 2.0).clamp(mx, (mx + mw - ww).max(mx));
     let ny = (y + 12.0).clamp(my, (my + mh - wh).max(my));
     let _ = window.set_position(tauri::LogicalPosition::new(nx, ny));
 }
 
-// --- plugins ---------------------------------------------------------------
+// --- 插件 --------------------------------------------------------------------
 
-/// Snapshot of the plugin store and per-kernel materialization state.
+/// 插件商店以及按内核粒度的物化状态快照。
 #[tauri::command]
 pub async fn plugin_status(state: State<'_, AppState>) -> Result<plugins::PluginStatus, String> {
     let data_dir = state.data_dir.clone();
@@ -1462,9 +1434,9 @@ pub async fn plugin_status(state: State<'_, AppState>) -> Result<plugins::Plugin
     .map_err(|e| e.to_string())
 }
 
-/// List every plugin materialized under `kernels/<version>/plugins/`. Used
-/// by the per-version tooltip in the versions panel so the user can inspect
-/// exactly what each installed kernel carries on disk.
+/// 列出物化到 `kernels/<version>/plugins/` 之下的每一个插件。由版本
+/// 面板里按版本悬浮提示使用，让用户能查看每个已安装内核在磁盘上实
+/// 际带有什么。
 #[tauri::command]
 pub async fn kernel_plugin_list(
     state: State<'_, AppState>,
@@ -1476,10 +1448,9 @@ pub async fn kernel_plugin_list(
         .map_err(|e| e.to_string())
 }
 
-/// Shared body of the plugin store commands: resolve pnpm against the
-/// cached node probe (streaming any auto-install progress), then run the
-/// `plugins::` operation on a blocking worker with progress forwarded over
-/// the channel.
+/// 插件商店命令的共享主体：基于已经缓存好的 node 探测来解析 pnpm
+/// （自动安装的进度会被转发），再在 blocking worker 上跑对应的
+/// `plugins::` 操作，进度通过通道转发出去。
 async fn run_plugin_command(
     app: AppHandle,
     on_event: Channel<String>,
@@ -1505,14 +1476,13 @@ async fn run_plugin_command(
     .map_err(|e| e.to_string())?
 }
 
-/// Install a community plugin (npm package name or git URL) into the
-/// central store, materialize it into every kernel, and wire the profile.
+/// 把一个社区插件（npm 包名或 git URL）安装到中央商店，物化到每个内
+/// 核，并完成 profile 接线。
 ///
-/// `mode` is the materialization mode at install time. It is optional so
-/// callers do not have to pick at install time — the Installed list owns
-/// the mode-toggle surface (`plugin_set_mode`), and `plugins::install`
-/// already falls back to `link` when the caller passes anything other
-/// than `copy`.
+/// `mode` 是安装时的物化模式。它是可选的，所以调用方不必在安装时决
+/// 定——「已安装」列表拥有模式开关界面（`plugin_set_mode`），而
+/// `plugins::install` 在调用方传入除 `copy` 之外的任何值时已经会回
+/// 退到 `link`。
 #[tauri::command]
 pub async fn plugin_install(
     app: AppHandle,
@@ -1531,7 +1501,7 @@ pub async fn plugin_install(
     .await
 }
 
-/// Fetch the latest version of one installed plugin and re-materialize.
+/// 拉取一个已安装插件的最新版本并重新物化。
 #[tauri::command]
 pub async fn plugin_update(
     app: AppHandle,
@@ -1548,7 +1518,7 @@ pub async fn plugin_update(
     .await
 }
 
-/// Uninstall a plugin everywhere (store, kernels, profile wiring).
+/// 在所有位置（商店、各内核、profile 接线）卸载一个插件。
 #[tauri::command]
 pub async fn plugin_uninstall(
     app: AppHandle,
@@ -1565,7 +1535,7 @@ pub async fn plugin_uninstall(
     .await
 }
 
-/// Re-materialize everything and re-wire the profile (「同步」button).
+/// 重新物化所有内容并重新接线 profile（「同步」按钮）。
 #[tauri::command]
 pub async fn plugin_sync(app: AppHandle, on_event: Channel<String>) -> Result<(), String> {
     run_plugin_command(
@@ -1578,7 +1548,7 @@ pub async fn plugin_sync(app: AppHandle, on_event: Channel<String>) -> Result<()
     .await
 }
 
-/// Switch a plugin's materialization mode (link/copy) and re-sync.
+/// 切换一个插件的物化模式（link/copy）并重新同步。
 #[tauri::command]
 pub async fn plugin_set_mode(
     app: AppHandle,
@@ -1596,7 +1566,7 @@ pub async fn plugin_set_mode(
     .await
 }
 
-/// Check every installed plugin against its origin for newer versions.
+/// 检查每个已安装插件在其来源处是否有更新版本。
 #[tauri::command]
 pub async fn plugin_check_updates(
     state: State<'_, AppState>,
@@ -1608,8 +1578,8 @@ pub async fn plugin_check_updates(
         .map_err(|e| e.to_string())
 }
 
-/// The full community catalog; search and filtering happen in the UI over
-/// this cached list. `force` bypasses the cache window (「刷新目录」).
+/// 完整的社区目录；搜索和过滤在 UI 中基于这份缓存列表进行。`force`
+/// 可以跳过缓存窗口（对应「刷新目录」）。
 #[tauri::command]
 pub async fn plugin_catalog(
     state: State<'_, AppState>,
@@ -1622,15 +1592,14 @@ pub async fn plugin_catalog(
         .map_err(|e| e.to_string())
 }
 
-/// Resolve one quarantined plugin after a boot incident.
+/// 处理一次启动故障中的一项被隔离插件。
 ///
-/// - `remove`: full uninstall (store, kernel materializations, profile
-///   wiring); the quarantine record goes with it.
-/// - `enable`: drop the quarantine record and re-wire immediately. A running
-///   kernel keeps its current plugin set until the next restart — the UI
-///   tells the user so, because re-enabling a genuinely broken plugin will
-///   simply reproduce the boot failure on that restart (the guard runs
-///   again, nothing is lost).
+/// - `remove`：完整卸载（商店、各内核的物化、profile 接线）；隔离
+///   记录随之一起删除。
+/// - `enable`：删除隔离记录并立即重新接线。已经运行的内核保持它当
+///   前的插件集合，直到下次重启——UI 会向用户说明，因为重新启用
+///   一个确实有问题的插件，下次重启只会再次复现启动失败（防护会再
+///   跑一遍，不会丢失任何东西）。
 #[tauri::command]
 pub async fn plugin_resolve(
     app: AppHandle,
@@ -1656,8 +1625,8 @@ pub async fn plugin_resolve(
                 let settings = settings::load(&data_dir);
                 let state = app.state::<AppState>();
                 let node_info = cached_node(&state, &settings);
-                // Re-wiring needs pnpm; nothing to stream since this path has
-                // no long install — only the profile resync runs.
+                // 重新接线需要 pnpm；这条路径没有长安装，所以没有可流式推送的消
+                // 息——只跑一次 profile 重新同步。
                 let mut noop = |_: &str| {};
                 let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, &mut noop)?;
                 plugins::ensure_wiring(&data_dir, &settings, &pnpm_exe, &mut noop)
@@ -1671,9 +1640,9 @@ pub async fn plugin_resolve(
     }
 }
 
-// --- skills -----------------------------------------------------------------
+// --- 技能 --------------------------------------------------------------------
 
-/// Snapshot of the skill store and per-skill active-root state.
+/// 技能商店以及按技能的 active-root 状态快照。
 #[tauri::command]
 pub async fn skill_status() -> Result<skills::SkillStatus, String> {
     tauri::async_runtime::spawn_blocking(skills::status)
@@ -1681,9 +1650,9 @@ pub async fn skill_status() -> Result<skills::SkillStatus, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Shared body of the skill-store commands: run the `skills::` operation on
-/// a blocking worker with progress forwarded over the channel. Skills need
-/// no pnpm/profile wiring, so this stays leaner than `run_plugin_command`.
+/// 技能商店命令的共享主体：在 blocking worker 上运行 `skills::` 操作，
+/// 并通过通道把进度转发出去。技能不需要 pnpm / profile 接线，因此这
+/// 条路径比 `run_plugin_command` 更精简。
 async fn run_skill_command(
     on_event: Channel<String>,
     op: impl FnOnce(&mut dyn FnMut(&str)) -> Result<(), AppError> + Send + 'static,
@@ -1698,12 +1667,11 @@ async fn run_skill_command(
     .map_err(|e| e.to_string())?
 }
 
-/// Install a skill package (npm spec, git URL, or local folder path) into
-/// the central store and materialize its skills into the kernel skill root.
-/// The running workbench picks the change up live through the kernel
-/// watcher. The shell always asks for link mode; `ensure_entry` falls back
-/// to copy on its own when symlinks are unavailable, and the actual mode
-/// is reported back to the UI through `SkillRow.actual_mode`.
+/// 安装一个技能包（npm spec、git URL 或本地目录路径）到中央商店，
+/// 并把它包含的技能物化到内核的技能根目录。运行中的工作台通过内核
+/// watcher 实时接收变更。Shell 一律请求 link 模式；`ensure_entry` 在
+/// 符号链接不可用时会自己回退到 copy，而实际使用的模式会通过
+/// `SkillRow.actual_mode` 回传给 UI。
 #[tauri::command]
 pub async fn skill_install(spec: String, on_event: Channel<String>) -> Result<(), String> {
     run_skill_command(on_event, move |progress| {
@@ -1712,8 +1680,7 @@ pub async fn skill_install(spec: String, on_event: Channel<String>) -> Result<()
     .await
 }
 
-/// Fetch the latest version of one installed skill package and reconcile
-/// its skills in the active root.
+/// 拉取一个已安装技能包的最新版本，并在 active root 中协调它的技能。
 #[tauri::command]
 pub async fn skill_update(id: String, on_event: Channel<String>) -> Result<(), String> {
     run_skill_command(on_event, move |progress| {
@@ -1722,13 +1689,13 @@ pub async fn skill_update(id: String, on_event: Channel<String>) -> Result<(), S
     .await
 }
 
-/// Uninstall a skill package everywhere (active root entries + store tree).
+/// 在所有位置（active root 条目 + 商店树）卸载一个技能包。
 #[tauri::command]
 pub async fn skill_uninstall(id: String, on_event: Channel<String>) -> Result<(), String> {
     run_skill_command(on_event, move |progress| skills::uninstall(&id, progress)).await
 }
 
-/// Enable or disable one skill of one package (link/unlink in the root).
+/// 启用或禁用某个包的某一个技能（在根目录中 link/unlink）。
 #[tauri::command]
 pub async fn skill_set_enabled(
     id: String,
@@ -1742,7 +1709,7 @@ pub async fn skill_set_enabled(
     .await
 }
 
-/// Check every installed skill package against its origin for newer versions.
+/// 检查每个已安装的技能包在其来源处是否有更新版本。
 #[tauri::command]
 pub async fn skill_check_updates() -> Result<Vec<skills::SkillUpdateInfo>, String> {
     tauri::async_runtime::spawn_blocking(skills::check_updates)
@@ -1798,17 +1765,16 @@ mod official_chat_layout_tests {
 
     #[test]
     fn relayout_rejects_tiny_provisional_layouts_that_collapse_macos_windows() {
-        // AppKit reports a few-pixel provisional client size right after
-        // window creation on macOS; applying it collapses the strip and
-        // content webviews to that sliver. The relayout must keep the
-        // last good frames instead.
+        // AppKit 在 macOS 上创建窗口后会立刻报告几像素大小的临时 client
+        // size；如果照此应用，strip 和内容 webview 都会坍缩成那条窄
+        // 缝。relayout 必须保留上一次良好的 frame。
         assert!(!official_chat_layout_plausible(official_chat_layout(
             1366.0, 3.0,
         )));
         assert!(!official_chat_layout_plausible(official_chat_layout(
             4.0, 768.0,
         )));
-        // A real window is always at least as large as the tab strip.
+        // 一个真实的窗口总是至少和页签栏一样大。
         assert!(official_chat_layout_plausible(official_chat_layout(
             1366.0, 768.0,
         )));

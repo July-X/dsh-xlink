@@ -1,4 +1,4 @@
-# dsh-desktop 图标
+# dsh-xlink 图标
 
 全仓库图标的双母版、bundle 套板规则与增量构建触发。约定性约束见 [AGENTS.md](../AGENTS.md)。
 
@@ -44,4 +44,4 @@ macOS Dock 不给图标加任何背景或蒙版（圆角是 artwork 自带的约
 
 `build.rs` 已经在调用 `tauri_build::build()` 之前显式声明了 6 个 `rerun-if-changed`（`icon.ico` / `icon.icns` / `icon.png` / `32x32.png` / `128x128.png` / `128x128@2x.png`），任何其中一个变化都强制 rerun build script → 重新生成 `.rc` → 重新 link。
 
-运行中的 dev exe 锁住文件的话，Tauri dev 会先关掉再重启；如果不是 dev 模式就 `Stop-Process` 一下 `dsh-desktop` 再 build。macOS Dock 那边是缓存问题，杀掉 Dock / 重启应用就刷新；Windows taskbar 缓存比 macOS 更粘，可能要重启 Explorer（`ie4uinit.exe -show` 或任务管理器重启 explorer.exe）才能让任务栏读出新图标。
+运行中的 dev exe 锁住文件的话，Tauri dev 会先关掉再重启；如果不是 dev 模式就 `Stop-Process` 一下 `dsh-xlink` 再 build。macOS Dock 那边是缓存问题，杀掉 Dock / 重启应用就刷新；Windows taskbar 缓存比 macOS 更粘，可能要重启 Explorer（`ie4uinit.exe -show` 或任务管理器重启 explorer.exe）才能让任务栏读出新图标。

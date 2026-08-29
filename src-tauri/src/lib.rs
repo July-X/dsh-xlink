@@ -1,9 +1,9 @@
-//! dsh-desktop: a Tauri shell around the DeepSeek Harness kernel.
+//! dsh-xlink：围绕 DeepSeek Harness 内核的 Tauri 壳。
 //!
-//! The shell manages pinned kernel versions (installed via pnpm from the
-//! official `dsh-v*` releases), runs the active kernel's `dsh web` server,
-//! and opens its UI in a dedicated webview window. All management happens in
-//! the local `ui/` frontend through the commands in [`commands`].
+//! 壳负责管理固定版本的内核（通过 pnpm 从官方 `dsh-v*` 发布版本安装）、
+//! 运行当前激活内核的 `dsh web` 服务器，并在专属 webview 窗口中打开其
+//! UI。所有管理操作都通过 [`commands`] 中的命令，由本地 `ui/` 前端
+//! 发起。
 
 mod archive;
 mod commands;
@@ -27,26 +27,25 @@ use std::sync::Mutex;
 use commands::AppState;
 use tauri::{Emitter, Manager, WindowEvent};
 
-/// Lock a mutex, recovering the inner value when another thread panicked.
+/// 锁定一个互斥锁；当另一个线程 panic 时取回内部值。
 pub fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Application entry; invoked from `main.rs`.
+/// 应用入口；由 `main.rs` 调用。
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let data_dir = kernel::data_dir(app.handle());
-            // Stamp the resolved data dir on stderr so a developer running
-            // `tauri dev` alongside the installed release shell can see at
-            // a glance which of the two (release → `~/.dsh/desktop/`, debug
-            // → `~/.dsh/desktop-dev/`) actually owns this process. Cheap
-            // insurance against the classic "I edited settings in the dev
-            // shell and the release shell doesn't see it" foot-gun.
+            // 把解析出的 data dir 打到 stderr，让同时运行 `tauri dev` 与
+            // 已安装 release 壳的开发者能一眼看出到底是哪一个
+            // （release → `~/.dsh/desktop/`，debug → `~/.dsh/desktop-dev/`）
+            // 真正拥有这个进程。这种廉价的保险能避免经典的「我在 dev 壳
+            // 里改了设置，release 壳却看不到」踩坑。
             eprintln!(
-                "dsh-desktop: data_dir = {} (build: {})",
+                "dsh-xlink: data_dir = {} (build: {})",
                 data_dir.display(),
                 if cfg!(debug_assertions) {
                     "dev"
@@ -54,42 +53,36 @@ pub fn run() {
                     "release"
                 }
             );
-            // Reap orphaned dsh web kernels belonging to this data dir
-            // BEFORE anything manages state: a crashed/killed shell leaves
-            // its kernel running with cwd == data_dir, and two kernels on
-            // the same project dir append to the same session log, which
-            // corrupts it (seq gap). Must run before start_kernel can
-            // observe "port already open" and report the orphan as a
-            // healthy instance.
+            // 必须在任何状态管理之前回收属于本 data dir 的孤儿 dsh web
+            // 内核：崩溃 / 被杀的壳会让它的内核以 cwd == data_dir 继续
+            // 运行，同一项目目录上两个内核会向同一会话日志追加内容，
+            // 导致日志损坏（seq gap）。必须早于 start_kernel，否则
+            // start_kernel 会观察到「端口已被占用」，把孤儿当作健康实例。
             kernel::reap_orphans(&data_dir);
             app.manage(AppState {
                 data_dir,
                 running: Mutex::new(None),
                 node_cache: Mutex::new(None),
             });
-            // Crash-recover any plugin-store staging dirs left behind by
-            // an earlier shell run that died mid-update. The recovery is
-            // a single read_dir scan on the happy path (no leftovers =
-            // nothing to do) so it is safe to run unconditionally here
-            // rather than gating on a marker file. Must run before any
-            // plugin command touches the store, which it does not yet at
-            // setup time.
+            // 崩溃恢复：清理上一次壳运行中途死亡留下的 plugin store
+            // staging 目录。正常路径下（无残留）只是一次 read_dir 扫描，
+            // 因此可以无条件在这里跑，而不必加 marker 文件做门控。必须
+            // 在任何 plugin 命令触及 store 之前运行，而 setup 时还没有
+            // 命令这么做。
             plugins::reconcile_store(&app.state::<AppState>().data_dir);
-            // Same class of startup repair for the skill store: recover
-            // staging swaps, re-link missing active-root entries, sweep
-            // orphaned store links. Pure filesystem work; failures land in
-            // the skill store's warning field for the UI.
+            // skill store 的同类启动期修复：恢复 staging 交换、重新
+            // 链接缺失的 active-root 条目、清理孤立的 store 链接。
+            // 纯文件系统操作；失败信息会落到 skill store 的 warning
+            // 字段供 UI 展示。
             skills::reconcile();
             updater::spawn_background_check(app.handle());
-            // Auto-open DevTools on the management window in debug builds.
-            // Tauri's webview keyboard shortcuts (`Cmd+Option+I`,
-            // `Cmd+Shift+I`, F12) do not always reach WKWebView on macOS,
-            // so the inspection surface has to be opened from the
-            // embedding side. `setup` fires after the configured windows
-            // are created, so the `main` webview is already retrievable
-            // here; the gated `#[cfg(debug_assertions)]` keeps release
-            // builds (which ship `with_devtools(false)` anyway) free of
-            // the call.
+            // 在 debug 构建中自动打开管理窗口的 DevTools。
+            // Tauri 的 webview 快捷键（`Cmd+Option+I`、`Cmd+Shift+I`、
+            // F12）在 macOS 上不一定能触达 WKWebView，因此调试入口
+            // 必须从嵌入端主动打开。`setup` 在已配置窗口创建之后
+            // 才触发，所以这里的 `main` webview 已经可取；
+            // `#[cfg(debug_assertions)]` 门控让 release 构建
+            // （其本身就 `with_devtools(false)`）免于这次调用。
             #[cfg(debug_assertions)]
             if let Some(window) = app.get_webview_window("main") {
                 window.open_devtools();
@@ -139,31 +132,25 @@ pub fn run() {
             commands::confirm_close_shell,
         ])
         .build(tauri::generate_context!())
-        .expect("failed to build the dsh-desktop app");
+        .expect("failed to build the dsh-xlink app");
 
-    // Reap the kernel when the shell exits so no dsh web process is left
-    // serving after the app quits. The in-memory child covers kernels this
-    // session spawned; the pid file covers orphans left by an earlier shell
-    // run (e.g. after a crash), guarded by `kill_pid`'s kernel check.
+    // 在壳退出时回收内核，使 app 退出后不会留下仍在服务的 dsh web 进程。
+    // 内存中的 child 覆盖本会话启动的内核；pid 文件覆盖上一次壳运行
+    // （例如崩溃后）留下的孤儿，由 `kill_pid` 的内核检查把关。
     //
-    // Closing the management window fires `WindowEvent::CloseRequested` *before*
-    // `RunEvent::Exit`. When the kernel is still running — or the official-chat
-    // window is open — we `prevent_close()` and ping the UI to ask the user
-    // whether to fully quit; the UI then runs `stop_kernel` (when running)
-    // followed by `confirm_close_shell`, which destroys every window and exits
-    // the event loop. Without this prompt the user could close the panel,
-    // leave an orphan kernel holding the port, and a later start would fail
-    // with the misleading "port already open" diagnostic until the orphan is
-    // reaped on the next shell launch.
+    // 关闭管理窗口会在 `RunEvent::Exit` 之前触发 `WindowEvent::CloseRequested`。
+    // 当内核仍在运行——或 official-chat 窗口仍打开——我们调用 `prevent_close()`
+    // 并通知 UI 询问用户是否完全退出；UI 接着运行 `stop_kernel`（运行时）
+    // 然后 `confirm_close_shell`，销毁所有窗口并退出事件循环。没有这一提示，
+    // 用户可能关掉面板却留下占用端口的孤儿内核，下次启动会因为误导性的
+    // 「端口已被占用」诊断而失败，直到下一次壳启动时才回收该孤儿。
     //
-    // The prompt path cannot rely on `RunEvent::Exit` for window teardown:
-    // `confirm_close_shell` destroys the main window, but the event loop only
-    // terminates once the LAST window is gone (and on macOS not even then —
-    // it needs an explicit exit), so a still-open `official-chat` window would
-    // keep the loop — and the app — alive with nobody left to close it. The
-    // Exit branch below therefore is only the fallback for exits that bypass
-    // the prompt (Cmd+Q, OS shutdown, last-window auto-close on Windows/Linux
-    // when nothing needed a warning).
+    // 提示路径不能依赖 `RunEvent::Exit` 来拆窗口：`confirm_close_shell`
+    // 会销毁主窗口，但事件循环只在最后一个窗口消失时才结束（macOS 上
+    // 即便如此也不结束——需要显式 exit），所以一个仍打开的 `official-chat`
+    // 窗口会让循环（以及 app）继续存活，却无人关闭它。因此下面的 Exit
+    // 分支只是绕过提示的那些退出（Cmd+Q、操作系统关机、
+    // Windows/Linux 上无需警告时最后窗口的自动关闭）的回退路径。
     app.run(|handle, event| {
         if let tauri::RunEvent::WindowEvent {
             label,
@@ -171,18 +158,17 @@ pub fn run() {
             ..
         } = &event
         {
-            // Only intercept the management window's X button; the harness
-            // workbench webview (label "harness") is allowed to close
-            // without confirmation since it has no kernel handle of its own.
+            // 只拦截管理窗口的关闭按钮；harness 工作台 webview
+            //（标签 "harness"）可以无需确认直接关闭，因为它自身不持有
+            // 内核句柄。
             let official_chat_open = handle.get_window("official-chat").is_some();
             if label == "main" && (kernel_running(handle) || official_chat_open) {
-                // Kernel running or official chat open: ask the user before
-                // tearing the shell down — a confirmed quit closes both.
-                // prevent_close() parks the close; the UI either confirms
-                // (stops the kernel when running, then calls
-                // confirm_close_shell) or cancels, leaving every window
-                // exactly as it was. Nothing is destroyed here so a cancel
-                // cannot take the official-chat window down with it.
+                // 内核仍在运行或官方聊天窗口已打开：在拆除壳之前先询问
+                // 用户——确认退出则一并关闭。prevent_close() 暂停关闭；
+                // UI 要么确认（在运行时停止内核，然后调用
+                // confirm_close_shell），要么取消，让所有窗口保持原样。
+                // 这里不会销毁任何东西，因此取消操作不会把 official-chat
+                // 窗口一起带走。
                 api.prevent_close();
                 if let Some(window) = handle.get_webview_window("main") {
                     let _ = window.emit(
@@ -194,21 +180,18 @@ pub fn run() {
                     );
                 }
             }
-            // Not the main window, or neither the kernel nor the official
-            // chat needs a warning: let the close proceed. The Exit branch
-            // below cascade-closes the official-chat webview on every real
-            // exit and reaps any pid-file leftover from an earlier crash.
+            // 不是主窗口，或内核与官方聊天都不需要警告：让关闭继续。
+            // 下面的 Exit 分支会在每次真实退出时级联关闭 official-chat
+            // webview，并回收上次崩溃留下的 pid 文件。
         }
         if let tauri::RunEvent::Exit = event {
-            // Cascade-close the official-chat panel-driven window on exits
-            // that bypassed the quit prompt (Cmd+Q on macOS, OS shutdown,
-            // last-window auto-close when nothing needed a warning). The
-            // confirmed-quit path already destroyed every window in
-            // `confirm_close_shell` before exiting the loop — Exit is the
-            // fallback net here, not the primary teardown. Same rationale
-            // as the WindowEvent handler above: official-chat is a
-            // transient panel-driven window and closing the panel implies
-            // closing it.
+            // 在绕过退出提示的那些退出路径（macOS 上的 Cmd+Q、操作系统
+            // 关机、无需警告时的最后窗口自动关闭）上级联关闭 official-chat
+            // 这个由面板驱动的窗口。确认退出路径已经在退出循环前通过
+            // `confirm_close_shell` 销毁了所有窗口——这里的 Exit 只是
+            // 回退兜底，不是主要的拆窗路径。理由与上面的 WindowEvent
+            // 处理相同：official-chat 是一个由面板驱动的临时窗口，
+            // 关闭面板就意味着关闭它。
             if let Some(oc) = handle.get_window("official-chat") {
                 let _ = oc.destroy();
             }
@@ -222,8 +205,8 @@ pub fn run() {
                 let data_dir = state.data_dir.clone();
                 let port = settings::load(&data_dir).port;
                 if !kernel::port_open(port) {
-                    // Port free: either nothing runs or stop() above reaped
-                    // it — drop a stale pid record so the next start is clean.
+                    // 端口空闲：要么没东西在跑，要么上面的 stop() 已经回收——
+                    // 丢弃陈旧的 pid 记录，让下次启动干净开始。
                     kernel::clear_pid(&data_dir);
                 } else if let Some(pid) = kernel::read_pid(&data_dir) {
                     kernel::kill_pid(pid, Some(port));
@@ -234,9 +217,8 @@ pub fn run() {
     });
 }
 
-/// Whether the kernel is currently serving traffic. Either the in-memory
-/// child handle is alive or the configured port answers — the latter catches
-/// kernels an earlier shell spawned whose pid we still need to reap.
+/// 内核当前是否在对外服务。内存中的 child 句柄还活着，或配置的端口
+/// 仍响应——后者能捕获上一次壳启动的内核，其 pid 我们仍需回收。
 fn kernel_running(handle: &tauri::AppHandle) -> bool {
     let Some(state) = handle.try_state::<AppState>() else {
         return false;

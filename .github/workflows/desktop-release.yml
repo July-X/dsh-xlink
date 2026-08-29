@@ -1,5 +1,5 @@
-# Build and publish the dsh-desktop shell for the supported desktop targets.
-# Releases are built from the independent project's main branch.
+# 为支持的桌面目标构建并发布 dsh-xlink 外壳。
+# 版本发布从独立项目的 main 分支构建。
 
 name: Desktop release (dsh-xlink)
 
@@ -88,8 +88,8 @@ jobs:
         id: meta
         shell: pwsh
         run: |
-          # Releases ship only from main: a tag must name a commit that is
-          # reachable from origin/main, and a manual dispatch must select main.
+          # 发布仅从 main 出货：tag 必须指向一个 origin/main 可达的 commit，
+          # 手动 dispatch 也必须选择 main。
           if ($env:GITHUB_REF_TYPE -eq 'branch' -and $env:GITHUB_REF_NAME -ne 'main') {
             throw "desktop releases only run on main; dispatched ref was $env:GITHUB_REF_NAME"
           }
@@ -138,6 +138,6 @@ jobs:
             - Windows x86_64（NSIS 安装包 .exe）
 
             使用方式：安装后在「内核版本」页安装并切换 DeepSeek Harness 内核版本即可使用。
-          # Keep both flags false so the updater's latest endpoint resolves.
+          # 两个开关都保持为 false，使 updater 的 latest endpoint 正常解析。
           releaseDraft: false
           prerelease: false

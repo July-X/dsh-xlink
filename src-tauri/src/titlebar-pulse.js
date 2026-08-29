@@ -48,10 +48,9 @@
 
   var STYLE_ID = "dsh-titlebar-pulse";
 
-  // Palette lookup by hostname. The official-chat content webviews
-  // (DeepSeek, Qianwen, MiniMax) all run in the same dedicated window
-  // and share the official brand blue; anything else (the dsh web
-  // workbench lives at 127.0.0.1) falls through to the Gitea green.
+  // 通过 hostname 查询配色。official-chat 的内容 webview（DeepSeek、
+  // 千问、MiniMax）都在同一个专用窗口内运行，共用官方品牌蓝；
+  // 除此之外（包括位于 127.0.0.1 的 dsh web 工作台）一律使用 Gitea 绿。
   var OFFICIAL_HOSTNAMES = ["chat.deepseek.com", "www.qianwen.com", "agent.minimaxi.com"];
   var isOfficial = OFFICIAL_HOSTNAMES.indexOf(window.location.hostname) !== -1;
   var PALETTE = isOfficial
@@ -74,11 +73,10 @@
   }
 
   function ensureSecondBar() {
-    // The dsh web workbench ships `body > [data-titlebar-pulse='2']` in
-    // its DOM; chat.deepseek.com (and any other remote page) does not.
-    // Append it here so the half-cycle second sweep has a node to ride,
-    // matching the workbench by structure rather than relying on the page
-    // to ship the DOM itself.
+    // dsh web 工作台自带 `body > [data-titlebar-pulse='2']` 节点；
+    // chat.deepseek.com（以及任何其他远程页面）则不会。这里补上一个，
+    // 让半周期的第二次扫光有节点可挂载，按结构与工作台保持一致，
+    // 而非依赖页面自行提供 DOM。
     var existing = document.querySelector("body > [data-titlebar-pulse='2']");
     if (existing) {
       return existing;
@@ -92,19 +90,19 @@
 
   function buildCss() {
     var viewportPx = cssViewportWidth();
-    // Width: 18.24% of the layout viewport, expressed in CSS pixels.
+    // 宽度：布局视口的 18.24%，以 CSS 像素表示。
     var bandPx = viewportPx * 0.1824;
-    // Keyframe endpoints in CSS pixels, not vw:
-    //   0%   → band leading edge one band-width past the left edge
-    //   100% → band trailing edge one band-width past the right edge
+    // 关键帧端点采用 CSS 像素而非 vw：
+    //   0%   → 条带前沿位于左边缘外一个条带宽度处
+    //   100% → 条带后沿位于右边缘外一个条带宽度处
     var startPx = -bandPx;
     var endPx = viewportPx + bandPx;
     var gradient =
       "linear-gradient(90deg, transparent 0%, " + HALO + " 15%, " + PALETTE.hex + " 50%, " + HALO + " 85%, transparent 100%)";
     return [
-      /* Hide a static brand band if the page ever ships one. */
+      /* 若页面自带静态品牌条带，将其隐藏。 */
       "body::before { content: none !important; display: none !important; }",
-      /* First sweep — left to right across the chrome row. */
+      /* 第一次扫光 —— 在 chrome 行上从左向右行进。 */
       "body::after {",
       "  content: '' !important;",
       "  position: fixed !important;",
@@ -149,8 +147,7 @@
     ensureSecondBar();
     var existing = document.getElementById(STYLE_ID);
     if (existing) {
-      // Recompute on resize: replace the sheet content so the keyframes
-      // track the current CSS viewport width.
+      // resize 时重新计算：替换样式表内容，使关键帧跟随当前的 CSS 视口宽度。
       existing.textContent = buildCss();
       return;
     }
@@ -166,10 +163,9 @@
     inject();
   }
 
-  // Recompute the keyframes whenever the viewport changes size or scale.
-  // WKWebView fires `resize` on zoom, window resize, and display scale
-  // changes, so this single listener covers every case where the CSS
-  // pixel width of the viewport shifts.
+  // 在视口尺寸或缩放变化时重新计算关键帧。WKWebView 会在缩放、窗口
+  // 尺寸变化以及显示缩放变化时触发 `resize`，因此单一监听器即可覆盖
+  // CSS 像素宽度变化的所有情形。
   var resizeTimer;
   window.addEventListener("resize", function () {
     clearTimeout(resizeTimer);

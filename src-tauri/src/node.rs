@@ -1,4 +1,4 @@
-//! Locating and validating the Node.js runtime that runs the kernel.
+//! 定位并校验用于运行 kernel 的 Node.js 运行时。
 
 use std::collections::HashSet;
 use std::fs;
@@ -23,13 +23,13 @@ pub struct NodeInfo {
     pub reason: String,
 }
 
-/// Parse `v22.19.0`-style output into (major, minor, patch).
+/// 将 `v22.19.0` 形式的输出解析为 (major, minor, patch)。
 fn parse_version(output: &str) -> Option<(u32, u32, u32)> {
     let text = output.trim().strip_prefix('v')?;
     let mut parts = text.split('.');
-    // Without the explicit `parse::<u32>()` annotations the compiler reports
-    // E0282 (`type annotations needed`) because each `parse()` is generic
-    // over the target integer type and has no constraint on its own.
+    // 若缺少显式的 `parse::<u32>()` 类型标注，编译器会报 E0282
+    // （type annotations needed），因为每个 `parse()` 都对目标整数类型
+    // 泛型，本身没有对类型的约束。
     let major = parts.next()?.parse::<u32>().ok()?;
     let minor = parts.next()?.parse::<u32>().ok()?;
     let patch = parts
@@ -41,12 +41,12 @@ fn parse_version(output: &str) -> Option<(u32, u32, u32)> {
     Some((major, minor, patch))
 }
 
-/// Whether a parsed version satisfies the dsh engine requirement.
+/// 判断已解析的版本是否满足 dsh 的 engines 要求。
 fn compatible((major, minor, _patch): (u32, u32, u32)) -> bool {
     (major == MIN_COMPATIBLE.0 && minor >= MIN_COMPATIBLE.1) || major >= MAJOR_ALT_FLOOR
 }
 
-/// Ask a node executable for its version.
+/// 向某个 node 可执行文件询问其版本。
 pub fn version_of(path: &Path) -> Option<String> {
     let mut cmd = Command::new(path);
     cmd.arg("--version");
@@ -58,7 +58,7 @@ pub fn version_of(path: &Path) -> Option<String> {
     (parse_version(&stdout).is_some()).then_some(version)
 }
 
-/// Probe a candidate node executable and report how usable it is.
+/// 探测某个 node 候选可执行文件，并报告其可用性。
 pub fn probe(path: &Path) -> NodeInfo {
     let path = path.to_string_lossy().into_owned();
     if !fs::metadata(&path).map(|m| m.is_file()).unwrap_or(false) {
@@ -98,7 +98,7 @@ pub fn probe(path: &Path) -> NodeInfo {
     }
 }
 
-/// Drop the trailing `.exe` for PATH lookup on Windows.
+/// 为 Windows 的 PATH 查找补上结尾的 `.exe`。
 fn exe_name(name: &str) -> String {
     if cfg!(windows) && !name.to_ascii_lowercase().ends_with(".exe") {
         format!("{name}.exe")
@@ -107,15 +107,13 @@ fn exe_name(name: &str) -> String {
     }
 }
 
-/// Candidate executable names probed in order when looking up a tool on
-/// Windows. Windows PATH lookups honour `PATHEXT` (default
-/// `.COM;.EXE;.BAT;.CMD;…`), and Node-adjacent tools are overwhelmingly
-/// shipped as `.cmd` shims into the user-level npm prefix
-/// (`%AppData%\npm\pnpm.cmd`) instead of `.exe`. Probing `.cmd` first
-/// matches the layout every npm `install -g` produces, then falls through
-/// to `.exe` (system-wide installs and `pnpm` standalone) and finally the
-/// bare name (PATH entries that already include an extension). Outside
-/// Windows only the bare name is valid.
+/// 在 Windows 上查找工具时按顺序探测的可执行文件名候选。
+/// Windows 的 PATH 查找遵循 `PATHEXT`（默认为 `.COM;.EXE;.BAT;.CMD;…`），
+/// 并且 Node 周边工具绝大多数都以 `.cmd` shim 的形式安装到用户级 npm 前缀
+/// （`%AppData%\npm\pnpm.cmd`）而非 `.exe`。先探测 `.cmd` 正好契合每次
+/// `npm install -g` 产生的布局，再回退到 `.exe`（系统级安装和独立的
+/// `pnpm` 安装），最后是裸名（PATH 项中已经包含扩展名）。在非
+/// Windows 平台上只有裸名是合法的。
 #[cfg(windows)]
 const WINDOWS_EXE_CANDIDATES: &[&str] = &[".cmd", ".exe", ""];
 
@@ -136,18 +134,17 @@ fn which_in_dir(name: &str, dir: &Path) -> Option<PathBuf> {
     candidate.is_file().then_some(candidate)
 }
 
-/// Directories to scan when looking up a tool on PATH. Detection must see
-/// the same PATH the shell stamps onto spawned children
-/// (`crate::env::merged_path`): a GUI-launched Windows shell inherits only
-/// the system PATH, so tools installed into the user-level npm prefix
-/// (`%AppData%\npm`) are invisible to a raw `std::env::var_os("PATH")`
-/// scan even though the user can run them from any terminal. On other
-/// platforms the merged PATH mirrors the process PATH.
+/// 在 PATH 上查找工具时需要扫描的目录。检测必须看到外壳注入到被启动
+/// 子进程上的同一份 PATH（`crate::env::merged_path`）：GUI 启动的
+/// Windows shell 只继承系统 PATH，因此即便用户在终端能跑出工具，装在
+/// 用户级 npm 前缀（`%AppData%\npm`）里的工具对直接调用
+/// `std::env::var_os("PATH")` 的扫描依然不可见。在其他平台上，
+/// 合并后的 PATH 与进程 PATH 一致。
 fn path_dirs() -> impl Iterator<Item = PathBuf> {
     std::env::split_paths(crate::env::merged_path())
 }
 
-/// Find `node` on the PATH.
+/// 在 PATH 中查找 `node`。
 fn from_path() -> Option<PathBuf> {
     for dir in path_dirs() {
         let candidate = dir.join(exe_name("node"));
@@ -158,7 +155,7 @@ fn from_path() -> Option<PathBuf> {
     None
 }
 
-/// Well-known install locations probed when `node` is not on the PATH.
+/// 当 PATH 中找不到 `node` 时探测的常见安装位置。
 fn common_locations() -> Vec<PathBuf> {
     let mut out = vec![
         PathBuf::from("/usr/local/bin/node"),
@@ -174,33 +171,30 @@ fn common_locations() -> Vec<PathBuf> {
     out
 }
 
-// --- nvm-managed installations ----------------------------------------------
+// --- nvm 管理的安装 -------------------------------------------------------
 //
-// GUI shells launch with a minimal PATH (launchd on macOS, the Window
-// Station system PATH merged from `HKCU\Environment` on Windows — see
-// `crate::env`), so a Node managed by nvm is invisible to the PATH walk
-// even though it is exactly the runtime the user intends to use. nvm
-// keeps every installed version on disk in a predictable layout, so the
-// shell discovers them directly instead of depending on the inherited
-// environment:
+// GUI shell 启动时拿到的 PATH 很有限（macOS 上是 launchd，Windows 上是
+// 从 `HKCU\Environment` 合并的 Window Station 系统 PATH，详见
+// `crate::env`），因此即便 nvm 管理的 Node 正是用户想要使用的运行时，
+// 它对 PATH 扫描依然不可见。nvm 在磁盘上以可预测的布局保存每个已安装
+// 的版本，外壳因此可以直接发现它们，而不依赖继承下来的环境：
 //
-// - nvm-sh (macOS/Linux): `$NVM_DIR` (default `~/.nvm`) with versions
-//   under `versions/node/<vX.Y.Z>/bin/node`; the preferred one recorded
-//   in `alias/default`, whose content may itself name another alias
-//   (`lts/hydrogen`) or a partial version (`22`).
-// - nvm-windows: `%NVM_HOME%` (default `%APPDATA%\nvm`) with versions
-//   under `vX.Y.Z\node.exe`; the version selected by `nvm use` is exposed
-//   as a directory junction named by `%NVM_SYMLINK%`.
+// - nvm-sh（macOS/Linux）：根目录 `$NVM_DIR`（默认 `~/.nvm`），
+//   版本位于 `versions/node/<vX.Y.Z>/bin/node`；首选版本记录在
+//   `alias/default` 中，其内容本身可能再指向另一个 alias
+//   （如 `lts/hydrogen`）或部分版本号（如 `22`）。
+// - nvm-windows：根目录 `%NVM_HOME%`（默认 `%APPDATA%\nvm`），版本
+//   位于 `vX.Y.Z\node.exe`；`nvm use` 所选的版本以
+//   `%NVM_SYMLINK%` 命名的目录 junction 暴露出来。
 
-/// How many alias-file indirections [`resolve_alias`] follows before
-/// giving up. `default` → `lts/hydrogen` → `20.9.0` is the common depth;
-/// repeated alias specs stop immediately, while the cap protects against
-/// unusually long acyclic chains and falls through to the newest-first scan.
+/// [`resolve_alias`] 在放弃前所跟随的 alias 文件间接跳转次数。
+/// `default` → `lts/hydrogen` → `20.9.0` 是常见深度；对重复的 alias
+/// 解析会立即停止，上限则防御异常长的无环链，并最终回退到按版本倒序
+/// 的扫描。
 #[cfg(not(windows))]
 const ALIAS_MAX_HOPS: usize = 5;
 
-/// The nvm-sh root directory (`$NVM_DIR`, defaulting to `~/.nvm`) when it
-/// exists on disk.
+/// nvm-sh 的根目录（`$NVM_DIR`，默认为 `~/.nvm`），仅在其真实存在于磁盘上时返回。
 #[cfg(not(windows))]
 fn nvm_root() -> Option<PathBuf> {
     let candidate = std::env::var_os("NVM_DIR")
@@ -209,10 +203,9 @@ fn nvm_root() -> Option<PathBuf> {
     candidate.is_dir().then_some(candidate)
 }
 
-/// Directories nvm-windows may keep versions in: `$NVM_HOME` when the
-/// environment carries it, plus the default `%APPDATA%\nvm` location. The
-/// GUI process frequently inherits neither variable (see `crate::env`),
-/// so the default keeps detection working without it.
+/// nvm-windows 可能存放版本的目录：携带 `$NVM_HOME` 时使用它，
+/// 否则回退到默认的 `%APPDATA%\nvm`。GUI 进程常常两个变量都拿不到
+/// （参见 `crate::env`），默认路径确保在这种情况下检测仍能工作。
 #[cfg(windows)]
 fn nvm_roots() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
@@ -231,10 +224,10 @@ fn nvm_roots() -> Vec<PathBuf> {
     out
 }
 
-/// Resolve an nvm-sh alias to a concrete version spec by following the
-/// alias-file chain: `alias/<name>` may name another alias and ends at a
-/// version string, possibly partial (`22`). Returns the final spec without
-/// checking that any installed version matches it.
+/// 沿着 alias 文件链把一个 nvm-sh alias 解析为具体的版本说明：
+/// `alias/<name>` 可能再指向另一个 alias，最终落到版本字符串
+/// （可能只是部分版本，如 `22`）。返回最终的版本说明，但不检查是否有
+/// 已安装版本与之匹配。
 #[cfg(not(windows))]
 fn resolve_alias(root: &Path, start: &str) -> Option<String> {
     let mut spec = start.to_string();
@@ -251,8 +244,8 @@ fn resolve_alias(root: &Path, start: &str) -> Option<String> {
                 }
                 spec = next.to_string();
             }
-            // `spec` does not name another alias file, so it already is
-            // the concrete (possibly partial) version spec.
+            // `spec` 没有再指向其他 alias 文件，因此它就是最终的
+            // （可能部分）版本说明。
             Err(_) => break,
         }
     }
@@ -260,37 +253,35 @@ fn resolve_alias(root: &Path, start: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// Trim and strip the leading `v` from an alias-resolved version spec so
-/// comparisons against installed directory names share one form.
+/// 将 alias 解析出的版本说明去掉前后空白和开头的 `v`，
+/// 以便与已安装目录名比较时使用统一格式。
 fn normalize_spec(spec: Option<&str>) -> Option<String> {
     let s = spec?.trim();
     let s = s.strip_prefix('v').unwrap_or(s);
     (!s.is_empty()).then(|| s.to_string())
 }
 
-/// Render a parsed tuple back to the dotted form used for alias-spec
-/// comparison (`(22, 19, 0)` → `"22.19.0"`).
+/// 把解析出的元组渲染回用于 alias 说明比较的点号形式
+/// （`(22, 19, 0)` → `"22.19.0"`）。
 fn format_version((major, minor, patch): (u32, u32, u32)) -> String {
     format!("{major}.{minor}.{patch}")
 }
 
-/// Order discovered version-manager installations for probing.
+/// 对版本管理器发现到的安装进行排序，以供探测。
 ///
-/// The installation matching `default_spec` comes first — that is the
-/// version the user pinned with `nvm alias default`. Exact match wins,
-/// then the highest installed version the spec prefixes (`22` resolves to
-/// the newest v22.x.y), mirroring how nvm itself interprets partial specs.
-/// Remaining engine-compatible installations follow newest-first, so an
-/// unpinned machine still gets a usable Node. Installations whose declared
-/// version cannot satisfy the engines range are dropped entirely: probing
-/// them would only produce a rejection the caller renders better than a
-/// wasted child spawn.
+/// 与 `default_spec` 匹配的安装排在最前——这是用户通过
+/// `nvm alias default` 锁定的版本。精确匹配优先，再按 spec 前缀
+/// 匹配已安装的最高版本（`22` 解析为最新的 v22.x.y），镜像 nvm 自身
+/// 对部分说明的解析方式。其余满足 engines 范围的安装按版本倒序排列，
+/// 这样即便用户没有 pin，也能拿到可用的 Node。声明版本无法满足
+/// engines 范围的安装会被直接丢弃：探测它们只会得到一个被调用方更好
+/// 渲染的拒绝结果，与白白多起一个子进程相比并不划算。
 fn order_nvm_versions(
     mut installed: Vec<((u32, u32, u32), PathBuf)>,
     default_spec: Option<&str>,
 ) -> Vec<PathBuf> {
-    // Newest first; equal tuples imply equal directories so no further
-    // tiebreak exists.
+    // 按版本从新到旧排序；相同的元组意味着相同的目录，
+    // 不需要进一步区分。
     installed.sort_by_key(|a| std::cmp::Reverse(a.0));
     let mut head: Option<usize> = None;
     if let Some(spec) = normalize_spec(default_spec) {
@@ -316,11 +307,10 @@ fn order_nvm_versions(
     out
 }
 
-/// Node executables managed by nvm-sh (macOS/Linux), in probe order: the
-/// `default`-alias installation first, then every other engine-compatible
-/// installation newest-first. Version directories whose names do not parse
-/// (custom builds dropped in by hand) are appended last so the probe, not
-/// the filename heuristic, decides.
+/// nvm-sh（macOS/Linux）管理的 node 可执行文件，按探测顺序：
+/// `default` alias 对应的安装排在最前，其余满足 engines 范围的安装
+/// 按版本倒序排列。目录名无法解析的版本（例如手工放入的自定义构建）
+/// 追加在末尾，让探测而非文件名启发来决定是否使用。
 #[cfg(not(windows))]
 pub(crate) fn nvm_candidates() -> Vec<PathBuf> {
     let Some(root) = nvm_root() else {
@@ -347,11 +337,10 @@ pub(crate) fn nvm_candidates() -> Vec<PathBuf> {
     out
 }
 
-/// Node executables managed by nvm-windows, in probe order: the active
-/// junction (`%NVM_SYMLINK%`, what `nvm use` selected) first, then every
-/// engine-compatible installation under `%NVM_HOME%` / `%APPDATA%\nvm`
-/// newest-first. Unparseable directory names are appended last and left to
-/// the probe.
+/// nvm-windows 管理的 node 可执行文件，按探测顺序：活跃 junction
+/// （`%NVM_SYMLINK%`，即 `nvm use` 选中的版本）排在最前，
+/// 然后是 `%NVM_HOME%` / `%APPDATA%\nvm` 下每个满足 engines 范围的
+/// 安装，按版本倒序排列。无法解析的目录名追加在末尾，留给探测。
 #[cfg(windows)]
 pub(crate) fn nvm_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -378,17 +367,16 @@ pub(crate) fn nvm_candidates() -> Vec<PathBuf> {
             }
         }
     }
-    // nvm-windows records its selection in the junction rather than an
-    // alias file, so there is no default spec to resolve here.
+    // nvm-windows 把所选版本记录在 junction 中而非 alias 文件，
+    // 因此这里没有需要解析的默认 spec。
     out.extend(order_nvm_versions(installed, None));
     out.extend(unparsed);
     out
 }
 
-/// Candidate node executables in auto-detection order: the PATH hit first
-/// (what the launching shell resolved — a terminal-run dev shell after
-/// `nvm use` lands here), then nvm-managed installations, then well-known
-/// system locations.
+/// 自动检测顺序下的 node 可执行候选：PATH 命中（启动 shell 解析到的——
+/// 终端里 `nvm use` 之后的 dev shell 会落在这里）优先，
+/// 其次是 nvm 管理的安装，最后是常见的系统位置。
 fn environment_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(found) = from_path() {
@@ -399,18 +387,17 @@ fn environment_candidates() -> Vec<PathBuf> {
     out
 }
 
-/// Result of probing the ordered environment candidates.
+/// 对有序的环境候选进行探测的结果。
 struct EnvironmentScan {
-    /// First candidate that satisfies the engines range, if any.
+    /// 第一个满足 engines 范围的候选（如果有）。
     usable: Option<NodeInfo>,
-    /// First candidate that runs but fails the range — surfaced when
-    /// nothing qualifies so the message can say "your Node is too old"
-    /// instead of pretending no Node exists.
+    /// 第一个能跑起来但不满足范围要求的候选——在没有合格候选时
+    /// 暴露出来，以便消息能够明确指出「Node 太老」而不是装作没有 Node。
     near_miss: Option<NodeInfo>,
 }
 
-/// Probe ordered candidates until one satisfies the engines range,
-/// remembering the closest failure along the way.
+/// 按顺序探测候选，直到某个满足 engines 范围为止，并沿途记住最接近
+/// 的失败结果。
 fn probe_environment(candidates: &[PathBuf]) -> EnvironmentScan {
     let mut near_miss: Option<NodeInfo> = None;
     for candidate in candidates {
@@ -431,34 +418,30 @@ fn probe_environment(candidates: &[PathBuf]) -> EnvironmentScan {
     }
 }
 
-/// Guidance when auto-detection finds no Node.js installation anywhere on
-/// disk — common on a fresh machine before any setup runs, or when the
-/// user has only just uninstalled the last runtime. Three independent
-/// install paths are listed because each user has a different preference;
-/// they pick whichever they would have used anyway, and the next status
-/// refresh (or the「检测 Node」button) re-runs detection.
+/// 当自动检测在磁盘上找不到任何 Node.js 安装时给出的指引——常见于全新
+/// 机器尚未完成任何初始化，或用户刚刚卸载了最后一个运行时。这里列出
+/// 三种独立的安装方式，是因为不同用户的偏好不同；他们选择自己本来就
+/// 会用的方式，下一次状态刷新（或「检测 Node」按钮）会重新运行检测。
 const NO_NODE_FOUND_GUIDANCE: &str =
     "请通过下列任一方式安装 Node.js 22.19+（或 >=24）：\n\
      • 版本管理器（推荐）：nvm 用户执行 `nvm install 24 && nvm alias default 24`；fnm 用户执行 `fnm install 24 && fnm default 24`；volta 用户执行 `volta install node@24`。\n\
      • 系统包管理器：macOS `brew install node@24`；Ubuntu/Debian 装 NodeSource 后 `apt install nodejs`；Windows `winget install OpenJS.NodeJS.LTS`。\n\
      • 官方安装包：从 https://nodejs.org/ 下载安装包，安装后重启本应用，或在「设置」中手动指定 node 可执行文件路径。";
 
-/// Guidance when auto-detection finds a Node.js installation but its
-/// declared version falls short of the engines range (`^22.19 || >=24`).
-/// Distinguishing this from "no Node at all" matters because the action
-/// is upgrade-in-place, not fresh-install.
+/// 当自动检测找到了 Node.js 安装，但其声明的版本低于 engines 范围
+/// （`^22.19 || >=24`）时的指引。区分这一点与「完全没有 Node」很关键，
+/// 因为对应的操作是就地升级，而不是全新安装。
 const NODE_TOO_OLD_GUIDANCE: &str =
     "请升级 Node 到 22.19+（或 >=24）：使用 nvm 的用户执行 `nvm install 24 && nvm alias default 24`；使用 fnm 的用户执行 `fnm install 24 && fnm default 24`；也可从 https://nodejs.org/ 下载新版安装包覆盖安装，或在「设置」中手动指定新版 node 可执行文件路径。";
 
-/// Resolve the node executable from explicit config, then the environment.
+/// 解析 node 可执行文件，先看显式配置，再看环境。
 pub fn resolve(settings: &Settings) -> NodeInfo {
     if let Some(path) = settings.node_path.as_ref() {
         let info = probe(Path::new(path));
         if info.ok {
             return info;
         }
-        // Fall through to detection; keep the reason so the UI can explain
-        // why the configured path was rejected.
+        // 回退到自动检测；保留原因以便 UI 说明配置路径为何被拒绝。
         let scan = probe_environment(&environment_candidates());
         if let Some(mut detected) = scan.usable {
             detected.reason = format!(
@@ -510,13 +493,13 @@ pub fn resolve(settings: &Settings) -> NodeInfo {
     }
 }
 
-/// Find a usable pnpm executable for installing kernels.
+/// 为安装 kernel 寻找可用的 pnpm 可执行文件。
 ///
-/// Prefer an explicit config path, then the folder next to the resolved
-/// `node`, then the PATH. pnpm is the installer for kernel versions; it is
-/// not bundled with Node, so a missing pnpm surfaces as an install-time
-/// error with setup guidance. The Windows probe tolerates both `.cmd`
-/// shims (the npm-prefix layout) and standalone `.exe` installs.
+/// 优先使用显式配置的路径，其次是与解析出的 `node` 同目录的版本，
+/// 最后是 PATH。pnpm 是 kernel 版本的安装器，它不随 Node 一起提供，
+/// 因此缺失的 pnpm 会以安装期错误形式暴露，并附带初始化指引。
+/// Windows 上的探测同时兼容 `.cmd` shim（npm 前缀布局）和独立的
+/// `.exe` 安装。
 pub fn resolve_pnpm(settings: &Settings, node_dir: &Path) -> Option<PathBuf> {
     if let Some(path) = settings.pnpm_path.as_ref() {
         if Path::new(path).is_file() {
@@ -534,12 +517,11 @@ pub fn resolve_pnpm(settings: &Settings, node_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Find an npm executable that ships with the resolved node. npm is needed
-/// only as a fallback installer when pnpm is missing; on the common layout
-/// it sits next to `node.exe` / `node` and on PATH. An explicit
-/// `settings.npm_path` wins when present (advanced users with a portable
-/// npm), then the node-sibling and PATH searches use the same `.cmd` /
-/// `.exe` / bare-name probe as pnpm.
+/// 寻找随解析出的 node 一同发布的 npm 可执行文件。npm 仅作为 pnpm 缺失
+/// 时的备选安装器使用；在常见布局下，它位于 `node.exe` / `node` 旁
+/// 并出现在 PATH 中。若存在显式的 `settings.npm_path`（拥有便携版 npm
+/// 的高级用户），它优先被采用；随后按 node 同目录、PATH 顺序搜索，
+/// 探测方式与 pnpm 相同，使用 `.cmd` / `.exe` / 裸名三种形式。
 pub fn find_npm(settings: &Settings, node_dir: &Path) -> Option<PathBuf> {
     if let Some(path) = settings.npm_path.as_ref() {
         if Path::new(path).is_file() {
@@ -614,11 +596,10 @@ pub fn ensure_pnpm(
             log = log_path.display()
         ));
     }
-    // `npm install -g` writes the new script into the npm prefix bin dir,
-    // which on the common layout is already on PATH — re-running the
-    // three-tier resolver picks the just-installed binary up. Falling back
-    // to the explicitly-configured prefix handles the unusual case where
-    // the user has a custom prefix that PATH does not see.
+    // `npm install -g` 会把新脚本写到 npm 前缀的 bin 目录，
+    // 在常见布局下该目录已经在 PATH 上——再次跑三级查找就能拿到刚装好
+    // 的二进制。回退到显式配置的前缀是为了应对用户自定义 prefix
+    // 不在 PATH 上的少见情况。
     if let Some(p) = resolve_pnpm(settings, node_dir) {
         on_progress("pnpm 已就绪");
         return Ok(p);
@@ -636,10 +617,10 @@ pub fn ensure_pnpm(
     ))
 }
 
-/// Ask npm where it would install global packages — the parent dir of the
-/// script bin we are about to look in. npm is a `.cmd` batch shim on
-/// Windows, so the spawn goes through `process::script_output`, which
-/// routes batch files through `%ComSpec% /C` and stamps the merged PATH.
+/// 询问 npm 会把全局包安装到哪里——也就是我们即将查找的脚本 bin
+/// 的父目录。在 Windows 上 npm 是 `.cmd` 批处理 shim，因此子进程通过
+/// `process::script_output` 启动，它把批处理文件交给 `%ComSpec% /C`
+/// 执行，并注入合并后的 PATH。
 fn npm_prefix(npm: &Path, cwd: &Path) -> Result<PathBuf, String> {
     let npm_dir = npm.parent().unwrap_or(std::path::Path::new("."));
     let (success, stdout, _stderr) =
@@ -661,22 +642,22 @@ mod tests {
     #[cfg(not(windows))]
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Sequential tag for `temp_root`, so parallel test runs do not
-    /// collide on the same `std::env::temp_dir()` scratch space. Used
-    /// only from the `cfg(not(windows))`-gated `resolve_alias` tests.
+    /// `temp_root` 的顺序编号，使并行测试不会在同一个
+    /// `std::env::temp_dir()` 暂存空间上冲突。仅由 `cfg(not(windows))`
+    /// 守卫下的 `resolve_alias` 测试使用。
     #[cfg(not(windows))]
     #[allow(dead_code)]
     static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-    /// Build a fresh scratch directory under `std::env::temp_dir()`. Each
-    /// call returns a unique path and removes any previous contents at that
-    /// path so a stale scratch from a crashed earlier run cannot leak in.
+    /// 在 `std::env::temp_dir()` 下创建一个全新的暂存目录。每次调用都返回
+    /// 唯一路径，并清掉该路径上之前残留的内容，避免之前崩溃的运行留下的
+    /// 旧数据混入本次测试。
     #[cfg(not(windows))]
     #[allow(dead_code)]
     fn temp_root(tag: &str) -> PathBuf {
         let seq = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "dsh-desktop-node-test-{tag}-{}-{seq}",
+            "dsh-xlink-node-test-{tag}-{}-{seq}",
             std::process::id(),
         ));
         let _ = fs::remove_dir_all(&dir);
@@ -685,14 +666,14 @@ mod tests {
     }
 
     fn vb(major: u32, minor: u32, patch: u32) -> PathBuf {
-        // Path content is irrelevant for ordering — only the tuple is read.
+        // 排序只读取元组，路径内容对顺序没有意义。
         PathBuf::from(format!("/fake/{major}.{minor}.{patch}"))
     }
 
     #[test]
     fn parse_version_accepts_v_prefix_and_prerelease() {
-        // The function reads `node --version` output, which always carries
-        // the leading `v`; the bare form is not a contract.
+        // 函数读取的是 `node --version` 输出，它始终带有开头的 `v`；
+        // 裸版本号不在契约范围内。
         assert_eq!(parse_version("v22.19.0"), Some((22, 19, 0)));
         assert_eq!(parse_version("v24.0.0-rc.1"), Some((24, 0, 0)));
         assert_eq!(parse_version("not a version"), None);
@@ -721,17 +702,15 @@ mod tests {
             ((22, 20, 0), vb(22, 20, 0)),
         ];
         let ordered = order_nvm_versions(installed, Some("v22.19.0"));
-        // exact match `v22.19.0` heads the list, the remaining compatible
-        // installations follow newest-first.
+        // 精确匹配 `v22.19.0` 排在最前，其余兼容的安装按版本倒序跟随。
         assert_eq!(ordered, vec![vb(22, 19, 0), vb(24, 5, 0), vb(22, 20, 0)],);
     }
 
     #[test]
     fn order_nvm_versions_resolves_partial_spec_to_newest_match() {
-        // `22` resolves to the highest installed v22.x.y — mirroring nvm.
-        // v22.10.0 is intentionally below `^22.19` so the test stays
-        // focused on the spec-resolution path; the engines-range drop is
-        // covered separately.
+        // `22` 解析为已安装的最高 v22.x.y——镜像 nvm 的行为。
+        // v22.10.0 故意低于 `^22.19`，让测试聚焦在 spec 解析路径上；
+        // engines 范围的丢弃逻辑另有专门测试覆盖。
         let installed = vec![
             ((22, 19, 0), vb(22, 19, 0)),
             ((22, 20, 0), vb(22, 20, 0)),
@@ -743,9 +722,8 @@ mod tests {
 
     #[test]
     fn order_nvm_versions_drops_incompatible() {
-        // 18.0.0 falls short of `^22.19 || >=24` and must be omitted from
-        // the probe list — spawning it would only burn a child process
-        // for a result the engine-range check rejects anyway.
+        // 18.0.0 低于 `^22.19 || >=24`，必须从探测列表中排除——
+        // 启动它只会白白消耗一个子进程，结果还是被 engines 检查拒掉。
         let installed = vec![
             ((18, 19, 0), vb(18, 19, 0)),
             ((22, 19, 0), vb(22, 19, 0)),
@@ -757,10 +735,9 @@ mod tests {
 
     #[test]
     fn order_nvm_versions_unknown_spec_falls_back_to_desc_scan() {
-        // `lts/hydrogen` chains to `20.9.0`, which is installed only under
-        // the alias name `default` here. With no installed match the head
-        // stays empty and the compatible ones still come through newest-
-        // first.
+        // `lts/hydrogen` 链接到 `20.9.0`，而 20.9.0 在这里只以 alias 名
+        // `default` 安装。没有匹配时队首留空，其余兼容版本仍然按版本倒序
+        // 输出。
         let installed = vec![((22, 19, 0), vb(22, 19, 0)), ((24, 5, 0), vb(24, 5, 0))];
         let ordered = order_nvm_versions(installed, Some("lts/hydrogen"));
         assert_eq!(ordered, vec![vb(24, 5, 0), vb(22, 19, 0)]);
@@ -784,9 +761,8 @@ mod tests {
         let root = temp_root("alias-partial");
         fs::create_dir_all(root.join("alias")).unwrap();
         fs::write(root.join("alias").join("default"), "22\n").unwrap();
-        // `alias/22` does not exist — nvm partial-spec behavior — so the
-        // chain terminates on the bare `22` and the caller matches it
-        // against installed versions.
+        // `alias/22` 不存在——这是 nvm 部分 spec 的行为——因此链在裸 `22`
+        // 处终止，由调用方拿它去匹配已安装的版本。
         assert_eq!(resolve_alias(&root, "default"), Some("22".into()));
     }
 
@@ -798,9 +774,8 @@ mod tests {
         fs::create_dir_all(&alias_dir).unwrap();
         fs::write(alias_dir.join("a"), "b").unwrap();
         fs::write(alias_dir.join("b"), "a").unwrap();
-        // The hop cap stops the resolution; the final spec is whatever the
-        // loop ended on, never a hang. It does not name an installed
-        // version, so callers fall back to the desc scan.
+        // 跳数上限会中止解析；最终 spec 就是循环停下的那个值，不会陷入死循环。
+        // 它并不对应一个已安装的版本，因此调用方会回退到倒序扫描。
         assert_eq!(
             resolve_alias(&root, "a").as_deref(),
             Some("a"),
@@ -817,11 +792,10 @@ mod tests {
         assert_eq!(resolve_alias(&root, "default"), None);
     }
 
-    /// The "no Node anywhere" message is the contract a user on a fresh
-    /// machine reads in the management panel. It must give three
-    /// independent install paths (version manager / package manager /
-    /// official installer) and the manual-path escape hatch, so the user
-    /// can act on whichever they would have used anyway.
+    /// 「设备上完全没有 Node」的消息是全新机器用户在管理面板里看到的合同
+    /// 内容。它必须给出三种独立的安装方式（版本管理器 / 包管理器 /
+    /// 官方安装包）以及手动路径的兜底入口，让用户可以照自己本来就会用
+    /// 的方式去安装。
     #[test]
     fn no_node_found_guidance_lists_three_install_paths() {
         let msg = NO_NODE_FOUND_GUIDANCE;
@@ -842,11 +816,9 @@ mod tests {
         );
     }
 
-    /// The "Node too old" message is the contract a user with an
-    /// outdated system install reads. It must point at upgrade commands
-    /// (not fresh-install), and at the manual-path slot so they can keep
-    /// their old install and still point the shell at a newer one if
-    /// they prefer.
+    /// 「Node 太老」的消息是装有过时系统 Node 的用户看到的合同内容。
+    /// 它必须指向升级命令（而非全新安装）以及手动路径的位置，使用户
+    /// 即便想保留旧 Node，也能在「设置」中指向更新版本。
     #[test]
     fn node_too_old_guidance_points_at_upgrade_paths() {
         let msg = NODE_TOO_OLD_GUIDANCE;
@@ -856,9 +828,8 @@ mod tests {
             "should point at the official installer",
         );
         assert!(msg.contains("「设置」"), "should mention the manual path");
-        // The "too old" branch never has to recommend apt/brew/winget
-        // because the user already has a Node; those fresh-install
-        // commands are misleading and would clutter the message.
+        // 「太老」分支没必要推荐 apt/brew/winget，因为用户已经有 Node；
+        // 这些全新安装命令会误导用户，并让消息显得冗长。
         assert!(
             !msg.contains("brew install"),
             "fresh-install commands do not belong in an upgrade message",

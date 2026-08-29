@@ -1,4 +1,4 @@
-/* Detect a genuinely blank or crashed harness document after the page had time to mount. */
+/* 在页面有充足挂载时间后，检测真正空白或崩溃的工作台文档。 */
 (function () {
   if (window.top !== window.self || window.__DSH_HARNESS_HEALTH_PROBE__) return;
   window.__DSH_HARNESS_HEALTH_PROBE__ = true;
@@ -41,8 +41,7 @@
         window.__DSH_HARNESS_HEALTH_REPORTED__ = true;
       }).catch(function () {
         reportInFlight = false;
-        // Retry a short-lived IPC race; a closed management panel must not
-        // leave the page permanently marked as reported.
+        // 对短暂的 IPC 竞态进行重试；管理面板已关闭时，不能把页面永久标记为已上报。
         scheduleReportRetry();
       });
     } catch (error) {
@@ -71,8 +70,8 @@
   }
 
   window.addEventListener("error", function (event) {
-    // Resource errors have no useful JS stack and are often harmless (for
-    // example, an optional image); only report executable errors here.
+    // 资源错误没有有用的 JS 栈，且通常无害（例如可选的图片），
+    // 这里只上报可执行错误。
     var error = event && event.error;
     var message = event && event.message;
     if (!error && !message) return;

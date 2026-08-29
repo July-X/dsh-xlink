@@ -1,20 +1,19 @@
-//! Workbench boot fault tolerance: watchdog, attribution, progressive
-//! plugin disabling, and incident reporting.
+//! 工作台启动容错：看门狗、归因、渐进式插件停用以及故障上报。
 //!
-//! [`guarded_start`] wraps a kernel launch in a watchdog. The spawned child
-//! must either answer its port within [`READY_TIMEOUT_SECS`] or exit; either
-//! non-ready outcome triggers attribution over the kernel log tail, then up
-//! to three boot attempts in progressively safer wiring states:
+//! [`guarded_start`] 把内核启动封装在看门狗中。派生出的子进程必须在
+//! [`READY_TIMEOUT_SECS`] 内应答端口，或者自行退出；任一未就绪的结果
+//! 都会触发对内核日志末尾的归因分析，然后最多进行三次启动尝试，逐步
+//! 切到更保守的接线状态：
 //!
-//! 1. as wired (the pre-guard behavior);
-//! 2. suspects from the log disabled via the quarantine registry;
-//! 3. safe mode — every third-party plugin disabled.
+//! 1. 按原接线启动（防护之前的行为）；
+//! 2. 通过隔离注册表停用日志中指出的可疑插件；
+//! 3. 安全模式——停用所有第三方插件。
 //!
-//! When even safe mode cannot boot, the flow restores the wiring and the
-//! quarantine state captured before the incident and reports an unrecovered
-//! [`Incident`] with an actionable hint. Every recovered outcome persists its
-//! quarantines so the management UI can offer the keep-disabled / re-enable /
-//! remove decision per suspect instead of leaving a dead workbench.
+//! 即便安全模式仍无法启动，流程也会把恢复前的接线和隔离状态复原，并
+//! 上报一个不可恢复的 [`Incident`]，附带可操作的下一步提示。每一次已
+//! 恢复的结果都会持久化其隔离记录，这样管理面板能为每个可疑项提供
+//! 「保持禁用 / 重新启用 / 移除」的决策，而不是留下一个无法启动的工
+//! 作台。
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -27,69 +26,68 @@ use crate::process::read_tail;
 use crate::quarantine::{self, QuarantineItem};
 use crate::{kernel, plugins, settings};
 
-/// How long the watchdog waits for the spawned kernel to answer its port
-/// before treating the boot as hung and killing the process. A healthy
-/// `dsh web` binds within a few seconds; thirty covers cold caches on
-/// slow disks without stretching the failure path unreasonably.
+/// 看门狗在判定启动挂起并杀掉进程前，会等待派生内核应答端口的最长时
+/// 间。健康的 `dsh web` 在几秒之内就能监听端口；30 秒足以覆盖慢速磁
+/// 盘上的冷缓存，同时不会让失败路径拉得过长。
 const READY_TIMEOUT_SECS: u64 = 30;
-/// Poll interval while watching a booting child.
+/// 监听正在启动的子进程时的轮询间隔。
 const WATCH_POLL_MILLIS: u64 = 500;
-/// Tail length read from `kernel.log` for attribution. Stack traces plus
-/// loader chatter fit comfortably; the full log stays on disk regardless.
+/// 归因时从 `kernel.log` 读取的尾部长度。堆栈信息加 Loader 输出已经
+/// 足够完整，完整日志无论如何都保留在磁盘上。
 const LOG_TAIL_BYTES: u64 = 32 * 1024;
-/// Suspects reported per incident. A boot failure rarely implicates more
-/// than a couple of plugins; the cap keeps the incident panel readable.
+/// 一次故障上报中报告的可疑项数量上限。启动失败通常牵涉不到几个以
+/// 上的插件；这一上限保证故障面板的可读性。
 const MAX_SUSPECTS: usize = 8;
-/// Evidence excerpt cap per suspect, in characters.
+/// 单个可疑项的证据摘录上限，按字符计。
 const EVIDENCE_MAX_CHARS: usize = 480;
 
-/// One plugin or kernel component the log evidence points at.
+/// 一条日志证据指向的插件或内核组件。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Suspect {
-    /// `plugin` or `kernel`.
+    /// `plugin` 或 `kernel`。
     pub kind: String,
-    /// Store id for plugins, kernel version for the kernel itself.
+    /// 插件为商店 id，内核则为内核版本号。
     pub id: String,
-    /// Display name shown verbatim in the UI.
+    /// 在 UI 中按原样显示的展示名。
     pub name: String,
-    /// Log excerpt backing the attribution, shown on demand in the UI.
+    /// 归因依据的日志摘录，按需在 UI 中展示。
     pub evidence: String,
 }
 
-/// The outcome of one guarded start, persisted under the data dir so the
-/// incident survives shell restarts and can be referenced by later messages.
+/// 一次防护式启动的结果，持久化到数据目录中，使故障信息在 Shell 重
+/// 启后仍能保留，并被后续消息引用。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Incident {
-    /// Whether a retry after disabling plugins got the workbench up.
+    /// 停用某些插件后的重试是否成功启动了工作台。
     pub recovered: bool,
-    /// Whether the workbench is now running without some third-party
-    /// plugins (recovered incidents only).
+    /// 工作台当前是否在没有部分第三方插件的状态下运行（仅对已恢复的
+    /// 故障有效）。
     pub safe_mode: bool,
-    /// One-paragraph summary rendered as the panel headline (简体中文).
+    /// 作为面板标题的一小段摘要（简体中文）。
     pub message: String,
     pub suspects: Vec<Suspect>,
-    /// Human-readable trail of what the guard tried, in order.
+    /// 防护模块依次尝试过的操作的可读记录。
     pub attempts: Vec<String>,
-    /// Tail of `kernel.log` at the moment of attribution.
+    /// 归因时刻的 `kernel.log` 末尾片段。
     pub log_tail: String,
-    /// Full path of `kernel.log` for the「打开日志」action.
+    /// `kernel.log` 的完整路径，供「打开日志」动作使用。
     pub log_path: String,
-    /// Actionable next step when not recovered (简体中文).
+    /// 未恢复时给出的可操作下一步（简体中文）。
     pub hint: Option<String>,
-    /// Seconds since epoch, for display.
+    /// 自纪元以来的秒数，用于显示。
     pub at: u64,
-    /// High-level attribution used to choose the repair action in the panel.
+    /// 用于在面板中选择处理动作的高层归因。
     #[serde(default)]
     pub cause: String,
-    /// Frontend health evidence captured by the harness webview, when the
-    /// incident came from a loaded-but-unhealthy page.
+    /// 当故障来自一个已加载但不健康的页面时，由 Shell 注入的探针捕
+    /// 获的前端健康证据。
     #[serde(default)]
     pub health: Option<HealthReport>,
 }
 
-/// A frontend health signal sent by the injected harness probe. The command
-/// layer validates and bounds each string before this is persisted in an
-/// incident, so a broken page cannot fill the incident file indefinitely.
+/// 由注入的 Shell 探针发送的前端健康信号。命令层会在该结构被写入故
+/// 障文件前对每一段字符串做校验并加上长度上限，避免坏页面无限增长故
+/// 障文件。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct HealthReport {
     pub kind: String,
@@ -98,24 +96,24 @@ pub struct HealthReport {
     pub page_url: String,
 }
 
-/// Result payload of the guarded `start_kernel` command.
+/// 防护过的 `start_kernel` 命令的结果负载。
 #[derive(Debug, Clone, Serialize)]
 pub struct StartReport {
     pub port: u16,
-    /// Whether the workbench is serving when the command returns.
+    /// 命令返回时工作台是否正在提供服务。
     pub running: bool,
-    /// Convenience flag mirroring "quarantine registry is non-empty".
+    /// 反映「隔离注册表非空」的便利标志位。
     pub safe_mode: bool,
     pub incident: Option<Incident>,
 }
 
-/// Everything the guard needs to spawn, rewire, and roll back.
+/// 防护模块启动子进程、重新接线以及回滚所需的一切信息。
 pub struct GuardDeps<'a> {
     pub data_dir: &'a Path,
     pub settings: &'a settings::Settings,
-    /// Validated node executable the kernel child is spawned with.
+    /// 已校验的 node 可执行文件，用于派生内核子进程。
     pub node_path: &'a Path,
-    /// Resolved pnpm executable used to re-sync the profile between attempts.
+    /// 解析到的 pnpm 可执行文件，用于在两次尝试之间重新同步 profile。
     pub pnpm_exe: &'a Path,
 }
 
@@ -141,10 +139,10 @@ enum WatchVerdict {
     Hung,
 }
 
-/// Watch a freshly spawned kernel until the port answers, the process exits,
-/// or the deadline passes. A hung child is killed here (whole process group,
-/// matching how「关闭工作台」tears kernels down) so a half-booted instance can
-/// never linger and later masquerade as a running workbench.
+/// 监听一个刚刚派生的内核，直至端口应答、进程退出或达到截止时间。被
+/// 判为挂起的子进程会在此处被终止（整体进程组，与「关闭工作台」拆解
+/// 内核时的方式一致），这样半启动的实例不会残留并稍后冒充一个正在
+/// 运行的工作台。
 fn watch_child(child: &mut Child, port: u16) -> WatchVerdict {
     let deadline = Instant::now() + Duration::from_secs(READY_TIMEOUT_SECS);
     loop {
@@ -154,9 +152,8 @@ fn watch_child(child: &mut Child, port: u16) -> WatchVerdict {
         if let Ok(Some(status)) = child.try_wait() {
             return WatchVerdict::Exited(status);
         }
-        // An OS-level wait error (the `Err` arm) means the child state is
-        // unknowable; keep polling the port so a healthy boot still wins
-        // the race.
+        // OS 级 wait 出错（`Err` 分支）意味着无法获知子进程状态；继续轮询
+        // 端口，以便健康的启动仍然能在竞速中胜出。
         if Instant::now() >= deadline {
             let _ = kernel::stop(child);
             return WatchVerdict::Hung;
@@ -181,18 +178,18 @@ impl BootVerdict {
     }
 }
 
-/// One guarded boot attempt: spawn through the ordinary path, then watch.
-/// Returns the verdict plus the live child on the `Ready` path (the caller
-/// registers it with the app state); failures consume the child.
+/// 一次受防护的启动尝试：通过常规路径派生进程，再进行监听。返回判定
+/// 结果，以及在 `Ready` 路径上的存活子进程（调用方将其注册到应用状
+/// 态）；失败路径会消费掉子进程。
 fn boot_once(
     deps: &GuardDeps<'_>,
     on_progress: &mut dyn FnMut(&str),
 ) -> (BootVerdict, Option<Child>) {
     match kernel::start_maybe(deps.data_dir, deps.node_path) {
         Ok(None) => (
-            // The port started answering mid-flow (another shell instance or
-            // a leftover orphan won the race). Treat as ready; reap_orphans
-            // owns the orphan case at shell startup.
+            // 端口在流程中途已经开始应答（另一个 Shell 实例或残留的孤
+            // 儿进程抢到了这个端口）。这里视为已就绪；孤儿进程的回收
+            // 由 Shell 启动时的 reap_orphans 负责。
             BootVerdict::Ready,
             None,
         ),
@@ -265,15 +262,13 @@ fn excerpt(lines: &[&str], idx: usize) -> String {
     format!("{truncated}…")
 }
 
-/// Attribute a boot failure to installed plugins (or the kernel itself) from
-/// the log tail. Plugin candidates match on anchored shapes only — their
-/// shell materialization path segment `plugins/<id>`, a `/`-prefixed path
-/// segment of the package name, or the name in quotes — because a bare
-/// substring test turns every short package name into a suspect whenever the
-/// word happens to occur anywhere in a stack trace.
+/// 根据日志末尾将一次启动失败归因到已安装的插件（或内核自身）。插件
+/// 候选只匹配锚定的形态——它们的 Shell 物化路径段 `plugins/<id>`，
+/// 加上 `/` 前缀的包名路径段，或者带引号的包名——因为纯子串匹配会让
+/// 任何短包名只要碰巧出现在堆栈里的任何位置就被当成可疑项。
 ///
-/// Conservative by design: no candidate match yields an empty list, and the
-/// empty case routes to safe mode rather than blaming an arbitrary plugin.
+/// 设计上保持保守：没有任何候选命中时返回空列表，空列表会路由到安
+/// 全模式，而不是胡乱指认某个插件。
 pub fn attribute(
     log_tail: &str,
     store_items: &[plugins::StoreItem],
@@ -287,9 +282,9 @@ pub fn attribute(
         if suspects.len() >= MAX_SUSPECTS {
             return suspects;
         }
-        // `plugins/<id>` covers link-mode kernel plugins dirs; `/name` also
-        // hits `/name/...` inside copy-mode profile paths; the quoted forms
-        // catch `Cannot find package 'x'` / `Cannot find module 'x'`.
+        // `plugins/<id>` 覆盖 link 模式下的内核插件目录；`/name` 同样能匹
+        // 配 copy 模式下 profile 路径中的 `/name/...` 形式；带引号的形
+        // 式则能命中 `Cannot find package 'x'` / `Cannot find module 'x'`。
         let needles = [
             format!("plugins/{}", item.id),
             format!("/{}", item.name),
@@ -405,10 +400,10 @@ fn suspect_records(suspects: &[Suspect], reason: String) -> Vec<QuarantineItem> 
         .collect()
 }
 
-// --- wiring helpers ---------------------------------------------------------
+// --- 接线辅助 -----------------------------------------------------------------
 
-/// First-attempt wiring repair, identical in spirit to the pre-guard quiet
-/// pass: failures land in the store warning instead of blocking the boot.
+/// 首次尝试的接线修复，思路与防护之前的静默通过一致：失败落到插件
+/// 商店告警中，而不是阻塞启动。
 fn sync_wiring_record_warning(deps: &GuardDeps<'_>, on_progress: &mut dyn FnMut(&str)) {
     match plugins::ensure_wiring(deps.data_dir, deps.settings, deps.pnpm_exe, on_progress) {
         Ok(_) => plugins::set_store_warning(deps.data_dir, None),
@@ -416,8 +411,8 @@ fn sync_wiring_record_warning(deps: &GuardDeps<'_>, on_progress: &mut dyn FnMut(
     }
 }
 
-/// Re-sync the profile between attempts, appending the outcome to the
-/// incident trail either way.
+/// 在两次尝试之间重新同步 profile，无论结果如何都会把过程追加到故
+/// 障轨迹中。
 fn refresh_wiring(
     deps: &GuardDeps<'_>,
     on_progress: &mut dyn FnMut(&str),
@@ -435,37 +430,36 @@ fn log_tail(deps: &GuardDeps<'_>) -> String {
     read_tail(&kernel_log_path(deps.data_dir), LOG_TAIL_BYTES)
 }
 
-// --- incident persistence ---------------------------------------------------
+// --- 故障持久化 ---------------------------------------------------------------
 
 fn incident_path(data_dir: &Path) -> PathBuf {
     data_dir.join("last-incident.json")
 }
 
-/// Persist the incident so it survives shell restarts; best-effort because a
-/// failed write must not mask the boot outcome the user is waiting on.
+/// 持久化故障信息，使其在 Shell 重启后仍然存在；尽力而为地写，因为
+/// 写入失败不能掩盖用户正在等待的启动结果。
 fn save_incident(data_dir: &Path, incident: &Incident) {
     if let Ok(text) = serde_json::to_string_pretty(incident) {
         let _ = std::fs::write(incident_path(data_dir), text + "\n");
     }
 }
 
-/// Drop the recorded incident after a clean normal boot — the stale report
-/// would otherwise contradict a workbench that just came up healthy.
+/// 在一次干净、正常的启动后清除已记录的故障——否则这份陈旧的报告
+/// 会与刚刚健康启动的工作台相矛盾。
 fn clear_incident(data_dir: &Path) {
     let _ = std::fs::remove_file(incident_path(data_dir));
 }
 
-/// Read the last recorded incident (used by commands that surface history).
+/// 读取最近一次记录的故障（供展示历史的命令使用）。
 pub fn load_incident(data_dir: &Path) -> Option<Incident> {
     let text = std::fs::read_to_string(incident_path(data_dir)).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-// --- orchestration ----------------------------------------------------------
+// --- 编排 --------------------------------------------------------------------
 
-/// Launch the active kernel under the boot guard. Returns the report for the
-/// UI plus the live child on success (the caller registers it with the app
-/// state and records its pid).
+/// 在启动防护下启动当前活动的内核。向 UI 返回报告，并在成功路径上
+/// 一起返回存活中的子进程（调用方把它注册到应用状态并记录其 pid）。
 pub fn guarded_start(
     deps: &GuardDeps<'_>,
     on_progress: &mut dyn FnMut(&str),
@@ -473,8 +467,8 @@ pub fn guarded_start(
     let port = deps.settings.port;
 
     if kernel::port_open(port) {
-        // Idempotent start: something already serves the port. Do not nag
-        // about historical quarantines here; the overview banner owns that.
+        // 幂等启动：有东西已经在监听这个端口。此处不必再就历史的隔离
+        // 记录唠叨，概览页的横幅负责展示。
         return (
             StartReport {
                 port,
@@ -495,11 +489,11 @@ pub fn guarded_start(
         plugins::snapshot_profile_manifest_text(deps.data_dir, &deps.settings.profile);
     let mut trail: Vec<String> = Vec::new();
 
-    // Attempt 1: exactly as wired.
+    // 第 1 次尝试：完全按既有接线启动。
     on_progress("正在启动工作台…");
     let (verdict, child) = boot_once(deps, on_progress);
-    // A `Ready` verdict without a child means something else started
-    // answering the port mid-flow; that is still a running workbench.
+    // 没有子进程但得到 `Ready` 判定，意味着流程中途已有别的东西开始
+    // 应答端口；这也属于一个正在运行的工作台。
     if matches!(verdict, BootVerdict::Ready) {
         clear_incident(deps.data_dir);
         return (
@@ -516,8 +510,8 @@ pub fn guarded_start(
     let tail = log_tail(deps);
     let mut suspects = attribute(&tail, &store_items, &kernel_label);
 
-    // Attempt 2: disable the attributed suspects and retry. Skipped when
-    // attribution found nothing — guessing would punish innocent plugins.
+    // 第 2 次尝试：停用归因得到的可疑插件后再试。当归因没有结果时跳过
+    // ——凭空猜测只会误伤无辜插件。
     if !suspects.is_empty() {
         on_progress("检测到疑似引发故障的插件，正在停用后重试…");
         let records = suspect_records(
@@ -562,8 +556,8 @@ pub fn guarded_start(
         }
     }
 
-    // Attempt 3: safe mode. With no third-party plugins there is nothing to
-    // disable — a bare-profile failure is the kernel or environment's fault.
+    // 第 3 次尝试：安全模式。如果没有第三方插件可停用——bare-profile 失
+    // 败通常是内核或环境的问题。
     if !store_items.is_empty() {
         on_progress("仍未启动成功，正在进入安全模式（停用全部第三方插件）后重试…");
         let already: HashSet<String> = quarantined_ids_now(deps.data_dir);
@@ -586,9 +580,8 @@ pub fn guarded_start(
             let (verdict3, child3) = boot_once(deps, on_progress);
             if matches!(verdict3, BootVerdict::Ready) {
                 trail.push("安全模式（全部第三方插件停用）下启动成功".to_string());
-                // Report every plugin as a suspect: the user must decide per
-                // plugin whether to remove it or leave it disabled, and the
-                // ones with real log evidence carry their excerpts.
+                // 把每个插件都报告为可疑项：用户必须按插件决定是移除还
+                // 是保持禁用，那些带有真正日志证据的会一起带上摘录。
                 let all_suspects: Vec<Suspect> = store_items
                     .iter()
                     .map(|item| Suspect {
@@ -635,10 +628,9 @@ pub fn guarded_start(
         }
     }
 
-    // Everything failed: this is not plugin-induced. Undo everything the
-    // guard changed so a fix applied outside the guard (reinstalling the
-    // kernel version, replacing a broken disk state) is never masked by
-    // half-applied quarantine or wiring state.
+    // 全部尝试都失败：这不是插件引起的。撤销防护期间做过的所有改动，
+    // 这样在防护之外采取的修复（重装内核版本、替换损坏的磁盘状态）不
+    // 会被半应用的隔离或接线状态所遮蔽。
     on_progress("多次尝试后仍无法启动，正在恢复原有配置…");
     trail.push(String::from("已放弃自动修复，恢复原有接线与隔离状态"));
     let _ = quarantine::save(deps.data_dir, &prior_quarantine);
@@ -690,7 +682,7 @@ fn quarantined_ids_now(data_dir: &Path) -> HashSet<String> {
     quarantine::ids(data_dir)
 }
 
-/// Merge attribution results across attempts by id, keeping first evidence.
+/// 按 id 合并跨次尝试的归因结果，保留先出现的证据。
 fn dedup_suspects(suspects: Vec<Suspect>) -> Vec<Suspect> {
     let mut out: Vec<Suspect> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -712,9 +704,9 @@ fn runtime_cause(suspects: &[Suspect]) -> &'static str {
     }
 }
 
-/// Put frontend health evidence in the same error-shaped stream as the kernel
-/// log. This lets the existing conservative path/name matcher attribute a
-/// client-side stack that never reached `kernel.log`.
+/// 把前端健康证据放进与内核日志相同的错误形态字符串流。这样既有的保
+/// 守路径/名称匹配器就能对一份从未落到 `kernel.log` 的客户端堆栈进
+/// 行归因。
 fn runtime_evidence(report: &HealthReport, kernel_tail: &str) -> String {
     let mut lines = Vec::new();
     if !report.kind.trim().is_empty() {
@@ -979,8 +971,8 @@ mod tests {
 
     #[test]
     fn attributes_link_layout_by_materialized_path() {
-        // Link-mode crashes resolve through the kernel plugins dir, whose
-        // segment carries the store id (`/` → `__`), not the npm name.
+        // Link 模式的崩溃解析路径会经过内核插件目录，该目录的路径段里携带的
+        // 是商店 id（`/` → `__`），而不是 npm 包名。
         let tail = "node:internal/modules/esm/resolve\n\
                     Error: Cannot find module '/Users/u/.dsh/desktop/kernels/0.1.1/plugins/@scope__pkg/lib/index.js'\n";
         let items = vec![store_item("@scope__pkg", "@scope/pkg")];
@@ -993,8 +985,8 @@ mod tests {
 
     #[test]
     fn attributes_copy_layout_by_package_name() {
-        // Copy-mode crashes resolve through the profile node_modules, which
-        // carries the package name rather than the store id.
+        // Copy 模式的崩溃解析路径经过 profile 的 node_modules，那里携带的是包名
+        // 而不是商店 id。
         let tail = "Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@scope/pkg' imported from /Users/u/.dsh/profiles/web/node_modules/@scope/pkg/lib/index.js\n";
         let items = vec![store_item("@scope__pkg", "@scope/pkg")];
         let suspects = attribute(tail, &items, "0.1.1");
@@ -1004,9 +996,9 @@ mod tests {
 
     #[test]
     fn ignores_chatty_but_innocent_plugins() {
-        // Loader progress lines mention many plugins; they are not
-        // error-shaped, so the chatty loader must stay out of the suspect
-        // list even though the failing package appears right next to it.
+        // Loader 的进度行会提到很多插件；它们并不呈现错误形态，所以这些吵闹但
+        // 无辜的 Loader 必须留在可疑列表之外，即便失败的包就出现在它
+        // 们旁边。
         let tail = "[loader] loading plugin alpha\n\
                     [loader] loading plugin beta\n\
                     Error: Cannot find package 'beta' imported from lib/index.js\n";
@@ -1018,8 +1010,8 @@ mod tests {
 
     #[test]
     fn bare_substring_occurrences_do_not_blame_short_names() {
-        // A short package name occurring unquoted inside an unrelated error
-        // line is not evidence; only the anchored shapes count.
+        // 短包名在一条无关错误行里不带引号出现，不能算作证据；只有锚定形态
+        // 才算数。
         let tail = "Error: something failed while preparing plugins\n";
         let items = vec![store_item("p", "p"), store_item("plug_x", "plug")];
         assert!(attribute(tail, &items, "0.1.1").is_empty());

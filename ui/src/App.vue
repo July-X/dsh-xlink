@@ -175,7 +175,7 @@ onUnmounted(() => {
     try {
       Promise.resolve(unlisten()).catch(() => {});
     } catch {
-      // A listener may already have been torn down by the WebView.
+      // 监听器可能已被 WebView 提前拆掉。
     }
   }
   document.removeEventListener('visibilitychange', onVisibilityChange);

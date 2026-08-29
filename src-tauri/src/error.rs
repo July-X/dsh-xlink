@@ -1,6 +1,6 @@
-//! Error type shared across the desktop-shell modules.
+//! 桌面外壳各模块共用的错误类型。
 
-/// Raised by the shell when a step cannot proceed without a diagnostic.
+/// 当某一步无法在没有诊断信息的情况下继续时，由外壳抛出。
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("GitHub 请求失败：{0}")]

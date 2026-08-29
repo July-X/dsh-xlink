@@ -1,17 +1,15 @@
-//! Community skill management: a central store under the dsh home,
-//! per-skill materialization into the kernel's user-level skill root, and
-//! update checks.
+//! 社区技能管理：在 dsh home 下维护中央库，将单个技能落地到 kernel 的用户级
+//! skill 根目录，并提供更新检查。
 //!
-//! Skills are instruction data (a `SKILL.md` bundle or a flat Markdown file
-//! with YAML frontmatter), not code: nothing to build, no profile wiring.
-//! The kernel's `dsh-skill-filesystem` provider scans `<DSH_HOME>/skills`
-//! (the user-dsh root) directly and watches it with chokidar, so a skill the
-//! shell links into that root is discovered live by every installed kernel
-//! version — no per-kernel materialization, no restart. Install unit is a
-//! package (npm tarball, git repo, local folder); materialization and
-//! enable/disable granularity is a single skill.
+//! 技能是纯指令数据（一个 `SKILL.md` 目录包或一个带 YAML frontmatter 的扁平
+//! Markdown 文件），不是代码：无需构建，也不涉及 profile 配置。
+//! kernel 的 `dsh-skill-filesystem` provider 直接扫描 `<DSH_HOME>/skills`
+//!（user-dsh 根目录）并用 chokidar 监听，外壳链接到该根目录的技能会被每一个
+//! 已安装的 kernel 版本实时发现——无需按 kernel 版本逐一落地，也无需重启。
+//! 安装单位是包（npm tarball、git 仓库、本地文件夹）；落地与启用/停用的
+//! 粒度是单个技能。
 //!
-//! Design notes: docs/skill-management.md in the desktop deliverable.
+//! 设计说明：桌面交付物的 docs/skill-management.md。
 
 use std::fs;
 use std::io;
@@ -25,72 +23,69 @@ use crate::process::run_capture;
 use crate::releases::{http_get_file, http_get_npm_latest, http_get_string};
 use crate::version::cmp_versions;
 
-/// Central store directory name under the dsh home. Sits next to the
-/// kernel-read `<home>/skills/` root but is shell-owned: disabled skills and
-/// provenance markers must never be visible to kernel discovery.
+/// dsh home 下的中央库目录名。位于 kernel 读取的 `<home>/skills/` 根目录旁，
+/// 但归外壳所有：被停用的技能与来源标记绝不能出现在 kernel 的发现范围内。
 const STORE_SUBDIR: &str = "skills-store";
-/// The shell's inventory file inside the store directory.
+/// 外壳的清单文件，位于中央库目录内。
 const STORE_FILE: &str = "store.json";
-/// Per-package fetch marker inside each store entry.
+/// 每个中央库条目内的单包获取标记。
 const SOURCE_MARKER: &str = ".dsh-source.json";
-/// Maximum directory depth (relative to the package root, 0-based children =
-/// depth 0) at which skill bundles are detected. Covers root-level bundles
-/// plus common monorepo layouts (`skills/<name>/SKILL.md`) without walking
-/// the whole tree.
+/// 技能目录包被识别的最大目录深度（相对包根目录，0 层子目录即深度 0）。
+/// 覆盖根目录的目录包以及常见的 monorepo 布局（`skills/<name>/SKILL.md`），
+/// 而不必遍历整棵树。
 const SCAN_MAX_DEPTH: usize = 3;
-/// Spec prefix users can write to force local-folder parsing.
+/// 用户可写的 spec 前缀，用于强制按本地文件夹解析。
 const LOCAL_PREFIX: &str = "local:";
 
-// --- data model ------------------------------------------------------------
+// --- 数据模型 ------------------------------------------------------------
 
-/// One skill discovered inside an installed package.
+/// 在已安装的包中发现的一个技能。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillEntry {
-    /// Frontmatter name, kebab-case; also the active-root entry name.
+    /// frontmatter 中的名字，kebab-case；同时也是活动根中的条目名。
     pub name: String,
     pub description: String,
-    /// Package-relative path to the bundle directory (`/` separators) or the
-    /// flat `.md` file. Opaque to the UI; resolved against the package dir.
+    /// 相对包根的路径（使用 `/` 分隔），指向目录包目录或扁平 `.md` 文件。
+    /// 对 UI 不透明；相对包目录解析。
     pub path: String,
-    /// Whether the skill is linked into the active root right now.
+    /// 技能此刻是否已链接到活动根。
     pub enabled: bool,
 }
 
-/// One installed skill package in the store.
+/// 中央库中的一个已安装技能包。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillStoreItem {
-    /// Filesystem-safe package key (package/repo/folder name).
+    /// 文件系统安全的包标识（包/仓库/文件夹名）。
     pub id: String,
-    /// Display name (npm package name, repo shorthand, or folder name).
+    /// 显示名（npm 包名、仓库简写或文件夹名）。
     pub name: String,
-    /// Fetch origin: npm, git, or local.
+    /// 获取来源：npm、git 或 local。
     pub origin: String,
-    /// npm spec / git URL / absolute local folder path.
+    /// npm spec / git URL / 本地文件夹的绝对路径。
     pub source: String,
     pub installed_version: String,
-    /// Latest known version, refreshed by check_updates; never set for local.
+    /// 已知的最新版本，由 check_updates 刷新；local 来源永不设置。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_version: Option<String>,
-    /// Desired materialization mode: link or copy.
+    /// 期望的落地模式：link 或 copy。
     pub mode: String,
-    /// Mode actually used on disk after fallback.
+    /// 实际在磁盘上使用的模式（可能因回退而不同）。
     pub actual_mode: String,
-    /// Whether the source pins a version (npm @version / git #tag); always
-    /// true for local folders.
+    /// 来源是否锁定版本（npm @version / git #tag）；本地文件夹始终为 true。
     pub pinned: bool,
-    /// Seconds since epoch, for display.
+    /// 自 epoch 起的秒数，用于展示。
     pub installed_at: String,
-    /// Seconds since epoch of the last fetch, for display.
+    /// 最近一次获取时自 epoch 起的秒数，用于展示。
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Skills discovered in this package at install/update time.
+    /// 在安装/更新时此包内发现的技能。
     pub skills: Vec<SkillEntry>,
 }
 
-/// The persisted store document.
+/// 持久化的中央库文档。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillStore {
     #[serde(rename = "schemaVersion")]
@@ -98,7 +93,7 @@ pub struct SkillStore {
     pub items: Vec<SkillStoreItem>,
     #[serde(rename = "lastCheckedAt", skip_serializing_if = "Option::is_none")]
     pub last_checked_at: Option<String>,
-    /// Last reconcile/materialize failure surfaced to the UI, if any.
+    /// 最近一次 reconcile/materialize 失败，向 UI 暴露的信息（如有）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
 }
@@ -114,17 +109,17 @@ impl Default for SkillStore {
     }
 }
 
-/// One skill line rendered inside a package row.
+/// 在一个包行内渲染的一条技能记录。
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillEntryView {
     pub name: String,
     pub description: String,
     pub enabled: bool,
-    /// Whether the expected entry actually exists in the active root.
+    /// 期望的条目是否实际存在于活动根中。
     pub present: bool,
 }
 
-/// One row the management UI renders (one installed package).
+/// 管理 UI 渲染的一行（对应一个已安装的包）。
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillRow {
     pub id: String,
@@ -143,13 +138,13 @@ pub struct SkillRow {
     pub updated_at: String,
 }
 
-/// Aggregate skill status for the management UI.
+/// 管理 UI 的技能聚合状态。
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillStatus {
     pub rows: Vec<SkillRow>,
-    /// Display path of the kernel-read user skill root.
+    /// kernel 读取的用户技能根的展示路径。
     pub skills_root: String,
-    /// Number of packages with a known newer version.
+    /// 已知存在更新版本的包数量。
     pub updates: usize,
     pub last_checked_at: Option<String>,
     pub warning: Option<String>,
@@ -158,19 +153,19 @@ pub struct SkillStatus {
 #[derive(Debug, Clone)]
 pub struct SkillSpec {
     pub origin: String,
-    /// npm package name, git URL, or absolute local folder path.
+    /// npm 包名、git URL 或本地文件夹的绝对路径。
     pub source: String,
-    /// Optional pinned version (npm semver) or tag (git).
+    /// 可选的版本锁定（npm semver）或 git tag。
     pub pin: Option<String>,
-    /// Filesystem-safe store id.
+    /// 文件系统安全的中央库 id。
     pub id: String,
-    /// Display name.
+    /// 显示名。
     pub name: String,
-    /// Human-facing repo URL for git origin.
+    /// git 来源下用户可见的仓库 URL。
     pub repo_url: Option<String>,
 }
 
-/// A parsed update-check result for one package.
+/// 解析出的单个包更新检查结果。
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillUpdateInfo {
     pub id: String,
@@ -178,10 +173,10 @@ pub struct SkillUpdateInfo {
     pub error: Option<String>,
 }
 
-// --- paths ------------------------------------------------------------------
+// --- 路径 ------------------------------------------------------------------
 
-/// The user's OS home directory (`$HOME` on Unix, `%USERPROFILE%` on
-/// Windows), mirroring kernel.rs's own fallback chain.
+/// 用户的操作系统主目录（Unix 上的 `$HOME`，Windows 上的 `%USERPROFILE%`），
+/// 与 kernel.rs 自身的回退链保持一致。
 fn os_home() -> PathBuf {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -189,8 +184,8 @@ fn os_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Expand a leading `~` component to the OS home. `DSH_HOME="~/…"` stays
-/// supported, matching the kernel's tilde expansion in `resolveDshHome`.
+/// 将开头的 `~` 组件展开为操作系统主目录。`DSH_HOME="~/…"` 仍受支持，
+/// 与 kernel 的 `resolveDshHome` 中波浪号展开行为一致。
 fn expand_tilde(path: &Path) -> PathBuf {
     let Some(Component::Normal(first)) = path.components().next() else {
         return path.to_path_buf();
@@ -202,10 +197,9 @@ fn expand_tilde(path: &Path) -> PathBuf {
     os_home().join(rest)
 }
 
-/// The dsh home the spawned kernel resolves on its own (`DSH_HOME` env or
-/// `~/.dsh`). The shell writes exactly the directory the kernel reads, so
-/// this mirrors the kernel's resolution order instead of deriving from the
-/// shell data dir (which `DSH_DESKTOP_DATA_DIR` can relocate elsewhere).
+/// 被启动的 kernel 自行解析出的 dsh home（`DSH_HOME` 环境变量或 `~/.dsh`）。
+/// 外壳必须写入 kernel 实际读取的那个目录，因此这里镜像 kernel 的解析顺序，
+/// 而不从外壳的数据目录派生（`DSH_DESKTOP_DATA_DIR` 可能将其重定向到别处）。
 fn resolve_home() -> PathBuf {
     expand_tilde(
         &std::env::var_os("DSH_HOME")
@@ -214,7 +208,7 @@ fn resolve_home() -> PathBuf {
     )
 }
 
-/// Central store root: `<home>/skills-store/`.
+/// 中央库根目录：`<home>/skills-store/`。
 pub fn store_dir(home: &Path) -> PathBuf {
     home.join(STORE_SUBDIR)
 }
@@ -227,14 +221,14 @@ fn store_pkg_dir(home: &Path, id: &str) -> PathBuf {
     store_dir(home).join(id)
 }
 
-/// The kernel-read user skill root (`<home>/skills/`, user-dsh rank 400):
-/// the single materialization target shared by every installed kernel.
+/// kernel 读取的用户技能根（`<home>/skills/`，user-dsh rank 400）：
+/// 所有已安装 kernel 共享的单一落地目标。
 pub fn skills_root(home: &Path) -> PathBuf {
     home.join("skills")
 }
 
-/// Active-root entry for one skill: bundle dirs link under their frontmatter
-/// name; flat files become `<name>.md` so the entry reads like the skill.
+/// 单个技能的活动根条目：目录包以其 frontmatter 名建立链接；
+/// 扁平文件则变为 `<name>.md`，使条目读起来就像技能本身。
 fn skill_target_path(home: &Path, entry: &SkillEntry) -> PathBuf {
     if entry.path.ends_with(".md") {
         skills_root(home).join(format!("{}.md", entry.name))
@@ -243,9 +237,8 @@ fn skill_target_path(home: &Path, entry: &SkillEntry) -> PathBuf {
     }
 }
 
-/// Map a package/repo/folder name to a filesystem-safe store id. Same rules
-/// as the plugin store: slashes become double underscores, dot / empty
-/// segments are rejected outright.
+/// 将包/仓库/文件夹名映射为文件系统安全的中央库 id。规则与插件中央库一致：
+/// 斜杠变为双下划线；空段或 `.`/`..` 段直接拒绝。
 fn id_for_name(raw: &str) -> Result<String, AppError> {
     let name = raw.trim();
     if name.is_empty() || name.len() > 200 {
@@ -268,7 +261,7 @@ fn now_epoch_secs() -> String {
         .unwrap_or_default()
 }
 
-// --- store persistence ------------------------------------------------------
+// --- 中央库持久化 -----------------------------------------------------------
 
 pub fn load_store(home: &Path) -> SkillStore {
     let Ok(text) = fs::read_to_string(store_file(home)) else {
@@ -306,10 +299,10 @@ fn remove_item(home: &Path, id: &str) -> Result<(), AppError> {
     save_store(home, &store)
 }
 
-// --- spec parsing -----------------------------------------------------------
+// --- spec 解析 ------------------------------------------------------------
 
-/// Split an npm spec into (name, optional pin). Same rules as the plugin
-/// store: the last @ after the scope prefix separates the version.
+/// 将 npm spec 拆分为 (name, 可选 pin)。规则与插件中央库一致：
+/// scope 前缀之后的最后一个 @ 用作版本分隔符。
 fn split_npm_spec(spec: &str) -> Result<(String, Option<String>), AppError> {
     let s = spec.trim();
     if s.starts_with('@') {
@@ -333,12 +326,11 @@ fn split_npm_spec(spec: &str) -> Result<(String, Option<String>), AppError> {
     }
 }
 
-/// Whether the input names a local folder: explicit prefix, tilde form,
-/// absolute POSIX path, `.`-relative path, or a Windows drive-letter path.
-/// The `\\?\` verbatim prefix is recognized too: `parse_local_spec` stores
-/// the canonicalized path as the package source, and `canonicalize` on
-/// Windows returns verbatim paths — without this arm the 「更新」 re-parse
-/// of a local package falls through to the npm-name validation and fails.
+/// 判断输入是否为本地文件夹：显式前缀、波浪号形式、绝对 POSIX 路径、
+/// `.` 相对路径或 Windows 盘符路径。`\\?\` verbatim 前缀同样被识别：
+/// `parse_local_spec` 会把规范化路径作为包来源存储，而 Windows 上的
+/// `canonicalize` 返回 verbatim 路径——少了这条分支，本地包的「更新」重新
+/// 解析会落到 npm 名称校验逻辑并失败。
 fn looks_like_local(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
     lower.starts_with(LOCAL_PREFIX)
@@ -352,10 +344,9 @@ fn looks_like_local(s: &str) -> bool {
             && (s.as_bytes()[2] == b'\\' || s.as_bytes()[2] == b'/'))
 }
 
-/// Parse an install request into a SkillSpec. Accepts npm package names
-/// (with optional @version), git URLs (https, git@, or owner/repo shorthand,
-/// with optional #tag), and local folder paths (`local:` prefix, `~/…`,
-/// absolute, or Windows drive paths).
+/// 将安装请求解析为 SkillSpec。接受 npm 包名（可带 @version）、git URL
+/// （https、git@ 或 owner/repo 简写，可选 #tag）以及本地文件夹路径
+/// （`local:` 前缀、`~/…`、绝对路径或 Windows 盘符路径）。
 pub fn parse_spec(raw: &str) -> Result<SkillSpec, AppError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.len() > 500 {
@@ -467,10 +458,10 @@ fn parse_local_spec(raw: &str) -> Result<SkillSpec, AppError> {
     })
 }
 
-// --- frontmatter ------------------------------------------------------------
+// --- frontmatter -----------------------------------------------------------
 
-/// Whether `name` matches the kernel's kebab-case skill-name rule
-/// (`^[a-z0-9]+(?:-[a-z0-9]+)*$`).
+/// 判断 `name` 是否匹配 kernel 的 kebab-case 技能命名规则
+/// （`^[a-z0-9]+(?:-[a-z0-9]+)*$`）。
 fn is_kebab_case(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -481,11 +472,10 @@ fn is_kebab_case(name: &str) -> bool {
         && !name.contains("--")
 }
 
-/// Extract `(name, description)` from a skill file's leading YAML
-/// frontmatter. A deliberate top-level subset: the kernel parses full YAML,
-/// but installing something the shell cannot verify would put an invisible
-/// skill in front of the user, so unparseable frontmatter rejects the
-/// candidate instead of trusting it.
+/// 从技能文件开头的 YAML frontmatter 中抽取 `(name, description)`。
+/// 这里是有意只解析顶层子集——安装一个外壳自身无法校验的技能会让用户在
+/// 不知情的情况下看到一个不可见的技能，因此无法解析的 frontmatter
+/// 会直接拒绝该候选，而不是信任它。
 fn parse_skill_markdown(text: &str) -> Option<(String, String)> {
     let mut lines = text.trim_start_matches('\u{feff}').lines();
     if lines.next()?.trim_end() != "---" {
@@ -498,7 +488,7 @@ fn parse_skill_markdown(text: &str) -> Option<(String, String)> {
         if line == "---" || line == "..." {
             break;
         }
-        // Top-level keys only: skip nested mappings, lists, block scalars.
+        // 只接受顶层键：跳过嵌套映射、列表、块字符串。
         if line.starts_with(' ') || line.starts_with('\t') || line.starts_with('-') {
             continue;
         }
@@ -526,23 +516,22 @@ fn strip_quotes(value: &str) -> &str {
     value
 }
 
-// --- package scanning -------------------------------------------------------
+// --- 包扫描 ---------------------------------------------------------------
 
-/// One validated skill found inside a package.
+/// 在包内发现的一个已校验技能。
 #[derive(Debug, Clone)]
 struct ScannedSkill {
     name: String,
     description: String,
-    /// Package-relative path with `/` separators, pointing at the bundle
-    /// directory (containing SKILL.md) or the flat `.md` file.
+    /// 相对包根的路径，使用 `/` 分隔，指向目录包目录（包含 SKILL.md）
+    /// 或扁平 `.md` 文件。
     rel: String,
 }
 
-/// Scan a fetched package for skills. Directories containing SKILL.md are
-/// bundle candidates down to [`SCAN_MAX_DEPTH`] levels; root-level flat
-/// `*.md` files are candidates too. Candidates the kernel would ignore
-/// (missing/invalid frontmatter, non-kebab names) surface through `warn`
-/// and are skipped; a scan yielding zero usable skills is an error.
+/// 扫描已获取的包以发现技能。包含 SKILL.md 的目录在 [`SCAN_MAX_DEPTH`]
+/// 层数内被视为目录包候选；根目录下的扁平 `*.md` 文件也算候选。
+/// kernel 会忽略的候选（缺少/无效 frontmatter、非 kebab 命名）通过
+/// `warn` 暴露并跳过；扫描若没有产生任何可用技能，则视为错误。
 fn scan_package_skills(
     pkg: &Path,
     warn: &mut dyn FnMut(&str),
@@ -557,8 +546,8 @@ fn scan_package_skills(
                 .into(),
         ));
     }
-    // Duplicate frontmatter names inside one package are ambiguous at
-    // materialization time (one active-root entry per name) — reject loudly.
+    // 同一个包内 frontmatter 名字重复，会在落地时产生歧义
+    // （活动根中每个名字只能有一个条目），因此直接报错。
     let mut seen = std::collections::BTreeSet::new();
     for skill in &found {
         if !seen.insert(skill.name.clone()) {
@@ -592,13 +581,11 @@ fn walk_package(
         if file_name.starts_with('.') || file_name == "node_modules" {
             continue;
         }
-        // Skip symlinks entirely: a skill bundle is a real on-disk tree, so
-        // the link/copy target the shell later materializes is the entry itself.
-        // A symlink inside the package (e.g. blader/humanizer's
-        // `skills/humanizer/SKILL.md` → `../../SKILL.md`, added in v2.11.1
-        // for Claude Desktop ZIP uploads) would otherwise double-count the
-        // same skill. Following symlinks could also escape the scan-depth
-        // limit and land outside the package root.
+        // 完全跳过符号链接：技能目录包应当是真实落盘的目录树，外壳随后落地
+        // 时的 link/copy 目标就是条目本身。包内的符号链接（例如 blader/humanizer
+        // v2.11.1 为 Claude Desktop 的 ZIP 上传增加的
+        // `skills/humanizer/SKILL.md` → `../../SKILL.md`）会重复计入同一
+        // 技能。跟随符号链接还可能越过扫描深度限制，落到包根之外。
         if fs::symlink_metadata(&path)
             .map(|md| md.file_type().is_symlink())
             .unwrap_or(false)
@@ -612,8 +599,8 @@ fn walk_package(
             .replace(std::path::MAIN_SEPARATOR, "/");
         if path.is_dir() {
             let skill_md = path.join("SKILL.md");
-            // Symlink-aware: a directory containing a symlinked SKILL.md is
-            // not a bundle even though `is_file()` would follow the link.
+            // 感知符号链接：包含符号链接 SKILL.md 的目录不算目录包，
+            // 尽管 `is_file()` 会跟随该链接。
             let bundle = fs::symlink_metadata(&skill_md)
                 .map(|md| md.is_file() && !md.file_type().is_symlink())
                 .unwrap_or(false);
@@ -636,15 +623,15 @@ fn walk_package(
                     },
                     Err(e) => warn(&format!("跳过 {rel}：SKILL.md 不可读（{e}）")),
                 }
-                // A bundle owns its subtree; do not descend further.
+                // 目录包独占其子树，不再下钻。
                 continue;
             }
             if depth + 1 < SCAN_MAX_DEPTH {
                 walk_package(root, &path, depth + 1, found, warn)?;
             }
         } else if depth == 0 && file_name.to_ascii_lowercase().ends_with(".md") {
-            // Flat candidate. Root-level README.md etc. carry no skill
-            // frontmatter and the kernel ignores them too — skip silently.
+            // 扁平候选。根目录下的 README.md 等文件没有技能 frontmatter，
+            // kernel 同样会忽略——此处静默跳过。
             if let Ok(text) = fs::read_to_string(&path) {
                 if let Some((name, description)) = parse_skill_markdown(&text) {
                     if is_kebab_case(&name) {
@@ -665,9 +652,9 @@ fn walk_package(
     Ok(())
 }
 
-// --- fetching ---------------------------------------------------------------
+// --- 获取 -----------------------------------------------------------------
 
-/// Highest semver-shaped tag among candidates, or None.
+/// 候选 tag 中形如 semver 的最高版本，若无则返回 None。
 fn latest_tag<'a>(tags: impl Iterator<Item = &'a str>) -> Option<String> {
     tags.filter_map(|t| {
         let stripped = t.strip_prefix('v').unwrap_or(t);
@@ -696,9 +683,8 @@ fn git_latest_tag(source: &str) -> Result<Option<String>, String> {
     Ok(latest_tag(tags.iter().map(|s| s.as_str())))
 }
 
-/// Whether a stored version string looks like semver rather than a short
-/// hash; see plugins.rs `looks_like_semver` for why the comparison splits
-/// on shape first.
+/// 判断已存储的版本字符串看上去像 semver 而不是短哈希；之所以先按形状
+/// 拆分比较，详见 plugins.rs 的 `looks_like_semver`。
 fn looks_like_semver(version: &str) -> bool {
     let stripped = version.strip_prefix('v').unwrap_or(version);
     let head = stripped.split_once('-').map(|(h, _)| h).unwrap_or(stripped);
@@ -718,7 +704,7 @@ fn is_newer_than(latest: &str, installed: &str, origin: &str, pinned: bool) -> b
     }
 }
 
-/// npm registry document slice needed for fetch + update checks.
+/// 获取与更新检查所需的 npm registry 文档片段。
 #[derive(Debug, Deserialize)]
 struct NpmDoc {
     #[serde(rename = "dist-tags", default)]
@@ -745,9 +731,9 @@ fn fetch_npm_doc(name: &str) -> Result<NpmDoc, String> {
     serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())
 }
 
-/// Extract an npm tgz into `dest`, stripping its leading `package/` segment.
-/// The shared Rust extractor rejects traversal paths, links, and special files
-/// and bounds both entry count and declared expanded content before publishing.
+/// 将 npm tgz 解包到 `dest`，并去掉其开头的 `package/` 段。
+/// 共享的 Rust 解包器会拒绝路径穿越、链接和特殊文件，并限制条目数量与
+/// 声明的展开后内容，然后再发布。
 fn extract_tarball(tarball: &Path, dest: &Path) -> Result<(), String> {
     crate::archive::extract_gzip_tarball(tarball, dest)
 }
@@ -764,7 +750,7 @@ fn write_source_marker(spec: &SkillSpec, version: &str, dest: &Path) -> Result<(
     fs::write(dest.join(SOURCE_MARKER), text + "\n").map_err(|e| AppError::Io(e.to_string()))
 }
 
-/// Recursively copy source into target, replacing whatever exists.
+/// 递归地将 source 复制到 target，若已存在则替换。
 fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
     if target.is_symlink() {
         remove_link(target);
@@ -786,14 +772,13 @@ fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Prefixes for staged fetch dirs, mirroring the plugin store's crash-safe
-/// swap vocabulary (`.tmp-*` in flight, `.new-*` validated, `.backup-*` the
-/// previous live tree during a swap). The leading dot keeps staging dirs out
-/// of every scanner and file listing.
+/// 暂存获取目录的前缀，镜像插件中央库的防崩溃交换术语：
+/// `.tmp-*` 表示获取中，`.new-*` 表示已校验，`.backup-*` 表示交换期间
+/// 先前活跃的目录树。前导的点让暂存目录不出现在任何扫描器与文件列表中。
 const TMP_PREFIX: &str = ".tmp-";
 const NEW_PREFIX: &str = ".new-";
 const BACKUP_PREFIX: &str = ".backup-";
-/// Marker naming the owning package id inside a staging dir.
+/// 在暂存目录中标记所属包 id 的标记文件。
 const ID_MARKER: &str = ".dsh-id";
 
 fn new_staging_dir(store: &Path, kind: &str) -> io::Result<PathBuf> {
@@ -816,21 +801,20 @@ fn stamp_id_marker(dir: &Path, id: &str) -> io::Result<()> {
     fs::write(dir.join(ID_MARKER), format!("{id}\n"))
 }
 
-/// Outcome of one successful fetch-and-publish cycle.
+/// 单次成功的「获取并发布」周期的结果。
 struct FetchedPackage {
-    /// Published store dir for the package.
+    /// 该包发布后的中央库目录。
     dir: PathBuf,
-    /// Version string recorded in the source marker (npm semver, git tag or
-    /// HEAD hash, `local` for folder imports).
+    /// 记录在来源标记中的版本字符串（npm semver、git tag 或 HEAD 哈希，
+    /// 文件夹导入则为 `local`）。
     version: String,
-    /// Validated skills discovered inside the package.
+    /// 在包内发现并通过校验的技能。
     skills: Vec<ScannedSkill>,
 }
 
-/// Fetch one package into the store under a staged tmp dir, scan it for
-/// skills, then publish over the final dir with the crash-safe three-stage
-/// rename the plugin store established. A crash at any step leaves the live
-/// package recoverable by [`reconcile`].
+/// 将一个包获取到中央库下某个 `.tmp-*` 暂存目录中，扫描其中的技能，
+/// 再用插件中央库确立的三阶段原子改名覆盖到正式目录。任何一步崩溃，
+/// 都可通过 [`reconcile`] 恢复已存在的包。
 fn fetch_into_store(
     home: &Path,
     spec: &SkillSpec,
@@ -839,14 +823,12 @@ fn fetch_into_store(
     let store = store_dir(home);
     fs::create_dir_all(&store).map_err(|e| AppError::Io(e.to_string()))?;
     let tmp = new_staging_dir(&store, TMP_PREFIX).map_err(|e| AppError::Io(e.to_string()))?;
-    // Stamping the `.dsh-id` marker must wait until AFTER the fetch_* call
-    // returns: `git clone` requires an empty destination dir and aborts with
-    // "destination path '...' already exists and is not an empty directory"
-    // when the marker file is present at fetch time; `npm` tarball extraction
-    // and `local` copy would happily overwrite the marker anyway, so
-    // stamping pre-fetch only ever worked for npm by accident. The marker
-    // travels with the contents when we rename `tmp → new`, so stamp after
-    // fetch and let the rename propagate it into the new staging path.
+    // `.dsh-id` 标记必须在 fetch_* 调用返回之后再写入：`git clone` 要求目标
+    // 目录为空，若获取时该标记已存在，就会报 "destination path '...' already
+    // exists and is not an empty directory" 失败；`npm` 的 tarball 解包与
+    // `local` 复制即便标记存在也会直接覆盖，所以预先写标记过去只是 npm
+    // 场景下的巧合。我们把 `tmp → new` 改名时标记会跟着内容一起过去，
+    // 因此先 fetch 再写标记，让改名把它顺带带到新的暂存路径。
 
     let version = match spec.origin.as_str() {
         "npm" => fetch_npm(spec, &tmp, on_progress),
@@ -878,7 +860,7 @@ fn fetch_into_store(
 
     let new = new_staging_dir(&store, NEW_PREFIX).map_err(|e| AppError::Io(e.to_string()))?;
     if let Err(e) = fs::rename(&tmp, &new) {
-        // tmp still holds the scanned content; leave it for reconcile.
+        // tmp 中仍保留已扫描的内容，留给 reconcile 兜底。
         return Err(AppError::Io(format!("将暂存目录提升到 .new-* 失败：{e}")));
     }
 
@@ -886,7 +868,7 @@ fn fetch_into_store(
     let backup = new_staging_dir(&store, BACKUP_PREFIX).map_err(|e| AppError::Io(e.to_string()))?;
     if final_dir.exists() {
         if let Err(e) = fs::rename(&final_dir, &backup) {
-            // Roll forward: promote the validated tree rather than strand it.
+            // 前向回滚：直接将已校验的目录推到正式位置，而不是让它孤立。
             if fs::rename(&new, &final_dir).is_err() {
                 let _ = fs::remove_dir_all(&new);
                 return Err(AppError::Io(format!("备份旧版本失败且无法发布新版本：{e}")));
@@ -897,7 +879,7 @@ fn fetch_into_store(
         }
         if let Err(e) = stamp_id_marker(&backup, &spec.id) {
             eprintln!(
-                "dsh-desktop: warning, could not stamp id marker on backup of {}: {e}",
+                "dsh-xlink: warning, could not stamp id marker on backup of {}: {e}",
                 spec.id
             );
         }
@@ -967,8 +949,8 @@ fn fetch_npm(
     on_progress(&format!("正在下载 {}@{version} …", spec.source));
     let tgz = dest.join(".pkg.tgz");
     http_get_file(&tarball, &tgz).map_err(|e| AppError::Skill(format!("下载失败：{e}")))?;
-    // Extract through the shared Rust archive handler; it validates the
-    // npm `package/` root and publishes the manifest at `dest` for scanning.
+    // 通过共享的 Rust 归档处理器解包；它会校验 npm 的 `package/` 根目录，
+    // 并将清单发布到 `dest` 供后续扫描。
     extract_tarball(&tgz, dest)
         .map_err(|e| AppError::Skill(format!("解包失败：{e}（请确认下载内容完整后重试）")))?;
     let _ = fs::remove_file(&tgz);
@@ -985,9 +967,9 @@ fn fetch_git(
             "未找到 git（git 来源的技能包需要 git；请先安装 git）".into(),
         ));
     }
-    // Pinned specs use their tag directly; unpinned repos install the highest
-    // semver tag so `installed_version` stays comparable by check_updates.
-    // Repos without any semver tag fall back to the default branch (HEAD hash).
+    // 锁定版本的 spec 直接使用其 tag；未锁定的仓库安装最高的 semver tag，
+    // 以便 `installed_version` 可被 check_updates 正确比较。
+    // 没有任何 semver tag 的仓库回退到默认分支（HEAD 哈希）。
     let branch = match spec.pin.as_ref() {
         Some(tag) => Some(tag.clone()),
         None => match git_latest_tag(&spec.source) {
@@ -1043,12 +1025,12 @@ fn fetch_local(
         let _ = fs::remove_dir_all(dest);
         return Err(AppError::Skill(format!("复制本地文件夹失败：{e}")));
     }
-    // A copied-in .git tree serves nobody here and bloats the store.
+    // 复制进来的 .git 目录在这里毫无用处，还会撑大中央库。
     let _ = fs::remove_dir_all(dest.join(".git"));
     Ok(String::from("local"))
 }
 
-// --- materialization --------------------------------------------------------
+// --- 落地 -----------------------------------------------------------------
 
 #[cfg(unix)]
 fn make_entry_link(source: &Path, target: &Path, _is_file: bool) -> io::Result<()> {
@@ -1064,8 +1046,8 @@ fn make_entry_link(source: &Path, target: &Path, is_file: bool) -> io::Result<()
     }
 }
 
-/// Resolve one store-side link source: expand a symlinked store entry to its
-/// real location so active-root links stay direct (no double-symlink chain).
+/// 解析中央库一侧的链接来源：把符号链接的中央库条目展开到真实位置，
+/// 让活动根的链接保持直接（避免出现双重符号链接链）。
 fn resolved_source(path: &Path) -> PathBuf {
     fs::symlink_metadata(path)
         .ok()
@@ -1074,17 +1056,17 @@ fn resolved_source(path: &Path) -> PathBuf {
         .unwrap_or_else(|| path.to_path_buf())
 }
 
-/// Remove a filesystem link without touching its target. On Windows
-/// `DeleteFile` rejects directory symlinks (ERROR_ACCESS_DENIED) — only
-/// `RemoveDirectory` removes them — while file symlinks need `DeleteFile`;
-/// trying both covers either kind on every platform.
+/// 删除一个文件系统链接而不触碰其目标。在 Windows 上 `DeleteFile` 会拒绝
+/// 目录符号链接（ERROR_ACCESS_DENIED）——只有 `RemoveDirectory` 才能删除
+/// 它们——而文件符号链接需要 `DeleteFile`；两者都试一遍，就能在任意平台上
+/// 覆盖两种链接类型。
 fn remove_link(path: &Path) {
     if fs::remove_file(path).is_err() {
         let _ = fs::remove_dir(path);
     }
 }
 
-/// Remove one active-root entry whatever it is (link, dir, or file).
+/// 删除某个活动根条目，无论是链接、目录还是文件。
 fn remove_target(target: &Path) {
     match fs::symlink_metadata(target) {
         Ok(md) if md.file_type().is_symlink() => remove_link(target),
@@ -1098,13 +1080,12 @@ fn remove_target(target: &Path) {
     }
 }
 
-/// Link (or copy) one skill into the active root under its frontmatter name.
+/// 将单个技能以链接（或复制）形式落到活动根中，名称使用 frontmatter 名。
 ///
-/// An entry already pointing at this exact source short-circuits (idempotent
-/// re-runs). Otherwise an occupied entry errors out unless `replace_owned`,
-/// which callers with inventory authority over the name (update refresh,
-/// reconcile repair) set to replace stale content from a previous version.
-/// Returns the actual mode used after any link→copy fallback.
+/// 若已有条目正好指向同一来源，则短路返回（重复运行幂等）。否则，
+/// 若目标位置已被占用，未传 `replace_owned` 时报错；拥有该名字清单
+/// 权限的调用方（更新刷新、reconcile 修复）会传入该参数，以替换先前
+/// 版本留下的陈旧内容。返回 link→copy 回退后实际使用的模式。
 fn ensure_entry(
     home: &Path,
     pkg_dir: &Path,
@@ -1148,7 +1129,7 @@ fn ensure_entry(
     if mode == "link" && make_entry_link(&source, &target, is_file).is_err() {
         actual = String::from("copy");
         eprintln!(
-            "dsh-desktop: link failed for skill {}; falling back to copy",
+            "dsh-xlink: link failed for skill {}; falling back to copy",
             entry.name
         );
     }
@@ -1164,8 +1145,8 @@ fn ensure_entry(
     Ok(actual)
 }
 
-/// Remove one skill's active-root entry, but only when it still is the
-/// store-owned link; a replaced or user-recreated entry is left alone.
+/// 移除某个技能的活动根条目，但仅当它仍是中央库拥有的链接时执行；
+/// 被替换过或用户重新创建的条目保持不动。
 fn unmaterialize_entry(home: &Path, pkg_dir: &Path, entry: &SkillEntry) {
     let target = skill_target_path(home, entry);
     let source = resolved_source(&pkg_dir.join(&entry.path));
@@ -1180,11 +1161,10 @@ fn unmaterialize_entry(home: &Path, pkg_dir: &Path, entry: &SkillEntry) {
     }
 }
 
-// --- orchestration ----------------------------------------------------------
+// --- 编排 -----------------------------------------------------------------
 
-/// Install a skill package: fetch into the store, scan and validate its
-/// skills, publish, then materialize every skill into the active root.
-/// The kernel's watcher picks the new entries up live — no restart.
+/// 安装一个技能包：获取到中央库，扫描并校验其技能，发布，然后将所有
+/// 技能落地到活动根。kernel 的 watcher 会实时发现新条目——无需重启。
 pub fn install(
     spec_str: &str,
     mode: &str,
@@ -1241,10 +1221,9 @@ fn install_into(
     Ok(item)
 }
 
-/// Update one package: re-fetch the same source, rescan skills, reconcile
-/// the active root — added skills link in enabled, upstream removals unlink,
-/// surviving skills refresh when their layout moved or the package runs in
-/// copy mode. Reports the diff via progress.
+/// 更新一个包：重新拉取同一来源，重新扫描技能，协调活动根——新增的技能
+/// 以启用状态链接进去，上游移除的技能解除链接，保留的技能在布局变动或
+/// 包以 copy 模式运行时刷新。通过进度回调报告差异。
 pub fn update(id: &str, on_progress: &mut dyn FnMut(&str)) -> Result<SkillStoreItem, AppError> {
     update_into(&resolve_home(), id, on_progress)
 }
@@ -1256,8 +1235,8 @@ fn update_into(
 ) -> Result<SkillStoreItem, AppError> {
     let previous =
         store_item(home, id).ok_or_else(|| AppError::Skill("技能包不在中央库中".into()))?;
-    // Local packages stay out of version checks by design, but a manual
-    // 「更新」 is their re-sync path after editing the source folder.
+    // 本地包按设计不参与版本检查，但手动「更新」是编辑源文件夹后的
+    // 重新同步途径。
     if previous.pinned && previous.origin != "local" {
         return Err(AppError::Skill(format!(
             "{} 已锁定版本 {}，如需升级请卸载后重新安装（不带版本号）",
@@ -1276,8 +1255,7 @@ fn update_into(
             name: s.name.clone(),
             description: s.description.clone(),
             path: s.rel.clone(),
-            // Surviving skills keep their previous enable state across the
-            // update; brand-new skills start enabled.
+            // 保留的技能在更新后保持之前的启用状态；全新添加的技能默认启用。
             enabled: previous
                 .skills
                 .iter()
@@ -1299,7 +1277,7 @@ fn update_into(
         let old = previous.skills.iter().find(|e| e.name == entry.name);
         let moved = old.map(|o| o.path != entry.path).unwrap_or(false);
         if !entry.enabled {
-            // Stay absent; also clear anything the previous layout linked.
+            // 保持缺席；同时清理上一版布局留下的链接。
             if let Some(o) = old {
                 unmaterialize_entry(home, &fetched.dir, o);
             }
@@ -1317,8 +1295,8 @@ fn update_into(
     Ok(updated)
 }
 
-/// Uninstall one package everywhere: unlink its skills, delete the store
-/// tree, drop the inventory row.
+/// 在所有位置卸载一个包：解除其技能的链接，删除中央库目录树，
+/// 删除清单行。
 pub fn uninstall(id: &str, on_progress: &mut dyn FnMut(&str)) -> Result<(), AppError> {
     uninstall_into(&resolve_home(), id, on_progress)
 }
@@ -1343,8 +1321,8 @@ fn uninstall_into(
     Ok(())
 }
 
-/// Enable or disable one skill of one package: build or remove its
-/// active-root entry. The kernel watcher applies the change live.
+/// 启用或停用一个包中的某个技能：在活动根中建立或移除其条目。
+/// kernel watcher 会实时应用此变更。
 pub fn set_enabled(
     id: &str,
     skill_name: &str,
@@ -1373,7 +1351,7 @@ fn set_enabled_into(
         return Ok(());
     }
     if enabled {
-        // Freshen the cached copy of path/description before linking.
+        // 在链接之前刷新 path/description 的缓存副本。
         ensure_entry(home, &pkg_dir, &item.mode, entry, false)?;
     } else {
         unmaterialize_entry(home, &pkg_dir, entry);
@@ -1387,7 +1365,7 @@ fn set_enabled_into(
     Ok(())
 }
 
-/// Compose the UI status snapshot (no network).
+/// 组装 UI 状态快照（不发起网络请求）。
 pub fn status() -> SkillStatus {
     status_for_home(&resolve_home())
 }
@@ -1416,8 +1394,8 @@ fn status_for_home(home: &Path) -> SkillStatus {
         {
             updates += 1;
         }
-        // Hide a stale "latest" once it is no longer newer than what the
-        // user actually has, mirroring the plugin rows' badge behavior.
+        // 当陈旧的 "latest" 已不再比用户实际安装的版本更新时隐藏它，
+        // 与插件行的徽标行为保持一致。
         let row_latest = item
             .latest_version
             .as_deref()
@@ -1449,10 +1427,10 @@ fn status_for_home(home: &Path) -> SkillStatus {
     }
 }
 
-// --- update checks ----------------------------------------------------------
+// --- 更新检查 --------------------------------------------------------------
 
-/// Check every non-local store item against its origin's latest version and
-/// persist the results for the UI badge.
+/// 对每个非 local 的中央库条目与对应来源的最新版本做比对，
+/// 并将结果持久化，供 UI 徽标展示。
 pub fn check_updates() -> Result<Vec<SkillUpdateInfo>, AppError> {
     check_updates_for_home(&resolve_home())
 }
@@ -1489,20 +1467,19 @@ fn check_updates_for_home(home: &Path) -> Result<Vec<SkillUpdateInfo>, AppError>
     Ok(out)
 }
 
-// --- reconcile --------------------------------------------------------------
+// --- 修复 -----------------------------------------------------------------
 
-/// Startup repair, safe to run unconditionally:
+/// 启动期修复流程，可无条件运行：
 ///
-/// 1. Recover staging swaps with the plugin-store rules (final exists → drop
-///    staging; else revert to backup, promote new, drop tmp).
-/// 2. Ensure the active root exists; re-materialize missing/broken entries
-///    for enabled skills; clear lingering entries for disabled skills.
-/// 3. Sweep active-root symlinks that point into the store but match no
-///    current inventory row (orphans of manual store deletion). Entries the
-///    store does not own — plain files, dirs, links pointing elsewhere —
-///    are user content and never touched.
+/// 1. 按插件中央库的规则恢复暂存目录交换（final 存在则丢弃暂存；
+///    否则回退到 backup、提升 new、丢弃 tmp）。
+/// 2. 确保活动根存在；为启用技能重新落地缺失/损坏的条目；
+///    清理被停用技能遗留的条目。
+/// 3. 清理活动根中指向中央库、但当前清单行已不存在的符号链接
+///    （手动删除中央库后留下的孤儿）。中央库不拥有的条目——普通文件、
+///    目录、指向别处的链接——属于用户内容，永远不会被触碰。
 ///
-/// Failures land in `store.warning` for the UI instead of blocking startup.
+/// 失败时写入 `store.warning` 供 UI 展示，而非阻塞启动。
 pub fn reconcile() {
     reconcile_home(&resolve_home());
 }
@@ -1537,17 +1514,17 @@ fn reconcile_home(home: &Path) {
                     }
                 }
             } else if !healthy {
-                // Disabled skills must stay absent; a lingering entry from an
-                // older layout goes away. Foreign content is left untouched.
+                // 停用的技能必须保持缺席；旧布局遗留的条目会被清掉。
+                // 外来内容保持不动。
                 unmaterialize_entry(home, &pkg_dir, entry);
             }
         }
     }
 
     if let Ok(entries) = fs::read_dir(&root) {
-        // Compare through canonicalize on both sides: the store may sit
-        // under a symlinked path segment (macOS /var → /private/var), and
-        // read_link returns whatever form the link was created with.
+        // 两侧都用 canonicalize 后再比较：中央库可能位于符号链接路径段
+        // 之下（macOS /var → /private/var），而 read_link 返回的是
+        // 创建链接时所用的形态。
         let store_canon = store_dir(home)
             .canonicalize()
             .unwrap_or_else(|_| store_dir(home));
@@ -1585,11 +1562,10 @@ fn reconcile_home(home: &Path) {
     }
 }
 
-/// Crash-recovery for staging dirs left behind by an interrupted fetch or
-/// update. Grouping uses the stamped `.dsh-id` marker; among competing
-/// staging dirs the lexicographically newest wins and older peers are
-/// dropped. Recovery prefers reverting to `.backup-*` (the known-good
-/// previous tree) when both states survive.
+/// 为中断的获取或更新所留下的暂存目录做崩溃恢复。分组依据是写入的
+/// `.dsh-id` 标记；在相互竞争的暂存目录中，字典序最大的获胜，其余
+/// 旧目录会被丢弃。当 `.backup-*` 和 `.new-*` 都幸存时，恢复优先
+/// 回退到 `.backup-*`（已知的上一次可用目录树）。
 fn recover_staging(home: &Path) {
     let store = store_dir(home);
     let Ok(entries) = fs::read_dir(&store) else {
@@ -1677,7 +1653,7 @@ mod tests {
 
     static TEST_HOME_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-    /// Unique throwaway fake-home per test, removed on drop.
+    /// 每个测试一个唯一、一次性的假 home，drop 时清理。
     struct TestHome(PathBuf);
 
     impl TestHome {
@@ -1766,7 +1742,7 @@ mod tests {
         assert_eq!(found[0].name, "deep-one");
         assert_eq!(found[0].rel.replace('\\', "/"), "skills/deep");
 
-        // A flat root file WITH frontmatter counts; both survive, sorted.
+        // 带 frontmatter 的根目录扁平文件会被计入；两者都保留并按顺序排列。
         fs::write(
             pkg.join("flat.md"),
             "---\nname: flat-one\ndescription: flat\n---\n",
@@ -1782,7 +1758,7 @@ mod tests {
         let home = TestHome::new();
         let pkg = home.root().join("pkg");
         write_bundle(&pkg, "good", "good-one", "fine");
-        // Invalid candidate the kernel would ignore too.
+        // kernel 同样会忽略的无效候选。
         fs::create_dir_all(pkg.join("bad")).unwrap();
         fs::write(pkg.join("bad/SKILL.md"), "---\ntitle: no name here\n---\n").unwrap();
         let mut warnings = Vec::new();
@@ -1829,7 +1805,7 @@ mod tests {
         set_enabled_into(&home.root(), &item.id, "beta-skill", true, &mut |_| {}).unwrap();
         assert!(beta.exists());
 
-        // Status reflects presence truth from disk.
+        // 状态反映磁盘上真实的存在性。
         let view = status_for_home(&home.root());
         assert_eq!(view.rows.len(), 1);
         let entry = view.rows[0]
@@ -1850,7 +1826,7 @@ mod tests {
         let home = TestHome::new();
         let src = home.root().join("pack");
         write_bundle(&src, "one", "clash-skill", "x");
-        // Pre-occupy the active root with foreign content.
+        // 预先占用活动根，放置外部内容。
         fs::create_dir_all(skills_root(&home.root()).join("clash-skill")).unwrap();
         let err =
             install_into(&home.root(), &src.to_string_lossy(), "link", &mut |_| {}).unwrap_err();
@@ -1862,19 +1838,19 @@ mod tests {
         let home = TestHome::new();
         let src = home.root().join("pack");
         write_bundle(&src, "one", "fix-me", "r");
-        // `_item` is only read by the unix-only orphan-link block below.
+        // `_item` 仅被下方 unix 专有的孤儿链接代码块读取。
         let _item =
             install_into(&home.root(), &src.to_string_lossy(), "link", &mut |_| {}).unwrap();
 
-        // Simulate external breakage: the link disappeared.
+        // 模拟外部破坏：链接消失了。
         let target = skills_root(&home.root()).join("fix-me");
         remove_target(&target);
         assert!(!target.exists());
         reconcile_home(&home.root());
         assert!(target.exists());
 
-        // An orphan link pointing into the store but absent from the store
-        // inventory gets swept; user files stay untouched.
+        // 指向中央库、但中央库清单中已不存在的孤儿链接会被清理；
+        // 用户文件保持不动。
         #[cfg(unix)]
         {
             let ghost_src = store_pkg_dir(&home.root(), &_item.id).join("one");
@@ -1898,10 +1874,10 @@ mod tests {
         write_bundle(&src, "move", "move-skill", "m");
         let item = install_into(&home.root(), &src.to_string_lossy(), "link", &mut |_| {}).unwrap();
 
-        // Disable one survivor before the upstream change.
+        // 在上游变动之前停用一个保留技能。
         set_enabled_into(&home.root(), &item.id, "keep-skill", false, &mut |_| {}).unwrap();
 
-        // Upstream: move `move`, drop `drop`, keep `keep`, add `added`.
+        // 上游变更：移动 `move`、删除 `drop`、保留 `keep`、新增 `added`。
         fs::remove_dir_all(src.join("move")).unwrap();
         write_bundle(&src, "nested/move", "move-skill", "m");
         fs::remove_dir_all(src.join("drop")).unwrap();
@@ -1911,7 +1887,7 @@ mod tests {
         let names: Vec<&str> = updated.skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["added-skill", "keep-skill", "move-skill"]);
         assert!(!skills_root(&home.root()).join("drop-skill").exists());
-        // Disabled state survives the update; the entry stays absent.
+        // 停用状态在更新后保留；对应条目仍缺席。
         let kept = updated
             .skills
             .iter()
@@ -1919,19 +1895,19 @@ mod tests {
             .unwrap();
         assert!(!kept.enabled);
         assert!(!skills_root(&home.root()).join("keep-skill").exists());
-        // Moved skill was relinked at the same public name.
+        // 被移动的技能在同一个公共名上重新建立链接。
         assert!(skills_root(&home.root()).join("move-skill").exists());
-        // New skill arrived enabled.
+        // 新技能以启用状态加入。
         assert!(skills_root(&home.root()).join("added-skill").exists());
     }
 
     #[cfg(unix)]
     #[test]
     fn scan_skips_symlinked_skill_md_to_avoid_double_counting_redirects() {
-        // Reproduce the blader/humanizer v2.11.1 packaging quirk: a real
-        // SKILL.md at the root plus a symlinked copy under `skills/<name>/`.
-        // Without the symlink-aware scan, the redirect doubles the skill and
-        // the duplicate-name check kills the install.
+        // 复现 blader/humanizer v2.11.1 的打包怪癖：根目录下有一份真实
+        // SKILL.md，`skills/<name>/` 下还放了一份符号链接副本。
+        // 若扫描不感知符号链接，重定向会导致同一技能被重复计入，
+        // 名字重复检查会让安装失败。
         let home = TestHome::new();
         let pkg = home.root().join("pkg");
         fs::create_dir_all(pkg.join("skills/humanizer")).unwrap();

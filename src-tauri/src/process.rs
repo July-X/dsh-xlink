@@ -28,39 +28,33 @@ pub fn quiet(cmd: &mut Command) -> &mut Command {
     cmd
 }
 
-/// Build a `Command` for a one-shot external tool (`git`, `tar`, …) that
-/// inherits the merged PATH, so children of the GUI shell can resolve
-/// tools the user installed under their own user PATH. `process::spawn`
-/// covers long-running helpers (pnpm/npm) and threads the same PATH in;
-/// this helper is the single-shot sibling — every direct `Command::new`
-/// in the shell that does not already live in `process::spawn` should
-/// build through here so a Windows install from `tauri build`'s GUI
-/// subsystem sees the same toolchain the user can see from `cmd.exe`.
+/// 为一次性外部工具（`git`、`tar` 等）构造 `Command`，让它继承合并后的 PATH，
+/// 这样 GUI 壳的子进程能解析到用户安装在自己 user PATH 下的工具。
+/// `process::spawn` 覆盖了长时间运行的助手（pnpm/npm）并把同样的 PATH
+/// 透传过去；本助手是单次执行的兄弟——壳里任何不处于 `process::spawn`
+/// 中的直接 `Command::new`，都应该通过这里构造，使 `tauri build` 的
+/// Windows GUI 子系统也能看到用户从 `cmd.exe` 看到的同一套工具链。
 ///
-/// Without the merge, `Command::new("git")` from a Windows GUI subsystem
-/// process looks up `git.exe` only on the system PATH. Git for Windows
-/// and most Windows installers register in `HKCU\Environment\Path`
-/// (user PATH), not the system PATH, so the lookup misses and the user
-/// sees the error wrapped as `未找到 git（git 来源的插件需要 git；请先
-/// 安装 git）`. The same shape would affect any other user-PATH-only
-/// tool — `tar` ships at `C:\Windows\System32\tar.exe` and works
-/// without the merge on Windows 10+, but the explicit stamping keeps
-/// macOS/Linux consistent and removes a future surprise when a new tool
-/// stops being system-installed.
+/// 若不做合并，Windows GUI 子系统进程里的 `Command::new("git")` 只能
+/// 在系统 PATH 上查找 `git.exe`。Git for Windows 以及大多数 Windows
+/// 安装器都注册在 `HKCU\Environment\Path`（user PATH），而非系统 PATH，
+/// 因此查找会失败，用户看到的是被包装为「未找到 git（git 来源的插件
+/// 需要 git；请先安装 git）」的错误。同类问题也会影响任何仅 user PATH
+/// 的工具——`tar` 位于 `C:\Windows\System32\tar.exe`，在 Windows 10+
+/// 上即使不合并也能工作，但显式 stamp 让 macOS/Linux 保持一致，并
+/// 避免未来某款工具不再随系统安装时出现意外。
 pub fn command_with_path<S: AsRef<OsStr>>(program: S) -> Command {
     let mut cmd = Command::new(program);
     cmd.env("PATH", crate::env::merged_path());
     cmd
 }
 
-/// Collect the output of a one-shot script tool (`npm config …`, …) whose
-/// executable may be a `.cmd` batch shim. CreateProcess cannot execute
-/// batch files directly on Windows, so the spawn routes through
-/// `%ComSpec% /C` there, mirroring `spawn`; elsewhere the executable runs
-/// directly. The child inherits the merged PATH with `extra_path_dirs`
-/// prepended, so the script's `#!/usr/bin/env node` resolution finds the
-/// node the caller validated even from a GUI shell with a system-only
-/// PATH.
+/// 收集一次性脚本工具（`npm config …` 等）的输出，这类工具的可执行文件
+/// 可能是 `.cmd` 批处理 shim。Windows 上 CreateProcess 无法直接执行批处理
+/// 文件，所以 spawn 走 `%ComSpec% /C`，与 `spawn` 一致；其他平台直接
+/// 执行可执行文件。子进程继承合并后的 PATH，并将 `extra_path_dirs` 前置，
+/// 让脚本的 `#!/usr/bin/env node` 解析能找到调用方已校验的 node，即便
+/// 是在只有系统 PATH 的 GUI 壳中。
 pub fn script_capture(
     exe: &Path,
     args: &[&str],
@@ -88,33 +82,28 @@ pub fn script_capture(
     }
 }
 
-/// Spawn a long-running child (`pnpm`, `npm`, …) and stream each stdout and
-/// stderr line to both `log_path` and `on_progress`, returning once the
-/// process exits.
+/// 启动一个长时间运行的子进程（`pnpm`、`npm` 等），把每一条 stdout 与
+/// stderr 行同时流式输出到 `log_path` 和 `on_progress`，进程退出后返回。
 ///
-/// `.cmd` files cannot be spawned directly on Windows, so they are routed
-/// through the command shell there; everywhere else the executable is run
-/// directly. Each output stream is drained on its own thread so a full OS
-/// pipe buffer can never deadlock the other stream; the lines travel over a
-/// channel back to this thread, which is the only caller of `on_progress`.
-/// A heartbeat keeps the caller informed when the child stays silent for
-/// tens of seconds while resolving the dependency graph or talking to the
-/// npm registry.
+/// Windows 上无法直接 spawn `.cmd` 文件，因此会走 command shell；
+/// 其他平台直接运行可执行文件。每个输出流都在独立线程上 drain，
+/// 使任何一边的 OS 管道缓冲区满都不会死锁另一边；行数据通过 channel
+/// 回传到这个线程，由它独占地调用 `on_progress`。当子进程在解析
+/// 依赖图或与 npm registry 通信时静默数十秒，心跳会让调用方随时知道
+/// 进度。
 ///
-/// `extra_path_dirs` prepends the listed directories to the inherited
-/// `PATH` on the child before it runs anything. macOS `.app` bundles launch
-/// from a launchd environment whose `PATH` is just `/usr/bin:/bin:/usr/sbin:
-/// /sbin`, so a user who installed Node and pnpm via Homebrew or nvm lives
-/// outside that path; a child that invokes a Node-shebanged script
-/// (`tsdown`, `tsc`, `node ./foo.js`, …) then dies with `env: node: No
-/// such file or directory` even though the parent could find both binaries
-/// to spawn them. Prepending `pnpm_exe.parent()` (and `node_dir` when the
-/// caller has it) makes the child see the same `node` the parent used.
+/// `extra_path_dirs` 在子进程运行任何东西之前，把列出的目录前置到
+/// 继承的 `PATH`。macOS `.app` bundle 从 launchd 环境启动，其 `PATH`
+/// 仅 `/usr/bin:/bin:/usr/sbin:/sbin`；因此通过 Homebrew 或 nvm
+/// 安装 Node 和 pnpm 的用户，这些工具都在 PATH 之外；调用 Node
+/// shebang 脚本（`tsdown`、`tsc`、`node ./foo.js` 等）的子进程会
+/// 因此以 `env: node: No such file or directory` 退出，即便父进程
+/// 自己能找到这两个可执行文件。前置 `pnpm_exe.parent()`（以及
+/// 调用方持有的 `node_dir`）能让子进程看到父进程使用的同一个 `node`。
 ///
-/// The log file's parent directory is created when missing: the first
-/// install on a fresh data dir reaches this helper before anything else
-/// has created the log directory, and a bare `open` would otherwise fail
-/// with `NotFound` (Windows: `系统找不到指定的路径 (os error 3)`).
+/// 日志文件的父目录在缺失时会创建：全新 data dir 上的首次安装会在
+/// 其他任何东西创建日志目录之前就进入本助手，直接 `open` 会以
+/// `NotFound` 失败（Windows 上为 `系统找不到指定的路径 (os error 3)`）。
 const MAX_OUTPUT_LINE_BYTES: usize = 64 * 1024;
 const OUTPUT_QUEUE_CAPACITY: usize = 256;
 
@@ -620,11 +609,11 @@ fn run_capture_bytes(program: &str, args: &[&str]) -> io::Result<(bool, Vec<u8>,
     run_capture_command_bytes(cmd, program)
 }
 
-/// Run a short-lived external tool and capture bounded stdout/stderr.
+/// 运行一个短生命周期的外部工具，捕获限定大小的 stdout/stderr。
 ///
-/// The child is isolated into its own process group on Unix and its output
-/// pipes are drained concurrently. A timeout kills the group and never waits
-/// indefinitely for a reader whose pipe may still be held by a descendant.
+/// 子进程在 Unix 上被隔离到独立进程组，输出管道并发 drain。超时
+/// 杀掉整个进程组，永远不会因某个读者持有的管道可能被后代占用而
+/// 无限等待。
 pub fn run_capture_output(program: &str, args: &[&str]) -> io::Result<(bool, String, String)> {
     let (success, stdout, stderr) = run_capture_bytes(program, args)?;
     Ok((
@@ -819,10 +808,9 @@ fn run_with_progress_log(
         drop(rx);
         terminate_process_tree(&mut child);
         let _ = log.flush();
-        // The receiver is dropped before termination so a noisy reader exits
-        // on send failure. Do not join here: a process outside the group may
-        // still hold an inherited pipe, and the command must honor its
-        // deadline rather than wait forever for that external process.
+        // 在终止之前就 drop 接收端，使嘈杂的 reader 因 send 失败而退出。
+        // 这里不要 join：组外的某个进程可能仍持有继承的管道，命令必须
+        // 遵守其 deadline，而不是为那个外部进程永远等待下去。
         drop(drain_stdout);
         drop(drain_stderr);
         return Err(io::Error::new(
@@ -843,32 +831,28 @@ fn run_with_progress_log(
 }
 
 fn spawn(exe: &Path, args: &[&str], cwd: &Path, extra_path_dirs: &[&Path]) -> io::Result<Child> {
-    // Pin every child we spawn (pnpm/npm and friends) at the shell's
-    // configured npm registry so the mirror choice is enforceable even when
-    // the user's global .npmrc points elsewhere or a project-local .npmrc
-    // is missing. `npm_config_registry` is the env var pnpm and npm both
-    // consult as the highest-priority source.
+    // 把每个 spawn 的子进程（pnpm/npm 等等）固定到壳配置的 npm registry，
+    // 让镜像选择即便在用户全局 .npmrc 指向别处或项目级 .npmrc 缺失时
+    // 仍然可强制生效。`npm_config_registry` 是 pnpm 与 npm 共同视为
+    // 最高优先级来源的环境变量。
     let registry = crate::registry::npm_registry_base();
-    // Tauri ships as a Windows GUI-subsystem app and inherits only the
-    // system PATH on launch; the user PATH (where `npm` and `pnpm` shims
-    // live after `npm install -g`) is dropped unless we re-stamp it.
-    // `env::merged_path` reads `HKCU\Environment\Path` once and joins it
-    // onto whatever the process already has.
+    // Tauri 以 Windows GUI 子系统应用发布，启动时仅继承系统 PATH；
+    // user PATH（`npm install -g` 后 `npm` 与 `pnpm` shim 所在）会被丢弃，
+    // 除非我们重新 stamp。`env::merged_path` 读取一次 `HKCU\Environment\Path`
+    // 并拼接到进程已有的 PATH 上。
     //
-    // `extra_path_dirs` is layered on top of that: caller-supplied
-    // directories (the validated `node` bin dir, `pnpm_exe.parent()` so
-    // pnpm's own shim family is reachable, …) are prepended in order so
-    // any Node-shebanged child can resolve `node` even on macOS .app
-    // bundles, whose launchd PATH is system-only.
+    // `extra_path_dirs` 在此之上再叠加一层：调用方提供的目录（已校验的
+    // `node` bin 目录、`pnpm_exe.parent()` 使 pnpm 自身的 shim 系列可达……）
+    // 按顺序前置，保证任何 Node shebang 子进程都能解析 `node`，即便在
+    // macOS .app bundle 上 launchd PATH 只有系统路径。
     let path = merge_extra_path(crate::env::merged_path(), extra_path_dirs);
     #[cfg(windows)]
     {
         let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into());
         let mut cmd = Command::new(comspec);
         cmd.arg("/C").arg(exe).args(args);
-        // GUI shells start with an arbitrary cwd; the child must inherit an
-        // explicit one or it resolves the nearest package.json upward and
-        // installs into the wrong directory.
+        // GUI 壳以任意的 cwd 启动；子进程必须显式继承一个 cwd，
+        // 否则会向上解析最近的 package.json 并装到错误目录。
         cmd.current_dir(cwd);
         cmd.env("PATH", path);
         cmd.env("npm_config_registry", registry);
@@ -889,9 +873,9 @@ fn spawn(exe: &Path, args: &[&str], cwd: &Path, extra_path_dirs: &[&Path]) -> io
     }
 }
 
-/// Prepend `extra` entries to `base`. Empty / non-existent entries are
-/// skipped so a caller that has no extra directories pays no cost. Path
-/// separators follow the host (`;` on Windows, `:` elsewhere).
+/// 把 `extra` 中的条目前置到 `base` 前。空 / 不存在的条目会被跳过，
+/// 这样调用方没有额外目录时没有任何代价。路径分隔符遵循宿主平台
+/// （Windows 上为 `;`，其他平台为 `:`）。
 fn merge_extra_path(base: &str, extra: &[&Path]) -> String {
     if extra.is_empty() {
         return base.to_string();
@@ -925,9 +909,8 @@ fn merge_extra_path(base: &str, extra: &[&Path]) -> String {
     out
 }
 
-/// Read a bounded tail of a text file for display. Missing or unreadable
-/// files yield an empty string — callers render tails next to live state
-/// and must not turn a vanished log into an error dialog.
+/// 读取文本文件的有界尾部用于展示。缺失或不可读的文件返回空字符串——
+/// 调用方在实时状态旁渲染 tail，不应把消失的日志变成错误对话框。
 pub(crate) fn read_tail(path: &Path, max_bytes: u64) -> String {
     let Ok(meta) = fs::metadata(path) else {
         return String::new();
@@ -938,9 +921,9 @@ pub(crate) fn read_tail(path: &Path, max_bytes: u64) -> String {
     use std::io::{Read, Seek};
     let mut reader = file;
     let offset = meta.len().saturating_sub(max_bytes);
-    // `Vec::with_capacity` cannot infer its element type until something
-    // pins it; without the annotation `reader.read_to_end(&mut buf)` later
-    // in this function needs the explicit hint.
+    // `Vec::with_capacity` 在没有东西把元素类型钉住之前无法推断；
+    // 没有这里的类型标注，后续的 `reader.read_to_end(&mut buf)` 需要
+    // 这条显式提示。
     let mut buf: Vec<u8> = Vec::with_capacity(max_bytes as usize);
     if offset > 0 {
         let _ = reader.seek(io::SeekFrom::Start(offset));
@@ -950,9 +933,9 @@ pub(crate) fn read_tail(path: &Path, max_bytes: u64) -> String {
 }
 
 fn reap(mut child: Child) -> io::Result<ExitStatus> {
-    // On Windows `ComSpec /C` makes cmd.exe the direct child and the real
-    // program its grandchild; waiting on cmd only returns after the
-    // grandchild has already exited, so a plain wait is right everywhere.
+    // Windows 上 `ComSpec /C` 把 cmd.exe 作为直接子进程，真正的程序是它的
+    // 孙子进程；在 cmd 上 wait 要等到孙子进程退出才返回，因此各处都使用
+    // 朴素的 wait 即可。
     child.wait()
 }
 
@@ -1113,32 +1096,29 @@ mod tests {
 
     #[test]
     fn merge_extra_path_all_extras_blank_falls_back_to_base() {
-        // A slice of only whitespace/empty entries must leave the base
-        // untouched — the helper should never panic on missing entries.
+        // 仅包含空白 / 空条目的切片必须保持 base 不变——助手不应在
+        // 条目缺失时 panic。
         let empty = PathBuf::from("");
         let base = format!("/usr/bin{SEP}/bin");
         let merged = merge_extra_path(&base, &[empty.as_path()]);
         assert_eq!(merged, base);
     }
 
-    /// `command_with_path` is the single-shot sibling of `spawn`: every
-    /// direct `Command::new` for an external tool (`git`, `tar`, …) should
-    /// route through here so the GUI shell's children inherit the merged
-    /// PATH instead of the system-only PATH they would otherwise see.
-    /// The Debug formatter of `Command` only reports the program and args
-    /// (env entries live in an opaque internal table on every Rust
-    /// version we care about), so we exercise the actual spawn path:
-    /// the test runs a tiny shell-less child on every supported host
-    /// and checks the child's `$PATH` echoes the merged value, not the
-    /// bare inherited PATH that would surface as the Windows bug.
+    /// `command_with_path` 是 `spawn` 的单次执行兄弟：每个针对外部工具
+    /// （`git`、`tar` 等）的直接 `Command::new` 都应该走这里，让 GUI 壳
+    /// 的子进程继承合并后的 PATH，而不是只能看到系统 PATH。`Command`
+    /// 的 Debug 格式化器只输出 program 与 args（环境项在我们关心的所有
+    /// Rust 版本上都存放在不透明的内部表中），因此这里走真实的 spawn 路径：
+    /// 测试在每个支持的宿主上运行一个小的无 shell 子进程，检查子进程的
+    /// `$PATH` 回显的是合并后的值，而非会触发 Windows bug 的裸继承 PATH。
     #[test]
     fn command_with_path_stamps_merged_path_on_child() {
         use std::process::Stdio;
 
         let mut cmd = command_with_path(if cfg!(windows) { "cmd.exe" } else { "/bin/sh" });
-        // `cmd.exe /C "echo %PATH%"` and `/bin/sh -c 'echo "$PATH"'` both
-        // round-trip the inherited PATH through the child untouched, so
-        // any divergence from `env::merged_path()` is the helper's fault.
+        // `cmd.exe /C "echo %PATH%"` 与 `/bin/sh -c 'echo "$PATH"'` 都会
+        // 原封不动地把继承的 PATH 回传到子进程；任何与 `env::merged_path()`
+        // 不一致都是助手的错。
         let child_path: String = if cfg!(windows) {
             "%PATH%".to_string()
         } else {
@@ -1165,8 +1145,8 @@ mod tests {
         let marker_idx = stdout
             .find(marker)
             .unwrap_or_else(|| panic!("child never printed marker: {stdout:?}"));
-        // PATH line is everything before the marker line; trim the
-        // trailing newline so we compare against the helper's exact output.
+        // PATH 一行是 marker 行之前的所有内容；去掉末尾换行以便与
+        // 助手的精确输出比较。
         let stamped = stdout[..marker_idx].trim_end().to_string();
         assert_eq!(
             stamped,

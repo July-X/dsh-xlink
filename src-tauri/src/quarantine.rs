@@ -1,11 +1,10 @@
-//! Quarantine registry for plugins the boot guard has disabled.
+//! 启动守卫已禁用的插件隔离注册表。
 //!
-//! `<data_dir>/quarantine.json` records plugins that broke kernel boot: each
-//! item stays installed in the central store but is excluded from profile
-//! wiring, so the workbench can start without it. Records carry the reason
-//! and the log excerpt that justified the isolation, which is what lets the
-//! management UI present a keep-disabled / re-enable / remove choice instead
-//! of a dead workbench. The detection flow lives in [`crate::guard`].
+//! `<data_dir>/quarantine.json` 记录那些破坏内核启动的插件：每条记录仍保留
+//! 在中心仓库中，但会被排除在 profile 接入之外，从而使工作台能够在缺少该
+//! 插件的情况下启动。记录中包含原因和支持该隔离决定的日志摘录，正是这些
+//! 信息让管理 UI 可以呈现“保持禁用 / 重新启用 / 删除”的选项，而不是面对
+//! 一个无法启动的工作台。检测流程位于 [`crate::guard`] 中。
 
 use std::collections::HashSet;
 use std::fs;
@@ -15,28 +14,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
-/// Quarantine document file name under the shell data dir.
+/// 外壳数据目录下隔离文档的文件名。
 const QUARANTINE_FILE: &str = "quarantine.json";
-/// Schema version stamped on every save; readers accept anything they can
-/// parse and renormalize on the next write (pre-release stance: no format
-/// compatibility promise).
+/// 每次保存时盖上的 schema 版本号；读取端接受任何能解析的内容，
+/// 并在下一次写入时重新规范化（发布前立场：不承诺格式兼容性）。
 const SCHEMA_VERSION: u32 = 1;
 
-/// One isolated plugin. `id` matches the central store id so wiring filters
-/// and the plugin management UI can join against their own rows.
+/// 一条被隔离的插件记录。`id` 与中心仓库的 id 一致，便于接入过滤
+/// 与插件管理 UI 关联到各自的记录行。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuarantineItem {
     pub id: String,
     pub name: String,
-    /// Human-readable isolation reason shown verbatim in the UI (简体中文).
+    /// 人类可读的隔离原因，在 UI 中按原文显示（简体中文）。
     pub reason: String,
-    /// Log excerpt backing the decision, shown on demand in the UI.
+    /// 支持该决定的日志摘录，在 UI 中按需显示。
     pub evidence: String,
-    /// Seconds since epoch, for display.
+    /// 自 epoch 起经过的秒数，仅用于显示。
     pub at: u64,
 }
 
-/// The persisted quarantine document.
+/// 持久化的隔离文档。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Quarantine {
     #[serde(rename = "schemaVersion", default)]
@@ -49,9 +47,8 @@ fn file_path(data_dir: &Path) -> PathBuf {
     data_dir.join(QUARANTINE_FILE)
 }
 
-/// Read the quarantine document. A missing or unparsable file means "nothing
-/// is quarantined" — the shell must still boot when the document is damaged,
-/// and a broken record must never permanently hide a plugin from wiring.
+/// 读取隔离文档。文件缺失或无法解析等同于“没有隔离项”——即使文档已损坏，
+/// 外壳也必须能够启动，并且破损的记录绝不能把某个插件永远从接入中隐藏。
 pub fn load(data_dir: &Path) -> Quarantine {
     fs::read_to_string(file_path(data_dir))
         .ok()
@@ -59,7 +56,7 @@ pub fn load(data_dir: &Path) -> Quarantine {
         .unwrap_or_default()
 }
 
-/// Persist the document, stamping the current schema version.
+/// 持久化文档，并盖上当前的 schema 版本号。
 pub fn save(data_dir: &Path, doc: &Quarantine) -> Result<(), AppError> {
     fs::create_dir_all(data_dir).map_err(|e| AppError::Io(e.to_string()))?;
     let mut normalized = doc.clone();
@@ -69,7 +66,7 @@ pub fn save(data_dir: &Path, doc: &Quarantine) -> Result<(), AppError> {
     fs::write(file_path(data_dir), text + "\n").map_err(|e| AppError::Io(e.to_string()))
 }
 
-/// Ids currently quarantined — the shape profile-wiring filters consume.
+/// 当前被隔离的 id 集合——profile 接入过滤所消费的形式。
 pub fn ids(data_dir: &Path) -> HashSet<String> {
     load(data_dir)
         .items
@@ -78,8 +75,7 @@ pub fn ids(data_dir: &Path) -> HashSet<String> {
         .collect()
 }
 
-/// Upsert records by id, preserving first-appearance order so the UI list is
-/// stable across re-detections.
+/// 按 id 写入或更新记录，保留首次出现的顺序，使 UI 列表在重复检测时保持稳定。
 pub fn add_all(data_dir: &Path, incoming: &[QuarantineItem]) -> Result<(), AppError> {
     let mut doc = load(data_dir);
     for item in incoming {
@@ -91,8 +87,8 @@ pub fn add_all(data_dir: &Path, incoming: &[QuarantineItem]) -> Result<(), AppEr
     save(data_dir, &doc)
 }
 
-/// Drop one record. Called when the user re-enables or removes the plugin;
-/// removing an absent id is already the requested state, so it succeeds.
+/// 删除一条记录。在用户重新启用或删除插件时调用；
+/// 删除一个不存在的 id 已经是期望的状态，因此会成功。
 pub fn remove(data_dir: &Path, id: &str) -> Result<(), AppError> {
     let mut doc = load(data_dir);
     doc.items.retain(|item| item.id != id);
@@ -144,7 +140,7 @@ mod tests {
         add_all(&dir, &[item("a"), item("b")]).expect("add");
         assert_eq!(ids(&dir), HashSet::from(["a".to_string(), "b".to_string()]));
 
-        // Upsert by id keeps one record per plugin and refreshes its fields.
+        // 按 id 写入或更新，使每个插件只保留一条记录并刷新其字段。
         let updated = QuarantineItem {
             reason: "新原因".to_string(),
             ..item("a")
@@ -160,7 +156,7 @@ mod tests {
 
         remove(&dir, "a").expect("remove");
         assert_eq!(ids(&dir), HashSet::from(["b".to_string()]));
-        // Removing an absent id is already the requested state.
+        // 删除一个不存在的 id 已经是期望的状态。
         remove(&dir, "a").expect("remove absent");
         let _ = fs::remove_dir_all(&dir);
     }

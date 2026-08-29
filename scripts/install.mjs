@@ -1,23 +1,21 @@
 #!/usr/bin/env node
-// Detect-then-install wrapper.
+// 检测后安装的包装脚本。
 //
-// This repository is a standalone deliverable with its own
-// `pnpm-workspace.yaml` (allowBuilds for esbuild), so a plain `pnpm install`
-// never climbs into another checkout. Do not pass `--ignore-workspace`: it
-// would skip the local workspace file and its allowBuilds whitelist, turning
-// esbuild's postinstall into a hard install error (strictDepBuilds). When pnpm
-// is missing we fall back to npm (npm runs dependency postinstalls by default).
+// 本仓库是自带 `pnpm-workspace.yaml`（为 esbuild 配置 allowBuilds）的
+// 独立交付物，因此普通的 `pnpm install` 不会上溯到其他 checkout。
+// 不要传入 `--ignore-workspace`：它会跳过本地 workspace 文件及其
+// allowBuilds 白名单，使 esbuild 的 postinstall 变成硬安装错误
+// （strictDepBuilds）。当 pnpm 缺失时回退到 npm（npm 默认会运行依赖
+// 的 postinstall）。
 //
-// Invoke through `npm run deps` or `pnpm run deps` from the repository root;
-// never call this file directly (it lives under scripts/ and is wired into
-// package.json's `scripts.deps`).
+// 请通过仓库根目录的 `npm run deps` 或 `pnpm run deps` 调用；切勿直接
+// 执行本文件（它位于 scripts/ 下，并已接入 package.json 的 `scripts.deps`）。
 
 import { execFileSync } from 'node:child_process';
 
 const isWin = process.platform === 'win32';
-// `.cmd` shims cannot be spawned directly on Windows (Node returns EINVAL);
-// the package manager scripts in the desktop project route through
-// `%ComSpec% /C` for the same reason.
+// 在 Windows 上无法直接派生 `.cmd` shim（Node 会返回 EINVAL）；
+// 本桌面项目中的包管理器脚本出于同样原因全部走 `%ComSpec% /C`。
 const comspec = isWin ? (process.env.ComSpec || 'cmd.exe') : null;
 
 function run(cmd, args) {
@@ -48,9 +46,8 @@ console.log(`[install] 正在执行：${pkgMgr} ${args.join(' ')}`);
 try {
   run(pkgMgr, args);
 } catch (err) {
-  // stdio: 'inherit' is set on the wrapper above so the child output has
-  // already streamed to the terminal; only the failure status is ours to
-  // surface here.
+  // 上述包装函数已设置 stdio: 'inherit'，子进程输出已经流式输出到
+  // 终端；这里只需负责暴露失败状态。
   console.error(`[install] ${pkgMgr} install 失败（退出码 ${err.status ?? '?'}）`);
   process.exit(err.status ?? 1);
 }

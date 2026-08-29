@@ -878,7 +878,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsh-desktop"
+name = "dsh-xlink"
 version = "0.1.0"
 dependencies = [
  "flate2",
