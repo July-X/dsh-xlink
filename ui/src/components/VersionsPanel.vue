@@ -5,8 +5,8 @@
 //
 // 面板挂载时主动调一次 refreshAll()，让「已安装」列表在用户进到这一页时就是最新的，
 // 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
-import { computed, onMounted } from 'vue';
-import { Refresh, Download, Promotion, Delete } from '@element-plus/icons-vue';
+import { computed, onMounted, reactive } from 'vue';
+import { Refresh, Download, Promotion, Delete, InfoFilled } from '@element-plus/icons-vue';
 import {
   store,
   refreshAll,
@@ -15,9 +15,55 @@ import {
   activateVersion,
   removeVersion,
 } from '../store.js';
+import { invoke } from '../bridge.js';
 import { globalBusy, isLoading } from '../loading.js';
+import VersionPluginsTip from './VersionPluginsTip.vue';
 
 const kernel = computed(() => store.view && store.view.kernel);
+
+// 每个已安装内核的插件快照只在 Tooltip 即将显示时读取，避免页面初次
+// 渲染就为所有内核发起 IPC。已成功读取的版本会复用缓存。
+const versionPlugins = reactive({});
+
+function versionPluginSlot(version) {
+  if (!versionPlugins[version]) {
+    versionPlugins[version] = {
+      loading: false,
+      loaded: false,
+      error: null,
+      rows: [],
+    };
+  }
+  return versionPlugins[version];
+}
+
+async function loadVersionPlugins(version) {
+  const slot = versionPluginSlot(version);
+  if (slot.loaded || slot.loading) return;
+
+  slot.loading = true;
+  slot.error = null;
+  try {
+    slot.rows = (await invoke('kernel_plugin_list', { version })) || [];
+    slot.loaded = true;
+  } catch (e) {
+    slot.error = e && e.message ? e.message : String(e);
+    slot.loaded = true;
+  } finally {
+    slot.loading = false;
+  }
+}
+
+const emptyPluginSnapshot = Object.freeze({
+  loading: false,
+  loaded: false,
+  error: null,
+  rows: [],
+});
+
+function pluginSnapshot(version) {
+  return versionPlugins[version] || emptyPluginSnapshot;
+}
 
 const installedVersions = computed(() => {
   const set = new Set();
@@ -28,7 +74,6 @@ const installedVersions = computed(() => {
 });
 
 // 进版本面板就重新扫描本地内核列表，与 npm 发布列解耦——
-// 即便用户从来没点过「检查更新」，左列也会显示当前已安装的所有版本。
 onMounted(() => {
   refreshAll();
 });
@@ -41,9 +86,6 @@ onMounted(() => {
         <h2>内核版本</h2>
         <span class="head-meta">
           <span class="muted">已安装 {{ kernel ? kernel.installed.length : '—' }} 个</span>
-          <el-button text :icon="Refresh" :loading="isLoading('checkUpdates')" @click="checkUpdates">
-            检查更新
-          </el-button>
         </span>
       </div>
 
@@ -57,6 +99,30 @@ onMounted(() => {
             <div v-for="v in kernel ? kernel.installed : []" :key="v.version" class="installed-row">
               <span class="release-ver">{{ v.version }}</span>
               <span class="release-actions">
+                <el-tooltip
+                  effect="dark"
+                  popper-class="kernel-plugin-tooltip"
+                  placement="right-start"
+                  :fallback-placements="['left-start', 'bottom-start', 'top-start']"
+                  :boundaries-padding="12"
+                  trigger="hover"
+                  :show-after="160"
+                  :hide-after="120"
+                  :offset="8"
+                  :show-arrow="true"
+                  @before-show="loadVersionPlugins(v.version)"
+                >
+                  <button
+                    type="button"
+                    class="installed-tip-trigger"
+                    :aria-label="'查看 ' + v.version + ' 的插件'"
+                  >
+                    <el-icon class="installed-tip-icon"><InfoFilled /></el-icon>
+                  </button>
+                  <template #content>
+                    <VersionPluginsTip :snapshot="pluginSnapshot(v.version)" :version="v.version" />
+                  </template>
+                </el-tooltip>
                 <el-tag v-if="v.active" type="success" size="small" effect="dark">当前使用</el-tag>
                 <template v-else>
                   <el-button
@@ -98,6 +164,9 @@ onMounted(() => {
           <h3 class="list-head-with-logo">
             <img class="brand-logo" src="https://avatars.githubusercontent.com/u/6078720?s=200&v=4" alt="npm" />
             <span>npm 发布</span>
+            <el-button class="release-check-button" text :icon="Refresh" :loading="isLoading('checkUpdates')" :disabled="globalBusy" @click="checkUpdates">
+              检查更新
+            </el-button>
           </h3>
           <div class="release-list">
             <p v-if="store.releases.length === 0" class="muted" style="margin: 0">

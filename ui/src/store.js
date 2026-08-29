@@ -4,7 +4,7 @@
 import { reactive } from 'vue';
 import { invoke, makeChannel } from './bridge.js';
 import { toast, toastSuccess, toastError, confirmDialog } from './notify.js';
-import { globalBusy, isLoading, setBusy, withLoading } from './loading.js';
+import { globalBusy, isLoading, withExclusive, withExclusiveLoading, withLoading, isExclusiveBusy } from './loading.js';
 import { withProgress, progress } from './progress.js';
 import { refreshPlugins } from './plugins.js';
 import { refreshSkills } from './skills.js';
@@ -40,6 +40,8 @@ let lastRunning = null;
 // 发出的请求提交快照，避免恢复动作已经清掉隔离记录后，较早的轮询响应又把
 // 旧 quarantined / last_incident 写回界面。
 let statusRequestSeq = 0;
+let statusInFlight = null;
+let refreshAllInFlight = null;
 function beginStatusRequest() {
   statusRequestSeq += 1;
   return statusRequestSeq;
@@ -73,35 +75,76 @@ export function setReleasePreview(value) {
   applyBuildClass();
 }
 
+let shownIncidentKey = '';
+
+function incidentKey(incident) {
+  const health = incident.health || {};
+  return [
+    incident.cause || '',
+    incident.message || '',
+    incident.log_path || '',
+    incident.at || '',
+    health.kind || '',
+    health.message || '',
+    health.stack || '',
+    health.page_url || '',
+  ].join('|');
+}
+
 export function showIncident(incident) {
   if (!incident) return;
+  const key = incidentKey(incident);
+  if (store.incidentVisible && shownIncidentKey === key) return;
+  shownIncidentKey = key;
   store.incident = incident;
+  store.lastIncident = incident;
   store.incidentVisible = true;
+}
+
+function requestStatus(force = false) {
+  if (!force && statusInFlight) return statusInFlight;
+  const requestSeq = beginStatusRequest();
+  const request = invoke('get_status')
+    .then((view) => {
+      const applied = applyStatus(view, requestSeq);
+      return { view, applied };
+    })
+    .finally(() => {
+      if (statusInFlight === request) statusInFlight = null;
+    });
+  statusInFlight = request;
+  return request;
 }
 
 // --- 状态读取 ---------------------------------------------------------------
 
-export async function refreshAll() {
-  try {
-    const requestSeq = beginStatusRequest();
-    const view = await invoke('get_status');
-    if (!applyStatus(view, requestSeq)) return;
-    await Promise.all([refreshPlugins(), refreshSkills()]);
-  } catch (e) {
-    toastError('读取状态失败：' + e);
-  }
+export function refreshAll() {
+  if (refreshAllInFlight) return refreshAllInFlight;
+  const request = (async () => {
+    try {
+      await requestStatus(true);
+      await Promise.all([refreshPlugins(), refreshSkills()]);
+    } catch (e) {
+      toastError('读取状态失败：' + e);
+    }
+  })();
+  const tracked = request.finally(() => {
+    if (refreshAllInFlight === tracked) refreshAllInFlight = null;
+  });
+  refreshAllInFlight = tracked;
+  return tracked;
 }
 
-// 后台轮询：失败不打扰用户，面板保留旧值，下个周期自动重试。
+// 后台轮询：失败不打扰用户，忙时跳过；面板保留旧值，下个周期自动重试。
 export async function pollStatus() {
-  if (document.hidden) return;
+  if (document.hidden || isExclusiveBusy() || refreshAllInFlight) return;
   try {
-    const requestSeq = beginStatusRequest();
-    const view = await invoke('get_status');
     const previousRunning = lastRunning;
-    if (!applyStatus(view, requestSeq)) return;
-    const changed = previousRunning !== null && view.kernel.running !== previousRunning;
-    if (changed && view.kernel.running && !store.starting) {
+    const ownsRequest = statusInFlight === null;
+    const result = await requestStatus();
+    if (!ownsRequest || !result.applied) return;
+    const changed = previousRunning !== null && result.view.kernel.running !== previousRunning;
+    if (changed && result.view.kernel.running && !store.starting) {
       toastSuccess('内核已就绪', 2500);
     }
   } catch {
@@ -112,8 +155,7 @@ export async function pollStatus() {
 // --- 内核版本 ---------------------------------------------------------------
 
 export function checkUpdates() {
-  return withLoading('checkUpdates', async () => {
-    setBusy(true);
+  return withExclusiveLoading('checkUpdates', async () => {
     try {
       const list = await invoke('fetch_releases');
       store.releases = list.releases || [];
@@ -124,13 +166,11 @@ export function checkUpdates() {
     } catch (e) {
       store.releases = [];
       toastError('获取发布失败：' + e, 6000);
-    } finally {
-      setBusy(false);
     }
   });
 }
 
-export function installVersion(version) {
+export function installVersion(version, options = {}) {
   return withProgress(
     {
       cmd: 'install_kernel',
@@ -139,36 +179,31 @@ export function installVersion(version) {
       fail: '安装失败',
       failToast: '安装失败，详情见进度窗口与日志',
     },
-    (channel) => ({ version, onEvent: channel })
+    (channel) => ({ version, onEvent: channel }),
+    options
   );
 }
 
 export function activateVersion(version) {
-  return withLoading('activate:' + version, async () => {
-    setBusy(true);
+  return withExclusiveLoading('activate:' + version, async () => {
     try {
       await invoke('activate_version', { version });
       toastSuccess('已切换活动版本为 ' + version + '（下次启动生效）');
       await refreshAll();
     } catch (e) {
       toastError('切换失败：' + e);
-    } finally {
-      setBusy(false);
     }
   });
 }
 
 export function removeVersion(version) {
-  return withLoading('remove:' + version, async () => {
-    setBusy(true);
+  return withExclusiveLoading('remove:' + version, async () => {
     try {
       await invoke('remove_version', { version });
       toastSuccess('已删除版本 ' + version);
       await refreshAll();
     } catch (e) {
       toastError('删除失败：' + e);
-    } finally {
-      setBusy(false);
     }
   });
 }
@@ -176,22 +211,23 @@ export function removeVersion(version) {
 // 「安装最新版本」（首次运行引导）：拉发布列表，优先第一个稳定版，
 // 全是预发布时退回最新可用版本。
 export function installLatestRelease() {
-  return withLoading('firstRunLatest', async () => {
-    setBusy(true);
+  return withExclusiveLoading('firstRunLatest', async () => {
+    let version;
     try {
       const list = await invoke('fetch_releases');
       store.releases = list.releases || [];
+      store.releaseWarning = list.warning || '';
       if (!store.releases.length) {
         toast('没有获取到官方发布，请稍后再试', 4000, 'warning');
-        return;
+        return undefined;
       }
       const stable = store.releases.find((r) => !r.prerelease);
-      await installVersion((stable || store.releases[0]).version);
+      version = (stable || store.releases[0]).version;
     } catch (e) {
       toastError('获取发布失败：' + e, 6000);
-    } finally {
-      setBusy(false);
+      return undefined;
     }
+    return installVersion(version, { exclusive: false });
   });
 }
 
@@ -200,58 +236,60 @@ export function installLatestRelease() {
 // 启动编排。start_kernel 内置启动看护：命令返回时端口必然就绪（或带事故
 // 报告），看护重试含 pnpm 重装、可能数分钟，阶段消息经 channel 流进进度面板。
 export function startWorkbench() {
-  store.starting = true;
-  const channel = makeChannel((msg) => {
-    progress.appendLog(msg);
-    progress.set(msg.length > 60 ? msg.slice(0, 57) + '…' : msg);
-  });
-  progress.resetLog();
-  progress.set('正在启动工作台…');
-  return invoke('start_kernel', channel ? { onEvent: channel } : {})
-    .then((report) => {
+  const run = withExclusive(async () => {
+    store.starting = true;
+    const channel = makeChannel((msg) => {
+      progress.appendLog(msg);
+      progress.set(msg.length > 60 ? msg.slice(0, 57) + '…' : msg);
+    });
+    progress.resetLog();
+    progress.set('正在启动工作台…');
+    try {
+      const report = await invoke('start_kernel', channel ? { onEvent: channel } : {});
       if (!report || !report.running) {
-        const err = new Error((report && report.incident && report.incident.message) || '内核未能启动，详情见日志');
-        err.report = report;
-        throw err;
+        const error = new Error(
+          (report && report.incident && report.incident.message) || '内核未能启动，详情见日志'
+        );
+        error.report = report;
+        throw error;
       }
-      return invoke('open_harness').then(() => report);
-    })
-    .then((report) => {
+      await invoke('open_harness');
       progress.hide();
-      toastSuccess(report && report.incident ? '工作台已以安全模式启动' : '工作台已启动');
-      if (report && report.incident) {
+      toastSuccess(report.incident ? '工作台已以安全模式启动' : '工作台已启动');
+      if (report.incident) {
         showIncident(report.incident);
       }
       lastRunning = true;
-    })
-    .catch((e) => {
+    } catch (e) {
       // 失败路径：进度面板保持开放（约定），事故面板覆盖其上解释原因。
-      progress.fail('启动失败：' + e.message);
-      toastError('启动失败：' + e.message, 8000);
-      if (e.report && e.report.incident) {
+      const message = e && e.message ? e.message : String(e);
+      progress.fail('启动失败：' + message);
+      toastError('启动失败：' + message, 8000);
+      if (e && e.report && e.report.incident) {
         showIncident(e.report.incident);
       } else {
         showLogs();
       }
-    })
-    .finally(() => {
+    } finally {
       store.starting = false;
-      refreshAll();
-    });
+      await refreshAll();
+    }
+  });
+  return run === undefined ? Promise.resolve(false) : run;
 }
 
 export async function stopWorkbench() {
-  const proceed = async () => {
-    setBusy(true);
-    try {
-      await invoke('stop_kernel');
-      toastSuccess('工作台已关闭');
-      await refreshAll();
-    } catch (e) {
-      toastError('关闭失败：' + e);
-    } finally {
-      setBusy(false);
-    }
+  const proceed = () => {
+    const run = withExclusive(async () => {
+      try {
+        await invoke('stop_kernel');
+        toastSuccess('工作台已关闭');
+        await refreshAll();
+      } catch (e) {
+        toastError('关闭失败：' + e);
+      }
+    });
+    return run === undefined ? Promise.resolve(false) : run;
   };
   const running = !!(store.view && store.view.kernel && store.view.kernel.running);
   if (!running) {
@@ -295,9 +333,12 @@ export function openDataDir() {
 
 // --- 外壳自更新 -------------------------------------------------------------
 
+let shellUpdateInFlight = null;
+
 export function checkShellUpdate(manual) {
-  const run = () =>
-    invoke('check_shell_update')
+  const run = () => {
+    if (shellUpdateInFlight) return shellUpdateInFlight;
+    const request = invoke('check_shell_update')
       .then((info) => {
         if (info.available) {
           showShellUpdateBanner(info.available);
@@ -310,8 +351,13 @@ export function checkShellUpdate(manual) {
           toastError('检查桌面端更新失败：' + e);
         }
       });
-  // 启动时的后台检查不挂按钮 loading，手动点才挂。
-  return manual ? withLoading('checkShellUpdate', run) : run();
+    const tracked = request.finally(() => {
+      if (shellUpdateInFlight === tracked) shellUpdateInFlight = null;
+    });
+    shellUpdateInFlight = tracked;
+    return tracked;
+  };
+  return manual ? withExclusiveLoading('checkShellUpdate', run) : run();
 }
 
 export function showShellUpdateBanner(version) {
@@ -324,19 +370,20 @@ export function installShellUpdate() {
   const channel = makeChannel((msg) => {
     store.shellUpdateText = msg;
   });
-  return withLoading('installShellUpdate', () =>
-    invoke('install_shell_update', { onEvent: channel }).catch((e) => {
-      toastError('桌面端更新失败：' + e, 6000);
-    })
-    // 成功时应用直接重启进新版本，无事可做。
+  return withExclusiveLoading(
+    'installShellUpdate',
+    () =>
+      invoke('install_shell_update', { onEvent: channel }).catch((e) => {
+        toastError('桌面端更新失败：' + e, 6000);
+      })
+      // 成功时应用直接重启进新版本，无事可做。
   );
 }
 
 // --- 设置 -------------------------------------------------------------------
 
 export function detectNode() {
-  return withLoading('detectNode', async () => {
-    setBusy(true);
+  return withExclusiveLoading('detectNode', async () => {
     try {
       const info = await invoke('detect_node');
       if (info.ok) {
@@ -346,8 +393,6 @@ export function detectNode() {
     } catch (e) {
       toastError('检测失败：' + e, 4000);
       return null;
-    } finally {
-      setBusy(false);
     }
   });
 }
@@ -360,8 +405,7 @@ export function saveSettings(portRaw, profileRaw) {
     return Promise.resolve(false);
   }
   const settings = { port, profile: (profileRaw || '').trim() || 'web' };
-  return withLoading('saveSettings', async () => {
-    setBusy(true);
+  return withExclusiveLoading('saveSettings', async () => {
     try {
       await invoke('save_settings', { settings });
       toastSuccess('设置已保存（重启内核后生效）');
@@ -370,8 +414,6 @@ export function saveSettings(portRaw, profileRaw) {
     } catch (e) {
       toastError('保存失败：' + e);
       return false;
-    } finally {
-      setBusy(false);
     }
   });
 }

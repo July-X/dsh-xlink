@@ -78,6 +78,24 @@ pub struct Incident {
     pub hint: Option<String>,
     /// Seconds since epoch, for display.
     pub at: u64,
+    /// High-level attribution used to choose the repair action in the panel.
+    #[serde(default)]
+    pub cause: String,
+    /// Frontend health evidence captured by the harness webview, when the
+    /// incident came from a loaded-but-unhealthy page.
+    #[serde(default)]
+    pub health: Option<HealthReport>,
+}
+
+/// A frontend health signal sent by the injected harness probe. The command
+/// layer validates and bounds each string before this is persisted in an
+/// incident, so a broken page cannot fill the incident file indefinitely.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct HealthReport {
+    pub kind: String,
+    pub message: String,
+    pub stack: String,
+    pub page_url: String,
 }
 
 /// Result payload of the guarded `start_kernel` command.
@@ -439,6 +457,8 @@ pub fn guarded_start(
                     log_path: kernel_log_path(deps.data_dir).display().to_string(),
                     hint: None,
                     at: epoch_secs(),
+                    cause: String::from("plugin"),
+                    health: None,
                 };
                 save_incident(deps.data_dir, &incident);
                 return (
@@ -511,6 +531,8 @@ pub fn guarded_start(
                     log_path: kernel_log_path(deps.data_dir).display().to_string(),
                     hint: None,
                     at: epoch_secs(),
+                    cause: String::from("plugin"),
+                    health: None,
                 };
                 save_incident(deps.data_dir, &incident);
                 return (
@@ -561,6 +583,12 @@ pub fn guarded_start(
         log_path: kernel_log_path(deps.data_dir).display().to_string(),
         hint: Some(hint),
         at: epoch_secs(),
+        cause: if kernel_suspected {
+            String::from("kernel")
+        } else {
+            String::from("unknown")
+        },
+        health: None,
     };
     save_incident(deps.data_dir, &incident);
     (
@@ -588,6 +616,155 @@ fn dedup_suspects(suspects: Vec<Suspect>) -> Vec<Suspect> {
         }
     }
     out
+}
+
+fn runtime_cause(suspects: &[Suspect]) -> &'static str {
+    if suspects.iter().any(|s| s.kind == "plugin") {
+        "plugin"
+    } else if suspects.iter().any(|s| s.kind == "kernel") {
+        "kernel"
+    } else {
+        "unknown"
+    }
+}
+
+/// Put frontend health evidence in the same error-shaped stream as the kernel
+/// log. This lets the existing conservative path/name matcher attribute a
+/// client-side stack that never reached `kernel.log`.
+fn runtime_evidence(report: &HealthReport, kernel_tail: &str) -> String {
+    let mut lines = Vec::new();
+    if !report.kind.trim().is_empty() {
+        lines.push(format!("Error: 工作台自检类型：{}", report.kind.trim()));
+    }
+    if !report.message.trim().is_empty() {
+        lines.push(format!("Error: 工作台前端错误：{}", report.message.trim()));
+    }
+    for line in report
+        .stack
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        lines.push(format!("Error: 前端堆栈：{line}"));
+    }
+    if !report.page_url.trim().is_empty() {
+        lines.push(format!("Error: 工作台页面地址：{}", report.page_url.trim()));
+    }
+    if !kernel_tail.is_empty() {
+        lines.push(kernel_tail.to_string());
+    }
+    lines.join("\n")
+}
+
+fn runtime_attempt(report: &HealthReport) -> String {
+    let kind = report.kind.trim();
+    let message = report.message.trim();
+    match (kind.is_empty(), message.is_empty()) {
+        (true, true) => String::from("工作台健康探针报告：页面异常"),
+        (true, false) => format!("工作台健康探针报告：{message}"),
+        (_, true) => format!("工作台健康探针报告：{kind}"),
+        (false, false) => format!("工作台健康探针报告：{kind}：{message}"),
+    }
+}
+
+/// Diagnose a workbench health report without restarting or changing the
+/// running kernel. Plugin evidence is temporarily quarantined so the next
+/// restart is safe; the user still chooses whether to keep, restore, or remove
+/// the plugin in the incident panel.
+pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
+    let now = epoch_secs();
+    let attempt = runtime_attempt(&report);
+    if let Some(existing) = load_incident(data_dir) {
+        if existing.health.as_ref() == Some(&report) && now.saturating_sub(existing.at) < 60 {
+            return existing;
+        }
+    }
+
+    let tail = log_tail(&GuardDeps {
+        data_dir,
+        settings: &settings::Settings::default(),
+        node_path: Path::new(""),
+        pnpm_exe: Path::new(""),
+    });
+    let store_items = plugins::load_store(data_dir).items;
+    let kernel_label = kernel::read_active(data_dir).unwrap_or_default();
+    let suspects = attribute(
+        &runtime_evidence(&report, &tail),
+        &store_items,
+        &kernel_label,
+    );
+    let plugin_suspects: Vec<Suspect> = suspects
+        .iter()
+        .filter(|s| s.kind == "plugin")
+        .cloned()
+        .collect();
+    let cause = runtime_cause(&suspects);
+    let mut attempts = vec![attempt];
+
+    let (message, hint) = match cause {
+        "plugin" => {
+            let names = plugin_suspects
+                .iter()
+                .map(|suspect| suspect.name.as_str())
+                .collect::<Vec<_>>()
+                .join("、");
+            let records = suspect_records(
+                &plugin_suspects,
+                String::from("工作台运行异常，前端或内核错误证据指向该插件，已临时隔离"),
+            );
+            let isolated = quarantine::add_all(data_dir, &records).is_ok();
+            if isolated {
+                attempts.push(format!("已临时隔离疑似插件：{names}，重启后验证"));
+            } else {
+                attempts.push(String::from("写入插件隔离记录失败，请在插件页手动处理"));
+            }
+            if isolated {
+                (
+                    format!(
+                        "工作台页面异常，错误证据指向插件「{names}」，已临时隔离；请决定如何修复。"
+                    ),
+                    String::from("请到插件页选择保持禁用、重新启用或移除，然后重启工作台验证。"),
+                )
+            } else {
+                (
+                    format!("工作台页面异常，错误证据指向插件「{names}」，但自动隔离失败。"),
+                    String::from("请先到插件页手动禁用或移除该插件，再重启工作台验证。"),
+                )
+            }
+        }
+        "kernel" => {
+            attempts.push(String::from("错误证据指向内核组件，未自动修改插件"));
+            (
+                String::from("工作台页面异常，错误证据指向当前内核组件，未自动修改插件。"),
+                String::from("请先查看完整内核日志，再到内核版本页切换其他版本；仍失败时删除当前版本后重新安装。"),
+            )
+        }
+        _ => {
+            attempts.push(String::from("未发现足够的插件或内核证据，暂不作强归因"));
+            (
+                String::from("工作台页面异常，但暂未找到足够证据区分插件和内核。"),
+                String::from(
+                    "请打开日志并重试；若持续发生，再到内核版本页切换其他版本或重新安装当前版本。",
+                ),
+            )
+        }
+    };
+
+    let incident = Incident {
+        recovered: false,
+        safe_mode: false,
+        message,
+        suspects,
+        attempts,
+        log_tail: tail,
+        log_path: kernel_log_path(data_dir).display().to_string(),
+        hint: Some(hint),
+        at: now,
+        cause: cause.to_string(),
+        health: Some(report),
+    };
+    save_incident(data_dir, &incident);
+    incident
 }
 
 #[cfg(test)]
@@ -674,6 +851,46 @@ mod tests {
         assert_eq!(suspects.len(), 1);
         assert_eq!(suspects[0].kind, "kernel");
         assert_eq!(suspects[0].id, "0.1.2");
+    }
+
+    #[test]
+    fn runtime_cause_prefers_plugin_evidence_and_defaults_to_unknown() {
+        assert_eq!(runtime_cause(&[]), "unknown");
+        assert_eq!(
+            runtime_cause(&[
+                Suspect {
+                    kind: "kernel".into(),
+                    id: "1".into(),
+                    name: "dsh".into(),
+                    evidence: String::new(),
+                },
+                Suspect {
+                    kind: "plugin".into(),
+                    id: "p".into(),
+                    name: "plugin".into(),
+                    evidence: String::new(),
+                }
+            ]),
+            "plugin"
+        );
+    }
+
+    #[test]
+    fn runtime_evidence_attributes_plugin_from_frontend_stack() {
+        let report = HealthReport {
+            kind: "runtime-error".into(),
+            message: "组件初始化失败".into(),
+            stack: "at mount (http://127.0.0.1:3090/plugins/ghost/main.js:1:1)".into(),
+            page_url: "http://127.0.0.1:3090".into(),
+        };
+        let suspects = attribute(
+            &runtime_evidence(&report, ""),
+            &[store_item("ghost", "ghost-plugin")],
+            "1.0.0",
+        );
+        assert_eq!(suspects.len(), 1);
+        assert_eq!(suspects[0].kind, "plugin");
+        assert_eq!(suspects[0].id, "ghost");
     }
 
     #[test]

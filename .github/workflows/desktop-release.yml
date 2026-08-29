@@ -17,7 +17,58 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run UI tests
+        run: pnpm run test:ui
+
+      - name: Build UI
+        run: pnpm run build:ui
+
+      - name: Enforce UI bundle budgets
+        shell: bash
+        run: |
+          js_bytes=$(find ui/dist/assets -type f -name '*.js' -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')
+          css_bytes=$(find ui/dist/assets -type f -name '*.css' -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')
+          echo "UI JavaScript: ${js_bytes} bytes (budget: 700000)"
+          echo "UI CSS: ${css_bytes} bytes (budget: 180000)"
+          if (( js_bytes > 700000 )); then
+            echo "UI JavaScript bundle exceeds its budget" >&2
+            exit 1
+          fi
+          if (( css_bytes > 180000 )); then
+            echo "UI CSS bundle exceeds its budget" >&2
+            exit 1
+          fi
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Run Rust Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
   build:
+    needs: quality
     strategy:
       fail-fast: false
       matrix:

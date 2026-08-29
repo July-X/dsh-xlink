@@ -16,14 +16,13 @@
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
-use crate::process::quiet;
-use crate::releases::http_get_string;
+use crate::process::run_capture;
+use crate::releases::{http_get_file, http_get_npm_latest, http_get_string};
 use crate::version::cmp_versions;
 
 /// Central store directory name under the dsh home. Sits next to the
@@ -668,17 +667,6 @@ fn walk_package(
 
 // --- fetching ---------------------------------------------------------------
 
-/// Run one command, collecting stdout for quick helpers (git ls-remote).
-/// Goes through `process::command_with_path` so the GUI shell's inherited
-/// PATH includes the user's tool locations.
-fn run_capture(program: &str, args: &[&str]) -> io::Result<(bool, String)> {
-    let mut cmd = crate::process::command_with_path(program);
-    cmd.args(args);
-    let output = quiet(&mut cmd).output()?;
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
-    Ok((output.status.success(), text))
-}
-
 /// Highest semver-shaped tag among candidates, or None.
 fn latest_tag<'a>(tags: impl Iterator<Item = &'a str>) -> Option<String> {
     tags.filter_map(|t| {
@@ -757,40 +745,11 @@ fn fetch_npm_doc(name: &str) -> Result<NpmDoc, String> {
     serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())
 }
 
-/// Extract a tgz into dest, stripping the leading package/ segment. System
-/// tar via `process::command_with_path`; the stderr excerpt surfaces real
-/// causes (corrupt archive, permission denied, MAX_PATH overrun).
+/// Extract an npm tgz into `dest`, stripping its leading `package/` segment.
+/// The shared Rust extractor rejects traversal paths, links, and special files
+/// and bounds both entry count and declared expanded content before publishing.
 fn extract_tarball(tarball: &Path, dest: &Path) -> Result<(), String> {
-    fs::create_dir_all(dest).map_err(|e| format!("创建解包目录失败：{e}"))?;
-    let mut cmd = crate::process::command_with_path("tar");
-    cmd.arg("-xzf")
-        .arg(tarball)
-        .arg("--strip-components=1")
-        .arg("-C")
-        .arg(dest)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let output = quiet(&mut cmd)
-        .output()
-        .map_err(|e| format!("无法运行系统 tar：{e}"))?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr)
-            .trim()
-            .lines()
-            .next()
-            .unwrap_or("")
-            .to_string();
-        return Err(format!(
-            "tar 解包失败（退出码 {:?}）{}",
-            output.status.code(),
-            if detail.is_empty() {
-                String::new()
-            } else {
-                format!("：{detail}")
-            }
-        ));
-    }
-    Ok(())
+    crate::archive::extract_gzip_tarball(tarball, dest)
 }
 
 fn write_source_marker(spec: &SkillSpec, version: &str, dest: &Path) -> Result<(), AppError> {
@@ -1006,14 +965,12 @@ fn fetch_npm(
             ))
         })?;
     on_progress(&format!("正在下载 {}@{version} …", spec.source));
-    let bytes = crate::releases::http_get_bytes(&tarball)
-        .map_err(|e| AppError::Skill(format!("下载失败：{e}")))?;
     let tgz = dest.join(".pkg.tgz");
-    fs::write(&tgz, bytes).map_err(|e| AppError::Io(e.to_string()))?;
-    // npm tarballs carry a leading package/ segment that --strip-components=1
-    // removes, landing the manifest at dest where the scanner expects it.
+    http_get_file(&tarball, &tgz).map_err(|e| AppError::Skill(format!("下载失败：{e}")))?;
+    // Extract through the shared Rust archive handler; it validates the
+    // npm `package/` root and publishes the manifest at `dest` for scanning.
     extract_tarball(&tgz, dest)
-        .map_err(|e| AppError::Skill(format!("解包失败：{e}（请确认系统存在 tar）")))?;
+        .map_err(|e| AppError::Skill(format!("解包失败：{e}（请确认下载内容完整后重试）")))?;
     let _ = fs::remove_file(&tgz);
     Ok(version)
 }
@@ -1023,9 +980,7 @@ fn fetch_git(
     dest: &Path,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<String, AppError> {
-    let mut probe = crate::process::command_with_path("git");
-    probe.arg("--version");
-    if quiet(&mut probe).output().is_err() {
+    if !matches!(run_capture("git", &["--version"]), Ok((true, _))) {
         return Err(AppError::Skill(
             "未找到 git（git 来源的技能包需要 git；请先安装 git）".into(),
         ));
@@ -1048,18 +1003,21 @@ fn fetch_git(
     if let Some(tag) = &branch {
         cmd.arg("--branch").arg(tag);
     }
-    let status = quiet(&mut cmd)
-        .arg(&spec.source)
-        .arg(dest)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+    cmd.arg(&spec.source).arg(dest);
+    let (success, _stdout, stderr) = crate::process::run_command_capture(cmd, "git clone")
         .map_err(|e| AppError::Io(format!("无法运行 git：{e}")))?;
-    if !status.success() {
-        return Err(AppError::Skill(format!(
-            "git clone 失败（退出码 {:?}），请检查地址与网络",
-            status.code()
-        )));
+    if !success {
+        let detail = stderr
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("")
+            .trim();
+        return Err(AppError::Skill(if detail.is_empty() {
+            "git clone 失败，请检查地址与网络".to_string()
+        } else {
+            format!("git clone 失败：{detail}")
+        }));
     }
     if let Some(tag) = branch {
         return Ok(tag);
@@ -1507,8 +1465,8 @@ fn check_updates_for_home(home: &Path) -> Result<Vec<SkillUpdateInfo>, AppError>
             continue;
         }
         let (latest, error) = match item.origin.as_str() {
-            "npm" => match fetch_npm_doc(&item.source) {
-                Ok(doc) => (doc.dist_tags.get("latest").cloned(), None),
+            "npm" => match http_get_npm_latest(&item.source) {
+                Ok(latest) => (latest, None),
                 Err(e) => (None, Some(e)),
             },
             "git" => match git_latest_tag(&item.source) {
@@ -1715,6 +1673,9 @@ fn recover_staging(home: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TEST_HOME_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     /// Unique throwaway fake-home per test, removed on drop.
     struct TestHome(PathBuf);
@@ -1725,8 +1686,11 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
-            let base =
-                std::env::temp_dir().join(format!("dsh-skills-test-{}-{nano}", std::process::id()));
+            let seq = TEST_HOME_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let base = std::env::temp_dir().join(format!(
+                "dsh-skills-test-{}-{nano}-{seq}",
+                std::process::id()
+            ));
             fs::create_dir_all(&base).expect("create test home");
             TestHome(base)
         }

@@ -5,6 +5,7 @@
 //! and opens its UI in a dedicated webview window. All management happens in
 //! the local `ui/` frontend through the commands in [`commands`].
 
+mod archive;
 mod commands;
 mod env;
 mod error;
@@ -112,6 +113,7 @@ pub fn run() {
             commands::start_kernel,
             commands::stop_kernel,
             commands::open_harness,
+            commands::report_harness_fault,
             commands::open_log_window,
             commands::open_official_chat,
             commands::close_official_chat,
@@ -119,6 +121,7 @@ pub fn run() {
             commands::switch_official_chat_tab,
             commands::focus_main_shell,
             commands::plugin_status,
+            commands::kernel_plugin_list,
             commands::plugin_install,
             commands::plugin_update,
             commands::plugin_uninstall,
@@ -217,12 +220,13 @@ pub fn run() {
                     }
                 }
                 let data_dir = state.data_dir.clone();
-                if !kernel::port_open(settings::load(&data_dir).port) {
+                let port = settings::load(&data_dir).port;
+                if !kernel::port_open(port) {
                     // Port free: either nothing runs or stop() above reaped
                     // it — drop a stale pid record so the next start is clean.
                     kernel::clear_pid(&data_dir);
                 } else if let Some(pid) = kernel::read_pid(&data_dir) {
-                    kernel::kill_pid(pid);
+                    kernel::kill_pid(pid, Some(port));
                     kernel::clear_pid(&data_dir);
                 }
             }

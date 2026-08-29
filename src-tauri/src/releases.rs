@@ -14,6 +14,11 @@
 //! they are looking at.
 
 use std::collections::BTreeMap;
+use std::fs::{self, File};
+use std::io;
+use std::path::Path;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -24,12 +29,24 @@ use crate::version::cmp_versions;
 pub const TAG_PREFIX: &str = "dsh-v";
 
 const USER_AGENT: &str = concat!("dsh-desktop/", env!("CARGO_PKG_VERSION"));
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_HTTP_BODY_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_TARBALL_BYTES: u64 = 256 * 1024 * 1024;
+
+fn http_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(HTTP_TIMEOUT))
+            .build()
+            .new_agent()
+    })
+}
 
 /// GET `url` and return the body as text. Every shell fetch goes out with
-/// the desktop User-Agent; `accept` carries an extra Accept header for the
-/// one endpoint that expects it (GitHub's REST API).
+/// the desktop User-Agent and a bounded response body.
 pub(crate) fn http_get_string(url: &str, accept: Option<&str>) -> Result<String, String> {
-    let request = ureq::get(url).header("User-Agent", USER_AGENT);
+    let request = http_agent().get(url).header("User-Agent", USER_AGENT);
     let request = match accept {
         Some(value) => request.header("Accept", value),
         None => request,
@@ -37,20 +54,56 @@ pub(crate) fn http_get_string(url: &str, accept: Option<&str>) -> Result<String,
     let mut response = request.call().map_err(|e: ureq::Error| e.to_string())?;
     response
         .body_mut()
+        .with_config()
+        .limit(MAX_HTTP_BODY_BYTES)
         .read_to_string()
         .map_err(|e: ureq::Error| e.to_string())
 }
 
-/// GET `url` and return the body as bytes (npm tarball downloads).
-pub(crate) fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let mut response = ureq::get(url)
-        .header("User-Agent", USER_AGENT)
-        .call()
-        .map_err(|e: ureq::Error| e.to_string())?;
-    response
-        .body_mut()
-        .read_to_vec()
-        .map_err(|e: ureq::Error| e.to_string())
+/// GET `url` and stream the body to `destination` without buffering the full
+/// tarball in memory. The destination is only complete when the copy succeeds.
+pub(crate) fn http_get_file(url: &str, destination: &Path) -> Result<(), String> {
+    let Some(file_name) = destination.file_name() else {
+        return Err("下载目标不是文件路径".into());
+    };
+    let mut partial_name = file_name.to_os_string();
+    partial_name.push(".part");
+    let partial = destination.with_file_name(partial_name);
+    let result = (|| {
+        let mut response = http_agent()
+            .get(url)
+            .header("User-Agent", USER_AGENT)
+            .call()
+            .map_err(|e: ureq::Error| e.to_string())?;
+        let mut reader = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_TARBALL_BYTES)
+            .reader();
+        let mut file = File::create(&partial).map_err(|e: io::Error| e.to_string())?;
+        io::copy(&mut reader, &mut file).map_err(|e: io::Error| e.to_string())?;
+        file.sync_all().map_err(|e: io::Error| e.to_string())?;
+        fs::rename(&partial, destination).map_err(|e: io::Error| e.to_string())?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&partial);
+    }
+    result
+}
+
+/// Fetch only npm's `latest` dist-tag for an update check. Package metadata
+/// and tarballs use the same configurable registry base.
+pub(crate) fn http_get_npm_latest(package: &str) -> Result<Option<String>, String> {
+    let encoded: String = url::form_urlencoded::byte_serialize(package.as_bytes()).collect();
+    let url = format!(
+        "{}-/package/{encoded}/dist-tags",
+        crate::registry::npm_registry_base()
+    );
+    let body = http_get_string(&url, None)?;
+    let tags: BTreeMap<String, String> =
+        serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
+    Ok(tags.get("latest").cloned())
 }
 
 /// npm registry endpoint for the `@deepseek-ai/dsh` package. The npm
