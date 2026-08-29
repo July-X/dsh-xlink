@@ -43,20 +43,24 @@ jobs:
         run: pnpm run build:ui
 
       - name: Enforce UI bundle budgets
-        shell: bash
         run: |
-          js_bytes=$(find ui/dist/assets -type f -name '*.js' -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')
-          css_bytes=$(find ui/dist/assets -type f -name '*.css' -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')
-          echo "UI JavaScript: ${js_bytes} bytes (budget: 700000)"
-          echo "UI CSS: ${css_bytes} bytes (budget: 180000)"
-          if (( js_bytes > 700000 )); then
-            echo "UI JavaScript bundle exceeds its budget" >&2
-            exit 1
-          fi
-          if (( css_bytes > 180000 )); then
-            echo "UI CSS bundle exceeds its budget" >&2
-            exit 1
-          fi
+          node --input-type=module <<'NODE'
+          import { readdirSync, statSync } from 'node:fs';
+
+          const assets = 'ui/dist/assets';
+          const totalBytes = (suffix) =>
+            readdirSync(assets)
+              .filter((name) => name.endsWith(suffix))
+              .reduce((total, name) => total + statSync(`${assets}/${name}`).size, 0);
+          const jsBytes = totalBytes('.js');
+          const cssBytes = totalBytes('.css');
+
+          console.log(`UI JavaScript: ${jsBytes} bytes (budget: 700000)`);
+          console.log(`UI CSS: ${cssBytes} bytes (budget: 180000)`);
+          if (jsBytes > 700000 || cssBytes > 180000) {
+            process.exitCode = 1;
+          }
+          NODE
 
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
