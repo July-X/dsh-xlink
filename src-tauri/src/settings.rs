@@ -1,39 +1,35 @@
-//! Persisted desktop-shell settings.
+//! 桌面外壳的持久化设置。
 //!
-//! Settings live in `<data_dir>/settings.json` as a flat JSON struct so the
-//! UI can read and update them through ordinary command round-trips
-//! (`<data_dir>` is `<dsh_home>/desktop[-dev]/`, see [`crate::kernel::data_dir`]).
+//! 设置保存在 `<data_dir>/settings.json` 中，以扁平的 JSON 结构组织，UI 可
+//! 以通过普通的命令往返来读写它们（`<data_dir>` 是 `<dsh_home>/desktop[-dev]/`，
+//! 详见 [`crate::kernel::data_dir`]）。
 
 use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-/// The port the management UI expects the dsh web server on when the
-/// user has not yet persisted a value of their own. Re-exports
-/// [`crate::kernel::DEFAULT_PORT`] so the two definitions cannot drift —
-/// debug builds (3091) and release builds (3090) agree on the same
-/// fallback.
+/// 用户尚未保存自己的端口值时，管理面板期望 dsh web 服务器所使用的端口。
+/// 这里重新导出 [`crate::kernel::DEFAULT_PORT`]，避免两个定义发生偏移——
+/// debug 构建（3091）和 release 构建（3090）共用同一个回退值。
 pub use crate::kernel::DEFAULT_PORT;
 
-/// User-facing configuration the desktop shell needs to run a kernel.
+/// 桌面外壳运行内核所需的用户配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Explicit path to the `node` executable; when empty the shell detects
-    /// it from the environment.
+    /// `node` 可执行文件的显式路径；当为空时由外壳从环境中探测。
     pub node_path: Option<String>,
-    /// Explicit path to the `pnpm` executable; when empty it is resolved next
-    /// to `node` or from the environment. pnpm installs kernel versions.
+    /// `pnpm` 可执行文件的显式路径；当为空时从 `node` 旁边或环境中解析。
+    /// pnpm 用来安装内核版本。
     pub pnpm_path: Option<String>,
-    /// Explicit path to the `npm` executable; when empty it is resolved next
-    /// to `node` or from the environment. npm is the auto-install fallback
-    /// when pnpm is missing, so a custom install (portable layout, nvm
-    /// without the node-sibling npm) needs this slot to skip a wasted probe.
+    /// `npm` 可执行文件的显式路径；当为空时从 `node` 旁边或环境中解析。
+    /// 在 pnpm 缺失时，npm 是自动安装的备选，因此对于自定义安装（便携式
+    /// 布局、未带 node 同伴 npm 的 nvm）需要通过此字段跳过无效的探测。
     pub npm_path: Option<String>,
-    /// Port the kernel's web UI listens on (dsh defaults to 3080).
+    /// 内核的 web UI 监听的端口（dsh 默认 3080）。
     pub port: u16,
-    /// Profile name the shell wires plugins into (dsh default: web).
+    /// 外壳将插件接入的 profile 名称（dsh 默认：web）。
     pub profile: String,
 }
 
@@ -49,12 +45,12 @@ impl Default for Settings {
     }
 }
 
-/// Path of the settings file under `data_dir`.
+/// 设置文件在 `data_dir` 下的路径。
 pub fn settings_file(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join("settings.json")
 }
 
-/// Read settings, returning defaults when the file is missing or unreadable.
+/// 读取设置，文件缺失或无法读取时返回默认值。
 pub fn load(data_dir: &Path) -> Settings {
     let path = settings_file(data_dir);
     fs::read_to_string(&path)
@@ -63,7 +59,7 @@ pub fn load(data_dir: &Path) -> Settings {
         .unwrap_or_default()
 }
 
-/// Persist settings, creating the parent directory when needed.
+/// 持久化设置，必要时创建父目录。
 pub fn save(data_dir: &Path, settings: &Settings) -> Result<(), String> {
     let path = settings_file(data_dir);
     if let Some(parent) = path.parent() {
@@ -77,8 +73,8 @@ pub fn save(data_dir: &Path, settings: &Settings) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// The UI sends only `{port, profile}`; Tauri deserializes the `settings`
-    /// arg with serde_json::from_value just like this.
+    /// UI 只发送 `{port, profile}`；Tauri 用 serde_json::from_value 反序列化
+    /// `settings` 参数，和这里的做法一致。
     #[test]
     fn ui_payload_deserializes() {
         let v = serde_json::json!({"port": 8080, "profile": "web"});
@@ -87,8 +83,8 @@ mod tests {
         assert_eq!(s.node_path, None);
     }
 
-    /// Ports outside u16 are rejected at the IPC boundary; the UI validates
-    /// 1024–65535 before sending so the user gets an actionable message.
+    /// 超出 u16 范围的端口会在 IPC 边界被拒绝；UI 在发送前会校验
+    /// 1024–65535，因此用户会得到一条可操作的提示。
     #[test]
     fn out_of_range_port_rejected() {
         let v = serde_json::json!({"port": 70000, "profile": "web"});

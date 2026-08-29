@@ -1,4 +1,4 @@
-# DeepSeek Harness 桌面端（dsh-desktop）
+# DeepSeek Harness 桌面端（dsh-xlink）
 
 [![Desktop release (dsh-xlink)](https://github.com/July-X/dsh-xlink/actions/workflows/desktop-release.yml/badge.svg?event=release)](https://github.com/July-X/dsh-xlink/actions/workflows/desktop-release.yml)
 
@@ -12,7 +12,7 @@
 ## 它如何工作
 
 ```
-+------------------------- dsh-desktop (Tauri v2) ----------------------------+
++---------------------------- dsh-xlink (Tauri v2) ----------------------------+
 |                                                                            |
 |  main window (panel)            harness window             official-chat   |
 |  ui/ static page                 WebviewWindow              window          |

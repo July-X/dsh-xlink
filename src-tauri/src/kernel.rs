@@ -1,24 +1,23 @@
-//! Kernel lifecycle: installing pinned kernel versions, managing the active
-//! version, and starting/stopping the `dsh web` process the shell embeds.
+//! 内核生命周期：安装固定版本的内核、管理当前激活版本，并启动 / 停止壳所内嵌的
+//! `dsh web` 进程。
 //!
-//! Shell metadata lives under the harness home, next to the kernel's own
-//! data: `<dsh_home>/desktop/` (`~/.dsh/desktop/` by default). A kernel
-//! version is installed by running pnpm into a dedicated directory:
+//! 壳的元数据与内核自身的数据并列存放，统一位于 harness home 目录下：
+//! `<dsh_home>/desktop/`（默认即 `~/.dsh/desktop/`）。安装一个内核版本时，
+//! 在专属目录中运行 pnpm：
 //!
 //! ```text
 //! <dsh_home>/desktop/kernels/<version>/
-//!   package.json                     # minimal stub pnpm installs into
-//!   node_modules/@deepseek-ai/dsh/   # the pinned kernel
+//!   package.json                     # pnpm 安装的最小桩包
+//!   node_modules/@deepseek-ai/dsh/   # 固定版本的内核
 //! ```
 //!
-//! The install uses the `hoisted` node-linker so `node_modules` stays flat —
-//! the same layout npm produces — and the kernel entry point can be resolved
-//! as a plain path without a symlink-capable filesystem. pnpm's global
-//! content-addressable store makes repeat installs of other versions much
-//! faster than a cold npm install. The `append-only` reporter emits one log
-//! line per lifecycle event on stdout, which streams to the UI in real time.
+//! 安装使用 `hoisted` node-linker，使 `node_modules` 保持平铺——与 npm 生成的
+//! 布局一致——内核入口路径可直接以普通路径解析，无需依赖支持符号链接的文件系统。
+//! pnpm 的全局内容寻址存储让重复安装其他版本比冷启动的 npm 安装快得多。
+//! `append-only` reporter 会把每个生命周期事件以一行日志输出到 stdout，
+//! 实时流式推送给 UI。
 //!
-//! The active version is recorded in `<dsh_home>/desktop/active.txt`.
+//! 当前激活版本记录在 `<dsh_home>/desktop/active.txt` 中。
 
 use std::fs;
 use std::io;
@@ -37,46 +36,42 @@ use tauri::Manager;
 use crate::error::AppError;
 use crate::settings::{self, Settings};
 
-/// dsh's own home directory name (see `@deepseek-ai/dsh-home-paths`).
+/// dsh 自身的 home 目录名（参见 `@deepseek-ai/dsh-home-paths`）。
 pub const DSH_HOME_DIR_NAME: &str = ".dsh";
-/// Shell metadata root under the dsh home for a *release* build of the
-/// shell: `<dsh_home>/desktop/`.
+/// *release* 构建下壳的元数据根目录，位于 dsh home 下：`<dsh_home>/desktop/`。
 const SHELL_SUBDIR_RELEASE: &str = "desktop";
-/// Shell metadata root for a *debug* build (`tauri dev`). The path sits
-/// next to the release path but is named differently so a developer can
-/// run `tauri dev` and the installed release shell side-by-side without
-/// either one stomping on the other's settings.json / kernels / active.txt
-/// / kernel.pid / port. Both builds read their own data dir, so the dev
-/// shell sees its own set of installed kernels and its own running kernel
-/// pid, and the release shell sees its own.
+/// *debug* 构建（`tauri dev`）下壳的元数据根目录。该路径与 release 路径并列
+/// 存在但名称不同，以便开发者在同一台机器上同时运行 `tauri dev` 和已安装的
+/// release 壳，二者的 settings.json / kernels / active.txt / kernel.pid / port
+/// 不会互相覆盖。两个构建读取各自的 data dir，因此 dev 壳看到的是自己安装的
+/// 内核集合和自己正在运行的内核 pid，release 壳看到的也是自己的。
 const SHELL_SUBDIR_DEV: &str = "desktop-dev";
-/// Sub-directory actually used by this build, picked at compile time.
+/// 本构建实际使用的子目录，在编译期选定。
 const SHELL_SUBDIR: &str = if cfg!(debug_assertions) {
     SHELL_SUBDIR_DEV
 } else {
     SHELL_SUBDIR_RELEASE
 };
-/// Default port for the kernel web server. Debug builds default to 3091
-/// (one above the release 3090) so `tauri dev` and the installed release
-/// shell can run on the same machine without colliding on loopback. The
-/// value only matters when settings.json is missing or has no `port`
-/// field; once the user persists a value it is read back as-is.
+/// 内核 web 服务器的默认端口。debug 构建默认为 3091（比 release 的 3090 多一），
+/// 这样 `tauri dev` 与已安装的 release 壳可以在同一台机器上运行而不会在 loopback 上
+/// 冲突。该值仅在 settings.json 缺失或没有 `port` 字段时生效；用户一旦持久化保存了
+/// 某个值，就会原样读回使用。
 pub const DEFAULT_PORT: u16 = if cfg!(debug_assertions) { 3091 } else { 3090 };
-/// Relative path of the kernel's CLI entry inside an installed package.
+/// 已安装包中内核 CLI 入口的相对路径。
 const KERNEL_BIN_REL: &str = "node_modules/@deepseek-ai/dsh/lib/bin.js";
 const MAX_ORPHAN_CANDIDATES: usize = 256;
 
-/// One installed kernel version on disk.
+/// 磁盘上已安装的一个内核版本。
 #[derive(Debug, Clone, Serialize)]
 pub struct InstalledVersion {
     pub version: String,
     pub active: bool,
-    /// Size of the kernel entry file (`KERNEL_BIN_REL`) only — a cheap
-    /// completeness signal, not the footprint of the whole install.
+    /// 仅内核入口文件（`KERNEL_BIN_REL`）的大小——一种廉价的完整性信号，
+    /// 而非整个安装的占用体积。
     pub size_bytes: u64,
 }
 
-/// Snapshot the UI renders on every status refresh.
+/// UI 在每次状态刷新时渲染的快照。
 #[derive(Debug, Clone, Serialize)]
 pub struct KernelStatus {
     pub installed: Vec<InstalledVersion>,
@@ -84,30 +79,28 @@ pub struct KernelStatus {
     pub active_installed: bool,
     pub running: bool,
     pub port: u16,
-    /// Display form of the shell's metadata root, with the user's home
-    /// prefix shortened to `~` when the path sits under it. The UI shows
-    /// this next to the「打开」button, which opens the same path — keeping
-    /// the label and the action on the same directory.
+    /// 壳元数据根目录的展示形式，当路径位于用户 home 下时把 home 前缀
+    /// 缩短为 `~`。UI 把该值显示在「打开」按钮旁边，按钮点击后也打开
+    /// 同一路径——这样标签和操作指向的是同一个目录。
     pub data_dir: String,
     pub ever_installed: bool,
 }
 
-/// Shell metadata root, derived in this priority order:
+/// 壳的元数据根目录，按以下优先级解析：
 ///
-/// 1. `DSH_DESKTOP_DATA_DIR` — full override. Lets a power user point the
-///    shell at any directory (e.g. for testing on an external drive) and
-///    short-circuits both the dsh-home and build-type subdir logic below.
-/// 2. `<dsh_home>/<SHELL_SUBDIR>/` where `<dsh_home>` comes from `DSH_HOME`
-///    or `~/.dsh` and `<SHELL_SUBDIR>` is `desktop/` for release builds
-///    and `desktop-dev/` for debug builds (`tauri dev`). The two names keep
-///    a developer-run shell and the installed release shell from sharing
-///    settings.json / active.txt / kernel.pid / port when both run on the
-///    same machine.
-/// 3. Tauri's OS app-data dir as a last-resort fallback if the dsh home is
-///    read-only; better to boot somewhere than to fail at startup.
+/// 1. `DSH_DESKTOP_DATA_DIR`——完整覆盖。允许高级用户把壳指向任意目录
+///    （例如在外置磁盘上测试），同时短路掉下文的 dsh-home 与构建类型
+///    子目录逻辑。
+/// 2. `<dsh_home>/<SHELL_SUBDIR>/`，其中 `<dsh_home>` 来自 `DSH_HOME`
+///    或 `~/.dsh`，`<SHELL_SUBDIR>` 在 release 构建下是 `desktop/`，
+///    在 debug 构建（`tauri dev`）下是 `desktop-dev/`。两个名称避免
+///    开发运行的壳与已安装的 release 壳在同一台机器上共用
+///    settings.json / active.txt / kernel.pid / port。
+/// 3. 当 dsh home 只读时，回退到 Tauri 的操作系统 app-data 目录；
+///    宁愿在某个地方启动也不愿在启动阶段直接失败。
 ///
-/// All shell state (kernels, settings, logs, active pointer) lives under
-/// this one root next to the kernel's own data.
+/// 壳的所有状态（内核、设置、日志、活动指针）都存放在这一根目录中，
+/// 与内核自身的数据并列。
 pub fn data_dir(app: &tauri::AppHandle) -> PathBuf {
     if let Some(override_dir) = std::env::var_os("DSH_DESKTOP_DATA_DIR").map(PathBuf::from) {
         let _ = fs::create_dir_all(&override_dir);
@@ -120,15 +113,15 @@ pub fn data_dir(app: &tauri::AppHandle) -> PathBuf {
     if fs::create_dir_all(&dir).is_ok() {
         return dir;
     }
-    // Read-only dsh home: fall back to the OS app-data dir so the shell
-    // still boots instead of failing at startup.
+    // dsh home 只读：回退到 OS 的 app-data 目录，使壳至少能启动，
+    // 而不是启动阶段直接失败。
     app.path()
         .app_data_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// The user's OS home directory (`$HOME` on Unix, `%USERPROFILE%` on Windows).
-/// Shared with `node.rs`, which locates nvm-managed Node installs under it.
+/// 用户的操作系统 home 目录（Unix 下为 `$HOME`，Windows 下为 `%USERPROFILE%`）。
+/// 与 `node.rs` 共用，由其在 home 下定位 nvm 管理的 Node 安装。
 pub(crate) fn dirs_home() -> PathBuf {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -136,12 +129,11 @@ pub(crate) fn dirs_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Render `path` for display by shortening its home prefix to `~`. Falls
-/// back to the full string when the path doesn't sit under the user's OS
-/// home (e.g. `DSH_HOME` was redirected to a custom location); in that
-/// case the user already knows the path is non-standard and wants to see
-/// it verbatim. Windows backslashes are normalized to forward slashes so
-/// the display form matches the `~/.dsh/...` convention used in docs.
+/// 把 `path` 渲染为展示形式：把 home 前缀缩短为 `~`。当路径不在用户
+/// 操作系统 home 下时（例如 `DSH_HOME` 被重定向到自定义位置）回退为
+/// 完整字符串；这种情况下用户已经知道路径非标准，需要原样查看。
+/// Windows 上的反斜杠会规范化为正斜杠，使展示形式与文档中
+/// `~/.dsh/...` 的写法一致。
 fn display_short(path: &Path) -> String {
     let home = dirs_home();
     let display = if let Ok(rel) = path.strip_prefix(&home) {
@@ -157,19 +149,16 @@ fn display_short(path: &Path) -> String {
     } else {
         path.display().to_string()
     };
-    // Long data-dir paths (custom DSH_HOME, deep app-data fallback) would
-    // push the kv value column in the overview card to overflow. Elide
-    // the middle of the path while keeping the readable head (`~` prefix
-    // and the first two segments after it) and the tail (the final 2–3
-    // segments, which carry the identity of the directory). The ellipsis
-    // keeps the value hintful without needing the full string.
+    // 较长的 data-dir 路径（自定义 DSH_HOME、深层 app-data 回退）会撑爆
+    // 概览卡片里的 kv 值列。省略路径的中间部分，保留可读的头部
+    // （`~` 前缀及其后两个段）与尾部（最末 2~3 个段，这些承载目录的标识）。
+    // 省略号让值仍带线索，无需展示完整字符串。
     ellipsize_middle(&display, 38)
 }
 
-/// Collapse the middle of `s` to `…` when it exceeds `max_chars`, keeping
-/// the head (up to the first ~40% of the budget) and the tail (the rest).
-/// Whole path segments are preferred as cut points so the result reads
-/// as a real path, not a chopped string.
+/// 把 `s` 中间折叠为 `…`（当长度超过 `max_chars` 时），保留头部
+/// （约前 40% 的预算）与尾部（其余）。优先以完整路径段作为切点，
+/// 让结果读起来仍是真实路径，而非被截断的字符串。
 fn ellipsize_middle(s: &str, max_chars: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= max_chars {
@@ -177,14 +166,14 @@ fn ellipsize_middle(s: &str, max_chars: usize) -> String {
     }
     let head_budget = max_chars * 2 / 5;
     let tail_budget = max_chars - head_budget;
-    // Preferred cut: at a '/' boundary so neither side ends mid-segment.
-    // Search inside the head range for the LAST '/' within head_budget,
-    // and inside the tail range for the FIRST '/' within tail_budget.
+    // 优先切在 '/' 边界处，避免任一侧停在段中间。
+    // 在 head 预算范围内倒序查找最后一个 '/'，在 tail 预算范围内
+    // 正序查找第一个 '/'。
     let head_cut = (0..head_budget).rev().find(|&i| chars[i] == '/');
     let tail_start = chars.len() - tail_budget;
     let tail_cut = (tail_start..chars.len()).find(|&i| chars[i] == '/');
     let head_end = match head_cut {
-        // Keep the '/' itself on the head side (segments read whole).
+        // 把 '/' 留在头部一侧（路径段读起来完整）。
         Some(i) => i + 1,
         None => head_budget,
     };
@@ -214,7 +203,7 @@ pub fn logs_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("logs")
 }
 
-/// Read the directory names that look like installed kernel versions.
+/// 读取看起来像已安装内核版本的目录名。
 pub fn list_installed(data_dir: &Path) -> Vec<InstalledVersion> {
     let dir = kernels_dir(data_dir);
     let mut out = Vec::new();
@@ -241,7 +230,7 @@ pub fn list_installed(data_dir: &Path) -> Vec<InstalledVersion> {
     out
 }
 
-/// The currently active version, if any.
+/// 当前激活的版本（若有）。
 pub fn read_active(data_dir: &Path) -> Option<String> {
     fs::read_to_string(active_file(data_dir))
         .ok()
@@ -249,12 +238,12 @@ pub fn read_active(data_dir: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Record the active version. Persisted as plain text so the CLI tooling and
-/// the app agree on a trivially inspectable format.
+/// 记录当前激活的版本。以纯文本形式持久化，便于 CLI 工具与 app 双方都能
+/// 简单地检查格式。
 ///
-/// The write goes through a temp file + rename so a crash mid-write can
-/// never leave a truncated `active.txt` behind — the reader treats an empty
-/// file as "no active version", which would silently unpin the kernel.
+/// 写入采用 temp 文件 + rename 的方式，避免写入中途崩溃留下被截断的
+/// `active.txt`——读取方把空文件当作「没有激活版本」，这会静默地解除
+/// 内核固定。
 pub fn write_active(data_dir: &Path, version: Option<&str>) -> Result<(), AppError> {
     fs::create_dir_all(data_dir).map_err(|e| AppError::Io(e.to_string()))?;
     let target = active_file(data_dir);
@@ -266,22 +255,22 @@ pub fn write_active(data_dir: &Path, version: Option<&str>) -> Result<(), AppErr
         }
         None => match fs::remove_file(&target) {
             Ok(()) => Ok(()),
-            // Removing a missing file is already the requested state; the
-            // uninstall path relies on this when cleaning up partially.
+            // 删除一个不存在的文件已达到请求状态；卸载路径在部分清理时
+            // 依赖此行为。
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(AppError::Io(e.to_string())),
         },
     }
 }
 
-/// Refresh the `active` flag on each installed version.
+/// 刷新每个已安装版本上的 `active` 标记。
 pub fn with_active(installed: &mut [InstalledVersion], active: Option<&str>) {
     for item in installed.iter_mut() {
         item.active = Some(item.version.as_str()) == active;
     }
 }
 
-/// Compose the full status snapshot.
+/// 组装完整的状态快照。
 pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
     let mut installed = list_installed(data_dir);
     let active = read_active(data_dir);
@@ -301,7 +290,7 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
     }
 }
 
-/// Toggle which installed version `start` will run.
+/// 切换 `start` 将运行的已安装版本。
 pub fn set_active(data_dir: &Path, version: &str) -> Result<(), AppError> {
     if !kernel_dir(data_dir, version).join(KERNEL_BIN_REL).is_file() {
         return Err(AppError::Kernel(format!(
@@ -311,8 +300,7 @@ pub fn set_active(data_dir: &Path, version: &str) -> Result<(), AppError> {
     write_active(data_dir, Some(version))
 }
 
-/// Delete an installed version. The caller must stop the kernel first when it
-/// is the active version.
+/// 删除一个已安装的版本。若该版本是当前激活版本，调用方需先停止内核。
 pub fn uninstall(data_dir: &Path, version: &str) -> Result<(), AppError> {
     if read_active(data_dir).as_deref() == Some(version) {
         return Err(AppError::Kernel(format!(
@@ -326,11 +314,17 @@ pub fn uninstall(data_dir: &Path, version: &str) -> Result<(), AppError> {
     fs::remove_dir_all(&dir).map_err(|e| AppError::Io(e.to_string()))
 }
 
-/// Keep only the newest `KEEP` install logs (by modified time) plus the one
-/// about to be written, so long-term use cannot balloon the logs directory.
-/// Only `install-*.log` files rotate — `kernel.log` is the running kernel's
-/// live log and must never be deleted out from under it.
-/// Best-effort: individual delete failures are ignored.
+/// 仅保留最新的 `KEEP` 条内核安装日志（按修改时间）以及即将写入的那一条，
+/// 防止长期使用让日志目录无限膨胀。在新命名规则下，每个文件是
+/// `<kind>-install-<version>-<date>.log`；过滤器同时接受这种格式与
+/// 旧式的 `install-*.log` 名称，让从老版本壳升级上来的用户首次使用时就
+/// 把旧安装日志清理掉。
+///
+/// Pnpm 自动安装日志（`<kind>-pnpm-install-<epoch>-<date>.log`）被排除：
+/// 它们不是安装脚本，且 `epoch` 已经让它们在每个会话中唯一，可通过
+/// 每日轮转自行清理。
+///
+/// Best-effort：单条删除失败会被忽略。
 fn rotate_install_logs(logs: &Path, keep: &Path) {
     const KEEP: usize = 9;
     let Ok(entries) = fs::read_dir(logs) else {
@@ -585,7 +579,7 @@ pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<C
         use std::os::unix::process::CommandExt;
         unsafe {
             cmd.pre_exec(|| {
-                // Detach into a new session so `kill -pid` reaps the group.
+                // 进入新会话，使 `kill -pid` 能回收整个进程组。
                 if libc::setsid() == -1 {
                     return Err(io::Error::last_os_error());
                 }
@@ -622,30 +616,25 @@ pub fn start_maybe(data_dir: &Path, node: &Path) -> Result<Option<Child>, AppErr
     start(data_dir, node, &active, port).map(Some)
 }
 
-/// Reap orphaned dsh web kernels whose working directory equals `data_dir`.
+/// 回收工作目录等于 `data_dir` 的孤儿 dsh web 内核。
 ///
-/// A shell crash or a shell window that was killed without going through
-/// 「关闭工作台」leaves the kernel subprocess behind (setsid detached it
-/// from the shell's process group). The next shell launch finds the port
-/// already bound and `start_maybe` reports "already running" — but the
-/// orphan keeps writing session logs for the same project directory as a
-/// second instance would, which is exactly what produced the
-/// `corrupt session log: seq gap in committed region` failures seen in
-/// the workbench history. Reap: scan every `@deepseek-ai/dsh/bin.js web`
-/// process, compare its cwd with `data_dir`, and SIGTERM+SIGKILL (via
-/// kill_pid, which has the same pid-is-kernel guard) anything matching
-/// that is not the current shell's own in-memory child.
+/// 壳发生崩溃，或壳窗口未走「关闭工作台」就被杀掉，都会把内核子进程留在
+/// 身后（setsid 已经把它从壳的进程组里分离出去）。下一次壳启动会发现
+/// 端口已被占用，`start_maybe` 报告「已在运行」——但那个孤儿会像第二个实例
+/// 那样继续向同一项目目录写会话日志，这正是历史上出现 `corrupt session
+/// log: seq gap in committed region` 失败的根因。回收流程：扫描所有
+/// `@deepseek-ai/dsh/bin.js web` 进程，把它们的 cwd 与 `data_dir` 比较，
+/// 对匹配且不是当前壳内存中子进程的项做 SIGTERM+SIGKILL（通过 kill_pid，
+/// 它带有相同的 pid-is-kernel 守卫）。
 ///
-/// Safe against a second, deliberately-running shell instance on the SAME
-/// data dir? Not entirely: a second shell using the same data dir also
-/// runs its kernel with cwd == data_dir, so this scan would reap that
-/// kernel too. That is the desired outcome though — the desktop shell is
-/// single-instance per data dir (the dev / release split gives each
-/// build its own dir), and two kernels on one dir are exactly the
-/// corruption scenario this function exists to prevent.
-/// windows_subsystem 下，Windows 端只保留接口、没有 orphan-reap 实现
+/// 对同一 data dir 上故意运行的第二个壳实例安全吗？并不完全安全：使用同一
+/// data dir 的第二个壳也会以 cwd == data_dir 运行其内核，所以本次扫描也会
+/// 把那个内核回收掉。但这正是期望的结果——桌面壳在每个 data dir 上是
+/// 单实例的（dev / release 划分让每个构建拥有自己的目录），而同一目录上
+/// 两个内核恰恰是本函数存在的目的所要防止的损坏场景。
+/// 在 windows_subsystem 下，Windows 端仅保留接口、没有 orphan-reap 实现
 /// （见函数体注释）。参数在 Unix 分支里被 `data_dir == cwd` 比较使用，
-/// Windows 编译时整个 #[cfg(unix)] 块被跳过，所以参数属于平台特定未用。
+/// Windows 编译时整个 #[cfg(unix)] 块被跳过，所以该参数属于平台特定的未使用项。
 #[cfg_attr(not(unix), allow(unused_variables))]
 pub fn reap_orphans(data_dir: &Path) {
     #[cfg(unix)]
@@ -659,8 +648,8 @@ pub fn reap_orphans(data_dir: &Path) {
         if !success {
             return;
         }
-        // Each candidate may trigger a bounded lsof/ps probe, so keep startup
-        // cleanup from becoming proportional to an untrusted process list.
+        // 每个候选项都可能触发一次有界的 lsof/ps 探测，因此不能让
+        // 启动期清理与不可信的进程列表规模成正比。
         let mut candidates = 0usize;
         for line in text.lines() {
             if candidates >= MAX_ORPHAN_CANDIDATES {
@@ -677,9 +666,8 @@ pub fn reap_orphans(data_dir: &Path) {
             if pid == std::process::id() {
                 continue;
             }
-            // Resolve the process's cwd: /proc/{pid}/cwd on Linux, lsof on
-            // macOS. Only entities whose cwd matches OUR data dir are ours
-            // to reap.
+            // 解析进程的 cwd：Linux 上读 /proc/{pid}/cwd，macOS 上用 lsof。
+            // 只有 cwd 与 OUR data dir 匹配的实体才是我们要回收的。
             let cwd_matches = std::fs::read_link(format!("/proc/{pid}/cwd"))
                 .map(|p| p == data_dir)
                 .unwrap_or_else(|_| {
@@ -708,31 +696,29 @@ pub fn reap_orphans(data_dir: &Path) {
     }
     #[cfg(windows)]
     {
-        // Windows: no /proc; wmic/wmic killed by newer PowerShell; the
-        // port-based fallback in stop_kernel covers the common path and
-        // PowerShell's Get-CimInstance is too slow to run per launch.
-        // Keep windows a no-op for now — orphan reaping there is a future
-        // task, and the pid-file/port fallback still lets the user stop.
+        // Windows 上没有 /proc；新版 PowerShell 已经禁用 wmic/wmic；
+        // stop_kernel 中的端口回退路径能覆盖常见情形，而 PowerShell 的
+        // Get-CimInstance 每次启动都跑太慢。Windows 上暂时保持 no-op——
+        // 那里的孤儿回收是后续任务，pid 文件 / 端口回退仍然允许用户停止。
     }
 }
 
-/// Stop a running kernel child, reaping its whole process group where the
-/// platform supports it.
+/// 停止正在运行的内核子进程，在支持的平台上回收整个进程组。
 pub fn stop(child: &mut Child) -> Result<(), AppError> {
     #[cfg(unix)]
     {
         let pid = child.id() as i32;
-        // Ask the group to terminate, then force-kill whatever survives.
+        // 先请求整个组终止，再强制 kill 任何仍然存活的进程。
         unsafe {
             libc::kill(-pid, libc::SIGTERM);
         }
-        // Poll try_wait instead of a blocking wait(): a child that ignores
-        // SIGTERM would otherwise park stop() here forever and the SIGKILL
-        // below could never run. Same 1-second budget as `kill_pid`.
+        // 用 try_wait 轮询而非阻塞 wait()：忽略 SIGTERM 的子进程会
+        // 永远阻塞 stop()，导致后面的 SIGKILL 无法执行。
+        // 与 `kill_pid` 同样的 1 秒预算。
         let mut exited = false;
         for _ in 0..10 {
-            // try_wait only fails on OS-level errors; keep polling and let
-            // the SIGKILL below settle the child either way.
+            // try_wait 仅在 OS 级错误时失败；继续轮询，无论如何
+            // 让后面的 SIGKILL 把子进程收尾。
             if child.try_wait().is_ok_and(|status| status.is_some()) {
                 exited = true;
                 break;
@@ -743,8 +729,8 @@ pub fn stop(child: &mut Child) -> Result<(), AppError> {
             unsafe {
                 libc::kill(-pid, libc::SIGKILL);
             }
-            // Reap after the kill; a wait error here means the child is
-            // already gone, which is the state we wanted.
+            // kill 后再回收；这里的 wait 报错意味着子进程已经消失，
+            // 而这正是我们想要的状态。
             let _ = child.wait();
         }
     }
@@ -759,41 +745,36 @@ pub fn stop(child: &mut Child) -> Result<(), AppError> {
     Ok(())
 }
 
-// --- pid tracking -----------------------------------------------------------
+// --- pid 跟踪 ---------------------------------------------------------------
 //
-// The shell's in-memory `running` child is lost when the shell itself
-// restarts. The pid file lets a later「停止内核」still reap the kernel.
+// 壳自身的内存中 `running` 子进程在壳重启时会丢失。pid 文件让稍后的
+// 「停止内核」操作仍然能够回收内核。
 
-// --- port-based pid lookup --------------------------------------------------
+// --- 基于端口的 pid 查询 -----------------------------------------------------
 //
-// When the dev and release shells run side-by-side (see the data-dir
-// isolation in `data_dir` + `DEFAULT_PORT`), the release shell's
-// `kernel.pid` is irrelevant to the dev shell and vice versa. The dev
-// shell can also be restarted while the kernel it started is still
-// running — the in-memory `state.running` handle is gone, and the
-// `start_maybe` call skipped the kernel start because the port was
-// already open, so the dev shell never wrote its own pid file. Stop
-// then has no pid to kill; the kernel stays up and the UI keeps
-// reading the port as "running". Lookup by listening port recovers
-// the pid in this scenario — the dev shell, the release shell, and
-// any future shell that wants to take over a kernel it did not start
-// can all reap the running process.
+// 当 dev 与 release 壳并列运行时（参见 `data_dir` + `DEFAULT_PORT` 中的
+// data dir 隔离），release 壳的 `kernel.pid` 与 dev 壳无关，反之亦然。
+// dev 壳还可能在它启动的内核仍在运行时被重启——此时内存中 `state.running`
+// 句柄已经消失，`start_maybe` 调用因为端口已被占用而跳过启动，因此 dev 壳
+// 永远不会写出自己的 pid 文件。此时 Stop 没有可 kill 的 pid；内核继续存活，
+// UI 把端口读作「运行中」。通过监听端口反查 pid 可以恢复这一场景下的
+// pid——dev 壳、release 壳，以及任何想要接管一个非自己启动的内核的后续
+// 壳，都可以用这种方式回收运行中的进程。
 
-/// Return the pid of whatever process is currently listening on
-/// `127.0.0.1:port`, or `None` if the port is free or the platform-
-/// specific lookup fails. Used as a fallback when the kernel pid
-/// file is missing or points at a stale process.
+/// 返回当前正在监听 `127.0.0.1:port` 的进程 pid；若端口空闲或
+/// 平台特定的查询失败，返回 `None`。作为内核 pid 文件缺失或指向
+/// 陈旧进程时的回退。
 #[cfg(unix)]
 pub(crate) fn port_listen_pid(port: u16) -> Option<u32> {
-    // lsof is the most portable: it ships with macOS by default and
-    // is in the base package of most Linux distributions.
-    // `-nP` skips DNS and service-name resolution (faster, deterministic
-    // output); `-iTCP:PORT -sTCP:LISTEN -t` filters to the one pid we
-    // want — the first line is the pid of the listener.
+    // lsof 最具可移植性：macOS 默认自带，绝大多数 Linux 发行版的
+    // base 包中也包含。
+    // `-nP` 跳过 DNS 与服务名解析（更快、输出更确定）；
+    // `-iTCP:PORT -sTCP:LISTEN -t` 过滤出我们想要的那一个 pid——
+    // 首行就是监听者的 pid。
     if let Some(pid) = port_listen_pid_lsof(port) {
         return Some(pid);
     }
-    // Fallback to `ss` for Linux systems that don't have lsof.
+    // 没有 lsof 的 Linux 系统回退到 `ss`。
     port_listen_pid_ss(port)
 }
 
@@ -819,11 +800,10 @@ pub(crate) fn port_listen_pid_ss(port: u16) -> Option<u32> {
     if !success {
         return None;
     }
-    // ss line format:
+    // ss 行格式：
     //   LISTEN 0 128  127.0.0.1:3091  127.0.0.1:*  users:(("node",pid=1762,fd=22))
-    // The pid lives inside the users:((\"...\",pid=NUMBER,fd=NUMBER)) tuple;
-    // we don't need to parse the surrounding text — just pick the first
-    // "pid=NUMBER" segment.
+    // pid 位于 users:(("…",pid=NUMBER,fd=NUMBER)) 元组中；
+    // 无需解析周围文本——只需取第一段 "pid=NUMBER"。
     stdout
         .lines()
         .filter_map(|line| {
@@ -839,9 +819,8 @@ pub(crate) fn port_listen_pid_ss(port: u16) -> Option<u32> {
 
 #[cfg(windows)]
 pub(crate) fn port_listen_pid(port: u16) -> Option<u32> {
-    // netstat -ano emits one line per TCP/UDP endpoint; filter by
-    // `:PORT` and `LISTENING` to find the pid of whatever is bound
-    // to the dev/release port.
+    // netstat -ano 每个 TCP/UDP 端点输出一行；用 `:PORT` 与 `LISTENING`
+    // 过滤，找到绑定在 dev/release 端口上的 pid。
     let (success, stdout, _) = crate::process::run_capture_output("netstat", &["-ano"]).ok()?;
     if !success {
         return None;
@@ -860,17 +839,17 @@ pub(crate) fn port_listen_pid(port: u16) -> Option<u32> {
     None
 }
 
-/// PID file of the last kernel the shell spawned: `<data_dir>/kernel.pid`.
+/// 上次壳启动的内核的 PID 文件：`<data_dir>/kernel.pid`。
 fn pid_path(data_dir: &Path) -> PathBuf {
     data_dir.join("kernel.pid")
 }
 
-/// Record the spawned kernel's pid (best-effort).
+/// 记录已启动内核的 pid（best-effort）。
 pub fn write_pid(data_dir: &Path, pid: u32) {
     let _ = fs::write(pid_path(data_dir), pid.to_string());
 }
 
-/// Read the recorded kernel pid, when present and parseable.
+/// 读取已记录的内核 pid（若存在且可解析）。
 pub fn read_pid(data_dir: &Path) -> Option<u32> {
     fs::read_to_string(pid_path(data_dir))
         .ok()?
@@ -879,13 +858,12 @@ pub fn read_pid(data_dir: &Path) -> Option<u32> {
         .ok()
 }
 
-/// Drop the pid record after a successful stop.
+/// 在成功停止后清除 pid 记录。
 pub fn clear_pid(data_dir: &Path) {
     let _ = fs::remove_file(pid_path(data_dir));
 }
 
-/// Return the command line for a process without allowing an unbounded helper
-/// command to hang the stop path.
+/// 返回某个进程的命令行，避免不受限的助手命令把 stop 路径挂住。
 fn process_command(pid: u32) -> Option<String> {
     #[cfg(unix)]
     {
@@ -906,9 +884,8 @@ fn process_command(pid: u32) -> Option<String> {
     }
 }
 
-/// Whether `pid` is a dsh kernel serving the requested port. Checking both the
-/// executable path and the port prevents PID reuse and cross-profile shells
-/// from being mistaken for the process this data directory owns.
+/// 判断 `pid` 是否是服务于指定端口的 dsh 内核。同时检查可执行路径与
+/// 端口，可防止 PID 复用以及跨 profile 的壳被误认为本 data dir 拥有的进程。
 pub(crate) fn pid_is_kernel(pid: u32, port: Option<u16>) -> bool {
     let Some(command) = process_command(pid) else {
         return false;
@@ -972,11 +949,10 @@ pub fn kill_pid(pid: u32, port: Option<u16>) {
 mod tests {
     use super::*;
 
-    /// `display_short` is what the UI shows next to the「打开」button;
-    /// the button must open the same directory the label names, otherwise
-    /// users land one level deep and wonder why the path mismatches. The
-    /// home-prefix substitution also has to stay consistent across the
-    /// forward/backslash boundary on Windows.
+    /// `display_short` 是 UI 显示在「打开」按钮旁的文本；
+    /// 按钮必须打开与标签同名的目录，否则用户会落到下一级而疑惑
+    /// 为何路径对不上。home 前缀的替换在 Windows 上还要在正斜杠 /
+    /// 反斜杠边界处保持一致。
     #[test]
     fn display_short_substitutes_home_with_tilde() {
         let home = dirs_home();
@@ -986,17 +962,16 @@ mod tests {
 
     #[test]
     fn display_short_falls_back_to_full_path_outside_home() {
-        // Custom DSH_HOME destinations live outside $HOME; show them verbatim
-        // so users with non-standard layouts can verify where their shell
-        // data actually went.
+        // 自定义 DSH_HOME 目标位于 $HOME 之外；原样展示，
+        // 让布局非标准的用户能核对自己的壳数据实际写到哪。
         let outside = PathBuf::from("/custom/redirect/.dsh/desktop");
         assert_eq!(display_short(&outside), outside.display().to_string());
     }
 
     #[test]
     fn display_short_keeps_tilde_only_when_path_equals_home() {
-        // Edge case: data_dir resolves to the home itself (no `.dsh/desktop`
-        // suffix). The output should still be a single `~`, not `~/`.
+        // 边界情形：data_dir 解析到 home 本身（没有 `.dsh/desktop`
+        // 后缀）。输出仍应为单个 `~`，而不是 `~/`。
         let home = dirs_home();
         assert_eq!(display_short(&home), "~");
     }

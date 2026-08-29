@@ -17,7 +17,7 @@ onMounted(async () => {
   try {
     tabs.value = resolveOfficialChatTabs(await invoke('official_chat_tabs'));
   } catch {
-    // Keep the fallback labels visible when an older or restricted build rejects IPC.
+    // 较旧或受限的构建拒绝 IPC 时，回退标签保持可见。
   }
 });
 

@@ -43,6 +43,8 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 
 版本发布由 `.github/workflows/desktop-release.yml` 负责。`desktop-v<version>` tag 和手动 dispatch 只接受 `main` 分支上的 commit；发布前同步 `package.json` 与 `src-tauri/tauri.conf.json` 的 `version`。workflow 使用 `TAURI_SIGNING_PRIVATE_KEY` 给更新制品签名，`releaseDraft` 与 `prerelease` 必须保持为 `false`，以保证 updater 的 latest endpoint 可用。
 
+- **发布平台**：dsh-xlink 只发布 Intel macOS（`macos-15-intel`）和 Windows（`windows-latest`）版本；不得添加、构建或发布任何 Linux/Ubuntu 版本、runner、制品或文案。
+
 ## 文档
 
 修改用户可见行为、数据目录、发布流程或安全策略时，同步更新 `README.md` 和对应 `docs/` 文档。文件保持 UTF-8、恰好一个末尾换行；不要提交依赖目录和构建产物。

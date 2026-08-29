@@ -1,4 +1,4 @@
-# dsh-desktop 已知坑
+# dsh-xlink 已知坑
 
 环境 / 平台 / 权限相关的常见症状与处理。约定性约束见 [AGENTS.md](../AGENTS.md)。
 

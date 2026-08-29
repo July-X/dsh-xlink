@@ -1,4 +1,4 @@
-# dsh-desktop 架构
+# dsh-xlink 架构
 
 桌面壳的模块布局、数据流与数据目录约定。约定性约束（必须照做）见 [AGENTS.md](../AGENTS.md)。
 
@@ -49,7 +49,7 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 
 外壳全部状态位于 `<dsh_home>/desktop/`（release build）或 `<dsh_home>/desktop-dev/`（debug build `tauri dev`），由 `kernel::data_dir` 解析并在启动时创建。子结构：`kernels/<版本>/`、`logs/`、`settings.json`、`active.txt`、`kernel.pid`。
 
-启动时 `setup()` 在 stderr 打印 `dsh-desktop: data_dir = <path> (build: dev|release)`，让用户一眼确认当前进程用的是哪个目录。
+启动时 `setup()` 在 stderr 打印 `dsh-xlink: data_dir = <path> (build: dev|release)`，让用户一眼确认当前进程用的是哪个目录。
 
 ### 优先级（`kernel::data_dir`）
 

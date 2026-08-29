@@ -1,6 +1,6 @@
-// Headless smoke test for pullstring-launcher.js: stub a minimal DOM,
-// run the script, then simulate a pull and assert the bulb lights and the
-// focus_main_shell command is invoked. Run: node scripts/smoke-pullstring.mjs
+// 针对 pullstring-launcher.js 的无头冒烟测试：提供一个最小 DOM 桩，
+// 运行脚本，再模拟一次拉动，并断言灯泡点亮以及 focus_main_shell 命令
+// 被调用。运行命令：node scripts/smoke-pullstring.mjs
 import { readFileSync } from "node:fs";
 
 const src = readFileSync(new URL("../src-tauri/src/pullstring-launcher.js", import.meta.url), "utf8");
@@ -71,7 +71,7 @@ const sandbox = {
   clearTimeout() {},
 };
 
-// Minimal eval: the script is an IIFE referencing window/document/globals.
+// 最简 eval：脚本是一个 IIFE，会引用 window/document/全局对象。
 const fn = new Function("window", "document", "console", "setTimeout", "clearTimeout", src);
 fn(window, document, console, sandbox.setTimeout, sandbox.clearTimeout);
 
@@ -79,8 +79,8 @@ const root = elements["dsh-shell-launcher"];
 if (!root) throw new Error("widget root was not injected");
 const style = elements["dsh-shell-launcher-style"];
 if (!style || !style._text.includes("#dsh-shell-launcher")) throw new Error("style not injected");
-// Light mode must not keep the translucent-white glass: the sheet needs an
-// explicit override keyed on the workbench theme marker (data-ds-dark-theme).
+// 浅色模式不能保留半透明白色玻璃：样式表必须按工作台主题标记
+// （data-ds-dark-theme）显式给出覆盖。
 if (!style._text.includes("body:not([data-ds-dark-theme])")) throw new Error("light-mode override missing");
 if (!style._text.includes("--dsh-launcher-bulb-stroke: #a16207")) throw new Error("light-mode bulb stroke missing");
 
@@ -88,14 +88,14 @@ const btn = root.children[0];
 if (btn.tag !== "button") throw new Error("launcher is not a button");
 if (!btn._html.includes("svg")) throw new Error("bulb SVG missing");
 
-// Simulate a pull: pointerdown -> pointerup -> click.
+// 模拟一次拉动：pointerdown -> pointerup -> click。
 btn.dispatch("pointerdown");
 if (!btn.classes.has("dsh-launcher-pulled")) throw new Error("pulled state not applied");
 btn.dispatch("pointerup");
 if (btn.classes.has("dsh-launcher-pulled")) throw new Error("pulled state not released");
 btn.dispatch("click", { screenX: 500.4, screenY: 300.2 });
 if (!btn.classes.has("dsh-launcher-on")) throw new Error("bulb did not light");
-// A successful click keeps the lamp lit until the next click.
+// 成功点击会让灯保持点亮，直到下一次点击。
 btn.dispatch("click", { screenX: 500.4, screenY: 300.2 });
 if (btn.classes.has("dsh-launcher-on")) throw new Error("bulb did not toggle off");
 const [cmd, args] = invoked[0] || [];

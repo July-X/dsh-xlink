@@ -1,4 +1,4 @@
-# dsh-desktop 技能（Skill）管理设计
+# dsh-xlink 技能（Skill）管理设计
 
 > 本文档描述桌面外壳的技能管理功能：中央存储、物化到内核读取路径、启用/禁用、更新提醒与社区目录。
 > 设计参照 [plugin-management.md](plugin-management.md)（社区插件管理）的同构模式，并按技能的本质差异做了简化。用户文档见 [README.md](../README.md)。

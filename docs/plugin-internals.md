@@ -1,4 +1,4 @@
-# dsh-desktop 插件机制实现
+# dsh-xlink 插件机制实现
 
 `plugins.rs` 内部的 pnpm 调用、`.npmrc` 规则、lockfile 处理与 symlink 修复。设计层（用户可见的目录布局、双模式、接线、目录浏览）见 [plugin-management.md](plugin-management.md)；约定性约束（必须照做）见 [AGENTS.md](../AGENTS.md)。
 

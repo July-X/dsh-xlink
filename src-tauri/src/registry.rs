@@ -1,39 +1,35 @@
-//! npm registry configuration for the desktop shell.
+//! 桌面外壳的 npm registry 配置。
 //!
-//! Every byte the shell pulls from the npm ecosystem — kernel installs,
-//! plugin installs, profile wiring, kernel release listings, plugin
-//! metadata, tarball downloads — is pinned to one base URL. The default
-//! points at the npmmirror mirror so installs work on a Chinese-network
-//! machine without touching the user's global npm config. Deployments
-//! that need the upstream registry or a different mirror override the
-//! default through the `DSH_NPM_REGISTRY` environment variable without
-//! rebuilding.
+//! 外壳从 npm 生态拉取的所有内容——内核安装、插件安装、profile 接入、
+//! 内核发布列表、插件元数据、tarball 下载——都绑定到同一个基础 URL。
+//! 默认指向 npmmirror 镜像，使得国内网络环境下的安装无需触及用户的全局
+//! npm 配置。需要使用上游 registry 或其他镜像的部署，可以通过
+//! `DSH_NPM_REGISTRY` 环境变量覆盖默认值，无需重新构建。
 //!
-//! Callers compose the URL as `format!("{base}{pkg}")`; the trailing
-//! slash on the default is required so unscoped packages resolve
-//! correctly.
+//! 调用方按 `format!("{base}{pkg}")` 拼装 URL；默认值末尾的斜杠是
+//! 必需的，以保证无命名空间包能正确解析。
 
-/// Default npm registry base. The trailing slash is load-bearing for URL
-/// composition at call sites; `resolve` re-asserts it on every read.
+/// 默认的 npm registry 基础 URL。末尾的斜杠对调用方拼装 URL 至关重要；
+/// `resolve` 在每次读取时都会重新确认它的存在。
 pub const DEFAULT_NPM_REGISTRY: &str = "https://registry.npmmirror.com/";
 
-/// Environment variable consulted at startup to override the registry
-/// base. Empty / whitespace-only values fall back to the default.
+/// 启动时读取的环境变量，用于覆盖 registry 基础 URL。
+/// 为空或仅含空白字符时回退到默认值。
 pub const NPM_REGISTRY_ENV: &str = "DSH_NPM_REGISTRY";
 
-/// Effective npm registry base URL. Reads `DSH_NPM_REGISTRY` from the
-/// process environment on every call; the shell is a GUI app and does not
-/// fork-spawn frequently enough for the read to matter, and live reload
-/// (e.g. test fixtures) is worth more than a cached value.
+/// 实际生效的 npm registry 基础 URL。每次调用都会从进程环境读取
+/// `DSH_NPM_REGISTRY`；外壳是 GUI 应用，fork-spawn 的频率并不高，
+/// 这次读取开销可以忽略，并且实时重新加载（例如测试 fixture）的
+/// 价值要高于缓存值。
 ///
-/// Returns a `String` (rather than `&'static str`) because the override
-/// is process-local state, not a constant.
+/// 返回 `String`（而不是 `&'static str`），因为覆盖值是进程级本地状态，
+/// 而不是常量。
 pub fn npm_registry_base() -> String {
     resolve(std::env::var(NPM_REGISTRY_ENV).ok().as_deref())
 }
 
-/// Pure resolver split out so tests can drive it without mutating the
-/// process environment (which would race parallel tests).
+/// 抽取出来的纯解析函数，以便测试在不动进程环境的情况下驱动它
+/// （进程环境操作会与并发测试产生竞态）。
 fn resolve(override_value: Option<&str>) -> String {
     let raw = override_value
         .map(str::trim)

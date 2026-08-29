@@ -1,5 +1,5 @@
 [package]
-name = "dsh-desktop"
+name = "dsh-xlink"
 version = "0.1.0"
 description = "DeepSeek Harness desktop shell: kernel version management and the bundled web UI"
 edition = "2021"

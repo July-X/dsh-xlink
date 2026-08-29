@@ -66,48 +66,45 @@
   // 两种 variant 的 pull 反馈幅度不一样：紧凑台灯只有 3px 才有
   // 比例感；老拉绳灯用 6px 看起来更"按下去"。
   var PULL_TRANSLATE_PX = LAMP_VARIANT === "desk" ? "3px" : "6px";
-  // Both surfaces the lamp lives on have enough vertical room for the
-  // active variant's SVG: the dsh web workbench is a full-window
-  // webview (no top clip), and the official-chat strip is its natural
-  // 38px tab-bar height (the compact 24x38 desk-lamp fits exactly).
-  // `top: 0` anchors the cord at the top edge of the viewport in
-  // both cases — long pull-string cord (pull-string variant) or the
-  // short pull-chain (desk variant) — reading as the lamp hanging
-  // from the chrome.
+  // 灯所在的两个表面都有足够的高度容纳当前 variant 的 SVG：dsh web 工作台
+  // 是占满窗口的 webview（顶部不会被裁切），official-chat strip 是天然的
+  // 38px 标签栏高度（紧凑的 24x38 台灯正好嵌入）。两种情况下 `top: 0`
+  // 都把绳锚定在视口顶部 —— 不论是较长的拉绳（pull-string variant）还是
+  // 较短的拉链（desk variant） —— 都读作灯悬挂在 chrome 上。
   var TOP_PX = "0px";
 
   var ROOT_ID = "dsh-shell-launcher";
   var STYLE_ID = "dsh-shell-launcher-style";
-  // Two SVGs — the variant decides which one is mounted.
-  // .dsh-launcher-shade / .dsh-launcher-stem are desk-only, and
-  // .dsh-launcher-filament is pull-string-only; the buildCss below only
-  // emits the rules that actually match the active SVG, so we never
-  // ship a CSS selector for an element that isn't in the DOM.
+  // 两套 SVG —— 由 variant 决定挂载哪一套。
+  // .dsh-launcher-shade / .dsh-launcher-stem 只在 desk 出现，
+  // .dsh-launcher-filament 只在 pull-string 出现；下面的 buildCss
+  // 只生成与当前激活 SVG 实际匹配的规则，因此我们永远不会为不在
+  // DOM 中的元素发布 CSS 选择器。
   var SVG_DESK = [
     '<svg viewBox="0 0 24 38" width="24" height="38" aria-hidden="true">',
-    /* Pull chain (short, from the top of the strip down to the shade). */
+    /* 拉链（短，从 strip 顶部向下到灯罩）。 */
     '<line class="dsh-launcher-cord" x1="12" y1="2" x2="12" y2="5"/>',
-    /* Lamp shade (trapezoid: narrower at top, wider at bottom). */
+    /* 灯罩（梯形：上窄下宽）。 */
     '<polygon class="dsh-launcher-shade" points="9,5 15,5 17,13 7,13"/>',
-    /* Bulb peeking out under the shade. */
+    /* 从灯罩下方露出的灯泡。 */
     '<circle class="dsh-launcher-bulb" cx="12" cy="14" r="2"/>',
-    /* Stem. */
+    /* 灯杆。 */
     '<line class="dsh-launcher-stem" x1="12" y1="16" x2="12" y2="30"/>',
-    /* Rounded base. */
+    /* 圆角底座。 */
     '<rect class="dsh-launcher-base" x="3" y="30" width="18" height="6" rx="1.5"/>',
     "</svg>",
   ].join("");
-  // The workbench variant uses a 66px pull-string lamp: its longer cord,
-  // screw base, bulb, and filament fit the taller workbench chrome.
+  // 工作台 variant 使用 66px 拉绳灯：更长的绳、螺丝底座、灯泡与灯丝
+  // 适配更高的工作台 chrome。
   var SVG_PULL = [
     '<svg viewBox="0 0 24 66" width="24" height="66" aria-hidden="true">',
-    /* The string, hanging from the top edge of the viewport. */
+    /* 从视口顶部边缘悬挂下来的绳子。 */
     '<line class="dsh-launcher-cord" x1="12" y1="0" x2="12" y2="38"/>',
-    /* Screw base where the string meets the bulb. */
+    /* 绳子与灯泡相接处的螺丝底座。 */
     '<rect class="dsh-launcher-base" x="8.5" y="37" width="7" height="7" rx="1.5"/>',
-    /* Bulb glass. */
+    /* 灯泡玻璃罩。 */
     '<circle class="dsh-launcher-bulb" cx="12" cy="54" r="9.5"/>',
-    /* Filament, visible when lit. */
+    /* 灯丝，点亮时可见。 */
     '<path class="dsh-launcher-filament" d="M9 52 q1.5 3 3 0 q1.5 -3 3 0" fill="none"/>',
     "</svg>",
   ].join("");
@@ -175,8 +172,8 @@
       "}",
     ];
 
-    // Variant-specific selectors that don't exist on the other variant's
-    // SVG (filament is pull-string only, shade+stem are desk only).
+    // Variant 专属的选择器，在另一种 variant 的 SVG 上并不存在
+    //（filament 只属于 pull-string，shade+stem 只属于 desk）。
     if (LAMP_VARIANT === "pull-string") {
       rules.push(
         "#" + ROOT_ID + " .dsh-launcher-filament {",
@@ -208,23 +205,20 @@
       );
     }
 
-    // Pulled: cord + body travel down together, springing back on
-    // release. The compact 38px desk lamp moves 3px; the taller 66px
-    // workbench lamp moves 6px.
+    // 拉动时：绳与灯身一起下移，松手回弹。紧凑的 38px 台灯下移 3px；
+    // 较高的 66px 工作台灯下移 6px。
     rules.push(
       "#" + ROOT_ID + " .dsh-launcher-btn.dsh-launcher-pulled svg {",
       "  transform: translateY(" + PULL_TRANSLATE_PX + ");",
       "}",
     );
 
-    // On (click-toggled): the lamp glows. The two variants share the
-    // steady on semantics (no blink, no stroke-width jump — just a
-    // persistent glow until the next click) but differ in the surface
-    // they light: the compact desk lamp tints shade + stem + base +
-    // bulb warm and stacks a tight 12px + wide 24px drop-shadow to
-    // read as a real light source from the small icon; the tall
-    // pull-string lamp just lights the bulb and tints its filament
-    // (it's already drawn large enough that one warm halo is enough).
+    // 点亮（点击切换）：灯发出光芒。两种 variant 共享相同的常亮语义
+    //（无闪烁、无描边粗细跳变 —— 仅保持持续发光直到下一次点击），
+    // 但点亮的具体表面不同：紧凑台灯会把灯罩、灯杆、底座、灯泡一起
+    // 染成暖色，并叠加 12px 紧凑 + 24px 宽暖的 drop-shadow，让小图标
+    // 也能读作真实光源；高挑的拉绳灯只点亮灯泡并把灯丝染成暖色
+    //（它已经画得足够大，一圈暖色光晕就够了）。
     if (LAMP_VARIANT === "desk") {
       rules.push(
         "#" + ROOT_ID + " .dsh-launcher-btn.dsh-launcher-on .dsh-launcher-shade {",
@@ -252,9 +246,8 @@
         "}",
       );
     } else {
-      // Pull-string variant on-state: bulb fills warm, filament
-      // tints orange (the visible glowing element of an Edison bulb),
-      // one drop-shadow halo around the whole SVG.
+      // pull-string variant 点亮状态：灯泡填充暖色，灯丝染橙
+      //（即爱迪生灯泡中可见的发光元件），整张 SVG 外加一圈 drop-shadow 光晕。
       rules.push(
         "#" + ROOT_ID + " .dsh-launcher-btn.dsh-launcher-on .dsh-launcher-bulb {",
         "  fill: var(--dsh-launcher-lit-fill);",
@@ -270,8 +263,8 @@
       );
     }
 
-    // Invoke failed (e.g. IPC unavailable): the bulb flashes red instead
-    // of staying warm, so a broken pull is visible without devtools.
+    // 调用失败（例如 IPC 不可用）：灯泡改亮红色而非维持暖色，
+    // 让坏的拉动无需打开开发者工具即可察觉。
     rules.push(
       "#" + ROOT_ID + " .dsh-launcher-btn.dsh-launcher-err .dsh-launcher-bulb {",
       "  fill: #ef4444;",
@@ -282,14 +275,12 @@
       "}",
     );
 
-    // Light mode (the workbench marks dark with body[data-ds-dark-theme],
-    // written by boot-theme.ts before plugin load and kept by
-    // ThemePresenter after): amber glass and darker linework keep the
-    // bulb legible on the white workbench. The chat page does not set
-    // the attribute, so the rule still applies via :not — and it
-    // happens to render fine on chat's white surfaces too. Only the
-    // palette variables change, so hover/lit precedence stays
-    // identical across themes.
+    // 浅色模式（工作台用 body[data-ds-dark-theme] 标记深色主题，
+    // 由 boot-theme.ts 在插件加载前写入，并由 ThemePresenter 之后维持）：
+    // 琥珀色玻璃与更深色的描边，使灯泡在白色工作台上仍然清晰可读。
+    // chat 页面不会设置该属性，所以这条规则依然经由 :not 生效 —— 同时
+    // 它在 chat 的白色表面上渲染也毫无问题。仅调色板变量发生变化，
+    // 因此 hover/常亮 在不同主题下的优先级保持一致。
     rules.push(
       "body:not([data-ds-dark-theme]) #" + ROOT_ID + " {",
       "  --dsh-launcher-base-fill: #78716c;",
@@ -309,17 +300,15 @@
   }
 
   /**
-   * Ask the shell to raise its management window next to the click.
-   * `point` is the click's screen position (MouseEvent.screenX/Y, CSS
-   * pixels); the shell moves the panel near it so the user does not
-   * have to hunt for the window on another monitor. `onError` fires
-   * when the Tauri IPC is unavailable or the command rejects, so the
-   * caller can swap the warm glow for the red error flash.
+   * 请外壳把其管理窗口提升到点击位置附近。
+   * `point` 是点击的屏幕坐标（MouseEvent.screenX/Y，CSS 像素）；
+   * 外壳会把面板移到该坐标附近，让用户无需在另一块显示器上寻找窗口。
+   * 当 Tauri IPC 不可用或命令被拒绝时，`onError` 触发，调用方可以
+   * 把暖色光替换为红色错误闪烁。
    *
-   * Both surfaces the lamp lives on (the workbench webview and the
-   * official-chat strip webview) keep `window.__TAURI__` intact, so a
-   * direct read is correct: there is no fingerprint script to neuter
-   * the bridge between injection and click time.
+   * 灯所在的两个表面（工作台 webview 与 official-chat strip webview）
+   * 都保留 `window.__TAURI__` 不动，因此直接读取是正确的：在注入与
+   * 点击之间没有任何指纹脚本会阉割桥接通道。
    */
   function invokeFocusMainShell(point, onError) {
     try {
@@ -328,15 +317,15 @@
         tauri.core
           .invoke("focus_main_shell", { x: Math.round(point.x), y: Math.round(point.y) })
           .catch(function (err) {
-            console.warn("dsh-desktop: focus_main_shell failed:", err);
+            console.warn("dsh-xlink: focus_main_shell failed:", err);
             onError();
           });
       } else {
-        console.warn("dsh-desktop: __TAURI__ unavailable; focus_main_shell not sent");
+        console.warn("dsh-xlink: __TAURI__ unavailable; focus_main_shell not sent");
         onError();
       }
     } catch (err) {
-      console.warn("dsh-desktop: focus_main_shell failed:", err);
+      console.warn("dsh-xlink: focus_main_shell failed:", err);
       onError();
     }
   }
@@ -362,10 +351,9 @@
     btn.innerHTML = SVG;
     root.appendChild(btn);
 
-    // Click toggles the lamp on/off (no auto-fade). focus_main_shell is
-    // still invoked on every click to raise the management panel to the
-    // front; on IPC failure the lamp drops back to off and shows a red
-    // error indicator until the next click.
+    // 点击切换灯的开/关（不会自动熄灭）。每次点击仍会调用 focus_main_shell
+    // 把管理面板提到最前；若 IPC 失败，灯会回到关闭状态并显示红色错误
+    // 提示，直到下一次点击。
     var isOn = false;
     btn.addEventListener("pointerdown", function () {
       btn.classList.add("dsh-launcher-pulled");

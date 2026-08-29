@@ -1,8 +1,7 @@
-//! Safe extraction of npm-style gzip tarballs.
+//! 安全解压 npm 风格的 gzip tarball。
 //!
-//! Npm archives are untrusted input. Extraction is kept in Rust instead of a
-//! platform tar process so path validation, link handling, and resource limits
-//! are identical on macOS, Windows, and Linux.
+//! npm 归档属于不可信输入。解压过程保留在 Rust 中而非借助平台 tar 进程，
+//! 从而在 macOS、Windows 与 Linux 上保持一致的路径校验、链接处理与资源限制。
 
 use std::fs::{self, File};
 use std::path::{Component, Path, PathBuf};
@@ -83,10 +82,9 @@ fn extract_inner(tarball: &Path, dest: &Path, extract_root: &Path) -> Result<(),
             ));
         }
 
-        // `tar::Entry::unpack_in` performs a second canonical containment
-        // check. The explicit validation above rejects paths rather than
-        // silently sanitizing them, and rejecting links prevents later files
-        // from traversing through an archive-created symlink.
+        // `tar::Entry::unpack_in` 会执行第二次规范化包含性检查。
+        // 上面的显式校验会直接拒绝非法路径，而不是静默清洗它们；
+        // 拒绝链接可以阻止后续文件经由归档创建的符号链接进行越界访问。
         entry
             .unpack_in(extract_root)
             .map_err(|e| format!("解包 {} 失败：{e}", path.display()))?;
@@ -119,11 +117,10 @@ fn extract_inner(tarball: &Path, dest: &Path, extract_root: &Path) -> Result<(),
     Ok(())
 }
 
-/// Extract an npm-style `.tgz` into `dest`, removing its leading `package/`.
+/// 将 npm 风格的 `.tgz` 解压到 `dest`，并去掉其开头的 `package/`。
 ///
-/// The archive is bounded to 100,000 entries and 512 MiB of declared
-/// uncompressed content. Absolute paths, parent components, links, and special
-/// files are rejected before any entry can reach the destination.
+/// 归档被限制为最多 100,000 条目，以及最多 512 MiB 的声明解压体积。
+/// 绝对路径、父级组件、链接以及特殊文件会在到达目标之前就被拒绝。
 pub(crate) fn extract_gzip_tarball(tarball: &Path, dest: &Path) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|e| format!("创建解包目录失败：{e}"))?;
     let extract_root = dest.join(EXTRACT_DIR);
@@ -152,7 +149,7 @@ mod tests {
     fn test_root() -> PathBuf {
         let seq = ARCHIVE_TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "dsh-desktop-archive-test-{}-{seq}",
+            "dsh-xlink-archive-test-{}-{seq}",
             std::process::id()
         ))
     }

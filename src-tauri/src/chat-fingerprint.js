@@ -40,8 +40,7 @@
   }
 
   // --- navigator.webdriver ------------------------------------------------
-  // Frozen on the prototype so every fresh document inherits the spoofed
-  // value before any script can re-define it on the instance.
+  // 在原型上冻结，使每个新文档在任何脚本在实例上重新定义之前，就已继承该伪装值。
   try {
     Object.defineProperty(Navigator.prototype, "webdriver", {
       get: function () { return false; },

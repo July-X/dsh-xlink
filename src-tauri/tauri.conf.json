@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "dsh-desktop",
+  "productName": "dsh-xlink",
   "version": "0.1.2-rc.2",
-  "identifier": "com.zhongxingxing.dsh-desktop",
+  "identifier": "com.zhongxingxing.dsh-xlink",
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:5173",
