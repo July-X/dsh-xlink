@@ -27,7 +27,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::Duration;
 
-use crate::process::{attach_log_drainers, quiet, run_with_progress};
+use crate::process::{
+    attach_log_drainers, build_log_kind, quiet, run_with_progress, run_with_progress_at, LogSpec,
+};
 
 use serde::Serialize;
 use tauri::Manager;
@@ -339,9 +341,15 @@ fn rotate_install_logs(logs: &Path, keep: &Path) {
         .map(|e| e.path())
         .filter(|p| p.is_file())
         .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("install-"))
+            let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+                return false;
+            };
+            // 新命名：<kind>-install-<version>-<date>.log
+            // 旧命名：install-<version>.log
+            // 两者均含子串 `install-`，排除 pnpm 自动安装。
+            let has_install = name.contains("install-");
+            let is_pnpm_auto = name.contains("pnpm-install-");
+            has_install && !is_pnpm_auto
         })
         .filter(|p| p != keep)
         .filter_map(|p| {
@@ -352,26 +360,24 @@ fn rotate_install_logs(logs: &Path, keep: &Path) {
     if logs.len() < KEEP {
         return;
     }
-    logs.sort_by_key(|a| std::cmp::Reverse(a.0)); // newest first
+    logs.sort_by_key(|a| std::cmp::Reverse(a.0)); // 最新在前
     for (_, path) in logs.iter().skip(KEEP - 1) {
         let _ = fs::remove_file(path);
     }
 }
 
-/// Ask pnpm to install `@deepseek-ai/dsh@<version>` into its directory.
+/// 让 pnpm 把 `@deepseek-ai/dsh@<version>` 安装到对应目录。
 ///
-/// `node_dir` is the directory of the validated `node` executable and is
-/// prepended to the child's PATH so pnpm's `#!/usr/bin/env node` shebang
-/// (and any lifecycle script that shells out to `node`) can resolve it.
-/// Without this stamp, a GUI process launched with a launchd-only PATH
-/// (macOS .app bundles) or a system-only Windows PATH dies with
-/// `env: node: No such file or directory` even though the parent could
-/// find the binary to spawn pnpm — especially common with nvm-managed
-/// Node, where `node` lives under `~/.nvm/versions/node/<v>/bin` and
-/// never appears on the inherited PATH.
+/// `node_dir` 是已校验 `node` 可执行文件所在的目录，并被前置到子进程的 PATH，
+/// 这样 pnpm 的 `#!/usr/bin/env node` shebang（以及任何 shell out 调用 `node`
+/// 的生命周期脚本）都能解析到它。若没有这一 stamp，通过 launchd-only PATH
+/// （macOS .app bundle）或仅有系统 PATH 的 Windows PATH 启动的 GUI 进程，
+/// 即便父进程能定位到二进制来拉起 pnpm，也会以 `env: node: No such file or
+/// directory` 退出。nvm 管理的 Node 尤为常见——`node` 位于
+/// `~/.nvm/versions/node/<v>/bin`，根本不在继承的 PATH 中。
 ///
-/// `on_progress` receives human-readable stage messages plus every raw
-/// installer log line, so the UI can show live output while the install runs.
+/// `on_progress` 会收到人类可读的阶段消息以及每一条原始安装日志行，
+/// 让 UI 在安装运行期间可以实时展示输出。
 pub fn install_version(
     data_dir: &Path,
     node_dir: &Path,
@@ -388,17 +394,21 @@ pub fn install_version(
     );
     fs::write(&stub, stub_text).map_err(|e| AppError::Io(e.to_string()))?;
 
-    let log_path = logs_dir(data_dir).join(format!("install-{version}.log"));
-    if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
-    }
-    rotate_install_logs(&logs_dir(data_dir), &log_path);
+    // 新命名规则下按日轮转的安装日志：实时脚本写入
+    // `<kind>-install-<version>-<date>.log`。用户在日志弹窗中打开的就是
+    // 当天的路径；跨日轮转防止长时间重试把单个文件撑满。这里保留旧的
+    // `install-<version>.log` 轮转调用，作为一次性清理——把重命名前残留的
+    // 旧文件扫掉，因为它们的旧路径已经无法通过 `list_log_files` 触达。
+    let logs_root = logs_dir(data_dir);
+    let log_spec = install_log_spec(version);
+    let log_path = log_spec.path_for(&logs_root, &crate::process::current_date_string());
+    rotate_install_logs(&logs_root, &log_path);
 
     on_progress("正在通过 pnpm 安装内核（首次通常需要 1~3 分钟，下方为实时日志）");
     let spec = format!("@deepseek-ai/dsh@{version}");
     let prefix = dir.to_str().unwrap_or_default();
-    // `--ignore-workspace` keeps the install out of any workspace the user's
-    // environment might expose; the kernel dir is a standalone package root.
+    // `--ignore-workspace` 让安装脱离用户环境可能暴露的任何 workspace；
+    // 内核目录是独立的 package 根目录。
     let args = [
         "add",
         "--prefix",
@@ -408,15 +418,16 @@ pub fn install_version(
         PNPM_REPORTER,
         spec.as_str(),
     ];
-    // `node_dir` first so any shebang or lifecycle child sees the exact
-    // node the parent used, even when pnpm itself sits elsewhere (e.g.
-    // a settings-pinned `pnpm` shim). See the doc comment above.
+    // `node_dir` 排在最前，使任何 shebang 或生命周期子进程看到的都是
+    // 父进程使用的同一个 node，即便 pnpm 本身位于别处（例如设置里
+    // 固定的 `pnpm` shim）。参见上文的 doc 注释。
     let pnpm_dir = pnpm_exe.parent().unwrap_or(Path::new("."));
     let status = run_pnpm(
         pnpm_exe,
         &args,
         &dir,
-        &log_path,
+        &logs_root,
+        &log_spec,
         &[node_dir, pnpm_dir],
         &mut on_progress,
     )
@@ -457,27 +468,75 @@ pub fn install_version(
     Ok(())
 }
 
-/// `--reporter=append-only`: pnpm prints one log line per lifecycle event
-/// on stdout, which `run_with_progress` streams to the UI and the log file.
+/// `--reporter=append-only`：pnpm 把每个生命周期事件以一行日志输出到 stdout，
+/// 由 `run_with_progress` 流式转发到 UI 和日志文件。
 pub(crate) const PNPM_REPORTER: &str = "--reporter=append-only";
 
-/// `--config.strict-dep-builds=false`: pnpm 11+ refuses to silently skip a
-/// transitive dependency's build script, turning `ERR_PNPM_IGNORED_BUILDS`
-/// into a non-zero exit code even when the produced tree is fine (plugins
-/// commonly pull in something like `node-pty`, whose native compile the
-/// shell never needs). Callers that pass this verify their own artifact
-/// (kernel entry, `node_modules`) instead of trusting the exit code.
+/// `--config.strict-dep-builds=false`：pnpm 11+ 默认不再静默跳过
+/// 间接依赖的构建脚本，会把 `ERR_PNPM_IGNORED_BUILDS` 转化为非零退出码，
+/// 即便生成的依赖树本身没问题（插件经常会拉入类似 `node-pty` 这类依赖，
+/// 其原生编译壳根本不需要）。传入该选项的调用方会自行校验产物
+/// （内核入口、`node_modules`），而非仅依赖退出码。
 pub(crate) const PNPM_NO_STRICT_DEP_BUILDS: &str = "--config.strict-dep-builds=false";
 
-/// Spawn pnpm once with the given args, piping merged stdout+stderr line by
-/// line to both `log_path` and `on_progress`. Thin wrapper over the shared
-/// `run_with_progress` helper, which already handles the Windows `.cmd`
-/// routing, dual-stream drain, and silent-period heartbeat that pnpm
-/// installs need to surface to the UI. `extra_path_dirs` is forwarded so
-/// the child can locate the validated `node` on its PATH — see
-/// `process::run_with_progress` for why pnpm's spawn environment is
-/// otherwise empty on macOS-launched `.app` bundles.
+/// 内核日志文件的逻辑名（不含构建类型前缀和日期戳）。完整的文件名在
+/// 写入时按 `<kind>-KERNEL_LOG_NAME-<date>.log` 拼装，从而在本地
+/// 午夜自动滚动到新文件。
+pub const KERNEL_LOG_NAME: &str = "kernel";
+
+/// 为运行中的内核构造按日轮转的日志 spec。进程内的每个轮转槽位
+/// （start、run_pnpm、ensure_pnpm）都使用同一 spec，这样在某个标签页
+/// tail 时始终跟踪同一个内核会话。
+pub fn kernel_log_spec() -> LogSpec {
+    LogSpec::new(build_log_kind(), KERNEL_LOG_NAME)
+}
+
+/// 为内核安装构造按日轮转的日志 spec。版本嵌入逻辑名中，因此同一版本的
+/// 多次安装尝试会落到同一个每日文件里（重试之间以追加方式累积）。
+pub fn install_log_spec(version: &str) -> LogSpec {
+    LogSpec::new(build_log_kind(), format!("install-{version}"))
+}
+
+/// 便捷函数：获取给定日志目录下当天的内核日志路径。由读取路径
+/// （`get_kernel_log`、guard attribution）使用，它们总是需要最近一天的日志。
+pub fn current_kernel_log_path(data_dir: &Path) -> PathBuf {
+    let logs = logs_dir(data_dir);
+    let today = crate::process::current_date_string();
+    kernel_log_spec().path_for(&logs, &today)
+}
+
+/// 用给定参数启动 pnpm 一次，将合并的 stdout+stderr 按行同时管道到
+/// 滚动日志和 `on_progress`。这是共享助手 `run_with_progress` 的轻量包装，
+/// 后者已经处理 Windows 上 `.cmd` 路由、双流 drain 以及静默期心跳——这些
+/// 正是 pnpm 安装需要透传到 UI 的能力。`extra_path_dirs` 透传进去，使
+/// 子进程能在其 PATH 上找到已校验的 `node`——原因参见
+/// `process::run_with_progress` 中关于 macOS 启动的 `.app` bundle 上
+/// pnpm spawn 环境为空的说明。
 pub(crate) fn run_pnpm(
+    pnpm_exe: &Path,
+    args: &[&str],
+    cwd: &Path,
+    logs_dir: &Path,
+    log_spec: &LogSpec,
+    extra_path_dirs: &[&Path],
+    on_progress: impl FnMut(&str),
+) -> io::Result<std::process::ExitStatus> {
+    run_with_progress(
+        pnpm_exe,
+        args,
+        cwd,
+        logs_dir,
+        log_spec,
+        extra_path_dirs,
+        on_progress,
+    )
+}
+
+/// `run_pnpm` 的路径固定版本。用于一次性脚本（例如插件自身目录下的
+/// per-plugin 构建日志等），由调用方完全拥有；输出原样写入 `log_path`，
+/// 不打构建类型戳，也不按日轮转。基于大小的轮转仍然生效，防止失控的
+/// 构建超出磁盘配额。
+pub(crate) fn run_pnpm_at(
     pnpm_exe: &Path,
     args: &[&str],
     cwd: &Path,
@@ -485,24 +544,18 @@ pub(crate) fn run_pnpm(
     extra_path_dirs: &[&Path],
     on_progress: impl FnMut(&str),
 ) -> io::Result<std::process::ExitStatus> {
-    run_with_progress(pnpm_exe, args, cwd, log_path, extra_path_dirs, on_progress)
+    run_with_progress_at(pnpm_exe, args, cwd, log_path, extra_path_dirs, on_progress)
 }
 
-/// Whether something is already listening on `127.0.0.1:port`.
+/// 检查 `127.0.0.1:port` 上是否已有进程在监听。
 pub fn port_open(port: u16) -> bool {
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
     let addr: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port));
     TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_ok()
 }
 
-/// The kernel log path for the current run.
-fn run_log_path(data_dir: &Path) -> PathBuf {
-    logs_dir(data_dir).join("kernel.log")
-}
-
-/// Spawn `dsh web --no-open` for the active version with output redirected to
-/// the kernel log. On Unix the child is placed in its own process group so a
-/// stop can reap the whole group.
+/// 为当前激活版本启动 `dsh web --no-open`，输出重定向到内核日志。
+/// 在 Unix 上，子进程会被放到独立的进程组中，停止时即可回收整个组。
 pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<Child, AppError> {
     let dir = kernel_dir(data_dir, version);
     let bin = dir.join(KERNEL_BIN_REL);
@@ -541,22 +594,22 @@ pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<C
         }
     }
 
-    // quiet() matters here too: the kernel is a long-running console app and
-    // would otherwise pin a visible terminal window for its whole lifetime.
+    // quiet() 在这里同样关键：内核是一个长时间运行的 console 应用，
+    // 否则它会在整个生命周期内一直占用一个可见的终端窗口。
     let mut child = quiet(&mut cmd)
         .spawn()
         .map_err(|e| AppError::Io(format!("无法启动内核：{e}")))?;
-    if let Err(error) = attach_log_drainers(&mut child, &run_log_path(data_dir)) {
+    if let Err(error) = attach_log_drainers(&mut child, &logs_dir(data_dir), &kernel_log_spec()) {
         crate::process::terminate_process_tree(&mut child);
         return Err(AppError::Io(format!("无法接管内核日志：{error}")));
     }
     Ok(child)
 }
 
-/// Start the active kernel unless something already listens on the port.
+/// 除非端口已被占用，否则启动当前激活的内核。
 ///
-/// Returns `Ok(None)` when the port already answers (idempotent start), or
-/// `Ok(Some(child))` when this call spawned the process.
+/// 当端口已有响应时返回 `Ok(None)`（幂等的启动），本调用真正拉起
+/// 进程时返回 `Ok(Some(child))`。
 pub fn start_maybe(data_dir: &Path, node: &Path) -> Result<Option<Child>, AppError> {
     let s = settings::load(data_dir);
     let port = s.port;
@@ -884,16 +937,15 @@ pub(crate) fn pid_is_kernel(pid: u32, port: Option<u16>) -> bool {
     false
 }
 
-/// Kill a tracked-out kernel by pid: TERM the process group, then KILL
-/// whatever survives. No-op when the pid is gone or does not match the kernel
-/// command and optional port recorded by this shell.
+/// 按 pid 杀掉被追踪出的内核：先给进程组发 TERM，再 KILL 任何幸存者。
+/// 当 pid 已不存在或与本壳记录的内核命令及可选端口不匹配时为 no-op。
 pub fn kill_pid(pid: u32, port: Option<u16>) {
     if !pid_is_kernel(pid, port) {
         return;
     }
     #[cfg(unix)]
     {
-        let pgid = pid as i32; // start() setsid()s, so the child leads its group
+        let pgid = pid as i32; // start() 会调用 setsid()，因此子进程是其进程组的领头
         unsafe {
             libc::kill(-pgid, libc::SIGTERM);
         }

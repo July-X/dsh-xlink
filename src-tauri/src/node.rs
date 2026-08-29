@@ -7,14 +7,14 @@ use std::process::Command;
 
 use serde::Serialize;
 
-use crate::process::{run_command_capture, run_with_progress};
+use crate::process::{run_command_capture, run_with_progress, LogSpec};
 use crate::settings::Settings;
 
-/// The engine range dsh declares (`^22.19.0 || >=24.0.0`).
+/// dsh 声明的 engines 范围（`^22.19.0 || >=24.0.0`）。
 const MIN_COMPATIBLE: (u32, u32, u32) = (22, 19, 0);
 const MAJOR_ALT_FLOOR: u32 = 24;
 
-/// What the shell found out about a Node candidate.
+/// 外壳对某个 Node 候选探测到的信息。
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeInfo {
     pub path: String,
@@ -557,20 +557,22 @@ pub fn find_npm(settings: &Settings, node_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Resolve pnpm, installing it on demand when only Node is present.
+/// 解析 pnpm，仅当 Node 存在时按需安装。
 ///
-/// The three-tier lookup (`settings.pnpm_path`, alongside `node`, PATH) is
-/// tried first. When none of them hit and `npm` is reachable, run
-/// `npm install -g pnpm` once, stream every line back through `on_progress`,
-/// and re-run the lookup so the just-installed binary is returned. The full
-/// npm transcript is written to `log_path` so the user can inspect failures
-/// without rerunning the install.
+/// 首先尝试三级查找（`settings.pnpm_path`、与 `node` 同目录、PATH）。
+/// 若都未命中且 `npm` 可用，则运行一次 `npm install -g pnpm`，把每一行
+/// 通过 `on_progress` 流式回传，并再次执行查找以返回刚装好的二进制。
+/// 完整的 npm 输出会被追加到 `logs_dir` 下由 `log_spec` 标识的、按天滚动
+/// 的 pnpm 安装日志；当日完整路径在调用时计算，这样用户可以立即从模态
+/// 框的标签列表中打开日志。
 pub fn ensure_pnpm(
     settings: &Settings,
     node_dir: &Path,
-    log_path: &Path,
+    logs_dir: &Path,
+    log_spec: &LogSpec,
     mut on_progress: impl FnMut(&str),
 ) -> Result<PathBuf, String> {
+    let log_path = log_spec.path_for(logs_dir, &crate::process::current_date_string());
     if let Some(p) = resolve_pnpm(settings, node_dir) {
         return Ok(p);
     }
@@ -582,16 +584,17 @@ pub fn ensure_pnpm(
     })?;
     on_progress("未检测到 pnpm，正在通过 npm 自动安装（首次需要联网，常见 30 秒~2 分钟）");
     let cwd = node_dir.to_path_buf();
-    // `npm` is a Node.js script with a `#!/usr/bin/env node` shebang and
-    // also runs lifecycle scripts during `install -g`. Prepend both the
-    // validated node bin dir and `npm.parent()` so the child can resolve
-    // `node` even when the GUI inherited a launchd-only PATH.
+    // `npm` 是一个带 `#!/usr/bin/env node` shebang 的 Node.js 脚本，
+    // 并且在 `install -g` 期间还会运行 lifecycle 脚本。把已校验的 node
+    // bin 目录与 `npm.parent()` 都放到 PATH 前部，让子进程即便在 GUI
+    // 仅继承到 launchd PATH 时也能解析 `node`。
     let npm_dir = npm.parent().unwrap_or(std::path::Path::new("."));
     let status = run_with_progress(
         &npm,
         &["install", "-g", "pnpm"],
         &cwd,
-        log_path,
+        logs_dir,
+        log_spec,
         &[node_dir, npm_dir],
         |line| on_progress(line),
     )

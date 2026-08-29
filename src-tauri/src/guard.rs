@@ -127,10 +127,13 @@ fn epoch_secs() -> u64 {
 }
 
 fn kernel_log_path(data_dir: &Path) -> PathBuf {
-    kernel::logs_dir(data_dir).join("kernel.log")
+    // 取当天的轮转内核日志的末尾；更早日期的文件仍然可以通过
+    // `read_log_file` 拿来进行更深入的分析，但启动失败归因总是希望拿
+    // 到最新的证据。
+    kernel::current_kernel_log_path(data_dir)
 }
 
-// --- watchdog ---------------------------------------------------------------
+// --- 看门狗 ---------------------------------------------------------------
 
 enum WatchVerdict {
     Ready,
@@ -215,20 +218,42 @@ fn boot_once(
     }
 }
 
-// --- attribution ------------------------------------------------------------
+// --- 归因 --------------------------------------------------------------------
 
-/// Lines that plausibly carry the failure cause. Boot logs interleave loader
-/// chatter («loading plugin …») with the actual error; matching only
-/// error-shaped lines keeps chatty-but-innocent plugins out of the suspect
-/// list, which is what makes the automatic disable safe to run unattended.
+/// 可能携带失败原因的行。启动日志把 Loader 的输出（形如 «loading
+/// plugin …»）与真正错误混合在一起；只匹配错误形态的行，才能把那些
+/// 看起来热闹但无关的插件排除在可疑列表之外，这正是自动停用可以无人
+/// 值守运行的安全前提。
 fn is_error_line(line: &str) -> bool {
-    const MARKERS: [&str; 8] = [
-        "Error", "error", "ERR_", "Cannot", "cannot", "throw", "Failed", "failed",
+    const MARKERS: [&str; 12] = [
+        "Error",
+        "error",
+        "ERR_",
+        "Cannot",
+        "cannot",
+        "throw",
+        "Throw",
+        "Failed",
+        "failed",
+        "Uncaught",
+        "uncaught",
+        "TypeError",
     ];
-    MARKERS.iter().any(|marker| line.contains(marker))
+    if MARKERS.iter().any(|marker| line.contains(marker)) {
+        return true;
+    }
+    // HTTP 4xx / 5xx 访问行同样属于错误形态：前端无法加载自己打包的文
+    // 件，效果上等同于模块缺失。
+    let lower = line.to_ascii_lowercase();
+    (lower.contains(" 4") || lower.contains(" 5"))
+        && (lower.contains("http")
+            || lower.contains("get ")
+            || lower.contains("post ")
+            || lower.contains("put ")
+            || lower.contains("delete "))
 }
 
-/// Join the hit line with one line of context on each side, capped.
+/// 把命中的行与其前后各一行的上下文拼接起来，并对长度设上限。
 fn excerpt(lines: &[&str], idx: usize) -> String {
     let start = idx.saturating_sub(1);
     let end = (idx + 2).min(lines.len());
@@ -287,14 +312,15 @@ pub fn attribute(
     }
 
     if suspects.is_empty() {
-        // Corrupted kernel install signal: module resolution failing on the
-        // dsh package itself. Any crash trace references the entry file, so
-        // only a resolution failure on the package counts as kernel evidence.
-        let Some(idx) = lines.iter().position(|line| {
-            is_error_line(line)
-                && line.contains("@deepseek-ai/dsh")
-                && (line.contains("Cannot find") || line.contains("ERR_MODULE_NOT_FOUND"))
-        }) else {
+        // 内核安装损坏信号：任何指向 `@deepseek-ai/dsh-*` 包，或者内核
+        // 自有 client-module loader 的错误形态行。该命名空间被内核发
+        // 行版保留（内建的 `client-ui-*`、`base`、`web-app`、`headless`
+        // 等），所以一旦命中，定义上就不可能是社区插件。我们还接受一
+        // 小组内核 Loader 在其预打包 chunk 表过时（启动时暴露的 build-
+        // time externals drift）时输出的特定短语：这些短语在不同内核版
+        // 本间稳定且很少变动，因此保守的规则是「命中其中任何一条」，
+        // 而非「只匹配我们今天认识的那几条」。
+        let Some(idx) = lines.iter().position(|line| is_kernel_evidence_line(line)) else {
             return suspects;
         };
         suspects.push(Suspect {
@@ -305,6 +331,64 @@ pub fn attribute(
         });
     }
     suspects
+}
+
+/// 判断 `line` 是否既呈现错误形态，又指向内核内部组件（内核的包命
+/// 名空间，或已知的 client-module loader 短语）。保守地：调用方必须
+/// 已经先按 `is_error_line` 的形态匹配确认这一行确实是错误，所以本
+/// 辅助函数只是在其之上叠加一个「是否归我们管？」的问题。
+fn is_kernel_evidence_line(line: &str) -> bool {
+    if !is_error_line(line) {
+        return false;
+    }
+    // 任何提到内核命名空间包名的错误。边界判断很关键：
+    // `@deepseek-ai/dsh/` 覆盖根入口文件（例如
+    // `@deepseek-ai/dsh/lib/bin.js`），而 `@deepseek-ai/dsh-` 覆盖
+    // 内核随附的所有内建 client module（例如
+    // `@deepseek-ai/dsh-client-ui-theme`）。以非字母数字的分隔符锚定
+    // 可以避免一个名叫 `@scope/dsh-foo` 的社区插件仅凭 `dsh` 子串被
+    // 误当成内核包。
+    if has_kernel_package_ref(line) {
+        return true;
+    }
+    // 稳定的内核 Loader 短语。这些是内核 client-module loader 在预打
+    // 包 chunk 表缺少某条目时输出的特定字符串；识别它们使得故障面板
+    // 能把空白 / 加载失败的报告路由到对应的内核版本，而不是留下一个
+    // 空洞的「暂未能归因」。
+    const KERNEL_LOADER_PHRASES: [&str; 6] = [
+        "client-modules",
+        "build-time externals drift",
+        "missed the module table",
+        "platform seed word",
+        "not a materialized module",
+        "no registered package factory",
+    ];
+    KERNEL_LOADER_PHRASES
+        .iter()
+        .any(|phrase| line.contains(phrase))
+}
+
+/// 当且仅当 `line` 引用了内核自己的包命名空间（`@deepseek-ai/dsh` 后
+/// 接非字母数字边界）时返回 true。不应匹配 `@deepseek-ai/dshfoo`——
+/// 那是（假设存在的）名字里碰巧含有 `dsh` 的社区包，并非内核。
+fn has_kernel_package_ref(line: &str) -> bool {
+    const NEEDLE: &str = "@deepseek-ai/dsh";
+    let mut start = 0;
+    while let Some(idx) = line[start..].find(NEEDLE) {
+        let after = start + idx + NEEDLE.len();
+        // 手写一个「下一个字符（如果有）是否为非字母数字边界？」的判
+        // 断——`Option::is_none_or` 是 1.77 之后才有的，`Cargo.toml`
+        // 中的 MSRV 门禁会拒绝在此调用该方法。
+        let boundary_ok = match line[after..].chars().next() {
+            None => true,
+            Some(c) => !c.is_ascii_alphanumeric(),
+        };
+        if boundary_ok {
+            return true;
+        }
+        start = after;
+    }
+    false
 }
 
 fn suspect_records(suspects: &[Suspect], reason: String) -> Vec<QuarantineItem> {
@@ -667,10 +751,48 @@ fn runtime_attempt(report: &HealthReport) -> String {
     }
 }
 
-/// Diagnose a workbench health report without restarting or changing the
-/// running kernel. Plugin evidence is temporarily quarantined so the next
-/// restart is safe; the user still chooses whether to keep, restore, or remove
-/// the plugin in the incident panel.
+/// 为空白页面场景构建一份「软信号」可疑项列表：当页面渲染为空白但内
+/// 核仍在响应时，插件代码是最常见的沉默元凶（同步的初始化错误、把
+/// 一切藏起来的 CSS bug、卡住的异步 Loader）。我们把每个已安装的第
+/// 三方插件都列出为软可疑项，但不附具体的日志证据，以便用户采取行
+/// 动；我们绝不在软信号下自动隔离——只有保守的 `attribute` 证据才
+/// 能驱动这件事。
+fn soft_attribute_blank(store_items: &[plugins::StoreItem], report: &HealthReport) -> Vec<Suspect> {
+    if report.kind.trim() != "blank" || store_items.is_empty() {
+        return Vec::new();
+    }
+    store_items
+        .iter()
+        .take(MAX_SUSPECTS)
+        .map(|item| Suspect {
+            kind: String::from("plugin"),
+            id: item.id.clone(),
+            name: item.name.clone(),
+            evidence: String::from(
+                "工作台页面加载完成后仍为空白，未发现可见内容。内核仍在响应 HTTP 请求，但页面未渲染。",
+            ),
+        })
+        .collect()
+}
+
+/// 启发式判断：当日志中出现 HTTP 4xx/5xx 访问行时，前端很可能没能
+/// 加载到某个资源——这看起来就像插件（link 模式接线指向了错误的路径）
+/// 的行为，值得作为软信号展示出来。
+fn log_has_http_failure(tail: &str) -> bool {
+    tail.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        (lower.contains(" 4") || lower.contains(" 5"))
+            && (lower.contains("http")
+                || lower.contains("get ")
+                || lower.contains("post ")
+                || lower.contains("put ")
+                || lower.contains("delete "))
+    })
+}
+
+/// 在不重启、不改动运行中的内核的前提下诊断一份工作台健康报告。
+/// 插件证据会被临时隔离，这样下一次重启是安全的；至于具体是保持、
+/// 恢复还是移除插件，仍然由用户在故障面板里决定。
 pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
     let now = epoch_secs();
     let attempt = runtime_attempt(&report);
@@ -688,11 +810,41 @@ pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
     });
     let store_items = plugins::load_store(data_dir).items;
     let kernel_label = kernel::read_active(data_dir).unwrap_or_default();
-    let suspects = attribute(
+    // 强证据：锚定到插件或内核的错误行。
+    let mut suspects = attribute(
         &runtime_evidence(&report, &tail),
         &store_items,
         &kernel_label,
     );
+    let soft_only = suspects.is_empty();
+    // 软证据：插件已安装时页面空白，或者内核日志中出现 HTTP 失败。我
+    // 们在这些场景下把每个已安装的插件都列为软可疑项，方便用户拿到
+    // 一个具体的清单去操作，但我们不会自动隔离——只有 `attribute` 的
+    // 证据强到足以在无人值守的情况下写隔离注册表。
+    if soft_only {
+        let blank_soft = soft_attribute_blank(&store_items, &report);
+        let http_soft =
+            log_has_http_failure(&tail) && !store_items.is_empty() && report.kind.trim() == "blank";
+        if !blank_soft.is_empty() || http_soft {
+            let mut soft = blank_soft;
+            if http_soft {
+                let extra: Vec<Suspect> = store_items
+                    .iter()
+                    .take(MAX_SUSPECTS.saturating_sub(soft.len()))
+                    .map(|item| Suspect {
+                        kind: String::from("plugin"),
+                        id: item.id.clone(),
+                        name: item.name.clone(),
+                        evidence: String::from(
+                            "内核日志出现 HTTP 4xx/5xx 响应，可能是插件静态资源加载失败",
+                        ),
+                    })
+                    .collect();
+                soft.extend(extra);
+            }
+            suspects = soft;
+        }
+    }
     let plugin_suspects: Vec<Suspect> = suspects
         .iter()
         .filter(|s| s.kind == "plugin")
@@ -702,7 +854,8 @@ pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
     let mut attempts = vec![attempt];
 
     let (message, hint) = match cause {
-        "plugin" => {
+        "plugin" if !soft_only => {
+            // 强证据路径：自动隔离可疑项。
             let names = plugin_suspects
                 .iter()
                 .map(|suspect| suspect.name.as_str())
@@ -732,6 +885,25 @@ pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
                 )
             }
         }
+        "plugin" => {
+            // 软证据路径：已安装插件但页面空白或出现 HTTP 失败、且无具
+            // 体日志证据。不自动隔离。
+            let names = plugin_suspects
+                .iter()
+                .map(|suspect| suspect.name.as_str())
+                .collect::<Vec<_>>()
+                .join("、");
+            attempts.push(format!(
+                "未发现具体的内核错误堆栈，但已安装的第三方插件无法排除：{names}（已列出但未自动停用）"
+            ));
+            attempts.push(String::from("软信号不会自动隔离，请按下方提示人工确认。"));
+            (
+                String::from("工作台页面加载后仍为空白，且已安装第三方插件。无法定位到具体插件的日志证据，请人工排查。"),
+                String::from(
+                    "建议步骤：① 打开「内核日志」查看是否有 4xx/5xx 或资源加载错误；② 在「插件」页临时停用全部第三方插件后重启工作台；③ 若停用后正常，逐个重新启用定位问题插件。",
+                ),
+            )
+        }
         "kernel" => {
             attempts.push(String::from("错误证据指向内核组件，未自动修改插件"));
             (
@@ -740,13 +912,30 @@ pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
             )
         }
         _ => {
-            attempts.push(String::from("未发现足够的插件或内核证据，暂不作强归因"));
-            (
-                String::from("工作台页面异常，但暂未找到足够证据区分插件和内核。"),
-                String::from(
-                    "请打开日志并重试；若持续发生，再到内核版本页切换其他版本或重新安装当前版本。",
-                ),
-            )
+            // 没有安装插件，同时也没有内核证据：纯粹属于环境 / 未知这
+            // 一类。仍然要给出一个比「我们不知道」更具体的下一步——
+            // 内核仍在响应，所以只是页面为空。引导用户去日志（CSS/JS
+            // 网络失败会出现在那里）以及去切换版本。
+            let http_hint = log_has_http_failure(&tail);
+            if http_hint {
+                attempts.push(String::from(
+                    "内核日志出现 HTTP 4xx/5xx，未定位到具体插件或内核组件",
+                ));
+                (
+                    String::from("工作台页面异常；内核仍在响应但日志含 HTTP 4xx/5xx，未定位到具体插件或内核组件。"),
+                    String::from(
+                        "请打开「内核日志」查看 4xx/5xx 详情；先尝试在「内核版本」页切换到其他已安装版本，仍失败时删除当前版本后重新安装。",
+                    ),
+                )
+            } else {
+                attempts.push(String::from("未发现足够的插件或内核证据，暂不作强归因"));
+                (
+                    String::from("工作台页面异常，但暂未找到足够证据区分插件和内核。"),
+                    String::from(
+                        "请打开日志并重试；若持续发生，再到内核版本页切换其他版本或重新安装当前版本。",
+                    ),
+                )
+            }
         }
     };
 
@@ -854,6 +1043,112 @@ mod tests {
     }
 
     #[test]
+    fn kernel_fallback_for_client_module_externals_drift() {
+        // 内核的 client-module loader 在其预打包 chunk 表过时时会输出这种
+        // 形态。日志中的包名是一个*内建*的内核 client module，而非社
+        // 区插件（这里插件商店为空），因此保守的匹配器必须把这个归到
+        // 对应的内核版本，而不是返回「暂未能归因」。
+        let tail = "Failed to load plugins\n\
+                    failed to import loader entry 84ed0f28 \
+                    (@deepseek-ai/dsh-client-ui-theme): client-modules: \
+                    require(\"@deepseek-ai/dsh-client-runtime/client\") \
+                    missed the module table — not a platform seed word, \
+                    not a materialized module, and no registered package \
+                    factory (a build-time externals drift, or a dynamic \
+                    dependency that did not arrive)\n";
+        let items = vec![store_item("p", "p")];
+        let suspects = attribute(tail, &items, "0.1.1-rc.2");
+        assert_eq!(suspects.len(), 1);
+        assert_eq!(suspects[0].kind, "kernel");
+        assert_eq!(suspects[0].id, "0.1.1-rc.2");
+        assert!(suspects[0].evidence.contains("client-modules"));
+        assert!(suspects[0].evidence.contains("build-time externals drift"));
+    }
+
+    #[test]
+    fn kernel_fallback_for_any_dsh_dash_package_in_error_line() {
+        // 任何提到 `@deepseek-ai/dsh-*` 包的错误行——即便不带 Loader 的特定
+        // 短语——都必须归到内核，因为该命名空间专属于内核发行版。社区插
+        // 件使用不同的 scope（例如 `@scope/plugin-name`），不会冲突。
+        let tail = "Error: failed to load chunk for @deepseek-ai/dsh-web-app/entry\n";
+        let items: Vec<plugins::StoreItem> = Vec::new();
+        let suspects = attribute(tail, &items, "0.1.0");
+        assert_eq!(suspects.len(), 1);
+        assert_eq!(suspects[0].kind, "kernel");
+    }
+
+    #[test]
+    fn kernel_fallback_ignores_community_plugin_with_dsh_in_name() {
+        // 原则上用户可以把社区插件命名为含 "dsh" 的名字（例如
+        // `@scope/dsh-foo`）。匹配器仍然必须根据*命名空间*
+        // `@deepseek-ai/dsh-` 而非 `dsh` 这个子串来判断，所以这种插件
+        // 仍然会落到插件分支。
+        let tail = "Error: Cannot find package '@scope/dsh-foo' \
+                    imported from plugins/@scope__dsh-foo/lib/index.js\n";
+        let items = vec![store_item("@scope__dsh-foo", "@scope/dsh-foo")];
+        let suspects = attribute(tail, &items, "0.1.0");
+        assert_eq!(suspects.len(), 1);
+        assert_eq!(suspects[0].kind, "plugin");
+        assert_eq!(suspects[0].id, "@scope__dsh-foo");
+    }
+
+    #[test]
+    fn is_kernel_evidence_line_recognises_loader_phrases() {
+        // 内核 client-module loader 在其 chunk 表过时时会输出的确切短语。其
+        // 中任何一条单独出现，都必须在错误行上触发内核分支。
+        assert!(is_kernel_evidence_line(
+            "Error: client-modules: require('x') missed the module table"
+        ));
+        assert!(is_kernel_evidence_line(
+            "Error: a build-time externals drift was detected"
+        ));
+        assert!(is_kernel_evidence_line(
+            "Error: missed the module table for chunk abc"
+        ));
+        assert!(is_kernel_evidence_line(
+            "Error: not a platform seed word: foo"
+        ));
+        assert!(is_kernel_evidence_line(
+            "Error: not a materialized module: bar"
+        ));
+        assert!(is_kernel_evidence_line(
+            "Error: no registered package factory for baz"
+        ));
+        // 命名空间规则覆盖更广范围的错误。
+        assert!(is_kernel_evidence_line(
+            "Error: failed to load @deepseek-ai/dsh-base/lib/index.js"
+        ));
+        // 非错误的行永远不算内核证据，即便它们提到了某个内核 Loader
+        // 短语（例如进度行 "client-modules: pre-bundling 12 chunks" 也
+        // 不能被标记）。
+        assert!(!is_kernel_evidence_line(
+            "client-modules: pre-bundling 12 chunks"
+        ));
+        // 既不提命名空间也不提 Loader 短语的行，也不算内核证据。
+        assert!(!is_kernel_evidence_line("Error: EADDRINUSE: port in use"));
+    }
+
+    #[test]
+    fn has_kernel_package_ref_anchors_on_boundary() {
+        // 内核命名空间的匹配：内核在日志中实际产生的各种形式（根包、子包、
+        // 带引号、在括号里、名字后紧跟一个闭括号）。
+        assert!(has_kernel_package_ref("@deepseek-ai/dsh/lib/bin.js"));
+        assert!(has_kernel_package_ref(
+            "(@deepseek-ai/dsh-client-ui-theme):"
+        ));
+        assert!(has_kernel_package_ref(
+            "require(\"@deepseek-ai/dsh-client-runtime/client\")"
+        ));
+        assert!(has_kernel_package_ref("'@deepseek-ai/dsh-base'"));
+        // 边界不匹配：名字碰巧含有 `dsh`（或 `dshfoo`）的社区插件不应
+        // 该被标成内核包。
+        assert!(!has_kernel_package_ref("@scope/dsh-foo"));
+        assert!(!has_kernel_package_ref("@scope/dshfoo"));
+        // 没有 scope 的裸子串也算不匹配（根本没有 `@deepseek-ai/dsh`）。
+        assert!(!has_kernel_package_ref("dsh-foo"));
+    }
+
+    #[test]
     fn runtime_cause_prefers_plugin_evidence_and_defaults_to_unknown() {
         assert_eq!(runtime_cause(&[]), "unknown");
         assert_eq!(
@@ -873,6 +1168,79 @@ mod tests {
             ]),
             "plugin"
         );
+    }
+
+    #[test]
+    fn soft_attribute_blank_lists_installed_plugins() {
+        // 空白页面报告且装有两个插件：两者都作为软可疑项呈现，让用户得到一
+        // 个可以操作的具体清单，即便日志里没有任何证据专门指向其中任
+        // 何一个。
+        let report = HealthReport {
+            kind: "blank".into(),
+            message: "工作台页面加载完成后仍为空白".into(),
+            stack: String::new(),
+            page_url: "http://127.0.0.1:3090/".into(),
+        };
+        let items = vec![store_item("alpha", "alpha"), store_item("beta", "beta")];
+        let soft = soft_attribute_blank(&items, &report);
+        assert_eq!(soft.len(), 2);
+        assert!(soft.iter().all(|s| s.kind == "plugin"));
+        let names: Vec<&str> = soft.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"alpha") && names.contains(&"beta"));
+    }
+
+    #[test]
+    fn soft_attribute_blank_no_plugins_returns_empty() {
+        // 没有安装插件：空白页面不是插件信号，函数必须返回空列表，使归因
+        // 留在内核 / 未知分支，并配有正确的下一步。
+        let report = HealthReport {
+            kind: "blank".into(),
+            message: String::new(),
+            stack: String::new(),
+            page_url: String::new(),
+        };
+        let items: Vec<plugins::StoreItem> = Vec::new();
+        assert!(soft_attribute_blank(&items, &report).is_empty());
+    }
+
+    #[test]
+    fn soft_attribute_blank_ignores_non_blank_kinds() {
+        // runtime-error / unhandled-rejection 不应走软信号路径：它们带
+        // 有真正的堆栈，应该由强证据分支负责。
+        let report = HealthReport {
+            kind: "runtime-error".into(),
+            message: String::new(),
+            stack: String::new(),
+            page_url: String::new(),
+        };
+        let items = vec![store_item("alpha", "alpha")];
+        assert!(soft_attribute_blank(&items, &report).is_empty());
+    }
+
+    #[test]
+    fn log_has_http_failure_detects_5xx_and_4xx_access_lines() {
+        assert!(log_has_http_failure(
+            "2024-01-15T12:00:00 GET /plugins/x/main.js 500 Internal Server Error"
+        ));
+        assert!(log_has_http_failure(
+            "127.0.0.1 - - [15/Jan/2024:12:00:00] \"GET /assets/index.css HTTP/1.1\" 404 -"
+        ));
+        assert!(!log_has_http_failure(
+            "2024-01-15T12:00:00 info: ready on port 3090"
+        ));
+        // 单独的 "5" 没有动词不算 HTTP 失败；没有动词的话，这个启发式会把任
+        // 何 5 字符的 id 都误判为失败。
+        assert!(!log_has_http_failure("id=12345"));
+    }
+
+    #[test]
+    fn is_error_line_catches_more_shapes() {
+        // 新识别出的错误形态，防护模块现在把它们视为证据。
+        assert!(is_error_line(
+            "TypeError: cannot read property 'x' of undefined"
+        ));
+        assert!(is_error_line("Uncaught (in promise) Connection refused"));
+        assert!(is_error_line("\"GET /assets/main.js HTTP/1.1\" 500 -"));
     }
 
     #[test]

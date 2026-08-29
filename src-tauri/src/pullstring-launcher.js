@@ -1,58 +1,47 @@
 /**
- * Initialization script injected into both local webviews the shell owns:
+ * 初始化脚本，注入到外壳拥有的两个本地 webview 中：
  *
- * - `open_harness` (the dsh web workbench webview, served from the kernel
- *   over `http://127.0.0.1:<port>`).
- * - `open_official_chat`'s strip webview (label `official-chat-strip`, the
- *   local SPA route `index.html?chatstrip=1` that renders the tab bar).
- *   The lamp is hosted by the same strip HWND as a compact 24x38 desk lamp,
- *   fitting inside the natural 38px tab-bar height.
+ * - `open_harness`（dsh web 工作台 webview，由内核通过
+ *   `http://127.0.0.1:<port>` 提供）。
+ * - `open_official_chat` 的 strip webview（标签 `official-chat-strip`，
+ *   渲染标签栏的本地 SPA 路由 `index.html?chatstrip=1`）。灯与 strip
+ *   同一 HWND 共存，是一个紧凑的 24x38 台灯，正好嵌入 38px 的天然标签栏高度。
  *
- * Both webviews keep `window.__TAURI__` intact — neither has its IPC
- * surface neutered — so the lamp talks straight to the global and the
- * injection only needs to handle chrome geometry, not fingerprint
- * defences.
+ * 两个 webview 都保留 `window.__TAURI__` 不动 —— 它们的 IPC 接口都不会被
+ * 阉割 —— 因此灯可以直接与全局对象通信，注入脚本只需处理 chrome 几何，
+ * 无需处理指纹防御。
  *
- * Pulling (clicking) the string lights the bulb and brings the shell's
- * main management window to the foreground via the `focus_main_shell`
- * command. The widget talks back to the shell over
- * `window.__TAURI__.core.invoke` (tauri.conf.json sets
- * `withGlobalTauri: true`), so it needs no page-side endpoint.
+ * 拉动（点击）绳子会点亮灯泡，并通过 `focus_main_shell` 命令把外壳的主
+ * 管理窗口带到前台。控件通过 `window.__TAURI__.core.invoke`（tauri.conf.json
+ * 设置了 `withGlobalTauri: true`）与外壳通信，因此不需要页面侧端点。
  *
- * Why inject from the shell rather than ship it in the kernel: the kernel
- * is a published npm artefact (`@deepseek-ai/dsh@<ver>`), and a shortcut
- * back to the shell's management panel is shell chrome, not page
- * content. The official-chat content webviews (DeepSeek / 千问 / MiniMax)
- * are third-party origins we cannot ship scripts into; the lamp itself
- * is window-level chrome and lives on the strip webview, which the shell
- * owns.
+ * 为什么由外壳注入而非随内核一起发布：内核是已发布的 npm 制品
+ * （`@deepseek-ai/dsh@<ver>`），而回到外壳管理面板的快捷方式是外壳的 chrome，
+ * 而不是页面内容。official-chat 的内容 webview（DeepSeek / 千问 / MiniMax）
+ * 属于第三方源，我们无法向其中注入脚本；灯本身属于窗口级 chrome，
+ * 位于外壳拥有的 strip webview 上。
  *
- * Two surfaces, two anchors and palettes:
+ * 两个表面，两套锚点与配色：
  *
- * - dsh web workbench: Gitea green cord (#609926) at left:212px, sized
- *   to land beside the sidebar-collapse button (the comment near the
- *   offset documents the geometry in detail).
+ * - dsh web 工作台：Gitea 绿色绳 (#609926)，位于 left:212px，恰好落在
+ *   侧栏折叠按钮旁（具体几何在偏移附近的注释中详述）。
  *
- * - official-chat strip: DeepSeek blue cord (#4D6BFE) at right:12px,
- *   mirrored to the right edge — the strip has no right-side content to
- *   collide with, and mirroring keeps the lamp visible regardless of how
- *   many tab buttons the strip grows.
+ * - official-chat strip：DeepSeek 蓝色绳 (#4D6BFE)，位于 right:12px，
+ *   镜像到右边 —— strip 右侧没有其他内容会与之冲突，镜像到右可以让灯
+ *   在 strip 标签按钮数量变化时始终保持可见。
  */
 (function () {
-  // Tauri runs initialization scripts in every frame; the widget belongs to
-  // the top-level page only — without this guard an iframe inside the
-  // workbench would mount its own lamp and double-paint the icon on every
-  // nested document. The strip page is a single document so the guard is a
-  // harmless no-op there.
+  // Tauri 会在每个 frame 中运行初始化脚本；该控件只属于顶层页面 —— 没有这
+  // 道守卫，工作台里的 iframe 会自己挂载一个灯，并对每个嵌套文档重复绘制
+  // 图标。strip 页面是单一文档，因此这里的守卫对它是无害的空操作。
   if (window.top !== window.self) {
     return;
   }
 
-  // Surface selection: the official-chat strip webview (loaded at
-  // `?chatstrip=1`) uses the DeepSeek-blue right-edge chrome; the dsh web
-  // workbench uses the Gitea-green left anchor beside the sidebar-collapse
-  // button. The legacy `chatlauncher=1` check remains harmless for stale
-  // URLs, while current official-chat chrome is owned by the strip webview.
+  // 表面选择：official-chat strip webview（在 `?chatstrip=1` 加载）使用
+  // DeepSeek 蓝色的右侧 chrome；dsh web 工作台使用 Gitea 绿色的左侧锚点，
+  // 紧贴侧栏折叠按钮。保留对旧的 `chatlauncher=1` 的检查，对陈旧 URL
+  // 仍是无害的，而当前 official-chat 的 chrome 由 strip webview 持有。
   var search = window.location.search;
   var isOfficial =
     search.indexOf("chatstrip=1") !== -1 ||
@@ -129,14 +118,12 @@
       "#" + ROOT_ID + " {",
       "  position: fixed;",
       "  top: " + TOP_PX + ";",
-      /* Anchor on the chrome corner. dsh web workbench hangs the lamp on
-         the right of the brand logo (left:212px); the official-chat
-         strip mirrors it to the right edge (right:12px). Plain window
-         resizes leave both anchors alone — the workbench sidebar is
-         fixed-width and the strip is its natural 38px tab-bar height;
-         each variant's SVG is sized to fit (24x38 desk for the strip,
-         24x66 pull-string for the full workbench). `top` is `0` on
-         both surfaces so the cord anchors at the top of the viewport. */
+      /* 锚定在 chrome 的转角。dsh web 工作台把灯挂在品牌 logo 右侧
+         (left:212px)；official-chat strip 把它镜像到右边 (right:12px)。
+         普通的窗口尺寸变化不会影响这两个锚点 —— 工作台侧栏是定宽的，
+         strip 是天然的 38px 标签栏高度；每个 variant 的 SVG 都按尺寸
+         适配（strip 上的 24x38 台灯，工作台上的 24x66 拉绳灯）。
+         两个表面都把 `top` 设为 `0`，让绳锚定在视口顶部。 */
       "  " + SIDE + ": " + EDGE_PX + ";",
       "  z-index: 2147483647;",
       "  pointer-events: none;",
@@ -159,9 +146,8 @@
       "  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);",
       "  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));",
       "}",
-      /* Cord color matches the surface brand (workbench green, official
-         chat blue) so the lamp reads as the same chrome surface as the
-         titlebar pulse running across the top of the viewport. */
+      /* 绳色与所在表面的品牌色匹配（工作台绿、官方对话蓝），
+         让灯读作与横贯视口顶部的 titlebar pulse 同一片 chrome。 */
       "#" + ROOT_ID + " .dsh-launcher-cord {",
       "  stroke: " + PALETTE.cord + ";",
       "  stroke-width: 2;",
@@ -171,9 +157,8 @@
       "  fill: var(--dsh-launcher-base-fill);",
       "  transition: fill 0.18s ease;",
       "}",
-      /* Palette variables, defaulting to the translucent whites that read
-         against the dark page palette; the light-mode override near the
-         end of the sheet swaps them. */
+      /* 调色板变量，默认使用在深色页面上仍可读出的半透明白色；
+         样式表末尾的浅色模式覆盖会替换这些值。 */
       "#" + ROOT_ID + " {",
       "  --dsh-launcher-base-fill: rgba(255, 255, 255, 0.42);",
       "  --dsh-launcher-bulb-fill: rgba(255, 255, 255, 0.14);",
@@ -204,9 +189,8 @@
     }
     if (LAMP_VARIANT === "desk") {
       rules.push(
-        "/* Conical shade of the desk lamp: same translucent glass as the",
-        "   bulb, with a thin lighter linework to read as a defined shape",
-        "   against the dark strip. */",
+        "/* 台灯的圆锥形灯罩：与灯泡相同的半透明玻璃，",
+        "   配以较细的浅色描边，在深色 strip 上仍能读出清晰的形状。 */",
         "#" + ROOT_ID + " .dsh-launcher-shade {",
         "  fill: rgba(255, 255, 255, 0.18);",
         "  stroke: rgba(255, 255, 255, 0.55);",
@@ -214,7 +198,7 @@
         "  stroke-linejoin: round;",
         "  transition: fill 0.18s ease, stroke 0.18s ease, stroke-width 0.18s ease;",
         "}",
-        "/* Stem is a single 1px line connecting the shade to the base. */",
+        "/* 灯杆是连接灯罩与底座的单条 1px 线。 */",
         "#" + ROOT_ID + " .dsh-launcher-stem {",
         "  stroke: rgba(255, 255, 255, 0.55);",
         "  stroke-width: 1;",
@@ -260,8 +244,7 @@
         "#" + ROOT_ID + " .dsh-launcher-btn.dsh-launcher-on .dsh-launcher-base {",
         "  fill: rgba(255, 255, 255, 0.55);",
         "}",
-        /* Stack: small depth shadow + tight 12px warm glow + wide 24px
-           softer glow. */
+        /* 叠加：细微的景深阴影 + 12px 紧凑暖光 + 24px 宽幅柔光。 */
         "#" + ROOT_ID + " .dsh-launcher-btn.dsh-launcher-on svg {",
         "  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45))",
         "          drop-shadow(0 0 12px rgba(255, 212, 94, 0.95))",

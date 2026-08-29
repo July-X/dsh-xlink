@@ -17,133 +17,127 @@ use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowBuilder, Win
 use url::Url;
 
 use crate::error::AppError;
-use crate::process::read_tail;
+use crate::process::{build_log_kind, read_tail, LogSpec};
 use crate::quarantine;
 use crate::{guard, kernel, node, plugins, releases, settings, skills, updater};
 
-/// DeepSeek official chat entrypoint that `open_official_chat` loads into
-/// the dedicated `official-chat` webview.
+/// `open_official_chat` 加载到专用 `official-chat` webview 中的
+/// DeepSeek 官方对话入口。
 ///
-/// No user-agent override for this window: the WebView2 engine IS a genuine
-/// desktop Edge/Chromium build. Overriding the UA string claims Chrome in
-/// the header while `Sec-CH-UA` client hints and native
-/// `navigator.userAgentData` keep reporting the real Edge brand — that
-/// cross-layer mismatch is exactly what environment checks flag, so the
-/// honest identity is also the consistent one.
+/// 该窗口不覆盖用户代理：WebView2 引擎本身就是真正的桌面 Edge/Chromium
+/// 构建。覆盖 UA 字符串会在请求头里声称是 Chrome，但 `Sec-CH-UA` 客户
+/// 端提示和原生 `navigator.userAgentData` 仍然报出真正的 Edge 品牌——
+/// 这种跨层不一致正是环境检测会盯上的东西，所以诚实的身份也是一致
+/// 的身份。
 pub const OFFICIAL_CHAT_URL: &str = "https://chat.deepseek.com";
 
-// WKWebView stores cookies and localStorage under this identifier on macOS.
-// Keep the IDs stable across releases, and separate debug from release data.
+// WKWebView 在 macOS 上把 cookies 和 localStorage 存到这个标识符下。
+// 在跨发布版之间保持 ID 稳定，并区分别名为 debug 与 release 的数据。
 #[cfg(all(target_os = "macos", debug_assertions))]
 const OFFICIAL_CHAT_DATA_STORE_IDENTIFIER: [u8; 16] = *b"dsh-chat-dev-001";
 #[cfg(all(target_os = "macos", not(debug_assertions)))]
 const OFFICIAL_CHAT_DATA_STORE_IDENTIFIER: [u8; 16] = *b"dsh-chat-rel-001";
 
-/// Chromium feature switches passed to the `official-chat` webview.
+/// 传给 `official-chat` webview 的 Chromium feature 开关。
 ///
-/// `additional_browser_args` **replaces** wry's built-in default set
-/// (`--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`), so
-/// those entries are restated here instead of silently re-enabled: without
-/// them WebView2 shows SmartScreen interstitials and Edge-only overlay UI a
-/// normal desktop Chrome never has. On top of those, `AutomationControlled`
-/// (both as a browser feature and as a blink runtime flag) keeps Chromium
-/// from reporting `navigator.webdriver = true` at the engine level — before
-/// any initialization script can mask it — and `TranslateUI` /
-/// `InterestFeedContentSuggestions` suppress more Edge-only surfaces. Only
-/// the WebView2 backend consumes browser args; macOS / Linux ignore them,
-/// so the builder wiring stays branch-free. The same per-folder options
-/// rule is why [`open_official_chat`] pairs this constant with a dedicated
-/// user-data directory.
+/// `additional_browser_args` 会**替换** wry 自带的默认集合
+/// （`--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`），
+/// 因此这里把相关条目重新声明一遍，避免悄悄被重新启用：少了这些项
+/// 之后，WebView2 会显示 SmartScreen 拦截页以及只有 Edge 才有的浮层
+/// UI，而普通桌面 Chrome 是不会有这些东西的。在此基础上，
+/// `AutomationControlled`（既作为浏览器 feature，又作为 blink runtime
+/// 标志位）阻止 Chromium 在引擎层就上报 `navigator.webdriver = true`，
+/// 让任何 initialization_script 都没机会遮盖它；`TranslateUI` /
+/// `InterestFeedContentSuggestions` 则压制更多 Edge-only 的界面。只有
+/// WebView2 后端会消费这些浏览器参数；macOS / Linux 会忽略它们，因此
+/// builder 的接线不必分平台分支。同一个 user-data 目录必须配一致的参
+/// 数（per-folder options），这也是 [`open_official_chat`] 把这个常
+/// 量与专用 user-data 目录配对使用的原因。
 pub const OFFICIAL_CHAT_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,AutomationControlled,TranslateUI,InterestFeedContentSuggestions --disable-blink-features=AutomationControlled";
 
-/// Second official-chat tab: 通义千问 (qianwen).
+/// 第二个官方对话页签：通义千问（qianwen）。
 pub const OFFICIAL_CHAT_QIANWEN_URL: &str = "https://www.qianwen.com";
 
-/// Third official-chat tab: MiniMax agent.
+/// 第三个官方对话页签：MiniMax agent。
 pub const OFFICIAL_CHAT_MINIMAX_URL: &str = "https://agent.minimaxi.com";
 
-/// The fixed tabs rendered in the official-chat window's tab strip, in
-/// display order. The first entry is the default active tab on open. Add a
-/// row here to add a tab — the strip webview discovers the list at runtime
-/// the strip webview discovers the list at runtime via [`official_chat_tabs`]
-/// and content webviews are created lazily when selected, so no other site is
-/// loaded during the initial open.
+/// 官方对话窗口页签栏中按展示顺序排列的固定页签。第一个条目是打开时
+/// 默认激活的页签。增加一行即可增加一个页签——strip webview 在运行
+/// 时通过 [`official_chat_tabs`] 发现这份列表，而内容 webview 是在
+/// 被选中时才惰性创建的，所以初次打开时不会加载任何其它站点。
 pub const OFFICIAL_CHAT_TABS: &[(&str, &str)] = &[
     ("DeepSeek", OFFICIAL_CHAT_URL),
     ("千问", OFFICIAL_CHAT_QIANWEN_URL),
     ("MiniMax", OFFICIAL_CHAT_MINIMAX_URL),
 ];
 
-/// Bare-window label. A `Window` (not a `WebviewWindow`) hosts the strip
-/// plus one child `Webview` per tab; closing the window tears down the lot.
+/// 裸窗口的 label。一个 `Window`（不是 `WebviewWindow`）承载 strip 加
+/// 每个页签对应的一个子 `Webview`；关窗时它们会一并被拆解。
 const OFFICIAL_CHAT_WINDOW_LABEL: &str = "official-chat";
-/// Local SPA webview that renders the tab bar (`index.html?chatstrip=1`).
-/// It keeps `window.__TAURI__` — `chat-fingerprint.js` is NOT injected here —
-/// so it can invoke [`official_chat_tabs`] / [`switch_official_chat_tab`].
-/// The pull-string lamp lives here too because child WebView transparency is
-/// unreliable on this Tauri 2.11 / wry 0.55.1 stack. The compact lamp and tab
-/// controls fit in the same 38px strip.
+/// 用于渲染页签栏的本地 SPA webview（`index.html?chatstrip=1`）。它保
+/// 留 `window.__TAURI__`——`chat-fingerprint.js` 不在这里注入——
+/// 因此可以调用 [`official_chat_tabs`] / [`switch_official_chat_tab`]。
+/// 拉绳小台灯也放在这里，因为在 Tauri 2.11 / wry 0.55.1 这版上，子
+/// WebView 的透明效果并不可靠。紧凑的小台灯和页签控件可以共用同一个
+/// 38px 高的 strip。
 const OFFICIAL_CHAT_STRIP_LABEL: &str = "official-chat-strip";
-/// Logical height of the pinned tab strip. The compact 24x38 desk-lamp SVG
-/// fits inside the natural 38px tab-bar height.
+/// 被钉在顶部的页签栏的逻辑高度。紧凑的 24×38 台灯 SVG 正好放进
+/// 38px 高的页签栏中。
 const OFFICIAL_CHAT_INITIAL_WIDTH: f64 = 1366.0;
 const OFFICIAL_CHAT_INITIAL_HEIGHT: f64 = 768.0;
 const OFFICIAL_CHAT_STRIP_HEIGHT: f64 = 38.0;
 
-/// Shared shell state installed as a Tauri managed state.
+/// 以 Tauri managed state 形式注册的共享 Shell 状态。
 pub struct AppState {
     pub data_dir: PathBuf,
     pub running: Mutex<Option<Child>>,
-    /// Last resolved Node runtime, keyed by the configured node path. The
-    /// status poll runs every few seconds; re-probing `node --version` each
-    /// time would spawn a process per poll (slow on Windows, where process
-    /// creation is expensive) for a result that only changes with the
-    /// setting or the machine's Node install.
+    /// 最近一次解析到的 Node 运行时，以配置的 node 路径为键。状态轮
+    /// 询每几秒就会跑一次；如果每次轮询都重新探测 `node --version`，
+    /// 就会产生进程派生（Windows 上进程创建开销大），但解析结果其实
+    /// 只在设置改变或机器的 Node 安装变化时才会变。
     pub node_cache: Mutex<Option<(Option<String>, node::NodeInfo)>>,
 }
 
-/// Everything the management UI needs on the first render.
+/// 管理面板首次渲染所需的全部信息。
 #[derive(Serialize)]
 pub struct StatusView {
-    /// Version of the running shell itself (from tauri.conf.json).
+    /// 正在运行的 Shell 自身的版本（来自 tauri.conf.json）。
     pub shell_version: String,
-    /// True in debug builds (`tauri dev`). The panel uses it to wash its
-    /// header column with the whale-eye red so the dev shell is visually
-    /// distinct from an installed release shell sharing the screen.
+    /// 在 debug 构建（`tauri dev`）下为 true。面板会用它把首列染上
+    /// 鲸鱼眼红，让 dev shell 在屏幕上能一眼和已安装的 release shell
+    /// 区分开。
     pub dev_build: bool,
     pub kernel: kernel::KernelStatus,
     pub node: node::NodeInfo,
     pub settings: settings::Settings,
-    /// Plugins the boot guard has disabled. The overview renders a banner
-    /// from this so a workbench running in safe mode is never silent about
-    /// what it is missing.
+    /// 启动防护已经停用的插件。概览页据此渲染横幅，使得即便工作台
+    /// 跑在安全模式下也不会对缺失的内容保持沉默。
     pub quarantined: Vec<quarantine::QuarantineItem>,
-    /// Most recent boot-guard incident, if any. Survives shell restarts via
-    /// `last-incident.json`, so「查看详情」keeps working after a relaunch
-    /// instead of only in the start command's response.
+    /// 最近一次启动防护的故障（如果有）。通过 `last-incident.json`
+    /// 跨 Shell 重启保留下来，因此「查看详情」在重新启动之后仍然可
+    /// 用，不只限于启动命令的响应中。
     pub last_incident: Option<guard::Incident>,
-    /// Whether the dedicated `official-chat` webview window is currently
-    /// registered with the app. The status poll observes this on the same
-    /// 2.5s cadence so the panel's button label flips between
-    /// 「打开官方对话」 and 「关闭官方对话」 without an extra IPC round-trip.
+    /// 专用 `official-chat` webview 窗口当前是否已注册到应用。状态
+    /// 轮询以同样的 2.5s 节奏观察这个标志，让面板按钮的文案在「打
+    /// 开官方对话」和「关闭官方对话」之间切换而无需额外的 IPC 往返。
     pub official_chat_open: bool,
 }
 
-// Read a bounded tail of a text file for display — moved to
-// `crate::process::read_tail` so the boot guard reads the same way.
+// 读取用于展示的定长文本文件尾部——已迁移到
+// `crate::process::read_tail`，以便启动防护以同样的方式读取。
 ///
-/// The web-app level error prefix the UI must not swallow.
+/// 不可被 UI 吞掉的 web-app 级错误前缀。
 fn app_err(data_dir: &Path, e: impl std::fmt::Display) -> String {
     format!("{e}（数据目录：{}）", data_dir.display())
 }
 
-// --- status ---------------------------------------------------------------
+// --- 状态 --------------------------------------------------------------------
 
 #[tauri::command]
 pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<StatusView, String> {
     let data_dir = state.data_dir.clone();
-    // File probes and the port check run on a blocking worker: as a sync
-    // command this poll would hold the Tauri main thread every few seconds.
+    // 文件探测和端口检查在 blocking worker 上运行：如果作为同步命令，
+    // 这个轮询会每几秒就霸占 Tauri 的主线程。
     tauri::async_runtime::spawn_blocking(move || {
         let settings = settings::load(&data_dir);
         let kernel_status = kernel::status(&data_dir, &settings);
@@ -212,27 +206,34 @@ pub async fn save_settings(
 
 #[tauri::command]
 pub async fn get_kernel_log(state: State<'_, AppState>) -> Result<String, String> {
-    let path = kernel::logs_dir(&state.data_dir).join("kernel.log");
+    // 仅取当天的轮转内核日志末尾。之所以只读当天是有意为之：用户在检
+    // 测到空白页之后几秒就会点「查看前端自检证据」，他们想看的正是
+    // 最新几行。较早的日期仍保留在目录和面板的页签列表中，要做更深
+    // 入调查只需切换一个页签。
+    let path = kernel::current_kernel_log_path(&state.data_dir);
     tauri::async_runtime::spawn_blocking(move || read_tail(&path, 16 * 1024))
         .await
         .map_err(|e| e.to_string())
 }
 
-/// One entry for the log-files modal tab list.
+/// 日志文件面板页签列表中的一项。
 #[derive(Serialize)]
 pub struct LogFileEntry {
-    /// Just the basename (e.g. `kernel.log`, `install-0.1.0-rc.6.log`); the
-    /// UI passes it back to `read_log_file`. Never expose absolute paths —
-    /// the UI runs in a sandboxed webview and should not need them.
+    /// 仅文件 basename（例如 `release-kernel-2024-01-15.log`、
+    /// `release-install-0.1.0-rc.6-2024-01-15.log`）；UI 把它回传给
+    /// `read_log_file`。绝不暴露绝对路径——UI 运行在沙箱化的 webview
+    /// 中，不应该需要绝对路径。
     pub name: String,
-    /// File size in bytes; the modal shows it next to the tab name.
+    /// 文件大小（字节）；面板会把它显示在页签名旁边。
     pub size: u64,
 }
 
-/// List `*.log` files under the shell's log directory, newest first.
+/// 列举 Shell 日志目录下的所有 `*.log` 文件，最新者优先。
 ///
-/// Files that disappear between `read_dir` and `metadata` are silently
-/// skipped — install logs are rotated in place and may race with this scan.
+/// `read_dir` 与 `metadata` 之间消失的文件会被静默跳过——安装日志会
+/// 原地轮转，可能与本次扫描产生竞速。该列表涵盖 `RotatingLog` 写出
+/// 的每一种「构建类型 + 名称 + 日期」组合，因此用户在面板中可以在
+/// 同一份滚动里同时看到实时的内核日志以及昨天的安装尝试。
 #[tauri::command]
 pub async fn list_log_files(state: State<'_, AppState>) -> Result<Vec<LogFileEntry>, String> {
     let dir = kernel::logs_dir(&state.data_dir);
@@ -351,22 +352,23 @@ pub fn promise_pnpm(
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
-    // The auto-install log lives under the shell's log dir next to the
-    // install logs; rotation reuses the existing kernel::logs_dir helper.
-    let pnpm_log = kernel::logs_dir(data_dir).join(format!(
-        "pnpm-install-{}.log",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    ));
-    let pnpm = node::ensure_pnpm(&s, &node_dir, &pnpm_log, &mut on_progress)?;
+    // 自动安装日志与安装日志一同放在 Shell 日志目录下；`run_pnpm` 使用
+    // 的同一个按日轮转的 writer 会把日志追加到当天的文件里。「构建类
+    // 型 + 日期」前缀让偶尔同机并存的 dev 与 release 尝试不会互相手
+    // 覆。
+    let logs_dir = kernel::logs_dir(data_dir);
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let pnpm_log_spec = LogSpec::new(build_log_kind(), format!("pnpm-install-{epoch}"));
+    let pnpm = node::ensure_pnpm(&s, &node_dir, &logs_dir, &pnpm_log_spec, &mut on_progress)?;
     Ok((PathBuf::from(node_info.path.clone()), pnpm))
 }
 
-// --- kernel install / switch / remove --------------------------------------
+// --- 内核安装 / 切换 / 移除 ----------------------------------------------------
 
-/// Install a pinned kernel version from npm, streaming progress events.
+/// 从 npm 安装指定版本的内核，期间通过事件流推送进度。
 #[tauri::command]
 pub async fn install_kernel(
     state: State<'_, AppState>,
@@ -677,38 +679,73 @@ fn bounded_health_text(
 }
 
 ///
-/// The command performs its settings read and port probe on a blocking worker.
-/// Webview creation still happens on a fresh OS thread: synchronous construction
-/// inside a Tauri command can deadlock on Windows, and keeping the builder off
-/// the async executor is safer on every platform.
+/// 该命令在 blocking worker 上读取配置并探测端口。Webview 的创建仍然
+/// 在一个新的 OS 线程上进行：在 Tauri 命令里同步构造 window 在
+/// Windows 上可能死锁，把 builder 排除在 async executor 之外在所有平台
+/// 上都更安全。
 ///
-/// The window is created with `closable(false)` so the OS title-bar close
-/// button is greyed out: an accidental click in the middle of a long task
-/// would otherwise drop the user's session. The deliberate path back
-/// through `stop_kernel` still works because that command uses `destroy()`
-/// rather than `close()`, which forces the OS to honor the tear-down even
-/// when the chrome close button is disabled. The Linux GTK+ backend is the
-/// documented exception: it may not grey the button out for windows that
-/// are already visible, so on Linux this is a behavioural hint rather than
-/// a hard guarantee.
-/// Open the dsh web workbench window. The native titlebar stays as
-/// the standard macOS / Windows / Linux chrome rather than Overlay so
-/// that the OS-level drag / resize / double-click-zoom continue to work
-/// reliably (the WKWebView drag-region path through `start_dragging` IPC
-/// is flaky under Tauri 2.11.5). The chrome-row pulse is owned by the
-/// shell rather than the kernel's `packages/client/web/src/base.css`,
-/// injected via `initialization_script(titlebar-pulse.js)`; the script
-/// appends a `<style>` node with `!important` rules so the shell
-/// override wins regardless of which kernel version is running and
-/// regardless of load order between this script and the workbench's
-/// own stylesheets. A second injected script (`pullstring-launcher.js`)
-/// renders a pull-string lamp floating at the workbench's top-left edge;
-/// pulling it invokes [`focus_main_shell`] to raise the management window
-/// over the current desktop.
+/// 窗口在创建时使用 `closable(false)`，因此系统标题栏的关闭按钮会被
+/// 灰掉：在长任务中途意外点击就不会打断用户会话。经过 `stop_kernel`
+/// 显式回到关闭路径仍然有效，因为该命令用的是 `destroy()` 而不是
+/// `close()`，能在 chrome 关闭按钮被禁用的前提下，强制让系统完成拆
+/// 解。Linux GTK+ 后端是文档记载的例外：它可能不会对已经可见的窗口灰
+/// 掉按钮，所以在 Linux 上这只是行为暗示，不是硬保证。
+/// 打开 dsh web 工作台窗口。原生标题栏保持 macOS / Windows / Linux 标
+/// 准的窗口装饰，而不是用 Overlay，这样系统级的拖动 / 调整大小 / 双
+/// 击最大化可以稳定工作（通过 `start_dragging` IPC 的 WKWebView 拖动
+/// 区域路径在 Tauri 2.11.5 上表现不稳）。标题栏脉冲由 Shell 端而非内
+/// 核的 `packages/client/web/src/base.css` 拥有，通过
+/// `initialization_script(titlebar-pulse.js)` 注入；脚本会附上一个带
+/// `!important` 规则的 `<style>` 节点，使得无论内核版本是什么、也不
+/// 论本脚本和工作台自身样式表的加载顺序，Shell 的覆盖都能胜出。第二个
+/// 注入脚本（`pullstring-launcher.js`）渲染一个浮在工作台左上角的拉
+/// 绳小台灯；拉动它会调用 [`focus_main_shell`] 把管理窗口提到当前桌
+/// 面之上。第三个脚本（`sourcemap-quieter.js`）会拦截工作台对
+/// `.js.map` 的请求，并以一份合成空 source map 应答——dsh 内核的 npm
+/// 包故意省掉了 source-map 负载（编译产物里仍保留 `sourceMappingURL`
+/// 注释），因此如果没有这个拦截器，每次打开工作台 DevTools 都会记约
+/// 44 行 “Failed to load resource 404”；这个覆盖在不破坏工作台功能
+/// 的前提下让它们安静下来。
+/// 解析工作台 webview 应该加载的 URL，优先使用内核自带的 launch-token
+/// URL。
+///
+/// 0.1.2-alpha.1 起的内核在 browser 入口前加上一个进程级的 launch
+/// token（`dsh-client-connection` BrowserAuth）：`/?token=` 用来签发
+/// 会话 cookie，裸的根请求会得到 401。token 的唯一出处就是内核启动时
+/// 输出的 `dsh web: http://127.0.0.1:<port>/?token=…` 这一行，Shell
+/// 会把它捕获到当天的内核日志中。每次内核重启都会追加新的一行，因此
+/// **最后**匹配到的那条就是当前运行进程的 token；旧版本内核不输出
+/// token，会继续接受裸的源地址，所以拿不到 token 时回退到它。
+fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> String {
+    let fallback = format!("http://127.0.0.1:{port}");
+    let needle = format!("http://127.0.0.1:{port}/?token=");
+    // 刚刚启动的内核要等它的第一轮启动流程走完之后才输出 URL 行，
+    // 因此当调用方与一次新启动竞速（「启动内核」紧跟着「打开工作
+    // 台」）时，最新一行可能还没落盘。短暂轮询——过期的 token 会返
+    // 回 401，结果会让工作台变成空白。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let tail = loop {
+        let tail = read_tail(&kernel::current_kernel_log_path(data_dir), 16 * 1024);
+        if tail.contains(&needle) || std::time::Instant::now() >= deadline {
+            break tail;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let Some(start) = tail.rfind(&needle) else {
+        return fallback;
+    };
+    let rest = &tail[start + needle.len()..];
+    let Some(end) = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+    else {
+        return format!("{needle}{rest}");
+    };
+    format!("{needle}{}", &rest[..end])
+}
+
 #[tauri::command]
 pub async fn open_harness(app: AppHandle) -> Result<(), String> {
     let data_dir = crate::kernel::data_dir(&app);
-    let port = tauri::async_runtime::spawn_blocking(move || {
+    let url = tauri::async_runtime::spawn_blocking(move || {
         let settings = settings::load(&data_dir);
         if !kernel::port_open(settings.port) {
             return Err(format!(
@@ -716,15 +753,19 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                 settings.port
             ));
         }
-        Ok::<u16, String>(settings.port)
+        Ok::<String, String>(kernel_workbench_url(&data_dir, settings.port))
     })
     .await
     .map_err(|e| e.to_string())??;
+    let url = Url::parse(&url).map_err(|e| e.to_string())?;
     if let Some(existing) = app.get_webview_window("harness") {
+        // 内核重启时会签发一个新的 launch token，使已经打开的窗口所持
+        // 有的 URL 失效；让已有窗口执行跳转，而不仅仅是聚焦它，以免
+        // 重启后工作台停在过期的 token 上变成空白。
+        let _ = existing.navigate(url.clone());
         let _ = existing.set_focus();
         return Ok(());
     }
-    let url = Url::parse(&format!("http://127.0.0.1:{port}")).map_err(|e| e.to_string())?;
     let handle = app.clone();
     std::thread::Builder::new()
         .name("dsh-open-harness".into())
@@ -736,9 +777,10 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                 .initialization_script(include_str!("titlebar-pulse.js"))
                 .initialization_script(include_str!("pullstring-launcher.js"))
                 .initialization_script(include_str!("harness-health.js"))
+                .initialization_script(include_str!("sourcemap-quieter.js"))
                 .build();
             if let Err(e) = result {
-                eprintln!("dsh-desktop: failed to open harness window: {e}");
+                eprintln!("dsh-xlink: failed to open harness window: {e}");
             }
             #[cfg(debug_assertions)]
             if let Ok(window) = app.get_webview_window("harness").ok_or("no harness window") {

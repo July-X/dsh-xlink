@@ -1,46 +1,38 @@
 /**
- * Initialization script injected ONLY into the `official-chat` webview (the
- * dedicated WebviewWindow that loads `https://chat.deepseek.com`).
+ * 初始化脚本，仅注入到 `official-chat` webview 中（专用的 WebviewWindow，
+ * 加载 `https://chat.deepseek.com`）。
  *
- * Strategy — be an honest desktop browser, not a disguised one. The engine
- * behind WebView2 IS a genuine desktop Edge/Chromium build, and it stays
- * self-consistent across every layer a site can compare: the User-Agent
- * header (no longer overridden), the `Sec-CH-UA` client hints derived from
- * the real brand, native `navigator.userAgentData`, plugins, permissions,
- * canvas/WebGL reads. Earlier revisions of this script faked those surfaces
- * as "Google Chrome" with plain-JS shims; each shim was itself detectable
- * (a `{}` where the spec puts a `NavigatorUAData` instance, a scripted
- * function where the spec puts a native one), and the JS-side Chrome claim
- * contradicted the HTTP-side Edge brand — exactly the kind of mismatch
- * environment checks look for. All of that is gone.
+ * 策略 —— 做一个诚实的桌面浏览器，而不是伪装成别的。WebView2 背后的引擎
+ * 本就是真正的桌面版 Edge/Chromium，它在网站可以比对的每一层都保持自洽：
+ * User-Agent 请求头（不再覆盖）、由真实品牌派生的 `Sec-CH-UA` client 提示、
+ * 原生的 `navigator.userAgentData`、插件、权限、canvas/WebGL 读数。本脚本
+ * 早期版本曾用纯 JS shim 把这些面伪装成 "Google Chrome"；而每个 shim
+ * 本身都可被探测到（规范本应是 `NavigatorUAData` 实例的地方出现 `{}`，
+ * 规范本应是原生方法的地方出现脚本函数），而且 JS 层声称的 Chrome 与
+ * HTTP 层 Edge 品牌相矛盾 —— 这正是环境检测会查找的那种不一致。所有这些
+ * 都已移除。
  *
- * What remains is only the removal of embedded-webview traces:
+ * 现在剩下的只是抹除嵌入式 webview 的痕迹：
  *
- * 1. Top-frame guard — initialization scripts run in every frame; only
- *    harden the top document.
- * 2. `navigator.webdriver` — pinned to `false` (the value a normal,
- *    non-automated desktop browser reports). The launcher args in
- *    `OFFICIAL_CHAT_BROWSER_ARGS` already disable the automation switches
- *    at the engine level; the prototype pin is belt-and-braces for builds
- *    where the flag is unavailable. Note `false`, not `undefined`: a
- *    missing property is itself a bot signal.
- * 3. Tauri globals — deleted outright (`__TAURI__`, `__TAURI_INTERNALS__`,
- *    `__TAURI_METADATA__`, `__TAURI_IPC__`). A normal browser shows
- *    nothing there, so page probes must see nothing too — exposing a
- *    Proxy "so typeof checks pass" still announces an embedded webview.
- *    The pull-string lamp lives on the official-chat strip webview
- *    (label `official-chat-strip`), which a local webview that does not
- *    run this fingerprint, so it keeps the live bridge untouched. (A
- *    brief stint on a separate `official-chat-launcher` webview was
- *    reverted because WebView2 child HWND transparency doesn't work on
- *    this Tauri 2.11 / wry 0.55.1 stack — the launcher kept painting
- *    an opaque dark square regardless of the controller's transparent
- *    DefaultBackgroundColor, so the lamp moved back into the strip
- *    and the strip grew from 38px to 66px to fit the 66px SVG.)
+ * 1. 顶层 frame 守卫 —— 初始化脚本会在每个 frame 中运行；只加固顶层文档。
+ * 2. `navigator.webdriver` —— 固定为 `false`（普通非自动化桌面浏览器的取值）。
+ *    `OFFICIAL_CHAT_BROWSER_ARGS` 中的启动器参数已在引擎层禁用自动化开关；
+ *    原型上的固定是对那些拿不到该标志的构建做的一道兜底。注意是 `false`，
+ *    而不是 `undefined`：属性缺失本身就是机器人信号。
+ * 3. Tauri 全局变量 —— 直接删除（`__TAURI__`、`__TAURI_INTERNALS__`、
+ *    `__TAURI_METADATA__`、`__TAURI_IPC__`）。普通浏览器里这些位置什么都没有，
+ *    所以页面探针也必须看到什么都没有 —— 哪怕暴露一个 Proxy 让 typeof
+ *    检查通过，依然是在宣告自己是嵌入式 webview。拉绳灯位于 official-chat
+ *    strip webview（标签 `official-chat-strip`）上，这是一个本地 webview，
+ *    并不运行本指纹脚本，因此它保留着活跃的桥接通道。（我们曾在独立的
+ *    `official-chat-launcher` webview 上短暂试验过，但因 WebView2 子 HWND
+ *    透明在当前 Tauri 2.11 / wry 0.55.1 上不生效而回滚 —— 无论控制器的
+ *    DefaultBackgroundColor 是否透明，启动器都会绘制一个不透明的深色方块；
+ *    因此灯被移回 strip，strip 也从 38px 增高到 66px 以容纳 66px 的 SVG。）
  *
- * The script is pure JavaScript (no TypeScript) and string-safe — it is
- * `include_str!`-embedded into Rust source at compile time, so any nested
- * backtick / unescaped quote / non-ASCII literal will fail the build.
+ * 本脚本为纯 JavaScript（无 TypeScript），且字符串安全 —— 它在编译期通过
+ * `include_str!` 嵌入到 Rust 源码中，任何嵌套反引号 / 未转义引号 /
+ * 非 ASCII 字面量都会导致构建失败。
  */
 (function () {
   if (window.top !== window.self) {
@@ -57,30 +49,28 @@
       enumerable: true,
     });
   } catch (e) {
-    // Older engines may forbid overriding the prototype — fall back to
-    // an instance-level defineProperty, which still satisfies the probe
-    // for the current document.
+    // 较老引擎可能禁止覆盖原型 —— 此时回退到实例级 defineProperty，
+    // 对当前文档的探针仍然能通过。
     try {
       Object.defineProperty(navigator, "webdriver", {
         get: function () { return false; },
         configurable: true,
         enumerable: true,
       });
-    } catch (_e2) { /* nothing else we can do here */ }
+    } catch (_e2) { /* 这里已无计可施 */ }
   }
 
-  // --- Tauri globals ------------------------------------------------------
-  // Delete the IPC surface instead of masking it: a normal browser has no
-  // `__TAURI_*` properties at all, so page probes must observe exactly
-  // that. `delete` wins when the property is configurable (the common
-  // case); if some build made it permanent, fall back to an undefined
-  // getter so at least the VALUE reads as absent.
+  // --- Tauri 全局变量 ------------------------------------------------------
+  // 直接删除 IPC 接口而不是遮盖它：普通浏览器根本没有 `__TAURI_*` 属性，
+  // 所以页面探针必须观察到完全为空。属性可配置时（常见情况）`delete` 生效；
+  // 若某构建使其成为永久属性，则回退到 undefined getter，使读取到的值
+  // 至少呈现为缺失。
   var tauriGlobals = ["__TAURI__", "__TAURI_INTERNALS__", "__TAURI_METADATA__", "__TAURI_IPC__"];
   for (var i = 0; i < tauriGlobals.length; i++) {
     var name = tauriGlobals[i];
     try {
       delete window[name];
-    } catch (e) { /* not configurable — mask below */ }
+    } catch (e) { /* 不可配置 —— 下方遮盖 */ }
     if (window[name] !== undefined) {
       try {
         Object.defineProperty(window, name, {
@@ -88,7 +78,7 @@
           configurable: true,
           enumerable: false,
         });
-      } catch (e2) { /* leave as-is rather than crash the document */ }
+      } catch (e2) { /* 宁可保留原状也不要让文档崩溃 */ }
     }
   }
 })();
