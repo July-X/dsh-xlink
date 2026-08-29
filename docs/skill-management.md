@@ -63,7 +63,7 @@
     └── skills-catalog.json          # 社区目录缓存（TTL 6 小时，同 plugins-catalog.json）
 ```
 
-技能 fetch 没有 pnpm 输出可留（git/tar 的失败原因直接进错误消息与进度面板），因此不设 `logs/skill-*.log`，也不需要插件中央库那套 `.npmrc`——技能流程完全不经过 pnpm。
+技能 fetch 不经过 pnpm，git 的有限输出直接进入错误消息与进度面板；npm tarball 由 Rust 解包器校验并发布，不依赖系统 tar，因此不设 `logs/skill-*.log`。
 
 包 id 映射与插件一致：`/` 替换为 `__`（`@ace-zone/dsh-skills` → `@ace-zone__dsh-skills`），拒绝 `..` 与空段。本地文件夹导入以文件夹名为 id，加 `local:` 来源标记。
 
@@ -73,7 +73,7 @@
 
 以 npm/git 来源为例（本地文件夹 = 把源路径纳入中央库管理，其余相同）：
 
-1. **fetch 进中央库**：npm 取 `dist-tags.latest`（或指定版本）下载 tarball 用系统 tar 解包；git 深度克隆。写 `.dsh-source.json` 与 store.json。日志落盘 `logs/skill-<id>.log`。
+1. **fetch 进中央库**：npm 取 `dist-tags.latest`（或指定版本）下载 tarball，完整写入 `.part` 后再发布，由 Rust 解包器只接受 `package/` 根并拒绝越界路径、链接和特殊文件；git 深度克隆也通过有界输出捕获。写 `.dsh-source.json` 与 store.json。
 2. **扫描与校验（fail loud）**：在包内探测技能入口——任意目录下的真实 `SKILL.md`（探测深度 ≤3 层，覆盖根即技能与常见 monorepo 布局）及顶层平铺 `*.md`；逐个解析 frontmatter，校验 kebab-case `name` + 非 `description`。符号链接（含目录与 `SKILL.md` 文件）一律不视为技能入口，避免 `git clone` 保留的装饰性重定向（如 blader/humanizer v2.11.1+ 的 `skills/<name>/SKILL.md → ../../SKILL.md`）把同一技能重复计入。一个技能都没有 → 安装失败并给出原因；包内重名（frontmatter name 冲突）→ 整包拒绝。
 3. **物化到活动根**：对每个校验通过的技能，在 `<DSH_HOME>/skills/` 建 symlink（Windows junction）指向中央库内的技能目录/文件，条目名 = frontmatter `name`。链接失败自动降级 copy（差异复制，跳过未变化文件），实际模式记入 store.json。
 4. **无第 4 步**：不跑 pnpm、不改 profile——插件流程里最重的两步在这里不存在。

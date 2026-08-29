@@ -3,7 +3,7 @@
 import { reactive } from 'vue';
 import { invoke } from './bridge.js';
 import { toast, toastSuccess, toastError } from './notify.js';
-import { withLoading } from './loading.js';
+import { withLoading, withExclusive, isExclusiveBusy } from './loading.js';
 import { withProgress } from './progress.js';
 import { refreshAll, store } from './store.js';
 
@@ -11,6 +11,10 @@ export const skillStore = reactive({
   view: null,
   spec: '',
 });
+
+const SKILL_UPDATE_CHECK_TTL_MS = 15 * 60 * 1000;
+let skillUpdatesInFlight = null;
+let lastSkillUpdateCheckAt = 0;
 
 export function originLabel(origin) {
   return origin === 'local' ? '本地' : origin === 'git' ? 'git' : 'npm';
@@ -57,22 +61,40 @@ export function uninstallSkill(id) {
   );
 }
 
-// 手动检查挂按钮 loading；启动自检静默。
-export function checkSkillUpdates(opts) {
+// 手动检查挂按钮 loading；面板进入时低频自检，启动期间失败静默。
+export function checkSkillUpdates(opts = {}) {
+  const force = !!opts.busy;
+  const request = () => {
+    if (skillUpdatesInFlight) return skillUpdatesInFlight;
+    if (!force && Date.now() - lastSkillUpdateCheckAt < SKILL_UPDATE_CHECK_TTL_MS) {
+      return Promise.resolve(null);
+    }
+    if (isExclusiveBusy()) return Promise.resolve(null);
+
+    const run = withExclusive(async () => {
+      const infos = await invoke('skill_check_updates');
+      lastSkillUpdateCheckAt = Date.now();
+      const n = (infos || []).filter((i) => i.latest).length;
+      if (n > 0 && opts.toastOnUpdates) {
+        toast('有 ' + n + ' 个技能包可更新', 5000, 'warning');
+      }
+      await refreshAll();
+      return infos;
+    });
+    if (!run) return Promise.resolve(null);
+    const settled = run.finally(() => {
+      if (skillUpdatesInFlight === settled) skillUpdatesInFlight = null;
+    });
+    skillUpdatesInFlight = settled;
+    return settled;
+  };
   const run = () =>
-    invoke('skill_check_updates')
-      .then((infos) => {
-        const n = (infos || []).filter((i) => i.latest).length;
-        if (n > 0 && opts.toastOnUpdates) {
-          toast('有 ' + n + ' 个技能包可更新', 5000, 'warning');
-        }
-        return refreshAll();
-      })
-      .catch((e) => {
-        if (opts.busy) {
-          toastError('检查技能更新失败：' + e, 6000);
-        }
-      });
+    request().catch((e) => {
+      if (opts.busy) {
+        toastError('检查技能更新失败：' + e, 6000);
+      }
+      return null;
+    });
   return opts.busy ? withLoading('checkSkillUpdates', run) : run();
 }
 

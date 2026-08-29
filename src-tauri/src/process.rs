@@ -9,10 +9,10 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
-use std::path::Path;
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Hide the console window Windows would otherwise flash for the child.
@@ -60,13 +60,14 @@ pub fn command_with_path<S: AsRef<OsStr>>(program: S) -> Command {
 /// prepended, so the script's `#!/usr/bin/env node` resolution finds the
 /// node the caller validated even from a GUI shell with a system-only
 /// PATH.
-pub fn script_output(
+pub fn script_capture(
     exe: &Path,
     args: &[&str],
     cwd: &Path,
     extra_path_dirs: &[&Path],
-) -> io::Result<std::process::Output> {
+) -> io::Result<(bool, String, String)> {
     let path = merge_extra_path(crate::env::merged_path(), extra_path_dirs);
+    let label = exe.to_string_lossy().into_owned();
     #[cfg(windows)]
     {
         let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into());
@@ -74,9 +75,7 @@ pub fn script_output(
         cmd.arg("/C").arg(exe).args(args);
         cmd.current_dir(cwd);
         cmd.env("PATH", path);
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        quiet(&mut cmd).output()
+        run_command_capture(cmd, &label)
     }
     #[cfg(not(windows))]
     {
@@ -84,9 +83,7 @@ pub fn script_output(
         cmd.args(args);
         cmd.current_dir(cwd);
         cmd.env("PATH", path);
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        cmd.output()
+        run_command_capture(cmd, &label)
     }
 }
 
@@ -117,6 +114,430 @@ pub fn script_output(
 /// install on a fresh data dir reaches this helper before anything else
 /// has created the log directory, and a bare `open` would otherwise fail
 /// with `NotFound` (Windows: `系统找不到指定的路径 (os error 3)`).
+const MAX_OUTPUT_LINE_BYTES: usize = 64 * 1024;
+const OUTPUT_QUEUE_CAPACITY: usize = 256;
+
+fn read_capped_line<R: BufRead>(
+    reader: &mut R,
+    buffer: &mut Vec<u8>,
+) -> io::Result<Option<String>> {
+    buffer.clear();
+    let mut truncated = false;
+    loop {
+        let chunk = reader.fill_buf()?;
+        if chunk.is_empty() {
+            if buffer.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let newline = chunk.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(chunk.len(), |index| index + 1);
+        if buffer.len() < MAX_OUTPUT_LINE_BYTES {
+            let available = MAX_OUTPUT_LINE_BYTES - buffer.len();
+            let copied = consumed.min(available);
+            buffer.extend_from_slice(&chunk[..copied]);
+            truncated |= copied < consumed;
+        } else {
+            truncated = true;
+        }
+        reader.consume(consumed);
+        if newline.is_some() {
+            break;
+        }
+    }
+    let mut line = String::from_utf8_lossy(buffer).into_owned();
+    if line.ends_with('\n') {
+        line.pop();
+        if line.ends_with('\r') {
+            line.pop();
+        }
+    }
+    if truncated {
+        line.push_str("… [输出行已截断]");
+    }
+    Ok(Some(line))
+}
+
+const KERNEL_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const KERNEL_LOG_BACKUPS: u8 = 2;
+const LOG_FLUSH_BYTES: u64 = 64 * 1024;
+
+fn rotated_log_path(path: &Path, index: u8) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".{index}"));
+    PathBuf::from(name)
+}
+
+fn rotate_existing_log(path: &Path) -> io::Result<()> {
+    for index in (1..=KERNEL_LOG_BACKUPS).rev() {
+        let source = if index == 1 {
+            path.to_path_buf()
+        } else {
+            rotated_log_path(path, index - 1)
+        };
+        let destination = rotated_log_path(path, index);
+        if source.exists() {
+            match fs::remove_file(&destination) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            fs::rename(source, destination)?;
+        }
+    }
+    Ok(())
+}
+
+struct RotatingLog {
+    path: PathBuf,
+    writer: Option<BufWriter<fs::File>>,
+    bytes: u64,
+    pending_bytes: u64,
+}
+
+impl RotatingLog {
+    fn new(path: &Path) -> io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if path
+            .metadata()
+            .map(|meta| meta.len() > KERNEL_LOG_MAX_BYTES)
+            .unwrap_or(false)
+        {
+            rotate_existing_log(path)?;
+        }
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            writer: Some(BufWriter::new(file)),
+            bytes: 0,
+            pending_bytes: 0,
+        })
+    }
+
+    fn rotate(&mut self) -> io::Result<()> {
+        if let Some(writer) = self.writer.take() {
+            writer.into_inner().map_err(|error| error.into_error())?;
+        }
+        rotate_existing_log(&self.path)?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.path)?;
+        self.writer = Some(BufWriter::new(file));
+        self.bytes = 0;
+        self.pending_bytes = 0;
+        Ok(())
+    }
+
+    fn write_line(&mut self, line: &str) -> io::Result<()> {
+        let needed = line.len() as u64 + 1;
+        if self.bytes > 0 && self.bytes.saturating_add(needed) > KERNEL_LOG_MAX_BYTES {
+            self.rotate()?;
+        }
+        let writer = self.writer.as_mut().expect("rotating log writer missing");
+        writer.write_all(line.as_bytes())?;
+        writer.write_all(b"\n")?;
+        self.bytes = self.bytes.saturating_add(needed);
+        self.pending_bytes = self.pending_bytes.saturating_add(needed);
+        if self.pending_bytes >= LOG_FLUSH_BYTES {
+            writer.flush()?;
+            self.pending_bytes = 0;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if let Some(writer) = self.writer.as_mut() {
+            writer.flush()?;
+        }
+        self.pending_bytes = 0;
+        Ok(())
+    }
+}
+
+fn spawn_log_drain<R: Read + Send + 'static>(stream: R, logger: Arc<Mutex<RotatingLog>>) {
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stream);
+        let mut buffer = Vec::with_capacity(MAX_OUTPUT_LINE_BYTES);
+        while let Ok(Some(line)) = read_capped_line(&mut reader, &mut buffer) {
+            let Ok(mut log) = logger.lock() else { break };
+            if log.write_line(&line).is_err() {
+                break;
+            }
+        }
+        if let Ok(mut log) = logger.lock() {
+            let _ = log.flush();
+        }
+    });
+}
+
+const RUN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
+const RUN_CAPTURE_MAX_BYTES: usize = 4 * 1024 * 1024;
+const RUN_CAPTURE_READER_GRACE: Duration = Duration::from_millis(500);
+
+fn isolate_process(cmd: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+}
+
+pub(crate) fn terminate_process_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let pgid = child.id() as i32;
+        unsafe {
+            libc::kill(-pgid, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if child.try_wait().ok().flatten().is_some() || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+        let _ = child.wait();
+    }
+    #[cfg(windows)]
+    {
+        let mut cmd = command_with_path("taskkill");
+        cmd.args(["/PID", &child.id().to_string(), "/T", "/F"]);
+        let _ = quiet(&mut cmd).status();
+        let _ = child.wait();
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn spawn_capture_reader<R: Read + Send + 'static>(
+    stream: R,
+    max_bytes: usize,
+) -> mpsc::Receiver<io::Result<Vec<u8>>> {
+    let (tx, rx) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = tx.send(read_bounded_bytes(stream, max_bytes));
+    });
+    rx
+}
+
+fn abandon_capture_reader(rx: &mpsc::Receiver<io::Result<Vec<u8>>>) {
+    let _ = rx.recv_timeout(RUN_CAPTURE_READER_GRACE);
+}
+
+fn wait_capture_reader(
+    rx: &mpsc::Receiver<io::Result<Vec<u8>>>,
+    deadline: Instant,
+) -> io::Result<Vec<u8>> {
+    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "captured output pipe did not close before the deadline",
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(io::Error::other("capture reader disconnected"))
+        }
+    }
+}
+
+fn run_capture_command_bytes(
+    mut cmd: Command,
+    label: &str,
+) -> io::Result<(bool, Vec<u8>, Vec<u8>)> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    isolate_process(&mut cmd);
+    let mut child = quiet(&mut cmd).spawn()?;
+    let stdout = child.stdout.take().expect("capture stdout was piped");
+    let stderr = child.stderr.take().expect("capture stderr was piped");
+    let stdout_reader = spawn_capture_reader(stdout, RUN_CAPTURE_MAX_BYTES);
+    let stderr_reader = spawn_capture_reader(stderr, RUN_CAPTURE_MAX_BYTES);
+
+    let started = Instant::now();
+    let deadline = started + RUN_CAPTURE_TIMEOUT;
+    let mut stdout_capture = None;
+    let mut stderr_capture = None;
+    let status = loop {
+        if stdout_capture.is_none() {
+            match stdout_reader.try_recv() {
+                Ok(result) => {
+                    if let Err(error) = &result {
+                        terminate_process_tree(&mut child);
+                        abandon_capture_reader(&stderr_reader);
+                        return Err(io::Error::new(error.kind(), error.to_string()));
+                    }
+                    stdout_capture = Some(result);
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        if stderr_capture.is_none() {
+            match stderr_reader.try_recv() {
+                Ok(result) => {
+                    if let Err(error) = &result {
+                        terminate_process_tree(&mut child);
+                        abandon_capture_reader(&stdout_reader);
+                        return Err(io::Error::new(error.kind(), error.to_string()));
+                    }
+                    stderr_capture = Some(result);
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    terminate_process_tree(&mut child);
+                    abandon_capture_reader(&stdout_reader);
+                    abandon_capture_reader(&stderr_reader);
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "{label} timed out after {} seconds",
+                            RUN_CAPTURE_TIMEOUT.as_secs()
+                        ),
+                    ));
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(50)));
+            }
+            Err(error) => {
+                terminate_process_tree(&mut child);
+                abandon_capture_reader(&stdout_reader);
+                abandon_capture_reader(&stderr_reader);
+                return Err(error);
+            }
+        }
+    };
+
+    let stdout = match match stdout_capture {
+        Some(result) => result,
+        None => wait_capture_reader(&stdout_reader, deadline),
+    } {
+        Ok(output) => output,
+        Err(error) => {
+            terminate_process_tree(&mut child);
+            abandon_capture_reader(&stderr_reader);
+            return Err(error);
+        }
+    };
+    let stderr = match match stderr_capture {
+        Some(result) => result,
+        None => wait_capture_reader(&stderr_reader, deadline),
+    } {
+        Ok(output) => output,
+        Err(error) => {
+            terminate_process_tree(&mut child);
+            return Err(error);
+        }
+    };
+    Ok((status.success(), stdout, stderr))
+}
+
+fn run_capture_bytes(program: &str, args: &[&str]) -> io::Result<(bool, Vec<u8>, Vec<u8>)> {
+    let mut cmd = command_with_path(program);
+    cmd.args(args);
+    run_capture_command_bytes(cmd, program)
+}
+
+/// Run a short-lived external tool and capture bounded stdout/stderr.
+///
+/// The child is isolated into its own process group on Unix and its output
+/// pipes are drained concurrently. A timeout kills the group and never waits
+/// indefinitely for a reader whose pipe may still be held by a descendant.
+pub fn run_capture_output(program: &str, args: &[&str]) -> io::Result<(bool, String, String)> {
+    let (success, stdout, stderr) = run_capture_bytes(program, args)?;
+    Ok((
+        success,
+        String::from_utf8_lossy(&stdout).into_owned(),
+        String::from_utf8_lossy(&stderr).into_owned(),
+    ))
+}
+
+pub fn run_command_capture(cmd: Command, label: &str) -> io::Result<(bool, String, String)> {
+    let (success, stdout, stderr) = run_capture_command_bytes(cmd, label)?;
+    Ok((
+        success,
+        String::from_utf8_lossy(&stdout).into_owned(),
+        String::from_utf8_lossy(&stderr).into_owned(),
+    ))
+}
+
+pub fn run_capture(program: &str, args: &[&str]) -> io::Result<(bool, String)> {
+    let (success, stdout, _) = run_capture_output(program, args)?;
+    Ok((success, stdout))
+}
+
+fn read_bounded_bytes<R: Read>(mut reader: R, max_bytes: usize) -> io::Result<Vec<u8>> {
+    let mut output = Vec::with_capacity(max_bytes.min(8192));
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        if output.len() >= max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("captured output exceeded {max_bytes} bytes"),
+            ));
+        }
+        let copied = count.min(max_bytes - output.len());
+        output.extend_from_slice(&buffer[..copied]);
+        if copied < count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("captured output exceeded {max_bytes} bytes"),
+            ));
+        }
+    }
+    Ok(output)
+}
+
+/// Attach bounded background log drains to a long-running child. The caller
+/// keeps ownership of the child while the detached readers keep its pipes
+/// flowing and rotate the log without retaining output in memory.
+pub fn attach_log_drainers(child: &mut Child, log_path: &Path) -> io::Result<()> {
+    let logger = Arc::new(Mutex::new(RotatingLog::new(log_path)?));
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "child stdout was not piped"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "child stderr was not piped"))?;
+    spawn_log_drain(stdout, Arc::clone(&logger));
+    spawn_log_drain(stderr, logger);
+    Ok(())
+}
+
 pub fn run_with_progress(
     exe: &Path,
     args: &[&str],
@@ -128,29 +549,32 @@ pub fn run_with_progress(
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut log = fs::OpenOptions::new()
+    let file = fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
         .open(log_path)?;
+    let mut log = BufWriter::new(file);
 
     let mut child = spawn(exe, args, cwd, extra_path_dirs)?;
     let stdout = child.stdout.take().expect("child stdout was piped");
     let stderr = child.stderr.take().expect("child stderr was piped");
 
-    let (tx, rx) = mpsc::channel::<String>();
+    let (tx, rx) = mpsc::sync_channel::<String>(OUTPUT_QUEUE_CAPACITY);
     let tx_err = tx.clone();
     let drain_stdout = std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
+        let mut reader = BufReader::new(stdout);
+        let mut buffer = Vec::with_capacity(MAX_OUTPUT_LINE_BYTES);
+        while let Ok(Some(line)) = read_capped_line(&mut reader, &mut buffer) {
             if tx.send(line).is_err() {
                 break;
             }
         }
     });
     let drain_stderr = std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines() {
-            let Ok(line) = line else { break };
+        let mut reader = BufReader::new(stderr);
+        let mut buffer = Vec::with_capacity(MAX_OUTPUT_LINE_BYTES);
+        while let Ok(Some(line)) = read_capped_line(&mut reader, &mut buffer) {
             if tx_err.send(line).is_err() {
                 break;
             }
@@ -158,9 +582,33 @@ pub fn run_with_progress(
     });
 
     const HEARTBEAT_SECS: u64 = 10;
+    const RUN_PROGRESS_TIMEOUT: Duration = Duration::from_secs(30 * 60);
     let started = Instant::now();
+    let deadline = started + RUN_PROGRESS_TIMEOUT;
+    let mut child_exited = false;
+    let mut output_closed = false;
+    let mut timed_out = false;
     loop {
-        match rx.recv_timeout(Duration::from_secs(HEARTBEAT_SECS)) {
+        if !child_exited {
+            match child.try_wait() {
+                Ok(Some(_)) => child_exited = true,
+                Ok(None) => {}
+                Err(error) => {
+                    drop(rx);
+                    terminate_process_tree(&mut child);
+                    return Err(error);
+                }
+            }
+        }
+        if child_exited && output_closed {
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            timed_out = true;
+            break;
+        }
+        match rx.recv_timeout(remaining.min(Duration::from_secs(HEARTBEAT_SECS))) {
             Ok(line) => {
                 on_progress(line.trim_end());
                 let _ = writeln!(log, "{line}");
@@ -169,14 +617,37 @@ pub fn run_with_progress(
                 let secs = started.elapsed().as_secs();
                 on_progress(&format!("… 子进程仍在运行（已进行 {secs} 秒）"));
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                output_closed = true;
+            }
         }
+    }
+
+    if timed_out {
+        drop(rx);
+        terminate_process_tree(&mut child);
+        let _ = log.flush();
+        // The receiver is dropped before termination so a noisy reader exits
+        // on send failure. Do not join here: a process outside the group may
+        // still hold an inherited pipe, and the command must honor its
+        // deadline rather than wait forever for that external process.
+        drop(drain_stdout);
+        drop(drain_stderr);
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "子进程运行超过 {} 分钟",
+                RUN_PROGRESS_TIMEOUT.as_secs() / 60
+            ),
+        ));
     }
 
     let _ = drain_stdout.join();
     let _ = drain_stderr.join();
 
-    reap(child)
+    let status = reap(child)?;
+    log.flush()?;
+    Ok(status)
 }
 
 fn spawn(exe: &Path, args: &[&str], cwd: &Path, extra_path_dirs: &[&Path]) -> io::Result<Child> {
@@ -210,6 +681,7 @@ fn spawn(exe: &Path, args: &[&str], cwd: &Path, extra_path_dirs: &[&Path]) -> io
         cmd.env("PATH", path);
         cmd.env("npm_config_registry", registry);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        isolate_process(&mut cmd);
         quiet(&mut cmd).spawn()
     }
     #[cfg(not(windows))]
@@ -220,7 +692,8 @@ fn spawn(exe: &Path, args: &[&str], cwd: &Path, extra_path_dirs: &[&Path]) -> io
         cmd.env("PATH", path);
         cmd.env("npm_config_registry", registry);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        cmd.spawn()
+        isolate_process(&mut cmd);
+        quiet(&mut cmd).spawn()
     }
 }
 
@@ -294,17 +767,75 @@ fn reap(mut child: Child) -> io::Result<ExitStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// First-run installs reach `run_with_progress` before anything else
+    static PROCESS_TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn capped_line_consumes_overlong_line_without_growing_buffer() {
+        let input = format!("{}\nnext\n", "x".repeat(MAX_OUTPUT_LINE_BYTES * 2));
+        let mut reader = BufReader::new(Cursor::new(input));
+        let mut buffer = Vec::new();
+        let first = read_capped_line(&mut reader, &mut buffer).expect("read first line");
+        assert!(first
+            .as_deref()
+            .is_some_and(|line| line.contains("输出行已截断")));
+        assert!(buffer.len() <= MAX_OUTPUT_LINE_BYTES);
+        assert_eq!(
+            read_capped_line(&mut reader, &mut buffer)
+                .unwrap()
+                .as_deref(),
+            Some("next")
+        );
+    }
+
+    #[test]
+    fn bounded_capture_rejects_excess_immediately() {
+        let input = vec![b'x'; 32];
+        let error = read_bounded_bytes(Cursor::new(input), 8).expect_err("capture must be bounded");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn command_capture_returns_bounded_stdout_and_stderr() {
+        let cmd = if cfg!(windows) {
+            let mut cmd = Command::new("cmd.exe");
+            cmd.args(["/C", "echo out 1>&2 & echo ok"]);
+            cmd
+        } else {
+            let mut cmd = Command::new("/bin/sh");
+            cmd.args(["-c", "printf ok; printf err >&2"]);
+            cmd
+        };
+        let (success, stdout, stderr) = run_command_capture(cmd, "capture test").unwrap();
+        assert!(success);
+        let line_end = if cfg!(windows) { "\r\n" } else { "" };
+        assert_eq!(stdout, format!("ok{line_end}"));
+        assert_eq!(stderr, if cfg!(windows) { "out \r\n" } else { "err" });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_capture_stops_when_output_limit_is_exceeded() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "yes x | head -c 4194305"]);
+        let error = run_command_capture(cmd, "noisy capture").expect_err("capture must be bounded");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
     /// has created the data dir's logs folder; the log open must create
     /// missing parents instead of failing with NotFound (Windows: `os
     /// error 3`), which previously surfaced as the misleading "无法运行
     /// npm" before npm was even spawned.
     #[test]
     fn run_with_progress_creates_missing_log_directory() {
-        let root =
-            std::env::temp_dir().join(format!("dsh-desktop-process-test-{}", std::process::id()));
+        let seq = PROCESS_TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "dsh-desktop-process-test-{}-{seq}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&root);
         let log_path = root.join("a").join("b").join("run.log");
         let cwd = std::env::temp_dir();

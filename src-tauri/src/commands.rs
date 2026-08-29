@@ -8,11 +8,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Mutex, OnceLock};
 
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, Rect, State};
+use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, State, Webview};
 use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowBuilder, WindowEvent};
 use url::Url;
 
@@ -65,8 +65,9 @@ pub const OFFICIAL_CHAT_MINIMAX_URL: &str = "https://agent.minimaxi.com";
 /// The fixed tabs rendered in the official-chat window's tab strip, in
 /// display order. The first entry is the default active tab on open. Add a
 /// row here to add a tab — the strip webview discovers the list at runtime
-/// via [`official_chat_tabs`] and content webviews are created in lockstep,
-/// so no other site is needed for a new tab.
+/// the strip webview discovers the list at runtime via [`official_chat_tabs`]
+/// and content webviews are created lazily when selected, so no other site is
+/// loaded during the initial open.
 pub const OFFICIAL_CHAT_TABS: &[(&str, &str)] = &[
     ("DeepSeek", OFFICIAL_CHAT_URL),
     ("千问", OFFICIAL_CHAT_QIANWEN_URL),
@@ -198,20 +199,23 @@ pub async fn detect_node(state: State<'_, AppState>) -> Result<node::NodeInfo, S
 }
 
 #[tauri::command]
-pub fn save_settings(
+pub async fn save_settings(
     state: State<'_, AppState>,
     settings: settings::Settings,
 ) -> Result<(), String> {
     let data_dir = state.data_dir.clone();
-    settings::save(&data_dir, &settings).map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || settings::save(&data_dir, &settings))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn get_kernel_log(state: State<'_, AppState>) -> String {
-    read_tail(
-        &kernel::logs_dir(&state.data_dir).join("kernel.log"),
-        16 * 1024,
-    )
+pub async fn get_kernel_log(state: State<'_, AppState>) -> Result<String, String> {
+    let path = kernel::logs_dir(&state.data_dir).join("kernel.log");
+    tauri::async_runtime::spawn_blocking(move || read_tail(&path, 16 * 1024))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// One entry for the log-files modal tab list.
@@ -230,29 +234,30 @@ pub struct LogFileEntry {
 /// Files that disappear between `read_dir` and `metadata` are silently
 /// skipped — install logs are rotated in place and may race with this scan.
 #[tauri::command]
-pub fn list_log_files(state: State<'_, AppState>) -> Vec<LogFileEntry> {
+pub async fn list_log_files(state: State<'_, AppState>) -> Result<Vec<LogFileEntry>, String> {
     let dir = kernel::logs_dir(&state.data_dir);
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return Vec::new();
-    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
+        let mut out: Vec<LogFileEntry> = entries
+            .filter_map(|e| e.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("log") {
+                    return None;
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                Some(LogFileEntry { name, size })
+            })
+            .collect();
 
-    let mut out: Vec<LogFileEntry> = entries
-        .filter_map(|e| e.ok())
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("log") {
-                return None;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            Some(LogFileEntry { name, size })
-        })
-        .collect();
-
-    // Newest first so the live `kernel.log` (touched on every status tick)
-    // lands at index 0 — the modal's default tab.
-    out.sort_by(|a, b| b.name.cmp(&a.name));
-    out
+        // Newest first so the live `kernel.log` (touched on every status tick)
+        // lands at index 0 — the modal's default tab.
+        out.sort_by(|a, b| b.name.cmp(&a.name));
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Read the tail of a named log file under the logs directory.
@@ -262,15 +267,18 @@ pub fn list_log_files(state: State<'_, AppState>) -> Vec<LogFileEntry> {
 /// logs directory. The same 16 KiB tail bound used by `get_kernel_log`
 /// keeps the modal responsive on large install logs.
 #[tauri::command]
-pub fn read_log_file(state: State<'_, AppState>, name: String) -> Result<String, String> {
+pub async fn read_log_file(state: State<'_, AppState>, name: String) -> Result<String, String> {
     if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
         return Err(format!("非法的日志文件名：{name}"));
     }
-    let path = kernel::logs_dir(&state.data_dir).join(&name);
-    if !path.starts_with(kernel::logs_dir(&state.data_dir)) {
+    let logs_dir = kernel::logs_dir(&state.data_dir);
+    let path = logs_dir.join(&name);
+    if !path.starts_with(&logs_dir) {
         return Err(format!("日志路径越界：{name}"));
     }
-    Ok(read_tail(&path, 16 * 1024))
+    tauri::async_runtime::spawn_blocking(move || read_tail(&path, 16 * 1024))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Reveal the shell's data directory in the OS file manager.
@@ -288,9 +296,13 @@ pub fn read_log_file(state: State<'_, AppState>, name: String) -> Result<String,
 pub async fn open_data_dir(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let path = state.data_dir.clone();
-    app.opener()
-        .open_path(path.to_string_lossy().into_owned(), None::<&str>)
-        .map_err(|e| format!("无法打开数据目录：{e}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        app.opener()
+            .open_path(path.to_string_lossy().into_owned(), None::<&str>)
+            .map_err(|e| format!("无法打开数据目录：{e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // --- shell self-update -----------------------------------------------------
@@ -364,39 +376,40 @@ pub async fn install_kernel(
     let data_dir = state.data_dir.clone();
     let settings = settings::load(&data_dir);
     let node_info = cached_node(&state, &settings);
-    let (node_path, pnpm_exe) = promise_pnpm(&data_dir, &node_info, |msg| {
-        let _ = on_event.send(msg.to_string());
-    })?;
-    // `node_dir` is the directory of the validated `node` executable.
-    // Install children need it on PATH so pnpm's `#!/usr/bin/env node`
-    // shebang and any lifecycle script that shells out to `node` resolve
-    // it even when the GUI process inherited a launchd-only PATH (macOS
-    // .app bundles) — the common case for nvm-managed installs.
-    let node_dir = node_path
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    // Clone the values the closure needs so we still own `data_dir` and
-    // `version` for the post-install `set_active` / auto-start steps.
-    let dir_for_thread = data_dir.clone();
-    let node_dir_for_thread = node_dir;
-    let pnpm_ex = pnpm_exe;
-    let version_for_thread = version.clone();
-    let send = on_event.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        kernel::install_version(
-            &dir_for_thread,
-            &node_dir_for_thread,
-            &pnpm_ex,
-            &version_for_thread,
-            |msg| {
-                let _ = send.send(msg.to_string());
-            },
-        )
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    result.map_err(|e| e.to_string())?;
+    let dir_for_install = data_dir.clone();
+    let node_info_for_install = node_info.clone();
+    let version_for_install = version.clone();
+    let send_install = on_event.clone();
+    let (node_path, pnpm_exe) =
+        tauri::async_runtime::spawn_blocking(move || -> Result<(PathBuf, PathBuf), String> {
+            let mut send = |msg: &str| {
+                let _ = send_install.send(msg.to_string());
+            };
+            let (node_path, pnpm_exe) =
+                promise_pnpm(&dir_for_install, &node_info_for_install, &mut send)?;
+            // `node_dir` is the directory of the validated `node` executable.
+            // Install children need it on PATH so pnpm's `#!/usr/bin/env node`
+            // shebang and any lifecycle script that shells out to `node` resolve
+            // it even when the GUI process inherited a launchd-only PATH (macOS
+            // .app bundles) — the common case for nvm-managed installs.
+            let node_dir = node_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            kernel::install_version(
+                &dir_for_install,
+                &node_dir,
+                &pnpm_exe,
+                &version_for_install,
+                |msg| {
+                    send(msg);
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            Ok((node_path, pnpm_exe))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
 
     // First kernel installed becomes active automatically; later installs
     // leave the current active version untouched.
@@ -410,22 +423,21 @@ pub async fn install_kernel(
         // plugin that breaks the kernel must land in the quarantine flow,
         // not leave the user with a crashed workbench after an install.
         let dir_for_start = data_dir.clone();
-        let node_info_for_start = node_info;
         // The channel stays with the outer function for the closing status
         // messages; the guarded-start worker gets its own clone.
         let on_event_for_start = on_event.clone();
+        let pnpm_exe_for_start = pnpm_exe.clone();
         let mut send = move |msg: &str| {
             let _ = on_event_for_start.send(msg.to_string());
         };
         let start_result = tauri::async_runtime::spawn_blocking(
             move || -> Result<(guard::StartReport, Option<Child>), String> {
                 let settings = settings::load(&dir_for_start);
-                let (_, pnpm_exe) = promise_pnpm(&dir_for_start, &node_info_for_start, &mut send)?;
                 let deps = guard::GuardDeps {
                     data_dir: &dir_for_start,
                     settings: &settings,
                     node_path: &node_path,
-                    pnpm_exe: &pnpm_exe,
+                    pnpm_exe: &pnpm_exe_for_start,
                 };
                 Ok(guard::guarded_start(&deps, &mut send))
             },
@@ -576,8 +588,10 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
             // a no-op.
             let mut killed = false;
             if let Some(pid) = kernel::read_pid(&data_dir) {
-                kernel::kill_pid(pid);
-                killed = true;
+                if kernel::pid_is_kernel(pid, Some(port)) {
+                    kernel::kill_pid(pid, Some(port));
+                    killed = true;
+                }
             }
             // Fallback: when the dev/release shells run side-by-side
             // and the in-memory child + pid file are both missing
@@ -590,18 +604,9 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
             // is left alone.
             if !killed {
                 if let Some(pid) = kernel::port_listen_pid(port) {
-                    #[cfg(unix)]
-                    {
-                        if kernel::pid_is_kernel(pid) {
-                            kernel::kill_pid(pid);
-                        }
+                    if kernel::pid_is_kernel(pid, Some(port)) {
+                        kernel::kill_pid(pid, Some(port));
                     }
-                    // Windows has no cheap pid-is-kernel probe (a
-                    // Get-CimInstance query is too slow for the stop
-                    // path); kill_pid's taskkill matches the existing
-                    // unguarded Windows stop behavior.
-                    #[cfg(windows)]
-                    kernel::kill_pid(pid);
                 }
             }
         }
@@ -612,13 +617,70 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Open the harness web UI in a dedicated window.
+/// Receive a one-shot health report from the harness webview and attribute it
+/// against the current kernel log. The returned incident is also emitted to the
+/// management panel so a white page cannot fail silently.
+#[tauri::command]
+pub async fn report_harness_fault(
+    app: AppHandle,
+    webview: Webview,
+    kind: String,
+    message: String,
+    stack: String,
+    page_url: String,
+) -> Result<guard::Incident, String> {
+    if webview.label() != "harness" {
+        return Err(String::from("工作台自检只能由 harness 窗口报告"));
+    }
+    let kind = bounded_health_text("类型", kind, 80, true)?;
+    if !matches!(
+        kind.as_str(),
+        "blank" | "runtime-error" | "unhandled-rejection"
+    ) {
+        return Err(String::from("工作台自检类型无效，请重新打开工作台"));
+    }
+    let message = bounded_health_text("错误信息", message, 2_000, true)?;
+    let stack = bounded_health_text("错误堆栈", stack, 8_000, false)?;
+    let page_url = bounded_health_text("页面地址", page_url, 1_000, false)?;
+    let report = guard::HealthReport {
+        kind,
+        message,
+        stack,
+        page_url,
+    };
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let incident = guard::diagnose_runtime(&data_dir, report);
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.emit("harness-fault", &incident);
+        }
+        Ok(incident)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn bounded_health_text(
+    field: &str,
+    value: String,
+    max_chars: usize,
+    required: bool,
+) -> Result<String, String> {
+    let value = value.trim().to_string();
+    if required && value.is_empty() {
+        return Err(format!("工作台自检的{field}不能为空"));
+    }
+    if value.chars().count() > max_chars {
+        return Err(format!("工作台自检的{field}过长，请重新打开工作台"));
+    }
+    Ok(value)
+}
+
 ///
-/// The webview window is created on a fresh OS thread so the synchronous
-/// command returns without holding the Tauri main thread. Webview creation
-/// inside a synchronous command deadlocks on Windows (per
-/// `WebviewWindowBuilder::new` docs), and even on macOS/Linux keeping the
-/// main thread free for the eventual webview setup is the safer default.
+/// The command performs its settings read and port probe on a blocking worker.
+/// Webview creation still happens on a fresh OS thread: synchronous construction
+/// inside a Tauri command can deadlock on Windows, and keeping the builder off
+/// the async executor is safer on every platform.
 ///
 /// The window is created with `closable(false)` so the OS title-bar close
 /// button is greyed out: an accidental click in the middle of a long task
@@ -644,21 +706,25 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
 /// pulling it invokes [`focus_main_shell`] to raise the management window
 /// over the current desktop.
 #[tauri::command]
-pub fn open_harness(app: AppHandle) -> Result<(), String> {
+pub async fn open_harness(app: AppHandle) -> Result<(), String> {
     let data_dir = crate::kernel::data_dir(&app);
-    let settings = settings::load(&data_dir);
-    if !kernel::port_open(settings.port) {
-        return Err(format!(
-            "内核未在运行（端口 {}），请先点击「启动工作台」",
-            settings.port
-        ));
-    }
+    let port = tauri::async_runtime::spawn_blocking(move || {
+        let settings = settings::load(&data_dir);
+        if !kernel::port_open(settings.port) {
+            return Err(format!(
+                "内核未在运行（端口 {}），请先点击「启动工作台」",
+                settings.port
+            ));
+        }
+        Ok::<u16, String>(settings.port)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     if let Some(existing) = app.get_webview_window("harness") {
         let _ = existing.set_focus();
         return Ok(());
     }
-    let url =
-        Url::parse(&format!("http://127.0.0.1:{}", settings.port)).map_err(|e| e.to_string())?;
+    let url = Url::parse(&format!("http://127.0.0.1:{port}")).map_err(|e| e.to_string())?;
     let handle = app.clone();
     std::thread::Builder::new()
         .name("dsh-open-harness".into())
@@ -669,6 +735,7 @@ pub fn open_harness(app: AppHandle) -> Result<(), String> {
                 .closable(false)
                 .initialization_script(include_str!("titlebar-pulse.js"))
                 .initialization_script(include_str!("pullstring-launcher.js"))
+                .initialization_script(include_str!("harness-health.js"))
                 .build();
             if let Err(e) = result {
                 eprintln!("dsh-desktop: failed to open harness window: {e}");
@@ -768,15 +835,93 @@ pub fn focus_main_shell(app: AppHandle, x: Option<f64>, y: Option<f64>) -> Resul
     window.set_focus().map_err(|e| e.to_string())
 }
 
+fn official_chat_mutation_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn current_official_chat_layout(window: &tauri::Window) -> OfficialChatLayout {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let phys = window.inner_size().unwrap_or_default();
+    let (width, height) = official_chat_initial_size(phys.width, phys.height, scale);
+    official_chat_layout(width, height)
+}
+
+fn add_official_chat_tab(
+    window: &tauri::Window,
+    index: usize,
+    layout: OfficialChatLayout,
+    profile_dir: &Path,
+) -> Result<(), String> {
+    let (_, url_text) = OFFICIAL_CHAT_TABS
+        .get(index)
+        .ok_or_else(|| format!("官方对话页签不存在：{index}"))?;
+    let label = format!("official-chat-tab-{index}");
+    let url = Url::parse(url_text).map_err(|e| format!("非法页签地址：{e}"))?;
+    let mut builder = WebviewBuilder::new(label, WebviewUrl::External(url))
+        .data_directory(profile_dir.to_path_buf())
+        .additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)
+        .initialization_script(include_str!("titlebar-pulse.js"))
+        .initialization_script(include_str!("chat-fingerprint.js"));
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.data_store_identifier(OFFICIAL_CHAT_DATA_STORE_IDENTIFIER);
+    }
+    window
+        .add_child(
+            builder,
+            LogicalPosition::new(0.0, layout.content_y),
+            LogicalSize::new(layout.width, layout.content_height),
+        )
+        .map_err(|e| format!("无法创建官方对话页签：{e}"))?;
+    Ok(())
+}
+
+/// Lazily create a requested content tab on a worker thread. `Window::add_child`
+/// synchronously dispatches to the event-loop thread, so calling it directly
+/// from a command can deadlock on Windows.
+fn ensure_official_chat_tab(
+    app: &AppHandle,
+    index: usize,
+    profile_dir: &Path,
+    layout: OfficialChatLayout,
+) -> Result<(), String> {
+    let window = app
+        .get_window(OFFICIAL_CHAT_WINDOW_LABEL)
+        .ok_or("官方对话窗口未打开".to_string())?;
+    if app
+        .get_webview(&format!("official-chat-tab-{index}"))
+        .is_some()
+    {
+        return Ok(());
+    }
+    let profile_dir = profile_dir.to_path_buf();
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("dsh-create-official-chat-tab".into())
+        .spawn(move || {
+            let result = (|| {
+                fs::create_dir_all(&profile_dir)
+                    .map_err(|e| format!("无法创建官方对话数据目录：{e}"))?;
+                add_official_chat_tab(&window, index, layout, &profile_dir)
+            })();
+            let _ = tx.send(result);
+        })
+        .map_err(|e| e.to_string())?;
+    rx.recv()
+        .map_err(|_| "官方对话页签创建线程已结束，未返回结果".to_string())?
+}
+
 /// Open the DeepSeek official chat in a tabbed window.
 ///
 /// One bare `tauri::Window` (label [`OFFICIAL_CHAT_WINDOW_LABEL`]) hosts a
 /// pinned tab-strip webview ([`OFFICIAL_CHAT_STRIP_LABEL`], the local SPA
-/// route `index.html?chatstrip=1`) plus one content webview per entry in
-/// [`OFFICIAL_CHAT_TABS`]. Only the active content webview is shown; the
-/// rest are hidden, so each site keeps its own page state across tab
-/// switches. [`relayout_official_chat`] keeps the strip pinned to the top
-/// and the content webviews filling the area below on every resize.
+/// route `index.html?chatstrip=1`) plus one lazily-created content webview per
+/// entry in [`OFFICIAL_CHAT_TABS`]. The default content webview is created on
+/// open; other remote pages are attached when selected. Only the active
+/// content webview is shown, and attached pages keep their state across tab
+/// switches. [`relayout_official_chat`] keeps the strip pinned to the top and
+/// the content webviews filling the area below on every resize.
 ///
 /// Built on a fresh OS thread (same Windows-deadlock reasoning as
 /// [`open_harness`]); the `Result<(), String>` ships back over an `mpsc`
@@ -804,25 +949,28 @@ pub fn focus_main_shell(app: AppHandle, x: Option<f64>, y: Option<f64>) -> Resul
 /// `app.get_window(OFFICIAL_CHAT_WINDOW_LABEL)` and re-focus it.
 #[tauri::command]
 pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
-    if let Some(existing) = app.get_window(OFFICIAL_CHAT_WINDOW_LABEL) {
-        let _ = existing.set_focus();
-        return Ok(());
-    }
     let handle = app.clone();
-    // WebView2 requires every environment on a user-data folder to share
-    // identical options — additional browser arguments included. The panel
-    // and harness windows already run a default-options environment on the
-    // default folder, so the official-chat content webviews need their own
-    // folder or environment creation fails and the window never appears.
-    let profile_dir = {
-        let state = app.state::<AppState>();
-        state.data_dir.join("webview-official-chat")
-    };
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("dsh-open-official-chat".into())
         .spawn(move || {
             let result: Result<(), String> = (|| {
+                let _mutation_guard = official_chat_mutation_lock()
+                    .lock()
+                    .map_err(|_| "官方对话窗口状态锁已损坏".to_string())?;
+                if let Some(existing) = handle.get_window(OFFICIAL_CHAT_WINDOW_LABEL) {
+                    let _ = existing.set_focus();
+                    return Ok(());
+                }
+                // WebView2 requires every environment on a user-data folder to
+                // share identical options. The official-chat content webviews
+                // therefore use a dedicated profile directory.
+                let profile_dir = {
+                    let state = handle.state::<AppState>();
+                    state.data_dir.join("webview-official-chat")
+                };
+                fs::create_dir_all(&profile_dir)
+                    .map_err(|e| format!("无法创建官方对话数据目录：{e}"))?;
                 let window = {
                     let mut builder = WindowBuilder::new(&handle, OFFICIAL_CHAT_WINDOW_LABEL)
                         .title("DeepSeek 官方对话")
@@ -854,7 +1002,6 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                         .build()
                         .map_err(|e| format!("无法创建官方对话窗口：{e}"))?
                 };
-                let _ = fs::create_dir_all(&profile_dir);
                 let scale = window.scale_factor().unwrap_or(1.0);
                 // AppKit can briefly report a tiny provisional client size while
                 // it finishes laying out the newly created content view.
@@ -879,34 +1026,11 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                     }
                 });
 
-                // One content webview per tab. Only the first is visible on
-                // open; switch_official_chat_tab toggles the rest. Wry applies
-                // the supplied child bounds on macOS, and the strip is built
-                // last so it starts above the content before the first relayout.
-                for (i, tab) in OFFICIAL_CHAT_TABS.iter().enumerate() {
-                    let label = format!("official-chat-tab-{i}");
-                    let url = Url::parse(tab.1).map_err(|e| format!("非法页签地址：{e}"))?;
-                    let mut builder = WebviewBuilder::new(label, WebviewUrl::External(url))
-                        .data_directory(profile_dir.clone())
-                        .additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)
-                        .initialization_script(include_str!("titlebar-pulse.js"))
-                        .initialization_script(include_str!("chat-fingerprint.js"));
-                    #[cfg(target_os = "macos")]
-                    {
-                        builder =
-                            builder.data_store_identifier(OFFICIAL_CHAT_DATA_STORE_IDENTIFIER);
-                    }
-                    let wv = window
-                        .add_child(
-                            builder,
-                            LogicalPosition::new(0.0, layout.content_y),
-                            LogicalSize::new(layout.width, layout.content_height),
-                        )
-                        .map_err(|e| format!("无法创建官方对话页签：{e}"))?;
-                    if i != 0 {
-                        let _ = wv.hide();
-                    }
-                }
+                // Create only the default content tab on open. Other remote
+                // pages are attached by switch_official_chat_tab on demand;
+                // once attached they keep the same persistent profile and
+                // remain mounted for the lifetime of this window.
+                add_official_chat_tab(&window, 0, layout, &profile_dir)?;
 
                 // Tab strip: local SPA route renders the tab bar and keeps
                 // `window.__TAURI__` so it can invoke the tab commands. The
@@ -1124,15 +1248,36 @@ pub fn official_chat_tabs() -> Vec<OfficialChatTab> {
 
 /// Switch the active tab in the official-chat window.
 ///
-/// Hides every content webview except the one at `index`, then shows and
-/// focuses it. The strip webview tracks its own active tab locally (it
-/// issued the click), so no back-event is needed for the common path; the
-/// default active tab on open is `0`, which the strip assumes on mount.
+/// A tab is created on first selection. Creation happens before any existing
+/// tab is hidden, so a failed WebView initialization leaves the current page
+/// usable. The lifecycle lock serializes open, switch, and close operations.
 #[tauri::command]
-pub fn switch_official_chat_tab(app: AppHandle, index: usize) -> Result<(), String> {
+pub async fn switch_official_chat_tab(app: AppHandle, index: usize) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || switch_official_chat_tab_blocking(app, index))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<(), String> {
     if index >= OFFICIAL_CHAT_TABS.len() {
         return Err(format!("官方对话页签不存在：{index}"));
     }
+    let _mutation_guard = official_chat_mutation_lock()
+        .lock()
+        .map_err(|_| "官方对话窗口状态锁已损坏".to_string())?;
+    let window = app
+        .get_window(OFFICIAL_CHAT_WINDOW_LABEL)
+        .ok_or("官方对话窗口未打开".to_string())?;
+    let target_label = format!("official-chat-tab-{index}");
+    if app.get_webview(&target_label).is_none() {
+        let profile_dir = {
+            let state = app.state::<AppState>();
+            state.data_dir.join("webview-official-chat")
+        };
+        let layout = current_official_chat_layout(&window);
+        ensure_official_chat_tab(&app, index, &profile_dir, layout)?;
+    }
+
     for (i, _) in OFFICIAL_CHAT_TABS.iter().enumerate() {
         if let Some(wv) = app.get_webview(&format!("official-chat-tab-{i}")) {
             if i == index {
@@ -1143,6 +1288,7 @@ pub fn switch_official_chat_tab(app: AppHandle, index: usize) -> Result<(), Stri
             }
         }
     }
+    relayout_official_chat(&app);
     Ok(())
 }
 
@@ -1155,7 +1301,16 @@ pub fn switch_official_chat_tab(app: AppHandle, index: usize) -> Result<(), Stri
 /// label flips back to "打开官方对话" on the next status poll once the
 /// window is gone.
 #[tauri::command]
-pub fn close_official_chat(app: AppHandle) -> Result<(), String> {
+pub async fn close_official_chat(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || close_official_chat_blocking(app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn close_official_chat_blocking(app: AppHandle) -> Result<(), String> {
+    let _mutation_guard = official_chat_mutation_lock()
+        .lock()
+        .map_err(|_| "官方对话窗口状态锁已损坏".to_string())?;
     app.get_window(OFFICIAL_CHAT_WINDOW_LABEL)
         .ok_or("官方对话窗口未打开".to_string())?
         .destroy()
@@ -1178,7 +1333,16 @@ pub fn close_official_chat(app: AppHandle) -> Result<(), String> {
 /// the transient windows first, then the main window, then exit the loop
 /// itself so the Exit branch still runs on every platform.
 #[tauri::command]
-pub fn confirm_close_shell(app: AppHandle) -> Result<(), String> {
+pub async fn confirm_close_shell(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || confirm_close_shell_blocking(app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
+    let _mutation_guard = official_chat_mutation_lock()
+        .lock()
+        .map_err(|_| "官方对话窗口状态锁已损坏".to_string())?;
     let main = app
         .get_webview_window("main")
         .ok_or("主壳窗口不存在（label: main）")?;
@@ -1254,6 +1418,20 @@ pub async fn plugin_status(state: State<'_, AppState>) -> Result<plugins::Plugin
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// List every plugin materialized under `kernels/<version>/plugins/`. Used
+/// by the per-version tooltip in the versions panel so the user can inspect
+/// exactly what each installed kernel carries on disk.
+#[tauri::command]
+pub async fn kernel_plugin_list(
+    state: State<'_, AppState>,
+    version: String,
+) -> Result<Vec<plugins::KernelPluginRow>, String> {
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || plugins::kernel_plugin_list(&data_dir, &version))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Shared body of the plugin store commands: resolve pnpm against the

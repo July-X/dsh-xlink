@@ -3,7 +3,7 @@
 import { reactive } from 'vue';
 import { invoke, openExternal } from './bridge.js';
 import { toast, toastSuccess, toastError } from './notify.js';
-import { withLoading } from './loading.js';
+import { withLoading, withExclusive, isExclusiveBusy } from './loading.js';
 import { withProgress } from './progress.js';
 import { refreshAll } from './store.js';
 
@@ -34,6 +34,27 @@ export const pluginStore = reactive({
   filter: 'all',
   spec: '',
 });
+
+const catalogIndex = new WeakMap();
+const UPDATE_CHECK_TTL_MS = 15 * 60 * 1000;
+let catalogInFlight = null;
+let pluginUpdatesInFlight = null;
+let lastPluginUpdateCheckAt = 0;
+
+function catalogMeta(item) {
+  const cached = catalogIndex.get(item);
+  if (cached) return cached;
+  const haystack = [item.name, item.description, item.repo, item.category, categoryLabel(item.category)]
+    .concat(item.tags || [])
+    .join(' ')
+    .toLowerCase();
+  const meta = {
+    haystack,
+    updatedAt: Date.parse(item.updated || '') || 0,
+  };
+  catalogIndex.set(item, meta);
+  return meta;
+}
 
 export function categoryLabel(id) {
   const hit = CATALOG_CATEGORIES.find(([key]) => key === id);
@@ -78,35 +99,45 @@ export function filteredCatalog(keys) {
     if (pluginStore.category !== 'all' && item.category !== pluginStore.category) return false;
     if (pluginStore.filter === 'installed' && !isInstalled(item, keys)) return false;
     if (pluginStore.filter === 'not-installed' && isInstalled(item, keys)) return false;
-    if (!q) return true;
-    const hay = [item.name, item.description, item.repo, item.category, categoryLabel(item.category)]
-      .concat(item.tags || [])
-      .join(' ')
-      .toLowerCase();
-    return hay.includes(q);
+    return !q || catalogMeta(item).haystack.includes(q);
   });
   if (pluginStore.sort === 'updated') {
-    items = items.slice().sort((a, b) => Date.parse(b.updated || '') - Date.parse(a.updated || ''));
+    items = items.slice().sort((a, b) => catalogMeta(b).updatedAt - catalogMeta(a).updatedAt);
   }
   return items;
 }
 
-// 目录拉取是纯网络读取：只给刷新按钮本身挂 loading，不锁整个外壳，
-// 用户在拉取期间仍可操作侧栏、启停工作台、搜索 / 排序 / 翻页。
-export function loadCatalog(manual) {
-  pluginStore.catalogLoaded = false;
-  const run = () =>
-    invoke('plugin_catalog', { force: !!manual })
-      .then((items) => {
+// 目录拉取只在插件面板激活或用户手动刷新时执行；相同请求共享一个
+// Promise，避免面板切换和按钮连点同时占用网络与解析资源。
+export function loadCatalog(manual = false) {
+  if (!manual && pluginStore.catalogLoaded) {
+    return Promise.resolve(pluginStore.catalogItems);
+  }
+  if (catalogInFlight) return catalogInFlight;
+  if (isExclusiveBusy()) return Promise.resolve(null);
+
+  const startRequest = () =>
+    withExclusive(async () => {
+      pluginStore.catalogLoaded = false;
+      try {
+        const items = await invoke('plugin_catalog', { force: !!manual });
         pluginStore.catalogItems = items || [];
         pluginStore.catalogLoaded = true;
         pluginStore.shown = CATALOG_PAGE;
-      })
-      .catch((e) => {
+        return pluginStore.catalogItems;
+      } catch (e) {
         pluginStore.catalogLoaded = true;
-        toastError('目录加载失败：' + e, 6000);
-      });
-  return manual ? withLoading('catalogReload', run) : run();
+        if (manual) toastError('目录加载失败：' + e, 6000);
+        return null;
+      }
+    });
+  const request = manual ? withLoading('catalogReload', startRequest) : startRequest();
+  if (request === undefined) return Promise.resolve(null);
+  const tracked = request.finally(() => {
+    if (catalogInFlight === tracked) catalogInFlight = null;
+  });
+  catalogInFlight = tracked;
+  return tracked;
 }
 
 // --- 安装 / 更新 / 卸载 / 同步 -----------------------------------------------
@@ -186,22 +217,40 @@ export function uninstallPlugin(id) {
 }
 
 // 手动检查挂按钮 loading、有更新时提示；启动自检静默（失败不打扰用户）。
-export function checkPluginUpdates(opts) {
-  const run = () =>
-    invoke('plugin_check_updates')
-      .then((infos) => {
+export function checkPluginUpdates(opts = {}) {
+  const now = Date.now();
+  if (lastPluginUpdateCheckAt && now - lastPluginUpdateCheckAt < UPDATE_CHECK_TTL_MS) {
+    return Promise.resolve(null);
+  }
+  if (pluginUpdatesInFlight) return pluginUpdatesInFlight;
+  if (isExclusiveBusy()) return Promise.resolve(null);
+
+  const startRequest = () => {
+    if (pluginUpdatesInFlight) return pluginUpdatesInFlight;
+    const request = withExclusive(async () => {
+      try {
+        const infos = await invoke('plugin_check_updates');
+        lastPluginUpdateCheckAt = Date.now();
         const n = (infos || []).filter((i) => i.latest).length;
         if (n > 0 && opts.toastOnUpdates) {
           toast('有 ' + n + ' 个插件可更新', 5000, 'warning');
         }
         return refreshAll();
-      })
-      .catch((e) => {
+      } catch (e) {
         if (opts.busy) {
           toastError('检查插件更新失败：' + e, 6000);
         }
-      });
-  return opts.busy ? withLoading('checkPluginUpdates', run) : run();
+        return null;
+      }
+    });
+    if (request === undefined) return Promise.resolve(null);
+    const tracked = request.finally(() => {
+      if (pluginUpdatesInFlight === tracked) pluginUpdatesInFlight = null;
+    });
+    pluginUpdatesInFlight = tracked;
+    return tracked;
+  };
+  return opts.busy ? withLoading('checkPluginUpdates', startRequest) : startRequest();
 }
 
 // refreshAll 的插件侧钩子：与内核状态一起刷新插件卡片。

@@ -42,6 +42,7 @@ function metaText(row) {
             text
             :icon="Refresh"
             :loading="isLoading('checkSkillUpdates')"
+            :disabled="globalBusy"
             @click="checkSkillUpdates({ busy: true, toastOnUpdates: true })"
           >
             检查更新

@@ -4,7 +4,7 @@
 // 让出阅读宽度；用户可用栏顶按钮手动展开/收起（手动选择覆盖自动判定），
 // 展开后点击右侧日志内容区会自动收起侧栏。
 // 「全屏」打开一个独立的满窗弹层展示当前文件内容，自带刷新 / 关闭按钮。
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { Refresh, Close, FullScreen, Fold, Expand } from '@element-plus/icons-vue';
 import { invoke } from '../bridge.js';
 import { toastError } from '../notify.js';
@@ -41,6 +41,12 @@ function collapseRailOnContentClick() {
 }
 
 let observer = null;
+function disconnectRail() {
+  if (!observer) return;
+  observer.disconnect();
+  observer = null;
+}
+
 function observeRail() {
   if (observer || !mainBox.value) return;
   observer = new ResizeObserver((entries) => {
@@ -56,12 +62,17 @@ function observeRail() {
 watch(
   () => logModal.visible,
   async (visible) => {
-    if (!visible) return;
+    if (!visible) {
+      disconnectRail();
+      return;
+    }
     railOverride.value = null;
     await nextTick();
     observeRail();
   }
 );
+
+onUnmounted(disconnectRail);
 
 // 切签 / 列表刷新后把激活签滚进可视区。
 watch(

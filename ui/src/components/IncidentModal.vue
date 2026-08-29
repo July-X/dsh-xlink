@@ -2,16 +2,53 @@
 // 启动容错事故面板：工作台启动失败被自动屏蔽后，把裁决权交给用户——
 // 每个嫌疑对象可展开错误证据，并选择移除 / 重新启用；直接关闭即保持禁用。
 import { computed, reactive } from 'vue';
-import { Document, Close, RefreshLeft, Delete, View, Hide } from '@element-plus/icons-vue';
+import { Document, Close, RefreshLeft, Delete, View, Hide, Connection } from '@element-plus/icons-vue';
 import { store } from '../store.js';
 import { resolvePluginQuarantine } from '../plugins.js';
 import { showLogs } from '../logs.js';
 
 const incident = computed(() => store.incident);
 
-const title = computed(() =>
-  incident.value && incident.value.recovered ? '已在安全模式下启动工作台' : '工作台启动失败'
-);
+const cause = computed(() => {
+  const value = incident.value && incident.value.cause;
+  if (value === 'plugin' || value === 'kernel' || value === 'unknown') return value;
+  const suspects = (incident.value && incident.value.suspects) || [];
+  if (suspects.some((suspect) => suspect.kind === 'plugin')) return 'plugin';
+  if (suspects.some((suspect) => suspect.kind === 'kernel')) return 'kernel';
+  return 'unknown';
+});
+
+const title = computed(() => {
+  if (!incident.value) return '工作台异常';
+  if (incident.value.recovered) return '已在安全模式下启动工作台';
+  if (cause.value === 'plugin') return '工作台异常：疑似插件问题';
+  if (cause.value === 'kernel') return '工作台异常：疑似内核问题';
+  return '工作台异常：暂未能归因';
+});
+
+const causeLabel = computed(() => {
+  if (cause.value === 'plugin') return '判断：疑似插件问题';
+  if (cause.value === 'kernel') return '判断：疑似内核问题';
+  return '判断：暂未能归因';
+});
+
+const healthText = computed(() => {
+  const health = incident.value && incident.value.health;
+  if (!health) return '';
+  return [
+    health.kind && `类型：${health.kind}`,
+    health.message && `消息：${health.message}`,
+    health.stack && `堆栈：\n${health.stack}`,
+    health.page_url && `页面：${health.page_url}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+});
+
+function goKernelVersions() {
+  close();
+  store.activePanel = 'versions';
+}
 
 // 证据区展开状态：按嫌疑对象 id 记录。
 const expanded = reactive(new Set());
@@ -54,9 +91,15 @@ async function resolveSuspect(id, action) {
 
     <div v-if="incident" class="incident-body" style="display: flex; flex-direction: column; gap: 12px">
       <p style="margin: 0">{{ incident.message || '' }}</p>
+      <el-tag class="incident-cause" effect="plain" size="small">{{ causeLabel }}</el-tag>
+
+      <details v-if="healthText" class="incident-health">
+        <summary>查看前端自检证据</summary>
+        <pre>{{ healthText }}</pre>
+      </details>
 
       <div class="incident-list">
-        <p v-if="!(incident.suspects || []).length" class="muted" style="margin: 0">未定位到具体的嫌疑插件。</p>
+        <p v-if="!(incident.suspects || []).length" class="muted" style="margin: 0">未定位到具体插件或内核组件。</p>
         <div v-for="suspect in incident.suspects || []" :key="suspect.id" class="suspect-item">
           <div class="suspect-head">
             <span class="suspect-name">{{ suspect.name }}</span>
@@ -69,7 +112,7 @@ async function resolveSuspect(id, action) {
             </el-button>
             <pre v-if="expanded.has(suspect.id)">{{ suspect.evidence }}</pre>
           </div>
-          <p v-else class="muted" style="margin: 0">该插件没有直接的日志证据（安全模式批量停用时无具体归因）。</p>
+          <p v-else class="muted" style="margin: 0">{{ suspect.kind === 'kernel' ? '暂未捕获该内核组件的直接日志证据。' : '该插件没有直接的日志证据（安全模式批量停用时无具体归因）。' }}</p>
 
           <div v-if="suspect.kind === 'plugin'" class="btn-row suspect-actions">
             <el-button size="small" text :icon="RefreshLeft" @click="resolveSuspect(suspect.id, 'enable')">重新启用</el-button>
@@ -96,6 +139,9 @@ async function resolveSuspect(id, action) {
       </div>
 
       <p v-if="incident.hint" class="muted" style="margin: 0">{{ incident.hint }}</p>
+      <div v-if="cause !== 'plugin' && !incident.recovered" class="btn-row">
+        <el-button type="warning" plain :icon="Connection" @click="goKernelVersions">前往内核版本页</el-button>
+      </div>
     </div>
   </el-dialog>
 </template>

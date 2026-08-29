@@ -7,7 +7,7 @@ use std::process::Command;
 
 use serde::Serialize;
 
-use crate::process::{quiet, run_with_progress};
+use crate::process::{run_command_capture, run_with_progress};
 use crate::settings::Settings;
 
 /// The engine range dsh declares (`^22.19.0 || >=24.0.0`).
@@ -50,13 +50,12 @@ fn compatible((major, minor, _patch): (u32, u32, u32)) -> bool {
 pub fn version_of(path: &Path) -> Option<String> {
     let mut cmd = Command::new(path);
     cmd.arg("--version");
-    let output = quiet(&mut cmd).output().ok()?;
-    if !output.status.success() {
+    let (success, stdout, _) = run_command_capture(cmd, "node --version").ok()?;
+    if !success {
         return None;
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let version = text.trim().to_string();
-    (parse_version(&text).is_some()).then_some(version)
+    let version = stdout.trim().to_string();
+    (parse_version(&stdout).is_some()).then_some(version)
 }
 
 /// Probe a candidate node executable and report how usable it is.
@@ -640,16 +639,13 @@ pub fn ensure_pnpm(
 /// routes batch files through `%ComSpec% /C` and stamps the merged PATH.
 fn npm_prefix(npm: &Path, cwd: &Path) -> Result<PathBuf, String> {
     let npm_dir = npm.parent().unwrap_or(std::path::Path::new("."));
-    let output = crate::process::script_output(npm, &["config", "get", "prefix"], cwd, &[npm_dir])
-        .map_err(|e| format!("无法读取 npm prefix：{e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "npm config get prefix 失败（退出码 {:?}）",
-            output.status.code()
-        ));
+    let (success, stdout, _stderr) =
+        crate::process::script_capture(npm, &["config", "get", "prefix"], cwd, &[npm_dir])
+            .map_err(|e| format!("无法读取 npm prefix：{e}"))?;
+    if !success {
+        return Err("npm config get prefix 失败（请检查 npm 与 Node 环境）".into());
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let prefix = text.trim();
+    let prefix = stdout.trim();
     if prefix.is_empty() {
         return Err("npm prefix 为空".into());
     }

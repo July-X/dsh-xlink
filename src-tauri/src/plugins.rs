@@ -18,15 +18,14 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
-use crate::process::quiet;
+use crate::process::run_capture;
 use crate::quarantine;
-use crate::releases::{http_get_bytes, http_get_string};
+use crate::releases::{http_get_file, http_get_npm_latest, http_get_string};
 use crate::version::cmp_versions;
 use crate::{commands, kernel, node, settings};
 
@@ -709,19 +708,6 @@ fn is_newer_than(latest: &str, installed: &str, origin: &str, pinned: bool) -> b
 
 // --- fetching ---------------------------------------------------------------
 
-/// Run one command, collecting stdout for quick helpers (git ls-remote).
-/// Goes through `process::command_with_path` for the same reason as the
-/// other direct git invocations: the helper's only caller is
-/// `git_latest_tag`, which shells out to `git` from a GUI-subsystem
-/// release build where the inherited PATH is system-only.
-fn run_capture(program: &str, args: &[&str]) -> io::Result<(bool, String)> {
-    let mut cmd = crate::process::command_with_path(program);
-    cmd.args(args);
-    let output = quiet(&mut cmd).output()?;
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
-    Ok((output.status.success(), text))
-}
-
 /// Fetch the npm registry document for a package.
 fn fetch_npm_doc(name: &str) -> Result<NpmDoc, String> {
     let url = format!("{}{}", crate::registry::npm_registry_base(), name);
@@ -729,61 +715,11 @@ fn fetch_npm_doc(name: &str) -> Result<NpmDoc, String> {
     serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())
 }
 
-/// Extract a tgz into dest, stripping the leading package/ segment. Uses the
-/// system tar (bsdtar on macOS/Windows, GNU tar elsewhere). `tar` is built
-/// through `process::command_with_path` so the GUI shell's inherited PATH
-/// includes the user's tool locations — without it, a Windows GUI release
-/// build (which only sees the system PATH) cannot find `tar.exe` when the
-/// user installed a third-party variant.
-///
-/// stderr is captured into the error message so a real extraction
-/// failure (corrupt archive, write-permission denied, MAX_PATH overrun
-/// on Windows, …) surfaces its actual cause instead of just an exit
-/// code the user cannot act on. stdout is discarded because `bsdtar`
-/// prints one extracted path per line and we do not want to forward
-/// the noise through the install log.
-///
-/// `dest` is `mkdir -p`'d before invoking `tar -C`. GNU tar creates the
-/// directory on demand; the Windows 10+ bsdtar shipped at
-/// `C:\Windows\System32\tar.exe` exits 1 with `could not chdir to`
-/// when the destination is missing, even when it could have created
-/// it. Pre-creating makes both flavors behave identically.
+/// Extract an npm tgz into `dest`, stripping its leading `package/` segment.
+/// The shared Rust extractor rejects traversal paths, links, and special files
+/// and bounds both entry count and declared expanded content before publishing.
 fn extract_tarball(tarball: &Path, dest: &Path) -> Result<(), String> {
-    fs::create_dir_all(dest).map_err(|e| format!("创建解包目录失败：{e}"))?;
-    let mut cmd = crate::process::command_with_path("tar");
-    cmd.arg("-xzf")
-        .arg(tarball)
-        .arg("--strip-components=1")
-        .arg("-C")
-        .arg(dest)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let output = quiet(&mut cmd)
-        .output()
-        .map_err(|e| format!("无法运行系统 tar：{e}"))?;
-    if !output.status.success() {
-        // bsdtar's diagnostics land on stderr; trim to a single line so
-        // the user-facing error stays compact. Newlines from multi-line
-        // bsdtar output (e.g. "Path too long") would otherwise break the
-        // log layout the UI already scrapes with the prefix "插件错误".
-        let detail = String::from_utf8_lossy(&output.stderr)
-            .trim()
-            .lines()
-            .next()
-            .unwrap_or("")
-            .to_string();
-        let code = output.status.code();
-        return Err(format!(
-            "tar 解包失败（退出码 {:?}）{}",
-            code,
-            if detail.is_empty() {
-                String::new()
-            } else {
-                format!("：{detail}")
-            }
-        ));
-    }
-    Ok(())
+    crate::archive::extract_gzip_tarball(tarball, dest)
 }
 
 fn write_source_marker(spec: &PluginSpec, version: &str, dest: &Path) -> Result<(), AppError> {
@@ -1205,19 +1141,13 @@ fn fetch_npm(
             ))
         })?;
     on_progress(&format!("正在下载 {}@{version} …", spec.source));
-    let bytes = http_get_bytes(&tarball).map_err(|e| AppError::Plugin(format!("下载失败：{e}")))?;
     let tgz = dest.join(".pkg.tgz");
-    fs::write(&tgz, bytes).map_err(|e| AppError::Io(e.to_string()))?;
-    // Extract straight into the staging dir. npm tarballs carry a leading
-    // `package/` segment that `--strip-components=1` removes, so the
-    // plugin's `package.json`, `lib/`, `cordis.patch.yml`, … land at the
-    // root of `dest` where `validate_plugin(&dest)` and the later
-    // store/kernels materialization expect them. The historical code
-    // extracted into `dest/package/` then immediately removed that
-    // subdirectory, leaving the staging dir empty and tripping
-    // `validate_plugin` with a "缺少可解析的 package.json" error.
+    http_get_file(&tarball, &tgz).map_err(|e| AppError::Plugin(format!("下载失败：{e}")))?;
+    // Extract into the staging dir through the shared Rust archive handler.
+    // It validates the npm `package/` root and publishes its children at
+    // `dest`, where `validate_plugin(&dest)` and materialization expect them.
     extract_tarball(&tgz, dest)
-        .map_err(|e| AppError::Plugin(format!("解包失败：{e}（请确认系统存在 tar）")))?;
+        .map_err(|e| AppError::Plugin(format!("解包失败：{e}（请确认下载内容完整后重试）")))?;
     let _ = fs::remove_file(&tgz);
     Ok(version)
 }
@@ -1235,9 +1165,7 @@ fn fetch_git(
     // bare `Command::new("git")` here resolves to "command not found" and
     // the user sees the misleading "未找到 git" error even though `git`
     // works from any cmd.exe they open themselves.
-    let mut probe = crate::process::command_with_path("git");
-    probe.arg("--version");
-    if quiet(&mut probe).output().is_err() {
+    if !matches!(run_capture("git", &["--version"]), Ok((true, _))) {
         return Err(AppError::Plugin(
             "未找到 git（git 来源的插件需要 git；请先安装 git）".into(),
         ));
@@ -1268,23 +1196,11 @@ fn fetch_git(
     if let Some(tag) = &branch {
         cmd.arg("--branch").arg(tag);
     }
-    // stderr 是 git 唯一的诊断输出（"Repository not found"、
-    // "could not resolve host"、"authentication failed"、"SSL certificate
-    // problem"…）。早期实现把它和 stdout 都吞掉，导致失败时 UI 只能
-    // 显示无意义的 "exit code 128"，用户根本看不出是仓库不存在、网络
-    // 不通、还是权限问题。这里改成 piped；错误时优先挑出 fatal/error
-    // 行（"Cloning into 'X'..." 是首行纯提示，紧跟其后的 fatal: 才是
-    // 真正原因；某些情况下 git 还会在 stdout 上吐诊断信息，一并捕获）。
-    let output = quiet(&mut cmd)
-        .arg(&spec.source)
-        .arg(dest)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+    cmd.arg(&spec.source).arg(dest);
+    let output = crate::process::run_command_capture(cmd, "git clone")
         .map_err(|e| AppError::Io(format!("无法运行 git：{e}")))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
+    let (success, stdout, stderr) = output;
+    if !success {
         // 优先反向查找 "fatal:" / "error:" 行；找不到就退回到最后一行
         // 非空 stderr，再退回 "，请检查地址与网络" 兜底文案。
         let detail = stderr
@@ -1305,8 +1221,7 @@ fn fetch_git(
             .unwrap_or("")
             .trim()
             .to_string();
-        let code = output.status.code();
-        let mut msg = format!("git clone 失败（退出码 {:?}）", code);
+        let mut msg = String::from("git clone 失败");
         if !detail.is_empty() {
             msg.push_str(&format!("：{detail}"));
         } else if !stdout_tail.is_empty() {
@@ -1393,7 +1308,12 @@ fn build_git_plugin(
         &[pnpm_dir],
         &mut *on_progress,
     )
-    .map_err(kernel::pnpm_spawn_err)?;
+    .map_err(|e| {
+        AppError::Plugin(format!(
+            "无法运行 pnpm（{e}），请确认 Node.js 与 pnpm 可用，详情见日志：{}",
+            log_path.display()
+        ))
+    })?;
     if !status.success() {
         return Err(AppError::Plugin(format!(
             "插件构建失败（退出码 {:?}）：`prepare` 未成功生成入口。详情见 {}",
@@ -1526,7 +1446,12 @@ fn install_store_deps(
         &[pnpm_dir],
         &mut *on_progress,
     )
-    .map_err(kernel::pnpm_spawn_err)?;
+    .map_err(|e| {
+        AppError::Plugin(format!(
+            "无法运行 pnpm（{e}），请确认 Node.js 与 pnpm 可用，详情见日志：{}",
+            log_path.display()
+        ))
+    })?;
     if !status.success() && !dir.join("node_modules").is_dir() {
         return Err(AppError::Plugin(format!(
             "插件依赖安装失败（退出码 {:?}），详情见日志：{}",
@@ -1707,6 +1632,19 @@ fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
     copy_tree_at(source, target, &mut Vec::new())
 }
 
+fn link_points_to_ancestor(path: &Path, ancestors: &[PathBuf]) -> bool {
+    let Ok(target) = fs::read_link(path) else {
+        return false;
+    };
+    let resolved = if target.is_absolute() {
+        target
+    } else {
+        path.parent().unwrap_or_else(|| Path::new(".")).join(target)
+    };
+    let resolved = fs::canonicalize(&resolved).unwrap_or(resolved);
+    ancestors.iter().any(|ancestor| ancestor == &resolved)
+}
+
 /// `ancestors` holds the canonical path of every directory on the current
 /// recursion stack. Copy mode follows directory links (a copied tree must
 /// not depend on link capability), and on macOS/Linux a pnpm
@@ -1762,6 +1700,12 @@ fn copy_tree_inner(source: &Path, target: &Path, ancestors: &mut Vec<PathBuf>) -
             io::Error::new(e.kind(), format!("读取 {} 的类型失败：{e}", from.display()))
         })?;
         if file_type.is_symlink() {
+            if link_points_to_ancestor(&from, ancestors) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("目录树存在循环链接：{}", from.display()),
+                ));
+            }
             // Follow the link once to classify it; a dangling link cannot be
             // copied and must not kill the whole tree.
             match fs::metadata(&from) {
@@ -2178,8 +2122,8 @@ pub fn check_updates(data_dir: &Path) -> Result<Vec<UpdateInfo>, AppError> {
     let mut out = Vec::new();
     for item in &mut store.items {
         let (latest, error) = match item.origin.as_str() {
-            "npm" => match fetch_npm_doc(&item.source) {
-                Ok(doc) => (doc.dist_tags.get("latest").cloned(), None),
+            "npm" => match http_get_npm_latest(&item.source) {
+                Ok(latest) => (latest, None),
                 Err(e) => (None, Some(e)),
             },
             "git" => match git_latest(item) {
@@ -2812,6 +2756,15 @@ pub fn set_mode(
     Ok(())
 }
 
+/// Sweep shell-owned plugin residue from every installed kernel. `ensure_wiring`
+/// only visits the active kernel, so the explicit all-kernel sync must own this
+/// pass itself.
+fn sweep_all_kernel_orphans(data_dir: &Path, store: &Store) {
+    for version in kernel::list_installed(data_dir) {
+        sweep_kernel_orphans(data_dir, &version.version, store);
+    }
+}
+
 /// Materialize everything and re-wire (the「同步」button).
 pub fn sync_all(
     data_dir: &Path,
@@ -2823,6 +2776,7 @@ pub fn sync_all(
     for item in &store.items {
         sync_kernels(data_dir, item)?;
     }
+    sweep_all_kernel_orphans(data_dir, &store);
     ensure_wiring(data_dir, settings, pnpm_exe, on_progress)?;
     Ok(())
 }
@@ -2913,6 +2867,86 @@ pub fn status(data_dir: &Path, settings: &settings::Settings) -> PluginStatus {
     }
 }
 
+/// One plugin materialized under `kernels/<version>/plugins/`. Returned by
+/// [`kernel_plugin_list`] so the management UI can hover a version row and
+/// see exactly which plugins the kernel currently has on disk — including
+/// shell-owned entries that have been removed from the central store and
+/// foreign entries the user dropped there manually.
+#[derive(Debug, Clone, Serialize)]
+pub struct KernelPluginRow {
+    pub id: String,
+    /// Resolved display name from the central store when known; otherwise
+    /// the same string as `id` so foreign/manual directories still show a
+    /// label in the tooltip.
+    pub name: String,
+    pub version: String,
+    /// "link" or "copy" — the `.meta` record is authoritative. `None` when
+    /// the directory has no `.meta` marker (a manual entry).
+    pub mode: Option<String>,
+    /// Whether the entry on disk still matches the recorded store version
+    /// (`synced_at` aside). When false the tooltip surfaces a "未同步" hint.
+    pub synced: bool,
+    /// Whether the central store has a matching item today. False here
+    /// means the plugin was deleted from the store but the kernel still
+    /// carries the residue — useful signal for the user to clean up.
+    pub in_store: bool,
+}
+
+/// Snapshot every plugin materialized under `kernels/<version>/plugins/`.
+/// `version` must already be installed; the function does not validate that
+/// because the versions panel only displays installed entries.
+pub fn kernel_plugin_list(data_dir: &Path, version: &str) -> Vec<KernelPluginRow> {
+    let mut rows = Vec::new();
+    let plugins_dir = kernel_plugins_dir(data_dir, version);
+    let entries = match fs::read_dir(&plugins_dir) {
+        Ok(it) => it,
+        Err(_) => return rows,
+    };
+    // Central-store name lookup so a freshly-deleted plugin still resolves
+    // its label instead of just showing the raw id.
+    let store_doc = load_store(data_dir);
+    let store_index: std::collections::HashMap<&str, &StoreItem> = store_doc
+        .items
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy().into_owned();
+        if name_str.starts_with('.') || name_str == META_SUBDIR {
+            continue;
+        }
+        let id = name_str;
+        let dir = entry.path();
+        let meta = read_meta(data_dir, version, &id);
+        let present = dir.exists();
+        let store_item = store_index.get(id.as_str()).copied();
+        let synced = match (&meta, store_item) {
+            (Some(meta), Some(item)) => present && meta.version == item.installed_version,
+            (Some(_), None) => present,
+            _ => false,
+        };
+        let (display_name, version, in_store) = match store_item {
+            Some(item) => (item.name.clone(), item.installed_version.clone(), true),
+            None => (
+                id.clone(),
+                meta.as_ref().map(|m| m.version.clone()).unwrap_or_default(),
+                false,
+            ),
+        };
+        rows.push(KernelPluginRow {
+            id,
+            name: display_name,
+            version,
+            mode: meta.map(|m| m.mode),
+            synced,
+            in_store,
+        });
+    }
+    rows.sort_by_key(|a| a.name.to_lowercase());
+    rows
+}
+
 /// Resolve a link-mode plugin's peerDependencies from the ACTIVE kernel's
 /// node_modules into the store dir, so the plugin's import walk finds the
 /// same cordis/dsh-* instances the kernel uses. Recorded in
@@ -2967,7 +3001,9 @@ fn refresh_store_peers(data_dir: &Path, item: &StoreItem, active: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    static TEST_HOME_COUNTER: AtomicUsize = AtomicUsize::new(0);
     /// Unique throwaway home per test, removed on drop.
     struct TestHome(PathBuf);
 
@@ -2979,7 +3015,8 @@ mod tests {
                 .unwrap_or(0);
             let base =
                 std::env::temp_dir().join(format!("dsh-plugins-test-{}", std::process::id()));
-            let home = base.join(nano.to_string());
+            let seq = TEST_HOME_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let home = base.join(format!("{nano}-{seq}"));
             fs::create_dir_all(&home).expect("test home");
             TestHome(home)
         }
@@ -3618,6 +3655,159 @@ mod tests {
             assert!(!plugins.join("dangler").exists());
         }
         assert!(plugins.join("foreign").exists());
+    }
+
+    #[test]
+    fn kernel_plugin_list_scans_materialized_entries() {
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        let version = "1.0.0";
+
+        let bin = kernel::kernel_dir(&data_dir, version).join("node_modules/@deepseek-ai/dsh/lib");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("bin.js"), "").unwrap();
+
+        // 中央库一个插件：内核目录带有有效的 link 元数据；另一个中央库项目
+        // 在内核目录中仍是旧版本，Tooltip 应明确显示它尚未同步。
+        let store = store_dir(&data_dir);
+        write_fake_plugin(&store.join("live-plugin"), "1.0.0");
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "live-plugin".into(),
+                name: "live-plugin".into(),
+                origin: "npm".into(),
+                source: "live-plugin".into(),
+                installed_version: "1.0.0".into(),
+                latest_version: None,
+                pinned: false,
+                mode: "link".into(),
+                repo_url: None,
+                description: None,
+                installed_at: "0".into(),
+                updated_at: "0".into(),
+            },
+        )
+        .expect("upsert store");
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "stale-plugin".into(),
+                name: "stale-plugin".into(),
+                origin: "npm".into(),
+                source: "stale-plugin".into(),
+                installed_version: "2.0.0".into(),
+                latest_version: None,
+                pinned: false,
+                mode: "copy".into(),
+                repo_url: None,
+                description: None,
+                installed_at: "0".into(),
+                updated_at: "0".into(),
+            },
+        )
+        .expect("upsert stale store");
+        let plugins = kernel_plugins_dir(&data_dir, version);
+        fs::create_dir_all(plugins.join("live-plugin")).unwrap();
+        write_meta(
+            &data_dir,
+            version,
+            "live-plugin",
+            &KernelMeta {
+                mode: "link".into(),
+                version: "1.0.0".into(),
+                synced_at: "1".into(),
+            },
+        )
+        .unwrap();
+        fs::create_dir_all(plugins.join("stale-plugin")).unwrap();
+        write_meta(
+            &data_dir,
+            version,
+            "stale-plugin",
+            &KernelMeta {
+                mode: "copy".into(),
+                version: "1.0.0".into(),
+                synced_at: "1".into(),
+            },
+        )
+        .unwrap();
+        // 手工目录：没有 meta 也没有 store 项目，应当原样出现并标 in_store=false。
+        fs::create_dir_all(plugins.join("manual")).unwrap();
+
+        let rows = kernel_plugin_list(&data_dir, version);
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"live-plugin"));
+        assert!(ids.contains(&"manual"));
+
+        let live = rows.iter().find(|r| r.id == "live-plugin").unwrap();
+        assert_eq!(live.name, "live-plugin");
+        assert_eq!(live.version, "1.0.0");
+        assert_eq!(live.mode.as_deref(), Some("link"));
+        assert!(live.in_store);
+        assert!(live.synced);
+
+        let stale = rows.iter().find(|r| r.id == "stale-plugin").unwrap();
+        assert!(stale.in_store);
+        assert!(!stale.synced);
+        assert_eq!(stale.mode.as_deref(), Some("copy"));
+
+        let manual = rows.iter().find(|r| r.id == "manual").unwrap();
+        assert_eq!(manual.name, "manual");
+        assert!(manual.mode.is_none());
+        assert!(!manual.in_store);
+    }
+
+    #[test]
+    fn sync_all_sweeps_removed_plugins_from_every_kernel() {
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        let versions = ["1.0.0", "2.0.0"];
+
+        for version in versions {
+            let bin =
+                kernel::kernel_dir(&data_dir, version).join("node_modules/@deepseek-ai/dsh/lib");
+            fs::create_dir_all(&bin).unwrap();
+            fs::write(bin.join("bin.js"), "").unwrap();
+
+            let plugins = kernel_plugins_dir(&data_dir, version);
+            fs::create_dir_all(plugins.join("ghost")).unwrap();
+            write_meta(
+                &data_dir,
+                version,
+                "ghost",
+                &KernelMeta {
+                    mode: "copy".into(),
+                    version: "1.0.0".into(),
+                    synced_at: "1".into(),
+                },
+            )
+            .unwrap();
+        }
+
+        // Keep profile reconciliation on its no-op path so this test isolates
+        // sync_all's all-kernel materialization cleanup.
+        let profile = profile_dir(&data_dir, DEFAULT_PROFILE);
+        fs::create_dir_all(profile.join("node_modules")).unwrap();
+        fs::write(
+            profile.join("package.json"),
+            r#"{"name":"dsh-profile-web","private":true,"dependencies":{},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app"]}}}"#,
+        )
+        .unwrap();
+
+        let mut noop = |_: &str| {};
+        sync_all(
+            &data_dir,
+            &settings::Settings::default(),
+            Path::new("pnpm"),
+            &mut noop,
+        )
+        .unwrap();
+
+        for version in versions {
+            assert!(!kernel_plugin_dir(&data_dir, version, "ghost").exists());
+            assert!(read_meta(&data_dir, version, "ghost").is_none());
+        }
     }
 
     #[test]

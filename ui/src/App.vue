@@ -4,13 +4,13 @@
 import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue';
 import { invoke, listen } from './bridge.js';
 import { toastError, confirmDialog } from './notify.js';
-import { ioActive } from './loading.js';
+import { globalBusy, ioActive } from './loading.js';
 import {
   store,
   refreshAll,
   pollStatus,
-  checkShellUpdate,
   showShellUpdateBanner,
+  showIncident,
 } from './store.js';
 import { loadCatalog, checkPluginUpdates } from './plugins.js';
 import { checkSkillUpdates } from './skills.js';
@@ -69,7 +69,28 @@ watchEffect(() => {
 });
 
 let pollTimer = null;
-const startupTimers = [];
+let appDisposed = false;
+const appUnlisteners = [];
+
+function registerAppListener(event, handler) {
+  let pending;
+  try {
+    pending = listen(event, handler);
+  } catch {
+    return;
+  }
+  if (!pending) return;
+  Promise.resolve(pending)
+    .then((unlisten) => {
+      if (typeof unlisten !== 'function') return;
+      if (appDisposed) {
+        Promise.resolve(unlisten()).catch(() => {});
+      } else {
+        appUnlisteners.push(unlisten);
+      }
+    })
+    .catch(() => {});
+}
 
 // 完全退出确认：Rust 侧在内核运行或官方对话打开时拦截主窗口关闭（prevent_close），
 // 由这里弹确认框；用户确认后先停内核（释放端口），再经 confirm_close_shell
@@ -105,9 +126,24 @@ function onQuitConfirmRequest(event) {
     });
 }
 
+function refreshActivePanelData() {
+  if (document.hidden) return;
+  if (store.activePanel === 'plugins') {
+    loadCatalog(false).then(() => checkPluginUpdates({ busy: false, toastOnUpdates: true }));
+  } else if (store.activePanel === 'skills') {
+    checkSkillUpdates({ busy: false, toastOnUpdates: true });
+  }
+}
+
+watch(() => store.activePanel, refreshActivePanelData);
+watch(globalBusy, (busy, previous) => {
+  if (previous && !busy) refreshActivePanelData();
+});
+
 function onVisibilityChange() {
   if (!document.hidden) {
     pollStatus();
+    refreshActivePanelData();
   }
 }
 
@@ -119,19 +155,29 @@ onMounted(() => {
   document.addEventListener('visibilitychange', onVisibilityChange);
 
   // 外壳后台检查到新版后广播此事件；手动按钮覆盖按需检查。
-  listen('shell-update-available', (e) => showShellUpdateBanner(e.payload));
-  listen('request-quit-confirm', onQuitConfirmRequest);
+  registerAppListener('shell-update-available', (e) => showShellUpdateBanner(e.payload));
+  registerAppListener('harness-fault', (e) => {
+    showIncident(e && e.payload);
+    refreshAll();
+  });
+  registerAppListener('request-quit-confirm', onQuitConfirmRequest);
 
-  // 启动后的静默预载 / 自检：失败均不打断，用户可在对应面板手动重试。
-  startupTimers.push(setTimeout(() => loadCatalog(false), 1200));
-  startupTimers.push(setTimeout(() => checkPluginUpdates({ busy: false, toastOnUpdates: true }), 3500));
-  startupTimers.push(setTimeout(() => checkSkillUpdates({ busy: false, toastOnUpdates: true }), 4200));
-  startupTimers.push(setTimeout(() => checkShellUpdate(false), 2500));
+  // 目录与更新检查由 activePanel watcher 按需触发；外壳检查由 Rust 后台任务负责。
 });
 
 onUnmounted(() => {
+  appDisposed = true;
   if (pollTimer) clearInterval(pollTimer);
-  startupTimers.forEach(clearTimeout);
+  pollTimer = null;
+  if (pulseOffTimer) clearTimeout(pulseOffTimer);
+  pulseOffTimer = null;
+  for (const unlisten of appUnlisteners.splice(0)) {
+    try {
+      Promise.resolve(unlisten()).catch(() => {});
+    } catch {
+      // A listener may already have been torn down by the WebView.
+    }
+  }
   document.removeEventListener('visibilitychange', onVisibilityChange);
 });
 </script>

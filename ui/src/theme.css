@@ -14,6 +14,8 @@
   --good: #34d399;
   --bad: #f87171;
   --warn: #fbbf24;
+  --tooltip-bg: #161e3d;
+  --tooltip-border: rgba(79, 140, 255, 0.42);
   --whale-eye: #ff2d30;
   --whale-eye-bright: #ff5a5e;
   --whale-eye-soft: #ffd9d9;
@@ -597,7 +599,8 @@ main {
 }
 
 .list-head-with-logo,
-.card-head-with-logo {
+.card-head-with-logo,
+.list-head-with-tip {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -608,6 +611,157 @@ main {
   height: 16px;
   border-radius: 4px;
   background: #fff;
+}
+
+.installed-tip-trigger {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  cursor: help;
+  outline: none;
+}
+.installed-tip-trigger:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 1px;
+}
+
+.installed-tip-icon {
+  color: var(--muted);
+  font-size: 14px;
+  transition: color 0.16s ease;
+}
+.installed-tip-trigger:hover .installed-tip-icon,
+.installed-tip-trigger:focus-visible .installed-tip-icon {
+  color: var(--el-color-primary);
+}
+
+.installed-tip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 360px;
+  padding: 2px;
+}
+
+.installed-tip-title {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.installed-tip-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.installed-tip-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+}
+
+.installed-tip-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.installed-tip-version {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.installed-tip-tags {
+  grid-column: 1 / -1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.installed-tip-loading,
+.installed-tip-error {
+  margin: 0;
+  font-size: 12px;
+}
+.installed-tip-error {
+  color: var(--el-color-warning);
+}
+
+.kernel-plugin-tooltip.el-popper.is-dark {
+  --el-popper-bg-color-dark: var(--tooltip-bg);
+  --el-popper-border-radius: 8px;
+  width: 252px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  padding: 9px 11px;
+  color: var(--text);
+  background: var(--tooltip-bg);
+  border: 1px solid var(--tooltip-border);
+  box-shadow: 0 10px 28px rgba(2, 6, 18, 0.5);
+}
+
+.kernel-plugin-tooltip.el-popper.is-dark > .el-popper__arrow::before {
+  background: var(--tooltip-bg);
+  border-color: var(--tooltip-border);
+}
+
+.kernel-plugin-tooltip .installed-tip {
+  width: 100%;
+  max-width: none;
+  padding: 0;
+}
+
+.kernel-plugin-tooltip .installed-tip-name {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.kernel-plugin-tooltip .el-tag {
+  --el-tag-bg-color: rgba(79, 140, 255, 0.12);
+  --el-tag-border-color: rgba(79, 140, 255, 0.48);
+  --el-tag-text-color: #b9d0ff;
+  height: 22px;
+  padding: 0 7px;
+}
+
+.kernel-plugin-tooltip .el-tag--warning {
+  --el-tag-bg-color: rgba(251, 191, 36, 0.13);
+  --el-tag-border-color: rgba(251, 191, 36, 0.48);
+  --el-tag-text-color: #fbd889;
+}
+
+.kernel-plugin-tooltip .el-tag--info {
+  --el-tag-bg-color: rgba(154, 164, 191, 0.13);
+  --el-tag-border-color: rgba(154, 164, 191, 0.42);
+  --el-tag-text-color: #c3cbe2;
 }
 
 .installed-list,
@@ -1190,12 +1344,30 @@ body.pulse-active > [data-titlebar-pulse='2'] {
 
 /* --- 事故面板 --- */
 
-.incident-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  max-height: 52vh;
+.incident-cause {
+  align-self: flex-start;
+}
+
+.incident-health {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.incident-health summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.incident-health pre {
+  max-height: 220px;
   overflow-y: auto;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.2);
 }
 
 .suspect-item {

@@ -24,10 +24,10 @@ use std::fs;
 use std::io;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::Duration;
 
-use crate::process::{quiet, run_with_progress};
+use crate::process::{attach_log_drainers, quiet, run_with_progress};
 
 use serde::Serialize;
 use tauri::Manager;
@@ -62,6 +62,7 @@ const SHELL_SUBDIR: &str = if cfg!(debug_assertions) {
 pub const DEFAULT_PORT: u16 = if cfg!(debug_assertions) { 3091 } else { 3090 };
 /// Relative path of the kernel's CLI entry inside an installed package.
 const KERNEL_BIN_REL: &str = "node_modules/@deepseek-ai/dsh/lib/bin.js";
+const MAX_ORPHAN_CANDIDATES: usize = 256;
 
 /// One installed kernel version on disk.
 #[derive(Debug, Clone, Serialize)]
@@ -419,7 +420,12 @@ pub fn install_version(
         &[node_dir, pnpm_dir],
         &mut on_progress,
     )
-    .map_err(pnpm_spawn_err)?;
+    .map_err(|e| {
+        AppError::Kernel(format!(
+            "无法运行 pnpm（{e}）。请确认已安装 Node.js 与 pnpm，详情见日志：{}",
+            log_path.display()
+        ))
+    })?;
     on_progress("pnpm 已退出，正在校验安装结果");
 
     // pnpm ≥ 10 在存在被忽略的构建脚本（见 `pnpm approve-builds`）时会打印
@@ -462,15 +468,6 @@ pub(crate) const PNPM_REPORTER: &str = "--reporter=append-only";
 /// shell never needs). Callers that pass this verify their own artifact
 /// (kernel entry, `node_modules`) instead of trusting the exit code.
 pub(crate) const PNPM_NO_STRICT_DEP_BUILDS: &str = "--config.strict-dep-builds=false";
-
-/// pnpm could not be spawned at all (missing binary, broken PATH) —
-/// distinct from a non-zero exit, which each caller judges against its own
-/// artifact checks.
-pub(crate) fn pnpm_spawn_err(e: io::Error) -> AppError {
-    AppError::Io(format!(
-        "无法运行 pnpm（{e}）。请确认已安装 Node.js 与 pnpm"
-    ))
-}
 
 /// Spawn pnpm once with the given args, piping merged stdout+stderr line by
 /// line to both `log_path` and `on_progress`. Thin wrapper over the shared
@@ -519,16 +516,7 @@ pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<C
             "端口 {port} 已被占用，可能已有内核在运行"
         )));
     }
-    fs::create_dir_all(logs_dir(data_dir)).map_err(|e| AppError::Io(e.to_string()))?;
-    let log = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(run_log_path(data_dir))
-        .map_err(|e| AppError::Io(e.to_string()))?;
-    let stdout = log.try_clone().map_err(|e| AppError::Io(e.to_string()))?;
-
-    let mut cmd = Command::new(node);
+    let mut cmd = crate::process::command_with_path(node);
     let port_arg: String = port.to_string();
     cmd.arg(&bin)
         .arg("web")
@@ -536,8 +524,8 @@ pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<C
         .arg("--port")
         .arg(port_arg)
         .current_dir(data_dir)
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(log));
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     #[cfg(unix)]
     {
@@ -555,9 +543,14 @@ pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<C
 
     // quiet() matters here too: the kernel is a long-running console app and
     // would otherwise pin a visible terminal window for its whole lifetime.
-    quiet(&mut cmd)
+    let mut child = quiet(&mut cmd)
         .spawn()
-        .map_err(|e| AppError::Io(format!("无法启动内核：{e}")))
+        .map_err(|e| AppError::Io(format!("无法启动内核：{e}")))?;
+    if let Err(error) = attach_log_drainers(&mut child, &run_log_path(data_dir)) {
+        crate::process::terminate_process_tree(&mut child);
+        return Err(AppError::Io(format!("无法接管内核日志：{error}")));
+    }
+    Ok(child)
 }
 
 /// Start the active kernel unless something already listens on the port.
@@ -604,16 +597,26 @@ pub fn start_maybe(data_dir: &Path, node: &Path) -> Result<Option<Child>, AppErr
 pub fn reap_orphans(data_dir: &Path) {
     #[cfg(unix)]
     {
-        use std::process::Command;
-        let out = match Command::new("ps").args(["-eo", "pid,command"]).output() {
-            Ok(o) if o.status.success() => o,
-            _ => return,
-        };
-        let text = String::from_utf8_lossy(&out.stdout);
+        let port = crate::settings::load(data_dir).port;
+        let (success, text, _) =
+            match crate::process::run_capture_output("ps", &["-eo", "pid,command"]) {
+                Ok(output) => output,
+                Err(_) => return,
+            };
+        if !success {
+            return;
+        }
+        // Each candidate may trigger a bounded lsof/ps probe, so keep startup
+        // cleanup from becoming proportional to an untrusted process list.
+        let mut candidates = 0usize;
         for line in text.lines() {
+            if candidates >= MAX_ORPHAN_CANDIDATES {
+                break;
+            }
             if !line.contains("@deepseek-ai/dsh/lib/bin.js") || !line.contains(" web ") {
                 continue;
             }
+            candidates += 1;
             let pid: u32 = match line.split_whitespace().next().and_then(|p| p.parse().ok()) {
                 Some(p) => p,
                 None => continue,
@@ -627,21 +630,26 @@ pub fn reap_orphans(data_dir: &Path) {
             let cwd_matches = std::fs::read_link(format!("/proc/{pid}/cwd"))
                 .map(|p| p == data_dir)
                 .unwrap_or_else(|_| {
-                    Command::new("lsof")
-                        .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
-                        .output()
-                        .ok()
-                        .and_then(|o| {
-                            String::from_utf8_lossy(&o.stdout)
+                    let pid_arg = pid.to_string();
+                    crate::process::run_capture_output(
+                        "lsof",
+                        &["-a", "-p", &pid_arg, "-d", "cwd", "-Fn"],
+                    )
+                    .ok()
+                    .and_then(|(success, stdout, _)| {
+                        success.then(|| {
+                            stdout
                                 .lines()
                                 .find(|l| l.starts_with('n'))
                                 .map(|l| std::path::PathBuf::from(&l[1..]))
                         })
-                        .map(|p| p == data_dir)
-                        .unwrap_or(false)
+                    })
+                    .flatten()
+                    .map(|p| p == data_dir)
+                    .unwrap_or(false)
                 });
             if cwd_matches {
-                kill_pid(pid);
+                kill_pid(pid, Some(port));
             }
         }
     }
@@ -690,7 +698,7 @@ pub fn stop(child: &mut Child) -> Result<(), AppError> {
     #[cfg(windows)]
     {
         let pid = child.id().to_string();
-        let mut cmd = Command::new("taskkill");
+        let mut cmd = crate::process::command_with_path("taskkill");
         cmd.args(["/PID", &pid, "/T", "/F"]);
         let _ = quiet(&mut cmd).status();
         let _ = child.wait();
@@ -738,32 +746,32 @@ pub(crate) fn port_listen_pid(port: u16) -> Option<u32> {
 
 #[cfg(unix)]
 pub(crate) fn port_listen_pid_lsof(port: u16) -> Option<u32> {
-    use std::process::Command;
-    let out = Command::new("lsof")
-        .args(["-nP", "-iTCP", &port.to_string(), "-sTCP:LISTEN", "-t"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())?;
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .next()
-        .and_then(|s| s.trim().parse().ok())
+    let port_arg = port.to_string();
+    let (success, stdout, _) = crate::process::run_capture_output(
+        "lsof",
+        &["-nP", "-iTCP", &port_arg, "-sTCP:LISTEN", "-t"],
+    )
+    .ok()?;
+    if !success {
+        return None;
+    }
+    stdout.lines().next().and_then(|s| s.trim().parse().ok())
 }
 
 #[cfg(unix)]
 pub(crate) fn port_listen_pid_ss(port: u16) -> Option<u32> {
-    use std::process::Command;
-    let out = Command::new("ss")
-        .args(["-lntp", &format!("sport = :{}", port)])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())?;
+    let filter = format!("sport = :{port}");
+    let (success, stdout, _) =
+        crate::process::run_capture_output("ss", &["-lntp", &filter]).ok()?;
+    if !success {
+        return None;
+    }
     // ss line format:
     //   LISTEN 0 128  127.0.0.1:3091  127.0.0.1:*  users:(("node",pid=1762,fd=22))
     // The pid lives inside the users:((\"...\",pid=NUMBER,fd=NUMBER)) tuple;
     // we don't need to parse the surrounding text — just pick the first
     // "pid=NUMBER" segment.
-    String::from_utf8_lossy(&out.stdout)
+    stdout
         .lines()
         .filter_map(|line| {
             let idx = line.find("pid=")?;
@@ -778,14 +786,16 @@ pub(crate) fn port_listen_pid_ss(port: u16) -> Option<u32> {
 
 #[cfg(windows)]
 pub(crate) fn port_listen_pid(port: u16) -> Option<u32> {
-    use std::process::Command;
     // netstat -ano emits one line per TCP/UDP endpoint; filter by
     // `:PORT` and `LISTENING` to find the pid of whatever is bound
     // to the dev/release port.
-    let out = Command::new("netstat").args(["-ano"]).output().ok()?;
+    let (success, stdout, _) = crate::process::run_capture_output("netstat", &["-ano"]).ok()?;
+    if !success {
+        return None;
+    }
     let port_str = port.to_string();
     let needle = format!(":{}", port_str);
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
+    for line in stdout.lines() {
         if line.contains(&needle) && line.contains("LISTENING") {
             if let Some(pid) = line.split_whitespace().last() {
                 if let Ok(pid) = pid.parse() {
@@ -821,25 +831,68 @@ pub fn clear_pid(data_dir: &Path) {
     let _ = fs::remove_file(pid_path(data_dir));
 }
 
-/// Whether the process behind `pid` looks like a kernel the shell spawned,
-/// guarding against killing an unrelated process after pid reuse.
-#[cfg(unix)]
-pub(crate) fn pid_is_kernel(pid: u32) -> bool {
-    Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("@deepseek-ai/dsh/lib/bin.js"))
-        .unwrap_or(false)
+/// Return the command line for a process without allowing an unbounded helper
+/// command to hang the stop path.
+fn process_command(pid: u32) -> Option<String> {
+    #[cfg(unix)]
+    {
+        crate::process::run_capture("ps", &["-p", &pid.to_string(), "-o", "command="])
+            .ok()
+            .and_then(|(ok, output)| ok.then_some(output))
+    }
+    #[cfg(windows)]
+    {
+        let filter =
+            format!("(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine");
+        crate::process::run_capture(
+            "powershell.exe",
+            &["-NoProfile", "-NonInteractive", "-Command", &filter],
+        )
+        .ok()
+        .and_then(|(ok, output)| ok.then_some(output))
+    }
+}
+
+/// Whether `pid` is a dsh kernel serving the requested port. Checking both the
+/// executable path and the port prevents PID reuse and cross-profile shells
+/// from being mistaken for the process this data directory owns.
+pub(crate) fn pid_is_kernel(pid: u32, port: Option<u16>) -> bool {
+    let Some(command) = process_command(pid) else {
+        return false;
+    };
+    let command = command.to_ascii_lowercase().replace('\\', "/");
+    if !command.contains("@deepseek-ai/dsh/lib/bin.js") {
+        return false;
+    }
+    let Some(port) = port else {
+        return true;
+    };
+    let port = port.to_string();
+    let mut args = command.split_whitespace();
+    while let Some(arg) = args.next() {
+        let arg = arg.trim_matches('"');
+        if arg == "--port" {
+            return args
+                .next()
+                .map(|value| value.trim_matches('"') == port)
+                .unwrap_or(false);
+        }
+        if let Some(value) = arg.strip_prefix("--port=") {
+            return value == port;
+        }
+    }
+    false
 }
 
 /// Kill a tracked-out kernel by pid: TERM the process group, then KILL
-/// whatever survives. No-op when the pid is gone or is not a kernel.
-pub fn kill_pid(pid: u32) {
+/// whatever survives. No-op when the pid is gone or does not match the kernel
+/// command and optional port recorded by this shell.
+pub fn kill_pid(pid: u32, port: Option<u16>) {
+    if !pid_is_kernel(pid, port) {
+        return;
+    }
     #[cfg(unix)]
     {
-        if !pid_is_kernel(pid) {
-            return;
-        }
         let pgid = pid as i32; // start() setsid()s, so the child leads its group
         unsafe {
             libc::kill(-pgid, libc::SIGTERM);
@@ -857,7 +910,7 @@ pub fn kill_pid(pid: u32) {
     }
     #[cfg(windows)]
     {
-        let mut cmd = Command::new("taskkill");
+        let mut cmd = crate::process::command_with_path("taskkill");
         cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
         let _ = quiet(&mut cmd).status();
     }

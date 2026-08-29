@@ -1,6 +1,7 @@
 // 轻提示与确认框：统一走 Element Plus 的 ElMessage / ElMessageBox。
 // WKWebView 没有原生 confirm()，ElMessageBox 是页内实现，天然可用。
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus/es/components/message/index.mjs';
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs';
 
 export function toast(message, ms = 3200, type = 'info') {
   ElMessage({ message, duration: ms, type, grouping: true });

@@ -1,7 +1,7 @@
 <script setup>
 // 插件页：已安装列表（同步 / 接线 / 隔离状态徽章 + 更新 / 模式切换 / 卸载）、
 // 手动安装（回车即装）、插件中心（分类筛选 + 搜索 + 排序 + 分页卡片）。
-import { computed, ref, watch } from 'vue';
+import { computed, onUnmounted, watch } from 'vue';
 import { Refresh, Switch, Delete, TopRight, Download, RefreshLeft, ArrowDown } from '@element-plus/icons-vue';
 import {
   pluginStore,
@@ -84,12 +84,18 @@ watch(
   () => {
     clearTimeout(queryTimer);
     queryTimer = setTimeout(() => {
+      queryTimer = null;
       pluginStore.shown = CATALOG_PAGE;
     }, 150);
   }
 );
 watch([() => pluginStore.sort, () => pluginStore.filter], () => {
   pluginStore.shown = CATALOG_PAGE;
+});
+
+onUnmounted(() => {
+  if (queryTimer) clearTimeout(queryTimer);
+  queryTimer = null;
 });
 
 function detailUrl(item) {
@@ -122,6 +128,7 @@ function statsText(item) {
             text
             :icon="Refresh"
             :loading="isLoading('checkPluginUpdates')"
+            :disabled="globalBusy"
             @click="checkPluginUpdates({ busy: true, toastOnUpdates: true })"
           >
             检查更新
@@ -222,7 +229,7 @@ function statsText(item) {
         </h2>
         <span class="head-meta">
           <span class="muted">{{ countText }}</span>
-          <el-button text :icon="Refresh" :loading="isLoading('catalogReload')" @click="loadCatalog(true)">
+          <el-button text :icon="Refresh" :loading="isLoading('catalogReload')" :disabled="globalBusy" @click="loadCatalog(true)">
             刷新目录
           </el-button>
         </span>

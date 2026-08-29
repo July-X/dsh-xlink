@@ -4,7 +4,7 @@
 import { computed } from 'vue';
 import { Odometer, Box, Connection, MagicStick, SetUp, Warning, Refresh } from '@element-plus/icons-vue';
 import { store, checkShellUpdate } from '../store.js';
-import { isLoading } from '../loading.js';
+import { globalBusy, isLoading } from '../loading.js';
 import { pluginStore } from '../plugins.js';
 import { skillStore } from '../skills.js';
 
@@ -46,7 +46,8 @@ const status = computed(() => {
         size="small"
         :icon="Refresh"
         :loading="isLoading('checkShellUpdate')"
-        title="检查桌面端更新"
+        :disabled="globalBusy"
+         title="检查桌面端更新"
         @click="checkShellUpdate(true)"
       >
         更新

@@ -79,18 +79,13 @@ fn compute_merged_path() -> String {
 /// here it is belt-and-braces.
 #[cfg(windows)]
 fn read_user_path() -> Option<String> {
-    use crate::process::quiet;
-    use std::process::Stdio;
     let mut cmd = Command::new(REG_EXE);
-    cmd.args(["query", REG_USER_ENV, "/v", REG_PATH_VALUE])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let output = quiet(&mut cmd).output().ok()?;
-    if !output.status.success() {
+    cmd.args(["query", REG_USER_ENV, "/v", REG_PATH_VALUE]);
+    let (success, stdout, _) = crate::process::run_command_capture(cmd, "reg query PATH").ok()?;
+    if !success {
         return None;
     }
-    parse_reg_path(&String::from_utf8_lossy(&output.stdout))
+    parse_reg_path(&stdout)
 }
 
 /// Pull the value column out of `reg query`'s standard output:

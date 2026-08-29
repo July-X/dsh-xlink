@@ -68,6 +68,26 @@ const guardText = computed(() => {
   return (store.lastIncident && store.lastIncident.message) || '上次工作台启动失败。';
 });
 
+function incidentCause(value) {
+  if (!value) return '';
+  if (value.cause === 'plugin' || value.cause === 'kernel' || value.cause === 'unknown') return value.cause;
+  const suspects = value.suspects || [];
+  if (suspects.some((suspect) => suspect.kind === 'plugin')) return 'plugin';
+  if (suspects.some((suspect) => suspect.kind === 'kernel')) return 'kernel';
+  return 'unknown';
+}
+
+const guardDestination = computed(() => {
+  const cause = incidentCause(store.lastIncident);
+  return cause === 'plugin' || quarantined.value.length > 0 ? 'plugins' : 'versions';
+});
+const guardDestinationLabel = computed(() =>
+  guardDestination.value === 'plugins' ? '前往插件页' : '检查内核版本'
+);
+function goGuardDestination() {
+  store.activePanel = guardDestination.value;
+}
+
 const toggleLabel = computed(() => {
   if (store.starting) return '正在启动…';
   return running.value ? '关闭工作台' : '启动工作台';
@@ -111,7 +131,7 @@ function goVersions() {
             <el-button type="primary" :icon="Box" :disabled="globalBusy" @click="goVersions">
               选择并安装内核
             </el-button>
-            <el-button :icon="Download" :loading="isLoading('firstRunLatest')" @click="installLatestRelease">
+            <el-button :icon="Download" :loading="isLoading('firstRunLatest')" :disabled="globalBusy" @click="installLatestRelease">
               安装最新版本
             </el-button>
           </div>
@@ -167,8 +187,8 @@ function goVersions() {
             <el-button size="small" type="warning" plain :icon="View" @click="showIncident(store.lastIncident)">
               查看详情
             </el-button>
-            <el-button size="small" text :icon="Connection" @click="store.activePanel = 'plugins'">
-              前往插件页
+            <el-button size="small" text :icon="Connection" @click="goGuardDestination">
+              {{ guardDestinationLabel }}
             </el-button>
           </div>
         </div>
@@ -210,7 +230,8 @@ function goVersions() {
           type="warning"
           :icon="Refresh"
           :loading="isLoading('installShellUpdate')"
-          @click="installShellUpdate"
+          :disabled="globalBusy"
+           @click="installShellUpdate"
         >
           更新并重启
         </el-button>

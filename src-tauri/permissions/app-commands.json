@@ -8,6 +8,13 @@
       }
     },
     {
+      "identifier": "allow-report-harness-fault",
+      "description": "Allow the loopback harness webview to report a one-shot white-page health failure to the management panel.",
+      "commands": {
+        "allow": ["report_harness_fault"]
+      }
+    },
+    {
       "identifier": "allow-local-commands",
       "description": "Allow every app command from the shell's own local windows (the management panel). Defining ANY app-level permission flips Tauri from 'app commands are open to local windows' to 'app commands require an explicit grant', so this permission restores the pre-existing behavior for the local UI. Maintenance: every command added to `tauri::generate_handler!` in lib.rs must be listed here, or its invoke from the panel fails with 'not allowed. Command not found'.",
       "commands": {
@@ -28,6 +35,7 @@
           "start_kernel",
           "stop_kernel",
           "open_harness",
+          "report_harness_fault",
           "open_log_window",
           "open_official_chat",
           "close_official_chat",
@@ -35,6 +43,7 @@
           "switch_official_chat_tab",
           "focus_main_shell",
           "plugin_status",
+          "kernel_plugin_list",
           "plugin_install",
           "plugin_update",
           "plugin_uninstall",

@@ -8,6 +8,10 @@
 - **运行时内核边界**：项目不携带或重新发布 dsh 内核代码。内核由用户从 npm registry 安装；桌面壳通过 `src-tauri/` Rust 进程和 `ui/` 管理面板管理其生命周期、配置和窗口行为。
 - **信任边界**：仅信任官方 `deepseek-ai` 仓库与 npm `@deepseek-ai` 命名空间；版本列表优先 npm registry，GitHub Releases 仅作回退。
 
+## 开发规则
+
+- 搜索文本或文件时优先使用 `rg`；仅在不可用时再使用 `grep` 等替代命令。
+
 ## 命令
 
 ```sh
