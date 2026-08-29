@@ -1,5 +1,7 @@
 <script setup>
 // macOS 与 Windows 主窗口共用自绘标题栏。Linux 暂不启用，继续沿用系统窗口装饰。
+// 标题栏按 394×78 参考图比例定 32px 高，承担「拖拽区域 + 交通灯 + 毛笔纹理」职责；
+// 标题文字、菜单入口等放在侧栏的卡片里，不混进标题栏。
 const isCustomTitlebarPlatform = /Macintosh|Mac OS X|Windows NT/.test(navigator.userAgent);
 const windowApi = window.__TAURI__ && window.__TAURI__.window;
 const appWindow = windowApi && windowApi.getCurrentWindow ? windowApi.getCurrentWindow() : null;
@@ -45,11 +47,6 @@ function minimizeWindow() {
       ></button>
     </div>
 
-    <div class="mac-titlebar__caption" data-tauri-drag-region>
-      <span class="mac-titlebar__caption-mark" aria-hidden="true"></span>
-      <span>DeepSeek Harness</span>
-    </div>
-
     <span class="mac-titlebar__brush mac-titlebar__brush--light" aria-hidden="true"></span>
     <span class="mac-titlebar__brush mac-titlebar__brush--ink" aria-hidden="true"></span>
     <span class="mac-titlebar__brush mac-titlebar__brush--dry" aria-hidden="true"></span>
@@ -57,7 +54,8 @@ function minimizeWindow() {
     <span class="mac-titlebar__brush mac-titlebar__brush--ridge" aria-hidden="true"></span>
     <span class="mac-titlebar__brush mac-titlebar__brush--broken" aria-hidden="true"></span>
     <span class="mac-titlebar__brush mac-titlebar__brush--bristle" aria-hidden="true"></span>
-    <span class="mac-titlebar__sweep" aria-hidden="true"></span>
-    <span class="mac-titlebar__sweep mac-titlebar__sweep--secondary" aria-hidden="true"></span>
+    <span class="mac-titlebar__brush mac-titlebar__brush--drip" aria-hidden="true"></span>
+    <span class="mac-titlebar__brush mac-titlebar__brush--smear" aria-hidden="true"></span>
+    <span class="mac-titlebar__brush mac-titlebar__brush--streak" aria-hidden="true"></span>
   </header>
 </template>

@@ -98,8 +98,9 @@ body {
 
 /* --- macOS / Windows 自绘标题栏 --------------------------------------------
    主窗口由 Rust 在 macOS / Windows 上关闭系统装饰，标题栏因此进入 WebView 的内容流。
-   底色从左侧 5% 不透明度的 Gitea 绿向右侧 70% 不透明度过渡；宽笔触
-   负责毛笔的行气，细纹理只作为干笔断墨的补充，避免看起来像普通的条纹渐变。 */
+   整体克制：深色底 + 左侧三盏交通灯，不再叠加笔刷 / 扫光 / 标题文字。
+   「源代码管理」等内容是侧栏菜单项，不属于标题栏职责。
+   高度按参考比例定 32px——参考图为 394×78，标题栏占顶部 ≈ 32/78 ≈ 41%。 */
 .app-shell {
   display: flex;
   flex-direction: column;
@@ -111,21 +112,20 @@ body {
   position: relative;
   z-index: 1001;
   display: flex;
-  flex: 0 0 44px;
+  flex: 0 0 32px;
   align-items: center;
-  height: 44px;
-  min-height: 44px;
+  height: 32px;
+  min-height: 32px;
   overflow: hidden;
   isolation: isolate;
-  color: rgba(247, 255, 238, 0.92);
   user-select: none;
   background-color: #10281f;
   background-image: linear-gradient(
     to right,
     rgba(77, 118, 44, 0.05) 0%,
-    rgba(77, 118, 44, 0.26) 32%,
-    rgba(77, 118, 44, 0.48) 64%,
-    rgba(77, 118, 44, 0.7) 100%
+    rgba(77, 118, 44, 0.18) 32%,
+    rgba(77, 118, 44, 0.31) 64%,
+    rgba(77, 118, 44, 0.45) 100%
   );
   border-bottom: 1px solid rgba(7, 22, 13, 0.8);
   box-shadow:
@@ -133,6 +133,9 @@ body {
     0 1px 0 rgba(255, 255, 255, 0.025);
 }
 
+/* 毛笔笔刷纹理层：::before / ::after 负责大斜向纹理和细斜纹噪点；
+   七道 __brush--* 是不规则多边形毛边，配合 clip-path 模拟毛笔落锋。
+   高度按 32px 重新铺排——原本基于 44px 排的几道会被 overflow:hidden 自然裁掉。 */
 .mac-titlebar::before {
   content: '';
   position: absolute;
@@ -184,8 +187,6 @@ body {
   mix-blend-mode: multiply;
 }
 
-/* 宽笔触是主纹理：不规则多边形负责毛边，重复渐变模拟干笔断墨，
-   两道深浅不同的笔锋交错后，比均匀的斜线更接近毛笔落锋的节奏。 */
 .mac-titlebar__brush {
   position: absolute;
   z-index: 2;
@@ -460,14 +461,145 @@ body {
   mix-blend-mode: screen;
 }
 
+/* 新增三道笔刷，配合原有七道凑成十道；每道用不同的形状 / 宽窄 / 旋转 /
+   混合模式，让毛笔纹理更随机而非均匀叠加。 */
+
+/* 细瘦竖向滴痕：左右各一缕，留出中间留白；与现有横向笔锋交错。 */
+.mac-titlebar__brush--drip {
+  top: 8px;
+  left: 42%;
+  width: 9%;
+  height: 21px;
+  opacity: 0.32;
+  clip-path: polygon(
+    0% 18%,
+    12% 6%,
+    26% 14%,
+    41% 4%,
+    58% 12%,
+    74% 3%,
+    88% 11%,
+    100% 22%,
+    100% 78%,
+    88% 86%,
+    74% 76%,
+    58% 92%,
+    41% 80%,
+    26% 90%,
+    12% 82%,
+    0% 78%
+  );
+  background:
+    linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgba(5, 22, 3, 0.22) 35%,
+      rgba(7, 28, 4, 0.36) 65%,
+      transparent 100%
+    );
+  transform: rotate(0.6deg);
+  mix-blend-mode: multiply;
+}
+
+/* 宽幅横扫：宽 86%，覆盖大部分宽度，模拟一笔长拖；混合模式用 overlay 增加层次。 */
+.mac-titlebar__brush--smear {
+  top: 13px;
+  left: 4%;
+  width: 86%;
+  height: 13px;
+  opacity: 0.29;
+  clip-path: polygon(
+    0% 56%,
+    6% 34%,
+    14% 48%,
+    24% 26%,
+    36% 41%,
+    48% 18%,
+    61% 36%,
+    73% 21%,
+    85% 43%,
+    94% 28%,
+    100% 44%,
+    97% 62%,
+    89% 76%,
+    76% 58%,
+    63% 78%,
+    49% 60%,
+    36% 82%,
+    23% 62%,
+    11% 78%,
+    0% 68%
+  );
+  background:
+    repeating-linear-gradient(
+      166deg,
+      rgba(120, 158, 64, 0.08) 0 1px,
+      transparent 1px 5px
+    ),
+    linear-gradient(
+      to right,
+      transparent 0%,
+      rgba(94, 139, 43, 0.13) 12%,
+      rgba(112, 155, 52, 0.18) 48%,
+      rgba(82, 124, 35, 0.1) 88%,
+      transparent 100%
+    );
+  transform: rotate(-1.7deg);
+  mix-blend-mode: overlay;
+}
+
+/* 长而稀的飞白：宽 94%，高度仅 6px，模拟笔尖快速掠过留下的稀薄痕迹；screen 模式加亮。 */
+.mac-titlebar__brush--streak {
+  top: 4px;
+  left: 2%;
+  width: 94%;
+  height: 6px;
+  opacity: 0.24;
+  clip-path: polygon(
+    0% 40%,
+    9% 22%,
+    22% 35%,
+    38% 14%,
+    52% 28%,
+    67% 8%,
+    82% 22%,
+    94% 14%,
+    100% 38%,
+    100% 62%,
+    94% 76%,
+    82% 88%,
+    67% 72%,
+    52% 86%,
+    38% 70%,
+    22% 84%,
+    9% 72%,
+    0% 60%
+  );
+  background:
+    repeating-linear-gradient(
+      178deg,
+      rgba(200, 228, 150, 0.08) 0 1px,
+      transparent 1px 4px
+    ),
+    linear-gradient(
+      to right,
+      transparent 0%,
+      rgba(160, 196, 88, 0.1) 6%,
+      rgba(190, 220, 130, 0.13) 50%,
+      rgba(140, 175, 70, 0.07) 94%,
+      transparent 100%
+    );
+  transform: rotate(2.4deg);
+  mix-blend-mode: screen;
+}
+
 .mac-titlebar__controls {
   position: relative;
   z-index: 3;
   display: flex;
-  flex: 0 0 62px;
   align-items: center;
   gap: 8px;
-  margin-left: 14px;
+  padding: 0 14px;
 }
 
 .mac-titlebar__light {
@@ -555,87 +687,16 @@ body {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
-.mac-titlebar__caption {
-  position: absolute;
-  z-index: 3;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  pointer-events: none;
-  color: rgba(247, 255, 238, 0.84);
-  font-size: 12px;
-  font-weight: 650;
-  text-shadow: 0 1px 2px rgba(12, 30, 6, 0.4);
-}
-
-.mac-titlebar__caption-mark {
-  width: 6px;
-  height: 6px;
-  flex: 0 0 6px;
-  border: 1px solid rgba(238, 255, 216, 0.72);
-  border-radius: 2px;
-  box-shadow: 0 0 7px rgba(224, 255, 189, 0.36);
-  transform: rotate(45deg);
-}
-
-.mac-titlebar__sweep {
-  position: absolute;
-  z-index: 2;
-  top: -12%;
-  left: 0;
-  width: 24%;
-  height: 124%;
-  pointer-events: none;
-  opacity: 0;
-  background: linear-gradient(
-    to right,
-    transparent 0%,
-    rgba(235, 255, 214, 0.05) 20%,
-    rgba(245, 255, 229, 0.36) 50%,
-    rgba(235, 255, 214, 0.05) 80%,
-    transparent 100%
-  );
-  filter: blur(1px);
-  mix-blend-mode: screen;
-}
-
-body.pulse-active .mac-titlebar__sweep {
-  animation: mac-titlebar-sweep 7.68s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-}
-
-.mac-titlebar__sweep--secondary {
-  animation-delay: 3.84s !important;
-}
-
-@keyframes mac-titlebar-sweep {
-  0% {
-    opacity: 0;
-    transform: translateX(-150%);
-  }
-  15% {
-    opacity: 1;
-  }
-  85% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
-    transform: translateX(520%);
-  }
-}
-
-/* dev 构建沿用鲸眼红作为外壳识别色；仅改变标题栏底色和纹理层，
+/* dev 构建沿用鲸眼红作为外壳识别色，仅替换标题栏底色；
    交通灯按钮本身保持 macOS 原生的红黄绿语义。 */
 body.dev-build .mac-titlebar {
   background-color: #210e19;
   background-image: linear-gradient(
     to right,
     rgba(164, 61, 69, 0.05) 0%,
-    rgba(164, 61, 69, 0.26) 32%,
-    rgba(164, 61, 69, 0.48) 64%,
-    rgba(164, 61, 69, 0.7) 100%
+    rgba(164, 61, 69, 0.18) 32%,
+    rgba(164, 61, 69, 0.31) 64%,
+    rgba(164, 61, 69, 0.45) 100%
   );
   border-bottom-color: rgba(31, 6, 12, 0.84);
   box-shadow:
@@ -655,20 +716,6 @@ body.dev-build .mac-titlebar::after {
 
 body.dev-build .mac-titlebar__brush {
   filter: hue-rotate(-95deg) blur(0.2px);
-}
-
-body.dev-build .mac-titlebar__sweep {
-  filter: hue-rotate(-95deg) blur(1px);
-}
-
-body.dev-build .mac-titlebar__caption {
-  color: rgba(255, 240, 240, 0.84);
-  text-shadow: 0 1px 2px rgba(31, 6, 12, 0.48);
-}
-
-body.dev-build .mac-titlebar__caption-mark {
-  border-color: rgba(255, 194, 196, 0.72);
-  box-shadow: 0 0 7px rgba(255, 104, 110, 0.3);
 }
 
 /* macOS / Windows 主窗口已有自己的扫光层；保留全局版本给日志阅读窗口。 */
