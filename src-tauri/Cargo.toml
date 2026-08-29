@@ -9,27 +9,31 @@ rust-version = "1.77"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# `unstable` exposes `WebviewBuilder` / `WindowBuilder` (bare window) /
-# `Window::add_child` — the multi-webview-per-window primitives the tabbed
-# official-chat window needs (one chrome-strip webview + N content webviews
-# in a single window). Pinned to tauri 2.11.x, so the unstable-API churn
-# risk is bounded to a tauri bump.
+# `unstable` 特性暴露 `WebviewBuilder` / `WindowBuilder`（裸窗口）/
+# `Window::add_child` —— 分页官方对话窗口所需的多 webview 单窗口原语
+# （一个 chrome 条带 webview + N 个内容 webview 共存于同一窗口）。
+# 锁定在 tauri 2.11.x，将 unstable API 变动风险限制在一次 tauri 升级内。
 tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Explicit re-export of the URL crate that Tauri 2.x pulls in via
-# `tauri::Url`; pinned here so `Url::parse` resolves unambiguously.
+# 显式再导出 Tauri 2.x 经 `tauri::Url` 引入的 URL crate；
+# 在此锁定版本，使 `Url::parse` 解析无歧义。
 url = "2"
-# HTTPS via rustls (ureq 3.x feature name is `rustls`, not `tls`): no system
-# TLS dependencies, so cross compiling for the Intel-macOS and Windows CI
-# runners works without a C toolchain.
+# 通过 rustls 走 HTTPS（ureq 3.x 的特性名是 `rustls` 而非 `tls`）：无系统
+# TLS 依赖，因此在 Intel macOS 与 Windows 的 CI runner 上交叉编译
+# 无需 C 工具链。
 ureq = { version = "3", default-features = false, features = ["json", "gzip", "rustls"] }
 thiserror = "2"
 tokio = { version = "1", features = ["time"] }
 flate2 = "1"
 tar = "0.4"
+# `time` 支撑 `process::RotatingLog` 的本地日期日志轮转。该 crate 已作为
+# 传递依赖存在于 lockfile 中；直接声明它可避免手写 libc::localtime_r 与
+# GetLocalTime 的兼容层，并让文件名日期戳与用户的日历日保持一致——
+# 即使是跨过 UTC 午夜。
+time = { version = "0.3", default-features = false, features = ["formatting", "local-offset", "macros"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

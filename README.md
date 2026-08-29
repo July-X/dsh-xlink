@@ -45,13 +45,13 @@
 - 一键启动 / 停止 / 打开 Harness 工作台
 - 「打开官方对话」：管理面板「概览」页一键拉起独立的官方对话窗口，按 `OFFICIAL_CHAT_TABS` 展示 DeepSeek、千问、MiniMax 三个页签，默认只加载 DeepSeek，其他页签首次选择时才创建并保留本窗口状态，使用原生 Edge UA、可持久化登录的专属 user-data 目录与 `OFFICIAL_CHAT_BROWSER_ARGS` 浏览器开关（隐藏 `navigator.webdriver`、关闭 SmartScreen 提醒与 Edge 专属 UI）让官方站点的环境检查把它视为普通浏览器；本地 `official-chat-strip` 页签栏 webview 注入 `pullstring-launcher.js`（拉绳属于整个官方对话窗口的 chrome，由页签栏 webview 承载），内容子 webview 注入 `titlebar-pulse.js` → `chat-fingerprint.js`（钉住 `navigator.webdriver = false` 并删除 `__TAURI_*` 嵌入式全局）（重复点击复用现有窗口并聚焦；窗口已开时按钮文案翻为「关闭官方对话」并触发 `close_official_chat`，OS 关闭按钮正常工作）
 - 更新菜单：列出 npm registry [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 的所有发布版本（含预发布标记），安装、切换活动版本、删除本地版本
-- 内核安装通过 pnpm 执行（`node-linker=hoisted` 保持扁平 `node_modules`，内容寻址存储让重复安装更快），安装过程逐行流式显示在进度面板中，完整日志落盘 `~/.dsh/desktop/logs/install-<版本>.log`；下载先写临时文件，成功后才发布，npm 包由外壳进行路径受限、禁止链接和有展开大小上限的 Rust 解包，无需额外安装系统 `tar`
+- 内核安装通过 pnpm 执行（`node-linker=hoisted` 保持扁平 `node_modules`，内容寻址存储让重复安装更快），安装过程逐行流式显示在进度面板中，完整日志落盘 `~/.dsh/desktop/logs/<kind>-install-<版本>-<日期>.log`（dev 壳则是 `~/.dsh/desktop-dev/logs/dev-install-<版本>-<日期>.log`，`<日期>` 为本地日期）；下载先写临时文件，成功后才发布，npm 包由外壳进行路径受限、禁止链接和有展开大小上限的 Rust 解包，无需额外安装系统 `tar`
 - Node.js 自动检测与手动指定（要求 `^22.19 || >=24`，与 dsh 的 engines 一致；自动发现 nvm（macOS/Linux `~/.nvm/versions/node/<v>/bin/node` 跟随 `alias/default` 链，Windows `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`），免去 GUI 启动看不到 nvm PATH 时改手动路径的步骤；检测为空时按「完全没有 Node」与「Node 版本太老」分别给出可操作的安装路径建议）
 - pnpm 路径可配置（默认取 node 同目录或 PATH）
 - 端口可配置（默认 3080）
 - 内核运行日志查看；应用退出时自动回收内核子进程
 - **插件管理**：社区插件（npm 包或 GitHub 仓库）统一存入 `~/.dsh/plugins/`，以**链接**（默认，Windows 自动降级**复制**）的方式进入每个已安装内核（`~/.dsh/desktop/kernels/<版本>/plugins/`），并自动接线进 profile——切换内核无需重装；「插件中心」对接 [dsh-plugin-hub](https://dsh-plugin.org) 目录（分类/搜索/排序/已安装过滤，6 小时本地缓存，官方 market 兜底），安装前校验 dsh 规范；管理面板提供安装/卸载/更新/切换模式/同步，检测到新版本时在卡片与启动时提醒；点击「同步」会遍历所有已安装内核，重新物化中央库中的插件，并清除外壳明确标记的已删除残留，保证外壳管理的插件状态与 `~/.dsh/plugins/` 一致；启动容错面板中的「移除插件」会同时清除隔离记录，若上次卸载只完成了部分清理，重复执行也能继续收尾
-- **工作台健康自检**：工作台窗口自动监听白屏、运行时错误和未处理的 Promise 异常；外壳会把前端消息、堆栈和页面地址与内核日志一起分析，判断为疑似插件、疑似内核或暂未能归因，并在事故面板展示证据和对应的插件隔离/移除、日志、内核版本修复入口
+- **工作台健康自检**：工作台窗口自动监听白屏、运行时错误和未处理的 Promise 异常；外壳会把前端消息、堆栈和页面地址与今天的内核日志（`<kind>-kernel-<日期>.log`）一起分析，判断为疑似插件、疑似内核或暂未能归因（白屏 + 已装第三方插件的「软信号」分支会列出所有插件作为排查候选但不会自动隔离），并在事故面板展示证据和对应的插件隔离/移除、日志、内核版本修复入口
 - **技能管理**：社区技能（npm 包 / GitHub 仓库 / 本地文件夹）统一存入 `~/.dsh/skills-store/`，按包安装的粒度以链接（失败降级复制）物化进内核自带扫描的 `~/.dsh/skills/`——不改 cordis 配置、不装依赖、切换内核零操作；内核对技能根做文件监视，**安装/卸载/更新对运行中的工作台即时生效，无需重启**；安装前逐个校验 SKILL.md frontmatter（kebab-case `name` + `description` 必填），避免"装了却不出现"；本地文件夹来源支持改完点「重新同步」；启动时自动对账（补链、清扫孤儿链接、恢复中断的更新）；v1 面板只出手动安装行（git 仓库地址），社区目录卡等中心上线技能 feed 之后再启用
 
 ## 目录结构

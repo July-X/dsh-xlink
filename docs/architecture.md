@@ -19,7 +19,22 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 - `releases.rs`：npm registry 全量版本 + dist-tags；registry 不可达时回退 GitHub Releases API 与 Atom feed。
 - `node.rs`：Node 检测（显式配置 → PATH → nvm 管理的 Node：macOS/Linux `$NVM_DIR/versions/node/<v>/bin/node` 跟随 `alias/default` 链，Windows `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe` → 常见系统位置）、engines 校验（`^22.19 || >=24`）、pnpm/npm 解析（显式配置 → node 同目录 → PATH）；空结果文案按「完全没有 Node」与「Node 版本太老」分别给出可操作的多路径（nvm/fnm/volta、brew/winget/apt、官方安装包）。
 - `settings.rs`：`settings.json` 平铺结构（`node_path` / `pnpm_path` / `port`），serde default 兼容缺字段。
-- `process.rs`：所有 GUI 子进程的 `quiet()`（CREATE_NO_WINDOW）+ `command_with_path()`（一次性 sibling，盖上 `env::merged_path()`）出口；一次性命令并行 drain stdout/stderr，4 MiB 输出上限、30 秒 deadline，Unix 进程组超时回收；长期 pnpm/npm 任务使用轮转日志、64 KiB 行上限和 30 分钟总 deadline，静默时发 heartbeat，超时回收整个进程组。
+- `process.rs`：所有 GUI 子进程的 `quiet()`（CREATE_NO_WINDOW）+ `command_with_path()`（一次性 sibling，盖上 `env::merged_path()`）出口；一次性命令并行 drain stdout/stderr，4 MiB 输出上限、30 秒 deadline，Unix 进程组超时回收；长期 pnpm/npm 任务使用日级轮转日志（详见「日志规范」）、64 KiB 行上限和 30 分钟总 deadline，静默时发 heartbeat，超时回收整个进程组；每行写完立即 flush（实时落盘），避免 SIGKILL 丢失最近 64 KiB 缓冲。
+
+## 日志规范
+
+`<data_dir>/logs/` 下每个 `.log` 文件都按统一的命名规范落盘，便于 `list_log_files` 列表稳定、用户/支持方一眼区分 build 类型与日期：
+
+- **文件名格式**：`<kind>-<name>-<YYYY-MM-DD>.log`，其中：
+  - `kind` = `release`（release build）或 `dev`（`tauri dev`），与 `kernel::data_dir` 的 `desktop/` / `desktop-dev/` 目录分槽保持一致。
+  - `name` = 逻辑名（`kernel` / `install-<version>` / `plugin-<id>` / `plugin-wiring` / `pnpm-install-<epoch>`）。
+  - `YYYY-MM-DD` = 本地日期（用户时区，非 UTC），按 `time` crate 的 `local-offset` 计算。
+- **轮转策略**：日级为主、尺寸为辅。`RotatingLog` 在每次 `write_line` 前检查本地日期与当前打开文件日期是否一致，不一致就关闭旧文件、打开新一天的文件。同一日内单文件跨 `KERNEL_LOG_MAX_BYTES`（8 MiB）则触发尺寸轮转：旧文件改名为 `<...>.1`，保留至多 `KERNEL_LOG_BACKUPS`（2）个备份。
+- **实时落盘**：`write_line` 每写一行立刻 `flush()`，不再使用 64 KiB `BufWriter` 批量冲刷——SIGKILL / 内核 panic 后用户仍能在 `read_log_file` 面板里读到崩溃前最后一行。
+- **install 日志清理**：`rotate_install_logs` 仍以「保留最近 9 份」为上限，新旧两种命名（`install-<version>.log` 旧名 + `<kind>-install-<version>-<date>.log` 新名）都纳入统计；`pnpm-install-*` 自动安装日志不在清理范围（每次 `npm install -g pnpm` 自带唯一 epoch 戳）。
+- **例外（fixed-path 模式）**：插件构建日志位于 `<plugin_dir>/.dsh-build.log`（插件卸载时一并清理），不属于上述规范——`run_pnpm_at` / `RotatingLog::new_at_path` 仍保证实时落盘与尺寸上限，但不应用 build kind / 日期前缀。
+
+`list_log_files` 仅按 `.log` 后缀扫描目录、按文件名字典序倒序排；最新的 `<kind>-kernel-<today>.log` 自动落到第一个 tab，符合用户「最近一次启动最相关」的预期。`read_log_file` 接受任意裸文件名（不含路径分隔符），所以新旧命名都通过同一组 Tauri 命令入口暴露给 UI。
 - `updater.rs`：`tauri-plugin-updater` 包装，启动 3 秒后后台检查并 emit `shell-update-available`。
 - `lib.rs`：装配 + `setup()` 取目录（必须走 `kernel::data_dir`）+ `RunEvent::Exit` 兜底回收内核进程组。`harness` 与 `official-chat` 两个 webview 窗口通过 `capabilities/harness-remote.json` / `capabilities/official-chat-remote.json` 分别绑定 ACL；拉绳挂件只需要 `allow-focus-main-shell` 这条 IPC 命令，URL 都精确钉死（`http://127.0.0.1:*` / `https://chat.deepseek.com/*` 等三个官方对话 origin，不开通 wildcard 域名）。`harness-remote.json` 直接授 `allow-focus-main-shell`，`official-chat-remote.json` 不授任何命令（拉绳属于窗口 chrome，由 `official-chat-strip` 页签栏 webview 承载、走 `allow-official-chat-tabs` 这条本地权限）。
 
@@ -65,4 +80,4 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 - `titlebar-pulse.js`（注入到 harness 工作台 webview + `official-chat` 内容子 webview）：接管 chrome-row 顶部条带。`location.hostname` 命中 DeepSeek / 千问 / MiniMax 三个授权 origin 之一时使用官方品牌蓝 `#4D6BFE`（rgb 77,107,254）；否则用 Gitea 绿 `#609926`（rgb 96,152,38）。两个 sweep 周期相同（6.01s），半周期偏移。workbench 页面自带 `<body><div data-titlebar-pulse="2">`，chat 页面没有——脚本用 `ensureSecondBar()` 在缺失时补上。
 - `chat-fingerprint.js`（仅注入到 `official-chat` 内容子 webview，**必须排在 `titlebar-pulse.js` 之后**）：只清除嵌入式痕迹，不再伪造浏览器指纹——把 `navigator.webdriver` 钉在 `false`（正常浏览器的值），并删除 `__TAURI__` / `__TAURI_INTERNALS__` / `__TAURI_METADATA__` / `__TAURI_IPC__` 全局（正常浏览器里它们根本不存在；暴露任何形式的 Proxy 都等于自报嵌入式身份）。其余表面保持真实：引擎是货真价实的桌面版 Edge，用普通 JS 对象冒充 `userAgentData` / plugins 等反而会被原生类检查识破。拉绳挂件由 strip WebView 承载，`chat-fingerprint.js` 仅作用于远程内容 WebView；两者不共享页面，因此不影响 Tauri bridge。
 - 三个脚本顶部都有 `if (window.top !== window.self) return` 顶帧守卫，避免 Tauri 在每个 iframe 都执行初始化脚本时挂出多份拉绳 / 条带 / 指纹 stub；harness 工作台在嵌套预览里也可能挂多个 iframe，守卫能让顶层唯一实例化。
-- `harness-health.js` 只在顶层工作台文档运行，监听 `error` / `unhandledrejection`，并在页面挂载后两次延迟检查可见内容以识别白屏；上报 `{ kind, message, stack, pageUrl }`，IPC 失败时最多重试 4 次。`report_harness_fault` 只接受 `harness` webview、限定类型和有界字符串，在 `spawn_blocking` 中把前端证据与 `kernel.log` 合并分析：路径/模块证据指向插件时临时隔离插件，内核模块证据指向内核时不改插件，证据不足则标记 `unknown`，不会把未知问题误报为内核故障。事故持久化到 `last-incident.json`，管理面板展示证据并提供插件处理、日志和内核版本入口。
+- `harness-health.js` 只在顶层工作台文档运行，监听 `error` / `unhandledrejection`，并在页面挂载后两次延迟检查可见内容以识别白屏；上报 `{ kind, message, stack, pageUrl }`，IPC 失败时最多重试 4 次。`report_harness_fault` 只接受 `harness` webview、限定类型和有界字符串，在 `spawn_blocking` 中把前端证据与今天的内核日志（`<kind>-kernel-<YYYY-MM-DD>.log`，见「日志规范」）合并分析：路径/模块证据指向插件时临时隔离插件，内核内置组件（`@deepseek-ai/dsh-*` 命名空间或 `client-modules` 加载器短语如 `build-time externals drift` / `missed the module table` / `no registered package factory`）归因到当前内核版本（不自动改插件），仅 `blank` 探针命中且日志无明确证据时把全部已安装插件列为「软信号」嫌疑但**不自动隔离**（避免误停用），证据完全不足时回退到「unknown」分支提示用户查看日志或切换内核版本。事故持久化到 `last-incident.json`，管理面板展示证据并提供插件处理、日志和内核版本入口。

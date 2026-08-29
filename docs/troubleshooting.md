@@ -14,7 +14,8 @@
 | macOS 访问 `127.0.0.1:3080` 失败 | WKWebView 默认允许环回，勿加 `NSAppTransportSecurity` 例外 |
 | 编辑器报 `capabilities/default.json` 缺 `$schema` | schema 由首次 `tauri build` 生成，属正常 |
 | updater 显示"已是最新"但实际有新版 | endpoint `/releases/latest/download/latest.json` 拿到 404——发布版本是 draft 或 prerelease。检查 `.github/workflows/desktop-release.yml` 是否被改过或最近一次 GitHub Release 是否被标成 prerelease |
-| Windows 任务栏图标不更新 | `tauri-build` 默认不发 `cargo:rerun-if-changed`，需要 `Stop-Process dsh-desktop` 后再 `cargo build`；重启 Explorer（`ie4uinit.exe -show`）清任务栏缓存。详见 [icon-design.md](icon-design.md) |
+| Windows 任务栏图标不更新 | `tauri-build` 默认不发 `cargo:rerun-if-changed`，需要 `Stop-Process dsh-xlink` 后再 `cargo build`；重启 Explorer（`ie4uinit.exe -show`）清任务栏缓存。详见 [icon-design.md](icon-design.md) |
 | macOS Dock 图标不更新 | 杀掉 Dock（`killall Dock`）或重启应用清缓存 |
 | 卸载插件后工作台无法启动，内核日志报 `cannot resolve profile bundle "<包名>"` | 托管 spec 曾按目录名子串 `desktop/kernels/` 判定，dev 壳（`desktop-dev/`）接线的插件卸载后依赖与 bundle 层残留在 profile manifest，内核沿悬空符号链接解析失败 —— 现改为按 `kernels/<version>/plugins/<id>` 尾部路径结构判定（与壳的数据目录名无关）；手工恢复：删掉 `~/.dsh/profiles/<profile>/package.json` 里该插件的 dependencies 与 bundles 条目，删 `node_modules/` 下悬空链接后 `pnpm install` |
-| 启动容错面板中移除插件后告警仍显示 | 若上次卸载已删除中央库记录但留下 `quarantine.json`，重新点击「移除插件」会按隔离记录完成幂等清理；若正在运行旧版 dev shell，需要重启并重新构建 Rust 端后再操作 | |
+| 启动容错面板中移除插件后告警仍显示 | 若上次卸载已删除中央库记录但留下 `quarantine.json`，重新点击「移除插件」会按隔离记录完成幂等清理；若正在运行旧版 dev shell，需要重启并重新构建 Rust 端后再操作 |
+| 工作台 DevTools 一堆 `Failed to load resource ... 404 ... .js.map`（默认安装约 44 条，仅 debug 构建自动开启的 DevTools 可见） | 内核 `@deepseek-ai/dsh` 的 npm tarball 故意不带 `.js.map` 体积，但构建产物末尾仍带 `//# sourceMappingURL=`，浏览器于是逐个去拉并得到 404。shell 通过 `sourcemap-quieter.js` 在 `fetch` / XHR / `console` 三层把这类请求改写为合成空 source map，DevTools 即不再报错（不影响工作台功能）；若想真正看到源码，回到 `tauri dev` 之外另装带 source map 的本地内核构建即可 | |

@@ -103,16 +103,16 @@ if (cmd !== "focus_main_shell") throw new Error(`unexpected invokes: ${JSON.stri
 if (!args || args.x !== 500 || args.y !== 300)
   throw new Error(`click coordinates not forwarded: ${JSON.stringify(args)}`);
 
-// Re-running the script must not duplicate the widget.
+// 重复运行脚本不得重复创建控件。
 fn(window, document, console, sandbox.setTimeout, sandbox.clearTimeout);
 if (document.body.children.filter((c) => c._id === "dsh-shell-launcher").length !== 1)
   throw new Error("widget duplicated on re-run");
 
-// Failure path: a rejecting invoke swaps the warm glow for the red flash.
+// 失败路径：invoke 拒绝时用红色闪烁替换暖光。
 let failingInvoked = 0;
 window.__TAURI__ = { core: { invoke: () => { failingInvoked++; return Promise.reject(new Error("denied")); } } };
 btn.dispatch("click");
-await Promise.resolve(); // let the rejection handler run
+await Promise.resolve(); // 等拒绝处理函数执行完毕
 if (!btn.classes.has("dsh-launcher-err")) throw new Error("error flash not applied");
 if (btn.classes.has("dsh-launcher-on")) throw new Error("warm glow not cleared on error");
 if (failingInvoked !== 1) throw new Error("failing invoke not called");

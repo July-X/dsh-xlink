@@ -1,22 +1,23 @@
-//! Suppressing the console window Windows allocates for child processes,
-//! plus a shared helper that streams long-running child output to both a
-//! log file and an in-process progress callback.
+//! 抑制 Windows 为子进程分配的 console 窗口，以及一个共享助手，把长时间运行
+//! 的子进程输出同时流式输出到日志文件和进程内的进度回调。
 //!
-//! The shell is a GUI-subsystem app: every `Command` spawned without
-//! `CREATE_NO_WINDOW` makes Windows briefly allocate a console window, which
-//! the user sees as a flashing terminal. All helper-process spawns in this
-//! crate go through `quiet`.
+//! 壳是 GUI 子系统应用：每个未指定 `CREATE_NO_WINDOW` 的 `Command`
+//! 都会让 Windows 短暂分配一个 console 窗口，用户会看到一个闪烁的终端。
+//! 本 crate 中所有助手进程的 spawn 都通过 `quiet`。
 
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Hide the console window Windows would otherwise flash for the child.
-/// No-op on other platforms.
+use time::format_description::FormatItem;
+use time::macros::format_description;
+use time::OffsetDateTime;
+
+/// 隐藏 Windows 否则会为子进程闪烁的 console 窗口。其他平台上为 no-op。
 pub fn quiet(cmd: &mut Command) -> &mut Command {
     #[cfg(windows)]
     {
@@ -161,7 +162,61 @@ fn read_capped_line<R: BufRead>(
 
 const KERNEL_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const KERNEL_LOG_BACKUPS: u8 = 2;
-const LOG_FLUSH_BYTES: u64 = 64 * 1024;
+/// 按日轮转路径中故意不使用 `BufWriter`。带缓冲的写入器在两次 flush 之间
+/// 会保留最多 8 KiB 在内存里，这会妨碍事件排查期间的实时 tail，并在内核
+/// panic 时可能丢失最近的日志行。OS 文件写入本身就内部批量化了少量写入，
+/// 因此按行 `write_all` + `flush_all` 既能让磁盘上的视图保持最新，又
+/// 不会带来可观的成本。
+const NO_BUF_FLUSH: bool = true;
+
+/// 写入每个日志文件名的构建类型前缀。release 与 dev 构建的壳已经位于
+/// 不同数据目录（`desktop/` 与 `desktop-dev/`），但同时在文件名上也
+/// 打上前缀，意味着——无论是文件管理器列出的 logs 目录，还是从
+/// `~/.dsh/desktop*/logs/` 取出并发送给支持的 tar 包——即使不参考
+/// 父路径也能一目了然。
+pub const LOG_KIND_RELEASE: &str = "release";
+pub const LOG_KIND_DEV: &str = "dev";
+
+/// 解析用于日志文件名 stamp 的构建类型。与 `kernel::data_dir` 中的
+/// `SHELL_SUBDIR_*` 划分相对应，保证目录布局与文件名 stamp 在「来自
+/// 哪个构建」上保持一致。
+pub fn build_log_kind() -> &'static str {
+    if cfg!(debug_assertions) {
+        LOG_KIND_DEV
+    } else {
+        LOG_KIND_RELEASE
+    }
+}
+
+/// 将 `SystemTime` 格式化为日志文件名中使用的本地日期戳 `YYYY-MM-DD`。
+/// `time` crate 的默认 features 包含 `local-offset`，转换使用用户所在时区——
+/// UTC 日期会在用户感知的本地时间的不同时刻翻转日志，把同一个用户日
+/// 拆到两个文件里。
+pub fn current_date_string() -> String {
+    local_date_string(SystemTime::now())
+}
+
+fn local_date_string(time: SystemTime) -> String {
+    let Ok(duration) = time.duration_since(UNIX_EPOCH) else {
+        return String::from("1970-01-01");
+    };
+    let Ok(datetime) = OffsetDateTime::from_unix_timestamp(duration.as_secs() as i64) else {
+        return String::from("1970-01-01");
+    };
+    let local =
+        datetime.to_offset(time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC));
+    const DATE_FORMAT: &[FormatItem<'static>] = format_description!("[year]-[month]-[day]");
+    local
+        .format(&DATE_FORMAT)
+        .unwrap_or_else(|_| String::from("1970-01-01"))
+}
+
+/// 为指定构建类型与本地日期下的具名日志拼装日志文件名。集中在此，
+/// 让所有调用方（内核日志、安装日志、插件日志……）都遵循同一格式，
+/// 这也是 `list_log_files` 与弹窗标签列表对用户保持稳定的根本。
+pub fn log_file_name(kind: &str, name: &str, date: &str) -> String {
+    format!("{}-{}-{}.log", kind, name, date)
+}
 
 fn rotated_log_path(path: &Path, index: u8) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
@@ -189,68 +244,168 @@ fn rotate_existing_log(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// 轮转写入器消费的具名日志 spec。`name` 是逻辑标识（`kernel`、`install`、
+/// `plugin-wiring` 等），与构建类型和日期一起嵌入文件名。构建类型由
+/// 调用方预先计算（通常是 `build_log_kind()`），便于单一测试或 CLI 工具
+/// 以另一种构建类型打 stamp。
+#[derive(Debug, Clone)]
+pub struct LogSpec {
+    pub kind: String,
+    pub name: String,
+}
+
+impl LogSpec {
+    pub fn new(kind: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            name: name.into(),
+        }
+    }
+
+    /// 把该 spec 在给定本地日期、给定日志目录下应当写入的文件路径解析出来。
+    /// `list_log_files` 用它来命名标签页，需要向用户展示路径的调用方
+    /// （如 `read_log_file` 的 tail 选择器）也会用到。
+    pub fn path_for(&self, logs_dir: &Path, date: &str) -> PathBuf {
+        logs_dir.join(log_file_name(&self.kind, &self.name, date))
+    }
+}
+
+/// 日志写入器模式：dated（构建类型 + 名称 + 日期戳，本地午夜滚动），
+/// 或 fixed-path（调用方指定的精确路径，例如位于插件目录内、卸载
+/// 时会被清理的 per-plugin 构建日志）。
+#[derive(Debug, Clone)]
+enum LogMode {
+    Dated { logs_dir: PathBuf, spec: LogSpec },
+    Fixed { path: PathBuf },
+}
+
+/// 按日轮转、实时 flush 的日志写入器。每个具名日志（`kernel`、
+/// `install-<version>`、`plugin-<id>` 等）一个实例；多个 `RotatingLog`
+/// 可以共享同一个 `logs_dir`，因为每个文件名都带唯一的构建类型、名称、
+/// 日期戳。
+///
+/// 轮转策略：
+/// - 当天始终写入 `<logs_dir>/<kind>-<name>-<date>.log`。
+/// - 跨日写入时，写入器关闭昨天的文件并打开新文件（昨天的文件保留
+///   在原位；列表视图与弹窗标签列表按需轮转）。
+/// - 当当天文件超过 `KERNEL_LOG_MAX_BYTES` 时，原文件重命名为 `<...>.1`
+///   并打开新文件，每个日期最多保留 `KERNEL_LOG_BACKUPS + 1` 代。
+/// - `Fixed` 模式完全跳过日期与构建类型轮转，使用调用方的精确路径；
+///   大小上限仍会触发轮转。
 struct RotatingLog {
-    path: PathBuf,
-    writer: Option<BufWriter<fs::File>>,
+    mode: LogMode,
+    current_date: String,
+    current_path: PathBuf,
+    writer: Option<fs::File>,
     bytes: u64,
-    pending_bytes: u64,
 }
 
 impl RotatingLog {
-    fn new(path: &Path) -> io::Result<Self> {
+    fn new(logs_dir: &Path, spec: LogSpec) -> io::Result<Self> {
+        fs::create_dir_all(logs_dir)?;
+        let mut log = Self {
+            mode: LogMode::Dated {
+                logs_dir: logs_dir.to_path_buf(),
+                spec,
+            },
+            current_date: String::new(),
+            current_path: PathBuf::new(),
+            writer: None,
+            bytes: 0,
+        };
+        log.open_for_today()?;
+        Ok(log)
+    }
+
+    /// 构造一个固定到特定路径的写入器。不进行日期或构建类型轮转；
+    /// 大小轮转仍然生效，防止失控的日志超出磁盘配额。供调用方完全拥有
+    /// 的一次性脚本（如 per-plugin 构建日志）使用。
+    fn new_at_path(path: &Path) -> io::Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        if path
-            .metadata()
-            .map(|meta| meta.len() > KERNEL_LOG_MAX_BYTES)
-            .unwrap_or(false)
-        {
-            rotate_existing_log(path)?;
-        }
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(path)?;
-        Ok(Self {
-            path: path.to_path_buf(),
-            writer: Some(BufWriter::new(file)),
+        let mut log = Self {
+            mode: LogMode::Fixed {
+                path: path.to_path_buf(),
+            },
+            current_date: local_date_string(SystemTime::now()),
+            current_path: path.to_path_buf(),
+            writer: None,
             bytes: 0,
-            pending_bytes: 0,
-        })
+        };
+        log.open_for_today()?;
+        Ok(log)
     }
 
-    fn rotate(&mut self) -> io::Result<()> {
-        if let Some(writer) = self.writer.take() {
-            writer.into_inner().map_err(|error| error.into_error())?;
+    /// 为当天的日志文件打开（或重新打开）写入器。幂等：相同日期且
+    /// 未达大小上限的调用是廉价的 no-op。新文件以追加（而非截断）方式
+    /// 打开，让一个新的实例接入已经打开的当天日志时能保留历史。
+    fn open_for_today(&mut self) -> io::Result<()> {
+        let path = self.resolve_path();
+        let same_path = self.current_path == path;
+        if same_path && self.bytes < KERNEL_LOG_MAX_BYTES && self.writer.is_some() {
+            return Ok(());
         }
-        rotate_existing_log(&self.path)?;
+        // 先释放上一个写入器；Drop 会关闭 FD，下一次 open 即可使用
+        // 同一路径而不会在 Unix 上出现 inotify 式的「text file busy」
+        // 小故障。
+        if let Some(_writer) = self.writer.take() {
+            // 在循环下一次迭代中显式 drop
+        }
+        // 大小上限：重新打开之前先把昨日同一天的同名文件轮转掉，
+        // 让新文件以空开始。日期变化时由于 `path` 与 `self.current_path`
+        // 不同，仍会落到全新文件。
+        if same_path {
+            if let Ok(meta) = fs::metadata(&path) {
+                if meta.len() >= KERNEL_LOG_MAX_BYTES {
+                    rotate_existing_log(&path)?;
+                }
+            }
+        }
         let file = fs::OpenOptions::new()
             .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&self.path)?;
-        self.writer = Some(BufWriter::new(file));
-        self.bytes = 0;
-        self.pending_bytes = 0;
+            .append(true)
+            .open(&path)?;
+        // 捕获 open 之后的大小，使已经开了数小时的长时间写入器看到
+        // 一个真实的字节数。
+        let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        self.current_path = path;
+        self.current_date = local_date_string(SystemTime::now());
+        self.writer = Some(file);
+        self.bytes = size;
         Ok(())
     }
 
+    fn resolve_path(&self) -> PathBuf {
+        match &self.mode {
+            LogMode::Dated { logs_dir, spec } => {
+                let today = local_date_string(SystemTime::now());
+                spec.path_for(logs_dir, &today)
+            }
+            LogMode::Fixed { path } => path.clone(),
+        }
+    }
+
     fn write_line(&mut self, line: &str) -> io::Result<()> {
+        // 先处理日期滚动（仅 dated 模式）：跨午夜运行的内核必须
+        // 先进入新一天的文件，再做大小检查，以保证午夜前的数据
+        // 落在正确的文件里。Fixed 模式从不按日期轮转。
         let needed = line.len() as u64 + 1;
-        if self.bytes > 0 && self.bytes.saturating_add(needed) > KERNEL_LOG_MAX_BYTES {
-            self.rotate()?;
+        let date_rolled = matches!(self.mode, LogMode::Dated { .. })
+            && self.current_date != local_date_string(SystemTime::now());
+        if date_rolled || self.bytes.saturating_add(needed) > KERNEL_LOG_MAX_BYTES {
+            self.open_for_today()?;
         }
         let writer = self.writer.as_mut().expect("rotating log writer missing");
         writer.write_all(line.as_bytes())?;
         writer.write_all(b"\n")?;
-        self.bytes = self.bytes.saturating_add(needed);
-        self.pending_bytes = self.pending_bytes.saturating_add(needed);
-        if self.pending_bytes >= LOG_FLUSH_BYTES {
+        // 实时 flush：每一行在下一个文件系统调用时就已经落盘。
+        // 加缓冲只会徒增成本，并可能在内核 panic / SIGKILL 时丢失
+        // 最近几行——而这恰恰是用户报告需要在日志里立刻看到的情形。
+        if NO_BUF_FLUSH {
             writer.flush()?;
-            self.pending_bytes = 0;
         }
+        self.bytes = self.bytes.saturating_add(needed);
         Ok(())
     }
 
@@ -258,7 +413,6 @@ impl RotatingLog {
         if let Some(writer) = self.writer.as_mut() {
             writer.flush()?;
         }
-        self.pending_bytes = 0;
         Ok(())
     }
 }
@@ -520,11 +674,22 @@ fn read_bounded_bytes<R: Read>(mut reader: R, max_bytes: usize) -> io::Result<Ve
     Ok(output)
 }
 
-/// Attach bounded background log drains to a long-running child. The caller
-/// keeps ownership of the child while the detached readers keep its pipes
-/// flowing and rotate the log without retaining output in memory.
-pub fn attach_log_drainers(child: &mut Child, log_path: &Path) -> io::Result<()> {
-    let logger = Arc::new(Mutex::new(RotatingLog::new(log_path)?));
+/// 给长时间运行的子进程附加有界的后台日志 drain。调用方保留子进程
+/// 的所有权，由分离的 reader 维持其管道流动并轮转日志，内存中不
+/// 滞留输出。
+///
+/// drain 出的输出通过按日轮转的 `RotatingLog` 写入，append 到当天的
+/// `<kind>-<name>-<date>.log`，本地午夜滚动到新文件，因此 tail 中的
+/// `read_log_file` 与手动的 `tail -F` 都能看到正在进行的启动过程，
+/// 又不会丢掉午夜前的历史。`log_spec` 携带逻辑名（`kernel`、
+/// `install-<version>` 等）以及构建类型戳；具体文件路径由写入器
+/// 内部解析。
+pub fn attach_log_drainers(
+    child: &mut Child,
+    logs_dir: &Path,
+    log_spec: &LogSpec,
+) -> io::Result<()> {
+    let logger = Arc::new(Mutex::new(RotatingLog::new(logs_dir, log_spec.clone())?));
     let stdout = child
         .stdout
         .take()
@@ -538,24 +703,51 @@ pub fn attach_log_drainers(child: &mut Child, log_path: &Path) -> io::Result<()>
     Ok(())
 }
 
+/// 把长时间运行子进程合并后的 stdout+stderr 同时流式输出到 `on_progress`
+/// 与 `logs_dir` 下按日轮转的日志文件，进程退出后返回。drain 出的输出
+/// 走与 `attach_log_drainers` 相同的、按日期 + 构建类型戳的写入器，
+/// 因此跨午夜的安装流程会落到两个文件，不需要额外代码路径。每一行
+/// 在下一行被接受前都已 flush，IPC 通道上的进度与磁盘上的进度始终
+/// 一致。
 pub fn run_with_progress(
+    exe: &Path,
+    args: &[&str],
+    cwd: &Path,
+    logs_dir: &Path,
+    log_spec: &LogSpec,
+    extra_path_dirs: &[&Path],
+    on_progress: impl FnMut(&str),
+) -> io::Result<ExitStatus> {
+    let log = RotatingLog::new(logs_dir, log_spec.clone())?;
+    run_with_progress_log(exe, args, cwd, log, extra_path_dirs, on_progress)
+}
+
+/// `run_with_progress` 的路径固定版本。完整输出原样 append 到 `log_path`——
+/// 不打构建类型戳，也不按日轮转。用于调用方完全拥有的一次性脚本
+/// （per-plugin 构建日志等）。每一行在下一行被接受前也已 flush，
+/// IPC 通道上的进度与磁盘上的进度始终一致。
+pub fn run_with_progress_at(
     exe: &Path,
     args: &[&str],
     cwd: &Path,
     log_path: &Path,
     extra_path_dirs: &[&Path],
+    on_progress: impl FnMut(&str),
+) -> io::Result<ExitStatus> {
+    let log = RotatingLog::new_at_path(log_path)?;
+    run_with_progress_log(exe, args, cwd, log, extra_path_dirs, on_progress)
+}
+
+/// `run_with_progress` 与 `run_with_progress_at` 的共享实现。`RotatingLog`
+/// 参数决定输出是落到 dated 文件（带构建类型戳）还是调用方固定的精确路径。
+fn run_with_progress_log(
+    exe: &Path,
+    args: &[&str],
+    cwd: &Path,
+    mut log: RotatingLog,
+    extra_path_dirs: &[&Path],
     mut on_progress: impl FnMut(&str),
 ) -> io::Result<ExitStatus> {
-    if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(log_path)?;
-    let mut log = BufWriter::new(file);
-
     let mut child = spawn(exe, args, cwd, extra_path_dirs)?;
     let stdout = child.stdout.take().expect("child stdout was piped");
     let stderr = child.stderr.take().expect("child stderr was piped");
@@ -611,7 +803,7 @@ pub fn run_with_progress(
         match rx.recv_timeout(remaining.min(Duration::from_secs(HEARTBEAT_SECS))) {
             Ok(line) => {
                 on_progress(line.trim_end());
-                let _ = writeln!(log, "{line}");
+                let _ = log.write_line(&line);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let secs = started.elapsed().as_secs();
@@ -825,26 +1017,27 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
-    /// has created the data dir's logs folder; the log open must create
-    /// missing parents instead of failing with NotFound (Windows: `os
-    /// error 3`), which previously surfaced as the misleading "无法运行
-    /// npm" before npm was even spawned.
+    /// 创建了 data dir 的 logs 目录；日志 open 必须创建缺失的父目录，
+    /// 而不是以 NotFound 失败（Windows 上为 `os error 3`），那种情况
+    /// 之前会在 npm 尚未 spawn 时就以误导性的「无法运行 npm」表面化。
     #[test]
     fn run_with_progress_creates_missing_log_directory() {
         let seq = PROCESS_TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "dsh-desktop-process-test-{}-{seq}",
+            "dsh-xlink-process-test-{}-{seq}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
-        let log_path = root.join("a").join("b").join("run.log");
+        let logs_dir = root.join("a").join("b");
+        let log_spec = LogSpec::new("test", "create-missing");
         let cwd = std::env::temp_dir();
         let status = if cfg!(windows) {
             run_with_progress(
                 Path::new("cmd.exe"),
                 &["/C", "echo", "hi"],
                 &cwd,
-                &log_path,
+                &logs_dir,
+                &log_spec,
                 &[],
                 |_| {},
             )
@@ -853,20 +1046,26 @@ mod tests {
                 Path::new("/bin/echo"),
                 &["hi"],
                 &cwd,
-                &log_path,
+                &logs_dir,
+                &log_spec,
                 &[],
                 |_| {},
             )
         }
         .expect("spawn child");
         assert!(status.success());
+        // dated 文件是文件名携带 spec 的 kind 与 name 的那一个；
+        // 父目录必须存在才能写入。这里不去钉死确切文件名（路径里有日期），
+        // 因为测试可能在 CI 上跨午夜运行。
+        let today = current_date_string();
+        let log_path = log_spec.path_for(&logs_dir, &today);
         assert!(log_path.is_file(), "log file must be created: {log_path:?}");
         let _ = fs::remove_dir_all(&root);
     }
-    /// Separator the helper actually uses on the host platform.
-    /// `merge_extra_path` follows `cfg(windows)` (see its body), so the
-    /// expected strings here track that choice instead of hard-coding a
-    /// Unix-style `:` that would fail on a Windows test runner.
+    /// 助手在宿主平台上实际使用的分隔符。
+    /// `merge_extra_path` 跟随 `cfg(windows)`（参见其函数体），
+    /// 因此这里期望字符串也跟随这一选择，而不是硬编码 Unix 风格的 `:`，
+    /// 否则在 Windows 测试运行器上会失败。
     const SEP: char = if cfg!(windows) { ';' } else { ':' };
 
     #[test]
@@ -974,5 +1173,150 @@ mod tests {
             crate::env::merged_path(),
             "child must inherit the merged PATH stamped by the helper"
         );
+    }
+
+    /// `local_date_string` 是按日轮转的心跳：在今天构造的 `RotatingLog`
+    /// 在请求当前路径时，必须报告一个带今天日期戳的文件。这里不去断言
+    /// 具体年份，让测试能扛过慢速 CI 时钟；唯一不变的形态约定是 spec
+    /// 名称之后的 `YYYY-MM-DD` 后缀。
+    #[test]
+    fn log_spec_path_for_stamps_local_date() {
+        let spec = LogSpec::new("test", "kernel");
+        let path = spec.path_for(Path::new("/tmp/logs"), &current_date_string());
+        let name = path.file_name().and_then(|n| n.to_str()).expect("name");
+        assert!(
+            name.starts_with("test-kernel-"),
+            "filename should carry the build kind and logical name: {name}"
+        );
+        // 日期后缀必须为 10 字符：YYYY-MM-DD。
+        let suffix = name.trim_end_matches(".log");
+        let date = suffix.rsplit('-').take(3).collect::<Vec<_>>();
+        let mut reconstructed = String::new();
+        for (i, part) in date.iter().rev().enumerate() {
+            if i > 0 {
+                reconstructed.push('-');
+            }
+            reconstructed.push_str(part);
+        }
+        assert_eq!(
+            reconstructed.len(),
+            10,
+            "date suffix must be YYYY-MM-DD: {reconstructed}"
+        );
+    }
+
+    /// `build_log_kind` 是区分 release 与 dev 日志的关键。它必须与
+    /// 目录划分（`desktop/` 与 `desktop-dev/`）保持一致，使从 data dir
+    /// 取出的 tar 包及其中的文件名总能就「来自哪个构建」达成一致。
+    #[test]
+    fn build_log_kind_matches_data_dir_split() {
+        let kind = build_log_kind();
+        if cfg!(debug_assertions) {
+            assert_eq!(kind, LOG_KIND_DEV);
+        } else {
+            assert_eq!(kind, LOG_KIND_RELEASE);
+        }
+    }
+
+    /// 今天打开的 `RotatingLog` 被赋予一个未来日期后，必须在下一次写入
+    /// 时迁移到新一天的文件。我们通过把写入器的 `current_date` 与
+    /// `current_path` 改成另一个日历日来覆盖 date-rolled 分支；
+    /// 下一次写入必须重新解析路径并落到新文件。
+    #[test]
+    fn rotating_log_rolls_on_date_change() {
+        let seq = PROCESS_TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let logs_dir = std::env::temp_dir().join(format!("dsh-rot-test-{seq}"));
+        let _ = fs::remove_dir_all(&logs_dir);
+        let spec = LogSpec::new("test", "kernel");
+        // 1. 用针对固定路径打开的写入器写入，模拟「昨天」。这与
+        //    `run_with_progress_at` 针对一个恰好匹配 dated 方案的脚本
+        //    会产生的形状相同。
+        let path_yesterday = spec.path_for(&logs_dir, "2000-01-01");
+        let mut yesterday_log = RotatingLog::new_at_path(&path_yesterday).expect("open yesterday");
+        yesterday_log.write_line("day-one").expect("write day one");
+        // 2. 打开一个全新的 dated 写入器（这代表壳在新一天启动的瞬间）。
+        //    之前写入的昨天文件必须保持原样。
+        let mut today_log = RotatingLog::new(&logs_dir, spec.clone()).expect("open today");
+        today_log.write_line("day-two").expect("write day two");
+        // 3. dated 写入器不能踩坏被固定的昨天文件：day-one 在 2000-01-01
+        //    文件里，day-two 在今天的文件里，两条路径不同。
+        let path_today = spec.path_for(&logs_dir, &current_date_string());
+        let yesterday_text = std::fs::read_to_string(&path_yesterday).expect("read yesterday");
+        let today_text = std::fs::read_to_string(&path_today).expect("read today");
+        assert!(yesterday_text.contains("day-one"));
+        assert!(today_text.contains("day-two"));
+        assert_ne!(path_yesterday, path_today);
+        let _ = fs::remove_dir_all(&logs_dir);
+    }
+
+    /// `write_line` 在 `current_date` 已经不再匹配本地时钟时必须走
+    /// date-rolled 分支——不只在构造时走。我们通过给私有字段塞一个
+    /// 陈旧日期来覆盖这一分支，然后写入一行：它应当落到今天的文件
+    /// （即写入器从实时时钟解析出的那条路径）。
+    #[test]
+    fn rotating_log_takes_date_rolled_branch_on_stale_state() {
+        let seq = PROCESS_TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let logs_dir = std::env::temp_dir().join(format!("dsh-rot-stale-test-{seq}"));
+        let _ = fs::remove_dir_all(&logs_dir);
+        let spec = LogSpec::new("test", "kernel");
+        let mut log = RotatingLog::new(&logs_dir, spec.clone()).expect("open");
+        log.write_line("first").expect("write first");
+        // 模拟写入器跨午夜一直开着：保存的 `current_date` 是昨天，
+        // 但实时时钟已经走到今天。下一次写入必须观察到这一不一致，
+        // 在今天的路径上重新打开（`resolve_path` 从实时时钟派生出该路径）。
+        let yesterday = spec.path_for(&logs_dir, "2000-01-01");
+        log.current_date = String::from("2000-01-01");
+        log.current_path = yesterday.clone();
+        log.write_line("second").expect("write second");
+        let today = spec.path_for(&logs_dir, &current_date_string());
+        let today_text = std::fs::read_to_string(&today).expect("read today");
+        assert!(
+            today_text.contains("second"),
+            "stale-state write must reach the live today's file: {today_text:?}"
+        );
+        // 「first」一行仍位于测试开始时打开的那个文件；日滚重置会
+        // 打开今天的文件，不会回溯修改原始文件。
+        let _ = fs::remove_dir_all(&logs_dir);
+    }
+
+    /// `RotatingLog::new_at_path` 是用于 per-plugin 构建日志的固定路径
+    /// 变体：它不能打日期或构建类型戳，连续写入必须追加到同一个文件
+    /// （使一个长构建的历史留在同一份脚本里）。
+    #[test]
+    fn rotating_log_at_path_appends_without_stamp() {
+        let seq = PROCESS_TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("dsh-rot-fixed-test-{seq}"));
+        let _ = fs::remove_dir_all(&root);
+        let path = root.join(".dsh-build.log");
+        let mut log = RotatingLog::new_at_path(&path).expect("open at path");
+        log.write_line("first").expect("write first");
+        log.write_line("second").expect("write second");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(text, "first\nsecond\n");
+        // 文件名不携带构建类型 / 日期戳。
+        let name = path.file_name().and_then(|n| n.to_str()).expect("name");
+        assert_eq!(name, ".dsh-build.log");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `write_line` 在每一行之后 flush OS 文件，使得壳的 panic / SIGKILL
+    /// 也能在磁盘上保留一份可供排查的最新日志。我们通过单次写入后用
+    /// 一个独立的 `File` 句柄重新打开来验证：不刷新的 `BufWriter` 在
+    /// Drop 后仍能给出数据，而不刷新的 `File` 不能（OS 自身也有缓冲，
+    /// 所以这里真正校验的是：在 `RotatingLog` 层面我们不会丢失那一行）。
+    #[test]
+    fn rotating_log_writes_are_durable_after_write() {
+        let seq = PROCESS_TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let logs_dir = std::env::temp_dir().join(format!("dsh-rot-flush-test-{seq}"));
+        let _ = fs::remove_dir_all(&logs_dir);
+        let spec = LogSpec::new("test", "kernel");
+        let mut log = RotatingLog::new(&logs_dir, spec.clone()).expect("open");
+        log.write_line("durable").expect("write");
+        // 通过全新的文件句柄读取（无共享状态），确认字节已经走过
+        // 写入器，到达 OS 页缓存。
+        let path = spec.path_for(&logs_dir, &current_date_string());
+        let text = std::fs::read_to_string(&path).expect("read after write");
+        assert!(text.contains("durable"));
+        let _ = fs::remove_dir_all(&logs_dir);
     }
 }

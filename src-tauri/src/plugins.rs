@@ -288,21 +288,29 @@ fn profile_dir(data_dir: &Path, profile: &str) -> PathBuf {
         .unwrap_or_else(|| data_dir.join("profiles").join(profile))
 }
 
+fn wiring_log_spec() -> crate::process::LogSpec {
+    crate::process::LogSpec::new(crate::process::build_log_kind(), "plugin-wiring")
+}
+
 fn wiring_log_path(data_dir: &Path) -> PathBuf {
-    kernel::logs_dir(data_dir).join("plugin-wiring.log")
+    let logs = kernel::logs_dir(data_dir);
+    wiring_log_spec().path_for(&logs, &crate::process::current_date_string())
+}
+
+fn plugin_log_spec(id: &str) -> crate::process::LogSpec {
+    crate::process::LogSpec::new(crate::process::build_log_kind(), format!("plugin-{id}"))
 }
 
 fn plugin_log_path(data_dir: &Path, id: &str) -> PathBuf {
-    kernel::logs_dir(data_dir).join(format!("plugin-{id}.log"))
+    let logs = kernel::logs_dir(data_dir);
+    plugin_log_spec(id).path_for(&logs, &crate::process::current_date_string())
 }
 
-/// Map a package/repo name to a filesystem-safe store id. Path traversal is
-/// structurally impossible afterwards: slashes become double underscores and
-/// dot / empty segments are rejected outright. Whitespace is also rejected
-/// because npm names and GitHub `owner/repo` strings are both single
-/// tokens — a string like `dsh plugin remove @scope/pkg` reaching this
-/// function means the caller forgot to peel a CLI invocation in
-/// `split_dsh_plugin_cli`; the store id should not silently swallow it.
+/// 将包名/仓库名映射为文件系统安全的中央库 id。之后路径穿越在结构上已不可能：
+/// 斜杠会被替换为双下划线，`.` / 空段会直接拒绝。空白字符同样会被拒绝，因为
+/// npm 包名和 GitHub `owner/repo` 字符串都是单一 token —— 形如
+/// `dsh plugin remove @scope/pkg` 的字符串走到这里意味着调用方忘了在
+/// `split_dsh_plugin_cli` 里剥掉 CLI 前缀，中央库 id 不应该默默吞下它。
 pub fn id_for_name(raw: &str) -> Result<String, AppError> {
     let name = raw.trim();
     if name.is_empty() || name.len() > 200 {
@@ -1264,7 +1272,7 @@ fn build_git_plugin(
 ) -> Result<(), AppError> {
     let root = match read_plugin_manifest(dest) {
         Ok(root) => root,
-        Err(_) => return Ok(()), // validate_plugin reports the real problem
+        Err(_) => return Ok(()), // 真正的错误由 validate_plugin 报告
     };
     let has_prepare = root
         .get("scripts")
@@ -1292,15 +1300,16 @@ fn build_git_plugin(
         kernel::PNPM_NO_STRICT_DEP_BUILDS,
         "--config.enable-pre-post-scripts=true",
     ];
-    // pnpm runs the package's `prepare` lifecycle script automatically after
-    // install when enable-pre-post-scripts is on. `pnpm_exe.parent()` is
-    // prepended to the child's PATH so the lifecycle shell can resolve
-    // `node` (and any sibling shebanged tool) even when the GUI inherited
-    // a launchd-only PATH that does not list the user's Homebrew / nvm bin
-    // directory; without it the prepare step exits 127 with
-    // `env: node: No such file or directory`.
+    // 当 enable-pre-post-scripts 打开时，pnpm 会在 install 之后自动跑包的
+    // `prepare` 生命周期脚本。`pnpm_exe.parent()` 被前置到子进程的 PATH 里，
+    // 让生命周期 shell 能解析到 `node`（以及任何同目录里有 shebang 的工具），
+    // 即使 GUI 进程继承到的 PATH 只有 launchd 的、不含用户的 Homebrew / nvm
+    // bin 目录；少了这一步 prepare 步骤会返回 127 并报
+    // `env: node: No such file or directory`。
     let pnpm_dir = pnpm_exe.parent().unwrap_or(Path::new("."));
-    let status = kernel::run_pnpm(
+    // 构建日志放在插件自己的目录里；不做按日轮转，也不带构建种类标记
+    // —— 插件卸载时该文件会被一起删掉，所以固定路径反而最合适。
+    let status = kernel::run_pnpm_at(
         pnpm_exe,
         &args,
         dest,
@@ -1438,11 +1447,15 @@ fn install_store_deps(
         kernel::PNPM_NO_STRICT_DEP_BUILDS,
     ];
     let pnpm_dir = pnpm_exe.parent().unwrap_or(Path::new("."));
+    // 插件安装日志放在桌面壳的日志目录下；使用按日命名的写入器，让跨午夜的
+    // 长安装落在两个文件里，且基于 spec 的文件名前缀让 dev / release 在弹窗
+    // 标签列表里能直观地区分开。
     let status = kernel::run_pnpm(
         pnpm_exe,
         &args,
         &dir,
-        &log_path,
+        &kernel::logs_dir(data_dir),
+        &plugin_log_spec(id),
         &[pnpm_dir],
         &mut *on_progress,
     )
@@ -1602,7 +1615,7 @@ fn sweep_kernel_orphans(data_dir: &Path, version: &str, store: &Store) {
         let dangling_link = fs::symlink_metadata(&path)
             .ok()
             .filter(|m| m.file_type().is_symlink())
-            .map(|_| !path.exists()) // exists() follows the link to its target
+            .map(|_| !path.exists()) // exists() 会顺着链接追到目标上
             .unwrap_or(false);
         let shell_owned = kernel_meta_file(data_dir, version, &name).is_file();
         if dangling_link || shell_owned {
@@ -2009,21 +2022,22 @@ pub fn ensure_wiring_filtered(
     Ok((specs.len(), changed))
 }
 
-/// Run `pnpm install` in the named profile directory, returning its exit
-/// status so each caller applies its own rollback semantics. The flags match
-/// the store-level installs: the profile only needs a usable node_modules,
-/// which the existing artifact fallback already tolerates when pnpm reports
-/// pnpm's ignored-builds false positive. `pnpm_exe.parent()` is prepended to
-/// the child's PATH so any Node-shebanged lifecycle script finds the same
-/// `node` the parent used to spawn pnpm.
+/// 在指定 profile 目录下跑 `pnpm install`，返回它的退出状态，让调用方各自
+/// 实施回滚语义。flag 与中央库层级的 install 保持一致：profile 只需要一个
+/// 可用的 node_modules，既有的产物回退机制在 pnpm 报告 ignored-builds 误报
+/// 时也兜得住。`pnpm_exe.parent()` 被前置到子进程的 PATH 里，让任何带
+/// Node shebang 的生命周期脚本都能找到与启动 pnpm 相同的 `node`。
 fn run_profile_install(
     data_dir: &Path,
     profile_name: &str,
     pnpm_exe: &Path,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<std::process::ExitStatus, AppError> {
-    let log_path = wiring_log_path(data_dir);
+    // 写入器在按日 spec 内部维持稳定的路径；每行都重新解析路径，跨午夜的
+    // 轮转仍能落到正确的文件里。这里不再单独暴露路径 —— 命名由 spec 负责。
     let pnpm_dir = pnpm_exe.parent().unwrap_or(Path::new("."));
+    // Profile 接线日志会被启动看护下所有 profile install 流程共享，因此
+    // 放在桌面壳的日志目录下，按日轮转，并打上构建种类标记。
     kernel::run_pnpm(
         pnpm_exe,
         &[
@@ -2032,22 +2046,22 @@ fn run_profile_install(
             kernel::PNPM_NO_STRICT_DEP_BUILDS,
         ],
         &profile_dir(data_dir, profile_name),
-        &log_path,
+        &kernel::logs_dir(data_dir),
+        &wiring_log_spec(),
         &[pnpm_dir],
         on_progress,
     )
     .map_err(|e| AppError::Io(format!("无法运行 pnpm（{e}）")))
 }
 
-/// Raw text of the profile manifest, captured before the boot guard rewrites
-/// wiring so a give-up can restore exactly what the user had.
+/// profile 清单的原始文本，在启动看护改写接线之前抓取，这样放弃时能
+/// 精准恢复用户原本的内容。
 pub fn snapshot_profile_manifest_text(data_dir: &Path, profile: &str) -> Option<String> {
     fs::read_to_string(profile_dir(data_dir, profile).join("package.json")).ok()
 }
 
-/// Restore a previously snapshotted manifest and resync node_modules with
-/// it. A missing snapshot keeps the current manifest and only reruns the
-/// install — the best available repair when the file itself vanished.
+/// 恢复先前抓取过的清单，并重新同步 node_modules。缺少快照时保留当前
+/// manifest、只重跑 install —— 这是文件本身丢失时能拿出的最好修复。
 pub fn restore_profile_manifest(
     data_dir: &Path,
     settings: &settings::Settings,
@@ -3524,15 +3538,15 @@ mod tests {
         let source = home.0.join("src-tree");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("real.txt"), "hi").unwrap();
-        // A symlink whose target vanished: `fs::copy` on it fails with os
-        // error 2 on Windows, which used to abort the whole tree copy.
+        // 目标已经消失的 symlink：Windows 上 `fs::copy` 对它会报 os error 2，
+        // 以前会让整次目录拷贝都终止。
         #[cfg(unix)]
         let linked = std::os::unix::fs::symlink(source.join("gone.txt"), source.join("link.txt"));
         #[cfg(windows)]
         let linked =
             std::os::windows::fs::symlink_file(source.join("gone.txt"), source.join("link.txt"));
         if linked.is_err() {
-            return; // no symlink privilege in this environment
+            return; // 当前环境没有 symlink 权限
         }
         let target = home.0.join("dst-tree");
         copy_tree(&source, &target).expect("dangling link must not abort the copy");
@@ -3546,16 +3560,15 @@ mod tests {
         let source = home.0.join("cycle-tree");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("real.txt"), "hi").unwrap();
-        // A directory link pointing back at its own ancestor: the layout a
-        // circular pnpm dependency produces on macOS/Linux, where
-        // node_modules is all symlinks. The copy must fail with a clear
-        // error instead of recursing forever.
+        // 指向自身祖先的目录链接：macOS / Linux 上 pnpm 循环依赖产生的
+        // 形态，那里 `node_modules` 全部是 symlink。拷贝必须以清晰的错误
+        // 失败，而不是无休止地递归。
         #[cfg(unix)]
         let linked = std::os::unix::fs::symlink(&source, source.join("loop"));
         #[cfg(windows)]
         let linked = std::os::windows::fs::symlink_dir(&source, source.join("loop"));
         if linked.is_err() {
-            return; // no symlink privilege in this environment
+            return; // 当前环境没有 symlink 权限
         }
         let err = copy_tree(&source, &home.0.join("dst-cycle")).expect_err("cycle must fail");
         assert!(
