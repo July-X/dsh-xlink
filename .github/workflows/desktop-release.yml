@@ -75,6 +75,7 @@ jobs:
     needs: quality
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - platform: macos-15-intel
