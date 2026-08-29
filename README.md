@@ -36,8 +36,9 @@
 +------------------------------------------------------------------------------+
 ```
 
-- **内置访问方式**：外壳在本地启动 `dsh web` 服务并用专用窗口加载其 Web UI，无需手动打开浏览器。
+- **内置访问方式**：外壳在本地启动 `dsh web` 服务并用专用窗口加载其 Web UI，无需手动打开浏览器；打开工作台前会为发布包缺失的 source map 生成最小 sidecar，避免 debug DevTools 产生无意义的 404。
 - **官方对话快捷入口**：管理面板「概览」页的「打开官方对话」按钮拉起独立的 `official-chat` 窗口（label `official-chat`），固定加载 DeepSeek 官方对话页 `https://chat.deepseek.com`，默认只初始化 DeepSeek 页签，千问与 MiniMax 在首次选择时才创建并在本次窗口中保留页面状态，以降低首开 CPU、内存和网络开销；由外壳注入 chrome-row 顶部条带 + 拉绳挂件。窗口创建时不再覆盖 user-agent——WebView2 引擎本身就是真实的桌面版 Edge，原生 UA、`Sec-CH-UA` 客户端提示与 `navigator.userAgentData` 天然一致（此前改写成 Chrome 反而制造跨层矛盾，正是环境检测的特征）；专属目录同时充当持久化配置档案，DeepSeek 登录态跨外壳重启保留；同一按钮在窗口已开时变为「关闭官方对话」，复用现有窗口并 `set_focus`，OS 关闭按钮也保持有效（该窗口不持有内核会话）。创建窗口时还经 `.additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)` 追加 Chromium 启动开关（wry 默认 `msWebOOUI` / `msPdfOOUI` / `msSmartScreenProtection` 之上叠加 `AutomationControlled`、`TranslateUI`、`InterestFeedContentSuggestions` 与 `--disable-blink-features=AutomationControlled`）：既抑制 `navigator.webdriver = true`，也不弹 SmartScreen 安全提醒与 Edge 专属 UI；该参数仅 WebView2 后端消费，macOS / Linux 构建自动忽略；同时窗口固定使用专属 user-data 目录 `<data_dir>/webview-official-chat`（WebView2 要求同一目录上的环境参数一致，不隔离会导致窗口创建失败）；之后给 `official-chat` 内容子 webview 注入 `titlebar-pulse.js` → `chat-fingerprint.js` 两个 `initialization_script`，给本地 `official-chat-strip` 页签栏 webview 注入 `pullstring-launcher.js`：拉绳属于整个官方对话窗口的 chrome，由页签栏 webview 承载；`chat-fingerprint.js` 不再与之同链、不需要 `pullstring-launcher.js` 抢跑 `window.__TAURI__` 的闭包引用。
+- **macOS / Windows 自定义标题栏（试验）**：管理面板在 macOS 和 Windows 上使用前端自绘的窗口标题栏，模拟交通灯控制，主色带从左到右以 5% 到 70% 的不透明度叠加深 Gitea 绿，并保留毛笔笔触纹理；dev 构建切换为同样规则的低亮度鲸眼红色系，Linux 暂保留系统标题栏。
 - **内核更新**：官方发布到 npm registry 的 `@deepseek-ai/dsh`（以及同名 `dsh-*` 依赖包）页面 [`https://www.npmjs.com/package/@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 与 GitHub `dsh-v<semver>` tag 一一对应；更新菜单直接读 npm registry（`https://registry.npmjs.org/@deepseek-ai/dsh`）拿到全量版本与 `dist-tags`，可安装、切换、删除任意已发布版本；只有 npm registry 不可达时才回退 GitHub Releases API 与其 Atom feed。
 
 ## 功能
@@ -120,7 +121,7 @@ npm run build:win         # x86_64-pc-windows-msvc
    - 首次安装会自动成为活动版本并自动启动内核。
    - 之后安装的版本不会覆盖当前活动版本，可随时在「已安装」列表中「切换」或「删除」。
 4. （可选）**插件** → 在「插件中心」按分类浏览、搜索（即时过滤）、按 Star/更新时间排序后一键安装，或手动填写 npm 包名（如 `@ace-zone/dsh-market`）/ GitHub 仓库 URL 安装；安装前自动校验插件是否符合 dsh 规范（package.json / `dsh.bundle.patch` / 入口文件），安装完成后重启工作台（关闭后重新启动）生效。点击「同步」会对所有已安装内核重新物化中央插件库，并清除外壳标记的已删除插件残留。进入「内核版本」页后，每个已安装版本旁的信息图标可悬停查看该版本实际物化的插件、版本和链接/拷贝模式。
-5. 在「概览」页点击「启动工作台」：自动拉起内核、等待就绪后打开工作台窗口进入 Harness 界面；启动失败会自动弹出事故面板和内核日志。「关闭工作台」会同时关闭工作台窗口并停止内核；内核运行中窗口被关掉时，可用「打开工作台窗口」重新打开。
+5. 在「概览」页点击「启动工作台」：自动拉起内核、等待就绪后校验当前内核的工作台地址，再打开工作台窗口进入 Harness 界面；启动失败会自动弹出事故面板和内核日志。「关闭工作台」会同时关闭工作台窗口并停止内核；内核运行中窗口被关掉时，可用「打开工作台窗口」重新打开。
    - 工作台窗口会自动进行健康自检。发现白屏、运行时错误或未处理的 Promise 异常时，事故面板会展示前端消息/堆栈，并标注「疑似插件问题」「疑似内核问题」或「暂未能归因」；插件问题可重新启用或移除，内核问题可打开日志并切换/重装版本，暂未归因时由你选择先看日志还是检查内核版本。
    - 工作台窗口侧栏头部右侧（品牌 logo 旁）悬浮着一个灯泡拉绳小挂件：点击（拉动）它，灯泡点亮的同时桌面端管理面板会归位到点击位置附近并提到当前桌面上方，方便随手操作；若灯泡闪红，说明与桌面壳的通信失败，可查看工作台 DevTools 控制台。
 6. 「打开官方对话」：在「概览」页点击此按钮即可拉起独立的官方对话窗口（顶部条带 chrome-row 官方品牌蓝 `#4D6BFE`、拉绳挂件挂页签栏右侧 12px；区别于工作台窗口的 Gitea 绿色 212px 偏移），按 `OFFICIAL_CHAT_TABS` 顺序排布 DeepSeek / 千问 / MiniMax 三个页签，与工作台窗口互不干扰；窗口创建时不覆盖 user-agent（诚实呈现桌面版 Edge）、以专属目录持久化登录态，并经 `.additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)` 注入 Chromium 开关（含 wry 默认三项与 `AutomationControlled` 等：不自报 `navigator.webdriver = true`、不弹 SmartScreen 安全提醒），随后给本地 `official-chat-strip` 页签栏 webview 注入 `pullstring-launcher.js`（拉绳属于整个窗口的 chrome，挂在页签栏右侧）、给内容子 webview 注入 `titlebar-pulse.js` → `chat-fingerprint.js`（钉住 `navigator.webdriver = false` 并删除 `__TAURI_*` 嵌入式全局——`chat-fingerprint.js` 只清嵌入式痕迹，不再伪造 `userAgentData` / `window.chrome`）；窗口已开时按钮变为「关闭官方对话」并销毁当前窗口，OS 关闭按钮始终保持有效。

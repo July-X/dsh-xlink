@@ -38,6 +38,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // 管理面板在 macOS / Windows 使用本地 Vue 标题栏绘制交通灯
+            // 和品牌背景。这个设置只影响 main，工作台与官方对话窗口
+            // 继续沿用各自的窗口 chrome。
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            if let Some(window) = app.get_webview_window("main") {
+                if let Err(error) = window.set_decorations(false) {
+                    eprintln!("dsh-xlink: 无法启用 macOS 自定义标题栏：{error}");
+                }
+            }
+
             let data_dir = kernel::data_dir(app.handle());
             // 把解析出的 data dir 打到 stderr，让同时运行 `tauri dev` 与
             // 已安装 release 壳的开发者能一眼看出到底是哪一个

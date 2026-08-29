@@ -691,12 +691,9 @@ fn bounded_health_text(
 /// 论本脚本和工作台自身样式表的加载顺序，Shell 的覆盖都能胜出。第二个
 /// 注入脚本（`pullstring-launcher.js`）渲染一个浮在工作台左上角的拉
 /// 绳小台灯；拉动它会调用 [`focus_main_shell`] 把管理窗口提到当前桌
-/// 面之上。第三个脚本（`sourcemap-quieter.js`）会拦截工作台对
-/// `.js.map` 的请求，并以一份合成空 source map 应答——dsh 内核的 npm
-/// 包故意省掉了 source-map 负载（编译产物里仍保留 `sourceMappingURL`
-/// 注释），因此如果没有这个拦截器，每次打开工作台 DevTools 都会记约
-/// 44 行 “Failed to load resource 404”；这个覆盖在不破坏工作台功能
-/// 的前提下让它们安静下来。
+/// 面之上。缺失 source map 则由打开窗口前的
+/// `kernel::prepare_workbench_source_maps` 在服务端文件层补齐，避免依赖
+/// 无法覆盖 DevTools 内部网络请求的页面脚本。
 /// 解析工作台 webview 应该加载的 URL，优先使用内核自带的 launch-token
 /// URL。
 ///
@@ -704,33 +701,65 @@ fn bounded_health_text(
 /// token（`dsh-client-connection` BrowserAuth）：`/?token=` 用来签发
 /// 会话 cookie，裸的根请求会得到 401。token 的唯一出处就是内核启动时
 /// 输出的 `dsh web: http://127.0.0.1:<port>/?token=…` 这一行，Shell
-/// 会把它捕获到当天的内核日志中。每次内核重启都会追加新的一行，因此
-/// **最后**匹配到的那条就是当前运行进程的 token；旧版本内核不输出
-/// token，会继续接受裸的源地址，所以拿不到 token 时回退到它。
-fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> String {
+/// 会把它捕获到当天的内核日志中。每次内核重启都会追加新的一行。
+///
+/// 当天日志可能还保留着上一个进程的 token；仅取最后一条日志行会在新进程
+/// 写出 URL 前选中旧 token，WebView 随后收到 401 并停在白屏。每个候选地址
+/// 都必须先通过 loopback HTTP 探针：token 地址应返回 303，旧版内核的裸地址
+/// 应返回 2xx。这样既等待当前进程的 token，也保留旧版内核的兼容路径。
+fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String, String> {
+    const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
+    const URL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
     let fallback = format!("http://127.0.0.1:{port}");
-    let needle = format!("http://127.0.0.1:{port}/?token=");
-    // 刚刚启动的内核要等它的第一轮启动流程走完之后才输出 URL 行，
-    // 因此当调用方与一次新启动竞速（「启动内核」紧跟着「打开工作
-    // 台」）时，最新一行可能还没落盘。短暂轮询——过期的 token 会返
-    // 回 401，结果会让工作台变成空白。
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    let tail = loop {
+    let deadline = std::time::Instant::now() + URL_TIMEOUT;
+    loop {
         let tail = read_tail(&kernel::current_kernel_log_path(data_dir), 16 * 1024);
-        if tail.contains(&needle) || std::time::Instant::now() >= deadline {
-            break tail;
+        let needle = format!("http://127.0.0.1:{port}/?token=");
+        if let Some(start) = tail.rfind(&needle) {
+            let rest = &tail[start + needle.len()..];
+            let token = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+                .map_or(rest, |end| &rest[..end]);
+            if !token.is_empty() {
+                let candidate = format!("{needle}{token}");
+                if workbench_url_responds(&candidate, PROBE_TIMEOUT) {
+                    return Ok(candidate);
+                }
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // 没有 token 的旧版内核仍接受裸地址；对 alpha.1 来说这里会返回
+        // 401，因此不能把它当成当前地址，而要继续等新的 token 日志。
+        if workbench_url_responds(&fallback, PROBE_TIMEOUT) {
+            return Ok(fallback);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "无法确认内核工作台地址，请打开日志后重试（日志：{}）",
+                kernel::current_kernel_log_path(data_dir).display()
+            ));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// 只检查工作台入口的响应状态，不跟随 303。使用独立的无 cookie agent，
+/// 探针不会把认证状态留给真正的工作台 webview。
+fn workbench_url_responds(url: &str, timeout: std::time::Duration) -> bool {
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .proxy(None)
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .build()
+        .new_agent();
+    let Ok(response) = agent.get(url).call() else {
+        return false;
     };
-    let Some(start) = tail.rfind(&needle) else {
-        return fallback;
-    };
-    let rest = &tail[start + needle.len()..];
-    let Some(end) = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
-    else {
-        return format!("{needle}{rest}");
-    };
-    format!("{needle}{}", &rest[..end])
+    let status = response.status().as_u16();
+    (200..300).contains(&status) || (300..400).contains(&status)
 }
 
 #[tauri::command]
@@ -744,7 +773,8 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                 settings.port
             ));
         }
-        Ok::<String, String>(kernel_workbench_url(&data_dir, settings.port))
+        kernel::prepare_workbench_source_maps(&data_dir);
+        kernel_workbench_url(&data_dir, settings.port)
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -768,7 +798,6 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                 .initialization_script(include_str!("titlebar-pulse.js"))
                 .initialization_script(include_str!("pullstring-launcher.js"))
                 .initialization_script(include_str!("harness-health.js"))
-                .initialization_script(include_str!("sourcemap-quieter.js"))
                 .build();
             if let Err(e) = result {
                 eprintln!("dsh-xlink: failed to open harness window: {e}");
@@ -1716,6 +1745,94 @@ pub async fn skill_check_updates() -> Result<Vec<skills::SkillUpdateInfo>, Strin
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod workbench_url_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn respond(mut stream: TcpStream, new_token: &str) {
+        let mut request = [0u8; 4096];
+        let size = stream.read(&mut request).unwrap_or(0);
+        let request = String::from_utf8_lossy(&request[..size]);
+        let status = if request.contains(&format!("token={new_token}")) {
+            "303 See Other"
+        } else {
+            "401 Unauthorized"
+        };
+        let response =
+            format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let _ = stream.write_all(response.as_bytes());
+    }
+
+    #[test]
+    fn waits_for_current_token_when_daily_log_contains_previous_process_token() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind probe server");
+        listener
+            .set_nonblocking(true)
+            .expect("set probe server nonblocking");
+        let port = listener.local_addr().expect("probe address").port();
+        let stale_token = "stale-process-token";
+        let current_token = "current-process-token";
+        let root = std::env::temp_dir().join(format!(
+            "dsh-xlink-workbench-url-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let log_path = kernel::current_kernel_log_path(&root);
+        fs::create_dir_all(log_path.parent().expect("log parent")).expect("create log dir");
+        fs::write(
+            &log_path,
+            format!("dsh web: http://127.0.0.1:{port}/?token={stale_token}\n"),
+        )
+        .expect("write stale token");
+
+        let stop_server = Arc::new(AtomicBool::new(false));
+        let server_stop = Arc::clone(&stop_server);
+        let server = std::thread::spawn(move || {
+            while !server_stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => respond(stream, current_token),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let log_for_append = log_path.clone();
+        let append = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let mut log = fs::OpenOptions::new()
+                .append(true)
+                .open(log_for_append)
+                .expect("open log for current token");
+            writeln!(
+                log,
+                "dsh web: http://127.0.0.1:{port}/?token={current_token}"
+            )
+            .expect("append current token");
+        });
+
+        let result = kernel_workbench_url(&root, port);
+
+        append.join().expect("append thread");
+        stop_server.store(true, Ordering::Relaxed);
+        server.join().expect("probe server thread");
+        fs::remove_dir_all(&root).expect("remove test data");
+        assert_eq!(
+            result,
+            Ok(format!("http://127.0.0.1:{port}/?token={current_token}"))
+        );
+    }
 }
 
 #[cfg(test)]

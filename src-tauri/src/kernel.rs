@@ -20,9 +20,9 @@
 //! 当前激活版本记录在 `<dsh_home>/desktop/active.txt` 中。
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::Duration;
 
@@ -57,6 +57,13 @@ const SHELL_SUBDIR: &str = if cfg!(debug_assertions) {
 /// 冲突。该值仅在 settings.json 缺失或没有 `port` 字段时生效；用户一旦持久化保存了
 /// 某个值，就会原样读回使用。
 pub const DEFAULT_PORT: u16 = if cfg!(debug_assertions) { 3091 } else { 3090 };
+/// 内核前端静态包的名称。npm 发布包会排除 dist 下的 source map，导致
+/// WebKit Inspector 在 debug 壳中对每个带引用的脚本报告 404。
+const WEB_FRONTEND_PACKAGE: &str = "@deepseek-ai/dsh-web-frontend";
+/// 不修改内核 JS，只为已存在 sourceMappingURL 的缺失目标生成这个最小
+/// v3 map；它让 DevTools 结束请求，不会伪造任何源码映射。
+pub(crate) const EMPTY_SOURCE_MAP: &str = r#"{"version":3,"sources":[],"names":[],"mappings":""}"#;
+
 /// 已安装包中内核 CLI 入口的相对路径。
 const KERNEL_BIN_REL: &str = "node_modules/@deepseek-ai/dsh/lib/bin.js";
 const MAX_ORPHAN_CANDIDATES: usize = 256;
@@ -193,6 +200,157 @@ pub fn kernels_dir(data_dir: &Path) -> PathBuf {
 
 pub fn kernel_dir(data_dir: &Path, version: &str) -> PathBuf {
     kernels_dir(data_dir).join(version)
+}
+
+/// 定位内核实际解析到的前端 dist。pnpm 的 hoisted 布局可能直接暴露
+/// 包目录，也可能把它放在 `.pnpm` 的带 peer 后缀目录中；两种布局都
+/// 由安装器合法地产生。
+fn frontend_dist_dir(kernel_root: &Path, version: &str) -> Option<PathBuf> {
+    let direct = kernel_root
+        .join("node_modules")
+        .join("@deepseek-ai")
+        .join(WEB_FRONTEND_PACKAGE.rsplit('/').next()?)
+        .join("dist");
+    if direct.is_dir() {
+        return Some(direct);
+    }
+
+    let package_version = version.strip_prefix('v').unwrap_or(version);
+    let prefix = format!("@deepseek-ai+dsh-web-frontend@{package_version}");
+    let pnpm_root = kernel_root.join("node_modules").join(".pnpm");
+    let entries = fs::read_dir(pnpm_root).ok()?;
+    entries.flatten().find_map(|entry| {
+        let name = entry.file_name();
+        let name = name.to_str()?;
+        if !name.starts_with(&prefix) {
+            return None;
+        }
+        let dist = entry
+            .path()
+            .join("node_modules")
+            .join("@deepseek-ai")
+            .join("dsh-web-frontend")
+            .join("dist");
+        dist.is_dir().then_some(dist)
+    })
+}
+
+/// 从 JS 文件末尾读取 source map 指令。发布包中的指令是普通的
+/// `//# sourceMappingURL=...` 注释；只接受 `.map` 文件，跳过 inline map
+/// 和其它 URL，避免把任意脚本文本转成文件路径。
+fn source_map_reference(source: &str) -> Option<&str> {
+    source.lines().rev().find_map(|line| {
+        let value = line.split_once("sourceMappingURL=")?.1.trim();
+        let value = value.strip_suffix("*/").map(str::trim).unwrap_or(value);
+        let end = value.find(['?', '#']).unwrap_or(value.len());
+        let value = &value[..end];
+        (value.ends_with(".map") && !value.starts_with("data:")).then_some(value)
+    })
+}
+
+/// 把相对 source map URL 解析到 `root` 内；绝对 URL、协议 URL 和越界
+/// 的 `..` 引用不应触发壳对任意路径的写入。
+fn source_map_path(script: &Path, reference: &str, root: &Path) -> Option<PathBuf> {
+    if reference.is_empty() || reference.contains("://") {
+        return None;
+    }
+    let mut path = script.parent()?.to_path_buf();
+    for component in Path::new(reference).components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => path.push(part),
+            Component::ParentDir => {
+                if !path.pop() {
+                    return None;
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    (path.starts_with(root) && path != root).then_some(path)
+}
+
+fn collect_javascript_files(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_javascript_files(&entry.path(), files)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let is_javascript = matches!(
+            entry.path().extension().and_then(|value| value.to_str()),
+            Some("js" | "mjs" | "cjs")
+        );
+        if is_javascript {
+            files.push(entry.path());
+        }
+    }
+    Ok(())
+}
+
+/// 为前端 dist 中已有 source map 声明而缺失的目标创建最小 v3 map。
+/// 返回本次新建的文件数；已有文件（包括符号链接）保持不变。
+fn materialize_missing_source_maps(dist_root: &Path) -> io::Result<usize> {
+    let root = fs::canonicalize(dist_root)?;
+    let mut scripts = Vec::new();
+    collect_javascript_files(&root, &mut scripts)?;
+    let mut created = 0;
+    for script in scripts {
+        let source = match fs::read_to_string(&script) {
+            Ok(source) => source,
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => continue,
+            Err(error) => return Err(error),
+        };
+        let Some(reference) = source_map_reference(&source) else {
+            continue;
+        };
+        let Some(map_path) = source_map_path(&script, reference, &root) else {
+            continue;
+        };
+        // symlink_metadata 也能识别 dangling symlink；壳不触碰包目录中
+        // 已存在的任何条目。
+        if fs::symlink_metadata(&map_path).is_ok() {
+            continue;
+        }
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&map_path)
+        {
+            Ok(mut map) => {
+                if let Err(error) = map.write_all(EMPTY_SOURCE_MAP.as_bytes()) {
+                    let _ = fs::remove_file(&map_path);
+                    return Err(error);
+                }
+                created += 1;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(created)
+}
+
+/// 在工作台窗口创建前准备缺失的前端 source map。该操作是 best-effort：
+/// source map 仅用于 DevTools 调试，包目录只读时不应阻断工作台本身启动。
+pub(crate) fn prepare_workbench_source_maps(data_dir: &Path) {
+    let Some(version) = read_active(data_dir) else {
+        return;
+    };
+    let root = kernel_dir(data_dir, &version);
+    let Some(dist) = frontend_dist_dir(&root, &version) else {
+        return;
+    };
+    if let Err(error) = materialize_missing_source_maps(&dist) {
+        eprintln!(
+            "dsh-xlink: unable to prepare frontend source maps in {}: {error}",
+            dist.display()
+        );
+    }
 }
 
 pub fn active_file(data_dir: &Path) -> PathBuf {
@@ -948,6 +1106,86 @@ pub fn kill_pid(pid: u32, port: Option<u16>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creates_empty_maps_only_for_missing_javascript_source_map_references() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-source-map-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("create assets");
+        fs::write(
+            assets.join("index.js"),
+            "console.log('workbench');\n//# sourceMappingURL=index.js.map\n",
+        )
+        .expect("write missing-map javascript");
+        fs::write(
+            assets.join("already.js"),
+            "//# sourceMappingURL=already.js.map\n",
+        )
+        .expect("write existing-map javascript");
+        fs::write(assets.join("already.js.map"), b"original map").expect("write existing map");
+        fs::write(
+            assets.join("inline.js"),
+            "//# sourceMappingURL=data:application/json;base64,AAAA\n",
+        )
+        .expect("write inline-map javascript");
+        fs::write(
+            assets.join("escape.js"),
+            "//# sourceMappingURL=../../outside.js.map\n",
+        )
+        .expect("write outside-map javascript");
+
+        let created = materialize_missing_source_maps(&root).expect("materialize maps");
+
+        assert_eq!(created, 1);
+        assert_eq!(
+            fs::read_to_string(assets.join("index.js.map")).expect("read generated map"),
+            EMPTY_SOURCE_MAP
+        );
+        assert_eq!(
+            fs::read_to_string(assets.join("already.js.map")).expect("read existing map"),
+            "original map"
+        );
+        assert!(!root
+            .parent()
+            .expect("temp parent")
+            .join("outside.js.map")
+            .exists());
+        fs::remove_dir_all(&root).expect("remove test files");
+    }
+
+    #[test]
+    fn finds_frontend_dist_in_pnpm_layout_and_strips_version_prefix() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-frontend-dist-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let dist = root
+            .join("node_modules")
+            .join(".pnpm")
+            .join("@deepseek-ai+dsh-web-frontend@0.1.2-alpha.1_peerhash")
+            .join("node_modules")
+            .join("@deepseek-ai")
+            .join("dsh-web-frontend")
+            .join("dist");
+        fs::create_dir_all(&dist).expect("create pnpm dist");
+
+        assert_eq!(
+            frontend_dist_dir(&root, "v0.1.2-alpha.1"),
+            Some(dist.clone())
+        );
+        fs::remove_dir_all(&root).expect("remove test files");
+    }
 
     /// `display_short` 是 UI 显示在「打开」按钮旁的文本；
     /// 按钮必须打开与标签同名的目录，否则用户会落到下一级而疑惑

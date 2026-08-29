@@ -24,6 +24,7 @@ import ProgressOverlay from './components/ProgressOverlay.vue';
 import LogModal from './components/LogModal.vue';
 import IncidentModal from './components/IncidentModal.vue';
 import DebugPanel from './components/DebugPanel.vue';
+import WindowTitleBar from './components/WindowTitleBar.vue';
 
 const PANELS = {
   overview: OverviewPanel,
@@ -183,16 +184,19 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="layout">
-    <SideBar />
-    <main>
-      <Transition name="panel" mode="out-in">
-        <component :is="PANELS[store.activePanel]" :key="store.activePanel" />
-      </Transition>
-    </main>
+  <div class="app-shell">
+    <WindowTitleBar />
+    <div class="layout">
+      <SideBar />
+      <main>
+        <Transition name="panel" mode="out-in">
+          <component :is="PANELS[store.activePanel]" :key="store.activePanel" />
+        </Transition>
+      </main>
+    </div>
+    <ProgressOverlay />
+    <LogModal />
+    <IncidentModal />
+    <DebugPanel />
   </div>
-  <ProgressOverlay />
-  <LogModal />
-  <IncidentModal />
-  <DebugPanel />
 </template>
