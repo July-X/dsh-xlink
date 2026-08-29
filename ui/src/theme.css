@@ -96,6 +96,587 @@ body {
   height: 100%;
 }
 
+/* --- macOS / Windows 自绘标题栏 --------------------------------------------
+   主窗口由 Rust 在 macOS / Windows 上关闭系统装饰，标题栏因此进入 WebView 的内容流。
+   底色从左侧 5% 不透明度的 Gitea 绿向右侧 70% 不透明度过渡；宽笔触
+   负责毛笔的行气，细纹理只作为干笔断墨的补充，避免看起来像普通的条纹渐变。 */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.mac-titlebar {
+  position: relative;
+  z-index: 1001;
+  display: flex;
+  flex: 0 0 44px;
+  align-items: center;
+  height: 44px;
+  min-height: 44px;
+  overflow: hidden;
+  isolation: isolate;
+  color: rgba(247, 255, 238, 0.92);
+  user-select: none;
+  background-color: #10281f;
+  background-image: linear-gradient(
+    to right,
+    rgba(77, 118, 44, 0.05) 0%,
+    rgba(77, 118, 44, 0.26) 32%,
+    rgba(77, 118, 44, 0.48) 64%,
+    rgba(77, 118, 44, 0.7) 100%
+  );
+  border-bottom: 1px solid rgba(7, 22, 13, 0.8);
+  box-shadow:
+    inset 0 1px 0 rgba(215, 240, 190, 0.1),
+    0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+.mac-titlebar::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  inset: -46% -8%;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      104deg,
+      transparent 0 11%,
+      rgba(191, 223, 153, 0.055) 12% 13%,
+      transparent 14% 29%,
+      rgba(170, 204, 125, 0.045) 30% 31.5%,
+      transparent 33% 53%,
+      rgba(201, 230, 163, 0.055) 54% 55%,
+      transparent 56% 75%,
+      rgba(7, 25, 4, 0.22) 76% 78%,
+      transparent 79%
+    ),
+    repeating-linear-gradient(
+      164deg,
+      rgba(231, 252, 195, 0.055) 0 1px,
+      transparent 1px 7px
+    ),
+    repeating-linear-gradient(
+      164deg,
+      transparent 0 14px,
+      rgba(6, 25, 4, 0.2) 14px 16px,
+      transparent 16px 29px
+    );
+  opacity: 0.72;
+  mix-blend-mode: soft-light;
+  transform: rotate(-1.5deg) scale(1.08);
+}
+
+.mac-titlebar::after {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    176deg,
+    transparent 0 4px,
+    rgba(5, 22, 3, 0.14) 4px 5px,
+    transparent 5px 11px
+  );
+  opacity: 0.62;
+  mix-blend-mode: multiply;
+}
+
+/* 宽笔触是主纹理：不规则多边形负责毛边，重复渐变模拟干笔断墨，
+   两道深浅不同的笔锋交错后，比均匀的斜线更接近毛笔落锋的节奏。 */
+.mac-titlebar__brush {
+  position: absolute;
+  z-index: 2;
+  display: block;
+  height: 14px;
+  pointer-events: none;
+  clip-path: polygon(
+    0% 42%,
+    3% 26%,
+    8% 18%,
+    14% 21%,
+    20% 12%,
+    29% 18%,
+    36% 8%,
+    45% 14%,
+    57% 6%,
+    68% 13%,
+    77% 4%,
+    87% 11%,
+    96% 18%,
+    100% 6%,
+    99% 41%,
+    100% 66%,
+    94% 61%,
+    88% 78%,
+    80% 64%,
+    71% 91%,
+    62% 72%,
+    51% 84%,
+    42% 69%,
+    32% 88%,
+    23% 70%,
+    14% 94%,
+    6% 72%,
+    0% 80%
+  );
+  filter: blur(0.2px);
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 3%, #000 94%, transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0%, #000 3%, #000 94%, transparent 100%);
+}
+
+.mac-titlebar__brush--light {
+  top: -3px;
+  left: -9%;
+  width: 120%;
+  opacity: 0.36;
+  background:
+    repeating-linear-gradient(
+      171deg,
+      rgba(151, 187, 94, 0.14) 0 1px,
+      transparent 1px 4px
+    ),
+    linear-gradient(
+      to right,
+      transparent 0%,
+      rgba(101, 147, 54, 0.11) 6%,
+      rgba(130, 171, 72, 0.17) 37%,
+      rgba(98, 142, 50, 0.12) 78%,
+      transparent 100%
+    );
+  transform: rotate(-1.2deg);
+  mix-blend-mode: screen;
+}
+
+.mac-titlebar__brush--ink {
+  top: 10px;
+  left: -7%;
+  width: 116%;
+  height: 18px;
+  opacity: 0.46;
+  background:
+    repeating-linear-gradient(
+      173deg,
+      rgba(3, 17, 2, 0.22) 0 2px,
+      transparent 2px 5px
+    ),
+    linear-gradient(
+      to right,
+      transparent 0%,
+      rgba(8, 28, 4, 0.2) 4%,
+      rgba(5, 22, 3, 0.34) 43%,
+      rgba(9, 31, 4, 0.18) 88%,
+      transparent 100%
+    );
+  transform: rotate(1.4deg);
+  mix-blend-mode: multiply;
+}
+
+.mac-titlebar__brush--dry {
+  top: 27px;
+  left: -14%;
+  width: 124%;
+  height: 11px;
+  opacity: 0.3;
+  background:
+    repeating-linear-gradient(
+      168deg,
+      rgba(132, 171, 69, 0.1) 0 1px,
+      transparent 1px 3px,
+      rgba(7, 27, 4, 0.08) 3px 4px,
+      transparent 4px 7px
+    ),
+    linear-gradient(
+      to right,
+      transparent 0%,
+      rgba(86, 133, 39, 0.09) 9%,
+      rgba(119, 159, 56, 0.14) 52%,
+      rgba(60, 103, 27, 0.09) 92%,
+      transparent 100%
+    );
+  transform: rotate(-2deg);
+  mix-blend-mode: screen;
+}
+
+.mac-titlebar__brush--tip {
+  top: 36px;
+  left: 24%;
+  width: 80%;
+  height: 8px;
+  opacity: 0.23;
+  background:
+    repeating-linear-gradient(
+      175deg,
+      rgba(158, 194, 91, 0.1) 0 1px,
+      transparent 1px 4px
+    ),
+    linear-gradient(
+      to right,
+      transparent 0%,
+      rgba(94, 139, 43, 0.11) 8%,
+      rgba(10, 34, 5, 0.1) 86%,
+      transparent 100%
+    );
+  transform: rotate(1.8deg);
+  mix-blend-mode: overlay;
+}
+
+.mac-titlebar__brush--ridge {
+  top: 3px;
+  left: 13%;
+  width: 78%;
+  height: 10px;
+  opacity: 0.3;
+  clip-path: polygon(
+    0% 48%,
+    8% 31%,
+    17% 36%,
+    28% 17%,
+    39% 27%,
+    51% 9%,
+    63% 25%,
+    76% 12%,
+    90% 26%,
+    100% 19%,
+    97% 63%,
+    88% 57%,
+    78% 76%,
+    64% 60%,
+    51% 82%,
+    37% 63%,
+    22% 78%,
+    9% 62%,
+    0% 72%
+  );
+  background:
+    repeating-linear-gradient(
+      174deg,
+      rgba(133, 173, 70, 0.1) 0 1px,
+      transparent 1px 4px
+    ),
+    linear-gradient(
+      to right,
+      transparent 0%,
+      rgba(102, 147, 45, 0.08) 9%,
+      rgba(128, 168, 65, 0.16) 48%,
+      rgba(77, 120, 31, 0.08) 94%,
+      transparent 100%
+    );
+  transform: rotate(-2.6deg);
+  mix-blend-mode: screen;
+}
+
+.mac-titlebar__brush--broken {
+  top: 18px;
+  left: 36%;
+  width: 70%;
+  height: 9px;
+  opacity: 0.34;
+  clip-path: polygon(
+    0% 45%,
+    6% 30%,
+    15% 38%,
+    25% 15%,
+    37% 28%,
+    50% 8%,
+    63% 22%,
+    76% 12%,
+    89% 29%,
+    100% 20%,
+    96% 69%,
+    83% 57%,
+    71% 83%,
+    56% 61%,
+    42% 78%,
+    28% 58%,
+    14% 80%,
+    4% 62%
+  );
+  background:
+    repeating-linear-gradient(
+      171deg,
+      transparent 0 5px,
+      rgba(5, 23, 3, 0.24) 5px 7px,
+      transparent 7px 11px
+    ),
+    linear-gradient(
+      to right,
+      transparent 0%,
+      rgba(5, 23, 3, 0.16) 4%,
+      rgba(7, 28, 4, 0.27) 42%,
+      rgba(7, 25, 4, 0.13) 91%,
+      transparent 100%
+    );
+  transform: rotate(2.1deg);
+  mix-blend-mode: multiply;
+}
+
+.mac-titlebar__brush--bristle {
+  top: 33px;
+  left: -3%;
+  width: 108%;
+  height: 6px;
+  opacity: 0.3;
+  clip-path: polygon(
+    0% 50%,
+    5% 28%,
+    13% 42%,
+    24% 21%,
+    35% 39%,
+    47% 18%,
+    59% 34%,
+    72% 16%,
+    85% 36%,
+    100% 25%,
+    98% 76%,
+    85% 64%,
+    73% 84%,
+    59% 65%,
+    46% 87%,
+    33% 63%,
+    21% 81%,
+    9% 61%,
+    0% 74%
+  );
+  background:
+    repeating-linear-gradient(
+      168deg,
+      rgba(123, 163, 59, 0.11) 0 1px,
+      transparent 1px 3px,
+      rgba(4, 22, 3, 0.1) 3px 4px,
+      transparent 4px 6px
+    ),
+    linear-gradient(
+      to right,
+      transparent 0%,
+      rgba(74, 117, 28, 0.08) 4%,
+      rgba(111, 150, 45, 0.14) 54%,
+      rgba(58, 98, 24, 0.08) 95%,
+      transparent 100%
+    );
+  transform: rotate(-1deg);
+  mix-blend-mode: screen;
+}
+
+.mac-titlebar__controls {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  flex: 0 0 62px;
+  align-items: center;
+  gap: 8px;
+  margin-left: 14px;
+}
+
+.mac-titlebar__light {
+  position: relative;
+  display: grid;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  padding: 0;
+  place-items: center;
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    0 0 0 0 rgba(255, 255, 255, 0);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.15s ease, filter 0.15s ease;
+}
+
+.mac-titlebar__light::before {
+  display: block;
+  color: rgba(45, 35, 28, 0.72);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.mac-titlebar__light:hover {
+  transform: scale(1.08);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 0 0 2px rgba(255, 255, 255, 0.14);
+}
+
+.mac-titlebar__light:focus-visible {
+  outline: 2px solid rgba(239, 255, 218, 0.9);
+  outline-offset: 3px;
+}
+
+.mac-titlebar__light--close {
+  background: #ff5f57;
+  border-color: #d94a43;
+}
+
+.mac-titlebar__light--close::before {
+  content: 'x';
+  font-size: 9px;
+}
+
+.mac-titlebar__light--minimize {
+  background: #febc2e;
+  border-color: #d89c1d;
+}
+
+.mac-titlebar__light--minimize::before {
+  content: '-';
+  font-size: 10px;
+}
+
+.mac-titlebar__light--zoom {
+  background: #28c840;
+  border-color: #1c9e31;
+}
+
+.mac-titlebar__light--zoom::before {
+  content: '+';
+  font-size: 9px;
+}
+
+.mac-titlebar__light:hover::before {
+  opacity: 1;
+}
+
+.mac-titlebar__light--zoom:disabled {
+  filter: saturate(0.68);
+  cursor: default;
+  opacity: 0.68;
+}
+
+.mac-titlebar__light--zoom:disabled:hover {
+  transform: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.mac-titlebar__caption {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  pointer-events: none;
+  color: rgba(247, 255, 238, 0.84);
+  font-size: 12px;
+  font-weight: 650;
+  text-shadow: 0 1px 2px rgba(12, 30, 6, 0.4);
+}
+
+.mac-titlebar__caption-mark {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border: 1px solid rgba(238, 255, 216, 0.72);
+  border-radius: 2px;
+  box-shadow: 0 0 7px rgba(224, 255, 189, 0.36);
+  transform: rotate(45deg);
+}
+
+.mac-titlebar__sweep {
+  position: absolute;
+  z-index: 2;
+  top: -12%;
+  left: 0;
+  width: 24%;
+  height: 124%;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    rgba(235, 255, 214, 0.05) 20%,
+    rgba(245, 255, 229, 0.36) 50%,
+    rgba(235, 255, 214, 0.05) 80%,
+    transparent 100%
+  );
+  filter: blur(1px);
+  mix-blend-mode: screen;
+}
+
+body.pulse-active .mac-titlebar__sweep {
+  animation: mac-titlebar-sweep 7.68s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.mac-titlebar__sweep--secondary {
+  animation-delay: 3.84s !important;
+}
+
+@keyframes mac-titlebar-sweep {
+  0% {
+    opacity: 0;
+    transform: translateX(-150%);
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(520%);
+  }
+}
+
+/* dev 构建沿用鲸眼红作为外壳识别色；仅改变标题栏底色和纹理层，
+   交通灯按钮本身保持 macOS 原生的红黄绿语义。 */
+body.dev-build .mac-titlebar {
+  background-color: #210e19;
+  background-image: linear-gradient(
+    to right,
+    rgba(164, 61, 69, 0.05) 0%,
+    rgba(164, 61, 69, 0.26) 32%,
+    rgba(164, 61, 69, 0.48) 64%,
+    rgba(164, 61, 69, 0.7) 100%
+  );
+  border-bottom-color: rgba(31, 6, 12, 0.84);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 170, 174, 0.1),
+    0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+/* 笔刷层原本以 Gitea 绿绘制，dev 时整体转到鲸眼红色相；保留各层
+   自己的 blur 和混合模式，只改变颜色观感。 */
+body.dev-build .mac-titlebar::before {
+  filter: hue-rotate(-95deg);
+}
+
+body.dev-build .mac-titlebar::after {
+  filter: hue-rotate(-95deg);
+}
+
+body.dev-build .mac-titlebar__brush {
+  filter: hue-rotate(-95deg) blur(0.2px);
+}
+
+body.dev-build .mac-titlebar__sweep {
+  filter: hue-rotate(-95deg) blur(1px);
+}
+
+body.dev-build .mac-titlebar__caption {
+  color: rgba(255, 240, 240, 0.84);
+  text-shadow: 0 1px 2px rgba(31, 6, 12, 0.48);
+}
+
+body.dev-build .mac-titlebar__caption-mark {
+  border-color: rgba(255, 194, 196, 0.72);
+  box-shadow: 0 0 7px rgba(255, 104, 110, 0.3);
+}
+
+/* macOS / Windows 主窗口已有自己的扫光层；保留全局版本给日志阅读窗口。 */
+body.custom-titlebar-shell::after,
+body.custom-titlebar-shell > [data-titlebar-pulse='2'] {
+  display: none;
+}
+
 a {
   color: var(--accent);
   text-decoration: none;
@@ -135,7 +716,9 @@ code {
 
 .layout {
   display: flex;
-  height: 100%;
+  flex: 1;
+  height: auto;
+  min-height: 0;
 }
 
 .sidebar {
@@ -1457,7 +2040,8 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   }
   .layout {
     flex-direction: column;
-    height: 100%;
+    height: auto;
+    min-height: 0;
   }
   .sidebar {
     flex: 0 0 auto;
