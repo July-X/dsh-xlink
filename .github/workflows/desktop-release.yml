@@ -353,11 +353,11 @@ jobs:
             fi
             if [[ -n "$existing_ids" ]]; then
               gh api --method DELETE \
-                "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets/${existing_ids}" \
+                "repos/${GITHUB_REPOSITORY}/releases/assets/${existing_ids}" \
                 >/dev/null
             fi
-            gh api --hostname uploads.github.com --method POST \
-              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
+            gh api --method POST \
+              "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
               --header 'Content-Type: application/octet-stream' \
               --raw-field "name=$asset_name" \
               --input "$path" \
