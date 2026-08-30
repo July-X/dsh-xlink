@@ -180,6 +180,41 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm exec tauri build
 
+      - name: Normalize macOS updater asset names
+        if: matrix.name == 'macos-intel'
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          macos_dir="src-tauri/target/release/bundle/macos"
+          dmg_count="$(find "$macos_dir" -maxdepth 1 -type f -name '*.dmg' -print | wc -l | tr -d ' ')"
+          archive_count="$(find "$macos_dir" -maxdepth 1 -type f -name '*.app.tar.gz' -print | wc -l | tr -d ' ')"
+          signature_count="$(find "$macos_dir" -maxdepth 1 -type f -name '*.app.tar.gz.sig' -print | wc -l | tr -d ' ')"
+          if [[ "$dmg_count" != '1' || "$archive_count" != '1' || "$signature_count" != '1' ]]; then
+            echo "expected one DMG, updater archive and signature; found $dmg_count/$archive_count/$signature_count" >&2
+            exit 1
+          fi
+
+          dmg="$(find "$macos_dir" -maxdepth 1 -type f -name '*.dmg' -print)"
+          archive="$(find "$macos_dir" -maxdepth 1 -type f -name '*.app.tar.gz' -print)"
+          signature="$(find "$macos_dir" -maxdepth 1 -type f -name '*.app.tar.gz.sig' -print)"
+          dmg_name="${dmg##*/}"
+          stem="${dmg_name%.dmg}"
+          versioned_archive="$macos_dir/$stem.app.tar.gz"
+          versioned_signature="$versioned_archive.sig"
+
+          if [[ "$stem" != *"$RELEASE_VERSION"* ]]; then
+            echo "macOS DMG does not contain release version $RELEASE_VERSION: $dmg_name" >&2
+            exit 1
+          fi
+          if [[ "$archive" != "$versioned_archive" ]]; then
+            mv "$archive" "$versioned_archive"
+          fi
+          if [[ "$signature" != "$versioned_signature" ]]; then
+            mv "$signature" "$versioned_signature"
+          fi
+
       - name: Upload macOS release assets
         if: matrix.name == 'macos-intel'
         uses: actions/upload-artifact@v4
