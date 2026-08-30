@@ -194,9 +194,10 @@ jobs:
         if: matrix.name == 'macos-intel'
         env:
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
-        run: node scripts/normalize-release-assets.mjs \
-          --bundle-dir src-tauri/target/release/bundle \
-          --version "$RELEASE_VERSION"
+        run: |
+          node scripts/normalize-release-assets.mjs \
+            --bundle-dir src-tauri/target/release/bundle \
+            --version "$RELEASE_VERSION"
 
       - name: Upload macOS release assets
         if: matrix.name == 'macos-intel'
@@ -245,9 +246,10 @@ jobs:
       - name: Normalize downloaded macOS updater asset names
         env:
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
-        run: node scripts/normalize-release-assets.mjs \
-          --bundle-dir artifacts \
-          --version "$RELEASE_VERSION"
+        run: |
+          node scripts/normalize-release-assets.mjs \
+            --bundle-dir artifacts \
+            --version "$RELEASE_VERSION"
 
       - name: Generate updater metadata
         env:
