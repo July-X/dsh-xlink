@@ -12,6 +12,7 @@ mod error;
 mod guard;
 mod kernel;
 mod node;
+mod patches;
 mod plugins;
 mod process;
 mod quarantine;
@@ -134,6 +135,9 @@ pub fn run() {
             commands::plugin_check_updates,
             commands::plugin_catalog,
             commands::plugin_resolve,
+            commands::patch_status,
+            commands::patch_apply,
+            commands::patch_revert,
             commands::skill_status,
             commands::skill_install,
             commands::skill_update,

@@ -54,6 +54,7 @@
 - **插件管理**：社区插件（npm 包或 GitHub 仓库）统一存入 `~/.dsh/plugins/`，以**链接**（默认，Windows 自动降级**复制**）的方式进入每个已安装内核（`~/.dsh/desktop/kernels/<版本>/plugins/`），并自动接线进 profile——切换内核无需重装；GitHub 仓库地址安装时优先使用对应 GitHub Release 的 tarball 版本数据，Release 不可用时回退 git clone，其它 Git 地址保持原有 clone 行为；「插件中心」对接 [dsh-plugin-hub](https://dsh-plugin.org) 目录（分类/搜索/排序/已安装过滤，6 小时本地缓存，官方 market 兜底），安装前校验 dsh 规范；管理面板提供安装/卸载/更新/切换模式/同步，检测到新版本时在卡片与启动时提醒；点击「同步」会遍历所有已安装内核，重新物化中央库中的插件，并清除外壳明确标记的已删除残留，保证外壳管理的插件状态与 `~/.dsh/plugins/` 一致；启动容错面板中的「移除插件」会同时清除隔离记录，若上次卸载只完成了部分清理，重复执行也能继续收尾
 - **工作台健康自检**：工作台窗口自动监听白屏、运行时错误和未处理的 Promise 异常；外壳会把前端消息、堆栈和页面地址与今天的内核日志（`<kind>-kernel-<日期>.log`）一起分析，判断为疑似插件、疑似内核或暂未能归因（白屏 + 已装第三方插件的「软信号」分支会列出所有插件作为排查候选但不会自动隔离），并在事故面板展示证据和对应的插件隔离/移除、日志、内核版本修复入口
 - **技能管理**：社区技能（npm 包 / GitHub 仓库 / 本地文件夹）统一存入 `~/.dsh/skills-store/`，按包安装的粒度以链接（失败降级复制）物化进内核自带扫描的 `~/.dsh/skills/`——不改 cordis 配置、不装依赖、切换内核零操作；内核对技能根做文件监视，**安装/卸载/更新对运行中的工作台即时生效，无需重启**；安装前逐个校验 SKILL.md frontmatter（kebab-case `name` + `description` 必填），避免"装了却不出现"；本地文件夹来源支持改完点「重新同步」；启动时自动对账（补链、清扫孤儿链接、恢复中断的更新）；v1 面板只出手动安装行（git 仓库地址），社区目录卡等中心上线技能 feed 之后再启用
+- **内置补丁（内核补丁 / 小插件）**：随 dsh-xlink 发布包捆绑的自研内核补丁与小插件（`src-tauri/resources/patches/<id>/`，发布时进入 app 资源目录，与社区插件不同、无需第三方信任），默认**不生效**——在「设置 → 内核补丁」页自主选择「应用到当前内核」或「撤销补丁」；应用前自动备份被覆盖的原文件到 `~/.dsh/desktop/patches/backups/`，撤销时从备份还原，备份丢失时以内容 SHA-256 校验兜底、绝不盲目覆盖或删除；支持 `copy`（新增/覆盖文件，覆盖既有文件时可用 `expectSha256` 声明预期原文件哈希作安全闸）与 `replace`（精确字符串替换）两种文件操作，目标路径严格限制在内核目录内，可按 `minKernelVersion` / `maxKernelVersion` 声明适用内核版本范围；应用记录持久化在 `~/.dsh/desktop/patches/state.json`，按「补丁 × 内核版本」隔离；工作台运行期间禁止操作；首个真实补丁为 `dsh-file-perf`（dsh 文件引用性能修复），设计文档见 [docs/patch-management.md](docs/patch-management.md)
 
 ## 目录结构
 
@@ -66,7 +67,7 @@
 │   ├── public/               # 静态资源：whale-icon.png 顶栏 logo
 │   ├── src/                  # 源码：App.vue / 各面板组件 / store / plugins / skills / theme.css
 │   └── dist/                 # vite build 产物（tauri.conf.json 的 frontendDist）
-├── docs/                     # 架构、插件、技能、图标和故障排查文档
+├── docs/                     # 架构、插件、技能、补丁、图标和故障排查文档
 ├── assets/                   # 全仓库图标母版
 │   ├── whale-icon.svg        # 完整细节母版（黑鲸 + 红眼，用于 ≥128px）
 │   ├── whale-icon-small.svg  # 小尺寸母版（红眼夸大版，用于 ≤64px）
@@ -74,15 +75,18 @@
 ├── scripts/
 │   └── build-icons.sh        # 从双 SVG 母版生成 Tauri 和面板图标
 └── src-tauri/                # Tauri v2 Rust 进程
-    ├── tauri.conf.json       # frontendDist → ../ui/dist
+    ├── tauri.conf.json       # frontendDist → ../ui/dist；resources 捆绑 patches/
     ├── Cargo.toml / Cargo.lock
     ├── capabilities/         # 各窗口的访问权限
     ├── icons/                # 应用图标集
+    ├── resources/
+    │   └── patches/<id>/     # 内置补丁清单与载荷（随发布包进入 app 资源目录）
     └── src/
         ├── main.rs / lib.rs  # 入口与装配（含退出时回收内核）
-        ├── commands.rs       # Tauri 命令（含插件/技能与窗口操作）
+        ├── commands.rs       # Tauri 命令（含插件/技能/补丁与窗口操作）
         ├── kernel.rs         # 安装 / active / 启动 / 停止 / 端口探测
         ├── plugins.rs        # 插件中央库、物化、接线与更新
+        ├── patches.rs        # 内置补丁：清单、备份、应用/撤销、状态
         ├── skills.rs         # 技能中央库、物化、启停与更新
         ├── releases.rs       # 官方发布列表（API + Atom 回退）
         ├── node.rs           # Node/pnpm 检测与版本校验
@@ -121,15 +125,16 @@ npm run build:win         # x86_64-pc-windows-msvc
    - 首次安装会自动成为活动版本并自动启动内核。
    - 之后安装的版本不会覆盖当前活动版本，可随时在「已安装」列表中「切换」或「删除」。
 4. （可选）**插件** → 在「插件中心」按分类浏览、搜索（即时过滤）、按 Star/更新时间排序后一键安装，或手动填写 npm 包名（如 `@ace-zone/dsh-market`）/ GitHub 仓库 URL 安装；安装前自动校验插件是否符合 dsh 规范（package.json / `dsh.bundle.patch` / 入口文件），安装完成后重启工作台（关闭后重新启动）生效。点击「同步」会对所有已安装内核重新物化中央插件库，并清除外壳标记的已删除插件残留。进入「内核版本」页后，每个已安装版本旁的信息图标可悬停查看该版本实际物化的插件、版本和链接/拷贝模式。
-5. 在「概览」页点击「启动工作台」：自动拉起内核、等待就绪后校验当前内核的工作台地址，再打开工作台窗口进入 Harness 界面；启动失败会自动弹出事故面板和内核日志。「关闭工作台」会同时关闭工作台窗口并停止内核。工作台窗口的系统关闭按钮（macOS 交通灯红灯 / Windows ×）始终可用，只收起窗口、内核与任务继续在后台运行；内核运行中收起窗口后，随时可用「打开工作台窗口」重新打开。
+5. （可选）**设置 → 内核补丁（内置）**：查看随当前 dsh-xlink 版本捆绑的内核补丁与小插件（来自本应用发布方，与社区插件不同），自主选择「应用到当前内核」或「撤销补丁」；应用前自动备份被覆盖的原文件、随时可撤销，状态与备份记录在 `~/.dsh/desktop/patches/`（dev 壳为 `desktop-dev`）。工作台运行期间不能操作，请先关闭工作台；切换内核版本后需对新的活动版本重新应用。
+6. 在「概览」页点击「启动工作台」：自动拉起内核、等待就绪后校验当前内核的工作台地址，再打开工作台窗口进入 Harness 界面；启动失败会自动弹出事故面板和内核日志。「关闭工作台」会同时关闭工作台窗口并停止内核。工作台窗口的系统关闭按钮（macOS 交通灯红灯 / Windows ×）始终可用，只收起窗口、内核与任务继续在后台运行；内核运行中收起窗口后，随时可用「打开工作台窗口」重新打开。
    - 工作台窗口会自动进行健康自检。发现白屏、运行时错误或未处理的 Promise 异常时，事故面板会展示前端消息/堆栈，并标注「疑似插件问题」「疑似内核问题」或「暂未能归因」；插件问题可重新启用或移除，内核问题可先停止工作台，再打开日志并切换/重装版本，暂未归因时由你选择先看日志还是检查内核版本。
    - 工作台窗口侧栏头部右侧（品牌 logo 旁）悬浮着一个灯泡拉绳小挂件：点击（拉动）它，灯泡点亮的同时桌面端管理面板会归位到点击位置附近并提到当前桌面上方，方便随手操作；若灯泡闪红，说明与桌面壳的通信失败，可查看工作台 DevTools 控制台。
-6. 「打开官方对话」：在「概览」页点击此按钮即可拉起独立的官方对话窗口（顶部条带 chrome-row 官方品牌蓝 `#4D6BFE`、拉绳挂件挂页签栏右侧 12px；区别于工作台窗口的 Gitea 绿色 212px 偏移），按 `OFFICIAL_CHAT_TABS` 顺序排布 DeepSeek / 千问 / MiniMax 三个页签，与工作台窗口互不干扰；窗口创建时不覆盖 user-agent（诚实呈现桌面版 Edge）、以专属目录持久化登录态，并经 `.additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)` 注入 Chromium 开关（含 wry 默认三项与 `AutomationControlled` 等：不自报 `navigator.webdriver = true`、不弹 SmartScreen 安全提醒），随后给本地 `official-chat-strip` 页签栏 webview 注入 `pullstring-launcher.js`（拉绳属于整个窗口的 chrome，挂在页签栏右侧）、给内容子 webview 注入 `titlebar-pulse.js` → `chat-fingerprint.js`（钉住 `navigator.webdriver = false` 并删除 `__TAURI_*` 嵌入式全局——`chat-fingerprint.js` 只清嵌入式痕迹，不再伪造 `userAgentData` / `window.chrome`）；窗口已开时按钮变为「关闭官方对话」并销毁当前窗口，OS 关闭按钮始终保持有效。
-7. 首次使用时在 Harness 的设置页配置 DeepSeek（`DEEPSEEK_API_KEY` 等）即可开始对话。
+7. 「打开官方对话」：在「概览」页点击此按钮即可拉起独立的官方对话窗口（顶部条带 chrome-row 官方品牌蓝 `#4D6BFE`、拉绳挂件挂页签栏右侧 12px；区别于工作台窗口的 Gitea 绿色 212px 偏移），按 `OFFICIAL_CHAT_TABS` 顺序排布 DeepSeek / 千问 / MiniMax 三个页签，与工作台窗口互不干扰；窗口创建时不覆盖 user-agent（诚实呈现桌面版 Edge）、以专属目录持久化登录态，并经 `.additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)` 注入 Chromium 开关（含 wry 默认三项与 `AutomationControlled` 等：不自报 `navigator.webdriver = true`、不弹 SmartScreen 安全提醒），随后给本地 `official-chat-strip` 页签栏 webview 注入 `pullstring-launcher.js`（拉绳属于整个窗口的 chrome，挂在页签栏右侧）、给内容子 webview 注入 `titlebar-pulse.js` → `chat-fingerprint.js`（钉住 `navigator.webdriver = false` 并删除 `__TAURI_*` 嵌入式全局——`chat-fingerprint.js` 只清嵌入式痕迹，不再伪造 `userAgentData` / `window.chrome`）；窗口已开时按钮变为「关闭官方对话」并销毁当前窗口，OS 关闭按钮始终保持有效。
+8. 首次使用时在 Harness 的设置页配置 DeepSeek（`DEEPSEEK_API_KEY` 等）即可开始对话。
 
 
 数据目录（统一在 dsh home 下的 `desktop/` 二级目录）：
-- 外壳元数据（已装版本、活动指针、设置、日志）：`~/.dsh/desktop/`（`kernels/`、`logs/`、`settings.json`、`active.txt`；可用 `DSH_HOME` 环境变量重定向整个 dsh home）
+- 外壳元数据（已装版本、活动指针、设置、日志、补丁状态）：`~/.dsh/desktop/`（`kernels/`、`logs/`、`settings.json`、`active.txt`、`patches/`（补丁应用记录与备份）；可用 `DSH_HOME` 环境变量重定向整个 dsh home）
 - 内核数据（会话、配置、profile）：`~/.dsh`
 > 从旧版本升级：旧版外壳把元数据存在系统应用数据目录（macOS `~/Library/Application Support/com.zhongxingxing.dsh-desktop/`）。新版启动后该处数据不再读取，请将旧目录下的 `kernels/`、`logs/`、`settings.json`、`active.txt` 手动移到 `~/.dsh/desktop/`。
 

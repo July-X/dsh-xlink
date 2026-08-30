@@ -58,6 +58,9 @@
           "skill_uninstall",
           "skill_set_enabled",
           "skill_check_updates",
+          "patch_status",
+          "patch_apply",
+          "patch_revert",
           "confirm_close_shell"
         ]
       }
