@@ -273,9 +273,25 @@ jobs:
           RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
         run: |
           set -euo pipefail
+          release_name="dsh-xlink v$RELEASE_VERSION"
+          tag_sha=""
+          if ! tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
+            --jq .object.sha 2>/dev/null)"; then
+            tag_sha=""
+          fi
+          if [[ -n "$tag_sha" && "$tag_sha" != "$GITHUB_SHA" ]]; then
+            echo "tag $RELEASE_TAG already points to $tag_sha, expected $GITHUB_SHA" >&2
+            exit 1
+          fi
+          if [[ -z "$tag_sha" ]]; then
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" \
+              -f sha="$GITHUB_SHA" >/dev/null
+          fi
+
           release_metadata="$(gh api "repos/${GITHUB_REPOSITORY}/releases" \
             --paginate \
-            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | [.id, .draft] | @tsv")"
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\" or (.draft == true and .name == \"$release_name\")) | [.id, .draft] | @tsv")"
           if [[ "$release_metadata" == *$'\n'* ]]; then
             echo "multiple releases found for tag $RELEASE_TAG" >&2
             exit 1
@@ -284,7 +300,7 @@ jobs:
             release_id="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
               -f tag_name="$RELEASE_TAG" \
               -f target_commitish="$GITHUB_SHA" \
-              -f name="dsh-xlink v$RELEASE_VERSION" \
+              -f name="$release_name" \
               -f body="$(<release-notes.md)" \
               -F draft=true \
               -F prerelease=false \
@@ -296,7 +312,9 @@ jobs:
               exit 1
             fi
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-              -f name="dsh-xlink v$RELEASE_VERSION" \
+              -f tag_name="$RELEASE_TAG" \
+              -f target_commitish="$GITHUB_SHA" \
+              -f name="$release_name" \
               -f body="$(<release-notes.md)" \
               -F draft=true \
               -F prerelease=false >/dev/null
@@ -306,7 +324,7 @@ jobs:
       - name: Upload all release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
         run: |
           set -euo pipefail
           assets=()
@@ -324,7 +342,26 @@ jobs:
             echo "expected five platform assets plus latest.json, found ${#assets[@]}" >&2
             exit 1
           fi
-          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          for path in "${assets[@]}"; do
+            asset_name="$(basename "$path")"
+            existing_ids="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
+              --paginate \
+              --jq ".[] | select(.name == \"$asset_name\") | .id")"
+            if [[ "$existing_ids" == *$'\n'* ]]; then
+              echo "multiple existing release assets found for $asset_name" >&2
+              exit 1
+            fi
+            if [[ -n "$existing_ids" ]]; then
+              gh api --method DELETE \
+                "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets/${existing_ids}" \
+                >/dev/null
+            fi
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=${asset_name}" \
+              --header 'Content-Type: application/octet-stream' \
+              --input "$path" \
+              >/dev/null
+          done
 
       - name: Publish complete release
         env:
