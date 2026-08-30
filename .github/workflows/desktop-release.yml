@@ -96,6 +96,10 @@ jobs:
         with:
           workspaces: src-tauri
           shared-key: quality-${{ runner.os }}-${{ runner.arch }}
+          # GitHub scopes caches by ref. Only main can provide a cache shared
+          # by future manual releases; tag-scoped saves add upload time but
+          # cannot be restored by the next version's tag.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
@@ -170,6 +174,9 @@ jobs:
         with:
           workspaces: src-tauri
           shared-key: release-${{ runner.os }}-${{ runner.arch }}
+          # Keep release caches in the main branch scope so later manual
+          # dispatches can restore them across version tags.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
