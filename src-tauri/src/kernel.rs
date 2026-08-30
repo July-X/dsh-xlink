@@ -1236,8 +1236,10 @@ mod tests {
         ));
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind workbench port");
         let port = listener.local_addr().expect("workbench address").port();
-        let mut settings = Settings::default();
-        settings.port = port;
+        let settings = Settings {
+            port,
+            ..Settings::default()
+        };
         settings::save(&root, &settings).expect("save test settings");
 
         let error = set_active(&root, "0.1.2").expect_err("running workbench must block switch");
