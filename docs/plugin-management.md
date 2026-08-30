@@ -50,7 +50,7 @@
 
 以「安装一个 npm 插件」为例（git 插件同理，仓库 URL 作来源）：
 
-1. **拉取进中央库**：查询 npm registry 文档，取 `dist-tags.latest`（或用户指定版本）与 `dist.tarball`，先将 tarball 流式写入 `.part` 临时文件，下载完整后再 rename；随后由 Rust 解包器只接受 `package/` 根，拒绝绝对/父级路径、符号链接、硬链接和特殊文件，并限制条目数与展开体积，最后发布到 `~/.dsh/plugins/<id>/`，写入 `.dsh-source.json` 与 `store.json`。
+1. **拉取进中央库**：npm 来源查询 registry 文档，取 `dist-tags.latest`（或用户指定版本）与 `dist.tarball`，先将 tarball 流式写入 `.part` 临时文件，下载完整后再 rename；GitHub 仓库来源优先查询对应仓库的 Releases API，未锁定时选择非 draft Release 中最高的 semver `tag_name`，锁定 `#tag` 时只查询该 tag，并使用响应中的 `tag_name` 构造绑定到该仓库的 GitHub API tarball 地址（`tarball_url` 仅作为 Release 可下载元数据）下载源码归档。两类归档都由 Rust 解包器校验：npm 只接受 `package/` 根，GitHub 只接受单一顶层根，二者都拒绝绝对/父级路径、符号链接、硬链接和特殊文件并限制条目数与展开体积，最后发布到 `~/.dsh/plugins/<id>/`，写入 `.dsh-source.json` 与 `store.json`。GitHub Release API、tarball 下载或解包不可用时，未锁定来源回退到原有最高 semver tag 的 `git clone`，锁定来源按指定 tag clone；非 GitHub Git 地址始终走 clone。
 2. **安装自身依赖**：仅 link 模式需要。中央库里的插件目录不是 pnpm 工作区的一部分，链接后 Node 会从该目录的 `node_modules` 解析插件依赖，所以在库内执行一次 `pnpm install`（hoisted，日志落盘 `logs/plugin-<id>.log`）。插件声明的 `peerDependencies`（如 `cordis`、`@deepseek-ai/dsh-*` 服务定义）从活动内核的 `node_modules` 里链接（或复制）进库内 `node_modules`，记录在 `.dsh-peers.json`（按内核版本），切换内核时自动重解析——保证与内核共享同一份 cordis 实例；copy 模式不需要这些：profile 的 pnpm 会负责插件的传递依赖，peer 走内核目录的父级查找天然可达。
 3. **按内核物化**：对每个已安装内核执行物化（见下节）。新安装的内核在安装完成后同样物化。
 4. **接线**：把插件登记进 `~/.dsh/profiles/<profile>/package.json`：
@@ -97,10 +97,10 @@
 | 来源 | 最新版本来源 | 说明 |
 | --- | --- | --- |
 | npm 包 | `registry.npmjs.org/<包名>` 的 `dist-tags.latest` | 与内核更新菜单同一 HTTP 模式（ureq + rustls） |
-| git 仓库（锁定 tag） | `git ls-remote --tags` 中语义化最新的 tag | 无需 API token，任意 git 宿主可用 |
-| git 仓库（跟随分支） | `git ls-remote <url> HEAD` 与本地 sha 比较 | 无 tag 插件退化为分支跟踪 |
+| GitHub 仓库 | 对应仓库 Releases API 中非 draft Release 的最高 semver `tag_name` | 安装/更新优先使用绑定到该仓库与 tag 的 GitHub API tarball；API 不可用或没有可用 Release 时回退 Git tag |
+| 其它 git 仓库 | `git ls-remote --tags` 中语义化最新的 tag | 无 semver tag 时仍回退默认分支并记录 HEAD 短 hash |
 
-一次「检查更新」遍历中央库所有插件，把有新版的项目写回 `store.json`。UI 行为：
+一次「检查更新」遍历中央库所有插件，把有新版的项目写回 `store.json`。GitHub Release 查询失败时会继续尝试 `git ls-remote`；只有两种来源都不可用才向 UI 返回错误。UI 行为：
 
 - 管理面板「插件管理」卡片头部显示 `N 个更新可用` 徽标；每行显示 `有更新` 徽标与「更新」按钮。
 - 应用启动/状态刷新时若存在上次检查结果，自动提示；「检查更新」按钮手动触发全量检查。
@@ -111,7 +111,7 @@
 外壳从参考实现 `losebird/dsh-plugin-market` 的 `registry/all.json` 拉取社区目录（缓存 6 小时），管理面板支持按名称/描述/分类搜索并一键安装：
 
 - 条目 `package` 字段存在 → 按 npm 包安装；
-- 否则按 `repo` 的 git URL 安装（使用条目里的 `spec`/tag 锁定版本，无 tag 则分支跟踪）；
+- 否则按 `repo` 的 git URL 安装：GitHub 地址优先使用 Release tarball，使用条目里的 `spec`/tag 锁定版本；没有可用 Release 时回退 git clone，无 tag 则跟随默认分支；
 - 每个条目展示类型/star/下载量/验证标记，「详情」跳转 GitHub。官方 [dsh-plugin topic 页](https://github.com/topics/dsh-plugin) 作为浏览入口链接常驻卡片。
 
 手动安装输入接受 npm 包名（含 `@scope` 与 `@version`）或 git URL（支持 `#tag`）。
