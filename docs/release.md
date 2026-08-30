@@ -48,7 +48,7 @@
 }
 ```
 
-四个平台键是 Tauri 的兼容别名：每个平台的两个键都指向同一份 updater archive 或 NSIS 安装包。脚本要求 DMG、macOS updater archive、macOS 签名、Windows NSIS 安装包和 Windows 签名各找到一份，并确认文件名包含当前版本。签名内容从对应 `.sig` 文件读取，不经过日志输出。
+四个平台键是 Tauri 的兼容别名：每个平台的两个键都指向同一份 updater archive 或 NSIS 安装包。macOS 构建阶段会把 Tauri 可能生成的未带版本号的 updater archive 和签名按 DMG 文件名规范化。脚本要求 DMG、macOS updater archive、macOS 签名、Windows NSIS 安装包和 Windows 签名各找到一份，并确认文件名包含当前版本。签名内容从对应 `.sig` 文件读取，不经过日志输出。
 
 ## 排障
 
