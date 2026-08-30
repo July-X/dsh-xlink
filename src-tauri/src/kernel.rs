@@ -1042,8 +1042,13 @@ fn process_command(pid: u32) -> Option<String> {
     }
 }
 
-/// 判断 `pid` 是否是服务于指定端口的 dsh 内核。同时检查可执行路径与
-/// 端口，可防止 PID 复用以及跨 profile 的壳被误认为本 data dir 拥有的进程。
+/// 判断 `pid` 是否是服务于指定端口的 dsh 内核。三层防护：
+/// 1. 命令行必须含 `@deepseek-ai/dsh/lib/bin.js`，挡住被复用 pid 的无关进程；
+/// 2. 命令行 `--port` 必须等于给定端口，挡住跨 profile（dev 3091 / release 3090）
+///    的壳误把对方的内核认作自己；
+/// 3. 给定端口时再向 OS 反查一次监听该端口的 pid，必须等于本 pid，挡住 pid 文件
+///    陈旧、内核早已退出但 OS 把 pid 复用给另一个进程的情况——单看命令行残留
+///    无法区分这一类，端口活体验证是唯一可信的"这还是不是同一个内核"判据。
 pub(crate) fn pid_is_kernel(pid: u32, port: Option<u16>) -> bool {
     let Some(command) = process_command(pid) else {
         return false;
@@ -1055,21 +1060,39 @@ pub(crate) fn pid_is_kernel(pid: u32, port: Option<u16>) -> bool {
     let Some(port) = port else {
         return true;
     };
-    let port = port.to_string();
+    let port_str = port.to_string();
     let mut args = command.split_whitespace();
+    let mut port_arg_matches = false;
     while let Some(arg) = args.next() {
         let arg = arg.trim_matches('"');
         if arg == "--port" {
-            return args
+            if args
                 .next()
-                .map(|value| value.trim_matches('"') == port)
-                .unwrap_or(false);
+                .map(|value| value.trim_matches('"') == port_str)
+                .unwrap_or(false)
+            {
+                port_arg_matches = true;
+            }
+            break;
         }
         if let Some(value) = arg.strip_prefix("--port=") {
-            return value == port;
+            if value == port_str {
+                port_arg_matches = true;
+            }
+            break;
         }
     }
-    false
+    if !port_arg_matches {
+        return false;
+    }
+    // 端口活体验证：OS 反查"当前谁在监听该端口"，必须等于本 pid。
+    // 查询失败（lsof / ss / netstat 缺失或沙盒阻断）时不要把已
+    // 经命令行验证过的内核误判为不可信——让 stop_kernel 的端口反查
+    // 兜底接手。
+    match port_listen_pid(port) {
+        Some(listener_pid) => listener_pid == pid,
+        None => true,
+    }
 }
 
 /// 按 pid 杀掉被追踪出的内核：先给进程组发 TERM，再 KILL 任何幸存者。
