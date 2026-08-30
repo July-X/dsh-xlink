@@ -273,10 +273,12 @@ jobs:
           RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
         run: |
           set -euo pipefail
-          release_endpoint="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
-          release_metadata=""
-          if ! release_metadata="$(gh api "$release_endpoint" --jq '[.id, .draft] | @tsv' 2>/dev/null)"; then
-            release_metadata=""
+          release_metadata="$(gh api "repos/${GITHUB_REPOSITORY}/releases" \
+            --paginate \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | [.id, .draft] | @tsv")"
+          if [[ "$release_metadata" == *$'\n'* ]]; then
+            echo "multiple releases found for tag $RELEASE_TAG" >&2
+            exit 1
           fi
           if [[ -z "$release_metadata" ]]; then
             release_id="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
@@ -327,12 +329,12 @@ jobs:
       - name: Publish complete release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
           RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
-          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .id)"
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
             -f name="dsh-xlink v$RELEASE_VERSION" \
             -f body="$(<release-notes.md)" \
             -F draft=false \
