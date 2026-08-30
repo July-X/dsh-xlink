@@ -554,11 +554,12 @@ pub async fn start_kernel(
 /// 过，内存中的子进程句柄已经不在了，但 pid 文件里还记录着要回收的
 /// 进程。
 ///
-/// 工作台窗口在创建时使用 `closable(false)`（见 `open_harness`），
-/// 因此系统标题栏的关闭按钮是禁用的，在任务中途意外点击不会打断用户
-/// 的会话。但通过这条命令显式回到关闭路径仍然必须工作，所以窗口走
-/// `destroy()`——强制让系统关掉窗口，而不理会 closable 标志——而不
-/// 是 `close()`，后者会被它自己设置的标志挡住。
+/// 工作台窗口的系统关闭按钮（macOS 交通灯红灯 / Windows ×）始终可
+/// 用，用户随时可以自己收起窗口——内核与进行中的任务继续在后台运
+/// 行，随时可经「打开工作台窗口」重新打开，所以收起窗口不会打断用
+/// 户的会话。拆掉整个工作台的唯一路径是这条命令：窗口走
+/// `destroy()`——强制让系统关掉窗口，而不理会窗口是否可关闭——内核
+/// 随之在下面停止。
 #[tauri::command]
 pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("harness") {
@@ -675,12 +676,10 @@ fn bounded_health_text(
 /// Windows 上可能死锁，把 builder 排除在 async executor 之外在所有平台
 /// 上都更安全。
 ///
-/// 窗口在创建时使用 `closable(false)`，因此系统标题栏的关闭按钮会被
-/// 灰掉：在长任务中途意外点击就不会打断用户会话。经过 `stop_kernel`
-/// 显式回到关闭路径仍然有效，因为该命令用的是 `destroy()` 而不是
-/// `close()`，能在 chrome 关闭按钮被禁用的前提下，强制让系统完成拆
-/// 解。Linux GTK+ 后端是文档记载的例外：它可能不会对已经可见的窗口灰
-/// 掉按钮，所以在 Linux 上这只是行为暗示，不是硬保证。
+/// 窗口不再设置 `closable(false)`：macOS 交通灯与 Windows 关闭按钮保
+/// 持可用，用户随时可以自己收起工作台窗口，内核与任务继续在后台运
+/// 行，「打开工作台窗口」可随时重新打开。「关闭工作台」则经
+/// `stop_kernel` 用 `destroy()` 强制拆窗口并停止内核。
 /// 打开 dsh web 工作台窗口。原生标题栏保持 macOS / Windows / Linux 标
 /// 准的窗口装饰，而不是用 Overlay，这样系统级的拖动 / 调整大小 / 双
 /// 击最大化可以稳定工作（通过 `start_dragging` IPC 的 WKWebView 拖动
@@ -794,7 +793,6 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
             let result = WebviewWindowBuilder::new(&handle, "harness", WebviewUrl::External(url))
                 .title("DeepSeek Harness 工作台")
                 .inner_size(1280.0, 840.0)
-                .closable(false)
                 .initialization_script(include_str!("titlebar-pulse.js"))
                 .initialization_script(include_str!("pullstring-launcher.js"))
                 .initialization_script(include_str!("harness-health.js"))
