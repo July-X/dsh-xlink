@@ -40,5 +40,7 @@ libc = "0.2"
 
 [profile.release]
 strip = true
-lto = true
-codegen-units = 1
+# Full LTO with one codegen unit makes CI release linking disproportionately slow.
+# Thin LTO and more units retain optimized binaries while shortening cold builds.
+lto = "thin"
+codegen-units = 16
