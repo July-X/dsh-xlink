@@ -21,6 +21,7 @@
     "dev:ui": "vite",
     "build": "tauri build",
     "build:ui": "vite build",
+    "test:release-assets": "node --test scripts/normalize-release-assets.test.mjs",
     "test:release-manifest": "node --test scripts/generate-updater-manifest.test.mjs",
     "test:ui": "node --test ui/test/officialChatTabs.test.js ui/test/statusRefresh.test.js ui/test/harnessHealth.test.js ui/test/loading.test.js ui/test/progress.test.js ui/test/updateChecks.test.js ui/test/installLatest.test.js ui/test/kernelSwitch.test.js",
     "build:mac-intel": "tauri build --target x86_64-apple-darwin",
