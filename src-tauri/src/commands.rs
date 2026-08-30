@@ -467,8 +467,8 @@ pub async fn activate_version(app: AppHandle, version: String) -> Result<(), Str
     let data_dir = app.state::<AppState>().data_dir.clone();
     // 接线会用 pnpm 跑插件商店；把整个切换放到主线程之外。
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        // 切换在下一次启动时生效；正在运行的内核会继续提供服务，直
-        // 到用户重启它。
+        // 切换会在下一次启动时生效，但为了避免运行中的服务与活动指针
+        // 不一致，kernel::set_active 会要求工作台已经停止。
         kernel::set_active(&data_dir, &version).map_err(|e| e.to_string())?;
         // 重新接线插件到新活动内核（失败不阻断切换，原因进入插件卡片警告）
         let settings = settings::load(&data_dir);

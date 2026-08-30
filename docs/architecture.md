@@ -44,6 +44,7 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 - npm 包解包由 `archive.rs` 在 Rust 内执行：只接受 `package/` 根、拒绝绝对/父级路径、符号链接/硬链接/特殊文件，最多 100,000 个条目、512 MiB 声明展开内容，并在临时目录校验后发布到目标目录。
 - `node-linker=hoisted` 保证 `node_modules` 扁平，内核入口固定为 `node_modules/@deepseek-ai/dsh/lib/bin.js`（`kernel::KERNEL_BIN_REL`）；改布局必须同步该常量与 `start()`。
 - `run_pnpm` 把 stdout/stderr 各用一个 drain 线程读入有界 mpsc channel，安装线程逐行回调 `on_progress` 并落盘日志——不要把两个管道放在同一线程顺序读取（会因管道缓冲区满而死锁）。
+- 切换活动内核只允许在工作台已停止时执行：版本页在启动或运行期间禁用“切换”，`kernel::set_active` 仍会检查配置端口并拒绝运行中的服务，用户必须先调用 `stop_kernel`。
 
 ## 数据目录
 

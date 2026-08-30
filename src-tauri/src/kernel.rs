@@ -448,8 +448,22 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
     }
 }
 
-/// 切换 `start` 将运行的已安装版本。
+/// 检查工作台是否已经停止。活动版本切换会改变下一次启动使用的内核；
+/// 工作台启动或运行期间必须先停止，避免当前服务与 active 指针指向不同版本。
+fn ensure_workbench_stopped(data_dir: &Path) -> Result<(), AppError> {
+    let port = settings::load(data_dir).port;
+    if port_open(port) {
+        return Err(AppError::Kernel(format!(
+            "工作台正在启动或运行（端口 {port}），请先点击「关闭工作台」停止工作台后再切换内核"
+        )));
+    }
+    Ok(())
+}
+
+/// 切换 `start` 将运行的已安装版本。只有工作台已停止时才能切换，避免
+/// 运行中的服务与 `active.txt` 指向不同版本。
 pub fn set_active(data_dir: &Path, version: &str) -> Result<(), AppError> {
+    ensure_workbench_stopped(data_dir)?;
     if !kernel_dir(data_dir, version).join(KERNEL_BIN_REL).is_file() {
         return Err(AppError::Kernel(format!(
             "版本 {version} 未安装或安装不完整"
@@ -1208,6 +1222,31 @@ mod tests {
             Some(dist.clone())
         );
         fs::remove_dir_all(&root).expect("remove test files");
+    }
+
+    #[test]
+    fn refuses_to_change_active_version_while_workbench_is_serving() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-active-version-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind workbench port");
+        let port = listener.local_addr().expect("workbench address").port();
+        let mut settings = Settings::default();
+        settings.port = port;
+        settings::save(&root, &settings).expect("save test settings");
+
+        let error = set_active(&root, "0.1.2").expect_err("running workbench must block switch");
+
+        assert!(error
+            .to_string()
+            .contains("请先点击「关闭工作台」停止工作台后再切换内核"));
+        drop(listener);
+        fs::remove_dir_all(&root).expect("remove test data");
     }
 
     /// `display_short` 是 UI 显示在「打开」按钮旁的文本；

@@ -13,6 +13,7 @@ import {
   checkUpdates,
   installVersion,
   activateVersion,
+  workbenchActiveNow,
   removeVersion,
 } from '../store.js';
 import { invoke } from '../bridge.js';
@@ -20,6 +21,7 @@ import { globalBusy, isLoading } from '../loading.js';
 import VersionPluginsTip from './VersionPluginsTip.vue';
 
 const kernel = computed(() => store.view && store.view.kernel);
+const workbenchActive = computed(() => workbenchActiveNow());
 
 // 每个已安装内核的插件快照只在 Tooltip 即将显示时读取，避免页面初次
 // 渲染就为所有内核发起 IPC。已成功读取的版本会复用缓存。
@@ -90,6 +92,13 @@ onMounted(() => {
       </div>
 
       <el-alert v-if="store.releaseWarning" :title="store.releaseWarning" type="warning" :closable="false" show-icon />
+      <el-alert
+        v-if="workbenchActive"
+        title="工作台启动或运行期间不能切换内核，请先停止工作台后再切换。"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
 
       <div class="updates-lists">
         <div class="list-group">
@@ -129,7 +138,7 @@ onMounted(() => {
                     size="small"
                     :icon="Promotion"
                     :loading="isLoading('activate:' + v.version)"
-                    :disabled="globalBusy"
+                    :disabled="globalBusy || workbenchActive"
                     @click="activateVersion(v.version)"
                   >
                     切换
