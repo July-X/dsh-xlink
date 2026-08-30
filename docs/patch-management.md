@@ -26,7 +26,10 @@ app bundle 资源目录），由本仓库维护、签名打包交付，用户只
 ```text
 src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（tauri.conf.json resources）
   manifest.json                               # 补丁清单（schemaVersion 1）
-  files/…                                     # copy 模式引用的文件，路径相对本目录
+  PATCH.md                                    # 出处、哈希链、修复内容与验证记录
+  files/<目标包名>/…                           # copy 模式引用的文件，路径相对本目录；
+                                              # 一个补丁覆盖多个包时按包名分目录，
+                                              # 避免同名文件（如 index.js）互相冲突
 
 <data_dir>/patches/                          # 运行时状态（data_dir = ~/.dsh/desktop[-dev]/）
   state.json                                 # 应用记录
@@ -39,7 +42,7 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
 
 ## 清单格式（manifest.json）
 
-以首个真实补丁 `dsh-file-perf` 为例（覆盖 npm dist 既有文件）：
+以首个真实补丁 `dsh-file-perf` 为例（覆盖 npm dist 既有文件，一个补丁两个目标包）：
 
 ```json
 {
@@ -47,18 +50,25 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
   "patches": [
     {
       "id": "dsh-file-perf",
-      "name": "dsh 文件引用性能修复（file-reference-local）",
-      "version": "1.0.0",
+      "name": "dsh @ 引用性能修复（file-reference-local + session-reference）",
+      "version": "1.1.0",
       "kind": "patch",
-      "description": "针对 @deepseek-ai/dsh-file-reference-local 的四个性能缺陷修复。",
+      "description": "修复 @ 补全的两个数据源。",
       "minKernelVersion": "0.1.1-rc.2",
       "maxKernelVersion": null,
       "files": [
         {
           "mode": "copy",
-          "from": "files/index.js",
+          "from": "files/dsh-file-reference-local/index.js",
           "to": "node_modules/@deepseek-ai/dsh-file-reference-local/lib/index.js",
           "expectSha256": "dcf5299bf9a1c8dd33bf7d099f8d7bdfd52d69e516ba90e97cda0cdf402e0a7d",
+          "required": true
+        },
+        {
+          "mode": "copy",
+          "from": "files/dsh-session-reference/index.js",
+          "to": "node_modules/@deepseek-ai/dsh-session-reference/lib/index.js",
+          "expectSha256": "e67bda5c8ee2e39437b474a596bc7fa600dfc9eea6821ce0a5c3eb3003c4e106",
           "required": true
         }
       ]
@@ -136,6 +146,9 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
    （`patch_status` / `patch_apply` / `patch_revert`）+ 设置页「内核补丁」卡片。
 3. **验证**：`cargo test patches` 覆盖应用/撤销/备份丢失/路径越界等场景；
    `cargo clippy --all-targets && cargo fmt`；`npm run build:ui`。
+   补丁**载荷本身**的行为另写只读校验脚本（如 `scripts/verify-dsh-file-perf.mjs`）：
+   既核对目标文件哈希是否为补丁后版本，也复跑该补丁特有的行为断言，
+   要求未应用时失败、应用后全绿——否则脚本无法证明补丁真的生效。
 4. **发布**：补丁资源随 app bundle 内置（tauri.conf.json 已配置 `resources`），
    无需改动 `.github/workflows/desktop-release.yml`；上架新补丁 = 改 `resources/patches/`
    并随版本发布。替换补丁文件（同 `id`）后，已应用过旧版的内核会因哈希不一致呈现
@@ -145,8 +158,9 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
 
 - [x] 初版机制：清单/状态/备份模型、应用/撤销/状态命令、设置页 UI、
       `expectSha256` 覆盖既有文件语义、单元测试。
-- [x] 首个真实补丁：`dsh-file-perf`（dsh 文件引用性能修复，含真实内核文件
-      的端到端验证）。此前用于验证机制的示例补丁（`xlink-hello` /
+- [x] 首个真实补丁：`dsh-file-perf`（dsh `@` 引用性能修复，含真实内核文件
+      的端到端验证）。v1.1.0 起同时覆盖 `dsh-file-reference-local` 与
+      `dsh-session-reference` 两个包。此前用于验证机制的示例补丁（`xlink-hello` /
       `xlink-stub-annotate`）已移除，机制能力由单元测试与 `dsh-file-perf` 覆盖。
 - [ ] 二期：补丁版本升级（`update` 命令：备份旧应用记录 → 应用新版本，无需先撤销）；
       按内核版本的应用视图（切换内核后对每个已装版本单独管理）。
@@ -157,21 +171,32 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
 
 `src-tauri/resources/patches/dsh-file-perf/`（含 `PATCH.md` 出处与验证记录）：
 
-- 目标：`node_modules/@deepseek-ai/dsh-file-reference-local/lib/index.js`
-  （npm 包 `@deepseek-ai/dsh-file-reference-local@0.1.1-rc.2`，MIT © 2026 DeepSeek）。
-- 内容：`@` 文件引用四个性能缺陷修复（invalidate 不再 abort 在途查询、
-  stale-while-revalidate、层序 16 并发 readdir、预计算 + 有界 top-K），
-  并修复 `@./` / `@.github/` 目录列举被误过滤的回归。
-- 安全闸：`expectSha256` = 原始 dist 的哈希
-  (`dcf5299b…2e0a7d`)；内核升级后文件漂移会在应用时明确失败。
-  补丁后文件哈希 `207d0e6f…2855b`（与「120/120 组行为等价 + A/B 性能」验证过的
-  产物逐字节一致）。
-- 验证：机制级单元测试覆盖 expectSha256 匹配/不匹配/缺失三种路径；另用真实
-  内核原文件跑过临时端到端（应用 → 逐字节一致 → 撤销 → 逐字节还原）。
-- 注意：同批次发现的配置修复（`excludedDirectories` 16 项，写入
-  `~/.dsh/profiles/web/cordis.patch.yml`）属用户侧配置，**不在**本补丁内；
-  会话引用侧性能问题（`sessionReferenceResolver/candidates` 全量加载会话日志）
-  需另立补丁。
+- 目标（两个包，同一 `id`，应用/撤销整体生效）：
+  - `node_modules/@deepseek-ai/dsh-file-reference-local/lib/index.js`
+    （`@` 的文件/目录候选源）；
+  - `node_modules/@deepseek-ai/dsh-session-reference/lib/index.js`
+    （`@` 的历史会话候选源）。
+  两者均来自 npm 包 `@0.1.1-rc.2`，MIT © 2026 DeepSeek。
+- 内容：
+  - file-reference-local — `@` 文件引用的索引失效、后台刷新、目录扫描和排序路径；
+    同时保留 `@./` / `@.github/` 目录列举行为；
+  - session-reference — 候选发现优先使用 workspace 头信息和 live session，完整列表在
+    后台刷新；标题优先从内存投影或 `sessionProjectionCache` 读取；归档会话在标题读取前
+    被过滤。服务未挂载或尚未初始化时软降级，不影响显式引用解析。
+- 安全闸：两个文件各自的 `expectSha256` = 对应原始 dist 哈希
+  (`dcf5299b…2e0a7d` / `e67bda5c…c4e106`)；内核升级后文件漂移会在应用时明确失败。
+  补丁后哈希 `593e150a…bd60` / `a4bbe7c0…4a87`。
+- 验证：机制级单元测试覆盖 expectSha256 匹配/不匹配/缺失三种路径；补丁行为用
+  `node scripts/verify-dsh-file-perf.mjs <内核根目录>` 复跑，脚本只读检查两个目标文件
+  的哈希并运行两份载荷的行为断言；另用真实内核原文件跑过临时端到端（应用 → 逐字节一致
+  → 撤销 → 逐字节还原）。
+- 注意：
+  - 同批次发现的配置修复（`excludedDirectories` 16 项，写入
+    `~/.dsh/profiles/web/cordis.patch.yml`）属用户侧配置，**不在**本补丁内；
+  - 如果同一内核已经应用过旧版 `dsh-file-perf`，更新后的状态会显示 `dirty`；先撤销旧
+    记录，再从设置页重新应用，补丁系统会用原备份恢复文件。
+  - 本补丁改善两个候选源，但客户端仍会同时等待两者；真实工作区的呼出耗时还需要在
+    应用后的目标内核上复测。
 
 ## 已知限制（初版）
 

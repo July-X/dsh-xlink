@@ -3,18 +3,25 @@
   "patches": [
     {
       "id": "dsh-file-perf",
-      "name": "dsh 文件引用性能修复（file-reference-local）",
-      "version": "1.0.0",
+      "name": "dsh @ 引用性能修复（file-reference-local + session-reference）",
+      "version": "1.1.0",
       "kind": "patch",
-      "description": "针对 @deepseek-ai/dsh-file-reference-local@0.1.1-rc.2 的四个性能缺陷：①索引失效不再 abort 在途查询；②失效后先返回旧索引、后台重扫（stale-while-revalidate）；③目录扫描改为层序 + 16 并发 readdir；④索引期预计算 lower/base/hidden、查询期零 split / 零 toLowerCase、有界 top-K 排序。同时修复 @./、@.github/ 目录列举被误过滤的回归。",
+      "description": "优化 @ 补全的两个数据源：file-reference-local 使用缓存索引、并发目录扫描、预计算查询和失效后台刷新，并保留 @./、@.github/ 目录列举；session-reference 复用 workspace 会话头信息与标题投影，完整列表在后台刷新，候选发现时过滤已归档会话。两个载荷按包名保留各自的目录层级。",
       "minKernelVersion": "0.1.1-rc.2",
       "maxKernelVersion": null,
       "files": [
         {
           "mode": "copy",
-          "from": "files/index.js",
+          "from": "files/dsh-file-reference-local/index.js",
           "to": "node_modules/@deepseek-ai/dsh-file-reference-local/lib/index.js",
           "expectSha256": "dcf5299bf9a1c8dd33bf7d099f8d7bdfd52d69e516ba90e97cda0cdf402e0a7d",
+          "required": true
+        },
+        {
+          "mode": "copy",
+          "from": "files/dsh-session-reference/index.js",
+          "to": "node_modules/@deepseek-ai/dsh-session-reference/lib/index.js",
+          "expectSha256": "e67bda5c8ee2e39437b474a596bc7fa600dfc9eea6821ce0a5c3eb3003c4e106",
           "required": true
         }
       ]
