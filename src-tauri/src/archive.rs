@@ -1,8 +1,9 @@
-//! 安全解压 npm 风格的 gzip tarball。
+//! 安全解压 npm 与 GitHub Release 的 gzip tarball。
 //!
-//! npm 归档属于不可信输入。解压过程保留在 Rust 中而非借助平台 tar 进程，
+//! npm 与 GitHub 归档都属于不可信输入。解压过程保留在 Rust 中而非借助平台 tar 进程，
 //! 从而在 macOS、Windows 与 Linux 上保持一致的路径校验、链接处理与资源限制。
 
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::path::{Component, Path, PathBuf};
 
@@ -14,17 +15,31 @@ const EXTRACT_DIR: &str = ".dsh-extract";
 const MAX_ARCHIVE_ENTRIES: u64 = 100_000;
 const MAX_UNPACKED_BYTES: u64 = 512 * 1024 * 1024;
 
-fn relative_archive_path(path: &Path) -> Result<PathBuf, String> {
+fn archive_relative_path(
+    path: &Path,
+    expected_root: Option<&str>,
+    archive_root: &mut Option<OsString>,
+) -> Result<PathBuf, String> {
     let mut components = path.components();
-    match components.next() {
-        Some(Component::Normal(root)) if root == ARCHIVE_ROOT => {}
-        Some(Component::Normal(root)) => {
+    let root = match components.next() {
+        Some(Component::Normal(root)) => root,
+        _ => return Err(format!("归档包含非法路径：{}", path.display())),
+    };
+
+    if let Some(expected) = expected_root {
+        if root != std::ffi::OsStr::new(expected) {
             return Err(format!(
-                "归档根目录必须是 {ARCHIVE_ROOT}/，收到 {}",
+                "归档根目录必须是 {expected}/，收到 {}",
                 root.to_string_lossy()
             ));
         }
-        _ => return Err(format!("归档包含非法路径：{}", path.display())),
+    }
+    if let Some(previous) = archive_root.as_ref() {
+        if previous != root {
+            return Err(format!("归档必须只包含一个根目录，发现 {}", path.display()));
+        }
+    } else {
+        *archive_root = Some(root.to_os_string());
     }
 
     let mut relative = PathBuf::new();
@@ -40,12 +55,24 @@ fn relative_archive_path(path: &Path) -> Result<PathBuf, String> {
     Ok(relative)
 }
 
-fn extract_inner(tarball: &Path, dest: &Path, extract_root: &Path) -> Result<(), String> {
+#[cfg(test)]
+fn relative_archive_path(path: &Path) -> Result<PathBuf, String> {
+    let mut archive_root = None;
+    archive_relative_path(path, Some(ARCHIVE_ROOT), &mut archive_root)
+}
+
+fn extract_inner(
+    tarball: &Path,
+    dest: &Path,
+    extract_root: &Path,
+    expected_root: Option<&str>,
+) -> Result<(), String> {
     let file = File::open(tarball).map_err(|e| format!("打开归档失败：{e}"))?;
     let decoder = GzDecoder::new(file);
     let mut archive = Archive::new(decoder);
     let mut entries_seen = 0u64;
     let mut unpacked_bytes = 0u64;
+    let mut archive_root: Option<OsString> = None;
 
     for entry_result in archive
         .entries()
@@ -60,7 +87,7 @@ fn extract_inner(tarball: &Path, dest: &Path, extract_root: &Path) -> Result<(),
             .path()
             .map_err(|e| format!("读取归档路径失败：{e}"))?
             .into_owned();
-        let relative = relative_archive_path(&path)?;
+        let relative = archive_relative_path(&path, expected_root, &mut archive_root)?;
         let kind = entry.header().entry_type();
         if kind.is_symlink() || kind.is_hard_link() {
             return Err(format!("归档不允许符号链接或硬链接：{}", path.display()));
@@ -93,9 +120,10 @@ fn extract_inner(tarball: &Path, dest: &Path, extract_root: &Path) -> Result<(),
         }
     }
 
-    let package_root = extract_root.join(ARCHIVE_ROOT);
+    let root = archive_root.ok_or_else(|| "归档为空".to_string())?;
+    let package_root = extract_root.join(PathBuf::from(root));
     if !package_root.is_dir() {
-        return Err("归档缺少 package/ 根目录".into());
+        return Err("归档缺少顶层根目录".into());
     }
 
     let children = fs::read_dir(&package_root)
@@ -117,24 +145,40 @@ fn extract_inner(tarball: &Path, dest: &Path, extract_root: &Path) -> Result<(),
     Ok(())
 }
 
-/// 将 npm 风格的 `.tgz` 解压到 `dest`，并去掉其开头的 `package/`。
-///
-/// 归档被限制为最多 100,000 条目，以及最多 512 MiB 的声明解压体积。
-/// 绝对路径、父级组件、链接以及特殊文件会在到达目标之前就被拒绝。
-pub(crate) fn extract_gzip_tarball(tarball: &Path, dest: &Path) -> Result<(), String> {
+fn extract_gzip_tarball_with_root(
+    tarball: &Path,
+    dest: &Path,
+    expected_root: Option<&str>,
+) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|e| format!("创建解包目录失败：{e}"))?;
     let extract_root = dest.join(EXTRACT_DIR);
     if extract_root.symlink_metadata().is_ok() {
         return Err(format!("解包临时目录已被占用：{}", extract_root.display()));
     }
     fs::create_dir_all(&extract_root).map_err(|e| format!("创建解包临时目录失败：{e}"))?;
-    let result = extract_inner(tarball, dest, &extract_root);
+    let result = extract_inner(tarball, dest, &extract_root, expected_root);
     let cleanup = fs::remove_dir_all(&extract_root);
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), _) => Err(error),
         (Ok(()), Err(error)) => Err(format!("清理解包临时目录失败：{error}")),
     }
+}
+
+/// 将 npm 风格的 `.tgz` 解压到 `dest`，并去掉其开头的 `package/`。
+///
+/// 归档被限制为最多 100,000 条目，以及最多 512 MiB 的声明解压体积。
+/// 绝对路径、父级组件、链接以及特殊文件会在到达目标之前就被拒绝。
+pub(crate) fn extract_gzip_tarball(tarball: &Path, dest: &Path) -> Result<(), String> {
+    extract_gzip_tarball_with_root(tarball, dest, Some(ARCHIVE_ROOT))
+}
+
+/// 将 GitHub Release 的 `.tar.gz` 解压到 `dest`，并去掉其唯一的顶层目录。
+///
+/// GitHub source archive 的根目录通常由仓库名和 commit 拼成，不能复用
+/// npm 固定的 `package/` 规则；其余路径、链接和资源限制与 npm 归档完全相同。
+pub(crate) fn extract_github_tarball(tarball: &Path, dest: &Path) -> Result<(), String> {
+    extract_gzip_tarball_with_root(tarball, dest, None)
 }
 
 #[cfg(test)]
@@ -189,6 +233,70 @@ mod tests {
             "export default 1;\n"
         );
         assert!(!dest.join(EXTRACT_DIR).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extracts_github_root_without_links() {
+        let root = test_root();
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let tarball = root.join("github.tgz");
+        let dest = root.join("dest");
+        fs::create_dir_all(&dest).unwrap();
+
+        let file = File::create(&tarball).unwrap();
+        let encoder = GzEncoder::new(file, Compression::fast());
+        let mut builder = Builder::new(encoder);
+        let body = b"module.exports = {}\n";
+        let mut header = Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "plugin-v1.2.3/lib/index.js", body.as_slice())
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        extract_github_tarball(&tarball, &dest).unwrap();
+        assert_eq!(
+            fs::read_to_string(dest.join("lib/index.js")).unwrap(),
+            "module.exports = {}\n"
+        );
+        assert!(!dest.join(EXTRACT_DIR).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_github_archive_with_multiple_roots() {
+        let root = test_root();
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let tarball = root.join("multiple-roots.tgz");
+        let dest = root.join("dest");
+        fs::create_dir_all(&dest).unwrap();
+
+        let file = File::create(&tarball).unwrap();
+        let encoder = GzEncoder::new(file, Compression::fast());
+        let mut builder = Builder::new(encoder);
+        for path in ["one/package.json", "two/package.json"] {
+            let body = b"{}";
+            let mut header = Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, body.as_slice())
+                .unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let error = extract_github_tarball(&tarball, &dest).expect_err("multiple roots must fail");
+        assert!(
+            error.contains("一个根目录"),
+            "error explains root constraint: {error}"
+        );
+        assert!(!dest.join("package.json").exists());
         let _ = fs::remove_dir_all(root);
     }
 

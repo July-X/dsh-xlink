@@ -4,7 +4,7 @@
 
 ## 完整流程（`install(spec)`）
 
-1. **fetch**：git clone（深度 1）或 npm tarball 解压到 `~/.dsh/plugins/<id>/`
+1. **fetch**：GitHub 仓库优先查询 Releases API，根据 `tag_name` 构造绑定到该仓库的 API tarball（`tarball_url` 仅用于确认 Release 有源码归档），并安全解包单一顶层目录；没有可用 Release 或 tarball 失败时 git clone（深度 1），其它 Git 地址始终 git clone；npm 来源下载 tarball 并解包到 `~/.dsh/plugins/<id>/`
 2. **ensure_store_npmrc**：写入 `~/.dsh/plugins/.npmrc`（`minimumReleaseAge=0`、固定 npm registry）—— pnpm v11 的 `minimumReleaseAgeExclude` 不支持通配符，必须直接关掉年龄检查
 3. **install_store_deps**：`pnpm install --ignore-workspace --config.node-linker=hoisted --reporter=append-only`
    - 装依赖链 → 若有 `prepare` 脚本（`tsdown` / `tsc`）→ 触发构建 → `lib/` 就位

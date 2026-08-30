@@ -19,6 +19,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use crate::error::AppError;
 use crate::process::run_capture;
@@ -228,7 +229,158 @@ struct NpmDist {
     tarball: String,
 }
 
-/// 解析后的安装请求。
+#[derive(Debug, Clone, Deserialize)]
+struct GithubRelease {
+    #[serde(rename = "tag_name")]
+    tag_name: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    tarball_url: String,
+}
+
+/// 解析公共 GitHub 仓库地址为 `owner/repo`。只有明确属于
+/// `github.com` 的 HTTPS/SSH/git 地址才会进入 Release 优先路径；其它
+/// Git 主机继续使用原有的 clone 流程。
+fn github_repo_path(source: &str) -> Option<String> {
+    let source = source
+        .trim()
+        .split_once('#')
+        .map(|(head, _)| head)
+        .unwrap_or(source.trim());
+
+    let path = if let Some(rest) = source.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        if !host.eq_ignore_ascii_case("github.com") || path.contains('?') {
+            return None;
+        }
+        path.trim_matches('/').to_string()
+    } else {
+        let parsed = Url::parse(source)
+            .or_else(|_| Url::parse(&format!("https://{source}")))
+            .ok()?;
+        let supported_scheme = match parsed.scheme() {
+            "https" => {
+                parsed.username().is_empty()
+                    && parsed.password().is_none()
+                    && parsed.port().map(|port| port == 443).unwrap_or(true)
+            }
+            "ssh" | "git+ssh" => {
+                (parsed.username().is_empty() || parsed.username().eq_ignore_ascii_case("git"))
+                    && parsed.password().is_none()
+                    && parsed.port().map(|port| port == 22).unwrap_or(true)
+            }
+            "git" => {
+                parsed.username().is_empty()
+                    && parsed.password().is_none()
+                    && parsed.port().map(|port| port == 9418).unwrap_or(true)
+            }
+            _ => false,
+        };
+        if !parsed
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case("github.com"))
+            || !supported_scheme
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return None;
+        }
+        parsed.path().trim_matches('/').to_string()
+    };
+
+    let mut parts = path.split('/');
+    let owner = parts.next()?;
+    let repo_raw = parts.next()?;
+    let repo = repo_raw.strip_suffix(".git").unwrap_or(repo_raw);
+    if parts.next().is_some() {
+        return None;
+    }
+    if !valid_github_segment(owner) || !valid_github_segment(repo) {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
+}
+
+fn valid_github_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment != "."
+        && segment != ".."
+        && !segment
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '\\' | '?' | '#' | '%'))
+}
+
+fn encode_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+fn github_release_endpoint(repo: &str, pin: Option<&str>) -> String {
+    let repo_path = repo
+        .split('/')
+        .map(encode_path_segment)
+        .collect::<Vec<_>>()
+        .join("/");
+    let base = format!("https://api.github.com/repos/{repo_path}/releases");
+    match pin {
+        Some(tag) => format!("{base}/tags/{}", encode_path_segment(tag)),
+        None => format!("{base}?per_page=100"),
+    }
+}
+
+fn github_tarball_url(repo: &str, tag: &str) -> String {
+    let repo_path = repo
+        .split('/')
+        .map(encode_path_segment)
+        .collect::<Vec<_>>()
+        .join("/");
+    format!(
+        "https://api.github.com/repos/{repo_path}/tarball/{}",
+        encode_path_segment(tag)
+    )
+}
+
+fn select_latest_github_release(
+    releases: impl IntoIterator<Item = GithubRelease>,
+) -> Option<GithubRelease> {
+    releases
+        .into_iter()
+        .filter(|release| {
+            !release.draft
+                && looks_like_semver(&release.tag_name)
+                && !release.tarball_url.trim().is_empty()
+        })
+        .max_by(|a, b| cmp_versions(&a.tag_name, &b.tag_name))
+}
+
+fn fetch_github_release(source: &str, pin: Option<&str>) -> Result<Option<GithubRelease>, String> {
+    let Some(repo) = github_repo_path(source) else {
+        return Ok(None);
+    };
+    let url = github_release_endpoint(&repo, pin);
+    let body = http_get_string(&url, Some("application/vnd.github+json"))?;
+    if let Some(tag) = pin {
+        let release: GithubRelease =
+            serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
+        return Ok((!release.draft
+            && release.tag_name == tag
+            && !release.tag_name.is_empty()
+            && !release.tarball_url.trim().is_empty())
+        .then_some(release));
+    }
+    let releases: Vec<GithubRelease> =
+        serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
+    Ok(select_latest_github_release(releases))
+}
+
 #[derive(Debug, Clone)]
 pub struct PluginSpec {
     pub origin: String,
@@ -568,7 +720,7 @@ pub fn parse_spec(spec: &str) -> Result<PluginSpec, AppError> {
             Some((u, tag)) if !u.is_empty() && !tag.is_empty() => (u, Some(tag.to_string())),
             _ => (s, None),
         };
-        let repo_url = s.contains("github.com/").then(|| url.to_string());
+        let repo_url = github_repo_path(url).map(|repo| format!("https://github.com/{repo}"));
         // URL 含空路径段（协议双斜杠），先归一成 owner/repo 形状再映射 id
         let id_base = url
             .trim_start_matches("git@")
@@ -1098,7 +1250,68 @@ fn fetch_npm(
     Ok(version)
 }
 
+fn try_fetch_github_release(
+    spec: &PluginSpec,
+    dest: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Option<String> {
+    let repo = github_repo_path(&spec.source)?;
+    on_progress(&format!("正在查询 GitHub Release：{repo}"));
+    let release = match fetch_github_release(&spec.source, spec.pin.as_deref()) {
+        Ok(Some(release)) => release,
+        Ok(None) => {
+            on_progress(&format!("{repo} 没有可用的 GitHub Release，回退 git clone"));
+            return None;
+        }
+        Err(error) => {
+            on_progress(&format!("GitHub Release 查询失败：{error}，回退 git clone"));
+            return None;
+        }
+    };
+
+    on_progress(&format!(
+        "正在下载 GitHub Release {repo}@{} …",
+        release.tag_name
+    ));
+    let tarball = dest.join(".github-release.tar.gz");
+    let tarball_url = github_tarball_url(&repo, &release.tag_name);
+    if let Err(error) = http_get_file(&tarball_url, &tarball) {
+        let _ = fs::remove_file(&tarball);
+        on_progress(&format!(
+            "GitHub Release tarball 下载失败：{error}，回退 git clone"
+        ));
+        return None;
+    }
+    if let Err(error) = crate::archive::extract_github_tarball(&tarball, dest) {
+        let _ = fs::remove_file(&tarball);
+        on_progress(&format!(
+            "GitHub Release tarball 解包失败：{error}，回退 git clone"
+        ));
+        return None;
+    }
+    let _ = fs::remove_file(&tarball);
+    Some(release.tag_name)
+}
+
 fn fetch_git(
+    spec: &PluginSpec,
+    dest: &Path,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<String, AppError> {
+    // 公共 GitHub 仓库通常把可运行的构建结果发布在 Release 对应的源码
+    // tarball 中。先走这条不依赖本机 git 的路径；API、下载或归档不可用时
+    // 再回退到原有 clone 流程，保留任意 Git 主机和私有仓库的兼容性。
+    if github_repo_path(&spec.source).is_some() {
+        if let Some(version) = try_fetch_github_release(spec, dest, on_progress) {
+            build_git_plugin(dest, pnpm_exe, on_progress)?;
+            return Ok(version);
+        }
+    }
+    fetch_git_clone(spec, dest, pnpm_exe, on_progress)
+}
+
+fn fetch_git_clone(
     spec: &PluginSpec,
     dest: &Path,
     pnpm_exe: &Path,
@@ -1192,10 +1405,10 @@ fn fetch_git(
     })
 }
 
-/// 在克隆完成后立刻构建一个 git 来源插件。
+/// 在 Git 来源获取完成后立刻构建一个 git 来源插件。
 ///
 /// Git 仓库把构建产物放在 `.gitignore` 里（`lib/` 从来不会被提交），所以
-/// 刚克隆下来的树不能满足加载器，直到构建完为止。包自身的 `prepare`
+/// 刚获取下来的树不能满足加载器，直到构建完为止。包自身的 `prepare`
 /// 脚本正是 npm 官方为这种场景提供的钩子；通过 pnpm 跑它能让工具链解析
 /// 留在插件内部完成。尽力而为：当 `prepare` 不存在时插件必须自带预构建
 /// 产物，且 `validate_plugin` 仍会守住最终状态，所以只有当声明的 prepare
@@ -2072,15 +2285,33 @@ pub fn check_updates(data_dir: &Path) -> Result<Vec<UpdateInfo>, AppError> {
     Ok(out)
 }
 
-/// git 来源插件的最新版本：远端发布的最高 semver tag。`fetch_git` 把
-/// `installed_version` 也对齐成同样的形态（要么是 tag，要么回退为 HEAD
-/// hash），这样 `is_newer_than` 就可以直接比较二者。
+/// git 来源插件的最新版本：GitHub 仓库优先取非 draft Release 中最高的 semver
+/// tag；其它 Git 来源或 GitHub Release 不可用时回退到远端最高 semver tag。
+/// `fetch_git` 把 `installed_version` 也对齐成同样的形态（要么是 tag，要么
+/// 回退为 HEAD hash），这样 `is_newer_than` 就可以直接比较二者。
 ///
-/// 未锁定分支跟随最高 tag 而非分支 HEAD —— 这样即使开发者 push 了新 commit
-/// 但尚未发版，也不会显得比用户上次安装的版本「更新」。插件作者通过 tag
-/// 发布版本，而 tag 才是用户希望被通知的内容。
+/// 未锁定分支跟随最高的已发布版本而非分支 HEAD —— 这样即使开发者 push 了
+/// 新 commit 但尚未发版，也不会显得比用户上次安装的版本「更新」。插件作者
+/// 通过 Release 或 tag 发布版本，而发布版本才是用户希望被通知的内容。
 fn git_latest(item: &StoreItem) -> Result<Option<String>, String> {
-    git_latest_tag(&item.source)
+    let mut release_error = None;
+    if github_repo_path(&item.source).is_some() {
+        match fetch_github_release(&item.source, None) {
+            Ok(Some(release)) => return Ok(Some(release.tag_name)),
+            Ok(None) => {}
+            Err(error) => release_error = Some(error),
+        }
+    }
+
+    match git_latest_tag(&item.source) {
+        Ok(version) => Ok(version),
+        Err(git_error) => match release_error {
+            Some(release_error) => Err(format!(
+                "GitHub Releases 与 git tags 均不可用（GitHub：{release_error}；git：{git_error}）"
+            )),
+            None => Err(git_error),
+        },
+    }
 }
 
 /// 远端发布的最高 semver tag。被 `fetch_git` 用来在源未锁定时挑选分支，
@@ -3224,6 +3455,122 @@ mod tests {
         assert_eq!(item.origin, "git");
         assert_eq!(item.spec, "https://github.com/someone/dsh-web-ui.git");
         assert!(item.repo.is_none());
+    }
+
+    #[test]
+    fn recognizes_github_sources_for_release_lookup() {
+        assert_eq!(
+            github_repo_path("https://github.com/Owner/Repo.git"),
+            Some("Owner/Repo".into())
+        );
+        assert_eq!(
+            github_repo_path("https://github.com/Owner/Repo/"),
+            Some("Owner/Repo".into())
+        );
+        assert_eq!(
+            github_repo_path("git@github.com:Owner/Repo.git"),
+            Some("Owner/Repo".into())
+        );
+        assert_eq!(
+            github_repo_path("ssh://git@github.com/Owner/Repo.git"),
+            Some("Owner/Repo".into())
+        );
+        assert_eq!(
+            github_repo_path("git+ssh://git@github.com/Owner/Repo.git"),
+            Some("Owner/Repo".into())
+        );
+        assert_eq!(
+            github_repo_path("git://github.com/Owner/Repo.git"),
+            Some("Owner/Repo".into())
+        );
+        assert_eq!(
+            github_repo_path("github.com/Owner/Repo"),
+            Some("Owner/Repo".into())
+        );
+
+        // 只有真正的 github.com 仓库进入 Release API；其它 Git 主机、伪造
+        // 域名、HTTP/认证/异常端口地址、带查询串的地址和多余路径都必须
+        // 保留在 clone 回退路径。
+        assert_eq!(github_repo_path("http://github.com/Owner/Repo.git"), None);
+        assert_eq!(
+            github_repo_path("https://user@github.com/Owner/Repo.git"),
+            None
+        );
+        assert_eq!(
+            github_repo_path("https://github.com:444/Owner/Repo.git"),
+            None
+        );
+        assert_eq!(
+            github_repo_path("ssh://git@github.com:2222/Owner/Repo.git"),
+            None
+        );
+        assert_eq!(github_repo_path("https://gitlab.com/Owner/Repo.git"), None);
+        assert_eq!(
+            github_repo_path("https://github.com.evil/Owner/Repo.git"),
+            None
+        );
+        assert_eq!(
+            github_repo_path("https://github.com/Owner/Repo.git?download=1"),
+            None
+        );
+        assert_eq!(
+            github_repo_path("https://github.com/Owner/Repo%2Fother.git"),
+            None
+        );
+        assert_eq!(
+            github_repo_path("https://github.com/Owner/Repo/releases"),
+            None
+        );
+    }
+
+    #[test]
+    fn builds_github_release_endpoints() {
+        assert_eq!(
+            github_release_endpoint("Owner/Repo", None),
+            "https://api.github.com/repos/Owner/Repo/releases?per_page=100"
+        );
+        assert_eq!(
+            github_release_endpoint("Owner/Repo", Some("release/v1.2.3")),
+            "https://api.github.com/repos/Owner/Repo/releases/tags/release%2Fv1.2.3"
+        );
+        assert_eq!(
+            github_tarball_url("Owner/Repo", "release/v1.2.3"),
+            "https://api.github.com/repos/Owner/Repo/tarball/release%2Fv1.2.3"
+        );
+    }
+
+    #[test]
+    fn selects_latest_usable_github_release() {
+        let release = |tag: &str, draft: bool, tarball_url: &str| GithubRelease {
+            tag_name: tag.into(),
+            draft,
+            tarball_url: tarball_url.into(),
+        };
+        let releases = vec![
+            release(
+                "v1.0.0",
+                false,
+                "https://api.github.com/repos/o/r/tarball/v1.0.0",
+            ),
+            release(
+                "v2.0.0",
+                true,
+                "https://api.github.com/repos/o/r/tarball/v2.0.0",
+            ),
+            release(
+                "v1.10.0-rc.1",
+                false,
+                "https://codeload.github.com/o/r/tar.gz/v1.10.0-rc.1",
+            ),
+            release(
+                "nightly",
+                false,
+                "https://api.github.com/repos/o/r/tarball/nightly",
+            ),
+            release("v1.9.0", false, "https://example.com/archive.tar.gz"),
+        ];
+        let selected = select_latest_github_release(releases).expect("release");
+        assert_eq!(selected.tag_name, "v1.10.0-rc.1");
     }
 
     #[test]
