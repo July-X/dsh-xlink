@@ -72,6 +72,7 @@ pub fn run() {
             app.manage(AppState {
                 data_dir,
                 running: Mutex::new(None),
+                lifecycle: Mutex::new(()),
                 node_cache: Mutex::new(None),
             });
             // 崩溃恢复：清理上一次壳运行中途死亡留下的 plugin store

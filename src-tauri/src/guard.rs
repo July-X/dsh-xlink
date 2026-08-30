@@ -22,7 +22,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::process::read_tail;
+use crate::process::{atomic_write, read_tail};
 use crate::quarantine::{self, QuarantineItem};
 use crate::{kernel, plugins, settings};
 
@@ -440,7 +440,7 @@ fn incident_path(data_dir: &Path) -> PathBuf {
 /// 写入失败不能掩盖用户正在等待的启动结果。
 fn save_incident(data_dir: &Path, incident: &Incident) {
     if let Ok(text) = serde_json::to_string_pretty(incident) {
-        let _ = std::fs::write(incident_path(data_dir), text + "\n");
+        let _ = atomic_write(&incident_path(data_dir), format!("{text}\n").as_bytes());
     }
 }
 

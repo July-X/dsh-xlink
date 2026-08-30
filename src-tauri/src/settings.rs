@@ -9,6 +9,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::process::atomic_write;
+
 /// 用户尚未保存自己的端口值时，管理面板期望 dsh web 服务器所使用的端口。
 /// 这里重新导出 [`crate::kernel::DEFAULT_PORT`]，避免两个定义发生偏移——
 /// debug 构建（3091）和 release 构建（3090）共用同一个回退值。
@@ -66,7 +68,7 @@ pub fn save(data_dir: &Path, settings: &Settings) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    fs::write(&path, text).map_err(|e| e.to_string())
+    atomic_write(&path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

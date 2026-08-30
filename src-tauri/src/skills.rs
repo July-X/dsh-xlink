@@ -14,12 +14,13 @@
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
-use crate::process::run_capture;
+use crate::process::{atomic_write, run_capture};
 use crate::releases::{http_get_file, http_get_npm_latest, http_get_string};
 use crate::version::cmp_versions;
 
@@ -263,6 +264,17 @@ fn now_epoch_secs() -> String {
 
 // --- 中央库持久化 -----------------------------------------------------------
 
+fn store_mutation_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// 锁定技能商店的清单变更。网络更新检查只在最终提交阶段持有这把锁，
+/// 不让慢速来源请求阻塞用户的技能安装或启停操作。
+pub fn lock_store() -> std::sync::MutexGuard<'static, ()> {
+    crate::lock(store_mutation_lock())
+}
+
 pub fn load_store(home: &Path) -> SkillStore {
     let Ok(text) = fs::read_to_string(store_file(home)) else {
         return SkillStore::default();
@@ -270,10 +282,11 @@ pub fn load_store(home: &Path) -> SkillStore {
     serde_json::from_str(&text).unwrap_or_default()
 }
 
-fn save_store(home: &Path, store: &SkillStore) -> Result<(), AppError> {
+fn save_store_unlocked(home: &Path, store: &SkillStore) -> Result<(), AppError> {
     fs::create_dir_all(store_dir(home)).map_err(|e| AppError::Io(e.to_string()))?;
     let text = serde_json::to_string_pretty(store).map_err(|e| AppError::Io(e.to_string()))?;
-    fs::write(store_file(home), text + "\n").map_err(|e| AppError::Io(e.to_string()))
+    atomic_write(&store_file(home), format!("{text}\n").as_bytes())
+        .map_err(|e| AppError::Io(e.to_string()))
 }
 
 fn store_item(home: &Path, id: &str) -> Option<SkillStoreItem> {
@@ -283,20 +296,20 @@ fn store_item(home: &Path, id: &str) -> Option<SkillStoreItem> {
         .find(|item| item.id == id)
 }
 
-fn upsert_item(home: &Path, item: SkillStoreItem) -> Result<(), AppError> {
+fn upsert_item_unlocked(home: &Path, item: SkillStoreItem) -> Result<(), AppError> {
     let mut store = load_store(home);
     if let Some(existing) = store.items.iter_mut().find(|i| i.id == item.id) {
         *existing = item;
     } else {
         store.items.push(item);
     }
-    save_store(home, &store)
+    save_store_unlocked(home, &store)
 }
 
-fn remove_item(home: &Path, id: &str) -> Result<(), AppError> {
+fn remove_item_unlocked(home: &Path, id: &str) -> Result<(), AppError> {
     let mut store = load_store(home);
     store.items.retain(|item| item.id != id);
-    save_store(home, &store)
+    save_store_unlocked(home, &store)
 }
 
 // --- spec 解析 ------------------------------------------------------------
@@ -747,7 +760,8 @@ fn write_source_marker(spec: &SkillSpec, version: &str, dest: &Path) -> Result<(
         "fetchedAt": now_epoch_secs(),
     });
     let text = serde_json::to_string_pretty(&marker).map_err(|e| AppError::Io(e.to_string()))?;
-    fs::write(dest.join(SOURCE_MARKER), text + "\n").map_err(|e| AppError::Io(e.to_string()))
+    atomic_write(&dest.join(SOURCE_MARKER), format!("{text}\n").as_bytes())
+        .map_err(|e| AppError::Io(e.to_string()))
 }
 
 /// 递归地将 source 复制到 target，若已存在则替换。
@@ -798,7 +812,7 @@ fn new_staging_dir(store: &Path, kind: &str) -> io::Result<PathBuf> {
 }
 
 fn stamp_id_marker(dir: &Path, id: &str) -> io::Result<()> {
-    fs::write(dir.join(ID_MARKER), format!("{id}\n"))
+    atomic_write(&dir.join(ID_MARKER), format!("{id}\n").as_bytes())
 }
 
 /// 单次成功的「获取并发布」周期的结果。
@@ -1170,6 +1184,7 @@ pub fn install(
     mode: &str,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<SkillStoreItem, AppError> {
+    let _store_guard = lock_store();
     install_into(&resolve_home(), spec_str, mode, on_progress)
 }
 
@@ -1217,7 +1232,7 @@ fn install_into(
         item.actual_mode = ensure_entry(home, &fetched.dir, &item.mode, &entry, false)?;
         item.skills.push(entry);
     }
-    upsert_item(home, item.clone())?;
+    upsert_item_unlocked(home, item.clone())?;
     Ok(item)
 }
 
@@ -1225,6 +1240,7 @@ fn install_into(
 /// 以启用状态链接进去，上游移除的技能解除链接，保留的技能在布局变动或
 /// 包以 copy 模式运行时刷新。通过进度回调报告差异。
 pub fn update(id: &str, on_progress: &mut dyn FnMut(&str)) -> Result<SkillStoreItem, AppError> {
+    let _store_guard = lock_store();
     update_into(&resolve_home(), id, on_progress)
 }
 
@@ -1291,13 +1307,14 @@ fn update_into(
             updated.actual_mode = ensure_entry(home, &fetched.dir, &updated.mode, entry, true)?;
         }
     }
-    upsert_item(home, updated.clone())?;
+    upsert_item_unlocked(home, updated.clone())?;
     Ok(updated)
 }
 
 /// 在所有位置卸载一个包：解除其技能的链接，删除中央库目录树，
 /// 删除清单行。
 pub fn uninstall(id: &str, on_progress: &mut dyn FnMut(&str)) -> Result<(), AppError> {
+    let _store_guard = lock_store();
     uninstall_into(&resolve_home(), id, on_progress)
 }
 
@@ -1312,7 +1329,7 @@ fn uninstall_into(
         unmaterialize_entry(home, &pkg_dir, entry);
     }
     let _ = fs::remove_dir_all(&pkg_dir);
-    remove_item(home, id)?;
+    remove_item_unlocked(home, id)?;
     on_progress(&format!(
         "已卸载 {}（{} 个技能已从工作台摘除）",
         item.name,
@@ -1329,6 +1346,7 @@ pub fn set_enabled(
     enabled: bool,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(), AppError> {
+    let _store_guard = lock_store();
     set_enabled_into(&resolve_home(), id, skill_name, enabled, on_progress)
 }
 
@@ -1357,7 +1375,7 @@ fn set_enabled_into(
         unmaterialize_entry(home, &pkg_dir, entry);
     }
     entry.enabled = enabled;
-    upsert_item(home, item)?;
+    upsert_item_unlocked(home, item)?;
     on_progress(&format!(
         "技能 {skill_name} 已{}（对运行中的工作台即时生效）",
         if enabled { "启用" } else { "停用" }
@@ -1436,12 +1454,20 @@ pub fn check_updates() -> Result<Vec<SkillUpdateInfo>, AppError> {
 }
 
 fn check_updates_for_home(home: &Path) -> Result<Vec<SkillUpdateInfo>, AppError> {
-    let mut store = load_store(home);
+    // 网络请求不能持有商店锁，否则一次远端超时会阻塞安装、卸载和启停。
+    // 提交时重新读取当前清单，并按 installed_version 做乐观冲突校验，
+    // 避免旧的检查结果覆盖刚完成的更新。
+    let snapshot = {
+        let _store_guard = lock_store();
+        load_store(home)
+            .items
+            .into_iter()
+            .filter(|item| item.origin != "local")
+            .collect::<Vec<_>>()
+    };
     let mut out = Vec::new();
-    for item in &mut store.items {
-        if item.origin == "local" {
-            continue;
-        }
+    let mut probes = Vec::with_capacity(snapshot.len());
+    for item in snapshot {
         let (latest, error) = match item.origin.as_str() {
             "npm" => match http_get_npm_latest(&item.source) {
                 Ok(latest) => (latest, None),
@@ -1455,15 +1481,29 @@ fn check_updates_for_home(home: &Path) -> Result<Vec<SkillUpdateInfo>, AppError>
         };
         let newer =
             latest.filter(|v| is_newer_than(v, &item.installed_version, &item.origin, item.pinned));
-        item.latest_version = newer.clone();
+        probes.push((
+            item.id.clone(),
+            item.installed_version.clone(),
+            newer.clone(),
+        ));
         out.push(SkillUpdateInfo {
             id: item.id.clone(),
             latest: newer,
             error,
         });
     }
+
+    let _store_guard = lock_store();
+    let mut store = load_store(home);
+    for (id, installed_version, latest) in probes {
+        if let Some(current) = store.items.iter_mut().find(|item| item.id == id) {
+            if current.installed_version == installed_version {
+                current.latest_version = latest;
+            }
+        }
+    }
     store.last_checked_at = Some(now_epoch_secs());
-    save_store(home, &store)?;
+    save_store_unlocked(home, &store)?;
     Ok(out)
 }
 
@@ -1481,6 +1521,7 @@ fn check_updates_for_home(home: &Path) -> Result<Vec<SkillUpdateInfo>, AppError>
 ///
 /// 失败时写入 `store.warning` 供 UI 展示，而非阻塞启动。
 pub fn reconcile() {
+    let _store_guard = lock_store();
     reconcile_home(&resolve_home());
 }
 
@@ -1558,7 +1599,7 @@ fn reconcile_home(home: &Path) {
     if warning != store.warning {
         let mut next = store;
         next.warning = warning;
-        let _ = save_store(home, &next);
+        let _ = save_store_unlocked(home, &next);
     }
 }
 

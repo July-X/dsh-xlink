@@ -16,13 +16,14 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::error::AppError;
-use crate::process::run_capture;
+use crate::process::{atomic_write, run_capture};
 use crate::quarantine;
 use crate::releases::{http_get_file, http_get_npm_latest, http_get_string};
 use crate::version::cmp_versions;
@@ -488,6 +489,17 @@ fn now_epoch_secs() -> String {
 
 // --- 中央库持久化 --------------------------------------------------------
 
+fn store_mutation_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// 锁定插件商店的清单变更。网络探测应在锁外执行，实际写回时再取得这把
+/// 锁，以免一次慢请求阻塞用户的安装或卸载操作。
+pub fn lock_store() -> std::sync::MutexGuard<'static, ()> {
+    crate::lock(store_mutation_lock())
+}
+
 pub fn load_store(data_dir: &Path) -> Store {
     let Ok(text) = fs::read_to_string(store_file(data_dir)) else {
         return Store::default();
@@ -495,10 +507,11 @@ pub fn load_store(data_dir: &Path) -> Store {
     serde_json::from_str(&text).unwrap_or_default()
 }
 
-fn save_store(data_dir: &Path, store: &Store) -> Result<(), AppError> {
+fn save_store_unlocked(data_dir: &Path, store: &Store) -> Result<(), AppError> {
     fs::create_dir_all(store_dir(data_dir)).map_err(|e| AppError::Io(e.to_string()))?;
     let text = serde_json::to_string_pretty(store).map_err(|e| AppError::Io(e.to_string()))?;
-    fs::write(store_file(data_dir), text + "\n").map_err(|e| AppError::Io(e.to_string()))?;
+    atomic_write(&store_file(data_dir), format!("{text}\n").as_bytes())
+        .map_err(|e| AppError::Io(e.to_string()))?;
     ensure_store_npmrc(data_dir)
 }
 
@@ -519,7 +532,7 @@ fn ensure_store_npmrc(data_dir: &Path) -> Result<(), AppError> {
     {
         return Ok(());
     }
-    fs::write(&npmrc, text).map_err(|e| AppError::Io(e.to_string()))?;
+    atomic_write(&npmrc, text.as_bytes()).map_err(|e| AppError::Io(e.to_string()))?;
     Ok(())
 }
 
@@ -530,20 +543,26 @@ fn store_item(data_dir: &Path, id: &str) -> Option<StoreItem> {
         .find(|item| item.id == id)
 }
 
-fn upsert_item(data_dir: &Path, item: StoreItem) -> Result<(), AppError> {
+fn upsert_item_unlocked(data_dir: &Path, item: StoreItem) -> Result<(), AppError> {
     let mut store = load_store(data_dir);
     if let Some(existing) = store.items.iter_mut().find(|i| i.id == item.id) {
         *existing = item;
     } else {
         store.items.push(item);
     }
-    save_store(data_dir, &store)
+    save_store_unlocked(data_dir, &store)
 }
 
-fn remove_item(data_dir: &Path, id: &str) -> Result<(), AppError> {
+#[cfg(test)]
+fn upsert_item(data_dir: &Path, item: StoreItem) -> Result<(), AppError> {
+    let _store_guard = lock_store();
+    upsert_item_unlocked(data_dir, item)
+}
+
+fn remove_item_unlocked(data_dir: &Path, id: &str) -> Result<(), AppError> {
     let mut store = load_store(data_dir);
     store.items.retain(|item| item.id != id);
-    save_store(data_dir, &store)
+    save_store_unlocked(data_dir, &store)
 }
 
 fn read_meta(data_dir: &Path, version: &str, id: &str) -> Option<KernelMeta> {
@@ -556,7 +575,7 @@ fn write_meta(data_dir: &Path, version: &str, id: &str, meta: &KernelMeta) -> Re
         fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
     }
     let text = serde_json::to_string(meta).map_err(|e| AppError::Io(e.to_string()))?;
-    fs::write(kernel_meta_file(data_dir, version, id), text)
+    atomic_write(&kernel_meta_file(data_dir, version, id), text.as_bytes())
         .map_err(|e| AppError::Io(e.to_string()))
 }
 
@@ -867,7 +886,8 @@ fn write_source_marker(spec: &PluginSpec, version: &str, dest: &Path) -> Result<
         "fetchedAt": now_epoch_secs(),
     });
     let text = serde_json::to_string_pretty(&marker).map_err(|e| AppError::Io(e.to_string()))?;
-    fs::write(dest.join(SOURCE_MARKER), text + "\n").map_err(|e| AppError::Io(e.to_string()))
+    atomic_write(&dest.join(SOURCE_MARKER), format!("{text}\n").as_bytes())
+        .map_err(|e| AppError::Io(e.to_string()))
 }
 
 /// 进行中取源目录的前缀（`.tmp-<pid>-<ts>`）。配合 `.dsh-id` 标记，
@@ -919,7 +939,7 @@ fn new_staging_dir(store: &Path, kind: &str, id: &str) -> io::Result<PathBuf> {
 /// 的 `final_dir` 归到一组。只能在 rename 成功后调用，绝不能在之前调用，
 /// 这样 rename 目标在 Windows 上始终保持空目录。
 fn stamp_id_marker(dir: &Path, id: &str) -> io::Result<()> {
-    fs::write(dir.join(ID_MARKER), format!("{id}\n"))
+    atomic_write(&dir.join(ID_MARKER), format!("{id}\n").as_bytes())
 }
 
 /// 把插件拉取到中央库的暂存 tmp 目录，校验后再以崩溃安全的方式发布到
@@ -937,7 +957,7 @@ fn fetch_into_store(
     pnpm_exe: &Path,
     spec: &PluginSpec,
     on_progress: &mut dyn FnMut(&str),
-) -> Result<StoreItem, AppError> {
+) -> Result<(StoreItem, bool), AppError> {
     let store = store_dir(data_dir);
     fs::create_dir_all(&store).map_err(|e| AppError::Io(e.to_string()))?;
     let tmp =
@@ -951,13 +971,13 @@ fn fetch_into_store(
     // 拿到所需的身份信息，标记又会跟着内容一起被 `tmp → new` 的 rename
     // 一起带走。
 
-    let version = match spec.origin.as_str() {
-        "npm" => fetch_npm(spec, &tmp, on_progress),
+    let fetched = match spec.origin.as_str() {
+        "npm" => fetch_npm(spec, &tmp, on_progress).map(|version| (version, false)),
         "git" => fetch_git(spec, &tmp, pnpm_exe, on_progress),
         other => Err(AppError::Plugin(format!("未知来源 {other:?}"))),
     };
-    let version = match version {
-        Ok(v) => v,
+    let (version, dependencies_ready) = match fetched {
+        Ok(value) => value,
         Err(e) => {
             let _ = fs::remove_dir_all(&tmp);
             return Err(e);
@@ -1041,26 +1061,29 @@ fn fetch_into_store(
 
     let now = now_epoch_secs();
     let existing = store_item(data_dir, &spec.id);
-    Ok(StoreItem {
-        id: spec.id.clone(),
-        name: spec.name.clone(),
-        origin: spec.origin.clone(),
-        source: spec.source.clone(),
-        installed_version: version,
-        latest_version: existing.as_ref().and_then(|e| e.latest_version.clone()),
-        mode: existing
-            .as_ref()
-            .map(|e| e.mode.clone())
-            .unwrap_or_else(|| String::from("link")),
-        pinned: spec.pin.is_some(),
-        installed_at: existing
-            .as_ref()
-            .map(|e| e.installed_at.clone())
-            .unwrap_or_else(|| now.clone()),
-        updated_at: now,
-        repo_url: spec.repo_url.clone(),
-        description: None,
-    })
+    Ok((
+        StoreItem {
+            id: spec.id.clone(),
+            name: spec.name.clone(),
+            origin: spec.origin.clone(),
+            source: spec.source.clone(),
+            installed_version: version,
+            latest_version: existing.as_ref().and_then(|e| e.latest_version.clone()),
+            mode: existing
+                .as_ref()
+                .map(|e| e.mode.clone())
+                .unwrap_or_else(|| String::from("link")),
+            pinned: spec.pin.is_some(),
+            installed_at: existing
+                .as_ref()
+                .map(|e| e.installed_at.clone())
+                .unwrap_or_else(|| now.clone()),
+            updated_at: now,
+            repo_url: spec.repo_url.clone(),
+            description: None,
+        },
+        dependencies_ready,
+    ))
 }
 
 /// 调和被中断更新遗留下来的暂存目录。每次启动都能安全调用；正常路径
@@ -1298,14 +1321,14 @@ fn fetch_git(
     dest: &Path,
     pnpm_exe: &Path,
     on_progress: &mut dyn FnMut(&str),
-) -> Result<String, AppError> {
+) -> Result<(String, bool), AppError> {
     // 公共 GitHub 仓库通常把可运行的构建结果发布在 Release 对应的源码
     // tarball 中。先走这条不依赖本机 git 的路径；API、下载或归档不可用时
     // 再回退到原有 clone 流程，保留任意 Git 主机和私有仓库的兼容性。
     if github_repo_path(&spec.source).is_some() {
         if let Some(version) = try_fetch_github_release(spec, dest, on_progress) {
-            build_git_plugin(dest, pnpm_exe, on_progress)?;
-            return Ok(version);
+            let dependencies_ready = build_git_plugin(dest, pnpm_exe, on_progress)?;
+            return Ok((version, dependencies_ready));
         }
     }
     fetch_git_clone(spec, dest, pnpm_exe, on_progress)
@@ -1316,7 +1339,7 @@ fn fetch_git_clone(
     dest: &Path,
     pnpm_exe: &Path,
     on_progress: &mut dyn FnMut(&str),
-) -> Result<String, AppError> {
+) -> Result<(String, bool), AppError> {
     // 探测和 clone 都走 `process::command_with_path`，让继承的 PATH 包含
     // 用户的工具位置。Windows 上 GUI 子系统的 release 构建在启动时只能
     // 看到 system PATH；而 Git for Windows 注册在用户 PATH
@@ -1388,9 +1411,9 @@ fn fetch_git_clone(
         }
         return Err(AppError::Plugin(msg));
     }
-    build_git_plugin(dest, pnpm_exe, on_progress)?;
+    let dependencies_ready = build_git_plugin(dest, pnpm_exe, on_progress)?;
     if let Some(tag) = branch {
-        return Ok(tag);
+        return Ok((tag, dependencies_ready));
     }
     // 未锁定的仓库且没有任何 semver tag：克隆的是默认分支；记录下 HEAD
     // 的 hash，让 source marker 仍能指向稳定的内容，用户也能看出当前
@@ -1398,11 +1421,14 @@ fn fetch_git_clone(
     let dest_str = dest.to_str().unwrap_or("");
     let (ok, out) = run_capture("git", &["-C", dest_str, "rev-parse", "--short", "HEAD"])
         .map_err(|e| AppError::Io(e.to_string()))?;
-    Ok(if ok {
-        out.trim().to_string()
-    } else {
-        String::from("head")
-    })
+    Ok((
+        if ok {
+            out.trim().to_string()
+        } else {
+            String::from("head")
+        },
+        dependencies_ready,
+    ))
 }
 
 /// 在 Git 来源获取完成后立刻构建一个 git 来源插件。
@@ -1417,10 +1443,10 @@ fn build_git_plugin(
     dest: &Path,
     pnpm_exe: &Path,
     on_progress: &mut dyn FnMut(&str),
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let root = match read_plugin_manifest(dest) {
         Ok(root) => root,
-        Err(_) => return Ok(()), // 真正的错误由 validate_plugin 报告
+        Err(_) => return Ok(false), // 真正的错误由 validate_plugin 报告
     };
     let has_prepare = root
         .get("scripts")
@@ -1433,7 +1459,7 @@ fn build_git_plugin(
         && (dest.join(main).is_file() || dest.join(format!("{main}.js")).is_file());
     // 预构建的仓库：什么都不用做。「声明了 prepare 但还没构建」才是常见情况。
     if !has_prepare || entry_ready {
-        return Ok(());
+        return Ok(false);
     }
     // 构建脚本需要依赖来定位工具（tsdown 等）。install_store_deps 之后会在
     // link 模式下跑一次，但太晚 —— 入口检查在这之前发生，且 copy 模式根本不会
@@ -1478,7 +1504,7 @@ fn build_git_plugin(
             log_path.display()
         )));
     }
-    Ok(())
+    Ok(true)
 }
 
 fn read_plugin_manifest(plugin_root: &Path) -> Result<serde_json::Value, serde_json::Error> {
@@ -1966,7 +1992,7 @@ fn write_profile_json(
         fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
     }
     let text = serde_json::to_string_pretty(root).map_err(|e| AppError::Io(e.to_string()))?;
-    fs::write(path, text + "\n").map_err(|e| AppError::Io(e.to_string()))
+    atomic_write(&path, format!("{text}\n").as_bytes()).map_err(|e| AppError::Io(e.to_string()))
 }
 
 /// 按内核相同的方式初始化 profile 清单，但提前把模板 bundle 列表写进去，
@@ -1987,7 +2013,7 @@ fn ensure_profile(data_dir: &Path, profile: &str) -> Result<(), AppError> {
     write_profile_json(data_dir, profile, &root)?;
     let patch = dir.join("cordis.patch.yml");
     if !patch.exists() {
-        let _ = fs::write(&patch, "# Your patch layer for this dsh profile.\n[]\n");
+        let _ = atomic_write(&patch, b"# Your patch layer for this dsh profile.\n[]\n");
     }
     let workspace = dir.join("pnpm-workspace.yaml");
     let needs_workspace = !workspace.exists()
@@ -1995,9 +2021,9 @@ fn ensure_profile(data_dir: &Path, profile: &str) -> Result<(), AppError> {
             .map(|t| !t.contains("minimumReleaseAge: 0"))
             .unwrap_or(false);
     if needs_workspace {
-        let _ = fs::write(
+        let _ = atomic_write(
             &workspace,
-            "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\nminimumReleaseAge: 0\n",
+            b"packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\nminimumReleaseAge: 0\n",
         );
     }
     Ok(())
@@ -2201,7 +2227,7 @@ pub fn restore_profile_manifest(
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
         }
-        fs::write(&path, text).map_err(|e| AppError::Io(e.to_string()))?;
+        atomic_write(&path, text.as_bytes()).map_err(|e| AppError::Io(e.to_string()))?;
     }
     on_progress("正在恢复 profile 依赖（pnpm install）");
     let status = run_profile_install(data_dir, &settings.profile, pnpm_exe, on_progress)?;
@@ -2218,9 +2244,10 @@ pub fn restore_profile_manifest(
 /// 写入（或清除）中央库向用户展示的告警。安静的接线流程和启动看护的
 /// 首次重试修复共用此函数，确保两处展示给用户的告警与插件卡片旁的内容一致。
 pub fn set_store_warning(data_dir: &Path, warning: Option<String>) {
+    let _store_guard = lock_store();
     let mut store = load_store(data_dir);
     store.warning = warning;
-    let _ = save_store(data_dir, &store);
+    let _ = save_store_unlocked(data_dir, &store);
 }
 
 /// 给同步命令（切换内核 / 启动）用的安静接线：失败时只写入中央库供
@@ -2257,15 +2284,26 @@ pub struct UpdateInfo {
 /// 把每个中央库条目对照其来源的最新版本检查一遍，结果写回中央库供 UI
 /// 角标使用。
 pub fn check_updates(data_dir: &Path) -> Result<Vec<UpdateInfo>, AppError> {
-    let mut store = load_store(data_dir);
+    // 网络请求不能持有商店锁，否则一次 GitHub/npm 超时会阻塞安装、卸载和
+    // 启动修复。提交阶段会重新读取当前清单，并用 installed_version 做
+    // 乐观冲突校验，避免旧结果覆盖刚完成的安装或更新。
+    let snapshot = {
+        let _store_guard = lock_store();
+        load_store(data_dir)
+            .items
+            .into_iter()
+            .filter(|item| item.origin != "local")
+            .collect::<Vec<_>>()
+    };
     let mut out = Vec::new();
-    for item in &mut store.items {
+    let mut probes = Vec::with_capacity(snapshot.len());
+    for item in snapshot {
         let (latest, error) = match item.origin.as_str() {
             "npm" => match http_get_npm_latest(&item.source) {
                 Ok(latest) => (latest, None),
                 Err(e) => (None, Some(e)),
             },
-            "git" => match git_latest(item) {
+            "git" => match git_latest(&item) {
                 Ok(v) => (v, None),
                 Err(e) => (None, Some(e)),
             },
@@ -2273,15 +2311,29 @@ pub fn check_updates(data_dir: &Path) -> Result<Vec<UpdateInfo>, AppError> {
         };
         let newer =
             latest.filter(|v| is_newer_than(v, &item.installed_version, &item.origin, item.pinned));
-        item.latest_version = newer.clone();
+        probes.push((
+            item.id.clone(),
+            item.installed_version.clone(),
+            newer.clone(),
+        ));
         out.push(UpdateInfo {
             id: item.id.clone(),
             latest: newer,
             error,
         });
     }
+
+    let _store_guard = lock_store();
+    let mut store = load_store(data_dir);
+    for (id, installed_version, latest) in probes {
+        if let Some(current) = store.items.iter_mut().find(|item| item.id == id) {
+            if current.installed_version == installed_version {
+                current.latest_version = latest;
+            }
+        }
+    }
     store.last_checked_at = Some(now_epoch_secs());
-    save_store(data_dir, &store)?;
+    save_store_unlocked(data_dir, &store)?;
     Ok(out)
 }
 
@@ -2644,7 +2696,7 @@ fn fetch_catalog(data_dir: &Path, force: bool) -> Result<Vec<CatalogItem>, Strin
     let items = filter_npm_origin(items);
     if fs::create_dir_all(data_dir).is_ok() {
         if let Ok(text) = serde_json::to_string(&items) {
-            let _ = fs::write(&cache, text);
+            let _ = atomic_write(&cache, text.as_bytes());
         }
     }
     Ok(items)
@@ -2749,6 +2801,18 @@ pub fn install(
     mode: &str,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<StoreItem, AppError> {
+    let _store_guard = lock_store();
+    install_unlocked(data_dir, settings, pnpm_exe, spec_str, mode, on_progress)
+}
+
+fn install_unlocked(
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    spec_str: &str,
+    mode: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<StoreItem, AppError> {
     let spec = parse_spec(spec_str)?;
     if store_item(data_dir, &spec.id).is_some() {
         return Err(AppError::Plugin(format!(
@@ -2756,15 +2820,15 @@ pub fn install(
             spec.name
         )));
     }
-    let mut item = fetch_into_store(data_dir, pnpm_exe, &spec, on_progress)?;
+    let (mut item, dependencies_ready) = fetch_into_store(data_dir, pnpm_exe, &spec, on_progress)?;
     item.mode = if mode == "copy" { "copy" } else { "link" }.to_string();
-    if item.mode == "link" {
+    if item.mode == "link" && !dependencies_ready {
         // 在装依赖前先确保中央库级别的 `.npmrc` 已就绪，这样即使中央库是在
         // 此修复部署之前创建的，`minimumReleaseAge` 排除也已生效。
         ensure_store_npmrc(data_dir).ok();
         install_store_deps(data_dir, pnpm_exe, &item.id, on_progress)?;
     }
-    upsert_item(data_dir, item.clone())?;
+    upsert_item_unlocked(data_dir, item.clone())?;
     // 重装代表明确的重试意图：清掉历史隔离记录，否则新装的插件会被旧
     // 记录挡在接线之外，表现为"装了却不生效"的哑故障。
     let _ = quarantine::remove(data_dir, &item.id);
@@ -2783,6 +2847,17 @@ pub fn update(
     id: &str,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<StoreItem, AppError> {
+    let _store_guard = lock_store();
+    update_unlocked(data_dir, settings, pnpm_exe, id, on_progress)
+}
+
+fn update_unlocked(
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<StoreItem, AppError> {
     let item =
         store_item(data_dir, id).ok_or_else(|| AppError::Plugin("插件不在中央库中".into()))?;
     if item.pinned {
@@ -2793,10 +2868,10 @@ pub fn update(
     }
     let spec = parse_spec(&item.source)?;
     on_progress(&format!("正在更新 {}", item.name));
-    let fetched = fetch_into_store(data_dir, pnpm_exe, &spec, on_progress)?;
-    let mut updated = fetched;
+    let (mut updated, dependencies_ready) =
+        fetch_into_store(data_dir, pnpm_exe, &spec, on_progress)?;
     updated.mode = item.mode.clone();
-    if updated.mode == "link" {
+    if updated.mode == "link" && !dependencies_ready {
         ensure_store_npmrc(data_dir).ok();
         install_store_deps(data_dir, pnpm_exe, &updated.id, on_progress)?;
     }
@@ -2805,7 +2880,7 @@ pub fn update(
     // 刚刚安装完成的「幻影新版本」。之后 `check_updates` 仍能在远端
     // 这次拉取之后又前进时重新抬高 `latest_version`。
     updated.latest_version = Some(updated.installed_version.clone());
-    upsert_item(data_dir, updated.clone())?;
+    upsert_item_unlocked(data_dir, updated.clone())?;
     // 与 install 同理：更新是明确的重试意图，历史隔离记录不再适用。
     let _ = quarantine::remove(data_dir, &updated.id);
     sync_kernels(data_dir, &updated)?;
@@ -2821,6 +2896,17 @@ pub fn update(
 /// 清理残留的隔离/profile 状态，又不会把「任意一个缺失的 id」当成卸载
 /// 成功。
 pub fn uninstall(
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    let _store_guard = lock_store();
+    uninstall_unlocked(data_dir, settings, pnpm_exe, id, on_progress)
+}
+
+fn uninstall_unlocked(
     data_dir: &Path,
     settings: &settings::Settings,
     pnpm_exe: &Path,
@@ -2857,7 +2943,7 @@ pub fn uninstall(
     for version in kernel::list_installed(data_dir) {
         remove_materialized(data_dir, &version.version, id);
     }
-    remove_item(data_dir, id)?;
+    remove_item_unlocked(data_dir, id)?;
     // 隔离记录随卸载一并清除：残留记录会在用户日后重装同名插件时把它挡
     // 在接线之外，形成"装了却不生效"的哑故障。
     quarantine::remove(data_dir, id)?;
@@ -2874,14 +2960,28 @@ pub fn set_mode(
     mode: &str,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(), AppError> {
+    let _store_guard = lock_store();
+    set_mode_unlocked(data_dir, settings, pnpm_exe, id, mode, on_progress)
+}
+
+fn set_mode_unlocked(
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    mode: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
     if mode != "link" && mode != "copy" {
         return Err(AppError::Plugin("模式只能是 link 或 copy".into()));
     }
     let mut item =
         store_item(data_dir, id).ok_or_else(|| AppError::Plugin("插件不在中央库中".into()))?;
+    let needs_store_deps = mode == "link"
+        && (item.mode != "link" || !store_plugin_dir(data_dir, id).join("node_modules").is_dir());
     item.mode = mode.to_string();
-    upsert_item(data_dir, item.clone())?;
-    if mode == "link" {
+    upsert_item_unlocked(data_dir, item.clone())?;
+    if needs_store_deps {
         install_store_deps(data_dir, pnpm_exe, id, on_progress)?;
     }
     sync_kernels(data_dir, &item)?;
@@ -2899,6 +2999,16 @@ fn sweep_all_kernel_orphans(data_dir: &Path, store: &Store) {
 
 /// 物化所有插件并重新接线（对应「同步」按钮）。
 pub fn sync_all(
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    let _store_guard = lock_store();
+    sync_all_unlocked(data_dir, settings, pnpm_exe, on_progress)
+}
+
+fn sync_all_unlocked(
     data_dir: &Path,
     settings: &settings::Settings,
     pnpm_exe: &Path,
@@ -3118,7 +3228,7 @@ fn refresh_store_peers(data_dir: &Path, item: &StoreItem, active: &str) -> Resul
     }
     let text = serde_json::json!({ "kernel": active, "peers": linked });
     if let Ok(text) = serde_json::to_string(&text) {
-        let _ = fs::write(meta_path, text);
+        let _ = atomic_write(&meta_path, text.as_bytes());
     }
     Ok(())
 }

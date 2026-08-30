@@ -142,8 +142,8 @@ npm run build:win         # x86_64-pc-windows-msvc
   - 推送 tag：先同步 `package.json` 与 `src-tauri/tauri.conf.json` 的 `version`，再 `git tag desktop-v<version>` 并推送；或
   - 手动在 Actions 页触发 `workflow_dispatch`（使用当前 `package.json` 版本）。
 - 发布来源限定为 `main` 分支，产物发布为正式 release，不是 draft 或 prerelease。
-- 发布前质量门禁：UI 回归测试与生产构建、JavaScript 700 kB/CSS 180 kB bundle 预算、Rust `cargo test`、`cargo fmt --check` 和 `cargo clippy -D warnings` 全部通过后才进入桌面构建矩阵。
-- 发布提速：质量门禁通过后，Intel macOS 与 Windows 两个构建 job 并行运行（`max-parallel: 2`）；pnpm store、Cargo registry 和按平台隔离的 Cargo target 都启用缓存，Rust release 使用 thin LTO 与 16 个 codegen units。缓存命中时避免重复下载和依赖编译，详细时序与排障见 [`docs/release.md`](docs/release.md)。
+- 发布前质量门禁：UI 回归测试与生产构建、JavaScript 700 kB/CSS 180 kB bundle 预算、Rust `cargo test`、`cargo fmt --check` 和 `cargo clippy -D warnings` 全部通过后才允许发布。
+- 发布提速：预检通过后，质量门禁与 Intel macOS、Windows 两个构建 job 并行运行；平台 job 只上传 Actions artifact，全部成功后由独立的 publish job 一次性创建正式 Release 与 `latest.json`。`max-parallel: 2`、pnpm store、Cargo registry 和按平台隔离的 Cargo target 都启用缓存，Rust release 使用 thin LTO 与 16 个 codegen units。缓存命中时避免重复下载和依赖编译，详细时序与排障见 [`docs/release.md`](docs/release.md)。
 > GitHub Actions 首次建立缓存时仍会经历冷启动；runner 排队、缓存服务和网络波动也不属于 workflow 可控的构建时间。
 > 签名说明：当前产物未做代码签名，Windows SmartScreen 与 macOS Gatekeeper 可能给出警告。加入签名（Apple Developer ID / Windows 代码签名证书 + 对应 secrets）后再去掉相关提示。
 

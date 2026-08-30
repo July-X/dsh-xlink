@@ -27,7 +27,8 @@ use std::process::{Child, Stdio};
 use std::time::Duration;
 
 use crate::process::{
-    attach_log_drainers, build_log_kind, quiet, run_with_progress, run_with_progress_at, LogSpec,
+    atomic_write, attach_log_drainers, build_log_kind, quiet, run_with_progress,
+    run_with_progress_at, LogSpec,
 };
 
 use serde::Serialize;
@@ -406,11 +407,8 @@ pub fn write_active(data_dir: &Path, version: Option<&str>) -> Result<(), AppErr
     fs::create_dir_all(data_dir).map_err(|e| AppError::Io(e.to_string()))?;
     let target = active_file(data_dir);
     match version {
-        Some(v) => {
-            let tmp = data_dir.join("active.txt.tmp");
-            fs::write(&tmp, format!("{v}\n")).map_err(|e| AppError::Io(e.to_string()))?;
-            fs::rename(&tmp, &target).map_err(|e| AppError::Io(e.to_string()))
-        }
+        Some(v) => atomic_write(&target, format!("{v}\n").as_bytes())
+            .map_err(|e| AppError::Io(e.to_string())),
         None => match fs::remove_file(&target) {
             Ok(()) => Ok(()),
             // 删除一个不存在的文件已达到请求状态；卸载路径在部分清理时
@@ -558,7 +556,7 @@ pub fn install_version(
         "{{\"name\":\"dsh-kernel-{}\",\"private\":true,\"version\":\"1.0.0\"}}\n",
         version.replace('.', "_")
     );
-    fs::write(&stub, stub_text).map_err(|e| AppError::Io(e.to_string()))?;
+    atomic_write(&stub, stub_text.as_bytes()).map_err(|e| AppError::Io(e.to_string()))?;
 
     // 新命名规则下按日轮转的安装日志：实时脚本写入
     // `<kind>-install-<version>-<date>.log`。用户在日志弹窗中打开的就是
@@ -1018,7 +1016,7 @@ fn pid_path(data_dir: &Path) -> PathBuf {
 
 /// 记录已启动内核的 pid（best-effort）。
 pub fn write_pid(data_dir: &Path, pid: u32) {
-    let _ = fs::write(pid_path(data_dir), pid.to_string());
+    let _ = atomic_write(&pid_path(data_dir), pid.to_string().as_bytes());
 }
 
 /// 读取已记录的内核 pid（若存在且可解析）。
