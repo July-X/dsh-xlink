@@ -21,7 +21,7 @@
     "dev:ui": "vite",
     "build": "tauri build",
     "build:ui": "vite build",
-    "test:ui": "node --test ui/test/officialChatTabs.test.js ui/test/statusRefresh.test.js ui/test/harnessHealth.test.js ui/test/loading.test.js ui/test/progress.test.js ui/test/updateChecks.test.js ui/test/installLatest.test.js",
+    "test:ui": "node --test ui/test/officialChatTabs.test.js ui/test/statusRefresh.test.js ui/test/harnessHealth.test.js ui/test/loading.test.js ui/test/progress.test.js ui/test/updateChecks.test.js ui/test/installLatest.test.js ui/test/kernelSwitch.test.js",
     "build:mac-intel": "tauri build --target x86_64-apple-darwin",
     "build:win": "tauri build --target x86_64-pc-windows-msvc"
   },
