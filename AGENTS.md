@@ -41,9 +41,51 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 
 ## 发布
 
-版本发布由 `.github/workflows/desktop-release.yml` 负责。`desktop-v<version>` tag 和手动 dispatch 只接受 `main` 分支上的 commit；发布前同步 `package.json` 与 `src-tauri/tauri.conf.json` 的 `version`。workflow 使用 `TAURI_SIGNING_PRIVATE_KEY` 给更新制品签名，`releaseDraft` 与 `prerelease` 必须保持为 `false`，以保证 updater 的 latest endpoint 可用。
+版本发布由 `.github/workflows/desktop-release.yml` 负责。发布前必须确认 `package.json` 与 `src-tauri/tauri.conf.json` 的 `version` 完全一致，并且版本提交已经推送到 `main`。workflow 使用 `TAURI_SIGNING_PRIVATE_KEY` 给更新制品签名，`releaseDraft` 与 `prerelease` 必须保持为 `false`，以保证 updater 的 latest endpoint 可用。
+
+### 发布触发
+
+- tag 格式固定为 `desktop-v<version>`，例如 `desktop-v0.1.2-rc.7`。
+- 推荐在目标 commit 上创建 tag，再推送 tag，让 tag push 自动触发发布：
+
+  ```sh
+  git fetch origin main --no-tags
+  git tag desktop-v<version> <main-commit>
+  git push origin desktop-v<version>
+  ```
+
+- 创建或更新 tag 后不要再手动 dispatch 同一版本。后启动的 Run 可能在 Release 已发布后按保护逻辑失败。
+- 手动 dispatch 只用于已有正确 tag、且没有相同版本 Run 正在执行的情况。不要用手动 dispatch 创建缺失的 tag，否则 workflow 创建 tag 后会再次触发 tag push Run。
+- `desktop-v<version>` tag 和手动 dispatch 只接受 `main` 分支上的 commit；不要从其他分支或未推送的本地 commit 发布。
 
 - **发布平台**：dsh-xlink 只发布 Intel macOS（`macos-15-intel`）和 Windows（`windows-latest`）版本；不得添加、构建或发布任何 Linux/Ubuntu 版本、runner、制品或文案。
+
+### Release 资产
+
+- 发布前必须确认最终资产为 5 个平台资产加 `latest.json`，共 6 个文件：Windows 安装包及签名、Intel macOS DMG、macOS updater 包及签名、`latest.json`。
+- 创建 Release 前必须先确保目标 tag 存在，避免生成 `untagged-*` Release。
+- 草稿 Release 的资产操作使用 Release ID，不要依赖 tag 查找或上传资产。
+- 资产接口必须使用以下路径：
+  - 列表：`GET /repos/{owner}/{repo}/releases/{release_id}/assets`
+  - 删除：`DELETE /repos/{owner}/{repo}/releases/assets/{asset_id}`
+  - 上传：`https://uploads.github.com/repos/{owner}/{repo}/releases/{release_id}/assets`
+- 上传资产时使用 `Content-Type: application/octet-stream`，并通过文件输入上传；不要把上传请求发到普通 `api.github.com` 地址。
+
+### 失败排查与发布后验证
+
+- workflow 失败时先定位具体 job 的失败日志，再修复或重试：
+
+  ```sh
+  gh run view <run-id> --job <job-id> --log-failed
+  ```
+
+- 发布完成后检查 Release、tag 和 updater 清单：
+
+  ```sh
+  gh api repos/July-X/dsh-xlink/releases/tags/desktop-v<version>
+  gh api repos/July-X/dsh-xlink/git/ref/tags/desktop-v<version>
+  curl -fsSL https://github.com/July-X/dsh-xlink/releases/latest/download/latest.json
+  ```
 
 ## 文档
 
