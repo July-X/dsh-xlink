@@ -27,8 +27,10 @@ var WorkspaceFileSearch = class {
 	config;
 	excludedDirectories;
 	generation;
+	refreshGeneration;
 	stale = false;
 	refreshing = false;
+	invalidationRevision = 0;
 	disposed = false;
 	constructor(root, config) {
 		this.root = root;
@@ -58,43 +60,63 @@ var WorkspaceFileSearch = class {
 	}
 	/** Discard the current index so the next bare query observes a fresh tree. */
 	invalidate() {
-		if (this.generation === void 0) return;
+		if (this.generation === void 0 || this.disposed) return;
 		this.stale = true;
+		this.invalidationRevision += 1;
 	}
 	/** Abort traversal and make later queries return no candidates. */
 	dispose() {
 		if (this.disposed) return;
 		this.disposed = true;
-		this.generation?.controller.abort(/* @__PURE__ */ new Error("file search disposed"));
+		const reason = /* @__PURE__ */ new Error("file search disposed");
+		this.generation?.controller.abort(reason);
+		this.refreshGeneration?.controller.abort(reason);
 		this.generation = void 0;
+		this.refreshGeneration = void 0;
+		this.refreshing = false;
 	}
 	ensureIndex() {
-		if (this.generation !== void 0 && this.stale && !this.refreshing) {
-			const served = this.generation;
-			this.refreshing = true;
-			this.startScan().catch(() => {}).finally(() => {
-				this.refreshing = false;
-				this.stale = false;
-			});
-			this.generation = served;
-			return served.promise;
+		if (this.generation !== void 0) {
+			if (this.stale && this.refreshGeneration === void 0) this.startRefresh();
+			return this.generation.promise;
 		}
-		if (this.generation !== void 0) return this.generation.promise;
+		if (this.refreshGeneration !== void 0) return this.refreshGeneration.promise;
 		return this.startScan();
 	}
+	startRefresh() {
+		if (this.refreshGeneration !== void 0 || this.generation === void 0) return;
+		const revision = this.invalidationRevision;
+		const refresh = this.createScan();
+		this.refreshGeneration = refresh;
+		this.refreshing = true;
+		refresh.promise.then(() => {
+			if (this.refreshGeneration !== refresh || this.disposed) return;
+			this.generation = refresh;
+			this.stale = this.invalidationRevision !== revision;
+		}, () => {}).finally(() => {
+			if (this.refreshGeneration === refresh) {
+				this.refreshGeneration = void 0;
+				this.refreshing = false;
+			}
+		}).catch(() => {});
+	}
 	startScan() {
+		const generation = this.createScan();
+		this.generation = generation;
+		return generation.promise;
+	}
+	createScan() {
 		const controller = new AbortController();
 		const generation = {
 			controller,
 			promise: Promise.resolve([])
 		};
 		generation.promise = this.scanWorkspace(controller.signal).catch((error) => {
-			/* v8 ignore next -- every owned abort clears `generation` synchronously; this only protects an unexpected scan failure */
+			/* v8 ignore next -- an initial scan failure must not leave a dead generation cached */
 			if (this.generation === generation) this.generation = void 0;
 			throw error;
 		});
-		this.generation = generation;
-		return generation.promise;
+		return generation;
 	}
 	async scanWorkspace(signal) {
 		const indexed = [];

@@ -2,7 +2,7 @@
 // 插件页：已安装列表（同步 / 接线 / 隔离状态徽章 + 更新 / 模式切换 / 卸载）、
 // 手动安装（回车即装）、插件中心（分类筛选 + 搜索 + 排序 + 分页卡片）。
 import { computed, onUnmounted, watch } from 'vue';
-import { Refresh, Switch, Delete, TopRight, Download, RefreshLeft, ArrowDown } from '@element-plus/icons-vue';
+import { Refresh, Switch, Delete, TopRight, Download, RefreshLeft, ArrowDown, Box, Link } from '@element-plus/icons-vue';
 import {
   pluginStore,
   CATALOG_CATEGORIES,
@@ -30,10 +30,11 @@ const view = computed(() => pluginStore.view);
 // --- 已安装列表 ---
 
 function metaText(row) {
+  // origin 已抽到 origin-chip；这里只回版本号 + 升级提示 + 锁定标记，
+  // 避免和 chip 里的「npm/git」重复。
   const pinNote = row.pinned ? ' · 已锁定版本' : '';
-  const installed = (row.origin === 'npm' ? 'npm' : 'git') + ' · ' + row.installed_version;
   const upgrade = row.latest_version ? ' → ' + row.latest_version : '';
-  return installed + upgrade + pinNote;
+  return row.installed_version + upgrade + pinNote;
 }
 
 function quarantineNote(row) {
@@ -152,7 +153,18 @@ function statsText(item) {
         <div v-for="row in view ? view.rows : []" :key="row.id" class="installed-row plugin-row">
           <span class="plugin-info">
             <span class="release-ver">{{ row.name }}</span>
-            <span class="plugin-meta">{{ metaText(row) }}</span>
+            <span class="plugin-meta">
+              <span class="origin-chip" :class="'origin-chip-' + row.origin">
+                <el-icon class="origin-chip-icon">
+                  <Box v-if="row.origin === 'npm'" />
+                  <Link v-else />
+                </el-icon>
+                <span class="origin-chip-label">{{ row.origin }}</span>
+              </span>
+              <span class="meta-version">{{ row.installed_version }}</span>
+              <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>
+              <span v-if="row.pinned" class="meta-pinned">· 已锁定版本</span>
+            </span>
             <span v-if="row.quarantined" class="plugin-meta quarantine-note">{{ quarantineNote(row) }}</span>
           </span>
           <span class="release-actions plugin-actions">
@@ -279,7 +291,7 @@ function statsText(item) {
           <div class="catalog-card-head">
             <span class="catalog-title">
               <span class="catalog-name">{{ item.name }}</span>
-              <el-tag v-if="item.version" size="small" effect="plain">{{ item.version }}</el-tag>
+              <span v-if="item.version" class="catalog-version">{{ item.version }}</span>
               <el-tag v-if="item.category" type="info" size="small" effect="plain">{{ categoryLabel(item.category) }}</el-tag>
               <el-tag v-if="item.verified" type="success" size="small" effect="plain">已验证</el-tag>
             </span>
