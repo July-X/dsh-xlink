@@ -356,9 +356,10 @@ jobs:
                 "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets/${existing_ids}" \
                 >/dev/null
             fi
-            gh api --method POST \
-              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=${asset_name}" \
+            gh api --hostname uploads.github.com --method POST \
+              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
               --header 'Content-Type: application/octet-stream' \
+              --raw-field "name=$asset_name" \
               --input "$path" \
               >/dev/null
           done
