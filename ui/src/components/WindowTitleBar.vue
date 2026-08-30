@@ -47,6 +47,11 @@ function minimizeWindow() {
       ></button>
     </div>
 
+    <div class="mac-titlebar__caption" data-tauri-drag-region>
+      <span class="mac-titlebar__caption-mark" aria-hidden="true"></span>
+      <span>Dsh-Xlink</span>
+    </div>
+
     <span class="mac-titlebar__brush mac-titlebar__brush--light" aria-hidden="true"></span>
     <span class="mac-titlebar__brush mac-titlebar__brush--ink" aria-hidden="true"></span>
     <span class="mac-titlebar__brush mac-titlebar__brush--dry" aria-hidden="true"></span>
