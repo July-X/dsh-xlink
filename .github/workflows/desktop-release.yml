@@ -32,9 +32,16 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: quality-${{ runner.os }}-${{ runner.arch }}
 
       - name: Install JavaScript dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Run UI tests
         run: pnpm run test:ui
@@ -75,7 +82,7 @@ jobs:
     needs: quality
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 2
       matrix:
         include:
           - platform: macos-15-intel
@@ -116,9 +123,17 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Cache Rust release dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: release-${{ runner.os }}-${{ runner.arch }}
 
       - name: Install the Tauri CLI
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Build and publish
         uses: tauri-apps/tauri-action@v1
