@@ -18,7 +18,7 @@ use url::Url;
 use crate::error::AppError;
 use crate::process::{build_log_kind, read_tail, LogSpec};
 use crate::quarantine;
-use crate::{guard, kernel, node, plugins, releases, settings, skills, updater};
+use crate::{guard, kernel, node, patches, plugins, releases, settings, skills, updater};
 
 /// `open_official_chat` 加载到专用 `official-chat` webview 中的
 /// DeepSeek 官方对话入口。
@@ -1670,6 +1670,65 @@ pub async fn plugin_resolve(
         }
         other => Err(format!("未知操作 {other:?}，支持 remove / enable")),
     }
+}
+
+// --- 内置补丁 ----------------------------------------------------------------
+
+/// 读取随 dsh-xlink 发布包捆绑的内置补丁清单。资源目录缺失 / 清单损坏时
+/// 静默降级为空列表，设置页呈现「此版本未携带任何内置补丁」。
+fn load_bundled_patches(app: &AppHandle) -> Vec<(patches::PatchDef, PathBuf)> {
+    match patches::resource_patches_dir(app) {
+        Some(dir) => match patches::load_patches(&dir) {
+            Ok(list) => list,
+            Err(reason) => {
+                eprintln!("dsh-xlink: 读取内置补丁失败：{reason}");
+                Vec::new()
+            }
+        },
+        None => Vec::new(),
+    }
+}
+
+/// 设置页「内核补丁」卡片的状态快照：每个补丁一行，状态按当前激活内核计算。
+#[tauri::command]
+pub async fn patch_status(app: AppHandle) -> Result<patches::PatchStatus, String> {
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let patches = load_bundled_patches(&app);
+        Ok(patches::status(&data_dir, &patches))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 应用一个内置补丁到当前激活内核。前置：工作台已停止、内核已激活、
+/// 补丁版本范围覆盖当前内核。返回应用过程中的跳过低提示。
+#[tauri::command]
+pub async fn patch_apply(app: AppHandle, id: String) -> Result<Vec<String>, String> {
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>, String> {
+        let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
+        let patches = load_bundled_patches(&app);
+        patches::apply(&data_dir, &patches, &id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 撤销一个内置补丁对当前激活内核的修改（从备份还原原文件）。
+/// 返回撤销过程中的警告（例如备份丢失时的兜底处理说明）。
+#[tauri::command]
+pub async fn patch_revert(app: AppHandle, id: String) -> Result<Vec<String>, String> {
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>, String> {
+        let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
+        let patches = load_bundled_patches(&app);
+        patches::revert(&data_dir, &patches, &id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // --- 技能 --------------------------------------------------------------------

@@ -1168,6 +1168,82 @@ main {
   flex-wrap: wrap;
 }
 
+/* 设置页「内核补丁」卡片：每个补丁一行，主信息 + 状态徽标 + 操作按钮。 */
+.patch-empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 6px 0;
+}
+
+.patch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.patch-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.patch-item-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.patch-item-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.patch-item-title strong {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.patch-state {
+  margin-left: auto;
+}
+
+.patch-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.patch-meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.patch-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--warn);
+  line-height: 1.5;
+}
+
+.patch-item-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
 /* el-button 轻微按压反馈。 */
 .el-button {
   transition: transform 0.12s ease, background-color 0.18s ease,
@@ -1457,10 +1533,54 @@ main {
   border-color: var(--border);
 }
 
+/* 版本文本：仅 .release-ver（VersionsPanel 内核版本行）保持等宽字体加粗，
+   不加 chip 背景也不加 icon，作为「正常文本」显示。 */
 .release-ver {
   font-weight: 600;
   font-size: 13px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* 版本徽标：git tag 风格小 chip + svgrepo.com/526342 tag 图标。
+   仅作用于插件相关的两处版本显示：
+   - .meta-version    → PluginsPanel 已装插件的版本号
+   - .catalog-version → PluginsPanel 插件中心目录卡片的版本 tag */
+.meta-version,
+.catalog-version {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px 2px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+  font-size: 11.5px;
+  color: var(--text);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.03) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  vertical-align: 1px;
+  margin-left: 0;
+}
+
+/* tag 图标：svgrepo.com/526342（tag.svg，viewBox 0 0 24 24）。
+   用 mask 把 SVG 形状裁出来，背景色走 currentColor 跟父级 color。
+   仅作用于插件相关的版本显示，.release-ver 不参与。 */
+.meta-version::before,
+.catalog-version::before {
+  content: '';
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  background-color: currentColor;
+  -webkit-mask-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M2.12264 12.816C2.41018 13.8186 3.18295 14.5914 4.72848 16.1369L6.55812 17.9665C9.24711 20.6555 10.5916 22 12.2623 22C13.933 22 15.2775 20.6555 17.9665 17.9665C20.6555 15.2775 22 13.933 22 12.2623 22 10.5916 20.6555 9.24711 17.9665 6.55812L16.1369 4.72848C14.5914 3.18295 13.8186 2.41018 12.816 2.12264 11.8134 1.83509 10.7485 2.08083 8.61875 2.57231L7.39057 2.85574C5.5988 3.26922 4.70292 3.47597 4.08944 4.08944 3.47597 4.70292 3.26922 5.59881 2.85574 7.39057L2.57231 8.61875C2.08083 10.7485 1.83509 11.8134 2.12264 12.816ZM10.1234 7.27098C10.911 8.05856 10.911 9.33549 10.1234 10.1231 9.33581 10.9107 8.05888 10.9107 7.27129 10.1231 6.48371 9.33549 6.48371 8.05856 7.27129 7.27098 8.05888 6.48339 9.33581 6.48339 10.1234 7.27098ZM19.0511 12.0511L12.0721 19.0303C11.7792 19.3232 11.3043 19.3232 11.0114 19.0303 10.7185 18.7375 10.7185 18.2626 11.0114 17.9697L17.9904 10.9904C18.2833 10.6975 18.7582 10.6975 19.0511 10.9904 19.344 11.2833 19.344 11.7582 19.0511 12.0511Z' fill='%23000'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M2.12264 12.816C2.41018 13.8186 3.18295 14.5914 4.72848 16.1369L6.55812 17.9665C9.24711 20.6555 10.5916 22 12.2623 22 13.933 22 15.2775 20.6555 17.9665 17.9665 20.6555 15.2775 22 13.933 22 12.2623 22 10.5916 20.6555 9.24711 17.9665 6.55812L16.1369 4.72848C14.5914 3.18295 13.8186 2.41018 12.816 2.12264 11.8134 1.83509 10.7485 2.08083 8.61875 2.57231L7.39057 2.85574C5.5988 3.26922 4.70292 3.47597 4.08944 4.08944 3.47597 4.70292 3.26922 5.59881 2.85574 7.39057L2.57231 8.61875C2.08083 10.7485 1.83509 11.8134 2.12264 12.816ZM10.1234 7.27098C10.911 8.05856 10.911 9.33549 10.1234 10.1231 9.33581 10.9107 8.05888 10.9107 7.27129 10.1231 6.48371 9.33549 6.48371 8.05856 7.27129 7.27098 8.05888 6.48339 9.33581 6.48339 10.1234 7.27098ZM19.0511 12.0511L12.0721 19.0303C11.7792 19.3232 11.3043 19.3232 11.0114 19.0303 10.7185 18.7375 10.7185 18.2626 11.0114 17.9697L17.9904 10.9904C18.2833 10.6975 18.7582 10.6975 19.0511 10.9904 19.344 11.2833 19.344 11.7582 19.0511 12.0511Z' fill='%23000'/%3E%3C/svg%3E");
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  flex-shrink: 0;
+  opacity: 0.7;
 }
 
 .release-actions {
@@ -1476,10 +1596,14 @@ main {
   flex-direction: column;
 }
 
+/* 插件信息（来源 / 版本等元数据）平铺到名称同行，靠视觉重量区分；
+   flex-wrap 让长描述/隔离提示在窄列下自动换到下一行而不是溢出。 */
 .plugin-info {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
   min-width: 0;
 }
 
@@ -1488,6 +1612,8 @@ main {
   font-size: 12px;
   word-break: break-all;
 }
+
+/* meta-version 已在上面的统一规则中定义；旧的独立块已移除。 */
 
 .quarantine-note {
   color: var(--warn);
@@ -2191,11 +2317,14 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   .updates-lists {
     grid-template-columns: 1fr;
   }
+  /* 窄窗下让已安装/版本列表按内容撑开高度，滚动只交给外层 main：
+     不再给内层加 42vh 顶盖，否则插件多了会先出现「内嵌滚动条」，
+     与设计目标「只外层一条纵向滚动条」冲突。 */
   .list-group .release-list,
   .list-group .installed-list,
   .installed-list {
-    max-height: 42vh;
-    overflow-y: auto;
+    max-height: none;
+    overflow-y: visible;
   }
   /* 卡片头在 480px 下让右侧 meta 掉到第二行并右对齐。 */
   .card-head {

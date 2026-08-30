@@ -1,10 +1,11 @@
 <script setup>
-// 设置：Web UI 端口、插件接线 profile 名、Node 检测。
-// 轮询每 2.5s 刷新 store.view，但用户正在编辑的输入框不被回写（focus 守卫）。
+// 设置：Web UI 端口、插件接线 profile 名、Node 检测，以及内置补丁（内核补丁 / 小插件）
+// 的应用与撤销。轮询每 2.5s 刷新 store.view，但用户正在编辑的输入框不被回写（focus 守卫）。
 import { computed, ref, watch } from 'vue';
-import { Check, Monitor } from '@element-plus/icons-vue';
+import { Check, Monitor, Refresh } from '@element-plus/icons-vue';
 import { store, detectNode, saveSettings } from '../store.js';
-import { isLoading } from '../loading.js';
+import { patchStore, refreshPatches, applyPatch, revertPatch } from '../patches.js';
+import { isLoading, withLoading } from '../loading.js';
 
 const port = ref(undefined);
 const profile = ref('');
@@ -22,6 +23,15 @@ watch(
   { immediate: true }
 );
 
+// 进入设置页时刷新补丁状态（内核激活版本可能已变化）。
+watch(
+  () => store.activePanel,
+  (panel) => {
+    if (panel === 'settings') refreshPatches();
+  },
+  { immediate: true }
+);
+
 const defaultNodeHint = computed(() => {
   const n = store.view && store.view.node;
   if (!n) return '';
@@ -30,11 +40,49 @@ const defaultNodeHint = computed(() => {
 
 const hintText = computed(() => nodeHint.value || defaultNodeHint.value);
 
-async function onDetectNode() {
-  const info = await detectNode();
-  if (info) {
-    nodeHint.value = info.ok ? '检测结果：' + info.path + '  ' + info.version : info.reason;
+// 工作台运行期间禁止应用 / 撤销补丁（会写入内核目录）。
+const workbenchRunning = computed(() => !!(store.view && store.view.kernel && store.view.kernel.running));
+
+const patchRows = computed(() => (patchStore.view && patchStore.view.patches) || []);
+
+function rangeText(row) {
+  if (row.min_kernel_version && row.max_kernel_version) {
+    return 'v' + row.min_kernel_version + ' ~ v' + row.max_kernel_version;
   }
+  if (row.min_kernel_version) return 'v' + row.min_kernel_version + ' 及以上';
+  if (row.max_kernel_version) return 'v' + row.max_kernel_version + ' 及以下';
+  return '任意内核版本';
+}
+
+// 状态徽标配色：未应用 / 不适用 / 无内核 → info；已应用 → success；
+// 文件未命中 → warning；文件被改动 → danger。
+function stateTag(state) {
+  if (state === 'applied') return 'success';
+  if (state === 'partial') return 'warning';
+  if (state === 'dirty') return 'danger';
+  return 'info';
+}
+
+// 状态决定主操作：已应用 / 部分应用 / 文件被改动 → 撤销；其余 → 应用。
+function primaryAction(row) {
+  return row.state === 'applied' || row.state === 'partial' || row.state === 'dirty'
+    ? 'revert'
+    : 'apply';
+}
+
+function onDetectNode() {
+  const info = detectNode();
+  if (info) {
+    info.then((result) => {
+      if (result) {
+        nodeHint.value = result.ok ? '检测结果：' + result.path + '  ' + result.version : result.reason;
+      }
+    });
+  }
+}
+
+function onRefreshPatches() {
+  withLoading('patchRefresh', () => refreshPatches());
 }
 
 function onSave() {
@@ -64,6 +112,69 @@ function onSave() {
         </el-button>
       </div>
       <p class="muted" style="margin: 0">{{ hintText }}</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>内核补丁（内置）</h2>
+        <el-button text size="small" :icon="Refresh" :loading="isLoading('patchRefresh')"
+          @click="onRefreshPatches">
+          刷新
+        </el-button>
+      </div>
+      <p class="muted" style="margin: 0">
+        随 dsh-xlink 发布包内置的自研内核补丁与小插件，默认不生效；由你选择是否应用到当前内核，
+        应用前自动备份原文件，可随时撤销。仅影响当前激活的内核版本。
+      </p>
+      <div v-if="!patchStore.loaded" class="patch-empty">补丁状态加载中…</div>
+      <div v-else-if="!patchRows.length" class="patch-empty">此版本的 dsh-xlink 未携带任何内置补丁。</div>
+      <div v-else class="patch-list">
+        <div v-for="row in patchRows" :key="row.id" class="patch-item">
+          <div class="patch-item-main">
+            <div class="patch-item-title">
+              <strong>{{ row.name }}</strong>
+              <el-tag v-if="row.kind === 'plugin'" size="small" type="success">内置插件</el-tag>
+              <el-tag v-else size="small" type="primary">补丁</el-tag>
+              <el-tag size="small" type="info" effect="plain">v{{ row.version }}</el-tag>
+              <el-tag :type="stateTag(row.state)" size="small" effect="dark" class="patch-state">
+                {{ row.state_text }}
+              </el-tag>
+            </div>
+            <p class="muted patch-desc">{{ row.description }}</p>
+            <p class="patch-meta">
+              <span>适用范围：{{ rangeText(row) }}</span>
+              <span v-if="row.applied_at">应用时间：{{ row.applied_at }}</span>
+            </p>
+            <p v-if="row.note" class="patch-note">{{ row.note }}</p>
+          </div>
+          <div class="patch-item-actions">
+            <el-button
+              v-if="primaryAction(row) === 'apply'"
+              type="primary"
+              size="small"
+              :disabled="!row.enabled || workbenchRunning"
+              :loading="isLoading('patchApply:' + row.id)"
+              @click="applyPatch(row.id, row.name)"
+            >
+              应用到当前内核
+            </el-button>
+            <el-button
+              v-else
+              type="danger"
+              plain
+              size="small"
+              :disabled="!row.enabled || workbenchRunning"
+              :loading="isLoading('patchRevert:' + row.id)"
+              @click="revertPatch(row.id, row.name)"
+            >
+              撤销补丁
+            </el-button>
+          </div>
+        </div>
+      </div>
+      <p v-if="workbenchRunning" class="patch-note">
+        工作台运行期间不能应用或撤销补丁，请先关闭工作台后再操作。
+      </p>
     </div>
   </section>
 </template>
