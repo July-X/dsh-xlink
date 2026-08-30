@@ -274,7 +274,10 @@ jobs:
         run: |
           set -euo pipefail
           release_endpoint="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
-          release_metadata="$(gh api "$release_endpoint" --jq '[.id, .draft] | @tsv' 2>/dev/null || true)"
+          release_metadata=""
+          if ! release_metadata="$(gh api "$release_endpoint" --jq '[.id, .draft] | @tsv' 2>/dev/null)"; then
+            release_metadata=""
+          fi
           if [[ -z "$release_metadata" ]]; then
             release_id="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
               -f tag_name="$RELEASE_TAG" \
