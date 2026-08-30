@@ -10,12 +10,17 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc, Arc, Mutex,
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use time::format_description::FormatItem;
 use time::macros::format_description;
 use time::OffsetDateTime;
+
+static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// 隐藏 Windows 否则会为子进程闪烁的 console 窗口。其他平台上为 no-op。
 pub fn quiet(cmd: &mut Command) -> &mut Command {
@@ -26,6 +31,86 @@ pub fn quiet(cmd: &mut Command) -> &mut Command {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd
+}
+
+/// 将一个小型持久化文件写入同目录临时文件，再替换正式文件。写入文件
+/// 和替换动作之间不会暴露截断的 JSON；同目录临时文件也确保 rename 不会
+/// 跨文件系统。Unix 直接使用 rename 的原子替换语义，Windows 在目标已存
+/// 在时先移除旧文件再 rename，至少不会让读者看到半写入内容。
+pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "atomic write path has no file name",
+            )
+        })?
+        .to_string_lossy();
+
+    for attempt in 0..100u32 {
+        let sequence = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(
+            ".{file_name}.tmp-{}-{sequence}-{attempt}",
+            std::process::id()
+        ));
+        let mut file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+
+        let result = (|| -> io::Result<()> {
+            file.write_all(contents)?;
+            file.sync_all()?;
+            drop(file);
+            replace_file(&temporary, path)?;
+            sync_parent_directory(parent)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        return result;
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique temporary file for atomic write",
+    ))
+}
+
+fn replace_file(temporary: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        match fs::rename(temporary, destination) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                fs::remove_file(destination)?;
+                fs::rename(temporary, destination)
+            }
+            Err(error) => Err(error),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(temporary, destination)
+    }
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> io::Result<()> {
+    fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 /// 为一次性外部工具（`git`、`tar` 等）构造 `Command`，让它继承合并后的 PATH，
@@ -971,6 +1056,33 @@ mod tests {
         let input = vec![b'x'; 32];
         let error = read_bounded_bytes(Cursor::new(input), 8).expect_err("capture must be bounded");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn atomic_write_replaces_file_without_leaving_staging_files() {
+        let seq = PROCESS_TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "dsh-atomic-write-test-{}-{seq}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create test directory");
+        let path = root.join("store.json");
+        fs::write(&path, b"old\n").expect("seed destination");
+
+        atomic_write(&path, b"new\n").expect("atomic replacement");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("read destination"),
+            "new\n"
+        );
+        let leftovers: Vec<_> = fs::read_dir(&root)
+            .expect("read test directory")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "temporary files must be cleaned up");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

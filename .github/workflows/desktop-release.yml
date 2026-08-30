@@ -10,15 +10,72 @@ on:
       - 'desktop-v*'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: desktop-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    name: Preflight
+    runs-on: macos-15-intel
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Validate source and version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF_TYPE" == "branch" && "$GITHUB_REF_NAME" != "main" ]]; then
+            echo "desktop releases only run on main; dispatched ref was $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+          git fetch origin main --no-tags
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "commit $GITHUB_SHA does not belong to main" >&2
+            exit 1
+          fi
+
+          version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+          tauri_version="$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version")"
+          if [[ "$version" != "$tauri_version" ]]; then
+            echo "version mismatch: package.json=$version, tauri.conf.json=$tauri_version" >&2
+            exit 1
+          fi
+
+          tag="desktop-v$version"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match desktop version $version" >&2
+            exit 1
+          fi
+
+          existing_tag="$(git rev-parse --verify "refs/tags/$tag^{commit}" 2>/dev/null || true)"
+          if [[ -n "$existing_tag" && "$existing_tag" != "$GITHUB_SHA" ]]; then
+            echo "tag $tag already points to $existing_tag, expected $GITHUB_SHA" >&2
+            exit 1
+          fi
+
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+
   quality:
     name: Quality gates
+    needs: preflight
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v6
@@ -45,6 +102,9 @@ jobs:
 
       - name: Run UI tests
         run: pnpm run test:ui
+
+      - name: Test release manifest generator
+        run: pnpm run test:release-manifest
 
       - name: Build UI
         run: pnpm run build:ui
@@ -79,41 +139,20 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
   build:
-    needs: quality
+    name: Build ${{ matrix.name }}
+    needs: preflight
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
         include:
-          - platform: macos-15-intel
-          - platform: windows-latest
+          - name: macos-intel
+            platform: macos-15-intel
+          - name: windows-x86_64
+            platform: windows-latest
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v6
-
-      - name: Verify the tag matches the app version and sits on main
-        id: meta
-        shell: pwsh
-        run: |
-          # 发布仅从 main 出货：tag 必须指向一个 origin/main 可达的 commit，
-          # 手动 dispatch 也必须选择 main。
-          if ($env:GITHUB_REF_TYPE -eq 'branch' -and $env:GITHUB_REF_NAME -ne 'main') {
-            throw "desktop releases only run on main; dispatched ref was $env:GITHUB_REF_NAME"
-          }
-          git fetch --depth=100 origin main
-          git merge-base --is-ancestor HEAD FETCH_HEAD
-          if ($LASTEXITCODE -ne 0) {
-            throw "tag $env:GITHUB_REF_NAME does not point at a commit on main"
-          }
-
-          $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
-          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
-          if ($conf.version -ne $pkg.version) {
-            throw "version mismatch: tauri.conf.json ($($conf.version)) != package.json ($($pkg.version))"
-          }
-          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "desktop-v$($conf.version)") {
-            throw "tag $env:GITHUB_REF_NAME does not match desktop version $($conf.version)"
-          }
 
       - uses: pnpm/action-setup@v4
         with:
@@ -132,27 +171,139 @@ jobs:
           workspaces: src-tauri
           shared-key: release-${{ runner.os }}-${{ runner.arch }}
 
-      - name: Install the Tauri CLI
+      - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
 
-      - name: Build and publish
-        uses: tauri-apps/tauri-action@v1
+      - name: Build signed desktop bundle
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm exec tauri build
+
+      - name: Upload macOS release assets
+        if: matrix.name == 'macos-intel'
+        uses: actions/upload-artifact@v4
         with:
-          projectPath: .
-          tagName: desktop-v__VERSION__
-          releaseName: 'dsh-xlink v__VERSION__'
-          releaseBody: |
-            ## dsh-xlink v__VERSION__
+          name: desktop-${{ matrix.name }}-${{ needs.preflight.outputs.version }}
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+          if-no-files-found: error
+          compression-level: 0
 
-            支持平台：
-            - Intel macOS（.dmg）
-            - Windows x86_64（NSIS 安装包 .exe）
+      - name: Upload Windows release assets
+        if: matrix.name == 'windows-x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}-${{ needs.preflight.outputs.version }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe.sig
+          if-no-files-found: error
+          compression-level: 0
 
-            使用方式：安装后在「内核版本」页安装并切换 DeepSeek Harness 内核版本即可使用。
-          # 两个开关都保持为 false，使 updater 的 latest endpoint 正常解析。
-          releaseDraft: false
-          prerelease: false
+  publish:
+    name: Publish release
+    needs: [preflight, quality, build]
+    if: ${{ always() && needs.preflight.result == 'success' && needs.quality.result == 'success' && needs.build.result == 'success' }}
+    runs-on: macos-15-intel
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*-${{ needs.preflight.outputs.version }}
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate updater metadata
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          node scripts/generate-updater-manifest.mjs \
+            --artifacts-dir artifacts \
+            --version "$RELEASE_VERSION" \
+            --tag "$RELEASE_TAG" \
+            --repository "$RELEASE_REPOSITORY" \
+            --manifest latest.json \
+            --notes release-notes.md
+
+      - name: Create or reuse release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+          release_endpoint="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          release_metadata="$(gh api "$release_endpoint" --jq '[.id, .draft] | @tsv' 2>/dev/null || true)"
+          if [[ -z "$release_metadata" ]]; then
+            release_id="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+              -f tag_name="$RELEASE_TAG" \
+              -f target_commitish="$GITHUB_SHA" \
+              -f name="dsh-xlink v$RELEASE_VERSION" \
+              -f body="$(<release-notes.md)" \
+              -F draft=true \
+              -F prerelease=false \
+              --jq .id)"
+          else
+            IFS=$'\t' read -r release_id release_draft <<< "$release_metadata"
+            if [[ "$release_draft" != "true" ]]; then
+              echo "release $RELEASE_TAG already exists and is published; refusing to overwrite it" >&2
+              exit 1
+            fi
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -f name="dsh-xlink v$RELEASE_VERSION" \
+              -f body="$(<release-notes.md)" \
+              -F draft=true \
+              -F prerelease=false >/dev/null
+          fi
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
+      - name: Upload all release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+          assets=()
+          while IFS= read -r path; do
+            assets+=("$path")
+          done < <(find artifacts -type f \( \
+            -name '*.dmg' -o \
+            -name '*.app.tar.gz' -o \
+            -name '*.app.tar.gz.sig' -o \
+            -name '*-setup.exe' -o \
+            -name '*-setup.exe.sig' \
+          \) -print)
+          assets+=(latest.json)
+          if [[ "${#assets[@]}" -ne 6 ]]; then
+            echo "expected five platform assets plus latest.json, found ${#assets[@]}" >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .id)"
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -f name="dsh-xlink v$RELEASE_VERSION" \
+            -f body="$(<release-notes.md)" \
+            -F draft=false \
+            -F prerelease=false >/dev/null

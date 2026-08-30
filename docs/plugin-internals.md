@@ -6,10 +6,8 @@
 
 1. **fetch**：GitHub 仓库优先查询 Releases API，根据 `tag_name` 构造绑定到该仓库的 API tarball（`tarball_url` 仅用于确认 Release 有源码归档），并安全解包单一顶层目录；没有可用 Release 或 tarball 失败时 git clone（深度 1），其它 Git 地址始终 git clone；npm 来源下载 tarball 并解包到 `~/.dsh/plugins/<id>/`
 2. **ensure_store_npmrc**：写入 `~/.dsh/plugins/.npmrc`（`minimumReleaseAge=0`、固定 npm registry）—— pnpm v11 的 `minimumReleaseAgeExclude` 不支持通配符，必须直接关掉年龄检查
-3. **install_store_deps**：`pnpm install --ignore-workspace --config.node-linker=hoisted --reporter=append-only`
-   - 装依赖链 → 若有 `prepare` 脚本（`tsdown` / `tsc`）→ 触发构建 → `lib/` 就位
-   - 装前**先删旧 `pnpm-lock.yaml`**：避开历史 lockfile 的 `minimumReleaseAge` 失效条目
-4. **upsert_item**：写入 `~/.dsh/plugins/store.json`
+3. **build_git_plugin / install_store_deps**：Git 仓库声明 `prepare` 且入口缺失时，fetch 阶段先执行 `pnpm install --ignore-workspace --config.node-linker=hoisted --reporter=append-only`，依赖和 `lib/` 一起就绪，并向后续流程返回“依赖已完成”的标志；其它 Git 或 npm 来源在 link 模式下由 `install_store_deps` 执行一次相同的安装。安装前**先删旧 `pnpm-lock.yaml`**：避开历史 lockfile 的 `minimumReleaseAge` 失效条目。
+4. **upsert_item**：在商店写锁内以原子替换方式写入 `~/.dsh/plugins/store.json`
 5. **sync_kernels**：每个已装内核调用 `materialize_one`：
    - 解析 `resolved_source`（store 若本身是 symlink，展开到真实路径）
    - 校验现有 `target` symlink 是否等于 `resolved_source`——不等就重建（修复历史 double-symlink 链）

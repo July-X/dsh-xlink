@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
+use crate::process::atomic_write;
 
 /// 外壳数据目录下隔离文档的文件名。
 const QUARANTINE_FILE: &str = "quarantine.json";
@@ -63,7 +64,8 @@ pub fn save(data_dir: &Path, doc: &Quarantine) -> Result<(), AppError> {
     normalized.schema_version = SCHEMA_VERSION;
     let text =
         serde_json::to_string_pretty(&normalized).map_err(|e| AppError::Io(e.to_string()))?;
-    fs::write(file_path(data_dir), text + "\n").map_err(|e| AppError::Io(e.to_string()))
+    atomic_write(&file_path(data_dir), format!("{text}\n").as_bytes())
+        .map_err(|e| AppError::Io(e.to_string()))
 }
 
 /// 当前被隔离的 id 集合——profile 接入过滤所消费的形式。

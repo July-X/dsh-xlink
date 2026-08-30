@@ -90,6 +90,9 @@ const OFFICIAL_CHAT_STRIP_HEIGHT: f64 = 38.0;
 pub struct AppState {
     pub data_dir: PathBuf,
     pub running: Mutex<Option<Child>>,
+    /// 串行化会改变内核、插件接线或工作台窗口状态的长操作，避免安装、
+    /// 启动、切换和停止互相观察到半完成的文件系统状态。
+    pub lifecycle: Mutex<()>,
     /// 最近一次解析到的 Node 运行时，以配置的 node 路径为键。状态轮
     /// 询每几秒就会跑一次；如果每次轮询都重新探测 `node --version`，
     /// 就会产生进程派生（Windows 上进程创建开销大），但解析结果其实
@@ -369,97 +372,79 @@ pub fn promise_pnpm(
 /// 从 npm 安装指定版本的内核，期间通过事件流推送进度。
 #[tauri::command]
 pub async fn install_kernel(
-    state: State<'_, AppState>,
+    app: AppHandle,
     version: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    let data_dir = state.data_dir.clone();
-    let settings = settings::load(&data_dir);
-    let node_info = cached_node(&state, &settings);
-    let dir_for_install = data_dir.clone();
-    let node_info_for_install = node_info.clone();
+    let data_dir = app.state::<AppState>().data_dir.clone();
     let version_for_install = version.clone();
-    let send_install = on_event.clone();
-    let (node_path, pnpm_exe) =
-        tauri::async_runtime::spawn_blocking(move || -> Result<(PathBuf, PathBuf), String> {
-            let mut send = |msg: &str| {
-                let _ = send_install.send(msg.to_string());
-            };
-            let (node_path, pnpm_exe) =
-                promise_pnpm(&dir_for_install, &node_info_for_install, &mut send)?;
-            // `node_dir` 是已校验的 `node` 可执行文件所在目录。安装派生出的子
-            // 进程需要它出现在 PATH 上，这样 pnpm 的
-            // `#!/usr/bin/env node` shebang 以及任何 shell-out 调
-            // `node` 的 lifecycle 脚本都能解析到它，即便 GUI 进程继承
-            // 到的只是 macOS .app 包那种 launchd-only PATH——这是 nvm 管
-            // 理的安装里很常见的场景。
-            let node_dir = node_path
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from("."));
-            kernel::install_version(
-                &dir_for_install,
-                &node_dir,
-                &pnpm_exe,
-                &version_for_install,
-                |msg| {
-                    send(msg);
-                },
-            )
-            .map_err(|e| e.to_string())?;
-            Ok((node_path, pnpm_exe))
-        })
-        .await
-        .map_err(|e| e.to_string())??;
-
-    // 首次安装的内核会自动设为活动版本，之后的安装不再改动当前活动版
-    // 本。
-    if kernel::read_active(&data_dir).is_none() {
-        kernel::set_active(&data_dir, &version).map_err(|e| e.to_string())?;
-        let _ = on_event.send(format!("已切换到版本 {version}"));
-    }
-    if !kernel::port_open(settings::load(&data_dir).port) {
-        let _ = on_event.send("正在启动内核…".to_string());
-        // 与「启动工作台」按钮共用同一条受防护的启动流程：刚装好的
-        // 插件若把内核搞坏必须落进隔离流程，而不是让用户在安装之后
-        // 面对一个崩溃的工作台。
-        let dir_for_start = data_dir.clone();
-        // 通道与外层函数一起用于尾部状态消息；guarded-start worker 拿到自
-        // 己的克隆。
-        let on_event_for_start = on_event.clone();
-        let pnpm_exe_for_start = pnpm_exe.clone();
-        let mut send = move |msg: &str| {
-            let _ = on_event_for_start.send(msg.to_string());
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
+        let settings = settings::load(&data_dir);
+        let node_info = cached_node(&state, &settings);
+        let mut send = |msg: &str| {
+            let _ = on_event.send(msg.to_string());
         };
-        let start_result = tauri::async_runtime::spawn_blocking(
-            move || -> Result<(guard::StartReport, Option<Child>), String> {
-                let settings = settings::load(&dir_for_start);
-                let deps = guard::GuardDeps {
-                    data_dir: &dir_for_start,
-                    settings: &settings,
-                    node_path: &node_path,
-                    pnpm_exe: &pnpm_exe_for_start,
-                };
-                Ok(guard::guarded_start(&deps, &mut send))
-            },
+        let (node_path, pnpm_exe) = promise_pnpm(&data_dir, &node_info, &mut send)?;
+        // `node_dir` 是已校验的 `node` 可执行文件所在目录。安装派生出的子
+        // 进程需要它出现在 PATH 上，这样 pnpm 的
+        // `#!/usr/bin/env node` shebang 以及任何 shell-out 调
+        // `node` 的 lifecycle 脚本都能解析到它，即便 GUI 进程继承
+        // 到的只是 macOS .app 包那种 launchd-only PATH——这是 nvm 管
+        // 理的安装里很常见的场景。
+        let node_dir = node_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        kernel::install_version(
+            &data_dir,
+            &node_dir,
+            &pnpm_exe,
+            &version_for_install,
+            |msg| send(msg),
         )
-        .await
         .map_err(|e| e.to_string())?;
-        let (report, child) = start_result?;
-        if let Some(child) = child {
-            register_child(&state, &data_dir, child);
-            let _ = on_event.send("内核已启动".to_string());
+
+        // 首次安装的内核会自动设为活动版本，之后的安装不再改动当前活动版
+        // 本。安装、切换和自动启动都在同一个 worker 与生命周期锁内完成，
+        // 不会让另一个命令插入到中间状态。
+        if kernel::read_active(&data_dir).is_none() {
+            kernel::set_active(&data_dir, &version_for_install).map_err(|e| e.to_string())?;
+            send(&format!("已切换到版本 {version_for_install}"));
         }
-        if let Some(incident) = report.incident {
-            let _ = on_event.send(incident.message);
-            for step in &incident.attempts {
-                let _ = on_event.send(format!("· {step}"));
+
+        // 重新读取设置，避免安装期间用户刚保存的端口配置被旧快照覆盖。
+        let settings = settings::load(&data_dir);
+        if !kernel::port_open(settings.port) {
+            send("正在启动内核…");
+            // 与「启动工作台」按钮共用同一条受防护的启动流程：刚装好的
+            // 插件若把内核搞坏必须落进隔离流程，而不是让用户在安装之后
+            // 面对一个崩溃的工作台。
+            let deps = guard::GuardDeps {
+                data_dir: &data_dir,
+                settings: &settings,
+                node_path: &node_path,
+                pnpm_exe: &pnpm_exe,
+            };
+            let (report, child) = guard::guarded_start(&deps, &mut send);
+            if let Some(child) = child {
+                register_child(&state, &data_dir, child);
+                send("内核已启动");
             }
-        } else if !report.running {
-            let _ = on_event.send("内核未能启动，详情见日志".to_string());
+            if let Some(incident) = report.incident {
+                send(&incident.message);
+                for step in &incident.attempts {
+                    send(&format!("· {step}"));
+                }
+            } else if !report.running {
+                send("内核未能启动，详情见日志");
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -467,12 +452,13 @@ pub async fn activate_version(app: AppHandle, version: String) -> Result<(), Str
     let data_dir = app.state::<AppState>().data_dir.clone();
     // 接线会用 pnpm 跑插件商店；把整个切换放到主线程之外。
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
         // 切换会在下一次启动时生效，但为了避免运行中的服务与活动指针
         // 不一致，kernel::set_active 会要求工作台已经停止。
         kernel::set_active(&data_dir, &version).map_err(|e| e.to_string())?;
         // 重新接线插件到新活动内核（失败不阻断切换，原因进入插件卡片警告）
         let settings = settings::load(&data_dir);
-        let state = app.state::<AppState>();
         let node_info = cached_node(&state, &settings);
         let _ = plugins::ensure_wiring_quiet(&data_dir, &settings, &node_info);
         Ok(())
@@ -482,11 +468,13 @@ pub async fn activate_version(app: AppHandle, version: String) -> Result<(), Str
 }
 
 #[tauri::command]
-pub async fn remove_version(state: State<'_, AppState>, version: String) -> Result<(), String> {
-    let data_dir = state.data_dir.clone();
+pub async fn remove_version(app: AppHandle, version: String) -> Result<(), String> {
+    let data_dir = app.state::<AppState>().data_dir.clone();
     // 对内核目录（包括 node_modules）的 remove_dir_all 在 Windows 上
     // 可能耗时数秒；绝对不能在主线程上做。
     tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
         kernel::uninstall(&data_dir, &version).map_err(|e| app_err(&data_dir, e))
     })
     .await
@@ -520,8 +508,9 @@ pub async fn start_kernel(
     // 接线和子进程派生都是阻塞的（pnpm、进程创建）；把它们放到 blocking
     // worker 上，而不是 Tauri 的主线程。
     tauri::async_runtime::spawn_blocking(move || -> Result<guard::StartReport, String> {
-        let settings = settings::load(&data_dir);
         let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
+        let settings = settings::load(&data_dir);
         let node_info = cached_node(&state, &settings);
         if !node_info.ok {
             return Err(node_info.reason.clone());
@@ -562,14 +551,15 @@ pub async fn start_kernel(
 /// 随之在下面停止。
 #[tauri::command]
 pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("harness") {
-        let _ = window.destroy();
-    }
     let data_dir = app.state::<AppState>().data_dir.clone();
     // kernel::stop 会等待子进程退出（最多等满它的 kill 超时），把这
     // 段等待放到主线程之外。
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
+        if let Some(window) = app.get_webview_window("harness") {
+            let _ = window.destroy();
+        }
         {
             let mut guard = crate::lock(&state.running);
             if let Some(mut child) = guard.take() {
@@ -644,6 +634,8 @@ pub async fn report_harness_fault(
     };
     let data_dir = app.state::<AppState>().data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
         let incident = guard::diagnose_runtime(&data_dir, report);
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.emit("harness-fault", &incident);
@@ -763,8 +755,10 @@ fn workbench_url_responds(url: &str, timeout: std::time::Duration) -> bool {
 
 #[tauri::command]
 pub async fn open_harness(app: AppHandle) -> Result<(), String> {
-    let data_dir = crate::kernel::data_dir(&app);
-    let url = tauri::async_runtime::spawn_blocking(move || {
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
         let settings = settings::load(&data_dir);
         if !kernel::port_open(settings.port) {
             return Err(format!(
@@ -773,40 +767,48 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
             ));
         }
         kernel::prepare_workbench_source_maps(&data_dir);
-        kernel_workbench_url(&data_dir, settings.port)
+        let url = Url::parse(&kernel_workbench_url(&data_dir, settings.port)?)
+            .map_err(|e| e.to_string())?;
+        if let Some(existing) = app.get_webview_window("harness") {
+            // 内核重启时会签发一个新的 launch token，使已经打开的窗口所持
+            // 有的 URL 失效；让已有窗口执行跳转，而不仅仅是聚焦它，以免
+            // 重启后工作台停在过期的 token 上变成空白。
+            let _ = existing.navigate(url);
+            let _ = existing.set_focus();
+            return Ok(());
+        }
+        let handle = app.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("dsh-open-harness".into())
+            .spawn(move || {
+                let result =
+                    WebviewWindowBuilder::new(&handle, "harness", WebviewUrl::External(url))
+                        .title("DeepSeek Harness 工作台")
+                        .inner_size(1280.0, 840.0)
+                        .initialization_script(include_str!("titlebar-pulse.js"))
+                        .initialization_script(include_str!("pullstring-launcher.js"))
+                        .initialization_script(include_str!("harness-health.js"))
+                        .build()
+                        .map(|_| ())
+                        .map_err(|e| format!("无法创建工作台窗口：{e}"));
+                if let Err(ref e) = result {
+                    eprintln!("dsh-xlink: failed to open harness window: {e}");
+                }
+                #[cfg(debug_assertions)]
+                if result.is_ok() {
+                    if let Some(window) = handle.get_webview_window("harness") {
+                        window.open_devtools();
+                    }
+                }
+                let _ = tx.send(result);
+            })
+            .map_err(|e| e.to_string())?;
+        rx.recv()
+            .map_err(|_| "工作台窗口创建线程已结束，未返回结果".to_string())?
     })
     .await
-    .map_err(|e| e.to_string())??;
-    let url = Url::parse(&url).map_err(|e| e.to_string())?;
-    if let Some(existing) = app.get_webview_window("harness") {
-        // 内核重启时会签发一个新的 launch token，使已经打开的窗口所持
-        // 有的 URL 失效；让已有窗口执行跳转，而不仅仅是聚焦它，以免
-        // 重启后工作台停在过期的 token 上变成空白。
-        let _ = existing.navigate(url.clone());
-        let _ = existing.set_focus();
-        return Ok(());
-    }
-    let handle = app.clone();
-    std::thread::Builder::new()
-        .name("dsh-open-harness".into())
-        .spawn(move || {
-            let result = WebviewWindowBuilder::new(&handle, "harness", WebviewUrl::External(url))
-                .title("DeepSeek Harness 工作台")
-                .inner_size(1280.0, 840.0)
-                .initialization_script(include_str!("titlebar-pulse.js"))
-                .initialization_script(include_str!("pullstring-launcher.js"))
-                .initialization_script(include_str!("harness-health.js"))
-                .build();
-            if let Err(e) = result {
-                eprintln!("dsh-xlink: failed to open harness window: {e}");
-            }
-            #[cfg(debug_assertions)]
-            if let Ok(window) = app.get_webview_window("harness").ok_or("no harness window") {
-                window.open_devtools();
-            }
-        })
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    .map_err(|e| e.to_string())?
 }
 
 /// 在专属的可调大小查看器窗口中打开日志文件。
@@ -1487,8 +1489,9 @@ async fn run_plugin_command(
 ) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let settings = settings::load(&data_dir);
         let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
+        let settings = settings::load(&data_dir);
         let node_info = cached_node(&state, &settings);
         let promise_send = on_event.clone();
         let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, move |msg| {
@@ -1648,9 +1651,11 @@ pub async fn plugin_resolve(
         "enable" => {
             let data_dir = app.state::<AppState>().data_dir.clone();
             tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+                let state = app.state::<AppState>();
+                let _lifecycle_guard = crate::lock(&state.lifecycle);
+                let _store_guard = plugins::lock_store();
                 quarantine::remove(&data_dir, &id).map_err(|e| e.to_string())?;
                 let settings = settings::load(&data_dir);
-                let state = app.state::<AppState>();
                 let node_info = cached_node(&state, &settings);
                 // 重新接线需要 pnpm；这条路径没有长安装，所以没有可流式推送的消
                 // 息——只跑一次 profile 重新同步。
@@ -1681,10 +1686,13 @@ pub async fn skill_status() -> Result<skills::SkillStatus, String> {
 /// 并通过通道把进度转发出去。技能不需要 pnpm / profile 接线，因此这
 /// 条路径比 `run_plugin_command` 更精简。
 async fn run_skill_command(
+    app: AppHandle,
     on_event: Channel<String>,
     op: impl FnOnce(&mut dyn FnMut(&str)) -> Result<(), AppError> + Send + 'static,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
         let mut progress = |msg: &str| {
             let _ = on_event.send(msg.to_string());
         };
@@ -1700,8 +1708,12 @@ async fn run_skill_command(
 /// 符号链接不可用时会自己回退到 copy，而实际使用的模式会通过
 /// `SkillRow.actual_mode` 回传给 UI。
 #[tauri::command]
-pub async fn skill_install(spec: String, on_event: Channel<String>) -> Result<(), String> {
-    run_skill_command(on_event, move |progress| {
+pub async fn skill_install(
+    app: AppHandle,
+    spec: String,
+    on_event: Channel<String>,
+) -> Result<(), String> {
+    run_skill_command(app, on_event, move |progress| {
         skills::install(&spec, "link", progress).map(|_| ())
     })
     .await
@@ -1709,8 +1721,12 @@ pub async fn skill_install(spec: String, on_event: Channel<String>) -> Result<()
 
 /// 拉取一个已安装技能包的最新版本，并在 active root 中协调它的技能。
 #[tauri::command]
-pub async fn skill_update(id: String, on_event: Channel<String>) -> Result<(), String> {
-    run_skill_command(on_event, move |progress| {
+pub async fn skill_update(
+    app: AppHandle,
+    id: String,
+    on_event: Channel<String>,
+) -> Result<(), String> {
+    run_skill_command(app, on_event, move |progress| {
         skills::update(&id, progress).map(|_| ())
     })
     .await
@@ -1718,19 +1734,27 @@ pub async fn skill_update(id: String, on_event: Channel<String>) -> Result<(), S
 
 /// 在所有位置（active root 条目 + 商店树）卸载一个技能包。
 #[tauri::command]
-pub async fn skill_uninstall(id: String, on_event: Channel<String>) -> Result<(), String> {
-    run_skill_command(on_event, move |progress| skills::uninstall(&id, progress)).await
+pub async fn skill_uninstall(
+    app: AppHandle,
+    id: String,
+    on_event: Channel<String>,
+) -> Result<(), String> {
+    run_skill_command(app, on_event, move |progress| {
+        skills::uninstall(&id, progress)
+    })
+    .await
 }
 
 /// 启用或禁用某个包的某一个技能（在根目录中 link/unlink）。
 #[tauri::command]
 pub async fn skill_set_enabled(
+    app: AppHandle,
     id: String,
     name: String,
     enabled: bool,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    run_skill_command(on_event, move |progress| {
+    run_skill_command(app, on_event, move |progress| {
         skills::set_enabled(&id, &name, enabled, progress)
     })
     .await

@@ -21,6 +21,13 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 - `settings.rs`：`settings.json` 平铺结构（`node_path` / `pnpm_path` / `port`），serde default 兼容缺字段。
 - `process.rs`：所有 GUI 子进程的 `quiet()`（CREATE_NO_WINDOW）+ `command_with_path()`（一次性 sibling，盖上 `env::merged_path()`）出口；一次性命令并行 drain stdout/stderr，4 MiB 输出上限、30 秒 deadline，Unix 进程组超时回收；长期 pnpm/npm 任务使用日级轮转日志（详见「日志规范」）、64 KiB 行上限和 30 分钟总 deadline，静默时发 heartbeat，超时回收整个进程组；每行写完立即 flush（实时落盘），避免 SIGKILL 丢失最近 64 KiB 缓冲。
 
+### 并发与持久化
+
+- `AppState.lifecycle` 是内核安装、启动、停止、切换和删除共用的生命周期锁。锁只在 `spawn_blocking` worker 内获取，保证长操作不会跨 `await` 持有标准 MutexGuard；安装流程在同一个 worker 内完成工具链解析、内核安装、首次激活和必要的自动启动。
+- `open_harness` 在独立窗口构建线程中通过 `mpsc` 回传真实的 `WebviewWindowBuilder::build()` 结果，命令只有收到成功结果才向 UI 返回成功；构建失败会保留可操作的错误信息。
+- `plugins.rs` 与 `skills.rs` 各自维护进程内商店写锁。安装、更新、卸载、模式/启停变更、全量同步和启动修复在写清单时串行化；更新检查只在读取快照和最终提交时加锁，网络请求在锁外执行，并以 `installed_version` 防止旧结果覆盖新安装。
+- `process::atomic_write` 把 `store.json`、设置文件和商店 `.npmrc` 先写入同目录临时文件并 `sync_all`，再替换正式文件。这样进程中断时读者只会看到旧的完整文件或新的完整文件，不会读到截断 JSON。
+
 ## 日志规范
 
 `<data_dir>/logs/` 下每个 `.log` 文件都按统一的命名规范落盘，便于 `list_log_files` 列表稳定、用户/支持方一眼区分 build 类型与日期：
