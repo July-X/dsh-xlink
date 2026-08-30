@@ -1,6 +1,6 @@
 # 发布流水线
 
-`.github/workflows/desktop-release.yml` 负责生成并发布 Intel macOS 与 Windows x86_64 安装包。发布只接受 `main` 可达的 `desktop-v<version>` tag，或从 `main` 手动 dispatch。
+`.github/workflows/desktop-release.yml` 负责生成并发布 Intel macOS 与 Windows x86_64 安装包。发布只接受 `main` 可达的 `desktop-v<version>` tag，或从 `main` 手动 dispatch。需要复用跨版本的 Rust 编译缓存时，推荐在 Actions 页面选择 `main` 手动 dispatch；推送 tag 的方式仍然保留。
 
 ## 时序
 
@@ -15,11 +15,11 @@
 ## 缓存与构建
 
 - `setup-node` 为 pnpm store 建立缓存，依赖使用 `pnpm install --frozen-lockfile --prefer-offline`。
-- `Swatinem/rust-cache@v2` 分别缓存质量 job 与 release job 的 Cargo registry、Git 依赖和编译结果；缓存 key 含 runner 系统与架构，避免 debug 检查产物污染 release target。
+- `Swatinem/rust-cache@v2` 分别缓存质量 job 与 release job 的 Cargo registry、Git 依赖和编译结果；缓存 key 含 runner 系统与架构，避免 debug 检查产物污染 release target。缓存只在 `main` 分支保存：GitHub 对不同 tag 使用独立的缓存作用域，tag 之间无法复用彼此的缓存，继续保存这些缓存只会延长 job 收尾时间。
 - `src-tauri/Cargo.toml` 使用 `lto = "thin"` 与 `codegen-units = 16`。这比完整 LTO 与单 codegen unit 更适合 CI 冷构建，同时保留 release 优化。
 - artifact 使用零压缩上传。DMG、tar.gz 和安装包本身已经压缩，减少 runner 上的重复压缩时间。
 
-第一次使用新 key 仍会经历依赖下载和编译；后续版本在 lockfile 未变化时可以复用缓存。runner 排队、缓存服务和网络波动不属于 workflow 可控的构建时间。
+首次从 `main` 手动发布时仍会经历依赖下载和编译；后续手动发布在 lockfile、Rust 工具链和 runner 未变化时可以复用缓存。直接推送新 tag 会进入新的缓存作用域，通常会走冷启动。runner 排队、缓存服务和网络波动不属于 workflow 可控的构建时间。
 
 ## updater 文件
 
@@ -53,6 +53,6 @@
 ## 排障
 
 - 质量 job 失败时，构建 job 可能已经完成，但 `publish` 会保持跳过，不会创建正式 Release。
-- 如果构建变慢，查看 `Cache Rust release dependencies` 与 `Install JavaScript dependencies` 的命中情况，再区分依赖编译耗时和 runner 排队耗时。
+- 如果构建变慢，先确认发布是否从 `main` 手动 dispatch，再查看 `Cache Rust release dependencies` 与 `Install JavaScript dependencies` 的命中情况，区分缓存冷启动、依赖编译和 runner 排队耗时。
 - 如果 `latest.json` 生成失败，先检查 artifact 中是否只有一份 `.dmg`、`.app.tar.gz`、`.app.tar.gz.sig`、`*-setup.exe` 与 `*-setup.exe.sig`，以及各文件名是否带当前版本。
 - 如果 updater 返回 404，确认最终 Release 是正式 release，且 `latest.json` 已与五个资产一起上传；不要把 `draft` 或 `prerelease` 留为 true。
