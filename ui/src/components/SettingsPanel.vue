@@ -127,30 +127,29 @@ function onSave() {
 
     <div class="card">
       <div class="card-head">
-        <h2>内核补丁（内置）</h2>
+        <h2>内置补丁</h2>
         <el-button text size="small" :icon="Refresh" :loading="isLoading('patchRefresh')"
           @click="onRefreshPatches">
           刷新
         </el-button>
       </div>
-      <p class="muted" style="margin: 0">
-        随 dsh-xlink 发布包内置的自研内核补丁与小插件，默认不生效；由你选择是否应用到当前内核，
-        应用前自动备份原文件，可随时撤销。仅影响当前激活的内核版本。
+      <p class="muted patch-section-hint">
+        随 dsh-xlink 内置，默认不生效；应用前自动备份，可随时撤销。
       </p>
       <div v-if="!patchStore.loaded" class="patch-empty">补丁状态加载中…</div>
-      <div v-else-if="!patchRows.length" class="patch-empty">此版本的 dsh-xlink 未携带任何内置补丁。</div>
+      <div v-else-if="!patchRows.length" class="patch-empty">此版本未携带任何内置补丁。</div>
       <div v-else class="patch-list">
         <div v-for="row in patchRows" :key="row.id" class="patch-item"
              :class="{ 'patch-item-obsolete': row.superseded, 'patch-item-collapsed': isObsoleteCollapsed(row) }">
           <div class="patch-item-main">
             <div class="patch-item-title">
               <strong :class="{ 'patch-name-obsolete': row.superseded }">{{ row.name }}</strong>
-              <el-tag v-if="row.kind === 'plugin'" size="small" type="success">内置插件</el-tag>
-              <el-tag v-else size="small" type="primary">补丁</el-tag>
-              <el-tag size="small" type="info" effect="plain">v{{ row.version }}</el-tag>
+              <el-tag v-if="row.kind === 'plugin'" size="small" type="success" effect="plain">插件</el-tag>
+              <el-tag v-else size="small" type="primary" effect="plain">补丁</el-tag>
+              <el-tag size="small" effect="plain">v{{ row.version }}</el-tag>
               <el-tag v-if="row.superseded && row.supersededSinceKernelVersion"
-                       size="small" type="info" effect="plain" class="patch-superseded-tag">
-                已并入官方内核 v{{ row.supersededSinceKernelVersion }} 起
+                       size="small" effect="plain" class="patch-superseded-tag">
+                已并入 v{{ row.supersededSinceKernelVersion }}
               </el-tag>
               <el-tag :type="stateTag(row.state)" size="small" effect="dark" class="patch-state">
                 {{ row.stateText }}
@@ -158,18 +157,18 @@ function onSave() {
               <el-button v-if="row.superseded" link size="small" class="patch-toggle"
                           @click="toggleObsolete(row.id)">
                 <el-icon><component :is="isObsoleteCollapsed(row) ? ArrowDown : ArrowUp" /></el-icon>
-                {{ isObsoleteCollapsed(row) ? '展开查看' : '收起' }}
+                {{ isObsoleteCollapsed(row) ? '详情' : '收起' }}
               </el-button>
             </div>
             <p v-if="isObsoleteCollapsed(row) && row.supersededSinceKernelVersion"
                class="muted patch-desc patch-obsolete-summary">
-              官方内核 v{{ row.supersededSinceKernelVersion }} 起已包含本补丁的修复，无需手动应用。
+              v{{ row.supersededSinceKernelVersion }} 起已合并，无需手动应用。
             </p>
             <template v-else>
               <p class="muted patch-desc">{{ row.description }}</p>
               <p class="patch-meta">
-                <span>适用范围：{{ rangeText(row) }}</span>
-                <span v-if="row.appliedAt">应用时间：{{ row.appliedAt }}</span>
+                <span>适用：{{ rangeText(row) }}</span>
+                <span v-if="row.appliedAt">已应用：{{ row.appliedAt }}</span>
               </p>
               <p v-if="row.note" class="patch-note">{{ row.note }}</p>
             </template>
@@ -183,7 +182,7 @@ function onSave() {
               :loading="isLoading('patchApply:' + row.id)"
               @click="applyPatch(row.id, row.name)"
             >
-              应用到当前内核
+              应用
             </el-button>
             <el-button
               v-else
@@ -194,7 +193,7 @@ function onSave() {
               :loading="isLoading('patchRevert:' + row.id)"
               @click="revertPatch(row.id, row.name)"
             >
-              撤销补丁
+              撤销
             </el-button>
           </div>
         </div>
