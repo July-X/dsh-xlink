@@ -1183,18 +1183,17 @@ main {
 
 .patch-item {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.02);
 }
 
+/* main 占满整行：actions 移到下方后，description / meta 不再被右侧按钮挤到左半边。 */
 .patch-item-main {
   min-width: 0;
-  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1238,10 +1237,14 @@ main {
   line-height: 1.5;
 }
 
+/* actions 独占底部一行：右对齐，与 main 之间用虚线分隔，避免 description
+   被「应用到当前内核」按钮挤到半边。 */
 .patch-item-actions {
   display: flex;
   align-items: center;
-  flex: none;
+  justify-content: flex-end;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
 }
 
 /* 已并入官方内核的补丁：默认折叠展示，整体降饱和、标题加删除线。 */
@@ -1253,9 +1256,11 @@ main {
   padding: 8px 12px;
 }
 .patch-name-obsolete {
-  text-decoration: line-through;
-  text-decoration-color: var(--muted);
-  text-decoration-thickness: 1px;
+  /* "已并入官方内核" 补丁的 Title 用斜体 + 灰度提示用户它不再是首选项；
+     line-through 删除线在 Element Plus el-tag 堆叠下视觉太弱，italic + 灰度
+     在面板里识别度更高。 */
+  font-style: italic;
+  color: var(--muted);
 }
 .patch-superseded-tag {
   font-weight: 500;
