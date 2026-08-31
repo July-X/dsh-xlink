@@ -77,6 +77,19 @@ pub struct PatchDef {
     pub min_kernel_version: Option<String>,
     #[serde(default)]
     pub max_kernel_version: Option<String>,
+    /// 当补丁功能已被官方内核采纳时，声明从哪个内核版本开始不再需要应用本补丁。
+    ///
+    /// 该字段为 `None` 表示补丁一直有效；非 `None` 时，对当前激活版本
+    /// `>=` 此值的内核，设置页会标记该补丁为「已并入官方内核」（默认折叠展示、
+    /// 应用按钮禁用），但已应用到旧内核的记录仍可正常撤销。
+    ///
+    /// 语义区别于 `maxKernelVersion`：后者直接拒绝在更高版本上**安装**，而
+    /// `supersededSinceKernelVersion` 仅表达「该版本后已不需要」，与
+    /// `minKernelVersion` / `maxKernelVersion` 共存——比如
+    /// `minKernelVersion: 0.1.1-rc.2`、`supersededSinceKernelVersion: 0.1.2-alpha.2`
+    /// 表示仅 `0.1.1-rc.2 ~ <0.1.2-alpha.2` 真正需要手动应用。
+    #[serde(default)]
+    pub superseded_since_kernel_version: Option<String>,
     pub files: Vec<PatchFileDef>,
 }
 
@@ -172,6 +185,14 @@ pub struct PatchRow {
     pub min_kernel_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_kernel_version: Option<String>,
+    /// 当补丁功能已被官方内核采纳时，声明从哪个内核版本开始不再需要应用本补丁。
+    /// 该字段透传自 `PatchDef.supersededSinceKernelVersion`，由 UI 决定如何
+    /// 展示「已并入官方内核」徽标与默认折叠卡片。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_since_kernel_version: Option<String>,
+    /// 对当前激活内核，补丁功能是否已被官方内核采纳。UI 据此渲染删除线 +
+    /// 默认折叠 + 禁用「应用」按钮；已应用记录的撤销不受影响。
+    pub superseded: bool,
     /// 状态机：no_kernel / incompatible / not_applied / applied / partial / dirty。
     pub state: String,
     /// 状态的人类可读文案（UI 直接展示）。
@@ -530,6 +551,15 @@ fn version_in_range(def: &PatchDef, kernel_version: &str) -> bool {
     in_min && in_max
 }
 
+/// 补丁对当前内核是否已被官方采纳——当 `superseded_since_kernel_version` 声明且
+/// 当前内核版本 `>=` 该值时返回 `true`。
+fn is_superseded(def: &PatchDef, kernel_version: &str) -> bool {
+    def.superseded_since_kernel_version
+        .as_deref()
+        .map(|bound| cmp_versions(kernel_version, bound) != std::cmp::Ordering::Less)
+        .unwrap_or(false)
+}
+
 /// 应用补丁到当前激活内核。前置：工作台已停止、内核已激活、版本在范围内。
 pub fn apply(
     data_dir: &Path,
@@ -547,6 +577,15 @@ pub fn apply(
             def.name,
             kernel_version,
             range_text(def)
+        )));
+    }
+    if is_superseded(def, &kernel_version) {
+        return Err(AppError::Patch(format!(
+            "补丁 {} 已被官方内核 v{} 及以上版本取代，无需手动应用；设置页已折叠该条目",
+            def.name,
+            def.superseded_since_kernel_version
+                .as_deref()
+                .unwrap_or("?"),
         )));
     }
 
@@ -974,6 +1013,8 @@ fn row_for(data_dir: &Path, def: &PatchDef, active: Option<&str>) -> PatchRow {
         description: def.description.clone(),
         min_kernel_version: def.min_kernel_version.clone(),
         max_kernel_version: def.max_kernel_version.clone(),
+        superseded_since_kernel_version: def.superseded_since_kernel_version.clone(),
+        superseded: false,
         state: String::new(),
         state_text: String::new(),
         note: None,
@@ -1006,12 +1047,27 @@ fn row_for(data_dir: &Path, def: &PatchDef, active: Option<&str>) -> PatchRow {
         )
     });
     let mut row = base;
+    let superseded = is_superseded(def, version);
+    row.superseded = superseded;
     match find_applied(&state, &def.id, version) {
         None => {
             row.state = "not_applied".into();
-            row.state_text = "未应用".into();
-            row.note = note_from_elsewhere;
-            row.enabled = true;
+            if superseded {
+                row.state_text = "已并入官方内核".into();
+                row.note = note_from_elsewhere.or_else(|| {
+                    def.superseded_since_kernel_version.as_deref().map(|bound| {
+                        format!(
+                            "官方内核 v{} 起已包含本补丁的修复；如需旧版本兼容，可点击「展开查看」",
+                            bound
+                        )
+                    })
+                });
+                row.enabled = false;
+            } else {
+                row.state_text = "未应用".into();
+                row.note = note_from_elsewhere;
+                row.enabled = true;
+            }
         }
         Some(record) => {
             let patch_version_matches =
@@ -1608,6 +1664,138 @@ mod tests {
         let record = find_applied(&state, "opt", "0.1.2").unwrap();
         assert!(record.files.is_empty());
         assert!(!record.notes.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 写一个独立的 superseded 资源根：单个 copy 补丁带 `supersededSinceKernelVersion`。
+    fn make_superseded_resource_root(root: &Path, bound: &str) -> PathBuf {
+        let res = root.join("resources").join("patches");
+        let dir = res.join("obsolete-copy");
+        fs::create_dir_all(dir.join("files")).unwrap();
+        fs::write(dir.join("files").join("x.js"), "patched\n").unwrap();
+        let original = "original\n";
+        fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schemaVersion": 1,
+                "patches": [{
+                    "id": "obsolete-copy",
+                    "name": "已被官方取代的补丁",
+                    "version": "1.0.0",
+                    "kind": "patch",
+                    "description": "已被官方内核采纳",
+                    "supersededSinceKernelVersion": bound,
+                    "files": [{
+                        "mode": "copy",
+                        "from": "files/x.js",
+                        "to": "node_modules/@deepseek-ai/dsh/lib/obsolete.js",
+                        "expectSha256": sha256_bytes(original.as_bytes()),
+                        "required": true
+                    }]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let _ = original; // 留作显式期望：expect_sha256 真实指向原文件
+        res
+    }
+
+    #[test]
+    fn superseded_status_reflects_bound_and_disables_apply() {
+        let root = temp_root("superseded");
+        let data = root.join("data");
+        setup(&data, "0.1.2-alpha.2");
+        let res = make_superseded_resource_root(&root, "0.1.2-alpha.2");
+        let patches = load_patches(&res).unwrap();
+
+        // 当前内核版本正好等于 supersededSinceKernelVersion → 视为已过时。
+        let row = status(&data, &patches)
+            .patches
+            .iter()
+            .find(|r| r.id == "obsolete-copy")
+            .unwrap()
+            .clone();
+        assert!(row.superseded);
+        assert_eq!(row.state, "not_applied");
+        assert_eq!(row.state_text, "已并入官方内核");
+        assert!(!row.enabled);
+        assert!(row.note.unwrap().contains("0.1.2-alpha.2"));
+        assert_eq!(
+            row.superseded_since_kernel_version.as_deref(),
+            Some("0.1.2-alpha.2")
+        );
+
+        // 仍可在 UI 上撤销（此处根本没有应用记录，revert 应报「未应用」）
+        // 应用必须被拒绝。
+        let err = apply(&data, &patches, "obsolete-copy").unwrap_err();
+        assert!(err.to_string().contains("已被官方内核"));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn superseded_below_bound_does_not_supersede() {
+        let root = temp_root("superseded-below");
+        let data = root.join("data");
+        setup(&data, "0.1.1-rc.2");
+        let res = make_superseded_resource_root(&root, "0.1.2-alpha.2");
+        let patches = load_patches(&res).unwrap();
+
+        let row = status(&data, &patches)
+            .patches
+            .iter()
+            .find(|r| r.id == "obsolete-copy")
+            .unwrap()
+            .clone();
+        assert!(!row.superseded);
+        assert_eq!(row.state, "not_applied");
+        assert!(row.enabled);
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn superseded_record_remains_revertible() {
+        // 即便当前内核版本已 superseded，曾经在旧版本上应用的记录依然可撤销：
+        // 模拟「在旧 rc.2 内核上应用 → 切到 alpha.2 看到 superseded 状态 →
+        // 切回 rc.2 仍能正常撤销」的清理流程。
+        let root = temp_root("superseded-revert");
+        let data = root.join("data");
+        setup(&data, "0.1.1-rc.2");
+        let res = make_superseded_resource_root(&root, "0.1.2-alpha.2");
+        let patches = load_patches(&res).unwrap();
+
+        let target = kernel::kernel_dir(&data, "0.1.1-rc.2")
+            .join("node_modules/@deepseek-ai/dsh/lib/obsolete.js");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, "original\n").unwrap();
+
+        apply(&data, &patches, "obsolete-copy").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "patched\n");
+
+        // 切到 alpha.2：当前激活版本无应用记录 → row 展示为「已并入官方内核」、
+        // 应用被 Rust 端拒绝。state.json 里 rc.2 上的应用记录依然保留。
+        kernel::write_active(&data, Some("0.1.2-alpha.2")).unwrap();
+        let row = status(&data, &patches)
+            .patches
+            .iter()
+            .find(|r| r.id == "obsolete-copy")
+            .unwrap()
+            .clone();
+        assert!(row.superseded);
+        assert_eq!(row.state, "not_applied");
+        assert!(!row.enabled);
+        assert!(apply(&data, &patches, "obsolete-copy").is_err());
+        assert!(read_state(&data)
+            .applied
+            .iter()
+            .any(|a| a.id == "obsolete-copy" && a.kernel_version == "0.1.1-rc.2"));
+
+        // 切回 rc.2：旧应用记录仍可撤销。
+        kernel::write_active(&data, Some("0.1.1-rc.2")).unwrap();
+        revert(&data, &patches, "obsolete-copy").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original\n");
         fs::remove_dir_all(&root).unwrap();
     }
 }

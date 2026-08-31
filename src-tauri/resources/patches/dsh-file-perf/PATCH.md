@@ -8,6 +8,32 @@ dsh-xlink 收录的第一个真实内核补丁。它覆盖 `@` 补全的两个�
 | `@deepseek-ai/dsh-file-reference-local` | 文件和目录候选 | 缓存索引、目录扫描、查询排序和失效刷新 |
 | `@deepseek-ai/dsh-session-reference` | 历史会话候选 | 复用会话头信息和标题投影，跳过归档会话 |
 
+## 状态：已被官方内核采纳
+
+官方 0.1.2-alpha.2 已经把这个补丁的全部核心优化合并进了官方包：
+
+- file-reference-local：`WorkspaceFileSearch` 的 `invalidate()` 只递增计数器、
+  `ensureIndex()` 后台重建、`DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES`
+  扩展为 16 个构建/版本控制目录、`listDirectory` 内的隐藏文件规则保留 `@./` 与
+  `@.github/`、`rankCandidates` 用有界 top-K。
+- session-reference：`projectedTitle` 走 `sessionProjections.snapshot` 或
+  `sessionProjectionCache.cachedSnapshot`，删除整段日志折叠（官方 commit
+  `8e9da9debf`：「folding a title costs the whole log, and this call sits
+  under every keystroke, so it is not attempted at all」），命中失败时退回
+  session id。
+
+因此本补丁对 0.1.2-alpha.2 及更高版本 `supersededSinceKernelVersion: 0.1.2-alpha.2` —
+设置页会把卡片折叠为「已并入官方内核」并禁用应用按钮；旧版本（0.1.1-rc.2 及之
+前）上的应用记录依然可正常撤销。manifest 的 `expectSha256` 安全闸会阻止在
+alpha.2 上误装（哈希不匹配直接以「内核版本可能已升级」中止）。
+
+## 目标
+
+```text
+node_modules/@deepseek-ai/dsh-file-reference-local/lib/index.js
+node_modules/@deepseek-ai/dsh-session-reference/lib/index.js
+```
+
 两个包都包含名为 `index.js` 的 dist 文件，载荷保留包目录层级，不把它们合并成一个
 文件：
 
@@ -19,19 +45,6 @@ files/
 
 客户端 `dsh-client-ui-reference` 会同时等待这两个候选源，因此任一源的慢路径都可能
 拖住整个 `@` 菜单。
-
-## 来源与哈希链
-
-| 文件 | SHA-256 |
-| --- | --- |
-| 原始 `dsh-file-reference-local/lib/index.js` | `dcf5299bf9a1c8dd33bf7d099f8d7bdfd52d69e516ba90e97cda0cdf402e0a7d` |
-| 补丁后 `files/dsh-file-reference-local/index.js` | `593e150adb4f5db2c16fa76d9980f66ef4190f31c6b73e0b890b76e92dedbd60` |
-| 原始 `dsh-session-reference/lib/index.js` | `e67bda5c8ee2e39437b474a596bc7fa600dfc9eea6821ce0a5c3eb3003c4e106` |
-| 补丁后 `files/dsh-session-reference/index.js` | `a4bbe7c0010ccd004026a33b41787513bd28182a488339a4590a870a2a294a87` |
-
-两者均取自 npm 包 `@0.1.1-rc.2`（MIT © 2026 DeepSeek）。manifest 的 `expectSha256`
-即对应的原始文件哈希：仅当内核里目标文件与它一致时才应用，内核升级 / 文件漂移时
-安全失败并给出可操作提示。
 
 ## 修复内容
 
@@ -64,7 +77,7 @@ files/
 
 - file-reference-local：3 个 root × 2 组排除 × 20 类 query =
   **120/120 组查询结果逐字节一致**，覆盖排序、评分、隐藏规则和目录列举。
-- session-reference：使用真实的磁盘会话和归档 id，验证头信息快路径、归档过滤、投影
+- session-：使用真实的磁盘会话和归档 id，验证头信息快路径、归档过滤、投影
   缓存标题、显式 id 查询、软降级和取消行为。
 - 复跑：`node scripts/verify-dsh-file-perf.mjs <内核根目录>`。脚本只读检查目标文件哈希，
   并运行两份载荷的行为断言。
@@ -86,12 +99,14 @@ files/
   还会受 workspace 初始化、内核进程负载和当前数据量影响。应用后应在目标内核上复跑校验
   脚本，再用实际工作区体验呼出和连续输入。
 - 补丁打在 npm dist 上：内核版本升级（重装 node_modules）会覆盖它，状态面板
-  会呈现「文件已被改动（dirty）」，此时可「撤销」（丢弃旧记录）或重新应用。
+  会呈现「文件已被已更新」，此时可「撤销」（丢弃旧记录）或重新应用。
 - 同一个 `dsh-file-perf` 已应用旧载荷时，更新后的 manifest 会把旧文件显示为 `dirty`。
   请先点击「撤销补丁」还原旧备份，再点击「应用到当前内核」写入两个新载荷，不要手动
   删除备份或直接覆盖内核文件。
 - 归档过滤会改变可见行为：归档后该会话在 `@` 里就搜不到了（需先在侧边栏取消归档）。
   两个文件在同一 `id` 下，应用/撤销是整体的，不能只留其一。
-- 同批次发现的配置修复（`excludedDirectories` 排除 `target/dist/.venv` 等 16 个构建
-  目录）写在 `~/.dsh/profiles/web/cordis.patch.yml`，属用户侧配置，**不在**本补丁内；
+- 同批次发现的配置修复（`excludedDirectories` 16 项，写入
+  `~/.dsh/profiles/web/cordis.patch.yml`）属用户侧配置，**不在**本补丁内；
   没有它，文件源的候选仍会被构建产物淹没。
+- 0.1.2-alpha.2 及更高版本：本补丁已被官方内核取代，`expectSha256` 安全闸会
+  拒绝在 alpha.2 内核上安装；UI 展示为「已并入官方内核」并禁用应用按钮。

@@ -1244,6 +1244,40 @@ main {
   flex: none;
 }
 
+/* 已并入官方内核的补丁：默认折叠展示，整体降饱和、标题加删除线。 */
+.patch-item-obsolete {
+  opacity: 0.72;
+  background: rgba(255, 255, 255, 0.015);
+}
+.patch-item-obsolete.patch-item-collapsed {
+  padding: 8px 12px;
+}
+.patch-name-obsolete {
+  text-decoration: line-through;
+  text-decoration-color: var(--muted);
+  text-decoration-thickness: 1px;
+}
+.patch-superseded-tag {
+  font-weight: 500;
+}
+.patch-obsolete-summary {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.patch-toggle {
+  margin-left: auto;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+}
+.patch-toggle .el-icon {
+  font-size: 12px;
+}
+
 /* el-button 轻微按压反馈。 */
 .el-button {
   transition: transform 0.12s ease, background-color 0.18s ease,

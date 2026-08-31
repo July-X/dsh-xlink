@@ -85,6 +85,7 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
 | `name` / `version` | 显示名称与补丁自身版本。 |
 | `kind` | `patch`（内核补丁，改动内核既有文件）或 `plugin`（内置小插件，多为新增文件）。仅作展示。 |
 | `minKernelVersion` / `maxKernelVersion` | 适用内核版本范围（含端点，`null` 表示不限）。比较复用 `version::cmp_versions`。 |
+| `supersededSinceKernelVersion` | 从该内核版本起，补丁功能已被官方内核采纳；`null` 表示一直有效，非 `null` 时对当前激活版本 `>=` 此值的内核，设置页把卡片折叠为「已并入官方内核」并禁用应用按钮（已应用到旧内核的记录仍可正常撤销）。语义区别于 `maxKernelVersion`：后者直接拒绝在更高版本上**安装**；本字段仅表达「该版本后已不需要」，与 `minKernelVersion` / `maxKernelVersion` 共存。 |
 | `files[]` | 文件操作序列。`mode` = `copy` 或 `replace`；`required` 默认 `true`，为 `false` 时目标不存在/未命中搜索串只跳过该文件并记录说明，不中断整个补丁。 |
 | `expectSha256`（copy 模式） | 预期「原文件」SHA-256（64 位小写十六进制）。给出时目标已存在必须与该哈希一致才会被备份并覆盖——把补丁打在 npm dist 等既有文件上时的安全闸：内核升级 / 文件漂移会明确失败而不是覆盖未知文件。缺省时 copy 保持「新增文件」语义（目标已存在且内容不同则拒绝）。 |
 | `replace` 模式 | 需要 `search`（精确字符串，不支持正则）与 `replacement`；全文中所有匹配都会替换。 |
@@ -135,6 +136,33 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
 | `applied` | 已应用，应用记录的 `patchVersion` 与当前清单一致，且磁盘文件与记录哈希一致。 |
 | `partial` | 已应用但有文件被跳过（非必需文件未命中）。 |
 | `dirty` | 记录存在但补丁版本不一致，或磁盘文件缺失/哈希不一致（内核可能被重装、补丁资源已更新或文件被手动修改），提示先撤销再重新应用。 |
+
+## 已被官方内核取代的补丁（supersededSinceKernelVersion）
+
+当官方内核的某个版本开始已经采纳了本补丁的修复，`PatchDef.supersededSinceKernelVersion`
+设为该版本号。对当前激活版本 `>=` 此值的内核：
+
+- 状态字段 `row.superseded` 为 `true`；`row.supersededSinceKernelVersion` 透传 manifest 声明；
+- `not_applied` 时 `state_text` 变为「已并入官方内核」；`enabled` 强制为 `false`，
+  Rust 端 `apply` 会以「补丁已被官方内核 v{bound} 及以上版本取代，无需手动应用」拒绝。
+- 撤销不受影响：旧版本上已应用的 `applied` 记录仍可正常 `revert`，新激活内核上看
+  不到这条记录（每个 kernel_version 独立）。
+- 旧 alpha.1 / rc.2 等内核上的应用记录不会因为官方内核升级而自动撤销；切回旧内核时
+  仍按 `applied` 处理。
+
+UI 表现（`ui/src/components/SettingsPanel.vue`）：
+
+- 卡片整体降饱和（`opacity: 0.72`），标题加删除线（`text-decoration: line-through`），
+  在标题行追加「已并入官方内核 v{bound} 起」徽标；
+- 默认折叠（只显示标题 + 徽标 + 一行说明 + 「展开查看」按钮），不展示描述、
+  适用范围、操作按钮；
+- 用户点击「展开查看」可手动展开（`obsoleteExpanded` Set 维护展开态）查看完整卡片；
+- 折叠态不展示「应用到当前内核」按钮，展开后该按钮也保持禁用（`row.enabled = false`）。
+
+`dsh-file-perf` 是第一个使用此字段的真实补丁（`supersededSinceKernelVersion: 0.1.2-alpha.2`）：
+官方 0.1.2-alpha.2 已经采纳了它的全部核心优化，alpha.2 上不需要再手动打补丁，
+但 `expectSha256` 仍以原 0.1.1-rc.2 dist 哈希做安全闸——目标文件与声明哈希不一致时
+拒绝应用并提示「内核版本可能已升级」。
 
 ## 开发流程与计划
 

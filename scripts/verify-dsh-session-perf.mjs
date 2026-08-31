@@ -19,13 +19,16 @@ import { spawnSync } from 'node:child_process';
 
 const DSH_HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh');
 const PATCH_ID = 'dsh-session-perf';
-const PATCH_VERSION = '1.0.1';
-const KERNEL_VERSION = '0.1.1-rc.2';
+const PATCH_VERSION = '1.1.0';
+const MIN_KERNEL_VERSION = '0.1.1-rc.2';
 const TARGET = 'node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js';
 const MANIFEST = resolve('src-tauri/resources/patches/dsh-session-perf/manifest.json');
-const ORIGINAL_SHA256 = '8b6ebc4509a3e969ab3ad6e0dfb553ae4861e5b101831afed23e593d148d97f3';
-const LEGACY_PATCHED_SHA256 = 'f20c1453291953cc875a1ec1519327c7a5abbd9d37a4244180ab41e807342355';
-const PATCHED_SHA256 = '9ed3fe3cfa3890e8559efd9369efac9866c19c3737c3328b6355c338f0a7f96e';
+// npm @deepseek-ai/dsh-session-persistence-jsonl@0.1.2-alpha.2 原始 dist
+const ORIGINAL_SHA256 = 'd5ae2c7d6f6fbca6b2d4d8c6fc7ffb1342d4ed6484ec9cd309ee5c7bf88e9a00';
+// v1.0.1 的 patched 载荷（针对 0.1.1-rc.2），保留以识别旧版应用记录
+const LEGACY_PATCHED_SHA256 = '9ed3fe3cfa3890e8559efd9369efac9866c19c3737c3328b6355c338f0a7f96e';
+// v1.1.0 的 patched 载荷（适配 0.1.2-alpha.2）
+const PATCHED_SHA256 = 'f9985512945738f32a29a6c34a3cda2e64ec1d051482a371c634e3fadaffb6ff';
 const CACHE_MARKER = 'const SESSION_ARTIFACT_LIST_CACHE_TTL_MS = 1000;';
 const requireApplied = process.argv.includes('--require-applied');
 const positional = process.argv.slice(2).find((arg) => !arg.startsWith('--'));
@@ -62,7 +65,8 @@ async function loadPatch(kernelRoot) {
   check('manifest 包含 dsh-session-perf', patch !== undefined);
   if (patch === undefined) throw new Error('manifest 中缺少 dsh-session-perf');
   check(`补丁版本为 ${PATCH_VERSION}`, patch.version === PATCH_VERSION);
-  check(`补丁版本范围精确覆盖 ${KERNEL_VERSION}`, patch.minKernelVersion === KERNEL_VERSION && patch.maxKernelVersion === KERNEL_VERSION);
+  check(`补丁最低支持内核 ${MIN_KERNEL_VERSION}`, patch.minKernelVersion === MIN_KERNEL_VERSION);
+  check('补丁不限定最高内核版本（v1.1.0 适配 0.1.2-alpha.2）', patch.maxKernelVersion === null);
   check('补丁只修改一个 persistence 目标', patch.files?.length === 1 && patch.files[0]?.mode === 'copy' && patch.files[0]?.to === TARGET);
   const file = patch.files?.[0];
   if (file === undefined || file.mode !== 'copy' || typeof file.from !== 'string') throw new Error('manifest 中缺少 persistence copy 文件');
