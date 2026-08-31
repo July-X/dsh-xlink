@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "patches": [
+    {
+      "id": "dsh-session-perf",
+      "name": "dsh 历史会话列表加载提速",
+      "version": "1.0.1",
+      "kind": "patch",
+      "description": "在 JSONL 持久层共享并缓存会话 artifact/header 扫描，避免 workspace、session.list 和 session-reference 在短时间内重复遍历全部 Zstandard 日志；不改变整日志 history 读取语义。",
+      "minKernelVersion": "0.1.1-rc.2",
+      "maxKernelVersion": "0.1.1-rc.2",
+      "files": [
+        {
+          "mode": "copy",
+          "from": "files/dsh-session-persistence-jsonl/index.js",
+          "to": "node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js",
+          "expectSha256": "8b6ebc4509a3e969ab3ad6e0dfb553ae4861e5b101831afed23e593d148d97f3",
+          "required": true
+        }
+      ]
+    }
+  ]
+}
