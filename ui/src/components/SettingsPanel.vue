@@ -1,8 +1,8 @@
 <script setup>
 // 设置：Web UI 端口、插件接线 profile 名、Node 检测，以及内置补丁（内核补丁 / 小插件）
 // 的应用与撤销。轮询每 2.5s 刷新 store.view，但用户正在编辑的输入框不被回写（focus 守卫）。
-import { computed, ref, watch } from 'vue';
-import { Check, Monitor, Refresh } from '@element-plus/icons-vue';
+import { computed, reactive, ref, watch } from 'vue';
+import { ArrowDown, ArrowUp, Check, Monitor, Refresh } from '@element-plus/icons-vue';
 import { store, detectNode, saveSettings } from '../store.js';
 import { patchStore, refreshPatches, applyPatch, revertPatch } from '../patches.js';
 import { isLoading, withLoading } from '../loading.js';
@@ -44,6 +44,17 @@ const hintText = computed(() => nodeHint.value || defaultNodeHint.value);
 const workbenchRunning = computed(() => !!(store.view && store.view.kernel && store.view.kernel.running));
 
 const patchRows = computed(() => (patchStore.view && patchStore.view.patches) || []);
+
+// 已并入官方内核的补丁默认折叠。用户在卡片上点击「展开查看」后把 id 加进 Set 里；
+// 切换内核或刷新时仍保持原折叠态（除非用户主动点回「收起」），避免误点展开影响阅读。
+const obsoleteExpanded = reactive(new Set());
+function toggleObsolete(id) {
+  if (obsoleteExpanded.has(id)) obsoleteExpanded.delete(id);
+  else obsoleteExpanded.add(id);
+}
+function isObsoleteCollapsed(row) {
+  return Boolean(row.superseded) && !obsoleteExpanded.has(row.id);
+}
 
 function rangeText(row) {
   if (row.min_kernel_version && row.max_kernel_version) {
@@ -129,25 +140,41 @@ function onSave() {
       <div v-if="!patchStore.loaded" class="patch-empty">补丁状态加载中…</div>
       <div v-else-if="!patchRows.length" class="patch-empty">此版本的 dsh-xlink 未携带任何内置补丁。</div>
       <div v-else class="patch-list">
-        <div v-for="row in patchRows" :key="row.id" class="patch-item">
+        <div v-for="row in patchRows" :key="row.id" class="patch-item"
+             :class="{ 'patch-item-obsolete': row.superseded, 'patch-item-collapsed': isObsoleteCollapsed(row) }">
           <div class="patch-item-main">
             <div class="patch-item-title">
-              <strong>{{ row.name }}</strong>
+              <strong :class="{ 'patch-name-obsolete': row.superseded }">{{ row.name }}</strong>
               <el-tag v-if="row.kind === 'plugin'" size="small" type="success">内置插件</el-tag>
               <el-tag v-else size="small" type="primary">补丁</el-tag>
               <el-tag size="small" type="info" effect="plain">v{{ row.version }}</el-tag>
+              <el-tag v-if="row.superseded && row.superseded_since_kernel_version"
+                       size="small" type="info" effect="plain" class="patch-superseded-tag">
+                已并入官方内核 v{{ row.superseded_since_kernel_version }} 起
+              </el-tag>
               <el-tag :type="stateTag(row.state)" size="small" effect="dark" class="patch-state">
                 {{ row.state_text }}
               </el-tag>
+              <el-button v-if="row.superseded" link size="small" class="patch-toggle"
+                          @click="toggleObsolete(row.id)">
+                <el-icon><component :is="isObsoleteCollapsed(row) ? ArrowDown : ArrowUp" /></el-icon>
+                {{ isObsoleteCollapsed(row) ? '展开查看' : '收起' }}
+              </el-button>
             </div>
-            <p class="muted patch-desc">{{ row.description }}</p>
-            <p class="patch-meta">
-              <span>适用范围：{{ rangeText(row) }}</span>
-              <span v-if="row.applied_at">应用时间：{{ row.applied_at }}</span>
+            <p v-if="isObsoleteCollapsed(row) && row.superseded_since_kernel_version"
+               class="muted patch-desc patch-obsolete-summary">
+              官方内核 v{{ row.superseded_since_kernel_version }} 起已包含本补丁的修复，无需手动应用。
             </p>
-            <p v-if="row.note" class="patch-note">{{ row.note }}</p>
+            <template v-else>
+              <p class="muted patch-desc">{{ row.description }}</p>
+              <p class="patch-meta">
+                <span>适用范围：{{ rangeText(row) }}</span>
+                <span v-if="row.applied_at">应用时间：{{ row.applied_at }}</span>
+              </p>
+              <p v-if="row.note" class="patch-note">{{ row.note }}</p>
+            </template>
           </div>
-          <div class="patch-item-actions">
+          <div v-if="!isObsoleteCollapsed(row)" class="patch-item-actions">
             <el-button
               v-if="primaryAction(row) === 'apply'"
               type="primary"

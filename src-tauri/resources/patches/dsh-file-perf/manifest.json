@@ -6,9 +6,10 @@
       "name": "dsh @ 引用性能修复（file-reference-local + session-reference）",
       "version": "1.1.0",
       "kind": "patch",
-      "description": "优化 @ 补全的两个数据源：file-reference-local 使用缓存索引、并发目录扫描、预计算查询和失效后台刷新，并保留 @./、@.github/ 目录列举；session-reference 复用 workspace 会话头信息与标题投影，完整列表在后台刷新，候选发现时过滤已归档会话。两个载荷按包名保留各自的目录层级。",
+      "description": "已被官方 0.1.2-alpha.2 内核采纳：在该版本及更高版本上设置页会折叠该补丁并禁用应用按钮；旧 rc 内核仍可应用。修复覆盖 @ 补全的两个数据源——file-reference-local 使用缓存索引、并发目录扫描、预计算查询和失效后台刷新，并保留 @./、@.github/ 目录列举；session-reference 复用 workspace 会话头信息与标题投影，完整列表在后台刷新，候选发现时过滤已归档会话。两个载荷按包名保留各自的目录层级。",
       "minKernelVersion": "0.1.1-rc.2",
       "maxKernelVersion": null,
+      "supersededSinceKernelVersion": "0.1.2-alpha.2",
       "files": [
         {
           "mode": "copy",
