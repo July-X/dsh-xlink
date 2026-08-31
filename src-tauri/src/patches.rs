@@ -1798,4 +1798,58 @@ mod tests {
         assert_eq!(fs::read_to_string(&target).unwrap(), "original\n");
         fs::remove_dir_all(&root).unwrap();
     }
+
+    /// PatchRow 必须以 camelCase 输出关键字段（`#[serde(rename_all = "camelCase")]`），
+    /// 否则前端 `row.stateText` / `row.supersededSinceKernelVersion` 之类全部是
+    /// undefined，会导致「已并入官方内核」卡片折叠逻辑与 v-if/v-else 切换全部失效。
+    /// 回归测试：每次改 struct 字段名时必须主动 review 这一行。
+    #[test]
+    fn patch_row_serde_keys_are_camel_case() {
+        let row = PatchRow {
+            id: "x".into(),
+            name: "n".into(),
+            version: "1.0.0".into(),
+            kind: "patch".into(),
+            description: "".into(),
+            min_kernel_version: Some("0.1.1-rc.2".into()),
+            // 必须 Some 才能让 skip_serializing_if 不跳过、JSON 里有键可验。
+            max_kernel_version: Some("0.1.2-alpha.1".into()),
+            superseded_since_kernel_version: Some("0.1.2-alpha.2".into()),
+            superseded: true,
+            state: "not_applied".into(),
+            state_text: "已并入官方内核".into(),
+            note: None,
+            applied_at: None,
+            enabled: false,
+        };
+        let json = serde_json::to_string(&row).expect("PatchRow should serialize");
+        // 必须用驼峰命名，否则 UI 端 v-if / {{ row.stateText }} 等都拿不到值，
+        // 「已并入官方内核」卡片折叠逻辑会沉默失效。
+        for key in [
+            "\"minKernelVersion\"",
+            "\"maxKernelVersion\"",
+            "\"supersededSinceKernelVersion\"",
+            "\"superseded\"",
+            "\"stateText\"",
+            "\"state\"",
+            "\"kind\"",
+        ] {
+            assert!(
+                json.contains(key),
+                "PatchRow JSON missing camelCase key {key}; full={json}"
+            );
+        }
+        // 反例：绝不能输出 snake_case，否则前端 `row.state_text` 等访问全部是 undefined。
+        for bad in [
+            "min_kernel_version\"",
+            "max_kernel_version\"",
+            "superseded_since_kernel_version\"",
+            "state_text\"",
+        ] {
+            assert!(
+                !json.contains(bad),
+                "PatchRow JSON unexpectedly contains snake_case key {bad}; rename_all lost? full={json}"
+            );
+        }
+    }
 }

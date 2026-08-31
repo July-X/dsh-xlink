@@ -57,11 +57,11 @@ function isObsoleteCollapsed(row) {
 }
 
 function rangeText(row) {
-  if (row.min_kernel_version && row.max_kernel_version) {
-    return 'v' + row.min_kernel_version + ' ~ v' + row.max_kernel_version;
+  if (row.minKernelVersion && row.maxKernelVersion) {
+    return 'v' + row.minKernelVersion + ' ~ v' + row.maxKernelVersion;
   }
-  if (row.min_kernel_version) return 'v' + row.min_kernel_version + ' 及以上';
-  if (row.max_kernel_version) return 'v' + row.max_kernel_version + ' 及以下';
+  if (row.minKernelVersion) return 'v' + row.minKernelVersion + ' 及以上';
+  if (row.maxKernelVersion) return 'v' + row.maxKernelVersion + ' 及以下';
   return '任意内核版本';
 }
 
@@ -148,12 +148,12 @@ function onSave() {
               <el-tag v-if="row.kind === 'plugin'" size="small" type="success">内置插件</el-tag>
               <el-tag v-else size="small" type="primary">补丁</el-tag>
               <el-tag size="small" type="info" effect="plain">v{{ row.version }}</el-tag>
-              <el-tag v-if="row.superseded && row.superseded_since_kernel_version"
+              <el-tag v-if="row.superseded && row.supersededSinceKernelVersion"
                        size="small" type="info" effect="plain" class="patch-superseded-tag">
-                已并入官方内核 v{{ row.superseded_since_kernel_version }} 起
+                已并入官方内核 v{{ row.supersededSinceKernelVersion }} 起
               </el-tag>
               <el-tag :type="stateTag(row.state)" size="small" effect="dark" class="patch-state">
-                {{ row.state_text }}
+                {{ row.stateText }}
               </el-tag>
               <el-button v-if="row.superseded" link size="small" class="patch-toggle"
                           @click="toggleObsolete(row.id)">
@@ -161,15 +161,15 @@ function onSave() {
                 {{ isObsoleteCollapsed(row) ? '展开查看' : '收起' }}
               </el-button>
             </div>
-            <p v-if="isObsoleteCollapsed(row) && row.superseded_since_kernel_version"
+            <p v-if="isObsoleteCollapsed(row) && row.supersededSinceKernelVersion"
                class="muted patch-desc patch-obsolete-summary">
-              官方内核 v{{ row.superseded_since_kernel_version }} 起已包含本补丁的修复，无需手动应用。
+              官方内核 v{{ row.supersededSinceKernelVersion }} 起已包含本补丁的修复，无需手动应用。
             </p>
             <template v-else>
               <p class="muted patch-desc">{{ row.description }}</p>
               <p class="patch-meta">
                 <span>适用范围：{{ rangeText(row) }}</span>
-                <span v-if="row.applied_at">应用时间：{{ row.applied_at }}</span>
+                <span v-if="row.appliedAt">应用时间：{{ row.appliedAt }}</span>
               </p>
               <p v-if="row.note" class="patch-note">{{ row.note }}</p>
             </template>
