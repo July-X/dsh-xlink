@@ -105,7 +105,8 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
    - `replace`：目标不存在或搜索串未命中 → `required` 时中止，否则跳过；命中 →
      先备份原文件，再原子写回替换后的内容。
    - 任何已有备份残留（上一次应用未正常撤销）都会中止并提示先撤销。
-3. 每个被修改/新增的文件记录 `hadOriginal`、备份相对路径、修改后内容 SHA-256。
+3. 每个被修改/新增的文件记录 `hadOriginal`、备份相对路径、修改后内容 SHA-256；应用记录同时保存
+   `patchVersion`。旧版记录缺少该字段时按过期记录处理，先撤销后才能重新应用当前定义。
 4. 应用记录原子写回 `state.json`（`process::atomic_write`）。
 
 ## 撤销流程（patch_revert）
@@ -131,9 +132,9 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
 | `no_kernel` | 尚未安装/激活内核，无法应用。 |
 | `incompatible` | 当前内核版本不在补丁的适用范围内。 |
 | `not_applied` | 未应用（或已应用到其他版本，附注说明）。 |
-| `applied` | 已应用，且磁盘文件与记录哈希一致。 |
+| `applied` | 已应用，应用记录的 `patchVersion` 与当前清单一致，且磁盘文件与记录哈希一致。 |
 | `partial` | 已应用但有文件被跳过（非必需文件未命中）。 |
-| `dirty` | 记录存在但磁盘文件缺失/哈希不一致（内核可能被重装或手动修改），提示重新应用或撤销。 |
+| `dirty` | 记录存在但补丁版本不一致，或磁盘文件缺失/哈希不一致（内核可能被重装、补丁资源已更新或文件被手动修改），提示先撤销再重新应用。 |
 
 ## 开发流程与计划
 
@@ -151,8 +152,8 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
    要求未应用时失败、应用后全绿——否则脚本无法证明补丁真的生效。
 4. **发布**：补丁资源随 app bundle 内置（tauri.conf.json 已配置 `resources`），
    无需改动 `.github/workflows/desktop-release.yml`；上架新补丁 = 改 `resources/patches/`
-   并随版本发布。替换补丁文件（同 `id`）后，已应用过旧版的内核会因哈希不一致呈现
-   `dirty`，由用户选择重新应用或撤销。
+   并随版本发布。替换补丁文件（同 `id`）时必须递增补丁 `version`；已应用过旧版或旧状态
+   记录的内核会呈现 `dirty`，由用户先撤销旧记录，再重新应用当前版本。
 
 ### 计划拆解
 
@@ -162,6 +163,7 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
       的端到端验证）。v1.1.0 起同时覆盖 `dsh-file-reference-local` 与
       `dsh-session-reference` 两个包。此前用于验证机制的示例补丁（`xlink-hello` /
       `xlink-stub-annotate`）已移除，机制能力由单元测试与 `dsh-file-perf` 覆盖。
+- [x] 第二个真实补丁：`dsh-session-perf` v1.0.1（JSONL 持久层会话 header 枚举的短 TTL 缓存、并发扫描合并、生命周期失效和旧载荷状态识别）。
 - [ ] 二期：补丁版本升级（`update` 命令：备份旧应用记录 → 应用新版本，无需先撤销）；
       按内核版本的应用视图（切换内核后对每个已装版本单独管理）。
 - [ ] 三期：补丁更新渠道（从发行版拉取最新补丁清单，脱离「随 app 版本捆绑」的节奏）；
@@ -197,6 +199,33 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
     记录，再从设置页重新应用，补丁系统会用原备份恢复文件。
   - 本补丁改善两个候选源，但客户端仍会同时等待两者；真实工作区的呼出耗时还需要在
     应用后的目标内核上复测。
+
+## 第二个内置补丁：dsh-session-perf
+
+`src-tauri/resources/patches/dsh-session-perf/`（使用 `copy + expectSha256` 注入共享缓存载荷）：
+
+- 目标：`node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js` 的
+  `listArtifacts()`；该入口同时服务 host `session.list`、workspace 启动 header bootstrap、
+  `session-reference` 后台刷新和 `listSnapshots()` 的 artifact 枚举。
+- 根因：每个调用方都重新遍历 project/session 目录，并读取每个 Zstandard artifact 的首帧
+  header。这个路径只读 header，但在启动期间会被多个服务重复触发。
+- 行为：同一个 persistence 实例在 1000 ms 内复用 header/path 结果；相同 revision 的
+  并发调用共享一个 in-flight 扫描；单个项目内的 header 探测最多 16 路并发且保留目录顺序；
+  `session/created` 和 `session/disposed` 立即清除缓存；
+  带 `AbortSignal` 的调用只取消自己的等待，不会中断其它调用共享的扫描。返回值为浅拷贝，
+  不把调用方对数组或 header 的修改写回缓存。
+- 边界：不缓存完整会话日志，不改变 `session.inspect()`、`readFrom()` 或
+  `session.history` 的解压、校验、分页和错误语义。外部进程直接改写 `~/.dsh/sessions` 时，
+  最多有一个 TTL 的最终一致性窗口。
+- 来源：目标文件来自 npm `@deepseek-ai/dsh-session-persistence-jsonl@0.1.1-rc.2`，
+  原始 SHA-256 为 `8b6ebc45…8d97f3`，补丁后 SHA-256 为 `9ed3fe3c…0a7f96e`。载荷按
+  包名保存在 `files/dsh-session-persistence-jsonl/index.js`，manifest 的版本范围和
+  `expectSha256` 只允许覆盖已核验的原始文件；补丁系统仍按文件级备份、原子写入和可撤销规则处理。
+- 验证：`npm run test:session-perf` 在临时模块树中检查清单、语法、并发合并、TTL 命中、
+  事件失效、调用方拷贝、缺失 artifact / 损坏 header 的 fail-soft、失败重试和 abort 语义；应用到当前内核后执行
+  `node scripts/verify-dsh-session-perf.mjs --require-applied` 检查目标状态，再用真实
+  `session.list` 和选中历史会话的 `session.history` 分开复测。当前载荷只声明适用于
+  `0.1.1-rc.2`，其它内核版本不能直接套用。
 
 ## 已知限制（初版）
 

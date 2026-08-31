@@ -125,6 +125,10 @@ pub struct AppliedPatch {
     pub kernel_version: String,
     #[serde(rename = "appliedAt")]
     pub applied_at: String,
+    /// 应用时使用的补丁定义版本。旧版 state.json 没有该字段时按过期记录处理，
+    /// 避免资源载荷更新后仍把旧文件误报为「已应用」。
+    #[serde(rename = "patchVersion", default)]
+    pub patch_version: Option<String>,
     /// 应用过程中跳过 / 警告的说明（非必需文件未命中、备份丢失等）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
@@ -557,6 +561,7 @@ pub fn apply(
         id: def.id.clone(),
         kernel_version: kernel_version.clone(),
         applied_at: crate::process::current_date_string(),
+        patch_version: Some(def.version.clone()),
         notes: Vec::new(),
         files: Vec::new(),
     };
@@ -1009,24 +1014,43 @@ fn row_for(data_dir: &Path, def: &PatchDef, active: Option<&str>) -> PatchRow {
             row.enabled = true;
         }
         Some(record) => {
-            let (state_code, problems) = disk_state(data_dir, record);
+            let patch_version_matches =
+                record.patch_version.as_deref() == Some(def.version.as_str());
+            let (state_code, mut problems) = disk_state(data_dir, record);
+            if !patch_version_matches {
+                problems.insert(
+                    0,
+                    format!(
+                        "记录中的补丁版本 {} 与当前版本 {} 不一致",
+                        record.patch_version.as_deref().unwrap_or("未知"),
+                        def.version
+                    ),
+                );
+            }
             row.applied_at = Some(record.applied_at.clone());
-            if state_code == "applied" && record.files.is_empty() && !record.notes.is_empty() {
+            if patch_version_matches
+                && state_code == "applied"
+                && record.files.is_empty()
+                && !record.notes.is_empty()
+            {
                 // 所有文件都因未命中目标被跳过：补丁记录存在但没有实际修改。
                 row.state = "partial".into();
                 row.state_text = "已应用（文件未命中）".into();
                 row.note = Some(record.notes.join("；"));
                 row.enabled = true;
-            } else if state_code == "applied" {
+            } else if patch_version_matches && state_code == "applied" {
                 row.state = "applied".into();
                 row.state_text = "已应用".into();
                 row.note = note_from_elsewhere;
                 row.enabled = true;
             } else {
                 row.state = "dirty".into();
-                row.state_text = "文件已被改动".into();
-                row.note =
-                    Some(problems.join("；") + "（内核可能被重装或手动修改，可重新应用或撤销）");
+                row.state_text = if patch_version_matches {
+                    "文件已被改动".into()
+                } else {
+                    "补丁版本已更新".into()
+                };
+                row.note = Some(problems.join("；") + "（请先撤销旧补丁记录，再重新应用当前版本）");
                 row.enabled = true;
             }
         }
@@ -1482,6 +1506,70 @@ mod tests {
             .find(|r| r.id == "hello-copy")
             .unwrap();
         assert_eq!(row.state, "dirty");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn status_marks_patch_definition_update_as_dirty() {
+        let root = temp_root("patch-version");
+        let data = root.join("data");
+        setup(&data, "0.1.2");
+        let res = make_resource_root(&root);
+        let patches = load_patches(&res).unwrap();
+
+        apply(&data, &patches, "hello-copy").unwrap();
+        let mut updated = patches.clone();
+        updated
+            .iter_mut()
+            .find(|(def, _)| def.id == "hello-copy")
+            .unwrap()
+            .0
+            .version = "1.1.0".into();
+
+        let row = status(&data, &updated)
+            .patches
+            .iter()
+            .find(|r| r.id == "hello-copy")
+            .unwrap()
+            .clone();
+        assert_eq!(row.state, "dirty");
+        assert_eq!(row.state_text, "补丁版本已更新");
+        assert!(row.note.unwrap().contains("1.0.0"));
+
+        // A stale record remains revertible so the user can install the new definition.
+        revert(&data, &updated, "hello-copy").unwrap();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn legacy_patch_record_without_version_is_dirty() {
+        let root = temp_root("legacy-version");
+        let data = root.join("data");
+        setup(&data, "0.1.2");
+        let res = make_resource_root(&root);
+        let patches = load_patches(&res).unwrap();
+
+        apply(&data, &patches, "hello-copy").unwrap();
+        let state_path = state_file(&data);
+        let mut state: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
+        state["applied"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("patchVersion");
+        fs::write(&state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+
+        let row = status(&data, &patches)
+            .patches
+            .iter()
+            .find(|r| r.id == "hello-copy")
+            .unwrap()
+            .clone();
+        assert_eq!(row.state, "dirty");
+        assert_eq!(row.state_text, "补丁版本已更新");
+        assert!(row.note.unwrap().contains("未知"));
+
+        revert(&data, &patches, "hello-copy").unwrap();
         fs::remove_dir_all(&root).unwrap();
     }
 

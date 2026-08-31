@@ -1,6 +1,6 @@
 {
   "name": "dsh-xlink",
-  "version": "0.1.2-rc.8",
+  "version": "0.1.2-rc.9",
   "private": true,
   "description": "DeepSeek Harness 桌面外壳：内嵌管理面板 + 内核版本管理与更新",
   "repository": {
@@ -23,6 +23,7 @@
     "build:ui": "vite build",
     "test:release-assets": "node --test scripts/normalize-release-assets.test.mjs",
     "test:release-manifest": "node --test scripts/generate-updater-manifest.test.mjs",
+    "test:session-perf": "node scripts/verify-dsh-session-perf.mjs",
     "test:ui": "node --test ui/test/officialChatTabs.test.js ui/test/statusRefresh.test.js ui/test/harnessHealth.test.js ui/test/loading.test.js ui/test/progress.test.js ui/test/updateChecks.test.js ui/test/installLatest.test.js ui/test/kernelSwitch.test.js",
     "build:mac-intel": "tauri build --target x86_64-apple-darwin",
     "build:win": "tauri build --target x86_64-pc-windows-msvc"
