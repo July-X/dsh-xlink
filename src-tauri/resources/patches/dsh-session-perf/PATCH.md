@@ -1,13 +1,32 @@
-# dsh-session-perf v1.1.0：dsh 历史会话列表加载提速
+# dsh-session-perf v1.2.0：dsh 历史会话列表加载提速（锚定官方 0.1.2-alpha.3）
 
 这个补丁优化 `session.list` 以及所有复用持久层 artifact 列表的调用方。它覆盖
 `@deepseek-ai/dsh-session-persistence-jsonl` 的 `listArtifacts()`，将短时间内重复的
 Zstandard header 扫描合并为一次共享读取，并把结果缓存 1 秒。
 
-v1.1.0 基于 `@deepseek-ai/dsh-session-persistence-jsonl@0.1.2-alpha.2` 重做：在 0.1.2-alpha.2
-的新版 `listArtifacts` 上额外加了 16 路并发的 directory 探测（`mapSessionArtifactDirs`），
-保留目录顺序；其它缓存 / TTL / 事件失效 / 共享 in-flight / 浅拷贝 / AbortSignal 边界与
-v1.0.1 保持一致。
+v1.2.0 锚定 `@deepseek-ai/dsh-session-persistence-jsonl@0.1.2-alpha.3` 重新收录：官方
+alpha.2 与 alpha.3 的 `lib/index.js` 逐字节相同（npm registry 实测，SHA-256 均为
+d5ae2c7d…），缓存机制与 v1.1.0 完全一致——16 路并发 directory 探测
+（`mapSessionArtifactDirs`）+ 共享 in-flight + 1s TTL + 事件失效 + 浅拷贝，
+仅更新版本标注、`minKernelVersion` 锚定为 `0.1.2-alpha.3` 并解除 superseded。
+
+## 状态：官方未采纳枚举缓存，本补丁继续收录
+
+官方 0.1.2-alpha.3 对会话读取做了结构性重构，但没有实现本补丁的「持久层扫描缓存」：
+
+- 官方新增 `dsh-session-query` 统一会话枚举、`dsh-session-projection-cache` 提供
+  `sessionListMetadata` / `projectedTitle` 投影——**标题读取不再解压每个日志**
+  （这是原 0.1.1-rc.2 时代最贵的路径，也是 file-perf 的 session-reference 部分）；
+- 但 `listArtifacts` 枚举层保持原样：每次 `list()` / `listSnapshots()` 仍全量遍历
+  目录并逐文件解压 header 首帧，无 TTL、无共享 in-flight、无并发探测。本机实测官方
+  alpha.3：并发两次 `list` = 2 次遍历、10 次 header 解压；`listSnapshots` 再 +1 次。
+- `session.list`、`session-reference.listCandidates`（按键级）、workspace 启动 init
+  仍各自触发全量枚举；只是标题渲染改走内存投影，不会再为取标题解压整段日志。
+
+因此本补丁在 alpha.3 上仍然有效，v1.2.0 起重新在设置页正常提供「应用/撤销」
+（不再折叠灰度）：`minKernelVersion: 0.1.2-alpha.3`、`maxKernelVersion: null`。
+alpha.2 及更早内核因服务范围锚定显示「不适用当前内核」；如确需旧内核支持，
+可回退 v1.1.0 载荷（目标文件同哈希，载荷互不冲突）。
 
 ## 目标
 
@@ -42,23 +61,25 @@ node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js
 
 ## 来源与安全闸
 
-载荷基于 npm 包 `@deepseek-ai/dsh-session-persistence-jsonl@0.1.2-alpha.2`，MIT © 2026
-DeepSeek。当前目标文件原始 SHA-256：
+载荷基于 npm 包 `@deepseek-ai/dsh-session-persistence-jsonl@0.1.2-alpha.3`（官方
+alpha.2 与 alpha.3 的 `lib/index.js` 逐字节相同），MIT © 2026 DeepSeek。
+当前目标文件原始 SHA-256：
 
 ```text
 d5ae2c7d6f6fbca6b2d4d8c6fc7ffb1342d4ed6484ec9cd309ee5c7bf88e9a00
 ```
 
-根据当前原始 dist 文件加入缓存实现生成的补丁后 SHA-256：
+根据当前原始 dist 文件加入缓存实现生成的补丁后 SHA-256（v1.2.0）：
 
 ```text
-f9985512945738f32a29a6c34a3cda2e64ec1d051482a371c634e3fadaffb6ff
+29d2501e9477633e0d1829edd554078329fdf3959bf0fff50672159bdeda6299
 ```
 
-这是补丁版本 `1.1.0`，是一个带 `expectSha256` 的 `copy` 补丁。载荷保存在
-`files/dsh-session-persistence-jsonl/index.js`，manifest 的 `expectSha256` 与 0.1.2-alpha.2
-dist 一致；`minKernelVersion` 为 `0.1.1-rc.2`、`maxKernelVersion` 为 `null`，允许 0.1.2-alpha.2
-直接应用。内核版本或 dist 内容漂移时会明确失败，不会覆盖未知文件。补丁系统在写入前备份原文件，
+这是补丁版本 `1.2.0`，是一个带 `expectSha256` 的 `copy` 补丁。载荷保存在
+`files/dsh-session-persistence-jsonl/index.js`，manifest 的 `expectSha256` 与
+0.1.2-alpha.3 dist（== 0.1.2-alpha.2 dist）一致；`minKernelVersion` 为
+`0.1.2-alpha.3`、`maxKernelVersion` 为 `null`（不再有 superseded 标记）。
+内核版本或 dist 内容漂移时会明确失败，不会覆盖未知文件。补丁系统在写入前备份原文件，
 并以原子写入方式落盘。应用前必须关闭工作台。
 
 ## 验证
@@ -97,6 +118,7 @@ node scripts/verify-dsh-session-perf.mjs --require-applied
   session projection cache 负责；
 - 内核重新安装或 dist 文件漂移后，补丁状态会变为 `dirty`，应通过设置页撤销旧记录或
   重新应用，不要直接覆盖内核文件；
-- `expectSha256` 与 0.1.2-alpha.2 dist 一致；v1.0.1 之前的载荷（0.1.1-rc.2）已被
-  v1.1.0 覆盖，verify 脚本会识别旧版应用记录并提示先撤销。
+- `expectSha256` 与 0.1.2-alpha.2 / 0.1.2-alpha.3 dist 一致；v1.1.0 及更早载荷
+  （0.1.1-rc.2 / 0.1.2-alpha.2 目标）已被 v1.2.0 覆盖，verify 脚本会识别旧版
+  应用记录并提示先撤销。
 - 16 路并发探测对小数据集（<20 个 session）收益有限，但防止大项目首次扫描成为瓶颈。
