@@ -19,16 +19,16 @@ import { spawnSync } from 'node:child_process';
 
 const DSH_HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh');
 const PATCH_ID = 'dsh-session-perf';
-const PATCH_VERSION = '1.1.0';
-const MIN_KERNEL_VERSION = '0.1.1-rc.2';
+const PATCH_VERSION = '1.2.0';
+const MIN_KERNEL_VERSION = '0.1.2-alpha.3';
 const TARGET = 'node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js';
 const MANIFEST = resolve('src-tauri/resources/patches/dsh-session-perf/manifest.json');
-// npm @deepseek-ai/dsh-session-persistence-jsonl@0.1.2-alpha.2 原始 dist
+// npm @deepseek-ai/dsh-session-persistence-jsonl@0.1.2-alpha.2 / 0.1.2-alpha.3 原始 dist（两版本逐字节相同）
 const ORIGINAL_SHA256 = 'd5ae2c7d6f6fbca6b2d4d8c6fc7ffb1342d4ed6484ec9cd309ee5c7bf88e9a00';
-// v1.0.1 的 patched 载荷（针对 0.1.1-rc.2），保留以识别旧版应用记录
-const LEGACY_PATCHED_SHA256 = '9ed3fe3cfa3890e8559efd9369efac9866c19c3737c3328b6355c338f0a7f96e';
-// v1.1.0 的 patched 载荷（适配 0.1.2-alpha.2）
-const PATCHED_SHA256 = 'f9985512945738f32a29a6c34a3cda2e64ec1d051482a371c634e3fadaffb6ff';
+// 旧版 patched 载荷（v1.0.1 针对 0.1.1-rc.2；v1.1.0 针对 0.1.2-alpha.2），保留以识别旧版应用记录
+const LEGACY_PATCHED_SHA256 = ['9ed3fe3cfa3890e8559efd9369efac9866c19c3737c3328b6355c338f0a7f96e', 'f9985512945738f32a29a6c34a3cda2e64ec1d051482a371c634e3fadaffb6ff'];
+// v1.2.0 的 patched 载荷（锚定 0.1.2-alpha.3）
+const PATCHED_SHA256 = '29d2501e9477633e0d1829edd554078329fdf3959bf0fff50672159bdeda6299';
 const CACHE_MARKER = 'const SESSION_ARTIFACT_LIST_CACHE_TTL_MS = 1000;';
 const requireApplied = process.argv.includes('--require-applied');
 const positional = process.argv.slice(2).find((arg) => !arg.startsWith('--'));
@@ -66,7 +66,8 @@ async function loadPatch(kernelRoot) {
   if (patch === undefined) throw new Error('manifest 中缺少 dsh-session-perf');
   check(`补丁版本为 ${PATCH_VERSION}`, patch.version === PATCH_VERSION);
   check(`补丁最低支持内核 ${MIN_KERNEL_VERSION}`, patch.minKernelVersion === MIN_KERNEL_VERSION);
-  check('补丁不限定最高内核版本（v1.1.0 适配 0.1.2-alpha.2）', patch.maxKernelVersion === null);
+  check('补丁不再标记 superseded（v1.2.0 锚定 0.1.2-alpha.3 重新收录）', patch.supersededSinceKernelVersion === undefined);
+  check('补丁不限定最高内核版本（v1.2.0 锚定 0.1.2-alpha.3）', patch.maxKernelVersion === null);
   check('补丁只修改一个 persistence 目标', patch.files?.length === 1 && patch.files[0]?.mode === 'copy' && patch.files[0]?.to === TARGET);
   const file = patch.files?.[0];
   if (file === undefined || file.mode !== 'copy' || typeof file.from !== 'string') throw new Error('manifest 中缺少 persistence copy 文件');
@@ -78,7 +79,7 @@ async function loadPatch(kernelRoot) {
   const targetSha = sha256(originalSource);
   const payloadSha = sha256(payloadSource);
   const isPatched = targetSha === PATCHED_SHA256;
-  const isLegacyPatched = targetSha === LEGACY_PATCHED_SHA256;
+  const isLegacyPatched = LEGACY_PATCHED_SHA256.includes(targetSha);
   check('manifest expectSha256 与原始 dist 一致', file.expectSha256 === ORIGINAL_SHA256);
   check('补丁载荷哈希与记录一致', payloadSha === PATCHED_SHA256, `sha256=${payloadSha}`);
   check(
@@ -87,7 +88,7 @@ async function loadPatch(kernelRoot) {
     `sha256=${targetSha}`
   );
   if (isLegacyPatched) {
-    check('目标文件不是旧版载荷', false, '检测到 v1.0.0 载荷，请先撤销旧补丁记录，再应用当前版本');
+    check('目标文件不是旧版载荷', false, '检测到 v1.0.1 / v1.1.0 旧载荷，请先撤销旧补丁记录，再应用当前版本');
   }
   if (requireApplied) check('目标文件已应用补丁', isPatched);
 

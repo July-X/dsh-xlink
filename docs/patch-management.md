@@ -164,6 +164,12 @@ UI 表现（`ui/src/components/SettingsPanel.vue`）：
 但 `expectSha256` 仍以原 0.1.1-rc.2 dist 哈希做安全闸——目标文件与声明哈希不一致时
 拒绝应用并提示「内核版本可能已升级」。
 
+`dsh-session-perf` 曾短暂标记过 `supersededSinceKernelVersion: 0.1.2-alpha.3`（误判官方
+alpha.3 重写了目标文件）；经 npm registry tarball 实测，官方 alpha.2 与 alpha.3 的
+`dsh-session-persistence-jsonl/lib/index.js` 逐字节相同（SHA-256 均为 d5ae2c7d…），
+官方并没有实现持久层枚举缓存（并发两次 `list` 仍全量遍历两次），因此 v1.2.0 锚定
+alpha.3 重新收录并移除 superseded。当前仅 `dsh-file-perf` 在「设置 → 内置补丁」页
+呈现灰度（不可应用）状态。
 ## 开发流程与计划
 
 新增/修改一个补丁的完整流程：
@@ -191,7 +197,7 @@ UI 表现（`ui/src/components/SettingsPanel.vue`）：
       的端到端验证）。v1.1.0 起同时覆盖 `dsh-file-reference-local` 与
       `dsh-session-reference` 两个包。此前用于验证机制的示例补丁（`xlink-hello` /
       `xlink-stub-annotate`）已移除，机制能力由单元测试与 `dsh-file-perf` 覆盖。
-- [x] 第二个真实补丁：`dsh-session-perf` v1.0.1（JSONL 持久层会话 header 枚举的短 TTL 缓存、并发扫描合并、生命周期失效和旧载荷状态识别）。
+- [x] 第二个真实补丁：`dsh-session-perf` v1.2.0（JSONL 持久层会话 header 枚举的短 TTL 缓存、并发扫描合并、生命周期失效和旧载荷状态识别；锚定官方 0.1.2-alpha.3 重新收录——官方未实现枚举缓存，alpha.2/alpha.3 官方 lib 逐字节相同）。
 - [ ] 二期：补丁版本升级（`update` 命令：备份旧应用记录 → 应用新版本，无需先撤销）；
       按内核版本的应用视图（切换内核后对每个已装版本单独管理）。
 - [ ] 三期：补丁更新渠道（从发行版拉取最新补丁清单，脱离「随 app 版本捆绑」的节奏）；
@@ -252,8 +258,9 @@ UI 表现（`ui/src/components/SettingsPanel.vue`）：
 - 验证：`npm run test:session-perf` 在临时模块树中检查清单、语法、并发合并、TTL 命中、
   事件失效、调用方拷贝、缺失 artifact / 损坏 header 的 fail-soft、失败重试和 abort 语义；应用到当前内核后执行
   `node scripts/verify-dsh-session-perf.mjs --require-applied` 检查目标状态，再用真实
-  `session.list` 和选中历史会话的 `session.history` 分开复测。当前载荷只声明适用于
-  `0.1.1-rc.2`，其它内核版本不能直接套用。
+  `session.list` 和选中历史会话的 `session.history` 分开复测。v1.2.0 锚定
+  `0.1.2-alpha.3`（`minKernelVersion: 0.1.2-alpha.3`，官方 alpha.2/alpha.3 的
+  目标文件逐字节相同），设置页正常提供「应用/撤销」。
 
 ## 已知限制（初版）
 

@@ -1494,7 +1494,7 @@ async function mapSessionArtifactDirs(dirs, worker) {
     return results;
 }
 /**
- * Original listArtifacts body from npm @deepseek-ai/dsh-session-persistence-jsonl@0.1.2-alpha.2,
+ * Original listArtifacts body from npm @deepseek-ai/dsh-session-persistence-jsonl@0.1.2-alpha.2 / 0.1.2-alpha.3 (official dist byte-identical, sha d5ae2c7d...),
  * extracted so listSessionArtifacts() below can wrap it with a shared cache without modifying
  * the surrounding class definition (which would break tree-shaking / dts emission).
  */
