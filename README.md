@@ -47,7 +47,7 @@
 - 「打开官方对话」：管理面板「概览」页一键拉起独立的官方对话窗口，按 `OFFICIAL_CHAT_TABS` 展示 DeepSeek、千问、MiniMax 三个页签，默认只加载 DeepSeek，其他页签首次选择时才创建并保留本窗口状态，使用原生 Edge UA、可持久化登录的专属 user-data 目录与 `OFFICIAL_CHAT_BROWSER_ARGS` 浏览器开关（隐藏 `navigator.webdriver`、关闭 SmartScreen 提醒与 Edge 专属 UI）让官方站点的环境检查把它视为普通浏览器；本地 `official-chat-strip` 页签栏 webview 注入 `pullstring-launcher.js`（拉绳属于整个官方对话窗口的 chrome，由页签栏 webview 承载），内容子 webview 注入 `titlebar-pulse.js` → `chat-fingerprint.js`（钉住 `navigator.webdriver = false` 并删除 `__TAURI_*` 嵌入式全局）（重复点击复用现有窗口并聚焦；窗口已开时按钮文案翻为「关闭官方对话」并触发 `close_official_chat`，OS 关闭按钮正常工作）
 - 更新菜单：列出 npm registry [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 的所有发布版本（含预发布标记），安装、切换活动版本、删除本地版本
 - 内核安装通过 pnpm 执行（`node-linker=hoisted` 保持扁平 `node_modules`，内容寻址存储让重复安装更快），安装过程逐行流式显示在进度面板中，完整日志落盘 `~/.dsh/desktop/logs/<kind>-install-<版本>-<日期>.log`（dev 壳则是 `~/.dsh/desktop-dev/logs/dev-install-<版本>-<日期>.log`，`<日期>` 为本地日期）；下载先写临时文件，成功后才发布，npm 包由外壳进行路径受限、禁止链接和有展开大小上限的 Rust 解包，无需额外安装系统 `tar`
-- Node.js 自动检测与手动指定（要求 `^22.19 || >=24`，与 dsh 的 engines 一致；自动发现 nvm（macOS/Linux `~/.nvm/versions/node/<v>/bin/node` 跟随 `alias/default` 链，Windows `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`），免去 GUI 启动看不到 nvm PATH 时改手动路径的步骤；检测为空时按「完全没有 Node」与「Node 版本太老」分别给出可操作的安装路径建议）
+- Node.js 自动检测与手动指定（要求 `^22.19 || >=24`，与 dsh 的 engines 一致；自动发现 nvm（macOS/Linux `~/.nvm/versions/node/<v>/bin/node` 跟随 `alias/default` 链，Windows `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`），免去 GUI 启动看不到 nvm PATH 时改手动路径的步骤；检测为空时弹窗询问是否「帮我安装」——确认后自动下载官方 Node.js（v24 LTS，SHA-256 校验）到数据目录 `tools/node/`，概览页 Node 行随时可再次触发；已安装的托管运行时优先于环境检测，显式配置的 node 路径仍最高优先）
 - pnpm 路径可配置（默认取 node 同目录或 PATH）
 - 端口可配置（默认 3080）
 - 内核运行日志查看；应用退出时自动回收内核子进程
@@ -119,7 +119,7 @@ npm run build:win         # x86_64-pc-windows-msvc
 ## 使用
 
 1. 启动桌面应用，打开管理面板。
-2. **设置**：确认已检测到满足要求的 Node.js（不满足时安装 Node 22.19+ 或手动指定路径；通过 nvm 管理的 Node 会被自动发现——macOS/Linux 读 `~/.nvm/alias/default` 与 `versions/node/*/bin/node`，Windows 读 `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`）。
+2. **设置**：确认已检测到满足要求的 Node.js（不满足时点击「帮我安装」即可自动下载官方 Node.js 到数据目录，或手动安装 Node 22.19+、手动指定路径；通过 nvm 管理的 Node 会被自动发现——macOS/Linux 读 `~/.nvm/alias/default` 与 `versions/node/*/bin/node`，Windows 读 `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`）。
 3. **内核更新**：应用启动时会扫描并列出本地已安装版本，进入「内核版本」页即可在左侧备用版本中切换；只有工作台已停止时才能切换，工作台启动或运行期间请先在「概览」页点击「关闭工作台」；点击「检查更新」只从 npm 获取官方发布列表，再选择未安装的版本点「安装」。
    - 安装通过 pnpm 执行，进度面板会实时滚动 pnpm 日志；pnpm 未安装时按提示 `npm install -g pnpm` 或在设置中指定 pnpm 路径。
    - 首次安装会自动成为活动版本并自动启动内核。

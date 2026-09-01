@@ -12,6 +12,7 @@ mod error;
 mod guard;
 mod kernel;
 mod node;
+mod node_install;
 mod patches;
 mod plugins;
 mod process;
@@ -104,6 +105,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::detect_node,
+            commands::install_node,
             commands::save_settings,
             commands::get_kernel_log,
             commands::list_log_files,

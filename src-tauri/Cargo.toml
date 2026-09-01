@@ -31,6 +31,8 @@ thiserror = "2"
 tokio = { version = "1", features = ["time"] }
 flate2 = "1"
 tar = "0.4"
+# Windows 上解压官方 node 发行 zip（node.exe + npm 树）；沿用严格路径校验。
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # `time` 支撑 `process::RotatingLog` 的本地日期日志轮转。该 crate 已作为
 # 传递依赖存在于 lockfile 中；直接声明它可避免手写 libc::localtime_r 与
 # GetLocalTime 的兼容层，并让文件名日期戳与用户的日历日保持一致——

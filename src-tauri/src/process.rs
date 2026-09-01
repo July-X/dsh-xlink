@@ -366,7 +366,7 @@ enum LogMode {
 ///   并打开新文件，每个日期最多保留 `KERNEL_LOG_BACKUPS + 1` 代。
 /// - `Fixed` 模式完全跳过日期与构建类型轮转，使用调用方的精确路径；
 ///   大小上限仍会触发轮转。
-struct RotatingLog {
+pub(crate) struct RotatingLog {
     mode: LogMode,
     current_date: String,
     current_path: PathBuf,
@@ -375,7 +375,7 @@ struct RotatingLog {
 }
 
 impl RotatingLog {
-    fn new(logs_dir: &Path, spec: LogSpec) -> io::Result<Self> {
+    pub(crate) fn new(logs_dir: &Path, spec: LogSpec) -> io::Result<Self> {
         fs::create_dir_all(logs_dir)?;
         let mut log = Self {
             mode: LogMode::Dated {
@@ -460,7 +460,7 @@ impl RotatingLog {
         }
     }
 
-    fn write_line(&mut self, line: &str) -> io::Result<()> {
+    pub(crate) fn write_line(&mut self, line: &str) -> io::Result<()> {
         // 先处理日期滚动（仅 dated 模式）：跨午夜运行的内核必须
         // 先进入新一天的文件，再做大小检查，以保证午夜前的数据
         // 落在正确的文件里。Fixed 模式从不按日期轮转。

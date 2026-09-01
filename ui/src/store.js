@@ -53,6 +53,7 @@ function applyStatus(view, requestSeq) {
   lastRunning = view.kernel.running;
   store.lastIncident = view.last_incident || null;
   applyBuildClass();
+  maybePromptNodeInstall();
   return true;
 }
 
@@ -156,6 +157,52 @@ export async function pollStatus() {
   } catch {
     // 静默：下个周期自动重试。
   }
+}
+
+// --- Node.js 自动安装 -----------------------------------------------------
+// 检测到没有可用的 Node.js 时弹窗询问是否自动安装（官方二进制下载到
+// 数据目录，不扩大安装包体积）。「不需要」只静默本次会话——外壳重启后
+// 轮询会再次提示；安装失败后冷却 60 秒再提示，避免 2.5s 轮询刷屏。
+let nodePromptDismissed = false;
+let nodePromptVisible = false;
+let nodeNextPromptAt = 0;
+const NODE_PROMPT_COOLDOWN_MS = 60 * 1000;
+
+export function installNode() {
+  return withProgress(
+    {
+      cmd: 'install_node',
+      start: '正在自动安装 Node.js（需联网下载官方二进制）…',
+      done: 'Node.js 已安装',
+      fail: 'Node.js 自动安装失败',
+      failToast: 'Node.js 自动安装失败，详情见进度窗口与日志',
+    },
+    (channel) => ({ onEvent: channel })
+  );
+}
+
+async function maybePromptNodeInstall() {
+  const view = store.view;
+  if (!view || !view.node || view.node.ok) return;
+  if (nodePromptVisible || nodePromptDismissed) return;
+  if (Date.now() < nodeNextPromptAt) return;
+  if (store.starting || progress.visible || isExclusiveBusy()) return;
+  nodePromptVisible = true;
+  const reason = view.node.reason ? '（' + view.node.reason + '）' : '';
+  const want = await confirmDialog(
+    '需要 Node.js 环境',
+    '未检测到满足 dsh 要求（^22.19 || >=24）的 Node.js。' + reason +
+      '\n是否自动下载并安装官方 Node.js（需联网，安装到本机数据目录）？',
+    '帮我安装',
+    '不需要'
+  );
+  nodePromptVisible = false;
+  if (!want) {
+    nodePromptDismissed = true;
+    return;
+  }
+  const ok = await installNode();
+  if (!ok) nodeNextPromptAt = Date.now() + NODE_PROMPT_COOLDOWN_MS;
 }
 
 // --- 内核版本 ---------------------------------------------------------------
