@@ -701,11 +701,12 @@ fn bounded_health_text(
 /// 打开 dsh web 工作台窗口。原生标题栏保持 macOS / Windows / Linux 标
 /// 准的窗口装饰，而不是用 Overlay，这样系统级的拖动 / 调整大小 / 双
 /// 击最大化可以稳定工作（通过 `start_dragging` IPC 的 WKWebView 拖动
-/// 区域路径在 Tauri 2.11.5 上表现不稳）。标题栏脉冲由 Shell 端而非内
+/// 区域路径在 Tauri 2.11.5 上表现不稳）。标题栏静态品牌条带由 Shell 端而非内
 /// 核的 `packages/client/web/src/base.css` 拥有，通过
-/// `initialization_script(titlebar-pulse.js)` 注入；脚本会附上一个带
-/// `!important` 规则的 `<style>` 节点，使得无论内核版本是什么、也不
-/// 论本脚本和工作台自身样式表的加载顺序，Shell 的覆盖都能胜出。第二个
+/// `initialization_script(titlebar-pulse.js)` 注入；脚本只创建静态 `<style>` 节点，
+/// 不运行常驻 CSS 动画，避免流式会话更新时 WKWebView 持续布局和合成。规则带有
+/// `!important`，使得无论内核版本是什么、也不论本脚本和工作台自身样式表的加载顺序，
+/// Shell 的覆盖都能胜出。第二个
 /// 注入脚本（`pullstring-launcher.js`）渲染一个浮在工作台左上角的拉
 /// 绳小台灯；拉动它会调用 [`focus_main_shell`] 把管理窗口提到当前桌
 /// 面之上。缺失 source map 则由打开窗口前的
