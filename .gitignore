@@ -4,7 +4,7 @@ package-lock.json
 pnpm-debug.log
 .pnpm-store/
 *.tsbuildinfo
-
+.idea/
 # Environment and local configuration
 .env
 .env.*
