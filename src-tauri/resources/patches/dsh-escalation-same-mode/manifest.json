@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "patches": [
+    {
+      "id": "dsh-escalation-same-mode",
+      "name": "dsh 同模式 sandbox_permissions 不再抛错",
+      "version": "1.0.0",
+      "kind": "patch",
+      "description": "在 @deepseek-ai/dsh-sandbox 的 approveEscalation 顶部插入同模式短路——`if (mode === effectiveMode) return mode;`：会话已处于 danger-full-access 等目标模式时，模型送入同模式 sandbox_permissions 不再被内核抛「not strictly wider than this call's current mode」，降级为无副作用 no-op。其他非更宽请求仍按原路径抛错；strictly wider 的请求仍走审批流；其余稳定错误消息完全不变。",
+      "minKernelVersion": "0.1.1-rc.2",
+      "maxKernelVersion": "0.1.1-rc.2",
+      "files": [
+        {
+          "mode": "copy",
+          "from": "files/dsh-sandbox/index.js",
+          "to": "node_modules/@deepseek-ai/dsh-sandbox/lib/index.js",
+          "expectSha256": "63ee2a10873a336162acd9a0d7da7f5f3dc59d072456a0b5271da277565e324f",
+          "required": true
+        }
+      ]
+    }
+  ]
+}
