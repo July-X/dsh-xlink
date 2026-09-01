@@ -16,10 +16,10 @@ export function toastError(message, ms = 5000) {
 }
 
 // Promise 化确认框：用户点「确认」resolve(true)，取消 / 关闭 resolve(false)。
-export function confirmDialog(title, text, okLabel) {
+export function confirmDialog(title, text, okLabel, cancelLabel = '取消') {
   return ElMessageBox.confirm(text, title, {
     confirmButtonText: okLabel || '确认',
-    cancelButtonText: '取消',
+    cancelButtonText: cancelLabel || '取消',
     type: 'warning',
     distinguishCancelAndClose: true,
   })

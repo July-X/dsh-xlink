@@ -163,8 +163,9 @@ pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<St
 }
 
 /// 通过 per-app 缓存解析 Node 运行时；只有 `node_path` 设置发生变化
-/// 时才会触发一次新的探测。
+/// 时才会触发一次新的探测。“帮我安装”成功后由 `install_node` 主动清缓存。
 fn cached_node(state: &AppState, settings: &settings::Settings) -> node::NodeInfo {
+    let data_dir = state.data_dir.clone();
     let key = settings.node_path.clone();
     let mut guard = crate::lock(&state.node_cache);
     if let Some((cached_key, info)) = guard.as_ref() {
@@ -172,7 +173,7 @@ fn cached_node(state: &AppState, settings: &settings::Settings) -> node::NodeInf
             return info.clone();
         }
     }
-    let info = node::resolve(settings);
+    let info = node::resolve(settings, &data_dir);
     *guard = Some((key, info.clone()));
     info
 }
@@ -187,10 +188,35 @@ pub async fn detect_node(state: State<'_, AppState>) -> Result<node::NodeInfo, S
     tauri::async_runtime::spawn_blocking(move || {
         let mut s = settings::load(&data_dir);
         s.node_path = None;
-        node::resolve(&s)
+        node::resolve(&s, &data_dir)
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// 用户确认后的托管 Node.js 自动安装（下载官方二进制到数据目录，
+/// 不扩大安装包体积）。进度经 Channel 推送；成功后清掉 per-app node
+/// 缓存，让下一次 get_status 立即报告新运行时，无需重启外壳。
+#[tauri::command]
+pub async fn install_node(app: AppHandle, on_event: Channel<String>) -> Result<(), String> {
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
+        let logs_dir = kernel::logs_dir(&data_dir);
+        let mut send = |msg: &str| {
+            let _ = on_event.send(msg.to_string());
+        };
+        let installed = crate::node_install::verify_or_install(&data_dir, &logs_dir, &mut send)?;
+        if installed.is_some() {
+            if let Ok(mut cache) = state.node_cache.lock() {
+                *cache = None;
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

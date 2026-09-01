@@ -419,11 +419,14 @@ fn probe_environment(candidates: &[PathBuf]) -> EnvironmentScan {
 }
 
 /// 当自动检测在磁盘上找不到任何 Node.js 安装时给出的指引——常见于全新
-/// 机器尚未完成任何初始化，或用户刚刚卸载了最后一个运行时。这里列出
-/// 三种独立的安装方式，是因为不同用户的偏好不同；他们选择自己本来就
-/// 会用的方式，下一次状态刷新（或「检测 Node」按钮）会重新运行检测。
+/// 机器尚未完成任何初始化，或用户刚刚卸载了最后一个运行时。首选外壳
+/// 自带的一键自动安装（下载官方二进制到数据目录，见 node_install.rs）；
+/// 其余三种独立安装方式保留，是因为不同用户的偏好不同；他们选择自己
+/// 本来就会用的方式，下一次状态刷新（或「检测 Node」按钮）会重新运行
+/// 检测。
 const NO_NODE_FOUND_GUIDANCE: &str =
     "请通过下列任一方式安装 Node.js 22.19+（或 >=24）：\n\
+     • 自动安装（推荐）：在主面板点击「帮我安装」，外壳将自动下载官方 Node.js 到数据目录（需联网）。\n\
      • 版本管理器（推荐）：nvm 用户执行 `nvm install 24 && nvm alias default 24`；fnm 用户执行 `fnm install 24 && fnm default 24`；volta 用户执行 `volta install node@24`。\n\
      • 系统包管理器：macOS `brew install node@24`；Ubuntu/Debian 装 NodeSource 后 `apt install nodejs`；Windows `winget install OpenJS.NodeJS.LTS`。\n\
      • 官方安装包：从 https://nodejs.org/ 下载安装包，安装后重启本应用，或在「设置」中手动指定 node 可执行文件路径。";
@@ -434,14 +437,40 @@ const NO_NODE_FOUND_GUIDANCE: &str =
 const NODE_TOO_OLD_GUIDANCE: &str =
     "请升级 Node 到 22.19+（或 >=24）：使用 nvm 的用户执行 `nvm install 24 && nvm alias default 24`；使用 fnm 的用户执行 `fnm install 24 && fnm default 24`；也可从 https://nodejs.org/ 下载新版安装包覆盖安装，或在「设置」中手动指定新版 node 可执行文件路径。";
 
-/// 解析 node 可执行文件，先看显式配置，再看环境。
-pub fn resolve(settings: &Settings) -> NodeInfo {
+/// 托管运行时（`data_dir/tools/node/`，由「帮我安装」自动下载）的探测结果：
+/// 已安装且满足 engines 时优先于环境检测，保证自动安装之后立刻可用。
+fn probe_managed(data_dir: &Path) -> Option<NodeInfo> {
+    let exe = crate::node_install::managed_node_exe(data_dir)?;
+    let info = probe(&exe);
+    if info.ok {
+        return Some(NodeInfo {
+            path: info.path,
+            version: info.version,
+            ok: true,
+            reason: "托管运行时（自动安装到数据目录）".into(),
+        });
+    }
+    None
+}
+
+/// 解析 node 可执行文件，依次看：显式配置 → 托管运行时 → 环境。
+/// 托管运行时是用户确认后自动安装到数据目录的官方二进制（node_install.rs），
+/// 它排在环境检测之前，让「自动安装后无需再配置任何东西」的承诺成立。
+/// 显式配置仍是最高优先级，可以覆盖托管运行时。
+pub fn resolve(settings: &Settings, data_dir: &Path) -> NodeInfo {
     if let Some(path) = settings.node_path.as_ref() {
         let info = probe(Path::new(path));
         if info.ok {
             return info;
         }
-        // 回退到自动检测；保留原因以便 UI 说明配置路径为何被拒绝。
+        // 回退到托管运行时 / 自动检测；保留原因以便 UI 说明配置路径为何被拒绝。
+        if let Some(mut detected) = probe_managed(data_dir) {
+            detected.reason = format!(
+                "配置的路径不可用（{}），已自动回退到：{}",
+                info.reason, detected.path
+            );
+            return detected;
+        }
         let scan = probe_environment(&environment_candidates());
         if let Some(mut detected) = scan.usable {
             detected.reason = format!(
@@ -466,6 +495,9 @@ pub fn resolve(settings: &Settings) -> NodeInfo {
             version: None,
             reason: format!("配置路径不可用且未找到可用 node。{detail}{guidance}"),
         };
+    }
+    if let Some(info) = probe_managed(data_dir) {
+        return info;
     }
     let scan = probe_environment(&environment_candidates());
     match scan.usable {

@@ -28,7 +28,9 @@ import {
   installShellUpdate,
   installLatestRelease,
   checkUpdates,
+  installNode,
 } from '../store.js';
+import { progress } from '../progress.js';
 import { globalBusy, isLoading } from '../loading.js';
 import { showLogs } from '../logs.js';
 
@@ -149,7 +151,21 @@ function goVersions() {
         <dt>工作台地址</dt>
         <dd>{{ urlText }}</dd>
         <dt>Node.js</dt>
-        <dd>{{ nodeText }}</dd>
+        <dd class="kv-with-action">
+          <span>{{ nodeText }}</span>
+          <el-button
+            v-if="node && !node.ok"
+            size="small"
+            text
+            type="primary"
+            :loading="progress.visible"
+            :disabled="globalBusy"
+            title="自动下载并安装官方 Node.js 到数据目录（需联网）"
+            @click="installNode"
+          >
+            自动安装
+          </el-button>
+        </dd>
         <dt>数据目录</dt>
         <dd class="kv-with-action">
           <span class="kv-path" :title="kernel && kernel.data_dir">{{ (kernel && kernel.data_dir) || '—' }}</span>
