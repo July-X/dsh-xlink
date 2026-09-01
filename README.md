@@ -37,7 +37,7 @@
 ```
 
 - **内置访问方式**：外壳在本地启动 `dsh web` 服务并用专用窗口加载其 Web UI，无需手动打开浏览器；打开工作台前会为发布包缺失的 source map 生成最小 sidecar，避免 debug DevTools 产生无意义的 404。
-- **官方对话快捷入口**：管理面板「概览」页的「打开官方对话」按钮拉起独立的 `official-chat` 窗口（label `official-chat`），固定加载 DeepSeek 官方对话页 `https://chat.deepseek.com`，默认只初始化 DeepSeek 页签，千问与 MiniMax 在首次选择时才创建并在本次窗口中保留页面状态，以降低首开 CPU、内存和网络开销；由外壳注入 chrome-row 顶部条带 + 拉绳挂件。窗口创建时不再覆盖 user-agent——WebView2 引擎本身就是真实的桌面版 Edge，原生 UA、`Sec-CH-UA` 客户端提示与 `navigator.userAgentData` 天然一致（此前改写成 Chrome 反而制造跨层矛盾，正是环境检测的特征）；专属目录同时充当持久化配置档案，DeepSeek 登录态跨外壳重启保留；同一按钮在窗口已开时变为「关闭官方对话」，复用现有窗口并 `set_focus`，OS 关闭按钮也保持有效（该窗口不持有内核会话）。创建窗口时还经 `.additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)` 追加 Chromium 启动开关（wry 默认 `msWebOOUI` / `msPdfOOUI` / `msSmartScreenProtection` 之上叠加 `AutomationControlled`、`TranslateUI`、`InterestFeedContentSuggestions` 与 `--disable-blink-features=AutomationControlled`）：既抑制 `navigator.webdriver = true`，也不弹 SmartScreen 安全提醒与 Edge 专属 UI；该参数仅 WebView2 后端消费，macOS / Linux 构建自动忽略；同时窗口固定使用专属 user-data 目录 `<data_dir>/webview-official-chat`（WebView2 要求同一目录上的环境参数一致，不隔离会导致窗口创建失败）；之后给 `official-chat` 内容子 webview 注入 `titlebar-pulse.js` → `chat-fingerprint.js` 两个 `initialization_script`，给本地 `official-chat-strip` 页签栏 webview 注入 `pullstring-launcher.js`：拉绳属于整个官方对话窗口的 chrome，由页签栏 webview 承载；`chat-fingerprint.js` 不再与之同链、不需要 `pullstring-launcher.js` 抢跑 `window.__TAURI__` 的闭包引用。
+- **官方对话快捷入口**：管理面板「概览」页的「打开官方对话」按钮拉起独立的 `official-chat` 窗口（label `official-chat`），固定加载 DeepSeek 官方对话页 `https://chat.deepseek.com`，默认只初始化 DeepSeek 页签，千问与 MiniMax 在首次选择时才创建并在本次窗口中保留页面状态，以降低首开 CPU、内存和网络开销；由外壳注入静态 chrome-row 顶部品牌条带 + 拉绳挂件（不运行常驻动画，避免 WKWebView 空闲时持续渲染）。窗口创建时不再覆盖 user-agent——WebView2 引擎本身就是真实的桌面版 Edge，原生 UA、`Sec-CH-UA` 客户端提示与 `navigator.userAgentData` 天然一致（此前改写成 Chrome 反而制造跨层矛盾，正是环境检测的特征）；专属目录同时充当持久化配置档案，DeepSeek 登录态跨外壳重启保留；同一按钮在窗口已开时变为「关闭官方对话」，复用现有窗口并 `set_focus`，OS 关闭按钮也保持有效（该窗口不持有内核会话）。创建窗口时还经 `.additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)` 追加 Chromium 启动开关（wry 默认 `msWebOOUI` / `msPdfOOUI` / `msSmartScreenProtection` 之上叠加 `AutomationControlled`、`TranslateUI`、`InterestFeedContentSuggestions` 与 `--disable-blink-features=AutomationControlled`）：既抑制 `navigator.webdriver = true`，也不弹 SmartScreen 安全提醒与 Edge 专属 UI；该参数仅 WebView2 后端消费，macOS / Linux 构建自动忽略；同时窗口固定使用专属 user-data 目录 `<data_dir>/webview-official-chat`（WebView2 要求同一目录上的环境参数一致，不隔离会导致窗口创建失败）；之后给 `official-chat` 内容子 webview 注入 `titlebar-pulse.js` → `chat-fingerprint.js` 两个 `initialization_script`，给本地 `official-chat-strip` 页签栏 webview 注入 `pullstring-launcher.js`：拉绳属于整个官方对话窗口的 chrome，由页签栏 webview 承载；`chat-fingerprint.js` 不再与之同链、不需要 `pullstring-launcher.js` 抢跑 `window.__TAURI__` 的闭包引用。
 - **macOS / Windows 自定义标题栏（试验）**：管理面板在 macOS 和 Windows 上使用前端自绘的窗口标题栏，模拟交通灯控制，主色带从左到右以 5% 到 70% 的不透明度叠加深 Gitea 绿，并保留毛笔笔触纹理；dev 构建切换为同样规则的低亮度鲸眼红色系，Linux 暂保留系统标题栏。
 - **内核更新**：官方发布到 npm registry 的 `@deepseek-ai/dsh`（以及同名 `dsh-*` 依赖包）页面 [`https://www.npmjs.com/package/@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 与 GitHub `dsh-v<semver>` tag 一一对应；更新菜单直接读 npm registry（`https://registry.npmjs.org/@deepseek-ai/dsh`）拿到全量版本与 `dist-tags`，可安装、切换、删除任意已发布版本；只有 npm registry 不可达时才回退 GitHub Releases API 与其 Atom feed。
 
@@ -126,7 +126,7 @@ npm run build:win         # x86_64-pc-windows-msvc
    - 之后安装的版本不会覆盖当前活动版本，可随时在「已安装」列表中「切换」或「删除」。
 4. （可选）**插件** → 在「插件中心」按分类浏览、搜索（即时过滤）、按 Star/更新时间排序后一键安装，或手动填写 npm 包名（如 `@ace-zone/dsh-market`）/ GitHub 仓库 URL 安装；安装前自动校验插件是否符合 dsh 规范（package.json / `dsh.bundle.patch` / 入口文件），安装完成后重启工作台（关闭后重新启动）生效。点击「同步」会对所有已安装内核重新物化中央插件库，并清除外壳标记的已删除插件残留。进入「内核版本」页后，每个已安装版本旁的信息图标可悬停查看该版本实际物化的插件、版本和链接/拷贝模式。
 5. （可选）**设置 → 内核补丁（内置）**：查看随当前 dsh-xlink 版本捆绑的内核补丁与小插件（来自本应用发布方，与社区插件不同），自主选择「应用到当前内核」或「撤销补丁」；应用前自动备份被覆盖的原文件、随时可撤销，状态与备份记录在 `~/.dsh/desktop/patches/`（dev 壳为 `desktop-dev`）。工作台运行期间不能操作，请先关闭工作台；切换内核版本后需对新的活动版本重新应用。
-   - `dsh-session-perf` v1.1.0 适配 `0.1.1-rc.2` ~ `0.1.2-alpha.2`，作用于历史会话列表的 metadata 扫描，应用后需重启工作台；它不会改变选中会话后的完整历史读取，首次冷扫描仍会读取现有 session header。
+   - `dsh-session-perf` v1.2.0 适配 `0.1.2-alpha.3`，作用于历史会话列表的 artifact/header 扫描，应用后需重启工作台；它不会改变选中会话后的完整历史读取，也不会优化 `dsh-personal-center` 的全量统计扫描。
    - `dsh-escalation-same-mode` v1.0.0 仅适用于 `0.1.1-rc.2`：在 `@deepseek-ai/dsh-sandbox` 的 `approveEscalation` 顶部插入同模式短路，会话已处于目标模式时再送入同模式 `sandbox_permissions` 不再被「not strictly wider」击穿；其它分支保持原行为，应用后需重启工作台使新 sandbox 模块生效。
 6. 在「概览」页点击「启动工作台」：自动拉起内核、等待就绪后校验当前内核的工作台地址，再打开工作台窗口进入 Harness 界面；启动失败会自动弹出事故面板和内核日志。「关闭工作台」会同时关闭工作台窗口并停止内核。工作台窗口的系统关闭按钮（macOS 交通灯红灯 / Windows ×）始终可用，只收起窗口、内核与任务继续在后台运行；内核运行中收起窗口后，随时可用「打开工作台窗口」重新打开。
    - 工作台窗口会自动进行健康自检。发现白屏、运行时错误或未处理的 Promise 异常时，事故面板会展示前端消息/堆栈，并标注「疑似插件问题」「疑似内核问题」或「暂未能归因」；插件问题可重新启用或移除，内核问题可先停止工作台，再打开日志并切换/重装版本，暂未归因时由你选择先看日志还是检查内核版本。
@@ -162,6 +162,13 @@ npm run build:win         # x86_64-pc-windows-msvc
 | macOS 启动后访问 `http://127.0.0.1:3080` 失败 | Tauri 2.x 默认 WKWebView 已允许本地环回访问，不需要 `NSAppTransportSecurity` 例外；本项目移除了该字段，依赖平台默认值。 |
 | 编辑器/IDE 报 `capabilities/default.json` 找不到 `$schema` | schema 文件在首次 `tauri build` 后由 `tauri-build` 生成；本项目移除了硬编码 `$schema` 引用，避免初次克隆时编辑器红字。 |
 | 升级后「已安装」列表为空 | 外壳元数据已迁到 `~/.dsh/desktop/`；按上文“数据目录”提示迁移旧目录内容，或重新安装内核。 |
+
+## 性能排查
+
+- 工作台与官方对话的顶部品牌线采用静态渲染，不会在空闲时保持 WebKit 帧循环。安装包含 `src-tauri/src/titlebar-pulse.js` 修改的桌面壳后，需要完全退出并重新启动应用，再重新打开工作台；已存在的 WebView 不会自动替换初始化脚本。
+- `dsh-personal-center` 是第三方可选插件。桌面宠物的统计接口会同步读取并解压全部历史会话；会话较多时可能造成明显的 Node 磁盘/CPU 阻塞。遇到周期性卡顿时，在个人配置中关闭桌面宠物和「会话状态」，需要统计时再手动打开 Token 用量页面。
+- `patchReload: live` 会启用 client-HMR 的 500ms bundle `stat` 轮询。日常使用可改为 `startup` 并在 profile patch 中禁用 `client-hmr`；需要调试 client plugin 时再恢复 `live`，删除该禁用项。
+- 当前内核为 `0.1.2-alpha.3` 时，可在「设置 → 内核补丁」停止工作台后应用 `dsh-session-perf`，减少会话列表的重复目录/header 扫描；它不优化选中会话后的完整历史解压。
 
 ## 已知限制与后续
 
