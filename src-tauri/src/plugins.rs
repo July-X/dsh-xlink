@@ -37,8 +37,9 @@ const STORE_SUBDIR: &str = "plugins";
 const STORE_FILE: &str = "store.json";
 /// 每个中央库条目内的取源标记文件。
 const SOURCE_MARKER: &str = ".dsh-source.json";
-/// 社区目录的主要数据源：dsh-plugin.org hub（DSH-Plugin Hub 插件中心背后的数据源）。
-const HUB_CATALOG_URL: &str = "https://dsh-plugin.org/api/plugins.zh.json";
+/// 社区目录的主要数据源：dshfind.com 插件超市的全量目录（原 dsh-plugin.org
+/// hub 的新站点；`/api/plugins-data` 是它的公开目录 JSON，站点页面在 `/zh`）。
+const HUB_CATALOG_URL: &str = "https://dshfind.com/api/plugins-data";
 /// 社区目录的回退数据源：参考市场的插件列表，在 hub 不可达时使用。
 const MARKET_CATALOG_URL: &str =
     "https://raw.githubusercontent.com/losebird/dsh-plugin-market/main/registry/all.json";
@@ -204,7 +205,7 @@ pub struct CatalogItem {
     /// 上游最近更新的 ISO 时间戳（已知时）。
     #[serde(default)]
     pub updated: String,
-    /// 给用户看的详情页（dsh-plugin.org 或仓库）。
+    /// 给用户看的详情页（dshfind.com 或仓库）。
     #[serde(default)]
     pub detail_url: String,
 }
@@ -2425,166 +2426,113 @@ struct CatalogInstall {
     method: String,
 }
 
-/// dsh-plugin.org 的短键载荷（`/api/plugins.zh.json`）。
+/// dshfind.com 的全量目录载荷（`/api/plugins-data`，插件超市网页与桌面端共用）。
 #[derive(Debug, Deserialize)]
-struct HubRaw {
-    /// 插件 slug。
+struct FindEnvelope {
     #[serde(default)]
-    s: String,
-    /// 作者 slug（GitHub owner，小写）。
+    plugins: Vec<FindRaw>,
+    /// fullName → locale → 人工翻译的短描述；中文文案优先于条目自带的英文描述。
+    #[serde(default, rename = "i18nDescriptions")]
+    i18n_descriptions: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+/// dshfind.com（原 dsh-plugin.org hub 的继任站点）的一条目录条目。
+#[derive(Debug, Deserialize)]
+struct FindRaw {
+    /// `owner/name`，全站唯一键。
+    #[serde(default, rename = "fullName")]
+    full_name: String,
+    /// 仓库短名，即插件 slug。
     #[serde(default)]
-    o: String,
-    /// 显示名称。
+    name: String,
+    /// 作者 slug（GitHub owner）。
     #[serde(default)]
-    n: String,
-    /// 最新版本，例如 `v3.22.1`。
+    owner: String,
+    /// GitHub 仓库地址。
     #[serde(default)]
-    vr: String,
-    /// 分类 id（interface / session / memory / tools / agent / workflow / …）。
+    url: String,
+    /// 描述（英文为主；中文见 i18nDescriptions）。
     #[serde(default)]
-    c: String,
+    description: String,
     /// 标签。
     #[serde(default)]
-    t: Vec<String>,
-    /// 描述。
-    #[serde(default)]
-    d: String,
-    /// 仓库引用。同时接受简写 `"owner/repo"` 与详细形式
-    /// `{ "repo": "owner/repo", "npmPackage": "pkg" }`；两者都填的条目
-    /// 说明作者同时提供了 npm 分发与源码仓库，目录应当从 npm 安装。
-    #[serde(default, deserialize_with = "deserialize_hub_repo")]
-    r: HubRepo,
-    /// 核验状态；`verified` 表示人工审核过。
-    #[serde(default)]
-    v: String,
-    /// 上游最近更新时间（ISO 8601）。
-    #[serde(default)]
-    u: String,
+    tags: Vec<String>,
     /// star 数。
     #[serde(default)]
-    sg: u64,
-    /// fork 数。
+    stars: u64,
+    /// 上游最近推送时间（ISO 8601）。
+    #[serde(default, rename = "pushedAt")]
+    pushed_at: String,
+    /// 分类 id（skin / ui / agent / memory / client / channel / tools / fun / resource）。
     #[serde(default)]
-    fk: u64,
+    category: String,
+    /// 累计下载量（对象形态；缺失表示没有可报的数字）。
+    #[serde(default)]
+    downloads: Option<FindDownloads>,
+    /// 官方出品（DeepSeek 官方或官方生态组织）。
+    #[serde(default, rename = "isOfficial")]
+    is_official: bool,
+    /// 优质项目（运营推荐标记）。
+    #[serde(default, rename = "isFeatured")]
+    is_featured: bool,
 }
 
-/// hub 条目里的仓库引用：可以是裸的 `owner/repo` 简写，也可以是详细对象
-/// `{ repo, npmPackage }`。空字段或缺失字段都解析为 `None`，下游代码不会
-/// 看到需要再过滤的占位字符串。
-#[derive(Debug, Default, Clone)]
-struct HubRepo {
-    repo: Option<String>,
-    npm_package: Option<String>,
+/// dshfind 的下载量对象（渠道 + 总数）。
+#[derive(Debug, Deserialize)]
+struct FindDownloads {
+    #[serde(default)]
+    total: u64,
 }
 
-impl HubRepo {
-    fn repo(&self) -> Option<&str> {
-        self.repo.as_deref().filter(|s| !s.is_empty())
-    }
-    fn npm_package(&self) -> Option<&str> {
-        self.npm_package.as_deref().filter(|s| !s.is_empty())
-    }
-}
-
-/// 把 `r` 从 JSON 字符串或 `{ repo, npmPackage }` 对象两种形式中任一反序列化。
-/// 其它类型（null、数字 …）归并为空 `HubRepo`，与 JSON 里省略该字段时的形态一致。
-///
-/// 自从作者开始同时发布 npm 分发与源码仓库之后，hub 数据里大多数条目
-/// 切到了详细形式。先前的 `r: String` 反序列化器会一并拒绝这些条目，
-/// 导致一条详细条目就让整个数组的 `Vec<HubRaw>::from_str` 失败 —— 目录
-/// 于是默默回退到规模小得多的参考市场。在这里同时接受两种形态，是让 hub
-/// 独占的插件也能在插件中心露脸的关键。
-fn deserialize_hub_repo<'de, D>(de: D) -> Result<HubRepo, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::Error;
-    let value = serde_json::Value::deserialize(de)?;
-    match value {
-        serde_json::Value::Null => Ok(HubRepo::default()),
-        serde_json::Value::String(s) => Ok(HubRepo {
-            repo: (!s.is_empty()).then_some(s),
-            npm_package: None,
-        }),
-        serde_json::Value::Object(_) => {
-            #[derive(Deserialize)]
-            struct Detail {
-                #[serde(default)]
-                repo: String,
-                #[serde(default, rename = "npmPackage")]
-                npm_package: String,
-            }
-            let d: Detail = serde_json::from_value(value).map_err(Error::custom)?;
-            Ok(HubRepo {
-                repo: (!d.repo.is_empty()).then_some(d.repo),
-                npm_package: (!d.npm_package.is_empty()).then_some(d.npm_package),
-            })
-        }
-        _ => Err(Error::custom(
-            "`r` must be a string or { repo, npmPackage } object",
-        )),
-    }
-}
-
-impl HubRaw {
-    /// 把一条 hub 条目规整成共享的目录条目。hub 数据区分四种安装路径，
-    /// 按以下优先级选取：
-    ///
-    /// 1. 填了 `npmPackage` → 从 npm 安装（作者发布的包，无需编译；当作者
-    ///    提供了 npm 分发时优先）。
-    /// 2. 填了 `repo` → 通过 `git clone` 从 GitHub 仓库安装。
-    /// 3. `repo` 缺失/为空，但 `o` + `n` 都填了 → 回退到
-    ///    `github.com/{o}/{n}.git`。hub 里这种条目有几十条 —— 作者发布了
-    ///    GitHub 仓库却没填 `r`，少了这个回退，`parse_spec` 会把安装路由
-    ///    到 npm（用显示名查），拿到 404，用户就会看到误导性的
-    ///    「查询 npm 失败：404」错误。
-    /// 4. 兜底 → 用显示名走 npm（给纯 npm 的旧条目预留的回退）。
-    ///
-    /// 目录 UI 在每张卡片上展示所选的来源，用户能一眼看出「安装」按钮
-    /// 会触发 npm 还是 git。
-    fn into_item(self) -> CatalogItem {
-        let repo = self.r.repo().map(str::to_string);
-        let npm_package = self.r.npm_package().map(str::to_string);
-        let detail_url = if !self.o.is_empty() && !self.s.is_empty() {
-            format!("https://dsh-plugin.org/zh/plugins/{}/{}", self.o, self.s)
+impl FindRaw {
+    /// 把一条 dshfind 条目规整成共享的目录条目。dshfind 收录的是挂了
+    /// `dsh-plugin` topic 的 GitHub 仓库，安装方式探测数据（npm 分发 / 仅
+    /// git / 需自行构建）不进入公开目录接口，因此统一从 GitHub 仓库安装 ——
+    /// `plugin_install` 会优先走 Release tarball，不可用时回退 git clone，
+    /// 卡片上的来源展示与安装行为一致，不会再出现误导性的 npm 404。
+    fn into_item(self, i18n: &BTreeMap<String, BTreeMap<String, String>>) -> CatalogItem {
+        let description = i18n
+            .get(&self.full_name)
+            .and_then(|m| m.get("zh"))
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .unwrap_or_else(|| self.description.clone());
+        let repo = if !self.full_name.is_empty() {
+            Some(self.full_name.clone())
+        } else {
+            // fullName 缺失时用 GitHub 地址还原 `owner/repo`。
+            github_repo_path(&self.url)
+        };
+        let spec = repo
+            .as_ref()
+            .map(|r| format!("https://github.com/{r}.git"))
+            .unwrap_or_default();
+        let detail_url = if !self.owner.is_empty() && !self.name.is_empty() {
+            format!(
+                "https://dshfind.com/zh/plugins/{}/{}",
+                self.owner, self.name
+            )
         } else {
             repo.as_ref()
                 .map(|r| format!("https://github.com/{r}"))
                 .unwrap_or_default()
         };
-        let (origin, spec) = if let Some(pkg) = &npm_package {
-            ("npm", pkg.clone())
-        } else if let Some(r) = &repo {
-            ("git", format!("https://github.com/{r}.git"))
-        } else if !self.o.is_empty() && !self.n.is_empty() {
-            (
-                "git",
-                format!("https://github.com/{}/{}.git", self.o, self.n),
-            )
-        } else {
-            ("npm", self.n.clone())
-        };
-        let id = if self.s.is_empty() {
-            self.n.clone()
-        } else {
-            self.s.clone()
-        };
         CatalogItem {
-            id,
-            name: self.n,
+            id: self.name.clone(),
+            name: self.name,
             kind: String::new(),
-            description: self.d,
-            stars: self.sg,
-            forks: self.fk,
-            downloads: 0,
-            verified: self.v == "verified",
+            description,
+            stars: self.stars,
+            forks: 0,
+            downloads: self.downloads.map(|d| d.total).unwrap_or(0),
+            verified: self.is_official || self.is_featured,
             repo,
             spec,
-            origin: origin.to_string(),
-            category: self.c,
-            version: self.vr,
-            tags: self.t,
-            updated: self.u,
+            origin: "git".to_string(),
+            category: self.category,
+            version: String::new(),
+            tags: self.tags,
+            updated: self.pushed_at,
             detail_url,
         }
     }
@@ -2650,20 +2598,16 @@ fn from_market_raw(raw: CatalogRaw) -> CatalogItem {
     }
 }
 
-/// 丢掉插件中心不应展示的目录条目。UI 把 npm install 作为规范路径
-///（占位符形如 `npm i @scope/pkg …`），手动安装流程也原生支持
-/// `npm i` / `pnpm add` / `yarn add` / `bun add` —— 因此没有 npm 包的
-/// 条目通过中心 UI 无法完成安装。它们仍然可以通过手动安装入口访问
-///（`owner/repo` / git URL / dsh plugin CLI），但目录不应列出它们，
-/// 否则每张卡片上的「安装」按钮都会对着 npm registry 拿 404。
-fn filter_npm_origin(items: Vec<CatalogItem>) -> Vec<CatalogItem> {
-    items.into_iter().filter(|i| i.origin == "npm").collect()
+/// 丢掉插件中心无法安装的目录条目：解析不出取源地址的条目（dshfind 条目
+/// 缺 fullName、市场条目 git 分支缺 repo）在「安装」时会对着空 spec 报错，
+/// 不该出现在卡片上。旧版本缓存的 npm 条目 spec 都非空，照常通过。
+fn filter_installable(items: Vec<CatalogItem>) -> Vec<CatalogItem> {
+    items.into_iter().filter(|i| !i.spec.is_empty()).collect()
 }
 
 /// 拉取社区目录，把规整后的条目缓存 `CATALOG_TTL_SECS`（`force` 跳过缓存）。
-/// dsh-plugin.org hub 是主要数据源；hub 不可达时回退到参考市场的列表。缓存
-/// 内容始终过滤为 npm 来源条目，这样引入此过滤之前写入的旧缓存不会在
-/// 首次读取时把仅 git 的条目泄到插件中心。
+/// dshfind.com 插件超市（原 dsh-plugin.org hub 的新站点）是主要数据源；
+/// 不可达时回退到参考市场的列表。缓存内容始终过滤掉无法安装的条目。
 fn fetch_catalog(data_dir: &Path, force: bool) -> Result<Vec<CatalogItem>, String> {
     let cache = data_dir.join(CATALOG_CACHE_FILE);
     let fresh = !force
@@ -2675,14 +2619,23 @@ fn fetch_catalog(data_dir: &Path, force: bool) -> Result<Vec<CatalogItem>, Strin
     if fresh {
         if let Ok(text) = fs::read_to_string(&cache) {
             if let Ok(items) = serde_json::from_str::<Vec<CatalogItem>>(&text) {
-                return Ok(filter_npm_origin(items));
+                return Ok(filter_installable(items));
             }
         }
     }
     let hub = http_get_string(HUB_CATALOG_URL, None).and_then(|body| {
-        serde_json::from_str::<Vec<HubRaw>>(&body)
+        serde_json::from_str::<FindEnvelope>(&body)
             .map_err(|e: serde_json::Error| e.to_string())
-            .map(|raws| raws.into_iter().map(HubRaw::into_item).collect::<Vec<_>>())
+            .map(|env| {
+                let FindEnvelope {
+                    plugins,
+                    i18n_descriptions,
+                } = env;
+                plugins
+                    .into_iter()
+                    .map(|raw| raw.into_item(&i18n_descriptions))
+                    .collect::<Vec<_>>()
+            })
     });
     let items = match hub {
         Ok(items) if !items.is_empty() => items,
@@ -2693,7 +2646,7 @@ fn fetch_catalog(data_dir: &Path, force: bool) -> Result<Vec<CatalogItem>, Strin
             doc.items.into_iter().map(from_market_raw).collect()
         }
     };
-    let items = filter_npm_origin(items);
+    let items = filter_installable(items);
     if fs::create_dir_all(data_dir).is_ok() {
         if let Ok(text) = serde_json::to_string(&items) {
             let _ = atomic_write(&cache, text.as_bytes());
@@ -3282,10 +3235,9 @@ mod tests {
     }
 
     #[test]
-    fn filter_npm_origin_drops_git_only_entries() {
-        // 插件中心只会展示「安装」按钮实际能从 npm 拿到的条目。仅 git 的
-        // 条目仍可通过手动安装入口访问（接受 owner/repo / git URL /
-        // dsh plugin CLI），但把它们列在目录里，用户一点安装就会立刻撞上 404。
+    fn filter_installable_drops_empty_spec_entries() {
+        // 插件中心只展示「安装」按钮有实际取源地址的条目：dshfind 条目缺
+        // fullName、市场条目 git 分支缺 repo 都会解析出空 spec，装不了。
         let mk = |id: &str, name: &str, origin: &str, spec: &str, repo: Option<&str>| CatalogItem {
             id: id.into(),
             name: name.into(),
@@ -3304,17 +3256,21 @@ mod tests {
             updated: String::new(),
             detail_url: String::new(),
         };
-        let npm_only = mk("a", "a", "npm", "@scope/a", Some("owner/a"));
-        let git_only = mk("b", "b", "git", "https://github.com/owner/b.git", None);
+        let npm_item = mk("a", "a", "npm", "@scope/a", Some("owner/a"));
+        let git_item = mk("b", "b", "git", "https://github.com/owner/b.git", None);
+        let broken = mk("c", "c", "git", "", None);
 
-        let out = filter_npm_origin(vec![npm_only.clone(), git_only]);
-        assert_eq!(out.len(), 1);
+        let out = filter_installable(vec![npm_item.clone(), git_item.clone(), broken]);
+        assert_eq!(out.len(), 2);
         assert_eq!(out[0].id, "a");
-        assert_eq!(out[0].origin, "npm");
+        assert_eq!(out[1].id, "b");
         // 空输入是 no-op。
-        assert!(filter_npm_origin(vec![]).is_empty());
-        // 全 npm 的列表原样穿透。
-        assert_eq!(filter_npm_origin(vec![npm_only.clone(), npm_only]).len(), 2);
+        assert!(filter_installable(vec![]).is_empty());
+        // 全部可安装的列表原样穿透。
+        assert_eq!(
+            filter_installable(vec![npm_item.clone(), git_item, npm_item]).len(),
+            3
+        );
     }
 
     #[test]
@@ -3486,85 +3442,90 @@ mod tests {
     }
 
     #[test]
-    fn hub_entry_normalizes_to_catalog_item() {
-        let raw: HubRaw = serde_json::from_str(
-            r#"{"s":"modlens","o":"liustack","n":"modlens","vr":"v3.22.1","c":"tools",
-                "t":["vision"],"d":"desc","r":"liustack/modlens","v":"verified",
-                "u":"2026-08-20T20:05:55Z","sg":3497,"fk":95}"#,
-        )
-        .expect("hub raw");
-        let item = raw.into_item();
+    fn find_entry_normalizes_to_catalog_item() {
+        // 完整正文载荷：dshfind 的公开目录是 `{ plugins, i18nDescriptions }`
+        // 信封；中文描述优先，安装统一走 GitHub 仓库。
+        let body = r#"{"plugins":[{"fullName":"liustack/modlens","name":"modlens","owner":"liustack",
+            "url":"https://github.com/liustack/modlens","description":"The first vision plugin.",
+            "tags":["vision"],"stars":3497,"pushedAt":"2026-08-20T20:05:55Z","category":"tools",
+            "isOfficial":false,"isFeatured":true}],
+            "i18nDescriptions":{"liustack/modlens":{"zh":"首个 DSH 视觉插件。"}}}"#;
+        let env: FindEnvelope = serde_json::from_str(body).expect("find envelope");
+        let FindEnvelope {
+            plugins,
+            i18n_descriptions,
+        } = env;
+        let item = plugins
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_item(&i18n_descriptions);
         assert_eq!(item.origin, "git");
         assert_eq!(item.spec, "https://github.com/liustack/modlens.git");
-        assert_eq!(item.version, "v3.22.1");
-        assert_eq!(item.stars, 3497);
-        assert_eq!(item.forks, 95);
-        assert!(item.verified);
+        assert_eq!(item.repo.as_deref(), Some("liustack/modlens"));
         assert_eq!(item.category, "tools");
+        assert_eq!(item.stars, 3497);
+        assert!(item.verified, "isFeatured 条目应标记为已验证");
+        assert_eq!(item.description, "首个 DSH 视觉插件。");
         assert_eq!(
             item.detail_url,
-            "https://dsh-plugin.org/zh/plugins/liustack/modlens"
+            "https://dshfind.com/zh/plugins/liustack/modlens"
         );
 
-        // 无 repo 的条目回退 npm 安装
-        let raw: HubRaw = serde_json::from_str(r#"{"n":"pkg","d":"x"}"#).expect("hub raw");
-        let item = raw.into_item();
-        assert_eq!(item.origin, "npm");
-        assert_eq!(item.spec, "pkg");
-        assert!(!item.verified);
-    }
-
-    #[test]
-    fn hub_entry_with_npm_package_installs_from_npm() {
-        // 作者同时发布了 GitHub 仓库和 npm 分发；目录应当走 npm 路径，
-        // 这样 UI 上的「安装」按钮装的是已发布的 tarball（在 npm 上可能
-        // 拿到 404，而不是对一个任意仓库做 git clone）。
-        let raw: HubRaw = serde_json::from_str(
-            r#"{"s":"dsh-zhipu","n":"dsh-zhipu","r":{"repo":"fineven/dsh-zhipu","npmPackage":"dsh-zhipu"}}"#,
+        // fullName 缺失时可用 GitHub 地址还原 `owner/repo`；两者都没有
+        // 才无法解析取源地址，过滤器应把它丢掉。
+        let env: FindEnvelope = serde_json::from_str(
+            r#"{"plugins":[
+                {"name":"x","description":"d"},
+                {"name":"plug","owner":"owner","url":"https://github.com/Owner/Plug"}
+            ]}"#,
         )
-        .expect("hub raw");
-        let item = raw.into_item();
-        assert_eq!(item.origin, "npm");
-        assert_eq!(item.spec, "dsh-zhipu");
-        assert_eq!(item.repo.as_deref(), Some("fineven/dsh-zhipu"));
+        .expect("find envelope");
+        let FindEnvelope {
+            plugins,
+            i18n_descriptions,
+        } = env;
+        let items: Vec<CatalogItem> = plugins
+            .into_iter()
+            .map(|raw| raw.into_item(&i18n_descriptions))
+            .collect();
+        assert!(items[0].spec.is_empty());
+        assert_eq!(items[1].spec, "https://github.com/Owner/Plug.git");
+        let kept = filter_installable(items);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name, "plug");
     }
 
     #[test]
-    fn hub_entry_with_repo_object_no_npm_falls_back_to_git() {
-        // 详细 `r` 但没有 `npmPackage` 时仍应走 git 安装；详细形式只是把
-        // `repo` 简写包成了对象形态，安装路径不变。
-        let raw: HubRaw =
-            serde_json::from_str(r#"{"s":"plug","n":"plug","r":{"repo":"owner/plug"}}"#)
-                .expect("hub raw");
-        let item = raw.into_item();
+    fn find_entry_falls_back_to_english_and_flags_official() {
+        // 没有中文翻译时用条目自带描述；官方条目视为「已验证」。
+        let env: FindEnvelope = serde_json::from_str(
+            r#"{"plugins":[{"fullName":"deepseek-ai/deepseek-harness","name":"deepseek-harness",
+                "owner":"deepseek-ai","description":"Everything is a plugin.",
+                "downloads":{"channel":"npm","total":1234},"isOfficial":true}]}"#,
+        )
+        .expect("find envelope");
+        let FindEnvelope {
+            plugins,
+            i18n_descriptions,
+        } = env;
+        let item = plugins
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_item(&i18n_descriptions);
         assert_eq!(item.origin, "git");
-        assert_eq!(item.spec, "https://github.com/owner/plug.git");
-    }
-
-    #[test]
-    fn hub_entry_with_empty_repo_object_falls_back_to_npm_name() {
-        // 详细 `r` 但两个字段都为空时，等同于 `r` 缺失 —— 用显示名走 npm 安装。
-        let raw: HubRaw =
-            serde_json::from_str(r#"{"s":"plug","n":"plug","r":{}}"#).expect("hub raw");
-        let item = raw.into_item();
-        assert_eq!(item.origin, "npm");
-        assert_eq!(item.spec, "plug");
-        assert!(item.repo.is_none());
-    }
-
-    #[test]
-    fn hub_entry_missing_repo_falls_back_to_owner_name_git() {
-        // 作者发布了 GitHub 仓库，却在 manifest 里把 `r` 留空。少了这个
-        // 回退，`parse_spec` 会把安装路由到 npm（用显示名查），拿到 404，
-        // 露出用户刚刚在 `dsh-web-ui` 上报的误导性「查询 npm 失败：404」
-        // 错误。`o` + `n` 足以让我们还原出规范的 github.com URL。
-        let raw: HubRaw =
-            serde_json::from_str(r#"{"s":"dsh-web-ui","o":"someone","n":"dsh-web-ui"}"#)
-                .expect("hub raw");
-        let item = raw.into_item();
-        assert_eq!(item.origin, "git");
-        assert_eq!(item.spec, "https://github.com/someone/dsh-web-ui.git");
-        assert!(item.repo.is_none());
+        assert_eq!(
+            item.spec,
+            "https://github.com/deepseek-ai/deepseek-harness.git"
+        );
+        assert_eq!(item.description, "Everything is a plugin.");
+        assert_eq!(item.downloads, 1234);
+        assert!(item.verified);
+        assert_eq!(
+            item.detail_url,
+            "https://dshfind.com/zh/plugins/deepseek-ai/deepseek-harness"
+        );
     }
 
     #[test]

@@ -7,19 +7,17 @@ import { withLoading, withExclusive, isExclusiveBusy } from './loading.js';
 import { withProgress } from './progress.js';
 import { refreshAll } from './store.js';
 
-// dsh-plugin.org 分类 id → 中文标签，数组顺序即界面顺序。
+// dshfind.com 分类 id → 中文标签，数组顺序即界面顺序。
 export const CATALOG_CATEGORIES = [
-  ['interface', '界面体验'],
-  ['session', '会话消息'],
-  ['memory', '记忆上下文'],
-  ['tools', '工具能力'],
+  ['skin', '外观皮肤'],
+  ['ui', '界面交互'],
   ['agent', '技能智能体'],
-  ['workflow', '工作流'],
-  ['integration', '集成连接'],
-  ['model', '模型推理'],
-  ['dev', '开发运维'],
-  ['knowledge', '数据知识'],
+  ['memory', '记忆上下文'],
+  ['client', '客户端'],
+  ['channel', '消息渠道'],
+  ['tools', '工具能力'],
   ['fun', '娱乐'],
+  ['resource', '资源数据'],
 ];
 export const CATALOG_PAGE = 60;
 
