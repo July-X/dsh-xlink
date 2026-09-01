@@ -247,8 +247,8 @@ function statsText(item) {
         </span>
       </div>
       <p class="muted" style="margin: 0">
-        来自 <a href="https://dsh-plugin.org" target="_blank" rel="noreferrer">dsh-plugin.org</a>
-        社区目录，点击「安装」即可装到本机插件库并接入所有内核。
+        来自 <a href="https://dshfind.com/zh" target="_blank" rel="noreferrer">dshfind.com</a>
+        插件超市目录，点击「安装」即可装到本机插件库并接入所有内核。
       </p>
       <div class="install-row">
         <el-input v-model="pluginStore.query" placeholder="搜索插件名称、描述、标签…" spellcheck="false" clearable />
