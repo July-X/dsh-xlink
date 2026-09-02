@@ -80,7 +80,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
           dest: ${{ runner.temp }}/setup-pnpm
@@ -161,7 +161,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
           dest: ${{ runner.temp }}/setup-pnpm
@@ -201,7 +201,7 @@ jobs:
 
       - name: Upload macOS release assets
         if: matrix.name == 'macos-intel'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.name }}-${{ needs.preflight.outputs.version }}
           path: |
@@ -213,7 +213,7 @@ jobs:
 
       - name: Upload Windows release assets
         if: matrix.name == 'windows-x86_64'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.name }}-${{ needs.preflight.outputs.version }}
           path: |
@@ -237,7 +237,7 @@ jobs:
           node-version: 24
 
       - name: Download platform artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: desktop-*-${{ needs.preflight.outputs.version }}
           path: artifacts
