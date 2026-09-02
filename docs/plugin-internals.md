@@ -8,10 +8,14 @@
 2. **ensure_store_npmrc**：写入 `~/.dsh/plugins/.npmrc`（`minimumReleaseAge=0`、固定 npm registry）—— pnpm v11 的 `minimumReleaseAgeExclude` 不支持通配符，必须直接关掉年龄检查
 3. **build_git_plugin / install_store_deps**：Git 仓库声明 `prepare` 且入口缺失时，fetch 阶段先执行 `pnpm install --ignore-workspace --config.node-linker=hoisted --reporter=append-only`，依赖和 `lib/` 一起就绪，并向后续流程返回“依赖已完成”的标志；其它 Git 或 npm 来源在 link 模式下由 `install_store_deps` 执行一次相同的安装。安装前**先删旧 `pnpm-lock.yaml`**：避开历史 lockfile 的 `minimumReleaseAge` 失效条目。
 4. **upsert_item**：在商店写锁内以原子替换方式写入 `~/.dsh/plugins/store.json`
-5. **sync_kernels**：每个已装内核调用 `materialize_one`：
+5. **sync_kernels**：每个已装内核调用 `materialize_one`；活动内核接线前，
+   `ensure_wiring` 会检查 link 模式插件中央目录中的普通 `dependencies`，
+   缺失时沿用安装阶段的 `pnpm` 修复流程，再继续物化：
    - 解析 `resolved_source`（store 若本身是 symlink，展开到真实路径）
    - 校验现有 `target` symlink 是否等于 `resolved_source`——不等就重建（修复历史 double-symlink 链）
    - 调 `refresh_store_peers`：把内核 `node_modules/@deepseek-ai/*` 链接进 store 的 peer deps 解析路径
+   - 普通 `dependencies` 仍由插件自己的 `node_modules` 提供；profile 的 `link:`
+     依赖不会替共享目录安装这些包，因此启动时会对缺失项做一次自愈检查
 6. **ensure_wiring**：写 profile 的 `package.json` + `pnpm install` 把 `link:` 依赖铺到 `profiles/<name>/node_modules/`
 
 ## 坑

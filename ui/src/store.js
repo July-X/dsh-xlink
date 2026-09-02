@@ -228,7 +228,7 @@ export function installVersion(version, options = {}) {
     {
       cmd: 'install_kernel',
       start: '正在安装 ' + version + ' …',
-      done: '版本 ' + version + ' 安装完成',
+      done: '版本 ' + version + ' 安装完成，请在概览页手动启动工作台',
       fail: '安装失败',
       failToast: '安装失败，详情见进度窗口与日志',
     },
