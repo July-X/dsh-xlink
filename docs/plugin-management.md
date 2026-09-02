@@ -110,7 +110,7 @@
 
 「插件中心」优先从 [dshfind.com](https://dshfind.com/zh)（原 dsh-plugin.org hub 的新站点）的公开目录接口 `/api/plugins-data` 拉取（缓存 6 小时，不可达时回退到参考实现 `losebird/dsh-plugin-market` 的 `registry/all.json`）。管理面板支持按名称/描述/分类搜索并一键安装：
 
-- dshfind 条目是挂了 `dsh-plugin` topic 的 GitHub 仓库，统一按 git 安装：GitHub 地址优先使用 Release tarball，没有可用 Release 时回退 git clone 跟随默认分支；中文描述优先取自条目的 i18n 翻译；
+- dshfind 条目是挂了 `dsh-plugin` topic 的 GitHub 仓库，安装优先走 npm：候选包名 `<repo-name>` 与 `dsh-<repo-name>`，命中 npm registry 的预构建包时直接安装；都没有时回退到 GitHub 安装（优先 Release tarball，没有可用 Release 时回退 git clone 跟随默认分支）。带 `#tag` 的 spec 是用户明确指定的版本，直接走 git 以使用对应 tag；中文描述优先取自条目的 i18n 翻译；
 - 回退市场条目 `package` 字段存在 → 按 npm 包安装；否则按 `repo` 的 git URL 安装（GitHub 地址优先使用 Release tarball，使用条目里的 `spec`/tag 锁定版本；没有可用 Release 时回退 git clone，无 tag 则跟随默认分支）；
 - 每个条目展示类型/star/下载量/验证标记，「详情」跳转 dshfind 中文详情页（回退条目跳转 GitHub）。官方 [dsh-plugin topic 页](https://github.com/topics/dsh-plugin) 作为浏览入口链接常驻卡片。
 
