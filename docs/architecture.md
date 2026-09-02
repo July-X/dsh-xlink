@@ -25,7 +25,7 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 
 ### 并发与持久化
 
-- `AppState.lifecycle` 是内核安装、启动、停止、切换和删除共用的生命周期锁。锁只在 `spawn_blocking` worker 内获取，保证长操作不会跨 `await` 持有标准 MutexGuard；安装流程在同一个 worker 内完成工具链解析、内核安装、首次激活和必要的自动启动。
+- `AppState.lifecycle` 是内核安装、启动、停止、切换和删除共用的生命周期锁。锁只在 `spawn_blocking` worker 内获取，保证长操作不会跨 `await` 持有标准 MutexGuard；安装流程在同一个 worker 内完成工具链解析、内核安装和首次激活，安装完成后保持内核停止状态，启动由单独的 `start_kernel` 命令负责。
 - `open_harness` 在独立窗口构建线程中通过 `mpsc` 回传真实的 `WebviewWindowBuilder::build()` 结果，命令只有收到成功结果才向 UI 返回成功；构建失败会保留可操作的错误信息。
 - `plugins.rs` 与 `skills.rs` 各自维护进程内商店写锁。安装、更新、卸载、模式/启停变更、全量同步和启动修复在写清单时串行化；更新检查只在读取快照和最终提交时加锁，网络请求在锁外执行，并以 `installed_version` 防止旧结果覆盖新安装。
 - `process::atomic_write` 把 `store.json`、设置文件和商店 `.npmrc` 先写入同目录临时文件并 `sync_all`，再替换正式文件。这样进程中断时读者只会看到旧的完整文件或新的完整文件，不会读到截断 JSON。
@@ -49,7 +49,7 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 
 ## 内核生命周期
 
-- 安装：在 `<data_dir>/kernels/<version>/` 写最小 stub `package.json` 后执行 `pnpm add --prefix … --ignore-workspace --config.node-linker=hoisted --reporter=append-only @deepseek-ai/dsh@<version>`；npm tarball 先写 `.part` 临时文件，完整下载后才 rename。
+- 安装：在 `<data_dir>/kernels/<version>/` 写最小 stub `package.json` 后执行 `pnpm add --prefix … --ignore-workspace --config.node-linker=hoisted --reporter=append-only @deepseek-ai/dsh@<version>`；npm tarball 先写 `.part` 临时文件，完整下载后才 rename。首次安装成功后只设置 `active.txt`，不会自动启动内核；启动由用户在概览页明确触发 `start_kernel`。
 - npm 包解包由 `archive.rs` 在 Rust 内执行：只接受 `package/` 根、拒绝绝对/父级路径、符号链接/硬链接/特殊文件，最多 100,000 个条目、512 MiB 声明展开内容，并在临时目录校验后发布到目标目录。
 - `node-linker=hoisted` 保证 `node_modules` 扁平，内核入口固定为 `node_modules/@deepseek-ai/dsh/lib/bin.js`（`kernel::KERNEL_BIN_REL`）；改布局必须同步该常量与 `start()`。
 - `run_pnpm` 把 stdout/stderr 各用一个 drain 线程读入有界 mpsc channel，安装线程逐行回调 `on_progress` 并落盘日志——不要把两个管道放在同一线程顺序读取（会因管道缓冲区满而死锁）。

@@ -1514,6 +1514,38 @@ fn read_plugin_manifest(plugin_root: &Path) -> Result<serde_json::Value, serde_j
     serde_json::from_str(&text)
 }
 
+/// 将 package.json 中的依赖名解析到插件自己的 node_modules，拒绝通过
+/// manifest 把检查路径带出插件目录。npm 包名只允许普通段或 `@scope/name`。
+fn store_dependency_path(plugin_root: &Path, name: &str) -> Option<PathBuf> {
+    if name.is_empty() || name.contains('\\') {
+        return None;
+    }
+    let mut path = plugin_root.join("node_modules");
+    for segment in name.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return None;
+        }
+        path.push(segment);
+    }
+    Some(path)
+}
+
+/// link 模式插件从中央库真实路径加载，因此其普通 dependencies 必须存在
+/// 于中央库自身；profile 的 `link:` 依赖不会替共享目录安装这些包。
+fn store_dependencies_ready(plugin_root: &Path) -> bool {
+    let Ok(root) = read_plugin_manifest(plugin_root) else {
+        return false;
+    };
+    let Some(dependencies) = root.get("dependencies").and_then(|d| d.as_object()) else {
+        return true;
+    };
+    dependencies.keys().all(|name| {
+        store_dependency_path(plugin_root, name)
+            .map(|path| path.join("package.json").is_file())
+            .unwrap_or(false)
+    })
+}
+
 /// 插件目录是否声明了运行时依赖。
 fn manifest_has_deps(plugin_root: &Path) -> bool {
     let Ok(root) = read_plugin_manifest(plugin_root) else {
@@ -1649,6 +1681,12 @@ fn install_store_deps(
         on_progress(
             "注意：pnpm 以非零退出码结束（多为依赖构建脚本被忽略所致），插件依赖已基本就绪",
         );
+    }
+    if !store_dependencies_ready(&dir) {
+        return Err(AppError::Plugin(format!(
+            "插件依赖未完整安装（package.json 中声明的依赖仍有缺失），详情见日志：{}",
+            log_path.display()
+        )));
     }
     Ok(())
 }
@@ -2076,6 +2114,31 @@ pub fn ensure_wiring(
     )
 }
 
+/// link 模式下插件源码从中央库路径加载，profile 的 `link:` 接线不会替中央
+/// 库安装普通 dependencies。插件目录可能被用户手工清理，或在切换内核、
+/// pnpm 重建后丢失 node_modules；启动前发现这种状态时沿用安装阶段的依赖
+/// 修复流程，让后面的内核加载拿到完整的运行时依赖。
+fn ensure_store_dependencies(
+    data_dir: &Path,
+    item: &StoreItem,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    if item.mode != "link" {
+        return Ok(());
+    }
+    let plugin_root = store_plugin_dir(data_dir, &item.id);
+    if !manifest_has_deps(&plugin_root) || store_dependencies_ready(&plugin_root) {
+        return Ok(());
+    }
+    on_progress(&format!(
+        "检测到插件 {} 的运行时依赖缺失，正在恢复 …",
+        item.name
+    ));
+    ensure_store_npmrc(data_dir).ok();
+    install_store_deps(data_dir, pnpm_exe, &item.id, on_progress)
+}
+
 /// 按中央库对活动内核的 profile 清单进行调和：把每个允许条目对应的依赖
 /// 设置为已物化的目录，维护 bundle 层，活动内核变更时重写 spec。当清单发生
 /// 变更或 profile 的 `node_modules` 缺失时运行 `pnpm install`。被过滤掉的
@@ -2111,7 +2174,8 @@ pub fn ensure_wiring_filtered(
     match kernel::read_active(data_dir) {
         Some(active) => {
             for item in store.items.iter().filter(|item| allow(item)) {
-                let result = refresh_store_peers(data_dir, item, &active)
+                let result = ensure_store_dependencies(data_dir, item, pnpm_exe, on_progress)
+                    .and_then(|_| refresh_store_peers(data_dir, item, &active))
                     .and_then(|_| materialize_one(data_dir, &active, item));
                 match result {
                     Ok(actual) => {
@@ -4333,6 +4397,36 @@ mod tests {
         // 幂等：同内核再跑一次不重复（存在即跳过）
         refresh_store_peers(&data_dir, &item, version).expect("peers again");
         assert!(dest.exists());
+    }
+
+    #[test]
+    fn store_dependencies_are_not_ready_until_each_declared_dependency_exists() {
+        let home = TestHome::new();
+        let plugin_root = store_plugin_dir(&home.data_dir(), "dependency-plugin");
+        fs::create_dir_all(&plugin_root).unwrap();
+        fs::write(
+            plugin_root.join("package.json"),
+            r#"{
+                "name":"dependency-plugin",
+                "dependencies": {
+                    "@deepseek-ai/dsh-settings":"^0.1.0",
+                    "@deepseek-ai/schemastery":"^3.18.0"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!store_dependencies_ready(&plugin_root));
+
+        let settings = plugin_root.join("node_modules/@deepseek-ai/dsh-settings");
+        fs::create_dir_all(&settings).unwrap();
+        fs::write(settings.join("package.json"), "{}").unwrap();
+        assert!(!store_dependencies_ready(&plugin_root));
+
+        let schemastery = plugin_root.join("node_modules/@deepseek-ai/schemastery");
+        fs::create_dir_all(&schemastery).unwrap();
+        fs::write(schemastery.join("package.json"), "{}").unwrap();
+        assert!(store_dependencies_ready(&plugin_root));
     }
 
     #[test]

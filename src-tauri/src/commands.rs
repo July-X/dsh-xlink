@@ -432,45 +432,25 @@ pub async fn install_kernel(
         )
         .map_err(|e| e.to_string())?;
 
-        // 首次安装的内核会自动设为活动版本，之后的安装不再改动当前活动版
-        // 本。安装、切换和自动启动都在同一个 worker 与生命周期锁内完成，
-        // 不会让另一个命令插入到中间状态。
-        if kernel::read_active(&data_dir).is_none() {
-            kernel::set_active(&data_dir, &version_for_install).map_err(|e| e.to_string())?;
-            send(&format!("已切换到版本 {version_for_install}"));
-        }
-
-        // 重新读取设置，避免安装期间用户刚保存的端口配置被旧快照覆盖。
-        let settings = settings::load(&data_dir);
-        if !kernel::port_open(settings.port) {
-            send("正在启动内核…");
-            // 与「启动工作台」按钮共用同一条受防护的启动流程：刚装好的
-            // 插件若把内核搞坏必须落进隔离流程，而不是让用户在安装之后
-            // 面对一个崩溃的工作台。
-            let deps = guard::GuardDeps {
-                data_dir: &data_dir,
-                settings: &settings,
-                node_path: &node_path,
-                pnpm_exe: &pnpm_exe,
-            };
-            let (report, child) = guard::guarded_start(&deps, &mut send);
-            if let Some(child) = child {
-                register_child(&state, &data_dir, child);
-                send("内核已启动");
-            }
-            if let Some(incident) = report.incident {
-                send(&incident.message);
-                for step in &incident.attempts {
-                    send(&format!("· {step}"));
-                }
-            } else if !report.running {
-                send("内核未能启动，详情见日志");
-            }
-        }
+        complete_kernel_install(&data_dir, &version_for_install, &mut send)?;
         Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn complete_kernel_install(
+    data_dir: &Path,
+    version: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), String> {
+    // 首次安装的内核会自动设为活动版本，之后的安装不再改动当前活动版
+    // 本；安装完成后保持停止状态，由用户从「概览」页明确启动工作台。
+    if kernel::read_active(data_dir).is_none() {
+        kernel::set_active(data_dir, version).map_err(|e| e.to_string())?;
+        on_progress(&format!("已切换到版本 {version}"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -505,6 +485,55 @@ pub async fn remove_version(app: AppHandle, version: String) -> Result<(), Strin
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod kernel_install_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn install_completion_does_not_start_kernel() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "dsh-xlink-install-completion-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let version = "0.1.2-alpha.test";
+        let bin =
+            kernel::kernel_dir(&data_dir, version).join("node_modules/@deepseek-ai/dsh/lib/bin.js");
+        fs::create_dir_all(bin.parent().expect("kernel bin parent")).expect("create kernel");
+        fs::write(&bin, b"// test kernel").expect("write kernel marker");
+        settings::save(
+            &data_dir,
+            &settings::Settings {
+                port: 0,
+                ..settings::Settings::default()
+            },
+        )
+        .expect("write settings");
+
+        let mut progress = |_message: &str| {};
+        let result = complete_kernel_install(&data_dir, version, &mut progress);
+        let active = kernel::read_active(&data_dir);
+        let port_open = kernel::port_open(0);
+        let pid_file_exists = data_dir.join("kernel.pid").is_file();
+        fs::remove_dir_all(&data_dir).expect("remove test data");
+
+        result.expect("complete install");
+        assert_eq!(active.as_deref(), Some(version));
+        assert!(
+            !port_open,
+            "install completion must leave the kernel stopped"
+        );
+        assert!(
+            !pid_file_exists,
+            "install completion must not register a kernel process"
+        );
+    }
 }
 
 // --- 内核生命周期 -----------------------------------------------------------
