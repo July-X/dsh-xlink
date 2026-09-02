@@ -7,17 +7,18 @@ import { withLoading, withExclusive, isExclusiveBusy } from './loading.js';
 import { withProgress } from './progress.js';
 import { refreshAll } from './store.js';
 
-// dshfind.com 分类 id → 中文标签，数组顺序即界面顺序。
+// dshfind.com 分类 id → 中文标签，数组顺序即界面顺序，与
+// https://dshfind.com/zh/plugins 上的筛选分组保持一致。
 export const CATALOG_CATEGORIES = [
-  ['skin', '外观皮肤'],
-  ['ui', '界面交互'],
-  ['agent', '技能智能体'],
+  ['skin', '皮肤主题'],
+  ['ui', '面板增强'],
+  ['agent', 'Agent 增强'],
   ['memory', '记忆上下文'],
   ['client', '客户端'],
-  ['channel', '消息渠道'],
-  ['tools', '工具能力'],
-  ['fun', '娱乐'],
-  ['resource', '资源数据'],
+  ['channel', '通道通知'],
+  ['tools', '工具集成'],
+  ['fun', '趣味互动'],
+  ['resource', '资源导航'],
 ];
 export const CATALOG_PAGE = 60;
 
