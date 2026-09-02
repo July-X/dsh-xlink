@@ -2758,6 +2758,58 @@ pub fn install(
     install_unlocked(data_dir, settings, pnpm_exe, spec_str, mode, on_progress)
 }
 
+/// 从 GitHub 风格的 spec 提取可能的 npm 包名候选。DSH 插件作者通常把
+/// 包发布为 `<repo-name>` 或 `dsh-<repo-name>`，所以对 GitHub 来源先按
+/// 这两个候选尝试 npm install（更快、有版本号、预构建），都失败再回退
+/// 到 git clone。带 `#tag` 的 spec 是用户明确指定的版本，走 git 以使用
+/// 对应 tag —— npm 上对应版本的发布不一定存在，硬猜反而容易装错。
+fn npm_candidates_from_github_spec(spec: &str) -> Option<Vec<String>> {
+    if spec.contains('#') {
+        return None;
+    }
+    let s = spec.trim_end_matches('/').trim_end_matches(".git");
+
+    let repo_path = if let Some(rest) = s.strip_prefix("git@github.com:") {
+        rest.to_string()
+    } else if let Some(rest) = s.strip_prefix("https://github.com/") {
+        rest.to_string()
+    } else if let Some(rest) = s.strip_prefix("http://github.com/") {
+        rest.to_string()
+    } else if let Some(rest) = s.strip_prefix("github.com/") {
+        rest.to_string()
+    } else if s.contains('/')
+        && !s.starts_with('@')
+        && !s.contains("://")
+        && !s.contains(' ')
+        && !s.contains('\t')
+    {
+        // `owner/repo` 简写：不是 URL、不是 scope，也不是包管理器 CLI（含空格）
+        s.to_string()
+    } else {
+        return None;
+    };
+
+    let parts: Vec<&str> = repo_path.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let repo_name = parts[parts.len() - 1].to_lowercase();
+    if repo_name.is_empty()
+        || !repo_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-._~".contains(c))
+    {
+        return None;
+    }
+
+    let mut candidates = Vec::new();
+    candidates.push(repo_name.clone());
+    if !repo_name.starts_with("dsh-") {
+        candidates.push(format!("dsh-{}", repo_name));
+    }
+    Some(candidates)
+}
+
 fn install_unlocked(
     data_dir: &Path,
     settings: &settings::Settings,
@@ -2766,6 +2818,24 @@ fn install_unlocked(
     mode: &str,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<StoreItem, AppError> {
+    // 插件中心安装：GitHub 来源先尝试作者的 npm 包（更快、有版本号、
+    // 预构建），npm 包不可用时回退到 GitHub 仓库安装。npm 安装走的是同
+    // 一份 `install_unlocked`，失败时 `fetch_into_store` 会回滚已写入的
+    // 中央库目录，状态干净。
+    if let Some(npm_candidates) = npm_candidates_from_github_spec(spec_str) {
+        for npm_name in &npm_candidates {
+            on_progress(&format!("尝试 npm 包 {} …", npm_name));
+            let mut silent = |_: &str| {};
+            if let Ok(item) =
+                install_unlocked(data_dir, settings, pnpm_exe, npm_name, mode, &mut silent)
+            {
+                on_progress(&format!("已通过 npm 安装 {}", npm_name));
+                return Ok(item);
+            }
+        }
+        on_progress("npm 包不可用，回退到 GitHub 仓库安装");
+    }
+
     let spec = parse_spec(spec_str)?;
     if store_item(data_dir, &spec.id).is_some() {
         return Err(AppError::Plugin(format!(
@@ -3526,6 +3596,54 @@ mod tests {
             item.detail_url,
             "https://dshfind.com/zh/plugins/deepseek-ai/deepseek-harness"
         );
+    }
+
+    #[test]
+    fn npm_candidates_from_github_spec_https() {
+        // 普通仓库：先试 `<repo-name>`，再加 `dsh-<repo-name>`。
+        assert_eq!(
+            npm_candidates_from_github_spec("https://github.com/owner/modlens"),
+            Some(vec!["modlens".to_string(), "dsh-modlens".to_string()])
+        );
+    }
+
+    #[test]
+    fn npm_candidates_from_github_spec_dsh_prefix() {
+        // 仓库名已经以 `dsh-` 开头：候选只有它自己，避免重复请求。
+        assert_eq!(
+            npm_candidates_from_github_spec("https://github.com/owner/dsh-zhipu"),
+            Some(vec!["dsh-zhipu".to_string()])
+        );
+    }
+
+    #[test]
+    fn npm_candidates_from_github_spec_git_ssh_and_owner_repo() {
+        assert_eq!(
+            npm_candidates_from_github_spec("git@github.com:owner/repo.git"),
+            Some(vec!["repo".to_string(), "dsh-repo".to_string()])
+        );
+        assert_eq!(
+            npm_candidates_from_github_spec("owner/repo"),
+            Some(vec!["repo".to_string(), "dsh-repo".to_string()])
+        );
+    }
+
+    #[test]
+    fn npm_candidates_from_github_spec_with_tag_returns_none() {
+        // 带 `#tag` 的 spec 是用户明确指定的版本，npm 上的对应版本不一
+        // 定存在，硬猜容易装错，直接走 git。
+        assert_eq!(
+            npm_candidates_from_github_spec("https://github.com/owner/repo#v1.0.0"),
+            None
+        );
+    }
+
+    #[test]
+    fn npm_candidates_from_github_spec_rejects_npm_shapes() {
+        // 已经是 npm 形态（或带 scope）的 spec 不要再走一遍 npm 探测。
+        assert_eq!(npm_candidates_from_github_spec("modlens"), None);
+        assert_eq!(npm_candidates_from_github_spec("@scope/pkg"), None);
+        assert_eq!(npm_candidates_from_github_spec("npm i @scope/pkg"), None);
     }
 
     #[test]
