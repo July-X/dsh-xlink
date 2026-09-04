@@ -1168,6 +1168,128 @@ main {
   flex-wrap: wrap;
 }
 
+/* 概览「当前内核」卡的次级按钮行：仅在工作台 / 官方对话开启后从下方淡入。
+   视觉上压低权重——左缩进 + 2px 细竖线把它挂在第一行下方；按钮本身是
+   ghost 风格（透明底 + 细描边 + 灰文），hover 才出现品牌色高亮，避免与
+   第一行主按钮抢视线，又不与普通 text 按钮那种几乎不可见的弱态混淆。 */
+.btn-row-sub {
+  margin-top: -2px;
+  padding: 4px 0 4px 14px;
+  border-left: 2px solid var(--border);
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  display: flex;
+  min-height: 32px;
+  transition: border-color 0.18s ease;
+}
+
+.btn-row-sub:hover {
+  border-left-color: rgba(79, 140, 255, 0.5);
+}
+
+.btn-sub {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-weight: 500;
+  transition: background-color 0.18s ease, border-color 0.18s ease,
+    color 0.18s ease, transform 0.12s ease;
+}
+
+.btn-sub:hover,
+.btn-sub:focus-visible {
+  background: rgba(79, 140, 255, 0.12);
+  border-color: rgba(79, 140, 255, 0.55);
+  color: var(--accent);
+  outline: none;
+}
+
+.btn-sub.is-disabled,
+.btn-sub.is-disabled:hover {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--muted);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 次级行进入/离开：仅透明度 + 4px 纵向位移，不影响第一行布局。 */
+.subrow-enter-from,
+.subrow-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.subrow-enter-active,
+.subrow-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+/* 「查看日志」按钮：无底色 text 按钮，文字用冰青 #67e8f9（cyan-300）——
+   与 --accent-2 #22d3ee 同色系但提亮，让按钮在深色卡上读得清且「不是白字」。
+   hover 进一步提到 #a5f3fc。覆盖 icon / hover / focus / active 态。
+   选择器用 .el-button（不带 --primary 后缀），因为现在这些按钮是
+   type="text"，没有 .el-button--primary 类。 */
+.btn-view.el-button,
+.btn-view.el-button .el-icon {
+  color: #67e8f9;
+}
+
+.btn-view.el-button:hover,
+.btn-view.el-button:focus-visible,
+.btn-view.el-button:hover .el-icon,
+.btn-view.el-button:focus-visible .el-icon {
+  color: #a5f3fc;
+}
+
+.btn-view.el-button:active,
+.btn-view.el-button:active .el-icon {
+  color: #67e8f9;
+}
+
+/* 「打开/关闭官方对话」按钮：同无底色 text 按钮，文字用薄荷绿 #6ee7b7
+   （emerald-300）——与 --good #34d399 同色系但提亮。hover 进一步提到 #a7f3d0。
+   覆盖 icon / hover / focus / active 态。 */
+.btn-chat.el-button,
+.btn-chat.el-button .el-icon {
+  color: #6ee7b7;
+}
+
+.btn-chat.el-button:hover,
+.btn-chat.el-button:focus-visible,
+.btn-chat.el-button:hover .el-icon,
+.btn-chat.el-button:focus-visible .el-icon {
+  color: #a7f3d0;
+}
+
+.btn-chat.el-button:active,
+.btn-chat.el-button:active .el-icon {
+  color: #6ee7b7;
+}
+
+/* 「关闭」态：珊瑚红 #f87171（--bad token / Tailwind red-400），
+   与薄荷绿 #6ee7b7、冰青 #67e8f9 同属 Tailwind 300-400 中亮度档，三色在
+   卡底上同强度同饱和度，看起来是「同一色板里的三个状态」而非「危险 vs 信息」
+   那种割裂的视觉权重。hover 进一步提到 #fca5a5。
+   源序放在 .btn-chat 之后，让「关闭官方对话」时 .btn-danger 覆盖 .btn-chat 的绿色。 */
+.btn-danger.el-button,
+.btn-danger.el-button .el-icon {
+  color: #f87171;
+}
+
+.btn-danger.el-button:hover,
+.btn-danger.el-button:focus-visible,
+.btn-danger.el-button:hover .el-icon,
+.btn-danger.el-button:focus-visible .el-icon {
+  color: #fca5a5;
+}
+
+.btn-danger.el-button:active,
+.btn-danger.el-button:active .el-icon {
+  color: #f87171;
+}
+
 /* 设置页「内核补丁」卡片：每个补丁一行，主信息 + 状态徽标 + 操作按钮。 */
 .patch-empty {
   color: var(--muted);
