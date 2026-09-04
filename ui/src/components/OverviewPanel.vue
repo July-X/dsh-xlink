@@ -1,8 +1,8 @@
 <script setup>
 // 概览：当前内核状态、工作台启停单按钮状态机、首次运行引导、
 // 外壳更新横幅与安装入口（手动检查在侧栏品牌区）以及启动容错横幅。
-// 内核生命周期是实现细节，只暴露「启动工作台 / 关闭工作台」；
-// 「打开工作台窗口 / 打开官方对话 / 查看日志」是次级入口。
+// 内核生命周期是实现细节，只暴露「打开/关闭工作台 / 打开/关闭官方对话 / 查看日志」；
+// 「打开工作台窗口 / 打开官方对话窗口」在对应服务开启后作为次级入口从第二行动态浮现。
 import { computed } from 'vue';
 import {
   SwitchButton,
@@ -24,6 +24,7 @@ import {
   stopWorkbench,
   openHarnessWindow,
   toggleOfficialChat,
+  openOfficialChatWindow,
   openDataDir,
   installShellUpdate,
   installLatestRelease,
@@ -92,7 +93,7 @@ function goGuardDestination() {
 
 const toggleLabel = computed(() => {
   if (store.starting) return '正在启动…';
-  return running.value ? '关闭工作台' : '启动工作台';
+  return running.value ? '关闭工作台' : '打开工作台';
 });
 
 const toggleDisabled = computed(() => {
@@ -210,9 +211,15 @@ function goVersions() {
         </div>
       </div>
 
+      <!-- 第一行：主操作三件套（工作台 / 官方对话 / 查看日志）+ 可选外壳更新。
+           文字色随状态切换：
+           - 打开态（打开工作台 / 打开官方对话）：白 / 淡绿
+           - 关闭态（关闭工作台 / 关闭官方对话）：淡红（btn-danger）
+           - 查看日志：淡青（始终只读）
+           全部用 type="text"（无底色无描边），仅靠文字色 + icon 区分。 -->
       <div class="btn-row">
         <el-button
-          type="primary"
+          :class="{ 'btn-danger': running }"
           :icon="SwitchButton"
           :loading="store.starting"
           :disabled="toggleDisabled"
@@ -221,18 +228,8 @@ function goVersions() {
           {{ toggleLabel }}
         </el-button>
         <el-button
-          text
-          :icon="TopRight"
-          :disabled="!running || store.starting || globalBusy"
-          :loading="isLoading('openHarness')"
-          @click="openHarnessWindow"
-        >
-          打开工作台窗口
-        </el-button>
-        <el-button
-          text
+          :class="{ 'btn-chat': !officialChatOpen, 'btn-danger': officialChatOpen }"
           :icon="ChatDotRound"
-          :class="{ 'official-chat-open': officialChatOpen, 'official-chat-closed': !officialChatOpen }"
           :disabled="store.starting || globalBusy"
           :loading="isLoading('officialChat')"
           title="打开或关闭 DeepSeek 官方对话"
@@ -240,7 +237,13 @@ function goVersions() {
         >
           {{ officialChatLabel }}
         </el-button>
-        <el-button text :icon="Document" @click="showLogs">查看日志</el-button>
+        <el-button
+          class="btn-view"
+          :icon="Document"
+          @click="showLogs"
+        >
+          查看日志
+        </el-button>
         <el-button
           v-if="store.shellUpdateVersion"
           type="warning"
@@ -252,6 +255,37 @@ function goVersions() {
           更新并重启
         </el-button>
       </div>
+
+      <!-- 第二行：仅在对应服务开启后出现，作为「打开 X 窗口」的次级入口；
+           视觉上压低权重（缩进 + ghost 风格），与第一行的主按钮做明显区分。 -->
+      <Transition name="subrow">
+        <div v-if="running || officialChatOpen" class="btn-row btn-row-sub">
+          <el-button
+            v-if="running"
+            class="btn-sub"
+            size="small"
+            :icon="TopRight"
+            :loading="isLoading('openHarness')"
+            :disabled="globalBusy"
+            title="在独立窗口中打开工作台 webview"
+            @click="openHarnessWindow"
+          >
+            打开工作台窗口
+          </el-button>
+          <el-button
+            v-if="officialChatOpen"
+            class="btn-sub"
+            size="small"
+            :icon="TopRight"
+            :loading="isLoading('openOfficialChatWindow')"
+            :disabled="globalBusy"
+            title="唤起 / 聚焦 DeepSeek 官方对话窗口"
+            @click="openOfficialChatWindow"
+          >
+            打开官方对话窗口
+          </el-button>
+        </div>
+      </Transition>
       <p v-if="!store.starting && !running && !canStart" class="muted" style="margin: 0">
         尚未安装可用内核，请先到「内核版本」页安装。
       </p>

@@ -386,6 +386,14 @@ export function toggleOfficialChat() {
   );
 }
 
+// 「打开官方对话窗口」专用入口：只触发 show/focus，不切换关闭态。
+// Rust 侧 open_official_chat 在窗口已存在时只会 set_focus，所以重复点击安全。
+export function openOfficialChatWindow() {
+  return withLoading('openOfficialChatWindow', () =>
+    invoke('open_official_chat').catch((e) => toastError('打开官方对话窗口失败：' + e, 5000))
+  );
+}
+
 export function openDataDir() {
   return withLoading('openDataDir', () =>
     invoke('open_data_dir').catch((e) => toastError('打开数据目录失败：' + e))
