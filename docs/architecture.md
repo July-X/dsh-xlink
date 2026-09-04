@@ -44,7 +44,7 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 - **例外（fixed-path 模式）**：插件构建日志位于 `<plugin_dir>/.dsh-build.log`（插件卸载时一并清理），不属于上述规范——`run_pnpm_at` / `RotatingLog::new_at_path` 仍保证实时落盘与尺寸上限，但不应用 build kind / 日期前缀。
 
 `list_log_files` 仅按 `.log` 后缀扫描目录、按文件名字典序倒序排；最新的 `<kind>-kernel-<today>.log` 自动落到第一个 tab，符合用户「最近一次启动最相关」的预期。`read_log_file` 接受任意裸文件名（不含路径分隔符），所以新旧命名都通过同一组 Tauri 命令入口暴露给 UI。
-- `updater.rs`：`tauri-plugin-updater` 包装，启动 3 秒后后台检查并 emit `shell-update-available`。
+- `updater.rs`：`tauri-plugin-updater` 包装，启动 3 秒后后台检查并 emit `shell-update-available`。安装前先下载并校验签名，再写入 `pending-shell-update.json`，随后拉起安装器并重启。Windows 新版本管理面板完成首次状态刷新后，通过 `confirm_shell_ready` 清理 `/UPDATE` 路径跳过的旧安装和 updater 临时目录；同一安装目录不调用旧卸载器，而是直接移除历史 exe 和默认快捷方式，清理失败则保留标记等待下次启动重试。
 - `lib.rs`：装配 + `setup()` 取目录（必须走 `kernel::data_dir`）+ `RunEvent::Exit` 兜底回收内核进程组。`harness` 与 `official-chat` 两个 webview 窗口通过 `capabilities/harness-remote.json` / `capabilities/official-chat-remote.json` 分别绑定 ACL；拉绳挂件只需要 `allow-focus-main-shell` 这条 IPC 命令，URL 都精确钉死（`http://127.0.0.1:*` / `https://chat.deepseek.com/*` 等三个官方对话 origin，不开通 wildcard 域名）。`harness-remote.json` 直接授 `allow-focus-main-shell`，`official-chat-remote.json` 不授任何命令（拉绳属于窗口 chrome，由 `official-chat-strip` 页签栏 webview 承载、走 `allow-official-chat-tabs` 这条本地权限）。
 
 ## 内核生命周期

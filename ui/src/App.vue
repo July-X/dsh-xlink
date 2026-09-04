@@ -149,7 +149,11 @@ function onVisibilityChange() {
 }
 
 onMounted(() => {
-  refreshAll();
+  // 先完成首屏状态刷新，再让 Rust 确认新 Shell 已经能运行；Windows
+  // 只有这一步之后才会清理更新前的安装目录和 updater 临时文件。
+  refreshAll()
+    .then(() => invoke('confirm_shell_ready'))
+    .catch((e) => toastError('更新后的旧版本清理未完成：' + e, 6000));
 
   // 状态轮询：窗口隐藏时整个跳过；重新可见时立即补一轮。
   pollTimer = setInterval(pollStatus, 2500);

@@ -28,6 +28,7 @@
           "open_data_dir",
           "check_shell_update",
           "install_shell_update",
+          "confirm_shell_ready",
           "fetch_releases",
           "install_kernel",
           "activate_version",

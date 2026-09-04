@@ -7,7 +7,15 @@
 //! 更新才会出现在这里——而且仅当该 release 被标记为 "latest"，
 //! GitHub 允许 prerelease 也被标记为 latest。
 
+use std::path::Path;
+#[cfg(any(test, all(windows, not(debug_assertions))))]
+use std::path::PathBuf;
+
+#[cfg(any(test, all(windows, not(debug_assertions))))]
+use serde::Deserialize;
 use serde::Serialize;
+#[cfg(all(windows, not(debug_assertions)))]
+use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::{Error as UpdaterError, UpdaterExt};
 
@@ -23,6 +31,123 @@ pub struct ShellUpdateInfo {
 
 /// 后台检查到较新外壳发布版本时触发的事件。
 pub const UPDATE_AVAILABLE_EVENT: &str = "shell-update-available";
+
+/// Windows 更新由 NSIS 以 `/UPDATE` 方式覆盖安装，旧安装目录的卸载和
+/// 快捷方式清理不会在这个路径执行。这个标记跨越 updater 拉起的旧进程和
+/// 新进程，只在新版本已经启动并通过 UI 确认后消费。
+#[cfg(all(windows, not(debug_assertions)))]
+const PENDING_UPDATE_FILE_NAME: &str = "pending-shell-update.json";
+#[cfg(any(test, all(windows, not(debug_assertions))))]
+const PENDING_UPDATE_SCHEMA_VERSION: u8 = 1;
+
+#[cfg(any(test, all(windows, not(debug_assertions))))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PendingShellUpdate {
+    schema_version: u8,
+    previous_executable: String,
+    previous_version: String,
+    target_version: String,
+}
+
+#[cfg(any(test, all(windows, not(debug_assertions))))]
+impl PendingShellUpdate {
+    fn is_ready_for(&self, current_version: &str) -> bool {
+        self.schema_version == PENDING_UPDATE_SCHEMA_VERSION
+            && self.target_version == current_version
+    }
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+fn pending_update_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(PENDING_UPDATE_FILE_NAME)
+}
+
+/// Windows 路径比较不区分大小写；统一分隔符后比较也让测试和跨版本
+/// 记录的路径格式保持稳定。
+#[cfg(any(test, all(windows, not(debug_assertions))))]
+fn normalized_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
+#[cfg(any(test, all(windows, not(debug_assertions))))]
+fn same_path(left: &Path, right: &Path) -> bool {
+    normalized_path(left) == normalized_path(right)
+}
+
+#[cfg(any(test, all(windows, not(debug_assertions))))]
+fn is_supported_shell_executable(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let file_name = file_name.to_ascii_lowercase();
+    matches!(
+        file_name.as_str(),
+        "dsh-desktop.exe" | "dsh-xlink.exe" | "dsh_desktop.exe" | "dsh_xlink.exe"
+    )
+}
+
+#[cfg(any(test, all(windows, not(debug_assertions))))]
+fn legacy_shortcut_names(old_name: &str) -> &'static [&'static str] {
+    match old_name {
+        "dsh-desktop.exe" => &["dsh-desktop.lnk"],
+        "dsh-xlink.exe" => &["dsh-xlink.lnk"],
+        "dsh_desktop.exe" => &["dsh_desktop.lnk", "dsh-desktop.lnk"],
+        "dsh_xlink.exe" => &["dsh_xlink.lnk", "dsh-xlink.lnk"],
+        _ => &[],
+    }
+}
+
+/// 返回需要由旧 NSIS 卸载器处理的安装目录；同目录覆盖安装不能再次
+/// 调用卸载器，否则它会把刚写入的新版本一并删除。
+#[cfg(any(test, all(windows, not(debug_assertions))))]
+fn previous_install_dir_for_cleanup(
+    previous_executable: &Path,
+    current_executable: &Path,
+) -> Result<Option<PathBuf>, String> {
+    if !previous_executable.is_absolute() {
+        return Err(format!(
+            "旧版本可执行文件路径不是绝对路径：{}",
+            previous_executable.display()
+        ));
+    }
+    if !is_supported_shell_executable(previous_executable) {
+        return Err(format!(
+            "旧版本可执行文件名称不受支持：{}",
+            previous_executable.display()
+        ));
+    }
+
+    let previous_dir = previous_executable
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| format!("无法解析旧版本安装目录：{}", previous_executable.display()))?;
+    let current_dir = current_executable
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| format!("无法解析当前版本安装目录：{}", current_executable.display()))?;
+
+    if same_path(previous_dir, current_dir) {
+        Ok(None)
+    } else {
+        Ok(Some(previous_dir.to_path_buf()))
+    }
+}
+
+/// tauri-plugin-updater 2.x 在 Windows 临时目录下使用
+/// `<app>-<version>-updater-*` 命名。只接受本项目当前和历史产品名，避免
+/// 清理用户的其它临时目录。
+#[cfg(any(test, all(windows, not(debug_assertions))))]
+fn is_owned_updater_temp_dir(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    (name.starts_with("dsh-xlink-")
+        || name.starts_with("dsh-desktop-")
+        || name.starts_with("dsh_xlink-")
+        || name.starts_with("dsh_desktop-"))
+        && name.contains("-updater-")
+}
 
 /// 将 tauri-plugin-updater 的错误翻译为面向用户的中文消息，说明实际出了
 /// 什么问题以及用户（或发布维护者）下一步该做什么。`Error` 是
@@ -112,8 +237,11 @@ pub fn spawn_background_check(app: &AppHandle) {
 /// updater 会用固定公钥校验 minisign 签名。
 pub async fn install(
     app: &AppHandle,
+    data_dir: &Path,
     on_progress: impl FnMut(&str) + Send,
 ) -> Result<(), AppError> {
+    #[cfg(all(windows, not(debug_assertions)))]
+    let current_version = app.package_info().version.to_string();
     let update = app
         .updater()
         .map_err(|e| AppError::Update(format!("初始化失败：{e}")))?
@@ -122,20 +250,17 @@ pub async fn install(
         .map_err(|e| AppError::Update(explain_updater_error(e)))?
         .ok_or_else(|| AppError::Update("当前已是最新版本".into()))?;
     let version = update.version.clone();
-    // download_and_install 接收两个回调，两者都会上报进度；
+    // download 接收两个回调，两者都会上报进度；
     // 让它们共享同一个 sink，sink 放在 mutex 后面。
     let progress = std::sync::Mutex::new(on_progress);
-    update
-        .download_and_install(
-            |received, total| {
-                // tauri-plugin-updater 的 chunk 回调每收到一个 chunk
-                // 触发一次，`received` 是当前的字节累计，`total` 是
-                // 响应 Content-Length 的 Option<usize`。之前的实现只
-                // 显示 `total`，让横幅一直停在 \"(4.0 MB)\" 上，即便
-                // 下载还在推进——用户因此报障称更新卡住。同时显示两个
-                // 值：以 MB 为单位的 received / total，让横幅能随着
-                // 每个 chunk 可见地前进。
-                let received_mb = format!("{:.1} MB", received as f64 / 1_048_576.0);
+    let mut downloaded = 0_u64;
+    let bytes = update
+        .download(
+            |chunk_length, total| {
+                // 插件回调传入的是本次 chunk 大小，不是累计值；这里在
+                // 外层累加后再展示，避免进度条反复显示单个 chunk 的大小。
+                downloaded = downloaded.saturating_add(chunk_length as u64);
+                let received_mb = format!("{:.1} MB", downloaded as f64 / 1_048_576.0);
                 let total_mb = total
                     .map(|t| format!("{:.1} MB", t as f64 / 1_048_576.0))
                     .unwrap_or_else(|| "?".into());
@@ -143,11 +268,386 @@ pub async fn install(
                     "正在下载 v{version}（{received_mb} / {total_mb}）…"
                 ));
             },
-            || crate::lock(&progress)("下载完成，正在安装并重启…"),
+            || crate::lock(&progress)("下载完成，正在校验并安装…"),
         )
         .await
+        .map_err(|e| AppError::Update(format!("下载或签名校验失败：{e}")))?;
+
+    #[cfg(all(windows, not(debug_assertions)))]
+    write_pending_update(data_dir, &current_version, &version)?;
+
+    #[cfg(any(not(windows), debug_assertions))]
+    let _ = data_dir;
+
+    update
+        .install(bytes)
         .map_err(|e| AppError::Update(format!("安装失败：{e}")))?;
     app.restart();
+}
+
+/// 由新版本管理面板首次挂载后调用。Windows 下只有当前包版本与更新前
+/// 记录的目标版本一致时才会开始回收旧安装；其它平台保持 no-op。
+pub fn confirm_shell_ready(app: &AppHandle, data_dir: &Path) -> Result<(), AppError> {
+    #[cfg(all(windows, not(debug_assertions)))]
+    {
+        if let Err(detail) = cleanup_after_ready(app, data_dir) {
+            return Err(cleanup_failure(data_dir, &detail));
+        }
+    }
+
+    #[cfg(any(not(windows), debug_assertions))]
+    {
+        let _ = (app, data_dir);
+    }
+    Ok(())
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+fn write_pending_update(
+    data_dir: &Path,
+    current_version: &str,
+    target_version: &str,
+) -> Result<(), AppError> {
+    let previous_executable = std::env::current_exe()
+        .map_err(|e| AppError::Update(format!("无法记录旧版本路径：{e}")))?;
+    if !is_supported_shell_executable(&previous_executable) {
+        return Err(AppError::Update(format!(
+            "无法识别当前 Shell 可执行文件：{}",
+            previous_executable.display()
+        )));
+    }
+
+    let pending = PendingShellUpdate {
+        schema_version: PENDING_UPDATE_SCHEMA_VERSION,
+        previous_executable: previous_executable.to_string_lossy().into_owned(),
+        previous_version: current_version.to_string(),
+        target_version: target_version.to_string(),
+    };
+    let text = serde_json::to_string_pretty(&pending)
+        .map_err(|e| AppError::Update(format!("无法编码更新清理标记：{e}")))?;
+    let path = pending_update_path(data_dir);
+    crate::process::atomic_write(&path, format!("{text}\n").as_bytes()).map_err(|e| {
+        AppError::Update(format!(
+            "无法记录更新清理标记：{e}（路径：{}）",
+            path.display()
+        ))
+    })
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+fn cleanup_after_ready(app: &AppHandle, data_dir: &Path) -> Result<(), String> {
+    use std::sync::{Mutex, OnceLock};
+
+    static CLEANUP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = crate::lock(CLEANUP_LOCK.get_or_init(|| Mutex::new(())));
+
+    let current_version = app.package_info().version.to_string();
+    let current_executable =
+        std::env::current_exe().map_err(|e| format!("无法读取当前版本路径：{e}"))?;
+    let desktop_dir = app
+        .path()
+        .desktop_dir()
+        .map_err(|e| format!("无法解析 Windows 桌面目录：{e}"))?;
+    let start_menu_dir = app
+        .path()
+        .config_dir()
+        .map_err(|e| format!("无法解析 Windows 用户配置目录：{e}"))?
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs");
+    let marker_path = pending_update_path(data_dir);
+    let pending = load_pending_update(data_dir)?;
+
+    let Some(pending) = pending else {
+        // 旧版 dsh-desktop 可能是用户通过安装器直接迁移过来的，没有机会
+        // 写入标记。只探测 NSIS 的默认 current-user 目录，避免碰用户自定义
+        // 的其它安装位置。
+        let mut failures = Vec::new();
+        if let Err(error) =
+            cleanup_legacy_default_install(&current_executable, &start_menu_dir, &desktop_dir)
+        {
+            failures.push(error);
+        }
+        // 标记机制启用前的版本也可能已经在 TEMP 留下 updater 目录，
+        // 因此无标记路径同样执行一次受限的历史目录清理。
+        if let Err(error) = cleanup_updater_temp_dirs() {
+            failures.push(error);
+        }
+        return if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("；"))
+        };
+    };
+
+    // 更新失败后旧版本可能再次启动；此时必须保留旧安装和标记，等待真正
+    // 的目标版本启动，而不是把仍在工作的版本卸掉。
+    if !pending.is_ready_for(&current_version) {
+        return Ok(());
+    }
+
+    let previous_executable = PathBuf::from(&pending.previous_executable);
+    match previous_install_dir_for_cleanup(&previous_executable, &current_executable)? {
+        Some(previous_dir) => {
+            if previous_dir.exists() {
+                uninstall_install_dir(&previous_dir)?;
+            }
+        }
+        None => cleanup_same_install_dir(
+            &previous_executable,
+            &current_executable,
+            &start_menu_dir,
+            &desktop_dir,
+        )?,
+    }
+
+    cleanup_updater_temp_dirs()?;
+    std::fs::remove_file(&marker_path)
+        .map_err(|e| format!("无法删除更新清理标记：{}：{e}", marker_path.display()))?;
+    Ok(())
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+fn load_pending_update(data_dir: &Path) -> Result<Option<PendingShellUpdate>, String> {
+    let path = pending_update_path(data_dir);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("无法读取更新清理标记：{}：{error}", path.display())),
+    };
+    let pending: PendingShellUpdate = serde_json::from_str(&text)
+        .map_err(|e| format!("更新清理标记损坏：{}：{e}", path.display()))?;
+    if pending.schema_version != PENDING_UPDATE_SCHEMA_VERSION {
+        return Err(format!(
+            "更新清理标记版本不受支持：{}：{}",
+            path.display(),
+            pending.schema_version
+        ));
+    }
+    Ok(Some(pending))
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+fn cleanup_legacy_default_install(
+    current_executable: &Path,
+    start_menu_dir: &Path,
+    desktop_dir: &Path,
+) -> Result<(), String> {
+    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
+        return Ok(());
+    };
+    let legacy_dir = PathBuf::from(local_app_data).join("dsh-desktop");
+    let Some(current_dir) = current_executable.parent() else {
+        return Err(format!(
+            "无法解析当前版本安装目录：{}",
+            current_executable.display()
+        ));
+    };
+    if same_path(&legacy_dir, current_dir) {
+        return cleanup_same_install_dir(
+            &legacy_dir.join("dsh-desktop.exe"),
+            current_executable,
+            start_menu_dir,
+            desktop_dir,
+        );
+    }
+    if !legacy_dir.exists() {
+        return Ok(());
+    }
+    uninstall_install_dir(&legacy_dir)
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+fn cleanup_same_install_dir(
+    previous_executable: &Path,
+    current_executable: &Path,
+    start_menu_dir: &Path,
+    desktop_dir: &Path,
+) -> Result<(), String> {
+    if same_path(previous_executable, current_executable) {
+        return Ok(());
+    }
+
+    // 同目录升级时不能调用旧卸载器：它可能删除刚安装的新版本资源。
+    // 只处理本项目历史产品名对应的旧 exe 和 NSIS 默认生成的两个快捷方式。
+    remove_file_if_present(previous_executable, "旧版本可执行文件")?;
+
+    let Some(old_name) = previous_executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_ascii_lowercase)
+    else {
+        return Err(format!(
+            "无法解析旧版本可执行文件名称：{}",
+            previous_executable.display()
+        ));
+    };
+    let shortcut_names = legacy_shortcut_names(&old_name);
+    if shortcut_names.is_empty() {
+        return Ok(());
+    }
+
+    let mut failures = Vec::new();
+    for name in shortcut_names {
+        if let Err(error) =
+            remove_file_if_present(&start_menu_dir.join(name), "旧版开始菜单快捷方式")
+        {
+            failures.push(error);
+        }
+    }
+    for name in shortcut_names {
+        if let Err(error) = remove_file_if_present(&desktop_dir.join(name), "旧版桌面快捷方式")
+        {
+            failures.push(error);
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("；"))
+    }
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+fn remove_file_if_present(path: &Path, description: &str) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "无法删除 {description} {}：{error}",
+            path.display()
+        )),
+    }
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+fn uninstall_install_dir(install_dir: &Path) -> Result<(), String> {
+    const SHELL_INSTALLER_FILES: [&str; 5] = [
+        "dsh-desktop.exe",
+        "dsh-xlink.exe",
+        "dsh_desktop.exe",
+        "dsh_xlink.exe",
+        "uninstall.exe",
+    ];
+
+    let uninstaller = install_dir.join("uninstall.exe");
+    if !uninstaller.is_file() {
+        return Err(format!(
+            "旧版本安装目录缺少 uninstall.exe：{}",
+            install_dir.display()
+        ));
+    }
+
+    // 不传 `/UPDATE`：NSIS 只有在普通卸载模式下才会删除旧快捷方式和
+    // 卸载注册表项。/S 仅抑制交互界面，不勾选删除用户数据。
+    let mut command = crate::process::command_with_path(&uninstaller);
+    crate::process::quiet(&mut command);
+    let install_dir_arg = format!("_?={}", install_dir.display());
+    let status = command
+        .arg("/S")
+        .arg(install_dir_arg)
+        .current_dir(install_dir)
+        .status()
+        .map_err(|e| format!("无法启动旧版本卸载器 {}：{e}", uninstaller.display()))?;
+    if !status.success() {
+        return Err(format!(
+            "旧版本卸载器退出码 {:?}：{}",
+            status.code(),
+            install_dir.display()
+        ));
+    }
+
+    // NSIS 卸载器会在退出后异步删除自身。等待这个短窗口，避免把正常的
+    // 自删除误报为失败；超过上限仍保留标记，下一次启动再重试。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let remaining: Vec<&str> = SHELL_INSTALLER_FILES
+            .iter()
+            .copied()
+            .filter(|name| install_dir.join(name).exists())
+            .collect();
+        if remaining.is_empty() {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "旧版本卸载后仍存在 {}：{}",
+                remaining.join("、"),
+                install_dir.display()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+fn cleanup_updater_temp_dirs() -> Result<(), String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match cleanup_updater_temp_dirs_once() {
+            Ok(()) => return Ok(()),
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+fn cleanup_updater_temp_dirs_once() -> Result<(), String> {
+    let temp_dir = std::env::temp_dir();
+    let entries = std::fs::read_dir(&temp_dir)
+        .map_err(|e| format!("无法扫描 updater 临时目录 {}：{e}", temp_dir.display()))?;
+    let mut failures = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                failures.push(format!("读取临时目录条目失败：{error}"));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_owned_updater_temp_dir(&name)
+            || !entry
+                .file_type()
+                .map(|file_type| file_type.is_dir())
+                .unwrap_or(false)
+        {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => failures.push(format!("{}：{error}", path.display())),
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "无法删除 updater 临时目录：{}",
+            failures.join("；")
+        ))
+    }
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+fn cleanup_failure(data_dir: &Path, detail: &str) -> AppError {
+    let logs_dir = crate::kernel::logs_dir(data_dir);
+    let spec =
+        crate::process::LogSpec::new(crate::process::build_log_kind(), "shell-update-cleanup");
+    let log_path = spec.path_for(&logs_dir, &crate::process::current_date_string());
+    if let Ok(mut log) = crate::process::RotatingLog::new(&logs_dir, spec) {
+        let _ = log.write_line(detail);
+    }
+    AppError::Update(format!(
+        "更新后的旧版本清理未完成：{detail}。应用仍可使用，重启后会自动重试。日志：{}",
+        log_path.display()
+    ))
 }
 
 #[cfg(test)]
@@ -193,5 +693,67 @@ mod tests {
             !mapped.contains("未发现已发布的桌面端 release"),
             "Serialization must not look like ReleaseNotFound: {mapped}"
         );
+    }
+
+    #[test]
+    fn pending_update_is_ready_only_for_its_target_version() {
+        let pending = PendingShellUpdate {
+            schema_version: PENDING_UPDATE_SCHEMA_VERSION,
+            previous_executable: String::from("/old/dsh-desktop.exe"),
+            previous_version: String::from("0.1.2-rc.13"),
+            target_version: String::from("0.1.2-rc.14"),
+        };
+
+        assert!(pending.is_ready_for("0.1.2-rc.14"));
+        assert!(!pending.is_ready_for("0.1.2-rc.13"));
+        assert!(!pending.is_ready_for("0.1.2-rc.15"));
+    }
+
+    #[test]
+    fn cleanup_rejects_unsupported_or_relative_previous_executables() {
+        let current = std::path::Path::new("/new/dsh-xlink/dsh-xlink.exe");
+
+        let relative = std::path::Path::new("old/dsh-desktop.exe");
+        assert!(previous_install_dir_for_cleanup(relative, current).is_err());
+
+        let unrelated = std::path::Path::new("/old/not-our-app.exe");
+        assert!(previous_install_dir_for_cleanup(unrelated, current).is_err());
+    }
+
+    #[test]
+    fn cleanup_skips_uninstaller_when_previous_and_current_share_directory() {
+        let previous = std::path::Path::new("/install/dsh-desktop.exe");
+        let current = std::path::Path::new("/install/dsh-xlink.exe");
+
+        assert_eq!(
+            previous_install_dir_for_cleanup(previous, current).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn updater_temp_name_matches_only_known_shell_prefixes() {
+        assert!(is_owned_updater_temp_dir(
+            "dsh-xlink-0.1.2-rc.14-updater-a1b2"
+        ));
+        assert!(is_owned_updater_temp_dir(
+            "dsh-desktop-0.1.2-rc.13-updater-c3d4"
+        ));
+        assert!(!is_owned_updater_temp_dir("tauri-0.1.2-updater-a1b2"));
+        assert!(!is_owned_updater_temp_dir("dsh-xlink-0.1.2-cache-a1b2"));
+    }
+
+    #[test]
+    fn legacy_executable_names_map_to_their_installer_shortcuts() {
+        assert_eq!(
+            legacy_shortcut_names("dsh-desktop.exe"),
+            &["dsh-desktop.lnk"]
+        );
+        assert_eq!(legacy_shortcut_names("dsh-xlink.exe"), &["dsh-xlink.lnk"]);
+        assert_eq!(
+            legacy_shortcut_names("dsh_desktop.exe"),
+            &["dsh_desktop.lnk", "dsh-desktop.lnk"]
+        );
+        assert!(legacy_shortcut_names("other.exe").is_empty());
     }
 }

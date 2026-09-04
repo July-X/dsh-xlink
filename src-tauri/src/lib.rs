@@ -113,6 +113,7 @@ pub fn run() {
             commands::open_data_dir,
             commands::check_shell_update,
             commands::install_shell_update,
+            commands::confirm_shell_ready,
             commands::fetch_releases,
             commands::install_kernel,
             commands::activate_version,

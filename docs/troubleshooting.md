@@ -15,6 +15,7 @@
 | macOS 访问 `127.0.0.1:3080` 失败 | WKWebView 默认允许环回，勿加 `NSAppTransportSecurity` 例外 |
 | 编辑器报 `capabilities/default.json` 缺 `$schema` | schema 由首次 `tauri build` 生成，属正常 |
 | updater 显示"已是最新"但实际有新版 | endpoint `/releases/latest/download/latest.json` 拿到 404——发布版本是 draft 或 prerelease。检查 `.github/workflows/desktop-release.yml` 是否被改过或最近一次 GitHub Release 是否被标成 prerelease |
+| Windows 更新后仍能从旧目录或旧快捷方式启动 | `tauri-plugin-updater` 的 NSIS `/UPDATE` 会覆盖安装但不执行旧版本卸载。新版本首次状态刷新后，对更新标记记录的不同安装目录调用其 `uninstall.exe /S`，同目录则直接删除历史 exe 和默认快捷方式，同时清理受限范围内的 updater 临时目录；若文件被占用或卸载失败，查看 `release-shell-update-cleanup-<日期>.log`，重启应用会自动重试。没有写入更新标记的用户自定义安装目录不会被扫描或删除 |
 | Windows 任务栏图标不更新 | `tauri-build` 默认不发 `cargo:rerun-if-changed`，需要 `Stop-Process dsh-xlink` 后再 `cargo build`；重启 Explorer（`ie4uinit.exe -show`）清任务栏缓存。详见 [icon-design.md](icon-design.md) |
 | macOS Dock 图标不更新 | 杀掉 Dock（`killall Dock`）或重启应用清缓存 |
 | 卸载插件后工作台无法启动，内核日志报 `cannot resolve profile bundle "<包名>"` | 托管 spec 曾按目录名子串 `desktop/kernels/` 判定，dev 壳（`desktop-dev/`）接线的插件卸载后依赖与 bundle 层残留在 profile manifest，内核沿悬空符号链接解析失败 —— 现改为按 `kernels/<version>/plugins/<id>` 尾部路径结构判定（与壳的数据目录名无关）；手工恢复：删掉 `~/.dsh/profiles/<profile>/package.json` 里该插件的 dependencies 与 bundles 条目，删 `node_modules/` 下悬空链接后 `pnpm install` |

@@ -344,12 +344,29 @@ pub async fn check_shell_update(app: AppHandle) -> Result<updater::ShellUpdateIn
 
 /// 下载、校验、安装挂起的 Shell 更新，然后重启。
 #[tauri::command]
-pub async fn install_shell_update(app: AppHandle, on_event: Channel<String>) -> Result<(), String> {
-    updater::install(&app, move |line| {
+pub async fn install_shell_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    on_event: Channel<String>,
+) -> Result<(), String> {
+    let data_dir = state.data_dir.clone();
+    updater::install(&app, &data_dir, move |line| {
         let _ = on_event.send(line.to_string());
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// 新版本管理面板完成首次状态刷新后调用，确认当前 Shell 已能正常运行，
+/// 再回收 Windows 上被 `/UPDATE` 跳过的旧安装和 updater 临时目录。
+#[tauri::command]
+pub async fn confirm_shell_ready(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        updater::confirm_shell_ready(&app, &data_dir).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // --- 发行版 ------------------------------------------------------------------
