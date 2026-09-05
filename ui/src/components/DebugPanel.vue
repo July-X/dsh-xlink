@@ -83,7 +83,7 @@ function close() {
           </label>
           <small class="debug-meta">
             <code>body.rel-build</code>（sidebar 透明）
-            · linear-gradient rgba(96, 153, 38, 0.25 → 0) @ 50%
+            · linear-gradient rgba(96, 153, 38, 0.25 → 0) @ 75%
             · Gitea brand 绿 <code>--gitea-green #609926</code>
             · 单一底色：绿只画在 body，sidebar release 期透明，整窗一片连贯不分段
             · 背景层（非覆盖层）：内容画在渐变之上，不糊
