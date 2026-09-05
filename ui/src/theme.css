@@ -838,7 +838,7 @@ body.dev-build .sidebar {
    整体感；故 release 期 sidebar 去掉自身填充（见下条规则），与 body 共用同一底
    色，绿叠同一底色即一片连贯地贯穿侧栏→主区。内容（卡片/菜单/文案）一律画在渐
    变之上，不糊。body 不滚动（overflow:hidden），渐变天然钉在视口顶部。覆盖整窗
-   顶部 50% 高度——顶端 α=0.25，线性淡出至 50% 窗高处归 0；幅度与 dev 构建的鲸
+   顶部 75% 高度——顶端 α=0.25，线性淡出至 75% 窗高处归 0；幅度与 dev 构建的鲸
    眼红侧栏渐变对齐，保留对称关系。rel-build 由首个状态帧落下后设置
    （store.js:applyBuildClass）；dev 调试面板可临时覆盖该类以便在 dev 期预览——
    见 DebugPanel.vue 的 setReleasePreview()。 */
@@ -846,7 +846,7 @@ body.rel-build {
   background-image: linear-gradient(
     to bottom,
     rgba(96, 153, 38, 0.25) 0%,
-    rgba(96, 153, 38, 0) 50%
+    rgba(96, 153, 38, 0) 75%
   );
 }
 
