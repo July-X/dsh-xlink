@@ -862,6 +862,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                         .initialization_script(include_str!("titlebar-pulse.js"))
                         .initialization_script(include_str!("pullstring-launcher.js"))
                         .initialization_script(include_str!("harness-health.js"))
+                        .initialization_script(include_str!("workbench-history-guard.js"))
                         .build()
                         .map(|_| ())
                         .map_err(|e| format!("无法创建工作台窗口：{e}"));
