@@ -98,6 +98,11 @@ pub struct AppState {
     /// 就会产生进程派生（Windows 上进程创建开销大），但解析结果其实
     /// 只在设置改变或机器的 Node 安装变化时才会变。
     pub node_cache: Mutex<Option<(Option<String>, node::NodeInfo)>>,
+    /// 工作台 webview 当前这一次加载所使用的入口 URL（含 launch token）。
+    /// 「打开工作台窗口」据此判断已有窗口是否还持有有效地址：token 没变
+    /// 就只把窗口带到台前，不重新导航（导航等于销毁并重建整个工作台前端
+    /// 状态）。仅在内核重启签发新 token 时才需要真正跳转。
+    pub harness_url: Mutex<Option<String>>,
 }
 
 /// 管理面板首次渲染所需的全部信息。
@@ -771,6 +776,23 @@ fn bounded_health_text(
 /// 写出 URL 前选中旧 token，WebView 随后收到 401 并停在白屏。每个候选地址
 /// 都必须先通过 loopback HTTP 探针：token 地址应返回 303，旧版内核的裸地址
 /// 应返回 2xx。这样既等待当前进程的 token，也保留旧版内核的兼容路径。
+/// 从当天内核日志里取出最后一条 launch-token 入口 URL（不做 HTTP 探针）。
+/// 「窗口已存在」的快路径用它来比对 token 是否变化：这只是一次日志尾读，
+/// 不会像 [`kernel_workbench_url`] 那样最多阻塞 10 秒。
+fn kernel_workbench_url_from_log(data_dir: &std::path::Path, port: u16) -> Option<String> {
+    let tail = read_tail(&kernel::current_kernel_log_path(data_dir), 16 * 1024);
+    let needle = format!("http://127.0.0.1:{port}/?token=");
+    let start = tail.rfind(&needle)?;
+    let rest = &tail[start + needle.len()..];
+    let token = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .map_or(rest, |end| &rest[..end]);
+    if token.is_empty() {
+        return None;
+    }
+    Some(format!("{needle}{token}"))
+}
+
 fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String, String> {
     const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
     const URL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -779,18 +801,9 @@ fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String,
     let fallback = format!("http://127.0.0.1:{port}");
     let deadline = std::time::Instant::now() + URL_TIMEOUT;
     loop {
-        let tail = read_tail(&kernel::current_kernel_log_path(data_dir), 16 * 1024);
-        let needle = format!("http://127.0.0.1:{port}/?token=");
-        if let Some(start) = tail.rfind(&needle) {
-            let rest = &tail[start + needle.len()..];
-            let token = rest
-                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
-                .map_or(rest, |end| &rest[..end]);
-            if !token.is_empty() {
-                let candidate = format!("{needle}{token}");
-                if workbench_url_responds(&candidate, PROBE_TIMEOUT) {
-                    return Ok(candidate);
-                }
+        if let Some(candidate) = kernel_workbench_url_from_log(data_dir, port) {
+            if workbench_url_responds(&candidate, PROBE_TIMEOUT) {
+                return Ok(candidate);
             }
         }
 
@@ -839,17 +852,40 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                 settings.port
             ));
         }
-        kernel::prepare_workbench_source_maps(&data_dir);
-        let url = Url::parse(&kernel_workbench_url(&data_dir, settings.port)?)
-            .map_err(|e| e.to_string())?;
+        // 已经开着的工作台窗口：这个入口的语义是「把它带到台前」，不是
+        // 重新加载。导航会丢掉工作台前端的全部运行时状态（会话滚动位置、
+        // 侧栏面板、终端），用户观察到的就是「销毁旧的、重新拉起新的」。
+        // 因此只有当内核重启签发了新的 launch token（日志里的入口 URL 与
+        // 本次加载所用的 URL 不同）时才导航，否则只做 show + unminimize +
+        // focus，并跳过探针与 source map 准备这些慢路径。
         if let Some(existing) = app.get_webview_window("harness") {
-            // 内核重启时会签发一个新的 launch token，使已经打开的窗口所持
-            // 有的 URL 失效；让已有窗口执行跳转，而不仅仅是聚焦它，以免
-            // 重启后工作台停在过期的 token 上变成空白。
-            let _ = existing.navigate(url);
+            let loaded = crate::lock(&state.harness_url).clone();
+            let latest = kernel_workbench_url_from_log(&data_dir, settings.port);
+            let stale = match (&loaded, &latest) {
+                (Some(loaded), Some(latest)) => loaded != latest,
+                // 没有记录到本次加载的地址（例如壳重启后窗口仍在）时不去
+                // 猜测，宁可保留现有页面。
+                _ => false,
+            };
+            if stale {
+                if let Some(latest) = latest {
+                    if let Ok(url) = Url::parse(&latest) {
+                        let _ = existing.navigate(url);
+                        *crate::lock(&state.harness_url) = Some(latest);
+                    }
+                }
+            }
+            let _ = existing.show();
+            let _ = existing.unminimize();
             let _ = existing.set_focus();
             return Ok(());
         }
+
+        kernel::prepare_workbench_source_maps(&data_dir);
+        let resolved = kernel_workbench_url(&data_dir, settings.port)?;
+        let url = Url::parse(&resolved).map_err(|e| e.to_string())?;
+        *crate::lock(&state.harness_url) = Some(resolved);
+
         let handle = app.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
