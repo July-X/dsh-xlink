@@ -23,7 +23,7 @@
  *
  * 两个表面，两套锚点与配色：
  *
- * - dsh web 工作台：Gitea 绿色绳 (#609926)，位于 left:212px，恰好落在
+ * - dsh web 工作台：Gitea 绿色绳 (#609926)，位于 left:200px，恰好落在
  *   侧栏折叠按钮旁（具体几何在偏移附近的注释中详述）。
  *
  * - official-chat strip：DeepSeek 蓝色绳 (#4D6BFE)，位于 right:12px，
@@ -54,11 +54,11 @@
         cord: "#609926",
       };
   // 官方对话窗口的拉绳灯挂在右侧边缘（right:12px，与原先的左侧 left:12px 镜像
-  // 对称）；dsh web 工作台仍贴左侧 left:212px（在品牌 logo 右侧、侧栏折叠键旁）。
+  // 对称）；dsh web 工作台仍贴左侧 left:200px（在品牌 logo 右侧、侧栏折叠键旁）。
   // SVG（绳/底座/灯泡/灯丝）全部以 x=12 为中心左右对称，故仅切换锚定边即可，
   // 无需水平翻转图形。
   var SIDE = isOfficial ? "right" : "left";
-  var EDGE_PX = isOfficial ? "12px" : "212px";
+  var EDGE_PX = isOfficial ? "12px" : "200px";
   // 两种 variant：官方对话 strip 用 24x38 的紧凑小台灯（不撑高 strip），
   // dsh 工作台用 24x66 的传统拉绳灯（cord 38px + 螺丝底座 + 大灯泡 + 灯丝），
   // 跟它们各自窗口的视觉语义匹配。
@@ -116,7 +116,7 @@
       "  position: fixed;",
       "  top: " + TOP_PX + ";",
       /* 锚定在 chrome 的转角。dsh web 工作台把灯挂在品牌 logo 右侧
-         (left:212px)；official-chat strip 把它镜像到右边 (right:12px)。
+         (left:200px)；official-chat strip 把它镜像到右边 (right:12px)。
          普通的窗口尺寸变化不会影响这两个锚点 —— 工作台侧栏是定宽的，
          strip 是天然的 38px 标签栏高度；每个 variant 的 SVG 都按尺寸
          适配（strip 上的 24x38 台灯，工作台上的 24x66 拉绳灯）。

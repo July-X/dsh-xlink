@@ -76,6 +76,7 @@ pub fn run() {
                 running: Mutex::new(None),
                 lifecycle: Mutex::new(()),
                 node_cache: Mutex::new(None),
+                harness_url: Mutex::new(None),
             });
             // 崩溃恢复：清理上一次壳运行中途死亡留下的 plugin store
             // staging 目录。正常路径下（无残留）只是一次 read_dir 扫描，
