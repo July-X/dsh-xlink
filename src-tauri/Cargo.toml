@@ -13,7 +13,13 @@ tauri-build = { version = "2", features = [] }
 # `Window::add_child` —— 分页官方对话窗口所需的多 webview 单窗口原语
 # （一个 chrome 条带 webview + N 个内容 webview 共存于同一窗口）。
 # 锁定在 tauri 2.11.x，将 unstable API 变动风险限制在一次 tauri 升级内。
-tauri = { version = "2", features = ["unstable"] }
+# `macos-private-api` 打开 wry 的 `transparent` 特性，从而允许把
+# WKWebView 的私有 `drawsBackground` 关掉。没有它时 WKWebView 在文档
+# 首帧之前一律绘制纯白，`background_color` 在 macOS 上完全看不到效果
+# （窗口底色被 webview 盖住）——这正是工作台/官方对话加载期刺眼白闪
+# 的成因。需配合 tauri.conf.json 的 `app.macOSPrivateApi: true`。
+# 仅影响 macOS；我们通过 DMG 自行分发，不受 App Store 私有 API 审核约束。
+tauri = { version = "2", features = ["unstable", "macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }

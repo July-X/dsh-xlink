@@ -11,6 +11,7 @@ use std::sync::{mpsc, Mutex, OnceLock};
 
 use serde::Serialize;
 use tauri::ipc::Channel;
+use tauri::webview::Color;
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, State, Webview};
 use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowBuilder, WindowEvent};
 use url::Url;
@@ -839,6 +840,29 @@ fn workbench_url_responds(url: &str, timeout: std::time::Duration) -> bool {
     (200..300).contains(&status) || (300..400).contains(&status)
 }
 
+/// 窗口/WebView 在首帧文档绘制之前使用的底色。
+///
+/// WebView 的默认底色是纯白：远程页面（工作台、官方对话）在网络请求
+/// 与首屏渲染完成前会有几百毫秒的空白期，在深色的壳里读作一记刺眼的
+/// 白闪。窗口层（NSWindow / HWND 背景）与 WebView 层都设成同一种底色
+/// 之后，这段空白期呈现的是与目标页面同色系的暗底，加载完成时只是内容
+/// 淡入，而不是从白到黑的跳变。
+///
+/// 颜色跟随系统主题（读主壳窗口的 theme）：浅色系统下用接近页面的浅灰
+/// 而不是强行涂黑，避免把白闪换成同样刺眼的黑闪。
+fn chrome_backdrop(app: &AppHandle) -> Color {
+    let dark = app
+        .get_webview_window("main")
+        .and_then(|w| w.theme().ok())
+        .map_or(true, |theme| theme == tauri::Theme::Dark);
+    if dark {
+        // 工作台与官方对话的深色底都在 #141414~#1B1B1F 附近。
+        Color(0x16, 0x17, 0x1a, 0xff)
+    } else {
+        Color(0xf7, 0xf7, 0xf8, 0xff)
+    }
+}
+
 #[tauri::command]
 pub async fn open_harness(app: AppHandle) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
@@ -886,6 +910,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         let url = Url::parse(&resolved).map_err(|e| e.to_string())?;
         *crate::lock(&state.harness_url) = Some(resolved);
 
+        let backdrop = chrome_backdrop(&app);
         let handle = app.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
@@ -895,6 +920,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                     WebviewWindowBuilder::new(&handle, "harness", WebviewUrl::External(url))
                         .title("DeepSeek Harness 工作台")
                         .inner_size(1280.0, 840.0)
+                        .background_color(backdrop)
                         .initialization_script(include_str!("titlebar-pulse.js"))
                         .initialization_script(include_str!("pullstring-launcher.js"))
                         .initialization_script(include_str!("harness-health.js"))
@@ -943,6 +969,7 @@ pub fn open_log_window(app: AppHandle, name: String) -> Result<(), String> {
         let _ = existing.destroy();
     }
     let encoded: String = url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
+    let backdrop = chrome_backdrop(&app);
     let handle = app.clone();
     std::thread::Builder::new()
         .name("dsh-open-log-viewer".into())
@@ -955,6 +982,7 @@ pub fn open_log_window(app: AppHandle, name: String) -> Result<(), String> {
             .title(format!("日志 - {name}"))
             .inner_size(960.0, 720.0)
             .resizable(true)
+            .background_color(backdrop)
             .build();
             if let Err(e) = result {
                 eprintln!("dsh-xlink: failed to open log viewer window: {e}");
@@ -1018,6 +1046,7 @@ fn add_official_chat_tab(
     index: usize,
     layout: OfficialChatLayout,
     profile_dir: &Path,
+    backdrop: Color,
 ) -> Result<(), String> {
     let (_, url_text) = OFFICIAL_CHAT_TABS
         .get(index)
@@ -1025,6 +1054,7 @@ fn add_official_chat_tab(
     let label = format!("official-chat-tab-{index}");
     let url = Url::parse(url_text).map_err(|e| format!("非法页签地址：{e}"))?;
     let mut builder = WebviewBuilder::new(label, WebviewUrl::External(url))
+        .background_color(backdrop)
         .data_directory(profile_dir.to_path_buf())
         .additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)
         .initialization_script(include_str!("titlebar-pulse.js"))
@@ -1051,6 +1081,7 @@ fn ensure_official_chat_tab(
     profile_dir: &Path,
     layout: OfficialChatLayout,
 ) -> Result<(), String> {
+    let backdrop = chrome_backdrop(app);
     let window = app
         .get_window(OFFICIAL_CHAT_WINDOW_LABEL)
         .ok_or("官方对话窗口未打开".to_string())?;
@@ -1068,7 +1099,7 @@ fn ensure_official_chat_tab(
             let result = (|| {
                 fs::create_dir_all(&profile_dir)
                     .map_err(|e| format!("无法创建官方对话数据目录：{e}"))?;
-                add_official_chat_tab(&window, index, layout, &profile_dir)
+                add_official_chat_tab(&window, index, layout, &profile_dir, backdrop)
             })();
             let _ = tx.send(result);
         })
@@ -1112,6 +1143,7 @@ fn ensure_official_chat_tab(
 /// 新聚焦。
 #[tauri::command]
 pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
+    let backdrop = chrome_backdrop(&app);
     let handle = app.clone();
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
@@ -1139,6 +1171,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                         .title("DeepSeek 官方对话")
                         .inner_size(OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT)
                         .resizable(true)
+                        .background_color(backdrop)
                         // 让 AppKit 在挂载子 WebView 之前先把父内容视图的 frame 确定下来；
                         // post-show 那一轮再根据注册结果重新设置每个子视
                         // 图的 frame。
@@ -1193,7 +1226,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                 // switch_official_chat_tab 按需挂载；一旦挂载，它们保
                 // 持同一份持久 profile，并在该窗口的生命周期内一直挂
                 // 着。
-                add_official_chat_tab(&window, 0, layout, &profile_dir)?;
+                add_official_chat_tab(&window, 0, layout, &profile_dir, backdrop)?;
 
                 // 页签栏：本地 SPA 路由渲染页签栏并保留 `window.__TAURI__`，使其能
                 // 调用页签命令。拉绳小台灯也由这个 38px 高的 WebView 渲
@@ -1203,6 +1236,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                     OFFICIAL_CHAT_STRIP_LABEL,
                     WebviewUrl::App("index.html?chatstrip=1".into()),
                 )
+                .background_color(backdrop)
                 .initialization_script(include_str!("pullstring-launcher.js"));
                 window
                     .add_child(
