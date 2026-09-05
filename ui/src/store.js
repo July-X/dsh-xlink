@@ -77,6 +77,7 @@ export function setReleasePreview(value) {
 }
 
 const VERSION_SWITCH_BLOCKED_MESSAGE = '工作台启动或运行期间不能切换内核，请先停止工作台后再切换。';
+const VERSION_SWITCH_BLOCKED_TOAST_MS = 8000;
 
 export function workbenchActiveNow() {
   return !!(store.starting || (store.view && store.view.kernel && store.view.kernel.running));
@@ -239,12 +240,12 @@ export function installVersion(version, options = {}) {
 
 export function activateVersion(version) {
   if (workbenchActiveNow()) {
-    toast(VERSION_SWITCH_BLOCKED_MESSAGE, 5000, 'warning');
+    toast(VERSION_SWITCH_BLOCKED_MESSAGE, VERSION_SWITCH_BLOCKED_TOAST_MS, 'warning');
     return Promise.resolve(false);
   }
   return withExclusiveLoading('activate:' + version, async () => {
     if (workbenchActiveNow()) {
-      toast(VERSION_SWITCH_BLOCKED_MESSAGE, 5000, 'warning');
+      toast(VERSION_SWITCH_BLOCKED_MESSAGE, VERSION_SWITCH_BLOCKED_TOAST_MS, 'warning');
       return false;
     }
     try {
