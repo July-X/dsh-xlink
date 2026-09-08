@@ -1797,12 +1797,105 @@ main {
   justify-content: flex-start;
 }
 
-.skill-row-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+/* --- 技能行 -----------------------------------------------------------
+   把技能行抽成与 PluginsPanel 一致的两行结构：名称 + 元数据一行，动作按钮
+   一行。`.skill-row` 给 info/actions 留出更多上下呼吸空间，避免在窄列下
+   按钮被挤换行；同时按危险动作（卸载）单独前置一个细分隔线，与「仓库」
+   「更新」等中性按钮视觉隔开。 */
+
+.skill-row {
+  gap: 6px;
+}
+
+.skill-row .plugin-info {
+  align-items: center;
+}
+
+.skill-actions {
+  margin-top: 6px;
   gap: 8px;
-  width: 100%;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.skill-actions-danger {
+  margin-left: 4px;
+}
+
+/* 来源 chip：与 PluginsPanel 共用同一套视觉规则。 */
+
+.origin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  text-transform: lowercase;
+}
+
+.origin-chip-local {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* 落地模式 chip：链接用 success 调，复制走中性色，与 el-tag 视觉一致但
+   是 inline span，可参与 plugin-info 的 flex-wrap 排版。 */
+
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px 2px 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
+
+.mode-chip-icon {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.mode-chip-link {
+  color: #67c23a;
+  background: rgba(103, 194, 58, 0.12);
+  border-color: rgba(103, 194, 58, 0.25);
+}
+
+/* meta 内的其他细节文本：升级箭头用淡一些，pinned 走 warning 调，技能数保持
+   灰，让眼睛更易把焦点放在版本与名称上。 */
+
+.meta-upgrade {
+  color: var(--warn);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.meta-pinned {
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.meta-skill-count {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.skill-description {
+  flex-basis: 100%;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 /* 行内标签动画：新增 / 变化时轻弹一下。 */
