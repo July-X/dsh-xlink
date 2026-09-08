@@ -573,12 +573,19 @@ pub fn install_version(
     let prefix = dir.to_str().unwrap_or_default();
     // `--ignore-workspace` 让安装脱离用户环境可能暴露的任何 workspace；
     // 内核目录是独立的 package 根目录。
+    // 同时打开 `PNPM_NO_STRICT_DEP_BUILDS`（不把 ERR_PNPM_IGNORED_BUILDS
+    // 视作错误，仅警告）与 `PNPM_ALLOW_ALL_BUILDS`（真正运行原生模块的
+    // install / postinstall 脚本，由壳对 @deepseek-ai 命名空间的信任背书）；
+    // 二者缺一则 fs-ext / node-pty 等模块只下载 JS 不编译 .node，
+    // 内核启动时报 `Cannot find module './build/Release/fs_ext.node'`。
     let args = [
         "add",
         "--prefix",
         prefix,
         "--ignore-workspace",
         "--config.node-linker=hoisted",
+        PNPM_NO_STRICT_DEP_BUILDS,
+        PNPM_ALLOW_ALL_BUILDS,
         PNPM_REPORTER,
         spec.as_str(),
     ];
@@ -626,8 +633,20 @@ pub fn install_version(
     }
     if !status.success() {
         on_progress(&format!(
-            "注意：pnpm 以退出码 {exit_code} 结束（多为依赖构建脚本被忽略所致，可以在该内核目录运行 pnpm approve-builds 允许），内核文件已安装完成"
+            "注意：pnpm 以退出码 {exit_code} 结束（多为依赖构建脚本未完全成功所致），已校验后续步骤"
         ));
+    }
+
+    // 真正决定内核是否能跑的是 `*.node` 二进制是否就位：仅凭 `bin.js`
+    // 与 pnpm 退出码无法判定 fs-ext / node-pty / koffi 是否真的产出了
+    // 原生模块。pnpm 11 的 ignored-builds 机制会让 `.node` 静默缺失，
+    // 必须显式遍历 `NATIVE_MODULE_CHECKS` 检查 build 产物；缺则直接失败，
+    // 不让工作台后续启动时再撞上「Cannot find module './build/...'」一类的
+    // 难以定位的错误。
+    if let Err(missing) = verify_native_modules(&dir) {
+        return Err(AppError::Kernel(format_native_modules_error(
+            &missing, &log_path,
+        )));
     }
     Ok(())
 }
@@ -642,6 +661,66 @@ pub(crate) const PNPM_REPORTER: &str = "--reporter=append-only";
 /// 其原生编译壳根本不需要）。传入该选项的调用方会自行校验产物
 /// （内核入口、`node_modules`），而非仅依赖退出码。
 pub(crate) const PNPM_NO_STRICT_DEP_BUILDS: &str = "--config.strict-dep-builds=false";
+
+/// `--config.dangerously-allow-all-builds=true`：pnpm 10+ 默认白名单机制下，
+/// 不在 `onlyBuiltDependencies` 的包的 `install` / `postinstall` 构建脚本会被
+/// 静默跳过。内核依赖链里 `fs-ext`、`node-pty`、`koffi` 等原生模块需要
+/// 真正执行 `node-gyp` / `cnoke` 才能产出 `*.node` 二进制，否则运行时
+/// 直接报 `Cannot find module './build/Release/fs_ext.node'` 一类错误；
+/// 仅仅 `strict-dep-builds=false` 只会让 pnpm 不再报错，**不会**实际运行
+/// 这些脚本。这个开关在 `install_version` 内部使用，由壳对 `@deepseek-ai`
+/// 命名空间的信任背书——任何被装入内核目录的依赖都已经过上游审查，再叠加
+/// `--config.strict-dep-builds=false` 让 pnpm 把退出码降级为可恢复警告，
+/// 后续 `verify_native_modules` 步骤会真正决定这次安装是否成功。
+pub(crate) const PNPM_ALLOW_ALL_BUILDS: &str = "--config.dangerously-allow-all-builds=true";
+
+/// 内核依赖树里必须存在原生二进制的关键包。安装结束后逐一检查
+/// `<kernel>/node_modules/<name>/<rel>` 是否就位——这是 pnpm 静默跳过
+/// 构建脚本后唯一可靠的就位判据（`pnpm` 的退出码不再可信，
+/// `node_modules/<name>` 的存在只说明 JS 已就位、不说明原生模块能加载）。
+///
+/// `fs-ext 2.x` 是 dsh 内核目前唯一真正需要 `node-gyp` 现场编译的依赖，
+/// 它没有预编译二进制（不像 `koffi` 用 `@koromix/koffi-<plat>` 可选依赖、
+/// `node-pty` 用 `prebuilds/<plat>`），缺 `.node` 时运行时直接报
+/// `Cannot find module './build/Release/fs_ext.node'`，是导致
+/// 「无法确认内核工作台地址」启动失败的根因。其它原生包都有预编译产物，
+/// 校验一次 `fs-ext` 即可。其他依赖如果未来新增需要现场编译的，请追加
+/// 到该列表中。
+const NATIVE_MODULE_CHECKS: &[(&str, &str)] = &[("fs-ext", "build/Release/fs_ext.node")];
+
+/// 内核 install 后核对每个 `NATIVE_MODULE_CHECKS` 是否产出了二进制。
+/// 全数到齐返回 `Ok(())`；缺失包名 + 期望路径用于构造可操作的错误文案。
+fn verify_native_modules(kernel_root: &Path) -> Result<(), Vec<(String, &'static str)>> {
+    let mut missing: Vec<(String, &'static str)> = Vec::new();
+    for (pkg, rel) in NATIVE_MODULE_CHECKS {
+        let path = kernel_root.join("node_modules").join(pkg).join(rel);
+        if !path.is_file() {
+            missing.push((pkg.to_string(), *rel));
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(missing)
+    }
+}
+
+/// 把「原生模块二进制缺失」翻译成 UI 可展示的可操作文案：列出缺失包、
+/// 推荐「安装 Node 24」（`fs-ext 2.x` 的旧 NAN C++ 头文件与 Node 25 的
+/// V8 ABI 不兼容，系统 Node 过新会导致构建脚本即使运行也会失败），并附
+/// 日志路径供用户回查。日志路径通过 `log_path` 注入，调用方负责传当日
+/// 的真实路径。
+fn format_native_modules_error(missing: &[(String, &'static str)], log_path: &Path) -> String {
+    let list = missing
+        .iter()
+        .map(|(pkg, rel)| format!("- {pkg}（缺 {rel}）"))
+        .collect::<Vec<_>>()
+        .join("、");
+    format!(
+        "内核依赖的原生模块未构建完成：{list}。常见原因是当前 Node 版本过新（如 Node 25+），导致 fs-ext 等模块的旧 C++ 头文件无法编译。推荐在「设置 → 运行时」点击「安装 Node.js」，让外壳使用内置的 Node 24 LTS；或者回退到与现有 Node 兼容的内核版本。完整日志：{log}",
+        log = log_path.display(),
+    )
+}
 
 /// 内核日志文件的逻辑名（不含构建类型前缀和日期戳）。完整的文件名在
 /// 写入时按 `<kind>-KERNEL_LOG_NAME-<date>.log` 拼装，从而在本地
@@ -1274,5 +1353,64 @@ mod tests {
         // 后缀）。输出仍应为单个 `~`，而不是 `~/`。
         let home = dirs_home();
         assert_eq!(display_short(&home), "~");
+    }
+
+    /// 当内核目录缺少 `fs-ext/build/Release/fs_ext.node`（pnpm 跳过构建
+    /// 脚本、Node 版本过新无法编译等情形都会导致此状态），`verify_native_modules`
+    /// 必须显式报告缺失，不能让 install 静默成功——后续启动会撞上
+    /// `Cannot find module './build/Release/fs_ext.node'`，UI 端表现为
+    /// 「无法确认内核工作台地址」，根因却被吞掉。
+    #[test]
+    fn verify_native_modules_flags_missing_fs_ext_binary() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-native-check-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let pkg_root = root.join("node_modules").join("fs-ext");
+        fs::create_dir_all(pkg_root.join("build/Release")).unwrap();
+        // 不写 .node 文件——模拟原生模块未构建的状态。
+        let missing = verify_native_modules(&root).expect_err("应报告缺失");
+        assert!(
+            missing.iter().any(|(pkg, _)| pkg == "fs-ext"),
+            "missing list 必须包含 fs-ext：{:?}",
+            missing
+        );
+        // 错误文案应当把缺失的相对路径与「安装 Node.js」指引同时给出，
+        // 让用户有可操作的下一步，而不是仅仅说"内核依赖未完整安装"。
+        let log = root.join("install.log");
+        let rendered = format_native_modules_error(&missing, &log);
+        assert!(rendered.contains("fs-ext"), "渲染文案：{rendered}");
+        assert!(
+            rendered.contains("设置"),
+            "应提示到设置页安装运行时：{rendered}"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 全部原生模块就位时 `verify_native_modules` 必须返回 `Ok`，
+    /// 即便内核目录本身只是个最小可启动 stub——验证逻辑只看 `*.node`
+    /// 是否存在，不依赖其它安装产物。
+    #[test]
+    fn verify_native_modules_passes_when_binary_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-native-check-pass-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let release = root
+            .join("node_modules")
+            .join("fs-ext")
+            .join("build/Release");
+        fs::create_dir_all(&release).unwrap();
+        fs::write(release.join("fs_ext.node"), b"stub").unwrap();
+        verify_native_modules(&root).expect("fs_ext.node 在位时必须通过");
+        fs::remove_dir_all(&root).unwrap();
     }
 }
