@@ -952,9 +952,75 @@ fn spawn(exe: &Path, args: &[&str], cwd: &Path, extra_path_dirs: &[&Path]) -> io
         cmd.current_dir(cwd);
         cmd.env("PATH", path);
         cmd.env("npm_config_registry", registry);
+        // macOS 上 Apple 命令行工具的 clang 默认只能找到 v1 下的零散 libc++
+        // 头文件，缺失 `memory` / `string` 等关键头——fs-ext / node-pty 等
+        // 依赖 node-gyp 的原生模块在「pnpm 真正跑构建脚本」路径上会以
+        // `fatal error: 'memory' file not found` 失败。CommandLineTools 的
+        // `xcrun --show-sdk-path` 在每个 macOS 升级 / Xcode 更新后会切换
+        // 版本，强行 stamp 某个具体路径会随 SDK 轮换失效；统一从 `xcrun`
+        // 取最新 SDK，并把 libc++ 的 v1 头目录与 SDK 系统头目录拼到
+        // `CPLUS_INCLUDE_PATH` / `C_INCLUDE_PATH`。父进程已经设置过的话不
+        // 覆盖，让高级用户的特殊配置（如指向完整 Xcode.app 的 SDK）优先。
+        apply_macos_toolchain_env(&mut cmd);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         isolate_process(&mut cmd);
         quiet(&mut cmd).spawn()
+    }
+}
+
+/// 在 macOS 上为子进程补足 node-gyp / clang 所需的 SDK 头目录。仅当父进程
+/// 没有显式覆盖相关变量时才填默认，让用户自定义优先。
+#[cfg(target_os = "macos")]
+fn apply_macos_toolchain_env(cmd: &mut Command) {
+    let Some(sdk_root) = detect_macos_sdk_root() else {
+        return;
+    };
+    let libcxx_include = format!("{sdk_root}/usr/include/c++/v1");
+    let sys_include = format!("{sdk_root}/usr/include");
+    let sdk_root_value: std::ffi::OsString = std::ffi::OsString::from(&sdk_root);
+    // 检查父进程是否显式设过；只要 `Command::env` 没在子命令上覆盖，
+    // std::env::var_os 看到的就是子进程实际继承到的值，避免给 GUI
+    // shell 已经手动 stamp 的高级用户环境硬塞 SDKROOT。
+    if std::env::var_os("SDKROOT").is_none() {
+        cmd.env("SDKROOT", &sdk_root_value);
+    }
+    let mut cxx_path = std::env::var("CPLUS_INCLUDE_PATH").unwrap_or_default();
+    if !cxx_path.split(':').any(|p| p == libcxx_include) {
+        if !cxx_path.is_empty() {
+            cxx_path.push(':');
+        }
+        cxx_path.push_str(&libcxx_include);
+        cmd.env("CPLUS_INCLUDE_PATH", &cxx_path);
+    }
+    let mut c_path = std::env::var("C_INCLUDE_PATH").unwrap_or_default();
+    if !c_path.split(':').any(|p| p == sys_include) {
+        if !c_path.is_empty() {
+            c_path.push(':');
+        }
+        c_path.push_str(&sys_include);
+        cmd.env("C_INCLUDE_PATH", &c_path);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn detect_macos_sdk_root() -> Option<String> {
+    if let Ok(value) = std::env::var("SDKROOT") {
+        if !value.is_empty() && std::path::Path::new(&value).is_dir() {
+            return Some(value);
+        }
+    }
+    let output = std::process::Command::new("xcrun")
+        .args(["--show-sdk-path", "--sdk", "macosx"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
     }
 }
 
@@ -1410,5 +1476,70 @@ mod tests {
         let text = std::fs::read_to_string(&path).expect("read after write");
         assert!(text.contains("durable"));
         let _ = fs::remove_dir_all(&logs_dir);
+    }
+
+    /// macOS 工具链补丁：CommandLineTools 自带的 clang 找不到完整的
+    /// libc++ 头目录。`detect_macos_sdk_root` 必须能拿到某个 SDK 路径，
+    /// `apply_macos_toolchain_env` 必须把 libc++ 的 v1 与 SDK 系统头
+    /// 拼进 `CPLUS_INCLUDE_PATH` / `C_INCLUDE_PATH`。这是 `fs-ext`、
+    /// `node-pty` 等原生模块在「pnpm 真正跑构建脚本」路径下能否成功
+    /// 编译的关键；少了这一步，`fatal error: 'memory' file not found`
+    /// 会让所有需要 node-gyp 的依赖全部失败。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apply_macos_toolchain_env_sets_include_paths_when_sdk_available() {
+        let sdk_root = match detect_macos_sdk_root() {
+            Some(path) if std::path::Path::new(&path).is_dir() => path,
+            _ => return, // 没装 CommandLineTools 的 CI 环境允许直接跳过
+        };
+        let libcxx_include = format!("{sdk_root}/usr/include/c++/v1");
+        let sys_include = format!("{sdk_root}/usr/include");
+
+        // 父进程没有 SDK 路径的占位 CPLUS_INCLUDE_PATH 时，函数必须
+        // 把 libcxx_include 与 sys_include 都加进来。
+        let mut cmd = std::process::Command::new("/bin/true");
+        apply_macos_toolchain_env(&mut cmd);
+        let cxx = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("CPLUS_INCLUDE_PATH"))
+            .and_then(|(_, v)| v.map(|s| s.to_string_lossy().into_owned()));
+        let c_path = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("C_INCLUDE_PATH"))
+            .and_then(|(_, v)| v.map(|s| s.to_string_lossy().into_owned()));
+        if let Some(cxx) = cxx {
+            assert!(
+                cxx.split(':').any(|p| p == libcxx_include),
+                "CPLUS_INCLUDE_PATH 应包含 {libcxx_include}，实际：{cxx}"
+            );
+        }
+        if let Some(c_path) = c_path {
+            assert!(
+                c_path.split(':').any(|p| p == sys_include),
+                "C_INCLUDE_PATH 应包含 {sys_include}，实际：{c_path}"
+            );
+        }
+    }
+
+    /// `apply_macos_toolchain_env` 不修改父进程的环境——它只在传入的
+    /// `Command` 上 `env` 调用；这条单测用于防止将来误用 `std::env::set_var`
+    /// 把 SDKROOT / CPLUS_INCLUDE_PATH 写进父进程，污染后续所有 spawn。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apply_macos_toolchain_env_does_not_mutate_parent_env() {
+        let before_sdkroot = std::env::var_os("SDKROOT");
+        let before_cxx = std::env::var_os("CPLUS_INCLUDE_PATH");
+        let mut cmd = std::process::Command::new("/bin/true");
+        apply_macos_toolchain_env(&mut cmd);
+        assert_eq!(
+            std::env::var_os("SDKROOT"),
+            before_sdkroot,
+            "SDKROOT 不应被写入父进程环境"
+        );
+        assert_eq!(
+            std::env::var_os("CPLUS_INCLUDE_PATH"),
+            before_cxx,
+            "CPLUS_INCLUDE_PATH 不应被写入父进程环境"
+        );
     }
 }
