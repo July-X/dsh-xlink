@@ -1,8 +1,9 @@
 <script setup>
-// 技能页：已安装技能包（来源 / 版本 / 技能数、更新 / 重新同步 / 卸载）+
-// 手动安装（git 来源，回车即装）。安装与卸载对运行中的工作台即时生效。
+// 技能页：已安装技能包（来源 / 落地模式 / 版本 / 技能数 + 更新 / 重新同步 /
+// 仓库 / 卸载）+ 手动安装（git 来源，回车即装）。安装与卸载对运行中的工作台
+// 即时生效。
 import { computed } from 'vue';
-import { Refresh, InfoFilled, Download, TopRight, Delete } from '@element-plus/icons-vue';
+import { Refresh, InfoFilled, Download, TopRight, Delete, Link, DocumentCopy } from '@element-plus/icons-vue';
 import {
   skillStore,
   originLabel,
@@ -16,20 +17,9 @@ import { globalBusy, isLoading } from '../loading.js';
 
 const view = computed(() => skillStore.view);
 
-function metaText(row) {
-  const pinNote = row.pinned && row.origin !== 'local' ? ' · 已锁定版本' : '';
-  const upgrade = row.latest_version ? ' → ' + row.latest_version : '';
-  return (
-    originLabel(row.origin) +
-    ' · ' +
-    (row.installed_version || '—') +
-    upgrade +
-    pinNote +
-    ' · ' +
-    row.skills.length +
-    ' 个技能'
-  );
-}
+// 模式（链接 / 复制）与来源（npm / git / local）都是只读状态，集中到元数据行
+// 与名称同行展示；动作区只保留真正可点的按钮（更新 / 重新同步 / 仓库 / 卸载），
+// 危险动作靠样式与左侧按钮组分开。
 </script>
 
 <template>
@@ -63,36 +53,64 @@ function metaText(row) {
 
       <div class="installed-list">
         <el-empty v-if="!view || !view.rows || view.rows.length === 0" description="尚未安装任何技能包。" :image-size="64" />
-        <div v-for="row in view ? view.rows : []" :key="row.id" class="installed-row plugin-row">
-          <span class="skill-row-head">
-            <span class="plugin-info">
-              <span class="release-ver">{{ row.name }}</span>
-              <span class="plugin-meta">{{ metaText(row) }}</span>
-              <span v-if="row.description" class="plugin-meta">{{ row.description }}</span>
+        <div v-for="row in view ? view.rows : []" :key="row.id" class="installed-row plugin-row skill-row">
+          <span class="plugin-info">
+            <span class="release-ver">{{ row.name }}</span>
+            <span class="plugin-meta">
+              <span class="origin-chip" :class="'origin-chip-' + row.origin">{{ originLabel(row.origin) }}</span>
+              <span v-if="row.actual_mode === 'copy'" class="mode-chip">
+                <el-icon class="mode-chip-icon"><DocumentCopy /></el-icon>复制
+              </span>
+              <span v-else-if="row.actual_mode === 'link'" class="mode-chip mode-chip-link">
+                <el-icon class="mode-chip-icon"><Link /></el-icon>链接
+              </span>
+              <span class="meta-version">{{ row.installed_version || '—' }}</span>
+              <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>
+              <span v-if="row.pinned && row.origin !== 'local'" class="meta-pinned">· 已锁定版本</span>
+              <span class="meta-skill-count">· {{ row.skills.length }} 个技能</span>
             </span>
-            <span class="release-actions plugin-actions">
-              <el-tag v-if="row.actual_mode === 'copy'" size="small" effect="plain">复制</el-tag>
-              <el-tag v-else-if="row.actual_mode === 'link'" type="success" size="small" effect="plain">链接</el-tag>
-              <template v-if="row.latest_version">
-                <el-tag type="warning" size="small" effect="plain">有更新 {{ row.latest_version }}</el-tag>
-                <el-button size="small" type="primary" :icon="Download" :disabled="globalBusy" @click="updateSkill(row.id)">更新</el-button>
-              </template>
-              <el-button v-else-if="row.origin === 'local'" size="small" text :icon="Refresh" :disabled="globalBusy" @click="updateSkill(row.id)">
-                重新同步
+            <span v-if="row.description" class="plugin-meta skill-description">{{ row.description }}</span>
+          </span>
+          <span class="release-actions skill-actions">
+            <template v-if="row.latest_version">
+              <el-tag type="warning" size="small" effect="plain">有更新 {{ row.latest_version }}</el-tag>
+              <el-button size="small" type="primary" :icon="Download" :disabled="globalBusy" @click="updateSkill(row.id)">
+                更新
               </el-button>
-              <el-button v-if="row.repo_url" size="small" text :icon="TopRight" @click="openExternal(row.repo_url)">仓库</el-button>
-              <el-popconfirm
-                title="确认卸载该技能包？"
-                confirm-button-text="卸载"
-                cancel-button-text="取消"
-                width="200"
-                @confirm="uninstallSkill(row.id)"
-              >
-                <template #reference>
-                  <el-button size="small" type="danger" plain :icon="Delete" :disabled="globalBusy">卸载</el-button>
-                </template>
-              </el-popconfirm>
-            </span>
+            </template>
+            <el-button
+              v-else-if="row.origin === 'local'"
+              size="small"
+              text
+              :icon="Refresh"
+              :disabled="globalBusy"
+              @click="updateSkill(row.id)"
+            >
+              重新同步
+            </el-button>
+            <el-button
+              v-if="row.repo_url"
+              size="small"
+              text
+              :icon="TopRight"
+              :disabled="globalBusy"
+              @click="openExternal(row.repo_url)"
+            >
+              仓库
+            </el-button>
+            <el-popconfirm
+              title="确认卸载该技能包？"
+              confirm-button-text="卸载"
+              cancel-button-text="取消"
+              width="200"
+              @confirm="uninstallSkill(row.id)"
+            >
+              <template #reference>
+                <el-button class="skill-actions-danger" size="small" type="danger" plain :icon="Delete" :disabled="globalBusy">
+                  卸载
+                </el-button>
+              </template>
+            </el-popconfirm>
           </span>
         </div>
       </div>
