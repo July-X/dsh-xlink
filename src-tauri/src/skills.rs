@@ -1281,6 +1281,13 @@ fn update_into(
         })
         .collect();
     updated.updated_at = now_epoch_secs();
+    // 把 installed_version 同步到刚刚拉取的版本，并让 latest_version 跟齐，
+    // 这样 UI 元数据（"v0.1 → v0.2" 升级箭头与"有更新 v0.2"角标）在更新成功
+    // 之后立刻清掉。否则 check_updates 的旧结果会留在 store.json 里，刷新
+    // 状态后卡片继续显示用户刚刚安装完成的「幻影新版本」。之后
+    // check_updates 仍能在远端这次拉取之后又前进时重新抬高 latest_version。
+    updated.installed_version = fetched.version;
+    updated.latest_version = Some(updated.installed_version.clone());
 
     for old in &previous.skills {
         if updated.skills.iter().any(|e| e.name == old.name) {
@@ -1940,6 +1947,54 @@ mod tests {
         assert!(skills_root(&home.root()).join("move-skill").exists());
         // 新技能以启用状态加入。
         assert!(skills_root(&home.root()).join("added-skill").exists());
+    }
+
+    /// 复现"更新后还显示旧版本号 + 提示用户继续更新"问题：
+    /// `check_updates` 在 store.json 里留下的 `latest_version` 必须随
+    /// `update_into` 同步到新拉取的版本，否则 UI 元数据与"有更新"角标
+    /// 会一直显示用户刚刚安装完成的「幻影新版本」。
+    #[test]
+    fn update_syncs_installed_and_latest_to_fetched_version() {
+        let home = TestHome::new();
+        let src = home.root().join("pack");
+        write_bundle(&src, "alpha", "alpha-skill", "first");
+        let item = install_into(&home.root(), &src.to_string_lossy(), "link", &mut |_| {}).unwrap();
+
+        // 模拟此前 check_updates 写入的旧 latest_version，并把 installed_version
+        // 故意改成更老的字符串（覆盖 install 阶段写入的 "local"），让 update 的
+        // 版本同步动作有真实差异可断言。
+        {
+            let mut store = load_store(&home.root());
+            store.items[0].latest_version = Some("v9.9.9".into());
+            store.items[0].installed_version = "0.0.0-old".into();
+            save_store_unlocked(&home.root(), &store).unwrap();
+        }
+
+        let updated = update_into(&home.root(), &item.id, &mut |_| {}).unwrap();
+
+        // 没有这行修正时，update 会把 previous.installed_version 原样保留，
+        // 卡片继续显示 "0.0.0-old"。
+        assert_eq!(
+            updated.installed_version, "local",
+            "installed_version must sync to fetched version after update"
+        );
+        // 没有这行修正时，latest_version 会保留之前的 "v9.9.9"，UI 仍会
+        // 把它当作可更新版本显示。
+        assert_eq!(
+            updated.latest_version.as_deref(),
+            Some("local"),
+            "latest_version must sync to installed_version after update"
+        );
+
+        // 同一份数据落盘后，status 行必须把 latest_version 过滤掉。
+        let view = status_for_home(&home.root());
+        assert_eq!(view.rows.len(), 1);
+        assert!(
+            view.rows[0].latest_version.is_none(),
+            "row.latest_version must be hidden when it equals installed_version, got {:?}",
+            view.rows[0].latest_version
+        );
+        assert_eq!(view.updates, 0);
     }
 
     #[cfg(unix)]
