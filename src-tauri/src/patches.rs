@@ -258,7 +258,23 @@ pub fn resource_patches_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
 }
 
 /// 读取资源目录下全部补丁清单，返回（补丁定义，补丁目录）。
+/// 便捷包装：只要清单、不要告警。生产路径用
+/// [`load_patches_with_warnings`]，因为被跳过的清单必须让用户看到（P2-12）；
+/// 单测里只关心"加载到了哪些补丁"，因此保留这个只会编译进测试的形式。
+#[cfg(test)]
 pub fn load_patches(resource_root: &Path) -> Result<Vec<(PatchDef, PathBuf)>, String> {
+    Ok(load_patches_with_warnings(resource_root)?.0)
+}
+
+/// 已加载的内置补丁清单，以及加载期间被跳过的条目的原因。
+pub type LoadedPatches = (Vec<(PatchDef, PathBuf)>, Vec<String>);
+
+/// 与 [`load_patches`] 相同，但把每个被跳过的清单/定义的原因也返回给调用方。
+///
+/// 旧行为只把这些原因 `eprintln` 掉：清单坏掉的补丁在设置页直接**消失**，
+/// 用户无法区分"这个版本没带它"与"它坏了"（P2-12）。
+pub fn load_patches_with_warnings(resource_root: &Path) -> Result<LoadedPatches, String> {
+    let mut warnings: Vec<String> = Vec::new();
     let mut out = Vec::new();
     let entries = fs::read_dir(resource_root).map_err(|e| {
         format!(
@@ -275,47 +291,47 @@ pub fn load_patches(resource_root: &Path) -> Result<Vec<(PatchDef, PathBuf)>, St
         let text = match fs::read_to_string(&manifest_path) {
             Ok(text) => text,
             Err(e) => {
-                eprintln!(
-                    "dsh-xlink: 跳过无效补丁目录 {}（缺少 manifest.json：{e}）",
-                    dir.display()
-                );
+                let reason = format!("补丁目录 {} 缺少 manifest.json（{e}）", dir.display());
+                eprintln!("dsh-xlink: 跳过无效补丁目录：{reason}");
+                warnings.push(reason);
                 continue;
             }
         };
         let manifest: PatchManifest = match serde_json::from_str(&text) {
             Ok(manifest) => manifest,
             Err(e) => {
-                eprintln!(
-                    "dsh-xlink: 跳过无效补丁清单 {}：{e}",
-                    manifest_path.display()
-                );
+                let reason = format!("补丁清单 {} 无法解析：{e}", manifest_path.display());
+                eprintln!("dsh-xlink: 跳过无效补丁清单：{reason}");
+                warnings.push(reason);
                 continue;
             }
         };
         if manifest.schema_version != MANIFEST_SCHEMA_VERSION {
-            eprintln!(
-                "dsh-xlink: 跳过不支持的补丁清单版本 {}（{}）",
+            let reason = format!(
+                "补丁清单 {} 的 schemaVersion 是 {}，本版本只支持 {}",
+                manifest_path.display(),
                 manifest.schema_version,
-                manifest_path.display()
+                MANIFEST_SCHEMA_VERSION
             );
+            eprintln!("dsh-xlink: 跳过不支持的补丁清单版本：{reason}");
+            warnings.push(reason);
             continue;
         }
         for def in manifest.patches {
             if let Err(reason) = validate_def(&def) {
-                eprintln!(
-                    "dsh-xlink: 跳过补丁 {}：{reason}",
-                    if def.id.is_empty() {
-                        "<无 id>"
-                    } else {
-                        &def.id
-                    }
-                );
+                let label = if def.id.is_empty() {
+                    "<无 id>".to_string()
+                } else {
+                    def.id.clone()
+                };
+                eprintln!("dsh-xlink: 跳过补丁 {label}：{reason}");
+                warnings.push(format!("补丁 {label} 定义非法：{reason}"));
                 continue;
             }
             out.push((def, dir.clone()));
         }
     }
-    Ok(out)
+    Ok((out, warnings))
 }
 
 /// 清单静态校验：id / files 非空、路径合法、模式字段自洽。运行期不依赖它，

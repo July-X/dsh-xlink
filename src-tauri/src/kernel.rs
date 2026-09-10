@@ -92,6 +92,10 @@ pub struct KernelStatus {
     /// 同一路径——这样标签和操作指向的是同一个目录。
     pub data_dir: String,
     pub ever_installed: bool,
+    /// 设置文件损坏 / 读不出来时的说明。非空时 UI 必须显示它：此时端口已经
+    /// 无声回退到默认值，不提示的话用户只会看到"工作台跑到别的端口去了"。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings_warning: Option<String>,
 }
 
 /// 壳的元数据根目录，按以下优先级解析：
@@ -445,6 +449,9 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
         running: workbench_running(data_dir, settings),
         port: settings.port,
         data_dir: display_short(data_dir),
+        // 与 `settings` 参数同样的读取路径，但保留诊断：调用方传进来的
+        // settings 可能已经是"回退后的默认值"。
+        settings_warning: crate::settings::load_checked(data_dir).1,
     }
 }
 
