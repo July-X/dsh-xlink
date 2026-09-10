@@ -16,13 +16,13 @@
     },
     {
       "identifier": "allow-local-commands",
-      "description": "Allow every app command from the shell's own local windows (the management panel). Defining ANY app-level permission flips Tauri from 'app commands are open to local windows' to 'app commands require an explicit grant', so this permission restores the pre-existing behavior for the local UI. Maintenance: every command added to `tauri::generate_handler!` in lib.rs must be listed here, or its invoke from the panel fails with 'not allowed. Command not found'.",
+      "description": "Allow every app command from the shell's own local windows (the management panel). Defining ANY app-level permission flips Tauri from 'app commands are open to local windows' to 'app commands require an explicit grant', so this permission restores the pre-existing behavior for the local UI. Maintenance: every command added to `tauri::generate_handler!` in lib.rs must be listed here, or its invoke from the panel fails with 'not allowed. Command not found'. This invariant is enforced by scripts/check-invariants.mjs in CI.",
       "commands": {
         "allow": [
           "get_status",
           "detect_node",
+          "install_node",
           "save_settings",
-          "get_kernel_log",
           "list_log_files",
           "read_log_file",
           "open_data_dir",

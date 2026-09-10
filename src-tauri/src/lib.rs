@@ -46,7 +46,15 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(error) = window.set_decorations(false) {
-                    eprintln!("dsh-xlink: 无法启用 macOS 自定义标题栏：{error}");
+                    // 这条设置同时服务 macOS（画交通灯）与 Windows（画品牌背景），
+                    // 所以文案不能写死 macOS。失败只影响窗口外观，不影响任何功能，
+                    // 因此只记录、不中断启动。
+                    eprintln!(
+                        "dsh-xlink: 无法为管理窗口关闭系统标题栏（set_decorations 失败）：{error}；\
+                         窗口会退回系统原生标题栏，标题栏按钮与功能不受影响。\
+                         若界面显示异常，重启应用重试；仍失败请用 `npm run dev` 在终端启动，\
+                         连同上面的完整输出一起反馈。"
+                    );
                 }
             }
 
@@ -89,6 +97,12 @@ pub fn run() {
             // 纯文件系统操作；失败信息会落到 skill store 的 warning
             // 字段供 UI 展示。
             skills::reconcile();
+            // 日志目录的启动期修复：把旧命名（`X.log.1`，扩展名是 `1`）的
+            // 轮转备份改名为 `X.1.log`，它们此前永远不出现在日志面板里。
+            // 纯改名、失败即跳过，不影响启动。
+            crate::process::migrate_legacy_rotated_logs(&kernel::logs_dir(
+                &app.state::<AppState>().data_dir,
+            ));
             updater::spawn_background_check(app.handle());
             // 在 debug 构建中自动打开管理窗口的 DevTools。
             // Tauri 的 webview 快捷键（`Cmd+Option+I`、`Cmd+Shift+I`、
@@ -108,7 +122,6 @@ pub fn run() {
             commands::detect_node,
             commands::install_node,
             commands::save_settings,
-            commands::get_kernel_log,
             commands::list_log_files,
             commands::read_log_file,
             commands::open_data_dir,
@@ -151,7 +164,19 @@ pub fn run() {
             commands::confirm_close_shell,
         ])
         .build(tauri::generate_context!())
-        .expect("failed to build the dsh-xlink app");
+        .unwrap_or_else(|error| {
+            // 走到这里说明 Tauri 连应用实例都没建起来（窗口/插件/运行时初始化
+            // 失败）。`generate_context!` 已在编译期把配置与前端资源清单烘焙进来，
+            // 所以运行期失败基本是环境问题而非代码缺陷 —— 给出可操作的下一步，
+            // 而不是把英文 panic 甩给用户。
+            eprintln!(
+                "dsh-xlink: 启动失败，无法创建应用窗口：{error}\n\
+                 请先确认管理面板产物存在（在项目根目录执行 `npm run build:ui` 生成 ui/dist），\
+                 然后重新启动应用；\n\
+                 若仍失败，用 `npm run dev` 在终端启动可看到完整输出，请连同上面的信息一起反馈。"
+            );
+            std::process::exit(1);
+        });
 
     // 在壳退出时回收内核，使 app 退出后不会留下仍在服务的 dsh web 进程。
     // 内存中的 child 覆盖本会话启动的内核；pid 文件覆盖上一次壳运行
@@ -222,28 +247,43 @@ pub fn run() {
                     }
                 }
                 let data_dir = state.data_dir.clone();
-                let port = settings::load(&data_dir).port;
-                if !kernel::port_open(port) {
-                    // 端口空闲：要么没东西在跑，要么上面的 stop() 已经回收——
-                    // 丢弃陈旧的 pid 记录，让下次启动干净开始。
-                    kernel::clear_pid(&data_dir);
-                } else if let Some(pid) = kernel::read_pid(&data_dir) {
-                    kernel::kill_pid(pid, Some(port));
-                    kernel::clear_pid(&data_dir);
+                let current = settings::load(&data_dir);
+                // 判据同样不看配置端口：内核可能绑在用户改端口之前的那个
+                // 端口上，用当前配置端口探测会漏掉它，让它继续占着端口活到
+                // 下一次启动。
+                if let Some(pid) = kernel::workbench_pid(&data_dir, &current) {
+                    kernel::kill_pid(pid, None);
                 }
+                kernel::clear_pid(&data_dir);
             }
         }
     });
 }
 
-/// 内核当前是否在对外服务。内存中的 child 句柄还活着，或配置的端口
-/// 仍响应——后者能捕获上一次壳启动的内核，其 pid 我们仍需回收。
+/// 内核当前是否在对外服务。
+///
+/// 内存中的句柄只有在内核**确实还活着**时才算数：内核自行退出或被外部杀掉
+/// 之后句柄仍留在槽位里，只看 `is_some()` 会让这里一直撒谎（关窗时弹出一个
+/// 与实际状态矛盾的确认为）。句柄失效后回落到 [`kernel::workbench_running`]，
+/// 它同样不以配置端口为判据——内核可能绑在用户改端口之前的那个端口上。
 fn kernel_running(handle: &tauri::AppHandle) -> bool {
     let Some(state) = handle.try_state::<AppState>() else {
         return false;
     };
-    if lock(&state.running).is_some() {
-        return true;
+    {
+        let mut guard = lock(&state.running);
+        let alive = guard
+            .as_mut()
+            .map(|child| child.try_wait().is_ok_and(|status| status.is_none()))
+            .unwrap_or(false);
+        if alive {
+            return true;
+        }
+        if guard.is_some() {
+            // 句柄还在但进程已经退出（或查询失败）：清掉僵尸句柄，
+            // 避免它继续影响状态判断。
+            *guard = None;
+        }
     }
-    kernel::port_open(settings::load(&state.data_dir).port)
+    kernel::workbench_running(&state.data_dir, &settings::load(&state.data_dir))
 }

@@ -164,7 +164,13 @@ fn watch_child(child: &mut Child, port: u16) -> WatchVerdict {
 
 enum BootVerdict {
     Ready,
+    /// 进程被拉起来了，但没能在就绪前提供服务（崩溃 / 端口竞态 / 挂起）——
+    /// 这时内核日志里可能有归因证据。
     Failed(String),
+    /// 内核**根本没有被派生出来**：端口被无关进程占用、激活版本未安装、
+    /// 日志目录不可写……这类失败与第三方插件无关，日志里也不会有任何插件
+    /// 证据，因此绝不能用来触发"停用插件"。
+    SpawnFailed(String),
     Hung,
 }
 
@@ -173,6 +179,7 @@ impl BootVerdict {
         match self {
             BootVerdict::Ready => String::from("启动成功"),
             BootVerdict::Failed(detail) => detail.clone(),
+            BootVerdict::SpawnFailed(detail) => detail.clone(),
             BootVerdict::Hung => format!("等待内核就绪超时（{READY_TIMEOUT_SECS} 秒）"),
         }
     }
@@ -210,7 +217,9 @@ fn boot_once(
         },
         Err(e) => {
             on_progress(&format!("无法拉起内核进程：{e}"));
-            (BootVerdict::Failed(e.to_string()), None)
+            // 这是"根本没起来"，不是"起来又崩了"：日志里没有任何可归因的插件
+            // 证据，把它当成普通失败会让看护去停用一批无辜插件。
+            (BootVerdict::SpawnFailed(e.to_string()), None)
         }
     }
 }
@@ -262,10 +271,60 @@ fn excerpt(lines: &[&str], idx: usize) -> String {
     format!("{truncated}…")
 }
 
+/// 一行日志是否把某条错误**锚定地**指向这个商店条目。
+///
+/// 三种锚定形态：
+/// 1. `plugins/<id>`：link 模式下内核插件目录里的物化路径段；
+/// 2. `node_modules/<name>`：copy 模式下 profile 里的包路径；
+/// 3. 带引号的包名：`Cannot find package 'x'` / `Cannot find module "x"`。
+///
+/// 1 与 2 都要求标识之后紧跟**路径段边界** —— 否则 `main` 会命中
+/// `node_modules/main-utils`、`plugins/main__extra`，等于又退回前缀匹配。
+///
+/// 这里曾经还有一条裸的 `/<name>` 子串规则，命中的是路径段*前缀*：插件名短
+/// （`main`/`ui`/`x`）时，一行 `GET /assets/main.js 500` 就足以把它写进
+/// quarantine 并停用。URL 路径不是包路径，那条规则已删除。
+fn is_anchored_plugin_hit(line: &str, item: &plugins::StoreItem) -> bool {
+    if line.contains(&format!("'{0}'", item.name)) || line.contains(&format!("\"{0}\"", item.name))
+    {
+        return true;
+    }
+    has_segment_path(line, "plugins/", &item.id)
+        || has_segment_path(line, "node_modules/", &item.name)
+}
+
+/// `line` 中是否出现 `<anchor><name>`，且 `<name>` 之后是路径段边界（或行尾）。
+///
+/// 与 `has_kernel_package_ref` 的边界规则**故意不同**，不要合并：那里锚定的是包
+/// 命名空间 `@deepseek-ai/dsh`，其后跟 `-` 仍属同一命名空间
+/// （`dsh-client-ui-theme`）；这里锚定的是**路径段**，`-` 是段内字符，因此
+/// `main` 不会命中 `main-utils`。
+fn has_segment_path(line: &str, anchor: &str, name: &str) -> bool {
+    let needle = format!("{anchor}{name}");
+    let mut from = 0;
+    while let Some(offset) = line[from..].find(&needle) {
+        let end = from + offset + needle.len();
+        let boundary_ok = line[end..]
+            .chars()
+            .next()
+            .map(|c| !is_path_segment_char(c))
+            .unwrap_or(true);
+        if boundary_ok {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// 路径段内允许出现的字符。`/`、空白、引号、括号、冒号、行尾等都是段边界。
+fn is_path_segment_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@')
+}
+
 /// 根据日志末尾将一次启动失败归因到已安装的插件（或内核自身）。插件
-/// 候选只匹配锚定的形态——它们的 Shell 物化路径段 `plugins/<id>`，
-/// 加上 `/` 前缀的包名路径段，或者带引号的包名——因为纯子串匹配会让
-/// 任何短包名只要碰巧出现在堆栈里的任何位置就被当成可疑项。
+/// 候选只匹配锚定的形态（见 [`is_anchored_plugin_hit`]），因为纯子串匹配
+/// 会让任何短包名只要碰巧出现在堆栈里的任何位置就被当成可疑项。
 ///
 /// 设计上保持保守：没有任何候选命中时返回空列表，空列表会路由到安
 /// 全模式，而不是胡乱指认某个插件。
@@ -282,18 +341,10 @@ pub fn attribute(
         if suspects.len() >= MAX_SUSPECTS {
             return suspects;
         }
-        // `plugins/<id>` 覆盖 link 模式下的内核插件目录；`/name` 同样能匹
-        // 配 copy 模式下 profile 路径中的 `/name/...` 形式；带引号的形
-        // 式则能命中 `Cannot find package 'x'` / `Cannot find module 'x'`。
-        let needles = [
-            format!("plugins/{}", item.id),
-            format!("/{}", item.name),
-            format!("'{}'", item.name),
-            format!("\"{}\"", item.name),
-        ];
-        let Some(idx) = lines.iter().position(|line| {
-            is_error_line(line) && needles.iter().any(|needle| line.contains(needle))
-        }) else {
+        let Some(idx) = lines
+            .iter()
+            .position(|line| is_error_line(line) && is_anchored_plugin_hit(line, item))
+        else {
             continue;
         };
         if seen.insert(item.id.clone()) {
@@ -466,9 +517,12 @@ pub fn guarded_start(
 ) -> (StartReport, Option<Child>) {
     let port = deps.settings.port;
 
-    if kernel::port_open(port) {
-        // 幂等启动：有东西已经在监听这个端口。此处不必再就历史的隔离
-        // 记录唠叨，概览页的横幅负责展示。
+    // 幂等启动：本 data dir 的内核已经在跑就什么都不做。判据走
+    // `kernel::workbench_pid`（pid 文件 + 内核身份校验），而不是"配置端口上
+    // 有东西在监听"——后者一是会把用户改端口之前启动的内核读成"没在跑"、
+    // 从而在同一 data dir 上拉起第二个内核（会话日志损坏），二是会把恰好
+    // 占用该端口的无关进程误报成"工作台已在运行"。
+    if kernel::workbench_running(deps.data_dir, deps.settings) {
         return (
             StartReport {
                 port,
@@ -506,9 +560,18 @@ pub fn guarded_start(
             child,
         );
     }
+    // 内核是否**真的跑起来过**。没有的话，下面所有"插件归因 → 停用 → 重试"
+    // 的阶梯都失去事实基础：那只会改写 quarantine.json 与 profile 接线，把无辜
+    // 插件标成故障源（用户按提示逐个处置，可能真的把它们删掉），而真实原因
+    // （端口被占、版本未安装、目录不可写）自始至终没被触及。
+    let kernel_started = !matches!(verdict, BootVerdict::SpawnFailed(_));
     trail.push(format!("常规启动失败：{}", verdict.reason()));
     let tail = log_tail(deps);
-    let mut suspects = attribute(&tail, &store_items, &kernel_label);
+    let mut suspects = if kernel_started {
+        attribute(&tail, &store_items, &kernel_label)
+    } else {
+        Vec::new()
+    };
 
     // 第 2 次尝试：停用归因得到的可疑插件后再试。当归因没有结果时跳过
     // ——凭空猜测只会误伤无辜插件。
@@ -557,8 +620,10 @@ pub fn guarded_start(
     }
 
     // 第 3 次尝试：安全模式。如果没有第三方插件可停用——bare-profile 失
-    // 败通常是内核或环境的问题。
-    if !store_items.is_empty() {
+    // 败通常是内核或环境的问题。内核压根没起来时同样跳过：把"停用全部插件"
+    // 施加在环境类失败上，只会在下一次重试恰好成功时把功劳错误地记到
+    // "插件有问题"头上。
+    if kernel_started && !store_items.is_empty() {
         on_progress("仍未启动成功，正在进入安全模式（停用全部第三方插件）后重试…");
         let already: HashSet<String> = quarantined_ids_now(deps.data_dir);
         let rest: Vec<Suspect> = store_items
@@ -1018,6 +1083,63 @@ mod tests {
     }
 
     #[test]
+    fn plugin_named_like_a_url_segment_is_not_blamed() {
+        // P2-7：插件名 `main` 撞上一条静态资源请求日志。旧实现的裸 `/<name>`
+        // 子串规则命中 `GET /assets/main.js`，把这个插件写进 quarantine 并
+        // 停用 —— 一条与它毫无关系的 5xx 就足以废掉一个正常插件。
+        let tail = "Error: GET /assets/main.js 500 Internal Server Error\n";
+        let items = vec![store_item("main", "main")];
+        assert!(
+            attribute(tail, &items, "0.1.1").is_empty(),
+            "URL 路径不是包路径，不能作为归因证据"
+        );
+
+        // 连 `/main` 这种"整段就是包名"的 URL 也不能算（它不是模块路径）。
+        let tail = "Error: GET /main HTTP/1.1 500\n";
+        assert!(attribute(tail, &items, "0.1.1").is_empty());
+    }
+
+    #[test]
+    fn module_paths_still_attribute_after_anchoring() {
+        // 收紧之后真正该命中的形态不能丢：copy 模式的 profile 路径与
+        // link 模式的 plugins/ 路径。
+        let items = vec![store_item("main", "main")];
+        let copy_tail =
+            "Error: Cannot find module '/Users/u/.dsh/profiles/web/node_modules/main/index.js'\n";
+        let suspects = attribute(copy_tail, &items, "0.1.1");
+        assert_eq!(suspects.len(), 1);
+        assert_eq!(suspects[0].id, "main");
+
+        let link_tail = "Error: ENOENT: no such file '/Users/u/.dsh/desktop/kernels/0.1.1/plugins/main/index.js'\n";
+        assert_eq!(attribute(link_tail, &items, "0.1.1").len(), 1);
+    }
+
+    #[test]
+    fn plugin_name_that_prefixes_another_package_is_not_blamed() {
+        // 段边界检查：`main` 不该命中 `node_modules/main-utils`。
+        let tail = "Error: Cannot find module '/p/node_modules/main-utils/index.js'\n";
+        let items = vec![store_item("main", "main")];
+        assert!(attribute(tail, &items, "0.1.1").is_empty());
+    }
+
+    #[test]
+    fn plugin_id_that_prefixes_another_id_is_not_blamed() {
+        // 同一类前缀问题也存在于 `plugins/<id>`：id `main` 是 `main__extra`
+        // 的前缀，必须只在真正属于它的路径段上命中。
+        let tail = "Error: ENOENT: no such file '/p/plugins/main__extra/index.js'\n";
+        let items = vec![
+            store_item("main", "main"),
+            store_item("main__extra", "@scope/main-extra"),
+        ];
+        let suspects = attribute(tail, &items, "0.1.1");
+        assert_eq!(suspects.len(), 1);
+        assert_eq!(
+            suspects[0].id, "main__extra",
+            "只有 id 与路径段完全一致的那个插件才算被命中"
+        );
+    }
+
+    #[test]
     fn no_match_yields_empty_list() {
         let tail = "Error: EADDRINUSE: address already in use 127.0.0.1:3090\n";
         let items = vec![store_item("p", "p")];
@@ -1260,5 +1382,96 @@ mod tests {
         let text = excerpt(&lines, 1);
         assert!(text.chars().count() <= EVIDENCE_MAX_CHARS + 1);
         assert!(text.ends_with('…'));
+    }
+
+    /// 内核**根本没被拉起来**时（这里是端口被无关进程占用），看护不得进入
+    /// "归因 → 停用插件 → 安全模式"的阶梯。
+    ///
+    /// 修复前：`start_maybe` 的 Err 被折叠成普通失败，日志里自然没有插件证据
+    /// （`attribute` 返回空），但第 3 次尝试仍会无条件停用**全部**第三方插件并
+    /// 改写 profile 接线。若那次重试恰好成功（占用端口的进程退出了），用户会
+    /// 收到"已停用以下插件后成功启动"的报告——把一次环境故障记成插件故障。
+    #[test]
+    fn unrelated_port_occupant_does_not_quarantine_plugins() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "dsh-guard-spawn-failed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        // 端口被本测试进程占用——它不是 dsh 内核。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind port");
+        let port = listener.local_addr().expect("listener addr").port();
+        let settings = crate::settings::Settings {
+            port,
+            ..crate::settings::Settings::default()
+        };
+        crate::settings::save(&data_dir, &settings).expect("save settings");
+
+        // 中央库里有一个已安装插件：修复前它会被全量停用并写进 quarantine.json。
+        let store_dir = plugins::store_dir(&data_dir);
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+        std::fs::write(
+            store_dir.join("store.json"),
+            r#"{"schemaVersion":1,"items":[{"id":"ghost","name":"ghost-plugin"}]}"#,
+        )
+        .expect("write store");
+        assert_eq!(
+            plugins::load_store(&data_dir).items.len(),
+            1,
+            "测试前置：store.json 必须能被解析，否则这个用例失去区分度"
+        );
+
+        let deps = GuardDeps {
+            data_dir: &data_dir,
+            settings: &settings,
+            node_path: Path::new("/nonexistent/node"),
+            pnpm_exe: Path::new("/nonexistent/pnpm"),
+        };
+        let (report, child) = guarded_start(&deps, &mut |_| {});
+
+        assert!(child.is_none(), "内核不该被拉起来");
+        assert!(
+            !report.running,
+            "端口被无关进程占用时不得报告工作台正在运行"
+        );
+        // 关键断言是"有没有进入安全模式"：旧行为确实会隔离全部插件、改写
+        // profile 接线，只是因为重试同样失败才在最后回滚隔离状态——所以单看
+        // quarantine 是否为空无法区分。真正致命的分支是"重试恰好成功"：那时
+        // 看护会把环境故障记成插件故障，并让用户按提示去处置无辜插件。
+        let attempts = report
+            .incident
+            .as_ref()
+            .map(|incident| incident.attempts.clone())
+            .unwrap_or_default();
+        assert!(
+            !attempts.iter().any(|entry| entry.contains("安全模式")),
+            "内核根本没被拉起来时不得进入安全模式；实际轨迹：{attempts:?}"
+        );
+        assert!(
+            report
+                .incident
+                .as_ref()
+                .map(|incident| incident.suspects.is_empty())
+                .unwrap_or(true),
+            "不得把任何插件列为疑似故障源"
+        );
+        assert!(
+            crate::quarantine::load(&data_dir).items.is_empty(),
+            "环境类失败不得隔离任何插件"
+        );
+        assert_eq!(
+            plugins::load_store(&data_dir).items.len(),
+            1,
+            "插件记录必须原样保留"
+        );
+
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let _ = std::fs::remove_dir_all(&store_dir);
     }
 }

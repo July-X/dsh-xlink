@@ -28,7 +28,8 @@
  *    `official-chat-launcher` webview 上短暂试验过，但因 WebView2 子 HWND
  *    透明在当前 Tauri 2.11 / wry 0.55.1 上不生效而回滚 —— 无论控制器的
  *    DefaultBackgroundColor 是否透明，启动器都会绘制一个不透明的深色方块；
- *    因此灯被移回 strip，strip 也从 38px 增高到 66px 以容纳 66px 的 SVG。）
+ *    因此灯被移回 strip，strip 保持它天然的 38px 标签栏高度、嵌入的是紧凑的
+ *    24x38 台灯（24x66 的传统拉绳灯只用于 dsh 工作台，见 pullstring-launcher.js）。）
  *
  * 本脚本为纯 JavaScript（无 TypeScript），且字符串安全 —— 它在编译期通过
  * `include_str!` 嵌入到 Rust 源码中，任何嵌套反引号 / 未转义引号 /

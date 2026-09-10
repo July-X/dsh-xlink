@@ -440,7 +440,9 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
         installed,
         active,
         active_installed,
-        running: port_open(settings.port),
+        // 不以配置端口判活：内核可能绑在用户改端口之前的那个端口上，
+        // 详见 [`workbench_pid`]。
+        running: workbench_running(data_dir, settings),
         port: settings.port,
         data_dir: display_short(data_dir),
     }
@@ -449,10 +451,11 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
 /// 检查工作台是否已经停止。活动版本切换会改变下一次启动使用的内核；
 /// 工作台启动或运行期间必须先停止，避免当前服务与 active 指针指向不同版本。
 fn ensure_workbench_stopped(data_dir: &Path) -> Result<(), AppError> {
-    let port = settings::load(data_dir).port;
-    if port_open(port) {
+    let settings = settings::load(data_dir);
+    if workbench_running(data_dir, &settings) {
         return Err(AppError::Kernel(format!(
-            "工作台正在启动或运行（端口 {port}），请先点击「关闭工作台」停止工作台后再切换内核"
+            "工作台正在启动或运行（端口 {}），请先点击「关闭工作台」停止工作台后再切换内核",
+            settings.port
         )));
     }
     Ok(())
@@ -549,14 +552,44 @@ pub fn install_version(
     node_exe: &Path,
     pnpm_exe: &Path,
     version: &str,
+    on_progress: impl FnMut(&str),
+) -> Result<(), AppError> {
+    let dir = kernel_dir(data_dir, version);
+    // 全新安装失败时把目录整个删掉。
+    //
+    // 半成品目录（pnpm 跑到一半、原生模块没编译出来、smoke 探针失败）会被
+    // `list_installed` 当成一个**已安装版本**列出来，而且允许用户切换过去；
+    // 真正撞上问题是在启动内核时——报"原生模块缺失"，然后被启动看护当成
+    // 疑似插件问题处理几分钟，用户完全看不出根因是这个版本压根没装完。
+    // 重装（目录本来就存在）时保留残骸，让用户能对比或手动处理。
+    let existed_before = dir.exists();
+    let outcome = install_version_into(data_dir, node_exe, pnpm_exe, version, on_progress);
+    if outcome.is_err() && !existed_before {
+        let _ = fs::remove_dir_all(&dir);
+    }
+    outcome
+}
+
+fn install_version_into(
+    data_dir: &Path,
+    node_exe: &Path,
+    pnpm_exe: &Path,
+    version: &str,
     mut on_progress: impl FnMut(&str),
 ) -> Result<(), AppError> {
     let dir = kernel_dir(data_dir, version);
     fs::create_dir_all(&dir).map_err(|e| AppError::Io(e.to_string()))?;
     let stub = dir.join("package.json");
+    // 用 serde_json 构造而不是手写 format!：版本号一旦含有引号，手写模板会被
+    // 闭合、注入任意字段（pnpm 之后会执行 stub 里的生命周期脚本）。这里由
+    // 序列化器负责转义；命令边界的 is_valid_kernel_version 是更早的一道闸。
     let stub_text = format!(
-        "{{\"name\":\"dsh-kernel-{}\",\"private\":true,\"version\":\"1.0.0\"}}\n",
-        version.replace('.', "_")
+        "{}\n",
+        serde_json::json!({
+            "name": format!("dsh-kernel-{}", version.replace('.', "_")),
+            "private": true,
+            "version": "1.0.0",
+        })
     );
     atomic_write(&stub, stub_text.as_bytes()).map_err(|e| AppError::Io(e.to_string()))?;
 
@@ -1053,7 +1086,12 @@ pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<C
             "端口 {port} 已被占用，可能已有内核在运行"
         )));
     }
-    let mut cmd = crate::process::command_with_path(node);
+    // 把内核自己那个 node 的目录前置到子进程 PATH：`node` 可能是托管安装
+    // （`<data_dir>/tools/node/<ver>/bin/node`）或 nvm 的绝对路径，这两种情况下
+    // 它都不在继承来的 PATH 上，内核派生的任何 `#!/usr/bin/env node` 子进程都
+    // 会找不到解释器。详见 process::command_with_path_dirs。
+    let node_dir = node.parent().unwrap_or_else(|| Path::new("."));
+    let mut cmd = crate::process::command_with_path_dirs(node, &[node_dir]);
     let port_arg: String = port.to_string();
     cmd.arg(&bin)
         .arg("web")
@@ -1092,13 +1130,25 @@ pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<C
 
 /// 除非端口已被占用，否则启动当前激活的内核。
 ///
-/// 当端口已有响应时返回 `Ok(None)`（幂等的启动），本调用真正拉起
-/// 进程时返回 `Ok(Some(child))`。
+/// 当端口已有响应、**且监听者确实是本 data dir 的内核**时返回 `Ok(None)`
+/// （幂等的启动）；本调用真正拉起进程时返回 `Ok(Some(child))`。
+///
+/// 端口上有响应但不是本 data dir 的内核时返回错误，而不是静默的 `Ok(None)`：
+/// 后者会让「启动工作台」报告成功，而工作台窗口打开的其实是别人的服务——
+/// 用户完全看不出内核根本没起来。
 pub fn start_maybe(data_dir: &Path, node: &Path) -> Result<Option<Child>, AppError> {
     let s = settings::load(data_dir);
     let port = s.port;
     if port_open(port) {
-        return Ok(None);
+        if workbench_running(data_dir, &s) {
+            return Ok(None);
+        }
+        let owner = port_listen_pid(port)
+            .map(|pid| format!("，占用者 pid {pid}"))
+            .unwrap_or_default();
+        return Err(AppError::Kernel(format!(
+            "端口 {port} 已被其它进程占用{owner}，无法启动工作台。请在设置页改用其它端口，或先释放该端口"
+        )));
     }
     let active = read_active(data_dir).ok_or_else(|| {
         AppError::Kernel("尚未选择内核版本，请先在“更新”页安装并切换到某一版本".into())
@@ -1129,7 +1179,6 @@ pub fn start_maybe(data_dir: &Path, node: &Path) -> Result<Option<Child>, AppErr
 pub fn reap_orphans(data_dir: &Path) {
     #[cfg(unix)]
     {
-        let port = crate::settings::load(data_dir).port;
         let (success, text, _) =
             match crate::process::run_capture_output("ps", &["-eo", "pid,command"]) {
                 Ok(output) => output,
@@ -1180,7 +1229,10 @@ pub fn reap_orphans(data_dir: &Path) {
                     .unwrap_or(false)
                 });
             if cwd_matches {
-                kill_pid(pid, Some(port));
+                // cwd 等于本 data dir 是比端口更强的身份证据，因此这里不再
+                // 传端口：内核可能是用户改端口之前启动的，用当前配置端口去
+                // 校验 `--port` 会让它恰好逃过回收。
+                kill_pid(pid, None);
             }
         }
     }
@@ -1307,26 +1359,49 @@ pub(crate) fn port_listen_pid_ss(port: u16) -> Option<u32> {
         .next()
 }
 
+/// 从 `netstat -ano` 的输出里取出正在监听 `port` 的 TCP pid。
+///
+/// 必须按列解析，不能对整行做 `:PORT` 子串匹配 —— 子串会命中三类别的东西：
+/// 另一个端口的监听者（`:3090` 命中 `:30900`）、外部地址列里的端口、以及
+/// IPv6 地址中的数字尾巴。选中错的 pid 之后 `pid_is_kernel` 恒为 false，
+/// 于是 `workbench_pid` 宣称「没有内核在跑」，而内核其实正服务着端口。
+///
+/// 规则：协议为 `TCP`、恰好 5 列（`TCP 本地地址 外部地址 状态 PID`）、本地
+/// 地址以 `:PORT` 结尾、状态为 `LISTENING`、末列可解析为 pid。
+#[cfg(any(windows, test))]
+fn parse_netstat_listener_pid(output: &str, port: u16) -> Option<u32> {
+    let suffix = format!(":{port}");
+    for line in output.lines() {
+        let columns: Vec<&str> = line.split_whitespace().collect();
+        // UDP 行只有 4 列（没有状态列），表头行的末列不是数字；两者都在
+        // 下面的条件里被自然排除。
+        if columns.len() != 5 {
+            continue;
+        }
+        if !columns[0].eq_ignore_ascii_case("TCP") || columns[3] != "LISTENING" {
+            continue;
+        }
+        // 只比较本地地址列的**结尾**：`127.0.0.1:3090`、`[::1]:3090` 都算，
+        // `0.0.0.0:30900` 不算。
+        if !columns[1].ends_with(&suffix) {
+            continue;
+        }
+        if let Ok(pid) = columns[4].parse() {
+            return Some(pid);
+        }
+    }
+    None
+}
+
 #[cfg(windows)]
 pub(crate) fn port_listen_pid(port: u16) -> Option<u32> {
-    // netstat -ano 每个 TCP/UDP 端点输出一行；用 `:PORT` 与 `LISTENING`
-    // 过滤，找到绑定在 dev/release 端口上的 pid。
+    // `netstat -ano` 每个 TCP/UDP 端点输出一行；解析交给
+    // `parse_netstat_listener_pid`（按列匹配，见那里的说明）。
     let (success, stdout, _) = crate::process::run_capture_output("netstat", &["-ano"]).ok()?;
     if !success {
         return None;
     }
-    let port_str = port.to_string();
-    let needle = format!(":{}", port_str);
-    for line in stdout.lines() {
-        if line.contains(&needle) && line.contains("LISTENING") {
-            if let Some(pid) = line.split_whitespace().last() {
-                if let Ok(pid) = pid.parse() {
-                    return Some(pid);
-                }
-            }
-        }
-    }
-    None
+    parse_netstat_listener_pid(&stdout, port)
 }
 
 /// 上次壳启动的内核的 PID 文件：`<data_dir>/kernel.pid`。
@@ -1374,6 +1449,38 @@ fn process_command(pid: u32) -> Option<String> {
     }
 }
 
+/// 命令行是否属于 dsh 内核（`@deepseek-ai/dsh/lib/bin.js`）。大小写与
+/// Windows 的反斜杠路径都要能命中。
+fn command_is_kernel(command: &str) -> bool {
+    command
+        .to_ascii_lowercase()
+        .replace('\\', "/")
+        .contains("@deepseek-ai/dsh/lib/bin.js")
+}
+
+/// 监听某个端口的进程是什么身份。区分 [`ListenerIdentity::Unknown`] 是有必要
+/// 的：读不到命令行（权限不足、进程刚退出）不等于"它不是内核"，调用方在
+/// Unknown 时应保持原来的宽松行为，否则会把正常场景挡在门外。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ListenerIdentity {
+    Kernel,
+    NotKernel,
+    Unknown,
+}
+
+/// 反查监听 `port` 的进程身份。端口空闲、平台查询失败或命令行不可读时
+/// 返回 [`ListenerIdentity::Unknown`]。
+pub(crate) fn port_listener_identity(port: u16) -> ListenerIdentity {
+    let Some(pid) = port_listen_pid(port) else {
+        return ListenerIdentity::Unknown;
+    };
+    match process_command(pid) {
+        Some(command) if command_is_kernel(&command) => ListenerIdentity::Kernel,
+        Some(_) => ListenerIdentity::NotKernel,
+        None => ListenerIdentity::Unknown,
+    }
+}
+
 /// 判断 `pid` 是否是服务于指定端口的 dsh 内核。三层防护：
 /// 1. 命令行必须含 `@deepseek-ai/dsh/lib/bin.js`，挡住被复用 pid 的无关进程；
 /// 2. 命令行 `--port` 必须等于给定端口，挡住跨 profile（dev 3091 / release 3090）
@@ -1381,14 +1488,19 @@ fn process_command(pid: u32) -> Option<String> {
 /// 3. 给定端口时再向 OS 反查一次监听该端口的 pid，必须等于本 pid，挡住 pid 文件
 ///    陈旧、内核早已退出但 OS 把 pid 复用给另一个进程的情况——单看命令行残留
 ///    无法区分这一类，端口活体验证是唯一可信的"这还是不是同一个内核"判据。
+///
+/// 传 `None` 时跳过第 2、3 层，只保留"这个 pid 现在是否仍是一个 dsh web 内核"
+/// 的身份与存活校验。调用方在已经持有更强证据时（例如 pid 文件属于本 data dir、
+/// 或已用 cwd 精确匹配过）应当传 `None`——端口会随用户的设置变化，把它当成
+/// 身份的一部分会让改过端口的内核彻底失去追踪，见 [`workbench_pid`]。
 pub(crate) fn pid_is_kernel(pid: u32, port: Option<u16>) -> bool {
     let Some(command) = process_command(pid) else {
         return false;
     };
-    let command = command.to_ascii_lowercase().replace('\\', "/");
-    if !command.contains("@deepseek-ai/dsh/lib/bin.js") {
+    if !command_is_kernel(&command) {
         return false;
     }
+    let command = command.to_ascii_lowercase().replace('\\', "/");
     let Some(port) = port else {
         return true;
     };
@@ -1427,6 +1539,43 @@ pub(crate) fn pid_is_kernel(pid: u32, port: Option<u16>) -> bool {
     }
 }
 
+/// 本 data dir 的内核当前是否真的在运行，并返回它的 pid。
+///
+/// **判据与配置端口解耦**，这是这个函数存在的理由：用户可以在内核运行期间
+/// 把端口从 3090 改成 3091，此后配置端口空闲而内核仍在服务。若把「配置端口
+/// 有监听者」当作"在工作台在跑"的唯一判据，状态页会读成「未运行」，用户点
+/// 一次「启动工作台」就会在同一 data dir 上拉起第二个内核——两个内核写同一
+/// 份会话日志，正是 [`reap_orphans`] 注释里描述的 `seq gap` 损坏。
+///
+/// 证据优先级：
+/// 1. `kernel.pid`（本壳或上一次壳启动内核时写入）+ [`pid_is_kernel`] 的实时
+///    身份校验。后者会重新查询进程是否存在，所以内核已退出、pid 被复用给别
+///    的进程时这里同样返回 `None`——僵尸检测与存活检测是同一件事。
+/// 2. 配置端口上的监听者，仅在 pid 文件缺失或失效时兜底（例如内核由上一个壳
+///    启动，而那个壳因端口已被占用而跳过了启动、从未写出 pid 文件）。兜底同样
+///    要求监听者通过身份校验，因此无关进程占用端口不会再被误报成「工作台在
+///    运行」。
+pub fn workbench_pid(data_dir: &Path, settings: &Settings) -> Option<u32> {
+    if let Some(pid) = read_pid(data_dir) {
+        if pid_is_kernel(pid, None) {
+            return Some(pid);
+        }
+    }
+    if port_open(settings.port) {
+        if let Some(pid) = port_listen_pid(settings.port) {
+            if pid_is_kernel(pid, None) {
+                return Some(pid);
+            }
+        }
+    }
+    None
+}
+
+/// [`workbench_pid`] 的布尔形式：工作台是否正在运行。
+pub fn workbench_running(data_dir: &Path, settings: &Settings) -> bool {
+    workbench_pid(data_dir, settings).is_some()
+}
+
 /// 按 pid 杀掉被追踪出的内核：先给进程组发 TERM，再 KILL 任何幸存者。
 /// 当 pid 已不存在或与本壳记录的内核命令及可选端口不匹配时为 no-op。
 pub fn kill_pid(pid: u32, port: Option<u16>) {
@@ -1461,6 +1610,81 @@ pub fn kill_pid(pid: u32, port: Option<u16>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `netstat -ano` 的真实形状（保留中文 Windows 的本地化表头，因为表头
+    /// 行也在被解析的输入里）。
+    const NETSTAT_SAMPLE: &str = "\
+活动连接
+
+  协议  本地地址          外部地址        状态           PID
+  TCP    127.0.0.1:30900        0.0.0.0:0              LISTENING       9001
+  TCP    127.0.0.1:3090         0.0.0.0:0              LISTENING       4242
+  TCP    127.0.0.1:3090         127.0.0.1:51000        ESTABLISHED     4242
+  TCP    127.0.0.1:51000        127.0.0.1:3090         ESTABLISHED     7777
+  TCP    [::1]:3090             [::]:0                 LISTENING       4242
+  UDP    127.0.0.1:3090         *:*                                    5555
+";
+
+    #[test]
+    fn kernel_command_identity_accepts_real_forms_and_rejects_near_misses() {
+        // `port_listener_identity` 只有在这条判据成立时才敢说"监听者是内核"。
+        assert!(command_is_kernel(
+            "/usr/local/bin/node /Users/u/.dsh/desktop/kernels/0.1.5/lib/node_modules/@deepseek-ai/dsh/lib/bin.js --port 3090"
+        ));
+        // Windows 命令行用反斜杠，且大小写不固定。
+        assert!(command_is_kernel(
+            r"C:\nodejs\node.exe C:\Users\u\.dsh\desktop\kernels\0.1.5\node_modules\@DeepSeek-AI\dsh\lib\bin.js --port 3090"
+        ));
+        // 近失：同命名空间下的另一个包、以及占用了端口的无关进程。
+        assert!(!command_is_kernel(
+            "/usr/bin/node /p/node_modules/@deepseek-ai/dsh-tools/lib/bin.js"
+        ));
+        assert!(!command_is_kernel("/usr/bin/python3 -m http.server 3090"));
+        assert!(!command_is_kernel(""));
+    }
+
+    #[test]
+    fn netstat_parser_does_not_confuse_a_longer_port() {
+        // P2-5：`:3090` 的子串匹配会先命中 `:30900` 那一行并返回 pid 9001，
+        // 于是 pid_is_kernel 失败、workbench_pid 报「没有内核在跑」。
+        assert_eq!(parse_netstat_listener_pid(NETSTAT_SAMPLE, 3090), Some(4242));
+        assert_eq!(
+            parse_netstat_listener_pid(NETSTAT_SAMPLE, 30900),
+            Some(9001)
+        );
+    }
+
+    #[test]
+    fn netstat_parser_ignores_non_listening_and_foreign_address_matches() {
+        // 外部地址列里出现该端口、或状态不是 LISTENING 的行都不算证据：
+        // 只有 `LISTENING` 的那一行才提供 pid。
+        let only_established = "\
+  协议  本地地址          外部地址        状态           PID
+  TCP    127.0.0.1:51000        127.0.0.1:3090         ESTABLISHED     7777
+";
+        assert_eq!(parse_netstat_listener_pid(only_established, 3090), None);
+
+        // UDP 行（4 列、无状态）不是 TCP 监听者，不能拿来当内核。
+        let only_udp = "\
+  协议  本地地址          外部地址        状态           PID
+  UDP    127.0.0.1:3090         *:*                                    5555
+";
+        assert_eq!(parse_netstat_listener_pid(only_udp, 3090), None);
+    }
+
+    #[test]
+    fn netstat_parser_accepts_ipv6_loopback_and_empty_output() {
+        let ipv6 = "\
+  TCP    [::1]:3091             [::]:0                 LISTENING       321
+";
+        assert_eq!(parse_netstat_listener_pid(ipv6, 3091), Some(321));
+        // 端口空闲 / netstat 只给出表头时必须是 None，而不是误报某个 pid。
+        assert_eq!(parse_netstat_listener_pid("", 3090), None);
+        assert_eq!(
+            parse_netstat_listener_pid("  协议  本地地址  外部地址  状态  PID\n", 3090),
+            None
+        );
+    }
 
     #[test]
     fn creates_empty_maps_only_for_missing_javascript_source_map_references() {
@@ -1552,19 +1776,74 @@ mod tests {
                 .expect("clock")
                 .as_nanos()
         ));
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind workbench port");
-        let port = listener.local_addr().expect("workbench address").port();
+        // 端口留空（0）：这个用例只验证 pid 记录这条证据链，不依赖端口。
         let settings = Settings {
-            port,
+            port: 0,
             ..Settings::default()
         };
         settings::save(&root, &settings).expect("save test settings");
+
+        // 「工作台在运行」现在由内核身份决定（命令行含内核入口），而不是
+        // "某个进程恰好占着配置端口"。因此这里派生一个命令行里带该标识的
+        // 占位进程，不需要真的能跑内核；`; :` 用来阻止 sh 把自身优化成对
+        // sleep 的 exec（那样会丢掉我们塞进 argv 的标识）。
+        let mut placeholder = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30; :")
+            .arg("@deepseek-ai/dsh/lib/bin.js")
+            .arg("web")
+            .spawn()
+            .expect("spawn placeholder kernel");
+        write_pid(&root, placeholder.id());
 
         let error = set_active(&root, "0.1.2").expect_err("running workbench must block switch");
 
         assert!(error
             .to_string()
             .contains("请先点击「关闭工作台」停止工作台后再切换内核"));
+
+        let _ = placeholder.kill();
+        let _ = placeholder.wait();
+        clear_pid(&root);
+        fs::remove_dir_all(&root).expect("remove test data");
+    }
+
+    /// 反向断言：端口上的**无关**监听者不再被当作"工作台在运行"，因此
+    /// 不会错误地阻止切换内核版本。
+    #[test]
+    fn switching_active_version_is_allowed_when_only_an_unrelated_listener_holds_the_port() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-active-version-unrelated-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind port");
+        let port = listener.local_addr().expect("listener addr").port();
+        settings::save(
+            &root,
+            &Settings {
+                port,
+                ..Settings::default()
+            },
+        )
+        .expect("save test settings");
+
+        // 没有内核在跑，所以守卫放行；随后因为版本未安装而失败——
+        // 错误信息应当是"未安装"，而不是"工作台正在运行"。
+        let error = set_active(&root, "0.1.2").expect_err("missing version must still fail");
+        let text = error.to_string();
+        assert!(
+            !text.contains("工作台正在启动或运行"),
+            "无关监听者不应阻止切换内核，实际：{text}"
+        );
+        assert!(
+            text.contains("未安装"),
+            "应当因为版本未安装而失败，实际：{text}"
+        );
+
         drop(listener);
         fs::remove_dir_all(&root).expect("remove test data");
     }
@@ -1914,5 +2193,127 @@ mod tests {
             std::io::ErrorKind::NotFound,
             format!("node not found on PATH: {name}"),
         ))
+    }
+
+    /// 一个隔离的 data dir，供"工作台是否在运行"的判据测试使用。
+    fn workbench_test_dir(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-workbench-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("create data dir");
+        root
+    }
+
+    /// 端口被**无关进程**占用时，不能报「工作台在运行」，启动路径也必须明确
+    /// 报出端口冲突。
+    ///
+    /// 修复前这两个判据都以"配置端口上有监听者"为准：面板显示「运行中」，
+    /// `start_maybe` 静默返回 `Ok(None)`（当作"已在运行"），而内核根本没起来
+    /// ——用户接着点「打开工作台」，打开的其实是那个无关进程。
+    #[test]
+    fn unrelated_listener_on_the_port_is_not_a_running_workbench() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind port");
+        let port = listener.local_addr().expect("listener addr").port();
+        let root = workbench_test_dir("unrelated-listener");
+        settings::save(
+            &root,
+            &Settings {
+                port,
+                ..Settings::default()
+            },
+        )
+        .expect("save settings");
+        let current = settings::load(&root);
+
+        // 监听者是本测试进程，命令行不含内核标识。
+        assert!(
+            !workbench_running(&root, &current),
+            "无关进程占用的端口不能被判成正在运行的工作台"
+        );
+        assert!(
+            !status(&root, &current).running,
+            "状态快照同样不能把无关监听者报成运行中"
+        );
+
+        let error = start_maybe(&root, Path::new("/nonexistent/node"))
+            .expect_err("端口被无关进程占用时必须报错，而不是静默认为已在运行");
+        assert!(
+            error.to_string().contains("已被其它进程占用"),
+            "错误信息应说明端口冲突，实际：{error}"
+        );
+
+        drop(listener);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 全新安装失败后不得留下半成品目录。
+    ///
+    /// `list_installed` 会把 `kernels/` 下任何目录都当成已安装版本，用户能切换
+    /// 过去，真正的失败推迟到启动内核时才发生（原生模块缺失），随后被启动看护
+    /// 当成疑似插件问题处理几分钟——用户完全看不出根因是这个版本没装完。
+    #[test]
+    fn failed_fresh_install_leaves_no_half_built_version() {
+        let root = workbench_test_dir("failed-install");
+        let version = "0.9.9";
+
+        let error = install_version(
+            &root,
+            Path::new("/nonexistent/node"),
+            Path::new("/nonexistent/pnpm"),
+            version,
+            |_| {},
+        )
+        .expect_err("pnpm 不存在时必须失败");
+        assert!(!error.to_string().is_empty());
+
+        assert!(
+            !kernel_dir(&root, version).exists(),
+            "失败的全新安装不得留下半成品目录"
+        );
+        assert!(
+            !list_installed(&root).iter().any(|v| v.version == version),
+            "半成品不得出现在已安装列表里"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `kernel.pid` 指向一个已经不存在（或已被复用给无关进程）的 pid 时，
+    /// 判据必须回落到「没有内核在运行」。
+    ///
+    /// 这也是"僵尸句柄"检测：内核自行退出后 pid 记录会留在磁盘上，只看
+    /// "记录存在"会让壳一直认为工作台活着。
+    #[test]
+    fn stale_pid_record_is_not_a_running_workbench() {
+        let root = workbench_test_dir("stale-pid");
+        // 端口留空（0）使这个用例只走 pid 文件分支，不触发端口兜底——
+        // 否则本机恰好在默认端口上跑着内核时这个断言会失真。
+        settings::save(
+            &root,
+            &Settings {
+                port: 0,
+                ..Settings::default()
+            },
+        )
+        .expect("save settings");
+        let current = settings::load(&root);
+
+        assert!(
+            !workbench_running(&root, &current),
+            "没有 pid 记录时不应报告工作台在运行"
+        );
+
+        write_pid(&root, u32::MAX);
+        assert!(
+            !workbench_running(&root, &current),
+            "陈旧的 pid 记录不能被判成正在运行的工作台"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
