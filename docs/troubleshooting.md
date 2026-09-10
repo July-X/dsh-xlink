@@ -12,7 +12,7 @@
 | Tauri 同步命令里创建 webview 卡死 | 用新线程创建（`open_harness` 模式） |
 | debug/dev 模式使用 `@deepseek-ai/dsh@0.1.2-alpha.1` 时首次打开工作台白屏，第二次点「打开工作台窗口」才正常 | alpha.1 的工作台 URL 带进程级 launch token；当天内核日志可能残留上一次进程的旧 token，旧 token 会返回 `401`。外壳现在会在打开 WebView 前用当前端口验证 token，并等待新 token；若仍失败，打开概览页「查看日志」并根据日志路径重试，或切换/重装内核版本 |
 | 主面板 invoke 全部报 `xxx not allowed. Command not found`、状态卡「加载中…」 | `src-tauri/permissions/` 一旦存在任何应用级权限文件，应用命令就从「本地窗口默认放行」翻转为「必须显式授权」。新增 `tauri::generate_handler!` 命令时必须把命令名同步进 `permissions/app-commands.json` 的 `allow-local-commands` 列表；工作台 webview（远程源）的命令单独走 `allow-focus-main-shell` + `capabilities/harness-remote.json` |
-| macOS 访问 `127.0.0.1:3080` 失败 | WKWebView 默认允许环回，勿加 `NSAppTransportSecurity` 例外 |
+| macOS 访问 `127.0.0.1:3090`（dev 壳为 3091）失败 | WKWebView 默认允许环回，勿加 `NSAppTransportSecurity` 例外 |
 | 编辑器报 `capabilities/default.json` 缺 `$schema` | schema 由首次 `tauri build` 生成，属正常 |
 | updater 显示"已是最新"但实际有新版 | endpoint `/releases/latest/download/latest.json` 拿到 404——发布版本是 draft 或 prerelease。检查 `.github/workflows/desktop-release.yml` 是否被改过或最近一次 GitHub Release 是否被标成 prerelease |
 | Windows 更新后仍能从旧目录或旧快捷方式启动 | `tauri-plugin-updater` 的 NSIS `/UPDATE` 会覆盖安装但不执行旧版本卸载。新版本首次状态刷新后，对更新标记记录的不同安装目录调用其 `uninstall.exe /S`，同目录则直接删除历史 exe 和默认快捷方式，同时清理受限范围内的 updater 临时目录；若文件被占用或卸载失败，查看 `release-shell-update-cleanup-<日期>.log`，重启应用会自动重试。没有写入更新标记的用户自定义安装目录不会被扫描或删除 |

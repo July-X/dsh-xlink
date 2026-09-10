@@ -9,8 +9,15 @@
 3. 平台 `build` 只执行签名构建并上传 Actions artifact，不创建或修改 GitHub Release。这样质量检查不会留下半成品，两个平台也不再争用同一份 `latest.json`。
 4. `publish` 只在预检、质量门禁和两个平台构建全部成功后运行。它下载两个 artifact，校验五个安装/更新文件各有且只有一份，由 `scripts/generate-updater-manifest.mjs` 生成 `latest.json`，再一次性上传全部资产。
 5. 新 Release 先以 draft 形式接收完整资产，上传结束后才转换为正式 release；最终 `draft=false`、`prerelease=false`，因此 `releases/latest/download/latest.json` 在发布完成时才对用户可见。
+6. `publish` 的最后一步做端到端校验：读回 Release 的真实资产集合并断言恰好 6 个，再拉取更新端点断言它报告的版本就是本次发布的版本、且每个平台资产都能以 HTTP 200 下载。这是「用户到底能不能收到更新」的唯一端到端检查。
 
 手动 dispatch 没有现成 tag 时，`publish` 会把当前 `main` commit 创建为 `desktop-v<version>` tag；tag 已存在时仅复用对应的 draft Release，正式 Release 会直接拒绝覆盖。版本文件未同步、tag 不在 `main` 或任一构建产物缺失都会在发布前失败。
+
+## 并发与版本单调性
+
+- **发布串行化**：workflow 使用固定的 `concurrency` 组（`group: desktop-release`），因此 tag push 与手动 dispatch 不会并行跑两条流水线。以 `github.ref` 分组时二者属于不同组，同一版本可以并发构建，后启动的那条会在 `Create or reuse release` 步骤上撞车失败——白烧一次双平台构建。
+- **版本单调性守卫**：`preflight` 会拉取线上 `releases/latest/download/latest.json`，断言待发布版本**严格大于**它报告的版本，否则直接失败。原因是 GitHub 的 `releases/latest` 取「最近创建的非 draft 非 prerelease release」，而不是 semver 最大值：给旧线发一个 hotfix 会让端点后退，而 Tauri 只在 `release.version > current_version` 时提示更新，已经装上新版本的用户从此静默收不到任何更新。线上还没有可读的 `latest.json`（首次发布）时该检查自动跳过。
+- **供应链**：workflow 中所有 `uses:` 都固定到 40 位 commit SHA（后缀注释是对应版本，由 Dependabot 负责升级）。build job 会把更新签名私钥放进构建步骤的环境，一个被投毒或被重指 tag 的第三方 action 足以读走私钥，从而为任意载荷签名。
 
 ## 缓存与构建
 

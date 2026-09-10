@@ -90,8 +90,10 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
 | `expectSha256`（copy 模式） | 预期「原文件」SHA-256（64 位小写十六进制）。给出时目标已存在必须与该哈希一致才会被备份并覆盖——把补丁打在 npm dist 等既有文件上时的安全闸：内核升级 / 文件漂移会明确失败而不是覆盖未知文件。缺省时 copy 保持「新增文件」语义（目标已存在且内容不同则拒绝）。 |
 | `replace` 模式 | 需要 `search`（精确字符串，不支持正则）与 `replacement`；全文中所有匹配都会替换。 |
 
-校验规则（应用时执行，而非加载时）：`copy` 必须给出 `from` 且资源内为普通文件；
-`replace` 必须同时给出 `search` 与 `replacement`；`to` 必须通过路径约束检查。
+校验分两层：**加载期**由 `load_patches` 调用 `validate_def` 做静态定义校验——`copy` 必须给出
+`from` 且资源内为普通文件；`replace` 必须同时给出 `search` 与 `replacement`；`to` 必须通过路径
+约束检查；`id` 不得重复。校验不通过的清单只记录原因、不进入可应用列表。**应用期**再做运行期
+裁决——目标文件哈希是否匹配 `expectSha256`、`search` 是否命中、备份是否被其它补丁占用。
 
 ## 应用流程（patch_apply）
 
@@ -170,6 +172,7 @@ alpha.3 重写了目标文件）；经 npm registry tarball 实测，官方 alph
 官方并没有实现持久层枚举缓存（并发两次 `list` 仍全量遍历两次），因此 v1.2.0 锚定
 alpha.3 重新收录并移除 superseded。当前仅 `dsh-file-perf` 在「设置 → 内置补丁」页
 呈现灰度（不可应用）状态。
+
 ## 开发流程与计划
 
 新增/修改一个补丁的完整流程：
@@ -252,8 +255,12 @@ alpha.3 重新收录并移除 superseded。当前仅 `dsh-file-perf` 在「设�
 - 边界：不缓存完整会话日志，不改变 `session.inspect()`、`readFrom()` 或
   `session.history` 的解压、校验、分页和错误语义。外部进程直接改写 `~/.dsh/sessions` 时，
   最多有一个 TTL 的最终一致性窗口。
-- 来源：目标文件来自 npm `@deepseek-ai/dsh-session-persistence-jsonl@0.1.1-rc.2`，
-  原始 SHA-256 为 `8b6ebc45…8d97f3`，补丁后 SHA-256 为 `9ed3fe3c…0a7f96e`。载荷按
+- 来源：目标文件来自 npm `@deepseek-ai/dsh-session-persistence-jsonl@0.1.2-alpha.3`
+  （官方 alpha.2 与 alpha.3 的 `lib/index.js` 逐字节相同），原始 SHA-256 为
+  `d5ae2c7d6f6fbca6b2d4d8c6fc7ffb1342d4ed6484ec9cd309ee5c7bf88e9a00`，v1.2.0 补丁后
+  SHA-256 为 `29d2501e9477633e0d1829edd554078329fdf3959bf0fff50672159bdeda6299`
+  （更早的 v1.0.1 / v1.1.0 载荷为 `9ed3fe3c…0a7f96e` / `f9985512…daffb6ff`，仍被
+  `scripts/verify-dsh-session-perf.mjs` 识别以便核对旧应用记录）。载荷按
   包名保存在 `files/dsh-session-persistence-jsonl/index.js`，manifest 的版本范围和
   `expectSha256` 只允许覆盖已核验的原始文件；补丁系统仍按文件级备份、原子写入和可撤销规则处理。
 - 验证：`npm run test:session-perf` 在临时模块树中检查清单、语法、并发合并、TTL 命中、

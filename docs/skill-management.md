@@ -75,15 +75,17 @@
 
 1. **fetch 进中央库**：npm 取 `dist-tags.latest`（或指定版本）下载 tarball，完整写入 `.part` 后再发布，由 Rust 解包器只接受 `package/` 根并拒绝越界路径、链接和特殊文件；git 深度克隆也通过有界输出捕获。写 `.dsh-source.json` 与 store.json。
 2. **扫描与校验（fail loud）**：在包内探测技能入口——任意目录下的真实 `SKILL.md`（探测深度 ≤3 层，覆盖根即技能与常见 monorepo 布局）及顶层平铺 `*.md`；逐个解析 frontmatter，校验 kebab-case `name` + 非 `description`。符号链接（含目录与 `SKILL.md` 文件）一律不视为技能入口，避免 `git clone` 保留的装饰性重定向（如 blader/humanizer v2.11.1+ 的 `skills/<name>/SKILL.md → ../../SKILL.md`）把同一技能重复计入。一个技能都没有 → 安装失败并给出原因；包内重名（frontmatter name 冲突）→ 整包拒绝。
-3. **物化到活动根**：对每个校验通过的技能，在 `<DSH_HOME>/skills/` 建 symlink（Windows junction）指向中央库内的技能目录/文件，条目名 = frontmatter `name`。链接失败自动降级 copy（差异复制，跳过未变化文件），实际模式记入 store.json。
-4. **无第 4 步**：不跑 pnpm、不改 profile——插件流程里最重的两步在这里不存在。
-5. **生效反馈**：壳探测内核端口是否在监听；运行中提示"已对工作台即时生效"，未运行提示"下次启动自动可用"。
+3. **物化到活动根**：对每个校验通过的技能，在 `<DSH_HOME>/skills/` 建链接指向中央库内的技能目录/文件，条目名 = frontmatter `name`。macOS/Linux 用符号链接；Windows 上**目录用 junction**（`mklink /J`，普通用户即可创建，不需要 `SeCreateSymbolicLinkPrivilege`），**扁平 `.md` 文件用文件符号链接**。链接创建失败时降级为整树复制，实际模式记入 store.json 并回显到面板的模式 chip。
+4. **所有权凭据**：无论链接还是复制，落地后都会把活动根条目的**内容指纹**（sha256）写进 store.json 的 `materialized_sha256`。判定"这个条目归本商店所有"时接受两种证据——链接解析到中央库源，或内容与记录的指纹一致；两者都不成立（用户手放的、落地后被改写过的）一律不动。指纹是 copy 模式唯一可用的凭据：没有它，复制出来的副本无法与用户自己的同名目录区分，卸载会静默失效。
+5. **无第 5 步**：不跑 pnpm、不改 profile——插件流程里最重的两步在这里不存在。
+6. **生效反馈**：壳探测内核端口是否在监听；运行中提示"已对工作台即时生效"，未运行提示"下次启动自动可用"。
 
-卸载 = 反向执行：拆除该包全部技能的活动根链接、删除中央库目录、更新 store.json。全程无进程重启。
+卸载 = 反向执行：拆除该包全部技能的活动根条目（按上述所有权凭据判定）、删除中央库目录、更新 store.json。全程无进程重启。
 
 ## 启用 / 禁用
 
-- **禁用** = 从活动根摘除该技能的链接（源完好保留在中央库），store.json 记 `enabled: false`；**启用** = 重建链接。
+- **禁用** = 从活动根摘除该技能的条目（源完好保留在中央库），store.json 记 `enabled: false`；**启用** = 重建链接或副本并刷新指纹。
+- 启动对账（`reconcile`）会为历史数据补记缺失的指纹：修复前落地的 copy 条目没有这个字段，补记之后才能被正常停用与卸载。
 - 不改写 SKILL.md 内容——`disable-model-invocation` 等 frontmatter 是技能作者的语义，壳的状态与之正交。
 - 内核 watcher 观察到条目移除/出现后自动失效重发现，运行中的会话在下一步模型请求前看到更新后的目录。
 
