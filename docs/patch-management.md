@@ -198,7 +198,7 @@ alpha.3 重新收录并移除 superseded。当前仅 `dsh-file-perf` 在「设�
       `dsh-session-reference` 两个包。此前用于验证机制的示例补丁（`xlink-hello` /
       `xlink-stub-annotate`）已移除，机制能力由单元测试与 `dsh-file-perf` 覆盖。
 - [x] 第二个真实补丁：`dsh-session-perf` v1.2.0（JSONL 持久层会话 header 枚举的短 TTL 缓存、并发扫描合并、生命周期失效和旧载荷状态识别；锚定官方 0.1.2-alpha.3 重新收录——官方未实现枚举缓存，alpha.2/alpha.3 官方 lib 逐字节相同）。
-- [x] 第三个真实补丁：`dsh-escalation-same-mode` v1.0.0（`copy + expectSha256` 模式：在 `@deepseek-ai/dsh-sandbox/lib/index.js` 的 `approveEscalation` 顶部插入同模式短路，让模型在已处于 `danger-full-access` 等目标模式时仍可合法送入同模式 `sandbox_permissions`，不再被「not strictly wider」击穿；其它非更宽请求仍按原路径抛错；当前载荷只覆盖 `0.1.1-rc.2`，其它内核版本不能直接套用）。
+- [x] 第三个真实补丁：`dsh-escalation-same-mode` v1.1.0（`copy + expectSha256` 模式：在 `@deepseek-ai/dsh-sandbox/lib/index.js` 的 `approveEscalation` 顶部插入同模式短路，让模型在已处于 `danger-full-access` 等目标模式时仍可合法送入同模式 `sandbox_permissions`，不再被「not strictly wider」击穿；其它非更宽请求仍按原路径抛错；v1.1.0 重新对齐官方 `0.1.3-alpha.2` dist——官方仍未采纳该短路，只把 `assertNever` 从 `@deepseek-ai/dsh-llm` 拆到 `@deepseek-ai/dsh-util-values`，载荷与 SHA 随之更新；v1.0.0 仅锚定 `0.1.1-rc.2`，已应用旧版的内核记录仍可撤销，重应用需先撤销旧记录再用 v1.1.0）。
 - [ ] 二期：补丁版本升级（`update` 命令：备份旧应用记录 → 应用新版本，无需先撤销）；
       按内核版本的应用视图（切换内核后对每个已装版本单独管理）。
 - [ ] 三期：补丁更新渠道（从发行版拉取最新补丁清单，脱离「随 app 版本捆绑」的节奏）；
@@ -273,19 +273,24 @@ alpha.3 重新收录并移除 superseded。当前仅 `dsh-file-perf` 在「设�
   `effectiveMode === "danger-full-access"` 且模型送入
   `sandbox_permissions: "danger-full-access"` 时被抛
   `sandbox escalation to "danger-full-access" is not strictly wider than this call's current "danger-full-access" mode`；
-  `workspace-write` 同模式也有同样问题。
+  `workspace-write` 同模式也有同样问题。官方 `0.1.3-alpha.2` 仍未采纳该短路（仅
+  `assertNever` 的 import 从 `@deepseek-ai/dsh-llm` 拆到 `@deepseek-ai/dsh-util-values`），
+  错误依旧出现。
 - 行为：补丁在 `const { requestedMode, effectiveMode, ... } = request;` 与
   `if (!(WIDER_MODES[effectiveMode] ?? []).includes(mode)) throw ...` 之间插入
   `if (mode === effectiveMode) return mode;`——同模式请求变成 no-op，不再走严格更宽表、
   也不再触发审批。其他分支完全保持原状：严格更宽的请求仍走审批流，非更宽但模式不同的
   请求仍按原路径抛错，无 `approver` / 无 `agent` 的失败消息文案也不变。
-- 来源：目标文件来自 npm `@deepseek-ai/dsh-sandbox@0.1.1-rc.2`，原始 SHA-256 为
-  `63ee2a10…e324f`，补丁后 SHA-256 为 `dafc42d2…22c5e`。清单只允许覆盖声明的原始
-  `expectSha256`；目标 SHA 不符时拒绝写入。载荷整文件保留在 `files/dsh-sandbox/index.js`。
+- 来源：v1.1.0 锚定 npm `@deepseek-ai/dsh-sandbox@0.1.3-alpha.2`，原始 SHA-256 为
+  `8994b3e4…3c03`，补丁后 SHA-256 为 `f741cf32…ba35`。v1.0.0 仅锚定 `0.1.1-rc.2`
+  （原始 `63ee2a10…e324f` / 补丁后 `dafc42d2…22c5e`），旧应用记录仍可在 0.1.1-rc.2
+  内核上撤销，重应用需先撤销再用 v1.1.0。清单只允许覆盖声明的原始 `expectSha256`；
+  目标 SHA 不符时拒绝写入。载荷整文件保留在 `files/dsh-sandbox/index.js`。
 - 验证：`npm run test:escalation-same-mode` 在临时模块树里检查清单、目标 / 载荷 SHA、
   载荷的同模式短路存在性、`approveEscalation` 的同模式 / 缩小 / 缺失 approver / 缺失 agent /
-  审批取消等行为断言。应用到当前内核后追加 `--require-applied` 复测。当前载荷只覆盖
-  `0.1.1-rc.2`，其它内核版本不能直接套用。
+  审批取消等行为断言（v1.1.0 起为 `@deepseek-ai/dsh-llm` 与
+  `@deepseek-ai/dsh-util-values` 分别提供独立 stub）。应用到当前内核后追加
+  `--require-applied` 复测。当前载荷只覆盖 `0.1.3-alpha.2`，其它内核版本不能直接套用。
 
 ## 已知限制（初版）
 
