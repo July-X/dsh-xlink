@@ -72,9 +72,24 @@ export function checkSkillUpdates(opts = {}) {
     if (isExclusiveBusy()) return Promise.resolve(null);
 
     const run = withExclusive(async () => {
-      const infos = await invoke('skill_check_updates');
-      lastSkillUpdateCheckAt = Date.now();
-      const n = (infos || []).filter((i) => i.latest).length;
+      const infos = (await invoke('skill_check_updates')) || [];
+      // 逐包的错误此前被完全忽略：网络或代理异常时用户点「检查更新」什么都
+      // 不会发生，也没有任何解释。这里至少把第一个具体原因说出来。
+      const failed = infos.filter((i) => i.error);
+      if (failed.length) {
+        toastError(
+          failed.length +
+            ' 个技能包检查更新失败：' +
+            failed[0].error +
+            '；请检查网络或代理后重试',
+          8000
+        );
+      } else {
+        // TTL 只在真的查到结果时推进——与后端保持一致：失败也推进的话，
+        // 15 分钟内不会再自动检查，用户手动点击也要等冷却。
+        lastSkillUpdateCheckAt = Date.now();
+      }
+      const n = infos.filter((i) => i.latest).length;
       if (n > 0 && opts.toastOnUpdates) {
         toast('有 ' + n + ' 个技能包可更新', 5000, 'warning');
       }

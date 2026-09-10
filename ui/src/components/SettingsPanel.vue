@@ -136,6 +136,13 @@ function onSave() {
       <p class="muted patch-section-hint">
         随 dsh-xlink 内置，默认不生效；应用前自动备份，可随时撤销。
       </p>
+      <el-alert
+        v-if="patchStore.view && patchStore.view.warning"
+        :title="patchStore.view.warning"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
       <div v-if="!patchStore.loaded" class="patch-empty">补丁状态加载中…</div>
       <div v-else-if="!patchRows.length" class="patch-empty">此版本未携带任何内置补丁。</div>
       <div v-else class="patch-list">

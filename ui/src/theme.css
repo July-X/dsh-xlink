@@ -2062,7 +2062,12 @@ main {
 .progress-overlay {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  /* 必须高于 Element Plus 的弹层（`.el-overlay` 是 2000）。事故面板
+     （IncidentModal）与日志面板都是 el-dialog，用户在那上面点「移除插件」
+     会触发一次 withProgress；如果浮层压在弹层下面，进度文案、pnpm 日志和
+     「关闭」按钮全部被遮罩盖住——界面看起来"点了没反应"，而按约定失败时
+     进度面板要保持开放由用户手动关闭，此时它根本点不到。 */
+  z-index: 3000;
   display: grid;
   place-items: center;
   background: rgba(4, 8, 20, 0.55);
