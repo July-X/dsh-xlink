@@ -32,7 +32,12 @@ url = "2"
 # 通过 rustls 走 HTTPS（ureq 3.x 的特性名是 `rustls` 而非 `tls`）：无系统
 # TLS 依赖，因此在 Intel macOS 与 Windows 的 CI runner 上交叉编译
 # 无需 C 工具链。
-ureq = { version = "3", default-features = false, features = ["json", "gzip", "rustls"] }
+# 刻意**不**开启 `gzip` 特性：ureq 的 `LimitReader` 位于解压器内层，压缩响应
+# 会让 `MAX_HTTP_BODY_BYTES` / `MAX_TARBALL_BYTES` 只约束压缩后的字节数——一个
+# 9.9 MiB 的 gzip 炸弹可以解出数十 GB 并触发 OOM abort（整个壳连同正在跑的
+# 内核一起消失）。不带该特性时 ureq 不会声明 `Accept-Encoding`，服务器也就
+# 不会压缩。
+ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
 thiserror = "2"
 tokio = { version = "1", features = ["time"] }
 flate2 = "1"

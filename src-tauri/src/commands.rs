@@ -215,9 +215,9 @@ pub async fn install_node(app: AppHandle, on_event: Channel<String>) -> Result<(
         };
         let installed = crate::node_install::verify_or_install(&data_dir, &logs_dir, &mut send)?;
         if installed.is_some() {
-            if let Ok(mut cache) = state.node_cache.lock() {
-                *cache = None;
-            }
+            // 用 crate::lock 而不是裸 lock()：锁被毒化时也要把缓存清掉，
+            // 否则下一次 get_status 仍会报告旧的（不存在的）Node 运行时。
+            *crate::lock(&state.node_cache) = None;
         }
         Ok(())
     })
@@ -231,22 +231,52 @@ pub async fn save_settings(
     settings: settings::Settings,
 ) -> Result<(), String> {
     let data_dir = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || settings::save(&data_dir, &settings))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let previous = settings::load(&data_dir);
+        // 端口只在工作台停止时才能改。运行中的内核绑在它启动时那个端口上，
+        // 改掉配置端口会让状态页把"运行中"读成"未运行"；用户随后点一次
+        // 「启动工作台」就会在同一 data dir 上拉起第二个内核，两个内核写
+        // 同一份会话日志（`seq gap` 损坏）。其余设置可以随时改。
+        if settings.port != previous.port && kernel::workbench_running(&data_dir, &previous) {
+            return Err(format!(
+                "工作台正在运行，无法修改端口（当前 {}，新值 {}）。请先点击「关闭工作台」停止工作台，再回来保存设置",
+                previous.port, settings.port
+            ));
+        }
+        settings::save(&data_dir, &settings).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
-pub async fn get_kernel_log(state: State<'_, AppState>) -> Result<String, String> {
-    // 仅取当天的轮转内核日志末尾。之所以只读当天是有意为之：用户在检
-    // 测到空白页之后几秒就会点「查看前端自检证据」，他们想看的正是
-    // 最新几行。较早的日期仍保留在目录和面板的页签列表中，要做更深
-    // 入调查只需切换一个页签。
-    let path = kernel::current_kernel_log_path(&state.data_dir);
-    tauri::async_runtime::spawn_blocking(move || read_tail(&path, 16 * 1024))
-        .await
-        .map_err(|e| e.to_string())
+/// 把日志文件名拆成排序键 `(基名, 代次)`，用于「最新者优先」的稳定排序。
+///
+/// - `release-kernel-2026-09-10.log` → `("release-kernel-2026-09-10", 0)`
+/// - `release-kernel-2026-09-10.1.log` → `("release-kernel-2026-09-10", 1)`
+/// - 非数字后缀不算代次：`a.b.log` → `("a.b", 0)`
+///
+/// 代次按数值而非字符串比较，否则 `.10.log` 会排到 `.2.log` 前面。
+pub fn log_sort_key(name: &str) -> (String, u32) {
+    let base = name.strip_suffix(".log").unwrap_or(name);
+    match base.rsplit_once('.') {
+        Some((stem, tail)) if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) => {
+            // 纯数字尾段当成代次；`u32` 溢出（异常长数字）时退回字符串形态，
+            // 归类为「非代次」而不是 panic。
+            match tail.parse::<u32>() {
+                Ok(generation) => (stem.to_string(), generation),
+                Err(_) => (base.to_string(), 0),
+            }
+        }
+        _ => (base.to_string(), 0),
+    }
+}
+
+/// `list_log_files` 的排序比较器：基名逆序（最新日期在前），同一基名内
+/// 代次升序（`….log` → `….1.log` → `….2.log`，新 → 旧）。
+pub fn compare_log_names(a: &str, b: &str) -> std::cmp::Ordering {
+    let (base_a, generation_a) = log_sort_key(a);
+    let (base_b, generation_b) = log_sort_key(b);
+    base_b.cmp(&base_a).then(generation_a.cmp(&generation_b))
 }
 
 /// 日志文件面板页签列表中的一项。
@@ -261,6 +291,40 @@ pub struct LogFileEntry {
     pub size: u64,
 }
 
+/// 扫描 logs 目录，收集所有 `.log` 文件（含轮转备份）并按「最新者优先」排序。
+///
+/// 独立成同步函数是为了能被测试直接驱动：面板可见性完全取决于这里的扩展名
+/// 过滤与排序，而 `list_log_files` 本身需要 Tauri 的 `State`，单测无法构造。
+fn collect_log_entries(dir: &Path) -> std::io::Result<Vec<LogFileEntry>> {
+    let entries = fs::read_dir(dir)?;
+    let mut out: Vec<LogFileEntry> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            // 轮转备份命名成 `<base>.<n>.log`，扩展名仍是 `log`，因此这里
+            // 天然收得到它们；只按扩展名判断即可，无需特判代次。
+            if path.extension().and_then(|s| s.to_str()) != Some("log") {
+                return None;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            Some(LogFileEntry { name, size })
+        })
+        .collect();
+
+    // 排序：先按「基名」逆序，把最新的 `release-kernel-<today>.log` 排到
+    // 列表头部；同一基名内再按代次升序，让同一天的日志按
+    // `….log` → `….1.log` → `….2.log`（新 → 旧）排列。单纯按文件名字典序
+    // 逆序会把 `.2.log` 排到 `.1.log` 前面，正好是反的。
+    //
+    // logs 目录目前没有任何保留策略：每个日期 × 每种 kind 最多留
+    // `KERNEL_LOG_BACKUPS + 1` 代，但日期只增不减。历史上这里曾引用过一个
+    // `cleanup_legacy_logs` 一次性清理函数，该函数已不存在——不要再按那个
+    // 名字找清理逻辑（见台账 P2-62）。
+    out.sort_by(|a, b| compare_log_names(&a.name, &b.name));
+    Ok(out)
+}
+
 /// 列举 Shell 日志目录下的所有 `*.log` 文件，最新者优先。
 ///
 /// `read_dir` 与 `metadata` 之间消失的文件会被静默跳过——安装日志会
@@ -271,27 +335,7 @@ pub struct LogFileEntry {
 pub async fn list_log_files(state: State<'_, AppState>) -> Result<Vec<LogFileEntry>, String> {
     let dir = kernel::logs_dir(&state.data_dir);
     tauri::async_runtime::spawn_blocking(move || {
-        let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
-        let mut out: Vec<LogFileEntry> = entries
-            .filter_map(|e| e.ok())
-            .filter_map(|entry| {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("log") {
-                    return None;
-                }
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                Some(LogFileEntry { name, size })
-            })
-            .collect();
-
-        // 命名规则会在每个文件上盖一个构建类型和递减日期，因此字典序的
-        // 逆序排序会把最新的 `release-kernel-<today>.log` 排到列表头
-        // 部。老式的裸 `kernel.log`（如果更老的 Shell 写过的话）按字
-        // 母序排；如果它真的出现在头部，一次性清理会把它清掉——见下
-        // 面的 `cleanup_legacy_logs`。
-        out.sort_by(|a, b| b.name.cmp(&a.name));
-        Ok(out)
+        collect_log_entries(&dir).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -425,6 +469,14 @@ pub async fn install_kernel(
     version: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
+    // 命令边界的最后一道闸：版本号来自 UI（最终来自远端版本列表），会被拼进
+    // `kernels/<version>` 与内核 stub package.json。这里拒绝一切非 semver 形态
+    // 的输入，包括路径分隔符与引号。
+    if !crate::version::is_valid_kernel_version(&version) {
+        return Err(format!(
+            "版本号 {version:?} 形态非法，拒绝安装；请从「内核版本」页的官方发布列表中选择版本"
+        ));
+    }
     let data_dir = app.state::<AppState>().data_dir.clone();
     let version_for_install = version.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
@@ -559,11 +611,43 @@ mod kernel_install_tests {
 
 // --- 内核生命周期 -----------------------------------------------------------
 
+/// 把新内核句柄放进槽位，并**显式回收**被替换掉的旧句柄。
+///
+/// `Option::replace` 会直接把旧 `Child` 丢掉，而 `std::process::Child` 的 `Drop`
+/// 不会 `wait` —— 在 Unix 上那个已经退出的子进程就成了僵尸，一直挂在进程表里
+/// 直到壳退出（`kernel_running` 只在句柄仍被用到时才会顺手 `try_wait`，不能
+/// 指望它兜底）。
+///
+/// 旧句柄仍在运行时**不杀它**（它可能正服务着用户的会话），但也绝不能把句柄
+/// 丢掉了事：交给一个后台线程 `wait`，让它在自己退出时被回收，同时把这件事
+/// 报给调用方 —— 同一个 data dir 上不该同时存在两个内核。
+fn replace_child_slot(slot: &Mutex<Option<Child>>, child: Child) -> Option<String> {
+    let previous = crate::lock(slot).replace(child);
+    let mut previous = previous?;
+    match previous.try_wait() {
+        // `try_wait` 对已退出的子进程就是一次 `waitpid`：拿到状态即已回收。
+        Ok(Some(_)) => None,
+        Ok(None) => {
+            let pid = previous.id();
+            std::thread::spawn(move || {
+                let _ = previous.wait();
+            });
+            Some(format!(
+                "上一个内核进程（pid {pid}）仍在运行，已交给后台线程等待其退出；\
+                 同一数据目录下不应同时存在两个内核，请确认是否有残留进程"
+            ))
+        }
+        Err(error) => Some(format!("回收上一个内核句柄失败：{error}")),
+    }
+}
+
 /// 为成功启动的内核子进程做注册：记录其 pid 以便后续重启后的 Shell
 /// 回收，并把句柄保存在应用状态中。
 fn register_child(state: &AppState, data_dir: &Path, child: Child) {
     kernel::write_pid(data_dir, child.id());
-    crate::lock(&state.running).replace(child);
+    if let Some(warning) = replace_child_slot(&state.running, child) {
+        eprintln!("dsh-xlink: {warning}");
+    }
 }
 
 /// 在启动防护下启动当前活动的内核。幂等：如果端口已经有应答则返回
@@ -636,42 +720,28 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
         if let Some(window) = app.get_webview_window("harness") {
             let _ = window.destroy();
         }
-        {
+        let stop_outcome = {
             let mut guard = crate::lock(&state.running);
-            if let Some(mut child) = guard.take() {
-                kernel::stop(&mut child).map_err(|e| e.to_string())?;
+            match guard.take() {
+                Some(mut child) => kernel::stop(&mut child),
+                None => Ok(()),
             }
+        };
+        // 端口不是判据：内核可能是在用户修改端口设置之前启动的，此时它仍然
+        // 绑在旧端口上——用当前配置端口去探测会读成「没有内核在跑」，于是一个
+        // 已经在服务的进程永远回收不掉。这里走与 `status()` 相同的活体判据
+        // （pid 文件，或配置端口上的内核身份校验），`kill_pid` 内部还会再校
+        // 验一遍 pid 仍指向 dsh 内核，因此被复用给无关进程的 pid 是 no-op。
+        let current = settings::load(&data_dir);
+        if let Some(pid) = kernel::workbench_pid(&data_dir, &current) {
+            kernel::kill_pid(pid, None);
         }
-        let port = settings::load(&data_dir).port;
-        if kernel::port_open(port) {
-            // 先尝试 pid 文件——内存中的句柄已经在 Shell 重启后丢失了，但之
-            // 前的 Shell 已经把 pid 写到了 <data_dir>/kernel.pid，且它
-            // 派生的内核仍然绑在该端口上。kill_pid 在发信号前会先校
-            // 验 pid 仍指向一个 dsh 内核，因此被回收给无关进程的 pid
-            // 是一个 no-op。
-            let mut killed = false;
-            if let Some(pid) = kernel::read_pid(&data_dir) {
-                if kernel::pid_is_kernel(pid, Some(port)) {
-                    kernel::kill_pid(pid, Some(port));
-                    killed = true;
-                }
-            }
-            // 兜底：当 dev/release Shell 并存，且内存中的子进程和 pid 文件都
-            // 不存在时（例如 start_maybe 因端口已被另一个 Shell 的内
-            // 核占用而跳过启动），Shell 在自身记录中找不到监听者。
-            // 通过端口反查拿到它的 pid，再用同样的 pid_is_kernel 防
-            // 护过滤一遍，这样即便回收到的 pid 恰好指向一个无关进
-            // 程，也仍然不会被误杀。
-            if !killed {
-                if let Some(pid) = kernel::port_listen_pid(port) {
-                    if kernel::pid_is_kernel(pid, Some(port)) {
-                        kernel::kill_pid(pid, Some(port));
-                    }
-                }
-            }
-        }
+        // pid 记录的清理必须无条件执行：内存句柄停止失败时若提前返回，下一次
+        // 启动会带着一份陈旧的 pid 记录继续跑，而进程可能还活着。
         kernel::clear_pid(&data_dir);
-        Ok(())
+        // 状态已经收敛，但把停止失败如实报给 UI——那通常意味着进程杀不掉，
+        // 属于用户需要知道的事。
+        stop_outcome.map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -861,6 +931,23 @@ fn chrome_backdrop(app: &AppHandle) -> Color {
     }
 }
 
+/// 端口上有一个**已确证不是内核**的监听者时，返回拒绝打开工作台的理由。
+///
+/// 只在 [`kernel::ListenerIdentity::NotKernel`] 时拒绝：端口被无关程序占用时
+/// 打开工作台会把那个程序当成工作台显示出来（P2-6 的残留）。身份未知
+/// （端口空闲、查不到 pid、命令行读不出来）时返回 `None` 保持原有宽松行为——
+/// 收紧到 Unknown 会让「内核在跑但 pid 反查失败」的正常场景打不开工作台，
+/// 那是比误开一个网页严重得多的回归。
+fn harness_port_conflict(port: u16, identity: kernel::ListenerIdentity) -> Option<String> {
+    match identity {
+        kernel::ListenerIdentity::NotKernel => Some(format!(
+            "端口 {port} 被另一个程序占用，它不是 dsh 内核。\
+             请先结束占用该端口的程序，或在「设置」里换一个端口后重试"
+        )),
+        kernel::ListenerIdentity::Kernel | kernel::ListenerIdentity::Unknown => None,
+    }
+}
+
 #[tauri::command]
 pub async fn open_harness(app: AppHandle) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
@@ -869,10 +956,26 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let settings = settings::load(&data_dir);
         if !kernel::port_open(settings.port) {
+            // 内核可能仍在**旧**端口上服务（用户改过端口设置，或 settings.json
+            // 被手工改过）。这种情况下让用户反复点「启动工作台」是死路，
+            // 直接给出唯一能收敛状态的下一步。
+            if kernel::workbench_pid(&data_dir, &settings).is_some() {
+                return Err(format!(
+                    "端口 {} 上没有工作台，但检测到内核仍在运行。请先点击「关闭工作台」停止它，再重新启动工作台",
+                    settings.port
+                ));
+            }
             return Err(format!(
                 "内核未在运行（端口 {}），请先点击「启动工作台」",
                 settings.port
             ));
+        }
+        // 端口上有监听者，但它必须是内核：无关程序占着端口时不能把它当
+        // 工作台打开（P2-6）。
+        if let Some(reason) =
+            harness_port_conflict(settings.port, kernel::port_listener_identity(settings.port))
+        {
+            return Err(reason);
         }
         // 已经开着的工作台窗口：这个入口的语义是「把它带到台前」，不是
         // 重新加载。导航会丢掉工作台前端的全部运行时状态（会话滚动位置、
@@ -1534,8 +1637,12 @@ fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
     let main = app
         .get_webview_window("main")
         .ok_or("主壳窗口不存在（label: main）")?;
+    // 用 `get_window`：`official-chat` 是由 WindowBuilder 创建的**裸窗口**
+    // （它用 add_child 挂载多个子 webview），`get_webview_window` 对它永远
+    // 返回 None，于是这个 label 会被静默跳过。以前靠 RunEvent::Exit 里的
+    // 兜底掩盖着，而本函数的契约正是"已确认的退出必须自己关掉每一个窗口"。
     for label in ["official-chat", "harness", "log-viewer"] {
-        if let Some(window) = app.get_webview_window(label) {
+        if let Some(window) = app.get_window(label) {
             let _ = window.destroy();
         }
     }
@@ -1613,6 +1720,11 @@ pub async fn kernel_plugin_list(
     state: State<'_, AppState>,
     version: String,
 ) -> Result<Vec<plugins::KernelPluginRow>, String> {
+    // `version` 会被当作路径段拼进 `kernels/<version>/plugins`，这里同样只接受
+    // 已安装列表里的形态。
+    if !crate::version::is_valid_kernel_version(&version) {
+        return Err(format!("版本号 {version:?} 形态非法"));
+    }
     let data_dir = state.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || plugins::kernel_plugin_list(&data_dir, &version))
         .await
@@ -2151,5 +2263,226 @@ mod official_chat_layout_tests {
             tauri::PhysicalSize::new(1366, 768),
         )));
         assert!(!should_relayout_official_chat(&WindowEvent::Focused(false)));
+    }
+}
+
+#[cfg(test)]
+mod log_listing_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn sorted(names: &[&str]) -> Vec<String> {
+        let mut owned: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        owned.sort_by(|a, b| compare_log_names(a, b));
+        owned
+    }
+
+    /// 在真实目录里跑一遍面板用的列举路径（含扩展名过滤），返回文件名字序列。
+    fn listed(dir: &Path) -> Vec<String> {
+        collect_log_entries(dir)
+            .expect("listing logs")
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect()
+    }
+
+    fn temp_logs_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-xlink-logs-{}-{}-{}",
+            label,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(&dir).expect("create temp logs dir");
+        dir
+    }
+
+    #[test]
+    fn listing_includes_rotated_backups_and_skips_other_extensions() {
+        // P2-4 的核心：轮转出去的 `<base>.<n>.log` 必须在面板列表里可见，
+        // 而 `notes.txt`、`X.log.1`（旧命名，扩展名是 `1`）都不该混进来。
+        let dir = temp_logs_dir("rotation");
+        for name in [
+            "release-kernel-2026-09-10.log",
+            "release-kernel-2026-09-10.1.log",
+            "release-kernel-2026-09-10.2.log",
+            "release-kernel-2026-09-09.log",
+        ] {
+            fs::write(dir.join(name), b"x").expect("write log");
+        }
+        fs::write(dir.join("notes.txt"), b"x").expect("write txt");
+        fs::write(dir.join("legacy.log.1"), b"x").expect("write legacy naming");
+
+        assert_eq!(
+            listed(&dir),
+            vec![
+                "release-kernel-2026-09-10.log",
+                "release-kernel-2026-09-10.1.log",
+                "release-kernel-2026-09-10.2.log",
+                "release-kernel-2026-09-09.log",
+            ]
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn listing_reports_file_sizes() {
+        let dir = temp_logs_dir("sizes");
+        fs::write(dir.join("release-kernel-2026-09-10.log"), b"12345").expect("write log");
+        let entries = collect_log_entries(&dir).expect("listing logs");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].size, 5);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn log_sort_key_splits_base_and_generation() {
+        assert_eq!(
+            log_sort_key("release-kernel-2026-09-10.log"),
+            ("release-kernel-2026-09-10".to_string(), 0)
+        );
+        assert_eq!(
+            log_sort_key("release-kernel-2026-09-10.1.log"),
+            ("release-kernel-2026-09-10".to_string(), 1)
+        );
+        // 非数字后缀不是代次，属于基名的一部分。
+        assert_eq!(log_sort_key("a.b.log"), ("a.b".to_string(), 0));
+        // 数字后缀按数值比较，而不是字符串。
+        assert_eq!(log_sort_key("x.10.log"), ("x".to_string(), 10));
+        // 没有扩展名时整体当基名。
+        assert_eq!(log_sort_key("kernel"), ("kernel".to_string(), 0));
+    }
+
+    #[test]
+    fn newest_log_first_then_its_backups_in_order() {
+        // 新日期在最前；同一天内 `.log` → `.1.log` → `.2.log`；老日期最后。
+        // 旧实现用纯字典序逆序，会把 `.2.log` 排到 `.1.log` 前面。
+        assert_eq!(
+            sorted(&[
+                "release-kernel-2026-09-09.log",
+                "release-kernel-2026-09-10.2.log",
+                "release-kernel-2026-09-10.log",
+                "release-kernel-2026-09-10.1.log",
+            ]),
+            vec![
+                "release-kernel-2026-09-10.log",
+                "release-kernel-2026-09-10.1.log",
+                "release-kernel-2026-09-10.2.log",
+                "release-kernel-2026-09-09.log",
+            ]
+        );
+    }
+
+    #[test]
+    fn two_digit_generations_sort_numerically() {
+        assert_eq!(
+            sorted(&["x.log", "x.2.log", "x.10.log"]),
+            vec!["x.log", "x.2.log", "x.10.log"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod harness_open_tests {
+    use super::*;
+
+    #[test]
+    fn refuses_to_open_a_port_held_by_a_known_non_kernel() {
+        // P2-6 残留：端口被无关程序占用时，面板此前会把这个端口当工作台
+        // 打开 —— 用户看到的是别人的网页。
+        let reason = harness_port_conflict(3090, kernel::ListenerIdentity::NotKernel)
+            .expect("已知的非内核监听者必须被拒绝");
+        assert!(reason.contains("3090"), "理由里要带上端口：{reason}");
+        assert!(reason.contains("设置"), "要给出可操作的下一步：{reason}");
+    }
+
+    #[test]
+    fn allows_the_kernel_and_unknown_listeners() {
+        assert!(harness_port_conflict(3090, kernel::ListenerIdentity::Kernel).is_none());
+        // 身份未知时必须保持宽松：读不到命令行不等于"不是内核"，收紧会让
+        // pid 反查失败的用户打不开工作台。
+        assert!(harness_port_conflict(3090, kernel::ListenerIdentity::Unknown).is_none());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod child_slot_tests {
+    use super::*;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    fn spawn_exit() -> Child {
+        Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn")
+    }
+
+    /// 等 `pid` 从进程表里消失（被回收）或超时。
+    ///
+    /// 用 `kill(pid, 0)` 探测而**不能**用 `waitpid`：`waitpid` 本身就会回收僵尸，
+    /// 于是"观测"这个动作把被观测对象消掉了，测试永远看到"已回收"——该用例的
+    /// 第一版正是这样失去区分度（反证时退化实现照样通过）。`kill(pid, 0)` 对
+    /// 僵尸同样返回成功，只有进程真正被回收（pid 从进程表消失）后才报 ESRCH。
+    fn wait_for_reap(pid: u32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if unsafe { libc::kill(pid as i32, 0) } != 0 {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[test]
+    fn replacing_a_dead_handle_reaps_it_instead_of_leaving_a_zombie() {
+        // P2-1：`Option::replace` 丢掉旧句柄而不 wait，已退出的子进程会以僵尸
+        // 态留在进程表里。这里把"已退出但未回收"的句柄放进槽位，再替换它。
+        let slot: Mutex<Option<Child>> = Mutex::new(Some(spawn_exit()));
+        let pid = slot.lock().unwrap().as_ref().unwrap().id();
+        // 等它退出：此刻它是僵尸，只有 wait/try_wait 能收掉。
+        std::thread::sleep(Duration::from_millis(300));
+
+        let warning = replace_child_slot(&slot, spawn_exit());
+        assert!(warning.is_none(), "已退出的旧句柄应被静默回收：{warning:?}");
+        assert!(
+            wait_for_reap(pid),
+            "旧子进程必须已被回收，否则它是僵尸（pid {pid}）"
+        );
+
+        if let Some(mut child) = slot.into_inner().unwrap() {
+            let _ = child.wait();
+        }
+    }
+
+    #[test]
+    fn replacing_a_live_handle_hands_it_to_a_background_reaper() {
+        // 旧句柄仍活着时不能杀（可能正在服务用户），但也不能丢句柄 —— 否则
+        // 它退出时同样没人回收。
+        let slot: Mutex<Option<Child>> = Mutex::new(Some(
+            Command::new("sh")
+                .arg("-c")
+                .arg("sleep 0.3")
+                .spawn()
+                .expect("spawn"),
+        ));
+        let pid = slot.lock().unwrap().as_ref().unwrap().id();
+
+        let warning = replace_child_slot(&slot, spawn_exit());
+        let warning = warning.expect("仍在运行的旧句柄必须报告出来");
+        assert!(
+            warning.contains(&pid.to_string()),
+            "诊断里要带上旧 pid：{warning}"
+        );
+        assert!(wait_for_reap(pid), "后台线程应负责回收它（pid {pid}）");
+
+        if let Some(mut child) = slot.into_inner().unwrap() {
+            let _ = child.wait();
+        }
     }
 }

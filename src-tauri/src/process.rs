@@ -113,6 +113,44 @@ fn sync_parent_directory(_parent: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// 读取一个小型 JSON 状态文件的结果。
+///
+/// **必须区分「文件不存在」与「读取/解析失败」**。把后者退化成"空清单"是
+/// 静默数据丢失的通用形态：同一次启动流程会据此清退接线、删除物化产物，并用
+/// 空内容覆盖掉用户的真实数据——Windows 上杀毒软件短暂锁一下文件、或一次手工
+/// 编辑留下的语法错误，就足以触发。`store.json` / `state.json` / `settings.json`
+/// 全都经这里读取。
+pub enum StateRead<T> {
+    Loaded(T),
+    /// 文件不存在：正常的首次运行。
+    Missing,
+    /// 读取或解析失败。调用方**不得**把它当成空状态继续：写路径要报错退出，
+    /// 清扫路径要跳过，展示路径要把它暴露成警告。原文件保持在原处不动，
+    /// 用户仍可人工恢复。
+    Corrupt {
+        reason: String,
+    },
+}
+
+/// 读取并解析 `path`，区分"不存在"与"损坏"（见 [`StateRead`]）。
+pub fn read_state_file<T: serde::de::DeserializeOwned>(path: &Path) -> StateRead<T> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return StateRead::Missing,
+        Err(error) => {
+            return StateRead::Corrupt {
+                reason: format!("无法读取 {}：{error}", path.display()),
+            }
+        }
+    };
+    match serde_json::from_str(&text) {
+        Ok(value) => StateRead::Loaded(value),
+        Err(error) => StateRead::Corrupt {
+            reason: format!("无法解析 {}：{error}", path.display()),
+        },
+    }
+}
+
 /// 为一次性外部工具（`git`、`tar` 等）构造 `Command`，让它继承合并后的 PATH，
 /// 这样 GUI 壳的子进程能解析到用户安装在自己 user PATH 下的工具。
 /// `process::spawn` 覆盖了长时间运行的助手（pnpm/npm）并把同样的 PATH
@@ -131,6 +169,24 @@ fn sync_parent_directory(_parent: &Path) -> io::Result<()> {
 pub fn command_with_path<S: AsRef<OsStr>>(program: S) -> Command {
     let mut cmd = Command::new(program);
     cmd.env("PATH", crate::env::merged_path());
+    cmd
+}
+
+/// 与 [`command_with_path`] 相同，但把 `extra_path_dirs` 前置到子进程的 PATH。
+///
+/// 用于**长驻**进程（内核）与任何可能派生出 `#!/usr/bin/env node` 子进程的
+/// 场景：调用方已经解析出唯一可信的 node 路径，把它所在目录前置之后，子进程
+/// 里的 shebang 才会解析到同一个 node。缺少这一步时，走托管安装（或 nvm
+/// 绝对路径探测）的用户，其内核 PATH 里根本没有那个 node 目录——插件 CLI、
+/// `npm`/`npx`、工作台里的终端任务一律以 `env: node: No such file or directory`
+/// 失败；若用户 PATH 上恰好还有另一条 Node 线，加载同一批原生模块还会撞
+/// `NODE_MODULE_VERSION` 不一致。
+pub fn command_with_path_dirs<S: AsRef<OsStr>>(program: S, extra_path_dirs: &[&Path]) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.env(
+        "PATH",
+        merge_extra_path(crate::env::merged_path(), extra_path_dirs),
+    );
     cmd
 }
 
@@ -292,10 +348,55 @@ pub fn log_file_name(kind: &str, name: &str, date: &str) -> String {
     format!("{}-{}-{}.log", kind, name, date)
 }
 
+/// 把旧命名的轮转备份（`<base>.log.<n>`）改名为新命名（`<base>.<n>.log`）。
+///
+/// 旧实现往文件名末尾追加代次，扩展名因此变成 `1`，`list_log_files` 的扩展名
+/// 过滤会把它们全部挡在面板之外 —— 也就是说 0.1.2-rc.18 及更早的壳轮转出去的
+/// 历史日志永远看不到。启动时做一次性改名即可把那部分内容找回来。
+///
+/// 只在目标不存在时改名：升级后又发生过一次轮转的情况里，新命名的那份才是
+/// 更新的内容，不能覆盖。所有错误静默跳过 —— 日志归档整理失败不该阻止启动。
+pub fn migrate_legacy_rotated_logs(logs_dir: &Path) {
+    let Ok(entries) = fs::read_dir(logs_dir) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // 形如 `release-kernel-2026-09-10.log.1`：以 `.log.<数字>` 结尾。
+        let Some((base, generation)) = name.rsplit_once(".log.") else {
+            continue;
+        };
+        if base.is_empty()
+            || generation.is_empty()
+            || !generation.bytes().all(|b| b.is_ascii_digit())
+        {
+            continue;
+        }
+        let target = logs_dir.join(format!("{base}.{generation}.log"));
+        if target.exists() {
+            continue;
+        }
+        let _ = fs::rename(entry.path(), target);
+    }
+}
+
+/// 轮转备份的路径：`<kind>-<name>-<date>.log` → `<kind>-<name>-<date>.<index>.log`。
+///
+/// 代次**必须**插在扩展名之前：`list_log_files` 按 `.log` 扩展名收文件，
+/// 而日志面板读取也要求 `read_log_file` 拿到一个纯文件名。旧实现直接往
+/// 末尾追加（`X.log.1`）会把扩展名变成 `1`，于是被轮转出去的历史日志
+/// 在面板里完全不可见 —— 而它们恰好是事故排查时最需要的那几 MB。
 fn rotated_log_path(path: &Path, index: u8) -> PathBuf {
-    let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".{index}"));
-    PathBuf::from(name)
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "log".to_string());
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("log")
+        .to_string();
+    path.with_file_name(format!("{stem}.{index}.{extension}"))
 }
 
 fn rotate_existing_log(path: &Path) -> io::Result<()> {
@@ -507,7 +608,12 @@ fn spawn_log_drain<R: Read + Send + 'static>(stream: R, logger: Arc<Mutex<Rotati
     });
 }
 
+/// 短工具（`git --version`、`taskkill`、`lsof`…）的默认上限。网络操作要显式
+/// 传更长的值，见 `run_command_capture_with_timeout`。
 const RUN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
+/// `git clone` 的上限：浅克隆在慢网络或大仓库下远超 30 秒，而它恰恰是很多
+/// 插件（GitHub Release 不可用时）的主安装路径。
+pub const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(600);
 const RUN_CAPTURE_MAX_BYTES: usize = 4 * 1024 * 1024;
 const RUN_CAPTURE_READER_GRACE: Duration = Duration::from_millis(500);
 
@@ -590,9 +696,20 @@ fn wait_capture_reader(
     }
 }
 
-fn run_capture_command_bytes(
+fn run_capture_command_bytes(cmd: Command, label: &str) -> io::Result<(bool, Vec<u8>, Vec<u8>)> {
+    run_capture_command_bytes_with_timeout(cmd, label, RUN_CAPTURE_TIMEOUT)
+}
+
+/// 与 [`run_capture_command_bytes`] 相同，但使用调用方给定的超时。
+///
+/// 30 秒的默认值是为 `git --version`、`taskkill`、`lsof` 这类短工具准备的；
+/// `git clone` 是**网络**操作，慢网络或大仓库下 30 秒必然超时——而很多 dsh
+/// 插件的 GitHub Release 不可用，clone 恰恰是主路径。传一个长超时可以避免把
+/// 一次正常的浅克隆变成"无法运行 git"。
+fn run_capture_command_bytes_with_timeout(
     mut cmd: Command,
     label: &str,
+    timeout: Duration,
 ) -> io::Result<(bool, Vec<u8>, Vec<u8>)> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -605,7 +722,7 @@ fn run_capture_command_bytes(
     let stderr_reader = spawn_capture_reader(stderr, RUN_CAPTURE_MAX_BYTES);
 
     let started = Instant::now();
-    let deadline = started + RUN_CAPTURE_TIMEOUT;
+    let deadline = started + timeout;
     let mut stdout_capture = None;
     let mut stderr_capture = None;
     let status = loop {
@@ -647,10 +764,7 @@ fn run_capture_command_bytes(
                     abandon_capture_reader(&stderr_reader);
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
-                        format!(
-                            "{label} timed out after {} seconds",
-                            RUN_CAPTURE_TIMEOUT.as_secs()
-                        ),
+                        format!("{label} timed out after {} seconds", timeout.as_secs()),
                     ));
                 }
                 std::thread::sleep(remaining.min(Duration::from_millis(50)));
@@ -701,6 +815,22 @@ fn run_capture_bytes(program: &str, args: &[&str]) -> io::Result<(bool, Vec<u8>,
 /// 无限等待。
 pub fn run_capture_output(program: &str, args: &[&str]) -> io::Result<(bool, String, String)> {
     let (success, stdout, stderr) = run_capture_bytes(program, args)?;
+    Ok((
+        success,
+        String::from_utf8_lossy(&stdout).into_owned(),
+        String::from_utf8_lossy(&stderr).into_owned(),
+    ))
+}
+
+/// 与 [`run_command_capture`] 相同，但使用调用方给定的超时。
+///
+/// 供 `git clone` 这类网络操作使用：默认的 30 秒对它们来说必然不够。
+pub fn run_command_capture_with_timeout(
+    cmd: Command,
+    label: &str,
+    timeout: Duration,
+) -> io::Result<(bool, String, String)> {
+    let (success, stdout, stderr) = run_capture_command_bytes_with_timeout(cmd, label, timeout)?;
     Ok((
         success,
         String::from_utf8_lossy(&stdout).into_owned(),
@@ -849,15 +979,29 @@ fn run_with_progress_log(
 
     const HEARTBEAT_SECS: u64 = 10;
     const RUN_PROGRESS_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+    // 子进程退出后等 drain 线程收尾的宽限。孙进程可能继承了 stdout/stderr 并
+    // 一直持有管道（pnpm 的生命周期脚本留下后台进程、Windows 上 `cmd /C` 包一层
+    // 时尤其常见）：那时 `rx` 永远不会 Disconnected，如果一直等到全局 deadline，
+    // 一次**已经成功**的安装会被报成"运行超过 30 分钟"的失败。
+    const DRAIN_GRACE: Duration = Duration::from_secs(5);
+    // 轮询周期：只用来及时发现"子进程已经退出"。心跳消息另按
+    // `HEARTBEAT_SECS` 节流，因此缩短轮询不会让 UI 收到更密的进度。
+    const POLL_INTERVAL: Duration = Duration::from_millis(500);
     let started = Instant::now();
+    let mut last_heartbeat = Instant::now();
     let deadline = started + RUN_PROGRESS_TIMEOUT;
     let mut child_exited = false;
     let mut output_closed = false;
     let mut timed_out = false;
+    let mut output_truncated = false;
+    let mut drain_deadline: Option<Instant> = None;
     loop {
         if !child_exited {
             match child.try_wait() {
-                Ok(Some(_)) => child_exited = true,
+                Ok(Some(_)) => {
+                    child_exited = true;
+                    drain_deadline = Some(Instant::now() + DRAIN_GRACE);
+                }
                 Ok(None) => {}
                 Err(error) => {
                     drop(rx);
@@ -869,19 +1013,35 @@ fn run_with_progress_log(
         if child_exited && output_closed {
             break;
         }
+        if let Some(grace) = drain_deadline {
+            if Instant::now() >= grace {
+                output_truncated = true;
+                break;
+            }
+        }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             timed_out = true;
             break;
         }
-        match rx.recv_timeout(remaining.min(Duration::from_secs(HEARTBEAT_SECS))) {
+        // 在"子进程已退出、只等管道关闭"的阶段只睡到宽限点，不做无意义的心跳。
+        let wait = match drain_deadline {
+            Some(grace) => grace.saturating_duration_since(Instant::now()),
+            None => POLL_INTERVAL,
+        };
+        match rx.recv_timeout(wait.min(remaining)) {
             Ok(line) => {
                 on_progress(line.trim_end());
                 let _ = log.write_line(&line);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                let secs = started.elapsed().as_secs();
-                on_progress(&format!("… 子进程仍在运行（已进行 {secs} 秒）"));
+                // 心跳按固定间隔节流：轮询变密是为了尽快发现子进程退出，
+                // 而不是往进度面板刷屏。
+                if last_heartbeat.elapsed() >= Duration::from_secs(HEARTBEAT_SECS) {
+                    last_heartbeat = Instant::now();
+                    let secs = started.elapsed().as_secs();
+                    on_progress(&format!("… 子进程仍在运行（已进行 {secs} 秒）"));
+                }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 output_closed = true;
@@ -907,8 +1067,15 @@ fn run_with_progress_log(
         ));
     }
 
-    let _ = drain_stdout.join();
-    let _ = drain_stderr.join();
+    if output_truncated {
+        // 进程本身已经正常结束，只是仍有别的进程持有它的输出管道。此时不能
+        // join：那会把刚设的宽限又变成无限等待。drain 线程会在管道最终关闭后
+        // 自行退出。
+        on_progress("子进程已退出；仍有其它进程持有它的输出管道，剩余输出未收录（进程本身已结束）");
+    } else {
+        let _ = drain_stdout.join();
+        let _ = drain_stderr.join();
+    }
 
     let status = reap(child)?;
     log.flush()?;
@@ -1060,26 +1227,52 @@ fn merge_extra_path(base: &str, extra: &[&Path]) -> String {
     out
 }
 
+/// 读到空内容后的短重试次数。撞上轮转的瞬间（旧文件被改名、同名新文件刚
+/// 建立）会读到 0 字节，而调用方把「空 tail」当作「没有日志证据」——启动
+/// 防护在 P1-3 之后仍会用这个证据决定要不要归因。一次 20 ms 后的重读足以
+/// 覆盖这个窗口，又不会让「日志确实是空的」多等太久。
+const READ_TAIL_ATTEMPTS: u8 = 2;
+const READ_TAIL_RETRY_DELAY: Duration = Duration::from_millis(20);
+
 /// 读取文本文件的有界尾部用于展示。缺失或不可读的文件返回空字符串——
 /// 调用方在实时状态旁渲染 tail，不应把消失的日志变成错误对话框。
 pub(crate) fn read_tail(path: &Path, max_bytes: u64) -> String {
-    let Ok(meta) = fs::metadata(path) else {
-        return String::new();
-    };
-    let Ok(file) = fs::File::open(path) else {
-        return String::new();
-    };
-    use std::io::{Read, Seek};
-    let mut reader = file;
-    let offset = meta.len().saturating_sub(max_bytes);
-    // `Vec::with_capacity` 在没有东西把元素类型钉住之前无法推断；
-    // 没有这里的类型标注，后续的 `reader.read_to_end(&mut buf)` 需要
-    // 这条显式提示。
-    let mut buf: Vec<u8> = Vec::with_capacity(max_bytes as usize);
-    if offset > 0 {
-        let _ = reader.seek(io::SeekFrom::Start(offset));
+    for attempt in 1..=READ_TAIL_ATTEMPTS {
+        let Ok(mut file) = fs::File::open(path) else {
+            return String::new();
+        };
+        // 长度必须取自**已打开的 fd**，而不是路径上的 `fs::metadata`。
+        // 先 metadata 再 open 会跨越一次日志轮转（rename + 新建同名文件）：
+        // 拿旧长度去 seek 一个更短的新文件，`seek` 到 EOF 之后是合法操作、
+        // 读回 0 字节，于是返回空 tail —— 面板显示「日志是空的」，启动防护
+        // 也会把「无内容」当成「无归因证据」，正是 P2-8 描述的路径。
+        let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let text = read_tail_from(&mut file, len, max_bytes);
+        if !text.is_empty() || attempt == READ_TAIL_ATTEMPTS {
+            return text;
+        }
+        std::thread::sleep(READ_TAIL_RETRY_DELAY);
     }
-    let _ = reader.read_to_end(&mut buf);
+    String::new()
+}
+
+/// 从已打开的句柄读取尾部。`len` 是调用方观察到的长度；若按它算出的起点
+/// 一个字节都读不到（文件在我们观察之后被截断或被替换成了更短的文件），
+/// 就退回从头读 —— 保证「文件里确实有内容」时不会返回空字符串。
+fn read_tail_from(file: &mut fs::File, len: u64, max_bytes: u64) -> String {
+    use std::io::{Read, Seek};
+    let start = len.saturating_sub(max_bytes);
+    // `Vec::with_capacity` 在没有东西把元素类型钉住之前无法推断；
+    // 没有这里的类型标注，后续的 `read_to_end(&mut buf)` 需要这条显式提示。
+    let mut buf: Vec<u8> = Vec::with_capacity(max_bytes as usize);
+    if start > 0 {
+        let _ = file.seek(io::SeekFrom::Start(start));
+    }
+    let _ = file.read_to_end(&mut buf);
+    if buf.is_empty() && start > 0 {
+        let _ = file.seek(io::SeekFrom::Start(0));
+        let _ = file.read_to_end(&mut buf);
+    }
     String::from_utf8_lossy(&buf).into_owned()
 }
 
@@ -1098,6 +1291,186 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static PROCESS_TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn rotated_backups_keep_the_log_extension() {
+        // 备份名必须仍以 `.log` 结尾：`list_log_files` 按扩展名收文件，
+        // `read_log_file` 也要求纯文件名。旧实现追加成 `X.log.1` 会让扩展名
+        // 变成 `1`，于是轮转出去的历史日志在面板里完全不可见（P2-4）。
+        let path = PathBuf::from("/tmp/logs/release-kernel-2026-09-10.log");
+        assert_eq!(
+            rotated_log_path(&path, 1),
+            PathBuf::from("/tmp/logs/release-kernel-2026-09-10.1.log")
+        );
+        assert_eq!(
+            rotated_log_path(&path, 2),
+            PathBuf::from("/tmp/logs/release-kernel-2026-09-10.2.log")
+        );
+        assert_eq!(
+            rotated_log_path(&path, 2)
+                .extension()
+                .and_then(|e| e.to_str()),
+            Some("log"),
+        );
+    }
+
+    #[test]
+    fn rotation_keeps_the_two_newest_generations_readable() {
+        let dir = temp_dir("rotation");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("release-kernel-2026-09-10.log");
+
+        // 依次写满三代：当前文件应变成 .1.log，原 .1.log 应变成 .2.log。
+        fs::write(&path, b"third").unwrap();
+        fs::write(rotated_log_path(&path, 1), b"second").unwrap();
+        fs::write(rotated_log_path(&path, 2), b"first").unwrap();
+        rotate_existing_log(&path).unwrap();
+
+        assert!(!path.exists(), "当前文件应被轮转走");
+        assert_eq!(
+            fs::read(rotated_log_path(&path, 1)).unwrap(),
+            b"third",
+            "最新的内容应落在第 1 代备份"
+        );
+        assert_eq!(
+            fs::read(rotated_log_path(&path, 2)).unwrap(),
+            b"second",
+            "上一代应下移一位"
+        );
+
+        // 每个备份都必须仍能被日志面板当普通 `.log` 文件读取。
+        for index in 1..=KERNEL_LOG_BACKUPS {
+            let backup = rotated_log_path(&path, index);
+            assert_eq!(
+                backup.extension().and_then(|e| e.to_str()),
+                Some("log"),
+                "{backup:?} 必须保留 .log 扩展名"
+            );
+        }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let unique = PROCESS_TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!(
+            "dsh-xlink-process-{}-{}-{}",
+            label,
+            std::process::id(),
+            unique
+        ))
+    }
+
+    #[test]
+    fn legacy_rotated_logs_are_migrated_without_clobbering_new_ones() {
+        let dir = temp_dir("log-migration");
+        fs::create_dir_all(&dir).unwrap();
+
+        // 旧命名（扩展名是 `1`，面板看不到）→ 应改名为 `X.1.log`。
+        fs::write(dir.join("release-kernel-2026-09-10.log.1"), b"legacy").unwrap();
+        fs::write(dir.join("release-kernel-2026-09-09.log.2"), b"legacy2").unwrap();
+        // 已经存在新命名的那份：说明升级后又轮转过一次，新命名才是更新的内容。
+        fs::write(dir.join("release-kernel-2026-09-10.1.log"), b"new").unwrap();
+        // 干扰项：不是轮转备份，不能被改名。
+        fs::write(dir.join("release-kernel-2026-09-10.log"), b"current").unwrap();
+        fs::write(dir.join("notes.log.bak"), b"other").unwrap();
+
+        migrate_legacy_rotated_logs(&dir);
+
+        assert_eq!(
+            fs::read(dir.join("release-kernel-2026-09-10.1.log")).unwrap(),
+            b"new",
+            "新命名的备份不能被旧文件覆盖"
+        );
+        // 目标已存在时明知有冲突也不能覆盖，因此旧文件被留在原地（内容不丢，
+        // 只是仍不进面板）——这是有意的取舍，不是遗漏。
+        assert_eq!(
+            fs::read(dir.join("release-kernel-2026-09-10.log.1")).unwrap(),
+            b"legacy",
+            "冲突时旧文件应原样保留"
+        );
+        assert_eq!(
+            fs::read(dir.join("release-kernel-2026-09-09.2.log")).unwrap(),
+            b"legacy2",
+            "没有冲突的旧备份应完成改名"
+        );
+        assert_eq!(
+            fs::read(dir.join("release-kernel-2026-09-10.log")).unwrap(),
+            b"current",
+            "当期日志不受影响"
+        );
+        assert!(dir.join("notes.log.bak").exists(), "非轮转备份不动");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_migration_tolerates_a_missing_directory() {
+        // 首次启动时 logs 目录可能还不存在：迁移必须静默返回而不是 panic。
+        migrate_legacy_rotated_logs(&temp_dir("logs-absent"));
+    }
+
+    #[test]
+    fn tail_returns_the_bounded_end_of_a_large_file() {
+        let dir = temp_dir("tail-large");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("release-kernel-2026-09-10.log");
+        let mut content = "x".repeat(200);
+        content.push_str("TAIL");
+        fs::write(&path, content.as_bytes()).unwrap();
+
+        let tail = read_tail(&path, 4);
+        assert_eq!(tail, "TAIL");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tail_returns_whole_content_for_small_files_and_empty_for_missing() {
+        let dir = temp_dir("tail-small");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("release-kernel-2026-09-10.log");
+        fs::write(&path, b"short").unwrap();
+        assert_eq!(read_tail(&path, 4096), "short");
+        assert_eq!(read_tail(&dir.join("gone.log"), 4096), "");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tail_falls_back_to_start_when_the_file_shrank_after_the_length_was_taken() {
+        // P2-8 的竞速，确定性复现：长度先按更大的旧文件取好（轮转前的
+        // `metadata().len()`），随后同名路径上已经是一个更短的新文件。
+        // 旧实现 seek 到越界位置后读回 0 字节并就此返回 —— 空 tail 会被
+        // 启动防护当成「无归因证据」。新实现在读空时退回从头读。
+        let dir = temp_dir("tail-race");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("release-kernel-2026-09-10.log");
+        fs::write(&path, b"rotation-leftovers").unwrap();
+
+        let mut file = fs::File::open(&path).unwrap();
+        // 1000 字节是"旧文件"的长度，远超当前文件实际的 18 字节。
+        let text = read_tail_from(&mut file, 1000, 16);
+        assert!(
+            !text.is_empty(),
+            "文件里有内容时不允许返回空 tail（正是 P2-8 的失败形态）"
+        );
+        assert!(
+            text.contains("rotation-leftovers"),
+            "应退回从头读，实际拿到：{text:?}"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tail_from_handle_respects_the_bound_when_the_length_is_current() {
+        // 长度可信时仍然只读尾部：越界兜底不能退化成"总是读全文"。
+        let dir = temp_dir("tail-bound");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("install.log");
+        fs::write(&path, b"0123456789").unwrap();
+
+        let mut file = fs::File::open(&path).unwrap();
+        let len = file.metadata().unwrap().len();
+        assert_eq!(read_tail_from(&mut file, len, 4), "6789");
+        fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn capped_line_consumes_overlong_line_without_growing_buffer() {
@@ -1331,6 +1704,96 @@ mod tests {
             crate::env::merged_path(),
             "child must inherit the merged PATH stamped by the helper"
         );
+    }
+
+    /// 子进程退出后，若孙进程仍持有输出管道，命令必须很快返回，而不是一直等到
+    /// 30 分钟的总超时——那会把一次**已经成功**的安装报成"运行超过 30 分钟"的失败。
+    ///
+    /// Unix-only：Windows 上要用 `start /b` 才能造出同样的"孙进程继承管道"形态。
+    #[cfg(unix)]
+    #[test]
+    fn run_with_progress_returns_soon_when_a_grandchild_holds_the_pipe() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-drain-grace-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(&root).expect("create work dir");
+
+        let started = Instant::now();
+        let status = run_with_progress_at(
+            Path::new("/bin/sh"),
+            // `&` 让 sleep 继承 stdout 后 sh 立刻退出：子进程没了，管道还开着。
+            &["-c", "sleep 30 & exit 0"],
+            &root,
+            &root.join("drain.log"),
+            &[],
+            |_| {},
+        )
+        .expect("命令本身必须成功返回");
+        let elapsed = started.elapsed();
+
+        assert!(status.success(), "子进程应正常退出");
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "子进程退出后应当在宽限内返回，实际耗时 {elapsed:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `command_with_path_dirs` 必须把调用方给出的目录**前置**到子进程 PATH。
+    ///
+    /// 这是"内核里 `#!/usr/bin/env node` 能工作"的前提：走托管安装（或 nvm
+    /// 绝对路径探测）时，那个 node 根本不在继承来的 PATH 上，内核对它派生的
+    /// 一切 node 子进程（插件 CLI、npm/npx、工作台终端任务）都只能靠这层前置
+    /// 找到解释器——少了它，用户看到的是 `env: node: No such file or directory`。
+    #[test]
+    fn command_with_path_dirs_prepends_extra_directories() {
+        use std::process::Stdio;
+
+        let extra = std::env::temp_dir().join(format!(
+            "dsh-path-dirs-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(&extra).expect("create extra dir");
+
+        let mut cmd = command_with_path_dirs(
+            if cfg!(windows) { "cmd.exe" } else { "/bin/sh" },
+            &[extra.as_path()],
+        );
+        let marker = "__DSH_TEST_PATH_DIRS_MARKER__";
+        if cfg!(windows) {
+            cmd.arg("/C").arg(format!("echo %PATH% & echo {marker}"));
+        } else {
+            cmd.arg("-c").arg(format!("echo \"$PATH\"; echo {marker}"));
+        }
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let child = quiet(&mut cmd).spawn().expect("spawn child");
+        let output = child.wait_with_output().expect("collect output");
+        assert!(
+            output.status.success(),
+            "child must exit cleanly, stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let marker_idx = stdout
+            .find(marker)
+            .unwrap_or_else(|| panic!("child never printed marker: {stdout:?}"));
+        let stamped = stdout[..marker_idx].trim_end();
+        let expected = merge_extra_path(crate::env::merged_path(), &[extra.as_path()]);
+        assert_eq!(
+            stamped, expected,
+            "child PATH must be the merged path with the extra directory prepended"
+        );
+        let _ = fs::remove_dir_all(&extra);
     }
 
     /// `local_date_string` 是按日轮转的心跳：在今天构造的 `RotatingLog`

@@ -161,6 +161,17 @@ pub struct AppliedFile {
     /// 备份文件相对 `<data_dir>/patches/backups/` 的路径。
     #[serde(rename = "backupRel", skip_serializing_if = "Option::is_none")]
     pub backup_rel: Option<String>,
+    /// 应用前原文件内容的 SHA-256（应用时目标不存在则为 `None`）。
+    ///
+    /// 备份丢失时靠它判断"该文件是否已经回到应用前的状态"：撤销中途失败后
+    /// 用户再次点「撤销」时，那些已经还原过、备份随之被删掉的文件正是靠这个
+    /// 哈希被认出来的，否则会被误报成"目标已被修改"而永久卡死。
+    #[serde(
+        rename = "originalSha256",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub original_sha256: Option<String>,
 }
 
 impl Default for PatchState {
@@ -211,6 +222,10 @@ pub struct PatchRow {
 #[serde(rename_all = "camelCase")]
 pub struct PatchStatus {
     pub patches: Vec<PatchRow>,
+    /// 补丁记录（`state.json`）读不出来时的说明。非空时 UI 必须显示它：
+    /// 此时所有补丁都显示为"未应用"，而磁盘上可能仍是打过补丁的内容。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 /// 运行时状态各路径。
@@ -321,8 +336,17 @@ fn validate_def(def: &PatchDef) -> Result<(), String> {
         }
         match file.mode.as_str() {
             "copy" => {
-                if file.from.as_deref().unwrap_or("").is_empty() {
+                let from = file.from.as_deref().unwrap_or("");
+                if from.is_empty() {
                     return Err(format!("files[].to={} 的 copy 模式缺少 from", file.to));
+                }
+                // `from` 是相对补丁目录的**资源**路径，和 `to` 一样必须留在
+                // 补丁目录内。旧实现只校验 `to`：`from: "../../../../etc/passwd"`
+                // 会被 `patch_dir.join(from)` 解析到补丁目录之外，绝对路径更会
+                // 直接丢弃 `patch_dir`，与文档「载荷按包名保存在 files/ 下」的
+                // 前提不符（P2-11）。
+                if let Err(e) = check_target_path(from) {
+                    return Err(format!("files[].from 非法（{from}）：{e}"));
                 }
                 if let Some(expected) = file.expect_sha256.as_deref() {
                     let hex = expected.trim().to_ascii_lowercase();
@@ -424,11 +448,39 @@ fn sha256_file(path: &Path) -> Result<String, AppError> {
     Ok(sha256_bytes(&bytes))
 }
 
+/// 展示路径用的容错读取：文件不存在或损坏都返回空状态。
+///
+/// **只读**：`apply` / `revert` 这类"读-改-写"路径必须用 [`read_state_checked`]，
+/// 否则一次解析失败就会让所有应用记录消失——磁盘上是补丁后的内容、备份还在，
+/// 而壳认为"没打过补丁"：既不会显示 dirty，也无法撤销，重装还会被残留备份挡住。
 fn read_state(data_dir: &Path) -> PatchState {
-    fs::read_to_string(state_file(data_dir))
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    match crate::process::read_state_file(&state_file(data_dir)) {
+        crate::process::StateRead::Loaded(state) => state,
+        crate::process::StateRead::Missing | crate::process::StateRead::Corrupt { .. } => {
+            PatchState::default()
+        }
+    }
+}
+
+/// 读-改-写路径用的读取：记录损坏时返回可操作的错误。
+fn read_state_checked(data_dir: &Path) -> Result<PatchState, AppError> {
+    match crate::process::read_state_file(&state_file(data_dir)) {
+        crate::process::StateRead::Loaded(state) => Ok(state),
+        crate::process::StateRead::Missing => Ok(PatchState::default()),
+        crate::process::StateRead::Corrupt { reason } => Err(AppError::Patch(format!(
+            "补丁记录损坏，为避免丢掉「哪些补丁已应用」的信息，本次操作已中止（{reason}）。请修复或删除该文件后重试",
+        ))),
+    }
+}
+
+/// 记录文件读不出来时的说明，供设置页横幅展示。
+fn state_integrity_warning(data_dir: &Path) -> Option<String> {
+    match crate::process::read_state_file::<PatchState>(&state_file(data_dir)) {
+        crate::process::StateRead::Corrupt { reason } => Some(format!(
+            "补丁记录损坏，暂时无法确认哪些补丁已应用（{reason}）。内核里可能仍是打过补丁的内容——请修复或删除该文件，或直接重装该内核版本；在修复之前不会写入任何补丁记录"
+        )),
+        _ => None,
+    }
 }
 
 fn write_state(data_dir: &Path, state: &PatchState) -> Result<(), AppError> {
@@ -465,12 +517,14 @@ fn backup_path(data_dir: &Path, id: &str, kernel_version: &str, to: &str) -> Pat
 }
 
 /// 应用前备份目标原文件；目标不存在则返回 `false`（无备份）。
+/// 应用前备份目标原文件。返回原文件内容的 SHA-256；目标原本不存在时返回
+/// `None`（无备份，撤销时按"新增文件"语义删除）。
 fn backup_target(
     data_dir: &Path,
     id: &str,
     kernel_version: &str,
     to: &str,
-) -> Result<bool, AppError> {
+) -> Result<Option<String>, AppError> {
     let target = kernel::kernel_dir(data_dir, kernel_version).join(to);
     match fs::symlink_metadata(&target) {
         Ok(meta) => {
@@ -506,9 +560,13 @@ fn backup_target(
                     backup.display()
                 ))
             })?;
-            Ok(true)
+            // 备份内容的哈希就是原文件的哈希；应用记录里带上它，撤销才可能
+            // 在备份丢失后判断出"这个文件已经还原过了"。
+            let original_sha256 = sha256_file(&backup)
+                .map_err(|e| AppError::Patch(format!("无法校验备份 {}：{e}", backup.display())))?;
+            Ok(Some(original_sha256))
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(AppError::Patch(format!(
             "无法检查目标 {}：{e}",
             target.display()
@@ -517,8 +575,13 @@ fn backup_target(
 }
 
 /// 工作台运行期间不允许动内核目录（与「切换内核版本」同一规则）。
+///
+/// 判据不看配置端口：内核可能是在用户修改端口设置之前启动的，此刻它仍然
+/// 绑在旧端口上——以配置端口探测会误判成"已停止"，于是补丁会在一个正在
+/// 服务的内核文件树里写入，重启后内核加载到的是半新半旧的混合状态。
 fn ensure_workbench_stopped(data_dir: &Path) -> Result<(), AppError> {
-    if kernel::port_open(settings::load(data_dir).port) {
+    let current = settings::load(data_dir);
+    if kernel::workbench_running(data_dir, &current) {
         return Err(AppError::Patch(
             "工作台正在启动或运行，请先点击「关闭工作台」停止后再应用或撤销补丁".into(),
         ));
@@ -589,7 +652,7 @@ pub fn apply(
         )));
     }
 
-    let mut state = read_state(data_dir);
+    let mut state = read_state_checked(data_dir)?;
     if find_applied(&state, id, &kernel_version).is_some() {
         return Err(AppError::Patch(format!(
             "补丁 {} 已应用到内核版本 {}，请先撤销后再重新应用",
@@ -605,204 +668,307 @@ pub fn apply(
         files: Vec::new(),
     };
     let kernel_root = kernel::kernel_dir(data_dir, &kernel_version);
-    let mut modified_any = false;
 
+    // --- 阶段 1：纯校验，不碰磁盘 -------------------------------------------
+    //
+    // 校验与写入必须分开。边校验边写时，靠后的文件校验失败会把前面已经写入
+    // 的文件留在内核里，而 state.json 不落盘——用户手里是一个"半补丁"内核，
+    // 且应用内没有任何恢复路径：撤销找不到记录（只有残留备份），重试又被那份
+    // 残留备份挡住。
+    let mut plan: Vec<PlannedFile> = Vec::new();
+    let mut skip_notes: Vec<String> = Vec::new();
     for file in &def.files {
-        let target = kernel_root.join(&file.to);
-        // 闭包只操作本文件；跳过说明通过返回值带回，避免与循环体里
-        // `applied.files.push` 的可变借用冲突。
-        let apply_one = || -> Result<(Option<AppliedFile>, Vec<String>), AppError> {
-            match file.mode.as_str() {
-                "copy" => {
-                    let from = file.from.as_deref().ok_or_else(|| {
-                        AppError::Patch(format!("补丁 {} 的 copy 文件缺少 from", def.id))
-                    })?;
-                    let source = patch_dir.join(from);
-                    let source_meta = fs::symlink_metadata(&source).map_err(|e| {
-                        AppError::Patch(format!(
-                            "补丁 {} 的源文件 {} 不存在：{e}",
-                            def.id,
-                            source.display()
-                        ))
-                    })?;
-                    if source_meta.file_type().is_symlink() || !source_meta.is_file() {
-                        return Err(AppError::Patch(format!(
-                            "补丁 {} 的源文件 {} 不是普通文件",
-                            def.id,
-                            source.display()
-                        )));
-                    }
-                    let bytes = fs::read(&source).map_err(|e| {
-                        AppError::Patch(format!("读取 {} 失败：{e}", source.display()))
-                    })?;
-                    let patched_sha256 = sha256_bytes(&bytes);
-                    ensure_no_symlink_ancestors(&target, &kernel_root)?;
-                    let existing = sha256_file(&target).ok();
-                    let expect = file
-                        .expect_sha256
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|h| !h.is_empty());
-                    // 先裁决「是否允许写入 / 是否跳过」，再统一走备份 + 写入，
-                    // 保证备份清理规则只有一条路径。
-                    let skip_note: Option<String> = match expect {
-                        Some(expected) => match existing.as_deref() {
-                            // 目标与预期原文件一致 → 允许覆盖。
-                            Some(sha) if sha.eq_ignore_ascii_case(expected) => None,
-                            // 目标已是补丁后状态（手工打过 / 上一次应用残留）→ 不动。
-                            Some(sha) if sha == patched_sha256.as_str() => None,
-                            None if !file.required => {
-                                Some(format!("跳过 {}：目标文件不存在（非必需）", file.to))
-                            }
-                            None => {
-                                return Err(AppError::Patch(format!(
-                                    "目标 {} 不存在：内核布局与补丁预期不符（预期原文件 SHA-256 {expected}），内核版本可能已升级",
-                                    target.display()
-                                )));
-                            }
-                            Some(sha) => {
-                                return Err(AppError::Patch(format!(
-                                    "目标 {} 内容与补丁预期的原文件不符（预期 SHA-256 {expected}，实际 {sha}）：内核版本可能已升级或文件已被其他工具修改，请确认内核版本后重试",
-                                    target.display()
-                                )));
-                            }
-                        },
-                        None => match existing.as_deref() {
-                            // 无预期哈希：新增文件语义。
-                            None => None,
-                            Some(sha) if sha == patched_sha256.as_str() => None,
-                            Some(_) => {
-                                return Err(AppError::Patch(format!(
-                                    "目标 {} 已存在且内容与补丁不同（可能是用户文件或已失效的旧补丁），拒绝覆盖；请先撤销旧补丁或手动处理",
-                                    target.display()
-                                )));
-                            }
-                        },
-                    };
-                    if let Some(note) = skip_note {
-                        return Ok((None, vec![note]));
-                    }
-                    let had_original = backup_target(data_dir, &def.id, &kernel_version, &file.to)?;
-                    // 已处于补丁后状态时不重写（保留 mtime）；其余情况原样覆盖。
-                    if existing.as_deref() != Some(patched_sha256.as_str()) {
-                        write_bytes_at(&target, &bytes)?;
-                    }
-                    let backup_rel = if had_original {
-                        Some(rel_backup(data_dir, id, &kernel_version, &file.to))
-                    } else {
-                        None
-                    };
-                    Ok((
-                        Some(AppliedFile {
-                            to: file.to.clone(),
-                            had_original,
-                            patched_sha256,
-                            backup_rel,
-                        }),
-                        Vec::new(),
-                    ))
-                }
-                "replace" => {
-                    ensure_no_symlink_ancestors(&target, &kernel_root)?;
-                    let had_original = backup_target(data_dir, &def.id, &kernel_version, &file.to)?;
-                    let text = match fs::read_to_string(&target) {
-                        Ok(text) => text,
-                        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                            if had_original {
-                                return Err(AppError::Patch("内部错误：备份存在但目标缺失".into()));
-                            }
-                            if !file.required {
-                                return Ok((
-                                    None,
-                                    vec![format!("跳过 {}：目标文件不存在（非必需）", file.to)],
-                                ));
-                            }
-                            return Err(AppError::Patch(format!(
-                                "replace 目标 {} 不存在",
-                                target.display()
-                            )));
-                        }
-                        Err(e) => {
-                            return Err(AppError::Patch(format!(
-                            "无法读取 replace 目标 {}（{e}）；replace 模式只支持 UTF-8 文本文件",
-                            target.display()
-                        )))
-                        }
-                    };
-                    let search = file.search.as_deref().unwrap_or("");
-                    let count = text.matches(search).count();
-                    if count == 0 {
-                        if !file.required {
-                            return Ok((
-                                None,
-                                vec![format!("跳过 {}：未找到匹配内容（非必需）", file.to)],
-                            ));
-                        }
-                        return Err(AppError::Patch(format!(
-                            "replace 目标 {} 中未找到待替换内容（该内核版本可能已包含此修改）",
-                            target.display()
-                        )));
-                    }
-                    let patched = text.replace(search, file.replacement.as_deref().unwrap_or(""));
-                    write_bytes_at(&target, patched.as_bytes())?;
-                    let backup_rel = if had_original {
-                        Some(rel_backup(data_dir, id, &kernel_version, &file.to))
-                    } else {
-                        None
-                    };
-                    Ok((
-                        Some(AppliedFile {
-                            to: file.to.clone(),
-                            had_original,
-                            patched_sha256: sha256_bytes(patched.as_bytes()),
-                            backup_rel,
-                        }),
-                        Vec::new(),
-                    ))
-                }
-                other => Err(AppError::Patch(format!(
-                    "补丁 {} 的文件模式 {other} 不支持",
-                    def.id
-                ))),
-            }
-        };
-        match apply_one() {
-            Ok((record, extra_notes)) => {
-                applied.notes.extend(extra_notes);
-                if let Some(record) = record {
-                    modified_any = true;
-                    applied.files.push(record);
-                }
-            }
-            Err(e) => {
-                // 部分文件已写入但后面失败：不落 state，已写入的文件与备份
-                // 残留会让下一次应用被「备份未清理」挡住——把错误信息补充上
-                // 可操作的下一步。
-                return Err(AppError::Patch(format!(
-                    "{e}（提示：本补丁 {id} 在失败前可能已写入部分文件；先撤销（会还原已备份文件）或清理 {} 后重试）",
-                    backups_root(data_dir).join(id).display()
-                )));
-            }
+        match plan_file(def, patch_dir, &kernel_root, file)? {
+            Planned::Skip(note) => skip_notes.push(note),
+            Planned::Write(planned) => plan.push(planned),
         }
     }
-
-    if !modified_any && applied.notes.is_empty() {
+    if plan.is_empty() && skip_notes.is_empty() {
         return Err(AppError::Patch(format!(
             "补丁 {} 未产生任何修改（文件清单为空或全部失败）",
             def.name
         )));
     }
-    // 全部文件被跳过（非必需未命中）也算「已应用（部分）」：保留记录与
-    // 说明，UI 呈现 partial 状态，用户可据此撤销记录。真正空操作（无文件
-    // 也无说明）在上面已被拒绝。
+
+    // 文件级占用检查：同一个文件不允许被两个补丁同时持有。
+    //
+    // 没有这道闸时，A、B 两个补丁可以先后改同一个文件：撤销 A 会用它自己的
+    // 备份直接覆盖，把 B 的改动静默丢掉；再撤销 B 又写回 B 的备份，最终内核
+    // 带着 A 的改动运行，而 state.json 里已经没有任何记录——既不显示 dirty，
+    // 也无法再撤销。纯校验，不产生任何副作用。
+    {
+        let occupied: Vec<(String, String)> = state
+            .applied
+            .iter()
+            .filter(|applied| applied.kernel_version == kernel_version && applied.id != id)
+            .flat_map(|applied| {
+                applied
+                    .files
+                    .iter()
+                    .map(|file| (file.to.clone(), applied.id.clone()))
+            })
+            .collect();
+        for planned in &plan {
+            if let Some((_, other)) = occupied.iter().find(|(to, _)| to == &planned.to) {
+                return Err(AppError::Patch(format!(
+                    "目标 {} 已被补丁 {other} 应用过：同一文件不能被两个补丁同时修改（撤销其中一个会静默覆盖另一个的改动）。请先撤销 {other}，再应用本补丁",
+                    planned.to
+                )));
+            }
+        }
+    }
+
+    // --- 阶段 2：执行；任何一步失败都按本次备份整体回滚 ----------------------
+    for planned in &plan {
+        match commit_file(data_dir, id, &kernel_version, &kernel_root, planned) {
+            Ok(record) => applied.files.push(record),
+            Err(error) => {
+                // 失败文件自身的备份（写入阶段才失败时它已经生成）不在
+                // committed 列表里，单独清理，避免残留备份挡住下一次应用。
+                let _ = fs::remove_file(backup_path(data_dir, id, &kernel_version, &planned.to));
+                let rollback =
+                    rollback_files(data_dir, id, &kernel_version, &kernel_root, &applied.files);
+                return Err(AppError::Patch(format!(
+                    "{error}{rollback}（补丁 {id} 未应用，本次已写入的内核文件已回到应用前的状态）"
+                )));
+            }
+        }
+    }
+
+    // 全部文件被跳过（非必需未命中）也算「已应用（部分）」：保留记录与说明，
+    // UI 呈现 partial 状态，用户可据此撤销记录。真正空操作（无文件也无说明）
+    // 在上面已被拒绝。
+    applied.notes = skip_notes;
+    let notes = applied.notes.clone();
     state.applied.push(applied);
-    let notes = state
-        .applied
-        .last()
-        .map(|a| a.notes.clone())
-        .unwrap_or_default();
     write_state(data_dir, &state)?;
     Ok(notes)
+}
+
+/// 校验阶段产出的单个文件执行计划。计划阶段只读，不改动内核目录。
+struct PlannedFile {
+    to: String,
+    /// 要写入目标文件的完整内容。
+    payload: Vec<u8>,
+    /// 写入后目标应有的内容哈希（记入 state）。
+    patched_sha256: String,
+    /// 目标当前已是补丁后的内容：执行阶段跳过写入以保留 mtime。
+    already_patched: bool,
+}
+
+enum Planned {
+    Skip(String),
+    Write(PlannedFile),
+}
+
+/// 校验一个文件能否安全应用，并算出要写入的内容。不产生任何副作用。
+fn plan_file(
+    def: &PatchDef,
+    patch_dir: &Path,
+    kernel_root: &Path,
+    file: &PatchFileDef,
+) -> Result<Planned, AppError> {
+    let target = kernel_root.join(&file.to);
+    match file.mode.as_str() {
+        "copy" => {
+            let from = file
+                .from
+                .as_deref()
+                .ok_or_else(|| AppError::Patch(format!("补丁 {} 的 copy 文件缺少 from", def.id)))?;
+            let source = patch_dir.join(from);
+            let source_meta = fs::symlink_metadata(&source).map_err(|e| {
+                AppError::Patch(format!(
+                    "补丁 {} 的源文件 {} 不存在：{e}",
+                    def.id,
+                    source.display()
+                ))
+            })?;
+            if source_meta.file_type().is_symlink() || !source_meta.is_file() {
+                return Err(AppError::Patch(format!(
+                    "补丁 {} 的源文件 {} 不是普通文件",
+                    def.id,
+                    source.display()
+                )));
+            }
+            let bytes = fs::read(&source)
+                .map_err(|e| AppError::Patch(format!("读取 {} 失败：{e}", source.display())))?;
+            let patched_sha256 = sha256_bytes(&bytes);
+            ensure_no_symlink_ancestors(&target, kernel_root)?;
+            let existing = sha256_file(&target).ok();
+            let expect = file
+                .expect_sha256
+                .as_deref()
+                .map(str::trim)
+                .filter(|h| !h.is_empty());
+            // 目标已是补丁后状态（手工打过 / 上一次应用残留）→ 允许通过，
+            // 但执行阶段不重写，保留 mtime。
+            let already_patched = existing.as_deref() == Some(patched_sha256.as_str());
+            match expect {
+                Some(expected) => match existing.as_deref() {
+                    // 目标与预期原文件一致 → 允许覆盖。
+                    Some(sha) if sha.eq_ignore_ascii_case(expected) => {}
+                    Some(_) if already_patched => {}
+                    None if !file.required => {
+                        return Ok(Planned::Skip(format!(
+                            "跳过 {}：目标文件不存在（非必需）",
+                            file.to
+                        )))
+                    }
+                    None => {
+                        return Err(AppError::Patch(format!(
+                            "目标 {} 不存在：内核布局与补丁预期不符（预期原文件 SHA-256 {expected}），内核版本可能已升级",
+                            target.display()
+                        )))
+                    }
+                    Some(sha) => {
+                        return Err(AppError::Patch(format!(
+                            "目标 {} 内容与补丁预期的原文件不符（预期 SHA-256 {expected}，实际 {sha}）：内核版本可能已升级或文件已被其他工具修改，请确认内核版本后重试",
+                            target.display()
+                        )))
+                    }
+                },
+                None => match existing.as_deref() {
+                    // 无预期哈希：新增文件语义。
+                    None => {}
+                    Some(_) if already_patched => {}
+                    Some(_) => {
+                        return Err(AppError::Patch(format!(
+                            "目标 {} 已存在且内容与补丁不同（可能是用户文件或已失效的旧补丁），拒绝覆盖；请先撤销旧补丁或手动处理",
+                            target.display()
+                        )))
+                    }
+                },
+            }
+            Ok(Planned::Write(PlannedFile {
+                to: file.to.clone(),
+                payload: bytes,
+                patched_sha256,
+                already_patched,
+            }))
+        }
+        "replace" => {
+            ensure_no_symlink_ancestors(&target, kernel_root)?;
+            let text = match fs::read_to_string(&target) {
+                Ok(text) => text,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    if !file.required {
+                        return Ok(Planned::Skip(format!(
+                            "跳过 {}：目标文件不存在（非必需）",
+                            file.to
+                        )));
+                    }
+                    return Err(AppError::Patch(format!(
+                        "replace 目标 {} 不存在",
+                        target.display()
+                    )));
+                }
+                Err(e) => {
+                    return Err(AppError::Patch(format!(
+                        "无法读取 replace 目标 {}（{e}）；replace 模式只支持 UTF-8 文本文件",
+                        target.display()
+                    )))
+                }
+            };
+            let search = file.search.as_deref().unwrap_or("");
+            // 空搜索串会让 `replace` 在每个字符之间插入替换文本，必然毁掉整个
+            // 文件；缺失 search 属于清单错误，直接拒绝而不是"尽力而为"。
+            if search.is_empty() {
+                return Err(AppError::Patch(format!(
+                    "补丁 {} 的目标 {} 缺少 search 字符串，拒绝执行（空搜索串会破坏整个文件）",
+                    def.id, file.to
+                )));
+            }
+            if !text.contains(search) {
+                if !file.required {
+                    return Ok(Planned::Skip(format!(
+                        "跳过 {}：未找到匹配内容（非必需）",
+                        file.to
+                    )));
+                }
+                return Err(AppError::Patch(format!(
+                    "replace 目标 {} 中未找到待替换内容（该内核版本可能已包含此修改）",
+                    target.display()
+                )));
+            }
+            let patched = text.replace(search, file.replacement.as_deref().unwrap_or(""));
+            let payload = patched.into_bytes();
+            let patched_sha256 = sha256_bytes(&payload);
+            Ok(Planned::Write(PlannedFile {
+                to: file.to.clone(),
+                payload,
+                patched_sha256,
+                already_patched: false,
+            }))
+        }
+        other => Err(AppError::Patch(format!(
+            "补丁 {} 的文件模式 {other} 不支持",
+            def.id
+        ))),
+    }
+}
+
+/// 执行阶段：备份 + 写入，返回写入记录。
+fn commit_file(
+    data_dir: &Path,
+    id: &str,
+    kernel_version: &str,
+    kernel_root: &Path,
+    planned: &PlannedFile,
+) -> Result<AppliedFile, AppError> {
+    let target = kernel_root.join(&planned.to);
+    let original_sha256 = backup_target(data_dir, id, kernel_version, &planned.to)?;
+    if !planned.already_patched {
+        write_bytes_at(&target, &planned.payload)?;
+    }
+    Ok(AppliedFile {
+        to: planned.to.clone(),
+        had_original: original_sha256.is_some(),
+        patched_sha256: planned.patched_sha256.clone(),
+        backup_rel: original_sha256
+            .as_ref()
+            .map(|_| rel_backup(data_dir, id, kernel_version, &planned.to)),
+        original_sha256,
+    })
+}
+
+/// 回滚本次执行已经写入的文件，并清理本次产生的备份。返回需要用户知道的
+/// 残留问题（空串表示回滚干净）。
+fn rollback_files(
+    data_dir: &Path,
+    id: &str,
+    kernel_version: &str,
+    kernel_root: &Path,
+    committed: &[AppliedFile],
+) -> String {
+    let mut problems: Vec<String> = Vec::new();
+    for applied in committed.iter().rev() {
+        let target = kernel_root.join(&applied.to);
+        match &applied.backup_rel {
+            Some(rel) => {
+                let backup = backups_root(data_dir).join(rel);
+                match fs::read(&backup) {
+                    Ok(bytes) => {
+                        if let Err(e) = write_bytes_at(&target, &bytes) {
+                            problems.push(format!("{}：{e}", applied.to));
+                        }
+                        let _ = fs::remove_file(&backup);
+                    }
+                    Err(e) => problems.push(format!("{}：备份不可读（{e}）", applied.to)),
+                }
+            }
+            // 无备份 = 应用前目标不存在：删掉我们新建的文件即可。
+            None => {
+                let _ = fs::remove_file(&target);
+                prune_empty_dirs(&target, kernel_root);
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(backups_root(data_dir).join(id).join(kernel_version));
+    if problems.is_empty() {
+        String::new()
+    } else {
+        format!("；回滚未完成的文件：{}（请手动检查）", problems.join("、"))
+    }
 }
 
 /// 备份相对路径（相对 `<data_dir>/patches/backups/`）。
@@ -835,7 +1001,7 @@ pub fn revert(
         AppError::Patch("尚未激活内核版本，请先在「内核版本」页安装并切换到某一版本".into())
     })?;
     let _ = find_patch(patches, id); // 提示补丁在当前版本存在（仅用于错误文案，非必需）
-    let mut state = read_state(data_dir);
+    let mut state = read_state_checked(data_dir)?;
     let record = {
         let found = find_applied(&state, id, &kernel_version)
             .cloned()
@@ -847,57 +1013,22 @@ pub fn revert(
     let mut warnings: Vec<String> = record.notes.clone();
     let kernel_root = kernel::kernel_dir(data_dir, &kernel_version);
 
-    for file in &record.files {
-        let target = kernel_root.join(&file.to);
-        let target_sha = sha256_file(&target).ok();
-        match &file.backup_rel {
-            Some(backup_rel) => {
-                let backup = backups_root(data_dir).join(backup_rel);
-                match fs::read(&backup) {
-                    Ok(bytes) => {
-                        write_bytes_at(&target, &bytes).map_err(|e| {
-                            AppError::Patch(format!("还原 {} 失败：{e}", target.display()))
-                        })?;
-                        let _ = fs::remove_file(&backup);
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                        // 备份丢失 → 走哈希校验兜底分支。
-                        warnings.push(format!(
-                            "{}：原文件备份已丢失（{}），尝试按内容校验兜底",
-                            file.to,
-                            backup.display()
-                        ));
-                        handle_missing_backup(&target, file, target_sha.as_deref(), &mut warnings)?;
-                    }
-                    Err(e) => {
-                        return Err(AppError::Patch(format!(
-                            "无法读取备份 {}：{e}",
-                            backup.display()
-                        )))
-                    }
-                }
-            }
-            None => {
-                // 无备份说明应用时目标不存在（纯新增文件）：校验后删除。
-                match target_sha {
-                    Some(sha) if sha == file.patched_sha256 => {
-                        fs::remove_file(&target).map_err(|e| {
-                            AppError::Patch(format!("无法删除补丁文件 {}：{e}", target.display()))
-                        })?;
-                        prune_empty_dirs(&target);
-                    }
-                    Some(_) => {
-                        return Err(AppError::Patch(format!(
-                            "补丁文件 {} 已被其他工具修改（内容与补丁不符），为安全起见不自动删除，请检查后手动处理",
-                            target.display()
-                        )));
-                    }
-                    None => {
-                        // 目标已不存在：本就是新增文件，视为已还原。
-                    }
-                }
-            }
+    // 逐个文件还原，并且**每还原一个就把进度写回 state.json**。
+    //
+    // 一次性"全成功才写 state"是撤销卡死的根因：第一个文件还原成功后备份
+    // 被删除，第二个文件失败时记录仍然完整，用户再次点「撤销」会从第一个
+    // 文件重来——它的备份已经不在了，而目标现在是正确的原文内容，于是被
+    // 误报成"目标已被修改（内容与补丁记录不一致）"，与磁盘真实状态完全相反。
+    let mut remaining: Vec<AppliedFile> = record.files.clone();
+    while !remaining.is_empty() {
+        let file = remaining[0].clone();
+        if let Err(error) = revert_one(data_dir, &kernel_root, &file, &mut warnings) {
+            // 先把已完成的进度落盘，再报告失败。
+            persist_revert_progress(data_dir, &mut state, id, &kernel_version, &remaining);
+            return Err(error);
         }
+        remaining.remove(0);
+        persist_revert_progress(data_dir, &mut state, id, &kernel_version, &remaining);
     }
 
     state
@@ -910,14 +1041,104 @@ pub fn revert(
     Ok(warnings)
 }
 
+/// 还原单个文件。备份存在时从备份还原；备份丢失时按内容哈希兜底。
+fn revert_one(
+    data_dir: &Path,
+    kernel_root: &Path,
+    file: &AppliedFile,
+    warnings: &mut Vec<String>,
+) -> Result<(), AppError> {
+    let target = kernel_root.join(&file.to);
+    let target_sha = sha256_file(&target).ok();
+    match &file.backup_rel {
+        Some(backup_rel) => {
+            let backup = backups_root(data_dir).join(backup_rel);
+            match fs::read(&backup) {
+                Ok(bytes) => {
+                    write_bytes_at(&target, &bytes).map_err(|e| {
+                        AppError::Patch(format!("还原 {} 失败：{e}", target.display()))
+                    })?;
+                    let _ = fs::remove_file(&backup);
+                    Ok(())
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    // 备份丢失 → 走哈希校验兜底分支。
+                    warnings.push(format!(
+                        "{}：原文件备份已丢失（{}），尝试按内容校验兜底",
+                        file.to,
+                        backup.display()
+                    ));
+                    handle_missing_backup(
+                        &target,
+                        kernel_root,
+                        file,
+                        target_sha.as_deref(),
+                        warnings,
+                    )
+                }
+                Err(e) => Err(AppError::Patch(format!(
+                    "无法读取备份 {}：{e}",
+                    backup.display()
+                ))),
+            }
+        }
+        None => {
+            // 无备份说明应用时目标不存在（纯新增文件）：校验后删除。
+            match target_sha {
+                Some(sha) if sha == file.patched_sha256 => {
+                    fs::remove_file(&target).map_err(|e| {
+                        AppError::Patch(format!("无法删除补丁文件 {}：{e}", target.display()))
+                    })?;
+                    prune_empty_dirs(&target, kernel_root);
+                    Ok(())
+                }
+                Some(_) => Err(AppError::Patch(format!(
+                    "补丁文件 {} 已被其他工具修改（内容与补丁不符），为安全起见不自动删除，请检查后手动处理",
+                    target.display()
+                ))),
+                // 目标已不存在：本就是新增文件，视为已还原。
+                None => Ok(()),
+            }
+        }
+    }
+}
+
+/// 把撤销进度写回 `state.json`：记录里只保留尚未还原的文件。
+fn persist_revert_progress(
+    data_dir: &Path,
+    state: &mut PatchState,
+    id: &str,
+    kernel_version: &str,
+    remaining: &[AppliedFile],
+) {
+    if let Some(applied) = state
+        .applied
+        .iter_mut()
+        .find(|a| a.id == id && a.kernel_version == kernel_version)
+    {
+        applied.files = remaining.to_vec();
+    }
+    // 写盘失败不改变"文件已经还原"这个事实：下一次撤销会靠 `original_sha256`
+    // 兜底认出已还原的文件，因此这里只做 best-effort。
+    let _ = write_state(data_dir, state);
+}
+
 /// 备份丢失时的兜底处理，返回后由调用方继续（或通过错误中止）。
 fn handle_missing_backup(
     target: &Path,
+    kernel_root: &Path,
     file: &AppliedFile,
     target_sha: Option<&str>,
     warnings: &mut Vec<String>,
 ) -> Result<(), AppError> {
     match target_sha {
+        // 目标已经回到应用前的内容：说明这个文件在之前的一次撤销里已经还原
+        // 过（备份随之被删除）。这是撤销可重入的关键判据——没有它，重入的
+        // 第二次撤销会被最后那个分支误报成"目标已被修改"而永久卡住。
+        Some(sha) if file.original_sha256.as_deref() == Some(sha) => {
+            warnings.push(format!("{}：已是应用前的原文件内容，视为已还原", file.to));
+            Ok(())
+        }
         None => {
             if file.had_original {
                 warnings.push(format!(
@@ -937,7 +1158,7 @@ fn handle_missing_backup(
                 // 纯新增文件：删除即还原。
                 fs::remove_file(target)
                     .map_err(|e| AppError::Patch(format!("无法删除 {}：{e}", target.display())))?;
-                prune_empty_dirs(target);
+                prune_empty_dirs(target, kernel_root);
                 Ok(())
             }
         }
@@ -948,10 +1169,17 @@ fn handle_missing_backup(
     }
 }
 
-/// 删除文件后清理空目录（只删到内核根为止，不出界）。
-fn prune_empty_dirs(file_path: &Path) {
+/// 删除文件后清理空目录，**只在内核根以内、且不删内核根本身**。
+///
+/// 旧实现既不接收根、也没有任何终止条件：`while let Some(d) = d.parent()`
+/// 会一路向上删空目录，包括 `<data_dir>/kernels`、`<data_dir>` 甚至更高层
+/// ——注释写着"只删到内核根为止"，实现里却没有这个界限（P2-10）。
+fn prune_empty_dirs(file_path: &Path, kernel_root: &Path) {
     let mut dir = file_path.parent();
     while let Some(d) = dir {
+        if d == kernel_root || !d.starts_with(kernel_root) {
+            break;
+        }
         if fs::read_dir(d)
             .map(|mut e| e.next().is_none())
             .unwrap_or(false)
@@ -1000,7 +1228,10 @@ pub fn status(data_dir: &Path, patches: &[(PatchDef, PathBuf)]) -> PatchStatus {
         .iter()
         .map(|(def, _)| row_for(data_dir, def, active.as_deref()))
         .collect();
-    PatchStatus { patches: rows }
+    PatchStatus {
+        patches: rows,
+        warning: state_integrity_warning(data_dir),
+    }
 }
 
 fn row_for(data_dir: &Path, def: &PatchDef, active: Option<&str>) -> PatchRow {
@@ -1851,5 +2082,395 @@ mod tests {
                 "PatchRow JSON unexpectedly contains snake_case key {bad}; rename_all lost? full={json}"
             );
         }
+    }
+
+    /// 构造一个「两个文件都覆盖既有文件」的补丁（真实场景：把补丁打在 npm
+    /// dist 的既有文件上，用 expectSha256 声明预期原文件哈希）。
+    fn make_two_file_patch(root: &Path) -> PathBuf {
+        let res = root.join("resources").join("patches");
+        let dir = res.join("two-files");
+        fs::create_dir_all(dir.join("files")).unwrap();
+        fs::write(dir.join("files/a.js"), "patched A\n").unwrap();
+        fs::write(dir.join("files/b.js"), "patched B\n").unwrap();
+        fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schemaVersion": 1,
+                "patches": [{
+                    "id": "two-files",
+                    "name": "两文件补丁",
+                    "version": "1.0.0",
+                    "kind": "patch",
+                    "description": "test",
+                    "files": [
+                        {
+                            "mode": "copy",
+                            "from": "files/a.js",
+                            "to": "a.js",
+                            "expectSha256": sha256_bytes(b"original A\n"),
+                            "required": true
+                        },
+                        {
+                            "mode": "copy",
+                            "from": "files/b.js",
+                            "to": "b.js",
+                            "expectSha256": sha256_bytes(b"original B\n"),
+                            "required": true
+                        }
+                    ]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        res
+    }
+
+    /// 多文件补丁在靠后的文件校验失败时，不得把靠前的文件写进内核。
+    ///
+    /// 修复前是「边校验边写」：第一个文件写入成功、第二个文件因 expectSha256
+    /// 不匹配而失败，于是 state.json 从不落盘（没有记录可撤销），而内核里已经
+    /// 躺着一个半补丁——重试又被残留备份挡住，应用内没有任何恢复路径。
+    #[test]
+    fn failed_second_file_leaves_no_partial_patch() {
+        let root = temp_root("partial");
+        let data = root.join("data");
+        let res = make_two_file_patch(&root);
+        setup(&data, "0.1.2");
+        let kernel_root = kernel::kernel_dir(&data, "0.1.2");
+        fs::write(kernel_root.join("a.js"), "original A\n").unwrap();
+        // b.js 的内容与补丁声明的原文件不符 → 第二个文件必然校验失败。
+        fs::write(kernel_root.join("b.js"), "someone else's B\n").unwrap();
+
+        let patches = load_patches(&res).unwrap();
+        let error = apply(&data, &patches, "two-files").expect_err("第二个文件必须让整次应用失败");
+        assert!(
+            error.to_string().contains("内容与补丁预期的原文件不符"),
+            "错误信息应说明原文件不匹配，实际：{error}"
+        );
+
+        assert_eq!(
+            fs::read_to_string(kernel_root.join("a.js")).unwrap(),
+            "original A\n",
+            "校验失败时第一个文件不得被写入（不允许半补丁）"
+        );
+        assert!(
+            read_state(&data).applied.is_empty(),
+            "失败的应用不得留下记录"
+        );
+        assert!(
+            !backups_root(&data).join("two-files").exists(),
+            "失败的应用不得留下备份（否则会挡住下一次重试）"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 撤销中途失败后再次点「撤销」，必须从剩下的文件继续。
+    ///
+    /// 修复前是「全部成功才写 state」：第一个文件还原成功后备份即被删除，
+    /// 第二个文件失败时记录仍然完整，于是再次撤销会从第一个文件重来——它的
+    /// 备份已经不在，目标又是正确的原文内容，于是被误报成「目标已被修改」，
+    /// 与磁盘真实状态完全相反，撤销永久卡死。
+    #[test]
+    fn revert_resumes_after_a_partial_failure() {
+        let root = temp_root("revert-resume");
+        let data = root.join("data");
+        let res = make_two_file_patch(&root);
+        setup(&data, "0.1.2");
+        let kernel_root = kernel::kernel_dir(&data, "0.1.2");
+        fs::write(kernel_root.join("a.js"), "original A\n").unwrap();
+        fs::write(kernel_root.join("b.js"), "original B\n").unwrap();
+
+        let patches = load_patches(&res).unwrap();
+        apply(&data, &patches, "two-files").expect("apply succeeds");
+        assert_eq!(
+            fs::read_to_string(kernel_root.join("b.js")).unwrap(),
+            "patched B\n"
+        );
+
+        // 让 b.js 的备份消失、内容漂移：撤销会在第二个文件上失败。
+        fs::remove_file(backup_path(&data, "two-files", "0.1.2", "b.js")).unwrap();
+        fs::write(kernel_root.join("b.js"), "hand edited\n").unwrap();
+
+        let error = revert(&data, &patches, "two-files").expect_err("第二个文件应导致撤销失败");
+        assert!(
+            error.to_string().contains("已被修改"),
+            "应报告目标被改写，实际：{error}"
+        );
+
+        // 第一个文件已经还原，且进度已落盘：记录里只剩第二个文件。
+        assert_eq!(
+            fs::read_to_string(kernel_root.join("a.js")).unwrap(),
+            "original A\n"
+        );
+        let state = read_state(&data);
+        let record = state
+            .applied
+            .iter()
+            .find(|a| a.id == "two-files")
+            .expect("失败后记录必须保留，让用户能继续撤销");
+        assert_eq!(record.files.len(), 1, "已还原的文件必须从记录里移除");
+        assert_eq!(record.files[0].to, "b.js");
+
+        // 用户按提示把文件恢复成原文之后再次撤销：必须能完成，而不是卡在
+        // 「目标已被修改」上（备份已丢失，靠原始哈希认出"已还原"）。
+        fs::write(kernel_root.join("b.js"), "original B\n").unwrap();
+        revert(&data, &patches, "two-files").expect("第二次撤销必须能从剩下的文件继续");
+        assert!(
+            !read_state(&data)
+                .applied
+                .iter()
+                .any(|a| a.id == "two-files"),
+            "撤销完成后记录必须被清除"
+        );
+        assert_eq!(
+            fs::read_to_string(kernel_root.join("b.js")).unwrap(),
+            "original B\n"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 同一个文件不能被两个补丁同时持有。
+    ///
+    /// 没有这道闸时：撤销 A 会用它自己的备份直接覆盖，把 B 的改动静默丢掉；
+    /// 再撤销 B 又写回 B 的备份，最终内核带着 A 的改动运行，而 state.json 里
+    /// 已经没有任何记录——既不显示 dirty，也无法再撤销。
+    #[test]
+    fn a_second_patch_on_the_same_file_is_rejected() {
+        let root = temp_root("file-ownership");
+        let data = root.join("data");
+        let res = root.join("resources").join("patches");
+        // 两个都改 package.json 的 replace 补丁，search 串互不重叠。
+        let cases = [
+            (
+                "first-touch",
+                "\"private\":true",
+                "\"private\":true,\"first\":true",
+            ),
+            (
+                "second-touch",
+                "\"version\":\"1.0.0\"",
+                "\"version\":\"1.0.1\"",
+            ),
+        ];
+        for (id, search, replacement) in cases {
+            let dir = res.join(id);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("manifest.json"),
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "schemaVersion": 1,
+                    "patches": [{
+                        "id": id,
+                        "name": id,
+                        "version": "1.0.0",
+                        "kind": "patch",
+                        "description": "test",
+                        "files": [{
+                            "mode": "replace",
+                            "search": search,
+                            "replacement": replacement,
+                            "to": "package.json",
+                            "required": true
+                        }]
+                    }]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        setup(&data, "0.1.2");
+        let patches = load_patches(&res).unwrap();
+        apply(&data, &patches, "first-touch").expect("第一个补丁应当应用成功");
+
+        let error =
+            apply(&data, &patches, "second-touch").expect_err("同一文件上的第二个补丁必须被拒绝");
+        assert!(
+            error.to_string().contains("已被补丁 first-touch 应用过"),
+            "错误信息应指明占用者，实际：{error}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 补丁记录损坏时，apply / revert 必须拒绝执行，而不是当成"没有任何应用
+    /// 记录"——那会让磁盘上打过补丁的文件既不可见（没有 dirty）也不可撤销。
+    #[test]
+    fn corrupt_patch_state_blocks_apply_and_revert() {
+        let root = temp_root("corrupt-state");
+        let data = root.join("data");
+        let res = make_two_file_patch(&root);
+        setup(&data, "0.1.2");
+        let kernel_root = kernel::kernel_dir(&data, "0.1.2");
+        fs::write(kernel_root.join("a.js"), "original A\n").unwrap();
+        fs::write(kernel_root.join("b.js"), "original B\n").unwrap();
+
+        fs::create_dir_all(state_dir(&data)).unwrap();
+        let damaged = "{ not json";
+        fs::write(state_file(&data), damaged).unwrap();
+
+        let patches = load_patches(&res).unwrap();
+        let error = apply(&data, &patches, "two-files").expect_err("记录损坏时必须拒绝写入");
+        assert!(
+            error.to_string().contains("损坏"),
+            "错误信息应说明记录损坏，实际：{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(state_file(&data)).unwrap(),
+            damaged,
+            "损坏的原文件不得被覆盖"
+        );
+        assert_eq!(
+            fs::read_to_string(kernel_root.join("a.js")).unwrap(),
+            "original A\n",
+            "记录损坏时不得改动内核文件"
+        );
+        // 展示路径仍能渲染，但必须带上警告。
+        let snapshot = status(&data, &patches);
+        assert!(
+            snapshot.warning.is_some(),
+            "损坏的记录必须在状态快照里暴露为警告"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    fn temp_root(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-xlink-patch-hardening-{}-{}-{}",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn prune_empty_dirs_stops_at_the_kernel_root() {
+        // P2-10：旧实现没有终止条件，会把空目录一路删到 <data_dir> 甚至更高。
+        let root = temp_root("prune");
+        let kernel_root = root.join("kernels").join("0.1.5");
+        let deep = kernel_root.join("node_modules").join("pkg").join("lib");
+        fs::create_dir_all(&deep).unwrap();
+        let target = deep.join("index.js");
+        fs::write(&target, b"x").unwrap();
+        fs::remove_file(&target).unwrap();
+
+        prune_empty_dirs(&target, &kernel_root);
+
+        assert!(!deep.exists(), "内核根以内的空目录应被清掉");
+        assert!(
+            kernel_root.exists(),
+            "内核根本身必须保留（旧实现会把它删掉）"
+        );
+        assert!(root.join("kernels").exists(), "内核根的父目录不能被删");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn prune_empty_dirs_never_walks_outside_the_kernel_root() {
+        // 传进来的路径若不在根以内（例如调用方弄错了根），一个目录都不该动。
+        let root = temp_root("prune-outside");
+        let kernel_root = root.join("kernels").join("0.1.5");
+        let outside = root.join("logs");
+        fs::create_dir_all(&kernel_root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let file = outside.join("a.log");
+        fs::write(&file, b"x").unwrap();
+        fs::remove_file(&file).unwrap();
+
+        prune_empty_dirs(&file, &kernel_root);
+
+        assert!(outside.exists(), "根以外的目录不允许被删除");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn manifest_with_traversing_from_is_rejected() {
+        // P2-11：`from` 完全没有越界校验，`../../../../etc/passwd` 可读到补丁
+        // 目录之外；绝对路径更会直接丢弃 patch_dir。
+        for evil in ["../../../../etc/passwd", "/etc/passwd"] {
+            let root = temp_root("from");
+            let res = root.join("resources").join("patches");
+            let dir = res.join("evil");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("manifest.json"),
+                serde_json::to_string(&serde_json::json!({
+                    "schemaVersion": 1,
+                    "patches": [{
+                        "id": "evil",
+                        "name": "越界补丁",
+                        "version": "1.0.0",
+                        "kind": "plugin",
+                        "description": "test",
+                        "files": [{
+                            "mode": "copy",
+                            "from": evil,
+                            "to": "node_modules/@deepseek-ai/dsh/lib/x.js",
+                            "required": true
+                        }]
+                    }]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let loaded = load_patches(&res).expect("扫描本身不该失败");
+            assert!(
+                loaded.iter().all(|(def, _)| def.id != "evil"),
+                "from={evil} 的清单必须被拒绝，实际加载了 {}",
+                loaded.len()
+            );
+            fs::remove_dir_all(&root).ok();
+        }
+    }
+
+    #[test]
+    fn legitimate_relative_from_still_loads() {
+        // 收紧之后正常形态不能被误伤。
+        let root = temp_root("from-ok");
+        let res = root.join("resources").join("patches");
+        let dir = res.join("ok");
+        fs::create_dir_all(dir.join("files")).unwrap();
+        fs::write(dir.join("files").join("x.js"), b"module.exports = 1;\n").unwrap();
+        fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_string(&serde_json::json!({
+                "schemaVersion": 1,
+                "patches": [{
+                    "id": "ok",
+                    "name": "正常补丁",
+                    "version": "1.0.0",
+                    "kind": "plugin",
+                    "description": "test",
+                    "files": [{
+                        "mode": "copy",
+                        "from": "files/x.js",
+                        "to": "node_modules/@deepseek-ai/dsh/lib/x.js",
+                        "required": true
+                    }]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let loaded = load_patches(&res).expect("扫描本身不该失败");
+        assert_eq!(loaded.len(), 1, "正常的相对 from 必须能加载");
+        assert_eq!(loaded[0].0.id, "ok");
+        fs::remove_dir_all(&root).ok();
     }
 }

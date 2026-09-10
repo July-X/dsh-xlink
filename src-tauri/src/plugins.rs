@@ -138,6 +138,13 @@ struct KernelMeta {
     /// 本次物化对应的中央库版本。
     version: String,
     synced_at: String,
+    /// 实际模式是 link→copy 的**降级**结果，而不是用户选择的模式。
+    ///
+    /// 没有这个标志就无法区分"用户想要 link 但系统不给权限（已降级）"与
+    /// "用户主动选择了 copy"：前者每次启动都重试建链、必然失败、然后整树重拷，
+    /// 而后者在用户切回 link 时必须真的重新物化。
+    #[serde(default)]
+    fallback: bool,
 }
 
 /// 管理界面渲染的一行数据。
@@ -229,6 +236,12 @@ struct NpmVersionDoc {
 struct NpmDist {
     #[serde(default)]
     tarball: String,
+    /// registry 声明的 SRI 摘要（`sha512-<base64>`）。外壳自己下载 tarball，
+    /// 必须据此校验一次：默认 registry 是第三方镜像，packument 与 tarball
+    /// 同源，镜像可以在元数据一致的前提下替换内容，而解包后 pnpm 会执行包里的
+    /// `prepare` 脚本。
+    #[serde(default)]
+    integrity: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -501,11 +514,34 @@ pub fn lock_store() -> std::sync::MutexGuard<'static, ()> {
     crate::lock(store_mutation_lock())
 }
 
+/// 展示路径用的容错读取：文件不存在或损坏都返回空清单。
+///
+/// **只读**：任何"读-改-写"路径都必须用 [`load_store_checked`]，否则一次解析
+/// 失败就会把空清单写回去，覆盖掉用户真实的插件记录。
 pub fn load_store(data_dir: &Path) -> Store {
-    let Ok(text) = fs::read_to_string(store_file(data_dir)) else {
-        return Store::default();
-    };
-    serde_json::from_str(&text).unwrap_or_default()
+    match crate::process::read_state_file(&store_file(data_dir)) {
+        crate::process::StateRead::Loaded(store) => store,
+        crate::process::StateRead::Missing | crate::process::StateRead::Corrupt { .. } => {
+            Store::default()
+        }
+    }
+}
+
+/// 读-改-写路径用的读取：清单损坏时返回可操作的错误，而不是拿空清单去覆盖
+/// 用户的数据。
+///
+/// 这条保护是必要的：`store.json` 一旦被当成空清单，同一次启动里
+/// `sweep_kernel_orphans` 会删掉活动内核中所有外壳管理的物化目录、
+/// `wire_manifest` 会清退 profile 的全部托管依赖，随后写库再把原文件覆盖掉——
+/// 一次杀软短暂锁文件就能造成用户插件的静默丢失。
+pub fn load_store_checked(data_dir: &Path) -> Result<Store, AppError> {
+    match crate::process::read_state_file(&store_file(data_dir)) {
+        crate::process::StateRead::Loaded(store) => Ok(store),
+        crate::process::StateRead::Missing => Ok(Store::default()),
+        crate::process::StateRead::Corrupt { reason } => Err(AppError::Plugin(format!(
+            "插件清单损坏，为避免覆盖已安装插件的记录，本次操作已中止（{reason}）。请修复或删除该文件后重试；工作台本身仍可正常启动"
+        ))),
+    }
 }
 
 fn save_store_unlocked(data_dir: &Path, store: &Store) -> Result<(), AppError> {
@@ -545,7 +581,7 @@ fn store_item(data_dir: &Path, id: &str) -> Option<StoreItem> {
 }
 
 fn upsert_item_unlocked(data_dir: &Path, item: StoreItem) -> Result<(), AppError> {
-    let mut store = load_store(data_dir);
+    let mut store = load_store_checked(data_dir)?;
     if let Some(existing) = store.items.iter_mut().find(|i| i.id == item.id) {
         *existing = item;
     } else {
@@ -561,7 +597,7 @@ fn upsert_item(data_dir: &Path, item: StoreItem) -> Result<(), AppError> {
 }
 
 fn remove_item_unlocked(data_dir: &Path, id: &str) -> Result<(), AppError> {
-    let mut store = load_store(data_dir);
+    let mut store = load_store_checked(data_dir)?;
     store.items.retain(|item| item.id != id);
     save_store_unlocked(data_dir, &store)
 }
@@ -1250,10 +1286,9 @@ fn fetch_npm(
             spec.source
         )));
     }
-    let tarball = doc
-        .versions
-        .get(&version)
-        .and_then(|v| v.dist.as_ref())
+    let dist = doc.versions.get(&version).and_then(|v| v.dist.as_ref());
+    let integrity = dist.and_then(|d| d.integrity.clone());
+    let tarball = dist
         .map(|d| d.tarball.clone())
         .filter(|t| !t.is_empty())
         .ok_or_else(|| {
@@ -1265,6 +1300,16 @@ fn fetch_npm(
     on_progress(&format!("正在下载 {}@{version} …", spec.source));
     let tgz = dest.join(".pkg.tgz");
     http_get_file(&tarball, &tgz).map_err(|e| AppError::Plugin(format!("下载失败：{e}")))?;
+    match crate::releases::verify_download_integrity(&tgz, integrity.as_deref()) {
+        Ok(Some(())) => on_progress("已校验下载内容的 integrity"),
+        Ok(None) => on_progress("registry 未提供 integrity，跳过内容校验"),
+        Err(reason) => {
+            let _ = fs::remove_file(&tgz);
+            return Err(AppError::Plugin(format!(
+                "{reason}。为避免安装未经验证的内容已中止；请重试或改用官方 registry（DSH_NPM_REGISTRY）"
+            )));
+        }
+    }
     // 通过共享的 Rust 归档处理器解压到暂存目录。它会校验 npm 的 `package/`
     // 根，并把其子项发布到 `dest`，后续 `validate_plugin(&dest)` 与物化步骤
     // 就从这里读取。
@@ -1378,8 +1423,23 @@ fn fetch_git_clone(
         cmd.arg("--branch").arg(tag);
     }
     cmd.arg(&spec.source).arg(dest);
-    let output = crate::process::run_command_capture(cmd, "git clone")
-        .map_err(|e| AppError::Io(format!("无法运行 git：{e}")))?;
+    // 与技能侧同理：clone 是网络操作，30 秒的默认上限会把一次正常的浅克隆
+    // 变成"无法运行 git"。很多 dsh 插件没有 GitHub Release，clone 是主路径。
+    let output = crate::process::run_command_capture_with_timeout(
+        cmd,
+        "git clone",
+        crate::process::GIT_CLONE_TIMEOUT,
+    )
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            AppError::Io(format!(
+                "git clone 超时（{} 分钟）：仓库较大或网络较慢，请重试，或改用带 Release 的来源",
+                crate::process::GIT_CLONE_TIMEOUT.as_secs() / 60
+            ))
+        } else {
+            AppError::Io(format!("无法运行 git：{e}"))
+        }
+    })?;
     let (success, stdout, stderr) = output;
     if !success {
         // 优先反向查找 "fatal:" / "error:" 行；找不到就退回到最后一行
@@ -1651,7 +1711,8 @@ fn install_store_deps(
         kernel::PNPM_REPORTER,
         kernel::PNPM_NO_STRICT_DEP_BUILDS,
     ];
-    let pnpm_dir = pnpm_exe.parent().unwrap_or(Path::new("."));
+    let extra_paths = pnpm_extra_paths(data_dir, pnpm_exe);
+    let extra_refs: Vec<&Path> = extra_paths.iter().map(|dir| dir.as_path()).collect();
     // 插件安装日志放在桌面壳的日志目录下；使用按日命名的写入器，让跨午夜的
     // 长安装落在两个文件里，且基于 spec 的文件名前缀让 dev / release 在弹窗
     // 标签列表里能直观地区分开。
@@ -1661,7 +1722,7 @@ fn install_store_deps(
         &dir,
         &kernel::logs_dir(data_dir),
         &plugin_log_spec(id),
-        &[pnpm_dir],
+        &extra_refs,
         &mut *on_progress,
     )
     .map_err(|e| {
@@ -1713,21 +1774,41 @@ pub fn materialize_one(
         .and_then(|_| fs::read_link(&source).ok())
         .unwrap_or_else(|| source.to_path_buf());
 
-    let fresh = meta
+    let synced_version_matches = meta
         .as_ref()
-        .map(|m| m.version == item.installed_version && m.mode == item.mode)
+        .map(|m| m.version == item.installed_version)
         .unwrap_or(false);
+    // 已降级的副本保持现状：期望 link、上次却因为权限落成 copy 时，不要再试一次
+    // （在无符号链接权限的 Windows 上必然失败）并整树重拷——含 node_modules 的
+    // 插件可达两万文件，那是每次启动内核都要付的代价。用户主动切换模式时
+    // `set_mode_unlocked` 会删掉 meta，从而强制重新物化。
+    let fallback_copy = meta
+        .as_ref()
+        .map(|m| m.fallback && m.mode == "copy" && item.mode == "link")
+        .unwrap_or(false);
+    let fresh =
+        synced_version_matches && meta.as_ref().map(|m| m.mode == item.mode).unwrap_or(false);
+    let satisfied = fresh || (synced_version_matches && fallback_copy);
 
-    // 如果元数据说没变化且目标已存在，还要再核对一下目标 symlink 是否真的正确。
-    // 上一次运行可能留下了一条过时的双重 symlink 链，即便记录的版本和模式
-    // 都没变 —— 落到下面去重建一条正确的直接链接。
-    if fresh && target.exists() {
-        let target_ok = fs::symlink_metadata(&target)
-            .ok()
-            .filter(|m| m.file_type().is_symlink())
-            .and_then(|_| fs::read_link(&target).ok())
-            .map(|link| link == resolved_source)
-            .unwrap_or(false);
+    if satisfied && target.exists() {
+        // 按**记录的实际形态**判断健康度：copy（用户选的或降级来的）落地的是
+        // 真实目录/文件，"目标必须是符号链接"对它恒为假——旧代码因此每次启动
+        // 都判定"不健康"并整树重删重拷。
+        let recorded_copy = meta.as_ref().map(|m| m.mode == "copy").unwrap_or(false);
+        let target_ok = if recorded_copy {
+            fs::symlink_metadata(&target)
+                .map(|m| !m.file_type().is_symlink())
+                .unwrap_or(false)
+        } else {
+            // 上一次运行可能留下了一条过时的双重 symlink 链，即便记录的版本和
+            // 模式都没变 —— 落到下面去重建一条正确的直接链接。
+            fs::symlink_metadata(&target)
+                .ok()
+                .filter(|m| m.file_type().is_symlink())
+                .and_then(|_| fs::read_link(&target).ok())
+                .map(|link| link == resolved_source)
+                .unwrap_or(false)
+        };
         if target_ok {
             return Ok(meta.map(|m| m.mode).unwrap_or_else(|| item.mode.clone()));
         }
@@ -1765,6 +1846,7 @@ pub fn materialize_one(
         version,
         &item.id,
         &KernelMeta {
+            fallback: actual != item.mode,
             mode: actual.clone(),
             version: item.installed_version.clone(),
             synced_at: now_epoch_secs(),
@@ -1845,7 +1927,20 @@ fn make_dir_link(source: &Path, target: &Path) -> io::Result<()> {
 /// 内核目标移走后的同伴链接）会让 `fs::copy` 报 os error 2，尽管它周围
 /// 一切正常。
 fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
-    copy_tree_at(source, target, &mut Vec::new())
+    // 源根的规范化路径：符号链接只有在解析后仍落在这个根**之内**时才被跟随。
+    // 越界链接（插件树里 `payload -> /Users/<user>` 这类）会把宿主的整棵树拷进
+    // 内核插件目录——磁盘被填满，私有文件也进入内核进程与插件代码可读的范围。
+    let root = fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
+    copy_tree_at(source, target, &mut Vec::new(), &root)
+}
+
+/// 符号链接解析后是否落在源根之外。解析失败（悬空链接）返回 `false`，
+/// 交由调用方的 metadata 分支处理。
+fn link_escapes_root(link: &Path, root: &Path) -> bool {
+    match fs::canonicalize(link) {
+        Ok(resolved) => !resolved.starts_with(root),
+        Err(_) => false,
+    }
 }
 
 fn link_points_to_ancestor(path: &Path, ancestors: &[PathBuf]) -> bool {
@@ -1866,7 +1961,12 @@ fn link_points_to_ancestor(path: &Path, ancestors: &[PathBuf]) -> bool {
 /// pnpm 的 `node_modules` 几乎全由 symlink 构成 —— 循环依赖会形成链接环，
 /// 这里通过检测目录的规范化路径是否已在祖先列表里来抓住它们。菱形结构
 ///（两个链接指向同一兄弟）不是环，会直接放行。
-fn copy_tree_at(source: &Path, target: &Path, ancestors: &mut Vec<PathBuf>) -> io::Result<()> {
+fn copy_tree_at(
+    source: &Path,
+    target: &Path,
+    ancestors: &mut Vec<PathBuf>,
+    root: &Path,
+) -> io::Result<()> {
     let canonical = fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
     if ancestors.contains(&canonical) {
         return Err(io::Error::new(
@@ -1875,12 +1975,17 @@ fn copy_tree_at(source: &Path, target: &Path, ancestors: &mut Vec<PathBuf>) -> i
         ));
     }
     ancestors.push(canonical);
-    let result = copy_tree_inner(source, target, ancestors);
+    let result = copy_tree_inner(source, target, ancestors, root);
     ancestors.pop();
     result
 }
 
-fn copy_tree_inner(source: &Path, target: &Path, ancestors: &mut Vec<PathBuf>) -> io::Result<()> {
+fn copy_tree_inner(
+    source: &Path,
+    target: &Path,
+    ancestors: &mut Vec<PathBuf>,
+    root: &Path,
+) -> io::Result<()> {
     if target.is_symlink() {
         remove_link(target);
         if target.is_symlink() {
@@ -1918,9 +2023,18 @@ fn copy_tree_inner(source: &Path, target: &Path, ancestors: &mut Vec<PathBuf>) -
                     format!("目录树存在循环链接：{}", from.display()),
                 ));
             }
+            // 越界链接不跟随：它指向源根之外，跟随会把宿主机的目录树整棵拷进
+            // 内核插件目录（磁盘被填满，私有文件进入内核与插件可读范围）。
+            if link_escapes_root(&from, root) {
+                eprintln!(
+                    "dsh-xlink: skipping symlink that escapes the package root: {}",
+                    from.display()
+                );
+                continue;
+            }
             // 沿链接走一次来分类；悬空链接拷不动，但也不能因此打断整棵树。
             match fs::metadata(&from) {
-                Ok(md) if md.is_dir() => copy_tree_at(&from, &to, ancestors)?,
+                Ok(md) if md.is_dir() => copy_tree_at(&from, &to, ancestors, root)?,
                 Ok(_) => copy_file(&from, &to)?,
                 Err(e) => {
                     eprintln!(
@@ -1931,7 +2045,7 @@ fn copy_tree_inner(source: &Path, target: &Path, ancestors: &mut Vec<PathBuf>) -
                 }
             }
         } else if file_type.is_dir() {
-            copy_tree_at(&from, &to, ancestors)?;
+            copy_tree_at(&from, &to, ancestors, root)?;
         } else {
             copy_file(&from, &to)?;
         }
@@ -2245,6 +2359,29 @@ pub fn ensure_wiring_filtered(
 /// 可用的 node_modules，既有的产物回退机制在 pnpm 报告 ignored-builds 误报
 /// 时也兜得住。`pnpm_exe.parent()` 被前置到子进程的 PATH 里，让任何带
 /// Node shebang 的生命周期脚本都能找到与启动 pnpm 相同的 `node`。
+/// 供 pnpm 子进程使用的额外 PATH 目录。
+///
+/// 两个目录都需要：`pnpm` 自己的 shim 目录（它的 shebang 与同目录工具），以及
+/// **托管 node 的目录**——npm 全局 prefix 与 node 的安装目录经常不是同一个，
+/// 只前置 pnpm 目录时，包的生命周期脚本（`prepare` / `install`）里的
+/// `#!/usr/bin/env node` 会以 127 失败，而错误信息只会说"无法运行 pnpm"。
+/// 走托管安装（`帮我安装 Node.js`）的用户尤其会撞上这一条。
+fn pnpm_extra_paths(data_dir: &Path, pnpm_exe: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = vec![pnpm_exe
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()];
+    if let Some(node) = crate::node_install::managed_node_exe(data_dir) {
+        if let Some(parent) = node.parent() {
+            let parent = parent.to_path_buf();
+            if !dirs.contains(&parent) {
+                dirs.push(parent);
+            }
+        }
+    }
+    dirs
+}
+
 fn run_profile_install(
     data_dir: &Path,
     profile_name: &str,
@@ -2253,7 +2390,8 @@ fn run_profile_install(
 ) -> Result<std::process::ExitStatus, AppError> {
     // 写入器在按日 spec 内部维持稳定的路径；每行都重新解析路径，跨午夜的
     // 轮转仍能落到正确的文件里。这里不再单独暴露路径 —— 命名由 spec 负责。
-    let pnpm_dir = pnpm_exe.parent().unwrap_or(Path::new("."));
+    let extra_paths = pnpm_extra_paths(data_dir, pnpm_exe);
+    let extra_refs: Vec<&Path> = extra_paths.iter().map(|dir| dir.as_path()).collect();
     // Profile 接线日志会被启动看护下所有 profile install 流程共享，因此
     // 放在桌面壳的日志目录下，按日轮转，并打上构建种类标记。
     kernel::run_pnpm(
@@ -2266,7 +2404,7 @@ fn run_profile_install(
         &profile_dir(data_dir, profile_name),
         &kernel::logs_dir(data_dir),
         &wiring_log_spec(),
-        &[pnpm_dir],
+        &extra_refs,
         on_progress,
     )
     .map_err(|e| AppError::Io(format!("无法运行 pnpm（{e}）")))
@@ -2310,7 +2448,11 @@ pub fn restore_profile_manifest(
 /// 首次重试修复共用此函数，确保两处展示给用户的告警与插件卡片旁的内容一致。
 pub fn set_store_warning(data_dir: &Path, warning: Option<String>) {
     let _store_guard = lock_store();
-    let mut store = load_store(data_dir);
+    // 读-改-写：清单损坏时保持原文件不动，绝不拿空清单覆盖它。这个函数由
+    // 启动看护每一轮都会调用，一旦退化成"写空清单"，损坏即刻变成永久丢失。
+    let Ok(mut store) = load_store_checked(data_dir) else {
+        return;
+    };
     store.warning = warning;
     let _ = save_store_unlocked(data_dir, &store);
 }
@@ -2890,11 +3032,31 @@ fn install_unlocked(
         for npm_name in &npm_candidates {
             on_progress(&format!("尝试 npm 包 {} …", npm_name));
             let mut silent = |_: &str| {};
-            if let Ok(item) =
-                install_unlocked(data_dir, settings, pnpm_exe, npm_name, mode, &mut silent)
-            {
-                on_progress(&format!("已通过 npm 安装 {}", npm_name));
-                return Ok(item);
+            match install_unlocked(data_dir, settings, pnpm_exe, npm_name, mode, &mut silent) {
+                Ok(item) => {
+                    on_progress(&format!("已通过 npm 安装 {}", npm_name));
+                    return Ok(item);
+                }
+                Err(error) => {
+                    // `install_unlocked` 在**写完 store 行之后**的任何一步失败
+                    // （物化、profile 接线）都会留下一个已记账的插件。此时若继续
+                    // 按 git 来源安装，用户会多出一个自己没要求的 npm 插件行——
+                    // 它已进 store.json，下次同步就参与接线，而进度里只有一句
+                    // "npm 包不可用"。取源/校验阶段失败则不会留痕（`fetch_into_store`
+                    // 自带回滚），那种情况才继续尝试下一个候选。
+                    let stray_id = id_for_name(npm_name).ok();
+                    let left_behind = stray_id
+                        .as_deref()
+                        .is_some_and(|id| store_item(data_dir, id).is_some());
+                    if left_behind {
+                        return Err(AppError::Plugin(format!(
+                            "npm 包 {npm_name} 安装失败，但已在中央库留下记录（{error}）。请先在插件面板卸载它，再重试或改用 GitHub 来源——直接回退到 git 会装出两个功能重复的插件",
+                        )));
+                    }
+                    on_progress(&format!(
+                        "npm 包 {npm_name} 不可用（{error}），继续尝试其它候选"
+                    ));
+                }
             }
         }
         on_progress("npm 包不可用，回退到 GitHub 仓库安装");
@@ -2973,6 +3135,16 @@ fn update_unlocked(
     sync_kernels(data_dir, &updated)?;
     on_progress("正在同步 profile");
     ensure_wiring(data_dir, settings, pnpm_exe, on_progress)?;
+    // copy 模式的更新必须**额外**重跑一次 profile 安装。
+    //
+    // pnpm 的 `file:` 依赖是在 `install` 时被硬链接/拷贝进 profile 的
+    // `node_modules` 的，而接线判定看的是"manifest 文本有没有变 + node_modules
+    // 在不在"——两者都没变，于是常规接线直接跳过重装，内核继续按 profile 里的
+    // 旧副本解析 bundle：UI 显示"已更新"，重启后跑的还是旧代码。这一次额外的
+    // pnpm install 是幂等的，代价几秒，换来的是"更新真的生效"。
+    if updated.mode == "copy" {
+        run_profile_install(data_dir, &settings.profile, pnpm_exe, on_progress)?;
+    }
     Ok(updated)
 }
 
@@ -3066,6 +3238,12 @@ fn set_mode_unlocked(
         store_item(data_dir, id).ok_or_else(|| AppError::Plugin("插件不在中央库中".into()))?;
     let needs_store_deps = mode == "link"
         && (item.mode != "link" || !store_plugin_dir(data_dir, id).join("node_modules").is_dir());
+    // 切换模式必须强制重新物化：否则"版本与形态都没变"的短路判定会让旧的
+    // 落地结果原样留着，用户点了切换却看不到任何变化。删掉 meta 即可让下一次
+    // materialize 走全新落地。
+    for installed in kernel::list_installed(data_dir) {
+        let _ = fs::remove_file(kernel_meta_file(data_dir, &installed.version, id));
+    }
     item.mode = mode.to_string();
     upsert_item_unlocked(data_dir, item.clone())?;
     if needs_store_deps {
@@ -3101,7 +3279,9 @@ fn sync_all_unlocked(
     pnpm_exe: &Path,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(), AppError> {
-    let store = load_store(data_dir);
+    // 清扫路径：清单读不出来时绝不能当成"没有插件"，否则会把活动内核里所有
+    // 物化目录当成孤儿删掉。
+    let store = load_store_checked(data_dir)?;
     for item in &store.items {
         sync_kernels(data_dir, item)?;
     }
@@ -3112,7 +3292,17 @@ fn sync_all_unlocked(
 
 /// 拼装 UI 的状态快照（不发起网络请求）。
 pub fn status(data_dir: &Path, settings: &settings::Settings) -> PluginStatus {
-    let store = load_store(data_dir);
+    let mut integrity_warning: Option<String> = None;
+    let store = match crate::process::read_state_file(&store_file(data_dir)) {
+        crate::process::StateRead::Loaded(store) => store,
+        crate::process::StateRead::Missing => Store::default(),
+        crate::process::StateRead::Corrupt { reason } => {
+            integrity_warning = Some(format!(
+                "插件清单损坏，已安装插件的记录暂时读不出来（{reason}）。请修复或删除该文件后重试；在修复之前不会写入任何插件状态，工作台仍可正常启动"
+            ));
+            Store::default()
+        }
+    };
     let active = kernel::read_active(data_dir);
     let profile_manifest = read_profile_json(data_dir, &settings.profile)
         .ok()
@@ -3146,11 +3336,15 @@ pub fn status(data_dir: &Path, settings: &settings::Settings) -> PluginStatus {
             .and_then(|s| s.as_str())
             .map(is_managed_spec)
             .unwrap_or(false);
-        if item
-            .latest_version
-            .as_deref()
-            .map(|l| is_newer_than(l, &item.installed_version, &item.origin, item.pinned))
-            .unwrap_or(false)
+        // 锁定版本（npm `@1.2.3` / git `#tag`）不参与「N 个更新」计数：
+        // `update_unlocked` 对 pinned 一律拒绝并提示重新安装，把它算成可更新
+        // 只会让用户点到一个必然失败的按钮（P2-22）。
+        if !item.pinned
+            && item
+                .latest_version
+                .as_deref()
+                .map(|l| is_newer_than(l, &item.installed_version, &item.origin, item.pinned))
+                .unwrap_or(false)
         {
             updates += 1;
         }
@@ -3163,6 +3357,7 @@ pub fn status(data_dir: &Path, settings: &settings::Settings) -> PluginStatus {
         let row_latest = item
             .latest_version
             .as_deref()
+            .filter(|_| !item.pinned)
             .filter(|l| is_newer_than(l, &item.installed_version, &item.origin, item.pinned))
             .map(|s| s.to_string());
         rows.push(PluginRow {
@@ -3190,7 +3385,8 @@ pub fn status(data_dir: &Path, settings: &settings::Settings) -> PluginStatus {
         active_kernel: active,
         updates,
         last_checked_at: store.last_checked_at,
-        warning: store.warning,
+        // 清单完整性优先于流程性警告：前者解释了为什么列表是空的。
+        warning: integrity_warning.or(store.warning),
     }
 }
 
@@ -3301,8 +3497,32 @@ fn refresh_store_peers(data_dir: &Path, item: &StoreItem, active: &str) -> Resul
             continue;
         }
         let dest = plugin_root.join("node_modules").join(name);
-        if dest.exists() {
-            continue; // 已在库内安装（已发布或被 hoisted）
+        // "已存在"不足以说明它指向正确的地方：切换内核之后，插件库里可能还留着
+        // 一条指向上一个内核的链接（`dest.exists()` 照样为真）。继续沿用会让插件
+        // 在内核 B 下 import 到内核 A 的 cordis / @deepseek-ai/*——两份实例、
+        // 重复注入、服务找不到；A 被卸载后还会变成悬空链接。
+        let dest_meta = fs::symlink_metadata(&dest).ok();
+        let dest_is_link = dest_meta
+            .as_ref()
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(false);
+        if dest_is_link {
+            let points_at_current =
+                match (fs::canonicalize(&dest).ok(), fs::canonicalize(&target).ok()) {
+                    (Some(current), Some(want)) => current == want,
+                    _ => false,
+                };
+            if points_at_current {
+                // 已经解析到当前内核：记进 peers，使 meta 如实反映磁盘状态。
+                linked.push(name.clone());
+                continue;
+            }
+            // 指向别处（通常是上一个内核）：清掉后重建。
+            remove_link(&dest);
+        } else if dest_meta.is_some() {
+            // 真实存在的目录/文件（npm 装进来的或 hoisted 的）：不动它，
+            // 也不记进 peers——它不是我们建的链接。
+            continue;
         }
         if let Some(parent) = dest.parent() {
             let _ = fs::create_dir_all(parent);
@@ -3886,6 +4106,10 @@ mod tests {
         assert!(is_newer_than("v0.15.0", "v0.14.0", "npm", false));
         assert!(!is_newer_than("v0.14.0", "v0.15.0", "npm", false));
         assert!(is_newer_than("v1.0.0", "v0.15.0", "git", true));
+        // 注意：`is_newer_than` 只回答"版本号上是否更新"，**不**回答"这个条目
+        // 能不能更新"。锁定版本（pinned）的过滤发生在 status / check_updates
+        // 里（见 `pinned_items_never_advertise_an_update`）。
+        assert!(is_newer_than("v0.15.0", "v0.14.0", "npm", true));
         assert!(is_newer_than("v0.16.0", "v0.15.0", "git", false));
         assert!(!is_newer_than("v0.15.0", "v0.15.0", "git", false));
 
@@ -3985,6 +4209,126 @@ mod tests {
         assert_eq!(meta.version, "1.0.0");
     }
 
+    /// 切换内核后，插件库里指向上一个内核的 peer 链接必须被重链到当前内核。
+    ///
+    /// 旧代码用 `dest.exists()` 判断"已安装"：一条指向**上一个内核**的链接照样
+    /// 为真，于是它被跳过、`meta.peers` 记成空数组，而早退条件只看 kernel 字段
+    /// ——从此每次启动都命中早退，永不重链。插件在内核 B 下 import 到内核 A 的
+    /// cordis / @deepseek-ai/*，两份实例、重复注入；A 卸载后还会变成悬空链接。
+    #[cfg(unix)]
+    #[test]
+    fn refresh_store_peers_relinks_links_pointing_at_the_old_kernel() {
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        let id = "peer-plugin";
+        let plugin_root = store_plugin_dir(&data_dir, id);
+        fs::create_dir_all(&plugin_root).unwrap();
+        fs::write(
+            plugin_root.join("package.json"),
+            r#"{"name":"peer-plugin","peerDependencies":{"cordis":"*"}}"#,
+        )
+        .unwrap();
+
+        // 两个内核各自带一份 cordis。
+        for version in ["0.1.1", "0.1.2"] {
+            let peer = kernel::kernel_dir(&data_dir, version).join("node_modules/cordis");
+            fs::create_dir_all(&peer).unwrap();
+            fs::write(peer.join("index.js"), format!("// cordis {version}")).unwrap();
+        }
+
+        let item = StoreItem {
+            id: id.into(),
+            mode: "link".into(),
+            ..StoreItem::default()
+        };
+        refresh_store_peers(&data_dir, &item, "0.1.1").expect("首次解析");
+        let dest = plugin_root.join("node_modules/cordis");
+        let first = fs::canonicalize(&dest).expect("canonicalize first");
+        assert!(first.to_string_lossy().contains("0.1.1"), "{first:?}");
+
+        // 切到 0.1.2：必须重链，而不是因为"目标已存在"就跳过。
+        refresh_store_peers(&data_dir, &item, "0.1.2").expect("切换内核后重链");
+        let second = fs::canonicalize(&dest).expect("canonicalize second");
+        assert!(
+            second.to_string_lossy().contains("0.1.2"),
+            "切换内核后 peer 链接必须指向新内核，实际：{}",
+            second.display()
+        );
+    }
+
+    /// copy 模式（包括 link→copy 降级）的短路判定必须对**真实目录**成立。
+    ///
+    /// 旧判定要求"目标本身必须是符号链接"，对副本恒为假，于是每次启动内核都会
+    /// `remove_materialized` + 整树 `copy_tree`——含 node_modules 的插件可达
+    /// 两万文件，中途失败还会留下半棵树。
+    #[test]
+    fn copy_materialization_short_circuits_on_resync() {
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        let id = "copy-short-circuit";
+        let source = store_plugin_dir(&data_dir, id);
+        fs::create_dir_all(source.join("lib")).unwrap();
+        fs::write(source.join("package.json"), "{}").unwrap();
+        fs::write(source.join("lib/index.js"), "module.exports = 1;\n").unwrap();
+
+        let item = StoreItem {
+            id: id.into(),
+            name: id.into(),
+            origin: "npm".into(),
+            source: id.into(),
+            installed_version: "1.0.0".into(),
+            latest_version: None,
+            mode: "copy".into(),
+            pinned: false,
+            installed_at: String::new(),
+            updated_at: String::new(),
+            repo_url: None,
+            description: None,
+        };
+        let version = "0.1.1";
+        assert_eq!(
+            materialize_one(&data_dir, version, &item).expect("首次物化"),
+            "copy"
+        );
+
+        let target = kernel_plugin_dir(&data_dir, version, id);
+        // 标记文件不在中央库里：它一旦消失，就说明目标被整树重拷过。
+        fs::write(target.join("RESYNC-MARKER"), b"x").unwrap();
+        assert_eq!(
+            materialize_one(&data_dir, version, &item).expect("二次物化"),
+            "copy"
+        );
+        assert!(
+            target.join("RESYNC-MARKER").exists(),
+            "版本与形态都没变时必须短路，不得整树重删重拷"
+        );
+
+        // 模拟 link→copy 降级：meta 记 fallback，而期望模式仍是 link。
+        let mut link_item = item.clone();
+        link_item.mode = "link".into();
+        write_meta(
+            &data_dir,
+            version,
+            id,
+            &KernelMeta {
+                fallback: true,
+                mode: "copy".into(),
+                version: link_item.installed_version.clone(),
+                synced_at: now_epoch_secs(),
+            },
+        )
+        .expect("write fallback meta");
+        fs::write(target.join("RESYNC-MARKER"), b"x").unwrap();
+        assert_eq!(
+            materialize_one(&data_dir, version, &link_item).expect("降级态再物化"),
+            "copy"
+        );
+        assert!(
+            target.join("RESYNC-MARKER").exists(),
+            "已降级的副本必须保持现状，而不是每次启动都重试建链并整树重拷"
+        );
+    }
+
     #[test]
     fn copy_tree_reports_failing_path() {
         let home = TestHome::new();
@@ -3994,6 +4338,31 @@ mod tests {
         assert!(
             msg.contains("no-such-source"),
             "error must name the failing path, got: {msg}"
+        );
+    }
+
+    /// 指向源根之外的符号链接不得被跟随：跟随会把宿主机的目录树整棵拷进内核
+    /// 插件目录——磁盘被填满，私有文件也进入内核进程与插件代码可读的范围。
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_skips_links_escaping_the_source_root() {
+        let home = TestHome::new();
+        let outside = home.0.join("outside");
+        fs::create_dir_all(outside.join("private")).unwrap();
+        fs::write(outside.join("private/secret.txt"), "secret").unwrap();
+
+        let source = home.0.join("src");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("index.js"), "ok").unwrap();
+        std::os::unix::fs::symlink(&outside, source.join("payload")).unwrap();
+
+        let target = home.0.join("dst");
+        copy_tree(&source, &target).expect("copy should succeed");
+
+        assert!(target.join("index.js").is_file(), "普通文件必须照常拷贝");
+        assert!(
+            !target.join("payload/private/secret.txt").exists(),
+            "越界链接不得被跟随（否则整棵宿主目录会被拷进内核插件目录）"
         );
     }
 
@@ -4104,6 +4473,7 @@ mod tests {
             version,
             "ghost",
             &KernelMeta {
+                fallback: false,
                 mode: "copy".into(),
                 version: "1.0.0".into(),
                 synced_at: "1".into(),
@@ -4191,6 +4561,7 @@ mod tests {
             version,
             "live-plugin",
             &KernelMeta {
+                fallback: false,
                 mode: "link".into(),
                 version: "1.0.0".into(),
                 synced_at: "1".into(),
@@ -4203,6 +4574,7 @@ mod tests {
             version,
             "stale-plugin",
             &KernelMeta {
+                fallback: false,
                 mode: "copy".into(),
                 version: "1.0.0".into(),
                 synced_at: "1".into(),
@@ -4254,6 +4626,7 @@ mod tests {
                 version,
                 "ghost",
                 &KernelMeta {
+                    fallback: false,
                     mode: "copy".into(),
                     version: "1.0.0".into(),
                     synced_at: "1".into(),
@@ -4678,6 +5051,45 @@ mod tests {
     }
 
     #[test]
+    fn pinned_items_never_advertise_an_update() {
+        // P2-22：锁定版本的条目标成「有更新」，但 `update()` 对 pinned 一律
+        // 拒绝（提示重新安装）—— 用户点下去必然失败。计数与行内角标都必须
+        // 忽略 pinned，npm 与 git 来源一视同仁。
+        for (origin, installed, latest) in
+            [("npm", "1.2.3", "1.3.0"), ("git", "v0.14.0", "v0.15.0")]
+        {
+            let home = TestHome::new();
+            let data_dir = home.data_dir();
+            upsert_item(
+                &data_dir,
+                StoreItem {
+                    id: "locked-plugin".into(),
+                    name: "locked-plugin".into(),
+                    origin: origin.into(),
+                    source: "locked-plugin@1.2.3".into(),
+                    installed_version: installed.into(),
+                    latest_version: Some(latest.into()),
+                    mode: "link".into(),
+                    pinned: true,
+                    installed_at: String::new(),
+                    updated_at: String::new(),
+                    repo_url: None,
+                    description: None,
+                },
+            )
+            .expect("save");
+            let settings = settings::Settings::default();
+            let view = status(&data_dir, &settings);
+            assert_eq!(view.updates, 0, "{origin} 的锁定版本不该计入更新数");
+            assert!(
+                view.rows[0].latest_version.is_none(),
+                "{origin} 的锁定版本不该显示「有更新」角标，实际 {:?}",
+                view.rows[0].latest_version
+            );
+        }
+    }
+
+    #[test]
     fn status_keeps_latest_when_newer_than_installed() {
         let home = TestHome::new();
         let data_dir = home.data_dir();
@@ -5046,5 +5458,57 @@ mod tests {
         let second = new_staging_dir(&store, TMP_PREFIX, "stale-test").expect("second call");
         assert!(second.is_dir());
         assert!(!stale_id_marker.exists(), "stale marker must be gone");
+    }
+
+    /// 清单损坏时不得被当成空清单。
+    ///
+    /// 这是静默数据丢失的通用形态：`store.json` 解析失败后退化成空清单，
+    /// 同一次启动里 `sweep_kernel_orphans` 会删掉活动内核中所有外壳管理的
+    /// 物化目录、`wire_manifest` 会清退 profile 的全部托管依赖，随后写库再把
+    /// 原文件覆盖掉——用户装过的插件就此消失。
+    #[test]
+    fn corrupt_store_is_never_treated_as_empty() {
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        fs::create_dir_all(store_dir(&data_dir)).expect("store dir");
+        let damaged = "{ this is not json";
+        fs::write(store_file(&data_dir), damaged).expect("write damaged store");
+
+        let item = StoreItem {
+            id: "test-plugin-1".into(),
+            name: "test-plugin".into(),
+            origin: "npm".into(),
+            source: "test-plugin".into(),
+            installed_version: "1.0.0".into(),
+            latest_version: None,
+            mode: "link".into(),
+            pinned: false,
+            installed_at: "1".into(),
+            updated_at: "2".into(),
+            repo_url: None,
+            description: None,
+        };
+        let error = upsert_item(&data_dir, item).expect_err("读-改-写路径必须拒绝执行");
+        assert!(
+            error.to_string().contains("损坏"),
+            "错误信息应说明清单损坏，实际：{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(store_file(&data_dir)).expect("read store"),
+            damaged,
+            "损坏的原文件不得被覆盖"
+        );
+        // 展示路径仍然可用（只是列表为空），UI 会通过 status.warning 说明原因。
+        assert!(load_store(&data_dir).items.is_empty());
+
+        // 清扫路径同样必须拒绝：不能把"读不出来"当成"没有插件"。
+        let sweep_error = sync_all(
+            &data_dir,
+            &settings::Settings::default(),
+            Path::new("/nonexistent/pnpm"),
+            &mut |_| {},
+        )
+        .expect_err("清扫路径必须拒绝在损坏清单上运行");
+        assert!(sweep_error.to_string().contains("损坏"), "{sweep_error}");
     }
 }

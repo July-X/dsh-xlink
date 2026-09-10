@@ -370,6 +370,10 @@ pub(crate) fn verify_or_install(
     // 3) SHA-256 校验（以官方 SHASUMS256.txt 为准）
     let actual = sha256_hex(&tarball)?;
     if !actual.eq_ignore_ascii_case(&expected) {
+        // 文案已经承诺「已删除无效文件」，实现就必须真的删：旧代码只在解压
+        // 失败分支删 tarball，校验失败时把损坏的下载（30–50 MB）留在磁盘上，
+        // 下一次重试还会复用它（P2-16）。
+        let _ = fs::remove_file(&tarball);
         return Err(format!(
             "Node.js 下载校验失败（期望 {expected}，实际 {actual}）。已删除无效文件，可重试。日志：{}",
             log_path.display()

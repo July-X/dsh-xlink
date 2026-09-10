@@ -51,6 +51,15 @@ pub struct SkillEntry {
     pub path: String,
     /// 技能此刻是否已链接到活动根。
     pub enabled: bool,
+    /// 上次物化后活动根条目的内容指纹（sha256 十六进制）。
+    ///
+    /// 这是 copy 模式唯一可用的所有权证据：Windows 上未开启「开发者模式」的
+    /// 普通用户拿不到符号链接权限，link 必然回退成 copy，而活动根里留下的是
+    /// 一份真实副本——没有指纹就再也无法安全地判断「这个条目归我所有，可以
+    /// 卸载」，卸载会静默变成空操作。链接模式同样记录它，这样即使链接之后被
+    /// 换成了副本，所有权判定依然成立。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialized_sha256: Option<String>,
 }
 
 /// 中央库中的一个已安装技能包。
@@ -275,11 +284,30 @@ pub fn lock_store() -> std::sync::MutexGuard<'static, ()> {
     crate::lock(store_mutation_lock())
 }
 
+/// 展示路径用的容错读取：文件不存在或损坏都返回空清单。
+///
+/// **只读**：任何"读-改-写"路径都必须用 [`load_store_checked`]。把损坏当成
+/// 空清单会让启动对账（`reconcile_home`）认为活动根里所有指向中央库的条目
+/// 都是孤儿链接并逐个删除，运行中的内核随即丢掉全部技能。
 pub fn load_store(home: &Path) -> SkillStore {
-    let Ok(text) = fs::read_to_string(store_file(home)) else {
-        return SkillStore::default();
-    };
-    serde_json::from_str(&text).unwrap_or_default()
+    match crate::process::read_state_file(&store_file(home)) {
+        crate::process::StateRead::Loaded(store) => store,
+        crate::process::StateRead::Missing | crate::process::StateRead::Corrupt { .. } => {
+            SkillStore::default()
+        }
+    }
+}
+
+/// 读-改-写路径用的读取：清单损坏时返回可操作的错误，而不是拿空清单覆盖
+/// 用户的真实记录。
+pub fn load_store_checked(home: &Path) -> Result<SkillStore, AppError> {
+    match crate::process::read_state_file(&store_file(home)) {
+        crate::process::StateRead::Loaded(store) => Ok(store),
+        crate::process::StateRead::Missing => Ok(SkillStore::default()),
+        crate::process::StateRead::Corrupt { reason } => Err(AppError::Skill(format!(
+            "技能清单损坏，为避免删除已安装技能的链接，本次操作已中止（{reason}）。请修复或删除该文件后重试；已装技能的链接不会被清理"
+        ))),
+    }
 }
 
 fn save_store_unlocked(home: &Path, store: &SkillStore) -> Result<(), AppError> {
@@ -297,7 +325,7 @@ fn store_item(home: &Path, id: &str) -> Option<SkillStoreItem> {
 }
 
 fn upsert_item_unlocked(home: &Path, item: SkillStoreItem) -> Result<(), AppError> {
-    let mut store = load_store(home);
+    let mut store = load_store_checked(home)?;
     if let Some(existing) = store.items.iter_mut().find(|i| i.id == item.id) {
         *existing = item;
     } else {
@@ -307,7 +335,7 @@ fn upsert_item_unlocked(home: &Path, item: SkillStoreItem) -> Result<(), AppErro
 }
 
 fn remove_item_unlocked(home: &Path, id: &str) -> Result<(), AppError> {
-    let mut store = load_store(home);
+    let mut store = load_store_checked(home)?;
     store.items.retain(|item| item.id != id);
     save_store_unlocked(home, &store)
 }
@@ -736,6 +764,12 @@ struct NpmVersionDoc {
 struct NpmDist {
     #[serde(default)]
     tarball: String,
+    /// registry 声明的 SRI 摘要（`sha512-<base64>`）。外壳自己下载 tarball，
+    /// 必须据此校验一次：默认 registry 是第三方镜像，packument 与 tarball
+    /// 同源，镜像可以在元数据一致的前提下替换内容，而解包后 pnpm 会执行包里的
+    /// `prepare` 脚本。
+    #[serde(default)]
+    integrity: Option<String>,
 }
 
 fn fetch_npm_doc(name: &str) -> Result<NpmDoc, String> {
@@ -765,6 +799,12 @@ fn write_source_marker(spec: &SkillSpec, version: &str, dest: &Path) -> Result<(
 }
 
 /// 递归地将 source 复制到 target，若已存在则替换。
+///
+/// **符号链接一律跳过**，与技能扫描器保持一致：扫描器本来就不把链接视为技能
+/// 入口（`git clone` 常留下 `SKILL.md -> ../../SKILL.md` 这类装饰性重定向），
+/// 而跟随一个指向包外的链接会把宿主机的目录树整棵拷进技能目录——既撑大中央库，
+/// 也让私有文件进入内核可读范围。旧实现跟随链接（`fs::copy`），目录链接会让
+/// 整个复制以 `os error 2` 失败。
 fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
     if target.is_symlink() {
         remove_link(target);
@@ -776,7 +816,15 @@ fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
         let entry = entry?;
         let from = entry.path();
         let to = target.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            eprintln!(
+                "dsh-xlink: skipping symlink {} during skill copy",
+                from.display()
+            );
+            continue;
+        }
+        if file_type.is_dir() {
             copy_tree(&from, &to)?;
         } else {
             let _ = fs::remove_file(&to);
@@ -948,10 +996,9 @@ fn fetch_npm(
             spec.source
         )));
     }
-    let tarball = doc
-        .versions
-        .get(&version)
-        .and_then(|v| v.dist.as_ref())
+    let dist = doc.versions.get(&version).and_then(|v| v.dist.as_ref());
+    let integrity = dist.and_then(|d| d.integrity.clone());
+    let tarball = dist
         .map(|d| d.tarball.clone())
         .filter(|t| !t.is_empty())
         .ok_or_else(|| {
@@ -963,6 +1010,16 @@ fn fetch_npm(
     on_progress(&format!("正在下载 {}@{version} …", spec.source));
     let tgz = dest.join(".pkg.tgz");
     http_get_file(&tarball, &tgz).map_err(|e| AppError::Skill(format!("下载失败：{e}")))?;
+    match crate::releases::verify_download_integrity(&tgz, integrity.as_deref()) {
+        Ok(Some(())) => on_progress("已校验下载内容的 integrity"),
+        Ok(None) => on_progress("registry 未提供 integrity，跳过内容校验"),
+        Err(reason) => {
+            let _ = fs::remove_file(&tgz);
+            return Err(AppError::Skill(format!(
+                "{reason}。为避免安装未经验证的内容已中止；请重试或改用官方 registry（DSH_NPM_REGISTRY）"
+            )));
+        }
+    }
     // 通过共享的 Rust 归档处理器解包；它会校验 npm 的 `package/` 根目录，
     // 并将清单发布到 `dest` 供后续扫描。
     extract_tarball(&tgz, dest)
@@ -1000,8 +1057,23 @@ fn fetch_git(
         cmd.arg("--branch").arg(tag);
     }
     cmd.arg(&spec.source).arg(dest);
-    let (success, _stdout, stderr) = crate::process::run_command_capture(cmd, "git clone")
-        .map_err(|e| AppError::Io(format!("无法运行 git：{e}")))?;
+    // clone 是网络操作：默认的 30 秒上限在慢网络或大仓库下必然超时，而很多技能
+    // 包只有 git 来源。用专用的长超时，并把超时包装成可操作的中文提示。
+    let (success, _stdout, stderr) = crate::process::run_command_capture_with_timeout(
+        cmd,
+        "git clone",
+        crate::process::GIT_CLONE_TIMEOUT,
+    )
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            AppError::Io(format!(
+                "git clone 超时（{} 分钟）：仓库较大或网络较慢，请重试，或改用带 Release 的来源",
+                crate::process::GIT_CLONE_TIMEOUT.as_secs() / 60
+            ))
+        } else {
+            AppError::Io(format!("无法运行 git：{e}"))
+        }
+    })?;
     if !success {
         let detail = stderr
             .lines()
@@ -1054,9 +1126,31 @@ fn make_entry_link(source: &Path, target: &Path, _is_file: bool) -> io::Result<(
 #[cfg(windows)]
 fn make_entry_link(source: &Path, target: &Path, is_file: bool) -> io::Result<()> {
     if is_file {
-        std::os::windows::fs::symlink_file(source, target)
+        // 文件没有 junction 等价物，仍需符号链接；拿不到权限时由调用方
+        // 回退到 copy，而 copy 的所有权现在由内容指纹判定，可以正常卸载。
+        return std::os::windows::fs::symlink_file(source, target);
+    }
+    // 目录用 junction 而不是目录符号链接：`symlink_dir` 需要
+    // SeCreateSymbolicLinkPrivilege，未开启「开发者模式」的普通用户拿不到，
+    // 于是 link 必然回退成 copy（磁盘上留下真实副本、中央库更新后内核读到的
+    // 还是旧内容）。junction 由文件系统本身支持，普通用户即可创建，
+    // 内核的文件监视也会像跟随符号链接一样跟随它——这也正是
+    // docs/skill-management.md 一直描述的行为。`mklink` 是 cmd 内建命令，
+    // 只能经 `cmd /C` 调用。
+    let mut cmd = crate::process::command_with_path("cmd");
+    cmd.arg("/C")
+        .arg("mklink")
+        .arg("/J")
+        .arg(target)
+        .arg(source);
+    let status = crate::process::quiet(&mut cmd).status()?;
+    if status.success() {
+        Ok(())
     } else {
-        std::os::windows::fs::symlink_dir(source, target)
+        Err(io::Error::other(format!(
+            "mklink /J 创建 junction 失败（退出码 {:?}）",
+            status.code()
+        )))
     }
 }
 
@@ -1094,19 +1188,132 @@ fn remove_target(target: &Path) {
     }
 }
 
+/// 一次物化的结果。
+#[derive(Debug, Clone)]
+struct Materialized {
+    /// 实际使用的模式。link 在缺少符号链接权限时回退为 copy，因此这与
+    /// 期望模式可能不同，必须回写给 UI（否则面板会显示"已链接"而磁盘上是副本）。
+    mode: String,
+    /// 落地后活动根条目的内容指纹，写入 [`SkillEntry::materialized_sha256`]。
+    fingerprint: Option<String>,
+}
+
+/// 一个条目（文件或目录）的内容指纹：文件取内容的 sha256；目录取
+/// "相对路径 + 内容 sha256" 排序后再哈希。符号链接不跟随（避免把链接目标
+/// 卷进指纹），链接自身的所有权由链接判定负责。
+fn fingerprint_path(path: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+
+    let md = fs::symlink_metadata(path).ok()?;
+    if md.file_type().is_symlink() {
+        return None;
+    }
+    if md.is_file() {
+        let bytes = fs::read(path).ok()?;
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        return Some(format!("{:x}", hasher.finalize()));
+    }
+    if !md.is_dir() {
+        return None;
+    }
+    let mut parts: Vec<(String, String)> = Vec::new();
+    collect_fingerprint_parts(path, path, &mut parts).ok()?;
+    parts.sort();
+    let mut hasher = Sha256::new();
+    for (relative, digest) in parts {
+        hasher.update(relative.as_bytes());
+        hasher.update([0]);
+        hasher.update(digest.as_bytes());
+        hasher.update([0]);
+    }
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+fn collect_fingerprint_parts(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, String)>,
+) -> io::Result<()> {
+    use sha2::{Digest, Sha256};
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let md = fs::symlink_metadata(&path)?;
+        if md.file_type().is_symlink() {
+            continue;
+        }
+        if md.is_dir() {
+            collect_fingerprint_parts(root, &path, out)?;
+        } else if md.is_file() {
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let bytes = fs::read(&path)?;
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            out.push((relative, format!("{:x}", hasher.finalize())));
+        }
+    }
+    Ok(())
+}
+
+/// `target` 是否是指向 `source` 的链接（符号链接，或 Windows 上的 junction）。
+///
+/// 用 `canonicalize` 比较而不是 `read_link` 的字面量比较：Windows 的 junction
+/// 回读时带 `\\?\` 前缀，macOS 上中央库又可能位于 `/var → /private/var` 这类
+/// 符号链接路径段之下，字面量比较会漏判——而漏判的后果是"卸载了但技能还在"。
+/// 目标断链或 canonicalize 失败时退回字面量比较，覆盖源已被删除的场景。
+fn link_resolves_to(target: &Path, source: &Path) -> bool {
+    let Ok(md) = fs::symlink_metadata(target) else {
+        return false;
+    };
+    if !md.file_type().is_symlink() {
+        return false;
+    }
+    match (fs::canonicalize(target), fs::canonicalize(source)) {
+        (Ok(resolved_target), Ok(resolved_source)) => resolved_target == resolved_source,
+        _ => fs::read_link(target)
+            .map(|link| link == source)
+            .unwrap_or(false),
+    }
+}
+
+/// 活动根里的条目是否由本商店物化（因此可以安全替换或删除）。两种证据，
+/// 任一成立即认领：
+///
+/// 1. **链接**：条目是指向中央库源的符号链接 / junction；
+/// 2. **内容指纹**：`store.json` 记录了落地时的指纹，且当前内容仍然匹配
+///    ——这是 copy 模式（Windows 未开启开发者模式时的必然回退）唯一可用的
+///    所有权证据。
+///
+/// 两者都不成立时返回 `false`：用户手放的、或落地后被改写过的条目一律不动。
+fn entry_is_owned(target: &Path, source: &Path, entry: &SkillEntry) -> bool {
+    if link_resolves_to(target, source) {
+        return true;
+    }
+    entry
+        .materialized_sha256
+        .as_deref()
+        .is_some_and(|expected| fingerprint_path(target).as_deref() == Some(expected))
+}
+
 /// 将单个技能以链接（或复制）形式落到活动根中，名称使用 frontmatter 名。
 ///
-/// 若已有条目正好指向同一来源，则短路返回（重复运行幂等）。否则，
-/// 若目标位置已被占用，未传 `replace_owned` 时报错；拥有该名字清单
+/// 若已有条目确属本商店（见 [`entry_is_owned`]），则短路返回并顺带刷新指纹。
+/// 否则，若目标位置已被占用，未传 `replace_owned` 时报错；拥有该名字清单
 /// 权限的调用方（更新刷新、reconcile 修复）会传入该参数，以替换先前
-/// 版本留下的陈旧内容。返回 link→copy 回退后实际使用的模式。
+/// 版本留下的陈旧内容。返回实际使用的模式与落地后的内容指纹。
 fn ensure_entry(
     home: &Path,
     pkg_dir: &Path,
     mode: &str,
     entry: &SkillEntry,
     replace_owned: bool,
-) -> Result<String, AppError> {
+) -> Result<Materialized, AppError> {
     let target = skill_target_path(home, entry);
     let source = resolved_source(&pkg_dir.join(&entry.path));
     if !source.exists() {
@@ -1117,15 +1324,18 @@ fn ensure_entry(
         )));
     }
     if let Ok(md) = fs::symlink_metadata(&target) {
-        let ours = md
-            .file_type()
-            .is_symlink()
-            .then(|| fs::read_link(&target).ok())
-            .flatten()
-            .map(|link| link == source)
-            .unwrap_or(false);
-        if ours {
-            return Ok(mode.to_string());
+        if entry_is_owned(&target, &source, entry) {
+            // 已经是我们的条目——按它在磁盘上的真实形态回报模式，而不是
+            // 回报期望模式：link 曾经回退成 copy 之后，这里若照抄 "link"
+            // 会让 UI 一直显示错误的模式，也让 copy 的刷新逻辑失效。
+            return Ok(Materialized {
+                mode: if md.file_type().is_symlink() {
+                    String::from("link")
+                } else {
+                    String::from("copy")
+                },
+                fingerprint: fingerprint_path(&target),
+            });
         }
         if !replace_owned {
             return Err(AppError::Skill(format!(
@@ -1156,21 +1366,21 @@ fn ensure_entry(
                 .map_err(|e| AppError::Io(format!("复制技能目录失败：{e}")))?;
         }
     }
-    Ok(actual)
+    // 指纹必须在落地完成之后计算：它就是"这一份内容归本商店所有"的凭据，
+    // 卸载与 reconcile 都靠它把副本与用户手放的条目区分开。
+    let fingerprint = fingerprint_path(&target);
+    Ok(Materialized {
+        mode: actual,
+        fingerprint,
+    })
 }
 
-/// 移除某个技能的活动根条目，但仅当它仍是中央库拥有的链接时执行；
-/// 被替换过或用户重新创建的条目保持不动。
+/// 移除某个技能的活动根条目，但仅当它仍由本商店拥有时执行（链接指向中央库，
+/// 或内容与记录的指纹一致）；被改写过的、用户重新创建的条目保持不动。
 fn unmaterialize_entry(home: &Path, pkg_dir: &Path, entry: &SkillEntry) {
     let target = skill_target_path(home, entry);
     let source = resolved_source(&pkg_dir.join(&entry.path));
-    let owned = fs::symlink_metadata(&target)
-        .ok()
-        .filter(|m| m.file_type().is_symlink())
-        .and_then(|_| fs::read_link(&target).ok())
-        .map(|link| link == source)
-        .unwrap_or(false);
-    if owned {
+    if entry_is_owned(&target, &source, entry) {
         remove_target(&target);
     }
 }
@@ -1223,13 +1433,16 @@ fn install_into(
     let fetched = fetch_into_store(home, &spec, on_progress)?;
     item.installed_version = fetched.version;
     for skill in &fetched.skills {
-        let entry = SkillEntry {
+        let mut entry = SkillEntry {
             name: skill.name.clone(),
             description: skill.description.clone(),
             path: skill.rel.clone(),
             enabled: true,
+            materialized_sha256: None,
         };
-        item.actual_mode = ensure_entry(home, &fetched.dir, &item.mode, &entry, false)?;
+        let outcome = ensure_entry(home, &fetched.dir, &item.mode, &entry, false)?;
+        item.actual_mode = outcome.mode;
+        entry.materialized_sha256 = outcome.fingerprint;
         item.skills.push(entry);
     }
     upsert_item_unlocked(home, item.clone())?;
@@ -1267,17 +1480,19 @@ fn update_into(
     updated.skills = fetched
         .skills
         .iter()
-        .map(|s| SkillEntry {
-            name: s.name.clone(),
-            description: s.description.clone(),
-            path: s.rel.clone(),
-            // 保留的技能在更新后保持之前的启用状态；全新添加的技能默认启用。
-            enabled: previous
-                .skills
-                .iter()
-                .find(|e| e.name == s.name)
-                .map(|e| e.enabled)
-                .unwrap_or(true),
+        .map(|s| {
+            let old = previous.skills.iter().find(|e| e.name == s.name);
+            SkillEntry {
+                name: s.name.clone(),
+                description: s.description.clone(),
+                path: s.rel.clone(),
+                // 保留的技能在更新后保持之前的启用状态；全新添加的技能默认启用。
+                enabled: old.map(|e| e.enabled).unwrap_or(true),
+                // 保留上一次的指纹：它是"这个条目曾由本商店落地"的证据，
+                // 在重新物化之前必须继续有效，否则 copy 模式的旧副本会在
+                // 刷新路径上被误判成外来条目。
+                materialized_sha256: old.and_then(|e| e.materialized_sha256.clone()),
+            }
         })
         .collect();
     updated.updated_at = now_epoch_secs();
@@ -1296,7 +1511,10 @@ fn update_into(
         unmaterialize_entry(home, &fetched.dir, old);
         on_progress(&format!("上游已移除技能 {}，已从工作台摘除", old.name));
     }
-    for entry in &updated.skills {
+    // 用索引遍历：重新物化之后要把新指纹写回同一个 entry，而"读 entry"
+    // 与"改 updated.skills"不能同时借用。
+    for index in 0..updated.skills.len() {
+        let entry = updated.skills[index].clone();
         let old = previous.skills.iter().find(|e| e.name == entry.name);
         let moved = old.map(|o| o.path != entry.path).unwrap_or(false);
         if !entry.enabled {
@@ -1309,9 +1527,11 @@ fn update_into(
         let needs_refresh = old.is_none()
             || moved
             || updated.mode == "copy"
-            || !skill_target_path(home, entry).exists();
+            || !skill_target_path(home, &entry).exists();
         if needs_refresh {
-            updated.actual_mode = ensure_entry(home, &fetched.dir, &updated.mode, entry, true)?;
+            let outcome = ensure_entry(home, &fetched.dir, &updated.mode, &entry, true)?;
+            updated.actual_mode = outcome.mode;
+            updated.skills[index].materialized_sha256 = outcome.fingerprint;
         }
     }
     upsert_item_unlocked(home, updated.clone())?;
@@ -1367,6 +1587,7 @@ fn set_enabled_into(
     let mut item =
         store_item(home, id).ok_or_else(|| AppError::Skill("技能包不在中央库中".into()))?;
     let pkg_dir = store_pkg_dir(home, id);
+    let mode = item.mode.clone();
     let entry = item
         .skills
         .iter_mut()
@@ -1376,8 +1597,11 @@ fn set_enabled_into(
         return Ok(());
     }
     if enabled {
-        // 在链接之前刷新 path/description 的缓存副本。
-        ensure_entry(home, &pkg_dir, &item.mode, entry, false)?;
+        // 在链接之前刷新 path/description 的缓存副本；重新落地后指纹要
+        // 跟着更新，否则停用时会因为指纹对不上而删不掉新副本。
+        let outcome = ensure_entry(home, &pkg_dir, &mode, entry, false)?;
+        entry.materialized_sha256 = outcome.fingerprint;
+        item.actual_mode = outcome.mode;
     } else {
         unmaterialize_entry(home, &pkg_dir, entry);
     }
@@ -1396,7 +1620,17 @@ pub fn status() -> SkillStatus {
 }
 
 fn status_for_home(home: &Path) -> SkillStatus {
-    let store = load_store(home);
+    let mut integrity_warning: Option<String> = None;
+    let store = match crate::process::read_state_file(&store_file(home)) {
+        crate::process::StateRead::Loaded(store) => store,
+        crate::process::StateRead::Missing => SkillStore::default(),
+        crate::process::StateRead::Corrupt { reason } => {
+            integrity_warning = Some(format!(
+                "技能清单损坏，已安装技能的记录暂时读不出来（{reason}）。请修复或删除该文件后重试；在修复之前不会清理或改写技能链接"
+            ));
+            SkillStore::default()
+        }
+    };
     let root = skills_root(home);
     let mut rows = Vec::new();
     let mut updates = 0;
@@ -1448,7 +1682,8 @@ fn status_for_home(home: &Path) -> SkillStatus {
         skills_root: root.display().to_string(),
         updates,
         last_checked_at: store.last_checked_at,
-        warning: store.warning,
+        // 清单完整性优先于流程性警告：前者解释了为什么列表是空的。
+        warning: integrity_warning.or(store.warning),
     }
 }
 
@@ -1501,7 +1736,7 @@ fn check_updates_for_home(home: &Path) -> Result<Vec<SkillUpdateInfo>, AppError>
     }
 
     let _store_guard = lock_store();
-    let mut store = load_store(home);
+    let mut store = load_store_checked(home)?;
     for (id, installed_version, latest) in probes {
         if let Some(current) = store.items.iter_mut().find(|item| item.id == id) {
             if current.installed_version == installed_version {
@@ -1509,9 +1744,21 @@ fn check_updates_for_home(home: &Path) -> Result<Vec<SkillUpdateInfo>, AppError>
             }
         }
     }
-    store.last_checked_at = Some(now_epoch_secs());
+    if should_advance_update_check(&out) {
+        store.last_checked_at = Some(now_epoch_secs());
+    }
     save_store_unlocked(home, &store)?;
     Ok(out)
+}
+
+/// 一次检查结束后是否应当推进 `last_checked_at`。
+///
+/// 全部来源都失败时**不能**推进：`last_checked_at` 是 15 分钟自动检查 TTL 的
+/// 依据，推进它等于把一次失败伪装成"刚查过"，用户点「检查更新」也要等冷却，
+/// 而界面上不会有任何解释。
+fn should_advance_update_check(results: &[SkillUpdateInfo]) -> bool {
+    // 没有已安装技能时确实"检查过了"（没有可查的东西）。
+    results.is_empty() || results.iter().any(|info| info.error.is_none())
 }
 
 // --- 修复 -----------------------------------------------------------------
@@ -1535,36 +1782,62 @@ pub fn reconcile() {
 fn reconcile_home(home: &Path) {
     recover_staging(home);
 
-    let store = load_store(home);
+    // 清扫路径：清单读不出来时必须整体退出，绝不能当成"没有任何已装技能"——
+    // 那会把活动根里所有指向中央库的条目当成孤儿链接删掉，运行中的内核立刻
+    // 丢掉全部技能，而 store.json 随后还会被空清单覆盖。
+    let Ok(mut store) = load_store_checked(home) else {
+        return;
+    };
     let root = skills_root(home);
     if fs::create_dir_all(&root).is_err() {
         return;
     }
 
     let mut warning = store.warning.clone();
+    let mut changed = false;
     let mut owned_targets: std::collections::HashSet<PathBuf> = Default::default();
-    for item in &store.items {
-        let pkg_dir = store_pkg_dir(home, &item.id);
-        for entry in &item.skills {
-            let target = skill_target_path(home, entry);
+    // 用索引遍历：修复路径要把刷新后的指纹写回同一个 entry。
+    for item_index in 0..store.items.len() {
+        let item_id = store.items[item_index].id.clone();
+        let mode = store.items[item_index].mode.clone();
+        let pkg_dir = store_pkg_dir(home, &item_id);
+        for entry_index in 0..store.items[item_index].skills.len() {
+            let entry = store.items[item_index].skills[entry_index].clone();
+            let target = skill_target_path(home, &entry);
             owned_targets.insert(target.clone());
-            let healthy = fs::symlink_metadata(&target)
-                .ok()
-                .filter(|m| m.file_type().is_symlink())
-                .and_then(|_| fs::read_link(&target).ok())
-                .map(|link| link == resolved_source(&pkg_dir.join(&entry.path)))
-                .unwrap_or(false);
+            let source = resolved_source(&pkg_dir.join(&entry.path));
+            let healthy = entry_is_owned(&target, &source, &entry);
             if entry.enabled {
-                if !healthy && pkg_dir.exists() {
-                    match ensure_entry(home, &pkg_dir, &item.mode, entry, true) {
-                        Ok(_) => warning = None,
-                        Err(e) => warning = Some(e.to_string()),
+                if healthy {
+                    // 迁移：修复之前落地的 copy 条目没有指纹。补记一次之后，
+                    // 它们才能被正常停用/卸载——这是"升级前用 copy 模式装过
+                    // 技能"的用户唯一不需要手动清理的出路。
+                    if entry.materialized_sha256.is_none() {
+                        if let Some(fingerprint) = fingerprint_path(&target) {
+                            store.items[item_index].skills[entry_index].materialized_sha256 =
+                                Some(fingerprint);
+                            changed = true;
+                        }
                     }
+                    continue;
+                }
+                if !pkg_dir.exists() {
+                    continue;
+                }
+                match ensure_entry(home, &pkg_dir, &mode, &entry, true) {
+                    Ok(outcome) => {
+                        store.items[item_index].actual_mode = outcome.mode;
+                        store.items[item_index].skills[entry_index].materialized_sha256 =
+                            outcome.fingerprint;
+                        changed = true;
+                        warning = None;
+                    }
+                    Err(e) => warning = Some(e.to_string()),
                 }
             } else if !healthy {
                 // 停用的技能必须保持缺席；旧布局遗留的条目会被清掉。
                 // 外来内容保持不动。
-                unmaterialize_entry(home, &pkg_dir, entry);
+                unmaterialize_entry(home, &pkg_dir, &entry);
             }
         }
     }
@@ -1576,37 +1849,52 @@ fn reconcile_home(home: &Path) {
         let store_canon = store_dir(home)
             .canonicalize()
             .unwrap_or_else(|_| store_dir(home));
+        // 中央库仍记录着的指纹：命中说明该条目是本商店的 copy 落地，
+        // 只是对应的技能已被上游移除或停用，可以安全回收。
+        let known_fingerprints: std::collections::HashSet<String> = store
+            .items
+            .iter()
+            .flat_map(|item| item.skills.iter())
+            .filter_map(|entry| entry.materialized_sha256.clone())
+            .collect();
         for entry in entries.flatten() {
             let path = entry.path();
             if owned_targets.contains(&path) {
                 continue;
             }
-            let orphan = fs::symlink_metadata(&path)
-                .ok()
-                .filter(|m| m.file_type().is_symlink())
-                .and_then(|_| fs::read_link(&path).ok())
-                .map(|link| {
-                    let target = if link.is_absolute() {
-                        link
-                    } else {
-                        root.join(link)
-                    };
-                    target
-                        .canonicalize()
-                        .map(|c| c.starts_with(&store_canon))
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false);
-            if orphan {
-                remove_link(&path);
+            let metadata = fs::symlink_metadata(&path).ok();
+            let is_link = metadata
+                .as_ref()
+                .is_some_and(|m| m.file_type().is_symlink());
+            let is_link_into_store = is_link
+                && fs::read_link(&path)
+                    .ok()
+                    .map(|link| {
+                        let target = if link.is_absolute() {
+                            link
+                        } else {
+                            root.join(link)
+                        };
+                        target
+                            .canonicalize()
+                            .map(|c| c.starts_with(&store_canon))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+            // 真实目录/文件形态的孤儿（copy 落地遗留）只能靠内容指纹认领；
+            // 指纹不在中央库记录里的条目一律不动——那可能是用户自己放进去的。
+            let is_copy_orphan = !is_link
+                && fingerprint_path(&path)
+                    .is_some_and(|fingerprint| known_fingerprints.contains(&fingerprint));
+            if is_link_into_store || is_copy_orphan {
+                remove_target(&path);
             }
         }
     }
 
-    if warning != store.warning {
-        let mut next = store;
-        next.warning = warning;
-        let _ = save_store_unlocked(home, &next);
+    if warning != store.warning || changed {
+        store.warning = warning;
+        let _ = save_store_unlocked(home, &store);
     }
 }
 
@@ -1869,6 +2157,110 @@ mod tests {
         assert!(status_for_home(&home.root()).rows.is_empty());
     }
 
+    /// copy 模式落地的技能必须能够被正常停用与卸载。
+    ///
+    /// copy 不是罕见路径：Windows 上未开启「开发者模式」的普通用户拿不到
+    /// 符号链接权限，link 必然回退成 copy。修复前所有权判定只认"目标是指向
+    /// 中央库的符号链接"，于是真实副本永远不被认领——卸载静默变成空操作，
+    /// 技能继续留在内核的发现根里被加载，而 store.json 记录与中央库目录已经
+    /// 删掉，壳再也管不到它。
+    #[test]
+    fn copy_mode_entries_can_be_disabled_and_uninstalled() {
+        let home = TestHome::new();
+        let src = home.root().join("copy-pack");
+        write_bundle(&src, "alpha", "copy-alpha", "first");
+        write_bundle(&src, "beta", "copy-beta", "second");
+
+        let item = install_into(&home.root(), &src.to_string_lossy(), "copy", &mut |_| {})
+            .expect("copy install succeeds");
+        assert_eq!(item.skills.len(), 2);
+        assert_eq!(item.actual_mode, "copy");
+
+        let alpha = skills_root(&home.root()).join("copy-alpha");
+        let beta = skills_root(&home.root()).join("copy-beta");
+        assert!(alpha.is_dir());
+        assert!(
+            !fs::symlink_metadata(&alpha)
+                .expect("copy target metadata")
+                .file_type()
+                .is_symlink(),
+            "copy 模式应当落地真实副本"
+        );
+        // 每个条目都要记录指纹——这是它之后能被认领的唯一凭据。
+        assert!(
+            item.skills.iter().all(|e| e.materialized_sha256.is_some()),
+            "copy 落地必须记录内容指纹"
+        );
+
+        set_enabled_into(&home.root(), &item.id, "copy-beta", false, &mut |_| {}).unwrap();
+        assert!(!beta.exists(), "停用必须真的摘掉副本");
+
+        set_enabled_into(&home.root(), &item.id, "copy-beta", true, &mut |_| {}).unwrap();
+        assert!(beta.exists());
+
+        uninstall_into(&home.root(), &item.id, &mut |_| {}).unwrap();
+        assert!(!alpha.exists(), "copy 模式的条目必须在卸载时被删除");
+        assert!(!beta.exists(), "copy 模式的条目必须在卸载时被删除");
+    }
+
+    /// 内容被改写过的副本不再属于本商店，卸载时必须留在原处。
+    ///
+    /// 指纹判定不能退化成"同名即认领"：用户手工改过的技能是自己的东西。
+    #[test]
+    fn modified_copy_entry_survives_uninstall() {
+        let home = TestHome::new();
+        let src = home.root().join("modify-pack");
+        write_bundle(&src, "alpha", "keep-alpha", "first");
+        let item = install_into(&home.root(), &src.to_string_lossy(), "copy", &mut |_| {})
+            .expect("copy install succeeds");
+        let target = skills_root(&home.root()).join("keep-alpha");
+        fs::write(
+            target.join("SKILL.md"),
+            "---\nname: keep-alpha\ndescription: hand edited\n---\n",
+        )
+        .unwrap();
+
+        uninstall_into(&home.root(), &item.id, &mut |_| {}).unwrap();
+        assert!(target.exists(), "被改写过的条目不应被当作本商店的副本删除");
+    }
+
+    /// 升级迁移：修复之前落地的 copy 条目没有指纹，`reconcile` 必须为它们
+    /// 补记一次，否则这批用户永远无法卸载这些技能。
+    #[test]
+    fn reconcile_backfills_fingerprints_for_legacy_copy_entries() {
+        let home = TestHome::new();
+        let src = home.root().join("legacy-pack");
+        write_bundle(&src, "alpha", "legacy-alpha", "first");
+        let item = install_into(&home.root(), &src.to_string_lossy(), "copy", &mut |_| {})
+            .expect("copy install succeeds");
+
+        // 模拟修复前写下的 store.json：条目存在，但没有指纹字段。
+        let mut store = load_store(&home.root());
+        for stored in &mut store.items {
+            for entry in &mut stored.skills {
+                entry.materialized_sha256 = None;
+            }
+        }
+        save_store_unlocked(&home.root(), &store).expect("write legacy store");
+
+        reconcile_home(&home.root());
+
+        let reconciled = load_store(&home.root());
+        assert!(
+            reconciled.items[0]
+                .skills
+                .iter()
+                .all(|e| e.materialized_sha256.is_some()),
+            "reconcile 必须为历史 copy 条目补记指纹"
+        );
+
+        uninstall_into(&home.root(), &item.id, &mut |_| {}).unwrap();
+        assert!(
+            !skills_root(&home.root()).join("legacy-alpha").exists(),
+            "补记指纹之后，历史 copy 条目必须可以被卸载"
+        );
+    }
+
     #[test]
     fn install_rejects_conflicting_existing_entry() {
         let home = TestHome::new();
@@ -2019,5 +2411,48 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "humanizer");
         assert_eq!(found[0].rel, "SKILL.md");
+    }
+
+    /// 清单损坏时不得清扫活动根：那会让运行中的内核立刻丢掉全部技能。
+    #[test]
+    fn corrupt_store_does_not_sweep_skill_links() {
+        let home = TestHome::new();
+        let src = home.root().join("pack");
+        write_bundle(&src, "one", "keep-me", "r");
+        install_into(&home.root(), &src.to_string_lossy(), "link", &mut |_| {}).unwrap();
+        let target = skills_root(&home.root()).join("keep-me");
+        assert!(target.exists());
+
+        let damaged = "{ broken json";
+        fs::write(store_file(&home.root()), damaged).unwrap();
+        reconcile_home(&home.root());
+
+        assert!(target.exists(), "清单损坏时不得清扫活动根里的技能链接");
+        assert_eq!(
+            fs::read_to_string(store_file(&home.root())).unwrap(),
+            damaged,
+            "损坏的原文件不得被覆盖"
+        );
+    }
+
+    #[test]
+    fn update_check_only_advances_when_something_succeeded() {
+        let info = |error: Option<&str>| SkillUpdateInfo {
+            id: String::from("x"),
+            latest: None,
+            error: error.map(str::to_string),
+        };
+        // 没有已装技能：确实检查过了。
+        assert!(should_advance_update_check(&[]));
+        // 至少一个来源成功。
+        assert!(should_advance_update_check(&[
+            info(Some("超时")),
+            info(None)
+        ]));
+        // 全部失败：不能推进，否则 15 分钟内自动检查静默停摆。
+        assert!(!should_advance_update_check(&[
+            info(Some("超时")),
+            info(Some("DNS 失败"))
+        ]));
     }
 }

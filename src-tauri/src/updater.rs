@@ -191,7 +191,18 @@ fn explain_updater_error(e: UpdaterError) -> String {
 pub async fn check(app: &AppHandle) -> Result<ShellUpdateInfo, AppError> {
     let current = app.package_info().version.to_string();
     let update = match app
-        .updater()
+        .updater_builder()
+        // 插件默认**不设任何超时**：认证门户、只完成 TCP 握手却不回包的企业代理、
+        // 卡死的 CDN 连接都会让 check 永不返回。而 UI 侧 `withExclusiveLoading`
+        // 会让 globalBusy 长期为真——几乎所有 IO 按钮被禁用且没有取消入口，用户
+        // 只能退出应用，更新却根本没装上。read_timeout 约束的是"两次读取之间的
+        // 间隔"，因此对慢速但持续传输的连接是安全的。
+        .configure_client(|builder| {
+            builder
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .read_timeout(std::time::Duration::from_secs(30))
+        })
+        .build()
         .map_err(|e| AppError::Update(format!("初始化失败：{e}")))?
         .check()
         .await
@@ -243,7 +254,15 @@ pub async fn install(
     #[cfg(all(windows, not(debug_assertions)))]
     let current_version = app.package_info().version.to_string();
     let update = app
-        .updater()
+        .updater_builder()
+        // 与 check 同样的理由：不设超时会让"下载安装"永远挂住。下载路径的读取
+        // 间隔放宽到 60 秒，避免慢速网络下大文件传输被误判为超时。
+        .configure_client(|builder| {
+            builder
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .read_timeout(std::time::Duration::from_secs(60))
+        })
+        .build()
         .map_err(|e| AppError::Update(format!("初始化失败：{e}")))?
         .check()
         .await
@@ -279,8 +298,13 @@ pub async fn install(
     #[cfg(any(not(windows), debug_assertions))]
     let _ = data_dir;
 
-    update
-        .install(bytes)
+    // `Update::install` 是同步实现（把安装包落盘，再派生安装器或替换 .app），
+    // 在 async 上下文里直接调用会阻塞一个 tokio worker 线程——Windows 上还要
+    // 等 NSIS 起来，可能几十秒。交给 blocking 线程池，并在它返回之后再重启。
+    let installer = update.clone();
+    tauri::async_runtime::spawn_blocking(move || installer.install(bytes))
+        .await
+        .map_err(|e| AppError::Update(format!("安装线程异常结束：{e}")))?
         .map_err(|e| AppError::Update(format!("安装失败：{e}")))?;
     app.restart();
 }

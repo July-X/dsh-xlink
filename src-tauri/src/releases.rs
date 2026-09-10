@@ -39,6 +39,75 @@ fn http_agent() -> &'static ureq::Agent {
     })
 }
 
+/// 校验一个已下载文件的 npm SRI 摘要（`sha512-<base64>` / `sha256-<base64>`）。
+///
+/// 外壳自己下载的 tarball 必须校验一次：默认 registry 是第三方镜像，packument
+/// 与 tarball 同源，镜像可以在元数据保持一致的前提下替换 tarball 内容，而解包
+/// 之后 pnpm 会执行包里的 `prepare` 生命周期脚本——那等于执行未经验证的下载物。
+/// `integrity` 缺失（老 packument 只给 sha1 的 `shasum`）时返回 `Ok(None)`，
+/// 由调用方决定如何提示。
+pub fn verify_download_integrity(
+    path: &Path,
+    integrity: Option<&str>,
+) -> Result<Option<()>, String> {
+    use sha2::{Digest, Sha256, Sha512};
+
+    let Some(integrity) = integrity.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let Some((algorithm, encoded)) = integrity.split_once('-') else {
+        return Err(format!(
+            "registry 返回的 integrity 形态无法识别：{integrity}"
+        ));
+    };
+    let expected = decode_base64(encoded.trim())
+        .ok_or_else(|| format!("registry 返回的 integrity 不是合法 base64：{integrity}"))?;
+    let bytes = fs::read(path).map_err(|e| format!("无法读取 {}：{e}", path.display()))?;
+    let actual = match algorithm {
+        "sha512" => Sha512::digest(&bytes).to_vec(),
+        "sha256" => Sha256::digest(&bytes).to_vec(),
+        other => {
+            return Err(format!(
+                "registry 使用了不支持的 integrity 算法 {other}，拒绝安装"
+            ))
+        }
+    };
+    if actual != expected {
+        return Err(format!(
+            "下载内容与 registry 声明的 integrity 不符（算法 {algorithm}）：文件可能被镜像替换或传输损坏"
+        ));
+    }
+    Ok(Some(()))
+}
+
+/// 解码标准 base64（SRI 使用的字符集，含 `+/` 与 `=` 填充）。
+fn decode_base64(input: &str) -> Option<Vec<u8>> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut lookup = [255u8; 256];
+    for (index, byte) in TABLE.iter().enumerate() {
+        lookup[*byte as usize] = index as u8;
+    }
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for byte in input.bytes() {
+        if byte == b'=' {
+            break;
+        }
+        let value = lookup[byte as usize];
+        if value == 255 {
+            return None;
+        }
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 /// GET `url` 并把 body 作为文本返回。桌面端每次外发请求都带上桌面
 /// User-Agent，并对响应体大小做了上限。
 pub(crate) fn http_get_string(url: &str, accept: Option<&str>) -> Result<String, String> {
@@ -137,6 +206,19 @@ pub fn version_from_tag(tag: &str) -> Option<String> {
 
 fn release_from_tag(tag: String, prerelease: bool) -> Option<ReleaseInfo> {
     let version = version_from_tag(&tag)?;
+    // `prerelease` 由调用方传入：GitHub REST 会带真实的 prerelease 标志，而
+    // Atom 兜底路径只能从 tag 名推断。两条路径都必须叠加上"版本号里带 `-`"
+    // 这一条——否则 Atom 回退时 `0.1.2-rc.19` 会被当成稳定版：列表不打预发布
+    // 标签，首次运行引导的「安装最新版本」还会优先选中它。
+    let prerelease = prerelease || version.contains('-');
+    // 版本号随后会被拼进 `kernels/<version>` 路径与 stub package.json，因此
+    // 在这里（GitHub API 与 Atom 两条来源的共同出口）就过滤掉非法形态。
+    // git tag 允许 `/`，历史上 GitHub 回退路径会把 `dsh-v1.0/hotfix` 变成
+    // `1.0/hotfix` 并在 kernels/ 下建出嵌套目录。
+    if !crate::version::is_valid_kernel_version(&version) {
+        eprintln!("dsh-xlink: 跳过形态非法的内核版本号：{version:?}");
+        return None;
+    }
     Some(ReleaseInfo {
         tag: tag.clone(),
         version,
@@ -206,10 +288,9 @@ fn fetch_npm() -> Result<Vec<ReleaseInfo>, String> {
         .filter(|(version, meta)| {
             // npm 有时会发布占位或被 yank 的条目；跳过它们，避免更新菜单
             // 推荐不可用的版本。
-            !version.is_empty()
-                && meta.deprecated.is_none()
-                && !version.contains(' ')
-                && !version.contains('/')
+            // 版本号会变成目录名与 stub JSON 的一部分：默认 registry 是第三方
+            // 镜像，镜像被投毒时一个形状怪异的版本键就能越界写盘或注入 stub 字段。
+            crate::version::is_valid_kernel_version(version) && meta.deprecated.is_none()
         })
         .map(|(version, meta)| {
             let tag = format!("{TAG_PREFIX}{version}");
@@ -356,5 +437,78 @@ pub fn list_releases() -> Result<ReleaseList, AppError> {
                 ))),
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Atom 兜底路径只能从 tag 名推断预发布状态：版本号里出现 `-` 就必须标成
+    /// 预发布，否则 `0.1.2-rc.19` 会被当成稳定版——列表不打预发布标签，首次
+    /// 运行引导的「安装最新版本」还会优先选中它。
+    #[test]
+    fn atom_fallback_marks_dashed_versions_as_prerelease() {
+        let stable = release_from_tag("dsh-v0.1.2".to_string(), false).expect("stable tag");
+        assert!(!stable.prerelease);
+        assert_eq!(stable.version, "0.1.2");
+
+        let pre = release_from_tag("dsh-v0.1.2-rc.19".to_string(), false).expect("prerelease tag");
+        assert!(pre.prerelease, "带 `-` 的版本号必须是预发布");
+
+        // REST 路径已经带真实标志时保持原样。
+        let flagged = release_from_tag("dsh-v0.1.2".to_string(), true).expect("flagged tag");
+        assert!(flagged.prerelease);
+    }
+
+    /// SRI 校验必须真的比对内容。
+    ///
+    /// 外壳自己下载的 tarball 走的是与 packument 同一个第三方镜像：镜像可以在
+    /// 元数据保持一致的前提下替换内容，而解包后 pnpm 会执行包里的 `prepare`
+    /// 脚本。空文件的 sha512 是一个知名向量，用它同时验证 base64 解码与摘要比对。
+    #[test]
+    fn download_integrity_compares_content() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-sri-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).expect("create dir");
+        let empty = root.join("empty.tgz");
+        std::fs::write(&empty, b"").expect("write file");
+
+        assert!(matches!(
+            verify_download_integrity(
+                &empty,
+                Some("sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg==")
+            ),
+            Ok(Some(()))
+        ));
+
+        let error =
+            verify_download_integrity(&empty, Some("sha512-AAAA")).expect_err("摘要不符必须被拒绝");
+        assert!(error.contains("integrity"), "{error}");
+
+        // 老 packument 只有 sha1 的 shasum、没有 integrity：跳过而不是误判。
+        assert!(matches!(verify_download_integrity(&empty, None), Ok(None)));
+        assert!(matches!(
+            verify_download_integrity(&empty, Some("  ")),
+            Ok(None)
+        ));
+
+        // 不支持的算法必须显式拒绝，而不是放过。
+        assert!(verify_download_integrity(&empty, Some("md5-AAAA")).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 形态非法的版本号在解析阶段就被丢掉（见 `version::is_valid_kernel_version`）。
+    #[test]
+    fn release_from_tag_rejects_non_semver_shapes() {
+        assert!(release_from_tag("dsh-v1.0/hotfix".to_string(), false).is_none());
+        assert!(release_from_tag("dsh-v..".to_string(), false).is_none());
     }
 }
