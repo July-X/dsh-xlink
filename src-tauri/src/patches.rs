@@ -413,41 +413,42 @@ fn check_target_path(rel: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 拒绝通过符号链接中间目录穿透内核目录：检查目标路径从父目录到内核根
-/// （含）之间每个已存在的祖先都必须是真实目录。只检查内核根以内——macOS
-/// 的 `/var`、`/tmp` 等系统路径本身就是符号链接，往上再查只会误伤。
+/// 拒绝让补丁写到内核目录之外：判据是**真实路径仍然落在内核根之内**，而不是
+/// "路径里不能出现符号链接"。
+///
+/// 旧实现见链接即拒，在 pnpm 的 isolated linker 布局下等于永远无法应用补丁：
+/// `node_modules/<pkg>` 本身就是指向
+/// `node_modules/.pnpm/<pkg>@<ver>/node_modules/<pkg>` 的符号链接，目标明明还
+/// 在同一个内核目录里，却会被一刀切拒绝，而且文案没给出任何下一步（P2-15）。
+///
+/// 现在允许指向内核内部的链接，仍然挡住任何指到内核之外的（例如
+/// `node_modules/<pkg> -> /etc`）。目标本身可能还不存在（copy 新增文件），
+/// 因此从最深的已存在祖先开始解析。
 fn ensure_no_symlink_ancestors(target: &Path, kernel_root: &Path) -> Result<(), AppError> {
     let mut probe = target.parent();
-    while let Some(dir) = probe {
-        match fs::symlink_metadata(dir) {
-            Ok(meta) => {
-                if meta.file_type().is_symlink() {
-                    return Err(AppError::Patch(format!(
-                        "目标路径 {} 的祖先 {} 是符号链接，为安全起见拒绝写入",
-                        target.display(),
-                        dir.display()
-                    )));
-                }
-                if !meta.is_dir() {
-                    return Err(AppError::Patch(format!(
-                        "目标路径 {} 的祖先 {} 不是目录",
-                        target.display(),
-                        dir.display()
-                    )));
-                }
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => {
-                return Err(AppError::Patch(format!(
-                    "无法检查目标路径 {}：{e}",
-                    target.display()
-                )))
-            }
+    let existing = loop {
+        match probe {
+            Some(dir) if dir.exists() => break dir.to_path_buf(),
+            Some(dir) => probe = dir.parent(),
+            None => return Ok(()),
         }
-        if dir == kernel_root {
-            break;
-        }
-        probe = dir.parent();
+    };
+    let real_root = kernel_root
+        .canonicalize()
+        .unwrap_or_else(|_| kernel_root.to_path_buf());
+    let real_existing = existing.canonicalize().map_err(|e| {
+        AppError::Patch(format!(
+            "无法解析 {} 的真实路径：{e}（请检查该目录是否存在且可访问）",
+            existing.display()
+        ))
+    })?;
+    if !real_existing.starts_with(&real_root) {
+        return Err(AppError::Patch(format!(
+            "拒绝写入 {}：它经由 {} 解析到内核目录之外（{}）。请重新安装该内核版本以恢复目录结构",
+            target.display(),
+            existing.display(),
+            real_existing.display()
+        )));
     }
     Ok(())
 }
@@ -696,7 +697,15 @@ pub fn apply(
     for file in &def.files {
         match plan_file(def, patch_dir, &kernel_root, file)? {
             Planned::Skip(note) => skip_notes.push(note),
-            Planned::Write(planned) => plan.push(planned),
+            Planned::Write(planned) => {
+                if planned.already_patched {
+                    skip_notes.push(format!(
+                        "{}：目标已是补丁后的内容，本次未重写；撤销时没有可恢复的原文件（需要还原请重新安装该内核版本）",
+                        planned.to
+                    ));
+                }
+                plan.push(planned);
+            }
         }
     }
     if plan.is_empty() && skip_notes.is_empty() {
@@ -932,10 +941,24 @@ fn commit_file(
     planned: &PlannedFile,
 ) -> Result<AppliedFile, AppError> {
     let target = kernel_root.join(&planned.to);
-    let original_sha256 = backup_target(data_dir, id, kernel_version, &planned.to)?;
-    if !planned.already_patched {
-        write_bytes_at(&target, &planned.payload)?;
+    // 目标在本次应用**之前**就已经是补丁后的内容（手工打过 / 上一次应用的
+    // 记录丢了）：绝不能给它做备份。备份下来的会是补丁内容本身，于是"撤销"
+    // 把补丁内容原样写回去、报告「已撤销」，而内核仍在跑补丁代码、记录却已
+    // 删除 —— 状态与磁盘彻底脱节（P2-9）。这里改为不写备份、不写文件，
+    // 并以 `had_original = true` 记录"应用前它已存在但没有可恢复的原文件"，
+    // 撤销时会走 `handle_missing_backup` 的「原文件备份已丢失」分支，如实
+    // 告诉用户需要重装内核版本。
+    if planned.already_patched {
+        return Ok(AppliedFile {
+            to: planned.to.clone(),
+            had_original: sha256_file(&target).ok().is_some(),
+            patched_sha256: planned.patched_sha256.clone(),
+            backup_rel: None,
+            original_sha256: None,
+        });
     }
+    let original_sha256 = backup_target(data_dir, id, kernel_version, &planned.to)?;
+    write_bytes_at(&target, &planned.payload)?;
     Ok(AppliedFile {
         to: planned.to.clone(),
         had_original: original_sha256.is_some(),
@@ -1099,7 +1122,21 @@ fn revert_one(
             }
         }
         None => {
-            // 无备份说明应用时目标不存在（纯新增文件）：校验后删除。
+            // 无备份有两种来源，必须区分：
+            // 1. 应用时目标不存在（纯新增文件）→ 校验后删除即还原；
+            // 2. 应用时目标**已经**是补丁后的内容（P2-9：手工打过 / 上次
+            //    记录丢失）→ 这个文件本来就是用户的，我们既没写过它、也没
+            //    有它的原文件，删掉它就是破坏。交给 `handle_missing_backup`
+            //    如实报告"没有可恢复的原文件"。
+            if file.had_original {
+                return handle_missing_backup(
+                    &target,
+                    kernel_root,
+                    file,
+                    target_sha.as_deref(),
+                    warnings,
+                );
+            }
             match target_sha {
                 Some(sha) if sha == file.patched_sha256 => {
                     fs::remove_file(&target).map_err(|e| {
@@ -1240,14 +1277,72 @@ fn disk_state(data_dir: &Path, record: &AppliedPatch) -> (String, Vec<String>) {
 /// 当前激活版本（可能为 None）。
 pub fn status(data_dir: &Path, patches: &[(PatchDef, PathBuf)]) -> PatchStatus {
     let active = kernel::read_active(data_dir);
-    let rows = patches
+    let mut rows: Vec<PatchRow> = patches
         .iter()
         .map(|(def, _)| row_for(data_dir, def, active.as_deref()))
         .collect();
+    rows.extend(orphan_record_rows(data_dir, patches, active.as_deref()));
     PatchStatus {
         patches: rows,
         warning: state_integrity_warning(data_dir),
     }
+}
+
+/// 为"定义已不在当前清单里、但记录仍存在"的补丁补一行。
+///
+/// 壳升级后不再携带某个补丁（或清单损坏被跳过）时，旧实现只遍历当前定义，
+/// 这些记录在设置页完全不可见 —— 而 `revert` 其实支持撤销它们，用户没有任何
+/// 入口，只能手改 `state.json`（P2-14）。
+fn orphan_record_rows(
+    data_dir: &Path,
+    patches: &[(PatchDef, PathBuf)],
+    active: Option<&str>,
+) -> Vec<PatchRow> {
+    let Some(version) = active else {
+        return Vec::new();
+    };
+    let state = read_state(data_dir);
+    state
+        .applied
+        .iter()
+        .filter(|record| record.kernel_version == version)
+        .filter(|record| !patches.iter().any(|(def, _)| def.id == record.id))
+        .map(|record| {
+            let (state_code, problems) = disk_state(data_dir, record);
+            let mut row = PatchRow {
+                id: record.id.clone(),
+                name: record.id.clone(),
+                version: record
+                    .patch_version
+                    .clone()
+                    .unwrap_or_else(|| "未知".to_string()),
+                kind: String::new(),
+                description: "该补丁的定义已不在当前版本的清单中，磁盘上仍保留应用记录".to_string(),
+                min_kernel_version: None,
+                max_kernel_version: None,
+                superseded_since_kernel_version: None,
+                superseded: false,
+                state: String::new(),
+                state_text: String::new(),
+                note: None,
+                applied_at: Some(record.applied_at.clone()),
+                enabled: true,
+            };
+            if state_code == "applied" {
+                row.state = "applied".into();
+                row.state_text = "已应用（定义已移除）".into();
+                row.note = Some("可以直接撤销；如需重新应用，请安装携带该补丁定义的壳版本".into());
+            } else {
+                row.state = "dirty".into();
+                row.state_text = "文件已被改动（定义已移除）".into();
+                row.note = Some(format!(
+                    "{}（请先撤销该记录再手动处理文件）",
+                    problems.join("；")
+                ));
+            }
+            row
+        })
+        .collect()
 }
 
 fn row_for(data_dir: &Path, def: &PatchDef, active: Option<&str>) -> PatchRow {
@@ -1366,7 +1461,7 @@ mod tests {
     use super::*;
 
     /// 构造一个迷你「资源目录」：两个补丁（copy / replace）加一个 shell 侧测试桩。
-    fn make_resource_root(root: &Path) -> PathBuf {
+    pub(super) fn make_resource_root(root: &Path) -> PathBuf {
         let res = root.join("resources").join("patches");
         // copy 模式补丁
         let copy_dir = res.join("hello-copy");
@@ -1450,7 +1545,7 @@ mod tests {
         res
     }
 
-    fn setup(data_dir: &Path, version: &str) {
+    pub(super) fn setup(data_dir: &Path, version: &str) {
         fs::create_dir_all(kernel::kernel_dir(data_dir, version)).unwrap();
         // 内核 stub package.json（与 kernel.rs 安装流程写出的形状一致）
         let stub = format!(
@@ -1510,7 +1605,10 @@ mod tests {
     }
 
     #[test]
-    fn copy_over_existing_identical_is_idempotent_and_revert_restores() {
+    fn copy_over_existing_identical_records_no_recoverable_original() {
+        // P2-9：目标已经是补丁后的内容时，旧实现把**补丁内容**当成"原文件"
+        // 备份下来，于是"撤销"会把补丁内容原样写回、报告「已撤销」，而内核
+        // 仍在跑补丁代码、记录已被删除 —— 状态与磁盘彻底脱节。
         let root = temp_root("idem");
         let data = root.join("data");
         setup(&data, "0.1.2");
@@ -1521,17 +1619,35 @@ mod tests {
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(&target, "module.exports = 42;\n").unwrap(); // 用户已有同名同内容文件
 
-        apply(&data, &patches, "hello-copy").unwrap();
+        let notes = apply(&data, &patches, "hello-copy").unwrap();
+        assert!(
+            notes.iter().any(|n| n.contains("没有可恢复的原文件")),
+            "应用时就该说明这次没有可恢复的原文件：{notes:?}"
+        );
         let state = read_state(&data);
         let record = find_applied(&state, "hello-copy", "0.1.2").unwrap();
-        assert!(record.files[0].had_original);
-        assert!(record.files[0].backup_rel.is_some());
+        assert!(record.files[0].had_original, "文件在应用前确实存在");
+        assert!(
+            record.files[0].backup_rel.is_none(),
+            "不得为已打过补丁的目标伪造备份"
+        );
+        assert!(record.files[0].original_sha256.is_none());
+        assert!(
+            !backups_root(&data).join("hello-copy").exists(),
+            "磁盘上也不该留下这份无意义的备份"
+        );
 
-        revert(&data, &patches, "hello-copy").unwrap();
-        // 原文件被还原（内容不变）
+        // 撤销必须如实拒绝：没有可恢复的原文件，不能假装"已撤销"。
+        let error = revert(&data, &patches, "hello-copy").unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains("原文件备份已丢失") || text.contains("无法自动还原"),
+            "应明确说明无原文件可恢复：{text}"
+        );
         assert_eq!(
             fs::read_to_string(&target).unwrap(),
-            "module.exports = 42;\n"
+            "module.exports = 42;\n",
+            "内容不应被改写"
         );
         fs::remove_dir_all(&root).unwrap();
     }
@@ -2487,6 +2603,99 @@ mod hardening_tests {
         let loaded = load_patches(&res).expect("扫描本身不该失败");
         assert_eq!(loaded.len(), 1, "正常的相对 from 必须能加载");
         assert_eq!(loaded[0].0.id, "ok");
+        fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod link_and_orphan_tests {
+    use super::tests::{make_resource_root, setup};
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    fn temp_root(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-xlink-patch-links-{}-{}-{}",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn pnpm_isolated_linker_layout_is_writable() {
+        // P2-15：pnpm 的 isolated linker 把 node_modules/<pkg> 做成指向
+        // node_modules/.pnpm/<pkg>@<ver>/node_modules/<pkg> 的**符号链接**。
+        // 旧实现见链接即拒 → 在这种布局下补丁永远无法应用。
+        let root = temp_root("pnpm");
+        let kernel_root = root.join("kernels").join("0.1.5");
+        let real_pkg = kernel_root
+            .join("node_modules")
+            .join(".pnpm")
+            .join("pkg@1.0.0")
+            .join("node_modules")
+            .join("pkg");
+        fs::create_dir_all(&real_pkg).unwrap();
+        let linked = kernel_root.join("node_modules").join("pkg");
+        symlink(&real_pkg, &linked).unwrap();
+        let target = linked.join("lib").join("index.js");
+
+        ensure_no_symlink_ancestors(&target, &kernel_root)
+            .expect("指向内核内部真实目录的链接必须被允许");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn links_escaping_the_kernel_root_are_still_rejected() {
+        // 收紧不能放过真正的逃逸：node_modules/<pkg> -> /tmp/outside。
+        let root = temp_root("escape");
+        let kernel_root = root.join("kernels").join("0.1.5");
+        let outside = root.join("outside");
+        fs::create_dir_all(&kernel_root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let linked = kernel_root.join("node_modules").join("pkg");
+        fs::create_dir_all(linked.parent().unwrap()).unwrap();
+        symlink(&outside, &linked).unwrap();
+
+        let error = ensure_no_symlink_ancestors(&linked.join("index.js"), &kernel_root)
+            .expect_err("指到内核之外的链接必须被拒绝");
+        let text = error.to_string();
+        assert!(text.contains("内核目录之外"), "错误要说明原因：{text}");
+        assert!(text.contains("重新安装"), "错误要给出下一步：{text}");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn removed_definition_with_live_record_is_still_listed() {
+        // P2-14：定义已不在清单里、记录仍在 → 必须在 status 里出现且可撤销。
+        let root = temp_root("orphan");
+        let data = root.join("data");
+        setup(&data, "0.1.2");
+        let res = make_resource_root(&root);
+        let patches = load_patches(&res).unwrap();
+        apply(&data, &patches, "hello-copy").unwrap();
+
+        // 模拟"壳升级后不再携带这个补丁"：清单为空。
+        let view = status(&data, &[]);
+        assert_eq!(view.patches.len(), 1, "孤儿记录必须出现在列表里");
+        let row = &view.patches[0];
+        assert_eq!(row.id, "hello-copy");
+        assert_eq!(row.state, "applied");
+        assert!(row.enabled, "必须允许撤销");
+        assert!(
+            row.state_text.contains("定义已移除"),
+            "状态文案要说明定义已移除：{}",
+            row.state_text
+        );
+
+        // 而且真的能撤销。
+        revert(&data, &patches, "hello-copy").expect("孤儿记录也必须可撤销");
+        assert!(read_state(&data).applied.is_empty());
         fs::remove_dir_all(&root).ok();
     }
 }

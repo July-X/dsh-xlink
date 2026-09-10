@@ -57,9 +57,10 @@
 | **P1（全部 29 条）** | | ✅ **已完成** | |
 | P2-10 / P2-11 / P2-16 / P2-22 | 补丁与安装的越界与承诺不一致 | ✅ 已修 | 见明细；共 6 条新测试 |
 | P2-12 / P2-19 | 坏清单/坏设置无声消失或回退 | ✅ 已修 | 补丁加载告警并入 `PatchStatus.warning`；设置损坏备份 + `settings_warning` 上报面板；新增 3 条测试 |
-| P2-2、P2-3、P2-9、P2-14、P2-15、P2-17、P2-18、P2-20、P2-21、P2-24、P2-27、P2-28、P2-30 ~ P2-44、P2-46 ~ P2-48、P2-51、P2-52 | | ⏳ 待修 | |
+| P2-9 / P2-14 / P2-15 | 撤销假成功、孤儿记录不可见、.pnpm 布局无法打补丁 | ✅ 已修 | 见明细；新增 4 条测试（含 1 条改写），三项反证通过 |
+| P2-2、P2-3、P2-17、P2-18、P2-20、P2-21、P2-24、P2-27、P2-28、P2-30 ~ P2-44、P2-46 ~ P2-48、P2-51、P2-52 | | ⏳ 待修 | |
 
-**当前基线**：`cargo test` 244 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 14 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
+**当前基线**：`cargo test` 247 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 14 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
 
 > 本文件同时是**问题清单**与**修复台账**：正文条目保留原始分析（含 `file:line`、触发场景、影响、建议），修复完成后在对应条目标题前加【已修】并在此表登记。
 
@@ -497,13 +498,13 @@
 
 | # | 位置 | 问题 | 建议 |
 | --- | --- | --- | --- |
-| P2-9 | `patches.rs:648-703`、`:850-861` | 目标已是补丁后内容时仍把它当"原文件"备份，撤销后文件内容不变却报告「已撤销」→ 壳声称已撤销、内核仍在跑补丁代码且无记录 | 无对应应用记录时不要备份，直接报错并给出下一步 |
+| 【已修】P2-9 | `patches.rs:648-703`、`:850-861` | 目标已是补丁后内容时仍把它当"原文件"备份，撤销后文件内容不变却报告「已撤销」→ 壳声称已撤销、内核仍在跑补丁代码且无记录 | 无对应应用记录时不要备份，直接报错并给出下一步 | ✅ 已修：目标已是补丁后内容时不再伪造备份（`commit_file` 直接返回 `had_original=true` + 无备份的记录），应用阶段就把"没有可恢复的原文件"写进注意事项；`revert_one` 的"无备份"分支改为先看 `had_original` —— 只有"应用前不存在"的纯新增文件才删除。**改写**了原本钉住旧行为的测试 `copy_over_existing_identical_records_no_recoverable_original`（旧断言要求存在假备份）。残留：rc.18 之前产生的假备份记录无法追溯识别（备份里就是补丁内容），会在下一批加"载荷哈希 == 记录原文件哈希"的识别告警
 | 【已修】P2-10 | `patches.rs:951-965` | `prune_empty_dirs` 注释写"只删到内核根为止"，实现既无 `kernel_root` 参数也无终止条件，会一路向上删空目录（含 `<data_dir>`） | 传入 `kernel_root` 并在该处停止；补单测 | ✅ 已修：`prune_empty_dirs` 接收 `kernel_root` 并在该处停止（同时拒绝根以外的路径），`handle_missing_backup` 透传根参数；新增 2 条测试（根内空目录被清、根本身与其父保留；根以外一个都不动）
 | 【已修】P2-11 | `patches.rs:620-637`、`:308-354` | 补丁源路径 `from` **完全没有**越界校验（`join("../../../../etc/passwd")` 可用，绝对路径会丢弃 `patch_dir`），与 `docs/patch-management.md:20` 的前提不符 | 对 `from` 复用 `check_target_path` | ✅ 已修：`validate_def` 对 `from` 复用 `check_target_path`，拒绝 `../` 越界与绝对路径；新增 2 条测试（`../../../../etc/passwd` 与 `/etc/passwd` 均被拒绝、正常相对路径仍可加载）
 | 【已修】P2-12 | `patches.rs:260-303` | 清单校验失败（缺 manifest / JSON 坏 / schemaVersion 不符）只 `eprintln` + `continue` → 该补丁在设置页直接消失，用户无法区分"本版本没带"与"清单坏了" | 经 `patch_status` 的 warning 暴露给 UI | ✅ 已修：`load_patches_with_warnings` 收集被跳过的清单/定义原因（缺 manifest、JSON 坏、schemaVersion 不符、定义非法），`patch_status` 把它们并入 `PatchStatus.warning`，设置页已有的告警条直接展示；`load_patches` 收为测试专用包装。坏掉的补丁不再无声消失
 | 【已修】P2-13 | `patches.rs:732-746` | `file.search.as_deref().unwrap_or("")`：`search` 为 null 时 `replace("", repl)` 会在每个字符间插入替换串，必然损坏目标 JS | `search` 缺失时直接返回错误 |
-| P2-14 | `patches.rs:997-1004` | `status` 只遍历当前清单定义 → 定义已被移除的历史补丁记录在 UI 中完全不可见（`revert` 其实支持） | status 额外渲染"定义已移除、仍可撤销"行 |
-| P2-15 | `patches.rs:379-413` | "内核根以内任何祖先是符号链接即拒绝写入"过严：`.pnpm` isolated linker 布局下补丁永远无法应用且文案无下一步 | 判据改为 canonicalize 后仍在 kernel_root 之内 |
+| 【已修】P2-14 | `patches.rs:997-1004` | `status` 只遍历当前清单定义 → 定义已被移除的历史补丁记录在 UI 中完全不可见（`revert` 其实支持） | status 额外渲染"定义已移除、仍可撤销"行 | ✅ 已修：`status` 追加 `orphan_record_rows` —— 定义已不在清单里但记录仍在当前激活内核上的补丁会显示为「已应用（定义已移除）」且可直接撤销；新增 1 条测试（清单置空后仍可见并可撤销）
+| 【已修】P2-15 | `patches.rs:379-413` | "内核根以内任何祖先是符号链接即拒绝写入"过严：`.pnpm` isolated linker 布局下补丁永远无法应用且文案无下一步 | 判据改为 canonicalize 后仍在 kernel_root 之内 | ✅ 已修：`ensure_no_symlink_ancestors` 的判据从"路径中不能有符号链接"改为"canonicalize 后的真实路径仍在（真实化的）内核根之内"——pnpm isolated linker 的 `node_modules/<pkg> -> .pnpm/<pkg>@<ver>/node_modules/<pkg>` 不再被一刀切拒绝，指到内核之外的链接仍然被拒且错误信息给出下一步。新增 2 条测试（各经反证）
 | 【已修】P2-16 | `node_install.rs:371-377` | SHA-256 校验失败时错误文案写「已删除无效文件，可重试」，但代码**没有**删除 tarball（对照解压失败分支 `:381-387` 确实删了） | 真的删除或改名 `.corrupt` | ✅ 已修：校验失败分支真的删除 tarball（此前只有解压失败分支删），与错误文案的承诺一致
 | P2-17 | `node_install.rs:382-403` | 临时目录名带 pid 只在同 pid 时清理（进程被杀留 ~200 MB）；下载产物 36-52 MB 装完不删；`fs::rename` 到已存在的版本目录在 Unix 报 `ENOTEMPTY` → 一旦 `tools/node/<ver>` 残缺就**永久无法重装**且无 UI 自救入口 | 启动时清理旧 `.node-tmp-*`；成功后删下载产物；失败信息给出「请删除 <path> 后重试」 |
 | P2-18 | `node_install.rs:26-36`、`:411-424`、`node.rs:50-59` | 产物平台按 `cfg!(windows)` 二选一（非 Windows 一律 `darwin-x64`），不看 `consts::OS/ARCH`；回滚时丢弃真实 stderr，把原因错写成「当前系统可能低于其最低版本要求」 | 用 `(OS, ARCH)` 映射产物名；保留并回传 stderr |
