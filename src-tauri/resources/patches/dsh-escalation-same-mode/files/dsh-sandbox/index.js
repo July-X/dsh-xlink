@@ -1,5 +1,6 @@
 import { Service } from "@deepseek-ai/cordis";
-import { HarnessError, assertNever } from "@deepseek-ai/dsh-llm";
+import { HarnessError } from "@deepseek-ai/dsh-llm";
+import { assertNever } from "@deepseek-ai/dsh-util-values";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 //#region lib/types/escalation.js

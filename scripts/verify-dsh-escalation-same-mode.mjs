@@ -21,17 +21,19 @@ import { spawnSync } from 'node:child_process';
 
 const DSH_HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh');
 const PATCH_ID = 'dsh-escalation-same-mode';
-const PATCH_VERSION = '1.0.0';
-const KERNEL_VERSION = '0.1.1-rc.2';
+const PATCH_VERSION = '1.1.0';
+const KERNEL_VERSION = '0.1.3-alpha.2';
 const TARGET = 'node_modules/@deepseek-ai/dsh-sandbox/lib/index.js';
 const PATCH_DIR = resolve('src-tauri/resources/patches/dsh-escalation-same-mode');
 const MANIFEST = join(PATCH_DIR, 'manifest.json');
 const PAYLOAD = join(PATCH_DIR, 'files/dsh-sandbox/index.js');
 // 与 manifest.expectSha256 严格一致：这是「原始 dist 文件」的 SHA，apply 必须以这个
-// 安全闸确认目标未被第三方工具改过。
-const ORIGINAL_SHA256 = '63ee2a10873a336162acd9a0d7da7f5f3dc59d072456a0b5271da277565e324f';
+// 安全闸确认目标未被第三方工具改过。v1.1.0 重新对齐官方 0.1.3-alpha.2 的 dist（0.1.1-rc.2
+// 时期为 63ee2a10…e324f；alpha.2 增加了 assertNever 拆分到 @deepseek-ai/dsh-util-values
+// 的无关重构，approveEscalation 仍未带同模式短路）。
+const ORIGINAL_SHA256 = '8994b3e497b0673eddd3640392de4671621aa8972846f4a66d0b1219decf3c03';
 // 与 PATCHED_SHA 一致：载荷本身的 SHA，apply 之后目标文件应等于这个。
-const PATCHED_SHA256 = 'dafc42d296d5757dbe0f626d2dbd79de7db444d3927833318f68afb831122c5e';
+const PATCHED_SHA256 = 'f741cf32e7918b243b423ac549e916f407db565637e6cfed7ca1baf0de7fba35';
 const SEARCH_MARKER = 'if (mode === effectiveMode) return mode;';
 
 const requireApplied = process.argv.includes('--require-applied');
@@ -142,19 +144,27 @@ async function behaviorCheck(source) {
     await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ type: 'module', main: 'index.js', exports: './index.js' }), 'utf8');
 
     // 载荷只需要 Service、HarnessError、assertNever；用最小桩固定行为测试的依赖契约。
+    // v1.1.0 起 assertNever 已从 @deepseek-ai/dsh-llm 拆分到 @deepseek-ai/dsh-util-values，
+    // 所以这里两个包都给独立 stub（覆盖官方 0.1.3-alpha.2 的实际 import 形态）。
     const dependencyRoot = join(tempRoot, 'node_modules', '@deepseek-ai');
     const cordisRoot = join(dependencyRoot, 'cordis');
     const llmRoot = join(dependencyRoot, 'dsh-llm');
+    const utilValuesRoot = join(dependencyRoot, 'dsh-util-values');
     await mkdir(cordisRoot, { recursive: true });
     await mkdir(llmRoot, { recursive: true });
+    await mkdir(utilValuesRoot, { recursive: true });
     await writeFile(join(cordisRoot, 'package.json'), JSON.stringify({ type: 'module', main: 'index.js', exports: './index.js' }), 'utf8');
     await writeFile(join(cordisRoot, 'index.js'), 'export class Service {}', 'utf8');
     await writeFile(join(llmRoot, 'package.json'), JSON.stringify({ type: 'module', main: 'index.js', exports: './index.js' }), 'utf8');
     const llmSource = [
       "export class HarnessError extends Error { constructor(message, code) { super(message); this.code = code; } }",
-      "export function assertNever(value, label) { throw new Error(String(label ?? 'Unexpected value') + ': ' + String(value)); }",
     ].join(String.fromCharCode(10));
     await writeFile(join(llmRoot, 'index.js'), llmSource, 'utf8');
+    await writeFile(join(utilValuesRoot, 'package.json'), JSON.stringify({ type: 'module', main: 'index.js', exports: './index.js' }), 'utf8');
+    const utilValuesSource = [
+      "export function assertNever(value, label) { throw new Error(String(label ?? 'Unexpected value') + ': ' + String(value)); }",
+    ].join(String.fromCharCode(10));
+    await writeFile(join(utilValuesRoot, 'index.js'), utilValuesSource, 'utf8');
     await writeFile(moduleFile, source, 'utf8');
     const moduleUrl = `${pathToFileURL(moduleFile).href}?dshEscalationSameMode=${Date.now()}`;
     const sandbox = await import(moduleUrl);
