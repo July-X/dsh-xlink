@@ -1,5 +1,11 @@
 # 为支持的桌面目标构建并发布 dsh-xlink 外壳。
 # 版本发布从独立项目的 main 分支构建。
+#
+# 所有 `uses:` 都固定到 40 位 commit SHA（后缀注释是它对应的版本）。
+# build job 会把 TAURI_SIGNING_PRIVATE_KEY 放进 `tauri build` 步骤的环境里，
+# 因此一个被投毒或被重指 tag 的第三方 action 足以读走更新签名私钥——那等于
+# 让攻击者可以为任意载荷签名，所有已安装用户都会通过验签。Dependabot 负责
+# 提出升级 PR（它会同时更新 SHA 与注释）。
 
 name: Desktop release (dsh-xlink)
 
@@ -12,8 +18,13 @@ on:
 permissions:
   contents: read
 
+# 固定的并发组：以 `github.ref` 分组会让 tag push（refs/tags/…）与手动
+# dispatch（refs/heads/main）落进**两个不同的组**，同一个版本因此可以并发跑
+# 两条完整流水线；后启动的那条会在 publish 的「Create or reuse release」步骤
+# 上撞车失败——白烧 20~30 分钟的双平台构建（rc.7 与 rc.13 都真实发生过）。
+# 发布频率很低，串行化的代价可以忽略。
 concurrency:
-  group: desktop-release-${{ github.ref }}
+  group: desktop-release
   cancel-in-progress: false
 
 jobs:
@@ -24,11 +35,11 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
 
@@ -68,6 +79,66 @@ jobs:
             exit 1
           fi
 
+          # 更新通道单调性：`releases/latest` 取的是「最近创建的非 draft 非
+          # prerelease release」，而不是 semver 最大值。给旧线发一个 hotfix 会让
+          # 端点后退，而 Tauri 只在 `release.version > current_version` 时提示
+          # 更新——已经装上新版本的用户从此静默收不到任何更新提示，且没有任何
+          # 步骤能发现。所以发布前就断言新版本严格大于线上最新版本。
+          published="$(curl -fsSL --max-time 20 \
+            "https://github.com/July-X/dsh-xlink/releases/latest/download/latest.json" 2>/dev/null \
+            | node -e "let s='';process.stdin.on('data',(c)=>s+=c).on('end',()=>{try{process.stdout.write(String(JSON.parse(s).version||''))}catch{}})" \
+            || true)"
+          if [[ -z "$published" ]]; then
+            echo "线上没有可读的 latest.json（首次发布或端点暂不可用），跳过版本单调性检查"
+          else
+            CANDIDATE="$version" PUBLISHED="$published" node -e '
+              const parse = (v) => {
+                const [head, pre = ""] = String(v).replace(/^v/, "").split("-");
+                return [head.split(".").map((n) => Number(n) || 0), pre];
+              };
+              const compare = (a, b) => {
+                const [na, pa] = parse(a);
+                const [nb, pb] = parse(b);
+                for (let i = 0; i < Math.max(na.length, nb.length); i += 1) {
+                  const delta = (na[i] || 0) - (nb[i] || 0);
+                  if (delta !== 0) return delta;
+                }
+                if (pa === pb) return 0;
+                if (!pa) return 1;
+                if (!pb) return -1;
+                const xa = pa.split(".");
+                const ya = pb.split(".");
+                for (let i = 0; i < Math.max(xa.length, ya.length); i += 1) {
+                  const x = xa[i];
+                  const y = ya[i];
+                  if (x === undefined) return -1;
+                  if (y === undefined) return 1;
+                  const nx = /^[0-9]+$/.test(x);
+                  const ny = /^[0-9]+$/.test(y);
+                  if (nx && ny) {
+                    if (Number(x) !== Number(y)) return Number(x) - Number(y);
+                  } else if (nx !== ny) {
+                    return nx ? 1 : -1;
+                  } else if (x !== y) {
+                    return x < y ? -1 : 1;
+                  }
+                }
+                return 0;
+              };
+              const candidate = process.env.CANDIDATE;
+              const published = process.env.PUBLISHED;
+              if (compare(candidate, published) <= 0) {
+                console.error(
+                  "版本单调性检查失败：待发布 " + candidate + " 不大于线上最新 " + published + "。",
+                  "GitHub 的 releases/latest 取「最近创建」而非 semver 最大值，发布较低版本会让",
+                  "/releases/latest 后退，已经装上新版本的用户从此收不到更新提示。"
+                );
+                process.exit(1);
+              }
+              console.log("版本单调性检查通过：" + published + " → " + candidate);
+            '
+          fi
+
           {
             echo "version=$version"
             echo "tag=$tag"
@@ -78,21 +149,21 @@ jobs:
     needs: preflight
     runs-on: macos-15-intel
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10
           dest: ${{ runner.temp }}/setup-pnpm
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
           shared-key: quality-${{ runner.os }}-${{ runner.arch }}
@@ -104,14 +175,20 @@ jobs:
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
 
+      - name: Check cross-file invariants
+        run: pnpm run check:invariants
+
       - name: Run UI tests
         run: pnpm run test:ui
 
-      - name: Test release manifest generator
-        run: pnpm run test:release-manifest
+      - name: Run script test suites
+        # 一次覆盖 scripts/*.test.mjs 的全部用例（标题栏注入、发布清单、
+        # 资产归一化、依赖安装脚本的输出透传）；以后新增脚本测试不必再逐个
+        # 往 workflow 里补步骤。
+        run: pnpm run test:scripts
 
-      - name: Test release asset normalization
-        run: pnpm run test:release-assets
+      - name: Smoke-test the pull-string launcher
+        run: node scripts/smoke-pullstring.mjs
 
       - name: Build UI
         run: pnpm run build:ui
@@ -159,21 +236,21 @@ jobs:
             platform: windows-latest
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10
           dest: ${{ runner.temp }}/setup-pnpm
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Cache Rust release dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
           shared-key: release-${{ runner.os }}-${{ runner.arch }}
@@ -201,7 +278,7 @@ jobs:
 
       - name: Upload macOS release assets
         if: matrix.name == 'macos-intel'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: desktop-${{ matrix.name }}-${{ needs.preflight.outputs.version }}
           path: |
@@ -213,7 +290,7 @@ jobs:
 
       - name: Upload Windows release assets
         if: matrix.name == 'windows-x86_64'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: desktop-${{ matrix.name }}-${{ needs.preflight.outputs.version }}
           path: |
@@ -230,14 +307,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
 
       - name: Download platform artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: desktop-*-${{ needs.preflight.outputs.version }}
           path: artifacts
@@ -377,3 +454,64 @@ jobs:
             -f body="$(<release-notes.md)" \
             -F draft=false \
             -F prerelease=false >/dev/null
+
+      - name: Verify published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # 1) 正式 Release 的资产必须恰好 6 个。上传前只按**文件名**删同名资产、
+          #    从没读回过 Release 的实际列表；复用人工建过的 draft 时可能留下命名
+          #    不同的旧资产，而资产计数只数本地目录，发现不了。这里读回真实集合。
+          #    （macOS runner 是 bash 3.2，没有 mapfile。）
+          names=()
+          while IFS= read -r name; do
+            names+=("$name")
+          done < <(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
+            --paginate --jq '.[].name')
+          if [[ "${#names[@]}" -ne 6 ]]; then
+            echo "published release has ${#names[@]} assets, expected exactly 6" >&2
+            exit 1
+          fi
+
+          # 2) 更新端点必须真的指向刚发布的版本，且每个平台资产可下载。
+          #    这是「用户能不能收到更新」唯一的端到端检查：GitHub 的
+          #    releases/latest 取「最近创建」而非 semver 最大值，任何把端点顶回去
+          #    的发布都会在这里立刻暴露，而不是等到用户再也收不到更新才发现。
+          endpoint="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/latest.json"
+          fetched=""
+          for attempt in 1 2 3 4 5; do
+            if curl -fsSL --max-time 20 "$endpoint" -o published-latest.json; then
+              fetched="yes"
+              break
+            fi
+            echo "updater endpoint not ready yet (attempt ${attempt}); retrying in 10s" >&2
+            sleep 10
+          done
+          if [[ -z "$fetched" ]]; then
+            echo "updater endpoint is unreachable: $endpoint" >&2
+            exit 1
+          fi
+          published_version="$(node -p "JSON.parse(require('fs').readFileSync('published-latest.json','utf8')).version")"
+          if [[ "$published_version" != "$RELEASE_VERSION" ]]; then
+            echo "updater endpoint reports $published_version, expected $RELEASE_VERSION" >&2
+            exit 1
+          fi
+          while IFS= read -r url; do
+            if [[ -z "$url" ]]; then
+              continue
+            fi
+            code="$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 60 "$url")"
+            if [[ "$code" != "200" ]]; then
+              echo "update asset unreachable (HTTP $code): $url" >&2
+              exit 1
+            fi
+          done < <(node -p "
+            const manifest = JSON.parse(require('fs').readFileSync('published-latest.json','utf8'));
+            Object.values(manifest.platforms || {}).map((platform) => platform.url).join('\\n')
+          ")
+          echo "verified: endpoint serves v${published_version}, all platform assets reachable"
