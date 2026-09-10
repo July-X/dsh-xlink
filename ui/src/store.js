@@ -15,6 +15,8 @@ export const store = reactive({
   view: null,
   releases: [],
   releaseWarning: '',
+  // 设置文件损坏时的提示（端口已回退到默认值）。
+  settingsWarning: '',
   // 启动编排窗口：点击「启动工作台」到端口就绪之间为 true，
   // 2.5s 轮询不会覆盖「正在启动…」的按钮态。
   starting: false,
@@ -51,6 +53,7 @@ function applyStatus(view, requestSeq) {
   if (requestSeq !== statusRequestSeq) return false;
   store.view = view;
   lastRunning = view.kernel.running;
+  store.settingsWarning = view.kernel.settings_warning || '';
   store.lastIncident = view.last_incident || null;
   applyBuildClass();
   maybePromptNodeInstall();

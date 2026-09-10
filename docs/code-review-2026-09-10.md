@@ -55,10 +55,11 @@
 | P2-6 / P2-7 | 端口身份误判、归因 needle 误伤短插件名 | ✅ 已修 | `ListenerIdentity` 三态 + `open_harness` 收口；归因改锚定路径段匹配（`main` 不再命中 `main-utils`） |
 | P2-62 | logs 目录无保留策略 | ⏳ 待修 | 每天最多新增 24 MiB，日期只增不减；历史注释引用的 `cleanup_legacy_logs` 已不存在 |
 | **P1（全部 29 条）** | | ✅ **已完成** | |
-| P2-10 / P2-11 / P2-16 / P2-22 | 补丁与安装的越界与承诺不一致 | ✅ 已修 | 见明细；共 5 条新测试 |
-| P2-2、P2-3、P2-9、P2-12、P2-14 ~ P2-21、P2-24、P2-27、P2-28、P2-30 ~ P2-44、P2-46 ~ P2-48、P2-51、P2-52 | | ⏳ 待修 | |
+| P2-10 / P2-11 / P2-16 / P2-22 | 补丁与安装的越界与承诺不一致 | ✅ 已修 | 见明细；共 6 条新测试 |
+| P2-12 / P2-19 | 坏清单/坏设置无声消失或回退 | ✅ 已修 | 补丁加载告警并入 `PatchStatus.warning`；设置损坏备份 + `settings_warning` 上报面板；新增 3 条测试 |
+| P2-2、P2-3、P2-9、P2-14、P2-15、P2-17、P2-18、P2-20、P2-21、P2-24、P2-27、P2-28、P2-30 ~ P2-44、P2-46 ~ P2-48、P2-51、P2-52 | | ⏳ 待修 | |
 
-**当前基线**：`cargo test` 241 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 14 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
+**当前基线**：`cargo test` 244 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 14 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
 
 > 本文件同时是**问题清单**与**修复台账**：正文条目保留原始分析（含 `file:line`、触发场景、影响、建议），修复完成后在对应条目标题前加【已修】并在此表登记。
 
@@ -499,14 +500,14 @@
 | P2-9 | `patches.rs:648-703`、`:850-861` | 目标已是补丁后内容时仍把它当"原文件"备份，撤销后文件内容不变却报告「已撤销」→ 壳声称已撤销、内核仍在跑补丁代码且无记录 | 无对应应用记录时不要备份，直接报错并给出下一步 |
 | 【已修】P2-10 | `patches.rs:951-965` | `prune_empty_dirs` 注释写"只删到内核根为止"，实现既无 `kernel_root` 参数也无终止条件，会一路向上删空目录（含 `<data_dir>`） | 传入 `kernel_root` 并在该处停止；补单测 | ✅ 已修：`prune_empty_dirs` 接收 `kernel_root` 并在该处停止（同时拒绝根以外的路径），`handle_missing_backup` 透传根参数；新增 2 条测试（根内空目录被清、根本身与其父保留；根以外一个都不动）
 | 【已修】P2-11 | `patches.rs:620-637`、`:308-354` | 补丁源路径 `from` **完全没有**越界校验（`join("../../../../etc/passwd")` 可用，绝对路径会丢弃 `patch_dir`），与 `docs/patch-management.md:20` 的前提不符 | 对 `from` 复用 `check_target_path` | ✅ 已修：`validate_def` 对 `from` 复用 `check_target_path`，拒绝 `../` 越界与绝对路径；新增 2 条测试（`../../../../etc/passwd` 与 `/etc/passwd` 均被拒绝、正常相对路径仍可加载）
-| P2-12 | `patches.rs:260-303` | 清单校验失败（缺 manifest / JSON 坏 / schemaVersion 不符）只 `eprintln` + `continue` → 该补丁在设置页直接消失，用户无法区分"本版本没带"与"清单坏了" | 经 `patch_status` 的 warning 暴露给 UI |
+| 【已修】P2-12 | `patches.rs:260-303` | 清单校验失败（缺 manifest / JSON 坏 / schemaVersion 不符）只 `eprintln` + `continue` → 该补丁在设置页直接消失，用户无法区分"本版本没带"与"清单坏了" | 经 `patch_status` 的 warning 暴露给 UI | ✅ 已修：`load_patches_with_warnings` 收集被跳过的清单/定义原因（缺 manifest、JSON 坏、schemaVersion 不符、定义非法），`patch_status` 把它们并入 `PatchStatus.warning`，设置页已有的告警条直接展示；`load_patches` 收为测试专用包装。坏掉的补丁不再无声消失
 | 【已修】P2-13 | `patches.rs:732-746` | `file.search.as_deref().unwrap_or("")`：`search` 为 null 时 `replace("", repl)` 会在每个字符间插入替换串，必然损坏目标 JS | `search` 缺失时直接返回错误 |
 | P2-14 | `patches.rs:997-1004` | `status` 只遍历当前清单定义 → 定义已被移除的历史补丁记录在 UI 中完全不可见（`revert` 其实支持） | status 额外渲染"定义已移除、仍可撤销"行 |
 | P2-15 | `patches.rs:379-413` | "内核根以内任何祖先是符号链接即拒绝写入"过严：`.pnpm` isolated linker 布局下补丁永远无法应用且文案无下一步 | 判据改为 canonicalize 后仍在 kernel_root 之内 |
 | 【已修】P2-16 | `node_install.rs:371-377` | SHA-256 校验失败时错误文案写「已删除无效文件，可重试」，但代码**没有**删除 tarball（对照解压失败分支 `:381-387` 确实删了） | 真的删除或改名 `.corrupt` | ✅ 已修：校验失败分支真的删除 tarball（此前只有解压失败分支删），与错误文案的承诺一致
 | P2-17 | `node_install.rs:382-403` | 临时目录名带 pid 只在同 pid 时清理（进程被杀留 ~200 MB）；下载产物 36-52 MB 装完不删；`fs::rename` 到已存在的版本目录在 Unix 报 `ENOTEMPTY` → 一旦 `tools/node/<ver>` 残缺就**永久无法重装**且无 UI 自救入口 | 启动时清理旧 `.node-tmp-*`；成功后删下载产物；失败信息给出「请删除 <path> 后重试」 |
 | P2-18 | `node_install.rs:26-36`、`:411-424`、`node.rs:50-59` | 产物平台按 `cfg!(windows)` 二选一（非 Windows 一律 `darwin-x64`），不看 `consts::OS/ARCH`；回滚时丢弃真实 stderr，把原因错写成「当前系统可能低于其最低版本要求」 | 用 `(OS, ARCH)` 映射产物名；保留并回传 stderr |
-| P2-19 | `settings.rs:56-62` | `settings::load` 吞掉所有错误：文件损坏 / 读失败 → 默认值，用户自定义端口**无声回退**到 3090/3091，无日志无提示 | 区分不存在与解析失败，损坏时备份并上报 |
+| 【已修】P2-19 | `settings.rs:56-62` | `settings::load` 吞掉所有错误：文件损坏 / 读失败 → 默认值，用户自定义端口**无声回退**到 3090/3091，无日志无提示 | 区分不存在与解析失败，损坏时备份并上报 | ✅ 已修：新增 `settings::load_checked` 区分"文件缺失（正常首次启动）"与"损坏/读不出来"——后者备份为 `settings.json.corrupt` 并返回含下一步的中文诊断；`KernelStatus.settings_warning` 透出到面板（VersionsPanel 新增告警条），端口回退不再无声。新增 3 条测试
 | P2-20 | `plugins.rs:1053-1058`、`:2910-2918` | 中央库发布与 `store.json` 记账非原子 → 孤儿目录无 store 行：面板不显示、「同步」不管、`uninstall` 直接拒绝，只能手删 | 失败路径回滚刚发布的目录；或在 reconcile 里清理"有外壳标记但无 store 行"的目录 |
 | P2-21 | `plugins.rs:2172`、`:2191-2197` | `specs` 以 `item.name` 为键：同名不同 id 互相覆盖接线，UI 对两行都报 wired=true | specs 以 id 为键，写 manifest 时检测同名冲突 |
 | 【已修】P2-22 | `plugins.rs:2377-2378`、`:853-863` | 锁定版本的 npm 插件被永久标成「有更新」，但更新必被拒（`pinned` 只在 git 分支生效） | check_updates/status 跳过 `item.pinned` | ✅ 已修：`status` / `check_updates` 跳过 `pinned` 条目（计数与行内角标），npm 与 git 一视同仁；`is_newer_than` 保持原有的"版本号比较"语义不变（git+pinned 的既有测试仍钉住该行为）。新增 1 条 status 层测试覆盖两种来源

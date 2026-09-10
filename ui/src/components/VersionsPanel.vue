@@ -89,6 +89,8 @@ onMounted(() => {
         </span>
       </div>
 
+      <el-alert v-if="store.settingsWarning" :title="store.settingsWarning" type="warning" :closable="false" show-icon />
+
       <el-alert v-if="store.releaseWarning" :title="store.releaseWarning" type="warning" :closable="false" show-icon />
 
       <div class="updates-lists">

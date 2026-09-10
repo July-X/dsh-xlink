@@ -1930,16 +1930,16 @@ pub async fn plugin_resolve(
 
 /// 读取随 dsh-xlink 发布包捆绑的内置补丁清单。资源目录缺失 / 清单损坏时
 /// 静默降级为空列表，设置页呈现「此版本未携带任何内置补丁」。
-fn load_bundled_patches(app: &AppHandle) -> Vec<(patches::PatchDef, PathBuf)> {
+fn load_bundled_patches(app: &AppHandle) -> (Vec<(patches::PatchDef, PathBuf)>, Vec<String>) {
     match patches::resource_patches_dir(app) {
-        Some(dir) => match patches::load_patches(&dir) {
-            Ok(list) => list,
+        Some(dir) => match patches::load_patches_with_warnings(&dir) {
+            Ok(loaded) => loaded,
             Err(reason) => {
                 eprintln!("dsh-xlink: 读取内置补丁失败：{reason}");
-                Vec::new()
+                (Vec::new(), vec![format!("读取内置补丁失败：{reason}")])
             }
         },
-        None => Vec::new(),
+        None => (Vec::new(), Vec::new()),
     }
 }
 
@@ -1948,8 +1948,18 @@ fn load_bundled_patches(app: &AppHandle) -> Vec<(patches::PatchDef, PathBuf)> {
 pub async fn patch_status(app: AppHandle) -> Result<patches::PatchStatus, String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let patches = load_bundled_patches(&app);
-        Ok(patches::status(&data_dir, &patches))
+        let (patches, load_warnings) = load_bundled_patches(&app);
+        let mut view = patches::status(&data_dir, &patches);
+        // 清单/定义被跳过的原因必须让用户看到：否则坏掉的补丁在设置页直接
+        // 消失，用户无法区分"这个版本没带"与"它坏了"（P2-12）。
+        if !load_warnings.is_empty() {
+            let merged = load_warnings.join("；");
+            view.warning = Some(match view.warning {
+                Some(existing) => format!("{existing}；{merged}"),
+                None => merged,
+            });
+        }
+        Ok(view)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1963,7 +1973,7 @@ pub async fn patch_apply(app: AppHandle, id: String) -> Result<Vec<String>, Stri
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
-        let patches = load_bundled_patches(&app);
+        let (patches, _warnings) = load_bundled_patches(&app);
         patches::apply(&data_dir, &patches, &id).map_err(|e| e.to_string())
     })
     .await
@@ -1978,7 +1988,7 @@ pub async fn patch_revert(app: AppHandle, id: String) -> Result<Vec<String>, Str
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
-        let patches = load_bundled_patches(&app);
+        let (patches, _warnings) = load_bundled_patches(&app);
         patches::revert(&data_dir, &patches, &id).map_err(|e| e.to_string())
     })
     .await

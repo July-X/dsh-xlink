@@ -52,13 +52,58 @@ pub fn settings_file(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join("settings.json")
 }
 
-/// 读取设置，文件缺失或无法读取时返回默认值。
-pub fn load(data_dir: &Path) -> Settings {
+/// 读取设置。文件缺失（首次启动的正常路径）静默返回默认值；
+/// **解析失败**时备份损坏文件并返回一条可操作的诊断。
+///
+/// 旧实现把"不存在"和"坏了/读不出来"一起吞成默认值：用户自定义的端口会
+/// 无声回退到 3090/3091，面板上没有任何提示，重启后"工作台怎么跑到别的
+/// 端口去了"完全无从解释（P2-19）。
+pub fn load_checked(data_dir: &Path) -> (Settings, Option<String>) {
     let path = settings_file(data_dir);
-    fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (Settings::default(), None)
+        }
+        Err(error) => {
+            return (
+                Settings::default(),
+                Some(format!(
+                    "设置文件无法读取（{error}），已改用默认设置（端口回到默认端口）。文件：{}",
+                    path.display()
+                )),
+            )
+        }
+    };
+    match serde_json::from_str::<Settings>(&text) {
+        Ok(settings) => (settings, None),
+        Err(error) => {
+            // 备份而不是让下一次 save 直接覆盖：损坏内容往往是用户手改错了一
+            // 个字符，留住它才能改回来。
+            let backup = path.with_extension("json.corrupt");
+            let backed_up = fs::copy(&path, &backup).is_ok();
+            let detail = if backed_up {
+                format!(
+                    "原文件已备份到 {}，修好它并重启应用即可恢复",
+                    backup.display()
+                )
+            } else {
+                format!("原文件未能备份，请先自行复制 {} 再修改", path.display())
+            };
+            (
+                Settings::default(),
+                Some(format!(
+                    "设置文件损坏（{error}），已改用默认设置（端口回到默认端口）。{detail}"
+                )),
+            )
+        }
+    }
+}
+
+/// 读取设置，忽略诊断信息。需要向用户展示"设置被回退了"的调用方应当用
+/// [`load_checked`]。
+pub fn load(data_dir: &Path) -> Settings {
+    load_checked(data_dir).0
 }
 
 /// 持久化设置，必要时创建父目录。
@@ -91,5 +136,70 @@ mod tests {
     fn out_of_range_port_rejected() {
         let v = serde_json::json!({"port": 70000, "profile": "web"});
         assert!(serde_json::from_value::<Settings>(v).is_err());
+    }
+}
+
+#[cfg(test)]
+mod load_checked_tests {
+    use super::*;
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-xlink-settings-{}-{}-{}",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn missing_file_is_not_a_warning() {
+        let dir = temp_dir("missing");
+        let (settings, warning) = load_checked(&dir);
+        assert_eq!(settings.port, DEFAULT_PORT);
+        assert!(warning.is_none(), "首次启动的缺文件不该报警：{warning:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn corrupt_file_is_reported_and_backed_up() {
+        // P2-19：损坏的设置此前会静默回退到默认端口，用户无从得知。
+        let dir = temp_dir("corrupt");
+        let path = settings_file(&dir);
+        std::fs::write(&path, b"{ \"port\": 3095, ").unwrap();
+
+        let (settings, warning) = load_checked(&dir);
+        let warning = warning.expect("损坏必须产生诊断");
+        assert_eq!(settings.port, DEFAULT_PORT, "损坏时回退到默认设置");
+        assert!(warning.contains("损坏"), "诊断要说明是损坏：{warning}");
+        assert!(
+            warning.contains("备份"),
+            "诊断要说清原文件去哪了：{warning}"
+        );
+        assert!(
+            dir.join("settings.json.corrupt").exists(),
+            "损坏的原文件必须被备份下来"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn valid_file_round_trips_without_warning() {
+        let dir = temp_dir("valid");
+        let settings = Settings {
+            port: 3199,
+            ..Settings::default()
+        };
+        save(&dir, &settings).expect("save");
+
+        let (loaded, warning) = load_checked(&dir);
+        assert_eq!(loaded.port, 3199);
+        assert!(warning.is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
