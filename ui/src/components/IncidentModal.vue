@@ -3,7 +3,8 @@
 // 每个嫌疑对象可展开错误证据，并选择移除 / 重新启用；直接关闭即保持禁用。
 import { computed, reactive } from 'vue';
 import { Document, Close, RefreshLeft, Delete, View, Hide, Connection } from '@element-plus/icons-vue';
-import { store } from '../store.js';
+import { store, globalBusy } from '../store.js';
+import { withLoading, isLoading } from '../loading.js';
 import { resolvePluginQuarantine } from '../plugins.js';
 import { showLogs } from '../logs.js';
 
@@ -65,7 +66,12 @@ function close() {
 }
 
 async function resolveSuspect(id, action) {
-  const ok = await resolvePluginQuarantine(id, action);
+  // 卸载/重新接线会跑 pnpm，可能几十秒。挂上按嫌疑对象粒度的 loading 并
+  // 借用互斥租约，避免长任务期间被反复点击（进度浮层现在也在弹层之上，
+  // 用户能看到它在做什么）。
+  const ok = await withLoading(`incidentResolve:${id}`, () =>
+    resolvePluginQuarantine(id, action)
+  );
   if (ok) {
     close();
   }
@@ -115,7 +121,16 @@ async function resolveSuspect(id, action) {
           <p v-else class="muted" style="margin: 0">{{ suspect.kind === 'kernel' ? '暂未捕获该内核组件的直接日志证据。' : '该插件没有直接的日志证据（安全模式批量停用时无具体归因）。' }}</p>
 
           <div v-if="suspect.kind === 'plugin'" class="btn-row suspect-actions">
-            <el-button size="small" text :icon="RefreshLeft" @click="resolveSuspect(suspect.id, 'enable')">重新启用</el-button>
+            <el-button
+              size="small"
+              text
+              :icon="RefreshLeft"
+              :loading="isLoading('incidentResolve:' + suspect.id)"
+              :disabled="globalBusy"
+              @click="resolveSuspect(suspect.id, 'enable')"
+            >
+              重新启用
+            </el-button>
             <el-popconfirm
               title="确认移除该插件？"
               confirm-button-text="移除"
@@ -124,7 +139,16 @@ async function resolveSuspect(id, action) {
               @confirm="resolveSuspect(suspect.id, 'remove')"
             >
               <template #reference>
-                <el-button size="small" type="danger" plain :icon="Delete">移除插件</el-button>
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  :icon="Delete"
+                  :loading="isLoading('incidentResolve:' + suspect.id)"
+                  :disabled="globalBusy"
+                >
+                  移除插件
+                </el-button>
               </template>
             </el-popconfirm>
             <span class="muted" style="font-size: 12px">不做操作即保持禁用</span>

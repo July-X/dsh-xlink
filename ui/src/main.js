@@ -14,6 +14,7 @@ import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs';
 import { ElIcon } from 'element-plus/es/components/icon/index.mjs';
 import { ElInput } from 'element-plus/es/components/input/index.mjs';
 import { ElInputNumber } from 'element-plus/es/components/input-number/index.mjs';
+import { ElLoading } from 'element-plus/es/components/loading/index.mjs';
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs';
 import { ElPopconfirm } from 'element-plus/es/components/popconfirm/index.mjs';
 import { ElSwitch } from 'element-plus/es/components/switch/index.mjs';
@@ -29,6 +30,7 @@ import 'element-plus/es/components/form-item/style/css.mjs';
 import 'element-plus/es/components/icon/style/css.mjs';
 import 'element-plus/es/components/input/style/css.mjs';
 import 'element-plus/es/components/input-number/style/css.mjs';
+import 'element-plus/es/components/loading/style/css.mjs';
 import 'element-plus/es/components/message/style/css.mjs';
 import 'element-plus/es/components/message-box/style/css.mjs';
 import 'element-plus/es/components/option/style/css.mjs';
@@ -79,5 +81,10 @@ const app = createApp(root);
   ElTag,
   ElTooltip,
 ].forEach((component) => app.component(component.name, component));
+// `v-loading` 是指令而不是组件：只注册组件的话它会被静默忽略
+// （Vue 对解析不到的指令直接跳过，既不报错也不渲染），插件中心的加载占位
+// 会退化成一块没有任何文案的空白。ElLoading 的 install 同时注册
+// `v-loading` 指令与 `$loading` 服务。
+app.use(ElLoading);
 provideGlobalConfig({ locale: zhCn }, app, true);
 app.mount('#app');
