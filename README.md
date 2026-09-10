@@ -28,7 +28,7 @@
 |  |   (node-linker=hoisted; live log stream to UI)                     |     |
 |  |   -> ~/.dsh/desktop/kernels/<version>/                            |     |
 |  | - active pointer: ~/.dsh/desktop/active.txt                       |     |
-|  | - start: node .../lib/bin.js web --no-open --port 3080            |     |
+|  | - start: node .../lib/bin.js web --no-open --port 3090            |     |
 |  +--------------------------------------------------------------------+     |
 |                        ^                                                     |
 |    kernel data (sessions, settings) | independent of shell, lives in         |
@@ -49,7 +49,7 @@
 - 内核安装通过 pnpm 执行（`node-linker=hoisted` 保持扁平 `node_modules`，内容寻址存储让重复安装更快），安装过程逐行流式显示在进度面板中，完整日志落盘 `~/.dsh/desktop/logs/<kind>-install-<版本>-<日期>.log`（dev 壳则是 `~/.dsh/desktop-dev/logs/dev-install-<版本>-<日期>.log`，`<日期>` 为本地日期）；下载先写临时文件，成功后才发布，npm 包由外壳进行路径受限、禁止链接和有展开大小上限的 Rust 解包，无需额外安装系统 `tar`
 - Node.js 自动检测与手动指定（要求 `^22.19 || >=24`，与 dsh 的 engines 一致；自动发现 nvm（macOS/Linux `~/.nvm/versions/node/<v>/bin/node` 跟随 `alias/default` 链，Windows `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`），免去 GUI 启动看不到 nvm PATH 时改手动路径的步骤；检测为空时弹窗询问是否「帮我安装」——确认后自动下载官方 Node.js（v24 LTS，SHA-256 校验）到数据目录 `tools/node/`，概览页 Node 行随时可再次触发；已安装的托管运行时优先于环境检测，显式配置的 node 路径仍最高优先）
 - pnpm 路径可配置（默认取 node 同目录或 PATH）
-- 端口可配置（默认 3080）
+- 端口可配置（release 默认 3090，`tauri dev` 下的 dev 壳默认 3091；可在设置页修改）
 - 内核运行日志查看；应用退出时自动回收内核子进程
 - **插件管理**：社区插件（npm 包或 GitHub 仓库）统一存入 `~/.dsh/plugins/`，以**链接**（默认，Windows 自动降级**复制**）的方式进入每个已安装内核（`~/.dsh/desktop/kernels/<版本>/plugins/`），并自动接线进 profile——切换内核无需重装；GitHub 仓库地址安装时优先使用对应 GitHub Release 的 tarball 版本数据，Release 不可用时回退 git clone，其它 Git 地址保持原有 clone 行为；「插件中心」对接 [dshfind.com](https://dshfind.com/zh) 插件超市目录（分类/搜索/排序/已安装过滤，6 小时本地缓存，官方 market 兜底），安装优先尝试 npm（候选 `<repo-name>` / `dsh-<repo-name>`），npm 包不可用时回退到 GitHub Release tarball/git clone，安装前校验 dsh 规范；管理面板提供安装/卸载/更新/切换模式/同步，检测到新版本时在卡片与启动时提醒；点击「同步」会遍历所有已安装内核，重新物化中央库中的插件，并清除外壳明确标记的已删除残留，保证外壳管理的插件状态与 `~/.dsh/plugins/` 一致；`link` 模式插件启动前会检查中央目录中的普通运行时依赖，缺失时自动用 pnpm 恢复；启动容错面板中的「移除插件」会同时清除隔离记录，若上次卸载只完成了部分清理，重复执行也能继续收尾
 - **工作台健康自检**：工作台窗口自动监听白屏、运行时错误和未处理的 Promise 异常；外壳会把前端消息、堆栈和页面地址与今天的内核日志（`<kind>-kernel-<日期>.log`）一起分析，判断为疑似插件、疑似内核或暂未能归因（白屏 + 已装第三方插件的「软信号」分支会列出所有插件作为排查候选但不会自动隔离），并在事故面板展示证据和对应的插件隔离/移除、日志、内核版本修复入口
@@ -159,7 +159,7 @@ npm run build:win         # x86_64-pc-windows-msvc
 | 症状 | 排查 |
 | --- | --- |
 | `WebviewWindowBuilder` 创建工作台窗口卡死 | Tauri 2.x 在同步命令里创建 webview 窗口**会死锁**（Windows 100%；macOS/Linux 部分情况下也慢）。本项目 `open_harness` 已经把创建放在新线程（`commands.rs::open_harness`）。新增类似命令请保持同样模式。 |
-| macOS 启动后访问 `http://127.0.0.1:3080` 失败 | Tauri 2.x 默认 WKWebView 已允许本地环回访问，不需要 `NSAppTransportSecurity` 例外；本项目移除了该字段，依赖平台默认值。 |
+| macOS 启动后访问 `http://127.0.0.1:3090`（dev 壳为 3091）失败 | Tauri 2.x 默认 WKWebView 已允许本地环回访问，不需要 `NSAppTransportSecurity` 例外；本项目移除了该字段，依赖平台默认值。 |
 | 编辑器/IDE 报 `capabilities/default.json` 找不到 `$schema` | schema 文件在首次 `tauri build` 后由 `tauri-build` 生成；本项目移除了硬编码 `$schema` 引用，避免初次克隆时编辑器红字。 |
 | 升级后「已安装」列表为空 | 外壳元数据已迁到 `~/.dsh/desktop/`；按上文“数据目录”提示迁移旧目录内容，或重新安装内核。 |
 
@@ -174,7 +174,7 @@ npm run build:win         # x86_64-pc-windows-msvc
 
 - **Node 运行时**：目前检测系统 Node 或手动指定；后续可捆绑 Node sidecar 实现开箱即用（分发体积 +40MB/平台）。
 - **pnpm 依赖**：内核安装依赖用户环境中的 pnpm（未捆绑）；后续可评估 `corepack` 或 sidecar 方式随应用分发。
-- **端口冲突**：若 3080 已被其他进程占用，先停止外部服务或改端口。
+- **端口冲突**：若 3090（dev 壳为 3091，以设置页显示为准）已被其他进程占用，先停止外部服务，或在设置页改用其它端口——注意「工作台运行期间不能改端口」，需先关闭工作台再保存。
 - **安全**：应用通过 Webview 加载本地 `http://127.0.0.1` 的 Harness 页面并暴露版本管理命令；仅信任官方 `deepseek-ai` 仓库与 npm 的 `@deepseek-ai` 命名空间。插件和技能是第三方内容/任意代码，安装前请自行确认来源；社区目录条目保留「未验证」标记。npm 包解包拒绝绝对路径、父级路径、符号链接、硬链接和特殊文件，并限制条目数与展开体积；这不能替代对第三方代码的审计。
 - **插件链接模式**：依赖文件系统符号链接支持（Windows 需要开发者模式，失败会自动降级为复制模式并在行内显示「复制」徽标）。
 - **自动更新**：桌面端使用 `tauri-plugin-updater` 下载并校验签名。Windows 更新重启后，管理面板完成首次状态刷新即会清理更新前的旧安装目录、快捷方式和 updater 临时目录；清理失败会保留标记，并在下次启动重试。
