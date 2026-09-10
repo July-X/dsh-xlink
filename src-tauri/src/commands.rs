@@ -436,19 +436,17 @@ pub async fn install_kernel(
             let _ = on_event.send(msg.to_string());
         };
         let (node_path, pnpm_exe) = promise_pnpm(&data_dir, &node_info, &mut send)?;
-        // `node_dir` 是已校验的 `node` 可执行文件所在目录。安装派生出的子
-        // 进程需要它出现在 PATH 上，这样 pnpm 的
+        // `install_version` 需要 node 可执行文件的完整路径——既用它本身
+        // 在安装结束后启动 smoke-load 探针（见
+        // `kernel::smoke_load_native_modules`），又把它所在目录前置到
+        // 子进程的 PATH 上，这样 pnpm 的
         // `#!/usr/bin/env node` shebang 以及任何 shell-out 调
         // `node` 的 lifecycle 脚本都能解析到它，即便 GUI 进程继承
         // 到的只是 macOS .app 包那种 launchd-only PATH——这是 nvm 管
         // 理的安装里很常见的场景。
-        let node_dir = node_path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
         kernel::install_version(
             &data_dir,
-            &node_dir,
+            &node_path,
             &pnpm_exe,
             &version_for_install,
             |msg| send(msg),

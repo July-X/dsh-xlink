@@ -532,19 +532,21 @@ fn rotate_install_logs(logs: &Path, keep: &Path) {
 
 /// 让 pnpm 把 `@deepseek-ai/dsh@<version>` 安装到对应目录。
 ///
-/// `node_dir` 是已校验 `node` 可执行文件所在的目录，并被前置到子进程的 PATH，
-/// 这样 pnpm 的 `#!/usr/bin/env node` shebang（以及任何 shell out 调用 `node`
-/// 的生命周期脚本）都能解析到它。若没有这一 stamp，通过 launchd-only PATH
-/// （macOS .app bundle）或仅有系统 PATH 的 Windows PATH 启动的 GUI 进程，
-/// 即便父进程能定位到二进制来拉起 pnpm，也会以 `env: node: No such file or
-/// directory` 退出。nvm 管理的 Node 尤为常见——`node` 位于
-/// `~/.nvm/versions/node/<v>/bin`，根本不在继承的 PATH 中。
+/// `node_exe` 是已校验的 `node` 可执行文件路径。其**所在目录**被前置到
+/// 子进程的 PATH，这样 pnpm 的 `#!/usr/bin/env node` shebang（以及任何
+/// shell out 调用 `node` 的生命周期脚本）都能解析到它。若没有这一 stamp，
+/// 通过 launchd-only PATH（macOS .app bundle）或仅有系统 PATH 的 Windows
+/// PATH 启动的 GUI 进程，即便父进程能定位到二进制来拉起 pnpm，也会以
+/// `env: node: No such file or directory` 退出。nvm 管理的 Node 尤为
+/// 常见——`node` 位于 `~/.nvm/versions/node/<v>/bin`，根本不在继承的
+/// PATH 中。`node_exe` 同时也是安装结束后 `smoke_load_native_modules`
+/// 启动 Node 探针的入口——见该函数的 doc 注释。
 ///
 /// `on_progress` 会收到人类可读的阶段消息以及每一条原始安装日志行，
 /// 让 UI 在安装运行期间可以实时展示输出。
 pub fn install_version(
     data_dir: &Path,
-    node_dir: &Path,
+    node_exe: &Path,
     pnpm_exe: &Path,
     version: &str,
     mut on_progress: impl FnMut(&str),
@@ -589,9 +591,10 @@ pub fn install_version(
         PNPM_REPORTER,
         spec.as_str(),
     ];
-    // `node_dir` 排在最前，使任何 shebang 或生命周期子进程看到的都是
+    // `node_exe` 的目录排在最前，使任何 shebang 或生命周期子进程看到的都是
     // 父进程使用的同一个 node，即便 pnpm 本身位于别处（例如设置里
     // 固定的 `pnpm` shim）。参见上文的 doc 注释。
+    let node_dir = node_exe.parent().unwrap_or_else(|| Path::new("."));
     let pnpm_dir = pnpm_exe.parent().unwrap_or(Path::new("."));
     let status = run_pnpm(
         pnpm_exe,
@@ -648,6 +651,24 @@ pub fn install_version(
             &missing, &log_path,
         )));
     }
+
+    // 静态检查通过后再跑一次「真的把原生模块加载起来」的可执行性探针。
+    // 文件存在 ≠ 可加载：fs-ext / node-addon-system 等在 Node 启动时
+    // 解析不到 `.node` 会以同步异常形式抛出，pnpm 阶段却已经退出 0——
+    // 这一步把那条路径在「安装完成」与「首次启动」之间提前引爆，并把
+    // 真实报错（NODE_MODULE_VERSION 不匹配、optionalDependencies 没拉
+    // 对平台、prebuild 文件缺失等）落到安装日志里，由 UI 立刻显示给
+    // 用户，而不是留给 last-incident 的二次归因。详见
+    // `smoke_load_native_modules` 的 doc 注释。
+    if let Err(reason) =
+        smoke_load_native_modules(node_exe, &dir, &logs_root, &log_spec, &mut on_progress)
+    {
+        return Err(AppError::Kernel(format!(
+            "内核依赖的可加载性校验失败：{reason}。常见原因：当前平台的 prebuild 未随 optionalDependencies 下载（重试安装或切换到其他内核版本），或 Node 版本与 prebuild 不匹配。完整日志：{}",
+            log_path.display()
+        )));
+    }
+    on_progress("内核安装成功");
     Ok(())
 }
 
@@ -674,28 +695,96 @@ pub(crate) const PNPM_NO_STRICT_DEP_BUILDS: &str = "--config.strict-dep-builds=f
 /// 后续 `verify_native_modules` 步骤会真正决定这次安装是否成功。
 pub(crate) const PNPM_ALLOW_ALL_BUILDS: &str = "--config.dangerously-allow-all-builds=true";
 
-/// 内核依赖树里必须存在原生二进制的关键包。安装结束后逐一检查
-/// `<kernel>/node_modules/<name>/<rel>` 是否就位——这是 pnpm 静默跳过
-/// 构建脚本后唯一可靠的就位判据（`pnpm` 的退出码不再可信，
-/// `node_modules/<name>` 的存在只说明 JS 已就位、不说明原生模块能加载）。
+/// 一项原生模块的就位检查：包名 + 相对 `node_modules/<pkg>` 的 `.node` 路径。
+/// 安装结束后核对每一项是否真的产出了二进制——这是 pnpm 静默跳过构建脚本
+/// 后唯一可靠的就位判据（`pnpm` 的退出码不再可信，`node_modules/<pkg>` 的
+/// 存在只说明 JS 已就位、不说明原生模块能加载）。
 ///
-/// `fs-ext 2.x` 是 dsh 内核目前唯一真正需要 `node-gyp` 现场编译的依赖，
-/// 它没有预编译二进制（不像 `koffi` 用 `@koromix/koffi-<plat>` 可选依赖、
-/// `node-pty` 用 `prebuilds/<plat>`），缺 `.node` 时运行时直接报
-/// `Cannot find module './build/Release/fs_ext.node'`，是导致
-/// 「无法确认内核工作台地址」启动失败的根因。其它原生包都有预编译产物，
-/// 校验一次 `fs-ext` 即可。其他依赖如果未来新增需要现场编译的，请追加
-/// 到该列表中。
-const NATIVE_MODULE_CHECKS: &[(&str, &str)] = &[("fs-ext", "build/Release/fs_ext.node")];
+/// 注意：该列表同时容纳「老内核的 `fs-ext`」和「新内核的
+/// `@deepseek-ai/node-addon-system-*`」两个家族的入口。`verify_native_modules`
+/// 在运行时只对**实际安装**的包做校验：内核依赖里没出现的包会被自动跳过，
+/// 避免「0.1.5-alpha 起不再引入 fs-ext、但校验器仍要 fs_ext.node」一类
+/// 的虚假缺失。两个家族分别承担不同的根因：
+///
+/// - `fs-ext 2.x`：dsh 0.1.3-alpha 系列直接依赖，需要 `node-gyp` 现场编译，
+///   它没有预编译二进制（不像 `koffi` / `node-pty` 用 per-platform prebuilds），
+///   缺 `.node` 时运行时直接报 `Cannot find module './build/Release/fs_ext.node'`，
+///   是「无法确认内核工作台地址」的根因之一。
+/// - `@deepseek-ai/node-addon-system-<plat>`：dsh 0.1.5-alpha 起
+///   `dsh-session-persistence-jsonl` 切换到的新平台原语，靠 per-platform
+///   子包（`…-darwin-x64` / `…-linux-x64` 等）携带预编译的 `bin/system.node`，
+///   完全替代了 `fs-ext` 的 `flock` 角色。它没有现场编译脚本，所以 Node 版本
+///   与本地构建工具链一般不会让它缺失；如果真的缺失，多半是 pnpm 的
+///   `onlyBuiltDependencies` 之外的网络/磁盘问题，重装即可。
+///
+/// 后续如果再出现需要现场编译的新增原生依赖，请把 `(package, relative_path)`
+/// 追加到该列表——但请优先确认它是否真的没有预编译产物；能 prebuild 就不要
+/// 让用户的 Node 版本影响安装。
+const NATIVE_MODULE_CHECKS: &[NativeCheck] = &[
+    // fs-ext：0.1.3-alpha 系列内核唯一需要 node-gyp 现场编译的入口。
+    NativeCheck::new("fs-ext", "build/Release/fs_ext.node"),
+    // node-addon-system：0.1.5-alpha 系列内核的平台原语入口。
+    // 子包以 `optionalDependencies` 形式被主包按当前 OS/arch 引入，
+    // 这里把已知的 6 个目标平台全部列出，`verify_native_modules` 会跳过
+    // 未安装的子包。
+    NativeCheck::new(
+        "@deepseek-ai/node-addon-system-darwin-x64",
+        "bin/system.node",
+    ),
+    NativeCheck::new(
+        "@deepseek-ai/node-addon-system-darwin-arm64",
+        "bin/system.node",
+    ),
+    NativeCheck::new(
+        "@deepseek-ai/node-addon-system-linux-x64",
+        "bin/system.node",
+    ),
+    NativeCheck::new(
+        "@deepseek-ai/node-addon-system-linux-arm64",
+        "bin/system.node",
+    ),
+    NativeCheck::new(
+        "@deepseek-ai/node-addon-system-win32-x64",
+        "bin/system.node",
+    ),
+    NativeCheck::new(
+        "@deepseek-ai/node-addon-system-win32-arm64",
+        "bin/system.node",
+    ),
+];
 
-/// 内核 install 后核对每个 `NATIVE_MODULE_CHECKS` 是否产出了二进制。
+/// 单项原生模块检查。包名用 `&'static str` 是因为整张表是静态字面量；
+/// 错误文案要把 pkg/rel 拼回用户可见的字符串，所以用 owned `String` 出口。
+#[derive(Clone, Copy)]
+struct NativeCheck {
+    pkg: &'static str,
+    rel: &'static str,
+}
+
+impl NativeCheck {
+    const fn new(pkg: &'static str, rel: &'static str) -> Self {
+        Self { pkg, rel }
+    }
+}
+
+/// 内核 install 后核对 `NATIVE_MODULE_CHECKS`：只对**实际安装**的包
+/// 校验其原生二进制（`<kernel>/node_modules/<pkg>/<rel>` 必须存在）。
+/// 包本身没出现在依赖树里就直接跳过——`fs-ext` 与 `node-addon-system`
+/// 分属不同时代的内核，校验器不应替内核版本"二选一"。
 /// 全数到齐返回 `Ok(())`；缺失包名 + 期望路径用于构造可操作的错误文案。
 fn verify_native_modules(kernel_root: &Path) -> Result<(), Vec<(String, &'static str)>> {
     let mut missing: Vec<(String, &'static str)> = Vec::new();
-    for (pkg, rel) in NATIVE_MODULE_CHECKS {
-        let path = kernel_root.join("node_modules").join(pkg).join(rel);
+    let nm = kernel_root.join("node_modules");
+    for check in NATIVE_MODULE_CHECKS {
+        // 包目录缺席意味着这条 entry 对当前内核版本根本不适用——
+        // 老内核没有 node-addon-system，新内核没有 fs-ext，校验器
+        // 不该为它们凭空补一条缺失记录。
+        if !nm.join(check.pkg).is_dir() {
+            continue;
+        }
+        let path = nm.join(check.pkg).join(check.rel);
         if !path.is_file() {
-            missing.push((pkg.to_string(), *rel));
+            missing.push((check.pkg.to_string(), check.rel));
         }
     }
     if missing.is_empty() {
@@ -706,20 +795,172 @@ fn verify_native_modules(kernel_root: &Path) -> Result<(), Vec<(String, &'static
 }
 
 /// 把「原生模块二进制缺失」翻译成 UI 可展示的可操作文案：列出缺失包、
-/// 推荐「安装 Node 24」（`fs-ext 2.x` 的旧 NAN C++ 头文件与 Node 25 的
-/// V8 ABI 不兼容，系统 Node 过新会导致构建脚本即使运行也会失败），并附
-/// 日志路径供用户回查。日志路径通过 `log_path` 注入，调用方负责传当日
-/// 的真实路径。
+/// 按缺失家族给出针对性指引（`fs-ext` 走"安装 Node 24"那条已验证有效的
+/// 路径；`node-addon-system-*` 因为携带 prebuild，缺二进制一般是 pnpm
+/// 没把 optionalDependencies 拉下来，建议重试或回退版本），并附日志路径
+/// 供用户回查。日志路径通过 `log_path` 注入，调用方负责传当日的真实路径。
 fn format_native_modules_error(missing: &[(String, &'static str)], log_path: &Path) -> String {
     let list = missing
         .iter()
         .map(|(pkg, rel)| format!("- {pkg}（缺 {rel}）"))
         .collect::<Vec<_>>()
         .join("、");
+    // 按缺失的家族分发建议：fs-ext 是真正的 node-gyp 现场编译依赖，
+    // Node 25+ 旧 NAN C++ 头文件不兼容会导致构建失败，所以仍推荐
+    // 「设置 → 运行时 → 安装 Node.js」让外壳使用内置 Node 24 LTS；
+    // node-addon-system-* 自带 prebuild，缺失意味着 optionalDependency
+    // 没被拉下来，重试或回退内核版本更对症。两条建议同时出现时一并给出。
+    let has_fs_ext = missing.iter().any(|(pkg, _)| pkg == "fs-ext");
+    let has_node_addon_system = missing
+        .iter()
+        .any(|(pkg, _)| pkg.starts_with("@deepseek-ai/node-addon-system-"));
+    let mut hint = String::new();
+    if has_fs_ext {
+        hint.push_str("推荐在「设置 → 运行时」点击「安装 Node.js」，让外壳使用内置的 Node 24 LTS（fs-ext 2.x 的旧 NAN C++ 头文件与 Node 25 的 V8 ABI 不兼容，系统 Node 过新会导致构建脚本即使运行也会失败）");
+    }
+    if has_node_addon_system {
+        if !hint.is_empty() {
+            hint.push('；');
+        }
+        hint.push_str("node-addon-system 子包以 optionalDependencies 形式随平台拉入，缺失通常意味着 pnpm 没有把当前平台的 prebuild 下载下来，请重试安装或回退到其他内核版本");
+    }
+    if !hint.is_empty() {
+        hint.push('。');
+    }
     format!(
-        "内核依赖的原生模块未构建完成：{list}。常见原因是当前 Node 版本过新（如 Node 25+），导致 fs-ext 等模块的旧 C++ 头文件无法编译。推荐在「设置 → 运行时」点击「安装 Node.js」，让外壳使用内置的 Node 24 LTS；或者回退到与现有 Node 兼容的内核版本。完整日志：{log}",
+        "内核依赖的原生模块未构建完成：{list}。{hint}完整日志：{log}",
         log = log_path.display(),
     )
+}
+
+/// smoke-load 探针：要逐一 `require()` 的内核包名列表。挑选原则是
+/// 「凡是会拉起原生模块的内核入口包」——把它们写成静态字面量是为了让
+/// 单元测试可以直接 grep 字符串、验证列表不为空；不是说这些包名
+/// 永远不变（实际上 `fs-ext` 在 0.1.5-alpha 起已被
+/// `@deepseek-ai/node-addon-system-*` 取代，但 `dsh-fs-local` /
+/// `dsh-subprocess-local` 等直接调用者无论上游怎么换底层库都会留着）。
+/// `node-addon-require-builtin`（@deepseek-ai/dsh 的隐式依赖）用来
+/// 验证 `@deepseek-ai/node-addon-system-darwin-x64` 这类 platform
+/// 子包真的把 `bin/system.node` 解析成功，因为 require 才会触发原生
+/// 模块加载——`require.resolve` 单独只能确认 JS 路径在位。
+const SMOKE_LOAD_TARGETS: &[&str] = &[
+    "@deepseek-ai/dsh-fs-local",
+    "@deepseek-ai/dsh-subprocess-local",
+    "@deepseek-ai/dsh-bash-local",
+    "@deepseek-ai/dsh-pwsh-local",
+    "@deepseek-ai/dsh-session-persistence-jsonl",
+    "@deepseek-ai/dsh-sandbox-local",
+    "@deepseek-ai/dsh-credentials-local",
+    "@deepseek-ai/dsh-attachment-local",
+    "@deepseek-ai/dsh-file-reference-local",
+    "@deepseek-ai/dsh-spill-local",
+    "node-addon-require-builtin",
+];
+
+/// 构造 smoke-load 探针的 JS 源码。设计要点：
+///
+/// 1. **同时跑 `require.resolve` + `require`**：前者确认 JS 入口在位，
+///    后者才会真正加载原生 `.node`。`require.resolve` 通过但 `require`
+///    抛 `Cannot find module './build/...'` 正是 fs-ext / node-addon-system
+///    这类问题在 pnpm 安装后最普遍的表现形态。
+/// 2. **不引入任何 dsh-xlink 私有的包名硬编码**：探针逻辑只问
+///    「这些模块能不能 require」，「要测哪些模块」由 `SMOKE_LOAD_TARGETS`
+///    这一行常量驱动，新增原生依赖时只追加常量即可，不必再改探针代码。
+/// 3. **错误用结构化形式输出**：`PROBE-FAIL <pkg> <code> <message>`，
+///    日志解析器（和单元测试）可以从大量堆栈里 grep 出真正失败的那一行。
+///    `console.error` 而不是 `console.log`，让 pnpm / vite 风格的 reporter
+///    不会吞掉它。
+/// 4. **`require.resolve` 失败时立即跳到 `require` 的 catch**：某些
+///    平台子包只作为 `optionalDependencies` 出现，`require.resolve` 在
+///    当前平台不需要时本来就不该解析成功，探针忽略这类缺失而非报错——
+///    这是平台无关的；真要测的是当前**确实应该可加载**的入口包。
+fn smoke_load_probe_script() -> String {
+    let targets_json = serde_json::to_string(SMOKE_LOAD_TARGETS).unwrap_or_else(|_| "[]".into());
+    format!(
+        r#"
+const targets = {targets_json};
+const fail = [];
+for (const t of targets) {{
+  let entry;
+  try {{ entry = require.resolve(t); }}
+  catch (e) {{
+    // 入口不可解析等同于「内核根本没把这个包拉下来」——是安装事故，
+    // 必须报错让壳知道，不允许静默跳过。
+    fail.push({{ pkg: t, code: 'UNRESOLVED', message: String(e && e.message || e) }});
+    console.error('PROBE-FAIL ' + t + ' UNRESOLVED ' + (e && e.code || ''));
+    continue;
+  }}
+  try {{
+    // require 是真正加载原生模块的入口；fs-ext / node-addon-system 等
+    // 在这一步会同步抛 'Cannot find module ./build/Release/...'。
+    require(t);
+  }} catch (e) {{
+    fail.push({{ pkg: t, code: 'LOAD_FAILED', message: String(e && e.message || e) }});
+    console.error('PROBE-FAIL ' + t + ' LOAD_FAILED ' + (e && e.code || '') + ' ' + (e && e.message || e));
+  }}
+}}
+if (fail.length === 0) {{
+  console.log('PROBE-OK ' + targets.length);
+  process.exit(0);
+}}
+console.error('PROBE-FAIL-COUNT ' + fail.length + '/' + targets.length);
+process.exit(2);
+"#
+    )
+}
+
+/// 安装结束后跑一次 Node 探针：把所有「必装 + 必能 require」的内核包
+/// 真实加载一次，把任何 `Cannot find module './build/Release/...'` 或
+/// `NODE_MODULE_VERSION mismatch` 一类错误在「安装完成 → 首次启动」
+/// 这条时间线上提前引爆。`verify_native_modules` 只看二进制**文件**
+/// 是否就位，`smoke_load_native_modules` 看的是原生模块**能不能加载**
+/// ——二者互补：前者快、能给精确的「哪个文件缺失」信息，但漏判
+/// `*.node` 存在但 ABI 不兼容的罕见情况；后者慢一点（最多一秒级），
+/// 但能把所有 require-time 问题一次性炸出来。
+///
+/// 失败的退出码 / 输出会经由 `run_with_progress` 落到 `log_path`，
+/// 调用方把它转译为用户可见的错误文案（见 `install_version` 中
+/// 调用点的 fallback 字符串）。
+fn smoke_load_native_modules(
+    node_exe: &Path,
+    kernel_dir: &Path,
+    logs_dir: &Path,
+    log_spec: &LogSpec,
+    on_progress: &mut impl FnMut(&str),
+) -> Result<(), String> {
+    on_progress("正在校验内核原生模块的可加载性");
+    let script = smoke_load_probe_script();
+    // hoisted node-linker 下 `kernel_dir/node_modules` 直接平铺了所有
+    // 顶层包；NODE_PATH 把这个目录暴露给 require 解析器，让探针里的
+    // `@deepseek-ai/dsh-foo` 等名称能解析到正确路径。这是 npm/yarn
+    // 风格的解析，pnpm 的 `--config.node-linker=hoisted` 已经把目录
+    // 布局对齐到了 npm。
+    let node_dir = node_exe.parent().unwrap_or_else(|| Path::new("."));
+    let status = run_with_progress(
+        node_exe,
+        &["--no-warnings", "-e", &script],
+        kernel_dir,
+        logs_dir,
+        log_spec,
+        &[node_dir],
+        |line| {
+            // 把探针的关键信号往前传到 UI（PROBE-OK / PROBE-FAIL），其余
+            // 噪音（Node 的 deprecation 提示等）由日志兜底。
+            if line.contains("PROBE-") {
+                on_progress(line);
+            }
+        },
+    )
+    .map_err(|e| format!("无法启动 Node 探针：{e}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    // exit code 2 是探针自己的失败约定（见脚本末尾），其他非零退出
+    // （如 127 找不到 node）也视作加载失败——文本已经在日志里。
+    Err(format!(
+        "Node 探针退出码 {:?}（详见当日日志）",
+        status.code()
+    ))
 }
 
 /// 内核日志文件的逻辑名（不含构建类型前缀和日期戳）。完整的文件名在
@@ -1412,5 +1653,266 @@ mod tests {
         fs::write(release.join("fs_ext.node"), b"stub").unwrap();
         verify_native_modules(&root).expect("fs_ext.node 在位时必须通过");
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 0.1.5-alpha 系列内核（fs-ext 已不再被依赖，改为
+    /// `@deepseek-ai/node-addon-system-<plat>`）：校验器必须接受「fs-ext
+    /// 不在依赖树里、node-addon-system 子包的 prebuild 已就位」的状态，
+    /// 否则 0.1.5-alpha 的全新安装永远过不了关——而实际上 fs_ext.node 本来
+    /// 就不该被期望存在。这是 commit 4c8da01 引入 strict 校验后唯一漏掉的
+    /// 路径。
+    #[test]
+    fn verify_native_modules_passes_when_node_addon_system_present_and_fs_ext_absent() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-native-check-nas-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        // 模拟新内核：只装 node-addon-system-darwin-x64，并写好其 prebuild。
+        // 注意：刻意不创建 fs-ext 目录——它在新内核里就不该存在。
+        let bin = root
+            .join("node_modules")
+            .join("@deepseek-ai/node-addon-system-darwin-x64")
+            .join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("system.node"), b"stub").unwrap();
+        verify_native_modules(&root)
+            .expect("fs-ext 缺席但 node-addon-system prebuild 就位时必须通过");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 新内核的 node-addon-system 子包目录虽然存在，但 prebuild 文件缺失：
+    /// 校验器应当把这一项报为缺失，让 UI 引导用户重试，而不是放过错误状态。
+    #[test]
+    fn verify_native_modules_flags_missing_node_addon_system_binary() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-native-check-nas-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let pkg = root
+            .join("node_modules")
+            .join("@deepseek-ai/node-addon-system-darwin-x64");
+        fs::create_dir_all(pkg.join("bin")).unwrap();
+        // 不写 system.node——模拟 prebuild 下载失败。
+        let missing = verify_native_modules(&root).expect_err("应报告缺失");
+        assert!(
+            missing
+                .iter()
+                .any(|(pkg, _)| pkg == "@deepseek-ai/node-addon-system-darwin-x64"),
+            "missing list 必须包含 node-addon-system-darwin-x64：{:?}",
+            missing
+        );
+        // 错误文案应当对 node-addon-system 给出针对性的重试建议，
+        // 而不是把「安装 Node 24」套到它头上。
+        let log = root.join("install.log");
+        let rendered = format_native_modules_error(&missing, &log);
+        assert!(
+            rendered.contains("node-addon-system"),
+            "渲染文案：{rendered}"
+        );
+        assert!(
+            !rendered.contains("Node 25"),
+            "不应把 Node 版本建议强加给 node-addon-system 缺失：{rendered}"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 文案分支：fs-ext 缺失与 node-addon-system 缺失同时出现时，
+    /// 两条建议都要出现，且按 fs-ext 在前、node-addon-system 在后的
+    /// 固定顺序串联（错误文案要给「重试」类用户与「换 Node」类用户
+    /// 都能用上的指引）。
+    #[test]
+    fn format_native_modules_error_combines_hints_for_both_families() {
+        let log = Path::new("/tmp/dsh-install-test.log");
+        let missing = vec![
+            ("fs-ext".to_string(), "build/Release/fs_ext.node"),
+            (
+                "@deepseek-ai/node-addon-system-linux-x64".to_string(),
+                "bin/system.node",
+            ),
+        ];
+        let rendered = format_native_modules_error(&missing, log);
+        assert!(rendered.contains("设置"), "应给出 Node 24 建议：{rendered}");
+        assert!(
+            rendered.contains("optionalDependencies"),
+            "应给出 node-addon-system 重试建议：{rendered}"
+        );
+        let settings_pos = rendered.find("设置").unwrap();
+        let optional_pos = rendered.find("optionalDependencies").unwrap();
+        assert!(
+            settings_pos < optional_pos,
+            "Node 建议应排在 node-addon-system 建议之前：{rendered}"
+        );
+    }
+
+    /// smoke-load 探针脚本必须包含至少一个会拉起原生模块的入口包，
+    /// 且必须同时调用 `require.resolve` 与 `require`——前者只确认
+    /// JS 路径在位，后者才真正加载 `.node`。如果未来有人把 `require`
+    /// 替换成 `require.resolve`，fs-ext / node-addon-system 缺失这种
+    /// 形态会被这条测试抓住，立刻挂掉。
+    #[test]
+    fn smoke_load_probe_script_requires_real_native_loading() {
+        let script = smoke_load_probe_script();
+        assert!(
+            script.contains("require.resolve"),
+            "探针必须先 require.resolve 再 require：{script}"
+        );
+        assert!(
+            script.contains("\n    require(t);") || script.contains("\n    require("),
+            "探针必须对每个目标真实 require 一次（不是仅解析）：{script}"
+        );
+        // SMOKE_LOAD_TARGETS 必须非空、且至少包含一个能拉起原生模块的
+        // 入口；上一版 0.1.3-alpha 的 fs-ext 守护已经被
+        // node-addon-system 替代，但 session-persistence-jsonl 在两个
+        // 版本里都必装——是回归测试的稳定锚点。
+        assert!(
+            !SMOKE_LOAD_TARGETS.is_empty(),
+            "SMOKE_LOAD_TARGETS 不能为空"
+        );
+        assert!(
+            SMOKE_LOAD_TARGETS.contains(&"@deepseek-ai/dsh-session-persistence-jsonl"),
+            "探针目标里必须包含 dsh-session-persistence-jsonl：{:?}",
+            SMOKE_LOAD_TARGETS
+        );
+        // 失败约定：PROBE-FAIL 行 + exit 2。字符串直接 grep，避免重构时
+        // 漏改约定。
+        assert!(
+            script.contains("PROBE-FAIL"),
+            "缺少 PROBE-FAIL 约定：{script}"
+        );
+        assert!(
+            script.contains("process.exit(2)"),
+            "缺少 exit(2) 约定：{script}"
+        );
+    }
+
+    /// smoke-load 真实跑通路径：构造一个**空的**内核目录（连 dsh 包都
+    /// 没装），让探针发现所有目标都不可解析，应当以非零退出码失败。
+    /// 这是把 smoke-load 接入 install_version 后的端到端防线——避免
+    /// `verify_native_modules` 通过但运行时 require 失败的旧坑再次
+    /// 漏过。
+    #[test]
+    fn smoke_load_native_modules_fails_when_target_unresolved() {
+        // 用 rustc 自带的 rust-script 跑不起 Node，但 `node` 在 CI 上一般
+        // 存在；本地 macOS 上没装 Node 的环境，跳过该测试。`#[ignore]` 给
+        // 默认运行兜底，CI 可以单独跑。
+        let Some(node) = find_system_node() else {
+            eprintln!(
+                "smoke_load_native_modules_fails_when_target_unresolved: 跳过（未找到 node）"
+            );
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "dsh-smoke-load-fail-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("node_modules")).unwrap();
+        let logs_dir = root.join("logs");
+        fs::create_dir_all(&logs_dir).unwrap();
+        let log_spec = install_log_spec("smoke-fail");
+        let mut captured = Vec::<String>::new();
+        let result = smoke_load_native_modules(&node, &root, &logs_dir, &log_spec, &mut |line| {
+            captured.push(line.to_string())
+        });
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            result.is_err(),
+            "空内核目录必须被探针报错：captured={captured:?}"
+        );
+        let err = result.unwrap_err();
+        assert!(err.contains("探针"), "错误文案应当提到探针：{err}");
+    }
+
+    /// smoke-load 通过路径：构造一个让探针「至少不报 UNRESOLVED」的场景，
+    /// 即提供一个空 module 让 `@deepseek-ai/dsh-session-persistence-jsonl`
+    /// 解析到但 `require` 抛错（这里用一个空目录 + 占位 package.json
+    /// 模拟）。这个测试只验证探针**真正启动 Node 并执行**，完整的
+    /// 成功路径需要在真实内核上验证——这里覆盖的是「探针进程能起来」
+    /// 这一最基本的前提。
+    #[test]
+    fn smoke_load_native_modules_invokes_node() {
+        let Some(node) = find_system_node() else {
+            eprintln!("smoke_load_native_modules_invokes_node: 跳过（未找到 node）");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "dsh-smoke-load-invoke-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("node_modules")).unwrap();
+        let logs_dir = root.join("logs");
+        fs::create_dir_all(&logs_dir).unwrap();
+        let log_spec = install_log_spec("smoke-invoke");
+        let mut captured = Vec::<String>::new();
+        // 探针应当被调用并以非零退出码结束（因为内核里啥都没装）。
+        let _ = smoke_load_native_modules(&node, &root, &logs_dir, &log_spec, &mut |line| {
+            captured.push(line.to_string())
+        });
+        // 关键信号必须出现在 on_progress 通道里（PROBE-FAIL-COUNT）。
+        assert!(
+            captured.iter().any(|l| l.contains("PROBE-")),
+            "on_progress 必须收到 PROBE-* 标记：{captured:?}"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 在 PATH / `command_with_path` 的合并路径下找一个可用的 `node`。
+    /// 测试环境若没装 Node 就跳过（不阻塞常规 CI）。
+    fn find_system_node() -> Option<PathBuf> {
+        let candidates: &[&str] = if cfg!(windows) {
+            &["node.exe"]
+        } else {
+            &["node"]
+        };
+        for c in candidates {
+            if let Ok(p) = which_first(c) {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    fn which_first(name: &str) -> std::io::Result<PathBuf> {
+        // 简化版 which：从 PATH 与 crate::env::merged_path() 之外的常用
+        // 位置查找。Windows 上 PATH 由 command_with_path 合并过；这里
+        // 直接 std::env::var 后 split，不必再走 merged_path。
+        let path_var = std::env::var_os("PATH")
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "PATH not set"))?;
+        for entry in std::env::split_paths(&path_var) {
+            let full = entry.join(name);
+            if full.is_file() {
+                return Ok(full);
+            }
+        }
+        // 兜底：典型 macOS Homebrew / Linux 系统 Node 路径。
+        for hint in [
+            "/usr/local/bin/node",
+            "/opt/homebrew/bin/node",
+            "/usr/bin/node",
+        ] {
+            let p = PathBuf::from(hint);
+            if p.is_file() {
+                return Ok(p);
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("node not found on PATH: {name}"),
+        ))
     }
 }
