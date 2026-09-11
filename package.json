@@ -32,7 +32,8 @@
     "build:mac-intel": "tauri build --target x86_64-apple-darwin",
     "build:win": "tauri build --target x86_64-pc-windows-msvc",
     "test:file-perf": "node scripts/verify-dsh-file-perf.mjs",
-    "check:signing-keys": "node scripts/check-signing-keys.mjs"
+    "check:signing-keys": "node scripts/check-signing-keys.mjs",
+    "check:ui-bindings": "node scripts/check-ui-bindings.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
