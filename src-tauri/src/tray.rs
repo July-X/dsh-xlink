@@ -8,7 +8,7 @@
 //! `prevent_close()` 并隐藏窗口。macOS 不参与（那里最小化/关闭沿用系统语义，
 //! Dock 承担常驻入口），所以整个模块按 `cfg(windows)` 编译。
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -29,6 +29,10 @@ const TRAY_ICON: tauri::image::Image<'static> = tauri::include_image!("icons/tra
 const CLOSE_HINT_INTERVAL_MS: u64 = 4000;
 
 static LAST_CLOSE_HINT_AT: AtomicU64 = AtomicU64::new(0);
+
+/// 主窗口当前是否处于"被收起进通知区域"的状态。恢复时据此决定要不要补发提示
+/// ——`hide_to_tray` 当场发的那条渲染在已隐藏的窗口里，用户看不到（P1-3）。
+static HIDDEN_TO_TRAY: AtomicBool = AtomicBool::new(false);
 
 /// 建立托盘图标。必须在事件循环启动前的 `setup` 里调用。
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
@@ -74,6 +78,8 @@ pub fn hide_to_tray(app: &AppHandle) {
     };
     let _ = window.set_skip_taskbar(true);
     let _ = window.hide();
+    // 记下"是被我们收起的"：只有从该状态恢复时才需要补发提示（P1-3）。
+    HIDDEN_TO_TRAY.store(true, Ordering::Relaxed);
 }
 
 /// 把主窗口从隐藏 / 最小化状态恢复到前台。
@@ -95,6 +101,12 @@ pub fn show_main_shell(app: &AppHandle) {
     let _ = window.set_always_on_top(true);
     let _ = window.set_always_on_top(false);
     let _ = window.set_focus();
+    // 收起时那条 `shell-hidden-to-tray` 是画在**刚被隐藏**的窗口里的，用户看不到
+    // （P1-3）。提示只有在窗口可见时才讲得通，所以从收起状态恢复时补发一条：此刻
+    // 用户正看着界面，"刚才去哪了、怎么再找回来"才有意义。
+    if HIDDEN_TO_TRAY.swap(false, Ordering::Relaxed) {
+        let _ = app.emit("shell-restored-from-tray", ());
+    }
 }
 
 /// 关闭请求的常驻化处理：把主窗口收进托盘而不是退出进程。
