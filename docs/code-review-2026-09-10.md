@@ -66,10 +66,11 @@
 | P2-45 / P2-47 / P2-48 / P2-52 | CI 入口缺失、verify 脚本假失败、坏徽章、无 push/PR 门禁 | ✅ 已修 | 新增 desktop-ci.yml；两个 verify 脚本加版本门 + try/catch；补 test:file-perf；修徽章 |
 | P2-32 ~ P2-34 | registry 信任边界口径、releases 无测试/无缓存 | ✅ 已修 | AGENTS 补镜像与 SRI 说明；`select_releases` + 6 条测试（空 npm 结果改为回退）；60s TTL 缓存 |
 | P2-28 / P2-62 | 日志窗口静默失败、logs 无保留策略 | ✅ 已修 | 校验合并 + 异步开窗回传错误；启动裁剪 30 天 / 200 MiB（10 分钟宽限）；新增 5 条测试 |
+| P2-51 | 发布流水线不校验签名密钥是否成对 | ✅ 已修 | 新增 check-signing-keys（Ed25519 验签 + key id 比对），build job 打包前执行；5 条测试 |
 | P2-38 ~ P2-40 / P2-43 / P2-44 | 日志重入被吞、窗口操作静默失败、无渲染兜底、两处文档漂移 | ✅ 已修 | 见明细；UI 测试 14 → 16 条 |
-| P2-2、P2-36、P2-46、P2-51 | | ⏳ 待修 | |
+| P2-2、P2-36、P2-46 | | ⏳ 待修 | |
 
-**当前基线**：`cargo test` 269 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 16 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
+**当前基线**：`cargo test` 269 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 16 通过；`npm run test:scripts` 15 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
 
 > 本文件同时是**问题清单**与**修复台账**：正文条目保留原始分析（含 `file:line`、触发场景、影响、建议），修复完成后在对应条目标题前加【已修】并在此表登记。
 
@@ -564,7 +565,7 @@
 | 【已修】P2-48 | `README.md:3` | 徽章用 `badge.svg?event=release`，而 workflow 只监听 push(tags) 与 `workflow_dispatch` → 该 URL 实测返回 `no status`，去掉参数后返回真实状态（当前为 `failing`），一个本该暴露发布流水线红灯的信号长期失效 | 删掉 `?event=release`（或改为 `?event=push`） | ✅ 已修：README 徽章去掉 `?event=release`（该参数实测返回 no status），改为默认即反映最近一次运行
 | 【已修】P2-49 | `tauri.conf.json:26-29` | `csp: null` + `withGlobalTauri: true` 让面板 webview 失去第二道防线。今日 `ui/src` 与 `index.html` 中无任何 XSS sink（纵深防御问题，非已发生的漏洞），但一旦出现 sink（社区目录、插件/技能元数据、内核日志、registry 响应都是外部字符串），无 CSP 意味着 payload 直接执行，而面板命令集包含 `plugin_install`（接受 git URL，安装流程会跑插件自己的 `prepare`）、`install_kernel`、`patch_apply` → 以用户身份任意代码执行 | 配置真实 CSP；`withGlobalTauri` 仅注入脚本需要，可收窄到必要窗口 |
 | 【已修】P2-50 | `docs/release.md:13` | 称手动 dispatch 会自动补 tag，与 AGENTS.md「不要用手动 dispatch 创建缺失的 tag」相冲突 | 统一文档口径 |
-| P2-51 | workflow:187-191 | 流水线对「CI 私钥与 `tauri.conf.json:63` 公钥是否成对」没有任何校验 —— 密钥轮换时若忘记同步公钥，会发布出所有客户端都验签失败的更新（且直到用户更新时才暴露） | 发布前用私钥签名一个测试载荷并用配置公钥验签 |
+| 【已修】P2-51 | workflow:187-191 | 流水线对「CI 私钥与 `tauri.conf.json:63` 公钥是否成对」没有任何校验 —— 密钥轮换时若忘记同步公钥，会发布出所有客户端都验签失败的更新（且直到用户更新时才暴露） | 发布前用私钥签名一个测试载荷并用配置公钥验签 | ✅ 已修：新增 `scripts/check-signing-keys.mjs` —— 用 CI 私钥通过 `tauri signer sign` 签一份测试载荷，再用 `tauri.conf.json` 的 `plugins.updater.pubkey` 做 Ed25519 验签（node:crypto，不依赖 minisign），并比对 key id；公钥字段是"整个 minisign 公钥文件再 base64"，脚本会先剥外层。发布 workflow 的 build job 在**打包之前**执行该校验（无密钥时跳过）。新增 5 条测试覆盖真实公钥形态、轮换后不匹配、伪造 key id、篡改载荷与畸形输入，三项反证命中
 | 【已修】P2-52 | `.github/workflows/`（仅 1 个文件） | 没有 push/PR 触发的 workflow：日常提交只有在打 tag 时才第一次跑 lint/测试 | 增加 push/PR 的轻量 workflow（fmt + clippy + cargo test + test:ui） | ✅ 已修：新增 `.github/workflows/desktop-ci.yml`（push main / PR / 手动触发，并发组取消旧运行，`permissions: contents: read`，所有 `uses:` 固定 commit SHA），步骤与发布 workflow 的 quality job 对齐：不变量 / test:ui / test:scripts / smoke-pullstring / UI 构建与包体预算 / fmt / cargo test / clippy。日常提交不再等到打 tag 才第一次跑门禁
 | 【已修】P2-53 | `scripts/install.mjs:21-26,49-52` | `run()` 用 `execFileSync` 且**没有** `stdio: 'inherit'`（第 49 行注释声称已设置，与实际不符）→ `pnpm install` 的进度输出全部被捕获丢弃，用户执行 `npm run deps` 后长时间无任何输出；且 `execFileSync` 默认 `maxBuffer` 为 1 MiB，依赖较多时输出超限会以 `ENOBUFS` 失败并给出难以理解的错误 | ✅ 已修：`run()` 透传 `opts`，安装调用传 `{ stdio: 'inherit' }`（实时输出 + 消除 `maxBuffer`）；catch 里把只打印 `err.status ?? '?'`（ENOENT/ENOBUFS 时退化成没有诊断价值的「退出码 ?」）改为打印 `err.message` 并补下一步。新增 `scripts/install-stdio.test.mjs`（1.8 MB 输出完整透传 / ENOENT 带出原因 / 非零退出码原样透出），三条均经反证；新增 `test:scripts` 入口把 `scripts/*.test.mjs` 全量（10 条）接入 CI |
 
