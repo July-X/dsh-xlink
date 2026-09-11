@@ -1496,6 +1496,41 @@ pub fn clear_pid(data_dir: &Path) {
     let _ = fs::remove_file(pid_path(data_dir));
 }
 
+/// 进程命令行查询缓存：Windows 上每次查询都要派生一次 PowerShell + CIM 查询
+/// （经验耗时 0.3–1 秒 CPU），而状态轮询每 2.5 秒就会问一次——只要 pid 文件还在
+/// （哪怕已经陈旧），就是每分钟约 24 次子进程与 WMI 查询，常驻托盘时是持续性
+/// 后台负载（P2-9）。
+///
+/// 缓存 3 秒（略大于一个轮询周期）：身份判据里其余部分仍然是实时查询——端口
+/// 监听活体（`port_listen_pid`）与进程存活（`process_state`）都直接问 OS，因此
+/// "内核刚启动/刚退出"最多被延迟一个周期，不会改变启停判定。查询失败（命令跑不
+/// 起来）不进缓存，避免把一次偶发失败固化 3 秒。
+#[cfg(windows)]
+mod command_cache {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// 缓存有效期。取值权衡：越大越省 PowerShell，越大越可能用到过期的身份。
+    const TTL: Duration = Duration::from_secs(3);
+
+    static CACHE: Mutex<Option<(u32, Instant, Option<String>)>> = Mutex::new(None);
+
+    pub(super) fn get(pid: u32) -> Option<Option<String>> {
+        let guard = CACHE.lock().ok()?;
+        let (cached_pid, at, value) = guard.as_ref()?;
+        (*cached_pid == pid && at.elapsed() < TTL).then(|| value.clone())
+    }
+
+    pub(super) fn put(pid: u32, value: Option<String>) {
+        if value.is_none() {
+            return;
+        }
+        if let Ok(mut guard) = CACHE.lock() {
+            *guard = Some((pid, Instant::now(), value));
+        }
+    }
+}
+
 /// 返回某个进程的命令行，避免不受限的助手命令把 stop 路径挂住。
 ///
 /// **空输出一律当作"查不到"返回 `None`**：Windows 的 PowerShell 对不存在的 pid
@@ -1511,14 +1546,20 @@ fn process_command(pid: u32) -> Option<String> {
     }
     #[cfg(windows)]
     {
+        // 轮询路径上复用几秒内的结果，别每 2.5 秒都派生一次 PowerShell（P2-9）。
+        if let Some(cached) = command_cache::get(pid) {
+            return cached;
+        }
         let filter =
             format!("(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine");
-        crate::process::run_capture(
+        let value = crate::process::run_capture(
             "powershell.exe",
             &["-NoProfile", "-NonInteractive", "-Command", &filter],
         )
         .ok()
-        .and_then(|(ok, output)| (ok && !output.trim().is_empty()).then_some(output))
+        .and_then(|(ok, output)| (ok && !output.trim().is_empty()).then_some(output));
+        command_cache::put(pid, value.clone());
+        value
     }
 }
 
