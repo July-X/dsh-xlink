@@ -20,12 +20,16 @@
 
 1. **按点修，没按类扫**：`load_store(` 在 `plugins.rs` 仍有 7 处（`:2403`/`:2674`/`:3226` 直接喂写/删）；收版本号的 4 个命令只加了 2 道闸；`entry_is_owned` 三条路径只修了 uninstall；`:loading="globalBusy"` 修了 OverviewPanel 没修 PluginsPanel。
 2. **修复自身的新代码，新分支零测试**：`rollback_files` 完全不在任何测试路径上（`apply` 的失败回滚无人测）；`sweep_unrecorded_store_dirs` / `ensure_wiring_filtered` 虽有经由 `reconcile_store` / `ensure_wiring` 的间接覆盖，但那些用例走的都是"清单存在且正常"的路径——**本轮出问题的"清单缺失/损坏"分支没有任何用例**。
-3. **"已修"的判据被稀释**：台账 121/122 条标 ✅，其中 P1-15（写路径只改一半）、P2-29（`stop()` 永远 `Ok`，"如实上报"是死代码）经本轮复核确认为名义已修。（初稿还列了 P2-35，已撤回——那是本报告自身的误报，见"审查自身的更正"。）
+3. **"已修"的判据被稀释**：台账 121/122 条标 ✅，其中 P1-15（写路径只改一半）、P2-29（`stop()` 永远 `Ok`，"如实上报"是死代码）经本轮复核确认为名义已修。P2-35 则是真缺陷（见下），审查期间被并发会话修掉。
 4. **二分语义只做了"损坏"半边**：`StateRead` 只拦 `Corrupt`，`Missing` 被当成正常空值；而应用自己的错误文案就在指导用户"删除该文件后重试"——提示语与破坏路径是同一个动作（P0-3/P0-4）。
 5. **门禁盲区就是漏点**：CI 只有 macOS；UI 的 loading/disabled 绑定没有静态检查；`check-signing-keys.mjs` 的入口守卫在 Windows 上恒不成立（P1-5）。
 6. **速率**：上一批 22 个提交 / 137 分钟 / +7841 行 / 121 条，平均 68 秒一条，不可能有第二遍同类扫描与"审自己的修复"。
 
-补充一条本轮自己的教训：审查期间工作区**有并发写入者**（另一个会话在同一 checkout 上改 `ui/src/theme.css` 并重建 `ui/dist`）。P1-2 的误报就来自"读工作区快照"而不是"读 `HEAD`"。此后所有结论都以 `git show HEAD:<file>` 复核。
+补充一条本轮自己的教训：审查期间工作区**有并发写入者**（另一个会话在同一 checkout 上工作，
+`ui/` 与 `ui/dist` 都被它改动）。这直接污染过一次判定——第一次复核 P1-2 时读的是工作区快照
+（当时它已被对方改好），于是写下了"误报"的结论；把审查对象钉回提交 `70f173c` 后可见该缺陷真实
+存在（详见下文）。结论：**判定必须钉住被审的那个提交**（`git show 70f173c:<file>`），并且复核
+时要先看 `git log` 有没有并发提交动过同一个文件。
 
 因此本轮除了修缺陷，还要补三类**门禁**：Windows 编译覆盖（P2-16）、UI 模板标识符检查（P2-19）、`check-invariants` 的补丁路径判据（P2-18）。
 
@@ -41,7 +45,7 @@
 | P0-6 | skills `replace_owned` 删除用户改过的 copy 副本 | ✅ 已修（反证命中） |
 | P0-7 | 补丁"无备份记录"永久不可撤销，且提示的重装建议无效 | ⏳ 待修 |
 | P1-1 | 托管 Node 解包根目录写死 `darwin-x64` | ✅ 已修 |
-| ~~P1-2~~ | ~~设置页 `globalBusy` 未导入~~ | ❌ **撤回：误报**（见下） |
+| P1-2 | 设置页 `globalBusy` 未导入 → `:disabled` 死绑定 | ✅ 已修（由并发会话 `dbce6a5` 修，本轮不重复） |
 | P1-3 | Windows 收起提示渲染在已隐藏的窗口里（README/architecture 已承诺） | ✅ 已修 |
 | P1-4 | 托盘「退出」在无内核时仍弹"工作台仍在运行" | ✅ 已修 |
 | P1-5 | `check-signing-keys.mjs` 在 Windows 上静默空转（误绿） | ✅ 已修 |
@@ -68,27 +72,27 @@
 | P2-19 | 缺"UI 模板未定义标识符"门禁 | ✅ 已修（新增 `scripts/check-ui-bindings.mjs`） |
 | P3-* | 轻微项（见文末"轻微与建议"） | ⏳ 待修 |
 
-### 审查自身的更正：P1-2 是误报（撤回）
+### 关于 P1-2 的最终判定（两次更正后）
 
-撤回理由（两条独立证据）：
+**结论：P1-2 是真缺陷，存在于审查对象 `70f173c`；由并发会话在审查期间修复并提交为 `dbce6a5`，
+本轮不重复修。** 状态记录如下，避免以后被误读：
 
-1. `git show HEAD:ui/src/components/SettingsPanel.vue` 第 8 行**本来就**是
-   `import { globalBusy, isLoading, withLoading } from '../loading.js';`（`70f173c` 提交内容）。
-2. 用 `@vue/compiler-sfc` 并**传入 `compileScript` 的 `bindingMetadata`** 重新编译该 SFC：
-   模板渲染为 `$setup.globalBusy`（`bindings.globalBusy = "setup-maybe-ref"`），即标识符
-   确实命中 setup 绑定，`:disabled` 是活的。
+| 时间 | 提交 | `ui/src/components/SettingsPanel.vue:8` | 说明 |
+| --- | --- | --- | --- |
+| 审查对象 | `70f173c` | `import { isLoading, withLoading } …` | 模板用了 `globalBusy`，绑定落空 → `:disabled` 恒为 `undefined` |
+| 22:07:27 | `dbce6a5`（July-X） | `import { globalBusy, isLoading, withLoading } …` | 并发会话修掉了它 |
+| 我的复核 | `dbce6a5` 之后 | 同上（已修） | 我读到的是"已修"状态，因而错误地写成"误报" |
 
-误报是怎么产生的：初次核对时读的是**工作区**的 `SettingsPanel.vue`（当时它的内容与
-`HEAD` 不一致），而审查期间工作区有并发写入者（审查结束前后 `ui/src/theme.css` 也被
-另一个写入者改动并重建了 `ui/dist`）。教训有两条，都已落进本轮的验证规范：
+两次更正的过程本身就是方法教训，两条都已落进验证规范：
 
-- 结论一律以 `git show HEAD:<file>` 为准，不以工作区快照为准；
-- "模板标识符未定义"这类判断必须跑编译器并传 `bindingMetadata`，否则所有标识符都会
-  渲染成 `_ctx.*`，看起来全都"未定义"。
+1. **判定要钉住被审提交**：用 `git show 70f173c:<file>`，并在复核前先看 `git log -- <file>`，
+   确认没有并发提交动过它；只读工作区快照会得出相反结论。
+2. **"模板标识符未定义"必须跑编译器并传 `bindingMetadata`**：不传 `compileScript` 的
+   `bindingMetadata` 时，`compileTemplate` 会把**所有**标识符渲染成 `_ctx.*`，看上去"处处未定义"，
+   据此判断必然误报。正确做法已落进 `scripts/check-ui-bindings.mjs`。
 
-这条误报同时也是 P2-19（UI 绑定门禁）的价值证明：手读 + 裸编译都会出错，只有把
-"模板引用了但 setup/全局都没有"做成可执行断言才靠得住。
-
+顺带一提：`scripts/check-ui-bindings.mjs` 的反证用的就是这个文件——去掉那行导入，门禁立刻报
+`模板引用了未定义的标识符 globalBusy`，说明这类缺陷是可以被自动拦住的。
 
 ---
 
@@ -149,9 +153,13 @@
 - 触发：Apple Silicon（`tauri dev` 或源码构建）或 Linux 上点「帮我安装」——`artifact_for_platform` 本轮新增了 `darwin-arm64` / `linux-*`，会先下 51 MB、校验 SHA-256 通过，再在 `strip_root` 报「归档根目录必须是 …-darwin-x64/」。
 - 修法：`ROOT` 由 slug 推导（`node-v{VERSION}-{slug}`），补按平台断言 ROOT 的单测。
 
-### ~~P1-2 设置页 `globalBusy` 未导入~~ —— 已撤回（误报）
+### P1-2 设置页 `globalBusy` 未导入 → `:disabled` 死绑定
 
-见上文「审查自身的更正：P1-2 是误报（撤回）」。`HEAD` 的实现本来就正确，本条不再作为缺陷跟踪。
+- 位置：`ui/src/components/SettingsPanel.vue:8`（只导入 `isLoading, withLoading`）vs `:122`、`:131`（模板用 `globalBusy`）。
+- 后果：`<script setup>` 里找不到的标识符回落到渲染上下文 → 恒 `undefined` → 按钮永不 disabled；
+  互斥租约期间点「保存设置」/「检测 Node.js」，`withExclusive` 返回 `undefined`，任务体不执行、
+  无任何 toast，2.5s 轮询再把输入框回滚。
+- 状态：**已由并发会话在 `dbce6a5` 修复**（补上导入），本轮只补门禁（P2-19）防止复发。
 
 ### P1-3 Windows「已收起到通知区域」提示用户看不到
 
