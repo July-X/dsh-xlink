@@ -592,16 +592,70 @@ impl RotatingLog {
     }
 }
 
-fn spawn_log_drain<R: Read + Send + 'static>(stream: R, logger: Arc<Mutex<RotatingLog>>) {
-    std::thread::spawn(move || {
-        let mut reader = BufReader::new(stream);
-        let mut buffer = Vec::with_capacity(MAX_OUTPUT_LINE_BYTES);
-        while let Ok(Some(line)) = read_capped_line(&mut reader, &mut buffer) {
-            let Ok(mut log) = logger.lock() else { break };
-            if log.write_line(&line).is_err() {
-                break;
+/// 最近一次日志写入失败的说明（读走即清），供诊断/事故面板引用。
+static LOG_WRITE_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+/// 取走"最近一次日志写入失败"的说明。`None` 表示当前没有已知的写入故障。
+pub fn take_log_write_error() -> Option<String> {
+    LOG_WRITE_ERROR.lock().ok().and_then(|mut slot| slot.take())
+}
+
+/// 记录一次日志写入失败。只保留第一条，避免同类错误刷屏，同时把诊断打到
+/// stderr —— 面板里看不到"日志本身坏了"，终端是唯一能立刻看到的地方。
+fn record_log_write_error(error: &io::Error) {
+    let message = format!("日志写入失败：{error}");
+    match LOG_WRITE_ERROR.lock() {
+        Ok(mut slot) => {
+            if slot.is_none() {
+                eprintln!("dsh-xlink: {message}（仍会继续排空内核输出，但后续内容不会落盘）");
+                *slot = Some(message);
             }
         }
+        Err(_) => eprintln!("dsh-xlink: {message}"),
+    }
+}
+
+/// 排空一个流，把每一行交给 `write`。
+///
+/// **写入失败绝不能中断排空**：一旦停止读取，子进程的管道会被填满，内核就
+/// 卡在写日志上（结果比丢日志严重得多）。旧实现在第一次写入出错时 `break`，
+/// 于是会话中途日志静默死亡，而事故面板仍然引用那个日志路径（P2-3）。
+///
+/// 返回实际读到的行数，便于诊断与测试。
+fn drain_stream<R: Read, F: FnMut(&str) -> io::Result<()>>(
+    stream: R,
+    mut write: F,
+) -> io::Result<u64> {
+    let mut reader = BufReader::new(stream);
+    let mut buffer = Vec::with_capacity(MAX_OUTPUT_LINE_BYTES);
+    let mut lines = 0u64;
+    let mut failing = false;
+    loop {
+        match read_capped_line(&mut reader, &mut buffer) {
+            Ok(Some(line)) => {
+                lines += 1;
+                match write(&line) {
+                    Ok(()) => failing = false,
+                    Err(error) => {
+                        if !failing {
+                            record_log_write_error(&error);
+                            failing = true;
+                        }
+                    }
+                }
+            }
+            Ok(None) => return Ok(lines),
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn spawn_log_drain<R: Read + Send + 'static>(stream: R, logger: Arc<Mutex<RotatingLog>>) {
+    std::thread::spawn(move || {
+        let _ = drain_stream(stream, |line| match logger.lock() {
+            Ok(mut log) => log.write_line(line),
+            Err(_) => Err(io::Error::other("日志写入器锁被毒化")),
+        });
         if let Ok(mut log) = logger.lock() {
             let _ = log.flush();
         }
@@ -2004,5 +2058,71 @@ mod tests {
             before_cxx,
             "CPLUS_INCLUDE_PATH 不应被写入父进程环境"
         );
+    }
+}
+
+#[cfg(test)]
+mod drain_stream_tests {
+    use super::*;
+    use std::io::Cursor;
+    use std::sync::Mutex as StdMutex;
+
+    /// `LOG_WRITE_ERROR` 是进程级单例，而 libtest 默认并发跑用例：碰它的用例
+    /// 必须串行，否则一个用例的 `take_log_write_error()` 会把另一个用例刚写进去
+    /// 的诊断读走（这正是第一版并发下偶发失败的原因）。
+    static GLOBAL_SLOT_LOCK: StdMutex<()> = StdMutex::new(());
+
+    fn lock_slot() -> std::sync::MutexGuard<'static, ()> {
+        GLOBAL_SLOT_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn drain_keeps_reading_after_a_write_failure() {
+        // P2-3：写入失败后旧实现立即 break，子进程管道会被填满，内核卡在写
+        // 日志上；而且日志静默死亡、事故面板仍指向该文件。
+        let _guard = lock_slot();
+        let input = "one\ntwo\nthree\n";
+        let mut seen: Vec<String> = Vec::new();
+        let lines = drain_stream(Cursor::new(input.as_bytes().to_vec()), |line| {
+            seen.push(line.to_string());
+            Err(io::Error::other("disk full"))
+        })
+        .expect("读取本身不该失败");
+
+        assert_eq!(lines, 3, "必须把流排空，否则子进程会阻塞");
+        assert_eq!(seen, vec!["one", "two", "three"], "每一行都要交给写入器");
+        assert!(
+            take_log_write_error().is_some(),
+            "写入失败必须留下可读的诊断"
+        );
+    }
+
+    #[test]
+    fn drain_reports_recovery_without_duplicating_diagnostics() {
+        let _guard = lock_slot();
+        let input = "a\nb\nc\nd\n";
+        let mut calls = 0usize;
+        let lines = drain_stream(Cursor::new(input.as_bytes().to_vec()), |_| {
+            calls += 1;
+            // 第 2 行失败一次，之后恢复。
+            if calls == 2 {
+                Err(io::Error::other("transient"))
+            } else {
+                Ok(())
+            }
+        })
+        .expect("读取本身不该失败");
+        assert_eq!(lines, 4);
+        assert!(take_log_write_error().is_some(), "瞬时失败也要留痕");
+        assert!(
+            take_log_write_error().is_none(),
+            "读走一次即清，避免同一条诊断反复出现"
+        );
+    }
+
+    #[test]
+    fn drain_returns_cleanly_for_empty_input() {
+        let lines = drain_stream(Cursor::new(Vec::new()), |_| Ok(())).expect("ok");
+        assert_eq!(lines, 0);
     }
 }

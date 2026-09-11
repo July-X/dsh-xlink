@@ -566,6 +566,12 @@ pub fn guarded_start(
     // （端口被占、版本未安装、目录不可写）自始至终没被触及。
     let kernel_started = !matches!(verdict, BootVerdict::SpawnFailed(_));
     trail.push(format!("常规启动失败：{}", verdict.reason()));
+    // 日志写入本身失败时，下面的 `log_tail` 读到的内容可能是不完整的，
+    // 而事故面板仍会引用这个日志路径。把"日志坏了"这件事放进 trail，
+    // 用户才知道该看哪里（P2-3）。
+    if let Some(log_error) = crate::process::take_log_write_error() {
+        trail.push(format!("{log_error}（本次日志可能不完整）"));
+    }
     let tail = log_tail(deps);
     let mut suspects = if kernel_started {
         attribute(&tail, &store_items, &kernel_label)
