@@ -498,6 +498,16 @@ pub async fn install_kernel(
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
+        // 安装前主动作废 per-app node 缓存：用户可能在 GUI 启动之后才
+        // 通过 nvm/brew/官方安装包等渠道装好 node，缓存键（`node_path`）
+        // 没变，`cached_node` 就会继续返回旧的 `ok: false`，把安装挡在
+        // `promise_pnpm` 这一步并抛出"未检测到满足 dsh 要求的 Node.js"——
+        // 但实际上 pnpm 完全能跑。强制重新探测一次（成本是一次
+        // `node --version`），同时把 fresh 结果回写缓存，让本轮安装
+        // 结束后的 `get_status` 轮询也立刻看到正确的 Node 状态，
+        // 避免关闭失败面板后又被 node 安装引导弹窗打扰一次。
+        // 同样用 `crate::lock`：锁被毒化时也要清掉缓存。
+        *crate::lock(&state.node_cache) = None;
         let settings = settings::load(&data_dir);
         let node_info = cached_node(&state, &settings);
         let mut send = |msg: &str| {

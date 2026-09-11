@@ -190,12 +190,56 @@ pub fn command_with_path_dirs<S: AsRef<OsStr>>(program: S, extra_path_dirs: &[&P
     cmd
 }
 
+/// Windows 上该不该把可执行文件交给 `%ComSpec% /C` 执行。
+///
+/// 判据是「CreateProcess 能不能直接拉起它」，因此只有**已知的真实二进制
+/// 后缀**（`.exe` / `.com`）走直接执行；`.cmd` / `.bat` 是批处理，必须
+/// 经命令解释器，其余一切形态（空后缀也算）沿用旧行为走 `%ComSpec% /C`。
+/// 这样修的是「`.exe` 被误交给 cmd 拼命令行」这一个明确缺陷，不额外改变
+/// 别的形态此前侥幸能跑的路径。非 Windows 平台上没有这种区分，
+/// 一律直接执行。
+fn needs_command_shell(exe: &Path) -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    !exe.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("com"))
+}
+
+/// 构造执行 `exe` + `args` 的 [`Command`]：批处理文件走 `%ComSpec% /C`，
+/// 其余直接执行。
+///
+/// **绝不能**把真实二进制也交给 `cmd.exe /C` 拼接命令行。`cmd.exe` 不按
+/// MSVCRT 规则重新解析 argv，而是直接对 `/C` 之后的整串做分词，只有整串
+/// 以 `"` 开头时才会剥掉首尾引号。父进程（Rust 的 `Command`）只在参数
+/// 含空格时加引号，于是 `C:\Program Files\nodejs\node.exe --version`
+/// 这样的命令行被切成「命令 `C:\Program` + 参数 `Files\nodejs\node.exe`
+/// --version」，cmd 报 `'C:\Program' is not recognized as an internal or
+/// external command` 并以退出码 1 结束，目标程序从未运行。Windows 上 Node
+/// 默认装在 `C:\Program Files\nodejs`，因此「node 装在默认位置」这一最
+/// 常见的情况下，凡是经此路径启动的 node 都会静默失败：pnpm 安装内核正常
+/// 完成，随后安装后的原生模块探针（`kernel::smoke_load_native_modules`）
+/// 以退出码 1 告败且日志里没有任何 `PROBE-` 行——因为 node 根本没跑。
+pub(crate) fn command_through_shell_if_needed(exe: &Path, args: &[&str]) -> Command {
+    #[cfg(windows)]
+    if needs_command_shell(exe) {
+        let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into());
+        let mut cmd = Command::new(comspec);
+        cmd.arg("/C").arg(exe).args(args);
+        return cmd;
+    }
+    let mut cmd = Command::new(exe);
+    cmd.args(args);
+    cmd
+}
+
 /// 收集一次性脚本工具（`npm config …` 等）的输出，这类工具的可执行文件
 /// 可能是 `.cmd` 批处理 shim。Windows 上 CreateProcess 无法直接执行批处理
-/// 文件，所以 spawn 走 `%ComSpec% /C`，与 `spawn` 一致；其他平台直接
-/// 执行可执行文件。子进程继承合并后的 PATH，并将 `extra_path_dirs` 前置，
-/// 让脚本的 `#!/usr/bin/env node` 解析能找到调用方已校验的 node，即便
-/// 是在只有系统 PATH 的 GUI 壳中。
+/// 文件，所以这类 shim 走 `%ComSpec% /C`；真实二进制（`.exe`）一律直接
+/// 执行（原因见 [`command_through_shell_if_needed`]）。子进程继承合并后的
+/// PATH，并将 `extra_path_dirs` 前置，让脚本的 `#!/usr/bin/env node` 解析
+/// 能找到调用方已校验的 node，即便是在只有系统 PATH 的 GUI 壳中。
 pub fn script_capture(
     exe: &Path,
     args: &[&str],
@@ -206,9 +250,7 @@ pub fn script_capture(
     let label = exe.to_string_lossy().into_owned();
     #[cfg(windows)]
     {
-        let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into());
-        let mut cmd = Command::new(comspec);
-        cmd.arg("/C").arg(exe).args(args);
+        let mut cmd = command_through_shell_if_needed(exe, args);
         cmd.current_dir(cwd);
         cmd.env("PATH", path);
         run_command_capture(cmd, &label)
@@ -1211,9 +1253,7 @@ fn spawn(exe: &Path, args: &[&str], cwd: &Path, extra_path_dirs: &[&Path]) -> io
     let path = merge_extra_path(crate::env::merged_path(), extra_path_dirs);
     #[cfg(windows)]
     {
-        let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into());
-        let mut cmd = Command::new(comspec);
-        cmd.arg("/C").arg(exe).args(args);
+        let mut cmd = command_through_shell_if_needed(exe, args);
         // GUI 壳以任意的 cwd 启动；子进程必须显式继承一个 cwd，
         // 否则会向上解析最近的 package.json 并装到错误目录。
         cmd.current_dir(cwd);
@@ -1749,7 +1789,11 @@ mod tests {
         assert!(success);
         let line_end = if cfg!(windows) { "\r\n" } else { "" };
         assert_eq!(stdout, format!("ok{line_end}"));
-        assert_eq!(stderr, if cfg!(windows) { "out \r\n" } else { "err" });
+        // `echo out 1>&2` 重定向的是 `echo` 的**参数分隔空格**之后的输出：
+        // 部分 cmd.exe 版本在重定向到管道时会把分隔空格一并写出（实测
+        // `"out  \r\n"`，两个空格），另一些只有一个。这里只钉住语义部分，
+        // 不把一个与本次改动无关的 cmd.exe 版本差异变成红灯。
+        assert_eq!(stderr.trim_end(), "out");
     }
 
     #[cfg(unix)]
@@ -1759,6 +1803,132 @@ mod tests {
         cmd.args(["-c", "yes x | head -c 4194305"]);
         let error = run_command_capture(cmd, "noisy capture").expect_err("capture must be bounded");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// 宿主平台上必然存在、且以**真实可执行文件**形式存在（非批处理
+    /// shim）的一个程序及其参数，运行时必然写出一行 stdout。用于让 spawn
+    /// 类测试覆盖「直接执行」这条路径——真机上的 pnpm 是 `.cmd`、node 是
+    /// `.exe`，两条分支都必须被真正跑过一次。返回 `None` 表示宿主上找不到
+    /// 这样的程序（此时测试自行跳过）。
+    fn direct_executable() -> Option<(&'static str, &'static [&'static str])> {
+        // 必须是「无参数也产生 stdout」的程序：日志写入器要以「有行可写」
+        // 为前提才会创建并 flush 日志文件。
+        const NO_ARGS: &[&str] = &[];
+        const SH: &[&str] = &["-c", "printf hi"];
+        let (exe, args) = if cfg!(windows) {
+            ("C:\\Windows\\System32\\hostname.exe", NO_ARGS)
+        } else {
+            ("/bin/sh", SH)
+        };
+        Path::new(exe).is_file().then_some((exe, args))
+    }
+
+    /// `command_through_shell_if_needed` 必须把 `.exe` 直接交给
+    /// CreateProcess，而不是经 `%ComSpec% /C` 拼命令行。后者在
+    /// `C:\Program Files\nodejs\node.exe` 这类含空格路径上会把命令行
+    /// 切成「`C:\Program` + 其余」，cmd 以退出码 1 报
+    /// `'C:\Program' is not recognized...`，目标程序根本没跑——内核安装后
+    /// 的原生模块探针正是这样在默认 Node 安装上全平台失败，且日志里连一行
+    /// `PROBE-` 都没有（P0 回归的根因）。
+    #[cfg(windows)]
+    #[test]
+    fn windows_executable_is_spawned_directly_not_through_command_shell() {
+        let spaced = Path::new("C:\\Program Files\\nodejs\\node.exe");
+        assert!(!needs_command_shell(spaced));
+        // 直接执行：`Command` 的程序就是那个含空格的路径本身，参数单独
+        // 成项；Debug 输出即最终命令行（`"C:\Program Files\nodejs\node.exe"
+        // "--version"`）。旧实现渲染成 `cmd.exe /C C:\Program
+        // Files\nodejs\node.exe --version`，正是被 cmd 切碎的那种形态。
+        let cmd = command_through_shell_if_needed(spaced, &["--version"]);
+        let rendered = format!("{cmd:?}");
+        assert!(
+            rendered.contains(r#""C:\\Program Files\\nodejs\\node.exe" "--version""#),
+            "含空格的 .exe 必须以自身为程序直接执行，实际：{rendered}"
+        );
+        assert!(
+            !rendered.contains("cmd.exe"),
+            "真实可执行文件不得绕经 cmd.exe，实际：{rendered}"
+        );
+        // 批处理 shim 仍然必须经 cmd.exe —— CreateProcess 跑不了 .cmd。
+        assert!(needs_command_shell(Path::new(
+            "C:\\Users\\me\\AppData\\Roaming\\npm\\pnpm.CMD"
+        )));
+        assert!(needs_command_shell(Path::new(
+            "C:\\Program Files\\nodejs\\npm.cmd"
+        )));
+        assert!(needs_command_shell(Path::new("C:\\tools\\build.bat")));
+        // 空后缀沿用旧行为，不在此顺带改变。
+        assert!(needs_command_shell(Path::new("C:\\tools\\mytool")));
+        assert!(!needs_command_shell(Path::new(
+            "C:\\Users\\me\\AppData\\Local\\pnpm\\pnpm.exe"
+        )));
+        assert!(!needs_command_shell(Path::new(
+            "C:\\Windows\\System32\\cmd.com"
+        )));
+    }
+
+    /// 真机回归：默认安装位置的 node 必须能被 spawn 出真实输出。这是
+    /// 「node 路径含空格」这条 P0 的最小可执行复现——旧实现下它恒以退出
+    /// 码 1 结束且没有任何 stdout/stderr。末尾顺带断言进度回调确实看到了
+    /// 子进程输出，因为内核安装后的原生模块探针正是靠「日志/进度里有没有
+    /// `PROBE-` 行」来区分「node 没跑起来」与「原生模块加载失败」的。
+    #[cfg(windows)]
+    #[test]
+    fn node_in_program_files_spawns_and_reports_version() {
+        let node = Path::new("C:\\Program Files\\nodejs\\node.exe");
+        if !node.is_file() {
+            return;
+        }
+        let mut cmd = command_through_shell_if_needed(node, &["--version"]);
+        let output = quiet(&mut cmd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("spawn node");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "node --version 必须成功，stderr={stderr:?}"
+        );
+        assert!(
+            stdout.trim().starts_with('v'),
+            "必须拿到真实版本输出，stdout={stdout:?}"
+        );
+
+        let seq = PROCESS_TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("dsh-xlink-probe-test-{}-{seq}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let logs_dir = root.join("logs");
+        let node_dir = node.parent().expect("node has a parent directory");
+        let mut captured: Vec<String> = Vec::new();
+        let status = run_with_progress(
+            node,
+            &["--no-warnings", "-e", "console.log('PROBE-OK 1')"],
+            &std::env::temp_dir(),
+            &logs_dir,
+            &LogSpec::new("test", "probe-spawn"),
+            &[node_dir],
+            |line| captured.push(line.to_string()),
+        )
+        .expect("run node through run_with_progress");
+        assert!(
+            status.success(),
+            "node 必须以 0 退出，captured={captured:?}"
+        );
+        assert!(
+            captured.iter().any(|line| line.contains("PROBE-OK")),
+            "进度回调必须看到 node 的输出，captured={captured:?}"
+        );
+        let log_path =
+            LogSpec::new("test", "probe-spawn").path_for(&logs_dir, &current_date_string());
+        let logged = fs::read_to_string(&log_path).expect("read probe log");
+        assert!(
+            logged.contains("PROBE-OK"),
+            "探针输出必须落到日志，实际：{logged:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// 创建了 data dir 的 logs 目录；日志 open 必须创建缺失的父目录，
@@ -1775,27 +1945,18 @@ mod tests {
         let logs_dir = root.join("a").join("b");
         let log_spec = LogSpec::new("test", "create-missing");
         let cwd = std::env::temp_dir();
-        let status = if cfg!(windows) {
-            run_with_progress(
-                Path::new("cmd.exe"),
-                &["/C", "echo", "hi"],
-                &cwd,
-                &logs_dir,
-                &log_spec,
-                &[],
-                |_| {},
-            )
-        } else {
-            run_with_progress(
-                Path::new("/bin/echo"),
-                &["hi"],
-                &cwd,
-                &logs_dir,
-                &log_spec,
-                &[],
-                |_| {},
-            )
-        }
+        let Some((exe, args)) = direct_executable() else {
+            return;
+        };
+        let status = run_with_progress(
+            Path::new(exe),
+            args,
+            &cwd,
+            &logs_dir,
+            &log_spec,
+            &[],
+            |_| {},
+        )
         .expect("spawn child");
         assert!(status.success());
         // dated 文件是文件名携带 spec 的 kind 与 name 的那一个；

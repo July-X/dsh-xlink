@@ -701,8 +701,11 @@ fn install_version_into(
     if let Err(reason) =
         smoke_load_native_modules(node_exe, &dir, &logs_root, &log_spec, &mut on_progress)
     {
+        // 探针已经把根因写进 `reason`（含它自己捕获的输出），直接放进
+        // 文案；只有「怎么处理」这类通用建议需要在这里补。文案里保留日志
+        // 路径，让用户能把完整 require 堆栈交给支持。
         return Err(AppError::Kernel(format!(
-            "内核依赖的可加载性校验失败：{reason}。常见原因：当前平台的 prebuild 未随 optionalDependencies 下载（重试安装或切换到其他内核版本），或 Node 版本与 prebuild 不匹配。完整日志：{}",
+            "内核依赖的可加载性校验失败：{reason}。若探针输出里出现 `Cannot find module` 或 `NODE_MODULE_VERSION`，说明当前平台的 prebuild 未随 optionalDependencies 下载或与本机 Node 版本不匹配（重试安装或切换到其他内核版本）；若只有退出码而没有探针输出，说明 Node 探针进程本身没能启动，日志与「设置 → 运行时」里显示的 Node 路径可用于定位。完整日志：{}",
             log_path.display()
         )));
     }
@@ -974,6 +977,18 @@ fn smoke_load_native_modules(
     // 风格的解析，pnpm 的 `--config.node-linker=hoisted` 已经把目录
     // 布局对齐到了 npm。
     let node_dir = node_exe.parent().unwrap_or_else(|| Path::new("."));
+    // 探针的失败证据必须留在内存里，而不是只依赖日志文件：日志是排障时
+    // 的第二手材料，而错误文案会原样展示给用户。旧的 `PROBE-FAIL` 行以前
+    // 只经由 `run_with_progress` 落到日志，UI 上只剩下「退出码 1」——探针
+    // 自己的失败约定是退出码 2，所以 1 恰恰**不是**探针报出的失败，
+    // 而是 node 根本没跑起来（见 `process::command_through_shell_if_needed`
+    // 里那条「含空格路径被 cmd.exe 切碎」的记录）。这类事故只看退出码
+    // 无从区分，必须把真实输出带出来。
+    //
+    // 行数上限避免把 require 失败的整段堆栈灌进进度面板；节点包名与
+    // 错误首行足够定位问题，完整输出仍在日志里。
+    const MAX_PROBE_DETAIL_LINES: usize = 6;
+    let mut probe_detail: Vec<String> = Vec::new();
     let status = run_with_progress(
         node_exe,
         &["--no-warnings", "-e", &script],
@@ -986,6 +1001,9 @@ fn smoke_load_native_modules(
             // 噪音（Node 的 deprecation 提示等）由日志兜底。
             if line.contains("PROBE-") {
                 on_progress(line);
+                if probe_detail.len() < MAX_PROBE_DETAIL_LINES {
+                    probe_detail.push(line.to_string());
+                }
             }
         },
     )
@@ -993,12 +1011,23 @@ fn smoke_load_native_modules(
     if status.success() {
         return Ok(());
     }
-    // exit code 2 是探针自己的失败约定（见脚本末尾），其他非零退出
-    // （如 127 找不到 node）也视作加载失败——文本已经在日志里。
-    Err(format!(
-        "Node 探针退出码 {:?}（详见当日日志）",
-        status.code()
-    ))
+    // exit code 2 是探针自己的失败约定（见脚本末尾）。其他非零退出既可能
+    // 是探针没能启动（shell 分词、ABI 崩溃），也可能是被信号/看护杀掉，
+    // 文案必须把两者分开，否则用户只会看到「退出码 1（详见当日日志）」
+    // 这种既没有原因也没有下一步的报错。
+    let code = status.code();
+    let mut reason = match code {
+        Some(2) => "Node 探针报告内核依赖无法加载".to_string(),
+        Some(other) => format!(
+            "Node 探针以退出码 {other} 结束（探针自身的失败约定是退出码 2，因此这通常意味着 node 可执行文件没能真正跑起来，例如路径中含空格被命令解释器切碎、或该 node 与内核的 prebuild ABI 不匹配）"
+        ),
+        None => "Node 探针被信号终止".to_string(),
+    };
+    if !probe_detail.is_empty() {
+        reason.push_str("；探针输出：");
+        reason.push_str(&probe_detail.join(" | "));
+    }
+    Err(reason)
 }
 
 /// 内核日志文件的逻辑名（不含构建类型前缀和日期戳）。完整的文件名在
