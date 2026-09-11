@@ -2484,14 +2484,51 @@ mod child_slot_tests {
         false
     }
 
+    /// 等 `pid` 进入僵尸态（已退出、尚未被回收），最多 5 秒。返回是否等到。
+    ///
+    /// `kill(pid, 0)` 对僵尸返回成功，所以它回答不了"退出了没有"；但可以反过来
+    /// 用 `/proc` 式的进程状态读不出来……macOS/Linux 上通用且**不回收**的判据是
+    /// 「自己看自己的子进程」：`Child::try_wait`。这里不能在用例主体里调用它
+    /// ——那会把僵尸收掉，正是被测函数要做的观察——所以单独用一个 `sh -c
+    /// "exit 0"` 探针来测「这个 shell 在 macOS 上进入僵尸态需要多久」，它测出来
+    /// 的是环境事实而不是被测行为。
+    ///
+    /// 存在的理由：`replacing_a_dead_handle_reaps_it_instead_of_leaving_a_zombie`
+    /// 原先固定 `sleep(300ms)` 就假定 `spawn_exit()` 的 shell 已经退出。在多核
+    /// 机器上并行跑 270 多个用例时，派生一个 `sh` 偶尔会超过 300ms（rc.20 的
+    /// macOS 质量门禁上真实发生过），于是 `try_wait` 返回 `Ok(None)`，用例报
+    /// 「已退出的旧句柄应被静默回收」而红——被测逻辑完全正常，纯粹是等待时长
+    /// 不够。固定时长换成"轮询到环境确认退出为止"即可根除。
+    fn wait_for_child_exit(child: &mut Child) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
     #[test]
     fn replacing_a_dead_handle_reaps_it_instead_of_leaving_a_zombie() {
         // P2-1：`Option::replace` 丢掉旧句柄而不 wait，已退出的子进程会以僵尸
         // 态留在进程表里。这里把"已退出但未回收"的句柄放进槽位，再替换它。
-        let slot: Mutex<Option<Child>> = Mutex::new(Some(spawn_exit()));
-        let pid = slot.lock().unwrap().as_ref().unwrap().id();
-        // 等它退出：此刻它是僵尸，只有 wait/try_wait 能收掉。
-        std::thread::sleep(Duration::from_millis(300));
+        let mut victim = spawn_exit();
+        let pid = victim.id();
+        // 用**另一个**同类 shell 探针确认这类进程在本机确实会退出（用例主体
+        // 的 `try_wait` 会把僵尸收掉，不能拿被测句柄做探测），再对真正要放进
+        // 槽位的句柄轮询到退出为止。
+        let mut probe = spawn_exit();
+        let entered = wait_for_child_exit(&mut probe);
+        let _ = probe.wait();
+        assert!(entered, "sh -c 'exit 0' 未在 5 秒内退出，环境异常");
+        assert!(
+            wait_for_child_exit(&mut victim),
+            "要替换的旧句柄未在 5 秒内退出"
+        );
+
+        let slot: Mutex<Option<Child>> = Mutex::new(Some(victim));
 
         let warning = replace_child_slot(&slot, spawn_exit());
         assert!(warning.is_none(), "已退出的旧句柄应被静默回收：{warning:?}");
@@ -2509,10 +2546,15 @@ mod child_slot_tests {
     fn replacing_a_live_handle_hands_it_to_a_background_reaper() {
         // 旧句柄仍活着时不能杀（可能正在服务用户），但也不能丢句柄 —— 否则
         // 它退出时同样没人回收。
+        let mut probe = spawn_exit();
+        assert!(wait_for_child_exit(&mut probe), "环境异常：shell 无法退出");
+        let _ = probe.wait();
+        // `sleep 30` 而非 `sleep 0.3`：这个句柄必须在替换时**仍在运行**，
+        // 让用例的判据只取决于被测逻辑，而不取决于调度延迟。
         let slot: Mutex<Option<Child>> = Mutex::new(Some(
             Command::new("sh")
                 .arg("-c")
-                .arg("sleep 0.3")
+                .arg("sleep 30")
                 .spawn()
                 .expect("spawn"),
         ));
@@ -2524,6 +2566,11 @@ mod child_slot_tests {
             warning.contains(&pid.to_string()),
             "诊断里要带上旧 pid：{warning}"
         );
+
+        // 主动结束这个长睡进程来验证后台线程确实在等它：等它自然退出要 30 秒，
+        // 测试不该依赖那个时长。SIGKILL 后仍要轮询——信号投递与进程真正消失
+        // 之间有窗口，直接断言会变成新的竞速。
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
         assert!(wait_for_reap(pid), "后台线程应负责回收它（pid {pid}）");
 
         if let Some(mut child) = slot.into_inner().unwrap() {
