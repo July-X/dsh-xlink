@@ -347,6 +347,18 @@ pub async fn list_log_files(state: State<'_, AppState>) -> Result<Vec<LogFileEnt
     .map_err(|e| e.to_string())?
 }
 
+/// 校验来自 UI 的日志文件名：必须是纯文件名（无路径分隔符、无 `..`），
+/// 避免页签列表把读取或开窗引到 logs 目录之外。
+///
+/// 这个判据此前在三处各写了一遍（读文件、开独立窗口），改一处漏一处的风险
+/// 很高（P2-28），现在只有一个实现。
+fn validate_log_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(format!("非法的日志文件名：{name}"));
+    }
+    Ok(())
+}
+
 /// 读取 logs 目录下指定日志文件的尾部。
 ///
 /// `name` 必须是纯文件名，不允许任何路径分隔符；本函数会拒绝其它形
@@ -354,9 +366,7 @@ pub async fn list_log_files(state: State<'_, AppState>) -> Result<Vec<LogFileEnt
 /// 16 KiB 作为尾部上限，使面板在面对大型安装日志时仍然保持响应。
 #[tauri::command]
 pub async fn read_log_file(state: State<'_, AppState>, name: String) -> Result<String, String> {
-    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err(format!("非法的日志文件名：{name}"));
-    }
+    validate_log_name(&name)?;
     let logs_dir = kernel::logs_dir(&state.data_dir);
     let path = logs_dir.join(&name);
     if !path.starts_with(&logs_dir) {
@@ -1068,19 +1078,22 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
 /// （capability `log-viewer.json` 仅授予该命令）。名称在这里也会经
 /// 过 `read_log_file` 的校验，所以错误的名字在窗口出现前就被拒掉。
 #[tauri::command]
-pub fn open_log_window(app: AppHandle, name: String) -> Result<(), String> {
-    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err(format!("非法的日志文件名：{name}"));
-    }
-    if let Some(existing) = app.get_webview_window("log-viewer") {
-        let _ = existing.destroy();
-    }
-    let encoded: String = url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
-    let backdrop = chrome_backdrop(&app);
+pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String> {
+    validate_log_name(&name)?;
+    // 建窗必须在**非主线程**上进行（Windows 上在主线程同步建 webview 会死锁，
+    // 与 `open_harness` 同样的理由），因此把结果经 mpsc 回传：旧实现是同步
+    // 命令 + 后台线程，失败只 `eprintln`，UI 永远返回成功——用户点了「全屏」
+    // 却什么都不发生，且没有任何提示（P2-28）。
+    let (tx, rx) = mpsc::channel();
     let handle = app.clone();
     std::thread::Builder::new()
         .name("dsh-open-log-viewer".into())
         .spawn(move || {
+            if let Some(existing) = handle.get_webview_window("log-viewer") {
+                let _ = existing.destroy();
+            }
+            let encoded: String = url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
+            let backdrop = chrome_backdrop(&handle);
             let result = WebviewWindowBuilder::new(
                 &handle,
                 "log-viewer",
@@ -1090,13 +1103,19 @@ pub fn open_log_window(app: AppHandle, name: String) -> Result<(), String> {
             .inner_size(960.0, 720.0)
             .resizable(true)
             .background_color(backdrop)
-            .build();
-            if let Err(e) = result {
-                eprintln!("dsh-xlink: failed to open log viewer window: {e}");
-            }
+            .build()
+            .map(|_| ())
+            .map_err(|e| format!("打开日志窗口失败：{e}。可改用主面板的「查看日志」弹窗，或重试"));
+            let _ = tx.send(result);
         })
-        .map_err(|e| e.to_string())?;
-    Ok(())
+        .map_err(|e| format!("无法启动日志窗口线程：{e}"))?;
+
+    // 等建窗结果。给足超时（webview 初始化在低配机器上可能偏慢），但绝不
+    // 无限等待：超时按失败上报，让用户至少知道发生了什么。
+    match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+        Ok(result) => result,
+        Err(_) => Err("打开日志窗口超时（20 秒）。请重试，或改用主面板的「查看日志」弹窗".into()),
+    }
 }
 
 /// 把 Shell 的主管理窗口提到当前桌面之上。
@@ -2499,6 +2518,36 @@ mod child_slot_tests {
 
         if let Some(mut child) = slot.into_inner().unwrap() {
             let _ = child.wait();
+        }
+    }
+}
+
+#[cfg(test)]
+mod log_name_tests {
+    use super::*;
+
+    #[test]
+    fn log_name_validation_rejects_anything_that_could_escape_logs_dir() {
+        // P2-28：这个判据原先在三个地方各写了一遍，合并后必须逐条钉住。
+        for bad in [
+            "",
+            "kernel.log/../../etc/passwd",
+            "..\\..\\windows\\system32\\config",
+            "/etc/passwd",
+            "sub/dir.log",
+            "sub\\dir.log",
+            "..",
+        ] {
+            assert!(
+                validate_log_name(bad).is_err(),
+                "{bad:?} 必须被拒绝（否则会读到 logs 目录之外）"
+            );
+        }
+        for good in [
+            "release-kernel-2026-09-10.log",
+            "release-kernel-2026-09-10.1.log",
+        ] {
+            assert!(validate_log_name(good).is_ok(), "{good:?} 是合法日志名");
         }
     }
 }

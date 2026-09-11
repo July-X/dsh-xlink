@@ -348,6 +348,63 @@ pub fn log_file_name(kind: &str, name: &str, date: &str) -> String {
     format!("{}-{}-{}.log", kind, name, date)
 }
 
+/// 日志目录的保留窗口：超过 `LOG_RETENTION_DAYS` 天、或总量超过
+/// `LOG_RETENTION_BYTES` 的日志会在启动时清掉（从最旧的开始）。
+///
+/// 每个「日期 × kind」最多留 `KERNEL_LOG_BACKUPS + 1` 代 × 8 MiB，但**日期
+/// 只增不减**：每天最多新增 24 MiB，长期使用会累积到 GB 级（P2-62）。这里按
+/// "先看天数、再看总量"的顺序裁剪，`LOG_RETENTION_GRACE` 内的文件永不删除
+/// —— 那可能是正在写入的当次会话日志。
+const LOG_RETENTION_DAYS: u64 = 30;
+const LOG_RETENTION_BYTES: u64 = 200 * 1024 * 1024;
+const LOG_RETENTION_GRACE: Duration = Duration::from_secs(600);
+
+/// 启动时裁剪过期的 Shell 日志，返回删除的文件数。
+pub fn prune_old_logs(logs_dir: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(logs_dir) else {
+        return 0;
+    };
+    let mut candidates: Vec<(PathBuf, SystemTime, u64)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("log") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        candidates.push((path, modified, meta.len()));
+    }
+    // 新的在前：裁剪时从尾部（最旧）开始丢。
+    candidates.sort_by_key(|(_, modified, _)| std::cmp::Reverse(*modified));
+
+    let now = SystemTime::now();
+    let mut kept_bytes = 0u64;
+    let mut removed = 0usize;
+    for (path, modified, size) in candidates {
+        let age = now.duration_since(modified).unwrap_or_default();
+        if age < LOG_RETENTION_GRACE {
+            // 刚写过的文件（多半是当前会话的日志）不参与裁剪，但仍计入总量。
+            kept_bytes = kept_bytes.saturating_add(size);
+            continue;
+        }
+        let expired = age > Duration::from_secs(LOG_RETENTION_DAYS * 24 * 60 * 60);
+        let over_budget = kept_bytes.saturating_add(size) > LOG_RETENTION_BYTES;
+        if expired || over_budget {
+            if fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+            continue;
+        }
+        kept_bytes = kept_bytes.saturating_add(size);
+    }
+    removed
+}
+
 /// 把旧命名的轮转备份（`<base>.log.<n>`）改名为新命名（`<base>.<n>.log`）。
 ///
 /// 旧实现往文件名末尾追加代次，扩展名因此变成 `1`，`list_log_files` 的扩展名
@@ -2124,5 +2181,113 @@ mod drain_stream_tests {
     fn drain_returns_cleanly_for_empty_input() {
         let lines = drain_stream(Cursor::new(Vec::new()), |_| Ok(())).expect("ok");
         assert_eq!(lines, 0);
+    }
+}
+
+#[cfg(test)]
+mod log_retention_tests {
+    use super::*;
+    use std::fs::File;
+
+    static RETENTION_COUNTER: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    fn temp_logs(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-xlink-retention-{}-{}-{}",
+            label,
+            std::process::id(),
+            RETENTION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_log(dir: &Path, name: &str, bytes: usize, age_secs: u64) {
+        let path = dir.join(name);
+        fs::write(&path, vec![b'x'; bytes]).unwrap();
+        let when = SystemTime::now() - Duration::from_secs(age_secs);
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+
+    #[test]
+    fn logs_older_than_the_retention_window_are_removed() {
+        // P2-62：日期只增不减，不裁剪会长期累积到 GB 级。
+        let dir = temp_logs("age");
+        write_log(&dir, "release-kernel-old.log", 16, 40 * 24 * 60 * 60);
+        write_log(&dir, "release-kernel-recent.log", 16, 20 * 24 * 60 * 60);
+        write_log(&dir, "release-kernel-today.log", 16, 5);
+
+        let removed = prune_old_logs(&dir);
+
+        assert_eq!(removed, 1, "只应删掉超过 30 天的那一份");
+        assert!(!dir.join("release-kernel-old.log").exists());
+        assert!(dir.join("release-kernel-recent.log").exists());
+        assert!(dir.join("release-kernel-today.log").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn total_size_budget_drops_the_oldest_first() {
+        let dir = temp_logs("size");
+        // 每份 100 MiB、都在保留期内：总量 300 MiB > 200 MiB，必须从最旧的开始丢。
+        let hundred_mib = 100 * 1024 * 1024;
+        write_log(
+            &dir,
+            "release-install-oldest.log",
+            hundred_mib,
+            3 * 24 * 60 * 60,
+        );
+        write_log(
+            &dir,
+            "release-install-middle.log",
+            hundred_mib,
+            2 * 24 * 60 * 60,
+        );
+        write_log(
+            &dir,
+            "release-install-newest.log",
+            hundred_mib,
+            24 * 60 * 60,
+        );
+
+        let removed = prune_old_logs(&dir);
+
+        assert_eq!(removed, 1, "超预算时从最旧的开始删，删到不再超预算为止");
+        assert!(!dir.join("release-install-oldest.log").exists());
+        assert!(dir.join("release-install-middle.log").exists());
+        assert!(dir.join("release-install-newest.log").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn freshly_written_logs_are_never_deleted() {
+        // 刚写过的文件很可能是当前会话正在追加的日志；即使超预算也不能动。
+        let dir = temp_logs("grace");
+        let huge = LOG_RETENTION_BYTES + 8 * 1024 * 1024;
+        write_log(&dir, "release-kernel-live.log", huge as usize, 1);
+
+        let removed = prune_old_logs(&dir);
+
+        assert_eq!(removed, 0, "宽限期内的文件绝不删除");
+        assert!(dir.join("release-kernel-live.log").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn non_log_files_and_missing_dirs_are_left_alone() {
+        let dir = temp_logs("mixed");
+        write_log(&dir, "keep.txt", 16, 400 * 24 * 60 * 60);
+        fs::write(dir.join("notes.md"), b"hello").unwrap();
+
+        assert_eq!(prune_old_logs(&dir), 0, "只处理 *.log");
+        assert!(dir.join("keep.txt").exists());
+        assert_eq!(prune_old_logs(&dir.join("absent")), 0, "目录缺失时静默返回");
+        fs::remove_dir_all(&dir).ok();
     }
 }
