@@ -270,6 +270,21 @@ jobs:
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
 
+      - name: Verify signing key pair
+        # 只换一半密钥（轮换了私钥但没同步 tauri.conf.json 里的 updater 公钥）
+        # 会发布出所有客户端都验签失败的更新，而且直到用户点「检查更新」才暴露。
+        # 这里用私钥签一个测试载荷、再用配置里的公钥验签，把事故拦在打包之前
+        # （P2-51）。放在构建之前，失败就不用白等一次完整打包。
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [[ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]]; then
+            echo "未配置 TAURI_SIGNING_PRIVATE_KEY，跳过签名密钥成对校验"
+            exit 0
+          fi
+          pnpm exec node scripts/check-signing-keys.mjs
+
       - name: Build signed desktop bundle
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
