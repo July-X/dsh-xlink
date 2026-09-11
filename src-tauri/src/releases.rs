@@ -41,43 +41,67 @@ fn http_agent() -> &'static ureq::Agent {
 
 /// 校验一个已下载文件的 npm SRI 摘要（`sha512-<base64>` / `sha256-<base64>`）。
 ///
-/// 外壳自己下载的 tarball 必须校验一次：默认 registry 是第三方镜像，packument
-/// 与 tarball 同源，镜像可以在元数据保持一致的前提下替换 tarball 内容，而解包
-/// 之后 pnpm 会执行包里的 `prepare` 生命周期脚本——那等于执行未经验证的下载物。
-/// `integrity` 缺失（老 packument 只给 sha1 的 `shasum`）时返回 `Ok(None)`，
-/// 由调用方决定如何提示。
+/// 外壳自己下载的 tarball 必须校验一次：默认 registry 是第三方镜像，而解包之后
+/// pnpm 会执行包里的 `prepare` 生命周期脚本——那等于执行未经验证的下载物。它能
+/// 发现"元数据与 tarball 不同源"、传输损坏与缓存不一致（镜像若**同时**改写了
+/// packument 与 tarball，任何同源校验都发现不了，那需要与上游 registry 的独立
+/// 对账；这里不要把它说成更强的保证）。
+///
+/// **必须支持一次给出多个摘要**：SRI 规范允许空格分隔的摘要列表，npm 的 `ssri`
+/// 也确实会产出这种形态。旧实现把 `sha512-A sha256-B` 整串送进 base64 解码，空格
+/// 让它必然失败——无论内容对不对都装不上（P2-6）。现在按 token 解析，取其中
+/// **最强且受支持**的算法校验；单个 token 形态不认识时跳过而不是整串失败。
+///
+/// 返回 `Ok(Some(算法名))` 表示已校验，`Ok(None)` 表示 registry 没给摘要（老
+/// packument 只给 sha1 的 `shasum`，本函数不消费它），由调用方决定如何提示。
 pub fn verify_download_integrity(
     path: &Path,
     integrity: Option<&str>,
-) -> Result<Option<()>, String> {
+) -> Result<Option<&'static str>, String> {
     use sha2::{Digest, Sha256, Sha512};
 
     let Some(integrity) = integrity.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
-    let Some((algorithm, encoded)) = integrity.split_once('-') else {
+    // 只挑"最强且受支持"的那一条：sha512 > sha256。
+    let mut best: Option<(&'static str, Vec<u8>)> = None;
+    for token in integrity.split_whitespace() {
+        let Some((algorithm, encoded)) = token.split_once('-') else {
+            continue;
+        };
+        let algorithm: &'static str = match algorithm {
+            "sha512" => "sha512",
+            "sha256" => "sha256",
+            // 不支持的算法（例如未来出现的 sha3）不阻断安装，只要还有一条能用。
+            _ => continue,
+        };
+        let Some(expected) = decode_base64(encoded.trim()) else {
+            continue;
+        };
+        let replace = match &best {
+            Some((current, _)) => *current == "sha256" && algorithm == "sha512",
+            None => true,
+        };
+        if replace {
+            best = Some((algorithm, expected));
+        }
+    }
+    let Some((algorithm, expected)) = best else {
         return Err(format!(
-            "registry 返回的 integrity 形态无法识别：{integrity}"
+            "registry 返回的 integrity 里没有本外壳支持的摘要（sha512/sha256）：{integrity}，拒绝安装"
         ));
     };
-    let expected = decode_base64(encoded.trim())
-        .ok_or_else(|| format!("registry 返回的 integrity 不是合法 base64：{integrity}"))?;
     let bytes = fs::read(path).map_err(|e| format!("无法读取 {}：{e}", path.display()))?;
     let actual = match algorithm {
         "sha512" => Sha512::digest(&bytes).to_vec(),
-        "sha256" => Sha256::digest(&bytes).to_vec(),
-        other => {
-            return Err(format!(
-                "registry 使用了不支持的 integrity 算法 {other}，拒绝安装"
-            ))
-        }
+        _ => Sha256::digest(&bytes).to_vec(),
     };
     if actual != expected {
         return Err(format!(
             "下载内容与 registry 声明的 integrity 不符（算法 {algorithm}）：文件可能被镜像替换或传输损坏"
         ));
     }
-    Ok(Some(()))
+    Ok(Some(algorithm))
 }
 
 /// 解码标准 base64（SRI 使用的字符集，含 `+/` 与 `=` 填充）。
@@ -692,7 +716,37 @@ mod tests {
                 &empty,
                 Some("sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg==")
             ),
-            Ok(Some(()))
+            Ok(Some("sha512"))
+        ));
+        // 多摘要（SRI 规范允许空格分隔，npm 的 ssri 会产出）：取最强且受支持的
+        // 那一条校验，旧实现会被空格卡成"不是合法 base64"而拒绝安装（P2-6）。
+        assert!(matches!(
+            verify_download_integrity(
+                &empty,
+                Some(
+                    "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU= \
+                     sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg=="
+                )
+            ),
+            Ok(Some("sha512"))
+        ));
+        // 只有 sha256 时也能用。
+        assert!(matches!(
+            verify_download_integrity(
+                &empty,
+                Some("sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=")
+            ),
+            Ok(Some("sha256"))
+        ));
+        // 无法识别的算法 + 一条可用的：跳过前者而不是整串失败。
+        assert!(matches!(
+            verify_download_integrity(
+                &empty,
+                Some(
+                    "sha3-AAAA sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg=="
+                )
+            ),
+            Ok(Some("sha512"))
         ));
 
         let error =
@@ -706,8 +760,11 @@ mod tests {
             Ok(None)
         ));
 
-        // 不支持的算法必须显式拒绝，而不是放过。
+        // 一条可用摘要都没有时必须显式拒绝，而不是放过。
         assert!(verify_download_integrity(&empty, Some("md5-AAAA")).is_err());
+        assert!(verify_download_integrity(&empty, Some("sha3-AAAA")).is_err());
+        // 摘要不符（多摘要里最强的那条不对）仍然拒绝。
+        assert!(verify_download_integrity(&empty, Some("sha256-AAAA sha512-AAAA")).is_err());
 
         let _ = std::fs::remove_dir_all(&root);
     }

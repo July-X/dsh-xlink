@@ -1476,8 +1476,10 @@ fn fetch_npm(
     let tgz = dest.join(".pkg.tgz");
     http_get_file(&tarball, &tgz).map_err(|e| AppError::Plugin(format!("下载失败：{e}")))?;
     match crate::releases::verify_download_integrity(&tgz, integrity.as_deref()) {
-        Ok(Some(())) => on_progress("已校验下载内容的 integrity"),
-        Ok(None) => on_progress("registry 未提供 integrity，跳过内容校验"),
+        Ok(Some(algorithm)) => on_progress(&format!("已校验下载内容的 integrity（{algorithm}）")),
+        Ok(None) => {
+            on_progress("registry 未提供 integrity（也没有可用的 shasum），本次未做内容校验")
+        }
         Err(reason) => {
             let _ = fs::remove_file(&tgz);
             return Err(AppError::Plugin(format!(
