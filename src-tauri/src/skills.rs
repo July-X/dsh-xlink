@@ -1196,6 +1196,9 @@ struct Materialized {
     mode: String,
     /// 落地后活动根条目的内容指纹，写入 [`SkillEntry::materialized_sha256`]。
     fingerprint: Option<String>,
+    /// 覆盖同名条目时为保留用户内容而改名得到的路径（见 [`keep_aside`]）。
+    /// 调用方必须把它写进 warning，否则用户不知道自己的改动去了哪里。
+    kept_aside: Option<String>,
 }
 
 /// 一个条目（文件或目录）的内容指纹：文件取内容的 sha256；目录取
@@ -1316,6 +1319,7 @@ fn ensure_entry(
 ) -> Result<Materialized, AppError> {
     let target = skill_target_path(home, entry);
     let source = resolved_source(&pkg_dir.join(&entry.path));
+    let mut kept_aside: Option<String> = None;
     if !source.exists() {
         return Err(AppError::Skill(format!(
             "技能 {} 的源路径在中央库中不存在：{}",
@@ -1335,6 +1339,7 @@ fn ensure_entry(
                     String::from("copy")
                 },
                 fingerprint: fingerprint_path(&target),
+                kept_aside: None,
             });
         }
         if !replace_owned {
@@ -1343,7 +1348,11 @@ fn ensure_entry(
                 target.display()
             )));
         }
-        remove_target(&target);
+        // 本商店没有认领它（用户改写过 / 手工放置），但调用方要求覆盖：**不能
+        // 直接删除**——`entry_is_owned` 为假既可能是"本商店上一版留下的陈旧副本"，
+        // 也可能是"用户改了内容"，两者在指纹上无法区分，而删掉后者就是无备份地
+        // 销毁用户的工作（P0-6）。一律改名保留现场，由调用方把路径报给用户。
+        kept_aside = Some(keep_aside(&target)?);
     }
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
@@ -1372,7 +1381,52 @@ fn ensure_entry(
     Ok(Materialized {
         mode: actual,
         fingerprint,
+        kept_aside,
     })
+}
+
+/// 把不归本商店所有的同名条目改名保留，返回新路径。
+///
+/// 覆盖用户内容之前必须留一份现场：`replace_owned` 的调用方（reconcile 修复、
+/// 更新刷新）本意是替换**本商店自己留下的陈旧副本**，但"用户改写过"与"陈旧"
+/// 在指纹上无法区分，所以一律保留而不是删除（P0-6）。改名带时间戳，避免连续
+/// 两次冲突互相覆盖。
+fn keep_aside(target: &Path) -> Result<String, AppError> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| String::from("skill"));
+    let mut candidate = target.with_file_name(format!("{name}.user-{stamp}"));
+    let mut counter = 1;
+    while candidate.exists() {
+        candidate = target.with_file_name(format!("{name}.user-{stamp}-{counter}"));
+        counter += 1;
+    }
+    fs::rename(target, &candidate).map_err(|e| {
+        AppError::Skill(format!(
+            "技能 {} 与技能库条目同名，且不是技能库放置的（可能被本地修改过）；\
+             无法把它备份为 {}（{e}）。请手动处理该条目后重试",
+            target.display(),
+            candidate.display()
+        ))
+    })?;
+    Ok(candidate.to_string_lossy().into_owned())
+}
+
+/// 追加一条中央库级告警（面板以告警条展示）。
+///
+/// 调用方必须已经持有商店锁，因此这里用 `_unlocked` 的读写，不再取锁。
+/// 读不出来（清单损坏）时静默跳过：告警本身不该让已经完成的操作失败。
+fn append_store_warning_unlocked(home: &Path, text: &str) {
+    let Ok(mut store) = load_store_checked(home) else {
+        return;
+    };
+    store.warning = Some(text.to_string());
+    let _ = save_store_unlocked(home, &store);
 }
 
 /// 移除某个技能的活动根条目，但仅当它仍由本商店拥有时执行（链接指向中央库，
@@ -1475,6 +1529,9 @@ fn update_into(
     let spec = parse_spec(&previous.source)?;
     on_progress(&format!("正在更新 {}", previous.name));
     let fetched = fetch_into_store(home, &spec, on_progress)?;
+    // 覆盖了不归技能库所有的同名条目时记下改名后的路径（见 `keep_aside`），
+    // 循环结束后写进中央库告警，供面板展示（P0-6）。
+    let mut kept_aside: Vec<String> = Vec::new();
 
     let mut updated = previous.clone();
     updated.skills = fetched
@@ -1532,9 +1589,21 @@ fn update_into(
             let outcome = ensure_entry(home, &fetched.dir, &updated.mode, &entry, true)?;
             updated.actual_mode = outcome.mode;
             updated.skills[index].materialized_sha256 = outcome.fingerprint;
+            if let Some(kept) = outcome.kept_aside {
+                kept_aside.push(format!("{} → {kept}", entry.name));
+            }
         }
     }
     upsert_item_unlocked(home, updated.clone())?;
+    if !kept_aside.is_empty() {
+        append_store_warning_unlocked(
+            home,
+            &format!(
+                "更新时覆盖了不归技能库所有的同名条目（{}）：内容已改名保留，未被删除；请自行确认是否合并或删除",
+                kept_aside.join("、")
+            ),
+        );
+    }
     Ok(updated)
 }
 
@@ -1623,10 +1692,26 @@ fn status_for_home(home: &Path) -> SkillStatus {
     let mut integrity_warning: Option<String> = None;
     let store = match crate::process::read_state_file(&store_file(home)) {
         crate::process::StateRead::Loaded(store) => store,
-        crate::process::StateRead::Missing => SkillStore::default(),
+        crate::process::StateRead::Missing => {
+            // 清单文件不存在但活动根里还有指向中央库的链接：这些条目会被保留
+            // （见 `reconcile_home` 的 store_present 判据），但面板读不到记录。
+            // 必须说清"东西还在、怎么找回"，否则看起来就是技能全没了（P0-4）。
+            let kept = store_link_count(home);
+            if kept > 0 {
+                integrity_warning = Some(format!(
+                    "技能清单（store.json）不存在，但技能目录里还保留着 {kept} 个来自技能库的条目。\
+                     它们不会被清理，但面板在恢复清单之前无法显示；\
+                     请恢复备份的 store.json，或重新安装这些技能。"
+                ));
+            }
+            SkillStore::default()
+        }
         crate::process::StateRead::Corrupt { reason } => {
             integrity_warning = Some(format!(
-                "技能清单损坏，已安装技能的记录暂时读不出来（{reason}）。请修复或删除该文件后重试；在修复之前不会清理或改写技能链接"
+                "技能清单损坏，已安装技能的记录暂时读不出来（{reason}）。\
+                 请优先修复该文件（它记录着每个技能的来源与启用状态）；\
+                 若只能删除，技能目录里来自技能库的条目会被保留，但需要重新安装才能恢复面板显示。\
+                 在修复之前不会清理或改写技能链接"
             ));
             SkillStore::default()
         }
@@ -1779,6 +1864,49 @@ pub fn reconcile() {
     reconcile_home(&resolve_home());
 }
 
+/// `path` 是否是指向中央库的链接（符号链接 / Windows junction）。
+///
+/// 判据与清扫路径共用一份：canonicalize 后落在 `store_canon` 之内才算。链接
+/// 目标不存在时按"不是"处理（无法证明它属于中央库）。
+fn link_into_store(root: &Path, path: &Path, store_canon: &Path) -> bool {
+    let is_link = fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    if !is_link {
+        return false;
+    }
+    fs::read_link(path)
+        .ok()
+        .map(|link| {
+            let target = if link.is_absolute() {
+                link
+            } else {
+                root.join(link)
+            };
+            target
+                .canonicalize()
+                .map(|c| c.starts_with(store_canon))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+/// 活动根里指向中央库的链接条目数。用于"清单文件缺失"时的现场告警：只有这种
+/// 条目会在清扫中被删掉，因此也只有它值得提醒（用户自己放进去的技能不算）。
+fn store_link_count(home: &Path) -> usize {
+    let root = skills_root(home);
+    let Ok(entries) = fs::read_dir(&root) else {
+        return 0;
+    };
+    let store_canon = store_dir(home)
+        .canonicalize()
+        .unwrap_or_else(|_| store_dir(home));
+    entries
+        .flatten()
+        .filter(|entry| link_into_store(&root, &entry.path(), &store_canon))
+        .count()
+}
+
 fn reconcile_home(home: &Path) {
     recover_staging(home);
 
@@ -1788,6 +1916,14 @@ fn reconcile_home(home: &Path) {
     let Ok(mut store) = load_store_checked(home) else {
         return;
     };
+    // 清单文件不存在时**不做**链接清扫。
+    //
+    // `load_store_checked` 把 `Missing` 归为"空清单"，这对写路径是安全的下界，
+    // 但清扫把"没有任何记录"解读成"活动根里所有指向中央库的条目都是孤儿"，于是
+    // 用户的技能链接被全部删除、运行中的内核通过 watcher 立刻丢掉全部技能
+    // （P0-4）。而应用自己的错误提示恰好建议用户"修复或删除该文件后重试"，也就是
+    // 亲手制造这个形态。全新安装（清单不存在、活动根为空）不受影响：没有链接可扫。
+    let store_present = store_file(home).is_file();
     let root = skills_root(home);
     if fs::create_dir_all(&root).is_err() {
         return;
@@ -1830,7 +1966,15 @@ fn reconcile_home(home: &Path) {
                         store.items[item_index].skills[entry_index].materialized_sha256 =
                             outcome.fingerprint;
                         changed = true;
-                        warning = None;
+                        // 覆盖的是不归本商店所有的同名条目：内容已改名保留，必须
+                        // 把路径告诉用户，否则"我的改动去哪了"无处可查（P0-6）。
+                        warning = outcome.kept_aside.map(|kept| {
+                            format!(
+                                "技能 {} 在技能目录里的同名条目不是技能库放置的（可能被你修改过），\
+                                 已改名保留为 {kept}，并落地了技能库版本；请自行确认是否合并或删除它",
+                                entry.name
+                            )
+                        });
                     }
                     Err(e) => warning = Some(e.to_string()),
                 }
@@ -1842,54 +1986,47 @@ fn reconcile_home(home: &Path) {
         }
     }
 
-    if let Ok(entries) = fs::read_dir(&root) {
-        // 两侧都用 canonicalize 后再比较：中央库可能位于符号链接路径段
-        // 之下（macOS /var → /private/var），而 read_link 返回的是
-        // 创建链接时所用的形态。
-        let store_canon = store_dir(home)
-            .canonicalize()
-            .unwrap_or_else(|_| store_dir(home));
-        // 中央库仍记录着的指纹：命中说明该条目是本商店的 copy 落地，
-        // 只是对应的技能已被上游移除或停用，可以安全回收。
-        let known_fingerprints: std::collections::HashSet<String> = store
-            .items
-            .iter()
-            .flat_map(|item| item.skills.iter())
-            .filter_map(|entry| entry.materialized_sha256.clone())
-            .collect();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if owned_targets.contains(&path) {
-                continue;
-            }
-            let metadata = fs::symlink_metadata(&path).ok();
-            let is_link = metadata
-                .as_ref()
-                .is_some_and(|m| m.file_type().is_symlink());
-            let is_link_into_store = is_link
-                && fs::read_link(&path)
-                    .ok()
-                    .map(|link| {
-                        let target = if link.is_absolute() {
-                            link
-                        } else {
-                            root.join(link)
-                        };
-                        target
-                            .canonicalize()
-                            .map(|c| c.starts_with(&store_canon))
-                            .unwrap_or(false)
-                    })
+    if store_present {
+        if let Ok(entries) = fs::read_dir(&root) {
+            // 两侧都用 canonicalize 后再比较：中央库可能位于符号链接路径段
+            // 之下（macOS /var → /private/var），而 read_link 返回的是
+            // 创建链接时所用的形态。
+            let store_canon = store_dir(home)
+                .canonicalize()
+                .unwrap_or_else(|_| store_dir(home));
+            // 中央库仍记录着的指纹：命中说明该条目是本商店的 copy 落地，
+            // 只是对应的技能已被上游移除或停用，可以安全回收。
+            let known_fingerprints: std::collections::HashSet<String> = store
+                .items
+                .iter()
+                .flat_map(|item| item.skills.iter())
+                .filter_map(|entry| entry.materialized_sha256.clone())
+                .collect();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if owned_targets.contains(&path) {
+                    continue;
+                }
+                let is_link = fs::symlink_metadata(&path)
+                    .map(|m| m.file_type().is_symlink())
                     .unwrap_or(false);
-            // 真实目录/文件形态的孤儿（copy 落地遗留）只能靠内容指纹认领；
-            // 指纹不在中央库记录里的条目一律不动——那可能是用户自己放进去的。
-            let is_copy_orphan = !is_link
-                && fingerprint_path(&path)
-                    .is_some_and(|fingerprint| known_fingerprints.contains(&fingerprint));
-            if is_link_into_store || is_copy_orphan {
-                remove_target(&path);
+                let is_link_into_store = link_into_store(&root, &path, &store_canon);
+                // 真实目录/文件形态的孤儿（copy 落地遗留）只能靠内容指纹认领；
+                // 指纹不在中央库记录里的条目一律不动——那可能是用户自己放进去的。
+                let is_copy_orphan = !is_link
+                    && fingerprint_path(&path)
+                        .is_some_and(|fingerprint| known_fingerprints.contains(&fingerprint));
+                if is_link_into_store || is_copy_orphan {
+                    remove_target(&path);
+                }
             }
         }
+    } else if store_link_count(home) > 0 {
+        // 清单文件缺失但活动根里还有指向中央库的条目：保留现场（不删任何东西），
+        // 由面板的告警条向用户解释怎么找回（P0-4）。
+        eprintln!(
+            "dsh-xlink: 技能清单（store.json）不存在，但活动根里还有指向中央库的条目；已保留现场，不做清理"
+        );
     }
 
     if warning != store.warning || changed {
@@ -2271,6 +2408,62 @@ mod tests {
         let err =
             install_into(&home.root(), &src.to_string_lossy(), "link", &mut |_| {}).unwrap_err();
         assert!(err.to_string().contains("冲突"));
+    }
+
+    #[test]
+    fn reconcile_without_store_file_keeps_store_links() {
+        // P0-4：清单文件不存在时不得把活动根里指向中央库的条目当孤儿清掉。
+        // 应用自己的错误提示恰好建议用户删除损坏的清单文件，也就是亲手制造
+        // 这个形态。
+        let home = TestHome::new();
+        let src = home.root().join("pack");
+        write_bundle(&src, "one", "keep-me", "k");
+        install_into(&home.root(), &src.to_string_lossy(), "link", &mut |_| {}).unwrap();
+        let target = skills_root(&home.root()).join("keep-me");
+        assert!(target.exists());
+
+        fs::remove_file(store_file(&home.root())).unwrap();
+        reconcile_home(&home.root());
+
+        assert!(target.exists(), "清单缺失时不得清理活动根条目");
+        #[cfg(unix)]
+        assert!(store_link_count(&home.root()) > 0, "链接应当仍在");
+    }
+
+    #[test]
+    fn reconcile_keeps_user_modified_copy_aside() {
+        // P0-6：copy 模式下用户改写过的那一份不归技能库所有。reconcile / update
+        // 覆盖同名条目时必须改名保留现场，而不是直接把用户内容删掉。
+        let home = TestHome::new();
+        let src = home.root().join("pack");
+        write_bundle(&src, "one", "edited", "e");
+        install_into(&home.root(), &src.to_string_lossy(), "copy", &mut |_| {}).unwrap();
+        let target = skills_root(&home.root()).join("edited");
+        fs::write(
+            target.join("SKILL.md"),
+            "---\nname: edited\ndescription: mine\n---\n\nMINE\n",
+        )
+        .unwrap();
+
+        reconcile_home(&home.root());
+
+        let kept: Vec<String> = fs::read_dir(skills_root(&home.root()))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("edited.user-"))
+            .collect();
+        assert_eq!(kept.len(), 1, "用户改动应被改名保留，实际目录：{kept:?}");
+        let kept_text =
+            fs::read_to_string(skills_root(&home.root()).join(&kept[0]).join("SKILL.md")).unwrap();
+        assert!(kept_text.contains("MINE"), "保留的必须是用户内容");
+        let landed = fs::read_to_string(target.join("SKILL.md")).unwrap();
+        assert!(landed.contains("Body."), "活动根应重新落地技能库版本");
+        let warning = load_store(&home.root()).warning.unwrap_or_default();
+        assert!(
+            warning.contains("edited.user-"),
+            "告警必须给出保留路径：{warning}"
+        );
     }
 
     #[test]
