@@ -51,14 +51,14 @@
 | P1-5 | `check-signing-keys.mjs` 在 Windows 上静默空转（误绿） | ✅ 已修 |
 | P1-6 | Node 回滚诊断在删除目录之后探测 → 诊断恒为空 | ✅ 已修 |
 | P1-7 | `remove_version` / `activate_version` 缺版本号闸（纵深） | ✅ 已修 |
-| P2-1 | `workbench_pid` 丢掉端口/cwd 关联 → 误杀另一实例内核 | ⏳ 待修 |
-| P2-2 | `kernel::stop` 永远返回 `Ok`，"停止失败如实上报"是死代码 | ⏳ 待修 |
-| P2-3 | `SpawnFailed` 仍跑 pnpm 恢复接线，事故文案按插件口径 | ⏳ 待修 |
-| P2-4 | "进程起来了但立刻退出"仍进安全模式（环境故障记成插件故障） | ⏳ 待修 |
-| P2-5 | guard 归因在 Windows 匹配不到反斜杠路径 | ⏳ 待修 |
-| P2-6 | SRI：`integrity` 缺失即放行；多摘要（空格分隔）硬失败 | ⏳ 待修 |
-| P2-7 | `save_settings` 清空 `node_path`；文案指向不存在的设置项 | 部分（文案已改指 settings.json） |
-| P2-8 | `detect_node` 不回写缓存 → 陈旧 `ok:false` 挡死启动 | ⏳ 待修 |
+| P2-1 | `workbench_pid` 丢掉端口/cwd 关联 → 误杀另一实例内核 | ✅ 已修（反证命中） |
+| P2-2 | `kernel::stop` 永远返回 `Ok`，"停止失败如实上报"是死代码 | ✅ 已修 |
+| P2-3 | `SpawnFailed` 仍跑 pnpm 恢复接线，事故文案按插件口径 | ✅ 已修 |
+| P2-4 | "进程起来了但立刻退出"仍进安全模式（环境故障记成插件故障） | ✅ 已修（含 `env` cause） |
+| P2-5 | guard 归因在 Windows 匹配不到反斜杠路径 | ✅ 已修 |
+| P2-6 | SRI：多摘要（空格分隔）硬失败；缺摘要时的策略 | ✅ 已修（缺摘要仍为跳过，见明细） |
+| P2-7 | `save_settings` 清空 `node_path`；文案指向不存在的设置项 | ✅ 已修 |
+| P2-8 | `detect_node` 不回写缓存 → 陈旧 `ok:false` 挡死启动 | ✅ 已修 |
 | P2-9 | Windows 每 2.5s 派生一次 PowerShell 做进程身份校验 | ⏳ 待修 |
 | P2-10 | `PluginsPanel` 模式徽章用 `:loading="globalBusy"`（P2-42 同款） | ⏳ 待修 |
 | P2-11 | 进度浮层 z-index 3000 压住 ElMessage / ElMessageBox | ⏳ 待修 |
@@ -67,7 +67,7 @@
 | P2-14 | 发布：版本单调性门 fail-open（`curl … \|\| true`） | ⏳ 待修 |
 | P2-15 | 发布：annotated tag 会让 publish 在跑满全流程后必挂 | ⏳ 待修 |
 | P2-16 | CI 无 Windows job，Windows 专属编译错误只在打 tag 时暴露 | ⏳ 待修 |
-| P2-17 | `open_log_window` 在 async 命令里阻塞 `recv_timeout(20s)` | ⏳ 待修 |
+| P2-17 | `open_log_window` 在 async 命令里阻塞 `recv_timeout(20s)` | ✅ 已修 |
 | P2-18 | `check-invariants.mjs` 对补丁 `from` 缺穿越校验、`to` 放行 UNC | ✅ 已修 |
 | P2-19 | 缺"UI 模板未定义标识符"门禁 | ✅ 已修（新增 `scripts/check-ui-bindings.mjs`） |
 | P3-* | 轻微项（见文末"轻微与建议"） | ⏳ 待修 |
@@ -365,6 +365,10 @@ npm run build:ui                                    OK（JS 424 KB / CSS 138 KB�
 | `fix(scripts): check-signing-keys 入口守卫改跨平台写法（P1-5）` | 发布门禁误绿 |
 | `test(scripts,ci): 补 UI 模板绑定门禁与补丁路径判据（P2-18/P2-19）` | 新门禁 |
 | `fix(patches,commands,ui): 给"无备份记录"一条清除出路（P0-7）` | 死记录出路 |
+| `fix(kernel,commands): pid 记录带端口 + stop 如实报告失败（P2-1/P2-2）` | 内核身份 |
+| `fix(releases,plugins,skills): SRI 支持多摘要，不再被空格卡死（P2-6）` | 下载校验 |
+| `fix(commands): 保存设置不再清空 node_path；node 缓存不再挡死启动（P2-7/P2-8/P2-17）` | 设置与阻塞 |
+| `fix(guard): 环境类失败不再进插件阶梯；归因认识 Windows 反斜杠路径（P2-3/P2-4/P2-5）` | 启动看护 + 夹具隔离 |
 
 > 提交只包含本轮修复涉及的文件；`ui/src/theme.css` 属于并发会话的改动，未被纳入。
 
@@ -372,11 +376,37 @@ npm run build:ui                                    OK（JS 424 KB / CSS 138 KB�
 
 | 优先级 | 编号 | 说明 |
 | --- | --- | --- |
-| 高 | P2-1 / P2-2 | pid 身份校验带上端口或 cwd；`kernel::stop` 如实返回失败 |
-| 中 | P2-3 / P2-4 / P2-5 | guard 的环境失败分类（跳过插件阶梯）、SpawnFailed 跳过 pnpm 恢复、Windows 反斜杠归因 |
-| 中 | P2-6 / P2-7 / P2-8 | SRI 缺摘要策略、`save_settings` 字段合并、node 缓存回写 |
-| 中 | P2-9 / P2-17 | Windows 进程身份校验换轻量 API；`open_log_window` 移入 `spawn_blocking` |
+| 中 | P2-9 | Windows 进程身份校验换轻量 API（现在每 2.5s 派生一次 PowerShell） |
 | 中 | P2-13 / P2-14 / P2-15 | 发布流程：清理前置、单调性门 fail-closed、tag 比对改用 `commits/<tag>` |
 | 中 | P2-16 | CI 增加 `windows-latest` 的 `cargo check --all-targets` |
 | 中 | P2-10 / P2-11 / P2-12 | UI 三项（与并发写入者的工作面重叠，待分工确认） |
 | 低 | P3-* | 轻微项：注释漂移、`eprintln` 可见性、`prune_old_logs` 语义、发布白名单口径等 |
+
+### 批次 4：P2 内核身份、环境失败分类与 SRI
+
+| 编号 | 改动 | 回归/反证 |
+| --- | --- | --- |
+| P2-1 | `kernel.pid` 记 `"<pid> <port>"`（`read_pid_record` 兼容旧格式），`workbench_pid` 对带端口的记录走完整三层判据，端口兜底分支同样带端口；`kill_pid` 调用点带 `recorded_kernel_port` | `pid_record_carries_the_start_port_and_accepts_the_legacy_format`、`recorded_port_mismatch_is_not_our_workbench`（真实诱饵进程）；反证命中：退回 `pid_is_kernel(pid, None)` 即失败 |
+| P2-2 | 新增三态 `process_state`（Alive / Gone / Unknown），`stop` 只在有正面证据时返回带 pid 与下一步的错误；`process_command` 空输出改为 `None`（顺带修掉"Windows 上把不存在的 pid 判成 NotKernel、误拒打开工作台"） | `process_state_distinguishes_gone_from_unknown` |
+| P2-3 | 只有本轮真的改过隔离/接线才跑 `restore_profile_manifest`；环境类失败的事故文案给出真实原因与下一步，`cause = "env"` | 见 P2-4 用例的轨迹断言（含"跳过接线恢复与 pnpm 重装"） |
+| P2-4 | `ENV_FAILURE_MARKERS` + `environment_failure`：命中 EADDRINUSE / EACCES / ENOSPC / NODE_MODULE_VERSION 等时不进插件归因、不重试停用、不进安全模式 | `environment_failure_recognizes_port_and_permission_errors`、`environment_exit_skips_the_plugin_ladder_and_the_pnpm_restore` |
+| P2-5 | `is_anchored_plugin_hit` / `is_kernel_evidence_line` 先做反斜杠归一化 | `attribution_matches_windows_backslash_paths`（含段落边界反例） |
+| P2-6 | SRI 按 token 解析多摘要、取最强受支持算法、未知算法跳过；注释里的威胁模型改正 | 既有 `download_integrity_compares_content` 扩到 5 种形态 |
+| P2-7 | `merge_settings`：`None` = 未提交（继承现值），`Some("")` = 显式清空 | `merge_keeps_paths_the_panel_did_not_submit` |
+| P2-8 | `start_kernel` 命中 `ok:false` 缓存时强制重探；`detect_node` 成功回写缓存 | 行为变化写在注释与提交里（无独立用例：需要真实的 Node 探测环境） |
+| P2-17 | `recv_timeout(20s)` 移入 `spawn_blocking` | 编译与既有 UI 测试覆盖 |
+
+**P2-6 的保留项**：`integrity` 与 `shasum` 都没有时仍然"跳过校验并继续安装"（只在
+进度里说明）。要改成默认拒绝需要：① 消费 `dist.shasum`（sha1）作为回退，而仓库目前
+没有 sha1 依赖（要么新增 `sha1` crate，要么手写 SHA-1 —— 后者属于"手搓密码学"，
+不建议）；② 或者把"无摘要"变成硬失败（会影响使用老 packument 的 registry）。这是
+需要产品决策的一项，未擅自改。
+
+**顺带发现并修掉的测试夹具缺陷**：`plugins::store_dir()` 取的是 data dir 的**父目录**
+（`<home>/plugins`），而 guard 的 `temp_data_dir` 把临时目录本身当 data dir——于是所有
+guard 用例共用 `/tmp/plugins`，某个用例的清理会删掉别人正在用的目录。表现为与被测
+行为无关的偶发失败（10 轮里 6 次；隔离后 8/8 稳定）。已改为每个用例 `<home>/desktop`。
+
+**待办（UI，需与并发会话协调）**：`cause = "env"` 需要在 `IncidentModal.vue` 与
+`OverviewPanel.vue` 的 cause 白名单/标题映射里加一项（现在会回落到"暂未能归因"，
+而面板正文已经是明确的环境原因）。这两个文件当时正被另一个会话编辑，本轮没有改动。
