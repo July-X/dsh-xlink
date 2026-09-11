@@ -60,19 +60,36 @@ export function revertPatch(id, name) {
     '撤销补丁'
   ).then((ok) => {
     if (!ok) return Promise.resolve(false);
-    return withExclusiveLoading('patchRevert:' + id, async () => {
-      try {
-        const warnings = await invoke('patch_revert', { id });
-        toastSuccess('补丁「' + name + '」已撤销');
-        if (warnings && warnings.length) {
-          warnings.forEach((w) => toast(w, 8000, 'warning'));
+    const run = (force) =>
+      withExclusiveLoading('patchRevert:' + id, async () => {
+        try {
+          const warnings = await invoke('patch_revert', { id, force });
+          toastSuccess(force ? '补丁「' + name + '」的记录已清除' : '补丁「' + name + '」已撤销');
+          if (warnings && warnings.length) {
+            warnings.forEach((w) => toast(w, 8000, 'warning'));
+          }
+          await refreshPatches();
+          return true;
+        } catch (e) {
+          const raw = e && e.message ? e.message : String(e);
+          // "没有可恢复的原文件"是唯一需要二次确认的分支：这类记录既撤销不掉、
+          // 也无法重新应用（apply 要求先撤销），而后端建议的"重装内核版本"同样
+          // 无效（重装后内容既不是补丁内容、也没有原始哈希可比），用户会永久
+          // 卡在一条无法处置的记录上（P0-7）。出路是"只清除记录、文件保持现状"。
+          if (!force && raw.includes('清除记录')) {
+            const clear = await confirmDialog(
+              '无法还原原文件，只清除记录？',
+              '这条补丁记录里没有可恢复的原文件备份，无法自动还原。继续只会清除应用记录，' +
+                '内核文件保持现状；如果它仍是补丁内容，建议随后重新安装该内核版本。',
+              '清除记录'
+            );
+            if (clear) return run(true);
+            return false;
+          }
+          toastActionError('撤销补丁失败', e, '请确认工作台已停止；备份丢失的文件需要重新安装该内核版本', 8000);
+          return false;
         }
-        await refreshPatches();
-        return true;
-      } catch (e) {
-        toastActionError('撤销补丁失败', e, '请确认工作台已停止；备份丢失的文件需要重新安装该内核版本', 8000);
-        return false;
-      }
-    });
+      });
+    return run(false);
   });
 }
