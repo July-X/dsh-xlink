@@ -494,6 +494,61 @@ pub fn id_for_name(raw: &str) -> Result<String, AppError> {
     Ok(name.replace('/', "__"))
 }
 
+/// 为一次「更新」构造 spec：来源照旧，但 **id 以记录为准**。
+///
+/// `parse_spec` 只算得出"基础" id，而名称冲突时安装用的是带短哈希后缀的 id
+/// （P2-24）。若不覆盖，更新会把新版本发布到另一个目录，旧目录继续留在内核里
+/// —— UI 说更新成功、跑的仍是旧代码。抽成函数是为了能单测这条不变量（真正的
+/// `update_unlocked` 需要联网拉取）。
+fn spec_for_update(item: &StoreItem) -> Result<PluginSpec, AppError> {
+    let mut spec = parse_spec(&item.source)?;
+    spec.id = item.id.clone();
+    Ok(spec)
+}
+
+/// 名称的短哈希后缀，用于消解 id 冲突（取 SHA-256 前 6 个十六进制字符）。
+///
+/// 选哈希而不是递增序号：id 必须是**名称的确定性函数**，否则重新安装同一个
+/// 包会算出不同的 id，把「已安装」判断和 store 行对上号这件事变成靠运气。
+fn short_name_hash(name: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(name.as_bytes());
+    format!("{:x}", hasher.finalize())[..6].to_string()
+}
+
+/// 为一个待安装的插件分配 id。
+///
+/// `id_for_name` 的 `/` → `__` 映射不是单射：npm 包 `owner__repo` 与 git 仓库
+/// `owner/repo` 会算出同一个 id，于是后安装的那个会覆盖前一个的源码、store 行
+/// 与内核接线（P2-24）。
+///
+/// 这里在**保留既有 id 不变**的前提下消解冲突（因此不需要迁移任何已安装的
+/// 插件）：基础 id 没被占用、或已被同名插件占用（更新路径）时照旧使用它；
+/// 被**别的**名字占用时追加名称的短哈希后缀。后缀同样由名称确定，所以重装 /
+/// 重试会得到同一个 id，而不是每次都生成新的。
+fn allocate_id(data_dir: &Path, spec: &PluginSpec) -> Result<String, AppError> {
+    let store = load_store(data_dir);
+    let occupied_by_other = |id: &str| {
+        store
+            .items
+            .iter()
+            .any(|item| item.id == id && item.name != spec.name)
+    };
+    if !occupied_by_other(&spec.id) {
+        return Ok(spec.id.clone());
+    }
+    let candidate = format!("{}-{}", spec.id, short_name_hash(&spec.name));
+    if !occupied_by_other(&candidate) {
+        return Ok(candidate);
+    }
+    Err(AppError::Plugin(format!(
+        "插件 {} 的 id（{}）与库中已有插件冲突，且加消歧后缀的 {} 也已被占用。\
+         请先卸载冲突的插件，或换一个包名 / 仓库地址后重试",
+        spec.name, spec.id, candidate
+    )))
+}
+
 fn now_epoch_secs() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3166,10 +3221,12 @@ fn install_unlocked(
                     // 它已进 store.json，下次同步就参与接线，而进度里只有一句
                     // "npm 包不可用"。取源/校验阶段失败则不会留痕（`fetch_into_store`
                     // 自带回滚），那种情况才继续尝试下一个候选。
-                    let stray_id = id_for_name(npm_name).ok();
-                    let left_behind = stray_id
-                        .as_deref()
-                        .is_some_and(|id| store_item(data_dir, id).is_some());
+                    // 按名称（而不是重新推导的 id）查记录：名称冲突时真正的 id
+                    // 带消歧后缀，用基础 id 查会漏掉这条残留（P2-24）。
+                    let left_behind = load_store(data_dir)
+                        .items
+                        .iter()
+                        .any(|entry| &entry.name == npm_name || &entry.source == npm_name);
                     if left_behind {
                         return Err(AppError::Plugin(format!(
                             "npm 包 {npm_name} 安装失败，但已在中央库留下记录（{error}）。请先在插件面板卸载它，再重试或改用 GitHub 来源——直接回退到 git 会装出两个功能重复的插件",
@@ -3184,7 +3241,10 @@ fn install_unlocked(
         on_progress("npm 包不可用，回退到 GitHub 仓库安装");
     }
 
-    let spec = parse_spec(spec_str)?;
+    let mut spec = parse_spec(spec_str)?;
+    // 名称到 id 的映射不是单射，安装前按库内实际情况分配（必要时加短哈希后缀），
+    // 避免两个不同来源的插件互相覆盖（P2-24）。
+    spec.id = allocate_id(data_dir, &spec)?;
     if store_item(data_dir, &spec.id).is_some() {
         return Err(AppError::Plugin(format!(
             "{} 已安装，请使用「更新」",
@@ -3237,7 +3297,7 @@ fn update_unlocked(
             item.name, item.installed_version
         )));
     }
-    let spec = parse_spec(&item.source)?;
+    let spec = spec_for_update(&item)?;
     on_progress(&format!("正在更新 {}", item.name));
     let (mut updated, dependencies_ready) =
         fetch_into_store(data_dir, pnpm_exe, &spec, on_progress)?;
@@ -5707,6 +5767,97 @@ mod id_collision_tests {
             updated_at: String::new(),
             repo_url: None,
             description: None,
+        }
+    }
+
+    fn spec_for(id: &str, name: &str, source: &str, origin: &str) -> PluginSpec {
+        PluginSpec {
+            origin: origin.into(),
+            source: source.into(),
+            pin: None,
+            id: id.into(),
+            name: name.into(),
+            repo_url: None,
+        }
+    }
+
+    #[test]
+    fn first_come_keeps_the_base_id_and_others_get_a_stable_suffix() {
+        // P2-24：`owner__repo`（npm）与 `owner/repo`（git）都会算出 id
+        // `owner__repo`。旧实现让第二个覆盖第一个；现在第一个保留基础 id，
+        // 第二个拿到确定性的消歧后缀。
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        let npm = spec_for("owner__repo", "owner__repo", "owner__repo", "npm");
+        // git 来源的 name 只有仓库名（`parse_spec` 取 URL 最后一段），npm 包名
+        // 才是 `owner__repo` —— id 基础值相同、名字不同，正是冲突的判据。
+        let git = spec_for(
+            "owner__repo",
+            "repo",
+            "https://github.com/owner/repo.git",
+            "git",
+        );
+
+        let npm_id = allocate_id(&data_dir, &npm).expect("空库直接用基础 id");
+        assert_eq!(npm_id, "owner__repo");
+        upsert_item(&data_dir, item(&npm_id, &npm.name, &npm.source)).expect("first");
+
+        let git_id = allocate_id(&data_dir, &git).expect("冲突时加后缀");
+        assert_ne!(git_id, "owner__repo", "不能与已安装的插件抢同一个 id");
+        // 后缀必须由**名称**确定（而不是随机/递增），否则重装会不断生成新 id。
+        assert_eq!(
+            git_id,
+            format!("owner__repo-{}", short_name_hash("repo")),
+            "消歧后缀应当是名称的短哈希"
+        );
+
+        // 确定性：重试 / 重新安装必须算出同一个 id，否则会不断堆积新目录。
+        assert_eq!(allocate_id(&data_dir, &git).unwrap(), git_id);
+        // 同一个来源再次安装仍然命中同一个 id（更新路径）。
+        assert_eq!(allocate_id(&data_dir, &npm).unwrap(), npm_id);
+
+        // 两个插件可以共存，各自有独立的 store 行与目录 id。
+        upsert_item(&data_dir, item(&git_id, &git.name, &git.source)).expect("second");
+        let store = load_store(&data_dir);
+        assert_eq!(store.items.len(), 2);
+        assert!(store
+            .items
+            .iter()
+            .any(|i| i.id == npm_id && i.name == "owner__repo"));
+        assert!(store
+            .items
+            .iter()
+            .any(|i| i.id == git_id && i.name == "repo"));
+    }
+
+    #[test]
+    fn update_keeps_the_recorded_id_even_when_it_carries_a_suffix() {
+        // 名称冲突时记录里的 id 带后缀，而 parse_spec 只会算出基础 id：更新若
+        // 不覆盖，新版本会被发布到另一个目录，内核里跑的还是旧代码。
+        let suffixed = item(
+            "owner__repo-abc123",
+            "owner/repo",
+            "https://github.com/owner/repo.git",
+        );
+        let spec = spec_for_update(&suffixed).expect("git 来源可解析");
+        assert_eq!(spec.id, "owner__repo-abc123", "id 必须以记录为准");
+        // git 来源的展示名只取仓库名（`owner/repo` → `repo`），id 才带 owner。
+        assert_eq!(spec.name, "repo");
+        assert_eq!(spec.source, "https://github.com/owner/repo.git");
+
+        // 普通（无后缀）记录同样保持不变。
+        let plain = item("dsh-flowglass", "dsh-flowglass", "dsh-flowglass");
+        assert_eq!(spec_for_update(&plain).unwrap().id, "dsh-flowglass");
+    }
+
+    #[test]
+    fn unsuffixed_names_keep_their_historic_ids() {
+        // 保留既有 id 是"不需要迁移"的前提：不冲突的名称必须一个字都不变。
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        for name in ["dsh-flowglass", "@scope/pkg", "plain"] {
+            let spec = spec_for(&id_for_name(name).unwrap(), name, name, "npm");
+            assert_eq!(allocate_id(&data_dir, &spec).unwrap(), spec.id);
         }
     }
 
