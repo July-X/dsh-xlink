@@ -2,7 +2,7 @@
 // 安装与卸载对运行中的工作台即时生效，无需重启；长任务同样走 withProgress。
 import { reactive } from 'vue';
 import { invoke } from './bridge.js';
-import { toast, toastSuccess, toastError } from './notify.js';
+import { toast, toastSuccess, toastActionError } from './notify.js';
 import { withLoading, withExclusive, isExclusiveBusy } from './loading.js';
 import { withProgress } from './progress.js';
 import { refreshAll, store } from './store.js';
@@ -77,11 +77,10 @@ export function checkSkillUpdates(opts = {}) {
       // 不会发生，也没有任何解释。这里至少把第一个具体原因说出来。
       const failed = infos.filter((i) => i.error);
       if (failed.length) {
-        toastError(
-          failed.length +
-            ' 个技能包检查更新失败：' +
-            failed[0].error +
-            '；请检查网络或代理后重试',
+        toastActionError(
+          failed.length + ' 个技能包检查更新失败',
+          failed[0].error,
+          '请检查网络或代理后重试；已安装技能不受影响',
           8000
         );
       } else {
@@ -106,7 +105,7 @@ export function checkSkillUpdates(opts = {}) {
   const run = () =>
     request().catch((e) => {
       if (opts.busy) {
-        toastError('检查技能更新失败：' + e, 6000);
+        toastActionError('检查技能更新失败', e, '请检查网络或代理设置后重试', 6000);
       }
       return null;
     });
