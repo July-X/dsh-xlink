@@ -1,6 +1,6 @@
 # DeepSeek Harness 桌面端（dsh-xlink）
 
-[![Desktop release (dsh-xlink)](https://github.com/July-X/dsh-xlink/actions/workflows/desktop-release.yml/badge.svg?event=release)](https://github.com/July-X/dsh-xlink/actions/workflows/desktop-release.yml)
+[![Desktop release (dsh-xlink)](https://github.com/July-X/dsh-xlink/actions/workflows/desktop-release.yml/badge.svg)](https://github.com/July-X/dsh-xlink/actions/workflows/desktop-release.yml)
 
 一个基于 [Tauri v2](https://tauri.app/zh-cn/) 的桌面外壳：在桌面上自由打开 DeepSeek Harness 的 Web UI，并提供**内核更新菜单**——跟随官方
 `deepseek-ai/deepseek-harness` 的 GitHub Release tag（`dsh-v*`）一键安装、切换、删除、更新内核版本。

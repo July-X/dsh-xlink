@@ -1,0 +1,91 @@
+# 日常提交的轻量门禁。发布 workflow（desktop-release.yml）只在打 tag 时运行，
+# 因此在此之前没有任何东西检查 push / PR —— 一个破坏 lint 或测试的提交要等到
+# 发版才第一次被拦住（P2-52）。这里复用同一套门禁步骤，不涉及签名与发布。
+name: Desktop CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的旧运行直接取消：CI 只关心最新一次提交。
+concurrency:
+  group: desktop-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality gates
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+          shared-key: ci-${{ runner.os }}-${{ runner.arch }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Check cross-file invariants
+        # 命令注册/白名单/capability/内置补丁清单/三处版本号一致性。
+        run: pnpm run check:invariants
+
+      - name: Run UI tests
+        run: pnpm run test:ui
+
+      - name: Run script test suites
+        run: pnpm run test:scripts
+
+      - name: Smoke-test the pull-string launcher
+        run: node scripts/smoke-pullstring.mjs
+
+      - name: Build UI
+        run: pnpm run build:ui
+
+      - name: Enforce UI bundle budgets
+        run: |
+          node --input-type=module <<'NODE'
+          import { readdirSync, statSync } from 'node:fs';
+
+          const assets = 'ui/dist/assets';
+          const totalBytes = (suffix) =>
+            readdirSync(assets)
+              .filter((name) => name.endsWith(suffix))
+              .reduce((total, name) => total + statSync(`${assets}/${name}`).size, 0);
+          const jsBytes = totalBytes('.js');
+          const cssBytes = totalBytes('.css');
+
+          console.log(`UI JavaScript: ${jsBytes} bytes (budget: 700000)`);
+          console.log(`UI CSS: ${cssBytes} bytes (budget: 180000)`);
+          if (jsBytes > 700000 || cssBytes > 180000) {
+            process.exitCode = 1;
+          }
+          NODE
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Run Rust Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
