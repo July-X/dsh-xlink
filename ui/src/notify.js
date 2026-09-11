@@ -3,8 +3,19 @@
 import { ElMessage } from 'element-plus/es/components/message/index.mjs';
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs';
 
+// 进度浮层的 z-index（`theme.css` 的 `.progress-overlay`）。浮层必须压在
+// `el-dialog`（Element Plus 基线 2000）之上，否则事故面板里触发的长任务会把
+// 进度文案与「关闭」按钮盖住——那条路径按约定要由用户手动关闭。
+const PROGRESS_OVERLAY_Z_INDEX = 3000;
+
+// 提示与确认框必须**高于**浮层：Element Plus 的默认基线是 2000 + 自增计数，
+// 恒低于浮层的 3000，于是长任务进行中弹的确认框（例如托盘「退出」的二次确认、
+// 补丁的「清除记录」确认）会被浮层遮住且点不到，而任务未失败时浮层没有关闭
+// 按钮——用户看到的是"点了没反应"（P2-11）。
+const NOTIFY_Z_INDEX = PROGRESS_OVERLAY_Z_INDEX + 1000;
+
 export function toast(message, ms = 3200, type = 'info') {
-  ElMessage({ message, duration: ms, type, grouping: true });
+  ElMessage({ message, duration: ms, type, grouping: true, zIndex: NOTIFY_Z_INDEX });
 }
 
 export function toastSuccess(message, ms = 3200) {
@@ -46,6 +57,8 @@ export function confirmDialog(title, text, okLabel, cancelLabel = '取消') {
     cancelButtonText: cancelLabel || '取消',
     type: 'warning',
     distinguishCancelAndClose: true,
+    // 与 toast 同理：确认框也必须浮在进度浮层之上（P2-11）。
+    zIndex: NOTIFY_Z_INDEX,
   })
     .then(() => true)
     .catch(() => false);
