@@ -1,8 +1,11 @@
 <script setup>
-// 侧栏：品牌区（logo + 状态胶囊）+ 主菜单 + 底部安全提示。
-// 菜单激活项由 store.activePanel 驱动，切换带指示条与背景动效。
+// 侧栏：品牌区（logo + 状态胶囊）+ 主菜单。菜单激活项由 store.activePanel
+// 驱动，切换带指示条与背景动效。
+//
+// 第三方来源的安全提示不在这里：它是插件页的语境提示，挂在全局侧栏会常驻
+// 占位，现由 PluginsPanel 顶部渲染（见 theme.css 的 .panel-notice）。
 import { computed } from 'vue';
-import { Odometer, Box, Connection, MagicStick, SetUp, Warning, Refresh } from '@element-plus/icons-vue';
+import { Odometer, Box, Connection, MagicStick, SetUp, Refresh } from '@element-plus/icons-vue';
 import { store, checkShellUpdate } from '../store.js';
 import { globalBusy, isLoading } from '../loading.js';
 import { pluginStore } from '../plugins.js';
@@ -68,10 +71,5 @@ const status = computed(() => {
         <span v-if="item.badge && item.badge() > 0" class="menu-badge">{{ item.badge() }} 个更新</span>
       </button>
     </nav>
-
-    <div class="safety-notice" role="note">
-      <el-icon><Warning /></el-icon>
-      <p>第三方插件由社区提供，本工具不对其安全性负责，请自行甄别。</p>
-    </div>
   </aside>
 </template>
