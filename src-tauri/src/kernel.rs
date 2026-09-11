@@ -1322,6 +1322,17 @@ pub fn stop(child: &mut Child) -> Result<(), AppError> {
         let _ = quiet(&mut cmd).status();
         let _ = child.wait();
     }
+    // 如实复查：旧实现无论结果都返回 `Ok`，于是 UI 一律提示「已关闭工作台」，
+    // 而 taskkill 被拒或进程处于不可中断状态时内核仍在服务——用户既看不到提示
+    // 也没有下一步（P2-2）。判据只在**有正面证据**（仍能查到该 pid）时报告失败：
+    // `Unknown`（查询工具跑不起来）时保持原有的乐观语义，否则受限环境会把每一次
+    // 正常停止都报成失败。
+    if process_state(child.id()) == ProcessState::Alive {
+        return Err(AppError::Kernel(format!(
+            "无法停止内核进程 {}：已发送终止信号但进程仍然存在（可能被系统或安全软件保护）。             请在任务管理器里结束它后重试；不确定时先用「查看日志」确认它是否仍在服务",
+            child.id()
+        )));
+    }
     Ok(())
 }
 
@@ -1447,18 +1458,37 @@ fn pid_path(data_dir: &Path) -> PathBuf {
     data_dir.join("kernel.pid")
 }
 
-/// 记录已启动内核的 pid（best-effort）。
-pub fn write_pid(data_dir: &Path, pid: u32) {
-    let _ = atomic_write(&pid_path(data_dir), pid.to_string().as_bytes());
+/// 记录已启动内核的 pid 与它绑定的端口（best-effort）。
+///
+/// 端口必须一起记：只记 pid 时"这个 pid 还是我们那个内核"与"OS 把同一个 pid
+/// 复用给了另一个 dsh 内核"无法区分，而后者会让「关闭工作台」对另一个实例的
+/// 内核（dev/release 双开、另一个 data dir、CLI 直跑的 `dsh web`）发
+/// SIGTERM/SIGKILL（P2-1）。
+pub fn write_pid(data_dir: &Path, pid: u32, port: u16) {
+    let _ = atomic_write(&pid_path(data_dir), format!("{pid} {port}\n").as_bytes());
 }
 
-/// 读取已记录的内核 pid（若存在且可解析）。
-pub fn read_pid(data_dir: &Path) -> Option<u32> {
-    fs::read_to_string(pid_path(data_dir))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
+/// 内核身份记录：pid + 启动时绑定的端口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PidRecord {
+    pub pid: u32,
+    /// 旧格式（rc.20 及更早只写 pid）为 `None`；下一次启动会重写成带端口的形态。
+    pub port: Option<u16>,
+}
+
+/// 读取 pid 记录（兼容只写 pid 的旧格式）。
+pub fn read_pid_record(data_dir: &Path) -> Option<PidRecord> {
+    let text = fs::read_to_string(pid_path(data_dir)).ok()?;
+    let mut parts = text.split_whitespace();
+    let pid = parts.next()?.parse().ok()?;
+    let port = parts.next().and_then(|value| value.parse::<u16>().ok());
+    Some(PidRecord { pid, port })
+}
+
+/// 记录里那个内核启动时绑定的端口（若有）。用于在按 pid 终止它之前把完整的
+/// 身份证据交给 [`kill_pid`]。
+pub fn recorded_kernel_port(data_dir: &Path) -> Option<u16> {
+    read_pid_record(data_dir).and_then(|record| record.port)
 }
 
 /// 在成功停止后清除 pid 记录。
@@ -1467,12 +1497,17 @@ pub fn clear_pid(data_dir: &Path) {
 }
 
 /// 返回某个进程的命令行，避免不受限的助手命令把 stop 路径挂住。
+///
+/// **空输出一律当作"查不到"返回 `None`**：Windows 的 PowerShell 对不存在的 pid
+/// 不报错，只是输出空串，若把空串当成 `Some("")` 返回，调用方就会得出"这个 pid
+/// 存在但不是内核"的结论（`ListenerIdentity::NotKernel`），于是「打开工作台」被
+/// 误拒、并让用户去结束一个根本不存在的进程。空输出同样意味着"无法据此判断身份"。
 fn process_command(pid: u32) -> Option<String> {
     #[cfg(unix)]
     {
         crate::process::run_capture("ps", &["-p", &pid.to_string(), "-o", "command="])
             .ok()
-            .and_then(|(ok, output)| ok.then_some(output))
+            .and_then(|(ok, output)| (ok && !output.trim().is_empty()).then_some(output))
     }
     #[cfg(windows)]
     {
@@ -1483,7 +1518,43 @@ fn process_command(pid: u32) -> Option<String> {
             &["-NoProfile", "-NonInteractive", "-Command", &filter],
         )
         .ok()
-        .and_then(|(ok, output)| ok.then_some(output))
+        .and_then(|(ok, output)| (ok && !output.trim().is_empty()).then_some(output))
+    }
+}
+
+/// 进程存活探测的三态结果。
+///
+/// 必须区分 [`ProcessState::Gone`] 与 [`ProcessState::Unknown`]：`ps` 明确报告
+/// "没有这个 pid"（退出码非 0）说明进程确实没了；而 `ps` 自己跑不起来（被沙盒
+/// 挡住、二进制缺失）时我们**什么都不知道**。把后者当成"还活着"会让 [`stop`]
+/// 在一切正常时报告失败，反过来当成"已死"又会让杀死失败的场景静默通过。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessState {
+    Alive,
+    Gone,
+    Unknown,
+}
+
+/// 查询进程存活状态（尽力而为，不猜）。
+fn process_state(pid: u32) -> ProcessState {
+    #[cfg(unix)]
+    let captured = crate::process::run_capture("ps", &["-p", &pid.to_string(), "-o", "command="]);
+    #[cfg(windows)]
+    let captured = {
+        let filter =
+            format!("(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine");
+        crate::process::run_capture(
+            "powershell.exe",
+            &["-NoProfile", "-NonInteractive", "-Command", &filter],
+        )
+    };
+    match captured {
+        // 查到了进程：查询成功且输出非空。
+        Ok((true, output)) if !output.trim().is_empty() => ProcessState::Alive,
+        // 查询本身成功但什么都没查到：Unix 上 `ps` 以非 0 退出（没有这个 pid），
+        // Windows 上 PowerShell 对不存在的 pid 返回空串且退出码为 0。
+        Ok(_) => ProcessState::Gone,
+        Err(_) => ProcessState::Unknown,
     }
 }
 
@@ -1589,19 +1660,24 @@ pub(crate) fn pid_is_kernel(pid: u32, port: Option<u16>) -> bool {
 /// 1. `kernel.pid`（本壳或上一次壳启动内核时写入）+ [`pid_is_kernel`] 的实时
 ///    身份校验。后者会重新查询进程是否存在，所以内核已退出、pid 被复用给别
 ///    的进程时这里同样返回 `None`——僵尸检测与存活检测是同一件事。
+///    记录里带着启动端口时做完整三层校验；只有 pid 的旧格式退回宽松判据。
 /// 2. 配置端口上的监听者，仅在 pid 文件缺失或失效时兜底（例如内核由上一个壳
 ///    启动，而那个壳因端口已被占用而跳过了启动、从未写出 pid 文件）。兜底同样
 ///    要求监听者通过身份校验，因此无关进程占用端口不会再被误报成「工作台在
 ///    运行」。
 pub fn workbench_pid(data_dir: &Path, settings: &Settings) -> Option<u32> {
-    if let Some(pid) = read_pid(data_dir) {
-        if pid_is_kernel(pid, None) {
-            return Some(pid);
+    if let Some(record) = read_pid_record(data_dir) {
+        // 带端口的记录走完整判据（身份 + 命令行里的 `--port` 一致 + 该端口的
+        // 监听者就是本 pid）。pid 被复用给另一个 dsh 内核时，第 2 层会挡住它：
+        // 那是另一个实例的内核，不属于本 data dir，更不能被我们杀掉（P2-1）。
+        if pid_is_kernel(record.pid, record.port) {
+            return Some(record.pid);
         }
     }
     if port_open(settings.port) {
         if let Some(pid) = port_listen_pid(settings.port) {
-            if pid_is_kernel(pid, None) {
+            // 这里已知监听端口就是 `settings.port`，把端口一起传下去让判据完整。
+            if pid_is_kernel(pid, Some(settings.port)) {
                 return Some(pid);
             }
         }
@@ -1830,9 +1906,14 @@ mod tests {
             .arg("sleep 30; :")
             .arg("@deepseek-ai/dsh/lib/bin.js")
             .arg("web")
+            .arg("--port")
+            .arg("3090")
             .spawn()
             .expect("spawn placeholder kernel");
-        write_pid(&root, placeholder.id());
+        // 记录里带端口，占位进程的命令行也必须带同一个端口：真实内核由
+        // `kernel::start` 以 `--port <port>` 启动，`workbench_pid` 的第 2 层正是
+        // 靠这个参数把"另一个实例的内核"排除在外（P2-1）。
+        write_pid(&root, placeholder.id(), 3090);
 
         let error = set_active(&root, "0.1.2").expect_err("running workbench must block switch");
 
@@ -2346,12 +2427,136 @@ mod tests {
             "没有 pid 记录时不应报告工作台在运行"
         );
 
-        write_pid(&root, u32::MAX);
+        write_pid(&root, u32::MAX, 3090);
         assert!(
             !workbench_running(&root, &current),
             "陈旧的 pid 记录不能被判成正在运行的工作台"
         );
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// P2-1：`kernel.pid` 里的身份记录必须带启动端口，并两种格式都能读。
+    #[test]
+    fn pid_record_carries_the_start_port_and_accepts_the_legacy_format() {
+        let root = workbench_test_dir("pid-record");
+        write_pid(&root, 4321, 3091);
+        assert_eq!(
+            read_pid_record(&root),
+            Some(PidRecord {
+                pid: 4321,
+                port: Some(3091)
+            })
+        );
+        assert_eq!(recorded_kernel_port(&root), Some(3091));
+
+        // 旧格式（rc.20 及更早只写一个数字）继续可读，端口为 None。
+        fs::write(pid_path(&root), "4321\n").expect("legacy pid file");
+        assert_eq!(
+            read_pid_record(&root),
+            Some(PidRecord {
+                pid: 4321,
+                port: None
+            })
+        );
+        assert_eq!(recorded_kernel_port(&root), None);
+
+        // 坏内容不算记录。
+        fs::write(pid_path(&root), "not-a-pid\n").expect("garbage pid file");
+        assert_eq!(read_pid_record(&root), None);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// P2-2：存活探测必须区分"查到了""确实没了""查不了"。
+    ///
+    /// `stop()` 只在有正面证据（仍能查到该 pid）时才报告停止失败；把"查不了"
+    /// 当成"还活着"会让受限环境里每一次正常停止都报错。
+    #[cfg(unix)]
+    #[test]
+    fn process_state_distinguishes_gone_from_unknown() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 5"])
+            .spawn()
+            .expect("spawn probe child");
+        let pid = child.id();
+        assert_eq!(process_state(pid), ProcessState::Alive, "活着的子进程");
+
+        let _ = child.kill();
+        let _ = child.wait();
+        // 已被回收：`ps -p <pid>` 退出码非 0（进程不存在），必须是 Gone 而不是 Unknown。
+        assert_eq!(process_state(pid), ProcessState::Gone, "已回收的 pid");
+
+        // 一个几乎不可能存在的 pid 同样是 Gone。
+        assert_eq!(process_state(u32::MAX), ProcessState::Gone);
+    }
+
+    /// P2-1：记录端口与进程实际端口不一致时不得认领。
+    ///
+    /// 用一个命令行里同时含内核标记与 `--port` 的真实进程模拟"另一个实例的内核"：
+    /// 它的 pid 落在本 data dir 的记录里（端口写成另一个值）时，旧判据
+    /// （`pid_is_kernel(pid, None)`，只看"这个 pid 现在是不是某个 dsh 内核"）会
+    /// 认领它，于是「关闭工作台」对它发 SIGTERM/SIGKILL——杀掉的是另一个实例正在
+    /// 服务的会话。带端口的完整判据必须拒绝，同时在端口一致时仍然认领。
+    #[cfg(unix)]
+    #[test]
+    fn recorded_port_mismatch_is_not_our_workbench() {
+        let root = workbench_test_dir("pid-port-mismatch");
+        // 端口留空（0）让这个用例只走 pid 文件分支，避免本机恰好在默认端口上有
+        // 内核时干扰断言。
+        settings::save(
+            &root,
+            &Settings {
+                port: 0,
+                ..Settings::default()
+            },
+        )
+        .expect("save settings");
+        let current = settings::load(&root);
+
+        // 诱饵必须让内核标记与 `--port` 留在**自己**的命令行里：`sh -c 'sleep 30'`
+        // 会被 shell 优化成 exec sleep，多余参数随之消失（第一版诱饵就是这么失真的），
+        // 所以这里用两条命令的脚本来保证 shell 一直活着；端口参数还必须放在脚本
+        // 末尾——`--port 45231;` 会被分号粘成一个 token，`pid_is_kernel` 的第 2 层
+        // 是按空格切分后逐 token 比对的。
+        let mut child = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "sleep 5; true @deepseek-ai/dsh/lib/bin.js --port 45231",
+            ])
+            .spawn()
+            .expect("spawn decoy kernel");
+        let pid = child.id();
+        let mut ready = false;
+        for _ in 0..40 {
+            if pid_is_kernel(pid, None) {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            ready,
+            "诱饵进程的命令行应当含内核标记：{:?}",
+            process_command(pid)
+        );
+        assert!(
+            !pid_is_kernel(pid, Some(45232)),
+            "端口不一致必须被拒绝（旧判据在这里返回 true）"
+        );
+
+        write_pid(&root, pid, 45232);
+        assert!(
+            !workbench_running(&root, &current),
+            "记录端口与内核实际端口不一致时不得认领（P2-1）"
+        );
+
+        // 端口一致时仍然认领——修复不能做成"永远不认"。
+        write_pid(&root, pid, 45231);
+        assert_eq!(workbench_pid(&root, &current), Some(pid));
+
+        let _ = child.kill();
+        let _ = child.wait();
         let _ = fs::remove_dir_all(&root);
     }
 }

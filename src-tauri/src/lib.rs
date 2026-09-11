@@ -285,7 +285,8 @@ pub fn run() {
                 // 端口上，用当前配置端口探测会漏掉它，让它继续占着端口活到
                 // 下一次启动。
                 if let Some(pid) = kernel::workbench_pid(&data_dir, &current) {
-                    kernel::kill_pid(pid, None);
+                    // 同 stop_kernel：带上记录里的启动端口（P2-1）。
+                    kernel::kill_pid(pid, kernel::recorded_kernel_port(&data_dir));
                 }
                 kernel::clear_pid(&data_dir);
             }
