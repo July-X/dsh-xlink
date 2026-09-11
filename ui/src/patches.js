@@ -3,7 +3,7 @@
 // 可随时撤销（从备份还原原文件）。状态与写入都在 Rust 侧完成。
 import { reactive } from 'vue';
 import { invoke } from './bridge.js';
-import { toast, toastSuccess, toastError, confirmDialog } from './notify.js';
+import { toast, toastSuccess, toastActionError, confirmDialog } from './notify.js';
 import { withExclusiveLoading } from './loading.js';
 
 export const patchStore = reactive({
@@ -46,7 +46,7 @@ export function applyPatch(id, name) {
         await refreshPatches();
         return true;
       } catch (e) {
-        toastError('应用补丁失败：' + e, 8000);
+        toastActionError('应用补丁失败', e, '请确认工作台已停止、内核版本在补丁适用范围内后重试', 8000);
         return false;
       }
     });
@@ -70,7 +70,7 @@ export function revertPatch(id, name) {
         await refreshPatches();
         return true;
       } catch (e) {
-        toastError('撤销补丁失败：' + e, 8000);
+        toastActionError('撤销补丁失败', e, '请确认工作台已停止；备份丢失的文件需要重新安装该内核版本', 8000);
         return false;
       }
     });

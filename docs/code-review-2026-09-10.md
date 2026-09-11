@@ -67,10 +67,11 @@
 | P2-32 ~ P2-34 | registry 信任边界口径、releases 无测试/无缓存 | ✅ 已修 | AGENTS 补镜像与 SRI 说明；`select_releases` + 6 条测试（空 npm 结果改为回退）；60s TTL 缓存 |
 | P2-28 / P2-62 | 日志窗口静默失败、logs 无保留策略 | ✅ 已修 | 校验合并 + 异步开窗回传错误；启动裁剪 30 天 / 200 MiB（10 分钟宽限）；新增 5 条测试 |
 | P2-51 | 发布流水线不校验签名密钥是否成对 | ✅ 已修 | 新增 check-signing-keys（Ed25519 验签 + key id 比对），build job 打包前执行；5 条测试 |
+| P2-36 | 错误提示缺「下一步 + 日志路径」 | ✅ 已修 | 统一 `toastActionError` 并逐点替换 20 处；英文原始错误不再直出；新增 1 条 UI 测试 |
 | P2-38 ~ P2-40 / P2-43 / P2-44 | 日志重入被吞、窗口操作静默失败、无渲染兜底、两处文档漂移 | ✅ 已修 | 见明细；UI 测试 14 → 16 条 |
-| P2-2、P2-36、P2-46 | | ⏳ 待修 | |
+| P2-2、P2-46 | | ⏳ 待修 | |
 
-**当前基线**：`cargo test` 269 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 16 通过；`npm run test:scripts` 15 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
+**当前基线**：`cargo test` 269 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 17 通过；`npm run test:scripts` 15 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
 
 > 本文件同时是**问题清单**与**修复台账**：正文条目保留原始分析（含 `file:line`、触发场景、影响、建议），修复完成后在对应条目标题前加【已修】并在此表登记。
 
@@ -176,7 +177,7 @@
 - `npm run check:invariants` 通过：命令注册与白名单一致（45）、capability 权限引用有效（5 个文件）、前端与注入脚本调用的 42 个命令全部已注册且已授权、内置补丁清单有效（3 个定义）。
 - **守卫有效性反证**：临时移除 `install_node` 后脚本以退出码 1 失败，并精确报出两处问题（"命令已注册但未列入 allow-local-commands" 与 "ui/src/store.js 调用了未授权的命令"）；恢复后重新通过。
 - 构建产物层面确认：重新触发 tauri-build 后 `gen/schemas/acl-manifests.json` 的 `allow-local-commands` 为 45 条且包含 `install_node`。
-- 全套验证绿：`cargo test` 190 通过、`cargo clippy --all-targets -- -D warnings` 零警告、`cargo fmt --check` 通过、`npm run test:ui` 16 通过、`node --test scripts/*.test.mjs` 7 通过、`node scripts/smoke-pullstring.mjs` 退出码 0。
+- 全套验证绿：`cargo test` 190 通过、`cargo clippy --all-targets -- -D warnings` 零警告、`cargo fmt --check` 通过、`npm run test:ui` 17 通过、`node --test scripts/*.test.mjs` 7 通过、`node scripts/smoke-pullstring.mjs` 退出码 0。
 
 <details>
 <summary>原始分析（修复前）</summary>
@@ -545,7 +546,7 @@
 | # | 位置 | 问题 | 建议 |
 | --- | --- | --- | --- |
 | 【已修】P2-35 | `SettingsPanel.vue:118,121` | 两个 IO 按钮缺 `:disabled="globalBusy"`：互斥租约期间点「保存设置」被静默丢弃（无 toast），2.5s 后轮询把输入框回滚，用户以为已保存 | 补 `:disabled`，并在动作开头显式提示"有其它任务正在进行" | ✅ 已修：设置页「保存设置」「检测 Node.js」补 `:disabled="globalBusy"`，互斥租约期间不再静默丢弃点击后被 2.5s 轮询回滚
-| P2-36 | `store.js:136,222,256,268,374,400,421,485`；`plugins.js:129,240`；`skills.js:94`；`logs.js:43,74`；`patches.js:49,73` | 错误提示普遍缺「下一步 + 日志路径」，英文 reqwest 原始错误直出（全项目仅 3 处符合约定） | 在 `notify.js` 增加 `toastActionError(prefix, e, nextStep)` 并逐点替换 |
+| 【已修】P2-36 | `store.js:136,222,256,268,374,400,421,485`；`plugins.js:129,240`；`skills.js:94`；`logs.js:43,74`；`patches.js:49,73` | 错误提示普遍缺「下一步 + 日志路径」，英文 reqwest 原始错误直出（全项目仅 3 处符合约定） | 在 `notify.js` 增加 `toastActionError(prefix, e, nextStep)` 并逐点替换 | ✅ 已修：`notify.js` 新增 `formatActionError` / `toastActionError` —— 后端已带中文指引的信息原样展示，英文原始错误（reqwest/ureq 直出）补上「下一步」；逐点替换 20 处调用（store.js 15、plugins.js 2、skills.js 2、patches.js 2、logs.js 1，含官方对话开关与启动失败），每个动作给出针对性的出路（停止工作台后重试 / 检查网络代理 / 手动打开数据目录 / 按事故面板处置 …）。新增 UI 测试 1 条（反证：不补下一步即失败）
 | 【已修】P2-37 | `VersionsPanel.vue:18,40-55` | 组件内直接 `invoke`（违反"状态与动作集中在 store"），且 catch 里也把 `slot.loaded = true` → 启动失败被永久缓存，tooltip 不再重试 | 失败不置 `loaded`；逻辑搬到 `plugins.js` | ✅ 已修：`kernel_plugin_list` 读取失败时不再置 `slot.loaded = true`，失败不会被永久缓存，再次悬浮会重试并显示错误
 | 【已修】P2-38 | `logs.js:15,31,33-48`、`LogModal.vue:114` | 全局单 loading 标志 + `withLoading` 吞掉重入：大日志下切签再点「刷新」什么都没发生 | 按文件粒度绑定 key；`loading` 改为请求序号 | ✅ 已修：日志读取改为请求序号 + 按文件名记录加载态，去掉 `withLoading` 的重入吞并——大日志未读完时再点「刷新」会真正重发，且慢的旧响应不会覆盖新结果；失败文案补上重试与 logs/ 路径。新增 UI 测试（反证：退回重入忽略即失败）
 | 【已修】P2-39 | `WindowTitleBar.vue:6-12`、`LogViewerWindow.vue:34-38` | 直接读 `window.__TAURI__.window` 且 `.catch(() => {})` 吞掉失败 → 关闭按钮可能毫无反应也无提示 | 在 `bridge.js` 暴露窗口操作并在失败时 toast | ✅ 已修：`bridge.js` 暴露 `windowAction`/`hasWindowControls`，标题栏与日志窗口不再直接读 `window.__TAURI__`，失败改为 toast 并给出系统快捷键出路（旧实现 `.catch(() => {})` 让按钮点了毫无反应）；`__TAURI__` 现在只出现在 bridge.js

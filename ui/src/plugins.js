@@ -2,7 +2,7 @@
 // 卸载 / 同步 / 模式切换。长任务统一走 withProgress（进度面板 + 日志流）。
 import { reactive } from 'vue';
 import { invoke, openExternal } from './bridge.js';
-import { toast, toastSuccess, toastError } from './notify.js';
+import { toast, toastSuccess, toastActionError } from './notify.js';
 import { withLoading, withExclusive, isExclusiveBusy } from './loading.js';
 import { withProgress } from './progress.js';
 import { refreshAll } from './store.js';
@@ -126,7 +126,7 @@ export function loadCatalog(manual = false) {
         return pluginStore.catalogItems;
       } catch (e) {
         pluginStore.catalogLoaded = true;
-        if (manual) toastError('目录加载失败：' + e, 6000);
+        if (manual) toastActionError('插件目录加载失败', e, '请检查网络或代理设置后重试；已安装插件不受影响', 6000);
         return null;
       }
     });
@@ -237,7 +237,7 @@ export function checkPluginUpdates(opts = {}) {
         return refreshAll();
       } catch (e) {
         if (opts.busy) {
-          toastError('检查插件更新失败：' + e, 6000);
+          toastActionError('检查插件更新失败', e, '请检查网络或代理设置后重试', 6000);
         }
         return null;
       }

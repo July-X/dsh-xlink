@@ -3,7 +3,7 @@
 // 启动编排、启停确认、外壳更新横幅、首次运行引导、2.5s 轮询。
 import { reactive } from 'vue';
 import { invoke, makeChannel } from './bridge.js';
-import { toast, toastSuccess, toastError, confirmDialog } from './notify.js';
+import { toast, toastSuccess, toastActionError, confirmDialog } from './notify.js';
 import { globalBusy, isLoading, withExclusive, withExclusiveLoading, withLoading, isExclusiveBusy } from './loading.js';
 import { withProgress, progress } from './progress.js';
 import { refreshPlugins } from './plugins.js';
@@ -136,7 +136,7 @@ export function refreshAll() {
       await requestStatus(true);
       await Promise.all([refreshPlugins(), refreshSkills()]);
     } catch (e) {
-      toastError('读取状态失败：' + e);
+      toastActionError('读取状态失败', e, '请确认应用仍在运行；若持续失败，重启应用后重试');
     }
   })();
   const tracked = request.finally(() => {
@@ -222,7 +222,7 @@ export function checkUpdates() {
       }
     } catch (e) {
       store.releases = [];
-      toastError('获取发布失败：' + e, 6000);
+      toastActionError('获取发布失败', e, '请检查网络或代理设置后重试；也可到 GitHub Releases 手动下载', 6000);
     }
   });
 }
@@ -256,7 +256,7 @@ export function activateVersion(version) {
       toastSuccess('已切换活动版本为 ' + version + '（下次启动生效）');
       await refreshAll();
     } catch (e) {
-      toastError('切换失败：' + e);
+      toastActionError('切换内核版本失败', e, '请先停止工作台再重试');
     }
   });
 }
@@ -268,7 +268,7 @@ export function removeVersion(version) {
       toastSuccess('已删除版本 ' + version);
       await refreshAll();
     } catch (e) {
-      toastError('删除失败：' + e);
+      toastActionError('删除内核版本失败', e, '请先停止工作台并确认该版本未被激活');
     }
   });
 }
@@ -289,7 +289,7 @@ export function installLatestRelease() {
       const stable = store.releases.find((r) => !r.prerelease);
       version = (stable || store.releases[0]).version;
     } catch (e) {
-      toastError('获取发布失败：' + e, 6000);
+      toastActionError('获取发布失败', e, '请检查网络或代理设置后重试；也可到 GitHub Releases 手动下载', 6000);
       return undefined;
     }
     return installVersion(version, { exclusive: false });
@@ -329,7 +329,7 @@ export function startWorkbench() {
       // 失败路径：进度面板保持开放（约定），事故面板覆盖其上解释原因。
       const message = e && e.message ? e.message : String(e);
       progress.fail('启动失败：' + message);
-      toastError('启动失败：' + message, 8000);
+      toastActionError('启动失败', e, '请按事故面板给出的处置建议操作；完整输出见「查看日志」', 8000);
       if (e && e.report && e.report.incident) {
         showIncident(e.report.incident);
       } else {
@@ -351,7 +351,7 @@ export async function stopWorkbench() {
         toastSuccess('工作台已关闭');
         await refreshAll();
       } catch (e) {
-        toastError('关闭失败：' + e);
+        toastActionError('关闭工作台失败', e, '请稍后重试；若内核仍在运行，可在活动监视器/任务管理器里结束 node 进程');
       }
     });
     return run === undefined ? Promise.resolve(false) : run;
@@ -374,7 +374,7 @@ export async function stopWorkbench() {
 
 export function openHarnessWindow() {
   return withLoading('openHarness', () =>
-    invoke('open_harness').catch((e) => toastError('无法打开工作台窗口：' + e))
+    invoke('open_harness').catch((e) => toastActionError('无法打开工作台窗口', e, '请先点击「启动工作台」，并确认设置里的端口没有被其它程序占用'))
   );
 }
 
@@ -382,11 +382,12 @@ export function openHarnessWindow() {
 export function toggleOfficialChat() {
   const open = !!(store.view && store.view.official_chat_open);
   const command = open ? 'close_official_chat' : 'open_official_chat';
-  const errorPrefix = open ? '关闭官方对话窗口失败：' : '无法打开官方对话窗口：';
   return withLoading('officialChat', () =>
     invoke(command)
       .then(() => refreshAll())
-      .catch((e) => toastError(errorPrefix + e, 5000))
+      .catch((e) =>
+        toastActionError(open ? '关闭官方对话窗口失败' : '无法打开官方对话窗口', e, '请确认内核正在运行后重试', 5000)
+      )
   );
 }
 
@@ -394,13 +395,13 @@ export function toggleOfficialChat() {
 // Rust 侧 open_official_chat 在窗口已存在时只会 set_focus，所以重复点击安全。
 export function openOfficialChatWindow() {
   return withLoading('openOfficialChatWindow', () =>
-    invoke('open_official_chat').catch((e) => toastError('打开官方对话窗口失败：' + e, 5000))
+    invoke('open_official_chat').catch((e) => toastActionError('打开官方对话窗口失败', e, '请确认内核正在运行后重试', 5000))
   );
 }
 
 export function openDataDir() {
   return withLoading('openDataDir', () =>
-    invoke('open_data_dir').catch((e) => toastError('打开数据目录失败：' + e))
+    invoke('open_data_dir').catch((e) => toastActionError('打开数据目录失败', e, '请按设置页显示的数据目录路径手动打开'))
   );
 }
 
@@ -421,7 +422,7 @@ export function checkShellUpdate(manual) {
       })
       .catch((e) => {
         if (manual) {
-          toastError('检查桌面端更新失败：' + e);
+          toastActionError('检查桌面端更新失败', e, '请检查网络或代理设置后重试');
         }
       });
     const tracked = request.finally(() => {
@@ -447,7 +448,7 @@ export function installShellUpdate() {
     'installShellUpdate',
     () =>
       invoke('install_shell_update', { onEvent: channel }).catch((e) => {
-        toastError('桌面端更新失败：' + e, 6000);
+        toastActionError('桌面端更新失败', e, '请稍后重试；也可到 GitHub Releases 手动下载安装包', 6000);
       })
       // 成功时应用直接重启进新版本，无事可做。
   );
@@ -464,7 +465,7 @@ export function detectNode() {
       }
       return info;
     } catch (e) {
-      toastError('检测失败：' + e, 4000);
+      toastActionError('检测 Node.js 失败', e, '请确认 Node.js 已安装且可执行，或在设置里手动指定路径', 4000);
       return null;
     }
   });
@@ -485,7 +486,7 @@ export function saveSettings(portRaw, profileRaw) {
       await refreshAll();
       return true;
     } catch (e) {
-      toastError('保存失败：' + e);
+      toastActionError('保存设置失败', e, '请检查端口是否被占用、取值是否合法后重试');
       return false;
     }
   });

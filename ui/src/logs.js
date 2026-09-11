@@ -3,7 +3,7 @@
 // 「刷新」重读当前签。
 import { reactive } from 'vue';
 import { invoke } from './bridge.js';
-import { toastError } from './notify.js';
+import { toastActionError } from './notify.js';
 import { withLoading } from './loading.js';
 import { stripAnsi } from './progress.js';
 
@@ -82,7 +82,9 @@ export function refreshLogTabs() {
       logModal.content = '（暂无日志文件）';
       return null;
     })
-    .catch((e) => toastError('读取日志列表失败：' + e, 4000));
+    .catch((e) =>
+      toastActionError('读取日志列表失败', e, '请点击「刷新」重试，或打开数据目录查看 logs/', 4000)
+    );
 }
 
 export function showLogs() {

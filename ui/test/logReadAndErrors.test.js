@@ -87,3 +87,22 @@ test('render errors are captured with a readable message and can be cleared', as
   assert.equal(renderErrors.message, '');
   assert.equal(renderErrors.count, 0);
 });
+
+test('action errors gain a next step while backend guidance is preserved', async () => {
+  const { formatActionError } = await import('../src/notify.js');
+
+  // 英文原始错误（reqwest/ureq 直出）→ 补上可操作的下一步。
+  const english = formatActionError('启动失败', new Error('error sending request for url'));
+  assert.match(english, /启动失败/);
+  assert.match(english, /重试|查看日志/, '英文原始错误必须补出下一步');
+
+  // 后端已经给了中文指引 → 原样保留，不叠加第二层"下一步"。
+  const guided = formatActionError(
+    '应用补丁失败',
+    new Error('目标不存在：内核布局与补丁预期不符，请确认内核版本后重试'),
+  );
+  assert.match(guided, /请确认内核版本后重试/);
+  assert.ok(!guided.includes('若反复失败'), '不应叠加通用提示');
+
+  assert.match(formatActionError('X 失败', undefined), /未知错误/);
+});
