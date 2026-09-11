@@ -489,8 +489,69 @@ jobs:
 
           # 1) 正式 Release 的资产必须恰好 6 个。上传前只按**文件名**删同名资产、
           #    从没读回过 Release 的实际列表；复用人工建过的 draft 时可能留下命名
-          #    不同的旧资产，而资产计数只数本地目录，发现不了。这里读回真实集合。
-          #    （macOS runner 是 bash 3.2，没有 mapfile。）
+          #    不同的旧资产，而资产计数只数本地目录，发现不了。
+          #
+          #    因此这里读回真实集合，并且**直接把计划外资产删掉**（P2-46）：只断言
+          #    数量会让"人工往 draft 里放过一个 dsh-xlink-<旧版本>.dmg"这类事故
+          #    变成红灯，需要人工去 Release 页面清理；发布脚本自己能做到的就不要
+          #    留给人。白名单来自本次实际产出的文件名（artifacts 目录）加上
+          #    latest.json。
+          #    （macOS runner 是 bash 3.2，没有 mapfile，只能用 while read 累加。）
+          expected_names=()
+          while IFS= read -r name; do
+            [[ -n "$name" ]] && expected_names+=("$name")
+          done < <(find artifacts -type f -exec basename {} \; | sort -u)
+          expected_names+=("latest.json")
+
+          is_expected() {
+            local candidate="$1"
+            local known
+            for known in "${expected_names[@]}"; do
+              [[ "$candidate" == "$known" ]] && return 0
+            done
+            return 1
+          }
+
+          # 资产 id 与名字分两次取值、按下标一一对应：合成一行再用 IFS 切分
+          # 在 bash 3.2 下很容易踩到制表符/字面量的坑（本地干跑就撞上了），
+          # 而这里两个查询各自都是单列、无空格，读起来也简单。
+          ids=()
+          while IFS= read -r id; do
+            [[ -n "$id" ]] && ids+=("$id")
+          done < <(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
+            --paginate --jq '.[].id')
+
+          current_names=()
+          while IFS= read -r name; do
+            [[ -n "$name" ]] && current_names+=("$name")
+          done < <(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
+            --paginate --jq '.[].name')
+
+          removed=0
+          index=0
+          while [[ "$index" -lt "${#current_names[@]}" ]]; do
+            asset_name="${current_names[$index]}"
+            asset_id="${ids[$index]:-}"
+            index=$((index + 1))
+            if is_expected "$asset_name"; then
+              continue
+            fi
+            if [[ -z "$asset_id" ]]; then
+              echo "unexpected asset ${asset_name} has no id; cannot delete it" >&2
+              exit 1
+            fi
+            echo "deleting unexpected release asset: ${asset_name} (id ${asset_id})" >&2
+            gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >/dev/null
+            removed=$((removed + 1))
+          done
+
+          if [[ "$removed" -gt 0 ]]; then
+            echo "removed ${removed} unexpected asset(s) before verifying the published set" >&2
+          fi
+
           names=()
           while IFS= read -r name; do
             names+=("$name")
@@ -498,9 +559,27 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
             --paginate --jq '.[].name')
           if [[ "${#names[@]}" -ne 6 ]]; then
-            echo "published release has ${#names[@]} assets, expected exactly 6" >&2
+            # `${names[*]:-}` 而不是 `${names[*]}`：macOS runner 的 bash 3.2 在
+            # `set -u` 下展开空数组会直接报 unbound variable，把"资产少了"的
+            # 诊断变成一句与实情无关的 shell 错误。
+            echo "published release has ${#names[@]} assets, expected exactly 6: ${names[*]:-}" >&2
             exit 1
           fi
+          # 删掉计划外资产之后，集合还必须与本次产出**逐个吻合**：数量对得上
+          # 但名字不对（例如少了 macOS 更新包、多了同名旧文件）同样是坏发布。
+          for expected in "${expected_names[@]}"; do
+            found="no"
+            for name in "${names[@]}"; do
+              if [[ "$name" == "$expected" ]]; then
+                found="yes"
+                break
+              fi
+            done
+            if [[ "$found" != "yes" ]]; then
+              echo "published release is missing expected asset: ${expected}" >&2
+              exit 1
+            fi
+          done
 
           # 2) 更新端点必须真的指向刚发布的版本，且每个平台资产可下载。
           #    这是「用户能不能收到更新」唯一的端到端检查：GitHub 的
