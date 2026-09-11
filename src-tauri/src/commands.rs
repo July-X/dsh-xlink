@@ -197,13 +197,21 @@ pub async fn detect_node(state: State<'_, AppState>) -> Result<node::NodeInfo, S
     // 安装 + 系统位置）可能派生一个子进程——把这些进程派生放到 Tauri
     // 主线程之外。
     let data_dir = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let info = tauri::async_runtime::spawn_blocking(move || {
         let mut s = settings::load(&data_dir);
         s.node_path = None;
         node::resolve(&s, &data_dir)
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    // 把新鲜结果写回缓存（键与 `cached_node` 一致：此时 `node_path` 视为未配置）：
+    // 「检测 Node.js」是用户装好 Node 之后的第一个动作，不回写的话随后的「启动
+    // 工作台」仍会命中旧的 `ok: false`（P2-8）。只在成功时写，失败结论留给下一次
+    // 真实探测。
+    if info.ok {
+        *crate::lock(&state.node_cache) = Some((None, info.clone()));
+    }
+    Ok(info)
 }
 
 /// 用户确认后的托管 Node.js 自动安装（下载官方二进制到数据目录，
@@ -239,6 +247,11 @@ pub async fn save_settings(
     let data_dir = state.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let previous = settings::load(&data_dir);
+        // 面板只提交 `port` 与 `profile`，其余字段（`node_path` / `pnpm_path` /
+        // `npm_path`）在请求里缺失，会被 `#[serde(default)]` 填成 `None`。直接落盘
+        // 等于把用户手写在 settings.json 里的 Node 路径静默清空——而托管 Node
+        // 安装失败时的提示恰好让用户去改那个字段（P2-7/P1-6）。
+        let settings = merge_settings(&settings, &previous);
         // 端口只在工作台停止时才能改。运行中的内核绑在它启动时那个端口上，
         // 改掉配置端口会让状态页把"运行中"读成"未运行"；用户随后点一次
         // 「启动工作台」就会在同一 data dir 上拉起第二个内核，两个内核写
@@ -253,6 +266,33 @@ pub async fn save_settings(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// 把面板提交的设置与磁盘上的现值合并：请求里为 `None` 的路径字段继承现值。
+///
+/// 语义：`None` = 这次请求没有提到该字段；`Some("")` = 显式清空。面板目前只发
+/// `port` / `profile`，因此手改过 `node_path` 的用户不会再被一次「保存设置」清掉
+/// （P2-7）。
+fn merge_settings(
+    incoming: &settings::Settings,
+    previous: &settings::Settings,
+) -> settings::Settings {
+    settings::Settings {
+        node_path: incoming
+            .node_path
+            .clone()
+            .or_else(|| previous.node_path.clone()),
+        pnpm_path: incoming
+            .pnpm_path
+            .clone()
+            .or_else(|| previous.pnpm_path.clone()),
+        npm_path: incoming
+            .npm_path
+            .clone()
+            .or_else(|| previous.npm_path.clone()),
+        port: incoming.port,
+        profile: incoming.profile.clone(),
+    }
 }
 
 /// 把日志文件名拆成排序键 `(基名, 代次)`，用于「最新者优先」的稳定排序。
@@ -602,6 +642,49 @@ pub async fn remove_version(app: AppHandle, version: String) -> Result<(), Strin
 }
 
 #[cfg(test)]
+mod settings_merge_tests {
+    use super::*;
+
+    /// P2-7：面板只提交 `port` / `profile`，合并必须保留下手改过的路径字段，
+    /// 否则一次「保存设置」就把用户配置的 Node 路径静默清空。
+    #[test]
+    fn merge_keeps_paths_the_panel_did_not_submit() {
+        let previous = settings::Settings {
+            node_path: Some("/opt/node/bin/node".into()),
+            pnpm_path: Some("/opt/node/bin/pnpm".into()),
+            npm_path: Some("/opt/node/bin/npm".into()),
+            port: 3090,
+            profile: "web".into(),
+        };
+        // 面板发来的请求：只有 port / profile，路径字段被 serde default 填成 None。
+        let incoming = settings::Settings {
+            node_path: None,
+            pnpm_path: None,
+            npm_path: None,
+            port: 3100,
+            profile: "dev".into(),
+        };
+
+        let merged = merge_settings(&incoming, &previous);
+        assert_eq!(merged.node_path.as_deref(), Some("/opt/node/bin/node"));
+        assert_eq!(merged.pnpm_path.as_deref(), Some("/opt/node/bin/pnpm"));
+        assert_eq!(merged.npm_path.as_deref(), Some("/opt/node/bin/npm"));
+        assert_eq!(merged.port, 3100, "面板提交的字段必须生效");
+        assert_eq!(merged.profile, "dev");
+
+        // 显式清空（空串）不被现值覆盖：`Some("")` 是"这次要清掉"。
+        let clear = settings::Settings {
+            node_path: Some(String::new()),
+            ..incoming.clone()
+        };
+        assert_eq!(
+            merge_settings(&clear, &previous).node_path.as_deref(),
+            Some("")
+        );
+    }
+}
+
+#[cfg(test)]
 mod kernel_install_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -715,7 +798,15 @@ pub async fn start_kernel(
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let settings = settings::load(&data_dir);
-        let node_info = cached_node(&state, &settings);
+        let mut node_info = cached_node(&state, &settings);
+        if !node_info.ok {
+            // 缓存可能已经过期：用户在壳运行期间用安装器 / nvm 装好了 Node，而缓存
+            // 只在安装内核与托管 Node 时作废。启动是低频动作，这里强制重探一次再
+            // 决定，避免「检测 Node.js」刚报成功、「启动工作台」仍拿旧结论拒绝
+            // （P2-8）。
+            *crate::lock(&state.node_cache) = None;
+            node_info = cached_node(&state, &settings);
+        }
         if !node_info.ok {
             return Err(node_info.reason.clone());
         }
@@ -1142,10 +1233,20 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
 
     // 等建窗结果。给足超时（webview 初始化在低配机器上可能偏慢），但绝不
     // 无限等待：超时按失败上报，让用户至少知道发生了什么。
-    match rx.recv_timeout(std::time::Duration::from_secs(20)) {
-        Ok(result) => result,
-        Err(_) => Err("打开日志窗口超时（20 秒）。请重试，或改用主面板的「查看日志」弹窗".into()),
-    }
+    //
+    // 等待必须放到 blocking 线程上：这是 async 命令，直接 `recv_timeout` 会占住
+    // 一个 tokio worker 最长 20 秒，期间的其它命令都要排队（AGENTS.md 的约定是
+    // 阻塞操作走 `spawn_blocking`，`open_harness` 也是这么做的，P2-17）。
+    tauri::async_runtime::spawn_blocking(move || {
+        match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok(result) => result,
+            Err(_) => {
+                Err("打开日志窗口超时（20 秒）。请重试，或改用主面板的「查看日志」弹窗".into())
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("等待日志窗口结果失败：{e}"))?
 }
 
 /// 把 Shell 的主管理窗口提到当前桌面之上。
