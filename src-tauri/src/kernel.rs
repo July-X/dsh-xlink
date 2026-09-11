@@ -91,7 +91,6 @@ pub struct KernelStatus {
     /// 缩短为 `~`。UI 把该值显示在「打开」按钮旁边，按钮点击后也打开
     /// 同一路径——这样标签和操作指向的是同一个目录。
     pub data_dir: String,
-    pub ever_installed: bool,
     /// 设置文件损坏 / 读不出来时的说明。非空时 UI 必须显示它：此时端口已经
     /// 无声回退到默认值，不提示的话用户只会看到"工作台跑到别的端口去了"。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -440,7 +439,6 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
         .map(|v| kernel_dir(data_dir, v).join(KERNEL_BIN_REL).is_file())
         .unwrap_or(false);
     KernelStatus {
-        ever_installed: !installed.is_empty(),
         installed,
         active,
         active_installed,

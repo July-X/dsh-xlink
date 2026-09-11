@@ -32,8 +32,12 @@ import {
   installNode,
 } from '../store.js';
 import { progress } from '../progress.js';
-import { globalBusy, isLoading } from '../loading.js';
+import { globalBusy, isLoading, withLoading } from '../loading.js';
 import { showLogs } from '../logs.js';
+
+// 进度窗口是全局的（任何长任务都会让它可见），按钮的加载态必须绑定自己的
+// key，否则任何别的长任务都会让这个按钮转圈（P2-42）。
+const onInstallNode = () => withLoading('installNode', () => installNode());
 
 const kernel = computed(() => store.view && store.view.kernel);
 const node = computed(() => store.view && store.view.node);
@@ -159,10 +163,10 @@ function goVersions() {
             size="small"
             text
             type="primary"
-            :loading="progress.visible"
+            :loading="isLoading('installNode')"
             :disabled="globalBusy"
             title="自动下载并安装官方 Node.js 到数据目录（需联网）"
-            @click="installNode"
+            @click="onInstallNode"
           >
             自动安装
           </el-button>

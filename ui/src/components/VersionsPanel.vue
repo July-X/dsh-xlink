@@ -47,8 +47,10 @@ async function loadVersionPlugins(version) {
     slot.rows = (await invoke('kernel_plugin_list', { version })) || [];
     slot.loaded = true;
   } catch (e) {
+    // 失败**不**置 `loaded`：旧实现把它一起置真，于是这次失败被永久缓存，
+    // 之后每次悬浮都直接命中"已加载"分支，tooltip 永远不会重试（P2-37）。
     slot.error = e && e.message ? e.message : String(e);
-    slot.loaded = true;
+    slot.loaded = false;
   } finally {
     slot.loading = false;
   }

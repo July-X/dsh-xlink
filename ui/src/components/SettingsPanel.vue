@@ -115,10 +115,22 @@ function onSave() {
         </el-form-item>
       </el-form>
       <div class="btn-row">
-        <el-button type="primary" :icon="Check" :loading="isLoading('saveSettings')" @click="onSave">
+        <el-button
+          type="primary"
+          :icon="Check"
+          :loading="isLoading('saveSettings')"
+          :disabled="globalBusy"
+          @click="onSave"
+        >
           保存设置
         </el-button>
-        <el-button text :icon="Monitor" :loading="isLoading('detectNode')" @click="onDetectNode">
+        <el-button
+          text
+          :icon="Monitor"
+          :loading="isLoading('detectNode')"
+          :disabled="globalBusy"
+          @click="onDetectNode"
+        >
           检测 Node.js
         </el-button>
       </div>
