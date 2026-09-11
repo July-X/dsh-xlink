@@ -50,9 +50,24 @@ export function decodePublicKey(input) {
   return { keyId, keyObject: createPublicKey({ key: der, format: 'der', type: 'spki' }) };
 }
 
+/// 归一化签名输入。
+///
+/// `tauri signer sign` 写出的 `.sig` 是**两行**的 minisign 签名文件：
+/// `untrusted comment: …` 加一行 base64。直接把这整段当 base64 解码会得到一个
+/// 294 字节的垃圾（首次真实发布就是这么失败的），所以先取最后一行非空文本。
+/// 只给单行 base64 的调用方（例如本脚本的单测）同样接受。
+export function normalizeSignature(input) {
+  const lines = String(input)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) throw new Error('签名内容为空');
+  return lines[lines.length - 1];
+}
+
 /// 解析 minisign 形态的签名，返回 { keyId, signature }。
-export function decodeSignature(base64) {
-  const raw = Buffer.from(base64, 'base64');
+export function decodeSignature(input) {
+  const raw = Buffer.from(normalizeSignature(input), 'base64');
   if (raw.length !== SIGNATURE_PREFIX_BYTES + ED25519_SIGNATURE_BYTES) {
     throw new Error(`签名长度异常（${raw.length} 字节，期望 74）`);
   }
@@ -97,7 +112,9 @@ export function signWithPrivateKey({ privateKey, password, payload, cwd }) {
         `tauri signer sign 失败（退出码 ${result.status}）：${(result.stderr || result.stdout || '').trim().slice(0, 400)}`,
       );
     }
-    return readFileSync(`${target}.sig`, 'utf8').trim();
+    // 返回 `.sig` 的原文（含 `untrusted comment:` 行）：归一化由
+    // `verifyPayload` → `normalizeSignature` 统一负责。
+    return readFileSync(`${target}.sig`, 'utf8');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

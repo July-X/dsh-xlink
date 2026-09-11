@@ -9,6 +9,7 @@ import {
   decodePublicKey,
   decodeSignature,
   normalizePublicKey,
+  normalizeSignature,
   verifyPayload,
 } from './check-signing-keys.mjs';
 
@@ -72,6 +73,22 @@ test('the real tauri.conf.json pubkey shape (wrapped minisign file) is understoo
 
   assert.equal(normalizePublicKey(wrapped), publicKeyBase64);
   assert.equal(verifyPayload({ publicKeyBase64: wrapped, payload, signatureBase64 }).ok, true);
+});
+
+test('the real .sig file shape (minisign comment + base64) is understood', () => {
+  // `tauri signer sign` 写出的 .sig 是两行：`untrusted comment: …` 加一行 base64。
+  // 首次真实发布（desktop-v0.1.2-rc.19）就是在这里失败的：把整段当 base64 解出
+  // 294 字节并抛"签名长度异常"。这条用例按真实文件形态钉住归一化。
+  const { privateKey, publicKeyBase64, keyId } = makeKeyPair();
+  const payload = Buffer.from('release payload\n');
+  const signatureLine = signPayload(privateKey, keyId, payload);
+  const sigFile = `untrusted comment: signature from tauri secret key\n${signatureLine}\n`;
+
+  assert.equal(normalizeSignature(sigFile), signatureLine);
+  assert.equal(verifyPayload({ publicKeyBase64, payload, signatureBase64: sigFile }).ok, true);
+  // 单行 base64 也必须继续可用（调用方不一定读文件）。
+  assert.equal(normalizeSignature(signatureLine), signatureLine);
+  assert.equal(decodeSignature(sigFile).keyId, keyId);
 });
 
 test('a signature carrying a foreign key id is rejected even when the math checks out', () => {
