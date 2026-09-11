@@ -11,7 +11,8 @@ import { createHash, createPublicKey, verify as cryptoVerify } from 'node:crypto
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const PUBLIC_KEY_PREFIX_BYTES = 10; // 算法(2) + key id(8)
 const SIGNATURE_PREFIX_BYTES = 10;
@@ -187,6 +188,22 @@ function main() {
   console.log('✓ 签名密钥成对：CI 私钥签出的载荷能被配置里的公钥验证');
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// 入口守卫必须跨平台：Windows 上 `process.argv[1]` 是 `D:\a\…\x.mjs`，
+// 而 `import.meta.url` 是 `file:///D:/a/…/x.mjs`——用 `` `file://${argv[1]}` ``
+// 直接拼永远不相等，脚本会一声不响地 exit 0（发布流程里表现为"这一步成功但
+// 什么都没检查"，P1-5）。仓库另外两个脚本用的是下面这种写法。
+const invokedPath = process.argv[1] && pathToFileURL(resolve(process.argv[1])).href;
+// `argv[1]` 与本文件同名 → 我们确实是被当作入口启动的；此时若 URL 仍对不上，
+// 说明守卫本身坏了（例如非 ASCII / 含空格路径），必须报错而不是静默 exit 0。
+// 被 `check-signing-keys.test.mjs` import 时 `argv[1]` 是测试文件，不进入该分支。
+const invokedIsSelf =
+  process.argv[1] && basename(fileURLToPath(import.meta.url)) === basename(process.argv[1]);
+if (invokedPath === import.meta.url) {
   main();
+} else if (invokedIsSelf) {
+  console.error(
+    `✗ 入口守卫未能识别本脚本（argv[1]=${process.argv[1]}，import.meta.url=${import.meta.url}）。` +
+      '这会让发布流程里的这一步"成功但什么都没检查"，请先修 scripts/check-signing-keys.mjs',
+  );
+  process.exitCode = 1;
 }
