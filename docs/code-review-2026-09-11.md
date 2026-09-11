@@ -61,7 +61,7 @@
 | P2-8 | `detect_node` 不回写缓存 → 陈旧 `ok:false` 挡死启动 | ✅ 已修 |
 | P2-9 | Windows 每 2.5s 派生一次 PowerShell 做进程身份校验 | ✅ 已修（3 秒缓存） |
 | P2-10 | `PluginsPanel` 模式徽章用 `:loading="globalBusy"`（P2-42 同款） | ✅ 已修 |
-| P2-11 | 进度浮层 z-index 3000 压住 ElMessage / ElMessageBox | ⏸ 待协调（改 `ui/src/theme.css`，属并发会话工作面） |
+| P2-11 | 进度浮层 z-index 3000 压住 ElMessage / ElMessageBox | ✅ 已修（在 `notify.js` 显式指定 zIndex，未改 theme.css） |
 | P2-12 | 技能自动检查失败不退避（注释显示为有意取舍，缺退避） | ✅ 已修 |
 | P2-13 | 发布：资产清理/断言排在 `draft=false` 之后，失败即锁死 | ✅ 已修 |
 | P2-14 | 发布：版本单调性门 fail-open（`curl … \|\| true`） | ✅ 已修 |
@@ -424,8 +424,11 @@ guard 用例共用 `/tmp/plugins`，某个用例的清理会删掉别人正在�
 | P2-16 | `desktop-ci.yml` 新增 `windows-compile` job（`cargo check --all-targets`，只需一个最小 `ui/dist`） | 本机验证过"最小 dist + cargo check"可通过 |
 | P3（部分） | `prune_old_logs` 按文件名日期戳跳过当天日志，并把"总量预算是软上限"写进注释 | 新增 `todays_logs_survive_even_when_the_budget_is_exceeded`；反证命中 |
 
-**仍未处理**：P2-11（`ui/src/theme.css` 的浮层 z-index，文件属并发会话工作面，按用户
-指示避开）；"轻微与建议"里剩余的纯文案/可见性项（`replace_child_slot` 告警只进
+**P2-11 的处理方式**：不改 `ui/src/theme.css`（并发会话工作面），改为在
+`ui/src/notify.js` 里显式给 `ElMessage` / `ElMessageBox` 指定 `zIndex`（浮层 + 1000），
+并新增用例钉住"提示层级 > 浮层层级"这条关系。
+
+**仍未处理**："轻微与建议"里剩余的纯文案/可见性项（`replace_child_slot` 告警只进
 stderr、`errors.js` 兜底措辞、`openExternal` 静默、`<dl>` 内容模型、标题栏 `right:104px`
 与注释不符、`check-signing-keys.test.mjs` 的 key id 钉死、发布白名单两处口径、
 dispatch 自建 tag、`status()` 重复读设置、`.corrupt` 固定名）。
