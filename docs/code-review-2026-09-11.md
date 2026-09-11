@@ -411,7 +411,10 @@ guard 用例共用 `/tmp/plugins`，某个用例的清理会删掉别人正在�
 `OverviewPanel.vue` 的 cause 白名单/标题映射里加一项（现在会回落到"暂未能归因"，
 而面板正文已经是明确的环境原因）。这两个文件当时正被另一个会话编辑，本轮没有改动。
 
-### 批次 5：Windows 轮询、UI 两处、发布流程与 CI
+### 批次 5：Windows 轮询、UI 三处、发布流程与 CI
+
+（P1-2 不在批次表里：它的判定经过两次更正，单独记在「关于 P1-2 的最终判定」与
+P1 明细里。）
 
 | 编号 | 改动 | 回归/反证 |
 | --- | --- | --- |
@@ -423,6 +426,7 @@ guard 用例共用 `/tmp/plugins`，某个用例的清理会删掉别人正在�
 | P2-15 | tag 比对改 `commits/<tag>`（服务端剥壳），与 preflight 的 `^{commit}` 口径一致 | 同上 |
 | P2-16 | `desktop-ci.yml` 新增 `windows-compile` job（`cargo check --all-targets`，只需一个最小 `ui/dist`） | 本机验证过"最小 dist + cargo check"可通过 |
 | P3（部分） | `prune_old_logs` 按文件名日期戳跳过当天日志，并把"总量预算是软上限"写进注释 | 新增 `todays_logs_survive_even_when_the_budget_is_exceeded`；反证命中 |
+| P2-11 | 不改 `theme.css`（并发会话工作面）：在 `ui/src/notify.js` 显式给 `ElMessage` / `ElMessageBox` 指定 `zIndex = 浮层 + 1000`，两者都浮在进度浮层之上，其它 `el-dialog` 仍按原设计压在浮层之下 | 新增用例 `提示与确认框显式抬到进度浮层之上`（对 `theme.css` 的浮层数值与 `notify.js` 的常量做关系断言） |
 
 **P2-11 的处理方式**：不改 `ui/src/theme.css`（并发会话工作面），改为在
 `ui/src/notify.js` 里显式给 `ElMessage` / `ElMessageBox` 指定 `zIndex`（浮层 + 1000），
