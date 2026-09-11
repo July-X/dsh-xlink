@@ -69,18 +69,50 @@
     return value.stack || value.message || String(value);
   }
 
+  /**
+   * 取「类型 + 消息」以及 cause 链，作为 message 上报。
+   *
+   * WebKit 的 `Error.prototype.stack` 只有帧（`fn@url:行:列`），没有 V8 那样的
+   * `TypeError: …` 首行；只上报 stack 会让事故面板里没有任何可读的错误原因，
+   * 归因也就无从谈起。`error` 事件自带 message，但 `unhandledrejection` 只有
+   * reason 对象，必须在探针里把它拆出来。
+   */
+  function describeError(value) {
+    if (!value) return "";
+    if (typeof value === "string") return value;
+    var parts = [];
+    var current = value;
+    for (var depth = 0; current && depth < 3; depth += 1) {
+      var name = typeof current.name === "string" ? current.name : "";
+      var text = typeof current.message === "string" ? current.message : "";
+      var label = name && text ? name + ": " + text : name || text;
+      if (!label) {
+        if (depth > 0) break;
+        label = String(current);
+      }
+      parts.push(depth === 0 ? label : "cause: " + label);
+      current = current.cause;
+    }
+    return parts.join(" ← ");
+  }
+
   window.addEventListener("error", function (event) {
     // 资源错误没有有用的 JS 栈，且通常无害（例如可选的图片），
     // 这里只上报可执行错误。
     var error = event && event.error;
     var message = event && event.message;
     if (!error && !message) return;
-    invokeReport("runtime-error", message || errorText(error), errorText(error));
+    invokeReport(
+      "runtime-error",
+      message || describeError(error) || errorText(error),
+      errorText(error)
+    );
   }, true);
 
   window.addEventListener("unhandledrejection", function (event) {
-    var detail = errorText(event && event.reason) || "未处理的 Promise 异常";
-    invokeReport("unhandled-rejection", detail, event && event.reason && event.reason.stack);
+    var reason = event && event.reason;
+    var detail = describeError(reason) || errorText(reason) || "未处理的 Promise 异常";
+    invokeReport("unhandled-rejection", detail, reason && reason.stack);
   });
 
   function isVisible(element) {

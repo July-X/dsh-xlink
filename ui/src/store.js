@@ -102,8 +102,24 @@ function incidentKey(incident) {
   ].join('|');
 }
 
-export function showIncident(incident) {
+// 「前端 bundle 异常」：页面仍在运行时的前端异常（内核 client-modules 的 bundle 抛错，
+// 但堆栈里没有包名，既无法指认插件也无法指认内核）。这类报告没有可处置的对象，弹模态
+// 框只会打断用户——只记录事实并交给概览横幅；横幅上的「查看详情」带 force 打开面板。
+// 有强证据（插件/内核）的报告、启动失败、以及 blank（白屏）一律照旧弹面板：那里有用户
+// 能做的动作，或者页面确实不可用。
+export function isNonFatalFrontendIncident(incident) {
+  if (!incident || incident.recovered) return false;
+  if (incident.cause !== 'frontend') return false;
+  const kind = (incident.health && incident.health.kind) || '';
+  return kind === 'unhandled-rejection' || kind === 'runtime-error';
+}
+
+export function showIncident(incident, options = {}) {
   if (!incident) return;
+  if (!options.force && isNonFatalFrontendIncident(incident)) {
+    store.lastIncident = incident;
+    return;
+  }
   const key = incidentKey(incident);
   if (store.incidentVisible && shownIncidentKey === key) return;
   shownIncidentKey = key;

@@ -77,7 +77,7 @@ const guardText = computed(() => {
 
 function incidentCause(value) {
   if (!value) return '';
-  if (value.cause === 'plugin' || value.cause === 'kernel' || value.cause === 'unknown') return value.cause;
+  if (['plugin', 'kernel', 'frontend', 'unknown'].includes(value.cause)) return value.cause;
   const suspects = value.suspects || [];
   if (suspects.some((suspect) => suspect.kind === 'plugin')) return 'plugin';
   if (suspects.some((suspect) => suspect.kind === 'kernel')) return 'kernel';
@@ -91,6 +91,14 @@ const guardDestination = computed(() => {
 const guardDestinationLabel = computed(() =>
   guardDestination.value === 'plugins' ? '前往插件页' : '检查内核版本'
 );
+// 非致命前端异常不弹模态框（见 store.js 的 showIncident）：横幅是它唯一的入口，
+// 因此这里必须显式要求打开面板，否则「查看详情」会变成空操作。
+const guardTitle = computed(() =>
+  incidentCause(store.lastIncident) === 'frontend' ? '工作台自检：前端异常（页面正常）' : '启动容错已介入'
+);
+function openIncidentDetails() {
+  showIncident(store.lastIncident, { force: true });
+}
 function goGuardDestination() {
   store.activePanel = guardDestination.value;
 }
@@ -202,10 +210,10 @@ function goVersions() {
           <el-icon><Warning /></el-icon>
         </div>
         <div class="callout-body">
-          <h3>启动容错已介入</h3>
+          <h3>{{ guardTitle }}</h3>
           <p>{{ guardText }}</p>
           <div class="btn-row">
-            <el-button size="small" type="warning" plain :icon="View" @click="showIncident(store.lastIncident)">
+            <el-button size="small" type="warning" plain :icon="View" @click="openIncidentDetails">
               查看详情
             </el-button>
             <el-button size="small" text :icon="Connection" @click="goGuardDestination">
