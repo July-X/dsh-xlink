@@ -1126,6 +1126,9 @@ pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<C
     let mut child = quiet(&mut cmd)
         .spawn()
         .map_err(|e| AppError::Io(format!("无法启动内核：{e}")))?;
+    // 派生后立刻纳入「随壳终止」的保护：Windows 上入 Job Object，壳崩溃 / 被
+    // 强杀时内核被系统一并收走，不会留下占端口的孤儿（P2-2）。
+    crate::process::adopt_kernel_process(&child);
     if let Err(error) = attach_log_drainers(&mut child, &logs_dir(data_dir), &kernel_log_spec()) {
         crate::process::terminate_process_tree(&mut child);
         return Err(AppError::Io(format!("无法接管内核日志：{error}")));
@@ -1177,8 +1180,9 @@ pub fn start_maybe(data_dir: &Path, node: &Path) -> Result<Option<Child>, AppErr
 /// 把那个内核回收掉。但这正是期望的结果——桌面壳在每个 data dir 上是
 /// 单实例的（dev / release 划分让每个构建拥有自己的目录），而同一目录上
 /// 两个内核恰恰是本函数存在的目的所要防止的损坏场景。
-/// 在 windows_subsystem 下，Windows 端仅保留接口、没有 orphan-reap 实现
-/// （见函数体注释）。参数在 Unix 分支里被 `data_dir == cwd` 比较使用，
+/// Windows 端不在这里扫描：内核在派生时就被放进 `KILL_ON_JOB_CLOSE` 的 Job
+/// Object（见 `process::adopt_kernel_process`），壳一退出内核就被系统终止，
+/// 不存在需要事后回收的孤儿。参数在 Unix 分支里被 `data_dir == cwd` 比较使用，
 /// Windows 编译时整个 #[cfg(unix)] 块被跳过，所以该参数属于平台特定的未使用项。
 #[cfg_attr(not(unix), allow(unused_variables))]
 pub fn reap_orphans(data_dir: &Path) {
