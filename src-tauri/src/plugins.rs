@@ -1310,36 +1310,55 @@ pub fn reconcile_store(data_dir: &Path) {
     }
 
     // 最后处理"已发布但没记账"的孤儿目录。
-    match load_store_checked(data_dir) {
-        Ok(doc) => sweep_unrecorded_store_dirs(data_dir, &doc, &recovered_ids),
+    //
+    // 只有清单文件**确实存在且能解析**时才清扫。`load_store_checked` 把
+    // `Missing` 归为"空清单"对全新安装是对的，但对清扫是灾难：清单文件不存在
+    // 时"没有任何记录"会被解读成"中央库里每个带标记的目录都是孤儿"，用户已装的
+    // 插件目录会被物理删除。而应用自己的错误提示恰恰建议用户"修复或删除该文件
+    // 后重试"，也就是亲手制造这个形态（P0-3）。
+    match load_store_for_sweep(data_dir) {
+        Ok(Some(doc)) => sweep_unrecorded_store_dirs(data_dir, &doc, &recovered_ids),
+        Ok(None) => {
+            let marked = marked_store_dirs(data_dir);
+            if !marked.is_empty() {
+                eprintln!(
+                    "dsh-xlink: store.json 不存在，但中央库里有 {} 个带标记的插件目录；\
+                     已保留现场，不做孤儿清理（请恢复或修复 store.json 后重试）",
+                    marked.len()
+                );
+            }
+        }
         Err(error) => {
             eprintln!("dsh-xlink: store.json 读取失败（{error}），跳过中央库孤儿目录清理")
         }
     }
 }
 
-/// 删除"带着外壳 id 标记、但 `store.json` 里没有对应记录"的中央库目录。
+/// 清扫路径专用的读取：区分"清单文件不存在"与"清单存在且为空"。
 ///
-/// 发布目录与写 store 行不是原子的：`fetch_into_store` 先把校验过的内容
-/// rename 进 `store/<id>`，`upsert_item_unlocked` 之后才记账。中间崩溃（或
-/// 记账失败）就留下一个孤儿目录 —— 面板不显示、"同步"不处理、`uninstall`
-/// 直接拒绝，用户只能去手删（P2-20）。
+/// `load_store_checked` 把两者都归为"空清单"（对写路径是安全的），但清扫必须
+/// 区分：文件不存在往往意味着"清单丢了/被删了"，把它当成空清单会删光用户的
+/// 插件库（P0-3）。
+fn load_store_for_sweep(data_dir: &Path) -> Result<Option<Store>, AppError> {
+    match crate::process::read_state_file(&store_file(data_dir)) {
+        crate::process::StateRead::Loaded(store) => Ok(Some(store)),
+        crate::process::StateRead::Missing => Ok(None),
+        crate::process::StateRead::Corrupt { reason } => {
+            Err(AppError::Plugin(format!("插件清单损坏（{reason}）")))
+        }
+    }
+}
+
+/// 中央库里"带着外壳 id 标记、且目录名与标记一致"的目录。
 ///
-/// 三重保险，避免误删用户数据：
-/// 1. 只在 `store.json` **能正常读出**时调用（损坏时按"没有记录"处理会把整个
-///    插件库清空）；
-/// 2. 只动名字与自身 id 标记一致、且不带任何暂存前缀的目录；
-/// 3. 没有 id 标记的目录一律不碰（不是外壳发布的）；
-/// 4. 跳过本轮恢复流程处理过的 id —— 那是"已验证内容等着记账"的救援对象。
-fn sweep_unrecorded_store_dirs(
-    data_dir: &Path,
-    doc: &Store,
-    recovered_ids: &std::collections::HashSet<String>,
-) {
+/// 清扫与"清单缺失时的现场告警"共用同一份判据，避免两处漂移；暂存前缀
+/// （`.tmp-` / `.new-` / `.bak-`）与没有标记的目录一律不算——后者不是外壳发布的。
+fn marked_store_dirs(data_dir: &Path) -> Vec<(String, PathBuf)> {
     let root = store_dir(data_dir);
     let Ok(entries) = fs::read_dir(&root) else {
-        return;
+        return Vec::new();
     };
+    let mut out = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with('.')
@@ -1360,10 +1379,37 @@ fn sweep_unrecorded_store_dirs(
         let Some(id) = marker else {
             continue;
         };
-        if id != name || recovered_ids.contains(&id) || doc.items.iter().any(|item| item.id == id) {
+        if id != name {
             continue;
         }
-        eprintln!("dsh-xlink: 清理未记账的插件目录 {name}（store.json 中没有对应记录）");
+        out.push((id, path));
+    }
+    out
+}
+
+/// 删除"带着外壳 id 标记、但 `store.json` 里没有对应记录"的中央库目录。
+///
+/// 发布目录与写 store 行不是原子的：`fetch_into_store` 先把校验过的内容
+/// rename 进 `store/<id>`，`upsert_item_unlocked` 之后才记账。中间崩溃（或
+/// 记账失败）就留下一个孤儿目录 —— 面板不显示、"同步"不处理、`uninstall`
+/// 直接拒绝，用户只能去手删（P2-20）。
+///
+/// 三重保险，避免误删用户数据：
+/// 1. 只在 `store.json` **能正常读出**时调用（损坏时按"没有记录"处理会把整个
+///    插件库清空）；
+/// 2. 只动名字与自身 id 标记一致、且不带任何暂存前缀的目录；
+/// 3. 没有 id 标记的目录一律不碰（不是外壳发布的）；
+/// 4. 跳过本轮恢复流程处理过的 id —— 那是"已验证内容等着记账"的救援对象。
+fn sweep_unrecorded_store_dirs(
+    data_dir: &Path,
+    doc: &Store,
+    recovered_ids: &std::collections::HashSet<String>,
+) {
+    for (id, path) in marked_store_dirs(data_dir) {
+        if recovered_ids.contains(&id) || doc.items.iter().any(|item| item.id == id) {
+            continue;
+        }
+        eprintln!("dsh-xlink: 清理未记账的插件目录 {id}（store.json 中没有对应记录）");
         let _ = fs::remove_dir_all(&path);
     }
 }
@@ -2400,7 +2446,10 @@ pub fn ensure_wiring_filtered(
     allow: &WiringFilter<'_>,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(usize, bool), AppError> {
-    let store = load_store(data_dir);
+    // 接线会物化/清扫各内核的插件目录并改写 profile 的托管依赖，属于"读-改-写"
+    // 路径：清单损坏时绝不能用空清单继续，否则 `sweep_kernel_orphans` 会删掉活动
+    // 内核里全部物化目录、`wire_manifest` 会清退 profile 的全部托管依赖（P0-5）。
+    let store = load_store_checked(data_dir)?;
     ensure_profile(data_dir, &settings.profile)?;
 
     // 物化活动内核，再据插件清单决定 bundle 层；没有活动内核且仍有插件时
@@ -2671,7 +2720,10 @@ pub fn check_updates(data_dir: &Path) -> Result<Vec<UpdateInfo>, AppError> {
     }
 
     let _store_guard = lock_store();
-    let mut store = load_store(data_dir);
+    // 写路径必须用严格读取：清单损坏时 `load_store` 会回落成空清单，而下面就是
+    // `save_store_unlocked`——一次读失败会把用户真实的插件记录原子覆盖掉（P0-2）。
+    // 技能侧的同一函数早已改用严格读取，这里补齐。
+    let mut store = load_store_checked(data_dir)?;
     for (id, installed_version, latest) in probes {
         if let Some(current) = store.items.iter_mut().find(|item| item.id == id) {
             if current.installed_version == installed_version {
@@ -3477,10 +3529,28 @@ pub fn status(data_dir: &Path, settings: &settings::Settings) -> PluginStatus {
     let mut integrity_warning: Option<String> = None;
     let store = match crate::process::read_state_file(&store_file(data_dir)) {
         crate::process::StateRead::Loaded(store) => store,
-        crate::process::StateRead::Missing => Store::default(),
+        crate::process::StateRead::Missing => {
+            // 清单文件不存在但中央库里还有带标记的目录：多半是清单丢了（或用户
+            // 按提示删掉了损坏的清单）。目录会被保留，但面板读不到它们的记录，
+            // 必须明确告诉用户"东西还在、怎么找回来"，否则看起来就是插件全没了
+            // （P0-3）。
+            let kept = marked_store_dirs(data_dir);
+            if !kept.is_empty() {
+                integrity_warning = Some(format!(
+                    "插件清单（store.json）不存在，但中央库里还保留着 {} 个插件目录。\
+                     这些目录不会被清理，但面板在恢复清单之前无法显示它们；\
+                     请恢复备份的 store.json，或对每个插件点「安装」重新记账。",
+                    kept.len()
+                ));
+            }
+            Store::default()
+        }
         crate::process::StateRead::Corrupt { reason } => {
             integrity_warning = Some(format!(
-                "插件清单损坏，已安装插件的记录暂时读不出来（{reason}）。请修复或删除该文件后重试；在修复之前不会写入任何插件状态，工作台仍可正常启动"
+                "插件清单损坏，已安装插件的记录暂时读不出来（{reason}）。\
+                 请优先修复该文件（它记录着每个插件的来源与接线状态）；\
+                 若只能删除，中央库里的插件目录会被保留，但需要重新安装这些插件才能恢复面板显示。\
+                 在修复之前不会写入任何插件状态，工作台仍可正常启动"
             ));
             Store::default()
         }
@@ -5498,6 +5568,35 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_without_store_file_keeps_marked_store_dirs() {
+        // P0-3：清单文件**不存在**（丢了，或用户按提示删掉了损坏的清单）时，
+        // 中央库里带外壳标记的目录必须原样保留。`load_store_checked` 把 `Missing`
+        // 归为空清单对写路径是安全下界，但清扫路径照此执行就会把用户已装的插件
+        // 目录物理删掉——而应用自己的错误提示恰恰建议用户删除那个文件。
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        let store = store_dir(&data_dir);
+        fs::create_dir_all(&store).unwrap();
+        mark_staging(&store.join("kept-plugin"), "kept-plugin");
+        write_fake_plugin(&store.join("kept-plugin"), "1.0.0");
+        assert!(!store_file(&data_dir).exists(), "前置条件：清单文件不存在");
+
+        reconcile_store(&data_dir);
+        assert!(
+            store.join("kept-plugin").is_dir(),
+            "清单文件缺失不得触发孤儿目录清理"
+        );
+
+        // 边界不变：清单文件存在且能解析时，未记账的目录仍会被清掉。
+        save_store_unlocked(&data_dir, &Store::default()).unwrap();
+        reconcile_store(&data_dir);
+        assert!(
+            !store.join("kept-plugin").exists(),
+            "清单存在（空）时未记账的目录仍应被清理"
+        );
+    }
+
+    #[test]
     fn reconcile_reverts_to_backup_when_final_missing_and_both_staging_present() {
         let home = TestHome::new();
         let data_dir = home.data_dir();
@@ -5920,9 +6019,14 @@ mod store_orphan_tests {
     fn unrecorded_marked_dir_is_swept_but_user_dirs_survive() {
         // P2-20：发布目录与写 store 行非原子，中间崩溃会留下无记录的目录：
         // 面板不显示、同步不管、uninstall 拒绝，只能手删。
+        //
+        // 前置条件：清扫只在**清单文件存在**时执行（P0-3）。这里写一份空的合法
+        // 清单，代表"清单在、只是没有这个目录的记录"；清单文件整体缺失时的行为
+        // 由 `reconcile_without_store_file_keeps_marked_store_dirs` 单独钉住。
         let home = TestHome::new();
         let data_dir = home.data_dir();
         let orphan = marked_dir(&data_dir, "orphan-plugin");
+        save_store_unlocked(&data_dir, &Store::default()).unwrap();
         // 用户自己放进去的目录（没有外壳标记）不能被误删。
         let user_dir = store_dir(&data_dir).join("user-notes");
         fs::create_dir_all(&user_dir).unwrap();
