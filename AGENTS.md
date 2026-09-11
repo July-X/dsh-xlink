@@ -7,6 +7,7 @@
 - **独立项目**：仓库根目录就是桌面交付物，不加入任何上级 pnpm workspace，也不依赖源仓库的构建、测试或发布门禁。根目录 `pnpm-workspace.yaml` 让 pnpm 将本项目作为独立根目录处理，直接运行 `pnpm install` 即可。
 - **运行时内核边界**：项目不携带或重新发布 dsh 内核代码。内核由用户从 npm registry 安装；桌面壳通过 `src-tauri/` Rust 进程和 `ui/` 管理面板管理其生命周期、配置和窗口行为。
 - **信任边界**：仅信任官方 `deepseek-ai` 仓库与 npm `@deepseek-ai` 命名空间；版本列表优先 npm registry，GitHub Releases 仅作回退。
+  - npm 基础 URL 默认指向 **npmmirror 镜像**（`registry.rs::DEFAULT_NPM_REGISTRY`），以便国内网络无需改全局 npm 配置即可安装；需要上游 registry 的部署用 `DSH_NPM_REGISTRY` 覆盖。镜像只影响**取源**，不影响信任判定：包名仍限定 `@deepseek-ai` 命名空间，下载的 tarball 仍按 npm 元数据里的 `dist.integrity`（SRI）逐字节校验（`releases::verify_download_integrity`），校验失败即删除并拒绝安装。
 
 ## 开发规则
 
@@ -34,7 +35,7 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 ## 实现约定
 
 - 用户可见文案用简体中文；错误信息必须包含可操作的下一步与相关日志路径。
-- 概览页只暴露「启动工作台 / 关闭工作台」单按钮状态机；「打开工作台窗口」「查看日志」是次级入口。
+- 概览页的状态机只有一个**主按钮**：「启动工作台 / 关闭工作台」；同排的「打开工作台窗口」「打开官方对话」与「查看日志」是并列的次级入口（都不改变内核状态），不要再往主按钮旁边加会启停内核的动作。
 - 长任务失败时进度面板保持开放，由用户手动关闭；完整原始输出始终落盘，报错信息引用日志路径。
 - 所有 GUI 子进程使用 `process.rs` 的 PATH 合并、静默窗口和进程组回收策略；涉及进程、网络或目录树的 Tauri 命令必须异步执行并使用 `spawn_blocking`。
 - 图标只从 `assets/whale-icon.svg` 与 `assets/whale-icon-small.svg` 生成，规则见 [docs/icon-design.md](docs/icon-design.md)。

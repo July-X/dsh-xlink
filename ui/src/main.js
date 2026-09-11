@@ -5,6 +5,7 @@
 // URL 带 ?chatstrip=1 时挂载 OfficialChatTabs（官方对话窗口的页签栏，
 // 该 webview 同时承载拉绳挂件，不再有独立的 launcher 路由）。
 import { createApp } from 'vue';
+import { reportRenderError } from './errors.js';
 import { ElAlert } from 'element-plus/es/components/alert/index.mjs';
 import { ElButton } from 'element-plus/es/components/button/index.mjs';
 import { provideGlobalConfig } from 'element-plus/es/components/config-provider/index.mjs';
@@ -86,5 +87,13 @@ const app = createApp(root);
 // 会退化成一块没有任何文案的空白。ElLoading 的 install 同时注册
 // `v-loading` 指令与 `$loading` 服务。
 app.use(ElLoading);
+// 渲染期错误兜底：没有它，一次 TypeError 就会让面板永久空白且无提示。
+app.config.errorHandler = (error, _instance, info) => {
+  reportRenderError(error, info);
+};
+app.config.warnHandler = (message, _instance, trace) => {
+  // 保留 Vue 的告警但不要让它静默消失：打包后控制台是唯一能看到的地方。
+  console.warn('[dsh-xlink] Vue 告警：', message, trace);
+};
 provideGlobalConfig({ locale: zhCn }, app, true);
 app.mount('#app');

@@ -64,9 +64,11 @@
 | P2-20 / P2-21 | 孤儿插件目录无人管、同名接线互相覆盖 | ✅ 已修 | reconcile 清理"有标记无记录"的目录（跳过本轮刚恢复的 id）；接线改以 id 为键并上报同名冲突；新增 4 条测试 |
 | P2-27 / P2-30 / P2-31 / P2-35 / P2-37 / P2-41 / P2-42 | 锁粒度、死字段、版本不一致、UI 约定漂移 | ✅ 已修 | 见明细；版本一致性同时进 preflight 与 check-invariants（反证命中） |
 | P2-45 / P2-47 / P2-48 / P2-52 | CI 入口缺失、verify 脚本假失败、坏徽章、无 push/PR 门禁 | ✅ 已修 | 新增 desktop-ci.yml；两个 verify 脚本加版本门 + try/catch；补 test:file-perf；修徽章 |
-| P2-2、P2-28、P2-32 ~ P2-34、P2-36、P2-38 ~ P2-40、P2-43、P2-44、P2-46、P2-51、P2-62 | | ⏳ 待修 | |
+| P2-32 ~ P2-34 | registry 信任边界口径、releases 无测试/无缓存 | ✅ 已修 | AGENTS 补镜像与 SRI 说明；`select_releases` + 6 条测试（空 npm 结果改为回退）；60s TTL 缓存 |
+| P2-38 ~ P2-40 / P2-43 / P2-44 | 日志重入被吞、窗口操作静默失败、无渲染兜底、两处文档漂移 | ✅ 已修 | 见明细；UI 测试 14 → 16 条 |
+| P2-2、P2-28、P2-36、P2-46、P2-51、P2-62 | | ⏳ 待修 | |
 
-**当前基线**：`cargo test` 258 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 14 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
+**当前基线**：`cargo test` 264 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 16 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
 
 > 本文件同时是**问题清单**与**修复台账**：正文条目保留原始分析（含 `file:line`、触发场景、影响、建议），修复完成后在对应条目标题前加【已修】并在此表登记。
 
@@ -172,7 +174,7 @@
 - `npm run check:invariants` 通过：命令注册与白名单一致（45）、capability 权限引用有效（5 个文件）、前端与注入脚本调用的 42 个命令全部已注册且已授权、内置补丁清单有效（3 个定义）。
 - **守卫有效性反证**：临时移除 `install_node` 后脚本以退出码 1 失败，并精确报出两处问题（"命令已注册但未列入 allow-local-commands" 与 "ui/src/store.js 调用了未授权的命令"）；恢复后重新通过。
 - 构建产物层面确认：重新触发 tauri-build 后 `gen/schemas/acl-manifests.json` 的 `allow-local-commands` 为 45 条且包含 `install_node`。
-- 全套验证绿：`cargo test` 190 通过、`cargo clippy --all-targets -- -D warnings` 零警告、`cargo fmt --check` 通过、`npm run test:ui` 14 通过、`node --test scripts/*.test.mjs` 7 通过、`node scripts/smoke-pullstring.mjs` 退出码 0。
+- 全套验证绿：`cargo test` 190 通过、`cargo clippy --all-targets -- -D warnings` 零警告、`cargo fmt --check` 通过、`npm run test:ui` 16 通过、`node --test scripts/*.test.mjs` 7 通过、`node scripts/smoke-pullstring.mjs` 退出码 0。
 
 <details>
 <summary>原始分析（修复前）</summary>
@@ -532,9 +534,9 @@
 | 【已修】P2-29 | `commands.rs:629-678` | `stop_kernel` 在 `kernel::stop` 失败时提前 return，跳过 `clear_pid`，且 harness 窗口已 destroy → "窗口已关、内核仍在、pid 残留" | 用 finally 语义确保 `clear_pid` |
 | 【已修】P2-30 | `kernel.rs:94,439` | `KernelStatus::ever_installed` 是死字段（UI 用 `installed.length === 0` 自行推导） | 删除字段或让 UI 使用它 | ✅ 已修：删除死字段 `KernelStatus::ever_installed`（UI 一直用 `installed.length === 0` 自行推导）
 | 【已修】P2-31 | `Cargo.toml:3` | `version = "0.1.0"` 与 `package.json`/`tauri.conf.json` 的 `0.1.2-rc.18` 不一致（CI 只校验后两者）。**已有实际影响**：`releases.rs:27` 的 `concat!("dsh-xlink/", env!("CARGO_PKG_VERSION"))` 是 npm registry / GitHub 的 User-Agent，外壳对外自称 `dsh-xlink/0.1.0`。**潜在结构性风险**：`package_info().version` 优先取 `tauri.conf.json` 的 version，一旦该字段被删就会回退到 `CARGO_PKG_VERSION`，所有已装 rc.18 的应用会自报 0.1.0 并永远认为 rc.18 是新版本 → 无限更新循环 | 同步该字段，或删除它并注明以 config 为准；preflight 纳入第三个版本文件 | ✅ 已修：`src-tauri/Cargo.toml` 版本 0.1.0 → 0.1.2-rc.18（`Cargo.lock` 随之更新），`env!("CARGO_PKG_VERSION")` 拼出的 User-Agent 不再对外自称 0.1.0；preflight 增加第三个版本文件的断言，`check-invariants.mjs` 也新增"三处版本一致"检查（反证：改回 0.1.0 即报错）
-| P2-32 | `registry.rs:14-29` | 默认 registry 是第三方镜像且 `DSH_NPM_REGISTRY` 可任意覆盖，与 AGENTS.md 声明的信任边界存在口径差异；node 下载的期望摘要也在安装时从同一站点取（只防传输损坏，不防镜像投毒） | 在 AGENTS.md 明确镜像策略；如需强保证，把期望摘要编进签名包 |
-| P2-33 | `releases.rs`（360 行，0 测试） | 承担"npm 优先、GitHub 回退"的信任边界与 latest 选择，却没有单元测试 | 补 `rank_releases` 与回退逻辑单测 |
-| P2-34 | `releases.rs`、`store.js:211-225` | `fetch_releases` 无 TTL 缓存，每次「检查更新」都重新打网络，首装引导还会立刻重复拉一次 | 统一缓存策略 |
+| 【已修】P2-32 | `registry.rs:14-29` | 默认 registry 是第三方镜像且 `DSH_NPM_REGISTRY` 可任意覆盖，与 AGENTS.md 声明的信任边界存在口径差异；node 下载的期望摘要也在安装时从同一站点取（只防传输损坏，不防镜像投毒） | 在 AGENTS.md 明确镜像策略；如需强保证，把期望摘要编进签名包 | ✅ 已修（文档口径）：AGENTS.md 的信任边界补充说明——npm 基础 URL 默认指向 npmmirror **镜像**，可用 `DSH_NPM_REGISTRY` 覆盖；镜像只影响取源，包名仍限定 `@deepseek-ai` 命名空间，tarball 仍按 `dist.integrity`（SRI）逐字节校验、失败即删除
+| 【已修】P2-33 | `releases.rs`（360 行，0 测试） | 承担"npm 优先、GitHub 回退"的信任边界与 latest 选择，却没有单元测试 | 补 `rank_releases` 与回退逻辑单测 | ✅ 已修：把三级回退链抽成接收**惰性**闭包的 `select_releases`，新增 6 条测试——npm 成功时下游源一次都不许被调用（闭包 panic 兜底）、空 npm 结果回退到 API、API 失败回退 Atom 且警告带上两侧原因与 prerelease 不完整、三源全失败时错误信息包含每个原因、缓存命中与失败不缓存。**顺带修掉一个真实缺陷**：npm 返回 200 但版本列表为空时旧实现直接报错，改为与失败同等对待并继续回退
+| 【已修】P2-34 | `releases.rs`、`store.js:211-225` | `fetch_releases` 无 TTL 缓存，每次「检查更新」都重新打网络，首装引导还会立刻重复拉一次 | 统一缓存策略 | ✅ 已修：`list_releases` 增加 60 秒进程级 TTL 缓存（只缓存成功结果，失败立刻可重试），首装引导启动时连拉两次不再打两遍完整回退链；缓存逻辑抽成 `cached_or_fetch` 以便测试（两条用例 + 三条反证命中）
 
 ### 界面
 
@@ -543,13 +545,13 @@
 | 【已修】P2-35 | `SettingsPanel.vue:118,121` | 两个 IO 按钮缺 `:disabled="globalBusy"`：互斥租约期间点「保存设置」被静默丢弃（无 toast），2.5s 后轮询把输入框回滚，用户以为已保存 | 补 `:disabled`，并在动作开头显式提示"有其它任务正在进行" | ✅ 已修：设置页「保存设置」「检测 Node.js」补 `:disabled="globalBusy"`，互斥租约期间不再静默丢弃点击后被 2.5s 轮询回滚
 | P2-36 | `store.js:136,222,256,268,374,400,421,485`；`plugins.js:129,240`；`skills.js:94`；`logs.js:43,74`；`patches.js:49,73` | 错误提示普遍缺「下一步 + 日志路径」，英文 reqwest 原始错误直出（全项目仅 3 处符合约定） | 在 `notify.js` 增加 `toastActionError(prefix, e, nextStep)` 并逐点替换 |
 | 【已修】P2-37 | `VersionsPanel.vue:18,40-55` | 组件内直接 `invoke`（违反"状态与动作集中在 store"），且 catch 里也把 `slot.loaded = true` → 启动失败被永久缓存，tooltip 不再重试 | 失败不置 `loaded`；逻辑搬到 `plugins.js` | ✅ 已修：`kernel_plugin_list` 读取失败时不再置 `slot.loaded = true`，失败不会被永久缓存，再次悬浮会重试并显示错误
-| P2-38 | `logs.js:15,31,33-48`、`LogModal.vue:114` | 全局单 loading 标志 + `withLoading` 吞掉重入：大日志下切签再点「刷新」什么都没发生 | 按文件粒度绑定 key；`loading` 改为请求序号 |
-| P2-39 | `WindowTitleBar.vue:6-12`、`LogViewerWindow.vue:34-38` | 直接读 `window.__TAURI__.window` 且 `.catch(() => {})` 吞掉失败 → 关闭按钮可能毫无反应也无提示 | 在 `bridge.js` 暴露窗口操作并在失败时 toast |
-| P2-40 | `main.js:64-83`、`App.vue:190-205` | 没有全局渲染错误兜底：`get_status` 形状变化导致渲染期 TypeError 时，面板永久空白且无提示 | 设 `app.config.errorHandler` + `onErrorCaptured` 兜底块 |
+| 【已修】P2-38 | `logs.js:15,31,33-48`、`LogModal.vue:114` | 全局单 loading 标志 + `withLoading` 吞掉重入：大日志下切签再点「刷新」什么都没发生 | 按文件粒度绑定 key；`loading` 改为请求序号 | ✅ 已修：日志读取改为请求序号 + 按文件名记录加载态，去掉 `withLoading` 的重入吞并——大日志未读完时再点「刷新」会真正重发，且慢的旧响应不会覆盖新结果；失败文案补上重试与 logs/ 路径。新增 UI 测试（反证：退回重入忽略即失败）
+| 【已修】P2-39 | `WindowTitleBar.vue:6-12`、`LogViewerWindow.vue:34-38` | 直接读 `window.__TAURI__.window` 且 `.catch(() => {})` 吞掉失败 → 关闭按钮可能毫无反应也无提示 | 在 `bridge.js` 暴露窗口操作并在失败时 toast | ✅ 已修：`bridge.js` 暴露 `windowAction`/`hasWindowControls`，标题栏与日志窗口不再直接读 `window.__TAURI__`，失败改为 toast 并给出系统快捷键出路（旧实现 `.catch(() => {})` 让按钮点了毫无反应）；`__TAURI__` 现在只出现在 bridge.js
+| 【已修】P2-40 | `main.js:64-83`、`App.vue:190-205` | 没有全局渲染错误兜底：`get_status` 形状变化导致渲染期 TypeError 时，面板永久空白且无提示 | 设 `app.config.errorHandler` + `onErrorCaptured` 兜底块 | ✅ 已修：新增 `ui/src/errors.js` + `app.config.errorHandler`，渲染期错误进入响应式状态并在 App.vue 顶部渲染兜底块（重新加载面板 / 忽略并继续）；此前一次 TypeError 会让面板永久空白且无提示。新增 UI 测试（反证：不记录即失败）
 | 【已修】P2-41 | `PluginsPanel.vue:157-163` | 插件来源 chip 直接渲染英文 `npm`/`git`/`local`（技能页有中文映射） | 把 `originLabel` 提到共享位置 | ✅ 已修：新增 `ui/src/labels.js` 承载 `originLabel`（未知来源原样返回），技能页改为再导出、插件页改用中文标签，两个页面不再一个中文一个英文
 | 【已修】P2-42 | `OverviewPanel.vue:165` | `installNode` 按钮用 `:loading="progress.visible"`（全局进度窗可见性）而非约定的 `isLoading(key)` | 走 `withLoading` | ✅ 已修：概览页「自动安装」按钮改绑 `isLoading('installNode')` 并经 `withLoading` 包裹，不再跟随全局进度窗可见性（任何长任务都会让它转圈）
-| P2-43 | `OverviewPanel.vue:205-230` | 概览页主操作是「工作台 / 官方对话 / 查看日志」三按钮同排，与 AGENTS.md 的"只暴露单按钮状态机、其余为次级入口"漂移 | 收敛 UI 或更新 AGENTS.md |
-| P2-44 | `ui/src/skills.js` 全文 | `skill_set_enabled` 无任何 UI 调用点，而 `docs/skill-management.md:84-86` 描述了完整启停功能（README:56 承认 v1 面板只有安装行） | 统一文档口径，或接线 |
+| 【已修】P2-43 | `OverviewPanel.vue:205-230` | 概览页主操作是「工作台 / 官方对话 / 查看日志」三按钮同排，与 AGENTS.md 的"只暴露单按钮状态机、其余为次级入口"漂移 | 收敛 UI 或更新 AGENTS.md | ✅ 已修（文档口径）：AGENTS.md 的概览页约定改为与实现一致——「启动/关闭工作台」是唯一主按钮，「打开工作台窗口 / 打开官方对话 / 查看日志」是并列次级入口
+| 【已修】P2-44 | `ui/src/skills.js` 全文 | `skill_set_enabled` 无任何 UI 调用点，而 `docs/skill-management.md:84-86` 描述了完整启停功能（README:56 承认 v1 面板只有安装行） | 统一文档口径，或接线 | ✅ 已修（文档口径）：`docs/skill-management.md` 的「启用 / 禁用」补上面板现状说明——后端命令 `skill_set_enabled` 与对账语义已完整，v1 面板尚未接线启停按钮（与 README 一致），不再让读者以为面板已有启停
 
 ### 构建与 CI
 

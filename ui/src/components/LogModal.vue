@@ -111,7 +111,7 @@ watch(
         >
           全屏
         </el-button>
-        <el-button text :icon="Refresh" :loading="logModal.loading" title="重新读取当前日志" @click="loadActiveLog">
+        <el-button text :icon="Refresh" :loading="logModal.loadingName === logModal.activeName && !!logModal.activeName" title="重新读取当前日志" @click="loadActiveLog">
           刷新
         </el-button>
         <el-button text :icon="Close" @click="logModal.visible = false">关闭</el-button>

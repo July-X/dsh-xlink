@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -384,7 +384,7 @@ fn fetch_atom() -> Result<Vec<ReleaseInfo>, String> {
 }
 
 /// 列出发布版本的结果：数据本身加上任何兜底警告。
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ReleaseList {
     pub releases: Vec<ReleaseInfo>,
     pub warning: Option<String>,
@@ -400,10 +400,67 @@ pub struct ReleaseList {
 ///
 /// 兜底时会设置 `warning`，UI 据此告知用户当前看到的是哪一份来源，
 /// 并提示 npm 端的 prerelease 标记可能不完整。
-pub fn list_releases() -> Result<ReleaseList, AppError> {
-    match fetch_npm() {
-        Ok(out) if !out.is_empty() => Ok(ReleaseList { releases: out, warning: None }),
-        Ok(_) => Err(AppError::GitHub("npm registry 未返回任何 @deepseek-ai/dsh 版本".into())),
+/// 「检查更新」结果的进程级缓存：TTL 内重复调用直接复用。
+///
+/// `list_releases` 是纯网络操作，而首装引导会在启动时立刻再拉一次（引导流程
+/// 自己调用一次 + 面板刷新调用一次），没有缓存就是两次完整的三级回退链
+/// （P2-34）。只缓存成功结果：失败必须立刻可重试。
+static RELEASES_CACHE: Mutex<Option<(Instant, ReleaseList)>> = Mutex::new(None);
+const RELEASES_CACHE_TTL: Duration = Duration::from_secs(60);
+
+fn cached_releases() -> Option<ReleaseList> {
+    let guard = RELEASES_CACHE.lock().ok()?;
+    let (stored_at, list) = guard.as_ref()?;
+    if stored_at.elapsed() < RELEASES_CACHE_TTL {
+        Some(list.clone())
+    } else {
+        None
+    }
+}
+
+fn store_releases(list: &ReleaseList) {
+    if let Ok(mut guard) = RELEASES_CACHE.lock() {
+        *guard = Some((Instant::now(), list.clone()));
+    }
+}
+
+#[cfg(test)]
+static RELEASES_CACHE_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+fn clear_releases_cache() {
+    if let Ok(mut guard) = RELEASES_CACHE.lock() {
+        *guard = None;
+    }
+}
+
+/// 三个数据源的优先级编排：npm registry → GitHub Releases API → GitHub Atom。
+///
+/// 抽成接收三个**惰性**取源闭包的函数是为了能单元测试：源没有失败就不该被
+/// 调用（否则一次成功的 npm 查询会白白多打两次网络），而三种失败组合各自
+/// 应该产出什么 warning 也需要逐条钉住（P2-33）。
+fn select_releases<F, G, H>(
+    fetch_npm: F,
+    fetch_api: G,
+    fetch_atom: H,
+) -> Result<ReleaseList, AppError>
+where
+    F: FnOnce() -> Result<Vec<ReleaseInfo>, String>,
+    G: FnOnce() -> Result<Vec<ReleaseInfo>, String>,
+    H: FnOnce() -> Result<Vec<ReleaseInfo>, String>,
+{
+    // 空列表与"查询失败"等价：都说明这一级源这次给不出可用数据，应当继续回退。
+    // 旧实现把空列表当成硬错误，于是镜像返回 200 但没有版本时用户直接看到报错，
+    // 而 GitHub 回退其实完全可用（P2-33 顺带收口）。
+    let npm_source = fetch_npm().and_then(|out| {
+        if out.is_empty() {
+            Err("npm registry 未返回任何 @deepseek-ai/dsh 版本".to_string())
+        } else {
+            Ok(out)
+        }
+    });
+    match npm_source {
+        Ok(out) => Ok(ReleaseList { releases: out, warning: None }),
         Err(npm_err) => match fetch_api() {
             Ok(out) if !out.is_empty() => Ok(ReleaseList {
                 releases: out,
@@ -440,6 +497,26 @@ pub fn list_releases() -> Result<ReleaseList, AppError> {
     }
 }
 
+/// 带 TTL 缓存的取源：命中即复用，只缓存成功结果。
+fn cached_or_fetch<F>(fetch: F) -> Result<ReleaseList, AppError>
+where
+    F: FnOnce() -> Result<ReleaseList, AppError>,
+{
+    if let Some(cached) = cached_releases() {
+        return Ok(cached);
+    }
+    let result = fetch();
+    if let Ok(list) = &result {
+        store_releases(list);
+    }
+    result
+}
+
+/// 列出可安装的内核版本（npm 优先，GitHub 回退），带 60 秒缓存。
+pub fn list_releases() -> Result<ReleaseList, AppError> {
+    cached_or_fetch(|| select_releases(fetch_npm, fetch_api, fetch_atom))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,6 +524,136 @@ mod tests {
     /// Atom 兜底路径只能从 tag 名推断预发布状态：版本号里出现 `-` 就必须标成
     /// 预发布，否则 `0.1.2-rc.19` 会被当成稳定版——列表不打预发布标签，首次
     /// 运行引导的「安装最新版本」还会优先选中它。
+    fn sample_release(version: &str) -> ReleaseInfo {
+        ReleaseInfo {
+            tag: format!("dsh-v{version}"),
+            version: version.to_string(),
+            prerelease: false,
+            name: format!("dsh-v{version}"),
+            published_at: None,
+            html_url: format!("https://example.invalid/dsh-v{version}"),
+        }
+    }
+
+    fn sample_list(version: &str) -> ReleaseList {
+        ReleaseList {
+            releases: vec![sample_release(version)],
+            warning: None,
+        }
+    }
+
+    fn err(message: &str) -> Result<Vec<ReleaseInfo>, String> {
+        Err(message.to_string())
+    }
+
+    fn ok(version: &str) -> Result<Vec<ReleaseInfo>, String> {
+        Ok(vec![sample_release(version)])
+    }
+
+    /// 源没有失败就不该被调用：惰性闭包在这里直接 panic，谁被多调一次就会炸。
+    fn forbidden() -> Result<Vec<ReleaseInfo>, String> {
+        panic!("上一级源成功时不允许再打网络");
+    }
+
+    #[test]
+    fn npm_wins_and_the_fallbacks_are_not_called() {
+        let list = select_releases(|| ok("0.2.0"), forbidden, forbidden).expect("npm 命中");
+        assert_eq!(list.releases[0].version, "0.2.0");
+        assert!(list.warning.is_none(), "npm 成功时不该有回退警告");
+    }
+
+    #[test]
+    fn empty_npm_result_falls_back_to_the_github_api() {
+        // 空列表与失败等价：旧实现的 `Ok(_) => Err(...)` 分支就是这么处理的，
+        // 这里把它钉住，避免以后有人把它当成功返回空的更新列表。
+        let list = select_releases(|| Ok(Vec::new()), || ok("0.1.9"), forbidden)
+            .expect("空 npm 结果应回退到 API");
+        assert_eq!(list.releases[0].version, "0.1.9");
+        assert!(
+            list.warning
+                .as_deref()
+                .unwrap_or("")
+                .contains("npm registry 未返回任何"),
+            "警告要说明 npm 为什么被跳过：{:?}",
+            list.warning
+        );
+    }
+
+    #[test]
+    fn api_failure_falls_back_to_the_atom_feed_with_a_warning() {
+        let list = select_releases(|| err("npm 超时"), || err("api 502"), || ok("0.1.8"))
+            .expect("三级回退应命中 Atom");
+        let warning = list.warning.expect("回退到 Atom 必须带警告");
+        assert!(
+            warning.contains("npm 超时"),
+            "警告要带上 npm 的原因：{warning}"
+        );
+        assert!(
+            warning.contains("api 502"),
+            "警告要带上 API 的原因：{warning}"
+        );
+        assert!(
+            warning.contains("prerelease"),
+            "Atom 的预发布标记不完整，必须写进警告：{warning}"
+        );
+    }
+
+    #[test]
+    fn all_sources_failing_reports_every_reason() {
+        let error = select_releases(|| err("npm 超时"), || err("api 502"), || err("atom 403"))
+            .expect_err("三个源都失败必须报错");
+        let text = error.to_string();
+        for reason in ["npm 超时", "api 502", "atom 403"] {
+            assert!(
+                text.contains(reason),
+                "错误要带上每个源的原因（缺 {reason}）：{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_calls_within_the_ttl_reuse_the_cached_result() {
+        // P2-34：首装引导会连着拉两次，没有缓存就是两次完整的三级回退链。
+        // 缓存是进程级单例，所以这条用例与其它碰缓存的用例串行执行。
+        let _guard = RELEASES_CACHE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        clear_releases_cache();
+        let calls = std::cell::Cell::new(0);
+        let fetch = || {
+            calls.set(calls.get() + 1);
+            Ok(sample_list("0.3.0"))
+        };
+
+        let first = cached_or_fetch(fetch).expect("第一次");
+        let second = cached_or_fetch(fetch).expect("第二次");
+        assert_eq!(calls.get(), 1, "TTL 内的第二次调用必须复用缓存");
+        assert_eq!(first.releases[0].version, second.releases[0].version);
+
+        clear_releases_cache();
+        let third = cached_or_fetch(fetch).expect("清缓存后");
+        assert_eq!(calls.get(), 2, "显式清缓存后必须重新取源");
+        assert_eq!(third.releases[0].version, "0.3.0");
+    }
+
+    #[test]
+    fn failures_are_never_cached() {
+        // 失败必须立刻可重试：用户点「检查更新」时网络刚恢复就该成功。
+        let _guard = RELEASES_CACHE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        clear_releases_cache();
+        let calls = std::cell::Cell::new(0);
+        let failing = || {
+            calls.set(calls.get() + 1);
+            Err::<ReleaseList, AppError>(AppError::GitHub("npm 不可用".into()))
+        };
+
+        assert!(cached_or_fetch(failing).is_err());
+        assert!(cached_or_fetch(failing).is_err());
+        assert_eq!(calls.get(), 2, "失败不允许进缓存");
+    }
+
     #[test]
     fn atom_fallback_marks_dashed_versions_as_prerelease() {
         let stable = release_from_tag("dsh-v0.1.2".to_string(), false).expect("stable tag");
