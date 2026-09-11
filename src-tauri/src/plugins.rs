@@ -1201,6 +1201,10 @@ pub fn reconcile_store(data_dir: &Path) {
         by_id.entry(id).or_default().push((kind, entry.path()));
     }
 
+    // 本轮恢复流程处理过的 id：它们的目录是"已验证但还没记账"的救援对象，
+    // 不能被下面的孤儿清理顺手删掉（那会把恢复动作当场撤销）。
+    let recovered_ids: std::collections::HashSet<String> = by_id.keys().cloned().collect();
+
     for (id, mut items) in by_id {
         let final_dir = store.join(&id);
         // 按目录名排序（其中编码了 pid + 时间戳），最新的排在最后。
@@ -1248,6 +1252,64 @@ pub fn reconcile_store(data_dir: &Path) {
             let _ = fs::rename(&new, &final_dir);
         }
         // 否则：只剩 `.tmp-*`，上面已经清理掉了。
+    }
+
+    // 最后处理"已发布但没记账"的孤儿目录。
+    match load_store_checked(data_dir) {
+        Ok(doc) => sweep_unrecorded_store_dirs(data_dir, &doc, &recovered_ids),
+        Err(error) => {
+            eprintln!("dsh-xlink: store.json 读取失败（{error}），跳过中央库孤儿目录清理")
+        }
+    }
+}
+
+/// 删除"带着外壳 id 标记、但 `store.json` 里没有对应记录"的中央库目录。
+///
+/// 发布目录与写 store 行不是原子的：`fetch_into_store` 先把校验过的内容
+/// rename 进 `store/<id>`，`upsert_item_unlocked` 之后才记账。中间崩溃（或
+/// 记账失败）就留下一个孤儿目录 —— 面板不显示、"同步"不处理、`uninstall`
+/// 直接拒绝，用户只能去手删（P2-20）。
+///
+/// 三重保险，避免误删用户数据：
+/// 1. 只在 `store.json` **能正常读出**时调用（损坏时按"没有记录"处理会把整个
+///    插件库清空）；
+/// 2. 只动名字与自身 id 标记一致、且不带任何暂存前缀的目录；
+/// 3. 没有 id 标记的目录一律不碰（不是外壳发布的）；
+/// 4. 跳过本轮恢复流程处理过的 id —— 那是"已验证内容等着记账"的救援对象。
+fn sweep_unrecorded_store_dirs(
+    data_dir: &Path,
+    doc: &Store,
+    recovered_ids: &std::collections::HashSet<String>,
+) {
+    let root = store_dir(data_dir);
+    let Ok(entries) = fs::read_dir(&root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.')
+            || name.starts_with(TMP_PREFIX)
+            || name.starts_with(NEW_PREFIX)
+            || name.starts_with(BACKUP_PREFIX)
+        {
+            continue;
+        }
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let marker = fs::read_to_string(path.join(ID_MARKER))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let Some(id) = marker else {
+            continue;
+        };
+        if id != name || recovered_ids.contains(&id) || doc.items.iter().any(|item| item.id == id) {
+            continue;
+        }
+        eprintln!("dsh-xlink: 清理未记账的插件目录 {name}（store.json 中没有对应记录）");
+        let _ = fs::remove_dir_all(&path);
     }
 }
 
@@ -2295,7 +2357,7 @@ pub fn ensure_wiring_filtered(
     // 清退，内核不带它启动），其余插件照常接线，最后聚合报错。否则一个
     // 损坏的插件会让卸载残留的清退永远跑不到，故障在 store warning 里
     // 越积越多。
-    let mut specs: BTreeMap<String, (String, bool)> = BTreeMap::new();
+    let mut specs: BTreeMap<String, WireSpec> = BTreeMap::new();
     let mut failures: Vec<String> = Vec::new();
     match kernel::read_active(data_dir) {
         Some(active) => {
@@ -2315,11 +2377,14 @@ pub fn ensure_wiring_filtered(
                             &kernel_plugin_dir(data_dir, &active, &item.id),
                         );
                         specs.insert(
-                            item.name.clone(),
-                            (
-                                format!("{prefix}{}", spec_path_string(&rel)),
-                                manifest_is_bundle(&kernel_plugin_dir(data_dir, &active, &item.id)),
-                            ),
+                            item.id.clone(),
+                            WireSpec {
+                                name: item.name.clone(),
+                                spec: format!("{prefix}{}", spec_path_string(&rel)),
+                                bundle: manifest_is_bundle(&kernel_plugin_dir(
+                                    data_dir, &active, &item.id,
+                                )),
+                            },
                         );
                     }
                     Err(e) => failures.push(format!("{}（{e}）", item.name)),
@@ -2334,7 +2399,9 @@ pub fn ensure_wiring_filtered(
     let mut root = read_profile_json(data_dir, &settings.profile)?
         .ok_or_else(|| AppError::Plugin("profile 尚未初始化".into()))?;
     let previous = root.clone();
-    let changed = wire_manifest(&mut root, &specs, &settings.profile)?;
+    let outcome = wire_manifest(&mut root, &specs, &settings.profile)?;
+    let changed = outcome.changed;
+    failures.extend(outcome.conflicts);
 
     // manifest 没变但 node_modules 缺失（上次 pnpm 失败或目录被清）也必须
     // 重装，否则 bundles 里的层解析不了，内核启动即崩。
@@ -2363,7 +2430,13 @@ pub fn ensure_wiring_filtered(
             failures.join("；")
         )));
     }
-    Ok((specs.len(), changed))
+    // 同名冲突时只有一条真正接入了 profile，计数要如实。
+    let wired = specs
+        .values()
+        .map(|entry| entry.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    Ok((wired, changed))
 }
 
 /// 在指定 profile 目录下跑 `pnpm install`，返回它的退出状态，让调用方各自
@@ -2882,29 +2955,66 @@ pub fn catalog(data_dir: &Path, force: bool) -> Result<Vec<CatalogItem>, AppErro
     Ok(items)
 }
 
-/// 把中央库的插件依赖与 bundle 层应用到 profile 清单上。返回是否发生变化。
+/// profile 清单里的一条托管接线。以**插件 id** 为键：两个不同的插件可能
+/// 共用同一个包名（例如 npm `@scope/pkg` 与另一个来源里同名的包），用名字
+/// 当键会让后一条静默覆盖前一条，而 UI 依据 `deps` 里的名字判断"已接线"，
+/// 于是两行都显示已接线（P2-21）。
+struct WireSpec {
+    /// 写进 `dependencies` / `bundles` 的包名。
+    name: String,
+    /// 依赖 spec（`link:` / `file:` 前缀 + 相对路径）。
+    spec: String,
+    /// 该插件是否提供 bundle 层。
+    bundle: bool,
+}
+
+/// 接线结果：清单是否变化，以及因同名而未被接线的冲突说明。
+struct WireOutcome {
+    changed: bool,
+    conflicts: Vec<String>,
+}
+
+/// 把中央库的插件依赖与 bundle 层应用到 profile 清单上。
 /// 纯函数（不碰 fs、不跑 pnpm），因此即使没有工具链也能对接线做单元测试。
 fn wire_manifest(
     root: &mut serde_json::Value,
-    specs: &BTreeMap<String, (String, bool)>,
+    specs: &BTreeMap<String, WireSpec>,
     profile: &str,
-) -> Result<bool, AppError> {
+) -> Result<WireOutcome, AppError> {
     let mut changed = false;
+    let mut conflicts: Vec<String> = Vec::new();
     let deps = root
         .get_mut("dependencies")
         .and_then(|d| d.as_object_mut())
         .ok_or_else(|| AppError::Plugin("profile manifest 缺少 dependencies".into()))?;
-    for (name, (spec, _)) in specs {
-        if deps.get(name).and_then(|s| s.as_str()) != Some(spec.as_str()) {
-            deps.insert(name.clone(), serde_json::Value::String(spec.clone()));
+    // 一个包名只能有一条依赖：同名时按 id 顺序取第一个（BTreeMap 保证顺序
+    // 确定），其余的记录冲突并跳过 —— 让用户看到"装了但没接线"，而不是让
+    // 两条互相覆盖、UI 还都显示已接线。
+    let mut claimed: BTreeMap<String, String> = BTreeMap::new();
+    for (id, entry) in specs {
+        if let Some(owner) = claimed.get(&entry.name) {
+            conflicts.push(format!(
+                "{}（id {id}）与 {} 共用包名 {}，只有前者接入 profile",
+                entry.name, owner, entry.name
+            ));
+            continue;
+        }
+        claimed.insert(entry.name.clone(), id.clone());
+        if deps.get(&entry.name).and_then(|s| s.as_str()) != Some(entry.spec.as_str()) {
+            deps.insert(
+                entry.name.clone(),
+                serde_json::Value::String(entry.spec.clone()),
+            );
             changed = true;
         }
     }
+    let managed_names: std::collections::HashSet<&str> =
+        claimed.keys().map(String::as_str).collect();
     deps.retain(|name, spec| {
         if !is_managed_spec(spec.as_str().unwrap_or("")) {
             return true; // 用户/CLI 管理的不动
         }
-        if !specs.contains_key(name) {
+        if !managed_names.contains(name.as_str()) {
             changed = true;
             return false;
         }
@@ -2920,9 +3030,9 @@ fn wire_manifest(
         .map(|(name, _)| name.clone())
         .collect();
     let managed_bundles: Vec<String> = specs
-        .iter()
-        .filter(|(_, (_, is_bundle))| *is_bundle)
-        .map(|(name, _)| name.clone())
+        .values()
+        .filter(|entry| entry.bundle)
+        .map(|entry| entry.name.clone())
         .collect();
     let template: Vec<String> = template_bundles(profile);
     let mut next: Vec<String> = template.clone();
@@ -2957,7 +3067,7 @@ fn wire_manifest(
         *bundles = next.into_iter().map(serde_json::Value::String).collect();
         changed = true;
     }
-    Ok(changed)
+    Ok(WireOutcome { changed, conflicts })
 }
 
 // --- 编排 ----------------------------------------------------------------
@@ -4815,6 +4925,48 @@ mod tests {
     }
 
     #[test]
+    fn wire_manifest_reports_name_collisions_instead_of_silently_dropping_one() {
+        // P2-21：两个不同 id 的插件共用同一个包名时，旧实现（以 name 为键）
+        // 会让后写入的那条静默覆盖前一条，而 UI 只看 `deps` 里有没有这个名字，
+        // 于是两行都显示"已接线"。现在以 id 为键并显式报告冲突。
+        let mut root = serde_json::json!({
+            "dependencies": {},
+            "dsh": { "profile": { "bundles": [] } },
+        });
+        let mut specs: BTreeMap<String, WireSpec> = BTreeMap::new();
+        specs.insert(
+            "aaa__pkg".to_string(),
+            WireSpec {
+                name: "shared-name".to_string(),
+                spec: "link:../../kernels/0.1.5/plugins/aaa__pkg".to_string(),
+                bundle: false,
+            },
+        );
+        specs.insert(
+            "bbb__pkg".to_string(),
+            WireSpec {
+                name: "shared-name".to_string(),
+                spec: "link:../../kernels/0.1.5/plugins/bbb__pkg".to_string(),
+                bundle: false,
+            },
+        );
+
+        let outcome = wire_manifest(&mut root, &specs, "web").expect("wire");
+        assert!(outcome.changed);
+        assert_eq!(outcome.conflicts.len(), 1, "必须报告一次同名冲突");
+        assert!(
+            outcome.conflicts[0].contains("shared-name"),
+            "冲突说明要带上包名：{:?}",
+            outcome.conflicts
+        );
+        // 按 id 顺序取第一个，行为确定而不是随机覆盖。
+        assert_eq!(
+            root["dependencies"]["shared-name"].as_str().unwrap(),
+            "link:../../kernels/0.1.5/plugins/aaa__pkg"
+        );
+    }
+
+    #[test]
     fn wire_manifest_applies_and_prunes() {
         let mut root = serde_json::json!({
             "name": "dsh-profile-web",
@@ -4829,23 +4981,27 @@ mod tests {
                 },
             },
         });
-        let mut specs = BTreeMap::new();
+        let mut specs: BTreeMap<String, WireSpec> = BTreeMap::new();
         specs.insert(
             "new-plugin".to_string(),
-            (
-                "link:../../desktop/kernels/9.9.9/plugins/new-plugin".to_string(),
-                true,
-            ),
+            WireSpec {
+                name: "new-plugin".to_string(),
+                spec: "link:../../desktop/kernels/9.9.9/plugins/new-plugin".to_string(),
+                bundle: true,
+            },
         );
         specs.insert(
             "plain-plugin".to_string(),
-            (
-                "link:../../desktop/kernels/9.9.9/plugins/plain-plugin".to_string(),
-                false,
-            ),
+            WireSpec {
+                name: "plain-plugin".to_string(),
+                spec: "link:../../desktop/kernels/9.9.9/plugins/plain-plugin".to_string(),
+                bundle: false,
+            },
         );
 
-        let changed = wire_manifest(&mut root, &specs, "web").expect("wire");
+        let changed = wire_manifest(&mut root, &specs, "web")
+            .expect("wire")
+            .changed;
         assert!(changed);
         let deps = root["dependencies"].as_object().expect("deps");
         assert_eq!(
@@ -4866,7 +5022,9 @@ mod tests {
         assert!(!bundles.contains(&"plain-plugin")); // 非 bundle 不进层
         assert!(!bundles.contains(&"old-plugin"));
 
-        let changed = wire_manifest(&mut root, &specs, "web").expect("wire again");
+        let changed = wire_manifest(&mut root, &specs, "web")
+            .expect("wire again")
+            .changed;
         assert!(!changed);
     }
 
@@ -4920,7 +5078,9 @@ mod tests {
             },
         });
         let specs = BTreeMap::new();
-        let changed = wire_manifest(&mut root, &specs, "web").expect("wire");
+        let changed = wire_manifest(&mut root, &specs, "web")
+            .expect("wire")
+            .changed;
         assert!(changed);
         let deps = root["dependencies"].as_object().expect("deps");
         assert!(!deps.contains_key("dsh-synapse")); // dev 壳卸载残留清退
@@ -4953,16 +5113,19 @@ mod tests {
                 },
             },
         });
-        let mut specs = BTreeMap::new();
+        let mut specs: BTreeMap<String, WireSpec> = BTreeMap::new();
         specs.insert(
             "dsh-synapse".to_string(),
-            (
-                "link:../../desktop/kernels/0.1.1-rc.2/plugins/github.com__liangmianya__dsh-synapse"
+            WireSpec {
+                name: "dsh-synapse".to_string(),
+                spec: "link:../../desktop/kernels/0.1.1-rc.2/plugins/github.com__liangmianya__dsh-synapse"
                     .to_string(),
-                true,
-            ),
+                bundle: true,
+            },
         );
-        let changed = wire_manifest(&mut root, &specs, "web").expect("wire");
+        let changed = wire_manifest(&mut root, &specs, "web")
+            .expect("wire")
+            .changed;
         assert!(changed);
         assert_eq!(
             root["dependencies"]["dsh-synapse"].as_str().unwrap(),
@@ -5587,5 +5750,96 @@ mod id_collision_tests {
         let store = load_store(&data_dir);
         assert_eq!(store.items.len(), 1);
         assert_eq!(store.items[0].installed_version, "2.0.0");
+    }
+}
+
+#[cfg(test)]
+mod store_orphan_tests {
+    use super::tests::TestHome;
+    use super::*;
+
+    fn marked_dir(data_dir: &Path, id: &str) -> PathBuf {
+        let dir = store_dir(data_dir).join(id);
+        fs::create_dir_all(&dir).unwrap();
+        stamp_id_marker(&dir, id).unwrap();
+        dir
+    }
+
+    #[test]
+    fn unrecorded_marked_dir_is_swept_but_user_dirs_survive() {
+        // P2-20：发布目录与写 store 行非原子，中间崩溃会留下无记录的目录：
+        // 面板不显示、同步不管、uninstall 拒绝，只能手删。
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        let orphan = marked_dir(&data_dir, "orphan-plugin");
+        // 用户自己放进去的目录（没有外壳标记）不能被误删。
+        let user_dir = store_dir(&data_dir).join("user-notes");
+        fs::create_dir_all(&user_dir).unwrap();
+        fs::write(user_dir.join("readme.txt"), b"mine").unwrap();
+
+        reconcile_store(&data_dir);
+
+        assert!(!orphan.exists(), "无记录的已发布目录必须被清理");
+        assert!(
+            user_dir.join("readme.txt").is_file(),
+            "没有外壳标记的目录不是我们的数据，必须保留"
+        );
+    }
+
+    #[test]
+    fn staging_recovery_is_not_undone_by_the_orphan_sweep() {
+        // 交互回归：reconcile 会把幸存的 `.new-*` 提升成正式目录（"已验证但
+        // 还没记账"的救援对象），孤儿清理不能在同一轮里把它删掉。
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        let staging = store_dir(&data_dir).join(format!("{NEW_PREFIX}0-1-rescued"));
+        fs::create_dir_all(&staging).unwrap();
+        stamp_id_marker(&staging, "rescued-plugin").unwrap();
+        fs::write(staging.join("package.json"), b"{}").unwrap();
+
+        reconcile_store(&data_dir);
+
+        let promoted = store_plugin_dir(&data_dir, "rescued-plugin");
+        assert!(
+            promoted.join("package.json").is_file(),
+            "恢复出来的目录必须留在原地"
+        );
+    }
+
+    #[test]
+    fn recorded_dir_and_corrupt_store_are_left_alone() {
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        let kept = marked_dir(&data_dir, "kept-plugin");
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "kept-plugin".into(),
+                name: "kept-plugin".into(),
+                origin: "npm".into(),
+                source: "kept-plugin".into(),
+                installed_version: "1.0.0".into(),
+                latest_version: None,
+                mode: "link".into(),
+                pinned: false,
+                installed_at: String::new(),
+                updated_at: String::new(),
+                repo_url: None,
+                description: None,
+            },
+        )
+        .expect("save");
+
+        reconcile_store(&data_dir);
+        assert!(kept.exists(), "有记录的插件目录不能被清理");
+
+        // store.json 损坏时必须一个都不删：否则会把整个插件库清空。
+        let other = marked_dir(&data_dir, "another-orphan");
+        fs::write(store_file(&data_dir), b"{ broken").unwrap();
+        reconcile_store(&data_dir);
+        assert!(
+            other.exists() && kept.exists(),
+            "store.json 读不出来时不允许清理任何目录"
+        );
     }
 }
