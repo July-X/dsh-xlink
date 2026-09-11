@@ -980,6 +980,9 @@ fn rollback_files(
     committed: &[AppliedFile],
 ) -> String {
     let mut problems: Vec<String> = Vec::new();
+    // 应用前就已存在、但本次没有写入过的文件（`already_patched`）。它们没有
+    // 备份，也**不属于本次改动**，回滚必须原样留着。
+    let mut untouched: usize = 0;
     for applied in committed.iter().rev() {
         let target = kernel_root.join(&applied.to);
         match &applied.backup_rel {
@@ -995,18 +998,36 @@ fn rollback_files(
                     Err(e) => problems.push(format!("{}：备份不可读（{e}）", applied.to)),
                 }
             }
-            // 无备份 = 应用前目标不存在：删掉我们新建的文件即可。
+            // 无备份有两种来源，绝不能都当成"本次新建的文件"：
+            // 1. 应用前目标不存在（`had_original == false`）→ 删掉我们新建的文件；
+            // 2. 应用前目标**已经**是补丁内容（`had_original == true`，见
+            //    `commit_file` 的 `already_patched` 分支）→ 本次一个字节都没写过
+            //    它，删掉它就是拿回滚当删除用：内核里的既有文件凭空消失，而错误
+            //    文案还写着"已回到应用前的状态"（P0-1）。
             None => {
+                if applied.had_original {
+                    untouched += 1;
+                    continue;
+                }
                 let _ = fs::remove_file(&target);
                 prune_empty_dirs(&target, kernel_root);
             }
         }
     }
     let _ = fs::remove_dir_all(backups_root(data_dir).join(id).join(kernel_version));
+    let mut note = String::new();
+    if untouched > 0 {
+        note.push_str(&format!(
+            "；另有 {untouched} 个文件在应用前就已存在且本次未写入，回滚保留原样"
+        ));
+    }
     if problems.is_empty() {
-        String::new()
+        note
     } else {
-        format!("；回滚未完成的文件：{}（请手动检查）", problems.join("、"))
+        format!(
+            "{note}；回滚未完成的文件：{}（请手动检查）",
+            problems.join("、")
+        )
     }
 }
 
@@ -1648,6 +1669,64 @@ mod tests {
             fs::read_to_string(&target).unwrap(),
             "module.exports = 42;\n",
             "内容不应被改写"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rollback_keeps_preexisting_file_when_a_later_file_fails() {
+        // P0-1：执行阶段失败时按本次备份整体回滚。`already_patched` 的文件既没有
+        // 备份、也不在本次的写入集合里（`had_original = true`）——旧实现把它和
+        // "本次新建的文件"混为一谈，回滚时直接删掉，等于拿回滚当删除用。
+        let root = temp_root("rollback-keep");
+        let data = root.join("data");
+        setup(&data, "0.1.2");
+        let res = root.join("res");
+        let dir = res.join("probe");
+        fs::create_dir_all(dir.join("files")).unwrap();
+        fs::write(dir.join("files").join("a.js"), "PATCHED\n").unwrap();
+        fs::write(dir.join("files").join("b.js"), "B\n").unwrap();
+        fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schemaVersion": 1,
+                "patches": [{
+                    "id": "probe",
+                    "name": "回滚探针",
+                    "version": "1.0.0",
+                    "kind": "patch",
+                    "description": "test",
+                    "files": [
+                        {"mode": "copy", "from": "files/a.js", "to": "node_modules/x/a.js", "required": true},
+                        {"mode": "copy", "from": "files/b.js", "to": "blocker/b.js", "required": true}
+                    ]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let patches = load_patches(&res).unwrap();
+        let kernel_root = kernel::kernel_dir(&data, "0.1.2");
+        let first = kernel_root.join("node_modules/x/a.js");
+        fs::create_dir_all(first.parent().unwrap()).unwrap();
+        // 应用前它就是补丁内容：本次不会写它，回滚也不许删它。
+        fs::write(&first, "PATCHED\n").unwrap();
+        // 让第二个文件在执行阶段失败：父路径是一个普通文件。
+        fs::write(kernel_root.join("blocker"), "not a dir\n").unwrap();
+
+        let error = apply(&data, &patches, "probe").unwrap_err().to_string();
+        assert!(
+            error.contains("回滚保留原样"),
+            "回滚说明必须点出保留的文件：{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(&first).unwrap(),
+            "PATCHED\n",
+            "应用前就已存在的文件不得被回滚删除"
+        );
+        assert!(
+            read_state(&data).applied.is_empty(),
+            "失败的应用不得留下记录"
         );
         fs::remove_dir_all(&root).unwrap();
     }
