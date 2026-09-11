@@ -16,9 +16,9 @@ const SKILL_UPDATE_CHECK_TTL_MS = 15 * 60 * 1000;
 let skillUpdatesInFlight = null;
 let lastSkillUpdateCheckAt = 0;
 
-export function originLabel(origin) {
-  return origin === 'local' ? '本地' : origin === 'git' ? 'git' : 'npm';
-}
+// `originLabel` 已提到 `labels.js`（技能页与插件页共用），这里保留再导出，
+// 避免既有调用点被迫同时改动。
+export { originLabel } from './labels.js';
 
 // 工作台是否在服务：决定动作提示是「即时生效」还是「下次启动可用」。
 export function kernelRunningNow() {

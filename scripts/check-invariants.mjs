@@ -231,6 +231,32 @@ for (const dir of patchDirs) {
 }
 note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
 
+// --- 版本一致性 ---------------------------------------------------------------
+//
+// 三个版本字段必须一致：`package.json` 与 `tauri.conf.json` 决定发布产物与
+// updater 的版本，`src-tauri/Cargo.toml` 是 `env!("CARGO_PKG_VERSION")` 的来源
+// —— 它被 releases.rs 当作对外 User-Agent（`dsh-xlink/<版本>`）。历史上
+// Cargo.toml 长期停在 0.1.0，外壳因此对 npm registry / GitHub 自称另一个版本
+// （P2-31）。preflight 也会拦，但那个门只在发布时才会跑到。
+
+{
+  const packageVersion = readJson('package.json').version;
+  const tauriVersion = readJson('src-tauri/tauri.conf.json').version;
+  const cargoMatch = read('src-tauri/Cargo.toml').match(/^version = "([^"]+)"/m);
+  const cargoVersion = cargoMatch?.[1];
+  if (!cargoVersion) {
+    fail('versions', '在 src-tauri/Cargo.toml 中找不到 version = "..."');
+  } else if (!(packageVersion === tauriVersion && packageVersion === cargoVersion)) {
+    fail(
+      'versions',
+      `版本不一致：package.json=${packageVersion}, tauri.conf.json=${tauriVersion}, ` +
+        `src-tauri/Cargo.toml=${cargoVersion}`,
+    );
+  } else {
+    note(`三处版本一致：${packageVersion}`);
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);

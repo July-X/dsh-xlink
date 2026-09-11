@@ -67,6 +67,15 @@ jobs:
             exit 1
           fi
 
+          # Cargo.toml 的 version 是 `CARGO_PKG_VERSION` 的来源，而它被
+          # releases.rs 当作对外 User-Agent（dsh-xlink/<版本>）；漏同步会让外壳
+          # 对 npm registry / GitHub 自称另一个版本。这里一并校验。
+          cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -n 1)"
+          if [[ "$version" != "$cargo_version" ]]; then
+            echo "version mismatch: package.json=$version, src-tauri/Cargo.toml=$cargo_version" >&2
+            exit 1
+          fi
+
           tag="desktop-v$version"
           if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "$tag" ]]; then
             echo "tag $GITHUB_REF_NAME does not match desktop version $version" >&2

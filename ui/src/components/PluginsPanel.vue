@@ -23,6 +23,7 @@ import {
   checkPluginUpdates,
   openExternal,
 } from '../plugins.js';
+import { originLabel } from '../labels.js';
 import { globalBusy, isLoading } from '../loading.js';
 
 const view = computed(() => pluginStore.view);
@@ -159,7 +160,7 @@ function statsText(item) {
                   <Box v-if="row.origin === 'npm'" />
                   <Link v-else />
                 </el-icon>
-                <span class="origin-chip-label">{{ row.origin }}</span>
+                <span class="origin-chip-label">{{ originLabel(row.origin) }}</span>
               </span>
               <span class="meta-version">{{ row.installed_version }}</span>
               <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>

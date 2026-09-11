@@ -173,14 +173,20 @@ pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<St
 fn cached_node(state: &AppState, settings: &settings::Settings) -> node::NodeInfo {
     let data_dir = state.data_dir.clone();
     let key = settings.node_path.clone();
-    let mut guard = crate::lock(&state.node_cache);
-    if let Some((cached_key, info)) = guard.as_ref() {
-        if *cached_key == key {
-            return info.clone();
+    // 命中缓存时立刻返回；未命中则**先释放锁**再探测。
+    // `node::resolve` 会派生 `node --version` 子进程（PATH + nvm + 系统位置
+    // 逐个试），在持锁期间做这件事会把状态轮询里其它 `cached_node` 调用一起
+    // 堵住（P2-27）。探测本身是幂等的，重复探测只是多花一次进程派生。
+    {
+        let guard = crate::lock(&state.node_cache);
+        if let Some((cached_key, info)) = guard.as_ref() {
+            if *cached_key == key {
+                return info.clone();
+            }
         }
     }
     let info = node::resolve(settings, &data_dir);
-    *guard = Some((key, info.clone()));
+    *crate::lock(&state.node_cache) = Some((key, info.clone()));
     info
 }
 
