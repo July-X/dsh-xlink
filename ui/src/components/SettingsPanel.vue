@@ -5,7 +5,7 @@ import { computed, reactive, ref, watch } from 'vue';
 import { ArrowDown, ArrowUp, Check, Monitor, Refresh } from '@element-plus/icons-vue';
 import { store, detectNode, saveSettings } from '../store.js';
 import { patchStore, refreshPatches, applyPatch, revertPatch } from '../patches.js';
-import { isLoading, withLoading } from '../loading.js';
+import { globalBusy, isLoading, withLoading } from '../loading.js';
 
 const port = ref(undefined);
 const profile = ref('');
