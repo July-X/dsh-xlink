@@ -108,8 +108,14 @@ export function verifyPayload({ publicKeyBase64, payload, signatureBase64 }) {
     : { ok: false, reason: 'Ed25519 验签失败（公私钥不匹配或载荷被改动）' };
 }
 
-function run(command, args, options = {}) {
-  return spawnSync(command, args, { encoding: 'utf8', ...options });
+/// 执行命令。Windows 上必须经 `cmd /C` 调 `pnpm`：Node 的 `spawnSync` 不会
+/// 自动补 `.cmd` 后缀，直接 spawn `pnpm` 会以 ENOENT 失败（与 `scripts/install.mjs`
+/// 里同样的处理）。
+function runPnpmExec(args, options = {}) {
+  const isWindows = process.platform === 'win32';
+  const command = isWindows ? process.env.ComSpec || 'cmd.exe' : 'pnpm';
+  const commandArgs = isWindows ? ['/C', 'pnpm', ...args] : args;
+  return spawnSync(command, commandArgs, { encoding: 'utf8', ...options });
 }
 
 /// 用 CI 私钥签一份测试载荷并返回签名内容。
@@ -118,7 +124,7 @@ export function signWithPrivateKey({ privateKey, password, payload, cwd }) {
   try {
     const target = join(dir, 'probe.bin');
     writeFileSync(target, payload);
-    const result = run('pnpm', ['exec', 'tauri', 'signer', 'sign', target], {
+    const result = runPnpmExec(['exec', 'tauri', 'signer', 'sign', target], {
       cwd,
       env: {
         ...process.env,

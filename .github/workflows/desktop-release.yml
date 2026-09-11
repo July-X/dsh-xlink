@@ -271,6 +271,9 @@ jobs:
         run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Verify signing key pair
+        # Windows runner 默认 shell 是 PowerShell，而这一步用的是 bash 语法；
+        # 显式声明 shell 让两个平台走同一份脚本（首次真实运行就是这么挂的）。
+        shell: bash
         # 只换一半密钥（轮换了私钥但没同步 tauri.conf.json 里的 updater 公钥）
         # 会发布出所有客户端都验签失败的更新，而且直到用户点「检查更新」才暴露。
         # 这里用私钥签一个测试载荷、再用配置里的公钥验签，把事故拦在打包之前
