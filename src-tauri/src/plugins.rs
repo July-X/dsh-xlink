@@ -583,6 +583,18 @@ fn store_item(data_dir: &Path, id: &str) -> Option<StoreItem> {
 fn upsert_item_unlocked(data_dir: &Path, item: StoreItem) -> Result<(), AppError> {
     let mut store = load_store_checked(data_dir)?;
     if let Some(existing) = store.items.iter_mut().find(|i| i.id == item.id) {
+        // `id_for_name` 的映射不是单射：`/` → `__` 让 npm 包 `owner__repo` 与
+        // git 仓库 `owner/repo` 落到同一个 id（P2-24）。直接覆盖会把前一个插件
+        // 的源码、store 行与内核接线一起换成另一个包，而且没有任何提示。
+        // 改映射要迁移既有安装，所以这里先做**冲突检测**：来源不同就拒绝，
+        // 让用户显式先卸载。
+        if existing.source != item.source || existing.name != item.name {
+            return Err(AppError::Plugin(format!(
+                "插件 id {} 已被「{}」（来源 {}）占用，无法再安装「{}」（来源 {}）：\
+                 这两个名称映射到同一个 id。请先卸载已安装的那个，或用不同的包名/仓库地址",
+                item.id, existing.name, existing.source, item.name, item.source
+            )));
+        }
         *existing = item;
     } else {
         store.items.push(item);
@@ -591,7 +603,7 @@ fn upsert_item_unlocked(data_dir: &Path, item: StoreItem) -> Result<(), AppError
 }
 
 #[cfg(test)]
-fn upsert_item(data_dir: &Path, item: StoreItem) -> Result<(), AppError> {
+pub(crate) fn upsert_item(data_dir: &Path, item: StoreItem) -> Result<(), AppError> {
     let _store_guard = lock_store();
     upsert_item_unlocked(data_dir, item)
 }
@@ -3546,10 +3558,10 @@ mod tests {
 
     static TEST_HOME_COUNTER: AtomicUsize = AtomicUsize::new(0);
     /// 每个测试独占的一次性 home，drop 时清理。
-    struct TestHome(PathBuf);
+    pub(super) struct TestHome(PathBuf);
 
     impl TestHome {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let nano = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_nanos())
@@ -3562,7 +3574,7 @@ mod tests {
             TestHome(home)
         }
 
-        fn data_dir(&self) -> PathBuf {
+        pub(super) fn data_dir(&self) -> PathBuf {
             self.0.join("desktop")
         }
     }
@@ -5510,5 +5522,70 @@ mod tests {
         )
         .expect_err("清扫路径必须拒绝在损坏清单上运行");
         assert!(sweep_error.to_string().contains("损坏"), "{sweep_error}");
+    }
+}
+
+#[cfg(test)]
+mod id_collision_tests {
+    use super::tests::TestHome;
+    use super::*;
+
+    fn item(id: &str, name: &str, source: &str) -> StoreItem {
+        StoreItem {
+            id: id.into(),
+            name: name.into(),
+            origin: "npm".into(),
+            source: source.into(),
+            installed_version: "1.0.0".into(),
+            latest_version: None,
+            mode: "link".into(),
+            pinned: false,
+            installed_at: String::new(),
+            updated_at: String::new(),
+            repo_url: None,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn colliding_ids_do_not_silently_replace_a_different_plugin() {
+        // P2-24：npm `owner__repo` 与 git `owner/repo` 都映射到 id
+        // `owner__repo`。旧实现直接覆盖，前一个插件的记录与源码被无声换掉。
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        upsert_item(&data_dir, item("owner__repo", "owner__repo", "owner__repo")).expect("first");
+
+        let error = upsert_item(
+            &data_dir,
+            item(
+                "owner__repo",
+                "owner/repo",
+                "https://github.com/owner/repo.git",
+            ),
+        )
+        .expect_err("不同来源复用同一 id 必须被拒绝");
+        let text = error.to_string();
+        assert!(text.contains("owner__repo"), "要说清冲突的 id：{text}");
+        assert!(text.contains("卸载"), "要给出下一步：{text}");
+
+        // 原有记录保持不变。
+        let store = load_store(&data_dir);
+        assert_eq!(store.items.len(), 1);
+        assert_eq!(store.items[0].source, "owner__repo");
+    }
+
+    #[test]
+    fn re_upserting_the_same_source_still_updates_in_place() {
+        // 冲突检测不能挡住正常的"重新记账"（同步/更新都会 upsert 同一来源）。
+        let home = TestHome::new();
+        let data_dir = home.data_dir();
+        upsert_item(&data_dir, item("p", "p", "p")).expect("first");
+        let mut updated = item("p", "p", "p");
+        updated.installed_version = "2.0.0".into();
+        upsert_item(&data_dir, updated).expect("同一来源必须允许更新");
+
+        let store = load_store(&data_dir);
+        assert_eq!(store.items.len(), 1);
+        assert_eq!(store.items[0].installed_version, "2.0.0");
     }
 }
