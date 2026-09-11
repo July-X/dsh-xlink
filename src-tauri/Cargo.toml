@@ -53,6 +53,17 @@ time = { version = "0.3", default-features = false, features = ["formatting", "l
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Windows：把内核放进 "kill on job close" 的 Job Object，让壳崩溃 / 被强杀时
+# 内核随 Job 句柄关闭一起被系统终止。这是 Windows 上唯一不需要读 PEB（或
+# 需要管理员权限）的孤儿回收手段，见 process.rs 的 job_object 模块（P2-2）。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
 [profile.release]
 strip = true
 # Full LTO with one codegen unit makes CI release linking disproportionately slow.

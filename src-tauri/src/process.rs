@@ -1387,6 +1387,99 @@ fn read_tail_from(file: &mut fs::File, len: u64, max_bytes: u64) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+/// Windows：把内核进程收进一个 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的
+/// Job Object。
+///
+/// 壳崩溃、被任务管理器强杀、或用户注销时，Job 句柄随进程一起关闭，系统会把
+/// Job 里的所有进程（内核及其派生的 node 子进程）一并终止 —— 因此不会留下
+/// 占着端口的孤儿内核（P2-2）。Unix 侧靠 `reap_orphans` 的「cwd == data_dir」
+/// 扫描兜底；Windows 没有等价且不需要读 PEB / 不需要管理员权限的手段。
+///
+/// 句柄必须活到壳退出，所以放进进程级 `OnceLock`：**一旦它被 drop，Job 就会
+/// 立刻关闭并杀掉正在运行的内核**。
+#[cfg(windows)]
+mod job_object {
+    use std::os::windows::io::AsRawHandle;
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    /// `HANDLE` 是裸指针，而 `OnceLock` 要求 `Sync`；Job 句柄只被主线程创建、
+    /// 之后只读使用，跨线程共享是安全的。
+    struct JobHandle(HANDLE);
+    unsafe impl Send for JobHandle {}
+    unsafe impl Sync for JobHandle {}
+
+    static KERNEL_JOB: OnceLock<JobHandle> = OnceLock::new();
+
+    fn job_handle() -> io::Result<HANDLE> {
+        if let Some(handle) = KERNEL_JOB.get() {
+            return Ok(handle.0);
+        }
+        // SAFETY: 两个空指针分别表示「默认安全属性」与「匿名 Job」，都是
+        // CreateJobObjectW 允许的取值；句柄所有权在成功后被 OnceLock 持有，
+        // 失败路径就地 CloseHandle，不会泄漏。
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if ok == 0 {
+                let error = io::Error::last_os_error();
+                CloseHandle(job);
+                return Err(error);
+            }
+            let _ = KERNEL_JOB.set(JobHandle(job));
+            Ok(job)
+        }
+    }
+
+    /// 把刚派生出的内核进程加入 Job。失败只记录不致命：孤儿回收退回到「下次
+    /// 启动时按 pid 文件 / 端口反查」的既有路径，比让内核起不来强。
+    pub(super) fn adopt(child: &Child) {
+        let job = match job_handle() {
+            Ok(job) => job,
+            Err(error) => {
+                eprintln!(
+                    "dsh-xlink: 无法创建内核 Job Object（{error}）；壳异常退出时可能留下孤儿内核"
+                );
+                return;
+            }
+        };
+        // SAFETY: `child` 是 std 刚从 CreateProcess 拿到的进程句柄，带有
+        // PROCESS_SET_QUOTA | PROCESS_TERMINATE；Job 句柄来自本模块的
+        // OnceLock，两者在调用期间都有效。
+        let assigned = unsafe { AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) };
+        if assigned == 0 {
+            eprintln!(
+                "dsh-xlink: 无法把内核进程加入 Job Object（{}）；壳异常退出时可能留下孤儿内核",
+                io::Error::last_os_error()
+            );
+        }
+    }
+}
+
+/// 把内核进程纳入「随壳一起终止」的机制（目前只有 Windows 的 Job Object 需
+/// 要显式动作；Unix 靠 `kernel::reap_orphans` 在下次启动时回收）。
+pub(crate) fn adopt_kernel_process(child: &Child) {
+    #[cfg(windows)]
+    job_object::adopt(child);
+    #[cfg(not(windows))]
+    let _ = child;
+}
+
 fn reap(mut child: Child) -> io::Result<ExitStatus> {
     // Windows 上 `ComSpec /C` 把 cmd.exe 作为直接子进程，真正的程序是它的
     // 孙子进程；在 cmd 上 wait 要等到孙子进程退出才返回，因此各处都使用

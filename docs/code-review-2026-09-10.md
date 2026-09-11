@@ -68,8 +68,9 @@
 | P2-28 / P2-62 | 日志窗口静默失败、logs 无保留策略 | ✅ 已修 | 校验合并 + 异步开窗回传错误；启动裁剪 30 天 / 200 MiB（10 分钟宽限）；新增 5 条测试 |
 | P2-51 | 发布流水线不校验签名密钥是否成对 | ✅ 已修 | 新增 check-signing-keys（Ed25519 验签 + key id 比对），build job 打包前执行；5 条测试 |
 | P2-36 | 错误提示缺「下一步 + 日志路径」 | ✅ 已修 | 统一 `toastActionError` 并逐点替换 20 处；英文原始错误不再直出；新增 1 条 UI 测试 |
+| P2-2 | Windows 孤儿内核永久残留 | ✅ 已修 | 内核入 `KILL_ON_JOB_CLOSE` Job Object（windows-sys 0.61）；模块抽到独立 crate 后 Windows 目标编译通过 |
 | P2-38 ~ P2-40 / P2-43 / P2-44 | 日志重入被吞、窗口操作静默失败、无渲染兜底、两处文档漂移 | ✅ 已修 | 见明细；UI 测试 14 → 16 条 |
-| P2-2、P2-46 | | ⏳ 待修 | |
+| P2-46 | | 🚧 部分修复 | |
 
 **当前基线**：`cargo test` 269 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 17 通过；`npm run test:scripts` 15 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
 
@@ -496,7 +497,7 @@
 | # | 位置 | 问题 | 建议 |
 | --- | --- | --- | --- |
 | 【已修】P2-1 | `commands.rs:564-567`、`lib.rs:241-249` | `register_child` 用 `replace` 丢弃旧 `Child` 且从不 `wait` → Unix 僵尸进程；`kernel_running()` 只看 `state.running.is_some()`，内核早已死亡仍报"运行中"，关窗时弹出与实际矛盾的确认为 | `replace` 前 `try_wait`；`get_status`/`kernel_running` 对持有句柄做一次 `try_wait`，已退出即清空 | ✅ 已修：`register_child` 改走 `replace_child_slot` —— 旧句柄先 `try_wait`（等价一次 `waitpid`，回收僵尸）；仍活着则交给后台线程 `wait` 并回报诊断，不再丢句柄。`kernel_running`/`status()` 本就走 `try_wait` + `workbench_running` 活体判据，已核对无残留。新增 2 条 Unix 测试：反证 A（丢句柄不回收）两条全挂、反证 B（不交后台线程）live 用例挂；第一版探测用 `waitpid` 自我回收导致无区分度，已改用 `kill(pid, 0)`
-| P2-2 | `kernel.rs:1187-1193` | Windows 分支 `reap_orphans` 是显式 no-op，壳崩溃后内核永久残留并占端口（macOS 有回收） | `AssignProcessToJobObject` + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`；补 Windows 孤儿扫描 |
+| 【已修】P2-2 | `kernel.rs:1187-1193` | Windows 分支 `reap_orphans` 是显式 no-op，壳崩溃后内核永久残留并占端口（macOS 有回收） | `AssignProcessToJobObject` + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`；补 Windows 孤儿扫描 | ✅ 已修：新增 `process::job_object`（Windows 专属）—— 内核一被派生出就加入带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object，壳崩溃 / 被任务管理器强杀 / 用户注销时 Job 句柄随进程关闭，系统把内核及其 node 子进程一并终止，不再留下占端口的孤儿（`reap_orphans` 在 Windows 上仍是 no-op，但已不需要它）。Job 句柄存进进程级 `OnceLock`（一旦被 drop 就会立刻杀掉内核，因此必须活到壳退出）；创建或加入失败只记录诊断，孤儿回收退回既有的 pid 文件 / 端口反查路径。新增 Windows 目标依赖 `windows-sys 0.61`（`Cargo.lock` 仅 +1 行，复用已有版本）。**验证方式**：把 `job_object` 模块原样抽到独立 crate 后以 `cargo check --target x86_64-pc-windows-msvc` 编译通过（本机无法交叉编译完整 Tauri 依赖树：`ring` 需要 C 交叉工具链）；macOS 侧 `cargo test` / clippy / fmt 全绿。运行时行为由发布 workflow 的 windows-latest 构建与手工冒烟覆盖
 | 【已修】P2-3 | `process.rs:498-503`、`:880` | 日志写入失败被完全吞掉（drain 线程首次出错即 break）→ 会话中途日志静默死亡，Incident 仍引用该日志路径 | drain 遇错不退出，累计错误并上报「日志写入失败：{e}」 | ✅ 已修：抽出可测的 `drain_stream` —— 写入失败**不再中断排空**（旧实现 `break` 后子进程管道会被填满，内核卡在写日志上；日志还静默死亡），改为累计诊断（进程级 `LOG_WRITE_ERROR`，读走即清，同时打到 stderr），并把诊断接入 `guarded_start` 的 trail，让事故面板说明"本次日志可能不完整"。新增 3 条测试（含并发串行锁，避免共享诊断槽互相偷读），反证（写入失败即 return）挂 2 条
 | 【已修】P2-4 | `process.rs:295-299` + `commands.rs:279` | 轮转备份命名为 `X.log.1`（扩展名变 `1`），而 `list_log_files` 只收 `.log` → 前 8 MiB 日志在面板中不可见 | ✅ 已修：`rotated_log_path` 改为把代次插在扩展名之前（`X.1.log`），扩展名仍是 `log`，面板与 `read_log_file` 天然可见；列举逻辑抽成可测的 `collect_log_entries`，排序改为「基名逆序 + 代次升序」（新 → 旧，旧实现纯字典序会把 `.2.log` 排到 `.1.log` 前）；启动时一次性把旧命名 `X.log.<n>` 迁移成 `X.<n>.log`（目标已存在则跳过，不覆盖更新的那份）。新增 9 条测试（列举/排序/轮转两代/迁移含冲突与目录缺失），并以反证确认「轮转命名」「列举含备份」「迁移不覆盖」三条都有区分度（220 通过） |
 | P2-62 | `commands.rs:288-296`（本次新增记录） | logs 目录**没有任何保留策略**：每个「日期 × kind」留 `KERNEL_LOG_BACKUPS + 1 = 3` 代 × 8 MiB，但日期只增不减 → 每天最多新增 24 MiB，长期使用可累积到 GB 级；且历史注释引用的 `cleanup_legacy_logs` 函数已不存在（本次已顺手改掉该误导性注释） | 启动时按总大小/天数做一次保留清理（例如保留最近 14 天或 200 MiB），并在文档里写明保留窗口 |
