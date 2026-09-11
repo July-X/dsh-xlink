@@ -58,9 +58,10 @@
 | P2-10 / P2-11 / P2-16 / P2-22 | 补丁与安装的越界与承诺不一致 | ✅ 已修 | 见明细；共 6 条新测试 |
 | P2-12 / P2-19 | 坏清单/坏设置无声消失或回退 | ✅ 已修 | 补丁加载告警并入 `PatchStatus.warning`；设置损坏备份 + `settings_warning` 上报面板；新增 3 条测试 |
 | P2-9 / P2-14 / P2-15 | 撤销假成功、孤儿记录不可见、.pnpm 布局无法打补丁 | ✅ 已修 | 见明细；新增 4 条测试（含 1 条改写），三项反证通过 |
-| P2-2、P2-3、P2-17、P2-18、P2-20、P2-21、P2-24、P2-27、P2-28、P2-30 ~ P2-44、P2-46 ~ P2-48、P2-51、P2-52 | | ⏳ 待修 | |
+| P2-3 | 日志写入失败被吞、排空线程退出 | ✅ 已修 | `drain_stream` 失败继续排空 + 诊断入 trail；新增 3 条测试，反证通过 |
+| P2-2、P2-17、P2-18、P2-20、P2-21、P2-24、P2-27、P2-28、P2-30 ~ P2-44、P2-46 ~ P2-48、P2-51、P2-52 | | ⏳ 待修 | |
 
-**当前基线**：`cargo test` 247 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 14 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
+**当前基线**：`cargo test` 250 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 14 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
 
 > 本文件同时是**问题清单**与**修复台账**：正文条目保留原始分析（含 `file:line`、触发场景、影响、建议），修复完成后在对应条目标题前加【已修】并在此表登记。
 
@@ -486,7 +487,7 @@
 | --- | --- | --- | --- |
 | 【已修】P2-1 | `commands.rs:564-567`、`lib.rs:241-249` | `register_child` 用 `replace` 丢弃旧 `Child` 且从不 `wait` → Unix 僵尸进程；`kernel_running()` 只看 `state.running.is_some()`，内核早已死亡仍报"运行中"，关窗时弹出与实际矛盾的确认为 | `replace` 前 `try_wait`；`get_status`/`kernel_running` 对持有句柄做一次 `try_wait`，已退出即清空 | ✅ 已修：`register_child` 改走 `replace_child_slot` —— 旧句柄先 `try_wait`（等价一次 `waitpid`，回收僵尸）；仍活着则交给后台线程 `wait` 并回报诊断，不再丢句柄。`kernel_running`/`status()` 本就走 `try_wait` + `workbench_running` 活体判据，已核对无残留。新增 2 条 Unix 测试：反证 A（丢句柄不回收）两条全挂、反证 B（不交后台线程）live 用例挂；第一版探测用 `waitpid` 自我回收导致无区分度，已改用 `kill(pid, 0)`
 | P2-2 | `kernel.rs:1187-1193` | Windows 分支 `reap_orphans` 是显式 no-op，壳崩溃后内核永久残留并占端口（macOS 有回收） | `AssignProcessToJobObject` + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`；补 Windows 孤儿扫描 |
-| P2-3 | `process.rs:498-503`、`:880` | 日志写入失败被完全吞掉（drain 线程首次出错即 break）→ 会话中途日志静默死亡，Incident 仍引用该日志路径 | drain 遇错不退出，累计错误并上报「日志写入失败：{e}」 |
+| 【已修】P2-3 | `process.rs:498-503`、`:880` | 日志写入失败被完全吞掉（drain 线程首次出错即 break）→ 会话中途日志静默死亡，Incident 仍引用该日志路径 | drain 遇错不退出，累计错误并上报「日志写入失败：{e}」 | ✅ 已修：抽出可测的 `drain_stream` —— 写入失败**不再中断排空**（旧实现 `break` 后子进程管道会被填满，内核卡在写日志上；日志还静默死亡），改为累计诊断（进程级 `LOG_WRITE_ERROR`，读走即清，同时打到 stderr），并把诊断接入 `guarded_start` 的 trail，让事故面板说明"本次日志可能不完整"。新增 3 条测试（含并发串行锁，避免共享诊断槽互相偷读），反证（写入失败即 return）挂 2 条
 | 【已修】P2-4 | `process.rs:295-299` + `commands.rs:279` | 轮转备份命名为 `X.log.1`（扩展名变 `1`），而 `list_log_files` 只收 `.log` → 前 8 MiB 日志在面板中不可见 | ✅ 已修：`rotated_log_path` 改为把代次插在扩展名之前（`X.1.log`），扩展名仍是 `log`，面板与 `read_log_file` 天然可见；列举逻辑抽成可测的 `collect_log_entries`，排序改为「基名逆序 + 代次升序」（新 → 旧，旧实现纯字典序会把 `.2.log` 排到 `.1.log` 前）；启动时一次性把旧命名 `X.log.<n>` 迁移成 `X.<n>.log`（目标已存在则跳过，不覆盖更新的那份）。新增 9 条测试（列举/排序/轮转两代/迁移含冲突与目录缺失），并以反证确认「轮转命名」「列举含备份」「迁移不覆盖」三条都有区分度（220 通过） |
 | P2-62 | `commands.rs:288-296`（本次新增记录） | logs 目录**没有任何保留策略**：每个「日期 × kind」留 `KERNEL_LOG_BACKUPS + 1 = 3` 代 × 8 MiB，但日期只增不减 → 每天最多新增 24 MiB，长期使用可累积到 GB 级；且历史注释引用的 `cleanup_legacy_logs` 函数已不存在（本次已顺手改掉该误导性注释） | 启动时按总大小/天数做一次保留清理（例如保留最近 14 天或 200 MiB），并在文档里写明保留窗口 |
 | 【已修】P2-5 | `kernel.rs:1310-1330`、`:1424-1427` | Windows 端口反查用子串匹配（`:3090` 会命中 `:30900`）取第一条 LISTENING → 选错 pid → `pid_is_kernel` 返回 false → `stop_kernel` 静默不动却报成功 | 按列解析 netstat：本地地址列以 `:{port}` 结尾且状态列为 LISTENING。**后果已被 P0-1 / P2-29 部分缓解**：`stop_kernel` 现在无条件清 pid 并如实上报，`start_maybe` 也会对无关占用者报错，因此剩下的症状是「误报端口被占用 / 找不到在跑的内核」，不再是「静默报成功」 | ✅ 已修：抽出平台无关的 `parse_netstat_listener_pid`，按列解析（TCP + 恰 5 列 + 本地地址以 `:PORT` 结尾 + LISTENING），`:3090` 不再命中 `:30900`。新增 3 条测试（含真实中文 Windows 输出形状），反证（退回子串匹配）命中
