@@ -196,19 +196,20 @@ pub fn command_with_path_dirs<S: AsRef<OsStr>>(program: S, extra_path_dirs: &[&P
 /// 后缀**（`.exe` / `.com`）走直接执行；`.cmd` / `.bat` 是批处理，必须
 /// 经命令解释器，其余一切形态（空后缀也算）沿用旧行为走 `%ComSpec% /C`。
 /// 这样修的是「`.exe` 被误交给 cmd 拼命令行」这一个明确缺陷，不额外改变
-/// 别的形态此前侥幸能跑的路径。非 Windows 平台上没有这种区分，
-/// 一律直接执行。
+/// 别的形态此前侥幸能跑的路径。
+///
+/// 只在 Windows 上编译：非 Windows 没有这层区分，直接执行即可；把这两个
+/// 助手留在其他平台只会变成 dead_code，而质量门禁跑的是
+/// `clippy --all-targets -- -D warnings`。
+#[cfg(windows)]
 fn needs_command_shell(exe: &Path) -> bool {
-    if !cfg!(windows) {
-        return false;
-    }
     !exe.extension()
         .and_then(OsStr::to_str)
         .is_some_and(|ext| ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("com"))
 }
 
 /// 构造执行 `exe` + `args` 的 [`Command`]：批处理文件走 `%ComSpec% /C`，
-/// 其余直接执行。
+/// 其余直接执行。仅 Windows 需要（见 [`needs_command_shell`]）。
 ///
 /// **绝不能**把真实二进制也交给 `cmd.exe /C` 拼接命令行。`cmd.exe` 不按
 /// MSVCRT 规则重新解析 argv，而是直接对 `/C` 之后的整串做分词，只有整串
@@ -221,8 +222,8 @@ fn needs_command_shell(exe: &Path) -> bool {
 /// 常见的情况下，凡是经此路径启动的 node 都会静默失败：pnpm 安装内核正常
 /// 完成，随后安装后的原生模块探针（`kernel::smoke_load_native_modules`）
 /// 以退出码 1 告败且日志里没有任何 `PROBE-` 行——因为 node 根本没跑。
+#[cfg(windows)]
 pub(crate) fn command_through_shell_if_needed(exe: &Path, args: &[&str]) -> Command {
-    #[cfg(windows)]
     if needs_command_shell(exe) {
         let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into());
         let mut cmd = Command::new(comspec);
@@ -237,9 +238,10 @@ pub(crate) fn command_through_shell_if_needed(exe: &Path, args: &[&str]) -> Comm
 /// 收集一次性脚本工具（`npm config …` 等）的输出，这类工具的可执行文件
 /// 可能是 `.cmd` 批处理 shim。Windows 上 CreateProcess 无法直接执行批处理
 /// 文件，所以这类 shim 走 `%ComSpec% /C`；真实二进制（`.exe`）一律直接
-/// 执行（原因见 [`command_through_shell_if_needed`]）。子进程继承合并后的
-/// PATH，并将 `extra_path_dirs` 前置，让脚本的 `#!/usr/bin/env node` 解析
-/// 能找到调用方已校验的 node，即便是在只有系统 PATH 的 GUI 壳中。
+/// 执行（原因见 `command_through_shell_if_needed` 的说明）。子进程继承
+/// 合并后的 PATH，并将 `extra_path_dirs` 前置，让脚本的
+/// `#!/usr/bin/env node` 解析能找到调用方已校验的 node，即便是在只有系统
+/// PATH 的 GUI 壳中。
 pub fn script_capture(
     exe: &Path,
     args: &[&str],
@@ -247,9 +249,9 @@ pub fn script_capture(
     extra_path_dirs: &[&Path],
 ) -> io::Result<(bool, String, String)> {
     let path = merge_extra_path(crate::env::merged_path(), extra_path_dirs);
-    let label = exe.to_string_lossy().into_owned();
     #[cfg(windows)]
     {
+        let label = exe.to_string_lossy().into_owned();
         let mut cmd = command_through_shell_if_needed(exe, args);
         cmd.current_dir(cwd);
         cmd.env("PATH", path);
@@ -257,6 +259,7 @@ pub fn script_capture(
     }
     #[cfg(not(windows))]
     {
+        let label = exe.to_string_lossy().into_owned();
         let mut cmd = Command::new(exe);
         cmd.args(args);
         cmd.current_dir(cwd);
@@ -1265,6 +1268,8 @@ fn spawn(exe: &Path, args: &[&str], cwd: &Path, extra_path_dirs: &[&Path]) -> io
     }
     #[cfg(not(windows))]
     {
+        // 非 Windows 没有 cmd.exe 的拼命令行问题，一律直接执行——这一段
+        // 保持与引入 Windows 修复前完全一致。
         let mut cmd = Command::new(exe);
         cmd.args(args);
         cmd.current_dir(cwd);
