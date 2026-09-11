@@ -109,3 +109,24 @@ test('failed skill update checks back off, and manual checks bypass the backoff'
   assert.ok(Array.isArray(manual), '手动检查必须真的跑');
   assert.equal(skillChecks, before + 2, '手动检查不受退避限制');
 });
+
+test('提示与确认框显式抬到进度浮层之上', async () => {
+  // P2-11：Element Plus 的默认 z-index 基线是 2000 + 自增计数，恒低于进度浮层的
+  // 3000。长任务进行中弹出的确认框（托盘「退出」的二次确认、补丁的「清除记录」
+  // 确认）会被浮层盖住且点不到，而任务未失败时浮层没有关闭按钮——用户看到的是
+  // "点了没反应"。这里钉住两侧的关系：notify 显式给 zIndex，且高于浮层。
+  const fs = await import('node:fs');
+  const notify = fs.readFileSync('ui/src/notify.js', 'utf8');
+  assert.match(notify, /zIndex: NOTIFY_Z_INDEX/, 'ElMessage 必须显式指定 zIndex');
+  assert.match(notify, /NOTIFY_Z_INDEX = PROGRESS_OVERLAY_Z_INDEX \+ 1000/);
+
+  const css = fs.readFileSync('ui/src/theme.css', 'utf8');
+  const overlayMatch = css.match(/\.progress-overlay\s*\{[^}]*z-index:\s*(\d+)/s);
+  assert.ok(overlayMatch, '必须能从 theme.css 读到 .progress-overlay 的 z-index');
+  const notifyMatch = notify.match(/PROGRESS_OVERLAY_Z_INDEX = (\d+)/);
+  assert.ok(notifyMatch, 'notify.js 必须声明浮层 z-index 常量');
+  assert.ok(
+    Number(notifyMatch[1]) + 1000 > Number(overlayMatch[1]),
+    '提示层级必须高于浮层'
+  );
+});
