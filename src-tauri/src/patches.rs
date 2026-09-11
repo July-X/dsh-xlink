@@ -1051,10 +1051,19 @@ fn write_bytes_at(target: &Path, bytes: &[u8]) -> Result<(), AppError> {
 }
 
 /// 撤销补丁对当前激活内核的修改。
+///
+/// `force` 为真时，对"没有可恢复的原文件"的文件不再中止，而是保留文件现状、
+/// 记一条告警并继续清除记录。这是唯一的出路：`had_original` 且无备份的记录
+/// （目标在应用前就是补丁内容）既撤销不掉、也无法重新应用（`apply` 要求先
+/// 撤销），而错误文案里建议的"重新安装该内核版本"同样无效——重装后目标内容
+/// 既不是补丁内容、也没有 `original_sha256` 可比，第二次撤销依然失败，用户会
+/// 永久卡在一条无法处置的记录上（P0-7）。调用方（UI）只在用户明确确认后才传
+/// 真，因此这里不隐瞒：改动会写进返回的 warnings。
 pub fn revert(
     data_dir: &Path,
     patches: &[(PatchDef, PathBuf)],
     id: &str,
+    force: bool,
 ) -> Result<Vec<String>, AppError> {
     ensure_workbench_stopped(data_dir)?;
     let kernel_version = kernel::read_active(data_dir).ok_or_else(|| {
@@ -1082,7 +1091,7 @@ pub fn revert(
     let mut remaining: Vec<AppliedFile> = record.files.clone();
     while !remaining.is_empty() {
         let file = remaining[0].clone();
-        if let Err(error) = revert_one(data_dir, &kernel_root, &file, &mut warnings) {
+        if let Err(error) = revert_one(data_dir, &kernel_root, &file, &mut warnings, force) {
             // 先把已完成的进度落盘，再报告失败。
             persist_revert_progress(data_dir, &mut state, id, &kernel_version, &remaining);
             return Err(error);
@@ -1107,6 +1116,7 @@ fn revert_one(
     kernel_root: &Path,
     file: &AppliedFile,
     warnings: &mut Vec<String>,
+    force: bool,
 ) -> Result<(), AppError> {
     let target = kernel_root.join(&file.to);
     let target_sha = sha256_file(&target).ok();
@@ -1134,6 +1144,7 @@ fn revert_one(
                         file,
                         target_sha.as_deref(),
                         warnings,
+                        force,
                     )
                 }
                 Err(e) => Err(AppError::Patch(format!(
@@ -1156,6 +1167,7 @@ fn revert_one(
                     file,
                     target_sha.as_deref(),
                     warnings,
+                    force,
                 );
             }
             match target_sha {
@@ -1204,6 +1216,7 @@ fn handle_missing_backup(
     file: &AppliedFile,
     target_sha: Option<&str>,
     warnings: &mut Vec<String>,
+    force: bool,
 ) -> Result<(), AppError> {
     match target_sha {
         // 目标已经回到应用前的内容：说明这个文件在之前的一次撤销里已经还原
@@ -1224,8 +1237,15 @@ fn handle_missing_backup(
         }
         Some(sha) if sha == file.patched_sha256 => {
             if file.had_original {
+                if force {
+                    warnings.push(format!(
+                        "{}：原文件备份已丢失，文件保持补丁后的内容未改动；记录已清除（如需还原请重新安装该内核版本）",
+                        file.to
+                    ));
+                    return Ok(());
+                }
                 Err(AppError::Patch(format!(
-                    "无法自动还原 {}：原文件备份已丢失（内核可能已重装或备份被清理），而目标仍是补丁后的内容。请重新安装该内核版本后重试，或手动处理该文件",
+                    "无法自动还原 {}：原文件备份已丢失（内核可能已重装或备份被清理），而目标仍是补丁后的内容。请重新安装该内核版本后重试，或手动处理该文件；若只想清除这条应用记录，可在确认后选择「清除记录」（文件保持现状）",
                     target.display()
                 )))
             } else {
@@ -1236,10 +1256,19 @@ fn handle_missing_backup(
                 Ok(())
             }
         }
-        Some(_) => Err(AppError::Patch(format!(
-            "无法自动还原 {}：目标文件已被修改（内容与补丁记录不一致），请检查后手动处理",
-            target.display()
-        ))),
+        Some(_) => {
+            if force {
+                warnings.push(format!(
+                    "{}：目标内容与记录不一致（没有可恢复的原文件），已保持现状并清除记录；请自行确认该文件是否需要重新安装内核版本",
+                    file.to
+                ));
+                return Ok(());
+            }
+            Err(AppError::Patch(format!(
+                "无法自动还原 {}：目标文件已被修改（内容与补丁记录不一致），请检查后手动处理；若只想清除这条应用记录，可在确认后选择「清除记录」（文件保持现状）",
+                target.display()
+            )))
+        }
     }
 }
 
@@ -1618,7 +1647,7 @@ mod tests {
         // 再应用应被拒绝（已应用）
         assert!(apply(&data, &patches, "hello-copy").is_err());
 
-        let warnings = revert(&data, &patches, "hello-copy").unwrap();
+        let warnings = revert(&data, &patches, "hello-copy", false).unwrap();
         assert!(warnings.is_empty());
         assert!(!target.exists());
         assert!(read_state(&data).applied.is_empty());
@@ -1659,7 +1688,7 @@ mod tests {
         );
 
         // 撤销必须如实拒绝：没有可恢复的原文件，不能假装"已撤销"。
-        let error = revert(&data, &patches, "hello-copy").unwrap_err();
+        let error = revert(&data, &patches, "hello-copy", false).unwrap_err();
         let text = error.to_string();
         assert!(
             text.contains("原文件备份已丢失") || text.contains("无法自动还原"),
@@ -1732,6 +1761,61 @@ mod tests {
     }
 
     #[test]
+    fn force_revert_clears_a_record_that_has_no_backup() {
+        // P0-7：目标在应用前就是补丁内容时，记录是 `had_original` 且没有备份。
+        // 普通撤销永远失败，而错误文案建议的"重新安装该内核版本"同样无效——
+        // 重装后目标内容既不是补丁内容、也没有 `original_sha256` 可比，第二次
+        // 撤销依然失败。于是记录永久卡住：撤不掉，也重打不了（apply 要求先撤销）。
+        // `force` 是用户唯一的出路，用它验证整条链。
+        let root = temp_root("force-revert");
+        let data = root.join("data");
+        setup(&data, "0.1.2");
+        let res = make_resource_root(&root);
+        let patches = load_patches(&res).unwrap();
+        let target = kernel::kernel_dir(&data, "0.1.2")
+            .join("node_modules/@deepseek-ai/dsh/lib/xlink-hello.js");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, "module.exports = 42;\n").unwrap();
+
+        apply(&data, &patches, "hello-copy").unwrap();
+        {
+            let state = read_state(&data);
+            let record = find_applied(&state, "hello-copy", "0.1.2").unwrap();
+            assert!(record.files[0].had_original && record.files[0].backup_rel.is_none());
+        }
+
+        // 普通撤销失败，且错误文案必须给出「清除记录」这条出路。
+        let error = revert(&data, &patches, "hello-copy", false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("清除记录"), "错误文案必须给出出路：{error}");
+
+        // 模拟用户照提示重装内核版本：内容回到上游原文，第二次撤销仍然失败。
+        fs::write(&target, "// upstream original\n").unwrap();
+        let second = revert(&data, &patches, "hello-copy", false)
+            .unwrap_err()
+            .to_string();
+        assert!(second.contains("清除记录"), "{second}");
+
+        // force：清除记录、文件保持现状，并把这件事写进 warnings。
+        let warnings = revert(&data, &patches, "hello-copy", true).unwrap();
+        assert!(
+            warnings.iter().any(|w| w.contains("清除记录")),
+            "必须如实说明记录已清除、文件未动：{warnings:?}"
+        );
+        assert!(
+            find_applied(&read_state(&data), "hello-copy", "0.1.2").is_none(),
+            "记录必须被清除"
+        );
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            "// upstream original\n",
+            "清除记录不得改动文件"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn copy_refuses_overwriting_unknown_content() {
         let root = temp_root("clash");
         let data = root.join("data");
@@ -1761,7 +1845,7 @@ mod tests {
             fs::read_to_string(kernel::kernel_dir(&data, "0.1.2").join("package.json")).unwrap();
         assert!(stub.contains("\"dshXlinkPatched\":true"));
 
-        revert(&data, &patches, "anno-replace").unwrap();
+        revert(&data, &patches, "anno-replace", false).unwrap();
         let stub =
             fs::read_to_string(kernel::kernel_dir(&data, "0.1.2").join("package.json")).unwrap();
         assert!(!stub.contains("dshXlinkPatched"));
@@ -1802,7 +1886,7 @@ mod tests {
         // 应用后文件被用户改掉：撤销必须以内容校验兜底，拒绝盲目操作
         fs::write(&target, "user edit\n").unwrap();
 
-        let error = revert(&data, &patches, "hello-copy").unwrap_err();
+        let error = revert(&data, &patches, "hello-copy", false).unwrap_err();
         assert!(error.to_string().contains("已被其他工具修改"));
         fs::remove_dir_all(&root).unwrap();
     }
@@ -1846,7 +1930,7 @@ mod tests {
         apply(&data, &patches, "overwrite").unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "patched content\n");
 
-        revert(&data, &patches, "overwrite").unwrap();
+        revert(&data, &patches, "overwrite", false).unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), original);
         fs::remove_dir_all(&root).unwrap();
     }
@@ -2035,7 +2119,7 @@ mod tests {
         assert!(row.note.unwrap().contains("1.0.0"));
 
         // A stale record remains revertible so the user can install the new definition.
-        revert(&data, &updated, "hello-copy").unwrap();
+        revert(&data, &updated, "hello-copy", false).unwrap();
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -2067,7 +2151,7 @@ mod tests {
         assert_eq!(row.state_text, "补丁版本已更新");
         assert!(row.note.unwrap().contains("未知"));
 
-        revert(&data, &patches, "hello-copy").unwrap();
+        revert(&data, &patches, "hello-copy", false).unwrap();
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -2236,7 +2320,7 @@ mod tests {
 
         // 切回 rc.2：旧应用记录仍可撤销。
         kernel::write_active(&data, Some("0.1.1-rc.2")).unwrap();
-        revert(&data, &patches, "obsolete-copy").unwrap();
+        revert(&data, &patches, "obsolete-copy", false).unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "original\n");
         fs::remove_dir_all(&root).unwrap();
     }
@@ -2404,7 +2488,8 @@ mod tests {
         fs::remove_file(backup_path(&data, "two-files", "0.1.2", "b.js")).unwrap();
         fs::write(kernel_root.join("b.js"), "hand edited\n").unwrap();
 
-        let error = revert(&data, &patches, "two-files").expect_err("第二个文件应导致撤销失败");
+        let error =
+            revert(&data, &patches, "two-files", false).expect_err("第二个文件应导致撤销失败");
         assert!(
             error.to_string().contains("已被修改"),
             "应报告目标被改写，实际：{error}"
@@ -2427,7 +2512,7 @@ mod tests {
         // 用户按提示把文件恢复成原文之后再次撤销：必须能完成，而不是卡在
         // 「目标已被修改」上（备份已丢失，靠原始哈希认出"已还原"）。
         fs::write(kernel_root.join("b.js"), "original B\n").unwrap();
-        revert(&data, &patches, "two-files").expect("第二次撤销必须能从剩下的文件继续");
+        revert(&data, &patches, "two-files", false).expect("第二次撤销必须能从剩下的文件继续");
         assert!(
             !read_state(&data)
                 .applied
@@ -2773,7 +2858,7 @@ mod link_and_orphan_tests {
         );
 
         // 而且真的能撤销。
-        revert(&data, &patches, "hello-copy").expect("孤儿记录也必须可撤销");
+        revert(&data, &patches, "hello-copy", false).expect("孤儿记录也必须可撤销");
         assert!(read_state(&data).applied.is_empty());
         fs::remove_dir_all(&root).ok();
     }

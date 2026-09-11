@@ -2061,13 +2061,20 @@ pub async fn patch_apply(app: AppHandle, id: String) -> Result<Vec<String>, Stri
 /// 撤销一个内置补丁对当前激活内核的修改（从备份还原原文件）。
 /// 返回撤销过程中的警告（例如备份丢失时的兜底处理说明）。
 #[tauri::command]
-pub async fn patch_revert(app: AppHandle, id: String) -> Result<Vec<String>, String> {
+pub async fn patch_revert(
+    app: AppHandle,
+    id: String,
+    // `force`：用户在确认后选择"只清除记录、文件保持现状"。只对"没有可恢复的
+    // 原文件"的记录有意义（P0-7）——那种记录既撤不掉也重打不了，没有这条出路
+    // 就只能手改 state.json。前端只在读到「清除记录」提示时才带真值。
+    force: Option<bool>,
+) -> Result<Vec<String>, String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let (patches, _warnings) = load_bundled_patches(&app);
-        patches::revert(&data_dir, &patches, &id).map_err(|e| e.to_string())
+        patches::revert(&data_dir, &patches, &id, force.unwrap_or(false)).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
