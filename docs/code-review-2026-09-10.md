@@ -59,9 +59,10 @@
 | P2-12 / P2-19 | 坏清单/坏设置无声消失或回退 | ✅ 已修 | 补丁加载告警并入 `PatchStatus.warning`；设置损坏备份 + `settings_warning` 上报面板；新增 3 条测试 |
 | P2-9 / P2-14 / P2-15 | 撤销假成功、孤儿记录不可见、.pnpm 布局无法打补丁 | ✅ 已修 | 见明细；新增 4 条测试（含 1 条改写），三项反证通过 |
 | P2-3 | 日志写入失败被吞、排空线程退出 | ✅ 已修 | `drain_stream` 失败继续排空 + 诊断入 trail；新增 3 条测试，反证通过 |
-| P2-2、P2-17、P2-18、P2-20、P2-21、P2-24、P2-27、P2-28、P2-30 ~ P2-44、P2-46 ~ P2-48、P2-51、P2-52 | | ⏳ 待修 | |
+| P2-17 / P2-18 | 托管 Node 的残留/无法恢复/平台错配 | ✅ 已修 | 清扫全部遗留临时目录 + 发布前清残缺目录 + 装完删包；产物按 OS/ARCH 精确匹配并带真实诊断；新增 2 条测试 |
+| P2-2、P2-20、P2-21、P2-24、P2-27、P2-28、P2-30 ~ P2-44、P2-46 ~ P2-48、P2-51、P2-52 | | ⏳ 待修 | |
 
-**当前基线**：`cargo test` 250 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 14 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
+**当前基线**：`cargo test` 252 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 14 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
 
 > 本文件同时是**问题清单**与**修复台账**：正文条目保留原始分析（含 `file:line`、触发场景、影响、建议），修复完成后在对应条目标题前加【已修】并在此表登记。
 
@@ -507,8 +508,8 @@
 | 【已修】P2-14 | `patches.rs:997-1004` | `status` 只遍历当前清单定义 → 定义已被移除的历史补丁记录在 UI 中完全不可见（`revert` 其实支持） | status 额外渲染"定义已移除、仍可撤销"行 | ✅ 已修：`status` 追加 `orphan_record_rows` —— 定义已不在清单里但记录仍在当前激活内核上的补丁会显示为「已应用（定义已移除）」且可直接撤销；新增 1 条测试（清单置空后仍可见并可撤销）
 | 【已修】P2-15 | `patches.rs:379-413` | "内核根以内任何祖先是符号链接即拒绝写入"过严：`.pnpm` isolated linker 布局下补丁永远无法应用且文案无下一步 | 判据改为 canonicalize 后仍在 kernel_root 之内 | ✅ 已修：`ensure_no_symlink_ancestors` 的判据从"路径中不能有符号链接"改为"canonicalize 后的真实路径仍在（真实化的）内核根之内"——pnpm isolated linker 的 `node_modules/<pkg> -> .pnpm/<pkg>@<ver>/node_modules/<pkg>` 不再被一刀切拒绝，指到内核之外的链接仍然被拒且错误信息给出下一步。新增 2 条测试（各经反证）
 | 【已修】P2-16 | `node_install.rs:371-377` | SHA-256 校验失败时错误文案写「已删除无效文件，可重试」，但代码**没有**删除 tarball（对照解压失败分支 `:381-387` 确实删了） | 真的删除或改名 `.corrupt` | ✅ 已修：校验失败分支真的删除 tarball（此前只有解压失败分支删），与错误文案的承诺一致
-| P2-17 | `node_install.rs:382-403` | 临时目录名带 pid 只在同 pid 时清理（进程被杀留 ~200 MB）；下载产物 36-52 MB 装完不删；`fs::rename` 到已存在的版本目录在 Unix 报 `ENOTEMPTY` → 一旦 `tools/node/<ver>` 残缺就**永久无法重装**且无 UI 自救入口 | 启动时清理旧 `.node-tmp-*`；成功后删下载产物；失败信息给出「请删除 <path> 后重试」 |
-| P2-18 | `node_install.rs:26-36`、`:411-424`、`node.rs:50-59` | 产物平台按 `cfg!(windows)` 二选一（非 Windows 一律 `darwin-x64`），不看 `consts::OS/ARCH`；回滚时丢弃真实 stderr，把原因错写成「当前系统可能低于其最低版本要求」 | 用 `(OS, ARCH)` 映射产物名；保留并回传 stderr |
+| 【已修】P2-17 | `node_install.rs:382-403` | 临时目录名带 pid 只在同 pid 时清理（进程被杀留 ~200 MB）；下载产物 36-52 MB 装完不删；`fs::rename` 到已存在的版本目录在 Unix 报 `ENOTEMPTY` → 一旦 `tools/node/<ver>` 残缺就**永久无法重装**且无 UI 自救入口 | 启动时清理旧 `.node-tmp-*`；成功后删下载产物；失败信息给出「请删除 <path> 后重试」 | ✅ 已修：① 启动安装前清扫**所有** pid 的 `.node-tmp-*`（旧实现只清自己 pid 的，被强杀后约 200 MB 永久残留）；② 发布前先删掉残缺的同版本目录（Unix `rename` 到非空目录会 `ENOTEMPTY`，残缺目录会让安装永远无法恢复）并给出「请手动删除后重试」；③ 安装成功后删除下载产物（36–52 MB）。新增 1 条测试（反证：只清本 pid 时挂）
+| 【已修】P2-18 | `node_install.rs:26-36`、`:411-424`、`node.rs:50-59` | 产物平台按 `cfg!(windows)` 二选一（非 Windows 一律 `darwin-x64`），不看 `consts::OS/ARCH`；回滚时丢弃真实 stderr，把原因错写成「当前系统可能低于其最低版本要求」 | 用 `(OS, ARCH)` 映射产物名；保留并回传 stderr | ✅ 已修：产物改由 `artifact_for_platform(OS, ARCH)` 精确匹配（win-x64 / darwin-x64 / darwin-arm64 / linux-x64 / linux-arm64），不支持的组合返回含下一步的错误而不是悄悄下载 x64 macOS 包；`artifact_size_text` 同源，不再对非 Windows 一律报「约 52 MB」；回滚原因的"当前系统可能低于其最低版本要求"改为带出真实探测输出（新增 `node::probe_failure_detail`，stderr 优先）。新增 1 条测试 + 改写产物名测试
 | 【已修】P2-19 | `settings.rs:56-62` | `settings::load` 吞掉所有错误：文件损坏 / 读失败 → 默认值，用户自定义端口**无声回退**到 3090/3091，无日志无提示 | 区分不存在与解析失败，损坏时备份并上报 | ✅ 已修：新增 `settings::load_checked` 区分"文件缺失（正常首次启动）"与"损坏/读不出来"——后者备份为 `settings.json.corrupt` 并返回含下一步的中文诊断；`KernelStatus.settings_warning` 透出到面板（VersionsPanel 新增告警条），端口回退不再无声。新增 3 条测试
 | P2-20 | `plugins.rs:1053-1058`、`:2910-2918` | 中央库发布与 `store.json` 记账非原子 → 孤儿目录无 store 行：面板不显示、「同步」不管、`uninstall` 直接拒绝，只能手删 | 失败路径回滚刚发布的目录；或在 reconcile 里清理"有外壳标记但无 store 行"的目录 |
 | P2-21 | `plugins.rs:2172`、`:2191-2197` | `specs` 以 `item.name` 为键：同名不同 id 互相覆盖接线，UI 对两行都报 wired=true | specs 以 id 为键，写 manifest 时检测同名冲突 |

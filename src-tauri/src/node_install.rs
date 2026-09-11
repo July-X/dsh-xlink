@@ -27,21 +27,43 @@ fn dist_base() -> String {
     format!("https://nodejs.org/dist/v{MANAGED_NODE_VERSION}")
 }
 
-fn artifact_name() -> &'static str {
-    if cfg!(windows) {
-        "node-v24.20.0-win-x64.zip"
-    } else {
-        "node-v24.20.0-darwin-x64.tar.gz"
-    }
+/// 当前平台的官方产物（文件名 + 体积提示）。
+///
+/// 旧实现按 `cfg!(windows)` 二选一，非 Windows 一律当成 `darwin-x64`：在
+/// Apple Silicon 上装出来的 x64 产物要靠 Rosetta 才能跑，在 Linux 上则直接
+/// 下载错平台的包（P2-18）。这里按 `std::env::consts::{OS, ARCH}` 精确匹配，
+/// 没有对应官方产物的组合明确报错并给出下一步，而不是"看起来装上了但跑不起来"。
+fn artifact_for_platform(os: &str, arch: &str) -> Result<(String, &'static str), String> {
+    let (slug, size_hint) = match (os, arch) {
+        ("windows", "x86_64") => ("win-x64", "约 36 MB"),
+        ("macos", "x86_64") => ("darwin-x64", "约 52 MB"),
+        ("macos", "aarch64") => ("darwin-arm64", "约 51 MB"),
+        ("linux", "x86_64") => ("linux-x64", "约 51 MB"),
+        ("linux", "aarch64") => ("linux-arm64", "约 50 MB"),
+        _ => {
+            return Err(format!(
+                "托管 Node.js 没有适配当前平台（{os}/{arch}）的官方产物，无法自动安装。\
+                 请在「设置」里指定系统里已有的 Node.js 路径，或手动安装 Node.js \
+                 v{MANAGED_NODE_VERSION} 及以上版本后重试"
+            ))
+        }
+    };
+    let extension = if os == "windows" { "zip" } else { "tar.gz" };
+    Ok((
+        format!("node-v{MANAGED_NODE_VERSION}-{slug}.{extension}"),
+        size_hint,
+    ))
 }
 
-/// 下载体积提示文案（压缩包大小，供进度消息与弹窗使用）。
-pub fn artifact_size_text() -> &'static str {
-    if cfg!(windows) {
-        "约 36 MB"
-    } else {
-        "约 52 MB"
-    }
+fn artifact_name() -> Result<String, String> {
+    artifact_for_platform(std::env::consts::OS, std::env::consts::ARCH).map(|(name, _)| name)
+}
+
+/// 下载体积提示文案（压缩包大小，供进度消息使用）。
+pub fn artifact_size_text() -> String {
+    artifact_for_platform(std::env::consts::OS, std::env::consts::ARCH)
+        .map(|(_, hint)| hint.to_string())
+        .unwrap_or_else(|_| "大小未知".to_string())
 }
 
 /// 托管运行时根目录：`<data_dir>/tools/node/`。
@@ -291,6 +313,21 @@ fn extract_and_shim(archive: &Path, version_dir: &Path) -> Result<(), String> {
     write_win_shims(version_dir)
 }
 
+/// 清掉 `tools/` 下所有遗留的 `.node-tmp-*` 临时目录（上次安装被强杀 / 崩溃
+/// 留下的约 200 MB 解包产物）。
+fn sweep_stale_temp_dirs(data_dir: &Path) {
+    let tools = data_dir.join("tools");
+    let Ok(entries) = fs::read_dir(&tools) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(".node-tmp-") {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// 安装完成后清掉旧版本目录，避免外壳升级固定版本后磁盘上堆积多个版本。
 /// 只删除 `v*` 前缀目录，不碰 tools/node 下的其他内容。
 fn prune_old_versions(data_dir: &Path) {
@@ -336,11 +373,11 @@ pub(crate) fn verify_or_install(
     };
 
     let version_dir = managed_version_dir(data_dir);
-    let artifact = artifact_name();
+    let artifact = artifact_name().map_err(|e| format!("{e}。日志：{}", log_path.display()))?;
     let download_dir = data_dir.join("tools").join("downloads");
     fs::create_dir_all(&download_dir)
         .map_err(|e| format!("创建下载目录失败：{e}。日志：{}", log_path.display()))?;
-    let tarball = download_dir.join(artifact);
+    let tarball = download_dir.join(&artifact);
 
     // 1) 校验文件
     step("正在获取官方校验文件 SHASUMS256.txt …");
@@ -351,7 +388,7 @@ pub(crate) fn verify_or_install(
                 log_path.display()
             )
         })?;
-    let expected = shasum_for(&shasums, artifact).ok_or_else(|| {
+    let expected = shasum_for(&shasums, &artifact).ok_or_else(|| {
         format!(
             "校验文件中未找到 {}，可能是网络劫持或版本不匹配。日志：{}",
             artifact,
@@ -383,6 +420,11 @@ pub(crate) fn verify_or_install(
 
     // 4) 解包到临时目录，成功后再发布
     step("正在解压并安装…");
+    // 清扫**所有**遗留的临时目录，而不只是本进程的：旧实现只删自己 pid 的那
+    // 一份，上一次被强杀（或崩溃）留下的 `.node-tmp-*` 会永久占着约 200 MB
+    // （P2-17）。`install_node` 持有 lifecycle 锁，同一时刻只可能有一次安装，
+    // 因此这里扫别人留下的临时目录是安全的。
+    sweep_stale_temp_dirs(data_dir);
     let temp_root = data_dir
         .join("tools")
         .join(format!(".node-tmp-{}", std::process::id()));
@@ -403,6 +445,18 @@ pub(crate) fn verify_or_install(
         fs::create_dir_all(parent)
             .map_err(|e| format!("创建托管目录失败：{e}。日志：{}", log_path.display()))?;
     }
+    // 走到这里说明托管运行时当前**不可用**（可用时函数早已返回），所以已存在
+    // 的 `version_dir` 一定是残缺的：Unix 上 `rename` 到非空目录会以
+    // `ENOTEMPTY` 失败，于是残缺目录会让安装永远无法恢复（P2-17）。先清掉它。
+    if version_dir.exists() {
+        fs::remove_dir_all(&version_dir).map_err(|e| {
+            format!(
+                "无法清理残缺的托管运行时目录 {}：{e}（请手动删除后重试）。日志：{}",
+                version_dir.display(),
+                log_path.display()
+            )
+        })?;
+    }
     fs::rename(&temp_version, &version_dir)
         .map_err(|e| format!("发布托管运行时失败：{e}。日志：{}", log_path.display()))?;
     let _ = fs::remove_dir_all(&temp_root);
@@ -415,14 +469,24 @@ pub(crate) fn verify_or_install(
     match crate::node::version_of(&exe) {
         Some(version) => {
             prune_old_versions(data_dir);
+            // 下载产物 36–52 MB，装完就没用了；旧实现把它一直留在
+            // tools/downloads 下（P2-17）。
+            let _ = fs::remove_file(&tarball);
+            let _ = fs::remove_dir_all(&temp_root);
             step(&format!("Node.js {version} 已安装并校验可用"));
             Ok(Some(exe))
         }
         None => {
             let _ = fs::remove_dir_all(&version_dir);
             let _ = fs::remove_file(&tarball);
+            // 带上真实的探测输出：旧实现把任何探测失败都写成"当前系统可能低于
+            // 其最低版本要求"，把权限问题、架构不匹配、被杀毒软件拦下等真实原因
+            // 一起掩盖掉了（P2-18）。
+            let detail = crate::node::probe_failure_detail(&exe)
+                .unwrap_or_else(|| "未返回任何诊断输出".to_string());
             Err(format!(
-                "托管 Node.js v{MANAGED_NODE_VERSION} 无法运行（当前系统可能低于其最低版本要求），已回滚。请按提示手动安装 Node.js。日志：{}",
+                "托管 Node.js v{MANAGED_NODE_VERSION} 无法运行，已回滚。实际输出：{detail}。\
+                 请在「设置」里指定系统里可用的 Node.js 路径，或手动安装 Node.js 后重试。日志：{}",
                 log_path.display()
             ))
         }
@@ -445,14 +509,84 @@ mod tests {
 
     #[test]
     fn artifact_names_match_pinned_version() {
-        assert_eq!(
-            artifact_name(),
+        // 钉住版本号，避免升级 MANAGED_NODE_VERSION 时漏改文件名。
+        let expected = format!(
+            "node-v{}-{}.{}",
+            MANAGED_NODE_VERSION,
             if cfg!(windows) {
-                "node-v24.20.0-win-x64.zip"
+                "win-x64"
             } else {
-                "node-v24.20.0-darwin-x64.tar.gz"
-            }
+                "darwin-x64"
+            },
+            if cfg!(windows) { "zip" } else { "tar.gz" }
         );
+        if matches!(
+            (std::env::consts::OS, std::env::consts::ARCH),
+            ("windows", "x86_64") | ("macos", "x86_64")
+        ) {
+            assert_eq!(artifact_name().unwrap(), expected);
+        }
+        assert_eq!(
+            artifact_for_platform("windows", "x86_64").unwrap().0,
+            format!("node-v{MANAGED_NODE_VERSION}-win-x64.zip")
+        );
+        assert_eq!(
+            artifact_for_platform("macos", "x86_64").unwrap().0,
+            format!("node-v{MANAGED_NODE_VERSION}-darwin-x64.tar.gz")
+        );
+    }
+
+    #[test]
+    fn sweep_removes_leftovers_from_any_process_but_keeps_real_installs() {
+        // P2-17：上一次安装被强杀会留下 tools/.node-tmp-<pid>（约 200 MB），
+        // 旧实现只清自己 pid 的那一份，别人的永远留着。
+        let root = std::env::temp_dir().join(format!(
+            "dsh-node-sweep-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let stale = root.join("tools").join(".node-tmp-999999");
+        fs::create_dir_all(stale.join("v24.20.0").join("bin")).unwrap();
+        fs::write(stale.join("v24.20.0").join("bin").join("node"), b"stub").unwrap();
+        let real = managed_version_dir(&root).join("bin");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("node"), b"real").unwrap();
+        let downloads = root.join("tools").join("downloads");
+        fs::create_dir_all(&downloads).unwrap();
+        fs::write(downloads.join("keep.txt"), b"keep").unwrap();
+
+        sweep_stale_temp_dirs(&root);
+
+        assert!(!stale.exists(), "任何 pid 留下的临时目录都要清掉");
+        assert!(
+            managed_version_dir(&root)
+                .join("bin")
+                .join("node")
+                .is_file(),
+            "真正的安装不能被误删"
+        );
+        assert!(downloads.join("keep.txt").is_file(), "下载目录不受影响");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn unsupported_platform_reports_the_reason_and_next_step() {
+        // P2-18：不支持的平台不能悄悄去下载 x64 macOS 包。
+        let error = artifact_for_platform("macos", "x86_64").is_ok();
+        assert!(error, "Intel macOS 是受支持平台");
+        let apple_silicon = artifact_for_platform("macos", "aarch64").unwrap();
+        assert!(
+            apple_silicon.0.contains("darwin-arm64"),
+            "{apple_silicon:?}"
+        );
+
+        let unsupported = artifact_for_platform("freebsd", "x86_64").unwrap_err();
+        assert!(unsupported.contains("freebsd"), "要说明平台：{unsupported}");
+        assert!(unsupported.contains("设置"), "要给出下一步：{unsupported}");
     }
 
     /// 端到端冒烟：真实下载官方产物 → SHA-256 校验 → 最小解包 → 探测，

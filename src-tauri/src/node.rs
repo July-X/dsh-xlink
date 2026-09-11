@@ -58,6 +58,29 @@ pub fn version_of(path: &Path) -> Option<String> {
     (parse_version(&stdout).is_some()).then_some(version)
 }
 
+/// 运行 `node --version` 失败时返回可读的诊断（stderr 优先，其次 stdout，
+/// 再退到退出状态）。
+///
+/// 回滚托管运行时的时候需要它：只写一句"当前系统可能低于其最低版本要求"
+/// 会把权限问题、架构不匹配、被杀毒软件拦下等真实原因全部掩盖（P2-18）。
+pub fn probe_failure_detail(path: &Path) -> Option<String> {
+    let mut cmd = Command::new(path);
+    cmd.arg("--version");
+    let (success, stdout, stderr) = run_command_capture(cmd, "node --version").ok()?;
+    if success {
+        return None;
+    }
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        return Some(stderr.to_string());
+    }
+    let stdout = stdout.trim();
+    if !stdout.is_empty() {
+        return Some(stdout.to_string());
+    }
+    Some("进程以非零状态退出且没有输出".to_string())
+}
+
 /// 探测某个 node 候选可执行文件，并报告其可用性。
 pub fn probe(path: &Path) -> NodeInfo {
     let path = path.to_string_lossy().into_owned();
