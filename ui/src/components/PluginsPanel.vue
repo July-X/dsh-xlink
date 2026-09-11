@@ -37,7 +37,7 @@ import {
   openExternal,
 } from '../plugins.js';
 import { originLabel } from '../labels.js';
-import { globalBusy, isLoading } from '../loading.js';
+import { globalBusy, isLoading, withLoading } from '../loading.js';
 
 const view = computed(() => pluginStore.view);
 
@@ -75,7 +75,12 @@ function modeTip(row) {
 }
 
 function togglePluginMode(row) {
-  return setPluginMode(row.id, currentMode(row) === 'link' ? 'copy' : 'link');
+  // 每个按钮绑自己的 key（P2-10，与 OverviewPanel 的 P2-42 同一条约定）：
+  // 用全局 `globalBusy` 当 loading 会让列表里**每一行**的模式徽章在任何长任务
+  // 期间一起转圈并被禁用，看起来像每行都在切模式，也拿不到自己的进度语义。
+  return withLoading('pluginMode:' + row.id, () =>
+    setPluginMode(row.id, currentMode(row) === 'link' ? 'copy' : 'link')
+  );
 }
 
 // --- 插件中心 ---
@@ -241,7 +246,8 @@ function statsText(item) {
                   class="entity-mode"
                   :class="{ 'is-link': currentMode(row) === 'link' }"
                   size="small"
-                  :loading="globalBusy"
+                  :loading="isLoading('pluginMode:' + row.id)"
+                  :disabled="globalBusy"
                   @click="togglePluginMode(row)"
                 >
                   {{ currentMode(row) === 'link' ? '链接' : '复制' }}
