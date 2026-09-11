@@ -8,14 +8,18 @@
 assets/
 ├── whale-icon.svg          # ≥128px（完整红眼细节）
 ├── whale-icon-small.svg    # ≤64px、favicon、ui/public/whale-icon.png
+├── whale-head.svg          # Windows 通知区域（托盘）图标：鱼头特写 + 放大 3 倍的红眼
 └── whale-icon-512.png      # 512px 位图（脚本从 whale-icon.svg 渲染）
 ```
 
 面板顶栏只按 60 CSS px 显示 `ui/public/whale-icon.png`（由 `whale-icon-small.svg` 渲染 128px）；小尺寸下细节是亚像素，必须简化。
 
-改设计只改两个 SVG 母版，然后跑 `scripts/build-icons.sh`（需 rsvg-convert + ImageMagick + macOS iconutil）一次性再生成：
+`whale-head.svg` 是托盘专用：整条鲸鱼缩到 16–32px 时红眼只剩 1–2 像素，读起来是一坨深色剪影，所以这里把镜头对准鱼头（红眼 + 白嘴斑那一片），红眼按同一几何放大到 3 倍（缩放中心落在眼睛本身），并给鲸体勾一圈白描边——任务栏浅色主题下深色鲸体本身够清楚，深色主题下靠这圈描边才认得出轮廓。取景由 viewBox 决定，调 `viewBox` 即可改「鱼头多大、眼睛在画幅里的位置」。
+
+改设计只改这几个 SVG 母版，然后跑 `scripts/build-icons.sh`（需 rsvg-convert + ImageMagick + macOS iconutil）一次性再生成：
 
 - `src-tauri/icons` 全套（按尺寸选母版合成 ico/icns）
+- `src-tauri/icons/tray-{16,20,24,32,40,48}.png`（由 `whale-head.svg`，透明底）
 - `assets/whale-icon-512.png`
 - `ui/public/whale-icon.png`（小母版渲染 128px）
 
@@ -23,7 +27,7 @@ assets/
 
 眼睛射线必须用 `<polygon>` 而非 `<path>`，避免后续通用 CSS 对 `path` 的规则影响眼睛细节。
 
-`src-tauri/icons` 只提交被 `tauri.conf.json` 引用的文件（`icon.icns` / `icon.ico` / `32x32.png` / `128x128.png` / `128x128@2x.png`）。改图标后重启应用，Dock 图标缓存才会刷新。
+`src-tauri/icons` 只提交被引用的文件（`tauri.conf.json` 的 `icon.icns` / `icon.ico` / `32x32.png` / `128x128.png` / `128x128@2x.png`，以及 `tray.rs` 的 `tray-*.png`）。改图标后重启应用，Dock 图标缓存才会刷新。
 
 ## 桌面 bundle 图标套板
 
@@ -33,6 +37,8 @@ macOS Dock 不给图标加任何背景或蒙版（圆角是 artwork 自带的约
 2. 把鲸鱼缩到瓦片的 75%（≈画布的 60%）居中叠上
 
 三个反面教材：瓦片铺满画布 → 视觉上比其他 Dock 图标大一圈；角落压成白色 → 读作硬白方块；没有瓦片全透明 → 只剩黑色鲸鱼剪影。
+
+Windows 通知区域（托盘）图标 `src-tauri/icons/tray-{16,20,24,32,40,48}.png` 不走套板：由 `assets/whale-head.svg` 直接渲染，保持透明底（通知区域本身是深色工作栏，白底板在那里很突兀）；`tray.rs` 用 `include_image!("icons/tray-32.png")` 在编译期解码成 RGBA，其余档位留给后续按 DPI 精调。
 
 输出必须保持 RGBA（`png:color-type=6`；`tauri::generate_context!` 编译期拒绝 RGB 图）。`ui/public/whale-icon.png` 保持全透明，叠加在深色管理面板上。
 

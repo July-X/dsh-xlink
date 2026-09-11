@@ -17,6 +17,9 @@ fn main() {
         "icons/32x32.png",
         "icons/128x128.png",
         "icons/128x128@2x.png",
+        // 通知区域图标由 `tray.rs` 的 `include_image!` 在编译期嵌入，
+        // 同样需要在这里声明，否则换掉托盘图标后 cargo 不会重新编译。
+        "icons/tray-32.png",
     ] {
         println!("cargo:rerun-if-changed={icon}");
     }

@@ -3,7 +3,7 @@
 // 以及启动时的事件监听、轮询与静默自检的编排。
 import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue';
 import { invoke, listen } from './bridge.js';
-import { toastError, confirmDialog } from './notify.js';
+import { toast, toastError, confirmDialog } from './notify.js';
 import { renderErrors, clearRenderError, reloadPanel } from './errors.js';
 import { globalBusy, ioActive } from './loading.js';
 import {
@@ -104,6 +104,7 @@ function onQuitConfirmRequest(event) {
   const payload = event && event.payload ? event.payload : {};
   const kernelRunning = !!payload.kernel_running;
   const chatOpen = !!payload.official_chat_open;
+  let title = '完全退出？';
   let detail;
   if (kernelRunning && chatOpen) {
     detail = '工作台与官方对话窗口仍在运行。关闭主壳会一并关闭它们；继续吗？';
@@ -112,8 +113,14 @@ function onQuitConfirmRequest(event) {
   } else {
     detail = '工作台仍在运行。关闭主壳前需要先关闭工作台；继续吗？';
   }
+  // Windows 的托盘「退出」走同一条确认流程，但语义是终止后台常驻进程，
+  // 而不是关闭一个已经收起的窗口——标题直说「退出」避免误解。
+  if (payload.from_tray) {
+    title = '退出 dsh-xlink？';
+    detail = '退出后内核与工作台会一并停止，托盘图标也会消失。' + detail;
+  }
   quitConfirmPending = true;
-  confirmDialog('完全退出？', detail, '关闭并退出')
+  confirmDialog(title, detail, payload.from_tray ? '退出' : '关闭并退出')
     .then((ok) => {
       if (!ok) return null;
       const stop = kernelRunning
@@ -162,6 +169,13 @@ onMounted(() => {
 
   // 外壳后台检查到新版后广播此事件；手动按钮覆盖按需检查。
   registerAppListener('shell-update-available', (e) => showShellUpdateBanner(e.payload));
+  // Windows：标题栏的最小化 / 关闭都只是把窗口收进通知区域（内核与工作台
+  // 继续运行，任务栏不再保留按钮），这个事件由 Rust 侧在真的收起时发出，
+  // 用来告诉用户「程序还在后台、去哪找它」——窗口已经隐藏，所以提示走系统级
+  // toast，而不是面板内的文案。
+  registerAppListener('shell-hidden-to-tray', () => {
+    toast('已收起到通知区域，程序继续在后台运行；任务栏不再保留窗口，点右下角托盘图标可重新打开，右键可退出', 6000);
+  });
   registerAppListener('harness-fault', (e) => {
     showIncident(e && e.payload);
     refreshAll();

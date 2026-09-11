@@ -21,6 +21,8 @@ mod registry;
 mod releases;
 mod settings;
 mod skills;
+#[cfg(target_os = "windows")]
+mod tray;
 mod updater;
 mod version;
 
@@ -109,6 +111,20 @@ pub fn run() {
                 eprintln!("dsh-xlink: 已清理 {removed} 个过期日志文件（保留 30 天 / 200 MiB）");
             }
             updater::spawn_background_check(app.handle());
+            // Windows：建立通知区域图标。管理面板在这里是「常驻后台」的
+            // ——关闭与最小化都只是收起窗口，托盘是唯一的重开与退出入口，
+            // 所以它必须在任何窗口可能被收起之前就绪。失败不阻断启动：
+            // 没有托盘时窗口仍可正常使用，只是「收起后只能靠重新启动找回」
+            // 这一退化行为，代价写进日志供排查。
+            #[cfg(target_os = "windows")]
+            if let Err(error) = tray::setup(app.handle()) {
+                eprintln!(
+                    "dsh-xlink: 无法建立通知区域图标（{error}）；\
+                     关闭按钮仍会把窗口收进后台，但届时只能通过重新启动应用找回界面。\
+                     若界面显示异常，重启应用重试；仍失败请用 `npm run dev` 在终端启动，\
+                     连同上面的完整输出一起反馈。"
+                );
+            }
             // 在 debug 构建中自动打开管理窗口的 DevTools。
             // Tauri 的 webview 快捷键（`Cmd+Option+I`、`Cmd+Shift+I`、
             // F12）在 macOS 上不一定能触达 WKWebView，因此调试入口
@@ -147,6 +163,7 @@ pub fn run() {
             commands::official_chat_tabs,
             commands::switch_official_chat_tab,
             commands::focus_main_shell,
+            commands::minimize_shell,
             commands::plugin_status,
             commands::kernel_plugin_list,
             commands::plugin_install,
@@ -187,12 +204,17 @@ pub fn run() {
     // 内存中的 child 覆盖本会话启动的内核；pid 文件覆盖上一次壳运行
     // （例如崩溃后）留下的孤儿，由 `kill_pid` 的内核检查把关。
     //
-    // 关闭管理窗口会在 `RunEvent::Exit` 之前触发 `WindowEvent::CloseRequested`。
-    // 当内核仍在运行——或 official-chat 窗口仍打开——我们调用 `prevent_close()`
-    // 并通知 UI 询问用户是否完全退出；UI 接着运行 `stop_kernel`（运行时）
-    // 然后 `confirm_close_shell`，销毁所有窗口并退出事件循环。没有这一提示，
-    // 用户可能关掉面板却留下占用端口的孤儿内核，下次启动会因为误导性的
-    // 「端口已被占用」诊断而失败，直到下一次壳启动时才回收该孤儿。
+    // 管理窗口的关闭请求分两条路：
+    //   · Windows（托盘常驻）：关闭只是把窗口收进通知区域，内核与工作台继续
+    //     运行；只有托盘菜单的「退出」才走确认与退出流程。这条分支在
+    //     `tray::intercept_close` 里实现，并且**优先**于退出确认——否则每次
+    //     点 X 都会弹一次「完全退出？」，与「收起后台」的语义自相矛盾。
+    //   · 其它平台：沿用原有询问语义。内核仍在运行或 official-chat 仍打开时
+    //     `prevent_close()` 并通知 UI 询问用户是否完全退出；UI 接着运行
+    //     `stop_kernel`（运行时）然后 `confirm_close_shell`，销毁所有窗口并
+    //     退出事件循环。没有这一提示，用户可能关掉面板却留下占用端口的孤儿
+    //     内核，下次启动会因为误导性的「端口已被占用」诊断而失败，直到下一次
+    //     壳启动时才回收该孤儿。
     //
     // 提示路径不能依赖 `RunEvent::Exit` 来拆窗口：`confirm_close_shell`
     // 会销毁主窗口，但事件循环只在最后一个窗口消失时才结束（macOS 上
@@ -207,6 +229,12 @@ pub fn run() {
             ..
         } = &event
         {
+            // Windows：把关闭改写成「收进托盘」，不再询问是否退出
+            //（退出改由托盘菜单显式发起）。
+            #[cfg(target_os = "windows")]
+            if tray::intercept_close(handle, label, api) {
+                return;
+            }
             // 只拦截管理窗口的关闭按钮；harness 工作台 webview
             //（标签 "harness"）可以无需确认直接关闭，因为它自身不持有
             // 内核句柄。
@@ -265,13 +293,41 @@ pub fn run() {
     });
 }
 
+/// 把管理面板主窗口恢复到前台（`show` + 取消最小化 + 前台聚焦）。
+///
+/// 按平台分发到唯一一份实现：Windows 用 [`tray::show_main_shell`]（与托盘图标
+/// 的「显示主界面」共用同一份），其它平台就地实现。**不要把实现挪回本函数、
+/// 再让 `tray::show_main_shell` 回调它**——那会构成无限递归，Windows 上点托盘
+/// 图标会直接 `thread 'main' has overflowed its stack`（首版即如此）。
+///
+/// Windows 上必须做一次 always-on-top 往返：焦点经 IPC 到达时
+/// `SetForegroundWindow` 会被系统静默忽略，先置顶再解除才能让窗口真正浮到
+/// 最前；其它平台是无害的 no-op。
+pub(crate) fn show_main_shell(handle: &tauri::AppHandle) {
+    #[cfg(target_os = "windows")]
+    tray::show_main_shell(handle);
+    #[cfg(not(target_os = "windows"))]
+    {
+        let Some(window) = handle.get_webview_window("main") else {
+            return;
+        };
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_always_on_top(false);
+        let _ = window.set_focus();
+    }
+}
+
 /// 内核当前是否在对外服务。
 ///
 /// 内存中的句柄只有在内核**确实还活着**时才算数：内核自行退出或被外部杀掉
 /// 之后句柄仍留在槽位里，只看 `is_some()` 会让这里一直撒谎（关窗时弹出一个
 /// 与实际状态矛盾的确认为）。句柄失效后回落到 [`kernel::workbench_running`]，
 /// 它同样不以配置端口为判据——内核可能绑在用户改端口之前的那个端口上。
-fn kernel_running(handle: &tauri::AppHandle) -> bool {
+///
+/// 对 crate 内公开：托盘菜单的「退出」要用它判断是否需要先弹确认。
+pub(crate) fn kernel_running(handle: &tauri::AppHandle) -> bool {
     let Some(state) = handle.try_state::<AppState>() else {
         return false;
     };
