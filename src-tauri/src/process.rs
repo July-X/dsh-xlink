@@ -1399,11 +1399,14 @@ fn read_tail_from(file: &mut fs::File, len: u64, max_bytes: u64) -> String {
 /// 立刻关闭并杀掉正在运行的内核**。
 #[cfg(windows)]
 mod job_object {
-    // 子模块**不继承**父模块的 `use`：`io` / `Child` 必须显式引入，否则
-    // Windows 目标下会报 E0433/E0425（这正是 desktop-v0.1.2-rc.19 第一次
-    // Windows 打包失败的原因）。
+    // 子模块**不继承**父模块的 `use`：本模块用到的符号必须逐个引入，否则
+    // Windows 目标下会报 E0433/E0425（desktop-v0.1.2-rc.19 连续两次 Windows
+    // 打包失败都是这一类：先是 `io` / `Child`，后是 `OnceLock`）。
+    // `use super::*` 只能覆盖父模块顶层确实导入过的名字 —— process.rs 顶层没有
+    // `OnceLock`，所以它必须单独写。
     use super::*;
     use std::os::windows::io::AsRawHandle;
+    use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
