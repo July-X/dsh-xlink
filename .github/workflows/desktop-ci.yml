@@ -89,3 +89,33 @@ jobs:
 
       - name: Run Rust Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+  # Windows 专属代码（托盘、Job Object、PowerShell 进程查询、反斜杠路径处理、
+  # `%ComSpec% /C` 分支）在 macOS 上一次也不会被编译。只靠发布流水线发现问题的
+  # 代价已经付过：rc.19 当天连续两次 Windows 编译失败，每次都要重新打 tag 并白烧
+  # 一轮双平台构建（P2-16）。
+  #
+  # 这里只做 `cargo check --all-targets`（编译期正确性），不签名、不打包、不跑
+  # 测试：目标是"Windows 代码至少能编过"。前端产物只需要存在一个 dist 目录，
+  # tauri-build 会校验 `frontendDist` 路径，因此先造一个最小 index.html。
+  windows-compile:
+    name: Windows compile check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+          shared-key: ci-windows-x86_64
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Provide a minimal frontendDist
+        shell: bash
+        run: |
+          mkdir -p ui/dist
+          printf '<!doctype html><html><body></body></html>\n' > ui/dist/index.html
+
+      - name: Check Windows-only code paths
+        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
