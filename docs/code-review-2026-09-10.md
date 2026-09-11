@@ -60,7 +60,7 @@
 | P2-9 / P2-14 / P2-15 | 撤销假成功、孤儿记录不可见、.pnpm 布局无法打补丁 | ✅ 已修 | 见明细；新增 4 条测试（含 1 条改写），三项反证通过 |
 | P2-3 | 日志写入失败被吞、排空线程退出 | ✅ 已修 | `drain_stream` 失败继续排空 + 诊断入 trail；新增 3 条测试，反证通过 |
 | P2-17 / P2-18 | 托管 Node 的残留/无法恢复/平台错配 | ✅ 已修 | 清扫全部遗留临时目录 + 发布前清残缺目录 + 装完删包；产物按 OS/ARCH 精确匹配并带真实诊断；新增 2 条测试 |
-| P2-24 | 插件 id 映射非单射导致互相覆盖 | 🚧 部分修复 | 复用同一 id 且来源不同时拒绝并提示先卸载；换 id 方案需迁移既有安装，留作独立项 |
+| P2-24 | 插件 id 映射非单射导致互相覆盖 | ✅ 已修 | `allocate_id` 按库内实况分配 id，冲突时加名称短哈希后缀（确定性、无需迁移）；`spec_for_update` 保证更新落在记录 id 上；4 条测试 + 三项反证 |
 | P2-20 / P2-21 | 孤儿插件目录无人管、同名接线互相覆盖 | ✅ 已修 | reconcile 清理"有标记无记录"的目录（跳过本轮刚恢复的 id）；接线改以 id 为键并上报同名冲突；新增 4 条测试 |
 | P2-27 / P2-30 / P2-31 / P2-35 / P2-37 / P2-41 / P2-42 | 锁粒度、死字段、版本不一致、UI 约定漂移 | ✅ 已修 | 见明细；版本一致性同时进 preflight 与 check-invariants（反证命中） |
 | P2-45 / P2-47 / P2-48 / P2-52 | CI 入口缺失、verify 脚本假失败、坏徽章、无 push/PR 门禁 | ✅ 已修 | 新增 desktop-ci.yml；两个 verify 脚本加版本门 + try/catch；补 test:file-perf；修徽章 |
@@ -72,7 +72,7 @@
 | P2-38 ~ P2-40 / P2-43 / P2-44 | 日志重入被吞、窗口操作静默失败、无渲染兜底、两处文档漂移 | ✅ 已修 | 见明细；UI 测试 14 → 16 条 |
 | P1 / P2（全部）| | ✅ **已完成** | |
 
-**当前基线**：`cargo test` 269 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 17 通过；`npm run test:scripts` 15 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
+**当前基线**：`cargo test` 272 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 17 通过；`npm run test:scripts` 15 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
 
 > 本文件同时是**问题清单**与**修复台账**：正文条目保留原始分析（含 `file:line`、触发场景、影响、建议），修复完成后在对应条目标题前加【已修】并在此表登记。
 
@@ -525,7 +525,7 @@
 | 【已修】P2-21 | `plugins.rs:2172`、`:2191-2197` | `specs` 以 `item.name` 为键：同名不同 id 互相覆盖接线，UI 对两行都报 wired=true | specs 以 id 为键，写 manifest 时检测同名冲突 | ✅ 已修：`specs` 改为以**插件 id** 为键的 `BTreeMap<String, WireSpec>`，`wire_manifest` 按 id 顺序取第一个占用包名的条目、其余记录为冲突说明并随 `failures` 上报（用户能看到"装了但没接线"），接线计数按去重后的包名统计；不再出现"后一条静默覆盖前一条、UI 两行都显示已接线"。新增 1 条测试（反证命中）
 | 【已修】P2-22 | `plugins.rs:2377-2378`、`:853-863` | 锁定版本的 npm 插件被永久标成「有更新」，但更新必被拒（`pinned` 只在 git 分支生效） | check_updates/status 跳过 `item.pinned` | ✅ 已修：`status` / `check_updates` 跳过 `pinned` 条目（计数与行内角标），npm 与 git 一视同仁；`is_newer_than` 保持原有的"版本号比较"语义不变（git+pinned 的既有测试仍钉住该行为）。新增 1 条 status 层测试覆盖两种来源
 | 【已修】P2-23 | `plugins.rs:3221-3223` | `kernel_plugin_list` 把前端传入的 `version` 直接当路径段（`../../..` 可越界枚举读取） | 入口用 `kernel::list_installed` 白名单校验 | ✅ 已在早前版本校验改造中修好：`kernel_plugin_list` 入口用 `crate::version::is_valid_kernel_version` 拒绝 `../` 等形态（`commands.rs:1726`）
-| 🚧 部分修复 P2-24 | `plugins.rs:464-482` | `id_for_name` 的 `/`→`__` 映射不是单射：npm `owner__repo` 与 git `owner/repo` 撞同一 id，互相覆盖源码与 store 行 | 转义 `_` 或追加短哈希后缀 | 🚧 部分修复：`upsert_item_unlocked` 增加**冲突检测** —— 同一个 id 被不同 `source`/`name` 复用时拒绝并给出"先卸载"的下一步，不再静默覆盖前一个插件的源码与记录（新增 2 条测试，反证命中）。**残留**：`/`→`__` 的映射本身仍不是单射，彻底修需要换 id 方案 + 迁移既有安装（store 行、`kernels/<ver>/plugins/<id>`、`.dsh-xlink-meta`），单独立项处理
+| 【已修】P2-24 | `plugins.rs:464-482` | `id_for_name` 的 `/`→`__` 映射不是单射：npm `owner__repo` 与 git `owner/repo` 撞同一 id，互相覆盖源码与 store 行 | 转义 `_` 或追加短哈希后缀 | 🚧 部分修复：`upsert_item_unlocked` 增加**冲突检测** —— 同一个 id 被不同 `source`/`name` 复用时拒绝并给出"先卸载"的下一步，不再静默覆盖前一个插件的源码与记录（新增 2 条测试，反证命中）。**残留**：`/`→`__` 的映射本身仍不是单射，彻底修需要换 id 方案 + 迁移既有安装（store 行、`kernels/<ver>/plugins/<id>`、`.dsh-xlink-meta`），单独立项处理 ✅ 已收口：新增 `allocate_id`（安装前按库内实际情况分配 id）与 `spec_for_update`（更新时以记录里的 id 为准）。基础 id 未被别的名字占用时**一个字都不变**（因此不需要迁移任何已安装插件）；被别的名字占用时追加**名称的短哈希后缀**（确定性，重试/重装得到同一个 id）。同时修掉两处会被后缀影响的路径：更新时用 `parse_spec` 重算基础 id 会把新版本发布到另一个目录（UI 说成功、内核仍跑旧代码）；npm 候选回退的残留检测改为按名称查记录，而不是重新推导 id。新增 4 条测试（首占基础 id + 后来者稳定后缀、既有 id 不变、update 以记录 id 为准、复用同 id 仍拒绝覆盖），三项反证全部命中
 
 ### 命令面与配置
 
