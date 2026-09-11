@@ -28,6 +28,19 @@ const failures = [];
 const notes = [];
 
 const fail = (section, message) => failures.push(`[${section}] ${message}`);
+
+/// 补丁清单里的路径必须是"补丁目录 / 内核目录内的普通相对路径"。
+///
+/// 与 Rust 的 `patches::check_target_path` 对齐：拒绝空路径、绝对路径、Windows
+/// 盘符（`C:…`）、UNC（`\\\\server\\share`）以及任何 `..` 段。判据比"存在性
+/// 检查"更早生效，坏清单在 CI 就报出来，而不是等到运行时才被 Rust 拒绝。
+const isSafeRelativePath = (raw) => {
+  const value = String(raw ?? '');
+  if (!value) return false;
+  if (isAbsolute(value) || /^[A-Za-z]:/.test(value) || value.startsWith('\\\\')) return false;
+  const segments = value.split(/[\\/]/);
+  return segments.length > 0 && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+};
 const note = (message) => notes.push(message);
 const read = (rel) => readFileSync(join(root, rel), 'utf8');
 const readJson = (rel) => JSON.parse(read(rel));
@@ -199,14 +212,18 @@ for (const dir of patchDirs) {
     }
     for (const entry of def.files) {
       const target = entry.to ?? '';
-      const segments = String(target).split(/[\\/]/);
-      if (!target || isAbsolute(target) || /^[A-Za-z]:/.test(target) || segments.includes('..')) {
+      if (!isSafeRelativePath(target)) {
         fail('patches', `${label} 的 ${id} 有非法目标路径：${JSON.stringify(target)}`);
       }
       if (entry.mode === 'copy') {
         const from = entry.from;
         if (!from) {
           fail('patches', `${label} 的 ${id} copy 模式缺少 from（目标 ${target}）`);
+        } else if (!isSafeRelativePath(from)) {
+          // 与 to 同一判据（Rust 侧 `validate_def` 对 from 也调 check_target_path）：
+          // 缺了它，`from: "../../../../etc/passwd"` 或绝对路径能过 CI 门禁，
+          // 审计价值直接归零（P2-18）。
+          fail('patches', `${label} 的 ${id} 的 from 非法（${JSON.stringify(from)}）：只接受补丁目录内的相对路径`);
         } else if (!existsSync(join(patchDir, from))) {
           fail('patches', `${label} 的 ${id} 引用的载荷不存在：${from}`);
         }
@@ -254,6 +271,26 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
     );
   } else {
     note(`三处版本一致：${packageVersion}`);
+  }
+}
+
+// --- 5. UI 模板绑定 ----------------------------------------------------------
+//
+// 模板里引用了既不在 `<script setup>` 绑定、也没有全局注册的标识符时，生产构建
+// 不报错，绑定被静默求值成 `undefined`（`:disabled` / `:loading` 变成永不生效），
+// 而全部 Rust 与 UI 测试都是绿的。判据由 `scripts/check-ui-bindings.mjs` 提供。
+{
+  const { checkProject } = await import('./check-ui-bindings.mjs');
+  const { checked, skipped, failures: uiFailures } = await checkProject(join(root, 'ui/src'));
+  if (uiFailures.length > 0) {
+    for (const failure of uiFailures) {
+      fail(
+        'ui-bindings',
+        `${relative(root, failure.file)} 的模板引用了未定义的标识符：${failure.names.join('、')}`,
+      );
+    }
+  } else {
+    note(`UI 模板绑定全部可解析：${checked} 个 <script setup> 组件（跳过 ${skipped} 个）`);
   }
 }
 
