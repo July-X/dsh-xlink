@@ -13,8 +13,13 @@ export const skillStore = reactive({
 });
 
 const SKILL_UPDATE_CHECK_TTL_MS = 15 * 60 * 1000;
+/// 失败后的自动重试冷却（比成功 TTL 短）：手动点击不受它限制。
+const SKILL_UPDATE_FAILURE_BACKOFF_MS = 5 * 60 * 1000;
 let skillUpdatesInFlight = null;
 let lastSkillUpdateCheckAt = 0;
+// 上一次"逐包探测有失败"的时间：失败不推进成功 TTL，但也不能让自动路径在每次
+// 切页 / 回焦 / 长任务结束时都重跑一遍全量探测（git 来源会真的起子进程）。
+let lastSkillUpdateFailureAt = 0;
 
 // `originLabel` 已提到 `labels.js`（技能页与插件页共用），这里保留再导出，
 // 避免既有调用点被迫同时改动。
@@ -69,6 +74,10 @@ export function checkSkillUpdates(opts = {}) {
     if (!force && Date.now() - lastSkillUpdateCheckAt < SKILL_UPDATE_CHECK_TTL_MS) {
       return Promise.resolve(null);
     }
+    // 失败退避：见 `lastSkillUpdateFailureAt` 的说明（P2-12）。
+    if (!force && Date.now() - lastSkillUpdateFailureAt < SKILL_UPDATE_FAILURE_BACKOFF_MS) {
+      return Promise.resolve(null);
+    }
     if (isExclusiveBusy()) return Promise.resolve(null);
 
     const run = withExclusive(async () => {
@@ -77,12 +86,17 @@ export function checkSkillUpdates(opts = {}) {
       // 不会发生，也没有任何解释。这里至少把第一个具体原因说出来。
       const failed = infos.filter((i) => i.error);
       if (failed.length) {
-        toastActionError(
-          failed.length + ' 个技能包检查更新失败',
-          failed[0].error,
-          '请检查网络或代理后重试；已安装技能不受影响',
-          8000
-        );
+        // 只有手动点击（busy=true）才弹提示：自动路径下持续失败的包会让用户每次
+        // 切页 / 回焦都吃一个 8 秒提示，而他不一定关心（P2-12）。
+        if (opts.busy) {
+          toastActionError(
+            failed.length + ' 个技能包检查更新失败',
+            failed[0].error,
+            '请检查网络或代理后重试；已安装技能不受影响',
+            8000
+          );
+        }
+        lastSkillUpdateFailureAt = Date.now();
       } else {
         // TTL 只在真的查到结果时推进——与后端保持一致：失败也推进的话，
         // 15 分钟内不会再自动检查，用户手动点击也要等冷却。
