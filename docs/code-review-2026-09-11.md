@@ -43,7 +43,7 @@
 | P0-4 | skills：store.json 缺失被当空清单 → 活动根链接全量删除 | ✅ 已修（反证命中） |
 | P0-5 | `ensure_wiring_filtered` 容错读取 → 清内核物化目录与 profile 依赖 | ✅ 已修 |
 | P0-6 | skills `replace_owned` 删除用户改过的 copy 副本 | ✅ 已修（反证命中） |
-| P0-7 | 补丁"无备份记录"永久不可撤销，且提示的重装建议无效 | ⏳ 待修 |
+| P0-7 | 补丁"无备份记录"永久不可撤销，且提示的重装建议无效 | ✅ 已修 |
 | P1-1 | 托管 Node 解包根目录写死 `darwin-x64` | ✅ 已修 |
 | P1-2 | 设置页 `globalBusy` 未导入 → `:disabled` 死绑定 | ✅ 已修（由并发会话 `dbce6a5` 修，本轮不重复） |
 | P1-3 | Windows 收起提示渲染在已隐藏的窗口里（README/architecture 已承诺） | ✅ 已修 |
@@ -307,6 +307,7 @@
 | P0-4 | `skills.rs::reconcile_home` 增加 `store_present` 判据：清单文件不存在时不做链接清扫；新增 `link_into_store` / `store_link_count` 供清扫与"缺失告警"共用；`status_for_home` 对 `Missing + 仍有技能库链接` 给出告警 | 新增 `reconcile_without_store_file_keeps_store_links`；反证命中 |
 | P0-5 | `plugins.rs::ensure_wiring_filtered` 改用 `load_store_checked`，清单损坏时中止接线且不改写 profile（错误经 `ensure_wiring` 的调用方进 trail / `store.warning`） | 既有 `ensure_wiring` 用例链路；行为变化写在函数注释里 |
 | P0-6 | `skills.rs::ensure_entry` 在 `replace_owned` 且不归本商店所有时改为 `keep_aside()` 改名保留（`<name>.user-<时间戳>`），`Materialized` 新增 `kept_aside` 并由 reconcile / update 写进 central-store 告警 | 新增 `reconcile_keeps_user_modified_copy_aside`；反证命中（退回 `remove_target` 即失败） |
+| P0-7 | `patches::revert` 新增 `force`：对"没有可恢复的原文件"的文件保留现状、如实告警并清除记录；两条失败分支的文案给出「清除记录」出路；`patch_revert` 透传 `force`；UI 只在后端给出该提示时弹二次确认 | 新增 `force_revert_clears_a_record_that_has_no_backup`（钉住"普通撤销必须给出生路 / 重装后仍失败 / force 清记录且不改文件"）；真实内置清单 `dsh-session-perf` 上的复现见 P0-7 明细 |
 
 ### 批次 2：P1 功能失效 / 误导
 
@@ -326,12 +327,12 @@
 | P2-18 | `check-invariants.mjs` 抽出 `isSafeRelativePath`（拒绝空段、`.`、`..`、绝对路径、盘符、UNC），`to` 与 `from` 共用，与 Rust 的 `check_target_path` 对齐 | 现有 3 个补丁定义通过；判据收紧方向为"拒绝更多" |
 | P2-19 | 新增 `scripts/check-ui-bindings.mjs` + `npm run check:ui-bindings`，并接入 `check-invariants`（CI 与发布流程已有的两步自动覆盖）；新增 `scripts/check-ui-bindings.test.mjs` | 3 条用例：判据单元、fixture（好/坏/选项式）、真实组件树全绿；反证命中（去掉 `globalBusy` 导入即报错） |
 
-### 批次 1–3 的门禁结果（本轮结束时的实测）
+### 批次 1–4 的门禁结果（本轮结束时的实测）
 
 ```
 cargo fmt --check                                   OK
 cargo clippy --all-targets -- -D warnings           OK（零警告）
-cargo test                                          277 passed / 0 failed / 1 ignored
+cargo test                                          278 passed / 0 failed / 1 ignored
 node --test ui/test/*.test.js                       17 passed
 node --test scripts/*.test.mjs                      20 passed
 node scripts/check-invariants.mjs                   OK（45 命令 + 补丁清单 + 三处版本 + UI 绑定）
@@ -349,11 +350,28 @@ npm run build:ui                                    OK（JS 424 KB / CSS 138 KB�
 - 涉及 UI 的剩余待修项（P2-10 `PluginsPanel.vue`、P2-11 `theme.css`、P2-12 `skills.js`）
   与对方的工作面有重叠，开始前需要确认由哪一方来做。
 
+### 提交记录（本轮，均已通过上述门禁）
+
+| 提交 | 内容 |
+| --- | --- |
+| `docs: 两天提交的独立复核报告与修复台账（2026-09-11）` | 本报告 |
+| `docs: 修正 P1-2 的判定——它在 70f173c 中确实存在` | 判定更正与方法教训 |
+| `fix(patches): 回滚不再删除应用前就已存在的文件（P0-1）` | 回滚语义 |
+| `fix(plugins): 清单缺失或损坏时不再清理/覆盖用户数据（P0-2/P0-3/P0-5）` | 容错读取链 |
+| `fix(skills): 清单缺失不清扫链接；覆盖非本商店条目时改名保留（P0-4/P0-6）` | 技能侧同链 |
+| `fix(node_install): 解包根目录按平台推导 + 回滚先取诊断（P1-1/P1-6）` | 平台适配与诊断 |
+| `fix(commands): activate/remove_version 补版本号闸（P1-7）` | 纵深 |
+| `fix(tray,ui): 收起提示改为恢复时补发；托盘退出文案与实际状态一致（P1-3/P1-4）` | 托盘 |
+| `fix(scripts): check-signing-keys 入口守卫改跨平台写法（P1-5）` | 发布门禁误绿 |
+| `test(scripts,ci): 补 UI 模板绑定门禁与补丁路径判据（P2-18/P2-19）` | 新门禁 |
+| `fix(patches,commands,ui): 给"无备份记录"一条清除出路（P0-7）` | 死记录出路 |
+
+> 提交只包含本轮修复涉及的文件；`ui/src/theme.css` 属于并发会话的改动，未被纳入。
+
 ### 下一步（剩余待修）
 
 | 优先级 | 编号 | 说明 |
 | --- | --- | --- |
-| 高 | P0-7 | 补丁"无备份记录"给出可撤销/可清除的出路（Rust + UI 各一处），并用真实内置清单补回归 |
 | 高 | P2-1 / P2-2 | pid 身份校验带上端口或 cwd；`kernel::stop` 如实返回失败 |
 | 中 | P2-3 / P2-4 / P2-5 | guard 的环境失败分类（跳过插件阶梯）、SpawnFailed 跳过 pnpm 恢复、Windows 反斜杠归因 |
 | 中 | P2-6 / P2-7 / P2-8 | SRI 缺摘要策略、`save_settings` 字段合并、node 缓存回写 |
