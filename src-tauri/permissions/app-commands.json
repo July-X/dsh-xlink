@@ -43,6 +43,7 @@
           "official_chat_tabs",
           "switch_official_chat_tab",
           "focus_main_shell",
+          "minimize_shell",
           "plugin_status",
           "kernel_plugin_list",
           "plugin_install",

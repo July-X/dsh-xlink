@@ -1142,7 +1142,8 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
 /// 输入事件带来的）时，`SetForegroundWindow` 会被静默忽略，导致窗口
 /// 「提到前面但仍藏在背后」。把窗口置顶再立即解除，会强制让它出现在
 /// 正常 z-order 的最前面；在 macOS/Linux 上这次切换只是一个无害的
-/// no-op 提升操作。
+/// no-op 提升操作。恢复动作的实现在 [`crate::show_main_shell`]，与
+/// Windows 托盘图标的「显示主界面」共用同一份。
 ///
 /// `x`/`y` 是点击事件发生位置的屏幕坐标（CSS 像素，对应
 /// `MouseEvent.screenX/Y`）；如果给到，窗口会先被重定位，使点击位置
@@ -1158,11 +1159,38 @@ pub fn focus_main_shell(app: AppHandle, x: Option<f64>, y: Option<f64>) -> Resul
     if let (Some(x), Some(y)) = (x, y) {
         reposition_near(&app, &window, x, y);
     }
-    let _ = window.unminimize();
-    let _ = window.show();
-    let _ = window.set_always_on_top(true);
-    let _ = window.set_always_on_top(false);
-    window.set_focus().map_err(|e| e.to_string())
+    crate::show_main_shell(&app);
+    Ok(())
+}
+
+/// Windows 标题栏的最小化按钮：与关闭一致，把窗口收进通知区域并从任务栏
+/// 移除按钮（托盘是唯一的恢复入口）。
+///
+/// 不复用 `Window::minimize()`：那会把窗口最小化到任务栏，而这里要的是
+/// 「任务栏不显示、只在托盘里」——`tray::hide_to_tray` 会
+/// `ITaskbarList::DeleteTab` 再隐藏窗口。
+///
+/// 命令在所有平台都注册（`generate_handler!` 的条目形态要保持「一个名字
+/// 一项」，`scripts/check-invariants.mjs` 是按 `,` 切分那段列表核对的），
+/// 但只有 Windows 会真的动手：其它平台没有托盘，收起来就再也找不回来，
+/// 所以这里直接返回，前端也只在 Windows 分支调用它。
+#[tauri::command]
+pub fn minimize_shell(
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] app: AppHandle,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        if app.get_webview_window("main").is_none() {
+            return Err("主壳窗口不存在（label: main）".to_string());
+        }
+        crate::tray::hide_to_tray(&app);
+        crate::tray::notify_hidden_once(&app);
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(())
+    }
 }
 
 fn official_chat_mutation_lock() -> &'static Mutex<()> {

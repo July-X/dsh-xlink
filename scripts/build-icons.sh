@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# 由两张 SVG 主图重新生成这个独立应用中的全部图标资源：
+# 由三张 SVG 主图重新生成这个独立应用中的全部图标资源：
 #   assets/whale-icon.svg        → 大小 ≥ 128（保留完整眼睛细节：光晕、星光、射线）
 #   assets/whale-icon-small.svg  → 大小 ≤ 64 以及管理面板标志
 #                                 （夸张的眼睛，否则细节将落在亚像素尺度）
+#   assets/whale-head.svg        → Windows 通知区域（托盘）图标
+#                                 （鱼头特写 + 放大的红眼，透明底）
 #
 # 产物：
 #   src-tauri/icons/{32x32,128x128,128x128@2x,icon}.png, icon.ico, icon.icns
+#   src-tauri/icons/tray-{16,20,24,32,40,48}.png
 #   assets/whale-icon-512.png
 #   ui/public/whale-icon.png           （由 SMALL 主图以 128 渲染）
 #
@@ -38,6 +41,15 @@ rsvg-convert -w "$SUPER" -h "$SUPER" assets/whale-icon-small.svg -o "$TMP/small-
 for s in 16 24 32 48 64; do
   magick "$TMP/small-super.png" -filter LanczosSharp -resize "${s}x${s}" \
     -define png:color-type=6 "$TMP/small-$s.png"
+done
+
+# 托盘图标：单独的鱼头主图（红眼放大 3 倍的鱼头特写），保持透明底——Windows
+# 通知区域本身就是深色工作栏，白底板在那里很突兀。多出来的 20/40 两档留给
+# 非整数 DPI 缩放（125% / 150%）挑最接近的帧。
+rsvg-convert -w "$SUPER" -h "$SUPER" assets/whale-head.svg -o "$TMP/head-super.png"
+for s in 16 20 24 32 40 48; do
+  magick "$TMP/head-super.png" -filter LanczosSharp -resize "${s}x${s}" \
+    -define png:color-type=6 "$TMP/tray-$s.png"
 done
 
 # ui/public/whale-icon.png 仍由 SMALL 主图以 128 渲染：面板把它绘制在
@@ -84,6 +96,12 @@ cp "$TMP/master-256-plate.png" "$ICONS/128x128@2x.png"
 cp "$TMP/master-512-plate.png" "$ICONS/icon.png"
 cp "$TMP/master-512-plate.png" assets/whale-icon-512.png
 cp "$TMP/small-128.png" ui/public/whale-icon.png
+
+# Windows 通知区域（托盘）图标：由 whale-head.svg 渲染的透明底 PNG，
+# 由 src-tauri/src/tray.rs 经 include_image! 在编译期解码成 RGBA。
+for s in 16 20 24 32 40 48; do
+  cp "$TMP/tray-$s.png" "$ICONS/tray-$s.png"
+done
 
 # Windows .ico：按尺寸分别提供帧，128 以下使用小尺寸变体。
 magick \

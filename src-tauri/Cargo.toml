@@ -19,7 +19,10 @@ tauri-build = { version = "2", features = [] }
 # （窗口底色被 webview 盖住）——这正是工作台/官方对话加载期刺眼白闪
 # 的成因。需配合 tauri.conf.json 的 `app.macOSPrivateApi: true`。
 # 仅影响 macOS；我们通过 DMG 自行分发，不受 App Store 私有 API 审核约束。
-tauri = { version = "2", features = ["unstable", "macos-private-api"] }
+# `tray-icon` 提供 Windows 通知区域图标（`tray.rs`），让管理面板可以
+# 「关闭即收起后台」。图标用 `include_image!` 在编译期解码成 RGBA，
+# 运行时不需要图片解码依赖。
+tauri = { version = "2", features = ["unstable", "macos-private-api", "tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
