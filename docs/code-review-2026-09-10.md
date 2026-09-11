@@ -53,7 +53,7 @@
 | P2-1 / P2-5 / P2-8 | 僵尸句柄、netstat 子串匹配、tail 竞速 | ✅ 已修 | 见明细；共 9 条新测试，全部经反证 |
 | P2-4 | 轮转日志在面板中不可见 | ✅ 已修 | 备份改名 `X.1.log`（保留 `.log` 扩展名）+ 列举排序改「新 → 旧」+ 启动期迁移旧命名；新增 9 条测试，三项反证通过 |
 | P2-6 / P2-7 | 端口身份误判、归因 needle 误伤短插件名 | ✅ 已修 | `ListenerIdentity` 三态 + `open_harness` 收口；归因改锚定路径段匹配（`main` 不再命中 `main-utils`） |
-| P2-62 | logs 目录无保留策略 | ⏳ 待修 | 每天最多新增 24 MiB，日期只增不减；历史注释引用的 `cleanup_legacy_logs` 已不存在 |
+| 【已修】P2-62 | logs 目录无保留策略 | ⏳ 待修 | 每天最多新增 24 MiB，日期只增不减；历史注释引用的 `cleanup_legacy_logs` 已不存在 | ✅ 已修：新增 `process::prune_old_logs`，启动时按「保留 30 天 / 总量 200 MiB、从最旧的开始丢」裁剪 logs 目录，10 分钟宽限期内的文件（多半是当前会话正在追加的日志）永不删除；`lib.rs` 接线并在删除时打一行 stderr。新增 4 条测试（天数、总量、宽限期、非 `*.log` 与目录缺失），两项反证命中
 | **P1（全部 29 条）** | | ✅ **已完成** | |
 | P2-10 / P2-11 / P2-16 / P2-22 | 补丁与安装的越界与承诺不一致 | ✅ 已修 | 见明细；共 6 条新测试 |
 | P2-12 / P2-19 | 坏清单/坏设置无声消失或回退 | ✅ 已修 | 补丁加载告警并入 `PatchStatus.warning`；设置损坏备份 + `settings_warning` 上报面板；新增 3 条测试 |
@@ -65,10 +65,11 @@
 | P2-27 / P2-30 / P2-31 / P2-35 / P2-37 / P2-41 / P2-42 | 锁粒度、死字段、版本不一致、UI 约定漂移 | ✅ 已修 | 见明细；版本一致性同时进 preflight 与 check-invariants（反证命中） |
 | P2-45 / P2-47 / P2-48 / P2-52 | CI 入口缺失、verify 脚本假失败、坏徽章、无 push/PR 门禁 | ✅ 已修 | 新增 desktop-ci.yml；两个 verify 脚本加版本门 + try/catch；补 test:file-perf；修徽章 |
 | P2-32 ~ P2-34 | registry 信任边界口径、releases 无测试/无缓存 | ✅ 已修 | AGENTS 补镜像与 SRI 说明；`select_releases` + 6 条测试（空 npm 结果改为回退）；60s TTL 缓存 |
+| P2-28 / P2-62 | 日志窗口静默失败、logs 无保留策略 | ✅ 已修 | 校验合并 + 异步开窗回传错误；启动裁剪 30 天 / 200 MiB（10 分钟宽限）；新增 5 条测试 |
 | P2-38 ~ P2-40 / P2-43 / P2-44 | 日志重入被吞、窗口操作静默失败、无渲染兜底、两处文档漂移 | ✅ 已修 | 见明细；UI 测试 14 → 16 条 |
-| P2-2、P2-28、P2-36、P2-46、P2-51、P2-62 | | ⏳ 待修 | |
+| P2-2、P2-36、P2-46、P2-51 | | ⏳ 待修 | |
 
-**当前基线**：`cargo test` 264 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 16 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
+**当前基线**：`cargo test` 269 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 16 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
 
 > 本文件同时是**问题清单**与**修复台账**：正文条目保留原始分析（含 `file:line`、触发场景、影响、建议），修复完成后在对应条目标题前加【已修】并在此表登记。
 
@@ -530,7 +531,7 @@
 | 【已修】P2-25 | `lib.rs:111`、`commands.rs:240-250` | `get_kernel_log` 命令零调用点（UI 与文档均无引用），与 `read_log_file` 功能重叠 | 删除，或补上入口 |
 | 【已修】P2-26 | `commands.rs:218` | 唯一一处用 `state.node_cache.lock()` 而非 `crate::lock()`：锁被毒化时静默跳过清缓存 | 统一 `crate::lock` |
 | 【已修】P2-27 | `commands.rs:173-185` | `cached_node` 在持有 `node_cache` 锁期间执行 `node::resolve`（会 fork `node --version`），锁粒度过大 | 探测在锁外完成 | ✅ 已修：`cached_node` 命中缓存即返回，未命中先**释放锁**再 `node::resolve`（探测会派生 `node --version`，持锁期间会堵住状态轮询里的其它调用）
-| P2-28 | `commands.rs:962-991` | `open_log_window` 是同步命令且失败只 `eprintln`，不返回给 UI；日志名校验在 3 处重复 | 统一为带 mpsc 等待的异步命令 + 抽 `validate_log_name` |
+| 【已修】P2-28 | `commands.rs:962-991` | `open_log_window` 是同步命令且失败只 `eprintln`，不返回给 UI；日志名校验在 3 处重复 | 统一为带 mpsc 等待的异步命令 + 抽 `validate_log_name` | ✅ 已修：日志名校验合并为唯一的 `validate_log_name`（此前在读文件与开窗三处各写一遍，新增 1 条测试 + 反证）；`open_log_window` 由同步命令改为异步命令，建窗结果经 mpsc 回传（20 秒超时），失败不再是"只 eprintln、UI 收到成功"——用户点了「全屏」却毫无反应且无提示。UI 侧改为优先展示后端文案（已含下一步）
 | 【已修】P2-29 | `commands.rs:629-678` | `stop_kernel` 在 `kernel::stop` 失败时提前 return，跳过 `clear_pid`，且 harness 窗口已 destroy → "窗口已关、内核仍在、pid 残留" | 用 finally 语义确保 `clear_pid` |
 | 【已修】P2-30 | `kernel.rs:94,439` | `KernelStatus::ever_installed` 是死字段（UI 用 `installed.length === 0` 自行推导） | 删除字段或让 UI 使用它 | ✅ 已修：删除死字段 `KernelStatus::ever_installed`（UI 一直用 `installed.length === 0` 自行推导）
 | 【已修】P2-31 | `Cargo.toml:3` | `version = "0.1.0"` 与 `package.json`/`tauri.conf.json` 的 `0.1.2-rc.18` 不一致（CI 只校验后两者）。**已有实际影响**：`releases.rs:27` 的 `concat!("dsh-xlink/", env!("CARGO_PKG_VERSION"))` 是 npm registry / GitHub 的 User-Agent，外壳对外自称 `dsh-xlink/0.1.0`。**潜在结构性风险**：`package_info().version` 优先取 `tauri.conf.json` 的 version，一旦该字段被删就会回退到 `CARGO_PKG_VERSION`，所有已装 rc.18 的应用会自报 0.1.0 并永远认为 rc.18 是新版本 → 无限更新循环 | 同步该字段，或删除它并注明以 config 为准；preflight 纳入第三个版本文件 | ✅ 已修：`src-tauri/Cargo.toml` 版本 0.1.0 → 0.1.2-rc.18（`Cargo.lock` 随之更新），`env!("CARGO_PKG_VERSION")` 拼出的 User-Agent 不再对外自称 0.1.0；preflight 增加第三个版本文件的断言，`check-invariants.mjs` 也新增"三处版本一致"检查（反证：改回 0.1.0 即报错）

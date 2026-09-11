@@ -100,9 +100,14 @@ pub fn run() {
             // 日志目录的启动期修复：把旧命名（`X.log.1`，扩展名是 `1`）的
             // 轮转备份改名为 `X.1.log`，它们此前永远不出现在日志面板里。
             // 纯改名、失败即跳过，不影响启动。
-            crate::process::migrate_legacy_rotated_logs(&kernel::logs_dir(
-                &app.state::<AppState>().data_dir,
-            ));
+            let logs_dir = kernel::logs_dir(&app.state::<AppState>().data_dir);
+            crate::process::migrate_legacy_rotated_logs(&logs_dir);
+            // 过期日志清理：每个「日期 × kind」三代 × 8 MiB 且日期只增不减，
+            // 不裁剪会长期累积到 GB 级（P2-62）。
+            let removed = crate::process::prune_old_logs(&logs_dir);
+            if removed > 0 {
+                eprintln!("dsh-xlink: 已清理 {removed} 个过期日志文件（保留 30 天 / 200 MiB）");
+            }
             updater::spawn_background_check(app.handle());
             // 在 debug 构建中自动打开管理窗口的 DevTools。
             // Tauri 的 webview 快捷键（`Cmd+Option+I`、`Cmd+Shift+I`、

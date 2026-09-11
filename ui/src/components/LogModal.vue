@@ -15,7 +15,10 @@ import { logModal, formatLogSize, switchLogTab, loadActiveLog } from '../logs.js
 function openLogWindow() {
   if (!logModal.activeName) return;
   return withLoading('openLogWindow', () =>
-    invoke('open_log_window', { name: logModal.activeName }).catch((e) => toastError('打开日志窗口失败：' + e))
+    invoke('open_log_window', { name: logModal.activeName }).catch((e) => {
+      // 后端已经给出「下一步」文案，优先原样展示。
+      toastError((e && e.message) || '打开日志窗口失败：' + e);
+    })
   );
 }
 
