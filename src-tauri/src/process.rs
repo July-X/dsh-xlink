@@ -1776,24 +1776,27 @@ mod tests {
 
     #[test]
     fn command_capture_returns_bounded_stdout_and_stderr() {
-        let cmd = if cfg!(windows) {
+        // 两边的脚本都把「标识串 + 换行」写进两个流：`ok` 走 stdout，
+        // 期望的 stderr 内容随平台不同（见下）。
+        let (cmd, expected_stderr) = if cfg!(windows) {
             let mut cmd = Command::new("cmd.exe");
             cmd.args(["/C", "echo out 1>&2 & echo ok"]);
-            cmd
+            (cmd, "out")
         } else {
             let mut cmd = Command::new("/bin/sh");
             cmd.args(["-c", "printf ok; printf err >&2"]);
-            cmd
+            (cmd, "err")
         };
         let (success, stdout, stderr) = run_command_capture(cmd, "capture test").unwrap();
         assert!(success);
         let line_end = if cfg!(windows) { "\r\n" } else { "" };
         assert_eq!(stdout, format!("ok{line_end}"));
-        // `echo out 1>&2` 重定向的是 `echo` 的**参数分隔空格**之后的输出：
-        // 部分 cmd.exe 版本在重定向到管道时会把分隔空格一并写出（实测
-        // `"out  \r\n"`，两个空格），另一些只有一个。这里只钉住语义部分，
-        // 不把一个与本次改动无关的 cmd.exe 版本差异变成红灯。
-        assert_eq!(stderr.trim_end(), "out");
+        // 只比较去掉行尾之后的内容：`echo out 1>&2` 重定向的是 `echo` 的
+        // **参数分隔空格**之后的输出，部分 cmd.exe 版本在重定向到管道时会
+        // 把分隔空格一并写出（实测 `"out  \r\n"`，两个空格），另一些只有
+        // 一个；Unix 侧则是精确的 `"err"`。断言要验证的是「两个流各自被
+        // 正确捕获」，把一个与本次改动无关的平台差异变成红灯没有意义。
+        assert_eq!(stderr.trim_end(), expected_stderr);
     }
 
     #[cfg(unix)]
