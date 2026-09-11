@@ -296,12 +296,16 @@ fn is_anchored_plugin_hit(line: &str, item: &plugins::StoreItem) -> bool {
     {
         return true;
     }
-    if has_segment_path(line, "plugins/", &item.id)
-        || has_segment_path(line, "node_modules/", &item.name)
+    // Windows 的日志里路径是反斜杠形态（`...\node_modules\main\index.js`、
+    // `...\kernels\0.1.5\plugins\main\...`），段落锚定必须在归一化后的文本上
+    // 做，否则同一份证据在 Windows 上会退化成"未归因"或全量安全模式（P2-5）。
+    let normalized = line.replace('\\', "/");
+    if has_segment_path(&normalized, "plugins/", &item.id)
+        || has_segment_path(&normalized, "node_modules/", &item.name)
     {
         return true;
     }
-    !is_ambiguous_combo_line(line) && bundle_member(line, &item.name)
+    !is_ambiguous_combo_line(&normalized) && bundle_member(&normalized, &item.name)
 }
 
 /// `line` 里是否出现 bundle 路径或组合路由中的 `<name>/client.js`，且名字前是
@@ -459,6 +463,9 @@ fn is_kernel_evidence_line(line: &str) -> bool {
     if !is_error_line(line) {
         return false;
     }
+    // 同 `is_anchored_plugin_hit`：Windows 上包路径是反斜杠形态，
+    // `@deepseek-ai\dsh\lib\bin.js` 也必须能命中内核命名空间（P2-5）。
+    let normalized = line.replace('\\', "/");
     // 任何提到内核命名空间包名的错误。边界判断很关键：
     // `@deepseek-ai/dsh/` 覆盖根入口文件（例如
     // `@deepseek-ai/dsh/lib/bin.js`），而 `@deepseek-ai/dsh-` 覆盖
@@ -471,7 +478,7 @@ fn is_kernel_evidence_line(line: &str) -> bool {
     // bundle，命中其中的内核包名并不能证明帧落在内核那一段上，归到内核
     // 就等于把插件的错记到内核头上（P2 级归因误报）。这种行留给
     // `diagnose_runtime` 的「前端 bundle」分支如实说明未定位到包名。
-    if has_kernel_package_ref(line) && !is_ambiguous_combo_line(line) {
+    if has_kernel_package_ref(&normalized) && !is_ambiguous_combo_line(&normalized) {
         return true;
     }
     // 稳定的内核 Loader 短语。这些是内核 client-module loader 在预打
@@ -489,6 +496,35 @@ fn is_kernel_evidence_line(line: &str) -> bool {
     KERNEL_LOADER_PHRASES
         .iter()
         .any(|phrase| line.contains(phrase))
+}
+
+/// 明确的「环境类」启动失败特征。
+///
+/// 这类失败里内核进程**起来过**（因此不会被判成 `SpawnFailed`），但失败原因与
+/// 插件无关：端口被占、目录不可写、磁盘满、原生模块与 Node ABI 不匹配……
+/// 把"停用全部插件"施加在它们身上，只会在下一次重试恰好成功时（占用端口的进程
+/// 退出了）把功劳记到"插件有问题"头上，并在 `quarantine.json` 里留下无辜插件的
+/// 记录（P2-4）。
+const ENV_FAILURE_MARKERS: [&str; 10] = [
+    "eaddrinuse",
+    "address already in use",
+    "eacces",
+    "eperm",
+    "permission denied",
+    "enospc",
+    "no space left on device",
+    "node_module_version",
+    "was compiled against a different node.js version",
+    "cannot find module './build/release",
+];
+
+/// 日志里是否出现了环境类失败特征；命中时返回命中的那一条（用于文案）。
+fn environment_failure(log_tail: &str) -> Option<String> {
+    let lower = log_tail.to_ascii_lowercase();
+    ENV_FAILURE_MARKERS
+        .iter()
+        .find(|marker| lower.contains(*marker))
+        .map(|marker| (*marker).to_string())
 }
 
 /// 当且仅当 `line` 引用了内核自己的包命名空间（`@deepseek-ai/dsh` 后
@@ -626,6 +662,9 @@ pub fn guarded_start(
     let manifest_snapshot =
         plugins::snapshot_profile_manifest_text(deps.data_dir, &deps.settings.profile);
     let mut trail: Vec<String> = Vec::new();
+    // 本次防护是否真的改过隔离 / 接线。没改过就不必用一次完整的 pnpm install
+    // 去"恢复"（P2-3）。
+    let mut quarantined_this_run = false;
 
     // 第 1 次尝试：完全按既有接线启动。
     on_progress("正在启动工作台…");
@@ -657,7 +696,17 @@ pub fn guarded_start(
         trail.push(format!("{log_error}（本次日志可能不完整）"));
     }
     let tail = log_tail(deps);
-    let mut suspects = if kernel_started {
+    // 环境类失败（端口被占、目录不可写、ABI 不匹配……）与"压根没起来"同等对待：
+    // 不做插件归因、不重试停用、不进安全模式。否则重试恰好成功时（占用者退出）
+    // 会把环境故障记成插件故障，并让用户去处置无辜插件（P2-4）。
+    let env_marker = environment_failure(&tail);
+    let plugin_ladder = kernel_started && env_marker.is_none();
+    if let Some(marker) = &env_marker {
+        trail.push(format!(
+            "检测到环境类失败特征（{marker}），跳过插件归因与安全模式"
+        ));
+    }
+    let mut suspects = if plugin_ladder {
         attribute(&tail, &store_items, &kernel_label)
     } else {
         Vec::new()
@@ -672,6 +721,7 @@ pub fn guarded_start(
             String::from("内核启动失败，错误日志指向该插件，已自动停用"),
         );
         if quarantine::add_all(deps.data_dir, &records).is_ok() {
+            quarantined_this_run = true;
             refresh_wiring(deps, on_progress, &mut trail);
             let (verdict2, child2) = boot_once(deps, on_progress);
             if matches!(verdict2, BootVerdict::Ready) {
@@ -713,7 +763,7 @@ pub fn guarded_start(
     // 败通常是内核或环境的问题。内核压根没起来时同样跳过：把"停用全部插件"
     // 施加在环境类失败上，只会在下一次重试恰好成功时把功劳错误地记到
     // "插件有问题"头上。
-    if kernel_started && !store_items.is_empty() {
+    if plugin_ladder && !store_items.is_empty() {
         on_progress("仍未启动成功，正在进入安全模式（停用全部第三方插件）后重试…");
         let already: HashSet<String> = quarantined_ids_now(deps.data_dir);
         let rest: Vec<Suspect> = store_items
@@ -731,6 +781,7 @@ pub fn guarded_start(
             String::from("无法定位具体引发故障的插件，安全模式已停用全部第三方插件"),
         );
         if quarantine::add_all(deps.data_dir, &records).is_ok() {
+            quarantined_this_run = true;
             refresh_wiring(deps, on_progress, &mut trail);
             let (verdict3, child3) = boot_once(deps, on_progress);
             if matches!(verdict3, BootVerdict::Ready) {
@@ -789,14 +840,23 @@ pub fn guarded_start(
     on_progress("多次尝试后仍无法启动，正在恢复原有配置…");
     trail.push(String::from("已放弃自动修复，恢复原有接线与隔离状态"));
     let _ = quarantine::save(deps.data_dir, &prior_quarantine);
-    if let Err(e) = plugins::restore_profile_manifest(
-        deps.data_dir,
-        deps.settings,
-        deps.pnpm_exe,
-        manifest_snapshot.as_deref(),
-        on_progress,
-    ) {
-        trail.push(format!("恢复原接线失败：{e}"));
+    if quarantined_this_run {
+        if let Err(e) = plugins::restore_profile_manifest(
+            deps.data_dir,
+            deps.settings,
+            deps.pnpm_exe,
+            manifest_snapshot.as_deref(),
+            on_progress,
+        ) {
+            trail.push(format!("恢复原接线失败：{e}"));
+        }
+    } else {
+        // 没有归因、也没进过安全模式 ⇒ 看护本次没改过插件接线，没必要用一次
+        // 完整的 `pnpm install`（可能数分钟、要联网）去"恢复"它；而且那条路径
+        // 会把失败原因埋进"已恢复原有插件配置"的插件口径话术里（P2-3）。
+        trail.push(String::from(
+            "本次未改动插件接线（无归因、未进入安全模式），跳过接线恢复与 pnpm 重装",
+        ));
     }
     let kernel_suspected = suspects.iter().any(|s| s.kind == "kernel");
     let multiple_versions = kernel::list_installed(deps.data_dir).len() > 1;
@@ -804,21 +864,41 @@ pub fn guarded_start(
     if kernel_suspected || multiple_versions {
         hint = format!("也可先尝试在「内核版本」页切换到其他已安装版本。{hint}");
     }
+    // 环境类失败给出真实原因与真实下一步：旧文案一律说"已恢复原有插件配置"，
+    // 把用户引向插件/内核重装，而真正的出路（换端口、释放端口、检查数据目录权限）
+    // 只埋在折叠的 attempts 里（P2-3/P2-4）。
+    let mut message = String::from("多次尝试后工作台仍无法启动，已恢复原有插件配置。");
+    let mut cause = if kernel_suspected {
+        String::from("kernel")
+    } else {
+        String::from("unknown")
+    };
+    let env_reason = if kernel_started {
+        env_marker
+            .as_deref()
+            .map(|marker| format!("内核启动过程中报告了环境类错误（{marker}）"))
+    } else {
+        Some(format!("内核进程没有被拉起来：{}", verdict.reason()))
+    };
+    if let Some(reason) = env_reason {
+        message = format!("工作台无法启动：{reason}。本次未改动任何插件配置。");
+        hint = String::from(
+            "请按上面的原因处理后重试：端口被占用就换一个端口（设置页）或结束占用该端口的进程；\n\
+             权限 / 磁盘问题请检查数据目录是否可写、磁盘是否已满；仍不确定时用「查看日志」看完整内核日志。",
+        );
+        cause = String::from("env");
+    }
     let incident = Incident {
         recovered: false,
         safe_mode: false,
-        message: String::from("多次尝试后工作台仍无法启动，已恢复原有插件配置。"),
+        message,
         suspects: dedup_suspects(suspects),
         attempts: trail,
         log_tail: tail,
         log_path: kernel_log_path(deps.data_dir).display().to_string(),
         hint: Some(hint),
         at: epoch_secs(),
-        cause: if kernel_suspected {
-            String::from("kernel")
-        } else {
-            String::from("unknown")
-        },
+        cause,
         health: None,
     };
     save_incident(deps.data_dir, &incident);
@@ -1555,8 +1635,14 @@ replaceFromOpening@http://127.0.0.1:4090/plugins/:1115:25\n\
 replaceGeneration@http://127.0.0.1:4090/plugins/:1093:28\n\
 open@http://127.0.0.1:4090/plugins/:1011:28";
 
+    /// 每个用例一个唯一的「dsh home」，data dir 是它下面的 `desktop/`。
+    ///
+    /// **data dir 必须带这一层父目录**：插件中央库在 `data_dir` 的**父目录**下
+    /// （`plugins::store_dir` = `<home>/plugins`），把临时目录本身当 data dir 会让
+    /// 所有用例共用同一个 `/tmp/plugins`——并行跑测试时互相覆盖，甚至被某个用例的
+    /// 清理逻辑整个删掉，表现为与被测行为无关的偶发失败（本次就是踩到了这个）。
     fn temp_data_dir(tag: &str) -> PathBuf {
-        let data_dir = std::env::temp_dir().join(format!(
+        let home = std::env::temp_dir().join(format!(
             "dsh-guard-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -1564,6 +1650,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        let data_dir = home.join("desktop");
         std::fs::create_dir_all(&data_dir).expect("create data dir");
         data_dir
     }
@@ -1865,6 +1952,153 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
         assert_eq!(startup.cause, "unknown", "没有健康证据就不能改判");
     }
 
+    /// P2-5：Windows 的反斜杠路径必须能参与段落锚定。
+    ///
+    /// 不归一化时 `...\node_modules\ghost-plugin\index.js` 这类**不带引号**的
+    /// 路径行既匹配不到 `node_modules/<name>`，也匹配不到内核命名空间，同一份
+    /// 证据在 Windows 上会退化成"未归因"或全量安全模式。
+    #[test]
+    fn attribution_matches_windows_backslash_paths() {
+        let items = vec![store_item("ghost-plugin", "ghost-plugin")];
+        let bare =
+            r"Error: at C:\Users\me\kernels\0.1.5\node_modules\ghost-plugin\lib\index.js:1:1";
+        assert!(
+            is_anchored_plugin_hit(bare, &items[0]),
+            "反斜杠路径必须命中 node_modules/<name> 段落"
+        );
+        let suspects = attribute(bare, &items, "0.1.5");
+        assert_eq!(suspects.len(), 1, "反斜杠路径必须能归因到插件");
+        assert_eq!(suspects[0].id, "ghost-plugin");
+
+        assert!(
+            is_kernel_evidence_line(
+                r"Error: Cannot find module 'C:\Users\me\kernels\0.1.5\node_modules\@deepseek-ai\dsh\lib\bin.js'"
+            ),
+            "反斜杠形态的内核包路径同样要命中内核命名空间"
+        );
+        // 段落边界仍然生效：`ghost-plugin-utils` 不是 `ghost-plugin`。
+        assert!(!is_anchored_plugin_hit(
+            r"Error: at C:\tmp\node_modules\ghost-plugin-utils\index.js:1:1",
+            &items[0]
+        ));
+    }
+
+    /// P2-4：环境类失败特征识别（端口被占、权限、ABI 不匹配……）。
+    #[test]
+    fn environment_failure_recognizes_port_and_permission_errors() {
+        assert!(environment_failure(
+            "Error: listen EADDRINUSE: address already in use 127.0.0.1:3090"
+        )
+        .is_some());
+        assert!(environment_failure("Error: EACCES: permission denied, open '/x'").is_some());
+        assert!(environment_failure(
+            "Error: The module was compiled against a different Node.js version using NODE_MODULE_VERSION 127"
+        )
+        .is_some());
+        assert!(environment_failure("Error: ENOSPC: no space left on device").is_some());
+        assert!(
+            environment_failure("TypeError: cannot read property 'x' of undefined").is_none(),
+            "普通前端/插件错误不得被当成环境类失败"
+        );
+        assert!(environment_failure("").is_none());
+    }
+
+    /// P2-3 / P2-4：内核"起来又因环境原因退出"时，看护不得进入插件阶梯，也不该
+    /// 用一次完整的 pnpm install 去"恢复"从未改过的接线，事故文案要给出真实原因。
+    ///
+    /// 构造：假 node（脚本）打印一行 EADDRINUSE 后以非 0 退出——这正是"端口被占"
+    /// 在内核日志里的形态。修复前：`kernel_started` 为真 ⇒ 进入安全模式停用全部
+    /// 插件、改写 profile 接线，最后跑 `pnpm install` 恢复，并告诉用户"已恢复原有
+    /// 插件配置 / 请重装内核"。
+    #[cfg(unix)]
+    #[test]
+    fn environment_exit_skips_the_plugin_ladder_and_the_pnpm_restore() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let data_dir = temp_data_dir("env-exit");
+        let version = "0.1.2";
+        let kernel_dir = crate::kernel::kernel_dir(&data_dir, version);
+        let bin = kernel_dir.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
+        std::fs::create_dir_all(bin.parent().expect("bin parent")).expect("kernel tree");
+        std::fs::write(&bin, "// stub\n").expect("write bin");
+
+        // 假 node：模拟"端口被占"的内核启动失败。
+        let fake_node = data_dir.join("fake-node");
+        std::fs::write(
+            &fake_node,
+            "#!/bin/sh\necho 'Error: listen EADDRINUSE: address already in use 127.0.0.1:3090' 1>&2\nexit 1\n",
+        )
+        .expect("write fake node");
+        std::fs::set_permissions(&fake_node, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake node");
+
+        // 端口用 0：`port_open(0)` 恒为假，因此这个用例不会因为并行跑的其它用例
+        // 抢走临时端口而走进"端口被占用"的 SpawnFailed 分支（那会让下面的文案断言
+        // 随机失败）。假 node 与端口无关，它总是打印 EADDRINUSE 后退出。
+        let settings = crate::settings::Settings {
+            port: 0,
+            ..crate::settings::Settings::default()
+        };
+        crate::settings::save(&data_dir, &settings).expect("save settings");
+        crate::kernel::write_active(&data_dir, Some(version)).expect("write active");
+
+        // 中央库里有一个已安装插件：修复前它会被全量停用。
+        let store_dir = plugins::store_dir(&data_dir);
+        std::fs::create_dir_all(&store_dir).expect("store dir");
+        std::fs::write(
+            store_dir.join("store.json"),
+            r#"{"schemaVersion":1,"items":[{"id":"ghost","name":"ghost-plugin"}]}"#,
+        )
+        .expect("write store");
+
+        let deps = GuardDeps {
+            data_dir: &data_dir,
+            settings: &settings,
+            node_path: &fake_node,
+            pnpm_exe: Path::new("/nonexistent/pnpm"),
+        };
+        let (report, child) = guarded_start(&deps, &mut |_| {});
+        assert!(child.is_none(), "环境类失败不该留下内核进程");
+
+        let incident = report.incident.expect("必须有事故面板");
+        assert_eq!(incident.cause, "env", "环境类失败必须标成 env");
+        assert!(
+            incident.message.contains("环境类错误"),
+            "文案要点出真实原因：{}",
+            incident.message
+        );
+        assert!(
+            !incident
+                .attempts
+                .iter()
+                .any(|entry| entry.contains("正在进入安全模式") || entry.contains("下启动成功")),
+            "环境类失败不得进入安全模式；实际轨迹：{:?}",
+            incident.attempts
+        );
+        assert!(
+            incident
+                .attempts
+                .iter()
+                .any(|entry| entry.contains("跳过接线恢复")),
+            "没有改过接线就不该跑 pnpm 恢复；实际轨迹：{:?}",
+            incident.attempts
+        );
+        assert!(
+            crate::quarantine::load(&data_dir).items.is_empty(),
+            "环境类失败不得隔离任何插件"
+        );
+        // 记录文件本身在整轮里必须仍然存在；内容层面的"记录未被清空"由
+        // `unrelated_port_occupant_does_not_quarantine_plugins` 用同一份夹具断言
+        // （这里不重复读盘：并行跑测试时另一次读盘可能与写盘交错，让断言变成
+        // 与被测行为无关的噪声）。
+        assert!(
+            plugins::store_dir(&data_dir).join("store.json").is_file(),
+            "插件清单文件不得被删除"
+        );
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
     /// 内核**根本没被拉起来**时（这里是端口被无关进程占用），看护不得进入
     /// "归因 → 停用插件 → 安全模式"的阶梯。
     ///
@@ -1874,15 +2108,9 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
     /// 收到"已停用以下插件后成功启动"的报告——把一次环境故障记成插件故障。
     #[test]
     fn unrelated_port_occupant_does_not_quarantine_plugins() {
-        let data_dir = std::env::temp_dir().join(format!(
-            "dsh-guard-spawn-failed-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        // 走同一个 helper：data dir 带自己的父目录，中央库才不会落到共享的
+        // `/tmp/plugins` 上（见 `temp_data_dir` 的说明）。
+        let data_dir = temp_data_dir("spawn-failed");
 
         // 端口被本测试进程占用——它不是 dsh 内核。
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind port");
