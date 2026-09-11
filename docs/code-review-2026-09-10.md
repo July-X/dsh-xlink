@@ -46,7 +46,7 @@
 | P2-25 | `get_kernel_log` 死命令 | ✅ 已修 | 实现、注册、白名单三处一并删除（注册命令 45 → 44） |
 | P2-26 | `node_cache` 用裸 `lock()` | ✅ 已修 | 改用 `crate::lock`，锁被毒化时也清缓存 |
 | P2-29 | `stop_kernel` 提前返回跳过 `clear_pid` | ✅ 已修 | pid 记录无条件清理，停止失败仍如实上报 |
-| 【已修】P2-45 | CI 缺少测试入口 | 🚧 部分修复 | 已接入 `check:invariants` / `test:scripts`（`scripts/*.test.mjs` 全量，10 条）/ `smoke-pullstring`；`verify-*.mjs` 的版本门仍待处理（见 P2-47） | ✅ 已修：补上 `test:file-perf` 入口；`test:scripts` 把 `scripts/*.test.mjs` 全量接入 CI（早前已完成）。三个 verify 脚本需要真实内核才能跑，因此不进 CI，而是通过 P2-47 的版本门做到"在有内核的开发机上不会假失败"
+| 【已修】P2-45 | CI 缺少测试入口 | ✅ 已修 | 已接入 `check:invariants` / `test:scripts`（`scripts/*.test.mjs` 全量，10 条）/ `smoke-pullstring`；`verify-*.mjs` 的版本门仍待处理（见 P2-47） | ✅ 已修：补上 `test:file-perf` 入口；`test:scripts` 把 `scripts/*.test.mjs` 全量接入 CI（早前已完成）。三个 verify 脚本需要真实内核才能跑，因此不进 CI，而是通过 P2-47 的版本门做到"在有内核的开发机上不会假失败"
 | P2-49 / P2-50 | 技能文档与实现不一致 | ✅ 已修 | 随 P0-3 更新 `docs/skill-management.md` |
 | P2-53 | `install.mjs` 丢弃子进程输出 | ✅ 已修 | `stdio: 'inherit'` + 失败原因不再退化成「退出码 ?」；新增 3 条反证过的测试与 `test:scripts` CI 入口 |
 | P2-54 ~ P2-61 | 注释与文档一致性（8 条） | ✅ 已修 | 逐条对齐实现：strip 高度、junction、copy 重同步语义、hash 锚定、校验时机、两处启动期文案 |
