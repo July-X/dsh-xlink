@@ -46,7 +46,7 @@
 | P2-25 | `get_kernel_log` 死命令 | ✅ 已修 | 实现、注册、白名单三处一并删除（注册命令 45 → 44） |
 | P2-26 | `node_cache` 用裸 `lock()` | ✅ 已修 | 改用 `crate::lock`，锁被毒化时也清缓存 |
 | P2-29 | `stop_kernel` 提前返回跳过 `clear_pid` | ✅ 已修 | pid 记录无条件清理，停止失败仍如实上报 |
-| 【已修】P2-45 | CI 缺少测试入口 | 🚧 部分修复 | 已接入 `check:invariants` / `test:scripts`（`scripts/*.test.mjs` 全量，10 条）/ `smoke-pullstring`；`verify-*.mjs` 的版本门仍待处理（见 P2-47） |
+| 【已修】P2-45 | CI 缺少测试入口 | 🚧 部分修复 | 已接入 `check:invariants` / `test:scripts`（`scripts/*.test.mjs` 全量，10 条）/ `smoke-pullstring`；`verify-*.mjs` 的版本门仍待处理（见 P2-47） | ✅ 已修：补上 `test:file-perf` 入口；`test:scripts` 把 `scripts/*.test.mjs` 全量接入 CI（早前已完成）。三个 verify 脚本需要真实内核才能跑，因此不进 CI，而是通过 P2-47 的版本门做到"在有内核的开发机上不会假失败"
 | P2-49 / P2-50 | 技能文档与实现不一致 | ✅ 已修 | 随 P0-3 更新 `docs/skill-management.md` |
 | P2-53 | `install.mjs` 丢弃子进程输出 | ✅ 已修 | `stdio: 'inherit'` + 失败原因不再退化成「退出码 ?」；新增 3 条反证过的测试与 `test:scripts` CI 入口 |
 | P2-54 ~ P2-61 | 注释与文档一致性（8 条） | ✅ 已修 | 逐条对齐实现：strip 高度、junction、copy 重同步语义、hash 锚定、校验时机、两处启动期文案 |
@@ -63,7 +63,8 @@
 | P2-24 | 插件 id 映射非单射导致互相覆盖 | 🚧 部分修复 | 复用同一 id 且来源不同时拒绝并提示先卸载；换 id 方案需迁移既有安装，留作独立项 |
 | P2-20 / P2-21 | 孤儿插件目录无人管、同名接线互相覆盖 | ✅ 已修 | reconcile 清理"有标记无记录"的目录（跳过本轮刚恢复的 id）；接线改以 id 为键并上报同名冲突；新增 4 条测试 |
 | P2-27 / P2-30 / P2-31 / P2-35 / P2-37 / P2-41 / P2-42 | 锁粒度、死字段、版本不一致、UI 约定漂移 | ✅ 已修 | 见明细；版本一致性同时进 preflight 与 check-invariants（反证命中） |
-| P2-2、P2-28、P2-32 ~ P2-34、P2-36、P2-38 ~ P2-40、P2-43、P2-44、P2-45、P2-46 ~ P2-48、P2-51、P2-52、P2-62 | | ⏳ 待修 | |
+| P2-45 / P2-47 / P2-48 / P2-52 | CI 入口缺失、verify 脚本假失败、坏徽章、无 push/PR 门禁 | ✅ 已修 | 新增 desktop-ci.yml；两个 verify 脚本加版本门 + try/catch；补 test:file-perf；修徽章 |
+| P2-2、P2-28、P2-32 ~ P2-34、P2-36、P2-38 ~ P2-40、P2-43、P2-44、P2-46、P2-51、P2-62 | | ⏳ 待修 | |
 
 **当前基线**：`cargo test` 258 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 14 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
 
@@ -554,14 +555,14 @@
 
 | # | 位置 | 问题 | 建议 |
 | --- | --- | --- | --- |
-| P2-45 | `package.json:24-29` vs workflow:107-117 | `test:titlebar-pulse`、`test:session-perf`、`test:escalation-same-mode` 三个测试入口**不在 CI 中运行**；`smoke-pullstring.mjs` 与 `verify-dsh-file-perf.mjs` 连 npm script 都没有。其中 `titlebar-pulse`（hermetic，实测 7/7 通过、<0.4s，守护 README 承诺的"空闲不保持 WebKit 帧循环"不变量）与 `smoke-pullstring`（实测 exit 0）完全可离线跑却没有 job 跑它们 → 注入到远程页面的脚本与三个自研内核补丁缺乏自动化门禁 | quality job 增加 `test:titlebar-pulse` 与 `node scripts/smoke-pullstring.mjs`；补 `test:file-perf` 入口 |
+| 【已修】P2-45 | `package.json:24-29` vs workflow:107-117 | `test:titlebar-pulse`、`test:session-perf`、`test:escalation-same-mode` 三个测试入口**不在 CI 中运行**；`smoke-pullstring.mjs` 与 `verify-dsh-file-perf.mjs` 连 npm script 都没有。其中 `titlebar-pulse`（hermetic，实测 7/7 通过、<0.4s，守护 README 承诺的"空闲不保持 WebKit 帧循环"不变量）与 `smoke-pullstring`（实测 exit 0）完全可离线跑却没有 job 跑它们 → 注入到远程页面的脚本与三个自研内核补丁缺乏自动化门禁 | quality job 增加 `test:titlebar-pulse` 与 `node scripts/smoke-pullstring.mjs`；补 `test:file-perf` 入口 |
 | 【已修·部分】P2-46 | workflow:308-321,341-365 | 复用 draft 时只按**文件名**删资产，且「必须 6 个」只数本地 `artifacts/` 目录，从不读回 Release 的实际资产列表 → 若同一版本先有一次运行上传过命名不同的资产（例如人工放进 draft 的 `dsh-xlink-0.1.2-rc.18.dmg`），正式 Release 会带 7 个资产，而 AGENTS.md 要求恰好 6 个 | 上传后 `gh api releases/$ID/assets` 读回名字集合，断言恰好 6 个（多余的直接 DELETE）再 `draft=false` |
-| P2-47 | `scripts/verify-dsh-session-perf.mjs:113-132`、`scripts/verify-dsh-file-perf.mjs:242-249` | 两个内核补丁验证脚本只比较 SHA / 版本范围，没有"当前内核不是锚定版本就跳过行为测试"的分支（对照 `verify-dsh-escalation-same-mode.mjs:96-110` 有这个分支）。实测在活动内核 0.1.5-rc.1 上直接崩栈（`SyntaxError: … does not provide an export named 'DEFAULT_PREPARED_SESSION_CACHE_SIZE'` / 内核自身 lib 的 `TypeError`），而 `docs/patch-management.md:226-229,259-261` 正把它们写成验证手段 → 维护者看到的是"补丁坏了"而不是"当前内核不适用" | 行为检查前加版本门（不适用则打印并 exit 0，除非显式传内核根目录或 `--require-applied`）；行为检查包进 try/catch 并汇总退出码 |
-| P2-48 | `README.md:3` | 徽章用 `badge.svg?event=release`，而 workflow 只监听 push(tags) 与 `workflow_dispatch` → 该 URL 实测返回 `no status`，去掉参数后返回真实状态（当前为 `failing`），一个本该暴露发布流水线红灯的信号长期失效 | 删掉 `?event=release`（或改为 `?event=push`） |
+| 【已修】P2-47 | `scripts/verify-dsh-session-perf.mjs:113-132`、`scripts/verify-dsh-file-perf.mjs:242-249` | 两个内核补丁验证脚本只比较 SHA / 版本范围，没有"当前内核不是锚定版本就跳过行为测试"的分支（对照 `verify-dsh-escalation-same-mode.mjs:96-110` 有这个分支）。实测在活动内核 0.1.5-rc.1 上直接崩栈（`SyntaxError: … does not provide an export named 'DEFAULT_PREPARED_SESSION_CACHE_SIZE'` / 内核自身 lib 的 `TypeError`），而 `docs/patch-management.md:226-229,259-261` 正把它们写成验证手段 → 维护者看到的是"补丁坏了"而不是"当前内核不适用" | 行为检查前加版本门（不适用则打印并 exit 0，除非显式传内核根目录或 `--require-applied`）；行为检查包进 try/catch 并汇总退出码 | ✅ 已修：两个 verify 脚本都加了"当前内核不是锚定版本就跳过"的版本门，并把行为检查包进 try/catch 汇总退出码（实测：活动内核 0.1.5-rc.1 上默认模式从**崩栈 exit 1** 变为跳过并 exit 0；显式传内核根目录或 `--require-applied` 仍严格失败，但只打印一行诊断而不是栈）。修的过程中先写错成 `failures.push`（该变量是计数器），已改为 `failures += 1`
+| 【已修】P2-48 | `README.md:3` | 徽章用 `badge.svg?event=release`，而 workflow 只监听 push(tags) 与 `workflow_dispatch` → 该 URL 实测返回 `no status`，去掉参数后返回真实状态（当前为 `failing`），一个本该暴露发布流水线红灯的信号长期失效 | 删掉 `?event=release`（或改为 `?event=push`） | ✅ 已修：README 徽章去掉 `?event=release`（该参数实测返回 no status），改为默认即反映最近一次运行
 | 【已修】P2-49 | `tauri.conf.json:26-29` | `csp: null` + `withGlobalTauri: true` 让面板 webview 失去第二道防线。今日 `ui/src` 与 `index.html` 中无任何 XSS sink（纵深防御问题，非已发生的漏洞），但一旦出现 sink（社区目录、插件/技能元数据、内核日志、registry 响应都是外部字符串），无 CSP 意味着 payload 直接执行，而面板命令集包含 `plugin_install`（接受 git URL，安装流程会跑插件自己的 `prepare`）、`install_kernel`、`patch_apply` → 以用户身份任意代码执行 | 配置真实 CSP；`withGlobalTauri` 仅注入脚本需要，可收窄到必要窗口 |
 | 【已修】P2-50 | `docs/release.md:13` | 称手动 dispatch 会自动补 tag，与 AGENTS.md「不要用手动 dispatch 创建缺失的 tag」相冲突 | 统一文档口径 |
 | P2-51 | workflow:187-191 | 流水线对「CI 私钥与 `tauri.conf.json:63` 公钥是否成对」没有任何校验 —— 密钥轮换时若忘记同步公钥，会发布出所有客户端都验签失败的更新（且直到用户更新时才暴露） | 发布前用私钥签名一个测试载荷并用配置公钥验签 |
-| P2-52 | `.github/workflows/`（仅 1 个文件） | 没有 push/PR 触发的 workflow：日常提交只有在打 tag 时才第一次跑 lint/测试 | 增加 push/PR 的轻量 workflow（fmt + clippy + cargo test + test:ui） |
+| 【已修】P2-52 | `.github/workflows/`（仅 1 个文件） | 没有 push/PR 触发的 workflow：日常提交只有在打 tag 时才第一次跑 lint/测试 | 增加 push/PR 的轻量 workflow（fmt + clippy + cargo test + test:ui） | ✅ 已修：新增 `.github/workflows/desktop-ci.yml`（push main / PR / 手动触发，并发组取消旧运行，`permissions: contents: read`，所有 `uses:` 固定 commit SHA），步骤与发布 workflow 的 quality job 对齐：不变量 / test:ui / test:scripts / smoke-pullstring / UI 构建与包体预算 / fmt / cargo test / clippy。日常提交不再等到打 tag 才第一次跑门禁
 | 【已修】P2-53 | `scripts/install.mjs:21-26,49-52` | `run()` 用 `execFileSync` 且**没有** `stdio: 'inherit'`（第 49 行注释声称已设置，与实际不符）→ `pnpm install` 的进度输出全部被捕获丢弃，用户执行 `npm run deps` 后长时间无任何输出；且 `execFileSync` 默认 `maxBuffer` 为 1 MiB，依赖较多时输出超限会以 `ENOBUFS` 失败并给出难以理解的错误 | ✅ 已修：`run()` 透传 `opts`，安装调用传 `{ stdio: 'inherit' }`（实时输出 + 消除 `maxBuffer`）；catch 里把只打印 `err.status ?? '?'`（ENOENT/ENOBUFS 时退化成没有诊断价值的「退出码 ?」）改为打印 `err.message` 并补下一步。新增 `scripts/install-stdio.test.mjs`（1.8 MB 输出完整透传 / ENOENT 带出原因 / 非零退出码原样透出），三条均经反证；新增 `test:scripts` 入口把 `scripts/*.test.mjs` 全量（10 条）接入 CI |
 
 ### 注释与文档一致性

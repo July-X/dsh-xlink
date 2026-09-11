@@ -82,11 +82,21 @@ async function loadPatch(kernelRoot) {
   const isLegacyPatched = LEGACY_PATCHED_SHA256.includes(targetSha);
   check('manifest expectSha256 与原始 dist 一致', file.expectSha256 === ORIGINAL_SHA256);
   check('补丁载荷哈希与记录一致', payloadSha === PATCHED_SHA256, `sha256=${payloadSha}`);
-  check(
-    '目标文件为原始版本、本补丁版本或可识别旧版本',
-    targetSha === ORIGINAL_SHA256 || isPatched || isLegacyPatched,
-    `sha256=${targetSha}`
-  );
+
+  // 目标文件检查同样只在"这就是本补丁锚定的那一份"时有意义：自动发现到的
+  // 活动内核可能是已被官方重写过目标文件的更高版本，把这种"不适用"报成
+  // 失败会让维护者以为补丁坏了（P2-47）。
+  const anchoredTarget = targetSha === ORIGINAL_SHA256 || isPatched || isLegacyPatched;
+  if (anchoredTarget) {
+    check('目标文件为原始版本、本补丁版本或可识别旧版本', true, `sha256=${targetSha}`);
+  } else if (requireApplied || positional) {
+    check('目标文件为原始版本、本补丁版本或可识别旧版本', false, `sha256=${targetSha}`);
+  } else {
+    console.log(
+      `! 目标文件不是本补丁锚定的版本（sha256=${targetSha}），跳过目标文件状态校验；` +
+        '显式传入锚定内核根目录或追加 --require-applied 进行严格检查',
+    );
+  }
   if (isLegacyPatched) {
     check('目标文件不是旧版载荷', false, '检测到 v1.0.1 / v1.1.0 旧载荷，请先撤销旧补丁记录，再应用当前版本');
   }
@@ -327,7 +337,33 @@ async function main() {
   console.log(`内核根目录：${kernelRoot}`);
   const { patchedSource, targetSha } = await loadPatch(kernelRoot);
   await syntaxCheck(patchedSource);
-  await behaviorCheck(patchedSource, kernelRoot);
+
+  // 行为检查只在目标文件确实是本补丁锚定的那一份时才有意义。自动发现到的
+  // 活动内核很可能是更高版本（官方已经重写过这个模块），此时按老版本 dist
+  // 写的模块导入会直接崩栈，维护者看到的是"补丁坏了"而不是"当前内核不适
+  // 用"（P2-47）。显式传入内核根目录或 --require-applied 时仍然严格运行。
+  const anchored =
+    targetSha === ORIGINAL_SHA256 ||
+    targetSha === PATCHED_SHA256 ||
+    LEGACY_PATCHED_SHA256.includes(targetSha);
+  const explicit = requireApplied || Boolean(positional);
+  if (anchored || explicit) {
+    try {
+      await behaviorCheck(patchedSource, kernelRoot);
+    } catch (error) {
+      // 崩栈也要计入失败并汇总退出码，而不是把栈直接甩给用户。
+      // （注意 `failures` 是计数器而不是数组。）
+      failures += 1;
+      console.log(
+        `✗ 行为检查抛出异常：${error && error.message ? error.message : error}`,
+      );
+    }
+  } else {
+    console.log(
+      `! 当前内核不是本补丁锚定的版本（目标文件 sha256=${targetSha}），跳过行为检查；` +
+        '显式传入锚定内核根目录或追加 --require-applied 可强制运行',
+    );
+  }
   console.log(`\n当前目标状态：${targetSha === ORIGINAL_SHA256 ? '未应用（载荷验证模式）' : '已应用或已漂移'}`);
   if (requireApplied && failures === 0) console.log('补丁已应用且验证通过');
   else if (!requireApplied && failures === 0) console.log('载荷验证通过；应用后追加 --require-applied 检查目标文件');

@@ -50,22 +50,43 @@ export function resolveKernelRoot(argv = process.argv.slice(2)) {
   throw new Error(`找不到激活内核：请显式传入内核根目录（检查 ${DSH_HOME}/desktop/active.txt）`);
 }
 
-function checkPayloadHashes(kernelRoot) {
-  console.log('— 载荷哈希（补丁是否落到内核）');
-  for (const [key, rel] of Object.entries(TARGETS)) {
+/// 读出两个目标文件的当前状态；`anchored` 表示它就是本补丁锚定的那一份
+/// （原始版本或补丁后版本）。
+function targetStates(kernelRoot) {
+  const states = Object.entries(TARGETS).map(([key, rel]) => {
     const path = join(kernelRoot, rel);
-    if (!existsSync(path)) {
-      check(`${rel} 存在`, false, '文件缺失');
+    const actual = existsSync(path) ? sha256(path) : null;
+    return {
+      label: rel.split('/').at(-3),
+      rel,
+      actual,
+      patched: SHA[`${key}Patched`],
+      original: SHA[`${key}Original`],
+      anchored:
+        actual !== null &&
+        (actual === SHA[`${key}Patched`] || actual === SHA[`${key}Original`]),
+    };
+  });
+  return { states, allAnchored: states.every((state) => state.anchored) };
+}
+
+function checkPayloadHashes(states, strict) {
+  console.log('— 载荷哈希（补丁是否落到内核）');
+  for (const state of states) {
+    const detail =
+      state.actual === null
+        ? '文件缺失'
+        : state.actual === state.original
+          ? '仍是原始文件（补丁未应用）'
+          : state.actual === state.patched
+            ? ''
+            : `未知哈希 ${state.actual.slice(0, 12)}…`;
+    if (!strict) {
+      // 活动内核不是锚定版本时，这两个哈希只用于说明"当前不适用"，不是失败。
+      console.log(`! ${state.label} 不是本补丁锚定的版本  ${detail}`);
       continue;
     }
-    const actual = sha256(path);
-    const patched = SHA[`${key}Patched`];
-    const original = SHA[`${key}Original`];
-    check(
-      `${rel.split('/').at(-3)} 已是补丁后版本`,
-      actual === patched,
-      actual === original ? '仍是原始文件（补丁未应用）' : actual === patched ? '' : `未知哈希 ${actual.slice(0, 12)}…`,
-    );
+    check(`${state.label} 已是补丁后版本`, state.actual === state.patched, detail);
   }
 }
 
@@ -240,11 +261,39 @@ async function checkSessionReference(kernelRoot) {
 }
 
 async function main() {
+  const explicit = process.argv.slice(2).some((arg) => !arg.startsWith('--'));
   const kernelRoot = resolveKernelRoot();
   console.log(`内核根目录：${kernelRoot}\n`);
-  checkPayloadHashes(kernelRoot);
-  await checkFileReference(kernelRoot);
-  await checkSessionReference(kernelRoot);
+  const { states, allAnchored } = targetStates(kernelRoot);
+  const strict = explicit || allAnchored;
+  checkPayloadHashes(states, strict);
+
+  // 行为检查只在目标文件确实是本补丁锚定的那一份时才有意义：自动发现到的
+  // 活动内核可能是已被官方重写过目标文件的更高版本，此时按老版本 dist 写的
+  // 模块导入会崩栈或报出与实际无关的断言，而 `docs/patch-management.md` 正把
+  // 本脚本写成验证手段 —— 维护者看到的是"补丁坏了"，不是"当前内核不适用"
+  // （P2-47）。显式传入内核根目录时仍然严格运行。
+  if (!strict) {
+    console.log(
+      '! 当前内核的目标文件不是本补丁锚定的版本，跳过行为检查；' +
+        '显式传入锚定内核根目录可强制运行',
+    );
+  } else {
+    for (const [label, run] of [
+      ['文件引用', checkFileReference],
+      ['会话引用', checkSessionReference],
+    ]) {
+      try {
+        await run(kernelRoot);
+      } catch (error) {
+        // 崩栈也要计入失败并汇总退出码，而不是把栈直接甩给用户。
+        failures += 1;
+        console.log(
+          `✗ ${label} 行为检查抛出异常：${error && error.message ? error.message : error}`,
+        );
+      }
+    }
+  }
   console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`);
   process.exitCode = failures === 0 ? 0 : 1;
 }
