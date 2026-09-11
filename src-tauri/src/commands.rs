@@ -682,10 +682,13 @@ fn replace_child_slot(slot: &Mutex<Option<Child>>, child: Child) -> Option<Strin
     }
 }
 
-/// 为成功启动的内核子进程做注册：记录其 pid 以便后续重启后的 Shell
+/// 为成功启动的内核子进程做注册：记录其 pid 与启动端口以便后续重启后的 Shell
 /// 回收，并把句柄保存在应用状态中。
-fn register_child(state: &AppState, data_dir: &Path, child: Child) {
-    kernel::write_pid(data_dir, child.id());
+///
+/// 端口必须一起记（P2-1）：只凭 pid 无法区分「这还是我们那个内核」与「OS 把同一
+/// 个 pid 复用给了另一个 dsh 内核」，后者会让「关闭工作台」误杀别的实例。
+fn register_child(state: &AppState, data_dir: &Path, port: u16, child: Child) {
+    kernel::write_pid(data_dir, child.id(), port);
     if let Some(warning) = replace_child_slot(&state.running, child) {
         eprintln!("dsh-xlink: {warning}");
     }
@@ -731,7 +734,7 @@ pub async fn start_kernel(
         };
         let (report, child) = guard::guarded_start(&deps, &mut send);
         if let Some(child) = child {
-            register_child(&state, &data_dir, child);
+            register_child(&state, &data_dir, settings.port, child);
         }
         Ok(report)
     })
@@ -775,7 +778,9 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
         // 验一遍 pid 仍指向 dsh 内核，因此被复用给无关进程的 pid 是 no-op。
         let current = settings::load(&data_dir);
         if let Some(pid) = kernel::workbench_pid(&data_dir, &current) {
-            kernel::kill_pid(pid, None);
+            // 带上记录里的启动端口：完整三层校验才挡得住「pid 被复用给另一个
+            // dsh 内核」这一类误杀（P2-1）。
+            kernel::kill_pid(pid, kernel::recorded_kernel_port(&data_dir));
         }
         // pid 记录的清理必须无条件执行：内存句柄停止失败时若提前返回，下一次
         // 启动会带着一份陈旧的 pid 记录继续跑，而进程可能还活着。
