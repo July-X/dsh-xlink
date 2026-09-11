@@ -7,7 +7,7 @@
 // 不依赖 minisign：Tauri 的签名是 Ed25519，node:crypto 直接可验。公钥/签名都是
 // minisign 的 base64 结构：`[2 字节算法][8 字节 key id][32 字节公钥]` 与
 // `[2 字节算法][8 字节 key id][64 字节签名]`。
-import { createPublicKey, verify as cryptoVerify } from 'node:crypto';
+import { createHash, createPublicKey, verify as cryptoVerify } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -50,22 +50,39 @@ export function decodePublicKey(input) {
   return { keyId, keyObject: createPublicKey({ key: der, format: 'der', type: 'spki' }) };
 }
 
-/// 归一化签名输入。
+/// 从 Tauri 写出的 `.sig` 内容里取出 minisign 的签名 base64 行。
 ///
-/// `tauri signer sign` 写出的 `.sig` 是**两行**的 minisign 签名文件：
-/// `untrusted comment: …` 加一行 base64。直接把这整段当 base64 解码会得到一个
-/// 294 字节的垃圾（首次真实发布就是这么失败的），所以先取最后一行非空文本。
-/// 只给单行 base64 的调用方（例如本脚本的单测）同样接受。
+/// 真实形态是**双层**的（用已发布的 rc.18 制品核对过）：
+/// 1. 文件内容本身是一整行 base64；
+/// 2. 解码后是标准 minisign 签名文件文本：
+///    `untrusted comment: signature from tauri secret key`
+///    + 签名 base64（可能折行）
+///    + `trusted comment: timestamp:…\tfile:…`
+///    + 全局签名 base64
+///
+/// 只取**第一段** base64（untrusted comment 之后、下一个 comment 之前）：
+/// 后面那段是 minisign 的全局签名，混进来会解出错误长度。同时接受直接给出的
+/// 单行签名 base64（本脚本的单测就是这么构造的）。
 export function normalizeSignature(input) {
-  const lines = String(input)
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (lines.length === 0) throw new Error('签名内容为空');
-  return lines[lines.length - 1];
+  const raw = String(input).trim();
+  if (!raw) throw new Error('签名内容为空');
+
+  const decoded = Buffer.from(raw, 'base64').toString('utf8');
+  const text = decoded.includes('untrusted comment:') ? decoded : raw;
+
+  const block = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('untrusted comment:')) continue;
+    if (trimmed.startsWith('trusted comment:')) break;
+    if (trimmed) block.push(trimmed);
+  }
+  if (block.length === 0) throw new Error('签名内容里找不到 base64 行');
+  return block.join('');
 }
 
-/// 解析 minisign 形态的签名，返回 { keyId, signature }。
+/// 用公钥验证载荷签名。key id 不一致直接判失败：那说明公私钥根本不是一对。
+/// 解析 minisign 签名结构，返回 { keyId, signature }。
 export function decodeSignature(input) {
   const raw = Buffer.from(normalizeSignature(input), 'base64');
   if (raw.length !== SIGNATURE_PREFIX_BYTES + ED25519_SIGNATURE_BYTES) {
@@ -77,14 +94,16 @@ export function decodeSignature(input) {
   };
 }
 
-/// 用公钥验证载荷签名。key id 不一致直接判失败：那说明公私钥根本不是一对。
 export function verifyPayload({ publicKeyBase64, payload, signatureBase64 }) {
   const { keyId, keyObject } = decodePublicKey(publicKeyBase64);
   const { keyId: sigKeyId, signature } = decodeSignature(signatureBase64);
   if (keyId !== sigKeyId) {
     return { ok: false, reason: `key id 不一致（公钥 ${keyId}，签名 ${sigKeyId}）` };
   }
-  return cryptoVerify(null, payload, keyObject, signature)
+  // minisign 是**预哈希**签名：Ed25519 签的是 BLAKE2b-512(文件内容)，而不是
+  // 文件本身。用已发布的 rc.18 制品验证过：对原文验签恒为 false，对摘要为 true。
+  const digest = createHash('blake2b512').update(payload).digest();
+  return cryptoVerify(null, digest, keyObject, signature)
     ? { ok: true }
     : { ok: false, reason: 'Ed25519 验签失败（公私钥不匹配或载荷被改动）' };
 }
