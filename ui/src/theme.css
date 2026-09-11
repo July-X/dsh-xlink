@@ -1019,26 +1019,29 @@ body.rel-build .sidebar {
   white-space: nowrap;
 }
 
-.safety-notice {
-  margin-top: auto;
+/* 第三方来源安全提示（PluginsPanel 顶部）。原先钉在侧栏底部、常驻显示：
+   它是插件页的语境提示，挂在全局侧栏既占地方，也和当前页面无关。现在改为
+   只在「插件」页渲染的面板级横幅——主区宽，一句话排一行，不再换行成两行。 */
+.panel-notice {
   display: flex;
+  align-items: flex-start;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 10px;
   background: rgba(251, 191, 36, 0.07);
   border: 1px solid rgba(251, 191, 36, 0.18);
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
-.safety-notice .el-icon {
+.panel-notice .el-icon {
   flex-shrink: 0;
   margin-top: 2px;
   color: var(--warn);
 }
 
-.safety-notice p {
+.panel-notice p {
   margin: 0;
 }
 
@@ -1764,62 +1767,280 @@ main {
   justify-content: flex-end;
 }
 
-.plugin-row {
-  align-items: flex-start;
-  flex-direction: column;
+/* 插件行的元数据 / 名称排版已统一到上面的 .entity-* 规则，这里不再单独定义。 */
+
+/* --- 列表行（已安装技能包 / 已安装插件共用） -----------------------------
+   每一条占两行：第一行「名称 + 来源 / 模式 chip + 一句话描述」，描述吃掉剩余
+   宽度（过长省略号收尾，完整内容走 tooltip）；第二行左侧放版本元数据、右侧
+   放状态 chip 与动作按钮。两行都不是「整体右对齐」——中间留白落在两个功能块
+   之间，比全部挤在右半边更读得出层次；版本号贴左边缘落在名称正下方，动作
+   按钮固定在最右缘，多行之间自然对齐。
+   列表外围一整块描边容器，行与行之间只留细分隔线，不再一行一张卡片。 */
+
+.entity-card {
+  gap: 10px;
 }
 
-/* 插件信息（来源 / 版本等元数据）平铺到名称同行，靠视觉重量区分；
-   flex-wrap 让长描述/隔离提示在窄列下自动换到下一行而不是溢出。 */
-.plugin-info {
+/* 标题旁的说明气泡触发点：从正文里收进来的存储路径与生效规则。 */
+.head-tip-icon {
+  color: var(--muted);
+  font-size: 13px;
+  cursor: help;
+  transition: color 0.16s ease;
+}
+
+.head-tip-icon:hover {
+  color: var(--accent);
+}
+
+.entity-list {
   display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px 8px;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* 空态自己带上下留白，容器不再叠一层内边距。 */
+.entity-list.is-empty {
+  border-style: dashed;
+}
+
+.entity-list.is-empty .el-empty {
+  padding: 22px 0;
+}
+
+.entity-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  transition: background 0.16s ease;
+}
+
+.entity-row + .entity-row {
+  border-top: 1px solid var(--border);
+}
+
+.entity-row:hover {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+/* 停用（隔离）的插件：左侧留一条警示色，扫一眼就能认出哪一行被禁用。 */
+.entity-row.is-warn {
+  box-shadow: inset 2px 0 0 0 var(--warn);
+}
+
+/* 第一行：名称与 chip 不收缩，描述吃掉剩余宽度。 */
+.entity-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
 }
 
-.plugin-meta {
+.entity-name {
+  flex-shrink: 0;
+  font-weight: 600;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.entity-head .origin-chip,
+.entity-head .mode-chip {
+  flex-shrink: 0;
+}
+
+.entity-desc {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--muted);
   font-size: 12px;
-  word-break: break-all;
+  line-height: 1.5;
 }
 
-/* meta-version 已在上面的统一规则中定义；旧的独立块已移除。 */
-
-.quarantine-note {
+.entity-warn {
+  flex-shrink: 0;
   color: var(--warn);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
-.plugin-actions {
-  margin-top: 4px;
-  justify-content: flex-start;
-}
-
-/* --- 技能行 -----------------------------------------------------------
-   把技能行抽成与 PluginsPanel 一致的两行结构：名称 + 元数据一行，动作按钮
-   一行。`.skill-row` 给 info/actions 留出更多上下呼吸空间，避免在窄列下
-   按钮被挤换行；同时按危险动作（卸载）单独前置一个细分隔线，与「仓库」
-   「更新」等中性按钮视觉隔开。 */
-
-.skill-row {
-  gap: 6px;
-}
-
-.skill-row .plugin-info {
+/* 第二行：元数据贴左、状态与动作贴右。 */
+.entity-foot {
+  display: flex;
   align-items: center;
-}
-
-.skill-actions {
-  margin-top: 6px;
   gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-start;
+  min-width: 0;
 }
 
-.skill-actions-danger {
-  margin-left: 4px;
+.entity-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.entity-meta > * {
+  flex-shrink: 0;
+}
+
+/* 版本号贴左边缘（多行对齐），技能数占定宽列贴右，「已锁定版本」这类可选
+   标记只填中间空档、不推挤两侧。 */
+.entity-meta .meta-version {
+  min-width: 66px;
+}
+
+.entity-meta .meta-skill-count {
+  min-width: 62px;
+}
+
+/* 状态 chip 组（已同步 / 待同步 / 无活动内核…）：紧贴按钮组左侧。 */
+.entity-states {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.entity-states .el-tag {
+  height: 20px;
+  padding: 0 6px;
+  font-size: 11.5px;
+}
+
+/* 同步异常只在动作区点一个警示点，完整原因走 tooltip：整行高度不被文字
+   标签顶起来。 */
+.state-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 15px;
+  color: var(--warn);
+  cursor: help;
+}
+
+.entity-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.entity-states + .entity-actions {
+  margin-left: 0;
+}
+
+.entity-actions:first-child {
+  margin-left: auto;
+}
+
+/* 图标按钮：项目内的通用 el-button 为常规尺寸（32px 高）而列表行压缩到
+   26px，不压扁会把每行顶高、按钮也压过名称。默认弱化成静默图标，hover 才
+   浮出色，危险动作（卸载）单独走红色。 */
+.entity-actions .el-button.entity-action {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  font-size: 13px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.entity-actions .el-button.entity-action:hover {
+  color: var(--text);
+  border-color: rgba(79, 140, 255, 0.5);
+  background: rgba(79, 140, 255, 0.12);
+}
+
+.entity-actions .el-button.entity-action.is-disabled {
+  opacity: 0.45;
+}
+
+/* 「有更新」是列表里唯一的实心动作，用品牌色点出来。 */
+.entity-actions .el-button.entity-action-update {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.entity-actions .el-button.entity-action-update:hover {
+  color: #fff;
+  background: #6ba0ff;
+  border-color: #6ba0ff;
+}
+
+.entity-actions .el-button.entity-action-danger:hover {
+  color: var(--bad);
+  border-color: rgba(248, 113, 113, 0.55);
+  background: rgba(248, 113, 113, 0.12);
+}
+
+/* 危险动作前的竖分隔线：卸载不跟「仓库 / 更新」挤成一组。 */
+.entity-action-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+/* 模式徽章按钮（插件：链接 / 复制）。原先用 el-switch + inline-prompt：双字
+   文案把控件顶到 58px 宽，同一个词还要在只读标签和开关 prompt 里各出现一次，
+   和同排的 26px 图标按钮也对不齐。改成与图标按钮同规格的徽章按钮，文案即
+   当前模式，点击切到另一种，hover 用品牌色提示这是可点的。 */
+.entity-actions .el-button.entity-mode {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.entity-actions .el-button.entity-mode:hover {
+  color: var(--text);
+  border-color: rgba(79, 140, 255, 0.5);
+  background: rgba(79, 140, 255, 0.12);
+}
+
+.entity-actions .el-button.entity-mode.is-link {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.32);
+  background: rgba(52, 211, 153, 0.12);
+}
+
+.entity-actions .el-button.entity-mode.is-link:hover {
+  color: #6ee7b7;
+  border-color: rgba(52, 211, 153, 0.55);
+  background: rgba(52, 211, 153, 0.18);
+}
+
+.entity-actions .el-button.entity-mode.is-disabled {
+  opacity: 0.45;
+}
+
+/* 窄窗口（≤760px，应用默认窗口宽）：行内左右留白收紧，元数据不再占定宽列
+   （宽度紧张时优先把空间让给版本号与按钮组）；列表不内嵌滚动，滚动仍只交给
+   外层 main。 */
+@media (max-width: 760px) {
+  .entity-row {
+    padding: 8px;
+  }
+  .entity-meta .meta-version,
+  .entity-meta .meta-skill-count {
+    min-width: 0;
+  }
 }
 
 /* 来源 chip：与 PluginsPanel 共用同一套视觉规则。 */
@@ -1890,14 +2111,6 @@ main {
   font-size: 12px;
 }
 
-.skill-description {
-  flex-basis: 100%;
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
 /* 行内标签动画：新增 / 变化时轻弹一下。 */
 .el-tag {
   transition: transform 0.15s ease;
@@ -1913,6 +2126,16 @@ main {
 .install-row .el-input,
 .install-row .el-select {
   flex: 1;
+}
+
+/* 社区资源提示：比正文弱一档，左侧一道细线挂在安装行下面。 */
+.install-hint {
+  margin: 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 /* --- 插件中心 --- */
@@ -2567,14 +2790,10 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   .menu-badge {
     margin-left: 2px;
   }
-  .safety-notice {
-    margin-top: 0;
-    padding: 8px 12px;
-    font-size: 11px;
-    align-items: center;
-  }
-  .safety-notice p {
-    line-height: 1.4;
+  /* 窄窗口下面板提示会换行，图标跟着首行顶部对齐。 */
+  .panel-notice {
+    padding: 8px 10px;
+    font-size: 11.5px;
   }
   main {
     overflow-y: auto;
