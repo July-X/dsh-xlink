@@ -110,8 +110,12 @@ function onQuitConfirmRequest(event) {
     detail = '工作台与官方对话窗口仍在运行。关闭主壳会一并关闭它们；继续吗？';
   } else if (chatOpen) {
     detail = '官方对话窗口仍打开。关闭主壳会一并关闭它（登录状态已保留）；继续吗？';
-  } else {
+  } else if (kernelRunning) {
     detail = '工作台仍在运行。关闭主壳前需要先关闭工作台；继续吗？';
+  } else {
+    // 托盘「退出」是无条件广播的：内核没跑、官方对话也没开时同样会走到这里，
+    // 旧文案却断言"工作台仍在运行"，与实际状态相反（P1-4）。
+    detail = '当前没有运行中的工作台或官方对话窗口。退出会关闭管理面板与托盘图标；继续吗？';
   }
   // Windows 的托盘「退出」走同一条确认流程，但语义是终止后台常驻进程，
   // 而不是关闭一个已经收起的窗口——标题直说「退出」避免误解。
@@ -169,12 +173,12 @@ onMounted(() => {
 
   // 外壳后台检查到新版后广播此事件；手动按钮覆盖按需检查。
   registerAppListener('shell-update-available', (e) => showShellUpdateBanner(e.payload));
-  // Windows：标题栏的最小化 / 关闭都只是把窗口收进通知区域（内核与工作台
-  // 继续运行，任务栏不再保留按钮），这个事件由 Rust 侧在真的收起时发出，
-  // 用来告诉用户「程序还在后台、去哪找它」——窗口已经隐藏，所以提示走系统级
-  // toast，而不是面板内的文案。
-  registerAppListener('shell-hidden-to-tray', () => {
-    toast('已收起到通知区域，程序继续在后台运行；任务栏不再保留窗口，点右下角托盘图标可重新打开，右键可退出', 6000);
+  // Windows：标题栏的最小化 / 关闭都只是把窗口收进通知区域（内核与工作台继续
+  // 运行，任务栏不再保留按钮）。提示只能在窗口可见时讲：收起那一刻窗口已经隐藏，
+  // 页内 toast 渲染在那里没人看得见（P1-3），所以 Rust 改为在**从通知区域恢复**
+  // 时补发这个事件，此刻说清"刚才去哪了、怎么再找回来"才有意义。
+  registerAppListener('shell-restored-from-tray', () => {
+    toast('刚才已收起到通知区域：程序继续在后台运行，点右下角托盘图标可重新打开，右键可退出', 8000);
   });
   registerAppListener('harness-fault', (e) => {
     showIncident(e && e.payload);
