@@ -554,6 +554,14 @@ fn complete_kernel_install(
 
 #[tauri::command]
 pub async fn activate_version(app: AppHandle, version: String) -> Result<(), String> {
+    // 命令边界的最后一道闸（与 install_kernel / kernel_plugin_list 同一判据）：
+    // 版本号是路径段，`".."` 之类的形态会被写进 active.txt，之后每次启动都按它
+    // 去拼 `kernels/<version>/bin.js`（P1-7）。
+    if !crate::version::is_valid_kernel_version(&version) {
+        return Err(format!(
+            "版本号 {version:?} 形态非法，拒绝切换；请从「内核版本」页的已安装列表中选择版本"
+        ));
+    }
     let data_dir = app.state::<AppState>().data_dir.clone();
     // 接线会用 pnpm 跑插件商店；把整个切换放到主线程之外。
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
@@ -574,6 +582,13 @@ pub async fn activate_version(app: AppHandle, version: String) -> Result<(), Str
 
 #[tauri::command]
 pub async fn remove_version(app: AppHandle, version: String) -> Result<(), String> {
+    // 同 activate_version：`kernel::uninstall` 会对 `kernels/<version>` 直接
+    // `remove_dir_all`，`".."` 会删掉整个数据目录（P1-7）。
+    if !crate::version::is_valid_kernel_version(&version) {
+        return Err(format!(
+            "版本号 {version:?} 形态非法，拒绝删除；请从「内核版本」页的已安装列表中选择版本"
+        ));
+    }
     let data_dir = app.state::<AppState>().data_dir.clone();
     // 对内核目录（包括 node_modules）的 remove_dir_all 在 Windows 上
     // 可能耗时数秒；绝对不能在主线程上做。
