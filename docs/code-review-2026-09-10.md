@@ -61,9 +61,10 @@
 | P2-3 | 日志写入失败被吞、排空线程退出 | ✅ 已修 | `drain_stream` 失败继续排空 + 诊断入 trail；新增 3 条测试，反证通过 |
 | P2-17 / P2-18 | 托管 Node 的残留/无法恢复/平台错配 | ✅ 已修 | 清扫全部遗留临时目录 + 发布前清残缺目录 + 装完删包；产物按 OS/ARCH 精确匹配并带真实诊断；新增 2 条测试 |
 | P2-24 | 插件 id 映射非单射导致互相覆盖 | 🚧 部分修复 | 复用同一 id 且来源不同时拒绝并提示先卸载；换 id 方案需迁移既有安装，留作独立项 |
-| P2-2、P2-20、P2-21、P2-27、P2-28、P2-30 ~ P2-44、P2-46 ~ P2-48、P2-51、P2-52 | | ⏳ 待修 | |
+| P2-20 / P2-21 | 孤儿插件目录无人管、同名接线互相覆盖 | ✅ 已修 | reconcile 清理"有标记无记录"的目录（跳过本轮刚恢复的 id）；接线改以 id 为键并上报同名冲突；新增 4 条测试 |
+| P2-2、P2-27、P2-28、P2-30 ~ P2-44、P2-45、P2-46 ~ P2-48、P2-51、P2-52、P2-62 | | ⏳ 待修 | |
 
-**当前基线**：`cargo test` 254 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 14 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
+**当前基线**：`cargo test` 258 通过 / 0 失败 / 1 忽略；`cargo clippy --all-targets -- -D warnings` 零警告；`cargo fmt --check` 通过；`npm run test:ui` 14 通过；`npm run test:scripts` 10 通过；`node scripts/smoke-pullstring.mjs` exit 0；`npm run check:invariants` 通过。
 
 > 本文件同时是**问题清单**与**修复台账**：正文条目保留原始分析（含 `file:line`、触发场景、影响、建议），修复完成后在对应条目标题前加【已修】并在此表登记。
 
@@ -512,8 +513,8 @@
 | 【已修】P2-17 | `node_install.rs:382-403` | 临时目录名带 pid 只在同 pid 时清理（进程被杀留 ~200 MB）；下载产物 36-52 MB 装完不删；`fs::rename` 到已存在的版本目录在 Unix 报 `ENOTEMPTY` → 一旦 `tools/node/<ver>` 残缺就**永久无法重装**且无 UI 自救入口 | 启动时清理旧 `.node-tmp-*`；成功后删下载产物；失败信息给出「请删除 <path> 后重试」 | ✅ 已修：① 启动安装前清扫**所有** pid 的 `.node-tmp-*`（旧实现只清自己 pid 的，被强杀后约 200 MB 永久残留）；② 发布前先删掉残缺的同版本目录（Unix `rename` 到非空目录会 `ENOTEMPTY`，残缺目录会让安装永远无法恢复）并给出「请手动删除后重试」；③ 安装成功后删除下载产物（36–52 MB）。新增 1 条测试（反证：只清本 pid 时挂）
 | 【已修】P2-18 | `node_install.rs:26-36`、`:411-424`、`node.rs:50-59` | 产物平台按 `cfg!(windows)` 二选一（非 Windows 一律 `darwin-x64`），不看 `consts::OS/ARCH`；回滚时丢弃真实 stderr，把原因错写成「当前系统可能低于其最低版本要求」 | 用 `(OS, ARCH)` 映射产物名；保留并回传 stderr | ✅ 已修：产物改由 `artifact_for_platform(OS, ARCH)` 精确匹配（win-x64 / darwin-x64 / darwin-arm64 / linux-x64 / linux-arm64），不支持的组合返回含下一步的错误而不是悄悄下载 x64 macOS 包；`artifact_size_text` 同源，不再对非 Windows 一律报「约 52 MB」；回滚原因的"当前系统可能低于其最低版本要求"改为带出真实探测输出（新增 `node::probe_failure_detail`，stderr 优先）。新增 1 条测试 + 改写产物名测试
 | 【已修】P2-19 | `settings.rs:56-62` | `settings::load` 吞掉所有错误：文件损坏 / 读失败 → 默认值，用户自定义端口**无声回退**到 3090/3091，无日志无提示 | 区分不存在与解析失败，损坏时备份并上报 | ✅ 已修：新增 `settings::load_checked` 区分"文件缺失（正常首次启动）"与"损坏/读不出来"——后者备份为 `settings.json.corrupt` 并返回含下一步的中文诊断；`KernelStatus.settings_warning` 透出到面板（VersionsPanel 新增告警条），端口回退不再无声。新增 3 条测试
-| P2-20 | `plugins.rs:1053-1058`、`:2910-2918` | 中央库发布与 `store.json` 记账非原子 → 孤儿目录无 store 行：面板不显示、「同步」不管、`uninstall` 直接拒绝，只能手删 | 失败路径回滚刚发布的目录；或在 reconcile 里清理"有外壳标记但无 store 行"的目录 |
-| P2-21 | `plugins.rs:2172`、`:2191-2197` | `specs` 以 `item.name` 为键：同名不同 id 互相覆盖接线，UI 对两行都报 wired=true | specs 以 id 为键，写 manifest 时检测同名冲突 |
+| 【已修】P2-20 | `plugins.rs:1053-1058`、`:2910-2918` | 中央库发布与 `store.json` 记账非原子 → 孤儿目录无 store 行：面板不显示、「同步」不管、`uninstall` 直接拒绝，只能手删 | 失败路径回滚刚发布的目录；或在 reconcile 里清理"有外壳标记但无 store 行"的目录 | ✅ 已修：`reconcile_store` 末尾新增 `sweep_unrecorded_store_dirs` —— 带外壳 id 标记、名字与标记一致、且 `store.json` 无对应记录的中央库目录会被清理（三重保险：只在 store.json 能正常读出时执行、跳过带暂存前缀的目录、没有标记的目录一律不碰）。**并修掉一个交互缺陷**：本轮恢复流程刚提升的 `.new-*` 目录会被顺手删掉（把救援动作当场撤销），因此跳过本轮 `by_id` 里出现过的 id。新增 3 条测试，两项反证命中（不做清理 / store 损坏时也清理 / 不跳过恢复中的 id）
+| 【已修】P2-21 | `plugins.rs:2172`、`:2191-2197` | `specs` 以 `item.name` 为键：同名不同 id 互相覆盖接线，UI 对两行都报 wired=true | specs 以 id 为键，写 manifest 时检测同名冲突 | ✅ 已修：`specs` 改为以**插件 id** 为键的 `BTreeMap<String, WireSpec>`，`wire_manifest` 按 id 顺序取第一个占用包名的条目、其余记录为冲突说明并随 `failures` 上报（用户能看到"装了但没接线"），接线计数按去重后的包名统计；不再出现"后一条静默覆盖前一条、UI 两行都显示已接线"。新增 1 条测试（反证命中）
 | 【已修】P2-22 | `plugins.rs:2377-2378`、`:853-863` | 锁定版本的 npm 插件被永久标成「有更新」，但更新必被拒（`pinned` 只在 git 分支生效） | check_updates/status 跳过 `item.pinned` | ✅ 已修：`status` / `check_updates` 跳过 `pinned` 条目（计数与行内角标），npm 与 git 一视同仁；`is_newer_than` 保持原有的"版本号比较"语义不变（git+pinned 的既有测试仍钉住该行为）。新增 1 条 status 层测试覆盖两种来源
 | 【已修】P2-23 | `plugins.rs:3221-3223` | `kernel_plugin_list` 把前端传入的 `version` 直接当路径段（`../../..` 可越界枚举读取） | 入口用 `kernel::list_installed` 白名单校验 | ✅ 已在早前版本校验改造中修好：`kernel_plugin_list` 入口用 `crate::version::is_valid_kernel_version` 拒绝 `../` 等形态（`commands.rs:1726`）
 | 🚧 部分修复 P2-24 | `plugins.rs:464-482` | `id_for_name` 的 `/`→`__` 映射不是单射：npm `owner__repo` 与 git `owner/repo` 撞同一 id，互相覆盖源码与 store 行 | 转义 `_` 或追加短哈希后缀 | 🚧 部分修复：`upsert_item_unlocked` 增加**冲突检测** —— 同一个 id 被不同 `source`/`name` 复用时拒绝并给出"先卸载"的下一步，不再静默覆盖前一个插件的源码与记录（新增 2 条测试，反证命中）。**残留**：`/`→`__` 的映射本身仍不是单射，彻底修需要换 id 方案 + 迁移既有安装（store 行、`kernels/<ver>/plugins/<id>`、`.dsh-xlink-meta`），单独立项处理
