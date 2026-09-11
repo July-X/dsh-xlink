@@ -398,8 +398,14 @@ pub fn log_file_name(kind: &str, name: &str, date: &str) -> String {
 ///
 /// 每个「日期 × kind」最多留 `KERNEL_LOG_BACKUPS + 1` 代 × 8 MiB，但**日期
 /// 只增不减**：每天最多新增 24 MiB，长期使用会累积到 GB 级（P2-62）。这里按
-/// "先看天数、再看总量"的顺序裁剪，`LOG_RETENTION_GRACE` 内的文件永不删除
-/// —— 那可能是正在写入的当次会话日志。
+/// "先看天数、再看总量"的顺序裁剪。
+///
+/// **今天写过的日志一律不删**（`LOG_RETENTION_GRACE` 只是第二重保险）：宽限期
+/// 按 mtime 判断"是否还在被写"，而启动期的裁剪发生在本进程开始写日志之前，那条
+/// 理由对当天文件并不成立；更关键的是同一 data dir 可能还有别的写入者（上一个
+/// 壳留下的进程、`DSH_DESKTOP_DATA_DIR` 共用），Unix 上 unlink 掉一个正被追加的
+/// 文件不会报错，对方会继续写一个已经不可见的 inode——内容静默丢失。总量预算因
+/// 此是"对今天以外的文件生效"的软上限。
 const LOG_RETENTION_DAYS: u64 = 30;
 const LOG_RETENTION_BYTES: u64 = 200 * 1024 * 1024;
 const LOG_RETENTION_GRACE: Duration = Duration::from_secs(600);
@@ -428,12 +434,19 @@ pub fn prune_old_logs(logs_dir: &Path) -> usize {
     candidates.sort_by_key(|(_, modified, _)| std::cmp::Reverse(*modified));
 
     let now = SystemTime::now();
+    // 今天的日期戳：文件名里就带着本地日期（`<kind>-<name>-<date>.log`），因此
+    // 不需要再读一遍 mtime 判断"是不是今天"。
+    let today = current_date_string();
     let mut kept_bytes = 0u64;
     let mut removed = 0usize;
     for (path, modified, size) in candidates {
         let age = now.duration_since(modified).unwrap_or_default();
-        if age < LOG_RETENTION_GRACE {
-            // 刚写过的文件（多半是当前会话的日志）不参与裁剪，但仍计入总量。
+        let is_today = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains(&today));
+        if is_today || age < LOG_RETENTION_GRACE {
+            // 今天写过的（以及刚写过的）文件不参与裁剪，但仍计入总量。
             kept_bytes = kept_bytes.saturating_add(size);
             continue;
         }
@@ -2530,6 +2543,40 @@ mod log_retention_tests {
         assert!(!dir.join("release-install-oldest.log").exists());
         assert!(dir.join("release-install-middle.log").exists());
         assert!(dir.join("release-install-newest.log").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn todays_logs_survive_even_when_the_budget_is_exceeded() {
+        // 当天日志永不删除：启动期裁剪发生在本进程开始写日志之前（"刚写过"这条
+        // 理由对当天文件不成立），而同一 data dir 可能还有别的写入者——Unix 上
+        // unlink 一个正被追加的文件不报错，对方会继续写一个不可见的 inode，
+        // 内容静默丢失。
+        let dir = temp_logs("today");
+        let today = current_date_string();
+        let huge = LOG_RETENTION_BYTES + 8 * 1024 * 1024;
+        // 今天写过、且已超出 10 分钟宽限期：仅凭 mtime 判断会被超预算删掉。
+        write_log(
+            &dir,
+            &format!("release-kernel-{today}.log"),
+            huge as usize,
+            11 * 60,
+        );
+        // 一份真正过期的旧文件：用来证明裁剪本身仍在工作。
+        write_log(
+            &dir,
+            "release-install-2020-01-01.log",
+            16,
+            40 * 24 * 60 * 60,
+        );
+
+        let removed = prune_old_logs(&dir);
+
+        assert!(
+            dir.join(format!("release-kernel-{today}.log")).exists(),
+            "当天日志不得被删除"
+        );
+        assert_eq!(removed, 1, "其它过期文件仍应被清理");
         fs::remove_dir_all(&dir).ok();
     }
 
