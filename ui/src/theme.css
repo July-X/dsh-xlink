@@ -2814,3 +2814,27 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   font-size: 11px;
   line-height: 1.5;
 }
+
+/* 渲染错误兜底块（P2-40）：面板渲染期抛错时它必须出现在最上方，
+   否则用户看到的只是"永久空白"，没有任何可操作的出口。 */
+.render-error-fallback {
+  position: fixed;
+  top: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4000;
+  width: min(720px, calc(100vw - 48px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--el-bg-color, #fff);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.render-error-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

@@ -28,7 +28,7 @@
     "test:escalation-same-mode": "node scripts/verify-dsh-escalation-same-mode.mjs",
     "test:titlebar-pulse": "node --test scripts/titlebar-pulse.test.mjs",
     "test:scripts": "node --test scripts/*.test.mjs",
-    "test:ui": "node --test ui/test/officialChatTabs.test.js ui/test/statusRefresh.test.js ui/test/harnessHealth.test.js ui/test/loading.test.js ui/test/progress.test.js ui/test/updateChecks.test.js ui/test/installLatest.test.js ui/test/kernelSwitch.test.js",
+    "test:ui": "node --test ui/test/officialChatTabs.test.js ui/test/statusRefresh.test.js ui/test/harnessHealth.test.js ui/test/loading.test.js ui/test/progress.test.js ui/test/updateChecks.test.js ui/test/installLatest.test.js ui/test/kernelSwitch.test.js ui/test/logReadAndErrors.test.js",
     "build:mac-intel": "tauri build --target x86_64-apple-darwin",
     "build:win": "tauri build --target x86_64-pc-windows-msvc",
     "test:file-perf": "node scripts/verify-dsh-file-perf.mjs"

@@ -4,7 +4,7 @@
 // 页头是文件名 + 刷新 / 关闭；刷新走 read_log_file 重读文件尾部。
 import { onMounted, ref, watchEffect } from 'vue';
 import { Refresh, Close } from '@element-plus/icons-vue';
-import { invoke } from './bridge.js';
+import { invoke, windowAction } from './bridge.js';
 import { toastError } from './notify.js';
 import { ioActive, isLoading, withLoading } from './loading.js';
 import { stripAnsi } from './progress.js';
@@ -31,10 +31,11 @@ function load() {
 }
 
 function closeWindow() {
-  const tauriWindow = window.__TAURI__ && window.__TAURI__.window;
-  if (tauriWindow) {
-    tauriWindow.getCurrentWindow().close().catch(() => {});
-  }
+  // 与标题栏一致：走 bridge 并在失败时提示，而不是静默什么都不做（P2-39）。
+  windowAction('close').catch((error) => {
+    const detail = error && error.message ? error.message : String(error);
+    toastError(`关闭窗口失败：${detail}。可改用系统快捷键（macOS Cmd+W，Windows Alt+F4）。`);
+  });
 }
 
 // 与管理壳一致：本窗口内 IO 进行中点亮标题栏鲸眼脉冲。

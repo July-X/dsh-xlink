@@ -4,6 +4,7 @@
 import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue';
 import { invoke, listen } from './bridge.js';
 import { toastError, confirmDialog } from './notify.js';
+import { renderErrors, clearRenderError, reloadPanel } from './errors.js';
 import { globalBusy, ioActive } from './loading.js';
 import {
   store,
@@ -189,6 +190,19 @@ onUnmounted(() => {
 
 <template>
   <div class="app-shell">
+    <div v-if="renderErrors.message" class="render-error-fallback">
+      <el-alert
+        type="error"
+        :closable="false"
+        show-icon
+        title="面板渲染出错，部分界面可能无法显示"
+        :description="renderErrors.message"
+      />
+      <div class="render-error-actions">
+        <el-button type="primary" size="small" @click="reloadPanel">重新加载面板</el-button>
+        <el-button size="small" @click="clearRenderError">忽略并继续</el-button>
+      </div>
+    </div>
     <WindowTitleBar />
     <div class="layout">
       <SideBar />
