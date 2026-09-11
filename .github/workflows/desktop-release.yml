@@ -93,12 +93,32 @@ jobs:
           # 端点后退，而 Tauri 只在 `release.version > current_version` 时提示
           # 更新——已经装上新版本的用户从此静默收不到任何更新提示，且没有任何
           # 步骤能发现。所以发布前就断言新版本严格大于线上最新版本。
-          published="$(curl -fsSL --max-time 20 \
-            "https://github.com/July-X/dsh-xlink/releases/latest/download/latest.json" 2>/dev/null \
-            | node -e "let s='';process.stdin.on('data',(c)=>s+=c).on('end',()=>{try{process.stdout.write(String(JSON.parse(s).version||''))}catch{}})" \
-            || true)"
-          if [[ -z "$published" ]]; then
-            echo "线上没有可读的 latest.json（首次发布或端点暂不可用），跳过版本单调性检查"
+          # 只有"确实还没有 Release"（404）才允许跳过；其它失败（超时、5xx、
+          # CDN 抖动、JSON 里没有 version）必须重试后失败——在异常时刻静默跳过，
+          # 恰好丢掉这道门唯一要防的东西（更新通道回退，P2-14）。
+          latest_url="https://github.com/July-X/dsh-xlink/releases/latest/download/latest.json"
+          published=""
+          http_code=""
+          for attempt in 1 2 3; do
+            body_file="$(mktemp)"
+            http_code="$(curl -sSL --max-time 20 -o "$body_file" -w '%{http_code}' "$latest_url" || echo 000)"
+            if [[ "$http_code" == "200" ]]; then
+              published="$(node -e "let s='';process.stdin.on('data',(c)=>s+=c).on('end',()=>{try{process.stdout.write(String(JSON.parse(s).version||''))}catch{}})" < "$body_file")"
+              rm -f "$body_file"
+              break
+            fi
+            rm -f "$body_file"
+            if [[ "$http_code" == "404" ]]; then
+              break
+            fi
+            echo "读取线上 latest.json 失败（HTTP $http_code，第 $attempt 次）" >&2
+            sleep 5
+          done
+          if [[ "$http_code" == "404" ]]; then
+            echo "线上还没有 Release（首次发布），跳过版本单调性检查"
+          elif [[ -z "$published" ]]; then
+            echo "无法确认线上 latest.json 的版本（HTTP $http_code）：拒绝在无法验证更新通道单调性的情况下发布" >&2
+            exit 1
           else
             CANDIDATE="$version" PUBLISHED="$published" node -e '
               const parse = (v) => {
@@ -378,9 +398,15 @@ jobs:
         run: |
           set -euo pipefail
           release_name="dsh-xlink v$RELEASE_VERSION"
+          # 用 `commits/<tag>` 而不是 `git/ref/tags/<tag>`：后者对 annotated tag
+          # 返回的是 **tag 对象** 的 SHA，而 tag push 事件的 `GITHUB_SHA` 是被指向的
+          # **commit**。用 ref API 时 `git tag -a` 创建的 tag 会让这里在跑满质量
+          # 门禁与双平台打包（20–30 分钟）之后才失败，报错还指向一个与实际原因
+          # 无关的"tag 指向了别的提交"（P2-15）。`commits/<ref>` 由服务端剥壳，
+          # 与 preflight 的 `^{commit}` 判定口径一致。
           tag_sha=""
-          if ! tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
-            --jq .object.sha 2>/dev/null)"; then
+          if ! tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" \
+            --jq .sha 2>/dev/null)"; then
             tag_sha=""
           fi
           if [[ -n "$tag_sha" && "$tag_sha" != "$GITHUB_SHA" ]]; then
@@ -468,28 +494,17 @@ jobs:
               >/dev/null
           done
 
-      - name: Publish complete release
+      - name: Normalize draft assets before publishing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ steps.release.outputs.release_id }}
-          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
-          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          set -euo pipefail
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
-            -f name="dsh-xlink v$RELEASE_VERSION" \
-            -f body="$(<release-notes.md)" \
-            -F draft=false \
-            -F prerelease=false >/dev/null
-
-      - name: Verify published release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_ID: ${{ steps.release.outputs.release_id }}
-          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
 
+          # 资产集合的整理与断言必须在**转正之前**完成（P2-13）：转正之后再删
+          # 资产，一旦后续任何一步失败，就已经对外可见的 Release 被就地改动，
+          # 而且重跑会被"already published"与版本单调性门拦住——只能人工上
+          # Release 页面收拾。草稿态下同样的操作是安全且可重入的。
           # 1) 正式 Release 的资产必须恰好 6 个。上传前只按**文件名**删同名资产、
           #    从没读回过 Release 的实际列表；复用人工建过的 draft 时可能留下命名
           #    不同的旧资产，而资产计数只数本地目录，发现不了。
@@ -584,6 +599,33 @@ jobs:
             fi
           done
 
+
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            -f name="dsh-xlink v$RELEASE_VERSION" \
+            -f body="$(<release-notes.md)" \
+            -F draft=false \
+            -F prerelease=false >/dev/null
+
+      - name: Verify published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # 资产集合的整理（删计划外资产 + 恰好 6 个 + 逐名比对）已经在
+          # 「Normalize draft assets before publishing」里、转正之前完成（P2-13）。
+          # 这里只做转正之后才成立的检查：更新端点指向刚发布的版本，且每个平台
+          # 资产真的可下载。
           # 2) 更新端点必须真的指向刚发布的版本，且每个平台资产可下载。
           #    这是「用户能不能收到更新」唯一的端到端检查：GitHub 的
           #    releases/latest 取「最近创建」而非 semver 最大值，任何把端点顶回去
