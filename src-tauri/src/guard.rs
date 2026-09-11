@@ -273,13 +273,20 @@ fn excerpt(lines: &[&str], idx: usize) -> String {
 
 /// 一行日志是否把某条错误**锚定地**指向这个商店条目。
 ///
-/// 三种锚定形态：
+/// 四种锚定形态：
 /// 1. `plugins/<id>`：link 模式下内核插件目录里的物化路径段；
 /// 2. `node_modules/<name>`：copy 模式下 profile 里的包路径；
-/// 3. 带引号的包名：`Cannot find package 'x'` / `Cannot find module "x"`。
+/// 3. 带引号的包名：`Cannot find package 'x'` / `Cannot find module "x"`；
+/// 4. 前端 bundle 成员：内核的 client-modules 用
+///    `/plugins/??<包名>/client.js,…&rev=…` 组合路由服务全部客户端模块，前端堆栈
+///    里的包名只出现在这个查询串里。
 ///
-/// 1 与 2 都要求标识之后紧跟**路径段边界** —— 否则 `main` 会命中
+/// 1、2、4 都要求标识之后紧跟**路径段边界** —— 否则 `main` 会命中
 /// `node_modules/main-utils`、`plugins/main__extra`，等于又退回前缀匹配。
+///
+/// 形态 4 只在**单成员**组合路由（以及 source map 里的 `/plugins/<包名>/client.js`
+/// 形态）下成立：多成员组合是若干插件拼成的同一个脚本，帧落在哪一段无法从 URL
+/// 判定，按成员逐个匹配会把同一批里的旁观者一起写进隔离清单。
 ///
 /// 这里曾经还有一条裸的 `/<name>` 子串规则，命中的是路径段*前缀*：插件名短
 /// （`main`/`ui`/`x`）时，一行 `GET /assets/main.js 500` 就足以把它写进
@@ -289,8 +296,73 @@ fn is_anchored_plugin_hit(line: &str, item: &plugins::StoreItem) -> bool {
     {
         return true;
     }
-    has_segment_path(line, "plugins/", &item.id)
+    if has_segment_path(line, "plugins/", &item.id)
         || has_segment_path(line, "node_modules/", &item.name)
+    {
+        return true;
+    }
+    !is_ambiguous_combo_line(line) && bundle_member(line, &item.name)
+}
+
+/// `line` 里是否出现 bundle 路径或组合路由中的 `<name>/client.js`，且名字前是
+/// 路由/查询分隔符、名字后是 URL 边界。
+///
+/// 前导字符这一条是必须的：只有 `??<name>/client.js`、`,<name>/client.js`、
+/// `/plugins/<name>/client.js` 这种**整段成员**才算数，否则名为 `main` 的插件
+/// 会被 `GET /assets/main/client.js` 这类无关请求误判。
+fn bundle_member(line: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let needle = format!("{name}/client.js");
+    let mut from = 0;
+    while let Some(offset) = line[from..].find(&needle) {
+        let start = from + offset;
+        let end = start + needle.len();
+        let before_ok = match line[..start].chars().next_back() {
+            None => true,
+            // 组合路由的分隔符：`/plugins/??<包名>/client.js,…`。
+            Some('?' | ',') => true,
+            // 只认插件路由段里的 `/plugins/<包名>/client.js`（source map 里的来源
+            // 名就是这个形态）；`/assets/main/client.js` 这类无关静态资源路径不算。
+            Some('/') => line[..start - 1].ends_with("/plugins"),
+            Some(_) => false,
+        };
+        let after_ok = line[end..]
+            .chars()
+            .next()
+            .map(|c| !is_path_segment_char(c))
+            .unwrap_or(true);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// 行内内核 client-modules 组合路由的成员数。
+///
+/// 形态：`/plugins/??<包名>/client.js,<包名>/client.js&rev=<hash>`（见内核的
+/// `dsh-client-modules`：`comboUrl`）。`None` 表示这一行里没有组合路由。
+fn combo_route_members(line: &str) -> Option<usize> {
+    const ROUTE: &str = "/plugins/??";
+    let start = line.find(ROUTE)? + ROUTE.len();
+    let rest = &line[start..];
+    let end = rest
+        .find(|c: char| c.is_whitespace() || matches!(c, '&' | '"' | '\'' | ')' | ']' | '<' | '>'))
+        .unwrap_or(rest.len());
+    let members = rest[..end]
+        .split(',')
+        .filter(|member| !member.is_empty())
+        .count();
+    (members > 0).then_some(members)
+}
+
+/// 这一行是否只是「多成员组合 bundle」的地址：一个脚本里同时打着多个包，里面出现
+/// 任何包名都不能作为指向该包的证据。
+fn is_ambiguous_combo_line(line: &str) -> bool {
+    matches!(combo_route_members(line), Some(members) if members > 1)
 }
 
 /// `line` 中是否出现 `<anchor><name>`，且 `<name>` 之后是路径段边界（或行尾）。
@@ -394,7 +466,12 @@ fn is_kernel_evidence_line(line: &str) -> bool {
     // `@deepseek-ai/dsh-client-ui-theme`）。以非字母数字的分隔符锚定
     // 可以避免一个名叫 `@scope/dsh-foo` 的社区插件仅凭 `dsh` 子串被
     // 误当成内核包。
-    if has_kernel_package_ref(line) {
+    //
+    // 例外是多成员组合 bundle 的地址：那一个脚本里同时打着第三方插件的
+    // bundle，命中其中的内核包名并不能证明帧落在内核那一段上，归到内核
+    // 就等于把插件的错记到内核头上（P2 级归因误报）。这种行留给
+    // `diagnose_runtime` 的「前端 bundle」分支如实说明未定位到包名。
+    if has_kernel_package_ref(line) && !is_ambiguous_combo_line(line) {
         return true;
     }
     // 稳定的内核 Loader 短语。这些是内核 client-module loader 在预打
@@ -502,9 +579,16 @@ fn clear_incident(data_dir: &Path) {
 }
 
 /// 读取最近一次记录的故障（供展示历史的命令使用）。
+///
+/// 读路径上会对旧记录重新判定一次「前端 bundle」这一类（见
+/// [`reclassify_frontend_bundle_incident`]）：判断与措辞的修复必须能作用到已经
+/// 落盘的事故上，否则升级外壳后概览横幅仍在念旧的「暂未能归因」文案。重新判定
+/// 是纯读操作：不写隔离、不改接线、也不回写文件。
 pub fn load_incident(data_dir: &Path) -> Option<Incident> {
     let text = std::fs::read_to_string(incident_path(data_dir)).ok()?;
-    serde_json::from_str(&text).ok()
+    let mut incident: Incident = serde_json::from_str(&text).ok()?;
+    reclassify_frontend_bundle_incident(&mut incident);
+    Some(incident)
 }
 
 // --- 编排 --------------------------------------------------------------------
@@ -775,6 +859,10 @@ fn runtime_cause(suspects: &[Suspect]) -> &'static str {
     }
 }
 
+/// 前端堆栈行在合并证据里的前缀。归因匹配与「帧是否落在客户端 bundle 路由上」
+/// 的判定都靠它把堆栈行与内核日志行区分开，改这里必须两处一起改。
+const FRONTEND_STACK_PREFIX: &str = "前端堆栈：";
+
 /// 把前端健康证据放进与内核日志相同的错误形态字符串流。这样既有的保
 /// 守路径/名称匹配器就能对一份从未落到 `kernel.log` 的客户端堆栈进
 /// 行归因。
@@ -792,7 +880,7 @@ fn runtime_evidence(report: &HealthReport, kernel_tail: &str) -> String {
         .map(str::trim)
         .filter(|line| !line.is_empty())
     {
-        lines.push(format!("Error: 前端堆栈：{line}"));
+        lines.push(format!("Error: {FRONTEND_STACK_PREFIX}{line}"));
     }
     if !report.page_url.trim().is_empty() {
         lines.push(format!("Error: 工作台页面地址：{}", report.page_url.trim()));
@@ -801,6 +889,54 @@ fn runtime_evidence(report: &HealthReport, kernel_tail: &str) -> String {
         lines.push(kernel_tail.to_string());
     }
     lines.join("\n")
+}
+
+/// 报告的堆栈里是否有帧落在内核 client-modules 的 bundle 路由（`/plugins/`）上。
+///
+/// 只看**前端堆栈行**：内核日志里的 `GET /plugins/… 404` 访问行同样含这个路径，
+/// 但它说明的是静态资源加载失败，与「某个 bundle 抛了异常」是两回事。
+fn has_client_bundle_frames(evidence: &str) -> bool {
+    evidence
+        .lines()
+        .any(|line| line.contains(FRONTEND_STACK_PREFIX) && line.contains("/plugins/"))
+}
+
+/// 「前端 bundle」这一类事故的文案。
+///
+/// 判断只说证据支持的事（异常来自客户端模块 bundle、但没有包名），并且明确
+/// 页面仍在运行——把一个非致命的前端异常说成「页面异常」，再让用户去切换或
+/// 重装内核版本，是这次误报的直接来源。下一步先要可诊断的材料（自检证据里的
+/// 消息），再谈动插件或换版本。
+fn frontend_bundle_wording() -> (String, String) {
+    (
+        String::from(
+            "工作台页面抛出了一个未处理的前端异常，异常来自内核服务的客户端模块 bundle（/plugins/），但证据里没有包名，无法区分内核内置组件与第三方插件；工作台本身仍在运行。",
+        ),
+        String::from(
+            "请用「打开日志」查看内核侧记录，并把上方自检证据里的「消息」一并反馈（它指出具体是哪段代码或哪条数据不合法）；若该提示反复出现，可先在插件页停用第三方插件后重启验证，再到内核版本页切换其他版本。",
+        ),
+    )
+}
+
+/// 把一份**已经落盘**的旧事故重新判定为「前端 bundle」。
+///
+/// 只改判断与文案，不碰 suspects / attempts / log_tail —— 那些是诊断当时的原始
+/// 记录，重写它们等于伪造证据。判据与 `diagnose_runtime` 完全一致：健康证据里
+/// 必须真有落在 bundle 路由上的前端堆栈帧，且没有任何指向插件/内核的嫌疑对象。
+fn reclassify_frontend_bundle_incident(incident: &mut Incident) {
+    if incident.cause != "unknown" || !incident.suspects.is_empty() {
+        return;
+    }
+    let Some(health) = incident.health.as_ref() else {
+        return;
+    };
+    if !has_client_bundle_frames(&runtime_evidence(health, "")) {
+        return;
+    }
+    let (message, hint) = frontend_bundle_wording();
+    incident.cause = String::from("frontend");
+    incident.message = message;
+    incident.hint = Some(hint);
 }
 
 fn runtime_attempt(report: &HealthReport) -> String {
@@ -873,12 +1009,9 @@ pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
     });
     let store_items = plugins::load_store(data_dir).items;
     let kernel_label = kernel::read_active(data_dir).unwrap_or_default();
+    let evidence = runtime_evidence(&report, &tail);
     // 强证据：锚定到插件或内核的错误行。
-    let mut suspects = attribute(
-        &runtime_evidence(&report, &tail),
-        &store_items,
-        &kernel_label,
-    );
+    let mut suspects = attribute(&evidence, &store_items, &kernel_label);
     let soft_only = suspects.is_empty();
     // 软证据：插件已安装时页面空白，或者内核日志中出现 HTTP 失败。我
     // 们在这些场景下把每个已安装的插件都列为软可疑项，方便用户拿到
@@ -913,7 +1046,15 @@ pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
         .filter(|s| s.kind == "plugin")
         .cloned()
         .collect();
-    let cause = runtime_cause(&suspects);
+    let mut cause = runtime_cause(&suspects);
+    // 前端 bundle 证据：帧落在内核 client-modules 的 `/plugins/` 组合路由上，却没有
+    // 能锚定到包的证据。包名只存在于组合 URL 的查询串里，而 WebKit 的堆栈文本会把
+    // 查询串整个丢掉（只剩 `http://127.0.0.1:3090/plugins/`），因此多成员组合里的
+    // 帧既不能归给插件（同批里可能只是旁观者），也不能归给内核（同批里有第三方
+    // bundle），必须如实说「未定位到包名」，而不是含糊的「暂未能归因」。
+    if cause == "unknown" && has_client_bundle_frames(&evidence) {
+        cause = "frontend";
+    }
     let mut attempts = vec![attempt];
 
     let (message, hint) = match cause {
@@ -966,6 +1107,15 @@ pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
                     "建议步骤：① 打开「内核日志」查看是否有 4xx/5xx 或资源加载错误；② 在「插件」页临时停用全部第三方插件后重启工作台；③ 若停用后正常，逐个重新启用定位问题插件。",
                 ),
             )
+        }
+        "frontend" => {
+            // 前端 bundle 路径：帧指向内核服务的客户端模块 bundle，但证据里没有
+            // 可归因的包名。不隔离、不改插件，也不把页面说成坏了——页面仍在运行，
+            // 抛出异常的只是其中一段 bundle 代码。
+            attempts.push(String::from(
+                "错误堆栈指向内核服务的客户端模块 bundle（/plugins/ 组合路由），但证据里没有可归因的包名",
+            ));
+            frontend_bundle_wording()
         }
         "kernel" => {
             attempts.push(String::from("错误证据指向内核组件，未自动修改插件"));
@@ -1390,6 +1540,331 @@ mod tests {
         assert!(text.ends_with('…'));
     }
 
+    /// 2026-09-11 在 macOS（WKWebView）上真实捕获的前端自检证据：内核
+    /// client-modules 的组合 bundle URL 到了 `Error.stack` 里只剩 `/plugins/`，
+    /// 只存在于查询串里的包名被 WebKit 丢掉。行号 148814 是组合脚本里的绝对行号，
+    /// 因此它确实来自内核服务的那一个 bundle，但**没有**任何可归因的包名。
+    const MACOS_BUNDLE_STACK: &str = "validateRecord@http://127.0.0.1:4090/plugins/:148814:26\n\
+expandAssistantStream@http://127.0.0.1:4090/plugins/:148722:34\n\
+replace@http://127.0.0.1:4090/plugins/:148874:80\n\
+installWindow@http://127.0.0.1:4090/plugins/:149517:49\n\
+acceptEventChange@http://127.0.0.1:4090/plugins/:149504:25\n\
+publish@http://127.0.0.1:4090/plugins/:149479:29\n\
+publish@http://127.0.0.1:4090/plugins/:147869:22\n\
+replaceFromOpening@http://127.0.0.1:4090/plugins/:1115:25\n\
+replaceGeneration@http://127.0.0.1:4090/plugins/:1093:28\n\
+open@http://127.0.0.1:4090/plugins/:1011:28";
+
+    fn temp_data_dir(tag: &str) -> PathBuf {
+        let data_dir = std::env::temp_dir().join(format!(
+            "dsh-guard-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        data_dir
+    }
+
+    fn write_store(data_dir: &Path, json: &str) {
+        let store_dir = plugins::store_dir(data_dir);
+        std::fs::create_dir_all(&store_dir).expect("create store dir");
+        std::fs::write(store_dir.join("store.json"), json).expect("write store");
+    }
+
+    #[test]
+    fn combo_route_members_counts_members() {
+        assert_eq!(
+            combo_route_members(
+                "Error: 前端堆栈：f@http://127.0.0.1:4090/plugins/??a/client.js&rev=1:2:3"
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            combo_route_members(
+                "Error: 前端堆栈：f@http://127.0.0.1:4090/plugins/??a/client.js,b/client.js&rev=1:2:3"
+            ),
+            Some(2)
+        );
+        // `/plugins/<包名>/client.js`（source map 里的来源名）不是组合路由。
+        assert_eq!(
+            combo_route_members("Error: 前端堆栈：f@http://127.0.0.1:4090/plugins/a/client.js:2:3"),
+            None
+        );
+        // 同一个包在组合 URL 里出现两次也只算两次成员——它依然是多成员脚本。
+        assert_eq!(
+            combo_route_members("/plugins/??a/client.js,a/client.js&rev=1"),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn bundle_member_requires_a_whole_member_segment() {
+        // 单成员组合路由与 map 里的 `/plugins/<包名>/client.js` 都算。
+        assert!(bundle_member(
+            "Error: f@http://127.0.0.1:4090/plugins/??main/client.js&rev=1:2:3",
+            "main"
+        ));
+        assert!(bundle_member(
+            "Error: f@http://127.0.0.1:4090/plugins/main/client.js:2:3",
+            "main"
+        ));
+        // 路径段前缀不是成员：`main-utils`、以及无关静态资源目录下的同名文件。
+        assert!(!bundle_member(
+            "Error: f@http://127.0.0.1:4090/plugins/??main-utils/client.js&rev=1:2:3",
+            "main"
+        ));
+        assert!(!bundle_member(
+            "Error: GET /assets/main/client.js 500",
+            "main"
+        ));
+    }
+
+    #[test]
+    fn single_member_combo_attributes_plugin_from_frontend_stack() {
+        // WebView2（V8）会保留查询串：单成员组合路由里的包名就是唯一成员，
+        // 这条帧可以锚定到该插件。
+        let report = HealthReport {
+            kind: "unhandled-rejection".into(),
+            message: "TypeError: 组件初始化失败".into(),
+            stack:
+                "at mount (http://127.0.0.1:4090/plugins/??ghost-plugin/client.js&rev=abc:12:26)"
+                    .into(),
+            page_url: "http://127.0.0.1:4090".into(),
+        };
+        let suspects = attribute(
+            &runtime_evidence(&report, ""),
+            &[store_item("ghost-plugin", "ghost-plugin")],
+            "1.0.0",
+        );
+        assert_eq!(suspects.len(), 1);
+        assert_eq!(suspects[0].kind, "plugin");
+        assert_eq!(suspects[0].id, "ghost-plugin");
+    }
+
+    #[test]
+    fn multi_member_combo_blames_neither_plugin_nor_kernel() {
+        // 多成员组合是若干包拼成的同一个脚本：里面的每个包名都只是「同batch的
+        // 邻居」。按成员逐条匹配会把无辜插件写进隔离清单，按内核命名空间匹配
+        // 会把插件的错记到内核头上——两者都必须拒绝。
+        let evidence = runtime_evidence(
+            &HealthReport {
+                kind: "unhandled-rejection".into(),
+                message: "TypeError: boom".into(),
+                stack: "at validateRecord (http://127.0.0.1:4090/plugins/??ghost-plugin/client.js,@deepseek-ai/dsh-api-session-controller/client.js&rev=abc:148814:26)".into(),
+                page_url: "http://127.0.0.1:4090".into(),
+            },
+            "",
+        );
+        assert!(
+            attribute(
+                &evidence,
+                &[store_item("ghost-plugin", "ghost-plugin")],
+                "1.0.0"
+            )
+            .is_empty(),
+            "多成员组合里的插件名不能作为指向该插件的证据"
+        );
+        assert!(!is_kernel_evidence_line(
+            "Error: 前端堆栈：at validateRecord (http://127.0.0.1:4090/plugins/??ghost-plugin/client.js,@deepseek-ai/dsh-api-session-controller/client.js&rev=abc:148814:26)"
+        ));
+    }
+
+    #[test]
+    fn client_bundle_frames_only_count_frontend_stack_lines() {
+        let evidence = runtime_evidence(
+            &HealthReport {
+                kind: "unhandled-rejection".into(),
+                message: String::new(),
+                stack: "validateRecord@http://127.0.0.1:4090/plugins/:148814:26".into(),
+                page_url: String::new(),
+            },
+            "",
+        );
+        assert!(has_client_bundle_frames(&evidence));
+        // 内核日志里的 `/plugins/…` 访问行说的是静态资源加载失败，
+        // 不是「某个 bundle 抛了异常」，不能算 bundle 帧。
+        assert!(!has_client_bundle_frames(
+            "Error: GET /plugins/??x/client.js 500 Internal Server Error"
+        ));
+    }
+
+    /// 归因落在「内核服务的客户端模块 bundle、但证据里没有包名」时，事故面板必须
+    /// 如实说这一点：含糊的「暂未能归因」+「切换/重装内核」会把一次前端异常说成
+    /// 页面故障，并让用户去动一个无辜的内核版本。同时不得隔离任何插件。
+    #[test]
+    fn runtime_client_bundle_fault_is_classified_without_blaming_anyone() {
+        let data_dir = temp_data_dir("frontend-bundle");
+        write_store(
+            &data_dir,
+            r#"{"schemaVersion":1,"items":[{"id":"ghost-plugin","name":"ghost-plugin"}]}"#,
+        );
+        let report = HealthReport {
+            kind: "unhandled-rejection".into(),
+            message: "TypeError: Assistant stream raw chunk must be a lossless JSON object".into(),
+            stack: MACOS_BUNDLE_STACK.into(),
+            page_url: "http://127.0.0.1:4090/".into(),
+        };
+
+        let incident = diagnose_runtime(&data_dir, report);
+
+        assert_eq!(incident.cause, "frontend");
+        assert!(
+            incident.suspects.is_empty(),
+            "没有包名就不许指认任何嫌疑对象"
+        );
+        assert!(
+            incident.message.contains("前端") && incident.message.contains("bundle"),
+            "文案必须点明异常来自前端 bundle：{}",
+            incident.message
+        );
+        assert!(
+            incident.message.contains("仍在运行"),
+            "页面仍在运行时不得把它说成页面故障：{}",
+            incident.message
+        );
+        let hint = incident.hint.clone().unwrap_or_default();
+        assert!(
+            hint.contains("消息"),
+            "下一步必须引导用户反馈自检证据里的错误消息：{hint}"
+        );
+        assert!(
+            crate::quarantine::load(&data_dir).items.is_empty(),
+            "前端 bundle 证据不得隔离任何插件"
+        );
+        assert_eq!(
+            incident.health.map(|health| health.kind),
+            Some(String::from("unhandled-rejection")),
+            "自检证据必须原样留在事故里"
+        );
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    /// 单成员组合路由里的插件名是强证据，仍必须走自动隔离路径——修多成员误报
+    /// 时不能把这条真实可用的归因一起收紧掉。
+    #[test]
+    fn runtime_single_bundle_plugin_evidence_still_quarantines() {
+        let data_dir = temp_data_dir("frontend-single");
+        write_store(
+            &data_dir,
+            r#"{"schemaVersion":1,"items":[{"id":"ghost-plugin","name":"ghost-plugin"}]}"#,
+        );
+        let incident = diagnose_runtime(
+            &data_dir,
+            HealthReport {
+                kind: "unhandled-rejection".into(),
+                message: "TypeError: boom".into(),
+                stack:
+                    "at mount (http://127.0.0.1:4090/plugins/??ghost-plugin/client.js&rev=abc:12:26)"
+                        .into(),
+                page_url: "http://127.0.0.1:4090/".into(),
+            },
+        );
+
+        assert_eq!(incident.cause, "plugin");
+        assert_eq!(incident.suspects.len(), 1);
+        assert_eq!(incident.suspects[0].name, "ghost-plugin");
+        let quarantined = crate::quarantine::load(&data_dir).items;
+        assert_eq!(quarantined.len(), 1);
+        assert_eq!(quarantined[0].id, "ghost-plugin");
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    /// 已经落盘的旧事故也必须跟着改判：用户升级外壳后，概览横幅读的就是这份
+    /// 文件。改判只许动判断与文案，原始证据（attempts / log_tail）与文件本身
+    /// 都不能被改写——读路径不产生副作用。
+    #[test]
+    fn stored_bundle_incident_is_reclassified_without_rewriting_evidence() {
+        let data_dir = temp_data_dir("frontend-stored");
+        let stored = Incident {
+            recovered: false,
+            safe_mode: false,
+            message: String::from("工作台页面异常，但暂未找到足够证据区分插件和内核。"),
+            suspects: Vec::new(),
+            attempts: vec![
+                String::from("工作台健康探针报告：unhandled-rejection：validateRecord@…"),
+                String::from("未发现足够的插件或内核证据，暂不作强归因"),
+            ],
+            log_tail: String::from("dsh web: http://127.0.0.1:4090/?token=…\n"),
+            log_path: String::from("/tmp/kernel.log"),
+            hint: Some(String::from(
+                "请打开日志并重试；若持续发生，再到内核版本页切换其他版本或重新安装当前版本。",
+            )),
+            at: 1_789_133_158,
+            cause: String::from("unknown"),
+            health: Some(HealthReport {
+                kind: String::from("unhandled-rejection"),
+                message: MACOS_BUNDLE_STACK.to_string(),
+                stack: MACOS_BUNDLE_STACK.to_string(),
+                page_url: String::from("http://127.0.0.1:4090/"),
+            }),
+        };
+        save_incident(&data_dir, &stored);
+        let on_disk = std::fs::read_to_string(incident_path(&data_dir)).expect("read incident");
+
+        let loaded = load_incident(&data_dir).expect("incident loads");
+
+        assert_eq!(loaded.cause, "frontend");
+        assert_eq!(loaded.message, frontend_bundle_wording().0);
+        assert_eq!(loaded.hint, Some(frontend_bundle_wording().1));
+        assert_eq!(loaded.attempts, stored.attempts, "原始轨迹不得被改写");
+        assert_eq!(loaded.log_tail, stored.log_tail, "原始日志片段不得被改写");
+        assert_eq!(loaded.at, stored.at);
+        assert_eq!(
+            std::fs::read_to_string(incident_path(&data_dir)).expect("read incident"),
+            on_disk,
+            "读路径不得回写事故文件"
+        );
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    /// 改判必须有边界：有嫌疑对象的事故（启动时停用了插件）和没有健康证据的
+    /// 事故都不能被贴上「前端 bundle」的标签。
+    #[test]
+    fn reclassification_leaves_other_incidents_alone() {
+        let bundle_health = Some(HealthReport {
+            kind: String::from("unhandled-rejection"),
+            message: MACOS_BUNDLE_STACK.to_string(),
+            stack: MACOS_BUNDLE_STACK.to_string(),
+            page_url: String::from("http://127.0.0.1:4090/"),
+        });
+        let mut with_suspect = Incident {
+            recovered: true,
+            safe_mode: true,
+            message: String::from("工作台已在停用以下插件后成功启动。"),
+            suspects: vec![Suspect {
+                kind: String::from("plugin"),
+                id: String::from("ghost-plugin"),
+                name: String::from("ghost-plugin"),
+                evidence: String::new(),
+            }],
+            attempts: Vec::new(),
+            log_tail: String::new(),
+            log_path: String::new(),
+            hint: None,
+            at: 1,
+            cause: String::from("plugin"),
+            health: bundle_health,
+        };
+        reclassify_frontend_bundle_incident(&mut with_suspect);
+        assert_eq!(with_suspect.cause, "plugin");
+        assert_eq!(with_suspect.message, "工作台已在停用以下插件后成功启动。");
+
+        let mut startup = Incident {
+            cause: String::from("unknown"),
+            health: None,
+            ..with_suspect.clone()
+        };
+        startup.suspects.clear();
+        reclassify_frontend_bundle_incident(&mut startup);
+        assert_eq!(startup.cause, "unknown", "没有健康证据就不能改判");
+    }
+
     /// 内核**根本没被拉起来**时（这里是端口被无关进程占用），看护不得进入
     /// "归因 → 停用插件 → 安全模式"的阶梯。
     ///
@@ -1454,8 +1929,11 @@ mod tests {
             .as_ref()
             .map(|incident| incident.attempts.clone())
             .unwrap_or_default();
+        // 判据是「有没有**进入**安全模式」，不能拿裸词「安全模式」当判据：正确路径
+        // 的收尾文案里也有一句「本次未改动插件接线（无归因、未进入安全模式）」，那是
+        // 否定用法，按裸词匹配会把正确行为判成失败。
         assert!(
-            !attempts.iter().any(|entry| entry.contains("安全模式")),
+            !attempts.iter().any(|entry| entry.starts_with("安全模式")),
             "内核根本没被拉起来时不得进入安全模式；实际轨迹：{attempts:?}"
         );
         assert!(

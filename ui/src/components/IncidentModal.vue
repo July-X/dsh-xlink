@@ -12,7 +12,7 @@ const incident = computed(() => store.incident);
 
 const cause = computed(() => {
   const value = incident.value && incident.value.cause;
-  if (value === 'plugin' || value === 'kernel' || value === 'unknown') return value;
+  if (value === 'plugin' || value === 'kernel' || value === 'frontend' || value === 'unknown') return value;
   const suspects = (incident.value && incident.value.suspects) || [];
   if (suspects.some((suspect) => suspect.kind === 'plugin')) return 'plugin';
   if (suspects.some((suspect) => suspect.kind === 'kernel')) return 'kernel';
@@ -24,12 +24,14 @@ const title = computed(() => {
   if (incident.value.recovered) return '已在安全模式下启动工作台';
   if (cause.value === 'plugin') return '工作台异常：疑似插件问题';
   if (cause.value === 'kernel') return '工作台异常：疑似内核问题';
+  if (cause.value === 'frontend') return '工作台异常：前端 bundle 异常';
   return '工作台异常：暂未能归因';
 });
 
 const causeLabel = computed(() => {
   if (cause.value === 'plugin') return '判断：疑似插件问题';
   if (cause.value === 'kernel') return '判断：疑似内核问题';
+  if (cause.value === 'frontend') return '判断：前端 bundle 异常（未定位到包名）';
   return '判断：暂未能归因';
 });
 
