@@ -18,6 +18,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::process::{build_log_kind, current_date_string, LogSpec, RotatingLog};
 use crate::releases::{http_get_file, http_get_string};
+use crate::settings;
 
 /// 托管运行时的固定版本。选 v24 LTS（满足 dsh engines `^22.19 || >=24`，
 /// 且 darwin-x64 / win-x64 均有官方产物）；升级由外壳发版带动。
@@ -57,6 +58,19 @@ fn artifact_for_platform(os: &str, arch: &str) -> Result<(String, &'static str),
 
 fn artifact_name() -> Result<String, String> {
     artifact_for_platform(std::env::consts::OS, std::env::consts::ARCH).map(|(name, _)| name)
+}
+
+/// 归档解包时的顶层目录名：官方 dist 的 `<产物名去掉扩展名>`（`node-v<版本>-<平台>`）。
+///
+/// 必须由 [`artifact_for_platform`] 推导，不能写死。写死 `darwin-x64` 时，解包
+/// 会在 Apple Silicon / Linux 上于第一个条目就报「归档根目录必须是 …-darwin-x64/」：
+/// 产物按真实平台下载、SHA-256 也校验通过，但没有任何文件被解出来（P1-1）。
+fn archive_root() -> Result<String, String> {
+    let name = artifact_name()?;
+    Ok(name
+        .rsplit_once('.')
+        .map(|(root, _)| root.to_string())
+        .unwrap_or(name))
 }
 
 /// 下载体积提示文案（压缩包大小，供进度消息使用）。
@@ -154,7 +168,9 @@ fn extract_tarball(tarball: &Path, version_dir: &Path) -> Result<(), String> {
     use flate2::read::GzDecoder;
     use tar::Archive;
 
-    const ROOT: &str = "node-v24.20.0-darwin-x64";
+    // 归档顶层目录由当前平台的产物名推导（见 `archive_root`）——写死会在
+    // Apple Silicon / Linux 上于第一个条目就失败（P1-1）。
+    let root = archive_root()?;
 
     let file = fs::File::open(tarball).map_err(|e| format!("打开归档失败：{e}"))?;
     let mut archive = Archive::new(GzDecoder::new(file));
@@ -174,7 +190,7 @@ fn extract_tarball(tarball: &Path, version_dir: &Path) -> Result<(), String> {
             .path()
             .map_err(|e| format!("读取归档路径失败：{e}"))?
             .into_owned();
-        let relative = strip_root(&path, ROOT)?;
+        let relative = strip_root(&path, &root)?;
         let kind = entry.header().entry_type();
 
         // 符号链接 / 硬链接是官方 dist 的便利入口（bin/npm 等），
@@ -227,7 +243,8 @@ fn extract_tarball(tarball: &Path, version_dir: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn extract_zip(zip_path: &Path, version_dir: &Path) -> Result<(), String> {
-    const ROOT: &str = "node-v24.20.0-win-x64";
+    // 同 `extract_tarball`：顶层目录由产物名推导，不再写死 win-x64（P1-1）。
+    let root = archive_root()?;
 
     let file = fs::File::open(zip_path).map_err(|e| format!("打开归档失败：{e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 zip 失败：{e}"))?;
@@ -243,7 +260,7 @@ fn extract_zip(zip_path: &Path, version_dir: &Path) -> Result<(), String> {
         let Some(path) = entry.enclosed_name() else {
             return Err("归档包含越界路径".into());
         };
-        let relative = strip_root(&path, ROOT)?;
+        let relative = strip_root(&path, &root)?;
         if entry.is_dir() {
             if relative.as_os_str().is_empty() || keep_win(&relative) {
                 fs::create_dir_all(version_dir.join(&relative))
@@ -477,16 +494,23 @@ pub(crate) fn verify_or_install(
             Ok(Some(exe))
         }
         None => {
-            let _ = fs::remove_dir_all(&version_dir);
-            let _ = fs::remove_file(&tarball);
-            // 带上真实的探测输出：旧实现把任何探测失败都写成"当前系统可能低于
-            // 其最低版本要求"，把权限问题、架构不匹配、被杀毒软件拦下等真实原因
-            // 一起掩盖掉了（P2-18）。
+            // 先取诊断、再删目录：`probe_failure_detail` 要派生的正是
+            // `<version_dir>/bin/node` 这个可执行文件，目录一旦先被删掉，探测必然
+            // 失败，用户永远只看到「未返回任何诊断输出」——与事实（文件已被删、
+            // 进程根本没启动）相反，恰好是 P2-18 想消除的那种掩盖（P1-6）。
             let detail = crate::node::probe_failure_detail(&exe)
                 .unwrap_or_else(|| "未返回任何诊断输出".to_string());
+            let _ = fs::remove_dir_all(&version_dir);
+            let _ = fs::remove_file(&tarball);
+            // 出路必须指向真实存在的入口：面板的「设置」页只有端口与 profile，
+            // 没有 Node 路径输入项，`node_path` 目前只能在 settings.json 里改
+            // （P2-7）。
             Err(format!(
                 "托管 Node.js v{MANAGED_NODE_VERSION} 无法运行，已回滚。实际输出：{detail}。\
-                 请在「设置」里指定系统里可用的 Node.js 路径，或手动安装 Node.js 后重试。日志：{}",
+                 请手动安装 Node.js v{MANAGED_NODE_VERSION} 及以上版本后重试；\
+                 也可以在 {} 里把 node_path 指到已有的 node 可执行文件（面板暂未提供该输入项）。\
+                 日志：{}",
+                settings::settings_file(data_dir).display(),
                 log_path.display()
             ))
         }
@@ -534,6 +558,54 @@ mod tests {
             artifact_for_platform("macos", "x86_64").unwrap().0,
             format!("node-v{MANAGED_NODE_VERSION}-darwin-x64.tar.gz")
         );
+        // 新增的平台映射同样要钉住：每一条都可能被真实下载（P2-18），漏钉一条
+        // 就等于让那个平台在真机上裸奔。
+        assert_eq!(
+            artifact_for_platform("macos", "aarch64").unwrap().0,
+            format!("node-v{MANAGED_NODE_VERSION}-darwin-arm64.tar.gz")
+        );
+        assert_eq!(
+            artifact_for_platform("linux", "x86_64").unwrap().0,
+            format!("node-v{MANAGED_NODE_VERSION}-linux-x64.tar.gz")
+        );
+        assert_eq!(
+            artifact_for_platform("linux", "aarch64").unwrap().0,
+            format!("node-v{MANAGED_NODE_VERSION}-linux-arm64.tar.gz")
+        );
+    }
+
+    /// P1-1：解包顶层目录必须由当前平台的产物名推导。
+    ///
+    /// 旧实现写死 `node-v24.20.0-darwin-x64`：产物按真实平台下载、SHA-256 也校验
+    /// 通过，然后 `strip_root` 在第一个条目就报「归档根目录必须是 …-darwin-x64/」——
+    /// 一次下载 51 MB、零文件解出。Apple Silicon 与 Linux 上是必然失败。
+    #[test]
+    fn archive_root_follows_the_platform_artifact() {
+        let name = artifact_name().unwrap();
+        let expected = name.rsplit_once('.').unwrap().0.to_string();
+        assert_eq!(archive_root().unwrap(), expected);
+        for (os, arch) in [
+            ("windows", "x86_64"),
+            ("macos", "x86_64"),
+            ("macos", "aarch64"),
+            ("linux", "x86_64"),
+            ("linux", "aarch64"),
+        ] {
+            let (name, _) = artifact_for_platform(os, arch).unwrap();
+            let root = name.rsplit_once('.').unwrap().0.to_string();
+            let inside = Path::new(&root).join("bin/node");
+            assert!(
+                strip_root(&inside, &root).is_ok(),
+                "{os}/{arch}：顶层目录 {root} 应当能解出条目"
+            );
+            // 写死的 x64 目录名在其它平台上必须被拒绝——这正是回归前的行为。
+            if root != "node-v24.20.0-darwin-x64" {
+                assert!(
+                    strip_root(&inside, "node-v24.20.0-darwin-x64").is_err(),
+                    "{os}/{arch}：写死的 darwin-x64 不得再被接受"
+                );
+            }
+        }
     }
 
     #[test]
