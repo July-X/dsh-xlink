@@ -59,18 +59,18 @@
 | P2-6 | SRI：多摘要（空格分隔）硬失败；缺摘要时的策略 | ✅ 已修（缺摘要仍为跳过，见明细） |
 | P2-7 | `save_settings` 清空 `node_path`；文案指向不存在的设置项 | ✅ 已修 |
 | P2-8 | `detect_node` 不回写缓存 → 陈旧 `ok:false` 挡死启动 | ✅ 已修 |
-| P2-9 | Windows 每 2.5s 派生一次 PowerShell 做进程身份校验 | ⏳ 待修 |
-| P2-10 | `PluginsPanel` 模式徽章用 `:loading="globalBusy"`（P2-42 同款） | ⏳ 待修 |
-| P2-11 | 进度浮层 z-index 3000 压住 ElMessage / ElMessageBox | ⏳ 待修 |
-| P2-12 | 技能自动检查失败不退避（注释显示为有意取舍，缺退避） | ⏳ 待修 |
-| P2-13 | 发布：资产清理/断言排在 `draft=false` 之后，失败即锁死 | ⏳ 待修 |
-| P2-14 | 发布：版本单调性门 fail-open（`curl … \|\| true`） | ⏳ 待修 |
-| P2-15 | 发布：annotated tag 会让 publish 在跑满全流程后必挂 | ⏳ 待修 |
-| P2-16 | CI 无 Windows job，Windows 专属编译错误只在打 tag 时暴露 | ⏳ 待修 |
+| P2-9 | Windows 每 2.5s 派生一次 PowerShell 做进程身份校验 | ✅ 已修（3 秒缓存） |
+| P2-10 | `PluginsPanel` 模式徽章用 `:loading="globalBusy"`（P2-42 同款） | ✅ 已修 |
+| P2-11 | 进度浮层 z-index 3000 压住 ElMessage / ElMessageBox | ⏸ 待协调（改 `ui/src/theme.css`，属并发会话工作面） |
+| P2-12 | 技能自动检查失败不退避（注释显示为有意取舍，缺退避） | ✅ 已修 |
+| P2-13 | 发布：资产清理/断言排在 `draft=false` 之后，失败即锁死 | ✅ 已修 |
+| P2-14 | 发布：版本单调性门 fail-open（`curl … \|\| true`） | ✅ 已修 |
+| P2-15 | 发布：annotated tag 会让 publish 在跑满全流程后必挂 | ✅ 已修 |
+| P2-16 | CI 无 Windows job，Windows 专属编译错误只在打 tag 时暴露 | ✅ 已修 |
 | P2-17 | `open_log_window` 在 async 命令里阻塞 `recv_timeout(20s)` | ✅ 已修 |
 | P2-18 | `check-invariants.mjs` 对补丁 `from` 缺穿越校验、`to` 放行 UNC | ✅ 已修 |
 | P2-19 | 缺"UI 模板未定义标识符"门禁 | ✅ 已修（新增 `scripts/check-ui-bindings.mjs`） |
-| P3-* | 轻微项（见文末"轻微与建议"） | ⏳ 待修 |
+| P3-* | 轻微项（见文末"轻微与建议"） | 🔄 进行中（已修 `prune_old_logs` 当天日志语义） |
 
 ### 关于 P1-2 的最终判定（两次更正后）
 
@@ -410,3 +410,22 @@ guard 用例共用 `/tmp/plugins`，某个用例的清理会删掉别人正在�
 **待办（UI，需与并发会话协调）**：`cause = "env"` 需要在 `IncidentModal.vue` 与
 `OverviewPanel.vue` 的 cause 白名单/标题映射里加一项（现在会回落到"暂未能归因"，
 而面板正文已经是明确的环境原因）。这两个文件当时正被另一个会话编辑，本轮没有改动。
+
+### 批次 5：Windows 轮询、UI 两处、发布流程与 CI
+
+| 编号 | 改动 | 回归/反证 |
+| --- | --- | --- |
+| P2-9 | Windows 专属 `command_cache`：同一 pid 的命令行结果缓存 3 秒；查询失败不缓存。端口活体与进程存活仍是实时查询，因此启停判定不受影响 | Windows 专属模块无法本机编译，已抽到临时 crate 以 `x86_64-pc-windows-msvc` 类型检查通过 |
+| P2-10 | 模式徽章改 `withLoading('pluginMode:' + row.id, …)` + `:loading="isLoading(...)"`，保留 `:disabled="globalBusy"` | `check-ui-bindings` + 22 条 UI 测试 |
+| P2-12 | 逐包失败只在手动点击时提示；失败后 5 分钟自动退避（手动不受限） | 新增用例 `failed skill update checks back off, and manual checks bypass the backoff` |
+| P2-13 | 资产整理（删计划外 + 恰好 6 个 + 逐名比对）前置为 `Normalize draft assets before publishing`，位于 `draft=false` 之前 | 33 个 `run:` 块全部 `bash -n` 通过；步骤顺序已打印核对 |
+| P2-14 | 单调性门区分 404 与其它失败：非 404 重试 3 次后 `exit 1` | 同上 |
+| P2-15 | tag 比对改 `commits/<tag>`（服务端剥壳），与 preflight 的 `^{commit}` 口径一致 | 同上 |
+| P2-16 | `desktop-ci.yml` 新增 `windows-compile` job（`cargo check --all-targets`，只需一个最小 `ui/dist`） | 本机验证过"最小 dist + cargo check"可通过 |
+| P3（部分） | `prune_old_logs` 按文件名日期戳跳过当天日志，并把"总量预算是软上限"写进注释 | 新增 `todays_logs_survive_even_when_the_budget_is_exceeded`；反证命中 |
+
+**仍未处理**：P2-11（`ui/src/theme.css` 的浮层 z-index，文件属并发会话工作面，按用户
+指示避开）；"轻微与建议"里剩余的纯文案/可见性项（`replace_child_slot` 告警只进
+stderr、`errors.js` 兜底措辞、`openExternal` 静默、`<dl>` 内容模型、标题栏 `right:104px`
+与注释不符、`check-signing-keys.test.mjs` 的 key id 钉死、发布白名单两处口径、
+dispatch 自建 tag、`status()` 重复读设置、`.corrupt` 固定名）。
