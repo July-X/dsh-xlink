@@ -5,7 +5,10 @@
   color-scheme: dark;
   --bg: #0b1020;
   --bg-soft: #121831;
-  --card: rgba(255, 255, 255, 0.04);
+  /* 卡片表面保持半透明（玻璃质感），叠一道 .card 上的 backdrop-filter 磨砂来
+     压掉与背景网格的交叉感。透明度越高卡片越亮、背后内容越淡，但网格也越
+     明显——所以这里只到 5%，剩下的交给磨砂。 */
+  --card: rgba(255, 255, 255, 0.05);
   --border: rgba(255, 255, 255, 0.1);
   --text: #e8ecf7;
   --muted: #9aa4bf;
@@ -88,12 +91,93 @@ body {
 }
 
 body {
-  background: var(--bg);
+  background-color: var(--bg);
   overflow: hidden;
 }
 
 #app {
   height: 100%;
+  /* 建 stacking context：.app-bg 以 z-index:-1 画在这个 context 内，于是位于
+     所有面板内容之下、body 底色之上。 */
+  position: relative;
+  z-index: 1;
+}
+
+/* --- 全窗背景：鲸蓝对角光晕 + 13.5px 小网格 -----------------------------------
+   挂在 App.vue 的 .app-bg 真实节点上，而不是 body 伪元素——body::after 已被
+   标题栏鲸眼扫光占用（那里的 `background:` 简写会清掉本节所有图层，且
+   .custom-titlebar-shell 下整条被 display:none），body::before 也已用于光晕，
+   伪元素在这里会互相覆盖，网格会静默消失。
+
+   网格要「左上最密、向下与向右都淡出」，即两道遮罩相乘。这里用嵌套元素实现：
+   外层 .app-bg__grid 管横向、内层 ::before 管纵向。之所以不用
+   `mask-composite: intersect`，是因为该属性较新且各内核写法不一，嵌套做乘法
+   在 WebKit / Chromium 上表现一致。 */
+.app-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  /* 对角光晕：左上角最强，向右下淡出；终点提前到 70%——否则在又高又窄的窗口上
+     对角线几乎被宽度主导，底部还留着一层蓝，收不干净。这一层刻意不带遮罩，
+     免得把光晕也一起裁掉——网格的遮罩只挂在 .app-bg__grid 子树上。 */
+  background-image: linear-gradient(
+    to bottom right,
+    rgba(79, 140, 255, 0.16) 0%,
+    rgba(79, 140, 255, 0.06) 35%,
+    transparent 70%
+  );
+}
+
+/* 横向遮罩：左端满强度，向右淡出。挂在容器上会连同整棵子树一起裁，于是与
+   ::before 的纵向遮罩相乘，得到「左上最密、右下全无」的二维衰减。 */
+.app-bg__grid {
+  position: absolute;
+  inset: 0;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 0%,
+    rgba(0, 0, 0, 0.7) 40%,
+    rgba(0, 0, 0, 0.35) 70%,
+    transparent 95%
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 0%,
+    rgba(0, 0, 0, 0.7) 40%,
+    rgba(0, 0, 0, 0.35) 70%,
+    transparent 95%
+  );
+}
+
+.app-bg__grid::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  /* 线色只给 6%：卡片保持半透明玻璃，网格会从卡片内部透出，与卡片边框、插件行
+     分隔线一起出现；线越亮，这种交叉越像乱线。6% 仍能看出网格，但不与内容争。 */
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  background-size: 13.5px 13.5px, 13.5px 13.5px;
+  background-repeat: repeat, repeat;
+  /* 纵向遮罩（保留原有行为）：顶端满强度，25% 处 0.75、55% 处 0.35，80% 窗高处
+     归 0——底部 20% 完全干净。必须是竖直方向：用 `to bottom right` 时，高窄
+     窗口的纵向衰减几乎为零，底部照样有网格。 */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 0%,
+    rgba(0, 0, 0, 0.75) 25%,
+    rgba(0, 0, 0, 0.35) 55%,
+    transparent 80%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 0%,
+    rgba(0, 0, 0, 0.75) 25%,
+    rgba(0, 0, 0, 0.35) 55%,
+    transparent 80%
+  );
 }
 
 /* --- macOS / Windows 自绘标题栏 --------------------------------------------
@@ -900,6 +984,9 @@ code {
    归 0（50% 以下回归纯 --bg-soft 底，不留拖尾）；幅度与 release 构建的 Gitea 绿
    背景渐变对齐，保留对称关系。 */
 body.dev-build .sidebar {
+  /* 让侧栏与 body 共用同一底色，红色版本带 + body 网格都能透过侧栏可见，
+     整体感与 release 期对称。 */
+  background: transparent;
   background-image: linear-gradient(
     to bottom,
     rgba(255, 45, 48, 0.25) 0%,
@@ -920,6 +1007,9 @@ body.dev-build .sidebar {
    （store.js:applyBuildClass）；dev 调试面板可临时覆盖该类以便在 dev 期预览——
    见 DebugPanel.vue 的 setReleasePreview()。 */
 body.rel-build {
+  /* 只保留 Gitea 绿版本带（画在 body 底色层，位于 .app-bg 之下，网格因此能
+     压在绿带上面）。光晕与网格由 .app-bg 承担，这里不要再叠一份：两套不同
+     间距的网格叠在一起会互相拍频，看着既有粗格又有细格，反而看不出网格多大。 */
   background-image: linear-gradient(
     to bottom,
     rgba(96, 153, 38, 0.25) 0%,
@@ -929,7 +1019,8 @@ body.rel-build {
 
 /* release 期侧栏去掉 --bg-soft 填充、改透明，让 body 那片绿贯穿侧栏→主区不
    分段（同一底色 = 同一合成结果 = 一个整体）；侧栏与主区的结构分隔仍由
-   border-right 承担。dev 构建不受影响——仍保留 --bg-soft + 鲸眼红。 */
+   border-right 承担。dev 构建同样透明（见 body.dev-build .sidebar）——两种
+   模式的侧栏都让 .app-bg 的网格透出来，只是版本带颜色不同。 */
 body.rel-build .sidebar {
   background: transparent;
 }
@@ -1161,6 +1252,12 @@ main {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* 磨砂玻璃：把卡片背后的整窗网格虚化掉。13.5px 的 1px 细线经 blur 摊成一层
+     柔和肌理，与卡片边框、插件行分隔线的交叉（锐利线条相撞）基本消失，同时
+     玻璃质感反而更强。只影响卡片内部——页面背景上的网格保持清晰。
+     代价：卡片需要做背景模糊合成，面板滚动时多一层渲染开销。 */
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
 }
 
 .card h2 {

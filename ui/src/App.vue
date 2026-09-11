@@ -208,6 +208,15 @@ onUnmounted(() => {
 
 <template>
   <div class="app-shell">
+    <!-- 全窗背景层（鲸蓝光晕 + 13.5px 网格）。用真实节点而非 body 伪元素：
+         body::after 已被标题栏鲸眼扫光占用（且 .custom-titlebar-shell 下被
+         display:none），body::before 也已用于光晕，伪元素在此不可复用。
+         网格的横向遮罩挂在外层、纵向遮罩挂在内层 ::before，两层相乘即
+         「左上最密、向右与向下双向淡出」——用嵌套而非 mask-composite，
+         避免依赖后者的浏览器支持。样式见 theme.css 的 .app-bg。 -->
+    <div class="app-bg" aria-hidden="true">
+      <div class="app-bg__grid"></div>
+    </div>
     <div v-if="renderErrors.message" class="render-error-fallback">
       <el-alert
         type="error"
