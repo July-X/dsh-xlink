@@ -1,6 +1,6 @@
 [package]
 name = "dsh-xlink"
-version = "0.1.3-rc.1"
+version = "0.1.3-rc.2"
 description = "DeepSeek Harness desktop shell: kernel version management and the bundled web UI"
 edition = "2021"
 rust-version = "1.77"
@@ -25,6 +25,24 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["unstable", "macos-private-api", "tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
+# 任务完成后的系统通知气泡（macOS 走 NSUserNotificationCenter，Windows 走
+# WinRT toast）。**刻意不用 `tauri-plugin-notification`**：它在 `init()` 里会往
+# 每一个 webview（含内核工作台与三个官方对话站点）注入一段 JS shim，macOS 上
+# 页面一加载就调用 `plugin:notification|is_permission_granted`——那些窗口的
+# capability 里没有这条权限，于是每次开页面都产生一个未处理的 Promise 拒绝
+# （被 `harness-health.js` 当故障上报），而且那段 shim 会在官方对话页面上留下
+# 一个 Tauri 味道的 `window.Notification`，与 `chat-fingerprint.js` 的目标相反。
+# 壳只需要 Rust 侧的发送能力，而 `notify-rust` 正是该插件的后端（macOS
+# `mac-notification-sys`、Windows `tauri-winrt-notification`），因此直接依赖它，
+# 两端行为一致且不碰任何 webview。
+notify-rust = "4"
+# 订阅内核 `/api/remote.mux` 的事件流（见 `notify.rs`）：内核通过这条
+# WebSocket 把 `api-session/status` 等事件推给客户端，桌面壳据此判定"某个
+# 会话的对话任务跑完了"。刻意**不开 TLS 特性**：内核只监听回环地址上的明文
+# `ws://`，引入 TLS 只会带进 C 工具链依赖（AGENTS.md 要求在 Intel macOS /
+# Windows 的 CI runner 上免 C 工具链构建）。`handshake` 提供握手所需的
+# 自定义请求头（Cookie / Origin），`url` 复用本项目已直接依赖的 `url` crate。
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "url"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 补丁应用/撤销的内容校验（state.json 记录修改后文件哈希）。
