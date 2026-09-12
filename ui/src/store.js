@@ -473,7 +473,7 @@ export function detectNode() {
       }
       return info;
     } catch (e) {
-      toastActionError('检测 Node.js 失败', e, '请确认 Node.js 已安装且可执行，或在设置里手动指定路径', 4000);
+      toastActionError('检测 Node.js 失败', e, '请确认 Node.js 已安装且可执行；也可在 settings.json 里手动指定 node_path 后重试', 4000);
       return null;
     }
   });

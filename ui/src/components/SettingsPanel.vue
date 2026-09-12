@@ -1,10 +1,12 @@
 <script setup>
-// 设置：Web UI 端口、插件接线 profile 名、Node 检测、任务完成通知，以及内置补丁
-// （内核补丁 / 小插件）的应用与撤销。轮询每 2.5s 刷新 store.view，但用户正在
-// 编辑的输入框不被回写（focus 守卫）。
+// 设置：Web UI 端口、任务完成通知，以及内置补丁（内核补丁 / 小插件）的应用与撤销。
+// 轮询每 2.5s 刷新 store.view，但用户正在编辑的输入框不被回写（focus 守卫）。
+// 「设置」卡只留端口这一项可改的东西：插件接线 profile 名是固定值，Node 环境结论与
+// 「重新检测」都在概览页（OverviewPanel 的「桌面端设置」摘要卡与「当前内核」的
+// Node.js 行），profile 仍跟着端口一起提交，不要在别处再复制一份输入。
 import { computed, reactive, ref, watch } from 'vue';
-import { ArrowDown, ArrowUp, Bell, Check, Monitor, Refresh } from '@element-plus/icons-vue';
-import { store, detectNode, saveSettings } from '../store.js';
+import { ArrowDown, ArrowUp, Bell, Check, Refresh } from '@element-plus/icons-vue';
+import { store, saveSettings } from '../store.js';
 import { patchStore, refreshPatches, applyPatch, revertPatch } from '../patches.js';
 import {
   notificationStore,
@@ -16,9 +18,10 @@ import {
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 
 const port = ref(undefined);
+// 固定值（默认 web）：界面上不再有输入行，但保存设置时仍要原样回传，否则 Rust 侧
+// 的合并会把 profile 覆盖回默认值。
 const profile = ref('');
 const editing = ref(false);
-const nodeHint = ref('');
 
 // 初始与外部变化时回写输入框；用户正在编辑（editing）时跳过，避免输入被回滚。
 watch(
@@ -43,14 +46,6 @@ watch(
   },
   { immediate: true }
 );
-
-const defaultNodeHint = computed(() => {
-  const n = store.view && store.view.node;
-  if (!n) return '';
-  return n.ok ? 'node ' + n.version + ' 满足 dsh 要求（^22.19 || >=24）' : n.reason;
-});
-
-const hintText = computed(() => nodeHint.value || defaultNodeHint.value);
 
 // 工作台运行期间禁止应用 / 撤销补丁（会写入内核目录）。
 const workbenchRunning = computed(() => !!(store.view && store.view.kernel && store.view.kernel.running));
@@ -93,17 +88,6 @@ function primaryAction(row) {
     : 'apply';
 }
 
-function onDetectNode() {
-  const info = detectNode();
-  if (info) {
-    info.then((result) => {
-      if (result) {
-        nodeHint.value = result.ok ? '检测结果：' + result.path + '  ' + result.version : result.reason;
-      }
-    });
-  }
-}
-
 function onRefreshPatches() {
   withLoading('patchRefresh', () => refreshPatches());
 }
@@ -141,10 +125,6 @@ function onSave() {
         <el-form-item label="Web UI 端口">
           <el-input-number v-model="port" :min="1024" :max="65535" :precision="0" controls-position="right" />
         </el-form-item>
-        <el-form-item label="插件接线 profile 名">
-          <!-- 固定值，不允许修改：保存设置时原样回传当前配置（默认 web）。 -->
-          <code class="profile-fixed">{{ profile || 'web' }}</code>
-        </el-form-item>
       </el-form>
       <div class="btn-row">
         <el-button
@@ -156,17 +136,13 @@ function onSave() {
         >
           保存设置
         </el-button>
-        <el-button
-          text
-          :icon="Monitor"
-          :loading="isLoading('detectNode')"
-          :disabled="globalBusy"
-          @click="onDetectNode"
-        >
-          检测 Node.js
-        </el-button>
       </div>
-      <p class="muted" style="margin: 0">{{ hintText }}</p>
+      <!-- 只改端口的卡片：profile 是固定值，Node 环境与「重新检测」都在概览页，
+           这里用一句话说明去处，省得用户以为功能被砍了。 -->
+      <p class="muted" style="margin: 0">
+        插件接线 profile 名固定为 <code>{{ profile || 'web' }}</code>，随端口一起保存；
+        Node.js 环境与「重新检测」在概览页。
+      </p>
     </div>
 
     <div class="card">

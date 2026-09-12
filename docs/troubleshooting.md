@@ -5,8 +5,8 @@
 | 症状 | 处理 |
 | --- | --- |
 | `pnpm install` 装出其他仓库内容 | 独立项目应在本仓库根目录运行 `pnpm install`，不要从包含它的上级目录启动命令 |
-| GUI 启动（Finder/开始菜单）下检测不到 nvm 的 Node，内核安装报「未检测到 Node.js」 | GUI 进程继承的 launchd / Window-Station PATH 不含 `~/.nvm/versions/node/*/bin` 或 `%NVM_HOME%\v*` —— `node.rs` 直接扫描 nvm 根并按 default 别名解析 + 版本降序探测；仍失败时在「设置」手动指定 node 路径 |
-| 目标机器完全没有 Node（nvm 没装 / 装了但未 install / 系统未装） | `node.rs` 没有任何候选可探测 —— 空结果文案分别给出三类安装路径：① 版本管理器 nvm/fnm/volta；② 系统包管理器 brew/winget/apt；③ 官方安装包；并附「设置」手动路径兜底 |
+| GUI 启动（Finder/开始菜单）下检测不到 nvm 的 Node，内核安装报「未检测到 Node.js」 | GUI 进程继承的 launchd / Window-Station PATH 不含 `~/.nvm/versions/node/*/bin` 或 `%NVM_HOME%\v*` —— `node.rs` 直接扫描 nvm 根并按 default 别名解析 + 版本降序探测；仍失败时在 `<data_dir>/settings.json` 里手动指定 `node_path`，改完回概览页点 Node.js 行的「重新检测」 |
+| 目标机器完全没有 Node（nvm 没装 / 装了但未 install / 系统未装） | `node.rs` 没有任何候选可探测 —— 空结果文案分别给出三类安装路径：① 版本管理器 nvm/fnm/volta；② 系统包管理器 brew/winget/apt；③ 官方安装包；并附手动路径（`settings.json` 的 `node_path`）兜底 |
 | GUI 启动下检测不到用户 PATH 里的 pnpm/npm（`%AppData%\npm`），误走自动安装 | 检测扫进程 PATH 只能看到系统 PATH —— `node.rs` 的 `path_dirs()` 一律扫 `env::merged_path()`（合并注册表 `HKCU\Environment\Path`）；新增 PATH 探测点同样必须用 merged_path |
 | 首次安装报「无法运行 npm 以自动安装 pnpm：系统找不到指定的路径 (os error 3)」 | `run_with_progress` 开日志时 `<data_dir>/logs/` 尚未创建（`install_version`/`kernel::start` 都在其后）—— 现在开日志前 `create_dir_all` 父目录；排查同类错误先看日志文件是否真的落盘 |
 | Tauri 同步命令里创建 webview 卡死 | 用新线程创建（`open_harness` 模式） |
