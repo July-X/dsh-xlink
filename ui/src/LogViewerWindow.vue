@@ -7,7 +7,7 @@ import { Refresh, Close } from '@element-plus/icons-vue';
 import { invoke, windowAction } from './bridge.js';
 import { toastError } from './notify.js';
 import { ioActive, isLoading, withLoading } from './loading.js';
-import { stripAnsi } from './progress.js';
+import { displayLogText } from './logs.js';
 
 const name = new URLSearchParams(location.search).get('log') || '';
 const content = ref('读取中…');
@@ -20,8 +20,7 @@ function load() {
   return withLoading('logwinRead', () =>
     invoke('read_log_file', { name })
       .then((text) => {
-        // 与日志面板一致：磁盘原文保留 ANSI，展示前剥离。
-        content.value = stripAnsi(text || '') || '（暂无内容）';
+        content.value = displayLogText(text);
       })
       .catch((e) => {
         content.value = '读取失败：' + e;

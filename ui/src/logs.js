@@ -27,6 +27,13 @@ export function formatLogSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
 }
 
+// 日志展示的统一口径：磁盘保留 pnpm/tsdown 的原始终端输出（含 ANSI 颜色码），
+// 展示前一律剥离；空文件给一句人话而不是空白。日志面板、全屏日志窗口与进度
+// 浮层的实时流共用这一条，别再各写一遍 `stripAnsi(text || '') || '（暂无内容）'`。
+export function displayLogText(text) {
+  return stripAnsi(text || '') || '（暂无内容）';
+}
+
 export function loadActiveLog() {
   if (!logModal.activeName) {
     logModal.content = '（暂无日志）';
@@ -45,9 +52,7 @@ export function loadActiveLog() {
     .then((text) => {
       // 读取期间用户可能已切签，或有更新的请求在飞：只有最新一次落内容。
       if (seq !== logReadSeq || logModal.activeName !== target) return;
-      // 落盘日志是 pnpm/tsdown 的原始终端输出，含 ANSI 颜色码；
-      // 按双轨约定磁盘保留原文、展示前剥离（同进度浮层的实时流）。
-      logModal.content = stripAnsi(text || '') || '（暂无内容）';
+      logModal.content = displayLogText(text);
     })
     .catch((e) => {
       if (seq !== logReadSeq) return;
