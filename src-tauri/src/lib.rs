@@ -13,6 +13,7 @@ mod guard;
 mod kernel;
 mod node;
 mod node_install;
+mod notify;
 mod patches;
 mod plugins;
 mod process;
@@ -36,29 +37,64 @@ pub fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// macOS 自检：管理面板窗口必须是「可最小化」的，否则标题栏那盏黄灯是个死按钮。
+///
+/// 这是「点黄灯没反应」那个 bug 的回归哨兵。根因在 AppKit 的
+/// `NSWindowStyleMask`：tao 的 `set_decorations(false)` 会把样式位重算成
+/// `Borderless | Resizable`（tao 0.35 `platform_impl/macos/window.rs`），
+/// 其中**不含** `Miniaturizable`，而 `miniaturize:` 在窗口不带该位时静默失败
+/// ——`isMiniaturized` 永远是 false、不报错，Tauri 的 `minimize()` 也把这次
+/// 失败当成功返回 `Ok(())`，前端连 toast 都触发不了。修复办法是让窗口**出生
+/// 即无边框**（`tauri.conf.json` 的 `decorations: false`，见那里的注释），
+/// 而不是建窗后再改一次装饰：后者那次样式重算会把默认的 `Miniaturizable`
+/// 一起抹掉，而且它由 tao 异步排到主线程队列，在 `setup()` 里补设也会被覆盖。
+///
+/// `is_minimizable()` 读的就是 AppKit 的 `isMiniaturizable`，所以这里能真实
+/// 反映黄灯是否可用。只记录、不中断启动：窗口仍可用关闭按钮与 `Cmd+M` 操作，
+/// 不值得为一个按钮拒绝启动。走 `spawn_blocking` 是因为该查询要同步回主线程，
+/// 直接在调用线程上等待会把它占住。
+#[cfg(target_os = "macos")]
+fn check_main_window_minimizable(app: &tauri::App) {
+    let Some(window) = app.get_webview_window("main") else {
+        eprintln!(
+            "dsh-xlink: 找不到管理窗口（label: main），无法确认标题栏黄灯是否可用。\
+             请重启应用；若问题持续，请用 `npm run dev` 在终端启动，\
+             连同上面的完整输出一起反馈。"
+        );
+        return;
+    };
+    // 该查询要同步回主线程，直接在调用线程上等待会把它占住。
+    tauri::async_runtime::spawn_blocking(move || {
+        if window.is_minimizable().unwrap_or(false) {
+            return;
+        }
+        eprintln!(
+            "dsh-xlink: 管理窗口不是「可最小化」的，标题栏黄灯点了不会有反应。\
+             请改用系统快捷键 Cmd+M；重启应用可重试这次设置。\
+             若问题持续，请用 `npm run dev` 在终端启动，连同上面的完整输出一起反馈。"
+        );
+    });
+}
+
 /// 应用入口；由 `main.rs` 调用。
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            // 管理面板在 macOS / Windows 使用本地 Vue 标题栏绘制交通灯
-            // 和品牌背景。这个设置只影响 main，工作台与官方对话窗口
-            // 继续沿用各自的窗口 chrome。
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            if let Some(window) = app.get_webview_window("main") {
-                if let Err(error) = window.set_decorations(false) {
-                    // 这条设置同时服务 macOS（画交通灯）与 Windows（画品牌背景），
-                    // 所以文案不能写死 macOS。失败只影响窗口外观，不影响任何功能，
-                    // 因此只记录、不中断启动。
-                    eprintln!(
-                        "dsh-xlink: 无法为管理窗口关闭系统标题栏（set_decorations 失败）：{error}；\
-                         窗口会退回系统原生标题栏，标题栏按钮与功能不受影响。\
-                         若界面显示异常，重启应用重试；仍失败请用 `npm run dev` 在终端启动，\
-                         连同上面的完整输出一起反馈。"
-                    );
-                }
-            }
+            // 管理面板在 macOS / Windows 上使用本地 Vue 标题栏绘制交通灯和品牌
+            // 背景：这两个平台的「无边框」由 `tauri.conf.json` 的 `decorations:
+            // false` 在**建窗时**给定，这里刻意不再调 `set_decorations(false)`。
+            //
+            // 运行时改装饰会顺手关掉 macOS 窗口的「可最小化」样式位，黄灯随即
+            // 变成点了没反应的死按钮（`miniaturize:` 静默失败，Tauri 的
+            // `minimize()` 还返回 `Ok(())`，前端连提示都弹不出来）；而且这次
+            // 样式重算由 tao 异步排到主线程队列，在 `setup()` 里紧接着补设
+            // `set_minimizable(true)` 也会被它覆盖（已实测）。声明式配置没有
+            // 这个问题：窗口出生就是无边框的，交通灯/标题栏按钮的语义位全部
+            // 保留。细节见下面 `check_main_window_minimizable` 的文档注释。
+            #[cfg(target_os = "macos")]
+            check_main_window_minimizable(app);
 
             let data_dir = kernel::data_dir(app.handle());
             // 把解析出的 data dir 打到 stderr，让同时运行 `tauri dev` 与
@@ -183,6 +219,10 @@ pub fn run() {
             commands::skill_uninstall,
             commands::skill_set_enabled,
             commands::skill_check_updates,
+            commands::notification_status,
+            commands::notification_mark_read,
+            commands::notification_save_settings,
+            commands::notification_test,
             commands::confirm_close_shell,
         ])
         .build(tauri::generate_context!())
@@ -261,6 +301,33 @@ pub fn run() {
             // 下面的 Exit 分支会在每次真实退出时级联关闭 official-chat
             // webview，并回收上次崩溃留下的 pid 文件。
         }
+        // 工作台窗口的前台状态：用户切回工作台即视为"看过结果了"，未读角标
+        // 清零。只认 `harness`——用户盯着管理面板时并不算看到了对话结果，
+        // 那种情况下仍然应该收到通知（见 `notify::set_workbench_focused`）。
+        if let tauri::RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::Focused(focused),
+            ..
+        } = &event
+        {
+            if label == "harness" {
+                notify::set_workbench_focused(handle, *focused);
+            }
+        }
+        // 窗口被销毁（用户点系统的关闭按钮、或 `stop_kernel` 的 `destroy()`）
+        // 时必须显式清掉前台标记：销毁不一定伴随 `Focused(false)`，而标记一旦
+        // 卡在 true，之后所有"离开时完成"的任务都会被当成"用户正在看"而永不
+        // 提醒——通知功能就此静默失效。
+        if let tauri::RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::Destroyed,
+            ..
+        } = &event
+        {
+            if label == "harness" {
+                notify::set_workbench_focused(handle, false);
+            }
+        }
         if let tauri::RunEvent::Exit = event {
             // 在绕过退出提示的那些退出路径（macOS 上的 Cmd+Q、操作系统
             // 关机、无需警告时的最后窗口自动关闭）上级联关闭 official-chat
@@ -290,6 +357,10 @@ pub fn run() {
                 }
                 kernel::clear_pid(&data_dir);
             }
+            // 事件订阅线程是壳自己的：退出前显式停掉并等在途的重连/读循环
+            // 收尾，避免进程退出时留下一个还在往已销毁的 AppHandle 上发事件
+            // 的线程。
+            notify::stop_watcher();
         }
     });
 }

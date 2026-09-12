@@ -292,6 +292,12 @@ fn merge_settings(
             .or_else(|| previous.npm_path.clone()),
         port: incoming.port,
         profile: incoming.profile.clone(),
+        // 通知设置由「任务通知」卡片自己的命令写入。面板的「保存设置」只发
+        // 端口与 profile，因此这里与路径字段同样按「请求没提到就继承现值」
+        // 处理，否则每次保存端口都会把用户打开的通知开关悄悄关掉。
+        notify_enabled: incoming.notify_enabled.or(previous.notify_enabled),
+        notify_away_only: incoming.notify_away_only.or(previous.notify_away_only),
+        notify_sound: incoming.notify_sound.or(previous.notify_sound),
     }
 }
 
@@ -647,6 +653,9 @@ mod settings_merge_tests {
 
     /// P2-7：面板只提交 `port` / `profile`，合并必须保留下手改过的路径字段，
     /// 否则一次「保存设置」就把用户配置的 Node 路径静默清空。
+    ///
+    /// 通知开关走同一条规则：用户在「任务通知」卡片里打开的开关，不能被
+    /// 面板的「保存设置」重置回默认值。
     #[test]
     fn merge_keeps_paths_the_panel_did_not_submit() {
         let previous = settings::Settings {
@@ -655,14 +664,18 @@ mod settings_merge_tests {
             npm_path: Some("/opt/node/bin/npm".into()),
             port: 3090,
             profile: "web".into(),
+            notify_enabled: Some(false),
+            notify_away_only: Some(false),
+            notify_sound: Some(true),
         };
-        // 面板发来的请求：只有 port / profile，路径字段被 serde default 填成 None。
+        // 面板发来的请求：只有 port / profile，其余字段被 serde default 填成 None。
         let incoming = settings::Settings {
             node_path: None,
             pnpm_path: None,
             npm_path: None,
             port: 3100,
             profile: "dev".into(),
+            ..settings::Settings::default()
         };
 
         let merged = merge_settings(&incoming, &previous);
@@ -671,6 +684,13 @@ mod settings_merge_tests {
         assert_eq!(merged.npm_path.as_deref(), Some("/opt/node/bin/npm"));
         assert_eq!(merged.port, 3100, "面板提交的字段必须生效");
         assert_eq!(merged.profile, "dev");
+        assert_eq!(
+            merged.notify_enabled,
+            Some(false),
+            "面板没提到的通知开关必须继承磁盘现值"
+        );
+        assert_eq!(merged.notify_away_only, Some(false));
+        assert_eq!(merged.notify_sound, Some(true));
 
         // 显式清空（空串）不被现值覆盖：`Some("")` 是"这次要清掉"。
         let clear = settings::Settings {
@@ -827,6 +847,13 @@ pub async fn start_kernel(
         if let Some(child) = child {
             register_child(&state, &data_dir, settings.port, child);
         }
+        // 内核已经在服务（本次是新拉起的，或者端口上本来就有一个健康实例
+        // ——`guarded_start` 的 no-op 分支）：确保事件订阅线程在跑。
+        // `start_watcher` 幂等，重复调用不会叠加线程；反过来，"内核在跑却没
+        // 有人订阅"就等于任务完成通知静默失效。
+        if crate::kernel_running(&app) {
+            crate::notify::start_watcher(&app);
+        }
         Ok(report)
     })
     .await
@@ -847,9 +874,12 @@ pub async fn start_kernel(
 #[tauri::command]
 pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
+    // 通知相关的收尾要用到 AppHandle，而下面的 `spawn_blocking` 会把 `app`
+    // 移进闭包，因此先留一份句柄。
+    let handle = app.clone();
     // kernel::stop 会等待子进程退出（最多等满它的 kill 超时），把这
-    // 段等待放到主线程之外。
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    // 段等待放到主线程之外。失败要在通知收尾之后如实上报，因此先接住结果。
+    let stop_result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         if let Some(window) = app.get_webview_window("harness") {
@@ -881,7 +911,67 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
         stop_outcome.map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    // 内核没了，事件流也就没有意义：停掉订阅线程，并把角标摘掉（残留的未读
+    // 数字会指向一个已经不存在的工作台）。
+    crate::notify::stop_watcher();
+    crate::notify::mark_all_read(&handle);
+    stop_result
+}
+
+/// 任务完成通知的当前状态（未读数、最近完成记录、订阅是否在线）。
+///
+/// 走 `spawn_blocking`：读设置文件是磁盘 IO，而状态命令由面板按秒级轮询，
+/// 不该占住主线程（AGENTS.md 的实现约定）。
+#[tauri::command]
+pub async fn notification_status(
+    app: AppHandle,
+) -> Result<crate::notify::NotificationStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::notify::status(&app))
+        .await
+        .map_err(|e| format!("读取通知状态失败：{e}。请重试"))
+}
+
+/// 全部标记为已读：未读计数清零，macOS Dock / Windows 任务栏的数字角标摘掉。
+#[tauri::command]
+pub async fn notification_mark_read(
+    app: AppHandle,
+) -> Result<crate::notify::NotificationStatus, String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::notify::mark_all_read(&handle))
+        .await
+        .map_err(|e| format!("清除未读标记失败：{e}。请重试"))
+}
+
+/// 保存任务通知的三个开关。其余设置原样保留。
+#[tauri::command]
+pub async fn notification_save_settings(
+    app: AppHandle,
+    enabled: bool,
+    notify_away_only: bool,
+    sound: bool,
+) -> Result<crate::notify::NotificationStatus, String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::notify::save_settings(&handle, enabled, notify_away_only, sound)
+    })
+    .await
+    .map_err(|e| format!("保存通知设置失败：{e}。请重试"))?
+}
+
+/// 发一条测试通知，用于确认系统通知权限与通路可用。
+///
+/// 失败信息（例如 macOS 上未打包的 dev 构建、Windows 上未安装的构建）会
+/// 通过返回状态里的 `lastError` 交给面板显示，而不是静默失败。
+#[tauri::command]
+pub async fn notification_test(
+    app: AppHandle,
+) -> Result<crate::notify::NotificationStatus, String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::notify::send_test(&handle))
+        .await
+        .map_err(|e| format!("发送测试通知失败：{e}。请重试"))
 }
 
 /// 接收来自 harness webview 的一次性健康报告，并按当前内核日志对其进
@@ -985,7 +1075,14 @@ fn bounded_health_text(
 /// 从当天内核日志里取出最后一条 launch-token 入口 URL（不做 HTTP 探针）。
 /// 「窗口已存在」的快路径用它来比对 token 是否变化：这只是一次日志尾读，
 /// 不会像 [`kernel_workbench_url`] 那样最多阻塞 10 秒。
-fn kernel_workbench_url_from_log(data_dir: &std::path::Path, port: u16) -> Option<String> {
+///
+/// 对 crate 内公开：`notify` 的事件订阅线程要用同一个 token 走一次
+/// `GET /?token=…` 换取认证 cookie，才能以"另一个客户端"的身份连上内核的
+/// `/api/remote.mux`。
+pub(crate) fn kernel_workbench_url_from_log(
+    data_dir: &std::path::Path,
+    port: u16,
+) -> Option<String> {
     let tail = read_tail(&kernel::current_kernel_log_path(data_dir), 16 * 1024);
     let needle = format!("http://127.0.0.1:{port}/?token=");
     let start = tail.rfind(&needle)?;

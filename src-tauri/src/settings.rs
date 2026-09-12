@@ -33,6 +33,14 @@ pub struct Settings {
     pub port: u16,
     /// 外壳将插件接入的 profile 名称（dsh 默认：web）。
     pub profile: String,
+    /// 任务完成通知总开关。`None` 表示用户从未设置过（走 [`crate::notify`]
+    /// 的默认值），而不是"关闭"——面板的 `save_settings` 只提交端口与
+    /// profile，用 `bool` 会让每次保存设置都把这些开关静默重置。
+    pub notify_enabled: Option<bool>,
+    /// 仅当工作台窗口不在前台时才弹通知气泡（未读计数不受此开关影响）。
+    pub notify_away_only: Option<bool>,
+    /// 通知是否带提示音。
+    pub notify_sound: Option<bool>,
 }
 
 impl Default for Settings {
@@ -43,6 +51,9 @@ impl Default for Settings {
             npm_path: None,
             port: DEFAULT_PORT,
             profile: crate::plugins::DEFAULT_PROFILE.to_string(),
+            notify_enabled: None,
+            notify_away_only: None,
+            notify_sound: None,
         }
     }
 }

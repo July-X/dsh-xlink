@@ -16,7 +16,10 @@
  *   2. 每个 capability 引用的自定义权限标识都真实存在；
  *   3. UI 与注入脚本调用的每个命令都已注册、且已授权给对应窗口；
  *   4. 内置补丁清单结构有效（与 patches.rs 的 validate_def 对齐，并额外保证
- *      copy 模式的 `from` 文件确实存在于仓库里）。
+ *      copy 模式的 `from` 文件确实存在于仓库里）；
+ *   5. UI 模板里的绑定都能解析（委托 `scripts/check-ui-bindings.mjs`）；
+ *   6. 管理窗口的无边框来自 `tauri.conf.json`（不是运行时 `set_decorations`），
+ *      且 macOS 标题栏最小化走系统原生最小化——写反了黄灯会静默失效。
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -292,6 +295,60 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
   } else {
     note(`UI 模板绑定全部可解析：${checked} 个 <script setup> 组件（跳过 ${skipped} 个）`);
   }
+}
+
+// --- 6. 管理窗口的无边框与标题栏按钮 ------------------------------------------
+//
+// 管理面板在 macOS / Windows 上自绘标题栏（`WindowTitleBar.vue`），窗口必须
+// 出生即无边框：一旦改成运行时 `set_decorations(false)`，tao 会重算 macOS 的
+// `NSWindowStyleMask` 并抹掉 `Miniaturizable`，标题栏黄灯随即变成点了没反应的
+// 死按钮（`miniaturize:` 静默失败，Tauri 的 `minimize()` 还返回 `Ok(())`）。
+// 这类回归在 CI 与 macOS 上的编译都不会报错，只有在真机点一次黄灯才看得见，
+// 所以这里把「可最小化」自检和声明式配置一起钉住。
+{
+  const mainWindow = readJson('src-tauri/tauri.conf.json').app?.windows?.find(
+    (window) => window.label === 'main',
+  );
+  if (!mainWindow) {
+    fail('titlebar', 'tauri.conf.json 里找不到 label 为 main 的窗口');
+  } else if (mainWindow.decorations !== false) {
+    fail(
+      'titlebar',
+      '`main` 窗口的 decorations 不是 false —— 自绘标题栏会叠在系统标题栏上；' +
+        '而且不能在 setup 里事后改（见下面那条）',
+    );
+  }
+
+  // 去掉注释与 cfg 门控后再匹配：注释里就写着这个 API 名字，直接匹配必然误报。
+  const rustCode = libSource
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ')
+    .replace(/#\[cfg\([^\]]*\)\]/g, ' ');
+
+  if (/set_decorations\s*\(/.test(rustCode)) {
+    fail(
+      'titlebar',
+      'src-tauri/src/lib.rs 在运行时调用 set_decorations —— tao 会重算 macOS 样式位并抹掉 ' +
+        'Miniaturizable，标题栏黄灯变死按钮；无边框请写在 tauri.conf.json 的 decorations: false',
+    );
+  }
+
+  if (!/fn check_main_window_minimizable/.test(rustCode)) {
+    fail('titlebar', 'src-tauri/src/lib.rs 缺少 check_main_window_minimizable 自检（黄灯回归哨兵被删了）');
+  }
+
+  const titlebar = read('ui/src/components/WindowTitleBar.vue');
+  const minimizeWindow = titlebar.match(/function minimizeWindow\s*\([^)]*\)\s*\{[\s\S]*?\n\}/);
+  if (!minimizeWindow) {
+    fail('titlebar', 'WindowTitleBar.vue 里找不到 minimizeWindow()（脚本需要更新）');
+  } else if (!/callWindow\(\s*'minimize'/.test(minimizeWindow[0])) {
+    fail(
+      'titlebar',
+      'WindowTitleBar.vue 的 minimizeWindow() 没有走 macOS 分支的 windowAction("minimize") —— ' +
+        'macOS 必须用系统原生最小化，minimize_shell 只在 Windows 收进通知区域',
+    );
+  }
+  note('管理窗口无边框来自声明式配置，标题栏最小化语义按平台分开');
 }
 
 // --- 结果 --------------------------------------------------------------------

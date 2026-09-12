@@ -15,6 +15,7 @@ import {
 } from './store.js';
 import { loadCatalog, checkPluginUpdates } from './plugins.js';
 import { checkSkillUpdates } from './skills.js';
+import { applyNotificationStatus } from './notifications.js';
 import SideBar from './components/SideBar.vue';
 import OverviewPanel from './components/OverviewPanel.vue';
 import VersionsPanel from './components/VersionsPanel.vue';
@@ -185,6 +186,9 @@ onMounted(() => {
     refreshAll();
   });
   registerAppListener('request-quit-confirm', onQuitConfirmRequest);
+  // 任务完成通知的状态由 Rust 侧持有（角标也在那边），它每次变化都会广播
+  // 一份快照；面板据此自动刷新未读数，不需要用户点「刷新」。
+  registerAppListener('notification-status', (e) => applyNotificationStatus(e && e.payload));
 
   // 目录与更新检查由 activePanel watcher 按需触发；外壳检查由 Rust 后台任务负责。
 });

@@ -1,10 +1,18 @@
 <script setup>
-// 设置：Web UI 端口、插件接线 profile 名、Node 检测，以及内置补丁（内核补丁 / 小插件）
-// 的应用与撤销。轮询每 2.5s 刷新 store.view，但用户正在编辑的输入框不被回写（focus 守卫）。
+// 设置：Web UI 端口、插件接线 profile 名、Node 检测、任务完成通知，以及内置补丁
+// （内核补丁 / 小插件）的应用与撤销。轮询每 2.5s 刷新 store.view，但用户正在
+// 编辑的输入框不被回写（focus 守卫）。
 import { computed, reactive, ref, watch } from 'vue';
-import { ArrowDown, ArrowUp, Check, Monitor, Refresh } from '@element-plus/icons-vue';
+import { ArrowDown, ArrowUp, Bell, Check, Monitor, Refresh } from '@element-plus/icons-vue';
 import { store, detectNode, saveSettings } from '../store.js';
 import { patchStore, refreshPatches, applyPatch, revertPatch } from '../patches.js';
+import {
+  notificationStore,
+  refreshNotificationStatus,
+  saveNotificationSettings,
+  markNotificationsRead,
+  sendTestNotification,
+} from '../notifications.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 
 const port = ref(undefined);
@@ -23,11 +31,15 @@ watch(
   { immediate: true }
 );
 
-// 进入设置页时刷新补丁状态（内核激活版本可能已变化）。
+// 进入设置页时刷新补丁与通知状态（内核激活版本、事件流连接都可能已经变化）。
+// 面板按 activePanel 作为 key 重新创建，所以「重新打开设置页」也会走到这里。
 watch(
   () => store.activePanel,
   (panel) => {
-    if (panel === 'settings') refreshPatches();
+    if (panel === 'settings') {
+      refreshPatches();
+      refreshNotificationStatus();
+    }
   },
   { immediate: true }
 );
@@ -96,6 +108,26 @@ function onRefreshPatches() {
   withLoading('patchRefresh', () => refreshPatches());
 }
 
+// 角标画在哪：Rust 回报的平台字符串决定文案，未知平台退回通用说法。
+const badgeTarget = computed(() => {
+  if (notificationStore.platform === 'macos') return 'Dock 图标';
+  if (notificationStore.platform === 'windows') return '任务栏图标';
+  return '应用图标';
+});
+
+// 自检结果就地显示，不弹页内浮层：那个浮层会被误认成"通知就是它"。
+const testNote = ref('');
+
+async function onTestNotification() {
+  testNote.value = '';
+  const ok = await sendTestNotification();
+  if (ok) {
+    testNote.value =
+      `已模拟一次任务完成：${badgeTarget.value}上的角标已更新，系统通知也已发出。` +
+      '若没有看到通知气泡，请在系统的通知设置里确认 dsh-xlink 已被允许（下面若有环境说明，请先按它处理）。';
+  }
+}
+
 function onSave() {
   saveSettings(port.value, profile.value);
 }
@@ -135,6 +167,83 @@ function onSave() {
         </el-button>
       </div>
       <p class="muted" style="margin: 0">{{ hintText }}</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>任务通知</h2>
+        <!-- 手动刷新：读取失败要说清下一步；进入设置页的自动刷新保持静默。 -->
+        <el-button text size="small" :icon="Refresh" :loading="isLoading('notificationRefresh')"
+          @click="refreshNotificationStatus(true)">
+          刷新
+        </el-button>
+      </div>
+      <p class="muted notify-section-hint">
+        会话里的对话任务跑完后：图标右上角挂上未读数字角标（macOS 在 Dock、Windows 在任务栏），
+        同时由系统弹一条通知气泡——通知来自操作系统，不是这个面板里的浮层。
+      </p>
+      <el-form label-width="200px" label-position="left">
+        <el-form-item label="任务完成后通知我">
+          <el-switch
+            :model-value="notificationStore.enabled"
+            :loading="isLoading('notificationSave')"
+            @change="(value) => saveNotificationSettings({ enabled: value })"
+          />
+        </el-form-item>
+        <el-form-item label="仅当工作台窗口不在前台时通知">
+          <div class="notify-field">
+            <el-switch
+              :model-value="notificationStore.notifyAwayOnly"
+              :disabled="!notificationStore.enabled"
+              :loading="isLoading('notificationSave')"
+              @change="(value) => saveNotificationSettings({ notifyAwayOnly: value })"
+            />
+            <span class="muted">
+              前台指你正在看着工作台，这时完成的任务不打扰你；切走或窗口被遮挡时才提醒。
+            </span>
+          </div>
+        </el-form-item>
+        <el-form-item label="通知声音">
+          <el-switch
+            :model-value="notificationStore.sound"
+            :disabled="!notificationStore.enabled"
+            :loading="isLoading('notificationSave')"
+            @change="(value) => saveNotificationSettings({ sound: value })"
+          />
+        </el-form-item>
+      </el-form>
+      <div class="btn-row">
+        <template v-if="notificationStore.unread > 0">
+          <span class="notify-unread">{{ notificationStore.unread }} 条未读</span>
+          <el-button text size="small" :loading="isLoading('notificationMarkRead')"
+            :disabled="globalBusy" @click="markNotificationsRead()">
+            全部已读
+          </el-button>
+        </template>
+        <el-button type="primary" size="small" :icon="Bell" :loading="isLoading('notificationTest')"
+          :disabled="globalBusy" @click="onTestNotification">
+          模拟一次任务完成
+        </el-button>
+        <span class="muted notify-test-hint">
+          未读 +1、角标刷新、发一条系统通知；看完点「全部已读」即可清零。
+        </span>
+      </div>
+      <p v-if="testNote" class="muted notify-hint">{{ testNote }}</p>
+      <p v-if="!notificationStore.watching" class="muted notify-hint">
+        尚未连接内核事件流：内核未运行或已断开，任务完成后不会提醒；启动工作台后点上方「刷新」重试。
+      </p>
+      <!-- 环境限制（不是错误）：例如 macOS 上未打包的 dev 构建无法投递系统通知，
+           角标仍然正常。用灰字而不是警告色，避免把平台约束说成故障。 -->
+      <p v-if="notificationStore.environmentNote" class="muted notify-hint">
+        {{ notificationStore.environmentNote }}
+      </p>
+      <el-alert
+        v-if="notificationStore.lastError"
+        :title="notificationStore.lastError"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
     </div>
 
     <div class="card">

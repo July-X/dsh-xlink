@@ -1594,6 +1594,51 @@ main {
   font-size: 11px;
 }
 
+/* 设置页「任务通知」卡片：三个开关一项一行。el-form-item__content 默认
+   line-height: 32px（为单行输入框准备），开关下方的解释文案必须自己压回
+   正常行高，否则两行说明会被撑成一大块。 */
+.notify-section-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.notify-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 5px 0;
+}
+
+.notify-field .muted {
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+/* 未读数：与「全部已读」同排，用品牌色把数字从灰色说明里拎出来。 */
+.notify-unread {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.notify-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* 与「模拟一次任务完成」同排的一句说明：按钮旁的次要文字，不能撑高按钮行。 */
+.notify-test-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
 /* el-button 轻微按压反馈。 */
 .el-button {
   transition: transform 0.12s ease, background-color 0.18s ease,
