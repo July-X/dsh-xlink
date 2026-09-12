@@ -305,6 +305,70 @@ pub fn send_test(app: &AppHandle) -> NotificationStatus {
     status
 }
 
+/// 试听提示音：只播一声系统提示音，不碰未读、角标与通知气泡。
+///
+/// 刻意**不做成"发一条带声音的系统通知"**：macOS 上未打包的 dev 构建根本投递
+/// 不了通知（见 [`environment_note`]），而试听最常在 dev 期使用——那样按一次
+/// 什么都听不到，反而像是"提示音坏了"。直接调系统的提示音接口：与通知气泡用的
+/// 默认提示音同源，且不依赖通知权限、不派生子进程。
+pub fn play_test_sound() -> Result<(), String> {
+    platform_alert_sound()
+}
+
+/// macOS：`kSystemSoundID_UserPreferredAlert`（0x1000）= 用户在「系统设置 → 声音」
+/// 里选的提醒声音，正是系统通知默认提示音用的那一个。`AudioServicesPlayAlertSound`
+/// 异步播放、立即返回，不需要 bundle，dev 构建同样出声。
+#[cfg(target_os = "macos")]
+fn platform_alert_sound() -> Result<(), String> {
+    const USER_PREFERRED_ALERT: u32 = 0x0000_1000;
+    // SAFETY: 纯 C 调用，实参是头文件里的常量 id（`SystemSoundID` 即 u32），
+    // 无返回值、无指针、无所有权转移；该函数可从任意线程调用。
+    unsafe { AudioServicesPlayAlertSound(USER_PREFERRED_ALERT) };
+    Ok(())
+}
+
+// `void AudioServicesPlayAlertSound(SystemSoundID inSystemSoundID)`（AudioToolbox）。
+#[cfg(target_os = "macos")]
+#[link(name = "AudioToolbox", kind = "framework")]
+extern "C" {
+    fn AudioServicesPlayAlertSound(sound_id: u32);
+}
+
+/// 播放失败时给用户的说明：讲清现象，并给出可检查的下一步。
+#[cfg(target_os = "windows")]
+const SOUND_FAILED: &str = "系统提示音没有播放成功：没有可用的音频输出设备，或系统声音被禁用。\
+                             请检查系统音量与输出设备后重试（角标与通知气泡不受影响）。";
+
+/// Windows：`MessageBeep` 异步播放、立即返回；`MB_ICONASTERISK` 取的是用户声音
+/// 方案里「通知」类的音效（Windows 10/11 默认方案下就是通知默认音效，
+/// 与 WinRT toast 的 `Notification.Default` 同一个 wav）。
+#[cfg(target_os = "windows")]
+fn platform_alert_sound() -> Result<(), String> {
+    use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
+    use windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONASTERISK;
+
+    // SAFETY: 纯 C 调用，实参是文档里的 MESSAGEBOX_STYLE 常量，无指针参数。
+    let played = unsafe { MessageBeep(MB_ICONASTERISK) };
+    beep_result(played != 0)
+}
+
+/// `MessageBeep` 返回 0 = 系统没能播放（通常是没有任何可用输出设备）。
+#[cfg(target_os = "windows")]
+fn beep_result(played: bool) -> Result<(), String> {
+    if played {
+        Ok(())
+    } else {
+        Err(SOUND_FAILED.into())
+    }
+}
+
+/// 壳只随 macOS 与 Windows 分发（AGENTS.md 的发布平台约定），其它平台上
+/// 如实说明不可用，而不是静默什么都不做。
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn platform_alert_sound() -> Result<(), String> {
+    Err("当前平台不支持试听提示音：dsh-xlink 只随 macOS 与 Windows 分发。".into())
+}
+
 /// 当前运行环境对系统通知的限制（`None` 表示没有已知限制）。
 ///
 /// macOS 的系统通知按**应用 bundle** 归属：`tauri dev` / `cargo run` 跑的是
@@ -1336,6 +1400,22 @@ mod windows_badge_tests {
                 "{count} 的角标不应铺满整个图标"
             );
         }
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_sound_tests {
+    use super::*;
+
+    /// `MessageBeep` 的返回值翻译：失败必须变成带下一步的说明，而不是静默无声。
+    #[test]
+    fn beep_failure_is_reported_with_a_next_step() {
+        assert!(beep_result(true).is_ok());
+        let error = beep_result(false).expect_err("播放失败必须报错");
+        assert!(
+            error.contains("输出设备"),
+            "错误要指向可检查的东西：{error}"
+        );
     }
 }
 

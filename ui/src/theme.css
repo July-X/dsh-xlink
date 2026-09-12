@@ -1603,8 +1603,9 @@ main {
 }
 
 /* 设置页「任务通知」卡片：三个开关一项一行。el-form-item__content 默认
-   line-height: 32px（为单行输入框准备），开关下方的解释文案必须自己压回
-   正常行高，否则两行说明会被撑成一大块。 */
+   line-height: 32px（为单行输入框准备），与开关同排的说明 / 试听按钮要自己
+   压回正常行高，并把 flex 行撑满可用宽度（默认的 content 是 flex 行，
+   子项不伸缩就会挤在左侧）。 */
 .notify-section-hint {
   margin: 0;
   font-size: 11.5px;
@@ -1612,15 +1613,16 @@ main {
   color: var(--muted);
 }
 
-.notify-field {
+.notify-inline {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  padding: 5px 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
-.notify-field .muted {
+.notify-inline .muted {
   font-size: 11.5px;
   line-height: 1.45;
 }
@@ -3116,6 +3118,23 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   color: #fff;
 }
 
+/* release 预览中的浮按钮：换成 release 的 Gitea 绿，让"当前是哪个外观"一眼可见
+   ——它必须留在屏幕上（这是切回 dev 的唯一入口），但颜色要跟当前模式对上。 */
+.debug-fab.preview {
+  background: rgba(96, 153, 38, 0.16);
+  border-color: rgba(96, 153, 38, 0.5);
+  color: var(--gitea-green);
+}
+.debug-fab.preview:hover {
+  background: rgba(96, 153, 38, 0.26);
+  border-color: var(--gitea-green);
+}
+.debug-fab.preview.open {
+  background: rgba(96, 153, 38, 0.32);
+  border-color: var(--gitea-green);
+  color: #fff;
+}
+
 .debug-panel {
   pointer-events: auto;
   width: min(380px, calc(100vw - 28px));
@@ -3155,14 +3174,6 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   font-size: 13.5px;
   font-weight: 700;
 }
-.debug-panel h4 {
-  margin: 4px 0 4px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-}
 .debug-hint {
   color: var(--muted);
   font-size: 11px;
@@ -3188,44 +3199,42 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   border-color: rgba(79, 140, 255, 0.5);
 }
 
-.debug-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.debug-row label {
+/* 预览开关一行：左文案右开关，开关不换行。 */
+.debug-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--text);
-  cursor: pointer;
+  justify-content: space-between;
+  gap: 12px;
 }
-.debug-row input[type='checkbox'] {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--accent);
-  cursor: pointer;
+.debug-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.debug-row-text strong {
+  font-size: 13px;
+  font-weight: 600;
 }
 .debug-meta {
-  display: block;
-  margin: 4px 0 0 22px;
   color: var(--muted);
   font-size: 11px;
-  line-height: 1.55;
-}
-.debug-meta code {
-  font-size: 10.5px;
-  padding: 1px 4px;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 4px;
-  color: var(--text);
+  line-height: 1.5;
 }
 
-.debug-hooks {
+/* 钩子速查默认收起：面板的主任务是那个开关，清单只是随手的参考。 */
+.debug-hooks summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.debug-hooks[open] summary {
+  margin-bottom: 6px;
+}
+.debug-hooks ul {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -3235,6 +3244,7 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   font-size: 12px;
   color: var(--muted);
 }
+
 .debug-hooks li {
   padding: 6px 8px;
   border-radius: 6px;

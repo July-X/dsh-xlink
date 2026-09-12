@@ -33,7 +33,23 @@ export const store = reactive({
   // dev 调试钩子：让 dev 构建也能临时启用 release 版的 CSS 钩子（绿渐变等），
   // 仅 store.view.dev_build 为 true 时生效。setReleasePreview() 是唯一入口。
   releasePreview: false,
+  // dev 专属界面是否生效 = `dev_build && !releasePreview`。所有「只在 dev 构建里
+  // 出现」的内容（设置页的「模拟一次任务完成」、概览页版本号的「（dev）」后缀、
+  // dev 面板里的参考信息）都只读这一个字段：release 预览一开，它们必须同时消失，
+  // 否则预览到的只是"半个正式版"。调试浮按钮**不**走这个字段——它是切回来的
+  // 唯一入口，预览期间必须留在屏幕上（见 DebugPanel.vue）。
+  // applyBuildClass() 是唯一写入口。
+  devUi: initialDevUi(),
 });
+
+/// `devUi` 的首帧兜底：HMR 重载时 body 上的 dev 类还在，直接读它，避免 dev
+// 专属入口先隐藏、等下一次状态轮询（最多 2.5 s）才闪回来。纯浏览器 / 单元测试
+// 环境拿不到 classList.contains 时按正式版处理。
+function initialDevUi() {
+  if (typeof document === 'undefined') return false;
+  const contains = document.body && document.body.classList && document.body.classList.contains;
+  return typeof contains === 'function' && document.body.classList.contains('dev-build');
+}
 
 // 上次观察到的内核运行态：只有外部来源导致的就绪迁移才弹「内核已就绪」
 // （启动编排自己会 toast）；初始化为 null，首轮轮询不提示。
@@ -60,19 +76,21 @@ function applyStatus(view, requestSeq) {
   return true;
 }
 
-// 把 body 上的 dev-build / rel-build 类同步独立成函数：refreshAll 与 2.5s 轮询
-// 都会调用，避免用户的 releasePreview 调试覆盖被下一次轮询清掉。
+// 把 body 上的 dev-build / rel-build 类与 store.devUi 同步独立成函数：refreshAll
+// 与 2.5s 轮询都会调用，避免用户的 releasePreview 调试覆盖被下一次轮询清掉。
 // dev_build=true 表示 tauri dev 调试构建；releasePreview 是 dev 期临时覆盖，
-// 打开后让 dev 也能看绿渐变等 release-only 样式。
+// 打开后让 dev 也能看绿渐变等 release-only 样式——顺带把 dev 专属入口全部收起来
+// （见 store.devUi 的注释）。
 function applyBuildClass() {
   const isDev = !!store.view?.dev_build;
   const effectiveDev = isDev && !store.releasePreview;
+  store.devUi = effectiveDev;
   document.body.classList.toggle('dev-build', effectiveDev);
   document.body.classList.toggle('rel-build', !effectiveDev);
 }
 
-// dev 调试动作：切换 release 版预览。非 dev 构建直接拒绝（no-op），避免在
-// 正式版里意外改出调试态。改完立即同步 body 类，不等下一次轮询。
+// dev 调试动作：切换 release 预览。非 dev 构建直接拒绝（no-op），避免在
+// 正式版里意外改出调试态。改完立即同步 body 类与 store.devUi，不等下一次轮询。
 export function setReleasePreview(value) {
   if (!store.view?.dev_build) return;
   store.releasePreview = !!value;

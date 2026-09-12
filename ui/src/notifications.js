@@ -22,6 +22,7 @@ const FALLBACKS = Object.freeze({
 const SAVE_KEY = 'notificationSave';
 const MARK_READ_KEY = 'notificationMarkRead';
 const TEST_KEY = 'notificationTest';
+const SOUND_TEST_KEY = 'notificationSoundTest';
 const REFRESH_KEY = 'notificationRefresh';
 
 export const notificationStore = reactive({
@@ -155,6 +156,9 @@ export function markNotificationsRead() {
 
 /// 模拟一次任务完成：Rust 侧把未读 +1、刷新系统角标、弹一条系统通知。
 ///
+/// 面板只在 dev 构建里显示这个按钮（`store.devUi`；开了 release 预览也会收起），
+/// 正式版用户不需要凭空多一条未读。
+///
 /// **不在成功路径上弹页内提示**：这个按钮的作用是让用户看到 Dock / 任务栏上的
 /// 角标和系统通知气泡，弹出绿色「成功」浮层只会被误认成"通知就是这玩意儿"
 /// （而且连点几次还会合并出一个计数角标，更像通知）。结果直接由卡片上的未读数
@@ -175,6 +179,25 @@ export function sendTestNotification() {
       return true;
     } catch (e) {
       toastActionError('测试任务完成失败', e, '请重试；若反复失败，打开「查看日志」把最近的日志发给维护者', 8000);
+      return false;
+    }
+  });
+}
+
+/// 试听提示音：只让 Rust 播一声系统提示音，不动未读、不发通知气泡。
+///
+/// 与「模拟一次任务完成」分开：那个按钮要连角标和系统通知一起走一遍，正式版
+/// 里不该出现；而"我到底能不能听到提示音"是每个用户都会问的问题，所以试听是
+/// 常驻入口。成功路径上给一条轻提示——声音本身没有画面反馈，不提示的话用户分不清
+/// 「静音了」和「没点动」。
+export function testNotificationSound() {
+  return withLoading(SOUND_TEST_KEY, async () => {
+    try {
+      await invoke('notification_test_sound');
+      toastSuccess('已播放系统提示音');
+      return true;
+    } catch (e) {
+      toastActionError('试听提示音失败', e, '请检查系统音量与输出设备，然后重试', 6000);
       return false;
     }
   });

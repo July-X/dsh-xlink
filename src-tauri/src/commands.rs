@@ -972,6 +972,9 @@ pub async fn notification_save_settings(
 ///
 /// 失败信息（例如 macOS 上未打包的 dev 构建、Windows 上未安装的构建）会
 /// 通过返回状态里的 `lastError` 交给面板显示，而不是静默失败。
+///
+/// 面板侧只在 dev 构建里显示这个按钮（正式版用户不需要凭空造一条未读）；
+/// 命令本身保持在 ACL 白名单里，方便 dev 构建与排障使用。
 #[tauri::command]
 pub async fn notification_test(
     app: AppHandle,
@@ -980,6 +983,15 @@ pub async fn notification_test(
     tauri::async_runtime::spawn_blocking(move || crate::notify::send_test(&handle))
         .await
         .map_err(|e| format!("发送测试通知失败：{e}。请重试"))
+}
+
+/// 试听提示音：只播放一声系统提示音，不动未读、角标与通知气泡。
+///
+/// 刻意**不**走 `spawn_blocking`：两个平台的播放接口都是"交给系统后立即返回"
+/// 的非阻塞调用，不涉及进程、网络或目录树（AGENTS.md 的实现约定）。
+#[tauri::command]
+pub fn notification_test_sound() -> Result<(), String> {
+    crate::notify::play_test_sound()
 }
 
 /// 接收来自 harness webview 的一次性健康报告，并按当前内核日志对其进

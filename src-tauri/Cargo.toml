@@ -82,10 +82,13 @@ libc = "0.2"
 # 按显示缩放挑 16/20/24/32 档靠 `GetSystemMetricsForDpi(SM_CXSMICON, …)`，
 # 按任务栏主题挑浅色/深色两套帧靠 `Software\…\Themes\Personalize` 下的
 # `SystemUsesLightTheme`（tray.rs 的 `small_icon_size` / `taskbar_is_light`）。
+# System_Diagnostics_Debug 只服务「试听提示音」的 `MessageBeep`（notify.rs）：
+# 它播放用户声音方案里的通知类音效，不引入任何新依赖。
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_System_Diagnostics_Debug",
   "Win32_System_JobObjects",
   "Win32_System_Registry",
   "Win32_System_Threading",

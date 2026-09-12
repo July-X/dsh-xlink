@@ -42,6 +42,9 @@ const core = {
     ) {
       return Promise.resolve(nextStatus);
     }
+    if (command === 'notification_test_sound') {
+      return Promise.resolve(null);
+    }
     throw new Error(`unexpected command: ${command}`);
   },
   Channel: class {
@@ -245,6 +248,24 @@ test('模拟任务完成：命令成功但 lastError 非空按失败处理', asy
   assert.equal(notificationStore.lastError, null);
 });
 
+test('试听提示音：只调播放命令，不动未读与状态', async () => {
+  const { notificationStore, refreshNotificationStatus, testNotificationSound } = await import(
+    '../src/notifications.js'
+  );
+
+  nextStatus = statusPayload({ unread: 2, sound: true });
+  await refreshNotificationStatus();
+
+  assert.equal(await testNotificationSound(), true);
+  assert.equal(calls.at(-1).command, 'notification_test_sound');
+  assert.equal(notificationStore.unread, 2, '试听只出声，不该改未读');
+
+  // 播放失败（没有输出设备等）必须报错，而不是静默当成功。
+  failNext = { command: 'notification_test_sound', error: new Error('no output device') };
+  assert.equal(await testNotificationSound(), false);
+  assert.equal(notificationStore.unread, 2);
+});
+
 test('环境限制说明（未打包构建）被规范化成只读提示', async () => {
   const { notificationStore, refreshNotificationStatus } = await import('../src/notifications.js');
 
@@ -281,6 +302,7 @@ test('设置页的 loading key 与模块内登记的一致', async () => {
     'notificationRefresh',
     'notificationMarkRead',
     'notificationTest',
+    'notificationSoundTest',
     'notificationSave',
   ]) {
     assert.ok(panel.includes(`isLoading('${key}')`), `SettingsPanel 必须为 ${key} 绑定 loading`);
