@@ -3,7 +3,9 @@
 // 外壳更新横幅与安装入口（手动检查在侧栏品牌区）以及启动容错横幅。
 // 内核生命周期是实现细节，只暴露「打开/关闭工作台 / 打开/关闭官方对话 / 查看日志」；
 // 「打开工作台窗口 / 打开官方对话窗口」在对应服务开启后作为次级入口从第二行动态浮现。
-import { computed } from 'vue';
+// 「当前内核」的 Node.js 行另带「重新检测」（探测本机环境，不改设置），卡片底部是
+// 「桌面端设置」只读摘要（端口 / 接线 profile / Node 环境结论）。
+import { computed, ref } from 'vue';
 import {
   SwitchButton,
   TopRight,
@@ -13,6 +15,8 @@ import {
   FolderOpened,
   Download,
   Box,
+  Monitor,
+  Setting,
   Warning,
   Connection,
   View,
@@ -30,6 +34,7 @@ import {
   installLatestRelease,
   checkUpdates,
   installNode,
+  detectNode,
 } from '../store.js';
 import { progress } from '../progress.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
@@ -42,6 +47,11 @@ const onInstallNode = () => withLoading('installNode', () => installNode());
 const kernel = computed(() => store.view && store.view.kernel);
 const node = computed(() => store.view && store.view.node);
 
+// 「重新检测」（由设置页搬来）探测的是本机环境，而 detect_node 不会让 Rust 侧的状态
+// 缓存失效，所以探测结果就地覆盖 Node 两处显示；离开概览页再回来即回到状态里的值。
+const detectedNode = ref(null);
+const shownNode = computed(() => detectedNode.value || node.value);
+
 const running = computed(() => !!(kernel.value && kernel.value.running));
 const officialChatOpen = computed(() => !!(store.view && store.view.official_chat_open));
 const officialChatLabel = computed(() => (officialChatOpen.value ? '关闭官方对话' : '打开官方对话'));
@@ -49,12 +59,48 @@ const canStart = computed(() => !!(kernel.value && kernel.value.active && kernel
 const noKernel = computed(() => !!(kernel.value && (!kernel.value.installed || kernel.value.installed.length === 0)));
 
 const nodeText = computed(() => {
-  const n = node.value;
+  const n = shownNode.value;
   if (!n) return '—';
   return n.ok ? [n.path, n.version].filter(Boolean).join('  ') : '未检测到可用 Node（' + n.reason + '）';
 });
 
 const urlText = computed(() => (running.value ? 'http://127.0.0.1:' + kernel.value.port : '—'));
+
+// 「桌面端设置」摘要卡：设置页那张卡的核心值只读罗列在这里，省去为了确认端口 /
+// 接线 profile / Node 是否达标而切页；改端口只在设置页，Node 重新检测在「当前内核」
+// 的 Node.js 行，这张卡不带任何写操作。
+const settings = computed(() => (store.view && store.view.settings) || null);
+
+const portText = computed(() => {
+  const value = settings.value && settings.value.port;
+  return value ? String(value) : '—';
+});
+
+const profileText = computed(() => (settings.value && settings.value.profile) || 'web');
+
+// Node 结论与设置页同口径（是否满足 dsh 的 ^22.19 || >=24）。不达标时只给一句结论：
+// 具体原因与「自动安装」入口就在上面的「当前内核」卡里，这里不重复一遍。
+const nodeRequirementText = computed(() => {
+  const n = shownNode.value;
+  if (!n) return '—';
+  return n.ok
+    ? 'node ' + n.version + ' 满足 dsh 要求（^22.19 || >=24）'
+    : '未检测到满足 dsh 要求（^22.19 || >=24）的 Node.js';
+});
+
+// 重新探测本机环境里的 Node（不读也不写 settings.node_path，探到什么都原样显示）。
+function onDetectNode() {
+  const info = detectNode();
+  if (info) {
+    info.then((result) => {
+      if (result) detectedNode.value = result;
+    });
+  }
+}
+
+function goSettings() {
+  store.activePanel = 'settings';
+}
 
 const shellVersionText = computed(() =>
   store.view ? 'v' + store.view.shell_version + (store.view.dev_build ? '（dev）' : '') : '—'
@@ -167,7 +213,7 @@ function goVersions() {
         <dd class="kv-with-action">
           <span>{{ nodeText }}</span>
           <el-button
-            v-if="node && !node.ok"
+            v-if="shownNode && !shownNode.ok"
             size="small"
             text
             type="primary"
@@ -177,6 +223,17 @@ function goVersions() {
             @click="onInstallNode"
           >
             自动安装
+          </el-button>
+          <el-button
+            size="small"
+            text
+            :icon="Monitor"
+            :loading="isLoading('detectNode')"
+            :disabled="globalBusy"
+            title="重新探测本机环境里的 Node.js（不改设置；刚装完 Node 时用它刷新）"
+            @click="onDetectNode"
+          >
+            重新检测
           </el-button>
         </dd>
         <dt>数据目录</dt>
@@ -301,6 +358,32 @@ function goVersions() {
       <p v-if="!store.starting && !running && !canStart" class="muted" style="margin: 0">
         尚未安装可用内核，请先到「内核版本」页安装。
       </p>
+    </div>
+
+    <!-- 桌面端设置摘要：只读。端口输入、保存与 Node 重新检测都不在这里
+         （设置页只留端口，检测在「当前内核」的 Node.js 行），这张卡只把当前取值
+         与结论放到一眼可见的位置。 -->
+    <div class="card">
+      <div class="card-head">
+        <h2>桌面端设置</h2>
+        <el-button
+          text
+          size="small"
+          :icon="Setting"
+          title="修改 Web UI 端口"
+          @click="goSettings"
+        >
+          前往设置
+        </el-button>
+      </div>
+      <dl class="kv">
+        <dt>Web UI 端口</dt>
+        <dd>{{ portText }}</dd>
+        <dt>插件接线 profile 名</dt>
+        <dd><code>{{ profileText }}</code></dd>
+        <dt>Node.js 环境</dt>
+        <dd>{{ nodeRequirementText }}</dd>
+      </dl>
     </div>
   </section>
 </template>

@@ -50,7 +50,7 @@
 - 内核安装通过 pnpm 执行（`node-linker=hoisted` 保持扁平 `node_modules`，内容寻址存储让重复安装更快），安装过程逐行流式显示在进度面板中，完整日志落盘 `~/.dsh/desktop/logs/<kind>-install-<版本>-<日期>.log`（dev 壳则是 `~/.dsh/desktop-dev/logs/dev-install-<版本>-<日期>.log`，`<日期>` 为本地日期）；下载先写临时文件，成功后才发布，npm 包由外壳进行路径受限、禁止链接和有展开大小上限的 Rust 解包，无需额外安装系统 `tar`
 - Node.js 自动检测与手动指定（要求 `^22.19 || >=24`，与 dsh 的 engines 一致；自动发现 nvm（macOS/Linux `~/.nvm/versions/node/<v>/bin/node` 跟随 `alias/default` 链，Windows `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`），免去 GUI 启动看不到 nvm PATH 时改手动路径的步骤；检测为空时弹窗询问是否「帮我安装」——确认后自动下载官方 Node.js（v24 LTS，SHA-256 校验）到数据目录 `tools/node/`，概览页 Node 行随时可再次触发；已安装的托管运行时优先于环境检测，显式配置的 node 路径仍最高优先）
 - pnpm 路径可配置（默认取 node 同目录或 PATH）
-- 端口可配置（release 默认 3090，`tauri dev` 下的 dev 壳默认 3091；可在设置页修改）
+- 端口可配置（release 默认 3090，`tauri dev` 下的 dev 壳默认 3091；设置页的「设置」卡只保留这一项可改的东西，插件接线 profile 名是固定值、跟着端口一起保存）；概览页底部的「桌面端设置」卡只读显示当前端口、profile 名与 Node 环境结论（是否满足 `^22.19 || >=24`），概览页「当前内核」的 Node.js 行提供「重新检测」（重新探测本机环境、不改设置，不达标时同排还有「自动安装」）
 - 内核运行日志查看；应用退出时自动回收内核子进程
 - **任务完成通知**：内核里某个会话的对话任务跑完后，macOS Dock 图标右上角显示系统数字角标、Windows 任务栏图标显示同款数字角标（系统原生角标 + 覆盖图标），两端同时弹一条系统通知气泡（「会话标题」已完成 · 用时 N 分 N 秒）；角标数字是**已完成但用户未读的任务数**——工作台窗口不在前台时完成的任务才会计数（正在看工作台时不打扰），切回工作台或点面板的「全部已读」即清零。检测方式是让外壳以客户端的身份订阅内核自己的 WebSocket 事件流（`/api/remote.mux` 的 `$events`，判据是 `api-session/status` 的 `running` 由真变假），不轮询、不占内核 CPU，内核没开窗口也照常工作；子代理会话不打扰，通知开关在「设置 → 任务通知」里；设计与取舍见 [docs/notification-design.md](docs/notification-design.md)
 - **插件管理**：社区插件（npm 包或 GitHub 仓库）统一存入 `~/.dsh/plugins/`，以**链接**（默认，Windows 自动降级**复制**）的方式进入每个已安装内核（`~/.dsh/desktop/kernels/<版本>/plugins/`），并自动接线进 profile——切换内核无需重装；GitHub 仓库地址安装时优先使用对应 GitHub Release 的 tarball 版本数据，Release 不可用时回退 git clone，其它 Git 地址保持原有 clone 行为；「插件中心」对接 [dshfind.com](https://dshfind.com/zh) 插件超市目录（分类/搜索/排序/已安装过滤，6 小时本地缓存，官方 market 兜底），安装优先尝试 npm（候选 `<repo-name>` / `dsh-<repo-name>`），npm 包不可用时回退到 GitHub Release tarball/git clone，安装前校验 dsh 规范；管理面板提供安装/卸载/更新/切换模式/同步，检测到新版本时在卡片与启动时提醒；点击「同步」会遍历所有已安装内核，重新物化中央库中的插件，并清除外壳明确标记的已删除残留，保证外壳管理的插件状态与 `~/.dsh/plugins/` 一致；`link` 模式插件启动前会检查中央目录中的普通运行时依赖，缺失时自动用 pnpm 恢复；启动容错面板中的「移除插件」会同时清除隔离记录，若上次卸载只完成了部分清理，重复执行也能继续收尾
@@ -122,7 +122,7 @@ npm run build:win         # x86_64-pc-windows-msvc
 ## 使用
 
 1. 启动桌面应用，打开管理面板。
-2. **设置**：确认已检测到满足要求的 Node.js（不满足时点击「帮我安装」即可自动下载官方 Node.js 到数据目录，或手动安装 Node 22.19+、手动指定路径；通过 nvm 管理的 Node 会被自动发现——macOS/Linux 读 `~/.nvm/alias/default` 与 `versions/node/*/bin/node`，Windows 读 `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`）。
+2. **Node.js 环境**：概览页「当前内核」的 Node.js 行显示实时检测结果，刚装完 Node 可点同排「重新检测」刷新（它只探测本机环境、不改设置）；不满足要求时点同排「自动安装」自动下载官方 Node.js 到数据目录（首次启动检测不到时会弹窗询问，点「帮我安装」同效），或手动安装 Node 22.19+、在 `<data_dir>/settings.json` 的 `node_path` 里手动指定路径；通过 nvm 管理的 Node 会被自动发现——macOS/Linux 读 `~/.nvm/alias/default` 与 `versions/node/*/bin/node`，Windows 读 `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`）。
 3. **内核更新**：应用启动时会扫描并列出本地已安装版本，进入「内核版本」页即可在左侧备用版本中切换；只有工作台已停止时才能切换，工作台启动或运行期间请先在「概览」页点击「关闭工作台」；点击「检查更新」只从 npm 获取官方发布列表，再选择未安装的版本点「安装」。
    - 安装通过 pnpm 执行，进度面板会实时滚动 pnpm 日志；pnpm 未安装时按提示 `npm install -g pnpm` 或在设置中指定 pnpm 路径。
    - 首次安装会自动成为活动版本，但不会启动内核；安装完成后请在「概览」页点击「启动工作台」。
