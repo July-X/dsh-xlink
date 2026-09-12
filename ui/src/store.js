@@ -6,6 +6,7 @@ import { invoke, makeChannel } from './bridge.js';
 import { toast, toastSuccess, toastActionError, confirmDialog } from './notify.js';
 import { globalBusy, isLoading, withExclusive, withExclusiveLoading, withLoading, isExclusiveBusy } from './loading.js';
 import { withProgress, progress } from './progress.js';
+import { singleFlight } from './async.js';
 import { refreshPlugins } from './plugins.js';
 import { refreshSkills } from './skills.js';
 import { showLogs } from './logs.js';
@@ -43,7 +44,6 @@ let lastRunning = null;
 // 旧 quarantined / last_incident 写回界面。
 let statusRequestSeq = 0;
 let statusInFlight = null;
-let refreshAllInFlight = null;
 function beginStatusRequest() {
   statusRequestSeq += 1;
   return statusRequestSeq;
@@ -145,26 +145,23 @@ function requestStatus(force = false) {
 
 // --- 状态读取 ---------------------------------------------------------------
 
+// 同一时刻只保留一次全量刷新：动作完成后的刷新与页面进入时的刷新合并。
+const runRefreshAll = singleFlight(async () => {
+  try {
+    await requestStatus(true);
+    await Promise.all([refreshPlugins(), refreshSkills()]);
+  } catch (e) {
+    toastActionError('读取状态失败', e, '请确认应用仍在运行；若持续失败，重启应用后重试');
+  }
+});
+
 export function refreshAll() {
-  if (refreshAllInFlight) return refreshAllInFlight;
-  const request = (async () => {
-    try {
-      await requestStatus(true);
-      await Promise.all([refreshPlugins(), refreshSkills()]);
-    } catch (e) {
-      toastActionError('读取状态失败', e, '请确认应用仍在运行；若持续失败，重启应用后重试');
-    }
-  })();
-  const tracked = request.finally(() => {
-    if (refreshAllInFlight === tracked) refreshAllInFlight = null;
-  });
-  refreshAllInFlight = tracked;
-  return tracked;
+  return runRefreshAll();
 }
 
 // 后台轮询：失败不打扰用户，忙时跳过；面板保留旧值，下个周期自动重试。
 export async function pollStatus() {
-  if (document.hidden || isExclusiveBusy() || refreshAllInFlight) return;
+  if (document.hidden || isExclusiveBusy() || runRefreshAll.busy()) return;
   try {
     const previousRunning = lastRunning;
     const ownsRequest = statusInFlight === null;
@@ -423,31 +420,26 @@ export function openDataDir() {
 
 // --- 外壳自更新 -------------------------------------------------------------
 
-let shellUpdateInFlight = null;
+// 检查本身去重：自动检查与手动点击合并成一次请求。
+const runShellUpdateCheck = singleFlight(async (manual) => {
+  try {
+    const info = await invoke('check_shell_update');
+    if (info.available) {
+      showShellUpdateBanner(info.available);
+    } else if (manual) {
+      toastSuccess('桌面端已是最新（v' + info.current + '）');
+    }
+  } catch (e) {
+    if (manual) {
+      toastActionError('检查桌面端更新失败', e, '请检查网络或代理设置后重试');
+    }
+  }
+});
 
 export function checkShellUpdate(manual) {
-  const run = () => {
-    if (shellUpdateInFlight) return shellUpdateInFlight;
-    const request = invoke('check_shell_update')
-      .then((info) => {
-        if (info.available) {
-          showShellUpdateBanner(info.available);
-        } else if (manual) {
-          toastSuccess('桌面端已是最新（v' + info.current + '）');
-        }
-      })
-      .catch((e) => {
-        if (manual) {
-          toastActionError('检查桌面端更新失败', e, '请检查网络或代理设置后重试');
-        }
-      });
-    const tracked = request.finally(() => {
-      if (shellUpdateInFlight === tracked) shellUpdateInFlight = null;
-    });
-    shellUpdateInFlight = tracked;
-    return tracked;
-  };
-  return manual ? withExclusiveLoading('checkShellUpdate', run) : run();
+  return manual
+    ? withExclusiveLoading('checkShellUpdate', () => runShellUpdateCheck(true))
+    : runShellUpdateCheck(false);
 }
 
 export function showShellUpdateBanner(version) {

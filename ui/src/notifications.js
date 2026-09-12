@@ -5,6 +5,7 @@ import { reactive } from 'vue';
 import { invoke } from './bridge.js';
 import { toastActionError, toastSuccess } from './notify.js';
 import { withLoading } from './loading.js';
+import { createStatusSource } from './async.js';
 
 // 与 Rust 侧一致：最近完成记录最多 8 条。裁剪只是兜底，防止异常载荷把设置页撑爆。
 const MAX_ITEMS = 8;
@@ -100,31 +101,17 @@ function currentSettings() {
   };
 }
 
-let statusInFlight = null;
-
-function startStatusRequest(manual) {
-  const request = invoke('notification_status')
-    .then((status) => applyStatus(status))
-    .catch((e) => {
-      // 自动路径（进入设置页）保持静默：保留上一次的值，下次打开再试。
-      if (manual) {
-        toastActionError('读取通知状态失败', e, '请检查内核是否在运行，然后点「刷新」重试', 6000);
-      }
-      return null;
-    });
-  const tracked = request.finally(() => {
-    if (statusInFlight === tracked) statusInFlight = null;
-  });
-  statusInFlight = tracked;
-  return tracked;
-}
+const loadStatus = createStatusSource('notification_status', applyStatus, (e, manual) => {
+  // 自动路径（进入设置页）保持静默：保留上一次的值，下次打开再试。
+  if (manual) {
+    toastActionError('读取通知状态失败', e, '请检查内核是否在运行，然后点「刷新」重试', 6000);
+  }
+});
 
 /// 读取通知状态；`manual` 为 true 时挂按钮 loading 并把失败讲清楚。
 /// 同一时刻只保留一个请求：面板打开与手动刷新会合并成同一次读取。
 export function refreshNotificationStatus(manual = false) {
-  if (statusInFlight) return statusInFlight;
-  const run = () => startStatusRequest(manual);
-  return manual ? withLoading(REFRESH_KEY, run) : run();
+  return manual ? withLoading(REFRESH_KEY, () => loadStatus(true)) : loadStatus(false);
 }
 
 /// 保存三个开关（未传的字段沿用当前值）。乐观回写：开关必须在点击的同一帧就
