@@ -40,7 +40,10 @@ const FILE_BUDGETS = {
   'src-tauri/src/patches.rs': 1250,
   'src-tauri/src/kernel.rs': 1180,
   'src-tauri/src/process.rs': 1180,
-  'src-tauri/src/notify.rs': 1050,
+  // 1050 → 1090：会话标题改为订阅 `session/control`（baseline 播种 + 标题投影帧
+  // 保鲜 + 老内核退回 session/list 快照），这部分逻辑与 Center 同生共死，拆出去
+  // 只会把状态机切成两半。详见 docs/notification-design.md §3.3。
+  'src-tauri/src/notify.rs': 1090,
   'src-tauri/src/guard.rs': 940,
   'ui/src/store.js': 430,
 };

@@ -29,14 +29,16 @@
 
 ```text
         ┌────────────────────────── 内核进程（dsh web, 127.0.0.1:<port>）──────────────────────────┐
-        │  agent/status ──► api-session/status(sessionId, running)                                  │
-        │  session/created ──► api-session/added(summary)         …经 /api/remote.mux 广播        │
+        │  agent/status ──► api-session/status(sessionId, running)         ┐                       │
+        │  session/created ──► api-session/added(summary)                  │ $events               │
+        │  session/title ──► title 投影变化 ──► session/control 的投影帧   ┘ （两条逻辑流）        │
         └───────────────────────────────────────────┬──────────────────────────────────────────────┘
                                                     │ WebSocket（与工作台 webview 同一条通道）
                                      ┌──────────────▼───────────────┐
                                      │ notify.rs 订阅线程            │  认证 cookie / 重连退避
                                      │  · running: true → false 判定 │
                                      │  · 子代理会话过滤             │
+                                     │  · 标题：baseline + 投影帧    │
                                      └──────────────┬───────────────┘
                                                     │
                         ┌───────────────────────────▼────────────────────────────┐
@@ -52,8 +54,9 @@
               └─────────────────────────────────┘   └──────────────────────────────────┘
                                 │
               ┌─────────────────▼──────────────────────────────────────────────────┐
-              │ 管理面板「任务通知」卡片：开关 / 未读数 / 全部已读 / 测试通知         │
+              │ 管理面板「任务通知」卡片：开关 / 试听提示音 / 未读数 / 全部已读      │
               │ 事件 `notification-status` 推送最新快照                              │
+              │ （「模拟一次任务完成」只在 dev 构建里渲染）                          │
               └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -118,15 +121,73 @@ ctx.on("agent/status", ({ agent, status }) => {
 
 | 事件 | 用途 |
 | --- | --- |
-| `api-session/added` | 新会话摘要（含标题、cwd、`parentSessionId`）→ 免费拿到通知文案里的标题 |
+| `api-session/added` | 新会话摘要（含 cwd、`parentSessionId`）→ 子代理标记的来源；**标题在这里通常是空的**，见 §3.3 |
 | `api-session/activity` | 用户消息写入会话 → 只用作旁证，不参与判定 |
 | `api-session/error` | 会话级错误 → 预留（当前不弹，避免与事故面板重复打扰） |
 
-> **id 形态**：事件里的 `sessionId` 是不带前缀的裸 uuid，而 `session/list`
-> 里是 `session-<uuid>`。壳统一去掉 `session-` 前缀后再建索引
-> （`notify::normalize_session_id`）。
+> **id 形态**：事件里的 `sessionId` 是不带前缀的裸 uuid，而 `session/control` 的
+> baseline 与 `session/list` 里是 `session-<uuid>`。壳统一去掉 `session-` 前缀后再
+> 建索引（`notify::normalize_session_id`）。
 
-### 3.3 子代理会话过滤
+### 3.3 会话标题：第二条逻辑流 `session/control`
+
+**标题不是事件，是一个投影**（`@deepseek-ai/dsh-session-title`）：
+
+```js
+const titleProjectionDefinition = {
+  key: "title",
+  init: () => null,                                   // 创建时为空
+  apply: (state, event) => event.type === "session/title" ? event.data.title : state,
+};
+```
+
+也就是说：`api-session/added` 在 `session/created` 那一刻发出（
+`dsh-api-session-controller` 的 `ctx.on("session/created", …)`），此时标题投影还是
+`null`；标题要等第一轮之后由模型生成、作为 `session/title` 事件写进会话日志，
+投影才变成字符串。而**投影变化只推给 `session/control` 的订阅者**：
+
+```js
+ctx.sessionProjections.onChanged((session, key, value, seq) => {
+  this.broadcast({ type: "projection", sessionId: session.id, key, value, seq });
+});
+```
+
+于是只听 `$events` 的壳永远拿不到"连接期间新建的会话"的标题，通知只能退回
+「未命名会话 <短 id>」——这正是 v0.1.3-rc.3 之前那个 bug。现在壳在**同一条物理
+连接**上再开一条 `session/control`，吃它的两类帧：
+
+```text
+{"type":"open","streamId":"dsh-xlink-titles","endpoint":"session/control","payload":{"args":{}}}
+
+{"type":"item","streamId":"dsh-xlink-titles","value":{
+   "type":"baseline",
+   "value":{"queues":{…},"jobs":{…},"projections":{
+      "session-<uuid>":{"asOfSeq":12,"values":{…,"title":"精简通知设置并显示测试按钮"}}}}}}
+
+{"type":"item","streamId":"dsh-xlink-titles","value":{
+   "type":"projection","sessionId":"session-<uuid>","key":"title","value":"新名字","seq":30}}
+```
+
+- `baseline`：连上时已经在内存里的会话的投影快照 → 直接播种标题表，并置
+  `titles_seeded`；标题被清空（`value: null`）时同步清掉本地缓存，让占位文案接管。
+- `projection`：只认 `key == "title"`；其它投影（todos / inbox / contextTimeline
+  等高频项）直接忽略，既不建索引也不广播。
+- 命中标题变化时会把面板里那条"最近完成"记录的名字一起改掉再广播
+  （`set_title` + `broadcast_now`），否则改名后历史列表还挂着旧名字。
+
+**成本**：baseline 是"常驻会话的**全部**投影"，本机 4 个会话实测 215 KB（其中
+大头是活跃会话的 `contextTimeline`），而 `session/list` 是 663 KB / 205 个会话、
+而且是每次都要重建全部会话投影的 CPU 重活。用控制流换来的是"标题永远是最新的"，
+且只在连接时读一次；没有它时（老内核）才退回 §3.1 那个快照：
+
+| 情形 | 行为 |
+| --- | --- |
+| 控制流可用 | baseline 播种 + 投影帧保鲜，**不再**调 `session/list` |
+| 内核不认 `session/control`（`{"type":"error"}`）、流中断、或 5 s 内没有 baseline | 退回一次 `session/list` 全量快照（每条连接最多一次；失败留给下次重连重试） |
+
+每条连接还会顺手重置这套状态（`titles_stream`），所以内核重启后重连能重新播种。
+
+### 3.4 子代理会话过滤
 
 子代理（subagent）各自是一个会话，跑完同样会发 `api-session/status(false)`，
 但它们不该打扰用户。事件里没有父会话字段，因此壳依赖 `api-session/added`：
@@ -137,16 +198,15 @@ ctx.on("agent/status", ({ agent, status }) => {
 事件，它的完成会被当成普通任务。代价是偶发的一条多余通知，换取的是实现简单
 （不需要为每次通知去查一次 2 MB 的会话列表）。
 
-### 3.4 标题的来源与代价
+### 3.4 标题的来源与代价（小结）
 
-通知文案要写"「会话标题」已完成"，而事件本身不带标题。壳的做法是：
-
-1. 连接期间新建的会话 → 直接用 `api-session/added` 摘要里的
-   `projections.values.title`，零成本；
-2. 连接之前就存在的会话 → 每个内核进程**最多一次** `session/list` 快照
-   （`titles_seeded` 门控），把标题与 cwd 缓存成表。这一次 0.5 s 的代价发生
-   在内核刚启动时，与内核启动本身的耗时相比可以忽略；
-3. 仍然查不到 → 文案回退成 `未命名会话 <id 前 8 位>`。
+| 来源 | 覆盖 | 代价 |
+| --- | --- | --- |
+| `session/control` 的 `baseline` | 连接时已经在内存里的会话 | 开流时一次性读取（本机实测 4 个会话 215 KB） |
+| `session/control` 的 `projection`（`key == "title"`） | 连接期间生成的标题、手动改名、清空 | 每帧一个很小的 JSON，只认 title |
+| `api-session/added` | 连接期间创建 / 载入的会话（含 cwd） | 零成本（事件本来就要读） |
+| `session/list` 快照 | 仅当前三条都不可用时兜底（老内核） | 每个内核进程最多一次，约 0.5 s 内核 CPU |
+| 都没有 | — | 文案回退成 `未命名会话 <id 前 8 位>` |
 
 ### 3.5 认证、重连与退避
 
@@ -209,6 +269,30 @@ DPI 下按 20/24 绘制——给一张 32×32 的源图让系统缩小，比给 
 提示音：`sound = true` 时请求系统默认提示音（macOS 传
 `NSUserNotificationDefaultSoundName`、Windows 传 `Default`），关闭时不设置任何
 声音——两端不设置即为静音。
+
+#### 「试听提示音」为什么单独走一条通道（`notification_test_sound`）
+
+面板上的「试听」按钮**不发通知**，而是直接调系统的提示音接口：
+
+| 平台 | 调用 | 播放的是什么 |
+| --- | --- | --- |
+| macOS | `AudioServicesPlayAlertSound(kSystemSoundID_UserPreferredAlert = 0x1000)`（AudioToolbox，`#[link]` 直接 FFI，无新依赖） | 用户在「系统设置 → 声音 → 提醒声音」里选的那个声音，与通知气泡默认提示音同源 |
+| Windows | `MessageBeep(MB_ICONASTERISK)`（`windows-sys`，仅多开 `Win32_System_Diagnostics_Debug` 特性） | 用户声音方案里「通知」类的音效（Windows 10/11 默认方案即通知默认音效） |
+
+三个理由：
+
+1. **dev 构建也要能听到**。macOS 上未打包的二进制投递不了通知（见下一节），
+   若试听靠"发一条带声音的通知"实现，`tauri dev` 里按下去只会静默——而这恰恰
+   是最常需要试听的场合。
+2. **不依赖通知权限**，也不写未读、不动角标；用户听到的就是系统提示音本身。
+3. 两个接口都是"交给系统后立即返回"的异步播放，不派生子进程、不阻塞命令线程
+   （所以 `notification_test_sound` 是同步命令，不需要 `spawn_blocking`）。
+   失败只有一种可检测的原因——Windows 上 `MessageBeep` 返回 0（没有可用输出
+   设备），此时返回带下一步的中文说明；macOS 的接口没有返回值。
+
+「试听」在声音开关关闭或总开关关闭时禁用：开关说"静音"、按钮却出声，两个信号
+会自相矛盾。成功路径上给一条轻提示（`已播放系统提示音`）——声音没有画面反馈，
+不提示的话用户分不清"系统静音了"和"按钮没点动"。
 
 #### 为什么不用 `tauri-plugin-notification`
 
@@ -286,6 +370,8 @@ struct Center {
 | 系统通知被拒/不可用 | `lastError` 给出具体平台指引 | 角标仍然工作（角标不依赖通知权限） |
 | 跑的是未打包构建（`tauri dev` / `cargo run`） | 面板灰字提示"系统通知不会以本应用名义投递" | 照常尝试投递；**角标不受影响**。原因见 §4.3 |
 | 未读积压 | 角标显示 `999+` | 焦点回到工作台或点「全部已读」即清零 |
+| 内核没有 `session/control`（老版本 / 协议漂移） | 无感 | 记一行日志，退回一次 `session/list` 标题快照（§3.3） |
+| 标题还没生成就完成了（首轮极短） | 通知写「未命名会话 <短 id>」 | 标题投影一到就把这条记录与面板里的名字改成真标题（`set_title`） |
 
 ## 7. 配置
 
@@ -300,10 +386,10 @@ struct Center {
 | `notify_sound` | `false` | 通知是否带提示音 |
 
 面板命令：`notification_status` / `notification_mark_read` /
-`notification_save_settings` / `notification_test`，全部登记在
-`permissions/app-commands.json` 的 `allow-local-commands` 里（漏登记会让按钮
-在面板里直接报 "not allowed"，`scripts/check-invariants.mjs` 会在 CI 拦住这种
-情况）。
+`notification_save_settings` / `notification_test` / `notification_test_sound`，
+全部登记在 `permissions/app-commands.json` 的 `allow-local-commands` 里（漏登记
+会让按钮在面板里直接报 "not allowed"，`scripts/check-invariants.mjs` 会在 CI
+拦住这种情况）。
 
 其中 `notification_test` 的语义是**模拟一次任务完成**（未读 +1 → 刷新角标 → 发一条
 系统通知），而不是"只发一条通知"：通知气泡能否出现由系统决定，若自检只发通知，用户
@@ -311,6 +397,11 @@ struct Center {
 Dock / 任务栏上的数字，从而把「功能没做」和「系统不放行通知」区分开。它刻意无视
 `notify_away_only`（用户主动点的按钮必须看得到效果），总开关关闭时只回一条可操作
 说明、不做任何事。面板**不在成功路径上弹页内浮层**——那会被误认成"通知就是它"。
+
+这个按钮**只在 dev 构建（`StatusView.dev_build`，即 `cfg!(debug_assertions)`）、且没有
+开启 release 预览（dev 调试面板里的「模拟正式版外观」）时渲染**：它会凭空给用户造一条
+未读，正式版没有这个需要，用户要验证"能不能听到提示音"用旁边的「试听」即可。命令本身
+仍留在 ACL 白名单里，dev 构建与排障随时可用。
 
 ## 8. 后续可选增强
 
@@ -342,7 +433,8 @@ cargo test --lib notify
 #   · launch token → dsh-auth cookie
 #   · WebSocket 握手（自定义 Cookie / Origin 头）与 101
 #   · $events 的 open 帧字段名 + 就绪帧里的 clientId
-#   · session/list 标题快照
+#   · session/list 标题快照（老内核的兜底路径）
+#   · session/control 的 baseline → 标题表（回归：通知里的会话名）
 DSH_DESKTOP_DATA_DIR=~/.dsh/desktop DSH_XLINK_LIVE_PORT=<端口> \
   cargo test --lib -- --ignored live_ --nocapture
 
@@ -363,16 +455,20 @@ CI 的 Windows job 会跑到；本机是 macOS 时用
 **A. 先看角标（dev 壳就够）**
 
 1. `npm run dev` 起 dev 壳（端口默认 3091，与已安装的 release 壳互不干扰）；
-2. 「设置 → 任务通知 → 模拟一次任务完成」；
+2. 「设置 → 任务通知 → 模拟一次任务完成」（这个按钮只在 dev 构建里显示）；
 3. 期望：Dock 图标右上角立刻出现红色数字角标（1），卡片里出现「1 条未读」；
-4. 点「全部已读」→ 角标消失。
+4. 点「全部已读」→ 角标消失；
+5. 「设置 → 任务通知 → 通知声音 → 试听」→ 期望立刻听到系统提醒声音
+   （不需要打包，也不需要通知权限）。
 
 **B. 再看系统通知气泡（需要打包后的 app）**
 
 1. `npm run build -- --debug`（产出一个 debug 版 `.app`，不签名也能投递本地通知）；
 2. 运行 `src-tauri/target/debug/bundle/macos/dsh-xlink.app`（或直接用安装版 DMG）；
 3. 「模拟一次任务完成」→ 期望系统通知中心弹出「任务已完成 · 「测试通知」已完成」；
-   首次可能需要到「系统设置 → 通知」里允许 dsh-xlink；
+   首次可能需要到「系统设置 → 通知」里允许 dsh-xlink（debug 版 `.app` 的
+   `dev_build` 仍为 true，所以这个按钮在 debug 包里也在；正式安装包里没有它，
+   验证气泡请用真实任务）；
 4. 真实链路：启动工作台 → 发一条会跑一两分钟的任务 → **切到别的应用** → 任务跑完后
    角标 +1 且弹出系统通知 → 切回工作台 → 角标清零。
 
@@ -411,3 +507,9 @@ curl -s -b /tmp/c.txt -H 'content-type: application/json' \
 | 插件式通知会在每个 webview 注入 shim 并调用 `is_permission_granted` | `tauri-plugin-notification` 的 `src/lib.rs`（`.js_init_script`）与 `src/init-iife.js` |
 | macOS 上未打包进程的通知被丢弃 / 归到父进程名下 | 系统日志：`usernoted: Sending request for permission for com.apple.Terminal with path …/target/debug/dsh-xlink`、`NotificationCenter: Unable to find valid bundle with backupPath: …` |
 | `sound_name` 的"系统默认提示音"取值：macOS `NSUserNotificationDefaultSoundName`、Windows `Default` | `mac-notification-sys` 的 `Sound` 取值表、`tauri-winrt-notification` 的 `impl FromStr for Sound`（Windows 未设置声音 = `<audio silent="true" />`） |
+| 标题是投影（`key: "title"`），由 `session/title` 事件折叠而来，创建时为 `null` | `@deepseek-ai/dsh-session-title/lib/index.js` 的 `titleProjectionDefinition`（`init: () => null`） |
+| `api-session/added` 在 `session/created` 时发出，因此创建那一刻标题还是空的 | `dsh-api-session-controller/lib/index.js`（`ctx.on("session/created", … ctx.emit("api-session/added", …))`） |
+| 投影变化只在 `session/control` 上推送（`{type:"projection",sessionId,key,value,seq}`），`$events` 里没有标题事件 | `dsh-api-session-controller/lib/index.js` 的 `SessionControlController`（`ctx.sessionProjections.onChanged(…)`） |
+| `session/control` 开流即给 `baseline`（`queues` / `jobs` / `projections`），投影里含每个常驻会话的 `values.title` | 实测（本机 4 个会话：baseline 215 KB，其中活跃会话的 `contextTimeline` 占大头；同机 `session/list` 为 663 KB / 205 个会话） |
+| 非 `$events` 的 endpoint 都是 Remote 方法流（`{namespace}/{method}`），payload 必须恰好是 `{"args":{…}}` | `dsh-api-gateway/lib/index.js` 的 `openWireStream` / `remoteRequest` |
+| 「试听提示音」两端走各自系统的提醒声接口 | `MacOSX.sdk/…/AudioToolbox.framework/Headers/AudioServices.h`（`kSystemSoundID_UserPreferredAlert = 0x00001000`、`AudioServicesPlayAlertSound`）；`windows-sys` 的 `Win32::System::Diagnostics::Debug::MessageBeep` + `Win32::UI::WindowsAndMessaging::MB_ICONASTERISK` |
