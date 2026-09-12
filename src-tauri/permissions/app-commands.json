@@ -63,6 +63,10 @@
           "patch_status",
           "patch_apply",
           "patch_revert",
+          "notification_status",
+          "notification_mark_read",
+          "notification_save_settings",
+          "notification_test",
           "confirm_close_shell"
         ]
       }
