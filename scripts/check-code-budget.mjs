@@ -34,20 +34,20 @@ const reportOnly = process.argv.includes('--report');
 /** 生产代码行数预算：文件 → 上限。包含注释以外的所有代码行。 */
 const FILE_BUDGETS = {
   'ui/src/theme.css': 2900,
-  'src-tauri/src/plugins.rs': 2750,
-  'src-tauri/src/commands.rs': 1650,
-  'src-tauri/src/skills.rs': 1560,
-  'src-tauri/src/patches.rs': 1260,
-  'src-tauri/src/kernel.rs': 1200,
+  'src-tauri/src/plugins.rs': 2650,
+  'src-tauri/src/commands.rs': 1550,
+  'src-tauri/src/skills.rs': 1490,
+  'src-tauri/src/patches.rs': 1250,
+  'src-tauri/src/kernel.rs': 1180,
   'src-tauri/src/process.rs': 1180,
-  'src-tauri/src/notify.rs': 1060,
-  'src-tauri/src/guard.rs': 950,
-  'ui/src/store.js': 440,
+  'src-tauri/src/notify.rs': 1050,
+  'src-tauri/src/guard.rs': 940,
+  'ui/src/store.js': 430,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
-const TOTAL_BUDGET = 20800;
+const TOTAL_BUDGET = 20400;
 /** 重复区间数上限。 */
-const DUPLICATE_BUDGET = 16;
+const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
 const WINDOW = 10;
 /** 计入重复区间的最小长度（归一化行数）。 */
@@ -69,12 +69,12 @@ function walk(dir, suffixes, skip = new Set(['node_modules', 'dist', 'target', '
 
 const show = (path) => relative(root, path).split('\\').join('/');
 
-/// 去掉 Rust 的 `#[cfg(test)] mod ...` 整块（含其上紧邻的 `#[cfg(test)]` 属性）。
+/// 去掉 Rust 的测试模块整块（`#[cfg(test)]` 与 `#[cfg(all(test, …))]` 都算）。
 function stripRustTests(text) {
   const lines = text.split('\n');
   const kept = [];
   for (let i = 0; i < lines.length; i += 1) {
-    if (lines[i].trim() !== '#[cfg(test)]') {
+    if (!/^#\[cfg\(.*\btest\b.*\)\]$/.test(lines[i].trim())) {
       kept.push(lines[i]);
       continue;
     }
@@ -95,16 +95,20 @@ function stripRustTests(text) {
 /// 归一化后仍然「有信息量」的行：注释、空行、纯括号行都不算。
 function significantLines(text) {
   const out = [];
-  for (const raw of text.replace(/\/\*[\s\S]*?\*\//g, '').split('\n')) {
-    const line = raw
-      .replace(/\/\/.*$/, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!line) continue;
-    if (/^[{}()[\];,]+$/.test(line)) continue;
-    if (/^<\/?[a-z-]+>$/.test(line)) continue;
-    out.push(line);
-  }
+  text
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .forEach((raw, index) => {
+      const line = raw
+        .replace(/\/\/.*$/, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!line) return;
+      if (/^[{}()[\];,]+$/.test(line)) return;
+      if (/^<\/?[a-z-]+>$/.test(line)) return;
+      // `line` 是原文件行号：重复块报告要能直接跳到那一行。
+      out.push({ text: line, line: index + 1 });
+    });
   return out;
 }
 
@@ -170,50 +174,59 @@ notes.push(`生产代码合计 ${total} 行（预算 ${TOTAL_BUDGET}）`);
 
 // --- 2. 重复块 ---------------------------------------------------------------
 
-const occurrences = new Map();
+const linesByFile = new Map();
+const keyToHits = new Map();
 for (const file of files) {
   const raw = readFileSync(file, 'utf8');
   const text = file.endsWith('.rs') ? stripRustTests(raw) : raw;
   const lines = significantLines(text);
+  linesByFile.set(show(file), lines);
   for (let i = 0; i + WINDOW <= lines.length; i += 1) {
-    const key = lines.slice(i, i + WINDOW).join('\n');
-    const hit = occurrences.get(key);
-    if (hit) hit.push([show(file), i]);
-    else occurrences.set(key, [[show(file), i]]);
+    const key = lines
+      .slice(i, i + WINDOW)
+      .map((entry) => entry.text)
+      .join('\n');
+    const hits = keyToHits.get(key);
+    const hit = { file: show(file), start: i, line: lines[i].line };
+    if (hits) hits.push(hit);
+    else keyToHits.set(key, [hit]);
   }
 }
 
-// 每个文件的「重复行区间」：把命中 ≥2 次的窗口按文件并成最长区间。
-const spans = new Map();
-for (const [, hits] of occurrences) {
-  if (hits.length < 2) continue;
-  for (const [file, start] of hits) {
-    const list = spans.get(file) || [];
-    list.push([start, start + WINDOW]);
-    spans.set(file, list);
-  }
-}
+const at = (file, start) => {
+  const lines = linesByFile.get(file);
+  if (start < 0 || start + WINDOW > lines.length) return null;
+  return lines
+    .slice(start, start + WINDOW)
+    .map((entry) => entry.text)
+    .join('\n');
+};
 
-let duplicates = 0;
+// 把「出现 ≥2 次的窗口」按出现位置向后延伸，得到最长重复块。直接数窗口是不行
+// 的：一个 30 行的复制粘贴会产生 21 个互相重叠的命中窗口，指标会随块长线性放大。
+const covered = new Set();
 const duplicateSamples = [];
-for (const [file, list] of spans) {
-  list.sort((a, b) => a[0] - b[0]);
-  let [from, to] = list[0];
-  for (const [start, end] of list.slice(1)) {
-    if (start <= to) {
-      to = Math.max(to, end);
-      continue;
-    }
-    if (to - from >= MIN_SPAN) {
-      duplicates += 1;
-      if (duplicateSamples.length < 5) duplicateSamples.push(`${file}:${from + 1}（${to - from} 行）`);
-    }
-    from = start;
-    to = end;
+let duplicates = 0;
+for (const hits of keyToHits.values()) {
+  if (hits.length < 2) continue;
+  if (hits.some((hit) => covered.has(`${hit.file}:${hit.start}`))) continue;
+  let extra = 0;
+  for (;;) {
+    const next = hits.map((hit) => at(hit.file, hit.start + extra + 1));
+    if (next.some((key) => key === null)) break;
+    if (!next.every((key) => key === next[0])) break;
+    extra += 1;
   }
-  if (to - from >= MIN_SPAN) {
-    duplicates += 1;
-    if (duplicateSamples.length < 5) duplicateSamples.push(`${file}:${from + 1}（${to - from} 行）`);
+  for (const hit of hits) {
+    for (let step = 0; step <= extra; step += 1) covered.add(`${hit.file}:${hit.start + step}`);
+  }
+  const length = WINDOW + extra;
+  if (length < MIN_SPAN) continue;
+  duplicates += 1;
+  if (duplicateSamples.length < 20) {
+    duplicateSamples.push(
+      `${hits[0].file}:${hits[0].line}（${length} 行 × ${hits.length} 份）`
+    );
   }
 }
 
@@ -237,6 +250,10 @@ for (const [path, count] of biggest) {
 for (const note of notes) console.log(`• ${note}`);
 
 if (reportOnly) {
+  if (duplicateSamples.length) {
+    console.log('重复区间（前几处）：');
+    for (const sample of duplicateSamples) console.log(`  ${sample}`);
+  }
   console.log('\n（--report：只度量，不判失败）');
   process.exit(0);
 }
