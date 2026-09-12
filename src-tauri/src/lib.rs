@@ -15,6 +15,7 @@ mod node;
 mod node_install;
 mod notify;
 mod patches;
+mod pkg;
 mod plugins;
 mod process;
 mod quarantine;

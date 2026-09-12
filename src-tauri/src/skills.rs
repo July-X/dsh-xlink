@@ -20,9 +20,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
+use crate::pkg::{
+    git_latest_tag, is_newer_than, new_staging_dir, remove_link, split_npm_spec, stamp_id_marker,
+    write_source_marker, ID_MARKER,
+};
 use crate::process::{atomic_write, run_capture};
-use crate::releases::{http_get_file, http_get_npm_latest, http_get_string};
-use crate::version::cmp_versions;
+use crate::releases::http_get_npm_latest;
 
 /// dsh home 下的中央库目录名。位于 kernel 读取的 `<home>/skills/` 根目录旁，
 /// 但归外壳所有：被停用的技能与来源标记绝不能出现在 kernel 的发现范围内。
@@ -30,7 +33,6 @@ const STORE_SUBDIR: &str = "skills-store";
 /// 外壳的清单文件，位于中央库目录内。
 const STORE_FILE: &str = "store.json";
 /// 每个中央库条目内的单包获取标记。
-const SOURCE_MARKER: &str = ".dsh-source.json";
 /// 技能目录包被识别的最大目录深度（相对包根目录，0 层子目录即深度 0）。
 /// 覆盖根目录的目录包以及常见的 monorepo 布局（`skills/<name>/SKILL.md`），
 /// 而不必遍历整棵树。
@@ -342,31 +344,6 @@ fn remove_item_unlocked(home: &Path, id: &str) -> Result<(), AppError> {
 
 // --- spec 解析 ------------------------------------------------------------
 
-/// 将 npm spec 拆分为 (name, 可选 pin)。规则与插件中央库一致：
-/// scope 前缀之后的最后一个 @ 用作版本分隔符。
-fn split_npm_spec(spec: &str) -> Result<(String, Option<String>), AppError> {
-    let s = spec.trim();
-    if s.starts_with('@') {
-        let (head, rest) = s
-            .split_once('/')
-            .ok_or_else(|| AppError::Skill(format!("非法的 npm 包名 {spec:?}")))?;
-        let rest = rest.trim();
-        let (name, pin) = match rest.rsplit_once('@') {
-            Some((n, p)) if !n.is_empty() && !p.is_empty() && !p.contains('/') => {
-                (n, Some(p.to_string()))
-            }
-            _ => (rest, None),
-        };
-        return Ok((format!("{head}/{name}"), pin));
-    }
-    match s.rsplit_once('@') {
-        Some((n, p)) if !n.is_empty() && !p.is_empty() && !p.contains('/') => {
-            Ok((n.to_string(), Some(p.to_string())))
-        }
-        _ => Ok((s.to_string(), None)),
-    }
-}
-
 /// 判断输入是否为本地文件夹：显式前缀、波浪号形式、绝对 POSIX 路径、
 /// `.` 相对路径或 Windows 盘符路径。`\\?\` verbatim 前缀同样被识别：
 /// `parse_local_spec` 会把规范化路径作为包来源存储，而 Windows 上的
@@ -439,7 +416,7 @@ pub fn parse_spec(raw: &str) -> Result<SkillSpec, AppError> {
             repo_url: Some(format!("https://github.com/{s}")),
         });
     }
-    let (name, pin) = split_npm_spec(s)?;
+    let (name, pin) = split_npm_spec(s).map_err(AppError::Skill)?;
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || "-._@/".contains(c))
@@ -695,109 +672,6 @@ fn walk_package(
 
 // --- 获取 -----------------------------------------------------------------
 
-/// 候选 tag 中形如 semver 的最高版本，若无则返回 None。
-fn latest_tag<'a>(tags: impl Iterator<Item = &'a str>) -> Option<String> {
-    tags.filter_map(|t| {
-        let stripped = t.strip_prefix('v').unwrap_or(t);
-        let head = stripped.split_once('-').map(|(h, _)| h).unwrap_or(stripped);
-        let parts: Vec<&str> = head.split('.').collect();
-        (parts.len() >= 2 && parts[..2].iter().all(|seg| seg.parse::<u64>().is_ok()))
-            .then(|| t.to_string())
-    })
-    .max_by(|a, b| cmp_versions(a, b))
-}
-
-fn git_latest_tag(source: &str) -> Result<Option<String>, String> {
-    let (ok, out) =
-        run_capture("git", &["ls-remote", "--tags", source]).map_err(|e| e.to_string())?;
-    if !ok {
-        return Ok(None);
-    }
-    let tags: Vec<String> = out
-        .lines()
-        .filter_map(|line| {
-            let (_, ref_part) = line.split_once('\t')?;
-            let tag = ref_part.strip_prefix("refs/tags/")?.trim_end_matches("^{}");
-            Some(tag.to_string())
-        })
-        .collect();
-    Ok(latest_tag(tags.iter().map(|s| s.as_str())))
-}
-
-/// 判断已存储的版本字符串看上去像 semver 而不是短哈希；之所以先按形状
-/// 拆分比较，详见 plugins.rs 的 `looks_like_semver`。
-fn looks_like_semver(version: &str) -> bool {
-    let stripped = version.strip_prefix('v').unwrap_or(version);
-    let head = stripped.split_once('-').map(|(h, _)| h).unwrap_or(stripped);
-    let parts: Vec<&str> = head.split('.').collect();
-    parts.len() >= 2 && parts[..2].iter().all(|seg| seg.parse::<u64>().is_ok())
-}
-
-fn is_newer_than(latest: &str, installed: &str, origin: &str, pinned: bool) -> bool {
-    if origin == "git" && !pinned && !looks_like_semver(installed) {
-        if looks_like_semver(latest) {
-            false
-        } else {
-            latest != installed
-        }
-    } else {
-        cmp_versions(latest, installed) == std::cmp::Ordering::Greater
-    }
-}
-
-/// 获取与更新检查所需的 npm registry 文档片段。
-#[derive(Debug, Deserialize)]
-struct NpmDoc {
-    #[serde(rename = "dist-tags", default)]
-    dist_tags: std::collections::BTreeMap<String, String>,
-    #[serde(default)]
-    versions: std::collections::BTreeMap<String, NpmVersionDoc>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NpmVersionDoc {
-    #[serde(default)]
-    dist: Option<NpmDist>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NpmDist {
-    #[serde(default)]
-    tarball: String,
-    /// registry 声明的 SRI 摘要（`sha512-<base64>`）。外壳自己下载 tarball，
-    /// 必须据此校验一次：默认 registry 是第三方镜像，packument 与 tarball
-    /// 同源，镜像可以在元数据一致的前提下替换内容，而解包后 pnpm 会执行包里的
-    /// `prepare` 脚本。
-    #[serde(default)]
-    integrity: Option<String>,
-}
-
-fn fetch_npm_doc(name: &str) -> Result<NpmDoc, String> {
-    let url = format!("{}{}", crate::registry::npm_registry_base(), name);
-    let body = http_get_string(&url, None)?;
-    serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())
-}
-
-/// 将 npm tgz 解包到 `dest`，并去掉其开头的 `package/` 段。
-/// 共享的 Rust 解包器会拒绝路径穿越、链接和特殊文件，并限制条目数量与
-/// 声明的展开后内容，然后再发布。
-fn extract_tarball(tarball: &Path, dest: &Path) -> Result<(), String> {
-    crate::archive::extract_gzip_tarball(tarball, dest)
-}
-
-fn write_source_marker(spec: &SkillSpec, version: &str, dest: &Path) -> Result<(), AppError> {
-    let marker = serde_json::json!({
-        "id": spec.id,
-        "origin": spec.origin,
-        "source": spec.source,
-        "version": version,
-        "fetchedAt": now_epoch_secs(),
-    });
-    let text = serde_json::to_string_pretty(&marker).map_err(|e| AppError::Io(e.to_string()))?;
-    atomic_write(&dest.join(SOURCE_MARKER), format!("{text}\n").as_bytes())
-        .map_err(|e| AppError::Io(e.to_string()))
-}
-
 /// 递归地将 source 复制到 target，若已存在则替换。
 ///
 /// **符号链接一律跳过**，与技能扫描器保持一致：扫描器本来就不把链接视为技能
@@ -840,29 +714,6 @@ fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
 const TMP_PREFIX: &str = ".tmp-";
 const NEW_PREFIX: &str = ".new-";
 const BACKUP_PREFIX: &str = ".backup-";
-/// 在暂存目录中标记所属包 id 的标记文件。
-const ID_MARKER: &str = ".dsh-id";
-
-fn new_staging_dir(store: &Path, kind: &str) -> io::Result<PathBuf> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = store.join(format!("{kind}{}-{nanos}", std::process::id()));
-    match fs::remove_dir_all(&dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(_) if !dir.exists() => {}
-        Err(e) => return Err(e),
-    }
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
-fn stamp_id_marker(dir: &Path, id: &str) -> io::Result<()> {
-    atomic_write(&dir.join(ID_MARKER), format!("{id}\n").as_bytes())
-}
-
 /// 单次成功的「获取并发布」周期的结果。
 struct FetchedPackage {
     /// 该包发布后的中央库目录。
@@ -961,7 +812,7 @@ fn fetch_into_store(
         }
     }
 
-    write_source_marker(spec, &version, &final_dir)?;
+    write_source_marker(&final_dir, &spec.id, &spec.origin, &spec.source, &version)?;
     on_progress(&format!(
         "发现 {} 个技能：{}",
         scanned.len(),
@@ -983,51 +834,8 @@ fn fetch_npm(
     dest: &Path,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<String, AppError> {
-    on_progress(&format!("正在查询 npm registry：{}", spec.source));
-    let doc =
-        fetch_npm_doc(&spec.source).map_err(|e| AppError::Skill(format!("查询 npm 失败：{e}")))?;
-    let version = spec
-        .pin
-        .clone()
-        .unwrap_or_else(|| doc.dist_tags.get("latest").cloned().unwrap_or_default());
-    if version.is_empty() {
-        return Err(AppError::Skill(format!(
-            "npm 上找不到包 {} 或其 latest 标记",
-            spec.source
-        )));
-    }
-    let dist = doc.versions.get(&version).and_then(|v| v.dist.as_ref());
-    let integrity = dist.and_then(|d| d.integrity.clone());
-    let tarball = dist
-        .map(|d| d.tarball.clone())
-        .filter(|t| !t.is_empty())
-        .ok_or_else(|| {
-            AppError::Skill(format!(
-                "npm 上 {}@{version} 没有可下载的 tarball",
-                spec.source
-            ))
-        })?;
-    on_progress(&format!("正在下载 {}@{version} …", spec.source));
-    let tgz = dest.join(".pkg.tgz");
-    http_get_file(&tarball, &tgz).map_err(|e| AppError::Skill(format!("下载失败：{e}")))?;
-    match crate::releases::verify_download_integrity(&tgz, integrity.as_deref()) {
-        Ok(Some(algorithm)) => on_progress(&format!("已校验下载内容的 integrity（{algorithm}）")),
-        Ok(None) => {
-            on_progress("registry 未提供 integrity（也没有可用的 shasum），本次未做内容校验")
-        }
-        Err(reason) => {
-            let _ = fs::remove_file(&tgz);
-            return Err(AppError::Skill(format!(
-                "{reason}。为避免安装未经验证的内容已中止；请重试或改用官方 registry（DSH_NPM_REGISTRY）"
-            )));
-        }
-    }
-    // 通过共享的 Rust 归档处理器解包；它会校验 npm 的 `package/` 根目录，
-    // 并将清单发布到 `dest` 供后续扫描。
-    extract_tarball(&tgz, dest)
-        .map_err(|e| AppError::Skill(format!("解包失败：{e}（请确认下载内容完整后重试）")))?;
-    let _ = fs::remove_file(&tgz);
-    Ok(version)
+    crate::pkg::fetch_npm_package(&spec.source, spec.pin.as_deref(), dest, on_progress)
+        .map_err(AppError::Skill)
 }
 
 fn fetch_git(
@@ -1164,16 +972,6 @@ fn resolved_source(path: &Path) -> PathBuf {
         .filter(|m| m.file_type().is_symlink())
         .and_then(|_| fs::read_link(path).ok())
         .unwrap_or_else(|| path.to_path_buf())
-}
-
-/// 删除一个文件系统链接而不触碰其目标。在 Windows 上 `DeleteFile` 会拒绝
-/// 目录符号链接（ERROR_ACCESS_DENIED）——只有 `RemoveDirectory` 才能删除
-/// 它们——而文件符号链接需要 `DeleteFile`；两者都试一遍，就能在任意平台上
-/// 覆盖两种链接类型。
-fn remove_link(path: &Path) {
-    if fs::remove_file(path).is_err() {
-        let _ = fs::remove_dir(path);
-    }
 }
 
 /// 删除某个活动根条目，无论是链接、目录还是文件。

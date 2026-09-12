@@ -11,7 +11,6 @@
 //!
 //! 设计说明见桌面交付物中的 `docs/plugin-management.md`。
 
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -23,6 +22,10 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::error::AppError;
+use crate::pkg::{
+    git_latest_tag, is_newer_than, looks_like_semver, new_staging_dir, remove_link, split_npm_spec,
+    stamp_id_marker, write_source_marker, ID_MARKER,
+};
 use crate::process::{atomic_write, run_capture};
 use crate::quarantine;
 use crate::releases::{http_get_file, http_get_npm_latest, http_get_string};
@@ -36,7 +39,6 @@ const STORE_SUBDIR: &str = "plugins";
 /// 位于中央库目录内的插件清单文件。
 const STORE_FILE: &str = "store.json";
 /// 每个中央库条目内的取源标记文件。
-const SOURCE_MARKER: &str = ".dsh-source.json";
 /// 社区目录的主要数据源：dshfind.com 插件超市的全量目录（原 dsh-plugin.org
 /// hub 的新站点；`/api/plugins-data` 是它的公开目录 JSON，站点页面在 `/zh`）。
 const HUB_CATALOG_URL: &str = "https://dshfind.com/api/plugins-data";
@@ -215,33 +217,6 @@ pub struct CatalogItem {
     /// 给用户看的详情页（dshfind.com 或仓库）。
     #[serde(default)]
     pub detail_url: String,
-}
-
-/// npm registry 文档中我们关心的子集。
-#[derive(Debug, Deserialize)]
-struct NpmDoc {
-    #[serde(rename = "dist-tags", default)]
-    dist_tags: BTreeMap<String, String>,
-    #[serde(default)]
-    versions: BTreeMap<String, NpmVersionDoc>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NpmVersionDoc {
-    #[serde(default)]
-    dist: Option<NpmDist>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NpmDist {
-    #[serde(default)]
-    tarball: String,
-    /// registry 声明的 SRI 摘要（`sha512-<base64>`）。外壳自己下载 tarball，
-    /// 必须据此校验一次：默认 registry 是第三方镜像，packument 与 tarball
-    /// 同源，镜像可以在元数据一致的前提下替换内容，而解包后 pnpm 会执行包里的
-    /// `prepare` 脚本。
-    #[serde(default)]
-    integrity: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -787,33 +762,6 @@ fn split_package_manager_cli(spec: &str) -> Option<String> {
     None
 }
 
-/// 把 npm spec 拆分为 (name, 可选 pin)。scope 前缀之后的最后一个 `@`
-/// 用来分隔版本；`@scope/name@1.2.3` 解析为 `(@scope/name, 1.2.3)`。
-/// 纯名字则原样返回。
-fn split_npm_spec(spec: &str) -> Result<(String, Option<String>), AppError> {
-    let s = spec.trim();
-    if s.starts_with('@') {
-        let (head, rest) = s
-            .split_once('/')
-            .ok_or_else(|| AppError::Plugin(format!("非法的 npm 包名 {spec:?}")))?;
-        let rest = rest.trim();
-        let (name, pin) = match rest.rsplit_once('@') {
-            Some((n, p)) if !n.is_empty() && !p.is_empty() && !p.contains('/') => {
-                (n, Some(p.to_string()))
-            }
-            _ => (rest, None),
-        };
-        let name = format!("{head}/{name}");
-        return Ok((name, pin));
-    }
-    match s.rsplit_once('@') {
-        Some((n, p)) if !n.is_empty() && !p.is_empty() && !p.contains('/') => {
-            Ok((n.to_string(), Some(p.to_string())))
-        }
-        _ => Ok((s.to_string(), None)),
-    }
-}
-
 /// 把安装请求解析为 `PluginSpec`。可接受的形式：
 ///   - 内核完整的 `dsh plugin [--profile X] (add|install) <pkg>` CLI 调用
 ///     （其中可选的 `--profile` / `-p` 标志被忽略 —— 桌面壳始终接入活动 profile）；
@@ -895,7 +843,7 @@ pub fn parse_spec(spec: &str) -> Result<PluginSpec, AppError> {
         });
     }
     // npm 来源
-    let (name, pin) = split_npm_spec(s)?;
+    let (name, pin) = split_npm_spec(s).map_err(AppError::Plugin)?;
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || "-._@/".contains(c))
@@ -916,83 +864,7 @@ pub fn parse_spec(spec: &str) -> Result<PluginSpec, AppError> {
 // --- 版本比较 -----------------------------------------------------------
 // 与内核发布列表共用：`crate::version::cmp_versions`。
 
-/// 在 tag 候选中挑出最高版本，若无则返回 `None`。
-fn latest_tag<'a>(tags: impl Iterator<Item = &'a str>) -> Option<String> {
-    tags.filter_map(|t| {
-        let stripped = t.strip_prefix('v').unwrap_or(t);
-        let head = stripped.split_once('-').map(|(h, _)| h).unwrap_or(stripped);
-        let parts: Vec<&str> = head.split('.').collect();
-        (parts.len() >= 2 && parts[..2].iter().all(|seg| seg.parse::<u64>().is_ok()))
-            .then(|| t.to_string())
-    })
-    .max_by(|a, b| cmp_versions(a, b))
-}
-
-/// 给定的版本字符串是否形如 semver（例如 `v0.15.0`、`1.2.3-rc.1`），而非
-/// git 短 hash（例如 `v646c91c`）。
-///
-/// 由 `is_newer_than` 用于识别以下罕见的回退路径：未锁定的 git 来源仓库
-/// 没有任何可用的 semver tag —— 此时 `installed_version` 是克隆下来的 HEAD
-/// 短 hash，而 `cmp_versions` 会单纯因为数字段数量把任何 semver tag 排在
-/// 前面。先按形态过滤一次，让 `is_newer_than` 选用合适的比较方式，而不是
-/// 盲目信任那种顺序。
-fn looks_like_semver(version: &str) -> bool {
-    let stripped = version.strip_prefix('v').unwrap_or(version);
-    let head = stripped.split_once('-').map(|(h, _)| h).unwrap_or(stripped);
-    let parts: Vec<&str> = head.split('.').collect();
-    parts.len() >= 2 && parts[..2].iter().all(|seg| seg.parse::<u64>().is_ok())
-}
-
-/// 给定来源的插件，候选版本 `latest` 是否比当前已安装的 `installed` 更新。
-///
-/// - npm / 锁定的 git：按 `cmp_versions` 与 semver 基线排序。
-/// - 未锁定 git、已安装版本呈 tag 形态（`fetch_git` 解析到最高 semver tag
-///   之后的常见情况）：同样按 semver 排序。
-/// - 未锁定 git、已安装版本呈 hash 形态（仓库无任何 semver tag 时的回退
-///   路径）：`cmp_versions` 会单纯因为数字段数量把远端的 tag 形 `latest`
-///   排在前面，因此改为字符串相等判断 —— 但仅在 `latest` 也是 hash 时生效。
-///   当 hash 形 `installed` 面对 tag 形 `latest` 时，说明远端没有可比较的
-///   commit 图信号，应当报告无更新，直到用户手动重新安装。
-fn is_newer_than(latest: &str, installed: &str, origin: &str, pinned: bool) -> bool {
-    if origin == "git" && !pinned && !looks_like_semver(installed) {
-        if looks_like_semver(latest) {
-            false
-        } else {
-            latest != installed
-        }
-    } else {
-        cmp_versions(latest, installed) == Ordering::Greater
-    }
-}
-
 // --- 取源 ----------------------------------------------------------------
-
-/// 拉取某个包的 npm registry 文档。
-fn fetch_npm_doc(name: &str) -> Result<NpmDoc, String> {
-    let url = format!("{}{}", crate::registry::npm_registry_base(), name);
-    let body = http_get_string(&url, None)?;
-    serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())
-}
-
-/// 将 npm tgz 解压到 `dest`，并剥掉其顶层的 `package/` 段。共享的 Rust
-/// 解压器会拒绝路径穿越、链接和特殊文件，并同时限制条目数量和声明的
-/// 解压后大小，再做发布。
-fn extract_tarball(tarball: &Path, dest: &Path) -> Result<(), String> {
-    crate::archive::extract_gzip_tarball(tarball, dest)
-}
-
-fn write_source_marker(spec: &PluginSpec, version: &str, dest: &Path) -> Result<(), AppError> {
-    let marker = serde_json::json!({
-        "id": spec.id,
-        "origin": spec.origin,
-        "source": spec.source,
-        "version": version,
-        "fetchedAt": now_epoch_secs(),
-    });
-    let text = serde_json::to_string_pretty(&marker).map_err(|e| AppError::Io(e.to_string()))?;
-    atomic_write(&dest.join(SOURCE_MARKER), format!("{text}\n").as_bytes())
-        .map_err(|e| AppError::Io(e.to_string()))
-}
 
 /// 进行中取源目录的前缀（`.tmp-<pid>-<ts>`）。配合 `.dsh-id` 标记，
 /// 让 `reconcile_store` 能按插件 id 暂存目录归类，而不必从目录名里解析 id
@@ -1005,47 +877,6 @@ const NEW_PREFIX: &str = "new-";
 /// `.backup-<pid>-<ts>` 会一直保留到发布成功、下一次清理把它移除；中途崩溃
 /// 时它是 `reconcile_store` 回滚到已知可用旧版本的安全网。
 const BACKUP_PREFIX: &str = "backup-";
-/// 暂存目录内部记录插件 id 的文件，恢复流程据此识别该目录归属，不必再解析路径。
-const ID_MARKER: &str = ".dsh-id";
-
-/// 在 `store` 下构造一个唯一的空暂存目录。`kind` 取 `TMP_PREFIX` /
-/// `NEW_PREFIX` / `BACKUP_PREFIX` 之一；`pid` 与 `nanos` 折入目录名，保证
-/// 两个并发的取源（或与崩溃交错的两次更新）不会冲突。
-///
-/// 何时写入 `.dsh-id` 标记由调用方决定。原来在 rename 目标上预先盖章是
-/// Windows 上的故障模式：上一次尝试遗留的 `.new-<pid>-<ts>` 目录里既有
-/// 标记文件也有中间内容，Windows 上 `fs::rename` 会以 ERROR_DIR_NOT_EMPTY
-/// 拒绝非空目标。让新路径在 rename 完成前保持空、只在源端盖章，封住了这
-/// 个口子。
-///
-/// `fs::remove_dir_all` 不再是「点了就忘」：清理旧目标的失败会暴露出来，
-/// 让调用方决定是重试、上报还是回退到别的路径。正常路径下返回值与之前一致。
-fn new_staging_dir(store: &Path, kind: &str, id: &str) -> io::Result<PathBuf> {
-    let _ = id;
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    let dir = store.join(format!("{kind}{pid}-{nanos}"));
-    match fs::remove_dir_all(&dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => {
-            return Err(e);
-        }
-    }
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
-/// 在已有暂存目录里写入 `.dsh-id` 标记，方便 `reconcile_store` 把它与对应
-/// 的 `final_dir` 归到一组。只能在 rename 成功后调用，绝不能在之前调用，
-/// 这样 rename 目标在 Windows 上始终保持空目录。
-fn stamp_id_marker(dir: &Path, id: &str) -> io::Result<()> {
-    atomic_write(&dir.join(ID_MARKER), format!("{id}\n").as_bytes())
-}
-
 /// 把插件拉取到中央库的暂存 tmp 目录，校验后再以崩溃安全的方式发布到
 /// `final_dir`。返回新的中央库条目，沿用原 mode 与 latest。`pnpm_exe` 用于
 /// 构建那些提交里不含 `lib/` 的 git 来源插件。
@@ -1064,8 +895,7 @@ fn fetch_into_store(
 ) -> Result<(StoreItem, bool), AppError> {
     let store = store_dir(data_dir);
     fs::create_dir_all(&store).map_err(|e| AppError::Io(e.to_string()))?;
-    let tmp =
-        new_staging_dir(&store, TMP_PREFIX, &spec.id).map_err(|e| AppError::Io(e.to_string()))?;
+    let tmp = new_staging_dir(&store, TMP_PREFIX).map_err(|e| AppError::Io(e.to_string()))?;
     // 写入 `.dsh-id` 标记必须等到 fetch_* 返回之后再做：`git clone` 要求目标
     // 目录为空，若标记文件在拉取时已经存在，它会直接中止并报
     // "destination path '...' already exists and is not an empty directory"。
@@ -1105,8 +935,7 @@ fn fetch_into_store(
     // `backup` 恢复回来，避免用户被卡在插件被卸载的状态。如果恢复本身也
     // 失败，函数会带着已暂存的状态返回错误，留给下次启动时 `reconcile_store`
     // 修补。
-    let new =
-        new_staging_dir(&store, NEW_PREFIX, &spec.id).map_err(|e| AppError::Io(e.to_string()))?;
+    let new = new_staging_dir(&store, NEW_PREFIX).map_err(|e| AppError::Io(e.to_string()))?;
     if let Err(e) = fs::rename(&tmp, &new) {
         // `tmp` 还保留着校验过的内容；留在磁盘上，让重试 /
         // `reconcile_store` 还有机会把它提升上去。
@@ -1114,8 +943,7 @@ fn fetch_into_store(
     }
 
     let final_dir = store_plugin_dir(data_dir, &spec.id);
-    let backup = new_staging_dir(&store, BACKUP_PREFIX, &spec.id)
-        .map_err(|e| AppError::Io(e.to_string()))?;
+    let backup = new_staging_dir(&store, BACKUP_PREFIX).map_err(|e| AppError::Io(e.to_string()))?;
     if final_dir.exists() {
         if let Err(e) = fs::rename(&final_dir, &backup) {
             // `new` 携带着校验过的内容；`final_dir` 是刚刚拒绝移动的线上插件。
@@ -1161,7 +989,7 @@ fn fetch_into_store(
         }
     }
 
-    write_source_marker(spec, &version, &final_dir)?;
+    write_source_marker(&final_dir, &spec.id, &spec.origin, &spec.source, &version)?;
 
     let now = now_epoch_secs();
     let existing = store_item(data_dir, &spec.id);
@@ -1414,86 +1242,13 @@ fn sweep_unrecorded_store_dirs(
     }
 }
 
-/// 在给定 npm 文档与用户提供的 pin（或 `None` 表示「按包的 `latest`
-/// dist-tag」)的前提下，决定插件安装应当钉到哪个版本。返回解析后的版本字符串，
-/// 以及当解析结果为空字符串时应当出现在错误信息中的标签。
-///
-/// Dist-tag 解析规则：
-/// - `pin = None` → 查 `dist-tags.latest`，缺省回退为 ""
-/// - `pin = Some(tag)`，且 `tag` 命中 dist-tag → 使用该 tag 指向的版本
-/// - `pin = Some(ver)`，且 `ver` 未命中任何 dist-tag → 把 pin 当字面量
-///   semver 使用（调用方会以清晰的错误信息暴露 `versions[ver]` 查询失败）
-fn resolve_npm_version(doc: &NpmDoc, pin: Option<&str>) -> (String, String) {
-    match pin {
-        Some(tag) => (
-            doc.dist_tags
-                .get(tag)
-                .cloned()
-                .unwrap_or_else(|| tag.to_string()),
-            tag.to_string(),
-        ),
-        None => (
-            doc.dist_tags.get("latest").cloned().unwrap_or_default(),
-            "latest".to_string(),
-        ),
-    }
-}
-
 fn fetch_npm(
     spec: &PluginSpec,
     dest: &Path,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<String, AppError> {
-    on_progress(&format!("正在查询 npm registry：{}", spec.source));
-    let doc =
-        fetch_npm_doc(&spec.source).map_err(|e| AppError::Plugin(format!("查询 npm 失败：{e}")))?;
-    // 先经 `dist-tags` 解析请求的版本，这样 `@latest`（或 `@next`、`@beta`）
-    // 之类的 pin 就能落到 `versions` 索引里实际的 semver 字符串上。少了这一步，
-    // 字面量 `"latest"` 会被当成 `versions` 的 key，查询返回 `None`，用户会看到
-    // 「npm 上 @linxin666/dsh-liangshen@latest 没有可下载的 tarball」，
-    // 即便这个包以及它的最新 tarball 都已发布在 registry 上。未命中任何
-    // dist-tag 的 pin 则原样穿透，保证 `@1.2.3` 这类字面量 semver 仍能直接
-    // 命中 `versions`。
-    let (version, pin_label) = resolve_npm_version(&doc, spec.pin.as_deref());
-    if version.is_empty() {
-        return Err(AppError::Plugin(format!(
-            "npm 上找不到包 {} 或其 {pin_label} 标记",
-            spec.source
-        )));
-    }
-    let dist = doc.versions.get(&version).and_then(|v| v.dist.as_ref());
-    let integrity = dist.and_then(|d| d.integrity.clone());
-    let tarball = dist
-        .map(|d| d.tarball.clone())
-        .filter(|t| !t.is_empty())
-        .ok_or_else(|| {
-            AppError::Plugin(format!(
-                "npm 上 {}@{version} 没有可下载的 tarball",
-                spec.source
-            ))
-        })?;
-    on_progress(&format!("正在下载 {}@{version} …", spec.source));
-    let tgz = dest.join(".pkg.tgz");
-    http_get_file(&tarball, &tgz).map_err(|e| AppError::Plugin(format!("下载失败：{e}")))?;
-    match crate::releases::verify_download_integrity(&tgz, integrity.as_deref()) {
-        Ok(Some(algorithm)) => on_progress(&format!("已校验下载内容的 integrity（{algorithm}）")),
-        Ok(None) => {
-            on_progress("registry 未提供 integrity（也没有可用的 shasum），本次未做内容校验")
-        }
-        Err(reason) => {
-            let _ = fs::remove_file(&tgz);
-            return Err(AppError::Plugin(format!(
-                "{reason}。为避免安装未经验证的内容已中止；请重试或改用官方 registry（DSH_NPM_REGISTRY）"
-            )));
-        }
-    }
-    // 通过共享的 Rust 归档处理器解压到暂存目录。它会校验 npm 的 `package/`
-    // 根，并把其子项发布到 `dest`，后续 `validate_plugin(&dest)` 与物化步骤
-    // 就从这里读取。
-    extract_tarball(&tgz, dest)
-        .map_err(|e| AppError::Plugin(format!("解包失败：{e}（请确认下载内容完整后重试）")))?;
-    let _ = fs::remove_file(&tgz);
-    Ok(version)
+    crate::pkg::fetch_npm_package(&spec.source, spec.pin.as_deref(), dest, on_progress)
+        .map_err(AppError::Plugin)
 }
 
 fn try_fetch_github_release(
@@ -2030,18 +1785,6 @@ pub fn materialize_one(
         },
     )?;
     Ok(actual)
-}
-
-/// 删除一个文件系统 link（symlink），不动它的目标。Windows 上 `DeleteFile`
-/// 会以 ERROR_ACCESS_DENIED 拒绝目录 symlink —— 只有 `RemoveDirectory`
-/// 才能删除它们；文件 symlink 又需要 `DeleteFile`；两种都试一遍就覆盖了
-/// 所有平台和所有形态。选错方式会让链接留在原地，之后所有操作（重建、
-/// 复制）都会顺着链接追到目标里去 —— Windows 上一次插件更新正是这样演变成
-/// 「把中央库目录拷给自己」并以 os error 2 失败。
-fn remove_link(path: &Path) {
-    if fs::remove_file(path).is_err() {
-        let _ = fs::remove_dir(path);
-    }
 }
 
 /// 从一个内核里移除插件的物化（link 或 copy 残留）。
@@ -2765,25 +2508,6 @@ fn git_latest(item: &StoreItem) -> Result<Option<String>, String> {
             None => Err(git_error),
         },
     }
-}
-
-/// 远端发布的最高 semver tag。被 `fetch_git` 用来在源未锁定时挑选分支，
-/// 被 `git_latest` 用来和已安装版本对比。远端没有可用 tag 时返回 `None`。
-fn git_latest_tag(source: &str) -> Result<Option<String>, String> {
-    let (ok, out) =
-        run_capture("git", &["ls-remote", "--tags", source]).map_err(|e| e.to_string())?;
-    if !ok {
-        return Ok(None);
-    }
-    let tags: Vec<String> = out
-        .lines()
-        .filter_map(|line| {
-            let (_, ref_part) = line.split_once('\t')?;
-            let tag = ref_part.strip_prefix("refs/tags/")?.trim_end_matches("^{}");
-            Some(tag.to_string())
-        })
-        .collect();
-    Ok(latest_tag(tags.iter().map(|s| s.as_str())))
 }
 
 // --- 目录 ----------------------------------------------------------------
@@ -3796,6 +3520,8 @@ fn refresh_store_peers(data_dir: &Path, item: &StoreItem, active: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::pkg::{latest_tag, looks_like_semver, resolve_npm_version, NpmDoc};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static TEST_HOME_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -5735,7 +5461,7 @@ mod tests {
     fn new_staging_dir_returns_empty_dir_without_marker() {
         let home = TestHome::new();
         let store = store_dir(&home.data_dir());
-        let dir = new_staging_dir(&store, TMP_PREFIX, "test-plugin").expect("create staging");
+        let dir = new_staging_dir(&store, TMP_PREFIX).expect("create staging");
         assert!(dir.is_dir(), "staging dir must exist");
         let entries: Vec<_> = fs::read_dir(&dir).unwrap().collect();
         assert!(
@@ -5767,8 +5493,8 @@ mod tests {
     fn new_staging_dir_paths_do_not_collide() {
         let home = TestHome::new();
         let store = store_dir(&home.data_dir());
-        let a = new_staging_dir(&store, TMP_PREFIX, "a").expect("first");
-        let b = new_staging_dir(&store, TMP_PREFIX, "b").expect("second");
+        let a = new_staging_dir(&store, TMP_PREFIX).expect("first");
+        let b = new_staging_dir(&store, TMP_PREFIX).expect("second");
         assert_ne!(a, b, "two staging dirs must have distinct paths");
         assert!(a.is_dir());
         assert!(b.is_dir());
@@ -5784,14 +5510,14 @@ mod tests {
         let home = TestHome::new();
         let store = store_dir(&home.data_dir());
         // 种下与 helper 第一次调用期望路径匹配的过期残留。
-        let first = new_staging_dir(&store, TMP_PREFIX, "stale-test").expect("first call");
+        let first = new_staging_dir(&store, TMP_PREFIX).expect("first call");
         let stale_id_marker = first.join(ID_MARKER);
         fs::write(&stale_id_marker, "stale-test\n").unwrap();
         // 第二次调用会落在不同的路径（nanos 漂移），但「同路径重试」要求
         // 清理步骤在目录被复用前完成 —— 验证 helper 的 remove 步骤对第一条
         // 路径确实有效。
         let _ = fs::remove_dir_all(&first);
-        let second = new_staging_dir(&store, TMP_PREFIX, "stale-test").expect("second call");
+        let second = new_staging_dir(&store, TMP_PREFIX).expect("second call");
         assert!(second.is_dir());
         assert!(!stale_id_marker.exists(), "stale marker must be gone");
     }
