@@ -10,7 +10,7 @@ const statusFor = (devBuild) => ({
   kernel: { running: false, active: '0.1.3', active_installed: true, installed: [] },
   node: { ok: true, path: '/node', version: '25.9.0' },
   settings: { port: 3090, profile: 'web' },
-  shell_version: '0.1.3-rc.3',
+  shell_version: '0.1.4',
   dev_build: devBuild,
   quarantined: [],
   last_incident: null,

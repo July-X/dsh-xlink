@@ -153,7 +153,7 @@ ctx.sessionProjections.onChanged((session, key, value, seq) => {
 ```
 
 于是只听 `$events` 的壳永远拿不到"连接期间新建的会话"的标题，通知只能退回
-「未命名会话 <短 id>」——这正是 v0.1.3-rc.3 之前那个 bug。现在壳在**同一条物理
+「未命名会话 <短 id>」——这正是 v0.1.3-rc.3 里的那个 bug（v0.1.4 修复）。现在壳在**同一条物理
 连接**上再开一条 `session/control`，吃它的两类帧：
 
 ```text
