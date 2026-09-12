@@ -371,6 +371,32 @@ pub fn current_date_string() -> String {
     local_date_string(SystemTime::now())
 }
 
+/// 自 Unix 纪元起的秒数。取不到时钟（系统时间早于 1970）时返回 0。
+///
+/// 各模块原先各写一份：`guard::epoch_secs`、`notify::now_ms`、`plugins` 与
+/// `skills` 的 `now_epoch_secs`（回退值还不一致——有的 0、有的空串）。事故报告
+/// 的 `at` 与清单的 `fetchedAt` 必须是同一种时间，否则面板上的「几秒前」会
+/// 互相矛盾。
+pub fn epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 自 Unix 纪元起的毫秒数（通知里的完成耗时、冷却窗口用）。
+pub fn epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// [`epoch_secs`] 的字符串形式，直接写进 JSON 清单。
+pub fn epoch_secs_string() -> String {
+    epoch_secs().to_string()
+}
+
 fn local_date_string(time: SystemTime) -> String {
     let Ok(duration) = time.duration_since(UNIX_EPOCH) else {
         return String::from("1970-01-01");

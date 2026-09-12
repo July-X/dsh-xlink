@@ -18,7 +18,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -115,13 +115,6 @@ pub struct GuardDeps<'a> {
     pub node_path: &'a Path,
     /// 解析到的 pnpm 可执行文件，用于在两次尝试之间重新同步 profile。
     pub pnpm_exe: &'a Path,
-}
-
-fn epoch_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 fn kernel_log_path(data_dir: &Path) -> PathBuf {
@@ -559,7 +552,7 @@ fn suspect_records(suspects: &[Suspect], reason: String) -> Vec<QuarantineItem> 
             name: s.name.clone(),
             reason: reason.clone(),
             evidence: s.evidence.clone(),
-            at: epoch_secs(),
+            at: crate::process::epoch_secs(),
         })
         .collect()
 }
@@ -735,7 +728,7 @@ pub fn guarded_start(
                     log_tail: tail,
                     log_path: kernel_log_path(deps.data_dir).display().to_string(),
                     hint: None,
-                    at: epoch_secs(),
+                    at: crate::process::epoch_secs(),
                     cause: String::from("plugin"),
                     health: None,
                 };
@@ -811,7 +804,7 @@ pub fn guarded_start(
                     log_tail: tail,
                     log_path: kernel_log_path(deps.data_dir).display().to_string(),
                     hint: None,
-                    at: epoch_secs(),
+                    at: crate::process::epoch_secs(),
                     cause: String::from("plugin"),
                     health: None,
                 };
@@ -895,7 +888,7 @@ pub fn guarded_start(
         log_tail: tail,
         log_path: kernel_log_path(deps.data_dir).display().to_string(),
         hint: Some(hint),
-        at: epoch_secs(),
+        at: crate::process::epoch_secs(),
         cause,
         health: None,
     };
@@ -1071,7 +1064,7 @@ fn log_has_http_failure(tail: &str) -> bool {
 /// 插件证据会被临时隔离，这样下一次重启是安全的；至于具体是保持、
 /// 恢复还是移除插件，仍然由用户在故障面板里决定。
 pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
-    let now = epoch_secs();
+    let now = crate::process::epoch_secs();
     let attempt = runtime_attempt(&report);
     if let Some(existing) = load_incident(data_dir) {
         if existing.health.as_ref() == Some(&report) && now.saturating_sub(existing.at) < 60 {
