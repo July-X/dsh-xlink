@@ -23,6 +23,7 @@ mod registry;
 mod releases;
 mod settings;
 mod skills;
+mod state;
 #[cfg(target_os = "windows")]
 mod tray;
 mod updater;

@@ -544,41 +544,35 @@ pub fn lock_store() -> std::sync::MutexGuard<'static, ()> {
     crate::lock(store_mutation_lock())
 }
 
+/// 插件清单的读写上下文。损坏必须中止而不是当空清单：
+/// `store.json` 一旦被当成空清单，同一次启动里 `sweep_kernel_orphans` 会删掉
+/// 活动内核中所有外壳管理的物化目录、`wire_manifest` 会清退 profile 的全部
+/// 托管依赖，随后写库再把原文件覆盖掉——一次杀软短暂锁文件就能造成用户插件
+/// 的静默丢失。
+const STORE_STATE: crate::state::StateCtx = crate::state::StateCtx {
+    corrupt: |reason| {
+        format!(
+            "插件清单损坏，为避免覆盖已安装插件的记录，本次操作已中止（{reason}）。请修复或删除该文件后重试；工作台本身仍可正常启动"
+        )
+    },
+    kind: AppError::Plugin,
+};
+
 /// 展示路径用的容错读取：文件不存在或损坏都返回空清单。
 ///
-/// **只读**：任何"读-改-写"路径都必须用 [`load_store_checked`]，否则一次解析
-/// 失败就会把空清单写回去，覆盖掉用户真实的插件记录。
+/// **只读**：任何"读-改-写"路径都必须用 [`load_store_checked`]。
 pub fn load_store(data_dir: &Path) -> Store {
-    match crate::process::read_state_file(&store_file(data_dir)) {
-        crate::process::StateRead::Loaded(store) => store,
-        crate::process::StateRead::Missing | crate::process::StateRead::Corrupt { .. } => {
-            Store::default()
-        }
-    }
+    crate::state::load_lossy(&store_file(data_dir))
 }
 
 /// 读-改-写路径用的读取：清单损坏时返回可操作的错误，而不是拿空清单去覆盖
 /// 用户的数据。
-///
-/// 这条保护是必要的：`store.json` 一旦被当成空清单，同一次启动里
-/// `sweep_kernel_orphans` 会删掉活动内核中所有外壳管理的物化目录、
-/// `wire_manifest` 会清退 profile 的全部托管依赖，随后写库再把原文件覆盖掉——
-/// 一次杀软短暂锁文件就能造成用户插件的静默丢失。
 pub fn load_store_checked(data_dir: &Path) -> Result<Store, AppError> {
-    match crate::process::read_state_file(&store_file(data_dir)) {
-        crate::process::StateRead::Loaded(store) => Ok(store),
-        crate::process::StateRead::Missing => Ok(Store::default()),
-        crate::process::StateRead::Corrupt { reason } => Err(AppError::Plugin(format!(
-            "插件清单损坏，为避免覆盖已安装插件的记录，本次操作已中止（{reason}）。请修复或删除该文件后重试；工作台本身仍可正常启动"
-        ))),
-    }
+    crate::state::load_checked(&store_file(data_dir), STORE_STATE)
 }
 
 fn save_store_unlocked(data_dir: &Path, store: &Store) -> Result<(), AppError> {
-    fs::create_dir_all(store_dir(data_dir)).map_err(|e| AppError::Io(e.to_string()))?;
-    let text = serde_json::to_string_pretty(store).map_err(|e| AppError::Io(e.to_string()))?;
-    atomic_write(&store_file(data_dir), format!("{text}\n").as_bytes())
-        .map_err(|e| AppError::Io(e.to_string()))?;
+    crate::state::save(&store_file(data_dir), store, STORE_STATE)?;
     ensure_store_npmrc(data_dir)
 }
 

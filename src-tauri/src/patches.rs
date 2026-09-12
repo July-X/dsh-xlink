@@ -465,53 +465,46 @@ fn sha256_file(path: &Path) -> Result<String, AppError> {
     Ok(sha256_bytes(&bytes))
 }
 
+/// 补丁记录的读写上下文。损坏必须中止：一次解析失败就会让所有应用记录消失
+/// ——磁盘上是补丁后的内容、备份还在，而壳认为"没打过补丁"：既不会显示
+/// dirty，也无法撤销，重装还会被残留备份挡住。
+const STATE: crate::state::StateCtx = crate::state::StateCtx {
+    corrupt: |reason| {
+        format!(
+            "补丁记录损坏，为避免丢掉「哪些补丁已应用」的信息，本次操作已中止（{reason}）。请修复或删除该文件后重试"
+        )
+    },
+    kind: AppError::Patch,
+};
+
+/// 记录文件读不出来时的说明，供设置页横幅展示。
+const STATE_WARNING: crate::state::StateCtx = crate::state::StateCtx {
+    corrupt: |reason| {
+        format!(
+            "补丁记录损坏，暂时无法确认哪些补丁已应用（{reason}）。内核里可能仍是打过补丁的内容——请修复或删除该文件，或直接重装该内核版本；在修复之前不会写入任何补丁记录"
+        )
+    },
+    kind: AppError::Patch,
+};
+
 /// 展示路径用的容错读取：文件不存在或损坏都返回空状态。
 ///
-/// **只读**：`apply` / `revert` 这类"读-改-写"路径必须用 [`read_state_checked`]，
-/// 否则一次解析失败就会让所有应用记录消失——磁盘上是补丁后的内容、备份还在，
-/// 而壳认为"没打过补丁"：既不会显示 dirty，也无法撤销，重装还会被残留备份挡住。
+/// **只读**：`apply` / `revert` 这类"读-改-写"路径必须用 [`read_state_checked`]。
 fn read_state(data_dir: &Path) -> PatchState {
-    match crate::process::read_state_file(&state_file(data_dir)) {
-        crate::process::StateRead::Loaded(state) => state,
-        crate::process::StateRead::Missing | crate::process::StateRead::Corrupt { .. } => {
-            PatchState::default()
-        }
-    }
+    crate::state::load_lossy(&state_file(data_dir))
 }
 
 /// 读-改-写路径用的读取：记录损坏时返回可操作的错误。
 fn read_state_checked(data_dir: &Path) -> Result<PatchState, AppError> {
-    match crate::process::read_state_file(&state_file(data_dir)) {
-        crate::process::StateRead::Loaded(state) => Ok(state),
-        crate::process::StateRead::Missing => Ok(PatchState::default()),
-        crate::process::StateRead::Corrupt { reason } => Err(AppError::Patch(format!(
-            "补丁记录损坏，为避免丢掉「哪些补丁已应用」的信息，本次操作已中止（{reason}）。请修复或删除该文件后重试",
-        ))),
-    }
+    crate::state::load_checked(&state_file(data_dir), STATE)
 }
 
-/// 记录文件读不出来时的说明，供设置页横幅展示。
 fn state_integrity_warning(data_dir: &Path) -> Option<String> {
-    match crate::process::read_state_file::<PatchState>(&state_file(data_dir)) {
-        crate::process::StateRead::Corrupt { reason } => Some(format!(
-            "补丁记录损坏，暂时无法确认哪些补丁已应用（{reason}）。内核里可能仍是打过补丁的内容——请修复或删除该文件，或直接重装该内核版本；在修复之前不会写入任何补丁记录"
-        )),
-        _ => None,
-    }
+    crate::state::integrity_warning::<PatchState>(&state_file(data_dir), STATE_WARNING)
 }
 
 fn write_state(data_dir: &Path, state: &PatchState) -> Result<(), AppError> {
-    let dir = state_dir(data_dir);
-    fs::create_dir_all(&dir)
-        .map_err(|e| AppError::Patch(format!("无法创建补丁状态目录 {}：{e}", dir.display())))?;
-    let text = serde_json::to_string_pretty(state)
-        .map_err(|e| AppError::Patch(format!("序列化补丁状态失败：{e}")))?;
-    atomic_write(&state_file(data_dir), text.as_bytes()).map_err(|e| {
-        AppError::Patch(format!(
-            "无法写入补丁状态 {}：{e}",
-            state_file(data_dir).display()
-        ))
-    })
+    crate::state::save(&state_file(data_dir), state, STATE)
 }
 
 /// 某补丁在某内核版本上的应用记录。
