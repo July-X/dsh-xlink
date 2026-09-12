@@ -131,6 +131,27 @@ pub struct StatusView {
     pub official_chat_open: bool,
 }
 
+/// 把同步/阻塞逻辑放到阻塞线程池执行，并把两类失败折成命令层统一的
+/// `Result<_, String>`：`JoinError`（任务 panic 或被取消）与业务错误。
+///
+/// 改用本助手之前，本文件里手工写 `spawn_blocking(...).await.map_err(|e| e.to_string())?`
+/// 有 20 多处，每处的 `JoinError` 都会把 tauri 的英文 "task panicked" /
+/// "task was cancelled" 直接甩到 UI 上；这里统一换成带下一步的中文文案。
+async fn blocking<T, E>(f: impl FnOnce() -> Result<T, E> + Send + 'static) -> Result<T, String>
+where
+    T: Send + 'static,
+    E: ToString + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|join| {
+            format!(
+                "后台任务异常结束（{join}）。请重试；若持续出现，请在终端用 `npm run dev` 启动以便看到完整输出"
+            )
+        })?
+        .map_err(|e| e.to_string())
+}
+
 // 读取用于展示的定长文本文件尾部——已迁移到
 // `crate::process::read_tail`，以便启动防护以同样的方式读取。
 ///
@@ -220,7 +241,7 @@ pub async fn detect_node(state: State<'_, AppState>) -> Result<node::NodeInfo, S
 #[tauri::command]
 pub async fn install_node(app: AppHandle, on_event: Channel<String>) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let logs_dir = kernel::logs_dir(&data_dir);
@@ -236,7 +257,6 @@ pub async fn install_node(app: AppHandle, on_event: Channel<String>) -> Result<(
         Ok(())
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -245,7 +265,7 @@ pub async fn save_settings(
     settings: settings::Settings,
 ) -> Result<(), String> {
     let data_dir = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    blocking(move || -> Result<(), String> {
         let previous = settings::load(&data_dir);
         // 面板只提交 `port` 与 `profile`，其余字段（`node_path` / `pnpm_path` /
         // `npm_path`）在请求里缺失，会被 `#[serde(default)]` 填成 `None`。直接落盘
@@ -265,7 +285,6 @@ pub async fn save_settings(
         settings::save(&data_dir, &settings).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// 把面板提交的设置与磁盘上的现值合并：请求里为 `None` 的路径字段继承现值。
@@ -386,11 +405,7 @@ fn collect_log_entries(dir: &Path) -> std::io::Result<Vec<LogFileEntry>> {
 #[tauri::command]
 pub async fn list_log_files(state: State<'_, AppState>) -> Result<Vec<LogFileEntry>, String> {
     let dir = kernel::logs_dir(&state.data_dir);
-    tauri::async_runtime::spawn_blocking(move || {
-        collect_log_entries(&dir).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    blocking(move || collect_log_entries(&dir).map_err(|e| e.to_string())).await
 }
 
 /// 校验来自 UI 的日志文件名：必须是纯文件名（无路径分隔符、无 `..`），
@@ -437,13 +452,12 @@ pub async fn read_log_file(state: State<'_, AppState>, name: String) -> Result<S
 pub async fn open_data_dir(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let path = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         app.opener()
             .open_path(path.to_string_lossy().into_owned(), None::<&str>)
             .map_err(|e| format!("无法打开数据目录：{e}"))
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 // --- Shell 自我更新 ---------------------------------------------------------
@@ -474,11 +488,7 @@ pub async fn install_shell_update(
 #[tauri::command]
 pub async fn confirm_shell_ready(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let data_dir = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        updater::confirm_shell_ready(&app, &data_dir).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    blocking(move || updater::confirm_shell_ready(&app, &data_dir).map_err(|e| e.to_string())).await
 }
 
 // --- 发行版 ------------------------------------------------------------------
@@ -487,10 +497,7 @@ pub async fn confirm_shell_ready(app: AppHandle, state: State<'_, AppState>) -> 
 #[tauri::command]
 pub async fn fetch_releases() -> Result<releases::ReleaseList, String> {
     // ureq 是同步的；把这步会阻塞的 HTTPS 请求放到主线程之外。
-    tauri::async_runtime::spawn_blocking(releases::list_releases)
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    blocking(releases::list_releases).await
 }
 
 /// 针对已经探测好的 node（调用方缓存的 `node::NodeInfo`）来解析
@@ -524,6 +531,20 @@ pub fn promise_pnpm(
 
 // --- 内核安装 / 切换 / 移除 ----------------------------------------------------
 
+/// 命令边界的版本号闸门：`version` 会被当作路径段拼进 `kernels/<version>`，
+/// 因此只接受 semver 形态（`.` / `..` / 路径分隔符一律拒绝，P1-7）。
+///
+/// `verb` 是本次操作的中文动词，`next_step` 是给用户的下一步；两者由调用点
+/// 给出，这样每条命令的可见文案各自保持不变。
+fn require_kernel_version(version: &str, verb: &str, next_step: &str) -> Result<(), String> {
+    if !crate::version::is_valid_kernel_version(version) {
+        return Err(format!(
+            "版本号 {version:?} 形态非法，拒绝{verb}；{next_step}"
+        ));
+    }
+    Ok(())
+}
+
 /// 从 npm 安装指定版本的内核，期间通过事件流推送进度。
 #[tauri::command]
 pub async fn install_kernel(
@@ -534,14 +555,14 @@ pub async fn install_kernel(
     // 命令边界的最后一道闸：版本号来自 UI（最终来自远端版本列表），会被拼进
     // `kernels/<version>` 与内核 stub package.json。这里拒绝一切非 semver 形态
     // 的输入，包括路径分隔符与引号。
-    if !crate::version::is_valid_kernel_version(&version) {
-        return Err(format!(
-            "版本号 {version:?} 形态非法，拒绝安装；请从「内核版本」页的官方发布列表中选择版本"
-        ));
-    }
+    require_kernel_version(
+        &version,
+        "安装",
+        "请从「内核版本」页的官方发布列表中选择版本",
+    )?;
     let data_dir = app.state::<AppState>().data_dir.clone();
     let version_for_install = version.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         // 安装前主动作废 per-app node 缓存：用户可能在 GUI 启动之后才
@@ -581,7 +602,6 @@ pub async fn install_kernel(
         Ok(())
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 fn complete_kernel_install(
@@ -603,14 +623,10 @@ pub async fn activate_version(app: AppHandle, version: String) -> Result<(), Str
     // 命令边界的最后一道闸（与 install_kernel / kernel_plugin_list 同一判据）：
     // 版本号是路径段，`".."` 之类的形态会被写进 active.txt，之后每次启动都按它
     // 去拼 `kernels/<version>/bin.js`（P1-7）。
-    if !crate::version::is_valid_kernel_version(&version) {
-        return Err(format!(
-            "版本号 {version:?} 形态非法，拒绝切换；请从「内核版本」页的已安装列表中选择版本"
-        ));
-    }
+    require_kernel_version(&version, "切换", "请从「内核版本」页的已安装列表中选择版本")?;
     let data_dir = app.state::<AppState>().data_dir.clone();
     // 接线会用 pnpm 跑插件商店；把整个切换放到主线程之外。
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         // 切换会在下一次启动时生效，但为了避免运行中的服务与活动指针
@@ -623,28 +639,22 @@ pub async fn activate_version(app: AppHandle, version: String) -> Result<(), Str
         Ok(())
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn remove_version(app: AppHandle, version: String) -> Result<(), String> {
     // 同 activate_version：`kernel::uninstall` 会对 `kernels/<version>` 直接
     // `remove_dir_all`，`".."` 会删掉整个数据目录（P1-7）。
-    if !crate::version::is_valid_kernel_version(&version) {
-        return Err(format!(
-            "版本号 {version:?} 形态非法，拒绝删除；请从「内核版本」页的已安装列表中选择版本"
-        ));
-    }
+    require_kernel_version(&version, "删除", "请从「内核版本」页的已安装列表中选择版本")?;
     let data_dir = app.state::<AppState>().data_dir.clone();
     // 对内核目录（包括 node_modules）的 remove_dir_all 在 Windows 上
     // 可能耗时数秒；绝对不能在主线程上做。
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         kernel::uninstall(&data_dir, &version).map_err(|e| app_err(&data_dir, e))
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
@@ -814,7 +824,7 @@ pub async fn start_kernel(
     let data_dir = app.state::<AppState>().data_dir.clone();
     // 接线和子进程派生都是阻塞的（pnpm、进程创建）；把它们放到 blocking
     // worker 上，而不是 Tauri 的主线程。
-    tauri::async_runtime::spawn_blocking(move || -> Result<guard::StartReport, String> {
+    blocking(move || -> Result<guard::StartReport, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let settings = settings::load(&data_dir);
@@ -857,7 +867,6 @@ pub async fn start_kernel(
         Ok(report)
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// 停止内核并关闭工作台窗口，让 UI 的「关闭工作台」能拆掉整个工作台，
@@ -874,12 +883,12 @@ pub async fn start_kernel(
 #[tauri::command]
 pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
-    // 通知相关的收尾要用到 AppHandle，而下面的 `spawn_blocking` 会把 `app`
+    // 通知相关的收尾要用到 AppHandle，而下面的 `blocking` 会把 `app`
     // 移进闭包，因此先留一份句柄。
     let handle = app.clone();
     // kernel::stop 会等待子进程退出（最多等满它的 kill 超时），把这
     // 段等待放到主线程之外。失败要在通知收尾之后如实上报，因此先接住结果。
-    let stop_result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    let stop_result = blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         if let Some(window) = app.get_webview_window("harness") {
@@ -910,8 +919,7 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
         // 属于用户需要知道的事。
         stop_outcome.map_err(|e| e.to_string())
     })
-    .await
-    .map_err(|e| e.to_string())?;
+    .await;
 
     // 内核没了，事件流也就没有意义：停掉订阅线程，并把角标摘掉（残留的未读
     // 数字会指向一个已经不存在的工作台）。
@@ -1006,7 +1014,7 @@ pub async fn report_harness_fault(
         page_url,
     };
     let data_dir = app.state::<AppState>().data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || -> Result<guard::Incident, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let incident = guard::diagnose_runtime(&data_dir, report);
@@ -1016,7 +1024,6 @@ pub async fn report_harness_fault(
         Ok(incident)
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 fn bounded_health_text(
@@ -1185,7 +1192,7 @@ fn harness_port_conflict(port: u16, identity: kernel::ListenerIdentity) -> Optio
 #[tauri::command]
 pub async fn open_harness(app: AppHandle) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let settings = settings::load(&data_dir);
@@ -1279,7 +1286,6 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
             .map_err(|_| "工作台窗口创建线程已结束，未返回结果".to_string())?
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// 在专属的可调大小查看器窗口中打开日志文件。
@@ -1333,17 +1339,18 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
     //
     // 等待必须放到 blocking 线程上：这是 async 命令，直接 `recv_timeout` 会占住
     // 一个 tokio worker 最长 20 秒，期间的其它命令都要排队（AGENTS.md 的约定是
-    // 阻塞操作走 `spawn_blocking`，`open_harness` 也是这么做的，P2-17）。
-    tauri::async_runtime::spawn_blocking(move || {
-        match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+    // 阻塞操作走 `blocking` 助手，`open_harness` 也是这么做的，P2-17）。
+    // 超时/建窗失败都带着自己的中文说明返回；`blocking` 只兜住 JoinError
+    //（任务 panic 或被取消），这里不再包一层前缀，免得把超时文案改成别的话。
+    blocking(
+        move || match rx.recv_timeout(std::time::Duration::from_secs(20)) {
             Ok(result) => result,
             Err(_) => {
                 Err("打开日志窗口超时（20 秒）。请重试，或改用主面板的「查看日志」弹窗".into())
             }
-        }
-    })
+        },
+    )
     .await
-    .map_err(|e| format!("等待日志窗口结果失败：{e}"))?
 }
 
 /// 把 Shell 的主管理窗口提到当前桌面之上。
@@ -1829,9 +1836,7 @@ pub fn official_chat_tabs() -> Vec<OfficialChatTab> {
 /// 把打开、切换、关闭三组操作串行化。
 #[tauri::command]
 pub async fn switch_official_chat_tab(app: AppHandle, index: usize) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || switch_official_chat_tab_blocking(app, index))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking(move || switch_official_chat_tab_blocking(app, index)).await
 }
 
 fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<(), String> {
@@ -1876,9 +1881,7 @@ fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<(),
 /// 口消失后下一次状态轮询会让按钮文案重新变成「打开官方对话」。
 #[tauri::command]
 pub async fn close_official_chat(app: AppHandle) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || close_official_chat_blocking(app))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking(move || close_official_chat_blocking(app)).await
 }
 
 fn close_official_chat_blocking(app: AppHandle) -> Result<(), String> {
@@ -1906,9 +1909,7 @@ fn close_official_chat_blocking(app: AppHandle) -> Result<(), String> {
 /// Exit 分支都能正常跑起来。
 #[tauri::command]
 pub async fn confirm_close_shell(app: AppHandle) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || confirm_close_shell_blocking(app))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking(move || confirm_close_shell_blocking(app)).await
 }
 
 fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
@@ -2002,7 +2003,8 @@ pub async fn kernel_plugin_list(
     version: String,
 ) -> Result<Vec<plugins::KernelPluginRow>, String> {
     // `version` 会被当作路径段拼进 `kernels/<version>/plugins`，这里同样只接受
-    // 已安装列表里的形态。
+    // 已安装列表里的形态。这是只读查询，沿用原来的短文案——`require_kernel_version`
+    // 需要操作动词，套上去会改掉用户看到的措辞。
     if !crate::version::is_valid_kernel_version(&version) {
         return Err(format!("版本号 {version:?} 形态非法"));
     }
@@ -2023,7 +2025,7 @@ async fn run_plugin_command(
         + 'static,
 ) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let settings = settings::load(&data_dir);
@@ -2038,7 +2040,6 @@ async fn run_plugin_command(
         op(&data_dir, &settings, &pnpm_exe, &mut progress).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// 把一个社区插件（npm 包名或 git URL）安装到中央商店，物化到每个内
@@ -2137,10 +2138,7 @@ pub async fn plugin_check_updates(
     state: State<'_, AppState>,
 ) -> Result<Vec<plugins::UpdateInfo>, String> {
     let data_dir = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || plugins::check_updates(&data_dir))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    blocking(move || plugins::check_updates(&data_dir)).await
 }
 
 /// 完整的社区目录；搜索和过滤在 UI 中基于这份缓存列表进行。`force`
@@ -2151,10 +2149,7 @@ pub async fn plugin_catalog(
     force: bool,
 ) -> Result<Vec<plugins::CatalogItem>, String> {
     let data_dir = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || plugins::catalog(&data_dir, force))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    blocking(move || plugins::catalog(&data_dir, force)).await
 }
 
 /// 处理一次启动故障中的一项被隔离插件。
@@ -2185,7 +2180,7 @@ pub async fn plugin_resolve(
         }
         "enable" => {
             let data_dir = app.state::<AppState>().data_dir.clone();
-            tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+            blocking(move || -> Result<(), String> {
                 let state = app.state::<AppState>();
                 let _lifecycle_guard = crate::lock(&state.lifecycle);
                 let _store_guard = plugins::lock_store();
@@ -2201,7 +2196,6 @@ pub async fn plugin_resolve(
                     .map_err(|e| e.to_string())
             })
             .await
-            .map_err(|e| e.to_string())?
         }
         other => Err(format!("未知操作 {other:?}，支持 remove / enable")),
     }
@@ -2228,7 +2222,7 @@ fn load_bundled_patches(app: &AppHandle) -> (Vec<(patches::PatchDef, PathBuf)>, 
 #[tauri::command]
 pub async fn patch_status(app: AppHandle) -> Result<patches::PatchStatus, String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || -> Result<patches::PatchStatus, String> {
         let (patches, load_warnings) = load_bundled_patches(&app);
         let mut view = patches::status(&data_dir, &patches);
         // 清单/定义被跳过的原因必须让用户看到：否则坏掉的补丁在设置页直接
@@ -2243,7 +2237,6 @@ pub async fn patch_status(app: AppHandle) -> Result<patches::PatchStatus, String
         Ok(view)
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// 应用一个内置补丁到当前激活内核。前置：工作台已停止、内核已激活、
@@ -2251,14 +2244,13 @@ pub async fn patch_status(app: AppHandle) -> Result<patches::PatchStatus, String
 #[tauri::command]
 pub async fn patch_apply(app: AppHandle, id: String) -> Result<Vec<String>, String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>, String> {
+    blocking(move || -> Result<Vec<String>, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let (patches, _warnings) = load_bundled_patches(&app);
         patches::apply(&data_dir, &patches, &id).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// 撤销一个内置补丁对当前激活内核的修改（从备份还原原文件）。
@@ -2273,14 +2265,13 @@ pub async fn patch_revert(
     force: Option<bool>,
 ) -> Result<Vec<String>, String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>, String> {
+    blocking(move || -> Result<Vec<String>, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let (patches, _warnings) = load_bundled_patches(&app);
         patches::revert(&data_dir, &patches, &id, force.unwrap_or(false)).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 // --- 技能 --------------------------------------------------------------------
@@ -2301,7 +2292,7 @@ async fn run_skill_command(
     on_event: Channel<String>,
     op: impl FnOnce(&mut dyn FnMut(&str)) -> Result<(), AppError> + Send + 'static,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let mut progress = |msg: &str| {
@@ -2310,7 +2301,6 @@ async fn run_skill_command(
         op(&mut progress).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// 安装一个技能包（npm spec、git URL 或本地目录路径）到中央商店，
@@ -2374,10 +2364,7 @@ pub async fn skill_set_enabled(
 /// 检查每个已安装的技能包在其来源处是否有更新版本。
 #[tauri::command]
 pub async fn skill_check_updates() -> Result<Vec<skills::SkillUpdateInfo>, String> {
-    tauri::async_runtime::spawn_blocking(skills::check_updates)
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    blocking(skills::check_updates).await
 }
 
 #[cfg(test)]
