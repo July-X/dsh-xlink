@@ -22,7 +22,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::process::{atomic_write, read_tail};
+use crate::process::read_tail;
 use crate::quarantine::{self, QuarantineItem};
 use crate::{kernel, plugins, settings};
 
@@ -603,9 +603,7 @@ fn incident_path(data_dir: &Path) -> PathBuf {
 /// 持久化故障信息，使其在 Shell 重启后仍然存在；尽力而为地写，因为
 /// 写入失败不能掩盖用户正在等待的启动结果。
 fn save_incident(data_dir: &Path, incident: &Incident) {
-    if let Ok(text) = serde_json::to_string_pretty(incident) {
-        let _ = atomic_write(&incident_path(data_dir), format!("{text}\n").as_bytes());
-    }
+    crate::state::save_best_effort(&incident_path(data_dir), incident);
 }
 
 /// 在一次干净、正常的启动后清除已记录的故障——否则这份陈旧的报告

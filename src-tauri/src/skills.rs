@@ -24,7 +24,7 @@ use crate::pkg::{
     git_latest_tag, is_newer_than, new_staging_dir, remove_link, split_npm_spec, stamp_id_marker,
     write_source_marker, ID_MARKER,
 };
-use crate::process::{atomic_write, run_capture};
+use crate::process::run_capture;
 use crate::releases::http_get_npm_latest;
 
 /// dsh home 下的中央库目录名。位于 kernel 读取的 `<home>/skills/` 根目录旁，
@@ -286,37 +286,33 @@ pub fn lock_store() -> std::sync::MutexGuard<'static, ()> {
     crate::lock(store_mutation_lock())
 }
 
+/// 技能清单的读写上下文。损坏必须中止：把损坏当成空清单会让启动对账
+/// （`reconcile_home`）认为活动根里所有指向中央库的条目都是孤儿链接并逐个
+/// 删除，运行中的内核随即丢掉全部技能。
+const STORE_STATE: crate::state::StateCtx = crate::state::StateCtx {
+    corrupt: |reason| {
+        format!(
+            "技能清单损坏，为避免删除已安装技能的链接，本次操作已中止（{reason}）。请修复或删除该文件后重试；已装技能的链接不会被清理"
+        )
+    },
+    kind: AppError::Skill,
+};
+
 /// 展示路径用的容错读取：文件不存在或损坏都返回空清单。
 ///
-/// **只读**：任何"读-改-写"路径都必须用 [`load_store_checked`]。把损坏当成
-/// 空清单会让启动对账（`reconcile_home`）认为活动根里所有指向中央库的条目
-/// 都是孤儿链接并逐个删除，运行中的内核随即丢掉全部技能。
+/// **只读**：任何"读-改-写"路径都必须用 [`load_store_checked`]。
 pub fn load_store(home: &Path) -> SkillStore {
-    match crate::process::read_state_file(&store_file(home)) {
-        crate::process::StateRead::Loaded(store) => store,
-        crate::process::StateRead::Missing | crate::process::StateRead::Corrupt { .. } => {
-            SkillStore::default()
-        }
-    }
+    crate::state::load_lossy(&store_file(home))
 }
 
 /// 读-改-写路径用的读取：清单损坏时返回可操作的错误，而不是拿空清单覆盖
 /// 用户的真实记录。
 pub fn load_store_checked(home: &Path) -> Result<SkillStore, AppError> {
-    match crate::process::read_state_file(&store_file(home)) {
-        crate::process::StateRead::Loaded(store) => Ok(store),
-        crate::process::StateRead::Missing => Ok(SkillStore::default()),
-        crate::process::StateRead::Corrupt { reason } => Err(AppError::Skill(format!(
-            "技能清单损坏，为避免删除已安装技能的链接，本次操作已中止（{reason}）。请修复或删除该文件后重试；已装技能的链接不会被清理"
-        ))),
-    }
+    crate::state::load_checked(&store_file(home), STORE_STATE)
 }
 
 fn save_store_unlocked(home: &Path, store: &SkillStore) -> Result<(), AppError> {
-    fs::create_dir_all(store_dir(home)).map_err(|e| AppError::Io(e.to_string()))?;
-    let text = serde_json::to_string_pretty(store).map_err(|e| AppError::Io(e.to_string()))?;
-    atomic_write(&store_file(home), format!("{text}\n").as_bytes())
-        .map_err(|e| AppError::Io(e.to_string()))
+    crate::state::save(&store_file(home), store, STORE_STATE)
 }
 
 fn store_item(home: &Path, id: &str) -> Option<SkillStoreItem> {

@@ -7,13 +7,11 @@
 //! 一个无法启动的工作台。检测流程位于 [`crate::guard`] 中。
 
 use std::collections::HashSet;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
-use crate::process::atomic_write;
 
 /// 外壳数据目录下隔离文档的文件名。
 const QUARANTINE_FILE: &str = "quarantine.json";
@@ -48,24 +46,21 @@ fn file_path(data_dir: &Path) -> PathBuf {
     data_dir.join(QUARANTINE_FILE)
 }
 
+/// 隔离文档的读写上下文。这里**只有写路径**：读路径刻意容错（见 [`load`]），
+/// 所以损坏原因原样透出即可。
+const STATE: crate::state::StateCtx = crate::state::StateCtx::plain(AppError::Io);
+
 /// 读取隔离文档。文件缺失或无法解析等同于“没有隔离项”——即使文档已损坏，
 /// 外壳也必须能够启动，并且破损的记录绝不能把某个插件永远从接入中隐藏。
 pub fn load(data_dir: &Path) -> Quarantine {
-    fs::read_to_string(file_path(data_dir))
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    crate::state::load_lossy(&file_path(data_dir))
 }
 
 /// 持久化文档，并盖上当前的 schema 版本号。
 pub fn save(data_dir: &Path, doc: &Quarantine) -> Result<(), AppError> {
-    fs::create_dir_all(data_dir).map_err(|e| AppError::Io(e.to_string()))?;
     let mut normalized = doc.clone();
     normalized.schema_version = SCHEMA_VERSION;
-    let text =
-        serde_json::to_string_pretty(&normalized).map_err(|e| AppError::Io(e.to_string()))?;
-    atomic_write(&file_path(data_dir), format!("{text}\n").as_bytes())
-        .map_err(|e| AppError::Io(e.to_string()))
+    crate::state::save(&file_path(data_dir), &normalized, STATE)
 }
 
 /// 当前被隔离的 id 集合——profile 接入过滤所消费的形式。
@@ -100,6 +95,8 @@ pub fn remove(data_dir: &Path, id: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::fs;
 
     fn item(id: &str) -> QuarantineItem {
         QuarantineItem {
