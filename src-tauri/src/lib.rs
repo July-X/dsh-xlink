@@ -330,6 +330,21 @@ pub fn run() {
                 notify::set_workbench_focused(handle, false);
             }
         }
+        // 显示缩放变化（窗口被拖到另一块 DPI 不同的屏幕，或系统缩放被改）后按新的
+        // `SM_CXSMICON` 重选托盘帧。托盘图标是 shell 侧的一张 HICON 快照，系统不会
+        // 替我们按新 DPI 重取：不重设的话，125%/150% 缩放下会一直用 100% 那一档
+        // 被 shell 拉大（发虚），或反过来被缩小（丢掉 16px 帧的清晰度）。
+        #[cfg(target_os = "windows")]
+        if let tauri::RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::ScaleFactorChanged { .. },
+            ..
+        } = &event
+        {
+            if label == tray::MAIN_WINDOW {
+                tray::refresh_icon(handle);
+            }
+        }
         if let tauri::RunEvent::Exit = event {
             // 在绕过退出提示的那些退出路径（macOS 上的 Cmd+Q、操作系统
             // 关机、无需警告时的最后窗口自动关闭）上级联关闭 official-chat
