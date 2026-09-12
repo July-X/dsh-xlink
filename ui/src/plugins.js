@@ -3,8 +3,9 @@
 import { reactive } from 'vue';
 import { invoke, openExternal } from './bridge.js';
 import { toast, toastSuccess, toastActionError } from './notify.js';
-import { withLoading, withExclusive, isExclusiveBusy } from './loading.js';
+import { withLoading, withExclusive } from './loading.js';
 import { withProgress } from './progress.js';
+import { createStatusSource, createUpdateChecker, singleFlight } from './async.js';
 import { refreshAll } from './store.js';
 
 // dshfind.com 分类 id → 中文标签，数组顺序即界面顺序，与
@@ -36,9 +37,6 @@ export const pluginStore = reactive({
 
 const catalogIndex = new WeakMap();
 const UPDATE_CHECK_TTL_MS = 15 * 60 * 1000;
-let catalogInFlight = null;
-let pluginUpdatesInFlight = null;
-let lastPluginUpdateCheckAt = 0;
 
 function catalogMeta(item) {
   const cached = catalogIndex.get(item);
@@ -108,13 +106,7 @@ export function filteredCatalog(keys) {
 
 // 目录拉取只在插件面板激活或用户手动刷新时执行；相同请求共享一个
 // Promise，避免面板切换和按钮连点同时占用网络与解析资源。
-export function loadCatalog(manual = false) {
-  if (!manual && pluginStore.catalogLoaded) {
-    return Promise.resolve(pluginStore.catalogItems);
-  }
-  if (catalogInFlight) return catalogInFlight;
-  if (isExclusiveBusy()) return Promise.resolve(null);
-
+const loadCatalogOnce = singleFlight((manual) => {
   const startRequest = () =>
     withExclusive(async () => {
       pluginStore.catalogLoaded = false;
@@ -131,12 +123,14 @@ export function loadCatalog(manual = false) {
       }
     });
   const request = manual ? withLoading('catalogReload', startRequest) : startRequest();
-  if (request === undefined) return Promise.resolve(null);
-  const tracked = request.finally(() => {
-    if (catalogInFlight === tracked) catalogInFlight = null;
-  });
-  catalogInFlight = tracked;
-  return tracked;
+  return request === undefined ? null : request;
+});
+
+export function loadCatalog(manual = false) {
+  if (!manual && pluginStore.catalogLoaded) {
+    return Promise.resolve(pluginStore.catalogItems);
+  }
+  return loadCatalogOnce(manual);
 }
 
 // --- 安装 / 更新 / 卸载 / 同步 -----------------------------------------------
@@ -216,51 +210,19 @@ export function uninstallPlugin(id) {
 }
 
 // 手动检查挂按钮 loading、有更新时提示；启动自检静默（失败不打扰用户）。
-export function checkPluginUpdates(opts = {}) {
-  const now = Date.now();
-  if (lastPluginUpdateCheckAt && now - lastPluginUpdateCheckAt < UPDATE_CHECK_TTL_MS) {
-    return Promise.resolve(null);
-  }
-  if (pluginUpdatesInFlight) return pluginUpdatesInFlight;
-  if (isExclusiveBusy()) return Promise.resolve(null);
-
-  const startRequest = () => {
-    if (pluginUpdatesInFlight) return pluginUpdatesInFlight;
-    const request = withExclusive(async () => {
-      try {
-        const infos = await invoke('plugin_check_updates');
-        lastPluginUpdateCheckAt = Date.now();
-        const n = (infos || []).filter((i) => i.latest).length;
-        if (n > 0 && opts.toastOnUpdates) {
-          toast('有 ' + n + ' 个插件可更新', 5000, 'warning');
-        }
-        return refreshAll();
-      } catch (e) {
-        if (opts.busy) {
-          toastActionError('检查插件更新失败', e, '请检查网络或代理设置后重试', 6000);
-        }
-        return null;
-      }
-    });
-    if (request === undefined) return Promise.resolve(null);
-    const tracked = request.finally(() => {
-      if (pluginUpdatesInFlight === tracked) pluginUpdatesInFlight = null;
-    });
-    pluginUpdatesInFlight = tracked;
-    return tracked;
-  };
-  return opts.busy ? withLoading('checkPluginUpdates', startRequest) : startRequest();
-}
+// 策略（TTL / 退避 / 互斥 / 去重 / 提示）见 async.js 的 createUpdateChecker。
+export const checkPluginUpdates = createUpdateChecker({
+  cmd: 'plugin_check_updates',
+  loadingKey: 'checkPluginUpdates',
+  noun: '插件',
+  ttlMs: UPDATE_CHECK_TTL_MS,
+  itemFailureHint: '请检查网络或代理设置后重试',
+  after: () => refreshAll(),
+});
 
 // refreshAll 的插件侧钩子：与内核状态一起刷新插件卡片。
-export function refreshPlugins() {
-  return invoke('plugin_status')
-    .then((view) => {
-      pluginStore.view = view;
-    })
-    .catch(() => {
-      // 静默刷新：读取失败时保留旧卡片，下次 refreshAll 再试。
-    });
-}
+export const refreshPlugins = createStatusSource('plugin_status', (view) => {
+  pluginStore.view = view;
+});
 
 export { openExternal };

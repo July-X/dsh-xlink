@@ -5,29 +5,18 @@ import { reactive } from 'vue';
 import { invoke } from './bridge.js';
 import { toast, toastSuccess, toastActionError, confirmDialog } from './notify.js';
 import { withExclusiveLoading } from './loading.js';
+import { createStatusSource } from './async.js';
 
 export const patchStore = reactive({
   view: null,
   loaded: false,
 });
 
-let patchesInFlight = null;
-
 // 静默刷新：读取失败保留旧卡片，下次进入设置页自动重试。
-export function refreshPatches() {
-  if (patchesInFlight) return patchesInFlight;
-  const request = invoke('patch_status')
-    .then((view) => {
-      patchStore.view = view;
-      patchStore.loaded = true;
-    })
-    .catch(() => {});
-  const tracked = request.finally(() => {
-    if (patchesInFlight === tracked) patchesInFlight = null;
-  });
-  patchesInFlight = tracked;
-  return tracked;
-}
+export const refreshPatches = createStatusSource('patch_status', (view) => {
+  patchStore.view = view;
+  patchStore.loaded = true;
+});
 
 export function applyPatch(id, name) {
   return confirmDialog(

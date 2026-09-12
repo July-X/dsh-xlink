@@ -82,11 +82,17 @@ globalThis.cancelAnimationFrame = () => {};
 test('failed plugin update checks do not consume the success TTL', async () => {
   const { checkPluginUpdates } = await import('../src/plugins.js');
 
+  // 第一次探测整体失败：不推进成功 TTL，所以第二次仍然真的跑。
   assert.equal(await checkPluginUpdates({ busy: true }), null);
   assert.equal(await checkPluginUpdates({ busy: true }), undefined);
   assert.equal(pluginChecks, 2);
-  assert.equal(await checkPluginUpdates({ busy: true }), null);
+  // 第二次成功推进了 TTL，自动路径被拦下。
+  assert.equal(await checkPluginUpdates({ busy: false }), null);
   assert.equal(pluginChecks, 2);
+  // 手动点击不受 TTL 限制（与技能侧同策略：用户点了就必须真的探测，
+  // 否则 15 分钟内点「检查更新」是完全没有反馈的死按钮）。
+  assert.equal(await checkPluginUpdates({ busy: true }), undefined);
+  assert.equal(pluginChecks, 3);
 });
 
 test('failed skill update checks back off, and manual checks bypass the backoff', async () => {
