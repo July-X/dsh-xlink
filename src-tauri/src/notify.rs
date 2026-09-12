@@ -18,6 +18,11 @@
 //! 即内核里某个会话的对话任务跑完了（`@deepseek-ai/dsh-api-session-controller`
 //! 把 `agent/status` 直接映射成这个事件）。
 //!
+//! 同一条物理连接上还开第二条逻辑流 `session/control`，只为**会话标题**：标题是
+//! 投影，变化只在 control 流上推送（`$events` 里的 `api-session/added` 发在会话
+//! 创建那一刻，标题还是空的）。见 `TITLES_BASELINE_TIMEOUT` 与
+//! `handle_control_item` 的说明。
+//!
 //! 刻意**不轮询** `session/list`：那条 RPC 每次都要为全部会话重建投影，
 //! 实测一次约 2.1 MB / 0.5 s 内核 CPU——按通知所需的时间粒度（秒级）轮询会
 //! 常驻吃掉一个核，代价与该功能的收益完全不成比例（详见
@@ -37,7 +42,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -54,6 +59,12 @@ const MUX_PATH: &str = "/api/remote.mux";
 const EVENTS_ENDPOINT: &str = "$events";
 /// 本壳在 `$events` 流上使用的流 id（同一条连接上唯一即可）。
 const STREAM_ID: &str = "dsh-xlink-notify";
+/// 逻辑流：会话控制（队列 / 任务 / 投影）。标题是**投影**，只有这条流会推它的变化。
+const CONTROL_ENDPOINT: &str = "session/control";
+/// 本壳在 `session/control` 流上使用的流 id。
+const CONTROL_STREAM_ID: &str = "dsh-xlink-titles";
+/// 等 `session/control` 的 baseline 的宽限期：超时还没来就退回 `session/list` 快照。
+const TITLES_BASELINE_TIMEOUT: Duration = Duration::from_secs(5);
 /// 会话状态事件：`args = [sessionId, running]`。
 const EVENT_SESSION_STATUS: &str = "api-session/status";
 /// 新会话事件：`args = [summary]`，用于免费拿到会话标题。
@@ -149,6 +160,17 @@ struct RunningTurn {
     started_at_ms: u64,
 }
 
+/// 标题流（`session/control`）在**当前这条连接**上的状态。重连即重置。
+#[derive(Debug, Clone, Copy)]
+struct TitlesStream {
+    /// 打开这条流的时刻，用于"迟迟没有 baseline"的超时判断。
+    opened_at: Instant,
+    /// 流已报错 / 已结束：不再等它，直接走 `session/list` 兜底。
+    dead: bool,
+    /// 本次连接已经试过 `session/list` 兜底（失败也要等下次重连再试，不刷屏）。
+    fallback_done: bool,
+}
+
 /// 通知中心的全部可变状态。
 struct Center {
     unread: u32,
@@ -157,14 +179,17 @@ struct Center {
     running: HashMap<String, RunningTurn>,
     /// 已知的子代理会话：它们的完成不该打扰用户。
     subagents: HashSet<String>,
-    /// 会话 id → 标题。来自 `api-session/added` 与启动时的一次性快照。
+    /// 会话 id → 标题。三个来源：`session/control` 的 baseline（常驻会话的权威
+    /// 快照）、标题投影的变化帧（新建会话标题生成 / 手动改名 / 清空）、以及
+    /// `api-session/added` 的摘要；老内核上没有控制流时退回 `session/list` 快照。
     titles: HashMap<String, String>,
     /// 会话 id → 最近一次判定的完成时刻，用于丢弃重连后重放的完成事件。
     last_finished: HashMap<String, u64>,
     watching: bool,
     last_error: Option<String>,
-    /// 已经用过的 `session/list` 快照（每个内核进程最多补一次标题）。
+    /// 标题表已经由权威来源填充过（baseline 或 `session/list` 快照）。
     titles_seeded: bool,
+    titles_stream: TitlesStream,
 }
 
 impl Center {
@@ -179,6 +204,11 @@ impl Center {
             watching: false,
             last_error: None,
             titles_seeded: false,
+            titles_stream: TitlesStream {
+                opened_at: Instant::now(),
+                dead: false,
+                fallback_done: false,
+            },
         }
     }
 }
@@ -510,27 +540,15 @@ fn subscribe_once(app: &AppHandle, stop: &AtomicBool) -> Result<(), String> {
         })?;
     let cookie = fetch_auth_cookie(&launch_url, port)?;
 
-    // 启动时补一次会话标题快照：事件里只有在连接期间新建的会话才自带标题，
-    // 而用户完全可能是「跑着一个已有会话，然后关掉窗口去干别的」。这次
-    // `session/list` 每个内核进程最多做一次（见 `titles_seeded`）。
-    // 判据先落到局部变量：`if` 条件里的临时锁在 Rust 2021 下会活到整个 `if`
-    // 结束，在块内再取一次锁就是自锁死。
-    let needs_titles = {
-        let center = center();
-        !center.titles_seeded
-    };
-    if needs_titles {
-        match fetch_session_titles(&cookie, port) {
-            Ok(titles) => {
-                let mut center = center();
-                center.titles.extend(titles);
-                center.titles_seeded = true;
-            }
-            Err(error) => {
-                // 拿不到标题不影响通知本身，只影响文案；下一个重连周期再试。
-                eprintln!("dsh-xlink: 读取会话标题失败（通知将使用占位标题）：{error}");
-            }
-        }
+    // 标题来源的每次连接重置：现在优先吃 `session/control` 的 baseline（下面开
+    // 流时说明），只有它不可用时才退回 `session/list` 快照。
+    {
+        let mut center = center();
+        center.titles_stream = TitlesStream {
+            opened_at: Instant::now(),
+            dead: false,
+            fallback_done: false,
+        };
     }
 
     let mut request = format!("ws://127.0.0.1:{port}{MUX_PATH}")
@@ -580,6 +598,22 @@ fn subscribe_once(app: &AppHandle, stop: &AtomicBool) -> Result<(), String> {
         .send(Message::Text(open.to_string().into()))
         .map_err(|e| format!("无法在内核事件流上打开 $events 订阅：{e}"))?;
 
+    // 第二条逻辑流：会话控制。**标题是投影（`title`），它的变化只在这条流上推送**
+    // ——`$events` 里只有 `api-session/added`（会话创建那一刻，标题还是空的）与
+    // `api-session/status`，所以只听 `$events` 的话，"创建后由模型生成标题"的会话
+    // 永远查不到名字，通知只能显示「未命名会话 <短 id>」。工作台侧栏用的就是这条
+    // 流：开流时先给一份 baseline（常驻会话的全部投影，含标题），之后每次投影变化
+    // 推一条 `{type:"projection", sessionId, key, value}`。
+    let control_open = serde_json::json!({
+        "type": "open",
+        "streamId": CONTROL_STREAM_ID,
+        "endpoint": CONTROL_ENDPOINT,
+        "payload": { "args": {} },
+    });
+    socket
+        .send(Message::Text(control_open.to_string().into()))
+        .map_err(|e| format!("无法在内核事件流上打开 session/control 订阅：{e}"))?;
+
     loop {
         if stop.load(Ordering::Relaxed) {
             let _ = socket.close(None);
@@ -610,26 +644,90 @@ fn subscribe_once(app: &AppHandle, stop: &AtomicBool) -> Result<(), String> {
                 ))
             }
         }
+        // 控制流不可用（老内核不认这个 endpoint、或它中途断了）或迟迟不给 baseline
+        // 时，退回一次 `session/list` 全量快照；拿不到也不影响通知本身，只影响文案。
+        if titles_fallback_due() {
+            fallback_session_titles(&cookie, port);
+        }
     }
 }
 
-/// 处理一条服务端文本帧。
+/// 现在是否该走 `session/list` 标题兜底：控制流没送来 baseline，且它已经报错 /
+/// 结束 / 超时；每条连接最多试一次（失败留给下次重连，避免刷屏）。
+fn titles_fallback_due() -> bool {
+    titles_fallback_due_at(&center(), Instant::now())
+}
+
+fn titles_fallback_due_at(center: &Center, now: Instant) -> bool {
+    if center.titles_seeded || center.titles_stream.fallback_done {
+        return false;
+    }
+    center.titles_stream.dead
+        || now.duration_since(center.titles_stream.opened_at) >= TITLES_BASELINE_TIMEOUT
+}
+
+/// 标题兜底：一次性读取全部会话标题（老内核上没有 `session/control` 时用）。
+fn fallback_session_titles(cookie: &str, port: u16) {
+    {
+        let mut center = center();
+        center.titles_stream.fallback_done = true;
+    }
+    match fetch_session_titles(cookie, port) {
+        Ok(titles) => {
+            let mut center = center();
+            center.titles.extend(titles);
+            center.titles_seeded = true;
+        }
+        Err(error) => {
+            // 拿不到标题不影响通知本身，只影响文案；下一个重连周期再试。
+            eprintln!("dsh-xlink: 读取会话标题失败（通知将使用占位标题）：{error}");
+        }
+    }
+}
+
+/// 处理一条服务端文本帧。两条逻辑流共用一条物理连接，按 `streamId` 分流。
 fn handle_frame(app: &AppHandle, text: &str) {
     let Ok(frame) = serde_json::from_str::<Value>(text) else {
         return;
     };
+    let stream_id = frame.get("streamId").and_then(Value::as_str).unwrap_or("");
+    // 流级失败（end / error）先记账：控制流死了就要退回快照兜底。
+    if stream_id == CONTROL_STREAM_ID {
+        match frame.get("type").and_then(Value::as_str) {
+            Some("end") => {
+                center().titles_stream.dead = true;
+                return;
+            }
+            Some("error") => {
+                let message = frame
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("未知错误");
+                // 老内核没有 session/control：这不算故障，退回 session/list 即可，
+                // 因此只记一行日志，不放 last_error 去吓用户。
+                eprintln!("dsh-xlink: 会话控制流不可用（{message}），改用 session/list 读取标题");
+                center().titles_stream.dead = true;
+                return;
+            }
+            _ => {}
+        }
+    }
     if frame.get("type").and_then(Value::as_str) != Some("item") {
         return;
     }
     let Some(item) = frame.get("value") else {
         return;
     };
+    if stream_id == CONTROL_STREAM_ID {
+        handle_control_item(app, item);
+        return;
+    }
     match item.get("type").and_then(Value::as_str) {
         Some("ready") => {
             let mut center = center();
             center.watching = true;
             center.last_error = None;
-            center.titles_seeded = true;
             drop(center);
             broadcast_now(app);
         }
@@ -1063,6 +1161,88 @@ fn remember_session(center: &mut Center, summary: &Value) {
     }
 }
 
+/// 处理 `session/control` 的一条 item（baseline / projection / queue / jobs）。
+///
+/// 只关心标题相关的两类帧，其余原样忽略——这条流很大（含队列、任务、全部投影），
+/// 每一条都解析是没必要的。
+fn handle_control_item(app: &AppHandle, item: &Value) {
+    let changed = match item.get("type").and_then(Value::as_str) {
+        Some("baseline") => {
+            let mut center = center();
+            seed_titles_from_baseline(&mut center, item.get("value"));
+            center.titles_seeded = true;
+            false
+        }
+        Some("projection") => {
+            let mut center = center();
+            apply_title_projection(&mut center, item)
+        }
+        _ => false,
+    };
+    // 投影变化也会改到面板里那条完成记录的名字（改完名字通知历史不该还是旧名）。
+    if changed {
+        broadcast_now(app);
+    }
+}
+
+/// 用 baseline 播种标题表：`projections[<sessionId>].values.title`。
+fn seed_titles_from_baseline(center: &mut Center, baseline: Option<&Value>) {
+    let Some(block) = baseline
+        .and_then(|b| b.get("projections"))
+        .and_then(Value::as_object)
+    else {
+        return;
+    };
+    for (raw_id, entry) in block {
+        let title = entry
+            .get("values")
+            .and_then(|v| v.get("title"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        set_title(center, raw_id, title);
+    }
+}
+
+/// 应用一条标题投影变化帧：`{sessionId, key: "title", value: string | null}`。
+///
+/// 返回是否真的改了标题表（调用方据此决定要不要广播给面板）。
+fn apply_title_projection(center: &mut Center, frame: &Value) -> bool {
+    if frame.get("key").and_then(Value::as_str) != Some("title") {
+        return false;
+    }
+    let Some(raw_id) = frame.get("sessionId").and_then(Value::as_str) else {
+        return false;
+    };
+    let title = frame
+        .get("value")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    set_title(center, raw_id, title)
+}
+
+/// 写入 / 清除一条标题，并同步面板里那条完成记录——通知历史不该停在旧名字上
+/// （会话改名后，"最近完成"列表上的名字要跟着变）。
+///
+/// 返回标题表是否真的变了（调用方据此决定要不要广播）。标题被清空时只清本地
+/// 缓存，不动已经记下的历史条目：那是一条"当时叫什么"的记录。
+fn set_title(center: &mut Center, raw_id: &str, title: &str) -> bool {
+    let id = normalize_session_id(raw_id);
+    let title = title.trim();
+    if title.is_empty() {
+        return center.titles.remove(&id).is_some();
+    }
+    let changed = center.titles.get(&id).map(String::as_str) != Some(title);
+    if changed {
+        center.titles.insert(id.clone(), title.to_string());
+    }
+    for item in center.items.iter_mut() {
+        if item.session_id == id && item.title != title {
+            item.title = title.to_string();
+        }
+    }
+    changed
+}
+
 fn broadcast_now(app: &AppHandle) {
     let status = status(app);
     broadcast(app, &status);
@@ -1350,6 +1530,146 @@ mod tests {
         assert!(center.subagents.contains("child"));
         assert!(!center.titles.contains_key("child"), "子代理不该进标题表");
     }
+
+    /// 回归：`api-session/added` 在会话**创建**那一刻发出，此时标题投影还是
+    /// `null`（标题由模型在第一轮之后生成）。曾经的实现只认这一个事件 + 开流时的
+    /// 一次性 `session/list` 快照，于是"连接期间新建的会话"永远查不到名字，通知
+    /// 只能显示「未命名会话 <短 id>」。这条用例钉住真正权威的来源：`session/control`
+    /// 的 baseline 与标题投影变化帧。
+    #[test]
+    fn baseline_and_title_projection_keep_titles_fresh() {
+        let mut center = Center::new();
+
+        // 创建时的事件：标题为空 / 缺失 → 不入表（这正是 bug 的起点）。
+        remember_session(
+            &mut center,
+            &serde_json::json!({
+                "sessionId": "session-e1723676-1111-2222-3333-444455556666",
+                "projections": { "values": { "title": null } },
+            }),
+        );
+        assert!(center.titles.is_empty(), "标题未生成时不该写入占位");
+
+        // baseline：常驻会话的投影快照，id 带 `session-` 前缀（与事件里的裸 uuid 不同）。
+        seed_titles_from_baseline(
+            &mut center,
+            Some(&serde_json::json!({
+                "queues": {},
+                "projections": {
+                    "session-e1723676-1111-2222-3333-444455556666": {
+                        "asOfSeq": 12,
+                        "values": { "title": "精简通知设置并显示测试按钮" },
+                    },
+                    "session-blank": { "values": { "title": null } },
+                    "session-spaces": { "values": { "title": "   " } },
+                },
+            })),
+        );
+        assert_eq!(
+            center
+                .titles
+                .get("e1723676-1111-2222-3333-444455556666")
+                .map(String::as_str),
+            Some("精简通知设置并显示测试按钮"),
+            "baseline 里带前缀的 id 要归一化成事件里的裸 uuid"
+        );
+        assert!(!center.titles.contains_key("blank"), "空标题不占位");
+        assert!(!center.titles.contains_key("spaces"), "纯空白标题不占位");
+
+        // 标题生成 / 改名：投影变化帧直接把新名字写进表里。
+        let mut center2 = Center::new();
+        assert!(apply_title_projection(
+            &mut center2,
+            &serde_json::json!({
+                "sessionId": "session-abc",
+                "key": "title",
+                "value": "新名字",
+                "seq": 30,
+            }),
+        ));
+        assert_eq!(
+            center2.titles.get("abc").map(String::as_str),
+            Some("新名字")
+        );
+        assert!(
+            !apply_title_projection(
+                &mut center2,
+                &serde_json::json!({ "sessionId": "session-abc", "key": "title", "value": "新名字" }),
+            ),
+            "同名重复帧不算变化，避免无谓广播"
+        );
+        // 其它投影（todos / inbox / …）不参与标题，也不该被当成变化。
+        assert!(!apply_title_projection(
+            &mut center2,
+            &serde_json::json!({ "sessionId": "session-abc", "key": "todos", "value": [] }),
+        ));
+        assert_eq!(
+            center2.titles.get("abc").map(String::as_str),
+            Some("新名字")
+        );
+
+        // 标题被清空：本地缓存跟着清掉，让「未命名会话 <短 id>」接管。
+        assert!(apply_title_projection(
+            &mut center2,
+            &serde_json::json!({ "sessionId": "session-abc", "key": "title", "value": null }),
+        ));
+        assert!(!center2.titles.contains_key("abc"));
+    }
+
+    /// 完成记录里的名字要跟着投影更新走：面板展示的历史不该停在旧标题上。
+    #[test]
+    fn title_projection_refreshes_recorded_items() {
+        let mut center = Center::new();
+        center.items.push_front(CompletedTask {
+            session_id: "abc".into(),
+            title: "未命名会话 abc".into(),
+            cwd: String::new(),
+            finished_at_ms: 1,
+            duration_ms: 0,
+        });
+
+        assert!(apply_title_projection(
+            &mut center,
+            &serde_json::json!({ "sessionId": "session-abc", "key": "title", "value": "真名" }),
+        ));
+        assert_eq!(center.titles.get("abc").map(String::as_str), Some("真名"));
+        assert_eq!(
+            center.items[0].title, "真名",
+            "已经记下的完成记录也要换成新名字（面板显示的就是它）"
+        );
+    }
+
+    /// 兜底时机：控制流不可用（老内核 / 报错）或迟迟不给 baseline 时才读
+    /// `session/list`；已经有了权威标题表就不再全量扫一遍。
+    #[test]
+    fn session_list_fallback_is_bounded() {
+        let mut center = Center::new();
+        // 以"开流时刻"为基准：`opened_at` 由 `Center::new()` 取 `Instant::now()`，
+        // 用外面更早的 `now` 会算不出超时。
+        let now = center.titles_stream.opened_at;
+
+        assert!(
+            !titles_fallback_due_at(&center, now),
+            "刚开流时先等 baseline，不要立刻全量扫"
+        );
+        assert!(
+            titles_fallback_due_at(&center, now + TITLES_BASELINE_TIMEOUT),
+            "超时还没 baseline：退回快照"
+        );
+
+        center.titles_stream.dead = true;
+        assert!(titles_fallback_due_at(&center, now), "控制流报错立刻兜底");
+
+        center.titles_stream.fallback_done = true;
+        assert!(!titles_fallback_due_at(&center, now), "每条连接只兜底一次");
+
+        let mut fresh = Center::new();
+        fresh.titles_seeded = true;
+        assert!(
+            !titles_fallback_due_at(&fresh, now + TITLES_BASELINE_TIMEOUT),
+            "标题表已经由 baseline 播种，不需要再扫 session/list"
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -1580,6 +1900,106 @@ mod live_tests {
             titles.keys().any(|key| !key.ends_with("#cwd")),
             "本机应至少有一个带标题的会话"
         );
+    }
+
+    /// 会话控制流的标题播种：真实内核上的回归用例。
+    ///
+    /// 复现的问题：会话创建时 `api-session/added` 里标题还是空的，标题由模型在第
+    /// 一轮之后生成，而它的变化**只**在 `session/control` 上推送。壳以前只听
+    /// `$events`，于是新建会话的通知永远显示「未命名会话 <短 id>」。这条测试连上
+    /// 真实内核、开同一条流，断言 baseline 能被解析成"事件里那种裸 uuid → 标题"
+    /// 的表——也就是通知文案要用的那次查表。
+    #[test]
+    #[ignore = "需要本机内核在运行；用法见模块注释"]
+    fn live_control_stream_seeds_titles() {
+        let port = live_port();
+        let data_dir = live_data_dir();
+        let launch = live_launch_url(&data_dir, port).expect("日志里应有 launch token URL");
+        let cookie = fetch_auth_cookie(&launch, port).expect("launch token 应能换取 cookie");
+
+        let mut request = format!("ws://127.0.0.1:{port}{MUX_PATH}")
+            .into_client_request()
+            .expect("构造 WebSocket 请求");
+        request.headers_mut().insert(
+            "Cookie",
+            tungstenite::http::HeaderValue::from_str(&cookie).expect("cookie 头合法"),
+        );
+        request.headers_mut().insert(
+            "Origin",
+            tungstenite::http::HeaderValue::from_str(&format!("http://127.0.0.1:{port}"))
+                .expect("origin 头合法"),
+        );
+        let (mut socket, _) = tungstenite::connect(request).expect("WebSocket 握手应成功");
+        if let tungstenite::stream::MaybeTlsStream::Plain(tcp) = socket.get_ref() {
+            tcp.set_read_timeout(Some(Duration::from_millis(500)))
+                .expect("设置读超时");
+        }
+        for (stream_id, endpoint) in [
+            (STREAM_ID, EVENTS_ENDPOINT),
+            (CONTROL_STREAM_ID, CONTROL_ENDPOINT),
+        ] {
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "open",
+                        "streamId": stream_id,
+                        "endpoint": endpoint,
+                        "payload": { "args": {} },
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("发送 open 帧");
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let mut baseline = None;
+        while std::time::Instant::now() < deadline {
+            let Some(frame) = read_frame_until(&mut socket, deadline) else {
+                break;
+            };
+            if frame["streamId"] == CONTROL_STREAM_ID {
+                if frame["type"] == "error" {
+                    panic!("内核不认 session/control（协议漂移？）：{frame}");
+                }
+                if frame["value"]["type"] == "baseline" {
+                    baseline = Some(frame["value"].clone());
+                    break;
+                }
+            }
+        }
+        let _ = socket.close(None);
+        let baseline = baseline.expect("15 秒内应收到 session/control 的 baseline");
+
+        // baseline 的 id 带 `session-` 前缀，而 `api-session/status` 事件带的是裸
+        // uuid：播种必须归一化，否则通知照样查不到名字。
+        let mut center = Center::new();
+        let before = center.titles.len();
+        seed_titles_from_baseline(&mut center, Some(&baseline["value"]));
+        let seeded = center.titles.len() - before;
+        assert!(seeded > 0, "baseline 里应至少有一个带标题的会话");
+        let (id, title) = {
+            let (id, title) = center
+                .titles
+                .iter()
+                .find(|(key, _)| !key.ends_with("#cwd"))
+                .expect("应至少播种一条标题");
+            (id.clone(), title.clone())
+        };
+        assert!(
+            !id.starts_with("session-"),
+            "标题表的 key 必须是裸 uuid：{id}"
+        );
+        assert!(!title.trim().is_empty(), "标题不该是空白：{id} => {title}");
+
+        // 通知文案走的是同一条查表路径：拿裸 uuid 必须能查到刚播种的标题。
+        assert!(
+            record_status(&mut center, &id, true, 1_000).is_none(),
+            "running 事件只记账"
+        );
+        let task = record_status(&mut center, &id, false, 3_000).expect("跑完一轮应产出完成记录");
+        assert_eq!(task.title, title, "完成记录必须用真标题而不是占位文案");
+        assert_eq!(task.duration_ms, 2_000, "时长按 running → idle 的墙钟差");
     }
 
     /// 系统通知通路自检：会在屏幕上真的弹一条通知。
