@@ -121,22 +121,33 @@ function onSave() {
   <section class="panel">
     <div class="card">
       <h2>设置</h2>
-      <el-form label-width="140px" label-position="left" @focusin="editing = true" @focusout="editing = false">
+      <!-- 标签列收到 100px、输入框走 .settings-port（132px）：二者一起保证最窄窗口下
+           「保存」仍与输入同排；窗口更窄时 .btn-row 会自然折行兜底。 -->
+      <el-form label-width="100px" label-position="left" @focusin="editing = true" @focusout="editing = false">
         <el-form-item label="Web UI 端口">
-          <el-input-number v-model="port" :min="1024" :max="65535" :precision="0" controls-position="right" />
+          <!-- 保存与输入同排：这张卡只有这一项，按钮另起一行会白白占掉一行高度。
+               复用 .btn-row 的 flex + 8px 间距；窄窗口下自动折行。 -->
+          <div class="btn-row">
+            <el-input-number
+              v-model="port"
+              class="settings-port"
+              :min="1024"
+              :max="65535"
+              :precision="0"
+              controls-position="right"
+            />
+            <el-button
+              type="primary"
+              :icon="Check"
+              :loading="isLoading('saveSettings')"
+              :disabled="globalBusy"
+              @click="onSave"
+            >
+              保存设置
+            </el-button>
+          </div>
         </el-form-item>
       </el-form>
-      <div class="btn-row">
-        <el-button
-          type="primary"
-          :icon="Check"
-          :loading="isLoading('saveSettings')"
-          :disabled="globalBusy"
-          @click="onSave"
-        >
-          保存设置
-        </el-button>
-      </div>
       <!-- 只改端口的卡片：profile 是固定值，Node 环境与「重新检测」都在概览页，
            这里用一句话说明去处，省得用户以为功能被砍了。 -->
       <p class="muted" style="margin: 0">
