@@ -283,6 +283,87 @@ pub fn stamp_id_marker(dir: &Path, id: &str) -> io::Result<()> {
     atomic_write(&dir.join(ID_MARKER), format!("{id}\n").as_bytes())
 }
 
+/// 把 git URL 归一成 `owner/repo` 形状，供调用方映射中央库 id。
+///
+/// 协议双斜杠、`git@host:` 里的冒号、`.git` 后缀都要先剥掉：同一个仓库写成
+/// `git@github.com:owner/repo.git` 与 `https://github.com/owner/repo` 必须算出
+/// 同一个 id，否则用户会看到「同一个包装了两遍」，而两份源码目录只有一份接线。
+pub fn repo_id_base(url: &str) -> String {
+    url.trim_start_matches("git@")
+        .split("://")
+        .last()
+        .unwrap_or(url)
+        .trim_end_matches(".git")
+        .replace(':', "/")
+}
+
+/// 崩溃残留暂存目录的分类。两个中央库（插件 / 技能）用同一套三段换名术语，
+/// 区别只在目录名前缀（`tmp-` 与 `.tmp-`），所以分类结果共享、前缀各自匹配。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StagingKind {
+    /// 取源进行中：内容未必完整，一律丢弃。
+    Tmp,
+    /// 已通过校验、等待发布。
+    New,
+    /// 发布过程中被挪到一旁的旧活动目录。
+    Backup,
+}
+
+/// 把一个 id 的残留暂存目录恢复到 `final_dir`，返回它现在是否有可用内容。
+///
+/// 恢复表只有一张，两个中央库共用，因为**两个状态都幸存时回滚优先**：旧版本
+/// 是我们知道用户已经在跑的那一份，`.new-*` 内容只是「已校验但还没跑起来」。
+/// 这张表决定的是用户插件 / 技能目录的最终内容——在两处各写一遍时，任何一次
+/// 改动都可能只改一半。
+///
+/// 规则：
+/// - `final_dir` 已存在：现有内容优先，暂存目录全部清掉；
+/// - 否则以最新的 `.backup-*` 回滚，其次提升最新的 `.new-*`；
+///   `tmp` 与较老的同辈一律清掉。
+///
+/// 目录名里编码了 pid + 时间戳，因此字典序即时间序，最新的排在最后。
+pub fn recover_staging_dir(final_dir: &Path, mut items: Vec<(StagingKind, PathBuf)>) -> bool {
+    items.sort_by(|a, b| a.1.file_name().cmp(&b.1.file_name()));
+    if final_dir.exists() {
+        for (_, path) in items {
+            let _ = fs::remove_dir_all(&path);
+        }
+        return true;
+    }
+    let newest = |kind: StagingKind| {
+        items
+            .iter()
+            .rev()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, p)| p.clone())
+    };
+    let newest_new = newest(StagingKind::New);
+    let newest_backup = newest(StagingKind::Backup);
+    for (kind, path) in &items {
+        let drop = match kind {
+            StagingKind::Tmp => true,
+            StagingKind::New => Some(path) != newest_new.as_ref(),
+            StagingKind::Backup => Some(path) != newest_backup.as_ref(),
+        };
+        if drop {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+    if let Some(backup) = newest_backup {
+        let _ = fs::rename(&backup, final_dir);
+        if let Some(new) = newest_new {
+            let _ = fs::remove_dir_all(&new);
+        }
+        true
+    } else if let Some(new) = newest_new {
+        let _ = fs::rename(&new, final_dir);
+        true
+    } else {
+        // 只剩 `.tmp-*`，上面已经清理掉了，且没有可用的 `.dsh-id` 记录。
+        false
+    }
+}
+
 // --- 取源标记 ---------------------------------------------------------------
 
 /// 写入 `.dsh-source.json`：记录这个中央库目录是谁、从哪来、什么版本。
@@ -298,7 +379,7 @@ pub fn write_source_marker(
         "origin": origin,
         "source": source,
         "version": version,
-        "fetchedAt": now_epoch_secs(),
+        "fetchedAt": crate::process::epoch_secs_string(),
     });
     let text = serde_json::to_string_pretty(&marker).map_err(|e| AppError::Io(e.to_string()))?;
     atomic_write(&dest.join(SOURCE_MARKER), format!("{text}\n").as_bytes())
@@ -317,11 +398,4 @@ pub fn remove_link(path: &Path) {
     if fs::remove_file(path).is_err() {
         let _ = fs::remove_dir(path);
     }
-}
-
-fn now_epoch_secs() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_default()
 }

@@ -15,14 +15,13 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::pkg::{
-    git_latest_tag, is_newer_than, new_staging_dir, remove_link, split_npm_spec, stamp_id_marker,
-    write_source_marker, ID_MARKER,
+    self, git_latest_tag, is_newer_than, new_staging_dir, remove_link, split_npm_spec,
+    stamp_id_marker, write_source_marker, ID_MARKER,
 };
 use crate::process::run_capture;
 use crate::releases::http_get_npm_latest;
@@ -266,13 +265,6 @@ fn id_for_name(raw: &str) -> Result<String, AppError> {
     Ok(name.replace('/', "__"))
 }
 
-fn now_epoch_secs() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_default()
-}
-
 // --- 中央库持久化 -----------------------------------------------------------
 
 fn store_mutation_lock() -> &'static Mutex<()> {
@@ -376,15 +368,7 @@ pub fn parse_spec(raw: &str) -> Result<SkillSpec, AppError> {
             _ => (s, None),
         };
         let repo_url = s.contains("github.com/").then(|| url.to_string());
-        // URL 含协议双斜杠等空路径段，先归一成 owner/repo 形状再映射 id。
-        let id_base = url
-            .trim_start_matches("git@")
-            .split("://")
-            .last()
-            .unwrap_or(url)
-            .trim_end_matches(".git")
-            .replace(':', "/");
-        let id = id_for_name(&id_base)?;
+        let id = id_for_name(&pkg::repo_id_base(url))?;
         let name = url
             .trim_end_matches(".git")
             .rsplit('/')
@@ -1262,7 +1246,7 @@ fn install_into(
         )));
     }
     let desired_mode = if mode == "copy" { "copy" } else { "link" }.to_string();
-    let now = now_epoch_secs();
+    let now = crate::process::epoch_secs_string();
     let mut item = SkillStoreItem {
         id: spec.id.clone(),
         name: spec.name.clone(),
@@ -1348,7 +1332,7 @@ fn update_into(
             }
         })
         .collect();
-    updated.updated_at = now_epoch_secs();
+    updated.updated_at = crate::process::epoch_secs_string();
     // 把 installed_version 同步到刚刚拉取的版本，并让 latest_version 跟齐，
     // 这样 UI 元数据（"v0.1 → v0.2" 升级箭头与"有更新 v0.2"角标）在更新成功
     // 之后立刻清掉。否则 check_updates 的旧结果会留在 store.json 里，刷新
@@ -1626,7 +1610,7 @@ fn check_updates_for_home(home: &Path) -> Result<Vec<SkillUpdateInfo>, AppError>
         }
     }
     if should_advance_update_check(&out) {
-        store.last_checked_at = Some(now_epoch_secs());
+        store.last_checked_at = Some(crate::process::epoch_secs_string());
     }
     save_store_unlocked(home, &store)?;
     Ok(out)
@@ -1841,24 +1825,18 @@ fn recover_staging(home: &Path) {
         return;
     };
 
-    enum Kind {
-        Tmp,
-        New,
-        Backup,
-    }
-
-    let mut by_id: std::collections::HashMap<String, Vec<(Kind, PathBuf)>> =
+    let mut by_id: std::collections::HashMap<String, Vec<(pkg::StagingKind, PathBuf)>> =
         std::collections::HashMap::new();
     for entry in entries.flatten() {
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
         let kind = if name.starts_with(TMP_PREFIX) {
-            Kind::Tmp
+            pkg::StagingKind::Tmp
         } else if name.starts_with(NEW_PREFIX) {
-            Kind::New
+            pkg::StagingKind::New
         } else if name.starts_with(BACKUP_PREFIX) {
-            Kind::Backup
+            pkg::StagingKind::Backup
         } else {
             continue;
         };
@@ -1872,53 +1850,18 @@ fn recover_staging(home: &Path) {
         by_id.entry(id).or_default().push((kind, entry.path()));
     }
 
-    for (id, mut items) in by_id {
-        let final_dir = store.join(&id);
-        items.sort_by(|a, b| a.1.file_name().cmp(&b.1.file_name()));
-
-        if final_dir.exists() {
-            for (_, path) in items {
-                let _ = fs::remove_dir_all(&path);
-            }
-            continue;
-        }
-
-        let newest_new = items
-            .iter()
-            .rev()
-            .find(|(k, _)| matches!(k, Kind::New))
-            .map(|(_, p)| p.clone());
-        let newest_backup = items
-            .iter()
-            .rev()
-            .find(|(k, _)| matches!(k, Kind::Backup))
-            .map(|(_, p)| p.clone());
-        for (kind, path) in &items {
-            let drop = match kind {
-                Kind::Tmp => true,
-                Kind::New => Some(path) != newest_new.as_ref(),
-                Kind::Backup => Some(path) != newest_backup.as_ref(),
-            };
-            if drop {
-                let _ = fs::remove_dir_all(path);
-            }
-        }
-
-        if let Some(backup) = newest_backup {
-            let _ = fs::rename(&backup, &final_dir);
-            if let Some(new) = newest_new {
-                let _ = fs::remove_dir_all(&new);
-            }
-        } else if let Some(new) = newest_new {
-            let _ = fs::rename(&new, &final_dir);
-        }
+    for (id, items) in by_id {
+        // 恢复表在 pkg.rs：两个中央库共用同一张，避免只改一半。
+        pkg::recover_staging_dir(&store.join(&id), items);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEST_HOME_COUNTER: AtomicUsize = AtomicUsize::new(0);
 

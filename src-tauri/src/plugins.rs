@@ -16,15 +16,14 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::error::AppError;
 use crate::pkg::{
-    git_latest_tag, is_newer_than, looks_like_semver, new_staging_dir, remove_link, split_npm_spec,
-    stamp_id_marker, write_source_marker, ID_MARKER,
+    self, git_latest_tag, is_newer_than, looks_like_semver, new_staging_dir, remove_link,
+    split_npm_spec, stamp_id_marker, write_source_marker, ID_MARKER,
 };
 use crate::process::{atomic_write, run_capture};
 use crate::quarantine;
@@ -524,13 +523,6 @@ fn allocate_id(data_dir: &Path, spec: &PluginSpec) -> Result<String, AppError> {
     )))
 }
 
-fn now_epoch_secs() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_default()
-}
-
 // --- 中央库持久化 --------------------------------------------------------
 
 fn store_mutation_lock() -> &'static Mutex<()> {
@@ -786,15 +778,7 @@ pub fn parse_spec(spec: &str) -> Result<PluginSpec, AppError> {
             _ => (s, None),
         };
         let repo_url = github_repo_path(url).map(|repo| format!("https://github.com/{repo}"));
-        // URL 含空路径段（协议双斜杠），先归一成 owner/repo 形状再映射 id
-        let id_base = url
-            .trim_start_matches("git@")
-            .split("://")
-            .last()
-            .unwrap_or(url)
-            .trim_end_matches(".git")
-            .replace(':', "/");
-        let id = id_for_name(&id_base)?;
+        let id = id_for_name(&pkg::repo_id_base(url))?;
         let name = url
             .trim_end_matches(".git")
             .rsplit('/')
@@ -985,7 +969,7 @@ fn fetch_into_store(
 
     write_source_marker(&final_dir, &spec.id, &spec.origin, &spec.source, &version)?;
 
-    let now = now_epoch_secs();
+    let now = crate::process::epoch_secs_string();
     let existing = store_item(data_dir, &spec.id);
     Ok((
         StoreItem {
@@ -1036,13 +1020,7 @@ pub fn reconcile_store(data_dir: &Path) {
         return;
     };
 
-    enum Kind {
-        Tmp,
-        New,
-        Backup,
-    }
-
-    let mut by_id: std::collections::HashMap<String, Vec<(Kind, PathBuf)>> =
+    let mut by_id: std::collections::HashMap<String, Vec<(pkg::StagingKind, PathBuf)>> =
         std::collections::HashMap::new();
     for entry in entries.flatten() {
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
@@ -1051,11 +1029,11 @@ pub fn reconcile_store(data_dir: &Path) {
         // `.tmp-` 是引入标记前的旧命名方式；当前的暂存目录统一使用
         // `tmp-` / `new-` / `backup-`（见 `new_staging_dir`）。
         let kind = if name.starts_with(TMP_PREFIX) || name.starts_with(".tmp-") {
-            Kind::Tmp
+            pkg::StagingKind::Tmp
         } else if name.starts_with(NEW_PREFIX) {
-            Kind::New
+            pkg::StagingKind::New
         } else if name.starts_with(BACKUP_PREFIX) {
-            Kind::Backup
+            pkg::StagingKind::Backup
         } else {
             continue;
         };
@@ -1082,53 +1060,9 @@ pub fn reconcile_store(data_dir: &Path) {
     // 不能被下面的孤儿清理顺手删掉（那会把恢复动作当场撤销）。
     let recovered_ids: std::collections::HashSet<String> = by_id.keys().cloned().collect();
 
-    for (id, mut items) in by_id {
-        let final_dir = store.join(&id);
-        // 按目录名排序（其中编码了 pid + 时间戳），最新的排在最后。
-        items.sort_by(|a, b| a.1.file_name().cmp(&b.1.file_name()));
-
-        if final_dir.exists() {
-            for (_, path) in items {
-                let _ = fs::remove_dir_all(&path);
-            }
-            continue;
-        }
-
-        // 分别挑出最新的 `.new-*` 与 `.backup-*`，丢弃所有较老的同辈。
-        // `.tmp-*` 一律丢弃。
-        let newest_new = items
-            .iter()
-            .rev()
-            .find(|(k, _)| matches!(k, Kind::New))
-            .map(|(_, p)| p.clone());
-        let newest_backup = items
-            .iter()
-            .rev()
-            .find(|(k, _)| matches!(k, Kind::Backup))
-            .map(|(_, p)| p.clone());
-        for (kind, path) in &items {
-            let drop = match kind {
-                Kind::Tmp => true,
-                Kind::New => Some(path) != newest_new.as_ref(),
-                Kind::Backup => Some(path) != newest_backup.as_ref(),
-            };
-            if drop {
-                let _ = fs::remove_dir_all(path);
-            }
-        }
-
-        // 落实上面那张表里的恢复动作。
-        if let Some(backup) = newest_backup {
-            // 两个状态都幸存时，回滚是更稳妥的默认：旧版本是我们知道用户
-            // 已经在跑的那一份，而 `.new-*` 内容只是「已校验但还没跑起来」。
-            let _ = fs::rename(&backup, &final_dir);
-            if let Some(new) = newest_new {
-                let _ = fs::remove_dir_all(&new);
-            }
-        } else if let Some(new) = newest_new {
-            let _ = fs::rename(&new, &final_dir);
-        }
-        // 否则：只剩 `.tmp-*`，上面已经清理掉了。
+    for (id, items) in by_id {
+        // 恢复表在 pkg.rs：两个中央库共用同一张，避免只改一半。
+        pkg::recover_staging_dir(&store.join(&id), items);
     }
 
     // 最后处理"已发布但没记账"的孤儿目录。
@@ -1775,7 +1709,7 @@ pub fn materialize_one(
             fallback: actual != item.mode,
             mode: actual.clone(),
             version: item.installed_version.clone(),
-            synced_at: now_epoch_secs(),
+            synced_at: crate::process::epoch_secs_string(),
         },
     )?;
     Ok(actual)
@@ -2470,7 +2404,7 @@ pub fn check_updates(data_dir: &Path) -> Result<Vec<UpdateInfo>, AppError> {
             }
         }
     }
-    store.last_checked_at = Some(now_epoch_secs());
+    store.last_checked_at = Some(crate::process::epoch_secs_string());
     save_store_unlocked(data_dir, &store)?;
     Ok(out)
 }
@@ -3515,6 +3449,8 @@ fn refresh_store_peers(data_dir: &Path, item: &StoreItem, active: &str) -> Resul
 mod tests {
     use super::*;
 
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use crate::pkg::{latest_tag, looks_like_semver, resolve_npm_version, NpmDoc};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -4288,7 +4224,7 @@ mod tests {
                 fallback: true,
                 mode: "copy".into(),
                 version: link_item.installed_version.clone(),
-                synced_at: now_epoch_secs(),
+                synced_at: crate::process::epoch_secs_string(),
             },
         )
         .expect("write fallback meta");
