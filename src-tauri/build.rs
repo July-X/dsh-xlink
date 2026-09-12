@@ -17,9 +17,22 @@ fn main() {
         "icons/32x32.png",
         "icons/128x128.png",
         "icons/128x128@2x.png",
-        // 通知区域图标由 `tray.rs` 的 `include_image!` 在编译期嵌入，
-        // 同样需要在这里声明，否则换掉托盘图标后 cargo 不会重新编译。
-        "icons/tray-32.png",
+        // 通知区域图标由 `tray.rs` 的 `include_image!` 在编译期嵌入（十二档：
+        // 浅色/深色任务栏各六档，运行时按主题 + 显示缩放选帧，漏掉哪一档，
+        // 换掉它之后 cargo 就不会重新编译，那一档会一直停在旧图）。同样需要
+        // 在这里声明，否则换掉托盘图标后 cargo 不会重新编译。
+        "icons/tray-dark-16.png",
+        "icons/tray-dark-20.png",
+        "icons/tray-dark-24.png",
+        "icons/tray-dark-32.png",
+        "icons/tray-dark-40.png",
+        "icons/tray-dark-48.png",
+        "icons/tray-light-16.png",
+        "icons/tray-light-20.png",
+        "icons/tray-light-24.png",
+        "icons/tray-light-32.png",
+        "icons/tray-light-40.png",
+        "icons/tray-light-48.png",
     ] {
         println!("cargo:rerun-if-changed={icon}");
     }
