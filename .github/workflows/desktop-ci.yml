@@ -49,6 +49,11 @@ jobs:
         # 命令注册/白名单/capability/内置补丁清单/三处版本号一致性。
         run: pnpm run check:invariants
 
+      - name: Check code budget
+        # 生产代码行数预算 + 重复区间数：拦住「这个模块又胖了一圈」，
+        # 要涨必须在同一个提交里改 scripts/check-code-budget.mjs 的数字。
+        run: pnpm run check:code-budget
+
       - name: Run UI tests
         run: pnpm run test:ui
 
