@@ -102,8 +102,10 @@ function goSettings() {
   store.activePanel = 'settings';
 }
 
+// 「（dev）」后缀是 release-only 钩子：dev 构建里标出来，开了 release 预览
+// 就按正式版隐藏（store.devUi 已经把预览算进去）。
 const shellVersionText = computed(() =>
-  store.view ? 'v' + store.view.shell_version + (store.view.dev_build ? '（dev）' : '') : '—'
+  store.view ? 'v' + store.view.shell_version + (store.devUi ? '（dev）' : '') : '—'
 );
 
 // 容错横幅：有被看护停用的插件，或上次启动事故未恢复时保持可见。

@@ -67,6 +67,7 @@
           "notification_mark_read",
           "notification_save_settings",
           "notification_test",
+          "notification_test_sound",
           "confirm_close_shell"
         ]
       }

@@ -5,7 +5,7 @@
 // 「重新检测」都在概览页（OverviewPanel 的「桌面端设置」摘要卡与「当前内核」的
 // Node.js 行），profile 仍跟着端口一起提交，不要在别处再复制一份输入。
 import { computed, reactive, ref, watch } from 'vue';
-import { ArrowDown, ArrowUp, Bell, Check, Refresh } from '@element-plus/icons-vue';
+import { ArrowDown, ArrowUp, Bell, Check, Headset, Refresh } from '@element-plus/icons-vue';
 import { store, saveSettings } from '../store.js';
 import { patchStore, refreshPatches, applyPatch, revertPatch } from '../patches.js';
 import {
@@ -14,6 +14,7 @@ import {
   saveNotificationSettings,
   markNotificationsRead,
   sendTestNotification,
+  testNotificationSound,
 } from '../notifications.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 
@@ -99,6 +100,11 @@ const badgeTarget = computed(() => {
   return '应用图标';
 });
 
+// 「模拟一次任务完成」只在 dev 构建里显示（`store.devUi`）：它给用户凭空造一条
+// 未读，正式版没有这个需要；「试听提示音」才是常驻入口。release 预览打开后这个
+// 字段也是 false，所以预览里看到的就是正式版的样子。
+const isDevBuild = computed(() => store.devUi);
+
 // 自检结果就地显示，不弹页内浮层：那个浮层会被误认成"通知就是它"。
 const testNote = ref('');
 
@@ -108,7 +114,7 @@ async function onTestNotification() {
   if (ok) {
     testNote.value =
       `已模拟一次任务完成：${badgeTarget.value}上的角标已更新，系统通知也已发出。` +
-      '若没有看到通知气泡，请在系统的通知设置里确认 dsh-xlink 已被允许（下面若有环境说明，请先按它处理）。';
+      '没看到气泡时，请在系统通知设置里允许 dsh-xlink（下面若有环境说明，先按它处理）。';
   }
 }
 
@@ -166,10 +172,9 @@ function onSave() {
         </el-button>
       </div>
       <p class="muted notify-section-hint">
-        会话里的对话任务跑完后：图标右上角挂上未读数字角标（macOS 在 Dock、Windows 在任务栏），
-        同时由系统弹一条通知气泡——通知来自操作系统，不是这个面板里的浮层。
+        会话任务跑完后：图标右上角挂未读数字角标（macOS Dock、Windows 任务栏），并由系统弹一条通知气泡。
       </p>
-      <el-form label-width="200px" label-position="left">
+      <el-form label-width="180px" label-position="left">
         <el-form-item label="任务完成后通知我">
           <el-switch
             :model-value="notificationStore.enabled"
@@ -177,26 +182,38 @@ function onSave() {
             @change="(value) => saveNotificationSettings({ enabled: value })"
           />
         </el-form-item>
-        <el-form-item label="仅当工作台窗口不在前台时通知">
-          <div class="notify-field">
+        <el-form-item label="仅当工作台不在前台时通知">
+          <div class="notify-inline">
             <el-switch
               :model-value="notificationStore.notifyAwayOnly"
               :disabled="!notificationStore.enabled"
               :loading="isLoading('notificationSave')"
               @change="(value) => saveNotificationSettings({ notifyAwayOnly: value })"
             />
-            <span class="muted">
-              前台指你正在看着工作台，这时完成的任务不打扰你；切走或窗口被遮挡时才提醒。
-            </span>
+            <span class="muted">切走或窗口被遮挡时才提醒</span>
           </div>
         </el-form-item>
         <el-form-item label="通知声音">
-          <el-switch
-            :model-value="notificationStore.sound"
-            :disabled="!notificationStore.enabled"
-            :loading="isLoading('notificationSave')"
-            @change="(value) => saveNotificationSettings({ sound: value })"
-          />
+          <div class="notify-inline">
+            <el-switch
+              :model-value="notificationStore.sound"
+              :disabled="!notificationStore.enabled"
+              :loading="isLoading('notificationSave')"
+              @change="(value) => saveNotificationSettings({ sound: value })"
+            />
+            <!-- 试听是常驻入口（正式版也有）：声音没有画面反馈，用户需要就地确认。
+                 声音关着时不试听——否则开关与听到的结果自相矛盾。 -->
+            <el-button
+              text
+              size="small"
+              :icon="Headset"
+              :loading="isLoading('notificationSoundTest')"
+              :disabled="!notificationStore.enabled || !notificationStore.sound || globalBusy"
+              @click="testNotificationSound()"
+            >
+              试听
+            </el-button>
+          </div>
         </el-form-item>
       </el-form>
       <div class="btn-row">
@@ -207,13 +224,14 @@ function onSave() {
             全部已读
           </el-button>
         </template>
-        <el-button type="primary" size="small" :icon="Bell" :loading="isLoading('notificationTest')"
-          :disabled="globalBusy" @click="onTestNotification">
-          模拟一次任务完成
-        </el-button>
-        <span class="muted notify-test-hint">
-          未读 +1、角标刷新、发一条系统通知；看完点「全部已读」即可清零。
-        </span>
+        <!-- dev 专用自检：正式版里不渲染（见 isDevBuild 的说明）。 -->
+        <template v-if="isDevBuild">
+          <el-button type="primary" size="small" :icon="Bell" :loading="isLoading('notificationTest')"
+            :disabled="globalBusy" @click="onTestNotification">
+            模拟一次任务完成
+          </el-button>
+          <span class="muted notify-test-hint">dev 专用：未读 +1、角标刷新、发一条系统通知。</span>
+        </template>
       </div>
       <p v-if="testNote" class="muted notify-hint">{{ testNote }}</p>
       <p v-if="!notificationStore.watching" class="muted notify-hint">

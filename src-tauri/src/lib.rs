@@ -225,6 +225,7 @@ pub fn run() {
             commands::notification_mark_read,
             commands::notification_save_settings,
             commands::notification_test,
+            commands::notification_test_sound,
             commands::confirm_close_shell,
         ])
         .build(tauri::generate_context!())
