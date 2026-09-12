@@ -37,7 +37,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -219,6 +219,22 @@ pub fn status(app: &AppHandle) -> NotificationStatus {
     }
 }
 
+/// 中心状态的一次完整提交：改中心 → 同步角标 → 广播快照 → 返回给命令层。
+///
+/// 手工写这几步时，锁还在手上就调 `status` / `sync_badge` 会自锁死，必须先
+/// `drop(center)` 再重新加锁——这类错误编译器看不见。收进一个函数后，锁的
+/// 持有时长是确定的：只包住 `mutate`（`status` 要读设置文件，不该握着锁做）。
+fn commit_center(app: &AppHandle, mutate: impl FnOnce(&mut Center)) -> NotificationStatus {
+    {
+        let mut center = center();
+        mutate(&mut center);
+    }
+    let status = status(app);
+    sync_badge(app);
+    broadcast(app, &status);
+    status
+}
+
 /// 保存通知设置。只写通知这三个字段，其余设置原样保留。
 pub fn save_settings(
     app: &AppHandle,
@@ -233,23 +249,16 @@ pub fn save_settings(
     current.notify_sound = Some(sound);
     settings::save(&data_dir, &current)?;
     // 关掉总开关时顺手把角标摘掉：留着一个点不动的数字比没有角标更让人困惑。
-    sync_badge(app);
-    let status = status(app);
-    broadcast(app, &status);
-    Ok(status)
+    // 中心状态本身没变（变的是磁盘上的设置），这里只是把收尾的两步走一遍。
+    Ok(commit_center(app, |_| {}))
 }
 
 /// 全部标记为已读：未读归零、角标清除。
 pub fn mark_all_read(app: &AppHandle) -> NotificationStatus {
-    {
-        let mut center = center();
+    commit_center(app, |center| {
         center.unread = 0;
         center.items.clear();
-    }
-    sync_badge(app);
-    let status = status(app);
-    broadcast(app, &status);
-    status
+    })
 }
 
 /// 自检入口：**模拟一次任务完成**——未读 +1、刷新系统角标、弹一条系统通知。
@@ -277,7 +286,7 @@ pub fn send_test(app: &AppHandle) -> NotificationStatus {
         session_id: "self-test".into(),
         title: "测试通知".into(),
         cwd: String::new(),
-        finished_at_ms: now_ms(),
+        finished_at_ms: crate::process::epoch_millis(),
         duration_ms: 0,
     };
     {
@@ -612,7 +621,7 @@ fn handle_frame(app: &AppHandle, text: &str) {
 fn on_session_status(app: &AppHandle, session_id: &str, running: bool) {
     let config = current_config(app);
     let id = normalize_session_id(session_id);
-    let now = now_ms();
+    let now = crate::process::epoch_millis();
 
     // 先把事件并入状态机（`running` 记账 + 完成判定），再决定要不要打扰用户：
     // 判定逻辑全在 `record_status` 里，因而可以脱离 AppHandle 单测。
@@ -756,7 +765,7 @@ fn fetch_session_titles(cookie: &str, port: u16) -> Result<HashMap<String, Strin
     let agent = loopback_agent(Duration::from_secs(20));
     let body = serde_json::json!({
         "type": "client-request",
-        "rpcId": format!("dsh-xlink-titles-{}", now_ms()),
+        "rpcId": format!("dsh-xlink-titles-{}", crate::process::epoch_millis()),
         "method": "session/list",
         "payload": { "args": { "_request": {} } },
     });
@@ -963,13 +972,6 @@ fn normalize_session_id(raw: &str) -> String {
 
 fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// 记下 `api-session/added` 里的会话摘要（标题、cwd、子代理标记）。

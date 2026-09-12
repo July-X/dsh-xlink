@@ -458,7 +458,59 @@ fn clear_releases_cache() {
     }
 }
 
+/// 一级源的**惰性**取源闭包：上一级命中时这一级不会被调用。
+type Fetch = Box<dyn FnOnce() -> Result<Vec<ReleaseInfo>, String>>;
+
+/// 回退链上的一级数据源。
+struct Source {
+    /// 在 warning / error 里的自称。
+    name: &'static str,
+    /// 「已回退到 …」后面的名字（括号里注明这一级的已知局限）。
+    fallback: &'static str,
+    /// 这一级返回空列表时给出的原因。
+    empty_reason: &'static str,
+    fetch: Fetch,
+}
+
+/// 把失败原因拼成「来源：原因；来源：原因」。
+fn format_failures(failed: &[(&str, String)]) -> String {
+    failed
+        .iter()
+        .map(|(name, reason)| format!("{name}：{reason}"))
+        .collect::<Vec<_>>()
+        .join("；")
+}
+
+/// 部分源失败时的回退警告：说明前面几级为什么被跳过、现在看到的是哪一级。
+///
+/// 只有一级失败时不重复写来源名——「npm registry 不可用（npm 超时）」已经
+/// 说清楚是哪一级了，这条文案与旧实现逐字一致。
+fn fallback_warning(failed: &[(&str, String)], winner: &str) -> String {
+    if failed.len() == 1 {
+        let (name, reason) = &failed[0];
+        return format!("{name} 不可用（{reason}），已回退到 {winner}");
+    }
+    let skipped = failed
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(" 与 ");
+    format!(
+        "{skipped} 均不可用（{}），已回退到 {winner}",
+        format_failures(failed)
+    )
+}
+
+/// 全部源都失败：每条原因都要带上，用户和维护者才能判断是网络问题还是数据问题。
+fn all_sources_failed(failed: &[(&str, String)]) -> AppError {
+    AppError::GitHub(format!("全部源不可用 — {}", format_failures(failed)))
+}
+
 /// 三个数据源的优先级编排：npm registry → GitHub Releases API → GitHub Atom。
+///
+/// 顺序就是这张表的顺序：第一个给出非空结果的源胜出，它前面几级的失败原因
+/// 汇总成**一条** warning（全失败时汇总成**一条** error）——旧实现把这套文案
+/// 在两个分支里各写了一遍，改一处就会漏另一处。
 ///
 /// 抽成接收三个**惰性**取源闭包的函数是为了能单元测试：源没有失败就不该被
 /// 调用（否则一次成功的 npm 查询会白白多打两次网络），而三种失败组合各自
@@ -469,56 +521,55 @@ fn select_releases<F, G, H>(
     fetch_atom: H,
 ) -> Result<ReleaseList, AppError>
 where
-    F: FnOnce() -> Result<Vec<ReleaseInfo>, String>,
-    G: FnOnce() -> Result<Vec<ReleaseInfo>, String>,
-    H: FnOnce() -> Result<Vec<ReleaseInfo>, String>,
+    F: FnOnce() -> Result<Vec<ReleaseInfo>, String> + 'static,
+    G: FnOnce() -> Result<Vec<ReleaseInfo>, String> + 'static,
+    H: FnOnce() -> Result<Vec<ReleaseInfo>, String> + 'static,
 {
+    let sources = [
+        Source {
+            name: "npm registry",
+            // 第一级不会是回退目标（只有排在它后面的源才可能胜出）。
+            fallback: "npm registry",
+            empty_reason: "npm registry 未返回任何 @deepseek-ai/dsh 版本",
+            fetch: Box::new(fetch_npm),
+        },
+        Source {
+            name: "GitHub API",
+            fallback: "GitHub Releases API",
+            empty_reason: "GitHub Releases API 返回空列表",
+            fetch: Box::new(fetch_api),
+        },
+        Source {
+            name: "GitHub Atom",
+            fallback: "GitHub Atom feed（prerelease 标记可能不完整）",
+            empty_reason: "Atom feed 未解析到 dsh-v* 标签",
+            fetch: Box::new(fetch_atom),
+        },
+    ];
+
     // 空列表与"查询失败"等价：都说明这一级源这次给不出可用数据，应当继续回退。
     // 旧实现把空列表当成硬错误，于是镜像返回 200 但没有版本时用户直接看到报错，
     // 而 GitHub 回退其实完全可用（P2-33 顺带收口）。
-    let npm_source = fetch_npm().and_then(|out| {
-        if out.is_empty() {
-            Err("npm registry 未返回任何 @deepseek-ai/dsh 版本".to_string())
-        } else {
-            Ok(out)
-        }
-    });
-    match npm_source {
-        Ok(out) => Ok(ReleaseList { releases: out, warning: None }),
-        Err(npm_err) => match fetch_api() {
-            Ok(out) if !out.is_empty() => Ok(ReleaseList {
-                releases: out,
-                warning: Some(format!(
-                    "npm registry 不可用（{npm_err}），已回退到 GitHub Releases API"
-                )),
-            }),
-            Ok(_) => {
-                let api_err = "GitHub Releases API 返回空列表".to_string();
-                match fetch_atom() {
-                    Ok(out) => Ok(ReleaseList {
-                        releases: out,
-                        warning: Some(format!(
-                            "npm registry 与 GitHub API 均不可用（npm：{npm_err}；api：{api_err}），已回退到 GitHub Atom feed（prerelease 标记可能不完整）"
-                        )),
-                    }),
-                    Err(atom_err) => Err(AppError::GitHub(format!(
-                        "全部源不可用 — npm：{npm_err}；GitHub API：{api_err}；GitHub Atom：{atom_err}"
-                    ))),
-                }
-            }
-            Err(api_err) => match fetch_atom() {
-                Ok(out) => Ok(ReleaseList {
+    let mut failed: Vec<(&'static str, String)> = Vec::new();
+    for source in sources {
+        let reason = match (source.fetch)() {
+            Ok(out) if !out.is_empty() => {
+                let warning = if failed.is_empty() {
+                    None
+                } else {
+                    Some(fallback_warning(&failed, source.fallback))
+                };
+                return Ok(ReleaseList {
                     releases: out,
-                    warning: Some(format!(
-                        "npm registry 与 GitHub API 均不可用（npm：{npm_err}；api：{api_err}），已回退到 GitHub Atom feed（prerelease 标记可能不完整）"
-                    )),
-                }),
-                Err(atom_err) => Err(AppError::GitHub(format!(
-                    "全部源不可用 — npm：{npm_err}；GitHub API：{api_err}；GitHub Atom：{atom_err}"
-                ))),
-            },
-        },
+                    warning,
+                });
+            }
+            Ok(_) => source.empty_reason.to_string(),
+            Err(error) => error,
+        };
+        failed.push((source.name, reason));
     }
+    Err(all_sources_failed(&failed))
 }
 
 /// 带 TTL 缓存的取源：命中即复用，只缓存成功结果。
