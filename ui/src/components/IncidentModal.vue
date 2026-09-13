@@ -7,33 +7,26 @@ import { store, globalBusy } from '../store.js';
 import { withLoading, isLoading } from '../loading.js';
 import { resolvePluginQuarantine } from '../plugins.js';
 import { showLogs } from '../logs.js';
+import {
+  incidentCause,
+  incidentTitle,
+  incidentCauseLabel,
+  incidentDestination,
+  incidentDestinationLabel,
+} from '../incidents.js';
 
 const incident = computed(() => store.incident);
 
-const cause = computed(() => {
-  const value = incident.value && incident.value.cause;
-  if (value === 'plugin' || value === 'kernel' || value === 'frontend' || value === 'unknown') return value;
-  const suspects = (incident.value && incident.value.suspects) || [];
-  if (suspects.some((suspect) => suspect.kind === 'plugin')) return 'plugin';
-  if (suspects.some((suspect) => suspect.kind === 'kernel')) return 'kernel';
-  return 'unknown';
-});
+const cause = computed(() => incidentCause(incident.value));
 
-const title = computed(() => {
-  if (!incident.value) return '工作台异常';
-  if (incident.value.recovered) return '已在安全模式下启动工作台';
-  if (cause.value === 'plugin') return '工作台异常：疑似插件问题';
-  if (cause.value === 'kernel') return '工作台异常：疑似内核问题';
-  if (cause.value === 'frontend') return '工作台异常：前端 bundle 异常';
-  return '工作台异常：暂未能归因';
-});
+const title = computed(() => incidentTitle(incident.value));
 
-const causeLabel = computed(() => {
-  if (cause.value === 'plugin') return '判断：疑似插件问题';
-  if (cause.value === 'kernel') return '判断：疑似内核问题';
-  if (cause.value === 'frontend') return '判断：前端 bundle 异常（未定位到包名）';
-  return '判断：暂未能归因';
-});
+const causeLabel = computed(() => incidentCauseLabel(incident.value));
+
+// 底部「下一步」按钮的落点：插件问题由每个嫌疑对象自己的按钮处置，环境问题去
+// 设置页（端口 / 数据目录），其余去内核版本页。
+const destination = computed(() => incidentDestination(incident.value));
+const destinationLabel = computed(() => incidentDestinationLabel(destination.value));
 
 const healthText = computed(() => {
   const health = incident.value && incident.value.health;
@@ -48,9 +41,9 @@ const healthText = computed(() => {
     .join('\n');
 });
 
-function goKernelVersions() {
+function goDestination() {
   close();
-  store.activePanel = 'versions';
+  store.activePanel = destination.value;
 }
 
 // 证据区展开状态：按嫌疑对象 id 记录。
@@ -166,7 +159,7 @@ async function resolveSuspect(id, action) {
 
       <p v-if="incident.hint" class="muted" style="margin: 0">{{ incident.hint }}</p>
       <div v-if="cause !== 'plugin' && !incident.recovered" class="btn-row">
-        <el-button type="warning" plain :icon="Connection" @click="goKernelVersions">前往内核版本页</el-button>
+        <el-button type="warning" plain :icon="Connection" @click="goDestination">{{ destinationLabel }}</el-button>
       </div>
     </div>
   </el-dialog>
