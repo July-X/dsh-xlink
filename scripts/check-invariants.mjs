@@ -20,6 +20,8 @@
  *   5. UI 模板里的绑定都能解析（委托 `scripts/check-ui-bindings.mjs`）；
  *   6. 管理窗口的无边框来自 `tauri.conf.json`（不是运行时 `set_decorations`），
  *      且 macOS 标题栏最小化走系统原生最小化——写反了黄灯会静默失效。
+ *   7. workflow 的 `uses:` 全部固定到 commit SHA，且 `.github/dependabot.yml` 存在并
+ *      覆盖 github-actions——钉住的 SHA 只能靠 Dependabot 推进，缺了它策略就是空话。
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -349,6 +351,49 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
     );
   }
   note('管理窗口无边框来自声明式配置，标题栏最小化语义按平台分开');
+}
+
+// --- 7. workflow 供应链：SHA 固定 + Dependabot ---------------------------------
+//
+// AGENTS.md 与 docs/release.md 都承诺「workflow 中所有 `uses:` 固定到 40 位 commit
+// SHA，升级走 Dependabot」。这两件事必须同时成立：SHA 固定把 action 冻在一个已知提交
+// 上，而没有 Dependabot 就没有任何东西会推进它——安全修复永远进不来，策略只剩文字。
+// 这类缺口不会让任何测试变红（仓库曾经就是这样：三份文档都写着「由 Dependabot 升级」，
+// 而 `.github/dependabot.yml` 并不存在），所以在这里显式钉住。
+{
+  const workflowDir = join(root, '.github/workflows');
+  const workflows = existsSync(workflowDir)
+    ? readdirSync(workflowDir).filter((name) => /\.ya?ml$/.test(name))
+    : [];
+  if (workflows.length === 0) fail('supply-chain', '找不到任何 workflow 文件');
+
+  let usesCount = 0;
+  for (const name of workflows) {
+    const lines = read(join('.github/workflows', name)).split('\n');
+    lines.forEach((line, index) => {
+      const match = line.match(/^\s*(?:-\s*)?uses:\s*(\S+)/);
+      if (!match) return;
+      const target = match[1].replace(/^['"]|['"]$/g, '');
+      if (target.startsWith('./')) return; // 仓库内 action 由本仓库代码决定，不需要 SHA
+      usesCount += 1;
+      if (!/@[0-9a-f]{40}$/.test(target)) {
+        fail('supply-chain', `${name}:${index + 1} 的 uses: ${target} 没有固定到 40 位 commit SHA`);
+      }
+    });
+  }
+  note(`workflow 的 ${usesCount} 处 uses: 全部固定到 commit SHA`);
+
+  const dependabot = '.github/dependabot.yml';
+  if (!existsSync(join(root, dependabot))) {
+    fail(
+      'supply-chain',
+      `缺少 ${dependabot}：钉死的 SHA 不会被任何东西自动升级，AGENTS.md 的「升级走 Dependabot」无从执行`,
+    );
+  } else if (!/package-ecosystem:\s*github-actions/.test(read(dependabot))) {
+    fail('supply-chain', `${dependabot} 没有 github-actions 条目，action 的 SHA 永远不会被推进`);
+  } else {
+    note('Dependabot 覆盖 github-actions（SHA 固定才有升级路径）');
+  }
 }
 
 // --- 结果 --------------------------------------------------------------------

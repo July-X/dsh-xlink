@@ -1,0 +1,59 @@
+# Dependabot 配置。
+#
+# AGENTS.md 与 docs/release.md 都写明「workflow 中所有 `uses:` 固定到 40 位 commit SHA，
+# 由 Dependabot 负责升级」——固定的 SHA 不会被任何东西自动推进，没有这份配置就等于把
+# action 永久冻在当前版本（安全补丁也进不来），而这条策略只剩文字。Dependabot 支持
+# SHA 固定的 action：它同时改写 SHA 与后缀的 `# vX.Y.Z` 注释。
+#
+# 三处依赖源：GitHub Actions、管理面板 npm 依赖（锁文件 pnpm-lock.yaml，仓库根）、
+# 桌面壳 Rust 依赖（锁文件 src-tauri/Cargo.lock）。次要版本与补丁合并成一个 PR 减少噪音，
+# 主版本单独成 PR —— action 与框架的主版本升级可能是破坏性的，必须逐个人工判断。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      npm-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      cargo-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
