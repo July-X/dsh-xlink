@@ -1118,6 +1118,23 @@ fn revert_one(
             let backup = backups_root(data_dir).join(backup_rel);
             match fs::read(&backup) {
                 Ok(bytes) => {
+                    // rc.18 之前的版本在"目标已经是补丁后内容"时也会照常备份，
+                    // 于是备份里存下的其实是**补丁内容本身**。按它还原等于什么都
+                    // 没做（写进去的还是补丁代码、文件内容与 mtime 都不变），却会
+                    // 报「已撤销」——用户以为内核跑回了官方代码，实际仍在跑补丁
+                    // （P2-9 的残留）。这类旧记录无法事后修复，只能如实拦下来：
+                    // 旧记录的 `original_sha256` 为空，备份哈希又等于补丁后哈希，
+                    // 两条同时成立才判定，避免误伤"补丁恰好是空操作"这种正常记录。
+                    if file.original_sha256.is_none() && sha256_bytes(&bytes) == file.patched_sha256
+                    {
+                        return Err(AppError::Patch(format!(
+                            "无法自动还原 {}：备份里存的与补丁后的内容完全一致，说明它不是原文件\
+                             （rc.18 之前的外壳在目标已是补丁内容时也会备份，已修）。\
+                             请重新安装该内核版本以恢复官方文件；若只想清除这条应用记录，\
+                             可在确认后选择「清除记录」（文件保持现状）",
+                            file.to
+                        )));
+                    }
                     write_bytes_at(&target, &bytes).map_err(|e| {
                         AppError::Patch(format!("还原 {} 失败：{e}", target.display()))
                     })?;
@@ -1805,6 +1822,66 @@ mod tests {
             "// upstream original\n",
             "清除记录不得改动文件"
         );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn legacy_fake_backup_is_recognized_instead_of_reporting_a_false_revert() {
+        // rc.18 之前的版本在"目标已经是补丁后内容"时也照常备份一次，于是备份里存的是
+        // **补丁内容本身**。按它还原等于什么都没做（写回去的还是补丁代码），却会报
+        // 「已撤销」——用户以为内核跑回了官方代码，实际仍在跑补丁（P2-9 的残留）。
+        // 旧记录里没有 `originalSha256`，因此判据是"无原文件哈希 + 备份哈希等于补丁后
+        // 哈希"。这里把一条正常记录改造成那种旧形态，确认撤销被拦下并给出出路。
+        let root = temp_root("legacy-fake-backup");
+        let data = root.join("data");
+        setup(&data, "0.1.2");
+        let res = make_resource_root(&root);
+        let patches = load_patches(&res).unwrap();
+        let target = kernel::kernel_dir(&data, "0.1.2").join("package.json");
+
+        apply(&data, &patches, "anno-replace").unwrap();
+        let patched_content = fs::read(&target).unwrap();
+
+        // 改造成旧形态：备份里塞补丁后的内容，并抹掉原文件哈希（旧版本没这个字段）。
+        let mut state = read_state(&data);
+        let record = state
+            .applied
+            .iter_mut()
+            .find(|a| a.id == "anno-replace" && a.kernel_version == "0.1.2")
+            .expect("apply 之后必须有记录");
+        let backup_rel = record.files[0]
+            .backup_rel
+            .clone()
+            .expect("replace 模式必然留下备份");
+        record.files[0].original_sha256 = None;
+        write_state(&data, &state).unwrap();
+        fs::write(backups_root(&data).join(&backup_rel), &patched_content).unwrap();
+
+        let error = revert(&data, &patches, "anno-replace", false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("不是原文件"),
+            "必须点破这份备份其实是补丁内容：{error}"
+        );
+        assert!(error.contains("清除记录"), "必须给出出路：{error}");
+        assert!(
+            find_applied(&read_state(&data), "anno-replace", "0.1.2").is_some(),
+            "拦下之后记录必须还在——绝不能悄悄当成已撤销"
+        );
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            patched_content,
+            "文件保持现状（本来也无从还原）"
+        );
+
+        // 带 `original_sha256` 的正常记录不受这条判据影响：即使补丁恰好是空操作。
+        let mut state = read_state(&data);
+        state.applied[0].files[0].original_sha256 = Some(sha256_bytes(&patched_content));
+        write_state(&data, &state).unwrap();
+        revert(&data, &patches, "anno-replace", false)
+            .expect("有原文件哈希的记录不该被这条判据拦下");
+
         fs::remove_dir_all(&root).unwrap();
     }
 
