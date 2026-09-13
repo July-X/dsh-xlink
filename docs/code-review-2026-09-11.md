@@ -70,7 +70,7 @@
 | P2-17 | `open_log_window` 在 async 命令里阻塞 `recv_timeout(20s)` | ✅ 已修 |
 | P2-18 | `check-invariants.mjs` 对补丁 `from` 缺穿越校验、`to` 放行 UNC | ✅ 已修 |
 | P2-19 | 缺"UI 模板未定义标识符"门禁 | ✅ 已修（新增 `scripts/check-ui-bindings.mjs`） |
-| P3-* | 轻微项（见文末"轻微与建议"） | 🔄 进行中（已修 `prune_old_logs` 当天日志语义） |
+| P3-* | 轻微项（见文末"轻微与建议"） | ✅ 已修（批次 5 修 `prune_old_logs` 当天日志语义；批次 6 收掉其余 8 条，见文末） |
 
 ### 关于 P1-2 的最终判定（两次更正后）
 
@@ -374,6 +374,12 @@ npm run build:ui                                    OK（JS 424 KB / CSS 138 KB�
 
 ### 下一步（剩余待修）
 
+> **2026-09-13 更新**：下表的 P2-9 / P2-10 / P2-11 / P2-12 / P2-13 / P2-14 / P2-15 / P2-16
+> 已在同一轮的批次 5 里修完；P3-* 与当时因并发会话而未动的 `cause = "env"` 接线在批次 6
+> 收口（明细见文末「批次 6」）。当前不再有已知遗留缺陷——本文件「未覆盖范围」里的
+> 无真机 E2E、存量代码（`archive.rs` / `quarantine.rs` / `env.rs` / official-chat）
+> 系统审查属于**新一轮审查**的范围，不是待修缺陷。
+
 | 优先级 | 编号 | 说明 |
 | --- | --- | --- |
 | 中 | P2-9 | Windows 进程身份校验换轻量 API（现在每 2.5s 派生一次 PowerShell） |
@@ -436,3 +442,22 @@ P1 明细里。）
 stderr、`errors.js` 兜底措辞、`openExternal` 静默、`<dl>` 内容模型、标题栏 `right:104px`
 与注释不符、`check-signing-keys.test.mjs` 的 key id 钉死、发布白名单两处口径、
 dispatch 自建 tag、`status()` 重复读设置、`.corrupt` 固定名）。
+
+### 批次 6（2026-09-13）：收掉上表剩下的条目与两处「跨轮承诺」
+
+| 编号 | 改动 | 回归/反证 |
+| --- | --- | --- |
+| P3（前端 4 条） | `openExternal` 不再吞错（`bridge.js` 按 P2-39 约定抛给调用方，四个按钮统一走 `notify.js` 的 `openExternalLink`）；两个面板的 `<dl class="entity-meta">` 换成 `div`；`errors.js` 按 Vue 的 `info` 分「渲染」与「运行」两个阶段给标题；Windows 标题栏 `right:104px`（标题实际左偏 52px）换成对称 `padding: 0 104px` | 新增 `ui/test/titlebarLayout.test.js`（几何判据）与 errors 两阶段用例；反证命中：退回 `right:104px` 即变红 |
+| P3（后端 3 条） | `settings.json.corrupt` 不再每 2.5s 轮询重写（内容相同即跳过，变了才更新）；`list_installed` 要求内核入口存在，半成品残骸不再被列成「已安装版本」；`replace_child_slot` 的告警经 `StartReport.warning` 走到面板提示，不再只进 stderr | 新增 `corrupt_file_is_not_backed_up_again_on_every_poll` / `corrupt_backup_follows_changed_content` / `list_installed_skips_directories_without_the_kernel_entry` / `start_report_serializes_the_non_fatal_warning_only_when_present` 与 `ui/test/startWarning.test.js`；三条反证全部命中 |
+| P3（注释漂移） | `commands.rs` / `kernel.rs` 里指向已删除 `get_kernel_log` 的两处注释改为实际调用方 | 编译即校验 |
+| 09-10 P2-9 残留 | rc.18 之前的「伪造备份」（备份里就是补丁内容）现在会被识别并拦下，不再报假的「已撤销」；判据要求同时满足「无 `originalSha256`」与「备份哈希 == 应用后哈希」，避免误伤空操作补丁 | 新增 `legacy_fake_backup_is_recognized_instead_of_reporting_a_false_revert`；反证命中 |
+| 09-11 P2-6 保留项 | 按产品决策收口为 fail-closed：优先 SRI（sha512/sha256），回退老 packument 的 `dist.shasum`（sha1，复用 tungstenite 已引入的 `sha1` 0.11，`Cargo.lock` 只多一行依赖边），两条都缺则拒绝安装 | `download_integrity_compares_content` 扩到 6 组断言；反证命中：退回 `Ok(None)` 即变红 |
+| 本文件「待办（UI，需与并发会话协调）」 | `cause = "env"` 接线完成，并把归因口径抽到 `ui/src/incidents.js` 共享层（两个组件此前各抄一份白名单，正是漏掉 `env` 的形态）；env 的下一步按钮改为去设置页 | 新增 `ui/test/incidents.test.js`（含"组件里再出现本地白名单即变红"的结构哨兵） |
+| 本文件之外（AGENTS.md 有文字无实现） | 补上 `.github/dependabot.yml`（github-actions / npm / cargo），并把「所有 `uses:` 固定到 SHA + dependabot.yml 存在且覆盖 github-actions」加进 `check:invariants` 第 7 项 | 反证命中：删配置文件、把 checkout 改回 `@v6` 均变红 |
+| 本文件之外（内置补丁锚定失配） | `dsh-session-perf` 的 `expectSha256` 锚定 0.1.2-alpha.3 而 `maxKernelVersion: null`，在 0.1.5 内核上「显示可应用、点下去必失败」。v1.3.0 把载荷移植到 0.1.5 线（保留上游三种 fail-soft）并收紧为实测逐字节相同的 `0.1.5-alpha.2` ~ `0.1.5-rc.2` | `verify-dsh-session-perf` 30 条断言全绿，三条反证命中；真实会话目录上官方 dist 与补丁载荷枚举出的 207 条 artifact 逐条（含顺序）一致 |
+| 本文件之外（技能启停未接线） | 面板接线 `skill_set_enabled`：技能数 chip 打开弹层，逐技能开关 + 按条目 loading | 新增 `ui/test/skillEnable.test.js`；`check:invariants` 的「前端调用命令」数 44 → 45，说明这条命令这次真的被调用了 |
+
+**批次 6 结束时的门禁实测**：`cargo test` 310 passed / 4 ignored；`clippy --all-targets`
+零警告；`fmt --check` 通过；`test:ui` 48 passed；`test:scripts` 20 passed；
+`check:invariants` 通过；`check:code-budget` 20496 / 20560 行、重复区间 3 处；
+`npm run test:session-perf` 30 条断言通过。
