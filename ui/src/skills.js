@@ -60,6 +60,23 @@ export function uninstallSkill(id) {
   );
 }
 
+/// 启用/停用某个包里的单个技能（后端在活动根里 link/unlink，内核 watcher 即时生效）。
+///
+/// 这条命令此前只有后端实现与文档描述，面板从未调用过——「停用」是比整包卸载更轻的
+/// 收手方式（保留在中央库、随时可恢复），却只能在面板外直接调命令。
+export function setSkillEnabled(id, name, enabled) {
+  const verb = enabled ? '启用' : '停用';
+  return withProgress(
+    {
+      cmd: 'skill_set_enabled',
+      start: `正在${verb}技能 ${name} …`,
+      done: `技能 ${name} 已${verb}` + effectSuffix(),
+      fail: `${verb}失败：${name}`,
+    },
+    (channel) => ({ id, name, enabled, onEvent: channel })
+  );
+}
+
 // 手动检查挂按钮 loading；面板进入时低频自检，启动期间失败静默。
 // 策略（TTL / 逐包失败退避 / 互斥 / 去重 / 提示）见 async.js 的 createUpdateChecker。
 export const checkSkillUpdates = createUpdateChecker({

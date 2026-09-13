@@ -13,12 +13,31 @@ import {
   installSkill,
   updateSkill,
   uninstallSkill,
+  setSkillEnabled,
   checkSkillUpdates,
 } from '../skills.js';
 import { openExternal } from '../bridge.js';
-import { globalBusy, isLoading } from '../loading.js';
+import { globalBusy, isLoading, withLoading } from '../loading.js';
 
 const view = computed(() => skillStore.view);
+
+// 技能启停：面板此前只提供安装/卸载/更新/重新同步，启停虽然有完整的后端能力
+// （skill_set_enabled + enabled:false 语义 + 启动对账），却只能在面板外直接调命令。
+// 粒度是「包里的单个技能」——停用比整包卸载轻，条目留在中央库、随时可恢复。
+function skillEnabledKey(id, name) {
+  return `skillEnabled:${id}:${name}`;
+}
+
+function toggleSkill(row, skill, enabled) {
+  return withLoading(skillEnabledKey(row.id, skill.name), () =>
+    setSkillEnabled(row.id, skill.name, enabled)
+  );
+}
+
+function skillCountText(row) {
+  const disabled = row.skills.filter((skill) => !skill.enabled).length;
+  return disabled > 0 ? `${row.skills.length} 个技能（${disabled} 个已停用）` : `${row.skills.length} 个技能`;
+}
 
 // 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进标题旁的
 // 信息气泡；路径优先用后端返回的真实根目录，拿不到时回退到约定路径。
@@ -87,7 +106,30 @@ const storeTip = computed(() => {
               <span class="meta-version">{{ row.installed_version || '—' }}</span>
               <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>
               <span v-if="row.pinned && row.origin !== 'local'" class="meta-pinned">已锁定版本</span>
-              <span class="meta-skill-count">{{ row.skills.length }} 个技能</span>
+              <!-- 技能启停收进弹层：一行一包的两行排版不被撑高，启停又能逐技能操作。 -->
+              <el-popover trigger="click" placement="top" :width="288" popper-class="skill-toggle-popover">
+                <template #reference>
+                  <span class="meta-skill-count is-clickable" title="点击启用 / 停用单个技能">
+                    {{ skillCountText(row) }}
+                  </span>
+                </template>
+                <div v-for="skill in row.skills" :key="skill.name" class="skill-toggle-item">
+                  <span class="skill-toggle-name" :title="skill.description">{{ skill.name }}</span>
+                  <el-tag v-if="skill.enabled && !skill.present" size="small" type="warning" effect="plain">
+                    条目缺失
+                  </el-tag>
+                  <el-switch
+                    :model-value="skill.enabled"
+                    :loading="isLoading(skillEnabledKey(row.id, skill.name))"
+                    :disabled="globalBusy"
+                    size="small"
+                    @change="(value) => toggleSkill(row, skill, value)"
+                  />
+                </div>
+                <p class="skill-toggle-tip muted">
+                  停用只把条目移出内核技能根，技能包仍留在中央库，随时可以再启用；重启工作台后依然生效。
+                </p>
+              </el-popover>
             </dl>
             <div class="entity-actions">
               <el-tooltip v-if="row.latest_version" :content="'更新到 ' + row.latest_version" placement="top" effect="dark">
