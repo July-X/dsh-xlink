@@ -48,7 +48,10 @@ const FILE_BUDGETS = {
   'ui/src/store.js': 430,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
-const TOTAL_BUDGET = 20400;
+// 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有
+// 后端实现，面板从未调用过：弹层 + 开关 + 动作 + 样式约 30 行），加上归因口径抽到
+// ui/src/incidents.js 共享层。两处都是新增能力而非复制粘贴，重复区间数仍为 3。
+const TOTAL_BUDGET = 20500;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
