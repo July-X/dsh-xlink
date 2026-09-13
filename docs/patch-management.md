@@ -169,9 +169,13 @@ UI 表现（`ui/src/components/SettingsPanel.vue`）：
 `dsh-session-perf` 曾短暂标记过 `supersededSinceKernelVersion: 0.1.2-alpha.3`（误判官方
 alpha.3 重写了目标文件）；经 npm registry tarball 实测，官方 alpha.2 与 alpha.3 的
 `dsh-session-persistence-jsonl/lib/index.js` 逐字节相同（SHA-256 均为 d5ae2c7d…），
-官方并没有实现持久层枚举缓存（并发两次 `list` 仍全量遍历两次），因此 v1.2.0 锚定
-alpha.3 重新收录并移除 superseded。当前仅 `dsh-file-perf` 在「设置 → 内置补丁」页
-呈现灰度（不可应用）状态。
+官方并没有实现持久层枚举缓存，因此 v1.2.0 曾锚定 alpha.3 重新收录并移除 superseded。
+**v1.3.0 起锚定整体上移到 0.1.5 线**：官方自 0.1.2-alpha.4 起重写了该模块（`listArtifacts`
+由「反压缩探测 + `parseHeaderMeta`」改为「generation 解析 + `readGenerationHeader`」），
+v1.2.0 的 `expectSha256` 在 0.1.5 内核上一律命中安全闸、点「应用」必然失败，而
+`maxKernelVersion: null` 又让它显示为可应用。v1.3.0 把载荷移植到 0.1.5 线的 dist 上
+（保留上游新的 fail-soft 契约），并把范围收紧为实测逐字节相同的 `0.1.5-alpha.2` ~
+`0.1.5-rc.2`。当前仅 `dsh-file-perf` 在「设置 → 内置补丁」页呈现灰度（不可应用）状态。
 
 ## 开发流程与计划
 
@@ -200,7 +204,7 @@ alpha.3 重新收录并移除 superseded。当前仅 `dsh-file-perf` 在「设�
       的端到端验证）。v1.1.0 起同时覆盖 `dsh-file-reference-local` 与
       `dsh-session-reference` 两个包。此前用于验证机制的示例补丁（`xlink-hello` /
       `xlink-stub-annotate`）已移除，机制能力由单元测试与 `dsh-file-perf` 覆盖。
-- [x] 第二个真实补丁：`dsh-session-perf` v1.2.0（JSONL 持久层会话 header 枚举的短 TTL 缓存、并发扫描合并、生命周期失效和旧载荷状态识别；锚定官方 0.1.2-alpha.3 重新收录——官方未实现枚举缓存，alpha.2/alpha.3 官方 lib 逐字节相同）。
+- [x] 第二个真实补丁：`dsh-session-perf`（JSONL 持久层会话 header 枚举的短 TTL 缓存、并发扫描合并、生命周期失效和旧载荷状态识别）。v1.2.0 锚定 0.1.2-alpha.3；**v1.3.0 起锚定官方 0.1.5 线**（`0.1.5-alpha.2` ~ `0.1.5-rc.2`，三者 dist 逐字节相同），载荷按上游新的 generation 解析路径重写并保留其 fail-soft 契约——旧锚定在内核自 0.1.2-alpha.4 起重写目标文件后已无法应用。
 - [x] 第三个真实补丁：`dsh-escalation-same-mode` v1.1.0（`copy + expectSha256` 模式：在 `@deepseek-ai/dsh-sandbox/lib/index.js` 的 `approveEscalation` 顶部插入同模式短路，让模型在已处于 `danger-full-access` 等目标模式时仍可合法送入同模式 `sandbox_permissions`，不再被「not strictly wider」击穿；其它非更宽请求仍按原路径抛错；v1.1.0 重新对齐官方 `0.1.3-alpha.2` dist——官方仍未采纳该短路，只把 `assertNever` 从 `@deepseek-ai/dsh-llm` 拆到 `@deepseek-ai/dsh-util-values`，载荷与 SHA 随之更新；v1.0.0 仅锚定 `0.1.1-rc.2`，已应用旧版的内核记录仍可撤销，重应用需先撤销旧记录再用 v1.1.0）。
 - [ ] 二期：补丁版本升级（`update` 命令：备份旧应用记录 → 应用新版本，无需先撤销）；
       按内核版本的应用视图（切换内核后对每个已装版本单独管理）。
@@ -255,20 +259,23 @@ alpha.3 重新收录并移除 superseded。当前仅 `dsh-file-perf` 在「设�
 - 边界：不缓存完整会话日志，不改变 `session.inspect()`、`readFrom()` 或
   `session.history` 的解压、校验、分页和错误语义。外部进程直接改写 `~/.dsh/sessions` 时，
   最多有一个 TTL 的最终一致性窗口。
-- 来源：目标文件来自 npm `@deepseek-ai/dsh-session-persistence-jsonl@0.1.2-alpha.3`
-  （官方 alpha.2 与 alpha.3 的 `lib/index.js` 逐字节相同），原始 SHA-256 为
-  `d5ae2c7d6f6fbca6b2d4d8c6fc7ffb1342d4ed6484ec9cd309ee5c7bf88e9a00`，v1.2.0 补丁后
-  SHA-256 为 `29d2501e9477633e0d1829edd554078329fdf3959bf0fff50672159bdeda6299`
-  （更早的 v1.0.1 / v1.1.0 载荷为 `9ed3fe3c…0a7f96e` / `f9985512…daffb6ff`，仍被
-  `scripts/verify-dsh-session-perf.mjs` 识别以便核对旧应用记录）。载荷按
+- 来源：目标文件来自 npm `@deepseek-ai/dsh-session-persistence-jsonl@0.1.5-rc.2`
+  （官方 `0.1.5-alpha.2` / `0.1.5-rc.1` / `0.1.5-rc.2` 的 `lib/index.js` 逐字节相同，
+  本机已安装内核实测一致），原始 SHA-256 为
+  `7d0640c9fc4be6c703b77605fdee6af519c542fae28a6cd4489353309812f062`，v1.3.0 补丁后
+  SHA-256 为 `89f0ad6567e791c9a8bf3bd293fe2a7650835bfd146a4adc9b1fcc5c5cedb14a`
+  （更早的载荷 v1.0.1 / v1.1.0 为 `9ed3fe3c…0a7f96e` / `f9985512…daffb6ff`，v1.2.0 为
+  `29d2501e…6299`，仍被 `scripts/verify-dsh-session-perf.mjs` 识别以便核对旧应用记录；
+  它们锚定的是 0.1.1-rc.2 / 0.1.2-alpha.x 内核线，在该线上仍可正常撤销）。载荷按
   包名保存在 `files/dsh-session-persistence-jsonl/index.js`，manifest 的版本范围和
   `expectSha256` 只允许覆盖已核验的原始文件；补丁系统仍按文件级备份、原子写入和可撤销规则处理。
 - 验证：`npm run test:session-perf` 在临时模块树中检查清单、语法、并发合并、TTL 命中、
-  事件失效、调用方拷贝、缺失 artifact / 损坏 header 的 fail-soft、失败重试和 abort 语义；应用到当前内核后执行
+  事件失效、调用方拷贝、无可用 generation / 损坏 header / 不支持既有格式三种 fail-soft、
+  按目录顺序检出重复会话 id、失败重试和 abort 语义；应用到当前内核后执行
   `node scripts/verify-dsh-session-perf.mjs --require-applied` 检查目标状态，再用真实
-  `session.list` 和选中历史会话的 `session.history` 分开复测。v1.2.0 锚定
-  `0.1.2-alpha.3`（`minKernelVersion: 0.1.2-alpha.3`，官方 alpha.2/alpha.3 的
-  目标文件逐字节相同），设置页正常提供「应用/撤销」。
+  `session.list` 和选中历史会话的 `session.history` 分开复测。v1.3.0 锚定
+  `0.1.5-rc.2`（`minKernelVersion: 0.1.5-alpha.2`、`maxKernelVersion: 0.1.5-rc.2`，
+  三个版本的目标文件逐字节相同），设置页正常提供「应用/撤销」。
 
 ## 第三个内置补丁：dsh-escalation-same-mode
 

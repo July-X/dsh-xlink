@@ -4,17 +4,17 @@
     {
       "id": "dsh-session-perf",
       "name": "dsh 历史会话列表加载提速",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "kind": "patch",
-      "description": "v1.2.0 锚定官方 0.1.2-alpha.3：官方 alpha.2 与 alpha.3 的 dsh-session-persistence-jsonl lib/index.js 逐字节相同（npm registry 实测），官方未实现持久层枚举缓存（实测并发两次 session.list 仍全量遍历两次），设置页正常提供应用/撤销。补丁在 JSONL 持久层共享并缓存会话 artifact/header 扫描，避免 workspace、session.list 和 session-reference 在短时间内重复遍历全部 Zstandard 日志；不改变整日志 history 读取语义。",
-      "minKernelVersion": "0.1.2-alpha.3",
-      "maxKernelVersion": null,
+      "description": "v1.3.0 锚定官方 0.1.5-rc.2：官方 0.1.5-alpha.2 / 0.1.5-rc.1 / 0.1.5-rc.2 的 dsh-session-persistence-jsonl lib/index.js 逐字节相同（npm registry 与本机已安装内核实测，SHA-256 均为 7d0640c9…），官方仍未实现持久层枚举缓存，设置页正常提供应用/撤销。补丁在 JSONL 持久层共享并缓存会话 artifact/header 扫描，避免 workspace、session.list 和 session-reference 在短时间内重复遍历全部 Zstandard 日志；不改变整日志 history 读取语义。v1.2.0 锚定的是 0.1.2-alpha.3，该线自 0.1.2-alpha.4 起目标文件已被官方重写，故收紧到已实测一致的范围。",
+      "minKernelVersion": "0.1.5-alpha.2",
+      "maxKernelVersion": "0.1.5-rc.2",
       "files": [
         {
           "mode": "copy",
           "from": "files/dsh-session-persistence-jsonl/index.js",
           "to": "node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js",
-          "expectSha256": "d5ae2c7d6f6fbca6b2d4d8c6fc7ffb1342d4ed6484ec9cd309ee5c7bf88e9a00",
+          "expectSha256": "7d0640c9fc4be6c703b77605fdee6af519c542fae28a6cd4489353309812f062",
           "required": true
         }
       ]

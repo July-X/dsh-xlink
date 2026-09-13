@@ -19,16 +19,25 @@ import { spawnSync } from 'node:child_process';
 
 const DSH_HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh');
 const PATCH_ID = 'dsh-session-perf';
-const PATCH_VERSION = '1.2.0';
-const MIN_KERNEL_VERSION = '0.1.2-alpha.3';
+const PATCH_VERSION = '1.3.0';
+const MIN_KERNEL_VERSION = '0.1.5-alpha.2';
+const MAX_KERNEL_VERSION = '0.1.5-rc.2';
 const TARGET = 'node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js';
 const MANIFEST = resolve('src-tauri/resources/patches/dsh-session-perf/manifest.json');
-// npm @deepseek-ai/dsh-session-persistence-jsonl@0.1.2-alpha.2 / 0.1.2-alpha.3 原始 dist（两版本逐字节相同）
-const ORIGINAL_SHA256 = 'd5ae2c7d6f6fbca6b2d4d8c6fc7ffb1342d4ed6484ec9cd309ee5c7bf88e9a00';
-// 旧版 patched 载荷（v1.0.1 针对 0.1.1-rc.2；v1.1.0 针对 0.1.2-alpha.2），保留以识别旧版应用记录
-const LEGACY_PATCHED_SHA256 = ['9ed3fe3cfa3890e8559efd9369efac9866c19c3737c3328b6355c338f0a7f96e', 'f9985512945738f32a29a6c34a3cda2e64ec1d051482a371c634e3fadaffb6ff'];
-// v1.2.0 的 patched 载荷（锚定 0.1.2-alpha.3）
-const PATCHED_SHA256 = '29d2501e9477633e0d1829edd554078329fdf3959bf0fff50672159bdeda6299';
+// npm @deepseek-ai/dsh-session-persistence-jsonl@0.1.5-alpha.2 / 0.1.5-rc.1 / 0.1.5-rc.2
+// 原始 dist（三者逐字节相同，本机已安装内核实测一致）
+const ORIGINAL_SHA256 = '7d0640c9fc4be6c703b77605fdee6af519c542fae28a6cd4489353309812f062';
+// 更早的 patched 载荷：v1.0.1 / v1.1.0 针对 0.1.1-rc.2 与 0.1.2-alpha.2，v1.2.0 针对
+// 0.1.2-alpha.2 / alpha.3。它们锚定的是另一条内核线（官方自 0.1.2-alpha.4 起重写了目标
+// 文件），在当前 0.1.5 范围内不可能出现，因此只用于识别与提示，不再计入失败——把"另一个
+// 内核线上的历史载荷"报成红灯会让维护者以为补丁坏了。已存在的应用记录仍可在设置页撤销。
+const LEGACY_PATCHED_SHA256 = [
+  '9ed3fe3cfa3890e8559efd9369efac9866c19c3737c3328b6355c338f0a7f96e',
+  'f9985512945738f32a29a6c34a3cda2e64ec1d051482a371c634e3fadaffb6ff',
+  '29d2501e9477633e0d1829edd554078329fdf3959bf0fff50672159bdeda6299',
+];
+// v1.3.0 的 patched 载荷（锚定 0.1.5-rc.2）
+const PATCHED_SHA256 = '89f0ad6567e791c9a8bf3bd293fe2a7650835bfd146a4adc9b1fcc5c5cedb14a';
 const CACHE_MARKER = 'const SESSION_ARTIFACT_LIST_CACHE_TTL_MS = 1000;';
 const requireApplied = process.argv.includes('--require-applied');
 const positional = process.argv.slice(2).find((arg) => !arg.startsWith('--'));
@@ -66,8 +75,8 @@ async function loadPatch(kernelRoot) {
   if (patch === undefined) throw new Error('manifest 中缺少 dsh-session-perf');
   check(`补丁版本为 ${PATCH_VERSION}`, patch.version === PATCH_VERSION);
   check(`补丁最低支持内核 ${MIN_KERNEL_VERSION}`, patch.minKernelVersion === MIN_KERNEL_VERSION);
-  check('补丁不再标记 superseded（v1.2.0 锚定 0.1.2-alpha.3 重新收录）', patch.supersededSinceKernelVersion === undefined);
-  check('补丁不限定最高内核版本（v1.2.0 锚定 0.1.2-alpha.3）', patch.maxKernelVersion === null);
+  check(`补丁最高支持内核 ${MAX_KERNEL_VERSION}`, patch.maxKernelVersion === MAX_KERNEL_VERSION);
+  check('补丁不标记 superseded（官方仍未实现枚举缓存）', patch.supersededSinceKernelVersion === undefined);
   check('补丁只修改一个 persistence 目标', patch.files?.length === 1 && patch.files[0]?.mode === 'copy' && patch.files[0]?.to === TARGET);
   const file = patch.files?.[0];
   if (file === undefined || file.mode !== 'copy' || typeof file.from !== 'string') throw new Error('manifest 中缺少 persistence copy 文件');
@@ -98,13 +107,22 @@ async function loadPatch(kernelRoot) {
     );
   }
   if (isLegacyPatched) {
-    check('目标文件不是旧版载荷', false, '检测到 v1.0.1 / v1.1.0 旧载荷，请先撤销旧补丁记录，再应用当前版本');
+    console.log(
+      '! 目标文件是更早版本（v1.0.1 / v1.1.0 / v1.2.0）的补丁载荷：那些版本锚定的是 ' +
+        '0.1.1-rc.2 / 0.1.2-alpha.x 内核线，当前版本不适用于该内核；' +
+        '已存在的应用记录可在设置页正常撤销（撤销走 state.json 记录，不受版本范围影响）',
+    );
   }
   if (requireApplied) check('目标文件已应用补丁', isPatched);
 
   const patchedSource = isPatched ? originalSource : payloadSource;
   check('补丁载荷包含 header cache', patchedSource.includes(CACHE_MARKER));
-  check('补丁载荷保留原始 export', patchedSource.includes('export { JsonlCompressionSchema, JsonlSessionPersistence, JsonlSessionPersistence as default };'));
+  // 0.1.5 线起官方去掉了具名导出 `JsonlSessionPersistence`，只保留 default，
+  // 载荷必须与目标 dist 的导出面完全一致。
+  check(
+    '补丁载荷保留原始 export',
+    patchedSource.includes('export { JsonlCompressionSchema, JsonlSessionPersistence as default };'),
+  );
   return { patch, targetPath, originalSource, patchedSource, targetSha };
 }
 
@@ -136,7 +154,12 @@ async function behaviorCheck(source, kernelRoot) {
 
     const cordisUrl = pathToFileURL(join(kernelRoot, 'node_modules/@deepseek-ai/cordis/lib/index.js')).href;
     const persistenceUrl = `${pathToFileURL(moduleFile).href}?dshSessionPerf=${Date.now()}`;
-    const [{ Context }, { JsonlSessionPersistence }] = await Promise.all([
+    // 0.1.5 线的 dist 只导出 default（具名导出 `JsonlSessionPersistence` 已被官方移除），
+    // 载荷必须保持这一点，因此这里也只取 default。
+    const { SessionFormatUnsupportedError } = await import(
+      pathToFileURL(join(kernelRoot, 'node_modules/@deepseek-ai/dsh-session-persistence/lib/index.js')).href
+    );
+    const [{ Context }, { default: JsonlSessionPersistence }] = await Promise.all([
       import(cordisUrl),
       import(persistenceUrl),
     ]);
@@ -144,14 +167,18 @@ async function behaviorCheck(source, kernelRoot) {
     const ctx = new Context();
     ctx.provide('sessions', { list: () => [], get: () => undefined });
     const persistence = new JsonlSessionPersistence(ctx, { root: tempSessionRoot, compression: 'zstd' });
-    // Bypass only the real filesystem walk; the patched prototype remains under test.
+    // 只绕过真实目录的编码探测：补丁后的 listArtifacts 仍然是被测对象。
+    // `ensureRootEncoding()` 会自行调用 listProjectDirs，绕不过去就会把扫描计数搅乱。
     persistence.rootEncodingCheck = Promise.resolve();
-    persistence.coordinator.initFor = () => ({});
-    persistence.coordinator.retire = () => {};
     const projectPath = join(tempSessionRoot, 'project');
     const sessionPath = join(projectPath, 'session');
     await mkdir(sessionPath, { recursive: true });
+    // list() 会对 artifact.path 做真实的 stat（revision/sizeBytes），所以路径必须真实存在。
     await writeFile(join(sessionPath, 'session.jsonl.zstd'), 'test');
+    const header = { version: 3, id: 'dsh-session-perf-test', createdAt: 1 };
+    // 0.1.5 线把"逐目录找日志 + 读 header"拆成了 resolveGenerationInDirectory /
+    // readGenerationHeader 两步，补丁改的正是驱动这两步的目录循环，因此 stub 这两步。
+    const selectedFor = (dir) => ({ sourcePath: join(dir, 'session.jsonl.zstd'), sourceVersion: 3 });
     let walks = 0;
     let clock = realDateNow();
     Date.now = () => clock;
@@ -161,29 +188,22 @@ async function behaviorCheck(source, kernelRoot) {
       return [projectPath];
     };
     persistence.listSessionDirs = async () => [sessionPath];
-    persistence.exists = async (path) => path.endsWith('session.jsonl.zstd');
-    persistence.readFirstZstdLine = async () => JSON.stringify({
-      type: 'session',
-      version: 1,
-      id: 'dsh-session-perf-test',
-      createdAt: 1,
-      cwd: tempSessionRoot,
-      delegationDepth: 0,
-    });
-    persistence.assertStoredIdentity = async () => {};
+    persistence.resolveGenerationInDirectory = async (dir) => selectedFor(dir);
+    persistence.readGenerationHeader = async () => header;
 
     const [first, second] = await Promise.all([persistence.list(), persistence.list()]);
     check('并发 persistence.list 共享一次扫描', walks === 1, `扫描次数=${walks}`);
-    check('首次扫描返回 artifact header', first.length === 1 && first[0].id === 'dsh-session-perf-test');
-    check('每个调用方获得独立的数组和 header', first !== second && first[0] !== second[0], '避免调用方修改缓存');
-    first[0].id = 'caller-mutated';
-    first.push({ id: 'caller-mutated' });
+    check('首次扫描返回 artifact header', first.length === 1 && first[0].header?.id === 'dsh-session-perf-test');
+    check(
+      '每个调用方获得独立的数组和 header',
+      first !== second && first[0] !== second[0] && first[0].header !== second[0].header,
+      '避免调用方修改缓存',
+    );
+    first[0].header.id = 'caller-mutated';
+    first.push({ header: { id: 'caller-mutated' } });
     const afterMutation = await persistence.list();
     check('TTL 内重复 persistence.list 命中缓存', walks === 1, `扫描次数=${walks}`);
-    check('调用方修改不会污染缓存', afterMutation.length === 1 && afterMutation[0].id === 'dsh-session-perf-test');
-
-    const snapshots = await persistence.listSnapshots();
-    check('listSnapshots 复用 artifact 缓存', walks === 1 && snapshots.length === 1 && typeof snapshots[0].revision === 'string');
+    check('调用方修改不会污染缓存', afterMutation.length === 1 && afterMutation[0].header.id === 'dsh-session-perf-test');
 
     clock += 1001;
     const afterTtl = await persistence.list();
@@ -197,32 +217,36 @@ async function behaviorCheck(source, kernelRoot) {
     await persistence.list();
     check('session/disposed 事件使缓存失效', walks === 4, `扫描次数=${walks}`);
 
+    // 该目录没有可用 generation：上游语义是跳过（continue），不是报错。
     ctx.emit('session/disposed', { id: 'dsh-session-perf-test' });
-    persistence.exists = async () => false;
+    persistence.resolveGenerationInDirectory = async () => undefined;
     const missing = await persistence.list();
-    check('缺失 artifact 仍 fail-soft 且不返回幽灵会话', walks === 5 && missing.length === 0);
+    check('无可用 generation 仍 fail-soft 且不返回幽灵会话', walks === 5 && missing.length === 0);
 
+    // header 解析不出来：上游语义同样是跳过。
     ctx.emit('session/disposed', { id: 'dsh-session-perf-test' });
-    persistence.exists = async (path) => path.endsWith('session.jsonl.zstd');
-    persistence.readFirstZstdLine = async () => 'not-json';
+    persistence.resolveGenerationInDirectory = async (dir) => selectedFor(dir);
+    persistence.readGenerationHeader = async () => undefined;
     const malformed = await persistence.list();
     check('损坏 header 仍 fail-soft 且不阻断列表', walks === 6 && malformed.length === 0);
 
+    // 不支持的既有格式：上游抛 SessionFormatUnsupportedError 并跳过。
+    // 并发化不能把这个 fail-soft 契约变成"整个列表失败"。
+    ctx.emit('session/disposed', { id: 'dsh-session-perf-test' });
+    persistence.readGenerationHeader = async () => {
+      throw new SessionFormatUnsupportedError('unsupported fixture format', { kind: 'jsonl', path: 'fixture' });
+    };
+    const unsupported = await persistence.list();
+    check('不支持的 generation 被跳过而不是让整次扫描失败', walks === 7 && unsupported.length === 0);
+
     ctx.emit('session/disposed', { id: 'dsh-session-perf-test' });
     let failedAttempt = true;
-    persistence.readFirstZstdLine = async () => {
+    persistence.readGenerationHeader = async () => {
       if (failedAttempt) {
         failedAttempt = false;
         throw new Error('simulated header read failure');
       }
-      return JSON.stringify({
-        type: 'session',
-        version: 1,
-        id: 'dsh-session-perf-test',
-        createdAt: 1,
-        cwd: tempSessionRoot,
-        delegationDepth: 0,
-      });
+      return header;
     };
     let scanFailed = false;
     try {
@@ -231,7 +255,35 @@ async function behaviorCheck(source, kernelRoot) {
       scanFailed = true;
     }
     const recovered = await persistence.list();
-    check('扫描失败不会写入缓存，下一次调用会重试', scanFailed && walks === 8 && recovered.length === 1);
+    check('扫描失败不会写入缓存，下一次调用会重试', scanFailed && walks === 9 && recovered.length === 1, `扫描次数=${walks}`);
+
+    // 重复会话 id：仍必须报错，且判据按**目录顺序**而不是完成顺序裁决
+    // （第一个目录故意更慢，若聚合时丢掉了顺序，这里就会漏报）。
+    const dupCtx = new Context();
+    dupCtx.provide('sessions', { list: () => [], get: () => undefined });
+    const dupPersistence = new JsonlSessionPersistence(dupCtx, { root: tempSessionRoot, compression: 'zstd' });
+    dupPersistence.rootEncodingCheck = Promise.resolve();
+    const dupDirs = [];
+    for (const name of ['dup-a', 'dup-b']) {
+      const dir = join(tempSessionRoot, name, 'session');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'session.jsonl.zstd'), 'test');
+      dupDirs.push(dir);
+    }
+    dupPersistence.listProjectDirs = async () => [join(tempSessionRoot, 'dup-a'), join(tempSessionRoot, 'dup-b')];
+    dupPersistence.listSessionDirs = async () => dupDirs;
+    dupPersistence.resolveGenerationInDirectory = async (dir) => selectedFor(dir);
+    dupPersistence.readGenerationHeader = async (selected) => {
+      await delay(selected.sourcePath.includes('dup-a') ? 15 : 1);
+      return { version: 3, id: 'duplicate-fixture', createdAt: 1 };
+    };
+    let duplicateRejected = false;
+    try {
+      await dupPersistence.list();
+    } catch (error) {
+      duplicateRejected = /duplicate JSONL session id/.test(String(error && error.message));
+    }
+    check('并发扫描仍按目录顺序检出重复会话 id', duplicateRejected);
 
     const concurrentCtx = new Context();
     concurrentCtx.provide('sessions', { list: () => [], get: () => undefined });
@@ -239,6 +291,10 @@ async function behaviorCheck(source, kernelRoot) {
     concurrentPersistence.rootEncodingCheck = Promise.resolve();
     const concurrentProjectPath = join(tempSessionRoot, 'concurrent');
     const concurrentDirs = Array.from({ length: 20 }, (_, index) => join(concurrentProjectPath, `session-${index}`));
+    for (const dir of concurrentDirs) {
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'session.jsonl.zstd'), 'test');
+    }
     let concurrentWalks = 0;
     let headerReads = 0;
     let activeHeaders = 0;
@@ -248,9 +304,8 @@ async function behaviorCheck(source, kernelRoot) {
       return [concurrentProjectPath];
     };
     concurrentPersistence.listSessionDirs = async () => concurrentDirs;
-    concurrentPersistence.exists = async (path) => path.endsWith('session.jsonl.zstd');
-    concurrentPersistence.assertStoredIdentity = async () => {};
-    concurrentPersistence.readFirstZstdLine = async (path, signal) => {
+    concurrentPersistence.resolveGenerationInDirectory = async (dir) => selectedFor(dir);
+    concurrentPersistence.readGenerationHeader = async (selected, expectedId, signal) => {
       signal?.throwIfAborted();
       activeHeaders += 1;
       maxActiveHeaders = Math.max(maxActiveHeaders, activeHeaders);
@@ -258,14 +313,7 @@ async function behaviorCheck(source, kernelRoot) {
         await delay(5);
         signal?.throwIfAborted();
         headerReads += 1;
-        return JSON.stringify({
-          type: 'session',
-          version: 1,
-          id: basename(dirname(path)),
-          createdAt: 1,
-          cwd: tempSessionRoot,
-          delegationDepth: 0,
-        });
+        return { version: 3, id: basename(dirname(selected.sourcePath)), createdAt: 1 };
       } finally {
         activeHeaders -= 1;
       }
@@ -274,9 +322,13 @@ async function behaviorCheck(source, kernelRoot) {
     check(
       'header 探测使用有界并发且保留目录顺序',
       concurrentWalks === 1 && headerReads === concurrentDirs.length && concurrentRows.length === concurrentDirs.length
-        && maxActiveHeaders > 1 && maxActiveHeaders <= 16
+        && maxActiveHeaders > 1 && maxActiveHeaders <= 16,
+      `最大并发=${maxActiveHeaders}`,
     );
-    check('并发扫描结果顺序稳定', concurrentRows[0]?.id === 'session-0' && concurrentRows.at(-1)?.id === 'session-19');
+    check(
+      '并发扫描结果顺序稳定',
+      concurrentRows[0]?.header?.id === 'session-0' && concurrentRows.at(-1)?.header?.id === 'session-19',
+    );
 
     const abortCtx = new Context();
     abortCtx.provide('sessions', { list: () => [], get: () => undefined });
@@ -290,7 +342,7 @@ async function behaviorCheck(source, kernelRoot) {
       return [];
     };
     const controller = new AbortController();
-    const pending = abortPersistence.list(controller.signal);
+    const pending = abortPersistence.list({ signal: controller.signal });
     const survivor = abortPersistence.list();
     controller.abort();
     let aborted = false;
@@ -315,7 +367,7 @@ async function behaviorCheck(source, kernelRoot) {
       return [];
     };
     const onlyController = new AbortController();
-    const onlyPending = allAbortPersistence.list(onlyController.signal);
+    const onlyPending = allAbortPersistence.list({ signal: onlyController.signal });
     await new Promise((resolvePromise) => setImmediate(resolvePromise));
     onlyController.abort();
     let onlyAborted = false;
