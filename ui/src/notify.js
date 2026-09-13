@@ -2,6 +2,7 @@
 // WKWebView 没有原生 confirm()，ElMessageBox 是页内实现，天然可用。
 import { ElMessage } from 'element-plus/es/components/message/index.mjs';
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs';
+import { openExternal } from './bridge.js';
 
 // 进度浮层的 z-index（`theme.css` 的 `.progress-overlay`）。浮层必须压在
 // `el-dialog`（Element Plus 基线 2000）之上，否则事故面板里触发的长任务会把
@@ -48,6 +49,22 @@ export function formatActionError(prefix, error, nextStep) {
 /// 统一的动作失败提示：`prefix` 说明发生了什么，`nextStep` 给出出路。
 export function toastActionError(prefix, error, nextStep, ms = 6000) {
   toastError(formatActionError(prefix, error, nextStep), ms);
+}
+
+/// 用系统浏览器打开外部链接，失败时给出可操作提示。
+///
+/// `bridge.js` 的 `openExternal` 按 P2-39 的约定把错误抛给调用方，但四个按钮
+/// （插件仓库、插件详情、技能仓库）各自写一遍 catch 只会让其中某个漏掉——失败在
+/// 这里统一收口：说明打不开的是什么，并给出手动复制的出路。
+export function openExternalLink(url, label = '链接') {
+  return openExternal(url).catch((error) => {
+    toastActionError(
+      `无法打开${label}`,
+      error,
+      '请复制地址到浏览器手动打开，或检查系统默认浏览器设置',
+    );
+    return undefined;
+  });
 }
 
 // Promise 化确认框：用户点「确认」resolve(true)，取消 / 关闭 resolve(false)。

@@ -74,18 +74,37 @@ test('render errors are captured with a readable message and can be cleared', as
   const originalError = console.error;
   console.error = () => {};
   try {
-    reportRenderError(new TypeError("Cannot read properties of undefined (reading 'port')"), 'render');
+    reportRenderError(new TypeError("Cannot read properties of undefined (reading 'port')"), 'render function');
   } finally {
     console.error = originalError;
   }
 
   assert.match(renderErrors.message, /reading 'port'/, '兜底文案要带上原始错误');
-  assert.match(renderErrors.message, /render/, '兜底文案要带上出错阶段');
+  assert.match(renderErrors.message, /render function/, '兜底文案要带上出错阶段');
   assert.equal(renderErrors.count, 1);
+  // 只有渲染函数 / 组件更新会让组件树渲染不出来，标题才该说"部分界面无法显示"。
+  assert.equal(renderErrors.stage, 'render');
+  assert.match(renderErrors.title, /渲染出错/);
+
+  // Vue 的 errorHandler 也接事件处理器、生命周期钩子、watcher 里的同步抛出
+  // （'component event handler' 等真实 info 字符串）：那时面板通常还活着，
+  // 说成"渲染出错"会误导用户去重载没坏的面板。
+  const originalError2 = console.error;
+  console.error = () => {};
+  try {
+    reportRenderError(new Error('点击回调炸了'), 'component event handler');
+  } finally {
+    console.error = originalError2;
+  }
+  assert.equal(renderErrors.stage, 'runtime');
+  assert.match(renderErrors.title, /运行出错/);
+  assert.doesNotMatch(renderErrors.title, /渲染出错/);
+  assert.equal(renderErrors.count, 2);
 
   clearRenderError();
   assert.equal(renderErrors.message, '');
   assert.equal(renderErrors.count, 0);
+  assert.equal(renderErrors.stage, 'render', '清空后必须回到默认阶段');
 });
 
 test('action errors gain a next step while backend guidance is preserved', async () => {

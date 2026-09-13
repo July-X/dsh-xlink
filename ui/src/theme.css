@@ -862,10 +862,13 @@ body {
   shape-rendering: crispEdges;
 }
 
-/* 标题文字避开右侧按钮：两枚 46px 命中区 + 一点安全间距。Windows 上标题
-   也真正居中（macOS 保持原有偏移，见 .mac-titlebar__caption）。 */
+/* 标题文字避开右侧按钮：两枚 46px 命中区 + 一点安全间距。
+   注意必须用**对称内边距**而不是 `right: 104px`：后者把标题容器从右边压掉
+   104px，flex 居中于是整体左偏 52px（窗口固定 480px 宽，肉眼可见），而注释还
+   写着"也真正居中"。左右各留 104px 既能挡住按钮，又让标题对整条标题栏居中；
+   标题只有 "Dsh-Xlink"，480px 窗口下空间绰绰有余。 */
 .mac-titlebar--win .mac-titlebar__caption {
-  right: 104px;
+  padding: 0 104px;
 }
 
 /* Windows 的拖拽热区：占满按钮组左侧的整条剩余空间，让标题文字两侧的

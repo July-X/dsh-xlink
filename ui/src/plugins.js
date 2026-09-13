@@ -1,7 +1,7 @@
 // 插件管理的共享状态与动作：中央仓列表、插件中心目录、安装 / 更新 /
 // 卸载 / 同步 / 模式切换。长任务统一走 withProgress（进度面板 + 日志流）。
 import { reactive } from 'vue';
-import { invoke, openExternal } from './bridge.js';
+import { invoke } from './bridge.js';
 import { toast, toastSuccess, toastActionError } from './notify.js';
 import { withLoading, withExclusive } from './loading.js';
 import { withProgress } from './progress.js';
@@ -224,5 +224,3 @@ export const checkPluginUpdates = createUpdateChecker({
 export const refreshPlugins = createStatusSource('plugin_status', (view) => {
   pluginStore.view = view;
 });
-
-export { openExternal };

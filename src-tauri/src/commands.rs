@@ -423,8 +423,9 @@ fn validate_log_name(name: &str) -> Result<(), String> {
 /// 读取 logs 目录下指定日志文件的尾部。
 ///
 /// `name` 必须是纯文件名，不允许任何路径分隔符；本函数会拒绝其它形
-/// 式以避免 UI 的页签列表越过 logs 目录。和 `get_kernel_log` 一样以
-/// 16 KiB 作为尾部上限，使面板在面对大型安装日志时仍然保持响应。
+/// 式以避免 UI 的页签列表越过 logs 目录。和启动防护读取内核日志尾部
+/// （`kernel_workbench_url_from_log`）一样以 16 KiB 作为尾部上限，使面板
+/// 在面对大型安装日志时仍然保持响应。
 #[tauri::command]
 pub async fn read_log_file(state: State<'_, AppState>, name: String) -> Result<String, String> {
     validate_log_name(&name)?;
