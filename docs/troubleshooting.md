@@ -27,4 +27,7 @@
 | macOS Dock 图标不更新 | 杀掉 Dock（`killall Dock`）或重启应用清缓存 |
 | 卸载插件后工作台无法启动，内核日志报 `cannot resolve profile bundle "<包名>"` | 托管 spec 曾按目录名子串 `desktop/kernels/` 判定，dev 壳（`desktop-dev/`）接线的插件卸载后依赖与 bundle 层残留在 profile manifest，内核沿悬空符号链接解析失败 —— 现改为按 `kernels/<version>/plugins/<id>` 尾部路径结构判定（与壳的数据目录名无关）；手工恢复：删掉 `~/.dsh/profiles/<profile>/package.json` 里该插件的 dependencies 与 bundles 条目，删 `node_modules/` 下悬空链接后 `pnpm install` |
 | 启动容错面板中移除插件后告警仍显示 | 若上次卸载已删除中央库记录但留下 `quarantine.json`，重新点击「移除插件」会按隔离记录完成幂等清理；若正在运行旧版 dev shell，需要重启并重新构建 Rust 端后再操作 |
+| 端口突然回到默认值 3090（dev 为 3091），概览页出现「设置文件损坏」告警 | `<data_dir>/settings.json` 解析失败，壳改用默认设置并把原文件备份为 `settings.json.corrupt`（改好它并重启即可恢复）。备份只在内容与磁盘上那份损坏文件不同时才写：状态轮询每 2.5 s 走一次这条路径，无条件复制会一直重写同一个备份 |
+| 点「启动工作台」后弹出「上一个内核进程（pid …）仍在运行」的提示，但工作台确实起来了 | 内存里的句柄槽位被替换时旧内核进程还活着（同一数据目录下不该同时存在两个内核）。壳不杀它——它可能正服务着某个会话——而是交给后台线程等待回收，并把这件事报给面板；按提示确认是否有残留进程（`ps`/任务管理器里搜 `dsh`），或关闭工作台后重试 |
+| 某个曾经装过的内核版本从「内核版本」页消失了，但 `kernels/<版本>/` 目录还在 | 目录里没有内核入口 `node_modules/@deepseek-ai/dsh/lib/bin.js`，说明那次安装（或重装）中途失败、留下的只是残骸——它永远启动不了，因此不再被列为「已安装版本」（与「切换」按钮的判据一致）。删掉该目录后重新安装即可；残骸本身故意保留，方便对比或手动处理 |
 | 工作台 DevTools 一堆 `Failed to load resource ... 404 ... .js.map`（默认安装约 44 条，仅 debug 构建自动开启的 DevTools 可见） | 内核 `@deepseek-ai/dsh` 的 npm tarball 故意不带 `.js.map` 体积，但构建产物末尾仍带 `//# sourceMappingURL=`，浏览器于是逐个去拉并得到 404。壳在打开工作台前扫描当前内核前端 `dist`，只为已声明但缺失的 map 创建最小合法 sidecar；已有 map 不覆盖，壳也不修改 JS。若前端包目录只读，工作台仍可正常启动，但需忽略这类调试提示；若想真正看到源码，回到 `tauri dev` 之外另装带 source map 的本地内核构建即可 | |

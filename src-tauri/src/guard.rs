@@ -105,6 +105,12 @@ pub struct StartReport {
     /// 反映「隔离注册表非空」的便利标志位。
     pub safe_mode: bool,
     pub incident: Option<Incident>,
+    /// 启动过程中的非致命异常（例如同一数据目录下还有上一个内核进程存活）。
+    ///
+    /// 这些情况不该把启动判成失败——内核确实起来了、会话能用——但也不能只写
+    /// stderr：用户看不到，两个内核同时占着同一个数据目录这件事就没人处理。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 /// 防护模块启动子进程、重新接线以及回滚所需的一切信息。
@@ -640,6 +646,7 @@ pub fn guarded_start(
                 running: true,
                 safe_mode: false,
                 incident: None,
+                warning: None,
             },
             None,
         );
@@ -670,6 +677,7 @@ pub fn guarded_start(
                 running: true,
                 safe_mode: !prior_quarantine.items.is_empty(),
                 incident: None,
+                warning: None,
             },
             child,
         );
@@ -739,6 +747,7 @@ pub fn guarded_start(
                         running: true,
                         safe_mode: true,
                         incident: Some(incident),
+                        warning: None,
                     },
                     child2,
                 );
@@ -815,6 +824,7 @@ pub fn guarded_start(
                         running: true,
                         safe_mode: true,
                         incident: Some(incident),
+                        warning: None,
                     },
                     child3,
                 );
@@ -899,6 +909,7 @@ pub fn guarded_start(
             running: false,
             safe_mode: false,
             incident: Some(incident),
+            warning: None,
         },
         None,
     )
@@ -1243,6 +1254,43 @@ pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `StartReport.warning` 是「非致命异常」通向面板的唯一通道。
+    ///
+    /// 这类异常不该把启动判成失败（内核确实起来了），但也不能只写 stderr：
+    /// 「同一数据目录下两个内核」需要用户去处理，而日志文件用户看不到。
+    /// 因此契约有两半：有值时必须进 JSON，没值时不能多出一个 `warning: null`
+    /// （面板按 `report.warning` 的真值判断，多一个 null 会让旧面板弹空提示）。
+    #[test]
+    fn start_report_serializes_the_non_fatal_warning_only_when_present() {
+        let base = StartReport {
+            port: 3090,
+            running: true,
+            safe_mode: false,
+            incident: None,
+            warning: Some(String::from(
+                "上一个内核进程（pid 42）仍在运行，已交给后台线程等待其退出；\
+                 同一数据目录下不应同时存在两个内核，请确认是否有残留进程",
+            )),
+        };
+        let json = serde_json::to_value(&base).expect("序列化 StartReport");
+        let warning = json
+            .get("warning")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        assert!(warning.contains("pid 42"), "warning 必须原样过桥：{json}");
+        assert!(warning.contains("残留进程"), "后端文案自带下一步：{json}");
+
+        let quiet = StartReport {
+            warning: None,
+            ..base
+        };
+        let json = serde_json::to_value(&quiet).expect("序列化 StartReport");
+        assert!(
+            json.get("warning").is_none(),
+            "没有异常时不该出现 warning 字段：{json}"
+        );
+    }
 
     fn store_item(id: &str, name: &str) -> plugins::StoreItem {
         plugins::StoreItem {

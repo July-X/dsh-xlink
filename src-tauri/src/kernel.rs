@@ -366,6 +366,14 @@ pub fn logs_dir(data_dir: &Path) -> PathBuf {
 }
 
 /// 读取看起来像已安装内核版本的目录名。
+///
+/// 判据与 `set_active` / `active_installed` 一致：**目录里必须有内核入口
+/// （`KERNEL_BIN_REL`）**。只看目录名的话，pnpm 跑到一半、原生模块没编译出来的
+/// 半成品也会被当成一个已安装版本列出来，用户能选中并切过去，真正撞上问题却推迟
+/// 到启动内核时——报"原生模块缺失"，然后被启动看护当成疑似插件问题处理几分钟。
+/// 重装失败保留的残骸正是这种形态。这里是纯 stat，不引入探针开销（`status()`
+/// 每 2.5s 轮询都会调用本函数）。入口存在但原生模块缺失的**晚期**失败仍会被列出，
+/// 那部分由启动前的 `verify_installed_version` 三重判定负责报错。
 pub fn list_installed(data_dir: &Path) -> Vec<InstalledVersion> {
     let dir = kernels_dir(data_dir);
     let mut out = Vec::new();
@@ -378,10 +386,11 @@ pub fn list_installed(data_dir: &Path) -> Vec<InstalledVersion> {
             if !entry.metadata().map(|m| m.is_dir()).unwrap_or(false) {
                 continue;
             }
-            let size = fs::metadata(kernel_dir(data_dir, &name).join(KERNEL_BIN_REL))
-                .ok()
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let Ok(size) =
+                fs::metadata(kernel_dir(data_dir, &name).join(KERNEL_BIN_REL)).map(|m| m.len())
+            else {
+                continue;
+            };
             out.push(InstalledVersion {
                 version: name,
                 active: false,
@@ -566,7 +575,8 @@ pub fn install_version(
     // `list_installed` 当成一个**已安装版本**列出来，而且允许用户切换过去；
     // 真正撞上问题是在启动内核时——报"原生模块缺失"，然后被启动看护当成
     // 疑似插件问题处理几分钟，用户完全看不出根因是这个版本压根没装完。
-    // 重装（目录本来就存在）时保留残骸，让用户能对比或手动处理。
+    // 重装（目录本来就存在）时保留残骸，让用户能对比或手动处理；残骸没有入口
+    // 文件，因此不会被 `list_installed` 列出（见该函数的判据）。
     let existed_before = dir.exists();
     let outcome = install_version_into(data_dir, node_exe, pnpm_exe, version, on_progress);
     if outcome.is_err() && !existed_before {
@@ -2414,8 +2424,8 @@ mod tests {
 
     /// 全新安装失败后不得留下半成品目录。
     ///
-    /// `list_installed` 会把 `kernels/` 下任何目录都当成已安装版本，用户能切换
-    /// 过去，真正的失败推迟到启动内核时才发生（原生模块缺失），随后被启动看护
+    /// 半成品目录只要带着内核入口就会被 `list_installed` 列成已安装版本、允许
+    /// 切换过去，真正的失败推迟到启动内核时才发生（原生模块缺失），随后被启动看护
     /// 当成疑似插件问题处理几分钟——用户完全看不出根因是这个版本没装完。
     #[test]
     fn failed_fresh_install_leaves_no_half_built_version() {
@@ -2440,6 +2450,37 @@ mod tests {
             !list_installed(&root).iter().any(|v| v.version == version),
             "半成品不得出现在已安装列表里"
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 没有内核入口的目录不得被列成「已安装版本」。
+    ///
+    /// 重装（目录已存在）失败时残骸是**故意保留**的，让用户能对比或手动处理；
+    /// 但它没有 `KERNEL_BIN_REL`，永远启动不了。只看目录名的话它会被列进面板、
+    /// 允许切换过去，真正的失败推迟到启动内核时才发生（原生模块缺失），随后被
+    /// 启动看护当成疑似插件问题处理几分钟——用户完全看不出根因是这个版本没装完。
+    #[test]
+    fn list_installed_skips_directories_without_the_kernel_entry() {
+        let root = workbench_test_dir("list-installed-entry");
+        let complete = kernel_dir(&root, "0.9.8");
+        let residue = kernel_dir(&root, "0.9.9");
+        fs::create_dir_all(complete.join(KERNEL_BIN_REL).parent().unwrap()).unwrap();
+        fs::write(complete.join(KERNEL_BIN_REL), b"// kernel entry\n").unwrap();
+        fs::create_dir_all(residue.join("node_modules/@deepseek-ai/dsh/lib")).unwrap();
+
+        let listed: Vec<String> = list_installed(&root)
+            .into_iter()
+            .map(|v| v.version)
+            .collect();
+        assert_eq!(
+            listed,
+            vec!["0.9.8".to_string()],
+            "只有带内核入口的目录才算已安装，残骸必须被跳过"
+        );
+
+        // 残骸本身仍留在磁盘上（保留证据 + 用户可手动处理），只是不再冒充已安装。
+        assert!(residue.exists(), "重装残骸应保留，不应被列表判据顺手删掉");
 
         let _ = fs::remove_dir_all(&root);
     }
