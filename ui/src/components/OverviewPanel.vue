@@ -39,6 +39,7 @@ import {
 import { progress } from '../progress.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 import { showLogs } from '../logs.js';
+import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents.js';
 
 // 进度窗口是全局的（任何长任务都会让它可见），按钮的加载态必须绑定自己的
 // key，否则任何别的长任务都会让这个按钮转圈（P2-42）。
@@ -123,27 +124,15 @@ const guardText = computed(() => {
   return (store.lastIncident && store.lastIncident.message) || '上次工作台启动失败。';
 });
 
-function incidentCause(value) {
-  if (!value) return '';
-  if (['plugin', 'kernel', 'frontend', 'unknown'].includes(value.cause)) return value.cause;
-  const suspects = value.suspects || [];
-  if (suspects.some((suspect) => suspect.kind === 'plugin')) return 'plugin';
-  if (suspects.some((suspect) => suspect.kind === 'kernel')) return 'kernel';
-  return 'unknown';
-}
-
-const guardDestination = computed(() => {
-  const cause = incidentCause(store.lastIncident);
-  return cause === 'plugin' || quarantined.value.length > 0 ? 'plugins' : 'versions';
-});
-const guardDestinationLabel = computed(() =>
-  guardDestination.value === 'plugins' ? '前往插件页' : '检查内核版本'
+// 归因口径（cause → 标题 / 判断 / 下一步去哪个面板）收在 `incidents.js`：
+// 它此前与 IncidentModal 各有一份，两边各漏过一次 `env`。
+const guardDestination = computed(() =>
+  incidentDestination(store.lastIncident, quarantined.value.length)
 );
+const guardDestinationLabel = computed(() => incidentDestinationLabel(guardDestination.value));
 // 非致命前端异常不弹模态框（见 store.js 的 showIncident）：横幅是它唯一的入口，
 // 因此这里必须显式要求打开面板，否则「查看详情」会变成空操作。
-const guardTitle = computed(() =>
-  incidentCause(store.lastIncident) === 'frontend' ? '工作台自检：前端异常（页面正常）' : '启动容错已介入'
-);
+const guardTitle = computed(() => incidentBannerTitle(store.lastIncident));
 function openIncidentDetails() {
   showIncident(store.lastIncident, { force: true });
 }
