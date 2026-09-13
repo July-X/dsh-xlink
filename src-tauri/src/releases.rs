@@ -39,7 +39,8 @@ fn http_agent() -> &'static ureq::Agent {
     })
 }
 
-/// 校验一个已下载文件的 npm SRI 摘要（`sha512-<base64>` / `sha256-<base64>`）。
+/// 校验一个已下载文件的 npm 摘要（SRI 的 `sha512-<base64>` / `sha256-<base64>`，
+/// 或老 packument 的 `dist.shasum` sha1 十六进制）。
 ///
 /// 外壳自己下载的 tarball 必须校验一次：默认 registry 是第三方镜像，而解包之后
 /// pnpm 会执行包里的 `prepare` 生命周期脚本——那等于执行未经验证的下载物。它能
@@ -52,18 +53,63 @@ fn http_agent() -> &'static ureq::Agent {
 /// 让它必然失败——无论内容对不对都装不上（P2-6）。现在按 token 解析，取其中
 /// **最强且受支持**的算法校验；单个 token 形态不认识时跳过而不是整串失败。
 ///
-/// 返回 `Ok(Some(算法名))` 表示已校验，`Ok(None)` 表示 registry 没给摘要（老
-/// packument 只给 sha1 的 `shasum`，本函数不消费它），由调用方决定如何提示。
+/// **两条摘要都没有时拒绝安装**（fail-closed）：老 packument 常常只有 sha1 的
+/// `dist.shasum`，所以先回退到它；两者都缺说明这份元数据根本没打算被校验，继续
+/// 安装等于把「下载物未经校验」当成默认路径，而下游要执行包里的脚本。回退只在
+/// **没有可用 integrity token 时**发生：integrity 里只要有一条受支持的摘要就按它
+/// 裁决，不符即拒绝，绝不再拿更弱的 sha1 兜底（否则篡改者只要让 sha512 对不上、
+/// sha1 恰好对得上就能通过）。
+///
+/// 返回 `Ok(Some(算法名))` 表示已校验。
 pub fn verify_download_integrity(
     path: &Path,
     integrity: Option<&str>,
+    shasum: Option<&str>,
 ) -> Result<Option<&'static str>, String> {
     use sha2::{Digest, Sha256, Sha512};
 
-    let Some(integrity) = integrity.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(None);
+    let bytes = fs::read(path).map_err(|e| format!("无法读取 {}：{e}", path.display()))?;
+    if let Some((algorithm, expected)) = strongest_integrity(integrity) {
+        let actual = match algorithm {
+            "sha512" => Sha512::digest(&bytes).to_vec(),
+            _ => Sha256::digest(&bytes).to_vec(),
+        };
+        if actual != expected {
+            return Err(format!(
+                "下载内容与 registry 声明的 integrity 不符（算法 {algorithm}）：文件可能被镜像替换或传输损坏"
+            ));
+        }
+        return Ok(Some(algorithm));
+    }
+    let Some(shasum) = shasum.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Err(String::from(
+            "registry 的元数据里既没有 dist.integrity 也没有 dist.shasum，无法校验下载内容，已拒绝安装；\
+             请改用提供摘要的 registry（DSH_NPM_REGISTRY）或联系镜像维护者",
+        ));
     };
-    // 只挑"最强且受支持"的那一条：sha512 > sha256。
+    let expected = shasum.to_ascii_lowercase();
+    let actual = {
+        use sha1::{Digest as _, Sha1};
+        Sha1::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    if actual != expected {
+        return Err(format!(
+            "下载内容与 registry 声明的 shasum 不符（算法 sha1）：期望 {expected}，实际 {actual}；\
+             文件可能被镜像替换或传输损坏"
+        ));
+    }
+    Ok(Some("sha1"))
+}
+
+/// 从 SRI 字符串里挑出「最强且受支持」的那条摘要：sha512 > sha256。
+///
+/// 单独抽出来是因为 `verify_download_integrity` 要先知道"有没有可用的强摘要"，
+/// 才能决定是否回退到 sha1 的 `shasum`。
+fn strongest_integrity(integrity: Option<&str>) -> Option<(&'static str, Vec<u8>)> {
+    let integrity = integrity.map(str::trim).filter(|value| !value.is_empty())?;
     let mut best: Option<(&'static str, Vec<u8>)> = None;
     for token in integrity.split_whitespace() {
         let Some((algorithm, encoded)) = token.split_once('-') else {
@@ -86,22 +132,7 @@ pub fn verify_download_integrity(
             best = Some((algorithm, expected));
         }
     }
-    let Some((algorithm, expected)) = best else {
-        return Err(format!(
-            "registry 返回的 integrity 里没有本外壳支持的摘要（sha512/sha256）：{integrity}，拒绝安装"
-        ));
-    };
-    let bytes = fs::read(path).map_err(|e| format!("无法读取 {}：{e}", path.display()))?;
-    let actual = match algorithm {
-        "sha512" => Sha512::digest(&bytes).to_vec(),
-        _ => Sha256::digest(&bytes).to_vec(),
-    };
-    if actual != expected {
-        return Err(format!(
-            "下载内容与 registry 声明的 integrity 不符（算法 {algorithm}）：文件可能被镜像替换或传输损坏"
-        ));
-    }
-    Ok(Some(algorithm))
+    best
 }
 
 /// 解码标准 base64（SRI 使用的字符集，含 `+/` 与 `=` 填充）。
@@ -765,7 +796,8 @@ mod tests {
         assert!(matches!(
             verify_download_integrity(
                 &empty,
-                Some("sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg==")
+                Some("sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg=="),
+                None
             ),
             Ok(Some("sha512"))
         ));
@@ -777,7 +809,8 @@ mod tests {
                 Some(
                     "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU= \
                      sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg=="
-                )
+                ),
+                None
             ),
             Ok(Some("sha512"))
         ));
@@ -785,7 +818,8 @@ mod tests {
         assert!(matches!(
             verify_download_integrity(
                 &empty,
-                Some("sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=")
+                Some("sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="),
+                None
             ),
             Ok(Some("sha256"))
         ));
@@ -795,27 +829,66 @@ mod tests {
                 &empty,
                 Some(
                     "sha3-AAAA sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg=="
-                )
+                ),
+                None
             ),
             Ok(Some("sha512"))
         ));
 
-        let error =
-            verify_download_integrity(&empty, Some("sha512-AAAA")).expect_err("摘要不符必须被拒绝");
+        let error = verify_download_integrity(&empty, Some("sha512-AAAA"), None)
+            .expect_err("摘要不符必须被拒绝");
         assert!(error.contains("integrity"), "{error}");
 
-        // 老 packument 只有 sha1 的 shasum、没有 integrity：跳过而不是误判。
-        assert!(matches!(verify_download_integrity(&empty, None), Ok(None)));
-        assert!(matches!(
-            verify_download_integrity(&empty, Some("  ")),
-            Ok(None)
-        ));
+        // 一条可用摘要、也没有 shasum 时必须显式拒绝，而不是放过（fail-closed）：
+        // 空内容的 sha1 是 da39a3ee…，正好用来验证回退路径。
+        let empty_sha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+        let error =
+            verify_download_integrity(&empty, None, None).expect_err("两条摘要都缺必须拒绝安装");
+        assert!(error.contains("dist.integrity"), "{error}");
+        assert!(error.contains("dist.shasum"), "{error}");
+        assert!(error.contains("拒绝安装"), "{error}");
+        assert!(verify_download_integrity(&empty, Some("  "), Some("   ")).is_err());
 
-        // 一条可用摘要都没有时必须显式拒绝，而不是放过。
-        assert!(verify_download_integrity(&empty, Some("md5-AAAA")).is_err());
-        assert!(verify_download_integrity(&empty, Some("sha3-AAAA")).is_err());
-        // 摘要不符（多摘要里最强的那条不对）仍然拒绝。
-        assert!(verify_download_integrity(&empty, Some("sha256-AAAA sha512-AAAA")).is_err());
+        // 老 packument：没有 integrity，只有 sha1 的 shasum → 回退到它并标注算法。
+        assert!(matches!(
+            verify_download_integrity(&empty, None, Some(empty_sha1)),
+            Ok(Some("sha1"))
+        ));
+        // 大小写与前后空白都要容忍（npm 上大小写不统一）。
+        assert!(matches!(
+            verify_download_integrity(
+                &empty,
+                None,
+                Some(&format!("  {}  ", empty_sha1.to_uppercase()))
+            ),
+            Ok(Some("sha1"))
+        ));
+        let error = verify_download_integrity(&empty, None, Some("a".repeat(40).as_str()))
+            .expect_err("shasum 不符必须拒绝");
+        assert!(error.contains("shasum"), "{error}");
+
+        // integrity 里只要有一条可用摘要就按它裁决：即使 shasum 是错的也不回退
+        // （否则篡改者只要让强摘要对不上、弱摘要对得上就能通过）。
+        assert!(matches!(
+            verify_download_integrity(
+                &empty,
+                Some("sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="),
+                Some("a".repeat(40).as_str())
+            ),
+            Ok(Some("sha256"))
+        ));
+        // 反之：integrity 全是不认识的算法时，可用的 shasum 仍然兜住。
+        assert!(matches!(
+            verify_download_integrity(&empty, Some("md5-AAAA sha3-AAAA"), Some(empty_sha1)),
+            Ok(Some("sha1"))
+        ));
+        // 摘要不符（多摘要里最强的那条不对）仍然拒绝，且不再退到 shasum。
+        assert!(verify_download_integrity(
+            &empty,
+            Some("sha256-AAAA sha512-AAAA"),
+            Some(empty_sha1)
+        )
+        .is_err());
 
         let _ = std::fs::remove_dir_all(&root);
     }
