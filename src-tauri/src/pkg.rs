@@ -61,6 +61,10 @@ pub struct NpmDist {
     /// `prepare` 脚本。
     #[serde(default)]
     pub integrity: Option<String>,
+    /// 老 packument 只给 sha1 的 `shasum`（十六进制）。没有 `integrity` 时回退到
+    /// 它；两条都没有时拒绝安装——判据见 `verify_download_integrity`。
+    #[serde(default)]
+    pub shasum: Option<String>,
 }
 
 /// 拉取某个包的 npm registry 文档。
@@ -113,6 +117,7 @@ pub fn fetch_npm_package(
     }
     let dist = doc.versions.get(&version).and_then(|v| v.dist.as_ref());
     let integrity = dist.and_then(|d| d.integrity.clone());
+    let shasum = dist.and_then(|d| d.shasum.clone());
     let tarball = dist
         .map(|d| d.tarball.clone())
         .filter(|t| !t.is_empty())
@@ -120,11 +125,16 @@ pub fn fetch_npm_package(
     on_progress(&format!("正在下载 {source}@{version} …"));
     let tgz = dest.join(".pkg.tgz");
     http_get_file(&tarball, &tgz).map_err(|e| format!("下载失败：{e}"))?;
-    match verify_download_integrity(&tgz, integrity.as_deref()) {
-        Ok(Some(algorithm)) => on_progress(&format!("已校验下载内容的 integrity（{algorithm}）")),
-        Ok(None) => {
-            on_progress("registry 未提供 integrity（也没有可用的 shasum），本次未做内容校验")
+    match verify_download_integrity(&tgz, integrity.as_deref(), shasum.as_deref()) {
+        Ok(Some(algorithm)) => {
+            let source = if algorithm == "sha1" {
+                "shasum（sha1，老 packument 回退）"
+            } else {
+                "integrity"
+            };
+            on_progress(&format!("已校验下载内容的{source}（{algorithm}）"));
         }
+        Ok(None) => on_progress("已校验下载内容"),
         Err(reason) => {
             let _ = fs::remove_file(&tgz);
             return Err(format!(

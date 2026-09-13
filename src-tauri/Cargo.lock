@@ -947,6 +947,7 @@ dependencies = [
  "notify-rust",
  "serde",
  "serde_json",
+ "sha1",
  "sha2",
  "tar",
  "tauri",
