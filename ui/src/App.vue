@@ -226,7 +226,7 @@ onUnmounted(() => {
         type="error"
         :closable="false"
         show-icon
-        title="面板渲染出错，部分界面可能无法显示"
+        :title="renderErrors.title"
         :description="renderErrors.message"
       />
       <div class="render-error-actions">

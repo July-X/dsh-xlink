@@ -1048,8 +1048,9 @@ pub fn install_log_spec(version: &str) -> LogSpec {
     LogSpec::new(build_log_kind(), format!("install-{version}"))
 }
 
-/// 便捷函数：获取给定日志目录下当天的内核日志路径。由读取路径
-/// （`get_kernel_log`、guard attribution）使用，它们总是需要最近一天的日志。
+/// 便捷函数：获取给定日志目录下当天的内核日志路径。由需要最近一天证据的调用方
+/// 使用：启动防护的归因（`guard::kernel_log_path`）、从日志里找回工作台地址
+/// （`commands::kernel_workbench_url_from_log`）以及通知面板引用日志路径。
 pub fn current_kernel_log_path(data_dir: &Path) -> PathBuf {
     let logs = logs_dir(data_dir);
     let today = crate::process::current_date_string();

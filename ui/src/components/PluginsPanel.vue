@@ -34,10 +34,10 @@ import {
   syncPlugins,
   uninstallPlugin,
   checkPluginUpdates,
-  openExternal,
 } from '../plugins.js';
 import { originLabel } from '../labels.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
+import { openExternalLink } from '../notify.js';
 
 const view = computed(() => pluginStore.view);
 
@@ -221,11 +221,11 @@ function statsText(item) {
             </el-tooltip>
           </div>
           <div class="entity-foot">
-            <dl class="entity-meta">
+            <div class="entity-meta">
               <span class="meta-version">{{ row.installed_version }}</span>
               <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>
               <span v-if="row.pinned" class="meta-pinned">已锁定版本</span>
-            </dl>
+            </div>
             <span class="entity-states">
               <el-tag v-if="!view || !view.active_kernel" type="warning" size="small" effect="plain">无活动内核</el-tag>
               <el-tag v-else-if="row.synced && row.wired" type="success" size="small" effect="plain">已同步</el-tag>
@@ -281,7 +281,7 @@ function statsText(item) {
                   circle
                   :icon="TopRight"
                   :disabled="globalBusy"
-                  @click="openExternal(row.repo_url)"
+                  @click="openExternalLink(row.repo_url, '仓库地址')"
                 />
               </el-tooltip>
               <span class="entity-action-sep" aria-hidden="true"></span>
@@ -395,7 +395,7 @@ function statsText(item) {
               </el-tag>
             </span>
             <span class="catalog-actions">
-              <el-button v-if="detailUrl(item)" size="small" text :icon="TopRight" @click="openExternal(detailUrl(item))">
+              <el-button v-if="detailUrl(item)" size="small" text :icon="TopRight" @click="openExternalLink(detailUrl(item), '插件详情页')">
                 打开详情
               </el-button>
               <el-button v-if="isInstalled(item, keys)" size="small" disabled>已安装</el-button>
