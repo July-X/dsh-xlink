@@ -91,8 +91,18 @@ pub fn load_checked(data_dir: &Path) -> (Settings, Option<String>) {
         Err(error) => {
             // 备份而不是让下一次 save 直接覆盖：损坏内容往往是用户手改错了一
             // 个字符，留住它才能改回来。
+            //
+            // 只在备份内容与当前损坏文件不同时才复制：
+            // ① `kernel::status()` 每 2.5s 轮询一次、每次都走 `load_checked`，
+            //    无条件 `fs::copy` 会在用户按提示修好文件之前反复重写同一个备份
+            //    （白写盘，面板上的备份 mtime 也一直在动，看起来像"又在损坏"）；
+            // ② 内容相同就跳过，因此同一份损坏只写一次；用户真的又改出新内容时
+            //    才重新覆盖，备份始终对应磁盘上当前那份损坏文件。
             let backup = path.with_extension("json.corrupt");
-            let backed_up = fs::copy(&path, &backup).is_ok();
+            let already_saved = fs::read(&backup)
+                .map(|previous| previous == text.as_bytes())
+                .unwrap_or(false);
+            let backed_up = already_saved || fs::copy(&path, &backup).is_ok();
             let detail = if backed_up {
                 format!(
                     "原文件已备份到 {}，修好它并重启应用即可恢复",
@@ -196,6 +206,69 @@ mod load_checked_tests {
             dir.join("settings.json.corrupt").exists(),
             "损坏的原文件必须被备份下来"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn corrupt_file_is_not_backed_up_again_on_every_poll() {
+        // `kernel::status()` 每 2.5s 轮询一次、每次都调 `load_checked`：无条件
+        // `fs::copy` 会一直重写同一个备份。把备份设成只读来观测"到底有没有再写"——
+        // 内容与磁盘上那份损坏文件一致时必须跳过复制（复制到只读目标会失败，
+        // 于是诊断会从"已备份"变成"未能备份"）。这里不还原权限：删除只读文件
+        // 取决于父目录是否可写，清理不受影响；而 `set_readonly(false)` 在 Unix 上
+        // 会把文件变成人人可写，clippy 会直接拦。
+        let dir = temp_dir("corrupt-once");
+        let path = settings_file(&dir);
+        let corrupt: &[u8] = b"{ \"port\": 3095, ";
+        std::fs::write(&path, corrupt).unwrap();
+
+        let (_, first) = load_checked(&dir);
+        let first = first.expect("首次损坏必须产生诊断");
+        assert!(first.contains("已备份"), "首次应真的写出备份：{first}");
+
+        let backup = dir.join("settings.json.corrupt");
+        let mut readonly = std::fs::metadata(&backup).unwrap().permissions();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&backup, readonly).unwrap();
+
+        // 同一份损坏内容再读两次：都不该尝试写备份。
+        for round in 1..=2 {
+            let (_, warning) = load_checked(&dir);
+            let warning = warning.expect("损坏依旧要产生诊断");
+            assert!(
+                warning.contains("已备份"),
+                "第 {round} 次轮询不该重写备份（说明又执行了一次 fs::copy）：{warning}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(&backup).unwrap(),
+            corrupt,
+            "跳过的只是重复写入，备份内容必须原样保留"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn corrupt_backup_follows_changed_content() {
+        // 跳过重复写入不能变成"永远不再更新"：用户又改出一份新的损坏内容时，
+        // 备份必须跟着变，否则照备份里的旧内容改不回去。
+        let dir = temp_dir("corrupt-changed");
+        let path = settings_file(&dir);
+        std::fs::write(&path, b"{ \"port\": 3095, ").unwrap();
+        let (_, warning) = load_checked(&dir);
+        assert!(warning.expect("首次损坏要产生诊断").contains("已备份"));
+
+        let changed: &[u8] = b"{ \"port\": 3096, ";
+        std::fs::write(&path, changed).unwrap();
+        let (_, warning) = load_checked(&dir);
+        assert!(warning.expect("仍要产生诊断").contains("已备份"));
+        assert_eq!(
+            std::fs::read(dir.join("settings.json.corrupt")).unwrap(),
+            changed,
+            "损坏内容变化后备份必须跟着更新"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

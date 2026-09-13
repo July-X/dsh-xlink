@@ -801,11 +801,13 @@ fn replace_child_slot(slot: &Mutex<Option<Child>>, child: Child) -> Option<Strin
 ///
 /// 端口必须一起记（P2-1）：只凭 pid 无法区分「这还是我们那个内核」与「OS 把同一
 /// 个 pid 复用给了另一个 dsh 内核」，后者会让「关闭工作台」误杀别的实例。
-fn register_child(state: &AppState, data_dir: &Path, port: u16, child: Child) {
+///
+/// 返回值是「句柄槽位里原来那个内核还活着」这类非致命异常：写 stderr 只进日志
+/// 文件，用户看不到，而两个内核同时占着同一个数据目录是需要人去处理的事，
+/// 因此调用方要把它放进 `StartReport` 让面板提示（见 `start_kernel`）。
+fn register_child(state: &AppState, data_dir: &Path, port: u16, child: Child) -> Option<String> {
     kernel::write_pid(data_dir, child.id(), port);
-    if let Some(warning) = replace_child_slot(&state.running, child) {
-        eprintln!("dsh-xlink: {warning}");
-    }
+    replace_child_slot(&state.running, child)
 }
 
 /// 在启动防护下启动当前活动的内核。幂等：如果端口已经有应答则返回
@@ -854,9 +856,13 @@ pub async fn start_kernel(
             node_path: &node_path,
             pnpm_exe: &pnpm_exe,
         };
-        let (report, child) = guard::guarded_start(&deps, &mut send);
+        let (mut report, child) = guard::guarded_start(&deps, &mut send);
         if let Some(child) = child {
-            register_child(&state, &data_dir, settings.port, child);
+            // 非致命异常照样要进日志文件（stderr）与面板（report.warning）。
+            if let Some(warning) = register_child(&state, &data_dir, settings.port, child) {
+                eprintln!("dsh-xlink: {warning}");
+                report.warning = Some(warning);
+            }
         }
         // 内核已经在服务（本次是新拉起的，或者端口上本来就有一个健康实例
         // ——`guarded_start` 的 no-op 分支）：确保事件订阅线程在跑。

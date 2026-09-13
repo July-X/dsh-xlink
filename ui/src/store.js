@@ -352,6 +352,12 @@ export function startWorkbench() {
       await invoke('open_harness');
       progress.hide();
       toastSuccess(report.incident ? '工作台已以安全模式启动' : '工作台已启动');
+      // 非致命异常（例如句柄槽位里原来那个内核还活着）：内核确实起来了，不该打断
+      // 启动，但两个内核同时占着同一个数据目录需要用户去处理——此前它只写进 stderr，
+      // 面板上完全看不到。后端文案自带下一步，原样展示。
+      if (report.warning) {
+        toast(report.warning, 10000, 'warning');
+      }
       if (report.incident) {
         showIncident(report.incident);
       }
