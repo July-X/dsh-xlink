@@ -46,7 +46,7 @@ tungstenite = { version = "0.30", default-features = false, features = ["handsha
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 补丁应用/撤销的内容校验（state.json 记录修改后文件哈希）。
-sha2 = "0.10"
+sha2 = "0.11"
 # 老 packument 只有 `dist.shasum`（sha1）时的下载校验回退。刻意复用 tungstenite
 # 已经拉进来的 0.11 线，`Cargo.lock` 不因它新增任何 crate——手写 SHA-1 属于
 # 「手搓密码学」，不用。见 `releases::verify_download_integrity`。
