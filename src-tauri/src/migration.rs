@@ -90,6 +90,17 @@ impl LegacySource {
             LegacySource::SkillsActive => "旧技能活动视图",
         }
     }
+
+    /// 备份目录里使用的稳定标识——ASCII slug，回滚路径据此外推。
+    /// **不**展示给用户（用 [`display_name`]）；变更前必须先确认所有已
+    /// 落盘的 backup 目录兼容新 slug。
+    pub fn backup_key(self) -> &'static str {
+        match self {
+            LegacySource::Plugins => "plugins",
+            LegacySource::SkillsStore => "skills-store",
+            LegacySource::SkillsActive => "skills-active",
+        }
+    }
 }
 
 /// 旧布局来源的扫描结果——只读、绝不创建目录。
@@ -500,11 +511,12 @@ impl MetadataTime for fs::Metadata {
     }
 }
 
-fn backup_path_for(backup_root: &Path, source: LegacySource, target: &Path) -> PathBuf {
-    // backup_root/<source-name>/<target 子目录相对名>
-    backup_root
-        .join(source.display_name())
-        .join(target.file_name().unwrap_or_default())
+fn backup_path_for(backup_root: &Path, source: LegacySource, _target: &Path) -> PathBuf {
+    // backup_root/<source-slug>/ —— 这是 backup 的**目录**（不是文件）。
+    // backup 里每条源条目都平铺在该目录下，rollback 时按该目录的 entry
+    // 名直接搬到 source.target() 的同级。这样设计避免「把整个目标目录
+    // 当成一个 entry 搬进 backup」造成的 rollback 路径错位。
+    backup_root.join(source.backup_key())
 }
 
 fn backup_existing(source: &Path, backup: &Path) -> io::Result<()> {
@@ -560,6 +572,182 @@ fn copy_tree_inner(source: &Path, target: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+// --- step 3：rollback_migration ----------------------------------------
+
+/// 单条回滚项的结果——把 `MigrationItemReport.backup_path` 还原回 `target_path`。
+#[derive(Debug, Clone, Serialize)]
+pub struct RollbackItemReport {
+    pub source: LegacySource,
+    pub backup_path: PathBuf,
+    pub target_path: PathBuf,
+    pub files_restored: usize,
+    pub status: RollbackStatus,
+    pub error: Option<String>,
+}
+
+/// 单条回滚项的状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RollbackStatus {
+    /// 该来源无 backup（SkipIfNewer 策略或旧 migration 没备份）。
+    NotFound,
+    /// 全部 backup 条目成功还原到目标。
+    Restored,
+    /// 部分条目还原成功，部分失败。
+    PartialFailure,
+    /// 全部失败（一般 backup 不可读 / 目标不可写）。
+    Failed,
+}
+
+/// 完整回滚报告——`rollback_migration` 的返回值。
+#[derive(Debug, Clone, Serialize)]
+pub struct RollbackReport {
+    pub migration_id: String,
+    pub backup_root: PathBuf,
+    pub items: Vec<RollbackItemReport>,
+}
+
+/// 把 `migration_id` 对应的 backup 还原回目标位置。
+///
+/// 流程：在 `<xlink_home>/backups/<id>`（或 `.2` / `.3` 后缀变体）下找到
+/// backup 目录，按 [`LegacySource::backup_key`] 分组，逐个把 backup 里的
+/// 条目 move 回 `source.target()`。
+///
+/// - 旧源**不被触碰**——本函数只动 backup 与目标。
+/// - 当前目标位置已存在的同文件会被新覆盖（毕竟 backup 是迁移前的旧
+///   快照，回滚的语义就是回到迁移前）。
+/// - 同 id 多次跑过的 backup（带 `.N` 后缀）会被全部还原，但顺序按
+///   `index` 升序——最早的 backup 先还原，确保状态可重现。
+/// - 找不到 backup 时返回 `RollbackStatus::NotFound`（不报错——可能
+///   SkipIfNewer 策略就没产生 backup，部分 rollback 是合理场景）。
+pub fn rollback_migration(migration_id: &str) -> Result<RollbackReport, AppError> {
+    if migration_id.is_empty() {
+        return Err(AppError::Plugin("migration id 不能为空".into()));
+    }
+    let backup_root = find_backup_root(migration_id).ok_or_else(|| {
+        AppError::Plugin(format!(
+            "找不到 migration id {migration_id} 的备份目录——可能从未跑过 BackupAndOverwrite 策略的迁移"
+        ))
+    })?;
+
+    let mut items = Vec::with_capacity(LegacySource::all().len());
+    for source in LegacySource::all() {
+        let source_backup = backup_root.join(source.backup_key());
+        if !source_backup.exists() {
+            items.push(RollbackItemReport {
+                source,
+                backup_path: source_backup,
+                target_path: source.target(),
+                files_restored: 0,
+                status: RollbackStatus::NotFound,
+                error: None,
+            });
+            continue;
+        }
+        let (restored, status, error) = rollback_one(&source_backup, &source.target());
+        items.push(RollbackItemReport {
+            source,
+            backup_path: source_backup,
+            target_path: source.target(),
+            files_restored: restored,
+            status,
+            error,
+        });
+    }
+    Ok(RollbackReport {
+        migration_id: migration_id.to_string(),
+        backup_root,
+        items,
+    })
+}
+
+/// 在 `<xlink_home>/backups/<id>` 下寻找现存 backup 根——优先取不带
+/// 后缀的（最新一次 run_migration 落到的位置），否则退到 `.2` 后缀
+/// 最早一次。同 id 多次迁移已经按 N 索引各自独立；UI 想还原哪次就
+/// 直接传 `<id>.N`。
+fn find_backup_root(migration_id: &str) -> Option<PathBuf> {
+    let base = xlink_home().join("backups").join(migration_id);
+    if base.exists() {
+        return Some(base);
+    }
+    let candidate = xlink_home()
+        .join("backups")
+        .join(format!("{migration_id}.2"));
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    None
+}
+
+fn rollback_one(backup_dir: &Path, target_dir: &Path) -> (usize, RollbackStatus, Option<String>) {
+    let entries = match fs::read_dir(backup_dir) {
+        Ok(it) => it,
+        Err(error) => {
+            return (
+                0,
+                RollbackStatus::Failed,
+                Some(format!("无法读取 backup 目录：{error}")),
+            );
+        }
+    };
+    if let Err(error) = fs::create_dir_all(target_dir) {
+        return (
+            0,
+            RollbackStatus::Failed,
+            Some(format!("无法创建目标目录：{error}")),
+        );
+    }
+    let mut restored = 0usize;
+    let mut last_error: Option<String> = None;
+    for entry in entries.flatten() {
+        let from = entry.path();
+        let file_name = entry.file_name();
+        let target_path = target_dir.join(&file_name);
+        let md = match fs::symlink_metadata(&from) {
+            Ok(md) => md,
+            Err(error) => {
+                last_error = Some(format!("{file_name:?} 元数据不可读：{error}"));
+                continue;
+            }
+        };
+        // 当前目标位置已有同名条目——回滚语义就是「回到迁移前」，所以直接覆盖。
+        if target_path.exists() || target_path.is_symlink() {
+            if md.is_dir() {
+                let _ = fs::remove_dir_all(&target_path);
+            } else {
+                let _ = fs::remove_file(&target_path);
+            }
+        }
+        match if md.is_dir() {
+            // backup 端是目录——把它整个搬回目标；目标端同层同名先删。
+            restore_directory(&from, &target_path)
+        } else {
+            fs::rename(&from, &target_path).map_err(io::Error::from)
+        } {
+            Ok(()) => restored += 1,
+            Err(error) => last_error = Some(format!("{file_name:?}：{error}")),
+        }
+    }
+    let status = match (last_error.is_some(), restored) {
+        (true, 0) => RollbackStatus::Failed,
+        (true, _) => RollbackStatus::PartialFailure,
+        (false, _) => RollbackStatus::Restored,
+    };
+    (restored, status, last_error)
+}
+
+fn restore_directory(from: &Path, to: &Path) -> io::Result<()> {
+    // rename 在跨设备 / 子目录同名场景下可能失败——退化到递归复制 + 删源。
+    match fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            copy_tree_inner(from, to)?;
+            let _ = fs::remove_dir_all(from);
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -912,5 +1100,156 @@ mod tests {
         // Rust 1.75+ 起 `File::set_modified` 在 Unix / Windows 都可用。
         let file = fs::OpenOptions::new().write(true).open(path).expect("open");
         file.set_modified(t).expect("set mtime");
+    }
+
+    // --- step 3：rollback_migration 测试 -------------------------------
+
+    #[test]
+    fn rollback_restores_old_target_after_backup_and_overwrite() {
+        // 旧 plugins 中央库 → 新 dsh-plugins/，BackupAndOverwrite 覆盖。
+        // rollback 必须把 backup 里的旧版本还原回目标，让用户回到迁移前。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy");
+        fs::write(plugins_legacy.join("shared.txt"), "from-old").expect("old");
+        let plugins_new = LegacySource::Plugins.target();
+        fs::create_dir_all(&plugins_new).expect("new");
+        fs::write(plugins_new.join("shared.txt"), "from-new").expect("new");
+        // 让源比目标晚——BackupAndOverwrite 路径会落到 BackupThenCopy。
+        let now = std::time::SystemTime::now();
+        set_mtime(&plugins_legacy.join("shared.txt"), now);
+        set_mtime(
+            &plugins_new.join("shared.txt"),
+            now - std::time::Duration::from_secs(60),
+        );
+
+        let report = run_migration(ConflictPolicy::BackupAndOverwrite, "rb1").expect("mig");
+        assert_eq!(
+            fs::read_to_string(plugins_new.join("shared.txt")).unwrap(),
+            "from-old",
+            "源必须覆盖目标"
+        );
+
+        // 迁移之后用户反悔——跑 rollback。
+        let rb = rollback_migration("rb1").expect("rollback");
+        let plugins_item = rb
+            .items
+            .iter()
+            .find(|i| i.source == LegacySource::Plugins)
+            .expect("plugins item");
+        assert_eq!(plugins_item.status, RollbackStatus::Restored);
+        assert_eq!(plugins_item.files_restored, 1);
+        assert!(
+            plugins_item.error.is_none(),
+            "rollback 不该报错：{error:?}",
+            error = plugins_item.error
+        );
+
+        // 目标内容必须回到迁移前的旧值。
+        let after = fs::read_to_string(plugins_new.join("shared.txt")).expect("read");
+        assert_eq!(after, "from-new", "rollback 必须把旧版本还原回目标");
+    }
+
+    #[test]
+    fn rollback_is_noop_for_items_without_backup() {
+        // SkipIfNewer 策略不会写 backup——rollback 报告里这些来源应该是
+        // NotFound 而非 Failed。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy");
+        fs::write(plugins_legacy.join("store.json"), "{}").expect("store");
+
+        let _ = run_migration(ConflictPolicy::SkipIfNewer, "rb2").expect("mig");
+        let rb = rollback_migration("rb2").expect("rollback");
+        let plugins_item = rb
+            .items
+            .iter()
+            .find(|i| i.source == LegacySource::Plugins)
+            .expect("plugins item");
+        assert_eq!(plugins_item.status, RollbackStatus::NotFound);
+        assert_eq!(plugins_item.files_restored, 0);
+        // 其它没参与迁移的来源也应该是 NotFound。
+        for item in rb
+            .items
+            .iter()
+            .filter(|i| i.source != LegacySource::Plugins)
+        {
+            assert_eq!(item.status, RollbackStatus::NotFound);
+        }
+    }
+
+    #[test]
+    fn rollback_errors_when_migration_id_not_found() {
+        // 从未跑过迁移的 id——rollback 必须报错而不是静默吞掉。
+        let home = TempHome::new();
+        let err = rollback_migration("never-existed").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("never-existed"),
+            "错误信息必须包含 migration id：{msg}"
+        );
+    }
+
+    #[test]
+    fn rollback_errors_when_migration_id_is_empty() {
+        let home = TempHome::new();
+        let err = rollback_migration("").unwrap_err();
+        assert!(err.to_string().contains("migration id 不能为空"));
+    }
+
+    #[test]
+    fn rollback_preserves_legacy_source() {
+        // 旧源不能被 rollback 触碰——回滚是"恢复目标"，不是"反向迁移"。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy");
+        fs::write(plugins_legacy.join("from-old.txt"), "x").expect("old");
+        let plugins_new = LegacySource::Plugins.target();
+        fs::create_dir_all(&plugins_new).expect("new");
+        fs::write(plugins_new.join("from-old.txt"), "y").expect("new");
+        // 让源比目标晚。
+        let now = std::time::SystemTime::now();
+        set_mtime(&plugins_legacy.join("from-old.txt"), now);
+        set_mtime(
+            &plugins_new.join("from-old.txt"),
+            now - std::time::Duration::from_secs(60),
+        );
+
+        run_migration(ConflictPolicy::BackupAndOverwrite, "rb-keep").expect("mig");
+        let before = fs::read_to_string(plugins_legacy.join("from-old.txt")).unwrap();
+        rollback_migration("rb-keep").expect("rb");
+        let after = fs::read_to_string(plugins_legacy.join("from-old.txt")).unwrap();
+        assert_eq!(before, after, "rollback 不能改旧源");
+    }
+
+    #[test]
+    fn rollback_restores_backup_after_target_was_overwritten_by_user() {
+        // 边界场景：用户先看到旧目标在 backup 里，手动把目标改了别的内容；
+        // 再触发 rollback——必须把 backup 里的旧版本再搬回去，
+        // 而不是迁就用户的"最新修改"。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy");
+        fs::write(plugins_legacy.join("shared.txt"), "from-old").expect("old");
+        let plugins_new = LegacySource::Plugins.target();
+        fs::create_dir_all(&plugins_new).expect("new");
+        fs::write(plugins_new.join("shared.txt"), "from-new").expect("new");
+        let now = std::time::SystemTime::now();
+        set_mtime(&plugins_legacy.join("shared.txt"), now);
+        set_mtime(
+            &plugins_new.join("shared.txt"),
+            now - std::time::Duration::from_secs(60),
+        );
+
+        run_migration(ConflictPolicy::BackupAndOverwrite, "rb-edge").expect("mig");
+        // 用户手动把目标改了——按"最新修改"逻辑 rollback 应该跳过。
+        fs::write(plugins_new.join("shared.txt"), "user-changed").expect("user edit");
+
+        rollback_migration("rb-edge").expect("rb");
+        let after = fs::read_to_string(plugins_new.join("shared.txt")).expect("read");
+        assert_eq!(
+            after, "from-new",
+            "rollback 必须按 backup 内容覆盖用户的最新修改——回滚语义就是回到迁移前"
+        );
     }
 }
