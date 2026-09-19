@@ -6,7 +6,7 @@
 // 面板挂载时主动调一次 refreshAll()，让「已安装」列表在用户进到这一页时就是最新的，
 // 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
 import { computed, onMounted, reactive } from 'vue';
-import { Refresh, Download, Promotion, Delete, InfoFilled } from '@element-plus/icons-vue';
+import { Refresh, Download, Promotion, Delete, InfoFilled, TopRight } from '@element-plus/icons-vue';
 import {
   store,
   refreshAll,
@@ -16,10 +16,16 @@ import {
   removeVersion,
 } from '../store.js';
 import { invoke } from '../bridge.js';
-import { globalBusy, isLoading } from '../loading.js';
+import { openExternalLink } from '../notify.js';
+import { globalBusy, isLoading, withLoading } from '../loading.js';
 import VersionPluginsTip from './VersionPluginsTip.vue';
 
+const KERNEL_RELEASES_URL = 'https://github.com/deepseek-ai/deepseek-harness/releases';
 const kernel = computed(() => store.view && store.view.kernel);
+
+function openKernelReleases() {
+  return withLoading('openKernelReleases', () => openExternalLink(KERNEL_RELEASES_URL, '内核发布页'));
+}
 
 // 每个已安装内核的插件快照只在 Tooltip 即将显示时读取，避免页面初次
 // 渲染就为所有内核发起 IPC。已成功读取的版本会复用缓存。
@@ -168,9 +174,20 @@ onMounted(() => {
           <h3 class="list-head-with-logo">
             <img class="brand-logo" src="https://avatars.githubusercontent.com/u/6078720?s=200&v=4" alt="npm" />
             <span>npm 发布</span>
-            <el-button class="release-check-button" text :icon="Refresh" :loading="isLoading('checkUpdates')" :disabled="globalBusy" @click="checkUpdates">
-              检查更新
-            </el-button>
+            <span class="release-list-actions">
+              <el-button class="release-check-button" text :icon="Refresh" :loading="isLoading('checkUpdates')" :disabled="globalBusy" @click="checkUpdates">
+                检查更新
+              </el-button>
+              <el-button
+                text
+                :icon="TopRight"
+                :loading="isLoading('openKernelReleases')"
+                :disabled="globalBusy"
+                @click="openKernelReleases"
+              >
+                打开发布页
+              </el-button>
+            </span>
           </h3>
           <div class="release-list">
             <p v-if="store.releases.length === 0" class="muted" style="margin: 0">
