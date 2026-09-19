@@ -54,6 +54,9 @@ pub const DEFAULT_INSTANCE_ID: &str = "default";
 /// 当前唯一已知的内核族；未来 mcode 通过 [`KERNEL_FAMILY_DSH`] 之外的新增
 /// 常量表达（并落到 [`crate::paths::kernels_root`] 下的独立目录）。
 pub const KERNEL_FAMILY_DSH: &str = "dsh";
+/// mcode 内核族标识（P7 mock 适配器预留）。真实接口协议尚未确定，本常量
+/// 当前仅供 mock adapter 与注册表使用；接入真实 mcode CLI 时再扩展能力声明。
+pub const KERNEL_FAMILY_MCODE: &str = "mcode";
 /// 新实例端口分配的起始值；与旧版 release 默认端口一致，方便迁移。
 pub const DEFAULT_PORT_BASE: u16 = 3090;
 /// 新实例端口分配的搜索上限（不含）。留出常用管理端口（3090+）与系统预留。
