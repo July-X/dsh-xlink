@@ -866,7 +866,7 @@ pub async fn start_kernel(
             node_path: &node_path,
             pnpm_exe: &pnpm_exe,
             family: crate::instance::KERNEL_FAMILY_DSH,
-            instance_id: "default",
+            instance_id: crate::instance::DEFAULT_INSTANCE_ID,
         };
         let (mut report, child) = guard::guarded_start(&deps, &mut send);
         if let Some(child) = child {
@@ -1051,7 +1051,7 @@ pub async fn report_harness_fault(
         let incident = guard::diagnose_runtime(
             &data_dir,
             crate::instance::KERNEL_FAMILY_DSH,
-            "default",
+            crate::instance::DEFAULT_INSTANCE_ID,
             report,
         );
         if let Some(window) = app.get_webview_window("main") {
@@ -1155,7 +1155,7 @@ fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String,
         if let Some(candidate) = kernel_workbench_url_from_log(
             data_dir,
             crate::instance::KERNEL_FAMILY_DSH,
-            "default",
+            crate::instance::DEFAULT_INSTANCE_ID,
             port,
         ) {
             if workbench_url_responds(&candidate, PROBE_TIMEOUT) {
@@ -1174,7 +1174,7 @@ fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String,
                 kernel::current_kernel_log_path(
                     data_dir,
                     crate::instance::KERNEL_FAMILY_DSH,
-                    "default"
+                    crate::instance::DEFAULT_INSTANCE_ID
                 )
                 .display()
             ));
@@ -1280,7 +1280,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
             let latest = kernel_workbench_url_from_log(
                 &data_dir,
                 crate::instance::KERNEL_FAMILY_DSH,
-                "default",
+                crate::instance::DEFAULT_INSTANCE_ID,
                 settings.port,
             );
             let stale = match (&loaded, &latest) {
@@ -2617,7 +2617,7 @@ pub async fn skill_check_updates() -> Result<Vec<skills::SkillUpdateInfo>, Strin
 //
 // 旧 start_kernel / stop_kernel 仍按 legacy data_dir 单实例工作，但
 // 在 setup() 中会先 ensure_default_instance_migrated，把现有用户的
-// active.txt + settings 吸收为一个名为 "default" 的实例，让 UI 能
+// active.txt + settings 吸收为一个名为 crate::instance::DEFAULT_INSTANCE_ID 的实例，让 UI 能
 // 立刻看到「我的实例」。
 
 /// UI 看到的实例摘要：注册表条目 + 运行时状态。
@@ -2798,7 +2798,7 @@ pub async fn restart_instance(
     start_instance(app, id).await
 }
 
-/// 仅 setup 期使用：从旧 active.txt + shell settings 派生 "default"
+/// 仅 setup 期使用：从旧 active.txt + shell settings 派生 crate::instance::DEFAULT_INSTANCE_ID
 /// 实例并写入磁盘。旧用户的内核二进制仍在 legacy `kernels/<version>/`，
 /// 不搬到新位置；实例记录里只记录 kernel_family + kernel_version，
 /// 启动时按 family + version 找到对应安装目录。
@@ -2884,7 +2884,7 @@ mod workbench_url_tests {
         let log_path = kernel::current_kernel_log_path(
             &root,
             crate::instance::KERNEL_FAMILY_DSH,
-            "default",
+            crate::instance::DEFAULT_INSTANCE_ID,
         );
         // P1：`kernel::logs_dir` 现在指向 shell-aware 路径，需要把 DSH_XLINK_HOME
         // 临时指向 root，让测试创建的日志文件与生产代码读到的是同一份。

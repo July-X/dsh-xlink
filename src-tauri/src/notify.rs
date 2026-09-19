@@ -533,7 +533,7 @@ fn subscribe_once(app: &AppHandle, stop: &AtomicBool) -> Result<(), String> {
     let launch_url = crate::commands::kernel_workbench_url_from_log(
         &data_dir,
         crate::instance::KERNEL_FAMILY_DSH,
-        "default",
+        crate::instance::DEFAULT_INSTANCE_ID,
         port,
     )
     .ok_or_else(|| {
@@ -543,7 +543,7 @@ fn subscribe_once(app: &AppHandle, stop: &AtomicBool) -> Result<(), String> {
             kernel::current_kernel_log_path(
                 &data_dir,
                 crate::instance::KERNEL_FAMILY_DSH,
-                "default"
+                crate::instance::DEFAULT_INSTANCE_ID
             )
             .display()
         )

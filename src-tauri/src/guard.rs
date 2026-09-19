@@ -1098,7 +1098,7 @@ pub fn diagnose_runtime(
         node_path: Path::new(""),
         pnpm_exe: Path::new(""),
         family: crate::instance::KERNEL_FAMILY_DSH,
-        instance_id: "default",
+        instance_id: crate::instance::DEFAULT_INSTANCE_ID,
     });
     let store_items = plugins::load_store(data_dir).items;
     let kernel_label = kernel::read_active(data_dir).unwrap_or_default();
@@ -1850,7 +1850,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
         let incident = diagnose_runtime(
             &data_dir,
             crate::instance::KERNEL_FAMILY_DSH,
-            "default",
+            crate::instance::DEFAULT_INSTANCE_ID,
             report,
         );
 
@@ -1899,7 +1899,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
         let incident = diagnose_runtime(
             &data_dir,
             crate::instance::KERNEL_FAMILY_DSH,
-            "default",
+            crate::instance::DEFAULT_INSTANCE_ID,
             HealthReport {
                 kind: "unhandled-rejection".into(),
                 message: "TypeError: boom".into(),
@@ -2116,7 +2116,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             node_path: &fake_node,
             pnpm_exe: Path::new("/nonexistent/pnpm"),
             family: crate::instance::KERNEL_FAMILY_DSH,
-            instance_id: "default",
+            instance_id: crate::instance::DEFAULT_INSTANCE_ID,
         };
         let (report, child) = guarded_start(&deps, &mut |_| {});
         assert!(child.is_none(), "环境类失败不该留下内核进程");
@@ -2202,7 +2202,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             node_path: Path::new("/nonexistent/node"),
             pnpm_exe: Path::new("/nonexistent/pnpm"),
             family: crate::instance::KERNEL_FAMILY_DSH,
-            instance_id: "default",
+            instance_id: crate::instance::DEFAULT_INSTANCE_ID,
         };
         let (report, child) = guarded_start(&deps, &mut |_| {});
 
