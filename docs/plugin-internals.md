@@ -2,12 +2,14 @@
 
 `plugins.rs` 内部的 pnpm 调用、`.npmrc` 规则、lockfile 处理与 symlink 修复。设计层（用户可见的目录布局、双模式、接线、目录浏览）见 [plugin-management.md](plugin-management.md)；约定性约束（必须照做）见 [AGENTS.md](../AGENTS.md)。
 
+> **状态（2026-09-19）**：本文档描述的是实现细节路径，多内核改造后插件中央库已从 `~/.dsh/plugins/` 迁到 Xlink home（`paths::plugins_store_root()` 解析）。本文逐行更新 fetch / .npmrc / store.json 三处路径引用；物化路径与实例维度的接线说明留在 [plugin-management.md](plugin-management.md) 与 [architecture.md §「多内核改造后的实际数据布局」](architecture.md)。
+
 ## 完整流程（`install(spec)`）
 
-1. **fetch**：GitHub 仓库优先查询 Releases API，根据 `tag_name` 构造绑定到该仓库的 API tarball（`tarball_url` 仅用于确认 Release 有源码归档），并安全解包单一顶层目录；没有可用 Release 或 tarball 失败时 git clone（深度 1），其它 Git 地址始终 git clone；npm 来源下载 tarball 并解包到 `~/.dsh/plugins/<id>/`
-2. **ensure_store_npmrc**：写入 `~/.dsh/plugins/.npmrc`（`minimumReleaseAge=0`、固定 npm registry）—— pnpm v11 的 `minimumReleaseAgeExclude` 不支持通配符，必须直接关掉年龄检查
+1. **fetch**：GitHub 仓库优先查询 Releases API，根据 `tag_name` 构造绑定到该仓库的 API tarball（`tarball_url` 仅用于确认 Release 有源码归档），并安全解包单一顶层目录；没有可用 Release 或 tarball 失败时 git clone（深度 1），其它 Git 地址始终 git clone；npm 来源下载 tarball 并解包到 `<DSH_XLINK_HOME>/dsh-plugins/<id>/`（`paths::plugins_store_root()` 解析）
+2. **ensure_store_npmrc**：写入 `<DSH_XLINK_HOME>/dsh-plugins/.npmrc`（`minimumReleaseAge=0`、固定 npm registry）—— pnpm v11 的 `minimumReleaseAgeExclude` 不支持通配符，必须直接关掉年龄检查
 3. **build_git_plugin / install_store_deps**：Git 仓库声明 `prepare` 且入口缺失时，fetch 阶段先执行 `pnpm install --ignore-workspace --config.node-linker=hoisted --reporter=append-only`，依赖和 `lib/` 一起就绪，并向后续流程返回“依赖已完成”的标志；其它 Git 或 npm 来源在 link 模式下由 `install_store_deps` 执行一次相同的安装。安装前**先删旧 `pnpm-lock.yaml`**：避开历史 lockfile 的 `minimumReleaseAge` 失效条目。
-4. **upsert_item**：在商店写锁内以原子替换方式写入 `~/.dsh/plugins/store.json`
+4. **upsert_item**：在商店写锁内以原子替换方式写入 `<DSH_XLINK_HOME>/dsh-plugins/store.json`
 5. **sync_kernels**：每个已装内核调用 `materialize_one`；活动内核接线前，
    `ensure_wiring` 会检查 link 模式插件中央目录中的普通 `dependencies`，
    缺失时沿用安装阶段的 `pnpm` 修复流程，再继续物化：
