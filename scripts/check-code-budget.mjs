@@ -34,7 +34,11 @@ const reportOnly = process.argv.includes('--report');
 /** 生产代码行数预算：文件 → 上限。包含注释以外的所有代码行。 */
 const FILE_BUDGETS = {
   'ui/src/theme.css': 2900,
-  'src-tauri/src/plugins.rs': 2650,
+  // P4 step 3：物化路径切到实例 extensions/plugins/<id>/，抽出 materialize_inner
+  // 共享逻辑、新增 materialize_one_for_instance / remove_materialized_for_instance
+  // / sweep_instance_orphans / default_instance_key / seed_default_instance_for_tests
+  // 等 helper + is_managed_spec 兼容新旧两种路径模式。净增约 30 行。
+  'src-tauri/src/plugins.rs': 2680,
   'src-tauri/src/commands.rs': 1750,
   'src-tauri/src/skills.rs': 1490,
   'src-tauri/src/patches.rs': 1250,
@@ -79,7 +83,12 @@ const FILE_BUDGETS = {
 // start_instance 切到 DshAdapter（约 30 行）。所有 DSH 专有路径
 // （DSH_HOME / profiles/<name>/ / cordis.patch.yml）现在只出现在
 // kernel_adapter.rs，不再散落在 kernel.rs / commands.rs 里。
-const TOTAL_BUDGET = 22160;
+// 22160 → 22190：P4 step 3 物化路径切到实例 extensions/plugins/<id>/，
+// 在 plugins.rs 内新增 materialize_inner / materialize_one_for_instance /
+// remove_materialized_for_instance / sweep_instance_orphans 等共享 helper
+// （约 +30 行）。物化与清扫是同一概念的同步代码，留在同一文件比拆出去
+// 更易维护；FILE_BUDGETS 里 plugins.rs 也对应上调 30 行。
+const TOTAL_BUDGET = 22190;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
