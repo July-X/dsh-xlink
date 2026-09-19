@@ -519,6 +519,14 @@ pub fn registry_mutex() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// 全局 instance lifecycle 互斥锁：start / stop / create / delete 都要先
+/// 拿这把锁，保证一个进程内不会有并发的实例启停（state.lifecycle 是
+/// Mutex<()>，进 spawn_blocking 闭包时 Clone 不到；这里用进程级单例）。
+pub fn lifecycle_mutex() -> &'static Mutex<()> {
+    static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 /// 默认实例 ID 与当前 Shell 模式：用于 UI 拿到当前 Shell 的"默认实例"。
 pub fn shell_default_instance_key(mode: ShellMode) -> String {
     format!("{}::{}", mode.as_str(), DEFAULT_INSTANCE_ID)
@@ -593,10 +601,7 @@ mod tests {
     use super::*;
     use crate::tests::scoped_xlink_home;
     use std::path::PathBuf;
-    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -619,7 +624,6 @@ mod tests {
     /// 注册表空状态：首次启动应返回 `InstanceRegistry::default()`。
     #[test]
     fn load_registry_returns_default_when_missing() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("missing");
         let _xlink = scoped_xlink_home(&home);
         let registry = load_registry().expect("missing is OK");
@@ -632,7 +636,6 @@ mod tests {
     /// 注册表写入后再读：实例列表与默认 id 必须原样回来。
     #[test]
     fn save_and_load_registry_round_trips() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("roundtrip");
         let _xlink = scoped_xlink_home(&home);
         let mut registry = InstanceRegistry::default();
@@ -712,7 +715,6 @@ mod tests {
     /// advisory lock 设计是允许的），release 后锁文件应消失。
     #[test]
     fn instance_lock_acquire_release() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("lock");
         let _xlink = scoped_xlink_home(&home);
         let record = sample_record("default", 3090, KERNEL_FAMILY_DSH);
@@ -728,7 +730,6 @@ mod tests {
     /// pid / port 写入与读取必须保持一致，包括只有 pid 的旧格式。
     #[test]
     fn pid_record_handles_old_and_new_format() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("pid");
         let _xlink = scoped_xlink_home(&home);
         let record = sample_record("default", 3090, KERNEL_FAMILY_DSH);
@@ -743,7 +744,6 @@ mod tests {
     /// `ensure_instance_dirs` 必须创建 DSH 期望的全部子目录。
     #[test]
     fn ensure_dirs_creates_dsh_home_layout() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("dirs");
         let _xlink = scoped_xlink_home(&home);
         let record = sample_record("default", 3090, KERNEL_FAMILY_DSH);
@@ -768,7 +768,6 @@ mod tests {
     /// `save_record_to_disk` 写入后再读应保持原值。
     #[test]
     fn save_record_round_trip() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("record");
         let _xlink = scoped_xlink_home(&home);
         let record = InstanceRecord {
@@ -792,7 +791,6 @@ mod tests {
     /// `load_runtime` 在文件不存在时返回 `stopped(0)`，写入后再读应原样回来。
     #[test]
     fn runtime_round_trip() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("runtime");
         let _xlink = scoped_xlink_home(&home);
         let record = sample_record("default", 3090, KERNEL_FAMILY_DSH);
