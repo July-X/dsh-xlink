@@ -1145,14 +1145,15 @@ fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String,
     const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
     const URL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
     const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+    let (family, instance_id) = instance::resolve_default();
 
     let fallback = format!("http://127.0.0.1:{port}");
     let deadline = std::time::Instant::now() + URL_TIMEOUT;
     loop {
         if let Some(candidate) = kernel_workbench_url_from_log(
             data_dir,
-            crate::instance::KERNEL_FAMILY_DSH,
-            crate::instance::DEFAULT_INSTANCE_ID,
+            family,
+            instance_id,
             port,
         ) {
             if workbench_url_responds(&candidate, PROBE_TIMEOUT) {
@@ -1168,12 +1169,8 @@ fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String,
         if std::time::Instant::now() >= deadline {
             return Err(format!(
                 "无法确认内核工作台地址，请打开日志后重试（日志：{}）",
-                kernel::current_kernel_log_path(
-                    data_dir,
-                    crate::instance::KERNEL_FAMILY_DSH,
-                    crate::instance::DEFAULT_INSTANCE_ID,
-                )
-                .display()
+                kernel::current_kernel_log_path(data_dir, family, instance_id)
+                    .display()
             ));
         }
         std::thread::sleep(POLL_INTERVAL);
@@ -1274,10 +1271,11 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         // focus，并跳过探针与 source map 准备这些慢路径。
         if let Some(existing) = app.get_webview_window("harness") {
             let loaded = crate::lock(&state.harness_url).clone();
+            let (family, instance_id) = instance::resolve_default();
             let latest = kernel_workbench_url_from_log(
                 &data_dir,
-                crate::instance::KERNEL_FAMILY_DSH,
-                crate::instance::DEFAULT_INSTANCE_ID,
+                family,
+                instance_id,
                 settings.port,
             );
             let stale = match (&loaded, &latest) {
