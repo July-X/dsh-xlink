@@ -30,6 +30,12 @@ use serde::{Deserialize, Serialize};
 use crate::instance::{InstanceRecord, KERNEL_FAMILY_DSH};
 use crate::paths;
 
+/// PATH 类环境变量在不同平台的分隔符。Windows 上是 `;`，其他平台是 `:`。
+#[cfg(windows)]
+const ENV_PATH_SEP: &str = ";";
+#[cfg(not(windows))]
+const ENV_PATH_SEP: &str = ":";
+
 /// 适配器声明的具体能力位。
 ///
 /// 不是所有内核族都支持同一组操作；命令层与 UI 据此决定按钮可见性。
@@ -182,6 +188,16 @@ pub trait KernelAdapter: Send + Sync {
     /// 并把 profile 模板与 `cordis.patch.yml`、`pnpm-workspace.yaml` 落盘。
     fn prepare_instance(&self, record: &InstanceRecord) -> Result<(), AdapterError>;
 
+    /// 自定义技能目录列表。默认空——内核族不主动接入额外技能源。
+    ///
+    /// 返回的路径会被 `start` 注入到内核进程（具体 env 名 / 注入格式
+    /// 由各 adapter 在 `start` 内部约定；DSH 端的接入方式需要 DSH
+    /// 自身支持）。即使内核端**暂未消费**该注入，把路径放在这里也是
+    /// 接口完整化的一部分——DSH 端升级后不需要再改 Xlink 代码。
+    fn custom_skill_dirs(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
     /// 启动实例。`install_root` 是 `resolve_install_dir` 的结果；`node`
     /// 是 `node` 可执行文件路径。
     ///
@@ -258,6 +274,15 @@ impl KernelAdapter for DshAdapter {
             return Err("版本号不能为空".into());
         }
         Ok(())
+    }
+
+    fn custom_skill_dirs(&self) -> Vec<PathBuf> {
+        // P5 起 Xlink 维护一份「共享技能活动视图」（设计稿 §9.1）——
+        // `<xlink_home>/skills/active/`。DSH 端目前尚未官方支持通过 env
+        // 注入额外 skill 目录，但保留这条接口让 DSH 升级时不需要再改
+        // Xlink 侧；`start` 会主动把它写进 `DSH_CUSTOM_SKILL_DIRS` env
+        // 供未来版本的 DSH 消费。
+        vec![paths::skills_active_root()]
     }
 
     fn prepare_instance(&self, record: &InstanceRecord) -> Result<(), AdapterError> {
@@ -344,9 +369,22 @@ impl KernelAdapter for DshAdapter {
             .env("DSH_HOME", &dsh_home)
             // DSH 也接受 `DSH_PROFILE`，但官方默认 profile 仍走
             // `$DSH_HOME/profiles/<name>/`，此处显式声明以防命令覆盖。
-            .env("DSH_PROFILE", &record.profile)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .env("DSH_PROFILE", &record.profile);
+        // P5：把 [`custom_skill_dirs`] 通过 `DSH_CUSTOM_SKILL_DIRS` 注入
+        // ——以 PATH 风格冒号分隔。DSH 端目前尚未官方支持 env 注入技能
+        // 目录，这条 env 是**接口预留**；DSH 端升级后（自定义 skill dir
+        // 协议稳定）不需要再改 Xlink 这边。空列表时**不**写 env，避免
+        // 把空字符串污染到 DSH 端。
+        let skill_dirs = self.custom_skill_dirs();
+        if !skill_dirs.is_empty() {
+            let joined = skill_dirs
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(ENV_PATH_SEP);
+            cmd.env("DSH_CUSTOM_SKILL_DIRS", joined);
+        }
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         #[cfg(unix)]
         {
@@ -615,5 +653,52 @@ mod tests {
         }
         std::fs::remove_dir_all(&home).ok();
         std::fs::remove_dir_all(&empty).ok();
+    }
+
+    #[test]
+    fn custom_skill_dirs_default_returns_empty_for_minimal_adapter() {
+        // 最小适配器不主动注入技能目录；DshAdapter 覆盖该方法返回非空。
+        struct MinimalAdapter;
+        impl KernelAdapter for MinimalAdapter {
+            fn family(&self) -> &'static KernelFamily {
+                KERNEL_FAMILY_DSH
+            }
+            fn capabilities(&self) -> AdapterCapabilities {
+                AdapterCapabilities::NONE
+            }
+            fn display_name(&self) -> &'static str {
+                "minimal"
+            }
+            fn resolve_install_dir(&self, _version: &str) -> Option<PathBuf> {
+                None
+            }
+            fn validate_version(&self, _version: &str) -> Result<(), String> {
+                Ok(())
+            }
+            fn prepare_instance(&self, _record: &InstanceRecord) -> Result<(), AdapterError> {
+                Ok(())
+            }
+            fn start(
+                &self,
+                _record: &InstanceRecord,
+                _install_root: &Path,
+                _node: &Path,
+            ) -> Result<std::process::Child, AdapterError> {
+                Err(AdapterError::Io("unused".into()))
+            }
+        }
+        assert!(MinimalAdapter.custom_skill_dirs().is_empty());
+    }
+
+    #[test]
+    fn dsh_adapter_custom_skill_dirs_returns_skills_active_root() {
+        // DshAdapter 必须报告 Xlink 的共享技能活动视图——v1 全局共享。
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = temp_dir("dsh-skill-dirs");
+        let _xlink = scoped_xlink_home(&home);
+        let dirs = DshAdapter.custom_skill_dirs();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0], paths::skills_active_root());
+        std::fs::remove_dir_all(&home).ok();
     }
 }
