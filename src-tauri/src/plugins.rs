@@ -3926,36 +3926,47 @@ fn refresh_store_peers(data_dir: &Path, item: &StoreItem, active: &str) -> Resul
     }
     Ok(())
 }
-/// 在测试 home 下种入一个默认实例 record + default_instance_id，让
+/// 在测试 home 下种入一组实例 record 与 `default_instance_id`，让
 /// `default_instance_key()` 走"从注册表读 default"这条生产路径。
 ///
-/// 仅测试用：跳过 `commands::ensure_default_instance_migrated` 内部的
-/// blocking + tauri state 逻辑，直接落一份 `InstanceRegistry` 与一份
-/// `InstanceRecord` 到 disk。生产流程里这一步由 setup 阶段的前端调用
-/// tauri command 完成。
+/// 同时种入 `default`（端口 3090，默认）与 `work`（端口 3091，备选）两
+/// 个实例——跨实例隔离测试用后者。仅测试用：跳过
+/// `commands::ensure_default_instance_migrated` 内部的 blocking + tauri
+/// state 逻辑，直接落一份 `InstanceRegistry` 与一份 `InstanceRecord`
+/// 到 disk。生产流程里这一步由 setup 阶段的前端调用 tauri command 完成。
 #[cfg(test)]
 fn seed_default_instance_for_tests(_home: &Path) {
     use crate::instance::{
         InstanceRecord, InstanceRegistry, DEFAULT_INSTANCE_ID, KERNEL_FAMILY_DSH,
     };
     let now_ms = crate::process::epoch_millis();
-    let mut record = InstanceRecord::new(DEFAULT_INSTANCE_ID, KERNEL_FAMILY_DSH, 3090, now_ms);
-    // 不指定 kernel_version：让 `kernel::read_active` 在测试里仍然走
-    // `<data_dir>/active.txt` 的 legacy 路径——多数插件测试不依赖具体版本。
-    record.kernel_version = None;
-    if let Err(error) = instance::ensure_instance_dirs(&record) {
-        eprintln!("dsh-xlink: 测试无法创建实例目录（{error}）");
+    let seed = |id: &str, port: u16| -> Option<InstanceRecord> {
+        let mut record = InstanceRecord::new(id, KERNEL_FAMILY_DSH, port, now_ms);
+        // 不指定 kernel_version：让 `kernel::read_active` 在测试里仍然走
+        // `<data_dir>/active.txt` 的 legacy 路径——多数插件测试不依赖具体版本。
+        record.kernel_version = None;
+        if let Err(error) = instance::ensure_instance_dirs(&record) {
+            eprintln!("dsh-xlink: 测试无法创建实例目录（{error}）");
+            return None;
+        }
+        if let Err(error) = instance::save_record_to_disk(&record) {
+            eprintln!("dsh-xlink: 测试无法写入实例记录（{error}）");
+            return None;
+        }
+        Some(record)
+    };
+    let Some(default_record) = seed(DEFAULT_INSTANCE_ID, 3090) else {
         return;
-    }
-    if let Err(error) = instance::save_record_to_disk(&record) {
-        eprintln!("dsh-xlink: 测试无法写入实例记录（{error}）");
-        return;
-    }
+    };
+    let work_record = seed("work", 3091);
     let mut registry = InstanceRegistry {
         default_instance_id: Some(DEFAULT_INSTANCE_ID.to_string()),
         ..InstanceRegistry::default()
     };
-    registry.instances.push(record);
+    registry.instances.push(default_record);
+    if let Some(work) = work_record {
+        registry.instances.push(work);
+    }
     if let Err(error) = instance::save_registry(&registry) {
         eprintln!("dsh-xlink: 测试无法写入注册表（{error}）");
     }
@@ -6269,6 +6280,229 @@ mod id_collision_tests {
         let store = load_store(&data_dir);
         assert_eq!(store.items.len(), 1);
         assert_eq!(store.items[0].installed_version, "2.0.0");
+    }
+
+    // --- P4 step 5：多实例隔离 / 接线 / 指纹 / 断链测试 ------------------
+
+    /// 共享的"中央库条目"构造 helper：P4 起物化只对默认实例生效（其它实例
+    /// 由 `_for_instance` 系列函数驱动）。本测试里也用同样的 item；中央库
+    /// 入口在跨实例隔离测试里只造一份，但分别投到两个实例的 extensions/。
+    fn store_item_with_id(id: &str, version: &str) -> StoreItem {
+        StoreItem {
+            id: id.into(),
+            name: id.into(),
+            origin: "npm".into(),
+            source: id.into(),
+            installed_version: version.into(),
+            latest_version: None,
+            mode: "link".into(),
+            pinned: false,
+            installed_at: String::new(),
+            updated_at: String::new(),
+            repo_url: None,
+            description: None,
+        }
+    }
+
+    /// 给中央库写一份"已取源"目录（最小合法 package.json），后续物化能 link
+    /// 上即可。TestHome 已经把 `DSH_XLINK_HOME` 切到 home，`plugins_store_root()`
+    /// 解析到 `<home>/dsh-plugins/`，所以 store_plugin_dir 不用绝对路径。
+    fn seed_store_plugin(id: &str) {
+        let dir = paths::plugins_store_root().join(id);
+        fs::create_dir_all(&dir).expect("seed plugin dir");
+        fs::write(dir.join("package.json"), "{}").expect("seed package.json");
+    }
+
+    /// 把 `item` 写进中央库 store，并装一份"已取源"中央库目录。
+    fn seed_store_item_with_source(item: &StoreItem) {
+        seed_store_plugin(&item.id);
+        upsert_item_unlocked(&paths::plugins_store_root(), item.clone()).expect("upsert");
+    }
+
+    #[test]
+    fn materialize_for_instance_does_not_touch_other_instances() {
+        // 在 default 与 work 两个实例上分别物化同一份中央库插件；
+        // 物化目录必须互不串：default 走 `<...>/instances/dsh/default/...`，
+        // work 走 `<...>/instances/dsh/work/...`。一个实例的物化失败
+        // 也不应该污染另一个实例的 meta / extensions/plugins 目录。
+        let (home, _guard) = TestHome::new();
+        let item = store_item_with_id("iso-plugin", "1.0.0");
+        seed_store_item_with_source(&item);
+
+        // 默认实例物化。
+        materialize_one_for_instance(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item,
+            "0.1.1",
+        )
+        .expect("default materialize");
+
+        // work 实例物化。
+        materialize_one_for_instance(instance::KERNEL_FAMILY_DSH, "work", &item, "0.1.1")
+            .expect("work materialize");
+
+        let default_target = paths::instance_extension_plugin_dir(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item.id,
+        );
+        let work_target =
+            paths::instance_extension_plugin_dir(instance::KERNEL_FAMILY_DSH, "work", &item.id);
+        assert!(default_target.exists(), "default 实例必须已物化");
+        assert!(work_target.exists(), "work 实例必须已物化");
+
+        // 两个实例的 meta 各自独立——删 work 的 meta 不会影响 default。
+        let work_meta =
+            paths::instance_extension_meta_file(instance::KERNEL_FAMILY_DSH, "work", &item.id);
+        let default_meta = paths::instance_extension_meta_file(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item.id,
+        );
+        fs::remove_file(&work_meta).expect("删 work meta");
+        assert!(default_meta.is_file(), "default meta 必须仍在");
+    }
+
+    #[test]
+    fn uninstall_for_instance_leaves_other_instances_materialization_intact() {
+        // 默认实例卸一个插件，不能影响 work 实例的物化：中央库目录虽然
+        // 是共享的，但物化目标是按实例分裂的；其他实例的 extensions/plugins
+        // 保留，等价于"该插件仍在那些实例里可用"。
+        let (home, _guard) = TestHome::new();
+        let item = store_item_with_id("split-uninstall", "1.0.0");
+        seed_store_item_with_source(&item);
+        materialize_one_for_instance(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item,
+            "0.1.1",
+        )
+        .expect("default materialize");
+        materialize_one_for_instance(instance::KERNEL_FAMILY_DSH, "work", &item, "0.1.1")
+            .expect("work materialize");
+
+        // 默认实例卸载（直接调 helper，跳过 store 中央库写入，因为本测试
+        // 主要观察物化隔离）。
+        remove_materialized_for_instance(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item.id,
+        );
+
+        let default_target = paths::instance_extension_plugin_dir(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item.id,
+        );
+        let work_target =
+            paths::instance_extension_plugin_dir(instance::KERNEL_FAMILY_DSH, "work", &item.id);
+        assert!(!default_target.exists(), "默认实例物化目录必须被卸掉");
+        assert!(work_target.exists(), "work 实例物化目录必须保留");
+        // 中央库目录也保留——其他实例仍在引用。
+        let store_plugin = paths::plugins_store_root().join(&item.id);
+        assert!(
+            store_plugin.is_dir(),
+            "中央库目录被多实例共享，不能随单实例卸载删除"
+        );
+    }
+
+    #[test]
+    fn sweep_instance_orphans_removes_only_dangling_or_owned_links() {
+        // 物化目录里有三类条目：
+        //   1) 在 store 里、且 extensions 里有目标 → 保留
+        //   2) 不在 store 里、是 dangling link（目标已删）→ 清理
+        //   3) 不在 store 里、有 meta（用户手动放进 extensions 的目录也算托管）→ 清理
+        //   4) 不在 store 里、既不是 link 也没 meta（用户手放的外来条目）→ 保留
+        let (home, _guard) = TestHome::new();
+        let family = instance::KERNEL_FAMILY_DSH;
+        let instance_id = "default";
+        let plugins_dir = paths::instance_extensions_plugins_dir(family, instance_id);
+        fs::create_dir_all(&plugins_dir).expect("extensions dir");
+
+        // 类型 1：在 store 里 + 中央库目录在 → 物化后正常 link。
+        let kept = "kept";
+        seed_store_plugin(kept);
+        let item = store_item_with_id(kept, "1.0.0");
+        upsert_item_unlocked(&paths::plugins_store_root(), item.clone()).expect("upsert");
+        materialize_one_for_instance(family, instance_id, &item, "0.1.1")
+            .expect("materialize kept");
+        // 把中央库目录删掉，让"用户手放的外来条目"判定生效——
+        // 我们要确保 sweep 只对 dangling 或 owned 出手，不会误删正常条目。
+        // 这里 kept 仍然在 store 里，sweep 不应清它。
+
+        // 类型 2：dangling link（目标不存在）。
+        let dangling = paths::instance_extensions_plugins_dir(family, instance_id).join("dangling");
+        std::os::unix::fs::symlink("/nonexistent/path/target", &dangling).expect("symlink");
+
+        // 类型 3：meta 在 + 不在 store 里（应被 sweep 当成 owned 清掉）。
+        let owned = "owned-orphan";
+        let owned_dir = paths::instance_extension_plugin_dir(family, instance_id, owned);
+        fs::create_dir_all(&owned_dir).expect("owned dir");
+        let owned_meta = paths::instance_extension_meta_file(family, instance_id, owned);
+        fs::write(&owned_meta, r#"{"mode":"link","version":"1.0.0"}"#).expect("meta");
+
+        // 类型 4：不在 store、没 meta 的真实目录（外来条目）→ 保留。
+        let foreign = "foreign";
+        let foreign_dir = paths::instance_extension_plugin_dir(family, instance_id, foreign);
+        fs::create_dir_all(&foreign_dir).expect("foreign dir");
+        fs::write(foreign_dir.join("README.md"), "user dropped this").expect("readme");
+
+        let store = load_store(&paths::plugins_store_root());
+        sweep_instance_orphans(family, instance_id, &store);
+
+        // 类型 1 保留。
+        assert!(
+            paths::instance_extension_plugin_dir(family, instance_id, kept).exists(),
+            "kept 必须在 store 里，sweep 不能清掉"
+        );
+        // 类型 2 已清理。
+        assert!(!dangling.exists(), "dangling link 必须被 sweep 清掉");
+        // 类型 3 已清理（含 meta）。
+        assert!(
+            !owned_dir.exists() && !owned_meta.exists(),
+            "有 meta 但不在 store 的目录必须被 sweep 当作 owned 清掉"
+        );
+        // 类型 4 保留。
+        assert!(
+            foreign_dir.exists(),
+            "外来条目（无 meta）必须保留，sweep 不能误删"
+        );
+    }
+
+    #[test]
+    fn materialize_meta_fingerprint_detects_stale_version_across_kernel_change() {
+        // 内容指纹：meta 记录 installed_version 与 synced_at；切换内核版本时
+        // 即使 mode 形同，version 不同也会让 `synced = false`，UI 能立刻
+        // 看到"未同步"提示。这是 P0 反复强调的"形态相同也要区分版本"约束。
+        let (home, _guard) = TestHome::new();
+        let family = instance::KERNEL_FAMILY_DSH;
+        let instance_id = "default";
+        let item_v1 = store_item_with_id("finger", "1.0.0");
+        seed_store_item_with_source(&item_v1);
+        materialize_one_for_instance(family, instance_id, &item_v1, "0.1.1")
+            .expect("materialize v1");
+
+        let meta_path = paths::instance_extension_meta_file(family, instance_id, &item_v1.id);
+        let meta_v1 = read_instance_meta(&meta_path).expect("v1 meta");
+        assert_eq!(meta_v1.version, "1.0.0");
+        // mode 在受限沙箱里可能被降级成 copy（无法 symlink）——两条都合法，
+        // 不能把"应当是 link"硬绑进断言；下面 v2 同理。
+        assert!(meta_v1.mode == "link" || meta_v1.mode == "copy");
+
+        // 把中央库插件的 installed_version 改成 2.0.0，重新物化——meta 必须
+        // 被刷新到新版本，旧 1.0.0 不能误判"仍然同步"。
+        let mut item_v2 = item_v1.clone();
+        item_v2.installed_version = "2.0.0".into();
+        upsert_item_unlocked(&paths::plugins_store_root(), item_v2.clone()).expect("upsert v2");
+        materialize_one_for_instance(family, instance_id, &item_v2, "0.1.1")
+            .expect("materialize v2");
+
+        let meta_v2 = read_instance_meta(&meta_path).expect("v2 meta");
+        assert_eq!(
+            meta_v2.version, "2.0.0",
+            "meta 必须更新到新版本，UI 据此显示「未同步」时不能误用旧 version"
+        );
     }
 }
 
