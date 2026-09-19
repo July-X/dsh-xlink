@@ -181,9 +181,76 @@ pub fn kernels_root() -> PathBuf {
     xlink_home().join("kernels")
 }
 
+/// 给定内核族的所有版本安装产物目录：`<xlink_home>/kernels/<family>/versions/`。
+pub fn kernel_versions_dir(family: &str) -> PathBuf {
+    kernels_root().join(family).join("versions")
+}
+
+/// 给定内核族与版本的安装根目录：`<xlink_home>/kernels/<family>/versions/<version>/`。
+///
+/// 验证 `version` 必须是合法的 id 组件——避免路径穿越到 `versions/../...`。
+pub fn kernel_version_dir(family: &str, version: &str) -> PathBuf {
+    validate_id_component(version).expect("version id must be valid for path use");
+    kernel_versions_dir(family).join(version)
+}
+
+/// 给定内核族的所有实例目录：`<xlink_home>/kernels/<family>/instances/`。
+pub fn kernel_instances_dir(family: &str) -> PathBuf {
+    kernels_root().join(family).join("instances")
+}
+
+/// 给定实例的根目录：`<xlink_home>/kernels/<family>/instances/<id>/`。
+pub fn instance_dir(family: &str, id: &str) -> PathBuf {
+    validate_id_component(id).expect("instance id must be valid for path use");
+    kernel_instances_dir(family).join(id)
+}
+
+/// 给定实例的 `instance.json` 路径：`<xlink_home>/kernels/<family>/instances/<id>/instance.json`。
+pub fn instance_record_file(family: &str, id: &str) -> PathBuf {
+    instance_dir(family, id).join("instance.json")
+}
+
+/// 给定实例的运行时子目录：`<xlink_home>/kernels/<family>/instances/<id>/runtime/`。
+pub fn instance_runtime_dir(family: &str, id: &str) -> PathBuf {
+    instance_dir(family, id).join("runtime")
+}
+
+/// 给定实例的 advisory file lock：`<...>/runtime/instance.lock`。
+pub fn instance_lock_file(family: &str, id: &str) -> PathBuf {
+    instance_runtime_dir(family, id).join("instance.lock")
+}
+
+/// 给定实例的 PID 文件：`<...>/runtime/pid`。
+pub fn instance_pid_file(family: &str, id: &str) -> PathBuf {
+    instance_runtime_dir(family, id).join("pid")
+}
+
+/// 给定实例的端口文件：`<...>/runtime/port`。
+pub fn instance_port_file(family: &str, id: &str) -> PathBuf {
+    instance_runtime_dir(family, id).join("port")
+}
+
+/// 给定实例的状态文件：`<...>/runtime/status.json`。
+pub fn instance_status_file(family: &str, id: &str) -> PathBuf {
+    instance_runtime_dir(family, id).join("status.json")
+}
+
+/// 给定实例的官方 `DSH_HOME`：`<...>/home/`。
+///
+/// 这里是 DSH 进程读取 `profiles/<name>`、sessions、storages、credentials、
+/// settings.yaml 的根目录。Xlink 通过适配器为每个实例准备这个目录。
+pub fn instance_dsh_home(family: &str, id: &str) -> PathBuf {
+    instance_dir(family, id).join("home")
+}
+
 /// Xlink 自身状态目录：`<xlink_home>/state/`（实例注册表、迁移记录、全局锁）。
 pub fn state_root() -> PathBuf {
     xlink_home().join("state")
+}
+
+/// 实例注册表：`<xlink_home>/state/instances.json`。
+pub fn instances_registry_file() -> PathBuf {
+    state_root().join("instances.json")
 }
 
 /// 可重建的下载 / registry 缓存目录：`<xlink_home>/cache/`。
