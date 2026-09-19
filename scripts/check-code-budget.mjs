@@ -38,7 +38,7 @@ const FILE_BUDGETS = {
   'src-tauri/src/commands.rs': 1750,
   'src-tauri/src/skills.rs': 1490,
   'src-tauri/src/patches.rs': 1250,
-  'src-tauri/src/kernel.rs': 1230,
+  'src-tauri/src/kernel.rs': 1260,
   'src-tauri/src/process.rs': 1180,
   // 1050 → 1090：会话标题改为订阅 `session/control`（baseline 播种 + 标题投影帧
   // 保鲜 + 老内核退回 session/list 快照），这部分逻辑与 Center 同生共死，拆出去
@@ -55,6 +55,10 @@ const FILE_BUDGETS = {
   // 子目录创建 + 默认实例迁移钩子。约 470 行（含 11 个测试 setup 与
   // 路径解析注释）。
   'src-tauri/src/instance.rs': 470,
+  // P3：KernelAdapter trait + AdapterCapabilities + DshAdapter 首实现
+  // （DSH_HOME / DSH_PROFILE 注入、profile/package.json 与 cordis.patch.yml
+  // 模板、resolve_install_dir 双查找）。约 430 行（含 9 个测试）。
+  'src-tauri/src/kernel_adapter.rs': 430,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
 // 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有
@@ -71,7 +75,11 @@ const FILE_BUDGETS = {
 // 类型（≈ 180 行）+ kernel.rs 新增 InstanceStartReport 与
 // start_instance / stop_instance / set_instance_active_version 接口
 // （≈ 50 行）。路径解析都在 paths.rs，重复区间数仍为 4。
-const TOTAL_BUDGET = 21660;
+// 21660 → 22160：P3 新增 kernel_adapter.rs（约 430 行）+ kernel.rs
+// start_instance 切到 DshAdapter（约 30 行）。所有 DSH 专有路径
+// （DSH_HOME / profiles/<name>/ / cordis.patch.yml）现在只出现在
+// kernel_adapter.rs，不再散落在 kernel.rs / commands.rs 里。
+const TOTAL_BUDGET = 22160;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
