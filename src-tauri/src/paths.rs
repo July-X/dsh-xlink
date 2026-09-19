@@ -258,21 +258,13 @@ pub fn instance_extensions_plugins_dir(family: &str, id: &str) -> PathBuf {
 /// 给定实例的单个插件物化目录：`<...>/extensions/plugins/<plugin-id>/`。
 ///
 /// 验证 `plugin_id` 必须是合法 id 组件——避免路径穿越到其它实例。
-pub fn instance_extension_plugin_dir(
-    family: &str,
-    id: &str,
-    plugin_id: &str,
-) -> PathBuf {
+pub fn instance_extension_plugin_dir(family: &str, id: &str, plugin_id: &str) -> PathBuf {
     validate_id_component(plugin_id).expect("plugin id must be valid for path use");
     instance_extensions_plugins_dir(family, id).join(plugin_id)
 }
 
 /// 给定实例的插件 metadata 文件：`<...>/extensions/plugins/<plugin-id>/.dsh-meta.json`。
-pub fn instance_extension_meta_file(
-    family: &str,
-    id: &str,
-    plugin_id: &str,
-) -> PathBuf {
+pub fn instance_extension_meta_file(family: &str, id: &str, plugin_id: &str) -> PathBuf {
     instance_extension_plugin_dir(family, id, plugin_id).join(".dsh-meta.json")
 }
 

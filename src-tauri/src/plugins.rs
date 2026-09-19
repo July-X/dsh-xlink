@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::error::AppError;
+use crate::instance;
+use crate::paths;
 use crate::pkg::{
     self, git_latest_tag, is_newer_than, looks_like_semver, new_staging_dir, remove_link,
     split_npm_spec, stamp_id_marker, write_source_marker, ID_MARKER,
@@ -468,25 +470,58 @@ fn store_plugin_dir(data_dir: &Path, id: &str) -> PathBuf {
     store_dir(data_dir).join(id)
 }
 
-fn kernel_plugins_dir(data_dir: &Path, version: &str) -> PathBuf {
-    kernel::kernel_dir(data_dir, version).join("plugins")
+/// 当前 Shell 模式记住的默认实例 `(family, id)`。注册表尚未写入时
+/// fallback 到 `(KERNEL_FAMILY_DSH, "default")` —— 这条 fallback 与
+/// `commands::ensure_default_instance_migrated` 的迁移目标一致；旧用户
+/// 第一次启动时这条路径会写出真正的 default 记录，第二次启动就走注册表
+/// 读到的 `default_instance_id`。
+///
+/// 解析失败（注册表 JSON 损坏）时同样 fallback：让插件模块在
+/// `setup()` 阶段或迁移完成之前仍然能读写出 extensions 目录。
+fn default_instance_key() -> (String, String) {
+    match crate::instance::load_registry() {
+        Ok(registry) => {
+            if let Some(id) = registry.default_instance_id.as_deref() {
+                if !id.is_empty() {
+                    return (instance::KERNEL_FAMILY_DSH.to_string(), id.to_string());
+                }
+            }
+        }
+        Err(_) => {}
+    }
+    (
+        instance::KERNEL_FAMILY_DSH.to_string(),
+        instance::DEFAULT_INSTANCE_ID.to_string(),
+    )
 }
 
-fn kernel_plugin_dir(data_dir: &Path, version: &str, id: &str) -> PathBuf {
-    kernel_plugins_dir(data_dir, version).join(id)
+/// P4 起插件物化目标走实例级 `extensions/plugins/<id>/`。
+///
+/// 旧 `kernel_plugins_dir` 返回 `<data_dir>/kernels/<version>/plugins/`，
+/// 已经作废 —— 物化目标必须按实例隔离。保留 `data_dir, version` 形参仅为
+/// 兼容既有调用站点（测试也走这条）；内部走实例 API，`version` 形参被忽略。
+fn kernel_plugins_dir(_data_dir: &Path, _version: &str) -> PathBuf {
+    let (family, id) = default_instance_key();
+    paths::instance_extensions_plugins_dir(&family, &id)
 }
 
-fn kernel_meta_file(data_dir: &Path, version: &str, id: &str) -> PathBuf {
-    kernel_plugins_dir(data_dir, version)
-        .join(META_SUBDIR)
-        .join(format!("{id}.json"))
+fn kernel_plugin_dir(_data_dir: &Path, _version: &str, id: &str) -> PathBuf {
+    let (family, instance_id) = default_instance_key();
+    paths::instance_extension_plugin_dir(&family, &instance_id, id)
 }
 
-fn profile_dir(data_dir: &Path, profile: &str) -> PathBuf {
-    data_dir
-        .parent()
-        .map(|home| home.join("profiles").join(profile))
-        .unwrap_or_else(|| data_dir.join("profiles").join(profile))
+fn kernel_meta_file(_data_dir: &Path, _version: &str, id: &str) -> PathBuf {
+    let (family, instance_id) = default_instance_key();
+    paths::instance_extension_meta_file(&family, &instance_id, id)
+}
+
+/// P4 起 profile 严格走 `instance_dsh_home/profiles/<profile>/`。旧
+/// `profile_dir` 拼接 `data_dir/../profiles/<profile>/` 的回退路径已废弃
+/// —— 新实例没有与旧路径一一对应的目录，无法再 fallback。`data_dir`
+/// 形参保留仅为兼容既有调用站点；内部走实例 API。
+fn profile_dir(_data_dir: &Path, profile: &str) -> PathBuf {
+    let (family, id) = default_instance_key();
+    paths::instance_profile_dir(&family, &id, profile)
 }
 
 fn wiring_log_spec() -> crate::process::LogSpec {
@@ -694,18 +729,30 @@ fn remove_item_unlocked(data_dir: &Path, id: &str) -> Result<(), AppError> {
     save_store_unlocked(data_dir, &store)
 }
 
-fn read_meta(data_dir: &Path, version: &str, id: &str) -> Option<KernelMeta> {
-    let text = fs::read_to_string(kernel_meta_file(data_dir, version, id)).ok()?;
+/// 从给定的 meta 文件路径读取物化记录；文件不存在 / JSON 损坏均返回 `None`，
+/// 由调用方自行决定「无记录 = 视为 fresh」或「无记录 = 视为坏掉」。
+fn read_instance_meta(meta_path: &Path) -> Option<KernelMeta> {
+    let text = fs::read_to_string(meta_path).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-fn write_meta(data_dir: &Path, version: &str, id: &str, meta: &KernelMeta) -> Result<(), AppError> {
-    if let Some(parent) = kernel_meta_file(data_dir, version, id).parent() {
+/// 把物化记录原子写入指定 meta 文件；父目录缺失时自动创建。
+fn write_meta_at(meta_path: &Path, meta: &KernelMeta) -> Result<(), AppError> {
+    if let Some(parent) = meta_path.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
     }
     let text = serde_json::to_string(meta).map_err(|e| AppError::Io(e.to_string()))?;
-    atomic_write(&kernel_meta_file(data_dir, version, id), text.as_bytes())
-        .map_err(|e| AppError::Io(e.to_string()))
+    atomic_write(meta_path, text.as_bytes()).map_err(|e| AppError::Io(e.to_string()))
+}
+
+/// 读取默认实例下指定插件的物化记录。
+fn read_meta(data_dir: &Path, version: &str, id: &str) -> Option<KernelMeta> {
+    read_instance_meta(&kernel_meta_file(data_dir, version, id))
+}
+
+/// 把物化记录写入默认实例下指定插件的 meta 文件。
+fn write_meta(data_dir: &Path, version: &str, id: &str, meta: &KernelMeta) -> Result<(), AppError> {
+    write_meta_at(&kernel_meta_file(data_dir, version, id), meta)
 }
 
 // --- spec 解析 -------------------------------------------------------------
@@ -1681,24 +1728,32 @@ fn install_store_deps(
 
 // --- 物化 ----------------------------------------------------------------
 
-/// 把一个插件物化到一个内核：link（symlink，Windows 上是 junction）或 copy，
-/// 记录在 `.meta/<id>.json` 中。返回实际采用的模式。
-pub fn materialize_one(
-    data_dir: &Path,
-    version: &str,
+/// 把一个插件从中央库物化到目标目录，方式是 link（symlink，Windows 上是
+/// junction）或 copy，结果写在 `meta_path` 里。返回实际采用的模式。
+///
+/// 这是物化的**纯函数**版：不依赖 `data_dir` 或 `version`，纯粹把
+/// `source → target` 摆好并写 meta。所有路径都已在上层解析好
+///（默认实例 → `instance_extensions_plugin_dir` 等）。
+///
+/// 注意 `target` 必须在调本函数前不存在——否则链接判定（`symlink_metadata`
+/// + `read_link`）会因为目标已经存在而误判「健康」。本函数第一步就清旧
+/// 产物（`remove_materialized_at`），让链接重新建在干净目录上。
+fn materialize_inner(
+    source: &Path,
+    target: &Path,
+    meta_path: &Path,
     item: &StoreItem,
+    log_path: &Path,
 ) -> Result<String, AppError> {
-    let source = store_plugin_dir(data_dir, &item.id);
-    let target = kernel_plugin_dir(data_dir, version, &item.id);
-    let meta = read_meta(data_dir, version, &item.id);
+    let meta = read_instance_meta(meta_path);
 
     // 一次性解析中央库路径：如果中央库源本身就是一个 symlink（比如 git 来源
     // 的插件直接克隆到中央库），用真实文件系统位置，让内核插件目录拿到
     // 一条直接链接 —— 避免双重 symlink 链把 Node 的 realpath 弄断。
-    let resolved_source = fs::symlink_metadata(&source)
+    let resolved_source = fs::symlink_metadata(source)
         .ok()
         .filter(|m| m.file_type().is_symlink())
-        .and_then(|_| fs::read_link(&source).ok())
+        .and_then(|_| fs::read_link(source).ok())
         .unwrap_or_else(|| source.to_path_buf());
 
     let synced_version_matches = meta
@@ -1723,16 +1778,16 @@ pub fn materialize_one(
         // 都判定"不健康"并整树重删重拷。
         let recorded_copy = meta.as_ref().map(|m| m.mode == "copy").unwrap_or(false);
         let target_ok = if recorded_copy {
-            fs::symlink_metadata(&target)
+            fs::symlink_metadata(target)
                 .map(|m| !m.file_type().is_symlink())
                 .unwrap_or(false)
         } else {
             // 上一次运行可能留下了一条过时的双重 symlink 链，即便记录的版本和
             // 模式都没变 —— 落到下面去重建一条正确的直接链接。
-            fs::symlink_metadata(&target)
+            fs::symlink_metadata(target)
                 .ok()
                 .filter(|m| m.file_type().is_symlink())
-                .and_then(|_| fs::read_link(&target).ok())
+                .and_then(|_| fs::read_link(target).ok())
                 .map(|link| link == resolved_source)
                 .unwrap_or(false)
         };
@@ -1742,10 +1797,10 @@ pub fn materialize_one(
     }
 
     // 清除旧产物（错误残留：非链接目录、指向别处的链接或旧版本副本）
-    remove_materialized(data_dir, version, &item.id);
+    remove_materialized_at(target, meta_path);
 
     let mut actual = item.mode.clone();
-    if item.mode == "link" && make_dir_link(&resolved_source, &target).is_err() {
+    if item.mode == "link" && make_dir_link(&resolved_source, target).is_err() {
         // 链接失败（Windows 权限、文件系统不支持）→ 降级复制
         actual = String::from("copy");
         eprintln!(
@@ -1754,24 +1809,22 @@ pub fn materialize_one(
         );
     }
     if actual == "copy" {
-        copy_tree(&source, &target).map_err(|e| {
+        copy_tree(source, target).map_err(|e| {
             AppError::Io(format!(
                 "复制插件 {} 到内核失败：{e}。请关闭工作台后点击「同步」重试；若持续失败请查看日志 {}",
                 item.id,
-                wiring_log_path(data_dir).display()
+                log_path.display()
             ))
         })?;
     }
     if !target.exists() {
         return Err(AppError::Plugin(format!(
-            "物化失败：{} 在内核 {version} 中未就绪",
+            "物化失败：{} 在实例 extensions 中未就绪",
             item.id
         )));
     }
-    write_meta(
-        data_dir,
-        version,
-        &item.id,
+    write_meta_at(
+        meta_path,
         &KernelMeta {
             fallback: actual != item.mode,
             mode: actual.clone(),
@@ -1782,26 +1835,80 @@ pub fn materialize_one(
     Ok(actual)
 }
 
-/// 从一个内核里移除插件的物化（link 或 copy 残留）。
-fn remove_materialized(data_dir: &Path, version: &str, id: &str) {
-    let target = kernel_plugin_dir(data_dir, version, id);
-    match fs::symlink_metadata(&target) {
-        Ok(md) if md.file_type().is_symlink() => remove_link(&target),
+/// P4 主路径：把一个插件物化到默认实例的 `extensions/plugins/<id>/`。
+///
+/// 这是默认实例的物化入口；具体实例范围命令走
+/// [`materialize_one_for_instance`]（下一步落地），单实例隔离测试与
+/// 多实例 UI 都用后者。
+pub fn materialize_one(
+    data_dir: &Path,
+    version: &str,
+    item: &StoreItem,
+) -> Result<String, AppError> {
+    let (family, id) = default_instance_key();
+    materialize_one_for_instance(&family, &id, item, version)
+}
+
+/// P4 主路径：把一个插件物化到指定实例的 `extensions/plugins/<id>/`。
+///
+/// `version` 形参保留仅为与 [`materialize_one`] 对齐；实例物化目标不再
+/// 按 version 切分，`extensions/plugins/` 在实例生命周期内持续存在，
+/// 切换内核版本只需要重链 `node_modules`，不动插件目录。
+pub fn materialize_one_for_instance(
+    family: &str,
+    instance_id: &str,
+    item: &StoreItem,
+    _version: &str,
+) -> Result<String, AppError> {
+    let source = store_plugin_dir(&paths::plugins_store_root(), &item.id);
+    let target = paths::instance_extension_plugin_dir(family, instance_id, &item.id);
+    let meta_path = paths::instance_extension_meta_file(family, instance_id, &item.id);
+    let log_path = wiring_log_path(
+        &paths::xlink_metadata_file()
+            .parent()
+            .unwrap_or_else(|| Path::new(".")),
+    );
+    materialize_inner(&source, &target, &meta_path, item, &log_path)
+}
+
+/// 从给定的物化目录里移除插件（link 或 copy 残留），并删 meta。
+fn remove_materialized_at(target: &Path, meta_path: &Path) {
+    match fs::symlink_metadata(target) {
+        Ok(md) if md.file_type().is_symlink() => remove_link(target),
         Ok(_) => {
-            let _ = fs::remove_dir_all(&target);
+            let _ = fs::remove_dir_all(target);
         }
         Err(_) => {}
     }
-    let _ = fs::remove_file(kernel_meta_file(data_dir, version, id));
+    let _ = fs::remove_file(meta_path);
 }
 
-/// 清理内核中中央库已经不再持有的插件条目 —— 卸载时撞上 Windows 文件锁、或
-/// 手工删除中央库目录后留下的残留。仅在以下两种情况清理：桌面壳能证明该条目
-/// 归它所有（有 `.meta/<id>.json` 记录），或者条目已经损坏（symlink 的目标
-/// 已消失）；用户手工放进内核 plugins 目录的任何东西都保留不动。以中央库
-/// 成员身份而非接线过滤器为依据，保证被隔离的插件也能保留物化。
-fn sweep_kernel_orphans(data_dir: &Path, version: &str, store: &Store) {
-    let dir = kernel_plugins_dir(data_dir, version);
+/// P4 主路径：从指定实例的 extensions 中移除插件。
+fn remove_materialized_for_instance(family: &str, instance_id: &str, plugin_id: &str) {
+    let target = paths::instance_extension_plugin_dir(family, instance_id, plugin_id);
+    let meta_path = paths::instance_extension_meta_file(family, instance_id, plugin_id);
+    remove_materialized_at(&target, &meta_path);
+}
+
+/// 旧 API：默认实例的物化移除 —— 委托到 [`remove_materialized_for_instance`]。
+/// `data_dir, version` 形参保留仅为兼容既有调用站点。
+fn remove_materialized(data_dir: &Path, version: &str, id: &str) {
+    let (family, instance_id) = default_instance_key();
+    remove_materialized_for_instance(&family, &instance_id, id);
+    // 形参 `data_dir, version` 仅用于保留旧签名：物化目标已迁到实例
+    // extensions，version 与 data_dir 不再决定清理范围。
+    let _ = (data_dir, version);
+}
+
+/// P4 主路径：清理指定实例 extensions 里中央库已不再持有的插件条目。
+///
+/// 卸载时撞上 Windows 文件锁、或手工删除中央库目录后留下的残留。仅在以下
+/// 两种情况清理：桌面壳能证明该条目归它所有（有 `.dsh-meta.json` 记录），
+/// 或者条目已经损坏（symlink 的目标已消失）；用户手工放进 extensions/plugins
+/// 目录的任何东西都保留不动。以中央库成员身份而非接线过滤器为依据，保证
+/// 被隔离的插件也能保留物化。
+fn sweep_instance_orphans(family: &str, instance_id: &str, store: &Store) {
+    let dir = paths::instance_extensions_plugins_dir(family, instance_id);
     let Ok(entries) = fs::read_dir(&dir) else {
         return;
     };
@@ -1809,7 +1916,7 @@ fn sweep_kernel_orphans(data_dir: &Path, version: &str, store: &Store) {
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if name == META_SUBDIR || store.items.iter().any(|i| i.id == name) {
+        if store.items.iter().any(|i| i.id == name) {
             continue;
         }
         let path = entry.path();
@@ -1818,11 +1925,18 @@ fn sweep_kernel_orphans(data_dir: &Path, version: &str, store: &Store) {
             .filter(|m| m.file_type().is_symlink())
             .map(|_| !path.exists()) // exists() 会顺着链接追到目标上
             .unwrap_or(false);
-        let shell_owned = kernel_meta_file(data_dir, version, &name).is_file();
+        let shell_owned = paths::instance_extension_meta_file(family, instance_id, &name).is_file();
         if dangling_link || shell_owned {
-            remove_materialized(data_dir, version, &name);
+            remove_materialized_for_instance(family, instance_id, &name);
         }
     }
+}
+
+/// 旧 API：默认实例的扩展清理 —— 委托到 [`sweep_instance_orphans`]。
+fn sweep_kernel_orphans(data_dir: &Path, version: &str, store: &Store) {
+    let (family, instance_id) = default_instance_key();
+    sweep_instance_orphans(&family, &instance_id, store);
+    let _ = (data_dir, version);
 }
 
 #[cfg(unix)]
@@ -1982,11 +2096,15 @@ fn copy_file(from: &Path, to: &Path) -> io::Result<()> {
         .map(|_| ())
 }
 
-/// 把插件物化到每一个已安装的内核。
+/// 把插件物化到默认实例的 `extensions/plugins/<id>/`。
+///
+/// P4 起插件物化按实例隔离（多实例隔离由 P5+ 命令驱动）：同一份中央库
+/// 入口被不同实例独立物化到各自 `extensions/plugins/`。这里只对默认
+/// 实例生效；具体实例的命令走 [`sync_for_instance`]（P5 阶段补）。
 pub fn sync_kernels(data_dir: &Path, item: &StoreItem) -> Result<(), AppError> {
-    for version in kernel::list_installed(data_dir) {
-        materialize_one(data_dir, &version.version, item)?;
-    }
+    let (family, instance_id) = default_instance_key();
+    let version = kernel::read_active(data_dir).unwrap_or_default();
+    materialize_one_for_instance(&family, &instance_id, item, &version)?;
     Ok(())
 }
 
@@ -2097,14 +2215,18 @@ fn ensure_profile(data_dir: &Path, profile: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// 判断 profile 中的 dependency spec 是否由桌面壳写入（指向某个内核的
-/// plugins 目录）。用来防止清退误伤 CLI 管理的依赖。
+/// 判断 profile 中的 dependency spec 是否由桌面壳写入（指向某个实例的
+/// `extensions/plugins/<id>` 或 P4 之前的 `kernels/<version>/plugins/<id>`）。
+/// 用来防止清退误伤 CLI 管理的依赖。
 ///
-/// 桌面壳写出的 spec 末尾总是 `kernels/<version>/plugins/<id>`；据此路径
-/// 结构匹配，而不是根据数据目录名做判断。基于目录名匹配（`desktop/kernels/`）
-/// 会把 debug 壳（`desktop-dev/`）或 `DSH_DESKTOP_DATA_DIR` 覆写写出的 spec
-/// 误判为用户自管的，卸载时留下悬空的依赖和 bundle 层，内核启动解析
-/// 悬空 bundle 时崩溃。
+/// 桌面壳写出的 spec 末尾要么是 P4 的 `.../extensions/plugins/<id>`，要么是
+/// P4 之前已经落盘的旧布局 `.../kernels/<version>/plugins/<id>`——两种都
+/// 必须识别为托管，否则 P4 升级时旧 spec 残留会被当成用户/CLI 依赖保留，
+/// 卸载时留不下清退，内核启动时解析悬空 bundle 崩溃。
+///
+/// 基于数据目录名（`desktop/` / `desktop-dev/`）匹配会把
+/// `DSH_DESKTOP_DATA_DIR` 覆写出的 spec 误判为用户自管的——必须按尾部布局
+/// 而不是按目录名判断。
 fn is_managed_spec(spec: &str) -> bool {
     let Some(path) = spec
         .strip_prefix(SPEC_LINK)
@@ -2112,13 +2234,21 @@ fn is_managed_spec(spec: &str) -> bool {
     else {
         return false;
     };
-    let mut segs = path.split('/').rev();
-    let (Some(id), Some("plugins"), Some(version), Some("kernels")) =
-        (segs.next(), segs.next(), segs.next(), segs.next())
-    else {
+    let segs: Vec<&str> = path.split('/').rev().collect();
+    if segs.len() < 3 {
         return false;
-    };
-    !id.is_empty() && !version.is_empty()
+    }
+    // P4 起的实例布局：`.../extensions/plugins/<id>` —— 尾三段
+    // (id, "plugins", "extensions")。
+    if segs.len() >= 3 && segs[1] == "plugins" && segs[2] == "extensions" {
+        return !segs[0].is_empty();
+    }
+    // P4 之前的多版本布局：`.../kernels/<version>/plugins/<id>` —— 尾四段
+    // (id, "plugins", version, "kernels")。`version` 与 `id` 都不得为空。
+    if segs.len() >= 4 && segs[1] == "plugins" && segs[3] == "kernels" {
+        return !segs[0].is_empty() && !segs[2].is_empty();
+    }
+    false
 }
 
 /// 决定哪些中央库条目参与物化与 profile 接线的过滤器。启动看护会把要排除
@@ -2205,10 +2335,13 @@ pub fn ensure_wiring_filtered(
     let mut failures: Vec<String> = Vec::new();
     match kernel::read_active(data_dir) {
         Some(active) => {
+            let (family, instance_id) = default_instance_key();
             for item in store.items.iter().filter(|item| allow(item)) {
                 let result = ensure_store_dependencies(data_dir, item, pnpm_exe, on_progress)
                     .and_then(|_| refresh_store_peers(data_dir, item, &active))
-                    .and_then(|_| materialize_one(data_dir, &active, item));
+                    .and_then(|_| {
+                        materialize_one_for_instance(&family, &instance_id, item, &active)
+                    });
                 match result {
                     Ok(actual) => {
                         let prefix = if actual == "copy" {
@@ -2216,25 +2349,22 @@ pub fn ensure_wiring_filtered(
                         } else {
                             SPEC_LINK
                         };
-                        let rel = relative_path(
-                            &profile_dir(data_dir, &settings.profile),
-                            &kernel_plugin_dir(data_dir, &active, &item.id),
-                        );
+                        let target =
+                            paths::instance_extension_plugin_dir(&family, &instance_id, &item.id);
+                        let rel = relative_path(&profile_dir(data_dir, &settings.profile), &target);
                         specs.insert(
                             item.id.clone(),
                             WireSpec {
                                 name: item.name.clone(),
                                 spec: format!("{prefix}{}", spec_path_string(&rel)),
-                                bundle: manifest_is_bundle(&kernel_plugin_dir(
-                                    data_dir, &active, &item.id,
-                                )),
+                                bundle: manifest_is_bundle(&target),
                             },
                         );
                     }
                     Err(e) => failures.push(format!("{}（{e}）", item.name)),
                 }
             }
-            sweep_kernel_orphans(data_dir, &active, &store);
+            sweep_instance_orphans(&family, &instance_id, &store);
         }
         None if !store.items.is_empty() => return Ok((0, false)),
         None => {}
@@ -3156,6 +3286,11 @@ fn uninstall_unlocked(
     }
     for version in kernel::list_installed(data_dir) {
         remove_materialized(data_dir, &version.version, id);
+        // `remove_materialized` 形参里的 `version` 在 P4 起已被忽略——物化
+        // 目标走实例 `extensions/plugins/`，不再按内核 version 切分。
+        // 内核列表的遍历仅为保留多版本迁移时的语义壳（多实例隔离在 P5 阶段
+        // 落地后这里会进一步改为对每个实例调一次 `remove_materialized_for_instance`）。
+        let _ = version;
     }
     remove_item_unlocked(data_dir, id)?;
     // 隔离记录随卸载一并清除：残留记录会在用户日后重装同名插件时把它挡
@@ -3195,9 +3330,12 @@ fn set_mode_unlocked(
         && (item.mode != "link" || !store_plugin_dir(data_dir, id).join("node_modules").is_dir());
     // 切换模式必须强制重新物化：否则"版本与形态都没变"的短路判定会让旧的
     // 落地结果原样留着，用户点了切换却看不到任何变化。删掉 meta 即可让下一次
-    // materialize 走全新落地。
+    // materialize 走全新落地。P4 起 meta 文件走实例 `extensions/plugins/<id>/.dsh-meta.json`，
+    // 不再按内核 version 切分；旧 `kernel_meta_file(data_dir, version, id)` 已被
+    // 委托到该路径，这里继续调用只是为了「删 meta」的语义直观。
     for installed in kernel::list_installed(data_dir) {
         let _ = fs::remove_file(kernel_meta_file(data_dir, &installed.version, id));
+        let _ = installed;
     }
     item.mode = mode.to_string();
     upsert_item_unlocked(data_dir, item.clone())?;
@@ -3209,12 +3347,15 @@ fn set_mode_unlocked(
     Ok(())
 }
 
-/// 清理每个已安装内核中归桌面壳所有的插件残留。`ensure_wiring` 只访问
-/// 活动内核，所以这一步必须由显式的全内核同步自己负责。
+/// 清理默认实例 extensions 里归桌面壳所有的插件残留。`ensure_wiring`
+/// 只对活动实例生效，所以这一步必须由显式的全实例同步自己负责。
+///
+/// P4 起物化按实例隔离；多实例的清理在 P5 阶段补——这里仅对默认实例
+/// 生效，避免清理路径穿越到不归本实例的 extensions。
 fn sweep_all_kernel_orphans(data_dir: &Path, store: &Store) {
-    for version in kernel::list_installed(data_dir) {
-        sweep_kernel_orphans(data_dir, &version.version, store);
-    }
+    let _ = data_dir;
+    let (family, instance_id) = default_instance_key();
+    sweep_instance_orphans(&family, &instance_id, store);
 }
 
 /// 物化所有插件并重新接线（对应「同步」按钮）。
@@ -3277,6 +3418,7 @@ pub fn status(data_dir: &Path, settings: &settings::Settings) -> PluginStatus {
         }
     };
     let active = kernel::read_active(data_dir);
+    let (family, instance_id) = default_instance_key();
     let profile_manifest = read_profile_json(data_dir, &settings.profile)
         .ok()
         .flatten();
@@ -3290,10 +3432,14 @@ pub fn status(data_dir: &Path, settings: &settings::Settings) -> PluginStatus {
             .iter()
             .find(|q| q.id == item.id)
             .cloned();
+        // 物化目录走实例 `extensions/plugins/<id>/`（P4）。profile
+        // 路径同样走实例 `instance_profile_dir`，见 [`profile_dir`]。
+        let meta_path = paths::instance_extension_meta_file(&family, &instance_id, &item.id);
+        let target = paths::instance_extension_plugin_dir(&family, &instance_id, &item.id);
         let (actual_mode, synced) = match &active {
             Some(version) => {
-                let meta = read_meta(data_dir, version, &item.id);
-                let present = kernel_plugin_dir(data_dir, version, &item.id).exists();
+                let meta = read_instance_meta(&meta_path);
+                let present = target.exists();
                 let current = meta
                     .as_ref()
                     .map(|m| m.version == item.installed_version)
@@ -3385,17 +3531,23 @@ pub struct KernelPluginRow {
     pub in_store: bool,
 }
 
-/// 抓取 `kernels/<version>/plugins/` 下物化的所有插件快照。`version` 必须
-/// 已经是已安装状态；本函数不做校验，因为版本面板只展示已安装的条目。
+/// 抓取默认实例 `extensions/plugins/` 下物化的所有插件快照。
+///
+/// P4 起插件按实例隔离（多实例 UI 在 P5 落地），版本面板在这里一次性
+/// 列出默认实例里实际物化的插件。`version` 形参保留仅为兼容既有调用
+/// 站点（[KernelPluginRow] 仍然报告 `version` 字段，但版本信息来自
+/// 中央库的 `installed_version` 而非物化目录里的 `kernels/<version>/`）。
 pub fn kernel_plugin_list(data_dir: &Path, version: &str) -> Vec<KernelPluginRow> {
+    let _ = (data_dir, version); // 形参仅为兼容签名
+    let (family, instance_id) = default_instance_key();
     let mut rows = Vec::new();
-    let plugins_dir = kernel_plugins_dir(data_dir, version);
+    let plugins_dir = paths::instance_extensions_plugins_dir(&family, &instance_id);
     let entries = match fs::read_dir(&plugins_dir) {
         Ok(it) => it,
         Err(_) => return rows,
     };
     // 中央库名字查询，让刚被删除的插件也能解析出标签，而不是只显示裸 id。
-    let store_doc = load_store(data_dir);
+    let store_doc = load_store(&paths::plugins_store_root());
     let store_index: std::collections::HashMap<&str, &StoreItem> = store_doc
         .items
         .iter()
@@ -3404,12 +3556,13 @@ pub fn kernel_plugin_list(data_dir: &Path, version: &str) -> Vec<KernelPluginRow
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy().into_owned();
-        if name_str.starts_with('.') || name_str == META_SUBDIR {
+        if name_str.starts_with('.') {
             continue;
         }
         let id = name_str;
         let dir = entry.path();
-        let meta = read_meta(data_dir, version, &id);
+        let meta_path = paths::instance_extension_meta_file(&family, &instance_id, &id);
+        let meta = read_instance_meta(&meta_path);
         let present = dir.exists();
         let store_item = store_index.get(id.as_str()).copied();
         let synced = match (&meta, store_item) {
@@ -3512,6 +3665,40 @@ fn refresh_store_peers(data_dir: &Path, item: &StoreItem, active: &str) -> Resul
     }
     Ok(())
 }
+/// 在测试 home 下种入一个默认实例 record + default_instance_id，让
+/// `default_instance_key()` 走"从注册表读 default"这条生产路径。
+///
+/// 仅测试用：跳过 `commands::ensure_default_instance_migrated` 内部的
+/// blocking + tauri state 逻辑，直接落一份 `InstanceRegistry` 与一份
+/// `InstanceRecord` 到 disk。生产流程里这一步由 setup 阶段的前端调用
+/// tauri command 完成。
+#[cfg(test)]
+fn seed_default_instance_for_tests(_home: &Path) {
+    use crate::instance::{
+        InstanceRecord, InstanceRegistry, DEFAULT_INSTANCE_ID, KERNEL_FAMILY_DSH,
+    };
+    let now_ms = crate::process::epoch_millis();
+    let mut record = InstanceRecord::new(DEFAULT_INSTANCE_ID, KERNEL_FAMILY_DSH, 3090, now_ms);
+    // 不指定 kernel_version：让 `kernel::read_active` 在测试里仍然走
+    // `<data_dir>/active.txt` 的 legacy 路径——多数插件测试不依赖具体版本。
+    record.kernel_version = None;
+    if let Err(error) = instance::ensure_instance_dirs(&record) {
+        eprintln!("dsh-xlink: 测试无法创建实例目录（{error}）");
+        return;
+    }
+    if let Err(error) = instance::save_record_to_disk(&record) {
+        eprintln!("dsh-xlink: 测试无法写入实例记录（{error}）");
+        return;
+    }
+    let mut registry = InstanceRegistry {
+        default_instance_id: Some(DEFAULT_INSTANCE_ID.to_string()),
+        ..InstanceRegistry::default()
+    };
+    registry.instances.push(record);
+    if let Err(error) = instance::save_registry(&registry) {
+        eprintln!("dsh-xlink: 测试无法写入注册表（{error}）");
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3534,6 +3721,11 @@ mod tests {
         ///
         /// **调用方必须把 EnvGuard 与 TestHome 绑在同一作用域**——通常
         /// `let (home, _guard) = TestHome::new();`。
+        ///
+        /// P4：创建时同时注册一个默认实例 record，模拟生产里
+        /// `commands::ensure_default_instance_migrated` 在 setup 阶段写出
+        /// 的实例条目。这样 `default_instance_key()` 走"从注册表读 default"
+        /// 这条生产路径，而不是 fallback 到 `(dsh, "default")` 的兜底分支。
         pub(super) fn new() -> (Self, crate::tests::EnvGuard) {
             let nano = SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -3545,6 +3737,7 @@ mod tests {
             let home = base.join(format!("{nano}-{seq}"));
             fs::create_dir_all(&home).expect("test home");
             let guard = crate::tests::scoped_xlink_home(&home);
+            seed_default_instance_for_tests(&home);
             (TestHome(home), guard)
         }
 
