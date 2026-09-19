@@ -1,6 +1,6 @@
 # 多内核改造阶段性状态（2026-09-19）
 
-> 本轮 commit 链（HEAD `86372ad`）的阶段性快照——给 review 节点做参考材料。
+> 本轮 commit 链（HEAD `d2bab6d`）的阶段性快照——给 review 节点做参考材料。
 > 完整计划与设计文档见 [docs/dsh-xlink-multi-kernel-design.md](dsh-xlink-multi-kernel-design.md)
 > 与 [docs/dsh-xlink-multi-kernel-development-plan.md](dsh-xlink-multi-kernel-development-plan.md)。
 > 配套架构补全见 [docs/architecture.md §「多内核改造后的实际数据布局」](architecture.md)。
@@ -22,10 +22,12 @@
 | **P0 收尾** 阶段性状态快照 | ✅ | `89932eb` |
 | **P0 收尾** architecture 增补「实际数据布局」 | ✅ | `257c42a` |
 | **P0 收尾** 状态快照自洽（HEAD 指针更新） | ✅ | `86372ad` |
+| **AGENTS.md 同步** README / plugin-mgmt / skill-mgmt 描述改用新路径 | ✅ | `94e09e6` |
+| **AGENTS.md 同步** troubleshooting spec 格式同步 P4 新布局 | ✅ | `d2bab6d` |
 | **P6 step 5** 迁移向导 UI 向导页面 | ⏸ 待 UI 形态决策 | — |
 | **P8** UI / 集成测试 / 发布准备 | ⏸ 待决策（实例列表 UI 形态 / PR 边界 / 是否阶段性发版） | — |
 
-完成度：**~93%**（13/15 row 已落地 commit；P6 step 5 / P8 仍依赖 UI 决策）。
+完成度：**~93%**（15/17 row 已落地 commit；P6 step 5 / P8 仍依赖 UI 决策）。
 
 ## 设计决策摘要
 
@@ -124,9 +126,17 @@
 
 P8 阶段统一清理——届时可以一次性 remove `cfg_attr` 注释。
 
+### dev plan §4 release threshold 验证
+
+- ✅ **package.json / tauri.conf.json 版本一致**：`0.1.5-rc.1` 对齐
+- ⚠️ **日志可区分 `shell_mode` / `kernel_family` / `kernel_version` / `instance_id`**：当前 `LogSpec` 只含 `kind`（shell mode）+ `name`（含 version for install，**不含 family / instance_id**）。多实例下两个同 family 同 version 的实例会写到同一个 `<shell_mode>-kernel-<date>.log` 文件，互相覆盖——dev plan §4 明文要求未满足。
+  - **影响范围**：`kernel::kernel_log_spec` / `kernel::current_kernel_log_path` 调用方有 `kernel::start_instance` / `kernel_adapter::DshAdapter::start` / `guard::kernel_log_path` / `commands::workbench_url_from_log` / `notify::*` 等 6+ 处
+  - **修复方向**：`LogSpec` 增加 `family: &str` + `instance_id: &str` 字段；`kernel_log_spec()` 改成 `kernel_log_spec(family, instance_id)`；`current_kernel_log_path` 改成 `current_kernel_log_path(data_dir, family, instance_id)`；所有调用方传 family + instance_id。日志文件名加 `<family>-<instance_id>-` 段。
+  - **本轮未修**：跨 6+ 处调用点 + 单元测试 fixture 调整，超出"文档收尾"范围，建议放 P8 阶段统一做（与「实例列表 UI」同批——届时日志字段命名也可由 UI 决策驱动）。
+
 ## Review 建议
 
-`3ad6c8e..86372ad` 共 26 个 commit（含 3 笔文档收尾）。建议按以下顺序 review：
+`3ad6c8e..d2bab6d` 共 30 个 commit（含 6 笔文档收尾）。建议按以下顺序 review：
 
 1. **设计层**（先看 docs）：本文件 + 设计稿 §P4–§P7 节 + [architecture.md §「多内核改造后的实际数据布局」](architecture.md)
 2. **关键 commit**（设计落地点）：
@@ -137,6 +147,7 @@ P8 阶段统一清理——届时可以一次性 remove `cfg_attr` 注释。
    - `1308cb6` P7 mcode mock 适配器
 3. **测试**：每个 step 都有 4–8 个集成测试覆盖关键不变量
 4. **预算**：FILE_BUDGETS 的每一次上调都在注释里写了"为什么"
-5. **文档**（最后看）：`89932eb` 阶段性状态快照（本文件）+ `257c42a` architecture 增补章节 + `86372ad` 自洽 HEAD 指针
+5. **文档**（最后看）：`89932eb` / `257c42a` / `86372ad` / `4825b57` 状态快照四联 + `94e09e6` / `d2bab6d` AGENTS.md 同步
+6. **release threshold**（特别看）：dev plan §4 四项发布门槛的逐项验证——含本轮新发现的「日志可区分 4 字段」缺口
 
-**HEAD `86372ad` 可作为 review 基线**。
+**HEAD `d2bab6d` 可作为 review 基线**。
