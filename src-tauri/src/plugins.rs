@@ -162,11 +162,15 @@ pub struct PluginRow {
     pub pinned: bool,
     /// 中央库中记录的期望模式。
     pub desired_mode: String,
-    /// 活动内核中的实际模式（仅当已物化时）。
+    /// 默认实例中的实际模式（仅当已物化时）。
+    ///
+    /// P8 起 PluginRow 同时携带 [`Self::instances`] 全量 per-instance 视图。
+    /// 该字段保留仅为兼容单实例 UI（PluginsPanel.vue 旧渲染路径），由
+    /// 默认实例的状态填入；新 UI 应直接读 `instances` map。
     pub actual_mode: Option<String>,
-    /// 活动内核中的物化是否完整且与当前版本一致。
+    /// 默认实例中的物化是否完整且与当前版本一致。
     pub synced: bool,
-    /// 活动内核的 profile 是否已经加载了此插件。
+    /// 默认实例的 profile 是否已经加载了此插件。
     pub wired: bool,
     /// 启动看护禁用此插件时的隔离记录；
     /// `None` 表示该插件正常参与接线。
@@ -175,6 +179,32 @@ pub struct PluginRow {
     pub description: Option<String>,
     pub installed_at: String,
     pub updated_at: String,
+    /// 每个实例在该插件上的状态（P8）。key 是实例 id（与
+    /// [`instance::InstanceRecord::id`] 一致）；注册表里已被删的实例不会
+    /// 出现在这里。物化与 wiring 都是实例私有的，quarantine 仍全局共享
+    /// （一个插件在所有实例上同时被隔离），所以每个实例都填同一份。
+    #[serde(default)]
+    pub instances: BTreeMap<String, PluginInstanceState>,
+}
+
+/// 单个实例上的插件状态（P8）。PluginRow.instances 的 value 类型。
+///
+/// 设计要点：所有字段都从文件系统读出（不在前端再算一遍），保证 UI
+/// 切 tab 时不需要重新发起 invoke；同时 legacy 字段（`actual_mode` /
+/// `synced` / `wired` / `quarantined`）也由「默认实例」的状态填一份，
+/// 单实例 UI 不需要做任何改动。
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginInstanceState {
+    /// 该实例是否已经把插件物化到 `extensions/plugins/<id>/`。
+    pub materialized: bool,
+    /// 物化模式（`link` / `copy`）；未物化时为 `None`。
+    pub actual_mode: Option<String>,
+    /// 物化是否与中央库的 `installed_version` 一致（不计 `synced_at`）。
+    pub synced: bool,
+    /// 该实例的 profile 是否加载了此插件。
+    pub wired: bool,
+    /// 全局 quarantine 标记的一份镜像（quarantine 是全局文档）。
+    pub quarantined: Option<quarantine::QuarantineItem>,
 }
 
 /// 管理界面所需的插件汇总状态。
@@ -2179,6 +2209,24 @@ fn read_profile_json(
         .map_err(|e| AppError::Io(e.to_string()))
 }
 
+/// P8 实例范围版：profile 路径走指定实例的
+/// `instance_profile_dir(family, instance_id, profile)/package.json`。
+/// 旧 `read_profile_json` 仍按默认实例工作（不破坏既有 caller）。
+fn read_profile_json_for_instance(
+    data_dir: &Path,
+    family: &str,
+    instance_id: &str,
+    profile: &str,
+) -> Result<Option<serde_json::Value>, AppError> {
+    let path = paths::instance_profile_dir(family, instance_id, profile).join("package.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|e| AppError::Io(e.to_string()))
+}
+
 fn write_profile_json(
     data_dir: &Path,
     profile: &str,
@@ -3684,6 +3732,10 @@ pub fn status_for_instance(
         .ok()
         .flatten();
     let quarantine_doc = quarantine::load(data_dir);
+    // P8：枚举注册表里所有实例，逐个计算该插件的物化 / wiring 状态。
+    // 注册表加载失败时降级为「只渲染当前实例」——单实例视角 UI 仍可工作，
+    // 只是 `instances` map 缺失，UI 上没有双 tab 的全部数据。
+    let registry = instance::load_registry().ok();
 
     let mut rows = Vec::new();
     let mut updates = 0;
@@ -3693,29 +3745,61 @@ pub fn status_for_instance(
             .iter()
             .find(|q| q.id == item.id)
             .cloned();
-        // 物化目录走实例 `extensions/plugins/<id>/`（P4）。profile
-        // 路径同样走实例 `instance_profile_dir`，见 [`profile_dir`]。
-        let meta_path = paths::instance_extension_meta_file(&family, &instance_id, &item.id);
-        let target = paths::instance_extension_plugin_dir(&family, &instance_id, &item.id);
-        let (actual_mode, synced) = match &active {
-            Some(version) => {
-                let meta = read_instance_meta(&meta_path);
-                let present = target.exists();
-                let current = meta
-                    .as_ref()
-                    .map(|m| m.version == item.installed_version)
-                    .unwrap_or(false);
-                (meta.map(|m| m.mode), present && current)
+        // P8 per-instance 状态：循环每个注册表实例读物化 / wiring。
+        // 物化目录走实例 `extensions/plugins/<id>/`（P4）；profile 路径
+        // 同样走实例 `instance_profile_dir`（P4）。quarantine 仍全局共享，
+        // 所以每个实例的 `quarantined` 字段填同一份。
+        let mut instances_map: BTreeMap<String, PluginInstanceState> = BTreeMap::new();
+        if let Some(reg) = registry.as_ref() {
+            for rec in &reg.instances {
+                let meta_path =
+                    paths::instance_extension_meta_file(&rec.kernel_family, &rec.id, &item.id);
+                let target =
+                    paths::instance_extension_plugin_dir(&rec.kernel_family, &rec.id, &item.id);
+                let (actual_mode, synced) = match &active {
+                    Some(version) => {
+                        let meta = read_instance_meta(&meta_path);
+                        let present = target.exists();
+                        let current = meta
+                            .as_ref()
+                            .map(|m| m.version == item.installed_version)
+                            .unwrap_or(false);
+                        (meta.map(|m| m.mode), present && current)
+                    }
+                    None => (None, false),
+                };
+                let wired = read_profile_json_for_instance(
+                    data_dir,
+                    &rec.kernel_family,
+                    &rec.id,
+                    &rec.profile,
+                )
+                .ok()
+                .flatten()
+                .as_ref()
+                .and_then(|m| m.get("dependencies"))
+                .and_then(|d| d.get(&item.name))
+                .and_then(|s| s.as_str())
+                .map(is_managed_spec)
+                .unwrap_or(false);
+                instances_map.insert(
+                    rec.id.clone(),
+                    PluginInstanceState {
+                        materialized: target.exists(),
+                        actual_mode,
+                        synced,
+                        wired,
+                        quarantined: quarantined.clone(),
+                    },
+                );
             }
-            None => (None, false),
-        };
-        let wired = profile_manifest
-            .as_ref()
-            .and_then(|m| m.get("dependencies"))
-            .and_then(|d| d.get(&item.name))
-            .and_then(|s| s.as_str())
-            .map(is_managed_spec)
-            .unwrap_or(false);
+        }
+        // 当前实例（status_for_instance 接收的 family+id）的状态复制到
+        // legacy 字段，保持单实例 UI（PluginsPanel 旧渲染路径）继续工作。
+        let cur = instances_map.get(instance_id);
+        let actual_mode = cur.and_then(|s| s.actual_mode.clone());
+        let synced = cur.map(|s| s.synced).unwrap_or(false);
+        let wired = cur.map(|s| s.wired).unwrap_or(false);
         // 锁定版本（npm `@1.2.3` / git `#tag`）不参与「N 个更新」计数：
         // `update_unlocked` 对 pinned 一律拒绝并提示重新安装，把它算成可更新
         // 只会让用户点到一个必然失败的按钮（P2-22）。
@@ -3757,6 +3841,7 @@ pub fn status_for_instance(
             description: item.description.clone(),
             installed_at: item.installed_at.clone(),
             updated_at: item.updated_at.clone(),
+            instances: instances_map,
         });
     }
     PluginStatus {
@@ -6503,6 +6588,239 @@ mod id_collision_tests {
             meta_v2.version, "2.0.0",
             "meta 必须更新到新版本，UI 据此显示「未同步」时不能误用旧 version"
         );
+    }
+
+    // ---------- P8 PluginRow.instances 视图 ----------
+
+    /// 准备一个最小可物化的实例 extensions/plugins/<id>/ 目录，并写入与
+    /// 中央库 `installed_version` 一致的 .meta，让 `materialized + synced`
+    /// 同时为 `true`。P8 测试都用它来构造「实例已同步」状态。同时把活动
+    /// 内核版本写入 `data_dir/active.txt`——`status_for_instance` 里
+    /// `match &active { Some(version) => ... }` 只有在内核活跃时才会填
+    /// `actual_mode` / `synced`，不写 active.txt 的话 .meta 永远读不到。
+    fn materialize_synced(
+        family: &str,
+        instance_id: &str,
+        plugin_id: &str,
+        installed_version: &str,
+        mode: &str,
+        active_version: &str,
+        data_dir: &Path,
+    ) {
+        let target = paths::instance_extension_plugin_dir(family, instance_id, plugin_id);
+        fs::create_dir_all(&target).expect("materialize target");
+        fs::write(target.join("index.js"), "// placeholder\n").expect("write placeholder");
+        let meta_path = paths::instance_extension_meta_file(family, instance_id, plugin_id);
+        let meta = KernelMeta {
+            mode: mode.to_string(),
+            version: installed_version.to_string(),
+            synced_at: "2026-09-19T00:00:00Z".to_string(),
+            fallback: false,
+        };
+        write_meta_at(&meta_path, &meta).expect("write meta");
+        fs::create_dir_all(data_dir).expect("data_dir");
+        fs::write(data_dir.join("active.txt"), active_version).expect("active.txt");
+    }
+
+    /// `status_for_instance` 在 PluginRow.instances 里把注册表里每个实例
+    /// 的物化 / wiring 状态各算一份：`default` 实例已物化且 wired，`work`
+    /// 实例未物化（`materialized = false`，`synced = false`），同时 legacy
+    /// 字段（`wired` / `synced` / `actual_mode`）由默认实例的状态填一份，
+    /// 单实例 UI 不需要再改代码。
+    #[test]
+    fn status_row_instances_per_instance_state() {
+        use crate::instance::{DEFAULT_INSTANCE_ID, KERNEL_FAMILY_DSH};
+
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "shared-plugin".into(),
+                name: "shared-plugin".into(),
+                origin: "npm".into(),
+                source: "shared-plugin".into(),
+                installed_version: "1.0.0".into(),
+                latest_version: None,
+                mode: "link".into(),
+                pinned: false,
+                installed_at: String::new(),
+                updated_at: String::new(),
+                repo_url: None,
+                description: None,
+            },
+        )
+        .expect("save store item");
+        // default 实例已物化 + wired；work 实例没动。
+        materialize_synced(
+            KERNEL_FAMILY_DSH,
+            DEFAULT_INSTANCE_ID,
+            "shared-plugin",
+            "1.0.0",
+            "link",
+            "0.5.0",
+            &data_dir,
+        );
+        let default_profile =
+            paths::instance_profile_dir(KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID, "web")
+                .join("package.json");
+        fs::create_dir_all(default_profile.parent().unwrap()).expect("profile dir");
+        // wiring 要求 spec 以 "link:" / "file:" 开头并指向 P4 起的
+        // extensions/plugins/<id> 布局（见 is_managed_spec）。写绝对路径，
+        // 测试环境 DSH_XLINK_HOME 已经被 TestHome 注入到临时目录。
+        let link_target = paths::instance_extension_plugin_dir(
+            KERNEL_FAMILY_DSH,
+            DEFAULT_INSTANCE_ID,
+            "shared-plugin",
+        );
+        let spec = format!("link:{}", link_target.display());
+        fs::write(
+            &default_profile,
+            format!(r#"{{"dependencies":{{"shared-plugin":"{}"}}}}"#, spec),
+        )
+        .expect("profile manifest");
+
+        let settings = settings::Settings::default();
+        let view =
+            status_for_instance(KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID, &data_dir, &settings);
+        assert_eq!(view.rows.len(), 1, "中央库一条 → 一行");
+        let row = &view.rows[0];
+
+        // legacy 字段保留 = 默认实例状态：单实例 UI 不需要任何改动。
+        assert_eq!(row.actual_mode.as_deref(), Some("link"));
+        assert!(row.synced, "default 实例已物化，synced 应为 true");
+        assert!(row.wired, "default 实例 profile 已加载，wired 应为 true");
+
+        // P8 instances map：两个实例都在；状态各自独立。
+        assert_eq!(row.instances.len(), 2, "注册表里 default + work 都应出现");
+        let default_state = row
+            .instances
+            .get(DEFAULT_INSTANCE_ID)
+            .expect("default 实例状态缺失");
+        assert!(default_state.materialized);
+        assert!(default_state.synced);
+        assert!(default_state.wired);
+        assert_eq!(default_state.actual_mode.as_deref(), Some("link"));
+        let work_state = row.instances.get("work").expect("work 实例状态缺失");
+        assert!(!work_state.materialized, "work 未物化");
+        assert!(!work_state.synced);
+        assert!(!work_state.wired);
+        assert!(work_state.actual_mode.is_none());
+    }
+
+    /// `status_for_instance("work")` 把 legacy 字段切到 work 实例：
+    /// 它没物化、没 wiring，所以 legacy 全 false。证明 legacy 字段跟随
+    /// 调用方传入的 instance_id，而不是固定走默认实例。
+    #[test]
+    fn status_row_legacy_fields_follow_called_instance() {
+        use crate::instance::{DEFAULT_INSTANCE_ID, KERNEL_FAMILY_DSH};
+
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "shared-plugin".into(),
+                name: "shared-plugin".into(),
+                origin: "npm".into(),
+                source: "shared-plugin".into(),
+                installed_version: "1.0.0".into(),
+                latest_version: None,
+                mode: "link".into(),
+                pinned: false,
+                installed_at: String::new(),
+                updated_at: String::new(),
+                repo_url: None,
+                description: None,
+            },
+        )
+        .expect("save");
+        // 只物化 default；work 没物化。
+        materialize_synced(
+            KERNEL_FAMILY_DSH,
+            DEFAULT_INSTANCE_ID,
+            "shared-plugin",
+            "1.0.0",
+            "link",
+            "0.5.0",
+            &data_dir,
+        );
+
+        let settings = settings::Settings::default();
+        let view = status_for_instance(KERNEL_FAMILY_DSH, "work", &data_dir, &settings);
+        let row = &view.rows[0];
+        // legacy 字段切到 work 视角：work 没物化、profile 没接线。
+        assert!(row.actual_mode.is_none());
+        assert!(!row.synced);
+        assert!(!row.wired);
+        // 但 instances map 里两个实例都还在。
+        assert_eq!(row.instances.len(), 2);
+        assert!(row.instances.get(DEFAULT_INSTANCE_ID).unwrap().materialized);
+        assert!(!row.instances.get("work").unwrap().materialized);
+    }
+
+    /// 物化目录存在但 `.meta` 记录的 version 与 installed_version 不一致时，
+    /// per-instance `synced = false`，`materialized = true`（目录在）。
+    /// `actual_mode` 仍按 .meta 填——UI 据此可以区分「目录在但版本对不上」
+    /// 与「完全没物化」两种状态。
+    #[test]
+    fn status_row_distinguishes_present_but_stale_materialization() {
+        use crate::instance::{DEFAULT_INSTANCE_ID, KERNEL_FAMILY_DSH};
+
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "stale-plugin".into(),
+                name: "stale-plugin".into(),
+                origin: "npm".into(),
+                source: "stale-plugin".into(),
+                installed_version: "2.0.0".into(), // 中央库最新是 2.0.0
+                latest_version: None,
+                mode: "copy".into(),
+                pinned: false,
+                installed_at: String::new(),
+                updated_at: String::new(),
+                repo_url: None,
+                description: None,
+            },
+        )
+        .expect("save");
+        // 物化目录存在；.meta 记录的 version 是旧版 1.0.0。
+        let target = paths::instance_extension_plugin_dir(
+            KERNEL_FAMILY_DSH,
+            DEFAULT_INSTANCE_ID,
+            "stale-plugin",
+        );
+        fs::create_dir_all(&target).expect("target");
+        fs::write(target.join("index.js"), "// old version\n").expect("file");
+        let meta_path = paths::instance_extension_meta_file(
+            KERNEL_FAMILY_DSH,
+            DEFAULT_INSTANCE_ID,
+            "stale-plugin",
+        );
+        let meta = KernelMeta {
+            mode: "copy".to_string(),
+            version: "1.0.0".to_string(), // 故意不一致
+            synced_at: "2026-09-19T00:00:00Z".to_string(),
+            fallback: false,
+        };
+        write_meta_at(&meta_path, &meta).expect("meta");
+        fs::create_dir_all(&data_dir).expect("data_dir");
+        fs::write(data_dir.join("active.txt"), "0.5.0").expect("active.txt");
+
+        let settings = settings::Settings::default();
+        let view =
+            status_for_instance(KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID, &data_dir, &settings);
+        let row = &view.rows[0];
+        let state = row
+            .instances
+            .get(DEFAULT_INSTANCE_ID)
+            .expect("default instance state");
+        assert!(state.materialized, "目录存在 → materialized = true");
+        assert!(!state.synced, "version 不一致 → synced = false");
+        assert_eq!(state.actual_mode.as_deref(), Some("copy"));
     }
 }
 

@@ -46,7 +46,7 @@ const FILE_BUDGETS = {
   // 旧 API 委托到新 API，加上 step 3 注释 / 测试 setup helper 的尾段）。
   // 物化/卸载/同步/状态/模式切换是同一概念的同步代码，留在同一文件比
   // 拆出去更易维护。
-  'src-tauri/src/plugins.rs': 2915,
+  'src-tauri/src/plugins.rs': 2980,
   // P4 step 4：4 条实例范围 Tauri 命令 plugin_install_instance /
   // plugin_uninstall_instance / plugin_sync_instance / plugin_status_instance
   // + 共享 run_plugin_command_instance 主体，约 +75 行。
@@ -143,12 +143,20 @@ const FILE_BUDGETS = {
 // ui/src/components/MigrationPanel.vue (~250 行) + App.vue / SideBar.vue
 // 接入 ~10 行 ≈ +410 行（实际 +260 是因为 UI 行的预算口径不计模板 style
 // 块里的 CSS——纯 <template> + <script setup> + state 加 invoke 包装）。
-// P8 #1 顶部实例 dropdown（commit ...）：ui/src/instance.js (~50 行)
+// P8 #1 顶部实例 dropdown（commit 25cd376）：ui/src/instance.js (~50 行)
 // + WindowTitleBar.vue 注入 chip + dropdown script/template 块（计入
 // theme.css；vue 模板不计入）+ theme.css 实例 chip / menu 样式 ~95 行
 // （+15 落在 theme.css 预算边沿）+ document-level click 关闭菜单 +
 // aria-haspopup / aria-expanded / aria-current 标注。23500 → 23800。
-const TOTAL_BUDGET = 23800;
+//
+// P8 #2 PluginRow per-instance 视图（commit ...）：plugins.rs 加
+// `PluginInstanceState` 结构（materialized / actual_mode / synced /
+// wired / quarantined 五个字段）+ PluginRow.instances: BTreeMap<id,
+// PluginInstanceState> + `read_profile_json_for_instance` helper +
+// status_for_instance 内部循环 instance::load_registry() 各实例（~+65
+// 行）+ 3 个回归测试（~+150 行）。plugins.rs 预算 2915 → 2980（+65）。
+// 总预算 23800 → 24050（+250，叠加 +65 与给后续 P8 #2 UI 留 buffer）。
+const TOTAL_BUDGET = 24050;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
