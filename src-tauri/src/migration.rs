@@ -291,14 +291,9 @@ pub struct MigrationReport {
 /// `migration_id` 决定 backup 目录名（`<xlink_home>/backups/<id>/`）；
 /// 同一 id 多次跑视为同一迁移的后续动作（旧 backup 不会被覆盖——后面
 /// 会带递增后缀）。
-pub fn run_migration(
-    policy: ConflictPolicy,
-    migration_id: &str,
-) -> Result<MigrationReport, AppError> {
-    if migration_id.is_empty() {
-        return Err(AppError::Plugin("migration id 不能为空".into()));
-    }
-    let backup_root = backup_root_for(migration_id);
+pub fn run_migration(policy: ConflictPolicy) -> Result<MigrationReport, AppError> {
+    let migration_id = next_migration_id();
+    let backup_root = backup_root_for(&migration_id);
     fs::create_dir_all(&backup_root)
         .map_err(|e| AppError::Io(format!("无法创建备份目录 {}：{e}", backup_root.display())))?;
 
@@ -313,6 +308,42 @@ pub fn run_migration(
         backup_root,
         items,
     })
+}
+
+/// 后端生成 migration_id：`AutoYYYYMMDD-HHMMSS-<short>` 格式。短后缀
+/// 由当前 epoch nanos 的末 4 位 hex 派生，避免同一秒内连跑两次撞 id。
+/// UI 不应自己造 id——Tauri 命令直接传 policy 即可。
+pub fn next_migration_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let nanos_tail = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| (d.subsec_nanos() & 0xFFFF) as u32)
+        .unwrap_or(0);
+    let (y, m, d, h, mi, s) = epoch_to_ymdhms(now);
+    format!(
+        "Auto{:04}{:02}{:02}-{:02}{:02}{:02}-{:04x}",
+        y, m, d, h, mi, s, nanos_tail
+    )
+}
+
+/// epoch 秒 → (年, 月, 日, 时, 分, 秒)。本地时区，避免和 UTC 跨日歧义。
+fn epoch_to_ymdhms(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
+    use time::{OffsetDateTime, UtcOffset};
+    let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let dt = OffsetDateTime::from_unix_timestamp(secs as i64).unwrap_or(OffsetDateTime::UNIX_EPOCH);
+    let local = dt.to_offset(offset);
+    (
+        local.year() as u32,
+        local.month() as u32,
+        u32::from(local.day()),
+        u32::from(local.hour()),
+        u32::from(local.minute()),
+        u32::from(local.second()),
+    )
 }
 
 fn backup_root_for(migration_id: &str) -> PathBuf {
@@ -1019,8 +1050,8 @@ mod tests {
         fs::write(plugins_legacy.join("pkg-a/data.txt"), "abc").expect("pkg data");
 
         let report =
-            run_migration(ConflictPolicy::SkipIfNewer, "step2-1").expect("migration succeeds");
-        assert_eq!(report.migration_id, "step2-1");
+            run_migration(ConflictPolicy::SkipIfNewer).expect("migration succeeds");
+        assert!(report.migration_id.starts_with("Auto"));
         assert!(report.backup_root.exists());
         assert!(report
             .items
@@ -1055,7 +1086,7 @@ mod tests {
         for source in LegacySource::all() {
             fs::create_dir_all(source.path()).expect("empty legacy dir");
         }
-        let report = run_migration(ConflictPolicy::SkipIfNewer, "step2-empty")
+        let report = run_migration(ConflictPolicy::SkipIfNewer)
             .expect("migration succeeds even if no source has files");
         assert_eq!(report.items.len(), 3);
         for item in &report.items {
@@ -1087,7 +1118,7 @@ mod tests {
         set_mtime(&newer, newer_time);
 
         let report =
-            run_migration(ConflictPolicy::SkipIfNewer, "step2-skip").expect("migration succeeds");
+            run_migration(ConflictPolicy::SkipIfNewer).expect("migration succeeds");
         let plugins_item = report
             .items
             .iter()
@@ -1124,7 +1155,7 @@ mod tests {
             now - std::time::Duration::from_secs(60),
         );
 
-        let report = run_migration(ConflictPolicy::BackupAndOverwrite, "step2-bk")
+        let report = run_migration(ConflictPolicy::BackupAndOverwrite)
             .expect("migration succeeds");
         let plugins_item = report
             .items
@@ -1152,7 +1183,7 @@ mod tests {
         fs::create_dir_all(&plugins_legacy).expect("legacy");
         fs::write(plugins_legacy.join("store.json"), "{}").expect("store");
 
-        run_migration(ConflictPolicy::SkipIfNewer, "step2-keep").expect("migration succeeds");
+        run_migration(ConflictPolicy::SkipIfNewer).expect("migration succeeds");
         assert!(
             plugins_legacy.join("store.json").is_file(),
             "旧源必须保留——回滚路径依赖它"
@@ -1168,8 +1199,8 @@ mod tests {
         fs::create_dir_all(&plugins_legacy).expect("legacy");
         fs::write(plugins_legacy.join("store.json"), "{}").expect("store");
 
-        let r1 = run_migration(ConflictPolicy::BackupAndOverwrite, "step2-multi").expect("r1");
-        let r2 = run_migration(ConflictPolicy::BackupAndOverwrite, "step2-multi").expect("r2");
+        let r1 = run_migration(ConflictPolicy::BackupAndOverwrite).expect("r1");
+        let r2 = run_migration(ConflictPolicy::BackupAndOverwrite).expect("r2");
         assert_ne!(r1.backup_root, r2.backup_root);
         assert!(
             r1.backup_root.exists() && r2.backup_root.exists(),
@@ -1209,15 +1240,15 @@ mod tests {
             now - std::time::Duration::from_secs(60),
         );
 
-        let report = run_migration(ConflictPolicy::BackupAndOverwrite, "rb1").expect("mig");
+        let report = run_migration(ConflictPolicy::BackupAndOverwrite).expect("mig");
         assert_eq!(
             fs::read_to_string(plugins_new.join("shared.txt")).unwrap(),
             "from-old",
             "源必须覆盖目标"
         );
 
-        // 迁移之后用户反悔——跑 rollback。
-        let rb = rollback_migration("rb1").expect("rollback");
+        // 迁移之后用户反悔——跑 rollback（id 来自后端报告）。
+        let rb = rollback_migration(&report.migration_id).expect("rollback");
         let plugins_item = rb
             .items
             .iter()
@@ -1245,8 +1276,8 @@ mod tests {
         fs::create_dir_all(&plugins_legacy).expect("legacy");
         fs::write(plugins_legacy.join("store.json"), "{}").expect("store");
 
-        let _ = run_migration(ConflictPolicy::SkipIfNewer, "rb2").expect("mig");
-        let rb = rollback_migration("rb2").expect("rollback");
+        let report = run_migration(ConflictPolicy::SkipIfNewer).expect("mig");
+        let rb = rollback_migration(&report.migration_id).expect("rollback");
         let plugins_item = rb
             .items
             .iter()
@@ -1301,9 +1332,9 @@ mod tests {
             now - std::time::Duration::from_secs(60),
         );
 
-        run_migration(ConflictPolicy::BackupAndOverwrite, "rb-keep").expect("mig");
+        let report = run_migration(ConflictPolicy::BackupAndOverwrite).expect("mig");
         let before = fs::read_to_string(plugins_legacy.join("from-old.txt")).unwrap();
-        rollback_migration("rb-keep").expect("rb");
+        rollback_migration(&report.migration_id).expect("rb");
         let after = fs::read_to_string(plugins_legacy.join("from-old.txt")).unwrap();
         assert_eq!(before, after, "rollback 不能改旧源");
     }
@@ -1327,11 +1358,11 @@ mod tests {
             now - std::time::Duration::from_secs(60),
         );
 
-        run_migration(ConflictPolicy::BackupAndOverwrite, "rb-edge").expect("mig");
+        let report = run_migration(ConflictPolicy::BackupAndOverwrite).expect("mig");
         // 用户手动把目标改了——按"最新修改"逻辑 rollback 应该跳过。
         fs::write(plugins_new.join("shared.txt"), "user-changed").expect("user edit");
 
-        rollback_migration("rb-edge").expect("rb");
+        rollback_migration(&report.migration_id).expect("rb");
         let after = fs::read_to_string(plugins_new.join("shared.txt")).expect("read");
         assert_eq!(
             after, "from-new",
@@ -1367,11 +1398,11 @@ mod tests {
             now - std::time::Duration::from_secs(60),
         );
 
-        run_migration(ConflictPolicy::BackupAndOverwrite, "list1").expect("mig");
+        run_migration(ConflictPolicy::BackupAndOverwrite).expect("mig");
         let summaries = list_migrations();
         assert_eq!(summaries.len(), 1);
         let summary = &summaries[0];
-        assert_eq!(summary.migration_id, "list1");
+        assert!(summary.migration_id.starts_with("Auto"));
         assert!(
             summary.sources.iter().any(|s| s == "plugins"),
             "summary 必须报告 sources 含 plugins：{:?}",
@@ -1385,15 +1416,27 @@ mod tests {
     fn list_migrations_ignores_dot_indexed_backup_dirs() {
         // 同 id 多次跑会留 `.2` / `.3` 后缀——list_migrations 只列 root
         // 一次，避免 UI 重复显示同名 id 的多个快照。
+        // 测试手法：手动建一个 `<id>.2` 子目录，确认 list_migrations
+        // 不把它算入（即使该子目录 mtime 比 root 新）。
         let home = TempHome::new();
         let plugins_legacy = LegacySource::Plugins.path();
         fs::create_dir_all(&plugins_legacy).expect("legacy");
         fs::write(plugins_legacy.join("store.json"), "{}").expect("store");
-        let _ = run_migration(ConflictPolicy::BackupAndOverwrite, "list-multi").expect("r1");
-        let _ = run_migration(ConflictPolicy::BackupAndOverwrite, "list-multi").expect("r2");
+        let report = run_migration(ConflictPolicy::BackupAndOverwrite).expect("r1");
+        let base = xlink_home().join("backups").join(&report.migration_id);
+        assert!(base.exists(), "首次迁移后 base 必须存在");
+        // 手工建 `<id>.2` 子目录，mtime 改到 base 之后——模拟「同 id 后续追加」
+        let dot2 = xlink_home()
+            .join("backups")
+            .join(format!("{}.2", report.migration_id));
+        std::fs::create_dir_all(&dot2).expect("create .2");
+        let touch = dot2.join(".touch");
+        std::fs::write(&touch, b"").expect("write touch");
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+        let _ = std::fs::File::open(&touch).and_then(|f| f.set_modified(later));
         let summaries = list_migrations();
         assert_eq!(summaries.len(), 1, "root + .2 后缀必须只列一次");
-        assert_eq!(summaries[0].migration_id, "list-multi");
+        assert_eq!(summaries[0].migration_id, report.migration_id);
     }
 
     #[test]
@@ -1405,16 +1448,18 @@ mod tests {
             let legacy = LegacySource::Plugins.path();
             fs::create_dir_all(&legacy).expect("legacy");
             fs::write(legacy.join("store.json"), "{}").expect("store");
-            run_migration(ConflictPolicy::SkipIfNewer, id).expect("mig");
+            run_migration(ConflictPolicy::SkipIfNewer).expect("mig");
             // 确保 mtime 差至少 1 秒——避免文件系统秒级粒度同值。
             std::thread::sleep(std::time::Duration::from_millis(1100));
         }
         let summaries = list_migrations();
-        let ids: Vec<_> = summaries.iter().map(|s| s.migration_id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec!["pending-sort-b", "pending-sort-a"],
-            "最近一次的迁移必须排第一"
-        );
+        assert_eq!(summaries.len(), 2);
+        // 后端自动生成 id（AutoYYYYMMDD-HHMMSS-<short>）；list_migrations
+        // 按 backup 目录 mtime 倒序——确保 2 条 id 不同、第一条 created_at
+        // ≥ 第二条。
+        assert_ne!(summaries[0].migration_id, summaries[1].migration_id);
+        let a = summaries[0].created_at.expect("created_at");
+        let b = summaries[1].created_at.expect("created_at");
+        assert!(a >= b, "最近一次的迁移必须排第一");
     }
 }
