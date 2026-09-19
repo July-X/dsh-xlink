@@ -38,8 +38,19 @@ const FILE_BUDGETS = {
   // 共享逻辑、新增 materialize_one_for_instance / remove_materialized_for_instance
   // / sweep_instance_orphans / default_instance_key / seed_default_instance_for_tests
   // 等 helper + is_managed_spec 兼容新旧两种路径模式。净增约 30 行。
-  'src-tauri/src/plugins.rs': 2680,
-  'src-tauri/src/commands.rs': 1750,
+  // P4 step 4：4 条实例范围顶层函数 install_for_instance / update_for_instance /
+  // uninstall_for_instance / set_mode_for_instance / sync_for_instance /
+  // status_for_instance + sync_kernels_for_instance / ensure_wiring_for_instance
+  // 共约 +235 行（install_unlocked / uninstall_unlocked / set_mode_unlocked /
+  // update_unlocked / sync_all_unlocked 接收 family/instance_id 形参，
+  // 旧 API 委托到新 API，加上 step 3 注释 / 测试 setup helper 的尾段）。
+  // 物化/卸载/同步/状态/模式切换是同一概念的同步代码，留在同一文件比
+  // 拆出去更易维护。
+  'src-tauri/src/plugins.rs': 2915,
+  // P4 step 4：4 条实例范围 Tauri 命令 plugin_install_instance /
+  // plugin_uninstall_instance / plugin_sync_instance / plugin_status_instance
+  // + 共享 run_plugin_command_instance 主体，约 +75 行。
+  'src-tauri/src/commands.rs': 1825,
   'src-tauri/src/skills.rs': 1490,
   'src-tauri/src/patches.rs': 1250,
   'src-tauri/src/kernel.rs': 1260,
@@ -88,7 +99,13 @@ const FILE_BUDGETS = {
 // remove_materialized_for_instance / sweep_instance_orphans 等共享 helper
 // （约 +30 行）。物化与清扫是同一概念的同步代码，留在同一文件比拆出去
 // 更易维护；FILE_BUDGETS 里 plugins.rs 也对应上调 30 行。
-const TOTAL_BUDGET = 22190;
+// 22190 → 22500：P4 step 4 新增 6 条实例范围顶层函数（install_for_instance /
+// update_for_instance / uninstall_for_instance / set_mode_for_instance /
+// sync_for_instance / status_for_instance）+ sync_kernels_for_instance /
+// ensure_wiring_for_instance（约 +235 行落在 plugins.rs）；commands.rs
+// 增加 4 条实例范围 Tauri 命令 + run_plugin_command_instance 共享主体
+// （约 +75 行）。总计 +310 行。
+const TOTAL_BUDGET = 22500;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
