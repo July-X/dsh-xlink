@@ -3,6 +3,16 @@
 > 本文档描述桌面外壳的技能管理功能：中央存储、物化到内核读取路径、启用/禁用、更新提醒与社区目录。
 > 设计参照 [plugin-management.md](plugin-management.md)（社区插件管理）的同构模式，并按技能的本质差异做了简化。用户文档见 [README.md](../README.md)。
 
+> **状态（2026-09-19）**：本文档部分章节描述的是单内核时代的中央库与活动视图布局。
+> 多内核改造落地后，中央库已迁到 Xlink home 的 `skills/packages/`，活动视图迁到
+> `skills/active/`（v1 全局共享）；`KernelAdapter::custom_skill_dirs` 接口已预留，
+> 通过 `DSH_CUSTOM_SKILL_DIRS` 环境变量接入内核。
+> 权威路径说明见
+> [architecture.md §「多内核改造后的实际数据布局」](architecture.md)
+> 与阶段性状态快照
+> [multi-kernel-migration-status-2026-09-19.md](multi-kernel-migration-status-2026-09-19.md)。
+> P6 step 5 / P8 落地后本文会按新的实际行为重新校对；当前以代码为准。
+
 ## 目标
 
 用户可以把社区技能（GitHub 仓库、npm 包、本地文件夹）安装到本地，由桌面外壳统一管理，并且：
