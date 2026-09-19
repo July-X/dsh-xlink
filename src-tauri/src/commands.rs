@@ -115,6 +115,10 @@ pub struct StatusView {
     /// 鲸鱼眼红，让 dev shell 在屏幕上能一眼和已安装的 release shell
     /// 区分开。
     pub dev_build: bool,
+    /// 当前 Shell 的构建模式（release / dev）。P1 之后用来替代部分场景下
+    /// 含糊的"dev 文字"，明确告诉用户「这是 dsh-xlink 自己的 dev/release
+    /// 构建，不影响内核数据」。UI 仍可同时使用 `dev_build` 来做色彩区分。
+    pub shell_mode: crate::paths::ShellMode,
     pub kernel: kernel::KernelStatus,
     pub node: node::NodeInfo,
     pub settings: settings::Settings,
@@ -168,7 +172,7 @@ pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<St
     // 文件探测和端口检查在 blocking worker 上运行：如果作为同步命令，
     // 这个轮询会每几秒就霸占 Tauri 的主线程。
     tauri::async_runtime::spawn_blocking(move || {
-        let settings = settings::load(&data_dir);
+        let settings = settings::load_for_shell(settings::current_mode());
         let kernel_status = kernel::status(&data_dir, &settings);
         let quarantine_doc = quarantine::load(&data_dir);
         let state = app.state::<AppState>();
@@ -177,6 +181,7 @@ pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<St
         StatusView {
             shell_version: app.package_info().version.to_string(),
             dev_build: cfg!(debug_assertions),
+            shell_mode: crate::paths::ShellMode::current(),
             kernel: kernel_status,
             node: node_info,
             quarantined: quarantine_doc.items,
@@ -219,7 +224,7 @@ pub async fn detect_node(state: State<'_, AppState>) -> Result<node::NodeInfo, S
     // 主线程之外。
     let data_dir = state.data_dir.clone();
     let info = tauri::async_runtime::spawn_blocking(move || {
-        let mut s = settings::load(&data_dir);
+        let mut s = settings::load_for_shell(settings::current_mode());
         s.node_path = None;
         node::resolve(&s, &data_dir)
     })
@@ -266,7 +271,7 @@ pub async fn save_settings(
 ) -> Result<(), String> {
     let data_dir = state.data_dir.clone();
     blocking(move || -> Result<(), String> {
-        let previous = settings::load(&data_dir);
+        let previous = settings::load_for_shell(settings::current_mode());
         // 面板只提交 `port` 与 `profile`，其余字段（`node_path` / `pnpm_path` /
         // `npm_path`）在请求里缺失，会被 `#[serde(default)]` 填成 `None`。直接落盘
         // 等于把用户手写在 settings.json 里的 Node 路径静默清空——而托管 Node
@@ -282,7 +287,7 @@ pub async fn save_settings(
                 previous.port, settings.port
             ));
         }
-        settings::save(&data_dir, &settings).map_err(|e| e.to_string())
+        settings::save_for_shell(settings::current_mode(), &settings).map_err(|e| e.to_string())
     })
     .await
 }
@@ -511,7 +516,7 @@ pub fn promise_pnpm(
     if !node_info.ok {
         return Err(node_info.reason.clone());
     }
-    let s = settings::load(data_dir);
+    let s = settings::load_for_shell(settings::current_mode());
     let node_dir = Path::new(&node_info.path)
         .parent()
         .map(|p| p.to_path_buf())
@@ -576,7 +581,7 @@ pub async fn install_kernel(
         // 避免关闭失败面板后又被 node 安装引导弹窗打扰一次。
         // 同样用 `crate::lock`：锁被毒化时也要清掉缓存。
         *crate::lock(&state.node_cache) = None;
-        let settings = settings::load(&data_dir);
+        let settings = settings::load_for_shell(settings::current_mode());
         let node_info = cached_node(&state, &settings);
         let mut send = |msg: &str| {
             let _ = on_event.send(msg.to_string());
@@ -634,7 +639,7 @@ pub async fn activate_version(app: AppHandle, version: String) -> Result<(), Str
         // 不一致，kernel::set_active 会要求工作台已经停止。
         kernel::set_active(&data_dir, &version).map_err(|e| e.to_string())?;
         // 重新接线插件到新活动内核（失败不阻断切换，原因进入插件卡片警告）
-        let settings = settings::load(&data_dir);
+        let settings = settings::load_for_shell(settings::current_mode());
         let node_info = cached_node(&state, &settings);
         let _ = plugins::ensure_wiring_quiet(&data_dir, &settings, &node_info);
         Ok(())
@@ -830,7 +835,7 @@ pub async fn start_kernel(
     blocking(move || -> Result<guard::StartReport, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
-        let settings = settings::load(&data_dir);
+        let settings = settings::load_for_shell(settings::current_mode());
         let mut node_info = cached_node(&state, &settings);
         if !node_info.ok {
             // 缓存可能已经过期：用户在壳运行期间用安装器 / nvm 装好了 Node，而缓存
@@ -913,7 +918,7 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
         // 已经在服务的进程永远回收不掉。这里走与 `status()` 相同的活体判据
         // （pid 文件，或配置端口上的内核身份校验），`kill_pid` 内部还会再校
         // 验一遍 pid 仍指向 dsh 内核，因此被复用给无关进程的 pid 是 no-op。
-        let current = settings::load(&data_dir);
+        let current = settings::load_for_shell(settings::current_mode());
         if let Some(pid) = kernel::workbench_pid(&data_dir, &current) {
             // 带上记录里的启动端口：完整三层校验才挡得住「pid 被复用给另一个
             // dsh 内核」这一类误杀（P2-1）。
@@ -1214,7 +1219,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
     blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
-        let settings = settings::load(&data_dir);
+        let settings = settings::load_for_shell(settings::current_mode());
         if !kernel::port_open(settings.port) {
             // 内核可能仍在**旧**端口上服务（用户改过端口设置，或 settings.json
             // 被手工改过）。这种情况下让用户反复点「启动工作台」是死路，
@@ -2006,7 +2011,7 @@ fn reposition_near(app: &AppHandle, window: &tauri::WebviewWindow, x: f64, y: f6
 pub async fn plugin_status(state: State<'_, AppState>) -> Result<plugins::PluginStatus, String> {
     let data_dir = state.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let settings = settings::load(&data_dir);
+        let settings = settings::load_for_shell(settings::current_mode());
         plugins::status(&data_dir, &settings)
     })
     .await
@@ -2047,7 +2052,7 @@ async fn run_plugin_command(
     blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
-        let settings = settings::load(&data_dir);
+        let settings = settings::load_for_shell(settings::current_mode());
         let node_info = cached_node(&state, &settings);
         let promise_send = on_event.clone();
         let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, move |msg| {
@@ -2204,7 +2209,7 @@ pub async fn plugin_resolve(
                 let _lifecycle_guard = crate::lock(&state.lifecycle);
                 let _store_guard = plugins::lock_store();
                 quarantine::remove(&data_dir, &id).map_err(|e| e.to_string())?;
-                let settings = settings::load(&data_dir);
+                let settings = settings::load_for_shell(settings::current_mode());
                 let node_info = cached_node(&state, &settings);
                 // 重新接线需要 pnpm；这条路径没有长安装，所以没有可流式推送的消
                 // 息——只跑一次 profile 重新同步。
@@ -2427,6 +2432,9 @@ mod workbench_url_tests {
                 .as_nanos()
         ));
         let log_path = kernel::current_kernel_log_path(&root);
+        // P1：`kernel::logs_dir` 现在指向 shell-aware 路径，需要把 DSH_XLINK_HOME
+        // 临时指向 root，让测试创建的日志文件与生产代码读到的是同一份。
+        let _xlink_home = crate::tests::scoped_xlink_home(&root);
         fs::create_dir_all(log_path.parent().expect("log parent")).expect("create log dir");
         fs::write(
             &log_path,

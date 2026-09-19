@@ -361,8 +361,16 @@ pub fn active_file(data_dir: &Path) -> PathBuf {
     data_dir.join("active.txt")
 }
 
-pub fn logs_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join("logs")
+/// Shell 日志目录。P1 之后所有 `<kind>-<name>-<date>.log` 形式的日志
+/// 都落在 [`crate::paths::shell_logs_dir`] 下；旧版 kernel data dir 下的
+/// `logs/` 仅作为只读兼容路径存在，供 P6 迁移向导扫描历史日志。
+///
+/// `data_dir` 参数暂时保留语义：未来实例化的内核会有自己的日志目录
+/// （`kernels/<family>/instances/<id>/home/logs/`），届时这个函数会
+/// 被 [`crate::paths`] 中新的解析函数取代。在过渡期内，让它返回当前
+/// Shell 模式的路径，等同于把 release / dev 各自的日志都迁到新布局。
+pub fn logs_dir(_data_dir: &Path) -> PathBuf {
+    crate::process::shell_logs_dir()
 }
 
 /// 读取看起来像已安装内核版本的目录名。
@@ -458,14 +466,15 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
         data_dir: display_short(data_dir),
         // 与 `settings` 参数同样的读取路径，但保留诊断：调用方传进来的
         // settings 可能已经是"回退后的默认值"。
-        settings_warning: crate::settings::load_checked(data_dir).1,
+        settings_warning: crate::settings::load_checked_for_shell(crate::settings::current_mode())
+            .1,
     }
 }
 
 /// 检查工作台是否已经停止。活动版本切换会改变下一次启动使用的内核；
 /// 工作台启动或运行期间必须先停止，避免当前服务与 active 指针指向不同版本。
 fn ensure_workbench_stopped(data_dir: &Path) -> Result<(), AppError> {
-    let settings = settings::load(data_dir);
+    let settings = settings::load_for_shell(settings::current_mode());
     if workbench_running(data_dir, &settings) {
         return Err(AppError::Kernel(format!(
             "工作台正在启动或运行（端口 {}），请先点击「关闭工作台」停止工作台后再切换内核",
@@ -1185,7 +1194,7 @@ pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<C
 /// 后者会让「启动工作台」报告成功，而工作台窗口打开的其实是别人的服务——
 /// 用户完全看不出内核根本没起来。
 pub fn start_maybe(data_dir: &Path, node: &Path) -> Result<Option<Child>, AppError> {
-    let s = settings::load(data_dir);
+    let s = settings::load_for_shell(settings::current_mode());
     let port = s.port;
     if port_open(port) {
         if workbench_running(data_dir, &s) {
@@ -1942,12 +1951,13 @@ mod tests {
                 .expect("clock")
                 .as_nanos()
         ));
+        let _xlink_home = scoped_xlink_home(&root);
         // 端口留空（0）：这个用例只验证 pid 记录这条证据链，不依赖端口。
         let settings = Settings {
             port: 0,
             ..Settings::default()
         };
-        settings::save(&root, &settings).expect("save test settings");
+        save_settings_both(&root, &settings);
 
         // 「工作台在运行」现在由内核身份决定（命令行含内核入口），而不是
         // "某个进程恰好占着配置端口"。因此这里派生一个命令行里带该标识的
@@ -1968,7 +1978,6 @@ mod tests {
         write_pid(&root, placeholder.id(), 3090);
 
         let error = set_active(&root, "0.1.2").expect_err("running workbench must block switch");
-
         assert!(error
             .to_string()
             .contains("请先点击「关闭工作台」停止工作台后再切换内核"));
@@ -2001,6 +2010,15 @@ mod tests {
             },
         )
         .expect("save test settings");
+        // P1：生产代码从 shell settings 读，再写到 shell 路径一份。
+        settings::save_for_shell(
+            settings::current_mode(),
+            &Settings {
+                port,
+                ..Settings::default()
+            },
+        )
+        .expect("save shell settings");
 
         // 没有内核在跑，所以守卫放行；随后因为版本未安装而失败——
         // 错误信息应当是"未安装"，而不是"工作台正在运行"。
@@ -2380,6 +2398,36 @@ mod tests {
         root
     }
 
+    /// 一次性配置：把 `DSH_XLINK_HOME` 指向给定路径，离开作用域时还原。
+    /// P1 之后生产代码读 Shell 设置走 shell-aware API，测试如果不希望污染
+    /// 当前用户真正的 shell 目录，就要靠这个 RAII 把 env 临时指向测试目录。
+    ///
+    /// **全进程 Mutex 串行化**：env 是共享的，并行跑的测试同时改它会相互覆盖。
+    /// 共享 [`crate::tests::scoped_xlink_home`] 实现，避免每个模块各写一份
+    /// 维护成本。
+    fn scoped_xlink_home(home: &Path) -> crate::tests::EnvGuard {
+        crate::tests::scoped_xlink_home(home)
+    }
+
+    /// 同时写入 legacy data_dir 与新 Shell 设置：测试要求生产代码既能看到
+    /// shell-aware 路径下的设置，也能让旧路径的 kernel 数据（active.txt、
+    /// kernel.pid 等）保持一致。P6 迁移向导落地后只保留 Shell 路径即可。
+    fn save_settings_both(data_dir: &Path, settings: &Settings) {
+        settings::save(data_dir, settings).expect("save legacy settings");
+        settings::save_for_shell(settings::current_mode(), settings).expect("save shell settings");
+    }
+
+    fn load_settings_for_test(data_dir: &Path) -> Settings {
+        // 优先 Shell 路径：生产代码现在也只走这里。legacy 路径作为兜底，
+        // 保证没有 Shell 文件时仍能拿到值。
+        let shell = settings::load_for_shell(settings::current_mode());
+        let shell_file = crate::paths::shell_settings_file(settings::current_mode());
+        if shell_file.exists() {
+            return shell;
+        }
+        settings::load(data_dir)
+    }
+
     /// 端口被**无关进程**占用时，不能报「工作台在运行」，启动路径也必须明确
     /// 报出端口冲突。
     ///
@@ -2391,15 +2439,15 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind port");
         let port = listener.local_addr().expect("listener addr").port();
         let root = workbench_test_dir("unrelated-listener");
-        settings::save(
+        let _xlink_home = scoped_xlink_home(&root);
+        save_settings_both(
             &root,
             &Settings {
                 port,
                 ..Settings::default()
             },
-        )
-        .expect("save settings");
-        let current = settings::load(&root);
+        );
+        let current = load_settings_for_test(&root);
 
         // 监听者是本测试进程，命令行不含内核标识。
         assert!(
@@ -2493,17 +2541,17 @@ mod tests {
     #[test]
     fn stale_pid_record_is_not_a_running_workbench() {
         let root = workbench_test_dir("stale-pid");
+        let _xlink_home = scoped_xlink_home(&root);
         // 端口留空（0）使这个用例只走 pid 文件分支，不触发端口兜底——
         // 否则本机恰好在默认端口上跑着内核时这个断言会失真。
-        settings::save(
+        save_settings_both(
             &root,
             &Settings {
                 port: 0,
                 ..Settings::default()
             },
-        )
-        .expect("save settings");
-        let current = settings::load(&root);
+        );
+        let current = load_settings_for_test(&root);
 
         assert!(
             !workbench_running(&root, &current),
@@ -2585,17 +2633,17 @@ mod tests {
     #[test]
     fn recorded_port_mismatch_is_not_our_workbench() {
         let root = workbench_test_dir("pid-port-mismatch");
+        let _xlink_home = scoped_xlink_home(&root);
         // 端口留空（0）让这个用例只走 pid 文件分支，避免本机恰好在默认端口上有
         // 内核时干扰断言。
-        settings::save(
+        save_settings_both(
             &root,
             &Settings {
                 port: 0,
                 ..Settings::default()
             },
-        )
-        .expect("save settings");
-        let current = settings::load(&root);
+        );
+        let current = load_settings_for_test(&root);
 
         // 诱饵必须让内核标记与 `--port` 留在**自己**的命令行里：`sh -c 'sleep 30'`
         // 会被 shell 优化成 exec sleep，多余参数随之消失（第一版诱饵就是这么失真的），
