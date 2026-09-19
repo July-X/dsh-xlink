@@ -240,6 +240,11 @@ pub fn run() {
             commands::stop_instance,
             commands::restart_instance,
             commands::ensure_default_instance_migrated,
+            // P6：迁移向导命令。
+            commands::migration_preview,
+            commands::migration_run,
+            commands::migration_rollback,
+            commands::migration_list,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| {
