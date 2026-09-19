@@ -34,10 +34,11 @@
 | **P0 收尾** 状态快照自洽（HEAD 指针更新） | ✅ | `86372ad` |
 | **AGENTS.md 同步** README / plugin-mgmt / skill-mgmt 描述改用新路径 | ✅ | `94e09e6` |
 | **AGENTS.md 同步** troubleshooting spec 格式同步 P4 新布局 | ✅ | `d2bab6d` |
-| **P6 step 5** 迁移向导 UI 向导页面 | ⏸ 待 UI 形态决策 | — |
-| **P8** UI / 集成测试 / 发布准备 | ⏸ 待决策（实例列表 UI 形态 / PR 边界 / 是否阶段性发版） | — |
+| **P6 step 5** 迁移向导 UI——嵌入式 4 步 el-steps | ✅ | `ea363ed` |
+| **P8 部分** 默认实例解析器 production 接入（5 处） | ✅ | `a932243` / `3b87473` / `5af0325` |
+| **P8** UI 实例列表 dropdown / 插件面板双 tab / 发布准备 | ⏸ 待决策（4 决策点见 [p8-ui-release-proposal.md](p8-ui-release-proposal.md)） | — |
 
-完成度：**~93%**（15/17 row 已落地 commit；P6 step 5 / P8 仍依赖 UI 决策）。
+完成度：**~96%**（17/19 row 已落地 commit；P8 UI 部分仍依赖决策）。
 
 ## 设计决策摘要
 
