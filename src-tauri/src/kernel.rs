@@ -3012,4 +3012,38 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         crate::tests::scoped_xlink_home(&dir)
     }
+
+    /// 端到端：`current_kernel_log_path(data_dir, family, id)` 真的产出
+    /// 实例感知文件名——dev plan §4 release threshold 修复的回归保险。
+    /// 同 family / 同 version 但不同 instance_id 必须落到不同文件。
+    #[test]
+    fn current_kernel_log_path_distinguishes_instances() {
+        let _xlink = scoped_xlink_home_for_test();
+        let today = crate::process::current_date_string();
+        let data_dir = Path::new("."); // logs_dir 不依赖 data_dir 内容，只看 shell mode
+        let path_a = current_kernel_log_path(data_dir, KERNEL_FAMILY_DSH, "default");
+        let path_b = current_kernel_log_path(data_dir, KERNEL_FAMILY_DSH, "work");
+        let path_c = current_kernel_log_path(data_dir, instance::KERNEL_FAMILY_MCODE, "default");
+
+        let name_a = path_a.file_name().and_then(|n| n.to_str()).expect("name_a");
+        let name_b = path_b.file_name().and_then(|n| n.to_str()).expect("name_b");
+        let name_c = path_c.file_name().and_then(|n| n.to_str()).expect("name_c");
+
+        assert_eq!(
+            name_a,
+            format!("{}-{}-default-kernel-{today}.log", build_log_kind(), KERNEL_FAMILY_DSH)
+        );
+        assert_eq!(
+            name_b,
+            format!("{}-{}-work-kernel-{today}.log", build_log_kind(), KERNEL_FAMILY_DSH)
+        );
+        assert_eq!(
+            name_c,
+            format!("{}-{}-default-kernel-{today}.log", build_log_kind(), instance::KERNEL_FAMILY_MCODE)
+        );
+        // 三条文件名两两不同——多实例下不会互相覆盖
+        assert_ne!(name_a, name_b);
+        assert_ne!(name_a, name_c);
+        assert_ne!(name_b, name_c);
+    }
 }
