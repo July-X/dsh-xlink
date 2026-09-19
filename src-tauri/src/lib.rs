@@ -13,6 +13,7 @@ mod guard;
 mod instance;
 mod kernel;
 mod kernel_adapter;
+mod migration;
 mod node;
 mod node_install;
 mod notify;
@@ -463,36 +464,76 @@ pub(crate) mod tests {
     use std::path::Path;
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    /// Xlink / DSH 各持一把进程级锁——两把 env 互不踩，同一进程内可同时
+    /// 持有一对 `EnvGuard`（如迁移向导测试需要既 mock `DSH_XLINK_HOME`
+    /// 又 mock `DSH_HOME`）。
+    static XLINK_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    static DSH_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     /// 持有进程级互斥锁 + 旧 env 值；drop 时按 RAII 释放锁并还原 env。
     /// 调用方只需 `let _guard = scoped_xlink_home(&root);`。
+    ///
+    /// `var` 决定改 `DSH_XLINK_HOME`（Xlink 路径解析）还是 `DSH_HOME`
+    ///（旧布局 + kernel 解析），也决定用哪把锁。
     pub(crate) struct EnvGuard {
         _lock: MutexGuard<'static, ()>,
+        var: EnvVar,
         previous: Option<std::ffi::OsString>,
+    }
+
+    enum EnvVar {
+        XlinkHome,
+        DshHome,
+    }
+
+    impl EnvVar {
+        fn name(&self) -> &'static str {
+            match self {
+                EnvVar::XlinkHome => crate::paths::DSH_XLINK_HOME_ENV,
+                EnvVar::DshHome => "DSH_HOME",
+            }
+        }
+        fn lock(&self) -> &'static Mutex<()> {
+            match self {
+                EnvVar::XlinkHome => XLINK_ENV_LOCK.get_or_init(|| Mutex::new(())),
+                EnvVar::DshHome => DSH_ENV_LOCK.get_or_init(|| Mutex::new(())),
+            }
+        }
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             match &self.previous {
-                Some(value) => std::env::set_var(crate::paths::DSH_XLINK_HOME_ENV, value),
-                None => std::env::remove_var(crate::paths::DSH_XLINK_HOME_ENV),
+                Some(value) => std::env::set_var(self.var.name(), value),
+                None => std::env::remove_var(self.var.name()),
             }
+        }
+    }
+
+    fn acquire_env_guard(home: &Path, var: EnvVar) -> EnvGuard {
+        let lock = var
+            .lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os(var.name());
+        std::env::set_var(var.name(), home);
+        EnvGuard {
+            _lock: lock,
+            var,
+            previous,
         }
     }
 
     /// 进入作用域时拿锁、把 `DSH_XLINK_HOME` 指向 `home`；drop 时还原 env
     /// 并释放锁。返回 [`EnvGuard`] 是 RAII 写法。
     pub(crate) fn scoped_xlink_home(home: &Path) -> EnvGuard {
-        let lock = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let previous = std::env::var_os(crate::paths::DSH_XLINK_HOME_ENV);
-        std::env::set_var(crate::paths::DSH_XLINK_HOME_ENV, home);
-        EnvGuard {
-            _lock: lock,
-            previous,
-        }
+        acquire_env_guard(home, EnvVar::XlinkHome)
+    }
+
+    /// 进入作用域时拿锁、把 `DSH_HOME` 指向 `home`；drop 时还原 env
+    /// 并释放锁。迁移向导的测试需要它——旧布局的路径解析由 `DSH_HOME`
+    /// 决定，与 `DSH_XLINK_HOME` 正交。
+    pub(crate) fn scoped_dsh_home(home: &Path) -> EnvGuard {
+        acquire_env_guard(home, EnvVar::DshHome)
     }
 }
