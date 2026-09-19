@@ -168,9 +168,29 @@ pub fn plugins_store_root() -> PathBuf {
     xlink_home().join("dsh-plugins")
 }
 
-/// 技能中央库根目录：`<xlink_home>/skills/`。
-pub fn skills_store_root() -> PathBuf {
+/// 技能中央库根目录：`skills/` 下分两个子层：
+///
+/// - `packages/` —— 经过校验的源包，由 [`skills_store_root`] 解析
+/// - `active/` —— 内核实际读取的活动视图，所有 DSH 实例共享一份（v1）
+///
+/// 这两条拆分从 P5 开始生效；之前 `<xlink_home>/skills/` 既当中央库
+/// 又当活动根的旧布局被 [`legacy_dsh_skills_root`] / [`legacy_dsh_skills_store`]
+/// 取代为只读兼容入口。
+pub fn skills_root() -> PathBuf {
     xlink_home().join("skills")
+}
+
+/// 技能中央库（已校验源包）根目录：`<xlink_home>/skills/packages/`。
+pub fn skills_store_root() -> PathBuf {
+    skills_root().join("packages")
+}
+
+/// 技能活动视图根目录：`<xlink_home>/skills/active/`。
+///
+/// v1 全局共享：所有已接入该路径的 DSH 实例都看到同一份视图；实例级
+/// 覆盖留到后续版本（见设计稿 §9.1「v1 的启用状态是全局共享的」）。
+pub fn skills_active_root() -> PathBuf {
+    skills_root().join("active")
 }
 
 /// 内核实例根目录：`<xlink_home>/kernels/`。
