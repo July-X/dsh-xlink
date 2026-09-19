@@ -373,10 +373,7 @@ pub fn load_runtime(family: &str, id: &str) -> InstanceRuntime {
             return InstanceRuntime::stopped(0);
         }
         Err(error) => {
-            eprintln!(
-                "dsh-xlink: 读取实例运行时 {} 失败：{error}",
-                path.display()
-            );
+            eprintln!("dsh-xlink: 读取实例运行时 {} 失败：{error}", path.display());
             return InstanceRuntime::stopped(0);
         }
     };
@@ -391,10 +388,7 @@ pub fn load_runtime(family: &str, id: &str) -> InstanceRuntime {
             InstanceRuntime::stopped(0)
         }
         Err(error) => {
-            eprintln!(
-                "dsh-xlink: 实例运行时 {} 解析失败：{error}",
-                path.display()
-            );
+            eprintln!("dsh-xlink: 实例运行时 {} 解析失败：{error}", path.display());
             InstanceRuntime::stopped(0)
         }
     }
@@ -563,13 +557,7 @@ pub fn ensure_instance_dirs(record: &InstanceRecord) -> Result<(), String> {
     }
     let home = instance_dir(&record.kernel_family, &record.id).join("home");
     // 官方 DSH 期望的子目录：profiles、sessions、storages、attachments、logs。
-    for sub in [
-        "profiles",
-        "sessions",
-        "storages",
-        "attachments/v1",
-        "logs",
-    ] {
+    for sub in ["profiles", "sessions", "storages", "attachments/v1", "logs"] {
         fs::create_dir_all(home.join(sub)).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -753,13 +741,7 @@ mod tests {
             assert!(home_dir.join(sub).is_dir(), "缺子目录：{sub}");
         }
         let dsh_home = home_dir.join("home");
-        for sub in [
-            "profiles",
-            "sessions",
-            "storages",
-            "attachments/v1",
-            "logs",
-        ] {
+        for sub in ["profiles", "sessions", "storages", "attachments/v1", "logs"] {
             assert!(dsh_home.join(sub).is_dir(), "缺 DSH 子目录：{sub}");
         }
         std::fs::remove_dir_all(&home).ok();

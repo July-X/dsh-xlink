@@ -35,9 +35,7 @@ use serde::Serialize;
 use tauri::Manager;
 
 use crate::error::AppError;
-use crate::instance::{
-    self, InstanceRecord, InstanceRuntime, KERNEL_FAMILY_DSH,
-};
+use crate::instance::{self, InstanceRecord, InstanceRuntime, KERNEL_FAMILY_DSH};
 use crate::paths;
 use crate::settings::{self, Settings};
 
@@ -1272,12 +1270,9 @@ pub fn start_instance(
             "端口 {port} 已被其它进程占用{owner}，无法启动工作台。请在设置页改用其它端口，或先释放该端口"
         )));
     }
-    let active = record
-        .kernel_version
-        .clone()
-        .ok_or_else(|| {
-            AppError::Kernel("实例尚未指定内核版本，请先在「更新」页安装并切换到某一版本".into())
-        })?;
+    let active = record.kernel_version.clone().ok_or_else(|| {
+        AppError::Kernel("实例尚未指定内核版本，请先在「更新」页安装并切换到某一版本".into())
+    })?;
     start(kernel_install_root, node, &active, port).map(Some)
 }
 
@@ -1294,11 +1289,7 @@ pub fn stop_instance(family: &str, id: &str) -> Result<(), AppError> {
     }
     // 清理 runtime 状态。
     let now_ms = crate::process::epoch_millis();
-    let _ = instance::save_runtime(
-        family,
-        id,
-        &InstanceRuntime::stopped(now_ms),
-    );
+    let _ = instance::save_runtime(family, id, &InstanceRuntime::stopped(now_ms));
     Ok(())
 }
 
@@ -1318,8 +1309,7 @@ pub fn instance_workbench_running(family: &str, id: &str, port: u16) -> bool {
 
 /// 读取实例当前指向的内核版本。
 pub fn instance_active_version(family: &str, id: &str) -> Option<String> {
-    instance::load_record_from_disk(family, id)
-        .and_then(|r| r.kernel_version)
+    instance::load_record_from_disk(family, id).and_then(|r| r.kernel_version)
 }
 
 /// 切换实例的内核版本。仅在实例未运行时允许切换。
@@ -1330,7 +1320,10 @@ pub fn set_instance_active_version(
     kernel_install_root: &Path,
 ) -> Result<(), AppError> {
     let mut record = resolve_instance_record(family, id, kernel_install_root)?;
-    if !kernel_dir(kernel_install_root, version).join(KERNEL_BIN_REL).is_file() {
+    if !kernel_dir(kernel_install_root, version)
+        .join(KERNEL_BIN_REL)
+        .is_file()
+    {
         return Err(AppError::Kernel(format!(
             "版本 {version} 未安装或安装不完整"
         )));
@@ -2875,20 +2868,14 @@ mod tests {
             "expected '未安装' in error, got: {error}"
         );
         // instance.json 不应被写脏：保留为 None。
-        let restored = instance::load_record_from_disk(
-            instance::KERNEL_FAMILY_DSH,
-            "default",
-        )
-        .expect("load");
+        let restored =
+            instance::load_record_from_disk(instance::KERNEL_FAMILY_DSH, "default").expect("load");
         assert!(
             restored.kernel_version.is_none(),
             "失败路径不应写脏 instance.json"
         );
         let _ = fs::remove_dir_all(&install_root);
-        let _ = fs::remove_dir_all(paths::instance_dir(
-            instance::KERNEL_FAMILY_DSH,
-            "default",
-        ));
+        let _ = fs::remove_dir_all(paths::instance_dir(instance::KERNEL_FAMILY_DSH, "default"));
     }
 
     /// `instance_workbench_pid` 在没有 pid 文件时必须返回 None，不读盘之外
@@ -2903,16 +2890,9 @@ mod tests {
             1700000000000,
         );
         instance::ensure_instance_dirs(&record).expect("ensure dirs");
-        let pid = instance_workbench_pid(
-            instance::KERNEL_FAMILY_DSH,
-            "alpha",
-            record.port,
-        );
+        let pid = instance_workbench_pid(instance::KERNEL_FAMILY_DSH, "alpha", record.port);
         assert!(pid.is_none(), "无 pid 文件时应返回 None");
-        let _ = fs::remove_dir_all(paths::instance_dir(
-            instance::KERNEL_FAMILY_DSH,
-            "alpha",
-        ));
+        let _ = fs::remove_dir_all(paths::instance_dir(instance::KERNEL_FAMILY_DSH, "alpha"));
     }
 
     /// `set_instance_active_version` 写入合法版本后必须把 instance.json 同步。
@@ -2933,8 +2913,7 @@ mod tests {
 
         let version = "0.1.5-rc.1";
         let bin = kernel_dir(&install_root, version).join(KERNEL_BIN_REL);
-        fs::create_dir_all(bin.parent().expect("bin parent"))
-            .expect("create kernel dir");
+        fs::create_dir_all(bin.parent().expect("bin parent")).expect("create kernel dir");
         fs::write(&bin, b"// stub kernel").expect("write bin stub");
 
         set_instance_active_version(
@@ -2944,17 +2923,11 @@ mod tests {
             &install_root,
         )
         .expect("set active version");
-        let restored = instance::load_record_from_disk(
-            instance::KERNEL_FAMILY_DSH,
-            "default",
-        )
-        .expect("load");
+        let restored =
+            instance::load_record_from_disk(instance::KERNEL_FAMILY_DSH, "default").expect("load");
         assert_eq!(restored.kernel_version.as_deref(), Some(version));
         let _ = fs::remove_dir_all(&install_root);
-        let _ = fs::remove_dir_all(paths::instance_dir(
-            instance::KERNEL_FAMILY_DSH,
-            "default",
-        ));
+        let _ = fs::remove_dir_all(paths::instance_dir(instance::KERNEL_FAMILY_DSH, "default"));
     }
 
     /// 跨实例的 workbench_pid 必须互不感知：A 实例的 pid 文件不影响 B
@@ -2963,47 +2936,24 @@ mod tests {
     fn instance_workbench_pid_is_scoped_per_instance() {
         let _guard = scoped_xlink_home_for_test();
         for id in ["a", "b"] {
-            let record = instance::InstanceRecord::new(
-                id,
-                instance::KERNEL_FAMILY_DSH,
-                3198,
-                1700000000000,
-            );
+            let record =
+                instance::InstanceRecord::new(id, instance::KERNEL_FAMILY_DSH, 3198, 1700000000000);
             instance::ensure_instance_dirs(&record).expect("ensure dirs");
             instance::save_record_to_disk(&record).expect("save");
         }
         // 给 a 写一个显然不存在的 pid：即使有 pid 文件，pid_is_kernel
         // 会判 false，workbench_pid 应返回 None。B 完全不受影响。
-        instance::write_pid(
-            instance::KERNEL_FAMILY_DSH,
-            "a",
-            u32::MAX,
-            3198,
-        )
-        .expect("write pid a");
+        instance::write_pid(instance::KERNEL_FAMILY_DSH, "a", u32::MAX, 3198).expect("write pid a");
         assert!(
-            instance_workbench_pid(
-                instance::KERNEL_FAMILY_DSH,
-                "a",
-                3198,
-            )
-            .is_none(),
+            instance_workbench_pid(instance::KERNEL_FAMILY_DSH, "a", 3198,).is_none(),
             "a 的 pid 必须是僵尸（pid 不存在）"
         );
         assert!(
-            instance_workbench_pid(
-                instance::KERNEL_FAMILY_DSH,
-                "b",
-                3198,
-            )
-            .is_none(),
+            instance_workbench_pid(instance::KERNEL_FAMILY_DSH, "b", 3198,).is_none(),
             "b 完全没 pid 文件，pid 查询应返回 None"
         );
         for id in ["a", "b"] {
-            let _ = fs::remove_dir_all(paths::instance_dir(
-                instance::KERNEL_FAMILY_DSH,
-                id,
-            ));
+            let _ = fs::remove_dir_all(paths::instance_dir(instance::KERNEL_FAMILY_DSH, id));
         }
     }
 

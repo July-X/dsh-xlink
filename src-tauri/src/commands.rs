@@ -2421,16 +2421,15 @@ pub struct InstanceSummary {
 pub async fn list_instances() -> Result<Vec<InstanceSummary>, String> {
     blocking(move || -> Result<Vec<InstanceSummary>, String> {
         let _guard = crate::lock(instance::lifecycle_mutex());
-        let registry = instance::load_registry()
-            .map_err(|e| format!("读取实例注册表失败：{e}"))?;
+        let registry = instance::load_registry().map_err(|e| format!("读取实例注册表失败：{e}"))?;
         let mode = paths::ShellMode::current();
         let summaries = registry
             .instances
             .iter()
             .map(|record| {
                 let runtime = instance::load_runtime(&record.kernel_family, &record.id);
-                let is_default = registry.default_instance_id.as_deref()
-                    == Some(record.id.as_str());
+                let is_default =
+                    registry.default_instance_id.as_deref() == Some(record.id.as_str());
                 InstanceSummary {
                     record: record.clone(),
                     runtime,
@@ -2458,27 +2457,19 @@ pub async fn create_instance(
     blocking(move || -> Result<InstanceSummary, String> {
         let _guard = crate::lock(instance::lifecycle_mutex());
         let now_ms = crate::process::epoch_millis();
-        let mut record = instance::InstanceRecord::new(
-            id.clone(),
-            instance::KERNEL_FAMILY_DSH,
-            port,
-            now_ms,
-        );
+        let mut record =
+            instance::InstanceRecord::new(id.clone(), instance::KERNEL_FAMILY_DSH, port, now_ms);
         record.label = label;
-        instance::ensure_instance_dirs(&record)
-            .map_err(|e| format!("准备实例目录失败：{e}"))?;
-        instance::save_record_to_disk(&record)
-            .map_err(|e| format!("写入实例记录失败：{e}"))?;
-        let mut registry = instance::load_registry()
-            .map_err(|e| format!("读取注册表失败：{e}"))?;
+        instance::ensure_instance_dirs(&record).map_err(|e| format!("准备实例目录失败：{e}"))?;
+        instance::save_record_to_disk(&record).map_err(|e| format!("写入实例记录失败：{e}"))?;
+        let mut registry = instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
         registry
             .add(record.clone())
             .map_err(|e| format!("注册表拒绝该 id：{e}"))?;
         if registry.default_instance_id.is_none() {
             registry.default_instance_id = Some(record.id.clone());
         }
-        instance::save_registry(&registry)
-            .map_err(|e| format!("写入注册表失败：{e}"))?;
+        instance::save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))?;
         let runtime = instance::load_runtime(&record.kernel_family, &record.id);
         let _ = data_dir;
         Ok(InstanceSummary {
@@ -2492,31 +2483,23 @@ pub async fn create_instance(
 
 /// UI 删除实例（仅未运行中的实例）。
 #[tauri::command]
-pub async fn delete_instance(
-    app: AppHandle,
-    id: String,
-) -> Result<(), String> {
+pub async fn delete_instance(app: AppHandle, id: String) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
     blocking(move || -> Result<(), String> {
-        let registry = instance::load_registry()
-            .map_err(|e| format!("读取注册表失败：{e}"))?;
+        let registry = instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
         let Some(record) = registry.get(&id).cloned() else {
             return Err(format!("实例 {id} 不存在"));
         };
         if kernel::instance_workbench_running(&record.kernel_family, &id, record.port) {
-            return Err(format!(
-                "实例 {id} 仍在运行，请先停止后再删除"
-            ));
+            return Err(format!("实例 {id} 仍在运行，请先停止后再删除"));
         }
-        instance::delete_instance_dirs(&record)
-            .map_err(|e| format!("清理实例目录失败：{e}"))?;
+        instance::delete_instance_dirs(&record).map_err(|e| format!("清理实例目录失败：{e}"))?;
         let mut registry = registry;
         registry.remove(&id);
         if registry.default_instance_id.as_deref() == Some(id.as_str()) {
             registry.default_instance_id = registry.instances.first().map(|r| r.id.clone());
         }
-        instance::save_registry(&registry)
-            .map_err(|e| format!("写入注册表失败：{e}"))?;
+        instance::save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))?;
         let _ = data_dir;
         Ok(())
     })
@@ -2527,14 +2510,12 @@ pub async fn delete_instance(
 #[tauri::command]
 pub async fn set_default_instance(id: String) -> Result<(), String> {
     blocking(move || -> Result<(), String> {
-        let mut registry = instance::load_registry()
-            .map_err(|e| format!("读取注册表失败：{e}"))?;
+        let mut registry = instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
         if registry.get(&id).is_none() {
             return Err(format!("实例 {id} 不存在"));
         }
         registry.default_instance_id = Some(id);
-        instance::save_registry(&registry)
-            .map_err(|e| format!("写入注册表失败：{e}"))?;
+        instance::save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))?;
         Ok(())
     })
     .await
@@ -2583,10 +2564,7 @@ pub async fn start_instance(
 
 /// UI 按实例停止。
 #[tauri::command]
-pub async fn stop_instance(
-    app: AppHandle,
-    id: String,
-) -> Result<(), String> {
+pub async fn stop_instance(app: AppHandle, id: String) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
     blocking(move || -> Result<(), String> {
         let _guard = crate::lock(instance::lifecycle_mutex());
@@ -2619,12 +2597,8 @@ pub async fn ensure_default_instance_migrated(
     let data_dir = state.data_dir.clone();
     blocking(move || -> Result<Option<InstanceSummary>, String> {
         let _guard = crate::lock(instance::lifecycle_mutex());
-        let mut registry = instance::load_registry()
-            .map_err(|e| format!("读取注册表失败：{e}"))?;
-        if registry
-            .get(instance::DEFAULT_INSTANCE_ID)
-            .is_some()
-        {
+        let mut registry = instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
+        if registry.get(instance::DEFAULT_INSTANCE_ID).is_some() {
             return Ok(None);
         }
         let now_ms = crate::process::epoch_millis();
@@ -2638,16 +2612,13 @@ pub async fn ensure_default_instance_migrated(
         );
         record.kernel_version = active;
         record.label = Some("默认实例（迁移自旧版）".to_string());
-        instance::ensure_instance_dirs(&record)
-            .map_err(|e| format!("准备实例目录失败：{e}"))?;
-        instance::save_record_to_disk(&record)
-            .map_err(|e| format!("写入实例记录失败：{e}"))?;
+        instance::ensure_instance_dirs(&record).map_err(|e| format!("准备实例目录失败：{e}"))?;
+        instance::save_record_to_disk(&record).map_err(|e| format!("写入实例记录失败：{e}"))?;
         registry
             .add(record.clone())
             .map_err(|e| format!("注册表拒绝该 id：{e}"))?;
         registry.default_instance_id = Some(record.id.clone());
-        instance::save_registry(&registry)
-            .map_err(|e| format!("写入注册表失败：{e}"))?;
+        instance::save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))?;
         let runtime = instance::load_runtime(&record.kernel_family, &record.id);
         Ok(Some(InstanceSummary {
             record,
