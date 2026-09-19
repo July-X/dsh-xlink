@@ -2,6 +2,8 @@
 
 桌面壳的模块布局、数据流与数据目录约定。约定性约束（必须照做）见 [AGENTS.md](../AGENTS.md)。
 
+下一阶段的多内核数据目录与扩展管理方案见 [dsh-xlink 多内核数据目录与扩展管理设计](dsh-xlink-multi-kernel-design.md)，对应的实施顺序见 [开发计划](dsh-xlink-multi-kernel-development-plan.md)。这两份文档是设计稿，当前代码仍按本文后续章节描述的旧布局运行。
+
 ## 模块
 
 ```
