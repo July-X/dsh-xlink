@@ -590,7 +590,7 @@ fn backup_target(
 /// 绑在旧端口上——以配置端口探测会误判成"已停止"，于是补丁会在一个正在
 /// 服务的内核文件树里写入，重启后内核加载到的是半新半旧的混合状态。
 fn ensure_workbench_stopped(data_dir: &Path) -> Result<(), AppError> {
-    let current = settings::load(data_dir);
+    let current = settings::load_for_shell(settings::current_mode());
     if kernel::workbench_running(data_dir, &current) {
         return Err(AppError::Patch(
             "工作台正在启动或运行，请先点击「关闭工作台」停止后再应用或撤销补丁".into(),
