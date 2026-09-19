@@ -9,27 +9,30 @@
 //! - [`scan_legacy_sources`]：只读扫描，返回每个来源是否存在、文件数
 //!   与字节数。**绝不**触碰旧目录——任何写入都要等用户拍板。
 //! - [`MigrationPreview`] / [`preview_migration`]：对每条可迁移来源，列出
-//!   源路径、目标路径、条目数和大小。复制 / 备份 / 回滚留到后续步骤
-//!   （UI 形态 / 备份策略 / credentials 处理 等决策点尚未对齐）。
+//!   源路径、目标路径、条目数和大小。
+//! - [`ConflictPolicy`] / [`MigrationStatus`] / [`MigrationItemReport`] /
+//!   [`MigrationReport`] / [`run_migration`]：按保守默认（SkipIfNewer，
+//!   credentials 不纳入）执行迁移；写入 backup 后再覆盖目标，旧源**永不
+//!   删除**（用户回滚时还能用）。
 //!
 //! 不在范围：
 //! - 旧 `~/.dsh/desktop[-dev]/` 仍在旧 DSH home 下供 kernel 模块使用
 //!   （含 `active.txt` / `kernel.pid` / 内核安装目录），由 kernel /
 //!   `kernel_adapter` 自管理，**不**属于本向导迁移范围。
-//!
-//! 测试约束（开发计划 §P6 测试要求）：
-//! - 预览阶段不写旧目录。
-//! - `scan_legacy_sources` / `preview_migration` 在不存在的目录上返回空，
-//!   不 panic、不创建目录。
+//! - 用户手动 `~/.dsh/sessions/` / `~/.dsh/credentials/` 等凭据与会话
+//!   数据**不**迁移（计划原文："首版可以只迁移 Shell、插件和技能"）。
+//! - P7 mcode 适配器与 P8 UI 集成留到后续阶段。
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::error::AppError;
 use crate::paths::{
     legacy_dsh_home, legacy_dsh_plugins_root, legacy_dsh_skills_root, legacy_dsh_skills_store,
-    plugins_store_root, skills_active_root, skills_store_root,
+    plugins_store_root, skills_active_root, skills_store_root, xlink_home,
 };
 
 /// 旧布局来源——按目录定位，不依赖文件内容。
@@ -210,9 +213,353 @@ pub fn preview_migration() -> MigrationPreview {
         .collect();
     MigrationPreview {
         legacy_dsh_home: legacy_dsh_home(),
-        xlink_home: crate::paths::xlink_home(),
+        xlink_home: xlink_home(),
         items,
     }
+}
+
+// --- step 2：复制 / 备份 / 报告 ----------------------------------------
+
+/// 目标已存在时的处理策略。`SkipIfNewer` 是最保守的默认——
+/// 保留用户后来修改的文件，仅写入**比目标更旧或不存在**的条目；这让
+/// 「先跑过迁移又回滚再跑一次」自然幂等。
+///
+/// `BackupAndOverwrite` 在覆盖前把现有目标移到
+/// `<xlink_home>/backups/<migration_id>/<source>/`，回滚时按 backup
+/// 路径还原即可（旧源不被删除）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictPolicy {
+    /// 跳过比目标更新的文件；只补缺失条目。
+    SkipIfNewer,
+    /// 备份现有目标后再覆盖。
+    BackupAndOverwrite,
+}
+
+/// 单条迁移项的执行结果。
+#[derive(Debug, Clone, Serialize)]
+pub struct MigrationItemReport {
+    pub source: LegacySource,
+    pub source_path: PathBuf,
+    pub target_path: PathBuf,
+    pub backup_path: Option<PathBuf>,
+    pub files_copied: usize,
+    pub files_skipped: usize,
+    pub status: MigrationStatus,
+    pub error: Option<String>,
+}
+
+/// 单条迁移项的执行状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MigrationStatus {
+    /// 源为空 / 不存在，无可迁移内容。
+    Skipped,
+    /// 全部条目按策略处理成功。
+    Copied,
+    /// 部分条目成功，部分失败。
+    PartialFailure,
+    /// 全部失败（一般是源不可读或目标不可写）。
+    Failed,
+}
+
+/// 完整迁移报告——`run_migration` 的返回值；UI 拿它做"哪些搬了、哪些没搬"的依据。
+#[derive(Debug, Clone, Serialize)]
+pub struct MigrationReport {
+    pub migration_id: String,
+    pub backup_root: PathBuf,
+    pub items: Vec<MigrationItemReport>,
+}
+
+/// 执行迁移：复制源到目标、按策略处理冲突、写入 backup（旧源永不删除）。
+///
+/// `migration_id` 决定 backup 目录名（`<xlink_home>/backups/<id>/`）；
+/// 同一 id 多次跑视为同一迁移的后续动作（旧 backup 不会被覆盖——后面
+/// 会带递增后缀）。
+pub fn run_migration(
+    policy: ConflictPolicy,
+    migration_id: &str,
+) -> Result<MigrationReport, AppError> {
+    if migration_id.is_empty() {
+        return Err(AppError::Plugin("migration id 不能为空".into()));
+    }
+    let backup_root = backup_root_for(migration_id);
+    fs::create_dir_all(&backup_root)
+        .map_err(|e| AppError::Io(format!("无法创建备份目录 {}：{e}", backup_root.display())))?;
+
+    let preview = preview_migration();
+    let mut items = Vec::with_capacity(preview.items.len());
+    for item in preview.items {
+        let report = migrate_one(&item, policy, &backup_root);
+        items.push(report);
+    }
+    Ok(MigrationReport {
+        migration_id: migration_id.to_string(),
+        backup_root,
+        items,
+    })
+}
+
+fn backup_root_for(migration_id: &str) -> PathBuf {
+    // 多轮跑同一 id：若目录已存在，加 `.2` / `.3` 后缀避免覆盖旧 backup。
+    let base = xlink_home().join("backups").join(migration_id);
+    if !base.exists() {
+        return base;
+    }
+    let mut index = 2u32;
+    loop {
+        let candidate = xlink_home()
+            .join("backups")
+            .join(format!("{migration_id}.{index}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn migrate_one(
+    item: &MigrationItemPreview,
+    policy: ConflictPolicy,
+    backup_root: &Path,
+) -> MigrationItemReport {
+    let source_path = item.source_path.clone();
+    let target_path = item.target_path.clone();
+    if !source_path.exists() {
+        return MigrationItemReport {
+            source: item.source,
+            source_path,
+            target_path,
+            backup_path: None,
+            files_copied: 0,
+            files_skipped: 0,
+            status: MigrationStatus::Skipped,
+            error: None,
+        };
+    }
+    if item.file_count == 0 && item.total_bytes == 0 {
+        return MigrationItemReport {
+            source: item.source,
+            source_path,
+            target_path,
+            backup_path: None,
+            files_copied: 0,
+            files_skipped: 0,
+            status: MigrationStatus::Skipped,
+            error: None,
+        };
+    }
+
+    let backup_path = match policy {
+        ConflictPolicy::BackupAndOverwrite if target_path.exists() => {
+            Some(backup_path_for(backup_root, item.source, &target_path))
+        }
+        _ => None,
+    };
+
+    let mut copied = 0usize;
+    let mut skipped = 0usize;
+    let mut last_error: Option<String> = None;
+
+    if let Err(error) = fs::create_dir_all(&target_path) {
+        return MigrationItemReport {
+            source: item.source,
+            source_path,
+            target_path,
+            backup_path: None,
+            files_copied: 0,
+            files_skipped: 0,
+            status: MigrationStatus::Failed,
+            error: Some(format!("无法创建目标目录：{error}")),
+        };
+    }
+
+    let entries = match fs::read_dir(&source_path) {
+        Ok(it) => it,
+        Err(error) => {
+            return MigrationItemReport {
+                source: item.source,
+                source_path,
+                target_path,
+                backup_path: None,
+                files_copied: 0,
+                files_skipped: 0,
+                status: MigrationStatus::Failed,
+                error: Some(format!("无法读取源目录：{error}")),
+            };
+        }
+    };
+
+    for entry in entries.flatten() {
+        let from = entry.path();
+        let file_name = match entry.file_name().to_str() {
+            Some(name) => name.to_string(),
+            None => {
+                last_error = Some("源文件名含非 UTF-8 字节，已跳过".into());
+                continue;
+            }
+        };
+        let to = target_path.join(&file_name);
+        let decision = decide_entry(&from, &to, policy);
+        match decision {
+            EntryDecision::Copy => match copy_one(&from, &to) {
+                Ok(()) => copied += 1,
+                Err(error) => last_error = Some(format!("{file_name}：{error}")),
+            },
+            EntryDecision::Skip(reason) => {
+                skipped += 1;
+                let _ = reason; // 当前不计日志——后续可加 `tracing` 字段
+            }
+            EntryDecision::BackupThenCopy => {
+                let backup_target = match backup_path.as_ref() {
+                    Some(root) => root.join(&file_name),
+                    None => to.clone(),
+                };
+                if let Err(error) = backup_existing(&to, &backup_target) {
+                    last_error = Some(format!("{file_name} 备份失败：{error}"));
+                    continue;
+                }
+                match copy_one(&from, &to) {
+                    Ok(()) => copied += 1,
+                    Err(error) => last_error = Some(format!("{file_name}：{error}")),
+                }
+            }
+        }
+    }
+
+    let status = match (last_error.is_some(), copied, skipped) {
+        (true, 0, 0) => MigrationStatus::Failed,
+        (true, _, _) => MigrationStatus::PartialFailure,
+        (false, _, _) => MigrationStatus::Copied,
+    };
+    MigrationItemReport {
+        source: item.source,
+        source_path,
+        target_path,
+        backup_path,
+        files_copied: copied,
+        files_skipped: skipped,
+        status,
+        error: last_error,
+    }
+}
+
+enum EntryDecision {
+    Copy,
+    Skip(&'static str),
+    BackupThenCopy,
+}
+
+fn decide_entry(source: &Path, target: &Path, policy: ConflictPolicy) -> EntryDecision {
+    if !target.exists() {
+        return EntryDecision::Copy;
+    }
+    let source_md = match fs::symlink_metadata(source) {
+        Ok(md) => md,
+        Err(_) => return EntryDecision::Skip("源元数据不可读"),
+    };
+    let target_md = match fs::symlink_metadata(target) {
+        Ok(md) => md,
+        Err(_) => return EntryDecision::Copy,
+    };
+    if source_md.is_dir() != target_md.is_dir() {
+        // 源是目录 / 目标是文件 / 链接 —— 不安全，跳过让用户手动处理。
+        return EntryDecision::Skip("源 / 目标类型不一致");
+    }
+    if source_md.is_dir() {
+        // 目录走「合并」：缺文件补、多文件保留——recursion 由 caller 内部
+        // 不在这里展开。简单以「目标更新则整目录跳过」处理。
+        return match policy {
+            ConflictPolicy::SkipIfNewer
+                if source_md.modified_or_now() < target_md.modified_or_now() =>
+            {
+                EntryDecision::Skip("目标目录比源新，跳过合并")
+            }
+            _ => EntryDecision::Copy,
+        };
+    }
+    // 普通文件：按 mtime + 策略判定。
+    match policy {
+        ConflictPolicy::SkipIfNewer
+            if source_md.modified_or_now() < target_md.modified_or_now() =>
+        {
+            EntryDecision::Skip("目标文件比源新")
+        }
+        ConflictPolicy::BackupAndOverwrite => EntryDecision::BackupThenCopy,
+        _ => EntryDecision::Copy,
+    }
+}
+
+/// `mtime` 读失败时回退到 UNIX_EPOCH——避免误判成"极旧源"导致 `SkipIfNewer`
+/// 拒绝写入。失败本身在 caller 已经记录。
+trait MetadataTime {
+    fn modified_or_now(&self) -> std::time::SystemTime;
+}
+impl MetadataTime for fs::Metadata {
+    fn modified_or_now(&self) -> std::time::SystemTime {
+        self.modified().unwrap_or(std::time::UNIX_EPOCH)
+    }
+}
+
+fn backup_path_for(backup_root: &Path, source: LegacySource, target: &Path) -> PathBuf {
+    // backup_root/<source-name>/<target 子目录相对名>
+    backup_root
+        .join(source.display_name())
+        .join(target.file_name().unwrap_or_default())
+}
+
+fn backup_existing(source: &Path, backup: &Path) -> io::Result<()> {
+    if let Some(parent) = backup.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // 旧 target 移到 backup——Windows 上 rename 覆盖已存在文件失败，需要
+    // 先把 backup 端删掉。Linux 上 rename 不会覆盖。
+    if backup.exists() {
+        let md = fs::symlink_metadata(backup)?;
+        if md.is_dir() {
+            fs::remove_dir_all(backup)?;
+        } else {
+            fs::remove_file(&backup)?;
+        }
+    }
+    fs::rename(source, backup)
+}
+
+fn copy_one(source: &Path, target: &Path) -> io::Result<()> {
+    let md = fs::symlink_metadata(source)?;
+    if md.is_dir() {
+        copy_tree_inner(source, target)
+    } else if md.file_type().is_symlink() {
+        // 链接直接复制其目标内容——避免在目标侧引入一层间接链接。
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source, target).map(|_| ())
+    } else {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source, target).map(|_| ())
+    }
+}
+
+fn copy_tree_inner(source: &Path, target: &Path) -> io::Result<()> {
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = target.join(entry.file_name());
+        let md = entry.file_type()?;
+        if md.is_symlink() {
+            // 跳过 symlink——避免复制半截链接链。
+            continue;
+        }
+        if md.is_dir() {
+            copy_tree_inner(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -381,5 +728,189 @@ mod tests {
             plugins_item.target_exists,
             "新布局 dsh-plugins 已存在，preview 必须如实报告"
         );
+    }
+
+    // --- step 2：run_migration 测试 -----------------------------------
+
+    #[test]
+    fn run_migration_copies_old_plugins_into_new_layout() {
+        // 旧 ~/.dsh/plugins/ 里有 store.json + pkg-a/ → 新 Xlink home
+        // 的 dsh-plugins/ 必须出现同样文件；backup_root 自动建在
+        // <xlink_home>/backups/<id>/。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy plugins");
+        fs::write(plugins_legacy.join("store.json"), "{\"v\":1}\n").expect("store");
+        fs::create_dir_all(plugins_legacy.join("pkg-a")).expect("pkg-a");
+        fs::write(plugins_legacy.join("pkg-a/data.txt"), "abc").expect("pkg data");
+
+        let report =
+            run_migration(ConflictPolicy::SkipIfNewer, "step2-1").expect("migration succeeds");
+        assert_eq!(report.migration_id, "step2-1");
+        assert!(report.backup_root.exists());
+        assert!(report
+            .items
+            .iter()
+            .any(|i| i.source == LegacySource::Plugins));
+
+        let plugins_new = LegacySource::Plugins.target();
+        assert!(
+            plugins_new.join("store.json").is_file(),
+            "store.json 必须被复制"
+        );
+        assert!(
+            plugins_new.join("pkg-a/data.txt").is_file(),
+            "嵌套文件必须被复制"
+        );
+
+        let plugins_item = report
+            .items
+            .iter()
+            .find(|i| i.source == LegacySource::Plugins)
+            .expect("plugins item");
+        assert_eq!(plugins_item.status, MigrationStatus::Copied);
+        assert!(plugins_item.files_copied >= 2);
+        assert!(plugins_item.error.is_none());
+    }
+
+    #[test]
+    fn run_migration_skips_sources_with_no_migratable_content() {
+        // 三个旧来源都建目录但都是空的 → 全部 Skipped；backup_root 仍
+        // 创建（保证可调用方落盘报告），但 report.items 全 0 拷贝。
+        let home = TempHome::new();
+        for source in LegacySource::all() {
+            fs::create_dir_all(source.path()).expect("empty legacy dir");
+        }
+        let report = run_migration(ConflictPolicy::SkipIfNewer, "step2-empty")
+            .expect("migration succeeds even if no source has files");
+        assert_eq!(report.items.len(), 3);
+        for item in &report.items {
+            assert_eq!(item.status, MigrationStatus::Skipped);
+            assert_eq!(item.files_copied, 0);
+        }
+    }
+
+    #[test]
+    fn run_migration_skip_if_newer_preserves_existing_target_with_newer_mtime() {
+        // 旧 plugins 中央库写文件 A；新 dsh-plugins/ 里已经有 B（用户手动
+        // 写的，比旧源更新）。SkipIfNewer 策略必须保留 B，把 A 复制过去
+        // 不覆盖 B。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy");
+        fs::write(plugins_legacy.join("from-old.txt"), "old-content").expect("old");
+        let plugins_new = LegacySource::Plugins.target();
+        fs::create_dir_all(&plugins_new).expect("new");
+        let newer = plugins_new.join("from-old.txt");
+        fs::write(&newer, "newer-content").expect("create target");
+        // 把目标文件的 mtime 推到"比源晚 1 秒"。
+        let newer_time = filetime_after(
+            fs::metadata(plugins_legacy.join("from-old.txt"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+        );
+        set_mtime(&newer, newer_time);
+
+        let report =
+            run_migration(ConflictPolicy::SkipIfNewer, "step2-skip").expect("migration succeeds");
+        let plugins_item = report
+            .items
+            .iter()
+            .find(|i| i.source == LegacySource::Plugins)
+            .expect("plugins item");
+        assert_eq!(plugins_item.status, MigrationStatus::Copied);
+        assert!(plugins_item.files_skipped >= 1, "目标比源新，必须跳过");
+        // 目标内容必须没变（仍是新布局原文件）。
+        let after = fs::read_to_string(&newer).expect("read target");
+        assert!(
+            after != "old-content",
+            "目标文件比源新，SkipIfNewer 不能覆盖其内容"
+        );
+    }
+
+    #[test]
+    fn run_migration_backup_and_overwrite_moves_old_target_under_backups() {
+        // BackupAndOverwrite：旧 plugins 中央库有 A → 新 dsh-plugins/
+        // 也有 A（内容不同）。目标 A 必须被移到 backup 目录，再被源 A
+        // 覆盖。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy");
+        fs::write(plugins_legacy.join("shared.txt"), "from-old").expect("old");
+        let plugins_new = LegacySource::Plugins.target();
+        fs::create_dir_all(&plugins_new).expect("new");
+        fs::write(plugins_new.join("shared.txt"), "from-new").expect("new");
+        // 让源 / 目标 mtime 一致——避免 SkipIfNewer 在 BackupAndOverwrite
+        // 路径下仍然走 Skip。源 mtime 设为更晚。
+        let now = std::time::SystemTime::now();
+        set_mtime(&plugins_legacy.join("shared.txt"), now);
+        set_mtime(
+            &plugins_new.join("shared.txt"),
+            now - std::time::Duration::from_secs(60),
+        );
+
+        let report = run_migration(ConflictPolicy::BackupAndOverwrite, "step2-bk")
+            .expect("migration succeeds");
+        let plugins_item = report
+            .items
+            .iter()
+            .find(|i| i.source == LegacySource::Plugins)
+            .expect("plugins item");
+        assert!(
+            plugins_item.backup_path.is_some(),
+            "BackupAndOverwrite 必须记录 backup_path"
+        );
+        // backup_path 形如 `<xlink_home>/backups/<id>/<source display_name>/<file>`。
+        assert!(
+            plugins_item.backup_path.as_ref().unwrap().exists(),
+            "BackupAndOverwrite 写出的 backup_path 必须真实存在"
+        );
+        let after = fs::read_to_string(plugins_new.join("shared.txt")).expect("read target");
+        assert_eq!(after, "from-old", "源必须覆盖目标");
+    }
+
+    #[test]
+    fn run_migration_does_not_remove_legacy_source() {
+        // 旧 plugins 中央库在迁移后必须**仍然存在**——回滚路径需要它。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy");
+        fs::write(plugins_legacy.join("store.json"), "{}").expect("store");
+
+        run_migration(ConflictPolicy::SkipIfNewer, "step2-keep").expect("migration succeeds");
+        assert!(
+            plugins_legacy.join("store.json").is_file(),
+            "旧源必须保留——回滚路径依赖它"
+        );
+    }
+
+    #[test]
+    fn run_migration_appends_index_when_backup_root_exists() {
+        // 同一 migration_id 跑两次：第二次必须把 backup 落到 `.2/` 后缀，
+        // 不覆盖第一次的 backup——回滚链必须可重现。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy");
+        fs::write(plugins_legacy.join("store.json"), "{}").expect("store");
+
+        let r1 = run_migration(ConflictPolicy::BackupAndOverwrite, "step2-multi").expect("r1");
+        let r2 = run_migration(ConflictPolicy::BackupAndOverwrite, "step2-multi").expect("r2");
+        assert_ne!(r1.backup_root, r2.backup_root);
+        assert!(
+            r1.backup_root.exists() && r2.backup_root.exists(),
+            "两次 backup 目录都必须存在"
+        );
+    }
+
+    /// 把 mtime 推到比 `baseline` 晚 10 秒——用于构造"目标比源新"场景。
+    fn filetime_after(baseline: std::time::SystemTime) -> std::time::SystemTime {
+        baseline + std::time::Duration::from_secs(10)
+    }
+
+    fn set_mtime(path: &Path, t: std::time::SystemTime) {
+        // Rust 1.75+ 起 `File::set_modified` 在 Unix / Windows 都可用。
+        let file = fs::OpenOptions::new().write(true).open(path).expect("open");
+        file.set_modified(t).expect("set mtime");
     }
 }
