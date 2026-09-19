@@ -860,13 +860,14 @@ pub async fn start_kernel(
         // 受防护的重试会通过 pnpm 重新接线插件；预先解析 pnpm，使得工具链
         // 缺失时能在第一次尝试前就失败，而不是在流程中途才报错。
         let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, &mut send)?;
+        let (family, instance_id) = instance::resolve_default();
         let deps = guard::GuardDeps {
             data_dir: &data_dir,
             settings: &settings,
             node_path: &node_path,
             pnpm_exe: &pnpm_exe,
-            family: crate::instance::KERNEL_FAMILY_DSH,
-            instance_id: crate::instance::DEFAULT_INSTANCE_ID,
+            family,
+            instance_id,
         };
         let (mut report, child) = guard::guarded_start(&deps, &mut send);
         if let Some(child) = child {
@@ -1048,12 +1049,8 @@ pub async fn report_harness_fault(
     blocking(move || -> Result<guard::Incident, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
-        let incident = guard::diagnose_runtime(
-            &data_dir,
-            crate::instance::KERNEL_FAMILY_DSH,
-            crate::instance::DEFAULT_INSTANCE_ID,
-            report,
-        );
+        let (family, instance_id) = instance::resolve_default();
+        let incident = guard::diagnose_runtime(&data_dir, family, instance_id, report);
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.emit("harness-fault", &incident);
         }
@@ -1174,7 +1171,7 @@ fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String,
                 kernel::current_kernel_log_path(
                     data_dir,
                     crate::instance::KERNEL_FAMILY_DSH,
-                    crate::instance::DEFAULT_INSTANCE_ID
+                    crate::instance::DEFAULT_INSTANCE_ID,
                 )
                 .display()
             ));
