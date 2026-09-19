@@ -35,6 +35,10 @@ use serde::Serialize;
 use tauri::Manager;
 
 use crate::error::AppError;
+use crate::instance::{
+    self, InstanceRecord, InstanceRuntime, KERNEL_FAMILY_DSH,
+};
+use crate::paths;
 use crate::settings::{self, Settings};
 
 /// dsh 自身的 home 目录名（参见 `@deepseek-ai/dsh-home-paths`）。
@@ -1211,6 +1215,140 @@ pub fn start_maybe(data_dir: &Path, node: &Path) -> Result<Option<Child>, AppErr
         AppError::Kernel("尚未选择内核版本，请先在“更新”页安装并切换到某一版本".into())
     })?;
     start(data_dir, node, &active, port).map(Some)
+}
+
+// ─── P2：按实例寻址的启动 / 停止 / 状态查询 ────────────────────────────────
+//
+// 旧接口（`start_maybe` / `stop_kernel` / `workbench_pid`）仍以单个 data dir 为
+// 视角，但内部已切到 instance 抽象；新接口（`start_instance` 等）显式接
+// `(family, id, kernel_install_root)`，由 commands.rs 直接调用。
+//
+// `kernel_install_root` 在 P2 阶段仍是 legacy `<dsh_home>/desktop[-dev]/`：
+// 内核二进制 `kernels/<version>/` 还没搬到 `kernels/<family>/versions/<...>`，
+// 那是 P3 的活儿。P2 只把壳侧的 pid / port / 状态 / 锁切到按实例寻址。
+
+/// 启动指定实例的内核。
+///
+/// - `family` / `id` 寻址实例目录与 instance.json；
+/// - `kernel_install_root` 是 `kernels/<version>/` 所在的根目录（P2 仍为
+///   legacy data_dir）；
+/// - `node` 是 `node` 可执行文件路径。
+///
+/// 返回 `Ok(None)` 表示端口已有响应、且监听者是本实例的内核（幂等启动）；
+/// `Ok(Some(child))` 是新拉起的进程；`Err` 报端口冲突或版本未安装。
+pub fn start_instance(
+    family: &str,
+    id: &str,
+    kernel_install_root: &Path,
+    node: &Path,
+) -> Result<Option<Child>, AppError> {
+    let record = resolve_instance_record(family, id, kernel_install_root)?;
+    let port = record.port;
+    if port_open(port) {
+        if instance_workbench_running(family, id, port) {
+            return Ok(None);
+        }
+        let owner = port_listen_pid(port)
+            .map(|pid| format!("，占用者 pid {pid}"))
+            .unwrap_or_default();
+        return Err(AppError::Kernel(format!(
+            "端口 {port} 已被其它进程占用{owner}，无法启动工作台。请在设置页改用其它端口，或先释放该端口"
+        )));
+    }
+    let active = record
+        .kernel_version
+        .clone()
+        .ok_or_else(|| {
+            AppError::Kernel("实例尚未指定内核版本，请先在「更新」页安装并切换到某一版本".into())
+        })?;
+    start(kernel_install_root, node, &active, port).map(Some)
+}
+
+/// 停止指定实例的内核（按 instance.json 与 pid 文件识别）。
+pub fn stop_instance(family: &str, id: &str) -> Result<(), AppError> {
+    let Some(record) = instance::load_record_from_disk(family, id) else {
+        return Err(AppError::Kernel(format!(
+            "实例 {family}/{id} 不存在或已被删除"
+        )));
+    };
+    let pid = instance::read_pid(family, id).map(|r| r.pid);
+    if let Some(pid) = pid {
+        kill_pid(pid, Some(record.port));
+    }
+    // 清理 runtime 状态。
+    let now_ms = crate::process::epoch_millis();
+    let _ = instance::save_runtime(
+        family,
+        id,
+        &InstanceRuntime::stopped(now_ms),
+    );
+    Ok(())
+}
+
+/// 判断指定实例的工作台是否真的在运行（按 pid 文件 + 端口 + 身份校验）。
+pub fn instance_workbench_pid(family: &str, id: &str, port: u16) -> Option<u32> {
+    let pid = instance::read_pid(family, id).map(|r| r.pid)?;
+    if !pid_is_kernel(pid, Some(port)) {
+        return None;
+    }
+    Some(pid)
+}
+
+/// [`instance_workbench_pid`] 的布尔形式。
+pub fn instance_workbench_running(family: &str, id: &str, port: u16) -> bool {
+    instance_workbench_pid(family, id, port).is_some()
+}
+
+/// 读取实例当前指向的内核版本。
+pub fn instance_active_version(family: &str, id: &str) -> Option<String> {
+    instance::load_record_from_disk(family, id)
+        .and_then(|r| r.kernel_version)
+}
+
+/// 切换实例的内核版本。仅在实例未运行时允许切换。
+pub fn set_instance_active_version(
+    family: &str,
+    id: &str,
+    version: &str,
+    kernel_install_root: &Path,
+) -> Result<(), AppError> {
+    let mut record = resolve_instance_record(family, id, kernel_install_root)?;
+    if !kernel_dir(kernel_install_root, version).join(KERNEL_BIN_REL).is_file() {
+        return Err(AppError::Kernel(format!(
+            "版本 {version} 未安装或安装不完整"
+        )));
+    }
+    if instance_workbench_running(family, id, record.port) {
+        return Err(AppError::Kernel(format!(
+            "实例 {id} 工作台正在启动或运行（端口 {}），请先点击「关闭工作台」停止工作台后再切换内核",
+            record.port
+        )));
+    }
+    record.kernel_version = Some(version.to_string());
+    instance::save_record_to_disk(&record)
+        .map_err(|e| AppError::Io(format!("无法写入实例记录：{e}")))?;
+    Ok(())
+}
+
+/// 加载实例记录；若记录不存在，按壳默认设置派生一份并落盘，保证后续
+/// 操作有据可查。
+fn resolve_instance_record(
+    family: &str,
+    id: &str,
+    _kernel_install_root: &Path,
+) -> Result<InstanceRecord, AppError> {
+    if let Some(record) = instance::load_record_from_disk(family, id) {
+        return Ok(record);
+    }
+    // 派生默认记录：端口从 shell settings 拿，profile 默认。
+    let settings = settings::load_for_shell(settings::current_mode());
+    let now_ms = crate::process::epoch_millis();
+    let record = InstanceRecord::new(id, family, settings.port, now_ms);
+    instance::ensure_instance_dirs(&record)
+        .map_err(|e| AppError::Io(format!("无法准备实例目录：{e}")))?;
+    instance::save_record_to_disk(&record)
+        .map_err(|e| AppError::Io(format!("无法写入实例记录：{e}")))?;
+    Ok(record)
 }
 
 /// 回收工作目录等于 `data_dir` 的孤儿 dsh web 内核。
@@ -2689,5 +2827,182 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // ─── P2：按实例寻址的内核生命周期测试 ───────────────────────────────
+
+    /// `set_instance_active_version` 在版本未安装时必须报错且不让 instance.json
+    /// 出现虚假的 `kernel_version`。
+    #[test]
+    fn set_instance_active_version_rejects_uninstalled_version() {
+        let _guard = scoped_xlink_home_for_test();
+        let install_root = workbench_test_dir("inst-set-active-missing");
+        // 准备好实例目录与一份空白 instance.json。
+        let record = instance::InstanceRecord::new(
+            "default",
+            instance::KERNEL_FAMILY_DSH,
+            3195,
+            1700000000000,
+        );
+        instance::ensure_instance_dirs(&record).expect("ensure dirs");
+        instance::save_record_to_disk(&record).expect("save record");
+        let error = set_instance_active_version(
+            instance::KERNEL_FAMILY_DSH,
+            "default",
+            "0.1.2-not-installed",
+            &install_root,
+        )
+        .expect_err("missing version must fail");
+        assert!(
+            error.to_string().contains("未安装"),
+            "expected '未安装' in error, got: {error}"
+        );
+        // instance.json 不应被写脏：保留为 None。
+        let restored = instance::load_record_from_disk(
+            instance::KERNEL_FAMILY_DSH,
+            "default",
+        )
+        .expect("load");
+        assert!(
+            restored.kernel_version.is_none(),
+            "失败路径不应写脏 instance.json"
+        );
+        let _ = fs::remove_dir_all(&install_root);
+        let _ = fs::remove_dir_all(paths::instance_dir(
+            instance::KERNEL_FAMILY_DSH,
+            "default",
+        ));
+    }
+
+    /// `instance_workbench_pid` 在没有 pid 文件时必须返回 None，不读盘之外
+    /// 的副作用。
+    #[test]
+    fn instance_workbench_pid_returns_none_without_pid_file() {
+        let _guard = scoped_xlink_home_for_test();
+        let record = instance::InstanceRecord::new(
+            "alpha",
+            instance::KERNEL_FAMILY_DSH,
+            3196,
+            1700000000000,
+        );
+        instance::ensure_instance_dirs(&record).expect("ensure dirs");
+        let pid = instance_workbench_pid(
+            instance::KERNEL_FAMILY_DSH,
+            "alpha",
+            record.port,
+        );
+        assert!(pid.is_none(), "无 pid 文件时应返回 None");
+        let _ = fs::remove_dir_all(paths::instance_dir(
+            instance::KERNEL_FAMILY_DSH,
+            "alpha",
+        ));
+    }
+
+    /// `set_instance_active_version` 写入合法版本后必须把 instance.json 同步。
+    /// 在 `<install_root>/kernels/<version>/node_modules/@deepseek-ai/dsh/lib/bin.js`
+    /// 放一个占位文件，模拟 pnpm 安装后的目录布局。
+    #[test]
+    fn set_instance_active_version_writes_record() {
+        let _guard = scoped_xlink_home_for_test();
+        let install_root = workbench_test_dir("inst-set-active-ok");
+        let record = instance::InstanceRecord::new(
+            "default",
+            instance::KERNEL_FAMILY_DSH,
+            3197,
+            1700000000000,
+        );
+        instance::ensure_instance_dirs(&record).expect("ensure dirs");
+        instance::save_record_to_disk(&record).expect("save");
+
+        let version = "0.1.5-rc.1";
+        let bin = kernel_dir(&install_root, version).join(KERNEL_BIN_REL);
+        fs::create_dir_all(bin.parent().expect("bin parent"))
+            .expect("create kernel dir");
+        fs::write(&bin, b"// stub kernel").expect("write bin stub");
+
+        set_instance_active_version(
+            instance::KERNEL_FAMILY_DSH,
+            "default",
+            version,
+            &install_root,
+        )
+        .expect("set active version");
+        let restored = instance::load_record_from_disk(
+            instance::KERNEL_FAMILY_DSH,
+            "default",
+        )
+        .expect("load");
+        assert_eq!(restored.kernel_version.as_deref(), Some(version));
+        let _ = fs::remove_dir_all(&install_root);
+        let _ = fs::remove_dir_all(paths::instance_dir(
+            instance::KERNEL_FAMILY_DSH,
+            "default",
+        ));
+    }
+
+    /// 跨实例的 workbench_pid 必须互不感知：A 实例的 pid 文件不影响 B
+    /// 实例的状态查询。
+    #[test]
+    fn instance_workbench_pid_is_scoped_per_instance() {
+        let _guard = scoped_xlink_home_for_test();
+        for id in ["a", "b"] {
+            let record = instance::InstanceRecord::new(
+                id,
+                instance::KERNEL_FAMILY_DSH,
+                3198,
+                1700000000000,
+            );
+            instance::ensure_instance_dirs(&record).expect("ensure dirs");
+            instance::save_record_to_disk(&record).expect("save");
+        }
+        // 给 a 写一个显然不存在的 pid：即使有 pid 文件，pid_is_kernel
+        // 会判 false，workbench_pid 应返回 None。B 完全不受影响。
+        instance::write_pid(
+            instance::KERNEL_FAMILY_DSH,
+            "a",
+            u32::MAX,
+            3198,
+        )
+        .expect("write pid a");
+        assert!(
+            instance_workbench_pid(
+                instance::KERNEL_FAMILY_DSH,
+                "a",
+                3198,
+            )
+            .is_none(),
+            "a 的 pid 必须是僵尸（pid 不存在）"
+        );
+        assert!(
+            instance_workbench_pid(
+                instance::KERNEL_FAMILY_DSH,
+                "b",
+                3198,
+            )
+            .is_none(),
+            "b 完全没 pid 文件，pid 查询应返回 None"
+        );
+        for id in ["a", "b"] {
+            let _ = fs::remove_dir_all(paths::instance_dir(
+                instance::KERNEL_FAMILY_DSH,
+                id,
+            ));
+        }
+    }
+
+    /// 测试内复用 lib.rs 的 RAII，但接受一个默认 home 的便利封装。
+    fn scoped_xlink_home_for_test() -> crate::tests::EnvGuard {
+        let _ = std::env::var_os(crate::paths::DSH_XLINK_HOME_ENV);
+        // 用一个临时目录做 DSH_XLINK_HOME，避免污染用户真实配置。
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-xlink-kernel-p2-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::tests::scoped_xlink_home(&dir)
     }
 }
