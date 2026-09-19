@@ -2128,6 +2128,147 @@ pub async fn plugin_uninstall(
     .await
 }
 
+// --- 插件：实例范围命令（多实例隔离入口） --------------------------------
+
+/// 给指定实例安装一个插件。中央库仍走全局 `data_dir`，但物化与 profile
+/// 接线只作用于 `(family, id)` 这一个实例的 `extensions/plugins/<id>/`。
+/// 多实例 UI（P5 阶段）通过这条入口让每个实例各自隔离地接插件。
+#[tauri::command]
+pub async fn plugin_install_instance(
+    family: String,
+    id: String,
+    spec: String,
+    mode: Option<String>,
+    app: AppHandle,
+    on_event: Channel<String>,
+) -> Result<(), String> {
+    let mode = mode.unwrap_or_else(|| String::from("link"));
+    run_plugin_command_instance(
+        family,
+        id,
+        app,
+        on_event,
+        move |family, instance_id, data_dir, settings, pnpm_exe, progress| {
+            plugins::install_for_instance(
+                family,
+                instance_id,
+                data_dir,
+                settings,
+                pnpm_exe,
+                &spec,
+                &mode,
+                progress,
+            )
+            .map(|_| ())
+        },
+    )
+    .await
+}
+
+/// 给指定实例卸载一个插件：中央库删除走全局 `data_dir`，本实例物化移除
+/// 走 `(family, id)` 这一个实例。
+#[tauri::command]
+pub async fn plugin_uninstall_instance(
+    family: String,
+    id: String,
+    plugin_id: String,
+    app: AppHandle,
+    on_event: Channel<String>,
+) -> Result<(), String> {
+    run_plugin_command_instance(
+        family,
+        id,
+        app,
+        on_event,
+        move |family, instance_id, data_dir, settings, pnpm_exe, progress| {
+            plugins::uninstall_for_instance(
+                family,
+                instance_id,
+                data_dir,
+                settings,
+                pnpm_exe,
+                &plugin_id,
+                progress,
+            )
+        },
+    )
+    .await
+}
+
+/// 给指定实例触发完整同步：重新物化每个 store item、清扫本实例 extensions
+/// 的孤儿、重接线 profile。
+#[tauri::command]
+pub async fn plugin_sync_instance(
+    family: String,
+    id: String,
+    app: AppHandle,
+    on_event: Channel<String>,
+) -> Result<(), String> {
+    run_plugin_command_instance(
+        family,
+        id,
+        app,
+        on_event,
+        move |family, instance_id, data_dir, settings, pnpm_exe, progress| {
+            plugins::sync_for_instance(family, instance_id, data_dir, settings, pnpm_exe, progress)
+        },
+    )
+    .await
+}
+
+/// 读取指定实例的插件状态快照——物化目标走 `(family, id)` 的
+/// `extensions/plugins/<id>/`，中央库仍读全局 `store.json`。
+#[tauri::command]
+pub async fn plugin_status_instance(
+    family: String,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<plugins::PluginStatus, String> {
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = settings::load_for_shell(settings::current_mode());
+        plugins::status_for_instance(&family, &id, &data_dir, &settings)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 实例范围插件命令的共享主体：与 [`run_plugin_command`] 类似，但额外
+/// 把 `(family, id)` 透传给操作闭包，让物化/接线走具体实例。
+async fn run_plugin_command_instance(
+    family: String,
+    id: String,
+    app: AppHandle,
+    on_event: Channel<String>,
+    op: impl FnOnce(
+            &str,
+            &str,
+            &Path,
+            &settings::Settings,
+            &Path,
+            &mut dyn FnMut(&str),
+        ) -> Result<(), AppError>
+        + Send
+        + 'static,
+) -> Result<(), String> {
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    blocking(move || -> Result<(), String> {
+        let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
+        let settings = settings::load_for_shell(settings::current_mode());
+        let node_info = cached_node(&state, &settings);
+        let promise_send = on_event.clone();
+        let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, move |msg| {
+            let _ = promise_send.send(msg.to_string());
+        })?;
+        let mut progress = |msg: &str| {
+            let _ = on_event.send(msg.to_string());
+        };
+        op(&family, &id, &data_dir, &settings, &pnpm_exe, &mut progress).map_err(|e| e.to_string())
+    })
+    .await
+}
+
 /// 重新物化所有内容并重新接线 profile（「同步」按钮）。
 #[tauri::command]
 pub async fn plugin_sync(app: AppHandle, on_event: Channel<String>) -> Result<(), String> {

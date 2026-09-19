@@ -2100,11 +2100,22 @@ fn copy_file(from: &Path, to: &Path) -> io::Result<()> {
 ///
 /// P4 起插件物化按实例隔离（多实例隔离由 P5+ 命令驱动）：同一份中央库
 /// 入口被不同实例独立物化到各自 `extensions/plugins/`。这里只对默认
-/// 实例生效；具体实例的命令走 [`sync_for_instance`]（P5 阶段补）。
+/// 实例生效；具体实例的命令走 [`sync_for_instance`]。
 pub fn sync_kernels(data_dir: &Path, item: &StoreItem) -> Result<(), AppError> {
     let (family, instance_id) = default_instance_key();
+    sync_kernels_for_instance(&family, &instance_id, data_dir, item)
+}
+
+/// 把插件物化到指定实例的 `extensions/plugins/<id>/`。实例范围命令
+///（`plugin_install_instance` / `plugin_sync_instance` 等）的入口之一。
+pub fn sync_kernels_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    item: &StoreItem,
+) -> Result<(), AppError> {
     let version = kernel::read_active(data_dir).unwrap_or_default();
-    materialize_one_for_instance(&family, &instance_id, item, &version)?;
+    materialize_one_for_instance(family, instance_id, item, &version)?;
     Ok(())
 }
 
@@ -2263,8 +2274,32 @@ pub fn ensure_wiring(
     pnpm_exe: &Path,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(usize, bool), AppError> {
+    let (family, instance_id) = default_instance_key();
+    ensure_wiring_for_instance(
+        &family,
+        &instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )
+}
+
+/// 按中央库对**指定实例**的 profile 清单进行调和（实例范围命令入口）。
+/// 隔离过滤仍在全局 quarantine 文档里读——它是中央库级别的状态，不会
+/// 按实例分裂。
+pub fn ensure_wiring_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(usize, bool), AppError> {
     let blocked = quarantine::ids(data_dir);
     ensure_wiring_filtered(
+        family,
+        instance_id,
         data_dir,
         settings,
         pnpm_exe,
@@ -2309,20 +2344,29 @@ fn ensure_store_dependencies(
 /// 一个插件时把残留清掉，而不会留下无法解析的层。
 ///
 /// 返回 `(wired_count, changed)`。
+///
+/// P4 起物化与清扫的目标由 `family + instance_id` 决定（实例范围命令
+/// 通过 [`ensure_wiring_for_instance`] 显式传入，默认实例命令通过
+/// [`default_instance_key`] fallback 进来）。`profile` 路径同样走实例
+/// `instance_profile_dir`，隔离仍读全局 quarantine 文档——它是中央库
+/// 级别状态，不会按实例分裂。
 pub fn ensure_wiring_filtered(
+    family: &str,
+    instance_id: &str,
     data_dir: &Path,
     settings: &settings::Settings,
     pnpm_exe: &Path,
     allow: &WiringFilter<'_>,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(usize, bool), AppError> {
-    // 接线会物化/清扫各内核的插件目录并改写 profile 的托管依赖，属于"读-改-写"
-    // 路径：清单损坏时绝不能用空清单继续，否则 `sweep_kernel_orphans` 会删掉活动
-    // 内核里全部物化目录、`wire_manifest` 会清退 profile 的全部托管依赖（P0-5）。
+    // 接线会物化/清扫各实例的 extensions/plugins 目录并改写 profile 的托管
+    // 依赖，属于"读-改-写"路径：清单损坏时绝不能用空清单继续，
+    // 否则 `sweep_instance_orphans` 会删掉本实例里全部物化目录、
+    // `wire_manifest` 会清退 profile 的全部托管依赖（P0-5）。
     let store = load_store_checked(data_dir)?;
     ensure_profile(data_dir, &settings.profile)?;
 
-    // 物化活动内核，再据插件清单决定 bundle 层；没有活动内核且仍有插件时
+    // 物化活动实例，再据插件清单决定 bundle 层；没有活动实例且仍有插件时
     // 等内核装好再接线（store 为空则继续，让下面的清退逻辑跑掉残留）。
     // 被过滤器排除的插件（如启动看护隔离的嫌疑插件）既不物化也不进清单，
     // 内核因此在缺少它们的状态下完成启动。
@@ -2335,13 +2379,10 @@ pub fn ensure_wiring_filtered(
     let mut failures: Vec<String> = Vec::new();
     match kernel::read_active(data_dir) {
         Some(active) => {
-            let (family, instance_id) = default_instance_key();
             for item in store.items.iter().filter(|item| allow(item)) {
                 let result = ensure_store_dependencies(data_dir, item, pnpm_exe, on_progress)
                     .and_then(|_| refresh_store_peers(data_dir, item, &active))
-                    .and_then(|_| {
-                        materialize_one_for_instance(&family, &instance_id, item, &active)
-                    });
+                    .and_then(|_| materialize_one_for_instance(family, instance_id, item, &active));
                 match result {
                     Ok(actual) => {
                         let prefix = if actual == "copy" {
@@ -2350,7 +2391,7 @@ pub fn ensure_wiring_filtered(
                             SPEC_LINK
                         };
                         let target =
-                            paths::instance_extension_plugin_dir(&family, &instance_id, &item.id);
+                            paths::instance_extension_plugin_dir(family, instance_id, &item.id);
                         let rel = relative_path(&profile_dir(data_dir, &settings.profile), &target);
                         specs.insert(
                             item.id.clone(),
@@ -2364,7 +2405,7 @@ pub fn ensure_wiring_filtered(
                     Err(e) => failures.push(format!("{}（{e}）", item.name)),
                 }
             }
-            sweep_instance_orphans(&family, &instance_id, &store);
+            sweep_instance_orphans(family, instance_id, &store);
         }
         None if !store.items.is_empty() => return Ok((0, false)),
         None => {}
@@ -3030,8 +3071,11 @@ fn wire_manifest(
 
 // --- 编排 ----------------------------------------------------------------
 
-/// 安装一个插件：拉取到中央库、link 模式下在中央库装依赖、物化到每一个内核、
-/// 接入活动 profile。
+/// 安装一个插件：拉取到中央库、link 模式下在中央库装依赖、物化到默认实例
+/// 的 `extensions/plugins/`、接入活动 profile。
+///
+/// 中央库（store.json / `<home>/dsh-plugins/`）由所有实例共享；物化与
+/// profile 接线按实例隔离（实例范围命令走 [`install_for_instance`]）。
 pub fn install(
     data_dir: &Path,
     settings: &settings::Settings,
@@ -3041,7 +3085,42 @@ pub fn install(
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<StoreItem, AppError> {
     let _store_guard = lock_store();
-    install_unlocked(data_dir, settings, pnpm_exe, spec_str, mode, on_progress)
+    let (family, instance_id) = default_instance_key();
+    install_for_instance(
+        &family,
+        &instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        spec_str,
+        mode,
+        on_progress,
+    )
+}
+
+/// 实例范围安装：中央库写入仍走全局 `data_dir`，物化与 profile 接线走
+/// 指定实例的 `extensions/plugins/<id>/`。多实例 UI（P5 阶段）通过
+/// 这条入口让每个实例各自隔离地接插件。
+pub fn install_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    spec_str: &str,
+    mode: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<StoreItem, AppError> {
+    install_unlocked(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        spec_str,
+        mode,
+        on_progress,
+    )
 }
 
 /// 从 GitHub 风格的 spec 提取可能的 npm 包名候选。DSH 插件作者通常把
@@ -3097,6 +3176,8 @@ fn npm_candidates_from_github_spec(spec: &str) -> Option<Vec<String>> {
 }
 
 fn install_unlocked(
+    family: &str,
+    instance_id: &str,
     data_dir: &Path,
     settings: &settings::Settings,
     pnpm_exe: &Path,
@@ -3112,7 +3193,16 @@ fn install_unlocked(
         for npm_name in &npm_candidates {
             on_progress(&format!("尝试 npm 包 {} …", npm_name));
             let mut silent = |_: &str| {};
-            match install_unlocked(data_dir, settings, pnpm_exe, npm_name, mode, &mut silent) {
+            match install_unlocked(
+                family,
+                instance_id,
+                data_dir,
+                settings,
+                pnpm_exe,
+                npm_name,
+                mode,
+                &mut silent,
+            ) {
                 Ok(item) => {
                     on_progress(&format!("已通过 npm 安装 {}", npm_name));
                     return Ok(item);
@@ -3166,13 +3256,20 @@ fn install_unlocked(
     // 重装代表明确的重试意图：清掉历史隔离记录，否则新装的插件会被旧
     // 记录挡在接线之外，表现为"装了却不生效"的哑故障。
     let _ = quarantine::remove(data_dir, &item.id);
-    sync_kernels(data_dir, &item)?;
+    sync_kernels_for_instance(family, instance_id, data_dir, &item)?;
     on_progress("正在接线到 profile");
-    ensure_wiring(data_dir, settings, pnpm_exe, on_progress)?;
+    ensure_wiring_for_instance(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )?;
     Ok(item)
 }
 
-/// 更新一个插件：按同一源重新拉取、刷新中央库依赖、重新同步所有内核、
+/// 更新一个插件：按同一源重新拉取、刷新中央库依赖、重新物化到默认实例、
 /// 重新接线。
 pub fn update(
     data_dir: &Path,
@@ -3182,10 +3279,43 @@ pub fn update(
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<StoreItem, AppError> {
     let _store_guard = lock_store();
-    update_unlocked(data_dir, settings, pnpm_exe, id, on_progress)
+    let (family, instance_id) = default_instance_key();
+    update_for_instance(
+        &family,
+        &instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        id,
+        on_progress,
+    )
+}
+
+/// 实例范围更新：中央库写入走全局 `data_dir`，物化与 profile 接线走
+/// 指定实例。
+pub fn update_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<StoreItem, AppError> {
+    update_unlocked(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        id,
+        on_progress,
+    )
 }
 
 fn update_unlocked(
+    family: &str,
+    instance_id: &str,
     data_dir: &Path,
     settings: &settings::Settings,
     pnpm_exe: &Path,
@@ -3217,9 +3347,16 @@ fn update_unlocked(
     upsert_item_unlocked(data_dir, updated.clone())?;
     // 与 install 同理：更新是明确的重试意图，历史隔离记录不再适用。
     let _ = quarantine::remove(data_dir, &updated.id);
-    sync_kernels(data_dir, &updated)?;
+    sync_kernels_for_instance(family, instance_id, data_dir, &updated)?;
     on_progress("正在同步 profile");
-    ensure_wiring(data_dir, settings, pnpm_exe, on_progress)?;
+    ensure_wiring_for_instance(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )?;
     // copy 模式的更新必须**额外**重跑一次 profile 安装。
     //
     // pnpm 的 `file:` 依赖是在 `install` 时被硬链接/拷贝进 profile 的
@@ -3233,7 +3370,7 @@ fn update_unlocked(
     Ok(updated)
 }
 
-/// 在所有位置移除一个插件：中央库、内核物化、profile 接线。
+/// 在所有位置移除一个插件：中央库、本实例物化、profile 接线。
 ///
 /// 部分清理之后仍可重试卸载：如果中央库条目已经不在，仅当隔离注册表里
 /// 仍然挂着同一个插件时，卸载请求才会被接受。这让事件响应动作能继续
@@ -3247,10 +3384,43 @@ pub fn uninstall(
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(), AppError> {
     let _store_guard = lock_store();
-    uninstall_unlocked(data_dir, settings, pnpm_exe, id, on_progress)
+    let (family, instance_id) = default_instance_key();
+    uninstall_for_instance(
+        &family,
+        &instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        id,
+        on_progress,
+    )
+}
+
+/// 实例范围卸载：中央库删除走全局 `data_dir`，本实例物化移除走
+/// `extensions/plugins/<id>/`，profile 接线重跑让 manifest 不再引用本插件。
+pub fn uninstall_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    uninstall_unlocked(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        id,
+        on_progress,
+    )
 }
 
 fn uninstall_unlocked(
+    family: &str,
+    instance_id: &str,
     data_dir: &Path,
     settings: &settings::Settings,
     pnpm_exe: &Path,
@@ -3284,23 +3454,28 @@ fn uninstall_unlocked(
             )));
         }
     }
-    for version in kernel::list_installed(data_dir) {
-        remove_materialized(data_dir, &version.version, id);
-        // `remove_materialized` 形参里的 `version` 在 P4 起已被忽略——物化
-        // 目标走实例 `extensions/plugins/`，不再按内核 version 切分。
-        // 内核列表的遍历仅为保留多版本迁移时的语义壳（多实例隔离在 P5 阶段
-        // 落地后这里会进一步改为对每个实例调一次 `remove_materialized_for_instance`）。
-        let _ = version;
-    }
+    // P4 起物化目标走本实例 `extensions/plugins/<id>/`，删除走
+    // `remove_materialized_for_instance`；`for installed in list_installed`
+    // 的旧循环在多实例下不再必要——同一份中央库目录被多实例共享，物化
+    // 是按实例隔离的；卸载一个插件只删**该实例**的物化，其它实例
+    // 仍保留自己的物化（如果它们各自装过的话）。
+    remove_materialized_for_instance(family, instance_id, id);
     remove_item_unlocked(data_dir, id)?;
     // 隔离记录随卸载一并清除：残留记录会在用户日后重装同名插件时把它挡
     // 在接线之外，形成"装了却不生效"的哑故障。
     quarantine::remove(data_dir, id)?;
-    ensure_wiring(data_dir, settings, pnpm_exe, on_progress)?;
+    ensure_wiring_for_instance(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )?;
     Ok(())
 }
 
-/// 把期望模式重新应用到每个内核，并重新接线。
+/// 把期望模式重新应用到本实例，并重新接线。
 pub fn set_mode(
     data_dir: &Path,
     settings: &settings::Settings,
@@ -3310,10 +3485,45 @@ pub fn set_mode(
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(), AppError> {
     let _store_guard = lock_store();
-    set_mode_unlocked(data_dir, settings, pnpm_exe, id, mode, on_progress)
+    let (family, instance_id) = default_instance_key();
+    set_mode_for_instance(
+        &family,
+        &instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        id,
+        mode,
+        on_progress,
+    )
+}
+
+/// 实例范围模式切换：中央库条目更新走全局 `data_dir`，物化重做走本实例。
+pub fn set_mode_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    mode: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    set_mode_unlocked(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        id,
+        mode,
+        on_progress,
+    )
 }
 
 fn set_mode_unlocked(
+    family: &str,
+    instance_id: &str,
     data_dir: &Path,
     settings: &settings::Settings,
     pnpm_exe: &Path,
@@ -3330,20 +3540,23 @@ fn set_mode_unlocked(
         && (item.mode != "link" || !store_plugin_dir(data_dir, id).join("node_modules").is_dir());
     // 切换模式必须强制重新物化：否则"版本与形态都没变"的短路判定会让旧的
     // 落地结果原样留着，用户点了切换却看不到任何变化。删掉 meta 即可让下一次
-    // materialize 走全新落地。P4 起 meta 文件走实例 `extensions/plugins/<id>/.dsh-meta.json`，
-    // 不再按内核 version 切分；旧 `kernel_meta_file(data_dir, version, id)` 已被
-    // 委托到该路径，这里继续调用只是为了「删 meta」的语义直观。
-    for installed in kernel::list_installed(data_dir) {
-        let _ = fs::remove_file(kernel_meta_file(data_dir, &installed.version, id));
-        let _ = installed;
-    }
+    // materialize 走全新落地。P4 起 meta 文件走实例 `extensions/plugins/<id>/.dsh-meta.json`。
+    let meta_path = paths::instance_extension_meta_file(family, instance_id, id);
+    let _ = fs::remove_file(&meta_path);
     item.mode = mode.to_string();
     upsert_item_unlocked(data_dir, item.clone())?;
     if needs_store_deps {
         install_store_deps(data_dir, pnpm_exe, id, on_progress)?;
     }
-    sync_kernels(data_dir, &item)?;
-    ensure_wiring(data_dir, settings, pnpm_exe, on_progress)?;
+    sync_kernels_for_instance(family, instance_id, data_dir, &item)?;
+    ensure_wiring_for_instance(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )?;
     Ok(())
 }
 
@@ -3366,28 +3579,77 @@ pub fn sync_all(
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(), AppError> {
     let _store_guard = lock_store();
-    sync_all_unlocked(data_dir, settings, pnpm_exe, on_progress)
+    let (family, instance_id) = default_instance_key();
+    sync_for_instance(
+        &family,
+        &instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )
 }
 
-fn sync_all_unlocked(
+/// 实例范围同步：对每个 store item 在指定实例的 `extensions/plugins/`
+/// 下重新物化、清扫孤儿、重接线。
+pub fn sync_for_instance(
+    family: &str,
+    instance_id: &str,
     data_dir: &Path,
     settings: &settings::Settings,
     pnpm_exe: &Path,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(), AppError> {
-    // 清扫路径：清单读不出来时绝不能当成"没有插件"，否则会把活动内核里所有
-    // 物化目录当成孤儿删掉。
+    sync_all_unlocked(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )
+}
+
+fn sync_all_unlocked(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    // 清扫路径：清单读不出来时绝不能当成"没有插件"，否则会把本实例
+    // extensions/plugins/ 里所有物化目录当成孤儿删掉。
     let store = load_store_checked(data_dir)?;
     for item in &store.items {
-        sync_kernels(data_dir, item)?;
+        sync_kernels_for_instance(family, instance_id, data_dir, item)?;
     }
-    sweep_all_kernel_orphans(data_dir, &store);
-    ensure_wiring(data_dir, settings, pnpm_exe, on_progress)?;
+    sweep_instance_orphans(family, instance_id, &store);
+    ensure_wiring_for_instance(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )?;
     Ok(())
 }
 
 /// 拼装 UI 的状态快照（不发起网络请求）。
 pub fn status(data_dir: &Path, settings: &settings::Settings) -> PluginStatus {
+    let (family, instance_id) = default_instance_key();
+    status_for_instance(&family, &instance_id, data_dir, settings)
+}
+
+/// 实例范围状态：物化目标走指定实例的 `extensions/plugins/<id>/`，
+/// 中央库仍读全局 `store.json`。
+pub fn status_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+) -> PluginStatus {
     let mut integrity_warning: Option<String> = None;
     let store = match crate::process::read_state_file(&store_file(data_dir)) {
         crate::process::StateRead::Loaded(store) => store,
@@ -3418,7 +3680,6 @@ pub fn status(data_dir: &Path, settings: &settings::Settings) -> PluginStatus {
         }
     };
     let active = kernel::read_active(data_dir);
-    let (family, instance_id) = default_instance_key();
     let profile_manifest = read_profile_json(data_dir, &settings.profile)
         .ok()
         .flatten();
