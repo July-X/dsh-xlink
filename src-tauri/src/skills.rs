@@ -658,38 +658,11 @@ fn walk_package(
 
 /// 递归地将 source 复制到 target，若已存在则替换。
 ///
-/// **符号链接一律跳过**，与技能扫描器保持一致：扫描器本来就不把链接视为技能
-/// 入口（`git clone` 常留下 `SKILL.md -> ../../SKILL.md` 这类装饰性重定向），
-/// 而跟随一个指向包外的链接会把宿主机的目录树整棵拷进技能目录——既撑大中央库，
-/// 也让私有文件进入内核可读范围。旧实现跟随链接（`fs::copy`），目录链接会让
-/// 整个复制以 `os error 2` 失败。
+/// 递归复制目录——委托到 [`pkg::copy_tree`]（共享层）。Skills 场景下
+/// 符号链接必须跳过（pnpm 的 node_modules 全是 symlink，跟随会把整棵
+/// 包外目录拷进中央库）。
 fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
-    if target.is_symlink() {
-        remove_link(target);
-    } else if target.exists() {
-        let _ = fs::remove_dir_all(target);
-    }
-    fs::create_dir_all(target)?;
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = target.join(entry.file_name());
-        let file_type = entry.file_type()?;
-        if file_type.is_symlink() {
-            eprintln!(
-                "dsh-xlink: skipping symlink {} during skill copy",
-                from.display()
-            );
-            continue;
-        }
-        if file_type.is_dir() {
-            copy_tree(&from, &to)?;
-        } else {
-            let _ = fs::remove_file(&to);
-            fs::copy(&from, &to)?;
-        }
-    }
-    Ok(())
+    pkg::copy_tree(source, target)
 }
 
 /// 暂存获取目录的前缀，镜像插件中央库的防崩溃交换术语：
