@@ -50,7 +50,11 @@ const FILE_BUDGETS = {
   // P4 step 4：4 条实例范围 Tauri 命令 plugin_install_instance /
   // plugin_uninstall_instance / plugin_sync_instance / plugin_status_instance
   // + 共享 run_plugin_command_instance 主体，约 +75 行。
-  'src-tauri/src/commands.rs': 1860,
+  // B 类日志 family/instance_id 接入：install_version / GuardDeps literal /
+  // kernel_workbench_url_from_log / diagnose_runtime 等 6+ caller 加 family +
+  // instance_id 形参（约 +28 行）。每个 caller 都同时给默认实例硬编码
+  // (DSH, "default")——P8 UI 决策后由真实 instance_id 替换。
+  'src-tauri/src/commands.rs': 1900,
   // P6 step 2+3+4：迁移向导后端——ConflictPolicy / MigrationStatus /
   // MigrationItemReport / MigrationReport / run_migration / migrate_one /
   // decide_entry / backup_existing / copy_one / copy_tree_inner +
@@ -61,7 +65,11 @@ const FILE_BUDGETS = {
   'src-tauri/src/migration.rs': 660,
   'src-tauri/src/skills.rs': 1490,
   'src-tauri/src/patches.rs': 1250,
-  'src-tauri/src/kernel.rs': 1260,
+  // B 类日志 family/instance_id 接入：kernel_log_spec / install_log_spec /
+  // current_kernel_log_path / install_version / install_version_into 加形参；
+  // attach_log_drainers 改用 family + id。start() legacy 单实例路径硬编码
+  // (DSH, "default")——P8 UI 决策后由真实 instance_id 替换。约 +11 行。
+  'src-tauri/src/kernel.rs': 1290,
   'src-tauri/src/process.rs': 1180,
   // 1050 → 1090：会话标题改为订阅 `session/control`（baseline 播种 + 标题投影帧
   // 保鲜 + 老内核退回 session/list 快照），这部分逻辑与 Center 同生共死，拆出去
@@ -124,7 +132,13 @@ const FILE_BUDGETS = {
 // 与 plugins.rs / skills.rs 的 copy_tree 是已知重复——AGENTS.md §3 要求
 // 提到 pkg.rs，留到独立重构处理；FILE_BUDGETS 里 kernel_adapter.rs /
 // migration.rs / commands.rs 也对应上调。
-const TOTAL_BUDGET = 23070;
+// B 类日志 family/instance_id 接入全链路（commit 158ced3）:
+// commands.rs +28 + kernel.rs +11 + guard.rs（kernel_log_path 重构 +
+// GuardDeps 加字段 + diagnose_runtime 加形参）+ kernel_adapter.rs +2 +
+// notify.rs +24 ≈ +89 行；测试 fixture 调整不计入生产预算但同样生效。
+// 下次 reset 预算时考虑把日志相关 caller 提到单独 helper（参考 AGENTS.md
+// §3 要求），避免散落到 5 个 module 的硬编码 (DSH, "default")。
+const TOTAL_BUDGET = 23200;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
