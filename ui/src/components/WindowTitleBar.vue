@@ -39,6 +39,47 @@ function closeWindow() {
   callWindow('close', '关闭窗口', hint);
 }
 
+// 实例列表 dropdown（P8 #1）：显示当前默认实例，dropdown 切换。
+// 顶部与 WindowTitleBar 融合——状态可见性优先。最小侵入：title bar 中央
+// 加一个 chip，不影响 macOS 交通灯 / Windows 按钮位置。
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { instanceStore, loadInstances, setDefaultInstance, familyLabel } from '../instance.js';
+
+const instanceMenuOpen = ref(false);
+const currentInstance = computed(
+  () => instanceStore.list.find((i) => i.record.id === instanceStore.defaultInstanceId) || null
+);
+
+function toggleInstanceMenu() {
+  instanceMenuOpen.value = !instanceMenuOpen.value;
+}
+async function pickInstance(id) {
+  instanceMenuOpen.value = false;
+  if (id === instanceStore.defaultInstanceId) return;
+  await setDefaultInstance(id);
+}
+
+// 文档级 click：菜单外的点击关掉菜单。chip / menu 自身都 @click.stop，
+// 所以冒泡上来的 click 一定是"点外面"，可以直接关。handle 用具名函数，
+// 让 onUnmounted 能 remove 同一引用，不会泄漏 listener。
+function closeInstanceMenuOnOutside() {
+  instanceMenuOpen.value = false;
+}
+onMounted(() => {
+  document.addEventListener('click', closeInstanceMenuOnOutside);
+  loadInstances().catch(() => {});
+});
+onUnmounted(() => {
+  document.removeEventListener('click', closeInstanceMenuOnOutside);
+});
+// 别的模块改默认实例（如 start_instance 完成后）也要刷新 list
+watch(
+  () => instanceStore.defaultInstanceId,
+  () => {
+    if (instanceStore.list.length === 0) loadInstances().catch(() => {});
+  }
+);
+
 function minimizeWindow() {
   // Windows：最小化与关闭语义一致——都收进通知区域并从任务栏移除按钮，
   // 只有托盘图标能把窗口叫回来（macOS 保持系统原生最小化到 Dock）。
@@ -85,6 +126,56 @@ function minimizeWindow() {
         title="窗口不可缩放"
         disabled
       ></button>
+    </div>
+
+    <!-- P8 #1 实例 dropdown：标题栏中央左侧挂一个 chip，单击展开实例
+         列表。位置避让 macOS 交通灯与 Windows 按钮（CSS 端按平台调 left
+         偏移），不挡 caption 文字、也不影响拖拽（绝对定位脱离 flex 流，
+         chip 与 menu 自身不挂 data-tauri-drag-region）。 -->
+    <div class="mac-titlebar__instance">
+      <button
+        type="button"
+        class="instance-chip"
+        :class="{ 'instance-chip--loading': instanceStore.switching }"
+        :aria-haspopup="'menu'"
+        :aria-expanded="instanceMenuOpen ? 'true' : 'false'"
+        :aria-busy="instanceStore.switching ? 'true' : 'false'"
+        aria-label="切换默认实例"
+        @click.stop="toggleInstanceMenu"
+      >
+        <span class="instance-chip__label">
+          <template v-if="currentInstance">
+            {{ familyLabel(currentInstance.record.family) }} · {{ currentInstance.record.id }}
+          </template>
+          <template v-else>加载中…</template>
+        </span>
+        <span class="instance-chip__caret" aria-hidden="true">▾</span>
+      </button>
+      <ul v-if="instanceMenuOpen" class="instance-menu" role="menu" @click.stop>
+        <li
+          v-for="it in instanceStore.list"
+          :key="it.record.id"
+          role="none"
+        >
+          <button
+            type="button"
+            class="instance-menu__item"
+            :class="{ 'instance-menu__item--default': it.is_default }"
+            role="menuitem"
+            :aria-current="it.is_default ? 'true' : undefined"
+            @click="pickInstance(it.record.id)"
+          >
+            <span class="instance-menu__name">
+              {{ familyLabel(it.record.family) }} · {{ it.record.id }}
+            </span>
+            <span
+              v-if="it.is_default"
+              class="instance-menu__check"
+              aria-label="当前默认"
+            >✓</span>
+          </button>
+        </li>
+      </ul>
     </div>
 
     <div class="mac-titlebar__caption" data-tauri-drag-region>
