@@ -34,6 +34,7 @@ use crate::paths::{
     legacy_dsh_home, legacy_dsh_plugins_root, legacy_dsh_skills_root, legacy_dsh_skills_store,
     plugins_store_root, skills_active_root, skills_store_root, xlink_home,
 };
+use crate::pkg;
 
 /// 旧布局来源——按目录定位，不依赖文件内容。
 ///
@@ -543,7 +544,8 @@ fn backup_existing(source: &Path, backup: &Path) -> io::Result<()> {
 fn copy_one(source: &Path, target: &Path) -> io::Result<()> {
     let md = fs::symlink_metadata(source)?;
     if md.is_dir() {
-        copy_tree_inner(source, target)
+        // 目录复制委托到共享层 [`pkg::copy_tree`]——与 P5 skills 模块共用同一份实现。
+        pkg::copy_tree(source, target)
     } else if md.file_type().is_symlink() {
         // 链接直接复制其目标内容——避免在目标侧引入一层间接链接。
         if let Some(parent) = target.parent() {
@@ -556,26 +558,6 @@ fn copy_one(source: &Path, target: &Path) -> io::Result<()> {
         }
         fs::copy(source, target).map(|_| ())
     }
-}
-
-fn copy_tree_inner(source: &Path, target: &Path) -> io::Result<()> {
-    fs::create_dir_all(target)?;
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = target.join(entry.file_name());
-        let md = entry.file_type()?;
-        if md.is_symlink() {
-            // 跳过 symlink——避免复制半截链接链。
-            continue;
-        }
-        if md.is_dir() {
-            copy_tree_inner(&from, &to)?;
-        } else {
-            fs::copy(&from, &to)?;
-        }
-    }
-    Ok(())
 }
 
 // --- step 3：rollback_migration ----------------------------------------
@@ -847,7 +829,7 @@ fn restore_directory(from: &Path, to: &Path) -> io::Result<()> {
     match fs::rename(from, to) {
         Ok(()) => Ok(()),
         Err(_) => {
-            copy_tree_inner(from, to)?;
+            pkg::copy_tree(from, to)?;
             let _ = fs::remove_dir_all(from);
             Ok(())
         }

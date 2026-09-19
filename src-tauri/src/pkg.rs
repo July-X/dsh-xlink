@@ -409,3 +409,41 @@ pub fn remove_link(path: &Path) {
         let _ = fs::remove_dir(path);
     }
 }
+
+/// 递归把 `source` 目录复制到 `target`。符号链接**跳过**——避免把链接链
+/// 半截搬进目标（顺链拷贝会让目标失去独立性；复制过去再被读链接的进程
+/// 解析时仍走源）。
+///
+/// 这是**简化**版：与 plugins::copy_tree 的「防越界链接 / 循环检测 /
+/// 错误信息包装」语义不同。pnpm 管理的 `node_modules` 几乎全由 symlink
+/// 构成，skills 包里 symlink 普遍指向包外（pnpm store），所以 skills
+/// 场景必须用简化版——否则一复制就被严格检查拦下。plugins 场景需要
+/// 严格保证（防止越界链接污染内核），仍保留自己的实现。
+///
+/// `target` 必须不存在或为空；存在的内容会**整树**删掉再写。
+pub fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
+    if target.is_symlink() {
+        remove_link(target);
+    } else if target.exists() {
+        fs::remove_dir_all(target)?;
+    }
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = target.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            // 简化版策略：跳过符号链接，不跟随。
+            continue;
+        }
+        if file_type.is_dir() {
+            copy_tree(&from, &to)?;
+        } else {
+            // 先清掉旧文件——避免 Windows / 部分 Linux fs::copy 不覆盖。
+            let _ = fs::remove_file(&to);
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
