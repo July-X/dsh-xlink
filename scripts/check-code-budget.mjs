@@ -46,6 +46,11 @@ const FILE_BUDGETS = {
   'src-tauri/src/notify.rs': 1090,
   'src-tauri/src/guard.rs': 940,
   'ui/src/store.js': 430,
+  // 多内核改造 P0：新路径模块（paths.rs）。包含 ShellMode、xlink_home、shell
+  // /kernels/skills/state/cache 解析、legacy resolver、id 校验与基础数据
+  // 模型——是后续 P2–P8 的依赖根，必须单独占预算，避免被 plugins/skills
+  // 这两个大文件吞噬。
+  'src-tauri/src/paths.rs': 500,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
 // 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有
@@ -54,7 +59,10 @@ const FILE_BUDGETS = {
 // 20500 → 20560：下载校验改成 fail-closed 并回退老 packument 的 shasum（sha1）——
 // 新增 sha1 回退分支、`strongest_integrity` 抽取与判据注释。安全策略收紧带来的
 // 行数是必要的，不该为了卡预算而少写一条校验路径。
-const TOTAL_BUDGET = 20560;
+// 20560 → 21060：新增 paths.rs（500 行）+ settings.rs 拆分 shell-aware / legacy
+// 双入口（≈ 60 行）+ commands.rs 暴露 shell_mode（≈ 5 行）+ store.js 加
+// shellMode 计算属性（≈ 4 行）。多内核改造 P0+P1 的最小可用代码量。
+const TOTAL_BUDGET = 21060;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
