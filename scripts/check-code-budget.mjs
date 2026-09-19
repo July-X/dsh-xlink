@@ -35,10 +35,10 @@ const reportOnly = process.argv.includes('--report');
 const FILE_BUDGETS = {
   'ui/src/theme.css': 2900,
   'src-tauri/src/plugins.rs': 2650,
-  'src-tauri/src/commands.rs': 1550,
+  'src-tauri/src/commands.rs': 1750,
   'src-tauri/src/skills.rs': 1490,
   'src-tauri/src/patches.rs': 1250,
-  'src-tauri/src/kernel.rs': 1180,
+  'src-tauri/src/kernel.rs': 1230,
   'src-tauri/src/process.rs': 1180,
   // 1050 → 1090：会话标题改为订阅 `session/control`（baseline 播种 + 标题投影帧
   // 保鲜 + 老内核退回 session/list 快照），这部分逻辑与 Center 同生共死，拆出去
@@ -50,7 +50,11 @@ const FILE_BUDGETS = {
   // /kernels/skills/state/cache 解析、legacy resolver、id 校验与基础数据
   // 模型——是后续 P2–P8 的依赖根，必须单独占预算，避免被 plugins/skills
   // 这两个大文件吞噬。
-  'src-tauri/src/paths.rs': 500,
+  'src-tauri/src/paths.rs': 600,
+  // P2：实例注册表 + 锁 + 端口分配 + runtime/pid 文件读写 + DSH home
+  // 子目录创建 + 默认实例迁移钩子。约 470 行（含 11 个测试 setup 与
+  // 路径解析注释）。
+  'src-tauri/src/instance.rs': 470,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
 // 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有
@@ -62,7 +66,12 @@ const FILE_BUDGETS = {
 // 20560 → 21060：新增 paths.rs（500 行）+ settings.rs 拆分 shell-aware / legacy
 // 双入口（≈ 60 行）+ commands.rs 暴露 shell_mode（≈ 5 行）+ store.js 加
 // shellMode 计算属性（≈ 4 行）。多内核改造 P0+P1 的最小可用代码量。
-const TOTAL_BUDGET = 21060;
+// 21060 → 21660：P2 落地 instance 模块（注册表 / 锁 / 端口 / runtime /
+// 迁移钩子，约 470 行）+ commands.rs 增加 8 条实例命令与 InstanceSummary
+// 类型（≈ 180 行）+ kernel.rs 新增 InstanceStartReport 与
+// start_instance / stop_instance / set_instance_active_version 接口
+// （≈ 50 行）。路径解析都在 paths.rs，重复区间数仍为 4。
+const TOTAL_BUDGET = 21660;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
