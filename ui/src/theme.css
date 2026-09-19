@@ -3346,3 +3346,113 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* --- 标题栏实例 chip / dropdown（P8 #1） ------------------------------------
+   macOS 走左上角交通灯之后 110px（3 个 14px 灯 + 8px gap + 14+14 padding，
+   留 12px 间距），Windows 上没有交通灯，靠近左边缘 12px。chip 垂直居中
+   在 titlebar 内（top: 50% + translateY），用 absolute 脱离 flex 流，不挡
+   caption 文字居中，也不抢 drag 热区。菜单展开方向向下（top: 100%），跟
+   macOS 原生 dropdown 视觉一致。 */
+
+.mac-titlebar__instance {
+  position: absolute;
+  top: 50%;
+  left: 110px;
+  transform: translateY(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+}
+
+.mac-titlebar--win .mac-titlebar__instance {
+  left: 12px;
+}
+
+.instance-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 10px;
+  border: 1px solid rgba(238, 255, 216, 0.22);
+  border-radius: 11px;
+  background: rgba(12, 30, 6, 0.4);
+  color: rgba(247, 255, 238, 0.86);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.instance-chip:hover {
+  background: rgba(12, 30, 6, 0.6);
+  border-color: rgba(238, 255, 216, 0.36);
+}
+
+.instance-chip:focus-visible {
+  outline: 2px solid rgba(239, 255, 218, 0.9);
+  outline-offset: 2px;
+}
+
+.instance-chip--loading {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.instance-chip__caret {
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0.72;
+}
+
+.instance-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 100;
+  min-width: 200px;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  border: 1px solid rgba(238, 255, 216, 0.2);
+  border-radius: 6px;
+  background: #1a1108;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+
+.instance-menu__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 6px 12px;
+  border: 0;
+  background: transparent;
+  color: rgba(247, 255, 238, 0.82);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.1s ease;
+}
+
+.instance-menu__item:hover {
+  background: rgba(238, 255, 216, 0.08);
+}
+
+.instance-menu__item:focus-visible {
+  outline: 2px solid rgba(239, 255, 218, 0.9);
+  outline-offset: -2px;
+}
+
+.instance-menu__item--default {
+  color: rgba(247, 255, 238, 0.96);
+}
+
+.instance-menu__check {
+  color: rgba(238, 255, 216, 0.78);
+  font-size: 11px;
+  font-weight: 700;
+}

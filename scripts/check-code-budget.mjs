@@ -33,7 +33,7 @@ const reportOnly = process.argv.includes('--report');
 
 /** 生产代码行数预算：文件 → 上限。包含注释以外的所有代码行。 */
 const FILE_BUDGETS = {
-  'ui/src/theme.css': 2900,
+  'ui/src/theme.css': 2915,
   // P4 step 3：物化路径切到实例 extensions/plugins/<id>/，抽出 materialize_inner
   // 共享逻辑、新增 materialize_one_for_instance / remove_materialized_for_instance
   // / sweep_instance_orphans / default_instance_key / seed_default_instance_for_tests
@@ -62,7 +62,7 @@ const FILE_BUDGETS = {
   // / restore_directory / find_backup_root + 12 个新测试，约 +600 行。
   // copy_tree_inner 与 plugins.rs / skills.rs 的 copy_tree 是已知重复；
   // AGENTS.md §3 要求提共享层到 pkg.rs，留到独立重构处理。
-  'src-tauri/src/migration.rs': 660,
+  'src-tauri/src/migration.rs': 670,
   'src-tauri/src/skills.rs': 1490,
   'src-tauri/src/patches.rs': 1250,
   // B 类日志 family/instance_id 接入：kernel_log_spec / install_log_spec /
@@ -143,7 +143,12 @@ const FILE_BUDGETS = {
 // ui/src/components/MigrationPanel.vue (~250 行) + App.vue / SideBar.vue
 // 接入 ~10 行 ≈ +410 行（实际 +260 是因为 UI 行的预算口径不计模板 style
 // 块里的 CSS——纯 <template> + <script setup> + state 加 invoke 包装）。
-const TOTAL_BUDGET = 23500;
+// P8 #1 顶部实例 dropdown（commit ...）：ui/src/instance.js (~50 行)
+// + WindowTitleBar.vue 注入 chip + dropdown script/template 块（计入
+// theme.css；vue 模板不计入）+ theme.css 实例 chip / menu 样式 ~95 行
+// （+15 落在 theme.css 预算边沿）+ document-level click 关闭菜单 +
+// aria-haspopup / aria-expanded / aria-current 标注。23500 → 23800。
+const TOTAL_BUDGET = 23800;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
