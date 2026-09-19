@@ -1,10 +1,10 @@
 <script setup>
-// 技能页：已安装技能包（来源 / 落地模式 / 版本 / 技能数 + 更新 / 重新同步 /
+// 技能页：已安装技能包（来源 / 落地模式 / 版本 / 包内技能启停 + 更新 / 重新同步 /
 // 仓库 / 卸载）+ 手动安装（git 来源，回车即装）。安装与卸载对运行中的工作台
 // 即时生效。
 //
-// 排版目标：一行一包、单行信息 + 单行描述，动作按钮固定在最右侧一列，
-// 多行之间版本号与按钮纵向对齐；行高不做两级堆叠，避免每个包占掉三行。
+// 排版目标：包信息与动作分区；版本 tag 与包名同行，包级说明收敛为单行并通过
+// Tooltip 承载全文；逐技能开关放在包头，包体保持简洁。
 import { computed } from 'vue';
 import { Refresh, InfoFilled, Download, TopRight, Delete, Link, DocumentCopy } from '@element-plus/icons-vue';
 import {
@@ -32,11 +32,6 @@ function toggleSkill(row, skill, enabled) {
   return withLoading(skillEnabledKey(row.id, skill.name), () =>
     setSkillEnabled(row.id, skill.name, enabled)
   );
-}
-
-function skillCountText(row) {
-  const disabled = row.skills.filter((skill) => !skill.enabled).length;
-  return disabled > 0 ? `${row.skills.length} 个技能（${disabled} 个已停用）` : `${row.skills.length} 个技能`;
 }
 
 // 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进标题旁的
@@ -87,101 +82,91 @@ const storeTip = computed(() => {
 
       <div class="entity-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
         <el-empty v-if="!view || !view.rows || view.rows.length === 0" description="尚未安装任何技能包。" :image-size="48" />
-        <div v-for="row in view ? view.rows : []" :key="row.id" class="entity-row">
-          <div class="entity-head">
-            <span class="entity-name">{{ row.name }}</span>
-            <span class="origin-chip" :class="'origin-chip-' + row.origin">{{ originLabel(row.origin) }}</span>
-            <span v-if="row.actual_mode === 'copy'" class="mode-chip">
-              <el-icon class="mode-chip-icon"><DocumentCopy /></el-icon>复制
-            </span>
-            <span v-else-if="row.actual_mode === 'link'" class="mode-chip mode-chip-link">
-              <el-icon class="mode-chip-icon"><Link /></el-icon>链接
-            </span>
-            <el-tooltip v-if="row.description" placement="top" effect="dark" :content="row.description">
-              <span class="entity-desc">{{ row.description }}</span>
-            </el-tooltip>
-          </div>
-          <div class="entity-foot">
-            <div class="entity-meta">
+        <div v-for="row in view ? view.rows : []" :key="row.id" class="entity-row skill-entity-row">
+          <div class="skill-row-main">
+            <div class="entity-head">
+              <span class="entity-name">{{ row.name }}</span>
+              <span class="origin-chip" :class="'origin-chip-' + row.origin">{{ originLabel(row.origin) }}</span>
+              <span v-if="row.actual_mode === 'copy'" class="mode-chip">
+                <el-icon class="mode-chip-icon"><DocumentCopy /></el-icon>复制
+              </span>
+              <span v-else-if="row.actual_mode === 'link'" class="mode-chip mode-chip-link">
+                <el-icon class="mode-chip-icon"><Link /></el-icon>链接
+              </span>
               <span class="meta-version">{{ row.installed_version || '—' }}</span>
+            </div>
+            <el-tooltip v-if="row.description" placement="top" effect="dark" :content="row.description">
+              <span class="entity-desc skill-package-description">{{ row.description }}</span>
+            </el-tooltip>
+            <div
+              v-if="row.latest_version || (row.pinned && row.origin !== 'local')"
+              class="skill-package-meta"
+            >
               <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>
               <span v-if="row.pinned && row.origin !== 'local'" class="meta-pinned">已锁定版本</span>
-              <!-- 技能启停收进弹层：一行一包的两行排版不被撑高，启停又能逐技能操作。 -->
-              <el-popover trigger="click" placement="top" :width="288" popper-class="skill-toggle-popover">
-                <template #reference>
-                  <span class="meta-skill-count is-clickable" title="点击启用 / 停用单个技能">
-                    {{ skillCountText(row) }}
-                  </span>
-                </template>
-                <div v-for="skill in row.skills" :key="skill.name" class="skill-toggle-item">
-                  <span class="skill-toggle-name" :title="skill.description">{{ skill.name }}</span>
-                  <el-tag v-if="skill.enabled && !skill.present" size="small" type="warning" effect="plain">
-                    条目缺失
-                  </el-tag>
-                  <el-switch
-                    :model-value="skill.enabled"
-                    :loading="isLoading(skillEnabledKey(row.id, skill.name))"
-                    :disabled="globalBusy"
-                    size="small"
-                    @change="(value) => toggleSkill(row, skill, value)"
-                  />
-                </div>
-                <p class="skill-toggle-tip muted">
-                  停用只把条目移出内核技能根，技能包仍留在中央库，随时可以再启用；重启工作台后依然生效。
-                </p>
-              </el-popover>
             </div>
-            <div class="entity-actions">
-              <el-tooltip v-if="row.latest_version" :content="'更新到 ' + row.latest_version" placement="top" effect="dark">
+          </div>
+          <div class="entity-actions skill-row-actions">
+            <template v-for="skill in row.skills" :key="'skill-control-' + skill.name">
+              <el-tag v-if="skill.enabled && !skill.present" size="small" type="warning" effect="plain">
+                条目缺失
+              </el-tag>
+              <el-switch
+                :model-value="skill.enabled"
+                :loading="isLoading(skillEnabledKey(row.id, skill.name))" :disabled="globalBusy"
+                size="small" :aria-label="(skill.enabled ? '停用 ' : '启用 ') + skill.name"
+                @change="(value) => toggleSkill(row, skill, value)"
+              />
+            </template>
+            <el-tooltip v-if="row.latest_version" :content="'更新到 ' + row.latest_version" placement="top" effect="dark">
+              <el-button
+                class="entity-action entity-action-update"
+                size="small"
+                type="primary"
+                circle
+                :icon="Download"
+                :disabled="globalBusy"
+                @click="updateSkill(row.id)"
+              />
+            </el-tooltip>
+            <el-tooltip v-else-if="row.origin === 'local'" content="重新同步本地目录" placement="top" effect="dark">
+              <el-button
+                class="entity-action"
+                size="small"
+                circle
+                :icon="Refresh"
+                :disabled="globalBusy"
+                @click="updateSkill(row.id)"
+              />
+            </el-tooltip>
+            <el-tooltip v-if="row.repo_url" content="打开仓库" placement="top" effect="dark">
+              <el-button
+                class="entity-action"
+                size="small"
+                circle
+                :icon="TopRight"
+                :disabled="globalBusy"
+                @click="openExternalLink(row.repo_url, '仓库地址')"
+              />
+            </el-tooltip>
+            <span class="entity-action-sep" aria-hidden="true"></span>
+            <el-popconfirm
+              title="确认卸载该技能包？"
+              confirm-button-text="卸载"
+              cancel-button-text="取消"
+              width="200"
+              @confirm="uninstallSkill(row.id)"
+            >
+              <template #reference>
                 <el-button
-                  class="entity-action entity-action-update"
-                  size="small"
-                  type="primary"
-                  circle
-                  :icon="Download"
-                  :disabled="globalBusy"
-                  @click="updateSkill(row.id)"
-                />
-              </el-tooltip>
-              <el-tooltip v-else-if="row.origin === 'local'" content="重新同步本地目录" placement="top" effect="dark">
-                <el-button
-                  class="entity-action"
+                  class="entity-action entity-action-danger"
                   size="small"
                   circle
-                  :icon="Refresh"
+                  :icon="Delete"
                   :disabled="globalBusy"
-                  @click="updateSkill(row.id)"
                 />
-              </el-tooltip>
-              <el-tooltip v-if="row.repo_url" content="打开仓库" placement="top" effect="dark">
-                <el-button
-                  class="entity-action"
-                  size="small"
-                  circle
-                  :icon="TopRight"
-                  :disabled="globalBusy"
-                  @click="openExternalLink(row.repo_url, '仓库地址')"
-                />
-              </el-tooltip>
-              <span class="entity-action-sep" aria-hidden="true"></span>
-              <el-popconfirm
-                title="确认卸载该技能包？"
-                confirm-button-text="卸载"
-                cancel-button-text="取消"
-                width="200"
-                @confirm="uninstallSkill(row.id)"
-              >
-                <template #reference>
-                  <el-button
-                    class="entity-action entity-action-danger"
-                    size="small"
-                    circle
-                    :icon="Delete"
-                    :disabled="globalBusy"
-                  />
-                </template>
-              </el-popconfirm>
-            </div>
+              </template>
+            </el-popconfirm>
           </div>
         </div>
       </div>
