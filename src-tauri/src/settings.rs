@@ -391,10 +391,6 @@ mod shell_aware_tests {
     use super::*;
     use crate::paths::ShellMode;
 
-    /// 全进程串行化所有改 env 的测试，避免并行 worker 互相踩。
-    /// `cargo test` 默认多线程，单测改 env 必须排队。
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn temp_dir(label: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "dsh-xlink-settings-shell-{}-{}-{}",
@@ -409,34 +405,17 @@ mod shell_aware_tests {
         dir
     }
 
-    struct ScopedHome {
-        previous: Option<std::ffi::OsString>,
-    }
-
-    impl ScopedHome {
-        fn set(value: &std::path::Path) -> Self {
-            let previous = std::env::var_os(crate::paths::DSH_XLINK_HOME_ENV);
-            std::env::set_var(crate::paths::DSH_XLINK_HOME_ENV, value);
-            Self { previous }
-        }
-    }
-
-    impl Drop for ScopedHome {
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => std::env::set_var(crate::paths::DSH_XLINK_HOME_ENV, value),
-                None => std::env::remove_var(crate::paths::DSH_XLINK_HOME_ENV),
-            }
-        }
-    }
-
     /// release / dev 的设置文件必须互不串写：同一目录树下两个 mode 的文件
     /// 同时存在时不会相互覆盖。
+    ///
+    /// P4 起改用共享 RAII `crate::tests::scoped_xlink_home`，与
+    /// `plugins::TestHome` 走同一把进程级互斥锁——之前本模块自带的
+    /// `ENV_LOCK` 跟 plugin 那边不互通，并行跑会同时改 DSH_XLINK_HOME
+    /// 把对方覆盖。
     #[test]
     fn release_and_dev_settings_do_not_cross() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("shell-isolated");
-        let _scoped = ScopedHome::set(&home);
+        let _guard = crate::tests::scoped_xlink_home(&home);
 
         let release = Settings {
             port: 3190,
@@ -475,9 +454,8 @@ mod shell_aware_tests {
     /// 首次启动的 release 与 dev 都应该是「缺文件 = 默认 + 无警告」。
     #[test]
     fn shell_settings_missing_is_not_a_warning() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("shell-missing");
-        let _scoped = ScopedHome::set(&home);
+        let _guard = crate::tests::scoped_xlink_home(&home);
 
         let (release, warn_release) = load_checked_for_shell(ShellMode::Release);
         let (dev, warn_dev) = load_checked_for_shell(ShellMode::Dev);
@@ -492,9 +470,8 @@ mod shell_aware_tests {
     /// 损坏备份策略与旧版一致：内容相同不重写，损坏再次发生仍备份。
     #[test]
     fn shell_settings_corrupt_backup_follows_content() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("shell-corrupt");
-        let _scoped = ScopedHome::set(&home);
+        let _guard = crate::tests::scoped_xlink_home(&home);
 
         let path = crate::paths::shell_settings_file(ShellMode::Release);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

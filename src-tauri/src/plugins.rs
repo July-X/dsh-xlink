@@ -387,13 +387,77 @@ pub struct PluginSpec {
 
 // --- 路径 ------------------------------------------------------------------
 
-/// 中央库根目录：`<home>/plugins/`，与中央库喂养的 profile 目录同级。
-/// `data_dir` 指向 `<home>/desktop/`（参见 `kernel::data_dir`）。
-pub fn store_dir(data_dir: &Path) -> PathBuf {
+/// 中央库根目录：P4 起迁到 `<xlink_home>/dsh-plugins/`（参见
+/// [`crate::paths::plugins_store_root`]），与 `<home>/desktop[-dev]/` 下的
+/// legacy 位置并列；`reconcile_store` 首次执行时把 legacy `<home>/plugins/`
+/// 整目录搬过去，确保存量用户的中央库不丢。
+///
+/// **保留 `data_dir` 形参**是兼容性设计——`plugins.rs` 内 13 个公开函数
+/// 仍按"传 `data_dir`"语义调用，签名统一不破坏；`data_dir` 只在 `reconcile_store`
+/// 等少数入口函数里还会用作 legacy 兜底。
+pub fn store_dir(_data_dir: &Path) -> PathBuf {
+    crate::paths::plugins_store_root()
+}
+
+/// Legacy 中央库根目录（`<home>/plugins/`），仅在 [`migrate_legacy_store`]
+/// 与 [`reconcile_store`] 的兜底逻辑里用到；新代码不应再使用。
+pub fn legacy_store_dir(data_dir: &Path) -> PathBuf {
     data_dir
         .parent()
         .map(|home| home.join(STORE_SUBDIR))
         .unwrap_or_else(|| data_dir.join(STORE_SUBDIR))
+}
+
+/// 把 legacy `<home>/plugins/` 整目录搬到新 `<xlink_home>/dsh-plugins/`。
+///
+/// 一次性迁移：成功一次后 legacy 目录被保留但写入路径不再使用，未来 P6
+/// 迁移向导完成后再统一清掉。新位置已有 `store.json` 时跳过整体搬迁，
+/// 只把 legacy 中尚不存在的子目录按需拷贝，避免覆盖新逻辑已写入的元数据。
+pub fn migrate_legacy_store(data_dir: &Path) -> std::io::Result<()> {
+    let new_root = crate::paths::plugins_store_root();
+    std::fs::create_dir_all(&new_root)?;
+    let legacy_root = legacy_store_dir(data_dir);
+    if !legacy_root.exists() {
+        return Ok(());
+    }
+    // 单层目录级复制：legacy/<plugin-id>/ → new_root/<plugin-id>/。
+    // 使用 fs::copy 跨目录移动时如果目标已存在就跳过——保证新逻辑已
+    // 写入的源文件不被覆盖。store.json 同样采用"目标优先"。
+    for entry in std::fs::read_dir(&legacy_root)?.flatten() {
+        let from = entry.path();
+        let to = new_root.join(entry.file_name());
+        if to.exists() {
+            continue;
+        }
+        let copy_result = if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)
+        } else {
+            std::fs::copy(&from, &to).map(|_| ())
+        };
+        if let Err(error) = copy_result {
+            // 单条失败不影响整体迁移——记到 stderr 让用户看见。
+            eprintln!(
+                "dsh-xlink: legacy 插件中央库搬迁失败 {} → {}: {error}",
+                from.display(),
+                to.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)?.flatten() {
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&src, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst).map(|_| ())?;
+        }
+    }
+    Ok(())
 }
 
 fn store_file(data_dir: &Path) -> PathBuf {
@@ -1015,6 +1079,9 @@ fn fetch_into_store(
 /// `.new-*` / `.backup-*` 之间，后缀字典序最大者胜出（时间戳 + pid 自然
 /// 排成最新在最后），其余较老的对等目录会被移除。
 pub fn reconcile_store(data_dir: &Path) {
+    // P4：启动期一次性把 legacy `<home>/plugins/` 搬到新位置。失败仅打
+    // 日志，不阻断后续 reconcile。
+    let _ = migrate_legacy_store(data_dir);
     let store = store_dir(data_dir);
     let Ok(entries) = fs::read_dir(&store) else {
         return;
@@ -3459,9 +3526,17 @@ mod tests {
     pub(super) struct TestHome(PathBuf);
 
     impl TestHome {
-        pub(super) fn new() -> Self {
+        /// P4：构造时把 `DSH_XLINK_HOME` 指向 TestHome，让
+        /// `paths::plugins_store_root()` 解析到 TestHome 内的 `dsh-plugins/`。
+        /// 返回的 [`crate::tests::EnvGuard`] 持有进程级互斥锁，离开
+        /// 作用域时还原 env 并放行下一个测试——避免并行测试互相踩
+        /// `DSH_XLINK_HOME`。
+        ///
+        /// **调用方必须把 EnvGuard 与 TestHome 绑在同一作用域**——通常
+        /// `let (home, _guard) = TestHome::new();`。
+        pub(super) fn new() -> (Self, crate::tests::EnvGuard) {
             let nano = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
+                .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let base =
@@ -3469,7 +3544,8 @@ mod tests {
             let seq = TEST_HOME_COUNTER.fetch_add(1, Ordering::Relaxed);
             let home = base.join(format!("{nano}-{seq}"));
             fs::create_dir_all(&home).expect("test home");
-            TestHome(home)
+            let guard = crate::tests::scoped_xlink_home(&home);
+            (TestHome(home), guard)
         }
 
         pub(super) fn data_dir(&self) -> PathBuf {
@@ -3654,7 +3730,7 @@ mod tests {
 
     #[test]
     fn validate_plugin_checks_the_load_contract() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let dir = home.0.join("plugin");
         fs::create_dir_all(&dir).expect("plugin dir");
 
@@ -4050,7 +4126,7 @@ mod tests {
 
     #[test]
     fn store_round_trips() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let item = StoreItem {
             id: "test-plugin-1".into(),
@@ -4075,7 +4151,7 @@ mod tests {
 
     #[test]
     fn materialize_link_then_copy() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let id = "mat-plugin";
         let source = store_plugin_dir(&data_dir, id);
@@ -4128,7 +4204,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn refresh_store_peers_relinks_links_pointing_at_the_old_kernel() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let id = "peer-plugin";
         let plugin_root = store_plugin_dir(&data_dir, id);
@@ -4173,7 +4249,7 @@ mod tests {
     /// 两万文件，中途失败还会留下半棵树。
     #[test]
     fn copy_materialization_short_circuits_on_resync() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let id = "copy-short-circuit";
         let source = store_plugin_dir(&data_dir, id);
@@ -4241,7 +4317,7 @@ mod tests {
 
     #[test]
     fn copy_tree_reports_failing_path() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let missing = home.0.join("no-such-source");
         let err = copy_tree(&missing, &home.0.join("out")).expect_err("missing source must fail");
         let msg = err.to_string();
@@ -4256,7 +4332,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn copy_tree_skips_links_escaping_the_source_root() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let outside = home.0.join("outside");
         fs::create_dir_all(outside.join("private")).unwrap();
         fs::write(outside.join("private/secret.txt"), "secret").unwrap();
@@ -4278,7 +4354,7 @@ mod tests {
 
     #[test]
     fn copy_tree_skips_dangling_symlink() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let source = home.0.join("src-tree");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("real.txt"), "hi").unwrap();
@@ -4300,7 +4376,7 @@ mod tests {
 
     #[test]
     fn copy_tree_aborts_on_link_cycle() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let source = home.0.join("cycle-tree");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("real.txt"), "hi").unwrap();
@@ -4323,7 +4399,7 @@ mod tests {
 
     #[test]
     fn reconcile_reaps_unmarked_staging_dirs() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let store = store_dir(&data_dir);
         fs::create_dir_all(&store).unwrap();
@@ -4340,7 +4416,7 @@ mod tests {
 
     #[test]
     fn reconcile_keeps_live_plugin_named_like_staging() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let store = store_dir(&data_dir);
         fs::create_dir_all(&store).unwrap();
@@ -4355,7 +4431,7 @@ mod tests {
 
     #[test]
     fn sweep_removes_only_owned_or_broken_orphans() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let version = "9.9.9";
         let item = StoreItem {
@@ -4416,7 +4492,7 @@ mod tests {
 
     #[test]
     fn kernel_plugin_list_scans_materialized_entries() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let version = "1.0.0";
 
@@ -4519,7 +4595,7 @@ mod tests {
 
     #[test]
     fn sync_all_sweeps_removed_plugins_from_every_kernel() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let versions = ["1.0.0", "2.0.0"];
 
@@ -4572,7 +4648,7 @@ mod tests {
 
     #[test]
     fn wiring_survives_single_plugin_failure() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let version = "9.9.9";
         fs::create_dir_all(&data_dir).unwrap();
@@ -4639,7 +4715,7 @@ mod tests {
 
     #[test]
     fn refreshes_peers_from_active_kernel() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let id = "peer-plugin";
         let version = "2.0.0";
@@ -4684,7 +4760,7 @@ mod tests {
 
     #[test]
     fn store_dependencies_are_not_ready_until_each_declared_dependency_exists() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let plugin_root = store_plugin_dir(&home.data_dir(), "dependency-plugin");
         fs::create_dir_all(&plugin_root).unwrap();
         fs::write(
@@ -4946,7 +5022,7 @@ mod tests {
 
     #[test]
     fn status_flags_stale_materialization() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let version = "1.0.0";
         fs::create_dir_all(kernel::kernel_dir(&data_dir, version)).unwrap();
@@ -4983,7 +5059,7 @@ mod tests {
     /// 总数已经单独过滤过。
     #[test]
     fn status_hides_latest_when_not_newer_than_installed() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         upsert_item(
             &data_dir,
@@ -5021,7 +5097,7 @@ mod tests {
         for (origin, installed, latest) in
             [("npm", "1.2.3", "1.3.0"), ("git", "v0.14.0", "v0.15.0")]
         {
-            let home = TestHome::new();
+            let (home, _guard) = TestHome::new();
             let data_dir = home.data_dir();
             upsert_item(
                 &data_dir,
@@ -5054,7 +5130,7 @@ mod tests {
 
     #[test]
     fn status_keeps_latest_when_newer_than_installed() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         upsert_item(
             &data_dir,
@@ -5085,7 +5161,7 @@ mod tests {
     /// 地不见。
     #[test]
     fn status_attaches_quarantine_record_to_row() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         upsert_item(
             &data_dir,
@@ -5133,7 +5209,7 @@ mod tests {
 
     #[test]
     fn uninstall_cleans_stale_quarantine_when_store_item_is_missing() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let id = "dsh-flowglass";
         fs::create_dir_all(&data_dir).expect("data dir");
@@ -5203,7 +5279,7 @@ mod tests {
 
     #[test]
     fn reconcile_is_noop_when_no_staging_dirs() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let store = store_dir(&data_dir);
         fs::create_dir_all(&store).unwrap();
@@ -5231,7 +5307,7 @@ mod tests {
         // 中央库里带外壳标记的目录必须原样保留。`load_store_checked` 把 `Missing`
         // 归为空清单对写路径是安全下界，但清扫路径照此执行就会把用户已装的插件
         // 目录物理删掉——而应用自己的错误提示恰恰建议用户删除那个文件。
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let store = store_dir(&data_dir);
         fs::create_dir_all(&store).unwrap();
@@ -5256,7 +5332,7 @@ mod tests {
 
     #[test]
     fn reconcile_reverts_to_backup_when_final_missing_and_both_staging_present() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let store = store_dir(&data_dir);
         fs::create_dir_all(&store).unwrap();
@@ -5284,7 +5360,7 @@ mod tests {
 
     #[test]
     fn reconcile_promotes_new_when_only_new_survives() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let store = store_dir(&data_dir);
         fs::create_dir_all(&store).unwrap();
@@ -5308,7 +5384,7 @@ mod tests {
 
     #[test]
     fn reconcile_discards_tmp_only() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let store = store_dir(&data_dir);
         fs::create_dir_all(&store).unwrap();
@@ -5326,7 +5402,7 @@ mod tests {
 
     #[test]
     fn reconcile_cleans_stale_staging_when_live_plugin_present() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let store = store_dir(&data_dir);
         fs::create_dir_all(&store).unwrap();
@@ -5349,7 +5425,7 @@ mod tests {
 
     #[test]
     fn reconcile_picks_newest_when_multiple_staging_dirs_share_id() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let store = store_dir(&data_dir);
         fs::create_dir_all(&store).unwrap();
@@ -5389,7 +5465,7 @@ mod tests {
     /// `stamp_id_marker` 在 rename 成功后再补上标记。
     #[test]
     fn new_staging_dir_returns_empty_dir_without_marker() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let store = store_dir(&home.data_dir());
         let dir = new_staging_dir(&store, TMP_PREFIX).expect("create staging");
         assert!(dir.is_dir(), "staging dir must exist");
@@ -5408,7 +5484,7 @@ mod tests {
     /// 目录分组的标记。盖章之后，目录里恰好只剩这一个文件（标记本身）。
     #[test]
     fn stamp_id_marker_writes_marker_file() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let dir = store_dir(&home.data_dir()).join("marker-target");
         fs::create_dir_all(&dir).unwrap();
         stamp_id_marker(&dir, "test-plugin").expect("stamp");
@@ -5421,7 +5497,7 @@ mod tests {
     /// 与第一次冲突，更不能把第一次清理掉。
     #[test]
     fn new_staging_dir_paths_do_not_collide() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let store = store_dir(&home.data_dir());
         let a = new_staging_dir(&store, TMP_PREFIX).expect("first");
         let b = new_staging_dir(&store, TMP_PREFIX).expect("second");
@@ -5437,7 +5513,7 @@ mod tests {
     // `fs::rename` 因 ERROR_DIR_NOT_EMPTY 而失败。
     #[test]
     fn new_staging_dir_clears_stale_target() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let store = store_dir(&home.data_dir());
         // 种下与 helper 第一次调用期望路径匹配的过期残留。
         let first = new_staging_dir(&store, TMP_PREFIX).expect("first call");
@@ -5460,7 +5536,7 @@ mod tests {
     /// 原文件覆盖掉——用户装过的插件就此消失。
     #[test]
     fn corrupt_store_is_never_treated_as_empty() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         fs::create_dir_all(store_dir(&data_dir)).expect("store dir");
         let damaged = "{ this is not json";
@@ -5503,6 +5579,87 @@ mod tests {
         .expect_err("清扫路径必须拒绝在损坏清单上运行");
         assert!(sweep_error.to_string().contains("损坏"), "{sweep_error}");
     }
+
+    /// P4：legacy `<home>/plugins/<id>/` 必须被搬到新 `<xlink_home>/dsh-plugins/<id>/`。
+    #[test]
+    fn migrate_legacy_store_copies_unknown_plugin() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-plugins-p4-migrate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        // legacy 模拟：`<legacy_home>/desktop[-dev]/` 结构。`legacy_store_dir`
+        // 通过 `data_dir.parent()` 取 `<legacy_home>`，所以 `data_dir` 必须是
+        // `<legacy_home>/desktop`。
+        let legacy_home = std::env::temp_dir().join(format!(
+            "dsh-plugins-p4-migrate-legacy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&legacy_home).unwrap();
+        let data_dir = legacy_home.join("desktop");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let legacy_root = legacy_store_dir(&data_dir);
+        let plugin_dir = legacy_root.join("legacy-plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("package.json"), b"{}").unwrap();
+
+        migrate_legacy_store(&data_dir).expect("migrate");
+        let new_root = crate::paths::plugins_store_root();
+        assert!(new_root.join("legacy-plugin/package.json").is_file());
+        // legacy 目录保留（用户可手动清理）。
+        assert!(legacy_root.exists());
+        let _ = std::fs::remove_dir_all(&legacy_home);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// P4：迁移不应覆盖新位置已有的同名插件。
+    #[test]
+    fn migrate_legacy_store_does_not_overwrite_newer_target() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-plugins-p4-no-overwrite-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let legacy_home = std::env::temp_dir().join(format!(
+            "dsh-plugins-p4-no-overwrite-legacy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&legacy_home).unwrap();
+        let data_dir = legacy_home.join("desktop");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let legacy_root = legacy_store_dir(&data_dir);
+        let plugin_dir = legacy_root.join("plugin-x");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("package.json"), b"{\"from\":\"legacy\"}").unwrap();
+
+        let new_root = crate::paths::plugins_store_root();
+        std::fs::create_dir_all(&new_root).unwrap();
+        let new_plugin = new_root.join("plugin-x");
+        std::fs::create_dir_all(&new_plugin).unwrap();
+        std::fs::write(new_plugin.join("package.json"), b"{\"from\":\"new\"}").unwrap();
+
+        migrate_legacy_store(&data_dir).expect("migrate");
+        let text = std::fs::read_to_string(new_plugin.join("package.json")).unwrap();
+        assert!(text.contains("\"new\""), "新位置的内容不应被覆盖");
+        let _ = std::fs::remove_dir_all(&legacy_home);
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }
 
 #[cfg(test)]
@@ -5543,7 +5700,7 @@ mod id_collision_tests {
         // P2-24：`owner__repo`（npm）与 `owner/repo`（git）都会算出 id
         // `owner__repo`。旧实现让第二个覆盖第一个；现在第一个保留基础 id，
         // 第二个拿到确定性的消歧后缀。
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let npm = spec_for("owner__repo", "owner__repo", "owner__repo", "npm");
         // git 来源的 name 只有仓库名（`parse_spec` 取 URL 最后一段），npm 包名
@@ -5610,7 +5767,7 @@ mod id_collision_tests {
     #[test]
     fn unsuffixed_names_keep_their_historic_ids() {
         // 保留既有 id 是"不需要迁移"的前提：不冲突的名称必须一个字都不变。
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         for name in ["dsh-flowglass", "@scope/pkg", "plain"] {
             let spec = spec_for(&id_for_name(name).unwrap(), name, name, "npm");
@@ -5622,7 +5779,7 @@ mod id_collision_tests {
     fn colliding_ids_do_not_silently_replace_a_different_plugin() {
         // P2-24：npm `owner__repo` 与 git `owner/repo` 都映射到 id
         // `owner__repo`。旧实现直接覆盖，前一个插件的记录与源码被无声换掉。
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         upsert_item(&data_dir, item("owner__repo", "owner__repo", "owner__repo")).expect("first");
 
@@ -5648,7 +5805,7 @@ mod id_collision_tests {
     #[test]
     fn re_upserting_the_same_source_still_updates_in_place() {
         // 冲突检测不能挡住正常的"重新记账"（同步/更新都会 upsert 同一来源）。
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         upsert_item(&data_dir, item("p", "p", "p")).expect("first");
         let mut updated = item("p", "p", "p");
@@ -5681,7 +5838,7 @@ mod store_orphan_tests {
         // 前置条件：清扫只在**清单文件存在**时执行（P0-3）。这里写一份空的合法
         // 清单，代表"清单在、只是没有这个目录的记录"；清单文件整体缺失时的行为
         // 由 `reconcile_without_store_file_keeps_marked_store_dirs` 单独钉住。
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let orphan = marked_dir(&data_dir, "orphan-plugin");
         save_store_unlocked(&data_dir, &Store::default()).unwrap();
@@ -5703,7 +5860,7 @@ mod store_orphan_tests {
     fn staging_recovery_is_not_undone_by_the_orphan_sweep() {
         // 交互回归：reconcile 会把幸存的 `.new-*` 提升成正式目录（"已验证但
         // 还没记账"的救援对象），孤儿清理不能在同一轮里把它删掉。
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let staging = store_dir(&data_dir).join(format!("{NEW_PREFIX}0-1-rescued"));
         fs::create_dir_all(&staging).unwrap();
@@ -5721,7 +5878,7 @@ mod store_orphan_tests {
 
     #[test]
     fn recorded_dir_and_corrupt_store_are_left_alone() {
-        let home = TestHome::new();
+        let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let kept = marked_dir(&data_dir, "kept-plugin");
         upsert_item(
