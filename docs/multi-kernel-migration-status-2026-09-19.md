@@ -1,6 +1,6 @@
 # 多内核改造阶段性状态（2026-09-19）
 
-> 本轮 commit 链（HEAD `257c42a`）的阶段性快照——给 review 节点做参考材料。
+> 本轮 commit 链（HEAD `86372ad`）的阶段性快照——给 review 节点做参考材料。
 > 完整计划与设计文档见 [docs/dsh-xlink-multi-kernel-design.md](dsh-xlink-multi-kernel-design.md)
 > 与 [docs/dsh-xlink-multi-kernel-development-plan.md](dsh-xlink-multi-kernel-development-plan.md)。
 > 配套架构补全见 [docs/architecture.md §「多内核改造后的实际数据布局」](architecture.md)。
@@ -21,10 +21,11 @@
 | **P7** mcode mock 适配器骨架 | ✅ | `1308cb6` |
 | **P0 收尾** 阶段性状态快照 | ✅ | `89932eb` |
 | **P0 收尾** architecture 增补「实际数据布局」 | ✅ | `257c42a` |
+| **P0 收尾** 状态快照自洽（HEAD 指针更新） | ✅ | `86372ad` |
 | **P6 step 5** 迁移向导 UI 向导页面 | ⏸ 待 UI 形态决策 | — |
 | **P8** UI / 集成测试 / 发布准备 | ⏸ 待决策（实例列表 UI 形态 / PR 边界 / 是否阶段性发版） | — |
 
-完成度：**~93%**（12/14 row 已落地 commit；P6 step 5 / P8 仍依赖 UI 决策）。
+完成度：**~93%**（13/15 row 已落地 commit；P6 step 5 / P8 仍依赖 UI 决策）。
 
 ## 设计决策摘要
 
@@ -125,7 +126,7 @@ P8 阶段统一清理——届时可以一次性 remove `cfg_attr` 注释。
 
 ## Review 建议
 
-`3ad6c8e..257c42a` 共 25 个 commit（含 2 笔文档收尾）。建议按以下顺序 review：
+`3ad6c8e..86372ad` 共 26 个 commit（含 3 笔文档收尾）。建议按以下顺序 review：
 
 1. **设计层**（先看 docs）：本文件 + 设计稿 §P4–§P7 节 + [architecture.md §「多内核改造后的实际数据布局」](architecture.md)
 2. **关键 commit**（设计落地点）：
@@ -136,6 +137,6 @@ P8 阶段统一清理——届时可以一次性 remove `cfg_attr` 注释。
    - `1308cb6` P7 mcode mock 适配器
 3. **测试**：每个 step 都有 4–8 个集成测试覆盖关键不变量
 4. **预算**：FILE_BUDGETS 的每一次上调都在注释里写了"为什么"
-5. **文档**（最后看）：`89932eb` 阶段性状态快照（本文件）+ `257c42a` architecture 增补章节
+5. **文档**（最后看）：`89932eb` 阶段性状态快照（本文件）+ `257c42a` architecture 增补章节 + `86372ad` 自洽 HEAD 指针
 
-**HEAD `257c42a` 可作为 review 基线**。
+**HEAD `86372ad` 可作为 review 基线**。
