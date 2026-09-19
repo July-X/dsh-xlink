@@ -2069,6 +2069,45 @@ main {
   background: rgba(255, 255, 255, 0.045);
 }
 
+.skill-entity-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px 12px;
+}
+
+.skill-row-main .entity-head {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.skill-row-main .entity-name {
+  min-width: 0;
+  flex-shrink: 1;
+  overflow-wrap: anywhere;
+}
+
+.skill-package-description {
+  display: block;
+  margin: 6px 0 0;
+}
+
+.skill-package-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.skill-row-actions {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+}
+
 /* 停用（隔离）的插件：左侧留一条警示色，扫一眼就能认出哪一行被禁用。 */
 .entity-row.is-warn {
   box-shadow: inset 2px 0 0 0 var(--warn);
@@ -2090,7 +2129,8 @@ main {
 }
 
 .entity-head .origin-chip,
-.entity-head .mode-chip {
+.entity-head .mode-chip,
+.entity-head .meta-version {
   flex-shrink: 0;
 }
 
@@ -2136,55 +2176,6 @@ main {
    标记只填中间空档、不推挤两侧。 */
 .entity-meta .meta-version {
   min-width: 66px;
-}
-
-.entity-meta .meta-skill-count {
-  min-width: 62px;
-}
-
-/* 技能数是启停弹层的入口：点一下才展开逐个技能的开关，行高保持两行。 */
-.entity-meta .meta-skill-count.is-clickable {
-  cursor: pointer;
-  text-decoration: underline dotted;
-  text-underline-offset: 2px;
-}
-
-.entity-meta .meta-skill-count.is-clickable:hover {
-  color: var(--text);
-}
-
-/* 技能启停弹层挂在 body 上（el-popover 默认 append-to-body），所以规则必须写在
-   全局 theme.css，不能放进组件的 scoped 样式。配色沿用主题的 --el-bg-color-overlay
-   与 --el-text-color-*，这里只补布局。 */
-.skill-toggle-popover.el-popper {
-  max-width: calc(100vw - 32px);
-  padding: 10px 12px;
-}
-
-.skill-toggle-popover .skill-toggle-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.skill-toggle-popover .skill-toggle-item + .skill-toggle-item {
-  margin-top: 8px;
-}
-
-.skill-toggle-popover .skill-toggle-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.skill-toggle-popover .skill-toggle-tip {
-  margin: 10px 0 0;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: normal;
 }
 
 /* 状态 chip 组（已同步 / 待同步 / 无活动内核…）：紧贴按钮组左侧。 */
@@ -2325,9 +2316,16 @@ main {
   .entity-row {
     padding: 8px;
   }
-  .entity-meta .meta-version,
-  .entity-meta .meta-skill-count {
+  .entity-meta .meta-version {
     min-width: 0;
+  }
+  .skill-entity-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 10px;
+    padding: 10px 9px;
+  }
+  .skill-package-meta {
+    margin-top: 6px;
   }
 }
 
@@ -2391,11 +2389,6 @@ main {
 
 .meta-pinned {
   color: var(--warn);
-  font-size: 12px;
-}
-
-.meta-skill-count {
-  color: var(--muted);
   font-size: 12px;
 }
 
