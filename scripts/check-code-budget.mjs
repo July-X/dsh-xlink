@@ -50,15 +50,15 @@ const FILE_BUDGETS = {
   // P4 step 4：4 条实例范围 Tauri 命令 plugin_install_instance /
   // plugin_uninstall_instance / plugin_sync_instance / plugin_status_instance
   // + 共享 run_plugin_command_instance 主体，约 +75 行。
-  'src-tauri/src/commands.rs': 1825,
-  // P6 step 2+3：迁移向导后端——ConflictPolicy / MigrationStatus /
+  'src-tauri/src/commands.rs': 1860,
+  // P6 step 2+3+4：迁移向导后端——ConflictPolicy / MigrationStatus /
   // MigrationItemReport / MigrationReport / run_migration / migrate_one /
   // decide_entry / backup_existing / copy_one / copy_tree_inner +
   // RollbackStatus / RollbackItemReport / RollbackReport / rollback_migration
   // / restore_directory / find_backup_root + 12 个新测试，约 +600 行。
   // copy_tree_inner 与 plugins.rs / skills.rs 的 copy_tree 是已知重复；
   // AGENTS.md §3 要求提共享层到 pkg.rs，留到独立重构处理。
-  'src-tauri/src/migration.rs': 600,
+  'src-tauri/src/migration.rs': 660,
   'src-tauri/src/skills.rs': 1490,
   'src-tauri/src/patches.rs': 1250,
   'src-tauri/src/kernel.rs': 1260,
@@ -113,12 +113,12 @@ const FILE_BUDGETS = {
 // ensure_wiring_for_instance（约 +235 行落在 plugins.rs）；commands.rs
 // 增加 4 条实例范围 Tauri 命令 + run_plugin_command_instance 共享主体
 // （约 +75 行）。总计 +310 行。
-// 22500 → 22890：P6 step 2+3 新增 migration.rs（≈ 600 行）+ lib.rs
-// ENV_LOCK 拆分 + scoped_dsh_home（≈ 60 行新增）。copy_tree_inner 与
-// plugins.rs / skills.rs 的 copy_tree 是已知重复——AGENTS.md §3 要求
-// 提到 pkg.rs，留到独立重构处理；FILE_BUDGETS 里 migration.rs 也对应
-// 上调到 600。
-const TOTAL_BUDGET = 22890;
+// 22500 → 23000：P6 step 2+3+4 新增 migration.rs（≈ 660 行）+ lib.rs
+// ENV_LOCK 拆分 + scoped_dsh_home（≈ 60 行新增）+ commands.rs 增加 4 条
+// 迁移向导命令（约 +35 行）。copy_tree_inner 与 plugins.rs / skills.rs
+// 的 copy_tree 是已知重复——AGENTS.md §3 要求提到 pkg.rs，留到独立重构
+// 处理；FILE_BUDGETS 里 migration.rs / commands.rs 也对应上调。
+const TOTAL_BUDGET = 23000;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */

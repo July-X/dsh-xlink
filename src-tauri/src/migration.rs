@@ -27,7 +27,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::paths::{
@@ -238,7 +238,11 @@ pub fn preview_migration() -> MigrationPreview {
 /// `BackupAndOverwrite` 在覆盖前把现有目标移到
 /// `<xlink_home>/backups/<migration_id>/<source>/`，回滚时按 backup
 /// 路径还原即可（旧源不被删除）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// serde tag 用 `kebab-case` 与 Tauri command 序列化对齐；前端可通过
+/// `\"skip-if-newer\"` / `\"backup-and-overwrite\"` 传字符串。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ConflictPolicy {
     /// 跳过比目标更新的文件；只补缺失条目。
     SkipIfNewer,
@@ -607,6 +611,106 @@ pub struct RollbackReport {
     pub migration_id: String,
     pub backup_root: PathBuf,
     pub items: Vec<RollbackItemReport>,
+}
+
+// --- step 4：list_migrations + 摘要 --------------------------------------
+
+/// 单条历史迁移的摘要——`list_migrations` 的返回元素。
+///
+/// 备份目录由 [`run_migration`] / [`rollback_migration`] 在
+/// `<xlink_home>/backups/<id>/` 下创建；`list_migrations` 扫所有现存
+/// backup 目录（含 `.N` 后缀变体）并返回这条记录。`created_at` 取目录
+/// 自身的 mtime——可粗略反映迁移发生时间，但**不能**当作正式时间戳
+/// （mtime 会被文件系统操作修改）。
+#[derive(Debug, Clone, Serialize)]
+pub struct MigrationSummary {
+    pub migration_id: String,
+    pub backup_root: PathBuf,
+    pub created_at: Option<std::time::SystemTime>,
+    pub sources: Vec<String>,
+}
+
+/// 列出所有历史迁移（按 backup 目录 mtime 倒序——最近跑过的在前）。
+///
+/// 扫描 `<xlink_home>/backups/` 下的**直接子目录**；不带 `.N` 后缀的
+/// 视为权威一次（多次 run 会带后缀），同 id 的多条会按 N 索引各自
+/// 独立列出。
+pub fn list_migrations() -> Vec<MigrationSummary> {
+    let backups_root = xlink_home().join("backups");
+    let entries = match fs::read_dir(&backups_root) {
+        Ok(it) => it,
+        Err(_) => return Vec::new(),
+    };
+    let mut summaries: Vec<MigrationSummary> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            // 必须是目录；跳过 hidden / 临时文件。
+            let md = fs::symlink_metadata(&path).ok()?;
+            if !md.is_dir() {
+                return None;
+            }
+            // mtime 是文件系统级 metadata，读失败时回退 None——失败不该
+            // 让整条记录消失。
+            let created_at = md.modified().ok();
+            let (migration_id, is_root) = parse_backup_dir_name(&file_name)?;
+            if !is_root {
+                // .N 后缀条目（root 已列出）——此处不单独列，避免 UI 重复
+                // 显示同名 id 的多个快照。UI 想看 N 次历史可在 summary
+                // 上提供更详细的版本；本函数刻意只列权威一次。
+                return None;
+            }
+            let sources = collect_source_keys(&path);
+            Some(MigrationSummary {
+                migration_id,
+                backup_root: path,
+                created_at,
+                sources,
+            })
+        })
+        .collect();
+    summaries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    summaries
+}
+
+/// 把 `backups/<name>` 的目录名拆成 `(migration_id, is_root)`：
+/// - `2026-09-19-migrate` → `("2026-09-19-migrate", true)`
+/// - `2026-09-19-migrate.2` → `("2026-09-19-migrate", false)`（非 root，被过滤掉）
+fn parse_backup_dir_name(name: &str) -> Option<(String, bool)> {
+    if name.starts_with('.') {
+        return None;
+    }
+    if let Some((base, suffix)) = name.rsplit_once('.') {
+        if suffix.parse::<u32>().is_ok() {
+            return Some((base.to_string(), false));
+        }
+    }
+    Some((name.to_string(), true))
+}
+
+/// 收集 backup 目录里实际存在的 source slug —— UI 据此知道「这次迁移
+/// 涉及哪些来源」。`backup_root/plugins/`、`backup_root/skills-store/`、
+/// `backup_root/skills-active/` 三个 slug 都可能存在。
+fn collect_source_keys(backup_root: &Path) -> Vec<String> {
+    let entries = match fs::read_dir(backup_root) {
+        Ok(it) => it,
+        Err(_) => return Vec::new(),
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let md = fs::symlink_metadata(entry.path()).ok()?;
+            if !md.is_dir() {
+                return None;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                return None;
+            }
+            Some(name)
+        })
+        .collect()
 }
 
 /// 把 `migration_id` 对应的 backup 还原回目标位置。
@@ -1250,6 +1354,85 @@ mod tests {
         assert_eq!(
             after, "from-new",
             "rollback 必须按 backup 内容覆盖用户的最新修改——回滚语义就是回到迁移前"
+        );
+    }
+
+    // --- step 4：list_migrations 测试 ---------------------------------
+
+    #[test]
+    fn list_migrations_is_empty_when_no_backup_root() {
+        // 没有 backup 目录——返回空 Vec，UI 据此显示「尚无迁移历史」。
+        let home = TempHome::new();
+        let summaries = list_migrations();
+        assert!(summaries.is_empty());
+    }
+
+    #[test]
+    fn list_migrations_collects_root_entries_with_sources() {
+        // 跑一次 BackupAndOverwrite 迁移 → list_migrations 必须返回一条记录，
+        // 其 sources 至少包含 plugins。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy");
+        fs::write(plugins_legacy.join("shared.txt"), "x").expect("old");
+        let plugins_new = LegacySource::Plugins.target();
+        fs::create_dir_all(&plugins_new).expect("new");
+        fs::write(plugins_new.join("shared.txt"), "y").expect("new");
+        let now = std::time::SystemTime::now();
+        set_mtime(&plugins_legacy.join("shared.txt"), now);
+        set_mtime(
+            &plugins_new.join("shared.txt"),
+            now - std::time::Duration::from_secs(60),
+        );
+
+        run_migration(ConflictPolicy::BackupAndOverwrite, "list1").expect("mig");
+        let summaries = list_migrations();
+        assert_eq!(summaries.len(), 1);
+        let summary = &summaries[0];
+        assert_eq!(summary.migration_id, "list1");
+        assert!(
+            summary.sources.iter().any(|s| s == "plugins"),
+            "summary 必须报告 sources 含 plugins：{:?}",
+            summary.sources
+        );
+        assert!(summary.backup_root.exists());
+        assert!(summary.created_at.is_some());
+    }
+
+    #[test]
+    fn list_migrations_ignores_dot_indexed_backup_dirs() {
+        // 同 id 多次跑会留 `.2` / `.3` 后缀——list_migrations 只列 root
+        // 一次，避免 UI 重复显示同名 id 的多个快照。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy");
+        fs::write(plugins_legacy.join("store.json"), "{}").expect("store");
+        let _ = run_migration(ConflictPolicy::BackupAndOverwrite, "list-multi").expect("r1");
+        let _ = run_migration(ConflictPolicy::BackupAndOverwrite, "list-multi").expect("r2");
+        let summaries = list_migrations();
+        assert_eq!(summaries.len(), 1, "root + .2 后缀必须只列一次");
+        assert_eq!(summaries[0].migration_id, "list-multi");
+    }
+
+    #[test]
+    fn list_migrations_sorts_newest_first() {
+        // 跑两次不同 id 的迁移——list_migrations 必须按 mtime 倒序返回，
+        // 让 UI 默认显示最近一次。
+        let home = TempHome::new();
+        for id in ["pending-sort-a", "pending-sort-b"] {
+            let legacy = LegacySource::Plugins.path();
+            fs::create_dir_all(&legacy).expect("legacy");
+            fs::write(legacy.join("store.json"), "{}").expect("store");
+            run_migration(ConflictPolicy::SkipIfNewer, id).expect("mig");
+            // 确保 mtime 差至少 1 秒——避免文件系统秒级粒度同值。
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+        }
+        let summaries = list_migrations();
+        let ids: Vec<_> = summaries.iter().map(|s| s.migration_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["pending-sort-b", "pending-sort-a"],
+            "最近一次的迁移必须排第一"
         );
     }
 }

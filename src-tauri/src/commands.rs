@@ -18,6 +18,7 @@ use url::Url;
 
 use crate::error::AppError;
 use crate::instance::{self, InstanceRecord};
+use crate::migration;
 use crate::paths;
 use crate::process::{build_log_kind, read_tail, LogSpec};
 use crate::quarantine;
@@ -2231,6 +2232,48 @@ pub async fn plugin_status_instance(
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+// --- 迁移向导（P6 step 4 后端命令） -------------------------------------
+
+/// 读旧布局来源 + 文件数 + 字节数，生成完整预览。**只读**——不创建
+/// 任何目录、不触碰源 / 目标。UI 用它给用户展示「这次会搬哪些」。
+#[tauri::command]
+pub async fn migration_preview() -> Result<migration::MigrationPreview, String> {
+    tauri::async_runtime::spawn_blocking(migration::preview_migration)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 执行迁移：按 policy 处理冲突、写入 backup（旧源永不被删除）。
+/// 在 blocking worker 上跑——进度信息直接写到 MigrationReport，不再走 on_event。
+#[tauri::command]
+pub async fn migration_run(
+    policy: migration::ConflictPolicy,
+    migration_id: String,
+) -> Result<migration::MigrationReport, String> {
+    tauri::async_runtime::spawn_blocking(move || migration::run_migration(policy, &migration_id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// 把 migration_id 对应的 backup 还原回目标位置。找不到 backup 时
+/// 返回 `AppError`，UI 据此弹「没找到可回滚的迁移」。
+#[tauri::command]
+pub async fn migration_rollback(migration_id: String) -> Result<migration::RollbackReport, String> {
+    tauri::async_runtime::spawn_blocking(move || migration::rollback_migration(&migration_id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// 列出所有历史迁移（按 backup 目录 mtime 倒序）。
+#[tauri::command]
+pub async fn migration_list() -> Result<Vec<migration::MigrationSummary>, String> {
+    tauri::async_runtime::spawn_blocking(migration::list_migrations)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 实例范围插件命令的共享主体：与 [`run_plugin_command`] 类似，但额外
