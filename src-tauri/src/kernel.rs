@@ -36,6 +36,7 @@ use tauri::Manager;
 
 use crate::error::AppError;
 use crate::instance::{self, InstanceRecord, InstanceRuntime, KERNEL_FAMILY_DSH};
+use crate::kernel_adapter::{self, AdapterError, DshAdapter};
 use crate::paths;
 use crate::settings::{self, Settings};
 
@@ -1270,10 +1271,34 @@ pub fn start_instance(
             "端口 {port} 已被其它进程占用{owner}，无法启动工作台。请在设置页改用其它端口，或先释放该端口"
         )));
     }
-    let active = record.kernel_version.clone().ok_or_else(|| {
-        AppError::Kernel("实例尚未指定内核版本，请先在「更新」页安装并切换到某一版本".into())
-    })?;
-    start(kernel_install_root, node, &active, port).map(Some)
+    if record.kernel_version.is_none() {
+        return Err(AppError::Kernel(
+            "实例尚未指定内核版本，请先在「更新」页安装并切换到某一版本".into(),
+        ));
+    }
+    // P3：调用 DshAdapter 而不是直接拼内核入口——adapter 设置 DSH_HOME
+    // / DSH_PROFILE / workspace cwd，并负责 profile/package.json 与
+    // cordis.patch.yml 的创建。
+    let adapter = kernel_adapter::lookup(family)
+        .ok_or_else(|| AppError::Kernel(format!("内核族 {family} 暂无可用适配器")))?;
+    adapter
+        .prepare_instance(&record)
+        .map_err(|e| AppError::Kernel(format!("准备实例目录失败：{e}")))?;
+    let install_root = adapter
+        .resolve_install_dir(record.kernel_version.as_deref().unwrap_or(""))
+        .unwrap_or_else(|| {
+            // legacy 兜底：调用方传入的 `kernel_install_root`（dsh 旧目录）
+            // 在 P3 仍承担 kernels/<version>/ 的解析。
+            kernel_install_root
+                .join("kernels")
+                .join(record.kernel_version.as_deref().unwrap_or(""))
+        });
+    let child = adapter
+        .start(&record, &install_root, node)
+        .map_err(|e| AppError::Kernel(format!("{e}")))?;
+    // 把 pid 写到 instance_pid_file，便于后续 status / stop 寻址。
+    let _ = instance::write_pid(family, id, child.id(), record.port);
+    Ok(Some(child))
 }
 
 /// 停止指定实例的内核（按 instance.json 与 pid 文件识别）。

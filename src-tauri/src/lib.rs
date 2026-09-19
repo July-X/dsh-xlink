@@ -12,6 +12,7 @@ mod error;
 mod guard;
 mod instance;
 mod kernel;
+mod kernel_adapter;
 mod node;
 mod node_install;
 mod notify;
