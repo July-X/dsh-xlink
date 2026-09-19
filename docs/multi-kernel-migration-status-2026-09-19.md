@@ -133,10 +133,8 @@ P8 阶段统一清理——届时可以一次性 remove `cfg_attr` 注释。
 - ✅ **没有把 `~/.dsh` 整体迁移或删除的脚本**：migration.rs 的 `LegacySource::all()` 只枚举 3 个具体旧源（Plugins / SkillsStore / SkillsActive），`~/.dsh/sessions` / `~/.dsh/credentials` 明确不在范围（dev plan §P6「credentials / sessions 不纳入首版迁移」）
 - ✅ **没有通过宽泛进程匹配杀掉用户的官方 DSH**：`process::terminate_process_tree` 在 Unix 用 `libc::kill(-pgid, ...)`（负 PID = 自己创建的进程组）、Windows 用 `taskkill /PID <id> /T /F`（按 PID 杀子树），都不做 name 匹配
 - ⚠️ **现有发布平台和 updater 没把新目录当安装目录**：**.github/workflows/desktop-release.yml** 静态查过——workflow 只跑 `pnpm exec tauri build` 与资产命名脚本 `scripts/normalize-release-assets.mjs`，不引用任何特定数据路径（grep `desktop/kernels` / `skills-store` / `extensions/plugins` 等均无匹配）。安装路径由 Tauri 配置 + OS 决定，不在 workflow 范围内。**剩余验证**：打一次 release 看 updater 端点（`releases/latest/download/latest.json`）和用户机器上的安装行为——需实际 release 触发。
-- ❌ **日志可区分 `shell_mode` / `kernel_family` / `kernel_version` / `instance_id`**：当前 `LogSpec` 只含 `kind`（shell mode）+ `name`（install 时含 version，**不含 family / instance_id**）。多实例下两个同 family 同 version 的实例会写到同一个 `<shell_mode>-kernel-<date>.log` 文件，互相覆盖——dev plan §4 明文要求未满足。
-  - **影响范围**：`kernel::kernel_log_spec` / `kernel::current_kernel_log_path` 调用方有 `kernel::start_instance` / `kernel_adapter::DshAdapter::start` / `guard::kernel_log_path` / `commands::workbench_url_from_log` / `notify::*` 等 6+ 处
-  - **修复方向**：`LogSpec` 增加 `family: &str` + `instance_id: &str` 字段；`kernel_log_spec()` 改成 `kernel_log_spec(family, instance_id)`；`current_kernel_log_path` 改成 `current_kernel_log_path(data_dir, family, instance_id)`；所有调用方传 family + instance_id。日志文件名加 `<family>-<instance_id>-` 段。
-  - **本轮未修**：跨 6+ 处调用点 + 单元测试 fixture 调整，超出"文档收尾"范围，建议放 P8 阶段统一做（与「实例列表 UI」同批——届时日志字段命名也可由 UI 决策驱动）。
+- ✅ **日志可区分 `shell_mode` / `kernel_family` / `kernel_version` / `instance_id`**（commit `eba8c96` + `158ced3`）：`LogSpec` 加 `family` + `instance_id` 字段；`log_file_name` 三参变体（旧格式 `release-kernel-2026-09-19.log` 保留壳级日志）+ 五参变体（实例感知 `release-dsh-default-kernel-2026-09-19.log`）；`kernel_log_spec(family, id)` / `install_log_spec(family, id, version)` / `current_kernel_log_path(data_dir, family, id)` / `install_version(family, ...)` 全链路接入；`guard::GuardDeps` 加 `family` / `instance_id`；`guard::diagnose_runtime` / `commands::kernel_workbench_url_from_log` / `notify::*` 全接 family + id。Legacy 默认实例（`DSH` + `"default"`）硬编码在 start_kernel / start_kernel 入口——P8 UI 决策后由真实 instance_id 替换。
+  - **遗留**：P8 UI 决策驱动后由默认实例解析器（kernel/instance 模块）统一替换所有硬编码的 `(DSH, "default")`；本轮不引入 UI 改动。
 
 ## Review 建议
 
