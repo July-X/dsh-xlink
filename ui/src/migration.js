@@ -12,6 +12,7 @@
 
 import { reactive, computed } from 'vue';
 import { invoke } from './bridge.js';
+import { toastActionError } from './notify.js';
 
 /** LegacySource 枚举（与后端 migration::LegacySource 对齐）。 */
 export const SOURCES = ['plugins', 'skills-store', 'skills-active'];
@@ -87,37 +88,52 @@ export function resetMigrationStore() {
 
 /** Step 1：发现。调 migration_preview + migration_list。 */
 export async function loadMigrationPreview() {
-  const [preview, history] = await Promise.all([
-    invoke('migration_preview'),
-    invoke('migration_list'),
-  ]);
-  migrationStore.preview = preview;
-  migrationStore.history = history || [];
-  // has_migratable 是后端 MigrationPreview 上的方法；前端做等价计算
-  migrationStore.hasMigratable =
-    preview && preview.items && preview.items.some((it) => it.file_count > 0 || it.total_bytes > 0);
-  return preview;
+  try {
+    const [preview, history] = await Promise.all([
+      invoke('migration_preview'),
+      invoke('migration_list'),
+    ]);
+    migrationStore.preview = preview;
+    migrationStore.history = history || [];
+    // has_migratable 是后端 MigrationPreview 上的方法；前端做等价计算
+    migrationStore.hasMigratable =
+      preview && preview.items && preview.items.some((it) => it.file_count > 0 || it.total_bytes > 0);
+    return preview;
+  } catch (e) {
+    toastActionError('扫描旧版数据失败', e, '检查日志确认原因后重试', 6000);
+    throw e;
+  }
 }
 
 /** Step 3：执行迁移。 */
 export async function runMigration() {
   const sources = Array.from(migrationStore.selectedSources);
-  const result = await invoke('migration_run', {
-    sources,
-    conflict_policy: migrationStore.conflictPolicy,
-  });
-  migrationStore.runResult = result;
-  return result;
+  try {
+    const result = await invoke('migration_run', {
+      sources,
+      conflict_policy: migrationStore.conflictPolicy,
+    });
+    migrationStore.runResult = result;
+    return result;
+  } catch (e) {
+    toastActionError('迁移运行失败', e, '可回滚本次迁移（backup 保留在 Xlink home），或重试', 8000);
+    throw e;
+  }
 }
 
 /** Step 4 / 历史列表：回滚。 */
 export async function rollbackMigration(migrationId) {
   migrationStore.rollbackInFlight = true;
   try {
-    const result = await invoke('migration_rollback', { migration_id: migrationId });
-    // 回滚后刷新历史与 preview
-    await loadMigrationPreview();
-    return result;
+    try {
+      const result = await invoke('migration_rollback', { migration_id: migrationId });
+      // 回滚后刷新历史与 preview
+      await loadMigrationPreview();
+      return result;
+    } catch (e) {
+      toastActionError('回滚失败', e, '查看日志确认 backup 路径是否仍可访问', 8000);
+      throw e;
+    }
   } finally {
     migrationStore.rollbackInFlight = false;
   }
