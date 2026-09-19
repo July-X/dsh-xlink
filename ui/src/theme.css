@@ -1758,6 +1758,17 @@ main {
   gap: 8px;
 }
 
+.list-head-with-logo {
+  flex-wrap: wrap;
+}
+
+.release-list-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
 .brand-logo {
   width: 16px;
   height: 16px;
