@@ -1847,12 +1847,8 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             page_url: "http://127.0.0.1:4090/".into(),
         };
 
-        let incident = diagnose_runtime(
-            &data_dir,
-            crate::instance::KERNEL_FAMILY_DSH,
-            crate::instance::DEFAULT_INSTANCE_ID,
-            report,
-        );
+        let (family, instance_id) = crate::instance::resolve_default();
+        let incident = diagnose_runtime(&data_dir, family, instance_id, report);
 
         assert_eq!(incident.cause, "frontend");
         assert!(
@@ -1896,10 +1892,11 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             &data_dir,
             r#"{"schemaVersion":1,"items":[{"id":"ghost-plugin","name":"ghost-plugin"}]}"#,
         );
+        let (family, instance_id) = crate::instance::resolve_default();
         let incident = diagnose_runtime(
             &data_dir,
-            crate::instance::KERNEL_FAMILY_DSH,
-            crate::instance::DEFAULT_INSTANCE_ID,
+            family,
+            instance_id,
             HealthReport {
                 kind: "unhandled-rejection".into(),
                 message: "TypeError: boom".into(),
@@ -2110,13 +2107,14 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
         )
         .expect("write store");
 
+        let (family, instance_id) = crate::instance::resolve_default();
         let deps = GuardDeps {
             data_dir: &data_dir,
             settings: &settings,
             node_path: &fake_node,
             pnpm_exe: Path::new("/nonexistent/pnpm"),
-            family: crate::instance::KERNEL_FAMILY_DSH,
-            instance_id: crate::instance::DEFAULT_INSTANCE_ID,
+            family,
+            instance_id,
         };
         let (report, child) = guarded_start(&deps, &mut |_| {});
         assert!(child.is_none(), "环境类失败不该留下内核进程");
@@ -2196,13 +2194,14 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             "测试前置：store.json 必须能被解析，否则这个用例失去区分度"
         );
 
+        let (family, instance_id) = crate::instance::resolve_default();
         let deps = GuardDeps {
             data_dir: &data_dir,
             settings: &settings,
             node_path: Path::new("/nonexistent/node"),
             pnpm_exe: Path::new("/nonexistent/pnpm"),
-            family: crate::instance::KERNEL_FAMILY_DSH,
-            instance_id: crate::instance::DEFAULT_INSTANCE_ID,
+            family,
+            instance_id,
         };
         let (report, child) = guarded_start(&deps, &mut |_| {});
 
