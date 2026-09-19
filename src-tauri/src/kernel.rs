@@ -1194,7 +1194,7 @@ pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<C
     if let Err(error) = attach_log_drainers(
         &mut child,
         &logs_dir(data_dir),
-        &kernel_log_spec(crate::instance::KERNEL_FAMILY_DSH, "default"),
+        &kernel_log_spec(crate::instance::KERNEL_FAMILY_DSH, crate::instance::DEFAULT_INSTANCE_ID),
     ) {
         crate::process::terminate_process_tree(&mut child);
         return Err(AppError::Io(format!("无法接管内核日志：{error}")));
@@ -2889,7 +2889,7 @@ mod tests {
         let install_root = workbench_test_dir("inst-set-active-missing");
         // 准备好实例目录与一份空白 instance.json。
         let record = instance::InstanceRecord::new(
-            "default",
+            crate::instance::DEFAULT_INSTANCE_ID,
             instance::KERNEL_FAMILY_DSH,
             3195,
             1700000000000,
@@ -2898,7 +2898,7 @@ mod tests {
         instance::save_record_to_disk(&record).expect("save record");
         let error = set_instance_active_version(
             instance::KERNEL_FAMILY_DSH,
-            "default",
+            crate::instance::DEFAULT_INSTANCE_ID,
             "0.1.2-not-installed",
             &install_root,
         )
@@ -2909,13 +2909,13 @@ mod tests {
         );
         // instance.json 不应被写脏：保留为 None。
         let restored =
-            instance::load_record_from_disk(instance::KERNEL_FAMILY_DSH, "default").expect("load");
+            instance::load_record_from_disk(instance::KERNEL_FAMILY_DSH, crate::instance::DEFAULT_INSTANCE_ID).expect("load");
         assert!(
             restored.kernel_version.is_none(),
             "失败路径不应写脏 instance.json"
         );
         let _ = fs::remove_dir_all(&install_root);
-        let _ = fs::remove_dir_all(paths::instance_dir(instance::KERNEL_FAMILY_DSH, "default"));
+        let _ = fs::remove_dir_all(paths::instance_dir(instance::KERNEL_FAMILY_DSH, crate::instance::DEFAULT_INSTANCE_ID));
     }
 
     /// `instance_workbench_pid` 在没有 pid 文件时必须返回 None，不读盘之外
@@ -2943,7 +2943,7 @@ mod tests {
         let _guard = scoped_xlink_home_for_test();
         let install_root = workbench_test_dir("inst-set-active-ok");
         let record = instance::InstanceRecord::new(
-            "default",
+            crate::instance::DEFAULT_INSTANCE_ID,
             instance::KERNEL_FAMILY_DSH,
             3197,
             1700000000000,
@@ -2958,16 +2958,16 @@ mod tests {
 
         set_instance_active_version(
             instance::KERNEL_FAMILY_DSH,
-            "default",
+            crate::instance::DEFAULT_INSTANCE_ID,
             version,
             &install_root,
         )
         .expect("set active version");
         let restored =
-            instance::load_record_from_disk(instance::KERNEL_FAMILY_DSH, "default").expect("load");
+            instance::load_record_from_disk(instance::KERNEL_FAMILY_DSH, crate::instance::DEFAULT_INSTANCE_ID).expect("load");
         assert_eq!(restored.kernel_version.as_deref(), Some(version));
         let _ = fs::remove_dir_all(&install_root);
-        let _ = fs::remove_dir_all(paths::instance_dir(instance::KERNEL_FAMILY_DSH, "default"));
+        let _ = fs::remove_dir_all(paths::instance_dir(instance::KERNEL_FAMILY_DSH, crate::instance::DEFAULT_INSTANCE_ID));
     }
 
     /// 跨实例的 workbench_pid 必须互不感知：A 实例的 pid 文件不影响 B
