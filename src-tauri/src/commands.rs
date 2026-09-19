@@ -2269,13 +2269,13 @@ pub async fn migration_preview() -> Result<migration::MigrationPreview, String> 
 }
 
 /// 执行迁移：按 policy 处理冲突、写入 backup（旧源永不被删除）。
+/// `migration_id` 由后端自动生成（`AutoYYYYMMDD-HHMMSS-<short>`）。
 /// 在 blocking worker 上跑——进度信息直接写到 MigrationReport，不再走 on_event。
 #[tauri::command]
 pub async fn migration_run(
     policy: migration::ConflictPolicy,
-    migration_id: String,
 ) -> Result<migration::MigrationReport, String> {
-    tauri::async_runtime::spawn_blocking(move || migration::run_migration(policy, &migration_id))
+    tauri::async_runtime::spawn_blocking(move || migration::run_migration(policy))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
