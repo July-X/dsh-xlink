@@ -425,8 +425,27 @@ fn local_date_string(time: SystemTime) -> String {
 /// 为指定构建类型与本地日期下的具名日志拼装日志文件名。集中在此，
 /// 让所有调用方（内核日志、安装日志、插件日志……）都遵循同一格式，
 /// 这也是 `list_log_files` 与弹窗标签列表对用户保持稳定的根本。
-pub fn log_file_name(kind: &str, name: &str, date: &str) -> String {
-    format!("{}-{}-{}.log", kind, name, date)
+///
+/// **实例感知格式**（dev plan §4 release threshold）：当 `family` 与
+/// `instance_id` 都非空时，文件名带上内核族与实例 id，区分多实例下
+/// 同 family / version 的并发运行——
+/// `release-dsh-default-kernel-2026-09-19.log`。仅用于内核 / 安装日志。
+///
+/// 仅 `kind` 命中（`family` / `instance_id` 为空）的壳级日志（插件
+/// 接线、节点安装、p2p 同步……）保留旧格式 `release-kernel-2026-09-19.log`，
+/// 避免无谓的破坏性变更。
+pub fn log_file_name(
+    kind: &str,
+    family: &str,
+    instance_id: &str,
+    name: &str,
+    date: &str,
+) -> String {
+    if family.is_empty() && instance_id.is_empty() {
+        format!("{}-{}-{}.log", kind, name, date)
+    } else {
+        format!("{}-{}-{}-{}-{}.log", kind, family, instance_id, name, date)
+    }
 }
 
 /// 日志目录的保留窗口：超过 `LOG_RETENTION_DAYS` 天、或总量超过
@@ -574,9 +593,17 @@ fn rotate_existing_log(path: &Path) -> io::Result<()> {
 /// `plugin-wiring` 等），与构建类型和日期一起嵌入文件名。构建类型由
 /// 调用方预先计算（通常是 `build_log_kind()`），便于单一测试或 CLI 工具
 /// 以另一种构建类型打 stamp。
+///
+/// `family` / `instance_id` 用于 dev plan §4 release threshold「日志可
+/// 区分 `shell_mode` / `kernel_family` / `kernel_version` / `instance_id`」
+/// ——非空时写入文件名带上内核族与实例 id，使多实例下同 family / version
+/// 的并发运行产生不同日志文件，停止互相覆盖。壳级日志（插件 / 节点）
+/// 留空，沿用旧格式。
 #[derive(Debug, Clone)]
 pub struct LogSpec {
     pub kind: String,
+    pub family: String,
+    pub instance_id: String,
     pub name: String,
 }
 
@@ -584,15 +611,34 @@ impl LogSpec {
     pub fn new(kind: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             kind: kind.into(),
+            family: String::new(),
+            instance_id: String::new(),
             name: name.into(),
         }
+    }
+
+    /// 标记该日志属于指定内核实例。返回 `self` 以便链式调用。
+    pub fn with_instance(
+        mut self,
+        family: impl Into<String>,
+        instance_id: impl Into<String>,
+    ) -> Self {
+        self.family = family.into();
+        self.instance_id = instance_id.into();
+        self
     }
 
     /// 把该 spec 在给定本地日期、给定日志目录下应当写入的文件路径解析出来。
     /// `list_log_files` 用它来命名标签页，需要向用户展示路径的调用方
     /// （如 `read_log_file` 的 tail 选择器）也会用到。
     pub fn path_for(&self, logs_dir: &Path, date: &str) -> PathBuf {
-        logs_dir.join(log_file_name(&self.kind, &self.name, date))
+        logs_dir.join(log_file_name(
+            &self.kind,
+            &self.family,
+            &self.instance_id,
+            &self.name,
+            date,
+        ))
     }
 }
 
@@ -2252,6 +2298,25 @@ mod tests {
             10,
             "date suffix must be YYYY-MM-DD: {reconstructed}"
         );
+    }
+
+    /// 实例感知格式：family / instance_id 非空时，文件名带上内核族
+    /// 与实例 id，避免多实例下同 family / version 并发运行互相覆盖
+    /// （dev plan §4 release threshold）。空 family + 空 instance_id
+    /// 仍走旧 3 段格式（壳级日志：插件 / 节点 / p2p）。
+    #[test]
+    fn log_file_name_uses_instance_when_provided() {
+        // 旧格式（壳级）
+        let legacy = log_file_name("release", "", "", "plugin-wiring", "2026-09-19");
+        assert_eq!(legacy, "release-plugin-wiring-2026-09-19.log");
+
+        // 新格式（实例感知）
+        let inst = log_file_name("release", "dsh", "default", "kernel", "2026-09-19");
+        assert_eq!(inst, "release-dsh-default-kernel-2026-09-19.log");
+
+        // 部分填充（仅 family 不算——只要有一个非空就走 5 段）
+        let partial = log_file_name("dev", "mcode", "", "kernel", "2026-09-19");
+        assert_eq!(partial, "dev-mcode--kernel-2026-09-19.log");
     }
 
     /// `build_log_kind` 是区分 release 与 dev 日志的关键。它必须与
