@@ -1,7 +1,14 @@
 <script setup>
 // 插件页：已安装列表（同步 / 接线 / 隔离状态徽章 + 更新 / 模式切换 / 卸载）、
 // 手动安装（回车即装）、插件中心（分类筛选 + 搜索 + 排序 + 分页卡片）。
-import { computed, onUnmounted, watch } from 'vue';
+//
+// P8 #2：已安装列表是「单 panel + 双 tab」结构。
+//   · 本实例：默认实例的插件视图——状态取自 PluginRow 的 legacy 字段
+//     （wired / synced / actual_mode / quarantined），沿用旧渲染路径。
+//   · 所有实例：每个插件 + 每个实例一个 chip，复用 P8 #1 顶部 dropdown 的
+//     instanceStore.list，按 instance_id 在 PluginRow.instances map 里查状态。
+//     让用户在不动默认实例的前提下，扫描「哪个实例装了这个 / 没装」差异。
+import { computed, onUnmounted, ref, watch } from 'vue';
 import {
   Refresh,
   Switch,
@@ -38,6 +45,7 @@ import {
 import { originLabel } from '../labels.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 import { openExternalLink } from '../notify.js';
+import { instanceStore, familyLabel } from '../instance.js';
 
 const view = computed(() => pluginStore.view);
 
@@ -157,6 +165,47 @@ function statsText(item) {
   if (updated) parts.push(updated);
   return parts.join(' · ');
 }
+
+// --- P8 #2 双 tab ---
+//
+// 「本实例」tab 与旧渲染路径共用同一个 entity-row 模板——状态走 legacy
+// 字段（wired / synced / actual_mode / quarantined）。「所有实例」tab
+// 走 row.instances map，把每个实例的 chip 摆出来，方便对比哪个实例装了
+// 哪个没装。
+const installedTab = ref('current');
+// 排序规则：把默认实例（is_default=true）排第一个，其余按 id 升序——
+// 让用户一眼看出默认实例在所有实例中的差异位置。
+const sortedInstances = computed(() => {
+  const list = instanceStore.list.slice();
+  list.sort((a, b) => {
+    if (a.is_default !== b.is_default) return a.is_default ? -1 : 1;
+    return a.record.id.localeCompare(b.record.id);
+  });
+  return list;
+});
+// 某行在指定实例上的状态：instances map 没有 key 说明注册表加载失败
+// （P8 #2 后端降级路径），按「无数据」处理，UI 上标「—」。
+function instanceStateFor(row, instanceId) {
+  if (!row.instances) return null;
+  return row.instances[instanceId] || null;
+}
+function instanceChipLabel(row, instanceId) {
+  const state = instanceStateFor(row, instanceId);
+  if (!state) return '—';
+  if (state.quarantined) return '已隔离';
+  if (!state.materialized) return '未物化';
+  if (!state.synced) return '版本不一致';
+  if (!state.wired) return '未接线';
+  return '已接线';
+}
+function instanceChipType(row, instanceId) {
+  const state = instanceStateFor(row, instanceId);
+  if (!state || !state.materialized) return 'info';
+  if (state.quarantined) return 'danger';
+  if (!state.synced) return 'warning';
+  if (!state.wired) return 'warning';
+  return 'success';
+}
 </script>
 
 <template>
@@ -196,7 +245,13 @@ function statsText(item) {
         show-icon
       />
 
-      <div class="entity-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
+      <!-- P8 #2：单 panel + 双 tab。「本实例」是默认实例视图（沿用旧
+           entity-row 渲染），「所有实例」按 instance 拆 chip——两个 tab
+           共用 pluginStore.view.rows。顶部 dropdown 切默认实例后
+           （commit 25cd376），本实例 tab 自动跟随新默认实例。 -->
+      <el-tabs v-model="installedTab" class="installed-tabs">
+        <el-tab-pane name="current" label="本实例">
+          <div class="entity-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
         <el-empty v-if="!view || !view.rows || view.rows.length === 0" description="尚未安装任何插件。" :image-size="48" />
         <div
           v-for="row in view ? view.rows : []"
@@ -306,6 +361,59 @@ function statsText(item) {
           </div>
         </div>
       </div>
+        </el-tab-pane>
+
+        <el-tab-pane name="all" label="所有实例">
+          <!-- 「所有实例」视图：每个插件一行，列上每个实例一枚 chip。
+               不复用 entity-row 是因为这里没有「更新 / 模式切换 / 卸载」
+               等动作（per-instance 的写动作暂未暴露，避免 UI 承诺做不到的
+               事情）；chip 只反映状态，方便用户做实例间差异扫描。 -->
+          <div class="entity-list all-instances-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
+            <el-empty
+              v-if="!view || !view.rows || view.rows.length === 0"
+              description="尚未安装任何插件。"
+              :image-size="48"
+            />
+            <div
+              v-for="row in view ? view.rows : []"
+              :key="row.id"
+              class="entity-row entity-row--instance-grid"
+              :class="{ 'is-warn': !!row.quarantined }"
+            >
+              <div class="entity-head">
+                <span class="entity-name">{{ row.name }}</span>
+                <span class="origin-chip" :class="'origin-chip-' + row.origin">
+                  <el-icon class="origin-chip-icon">
+                    <Box v-if="row.origin === 'npm'" />
+                    <Link v-else />
+                  </el-icon>
+                  <span class="origin-chip-label">{{ originLabel(row.origin) }}</span>
+                </span>
+              </div>
+              <div class="entity-foot entity-foot--instance-grid">
+                <div class="instance-chip-row">
+                  <el-tag
+                    v-for="inst in sortedInstances"
+                    :key="inst.record.id"
+                    :type="instanceChipType(row, inst.record.id)"
+                    size="small"
+                    effect="plain"
+                    class="instance-state-chip"
+                  >
+                    <span class="instance-state-chip__id">{{ familyLabel(inst.record.family) }} · {{ inst.record.id }}</span>
+                    <span class="instance-state-chip__sep" aria-hidden="true">·</span>
+                    <span class="instance-state-chip__label">{{ instanceChipLabel(row, inst.record.id) }}</span>
+                  </el-tag>
+                  <span
+                    v-if="sortedInstances.length === 0"
+                    class="instance-state-empty"
+                  >未加载实例列表（实例注册表加载失败）</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
 
       <h3 class="section-divider">手动安装</h3>
       <div class="install-row">

@@ -33,7 +33,7 @@ const reportOnly = process.argv.includes('--report');
 
 /** 生产代码行数预算：文件 → 上限。包含注释以外的所有代码行。 */
 const FILE_BUDGETS = {
-  'ui/src/theme.css': 2915,
+  'ui/src/theme.css': 2960,
   // P4 step 3：物化路径切到实例 extensions/plugins/<id>/，抽出 materialize_inner
   // 共享逻辑、新增 materialize_one_for_instance / remove_materialized_for_instance
   // / sweep_instance_orphans / default_instance_key / seed_default_instance_for_tests

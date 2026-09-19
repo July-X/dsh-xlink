@@ -3456,3 +3456,62 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   font-size: 11px;
   font-weight: 700;
 }
+
+/* --- P8 #2 插件面板「所有实例」tab ----------------------------------------
+   沿用 entity-row 的视觉骨架，但 entity-foot 不再放动作按钮，而是把每个
+   实例的状态挤在一行 chip 里。chip 折行自适应窄屏。 */
+
+.installed-tabs {
+  margin-top: 4px;
+}
+
+.installed-tabs .el-tabs__nav-wrap::after {
+  background-color: rgba(238, 255, 216, 0.12);
+}
+
+.all-instances-list {
+  gap: 6px;
+}
+
+.entity-row--instance-grid {
+  display: block;
+  padding: 10px 12px;
+}
+
+.entity-foot--instance-grid {
+  display: block;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(238, 255, 216, 0.12);
+}
+
+.instance-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.instance-state-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.instance-state-chip__id {
+  font-weight: 600;
+}
+
+.instance-state-chip__sep {
+  opacity: 0.5;
+}
+
+.instance-state-chip__label {
+  font-weight: 500;
+}
+
+.instance-state-empty {
+  font-size: 11px;
+  color: var(--muted, rgba(247, 255, 238, 0.6));
+}
