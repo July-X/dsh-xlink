@@ -15,6 +15,7 @@ mod node;
 mod node_install;
 mod notify;
 mod patches;
+mod paths;
 mod pkg;
 mod plugins;
 mod process;
@@ -365,7 +366,7 @@ pub fn run() {
                     }
                 }
                 let data_dir = state.data_dir.clone();
-                let current = settings::load(&data_dir);
+                let current = settings::load_for_shell(settings::current_mode());
                 // 判据同样不看配置端口：内核可能绑在用户改端口之前的那个
                 // 端口上，用当前配置端口探测会漏掉它，让它继续占着端口活到
                 // 下一次启动。
@@ -436,5 +437,51 @@ pub(crate) fn kernel_running(handle: &tauri::AppHandle) -> bool {
             *guard = None;
         }
     }
-    kernel::workbench_running(&state.data_dir, &settings::load(&state.data_dir))
+    kernel::workbench_running(
+        &state.data_dir,
+        &settings::load_for_shell(settings::current_mode()),
+    )
+}
+
+/// 测试专用 RAII：把 `DSH_XLINK_HOME` 临时指向给定路径，离开作用域时还原。
+/// 进程内串行化（`OnceLock<Mutex>`），防止并行测试相互覆盖 env。
+///
+/// 仅在 `cfg(test)` 下编译；生产代码看不到，避免误把测试逻辑拖进发布版。
+#[cfg(test)]
+pub(crate) mod tests {
+    use std::path::Path;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    /// 持有进程级互斥锁 + 旧 env 值；drop 时按 RAII 释放锁并还原 env。
+    /// 调用方只需 `let _guard = scoped_xlink_home(&root);`。
+    pub(crate) struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(crate::paths::DSH_XLINK_HOME_ENV, value),
+                None => std::env::remove_var(crate::paths::DSH_XLINK_HOME_ENV),
+            }
+        }
+    }
+
+    /// 进入作用域时拿锁、把 `DSH_XLINK_HOME` 指向 `home`；drop 时还原 env
+    /// 并释放锁。返回 [`EnvGuard`] 是 RAII 写法。
+    pub(crate) fn scoped_xlink_home(home: &Path) -> EnvGuard {
+        let lock = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os(crate::paths::DSH_XLINK_HOME_ENV);
+        std::env::set_var(crate::paths::DSH_XLINK_HOME_ENV, home);
+        EnvGuard {
+            _lock: lock,
+            previous,
+        }
+    }
 }
