@@ -1227,6 +1227,23 @@ pub fn start_maybe(data_dir: &Path, node: &Path) -> Result<Option<Child>, AppErr
 // 内核二进制 `kernels/<version>/` 还没搬到 `kernels/<family>/versions/<...>`，
 // 那是 P3 的活儿。P2 只把壳侧的 pid / port / 状态 / 锁切到按实例寻址。
 
+/// 启动指定实例的返回报告（命令层传输用，必须 Serialize）。
+///
+/// `started = false` 表示端口已有响应且监听者是本实例的内核（幂等启动）；
+/// `started = true` 表示本次新拉起了进程。`warning` 携带非致命异常
+/// （路径权限、log drainer 接管失败等），UI 应当把它显示出来。
+///
+/// **不直接持有 `Child`**——`Child` 不 `Serialize`，也不该跨 IPC 通道传。
+/// 调用方在收到 `started = true` 后应自行拿 `started_at_ms` 与
+/// `port` 写 runtime 状态，并由 `kernel::register_started_child`
+/// 之类的 helper 把 Child 注册到 `state.running`。
+#[derive(Debug, serde::Serialize)]
+pub struct InstanceStartReport {
+    pub instance_id: String,
+    pub started: bool,
+    pub warning: Option<String>,
+}
+
 /// 启动指定实例的内核。
 ///
 /// - `family` / `id` 寻址实例目录与 instance.json；

@@ -229,6 +229,15 @@ pub fn run() {
             commands::notification_test,
             commands::notification_test_sound,
             commands::confirm_close_shell,
+            // P2：实例管理命令。
+            commands::list_instances,
+            commands::create_instance,
+            commands::delete_instance,
+            commands::set_default_instance,
+            commands::start_instance,
+            commands::stop_instance,
+            commands::restart_instance,
+            commands::ensure_default_instance_migrated,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| {

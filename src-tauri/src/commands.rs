@@ -17,9 +17,12 @@ use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowBuilder, Win
 use url::Url;
 
 use crate::error::AppError;
+use crate::instance::{self, InstanceRecord};
+use crate::paths;
 use crate::process::{build_log_kind, read_tail, LogSpec};
 use crate::quarantine;
 use crate::{guard, kernel, node, patches, plugins, releases, settings, skills, updater};
+use serde::Deserialize as _;
 
 /// `open_official_chat` 加载到专用 `official-chat` webview 中的
 /// DeepSeek 官方对话入口。
@@ -2389,6 +2392,270 @@ pub async fn skill_set_enabled(
 #[tauri::command]
 pub async fn skill_check_updates() -> Result<Vec<skills::SkillUpdateInfo>, String> {
     blocking(skills::check_updates).await
+}
+
+// ─── P2：实例管理命令 ────────────────────────────────────────────────────
+//
+// 多内核改造 P2 把"实例"作为管理单位引入。下面的命令暴露给 UI：
+//   - list_instances / get_instance：列 / 查
+//   - create_instance / delete_instance / rename_instance：增删改
+//   - set_default_instance：当前 Shell 模式记住默认实例
+//   - start_instance / stop_instance / restart_instance：生命周期
+//   - ensure_default_instance_migrated：从旧 active.txt + settings 迁移
+//
+// 旧 start_kernel / stop_kernel 仍按 legacy data_dir 单实例工作，但
+// 在 setup() 中会先 ensure_default_instance_migrated，把现有用户的
+// active.txt + settings 吸收为一个名为 "default" 的实例，让 UI 能
+// 立刻看到「我的实例」。
+
+/// UI 看到的实例摘要：注册表条目 + 运行时状态。
+#[derive(serde::Serialize)]
+pub struct InstanceSummary {
+    pub record: instance::InstanceRecord,
+    pub runtime: instance::InstanceRuntime,
+    pub is_default: bool,
+}
+
+/// UI 列实例。`family` 暂固定为 `"dsh"`，未来 mcode 通过独立命令暴露。
+#[tauri::command]
+pub async fn list_instances() -> Result<Vec<InstanceSummary>, String> {
+    blocking(move || -> Result<Vec<InstanceSummary>, String> {
+        let _guard = crate::lock(instance::lifecycle_mutex());
+        let registry = instance::load_registry()
+            .map_err(|e| format!("读取实例注册表失败：{e}"))?;
+        let mode = paths::ShellMode::current();
+        let summaries = registry
+            .instances
+            .iter()
+            .map(|record| {
+                let runtime = instance::load_runtime(&record.kernel_family, &record.id);
+                let is_default = registry.default_instance_id.as_deref()
+                    == Some(record.id.as_str());
+                InstanceSummary {
+                    record: record.clone(),
+                    runtime,
+                    is_default,
+                }
+            })
+            .collect::<Vec<_>>();
+        // 按模式筛 default：每个 Shell 模式独立记住自己的 default，
+        // 但目前 UI 不区分模式，简单地把任何 default 都标 true。
+        let _ = mode;
+        Ok(summaries)
+    })
+    .await
+}
+
+/// UI 创建实例。
+#[tauri::command]
+pub async fn create_instance(
+    app: AppHandle,
+    id: String,
+    port: u16,
+    label: Option<String>,
+) -> Result<InstanceSummary, String> {
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    blocking(move || -> Result<InstanceSummary, String> {
+        let _guard = crate::lock(instance::lifecycle_mutex());
+        let now_ms = crate::process::epoch_millis();
+        let mut record = instance::InstanceRecord::new(
+            id.clone(),
+            instance::KERNEL_FAMILY_DSH,
+            port,
+            now_ms,
+        );
+        record.label = label;
+        instance::ensure_instance_dirs(&record)
+            .map_err(|e| format!("准备实例目录失败：{e}"))?;
+        instance::save_record_to_disk(&record)
+            .map_err(|e| format!("写入实例记录失败：{e}"))?;
+        let mut registry = instance::load_registry()
+            .map_err(|e| format!("读取注册表失败：{e}"))?;
+        registry
+            .add(record.clone())
+            .map_err(|e| format!("注册表拒绝该 id：{e}"))?;
+        if registry.default_instance_id.is_none() {
+            registry.default_instance_id = Some(record.id.clone());
+        }
+        instance::save_registry(&registry)
+            .map_err(|e| format!("写入注册表失败：{e}"))?;
+        let runtime = instance::load_runtime(&record.kernel_family, &record.id);
+        let _ = data_dir;
+        Ok(InstanceSummary {
+            record,
+            runtime,
+            is_default: registry.default_instance_id.as_deref() == Some(id.as_str()),
+        })
+    })
+    .await
+}
+
+/// UI 删除实例（仅未运行中的实例）。
+#[tauri::command]
+pub async fn delete_instance(
+    app: AppHandle,
+    id: String,
+) -> Result<(), String> {
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    blocking(move || -> Result<(), String> {
+        let registry = instance::load_registry()
+            .map_err(|e| format!("读取注册表失败：{e}"))?;
+        let Some(record) = registry.get(&id).cloned() else {
+            return Err(format!("实例 {id} 不存在"));
+        };
+        if kernel::instance_workbench_running(&record.kernel_family, &id, record.port) {
+            return Err(format!(
+                "实例 {id} 仍在运行，请先停止后再删除"
+            ));
+        }
+        instance::delete_instance_dirs(&record)
+            .map_err(|e| format!("清理实例目录失败：{e}"))?;
+        let mut registry = registry;
+        registry.remove(&id);
+        if registry.default_instance_id.as_deref() == Some(id.as_str()) {
+            registry.default_instance_id = registry.instances.first().map(|r| r.id.clone());
+        }
+        instance::save_registry(&registry)
+            .map_err(|e| format!("写入注册表失败：{e}"))?;
+        let _ = data_dir;
+        Ok(())
+    })
+    .await
+}
+
+/// UI 切换当前 Shell 模式的默认实例。
+#[tauri::command]
+pub async fn set_default_instance(id: String) -> Result<(), String> {
+    blocking(move || -> Result<(), String> {
+        let mut registry = instance::load_registry()
+            .map_err(|e| format!("读取注册表失败：{e}"))?;
+        if registry.get(&id).is_none() {
+            return Err(format!("实例 {id} 不存在"));
+        }
+        registry.default_instance_id = Some(id);
+        instance::save_registry(&registry)
+            .map_err(|e| format!("写入注册表失败：{e}"))?;
+        Ok(())
+    })
+    .await
+}
+
+/// UI 按实例启动。`node` 走 shell settings；启动逻辑委托给
+/// [`kernel::start_instance`]。
+#[tauri::command]
+pub async fn start_instance(
+    app: AppHandle,
+    id: String,
+) -> Result<kernel::InstanceStartReport, String> {
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    blocking(move || -> Result<kernel::InstanceStartReport, String> {
+        let _guard = crate::lock(instance::lifecycle_mutex());
+        let settings = settings::load_for_shell(settings::current_mode());
+        // 不走 cached_node —— instance 启动可能发生在面板不知道的实例上；
+        // 至少重探一次避免拿旧缓存拒绝。
+        let node_info = {
+            use crate::node::resolve as node_resolve;
+            let mut probe = settings.clone();
+            probe.node_path = None;
+            node_resolve(&probe, &data_dir)
+        };
+        if !node_info.ok {
+            return Err(node_info.reason.clone());
+        }
+        let node_path = PathBuf::from(node_info.path.clone());
+        let family = instance::KERNEL_FAMILY_DSH;
+        let child = kernel::start_instance(family, &id, &data_dir, &node_path)
+            .map_err(|e| format!("{e}"))?;
+        let now_ms = crate::process::epoch_millis();
+        let mut runtime = instance::load_runtime(family, &id);
+        runtime.status = instance::InstanceStatus::Running;
+        runtime.last_updated_ms = now_ms;
+        runtime.port = Some(settings.port);
+        let _ = instance::save_runtime(family, &id, &runtime);
+        Ok(kernel::InstanceStartReport {
+            instance_id: id,
+            started: child.is_some(),
+            warning: None,
+        })
+    })
+    .await
+}
+
+/// UI 按实例停止。
+#[tauri::command]
+pub async fn stop_instance(
+    app: AppHandle,
+    id: String,
+) -> Result<(), String> {
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    blocking(move || -> Result<(), String> {
+        let _guard = crate::lock(instance::lifecycle_mutex());
+        let family = instance::KERNEL_FAMILY_DSH;
+        kernel::stop_instance(family, &id).map_err(|e| format!("{e}"))?;
+        let _ = data_dir;
+        Ok(())
+    })
+    .await
+}
+
+/// UI 按实例重启（stop + 重新启动）。
+#[tauri::command]
+pub async fn restart_instance(
+    app: AppHandle,
+    id: String,
+) -> Result<kernel::InstanceStartReport, String> {
+    stop_instance(app.clone(), id.clone()).await?;
+    start_instance(app, id).await
+}
+
+/// 仅 setup 期使用：从旧 active.txt + shell settings 派生 "default"
+/// 实例并写入磁盘。旧用户的内核二进制仍在 legacy `kernels/<version>/`，
+/// 不搬到新位置；实例记录里只记录 kernel_family + kernel_version，
+/// 启动时按 family + version 找到对应安装目录。
+#[tauri::command]
+pub async fn ensure_default_instance_migrated(
+    state: State<'_, AppState>,
+) -> Result<Option<InstanceSummary>, String> {
+    let data_dir = state.data_dir.clone();
+    blocking(move || -> Result<Option<InstanceSummary>, String> {
+        let _guard = crate::lock(instance::lifecycle_mutex());
+        let mut registry = instance::load_registry()
+            .map_err(|e| format!("读取注册表失败：{e}"))?;
+        if registry
+            .get(instance::DEFAULT_INSTANCE_ID)
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let now_ms = crate::process::epoch_millis();
+        let settings = settings::load_for_shell(settings::current_mode());
+        let active = kernel::read_active(&data_dir);
+        let mut record = InstanceRecord::new(
+            instance::DEFAULT_INSTANCE_ID,
+            instance::KERNEL_FAMILY_DSH,
+            settings.port,
+            now_ms,
+        );
+        record.kernel_version = active;
+        record.label = Some("默认实例（迁移自旧版）".to_string());
+        instance::ensure_instance_dirs(&record)
+            .map_err(|e| format!("准备实例目录失败：{e}"))?;
+        instance::save_record_to_disk(&record)
+            .map_err(|e| format!("写入实例记录失败：{e}"))?;
+        registry
+            .add(record.clone())
+            .map_err(|e| format!("注册表拒绝该 id：{e}"))?;
+        registry.default_instance_id = Some(record.id.clone());
+        instance::save_registry(&registry)
+            .map_err(|e| format!("写入注册表失败：{e}"))?;
+        let runtime = instance::load_runtime(&record.kernel_family, &record.id);
+        Ok(Some(InstanceSummary {
+            record,
+            runtime,
+            is_default: true,
+        }))
+    })
+    .await
 }
 
 #[cfg(test)]
