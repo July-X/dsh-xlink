@@ -81,7 +81,7 @@ const FILE_BUDGETS = {
   // P3：KernelAdapter trait + AdapterCapabilities + DshAdapter 首实现
   // （DSH_HOME / DSH_PROFILE 注入、profile/package.json 与 cordis.patch.yml
   // 模板、resolve_install_dir 双查找）。约 430 行（含 9 个测试）。
-  'src-tauri/src/kernel_adapter.rs': 430,
+  'src-tauri/src/kernel_adapter.rs': 620,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
 // 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有
@@ -113,12 +113,18 @@ const FILE_BUDGETS = {
 // ensure_wiring_for_instance（约 +235 行落在 plugins.rs）；commands.rs
 // 增加 4 条实例范围 Tauri 命令 + run_plugin_command_instance 共享主体
 // （约 +75 行）。总计 +310 行。
-// 22500 → 23000：P6 step 2+3+4 新增 migration.rs（≈ 660 行）+ lib.rs
-// ENV_LOCK 拆分 + scoped_dsh_home（≈ 60 行新增）+ commands.rs 增加 4 条
-// 迁移向导命令（约 +35 行）。copy_tree_inner 与 plugins.rs / skills.rs
-// 的 copy_tree 是已知重复——AGENTS.md §3 要求提到 pkg.rs，留到独立重构
-// 处理；FILE_BUDGETS 里 migration.rs / commands.rs 也对应上调。
-const TOTAL_BUDGET = 23000;
+// 22500 → 23070：P6 step 2+3+4 + P7 + P5 step 3 + copy_tree 共享。
+// P6 step 2+3+4 新增 migration.rs（≈ 660 行）+ lib.rs ENV_LOCK 拆分 +
+// scoped_dsh_home（≈ 60 行新增）+ commands.rs 增加 4 条迁移向导命令
+// （约 +35 行）。P5 step 3 KernelAdapter::custom_skill_dirs 接口预留 +
+// DshAdapter 返回 paths::skills_active_root() + start 注入
+// DSH_CUSTOM_SKILL_DIRS env + ENV_PATH_SEP 常量 + 2 个测试，约 +91 行
+// 落在 kernel_adapter.rs。P7 McodeAdapter mock + KERNEL_FAMILY_MCODE
+// 常量 + 8 个测试，约 +100 行同样落在 kernel_adapter.rs。copy_tree_inner
+// 与 plugins.rs / skills.rs 的 copy_tree 是已知重复——AGENTS.md §3 要求
+// 提到 pkg.rs，留到独立重构处理；FILE_BUDGETS 里 kernel_adapter.rs /
+// migration.rs / commands.rs 也对应上调。
+const TOTAL_BUDGET = 23070;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */

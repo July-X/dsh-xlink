@@ -27,7 +27,7 @@ use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
 
-use crate::instance::{InstanceRecord, KERNEL_FAMILY_DSH};
+use crate::instance::{InstanceRecord, KERNEL_FAMILY_DSH, KERNEL_FAMILY_MCODE};
 use crate::paths;
 
 /// PATH 类环境变量在不同平台的分隔符。Windows 上是 `;`，其他平台是 `:`。
@@ -151,7 +151,10 @@ impl std::fmt::Display for AdapterError {
 /// （`HashSet` 要求 trait 实现 `Hash + Eq`，与 `dyn` trait 对象不兼容，
 /// 所以这里用 `Vec` + 线性扫描；适配器数量天然很少，开销可忽略。）
 pub fn adapters() -> Vec<Box<dyn KernelAdapter>> {
-    vec![Box::new(DshAdapter::default())]
+    vec![
+        Box::new(DshAdapter::default()),
+        Box::new(McodeAdapter::new()),
+    ]
 }
 
 /// 按 `family` 字符串查询适配器。找不到时返回 `None`，调用方应使用
@@ -413,6 +416,83 @@ impl KernelAdapter for DshAdapter {
             return Err(AdapterError::Io(format!("无法接管内核日志：{error}")));
         }
         Ok(child)
+    }
+}
+
+// ─── mcode 适配器（mock / dry-run）────────────────────────────────────────
+
+/// mcode 内核族的**mock**实现——按开发计划 §P7「先实现 mock 或 dry-run
+/// adapter，是否接入真实 mcode CLI 由独立需求决定」。
+///
+/// 当前**不接入**真实 mcode CLI：所有物化 / 启动操作都返回
+/// [`AdapterError::VersionNotInstalled`]（mock 不真支持）。能力位全部不声明，
+/// 命令层据此不渲染「安装 / 同步 / 接线」等按钮——只是让 Xlink 的通用
+/// 实例管理代码（注册表 / 端口分配 / 锁 / 日志归属）能在两种内核并存时
+/// 仍然走同一条路径，证明 `KernelAdapter` trait 真的能容纳第二种内核。
+///
+/// 真实接入时只需替换 [`McodeAdapter::start`] / [`McodeAdapter::prepare_instance`]
+/// 等方法实现，**不**需要改 [`adapters`] 注册表与 [`KernelAdapter`] trait。
+pub struct McodeAdapter;
+
+impl McodeAdapter {
+    pub const fn new() -> Self {
+        McodeAdapter
+    }
+}
+
+impl Default for McodeAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KernelAdapter for McodeAdapter {
+    fn family(&self) -> &'static KernelFamily {
+        // `KernelFamily = str`（P2 引入的类型别名）—— `&'static str`
+        // 直接满足 trait 方法签名，无需转换。
+        KERNEL_FAMILY_MCODE
+    }
+
+    fn capabilities(&self) -> AdapterCapabilities {
+        // mock 不声明任何能力——所有物化 / 接线 / 安装按钮都不渲染。
+        AdapterCapabilities::NONE
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Mcode (mock)"
+    }
+
+    fn resolve_install_dir(&self, _version: &str) -> Option<PathBuf> {
+        // mock 不解析安装目录——调用方拿到 `None` 会走 legacy / 兜底，
+        // 真实 mcode 接入时这里返回 `Some(path)` 即可。
+        None
+    }
+
+    fn validate_version(&self, _version: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn prepare_instance(&self, record: &InstanceRecord) -> Result<(), AdapterError> {
+        // mock 不真准备实例目录——返回 VersionNotInstalled 让调用方
+        // 弹「尚未支持」提示。真实 mcode 接入时在这里创建 mcode 专有
+        // 目录布局即可。
+        Err(AdapterError::VersionNotInstalled {
+            family: record.kernel_family.clone(),
+            version: record.kernel_version.clone().unwrap_or_default(),
+        })
+    }
+
+    fn start(
+        &self,
+        record: &InstanceRecord,
+        _install_root: &Path,
+        _node: &Path,
+    ) -> Result<std::process::Child, AdapterError> {
+        // mock 不启动进程。真实 mcode 接入时在这里 spawn `mcode web` 即可。
+        Err(AdapterError::VersionNotInstalled {
+            family: record.kernel_family.clone(),
+            version: record.kernel_version.clone().unwrap_or_default(),
+        })
     }
 }
 
@@ -700,5 +780,89 @@ mod tests {
         assert_eq!(dirs.len(), 1);
         assert_eq!(dirs[0], paths::skills_active_root());
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    // --- P7：mcode mock 适配器测试 ---------------------------------------
+
+    #[test]
+    fn adapters_returns_both_dsh_and_mcode() {
+        // 注册表必须同时返回 dsh 与 mcode 适配器——证明通用实例模型能
+        // 容纳第二种内核（开发计划 §P7 测试要求）。按 family 排序便于
+        // 测试断言稳定。
+        let mut adapters = adapters();
+        adapters.sort_by(|a, b| a.family().cmp(b.family()));
+        let families: Vec<_> = adapters.iter().map(|a| a.family()).collect();
+        assert_eq!(families, vec!["dsh", "mcode"]);
+    }
+
+    #[test]
+    fn lookup_finds_mcode() {
+        let adapter = lookup("mcode").expect("mcode adapter must be registered");
+        assert_eq!(adapter.family(), "mcode");
+        assert_eq!(adapter.display_name(), "Mcode (mock)");
+    }
+
+    #[test]
+    fn mcode_adapter_declares_no_capabilities() {
+        // mock 不支持任何能力——命令层据此不渲染「安装 / 同步 / 接线」按钮。
+        let caps = McodeAdapter.capabilities();
+        assert!(caps.list().is_empty(), "mock 不应声明任何能力位");
+    }
+
+    #[test]
+    fn mcode_adapter_resolve_install_dir_returns_none() {
+        // mock 不解析真实安装目录——调用方拿到 None 会走 legacy / 兜底。
+        assert!(McodeAdapter.resolve_install_dir("0.1.0").is_none());
+    }
+
+    #[test]
+    fn mcode_adapter_prepare_instance_rejects_as_unsupported() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = temp_dir("mcode-prepare");
+        let _xlink = scoped_xlink_home(&home);
+        let mut record = sample_record();
+        record.kernel_family = "mcode".into();
+        record.kernel_version = Some("0.1.0".into());
+        let err = McodeAdapter
+            .prepare_instance(&record)
+            .expect_err("mock 不应真准备");
+        match err {
+            AdapterError::VersionNotInstalled { .. } => {}
+            other => panic!("unexpected: {other:?}"),
+        }
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn mcode_adapter_start_rejects_as_unsupported() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = temp_dir("mcode-start");
+        let _xlink = scoped_xlink_home(&home);
+        let mut record = sample_record();
+        record.kernel_family = "mcode".into();
+        record.kernel_version = Some("0.1.0".into());
+        let empty = temp_dir("mcode-start-empty");
+        let err = McodeAdapter
+            .start(&record, &empty, Path::new("/nonexistent/node"))
+            .expect_err("mock 不应真启动");
+        match err {
+            AdapterError::VersionNotInstalled { .. } => {}
+            other => panic!("unexpected: {other:?}"),
+        }
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&empty).ok();
+    }
+
+    #[test]
+    fn mcode_adapter_custom_skill_dirs_returns_empty() {
+        // mock 不主动接入技能目录。
+        assert!(McodeAdapter.custom_skill_dirs().is_empty());
+    }
+
+    #[test]
+    fn dsh_and_mcode_have_distinct_family_strings() {
+        // 防止未来有人把两个 family 写成同名（同名字符串会让 lookup
+        // 走到错误的 adapter 上）。
+        assert_ne!(McodeAdapter.family(), DshAdapter.family());
     }
 }
