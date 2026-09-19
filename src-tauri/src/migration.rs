@@ -1049,8 +1049,7 @@ mod tests {
         fs::create_dir_all(plugins_legacy.join("pkg-a")).expect("pkg-a");
         fs::write(plugins_legacy.join("pkg-a/data.txt"), "abc").expect("pkg data");
 
-        let report =
-            run_migration(ConflictPolicy::SkipIfNewer).expect("migration succeeds");
+        let report = run_migration(ConflictPolicy::SkipIfNewer).expect("migration succeeds");
         assert!(report.migration_id.starts_with("Auto"));
         assert!(report.backup_root.exists());
         assert!(report
@@ -1117,8 +1116,7 @@ mod tests {
         );
         set_mtime(&newer, newer_time);
 
-        let report =
-            run_migration(ConflictPolicy::SkipIfNewer).expect("migration succeeds");
+        let report = run_migration(ConflictPolicy::SkipIfNewer).expect("migration succeeds");
         let plugins_item = report
             .items
             .iter()
@@ -1155,8 +1153,7 @@ mod tests {
             now - std::time::Duration::from_secs(60),
         );
 
-        let report = run_migration(ConflictPolicy::BackupAndOverwrite)
-            .expect("migration succeeds");
+        let report = run_migration(ConflictPolicy::BackupAndOverwrite).expect("migration succeeds");
         let plugins_item = report
             .items
             .iter()
