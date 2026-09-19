@@ -600,6 +600,7 @@ pub async fn install_kernel(
         // 到的只是 macOS .app 包那种 launchd-only PATH——这是 nvm 管
         // 理的安装里很常见的场景。
         kernel::install_version(
+            crate::instance::KERNEL_FAMILY_DSH,
             &data_dir,
             &node_path,
             &pnpm_exe,
@@ -864,6 +865,8 @@ pub async fn start_kernel(
             settings: &settings,
             node_path: &node_path,
             pnpm_exe: &pnpm_exe,
+            family: crate::instance::KERNEL_FAMILY_DSH,
+            instance_id: "default",
         };
         let (mut report, child) = guard::guarded_start(&deps, &mut send);
         if let Some(child) = child {
@@ -1045,7 +1048,12 @@ pub async fn report_harness_fault(
     blocking(move || -> Result<guard::Incident, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
-        let incident = guard::diagnose_runtime(&data_dir, report);
+        let incident = guard::diagnose_runtime(
+            &data_dir,
+            crate::instance::KERNEL_FAMILY_DSH,
+            "default",
+            report,
+        );
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.emit("harness-fault", &incident);
         }
@@ -1116,9 +1124,14 @@ fn bounded_health_text(
 /// `/api/remote.mux`。
 pub(crate) fn kernel_workbench_url_from_log(
     data_dir: &std::path::Path,
+    family: &str,
+    instance_id: &str,
     port: u16,
 ) -> Option<String> {
-    let tail = read_tail(&kernel::current_kernel_log_path(data_dir), 16 * 1024);
+    let tail = read_tail(
+        &kernel::current_kernel_log_path(data_dir, family, instance_id),
+        16 * 1024,
+    );
     let needle = format!("http://127.0.0.1:{port}/?token=");
     let start = tail.rfind(&needle)?;
     let rest = &tail[start + needle.len()..];
@@ -1139,7 +1152,12 @@ fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String,
     let fallback = format!("http://127.0.0.1:{port}");
     let deadline = std::time::Instant::now() + URL_TIMEOUT;
     loop {
-        if let Some(candidate) = kernel_workbench_url_from_log(data_dir, port) {
+        if let Some(candidate) = kernel_workbench_url_from_log(
+            data_dir,
+            crate::instance::KERNEL_FAMILY_DSH,
+            "default",
+            port,
+        ) {
             if workbench_url_responds(&candidate, PROBE_TIMEOUT) {
                 return Ok(candidate);
             }
@@ -1153,7 +1171,12 @@ fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String,
         if std::time::Instant::now() >= deadline {
             return Err(format!(
                 "无法确认内核工作台地址，请打开日志后重试（日志：{}）",
-                kernel::current_kernel_log_path(data_dir).display()
+                kernel::current_kernel_log_path(
+                    data_dir,
+                    crate::instance::KERNEL_FAMILY_DSH,
+                    "default"
+                )
+                .display()
             ));
         }
         std::thread::sleep(POLL_INTERVAL);
@@ -1254,7 +1277,12 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         // focus，并跳过探针与 source map 准备这些慢路径。
         if let Some(existing) = app.get_webview_window("harness") {
             let loaded = crate::lock(&state.harness_url).clone();
-            let latest = kernel_workbench_url_from_log(&data_dir, settings.port);
+            let latest = kernel_workbench_url_from_log(
+                &data_dir,
+                crate::instance::KERNEL_FAMILY_DSH,
+                "default",
+                settings.port,
+            );
             let stale = match (&loaded, &latest) {
                 (Some(loaded), Some(latest)) => loaded != latest,
                 // 没有记录到本次加载的地址（例如壳重启后窗口仍在）时不去
@@ -2853,7 +2881,11 @@ mod workbench_url_tests {
                 .expect("clock")
                 .as_nanos()
         ));
-        let log_path = kernel::current_kernel_log_path(&root);
+        let log_path = kernel::current_kernel_log_path(
+            &root,
+            crate::instance::KERNEL_FAMILY_DSH,
+            "default",
+        );
         // P1：`kernel::logs_dir` 现在指向 shell-aware 路径，需要把 DSH_XLINK_HOME
         // 临时指向 root，让测试创建的日志文件与生产代码读到的是同一份。
         let _xlink_home = crate::tests::scoped_xlink_home(&root);

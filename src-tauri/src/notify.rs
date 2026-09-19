@@ -530,14 +530,24 @@ fn subscribe_once(app: &AppHandle, stop: &AtomicBool) -> Result<(), String> {
     let state = app.state::<AppState>();
     let data_dir = state.data_dir.clone();
     let port = settings::load_for_shell(settings::current_mode()).port;
-    let launch_url =
-        crate::commands::kernel_workbench_url_from_log(&data_dir, port).ok_or_else(|| {
-            format!(
-                "还没有拿到内核入口地址（端口 {port}）。工作台未启动时不会收到任务完成通知；\
-                 请先在概览页启动工作台。日志：{}",
-                kernel::current_kernel_log_path(&data_dir).display()
+    let launch_url = crate::commands::kernel_workbench_url_from_log(
+        &data_dir,
+        crate::instance::KERNEL_FAMILY_DSH,
+        "default",
+        port,
+    )
+    .ok_or_else(|| {
+        format!(
+            "还没有拿到内核入口地址（端口 {port}）。工作台未启动时不会收到任务完成通知；\
+             请先在概览页启动工作台。日志：{}",
+            kernel::current_kernel_log_path(
+                &data_dir,
+                crate::instance::KERNEL_FAMILY_DSH,
+                "default"
             )
-        })?;
+            .display()
+        )
+    })?;
     let cookie = fetch_auth_cookie(&launch_url, port)?;
 
     // 标题来源的每次连接重置：现在优先吃 `session/control` 的 baseline（下面开

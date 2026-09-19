@@ -574,6 +574,7 @@ fn rotate_install_logs(logs: &Path, keep: &Path) {
 /// `on_progress` 会收到人类可读的阶段消息以及每一条原始安装日志行，
 /// 让 UI 在安装运行期间可以实时展示输出。
 pub fn install_version(
+    family: &str,
     data_dir: &Path,
     node_exe: &Path,
     pnpm_exe: &Path,
@@ -590,7 +591,7 @@ pub fn install_version(
     // 重装（目录本来就存在）时保留残骸，让用户能对比或手动处理；残骸没有入口
     // 文件，因此不会被 `list_installed` 列出（见该函数的判据）。
     let existed_before = dir.exists();
-    let outcome = install_version_into(data_dir, node_exe, pnpm_exe, version, on_progress);
+    let outcome = install_version_into(family, data_dir, node_exe, pnpm_exe, version, on_progress);
     if outcome.is_err() && !existed_before {
         let _ = fs::remove_dir_all(&dir);
     }
@@ -598,6 +599,7 @@ pub fn install_version(
 }
 
 fn install_version_into(
+    family: &str,
     data_dir: &Path,
     node_exe: &Path,
     pnpm_exe: &Path,
@@ -626,7 +628,7 @@ fn install_version_into(
     // `install-<version>.log` 轮转调用，作为一次性清理——把重命名前残留的
     // 旧文件扫掉，因为它们的旧路径已经无法通过 `list_log_files` 触达。
     let logs_root = logs_dir(data_dir);
-    let log_spec = install_log_spec(version);
+    let log_spec = install_log_spec(family, "", version);
     let log_path = log_spec.path_for(&logs_root, &crate::process::current_date_string());
     rotate_install_logs(&logs_root, &log_path);
 
@@ -1060,23 +1062,31 @@ pub const KERNEL_LOG_NAME: &str = "kernel";
 /// 为运行中的内核构造按日轮转的日志 spec。进程内的每个轮转槽位
 /// （start、run_pnpm、ensure_pnpm）都使用同一 spec，这样在某个标签页
 /// tail 时始终跟踪同一个内核会话。
-pub fn kernel_log_spec() -> LogSpec {
-    LogSpec::new(build_log_kind(), KERNEL_LOG_NAME)
+///
+/// `family` / `instance_id` 写入文件名（dev plan §4 release threshold），
+/// 多实例下同 family / version 不会写到同一日志文件。
+pub fn kernel_log_spec(family: &str, instance_id: &str) -> LogSpec {
+    LogSpec::new(build_log_kind(), KERNEL_LOG_NAME).with_instance(family, instance_id)
 }
 
 /// 为内核安装构造按日轮转的日志 spec。版本嵌入逻辑名中，因此同一版本的
 /// 多次安装尝试会落到同一个每日文件里（重试之间以追加方式累积）。
-pub fn install_log_spec(version: &str) -> LogSpec {
+pub fn install_log_spec(family: &str, instance_id: &str, version: &str) -> LogSpec {
     LogSpec::new(build_log_kind(), format!("install-{version}"))
+        .with_instance(family, instance_id)
 }
 
 /// 便捷函数：获取给定日志目录下当天的内核日志路径。由需要最近一天证据的调用方
 /// 使用：启动防护的归因（`guard::kernel_log_path`）、从日志里找回工作台地址
 /// （`commands::kernel_workbench_url_from_log`）以及通知面板引用日志路径。
-pub fn current_kernel_log_path(data_dir: &Path) -> PathBuf {
+pub fn current_kernel_log_path(
+    data_dir: &Path,
+    family: &str,
+    instance_id: &str,
+) -> PathBuf {
     let logs = logs_dir(data_dir);
     let today = crate::process::current_date_string();
-    kernel_log_spec().path_for(&logs, &today)
+    kernel_log_spec(family, instance_id).path_for(&logs, &today)
 }
 
 /// 用给定参数启动 pnpm 一次，将合并的 stdout+stderr 按行同时管道到
@@ -1181,7 +1191,11 @@ pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<C
     // 派生后立刻纳入「随壳终止」的保护：Windows 上入 Job Object，壳崩溃 / 被
     // 强杀时内核被系统一并收走，不会留下占端口的孤儿（P2-2）。
     crate::process::adopt_kernel_process(&child);
-    if let Err(error) = attach_log_drainers(&mut child, &logs_dir(data_dir), &kernel_log_spec()) {
+    if let Err(error) = attach_log_drainers(
+        &mut child,
+        &logs_dir(data_dir),
+        &kernel_log_spec(crate::instance::KERNEL_FAMILY_DSH, "default"),
+    ) {
         crate::process::terminate_process_tree(&mut child);
         return Err(AppError::Io(format!("无法接管内核日志：{error}")));
     }
@@ -2461,7 +2475,7 @@ mod tests {
         fs::create_dir_all(root.join("node_modules")).unwrap();
         let logs_dir = root.join("logs");
         fs::create_dir_all(&logs_dir).unwrap();
-        let log_spec = install_log_spec("smoke-fail");
+        let log_spec = install_log_spec(KERNEL_FAMILY_DSH, "", "smoke-fail");
         let mut captured = Vec::<String>::new();
         let result = smoke_load_native_modules(&node, &root, &logs_dir, &log_spec, &mut |line| {
             captured.push(line.to_string())
@@ -2498,7 +2512,7 @@ mod tests {
         fs::create_dir_all(root.join("node_modules")).unwrap();
         let logs_dir = root.join("logs");
         fs::create_dir_all(&logs_dir).unwrap();
-        let log_spec = install_log_spec("smoke-invoke");
+        let log_spec = install_log_spec(KERNEL_FAMILY_DSH, "", "smoke-invoke");
         let mut captured = Vec::<String>::new();
         // 探针应当被调用并以非零退出码结束（因为内核里啥都没装）。
         let _ = smoke_load_native_modules(&node, &root, &logs_dir, &log_spec, &mut |line| {
@@ -2654,6 +2668,7 @@ mod tests {
         let version = "0.9.9";
 
         let error = install_version(
+            KERNEL_FAMILY_DSH,
             &root,
             Path::new("/nonexistent/node"),
             Path::new("/nonexistent/pnpm"),
