@@ -10,6 +10,7 @@ mod commands;
 mod env;
 mod error;
 mod guard;
+mod instance;
 mod kernel;
 mod node;
 mod node_install;
