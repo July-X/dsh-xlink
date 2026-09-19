@@ -121,13 +121,17 @@ pub struct GuardDeps<'a> {
     pub node_path: &'a Path,
     /// 解析到的 pnpm 可执行文件，用于在两次尝试之间重新同步 profile。
     pub pnpm_exe: &'a Path,
+    /// 内核族（dev plan §4 release threshold 多实例日志区分）。
+    pub family: &'a str,
+    /// 实例 id。
+    pub instance_id: &'a str,
 }
 
-fn kernel_log_path(data_dir: &Path) -> PathBuf {
+fn kernel_log_path(deps: &GuardDeps<'_>) -> PathBuf {
     // 取当天的轮转内核日志的末尾；更早日期的文件仍然可以通过
     // `read_log_file` 拿来进行更深入的分析，但启动失败归因总是希望拿
     // 到最新的证据。
-    kernel::current_kernel_log_path(data_dir)
+    kernel::current_kernel_log_path(deps.data_dir, deps.family, deps.instance_id)
 }
 
 // --- 看门狗 ---------------------------------------------------------------
@@ -590,7 +594,7 @@ fn refresh_wiring(
 }
 
 fn log_tail(deps: &GuardDeps<'_>) -> String {
-    read_tail(&kernel_log_path(deps.data_dir), LOG_TAIL_BYTES)
+    read_tail(&kernel_log_path(deps), LOG_TAIL_BYTES)
 }
 
 // --- 故障持久化 ---------------------------------------------------------------
@@ -734,7 +738,7 @@ pub fn guarded_start(
                     suspects,
                     attempts: trail,
                     log_tail: tail,
-                    log_path: kernel_log_path(deps.data_dir).display().to_string(),
+                    log_path: kernel_log_path(deps).display().to_string(),
                     hint: None,
                     at: crate::process::epoch_secs(),
                     cause: String::from("plugin"),
@@ -811,7 +815,7 @@ pub fn guarded_start(
                     suspects: all_suspects,
                     attempts: trail,
                     log_tail: tail,
-                    log_path: kernel_log_path(deps.data_dir).display().to_string(),
+                    log_path: kernel_log_path(deps).display().to_string(),
                     hint: None,
                     at: crate::process::epoch_secs(),
                     cause: String::from("plugin"),
@@ -896,7 +900,7 @@ pub fn guarded_start(
         suspects: dedup_suspects(suspects),
         attempts: trail,
         log_tail: tail,
-        log_path: kernel_log_path(deps.data_dir).display().to_string(),
+        log_path: kernel_log_path(deps).display().to_string(),
         hint: Some(hint),
         at: crate::process::epoch_secs(),
         cause,
@@ -1074,7 +1078,12 @@ fn log_has_http_failure(tail: &str) -> bool {
 /// 在不重启、不改动运行中的内核的前提下诊断一份工作台健康报告。
 /// 插件证据会被临时隔离，这样下一次重启是安全的；至于具体是保持、
 /// 恢复还是移除插件，仍然由用户在故障面板里决定。
-pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
+pub fn diagnose_runtime(
+    data_dir: &Path,
+    family: &str,
+    instance_id: &str,
+    report: HealthReport,
+) -> Incident {
     let now = crate::process::epoch_secs();
     let attempt = runtime_attempt(&report);
     if let Some(existing) = load_incident(data_dir) {
@@ -1088,6 +1097,8 @@ pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
         settings: &settings::Settings::default(),
         node_path: Path::new(""),
         pnpm_exe: Path::new(""),
+        family: crate::instance::KERNEL_FAMILY_DSH,
+        instance_id: "default",
     });
     let store_items = plugins::load_store(data_dir).items;
     let kernel_label = kernel::read_active(data_dir).unwrap_or_default();
@@ -1241,7 +1252,9 @@ pub fn diagnose_runtime(data_dir: &Path, report: HealthReport) -> Incident {
         suspects,
         attempts,
         log_tail: tail,
-        log_path: kernel_log_path(data_dir).display().to_string(),
+        log_path: kernel::current_kernel_log_path(data_dir, family, instance_id)
+            .display()
+            .to_string(),
         hint: Some(hint),
         at: now,
         cause: cause.to_string(),
@@ -1834,7 +1847,12 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             page_url: "http://127.0.0.1:4090/".into(),
         };
 
-        let incident = diagnose_runtime(&data_dir, report);
+        let incident = diagnose_runtime(
+            &data_dir,
+            crate::instance::KERNEL_FAMILY_DSH,
+            "default",
+            report,
+        );
 
         assert_eq!(incident.cause, "frontend");
         assert!(
@@ -1880,6 +1898,8 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
         );
         let incident = diagnose_runtime(
             &data_dir,
+            crate::instance::KERNEL_FAMILY_DSH,
+            "default",
             HealthReport {
                 kind: "unhandled-rejection".into(),
                 message: "TypeError: boom".into(),
@@ -2095,6 +2115,8 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             settings: &settings,
             node_path: &fake_node,
             pnpm_exe: Path::new("/nonexistent/pnpm"),
+            family: crate::instance::KERNEL_FAMILY_DSH,
+            instance_id: "default",
         };
         let (report, child) = guarded_start(&deps, &mut |_| {});
         assert!(child.is_none(), "环境类失败不该留下内核进程");
@@ -2179,6 +2201,8 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             settings: &settings,
             node_path: Path::new("/nonexistent/node"),
             pnpm_exe: Path::new("/nonexistent/pnpm"),
+            family: crate::instance::KERNEL_FAMILY_DSH,
+            instance_id: "default",
         };
         let (report, child) = guarded_start(&deps, &mut |_| {});
 

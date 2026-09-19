@@ -410,7 +410,7 @@ impl KernelAdapter for DshAdapter {
         if let Err(error) = crate::process::attach_log_drainers(
             &mut child,
             &paths::shell_logs_dir(crate::paths::ShellMode::current()),
-            &crate::kernel::kernel_log_spec(),
+            &crate::kernel::kernel_log_spec(&record.kernel_family, &record.id),
         ) {
             crate::process::terminate_process_tree(&mut child);
             return Err(AdapterError::Io(format!("无法接管内核日志：{error}")));
