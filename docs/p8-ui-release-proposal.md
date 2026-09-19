@@ -167,3 +167,18 @@ pub fn resolve_default() -> (Family, String) {
 
 收到回复后即可开始实现——预计 4 笔 commit，与 P6 step 5 提案（3 commit）
 合计 ~7 commit 完成 P6 step 5 + P8 全量。
+
+---
+
+## 落地记录（2026-09-20）
+
+4 决策点按推荐项拍板 + 落地完成：
+
+| 决策点 | 拍板 | 落地 commit |
+|-------|------|-------------|
+| 1. 实例列表 UI | 顶部 dropdown | `25cd376` `feat(p8): 顶部实例 dropdown 落地` |
+| 2. 插件面板视图 | 单 panel + 双 tab | `9df8ed8` 后端 `PluginRow` per-instance + `83186d2` 前端双 tab |
+| 3. PR / release 边界 | 阶段性 11 PR + 1 tag（`desktop-v0.2.0`） | 开发层已就绪，发布重组待用户拍板时机 |
+| 4. 默认实例解析器 | `instance::resolve_default()` 函数 + 9 处替换 | `a932243` / `3b87473` / `5af0325` / `1053040` 等 |
+
+累计 `main-dev2` 60 commit，P0–P8 共 9 stage 全部落地。**剩余发布层动作**：60 commit 按 dev plan §5 重组为 11 PR + 打 `desktop-v0.2.0` tag + push 远端——按 profile 规则需用户明确授权。

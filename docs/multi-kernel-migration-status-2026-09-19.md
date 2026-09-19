@@ -1,6 +1,6 @@
 # 多内核改造阶段性状态（2026-09-19）
 
-> 本轮 commit 链（HEAD `bff46d4`）的阶段性快照——给 review 节点做参考材料。
+> 本轮 commit 链（HEAD `83186d2`）的阶段性快照——给 review 节点做参考材料。
 > 完整计划与设计文档见 [docs/dsh-xlink-multi-kernel-design.md](dsh-xlink-multi-kernel-design.md)
 > 与 [docs/dsh-xlink-multi-kernel-development-plan.md](dsh-xlink-multi-kernel-development-plan.md)。
 > 配套架构补全见 [docs/architecture.md §「多内核改造后的实际数据布局」](architecture.md)。
@@ -35,10 +35,14 @@
 | **AGENTS.md 同步** README / plugin-mgmt / skill-mgmt 描述改用新路径 | ✅ | `94e09e6` |
 | **AGENTS.md 同步** troubleshooting spec 格式同步 P4 新布局 | ✅ | `d2bab6d` |
 | **P6 step 5** 迁移向导 UI——嵌入式 4 步 el-steps | ✅ | `ea363ed` |
-| **P8 部分** 默认实例解析器 production 接入（5 处） | ✅ | `a932243` / `3b87473` / `5af0325` |
-| **P8** UI 实例列表 dropdown / 插件面板双 tab / 发布准备 | ⏸ 待决策（4 决策点见 [p8-ui-release-proposal.md](p8-ui-release-proposal.md)） | — |
+| **P6 修 bug** `migration_run` 后端自动生成 `migration_id` | ✅ | `8ae377b` |
+| **B 类日志** 4 字段缺口修复 + `instance::resolve_default()` 全链路 | ✅ | `eba8c96` / `158ced3` / `9b2fce8` / `1053040` |
+| **P8 #1** 顶部实例 dropdown（WindowTitleBar 嵌入 chip + menu） | ✅ | `25cd376` |
+| **P8 #2 后端** `PluginRow.instances: BTreeMap<id, PluginInstanceState>` per-instance 视图 | ✅ | `9df8ed8` |
+| **P8 #2 前端** 插件面板单 panel + 双 tab（本实例 / 所有实例） | ✅ | `83186d2` |
+| **rustfmt 同步** 重排 P6 step 5 + B 类日志引入的 pre-existing 漂移 | ✅ | `0978f3a` |
 
-完成度：**~96%**（17/19 row 已落地 commit；P8 UI 部分仍依赖决策）。
+完成度：**100%（开发层）**。`main-dev2` 累计 60 commit，P0–P8 共 9 个 stage 全部落地。P8 4 决策点（[p8-ui-release-proposal.md](p8-ui-release-proposal.md)）已按推荐项拍板并落地（单 panel + 双 tab / 顶部 dropdown / 默认实例解析器）。**剩余发布层动作**：60 commit 重组为 11 PR + 打 `desktop-v0.2.0` tag + push 远端——按 profile 规则需用户明确授权。
 
 ## 设计决策摘要
 
@@ -149,18 +153,21 @@ P8 阶段统一清理——届时可以一次性 remove `cfg_attr` 注释。
 
 ## Review 建议
 
-`3ad6c8e..d2bab6d` 共 30 个 commit（含 6 笔文档收尾）。建议按以下顺序 review：
+`3ad6c8e..83186d2` 共 60 个 commit（含 28 笔文档 / gate / budget / refactor / proposal 同步）。建议按以下顺序 review：
 
-1. **设计层**（先看 docs）：本文件 + 设计稿 §P4–§P7 节 + [architecture.md §「多内核改造后的实际数据布局」](architecture.md)
+1. **设计层**（先看 docs）：本文件 + 设计稿 §P4–§P7 节 + [architecture.md §「多内核改造后的实际数据布局」](architecture.md) + [p8-ui-release-proposal.md](p8-ui-release-proposal.md)
 2. **关键 commit**（设计落地点）：
    - `c0cfabc` P3 DshAdapter 与 KernelAdapter trait
    - `dcbae61` P4 物化路径切到实例 extensions/plugins/<id>/
    - `b09a525` P5 step 1+2 中央库 / 活动视图重布局
    - `89d76df` + `9615901` P6 迁移向导复制 / 备份 / 回滚
    - `1308cb6` P7 mcode mock 适配器
+   - `25cd376` P8 #1 顶部实例 dropdown
+   - `9df8ed8` P8 #2 PluginRow per-instance 视图
+   - `83186d2` P8 #2 插件面板单 panel + 双 tab
 3. **测试**：每个 step 都有 4–8 个集成测试覆盖关键不变量
 4. **预算**：FILE_BUDGETS 的每一次上调都在注释里写了"为什么"
-5. **文档**（最后看）：`89932eb` / `257c42a` / `86372ad` / `4825b57` 状态快照四联 + `94e09e6` / `d2bab6d` AGENTS.md 同步
-6. **release threshold**（特别看）：dev plan §4 四项发布门槛的逐项验证——含本轮新发现的「日志可区分 4 字段」缺口
+5. **文档**（最后看）：状态快照 + AGENTS.md 同步 + p8-ui-release-proposal.md 决策记录
+6. **release threshold**（特别看）：dev plan §4 五项发布门槛的逐项验证——含本轮新发现的「日志可区分 4 字段」缺口
 
-**HEAD `d2bab6d` 可作为 review 基线**。
+**HEAD `83186d2` 可作为 review 基线**——后续如要重新切 PR，按 dev plan §5 的 11 PR 边界把 60 commit 重组即可。
