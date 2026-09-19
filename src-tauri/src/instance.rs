@@ -57,6 +57,22 @@ pub const KERNEL_FAMILY_DSH: &str = "dsh";
 /// mcode 内核族标识（P7 mock 适配器预留）。真实接口协议尚未确定，本常量
 /// 当前仅供 mock adapter 与注册表使用；接入真实 mcode CLI 时再扩展能力声明。
 pub const KERNEL_FAMILY_MCODE: &str = "mcode";
+
+/// 默认实例元组（family + id）——legacy 单实例时代向多实例过渡期间
+/// 的「占位默认实例」。所有 hard-coded `(KERNEL_FAMILY_DSH,
+/// DEFAULT_INSTANCE_ID)` caller（`guard::GuardDeps`、
+/// `commands::kernel_workbench_url_from_log`、`notify::*`、
+/// `kernel::start()` 等共 8 处）应改走 `resolve_default()`，
+/// 未来 P8 UI 决策落地后由 [`InstanceRegistry::default_instance_id`]
+/// 接管——所有 caller 自动跟进，无需散落修改。
+///
+/// 返回 `(&'static str, &'static str)` 而非结构体：caller 现有的
+/// `kernel_log_spec(family, id)` / `current_kernel_log_path(data_dir,
+/// family, id)` 等签名是 `(family, id)` 形式，元组更对称
+/// 调用；引入结构体会让 caller 解构 + 重建，徒增行数。
+pub fn resolve_default() -> (&'static str, &'static str) {
+    (KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID)
+}
 /// 新实例端口分配的起始值；与旧版 release 默认端口一致，方便迁移。
 pub const DEFAULT_PORT_BASE: u16 = 3090;
 /// 新实例端口分配的搜索上限（不含）。留出常用管理端口（3090+）与系统预留。
