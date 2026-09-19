@@ -98,3 +98,64 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 - `chat-fingerprint.js`（仅注入到 `official-chat` 内容子 webview，**必须排在 `titlebar-pulse.js` 之后**）：只清除嵌入式痕迹，不再伪造浏览器指纹——把 `navigator.webdriver` 钉在 `false`（正常浏览器的值），并删除 `__TAURI__` / `__TAURI_INTERNALS__` / `__TAURI_METADATA__` / `__TAURI_IPC__` 全局（正常浏览器里它们根本不存在；暴露任何形式的 Proxy 都等于自报嵌入式身份）。其余表面保持真实：引擎是货真价实的桌面版 Edge，用普通 JS 对象冒充 `userAgentData` / plugins 等反而会被原生类检查识破。拉绳挂件由 strip WebView 承载，`chat-fingerprint.js` 仅作用于远程内容 WebView；两者不共享页面，因此不影响 Tauri bridge。
 - 三个脚本顶部都有 `if (window.top !== window.self) return` 顶帧守卫，避免 Tauri 在每个 iframe 都执行初始化脚本时挂出多份拉绳 / 条带 / 指纹 stub；harness 工作台在嵌套预览里也可能挂多个 iframe，守卫能让顶层唯一实例化。
 - `harness-health.js` 只在顶层工作台文档运行，监听 `error` / `unhandledrejection`，并在页面挂载后两次延迟检查可见内容以识别白屏；上报 `{ kind, message, stack, pageUrl }`，IPC 失败时最多重试 4 次。`message` 取异常的「类型: 消息」以及 `cause` 链，与 `stack` 分开：WebKit 的 `Error.stack` 只有帧（`fn@url:行:列`），没有 V8 那样的消息首行，只上报堆栈会让事故证据里没有任何可读原因。`report_harness_fault` 只接受 `harness` webview、限定类型和有界字符串，在 `spawn_blocking` 中把前端证据与今天的内核日志（`<kind>-kernel-<YYYY-MM-DD>.log`，见「日志规范」）合并分析：路径/模块证据指向插件时临时隔离插件，内核内置组件（`@deepseek-ai/dsh-*` 命名空间或 `client-modules` 加载器短语如 `build-time externals drift` / `missed the module table` / `no registered package factory`）归因到当前内核版本（不自动改插件），仅 `blank` 探针命中且日志无明确证据时把全部已安装插件列为「软信号」嫌疑但**不自动隔离**（避免误停用），证据完全不足时回退到「unknown」分支提示用户查看日志或切换内核版本。前端堆栈里的包名只出现在内核 client-modules 的组合路由（`/plugins/??<包名>/client.js,…&rev=…`）查询串里，因此归因对 bundle 成员另有一条锚定规则：只有**单成员**组合路由（以及 map 来源名里的 `/plugins/<包名>/client.js`）才锁定到该包；多成员组合是若干插件拼成的同一个脚本，按成员逐个匹配会把同批的旁观者写进隔离清单，按内核命名空间匹配则会把插件的错记到内核头上——两类都必须拒绝。本机 WebKit 的堆栈文本还会把查询串整个丢掉（只剩 `http://127.0.0.1:3090/plugins/`），此时判为「前端 bundle 异常（未定位到包名）」：文案明确页面仍在运行，不隔离、不改插件、不弹事故面板——这类报告没有可处置的对象，打断用户没有收益，因此只记录到 `last-incident.json` 并由概览横幅提示，横幅的「查看详情」带 `force` 打开面板（`store.js` 的 `showIncident` 只对 `cause === 'frontend'` 且 `kind` 为 `unhandled-rejection` / `runtime-error` 的未恢复报告降级；有强证据的插件/内核报告、启动失败与 `blank` 白屏照旧弹面板）。事故持久化到 `last-incident.json`，`load_incident` 会在读路径上把这类判据已被修复的旧记录改判为「前端 bundle」（只改判断与文案，`suspects` / `attempts` / `log_tail` 原样保留、不回写文件），管理面板展示证据并提供插件处理、日志和内核版本入口。
+
+## 多内核改造后的实际数据布局
+
+> 本节描述当前代码（HEAD `89932eb`）已经落地的多实例数据布局。完整设计与开发计划见
+> [dsh-xlink-multi-kernel-design.md](dsh-xlink-multi-kernel-design.md) 与
+> [dsh-xlink-multi-kernel-development-plan.md](dsh-xlink-multi-kernel-development-plan.md)。
+> 阶段性 commit 快照见 [multi-kernel-migration-status-2026-09-19.md](multi-kernel-migration-status-2026-09-19.md)。
+
+### 路径解析分工（`src-tauri/src/paths.rs`）
+
+`paths.rs` 是路径解析的单一入口。**两套正交环境变量**：
+- `DSH_XLINK_HOME`：Xlink 自身的数据目录（`<xlink_home>/`）。中央库 / 活动视图 / 备份 / cache / state 都在这里。
+- `DSH_HOME`：旧版 dsh home（`~/.dsh/`）。kernel / `kernel_adapter` 还在用，与 `DSH_XLINK_HOME` 不重叠。
+
+### Xlink home（`<xlink_home>/`，由 `DSH_XLINK_HOME` 解析）
+
+```
+<DSH_XLINK_HOME>/
+├── shell/<mode>/                  # release / dev Shell 自己的设置 / UI 状态 / 日志
+├── kernels/<family>/              # 内核按 family 分目录
+│   ├── versions/<version>/        # 内核二进制安装位置（family = dsh / mcode）
+│   └── instances/<id>/            # 每个实例独立的 workspace + DSH home + runtime
+│       ├── home/                  # 该实例的 DSH_HOME（profile / sessions / credentials）
+│       ├── extensions/plugins/<id>/ # 插件物化目录（**多实例隔离**）
+│       ├── extensions/wiring.json  # 该实例的 profile 接线记录
+│       └── workspace/              # 内核进程 cwd
+├── dsh-plugins/                   # 插件中央库（**全局共享**）
+├── skills/
+│   ├── packages/<id>/             # 技能中央库（**全局共享**）
+│   └── active/                    # 技能活动视图（**v1 全局共享**——DSH 通过 customSkillDirs 接入）
+├── state/                         # 实例注册表 / PID 文件 / 端口锁
+├── cache/                         # nodejs / 内核下载缓存
+├── backups/<migration_id>/        # 迁移向导的 backup（回滚时按此还原）
+└── xlink.json                     # Xlink 自身的元数据
+```
+
+### DSH home（旧版 `<DSH_HOME>/`，由 `DSH_HOME` 解析）
+
+`~/.dsh/` 仍由 kernel / kernel_adapter 模块自管。本仓库**不写**这里：
+- `<DSH_HOME>/desktop[-dev]/kernels/<version>/` — 内核 legacy 安装位置（`resolve_install_dir` 兜底）
+- `<DSH_HOME>/desktop[-dev]/{active.txt, kernel.pid, port, logs/}` — Shell 状态 / 内核进程锁 / 日志
+- `<DSH_HOME>/desktop[-dev>/plugins.json` — **旧** 插件中央库（已迁到 `<DSH_XLINK_HOME>/dsh-plugins/`）
+- `<DSH_HOME>/desktop[-dev>/store.json` — **旧** 技能中央库（已迁到 `skills/packages/`）
+- `<DSH_HOME>/desktop[-dev]/skills/` — **旧** 技能活动视图（已迁到 `skills/active/`）
+
+**旧 → 新** 路径映射由 `migration::LegacySource` 表达，迁移向导 `migration::run_migration` 按这个映射把旧布局导入新布局（**旧源永不被删除**——rollback 路径依赖）。
+
+### 多实例隔离
+
+- 插件物化按 `(family, instance_id)` 隔离：`extensions/plugins/<id>/` 在每个实例独立维护；默认实例 `default`，其他实例由用户创建。
+- 技能活动视图 v1 **全局共享**（`skills/active/`）。`KernelAdapter::custom_skill_dirs` 已预留接口（`DshAdapter` 返回 `vec![skills_active_root()]`，`start` 通过 `DSH_CUSTOM_SKILL_DIRS` env 注入）；DSH 端升级支持时不需要改 Xlink 代码。
+- 实例端口 / PID / 锁由 `crate::instance::InstanceRegistry` 集中管理；`DSH_XLINK_HOME` 与 `DSH_HOME` 不在同一进程级 mutex 下，但 `start_instance` / `stop_instance` 都通过 `lifecycle_mutex()` 串行化。
+
+### 第二内核可扩展性（`KernelAdapter` trait）
+
+`src-tauri/src/kernel_adapter.rs` 的 `KernelAdapter` trait + `adapters()` 注册表容纳多内核族：
+- `DshAdapter`（active）—— DSH 的具体实现
+- `McodeAdapter`（mock，P7 阶段）—— 所有物化 / 启动返回 `VersionNotInstalled`，能力位全空；证明通用实例模型能容纳第二种内核
+- 真实接入新内核只需替换对应 adapter 的方法实现，**不**需要改 `KernelAdapter` trait 或 `adapters()` 注册表
+
+`KERNEL_FAMILY_DSH = "dsh"` / `KERNEL_FAMILY_MCODE = "mcode"` —— 路径解析、端口分配、锁、日志归属都已按 family 分流。
