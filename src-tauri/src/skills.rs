@@ -19,6 +19,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
+use crate::paths;
 use crate::pkg::{
     self, git_latest_tag, is_newer_than, new_staging_dir, remove_link, split_npm_spec,
     stamp_id_marker, write_source_marker, ID_MARKER,
@@ -26,10 +27,10 @@ use crate::pkg::{
 use crate::process::run_capture;
 use crate::releases::http_get_npm_latest;
 
-/// dsh home 下的中央库目录名。位于 kernel 读取的 `<home>/skills/` 根目录旁，
-/// 但归外壳所有：被停用的技能与来源标记绝不能出现在 kernel 的发现范围内。
-const STORE_SUBDIR: &str = "skills-store";
-/// 外壳的清单文件，位于中央库目录内。
+/// 外壳的清单文件，位于中央库目录内（`paths::skills_store_root()`）。
+/// 保留为常量便于所有 store I/O 引用同一个名字——P5 起中央库目录由
+/// `paths::skills_store_root()` 解析为 `skills/packages/`，原 `skills-store/`
+/// 子目录名废弃（[`legacy_dsh_skills_store`] 仅作只读兼容入口）。
 const STORE_FILE: &str = "store.json";
 /// 每个中央库条目内的单包获取标记。
 /// 技能目录包被识别的最大目录深度（相对包根目录，0 层子目录即深度 0）。
@@ -219,32 +220,35 @@ fn resolve_home() -> PathBuf {
     )
 }
 
-/// 中央库根目录：`<home>/skills-store/`。
-pub fn store_dir(home: &Path) -> PathBuf {
-    home.join(STORE_SUBDIR)
+/// 中央库根目录：`paths::skills_store_root()` 即
+/// `<xlink_home>/skills/packages/`。`home` 形参保留仅为兼容既有调用站点——
+/// P5 起中央库严格走 Xlink home，活动视图独立走 `paths::skills_active_root()`。
+pub fn store_dir(_home: &Path) -> PathBuf {
+    paths::skills_store_root()
 }
 
-fn store_file(home: &Path) -> PathBuf {
-    store_dir(home).join(STORE_FILE)
+fn store_file(_home: &Path) -> PathBuf {
+    paths::skills_store_root().join(STORE_FILE)
 }
 
-fn store_pkg_dir(home: &Path, id: &str) -> PathBuf {
-    store_dir(home).join(id)
+fn store_pkg_dir(_home: &Path, id: &str) -> PathBuf {
+    paths::skills_store_root().join(id)
 }
 
-/// kernel 读取的用户技能根（`<home>/skills/`，user-dsh rank 400）：
-/// 所有已安装 kernel 共享的单一落地目标。
-pub fn skills_root(home: &Path) -> PathBuf {
-    home.join("skills")
+/// kernel 读取的共享活动视图（`paths::skills_active_root()` 即
+/// `<xlink_home>/skills/active/`）：所有已接入该目录的 DSH 实例共享同一份
+/// 视图（v1 全局共享）。`home` 形参保留仅为兼容既有调用站点。
+pub fn skills_root(_home: &Path) -> PathBuf {
+    paths::skills_active_root()
 }
 
 /// 单个技能的活动根条目：目录包以其 frontmatter 名建立链接；
 /// 扁平文件则变为 `<name>.md`，使条目读起来就像技能本身。
-fn skill_target_path(home: &Path, entry: &SkillEntry) -> PathBuf {
+fn skill_target_path(_home: &Path, entry: &SkillEntry) -> PathBuf {
     if entry.path.ends_with(".md") {
-        skills_root(home).join(format!("{}.md", entry.name))
+        paths::skills_active_root().join(format!("{}.md", entry.name))
     } else {
-        skills_root(home).join(&entry.name)
+        paths::skills_active_root().join(&entry.name)
     }
 }
 
@@ -1866,7 +1870,15 @@ mod tests {
     static TEST_HOME_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     /// 每个测试一个唯一、一次性的假 home，drop 时清理。
-    struct TestHome(PathBuf);
+    /// P5：构造时同时把 `DSH_XLINK_HOME` 指向 home，让
+    /// `paths::skills_store_root()` / `paths::skills_active_root()` 解析
+    /// 到 home 内的 `skills/packages/` / `skills/active/`。
+    /// EnvGuard 在 TestHome drop 时自动还原 env——避免并行测试互相踩
+    /// `DSH_XLINK_HOME`。
+    struct TestHome {
+        root: PathBuf,
+        _guard: crate::tests::EnvGuard,
+    }
 
     impl TestHome {
         fn new() -> Self {
@@ -1880,17 +1892,21 @@ mod tests {
                 std::process::id()
             ));
             fs::create_dir_all(&base).expect("create test home");
-            TestHome(base)
+            let guard = crate::tests::scoped_xlink_home(&base);
+            TestHome {
+                root: base,
+                _guard: guard,
+            }
         }
 
         fn root(&self) -> PathBuf {
-            self.0.clone()
+            self.root.clone()
         }
     }
 
     impl Drop for TestHome {
         fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            let _ = fs::remove_dir_all(&self.root);
         }
     }
 
