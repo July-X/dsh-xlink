@@ -1,14 +1,20 @@
 //! 桌面外壳的持久化设置。
 //!
-//! 设置保存在 `<data_dir>/settings.json` 中，以扁平的 JSON 结构组织，UI 可
-//! 以通过普通的命令往返来读写它们（`<data_dir>` 是 `<dsh_home>/desktop[-dev]/`，
-//! 详见 [`crate::kernel::data_dir`]）。
+//! P1 之后，**Shell 设置**保存到 `<xlink_home>/shell/<mode>/settings.json`，
+//! 由 [`load_for_shell`] / [`save_for_shell`] 读写。旧版「按 data_dir 读写」
+//! 的 [`load`] / [`save`] 仍保留，作为只读兼容入口供迁移期使用：P6 之前
+//! 不应再调用它们。
+//!
+//! 旧布局是 `<dsh_home>/desktop[-dev]/settings.json`（参见
+//! [`crate::kernel::data_dir`]），路径在 [`settings_file`]；新布局由
+//! [`crate::paths::shell_settings_file`] 给出。
 
 use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::paths::{self, ShellMode};
 use crate::process::atomic_write;
 
 /// 用户尚未保存自己的端口值时，管理面板期望 dsh web 服务器所使用的端口。
@@ -58,7 +64,9 @@ impl Default for Settings {
     }
 }
 
-/// 设置文件在 `data_dir` 下的路径。
+/// 设置文件在 `data_dir` 下的路径。**仅用于旧版 data_dir 解析**——P1 之后
+/// 新写入请用 [`paths::shell_settings_file`]。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn settings_file(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join("settings.json")
 }
@@ -69,6 +77,9 @@ pub fn settings_file(data_dir: &Path) -> std::path::PathBuf {
 /// 旧实现把"不存在"和"坏了/读不出来"一起吞成默认值：用户自定义的端口会
 /// 无声回退到 3090/3091，面板上没有任何提示，重启后"工作台怎么跑到别的
 /// 端口去了"完全无从解释（P2-19）。
+///
+/// **仅用于旧版 data_dir 解析**。P1 之后新代码请用 [`load_for_shell`]。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn load_checked(data_dir: &Path) -> (Settings, Option<String>) {
     let path = settings_file(data_dir);
     let text = match fs::read_to_string(&path) {
@@ -123,11 +134,17 @@ pub fn load_checked(data_dir: &Path) -> (Settings, Option<String>) {
 
 /// 读取设置，忽略诊断信息。需要向用户展示"设置被回退了"的调用方应当用
 /// [`load_checked`]。
+///
+/// **仅用于旧版 data_dir 解析**。P1 之后新代码请用 [`load_for_shell`]。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn load(data_dir: &Path) -> Settings {
     load_checked(data_dir).0
 }
 
 /// 持久化设置，必要时创建父目录。
+///
+/// **仅用于旧版 data_dir 解析**。P1 之后新代码请用 [`save_for_shell`]。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn save(data_dir: &Path, settings: &Settings) -> Result<(), String> {
     let path = settings_file(data_dir);
     if let Some(parent) = path.parent() {
@@ -135,6 +152,87 @@ pub fn save(data_dir: &Path, settings: &Settings) -> Result<(), String> {
     }
     let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     atomic_write(&path, text.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// 读取当前 Shell 模式下的设置。文件位于
+/// `<xlink_home>/shell/<mode>/settings.json`；首次启动或模式全新时
+/// 文件不存在，返回默认值与 `None` 诊断。
+///
+/// 与 [`load_checked`] 共享损坏备份策略——新写入与新损坏都走同一条
+/// 「不反复重写备份」的逻辑，保证面板上看到的 mtime 与磁盘一致。
+pub fn load_checked_for_shell(mode: ShellMode) -> (Settings, Option<String>) {
+    let path = paths::shell_settings_file(mode);
+    load_checked_inner(&path, mode)
+}
+
+/// 读取当前 Shell 模式的设置，忽略诊断信息。
+pub fn load_for_shell(mode: ShellMode) -> Settings {
+    load_checked_for_shell(mode).0
+}
+
+/// 持久化当前 Shell 模式的设置。
+///
+/// 写之前确保父目录存在；与旧 [`save`] 同样使用 [`atomic_write`]
+/// 避免写盘过程中读到截断 JSON。
+pub fn save_for_shell(mode: ShellMode, settings: &Settings) -> Result<(), String> {
+    let path = paths::shell_settings_file(mode);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    atomic_write(&path, text.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// 当前 Shell 模式快捷别名。生产代码里反复写 `paths::ShellMode::current()`
+/// 既冗长又容易漂移到不相关的语境——把"settings 与 Shell 模式绑定"这层
+/// 语义集中到 settings 模块里。
+pub fn current_mode() -> ShellMode {
+    paths::ShellMode::current()
+}
+
+fn load_checked_inner(path: &Path, _mode: ShellMode) -> (Settings, Option<String>) {
+    // 故意复用 [`load_checked`] 的语义，但 `path` 不再依赖 data_dir：
+    // 我们直接传任意 `&Path` 给读 + 解析 + 备份逻辑。新旧布局共用一套
+    // 损坏处理，避免行为分叉。
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (Settings::default(), None);
+        }
+        Err(error) => {
+            return (
+                Settings::default(),
+                Some(format!(
+                    "设置文件无法读取（{error}），已改用默认设置（端口回到默认端口）。文件：{}",
+                    path.display()
+                )),
+            );
+        }
+    };
+    match serde_json::from_str::<Settings>(&text) {
+        Ok(settings) => (settings, None),
+        Err(error) => {
+            let backup = path.with_extension("json.corrupt");
+            let already_saved = fs::read(&backup)
+                .map(|previous| previous == text.as_bytes())
+                .unwrap_or(false);
+            let backed_up = already_saved || fs::copy(path, &backup).is_ok();
+            let detail = if backed_up {
+                format!(
+                    "原文件已备份到 {}，修好它并重启应用即可恢复",
+                    backup.display()
+                )
+            } else {
+                format!("原文件未能备份，请先自行复制 {} 再修改", path.display())
+            };
+            (
+                Settings::default(),
+                Some(format!(
+                    "设置文件损坏（{error}），已改用默认设置（端口回到默认端口）。{detail}"
+                )),
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -285,5 +383,134 @@ mod load_checked_tests {
         assert_eq!(loaded.port, 3199);
         assert!(warning.is_none());
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod shell_aware_tests {
+    use super::*;
+    use crate::paths::ShellMode;
+
+    /// 全进程串行化所有改 env 的测试，避免并行 worker 互相踩。
+    /// `cargo test` 默认多线程，单测改 env 必须排队。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-xlink-settings-shell-{}-{}-{}",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    struct ScopedHome {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ScopedHome {
+        fn set(value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(crate::paths::DSH_XLINK_HOME_ENV);
+            std::env::set_var(crate::paths::DSH_XLINK_HOME_ENV, value);
+            Self { previous }
+        }
+    }
+
+    impl Drop for ScopedHome {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(crate::paths::DSH_XLINK_HOME_ENV, value),
+                None => std::env::remove_var(crate::paths::DSH_XLINK_HOME_ENV),
+            }
+        }
+    }
+
+    /// release / dev 的设置文件必须互不串写：同一目录树下两个 mode 的文件
+    /// 同时存在时不会相互覆盖。
+    #[test]
+    fn release_and_dev_settings_do_not_cross() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = temp_dir("shell-isolated");
+        let _scoped = ScopedHome::set(&home);
+
+        let release = Settings {
+            port: 3190,
+            ..Settings::default()
+        };
+        let dev = Settings {
+            port: 3191,
+            ..Settings::default()
+        };
+
+        save_for_shell(ShellMode::Release, &release).expect("save release");
+        save_for_shell(ShellMode::Dev, &dev).expect("save dev");
+
+        let loaded_release = load_for_shell(ShellMode::Release);
+        let loaded_dev = load_for_shell(ShellMode::Dev);
+        assert_eq!(loaded_release.port, 3190, "release 应保留自己的端口");
+        assert_eq!(loaded_dev.port, 3191, "dev 应保留自己的端口");
+
+        // 文件落点必须分别落在 shell/release 与 shell/dev。
+        let release_path = home.join("shell").join("release").join("settings.json");
+        let dev_path = home.join("shell").join("dev").join("settings.json");
+        assert!(
+            release_path.exists(),
+            "release 设置文件应存在：{}",
+            release_path.display()
+        );
+        assert!(
+            dev_path.exists(),
+            "dev 设置文件应存在：{}",
+            dev_path.display()
+        );
+
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 首次启动的 release 与 dev 都应该是「缺文件 = 默认 + 无警告」。
+    #[test]
+    fn shell_settings_missing_is_not_a_warning() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = temp_dir("shell-missing");
+        let _scoped = ScopedHome::set(&home);
+
+        let (release, warn_release) = load_checked_for_shell(ShellMode::Release);
+        let (dev, warn_dev) = load_checked_for_shell(ShellMode::Dev);
+        assert_eq!(release.port, DEFAULT_PORT);
+        assert_eq!(dev.port, DEFAULT_PORT);
+        assert!(warn_release.is_none(), "release 缺文件不该报警");
+        assert!(warn_dev.is_none(), "dev 缺文件不该报警");
+
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 损坏备份策略与旧版一致：内容相同不重写，损坏再次发生仍备份。
+    #[test]
+    fn shell_settings_corrupt_backup_follows_content() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = temp_dir("shell-corrupt");
+        let _scoped = ScopedHome::set(&home);
+
+        let path = crate::paths::shell_settings_file(ShellMode::Release);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ \"port\": 3192, ").unwrap();
+
+        let (_, first) = load_checked_for_shell(ShellMode::Release);
+        assert!(first.expect("首次损坏必须报警").contains("已备份"));
+
+        let backup = path.with_extension("json.corrupt");
+        let mut readonly = std::fs::metadata(&backup).unwrap().permissions();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&backup, readonly).unwrap();
+
+        let (_, second) = load_checked_for_shell(ShellMode::Release);
+        assert!(second.expect("损坏依旧要报警").contains("已备份"));
+
+        std::fs::remove_dir_all(&home).ok();
     }
 }
