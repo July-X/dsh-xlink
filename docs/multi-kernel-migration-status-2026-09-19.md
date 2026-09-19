@@ -77,7 +77,8 @@
 | 项 | 现状 | 备注 |
 |----|------|------|
 | `cargo test --lib` | 383 pass / 7 pre-existing flaky | 6-7 个 flaky 是 race，与本轮无关 |
-| `cargo clippy --all-targets` | 0 errors | 全 pre-existing warnings |
+| `cargo check --lib` | 通过 (1.88s) | 0 errors；本轮重跑无新增 warnings |
+| `cargo clippy --lib` | 0 errors (7.31s) | 80 warnings 全部 P4 step 3.5 旧 API 残留（`cfg_attr(not(test), allow(dead_code))` 临时保留）|
 | `cargo fmt --check` | clean | — |
 | `npm run build:ui` | 通过 | 960 modules / 0 errors |
 | 代码预算门禁 | 通过 | TOTAL 23033/23070，duplicate 5/6 |
