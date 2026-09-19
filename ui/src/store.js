@@ -1,7 +1,7 @@
 // 内核 / 发布 / 外壳自更新的共享状态与动作。
 // 面板组件从这里读 view / releases，动作函数保留原零构建版的行为契约：
 // 启动编排、启停确认、外壳更新横幅、首次运行引导、2.5s 轮询。
-import { reactive } from 'vue';
+import { reactive, computed } from 'vue';
 import { invoke, makeChannel } from './bridge.js';
 import { toast, toastSuccess, toastActionError, confirmDialog } from './notify.js';
 import { globalBusy, isLoading, withExclusive, withExclusiveLoading, withLoading, isExclusiveBusy } from './loading.js';
@@ -12,7 +12,7 @@ import { refreshSkills } from './skills.js';
 import { showLogs } from './logs.js';
 
 export const store = reactive({
-  // get_status 的完整返回：{ kernel, node, settings, shell_version, dev_build, quarantined, last_incident, official_chat_open }
+  // get_status 的完整返回：{ kernel, node, settings, shell_version, dev_build, shell_mode, quarantined, last_incident, official_chat_open }
   view: null,
   releases: [],
   releaseWarning: '',
@@ -88,6 +88,12 @@ function applyBuildClass() {
   document.body.classList.toggle('dev-build', effectiveDev);
   document.body.classList.toggle('rel-build', !effectiveDev);
 }
+
+// 当前 Shell 的构建模式（'release' / 'dev'），与 store.view.shell_mode 同步。
+// P1 之后用来在 UI 上明确告知用户「这是 dsh-xlink 自己的 release/dev 构建」，
+// 而不是把它误解释为「内核是 release/dev」。调用方应当把它读作「Shell 模式」，
+// 不要把它当作 kernel/instance 维度的状态。
+export const shellMode = computed(() => store.view?.shell_mode ?? 'release');
 
 // dev 调试动作：切换 release 预览。非 dev 构建直接拒绝（no-op），避免在
 // 正式版里意外改出调试态。改完立即同步 body 类与 store.devUi，不等下一次轮询。
