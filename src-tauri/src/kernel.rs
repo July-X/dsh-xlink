@@ -1072,18 +1072,13 @@ pub fn kernel_log_spec(family: &str, instance_id: &str) -> LogSpec {
 /// 为内核安装构造按日轮转的日志 spec。版本嵌入逻辑名中，因此同一版本的
 /// 多次安装尝试会落到同一个每日文件里（重试之间以追加方式累积）。
 pub fn install_log_spec(family: &str, instance_id: &str, version: &str) -> LogSpec {
-    LogSpec::new(build_log_kind(), format!("install-{version}"))
-        .with_instance(family, instance_id)
+    LogSpec::new(build_log_kind(), format!("install-{version}")).with_instance(family, instance_id)
 }
 
 /// 便捷函数：获取给定日志目录下当天的内核日志路径。由需要最近一天证据的调用方
 /// 使用：启动防护的归因（`guard::kernel_log_path`）、从日志里找回工作台地址
 /// （`commands::kernel_workbench_url_from_log`）以及通知面板引用日志路径。
-pub fn current_kernel_log_path(
-    data_dir: &Path,
-    family: &str,
-    instance_id: &str,
-) -> PathBuf {
+pub fn current_kernel_log_path(data_dir: &Path, family: &str, instance_id: &str) -> PathBuf {
     let logs = logs_dir(data_dir);
     let today = crate::process::current_date_string();
     kernel_log_spec(family, instance_id).path_for(&logs, &today)
@@ -1194,7 +1189,10 @@ pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<C
     if let Err(error) = attach_log_drainers(
         &mut child,
         &logs_dir(data_dir),
-        &kernel_log_spec(crate::instance::KERNEL_FAMILY_DSH, crate::instance::DEFAULT_INSTANCE_ID),
+        &kernel_log_spec(
+            crate::instance::KERNEL_FAMILY_DSH,
+            crate::instance::DEFAULT_INSTANCE_ID,
+        ),
     ) {
         crate::process::terminate_process_tree(&mut child);
         return Err(AppError::Io(format!("无法接管内核日志：{error}")));
@@ -2908,14 +2906,20 @@ mod tests {
             "expected '未安装' in error, got: {error}"
         );
         // instance.json 不应被写脏：保留为 None。
-        let restored =
-            instance::load_record_from_disk(instance::KERNEL_FAMILY_DSH, crate::instance::DEFAULT_INSTANCE_ID).expect("load");
+        let restored = instance::load_record_from_disk(
+            instance::KERNEL_FAMILY_DSH,
+            crate::instance::DEFAULT_INSTANCE_ID,
+        )
+        .expect("load");
         assert!(
             restored.kernel_version.is_none(),
             "失败路径不应写脏 instance.json"
         );
         let _ = fs::remove_dir_all(&install_root);
-        let _ = fs::remove_dir_all(paths::instance_dir(instance::KERNEL_FAMILY_DSH, crate::instance::DEFAULT_INSTANCE_ID));
+        let _ = fs::remove_dir_all(paths::instance_dir(
+            instance::KERNEL_FAMILY_DSH,
+            crate::instance::DEFAULT_INSTANCE_ID,
+        ));
     }
 
     /// `instance_workbench_pid` 在没有 pid 文件时必须返回 None，不读盘之外
@@ -2963,11 +2967,17 @@ mod tests {
             &install_root,
         )
         .expect("set active version");
-        let restored =
-            instance::load_record_from_disk(instance::KERNEL_FAMILY_DSH, crate::instance::DEFAULT_INSTANCE_ID).expect("load");
+        let restored = instance::load_record_from_disk(
+            instance::KERNEL_FAMILY_DSH,
+            crate::instance::DEFAULT_INSTANCE_ID,
+        )
+        .expect("load");
         assert_eq!(restored.kernel_version.as_deref(), Some(version));
         let _ = fs::remove_dir_all(&install_root);
-        let _ = fs::remove_dir_all(paths::instance_dir(instance::KERNEL_FAMILY_DSH, crate::instance::DEFAULT_INSTANCE_ID));
+        let _ = fs::remove_dir_all(paths::instance_dir(
+            instance::KERNEL_FAMILY_DSH,
+            crate::instance::DEFAULT_INSTANCE_ID,
+        ));
     }
 
     /// 跨实例的 workbench_pid 必须互不感知：A 实例的 pid 文件不影响 B
@@ -3031,15 +3041,27 @@ mod tests {
 
         assert_eq!(
             name_a,
-            format!("{}-{}-default-kernel-{today}.log", build_log_kind(), KERNEL_FAMILY_DSH)
+            format!(
+                "{}-{}-default-kernel-{today}.log",
+                build_log_kind(),
+                KERNEL_FAMILY_DSH
+            )
         );
         assert_eq!(
             name_b,
-            format!("{}-{}-work-kernel-{today}.log", build_log_kind(), KERNEL_FAMILY_DSH)
+            format!(
+                "{}-{}-work-kernel-{today}.log",
+                build_log_kind(),
+                KERNEL_FAMILY_DSH
+            )
         );
         assert_eq!(
             name_c,
-            format!("{}-{}-default-kernel-{today}.log", build_log_kind(), instance::KERNEL_FAMILY_MCODE)
+            format!(
+                "{}-{}-default-kernel-{today}.log",
+                build_log_kind(),
+                instance::KERNEL_FAMILY_MCODE
+            )
         );
         // 三条文件名两两不同——多实例下不会互相覆盖
         assert_ne!(name_a, name_b);

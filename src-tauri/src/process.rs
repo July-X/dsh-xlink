@@ -2327,18 +2327,14 @@ mod tests {
     fn log_spec_with_instance_round_trips_through_path_for() {
         let today = current_date_string();
         // 新格式：实例感知
-        let inst_spec =
-            LogSpec::new("release", "kernel").with_instance("dsh", "default");
+        let inst_spec = LogSpec::new("release", "kernel").with_instance("dsh", "default");
         let inst_name = inst_spec
             .path_for(Path::new("/var/folders/x/y/T/dsh-xlink-logs"), &today)
             .file_name()
             .and_then(|n| n.to_str())
             .expect("name")
             .to_string();
-        assert_eq!(
-            inst_name,
-            format!("release-dsh-default-kernel-{today}.log")
-        );
+        assert_eq!(inst_name, format!("release-dsh-default-kernel-{today}.log"));
 
         // 旧格式：壳级（family + instance_id 都空）
         let shell_spec = LogSpec::new("release", "plugin-wiring");
@@ -2348,10 +2344,7 @@ mod tests {
             .and_then(|n| n.to_str())
             .expect("name")
             .to_string();
-        assert_eq!(
-            shell_name,
-            format!("release-plugin-wiring-{today}.log")
-        );
+        assert_eq!(shell_name, format!("release-plugin-wiring-{today}.log"));
     }
 
     /// `build_log_kind` 是区分 release 与 dev 日志的关键。它必须与

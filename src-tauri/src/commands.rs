@@ -1150,12 +1150,8 @@ fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String,
     let fallback = format!("http://127.0.0.1:{port}");
     let deadline = std::time::Instant::now() + URL_TIMEOUT;
     loop {
-        if let Some(candidate) = kernel_workbench_url_from_log(
-            data_dir,
-            family,
-            instance_id,
-            port,
-        ) {
+        if let Some(candidate) = kernel_workbench_url_from_log(data_dir, family, instance_id, port)
+        {
             if workbench_url_responds(&candidate, PROBE_TIMEOUT) {
                 return Ok(candidate);
             }
@@ -1169,8 +1165,7 @@ fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String,
         if std::time::Instant::now() >= deadline {
             return Err(format!(
                 "无法确认内核工作台地址，请打开日志后重试（日志：{}）",
-                kernel::current_kernel_log_path(data_dir, family, instance_id)
-                    .display()
+                kernel::current_kernel_log_path(data_dir, family, instance_id).display()
             ));
         }
         std::thread::sleep(POLL_INTERVAL);
