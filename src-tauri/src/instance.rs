@@ -813,4 +813,20 @@ mod tests {
         assert_eq!(restored.port, Some(3090));
         std::fs::remove_dir_all(&home).ok();
     }
+
+    /// `resolve_default()` 返回当前 Shell 记住的默认实例元组
+    /// (family, id)。锁住 production caller（guard / commands / notify）
+    /// 引用的语义：将来 P8 UI 决策把 `InstanceRegistry::default_instance_id`
+    /// 接进来时，caller 一处不动即可跟进。
+    #[test]
+    fn resolve_default_returns_dsh_default_pair() {
+        let (family, instance_id) = resolve_default();
+        assert_eq!(family, KERNEL_FAMILY_DSH);
+        assert_eq!(instance_id, DEFAULT_INSTANCE_ID);
+        // 元组对齐 caller 现有签名：`kernel_log_spec(family, id)` 、
+        // `current_kernel_log_path(data_dir, family, id)` —— 解构即可，
+        // 无需结构体中间层。
+        let (f, i) = resolve_default();
+        assert_eq!((f, i), (KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID));
+    }
 }
