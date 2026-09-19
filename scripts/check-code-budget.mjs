@@ -138,7 +138,12 @@ const FILE_BUDGETS = {
 // notify.rs +24 ≈ +89 行；测试 fixture 调整不计入生产预算但同样生效。
 // 下次 reset 预算时考虑把日志相关 caller 提到单独 helper（参考 AGENTS.md
 // §3 要求），避免散落到 5 个 module 的硬编码 (DSH, "default")。
-const TOTAL_BUDGET = 23200;
+//
+// P6 step 5 迁移向导 UI（commit ...）：ui/src/migration.js (~150 行) +
+// ui/src/components/MigrationPanel.vue (~250 行) + App.vue / SideBar.vue
+// 接入 ~10 行 ≈ +410 行（实际 +260 是因为 UI 行的预算口径不计模板 style
+// 块里的 CSS——纯 <template> + <script setup> + state 加 invoke 包装）。
+const TOTAL_BUDGET = 23500;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */

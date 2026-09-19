@@ -22,6 +22,7 @@ import VersionsPanel from './components/VersionsPanel.vue';
 import PluginsPanel from './components/PluginsPanel.vue';
 import SkillsPanel from './components/SkillsPanel.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
+import MigrationPanel from './components/MigrationPanel.vue';
 import ProgressOverlay from './components/ProgressOverlay.vue';
 import LogModal from './components/LogModal.vue';
 import IncidentModal from './components/IncidentModal.vue';
@@ -34,6 +35,7 @@ const PANELS = {
   plugins: PluginsPanel,
   skills: SkillsPanel,
   settings: SettingsPanel,
+  migration: MigrationPanel,
 };
 
 // 标题栏鲸眼脉冲 = 业务活动指示：按钮触发的 IO（withLoading / withProgress）

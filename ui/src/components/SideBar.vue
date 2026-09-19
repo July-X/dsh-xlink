@@ -5,7 +5,7 @@
 // 第三方来源的安全提示不在这里：它是插件页的语境提示，挂在全局侧栏会常驻
 // 占位，现由 PluginsPanel 顶部渲染（见 theme.css 的 .panel-notice）。
 import { computed } from 'vue';
-import { Odometer, Box, Connection, MagicStick, SetUp, Refresh } from '@element-plus/icons-vue';
+import { Odometer, Box, Connection, MagicStick, SetUp, Refresh, Right } from '@element-plus/icons-vue';
 import { store, checkShellUpdate } from '../store.js';
 import { globalBusy, isLoading } from '../loading.js';
 import { pluginStore } from '../plugins.js';
@@ -17,6 +17,7 @@ const MENU = [
   { id: 'plugins', label: '插件', icon: Connection, badge: () => (pluginStore.view && pluginStore.view.updates) || 0 },
   { id: 'skills', label: '技能', icon: MagicStick, badge: () => (skillStore.view && skillStore.view.updates) || 0 },
   { id: 'settings', label: '设置', icon: SetUp },
+  { id: 'migration', label: '数据迁移', icon: Right },
 ];
 
 const status = computed(() => {
