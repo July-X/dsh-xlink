@@ -1,8 +1,9 @@
 # 多内核改造阶段性状态（2026-09-19）
 
-> 本轮 commit 链（HEAD `1308cb6`）的阶段性快照——给 review 节点做参考材料。
+> 本轮 commit 链（HEAD `257c42a`）的阶段性快照——给 review 节点做参考材料。
 > 完整计划与设计文档见 [docs/dsh-xlink-multi-kernel-design.md](dsh-xlink-multi-kernel-design.md)
 > 与 [docs/dsh-xlink-multi-kernel-development-plan.md](dsh-xlink-multi-kernel-development-plan.md)。
+> 配套架构补全见 [docs/architecture.md §「多内核改造后的实际数据布局」](architecture.md)。
 
 ## 整体进度
 
@@ -12,16 +13,18 @@
 | **P1** Shell 状态与内核数据解耦 | ✅ | `67b1d11` / `e7df2ac` / `b7db029` / `6d9fb2b` |
 | **P2** 实例注册表与生命周期 | ✅ | `36677f2` / `a5ad9d9` / `3eced70` / `5d5b729` / `884b2fb` |
 | **P3** DSH 适配器与独立 DSH_HOME | ✅ | `c0cfabc` |
-| **P4** plugins 多实例（7 step） | ✅ | `358ae5a` / `58b1d11` / `dcbae61` / `55f3535` / `8772105` |
+| **P4** plugins 多实例（5 step） | ✅ | `358ae5a` / `58b1d11` / `dcbae61` / `55f3535` / `8772105` |
 | **P5 step 1+2** skills 中央库 / 活动视图重布局 | ✅ | `b09a525` |
 | **P5 step 3** 自定义技能目录接口预留 | ✅ | `7290e07` |
 | **P6 step 1–4** 迁移向导后端 | ✅ | `b24e68e` / `89d76df` / `9615901` / `5416bca` |
 | **P0 跨模块清理** copy_tree 共享层 | ✅ | `e121cf1` |
 | **P7** mcode mock 适配器骨架 | ✅ | `1308cb6` |
+| **P0 收尾** 阶段性状态快照 | ✅ | `89932eb` |
+| **P0 收尾** architecture 增补「实际数据布局」 | ✅ | `257c42a` |
 | **P6 step 5** 迁移向导 UI 向导页面 | ⏸ 待 UI 形态决策 | — |
 | **P8** UI / 集成测试 / 发布准备 | ⏸ 待决策（实例列表 UI 形态 / PR 边界 / 是否阶段性发版） | — |
 
-完成度：**~92%**（11/13 stage 已落地 commit）。
+完成度：**~93%**（12/14 row 已落地 commit；P6 step 5 / P8 仍依赖 UI 决策）。
 
 ## 设计决策摘要
 
@@ -122,9 +125,9 @@ P8 阶段统一清理——届时可以一次性 remove `cfg_attr` 注释。
 
 ## Review 建议
 
-`3ad6c8e..1308cb6` 共 23 个 commit。建议按以下顺序 review：
+`3ad6c8e..257c42a` 共 25 个 commit（含 2 笔文档收尾）。建议按以下顺序 review：
 
-1. **设计层**（先看 docs）：本文件 + 设计稿 §P4–§P7 节
+1. **设计层**（先看 docs）：本文件 + 设计稿 §P4–§P7 节 + [architecture.md §「多内核改造后的实际数据布局」](architecture.md)
 2. **关键 commit**（设计落地点）：
    - `c0cfabc` P3 DshAdapter 与 KernelAdapter trait
    - `dcbae61` P4 物化路径切到实例 extensions/plugins/<id>/
@@ -133,5 +136,6 @@ P8 阶段统一清理——届时可以一次性 remove `cfg_attr` 注释。
    - `1308cb6` P7 mcode mock 适配器
 3. **测试**：每个 step 都有 4–8 个集成测试覆盖关键不变量
 4. **预算**：FILE_BUDGETS 的每一次上调都在注释里写了"为什么"
+5. **文档**（最后看）：`89932eb` 阶段性状态快照（本文件）+ `257c42a` architecture 增补章节
 
-**HEAD `1308cb6` 可作为 review 基线**。
+**HEAD `257c42a` 可作为 review 基线**。
