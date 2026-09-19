@@ -352,14 +352,24 @@ const NO_BUF_FLUSH: bool = true;
 pub const LOG_KIND_RELEASE: &str = "release";
 pub const LOG_KIND_DEV: &str = "dev";
 
-/// 解析用于日志文件名 stamp 的构建类型。与 `kernel::data_dir` 中的
-/// `SHELL_SUBDIR_*` 划分相对应，保证目录布局与文件名 stamp 在「来自
-/// 哪个构建」上保持一致。
+/// 当前 Shell 构建对应的日志目录（仅 Shell 自己的日志；内核日志仍由
+/// `kernel::logs_dir` 提供）。P1 之后，Shell 状态完全位于新布局
+/// `<xlink_home>/shell/<mode>/logs/`，而内核日志暂时留在 legacy data dir
+/// 以保留向后兼容；二者最终会在 P2/P3 拆开。
+pub fn shell_logs_dir() -> std::path::PathBuf {
+    crate::paths::shell_logs_dir(crate::paths::ShellMode::current())
+}
+
+/// 解析用于日志文件名 stamp 的构建类型。与 [`crate::paths::ShellMode`]
+/// 一一对应：release / dev 是 Shell 构建差异，不参与内核数据路径。
+///
+/// P1 之后该函数由 [`crate::paths::ShellMode::current`] 单一来源驱动；
+/// 保留 `LOG_KIND_*` 常量是为了不破坏现有日志文件名格式与外部依赖
+/// （日志面板、UI 标签）的稳定。
 pub fn build_log_kind() -> &'static str {
-    if cfg!(debug_assertions) {
-        LOG_KIND_DEV
-    } else {
-        LOG_KIND_RELEASE
+    match crate::paths::ShellMode::current() {
+        crate::paths::ShellMode::Release => LOG_KIND_RELEASE,
+        crate::paths::ShellMode::Dev => LOG_KIND_DEV,
     }
 }
 
