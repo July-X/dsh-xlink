@@ -243,6 +243,56 @@ pub fn instance_dsh_home(family: &str, id: &str) -> PathBuf {
     instance_dir(family, id).join("home")
 }
 
+/// 给定实例的"扩展"目录：profile 之外的扩展物化目标都在这里。
+/// P4 起插件物化目标为 `<...>/extensions/plugins/<plugin-id>/`，
+/// 让中央源库的"全局可见"与实例"按实例接线"清晰分离。
+pub fn instance_extensions_dir(family: &str, id: &str) -> PathBuf {
+    instance_dir(family, id).join("extensions")
+}
+
+/// 给定实例的所有插件物化目录：`<...>/extensions/plugins/`。
+pub fn instance_extensions_plugins_dir(family: &str, id: &str) -> PathBuf {
+    instance_extensions_dir(family, id).join("plugins")
+}
+
+/// 给定实例的单个插件物化目录：`<...>/extensions/plugins/<plugin-id>/`。
+///
+/// 验证 `plugin_id` 必须是合法 id 组件——避免路径穿越到其它实例。
+pub fn instance_extension_plugin_dir(
+    family: &str,
+    id: &str,
+    plugin_id: &str,
+) -> PathBuf {
+    validate_id_component(plugin_id).expect("plugin id must be valid for path use");
+    instance_extensions_plugins_dir(family, id).join(plugin_id)
+}
+
+/// 给定实例的插件 metadata 文件：`<...>/extensions/plugins/<plugin-id>/.dsh-meta.json`。
+pub fn instance_extension_meta_file(
+    family: &str,
+    id: &str,
+    plugin_id: &str,
+) -> PathBuf {
+    instance_extension_plugin_dir(family, id, plugin_id).join(".dsh-meta.json")
+}
+
+/// 给定实例的 wiring 状态文件：`<...>/extensions/wiring.json`。
+///
+/// 记录每个插件的 link/copy 模式、内容指纹与是否被 `disabled`。
+/// P4 把 wiring 从全局 store 拆到这里——每个实例独立可恢复。
+pub fn instance_wiring_file(family: &str, id: &str) -> PathBuf {
+    instance_extensions_dir(family, id).join("wiring.json")
+}
+
+/// 给定实例的 profile 目录：`<instance_dsh_home>/profiles/<profile>/`。
+///
+/// 严格走 `paths::instance_dsh_home`，不由调用方拼接——避免出现
+/// `<data_dir>/../profiles/<profile>/` 这种仍依赖旧 data_dir 的拼接。
+pub fn instance_profile_dir(family: &str, id: &str, profile: &str) -> PathBuf {
+    validate_id_component(profile).expect("profile must be valid for path use");
+    instance_dsh_home(family, id).join("profiles").join(profile)
+}
+
 /// Xlink 自身状态目录：`<xlink_home>/state/`（实例注册表、迁移记录、全局锁）。
 pub fn state_root() -> PathBuf {
     xlink_home().join("state")
@@ -487,6 +537,7 @@ mod test_helpers {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::scoped_xlink_home;
     use test_helpers::{temp_dir, ScopedEnv, ENV_LOCK};
 
     /// release / dev 共用根目录，但路径不再重复。
@@ -510,6 +561,41 @@ mod tests {
             "dev 应落在 shell/dev 下：{}",
             dev.display()
         );
+    }
+
+    /// P4 路径：实例扩展目录、插件物化目录与 wiring 文件必须按 instance id
+    /// 隔离，且 plugin_id 必须经过 `validate_id_component` 校验。
+    #[test]
+    fn instance_extension_paths_partition_by_instance() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = temp_dir("ext-paths");
+        let _xlink = scoped_xlink_home(&home);
+        let plugin = "my-plugin";
+        let a_ext = instance_extension_plugin_dir("dsh", "a", plugin);
+        let b_ext = instance_extension_plugin_dir("dsh", "b", plugin);
+        let a_root = xlink_home();
+        assert!(a_ext.starts_with(&a_root));
+        assert!(b_ext.starts_with(&a_root));
+        assert_ne!(a_ext, b_ext, "不同实例的插件目录必须互不重叠");
+        assert!(a_ext.ends_with(format!("extensions/plugins/{plugin}")));
+        assert!(instance_extension_meta_file("dsh", "a", plugin).ends_with(".dsh-meta.json"));
+        assert!(instance_wiring_file("dsh", "a").ends_with("extensions/wiring.json"));
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// P4 路径：实例 profile 目录必须严格走 `instance_dsh_home`，不能
+    /// 退回到旧 `data_dir/../profiles` 拼接。
+    #[test]
+    fn instance_profile_dir_uses_dsh_home() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = temp_dir("profile-paths");
+        let _xlink = scoped_xlink_home(&home);
+        let p = instance_profile_dir("dsh", "default", "web");
+        assert!(p.starts_with(instance_dsh_home("dsh", "default")));
+        assert!(p.ends_with("profiles/web"));
+        // 反过来：不应回退到旧 data_dir 拼接
+        assert!(!p.starts_with(home.join(".dsh").join("desktop")));
+        std::fs::remove_dir_all(&home).ok();
     }
 
     /// `DSH_XLINK_HOME` 必须覆盖默认值。
@@ -656,6 +742,7 @@ mod tests {
 #[cfg(test)]
 mod integration_paths_tests {
     use super::*;
+    use crate::tests::scoped_xlink_home;
     use test_helpers::{temp_dir, ScopedEnv, ENV_LOCK};
 
     /// release 与 dev 的 Shell 路径必须落在同一 `xlink_home()` 下，但
