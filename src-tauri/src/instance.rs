@@ -39,8 +39,6 @@ use crate::paths::{
     ShellMode,
 };
 use crate::process::atomic_write;
-use crate::state;
-
 /// 当前注册表 schema 版本。每次破坏性变更必须递增；
 /// [`InstanceRegistry::load_or_migrate`] 据此拒绝未来版本。
 pub const CURRENT_REGISTRY_SCHEMA_VERSION: u32 = 1;

@@ -23,7 +23,6 @@ use crate::paths;
 use crate::process::{build_log_kind, read_tail, LogSpec};
 use crate::quarantine;
 use crate::{guard, kernel, node, patches, plugins, releases, settings, skills, updater};
-use serde::Deserialize as _;
 
 /// `open_official_chat` 加载到专用 `official-chat` webview 中的
 /// DeepSeek 官方对话入口。

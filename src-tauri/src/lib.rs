@@ -4,6 +4,27 @@
 //! 运行当前激活内核的 `dsh web` 服务器，并在专属 webview 窗口中打开其
 //! UI。所有管理操作都通过 [`commands`] 中的命令，由本地 `ui/` 前端
 //! 发起。
+//!
+//! ## 死代码策略
+//!
+//! `tauri dev` 默认会打开所有编译期 warning。多内核改造（P0–P8 共 9 个
+//! stage）有意保留了一批「预留 API」——例如 [`commands::plugin_install_instance`]
+//! / [`commands::plugin_sync_instance`] 等实例范围命令、
+//! [`instance::allocate_port`] / [`instance::InstanceLock`] 等端口与锁原语、
+//! [`kernel_adapter::AdapterCapability`] / [`kernel_adapter::resolve_install_root`]
+//! 等适配器 trait 骨架——它们是后续 PR 启用 per-instance 写动作、第二内核
+//! 接入的入口，删了就找不回来。下面这条 `allow(dead_code)` 让
+//! `cargo check` / `cargo test` 都静默这一类预留 API 的 dead_code 警告；
+//! 只关 dead_code，不关 unused_imports / unused_variables——那两类是真
+//! 报警（未使用的导入 / 变量通常是上一笔 commit 的失误），不允许用
+//! allow 抹掉。
+//!
+//! 当某个预留 API 在后续 commit 真正被接入时，**移除对应 item 上方的
+//! allow 标注**（或整体移除本 allow 然后逐步加 item 级 allow）。
+#![allow(
+    dead_code,
+    reason = "多内核改造预留 API（实例范围命令 / 端口分配 / 适配器骨架）"
+)]
 
 mod archive;
 mod commands;
