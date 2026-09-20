@@ -177,7 +177,11 @@ function toggleSource(src) {
     <!-- Step 1：选择 -->
     <div v-show="migrationStore.activeStep === 1" class="step-body">
       <h3>选择来源</h3>
-      <el-checkbox-group>
+      <!-- 不用 el-checkbox-group：EP 的 checkbox 一旦处于 group 内就走组模式，
+           子项自己的 :model-value 会被忽略、点击改的是 group 的模型——而这里
+           的选中态是 Set（migrationStore.selectedSources），不适合硬套数组
+           v-model。独立 checkbox 走受控用法（:model-value + @change）即可。 -->
+      <div class="source-options">
         <el-checkbox
           v-for="item in previewItems"
           :key="item.source"
@@ -188,7 +192,7 @@ function toggleSource(src) {
           {{ sourceDisplayName(item.source) }}
           <small>（{{ item.file_count }} 个文件，{{ formatBytes(item.total_bytes) }}）</small>
         </el-checkbox>
-      </el-checkbox-group>
+      </div>
 
       <h3>冲突策略</h3>
       <el-radio-group v-model="migrationStore.conflictPolicy">
@@ -283,4 +287,6 @@ function toggleSource(src) {
 .history { margin-top: 32px; }
 .history h3 { margin-bottom: 12px; }
 .credentials-note { margin-top: 24px; padding: 12px 16px; background: var(--surface-soft); border-radius: 6px; color: var(--text-muted); }
+/* 来源勾选纵向排布（原先靠 el-checkbox-group 的布局习惯，去掉 group 后自己排） */
+.source-options { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 </style>

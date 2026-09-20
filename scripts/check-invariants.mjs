@@ -447,6 +447,21 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
     } else {
       note(`EP 组件注册完整：模板用到 ${used.size} 种，全部已在 main.js 注册`);
     }
+
+    // group 类组件没有模型时，子项的独立 :model-value 会被组模式忽略：
+    // checkbox 进入 group 后读的是 group 的模型值，点了没反应（迁移向导
+    // 来源勾选因此整个失效）。凡是用 group 就必须绑模型。
+    for (const file of walk(join(root, 'ui/src'), ['.vue'])) {
+      for (const match of readFileSync(file, 'utf8').matchAll(/<(el-checkbox-group|el-radio-group)\b([^>]*)>/g)) {
+        const attrs = match[2];
+        if (!/v-model|:model-value/.test(attrs)) {
+          fail(
+            'ep-registry',
+            `${show(file)} 的 <${match[1]}> 没有 v-model / :model-value——子项会进组模式并忽略自己的 :model-value，点击静默失效`,
+          );
+        }
+      }
+    }
   }
 }
 
