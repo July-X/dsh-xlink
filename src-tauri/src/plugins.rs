@@ -1786,6 +1786,20 @@ fn materialize_inner(
         .and_then(|_| fs::read_link(source).ok())
         .unwrap_or_else(|| source.to_path_buf());
 
+    // 中央库包目录必须真实可解析：清单记录可能因外部事故（夹具泄漏、手工
+    // 清理、迁移中断）指向一个已经不存在的包，或包目录本身是条悬空链接。
+    // 缺包时在这里失败并给出可操作的下一步——照常往下走会 `make_dir_link`
+    // 建出一条**悬空链接**，`target.exists()` 跟随链接判 false，于是每轮
+    // 同步都重复「建悬空链接 → 报未就绪」，错误文案还引导用户去点一个
+    // 永远修不好的「同步」。
+    if !resolved_source.exists() {
+        return Err(AppError::Plugin(format!(
+            "中央库缺少插件包 {}（解析 {} 失败：包目录不存在），无法接入内核。请卸载该插件后重新安装；若需保留数据请先检查备份目录",
+            item.id,
+            source.display()
+        )));
+    }
+
     let synced_version_matches = meta
         .as_ref()
         .map(|m| m.version == item.installed_version)
@@ -6453,6 +6467,40 @@ mod id_collision_tests {
         );
         fs::remove_file(&work_meta).expect("删 work meta");
         assert!(default_meta.is_file(), "default meta 必须仍在");
+    }
+
+    #[test]
+    fn materialize_missing_central_package_fails_without_dangling_link() {
+        // 回归：清单记录还在、中央库包目录已不存在（夹具泄漏 / 手工清理 /
+        // 迁移中断都可能造成）时，物化必须**立即失败**且不在实例 extensions
+        // 里留下悬空链接——修复前照常 make_dir_link，随后 `target.exists()`
+        // 跟随悬空链接判 false 报「未就绪，点击同步重试」：每轮同步都重复
+        // 建悬空链接，错误永远修不好。
+        let (home, _guard) = TestHome::new();
+        let item = store_item_with_id("ghost", "1.0.0");
+        upsert_item_unlocked(&paths::plugins_store_root(), item.clone()).expect("upsert");
+
+        let err = materialize_one_for_instance(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item,
+            "0.1.1",
+        )
+        .expect_err("缺包必须失败");
+        assert!(
+            err.to_string().contains("中央库缺少插件包"),
+            "错误必须指明缺包与下一步：{err}"
+        );
+
+        let target = paths::instance_extension_plugin_dir(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item.id,
+        );
+        assert!(
+            fs::symlink_metadata(&target).is_err(),
+            "不允许在实例 extensions 里留下悬空链接"
+        );
     }
 
     #[test]
