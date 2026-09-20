@@ -52,7 +52,7 @@ const view = computed(() => pluginStore.view);
 // 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进标题旁的
 // 信息气泡，与技能页保持一致。
 const installTip =
-  '插件统一存放于 ~/.dsh/plugins/，切换内核无需重装；安装完成后自动校验是否符合 ' +
+  '插件统一存放于 ~/.dsh-xlink/dsh-plugins/，切换内核无需重装；安装完成后自动校验是否符合 ' +
   'dsh 插件规范，内核重启后生效。';
 
 // --- 已安装列表 ---
@@ -173,6 +173,19 @@ function statsText(item) {
 // 走 row.instances map，把每个实例的 chip 摆出来，方便对比哪个实例装了
 // 哪个没装。
 const installedTab = ref('current');
+// 「本实例」是个相对概念，单实例用户未必知道它指什么：标签里直接带上当前
+// 实例身份（与顶栏 dropdown 的 chip 同源、同文案），悬停提示再讲清两个 tab
+// 的分工——本实例管操作，所有实例只看不动。
+const currentInstanceLabel = computed(() => {
+  const def = instanceStore.list.find((item) => item.is_default);
+  return def ? `${familyLabel(def.record.kernel_family)} · ${def.record.id}` : '';
+});
+const currentTabLabel = computed(() =>
+  currentInstanceLabel.value ? `本实例（${currentInstanceLabel.value}）` : '本实例',
+);
+const tabsTip =
+  '「本实例」＝顶栏当前选中的内核实例：这里的版本、模式与同步状态都只关于该实例，' +
+  '顶栏切换实例后此页随之变化。「所有实例」仅作跨实例对比查看，不提供操作。';
 // 排序规则：把默认实例（is_default=true）排第一个，其余按 id 升序——
 // 让用户一眼看出默认实例在所有实例中的差异位置。
 const sortedInstances = computed(() => {
@@ -250,7 +263,12 @@ function instanceChipType(row, instanceId) {
            共用 pluginStore.view.rows。顶部 dropdown 切默认实例后
            （commit 25cd376），本实例 tab 自动跟随新默认实例。 -->
       <el-tabs v-model="installedTab" class="installed-tabs">
-        <el-tab-pane name="current" label="本实例">
+        <el-tab-pane name="current">
+          <template #label>
+            <el-tooltip placement="bottom-start" effect="dark" :content="tabsTip">
+              <span class="tab-label">{{ currentTabLabel }}</span>
+            </el-tooltip>
+          </template>
           <div class="entity-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
         <el-empty v-if="!view || !view.rows || view.rows.length === 0" description="尚未安装任何插件。" :image-size="48" />
         <div
