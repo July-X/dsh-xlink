@@ -1061,6 +1061,17 @@ fn entry_is_owned(target: &Path, source: &Path, entry: &SkillEntry) -> bool {
         .is_some_and(|expected| fingerprint_path(target).as_deref() == Some(expected))
 }
 
+/// 活动根条目是**非链接**的普通内容拷贝，且内容与中央库源逐字节一致。
+///
+/// 这是迁移向导特有的产物：`migration::copy_one` 落地旧活动根时不保留跨根
+/// 符号链接，链接被解引用成内容相同的普通文件 / 目录，而新清单里没有它
+/// 的 `materialized_sha256`——`entry_is_owned` 因此认不出来。内容与源完全
+/// 一致时不存在"用户工作成果"问题，调用方可以安全收编（symlink 一律
+/// 返回 false：链接指向哪由 `link_resolves_to` 判，不在这里越权）。
+fn identical_unowned_copy(target: &Path, md: &fs::Metadata, source: &Path) -> bool {
+    (md.is_file() || md.is_dir()) && fingerprint_path(target) == fingerprint_path(source)
+}
+
 /// 将单个技能以链接（或复制）形式落到活动根中，名称使用 frontmatter 名。
 ///
 /// 若已有条目确属本商店（见 [`entry_is_owned`]），则短路返回并顺带刷新指纹。
@@ -1099,17 +1110,35 @@ fn ensure_entry(
                 kept_aside: None,
             });
         }
-        if !replace_owned {
+        let identical_copy = identical_unowned_copy(&target, &md, &source);
+        if identical_copy {
+            // 迁移向导落地旧活动根时会把符号链接**解引用成内容拷贝**
+            // （migration 的 copy_one 不保留跨根链接）。这份拷贝与中央库源
+            // 逐字节相同，但清单里没有它的指纹——按证据判所有权会被当成
+            // 「用户手放」，启用直接冲突（真实复测：迁移 humanizer 后再
+            // 启用报技能名冲突）。非链接、内容与源完全一致的条目就是同一
+            // 份字节，不可能是用户的工作成果，直接收编：删掉后走正常落地
+            // 流程重新记账，后续停用 / 卸载也就有了指纹凭据。
+            let removed = if md.is_dir() {
+                fs::remove_dir_all(&target)
+            } else {
+                fs::remove_file(&target)
+            };
+            removed.map_err(|e| {
+                AppError::Io(format!("无法收编同名同内容条目 {}：{e}", target.display()))
+            })?;
+        } else if !replace_owned {
             return Err(AppError::Skill(format!(
                 "技能名冲突：活动根中已存在同名条目 {} 且不来自当前技能包；可能来自其他技能包或手动放置，请先处理该条目",
                 target.display()
             )));
+        } else {
+            // 本商店没有认领它（用户改写过 / 手工放置），但调用方要求覆盖：**不能
+            // 直接删除**——`entry_is_owned` 为假既可能是"本商店上一版留下的陈旧副本"，
+            // 也可能是"用户改了内容"，两者在指纹上无法区分，而删掉后者就是无备份地
+            // 销毁用户的工作（P0-6）。一律改名保留现场，由调用方把路径报给用户。
+            kept_aside = Some(keep_aside(&target)?);
         }
-        // 本商店没有认领它（用户改写过 / 手工放置），但调用方要求覆盖：**不能
-        // 直接删除**——`entry_is_owned` 为假既可能是"本商店上一版留下的陈旧副本"，
-        // 也可能是"用户改了内容"，两者在指纹上无法区分，而删掉后者就是无备份地
-        // 销毁用户的工作（P0-6）。一律改名保留现场，由调用方把路径报给用户。
-        kept_aside = Some(keep_aside(&target)?);
     }
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
@@ -2020,6 +2049,55 @@ mod tests {
         assert!(!alpha.exists());
         assert!(!beta.exists());
         assert!(status_for_home(&home.root()).rows.is_empty());
+    }
+
+    /// 启用必须能收编「迁移向导解引用落地」的内容拷贝；用户改写过内容的
+    /// 同名条目仍然按冲突拒绝。
+    ///
+    /// 迁移向导把旧活动根的符号链接解引用成内容拷贝（不保留跨根链接），
+    /// 新清单里没有这份拷贝的物化指纹——修复前 `entry_is_owned` 认不出
+    /// 它，启用直接报「技能名冲突」（真实复测：迁移 humanizer 后再启用
+    /// 失败）。内容与中央库源逐字节一致的条目是同一份字节，启用应当直接
+    /// 收编并补记账，让后续停用 / 卸载拿到凭据。
+    #[test]
+    fn enable_adopts_migration_content_copy_but_still_rejects_user_edits() {
+        let home = TestHome::new();
+        let src = home.root().join("migrated-pack");
+        write_bundle(&src, "humanizer", "humanizer", "rewrite");
+
+        let spec_str = src.to_string_lossy().to_string();
+        let item =
+            install_into(&home.root(), &spec_str, "link", &mut |_| {}).expect("install succeeds");
+        let target = skills_root(&home.root()).join("humanizer");
+        let pkg_skill = store_pkg_dir(&home.root(), &item.id).join("humanizer/SKILL.md");
+
+        // 构造迁移后的现场：停用 + 抹掉物化指纹（迁移清单没有凭据），
+        // 再把旧链接解引用成内容拷贝放回活动根。
+        set_enabled_into(&home.root(), &item.id, "humanizer", false, &mut |_| {}).unwrap();
+        assert!(!target.exists());
+        let mut unowned = store_item(&home.root(), &item.id).expect("store item");
+        unowned.skills[0].materialized_sha256 = None;
+        upsert_item_unlocked(&home.root(), unowned).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::copy(&pkg_skill, target.join("SKILL.md")).expect("simulate migrated copy");
+
+        // 内容一致 → 收编成功，且停用（凭据已补记）能真正删掉条目。
+        set_enabled_into(&home.root(), &item.id, "humanizer", true, &mut |_| {})
+            .expect("启用应收编内容一致的同名拷贝");
+        assert!(target.join("SKILL.md").exists());
+        set_enabled_into(&home.root(), &item.id, "humanizer", false, &mut |_| {}).unwrap();
+        assert!(!target.exists(), "收编后的条目必须可以被停用删除");
+
+        // 内容被改写的同名条目不是迁移产物：仍按冲突拒绝，不吞用户修改。
+        fs::create_dir_all(&target).unwrap();
+        fs::write(
+            target.join("SKILL.md"),
+            "---\nname: humanizer\ndescription: user edited\n---\n\nMine.\n",
+        )
+        .unwrap();
+        let err =
+            set_enabled_into(&home.root(), &item.id, "humanizer", true, &mut |_| {}).unwrap_err();
+        assert!(err.to_string().contains("技能名冲突"), "实际：{err}");
     }
 
     /// copy 模式落地的技能必须能够被正常停用与卸载。
