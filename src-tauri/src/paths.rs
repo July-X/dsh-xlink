@@ -141,6 +141,20 @@ pub fn shell_dir(mode: ShellMode) -> PathBuf {
     xlink_home().join("shell").join(mode.as_str())
 }
 
+/// Shell 自己的运行时元数据目录：`<xlink_home>/<desktop[-dev]>/`。
+///
+/// 存放 `active.txt`（活动内核版本）/ `port` / `pid` 文件——这些是
+/// 「壳当前在跑哪个内核」状态，不属于业务数据。跟 [`shell_dir`] 是同一
+/// 根目录下的两个 subdir：settings / ui-state / logs 走 `shell/<mode>/`，
+/// runtime 元数据走 `desktop[-dev]/`。subdir 沿用旧名（`desktop` /
+/// `desktop-dev`）让用户认知「dev / release 各自独立目录」这件事继续成立。
+///
+/// P8 #X 修复：之前走 `<DSH_HOME>/desktop[-dev]/`（旧 `~/.dsh/...` 根），
+/// 切到 `xlink_home()` 让所有 Shell 状态都落在 `~/.dsh-xlink/` 下。
+pub fn shell_runtime_dir(mode: ShellMode) -> PathBuf {
+    xlink_home().join(mode.legacy_subdir())
+}
+
 /// Shell 设置文件：`<xlink_home>/shell/<mode>/settings.json`。
 pub fn shell_settings_file(mode: ShellMode) -> PathBuf {
     shell_dir(mode).join("settings.json")

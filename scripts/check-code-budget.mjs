@@ -157,12 +157,17 @@ const FILE_BUDGETS = {
 // 行）+ 3 个回归测试（~+150 行）。plugins.rs 预算 2915 → 2980（+65）。
 // 总预算 23800 → 24050（+250，叠加 +65 与给后续 P8 #2 UI 留 buffer）。
 //
-// 历史数据迁移 UX 改造（commit ...）：migration.rs 加
+// 历史数据迁移 UX 改造（commit 37d7d70 / eb2afb8）：migration.rs 加
 // `MigrationProgress` 结构 + `run_migration_with_progress<F>` 闭包版 +
 // `MigrationSkip` 结构 + is_migration_skipped / set_migration_skipped /
 // clear_migration_skipped 三个 helper（~+107 行）。migration.rs 预算
 // 670 → 740（+70）。总预算 24050 → 24400（+350 给后续 UI 改造留 buffer）。
-const TOTAL_BUDGET = 24400;
+//
+// dev 复测 4 项 UX 修复（commit ...）：kernel.rs `data_dir` 切到
+// `xlink_home + desktop[-dev]/` + 删旧 SHELL_SUBDIR 常量（~+50）；
+// instance.rs 加 `ensure_default_registered` sync helper（~+50）。总
+// 预算 24400 → 24500（+100 buffer）。
+const TOTAL_BUDGET = 24500;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */

@@ -147,7 +147,12 @@ function minimizeWindow() {
           <template v-if="currentInstance">
             {{ familyLabel(currentInstance.record.family) }} · {{ currentInstance.record.id }}
           </template>
-          <template v-else>加载中…</template>
+          <!-- `loaded === null` = 还在拉（首次 mount）；`loaded !== null`
+               且 list 为空 = 后端已响应但没找到默认实例（注册表空 / 没
+               注册默认实例）。前者继续「加载中…」，后者给个明确文案，
+               让用户知道「这状态是结果不是卡死」。 -->
+          <template v-else-if="instanceStore.loaded === null">加载中…</template>
+          <template v-else>未设置默认实例</template>
         </span>
         <span class="instance-chip__caret" aria-hidden="true">▾</span>
       </button>

@@ -18,6 +18,7 @@ import {
   formatBytes,
 } from '../migration.js';
 import { toast } from '../notify.js';
+import { syncPlugins } from '../plugins.js';
 
 const dialogVisible = computed({
   get: () => promptStore.open,
@@ -66,6 +67,14 @@ const doneCount = computed(() => {
 async function onConfirm() {
   try {
     await runPromptMigration();
+    // 迁移完成后自动同步实例层物化 + 接线：旧 plugin 中央库
+    // `~/.dsh/plugins/<id>/` 搬到 `~/.dsh-xlink/dsh-plugins/<id>/` 后，
+    // 各实例的 `extensions/plugins/<id>/` 还是空的，需要 sync 把中央库
+    // 复制到实例 extensions 下并更新 profile package.json 的依赖。否则
+    // 用户在「插件」面板会看到「未就绪 / 未接线」错误（截图里
+    // ghost-plugin 的「物化失败：在实例 extensions 中未就绪」就是这
+    // 个状态）。失败也吞掉——sync 是补救步骤，弹窗不该被它阻断。
+    syncPlugins().catch(() => {});
   } catch (e) {
     // toastActionError 已经在 runMigration 内部打过；弹窗保留在 ask 阶段
     // 让用户可以重试。

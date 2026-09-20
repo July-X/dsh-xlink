@@ -47,21 +47,11 @@ use crate::settings::{self, Settings};
 use crate::paths;
 
 /// dsh 自身的 home 目录名（参见 `@deepseek-ai/dsh-home-paths`）。
+/// 保留仅为 legacy 中央库扫描（[migration::LegacySource::path]）和
+/// 旧 fixture 测试使用；P8 #X 之后 `kernel::data_dir` 已经切到
+/// [`crate::paths::shell_runtime_dir`]（`xlink_home + desktop[-dev]/`），
+/// 不再依赖这条常量。
 pub const DSH_HOME_DIR_NAME: &str = ".dsh";
-/// *release* 构建下壳的元数据根目录，位于 dsh home 下：`<dsh_home>/desktop/`。
-const SHELL_SUBDIR_RELEASE: &str = "desktop";
-/// *debug* 构建（`tauri dev`）下壳的元数据根目录。该路径与 release 路径并列
-/// 存在但名称不同，以便开发者在同一台机器上同时运行 `tauri dev` 和已安装的
-/// release 壳，二者的 settings.json / kernels / active.txt / kernel.pid / port
-/// 不会互相覆盖。两个构建读取各自的 data dir，因此 dev 壳看到的是自己安装的
-/// 内核集合和自己正在运行的内核 pid，release 壳看到的也是自己的。
-const SHELL_SUBDIR_DEV: &str = "desktop-dev";
-/// 本构建实际使用的子目录，在编译期选定。
-const SHELL_SUBDIR: &str = if cfg!(debug_assertions) {
-    SHELL_SUBDIR_DEV
-} else {
-    SHELL_SUBDIR_RELEASE
-};
 /// 内核 web 服务器的默认端口。debug 构建默认为 3091（比 release 的 3090 多一），
 /// 这样 `tauri dev` 与已安装的 release 壳可以在同一台机器上运行而不会在 loopback 上
 /// 冲突。该值仅在 settings.json 缺失或没有 `port` 字段时生效；用户一旦持久化保存了
@@ -109,14 +99,10 @@ pub struct KernelStatus {
 /// 壳的元数据根目录，按以下优先级解析：
 ///
 /// 1. `DSH_DESKTOP_DATA_DIR`——完整覆盖。允许高级用户把壳指向任意目录
-///    （例如在外置磁盘上测试），同时短路掉下文的 dsh-home 与构建类型
-///    子目录逻辑。
-/// 2. `<dsh_home>/<SHELL_SUBDIR>/`，其中 `<dsh_home>` 来自 `DSH_HOME`
-///    或 `~/.dsh`，`<SHELL_SUBDIR>` 在 release 构建下是 `desktop/`，
-///    在 debug 构建（`tauri dev`）下是 `desktop-dev/`。两个名称避免
-///    开发运行的壳与已安装的 release 壳在同一台机器上共用
-///    settings.json / active.txt / kernel.pid / port。
-/// 3. 当 dsh home 只读时，回退到 Tauri 的操作系统 app-data 目录；
+///    （例如在外置磁盘上测试），同时短路掉下文的 home 解析。
+/// 2. `<xlink_home>/<desktop[-dev]>/`——默认根目录。所有 Shell 状态
+///    （业务数据 + 运行时元数据）都落在 `~/.dsh-xlink/` 下。
+/// 3. 当 xlink_home 不可写时，回退到 Tauri 的操作系统 app-data 目录；
 ///    宁愿在某个地方启动也不愿在启动阶段直接失败。
 ///
 /// 壳的所有状态（内核、设置、日志、活动指针）都存放在这一根目录中，
@@ -126,18 +112,13 @@ pub fn data_dir(app: &tauri::AppHandle) -> PathBuf {
         let _ = fs::create_dir_all(&override_dir);
         return override_dir;
     }
-    let home = std::env::var_os("DSH_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dirs_home().join(DSH_HOME_DIR_NAME));
-    let dir = home.join(SHELL_SUBDIR);
+    let dir = crate::paths::shell_runtime_dir(crate::paths::ShellMode::current());
     if fs::create_dir_all(&dir).is_ok() {
         return dir;
     }
-    // dsh home 只读：回退到 OS 的 app-data 目录，使壳至少能启动，
+    // xlink_home 不可写：回退到 OS 的 app-data 目录，使壳至少能启动，
     // 而不是启动阶段直接失败。
-    app.path()
-        .app_data_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
+    app.path().app_data_dir().unwrap_or_else(|_| dir)
 }
 
 /// 用户的操作系统 home 目录（Unix 下为 `$HOME`，Windows 下为 `%USERPROFILE%`）。
