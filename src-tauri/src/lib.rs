@@ -567,6 +567,25 @@ pub(crate) mod tests {
         acquire_env_guard(home, EnvVar::XlinkHome)
     }
 
+    /// 进入作用域时拿锁、**移除** `DSH_XLINK_HOME`；drop 时还原 env 并释放
+    /// 锁。测「缺省解析到 `~/.dsh-xlink`」这类默认路径时必须走这里，不能
+    /// 裸调 `env::remove_var`——后者只在本地锁里串行，拦不住别的模块正持
+    /// 着 [`scoped_xlink_home`] 往临时目录写文件，env 一被摘掉那些写入就
+    /// 全部落到用户真实的 `~/.dsh-xlink`（夹具泄漏进真实数据的根因）。
+    pub(crate) fn scoped_xlink_home_unset() -> EnvGuard {
+        let lock = EnvVar::XlinkHome
+            .lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os(EnvVar::XlinkHome.name());
+        std::env::remove_var(EnvVar::XlinkHome.name());
+        EnvGuard {
+            _lock: lock,
+            var: EnvVar::XlinkHome,
+            previous,
+        }
+    }
+
     /// 进入作用域时拿锁、把 `DSH_HOME` 指向 `home`；drop 时还原 env
     /// 并释放锁。迁移向导的测试需要它——旧布局的路径解析由 `DSH_HOME`
     /// 决定，与 `DSH_XLINK_HOME` 正交。

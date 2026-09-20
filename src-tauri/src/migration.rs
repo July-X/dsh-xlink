@@ -234,7 +234,10 @@ pub fn preview_migration() -> MigrationPreview {
 
 /// 目标已存在时的处理策略。`SkipIfNewer` 是最保守的默认——
 /// 保留用户后来修改的文件，仅写入**比目标更旧或不存在**的条目；这让
-/// 「先跑过迁移又回滚再跑一次」自然幂等。
+/// 「先跑过迁移又回滚再跑一次」自然幂等。**例外**：插件 / 技能中央库
+/// 的 `store.json` 清单不走整文件比较，任何策略下都按条目 `id` 合并
+/// （目标已有条目优先）——整文件覆盖会抹掉目标侧后来新增的记录，整
+/// 文件跳过又会让源记录永远迁不进来。
 ///
 /// `BackupAndOverwrite` 在覆盖前把现有目标移到
 /// `<xlink_home>/backups/<migration_id>/<source>/`，回滚时按 backup
@@ -549,11 +552,26 @@ fn migrate_one(
             }
         };
         let to = target_path.join(&file_name);
-        let decision = decide_entry(&from, &to, policy);
+        let decision = if is_store_manifest(item.source, &file_name) && to.exists() {
+            // 清单文件永远走合并——不管策略与 mtime。BackupAndOverwrite
+            // 的「备份后整体覆盖」只对普通文件有意义；清单文件覆盖会静默
+            // 丢掉目标侧独有的条目，回滚都找不回来。
+            EntryDecision::MergeManifest
+        } else {
+            decide_entry(&from, &to, policy)
+        };
         match decision {
             EntryDecision::Copy => match copy_one(&from, &to) {
                 Ok(()) => copied += 1,
                 Err(error) => last_error = Some(format!("{file_name}：{error}")),
+            },
+            EntryDecision::MergeManifest => match merge_store_manifest(&from, &to) {
+                Ok(()) => copied += 1,
+                Err(_) => {
+                    // 合并失败（清单损坏 / 不可读）按保守处理：当作跳过，
+                    // 不让一条清单拖垮整个来源的搬运——包目录仍按策略复制。
+                    skipped += 1;
+                }
             },
             EntryDecision::Skip(reason) => {
                 skipped += 1;
@@ -597,6 +615,12 @@ enum EntryDecision {
     Copy,
     Skip(&'static str),
     BackupThenCopy,
+    /// 清单文件（`store.json`）不整文件覆盖——按条目 `id` 合并进目标，
+    /// 目标已有条目优先。整文件 Copy 会把目标里比源多出的记录（用户迁
+    /// 移后新装的插件/技能）抹掉；SkipIfNewer 整文件 Skip 又会让源里
+    /// 用户真正要迁的记录永远进不来（只要目标清单因任何原因比源新——
+    /// 哪怕内容是错的）。
+    MergeManifest,
 }
 
 fn decide_entry(source: &Path, target: &Path, policy: ConflictPolicy) -> EntryDecision {
@@ -648,6 +672,59 @@ impl MetadataTime for fs::Metadata {
     fn modified_or_now(&self) -> std::time::SystemTime {
         self.modified().unwrap_or(std::time::UNIX_EPOCH)
     }
+}
+
+/// 这条源条目是不是中央库清单：插件与技能中央库的 `store.json` 都位于
+/// 源根目录顶层，且目标侧同名文件就是新布局的活清单（`dsh-plugins/
+/// store.json`、`skills/packages/store.json`）。
+fn is_store_manifest(source: LegacySource, file_name: &str) -> bool {
+    file_name == "store.json" && matches!(source, LegacySource::Plugins | LegacySource::SkillsStore)
+}
+
+/// 把源清单的条目按 `id` 合并进目标清单：目标已有条目**原样保留**（含
+/// 用户迁移后改过的状态），只补目标缺失的条目。两侧 JSON 结构都容忍
+/// 未知字段——目标文档的其它顶层字段（`schemaVersion`、`lastCheckedAt`
+/// 等）原样保留。
+///
+/// 任何一侧解析失败都返回 `Err`，由 caller 决定降级（当前：当跳过处理）。
+fn merge_store_manifest(source_file: &Path, target_file: &Path) -> io::Result<()> {
+    let read_json = |path: &Path| -> io::Result<serde_json::Value> {
+        let text = fs::read_to_string(path)?;
+        serde_json::from_str(&text).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{}：{e}", path.display()),
+            )
+        })
+    };
+    let mut target_doc = read_json(target_file)?;
+    let source_doc = read_json(source_file)?;
+
+    let source_items = source_doc
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let target_items = target_doc
+        .get("items")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "目标清单缺少 items 数组"))?
+        .clone();
+    let mut merged = target_items;
+    let mut seen: std::collections::HashSet<String> = merged
+        .iter()
+        .filter_map(|item| item.get("id").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+    for item in source_items {
+        let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if seen.insert(id.to_string()) {
+            merged.push(item);
+        }
+    }
+    target_doc["items"] = serde_json::Value::Array(merged);
+    crate::process::atomic_write(target_file, target_doc.to_string().as_bytes())
 }
 
 fn backup_path_for(backup_root: &Path, source: LegacySource, _target: &Path) -> PathBuf {
@@ -1235,6 +1312,66 @@ mod tests {
             after != "old-content",
             "目标文件比源新，SkipIfNewer 不能覆盖其内容"
         );
+    }
+
+    #[test]
+    fn run_migration_merges_store_manifest_instead_of_skip_or_overwrite() {
+        // 回归：真实环境里目标 store.json 可能因任何原因比源"新"（例如被
+        // 其它流程写过），SkipIfNewer 整文件跳过会让源里用户真正要迁的
+        // 记录永远进不来——面板只剩目标侧的错误条目。清单必须按 id 合并：
+        // 源独有条目并入，目标已有条目原样保留。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy");
+        fs::write(
+            plugins_legacy.join("store.json"),
+            r#"{"schemaVersion":1,"items":[
+                {"id":"shared","name":"shared","origin":"npm"},
+                {"id":"only-old","name":"only-old","origin":"npm"}]}"#,
+        )
+        .expect("legacy store");
+        let plugins_new = LegacySource::Plugins.target();
+        fs::create_dir_all(&plugins_new).expect("new");
+        fs::write(
+            plugins_new.join("store.json"),
+            r#"{"schemaVersion":1,"items":[
+                {"id":"shared","name":"shared-renamed","origin":"npm"}],
+                "lastCheckedAt":"1"}"#,
+        )
+        .expect("new store");
+        // 让目标 mtime 比源新——旧逻辑在这里整文件 Skip，源记录全部丢失。
+        let now = std::time::SystemTime::now();
+        set_mtime(
+            &plugins_legacy.join("store.json"),
+            now - std::time::Duration::from_secs(60),
+        );
+        set_mtime(&plugins_new.join("store.json"), now);
+
+        let report = run_migration(ConflictPolicy::SkipIfNewer).expect("migration succeeds");
+        let plugins_item = report
+            .items
+            .iter()
+            .find(|i| i.source == LegacySource::Plugins)
+            .expect("plugins item");
+        assert_eq!(plugins_item.status, MigrationStatus::Copied);
+
+        let merged: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(plugins_new.join("store.json")).expect("read merged"),
+        )
+        .expect("merged store.json 必须仍是合法 JSON");
+        let items = merged["items"].as_array().expect("items 数组");
+        let ids: Vec<&str> = items.iter().filter_map(|i| i["id"].as_str()).collect();
+        assert_eq!(ids.len(), 2, "合并后不允许重复条目：{ids:?}");
+        assert!(ids.contains(&"only-old"), "源独有条目必须被并入：{ids:?}");
+        let shared = items
+            .iter()
+            .find(|i| i["id"] == "shared")
+            .expect("shared 条目");
+        assert_eq!(
+            shared["name"], "shared-renamed",
+            "目标已有条目必须原样保留，不被源覆盖"
+        );
+        assert_eq!(merged["lastCheckedAt"], "1", "目标清单其它顶层字段原样保留");
     }
 
     #[test]

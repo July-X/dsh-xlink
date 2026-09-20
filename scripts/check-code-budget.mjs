@@ -62,7 +62,11 @@ const FILE_BUDGETS = {
   // / restore_directory / find_backup_root + 12 个新测试，约 +600 行。
   // copy_tree_inner 与 plugins.rs / skills.rs 的 copy_tree 是已知重复；
   // AGENTS.md §3 要求提共享层到 pkg.rs，留到独立重构处理。
-  'src-tauri/src/migration.rs': 740,
+  // 740 → 800：store.json 清单按 id 合并（EntryDecision::MergeManifest +
+  // is_store_manifest + merge_store_manifest）+ 合并回归测试 + 共享 env
+  // 守卫 scoped_xlink_home_unset 的调用方改造。合并语义是修复「目标清单
+  // 被泄漏数据顶新导致源记录永远迁不进来」的根因，逻辑必须留在迁移层。
+  'src-tauri/src/migration.rs': 800,
   'src-tauri/src/skills.rs': 1490,
   'src-tauri/src/patches.rs': 1250,
   // B 类日志 family/instance_id 接入：kernel_log_spec / install_log_spec /

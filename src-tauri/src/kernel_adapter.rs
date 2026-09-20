@@ -535,10 +535,7 @@ mod tests {
     use crate::paths;
     use crate::tests::scoped_xlink_home;
     use std::path::PathBuf;
-    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -610,7 +607,6 @@ mod tests {
     /// `resolve_install_dir` 在版本非法或目录不存在时返回 None。
     #[test]
     fn resolve_install_dir_returns_none_when_missing() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("resolve-none");
         let _xlink = scoped_xlink_home(&home);
         let adapter = DshAdapter;
@@ -622,7 +618,6 @@ mod tests {
     /// `prepare_instance` 必须创建 profile 模板与 cordis.patch.yml 占位。
     #[test]
     fn prepare_instance_creates_dsh_home_layout() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("prepare");
         let _xlink = scoped_xlink_home(&home);
         let adapter = DshAdapter;
@@ -667,7 +662,6 @@ mod tests {
     /// `resolve_install_root` 在 legacy 路径命中时返回 legacy 目录。
     #[test]
     fn resolve_install_root_falls_back_to_legacy() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("legacy");
         let _xlink = scoped_xlink_home(&home);
         let mut record = sample_record();
@@ -696,7 +690,6 @@ mod tests {
     /// `resolve_install_root` 在两处都没有时返回 VersionNotInstalled。
     #[test]
     fn resolve_install_root_errors_when_missing() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("missing");
         let _xlink = scoped_xlink_home(&home);
         let mut record = sample_record();
@@ -717,7 +710,6 @@ mod tests {
     /// start 必须先校验 bin 与 profile 目录，缺失时报相应错误而不是默默 spawn。
     #[test]
     fn start_rejects_missing_binary() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("start-missing");
         let _xlink = scoped_xlink_home(&home);
         let adapter = DshAdapter;
@@ -773,7 +765,6 @@ mod tests {
     #[test]
     fn dsh_adapter_custom_skill_dirs_returns_skills_active_root() {
         // DshAdapter 必须报告 Xlink 的共享技能活动视图——v1 全局共享。
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("dsh-skill-dirs");
         let _xlink = scoped_xlink_home(&home);
         let dirs = DshAdapter.custom_skill_dirs();
@@ -817,7 +808,6 @@ mod tests {
 
     #[test]
     fn mcode_adapter_prepare_instance_rejects_as_unsupported() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("mcode-prepare");
         let _xlink = scoped_xlink_home(&home);
         let mut record = sample_record();
@@ -835,7 +825,6 @@ mod tests {
 
     #[test]
     fn mcode_adapter_start_rejects_as_unsupported() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("mcode-start");
         let _xlink = scoped_xlink_home(&home);
         let mut record = sample_record();

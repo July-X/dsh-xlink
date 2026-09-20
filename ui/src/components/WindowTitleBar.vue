@@ -145,7 +145,7 @@ function minimizeWindow() {
       >
         <span class="instance-chip__label">
           <template v-if="currentInstance">
-            {{ familyLabel(currentInstance.record.family) }} · {{ currentInstance.record.id }}
+            {{ familyLabel(currentInstance.record.kernel_family) }} · {{ currentInstance.record.id }}
           </template>
           <!-- `loaded === null` = 还在拉（首次 mount）；`loaded !== null`
                且 list 为空 = 后端已响应但没找到默认实例（注册表空 / 没
@@ -171,7 +171,7 @@ function minimizeWindow() {
             @click="pickInstance(it.record.id)"
           >
             <span class="instance-menu__name">
-              {{ familyLabel(it.record.family) }} · {{ it.record.id }}
+              {{ familyLabel(it.record.kernel_family) }} · {{ it.record.id }}
             </span>
             <span
               v-if="it.is_default"

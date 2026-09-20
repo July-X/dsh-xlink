@@ -400,7 +400,7 @@ function instanceChipType(row, instanceId) {
                     effect="plain"
                     class="instance-state-chip"
                   >
-                    <span class="instance-state-chip__id">{{ familyLabel(inst.record.family) }} · {{ inst.record.id }}</span>
+                    <span class="instance-state-chip__id">{{ familyLabel(inst.record.kernel_family) }} · {{ inst.record.id }}</span>
                     <span class="instance-state-chip__sep" aria-hidden="true">·</span>
                     <span class="instance-state-chip__label">{{ instanceChipLabel(row, inst.record.id) }}</span>
                   </el-tag>
