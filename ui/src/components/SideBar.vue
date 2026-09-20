@@ -10,6 +10,7 @@ import { store, checkShellUpdate } from '../store.js';
 import { globalBusy, isLoading } from '../loading.js';
 import { pluginStore } from '../plugins.js';
 import { skillStore } from '../skills.js';
+import { migrationStore } from '../migration.js';
 
 const MENU = [
   { id: 'overview', label: '概览', icon: Odometer },
@@ -17,7 +18,11 @@ const MENU = [
   { id: 'plugins', label: '插件', icon: Connection, badge: () => (pluginStore.view && pluginStore.view.updates) || 0 },
   { id: 'skills', label: '技能', icon: MagicStick, badge: () => (skillStore.view && skillStore.view.updates) || 0 },
   { id: 'settings', label: '设置', icon: SetUp },
-  { id: 'migration', label: '数据迁移', icon: Right },
+  // 「数据迁移」按 `migrationStore.hasMigratable` 显示：只有当扫描到遗留
+  // 数据（plugin / skill 中央库有内容可搬）时才出现菜单项。首次启动扫描
+  // 完成 → 菜单可见；迁移走完 / 用户拒绝 + 清理完 → 菜单隐藏。「再次询问
+  // 迁移」按钮本来就在 MigrationPanel 上，需要时打开面板就能点。
+  { id: 'migration', label: '数据迁移', icon: Right, show: () => migrationStore.hasMigratable === true },
 ];
 
 const status = computed(() => {
@@ -27,6 +32,12 @@ const status = computed(() => {
   if (k.active && k.active_installed) return { text: '已停止', cls: 'bad' };
   return { text: '未安装', cls: '' };
 });
+
+// 过滤掉 `show()` 返回 false 的菜单项——数据迁移默认隐藏，扫描到遗留
+// 数据才显示。
+const visibleMenu = computed(() =>
+  MENU.filter((it) => (typeof it.show === 'function' ? it.show() : true))
+);
 </script>
 
 <template>
@@ -60,7 +71,7 @@ const status = computed(() => {
 
     <nav class="menu" aria-label="主菜单">
       <button
-        v-for="item in MENU"
+        v-for="item in visibleMenu"
         :key="item.id"
         type="button"
         class="menu-item"

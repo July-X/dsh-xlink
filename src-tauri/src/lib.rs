@@ -144,6 +144,18 @@ pub fn run() {
             // 导致日志损坏（seq gap）。必须早于 start_kernel，否则
             // start_kernel 会观察到「端口已被占用」，把孤儿当作健康实例。
             kernel::reap_orphans(&data_dir);
+            // 实例系统：把现有用户从旧 active.txt + settings 迁过来的状态
+            // 灌进实例注册表。旧版壳首次启动或升级到 P8 之后的 dev 跑，
+            // 实例系统都是空——不主动跑这一步，顶部 dropdown 会一直显示
+            // 「加载中」、PluginsPanel「所有实例」tab 会显示「实例注册表
+            // 加载失败」。这是 setup 期的兜底；前端 [`ensure_default_instance_migrated`]
+            // 仍然暴露给显式重置 / 调试用。
+            //
+            // 必须**早于** `app.manage(AppState { data_dir, ... })`——后者
+            // 会 move 走 data_dir，之后再借用就拿不到了。
+            if let Err(error) = crate::instance::ensure_default_registered(&data_dir) {
+                eprintln!("dsh-xlink: 默认实例注册失败（{error}）");
+            }
             app.manage(AppState {
                 data_dir,
                 running: Mutex::new(None),
@@ -157,6 +169,7 @@ pub fn run() {
             // 让用户主动决定。setup 期只做孤儿内核回收（`reap_orphans`）
             // 与日志目录的轻量修复；plugin store / skill store 的恢复
             // 推迟到用户授权之后跑。
+
             // 日志目录的启动期修复：把旧命名（`X.log.1`，扩展名是 `1`）的
             // 轮转备份改名为 `X.1.log`，它们此前永远不出现在日志面板里。
             // 纯改名、失败即跳过，不影响启动。

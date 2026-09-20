@@ -313,6 +313,44 @@ pub fn save_registry(registry: &InstanceRegistry) -> Result<(), RegistryError> {
     Ok(())
 }
 
+/// 确保默认实例已注册（同步版本，给 lib.rs setup() 直接调）。
+///
+/// 旧版壳首次启动时没走过实例系统，`<xlink_home>/state/instances.json`
+/// 不存在。setup() 在 [`crate::commands::ensure_default_instance_migrated`]
+/// 命令暴露给前端之外，**也**主动跑一次同样的逻辑——把现有用户从
+/// 旧 `active.txt + settings` 迁过来的状态灌进实例系统，避免
+/// [`list_instances`] 返回空导致顶部 dropdown「加载中」与
+/// PluginsPanel「所有实例」tab 显示「实例注册表加载失败」。
+///
+/// 与 [`crate::commands::ensure_default_instance_migrated`] 函数体一致，
+/// 抽出来是为了避开 setup 闭包内的 `spawn_blocking`——setup 是 `FnOnce`
+/// 同步闭包，必须在主线程里串行做完才能继续启动。
+pub fn ensure_default_registered(data_dir: &Path) -> Result<(), String> {
+    let _guard = crate::lock(lifecycle_mutex());
+    let mut registry = load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
+    if registry.get(DEFAULT_INSTANCE_ID).is_some() {
+        return Ok(());
+    }
+    let now_ms = crate::process::epoch_millis();
+    let settings = crate::settings::load_for_shell(crate::settings::current_mode());
+    let active = crate::kernel::read_active(data_dir);
+    let mut record = InstanceRecord::new(
+        DEFAULT_INSTANCE_ID,
+        KERNEL_FAMILY_DSH,
+        settings.port,
+        now_ms,
+    );
+    record.kernel_version = active;
+    record.label = Some("默认实例（迁移自旧版）".to_string());
+    ensure_instance_dirs(&record).map_err(|e| format!("准备实例目录失败：{e}"))?;
+    save_record_to_disk(&record).map_err(|e| format!("写入实例记录失败：{e}"))?;
+    registry
+        .add(record)
+        .map_err(|e| format!("注册表拒绝该 id：{e}"))?;
+    registry.default_instance_id = Some(DEFAULT_INSTANCE_ID.to_string());
+    save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))
+}
+
 /// 注册表读取 / 写入错误。
 #[derive(Debug, Clone)]
 pub enum RegistryError {
