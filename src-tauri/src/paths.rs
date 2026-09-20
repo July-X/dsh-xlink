@@ -512,13 +512,7 @@ impl ShellState {
 
 #[cfg(test)]
 mod test_helpers {
-    use std::ffi::OsString;
-    use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
-
-    /// 全进程串行化所有改 env 的测试，避免并行 worker 互相踩。
-    /// `cargo test` 默认多线程，单测改 env 必须排队。
-    pub(super) static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use std::path::PathBuf;
 
     /// 用唯一前缀拿一个临时目录，便于并行测试不冲突。
     pub(super) fn temp_dir(label: &str) -> PathBuf {
@@ -534,44 +528,19 @@ mod test_helpers {
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
-
-    /// 在测试作用域内设置 env，离开时还原。`HOME` 与 `USERPROFILE` 同时
-    /// 处理（Windows 优先 USERPROFILE），避免 OS 差异让测试 flaky。
-    pub(super) struct ScopedEnv {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl ScopedEnv {
-        pub(super) fn set(key: &'static str, value: &Path) -> Self {
-            let previous = std::env::var_os(key);
-            std::env::set_var(key, value);
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for ScopedEnv {
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::scoped_xlink_home;
-    use test_helpers::{temp_dir, ScopedEnv, ENV_LOCK};
+    use crate::tests::{scoped_dsh_home, scoped_xlink_home, scoped_xlink_home_unset};
+    use test_helpers::temp_dir;
 
     /// release / dev 共用根目录，但路径不再重复。
     #[test]
     fn shell_paths_split_by_mode_under_shared_root() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let fake = temp_dir("xlink-home");
-        let _home = ScopedEnv::set(DSH_XLINK_HOME_ENV, &fake);
+        let _home = scoped_xlink_home(&fake);
         let release = shell_dir(ShellMode::Release);
         let dev = shell_dir(ShellMode::Dev);
         assert!(release.starts_with(&fake), "release 应在 xlink_home 下");
@@ -593,7 +562,6 @@ mod tests {
     /// 隔离，且 plugin_id 必须经过 `validate_id_component` 校验。
     #[test]
     fn instance_extension_paths_partition_by_instance() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("ext-paths");
         let _xlink = scoped_xlink_home(&home);
         let plugin = "my-plugin";
@@ -613,7 +581,6 @@ mod tests {
     /// 退回到旧 `data_dir/../profiles` 拼接。
     #[test]
     fn instance_profile_dir_uses_dsh_home() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let home = temp_dir("profile-paths");
         let _xlink = scoped_xlink_home(&home);
         let p = instance_profile_dir("dsh", "default", "web");
@@ -627,9 +594,8 @@ mod tests {
     /// `DSH_XLINK_HOME` 必须覆盖默认值。
     #[test]
     fn dsh_xlink_home_overrides_default() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let fake = temp_dir("override");
-        let _home = ScopedEnv::set(DSH_XLINK_HOME_ENV, &fake);
+        let _home = scoped_xlink_home(&fake);
         assert_eq!(xlink_home(), fake);
         // 子路径仍以 override 为根。
         assert!(shell_settings_file(ShellMode::Release).starts_with(&fake));
@@ -638,8 +604,10 @@ mod tests {
     /// 默认根目录是 `<dirs_home>/.dsh-xlink/`；DSH_XLINK_HOME 缺省时使用之。
     #[test]
     fn default_root_is_home_dot_dsh_xlink() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var(DSH_XLINK_HOME_ENV);
+        // 必须走共享 unset 守卫：裸 remove_var 只在本地锁里串行，会摘掉
+        // 并行测试（plugins::TestHome 等）正依赖的 DSH_XLINK_HOME，把它们
+        // 的写入泄漏到用户真实的 ~/.dsh-xlink。
+        let _guard = scoped_xlink_home_unset();
         let expected = dirs_home().join(DEFAULT_HOME_DIR_NAME);
         assert_eq!(xlink_home(), expected);
     }
@@ -648,11 +616,10 @@ mod tests {
     /// legacy resolver 走自己的变量，不能互相回退。
     #[test]
     fn dsh_xlink_home_and_dsh_home_do_not_cross() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let xlink_dir = temp_dir("xlink-only");
         let dsh_dir = temp_dir("dsh-only");
-        let _xlink = ScopedEnv::set(DSH_XLINK_HOME_ENV, &xlink_dir);
-        let _dsh = ScopedEnv::set("DSH_HOME", &dsh_dir);
+        let _xlink = scoped_xlink_home(&xlink_dir);
+        let _dsh = scoped_dsh_home(&dsh_dir);
         assert_eq!(xlink_home(), xlink_dir);
         assert_eq!(legacy_dsh_home(), dsh_dir);
         // 新路径完全在 xlink_dir 下，与 dsh_dir 无关。
@@ -768,7 +735,8 @@ mod tests {
 #[cfg(test)]
 mod integration_paths_tests {
     use super::*;
-    use test_helpers::{temp_dir, ScopedEnv, ENV_LOCK};
+    use crate::tests::{scoped_dsh_home, scoped_xlink_home};
+    use test_helpers::temp_dir;
 
     /// release 与 dev 的 Shell 路径必须落在同一 `xlink_home()` 下，但
     /// 互不覆盖。
@@ -798,9 +766,8 @@ mod integration_paths_tests {
     #[test]
     fn legacy_resolver_is_stable_under_default_env() {
         // 测试不依赖具体 home：先 set_var DSH_HOME 到临时目录，保证断言稳定。
-        let _guard = ENV_LOCK.lock().unwrap();
         let fake = temp_dir("legacy-dsh-home");
-        let _dsh = ScopedEnv::set("DSH_HOME", &fake);
+        let _dsh = scoped_dsh_home(&fake);
         assert_eq!(
             legacy_desktop_data_dir(ShellMode::Release),
             fake.join(LEGACY_SHELL_SUBDIR_RELEASE)
@@ -818,11 +785,10 @@ mod integration_paths_tests {
     /// 走 `xlink_home()`，legacy 路径永远走 `DSH_HOME`。
     #[test]
     fn new_and_legacy_paths_are_orthogonal() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let xlink_dir = temp_dir("xlink-ortho");
         let dsh_dir = temp_dir("dsh-ortho");
-        let _xlink = ScopedEnv::set(DSH_XLINK_HOME_ENV, &xlink_dir);
-        let _dsh = ScopedEnv::set("DSH_HOME", &dsh_dir);
+        let _xlink = scoped_xlink_home(&xlink_dir);
+        let _dsh = scoped_dsh_home(&dsh_dir);
 
         // 新路径：在 xlink_dir 下。
         assert!(shell_settings_file(ShellMode::Release).starts_with(&xlink_dir));

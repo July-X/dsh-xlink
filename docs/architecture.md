@@ -143,7 +143,7 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 - `<DSH_HOME>/desktop[-dev>/store.json` — **旧** 技能中央库（已迁到 `skills/packages/`）
 - `<DSH_HOME>/desktop[-dev]/skills/` — **旧** 技能活动视图（已迁到 `skills/active/`）
 
-**旧 → 新** 路径映射由 `migration::LegacySource` 表达，迁移向导 `migration::run_migration` 按这个映射把旧布局导入新布局（**旧源永不被删除**——rollback 路径依赖）。
+**旧 → 新** 路径映射由 `migration::LegacySource` 表达，迁移向导 `migration::run_migration` 按这个映射把旧布局导入新布局（**旧源永不被删除**——rollback 路径依赖）。中央库清单 `store.json` 不走整文件复制/跳过：任何冲突策略下都按条目 `id` **合并**进目标清单（目标已有条目优先、只补缺失条目），否则目标侧清单一旦比源「新」（哪怕内容是测试夹具泄漏之类的错误数据），源记录就永远迁不进来。
 
 ### 多实例隔离
 
