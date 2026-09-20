@@ -869,6 +869,8 @@ fn restore_directory(from: &Path, to: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(unused_variables)]
+
     use super::*;
 
     /// 测试 home：在临时目录下建一份唯一临时目录；drop 时自动清理。

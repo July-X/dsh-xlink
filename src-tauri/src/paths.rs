@@ -754,7 +754,6 @@ mod tests {
 #[cfg(test)]
 mod integration_paths_tests {
     use super::*;
-    use crate::tests::scoped_xlink_home;
     use test_helpers::{temp_dir, ScopedEnv, ENV_LOCK};
 
     /// release 与 dev 的 Shell 路径必须落在同一 `xlink_home()` 下，但

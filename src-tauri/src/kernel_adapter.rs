@@ -293,7 +293,7 @@ impl KernelAdapter for DshAdapter {
         paths::validate_id_component(&record.kernel_family)
             .map_err(|e| AdapterError::Io(e.to_string()))?;
         paths::validate_id_component(&record.profile)
-            .map_err(|e| AdapterError::InvalidProfile(record.profile.clone()))?;
+            .map_err(|_e| AdapterError::InvalidProfile(record.profile.clone()))?;
         crate::instance::ensure_instance_dirs(record)
             .map_err(|e| AdapterError::Io(e.to_string()))?;
         // DSH 实例的 profile / pnpm-workspace / cordis.patch 模板。

@@ -35,10 +35,16 @@ use serde::Serialize;
 use tauri::Manager;
 
 use crate::error::AppError;
+// KERNEL_FAMILY_DSH 仅在 test 块使用；non-test 代码走
+// `crate::instance::KERNEL_FAMILY_DSH` 完全路径。cfg_attr(not(test))
+// 让 `cargo check` 不报警，`cargo test` 仍按"真用才不报警"的标准。
+#[cfg_attr(not(test), allow(unused_imports))]
 use crate::instance::{self, InstanceRecord, InstanceRuntime, KERNEL_FAMILY_DSH};
-use crate::kernel_adapter::{self, AdapterError, DshAdapter};
-use crate::paths;
+use crate::kernel_adapter;
 use crate::settings::{self, Settings};
+// 同理：`paths` 仅在 test 块用 `paths::instance_dir`（更短）。
+#[cfg_attr(not(test), allow(unused_imports))]
+use crate::paths;
 
 /// dsh 自身的 home 目录名（参见 `@deepseek-ai/dsh-home-paths`）。
 pub const DSH_HOME_DIR_NAME: &str = ".dsh";

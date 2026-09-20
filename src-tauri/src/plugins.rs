@@ -1871,7 +1871,7 @@ fn materialize_inner(
 /// [`materialize_one_for_instance`]（下一步落地），单实例隔离测试与
 /// 多实例 UI 都用后者。
 pub fn materialize_one(
-    data_dir: &Path,
+    _data_dir: &Path,
     version: &str,
     item: &StoreItem,
 ) -> Result<String, AppError> {
@@ -2213,7 +2213,7 @@ fn read_profile_json(
 /// `instance_profile_dir(family, instance_id, profile)/package.json`。
 /// 旧 `read_profile_json` 仍按默认实例工作（不破坏既有 caller）。
 fn read_profile_json_for_instance(
-    data_dir: &Path,
+    _data_dir: &Path,
     family: &str,
     instance_id: &str,
     profile: &str,
@@ -3692,8 +3692,13 @@ pub fn status(data_dir: &Path, settings: &settings::Settings) -> PluginStatus {
 
 /// 实例范围状态：物化目标走指定实例的 `extensions/plugins/<id>/`，
 /// 中央库仍读全局 `store.json`。
+///
+/// `family` 当前未在函数体内引用——签名保留是为与 `status_for_kernel_*`
+/// 对齐，未来按 family 路由时不用改 caller；当前的 per-instance 视图在
+/// `instances map` 里只携带 instance_id，物化与 wiring 状态本就按实例
+/// 计算，不再单独看 family。
 pub fn status_for_instance(
-    family: &str,
+    _family: &str,
     instance_id: &str,
     data_dir: &Path,
     settings: &settings::Settings,
@@ -3728,9 +3733,6 @@ pub fn status_for_instance(
         }
     };
     let active = kernel::read_active(data_dir);
-    let profile_manifest = read_profile_json(data_dir, &settings.profile)
-        .ok()
-        .flatten();
     let quarantine_doc = quarantine::load(data_dir);
     // P8：枚举注册表里所有实例，逐个计算该插件的物化 / wiring 状态。
     // 注册表加载失败时降级为「只渲染当前实例」——单实例视角 UI 仍可工作，
@@ -3757,7 +3759,7 @@ pub fn status_for_instance(
                 let target =
                     paths::instance_extension_plugin_dir(&rec.kernel_family, &rec.id, &item.id);
                 let (actual_mode, synced) = match &active {
-                    Some(version) => {
+                    Some(_version) => {
                         let meta = read_instance_meta(&meta_path);
                         let present = target.exists();
                         let current = meta
@@ -4058,9 +4060,11 @@ fn seed_default_instance_for_tests(_home: &Path) {
 }
 #[cfg(test)]
 mod tests {
+    #![allow(unused_variables)]
+
     use super::*;
 
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::SystemTime;
 
     use crate::pkg::{latest_tag, looks_like_semver, resolve_npm_version, NpmDoc};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -6214,6 +6218,8 @@ mod tests {
 
 #[cfg(test)]
 mod id_collision_tests {
+    #![allow(unused_variables)]
+
     use super::tests::TestHome;
     use super::*;
 
@@ -6826,6 +6832,8 @@ mod id_collision_tests {
 
 #[cfg(test)]
 mod store_orphan_tests {
+    #![allow(unused_variables)]
+
     use super::tests::TestHome;
     use super::*;
 
