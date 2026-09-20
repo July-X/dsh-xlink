@@ -1,9 +1,16 @@
-// 旧版数据迁移向导（dev plan §P6 step 5）—— 后端 4 条命令已可用：
-// migration_preview / migration_run / migration_rollback / migration_list
-// （commit b24e68e / 89d76df / 9615901 / 5416bca）。
+// 旧版数据迁移向导（dev plan §P6 step 5）+ 主窗口弹窗（commit 37d7d70）。
 //
-// UI 形态：嵌入式向导页（侧栏新 panel），4 步 el-steps：
-// 发现 → 选择 → 运行 → 完成/回滚。
+// 后端命令：
+// - migration_preview / migration_rollback / migration_list
+// - migration_run(policy, on_progress) — on_progress 是 Tauri Channel，
+//   每完成一源 emit MigrationProgress，前端用它更新进度条 + 文字步骤
+// - migration_skip_get / _set / _clear — 用户拒绝状态持久化到
+//   <xlink_home>/migration-skipped.json（用户点过一次「否」后不再弹）
+//
+// UI 形态：
+// - 主窗口 mount 后检测遗留数据 + skip 状态 → 满足条件弹 el-dialog
+//   居中 modal（[MigrationPrompt.vue]），是/否二选一
+// - 「数据迁移」侧栏 panel 保留作为：手动重跳 / 查历史 / rollback
 //
 // 保守默认（dev plan §P6）：
 // - ConflictPolicy::SkipIfNewer 默认（保留用户后来修改的文件）
@@ -11,7 +18,7 @@
 // - 旧源永不被删除（rollback 路径依赖）
 
 import { reactive, computed } from 'vue';
-import { invoke } from './bridge.js';
+import { invoke, makeChannel } from './bridge.js';
 import { toastActionError } from './notify.js';
 
 /** LegacySource 枚举（与后端 migration::LegacySource 对齐）。 */
@@ -74,6 +81,29 @@ export const migrationStore = reactive({
   selectedHistoryId: '',
 });
 
+/** 主窗口 mount 弹窗专用：是否处于「用户拒绝迁移」状态。 */
+export const migrationSkip = reactive({
+  /** 后端 migration_skip_get 拿到的当前值。null = 还没查过。 */
+  skipped: null,
+});
+
+/** 主窗口 mount 弹窗专用 store（与 MigrationPanel 的 migrationStore 分离）。 */
+export const promptStore = reactive({
+  /** 弹窗是否打开。 */
+  open: false,
+  /** 弹窗上下文：'initial' = 启动期首次提示，'re-prompt' = 用户在侧栏面板
+   * 主动重跳（措辞不同：初始时强调「是否要迁移」，重跳时强调「再次询问」）。 */
+  context: 'initial',
+  /** 当前 migration preview（migrationStore.preview 是同一个对象的引用）。 */
+  preview: null,
+  /** 弹窗的子状态：'ask'（等用户选）/ 'running'（迁移中 + 进度条）/ 'done'（完成 + summary）。 */
+  phase: 'ask',
+  /** 'running' 期间的进度（来自 Channel onmessage）。 */
+  progress: { step: 0, total: 0, sourceLabel: '', stage: '' },
+  /** 'done' 后的 run result。 */
+  runResult: null,
+});
+
 /** 默认重置（每次进入向导时调用）。 */
 export function resetMigrationStore() {
   migrationStore.activeStep = 0;
@@ -105,13 +135,16 @@ export async function loadMigrationPreview() {
   }
 }
 
-/** Step 3：执行迁移。 */
-export async function runMigration() {
-  const sources = Array.from(migrationStore.selectedSources);
+/** Step 3：执行迁移。`onProgress` 是 Channel<MigrationProgress> 的
+ *  onmessage 回调，每完成一源触发一次——用于实时更新进度条 + 文字步骤。 */
+export async function runMigration(onProgress) {
   try {
+    const channel = makeChannel(onProgress || (() => {}));
     const result = await invoke('migration_run', {
-      sources,
+      // 后端只接 policy + Channel；sources 由后端 preview 自动枚举。
+      // 旧版把 sources 也当参数传了，后端命令签名在 commit 37d7d70 已简化。
       conflict_policy: migrationStore.conflictPolicy,
+      on_progress: channel,
     });
     migrationStore.runResult = result;
     return result;
@@ -137,6 +170,105 @@ export async function rollbackMigration(migrationId) {
   } finally {
     migrationStore.rollbackInFlight = false;
   }
+}
+
+/** 后端查「用户是否拒绝过迁移」。失败视同 false（不弹窗但也不阻拦后续扫描）。 */
+export async function loadMigrationSkip() {
+  try {
+    migrationSkip.skipped = await invoke('migration_skip_get');
+  } catch (e) {
+    migrationSkip.skipped = false;
+    toastActionError('读取迁移跳过状态失败', e, '本次会按未跳过处理', 5000);
+  }
+  return migrationSkip.skipped;
+}
+
+/** 用户在弹窗点「否」：调后端写 skip 标记 + 前端 cache 同步。 */
+export async function setMigrationSkip(sources) {
+  try {
+    await invoke('migration_skip_set', { sources: sources || [] });
+    migrationSkip.skipped = true;
+  } catch (e) {
+    toastActionError('记录跳过状态失败', e, '下次启动仍会再问', 6000);
+    throw e;
+  }
+}
+
+/** 清除 skip 标记（用户在「数据迁移」侧栏面板手动重跳时调）。 */
+export async function clearMigrationSkip() {
+  try {
+    await invoke('migration_skip_clear');
+    migrationSkip.skipped = false;
+  } catch (e) {
+    toastActionError('清除跳过状态失败', e, '请稍后重试', 6000);
+    throw e;
+  }
+}
+
+/** 弹窗：用户选「是 → 迁移」。`sources` 是 preview 里 file_count > 0 的项。 */
+export async function runPromptMigration() {
+  promptStore.phase = 'running';
+  promptStore.progress = { step: 0, total: 0, sourceLabel: '', stage: '准备' };
+  try {
+    // conflict_policy 默认走 SkipIfNewer——和原 MigrationPanel 一致；
+    // 弹窗里没暴露 policy 选项（保守默认 + dev plan §6），用户拒绝策略
+    // 也是「保留用户后来修改的文件」最贴近直觉。
+    const result = await runMigration((progress) => {
+      promptStore.progress = progress;
+    });
+    promptStore.phase = 'done';
+    promptStore.runResult = result;
+    return result;
+  } catch (e) {
+    promptStore.phase = 'ask';
+    throw e;
+  }
+}
+
+/** 弹窗：用户选「否 → 不迁移」。 */
+export async function declinePromptMigration(sources) {
+  await setMigrationSkip(sources);
+  promptStore.open = false;
+}
+
+/** 主窗口 mount 时调用：扫 preview + 读 skip 状态，决定要不要弹。
+ * 由 App.vue onMounted 在 refreshAll() 后调一次。 */
+export async function maybeOpenMigrationPrompt() {
+  // 后端 preview 失败（比如 data_dir 不可读）→ 不弹
+  let preview;
+  try {
+    preview = await invoke('migration_preview');
+  } catch (e) {
+    return false;
+  }
+  migrationStore.preview = preview;
+  const hasMigration =
+    preview && preview.items && preview.items.some(
+      (it) => it.file_count > 0 || it.total_bytes > 0
+    );
+  migrationStore.hasMigratable = hasMigration;
+  if (!hasMigration) return false;
+  // 后端 skip 状态失败 → 跟没拒绝过一样，不阻拦弹窗
+  const skipped = await loadMigrationSkip();
+  if (skipped) return false;
+  promptStore.context = 'initial';
+  promptStore.preview = preview;
+  promptStore.phase = 'ask';
+  promptStore.progress = { step: 0, total: 0, sourceLabel: '', stage: '' };
+  promptStore.runResult = null;
+  promptStore.open = true;
+  return true;
+}
+
+/** 在「数据迁移」侧栏面板手动重跳。 */
+export function reopenMigrationPrompt() {
+  if (!migrationStore.preview || !migrationStore.hasMigratable) return;
+  promptStore.context = 're-prompt';
+  promptStore.preview = migrationStore.preview;
+  promptStore.phase = 'ask';
+  promptStore.progress = { step: 0, total: 0, sourceLabel: '', stage: '' };
+  promptStore.runResult = null;
+  promptStore.open = true;
 }
 
 /** 文件大小格式化（B / KiB / MiB / GiB）。 */
