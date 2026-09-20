@@ -141,10 +141,14 @@ export async function runMigration(onProgress) {
   try {
     const channel = makeChannel(onProgress || (() => {}));
     const result = await invoke('migration_run', {
-      // 后端只接 policy + Channel；sources 由后端 preview 自动枚举。
-      // 旧版把 sources 也当参数传了，后端命令签名在 commit 37d7d70 已简化。
-      conflict_policy: migrationStore.conflictPolicy,
-      on_progress: channel,
+      // Tauri 2.x 对 #[tauri::command] 参数默认应用 camelCase：
+      // Rust `policy` 单字不变、`on_progress` 转 `onProgress`。
+      // 旧版传 `conflict_policy` + `on_progress` 会触发
+      // "command missing required key policy"（commit a87dc5b 之后
+      // 第一次真跑就暴露了——之前 commands.rs 没把 sources 去掉时
+      // 这个错误同样会报，只是没人测过 step 3）。
+      policy: migrationStore.conflictPolicy,
+      onProgress: channel,
     });
     migrationStore.runResult = result;
     return result;
