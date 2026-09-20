@@ -151,17 +151,12 @@ pub fn run() {
                 node_cache: Mutex::new(None),
                 harness_url: Mutex::new(None),
             });
-            // 崩溃恢复：清理上一次壳运行中途死亡留下的 plugin store
-            // staging 目录。正常路径下（无残留）只是一次 read_dir 扫描，
-            // 因此可以无条件在这里跑，而不必加 marker 文件做门控。必须
-            // 在任何 plugin 命令触及 store 之前运行，而 setup 时还没有
-            // 命令这么做。
-            plugins::reconcile_store(&app.state::<AppState>().data_dir);
-            // skill store 的同类启动期修复：恢复 staging 交换、重新
-            // 链接缺失的 active-root 条目、清理孤立的 store 链接。
-            // 纯文件系统操作；失败信息会落到 skill store 的 warning
-            // 字段供 UI 展示。
-            skills::reconcile();
+            // 历史数据迁移（plugin 中央库搬迁 / skill store 整合）不再在
+            // setup() 里自动跑——主窗口 mount 后由 [`migration_prompt`]
+            // 检测到遗留数据时通过 [`migration_run`] / [`migration_skip_set`]
+            // 让用户主动决定。setup 期只做孤儿内核回收（`reap_orphans`）
+            // 与日志目录的轻量修复；plugin store / skill store 的恢复
+            // 推迟到用户授权之后跑。
             // 日志目录的启动期修复：把旧命名（`X.log.1`，扩展名是 `1`）的
             // 轮转备份改名为 `X.1.log`，它们此前永远不出现在日志面板里。
             // 纯改名、失败即跳过，不影响启动。
@@ -266,6 +261,9 @@ pub fn run() {
             commands::migration_run,
             commands::migration_rollback,
             commands::migration_list,
+            commands::migration_skip_get,
+            commands::migration_skip_set,
+            commands::migration_skip_clear,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| {

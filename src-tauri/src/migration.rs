@@ -43,7 +43,7 @@ use crate::pkg;
 /// - `plugins/` → 新 Xlink home 的 `dsh-plugins/`
 /// - `skills-store/` → 新 Xlink home 的 `skills/packages/`
 /// - `skills/` → 新 Xlink home 的 `skills/active/`
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LegacySource {
     /// `~/.dsh/plugins/`（旧版插件中央库）。
@@ -286,21 +286,77 @@ pub struct MigrationReport {
     pub items: Vec<MigrationItemReport>,
 }
 
+/// 单步进度事件。Tauri Channel 把这个 struct 序列化推到前端，前端用它
+/// 更新进度条 + 当前步骤文字。
+///
+/// 序列化字段稳定，避免后续 commit 改名 / 改序后前端会读到 null。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationProgress {
+    /// 当前 1-based 步骤索引（0 = 准备阶段，未开始第一项）。
+    pub step: u32,
+    /// 总步骤数（`preview.items.len()`）。
+    pub total: u32,
+    /// 当前步骤的源（用户可读的 `display_name`，如「旧插件中央库」）。
+    pub source_label: String,
+    /// 当前阶段文案：搬运中 / 已完成 / 失败 / 跳过。
+    pub stage: String,
+}
+
 /// 执行迁移：复制源到目标、按策略处理冲突、写入 backup（旧源永不删除）。
 ///
 /// `migration_id` 决定 backup 目录名（`<xlink_home>/backups/<id>/`）；
 /// 同一 id 多次跑视为同一迁移的后续动作（旧 backup 不会被覆盖——后面
 /// 会带递增后缀）。
 pub fn run_migration(policy: ConflictPolicy) -> Result<MigrationReport, AppError> {
+    run_migration_with_progress(policy, |_progress| {})
+}
+
+/// 进度回调版 [`run_migration`]：每完成一个 [`migrate_one`] 就调一次
+/// `on_progress`，前端用它更新进度条 / 当前步骤文字。
+///
+/// 旧 `run_migration(policy)` 是这条函数的 zero-callback wrapper。
+pub fn run_migration_with_progress<F>(
+    policy: ConflictPolicy,
+    mut on_progress: F,
+) -> Result<MigrationReport, AppError>
+where
+    F: FnMut(MigrationProgress),
+{
     let migration_id = next_migration_id();
     let backup_root = backup_root_for(&migration_id);
     fs::create_dir_all(&backup_root)
         .map_err(|e| AppError::Io(format!("无法创建备份目录 {}：{e}", backup_root.display())))?;
 
     let preview = preview_migration();
+    let total = preview.items.len() as u32;
+    on_progress(MigrationProgress {
+        step: 0,
+        total,
+        source_label: String::new(),
+        stage: "准备".to_string(),
+    });
     let mut items = Vec::with_capacity(preview.items.len());
-    for item in preview.items {
+    for (idx, item) in preview.items.into_iter().enumerate() {
+        let step = (idx + 1) as u32;
+        on_progress(MigrationProgress {
+            step,
+            total,
+            source_label: item.source.display_name().to_string(),
+            stage: "搬运中".to_string(),
+        });
         let report = migrate_one(&item, policy, &backup_root);
+        let stage = match report.status {
+            MigrationStatus::Copied => "已完成",
+            MigrationStatus::Skipped => "已跳过",
+            MigrationStatus::PartialFailure | MigrationStatus::Failed => "失败",
+        };
+        on_progress(MigrationProgress {
+            step,
+            total,
+            source_label: item.source.display_name().to_string(),
+            stage: stage.to_string(),
+        });
         items.push(report);
     }
     Ok(MigrationReport {
@@ -308,6 +364,53 @@ pub fn run_migration(policy: ConflictPolicy) -> Result<MigrationReport, AppError
         backup_root,
         items,
     })
+}
+
+/// 用户拒绝迁移的持久化状态：写到 `<data_dir>/migration-skipped.json`。
+/// 「主窗口启动弹窗」检测到 skip=true 时不弹；用户在「数据迁移」侧栏面板
+/// 里手动 `clear_migration_skip` 之后才会重新弹。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationSkip {
+    /// 用户点击「否」时记录的 epoch 毫秒。后续想加「7 天后再问」时复用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_at_ms: Option<u64>,
+    /// 用户拒绝时遗留下来的来源列表——只用作日志/审计，不参与"是否再问"的
+    /// 判断（用户拒绝过一次后，无论数据是否变化都按 skip=true 处理）。
+    #[serde(default)]
+    pub sources: Vec<LegacySource>,
+}
+
+fn skip_state_file() -> PathBuf {
+    crate::paths::kernels_root().join("migration-skipped.json")
+}
+
+/// 当前是否处于「用户拒绝迁移」状态。
+pub fn is_migration_skipped() -> bool {
+    let doc: MigrationSkip = crate::state::load_lossy(&skip_state_file());
+    doc.skipped_at_ms.is_some()
+}
+
+/// 记录用户拒绝。
+pub fn set_migration_skipped(sources: Vec<LegacySource>) -> Result<(), AppError> {
+    let doc = MigrationSkip {
+        skipped_at_ms: Some(crate::process::epoch_millis()),
+        sources,
+    };
+    crate::state::save(
+        &skip_state_file(),
+        &doc,
+        crate::state::StateCtx::plain(AppError::Io),
+    )
+}
+
+/// 清除拒绝标记（用户在「数据迁移」侧栏面板手动重跳时调用）。
+pub fn clear_migration_skipped() -> Result<(), AppError> {
+    let path = skip_state_file();
+    if !path.exists() {
+        return Ok(());
+    }
+    std::fs::remove_file(&path).map_err(|e| AppError::Io(format!("无法删除跳过标记：{e}")))
 }
 
 /// 后端生成 migration_id：`AutoYYYYMMDD-HHMMSS-<short>` 格式。短后缀

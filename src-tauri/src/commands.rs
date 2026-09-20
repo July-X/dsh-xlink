@@ -2264,15 +2264,25 @@ pub async fn migration_preview() -> Result<migration::MigrationPreview, String> 
 
 /// 执行迁移：按 policy 处理冲突、写入 backup（旧源永不被删除）。
 /// `migration_id` 由后端自动生成（`AutoYYYYMMDD-HHMMSS-<short>`）。
-/// 在 blocking worker 上跑——进度信息直接写到 MigrationReport，不再走 on_event。
+/// 在 blocking worker 上跑——进度信息通过 `on_progress` Channel 推到前端，
+/// 让「数据迁移」弹窗实时显示进度条 + 当前步骤文字。
 #[tauri::command]
 pub async fn migration_run(
     policy: migration::ConflictPolicy,
+    on_progress: Channel<migration::MigrationProgress>,
 ) -> Result<migration::MigrationReport, String> {
-    tauri::async_runtime::spawn_blocking(move || migration::run_migration(policy))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        migration::run_migration_with_progress(policy, |progress| {
+            // Channel.send 失败 = 前端已经断开（比如用户关掉了弹窗）。
+            // 这不影响后端继续完成迁移（写 backup 是主要的可观察副作用），
+            // 只是不再推消息；前端的弹窗后续读 `migration_list()` 仍能拿到
+            // 最终 report id + backup 路径。
+            let _ = on_progress.send(progress);
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 /// 把 migration_id 对应的 backup 还原回目标位置。找不到 backup 时
@@ -2291,6 +2301,26 @@ pub async fn migration_list() -> Result<Vec<migration::MigrationSummary>, String
     tauri::async_runtime::spawn_blocking(migration::list_migrations)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// 当前是否处于「用户拒绝迁移」状态。主窗口 mount 后弹窗用这个决定
+/// 是否要问用户。
+#[tauri::command]
+pub async fn migration_skip_get() -> Result<bool, String> {
+    Ok(migration::is_migration_skipped())
+}
+
+/// 记录用户拒绝迁移（弹窗点「否」时调）。`sources` 是这次弹窗扫描到的
+/// 来源列表，写进 skip 文件供审计/日志用，不参与"是否再问"的判断。
+#[tauri::command]
+pub async fn migration_skip_set(sources: Vec<migration::LegacySource>) -> Result<(), String> {
+    migration::set_migration_skipped(sources).map_err(|e| e.to_string())
+}
+
+/// 清除拒绝标记——用户在「数据迁移」侧栏面板手动重跳时调。
+#[tauri::command]
+pub async fn migration_skip_clear() -> Result<(), String> {
+    migration::clear_migration_skipped().map_err(|e| e.to_string())
 }
 
 /// 实例范围插件命令的共享主体：与 [`run_plugin_command`] 类似，但额外
