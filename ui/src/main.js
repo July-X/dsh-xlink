@@ -8,6 +8,7 @@ import { createApp } from 'vue';
 import { reportRenderError } from './errors.js';
 import { ElAlert } from 'element-plus/es/components/alert/index.mjs';
 import { ElButton } from 'element-plus/es/components/button/index.mjs';
+import { ElCheckbox, ElCheckboxGroup } from 'element-plus/es/components/checkbox/index.mjs';
 import { provideGlobalConfig } from 'element-plus/es/components/config-provider/index.mjs';
 import { ElDialog } from 'element-plus/es/components/dialog/index.mjs';
 import { ElEmpty } from 'element-plus/es/components/empty/index.mjs';
@@ -17,13 +18,20 @@ import { ElInput } from 'element-plus/es/components/input/index.mjs';
 import { ElInputNumber } from 'element-plus/es/components/input-number/index.mjs';
 import { ElLoading } from 'element-plus/es/components/loading/index.mjs';
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs';
+import { ElProgress } from 'element-plus/es/components/progress/index.mjs';
+import { ElRadio, ElRadioGroup } from 'element-plus/es/components/radio/index.mjs';
+import { ElResult } from 'element-plus/es/components/result/index.mjs';
+import { ElStep, ElSteps } from 'element-plus/es/components/steps/index.mjs';
 import { ElSwitch } from 'element-plus/es/components/switch/index.mjs';
 import { ElPopconfirm } from 'element-plus/es/components/popconfirm/index.mjs';
+import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs';
+import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs';
 import { ElTag } from 'element-plus/es/components/tag/index.mjs';
 import { ElTooltip } from 'element-plus/es/components/tooltip/index.mjs';
 import zhCn from 'element-plus/es/locale/lang/zh-cn';
 import 'element-plus/es/components/alert/style/css.mjs';
 import 'element-plus/es/components/button/style/css.mjs';
+import 'element-plus/es/components/checkbox/style/css.mjs';
 import 'element-plus/es/components/dialog/style/css.mjs';
 import 'element-plus/es/components/empty/style/css.mjs';
 import 'element-plus/es/components/form/style/css.mjs';
@@ -36,8 +44,16 @@ import 'element-plus/es/components/message/style/css.mjs';
 import 'element-plus/es/components/message-box/style/css.mjs';
 import 'element-plus/es/components/option/style/css.mjs';
 import 'element-plus/es/components/popconfirm/style/css.mjs';
+import 'element-plus/es/components/progress/style/css.mjs';
+import 'element-plus/es/components/radio/style/css.mjs';
+import 'element-plus/es/components/result/style/css.mjs';
 import 'element-plus/es/components/select/style/css.mjs';
+import 'element-plus/es/components/step/style/css.mjs';
+import 'element-plus/es/components/steps/style/css.mjs';
 import 'element-plus/es/components/switch/style/css.mjs';
+import 'element-plus/es/components/tab-pane/style/css.mjs';
+import 'element-plus/es/components/table/style/css.mjs';
+import 'element-plus/es/components/tabs/style/css.mjs';
 import 'element-plus/es/components/tag/style/css.mjs';
 import 'element-plus/es/components/tooltip/style/css.mjs';
 import 'element-plus/theme-chalk/dark/css-vars.css';
@@ -68,6 +84,8 @@ const app = createApp(root);
 [
   ElAlert,
   ElButton,
+  ElCheckbox,
+  ElCheckboxGroup,
   ElDialog,
   ElEmpty,
   ElForm,
@@ -77,8 +95,18 @@ const app = createApp(root);
   ElInputNumber,
   ElOption,
   ElPopconfirm,
-  ElSelect,
+  ElProgress,
+  ElRadio,
+  ElRadioGroup,
+  ElResult,
+  ElStep,
+  ElSteps,
   ElSwitch,
+  ElSelect,
+  ElTable,
+  ElTableColumn,
+  ElTabPane,
+  ElTabs,
   ElTag,
   ElTooltip,
 ].forEach((component) => app.component(component.name, component));

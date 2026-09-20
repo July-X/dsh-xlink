@@ -171,7 +171,13 @@ const FILE_BUDGETS = {
 // `xlink_home + desktop[-dev]/` + 删旧 SHELL_SUBDIR 常量（~+50）；
 // instance.rs 加 `ensure_default_registered` sync helper（~+50）。总
 // 预算 24400 → 24500（+100 buffer）。
-const TOTAL_BUDGET = 24500;
+//
+// EP 组件按需注册补全（commit ...）：main.js 补注册 12 个缺失组件
+//（tabs / table / steps / checkbox / radio / result / progress 及配套
+// style import，~+30 行）。这不是样板膨胀——这 12 个组件在模板里
+// 已被使用但从未注册，此前被当未知自定义元素静默渲染坏。总预算
+// 24500 → 24550（+50 buffer）。
+const TOTAL_BUDGET = 24550;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
