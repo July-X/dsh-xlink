@@ -16,6 +16,7 @@ import {
 import { loadCatalog, checkPluginUpdates } from './plugins.js';
 import { checkSkillUpdates } from './skills.js';
 import { applyNotificationStatus } from './notifications.js';
+import { maybeOpenMigrationPrompt } from './migration.js';
 import SideBar from './components/SideBar.vue';
 import OverviewPanel from './components/OverviewPanel.vue';
 import VersionsPanel from './components/VersionsPanel.vue';
@@ -23,6 +24,7 @@ import PluginsPanel from './components/PluginsPanel.vue';
 import SkillsPanel from './components/SkillsPanel.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
 import MigrationPanel from './components/MigrationPanel.vue';
+import MigrationPrompt from './components/MigrationPrompt.vue';
 import ProgressOverlay from './components/ProgressOverlay.vue';
 import LogModal from './components/LogModal.vue';
 import IncidentModal from './components/IncidentModal.vue';
@@ -170,6 +172,10 @@ onMounted(() => {
     .then(() => invoke('confirm_shell_ready'))
     .catch((e) => toastError('更新后的旧版本清理未完成：' + e, 6000));
 
+  // 历史数据迁移弹窗：扫到遗留数据 + 用户未拒绝过时自动弹。
+  // 失败（preview / skip 读取异常）静默忽略——主流程不受影响。
+  maybeOpenMigrationPrompt().catch(() => {});
+
   // 状态轮询：窗口隐藏时整个跳过；重新可见时立即补一轮。
   pollTimer = setInterval(pollStatus, 2500);
   document.addEventListener('visibilitychange', onVisibilityChange);
@@ -249,5 +255,9 @@ onUnmounted(() => {
     <LogModal />
     <IncidentModal />
     <DebugPanel />
+    <!-- 主窗口 mount 后弹窗：检测到旧版数据 + 用户未拒绝过时弹。
+         MigrationPanel 是「数据迁移」侧栏面板（手动重跳 / 查历史 / 回滚），
+         与本弹窗并存：弹窗负责首次发现提示，面板负责反复操作。 -->
+    <MigrationPrompt />
   </div>
 </template>

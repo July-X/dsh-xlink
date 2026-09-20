@@ -62,7 +62,7 @@ const FILE_BUDGETS = {
   // / restore_directory / find_backup_root + 12 个新测试，约 +600 行。
   // copy_tree_inner 与 plugins.rs / skills.rs 的 copy_tree 是已知重复；
   // AGENTS.md §3 要求提共享层到 pkg.rs，留到独立重构处理。
-  'src-tauri/src/migration.rs': 670,
+  'src-tauri/src/migration.rs': 740,
   'src-tauri/src/skills.rs': 1490,
   'src-tauri/src/patches.rs': 1250,
   // B 类日志 family/instance_id 接入：kernel_log_spec / install_log_spec /
@@ -156,7 +156,13 @@ const FILE_BUDGETS = {
 // status_for_instance 内部循环 instance::load_registry() 各实例（~+65
 // 行）+ 3 个回归测试（~+150 行）。plugins.rs 预算 2915 → 2980（+65）。
 // 总预算 23800 → 24050（+250，叠加 +65 与给后续 P8 #2 UI 留 buffer）。
-const TOTAL_BUDGET = 24050;
+//
+// 历史数据迁移 UX 改造（commit ...）：migration.rs 加
+// `MigrationProgress` 结构 + `run_migration_with_progress<F>` 闭包版 +
+// `MigrationSkip` 结构 + is_migration_skipped / set_migration_skipped /
+// clear_migration_skipped 三个 helper（~+107 行）。migration.rs 预算
+// 670 → 740（+70）。总预算 24050 → 24400（+350 给后续 UI 改造留 buffer）。
+const TOTAL_BUDGET = 24400;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */

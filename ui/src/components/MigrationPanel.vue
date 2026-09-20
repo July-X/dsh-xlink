@@ -1,9 +1,13 @@
 <script setup>
-// 旧版数据迁移向导（dev plan §P6 step 5）
+// 旧版数据迁移向导（dev plan §P6 step 5）+ 主动询问入口（commit 37d7d70）。
 //
 // 4 步 el-steps：发现 → 选择 → 运行 → 完成 / 回滚
-// 后端 4 条命令已可用：migration_preview / migration_run /
-// migration_rollback / migration_list
+// 后端命令已可用：migration_preview / migration_run(policy, on_progress Channel)
+// / migration_rollback / migration_list / migration_skip_{get,set,clear}。
+//
+// 与 [MigrationPrompt.vue]（主窗口 mount 弹窗）并存：弹窗负责首次发现
+// 提示，面板负责反复操作；面板 step-actions 加「再次询问迁移」按钮让
+// 拒绝过的用户也能主动重跳。
 //
 // 保守默认：ConflictPolicy::SkipIfNewer + 凭据与会话不纳入 + 旧源永不删除
 import { computed, onMounted, ref, watch } from 'vue';
@@ -14,6 +18,8 @@ import {
   loadMigrationPreview,
   runMigration,
   rollbackMigration,
+  clearMigrationSkip,
+  reopenMigrationPrompt,
   sourceDisplayName,
   sourceBackupKey,
   conflictPolicyDisplayName,
@@ -65,6 +71,21 @@ function next() {
 }
 function prev() {
   if (migrationStore.activeStep > 0) migrationStore.activeStep -= 1;
+}
+
+// 用户在「数据迁移」面板主动重跳：先清掉之前的 skip 标记（如果有），
+// 再触发弹窗。MigrationPrompt 的 promptStore.open = true 之后弹窗就
+// 走 ask / running / done 三阶段，跟首次启动的提示同一条路径。
+async function onReopenPrompt() {
+  await clearMigrationSkip();
+  if (!migrationStore.preview) {
+    await loadMigrationPreview();
+  }
+  if (!migrationStore.hasMigratable) {
+    // 没有可迁移内容时给个轻提示，不开弹窗
+    return;
+  }
+  reopenMigrationPrompt();
 }
 
 function toggleSource(src) {
@@ -138,6 +159,9 @@ function toggleSource(src) {
       <footer class="step-actions">
         <el-button @click="refreshPreview" :icon="Refresh" :loading="isLoading('migrationPreview')">
           重新扫描
+        </el-button>
+        <el-button @click="onReopenPrompt">
+          再次询问迁移
         </el-button>
         <el-button
           type="primary"
