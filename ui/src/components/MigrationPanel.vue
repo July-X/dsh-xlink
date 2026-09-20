@@ -30,6 +30,7 @@ import {
   SOURCES,
 } from '../migration.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
+import { store } from '../store.js';
 
 const previewItems = computed(() =>
   (migrationStore.preview && migrationStore.preview.items) || []
@@ -39,7 +40,7 @@ const historyList = computed(() => migrationStore.history || []);
 
 const runResultItems = computed(() => {
   if (!migrationStore.runResult) return [];
-  // MigrationReport.per_source items（per_source 字段名约定）
+  // MigrationReport.items（字段名与 Rust MigrationItemReport 对齐）
   return migrationStore.runResult.per_source || migrationStore.runResult.items || [];
 });
 
@@ -51,6 +52,25 @@ onMounted(async () => {
 
 async function refreshPreview() {
   await withLoading('migrationPreview', () => loadMigrationPreview());
+}
+
+// 「完成」收尾并回到概览主界面：迁移结果留在历史列表里可随时回查 / 回滚；
+// 面板经 :key 切换会卸载重挂，下次进来自然从「发现」重新扫描。
+function onFinish() {
+  resetMigrationStore();
+  store.activePanel = 'overview';
+}
+
+// 后端给的是 epoch 秒字符串（与商店清单时间戳约定一致），这里转本地时间。
+function formatHistoryTime(epochSecs) {
+  if (!epochSecs) return '—';
+  const date = new Date(Number(epochSecs) * 1000);
+  if (Number.isNaN(date.getTime())) return '—';
+  const pad = (n) => String(n).padStart(2, '0');
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  );
 }
 
 async function onRun() {
@@ -140,8 +160,20 @@ function toggleSource(src) {
         <h3>历史迁移</h3>
         <el-table :data="historyList" stripe>
           <el-table-column prop="migration_id" label="ID" />
-          <el-table-column prop="started_at" label="开始时间" />
-          <el-table-column prop="status" label="状态" />
+          <el-table-column label="开始时间">
+            <template #default="scope">
+              {{ formatHistoryTime(scope && scope.row && scope.row.created_at) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="来源">
+            <template #default="scope">
+              {{
+                scope && scope.row && Array.isArray(scope.row.sources)
+                  ? `${scope.row.sources.length} 个来源`
+                  : '—'
+              }}
+            </template>
+          </el-table-column>
           <el-table-column label="操作">
             <template #default="scope">
               <el-button
@@ -253,21 +285,23 @@ function toggleSource(src) {
         </el-result>
         <table v-if="runResultItems.length > 0" class="preview-table">
           <thead>
-            <tr><th>来源</th><th>已迁移</th><th>备份</th><th>冲突</th></tr>
+            <tr><th>来源</th><th>已迁移</th><th>跳过</th><th>备份</th></tr>
           </thead>
           <tbody>
             <tr v-for="item in runResultItems" :key="item.source">
               <td>{{ sourceDisplayName(item.source) }}</td>
-              <td>{{ item.copied_files || '—' }}</td>
+              <td>{{ item.files_copied ?? 0 }}</td>
+              <!-- 跳过 = SkipIfNewer 下保留目标侧更新内容的条目；迁移报告
+                   没有「冲突」计数字段，原列读 conflicts 恒为空 -->
+              <td>{{ item.files_skipped ?? 0 }}</td>
               <td class="path">{{ item.backup_path || '—' }}</td>
-              <td>{{ item.conflicts || 0 }}</td>
             </tr>
           </tbody>
         </table>
       </template>
       <footer class="step-actions">
         <el-button @click="prev">上一步</el-button>
-        <el-button @click="resetMigrationStore(); migrationStore.activeStep = 0">
+        <el-button type="primary" @click="onFinish">
           完成
         </el-button>
       </footer>
@@ -276,17 +310,25 @@ function toggleSource(src) {
 </template>
 
 <style scoped>
-.panel { padding: 16px 20px; }
-.subtitle { color: var(--text-muted); margin-top: 4px; }
-.step-body { margin-top: 24px; }
-.step-actions { margin-top: 24px; display: flex; gap: 8px; justify-content: flex-end; }
-.preview-table { width: 100%; border-collapse: collapse; margin: 12px 0; }
-.preview-table th, .preview-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+.panel { padding: 12px 20px; }
+/* 紧凑布局：向导是一次性流程，页内留白按工具页收紧，减少纵向滚动 */
+.migration header h2 { margin: 0; font-size: 20px; }
+.subtitle { color: var(--text-muted); margin: 2px 0 0; }
+.step-body { margin-top: 14px; }
+.step-body h3 { margin: 14px 0 8px; }
+.step-actions { margin-top: 16px; display: flex; gap: 8px; justify-content: flex-end; }
+.preview-table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+.preview-table th, .preview-table td { padding: 6px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+.preview-table td { vertical-align: top; }
 .preview-table .path { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text-muted); }
 .hint { color: var(--text-muted); font-size: 13px; }
-.history { margin-top: 32px; }
-.history h3 { margin-bottom: 12px; }
-.credentials-note { margin-top: 24px; padding: 12px 16px; background: var(--surface-soft); border-radius: 6px; color: var(--text-muted); }
+.history { margin-top: 20px; }
+.history h3 { margin-bottom: 8px; }
+/* 迁移 ID 是定长单行标识（AutoYYYYMMDD-HHMMSS-xxxx），窄列会把它逐字符
+   竖排折行；时间与操作同理单行显示。el-table 的内容在 .cell 包装里，
+   scoped 样式需要 :deep 穿透 */
+.history :deep(.el-table .cell) { white-space: nowrap; }
+.credentials-note { margin-top: 14px; padding: 10px 16px; background: var(--surface-soft); border-radius: 6px; color: var(--text-muted); }
 /* 来源勾选纵向排布（原先靠 el-checkbox-group 的布局习惯，去掉 group 后自己排） */
 .source-options { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 </style>

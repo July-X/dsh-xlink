@@ -819,7 +819,10 @@ pub struct RollbackReport {
 pub struct MigrationSummary {
     pub migration_id: String,
     pub backup_root: PathBuf,
-    pub created_at: Option<std::time::SystemTime>,
+    /// 备份目录 mtime，epoch 秒字符串——与商店清单的时间戳约定一致，
+    /// 前端自己格式化本地时间。SystemTime 的 serde 序列化是个结构体，
+    /// 前端没法直接读。
+    pub created_at: Option<String>,
     pub sources: Vec<String>,
 }
 
@@ -846,7 +849,11 @@ pub fn list_migrations() -> Vec<MigrationSummary> {
             }
             // mtime 是文件系统级 metadata，读失败时回退 None——失败不该
             // 让整条记录消失。
-            let created_at = md.modified().ok();
+            let created_at = md.modified().ok().and_then(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs().to_string())
+            });
             let (migration_id, is_root) = parse_backup_dir_name(&file_name)?;
             if !is_root {
                 // .N 后缀条目（root 已列出）——此处不单独列，避免 UI 重复
@@ -863,6 +870,7 @@ pub fn list_migrations() -> Vec<MigrationSummary> {
             })
         })
         .collect();
+    // epoch 秒字符串的字典序与时间序一致，倒序即「最近在前」。
     summaries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     summaries
 }
@@ -1697,8 +1705,8 @@ mod tests {
         // 按 backup 目录 mtime 倒序——确保 2 条 id 不同、第一条 created_at
         // ≥ 第二条。
         assert_ne!(summaries[0].migration_id, summaries[1].migration_id);
-        let a = summaries[0].created_at.expect("created_at");
-        let b = summaries[1].created_at.expect("created_at");
+        let a = summaries[0].created_at.as_deref().expect("created_at");
+        let b = summaries[1].created_at.as_deref().expect("created_at");
         assert!(a >= b, "最近一次的迁移必须排第一");
     }
 }
