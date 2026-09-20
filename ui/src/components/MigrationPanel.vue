@@ -143,12 +143,13 @@ function toggleSource(src) {
           <el-table-column prop="started_at" label="开始时间" />
           <el-table-column prop="status" label="状态" />
           <el-table-column label="操作">
-            <template #default="{ row }">
+            <template #default="scope">
               <el-button
+                v-if="scope && scope.row"
                 size="small"
                 :icon="RefreshLeft"
                 :loading="isLoading('migrationRollback') && migrationStore.rollbackInFlight"
-                @click="onRollback(row.migration_id)"
+                @click="onRollback(scope.row.migration_id)"
               >
                 回滚
               </el-button>
