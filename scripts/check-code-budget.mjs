@@ -177,7 +177,11 @@ const FILE_BUDGETS = {
 // style import，~+30 行）。这不是样板膨胀——这 12 个组件在模板里
 // 已被使用但从未注册，此前被当未知自定义元素静默渲染坏。总预算
 // 24500 → 24550（+50 buffer）。
-const TOTAL_BUDGET = 24550;
+//
+// 迁移向导收尾 UX（commit ...）：MigrationSummary.created_at 改 epoch
+// 秒字符串 + MigrationPanel 完成 / 紧凑布局 / 报告与历史字段对齐
+//（~+30 行）。总预算 24550 → 24600（+50 buffer）。
+const TOTAL_BUDGET = 24600;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
