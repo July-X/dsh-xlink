@@ -22,6 +22,9 @@
  *      且 macOS 标题栏最小化走系统原生最小化——写反了黄灯会静默失效。
  *   7. workflow 的 `uses:` 全部固定到 commit SHA，且 `.github/dependabot.yml` 存在并
  *      覆盖 github-actions——钉住的 SHA 只能靠 Dependabot 推进，缺了它策略就是空话。
+ *   8. UI 模板里用到的 `el-*` 组件都已在 main.js 注册——本项目不引入 unplugin
+ *      自动导入器，漏注册的组件在构建与测试全绿的情况下被当未知自定义元素
+ *      原样渲染（P8 双 tab 因此整页平铺、迁移向导的勾选/单选全部失效）。
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -393,6 +396,57 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
     fail('supply-chain', `${dependabot} 没有 github-actions 条目，action 的 SHA 永远不会被推进`);
   } else {
     note('Dependabot 覆盖 github-actions（SHA 固定才有升级路径）');
+  }
+}
+
+// --- 8. Element Plus 组件：模板用到的必须已注册 ------------------------------
+//
+// main.js 按「显式 import + app.component」注册 EP 组件，不引入 unplugin 自动
+// 导入器。模板里写了 `<el-tabs>` 这类未注册组件时生产构建照样绿：Vue 把它当
+// 未知自定义元素原样渲染——tab 头消失、所有 pane 内容平铺、v-model 静默失效
+// （P8 插件双 tab 与迁移向导的勾选/单选都栽在这里）。把「模板 el-* ⊆ main.js
+// 注册集合」钉进门禁。局部 `components:` 注册在本仓库不存在（已约定全局注册），
+// 如未来引入需同步扩展本检查。
+{
+  const mainJs = read('ui/src/main.js');
+  const registrationBlock = mainJs.match(
+    /\[([\s\S]*?)\]\s*\.forEach\(\(component\)\s*=>\s*app\.component/,
+  );
+  if (!registrationBlock) {
+    fail(
+      'ep-registry',
+      'main.js 里找不到 `[…].forEach((component) => app.component(component.name, component))` 注册块',
+    );
+  } else {
+    // ElTableColumn → el-table-column；注册集合统一带 `el-` 前缀，与模板写法对齐。
+    const toKebab = (ident) =>
+      'el-' +
+      ident
+        .replace(/^El/, '')
+        .replace(/([A-Z])/g, '-$1')
+        .toLowerCase()
+        .replace(/^-/, '');
+    const registered = new Set(
+      (registrationBlock[1].match(/El[A-Za-z]+/g) ?? []).map(toKebab),
+    );
+    const used = new Map();
+    for (const file of walk(join(root, 'ui/src'), ['.vue'])) {
+      for (const match of readFileSync(file, 'utf8').matchAll(/<el-([a-z][a-z0-9-]*)/g)) {
+        const name = `el-${match[1]}`;
+        if (!used.has(name)) used.set(name, show(file));
+      }
+    }
+    const missing = [...used.keys()].filter((name) => !registered.has(name));
+    if (missing.length > 0) {
+      for (const name of missing) {
+        fail(
+          'ep-registry',
+          `${used.get(name)} 用了 <${name}>，但 main.js 没有注册该组件——未知自定义元素会被原样渲染（tab 头消失、v-model 失效）`,
+        );
+      }
+    } else {
+      note(`EP 组件注册完整：模板用到 ${used.size} 种，全部已在 main.js 注册`);
+    }
   }
 }
 
