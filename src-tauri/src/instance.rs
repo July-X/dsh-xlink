@@ -71,6 +71,23 @@ pub const KERNEL_FAMILY_MCODE: &str = "mcode";
 pub fn resolve_default() -> (&'static str, &'static str) {
     (KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID)
 }
+
+/// 壳当前服务的内核族：注册表中默认实例的 `kernel_family`。
+///
+/// 注册表不可读、没有默认实例或找不到对应记录时回退 DSH——与
+/// [`resolve_default`] 的兜底口径一致。setup 期用它把 data_dir 解析到
+/// `<xlink_home>/<family>/desktop[-dev]/`，让 mcode 等新内核族将来接入时
+/// 天然拿到自己的族目录。
+pub fn default_family() -> String {
+    if let Ok(registry) = load_registry() {
+        if let Some(id) = registry.default_instance_id.as_deref() {
+            if let Some(record) = registry.instances.iter().find(|item| item.id == id) {
+                return record.kernel_family.clone();
+            }
+        }
+    }
+    KERNEL_FAMILY_DSH.to_string()
+}
 /// 新实例端口分配的起始值；与旧版 release 默认端口一致，方便迁移。
 pub const DEFAULT_PORT_BASE: u16 = 3090;
 /// 新实例端口分配的搜索上限（不含）。留出常用管理端口（3090+）与系统预留。

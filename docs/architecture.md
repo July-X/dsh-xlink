@@ -11,7 +11,8 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
                                    │              │
                               settings.rs    releases.rs（npm registry → GitHub 回退）
                                    │
-              ~/.dsh/desktop/{settings.json, kernels/, logs/, active.txt, patches/} + ~/.dsh/plugins/
+              ~/.dsh-xlink/{shell/<mode>/, kernels/<family>/, dsh-plugins/, skills/}
+              + ~/.dsh-xlink/<family>/desktop[-dev]/{kernels/, active.txt, patches/, quarantine.json}
 ```
 
 - `commands.rs`：Tauri 命令层。长任务用 `spawn_blocking` + `tauri::ipc::Channel` 向 UI 推进度事件；`install_node`（「帮我安装」）下载官方 Node.js 到数据目录并与内核安装共用 lifecycle 锁，成功后清空 `node_cache` 让下一次 `get_status` 立刻报告新运行时；设置和日志目录读写也经 `spawn_blocking`，不占用主线程；窗口类命令（`open_harness`、`open_log_window`）在新 OS 线程上构建 webview（Windows 主线程创建会死锁）。日志「全屏」由 `open_log_window` 弹独立可缩放窗口（同一 SPA 加 `?log=<name>` 查询串，`ui/src/main.js` 分流到 `LogViewerWindow.vue`），ACL 走 `capabilities/log-viewer.json`（只放 `read_log_file`）。
@@ -40,7 +41,7 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 `<data_dir>/logs/` 下每个 `.log` 文件都按统一的命名规范落盘，便于 `list_log_files` 列表稳定、用户/支持方一眼区分 build 类型与日期：
 
 - **文件名格式**：`<kind>-<name>-<YYYY-MM-DD>.log`，其中：
-  - `kind` = `release`（release build）或 `dev`（`tauri dev`），与 `kernel::data_dir` 的 `desktop/` / `desktop-dev/` 目录分槽保持一致。
+  - `kind` = `release`（release build）或 `dev`（`tauri dev`），与 Shell 日志目录 `shell/<release|dev>/` 及 data_dir 的 `desktop/` / `desktop-dev/` 分槽保持一致。
   - `name` = 逻辑名（`kernel` / `install-<version>` / `plugin-<id>` / `plugin-wiring` / `pnpm-install-<epoch>`）。
   - `YYYY-MM-DD` = 本地日期（用户时区，非 UTC），按 `time` crate 的 `local-offset` 计算。
 - **轮转策略**：日级为主、尺寸为辅。`RotatingLog` 在每次 `write_line` 前检查本地日期与当前打开文件日期是否一致，不一致就关闭旧文件、打开新一天的文件。同一日内单文件跨 `KERNEL_LOG_MAX_BYTES`（8 MiB）则触发尺寸轮转：旧文件改名为 `<...>.1`，保留至多 `KERNEL_LOG_BACKUPS`（2）个备份。
@@ -62,19 +63,23 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 
 ## 数据目录
 
-外壳全部状态位于 `<dsh_home>/desktop/`（release build）或 `<dsh_home>/desktop-dev/`（debug build `tauri dev`），由 `kernel::data_dir` 解析并在启动时创建。子结构：`kernels/<版本>/`、`logs/`、`settings.json`、`active.txt`、`kernel.pid`、`patches/`（补丁应用记录 `state.json` 与 `backups/` 原文件备份）、`tools/node/v<version>/`（托管 Node.js 运行时，见 `node_install.rs`）与 `tools/downloads/`（下载缓存）。
+外壳全部状态位于 `<dsh_xlink_home>/<family>/desktop/`（release build）或 `<dsh_xlink_home>/<family>/desktop-dev/`（debug build `tauri dev`），按**内核族命名空间**隔离（dsh 与将来的 mcode 各持一份，互不可见），由 `kernel::data_dir` 解析并在启动时创建。子结构：`kernels/<版本>/`、`logs/`、`settings.json`、`active.txt`、`kernel.pid`、`patches/`（补丁应用记录 `state.json` 与 `backups/` 原文件备份）、`tools/node/v<version>/`（托管 Node.js 运行时，见 `node_install.rs`）与 `tools/downloads/`（下载缓存）。
 
-启动时 `setup()` 在 stderr 打印 `dsh-xlink: data_dir = <path> (build: dev|release)`，让用户一眼确认当前进程用的是哪个目录。
+启动时 `setup()` 在 stderr 打印 `dsh-xlink: data_dir = <path> (family: <family>, build: dev|release)`，让用户一眼确认当前进程用的是哪个目录、哪个内核族。
+
+### 平铺布局的一次性搬迁
+
+v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data_dir 时**整体 rename** 进 `<family>/`（同卷原子操作，active.txt / 内核安装 / quarantine 一起过去）。rename 失败时继续使用旧目录（宁可留在平铺位置也不让用户面对空的新目录）；新旧并存（上次搬迁中断）时以族目录为准、旧目录保留待手动清理。
 
 ### 优先级（`kernel::data_dir`）
 
 1. `DSH_DESKTOP_DATA_DIR` 环境变量——完全覆盖目录路径（用于在外部盘上测试等场景）
-2. `<DSH_HOME 或 ~/.dsh>/<SHELL_SUBDIR>/`——`SHELL_SUBDIR` 在 release 是 `desktop`、debug 是 `desktop-dev`
-3. `app_data_dir()`（OS app-data 目录）作为只读 dsh home 的 fallback
+2. `<DSH_XLINK_HOME 或 ~/.dsh-xlink>/<family>/<SHELL_SUBDIR>/`——family 来自实例注册表默认实例（`instance::default_family()`，回退 `dsh`）；`SHELL_SUBDIR` 在 release 是 `desktop`、debug 是 `desktop-dev`
+3. `app_data_dir()`（OS app-data 目录）作为 xlink home 不可写时的 fallback
 
 ### 为什么 dev 和 release 用不同目录
 
-`settings.json`（端口配置）、`active.txt`（当前激活版本）、`kernel.pid`（运行中内核的 PID）、`kernels/<版本>/`（安装的内核）、loopback 端口都是**共享资源**。一个开发者同时跑 `tauri dev` 和已装的 release shell 时，两个实例会互相争端口（`port_open` 拒绝启动）、互相 kill（任意一方点"关闭工作台"就把对方的内核杀了）、互相覆盖 `active.txt` 和 `settings.json`。分目录 + 错位端口（debug 3091 / release 3090）让两边完全互不读对方的 state——dev 可以放心改端口、切内核、看 log，不会污染 release shell 的视图。
+`settings.json`（端口配置）、`active.txt`（当前激活版本）、`kernel.pid`（运行中内核的 PID）、`kernels/`（安装的内核）、loopback 端口都是**共享资源**。一个开发者同时跑 `tauri dev` 和已装的 release shell 时，两个实例会互相争端口（`port_open` 拒绝启动）、互相 kill（任意一方点"关闭工作台"就把对方的内核杀了）、互相覆盖 `active.txt` 和 `settings.json`。分目录 + 错位端口（debug 3091 / release 3090）让两边完全互不读对方的 state——dev 可以放心改端口、切内核、看 log，不会污染 release shell 的视图。
 
 ### 端口（`kernel::DEFAULT_PORT`）
 
@@ -136,7 +141,7 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 
 ### DSH home（旧版 `<DSH_HOME>/`，由 `DSH_HOME` 解析）
 
-`~/.dsh/` 仍由 kernel / kernel_adapter 模块自管。本仓库**不写**这里：
+`~/.dsh/` 仍由 kernel / kernel_adapter 模块自管。本仓库**不写**这里（另有 v0.2.x 的平铺布局 `<DSH_XLINK_HOME>/desktop[-dev]/`——启动时自动整体搬进 `<family>/`，见上文「平铺布局的一次性搬迁」）：
 - `<DSH_HOME>/desktop[-dev]/kernels/<version>/` — 内核 legacy 安装位置（`resolve_install_dir` 兜底）
 - `<DSH_HOME>/desktop[-dev]/{active.txt, kernel.pid, port, logs/}` — Shell 状态 / 内核进程锁 / 日志
 - `<DSH_HOME>/desktop[-dev>/plugins.json` — **旧** 插件中央库（已迁到 `<DSH_XLINK_HOME>/dsh-plugins/`）

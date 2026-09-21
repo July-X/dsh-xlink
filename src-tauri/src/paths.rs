@@ -91,8 +91,8 @@ impl ShellMode {
         }
     }
 
-    /// 旧版 Shell 子目录名（仅 legacy resolver 使用）。
-    pub const fn legacy_subdir(self) -> &'static str {
+    /// release/dev 的运行时子目录名（`desktop` / `desktop-dev`）。
+    pub const fn runtime_subdir(self) -> &'static str {
         match self {
             ShellMode::Release => LEGACY_SHELL_SUBDIR_RELEASE,
             ShellMode::Dev => LEGACY_SHELL_SUBDIR_DEV,
@@ -141,18 +141,27 @@ pub fn shell_dir(mode: ShellMode) -> PathBuf {
     xlink_home().join("shell").join(mode.as_str())
 }
 
-/// Shell 自己的运行时元数据目录：`<xlink_home>/<desktop[-dev]>/`。
+/// 给定内核族的运行时数据根目录：`<xlink_home>/<family>/desktop[-dev]/`。
 ///
-/// 存放 `active.txt`（活动内核版本）/ `port` / `pid` 文件——这些是
-/// 「壳当前在跑哪个内核」状态，不属于业务数据。跟 [`shell_dir`] 是同一
-/// 根目录下的两个 subdir：settings / ui-state / logs 走 `shell/<mode>/`，
-/// runtime 元数据走 `desktop[-dev]/`。subdir 沿用旧名（`desktop` /
-/// `desktop-dev`）让用户认知「dev / release 各自独立目录」这件事继续成立。
+/// desktop / desktop-dev 以内核族为首层命名空间：dsh 与将来的 mcode 各自
+/// 持有 `<xlink_home>/dsh/desktop[-dev]`、`<xlink_home>/mcode/desktop[-dev]`，
+/// 互不可见。active.txt、`kernels/<version>` 安装产物、quarantine.json 等
+/// 「壳在跑哪个内核」的状态都随 data_dir 落在族目录内。
 ///
-/// P8 #X 修复：之前走 `<DSH_HOME>/desktop[-dev]/`（旧 `~/.dsh/...` 根），
-/// 切到 `xlink_home()` 让所有 Shell 状态都落在 `~/.dsh-xlink/` 下。
-pub fn shell_runtime_dir(mode: ShellMode) -> PathBuf {
-    xlink_home().join(mode.legacy_subdir())
+/// v0.2.x 及之前的平铺位置（`<xlink_home>/desktop[-dev]/`，见
+/// [`legacy_runtime_dir`]）由 [`crate::kernel::data_dir`] 在启动期一次性
+/// 搬迁进来。
+pub fn family_runtime_dir(family: &str, mode: ShellMode) -> PathBuf {
+    validate_id_component(family).expect("kernel family must be valid for path use");
+    xlink_home().join(family).join(mode.runtime_subdir())
+}
+
+/// 旧版（v0.2.x 平铺布局）Shell 运行时元数据目录：`<xlink_home>/desktop[-dev]/`。
+///
+/// 只剩一个消费者：[`crate::kernel::data_dir`] 启动期把它整体改名搬迁到
+/// [`family_runtime_dir`]。除迁移逻辑外不要新增引用。
+pub fn legacy_runtime_dir(mode: ShellMode) -> PathBuf {
+    xlink_home().join(mode.runtime_subdir())
 }
 
 /// Shell 设置文件：`<xlink_home>/shell/<mode>/settings.json`。
@@ -349,11 +358,12 @@ pub fn legacy_dsh_home() -> PathBuf {
     dirs_home().join(DSH_HOME_DIR_NAME)
 }
 
-/// 旧版 release/dev Shell 数据根目录：`<dsh_home>/desktop[-dev]/`。
+/// 旧版（DSH_HOME 时代）release/dev Shell 数据根目录：`<dsh_home>/desktop[-dev]/`。
 ///
-/// 仍由当前 [`crate::kernel::data_dir`] 使用，P2 之前继续生效。
+/// 只读兼容入口，无生产调用方；当前 [`crate::kernel::data_dir`] 走
+/// [`family_runtime_dir`]（`<xlink_home>/<family>/desktop[-dev]/`）。
 pub fn legacy_desktop_data_dir(mode: ShellMode) -> PathBuf {
-    legacy_dsh_home().join(mode.legacy_subdir())
+    legacy_dsh_home().join(mode.runtime_subdir())
 }
 
 /// 旧版插件中央库根目录：`<dsh_home>/plugins/`。
@@ -697,6 +707,38 @@ mod tests {
         let current = ShellMode::current();
         assert!(matches!(current, ShellMode::Release | ShellMode::Dev));
         assert_eq!(current.as_str(), current.as_str());
+    }
+
+    /// 运行时目录按内核族命名空间隔离：`<xlink_home>/<family>/desktop[-dev]/`。
+    /// dsh 与将来的 mcode 各持一份，release / dev 在族内再分层。
+    #[test]
+    fn family_runtime_dir_namespaces_by_kernel_family() {
+        let fake = temp_dir("family-runtime");
+        let _home = scoped_xlink_home(&fake);
+        let dsh_release = family_runtime_dir("dsh", ShellMode::Release);
+        let dsh_dev = family_runtime_dir("dsh", ShellMode::Dev);
+        let mcode_release = family_runtime_dir("mcode", ShellMode::Release);
+        assert_eq!(
+            dsh_release,
+            fake.join("dsh").join(ShellMode::Release.runtime_subdir()),
+            "release 应落在 dsh/desktop"
+        );
+        assert_eq!(
+            dsh_dev,
+            fake.join("dsh").join(ShellMode::Dev.runtime_subdir()),
+            "dev 应落在 dsh/desktop-dev"
+        );
+        assert_ne!(dsh_release, dsh_dev, "同族的 release / dev 必须分离");
+        assert_ne!(dsh_release, mcode_release, "不同内核族的目录必须互不可见");
+        assert!(mcode_release.starts_with(fake.join("mcode")));
+    }
+
+    /// 内核族名是路径组件，必须过 `validate_id_component` 这道闸。
+    #[test]
+    #[should_panic(expected = "kernel family must be valid for path use")]
+    fn family_runtime_dir_rejects_invalid_family() {
+        let _home = scoped_xlink_home(&temp_dir("family-invalid"));
+        let _ = family_runtime_dir("../escape", ShellMode::current());
     }
 
     /// 元数据结构必须带 schema_version，且 is_compatible 反映未来兼容性。
