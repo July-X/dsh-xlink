@@ -164,8 +164,9 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 
 P8 在「已上线」与「即将发布」两个层面把多实例状态暴露给用户：
 
-- **顶部实例 dropdown**（commit `25cd376`，`ui/src/components/WindowTitleBar.vue` + `ui/src/instance.js`）：
-  显示当前默认实例，dropdown 切换即调用 `set_default_instance(id)`。状态可见性优先——不打开面板也能看见当前是哪个实例。
+- **顶部内核标签**（`ui/src/components/KernelTabs.vue` + `ui/src/instance.js`）：
+  标签栏挂在标题栏正下方、侧栏与内容区之上——先选内核，品牌 / 菜单 / 面板都归属当前 tab。每个内核一个 tab，只显示内核族名（DSH / mcode），注册表实例 id 不对外展示。调用 `set_default_instance(id)` 保存注册表默认项，按 id 排序，选择后不移动标签。列表读取复用在途请求，过期响应不能覆盖选择；读取失败保留已有列表并提供重试。切换和后续刷新共用互斥忙碌状态，失败释放状态并提示。
+  此处尚未完成旧命令的实例化：`get_status`、`start_kernel` 等仍走单实例兼容路径，不能通过改写全局 settings / active.txt 冒充实例切换，否则会破坏目录隔离。
 - **插件面板单 panel + 双 tab**（commit `9df8ed8` + `83186d2`）：
   - 「本实例」tab 沿用旧 entity-row 渲染（状态走 `PluginRow` legacy 字段）
   - 「所有实例」tab 展示每个插件 + 每个实例一枚 chip（family · id · 状态），数据来自 `PluginRow.instances: BTreeMap<instance_id, PluginInstanceState>`
