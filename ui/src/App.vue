@@ -18,6 +18,7 @@ import { loadInstances } from './instance.js';
 import { checkSkillUpdates } from './skills.js';
 import { applyNotificationStatus } from './notifications.js';
 import { maybeOpenMigrationPrompt } from './migration.js';
+import KernelTabs from './components/KernelTabs.vue';
 import SideBar from './components/SideBar.vue';
 import OverviewPanel from './components/OverviewPanel.vue';
 import VersionsPanel from './components/VersionsPanel.vue';
@@ -180,8 +181,8 @@ onMounted(() => {
   // 失败（preview / skip 读取异常）静默忽略——主流程不受影响。
   maybeOpenMigrationPrompt().catch(() => {});
 
-  // 实例注册表：插件页「所有实例」tab、概览页实例 tab 都消费这份列表，
-  // 在根组件保证它启动即加载（原先由标题栏 chip 的 mount 顺带完成）。
+  // 实例注册表：插件页「所有实例」tab、顶部内核 tab 都消费这份列表，
+  // 在根组件保证它启动即加载（顶部内核 tab 组件本身也在这个层级渲染）。
   loadInstances().catch(() => {});
 
   // 状态轮询：窗口隐藏时整个跳过；重新可见时立即补一轮。
@@ -251,6 +252,8 @@ onUnmounted(() => {
       </div>
     </div>
     <WindowTitleBar />
+    <!-- 内核 tab 在侧栏 / 内容区之上：先选内核，下方品牌、菜单与面板都归属它。 -->
+    <KernelTabs />
     <div class="layout">
       <SideBar />
       <main>

@@ -981,20 +981,24 @@ code {
   border-right: 1px solid var(--border);
 }
 
-/* dev 构建（tauri dev）：自侧栏顶部（品牌区）向下铺一层鲸眼红淡出渐变，与正式壳
-   一眼可辨。渐变是 .sidebar 的背景层（非覆盖层）——内容（品牌/菜单）画在渐变之上，
-   不会被「糊一层」。覆盖侧栏顶部 50% 高度——顶端 α=0.25，线性淡出至 50% 窗高处
-   归 0（50% 以下回归纯 --bg-soft 底，不留拖尾）；幅度与 release 构建的 Gitea 绿
-   背景渐变对齐，保留对称关系。 */
-body.dev-build .sidebar {
-  /* 让侧栏与 body 共用同一底色，红色版本带 + body 网格都能透过侧栏可见，
-     整体感与 release 期对称。 */
-  background: transparent;
+/* dev 构建（tauri dev）：自窗口顶部（内核 tab 行）向下铺一层鲸眼红淡出渐变，
+   与正式壳一眼可辨。内核 tab 上移为全局顶栏后，渐变必须从 body 起笔——若仍画
+   在 .sidebar 上，红色要等 tab 行之下才开始，顶部会被切成两段底色。与 release
+   的绿版本带同一画法：渐变是 body 的背景层（非覆盖层），#app/.layout/
+   .kernel-tabs/main 均透明，内容画在渐变之上，不会被「糊一层」。顶端 α=0.25，
+   线性淡出至 50% 窗高处归 0；幅度与 release 构建的 Gitea 绿背景渐变对齐，
+   保留对称关系。 */
+body.dev-build {
   background-image: linear-gradient(
     to bottom,
     rgba(255, 45, 48, 0.25) 0%,
     rgba(255, 45, 48, 0) 50%
   );
+}
+body.dev-build .sidebar {
+  /* 让侧栏与 body 共用同一底色，红色版本带 + body 网格都能透过侧栏可见，
+     整体感与 release 期对称。 */
+  background: transparent;
 }
 
 /* release 构建：自窗口顶部向下铺一层 Gitea brand 绿（--gitea-green #609926）的

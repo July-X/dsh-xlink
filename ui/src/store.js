@@ -179,7 +179,9 @@ const runRefreshAll = singleFlight(async () => {
   }
 });
 
-export function refreshAll() {
+export async function refreshAll({ fresh = false } = {}) {
+  // 切换后的刷新不能复用切换前已发出的读取。
+  if (fresh && runRefreshAll.busy()) await runRefreshAll();
   return runRefreshAll();
 }
 

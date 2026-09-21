@@ -61,6 +61,29 @@ globalThis.document = {
   removeEventListener() {},
   body: { classList: { toggle() {} } },
 };
+
+test('fresh refresh waits for the old flight and then reads status again', async () => {
+  const { store, refreshAll } = await import('../src/store.js');
+  const originalInvoke = core.invoke;
+  const pending = deferred();
+  let reads = 0;
+  core.invoke = (command) => {
+    if (command === 'get_status') return ++reads === 1 ? pending.promise : Promise.resolve(freshStatus);
+    return originalInvoke(command);
+  };
+  try {
+    const previous = refreshAll();
+    const current = refreshAll({ fresh: true });
+    await Promise.resolve();
+    assert.equal(reads, 1);
+    pending.resolve(staleStatus);
+    await Promise.all([previous, current]);
+    assert.equal(reads, 2);
+    assert.equal(store.view.quarantined.length, 0);
+  } finally {
+    core.invoke = originalInvoke;
+  }
+});
 Object.defineProperty(globalThis, 'navigator', {
   configurable: true,
   value: { userAgent: 'node' },
