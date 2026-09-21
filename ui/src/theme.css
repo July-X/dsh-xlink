@@ -1182,15 +1182,21 @@ body.rel-build .sidebar {
   font-size: 16px;
 }
 
+/* 待更新数字角标：App 图标徽标那种红色数字圆点，不放文字——具体含义
+   在悬停 title 里（SideBar）。超过 99 由调用方显示 99+，胶囊随内容
+   微放宽。 */
 .menu-badge {
   margin-left: auto;
-  padding: 1px 7px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
   border-radius: 999px;
-  background: rgba(251, 191, 36, 0.16);
-  border: 1px solid rgba(251, 191, 36, 0.35);
-  color: var(--warn);
-  font-size: 10.5px;
-  line-height: 1.5;
+  background: var(--bad);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
   white-space: nowrap;
 }
 
