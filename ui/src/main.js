@@ -29,6 +29,8 @@ import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs';
 import { ElTag } from 'element-plus/es/components/tag/index.mjs';
 import { ElTooltip } from 'element-plus/es/components/tooltip/index.mjs';
 import zhCn from 'element-plus/es/locale/lang/zh-cn';
+import { homeDir } from './bridge.js';
+import { setDisplayHomeDir } from './labels.js';
 import 'element-plus/es/components/alert/style/css.mjs';
 import 'element-plus/es/components/button/style/css.mjs';
 import 'element-plus/es/components/checkbox/style/css.mjs';
@@ -124,4 +126,6 @@ app.config.warnHandler = (message, _instance, trace) => {
   console.warn('[dsh-xlink] Vue 告警：', message, trace);
 };
 provideGlobalConfig({ locale: zhCn }, app, true);
+// 路径显示折叠 `~`：异步取 home，到达前面板照常渲染（先显示全路径）。
+if (homeDir()) homeDir().then((home) => setDisplayHomeDir(home));
 app.mount('#app');

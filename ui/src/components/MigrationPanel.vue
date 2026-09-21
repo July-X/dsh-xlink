@@ -31,6 +31,7 @@ import {
 } from '../migration.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 import { store } from '../store.js';
+import { tildePath } from '../labels.js';
 
 const previewItems = computed(() =>
   (migrationStore.preview && migrationStore.preview.items) || []
@@ -147,8 +148,8 @@ function toggleSource(src) {
           <tbody>
             <tr v-for="item in previewItems" :key="item.source">
               <td>{{ sourceDisplayName(item.source) }}</td>
-              <td class="path">{{ item.legacy_path }}</td>
-              <td class="path">{{ item.target_path }}</td>
+              <td class="path">{{ tildePath(item.legacy_path) }}</td>
+              <td class="path">{{ tildePath(item.target_path) }}</td>
               <td>{{ item.file_count }}</td>
               <td>{{ formatBytes(item.total_bytes) }}</td>
             </tr>
@@ -252,7 +253,7 @@ function toggleSource(src) {
         将复制
         <strong>{{ migrationStore.selectedSources.size }}</strong>
         个来源到多实例布局，先备份到
-        <code>{{ migrationStore.preview && migrationStore.preview.xlink_home }}/backups/&lt;migration_id&gt;/</code>
+            <code>{{ tildePath(migrationStore.preview && migrationStore.preview.xlink_home) }}/backups/&lt;migration_id&gt;/</code>
         再覆盖目标，旧源不会被删除。
       </p>
       <p>冲突策略：{{ conflictPolicyDisplayName(migrationStore.conflictPolicy) }}</p>
@@ -294,7 +295,7 @@ function toggleSource(src) {
               <!-- 跳过 = SkipIfNewer 下保留目标侧更新内容的条目；迁移报告
                    没有「冲突」计数字段，原列读 conflicts 恒为空 -->
               <td>{{ item.files_skipped ?? 0 }}</td>
-              <td class="path">{{ item.backup_path || '—' }}</td>
+              <td class="path">{{ tildePath(item.backup_path) || '—' }}</td>
             </tr>
           </tbody>
         </table>
