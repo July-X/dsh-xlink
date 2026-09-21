@@ -37,7 +37,13 @@ const previewItems = computed(() =>
   (migrationStore.preview && migrationStore.preview.items) || []
 );
 
-const historyList = computed(() => migrationStore.history || []);
+// 历史列表只展示最近一次：更早的迁移极少回查，全列出来只会拉长页面。
+// 后端按 mtime 倒序返回，取第一条即最近一次；旧备份目录仍完整保留在
+// backups/ 下（回滚路径依赖，只是不再逐条列进 UI）。
+const historyList = computed(() => (migrationStore.history || []).slice(0, 1));
+const historyHiddenCount = computed(() =>
+  Math.max((migrationStore.history || []).length - historyList.value.length, 0)
+);
 
 const runResultItems = computed(() => {
   if (!migrationStore.runResult) return [];
@@ -189,6 +195,9 @@ function toggleSource(src) {
             </template>
           </el-table-column>
         </el-table>
+        <p v-if="historyHiddenCount > 0" class="hint">
+          仅显示最近一次迁移；更早的 {{ historyHiddenCount }} 次备份仍保留在 backups/ 目录，未删除。
+        </p>
       </div>
       <footer class="step-actions">
         <el-button @click="refreshPreview" :icon="Refresh" :loading="isLoading('migrationPreview')">
