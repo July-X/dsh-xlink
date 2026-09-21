@@ -147,7 +147,10 @@ function onQuitConfirmRequest(event) {
 function refreshActivePanelData() {
   if (document.hidden) return;
   if (store.activePanel === 'plugins') {
-    loadCatalog(false).then(() => checkPluginUpdates({ busy: false, toastOnUpdates: true }));
+    // 目录与更新检查互不依赖（更新检查不消费 catalog 的结果），并行跑；
+    // 原来的 .then 串行让冷启动多等一趟网络才发起第二趟。
+    loadCatalog(false);
+    checkPluginUpdates({ busy: false, toastOnUpdates: true });
   } else if (store.activePanel === 'skills') {
     checkSkillUpdates({ busy: false, toastOnUpdates: true });
   }

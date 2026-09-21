@@ -21,6 +21,7 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElProgress } from 'element-plus/es/components/progress/index.mjs';
 import { ElRadio, ElRadioGroup } from 'element-plus/es/components/radio/index.mjs';
 import { ElResult } from 'element-plus/es/components/result/index.mjs';
+import { ElSkeleton } from 'element-plus/es/components/skeleton/index.mjs';
 import { ElStep, ElSteps } from 'element-plus/es/components/steps/index.mjs';
 import { ElSwitch } from 'element-plus/es/components/switch/index.mjs';
 import { ElPopconfirm } from 'element-plus/es/components/popconfirm/index.mjs';
@@ -50,6 +51,7 @@ import 'element-plus/es/components/progress/style/css.mjs';
 import 'element-plus/es/components/radio/style/css.mjs';
 import 'element-plus/es/components/result/style/css.mjs';
 import 'element-plus/es/components/select/style/css.mjs';
+import 'element-plus/es/components/skeleton/style/css.mjs';
 import 'element-plus/es/components/step/style/css.mjs';
 import 'element-plus/es/components/steps/style/css.mjs';
 import 'element-plus/es/components/switch/style/css.mjs';
@@ -105,6 +107,7 @@ const app = createApp(root);
   ElSteps,
   ElSwitch,
   ElSelect,
+  ElSkeleton,
   ElTable,
   ElTableColumn,
   ElTabPane,

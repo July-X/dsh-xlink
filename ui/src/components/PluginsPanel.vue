@@ -270,7 +270,14 @@ function instanceChipType(row, instanceId) {
             </el-tooltip>
           </template>
           <div class="entity-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
-        <el-empty v-if="!view || !view.rows || view.rows.length === 0" description="尚未安装任何插件。" :image-size="48" />
+        <!-- 首次状态未返回时显示骨架：view===null 是「加载中」而不是
+             「尚未安装」，画成空态会让用户以为插件全丢了。 -->
+        <template v-if="!view">
+          <div v-for="i in 2" :key="'skeleton-' + i" class="entity-row">
+            <el-skeleton :rows="1" animated style="width: 55%" />
+          </div>
+        </template>
+        <el-empty v-else-if="!view.rows || view.rows.length === 0" description="尚未安装任何插件。" :image-size="48" />
         <div
           v-for="row in view ? view.rows : []"
           :key="row.id"

@@ -1231,20 +1231,22 @@ main {
   gap: 14px;
 }
 
-/* 面板切换动效：轻淡入 + 8px 上浮，切换时旧面板先离场。 */
+/* 面板切换动效：轻淡入 + 上浮。out-in 模式下旧面板完全离场后新面板才
+   挂载，动画时长直接加进每次切换的空窗期——控制在 0.1s 量级，切换
+   才不会「先空一下再出内容」。 */
 .panel-enter-active {
-  transition: opacity 0.22s ease, transform 0.22s ease;
+  transition: opacity 0.13s ease, transform 0.13s ease;
 }
 .panel-leave-active {
-  transition: opacity 0.14s ease, transform 0.14s ease;
+  transition: opacity 0.08s ease, transform 0.08s ease;
 }
 .panel-enter-from {
   opacity: 0;
-  transform: translateY(10px);
+  transform: translateY(6px);
 }
 .panel-leave-to {
   opacity: 0;
-  transform: translateY(-6px);
+  transform: translateY(-4px);
 }
 
 .card {
