@@ -14,6 +14,7 @@ import {
   showIncident,
 } from './store.js';
 import { loadCatalog, checkPluginUpdates } from './plugins.js';
+import { loadInstances } from './instance.js';
 import { checkSkillUpdates } from './skills.js';
 import { applyNotificationStatus } from './notifications.js';
 import { maybeOpenMigrationPrompt } from './migration.js';
@@ -178,6 +179,10 @@ onMounted(() => {
   // 历史数据迁移弹窗：扫到遗留数据 + 用户未拒绝过时自动弹。
   // 失败（preview / skip 读取异常）静默忽略——主流程不受影响。
   maybeOpenMigrationPrompt().catch(() => {});
+
+  // 实例注册表：插件页「所有实例」tab、概览页实例 tab 都消费这份列表，
+  // 在根组件保证它启动即加载（原先由标题栏 chip 的 mount 顺带完成）。
+  loadInstances().catch(() => {});
 
   // 状态轮询：窗口隐藏时整个跳过；重新可见时立即补一轮。
   pollTimer = setInterval(pollStatus, 2500);

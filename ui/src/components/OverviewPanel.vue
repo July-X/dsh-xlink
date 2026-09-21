@@ -5,7 +5,7 @@
 // 「打开工作台窗口 / 打开官方对话窗口」在对应服务开启后作为次级入口从第二行动态浮现。
 // 「当前内核」的 Node.js 行另带「重新检测」（探测本机环境，不改设置），卡片底部是
 // 「桌面端设置」只读摘要（端口 / 接线 profile / Node 环境结论）。
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import {
   SwitchButton,
   TopRight,
@@ -41,6 +41,33 @@ import { globalBusy, isLoading, withLoading } from '../loading.js';
 import { showLogs } from '../logs.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents.js';
 import { tildePath } from '../labels.js';
+import { instanceStore, loadInstances, setDefaultInstance, familyLabel } from '../instance.js';
+import { refreshAll } from '../store.js';
+
+// 实例 tab（原标题栏 dropdown 下放）：默认实例排第一，其余按 id 升序；
+// 激活态跟随 defaultInstanceId。切换默认实例后重读全部状态，让「当前
+// 内核」「桌面端设置」等卡片立即反映新实例。
+const instanceTabs = computed(() => {
+  const list = instanceStore.list.slice();
+  list.sort((a, b) => {
+    if (a.is_default !== b.is_default) return a.is_default ? -1 : 1;
+    return a.record.id.localeCompare(b.record.id);
+  });
+  return list.map((it) => ({
+    id: it.record.id,
+    family: familyLabel(it.record.kernel_family),
+  }));
+});
+
+onMounted(() => {
+  loadInstances().catch(() => {});
+});
+
+async function pickInstance(id) {
+  if (id === instanceStore.defaultInstanceId) return;
+  await setDefaultInstance(id);
+  refreshAll();
+}
 
 // 进度窗口是全局的（任何长任务都会让它可见），按钮的加载态必须绑定自己的
 // key，否则任何别的长任务都会让这个按钮转圈（P2-42）。
@@ -170,6 +197,28 @@ function goVersions() {
 
 <template>
   <section class="panel">
+    <!-- 实例 tab（原 P8 #1 标题栏 dropdown 下放）：概览内容区的第一行，
+         tab 即下方「当前内核」卡片的上下文。后续接入 mcode 等新内核族时，
+         新实例在这里多一个 tab，无需再动布局。 -->
+    <nav class="instance-tabs" aria-label="内核实例切换">
+      <template v-if="instanceTabs.length > 0">
+        <button
+          v-for="tab in instanceTabs"
+          :key="tab.id"
+          type="button"
+          class="instance-tab"
+          :class="{ 'is-active': tab.id === instanceStore.defaultInstanceId }"
+          :disabled="instanceStore.switching"
+          :aria-current="tab.id === instanceStore.defaultInstanceId ? 'true' : undefined"
+          @click="pickInstance(tab.id)"
+        >
+          <span class="instance-tab__family">{{ tab.family }}</span>
+          <span class="instance-tab__id">· {{ tab.id }}</span>
+        </button>
+      </template>
+      <span v-else-if="instanceStore.loaded === null" class="instance-tabs__note">加载中…</span>
+      <span v-else class="instance-tabs__note">未设置默认实例</span>
+    </nav>
     <!-- 首次运行引导：未安装任何内核时给出两条路径——去版本页挑选，
          或直接安装当前最新稳定版。 -->
     <Transition name="panel">
@@ -379,3 +428,49 @@ function goVersions() {
     </div>
   </section>
 </template>
+
+<style scoped>
+/* 实例 tab（下放自标题栏）：下划线式页签，与 el-tabs 的视觉语言一致；
+   激活项用品牌色下划线标出「当前内核」卡片正在展示的实例。 */
+.instance-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+.instance-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 8px 14px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.1s ease, border-color 0.1s ease;
+}
+.instance-tab:hover:not(.is-active) {
+  color: var(--text);
+}
+.instance-tab.is-active {
+  color: var(--text);
+  border-bottom-color: var(--el-color-primary);
+  font-weight: 600;
+}
+.instance-tab__family {
+  font-weight: 600;
+}
+.instance-tab:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.instance-tabs__note {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 8px 0;
+}
+</style>
