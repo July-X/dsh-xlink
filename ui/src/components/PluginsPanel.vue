@@ -66,7 +66,7 @@ function quarantineNote(row) {
 // 说明「无活动内核」），返回文案用于动作区的警示点 tooltip。
 function syncWarning(row) {
   if (!view.value || !view.value.active_kernel) return '';
-  if (!row.synced) return '待同步：活动内核中的物化副本与当前版本不一致，点「同步到所有内核」修复';
+  if (!row.synced) return '待同步：活动内核中的插件副本与当前版本不一致，点「同步到所有内核」修复';
   if (!row.wired) return '待接线：活动内核的 profile 尚未加载该插件，点「同步到所有内核」修复';
   return '';
 }
@@ -206,10 +206,20 @@ function instanceChipLabel(row, instanceId) {
   const state = instanceStateFor(row, instanceId);
   if (!state) return '—';
   if (state.quarantined) return '已隔离';
-  if (!state.materialized) return '未物化';
+  if (!state.materialized) return '未同步';
   if (!state.synced) return '版本不一致';
   if (!state.wired) return '未接线';
   return '已接线';
+}
+// 状态词的原话：chip 上只放短词，悬停讲清「这是什么、怎么修」。
+function instanceChipTip(row, instanceId) {
+  const state = instanceStateFor(row, instanceId);
+  if (!state) return '该实例的状态暂不可用（实例注册表未加载）';
+  if (state.quarantined) return '因启动故障被隔离停用；可在「本实例」页恢复启用';
+  if (!state.materialized) return '插件尚未同步到该实例；点上方「同步到所有内核」即可装载';
+  if (!state.synced) return '该实例中的插件副本与当前安装版本不一致；点「同步到所有内核」更新';
+  if (!state.wired) return '该实例的内核配置尚未接入此插件；同步后重启工作台生效';
+  return '插件已在该实例装载并接入内核';
 }
 function instanceChipType(row, instanceId) {
   const state = instanceStateFor(row, instanceId);
@@ -424,6 +434,7 @@ function instanceChipType(row, instanceId) {
                     size="small"
                     effect="plain"
                     class="instance-state-chip"
+                    :title="instanceChipTip(row, inst.record.id)"
                   >
                     <span class="instance-state-chip__id">{{ familyLabel(inst.record.kernel_family) }} · {{ inst.record.id }}</span>
                     <span class="instance-state-chip__sep" aria-hidden="true">·</span>

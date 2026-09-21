@@ -1863,8 +1863,9 @@ fn materialize_inner(
     }
     if !target.exists() {
         return Err(AppError::Plugin(format!(
-            "物化失败：{} 在实例 extensions 中未就绪",
-            item.id
+            "插件装载失败：{} 未能在实例 extensions 中就绪，请点「同步」重试；若持续失败请查看日志 {}",
+            item.id,
+            log_path.display()
         )));
     }
     write_meta_at(

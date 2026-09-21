@@ -30,7 +30,7 @@ const title = computed(() => {
     <p v-if="snapshot.loading" class="installed-tip-loading">正在读取 {{ version }} 的插件…</p>
     <p v-else-if="snapshot.error" class="installed-tip-error">读取失败：{{ snapshot.error }}</p>
     <p v-else-if="!snapshot.rows || snapshot.rows.length === 0" class="muted" style="margin: 0">
-      该内核未物化任何插件。
+      该内核未装载任何插件。
     </p>
     <ul v-else class="installed-tip-list">
       <li v-for="row in snapshot.rows" :key="row.id" class="installed-tip-row">
