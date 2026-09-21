@@ -280,7 +280,7 @@ function toggleSource(src) {
     </div>
 
     <!-- Step 3：完成 -->
-    <div v-show="migrationStore.activeStep === 3" class="step-body">
+    <div v-show="migrationStore.activeStep === 3" class="step-body finish-body">
       <template v-if="!migrationStore.runResult">
         <el-empty description="尚未运行迁移。" />
       </template>
@@ -341,4 +341,11 @@ function toggleSource(src) {
 .credentials-note { margin-top: 14px; padding: 10px 16px; background: var(--surface-soft); border-radius: 6px; color: var(--text-muted); }
 /* 来源勾选纵向排布（原先靠 el-checkbox-group 的布局习惯，去掉 group 后自己排） */
 .source-options { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+/* 完成页：el-result 自带 40px 上下留白 + 64px 大图标，是这屏被拉长的主因；
+   收紧到与其它工具页一致的密度 */
+.finish-body :deep(.el-result) { padding: 0 0 4px; }
+.finish-body :deep(.el-result__icon svg) { width: 44px; height: 44px; }
+.finish-body :deep(.el-result__title) { margin-top: 10px; font-size: 17px; }
+.finish-body :deep(.el-result__subtitle) { margin-top: 6px; }
+.finish-body :deep(.el-result__subtitle p) { margin: 0; line-height: 1.6; }
 </style>
