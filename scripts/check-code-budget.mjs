@@ -185,7 +185,11 @@ const FILE_BUDGETS = {
 // 路径显示折叠 ~（commit ...）：bridge.js 加 homeDir() 封装 +
 // labels.js 加 tildePath 共享助手 + 两个面板接入（~+40 行）。折叠
 // 逻辑必须共享一份，各面板自己拼 `~` 会漂移。总预算 24600 → 24650。
-const TOTAL_BUDGET = 24650;
+//
+// 插件页渲染提速（commit ...）：已安装列表骨架屏（view===null 是
+// 加载中不是空态）+ ElSkeleton 注册 + 切换动画收紧 + 面板加载并行
+// 化（~+20 行）。总预算 24650 → 24700。
+const TOTAL_BUDGET = 24700;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
