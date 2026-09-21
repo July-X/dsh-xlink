@@ -40,6 +40,7 @@ import { progress } from '../progress.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 import { showLogs } from '../logs.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents.js';
+import { tildePath } from '../labels.js';
 
 // 进度窗口是全局的（任何长任务都会让它可见），按钮的加载态必须绑定自己的
 // key，否则任何别的长任务都会让这个按钮转圈（P2-42）。
@@ -62,7 +63,7 @@ const noKernel = computed(() => !!(kernel.value && (!kernel.value.installed || k
 const nodeText = computed(() => {
   const n = shownNode.value;
   if (!n) return '—';
-  return n.ok ? [n.path, n.version].filter(Boolean).join('  ') : '未检测到可用 Node（' + n.reason + '）';
+  return n.ok ? [tildePath(n.path), n.version].filter(Boolean).join('  ') : '未检测到可用 Node（' + n.reason + '）';
 });
 
 const urlText = computed(() => (running.value ? 'http://127.0.0.1:' + kernel.value.port : '—'));

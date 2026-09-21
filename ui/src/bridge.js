@@ -4,6 +4,18 @@
 const core = window.__TAURI__ && window.__TAURI__.core;
 const tauriEvent = window.__TAURI__ && window.__TAURI__.event;
 const tauriWindow = window.__TAURI__ && window.__TAURI__.window;
+const tauriPath = window.__TAURI__ && window.__TAURI__.path;
+
+let homeDirPromise = null;
+
+/// 当前用户 home 目录（路径显示折叠 `~` 用），返回 Promise；桥接未注入
+/// 或 path API 不可用（纯浏览器调试）时 resolve null，调用方按原路径
+/// 显示兜底。进程内只取一次。
+export function homeDir() {
+  if (!tauriPath || typeof tauriPath.homeDir !== 'function') return null;
+  if (!homeDirPromise) homeDirPromise = tauriPath.homeDir().catch(() => null);
+  return homeDirPromise;
+}
 
 export function invoke(cmd, args) {
   if (!core) {

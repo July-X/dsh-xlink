@@ -181,7 +181,11 @@ const FILE_BUDGETS = {
 // 迁移向导收尾 UX（commit ...）：MigrationSummary.created_at 改 epoch
 // 秒字符串 + MigrationPanel 完成 / 紧凑布局 / 报告与历史字段对齐
 //（~+30 行）。总预算 24550 → 24600（+50 buffer）。
-const TOTAL_BUDGET = 24600;
+//
+// 路径显示折叠 ~（commit ...）：bridge.js 加 homeDir() 封装 +
+// labels.js 加 tildePath 共享助手 + 两个面板接入（~+40 行）。折叠
+// 逻辑必须共享一份，各面板自己拼 `~` 会漂移。总预算 24600 → 24650。
+const TOTAL_BUDGET = 24650;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
