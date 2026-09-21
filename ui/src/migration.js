@@ -187,6 +187,16 @@ export async function loadMigrationSkip() {
   return migrationSkip.skipped;
 }
 
+/** 只拉历史迁移记录：设置页入口的「迁移过 / 未迁移」状态用，不触发
+ *  全量扫描。拉失败静默——入口的亮灰只是提示，按钮仍然可点。 */
+export async function loadMigrationHistory() {
+  try {
+    migrationStore.history = (await invoke('migration_list')) || [];
+  } catch {
+    migrationStore.history = migrationStore.history || [];
+  }
+}
+
 /** 用户在弹窗点「否」：调后端写 skip 标记 + 前端 cache 同步。 */
 export async function setMigrationSkip(sources) {
   try {

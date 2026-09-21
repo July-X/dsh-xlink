@@ -4,10 +4,11 @@
 // 「设置」卡只留端口这一项可改的东西：插件接线 profile 名是固定值，Node 环境结论与
 // 「重新检测」都在概览页（OverviewPanel 的「桌面端设置」摘要卡与「当前内核」的
 // Node.js 行），profile 仍跟着端口一起提交，不要在别处再复制一份输入。
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { ArrowDown, ArrowUp, Bell, Check, Headset, Refresh } from '@element-plus/icons-vue';
 import { store, saveSettings } from '../store.js';
 import { patchStore, refreshPatches, applyPatch, revertPatch } from '../patches.js';
+import { migrationStore, loadMigrationHistory } from '../migration.js';
 import {
   notificationStore,
   refreshNotificationStatus,
@@ -121,6 +122,13 @@ async function onTestNotification() {
 function onSave() {
   saveSettings(port.value, profile.value);
 }
+
+// 数据迁移入口的状态：迁移过（历史非空）显示灰色入口，没迁移过显示亮色
+// 引导。migration_list 是轻量读取，进设置页刷新一次保持准确。
+const migratedBefore = computed(() => migrationStore.history.length > 0);
+onMounted(() => {
+  loadMigrationHistory();
+});
 </script>
 
 <template>
@@ -160,6 +168,23 @@ function onSave() {
         插件接线 profile 名固定为 <code>{{ profile || 'web' }}</code>，随端口一起保存；
         Node.js 环境与「重新检测」在概览页。
       </p>
+    </div>
+
+    <div class="card">
+      <h2>数据迁移</h2>
+      <p class="muted" style="margin: 0 0 8px">
+        {{
+          migratedBefore
+            ? '已迁移过；可进入迁移页查看历史、重新运行或回滚。'
+            : '把旧版 dsh-xlink 的插件 / 技能导入多实例布局；旧源不会被删除，可随时回滚。'
+        }}
+      </p>
+      <el-button
+        :type="migratedBefore ? 'default' : 'primary'"
+        @click="store.activePanel = 'migration'"
+      >
+        {{ migratedBefore ? '查看数据迁移' : '去迁移' }}
+      </el-button>
     </div>
 
     <div class="card">
