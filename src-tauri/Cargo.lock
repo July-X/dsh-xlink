@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-xlink"
-version = "0.1.5-rc.1"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "libc",

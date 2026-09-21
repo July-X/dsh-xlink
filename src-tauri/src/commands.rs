@@ -2900,14 +2900,16 @@ mod workbench_url_tests {
                 .expect("clock")
                 .as_nanos()
         ));
+        // P1：`kernel::logs_dir` 现在指向 shell-aware 路径（解析
+        // `DSH_XLINK_HOME`，忽略传入的 data_dir）。必须先 scoping 再算
+        // `log_path`，否则夹具会写进用户真实的 `~/.dsh-xlink` 日志，
+        // 而被测代码在临时目录里什么也读不到。
+        let _xlink_home = crate::tests::scoped_xlink_home(&root);
         let log_path = kernel::current_kernel_log_path(
             &root,
             crate::instance::KERNEL_FAMILY_DSH,
             crate::instance::DEFAULT_INSTANCE_ID,
         );
-        // P1：`kernel::logs_dir` 现在指向 shell-aware 路径，需要把 DSH_XLINK_HOME
-        // 临时指向 root，让测试创建的日志文件与生产代码读到的是同一份。
-        let _xlink_home = crate::tests::scoped_xlink_home(&root);
         fs::create_dir_all(log_path.parent().expect("log parent")).expect("create log dir");
         fs::write(
             &log_path,

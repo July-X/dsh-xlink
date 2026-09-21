@@ -509,15 +509,12 @@ fn store_plugin_dir(data_dir: &Path, id: &str) -> PathBuf {
 /// 解析失败（注册表 JSON 损坏）时同样 fallback：让插件模块在
 /// `setup()` 阶段或迁移完成之前仍然能读写出 extensions 目录。
 fn default_instance_key() -> (String, String) {
-    match crate::instance::load_registry() {
-        Ok(registry) => {
-            if let Some(id) = registry.default_instance_id.as_deref() {
-                if !id.is_empty() {
-                    return (instance::KERNEL_FAMILY_DSH.to_string(), id.to_string());
-                }
+    if let Ok(registry) = crate::instance::load_registry() {
+        if let Some(id) = registry.default_instance_id.as_deref() {
+            if !id.is_empty() {
+                return (instance::KERNEL_FAMILY_DSH.to_string(), id.to_string());
             }
         }
-        Err(_) => {}
     }
     (
         instance::KERNEL_FAMILY_DSH.to_string(),
@@ -1767,7 +1764,7 @@ fn install_store_deps(
 ///
 /// 注意 `target` 必须在调本函数前不存在——否则链接判定（`symlink_metadata`
 /// + `read_link`）会因为目标已经存在而误判「健康」。本函数第一步就清旧
-/// 产物（`remove_materialized_at`），让链接重新建在干净目录上。
+///   产物（`remove_materialized_at`），让链接重新建在干净目录上。
 fn materialize_inner(
     source: &Path,
     target: &Path,
@@ -1909,7 +1906,7 @@ pub fn materialize_one_for_instance(
     let target = paths::instance_extension_plugin_dir(family, instance_id, &item.id);
     let meta_path = paths::instance_extension_meta_file(family, instance_id, &item.id);
     let log_path = wiring_log_path(
-        &paths::xlink_metadata_file()
+        paths::xlink_metadata_file()
             .parent()
             .unwrap_or_else(|| Path::new(".")),
     );
@@ -3164,6 +3161,7 @@ pub fn install(
 /// 实例范围安装：中央库写入仍走全局 `data_dir`，物化与 profile 接线走
 /// 指定实例的 `extensions/plugins/<id>/`。多实例 UI（P5 阶段）通过
 /// 这条入口让每个实例各自隔离地接插件。
+#[allow(clippy::too_many_arguments)]
 pub fn install_for_instance(
     family: &str,
     instance_id: &str,
@@ -3238,6 +3236,7 @@ fn npm_candidates_from_github_spec(spec: &str) -> Option<Vec<String>> {
     Some(candidates)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install_unlocked(
     family: &str,
     instance_id: &str,
@@ -3562,6 +3561,7 @@ pub fn set_mode(
 }
 
 /// 实例范围模式切换：中央库条目更新走全局 `data_dir`，物化重做走本实例。
+#[allow(clippy::too_many_arguments)]
 pub fn set_mode_for_instance(
     family: &str,
     instance_id: &str,
@@ -3584,6 +3584,7 @@ pub fn set_mode_for_instance(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn set_mode_unlocked(
     family: &str,
     instance_id: &str,
