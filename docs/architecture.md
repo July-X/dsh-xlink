@@ -167,10 +167,10 @@ P8 在「已上线」与「即将发布」两个层面把多实例状态暴露�
 - **顶部内核标签**（`ui/src/components/KernelTabs.vue` + `ui/src/instance.js`）：
   标签栏挂在标题栏正下方、侧栏与内容区之上——先选内核，品牌 / 菜单 / 面板都归属当前 tab。每个内核一个 tab，只显示内核族名（DSH / mcode），注册表实例 id 不对外展示。调用 `set_default_instance(id)` 保存注册表默认项，按 id 排序，选择后不移动标签。列表读取复用在途请求，过期响应不能覆盖选择；读取失败保留已有列表并提供重试。切换和后续刷新共用互斥忙碌状态，失败释放状态并提示。
   此处尚未完成旧命令的实例化：`get_status`、`start_kernel` 等仍走单实例兼容路径，不能通过改写全局 settings / active.txt 冒充实例切换，否则会破坏目录隔离。
-- **插件面板单 panel + 双 tab**（commit `9df8ed8` + `83186d2`）：
-  - 「本实例」tab 沿用旧 entity-row 渲染（状态走 `PluginRow` legacy 字段）
-  - 「所有实例」tab 展示每个插件 + 每个实例一枚 chip（family · id · 状态），数据来自 `PluginRow.instances: BTreeMap<instance_id, PluginInstanceState>`
+- **插件面板单 panel + 双 tab**（commit `9df8ed8` + `83186d2`；命名随 2026-09 IA 调整）：
+  - 「当前内核」tab 沿用旧 entity-row 渲染（状态走 `PluginRow` legacy 字段），只做管理（同步 / 接线 / 模式切换 / 卸载），不带安装入口
+  - 「已安装」tab 是本机插件库清单 + 获取入口：每个插件 + 每个实例一枚 chip（family · id · 状态），数据来自 `PluginRow.instances: BTreeMap<instance_id, PluginInstanceState>`；手动安装与插件中心也归这页——安装针对的是插件库，不属于某个内核
   - 后端 `status_for_instance` 内部枚举 `instance::load_registry()`，每个实例算一份 state 填进 map——单次 invoke 带回全实例状态，省去切 tab 再发请求的延迟
 - **默认实例解析器**（commit `1053040` 等）：`instance::resolve_default()` 返回 `(&'static str, &'static str)` 元组（family + id），9 处 production caller + test fixture 全接入；后续 `InstanceRegistry::default_instance_id` 接管时 caller 自动跟进，无需再扫
 
-写动作（enable / disable / 模式切换 / 卸载）只在「本实例」tab 暴露；「所有实例」tab 只显示 chip，不暴露 per-instance 写按钮——后端 enable_plugin / disable_plugin / set_plugin_mode 命令签名仍是单实例，per-instance 重构属于后续 PR。
+写动作（enable / disable / 模式切换 / 卸载）只在「当前内核」tab 暴露；「已安装」tab 只显示 chip 与获取入口（手动安装 / 插件中心），不暴露 per-instance 写按钮——后端 enable_plugin / disable_plugin / set_plugin_mode 命令签名仍是单实例，per-instance 重构属于后续 PR。
