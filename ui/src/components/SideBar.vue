@@ -80,7 +80,12 @@ const visibleMenu = computed(() =>
       >
         <el-icon><component :is="item.icon" /></el-icon>
         <span>{{ item.label }}</span>
-        <span v-if="item.badge && item.badge() > 0" class="menu-badge">{{ item.badge() }} 个更新</span>
+        <!-- 只显示数量：具体含义收进悬停提示，侧栏行内保持轻。 -->
+        <span
+          v-if="item.badge && item.badge() > 0"
+          class="menu-badge"
+          :title="item.label + '有 ' + item.badge() + ' 个可更新'"
+        >{{ item.badge() }}</span>
       </button>
     </nav>
   </aside>
