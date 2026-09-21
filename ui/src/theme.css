@@ -1233,8 +1233,7 @@ main {
 
 /* 面板切换动效：轻淡入 + 上浮。out-in 模式下旧面板完全离场后新面板才
    挂载，动画时长直接加进每次切换的空窗期——控制在 0.1s 量级，切换
-   才不会「先空一下再出内容」。 */
-.panel-enter-active {
+   才不会「先空一下再出内容」。 */.panel-enter-active {
   transition: opacity 0.13s ease, transform 0.13s ease;
 }
 .panel-leave-active {
@@ -1875,6 +1874,21 @@ main {
 }
 .installed-tip-error {
   color: var(--el-color-warning);
+}
+
+/* --- EP tooltip 主题对齐 -----------------------------------------------------
+   `effect="dark"` 的 EP 语义是「与当前主题相反」：html.dark 暗色变量下它被
+   翻成白底黑字，与整个暗色 UI 打架。全局把 is-dark 气泡压成应用统一的深色
+   样式（与下方 kernel-plugin-tooltip 的局部覆盖同源），箭头随背景同步。 */
+.el-popper.is-dark {
+  background: var(--tooltip-bg);
+  color: var(--text);
+  border: 1px solid var(--tooltip-border);
+}
+
+.el-popper.is-dark > .el-popper__arrow::before {
+  background: var(--tooltip-bg);
+  border-color: var(--tooltip-border);
 }
 
 .kernel-plugin-tooltip.el-popper.is-dark {
