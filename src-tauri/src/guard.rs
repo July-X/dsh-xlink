@@ -1689,11 +1689,15 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
 
     /// 每个用例一个唯一的「dsh home」，data dir 是它下面的 `desktop/`。
     ///
-    /// **data dir 必须带这一层父目录**：插件中央库在 `data_dir` 的**父目录**下
-    /// （`plugins::store_dir` = `<home>/plugins`），把临时目录本身当 data dir 会让
-    /// 所有用例共用同一个 `/tmp/plugins`——并行跑测试时互相覆盖，甚至被某个用例的
-    /// 清理逻辑整个删掉，表现为与被测行为无关的偶发失败（本次就是踩到了这个）。
-    fn temp_data_dir(tag: &str) -> PathBuf {
+    /// **必须连同返回的 env guard 一起持有到用例结束**：中央库在
+    /// `xlink_home()/dsh-plugins`（[`plugins::store_dir`] 根本不看传入的
+    /// data_dir），不锚定 `DSH_XLINK_HOME` 时夹具会写进用户真实的
+    /// `~/.dsh-xlink`；并行跑的其它用例临时改这个进程级 env 时，本用例的
+    /// 读写还会落进**别人的**临时目录——表现为与被测行为无关的偶发失败
+    /// （store 读回变空、分类退化成 unknown、别人 teardown 报
+    /// DirectoryNotEmpty）。guard 复用 [`crate::tests::scoped_xlink_home`]：
+    /// 锚定 env 的同时持有互斥锁，与其它锚定型用例天然互斥。
+    fn temp_data_dir(tag: &str) -> (PathBuf, crate::tests::EnvGuard) {
         let home = std::env::temp_dir().join(format!(
             "dsh-guard-{tag}-{}-{}",
             std::process::id(),
@@ -1704,7 +1708,14 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
         ));
         let data_dir = home.join("desktop");
         std::fs::create_dir_all(&data_dir).expect("create data dir");
-        data_dir
+        let env = crate::tests::scoped_xlink_home(&home);
+        (data_dir, env)
+    }
+
+    /// 清理整个临时 home：中央库在 `<home>/dsh-plugins`（见 [`temp_data_dir`]），
+    /// 只删 `desktop/` 会把夹具残留在 /tmp。
+    fn cleanup(data_dir: &Path) {
+        let _ = std::fs::remove_dir_all(data_dir.parent().unwrap_or(data_dir));
     }
 
     fn write_store(data_dir: &Path, json: &str) {
@@ -1835,7 +1846,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
     /// 页面故障，并让用户去动一个无辜的内核版本。同时不得隔离任何插件。
     #[test]
     fn runtime_client_bundle_fault_is_classified_without_blaming_anyone() {
-        let data_dir = temp_data_dir("frontend-bundle");
+        let (data_dir, _xlink_home) = temp_data_dir("frontend-bundle");
         write_store(
             &data_dir,
             r#"{"schemaVersion":1,"items":[{"id":"ghost-plugin","name":"ghost-plugin"}]}"#,
@@ -1880,14 +1891,14 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             "自检证据必须原样留在事故里"
         );
 
-        let _ = std::fs::remove_dir_all(&data_dir);
+        cleanup(&data_dir);
     }
 
     /// 单成员组合路由里的插件名是强证据，仍必须走自动隔离路径——修多成员误报
     /// 时不能把这条真实可用的归因一起收紧掉。
     #[test]
     fn runtime_single_bundle_plugin_evidence_still_quarantines() {
-        let data_dir = temp_data_dir("frontend-single");
+        let (data_dir, _xlink_home) = temp_data_dir("frontend-single");
         write_store(
             &data_dir,
             r#"{"schemaVersion":1,"items":[{"id":"ghost-plugin","name":"ghost-plugin"}]}"#,
@@ -1914,7 +1925,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
         assert_eq!(quarantined.len(), 1);
         assert_eq!(quarantined[0].id, "ghost-plugin");
 
-        let _ = std::fs::remove_dir_all(&data_dir);
+        cleanup(&data_dir);
     }
 
     /// 已经落盘的旧事故也必须跟着改判：用户升级外壳后，概览横幅读的就是这份
@@ -1922,7 +1933,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
     /// 都不能被改写——读路径不产生副作用。
     #[test]
     fn stored_bundle_incident_is_reclassified_without_rewriting_evidence() {
-        let data_dir = temp_data_dir("frontend-stored");
+        let (data_dir, _xlink_home) = temp_data_dir("frontend-stored");
         let stored = Incident {
             recovered: false,
             safe_mode: false,
@@ -1963,7 +1974,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             "读路径不得回写事故文件"
         );
 
-        let _ = std::fs::remove_dir_all(&data_dir);
+        cleanup(&data_dir);
     }
 
     /// 改判必须有边界：有嫌疑对象的事故（启动时停用了插件）和没有健康证据的
@@ -2071,7 +2082,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
     fn environment_exit_skips_the_plugin_ladder_and_the_pnpm_restore() {
         use std::os::unix::fs::PermissionsExt;
 
-        let data_dir = temp_data_dir("env-exit");
+        let (data_dir, _xlink_home) = temp_data_dir("env-exit");
         let version = "0.1.2";
         let kernel_dir = crate::kernel::kernel_dir(&data_dir, version);
         let bin = kernel_dir.join("node_modules/@deepseek-ai/dsh/lib/bin.js");
@@ -2155,7 +2166,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             "插件清单文件不得被删除"
         );
 
-        let _ = std::fs::remove_dir_all(&data_dir);
+        cleanup(&data_dir);
     }
 
     /// 内核**根本没被拉起来**时（这里是端口被无关进程占用），看护不得进入
@@ -2167,9 +2178,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
     /// 收到"已停用以下插件后成功启动"的报告——把一次环境故障记成插件故障。
     #[test]
     fn unrelated_port_occupant_does_not_quarantine_plugins() {
-        // 走同一个 helper：data dir 带自己的父目录，中央库才不会落到共享的
-        // `/tmp/plugins` 上（见 `temp_data_dir` 的说明）。
-        let data_dir = temp_data_dir("spawn-failed");
+        let (data_dir, _xlink_home) = temp_data_dir("spawn-failed");
 
         // 端口被本测试进程占用——它不是 dsh 内核。
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind port");
@@ -2245,7 +2254,6 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
         );
 
         drop(listener);
-        let _ = std::fs::remove_dir_all(&data_dir);
-        let _ = std::fs::remove_dir_all(&store_dir);
+        cleanup(&data_dir);
     }
 }
