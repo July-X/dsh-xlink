@@ -45,6 +45,7 @@ import {
 import { originLabel } from '../labels.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 import { openExternalLink } from '../notify.js';
+import { store } from '../store.js';
 import { instanceStore, familyLabel } from '../instance.js';
 
 const view = computed(() => pluginStore.view);
@@ -173,12 +174,16 @@ function statsText(item) {
 // 走 row.instances map，把每个实例的 chip 摆出来，方便对比哪个实例装了
 // 哪个没装。
 const installedTab = ref('current');
-// 「本实例」是个相对概念，单实例用户未必知道它指什么：标签里直接带上当前
-// 实例身份（与顶栏 dropdown 的 chip 同源、同文案），悬停提示再讲清两个 tab
-// 的分工——本实例管操作，所有实例只看不动。
+// 「本实例」是个相对概念，单实例用户未必知道它指什么：标签里带上当前内核身份
+// 与其活动版本号（与概览页「活动版本」同源），悬停提示再讲清两个 tab 的分工
+// ——本实例管操作，所有实例只看不动。注册表实例 id（如 default）是实现细节，
+// 与顶栏内核 tab 同口径不对外展示。
 const currentInstanceLabel = computed(() => {
   const def = instanceStore.list.find((item) => item.is_default);
-  return def ? `${familyLabel(def.record.kernel_family)} · ${def.record.id}` : '';
+  if (!def) return '';
+  const family = familyLabel(def.record.kernel_family);
+  const active = store.view && store.view.kernel && store.view.kernel.active;
+  return active ? `${family} · ${active}` : family;
 });
 const currentTabLabel = computed(() =>
   currentInstanceLabel.value ? `本实例（${currentInstanceLabel.value}）` : '本实例',
