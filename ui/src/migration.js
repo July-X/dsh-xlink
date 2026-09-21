@@ -245,17 +245,24 @@ export async function declinePromptMigration(sources) {
   promptStore.open = false;
 }
 
-/** 主窗口 mount 时调用：扫 preview + 读 skip 状态，决定要不要弹。
+/** 主窗口 mount 时调用：扫 preview + 读迁移历史 + 读 skip 状态，决定要不要弹。
  * 由 App.vue onMounted 在 refreshAll() 后调一次。 */
 export async function maybeOpenMigrationPrompt() {
   // 后端 preview 失败（比如 data_dir 不可读）→ 不弹
   let preview;
+  let history = [];
   try {
-    preview = await invoke('migration_preview');
+    [preview, history] = await Promise.all([
+      invoke('migration_preview'),
+      invoke('migration_list').catch(() => []),
+    ]);
   } catch (e) {
     return false;
   }
   migrationStore.preview = preview;
+  // 历史记录驱动「数据迁移」侧栏入口的显隐：迁移设计是旧源永不删除，
+  // 只看遗留数据的话，迁移过的用户重启也会一直看到入口。
+  migrationStore.history = history || [];
   const hasMigration =
     preview && preview.items && preview.items.some(
       (it) => it.file_count > 0 || it.total_bytes > 0

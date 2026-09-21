@@ -18,11 +18,11 @@ const MENU = [
   { id: 'plugins', label: '插件', icon: Connection, badge: () => (pluginStore.view && pluginStore.view.updates) || 0 },
   { id: 'skills', label: '技能', icon: MagicStick, badge: () => (skillStore.view && skillStore.view.updates) || 0 },
   { id: 'settings', label: '设置', icon: SetUp },
-  // 「数据迁移」按 `migrationStore.hasMigratable` 显示：只有当扫描到遗留
-  // 数据（plugin / skill 中央库有内容可搬）时才出现菜单项。首次启动扫描
-  // 完成 → 菜单可见；迁移走完 / 用户拒绝 + 清理完 → 菜单隐藏。「再次询问
-  // 迁移」按钮本来就在 MigrationPanel 上，需要时打开面板就能点。
-  { id: 'migration', label: '数据迁移', icon: Right, show: () => migrationStore.hasMigratable === true },
+  // 「数据迁移」只在「从未迁移过 + 扫描到遗留数据」时显示：迁移设计是
+  // 旧源永不删除，旧数据永远扫得到，只看 hasMigratable 会让迁移过的用户
+  // 每次重启都看到入口。判断「迁移过」看历史记录（migration_list）非空。
+  // 迁移过的用户要走重跑 / 回滚 / 历史，用设置页的「数据迁移」入口。
+  { id: 'migration', label: '数据迁移', icon: Right, show: () => migrationStore.hasMigratable === true && migrationStore.history.length === 0 },
 ];
 
 const status = computed(() => {
