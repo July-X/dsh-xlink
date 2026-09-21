@@ -56,7 +56,7 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
 - **打开官方对话**：拉起独立的官方对话窗口，按 `OFFICIAL_CHAT_TABS` 顺序排布 DeepSeek / 千问 / MiniMax 三个页签，与工作台窗口互不干扰。使用原生 Edge UA 与可持久化登录的专属 user-data 目录。窗口已开时按钮变为「关闭官方对话」并销毁当前窗口。
 - **多内核并存**：窗口顶部一排内核 tab——DSH（active）、mcode（mock，结构性已就位）等内核族并列。每个内核族可同时跑多个实例；概览页底部「实例切换器」tab 直接在主页面切实例。侧栏菜单、插件页、技能页、设置页都跟随当前实例，互不串。已迁移用户在「概览」页不再显示「数据迁移」入口（数据迁移向导在「设置」页常驻，可点进查看最近一次迁移）。
 - **更新菜单**：列出 npm registry [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 的所有发布版本（含预发布标记），可安装、切换活动版本、删除本地版本。
-- **内核安装通过 pnpm**：`node-linker=hoisted` 保持扁平 `node_modules`，内容寻址存储让重复安装更快；安装过程逐行流式显示在进度面板中，完整日志落盘 `~/.dsh/desktop/logs/<kind>-install-<版本>-<日期>.log`（dev 壳则是 `~/.dsh/desktop-dev/logs/dev-install-<版本>-<日期>.log`，`<日期>` 为本地日期）。下载先写临时文件，成功后才发布；npm 包由外壳进行路径受限、禁止链接和有展开大小上限的 Rust 解包，无需额外安装系统 `tar`。
+- **内核安装通过 pnpm**：`node-linker=hoisted` 保持扁平 `node_modules`，内容寻址存储让重复安装更快；安装过程逐行流式显示在进度面板中，完整日志落盘 `~/.dsh-xlink/shell/release/logs/<kind>-install-<版本>-<日期>.log`（dev 壳则是 `~/.dsh-xlink/shell/dev/logs/dev-install-<版本>-<日期>.log`，`<日期>` 为本地日期）。下载先写临时文件，成功后才发布；npm 包由外壳进行路径受限、禁止链接和有展开大小上限的 Rust 解包，无需额外安装系统 `tar`。
 - **Node.js 自动检测与手动指定**：要求 `^22.19 || >=24`，与 dsh 的 engines 一致。自动发现 nvm（macOS/Linux `~/.nvm/versions/node/<v>/bin/node` 跟随 `alias/default` 链，Windows `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`），免去 GUI 启动看不到 nvm PATH 时改手动路径的步骤。检测为空时弹窗询问是否「帮我安装」——确认后自动下载官方 Node.js（v24 LTS，SHA-256 校验）到数据目录 `tools/node/`；概览页 Node 行随时可再次触发。已安装的托管运行时优先于环境检测，显式配置的 node 路径仍最高优先。
 - **pnpm 路径可配置**（默认取 node 同目录或 PATH）。
 - **端口可配置**：release 默认 3090，`tauri dev` 下的 dev 壳默认 3091。设置页的「设置」卡只保留这一项可改的东西（插件接线 profile 名是固定值，跟着端口一起保存）。概览页底部的「桌面端设置」卡只读显示当前端口、profile 名与 Node 环境结论。概览页「当前内核」的 Node.js 行提供「重新检测」（重新探测本机环境、不改设置，不达标时同排还有「自动安装」）。
@@ -67,7 +67,7 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
 - **工作台健康自检**：工作台窗口自动监听白屏、运行时错误和未处理的 Promise 异常。外壳会把前端证据（异常类型与消息、`cause` 链、堆栈、页面地址）与今天的内核日志一起分析，归类为「疑似插件」「疑似内核」「前端 bundle 异常」「运行环境问题」或「暂未能归因」，并在事故面板展示证据和对应的处置入口。「前端 bundle 异常」不弹事故面板（页面仍在运行、这类异常没有可处置对象），只在概览页横幅提示，点「查看详情」展开完整证据——按提示先看日志、反馈错误消息，再考虑停用第三方插件或切换内核版本。完整设计见 [docs/troubleshooting.md](docs/troubleshooting.md)。
 - **技能管理（全局共享）**：与插件相反——社区技能（npm 包 / GitHub 仓库 / 本地文件夹）由外壳统一管理，源存放在 `DSH_XLINK_HOME/skills/packages/`，按包安装的粒度以链接（失败降级复制）物化进一份 v1 全局共享的活动视图（`skills/active/`）。所有内核实例、DSH 与未来的 mcode 都从同一份活动视图读，由各自适配器通过 `DSH_CUSTOM_SKILL_DIRS` 注入——多实例的技能视图天然一致，不需要每个实例各自维护一份。不改 cordis 配置、不装依赖、切换实例零操作。内核对技能根做文件监视，安装 / 卸载 / 更新对运行中的工作台即时生效，无需重启。安装前逐个校验 SKILL.md frontmatter（kebab-case `name` + `description` 必填），避免「装了却不出现」。已安装卡片在包头提供逐个启用 / 停用开关（粒度是单个技能），停用只把条目移出活动视图，包仍留在中央库，随时可恢复。中央库与活动视图的条目状态包括「未同步」——本地活动根条目与中央库记录不一致（如外部修改了源目录）时显示，提示用户先「重新同步」。多实例共享活动视图的设计理由见 [docs/architecture.md §「多内核改造后的实际数据布局」](docs/architecture.md)。
 - **数据迁移向导**：「设置」页常驻入口（未迁移亮色，已迁移灰色均可点进）。嵌入式 4 步向导——发现 → 选择 → 运行 → 完成 / 回滚。迁移运行期间走 `ProgressOverlay` 与安装内核 / 装插件共享同一进度 UI。凭据与会话首版不纳入迁移（旧版默认保守）；冲突策略默认 `SkipIfNewer`（保留用户后来修改）；旧源永不被删除（rollback 路径依赖）。完成后回主界面，顶部 banner 报告最近一次迁移的状态（不再展示完整历史）。完整设计见 [docs/migration-wizard-ui-proposal.md](docs/migration-wizard-ui-proposal.md)。
-- **内置补丁（内核补丁 / 小插件）**：随 dsh-xlink 发布包捆绑的自研内核补丁与小插件（`src-tauri/resources/patches/<id>/`，发布时进入 app 资源目录，与社区插件不同、无需第三方信任），默认不生效。在「设置 → 内核补丁」页自主选择「应用到当前内核」或「撤销补丁」；应用前自动备份被覆盖的原文件到 `~/.dsh/desktop/patches/backups/`，撤销时从备份还原，备份丢失时以内容 SHA-256 校验兜底、绝不盲目覆盖或删除。支持 `copy`（新增 / 覆盖文件）与 `replace`（精确字符串替换）两种文件操作，目标路径严格限制在内核目录内，可按 `minKernelVersion` / `maxKernelVersion` 声明适用内核版本范围。当补丁功能被官方内核采纳后可通过 `supersededSinceKernelVersion` 字段声明「从该内核版本起已被官方取代」，UI 把对应卡片折叠为「已并入官方内核」（删除线 + 默认收起 + 应用按钮禁用），用户可手动展开查看。应用记录持久化在 `~/.dsh/desktop/patches/state.json`，按「补丁 × 内核版本」隔离；工作台运行期间禁止操作。`dsh-file-perf`（dsh `@` 引用性能修复）已被官方 0.1.2-alpha.2 起直接采纳，卡片折叠为「已并入官方内核」；`dsh-session-perf`（历史会话列表加载提速）v1.3.0 锚定官方 0.1.5-alpha.2 ~ 0.1.5-rc.2；`dsh-escalation-same-mode`（同模式 sandbox 升级短路）v1.1.0 锚定 0.1.3-alpha.2。旧内核上的已应用记录仍可撤销。设计文档见 [docs/patch-management.md](docs/patch-management.md)。
+- **内置补丁（内核补丁 / 小插件）**：随 dsh-xlink 发布包捆绑的自研内核补丁与小插件（`src-tauri/resources/patches/<id>/`，发布时进入 app 资源目录，与社区插件不同、无需第三方信任），默认不生效。在「设置 → 内核补丁」页自主选择「应用到当前内核」或「撤销补丁」；应用前自动备份被覆盖的原文件到 `~/.dsh-xlink/dsh/desktop/patches/backups/`，撤销时从备份还原，备份丢失时以内容 SHA-256 校验兜底、绝不盲目覆盖或删除。支持 `copy`（新增 / 覆盖文件）与 `replace`（精确字符串替换）两种文件操作，目标路径严格限制在内核目录内，可按 `minKernelVersion` / `maxKernelVersion` 声明适用内核版本范围。当补丁功能被官方内核采纳后可通过 `supersededSinceKernelVersion` 字段声明「从该内核版本起已被官方取代」，UI 把对应卡片折叠为「已并入官方内核」（删除线 + 默认收起 + 应用按钮禁用），用户可手动展开查看。应用记录持久化在 `~/.dsh-xlink/dsh/desktop/patches/state.json`，按「补丁 × 内核版本」隔离；工作台运行期间禁止操作。`dsh-file-perf`（dsh `@` 引用性能修复）已被官方 0.1.2-alpha.2 起直接采纳，卡片折叠为「已并入官方内核」；`dsh-session-perf`（历史会话列表加载提速）v1.3.0 锚定官方 0.1.5-alpha.2 ~ 0.1.5-rc.2；`dsh-escalation-same-mode`（同模式 sandbox 升级短路）v1.1.0 锚定 0.1.3-alpha.2。旧内核上的已应用记录仍可撤销。设计文档见 [docs/patch-management.md](docs/patch-management.md)。
 
 ## 目录结构
 
@@ -141,19 +141,20 @@ npm run build:win         # x86_64-pc-windows-msvc
 2. **Node.js 环境**：概览页「当前内核」的 Node.js 行显示实时检测结果，刚装完 Node 可点同排「重新检测」刷新（它只探测本机环境、不改设置）。不满足要求时点同排「自动安装」自动下载官方 Node.js 到数据目录（首次启动检测不到时会弹窗询问，点「帮我安装」同效），或手动安装 Node 22.19+、在 `<data_dir>/settings.json` 的 `node_path` 里手动指定路径。通过 nvm 管理的 Node 会被自动发现。
 3. **内核更新**：应用启动时会扫描并列出本地已安装版本，进入「内核版本」页即可在左侧备用版本中切换。只有工作台已停止时才能切换；工作台启动或运行期间请先在「概览」页点击「关闭工作台」。点击「检查更新」只从 npm 获取官方发布列表，再选择未安装的版本点「安装」。安装通过 pnpm 执行，进度面板会实时滚动 pnpm 日志；pnpm 未安装时按提示 `npm install -g pnpm` 或在设置中指定 pnpm 路径。首次安装会自动成为活动版本，但不会启动内核；安装完成后请在「概览」页点击「启动工作台」。之后安装的版本不会覆盖当前活动版本，可随时在「已安装」列表中「切换」或「删除」。
 4. （可选）**插件** → 在「插件中心」按分类浏览、搜索（即时过滤）、按 Star / 更新时间排序后一键安装，或手动填写 npm 包名（如 `@ace-zone/dsh-market`）/ GitHub 仓库 URL 安装。安装前自动校验插件是否符合 dsh 规范（package.json / `dsh.bundle.patch` / 入口文件），安装完成后重启工作台（关闭后重新启动）生效。点击「同步」会对所有已安装内核重新物化中央插件库，并清除外壳标记的已删除插件残留。进入「内核版本」页后，每个已安装版本旁的信息图标可悬停查看该版本实际物化的插件、版本和链接 / 拷贝模式。
-5. （可选）**设置 → 内核补丁（内置）**：查看随当前 dsh-xlink 版本捆绑的内核补丁与小插件（来自本应用发布方，与社区插件不同），自主选择「应用到当前内核」或「撤销补丁」。应用前自动备份被覆盖的原文件、随时可撤销，状态与备份记录在 `~/.dsh/desktop/patches/`（dev 壳为 `desktop-dev`）。工作台运行期间不能操作，请先关闭工作台；切换内核版本后需对新的活动版本重新应用。补丁与适用内核版本详见 [docs/patch-management.md](docs/patch-management.md)。
+5. （可选）**设置 → 内核补丁（内置）**：查看随当前 dsh-xlink 版本捆绑的内核补丁与小插件（来自本应用发布方，与社区插件不同），自主选择「应用到当前内核」或「撤销补丁」。应用前自动备份被覆盖的原文件、随时可撤销，状态与备份记录在 `~/.dsh-xlink/dsh/desktop/patches/`（dev 壳为 `~/.dsh-xlink/dsh/desktop-dev/patches/`）。工作台运行期间不能操作，请先关闭工作台；切换内核版本后需对新的活动版本重新应用。补丁与适用内核版本详见 [docs/patch-management.md](docs/patch-management.md)。
 6. 在「概览」页点击「启动工作台」：自动拉起内核、等待就绪后校验当前内核的工作台地址，再打开工作台窗口进入 Harness 界面；启动失败会自动弹出事故面板和内核日志。「关闭工作台」会同时关闭工作台窗口并停止内核。工作台窗口的系统关闭按钮（macOS 交通灯红灯 / Windows ×）始终可用，只收起窗口、内核与任务继续在后台运行；内核运行中收起窗口后，随时可用「打开工作台窗口」重新打开。工作台窗口会自动进行健康自检——发现白屏、运行时错误或未处理的 Promise 异常时，事故面板会展示异常类型 / 消息 / 堆栈与页面地址，并标注归类（「疑似插件问题」「疑似内核问题」「前端 bundle 异常」「运行环境问题」「暂未能归因」）。插件问题可重新启用或移除；内核问题可先停止工作台，再打开日志并切换 / 重装版本；「运行环境问题」（端口被占用、数据目录不可写、磁盘已满等）指向设置页与日志，面板按钮会直接去设置页。工作台窗口侧栏头部右侧（品牌 logo 旁）悬浮着一个灯泡拉绳小挂件：点击（拉动）它，灯泡点亮的同时桌面端管理面板会归位到点击位置附近并提到当前桌面上方，方便随手操作；若灯泡闪红，说明与桌面壳的通信失败，可查看工作台 DevTools 控制台。
 7. 「打开官方对话」：在「概览」页点击此按钮即可拉起独立的官方对话窗口（顶部条带 chrome-row 官方品牌蓝 `#4D6BFE`、拉绳挂件挂页签栏右侧 12 px；区别于工作台窗口的 Gitea 绿色 212 px 偏移），按 `OFFICIAL_CHAT_TABS` 顺序排布 DeepSeek / 千问 / MiniMax 三个页签。窗口已开时按钮变为「关闭官方对话」并销毁当前窗口。
 8. （可选）**设置 → 数据迁移**：从旧版 dsh home 布局搬到新多实例布局——嵌入式 4 步向导。凭据与会话首版不纳入迁移，冲突策略默认 `SkipIfNewer`，旧源永不被删除。已迁移用户在「概览」页不再显示入口，仍可在「设置」页回查。
 9. 首次使用时在 Harness 的设置页配置 DeepSeek（`DEEPSEEK_API_KEY` 等）即可开始对话。
 
-数据目录（统一在 dsh home 下的 `desktop/` 二级目录）：
+数据目录（按内核族命名空间隔离，统一在 `~/.dsh-xlink/` 下）：
 
-- 外壳元数据（已装版本、活动指针、设置、日志、补丁状态、迁移状态）：`~/.dsh/desktop/`（`kernels/`、`logs/`、`settings.json`、`active.txt`、`patches/`（补丁应用记录与备份）、`migration/`（迁移报告与备份）；可用 `DSH_HOME` 环境变量重定向整个 dsh home）
-- 内核数据（会话、配置、profile）：`~/.dsh`
-- 多内核相关（中央插件库 / 技能库 / 活动视图）：权威布局见 [docs/architecture.md §「多内核改造后的实际数据布局」](docs/architecture.md)
+- 外壳数据（已装内核 `kernels/`、活动指针 `active.txt`、补丁 `patches/`、隔离记录 `quarantine.json` 等）：`~/.dsh-xlink/dsh/desktop/`（release 壳）或 `~/.dsh-xlink/dsh/desktop-dev/`（dev 壳）。将来接入新内核族（如 mcode）会得到各自独立的 `~/.dsh-xlink/mcode/desktop[-dev]/`。可用 `DSH_XLINK_HOME` 重定向整个根目录，`DSH_DESKTOP_DATA_DIR` 完整覆盖外壳数据目录
+- 外壳自身日志与每壳设置（release / dev 分槽）：`~/.dsh-xlink/shell/<release|dev>/`（`logs/`、`settings.json`、`ui-state.json`）
+- 多内核相关（内核版本与实例 `kernels/<族>/`、中央插件库 `dsh-plugins/`、技能库 `skills/`）：权威布局见 [docs/architecture.md §「多内核改造后的实际数据布局」](docs/architecture.md)
+- 内核自身数据（会话、配置、profile）：`~/.dsh`（内核进程的 `DSH_HOME`，外壳不写这里）
 
-> 从旧版本升级：旧版外壳把元数据存在系统应用数据目录（macOS `~/Library/Application Support/com.zhongxingxing.dsh-desktop/`）。新版启动后该处数据不再读取，请将旧目录下的 `kernels/`、`logs/`、`settings.json`、`active.txt` 手动移到 `~/.dsh/desktop/`。
+> 从 v0.2.x 升级：平铺的 `~/.dsh-xlink/desktop[-dev]/` 会在新版首次启动时自动整体搬进 `~/.dsh-xlink/dsh/`；搬迁失败时继续使用旧目录，数据不会丢失。更早版本（元数据在系统应用数据目录或 `~/.dsh/desktop/`）的数据不再被读取，如需保留请手动移入上述外壳数据目录。
 
 ## 发布（GitHub Actions）
 
@@ -178,7 +179,7 @@ npm run build:win         # x86_64-pc-windows-msvc
 | `WebviewWindowBuilder` 创建工作台窗口卡死 | Tauri 2.x 在同步命令里创建 webview 窗口**会死锁**（Windows 100%；macOS/Linux 部分情况下也慢）。本项目 `open_harness` 已经把创建放在新线程（`commands.rs::open_harness`）。新增类似命令请保持同样模式。 |
 | macOS 启动后访问 `http://127.0.0.1:3090`（dev 壳为 3091）失败 | Tauri 2.x 默认 WKWebView 已允许本地环回访问，不需要 `NSAppTransportSecurity` 例外；本项目移除了该字段，依赖平台默认值。 |
 | 编辑器 / IDE 报 `capabilities/default.json` 找不到 `$schema` | schema 文件在首次 `tauri build` 后由 `tauri-build` 生成；本项目移除了硬编码 `$schema` 引用，避免初次克隆时编辑器红字。 |
-| 升级后「已安装」列表为空 | 外壳元数据已迁到 `~/.dsh/desktop/`；按上文「数据目录」提示迁移旧目录内容，或重新安装内核。 |
+| 升级后「已安装」列表为空 | 外壳元数据在 `~/.dsh-xlink/dsh/desktop/`（v0.2.x 平铺目录会自动搬入）；按上文「数据目录」提示确认目录位置，或重新安装内核。 |
 
 ## 性能排查
 

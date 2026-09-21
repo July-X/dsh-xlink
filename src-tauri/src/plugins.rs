@@ -431,13 +431,14 @@ pub fn store_dir(_data_dir: &Path) -> PathBuf {
     crate::paths::plugins_store_root()
 }
 
-/// Legacy 中央库根目录（`<home>/plugins/`），仅在 [`migrate_legacy_store`]
+/// Legacy 中央库根目录：`<xlink_home>/plugins/`，仅在 [`migrate_legacy_store`]
 /// 与 [`reconcile_store`] 的兜底逻辑里用到；新代码不应再使用。
-pub fn legacy_store_dir(data_dir: &Path) -> PathBuf {
-    data_dir
-        .parent()
-        .map(|home| home.join(STORE_SUBDIR))
-        .unwrap_or_else(|| data_dir.join(STORE_SUBDIR))
+///
+/// 固定从 `xlink_home()` 派生而不是 `data_dir.parent()`：data_dir 自家族
+/// 命名空间改造后多了一层 `<family>/`，沿用 parent 派生会让这个「历史上
+/// 曾存在过的平铺位置」随 data_dir 漂移、扫不到真正留在原地的旧数据。
+pub fn legacy_store_dir(_data_dir: &Path) -> PathBuf {
+    crate::paths::xlink_home().join(STORE_SUBDIR)
 }
 
 /// 把 legacy `<home>/plugins/` 整目录搬到新 `<xlink_home>/dsh-plugins/`。

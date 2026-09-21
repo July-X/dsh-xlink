@@ -123,14 +123,19 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             check_main_window_minimizable(app);
 
-            let data_dir = kernel::data_dir(app.handle());
+            // 家族命名空间：data_dir 按（注册表里）默认实例的内核族解析到
+            // `<xlink_home>/<family>/desktop[-dev]/`，并把 v0.2.x 的平铺
+            // 目录（`<xlink_home>/desktop[-dev]/`）一次性搬迁进去。
+            let family = crate::instance::default_family();
+            let data_dir = kernel::data_dir(app.handle(), &family);
             // 把解析出的 data dir 打到 stderr，让同时运行 `tauri dev` 与
             // 已安装 release 壳的开发者能一眼看出到底是哪一个
-            // （release → `~/.dsh/desktop/`，debug → `~/.dsh/desktop-dev/`）
-            // 真正拥有这个进程。这种廉价的保险能避免经典的「我在 dev 壳
-            // 里改了设置，release 壳却看不到」踩坑。
+            // （release → `~/.dsh-xlink/<family>/desktop/`，debug →
+            // `~/.dsh-xlink/<family>/desktop-dev/`）真正拥有这个进程。
+            // 这种廉价的保险能避免经典的「我在 dev 壳里改了设置，
+            // release 壳却看不到」踩坑。
             eprintln!(
-                "dsh-xlink: data_dir = {} (build: {})",
+                "dsh-xlink: data_dir = {} (family: {family}, build: {})",
                 data_dir.display(),
                 if cfg!(debug_assertions) {
                     "dev"

@@ -48,8 +48,8 @@ use crate::paths;
 
 /// dsh 自身的 home 目录名（参见 `@deepseek-ai/dsh-home-paths`）。
 /// 保留仅为 legacy 中央库扫描（[migration::LegacySource::path]）和
-/// 旧 fixture 测试使用；P8 #X 之后 `kernel::data_dir` 已经切到
-/// [`crate::paths::shell_runtime_dir`]（`xlink_home + desktop[-dev]/`），
+/// 旧 fixture 测试使用；`kernel::data_dir` 已经切到
+/// [`crate::paths::family_runtime_dir`]（`xlink_home/<family>/desktop[-dev]/`），
 /// 不再依赖这条常量。
 pub const DSH_HOME_DIR_NAME: &str = ".dsh";
 /// 内核 web 服务器的默认端口。debug 构建默认为 3091（比 release 的 3090 多一），
@@ -100,25 +100,68 @@ pub struct KernelStatus {
 ///
 /// 1. `DSH_DESKTOP_DATA_DIR`——完整覆盖。允许高级用户把壳指向任意目录
 ///    （例如在外置磁盘上测试），同时短路掉下文的 home 解析。
-/// 2. `<xlink_home>/<desktop[-dev]>/`——默认根目录。所有 Shell 状态
-///    （业务数据 + 运行时元数据）都落在 `~/.dsh-xlink/` 下。
+/// 2. `<xlink_home>/<family>/desktop[-dev]/`——按内核族命名的默认根目录。
+///    dsh 与将来的 mcode 各有一份（`dsh/desktop`、`mcode/desktop`），互不
+///    可见。所有 Shell 状态（内核安装、活动指针、quarantine）都落在族目录内。
 /// 3. 当 xlink_home 不可写时，回退到 Tauri 的操作系统 app-data 目录；
 ///    宁愿在某个地方启动也不愿在启动阶段直接失败。
 ///
-/// 壳的所有状态（内核、设置、日志、活动指针）都存放在这一根目录中，
-/// 与内核自身的数据并列。
-pub fn data_dir(app: &tauri::AppHandle) -> PathBuf {
+/// 解析的同时把 v0.2.x 的平铺布局（`<xlink_home>/desktop[-dev]/`）一次性
+/// 搬迁进族目录，见 [`resolve_family_runtime_dir`]。
+pub fn data_dir(app: &tauri::AppHandle, family: &str) -> PathBuf {
     if let Some(override_dir) = std::env::var_os("DSH_DESKTOP_DATA_DIR").map(PathBuf::from) {
         let _ = fs::create_dir_all(&override_dir);
         return override_dir;
     }
-    let dir = crate::paths::shell_runtime_dir(crate::paths::ShellMode::current());
-    if fs::create_dir_all(&dir).is_ok() {
-        return dir;
+    match resolve_family_runtime_dir(family) {
+        Some(dir) => dir,
+        None => app.path().app_data_dir().unwrap_or_else(|_| {
+            crate::paths::family_runtime_dir(family, crate::paths::ShellMode::current())
+        }),
     }
-    // xlink_home 不可写：回退到 OS 的 app-data 目录，使壳至少能启动，
-    // 而不是启动阶段直接失败。
-    app.path().app_data_dir().unwrap_or(dir)
+}
+
+/// 解析当前构建模式的族运行时目录，并把平铺旧布局搬迁进来。
+///
+/// - 旧目录（`<xlink_home>/desktop[-dev]/`）存在且新目录不存在：同卷
+///   `rename` 原子搬迁，active.txt、内核安装产物、quarantine 等一起过去。
+///   失败则**继续使用旧目录**——宁可留在平铺位置也不能让用户面对一个
+///   空的新目录（设置、活动版本全部「丢失」）。
+/// - 新旧并存（上次搬迁中断）：新目录优先，旧目录原样保留等用户手动清理。
+/// - xlink_home 不可写：返回 `None`，调用方走 app-data 回退。
+fn resolve_family_runtime_dir(family: &str) -> Option<PathBuf> {
+    let mode = crate::paths::ShellMode::current();
+    let new_dir = crate::paths::family_runtime_dir(family, mode);
+    let legacy_dir = crate::paths::legacy_runtime_dir(mode);
+    if legacy_dir.is_dir() && !new_dir.exists() {
+        if let Some(parent) = new_dir.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        return match fs::rename(&legacy_dir, &new_dir) {
+            Ok(()) => Some(new_dir),
+            Err(error) => {
+                eprintln!(
+                    "dsh-xlink: 运行时目录搬迁失败 {} → {}：{error}；\
+                     本次继续使用旧目录，数据不会丢失",
+                    legacy_dir.display(),
+                    new_dir.display()
+                );
+                Some(legacy_dir)
+            }
+        };
+    }
+    if legacy_dir.is_dir() && new_dir.exists() {
+        eprintln!(
+            "dsh-xlink: 平铺旧目录 {} 与族目录 {} 并存（上次搬迁中断或手动恢复过）；\
+             使用族目录，旧目录保留待手动清理",
+            legacy_dir.display(),
+            new_dir.display()
+        );
+    }
+    if fs::create_dir_all(&new_dir).is_ok() {
+        return Some(new_dir);
+    }
+    None
 }
 
 /// 用户的操作系统 home 目录（Unix 下为 `$HOME`，Windows 下为 `%USERPROFILE%`）。
@@ -3054,5 +3097,103 @@ mod tests {
         assert_ne!(name_a, name_b);
         assert_ne!(name_a, name_c);
         assert_ne!(name_b, name_c);
+    }
+
+    /// 家族命名空间迁移：平铺旧目录（`<xlink_home>/desktop[-dev]/`）存在时，
+    /// 解析 data_dir 必须把它整体改名搬进 `<family>/`——active.txt、内核
+    /// 安装产物一起过去，旧位置不再残留。
+    #[test]
+    fn family_runtime_dir_migrates_flat_layout_once() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-family-migrate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let _xlink_home = crate::tests::scoped_xlink_home(&home);
+        let mode = paths::ShellMode::current();
+        let legacy = paths::legacy_runtime_dir(mode);
+        let expected = paths::family_runtime_dir(instance::KERNEL_FAMILY_DSH, mode);
+        fs::create_dir_all(legacy.join("kernels/0.1.6-alpha.2")).expect("legacy tree");
+        fs::write(legacy.join("active.txt"), "0.1.6-alpha.2").expect("write active");
+
+        let dir = resolve_family_runtime_dir(instance::KERNEL_FAMILY_DSH).expect("resolvable");
+
+        assert_eq!(dir, expected, "data_dir 必须落在 <family>/desktop[-dev]");
+        assert_eq!(
+            fs::read_to_string(expected.join("active.txt")).expect("read active"),
+            "0.1.6-alpha.2",
+            "旧目录内容必须随 rename 一起过去"
+        );
+        assert!(expected.join("kernels/0.1.6-alpha.2").is_dir());
+        assert!(!legacy.exists(), "平铺旧目录必须整体搬走，不得残留");
+
+        fs::remove_dir_all(&home).ok();
+    }
+
+    /// 全新安装（平铺旧目录从未存在）：直接创建族目录，不得顺手把平铺
+    /// 位置建出来。
+    #[test]
+    fn family_runtime_dir_creates_fresh_dir_without_legacy() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-family-fresh-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let _xlink_home = crate::tests::scoped_xlink_home(&home);
+        let mode = paths::ShellMode::current();
+        let legacy = paths::legacy_runtime_dir(mode);
+
+        let dir = resolve_family_runtime_dir(instance::KERNEL_FAMILY_DSH).expect("resolvable");
+
+        assert_eq!(
+            dir,
+            paths::family_runtime_dir(instance::KERNEL_FAMILY_DSH, mode)
+        );
+        assert!(dir.is_dir());
+        assert!(!legacy.exists(), "全新安装不得创建平铺旧目录");
+
+        fs::remove_dir_all(&home).ok();
+    }
+
+    /// 新旧并存（上次搬迁中断或用户手动恢复过）：族目录优先，两侧内容都
+    /// 不被破坏——任何一侧的覆盖都是数据丢失。
+    #[test]
+    fn family_runtime_dir_prefers_family_dir_when_both_exist() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-family-both-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let _xlink_home = crate::tests::scoped_xlink_home(&home);
+        let mode = paths::ShellMode::current();
+        let legacy = paths::legacy_runtime_dir(mode);
+        let family_dir = paths::family_runtime_dir(instance::KERNEL_FAMILY_DSH, mode);
+        fs::create_dir_all(&legacy).expect("legacy dir");
+        fs::write(legacy.join("legacy-marker"), "old").expect("write legacy marker");
+        fs::create_dir_all(&family_dir).expect("family dir");
+        fs::write(family_dir.join("family-marker"), "new").expect("write family marker");
+
+        let dir = resolve_family_runtime_dir(instance::KERNEL_FAMILY_DSH).expect("resolvable");
+
+        assert_eq!(dir, family_dir, "并存时必须以族目录为准");
+        assert!(
+            family_dir.join("family-marker").is_file(),
+            "族目录内容不得被搬迁破坏"
+        );
+        assert!(
+            legacy.join("legacy-marker").is_file(),
+            "旧目录必须原样保留，等用户手动清理"
+        );
+
+        fs::remove_dir_all(&home).ok();
     }
 }
