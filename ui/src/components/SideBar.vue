@@ -85,7 +85,7 @@ const visibleMenu = computed(() =>
           v-if="item.badge && item.badge() > 0"
           class="menu-badge"
           :title="item.label + '有 ' + item.badge() + ' 个可更新'"
-        >{{ item.badge() }}</span>
+        >{{ item.badge() > 99 ? '99+' : item.badge() }}</span>
       </button>
     </nav>
   </aside>
