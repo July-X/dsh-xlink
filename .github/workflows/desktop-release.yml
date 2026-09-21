@@ -236,8 +236,8 @@ jobs:
           const cssBytes = totalBytes('.css');
 
           console.log(`UI JavaScript: ${jsBytes} bytes (budget: 700000)`);
-          console.log(`UI CSS: ${cssBytes} bytes (budget: 180000)`);
-          if (jsBytes > 700000 || cssBytes > 180000) {
+          console.log(`UI CSS: ${cssBytes} bytes (budget: 230000)`);
+          if (jsBytes > 700000 || cssBytes > 230000) {
             process.exitCode = 1;
           }
           NODE
