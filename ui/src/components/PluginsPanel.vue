@@ -173,9 +173,9 @@ function statsText(item) {
 // 哪个没装。
 const installedTab = ref('current');
 // 「当前内核」是个相对概念，用户未必知道它指什么：标签里带上当前内核身份
-// 与其活动版本号（与概览页「活动版本」同源），悬停提示再讲清两个 tab 的分工
-// ——当前内核管管理，已安装管获取。注册表实例 id（如 default）是实现细节，
-// 与顶栏内核 tab 同口径不对外展示。
+// 与其活动版本号（与概览页「活动版本」同源）。注册表实例 id（如 default）
+// 是实现细节，与顶栏内核 tab 同口径不对外展示。两个 tab 的 tooltip 各讲
+// 各的职责，一句话说完。
 const currentInstanceLabel = computed(() => {
   const def = instanceStore.list.find((item) => item.is_default);
   if (!def) return '';
@@ -186,10 +186,8 @@ const currentInstanceLabel = computed(() => {
 const currentTabLabel = computed(() =>
   currentInstanceLabel.value ? `当前内核（${currentInstanceLabel.value}）` : '当前内核',
 );
-const tabsTip =
-  '「当前内核」＝顶栏当前选中的内核：这里的版本、模式与同步状态都只关于该内核，' +
-  '顶栏切换后此页随之变化。「已安装」是本机插件库与插件中心：安装插件、对比各内核' +
-  '的装载状态都在那边。';
+const currentTabTip = '只管理顶栏当前选中的内核：同步、模式与卸载都只作用于它。';
+const installedTabTip = '本机插件库：安装新插件，对比各内核的装载状态。';
 // 排序规则：把默认实例（is_default=true）排第一个，其余按 id 升序——
 // 让用户一眼看出默认实例在所有实例中的差异位置。
 const sortedInstances = computed(() => {
@@ -272,138 +270,18 @@ function instanceChipType(row, instanceId) {
         show-icon
       />
 
-      <!-- 单 card 双 tab：「当前内核」是顶栏选中内核的视图（沿用旧
-           entity-row 渲染），「已安装」是本机插件库清单 + 获取入口（手动安装、
-           插件中心）——安装针对插件库，不属于某个内核，故不放在当前内核 tab。
-           两个 tab 共用 pluginStore.view.rows；顶栏切默认实例后，
-           当前内核 tab 自动跟随新默认实例。 -->
+      <!-- 单 card 双 tab，默认激活「当前内核」：「已安装」（本机插件库清单 +
+           获取入口：手动安装、插件中心）排在左侧第一位，「当前内核」随后——
+           安装针对插件库，不属于某个内核，故不放在当前内核 tab。两个 tab
+           共用 pluginStore.view.rows；顶栏切默认实例后，当前内核 tab 自动
+           跟随新默认实例。 -->
       <el-tabs v-model="installedTab" class="installed-tabs">
-        <el-tab-pane name="current">
+        <el-tab-pane name="all">
           <template #label>
-            <el-tooltip placement="bottom-start" effect="dark" :content="tabsTip">
-              <span class="tab-label">{{ currentTabLabel }}</span>
+            <el-tooltip placement="bottom-start" effect="dark" :content="installedTabTip">
+              <span class="tab-label">已安装</span>
             </el-tooltip>
           </template>
-          <div class="entity-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
-        <!-- 首次状态未返回时显示骨架：view===null 是「加载中」而不是
-             「尚未安装」，画成空态会让用户以为插件全丢了。 -->
-        <template v-if="!view">
-          <div v-for="i in 2" :key="'skeleton-' + i" class="entity-row">
-            <el-skeleton :rows="1" animated style="width: 55%" />
-          </div>
-        </template>
-        <el-empty v-else-if="!view.rows || view.rows.length === 0" description="当前内核尚未接入任何插件；先到「已安装」页签安装。" :image-size="48" />
-        <div
-          v-for="row in view ? view.rows : []"
-          :key="row.id"
-          class="entity-row"
-          :class="{ 'is-warn': !!row.quarantined }"
-        >
-          <div class="entity-head">
-            <el-tooltip v-if="row.quarantined" placement="top" effect="dark" :content="quarantineNote(row)">
-              <span class="entity-warn"><el-icon><WarningFilled /></el-icon> 已停用</span>
-            </el-tooltip>
-            <span class="entity-name">{{ row.name }}</span>
-            <span class="origin-chip" :class="'origin-chip-' + row.origin">
-              <el-icon class="origin-chip-icon">
-                <Box v-if="row.origin === 'npm'" />
-                <Link v-else />
-              </el-icon>
-              <span class="origin-chip-label">{{ originLabel(row.origin) }}</span>
-            </span>
-            <el-tooltip v-if="row.description" placement="top" effect="dark" :content="row.description">
-              <span class="entity-desc">{{ row.description }}</span>
-            </el-tooltip>
-          </div>
-          <div class="entity-foot">
-            <div class="entity-meta">
-              <span class="meta-version">{{ row.installed_version }}</span>
-              <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>
-              <span v-if="row.pinned" class="meta-pinned">已锁定版本</span>
-            </div>
-            <span class="entity-states">
-              <el-tag v-if="!view || !view.active_kernel" type="warning" size="small" effect="plain">无活动内核</el-tag>
-              <el-tag v-else-if="row.synced && row.wired" type="success" size="small" effect="plain">已同步</el-tag>
-            </span>
-            <!-- 待同步 / 待接线只在动作区点一个警示点，原因走 tooltip：原先把状态
-                 铺成整枚文字标签，一行挤三四枚，把行高和右半区一起顶满。 -->
-            <span v-if="syncWarning(row)" class="state-dot">
-              <el-tooltip placement="top" effect="dark" :content="syncWarning(row)">
-                <el-icon><WarningFilled /></el-icon>
-              </el-tooltip>
-            </span>
-            <div class="entity-actions">
-              <!-- 物化模式：徽章文案即当前模式，点击切到另一种。切换走
-                   plugin_set_mode 长任务，状态以 row.desired_mode 为准，
-                   命令完成刷新后才翻转（未落地时回落到中央库记录的模式）。 -->
-              <el-tooltip placement="top" effect="dark" :content="modeTip(row)">
-                <el-button
-                  class="entity-mode"
-                  :class="{ 'is-link': currentMode(row) === 'link' }"
-                  size="small"
-                  :loading="isLoading('pluginMode:' + row.id)"
-                  :disabled="globalBusy"
-                  @click="togglePluginMode(row)"
-                >
-                  {{ currentMode(row) === 'link' ? '链接' : '复制' }}
-                </el-button>
-              </el-tooltip>
-              <el-tooltip v-if="row.quarantined" content="恢复启用" placement="top" effect="dark">
-                <el-button
-                  class="entity-action"
-                  size="small"
-                  circle
-                  :icon="RefreshLeft"
-                  :disabled="globalBusy"
-                  @click="resolvePluginQuarantine(row.id, 'enable')"
-                />
-              </el-tooltip>
-              <el-tooltip v-if="row.latest_version && !row.pinned" :content="'更新到 ' + row.latest_version" placement="top" effect="dark">
-                <el-button
-                  class="entity-action entity-action-update"
-                  size="small"
-                  type="primary"
-                  circle
-                  :icon="Download"
-                  :disabled="globalBusy"
-                  @click="updatePlugin(row.id)"
-                />
-              </el-tooltip>
-              <el-tooltip v-if="row.repo_url" content="打开仓库" placement="top" effect="dark">
-                <el-button
-                  class="entity-action"
-                  size="small"
-                  circle
-                  :icon="TopRight"
-                  :disabled="globalBusy"
-                  @click="openExternalLink(row.repo_url, '仓库地址')"
-                />
-              </el-tooltip>
-              <span class="entity-action-sep" aria-hidden="true"></span>
-              <el-popconfirm
-                title="确认卸载该插件？"
-                confirm-button-text="卸载"
-                cancel-button-text="取消"
-                width="200"
-                @confirm="uninstallPlugin(row.id)"
-              >
-                <template #reference>
-                  <el-button
-                    class="entity-action entity-action-danger"
-                    size="small"
-                    circle
-                    :icon="Delete"
-                    :disabled="globalBusy"
-                  />
-                </template>
-              </el-popconfirm>
-            </div>
-          </div>
-        </div>
-      </div>
-        </el-tab-pane>
-
-        <el-tab-pane name="all" label="已安装">
           <!-- 「已安装」视图：本机插件库清单 + 获取入口。清单是每个插件
                一行、列上每个实例一枚 chip（不复用 entity-row 是因为这里
                没有「更新 / 模式切换 / 卸载」等 per-kernel 动作——写动作
@@ -553,6 +431,131 @@ function instanceChipType(row, instanceId) {
           <div v-if="hasMore" class="catalog-more">
             <el-button text :icon="ArrowDown" @click="showMore">显示更多</el-button>
           </div>
+        </el-tab-pane>
+
+        <el-tab-pane name="current">
+          <template #label>
+            <el-tooltip placement="bottom-start" effect="dark" :content="currentTabTip">
+              <span class="tab-label">{{ currentTabLabel }}</span>
+            </el-tooltip>
+          </template>
+          <div class="entity-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
+        <!-- 首次状态未返回时显示骨架：view===null 是「加载中」而不是
+             「尚未安装」，画成空态会让用户以为插件全丢了。 -->
+        <template v-if="!view">
+          <div v-for="i in 2" :key="'skeleton-' + i" class="entity-row">
+            <el-skeleton :rows="1" animated style="width: 55%" />
+          </div>
+        </template>
+        <el-empty v-else-if="!view.rows || view.rows.length === 0" description="当前内核尚未接入任何插件；先到「已安装」页签安装。" :image-size="48" />
+        <div
+          v-for="row in view ? view.rows : []"
+          :key="row.id"
+          class="entity-row"
+          :class="{ 'is-warn': !!row.quarantined }"
+        >
+          <div class="entity-head">
+            <el-tooltip v-if="row.quarantined" placement="top" effect="dark" :content="quarantineNote(row)">
+              <span class="entity-warn"><el-icon><WarningFilled /></el-icon> 已停用</span>
+            </el-tooltip>
+            <span class="entity-name">{{ row.name }}</span>
+            <span class="origin-chip" :class="'origin-chip-' + row.origin">
+              <el-icon class="origin-chip-icon">
+                <Box v-if="row.origin === 'npm'" />
+                <Link v-else />
+              </el-icon>
+              <span class="origin-chip-label">{{ originLabel(row.origin) }}</span>
+            </span>
+            <el-tooltip v-if="row.description" placement="top" effect="dark" :content="row.description">
+              <span class="entity-desc">{{ row.description }}</span>
+            </el-tooltip>
+          </div>
+          <div class="entity-foot">
+            <div class="entity-meta">
+              <span class="meta-version">{{ row.installed_version }}</span>
+              <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>
+              <span v-if="row.pinned" class="meta-pinned">已锁定版本</span>
+            </div>
+            <span class="entity-states">
+              <el-tag v-if="!view || !view.active_kernel" type="warning" size="small" effect="plain">无活动内核</el-tag>
+              <el-tag v-else-if="row.synced && row.wired" type="success" size="small" effect="plain">已同步</el-tag>
+            </span>
+            <!-- 待同步 / 待接线只在动作区点一个警示点，原因走 tooltip：原先把状态
+                 铺成整枚文字标签，一行挤三四枚，把行高和右半区一起顶满。 -->
+            <span v-if="syncWarning(row)" class="state-dot">
+              <el-tooltip placement="top" effect="dark" :content="syncWarning(row)">
+                <el-icon><WarningFilled /></el-icon>
+              </el-tooltip>
+            </span>
+            <div class="entity-actions">
+              <!-- 物化模式：徽章文案即当前模式，点击切到另一种。切换走
+                   plugin_set_mode 长任务，状态以 row.desired_mode 为准，
+                   命令完成刷新后才翻转（未落地时回落到中央库记录的模式）。 -->
+              <el-tooltip placement="top" effect="dark" :content="modeTip(row)">
+                <el-button
+                  class="entity-mode"
+                  :class="{ 'is-link': currentMode(row) === 'link' }"
+                  size="small"
+                  :loading="isLoading('pluginMode:' + row.id)"
+                  :disabled="globalBusy"
+                  @click="togglePluginMode(row)"
+                >
+                  {{ currentMode(row) === 'link' ? '链接' : '复制' }}
+                </el-button>
+              </el-tooltip>
+              <el-tooltip v-if="row.quarantined" content="恢复启用" placement="top" effect="dark">
+                <el-button
+                  class="entity-action"
+                  size="small"
+                  circle
+                  :icon="RefreshLeft"
+                  :disabled="globalBusy"
+                  @click="resolvePluginQuarantine(row.id, 'enable')"
+                />
+              </el-tooltip>
+              <el-tooltip v-if="row.latest_version && !row.pinned" :content="'更新到 ' + row.latest_version" placement="top" effect="dark">
+                <el-button
+                  class="entity-action entity-action-update"
+                  size="small"
+                  type="primary"
+                  circle
+                  :icon="Download"
+                  :disabled="globalBusy"
+                  @click="updatePlugin(row.id)"
+                />
+              </el-tooltip>
+              <el-tooltip v-if="row.repo_url" content="打开仓库" placement="top" effect="dark">
+                <el-button
+                  class="entity-action"
+                  size="small"
+                  circle
+                  :icon="TopRight"
+                  :disabled="globalBusy"
+                  @click="openExternalLink(row.repo_url, '仓库地址')"
+                />
+              </el-tooltip>
+              <span class="entity-action-sep" aria-hidden="true"></span>
+              <el-popconfirm
+                title="确认卸载该插件？"
+                confirm-button-text="卸载"
+                cancel-button-text="取消"
+                width="200"
+                @confirm="uninstallPlugin(row.id)"
+              >
+                <template #reference>
+                  <el-button
+                    class="entity-action entity-action-danger"
+                    size="small"
+                    circle
+                    :icon="Delete"
+                    :disabled="globalBusy"
+                  />
+                </template>
+              </el-popconfirm>
+            </div>
+          </div>
+        </div>
+      </div>
         </el-tab-pane>
       </el-tabs>
     </div>
