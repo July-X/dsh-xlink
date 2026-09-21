@@ -25,7 +25,7 @@
 //! `DSH_HOME` 通过适配器从旧目录读取（详见 P3）。本模块的入口函数
 //! （[`InstanceRegistry::load_or_migrate`]）会把旧 `active.txt` 中的版本号
 //! + 旧 settings 里的端口吸收为一个名为 `"default"` 的实例；用户不必感知
-//! 这次搬迁。
+//!   这次搬迁。
 
 use std::fs;
 use std::path::{Path, PathBuf};

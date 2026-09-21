@@ -427,7 +427,7 @@ pub fn next_migration_id() -> String {
         .unwrap_or(0);
     let nanos_tail = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| (d.subsec_nanos() & 0xFFFF) as u32)
+        .map(|d| d.subsec_nanos() & 0xFFFF)
         .unwrap_or(0);
     let (y, m, d, h, mi, s) = epoch_to_ymdhms(now);
     format!(
@@ -746,7 +746,7 @@ fn backup_existing(source: &Path, backup: &Path) -> io::Result<()> {
         if md.is_dir() {
             fs::remove_dir_all(backup)?;
         } else {
-            fs::remove_file(&backup)?;
+            fs::remove_file(backup)?;
         }
     }
     fs::rename(source, backup)
@@ -1029,7 +1029,7 @@ fn rollback_one(backup_dir: &Path, target_dir: &Path) -> (usize, RollbackStatus,
             // backup 端是目录——把它整个搬回目标；目标端同层同名先删。
             restore_directory(&from, &target_path)
         } else {
-            fs::rename(&from, &target_path).map_err(io::Error::from)
+            fs::rename(&from, &target_path)
         } {
             Ok(()) => restored += 1,
             Err(error) => last_error = Some(format!("{file_name:?}：{error}")),

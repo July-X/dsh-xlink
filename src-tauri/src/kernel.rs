@@ -118,7 +118,7 @@ pub fn data_dir(app: &tauri::AppHandle) -> PathBuf {
     }
     // xlink_home 不可写：回退到 OS 的 app-data 目录，使壳至少能启动，
     // 而不是启动阶段直接失败。
-    app.path().app_data_dir().unwrap_or_else(|_| dir)
+    app.path().app_data_dir().unwrap_or(dir)
 }
 
 /// 用户的操作系统 home 目录（Unix 下为 `$HOME`，Windows 下为 `%USERPROFILE%`）。

@@ -151,10 +151,7 @@ impl std::fmt::Display for AdapterError {
 /// （`HashSet` 要求 trait 实现 `Hash + Eq`，与 `dyn` trait 对象不兼容，
 /// 所以这里用 `Vec` + 线性扫描；适配器数量天然很少，开销可忽略。）
 pub fn adapters() -> Vec<Box<dyn KernelAdapter>> {
-    vec![
-        Box::new(DshAdapter::default()),
-        Box::new(McodeAdapter::new()),
-    ]
+    vec![Box::new(DshAdapter), Box::new(McodeAdapter::new())]
 }
 
 /// 按 `family` 字符串查询适配器。找不到时返回 `None`，调用方应使用
@@ -256,7 +253,7 @@ impl KernelAdapter for DshAdapter {
     }
 
     fn resolve_install_dir(&self, version: &str) -> Option<PathBuf> {
-        if let Err(_) = paths::validate_id_component(version) {
+        if paths::validate_id_component(version).is_err() {
             return None;
         }
         let new_path = paths::kernel_version_dir(KERNEL_FAMILY_DSH, version);
