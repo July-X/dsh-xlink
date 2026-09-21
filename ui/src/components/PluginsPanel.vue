@@ -1,13 +1,11 @@
 <script setup>
-// 插件页：已安装列表（同步 / 接线 / 隔离状态徽章 + 更新 / 模式切换 / 卸载）、
-// 手动安装（回车即装）、插件中心（分类筛选 + 搜索 + 排序 + 分页卡片）。
-//
-// P8 #2：已安装列表是「单 panel + 双 tab」结构。
-//   · 本实例：默认实例的插件视图——状态取自 PluginRow 的 legacy 字段
-//     （wired / synced / actual_mode / quarantined），沿用旧渲染路径。
-//   · 所有实例：每个插件 + 每个实例一个 chip，复用 P8 #1 顶部 dropdown 的
-//     instanceStore.list，按 instance_id 在 PluginRow.instances map 里查状态。
-//     让用户在不动默认实例的前提下，扫描「哪个实例装了这个 / 没装」差异。
+// 插件页：单 card 双 tab——
+//   · 当前内核：顶栏选中内核的插件视图——状态取自 PluginRow 的 legacy 字段
+//     （wired / synced / actual_mode / quarantined），沿用旧渲染路径；只做管理
+//     （同步 / 接线 / 模式切换 / 卸载），不带任何安装入口。
+//   · 已安装：本机插件库清单（每个插件 + 每个实例一枚 chip，按 instance_id
+//     在 PluginRow.instances map 里查状态）+ 全部获取入口（手动安装 +
+//     插件中心）——安装动作针对的是插件库，不属于某个内核。
 import { computed, onUnmounted, ref, watch } from 'vue';
 import {
   Refresh,
@@ -174,9 +172,9 @@ function statsText(item) {
 // 走 row.instances map，把每个实例的 chip 摆出来，方便对比哪个实例装了
 // 哪个没装。
 const installedTab = ref('current');
-// 「本实例」是个相对概念，单实例用户未必知道它指什么：标签里带上当前内核身份
+// 「当前内核」是个相对概念，用户未必知道它指什么：标签里带上当前内核身份
 // 与其活动版本号（与概览页「活动版本」同源），悬停提示再讲清两个 tab 的分工
-// ——本实例管操作，所有实例只看不动。注册表实例 id（如 default）是实现细节，
+// ——当前内核管管理，已安装管获取。注册表实例 id（如 default）是实现细节，
 // 与顶栏内核 tab 同口径不对外展示。
 const currentInstanceLabel = computed(() => {
   const def = instanceStore.list.find((item) => item.is_default);
@@ -186,11 +184,12 @@ const currentInstanceLabel = computed(() => {
   return active ? `${family} · ${active}` : family;
 });
 const currentTabLabel = computed(() =>
-  currentInstanceLabel.value ? `本实例（${currentInstanceLabel.value}）` : '本实例',
+  currentInstanceLabel.value ? `当前内核（${currentInstanceLabel.value}）` : '当前内核',
 );
 const tabsTip =
-  '「本实例」＝顶栏当前选中的内核实例：这里的版本、模式与同步状态都只关于该实例，' +
-  '顶栏切换实例后此页随之变化。「所有实例」仅作跨实例对比查看，不提供操作。';
+  '「当前内核」＝顶栏当前选中的内核：这里的版本、模式与同步状态都只关于该内核，' +
+  '顶栏切换后此页随之变化。「已安装」是本机插件库与插件中心：安装插件、对比各内核' +
+  '的装载状态都在那边。';
 // 排序规则：把默认实例（is_default=true）排第一个，其余按 id 升序——
 // 让用户一眼看出默认实例在所有实例中的差异位置。
 const sortedInstances = computed(() => {
@@ -273,10 +272,11 @@ function instanceChipType(row, instanceId) {
         show-icon
       />
 
-      <!-- P8 #2：单 panel + 双 tab。「本实例」是默认实例视图（沿用旧
-           entity-row 渲染），「所有实例」按 instance 拆 chip——两个 tab
-           共用 pluginStore.view.rows。顶部 dropdown 切默认实例后
-           （commit 25cd376），本实例 tab 自动跟随新默认实例。 -->
+      <!-- 单 card 双 tab：「当前内核」是顶栏选中内核的视图（沿用旧
+           entity-row 渲染），「已安装」是本机插件库清单 + 获取入口（手动安装、
+           插件中心）——安装针对插件库，不属于某个内核，故不放在当前内核 tab。
+           两个 tab 共用 pluginStore.view.rows；顶栏切默认实例后，
+           当前内核 tab 自动跟随新默认实例。 -->
       <el-tabs v-model="installedTab" class="installed-tabs">
         <el-tab-pane name="current">
           <template #label>
@@ -292,7 +292,7 @@ function instanceChipType(row, instanceId) {
             <el-skeleton :rows="1" animated style="width: 55%" />
           </div>
         </template>
-        <el-empty v-else-if="!view.rows || view.rows.length === 0" description="尚未安装任何插件。" :image-size="48" />
+        <el-empty v-else-if="!view.rows || view.rows.length === 0" description="当前内核尚未接入任何插件；先到「已安装」页签安装。" :image-size="48" />
         <div
           v-for="row in view ? view.rows : []"
           :key="row.id"
@@ -403,15 +403,16 @@ function instanceChipType(row, instanceId) {
       </div>
         </el-tab-pane>
 
-        <el-tab-pane name="all" label="所有实例">
-          <!-- 「所有实例」视图：每个插件一行，列上每个实例一枚 chip。
-               不复用 entity-row 是因为这里没有「更新 / 模式切换 / 卸载」
-               等动作（per-instance 的写动作暂未暴露，避免 UI 承诺做不到的
-               事情）；chip 只反映状态，方便用户做实例间差异扫描。 -->
+        <el-tab-pane name="all" label="已安装">
+          <!-- 「已安装」视图：本机插件库清单 + 获取入口。清单是每个插件
+               一行、列上每个实例一枚 chip（不复用 entity-row 是因为这里
+               没有「更新 / 模式切换 / 卸载」等 per-kernel 动作——写动作
+               留在「当前内核」tab）；手动安装与插件中心也归这页：安装
+               针对的是插件库，不属于某个内核。 -->
           <div class="entity-list all-instances-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
             <el-empty
               v-if="!view || !view.rows || view.rows.length === 0"
-              description="尚未安装任何插件。"
+              description="本机插件库为空；用下方「手动安装」或插件中心获取插件。"
               :image-size="48"
             />
             <div
@@ -453,112 +454,107 @@ function instanceChipType(row, instanceId) {
               </div>
             </div>
           </div>
+
+          <h3 class="section-divider">手动安装</h3>
+          <div class="install-row">
+            <el-input
+              v-model="pluginStore.spec"
+              placeholder="npm i @scope/pkg · 也支持 owner/repo、dsh add"
+              spellcheck="false"
+              clearable
+              @keyup.enter="installPlugin('')"
+            >
+              <template #suffix>
+                <span class="muted" title="按 Enter 开始安装">↵</span>
+              </template>
+            </el-input>
+          </div>
+
+          <h3 class="section-divider">
+            插件中心
+            <span class="head-meta" style="margin-left: auto">
+              <span class="muted">{{ countText }}</span>
+              <el-button text :icon="Refresh" :loading="isLoading('catalogReload')" :disabled="globalBusy" @click="loadCatalog(true)">
+                刷新目录
+              </el-button>
+            </span>
+          </h3>
+          <p class="muted" style="margin: 0">
+            来自 <a href="https://dshfind.com/zh" target="_blank" rel="noreferrer">dshfind.com</a>
+            插件超市目录，点击「安装」即可装到本机插件库并接入所有内核。
+          </p>
+          <div class="install-row">
+            <el-input v-model="pluginStore.query" placeholder="搜索插件名称、描述、标签…" spellcheck="false" clearable />
+            <el-select v-model="pluginStore.sort" style="max-width: 130px" title="排序">
+              <el-option value="stars" label="Star 最多" />
+              <el-option value="updated" label="最近更新" />
+            </el-select>
+            <el-select v-model="pluginStore.filter" style="max-width: 120px" title="安装状态">
+              <el-option value="all" label="全部" />
+              <el-option value="installed" label="已安装" />
+              <el-option value="not-installed" label="未安装" />
+            </el-select>
+          </div>
+
+          <div class="catalog-cats">
+            <button
+              v-for="chip in catChips"
+              :key="chip.id"
+              type="button"
+              class="cat-chip"
+              :class="{ active: pluginStore.category === chip.id }"
+              @click="pickCategory(chip.id)"
+            >
+              {{ chip.label }}
+              <span v-if="chip.count" class="cat-count">{{ chip.count }}</span>
+            </button>
+          </div>
+
+          <div v-if="!pluginStore.catalogLoaded" v-loading="true" style="min-height: 120px" element-loading-text="目录加载中…"></div>
+          <p v-else-if="items.length === 0" class="muted" style="margin: 0">
+            {{ pluginStore.catalogItems.length ? '没有匹配的插件，换个关键词或分类试试。' : '目录为空或加载失败，点「刷新目录」重试。' }}
+          </p>
+          <TransitionGroup v-else name="catalog" tag="div" class="catalog-list">
+            <div
+              v-for="(item, index) in shownItems"
+              :key="item.spec || item.name"
+              class="catalog-card"
+              :style="{ '--i': index }"
+            >
+              <div class="catalog-card-head">
+                <span class="catalog-title">
+                  <span class="catalog-name">{{ item.name }}</span>
+                  <span v-if="item.version" class="catalog-version">{{ item.version }}</span>
+                  <el-tag v-if="item.category" type="info" size="small" effect="plain">{{ categoryLabel(item.category) }}</el-tag>
+                  <el-tag v-if="item.verified" type="success" size="small" effect="plain">已验证</el-tag>
+                </span>
+                <span class="catalog-stats">{{ statsText(item) }}</span>
+              </div>
+              <p v-if="item.description" class="catalog-desc">{{ descText(item) }}</p>
+              <div class="catalog-card-foot">
+                <span class="catalog-tags">
+                  <el-tag v-for="tag in (item.tags || []).slice(0, 4)" :key="tag" size="small" effect="plain" type="info">
+                    {{ tag }}
+                  </el-tag>
+                </span>
+                <span class="catalog-actions">
+                  <el-button v-if="detailUrl(item)" size="small" text :icon="TopRight" @click="openExternalLink(detailUrl(item), '插件详情页')">
+                    打开详情
+                  </el-button>
+                  <el-button v-if="isInstalled(item, keys)" size="small" disabled>已安装</el-button>
+                  <el-button v-else size="small" type="primary" :icon="Download" :disabled="globalBusy" @click="installPlugin(item.spec)">
+                    安装
+                  </el-button>
+                </span>
+              </div>
+            </div>
+          </TransitionGroup>
+
+          <div v-if="hasMore" class="catalog-more">
+            <el-button text :icon="ArrowDown" @click="showMore">显示更多</el-button>
+          </div>
         </el-tab-pane>
       </el-tabs>
-
-      <h3 class="section-divider">手动安装</h3>
-      <div class="install-row">
-        <el-input
-          v-model="pluginStore.spec"
-          placeholder="npm i @scope/pkg · 也支持 owner/repo、dsh add"
-          spellcheck="false"
-          clearable
-          @keyup.enter="installPlugin('')"
-        >
-          <template #suffix>
-            <span class="muted" title="按 Enter 开始安装">↵</span>
-          </template>
-        </el-input>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-head">
-        <h2 class="card-head-with-logo">
-          <img class="brand-logo" src="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" alt="GitHub" />
-          <span>插件中心</span>
-        </h2>
-        <span class="head-meta">
-          <span class="muted">{{ countText }}</span>
-          <el-button text :icon="Refresh" :loading="isLoading('catalogReload')" :disabled="globalBusy" @click="loadCatalog(true)">
-            刷新目录
-          </el-button>
-        </span>
-      </div>
-      <p class="muted" style="margin: 0">
-        来自 <a href="https://dshfind.com/zh" target="_blank" rel="noreferrer">dshfind.com</a>
-        插件超市目录，点击「安装」即可装到本机插件库并接入所有内核。
-      </p>
-      <div class="install-row">
-        <el-input v-model="pluginStore.query" placeholder="搜索插件名称、描述、标签…" spellcheck="false" clearable />
-        <el-select v-model="pluginStore.sort" style="max-width: 130px" title="排序">
-          <el-option value="stars" label="Star 最多" />
-          <el-option value="updated" label="最近更新" />
-        </el-select>
-        <el-select v-model="pluginStore.filter" style="max-width: 120px" title="安装状态">
-          <el-option value="all" label="全部" />
-          <el-option value="installed" label="已安装" />
-          <el-option value="not-installed" label="未安装" />
-        </el-select>
-      </div>
-
-      <div class="catalog-cats">
-        <button
-          v-for="chip in catChips"
-          :key="chip.id"
-          type="button"
-          class="cat-chip"
-          :class="{ active: pluginStore.category === chip.id }"
-          @click="pickCategory(chip.id)"
-        >
-          {{ chip.label }}
-          <span v-if="chip.count" class="cat-count">{{ chip.count }}</span>
-        </button>
-      </div>
-
-      <div v-if="!pluginStore.catalogLoaded" v-loading="true" style="min-height: 120px" element-loading-text="目录加载中…"></div>
-      <p v-else-if="items.length === 0" class="muted" style="margin: 0">
-        {{ pluginStore.catalogItems.length ? '没有匹配的插件，换个关键词或分类试试。' : '目录为空或加载失败，点「刷新目录」重试。' }}
-      </p>
-      <TransitionGroup v-else name="catalog" tag="div" class="catalog-list">
-        <div
-          v-for="(item, index) in shownItems"
-          :key="item.spec || item.name"
-          class="catalog-card"
-          :style="{ '--i': index }"
-        >
-          <div class="catalog-card-head">
-            <span class="catalog-title">
-              <span class="catalog-name">{{ item.name }}</span>
-              <span v-if="item.version" class="catalog-version">{{ item.version }}</span>
-              <el-tag v-if="item.category" type="info" size="small" effect="plain">{{ categoryLabel(item.category) }}</el-tag>
-              <el-tag v-if="item.verified" type="success" size="small" effect="plain">已验证</el-tag>
-            </span>
-            <span class="catalog-stats">{{ statsText(item) }}</span>
-          </div>
-          <p v-if="item.description" class="catalog-desc">{{ descText(item) }}</p>
-          <div class="catalog-card-foot">
-            <span class="catalog-tags">
-              <el-tag v-for="tag in (item.tags || []).slice(0, 4)" :key="tag" size="small" effect="plain" type="info">
-                {{ tag }}
-              </el-tag>
-            </span>
-            <span class="catalog-actions">
-              <el-button v-if="detailUrl(item)" size="small" text :icon="TopRight" @click="openExternalLink(detailUrl(item), '插件详情页')">
-                打开详情
-              </el-button>
-              <el-button v-if="isInstalled(item, keys)" size="small" disabled>已安装</el-button>
-              <el-button v-else size="small" type="primary" :icon="Download" :disabled="globalBusy" @click="installPlugin(item.spec)">
-                安装
-              </el-button>
-            </span>
-          </div>
-        </div>
-      </TransitionGroup>
-
-      <div v-if="hasMore" class="catalog-more">
-        <el-button text :icon="ArrowDown" @click="showMore">显示更多</el-button>
-      </div>
     </div>
   </section>
 </template>
