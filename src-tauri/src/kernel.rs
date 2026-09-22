@@ -19,6 +19,7 @@
 //!
 //! 当前激活版本记录在 `<dsh_home>/desktop/active.txt` 中。
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::net::TcpStream;
@@ -628,6 +629,99 @@ pub fn install_version(
     outcome
 }
 
+/// 官方 dsh 内核在 npm 上的包名（`@deepseek-ai` 命名空间，AGENTS.md 信任边界）。
+const DSH_NPM_PACKAGE: &str = "@deepseek-ai/dsh";
+
+/// 内核 stub 的最小 package.json；`overrides` 非空时带上
+/// `pnpm.overrides`（依赖锁步钉版，见 [`scan_dsh_version_skew`]）。
+fn write_kernel_stub(
+    stub: &Path,
+    version: &str,
+    overrides: &BTreeMap<String, String>,
+) -> io::Result<()> {
+    // 用 serde_json 构造而不是手写 format!：版本号一旦含有引号，手写模板会被
+    // 闭合、注入任意字段（pnpm 之后会执行 stub 里的生命周期脚本）。这里由
+    // 序列化器负责转义；命令边界的 is_valid_kernel_version 是更早的一道闸。
+    let mut doc = serde_json::json!({
+        "name": format!("dsh-kernel-{}", version.replace('.', "_")),
+        "private": true,
+        "version": "1.0.0",
+    });
+    if !overrides.is_empty() {
+        doc["pnpm"] = serde_json::json!({ "overrides": overrides });
+    }
+    atomic_write(stub, format!("{doc}\n").as_bytes())
+}
+
+/// 扫描 hoisted `node_modules` 里与内核版本错位的官方 dsh 锁步子包，返回
+/// `{ 包名: 内核版本 }` 形式的 `pnpm.overrides` 增量。
+///
+/// 内核是 monorepo **锁步发布**：同一版本线上所有 `@deepseek-ai/dsh*` 子包
+/// 一起出版本号。主包却用 `^0.1.6-alpha.1` 这类范围声明依赖（含传递依赖），
+/// pnpm 会浮动到「范围内最新」——装 alpha.1 时 alpha.2 已发布，全部子包落
+/// 到 alpha.2，而 alpha 之间没有兼容承诺，内核启动即报
+/// `does not provide an export named '…'`（0.1.6-alpha.1 实测）。
+///
+/// 只认 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*`：锁步发布保证同名内核
+/// 版本必然存在；cordis / cosmokit 等命名空间内非锁步包按各自范围浮动，
+/// 不参与钉版。传递依赖不在主包依赖表里，所以必须**装完后扫目录**而不是
+/// 预先从元数据推导。
+fn scan_dsh_version_skew(kernel_dir: &Path, version: &str) -> BTreeMap<String, String> {
+    let scope = kernel_dir.join("node_modules").join("@deepseek-ai");
+    let Ok(entries) = fs::read_dir(&scope) else {
+        return BTreeMap::new();
+    };
+    let mut overrides = BTreeMap::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name != "dsh" && !name.starts_with("dsh-") {
+            continue;
+        }
+        // 名字要写进 pnpm-workspace.yaml，先过路径组件闸（拒绝引号、
+        // 控制字符、分隔符），让畸形目录名走「跳过」而不是污染 yaml。
+        if crate::paths::validate_id_component(&name).is_err() {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(entry.path().join("package.json")) else {
+            continue;
+        };
+        let installed = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|doc| {
+                doc.get("version")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        if installed != version {
+            overrides.insert(format!("@deepseek-ai/{name}"), version.to_string());
+        }
+    }
+    overrides
+}
+
+/// 内核目录的 `pnpm-workspace.yaml`：`packages` 段把内核目录锚定为 workspace
+/// 根（这是移除 `--ignore-workspace` 后防上层 workspace 泄漏的机制），
+/// `overrides` 段承载依赖锁步钉版。
+///
+/// **pnpm 10 起这类配置从 package.json 的 `pnpm` 字段迁到了本文件**——实测
+/// pnpm 11.15 对 stub package.json 里的 `pnpm.overrides` 完全无视（lockfile
+/// 不生成 overrides 段），只认这里。旧版 pnpm（≤9）反之只认 package.json，
+/// 所以两处都写。空 `overrides` 时省略该段（安装首轮还没有错位清单）。
+fn write_kernel_workspace_yaml(
+    kernel_dir: &Path,
+    overrides: &BTreeMap<String, String>,
+) -> io::Result<()> {
+    let mut yaml = String::from("packages:\n  - \".\"\n");
+    if !overrides.is_empty() {
+        yaml.push_str("overrides:\n");
+        for (name, version) in overrides {
+            yaml.push_str(&format!("  \"{name}\": \"{version}\"\n"));
+        }
+    }
+    atomic_write(&kernel_dir.join("pnpm-workspace.yaml"), yaml.as_bytes())
+}
+
 fn install_version_into(
     family: &str,
     data_dir: &Path,
@@ -639,18 +733,8 @@ fn install_version_into(
     let dir = kernel_dir(data_dir, version);
     fs::create_dir_all(&dir).map_err(|e| AppError::Io(e.to_string()))?;
     let stub = dir.join("package.json");
-    // 用 serde_json 构造而不是手写 format!：版本号一旦含有引号，手写模板会被
-    // 闭合、注入任意字段（pnpm 之后会执行 stub 里的生命周期脚本）。这里由
-    // 序列化器负责转义；命令边界的 is_valid_kernel_version 是更早的一道闸。
-    let stub_text = format!(
-        "{}\n",
-        serde_json::json!({
-            "name": format!("dsh-kernel-{}", version.replace('.', "_")),
-            "private": true,
-            "version": "1.0.0",
-        })
-    );
-    atomic_write(&stub, stub_text.as_bytes()).map_err(|e| AppError::Io(e.to_string()))?;
+    write_kernel_stub(&stub, version, &BTreeMap::new()).map_err(|e| AppError::Io(e.to_string()))?;
+    write_kernel_workspace_yaml(&dir, &BTreeMap::new()).map_err(|e| AppError::Io(e.to_string()))?;
 
     // 新命名规则下按日轮转的安装日志：实时脚本写入
     // `<kind>-install-<version>-<date>.log`。用户在日志弹窗中打开的就是
@@ -663,11 +747,13 @@ fn install_version_into(
     rotate_install_logs(&logs_root, &log_path);
 
     on_progress("正在通过 pnpm 安装内核（首次通常需要 1~3 分钟，下方为实时日志）");
-    let spec = format!("@deepseek-ai/dsh@{version}");
+    let spec = format!("{DSH_NPM_PACKAGE}@{version}");
     let prefix = dir.to_str().unwrap_or_default();
-    // `--ignore-workspace` 让安装脱离用户环境可能暴露的任何 workspace；
-    // 内核目录是独立的 package 根目录。
-    // 同时打开 `PNPM_NO_STRICT_DEP_BUILDS`（不把 ERR_PNPM_IGNORED_BUILDS
+    // 内核目录自带 pnpm-workspace.yaml（见 [`write_kernel_workspace_yaml`]），
+    // pnpm 向上查找 workspace 根时会停在内核目录——上级目录的 workspace
+    // 不会泄漏进来，因此不需要（也不能带）`--ignore-workspace`：pnpm ≥ 10
+    // 会连 overrides 一起无视它。
+    // `PNPM_NO_STRICT_DEP_BUILDS`（不把 ERR_PNPM_IGNORED_BUILDS
     // 视作错误，仅警告）与 `PNPM_ALLOW_ALL_BUILDS`（真正运行原生模块的
     // install / postinstall 脚本，由壳对 @deepseek-ai 命名空间的信任背书）；
     // 二者缺一则 fs-ext / node-pty 等模块只下载 JS 不编译 .node，
@@ -676,7 +762,6 @@ fn install_version_into(
         "add",
         "--prefix",
         prefix,
-        "--ignore-workspace",
         "--config.node-linker=hoisted",
         PNPM_NO_STRICT_DEP_BUILDS,
         PNPM_ALLOW_ALL_BUILDS,
@@ -729,6 +814,65 @@ fn install_version_into(
     if !status.success() {
         on_progress(&format!(
             "注意：pnpm 以退出码 {exit_code} 结束（多为依赖构建脚本未完全成功所致），已校验后续步骤"
+        ));
+    }
+
+    // 依赖锁步对账：首轮按 semver 范围浮动安装（主包直接依赖与传递依赖里
+    // 的官方子包都可能浮动到比内核新的版本），扫出错位后把整个官方 dsh 子包
+    // 集合钉到内核精确版本重装一遍。钉版后仍有错位说明锁步版本根本不存在
+    // （发布事故），带着错位装完只会复现「启动即报 export missing」，所以
+    // 直接判安装失败并把线索交给用户。
+    let skew = scan_dsh_version_skew(&dir, version);
+    if !skew.is_empty() {
+        let mut examples = skew.keys().take(3).cloned().collect::<Vec<_>>();
+        examples.sort();
+        on_progress(&format!(
+            "检测到 {} 个官方子包与内核版本 {} 错位（如 {}），正在按锁步版本重装",
+            skew.len(),
+            version,
+            examples.join(", ")
+        ));
+        write_kernel_stub(&stub, version, &skew).map_err(|e| AppError::Io(e.to_string()))?;
+        write_kernel_workspace_yaml(&dir, &skew).map_err(|e| AppError::Io(e.to_string()))?;
+        let status = run_pnpm(
+            pnpm_exe,
+            &args,
+            &dir,
+            &logs_root,
+            &log_spec,
+            &[node_dir, pnpm_dir],
+            &mut on_progress,
+        )
+        .map_err(|e| {
+            AppError::Kernel(format!(
+                "无法运行 pnpm（{e}）。请确认已安装 Node.js 与 pnpm，详情见日志：{}",
+                log_path.display()
+            ))
+        })?;
+        if !status.success() && !dir.join(KERNEL_BIN_REL).is_file() {
+            return Err(AppError::Kernel(format!(
+                "依赖锁步重装失败（pnpm 退出码 {}），详情见日志：{}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "? (信号)".into()),
+                log_path.display()
+            )));
+        }
+        let residual = scan_dsh_version_skew(&dir, version);
+        if !residual.is_empty() {
+            let mut names = residual.keys().take(5).cloned().collect::<Vec<_>>();
+            names.sort();
+            return Err(AppError::Kernel(format!(
+                "官方子包无法钉到内核版本 {version}（仍错位：{}）。\
+                 该内核版本的依赖发布可能不完整：请删除此版本后重试安装，\
+                 或改用其他内核版本，并把日志反馈给内核发布方：{}",
+                names.join(", "),
+                log_path.display()
+            )));
+        }
+        on_progress(&format!(
+            "官方子包已全部钉到内核版本 {version}，依赖锁步一致"
         ));
     }
 
@@ -3097,6 +3241,71 @@ mod tests {
         assert_ne!(name_a, name_b);
         assert_ne!(name_a, name_c);
         assert_ne!(name_b, name_c);
+    }
+
+    /// 依赖锁步对账：扫描只认 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*`，
+    /// 错位的记录成 overrides；cordis / cosmokit 等非锁步包与第三方包不参与。
+    #[test]
+    fn scan_dsh_version_skew_pins_only_lockstep_scope() {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-skew-scan-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let scope = dir.join("node_modules").join("@deepseek-ai");
+        let write = |name: &str, version: &str| {
+            let p = scope.join(name);
+            fs::create_dir_all(&p).unwrap();
+            fs::write(
+                p.join("package.json"),
+                format!(r#"{{"name":"@deepseek-ai/{name}","version":"{version}"}}"#),
+            )
+            .unwrap();
+        };
+        write("dsh", "0.1.6-alpha.1"); // 主包一致 → 不钉
+        write("dsh-app-boot", "0.1.6-alpha.2"); // 错位锁步包 → 钉
+        write("dsh-subprocess-local", "0.1.6-alpha.2"); // 传递依赖错位 → 钉
+        write("cordis", "4.0.2"); // 命名空间内非锁步 → 不参与
+        write("cosmokit", "1.8.3"); // 同上
+
+        let skew = scan_dsh_version_skew(&dir, "0.1.6-alpha.1");
+
+        assert_eq!(
+            skew,
+            BTreeMap::from([
+                (
+                    "@deepseek-ai/dsh-app-boot".to_string(),
+                    "0.1.6-alpha.1".to_string()
+                ),
+                (
+                    "@deepseek-ai/dsh-subprocess-local".to_string(),
+                    "0.1.6-alpha.1".to_string()
+                ),
+            ]),
+            "只有版本错位的 dsh 锁步子包进入 overrides"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// node_modules 缺失（pnpm 半途而废）或 scope 目录为空时安全返回空表，
+    /// 不 panic 也不产生空 overrides。
+    #[test]
+    fn scan_dsh_version_skew_tolerates_missing_node_modules() {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-skew-empty-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(scan_dsh_version_skew(&dir, "0.1.6-alpha.1").is_empty());
+        fs::remove_dir_all(&dir).ok();
     }
 
     /// 家族命名空间迁移：平铺旧目录（`<xlink_home>/desktop[-dev]/`）存在时，

@@ -73,7 +73,9 @@ const FILE_BUDGETS = {
   // current_kernel_log_path / install_version / install_version_into 加形参；
   // attach_log_drainers 改用 family + id。start() legacy 单实例路径硬编码
   // (DSH, "default")——P8 UI 决策后由真实 instance_id 替换。约 +11 行。
-  'src-tauri/src/kernel.rs': 1290,
+  // 1290 → 1380：内核安装依赖锁步对账（scan_dsh_version_skew /
+  // write_kernel_workspace_yaml / write_kernel_stub / 安装二遍钉版）。
+  'src-tauri/src/kernel.rs': 1380,
   'src-tauri/src/process.rs': 1180,
   // 1050 → 1090：会话标题改为订阅 `session/control`（baseline 播种 + 标题投影帧
   // 保鲜 + 老内核退回 session/list 快照），这部分逻辑与 Center 同生共死，拆出去
@@ -189,7 +191,12 @@ const FILE_BUDGETS = {
 // 插件页渲染提速（commit ...）：已安装列表骨架屏（view===null 是
 // 加载中不是空态）+ ElSkeleton 注册 + 切换动画收紧 + 面板加载并行
 // 化（~+20 行）。总预算 24650 → 24700。
-const TOTAL_BUDGET = 24700;
+//
+// 内核安装依赖锁步对账（commit ...）：scan_dsh_version_skew 扫描官方
+// 子包版本错位 + write_kernel_workspace_yaml + 安装二遍钉版重装
+// （~+90 行）。修「主包与 ^ 浮动依赖混装致启动即崩」，无法再复用
+// 既有模块收敛。总预算 24700 → 24900。
+const TOTAL_BUDGET = 24900;
 /** 重复区间数上限。 */
 const DUPLICATE_BUDGET = 6;
 /** 归一化滑窗宽度。 */
