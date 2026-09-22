@@ -55,7 +55,7 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 
 ## 内核生命周期
 
-- 安装：在 `<data_dir>/kernels/<version>/` 写最小 stub `package.json` 后执行 `pnpm add --prefix … --ignore-workspace --config.node-linker=hoisted --reporter=append-only @deepseek-ai/dsh@<version>`；npm tarball 先写 `.part` 临时文件，完整下载后才 rename。首次安装成功后只设置 `active.txt`，不会自动启动内核；启动由用户在概览页明确触发 `start_kernel`。
+- 安装：在 `<data_dir>/kernels/<version>/` 写最小 stub `package.json` 与 `pnpm-workspace.yaml`（`packages: ["."]` 把内核目录锚定为 workspace 根，防上层 workspace 泄漏）后执行 `pnpm add --prefix … --config.node-linker=hoisted --reporter=append-only @deepseek-ai/dsh@<version>`。安装完成后扫描官方子包版本错位：内核 monorepo 锁步发布（所有 `@deepseek-ai/dsh*` 子包同版本），主包却用 `^` 范围声明依赖，pnpm 会浮动到范围内最新——装 alpha.1 时 alpha.2 已存在就会装出「主包 alpha.1 + 依赖 alpha.2」的混装树，启动即报 `does not provide an export named '…'`。壳的对策是把扫描出的错位子包（含传递依赖）以 `pnpm.overrides` 钉到内核精确版本（pnpm ≥10 只认 `pnpm-workspace.yaml`，旧版只认 stub 的 `pnpm` 字段，两处都写）再重装一遍并复扫，仍错位则判安装失败。npm tarball 先写 `.part` 临时文件，完整下载后才 rename。首次安装成功后只设置 `active.txt`，不会自动启动内核；启动由用户在概览页明确触发 `start_kernel`。
 - npm 包解包由 `archive.rs` 在 Rust 内执行：只接受 `package/` 根、拒绝绝对/父级路径、符号链接/硬链接/特殊文件，最多 100,000 个条目、512 MiB 声明展开内容，并在临时目录校验后发布到目标目录。
 - `node-linker=hoisted` 保证 `node_modules` 扁平，内核入口固定为 `node_modules/@deepseek-ai/dsh/lib/bin.js`（`kernel::KERNEL_BIN_REL`）；改布局必须同步该常量与 `start()`。
 - `run_pnpm` 把 stdout/stderr 各用一个 drain 线程读入有界 mpsc channel，安装线程逐行回调 `on_progress` 并落盘日志——不要把两个管道放在同一线程顺序读取（会因管道缓冲区满而死锁）。
