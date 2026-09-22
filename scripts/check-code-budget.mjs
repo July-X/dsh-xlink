@@ -54,7 +54,13 @@ const FILE_BUDGETS = {
   // kernel_workbench_url_from_log / diagnose_runtime 等 6+ caller 加 family +
   // instance_id 形参（约 +28 行）。每个 caller 都同时给默认实例硬编码
   // (DSH, "default")——P8 UI 决策后由真实 instance_id 替换。
-  'src-tauri/src/commands.rs': 1900,
+  // 工作台外链修复（commit ...）：open_harness 给 harness webview 注册
+  // on_new_window 处理器。内核前端把会话内容里的网页地址渲染成
+  // target="_blank"，而 Tauri webview 默认拒绝一切 window.open 请求
+  // （wry 无 handler 时 macOS 取消导航 / Windows 标记已处理），点击会
+  // 静默失效；处理器把 http(s) 外链交给系统默认浏览器（~+15 行）。
+  // 1900 → 1910。
+  'src-tauri/src/commands.rs': 1910,
   // P6 step 2+3+4：迁移向导后端——ConflictPolicy / MigrationStatus /
   // MigrationItemReport / MigrationReport / run_migration / migrate_one /
   // decide_entry / backup_existing / copy_one / copy_tree_inner +
