@@ -6549,6 +6549,11 @@ mod id_collision_tests {
         );
     }
 
+    // dangling link 夹具用 `std::os::unix::fs::symlink` 构造；Windows 没有
+    // 这条 API（且目录符号链接需要特权），按仓库惯例整条用例限定 unix——
+    // 不加门禁会让 `cargo test` / `clippy --all-targets` 的测试目标在
+    // Windows（发布平台之一）上整体编译失败，挡住所有其它测试。
+    #[cfg(unix)]
     #[test]
     fn sweep_instance_orphans_removes_only_dangling_or_owned_links() {
         // 物化目录里有三类条目：
