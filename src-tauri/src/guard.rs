@@ -444,7 +444,9 @@ pub fn attribute(
         // 小组内核 Loader 在其预打包 chunk 表过时（启动时暴露的 build-
         // time externals drift）时输出的特定短语：这些短语在不同内核版
         // 本间稳定且很少变动，因此保守的规则是「命中其中任何一条」，
-        // 而非「只匹配我们今天认识的那几条」。
+        // 而非「只匹配我们今天认识的那几条」。唯一的例外是内核自己标注
+        // 为「跳过后继续启动」的非致命诊断（见 [`is_kernel_evidence_line`]
+        // 开头的排除）：内核启动成功这一事实与把它当内核故障直接矛盾。
         let Some(idx) = lines.iter().position(|line| is_kernel_evidence_line(line)) else {
             return suspects;
         };
@@ -458,11 +460,40 @@ pub fn attribute(
     suspects
 }
 
+/// 内核对 profile bundle 的 «skipping profile bundle …» 诊断是**非致命**
+/// 的：内核加载 profile 时某个 bundle 解析失败，只把原因写到 stderr 然后
+/// 跳过它继续启动。这行虽然同时带 `Error:`/`cannot` 字样与
+/// `@deepseek-ai/dsh-*` 包名（两条内核证据形态都会命中），却不指向内核
+/// 缺陷——它说的是 profile 里登记的 bundle 名在当前内核安装里解析不了
+/// （清单不可读、缺 `dsh.bundle` 声明等其余跳过原因同理）。
+///
+/// 为什么必须在归因时显式排除：profile（`~/.dsh/profiles/<名>`）跨内核
+/// 版本共享，升级只替换 `kernels/<版本>` 目录。旧内核写进 profile 的
+/// bundle 名（典型是实验功能包）一旦被新内核改名或移除，残留条目**每次
+/// 启动都会重新刷一遍同样的警告**，一次启动就是几十条，足以占满按天滚
+/// 动的 kernel.log 尾部。此后页面抛出任何无关异常，`attribute` 都会在日
+/// 志尾部「找到」这些行并归因为内核——事故面板于是指责内核、建议切换/
+/// 重装版本，而内核其实启动成功了（2026-09 内核 0.1.7-alpha.1 升级后的
+/// 真实误报：残留的 `…agent-team-web-profile` 警告叠加一个插件命令被
+/// ACL 拒绝的前端异常，被包装成「疑似内核问题」）。
+///
+/// 插件归因不受影响：若被跳过的 bundle 恰是桌面接线的插件，带引号的包
+/// 名仍会命中 [`is_anchored_plugin_hit`] 的引号形态，照常进入停用/隔离
+/// 阶梯；其余（实验功能、CLI 手动添加的包）如实落到「暂未能归因」。
+fn is_profile_bundle_skip_line(line: &str) -> bool {
+    line.contains("skipping profile bundle")
+}
+
 /// 判断 `line` 是否既呈现错误形态，又指向内核内部组件（内核的包命
 /// 名空间，或已知的 client-module loader 短语）。保守地：调用方必须
 /// 已经先按 `is_error_line` 的形态匹配确认这一行确实是错误，所以本
 /// 辅助函数只是在其之上叠加一个「是否归我们管？」的问题。
 fn is_kernel_evidence_line(line: &str) -> bool {
+    // 内核自己标注为「跳过后继续启动」的非致命诊断永远不算内核证据，
+    // 即便它同时命中下面两条形态（理由见 [`is_profile_bundle_skip_line`]）。
+    if is_profile_bundle_skip_line(line) {
+        return false;
+    }
     if !is_error_line(line) {
         return false;
     }
@@ -1480,6 +1511,55 @@ mod tests {
     }
 
     #[test]
+    fn profile_bundle_skip_lines_never_blame_the_kernel() {
+        // 内核对 profile bundle 的 «skipping …» 诊断是非致命的：报告后跳过
+        // 并继续启动。它带着 `Error:`/`cannot` 字样和 `@deepseek-ai/dsh-*`
+        // 包名，两条内核证据形态都会命中，必须显式排除——否则升级后残留
+        // 在 profile 里的旧 bundle 名每次启动都刷一遍同样的警告，把按天滚
+        // 动的日志尾部占满，之后任何无关前端异常都会被归因成「内核问题」
+        // （2026-09 内核 0.1.7-alpha.1 升级后的真实误报）。
+        let skip = "dsh: skipping profile bundle \
+                    \"@deepseek-ai/dsh-experimental-agent-team-web-profile\": Error: dsh: \
+                    cannot resolve profile bundle \
+                    \"@deepseek-ai/dsh-experimental-agent-team-web-profile\" from the dsh \
+                    installation or C:\\Users\\u\\.dsh\\profiles\\web; run 'dsh plugin \
+                    --profile web install' if its dependency is not installed";
+        assert!(!is_kernel_evidence_line(skip));
+        // 其余跳过原因（清单可读但缺 `dsh.bundle` 声明）同理。
+        assert!(!is_kernel_evidence_line(
+            "dsh: skipping profile bundle \"x\": Error: dsh: profile bundle \"x\" declares no dsh.bundle in its package.json"
+        ));
+        // 归因整体也不能因为日志尾部全是这种警告就落到内核头上。
+        let tail = format!("dsh web: http://127.0.0.1:3090/?token=t\n{skip}\n{skip}\n");
+        let items: Vec<plugins::StoreItem> = Vec::new();
+        assert!(
+            attribute(&tail, &items, "0.1.7-alpha.1").is_empty(),
+            "非致命的跳过警告不得归因到内核"
+        );
+        // 排除只针对跳过诊断本身：真正指向内核的错误行仍旧算数。
+        assert!(is_kernel_evidence_line(
+            "Error: Cannot find module '@deepseek-ai/dsh/lib/bin.js'"
+        ));
+    }
+
+    #[test]
+    fn skipping_plugin_bundle_still_blames_that_plugin() {
+        // 被跳过的 bundle 如果就是桌面接线的插件，带引号的包名仍然构成指
+        // 向该插件的证据——排除只保护内核，不替插件开脱（插件解析不了
+        // 本来就该走停用/隔离阶梯）。
+        let tail = "dsh: skipping profile bundle \"dsh-context\": \
+                    Error: dsh: cannot resolve profile bundle \"dsh-context\" \
+                    from the dsh installation or /h/profiles/web; \
+                    run 'dsh plugin --profile web install' if its dependency is not installed\n";
+        let items = vec![store_item("dsh-context", "dsh-context")];
+        let suspects = attribute(tail, &items, "0.1.7-alpha.1");
+        assert_eq!(suspects.len(), 1);
+        assert_eq!(suspects[0].kind, "plugin");
+        assert_eq!(suspects[0].id, "dsh-context");
+        assert!(suspects[0].evidence.contains("skipping profile bundle"));
+    }
+
+    #[test]
     fn kernel_fallback_ignores_community_plugin_with_dsh_in_name() {
         // 原则上用户可以把社区插件命名为含 "dsh" 的名字（例如
         // `@scope/dsh-foo`）。匹配器仍然必须根据*命名空间*
@@ -1924,6 +2004,65 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
         let quarantined = crate::quarantine::load(&data_dir).items;
         assert_eq!(quarantined.len(), 1);
         assert_eq!(quarantined[0].id, "ghost-plugin");
+
+        cleanup(&data_dir);
+    }
+
+    /// 真实回归（2026-09，内核 0.1.7-alpha.1 升级）：profile 里残留的旧
+    /// bundle 名让每次启动刷几十条 «skipping profile bundle … Error:
+    /// cannot resolve …» 非致命警告，占满当天 kernel.log 的尾部。随后页
+    /// 面抛出与内核无关的异常（这里是插件命令被 ACL 拒绝的
+    /// unhandled-rejection），归因不得拿日志尾部的这些警告指责内核、把
+    /// 用户引去切换/重装内核版本——内核启动成功的事实就写在日志第一行。
+    #[test]
+    fn runtime_incident_with_skip_noise_does_not_blame_the_kernel() {
+        let (data_dir, _xlink_home) = temp_data_dir("kernel-skip-noise");
+        write_store(&data_dir, r#"{"schemaVersion":1,"items":[]}"#);
+        let (family, instance_id) = crate::instance::resolve_default();
+        let log_path = crate::kernel::current_kernel_log_path(&data_dir, family, instance_id);
+        std::fs::create_dir_all(log_path.parent().expect("日志路径必有父目录"))
+            .expect("创建日志目录");
+        let skip = "dsh: skipping profile bundle \
+                    \"@deepseek-ai/dsh-experimental-agent-team-web-profile\": Error: dsh: \
+                    cannot resolve profile bundle \
+                    \"@deepseek-ai/dsh-experimental-agent-team-web-profile\" from the dsh \
+                    installation or C:\\Users\\u\\.dsh\\profiles\\web; run 'dsh plugin \
+                    --profile web install' if its dependency is not installed";
+        std::fs::write(
+            &log_path,
+            format!("dsh web: http://127.0.0.1:3090/?token=t\n{skip}\n{skip}\n{skip}\n"),
+        )
+        .expect("写入内核日志");
+
+        let incident = diagnose_runtime(
+            &data_dir,
+            family,
+            instance_id,
+            HealthReport {
+                kind: "unhandled-rejection".into(),
+                message: "Command plugin:opener|open_url not allowed by ACL".into(),
+                stack: String::new(),
+                page_url: "http://127.0.0.1:3090/".into(),
+            },
+        );
+
+        assert_eq!(
+            incident.cause, "unknown",
+            "跳过警告不是内核证据，只能如实落到「暂未能归因」"
+        );
+        assert!(
+            incident.suspects.is_empty(),
+            "没有可锚定的嫌疑对象就不得指认任何人"
+        );
+        assert!(
+            !incident.message.contains("内核组件"),
+            "文案不得把无关异常说成内核故障：{}",
+            incident.message
+        );
+        assert!(
+            crate::quarantine::load(&data_dir).items.is_empty(),
+            "跳过警告不得隔离任何插件"
+        );
 
         cleanup(&data_dir);
     }
