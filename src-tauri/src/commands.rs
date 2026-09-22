@@ -11,7 +11,7 @@ use std::sync::{mpsc, Mutex, OnceLock};
 
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::webview::Color;
+use tauri::webview::{Color, NewWindowResponse};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, State, Webview};
 use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowBuilder, WindowEvent};
 use url::Url;
@@ -1299,6 +1299,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
 
         let backdrop = chrome_backdrop(&app);
         let handle = app.clone();
+        let link_opener = handle.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("dsh-open-harness".into())
@@ -1308,6 +1309,32 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                         .title("DeepSeek Harness 工作台")
                         .inner_size(1280.0, 840.0)
                         .background_color(backdrop)
+                        // 内核 Web 前端把会话内容里的网页地址渲染成
+                        // `<a target="_blank" rel="noopener noreferrer">`，
+                        // 交给「浏览器打开新标签页」的默认行为。但 Tauri
+                        // webview 默认拒绝一切 window.open 请求：wry 在没有
+                        // 注册 new-window handler 时，macOS 的 WKWebView
+                        // UIDelegate 返回 nil（取消导航），Windows 的
+                        // WebView2 把 NewWindowRequested 标记为已处理——
+                        // 点击因此静默失效。这里显式接住新窗口请求：http(s)
+                        // 外链交给系统默认浏览器；其余 scheme（about:blank
+                        // 等程序化调用）一律拒绝，不在壳内长出无主窗口。
+                        // 不返回 Allow：默认实现会在壳内开一个裸 NSWindow /
+                        // WebView2 窗口，绕开本壳的窗口管理与托盘策略。
+                        .on_new_window(move |link, _features| {
+                            if matches!(link.scheme(), "http" | "https") {
+                                use tauri_plugin_opener::OpenerExt;
+                                if let Err(error) = link_opener
+                                    .opener()
+                                    .open_url(link.to_string(), None::<&str>)
+                                {
+                                    eprintln!(
+                                        "dsh-xlink: 无法用系统浏览器打开链接 {link}：{error}"
+                                    );
+                                }
+                            }
+                            NewWindowResponse::Deny
+                        })
                         .initialization_script(include_str!("titlebar-pulse.js"))
                         .initialization_script(include_str!("pullstring-launcher.js"))
                         .initialization_script(include_str!("harness-health.js"))
