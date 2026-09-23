@@ -3,6 +3,17 @@ import test from 'node:test';
 
 let pluginChecks = 0;
 let skillChecks = 0;
+// 挂起钩子：置为一个带 promise/resolve 的对象时，下一次对应命令的 invoke
+// 挂住不返回，让测试能在「探测进行中」观察全局按钮状态。
+let pluginCheckGate = null;
+let fetchReleasesGate = null;
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+};
 const status = {
   kernel: { running: false, active: '0.1.1', active_installed: true, installed: ['0.1.1'] },
   node: { ok: true, path: '/node', version: '22.19.0' },
@@ -20,8 +31,21 @@ globalThis.window = {
       invoke(command) {
         if (command === 'plugin_check_updates') {
           pluginChecks += 1;
+          if (pluginCheckGate) {
+            const gate = pluginCheckGate;
+            pluginCheckGate = null;
+            return gate.promise;
+          }
           if (pluginChecks === 1) return Promise.reject(new Error('temporary failure'));
           return Promise.resolve([]);
+        }
+        if (command === 'fetch_releases') {
+          if (fetchReleasesGate) {
+            const gate = fetchReleasesGate;
+            fetchReleasesGate = null;
+            return gate.promise;
+          }
+          return Promise.resolve({ releases: [], warning: '' });
         }
         if (command === 'skill_check_updates') {
           skillChecks += 1;
@@ -114,6 +138,48 @@ test('failed skill update checks back off, and manual checks bypass the backoff'
   const manual = await checkSkillUpdates({ busy: true });
   assert.ok(Array.isArray(manual), '手动检查必须真的跑');
   assert.equal(skillChecks, before + 2, '手动检查不受退避限制');
+});
+
+test('手动更新检查不置全局 busy、不挡互斥任务', async () => {
+  const { checkPluginUpdates } = await import('../src/plugins.js');
+  const { globalBusy, isExclusiveBusy, isLoading, withExclusive } = await import('../src/loading.js');
+
+  // 挂住探测，观察「检查进行中」的全局状态。
+  const gate = deferred();
+  pluginCheckGate = gate;
+
+  const pending = checkPluginUpdates({ busy: true });
+  // 放过一个微任务：让 singleFlight 的探测体真正启动并越过让路检查、
+  // 进入挂起的 invoke——之后的互斥任务才不会把这次探测挡成 null。
+  await Promise.resolve();
+  assert.equal(isLoading('checkPluginUpdates'), true, '手动检查必须仍挂自己的按钮 loading');
+  assert.equal(globalBusy.value, false, '检查更新不得置全局 busy（否则全界面按钮一起禁用）');
+  assert.equal(isExclusiveBusy(), false, '检查更新不得持有互斥租约');
+
+  // 探测进行中，真正的互斥任务照常执行（不会被排队拒绝成 undefined）。
+  assert.equal(await withExclusive(async () => 'ran'), 'ran');
+
+  gate.resolve([]);
+  assert.equal(await pending, undefined, '成功路径 after() 的返回值照旧');
+  assert.equal(isLoading('checkPluginUpdates'), false);
+});
+
+test('内核「检查更新」同样只挂按钮 loading，不进互斥租约', async () => {
+  const { store, checkUpdates } = await import('../src/store.js');
+  const { globalBusy, isExclusiveBusy, isLoading } = await import('../src/loading.js');
+
+  const gate = deferred();
+  fetchReleasesGate = gate;
+  const pending = checkUpdates();
+
+  assert.equal(isLoading('checkUpdates'), true);
+  assert.equal(globalBusy.value, false);
+  assert.equal(isExclusiveBusy(), false);
+
+  gate.resolve({ releases: [{ version: '9.9.9', prerelease: false }], warning: '' });
+  await pending;
+  assert.equal(isLoading('checkUpdates'), false);
+  assert.equal(store.releases.length, 1);
 });
 
 test('提示与确认框显式抬到进度浮层之上', async () => {

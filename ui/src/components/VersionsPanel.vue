@@ -14,6 +14,7 @@ import {
   installVersion,
   activateVersion,
   removeVersion,
+  workbenchActiveNow,
 } from '../store.js';
 import { invoke } from '../bridge.js';
 import { openExternalLink } from '../notify.js';
@@ -139,7 +140,8 @@ onMounted(() => {
                     size="small"
                     :icon="Promotion"
                     :loading="isLoading('activate:' + v.version)"
-                    :disabled="globalBusy"
+                    :disabled="globalBusy || workbenchActiveNow()"
+                    title="工作台启动或运行期间不能切换内核"
                     @click="activateVersion(v.version)"
                   >
                     切换
