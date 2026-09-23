@@ -250,8 +250,11 @@ async function maybePromptNodeInstall() {
 
 // --- 内核版本 ---------------------------------------------------------------
 
+// 检查更新是只读探测（拉 npm 发布列表）：只挂本按钮 loading，不持互斥租约、
+// 不置 globalBusy——探测期间其他面板的按钮照常可用；切换 / 安装 / 启停的
+// 互斥由它们自己的租约与 workbenchActiveNow 守卫负责。
 export function checkUpdates() {
-  return withExclusiveLoading('checkUpdates', async () => {
+  return withLoading('checkUpdates', async () => {
     try {
       const list = await invoke('fetch_releases');
       store.releases = list.releases || [];
@@ -470,7 +473,7 @@ const runShellUpdateCheck = singleFlight(async (manual) => {
 
 export function checkShellUpdate(manual) {
   return manual
-    ? withExclusiveLoading('checkShellUpdate', () => runShellUpdateCheck(true))
+    ? withLoading('checkShellUpdate', () => runShellUpdateCheck(true))
     : runShellUpdateCheck(false);
 }
 

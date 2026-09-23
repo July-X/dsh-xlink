@@ -7,7 +7,7 @@
 // 失败有退避。策略写在工厂里，两个模块只剩参数差异。
 import { invoke } from './bridge.js';
 import { toast, toastActionError } from './notify.js';
-import { withLoading, withExclusive, isExclusiveBusy } from './loading.js';
+import { withLoading, isExclusiveBusy } from './loading.js';
 
 /**
  * 单飞：同名请求在途时复用同一个 Promise；成功、失败都会释放。
@@ -50,14 +50,18 @@ export function createStatusSource(cmd, apply, onError) {
 }
 
 /**
- * 更新检查策略：TTL + 逐包失败退避 + 全局互斥 + 在途去重 + 提示。
+ * 更新检查策略：TTL + 逐包失败退避 + 给互斥任务让路 + 在途去重 + 提示。
  *
  * - 手动点击（`{ busy: true }`）绕过 TTL 与退避，必须真的探测；
  * - 自动路径（切页 / 回焦 / 长任务结束）受两者限制：git 来源的探测会真的
  *   起子进程，不能每次触发都重跑；
  * - 逐包失败（后端把单个来源的错误放在条目上）不推进成功 TTL，但推进退避；
  * - 每次调用都返回「本次是否拿到新结果」：无新结果时解析为 `null`，
- *   调用方不必区分「被跳过」与「被互斥挡住」。
+ *   调用方不必区分「被跳过」与「被让路挡住」。
+ *
+ * 检查是只读探测，**不持互斥租约**（不置 globalBusy）：探测进行时其他按钮
+ * 照常可用；只有安装 / 启停这类互斥任务真正在跑时（isExclusiveBusy）才让路
+ * 返回 `null`，避免探测和写状态的任务交错。
  *
  * `after(infos)` 决定成功时解析成什么：插件面板刷新全部卡片后返回 `undefined`，
  * 技能面板返回逐包结果。
@@ -86,40 +90,39 @@ export function createUpdateChecker({
     }
     if (isExclusiveBusy()) return null;
 
-    const flight = withExclusive(async () => {
-      let infos;
-      try {
-        infos = (await invoke(cmd)) || [];
-      } catch (e) {
-        if (manual) {
-          toastActionError('检查' + noun + '更新失败', e, '请检查网络或代理设置后重试', 6000);
-        }
-        return null;
+    // 只读探测不进互斥租约：探测期间别的按钮照常可点（安装/启停仍会因
+    // 上面的 isExclusiveBusy 让路检查而互斥）。手动点击的按钮 loading 由
+    // 外层 withLoading 提供。
+    let infos;
+    try {
+      infos = (await invoke(cmd)) || [];
+    } catch (e) {
+      if (manual) {
+        toastActionError('检查' + noun + '更新失败', e, '请检查网络或代理设置后重试', 6000);
       }
-      const failed = infos.filter((i) => i.error);
-      if (failed.length) {
-        // 只有手动点击才弹提示：自动路径下持续失败的包会让用户每次切页 / 回焦
-        // 都吃一个 8 秒提示，而他不一定关心（P2-12）。
-        if (manual) {
-          toastActionError(
-            failed.length + ' 个' + noun + '检查更新失败',
-            failed[0].error,
-            itemFailureHint,
-            8000
-          );
-        }
-        lastFailureAt = Date.now();
-      } else {
-        lastSuccessAt = Date.now();
+      return null;
+    }
+    const failed = infos.filter((i) => i.error);
+    if (failed.length) {
+      // 只有手动点击才弹提示：自动路径下持续失败的包会让用户每次切页 / 回焦
+      // 都吃一个 8 秒提示，而他不一定关心（P2-12）。
+      if (manual) {
+        toastActionError(
+          failed.length + ' 个' + noun + '检查更新失败',
+          failed[0].error,
+          itemFailureHint,
+          8000
+        );
       }
-      const n = infos.filter((i) => i.latest).length;
-      if (n > 0 && opts.toastOnUpdates) {
-        toast('有 ' + n + ' 个' + noun + '可更新', 5000, 'warning');
-      }
-      return after(infos);
-    });
-    // withExclusive 在别的互斥任务进行中时返回 undefined。
-    return flight === undefined ? null : flight;
+      lastFailureAt = Date.now();
+    } else {
+      lastSuccessAt = Date.now();
+    }
+    const n = infos.filter((i) => i.latest).length;
+    if (n > 0 && opts.toastOnUpdates) {
+      toast('有 ' + n + ' 个' + noun + '可更新', 5000, 'warning');
+    }
+    return after(infos);
   };
 
   const flight = singleFlight((manual, opts) => run(manual, opts));
