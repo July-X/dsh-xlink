@@ -1,6 +1,5 @@
 //! 定位并校验用于运行 kernel 的 Node.js 运行时。
 
-use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -253,6 +252,8 @@ fn nvm_roots() -> Vec<PathBuf> {
 /// 已安装版本与之匹配。
 #[cfg(not(windows))]
 fn resolve_alias(root: &Path, start: &str) -> Option<String> {
+    // 只在这一平台分支里用得到：放函数内，Windows 编译不带未使用告警。
+    use std::collections::HashSet;
     let mut spec = start.to_string();
     let mut seen = HashSet::new();
     for _ in 0..ALIAS_MAX_HOPS {

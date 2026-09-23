@@ -1514,16 +1514,16 @@ fn add_official_chat_tab(
         .ok_or_else(|| format!("官方对话页签不存在：{index}"))?;
     let label = format!("official-chat-tab-{index}");
     let url = Url::parse(url_text).map_err(|e| format!("非法页签地址：{e}"))?;
-    let mut builder = WebviewBuilder::new(label, WebviewUrl::External(url))
+    let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
         .background_color(backdrop)
         .data_directory(profile_dir.to_path_buf())
         .additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)
         .initialization_script(include_str!("titlebar-pulse.js"))
         .initialization_script(include_str!("chat-fingerprint.js"));
+    // data_store_identifier 只在 macOS 存在；用 cfg 下的绑定遮蔽代替
+    // `let mut`，其他平台不会留下 unused_mut 告警。
     #[cfg(target_os = "macos")]
-    {
-        builder = builder.data_store_identifier(OFFICIAL_CHAT_DATA_STORE_IDENTIFIER);
-    }
+    let builder = builder.data_store_identifier(OFFICIAL_CHAT_DATA_STORE_IDENTIFIER);
     window
         .add_child(
             builder,
@@ -1628,7 +1628,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                 fs::create_dir_all(&profile_dir)
                     .map_err(|e| format!("无法创建官方对话数据目录：{e}"))?;
                 let window = {
-                    let mut builder = WindowBuilder::new(&handle, OFFICIAL_CHAT_WINDOW_LABEL)
+                    let builder = WindowBuilder::new(&handle, OFFICIAL_CHAT_WINDOW_LABEL)
                         .title("DeepSeek 官方对话")
                         .inner_size(OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT)
                         .resizable(true)
@@ -1650,11 +1650,10 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                     // `title_bar_style` 只在 macOS 上存在
                     // （`WindowBuilder` 把它包在
                     // `#[cfg(target_os = "macos")]` 下）——Windows 和
-                    // Linux 上的平台默认行为保持不变。
+                    // Linux 上的平台默认行为保持不变。用 cfg 下的绑定遮蔽
+                    // 代替 `let mut`，其他平台不会留下 unused_mut 告警。
                     #[cfg(target_os = "macos")]
-                    {
-                        builder = builder.title_bar_style(tauri::TitleBarStyle::Transparent);
-                    }
+                    let builder = builder.title_bar_style(tauri::TitleBarStyle::Transparent);
                     builder
                         .build()
                         .map_err(|e| format!("无法创建官方对话窗口：{e}"))?
