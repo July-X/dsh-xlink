@@ -2802,7 +2802,7 @@ pub async fn start_instance(
         }
         let node_path = PathBuf::from(node_info.path.clone());
         let family = instance::KERNEL_FAMILY_DSH;
-        let child = kernel::start_instance(family, &id, &data_dir, &node_path)
+        let child = kernel::start_instance(family, &id, &data_dir, &node_path, &settings)
             .map_err(|e| format!("{e}"))?;
         let now_ms = crate::process::epoch_millis();
         let mut runtime = instance::load_runtime(family, &id);

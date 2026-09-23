@@ -195,7 +195,17 @@ fn boot_once(
     deps: &GuardDeps<'_>,
     on_progress: &mut dyn FnMut(&str),
 ) -> (BootVerdict, Option<Child>) {
-    match kernel::start_maybe(deps.data_dir, deps.node_path) {
+    // 唯一拉起路径走实例适配器：`start_instance` 内部同步壳侧权威状态
+    // （settings 端口 / profile、active.txt 版本）进实例记录，并由适配器
+    // 注入 `DSH_HOME` / `DSH_PROFILE`——漏注入会让内核回退默认 `~/.dsh`，
+    // 接线与用户数据全部落空。
+    match kernel::start_instance(
+        deps.family,
+        deps.instance_id,
+        deps.data_dir,
+        deps.node_path,
+        deps.settings,
+    ) {
         Ok(None) => (
             // 端口在流程中途已经开始应答（另一个 Shell 实例或残留的孤
             // 儿进程抢到了这个端口）。这里视为已就绪；孤儿进程的回收

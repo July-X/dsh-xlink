@@ -24,12 +24,11 @@ use std::fs;
 use std::io::{self, Write};
 use std::net::TcpStream;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::Child;
 use std::time::Duration;
 
 use crate::process::{
-    atomic_write, attach_log_drainers, build_log_kind, quiet, run_with_progress,
-    run_with_progress_at, LogSpec,
+    atomic_write, build_log_kind, run_with_progress, run_with_progress_at, LogSpec,
 };
 
 use serde::Serialize;
@@ -1307,100 +1306,10 @@ pub fn port_open(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_ok()
 }
 
-/// 为当前激活版本启动 `dsh web --no-open`，输出重定向到内核日志。
-/// 在 Unix 上，子进程会被放到独立的进程组中，停止时即可回收整个组。
-pub fn start(data_dir: &Path, node: &Path, version: &str, port: u16) -> Result<Child, AppError> {
-    let dir = kernel_dir(data_dir, version);
-    let bin = dir.join(KERNEL_BIN_REL);
-    if !bin.is_file() {
-        return Err(AppError::Kernel(format!(
-            "版本 {version} 未安装或安装不完整"
-        )));
-    }
-    if port_open(port) {
-        return Err(AppError::Kernel(format!(
-            "端口 {port} 已被占用，可能已有内核在运行"
-        )));
-    }
-    // 把内核自己那个 node 的目录前置到子进程 PATH：`node` 可能是托管安装
-    // （`<data_dir>/tools/node/<ver>/bin/node`）或 nvm 的绝对路径，这两种情况下
-    // 它都不在继承来的 PATH 上，内核派生的任何 `#!/usr/bin/env node` 子进程都
-    // 会找不到解释器。详见 process::command_with_path_dirs。
-    let node_dir = node.parent().unwrap_or_else(|| Path::new("."));
-    let mut cmd = crate::process::command_with_path_dirs(node, &[node_dir]);
-    let port_arg: String = port.to_string();
-    cmd.arg(&bin)
-        .arg("web")
-        .arg("--no-open")
-        .arg("--port")
-        .arg(port_arg)
-        .current_dir(data_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            cmd.pre_exec(|| {
-                // 进入新会话，使 `kill -pid` 能回收整个进程组。
-                if libc::setsid() == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
-
-    // quiet() 在这里同样关键：内核是一个长时间运行的 console 应用，
-    // 否则它会在整个生命周期内一直占用一个可见的终端窗口。
-    let mut child = quiet(&mut cmd)
-        .spawn()
-        .map_err(|e| AppError::Io(format!("无法启动内核：{e}")))?;
-    // 派生后立刻纳入「随壳终止」的保护：Windows 上入 Job Object，壳崩溃 / 被
-    // 强杀时内核被系统一并收走，不会留下占端口的孤儿（P2-2）。
-    crate::process::adopt_kernel_process(&child);
-    if let Err(error) = attach_log_drainers(
-        &mut child,
-        &logs_dir(data_dir),
-        &kernel_log_spec(
-            crate::instance::KERNEL_FAMILY_DSH,
-            crate::instance::DEFAULT_INSTANCE_ID,
-        ),
-    ) {
-        crate::process::terminate_process_tree(&mut child);
-        return Err(AppError::Io(format!("无法接管内核日志：{error}")));
-    }
-    Ok(child)
-}
-
-/// 除非端口已被占用，否则启动当前激活的内核。
-///
-/// 当端口已有响应、**且监听者确实是本 data dir 的内核**时返回 `Ok(None)`
-/// （幂等的启动）；本调用真正拉起进程时返回 `Ok(Some(child))`。
-///
-/// 端口上有响应但不是本 data dir 的内核时返回错误，而不是静默的 `Ok(None)`：
-/// 后者会让「启动工作台」报告成功，而工作台窗口打开的其实是别人的服务——
-/// 用户完全看不出内核根本没起来。
-pub fn start_maybe(data_dir: &Path, node: &Path) -> Result<Option<Child>, AppError> {
-    let s = settings::load_for_shell(settings::current_mode());
-    let port = s.port;
-    if port_open(port) {
-        if workbench_running(data_dir, &s) {
-            return Ok(None);
-        }
-        let owner = port_listen_pid(port)
-            .map(|pid| format!("，占用者 pid {pid}"))
-            .unwrap_or_default();
-        return Err(AppError::Kernel(format!(
-            "端口 {port} 已被其它进程占用{owner}，无法启动工作台。请在设置页改用其它端口，或先释放该端口"
-        )));
-    }
-    let active = read_active(data_dir).ok_or_else(|| {
-        AppError::Kernel("尚未选择内核版本，请先在“更新”页安装并切换到某一版本".into())
-    })?;
-    start(data_dir, node, &active, port).map(Some)
-}
+// 旧的单 data dir 启动路径（`start` / `start_maybe`，不注入 `DSH_HOME`）已
+// 删除：内核唯一拉起路径是下面的 [`start_instance`]。保留旧的
+// `workbench_running` / pid 文件判据——壳崩溃后由它们把存量内核识别为
+// 「已在运行」，避免同一数据目录双内核。
 
 // ─── P2：按实例寻址的启动 / 停止 / 状态查询 ────────────────────────────────
 //
@@ -1434,17 +1343,23 @@ pub struct InstanceStartReport {
 /// - `family` / `id` 寻址实例目录与 instance.json；
 /// - `kernel_install_root` 是 `kernels/<version>/` 所在的根目录（P2 仍为
 ///   legacy data_dir）；
-/// - `node` 是 `node` 可执行文件路径。
+/// - `node` 是 `node` 可执行文件路径；`settings` 是壳侧权威设置（端口 /
+///   接线 profile），启动前同步进实例记录，见 [`resolve_instance_record`]。
 ///
 /// 返回 `Ok(None)` 表示端口已有响应、且监听者是本实例的内核（幂等启动）；
 /// `Ok(Some(child))` 是新拉起的进程；`Err` 报端口冲突或版本未安装。
+///
+/// 这是**唯一的**内核拉起路径：适配器负责设置 `DSH_HOME` / `DSH_PROFILE`
+/// 与 workspace cwd——漏掉 `DSH_HOME` 内核会回退默认 `~/.dsh`，插件接线
+/// 与用户数据全部落空（2026-09 多内核改造后主路径漏走本函数导致的事故）。
 pub fn start_instance(
     family: &str,
     id: &str,
     kernel_install_root: &Path,
     node: &Path,
+    settings: &settings::Settings,
 ) -> Result<Option<Child>, AppError> {
-    let record = resolve_instance_record(family, id, kernel_install_root)?;
+    let record = resolve_instance_record(family, id, kernel_install_root, settings)?;
     let port = record.port;
     if port_open(port) {
         if instance_workbench_running(family, id, port) {
@@ -1479,8 +1394,11 @@ pub fn start_instance(
                 .join("kernels")
                 .join(record.kernel_version.as_deref().unwrap_or(""))
         });
+    // 内核 stdout/stderr 与 legacy 路径一致地落 `<data_dir>/logs`——日志
+    // 面板（`read_log_file_list`）只扫这一处；适配器里默认的 shell 日志目录
+    // 只放外壳自身日志（paths::shell_logs_dir 的文档约定）。
     let child = adapter
-        .start(&record, &install_root, node)
+        .start(&record, &install_root, node, &logs_dir(kernel_install_root))
         .map_err(|e| AppError::Kernel(format!("{e}")))?;
     // 把 pid 写到 instance_pid_file，便于后续 status / stop 寻址。
     let _ = instance::write_pid(family, id, child.id(), record.port);
@@ -1529,8 +1447,9 @@ pub fn set_instance_active_version(
     id: &str,
     version: &str,
     kernel_install_root: &Path,
+    settings: &settings::Settings,
 ) -> Result<(), AppError> {
-    let mut record = resolve_instance_record(family, id, kernel_install_root)?;
+    let mut record = resolve_instance_record(family, id, kernel_install_root, settings)?;
     if !kernel_dir(kernel_install_root, version)
         .join(KERNEL_BIN_REL)
         .is_file()
@@ -1553,20 +1472,36 @@ pub fn set_instance_active_version(
 
 /// 加载实例记录；若记录不存在，按壳默认设置派生一份并落盘，保证后续
 /// 操作有据可查。
+///
+/// 无论记录是否新派生，都会把**壳侧权威状态**同步进记录并落盘——实例
+/// 记录是启动的执行依据，任何一项滞后都会让实例跑在错误的状态上：
+///
+/// - `port` / `profile` 以 shell settings 为准（`save_settings` 只允许在
+///   工作台停止时改端口，这里读到的一定是可安全生效的值）；
+/// - `kernel_version` 以 `active.txt` 为准（「内核版本」页的「切换」写它，
+///   旧路径只更新 active.txt 不同步记录）。
 fn resolve_instance_record(
     family: &str,
     id: &str,
-    _kernel_install_root: &Path,
+    kernel_install_root: &Path,
+    settings: &settings::Settings,
 ) -> Result<InstanceRecord, AppError> {
-    if let Some(record) = instance::load_record_from_disk(family, id) {
-        return Ok(record);
+    let mut record = match instance::load_record_from_disk(family, id) {
+        Some(record) => record,
+        None => {
+            // 派生默认记录：端口从 shell settings 拿，profile 默认。
+            let now_ms = crate::process::epoch_millis();
+            let record = InstanceRecord::new(id, family, settings.port, now_ms);
+            instance::ensure_instance_dirs(&record)
+                .map_err(|e| AppError::Io(format!("无法准备实例目录：{e}")))?;
+            record
+        }
+    };
+    record.port = settings.port;
+    record.profile = settings.profile.clone();
+    if let Some(active) = read_active(kernel_install_root) {
+        record.kernel_version = Some(active);
     }
-    // 派生默认记录：端口从 shell settings 拿，profile 默认。
-    let settings = settings::load_for_shell(settings::current_mode());
-    let now_ms = crate::process::epoch_millis();
-    let record = InstanceRecord::new(id, family, settings.port, now_ms);
-    instance::ensure_instance_dirs(&record)
-        .map_err(|e| AppError::Io(format!("无法准备实例目录：{e}")))?;
     instance::save_record_to_disk(&record)
         .map_err(|e| AppError::Io(format!("无法写入实例记录：{e}")))?;
     Ok(record)
@@ -1698,7 +1633,8 @@ pub fn stop(child: &mut Child) -> Result<(), AppError> {
         let pid = child.id().to_string();
         let mut cmd = crate::process::command_with_path("taskkill");
         cmd.args(["/PID", &pid, "/T", "/F"]);
-        let _ = quiet(&mut cmd).status();
+        // quiet 只在 Windows 分支用到：不进顶层 import，避免其他平台报未使用。
+        let _ = crate::process::quiet(&mut cmd).status();
         let _ = child.wait();
     }
     // 如实复查：旧实现无论结果都返回 `Ok`，于是 UI 一律提示「已关闭工作台」，
@@ -2818,8 +2754,14 @@ mod tests {
             "状态快照同样不能把无关监听者报成运行中"
         );
 
-        let error = start_maybe(&root, Path::new("/nonexistent/node"))
-            .expect_err("端口被无关进程占用时必须报错，而不是静默认为已在运行");
+        let error = start_instance(
+            instance::KERNEL_FAMILY_DSH,
+            crate::instance::DEFAULT_INSTANCE_ID,
+            &root,
+            Path::new("/nonexistent/node"),
+            &current,
+        )
+        .expect_err("端口被无关进程占用时必须报错，而不是静默认为已在运行");
         assert!(
             error.to_string().contains("已被其它进程占用"),
             "错误信息应说明端口冲突，实际：{error}"
@@ -3053,6 +2995,58 @@ mod tests {
 
     // ─── P2：按实例寻址的内核生命周期测试 ───────────────────────────────
 
+    /// `resolve_instance_record` 必须把壳侧权威状态同步进实例记录：
+    /// 端口 / profile 跟 settings，内核版本跟 active.txt。记录滞后会让
+    /// 实例跑在旧端口 / 旧版本 / 旧 profile 上——「内核版本」页的切换
+    /// 只写 active.txt，不同步这条规则就会启动旧版本。
+    #[test]
+    fn resolve_instance_record_syncs_shell_authoritative_state() {
+        let _guard = scoped_xlink_home_for_test();
+        let install_root = workbench_test_dir("inst-resolve-sync");
+        let mut record = InstanceRecord::new(
+            crate::instance::DEFAULT_INSTANCE_ID,
+            instance::KERNEL_FAMILY_DSH,
+            3000,
+            1700000000000,
+        );
+        record.profile = "old-profile".into();
+        record.kernel_version = Some("0.0.1-stale".into());
+        instance::ensure_instance_dirs(&record).expect("ensure dirs");
+        instance::save_record_to_disk(&record).expect("save record");
+
+        // active.txt 指向新版本（「内核版本」页「切换」的落点）。
+        write_active(&install_root, Some("0.1.5-rc.1")).expect("write active");
+
+        let settings = Settings {
+            port: 3091,
+            ..Settings::default()
+        };
+        let synced = resolve_instance_record(
+            instance::KERNEL_FAMILY_DSH,
+            crate::instance::DEFAULT_INSTANCE_ID,
+            &install_root,
+            &settings,
+        )
+        .expect("resolve");
+
+        assert_eq!(synced.port, 3091, "端口必须跟 settings");
+        assert_eq!(synced.profile, "web", "profile 必须跟 settings 默认值");
+        assert_eq!(
+            synced.kernel_version.as_deref(),
+            Some("0.1.5-rc.1"),
+            "内核版本必须跟 active.txt"
+        );
+
+        // 同步结果必须落盘：后续读盘的调用方拿到的也是新值。
+        let persisted = instance::load_record_from_disk(
+            instance::KERNEL_FAMILY_DSH,
+            crate::instance::DEFAULT_INSTANCE_ID,
+        )
+        .expect("record persisted");
+        assert_eq!(persisted.port, 3091);
+        assert_eq!(persisted.kernel_version.as_deref(), Some("0.1.5-rc.1"));
+    }
+
     /// `set_instance_active_version` 在版本未安装时必须报错且不让 instance.json
     /// 出现虚假的 `kernel_version`。
     #[test]
@@ -3073,6 +3067,7 @@ mod tests {
             crate::instance::DEFAULT_INSTANCE_ID,
             "0.1.2-not-installed",
             &install_root,
+            &crate::settings::Settings::default(),
         )
         .expect_err("missing version must fail");
         assert!(
@@ -3139,6 +3134,7 @@ mod tests {
             crate::instance::DEFAULT_INSTANCE_ID,
             version,
             &install_root,
+            &crate::settings::Settings::default(),
         )
         .expect("set active version");
         let restored = instance::load_record_from_disk(

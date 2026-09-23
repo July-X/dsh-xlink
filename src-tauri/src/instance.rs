@@ -368,6 +368,153 @@ pub fn ensure_default_registered(data_dir: &Path) -> Result<(), String> {
     save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))
 }
 
+// --- 内核 home 的一次性搬迁（~/.dsh → 实例 DSH_HOME）------------------------
+
+/// 内核拥有的 home 子目录：存在即并入实例 home。目标是**合并**而不是整目录
+/// rename——实例 home 的骨架（profiles/sessions/…）与外壳接线产物（profile
+/// 里的 package.json / node_modules）早已就位，不能被整目录覆盖。
+const LEGACY_DSH_HOME_DIRS: &[&str] = &[
+    "sessions",
+    "storages",
+    "attachments",
+    "logs",
+    "cache",
+    "profiles",
+    "llm-deepseek",
+];
+/// 内核拥有的 home 散文件：会话凭据、内核设置、遥测身份、任务板状态。
+const LEGACY_DSH_HOME_FILES: &[&str] = &[
+    ".credentials.yaml",
+    "settings.yaml",
+    "settings.yaml.imported",
+    ".anonymous-user-id",
+    "cordis.patch.yml",
+    "dsh-taskboard.json",
+    "dsh-taskboard-templates.json",
+];
+
+/// 把官方内核的默认 home（`~/.dsh`）里的用户数据一次性搬进实例 `DSH_HOME`。
+///
+/// 多内核改造前，内核始终以默认 home 启动（旧启动路径从不注入 `DSH_HOME`），
+/// 会话、凭据、profile 都积累在 `~/.dsh`；改造后内核经 `DSH_HOME` 指向实例
+/// 目录，不搬迁等于让用户面对一个空工作台。规则：
+///
+/// - 成功标记（`<home>/.dsh-home-migrated`）存在直接返回，后续启动零开销；
+/// - 目录项**递归并入**：目标已有的条目以目标为准（多半是外壳接线刚重新
+///   物化的产物），两侧都是目录则继续下探，缺失的条目整体移入；`node_modules`
+///   不动（接线的 pnpm 产物，按 package.json 重建）。已移动的条目下次启动
+///   自动跳过，因此中断后重跑是安全的；
+/// - 移动优先同卷 `rename`（原子），失败（跨卷）回退复制后删除；
+/// - `~/.dsh` 里**外壳拥有**的旧数据（`desktop/`、`plugins/`、`skills*`）
+///   不在清单内，绝不触碰——它们归历史数据迁移面板管。
+///
+/// `legacy_home` 由调用方传入（生产为 `$HOME/.dsh`，测试传临时目录）：函数
+/// 本身可测，也不会在 `cargo test` 里扫到开发机的真实 home。
+pub fn migrate_legacy_dsh_home_if_needed(
+    family: &str,
+    id: &str,
+    legacy_home: &Path,
+) -> Result<(), String> {
+    if family != KERNEL_FAMILY_DSH {
+        return Ok(()); // `~/.dsh` 只是 dsh 族的默认 home，其他族没有历史包袱
+    }
+    let target = paths::instance_dsh_home(family, id);
+    let marker = target.join(".dsh-home-migrated");
+    if marker.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(&target).map_err(|e| format!("无法创建实例内核目录 {target:?}：{e}"))?;
+    if legacy_home.is_dir() {
+        for name in LEGACY_DSH_HOME_DIRS {
+            merge_move_dir(&legacy_home.join(name), &target.join(name))?;
+        }
+        for name in LEGACY_DSH_HOME_FILES {
+            let src = legacy_home.join(name);
+            let dst = target.join(name);
+            if src.is_file() && !dst.exists() {
+                move_item(&src, &dst)?;
+            }
+        }
+    }
+    // 全新机器（没有遗留 home）同样写标记：后续启动走零开销快路径。
+    atomic_write(&marker, b"{}\n").map_err(|e| format!("无法写入搬迁标记 {marker:?}：{e}"))?;
+    Ok(())
+}
+
+/// 把 `src` 目录**递归并入** `dst`：`dst` 缺失的条目整体移入，已有的条目
+/// 若两侧都是目录则继续下探、否则以目标为准留在源处。实例 home 的骨架
+/// （`profiles/web`、`sessions`、`attachments/v1`…）早已就位，不做递归的
+/// 话整个子树会被一层「已存在」挡住。`node_modules` 明确不下探也不移动：
+/// 那是外壳接线的 pnpm 产物，由 `ensure_wiring` 按 package.json 重建，
+/// 遗留的同名树整体留在源目录不动。
+fn merge_move_dir(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.is_dir() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(src).map_err(|e| format!("无法读取目录 {src:?}：{e}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("无法读取目录 {src:?}：{e}"))?;
+        if entry.file_name() == "node_modules" {
+            continue;
+        }
+        let child_src = entry.path();
+        let child_dst = dst.join(entry.file_name());
+        if child_dst.exists() {
+            if child_src.is_dir() && child_dst.is_dir() {
+                merge_move_dir(&child_src, &child_dst)?;
+            }
+            continue;
+        }
+        move_item(&child_src, &child_dst)?;
+    }
+    // 内容并入后源目录只剩空壳时清掉它，让 `~/.dsh` 里不残留空骨架。
+    // 只删空目录：非空说明有条目被目标保留，那是有意留给用户的。
+    if fs::read_dir(src)
+        .map(|mut it| it.next().is_none())
+        .unwrap_or(false)
+    {
+        let _ = fs::remove_dir(src);
+    }
+    Ok(())
+}
+
+/// 单个条目的移动：优先同卷 `rename`（原子、零拷贝），失败（通常为跨卷）
+/// 回退到复制后删除源。
+fn move_item(src: &Path, dst: &Path) -> Result<(), String> {
+    if fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    if src.is_dir() {
+        copy_dir_recursive(src, dst)?;
+        fs::remove_dir_all(src).map_err(|e| format!("无法删除源目录 {src:?}：{e}"))?;
+    } else {
+        fs::copy(src, dst).map_err(|e| format!("无法复制 {src:?} → {dst:?}：{e}"))?;
+        fs::remove_file(src).map_err(|e| format!("无法删除源文件 {src:?}：{e}"))?;
+    }
+    Ok(())
+}
+
+/// 递归复制目录（std 没有 `copy_dir_all`；只覆盖本搬迁的跨卷回退场景）。
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| format!("无法创建目录 {dst:?}：{e}"))?;
+    let entries = fs::read_dir(src).map_err(|e| format!("无法读取目录 {src:?}：{e}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("无法读取目录 {src:?}：{e}"))?;
+        let child_dst = dst.join(entry.file_name());
+        if entry
+            .file_type()
+            .map_err(|e| format!("无法读取 {src:?}：{e}"))?
+            .is_dir()
+        {
+            copy_dir_recursive(&entry.path(), &child_dst)?;
+        } else {
+            fs::copy(entry.path(), &child_dst)
+                .map_err(|e| format!("无法复制 {:?} → {child_dst:?}：{e}", entry.path()))?;
+        }
+    }
+    Ok(())
+}
+
 /// 注册表读取 / 写入错误。
 #[derive(Debug, Clone)]
 pub enum RegistryError {
@@ -881,5 +1028,124 @@ mod tests {
         // 无需结构体中间层。
         let (f, i) = resolve_default();
         assert_eq!((f, i), (KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID));
+    }
+
+    // --- 内核 home 搬迁 -----------------------------------------------------
+
+    /// 遗留 `~/.dsh` 里的内核数据必须整体进入实例 home，且搬迁幂等：
+    /// 第二次调用是零操作，不再移动任何东西。
+    #[test]
+    fn legacy_home_migration_moves_user_data_once() {
+        let home = temp_dir("home-migrate");
+        let _xlink = scoped_xlink_home(&home);
+        let legacy = home.join("legacy-dsh");
+        fs::create_dir_all(legacy.join("profiles/web")).unwrap();
+        fs::create_dir_all(legacy.join("sessions/2026-09")).unwrap();
+        fs::write(legacy.join("profiles/web/cordis.yml"), "[]").unwrap();
+        fs::write(legacy.join("sessions/2026-09/a.jsonl"), "{}").unwrap();
+        fs::write(legacy.join(".credentials.yaml"), "token: x").unwrap();
+
+        migrate_legacy_dsh_home_if_needed(KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID, &legacy)
+            .expect("first migration");
+
+        let target = paths::instance_dsh_home(KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID);
+        assert_eq!(
+            fs::read_to_string(target.join("profiles/web/cordis.yml")).unwrap(),
+            "[]"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("sessions/2026-09/a.jsonl")).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join(".credentials.yaml")).unwrap(),
+            "token: x"
+        );
+        assert!(
+            !legacy.join("sessions").exists(),
+            "整体移动后源目录不再保留"
+        );
+        assert!(!legacy.join(".credentials.yaml").exists());
+        assert!(
+            target.join(".dsh-home-migrated").exists(),
+            "成功标记必须落盘"
+        );
+
+        // 幂等：标记存在后，即使遗留目录再出现新内容也不再搬。
+        fs::write(legacy.join("stray.txt"), "later").unwrap();
+        migrate_legacy_dsh_home_if_needed(KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID, &legacy)
+            .expect("second migration");
+        assert!(!target.join("stray.txt").exists());
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 实例 home 已有条目（外壳接线刚物化的骨架/产物）时逐层并入：
+    /// 目标已有的一律保留，缺失的移入。中断续跑即依赖这条规则。
+    #[test]
+    fn legacy_home_migration_merges_without_overwriting_targets() {
+        let home = temp_dir("home-merge");
+        let _xlink = scoped_xlink_home(&home);
+        let legacy = home.join("legacy-dsh");
+        fs::create_dir_all(legacy.join("profiles/web")).unwrap();
+        fs::create_dir_all(legacy.join("sessions")).unwrap();
+        fs::write(
+            legacy.join("profiles/web/package.json"),
+            "{\"legacy\":true}",
+        )
+        .unwrap();
+        fs::write(legacy.join("profiles/web/cordis.yml"), "[]").unwrap();
+        fs::write(legacy.join("sessions/old.jsonl"), "legacy").unwrap();
+
+        // 目标先行存在：外壳接线写过的 package.json 与会话。
+        let record = sample_record(DEFAULT_INSTANCE_ID, 3090, KERNEL_FAMILY_DSH);
+        ensure_instance_dirs(&record).unwrap();
+        let target = paths::instance_dsh_home(KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID);
+        let wired_profile = target.join("profiles/web");
+        fs::create_dir_all(&wired_profile).unwrap();
+        fs::write(wired_profile.join("package.json"), "{\"wired\":true}").unwrap();
+        fs::create_dir_all(target.join("sessions")).unwrap();
+        fs::write(target.join("sessions/old.jsonl"), "wired").unwrap();
+
+        migrate_legacy_dsh_home_if_needed(KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID, &legacy)
+            .expect("migration");
+
+        // 目标已有的：原样保留。
+        assert_eq!(
+            fs::read_to_string(wired_profile.join("package.json")).unwrap(),
+            "{\"wired\":true}",
+            "接线产物不得被遗留目录覆盖"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("sessions/old.jsonl")).unwrap(),
+            "wired",
+            "目标已有的会话不得被同名遗留会话覆盖"
+        );
+        // 目标缺失的：移入。
+        assert_eq!(
+            fs::read_to_string(wired_profile.join("cordis.yml")).unwrap(),
+            "[]"
+        );
+        // 源里被跳过的条目原样保留（不删用户数据）。
+        assert_eq!(
+            fs::read_to_string(legacy.join("profiles/web/package.json")).unwrap(),
+            "{\"legacy\":true}"
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 非 dsh 族没有 `~/.dsh` 历史包袱：调用必须是零操作（不建目录、不写标记）。
+    #[test]
+    fn migration_is_noop_for_other_families() {
+        let home = temp_dir("home-mcode");
+        let _xlink = scoped_xlink_home(&home);
+        let legacy = home.join("legacy-dsh");
+        fs::create_dir_all(&legacy).unwrap();
+        migrate_legacy_dsh_home_if_needed(KERNEL_FAMILY_MCODE, "default", &legacy)
+            .expect("noop for mcode");
+        assert!(
+            !paths::instance_dsh_home(KERNEL_FAMILY_MCODE, "default").exists(),
+            "mcode 实例不得被建出 dsh 族的搬迁产物"
+        );
+        std::fs::remove_dir_all(&home).ok();
     }
 }

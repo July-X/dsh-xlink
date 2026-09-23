@@ -161,6 +161,21 @@ pub fn run() {
             if let Err(error) = crate::instance::ensure_default_registered(&data_dir) {
                 eprintln!("dsh-xlink: 默认实例注册失败（{error}）");
             }
+            // 内核 home 一次性搬迁：多内核改造前内核一直以默认 `~/.dsh` 运行
+            // （旧启动路径从不注入 `DSH_HOME`），会话 / 凭据 / profile 都在
+            // 那里；改造后内核经 `DSH_HOME` 指向实例目录，不搬迁等于让用户
+            // 面对一个空工作台。失败不阻塞启动：数据原封留在 `~/.dsh`，下次
+            // 启动自动重试（逐项并入，可安全续跑）。
+            if let Err(error) = crate::instance::migrate_legacy_dsh_home_if_needed(
+                &family,
+                crate::instance::DEFAULT_INSTANCE_ID,
+                &crate::paths::dirs_home().join(".dsh"),
+            ) {
+                eprintln!(
+                    "dsh-xlink: 内核数据搬迁 ~/.dsh 未完成（{error}）；\
+                     遗留数据原样保留，修复后重启桌面端会自动重试"
+                );
+            }
             app.manage(AppState {
                 data_dir,
                 running: Mutex::new(None),
