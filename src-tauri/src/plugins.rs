@@ -6573,9 +6573,15 @@ mod id_collision_tests {
         // 我们要确保 sweep 只对 dangling 或 owned 出手，不会误删正常条目。
         // 这里 kept 仍然在 store 里，sweep 不应清它。
 
-        // 类型 2：dangling link（目标不存在）。
+        // 类型 2：dangling link（目标不存在）。与文件内其他测试同一套路：
+        // 平台各自的 symlink API；Windows 上建链需要管理员 / 开发者模式，
+        // 失败时 dangling 不存在，类型 2 的断言退化为恒真，其余类型照常覆盖。
         let dangling = paths::instance_extensions_plugins_dir(family, instance_id).join("dangling");
-        std::os::unix::fs::symlink("/nonexistent/path/target", &dangling).expect("symlink");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink("/nonexistent/path/target", &dangling);
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir("/nonexistent/path/target", &dangling);
+        let _ = linked;
 
         // 类型 3：meta 在 + 不在 store 里（应被 sweep 当成 owned 清掉）。
         let owned = "owned-orphan";

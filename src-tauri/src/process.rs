@@ -881,6 +881,12 @@ fn isolate_process(cmd: &mut Command) {
             });
         }
     }
+    #[cfg(windows)]
+    {
+        // Windows 的进程树回收由 Job Object 负责（见 terminate_process_tree），
+        // 创建期没有 setsid 等价物；这里只消费参数，保持签名跨平台一致。
+        let _ = cmd;
+    }
 }
 
 pub(crate) fn terminate_process_tree(child: &mut Child) {
