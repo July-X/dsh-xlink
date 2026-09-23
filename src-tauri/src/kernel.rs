@@ -1394,9 +1394,9 @@ pub fn start_instance(
                 .join("kernels")
                 .join(record.kernel_version.as_deref().unwrap_or(""))
         });
-    // 内核 stdout/stderr 与 legacy 路径一致地落 `<data_dir>/logs`——日志
-    // 面板（`read_log_file_list`）只扫这一处；适配器里默认的 shell 日志目录
-    // 只放外壳自身日志（paths::shell_logs_dir 的文档约定）。
+    // 内核 stdout/stderr 落 [`logs_dir`]（= `paths::shell_logs_dir`，按构建
+    // 模式分目录）——日志面板（`read_log_file_list`）只扫这一处；适配器里
+    // 默认的 shell 日志目录与这里是同一路径，显式传参只为不依赖该默认值。
     let child = adapter
         .start(&record, &install_root, node, &logs_dir(kernel_install_root))
         .map_err(|e| AppError::Kernel(format!("{e}")))?;

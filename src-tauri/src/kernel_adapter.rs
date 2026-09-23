@@ -322,13 +322,27 @@ impl KernelAdapter for DshAdapter {
             std::fs::write(&workspace_yml, "packages:\n  - .\n")
                 .map_err(|e| AdapterError::Io(e.to_string()))?;
         }
+        // dsh-app-boot 要求 `cordis.patch.yml`（可缺席）是**顶层 YAML 数组**
+        // （loader patch 条目列表）。P3 起的占位模板曾写成 `schema_version: 1`
+        // 映射——内核从不读默认 `~/.dsh` 下不存在的同名文件所以多年无恙，而
+        // e0cb7e6 把启动切到实例 DSH_HOME 后内核首次真正读到它，启动即
+        // `fatal uncaught exception`（exit status 1），且安全模式不触及该文件、
+        // 重试永远复现。这里除首次写入正确模板外，还把历史构建写出的坏模板
+        // **字节级匹配**后原位改写；用户或内核写入的任何其他内容不动。
+        const PATCH_YML_TEMPLATE: &str = "# dsh-xlink managed cordis patch\n[]\n";
+        const PATCH_YML_BROKEN: &str = "# dsh-xlink managed cordis patch\nschema_version: 1\n";
         let patch_yml = home.join("cordis.patch.yml");
-        if !patch_yml.exists() {
-            std::fs::write(
-                &patch_yml,
-                "# dsh-xlink managed cordis patch\nschema_version: 1\n",
-            )
-            .map_err(|e| AdapterError::Io(e.to_string()))?;
+        match std::fs::read_to_string(&patch_yml) {
+            Ok(text) if text == PATCH_YML_BROKEN => {
+                std::fs::write(&patch_yml, PATCH_YML_TEMPLATE)
+                    .map_err(|e| AdapterError::Io(e.to_string()))?;
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::write(&patch_yml, PATCH_YML_TEMPLATE)
+                    .map_err(|e| AdapterError::Io(e.to_string()))?;
+            }
+            Err(error) => return Err(AdapterError::Io(error.to_string())),
         }
         Ok(())
     }
@@ -653,10 +667,52 @@ mod tests {
             "缺 cordis.patch.yml：{}",
             patch_yml.display()
         );
+        // dsh-app-boot 要求顶层数组：占位模板必须是 `[]`，不能是映射。
+        let patch_text = std::fs::read_to_string(&patch_yml).unwrap();
+        assert!(
+            patch_text.trim_end().ends_with("[]"),
+            "cordis.patch.yml 必须是顶层数组，实际：{patch_text:?}"
+        );
         // package.json 内容含 schema_version 与 kernel_family。
         let text = std::fs::read_to_string(&profile_pkg).unwrap();
         assert!(text.contains("kernel_family"));
         assert!(text.contains("schema_version"));
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 历史构建写出的坏模板（`schema_version: 1` 映射）必须被原位修复成
+    /// 顶层数组；用户改过的内容不得被碰。
+    #[test]
+    fn prepare_instance_repairs_broken_patch_template() {
+        let home = temp_dir("patch-repair");
+        let _xlink = scoped_xlink_home(&home);
+        let adapter = DshAdapter;
+        let record = sample_record();
+        crate::instance::ensure_instance_dirs(&record).expect("ensure dirs");
+        let patch_yml = DshAdapter::dsh_home_for(&record).join("cordis.patch.yml");
+        std::fs::create_dir_all(patch_yml.parent().unwrap()).unwrap();
+
+        // 坏模板：字节级匹配历史构建的输出 → 修复。
+        std::fs::write(
+            &patch_yml,
+            "# dsh-xlink managed cordis patch\nschema_version: 1\n",
+        )
+        .unwrap();
+        adapter.prepare_instance(&record).expect("prepare");
+        assert_eq!(
+            std::fs::read_to_string(&patch_yml).unwrap(),
+            "# dsh-xlink managed cordis patch\n[]\n",
+            "坏模板必须原位改写为顶层数组"
+        );
+
+        // 用户内容：不得被触碰。
+        std::fs::write(&patch_yml, "- my: patch\n").unwrap();
+        adapter.prepare_instance(&record).expect("prepare");
+        assert_eq!(
+            std::fs::read_to_string(&patch_yml).unwrap(),
+            "- my: patch\n",
+            "用户自己的 patch 内容不得被覆盖"
+        );
         std::fs::remove_dir_all(&home).ok();
     }
 
