@@ -156,7 +156,7 @@ npm run build:win         # x86_64-pc-windows-msvc
 
 > 从 v0.2.x 升级：平铺的 `~/.dsh-xlink/desktop[-dev]/` 会在新版首次启动时自动整体搬进 `~/.dsh-xlink/dsh/`；搬迁失败时继续使用旧目录，数据不会丢失。更早版本（元数据在系统应用数据目录或 `~/.dsh/desktop/`）的数据不再被读取，如需保留请手动移入上述外壳数据目录。
 >
-> 内核数据的一次性搬迁：旧版外壳不注入 `DSH_HOME`，内核把会话、凭据、profile 写在 `~/.dsh`。新版首次启动会把其中内核拥有的数据（`profiles/`、`sessions/`、`storages/`、`attachments/`、`logs/`、`.credentials.yaml`、`settings.yaml*` 等）自动并入实例内核 home：逐项递归并入、目标已有的条目以新目录为准（不会覆盖接线产物），中断后下次启动自动续跑；`~/.dsh` 里外壳拥有的旧目录（`desktop/`、`plugins/`、`skills*` 等）不在搬迁清单内，原样保留。
+> 内核数据的一次性搬迁：旧版外壳不注入 `DSH_HOME`，内核把会话、凭据、profile 写在 `~/.dsh`。新版首次启动会把其中内核拥有的数据（`profiles/`、`sessions/`、`storages/`、`synapse/`、`attachments/`、`logs/`、`.credentials.yaml`、`settings.yaml*` 等）并入实例内核 home。已有迁移标记也会按版本补跑；若活动 `settings.yaml` 缺失，会从 `settings.yaml.imported` 复制恢复，归档保留。目标已有的同名文件继续优先，中断后下次启动自动续跑。`~/.dsh` 里外壳拥有的旧目录（`desktop/`、`plugins/`、`skills*` 等）不在搬迁清单内，原样保留。
 
 ## 发布（GitHub Actions）
 

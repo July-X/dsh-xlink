@@ -141,7 +141,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 ### DSH home（`~/.dsh/`：旧版默认 home，已并入实例 home）
 
-旧版外壳不注入 `DSH_HOME`，内核一直以默认 `~/.dsh/` 运行，这里因此积累了内核的用户数据（`profiles/`、`sessions/`、`storages/`、`attachments/`、`logs/`、`.credentials.yaml`、`settings.yaml*`、`cordis.patch.yml`、`dsh-taskboard*.json`、`.anonymous-user-id`、`llm-deepseek/`、`cache/`）。壳启动时 `instance::migrate_legacy_dsh_home_if_needed` 会把这些条目**递归并入**默认实例的 `instances/<id>/home/`：目标已有的条目以目标为准（接线产物更新）、缺失的移入，`node_modules` 不动（由 `ensure_wiring` 按 package.json 重建），搬空的外壳目录会被清理；成功后写 `.dsh-home-migrated` 标记，后续启动零开销。清单外的外壳旧目录（`desktop[-dev]/`、`plugins/`、`skills*`）原样保留，归迁移向导管：
+旧版外壳不注入 `DSH_HOME`，内核一直以默认 `~/.dsh/` 运行，这里因此积累了内核的用户数据（`profiles/`、`sessions/`、`storages/`、`synapse/`、`attachments/`、`logs/`、`.credentials.yaml`、`settings.yaml*`、`cordis.patch.yml`、`dsh-taskboard*.json`、`.anonymous-user-id`、`llm-deepseek/`、`cache/`）。壳启动时 `instance::migrate_legacy_dsh_home_if_needed` 会把这些条目**递归并入**默认实例的 `instances/<id>/home/`：目标已有的条目以目标为准（接线产物更新）、缺失的移入，`node_modules` 不动（由 `ensure_wiring` 按 package.json 重建）。迁移标记记录 schema 版本，升级后会补跑新增的数据项；活动 `settings.yaml` 缺失时，从 `settings.yaml.imported` 复制恢复，原归档保留。清单外的外壳旧目录（`desktop[-dev]/`、`plugins/`、`skills*`）原样保留，归迁移向导管：
 
 - `<DSH_HOME>/desktop[-dev]/kernels/<version>/` — 内核 legacy 安装位置（`resolve_install_dir` 兜底）
 - `<DSH_HOME>/desktop[-dev]/{active.txt, kernel.pid, port, logs/}` — Shell 状态 / 内核进程锁 / 日志
