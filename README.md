@@ -152,9 +152,11 @@ npm run build:win         # x86_64-pc-windows-msvc
 - 外壳数据（已装内核 `kernels/`、活动指针 `active.txt`、补丁 `patches/`、隔离记录 `quarantine.json` 等）：`~/.dsh-xlink/dsh/desktop/`（release 壳）或 `~/.dsh-xlink/dsh/desktop-dev/`（dev 壳）。将来接入新内核族（如 mcode）会得到各自独立的 `~/.dsh-xlink/mcode/desktop[-dev]/`。可用 `DSH_XLINK_HOME` 重定向整个根目录，`DSH_DESKTOP_DATA_DIR` 完整覆盖外壳数据目录
 - 外壳自身日志与每壳设置（release / dev 分槽）：`~/.dsh-xlink/shell/<release|dev>/`（`logs/`、`settings.json`、`ui-state.json`）
 - 多内核相关（内核版本与实例 `kernels/<族>/`、中央插件库 `dsh-plugins/`、技能库 `skills/`）：权威布局见 [docs/architecture.md §「多内核改造后的实际数据布局」](docs/architecture.md)
-- 内核自身数据（会话、配置、profile）：`~/.dsh`（内核进程的 `DSH_HOME`，外壳不写这里）
+- 内核自身数据（会话、凭据、配置、profile）：实例内核 home `~/.dsh-xlink/kernels/dsh/instances/<id>/home/`——启动内核时外壳以 `DSH_HOME` 环境变量注入，内核进程的全部用户数据都落在这里，不再使用 `~/.dsh`
 
 > 从 v0.2.x 升级：平铺的 `~/.dsh-xlink/desktop[-dev]/` 会在新版首次启动时自动整体搬进 `~/.dsh-xlink/dsh/`；搬迁失败时继续使用旧目录，数据不会丢失。更早版本（元数据在系统应用数据目录或 `~/.dsh/desktop/`）的数据不再被读取，如需保留请手动移入上述外壳数据目录。
+>
+> 内核数据的一次性搬迁：旧版外壳不注入 `DSH_HOME`，内核把会话、凭据、profile 写在 `~/.dsh`。新版首次启动会把其中内核拥有的数据（`profiles/`、`sessions/`、`storages/`、`attachments/`、`logs/`、`.credentials.yaml`、`settings.yaml*` 等）自动并入实例内核 home：逐项递归并入、目标已有的条目以新目录为准（不会覆盖接线产物），中断后下次启动自动续跑；`~/.dsh` 里外壳拥有的旧目录（`desktop/`、`plugins/`、`skills*` 等）不在搬迁清单内，原样保留。
 
 ## 发布（GitHub Actions）
 

@@ -115,7 +115,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 `paths.rs` 是路径解析的单一入口。**两套正交环境变量**：
 - `DSH_XLINK_HOME`：Xlink 自身的数据目录（`<xlink_home>/`）。中央库 / 活动视图 / 备份 / cache / state 都在这里。
-- `DSH_HOME`：旧版 dsh home（`~/.dsh/`）。kernel / `kernel_adapter` 还在用，与 `DSH_XLINK_HOME` 不重叠。
+- `DSH_HOME`：dsh 内核进程的用户数据根（profile / sessions / credentials）。启动实例时由 `DshAdapter` 注入为**实例 home**（`<xlink_home>/kernels/<family>/instances/<id>/home/`）；它不再指向 `~/.dsh`——那里的历史用户数据由 [`instance::migrate_legacy_dsh_home_if_needed`] 在壳启动时一次性并入实例 home。
 
 ### Xlink home（`<xlink_home>/`，由 `DSH_XLINK_HOME` 解析）
 
@@ -139,9 +139,10 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 └── xlink.json                     # Xlink 自身的元数据
 ```
 
-### DSH home（旧版 `<DSH_HOME>/`，由 `DSH_HOME` 解析）
+### DSH home（`~/.dsh/`：旧版默认 home，已并入实例 home）
 
-`~/.dsh/` 仍由 kernel / kernel_adapter 模块自管。本仓库**不写**这里（另有 v0.2.x 的平铺布局 `<DSH_XLINK_HOME>/desktop[-dev]/`——启动时自动整体搬进 `<family>/`，见上文「平铺布局的一次性搬迁」）：
+旧版外壳不注入 `DSH_HOME`，内核一直以默认 `~/.dsh/` 运行，这里因此积累了内核的用户数据（`profiles/`、`sessions/`、`storages/`、`attachments/`、`logs/`、`.credentials.yaml`、`settings.yaml*`、`cordis.patch.yml`、`dsh-taskboard*.json`、`.anonymous-user-id`、`llm-deepseek/`、`cache/`）。壳启动时 `instance::migrate_legacy_dsh_home_if_needed` 会把这些条目**递归并入**默认实例的 `instances/<id>/home/`：目标已有的条目以目标为准（接线产物更新）、缺失的移入，`node_modules` 不动（由 `ensure_wiring` 按 package.json 重建），搬空的外壳目录会被清理；成功后写 `.dsh-home-migrated` 标记，后续启动零开销。清单外的外壳旧目录（`desktop[-dev]/`、`plugins/`、`skills*`）原样保留，归迁移向导管：
+
 - `<DSH_HOME>/desktop[-dev]/kernels/<version>/` — 内核 legacy 安装位置（`resolve_install_dir` 兜底）
 - `<DSH_HOME>/desktop[-dev]/{active.txt, kernel.pid, port, logs/}` — Shell 状态 / 内核进程锁 / 日志
 - `<DSH_HOME>/desktop[-dev>/plugins.json` — **旧** 插件中央库（已迁到 `<DSH_XLINK_HOME>/dsh-plugins/`）

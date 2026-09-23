@@ -97,7 +97,9 @@ const FILE_BUDGETS = {
   // P2：实例注册表 + 锁 + 端口分配 + runtime/pid 文件读写 + DSH home
   // 子目录创建 + 默认实例迁移钩子。约 470 行（含 11 个测试 setup 与
   // 路径解析注释）。
-  'src-tauri/src/instance.rs': 470,
+  // 2026-09-23：新增内核 home 一次性搬迁（~/.dsh → 实例 DSH_HOME）——递归
+  // 并入 / 原子移动 / 跨卷回退 / 幂等标记，~+64 行，470 → 540。
+  'src-tauri/src/instance.rs': 540,
   // P3：KernelAdapter trait + AdapterCapabilities + DshAdapter 首实现
   // （DSH_HOME / DSH_PROFILE 注入、profile/package.json 与 cordis.patch.yml
   // 模板、resolve_install_dir 双查找）。约 430 行（含 9 个测试）。

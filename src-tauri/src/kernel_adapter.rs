@@ -199,7 +199,8 @@ pub trait KernelAdapter: Send + Sync {
     }
 
     /// 启动实例。`install_root` 是 `resolve_install_dir` 的结果；`node`
-    /// 是 `node` 可执行文件路径。
+    /// 是 `node` 可执行文件路径；`logs_dir` 是内核 stdout/stderr 的落盘
+    /// 目录（`<data_dir>/logs`，日志面板只扫这里）。
     ///
     /// 适配器必须设置 `DSH_HOME` 等环境变量，并把进程的 `cwd` 设到
     /// 实例 workspace。
@@ -208,6 +209,7 @@ pub trait KernelAdapter: Send + Sync {
         record: &InstanceRecord,
         install_root: &Path,
         node: &Path,
+        logs_dir: &Path,
     ) -> Result<std::process::Child, AdapterError>;
 }
 
@@ -336,6 +338,7 @@ impl KernelAdapter for DshAdapter {
         record: &InstanceRecord,
         install_root: &Path,
         node: &Path,
+        logs_dir: &Path,
     ) -> Result<std::process::Child, AdapterError> {
         let bin = install_root.join(Self::KERNEL_BIN_REL);
         if !bin.is_file() {
@@ -406,7 +409,7 @@ impl KernelAdapter for DshAdapter {
         crate::process::adopt_kernel_process(&child);
         if let Err(error) = crate::process::attach_log_drainers(
             &mut child,
-            &paths::shell_logs_dir(crate::paths::ShellMode::current()),
+            logs_dir,
             &crate::kernel::kernel_log_spec(&record.kernel_family, &record.id),
         ) {
             crate::process::terminate_process_tree(&mut child);
@@ -484,6 +487,7 @@ impl KernelAdapter for McodeAdapter {
         record: &InstanceRecord,
         _install_root: &Path,
         _node: &Path,
+        _logs_dir: &Path,
     ) -> Result<std::process::Child, AdapterError> {
         // mock 不启动进程。真实 mcode 接入时在这里 spawn `mcode web` 即可。
         Err(AdapterError::VersionNotInstalled {
@@ -714,7 +718,7 @@ mod tests {
         record.kernel_version = Some("0.1.5-rc.1".into());
         let empty = temp_dir("start-empty");
         let err = adapter
-            .start(&record, &empty, Path::new("/nonexistent/node"))
+            .start(&record, &empty, Path::new("/nonexistent/node"), &empty)
             .expect_err("应拒绝");
         match err {
             AdapterError::VersionNotInstalled { .. } => {}
@@ -752,6 +756,7 @@ mod tests {
                 _record: &InstanceRecord,
                 _install_root: &Path,
                 _node: &Path,
+                _logs_dir: &Path,
             ) -> Result<std::process::Child, AdapterError> {
                 Err(AdapterError::Io("unused".into()))
             }
@@ -829,7 +834,7 @@ mod tests {
         record.kernel_version = Some("0.1.0".into());
         let empty = temp_dir("mcode-start-empty");
         let err = McodeAdapter
-            .start(&record, &empty, Path::new("/nonexistent/node"))
+            .start(&record, &empty, Path::new("/nonexistent/node"), &empty)
             .expect_err("mock 不应真启动");
         match err {
             AdapterError::VersionNotInstalled { .. } => {}
