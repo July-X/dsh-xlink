@@ -480,7 +480,16 @@ fn merge_move_dir(src: &Path, dst: &Path) -> Result<(), String> {
 
 /// 单个条目的移动：优先同卷 `rename`（原子、零拷贝），失败（通常为跨卷）
 /// 回退到复制后删除源。
+///
+/// 移动前先把目标父目录建出来：`rename` 与 `fs::copy` 都不会创建中间目录，
+/// 而实例 home 的骨架不保证含有清单子目录——遗留 home 里的散文件
+/// （`storages/*.json`、`llm-deepseek/files-v3.json`）落到一个目标侧还不
+/// 存在的目录时，rename 与 copy 会先后以 ENOENT 失败，整个搬迁就此中断且
+/// 成功标记不落盘（0.2.2 实测）。
 fn move_item(src: &Path, dst: &Path) -> Result<(), String> {
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("无法创建目录 {parent:?}：{e}"))?;
+    }
     if fs::rename(src, dst).is_ok() {
         return Ok(());
     }
@@ -1146,6 +1155,37 @@ mod tests {
             !paths::instance_dsh_home(KERNEL_FAMILY_MCODE, "default").exists(),
             "mcode 实例不得被建出 dsh 族的搬迁产物"
         );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 散文件落入目标侧还不存在的子目录必须成功：`rename` / `fs::copy` 都
+    /// 不会创建中间目录，`move_item` 必须先把父目录建出来，否则整个搬迁
+    /// 以 ENOENT 中断、成功标记不落盘（0.2.2 实测卡死在
+    /// `storages/*.json` / `llm-deepseek/files-v3.json`）。
+    #[test]
+    fn legacy_home_migration_creates_missing_target_parents() {
+        let home = temp_dir("home-nested-file");
+        let _xlink = scoped_xlink_home(&home);
+        let legacy = home.join("legacy-dsh");
+        fs::create_dir_all(legacy.join("storages")).unwrap();
+        fs::create_dir_all(legacy.join("llm-deepseek")).unwrap();
+        fs::write(legacy.join("storages/workspace.json"), "{}").unwrap();
+        fs::write(legacy.join("llm-deepseek/files-v3.json"), "[]").unwrap();
+
+        migrate_legacy_dsh_home_if_needed(KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID, &legacy)
+            .expect("migration 必须在全新 home 上一次走完");
+
+        let target = paths::instance_dsh_home(KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID);
+        assert_eq!(
+            fs::read_to_string(target.join("storages/workspace.json")).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("llm-deepseek/files-v3.json")).unwrap(),
+            "[]"
+        );
+        assert!(target.join(".dsh-home-migrated").exists(), "标记必须落盘");
+        assert!(!legacy.join("llm-deepseek").exists(), "搬空的源目录应清理");
         std::fs::remove_dir_all(&home).ok();
     }
 }
