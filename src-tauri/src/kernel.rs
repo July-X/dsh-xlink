@@ -2073,7 +2073,8 @@ pub fn kill_pid(pid: u32, port: Option<u16>) {
     {
         let mut cmd = crate::process::command_with_path("taskkill");
         cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
-        let _ = quiet(&mut cmd).status();
+        // quiet 只在 Windows 分支用到：不进顶层 import，避免其他平台报未使用。
+        let _ = crate::process::quiet(&mut cmd).status();
     }
 }
 
