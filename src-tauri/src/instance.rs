@@ -381,6 +381,7 @@ const LEGACY_DSH_HOME_DIRS: &[&str] = &[
     "cache",
     "profiles",
     "llm-deepseek",
+    "synapse",
 ];
 /// 内核拥有的 home 散文件：会话凭据、内核设置、遥测身份、任务板状态。
 const LEGACY_DSH_HOME_FILES: &[&str] = &[
@@ -392,6 +393,7 @@ const LEGACY_DSH_HOME_FILES: &[&str] = &[
     "dsh-taskboard.json",
     "dsh-taskboard-templates.json",
 ];
+const DSH_HOME_MIGRATION_SCHEMA_VERSION: u64 = 2;
 
 /// 把官方内核的默认 home（`~/.dsh`）里的用户数据一次性搬进实例 `DSH_HOME`。
 ///
@@ -399,11 +401,13 @@ const LEGACY_DSH_HOME_FILES: &[&str] = &[
 /// 会话、凭据、profile 都积累在 `~/.dsh`；改造后内核经 `DSH_HOME` 指向实例
 /// 目录，不搬迁等于让用户面对一个空工作台。规则：
 ///
-/// - 成功标记（`<home>/.dsh-home-migrated`）存在直接返回，后续启动零开销；
+/// - `<home>/.dsh-home-migrated` 保存迁移版本；旧版本标记会触发一次补迁；
 /// - 目录项**递归并入**：目标已有的条目以目标为准（多半是外壳接线刚重新
 ///   物化的产物），两侧都是目录则继续下探，缺失的条目整体移入；`node_modules`
 ///   不动（接线的 pnpm 产物，按 package.json 重建）。已移动的条目下次启动
 ///   自动跳过，因此中断后重跑是安全的；
+/// - `settings.yaml.imported` 只在活动 `settings.yaml` 缺失时复制为活动设置，
+///   原归档保留；
 /// - 移动优先同卷 `rename`（原子），失败（跨卷）回退复制后删除；
 /// - `~/.dsh` 里**外壳拥有**的旧数据（`desktop/`、`plugins/`、`skills*`）
 ///   不在清单内，绝不触碰——它们归历史数据迁移面板管。
@@ -420,7 +424,16 @@ pub fn migrate_legacy_dsh_home_if_needed(
     }
     let target = paths::instance_dsh_home(family, id);
     let marker = target.join(".dsh-home-migrated");
-    if marker.exists() {
+    let migration_version = fs::read(&marker)
+        .ok()
+        .and_then(|contents| serde_json::from_slice::<serde_json::Value>(&contents).ok())
+        .and_then(|value| {
+            value
+                .get("schema_version")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .unwrap_or_default();
+    if migration_version >= DSH_HOME_MIGRATION_SCHEMA_VERSION {
         return Ok(());
     }
     fs::create_dir_all(&target).map_err(|e| format!("无法创建实例内核目录 {target:?}：{e}"))?;
@@ -436,9 +449,29 @@ pub fn migrate_legacy_dsh_home_if_needed(
             }
         }
     }
-    // 全新机器（没有遗留 home）同样写标记：后续启动走零开销快路径。
-    atomic_write(&marker, b"{}\n").map_err(|e| format!("无法写入搬迁标记 {marker:?}：{e}"))?;
+    restore_imported_settings_if_missing(&target)?;
+    let marker_content = serde_json::json!({
+        "schema_version": DSH_HOME_MIGRATION_SCHEMA_VERSION,
+    });
+    atomic_write(&marker, format!("{marker_content}\n").as_bytes())
+        .map_err(|e| format!("无法写入搬迁标记 {marker:?}：{e}"))?;
     Ok(())
+}
+
+/// `settings.yaml.imported` 是内核的导入归档，不会被 settings-file 当作活动配置读取。
+/// 已有活动文件始终优先；归档只在活动文件缺失时复制恢复，原件保留供回滚。
+fn restore_imported_settings_if_missing(home: &Path) -> Result<(), String> {
+    let active = home.join("settings.yaml");
+    if active.exists() {
+        return Ok(());
+    }
+    let imported = home.join("settings.yaml.imported");
+    if !imported.is_file() {
+        return Ok(());
+    }
+    fs::copy(&imported, &active)
+        .map(|_| ())
+        .map_err(|error| format!("无法从设置归档恢复内核设置 {imported:?} → {active:?}：{error}"))
 }
 
 /// 把 `src` 目录**递归并入** `dst`：`dst` 缺失的条目整体移入，已有的条目
