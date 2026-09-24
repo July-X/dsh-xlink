@@ -48,8 +48,9 @@ import { instanceStore, familyLabel } from '../instance.js';
 
 const view = computed(() => pluginStore.view);
 
-// 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进标题旁的
-// 信息气泡，与技能页保持一致。
+// 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进卡片头左
+// 侧的小图标气泡里——与技能页保持一致；下方 tab 文字「已安装」与「当前内核」
+// 自身即可承担章节名，卡片头不再单独挂「已安装」标题。
 const installTip =
   '插件统一存放于 ~/.dsh-xlink/dsh-plugins/，切换内核无需重装；安装完成后自动校验是否符合 ' +
   'dsh 插件规范，内核重启后生效。';
@@ -243,12 +244,9 @@ function instanceChipType(row, instanceId) {
     </div>
     <div class="card entity-card">
       <div class="card-head">
-        <h2 class="card-head-with-tip">
-          <span>已安装</span>
-          <el-tooltip placement="top" effect="dark" :content="installTip">
-            <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
-          </el-tooltip>
-        </h2>
+        <el-tooltip placement="top" effect="dark" :content="installTip">
+          <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
+        </el-tooltip>
         <span class="head-meta">
           <el-button text :icon="Switch" :disabled="globalBusy" @click="syncPlugins">同步到所有内核</el-button>
           <el-button
