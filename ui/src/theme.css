@@ -1238,7 +1238,7 @@ main {
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 /* 面板切换动效：轻淡入 + 上浮。out-in 模式下旧面板完全离场后新面板才
@@ -1262,10 +1262,10 @@ main {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px 18px;
+  padding: 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   /* 磨砂玻璃：把卡片背后的整窗网格虚化掉。13.5px 的 1px 细线经 blur 摊成一层
      柔和肌理，与卡片边框、插件行分隔线的交叉（锐利线条相撞）基本消失，同时
      玻璃质感反而更强。只影响卡片内部——页面背景上的网格保持清晰。
@@ -1295,12 +1295,12 @@ main {
   justify-content: space-between;
   gap: 10px;
   flex-wrap: wrap;
-  padding-bottom: 10px;
+  padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
 }
 
 .card > h2 {
-  padding-bottom: 10px;
+  padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -1489,137 +1489,68 @@ main {
   width: 132px;
 }
 
-/* 设置页「内核补丁」卡片：每个补丁一行，主信息 + 状态徽标 + 操作按钮。 */
-.patch-empty {
-  color: var(--muted);
-  font-size: 13px;
-  padding: 6px 0;
+/* 设置卡片的 form-item 同样收紧：默认 22px margin-bottom 让单 form-item 卡片
+   底部留出过多空白。设置卡只一项表单，不需要这个间隔。 */
+.settings-form .el-form-item {
+  margin-bottom: 0;
 }
 
-.patch-section-hint {
-  margin: 0 0 8px;
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--muted);
+/* 设置页「数据迁移」折叠卡片：默认收起，点卡片头整条展开，避免「去迁移」CTA
+   抢戏（启动期一次性弹窗才是首次迁移的主入口）。button 默认样式重置后与
+   .card-head 同款布局，再用 .card-collapsed 把展开前的下边线隐掉，避免
+   收起后留下一条把头部和空白卡身分开的多余线。 */
+.card-head-toggle {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 0 0 10px;
+  width: 100%;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
 }
-
-.patch-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.card-head-toggle:hover {
+  background: rgba(255, 255, 255, 0.025);
 }
-
-.patch-item {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.02);
+.card-head-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+  border-radius: 6px;
 }
-
-/* main 占满整行：actions 移到下方后，description / meta 不再被右侧按钮挤到左半边。 */
-.patch-item-main {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.card.card-collapsed > .card-head-toggle {
+  border-bottom-color: transparent;
+  padding-bottom: 0;
 }
-
-.patch-item-title {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-wrap: wrap;
+.card.card-collapsed > .card-head-toggle:focus-visible {
+  /* 收起态去掉下边线后，focus-visible 的 outline 不能越过卡片底边——offset
+     从 -3px 改成 0，让蓝框贴在卡片内侧。 */
+  outline-offset: 0;
 }
-
-.patch-item-title strong {
-  font-size: 12.5px;
-  color: var(--text);
-  font-weight: 600;
-  line-height: 1.4;
-}
-
-.patch-state {
+.migration-status {
   margin-left: auto;
-}
-
-.patch-desc {
-  margin: 0;
-  font-size: 11.5px;
-  line-height: 1.45;
+  font-size: 12px;
   color: var(--muted);
 }
-
-.patch-meta {
-  margin: 0;
-  font-size: 11px;
+.migration-toggle-icon {
+  font-size: 14px;
   color: var(--muted);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px 12px;
-}
-
-.patch-note {
-  margin: 0;
-  font-size: 11.5px;
-  color: var(--warn);
-  line-height: 1.45;
-}
-
-/* actions 独占底部一行：右对齐，与 main 之间用虚线分隔，避免 description
-   被「应用到当前内核」按钮挤到半边。 */
-.patch-item-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding-top: 6px;
-  border-top: 1px dashed var(--border);
-  gap: 6px;
-}
-
-/* 已并入官方内核的补丁：默认折叠展示，整体降饱和、标题加删除线。 */
-.patch-item-obsolete {
-  opacity: 0.72;
-  background: rgba(255, 255, 255, 0.015);
-}
-.patch-item-obsolete.patch-item-collapsed {
-  padding: 6px 10px;
-}
-.patch-name-obsolete {
-  /* "已并入官方内核" 补丁的 Title 用斜体 + 灰度提示用户它不再是首选项；
-     line-through 删除线在 Element Plus el-tag 堆叠下视觉太弱，italic + 灰度
-     在面板里识别度更高。 */
-  font-style: italic;
-  color: var(--muted);
-}
-.patch-superseded-tag {
-  font-weight: 500;
-}
-.patch-obsolete-summary {
-  margin: 0;
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--muted);
-}
-.patch-toggle {
-  margin-left: auto;
-  font-size: 11.5px;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 4px;
-  height: 18px;
-}
-.patch-toggle .el-icon {
-  font-size: 11px;
+  transition: transform 0.18s ease;
 }
 
 /* 设置页「任务通知」卡片：三个开关一项一行。el-form-item__content 默认
    line-height: 32px（为单行输入框准备），与开关同排的说明 / 试听按钮要自己
    压回正常行高，并把 flex 行撑满可用宽度（默认的 content 是 flex 行，
-   子项不伸缩就会挤在左侧）。 */
+   子项不伸缩就会挤在左侧）。
+   form-item 默认 margin-bottom 22px 在 3 个开关下显得过宽（≈44px 空白），用
+   12px 收紧；卡片自身 gap 已经是 8px，间隔靠 form 内部处理，外部不会留
+   多余空白。 */
+.notify-form .el-form-item {
+  margin-bottom: 12px;
+}
+.notify-form .el-form-item:last-child {
+  margin-bottom: 0;
+}
 .notify-section-hint {
   margin: 0;
   font-size: 11.5px;
@@ -1639,6 +1570,32 @@ main {
 .notify-inline .muted {
   font-size: 11.5px;
   line-height: 1.45;
+}
+
+/* 卡片标题旁的「?」提示图标：替代原来常驻的说明行，鼠标 hover 时弹出 tooltip——
+   卡片能再省一行高度，又保留对功能语义的解释。设置 / 任务通知等卡片共用。 */
+.card-title-with-tip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.card-info-icon {
+  font-size: 14px;
+  color: var(--muted);
+  cursor: help;
+  transition: color 0.15s ease;
+}
+.card-info-icon:hover {
+  color: var(--text);
+}
+
+/* tooltip 内容宽度：设置 / 任务通知卡片的说明都不长，但窗口只有 480px，
+   显式限制 max-width 强制文本在窄列里换行，避免单行过长被右侧裁掉。 */
+.card-info-tooltip {
+  max-width: 280px;
+  line-height: 1.55;
+  word-wrap: break-word;
+  white-space: normal;
 }
 
 /* 未读数：与「全部已读」同排，用品牌色把数字从灰色说明里拎出来。 */
