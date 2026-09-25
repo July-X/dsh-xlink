@@ -267,7 +267,7 @@ const FILE_BUDGETS = {
 // drag-end（每帧同步 I/O 是卡顿主因）。PaneSplitter.vue 重写、LogModal /
 // LogViewerWindow 增加 onSidebarDragEnd 处理、theme.css 加 body.pane-dragging
 // 规则（~+50 行）。三个叠加来源合并治，否则只改一处仍有可见抖动。
-const TOTAL_BUDGET = 26970;
+const TOTAL_BUDGET = 27080;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。
