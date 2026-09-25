@@ -745,6 +745,7 @@ pub fn attach_usage_dock_listener(app: &tauri::AppHandle) {
     };
     let handle = app.clone();
     let main_for_handler = main.clone();
+    let last_apply = std::sync::Mutex::new(None);
     main.on_window_event(move |event| {
         if !matches!(event, tauri::WindowEvent::Moved(_)) {
             return;
@@ -752,6 +753,19 @@ pub fn attach_usage_dock_listener(app: &tauri::AppHandle) {
         let Some(usage) = handle.get_webview_window("usage-viewer") else {
             return;
         };
+        // 合帧：拖动时 Moved 的触发频率远超显示刷新率，把 set_position
+        // 压到 ~60fps，中间位置直接丢弃（后续事件总会带上最新值）。逐
+        // 事件定位会让指令在主线程队列里积压，跟随看起来迟滞、卡顿。
+        {
+            let mut last = last_apply
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let now = std::time::Instant::now();
+            if last.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(15)) {
+                return;
+            }
+            *last = Some(now);
+        }
         let Some((x, y)) = docked_position(&main_for_handler) else {
             return;
         };

@@ -791,9 +791,9 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 .usage-model-list {
   flex: 1;
   min-width: 0;
-  /* 最多直接显示 10 行（行高 ≈25px），其余在列表内滚动——
-     整窗不出现纵向滚动条。 */
-  max-height: 250px;
+  /* 至少可见 10 行；有剩余空间就继续向下撑满（底部不留空档），
+     行数超出在列表内滚动——整窗不出现纵向滚动条。 */
+  min-height: 250px;
   overflow-y: auto;
 }
 .usage-model-row {
