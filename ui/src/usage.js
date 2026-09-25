@@ -26,12 +26,14 @@ const SUMMARY_TTL_MS = 60_000;
 // --- 纯展示函数 ---------------------------------------------------------------
 
 // Token 计数统一走 B / M / K 标准单位（与示意图的标注一致），原值留在
-// tooltip / title 里。1e9 以上一位小数，更大数量级整数位不再膨胀。
+// tooltip / title 里。单位换算后**精确到小数点后两位**（toFixed 截齐，
+// 不做有效数字收缩——统计数字的位数一致性比短更重要）；<1000 的原始
+// 计数本身就是整数，按整数展示。
 export function formatTokens(value) {
   const n = Number(value) || 0;
-  if (n >= 1e9) return trimUnit(n / 1e9) + 'B';
-  if (n >= 1e6) return trimUnit(n / 1e6) + 'M';
-  if (n >= 1e3) return trimUnit(n / 1e3) + 'K';
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(2) + 'K';
   return String(Math.round(n));
 }
 
@@ -94,12 +96,6 @@ export function summarizeDays(days) {
     })
     .sort((a, b) => b.tokens - a.tokens || (a.key < b.key ? -1 : 1));
   return { tokens, requests, activeDays, models };
-}
-
-function trimUnit(x) {
-  if (x >= 100) return String(Math.round(x));
-  const s = x.toFixed(1);
-  return s.endsWith('.0') ? s.slice(0, -2) : s;
 }
 
 export function formatPercent(ratio) {
