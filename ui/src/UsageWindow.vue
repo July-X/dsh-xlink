@@ -835,7 +835,9 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   overflow-y: auto;
   /* 滚动条默认隐藏；悬停列表或滚动期间（`.is-scrolling` 由
      bindScrollAutoHide 维护，800ms 无滚动移除）显形——既不常驻占位，
-     数据被截断也可发现、可滚。 */
+     数据被截断也可发现、可滚。stable 预留槽位：滚动条显形/隐形时行
+     内容不发生 8px 横移（与 .log-tabs 同一套处理）。 */
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
 }
