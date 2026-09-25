@@ -328,6 +328,14 @@ pub fn instance_profile_dir(family: &str, id: &str, profile: &str) -> PathBuf {
     instance_dsh_home(family, id).join("profiles").join(profile)
 }
 
+/// 给定实例的模型用量账目：`<instance_dir>/usage/state.json`（usage.rs）。
+///
+/// 账目跟着实例走（数据源是该实例 DSH home 里的 sessions），与壳的
+/// release/dev 模式无关——两个模式的壳读同一份账，不会各扫各的。
+pub fn instance_usage_state_file(family: &str, id: &str) -> PathBuf {
+    instance_dir(family, id).join("usage").join("state.json")
+}
+
 /// Xlink 自身状态目录：`<xlink_home>/state/`（实例注册表、迁移记录、全局锁）。
 pub fn state_root() -> PathBuf {
     xlink_home().join("state")
