@@ -192,7 +192,7 @@ onMounted(() => {
       <p v-if="!notificationStore.watching" class="muted notify-hint">
         尚未连接内核事件流：内核未运行或已断开，任务完成后不会提醒。
       </p>
-      <p v-if="notificationStore.environmentNote" class="muted notify-hint">
+      <p v-if="notificationStore.notificationsBlocked && notificationStore.environmentNote" class="muted notify-hint">
         {{ notificationStore.environmentNote }}
       </p>
       <el-alert

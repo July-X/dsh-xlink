@@ -103,7 +103,9 @@ pub struct NotificationStatus {
     /// 最近一次订阅或通知失败的可操作说明。
     pub last_error: Option<String>,
     /// 当前运行环境的限制说明（不是错误）。例如 macOS 上未打包的 dev 构建
-    /// 拿不到应用 bundle，系统通知不会以本应用的名义投递。
+    /// 拿不到应用 bundle，系统通知不会以本应用的名义投递——这种情形视为
+    /// `notifications_blocked = true`，UI 据此决定要不要展示 `environment_note`。
+    pub notifications_blocked: bool,
     pub environment_note: Option<String>,
     /// 运行平台（`macos` / `windows`）。
     pub platform: String,
@@ -244,6 +246,7 @@ pub fn status(app: &AppHandle) -> NotificationStatus {
         items: center.items.iter().cloned().collect(),
         watching: center.watching,
         last_error: center.last_error.clone(),
+        notifications_blocked: notifications_blocked(),
         environment_note: environment_note(),
         platform: std::env::consts::OS.to_string(),
     }
@@ -399,7 +402,7 @@ fn platform_alert_sound() -> Result<(), String> {
     Err("当前平台不支持试听提示音：dsh-xlink 只随 macOS 与 Windows 分发。".into())
 }
 
-/// 当前运行环境对系统通知的限制（`None` 表示没有已知限制）。
+/// 当前运行环境对系统通知的限制（`true` = 通知投递会被阻塞）。
 ///
 /// macOS 的系统通知按**应用 bundle** 归属：`tauri dev` / `cargo run` 跑的是
 /// `target/debug/dsh-xlink` 这个裸可执行文件，系统找不到 bundle —— 实测
@@ -407,22 +410,45 @@ fn platform_alert_sound() -> Result<(), String> {
 /// `Unable to find valid bundle`，通知因此不会以 dsh-xlink 的名义出现。这是平台
 /// 约束，壳无法绕过，只能如实告诉用户"用安装版验证"。角标不受影响（它直接作用
 /// 在 Dock / 任务栏上）。
-fn environment_note() -> Option<String> {
+///
+/// 桌面壳用 `notify-rust` 的 `NSUserNotificationCenter` backend，**不**经过
+/// `UNUserNotificationCenter` 的权限授权，因此"macOS 系统设置 → 通知"里看到的
+/// dsh-xlink 永远是无权限状态——在那里勾上也没用。本文把 `notifications_blocked`
+/// 限定为"通知事实上无法投递"的情形（dev 构建 / 后续若切到 UN backend 则检测授权
+/// 状态），避免给打包版用户展示一条误以为是权限问题的说明。
+fn notifications_blocked() -> bool {
     #[cfg(target_os = "macos")]
     {
         let in_bundle = std::env::current_exe()
             .map(|path| path.to_string_lossy().contains(".app/Contents/MacOS/"))
             .unwrap_or(false);
         if !in_bundle {
-            return Some(
-                "当前是未打包的开发构建：macOS 按应用 bundle 归属系统通知，找不到 bundle 时\
-                 通知不会以 dsh-xlink 的名义投递（角标仍然正常）。要验证通知气泡，请用安装版，\
-                 或先执行 `npm run build -- --debug` 再运行 \
-                 `src-tauri/target/debug/bundle/macos/dsh-xlink.app`。"
-                    .into(),
-            );
+            return true;
         }
     }
+    false
+}
+
+/// 当前运行环境的限制说明（仅在 [`notifications_blocked`] 为 `true` 时返回）。
+///
+/// 设置页拿到 `notifications_blocked = true` 但 `environment_note = None` 的
+/// 组合时仍不展示任何说明——保留 `notifications_blocked` 作为开关字段，方便以后
+/// 加更多阻塞场景而不需要同步改前端条件。
+fn environment_note() -> Option<String> {
+    if !notifications_blocked() {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return Some(
+            "当前是未打包的开发构建：macOS 按应用 bundle 归属系统通知，找不到 bundle 时\
+             通知不会以 dsh-xlink 的名义投递（角标仍然正常）。要验证通知气泡，请用安装版，\
+             或先执行 `npm run build -- --debug` 再运行 \
+             `src-tauri/target/debug/bundle/macos/dsh-xlink.app`。"
+                .into(),
+        );
+    }
+    #[allow(unreachable_code)]
     None
 }
 

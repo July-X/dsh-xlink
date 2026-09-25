@@ -32,6 +32,9 @@ export const notificationStore = reactive({
   items: [],
   watching: false,
   lastError: null,
+  // 通知投递被阻塞（macOS dev 构建等）。只有此字段为 true 时 UI 才展示
+  // environmentNote——避免在打包版里误把投递受限说明当作权限问题显示。
+  notificationsBlocked: false,
   environmentNote: null,
   platform: '',
 });
@@ -65,6 +68,9 @@ export function normalizeNotificationStatus(raw) {
     items: (Array.isArray(src.items) ? src.items.slice(0, MAX_ITEMS) : []).map(normalizeItem),
     watching: boolOr(src.watching, false),
     lastError: typeof src.lastError === 'string' && src.lastError.trim() ? src.lastError.trim() : null,
+    // 通知投递被阻塞（如 macOS dev 构建无 bundle）。仅在 `notificationsBlocked`
+    // 为 true 时前端才渲染 environmentNote。
+    notificationsBlocked: boolOr(src.notificationsBlocked, false),
     // 环境限制说明（不是错误）：例如 macOS 上未打包的 dev 构建拿不到应用
     // bundle，系统通知不会以本应用的名义投递。Rust 侧生成，前端只展示。
     environmentNote:
