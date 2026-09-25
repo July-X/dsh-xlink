@@ -116,12 +116,8 @@ function toggleRail() {
   railOverride.value = !railCollapsed.value;
 }
 
-// 侧栏宽度：可拖拽分隔条驱动；持久化到 localStorage 让再次打开保持习惯。
-// 默认 240px，范围 180-560 写在 logs.js::SIDEBAR_WIDTH_DEFAULTS。
-//
-// 关键：拖拽过程中**不**写 localStorage。`saveSidebarWidth` 是同步 I/O，
-// 高 DPI 鼠标 1 秒能触发上百次 mousemove，每次都写磁盘会让拖拽明显卡顿。
-// 这里只在更新响应式宽度（驱动 UI 重绘），松手时再持久化一次。
+// 侧栏宽度：拖拽过程中只更新响应式宽度，松手时再写 localStorage（避免
+// 每帧同步 I/O 卡住 UI）。默认 240px，范围 180-560 在 logs.js 里。
 const SIDEBAR_WIDTH_KEY = 'dsh.logViewer.sidebarWidth';
 const SIDEBAR_WIDTH_MIN = 180;
 const SIDEBAR_WIDTH_MAX = 560;

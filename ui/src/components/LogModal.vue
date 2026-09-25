@@ -55,9 +55,8 @@ function collapseRailOnContentClick() {
   }
 }
 
-// 侧栏宽度：可拖拽分隔条驱动；持久化到 localStorage。
-// 默认 220px：比独立窗口稍窄，留更多空间给日志正文（弹窗本来就窄）。
-// 范围 180-420 写在 logs.js::SIDEBAR_WIDTH_DEFAULTS。
+// 侧栏宽度：拖拽期间只更新响应式宽度，松手时再写 localStorage（同
+// LogViewerWindow 注释，避免每帧同步 I/O 卡住 UI）。默认 220px。
 const SIDEBAR_WIDTH_KEY = 'dsh.logModal.sidebarWidth';
 const SIDEBAR_WIDTH_MIN = 180;
 const SIDEBAR_WIDTH_MAX = 420;
@@ -65,7 +64,9 @@ const SIDEBAR_WIDTH_MAX = 420;
 const sidebarWidth = ref(loadSidebarWidth(SIDEBAR_WIDTH_KEY, 'modal'));
 function onSidebarWidthChange(next) {
   sidebarWidth.value = next;
-  saveSidebarWidth(SIDEBAR_WIDTH_KEY, next);
+}
+function onSidebarDragEnd() {
+  saveSidebarWidth(SIDEBAR_WIDTH_KEY, sidebarWidth.value);
 }
 
 let observer = null;
@@ -189,6 +190,7 @@ onBeforeUnmount(() => {
         :max="SIDEBAR_WIDTH_MAX"
         side="left"
         @update:model-value="onSidebarWidthChange"
+        @drag-end="onSidebarDragEnd"
       />
       <div class="log-body" @click="collapseRailOnContentClick">
         <p v-if="railCollapsed && logModal.activeName" class="log-active-name" :title="logModal.activeName">
