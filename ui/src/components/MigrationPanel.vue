@@ -141,10 +141,10 @@ function toggleSource(src) {
     <!-- Step 0：发现 -->
     <div v-show="migrationStore.activeStep === 0" class="step-body">
       <template v-if="!migrationStore.preview">
-        <p>正在扫描旧版数据…</p>
+        <p class="hint">正在扫描旧版数据…</p>
       </template>
       <template v-else-if="!migrationStore.hasMigratable">
-        <el-empty description="未检测到旧版数据，无需迁移。" />
+        <p class="empty-state">未检测到旧版数据，无需迁移。</p>
       </template>
       <template v-else>
         <table class="preview-table">
@@ -165,36 +165,23 @@ function toggleSource(src) {
       </template>
       <div v-if="historyList.length > 0" class="history">
         <h3>历史迁移</h3>
-        <el-table :data="historyList" stripe>
-          <el-table-column prop="migration_id" label="ID" />
-          <el-table-column label="开始时间">
-            <template #default="scope">
-              {{ formatHistoryTime(scope && scope.row && scope.row.created_at) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="来源">
-            <template #default="scope">
-              {{
-                scope && scope.row && Array.isArray(scope.row.sources)
-                  ? `${scope.row.sources.length} 个来源`
-                  : '—'
-              }}
-            </template>
-          </el-table-column>
-          <el-table-column label="操作">
-            <template #default="scope">
+        <div class="history-list">
+          <div v-for="row in historyList" :key="row.migration_id" class="history-row">
+            <span class="history-cell history-id" :title="row.migration_id">{{ row.migration_id }}</span>
+            <span class="history-cell">{{ formatHistoryTime(row.created_at) }}</span>
+            <span class="history-cell">{{ Array.isArray(row.sources) ? `${row.sources.length} 个来源` : '—' }}</span>
+            <span class="history-cell history-actions">
               <el-button
-                v-if="scope && scope.row"
                 size="small"
                 :icon="RefreshLeft"
                 :loading="isLoading('migrationRollback') && migrationStore.rollbackInFlight"
-                @click="onRollback(scope.row.migration_id)"
+                @click="onRollback(row.migration_id)"
               >
                 回滚
               </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+            </span>
+          </div>
+        </div>
         <p v-if="historyHiddenCount > 0" class="hint">
           仅显示最近一次迁移；更早的 {{ historyHiddenCount }} 次备份仍保留在 backups/ 目录，未删除。
         </p>
@@ -282,17 +269,16 @@ function toggleSource(src) {
     <!-- Step 3：完成 -->
     <div v-show="migrationStore.activeStep === 3" class="step-body finish-body">
       <template v-if="!migrationStore.runResult">
-        <el-empty description="尚未运行迁移。" />
+        <p class="empty-state">尚未运行迁移。</p>
       </template>
       <template v-else>
-        <el-result icon="success" title="数据已迁移">
-          <template #sub-title>
-            <p>
-              迁移 ID：<code>{{ migrationStore.runResult.migration_id }}</code><br />
-              已迁移 {{ runResultItems.length }} 个来源。
-            </p>
-          </template>
-        </el-result>
+        <div class="result-summary">
+          <strong>数据已迁移</strong>
+          <span class="hint">
+            迁移 ID：<code>{{ migrationStore.runResult.migration_id }}</code> ·
+            已迁移 {{ runResultItems.length }} 个来源。
+          </span>
+        </div>
         <table v-if="runResultItems.length > 0" class="preview-table">
           <thead>
             <tr><th>来源</th><th>已迁移</th><th>跳过</th><th>备份</th></tr>
@@ -320,32 +306,84 @@ function toggleSource(src) {
 </template>
 
 <style scoped>
-.panel { padding: 12px 20px; }
-/* 紧凑布局：向导是一次性流程，页内留白按工具页收紧，减少纵向滚动 */
-.migration header h2 { margin: 0; font-size: 20px; }
-.subtitle { color: var(--text-muted); margin: 2px 0 0; }
-.step-body { margin-top: 14px; }
-.step-body h3 { margin: 14px 0 8px; }
-.step-actions { margin-top: 16px; display: flex; gap: 8px; justify-content: flex-end; }
-.preview-table { width: 100%; border-collapse: collapse; margin: 8px 0; }
-.preview-table th, .preview-table td { padding: 6px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+/* 紧凑布局：向导是一次性流程，页内留白按工具页收紧，减少纵向滚动。
+   ElSteps / el-empty / el-result / el-table 都自带较多垂直留白，
+   在 480×1600 的窄窗口里加起来会触发滚动条；这里能省的省掉，
+   不能省的（必须保留可读性的标题、按钮行）就只压 padding。 */
+.panel { padding: 12px 16px; }
+.migration header h2 { margin: 0; font-size: 18px; }
+.subtitle { color: var(--text-muted); margin: 2px 0 0; font-size: 12.5px; }
+.step-body { margin-top: 10px; }
+.step-body h3 { margin: 10px 0 6px; font-size: 13px; }
+.step-actions { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
+.preview-table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 12px; }
+.preview-table th, .preview-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
 .preview-table td { vertical-align: top; }
-.preview-table .path { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text-muted); }
-.hint { color: var(--text-muted); font-size: 13px; }
-.history { margin-top: 20px; }
-.history h3 { margin-bottom: 8px; }
-/* 迁移 ID 是定长单行标识（AutoYYYYMMDD-HHMMSS-xxxx），窄列会把它逐字符
-   竖排折行；时间与操作同理单行显示。el-table 的内容在 .cell 包装里，
-   scoped 样式需要 :deep 穿透 */
-.history :deep(.el-table .cell) { white-space: nowrap; }
-.credentials-note { margin-top: 14px; padding: 10px 16px; background: var(--surface-soft); border-radius: 6px; color: var(--text-muted); }
+.preview-table .path { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--text-muted); }
+.hint { color: var(--text-muted); font-size: 12px; margin: 6px 0 0; }
+.empty-state {
+  margin: 16px 0;
+  padding: 18px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  background: rgba(255, 255, 255, 0.015);
+}
+.result-summary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 6px 0 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.result-summary .hint { margin: 0; }
+.history { margin-top: 16px; }
+.history h3 { margin: 0 0 6px; font-size: 13px; }
+/* 历史迁移本来用 el-table，但表头 + 单元格 padding 在窄列里把整行顶到 36px+
+   高，且自带一些不能改的垂直留白。改用 grid 布局直接控制紧凑度。 */
+.history-list {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 0.8fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.history-row + .history-row {
+  border-top: 1px solid var(--border);
+}
+.history-cell {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+}
+.history-id {
+  font-family: ui-monospace, monospace;
+  color: var(--text);
+}
+.history-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.credentials-note { margin-top: 12px; padding: 8px 12px; background: var(--surface-soft); border-radius: 6px; color: var(--text-muted); font-size: 12px; }
 /* 来源勾选纵向排布（原先靠 el-checkbox-group 的布局习惯，去掉 group 后自己排） */
-.source-options { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
-/* 完成页：el-result 自带 40px 上下留白 + 64px 大图标，是这屏被拉长的主因；
-   收紧到与其它工具页一致的密度 */
-.finish-body :deep(.el-result) { padding: 0 0 4px; }
-.finish-body :deep(.el-result__icon svg) { width: 44px; height: 44px; }
-.finish-body :deep(.el-result__title) { margin-top: 10px; font-size: 17px; }
-.finish-body :deep(.el-result__subtitle) { margin-top: 6px; }
-.finish-body :deep(.el-result__subtitle p) { margin: 0; line-height: 1.6; }
+.source-options { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+/* ElSteps 的 ::v-deep 收紧：simple 模式默认步骤块高度约 40px+，这里压到 ~28px */
+.migration :deep(.el-step__head) { margin-bottom: 2px; }
+.migration :deep(.el-step__title) { font-size: 13px; }
+.migration :deep(.el-step__description) { font-size: 11.5px; }
+.migration :deep(.el-step.is-simple .el-step__arrow) { margin: 0 8px; }
 </style>
