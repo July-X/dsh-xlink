@@ -1,6 +1,6 @@
 # DeepSeek Harness 桌面端（dsh-xlink）
 
-[![Desktop release (dsh-xlink)](https://github.com/July-X/dsh-xlink/actions/workflows/desktop-release.yml/badge.svg)](https://github.com/July-X/dsh-xlink/actions/workflows/desktop-release.yml)
+[![Latest release](https://img.shields.io/github/v/release/July-X/dsh-xlink)](https://github.com/July-X/dsh-xlink/releases/latest)
 
 基于 [Tauri v2](https://tauri.app/zh-cn/) 的多内核桌面外壳。把不同内核的 Web UI（当前已支持 DeepSeek Harness，未来加入 mcode 等）装到桌面上、按实例跑起来、互不干扰地共存。外壳只准备路径和环境变量，不改内核代码——内核怎么跑是内核自己的事，外壳只负责「给它一个干净的家、装好扩展、看护生命」。跟着官方 [`deepseek-ai/deepseek-harness`](https://github.com/deepseek-ai/deepseek-harness) 的 `dsh-v*` tag 一键装、切换、删。
 
