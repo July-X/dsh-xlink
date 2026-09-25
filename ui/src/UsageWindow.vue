@@ -793,10 +793,11 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   display: flex;
   gap: 24px;
   align-items: stretch;
-  /* 模型用量区域保持稳定高度，避免列表内容把整段撑开。 */
-  height: 252px;
-  flex: none;
-  min-height: 0;
+  /* 明细高度随窗口剩余空间走：至少 252px（10 行）保底，剩余空间继续
+     向下吃满、一屏看更多行；超高时列表内部滚动，overflow hidden 兜底
+     避免顶出整窗滚动条。 */
+  flex: 1 1 auto;
+  min-height: 252px;
   overflow: hidden;
 }
 .usage-donut-wrap {
