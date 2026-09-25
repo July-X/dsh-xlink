@@ -2887,6 +2887,13 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   margin-left: -1px;
 }
 
+/* 拖拽期间关掉 width transition：0.2s 缓动在 60Hz 拖拽时会不断重启动画；
+   will-change 把 width 提到合成层。松手后由 PaneSplitter 移除 body 类。 */
+body.pane-dragging .log-tabs {
+  transition: none !important;
+  will-change: width;
+}
+
 /* 独立窗口：日志正文为空时给一个清晰的占位（避免显示「读取中…」却什么都没）。 */
 .logwin-empty {
   flex: 1;
