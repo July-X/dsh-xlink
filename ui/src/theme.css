@@ -2790,7 +2790,9 @@ body.pulse-active > [data-titlebar-pulse='2'] {
 
 .log-main {
   display: flex;
-  gap: 10px;
+  /* 间距由 PaneSplitter 承担：去掉 gap 让侧栏与正文紧贴分隔条，
+     拖拽时不会出现「间隙忽大忽小」的尴尬。 */
+  gap: 0;
   height: calc(100vh - 190px);
   min-height: 320px;
 }
@@ -2808,7 +2810,8 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 16px;
+  /* 8/12 紧凑：让出纵向空间给正文阅读；缩窗后留更多余地给按钮 / 标题。 */
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-soft);
 }
@@ -2827,33 +2830,230 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  margin: 12px 16px 16px;
+  /* 占满显示区域：去掉外边距 / 边框 / 圆角，仅靠更暗的背景与侧栏区分；
+     内部 padding 3px：四周只留极窄衬边（按反馈从 8/14 收紧）。
+     滚动条样式在 .log-content 里。 */
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0.24);
+  padding: 3px;
+}
+
+/* 独立日志窗口：分类侧栏 + 正文横排（与 LogModal 复用同一套侧栏样式）。 */
+.logwin-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  /* 0 外边距让正文贴边填充到底 / 到右；间距由分隔条承担而非 gap，
+     避免拖拽时 gap 也吃宽度。 */
+  padding: 0;
+}
+
+/* 拖拽分隔条：6px 命中区，中间一根 1px 细线作为视觉分隔。
+   鼠标悬停或拖拽时命中区淡蓝背景、细线变 accent 色。 */
+.pane-splitter {
+  flex-shrink: 0;
+  width: 6px;
+  cursor: col-resize;
+  position: relative;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.pane-splitter:hover {
+  background: rgba(79, 140, 255, 0.08);
+}
+
+.pane-splitter.dragging {
+  background: rgba(79, 140, 255, 0.16);
+}
+
+.pane-splitter-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  margin-left: -0.5px;
+  background: rgba(255, 255, 255, 0.1);
+  transition: background 0.15s ease, width 0.15s ease;
+}
+
+.pane-splitter:hover .pane-splitter-grip,
+.pane-splitter.dragging .pane-splitter-grip {
+  background: var(--accent);
+  width: 2px;
+  margin-left: -1px;
+}
+
+/* 独立窗口：日志正文为空时给一个清晰的占位（避免显示「读取中…」却什么都没）。 */
+.logwin-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.logwin-empty .logwin-empty-hint {
+  font-size: 11.5px;
+  opacity: 0.7;
+}
+
+.logwin-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.logwin-category {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 8px;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  background: rgba(0, 0, 0, 0.28);
-  padding: 12px 14px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .log-tabs {
   flex-shrink: 0;
-  width: 168px;
+  /* 填满所在行 flex 容器的高度（默认 align-self: stretch），
+     这样 overflow-y: auto 才会真出滚动条而不是被内容顶高。 */
+  min-height: 0;
+  align-self: stretch;
+  /* 宽度由父组件通过 `--sidebar-width` 注入：主面板 168px 起步，
+     独立窗口 240px 起步并允许用户拖拽调整。`.collapsed` 走 34px 细轨。 */
+  width: var(--sidebar-width, 168px);
   overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  padding: 4px 0 8px;
+  /* 拖拽分隔条改变宽度时不要把日志正文闪一下：宽度过渡只针对折叠态切换 */
   transition: width 0.2s ease;
 }
 
-/* 收缩态：细轨只留展开按钮，宽度让位给日志正文。 */
+/* 滚动条默认透明、滚动期间才显形（`.is-scrolling` 由滚动事件加上） */
+.log-tabs {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.log-tabs::-webkit-scrollbar {
+  width: 8px;
+}
+
+.log-tabs::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.log-tabs::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.2s ease;
+}
+
+.log-tabs.is-scrolling {
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+
+.log-tabs.is-scrolling::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.log-tabs.is-scrolling::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+
 .log-tabs.collapsed {
-  width: 34px;
+  /* 折叠后只放 toggle 按钮：宽 40px 容纳 8px 左缘 + 28px 按钮 + 4px 右缘，
+     之前 34px 会被按钮顶出 2px（按钮被裁掉，右边面板因此显得侵入）。 */
+  width: 40px;
   align-items: center;
   overflow: hidden;
+  padding: 4px 0;
+  /* 与正文之间一根细分隔线：折叠态不再有 PaneSplitter 视觉锚点，靠这条
+     border 把侧栏「收起的细轨」明确成一栏，而非让正文暗背景延伸到侧栏位。 */
+  border-right: 1px solid var(--border);
+}
+
+/* 分类侧栏：每个 .log-group = 一类 */
+.log-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 8px;
+}
+
+.log-group:first-child {
+  padding-top: 4px;
+}
+
+/* 分组之间用虚线分隔（首组不加），比单纯 padding 更能让用户感受到「换了一类」 */
+.log-group + .log-group {
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.log-group-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(154, 164, 191, 0.95);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 0 12px 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 分组标题前一根 accent 色细条 —— 比纯文字更显眼，与文件签的整块填色形成对比 */
+.log-group-title::before {
+  content: '';
+  width: 3px;
+  height: 10px;
+  background: var(--accent);
+  border-radius: 1px;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
+/* 当前激活文件所在的那一组，色条加深发光 */
+.log-group:has(.log-tab[aria-selected='true']) .log-group-title::before {
+  opacity: 1;
+  box-shadow: 0 0 6px rgba(79, 140, 255, 0.6);
+}
+
+.log-tab-name {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  width: 100%;
+  /* 文件名等宽字体 —— 路径感更强，也与正文日志字体一致 */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
 }
 
 .rail-toggle {
   display: grid;
   place-items: center;
+  /* 与容器左缘空出 8px：侧栏里只有它没有内边距，贴边时会顶到窗口边框 */
+  margin-left: 8px;
   width: 28px;
   height: 28px;
   flex-shrink: 0;
@@ -2902,29 +3102,37 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
-  color: var(--muted);
+  /* 默认偏亮，让文件签明显区别于分组标题（标题是 `--muted` 灰、
+   * uppercase、10px） */
+  color: var(--text);
   font-family: inherit;
   font-size: 12px;
   text-align: left;
   cursor: pointer;
   word-break: break-all;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+/* 未激活态：暗一档，hover / 选中才亮 —— 避免几十个文件名挤在一起太刺眼 */
+.log-tab:not([aria-selected='true']):not(:hover) {
+  color: rgba(232, 236, 247, 0.72);
 }
 
 .log-tab:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.06);
   color: var(--text);
 }
 
 .log-tab[aria-selected='true'] {
-  background: rgba(79, 140, 255, 0.14);
-  border-color: rgba(79, 140, 255, 0.4);
+  background: rgba(79, 140, 255, 0.16);
+  border-color: rgba(79, 140, 255, 0.55);
   color: var(--text);
 }
 
 .log-tab-size {
   font-size: 10.5px;
-  opacity: 0.7;
+  opacity: 0.65;
+  font-family: inherit;
 }
 
 .log-content {
@@ -2934,7 +3142,40 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   border-radius: 10px;
   border: 1px solid var(--border);
   background: rgba(0, 0, 0, 0.28);
-  padding: 12px 14px;
+  /* 8/14：与独立窗口的 .logwin-content 保持同一节奏；之前 12/14 给小日志
+     文件留太多呼吸感，缩窗后空隙更显眼。 */
+  padding: 8px 14px;
+  /* 滚动期间才显滚动条（`.is-scrolling` 由滚动事件加上，800ms 后移除） */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.log-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.log-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.log-content::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.2s ease;
+}
+
+.log-content.is-scrolling {
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+
+.log-content.is-scrolling::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.log-content.is-scrolling::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
 }
 
 /* --- 事故面板 --- */

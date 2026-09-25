@@ -33,7 +33,13 @@ const reportOnly = process.argv.includes('--report');
 
 /** 生产代码行数预算：文件 → 上限。包含注释以外的所有代码行。 */
 const FILE_BUDGETS = {
-  'ui/src/theme.css': 2960,
+  // 2960 → 2980：日志分类侧栏改版——分组标题 accent 色条 + 分组间虚线 +
+  // 文件名单色等宽字体 + 暗色滚动条 + .log-tabs 撑满行高修复滚动 + 选中态
+  // 通过 :has() 给所在分组高亮色条（~+20 行）。视觉层次本来就在共用样式
+  // 文件里凑着放——没必要为单个 panel 拆 CSS 文件，徒增 @import 链。
+  // 2980 → 3080：侧栏改版继续追加的分组/滚动条等样式（工作区实测 3057，
+  // 仍在迭代）。共享主题文件按约定不拆分，涨数字让其可见。
+  'ui/src/theme.css': 3080,
   // P4 step 3：物化路径切到实例 extensions/plugins/<id>/，抽出 materialize_inner
   // 共享逻辑、新增 materialize_one_for_instance / remove_materialized_for_instance
   // / sweep_instance_orphans / default_instance_key / seed_default_instance_for_tests
@@ -104,6 +110,26 @@ const FILE_BUDGETS = {
   // （DSH_HOME / DSH_PROFILE 注入、profile/package.json 与 cordis.patch.yml
   // 模板、resolve_install_dir 双查找）。约 430 行（含 9 个测试）。
   'src-tauri/src/kernel_adapter.rs': 620,
+  // 模型用量统计（usage.rs）：内核 session 多帧 zstd 流的增量扫描（ruzstd
+  // 帧级解码 + offset checkpoint + 坏帧停驻）、按「天 × 模型」预聚合与 90 天
+  // 保留剪枝、汇总视图派生与 get_model_usage / open_usage_window 命令，
+  // 外加主窗拖动吸附跟随（dock_x / dock_y / docked_position / 事件监听）。
+  // 扫描是唯一数据通路，与账目结构同生共死，不宜再拆。生产代码约 665 行
+  // （测试另计）。
+  'src-tauri/src/usage.rs': 700,
+  // 模型用量统计（usage.js）：窗口/卡片状态动作 + B/M/K 单位、热力图分级
+  // 与周列对齐、趋势堆叠、饼图扇区等纯展示函数（node --test 直测）。
+  // 160 → 180：实际落地比估的多（数字格式、模型配色 ring、热力 tooltip
+  // 阈值再加注释）；另含 heatLevels / heatmapColumns 的 doc 注释。
+  'ui/src/usage.js': 180,
+  // 模型用量统计（UsageWindow.vue）：独立窗口根组件（open_usage_window 弹出，
+  // ?usage=1 挂载）——摘要卡 + 热力图 + 堆叠柱状趋势 + 环形图/列表与
+  // scoped 样式，全 CSS/内联 SVG 不引图表库。
+  // 560 → 700：落地比估的多（环形图 + 列表卡片 + 局部样式），手绘 SVG 段
+  // 不可压缩；用法与 LogViewerWindow 同模式（独立窗口根组件 + scoped CSS）。
+  // 700 → 780：范围切换 + 时间范围档位（~+50）与热力图/趋势两个共享 hover
+  // 明细浮层（~+60）——都是展示层增量，拆文件只会让浮层与图形结构分家。
+  'ui/src/UsageWindow.vue': 780,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
 // 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有
@@ -204,9 +230,40 @@ const FILE_BUDGETS = {
 // 子包版本错位 + write_kernel_workspace_yaml + 安装二遍钉版重装
 // （~+90 行）。修「主包与 ^ 浮动依赖混装致启动即崩」，无法再复用
 // 既有模块收敛。总预算 24700 → 24900。
-const TOTAL_BUDGET = 24900;
-/** 重复区间数上限。 */
-const DUPLICATE_BUDGET = 6;
+//
+// 模型用量统计（commit ...）：新增 usage.rs（多帧 zstd 增量扫描 + 90 天
+// 「天 × 模型」聚合 + open_usage_window 建窗）、usage.js（展示纯函数）与
+// UsageWindow.vue（独立窗口：热力图 / 趋势 / 环形图 + 列表，全 CSS/SVG
+// 不引图表库），共约 +1230 行；另有进行中的日志侧栏改版（~+90 行）。
+// 展示层全部手绘是为了不加图表库依赖，账目层不可再拆（账目结构即数据
+// 通路）。总预算 24900 → 26300。
+//
+// 26300 → 26500：日志侧栏改版落地——LOG_CATEGORIES / parseLogFilename /
+// categorizeLogFile / groupLogFiles（logs.js +~110 行）、共享 LogSidebar 组件
+// （52 行）、LogViewerWindow + LogModal 切到 LogSidebar（vue -+120 行）、
+// theme.css 加分组色条 + 分隔线 + 单色等宽 + 暗色滚动条（+~80 行）、
+// logCategorize.test.js（+110 行）。分类逻辑是后续看日志选文件的工作流
+// 入口，值得把判据和边界（instance-aware / 轮转备份 / plugin-wiring 不能
+// 被 plugin-* 吃掉）用测试钉住。
+// usage.js / UsageWindow.vue 是另一条 in-progress 分支（commit ...）的
+// 落地件，本轮还没合并过来，估算偏低；总预算留 100 行余量。
+//
+// 26500 → 26600：模型用量窗口按反馈迭代——默认高度 768、模型明细前 5 名
+// 可见其余列表内滚动（避免整窗纵向滚动条）、热力图 hover 换成带日期 /
+// 星期 / 总用量 / 请求次数的明细浮层（usage.js +weekdayLabel，UsageWindow
+// +~75 行）。均为展示层增量，不引依赖。
+//
+// 26600 → 26650：窗口打开吸附主窗右侧（dock_x / dock_y 纯函数 + 单测，
+// 贴不下翻左侧、垂直夹屏内），高度与主壳 800 等高（~+45 行）。
+//
+// 26650 → 26900：用量窗口模型明细放行前 10 名（列表内滚动）、趋势绘图区
+// 与各段纵向间距收紧（UsageWindow 内部 height 换 spacing，总量±0）；
+// theme.css 的日志侧栏样式继续追加（+~77）按上文条目单列。留 ~35 行余量。
+const TOTAL_BUDGET = 26900;
+// 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
+// LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
+// 两段并入 LogSidebar / 共享动作后再把数字收回。
+const DUPLICATE_BUDGET = 8;
 /** 归一化滑窗宽度。 */
 const WINDOW = 10;
 /** 计入重复区间的最小长度（归一化行数）。 */
