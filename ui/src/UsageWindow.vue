@@ -6,9 +6,10 @@
 // 全部 CSS / 内联 SVG，不引图表库。支持时间范围切换（15 ~ 90 天，展示
 // 层切片，不触发重扫）；趋势柱状图 hover 出模型明细浮层。窗口打开即强制
 // 重扫（usage.js 的 refreshUsage）；ℹ️ tooltip 是 90 天保留策略的告知位。
-import { computed, onMounted, ref, watchEffect } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue';
 import { Refresh, InfoFilled } from '@element-plus/icons-vue';
 import { ioActive, isLoading, withLoading } from './loading.js';
+import { bindScrollAutoHide } from './logs.js';
 import {
   usage,
   refreshUsage,
@@ -126,6 +127,16 @@ function partColor(key) {
 
 const trendPlot = ref(null);
 const tipEl = ref(null);
+
+// 模型明细的滚动条只在滚动期间显形（与日志正文同一套 is-scrolling 交互，
+// 共享 logs.js::bindScrollAutoHide）；列表在 data 到达后才挂载，watch 引用。
+const listEl = ref(null);
+let unbindListScroll = null;
+watch(listEl, (el) => {
+  unbindListScroll?.();
+  unbindListScroll = bindScrollAutoHide(el);
+});
+onUnmounted(() => unbindListScroll?.());
 const hover = ref(null); // { row, x, y }，x/y 为光标在 plot 内的坐标
 
 function showHover(row, event) {
@@ -401,7 +412,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
                   <text x="60" y="72" class="usage-donut-label">Tokens 用量</text>
                 </svg>
               </div>
-              <div class="usage-model-list">
+              <div ref="listEl" class="usage-model-list">
                 <div v-for="(m, index) in listRows" :key="m.key" class="usage-model-row">
                   <i class="usage-model-chip" :style="{ background: modelColor(index) }"></i>
                   <span class="usage-model-name" :title="m.key">{{ m.model || m.key }}</span>
@@ -806,6 +817,29 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
      行数超出在列表内滚动——整窗不出现纵向滚动条。 */
   min-height: 0;
   overflow-y: auto;
+  /* 滚动期间才显滚动条（`.is-scrolling` 由 bindScrollAutoHide 加上，
+     800ms 无滚动移除），与日志正文同一套交互节奏。 */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.usage-model-list.is-scrolling {
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+.usage-model-list::-webkit-scrollbar {
+  width: 8px;
+}
+.usage-model-list::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.2s ease;
+}
+.usage-model-list.is-scrolling::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+}
+.usage-model-list.is-scrolling::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
 }
 .usage-model-row {
   display: flex;
