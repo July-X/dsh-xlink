@@ -23,7 +23,6 @@ const SAVE_KEY = 'notificationSave';
 const MARK_READ_KEY = 'notificationMarkRead';
 const TEST_KEY = 'notificationTest';
 const SOUND_TEST_KEY = 'notificationSoundTest';
-const REFRESH_KEY = 'notificationRefresh';
 
 export const notificationStore = reactive({
   enabled: FALLBACKS.enabled,
@@ -102,17 +101,11 @@ function currentSettings() {
   };
 }
 
-const loadStatus = createStatusSource('notification_status', applyStatus, (e, manual) => {
-  // 自动路径（进入设置页）保持静默：保留上一次的值，下次打开再试。
-  if (manual) {
-    toastActionError('读取通知状态失败', e, '请检查内核是否在运行，然后点「刷新」重试', 6000);
-  }
-});
+const loadStatus = createStatusSource('notification_status', applyStatus);
 
-/// 读取通知状态；`manual` 为 true 时挂按钮 loading 并把失败讲清楚。
-/// 同一时刻只保留一个请求：面板打开与手动刷新会合并成同一次读取。
-export function refreshNotificationStatus(manual = false) {
-  return manual ? withLoading(REFRESH_KEY, () => loadStatus(true)) : loadStatus(false);
+/// 读取通知状态。同一时刻只保留一个请求：面板打开时会合并多次触发。
+export function refreshNotificationStatus() {
+  return loadStatus();
 }
 
 /// 保存三个开关（未传的字段沿用当前值）。乐观回写：开关必须在点击的同一帧就
