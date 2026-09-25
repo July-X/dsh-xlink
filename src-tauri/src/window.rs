@@ -22,53 +22,121 @@ const DRAG_START_QUIET: Duration = Duration::from_millis(400);
 
 use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow, WindowEvent};
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowSize {
+    pub width: f64,
+    pub height: f64,
+}
+
+pub const USAGE_VIEWER_LABEL: &str = "usage-viewer";
+pub const USAGE_VIEWER_SIZE: WindowSize = WindowSize {
+    width: 760.0,
+    height: 800.0,
+};
+pub const LOG_VIEWER_LABEL: &str = "log-viewer";
+pub const LOG_VIEWER_SIZE: WindowSize = WindowSize {
+    width: 960.0,
+    height: 720.0,
+};
+
 /// 吸附 X（物理像素）：优先把窗口贴在主窗右侧；右侧放不下就翻到主窗左侧。
-/// `mon_x + mon_w` 是当前显示器右缘（含多显示器负坐标场景）。
 pub fn dock_x(main_x: i32, main_w: i32, win_w: i32, mon_x: i32, mon_w: i32) -> i32 {
-    let right = main_x + main_w;
-    if right + win_w <= mon_x + mon_w {
+    let monitor_right = mon_x.saturating_add(mon_w);
+    let right = main_x.saturating_add(main_w);
+    let preferred = if right.saturating_add(win_w) <= monitor_right {
         right
     } else {
-        main_x - win_w
-    }
+        main_x.saturating_sub(win_w)
+    };
+    clamp_position(preferred, mon_x, mon_w, win_w)
 }
 
 /// 吸附 Y（物理像素）：与主窗顶对齐；底部超出行程就上移、夹在屏内。
 pub fn dock_y(main_y: i32, win_h: i32, mon_y: i32, mon_h: i32) -> i32 {
-    if main_y + win_h > mon_y + mon_h {
-        mon_y + mon_h - win_h
+    let preferred = if main_y.saturating_add(win_h) > mon_y.saturating_add(mon_h) {
+        mon_y.saturating_add(mon_h).saturating_sub(win_h)
     } else {
         main_y
+    };
+    clamp_position(preferred, mon_y, mon_h, win_h)
+}
+
+fn clamp_position(position: i32, monitor_start: i32, monitor_size: i32, window_size: i32) -> i32 {
+    let monitor_end = monitor_start.saturating_add(monitor_size);
+    let max_position = monitor_end.saturating_sub(window_size);
+    if max_position < monitor_start {
+        monitor_start
+    } else {
+        position.clamp(monitor_start, max_position)
     }
 }
 
 /// 计算指定尺寸下的吸附位置（物理像素）。主窗不在（理论上不会）或取不
 /// 到显示器信息时返回 `None`，调用方据此决定是否落到默认居中。
-pub fn compute_dock_position(main: &WebviewWindow, win_w: f64, win_h: f64) -> Option<(i32, i32)> {
+pub fn compute_dock_position(main: &WebviewWindow, window_size: WindowSize) -> Option<(i32, i32)> {
     let scale = main.scale_factor().ok()?;
     let pos = main.outer_position().ok()?;
-    let size = main.outer_size().ok()?;
+    let main_size = main.outer_size().ok()?;
     let monitor = main.current_monitor().ok().flatten()?;
     let m_pos = monitor.position();
     let m_size = monitor.size();
-    let width_phys = (win_w * scale) as i32;
-    let height_phys = (win_h * scale) as i32;
-    let x = dock_x(
-        pos.x,
-        size.width as i32,
+    let width_phys = (window_size.width * scale) as i32;
+    let height_phys = (window_size.height * scale) as i32;
+    Some(compute_dock_position_physical(
+        pos,
+        main_size,
         width_phys,
-        m_pos.x,
-        m_size.width as i32,
-    );
-    let y = dock_y(pos.y, height_phys, m_pos.y, m_size.height as i32);
-    Some((x, y))
+        height_phys,
+        *m_pos,
+        *m_size,
+    ))
 }
 
-/// 把屏幕物理坐标换算成 builder 期望的逻辑坐标。`compute_dock_position`
+fn compute_dock_position_physical(
+    main_position: PhysicalPosition<i32>,
+    main_size: tauri::PhysicalSize<u32>,
+    window_width: i32,
+    window_height: i32,
+    monitor_position: PhysicalPosition<i32>,
+    monitor_size: tauri::PhysicalSize<u32>,
+) -> (i32, i32) {
+    let x = dock_x(
+        main_position.x,
+        main_size.width as i32,
+        window_width,
+        monitor_position.x,
+        monitor_size.width as i32,
+    );
+    let y = dock_y(
+        main_position.y,
+        window_height,
+        monitor_position.y,
+        monitor_size.height as i32,
+    );
+    (x, y)
+}
+
+fn compute_dock_position_for_target(
+    main: &WebviewWindow,
+    target_size: tauri::PhysicalSize<u32>,
+) -> Option<(i32, i32)> {
+    let main_position = main.outer_position().ok()?;
+    let main_size = main.outer_size().ok()?;
+    let monitor = main.current_monitor().ok().flatten()?;
+    Some(compute_dock_position_physical(
+        main_position,
+        main_size,
+        target_size.width as i32,
+        target_size.height as i32,
+        *monitor.position(),
+        *monitor.size(),
+    ))
+}
+
 /// 返回物理像素，WebviewWindowBuilder 的 `position` 要的是逻辑像素。
-pub fn dock_position_logical(main: &WebviewWindow, win_w: f64, win_h: f64) -> Option<(f64, f64)> {
+pub fn dock_position_logical(main: &WebviewWindow, size: WindowSize) -> Option<(f64, f64)> {
     let scale = main.scale_factor().ok()?;
-    let (x, y) = compute_dock_position(main, win_w, win_h)?;
+    let (x, y) = compute_dock_position(main, size)?;
     Some((x as f64 / scale, y as f64 / scale))
 }
 
@@ -79,7 +147,7 @@ pub fn dock_position_logical(main: &WebviewWindow, win_w: f64, win_h: f64) -> Op
 ///
 /// 副窗自身的移动不经过这条路径（事件源是 `main`），不存在两窗互相拉扯
 /// 的回环；主窗固定不可缩放，`Resized` 也不需要处理。
-pub fn attach_dock_listener(app: &AppHandle, target_label: &'static str, win_w: f64, win_h: f64) {
+pub fn attach_dock_listener(app: &AppHandle, target_label: &'static str) {
     let Some(main) = app.get_webview_window("main") else {
         return;
     };
@@ -123,7 +191,10 @@ pub fn attach_dock_listener(app: &AppHandle, target_label: &'static str, win_w: 
         *last_apply
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(now);
-        let Some((x, y)) = compute_dock_position(&main_for_handler, win_w, win_h) else {
+        let Ok(target_size) = target.outer_size() else {
+            return;
+        };
+        let Some((x, y)) = compute_dock_position_for_target(&main_for_handler, target_size) else {
             return;
         };
         let _ = target.set_position(PhysicalPosition::new(x, y));
@@ -154,5 +225,31 @@ mod tests {
         assert_eq!(dock_y(300, 800, 0, 1000), 200);
         // 恰好放得下（底边贴齐屏幕底缘）：原样对齐。
         assert_eq!(dock_y(-200, 800, -400, 1000), -200);
+    }
+
+    #[test]
+    fn dock_position_clamps_oversized_windows_to_monitor_origin() {
+        assert_eq!(dock_x(100, 480, 3_000, 0, 1_920), 0);
+        assert_eq!(dock_y(100, 2_000, 0, 1_080), 0);
+    }
+
+    #[test]
+    fn registered_window_specs_keep_labels_and_default_sizes_together() {
+        assert_eq!(USAGE_VIEWER_LABEL, "usage-viewer");
+        assert_eq!(
+            USAGE_VIEWER_SIZE,
+            WindowSize {
+                width: 760.0,
+                height: 800.0
+            }
+        );
+        assert_eq!(LOG_VIEWER_LABEL, "log-viewer");
+        assert_eq!(
+            LOG_VIEWER_SIZE,
+            WindowSize {
+                width: 960.0,
+                height: 720.0
+            }
+        );
     }
 }
