@@ -1371,6 +1371,11 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
 /// 建，这样打开另一个文件时不需要跨窗口消息；而该窗口是只读的，丢
 /// 掉一个查看器也不会损失任何东西。
 ///
+/// **吸附 + 移动跟随**：与 `usage::open_usage_window` 共用 `crate::window`
+/// 的 dock 算法——打开时贴在主窗右侧、顶边对齐（与用量窗口并排的两栏工作
+/// 区），主窗拖动时由 `window::attach_dock_listener`（lib.rs setup 阶段挂
+/// 上）按合帧窗口持续 set_position，保持吸附状态。
+///
 /// 页面是同一个 SPA：`ui/src/main.js` 在 `?log=<name>` 出现时挂载
 /// 的是独立查看器，而不是管理面板；查看器自己调用 `read_log_file`
 /// （capability `log-viewer.json` 仅授予该命令）。名称在这里也会经
@@ -1392,18 +1397,26 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
             }
             let encoded: String = url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
             let backdrop = chrome_backdrop(&handle);
-            let result = WebviewWindowBuilder::new(
+            // 吸附定位与用量窗口共用一套算法：贴主窗右侧、顶边对齐，
+            // 右侧放不下翻左侧；物理坐标换算成逻辑坐标交给 builder。
+            let dock = handle.get_webview_window("main").and_then(|main| {
+                crate::window::dock_position_logical(&main, LOG_WINDOW_WIDTH, LOG_WINDOW_HEIGHT)
+            });
+            let mut builder = WebviewWindowBuilder::new(
                 &handle,
                 "log-viewer",
                 WebviewUrl::App(format!("index.html?log={encoded}").into()),
             )
             .title(format!("日志 - {name}"))
-            .inner_size(960.0, 720.0)
+            .inner_size(LOG_WINDOW_WIDTH, LOG_WINDOW_HEIGHT)
             .resizable(true)
-            .background_color(backdrop)
-            .build()
-            .map(|_| ())
-            .map_err(|e| format!("打开日志窗口失败：{e}。可改用主面板的「查看日志」弹窗，或重试"));
+            .background_color(backdrop);
+            if let Some((x, y)) = dock {
+                builder = builder.position(x, y);
+            }
+            let result = builder.build().map(|_| ()).map_err(|e| {
+                format!("打开日志窗口失败：{e}。可改用主面板的「查看日志」弹窗，或重试")
+            });
             let _ = tx.send(result);
         })
         .map_err(|e| format!("无法启动日志窗口线程：{e}"))?;
@@ -1426,6 +1439,13 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
     )
     .await
 }
+
+/// 日志查看器窗口默认尺寸（逻辑像素）。比用量窗口更宽以容纳长文件名 +
+/// 分类侧栏同时阅读；高度低于主壳（720 vs 800），底部有余量给任务栏；
+/// `attach_dock_listener` 用这两个尺寸算吸附位置，主窗拖动时按这套尺寸
+/// 重算跟随。改动需同步 lib.rs 同段 `attach_dock_listener` 调用。
+const LOG_WINDOW_WIDTH: f64 = 960.0;
+const LOG_WINDOW_HEIGHT: f64 = 720.0;
 
 /// 把 Shell 的主管理窗口提到当前桌面之上。
 ///

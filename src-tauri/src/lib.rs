@@ -54,6 +54,7 @@ mod tray;
 mod updater;
 mod usage;
 mod version;
+mod window;
 
 use std::sync::Mutex;
 
@@ -124,9 +125,14 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             check_main_window_minimizable(app);
 
-            // 模型用量窗口吸附跟随：主窗拖动时用量窗口保持贴在其右侧
-            // （窗口未打开时监听器内部直接短路）。
-            usage::attach_usage_dock_listener(app.handle());
+            // 副窗吸附跟随：模型用量窗口 + 日志查看器共用同一套 dock /
+            // 移动跟随逻辑（详见 `window::attach_dock_listener`）。主窗拖动时
+            // 副窗按合帧窗口（~60fps）持续 set_position，保持贴在主窗右侧。
+            // 两个监听器都挂在 main 的 on_window_event 上，事件源单一不
+            // 会形成两窗互拉的回环；未开的窗口由 `get_webview_window`
+            // 短路掉，不影响 setup 流程。
+            window::attach_dock_listener(app.handle(), "usage-viewer", 760.0, 800.0);
+            window::attach_dock_listener(app.handle(), "log-viewer", 960.0, 720.0);
 
             // 家族命名空间：data_dir 按（注册表里）默认实例的内核族解析到
             // `<xlink_home>/<family>/desktop[-dev]/`，并把 v0.2.x 的平铺

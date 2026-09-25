@@ -267,6 +267,16 @@ const FILE_BUDGETS = {
 // drag-end（每帧同步 I/O 是卡顿主因）。PaneSplitter.vue 重写、LogModal /
 // LogViewerWindow 增加 onSidebarDragEnd 处理、theme.css 加 body.pane-dragging
 // 规则（~+50 行）。三个叠加来源合并治，否则只改一处仍有可见抖动。
+//
+// 26950 → 27080：先用 PaneSplitter 三处合治拿下拖拽卡顿；同步合并同
+// 日提交（ac1a6aa 摘要区「今日用量」瓦片，+7）。本分支：日志查看器
+// 接入用量窗口同源的吸附 + 移动跟随——抽出 window.rs（dock_x / dock_y /
+// compute_dock_position / dock_position_logical / attach_dock_listener，
+// ~+141 行），usage.rs 删除已搬走的私有 dock_* 与 attach_usage_dock_listener
+//（~-150 行），commands.rs::open_log_window 增加吸附定位 + LOG_WINDOW_* 常量
+//（+~20），lib.rs 双挂 attach_dock_listener（usage-viewer 760×800 +
+// log-viewer 960×720，+~10）；净 ~+22 行，与上述 +7 合计 ~+30，预算上调
+// 130 是给后续「用量窗口换库 / 日志联动」一类连续作业预留余量。
 const TOTAL_BUDGET = 27080;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
