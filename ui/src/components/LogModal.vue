@@ -3,13 +3,24 @@
 // 文件签栏按可用宽度自动收缩成细轨（主窗口固定 480px，恒收缩），给日志正文
 // 让出阅读宽度；用户可用栏顶按钮手动展开/收起（手动选择覆盖自动判定），
 // 展开后点击右侧日志内容区会自动收起侧栏。
-// 「全屏」打开一个独立的满窗弹层展示当前文件内容，自带刷新 / 关闭按钮。
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
-import { Refresh, Close, FullScreen, Fold, Expand } from '@element-plus/icons-vue';
+// 「全屏」打开一个独立的可缩放 OS 窗口展示同样的分类列表（见 LogViewerWindow.vue）。
+// 分类侧栏的渲染由 LogSidebar 共享组件承担；侧栏与正文之间是 6px 可拖拽分隔条。
+import { computed, nextTick, onBeforeUnmount, onUnmounted, ref, watch } from 'vue';
+import { Refresh, Close, FullScreen } from '@element-plus/icons-vue';
 import { invoke } from '../bridge.js';
 import { toastError } from '../notify.js';
 import { withLoading, isLoading } from '../loading.js';
-import { logModal, formatLogSize, switchLogTab, loadActiveLog } from '../logs.js';
+import {
+  bindScrollAutoHide,
+  groupLogFiles,
+  loadActiveLog,
+  loadSidebarWidth,
+  logModal,
+  saveSidebarWidth,
+  switchLogTab,
+} from '../logs.js';
+import LogSidebar from './LogSidebar.vue';
+import PaneSplitter from './PaneSplitter.vue';
 
 // 「全屏」：主壳窗口固定 480×800，日志阅读交给独立的可缩放 OS 窗口。
 function openLogWindow() {
@@ -22,8 +33,9 @@ function openLogWindow() {
   );
 }
 
-const tabsBox = ref(null);
 const mainBox = ref(null);
+const tabsBox = ref(null);
+const groups = computed(() => groupLogFiles(logModal.files));
 
 // 宽度低于该阈值时侧栏自动收缩（仅在没有手动覆盖时生效）。
 const RAIL_COLLAPSE_WIDTH = 560;
@@ -41,6 +53,19 @@ function collapseRailOnContentClick() {
   if (!railCollapsed.value) {
     railOverride.value = true;
   }
+}
+
+// 侧栏宽度：可拖拽分隔条驱动；持久化到 localStorage。
+// 默认 220px：比独立窗口稍窄，留更多空间给日志正文（弹窗本来就窄）。
+// 范围 180-420 写在 logs.js::SIDEBAR_WIDTH_DEFAULTS。
+const SIDEBAR_WIDTH_KEY = 'dsh.logModal.sidebarWidth';
+const SIDEBAR_WIDTH_MIN = 180;
+const SIDEBAR_WIDTH_MAX = 420;
+
+const sidebarWidth = ref(loadSidebarWidth(SIDEBAR_WIDTH_KEY, 'modal'));
+function onSidebarWidthChange(next) {
+  sidebarWidth.value = next;
+  saveSidebarWidth(SIDEBAR_WIDTH_KEY, next);
 }
 
 let observer = null;
@@ -82,12 +107,38 @@ watch(
   () => logModal.activeName,
   async () => {
     await nextTick();
-    const active = tabsBox.value && tabsBox.value.querySelector('.log-tab[aria-selected="true"]');
+    const root = tabsBox.value && tabsBox.value.$el;
+    if (!root) return;
+    const active = root.querySelector('.log-tab[aria-selected="true"]');
     if (active) {
       active.scrollIntoView({ block: 'nearest' });
     }
   }
 );
+
+// 滚动期间才显滚动条：与 LogViewerWindow 共用 logs.js::bindScrollAutoHide。
+let unbindScroll = null;
+watch(
+  () => logModal.visible,
+  async (visible) => {
+    if (!visible) {
+      if (unbindScroll) {
+        unbindScroll();
+        unbindScroll = null;
+      }
+      return;
+    }
+    await nextTick();
+    const sidebarEl = tabsBox.value && tabsBox.value.$el;
+    const contentEl = document.querySelector('.log-dialog .log-content');
+    const cleanups = [bindScrollAutoHide(sidebarEl), bindScrollAutoHide(contentEl)].filter(Boolean);
+    unbindScroll = () => cleanups.forEach((fn) => fn());
+  }
+);
+
+onBeforeUnmount(() => {
+  if (unbindScroll) unbindScroll();
+});
 </script>
 
 <template>
@@ -122,32 +173,23 @@ watch(
     </template>
 
     <div ref="mainBox" class="log-main">
-      <div ref="tabsBox" class="log-tabs" :class="{ collapsed: railCollapsed }" role="tablist" aria-orientation="vertical">
-        <button
-          type="button"
-          class="rail-toggle"
-          :title="railCollapsed ? '展开日志列表' : '收起日志列表'"
-          @click="toggleRail"
-        >
-          <el-icon><Expand v-if="railCollapsed" /><Fold v-else /></el-icon>
-        </button>
-        <template v-if="!railCollapsed">
-          <span v-if="!logModal.files.length" class="log-tab-size">（暂无日志文件）</span>
-          <button
-            v-for="f in logModal.files"
-            :key="f.name"
-            type="button"
-            class="log-tab"
-            role="tab"
-            :aria-selected="f.name === logModal.activeName ? 'true' : 'false'"
-            :title="f.name"
-            @click="switchLogTab(f.name)"
-          >
-            <span>{{ f.name }}</span>
-            <span v-if="typeof f.size === 'number'" class="log-tab-size">{{ formatLogSize(f.size) }}</span>
-          </button>
-        </template>
-      </div>
+      <LogSidebar
+        ref="tabsBox"
+        :style="{ '--sidebar-width': sidebarWidth + 'px' }"
+        :groups="groups"
+        :active-name="logModal.activeName"
+        :rail-collapsed="railCollapsed"
+        @select="switchLogTab"
+        @toggle-rail="toggleRail"
+      />
+      <PaneSplitter
+        v-if="!railCollapsed"
+        :model-value="sidebarWidth"
+        :min="SIDEBAR_WIDTH_MIN"
+        :max="SIDEBAR_WIDTH_MAX"
+        side="left"
+        @update:model-value="onSidebarWidthChange"
+      />
       <div class="log-body" @click="collapseRailOnContentClick">
         <p v-if="railCollapsed && logModal.activeName" class="log-active-name" :title="logModal.activeName">
           {{ logModal.activeName }}
