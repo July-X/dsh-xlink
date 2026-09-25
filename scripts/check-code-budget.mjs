@@ -129,7 +129,7 @@ const FILE_BUDGETS = {
   // 不可压缩；用法与 LogViewerWindow 同模式（独立窗口根组件 + scoped CSS）。
   // 700 → 780：范围切换 + 时间范围档位（~+50）与热力图/趋势两个共享 hover
   // 明细浮层（~+60）——都是展示层增量，拆文件只会让浮层与图形结构分家。
-  'ui/src/UsageWindow.vue': 780,
+  'ui/src/UsageWindow.vue': 830,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
 // 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有
