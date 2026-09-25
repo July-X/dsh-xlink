@@ -54,8 +54,15 @@ const rangeText = computed(() => `近 ${rangeLabel.value}`);
 
 const summaries = computed(() => {
   const s = rangeSummary.value;
+  // 今日用量与所选范围无关：恒取日序列的最后一天（Rust 恒补齐到今天）。
+  const today = summarizeDays(sliceDays(data.value && data.value.days, 1));
   const top = s.models[0];
   return [
+    {
+      label: '今日用量',
+      value: formatTokens(today.tokens),
+      title: `今天 ${today.tokens} tokens · ${today.requests} 次`,
+    },
     {
       label: '日均用量',
       value: formatTokens(s.tokens / Math.max(1, rangeDays.value)),
