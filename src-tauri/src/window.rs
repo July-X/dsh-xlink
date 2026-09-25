@@ -3,7 +3,8 @@
 // 「吸附」指打开时把窗口贴在主窗右侧（主窗贴近屏幕右缘时自动翻左侧）、
 // 与主窗顶边对齐（底部超出行程则上移夹回屏内），让两个窗口看起来像同一
 // 个工作区。「移动跟随」指主窗被拖动时，副窗通过主窗的 `on_window_event`
-// 监听 `Moved` 事件按合帧窗口（~60fps）持续 `set_position`，始终保持吸附。
+// 监听 `Moved` 事件按合帧窗口（~60fps）持续 `set_position`，始终保持吸附；
+// 每轮拖动开始先把副窗提到最前（set_focus），连动穿过其他应用窗口时不被压在后面。
 //
 // 这两条路径被日志查看器（`commands::open_log_window`）和模型用量窗口
 // （`usage::open_usage_window`）共用——它们的差别只是窗口尺寸与 label，
@@ -11,6 +12,13 @@
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// 跟随定位的合帧间隔：拖动时 `Moved` 触发频率远超显示刷新率，逐事件
+/// 下发 `set_position` 会在主线程队列积压出迟滞感，压到 ~60fps 最顺滑。
+const FRAME_INTERVAL: Duration = Duration::from_millis(15);
+/// 拖动开始的判定：距上次跟随 tick 超过该安静期视为新一轮拖动，先把
+/// 副窗提到最前再进入跟随。
+const DRAG_START_QUIET: Duration = Duration::from_millis(400);
 
 use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow, WindowEvent};
 
@@ -88,16 +96,33 @@ pub fn attach_dock_listener(app: &AppHandle, target_label: &'static str, win_w: 
         let Some(target) = handle.get_webview_window(target_label) else {
             return;
         };
+        let now = Instant::now();
+        let elapsed = match last_apply
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
         {
-            let mut last = last_apply
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let now = Instant::now();
-            if last.is_some_and(|t| now.duration_since(t) < Duration::from_millis(15)) {
-                return;
-            }
-            *last = Some(now);
+            Some(t) => now.duration_since(*t),
+            None => Duration::MAX,
+        };
+        // 拖动开始的第一次 Moved（距上次 tick 超过安静期）：先把副窗提到
+        // 最前（set_focus），否则两窗连动穿过其他应用窗口时副窗会被压在
+        // 人家后面，出现"一半在别窗前后"的穿插。tao 没有"提到最前但不抢
+        // 焦点"的 API（macOS 的 set_visible 也是 makeKeyAndOrderFront），
+        // 所以每个拖动回合只做一次，焦点落在副窗上，点任意窗口即可收回。
+        let drag_start = elapsed >= DRAG_START_QUIET;
+        if drag_start {
+            let _ = target.set_focus();
         }
+        // 合帧节流：Moved 触发频率远超显示刷新率，把 set_position 压到
+        // ~60fps，中间位置直接丢弃（后续事件总会带上最新值）。逐事件下发
+        // 会让指令在主线程队列里积压，跟随看起来迟滞、卡顿。
+        if elapsed < FRAME_INTERVAL && !drag_start {
+            return;
+        }
+        *last_apply
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(now);
         let Some((x, y)) = compute_dock_position(&main_for_handler, win_w, win_h) else {
             return;
         };
