@@ -259,7 +259,15 @@ const FILE_BUDGETS = {
 // 26650 → 26900：用量窗口模型明细放行前 10 名（列表内滚动）、趋势绘图区
 // 与各段纵向间距收紧（UsageWindow 内部 height 换 spacing，总量±0）；
 // theme.css 的日志侧栏样式继续追加（+~77）按上文条目单列。留 ~35 行余量。
-const TOTAL_BUDGET = 26900;
+//
+// 26900 → 26950：PaneSplitter 拖拽体验优化——pointer events +
+// setPointerCapture（光标跑出元素不丢事件）+ requestAnimationFrame 节流
+// （1kHz mousemove 收敛到 60Hz）+ 拖拽期间关掉 .log-tabs 的 width transition
+// （0.2s 缓动在 60Hz 拖拽时会不断重启动画）+ localStorage 持久化延迟到
+// drag-end（每帧同步 I/O 是卡顿主因）。PaneSplitter.vue 重写、LogModal /
+// LogViewerWindow 增加 onSidebarDragEnd 处理、theme.css 加 body.pane-dragging
+// 规则（~+50 行）。三个叠加来源合并治，否则只改一处仍有可见抖动。
+const TOTAL_BUDGET = 26970;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。
