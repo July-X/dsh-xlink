@@ -73,10 +73,11 @@ const summaries = computed(() => {
     { label: '活跃天数', value: String(s.activeDays), title: `选定范围共 ${rangeDays.value} 天` },
     {
       label: '最常用模型',
-      value: top ? top.key : '—',
-      title: top ? `${formatTokens(top.tokens)} tokens` : '',
-      // 模型键太长容易溢出，整行宽（瓦片网格的第二行）。4 列变 3+1 比 4
-      // 列窄窗更稳，不会被挤到换行；紧凑 padding 让两行总高比单行还省。
+      // 只显示模型名，provider 前缀（zai-coding-cn 这类）挪进 tooltip；
+      // 完整键仍在 title 里可查。
+      value: top ? top.model || top.key : '—',
+      title: top ? `${top.key} · ${formatTokens(top.tokens)} tokens` : '',
+      // 跨两列：与「活跃天数」同排凑满两行，不再单独占一行。
       wide: true,
     },
   ];
@@ -599,7 +600,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   padding-left: 14px;
 }
 .usage-summary-card.wide {
-  grid-column: 1 / -1;
+  grid-column: span 2;
 }
 .usage-summary-card {
   background: var(--el-fill-color-light);
