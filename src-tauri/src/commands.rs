@@ -1198,7 +1198,9 @@ fn workbench_url_responds(url: &str, timeout: std::time::Duration) -> bool {
 ///
 /// 颜色跟随系统主题（读主壳窗口的 theme）：浅色系统下用接近页面的浅灰
 /// 而不是强行涂黑，避免把白闪换成同样刺眼的黑闪。
-fn chrome_backdrop(app: &AppHandle) -> Color {
+/// `pub(crate)`：模型用量窗口（usage.rs::open_usage_window）与日志查看器
+/// 同一条建窗路径，暗底过渡色必须一致，不能各调一份色值。
+pub(crate) fn chrome_backdrop(app: &AppHandle) -> Color {
     let dark = app
         .get_webview_window("main")
         .and_then(|w| w.theme().ok())

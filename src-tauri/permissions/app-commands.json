@@ -83,8 +83,17 @@
           "migration_list",
           "migration_skip_get",
           "migration_skip_set",
-          "migration_skip_clear"
+          "migration_skip_clear",
+          "get_model_usage",
+          "open_usage_window"
         ]
+      }
+    },
+    {
+      "identifier": "allow-usage-viewer",
+      "description": "Read-only usage stats for the standalone model-usage window (label \"usage-viewer\", opened by the overview card's「模型用量」button via open_usage_window). The window renders the aggregated 90-day view via get_model_usage and closes itself — no write or lifecycle commands.",
+      "commands": {
+        "allow": ["get_model_usage"]
       }
     },
     {
@@ -96,9 +105,9 @@
     },
     {
       "identifier": "allow-log-viewer",
-      "description": "Read-only log access for the standalone log viewer window (label \"log-viewer\", opened by open_log_window). The window renders one file's tail via read_log_file and nothing else; the panel keeps the full command set via allow-local-commands.",
+      "description": "Read-only log access for the standalone log viewer window (label \"log-viewer\", opened by open_log_window). The window lists files via list_log_files (categorized sidebar) and renders one file's tail via read_log_file; nothing else. The panel keeps the full command set via allow-local-commands.",
       "commands": {
-        "allow": ["read_log_file"]
+        "allow": ["list_log_files", "read_log_file"]
       }
     }
   ]

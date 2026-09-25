@@ -5,7 +5,7 @@
 // 「打开工作台窗口 / 打开官方对话窗口」在对应服务开启后作为次级入口从第二行动态浮现。
 // 「当前内核」的 Node.js 行另带「重新检测」（探测本机环境，不改设置），卡片底部是
 // 「桌面端设置」只读摘要（端口 / 接线 profile / Node 环境结论）。
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import {
   SwitchButton,
   TopRight,
@@ -20,6 +20,7 @@ import {
   Warning,
   Connection,
   View,
+  TrendCharts,
 } from '@element-plus/icons-vue';
 import {
   store,
@@ -38,13 +39,29 @@ import {
 } from '../store.js';
 import { progress } from '../progress.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
-import { showLogs } from '../logs.js';
+import { openLogsWindow } from '../logs.js';
+import { loadUsageSummary, openUsageWindow, usage, formatTokens, RETENTION_DAYS } from '../usage.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents.js';
 import { tildePath } from '../labels.js';
 
 // 进度窗口是全局的（任何长任务都会让它可见），按钮的加载态必须绑定自己的
 // key，否则任何别的长任务都会让这个按钮转圈（P2-42）。
 const onInstallNode = () => withLoading('installNode', () => installNode());
+
+// 模型用量（近 7 天）：进入概览页就拉一次（60s 内复用，后端另有 45s 扫描
+// 新鲜度窗口）；原始值与 90 天保留策略进 tooltip。
+onMounted(() => {
+  loadUsageSummary();
+});
+const usageWeekText = computed(() =>
+  usage.data ? formatTokens(usage.data.week_tokens) + ' tokens' : '—'
+);
+// 数据是异步到达的：tooltip 也要跟着 usage.data 走，用 computed 而不是常量。
+const usageWeekTip = computed(() =>
+  usage.data
+    ? `最近 7 天 ${usage.data.week_tokens} tokens；模型用量统计只保留最近 ${RETENTION_DAYS} 天，更早的记录自动丢弃`
+    : `统计最近 ${RETENTION_DAYS} 天的模型用量，超过 ${RETENTION_DAYS} 天的记录自动丢弃`
+);
 
 const kernel = computed(() => store.view && store.view.kernel);
 const node = computed(() => store.view && store.view.node);
@@ -244,6 +261,21 @@ function goVersions() {
         </dd>
         <dt>桌面端版本</dt>
         <dd>{{ shellVersionText }}</dd>
+        <dt>近 7 天用量</dt>
+        <dd class="kv-with-action">
+          <span :title="usageWeekTip">{{ usageWeekText }}</span>
+          <el-button
+            size="small"
+            text
+            type="primary"
+            :icon="TrendCharts"
+            :loading="isLoading('openUsageWindow')"
+            title="在独立窗口中查看模型用量（热力图 / 趋势 / 按模型统计，最近 90 天）"
+            @click="openUsageWindow"
+          >
+            模型用量
+          </el-button>
+        </dd>
       </dl>
 
       <el-alert
@@ -301,7 +333,8 @@ function goVersions() {
         <el-button
           class="btn-view"
           :icon="Document"
-          @click="showLogs"
+          :loading="isLoading('openLogsWindow')"
+          @click="openLogsWindow"
         >
           查看日志
         </el-button>

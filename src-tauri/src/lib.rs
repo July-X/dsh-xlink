@@ -52,6 +52,7 @@ mod state;
 #[cfg(target_os = "windows")]
 mod tray;
 mod updater;
+mod usage;
 mod version;
 
 use std::sync::Mutex;
@@ -122,6 +123,10 @@ pub fn run() {
             // 保留。细节见下面 `check_main_window_minimizable` 的文档注释。
             #[cfg(target_os = "macos")]
             check_main_window_minimizable(app);
+
+            // 模型用量窗口吸附跟随：主窗拖动时用量窗口保持贴在其右侧
+            // （窗口未打开时监听器内部直接短路）。
+            usage::attach_usage_dock_listener(app.handle());
 
             // 家族命名空间：data_dir 按（注册表里）默认实例的内核族解析到
             // `<xlink_home>/<family>/desktop[-dev]/`，并把 v0.2.x 的平铺
@@ -297,6 +302,9 @@ pub fn run() {
             commands::migration_skip_get,
             commands::migration_skip_set,
             commands::migration_skip_clear,
+            // 模型用量统计：扫描与聚合都住在 usage.rs，不经 commands.rs。
+            usage::get_model_usage,
+            usage::open_usage_window,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| {

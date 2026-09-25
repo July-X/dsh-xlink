@@ -1,0 +1,6 @@
+{
+  "identifier": "usage-viewer",
+  "description": "The standalone model-usage window (opened by the overview card's「模型用量」button via open_usage_window) loads the local SPA at index.html?usage=1. It only fetches the aggregated usage view and closes itself — no write or lifecycle commands.",
+  "windows": ["usage-viewer"],
+  "permissions": ["core:default", "core:window:allow-close", "allow-usage-viewer"]
+}

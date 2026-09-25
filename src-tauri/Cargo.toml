@@ -72,8 +72,13 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # `time` 支撑 `process::RotatingLog` 的本地日期日志轮转。该 crate 已作为
 # 传递依赖存在于 lockfile 中；直接声明它可避免手写 libc::localtime_r 与
 # GetLocalTime 的兼容层，并让文件名日期戳与用户的日历日保持一致——
-# 即使是跨过 UTC 午夜。
-time = { version = "0.3", default-features = false, features = ["formatting", "local-offset", "macros"] }
+# 即使是跨过 UTC 午夜。`parsing` 供 usage.rs 把 YYYY-MM-DD 日账键解析回
+# Date 逐日推进（热力图给无用量日期补零格）。
+time = { version = "0.3", default-features = false, features = ["formatting", "local-offset", "macros", "parsing"] }
+# 纯 Rust 的 zstd **解码器**（仅解码、无 C 工具链；理由同 tungstenite 不开
+# TLS——CI 的 Intel macOS runner 交叉编译不受影响）。内核把会话落成 zstd
+# 多帧流，usage.rs 据此做增量扫描：只解上次之后新追加的帧。
+ruzstd = "0.8.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

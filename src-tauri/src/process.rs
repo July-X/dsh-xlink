@@ -407,7 +407,9 @@ pub fn epoch_secs_string() -> String {
     epoch_secs().to_string()
 }
 
-fn local_date_string(time: SystemTime) -> String {
+/// `pub(crate)`：模型用量统计（usage.rs）按同一口径给用量记录打本地日历日，
+/// 不能各写一份本地日期格式化（日期口径一漂移，热力图就会把同一天拆成两格）。
+pub(crate) fn local_date_string(time: SystemTime) -> String {
     let Ok(duration) = time.duration_since(UNIX_EPOCH) else {
         return String::from("1970-01-01");
     };
