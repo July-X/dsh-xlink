@@ -394,7 +394,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
           </section>
 
           <!-- 模型用量 -->
-          <section class="usage-section">
+          <section class="usage-section usage-model-section">
             <div class="usage-section-head">
               <h3>模型用量</h3>
               <span class="usage-section-hint">{{ rangeText }}合计 {{ formatTokens(rangeSummary.tokens) }} tokens</span>
@@ -628,6 +628,15 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 .usage-section {
   margin-top: 12px;
 }
+.usage-model-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 252px;
+}
+.usage-model-section .usage-section-head {
+  flex: none;
+}
 .usage-section-head {
   display: flex;
   align-items: baseline;
@@ -793,11 +802,10 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   display: flex;
   gap: 24px;
   align-items: stretch;
-  /* 明细高度随窗口剩余空间走：至少 252px（10 行）保底，剩余空间继续
-     向下吃满、一屏看更多行；超高时列表内部滚动，overflow hidden 兜底
-     避免顶出整窗滚动条。 */
+  /* 模型区占满主内容剩余空间，列表超出时在自身容器内滚动；这样下方状态栏
+     不会覆盖最后一行，且不会因为固定高度在下方留下大块空白。 */
   flex: 1 1 auto;
-  min-height: 252px;
+  min-height: 0;
   overflow: hidden;
 }
 .usage-donut-wrap {
@@ -827,37 +835,24 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 .usage-model-list {
   flex: 1;
   min-width: 0;
-  /* 高度完全跟随父段：空间多就多显示几行，空间少就少显示几行，
-     行数超出在列表内滚动——整窗不出现纵向滚动条。固定区域贴近页脚时，
-     给列表末尾留出安全间距，确保最后一行完整可见；饼图仍按整个模型用量区域居中。 */
+  /* 列表占满模型区的剩余高度（底部保留安全间距），超出内容通过纵向滚动查看；
+     滚动条保持可见，明确提示还有更多模型明细。stable 预留槽位，避免滚动条
+     出现时行内容发生横向位移。 */
   margin-bottom: 8px;
   min-height: 0;
   overflow-y: auto;
-  /* 滚动条默认隐藏；悬停列表或滚动期间（`.is-scrolling` 由
-     bindScrollAutoHide 维护，800ms 无滚动移除）显形——既不常驻占位，
-     数据被截断也可发现、可滚。stable 预留槽位：滚动条显形/隐形时行
-     内容不发生 8px 横移（与 .log-tabs 同一套处理）。 */
   scrollbar-gutter: stable;
   scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-.usage-model-list:hover,
-.usage-model-list.is-scrolling {
   scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
 }
 .usage-model-list::-webkit-scrollbar {
   width: 8px;
 }
 .usage-model-list::-webkit-scrollbar-thumb {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.35);
   border-radius: 4px;
   border: 2px solid transparent;
   background-clip: padding-box;
-  transition: background 0.2s ease;
-}
-.usage-model-list:hover::-webkit-scrollbar-thumb,
-.usage-model-list.is-scrolling::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.35);
 }
 .usage-model-row {
   display: flex;
