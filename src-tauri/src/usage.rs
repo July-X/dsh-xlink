@@ -711,68 +711,6 @@ pub async fn get_model_usage(force: Option<bool>) -> Result<UsageView, String> {
         .map_err(|e| e.to_string())
 }
 
-/// 吸附位置（物理像素）：贴主窗右侧、顶边对齐；右缘放不下翻左侧，底部
-/// 超行程夹回屏内。open_usage_window 的初始定位与拖动跟随共用这一套。
-fn docked_position(main: &tauri::WebviewWindow) -> Option<(i32, i32)> {
-    let scale = main.scale_factor().ok()?;
-    let pos = main.outer_position().ok()?;
-    let size = main.outer_size().ok()?;
-    let monitor = main.current_monitor().ok().flatten()?;
-    let m_pos = monitor.position();
-    let m_size = monitor.size();
-    let width_phys = (USAGE_WINDOW_WIDTH * scale) as i32;
-    let height_phys = (USAGE_WINDOW_HEIGHT * scale) as i32;
-    let x = dock_x(
-        pos.x,
-        size.width as i32,
-        width_phys,
-        m_pos.x,
-        m_size.width as i32,
-    );
-    let y = dock_y(pos.y, height_phys, m_pos.y, m_size.height as i32);
-    Some((x, y))
-}
-
-/// 全局窗口事件监听：主窗被拖动时让用量窗口跟着走，保持吸附状态。
-///
-/// 挂在主窗自己的 `on_window_event` 上（`Moved` 在拖动全程连续触发），
-/// 每次都按 [`docked_position`] 重算目标位置——主窗靠近屏幕右缘时吸附
-/// 会自动从右侧翻到左侧。用量窗口自身的移动不经过这里（只认 main），
-/// 所以不存在两窗互相拉扯的回环；主窗固定不可缩放，`Resized` 无需处理。
-pub fn attach_usage_dock_listener(app: &tauri::AppHandle) {
-    let Some(main) = app.get_webview_window("main") else {
-        return;
-    };
-    let handle = app.clone();
-    let main_for_handler = main.clone();
-    let last_apply = std::sync::Mutex::new(None);
-    main.on_window_event(move |event| {
-        if !matches!(event, tauri::WindowEvent::Moved(_)) {
-            return;
-        }
-        let Some(usage) = handle.get_webview_window("usage-viewer") else {
-            return;
-        };
-        // 合帧：拖动时 Moved 的触发频率远超显示刷新率，把 set_position
-        // 压到 ~60fps，中间位置直接丢弃（后续事件总会带上最新值）。逐
-        // 事件定位会让指令在主线程队列里积压，跟随看起来迟滞、卡顿。
-        {
-            let mut last = last_apply
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let now = std::time::Instant::now();
-            if last.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(15)) {
-                return;
-            }
-            *last = Some(now);
-        }
-        let Some((x, y)) = docked_position(&main_for_handler) else {
-            return;
-        };
-        let _ = usage.set_position(tauri::PhysicalPosition::new(x, y));
-    });
-}
-
 /// 在独立可缩放窗口中打开模型用量统计。
 ///
 /// 管理窗口被固定为 480×800（tauri.conf.json），热力图 / 趋势 / 环形图
@@ -780,10 +718,10 @@ pub fn attach_usage_dock_listener(app: &tauri::AppHandle) {
 /// （`?usage=1` 挂载 `UsageWindow.vue`，capability `usage-viewer.json`
 /// 只授予 `get_model_usage`）。窗口尺寸 760×800：**高度与主壳一致**，
 /// 打开时吸附在主窗右侧、顶边对齐（右侧贴不下屏幕就贴左侧，垂直超出行
-/// 程就上移夹在屏内，见 [`dock_x`] / [`dock_y`]）。构造过程与
-/// `open_log_window` 一致：webview 在新线程上构建（Windows 主线程同步建
-/// webview 会死锁）；已有窗口先销毁再重建——窗口是只读的，重建即顺手拿
-/// 到一次 force 重扫，不损失任何状态。
+/// 程就上移夹在屏内，详见 `crate::window::dock_x` / `dock_y`）。构造过程
+/// 与 `open_log_window` 一致：webview 在新线程上构建（Windows 主线程同
+/// 步建 webview 会死锁）；已有窗口先销毁再重建——窗口是只读的，重建即顺
+/// 手拿到一次 force 重扫，不损失任何状态。
 #[tauri::command]
 pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -798,9 +736,7 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
             // 吸附定位取主窗的物理坐标 + 缩放比换算成逻辑坐标交给 builder；
             // 主窗不在（理论上不会）或取不到显示器信息时保持默认居中。
             let dock = handle.get_webview_window("main").and_then(|main| {
-                let scale = main.scale_factor().ok()?;
-                let (x, y) = docked_position(&main)?;
-                Some((x as f64 / scale, y as f64 / scale))
+                crate::window::dock_position_logical(&main, USAGE_WINDOW_WIDTH, USAGE_WINDOW_HEIGHT)
             });
             let mut builder = tauri::WebviewWindowBuilder::new(
                 &handle,
@@ -839,26 +775,6 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
 /// （tauri.conf.json 的 main = 480×800），吸附打开后两窗上下缘对齐。
 const USAGE_WINDOW_WIDTH: f64 = 760.0;
 const USAGE_WINDOW_HEIGHT: f64 = 800.0;
-
-/// 吸附 X（物理像素）：优先把窗口贴在主窗右侧；主窗已贴近屏幕右缘、
-/// 右侧放不下时贴到主窗左侧。`mon_x + mon_w` 是屏幕右缘。
-fn dock_x(main_x: i32, main_w: i32, win_w: i32, mon_x: i32, mon_w: i32) -> i32 {
-    let right = main_x + main_w;
-    if right + win_w <= mon_x + mon_w {
-        right
-    } else {
-        main_x - win_w
-    }
-}
-
-/// 吸附 Y（物理像素）：与主窗顶对齐；底部超出行程时上移、夹在屏幕内。
-fn dock_y(main_y: i32, win_h: i32, mon_y: i32, mon_h: i32) -> i32 {
-    if main_y + win_h > mon_y + mon_h {
-        mon_y + mon_h - win_h
-    } else {
-        main_y
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1196,26 +1112,6 @@ mod tests {
         );
         assert_eq!(view.retention_days, RETENTION_DAYS);
         assert_eq!(view.days.len() as u64, RETENTION_DAYS);
-    }
-
-    #[test]
-    fn dock_x_prefers_right_side_and_flips_left_when_offscreen() {
-        // 主窗在屏幕中部：吸附到主窗右缘。
-        assert_eq!(dock_x(100, 480, 760, 0, 1920), 580);
-        // 主窗贴屏幕右缘（1440+480 = 1920）：右侧放不下 → 贴到主窗左侧。
-        assert_eq!(dock_x(1440, 480, 760, 0, 1920), 680);
-        // 副屏在左侧（负坐标）同样成立：贴主窗左侧 = main_x − 窗宽。
-        assert_eq!(dock_x(-1000, 480, 760, -1920, 1920), -1760);
-    }
-
-    #[test]
-    fn dock_y_aligns_top_and_clamps_inside_monitor() {
-        // 常规：与主窗顶对齐。
-        assert_eq!(dock_y(100, 800, 0, 1000), 100);
-        // 主窗偏下、800 高放不下：上移到屏幕底缘。
-        assert_eq!(dock_y(300, 800, 0, 1000), 200);
-        // 恰好放得下（底边贴齐屏幕底缘）：原样对齐。
-        assert_eq!(dock_y(-200, 800, -400, 1000), -200);
     }
 
     // --- 测试工具 ------------------------------------------------------------
