@@ -1,13 +1,12 @@
 <script setup>
-// 设置：Web UI 端口、任务完成通知，以及内置补丁（内核补丁 / 小插件）的应用与撤销。
-// 轮询每 2.5s 刷新 store.view，但用户正在编辑的输入框不被回写（focus 守卫）。
-// 「设置」卡只留端口这一项可改的东西：插件接线 profile 名是固定值，Node 环境结论与
-// 「重新检测」都在概览页（OverviewPanel 的「桌面端设置」摘要卡与「当前内核」的
-// Node.js 行），profile 仍跟着端口一起提交，不要在别处再复制一份输入。
-import { computed, onMounted, reactive, ref, watch } from 'vue';
-import { ArrowDown, ArrowUp, Bell, Check, Headset, Refresh } from '@element-plus/icons-vue';
+// 设置：Web UI 端口、任务完成通知、可选的数据迁移入口。内置补丁（内核补丁 / 小插件）
+// 入口已隐藏——最新内核已包含相关修复，不再需要从设置页应用；后端 `patch_status` /
+// `patch_apply` / `patch_revert` 与 `ui/src/patches.js` 仍保留，便于旧内核撤销。
+// 卡片顺序：设置 → 任务通知 → 数据迁移（默认折叠）。迁移是旧版兼容路径，启动期
+// 一次性弹窗（MigrationPrompt）才是首次迁移的主入口，日常用不到。
+import { computed, onMounted, ref, watch } from 'vue';
+import { ArrowDown, ArrowUp, Bell, Check, Headset, QuestionFilled } from '@element-plus/icons-vue';
 import { store, saveSettings } from '../store.js';
-import { patchStore, refreshPatches, applyPatch, revertPatch } from '../patches.js';
 import { migrationStore, loadMigrationHistory } from '../migration.js';
 import {
   notificationStore,
@@ -17,11 +16,10 @@ import {
   sendTestNotification,
   testNotificationSound,
 } from '../notifications.js';
-import { globalBusy, isLoading, withLoading } from '../loading.js';
+import { globalBusy, isLoading } from '../loading.js';
 
 const port = ref(undefined);
-// 固定值（默认 web）：界面上不再有输入行，但保存设置时仍要原样回传，否则 Rust 侧
-// 的合并会把 profile 覆盖回默认值。
+// 固定值（默认 web）：保存时仍要原样回传，否则 Rust 侧的合并会把 profile 覆盖。
 const profile = ref('');
 const editing = ref(false);
 
@@ -36,77 +34,26 @@ watch(
   { immediate: true }
 );
 
-// 进入设置页时刷新补丁与通知状态（内核激活版本、事件流连接都可能已经变化）。
-// 面板按 activePanel 作为 key 重新创建，所以「重新打开设置页」也会走到这里。
+// 进入设置页时刷新通知状态（事件流连接可能已经变化）。
 watch(
   () => store.activePanel,
   (panel) => {
     if (panel === 'settings') {
-      refreshPatches();
       refreshNotificationStatus();
     }
   },
   { immediate: true }
 );
 
-// 工作台运行期间禁止应用 / 撤销补丁（会写入内核目录）。
-const workbenchRunning = computed(() => !!(store.view && store.view.kernel && store.view.kernel.running));
-
-const patchRows = computed(() => (patchStore.view && patchStore.view.patches) || []);
-
-// 已并入官方内核的补丁默认折叠。用户在卡片上点击「展开查看」后把 id 加进 Set 里；
-// 切换内核或刷新时仍保持原折叠态（除非用户主动点回「收起」），避免误点展开影响阅读。
-const obsoleteExpanded = reactive(new Set());
-function toggleObsolete(id) {
-  if (obsoleteExpanded.has(id)) obsoleteExpanded.delete(id);
-  else obsoleteExpanded.add(id);
-}
-function isObsoleteCollapsed(row) {
-  return Boolean(row.superseded) && !obsoleteExpanded.has(row.id);
-}
-
-function rangeText(row) {
-  if (row.minKernelVersion && row.maxKernelVersion) {
-    return 'v' + row.minKernelVersion + ' ~ v' + row.maxKernelVersion;
-  }
-  if (row.minKernelVersion) return 'v' + row.minKernelVersion + ' 及以上';
-  if (row.maxKernelVersion) return 'v' + row.maxKernelVersion + ' 及以下';
-  return '任意内核版本';
-}
-
-// 状态徽标配色：未应用 / 不适用 / 无内核 → info；已应用 → success；
-// 文件未命中 → warning；文件被改动 → danger。
-function stateTag(state) {
-  if (state === 'applied') return 'success';
-  if (state === 'partial') return 'warning';
-  if (state === 'dirty') return 'danger';
-  return 'info';
-}
-
-// 状态决定主操作：已应用 / 部分应用 / 文件被改动 → 撤销；其余 → 应用。
-function primaryAction(row) {
-  return row.state === 'applied' || row.state === 'partial' || row.state === 'dirty'
-    ? 'revert'
-    : 'apply';
-}
-
-function onRefreshPatches() {
-  withLoading('patchRefresh', () => refreshPatches());
-}
-
-// 角标画在哪：Rust 回报的平台字符串决定文案，未知平台退回通用说法。
+// 角标画在哪：Rust 回报的平台字符串决定文案。
 const badgeTarget = computed(() => {
   if (notificationStore.platform === 'macos') return 'Dock 图标';
   if (notificationStore.platform === 'windows') return '任务栏图标';
   return '应用图标';
 });
 
-// 「模拟一次任务完成」只在 dev 构建里显示（`store.devUi`）：它给用户凭空造一条
-// 未读，正式版没有这个需要；「试听提示音」才是常驻入口。release 预览打开后这个
-// 字段也是 false，所以预览里看到的就是正式版的样子。
+// dev 专用自检入口（`store.devUi`）：release 预览打开后这个字段也是 false。
 const isDevBuild = computed(() => store.devUi);
-
-// 自检结果就地显示，不弹页内浮层：那个浮层会被误认成"通知就是它"。
 const testNote = ref('');
 
 async function onTestNotification() {
@@ -123,9 +70,11 @@ function onSave() {
   saveSettings(port.value, profile.value);
 }
 
-// 数据迁移入口的状态：迁移过（历史非空）显示灰色入口，没迁移过显示亮色
-// 引导。migration_list 是轻量读取，进设置页刷新一次保持准确。
+// 迁移过 = 历史非空，未迁移 = 历史为空。
 const migratedBefore = computed(() => migrationStore.history.length > 0);
+// 迁移卡片默认收起——首次进设置页不该被「去迁移」CTA 抢戏（启动期一次性弹窗才是
+// 主入口），日常也用不到。展开态留在组件实例里，跨切页会重置。
+const migrationExpanded = ref(false);
 onMounted(() => {
   loadMigrationHistory();
 });
@@ -134,13 +83,19 @@ onMounted(() => {
 <template>
   <section class="panel">
     <div class="card">
-      <h2>设置</h2>
-      <!-- 标签列收到 100px、输入框走 .settings-port（132px）：二者一起保证最窄窗口下
-           「保存」仍与输入同排；窗口更窄时 .btn-row 会自然折行兜底。 -->
-      <el-form label-width="100px" label-position="left" @focusin="editing = true" @focusout="editing = false">
+      <h2 class="card-title-with-tip">
+        设置
+        <el-tooltip placement="bottom-start" :show-after="80">
+          <template #content>
+            <div class="card-info-tooltip">
+              profile 名固定为 web，随端口一起保存；Node 环境与「重新检测」在概览页。
+            </div>
+          </template>
+          <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
+        </el-tooltip>
+      </h2>
+      <el-form class="settings-form" label-width="100px" label-position="left" @focusin="editing = true" @focusout="editing = false">
         <el-form-item label="Web UI 端口">
-          <!-- 保存与输入同排：这张卡只有这一项，按钮另起一行会白白占掉一行高度。
-               复用 .btn-row 的 flex + 8px 间距；窄窗口下自动折行。 -->
           <div class="btn-row">
             <el-input-number
               v-model="port"
@@ -162,44 +117,21 @@ onMounted(() => {
           </div>
         </el-form-item>
       </el-form>
-      <!-- 只改端口的卡片：profile 是固定值，Node 环境与「重新检测」都在概览页，
-           这里用一句话说明去处，省得用户以为功能被砍了。 -->
-      <p class="muted" style="margin: 0">
-        插件接线 profile 名固定为 <code>{{ profile || 'web' }}</code>，随端口一起保存；
-        Node.js 环境与「重新检测」在概览页。
-      </p>
     </div>
 
     <div class="card">
-      <h2>数据迁移</h2>
-      <p class="muted" style="margin: 0 0 8px">
-        {{
-          migratedBefore
-            ? '已迁移过；可进入迁移页查看历史、重新运行或回滚。'
-            : '把旧版 dsh-xlink 的插件 / 技能导入多实例布局；旧源不会被删除，可随时回滚。'
-        }}
-      </p>
-      <el-button
-        :type="migratedBefore ? 'default' : 'primary'"
-        @click="store.activePanel = 'migration'"
-      >
-        {{ migratedBefore ? '查看数据迁移' : '去迁移' }}
-      </el-button>
-    </div>
-
-    <div class="card">
-      <div class="card-head">
-        <h2>任务通知</h2>
-        <!-- 手动刷新：读取失败要说清下一步；进入设置页的自动刷新保持静默。 -->
-        <el-button text size="small" :icon="Refresh" :loading="isLoading('notificationRefresh')"
-          @click="refreshNotificationStatus(true)">
-          刷新
-        </el-button>
-      </div>
-      <p class="muted notify-section-hint">
-        会话任务跑完后：图标右上角挂未读数字角标（macOS Dock、Windows 任务栏），并由系统弹一条通知气泡。
-      </p>
-      <el-form label-width="180px" label-position="left">
+      <h2 class="card-title-with-tip">
+        任务通知
+        <el-tooltip placement="bottom-start" :show-after="80">
+          <template #content>
+            <div class="card-info-tooltip">
+              任务完成后挂未读角标并发送系统通知气泡。
+            </div>
+          </template>
+          <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
+        </el-tooltip>
+      </h2>
+      <el-form class="notify-form" label-width="152px" label-position="left">
         <el-form-item label="任务完成后通知我">
           <el-switch
             :model-value="notificationStore.enabled"
@@ -207,7 +139,7 @@ onMounted(() => {
             @change="(value) => saveNotificationSettings({ enabled: value })"
           />
         </el-form-item>
-        <el-form-item label="仅当工作台不在前台时通知">
+        <el-form-item label="工作台不在前台才通知">
           <div class="notify-inline">
             <el-switch
               :model-value="notificationStore.notifyAwayOnly"
@@ -226,8 +158,7 @@ onMounted(() => {
               :loading="isLoading('notificationSave')"
               @change="(value) => saveNotificationSettings({ sound: value })"
             />
-            <!-- 试听是常驻入口（正式版也有）：声音没有画面反馈，用户需要就地确认。
-                 声音关着时不试听——否则开关与听到的结果自相矛盾。 -->
+            <!-- 声音关着时不试听——否则开关与听到的结果自相矛盾。 -->
             <el-button
               text
               size="small"
@@ -249,21 +180,18 @@ onMounted(() => {
             全部已读
           </el-button>
         </template>
-        <!-- dev 专用自检：正式版里不渲染（见 isDevBuild 的说明）。 -->
         <template v-if="isDevBuild">
           <el-button type="primary" size="small" :icon="Bell" :loading="isLoading('notificationTest')"
             :disabled="globalBusy" @click="onTestNotification">
             模拟一次任务完成
           </el-button>
-          <span class="muted notify-test-hint">dev 专用：未读 +1、角标刷新、发一条系统通知。</span>
+          <span class="muted notify-test-hint">dev 专用。</span>
         </template>
       </div>
       <p v-if="testNote" class="muted notify-hint">{{ testNote }}</p>
       <p v-if="!notificationStore.watching" class="muted notify-hint">
-        尚未连接内核事件流：内核未运行或已断开，任务完成后不会提醒；启动工作台后点上方「刷新」重试。
+        尚未连接内核事件流：内核未运行或已断开，任务完成后不会提醒。
       </p>
-      <!-- 环境限制（不是错误）：例如 macOS 上未打包的 dev 构建无法投递系统通知，
-           角标仍然正常。用灰字而不是警告色，避免把平台约束说成故障。 -->
       <p v-if="notificationStore.environmentNote" class="muted notify-hint">
         {{ notificationStore.environmentNote }}
       </p>
@@ -276,89 +204,34 @@ onMounted(() => {
       />
     </div>
 
-    <div class="card">
-      <div class="card-head">
-        <h2>内置补丁</h2>
-        <el-button text size="small" :icon="Refresh" :loading="isLoading('patchRefresh')"
-          @click="onRefreshPatches">
-          刷新
+    <div class="card" :class="{ 'card-collapsed': !migrationExpanded }">
+      <button
+        type="button"
+        class="card-head card-head-toggle"
+        :aria-expanded="migrationExpanded"
+        @click="migrationExpanded = !migrationExpanded"
+      >
+        <h2>数据迁移</h2>
+        <span class="migration-status">{{ migratedBefore ? '已迁移' : '尚未迁移' }}</span>
+        <el-icon class="migration-toggle-icon">
+          <component :is="migrationExpanded ? ArrowUp : ArrowDown" />
+        </el-icon>
+      </button>
+      <template v-if="migrationExpanded">
+        <p class="muted" style="margin: 0">
+          {{
+            migratedBefore
+              ? '已迁移过；可进入迁移页查看历史、重新运行或回滚。'
+              : '把旧版 dsh-xlink 的插件 / 技能导入多实例布局；旧源不会被删除，可随时回滚。'
+          }}
+        </p>
+        <el-button
+          :type="migratedBefore ? 'default' : 'primary'"
+          @click="store.activePanel = 'migration'"
+        >
+          {{ migratedBefore ? '查看数据迁移' : '去迁移' }}
         </el-button>
-      </div>
-      <p class="muted patch-section-hint">
-        随 dsh-xlink 内置，默认不生效；应用前自动备份，可随时撤销。
-      </p>
-      <el-alert
-        v-if="patchStore.view && patchStore.view.warning"
-        :title="patchStore.view.warning"
-        type="warning"
-        :closable="false"
-        show-icon
-      />
-      <div v-if="!patchStore.loaded" class="patch-empty">补丁状态加载中…</div>
-      <div v-else-if="!patchRows.length" class="patch-empty">此版本未携带任何内置补丁。</div>
-      <div v-else class="patch-list">
-        <div v-for="row in patchRows" :key="row.id" class="patch-item"
-             :class="{ 'patch-item-obsolete': row.superseded, 'patch-item-collapsed': isObsoleteCollapsed(row) }">
-          <div class="patch-item-main">
-            <div class="patch-item-title">
-              <strong :class="{ 'patch-name-obsolete': row.superseded }">{{ row.name }}</strong>
-              <el-tag v-if="row.kind === 'plugin'" size="small" type="success" effect="plain">插件</el-tag>
-              <el-tag v-else size="small" type="primary" effect="plain">补丁</el-tag>
-              <el-tag size="small" effect="plain">v{{ row.version }}</el-tag>
-              <el-tag v-if="row.superseded && row.supersededSinceKernelVersion"
-                       size="small" effect="plain" class="patch-superseded-tag">
-                已并入 v{{ row.supersededSinceKernelVersion }}
-              </el-tag>
-              <el-tag :type="stateTag(row.state)" size="small" effect="dark" class="patch-state">
-                {{ row.stateText }}
-              </el-tag>
-              <el-button v-if="row.superseded" link size="small" class="patch-toggle"
-                          @click="toggleObsolete(row.id)">
-                <el-icon><component :is="isObsoleteCollapsed(row) ? ArrowDown : ArrowUp" /></el-icon>
-                {{ isObsoleteCollapsed(row) ? '详情' : '收起' }}
-              </el-button>
-            </div>
-            <p v-if="isObsoleteCollapsed(row) && row.supersededSinceKernelVersion"
-               class="muted patch-desc patch-obsolete-summary">
-              v{{ row.supersededSinceKernelVersion }} 起已合并，无需手动应用。
-            </p>
-            <template v-else>
-              <p class="muted patch-desc">{{ row.description }}</p>
-              <p class="patch-meta">
-                <span>适用：{{ rangeText(row) }}</span>
-                <span v-if="row.appliedAt">已应用：{{ row.appliedAt }}</span>
-              </p>
-              <p v-if="row.note" class="patch-note">{{ row.note }}</p>
-            </template>
-          </div>
-          <div v-if="!isObsoleteCollapsed(row)" class="patch-item-actions">
-            <el-button
-              v-if="primaryAction(row) === 'apply'"
-              type="primary"
-              size="small"
-              :disabled="!row.enabled || workbenchRunning"
-              :loading="isLoading('patchApply:' + row.id)"
-              @click="applyPatch(row.id, row.name)"
-            >
-              应用
-            </el-button>
-            <el-button
-              v-else
-              type="danger"
-              plain
-              size="small"
-              :disabled="!row.enabled || workbenchRunning"
-              :loading="isLoading('patchRevert:' + row.id)"
-              @click="revertPatch(row.id, row.name)"
-            >
-              撤销
-            </el-button>
-          </div>
-        </div>
-      </div>
-      <p v-if="workbenchRunning" class="patch-note">
-        工作台运行期间不能应用或撤销补丁，请先关闭工作台后再操作。
-      </p>
+      </template>
     </div>
   </section>
 </template>
