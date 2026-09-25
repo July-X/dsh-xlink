@@ -37,16 +37,16 @@ const {
   RANGE_OPTIONS,
 } = await import('../src/usage.js');
 
-test('formatTokens 走 B / M / K 标准单位', () => {
+test('formatTokens 走 B / M / K 标准单位，精确到两位小数', () => {
   assert.equal(formatTokens(0), '0');
   assert.equal(formatTokens(512), '512');
-  assert.equal(formatTokens(1234), '1.2K');
-  assert.equal(formatTokens(12_345_678), '12.3M');
-  assert.equal(formatTokens(3_149_676_512), '3.1B');
-  assert.equal(formatTokens(123_400_000_000), '123B');
+  assert.equal(formatTokens(1234), '1.23K');
+  assert.equal(formatTokens(12_345_678), '12.35M');
+  assert.equal(formatTokens(3_149_676_512), '3.15B');
+  assert.equal(formatTokens(123_400_000_000), '123.40B');
   assert.equal(formatTokens(undefined), '0');
-  // 示意图标注的诉求：整数亿级不再带无意义的小数。
-  assert.equal(formatTokens(8_400_000_000), '8.4B');
+  // 统计数字的位数一致性比短更重要：单位换算后恒两位小数。
+  assert.equal(formatTokens(8_400_000_000), '8.40B');
 });
 
 test('formatPercent 固定一位小数', () => {
