@@ -100,7 +100,7 @@ const trend = computed(() => stackTrend(rangeDaysView.value, rangeModels.value))
 const trendRows = computed(() => trend.value.rows);
 const trendMax = computed(() => trend.value.max);
 const yTicks = computed(() => [0.25, 0.5, 0.75, 1].map((p) => ({ p, label: formatTokens(trendMax.value * p) })));
-// 刻度日期：整窗均分 6 个（含首尾），M/D 短格式。
+// 刻度日期：从柱槽中心取最多 6 个，M/D 短格式。
 const xTicks = computed(() => {
   const rows = trendRows.value;
   if (!rows.length) return [];
@@ -111,7 +111,13 @@ const xTicks = computed(() => {
   }
   return [...picked].map((index) => {
     const parts = rows[index].date.split('-');
-    return { index, label: `${Number(parts[1])}/${Number(parts[2])}` };
+    // 柱体使用等宽槽位，刻度应落在槽位中心；单日数据自然位于 50%。
+    const position = ((index + 0.5) / rows.length) * 100;
+    return {
+      index,
+      label: `${Number(parts[1])}/${Number(parts[2])}`,
+      position: Math.min(96, Math.max(4, position)),
+    };
   });
 });
 
@@ -759,7 +765,11 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   outline: 1px solid var(--tooltip-border);
 }
 .usage-trend-seg {
+  /* 外层 bar 保留完整点位槽位，实际堆叠柱体限制宽度并保持居中，
+     这样少量日期不会把柱形无限横向拉宽。 */
   width: 100%;
+  max-width: 14px;
+  margin-inline: auto;
   display: block;
 }
 .usage-trend-x {
@@ -780,9 +790,9 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   display: flex;
   gap: 24px;
   align-items: stretch;
-  /* 尽可能吃满剩余高度（grow），空间不足时收缩（shrink）让整窗始终
-     无纵向滚动条；自身超高由内部列表滚动消化。 */
-  flex: 1 1 0;
+  /* 模型用量区域保持稳定高度，避免列表内容把整段撑开。 */
+  height: 252px;
+  flex: none;
   min-height: 0;
   overflow: hidden;
 }
@@ -814,7 +824,9 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   flex: 1;
   min-width: 0;
   /* 高度完全跟随父段：空间多就多显示几行，空间少就少显示几行，
-     行数超出在列表内滚动——整窗不出现纵向滚动条。 */
+     行数超出在列表内滚动——整窗不出现纵向滚动条。固定区域贴近页脚时，
+     给列表末尾留出安全间距，确保最后一行完整可见；饼图仍按整个模型用量区域居中。 */
+  margin-bottom: 8px;
   min-height: 0;
   overflow-y: auto;
   /* 滚动条默认隐藏；悬停列表或滚动期间（`.is-scrolling` 由

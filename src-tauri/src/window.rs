@@ -10,7 +10,7 @@
 // （`usage::open_usage_window`）共用——它们的差别只是窗口尺寸与 label，
 // 几何算法完全一致。共用的好处是 dock / 跟随的行为绝对不会「一个修一个忘」。
 
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// 跟随定位的合帧间隔：拖动时 `Moved` 触发频率远超显示刷新率，逐事件
@@ -118,9 +118,9 @@ fn compute_dock_position_physical(
 
 fn compute_dock_position_for_target(
     main: &WebviewWindow,
+    main_position: PhysicalPosition<i32>,
     target_size: tauri::PhysicalSize<u32>,
 ) -> Option<(i32, i32)> {
-    let main_position = main.outer_position().ok()?;
     let main_size = main.outer_size().ok()?;
     let monitor = main.current_monitor().ok().flatten()?;
     Some(compute_dock_position_physical(
@@ -141,9 +141,9 @@ pub fn dock_position_logical(main: &WebviewWindow, size: WindowSize) -> Option<(
 }
 
 /// 移动跟随监听器：主窗被拖动时，副窗（`target_label`）按 [`compute_dock_position`]
-/// 重算并 `set_position`，保持吸附状态。`on_window_event` 挂在主窗上
-/// （`Moved` 在拖动全程连续触发），所以开不开副窗都能安全挂载——本函数
-/// 内部用 `get_webview_window(target_label)` 短路未开窗的情况。
+/// 重算并 `set_position`，保持吸附状态。主窗的 `Moved` 回调只记录最新物理坐标，
+/// 实际窗口查询与定位在独立跟随线程中按 [`FRAME_INTERVAL`] 合帧执行，避免原生
+/// 窗口调用阻塞主窗拖动事件。未开的副窗不会触发定位，打开后可直接接收后续位置。
 ///
 /// 副窗自身的移动不经过这条路径（事件源是 `main`），不存在两窗互相拉扯
 /// 的回环；主窗固定不可缩放，`Resized` 也不需要处理。
@@ -151,53 +151,82 @@ pub fn attach_dock_listener(app: &AppHandle, target_label: &'static str) {
     let Some(main) = app.get_webview_window("main") else {
         return;
     };
-    let handle = app.clone();
-    let main_for_handler = main.clone();
-    // 合帧节流：Moved 触发频率远超显示刷新率，把 set_position 压到 ~60fps，
-    // 中间位置直接丢弃（后续事件总会带上最新值）。逐事件下发会让指令
-    // 在主线程队列里积压，跟随看起来迟滞、卡顿。
-    let last_apply: Mutex<Option<Instant>> = Mutex::new(None);
+
+    // 只保留最新位置：拖动事件的生产速度可能高于窗口系统的处理速度，
+    // 丢弃过时位置比排队 set_position 更顺滑，也不会让副窗越跟越远。
+    let pending = Arc::new((Mutex::new(None::<PhysicalPosition<i32>>), Condvar::new()));
+    let worker_pending = Arc::clone(&pending);
+    let worker_handle = app.clone();
+    let main_for_worker = main.clone();
+    let worker_label = target_label;
+    let _ = std::thread::Builder::new()
+        .name(format!("dsh-dock-{worker_label}"))
+        .spawn(move || {
+            let mut last_apply: Option<Instant> = None;
+            loop {
+                let main_position = {
+                    let (position_lock, wake) = &*worker_pending;
+                    let mut latest = position_lock
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    loop {
+                        if let Some(last) = last_apply {
+                            let remaining = FRAME_INTERVAL.saturating_sub(last.elapsed());
+                            if !remaining.is_zero() {
+                                let (next, timeout) = wake
+                                    .wait_timeout(latest, remaining)
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                latest = next;
+                                if !timeout.timed_out() {
+                                    // 有更新位置到达，继续等待本帧截止时间，
+                                    // 最终只取最新值。
+                                    continue;
+                                }
+                            }
+                        }
+                        if let Some(position) = latest.take() {
+                            break position;
+                        }
+                        latest = wake
+                            .wait(latest)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    }
+                };
+
+                let Some(target) = worker_handle.get_webview_window(worker_label) else {
+                    continue;
+                };
+                let now = Instant::now();
+                let drag_start = last_apply
+                    .map(|last| now.duration_since(last) >= DRAG_START_QUIET)
+                    .unwrap_or(true);
+                if drag_start {
+                    // 每轮拖动只提到最前一次，避免两窗穿过其他应用时发生穿插。
+                    let _ = target.set_focus();
+                }
+                let Ok(target_size) = target.outer_size() else {
+                    continue;
+                };
+                let Some((x, y)) =
+                    compute_dock_position_for_target(&main_for_worker, main_position, target_size)
+                else {
+                    continue;
+                };
+                last_apply = Some(now);
+                let _ = target.set_position(PhysicalPosition::new(x, y));
+            }
+        });
+
+    let pending_for_handler = Arc::clone(&pending);
     main.on_window_event(move |event| {
-        if !matches!(event, WindowEvent::Moved(_)) {
-            return;
-        }
-        let Some(target) = handle.get_webview_window(target_label) else {
+        let WindowEvent::Moved(position) = event else {
             return;
         };
-        let now = Instant::now();
-        let elapsed = match last_apply
+        let (position_lock, wake) = &*pending_for_handler;
+        *position_lock
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-        {
-            Some(t) => now.duration_since(*t),
-            None => Duration::MAX,
-        };
-        // 拖动开始的第一次 Moved（距上次 tick 超过安静期）：先把副窗提到
-        // 最前（set_focus），否则两窗连动穿过其他应用窗口时副窗会被压在
-        // 人家后面，出现"一半在别窗前后"的穿插。tao 没有"提到最前但不抢
-        // 焦点"的 API（macOS 的 set_visible 也是 makeKeyAndOrderFront），
-        // 所以每个拖动回合只做一次，焦点落在副窗上，点任意窗口即可收回。
-        let drag_start = elapsed >= DRAG_START_QUIET;
-        if drag_start {
-            let _ = target.set_focus();
-        }
-        // 合帧节流：Moved 触发频率远超显示刷新率，把 set_position 压到
-        // ~60fps，中间位置直接丢弃（后续事件总会带上最新值）。逐事件下发
-        // 会让指令在主线程队列里积压，跟随看起来迟滞、卡顿。
-        if elapsed < FRAME_INTERVAL && !drag_start {
-            return;
-        }
-        *last_apply
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(now);
-        let Ok(target_size) = target.outer_size() else {
-            return;
-        };
-        let Some((x, y)) = compute_dock_position_for_target(&main_for_handler, target_size) else {
-            return;
-        };
-        let _ = target.set_position(PhysicalPosition::new(x, y));
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(*position);
+        wake.notify_one();
     });
 }
 
