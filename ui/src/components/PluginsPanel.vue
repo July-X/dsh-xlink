@@ -172,7 +172,7 @@ function statsText(item) {
 // 字段（wired / synced / actual_mode / quarantined）。「所有实例」tab
 // 走 row.instances map，把每个实例的 chip 摆出来，方便对比哪个实例装了
 // 哪个没装。
-const installedTab = ref('current');
+const installedTab = ref('all');
 // 「当前内核」是个相对概念，用户未必知道它指什么：标签里带上当前内核身份
 // 与其活动版本号（与概览页「活动版本」同源）。注册表实例 id（如 default）
 // 是实现细节，与顶栏内核 tab 同口径不对外展示。两个 tab 的 tooltip 各讲
