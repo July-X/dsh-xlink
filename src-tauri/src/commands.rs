@@ -1400,7 +1400,7 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
             // 吸附定位与用量窗口共用一套算法：贴主窗右侧、顶边对齐，
             // 右侧放不下翻左侧；物理坐标换算成逻辑坐标交给 builder。
             let dock = handle.get_webview_window("main").and_then(|main| {
-                crate::window::dock_position_logical(&main, LOG_WINDOW_WIDTH, LOG_WINDOW_HEIGHT)
+                crate::window::dock_position_logical(&main, crate::window::LOG_VIEWER_SIZE)
             });
             let mut builder = WebviewWindowBuilder::new(
                 &handle,
@@ -1408,7 +1408,10 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
                 WebviewUrl::App(format!("index.html?log={encoded}").into()),
             )
             .title(format!("日志 - {name}"))
-            .inner_size(LOG_WINDOW_WIDTH, LOG_WINDOW_HEIGHT)
+            .inner_size(
+                crate::window::LOG_VIEWER_SIZE.width,
+                crate::window::LOG_VIEWER_SIZE.height,
+            )
             .resizable(true)
             .background_color(backdrop);
             if let Some((x, y)) = dock {
@@ -1439,13 +1442,6 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
     )
     .await
 }
-
-/// 日志查看器窗口默认尺寸（逻辑像素）。比用量窗口更宽以容纳长文件名 +
-/// 分类侧栏同时阅读；高度低于主壳（720 vs 800），底部有余量给任务栏；
-/// `attach_dock_listener` 用这两个尺寸算吸附位置，主窗拖动时按这套尺寸
-/// 重算跟随。改动需同步 lib.rs 同段 `attach_dock_listener` 调用。
-const LOG_WINDOW_WIDTH: f64 = 960.0;
-const LOG_WINDOW_HEIGHT: f64 = 720.0;
 
 /// 把 Shell 的主管理窗口提到当前桌面之上。
 ///

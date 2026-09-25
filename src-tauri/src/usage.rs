@@ -736,7 +736,7 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
             // 吸附定位取主窗的物理坐标 + 缩放比换算成逻辑坐标交给 builder；
             // 主窗不在（理论上不会）或取不到显示器信息时保持默认居中。
             let dock = handle.get_webview_window("main").and_then(|main| {
-                crate::window::dock_position_logical(&main, USAGE_WINDOW_WIDTH, USAGE_WINDOW_HEIGHT)
+                crate::window::dock_position_logical(&main, crate::window::USAGE_VIEWER_SIZE)
             });
             let mut builder = tauri::WebviewWindowBuilder::new(
                 &handle,
@@ -744,7 +744,10 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
                 tauri::WebviewUrl::App("index.html?usage=1".into()),
             )
             .title("模型用量")
-            .inner_size(USAGE_WINDOW_WIDTH, USAGE_WINDOW_HEIGHT)
+            .inner_size(
+                crate::window::USAGE_VIEWER_SIZE.width,
+                crate::window::USAGE_VIEWER_SIZE.height,
+            )
             .min_inner_size(720.0, 520.0)
             .resizable(true)
             .background_color(backdrop);
@@ -770,11 +773,6 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
     .await
     .map_err(|join| format!("后台任务异常结束（{join}）。请重试"))?
 }
-
-/// 用量窗口默认尺寸（逻辑像素）。宽度两栏刚好铺满；**高度与主壳一致**
-/// （tauri.conf.json 的 main = 480×800），吸附打开后两窗上下缘对齐。
-const USAGE_WINDOW_WIDTH: f64 = 760.0;
-const USAGE_WINDOW_HEIGHT: f64 = 800.0;
 
 #[cfg(test)]
 mod tests {

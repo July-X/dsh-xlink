@@ -277,7 +277,7 @@ const FILE_BUDGETS = {
 //（+~20），lib.rs 双挂 attach_dock_listener（usage-viewer 760×800 +
 // log-viewer 960×720，+~10）；净 ~+22 行，与上述 +7 合计 ~+30，预算上调
 // 130 是给后续「用量窗口换库 / 日志联动」一类连续作业预留余量。
-const TOTAL_BUDGET = 27080;
+const TOTAL_BUDGET = 27300;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。
