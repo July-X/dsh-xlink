@@ -141,11 +141,12 @@ test('modelColor 按序循环取色且容忍越界', () => {
   assert.match(modelColor(3), /^#/);
 });
 
-test('RANGE_OPTIONS 只保留 15/30/60/90 天四档', () => {
+test('RANGE_OPTIONS 覆盖 今日 与 7/15/30/60/90 天六档', () => {
   assert.deepEqual(
     RANGE_OPTIONS.map((o) => o.days),
-    [15, 30, 60, 90]
+    [1, 7, 15, 30, 60, 90]
   );
+  assert.equal(RANGE_OPTIONS[0].label, '今日');
   assert.equal(RANGE_OPTIONS[RANGE_OPTIONS.length - 1].label, '90 天');
 });
 

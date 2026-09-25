@@ -51,7 +51,7 @@ const rangeDaysView = computed(() => sliceDays(data.value && data.value.days, ra
 const rangeSummary = computed(() => summarizeDays(rangeDaysView.value));
 const rangeModels = computed(() => rangeSummary.value.models);
 
-const rangeText = computed(() => `近 ${rangeLabel.value}`);
+const rangeText = computed(() => (rangeDays.value === 1 ? '今日' : `近 ${rangeLabel.value}`));
 
 const summaries = computed(() => {
   const s = rangeSummary.value;
@@ -817,13 +817,15 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
      行数超出在列表内滚动——整窗不出现纵向滚动条。 */
   min-height: 0;
   overflow-y: auto;
-  /* 滚动期间才显滚动条（`.is-scrolling` 由 bindScrollAutoHide 加上，
-     800ms 无滚动移除），与日志正文同一套交互节奏。 */
+  /* 滚动条默认隐藏；悬停列表或滚动期间（`.is-scrolling` 由
+     bindScrollAutoHide 维护，800ms 无滚动移除）显形——既不常驻占位，
+     数据被截断也可发现、可滚。 */
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
 }
+.usage-model-list:hover,
 .usage-model-list.is-scrolling {
-  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
 }
 .usage-model-list::-webkit-scrollbar {
   width: 8px;
@@ -835,11 +837,9 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   background-clip: padding-box;
   transition: background 0.2s ease;
 }
+.usage-model-list:hover::-webkit-scrollbar-thumb,
 .usage-model-list.is-scrolling::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.22);
-}
-.usage-model-list.is-scrolling::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.32);
+  background: rgba(255, 255, 255, 0.35);
 }
 .usage-model-row {
   display: flex;
