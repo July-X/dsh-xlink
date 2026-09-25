@@ -539,7 +539,9 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
      空间，页脚贴底；超出时照常整体滚动。 */
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
+  /* 纵向同样不出滚动条：各段高度由 flex 分配（模型明细段可收缩，
+     内部自带滚动），极端小窗下宁可裁切也不顶出整窗滚动条。 */
+  overflow-y: hidden;
   /* 横向一律不出滚动条：热力图自己带滚动容器；趋势图 hover 浮层的
      位置在脚本里钳制在绘图区内，这里是最后的安全网。 */
   overflow-x: hidden;
@@ -760,9 +762,11 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   display: flex;
   gap: 24px;
   align-items: stretch;
-  /* 吸收主内容区剩余高度：列表随之变高，一屏能看到更多模型行。 */
-  flex: 1 0 auto;
+  /* 尽可能吃满剩余高度（grow），空间不足时收缩（shrink）让整窗始终
+     无纵向滚动条；自身超高由内部列表滚动消化。 */
+  flex: 1 1 0;
   min-height: 0;
+  overflow: hidden;
 }
 .usage-donut-wrap {
   flex: 0 0 170px;
@@ -791,9 +795,9 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 .usage-model-list {
   flex: 1;
   min-width: 0;
-  /* 至少可见 10 行；有剩余空间就继续向下撑满（底部不留空档），
+  /* 高度完全跟随父段：空间多就多显示几行，空间少就少显示几行，
      行数超出在列表内滚动——整窗不出现纵向滚动条。 */
-  min-height: 250px;
+  min-height: 0;
   overflow-y: auto;
 }
 .usage-model-row {
