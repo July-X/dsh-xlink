@@ -383,7 +383,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
                     v-for="t in xTicks"
                     :key="t.index"
                     class="usage-trend-x-label"
-                    :style="{ left: (t.index / Math.max(1, trendRows.length - 1)) * 100 + '%' }"
+                    :style="{ left: t.position + '%' }"
                   >
                     {{ t.label }}
                   </span>
@@ -777,11 +777,13 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   left: 0;
   right: 0;
   bottom: 0;
-  height: 18px;
+  height: 30px;
 }
 .usage-trend-x-label {
   position: absolute;
-  transform: translateX(-50%);
+  bottom: 2px;
+  transform: translateX(-50%) rotate(-45deg);
+  transform-origin: 50% 100%;
   color: var(--muted);
   font-size: 11px;
   white-space: nowrap;
