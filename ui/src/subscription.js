@@ -19,8 +19,10 @@ export const PLAN_KIND = 'plan';
 export const BALANCE_KIND = 'balance';
 
 export const subscription = reactive({
-  // 独立窗口 / 手动刷新进行中。
+  // 独立窗口 / 手动全量刷新进行中。
   loading: false,
+  // 单 provider 刷新进行中的 id 列表（概览卡每个分区标题旁的刷新 icon）。
+  refreshingIds: [],
   // 上一次成功拉取的 SubscriptionView；失败时不清空（keep-last-good）。
   data: null,
   // 最近一次失败的用户文案（数组，卡片/窗口内联展示）；成功时置空。
@@ -129,6 +131,23 @@ function applyView(data) {
   subscription.loadedAt = Date.now();
 }
 
+/**
+ * 把单 provider 的视图合并进现有数据（Rust 侧按 provider 查询只返回该
+ * provider；其它分区保持 keep-last-good 原样不动）。没有旧数据时整体接管。
+ */
+function mergeProviderView(data) {
+  const current = subscription.data;
+  if (!current) return applyView(data);
+  const byId = new Map(current.providers.map((p) => [p.id, p]));
+  for (const provider of data.providers) byId.set(provider.id, provider);
+  applyView({ ...current, providers: current.providers.map((p) => byId.get(p.id)) });
+}
+
+/** 某个 provider 的单分区刷新是否进行中。 */
+export function isProviderRefreshing(id) {
+  return subscription.refreshingIds.includes(id);
+}
+
 // --- 状态动作 ---------------------------------------------------------------
 
 /** 概览卡片：TTL 内复用上次结果。失败只写 errors，不动 data（keep-last-good）。 */
@@ -149,15 +168,33 @@ export async function loadSubscriptionSummary() {
  * 返回本次视图，供设置页「测试连接」读取每个 provider 的状态。
  */
 export async function refreshSubscription(provider) {
+  if (provider) return refreshSubscriptionProvider(provider);
   subscription.loading = true;
   try {
     applyView(
-      await invoke('get_subscription_usage', { provider: provider || null, force: true })
+      await invoke('get_subscription_usage', { provider: null, force: true })
     );
   } catch (e) {
     subscription.errors = [formatActionError('查询套餐用量失败', e, '已保留上次结果，可点击刷新重试')];
   } finally {
     subscription.loading = false;
+  }
+  return subscription.data;
+}
+
+/**
+ * 只刷新指定 provider（概览卡分区标题旁的刷新 icon）：在途去重，失败保留
+ * 该分区上次结果并写横幅；成功只合并这一分区的数据，其它分区不动。
+ */
+export async function refreshSubscriptionProvider(id) {
+  if (!id || isProviderRefreshing(id)) return subscription.data;
+  subscription.refreshingIds.push(id);
+  try {
+    mergeProviderView(await invoke('get_subscription_usage', { provider: id, force: true }));
+  } catch (e) {
+    subscription.errors = [formatActionError('查询套餐用量失败', e, '已保留上次结果，可点击刷新重试')];
+  } finally {
+    subscription.refreshingIds = subscription.refreshingIds.filter((item) => item !== id);
   }
   return subscription.data;
 }

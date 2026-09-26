@@ -8,11 +8,13 @@
 import { computed, onMounted, ref } from 'vue';
 import {
   InfoFilled,
-  SwitchButton,
   Timer,
   TopRight,
   Document,
   ChatDotRound,
+  CircleClose,
+  VideoPlay,
+  VideoPause,
   Refresh,
   FolderOpened,
   Download,
@@ -48,6 +50,8 @@ import {
   loadSubscriptionSummary,
   openSubscriptionWindow,
   refreshSubscription,
+  refreshSubscriptionProvider,
+  isProviderRefreshing,
   providerShortState,
   tierRow,
   balanceText,
@@ -106,6 +110,10 @@ const planBlockRows = computed(() => planRows.value.filter((row) => row.provider
 function onRefreshPlan() {
   refreshSubscription();
 }
+// 分区标题旁的刷新 icon：只重新查询这一个 provider（在途去重 + 旋转加载态）。
+function onRefreshProvider(id) {
+  refreshSubscriptionProvider(id);
+}
 
 const kernel = computed(() => store.view && store.view.kernel);
 const node = computed(() => store.view && store.view.node);
@@ -126,7 +134,6 @@ const kernelStatus = computed(() => {
   return { text: '未安装', cls: '' };
 });
 const officialChatOpen = computed(() => !!(store.view && store.view.official_chat_open));
-const officialChatLabel = computed(() => (officialChatOpen.value ? '关闭官方对话' : '打开官方对话'));
 const canStart = computed(() => !!(kernel.value && kernel.value.active && kernel.value.active_installed));
 const noKernel = computed(() => !!(kernel.value && (!kernel.value.installed || kernel.value.installed.length === 0)));
 
@@ -189,11 +196,6 @@ function openIncidentDetails() {
 function goGuardDestination() {
   store.activePanel = guardDestination.value;
 }
-
-const toggleLabel = computed(() => {
-  if (store.starting) return '正在启动…';
-  return running.value ? '关闭工作台' : '打开工作台';
-});
 
 const toggleDisabled = computed(() => {
   if (store.starting) return true;
@@ -353,30 +355,31 @@ function goVersions() {
       </div>
 
       <!-- 第一行：主操作三件套（工作台 / 官方对话 / 查看日志）+ 可选外壳更新。
-           文字色随状态切换：
-           - 打开态（打开工作台 / 打开官方对话）：白 / 淡绿
-           - 关闭态（关闭工作台 / 关闭官方对话）：淡红（btn-danger）
-           - 查看日志：淡青（始终只读）
+           按钮只写名词不写「打开/关闭」：动作方向由 icon 表达——
+           - 工作台：▶ 启动（VideoPlay）/ ⏸ 停止（VideoPause）
+           - 官方对话：💬 打开（ChatDotRound）/ ⏹ 关闭（CircleClose）
+           文字色仍随状态切换（关闭态淡红 btn-danger），查看日志淡青（只读）。
            全部用 type="text"（无底色无描边），仅靠文字色 + icon 区分。 -->
       <div class="btn-row">
         <el-button
           :class="{ 'btn-danger': running }"
-          :icon="SwitchButton"
+          :icon="running ? VideoPause : VideoPlay"
           :loading="store.starting"
           :disabled="toggleDisabled"
+          :title="running ? '停止工作台' : '启动工作台'"
           @click="onToggle"
         >
-          {{ toggleLabel }}
+          工作台
         </el-button>
         <el-button
           :class="{ 'btn-chat': !officialChatOpen, 'btn-danger': officialChatOpen }"
-          :icon="ChatDotRound"
+          :icon="officialChatOpen ? CircleClose : ChatDotRound"
           :disabled="store.starting || globalBusy"
           :loading="isLoading('officialChat')"
-          title="打开或关闭 DeepSeek 官方对话"
+          :title="officialChatOpen ? '关闭 DeepSeek 官方对话' : '打开 DeepSeek 官方对话'"
           @click="toggleOfficialChat"
         >
-          {{ officialChatLabel }}
+          官方对话
         </el-button>
         <el-button
           class="btn-view"
@@ -412,7 +415,7 @@ function goVersions() {
             title="在独立窗口中打开工作台 webview"
             @click="openHarnessWindow"
           >
-            打开工作台窗口
+            工作台窗口
           </el-button>
           <el-button
             v-if="officialChatOpen"
@@ -424,7 +427,7 @@ function goVersions() {
             title="唤起 / 聚焦 DeepSeek 官方对话窗口"
             @click="openOfficialChatWindow"
           >
-            打开官方对话窗口
+            官方对话窗口
           </el-button>
         </div>
       </Transition>
@@ -454,7 +457,7 @@ function goVersions() {
         </h2>
         <span v-if="anyKeyConfigured" class="plan-head-actions">
           <el-button
-            text
+            round
             size="small"
             :icon="Refresh"
             :loading="subscription.loading"
@@ -464,7 +467,7 @@ function goVersions() {
             刷新
           </el-button>
           <el-button
-            text
+            round
             size="small"
             :icon="TopRight"
             :loading="isLoading('openSubscriptionWindow')"
@@ -502,9 +505,15 @@ function goVersions() {
         <div v-for="row in balanceRows" :key="row.provider.id" class="plan-provider">
           <div class="plan-provider-head">
             <span class="plan-provider-name">{{ row.provider.label }}</span>
-            <span v-if="row.queriedCompact" class="age-pill" :title="'查询于 ' + row.queried">
-              <el-icon><Refresh /></el-icon>{{ row.queriedCompact }}
-            </span>
+            <button
+              type="button"
+              class="age-pill age-pill-btn"
+              :title="isProviderRefreshing(row.provider.id) ? '正在查询…' : '查询于 ' + row.queried + '，点击只刷新 ' + row.provider.label"
+              :disabled="isProviderRefreshing(row.provider.id)"
+              @click="onRefreshProvider(row.provider.id)"
+            >
+              <el-icon :class="{ 'is-loading': isProviderRefreshing(row.provider.id) }"><Refresh /></el-icon>{{ row.queriedCompact }}
+            </button>
           </div>
           <template v-if="row.provider.kind === 'balance'">
             <div v-for="(text, index) in row.balances" :key="index" class="plan-balance">
@@ -527,9 +536,15 @@ function goVersions() {
           <div v-for="row in planBlockRows" :key="row.provider.id" class="plan-provider">
             <div class="plan-provider-head">
               <span class="plan-provider-name">{{ row.provider.label }}</span>
-              <span v-if="row.queriedCompact" class="age-pill" :title="'查询于 ' + row.queried">
-                <el-icon><Refresh /></el-icon>{{ row.queriedCompact }}
-              </span>
+              <button
+                type="button"
+                class="age-pill age-pill-btn"
+                :title="isProviderRefreshing(row.provider.id) ? '正在查询…' : '查询于 ' + row.queried + '，点击只刷新 ' + row.provider.label"
+                :disabled="isProviderRefreshing(row.provider.id)"
+                @click="onRefreshProvider(row.provider.id)"
+              >
+                <el-icon :class="{ 'is-loading': isProviderRefreshing(row.provider.id) }"><Refresh /></el-icon>{{ row.queriedCompact }}
+              </button>
             </div>
             <div v-for="tier in row.tiers" :key="tier.name" class="plan-tier-col">
               <div class="plan-tier-head">
@@ -608,6 +623,19 @@ function goVersions() {
   padding: 1px 8px;
   border: 1px solid var(--el-border-color-extra-light);
   border-radius: 999px;
+}
+/* 分区刷新按钮：复用年龄胶囊外观，但可点击；禁用（查询中）降透明度。 */
+.age-pill-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.age-pill-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 /* 套餐用量卡头右侧的按钮组（刷新 / 查看详情）。 */
 .plan-head-actions {
