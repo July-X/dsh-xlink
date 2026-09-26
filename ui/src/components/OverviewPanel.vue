@@ -628,12 +628,45 @@ function goVersions() {
 .plan-provider {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   /* 分块展示：描边 + 微底色 + 圆角，与独立窗口的 provider 分区同语言。 */
   border: 1px solid var(--el-border-color-extra-light);
   border-radius: 10px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   background: var(--el-fill-color-light);
+}
+/* 套餐类：grid 自适应栅格。480 窗口稳定两列并排（MiniMax 与 GLM 同行），
+   更宽窗口自动三列；新增 provider 依次往后排。 */
+.plan-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+}
+.plan-grid .plan-provider {
+  min-width: 0;
+}
+/* 窄块内的 tier：名称 / 百分比 / 倒计时一行，进度条独占下一行。 */
+.plan-tier-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.plan-tier-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.plan-tier-head .plan-tier-name {
+  color: var(--muted);
+  font-weight: 600;
+}
+.plan-tier-head .plan-tier-percent {
+  font-weight: 600;
+}
+.plan-tier-head .plan-tier-reset {
+  margin-left: auto;
 }
 .plan-provider-head {
   display: flex;
