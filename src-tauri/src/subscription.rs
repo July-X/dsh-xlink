@@ -63,11 +63,12 @@ pub const PROVIDER_MINIMAX_EN: &str = "minimax_en";
 pub const PROVIDER_DEEPSEEK: &str = "deepseek";
 pub const PROVIDER_ZAI_CODING_CN: &str = "zai_coding_cn";
 
-/// 视图里的固定输出顺序：概览卡与独立窗口都按它排列。
+/// 视图里的固定输出顺序：概览卡与独立窗口都按它排列。DeepSeek 是余额类
+/// 数据、更新最直观，放在最前（用户指定的展示顺序）。
 const PROVIDER_ORDER: [&str; 4] = [
+    PROVIDER_DEEPSEEK,
     PROVIDER_MINIMAX_CN,
     PROVIDER_MINIMAX_EN,
-    PROVIDER_DEEPSEEK,
     PROVIDER_ZAI_CODING_CN,
 ];
 
