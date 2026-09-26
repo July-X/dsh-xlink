@@ -67,6 +67,7 @@
    - `dependencies["<包名>"] = "file:../../desktop/kernels/<活动版本>/plugins/<id>"`（copy 模式）
    - dev 壳（`tauri dev`）的物化目标在 `desktop-dev/` 下，写出的 spec 相应含 `desktop-dev/kernels/`。依赖是否由壳接管（卸载/隔离时清退）按 spec 的尾部路径结构 `kernels/<version>/plugins/<id>` 判定，与数据目录名无关；其余 spec（版本号、指向任意目录的 link/file）视为用户/CLI 管理，接线校正不动。
    - 若插件清单声明 `dsh.bundle`，把包名追加进 `dsh.profile.bundles`（去重、保留模板层）。
+   - 内核工作台「插件」页的官方插件开关（如实验特性）只向 `dsh.profile.bundles` 追加一行包名、不写 `dependencies`——这些包随内核自带，启用无需 pnpm 接线。每次启动的接线调和解析 bundle 行时按「是否伴随托管依赖」判断归属：没有托管依赖背书的行（官方插件开关、用户/CLI 手工添加）原样保留，只有外壳自己写过的行才在卸载/隔离后随托管依赖一起清退；因此官方插件的启用状态在重启内核后保持不变。
    - 在 profile 目录运行 `pnpm install`（profile 自带 pnpm-workspace.yaml，hoisted/peers 语义与 `dsh plugin` 一致），使 `node_modules/<包名>` 指向物化目录。内核启动时 Loader 按 bundle 名从 profile 解析并应用其 patch 层，与 `dsh plugin add` 行为一致。
 5. **卸载**：反向执行——移除依赖与 bundle 层、profile pnpm install 清理、删除所有内核的物化产物与中央库目录、更新 store.json；如果上一次卸载只完成了部分步骤而隔离记录仍在，启动容错面板中的「移除插件」可重复执行并继续清理残留隔离记录与接线。
 
