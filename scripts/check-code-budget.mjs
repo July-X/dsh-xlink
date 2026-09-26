@@ -39,7 +39,11 @@ const FILE_BUDGETS = {
   // 文件里凑着放——没必要为单个 panel 拆 CSS 文件，徒增 @import 链。
   // 2980 → 3080：侧栏改版继续追加的分组/滚动条等样式（工作区实测 3057，
   // 仍在迭代）。共享主题文件按约定不拆分，涨数字让其可见。
-  'ui/src/theme.css': 3080,
+  // 3080 → 3160：插件中心改行式枚举（见下方 TOTAL_BUDGET 处的说明）：
+  // 新增搜索框工具条、分类 chip 单行横滚、结果计数行与 .catalog-row
+  // 行式条目样式；旧 .catalog-card / .catalog-card-head / .catalog-title /
+  // .catalog-card-foot / .catalog-tags 随之删除，净 +62。
+  'ui/src/theme.css': 3160,
   // P4 step 3：物化路径切到实例 extensions/plugins/<id>/，抽出 materialize_inner
   // 共享逻辑、新增 materialize_one_for_instance / remove_materialized_for_instance
   // / sweep_instance_orphans / default_instance_key / seed_default_instance_for_tests
@@ -314,7 +318,26 @@ const FILE_BUDGETS = {
 // 概览卡分区标题旁的刷新 icon 支持按 provider 单独刷新：subscription.js 加
 // 单分区合并与在途去重（Rust 按 provider 查询只返回该分区），OverviewPanel
 // 年龄胶囊改为可点按钮（加载态旋转），29140 → 29210。
-const TOTAL_BUDGET = 29210;
+//
+// 29210 → 29450：插件中心搜索枚举界面（PluginsPanel.vue / plugins.js / theme.css）。
+// 起因是一处**功能缺失**而非体积超标：pluginStore.query 早就有状态、有
+// filteredCatalog 过滤、有 150ms 防抖 watcher，但模板里从没有任何输入框
+// 绑定它——16034 条目录只能靠 10 个分类 chip 一页页翻。本轮补齐并按真机
+// 反馈重排枚举面：
+//   plugins.js（+53）：相关度排序 matchScore（名称前缀 3 > 名称中段 2 >
+//   其余字段 1，0 不命中；原先只有 haystack.includes 的二值命中，搜 agent
+//   会把「描述里提了一句 agent」的条目排在「名字就叫 agent」的前面）、
+//   matchParts 高亮分段、hasActiveFilter / resetCatalogFilters，
+//   CATALOG_PAGE 60 → 24（60 条/次 ≈ 5000px 滚动，点完「显示更多」就找不到
+//   自己刚看到哪了）。
+//   PluginsPanel.vue（+84）：补搜索框、搜索框占主位 + 排序收同行的工具条、
+//   分类 chip 改单行横向滚动（10 枚 chip 换行占三行，把首屏结果挤出屏幕）、
+//   结果计数行（匹配 N / 总数）与「清除筛选」、目录条目由三段式卡片
+//   （约 90px，一屏 3-4 个）改定高三行的行式条目（约 62px）。结构上未动
+//   「已安装 / 当前内核」双 tab 与任何 Rust 命令。
+//   theme.css（+64）：行式条目 + 工具条 + chip 横滚 + 计数行样式；删掉
+//   .catalog-card 系列后仍为净增。共 +173，预算上调 240 留余量。
+const TOTAL_BUDGET = 29450;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

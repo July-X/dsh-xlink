@@ -23,6 +23,7 @@ import {
 } from '@element-plus/icons-vue';
 import {
   pluginStore,
+  catalogLoading,
   CATALOG_CATEGORIES,
   CATALOG_PAGE,
   categoryLabel,
@@ -111,6 +112,9 @@ const catChips = computed(() => {
   return chips;
 });
 
+// el-select v-model 直接改 pluginStore.category，但用户切分类后需要把
+// shown 重置回首屏——chip 时代 pickCategory 包了这两步，改下拉后拆开
+// 显式调用，免得「翻到第 3 页切分类仍卡在第 3 页」的隐形 bug。
 function pickCategory(id) {
   pluginStore.category = id;
   pluginStore.shown = CATALOG_PAGE;
@@ -145,9 +149,20 @@ function detailUrl(item) {
   return item.detail_url || (item.repo ? 'https://github.com/' + item.repo : '');
 }
 
+// 描述的截断分两层：这里按 90 字硬切一次（控制 DOM 里的文本长度），CSS 再按
+// 行数 clamp 一次（控制视觉行高）。原先只靠这里的字���切，结果每张卡固定占
+// 三行、描述长短不影响行数，一屏只看得到三四条。
 function descText(item) {
   const d = item.description || '';
-  return d.length > 140 ? d.slice(0, 137) + '…' : d;
+  return d.length > 90 ? d.slice(0, 87) + '…' : d;
+}
+
+// 目录条目原先单独占一行摆 4 个 tag，行高直接翻倍。tag 本身是搜索命中字段
+// （见 plugins.js 的 haystack），值得留在信息里但不值得各占一行——挂到分类
+// 标签的 tooltip 上，悬停即得。
+function tagsTip(item) {
+  const tags = (item.tags || []).map((tag) => String(tag).trim()).filter(Boolean);
+  return tags.length ? '标签：' + tags.join(' · ') : '';
 }
 
 function statsText(item) {
@@ -356,65 +371,86 @@ function instanceChipType(row, instanceId) {
             </el-input>
           </div>
 
-          <div class="install-row">
-            <el-select v-model="pluginStore.sort" style="max-width: 130px" title="排序">
+          <!-- 枚举区不再重复「插件中心 / 来自 dshfind.com」标题：上方卡片头
+               已经有一份（还带跳转链接），这里再来一次是纯重复，且白占一行。
+               手动安装输入框与下面的分类筛选拉开间距：两者是「装单个包」与
+               「按分类筛选」两件事，紧挨着容易被当成同一个输入区。 -->
+          <!-- 分类筛选用下拉与排序并列：原本是单行横滚的 chip，10 个分类 +
+               「全部」在 480px 窄窗里横滚只能看到三四个，渐隐遮罩又挡掉
+               选项前的数字，用户压根看不到完整列表。改成下拉后所有分类 +
+               计数都明确展示，排序下拉占主位、分类筛选收同一行右侧。 -->
+          <div class="catalog-subbar">
+            <el-select
+              v-model="pluginStore.category"
+              class="catalog-category"
+              title="分类筛选"
+              @change="pickCategory"
+            >
+              <el-option
+                v-for="chip in catChips"
+                :key="chip.id"
+                :value="chip.id"
+                :label="chip.count ? `${chip.label}（${formatCount(chip.count)}）` : chip.label"
+              />
+            </el-select>
+            <el-select v-model="pluginStore.sort" class="catalog-sort" title="排序">
               <el-option value="stars" label="Star 最多" />
               <el-option value="updated" label="最近更新" />
             </el-select>
-            <el-select v-model="pluginStore.filter" style="max-width: 120px" title="安装状态">
-              <el-option value="all" label="全部" />
-              <el-option value="installed" label="已安装" />
-              <el-option value="not-installed" label="未安装" />
-            </el-select>
           </div>
 
-          <div class="catalog-cats">
-            <button
-              v-for="chip in catChips"
-              :key="chip.id"
-              type="button"
-              class="cat-chip"
-              :class="{ active: pluginStore.category === chip.id }"
-              @click="pickCategory(chip.id)"
-            >
-              {{ chip.label }}
-              <span v-if="chip.count" class="cat-count">{{ chip.count }}</span>
-            </button>
-          </div>
-
-          <div v-if="!pluginStore.catalogLoaded" v-loading="true" style="min-height: 120px" element-loading-text="目录加载中…"></div>
+          <div v-if="!pluginStore.catalogLoaded" v-loading="catalogLoading" style="min-height: 120px" element-loading-text="目录加载中…"></div>
           <p v-else-if="items.length === 0" class="muted" style="margin: 0">
-            {{ pluginStore.catalogItems.length ? '没有匹配的插件，换个关键词或分类试试。' : '目录为空或加载失败，点「刷新目录」重试。' }}
+            {{ pluginStore.catalogItems.length ? '没有匹配的插件，换个关键词或分类试试。' : '目录为空或加载失败，点「刷新数据」重试。' }}
           </p>
           <TransitionGroup v-else name="catalog" tag="div" class="catalog-list">
+            <!-- 行式条目：原先是三段式卡片（标题行自由换行 + 描述 + tag 行），
+                 一张约 90px，一屏只看三四个。改成「标题 / 描述 / 底部」定高
+                 三行后约 62px，枚举效率显著提升。 -->
             <div
               v-for="(item, index) in shownItems"
               :key="item.spec || item.name"
-              class="catalog-card"
+              class="catalog-row"
               :style="{ '--i': index }"
             >
-              <div class="catalog-card-head">
-                <span class="catalog-title">
-                  <span class="catalog-name">{{ item.name }}</span>
-                  <span v-if="item.version" class="catalog-version">{{ item.version }}</span>
-                  <el-tag v-if="item.category" type="info" size="small" effect="plain">{{ categoryLabel(item.category) }}</el-tag>
-                  <el-tag v-if="item.verified" type="success" size="small" effect="plain">已验证</el-tag>
-                </span>
-                <span class="catalog-stats">{{ statsText(item) }}</span>
+              <div class="catalog-row-title">
+                <span class="catalog-name">{{ item.name }}</span>
+                <span v-if="item.version" class="catalog-version">{{ item.version }}</span>
+                <el-tooltip
+                  v-if="item.category"
+                  placement="top"
+                  effect="dark"
+                  :disabled="!tagsTip(item)"
+                  :content="tagsTip(item)"
+                >
+                  <el-tag class="catalog-cat-tag" type="info" size="small" effect="plain">
+                    {{ categoryLabel(item.category) }}
+                  </el-tag>
+                </el-tooltip>
+                <span v-if="item.verified" class="catalog-verified">已验证</span>
               </div>
               <p v-if="item.description" class="catalog-desc">{{ descText(item) }}</p>
-              <div class="catalog-card-foot">
-                <span class="catalog-tags">
-                  <el-tag v-for="tag in (item.tags || []).slice(0, 4)" :key="tag" size="small" effect="plain" type="info">
-                    {{ tag }}
-                  </el-tag>
-                </span>
+              <div class="catalog-row-foot">
+                <span class="catalog-stats">{{ statsText(item) }}</span>
                 <span class="catalog-actions">
-                  <el-button v-if="detailUrl(item)" size="small" text :icon="TopRight" @click="openExternalLink(detailUrl(item), '插件详情页')">
-                    打开详情
-                  </el-button>
+                  <el-tooltip placement="top" effect="dark" content="在浏览器打开插件详情页">
+                    <el-button
+                      v-if="detailUrl(item)"
+                      size="small"
+                      text
+                      :icon="TopRight"
+                      @click="openExternalLink(detailUrl(item), '插件详情页')"
+                    />
+                  </el-tooltip>
                   <el-button v-if="isInstalled(item, keys)" size="small" disabled>已安装</el-button>
-                  <el-button v-else size="small" type="primary" :icon="Download" :disabled="globalBusy" @click="installPlugin(item.spec)">
+                  <el-button
+                    v-else
+                    size="small"
+                    type="primary"
+                    :icon="Download"
+                    :disabled="globalBusy"
+                    @click="installPlugin(item.spec)"
+                  >
                     安装
                   </el-button>
                 </span>
@@ -422,8 +458,13 @@ function instanceChipType(row, instanceId) {
             </div>
           </TransitionGroup>
 
-          <div v-if="hasMore" class="catalog-more">
-            <el-button text :icon="ArrowDown" @click="showMore">显示更多</el-button>
+          <!-- 加载中必须连它一起藏：hasMore 只看 catalogItems（上一轮的
+               旧数据），刷新期间照常渲染会让人误以为「列表已出来但卡住」
+               ——转圈的 mask 和「还有 N 个」同框就是这个原因。 -->
+          <div v-if="pluginStore.catalogLoaded && hasMore" class="catalog-more">
+            <el-button text :icon="ArrowDown" @click="showMore">
+              显示更多（还有 {{ items.length - pluginStore.shown }} 个）
+            </el-button>
           </div>
         </el-tab-pane>
 
