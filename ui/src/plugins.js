@@ -190,6 +190,12 @@ const loadCatalogOnce = singleFlight((manual) => {
       const watchdog = setTimeout(() => {
         if (settled) return;
         settled = true;
+        // 看门狗必须自己落终态：finalize 原本只挂在 invoke 链的 .finally
+        // 上，若 invoke 因 IPC 异常永远不 settle，spinner 仍会无限转——
+        // 看门狗就白设了。这里直接关 spinner、置 catalogLoaded，迟到的
+        // invoke 结果由下方 then/catch 静默入库（catalogLoaded 已是 true，
+        // 列表照常刷新）。
+        finalize();
         if (manual) {
           toastActionError(
             '插件目录加载超时',
