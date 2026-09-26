@@ -113,6 +113,7 @@ test('状态规范化：字段缺失回落默认值', async () => {
     items: [],
     watching: false,
     lastError: null,
+    notificationsBlocked: false,
     environmentNote: null,
     platform: '',
   });
@@ -299,7 +300,7 @@ test('设置页的 loading key 与模块内登记的一致', async () => {
   const fs = await import('node:fs');
   const panel = fs.readFileSync('ui/src/components/SettingsPanel.vue', 'utf8');
   for (const key of [
-    'notificationRefresh',
+    // notificationRefresh 随 cd780b5「通知卡精简」移除：面板不再有手动刷新按钮。
     'notificationMarkRead',
     'notificationTest',
     'notificationSoundTest',

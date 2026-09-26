@@ -178,6 +178,14 @@ pub fn shell_ui_state_file(mode: ShellMode) -> PathBuf {
     shell_dir(mode).join("ui-state.json")
 }
 
+/// 订阅用量缓存文档：`<实例目录>/subscription-cache.json`。
+///
+/// 查询凭据与模型设置都跟随当前 DSH 实例 / profile，缓存必须按实例隔离：
+/// 切换实例（不同账号）后绝不能把上一个实例的余额展示给用户。
+pub fn instance_subscription_cache_file(family: &str, instance_id: &str) -> PathBuf {
+    instance_dir(family, instance_id).join("subscription-cache.json")
+}
+
 /// Shell 日志目录：`<xlink_home>/shell/<mode>/logs/`。
 ///
 /// 该目录只放 Shell 自身的日志（`<kind>-<name>-<date>.log` 形式）；内核

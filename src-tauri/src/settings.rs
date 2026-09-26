@@ -256,6 +256,20 @@ mod tests {
         let v = serde_json::json!({"port": 70000, "profile": "web"});
         assert!(serde_json::from_value::<Settings>(v).is_err());
     }
+
+    /// 云端套餐用量凭据不由 Shell 设置存储（设计决策：复用内核模型凭据，
+    /// 工作台模型设置是唯一凭据编辑入口）。
+    #[test]
+    fn settings_carry_no_subscription_credentials() {
+        let s: Settings = serde_json::from_value(serde_json::json!({"port": 3090})).unwrap();
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(
+            !text.contains("subscription")
+                && !text.contains("api_key")
+                && !text.contains("API_KEY"),
+            "settings.json 不得出现任何订阅凭据字段：{text}"
+        );
+    }
 }
 
 #[cfg(test)]

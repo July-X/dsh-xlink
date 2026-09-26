@@ -3,10 +3,11 @@
 // 外壳更新横幅与安装入口（手动检查在侧栏品牌区）以及启动容错横幅。
 // 内核生命周期是实现细节，只暴露「打开/关闭工作台 / 打开/关闭官方对话 / 查看日志」；
 // 「打开工作台窗口 / 打开官方对话窗口」在对应服务开启后作为次级入口从第二行动态浮现。
-// 「当前内核」的 Node.js 行另带「重新检测」（探测本机环境，不改设置），卡片底部是
-// 「桌面端设置」只读摘要（端口 / 接线 profile / Node 环境结论）。
+// 「当前内核」的 Node.js 行另带「重新检测」（探测本机环境，不改设置）；Node
+// 环境结论悬浮在卡标题旁的 ℹ️ 上（原「桌面端设置」卡已并入这个 tooltip）。
 import { computed, onMounted, ref } from 'vue';
 import {
+  InfoFilled,
   SwitchButton,
   TopRight,
   Document,
@@ -41,6 +42,16 @@ import { progress } from '../progress.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 import { openLogsWindow } from '../logs.js';
 import { loadUsageSummary, openUsageWindow, usage, formatTokens, RETENTION_DAYS } from '../usage.js';
+import {
+  subscription,
+  loadSubscriptionSummary,
+  openSubscriptionWindow,
+  refreshSubscription,
+  providerShortState,
+  tierRow,
+  balanceText,
+  queriedAtLabel,
+} from '../subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents.js';
 import { tildePath } from '../labels.js';
 
@@ -63,6 +74,32 @@ const usageWeekTip = computed(() =>
     : `统计最近 ${RETENTION_DAYS} 天的模型用量，超过 ${RETENTION_DAYS} 天的记录自动丢弃`
 );
 
+// --- 套餐用量（云端额度 / 余额，与模型用量并列但互相独立） -------------------
+// 卡片内容直接展示（无折叠）；凭据未配置时只给「前往模型设置」入口。
+const anyKeyConfigured = computed(() =>
+  ((subscription.data && subscription.data.providers) || []).some((provider) => provider.configured)
+);
+onMounted(() => {
+  // 未配置时不发请求：Rust 侧对未配置 provider 也只做凭据解析，不产生网络调用，
+  // 但首次进入概览总得拉一次才知道配置状态——由 loadSubscriptionSummary 自行决定。
+  loadSubscriptionSummary();
+});
+// 工作台里改完凭据回到概览：数据拉取动作自带 TTL，这里不额外触发。
+const planRows = computed(() =>
+  ((subscription.data && subscription.data.providers) || [])
+    .filter((provider) => provider.configured)
+    .map((provider) => ({
+      provider,
+      tiers: provider.kind === 'plan' ? provider.tiers.map((tier) => tierRow(tier)).filter(Boolean) : [],
+      balances: provider.kind === 'balance' ? provider.balances.map((balance) => balanceText(balance)) : [],
+      shortState: providerShortState(provider),
+      queried: queriedAtLabel(provider),
+    }))
+);
+function onRefreshPlan() {
+  refreshSubscription();
+}
+
 const kernel = computed(() => store.view && store.view.kernel);
 const node = computed(() => store.view && store.view.node);
 
@@ -72,6 +109,15 @@ const detectedNode = ref(null);
 const shownNode = computed(() => detectedNode.value || node.value);
 
 const running = computed(() => !!(kernel.value && kernel.value.running));
+
+// 运行状态胶囊（品牌区同款视觉）：运行中（绿）/ 已停止（红）/ 未安装（中性）。
+const kernelStatus = computed(() => {
+  const k = kernel.value;
+  if (!k) return { text: '加载中…', cls: '' };
+  if (k.running) return { text: '运行中', cls: 'ok' };
+  if (k.active && k.active_installed) return { text: '已停止', cls: 'bad' };
+  return { text: '未安装', cls: '' };
+});
 const officialChatOpen = computed(() => !!(store.view && store.view.official_chat_open));
 const officialChatLabel = computed(() => (officialChatOpen.value ? '关闭官方对话' : '打开官方对话'));
 const canStart = computed(() => !!(kernel.value && kernel.value.active && kernel.value.active_installed));
@@ -85,20 +131,9 @@ const nodeText = computed(() => {
 
 const urlText = computed(() => (running.value ? 'http://127.0.0.1:' + kernel.value.port : '—'));
 
-// 「桌面端设置」摘要卡：设置页那张卡的核心值只读罗列在这里，省去为了确认端口 /
-// 接线 profile / Node 是否达标而切页；改端口只在设置页，Node 重新检测在「当前内核」
-// 的 Node.js 行，这张卡不带任何写操作。
-const settings = computed(() => (store.view && store.view.settings) || null);
-
-const portText = computed(() => {
-  const value = settings.value && settings.value.port;
-  return value ? String(value) : '—';
-});
-
-const profileText = computed(() => (settings.value && settings.value.profile) || 'web');
-
-// Node 结论与设置页同口径（是否满足 dsh 的 ^22.19 || >=24）。不达标时只给一句结论：
-// 具体原因与「自动安装」入口就在上面的「当前内核」卡里，这里不重复一遍。
+// Node 环境结论（自动检测口径：是否满足 dsh 的 ^22.19 || >=24）。悬浮在
+// 「当前内核」标题旁的 ℹ️ 上展示；不达标时的具体原因与「自动安装」入口在
+// 本卡的 Node.js 行，这里只给一句结论。
 const nodeRequirementText = computed(() => {
   const n = shownNode.value;
   if (!n) return '—';
@@ -116,16 +151,6 @@ function onDetectNode() {
     });
   }
 }
-
-function goSettings() {
-  store.activePanel = 'settings';
-}
-
-// 「（dev）」后缀是 release-only 钩子：dev 构建里标出来，开了 release 预览
-// 就按正式版隐藏（store.devUi 已经把预览算进去）。
-const shellVersionText = computed(() =>
-  store.view ? 'v' + store.view.shell_version + (store.devUi ? '（dev）' : '') : '—'
-);
 
 // 容错横幅：有被看护停用的插件，或上次启动事故未恢复时保持可见。
 const quarantined = computed(() => (store.view && store.view.quarantined) || []);
@@ -210,12 +235,30 @@ function goVersions() {
     </Transition>
 
     <div class="card">
-      <h2>当前内核</h2>
+      <h2 class="kernel-title">
+        当前内核
+        <el-tooltip placement="bottom-start" :show-after="80">
+          <template #content>
+            <div class="card-info-tooltip">
+              <div>Node.js 环境</div>
+              <div>{{ nodeRequirementText }}</div>
+            </div>
+          </template>
+          <el-icon class="card-info-icon"><InfoFilled /></el-icon>
+        </el-tooltip>
+        <span class="kernel-version" :title="'活动内核版本：' + ((kernel && kernel.active) || '未选择')">
+          {{ (kernel && kernel.active) || '未选择' }}
+        </span>
+      </h2>
       <dl class="kv">
         <dt>运行状态</dt>
-        <dd>{{ running ? '运行中' : '未运行' }}</dd>
-        <dt>活动版本</dt>
-        <dd>{{ (kernel && kernel.active) || '（未选择）' }}</dd>
+        <dd>
+          <!-- 品牌区同款状态胶囊（圆点 + 文本），语义一致：运行中 / 已停止 / 未安装。 -->
+          <span class="status-pill">
+            <span class="dot" :class="kernelStatus.cls"></span>
+            <span>{{ kernelStatus.text }}</span>
+          </span>
+        </dd>
         <dt>工作台地址</dt>
         <dd>{{ urlText }}</dd>
         <dt>Node.js</dt>
@@ -259,8 +302,6 @@ function goVersions() {
             打开
           </el-button>
         </dd>
-        <dt>桌面端版本</dt>
-        <dd>{{ shellVersionText }}</dd>
         <dt>近 7 天用量</dt>
         <dd class="kv-with-action">
           <span :title="usageWeekTip">{{ usageWeekText }}</span>
@@ -385,30 +426,246 @@ function goVersions() {
       </p>
     </div>
 
-    <!-- 桌面端设置摘要：只读。端口输入、保存与 Node 重新检测都不在这里
-         （设置页只留端口，检测在「当前内核」的 Node.js 行），这张卡只把当前取值
-         与结论放到一眼可见的位置。 -->
+    <!-- 套餐用量：独立只读卡，内容直接展示（无折叠）。MiniMax 双窗口进度 +
+         DeepSeek 余额行；完整可操作错误文案只在顶部横幅出现，provider 分区
+         仅用短状态词标注。凭据复用工作台模型设置，这张卡不带任何写操作。 -->
     <div class="card">
       <div class="card-head">
-        <h2>桌面端设置</h2>
+        <h2>
+          套餐用量
+          <el-tooltip placement="bottom-start" :show-after="80">
+            <template #content>
+              <div class="card-info-tooltip">
+                当前支持 MiniMax（国内站 / 国际站）Token Plan 的 5 小时 / 周窗口剩余百分比、
+                DeepSeek 按量账户余额（多币种），以及智谱 GLM 编程套餐的 5 小时 / 周窗口剩余百分比
+                （需额外配置组织 / 项目上下文，见错误提示内的获取方法）。数据缓存 5 分钟，
+                60 秒内重复打开概览直接复用；点「刷新」立即重新查询。凭据复用工作台模型设置，
+                外壳不保存 Key；未在内核配置对应厂商时，相应分区自动隐藏。
+              </div>
+            </template>
+            <el-icon class="card-info-icon"><InfoFilled /></el-icon>
+          </el-tooltip>
+        </h2>
+        <span v-if="anyKeyConfigured" class="plan-head-actions">
+          <el-button
+            text
+            size="small"
+            :icon="Refresh"
+            :loading="subscription.loading"
+            title="立即重新查询（越过 5 分钟缓存）"
+            @click="onRefreshPlan"
+          >
+            刷新
+          </el-button>
+          <el-button
+            text
+            size="small"
+            :icon="TopRight"
+            :loading="isLoading('openSubscriptionWindow')"
+            title="在独立窗口中查看套餐用量"
+            @click="openSubscriptionWindow"
+          >
+            查看详情
+          </el-button>
+        </span>
         <el-button
+          v-else
           text
           size="small"
+          type="primary"
           :icon="Setting"
-          title="修改 Web UI 端口"
-          @click="goSettings"
+          title="凭据在工作台的模型设置里配置（外壳不保存任何 Key）"
+          @click="openHarnessWindow"
         >
-          前往设置
+          前往模型设置
         </el-button>
       </div>
-      <dl class="kv">
-        <dt>Web UI 端口</dt>
-        <dd>{{ portText }}</dd>
-        <dt>插件接线 profile 名</dt>
-        <dd><code>{{ profileText }}</code></dd>
-        <dt>Node.js 环境</dt>
-        <dd>{{ nodeRequirementText }}</dd>
-      </dl>
+      <p v-if="!anyKeyConfigured" class="muted" style="margin: 0">
+        当前实例未配置可查询的模型凭据；到工作台的模型设置配置后，这里展示套餐剩余额度与余额。
+      </p>
+      <div v-else class="plan-body">
+        <el-alert
+          v-for="(error, index) in subscription.errors"
+          :key="index"
+          :title="error"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="plan-error"
+        />
+        <div v-for="row in planRows" :key="row.provider.id" class="plan-provider">
+          <div class="plan-provider-head">
+            <span class="plan-provider-name">{{ row.provider.label }}</span>
+            <span v-if="row.queried" class="muted plan-queried">查询于 {{ row.queried }}</span>
+          </div>
+          <template v-if="row.provider.kind === 'plan'">
+            <div v-for="tier in row.tiers" :key="tier.name" class="plan-tier">
+              <span class="plan-tier-name">{{ tier.name }}</span>
+              <div class="plan-bar" role="img" :aria-label="tier.tip" :title="tier.tip">
+                <i :class="'plan-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
+              </div>
+              <span class="plan-tier-percent">剩余 {{ tier.percent }}%</span>
+              <span class="muted plan-tier-reset">{{ tier.countdown ? tier.countdown + '后重置' : '' }}</span>
+            </div>
+          </template>
+          <template v-else-if="row.provider.kind === 'balance'">
+            <div v-for="(text, index) in row.balances" :key="index" class="plan-balance">
+              <span>{{ text }}</span>
+              <span v-if="row.provider.is_available === false" class="plan-balance-unavailable">
+                余额不足，无法发起调用
+              </span>
+            </div>
+          </template>
+          <!-- 短状态词：完整可操作文案在上面横幅，这里不重复铺长文。 -->
+          <p
+            v-if="row.shortState"
+            class="plan-state"
+            :class="{ 'plan-state-bad': row.provider.fetch_error || row.provider.credential_status === 'expired' || row.provider.error }"
+          >
+            {{ row.shortState }}
+          </p>
+        </div>
+        <p v-if="!planRows.length" class="muted" style="margin: 0">尚未查询，点击右上角「刷新」获取。</p>
+      </div>
     </div>
-  </section>
+
+</section>
 </template>
+
+<style scoped>
+/* 信息行文本行高居中：胶囊 / 按钮与文本垂直对齐（grid 行默认顶对齐）。 */
+.kv dt,
+.kv dd {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+/* 信息行里的状态胶囊比品牌区小一号；并抵消窄窗媒体查询的
+   `.status-pill { margin-left: auto }`——那条规则是为品牌行右推准备的，
+   在信息行里会把胶囊推到整行最右（与下方文本列错位）。 */
+.kv .status-pill {
+  margin-left: 0;
+  padding: 1px 8px;
+  gap: 4px;
+  font-size: 11px;
+}
+.kv .status-pill .dot {
+  width: 6px;
+  height: 6px;
+}
+/* 「当前内核」标题行：标题 + ℹ️ 在左，活动版本徽标独占最右。 */
+.kernel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.kernel-version {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  font-family: var(--el-font-family, inherit);
+  letter-spacing: 0.02em;
+  padding: 1px 8px;
+  border: 1px solid var(--el-border-color-extra-light);
+  border-radius: 999px;
+}
+/* 套餐用量卡头右侧的按钮组（刷新 / 查看详情）。 */
+.plan-head-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* 套餐用量卡内容：横幅 + provider 分区的纵向间距。 */
+.plan-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.plan-error {
+  --el-alert-padding: 6px 10px;
+}
+.plan-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.plan-provider-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.plan-provider-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+.plan-queried {
+  font-size: 12px;
+}
+.plan-tier {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.plan-tier-name {
+  flex: none;
+  width: 68px;
+  color: var(--muted);
+}
+.plan-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.plan-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+}
+/* 进度条三档配色：按「剩余」百分比（与已用口径相反）。 */
+.plan-bar-fill.level-ok {
+  background: var(--accent);
+}
+.plan-bar-fill.level-warning {
+  background: var(--el-color-warning);
+}
+.plan-bar-fill.level-danger {
+  background: var(--el-color-danger);
+}
+.plan-tier-percent {
+  flex: none;
+  min-width: 56px;
+  text-align: right;
+  font-weight: 600;
+}
+.plan-tier-reset {
+  flex: none;
+  min-width: 96px;
+  text-align: right;
+}
+.plan-balance {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.plan-balance-unavailable {
+  color: var(--el-color-danger);
+  font-weight: 600;
+}
+.plan-state {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.plan-state-bad {
+  color: var(--el-color-danger);
+}
+</style>
