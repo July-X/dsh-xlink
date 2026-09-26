@@ -298,9 +298,9 @@ const lastFetched = computed(() => {
   height: 100%;
   border-radius: 5px;
 }
-/* 进度条三档配色：按「剩余」百分比（与已用口径相反）。 */
+/* 进度条三档配色（剩余口径）：≥70 绿 / 40–69.99 橙 / <39.99 红。 */
 .sub-bar-fill.level-ok {
-  background: var(--accent);
+  background: var(--el-color-success);
 }
 .sub-bar-fill.level-warning {
   background: var(--el-color-warning);

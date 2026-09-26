@@ -444,10 +444,9 @@ function goVersions() {
             <template #content>
               <div class="card-info-tooltip">
                 当前支持 MiniMax（国内站 / 国际站）Token Plan 的 5 小时 / 周窗口剩余百分比、
-                DeepSeek 按量账户余额（多币种），以及智谱 GLM 编程套餐的 5 小时 / 周窗口剩余百分比
-                （需额外配置组织 / 项目上下文，见错误提示内的获取方法）。数据缓存 5 分钟，
-                60 秒内重复打开概览直接复用；点「刷新」立即重新查询。凭据复用工作台模型设置，
-                外壳不保存 Key；未在内核配置对应厂商时，相应分区自动隐藏。
+                DeepSeek 按量账户余额（多币种），以及智谱 GLM 编程套餐的 5 小时 / 周窗口剩余百分比。
+                数据缓存 5 分钟，点「刷新」立即重新查询。凭据复用工作台模型设置；
+                未在内核配置对应厂商时，相应分区自动隐藏。
               </div>
             </template>
             <el-icon class="card-info-icon"><InfoFilled /></el-icon>
@@ -536,13 +535,14 @@ function goVersions() {
               <div class="plan-tier-head">
                 <span class="plan-tier-name">{{ tier.name }}</span>
                 <span v-if="tier.unlimited" class="plan-tier-unlimited">♾️ 无限周额度</span>
-                <span v-else class="plan-tier-percent">剩余 {{ tier.percent }}%</span>
                 <span class="muted plan-tier-reset" :title="tier.countdownTitle">
                   <el-icon v-if="tier.countdown" class="plan-reset-icon"><Timer /></el-icon>{{ tier.countdown || '' }}
                 </span>
               </div>
               <div v-if="!tier.unlimited" class="plan-bar" role="img" :aria-label="tier.tip" :title="tier.tip">
                 <i :class="'plan-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
+                <!-- 剩余百分比居中显示在进度条上。 -->
+                <span class="plan-bar-percent">{{ tier.percent }}%</span>
               </div>
             </div>
             <p
@@ -664,6 +664,8 @@ function goVersions() {
   font-weight: 600;
 }
 .plan-tier-head .plan-tier-percent {
+  /* 百分比与倒计时一起贴卡片右边缘，名称独占左侧。 */
+  margin-left: auto;
   font-weight: 600;
 }
 .plan-tier-head .plan-tier-reset {
@@ -716,6 +718,7 @@ function goVersions() {
   font-weight: 600;
 }
 .plan-tier-head .plan-tier-percent {
+  margin-left: auto;
   font-weight: 600;
 }
 .plan-tier-head .plan-tier-reset {
@@ -738,20 +741,34 @@ function goVersions() {
   color: var(--muted);
 }
 .plan-bar {
+  position: relative;
   flex: 1;
-  height: 8px;
-  border-radius: 4px;
+  height: 10px;
+  border-radius: 5px;
   background: rgba(255, 255, 255, 0.08);
   overflow: hidden;
+}
+/* 剩余百分比：绝对定位水平垂直居中，黑色文字（白描边保证在绿/橙底上可读）。 */
+.plan-bar-percent {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 600;
+  color: #fff;
+  pointer-events: none;
 }
 .plan-bar-fill {
   display: block;
   height: 100%;
   border-radius: 4px;
 }
-/* 进度条三档配色：按「剩余」百分比（与已用口径相反）。 */
+/* 进度条三档配色（剩余口径）：≥70 绿 / 40–69.99 橙 / <39.99 红。 */
 .plan-bar-fill.level-ok {
-  background: var(--accent);
+  background: #15803d;
 }
 .plan-bar-fill.level-warning {
   background: var(--el-color-warning);
@@ -768,6 +785,8 @@ function goVersions() {
 .plan-tier-reset {
   flex: none;
   min-width: 96px;
+  /* inline-flex 容器不吃 text-align，用 justify-content 让图标+文字贴右缘。 */
+  justify-content: flex-end;
   text-align: right;
 }
 .plan-balance {
