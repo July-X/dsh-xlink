@@ -2,7 +2,7 @@
 
 [![Latest release](https://img.shields.io/github/v/release/July-X/dsh-xlink)](https://github.com/July-X/dsh-xlink/releases/latest)
 
-基于 [Tauri v2](https://tauri.app/zh-cn/) 的多内核桌面外壳。把不同内核的 Web UI（当前已支持 DeepSeek Harness，未来加入 mcode 等）装到桌面上、按实例跑起来、互不干扰地共存。外壳只准备路径和环境变量，不改内核代码——内核怎么跑是内核自己的事，外壳只负责「给它一个干净的家、装好扩展、看护生命」。跟着官方 [`deepseek-ai/deepseek-harness`](https://github.com/deepseek-ai/deepseek-harness) 的 `dsh-v*` tag 一键装、切换、删。
+[Tauri v2](https://tauri.app/zh-cn/) 写的多内核桌面外壳，把不同内核的 Web UI 装到桌面上——目前支持 DeepSeek Harness，后续会加 mcode 等。每个内核按实例运行、互不干扰。外壳只管准备路径与环境变量、装扩展、看护生命周期，内核怎么跑由内核自己决定。跟着官方 [`deepseek-ai/deepseek-harness`](https://github.com/deepseek-ai/deepseek-harness) 的 `dsh-v*` tag 一键安装、切换、删除。
 
 仓库根目录就是桌面项目本体（独立 pnpm 根、独立的 Tauri / Vue / 文档 / 发布配置）。
 
@@ -12,9 +12,9 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
 
 ## 它如何工作
 
-**多内核并存**：窗口顶部一排内核 tab——DSH 与未来的 mcode 各占一个 tab，标签只显示内核族名。所有面板、侧栏与菜单都归属当前选中的内核；标签按实例标识稳定排列，切换期间禁止重复提交，列表读取失败可重试。当前实例是注册表里的默认实例；旧版概览、版本和插件写入接口仍使用兼容实例 `dsh/default`，尚未代表整套管理功能已支持任意实例。切换标签不搬实例目录、不覆盖全局设置。
+**多内核并存**：窗口顶部一排内核 tab，DSH 与未来的 mcode 各占一个，标签只显示内核族名。所有面板、侧栏与菜单归属当前选中的内核；标签按实例标识稳定排列，切换期间禁止重复提交，列表读取失败可重试。当前实例是注册表默认实例；旧版概览、版本、插件写入接口仍走兼容实例 `dsh/default`。切换标签不搬实例目录、不覆盖全局设置。
 
-**0 侵入内核**：外壳通过 `KernelAdapter` trait 与每个内核族对接——`DshAdapter`（active）负责 DeepSeek Harness 的实例准备，`McodeAdapter`（mock，已注册）证明通用实例模型能容纳第二种内核。Xlink 只负责：拉起实例前把实例 home、profile、workspace、端口、customSkillDirs 准备到位；启动时把 `DSH_HOME`、`DSH_CUSTOM_SKILL_DIRS` 等环境变量塞给进程；跑起来之后用 WebSocket / HTTP 探测健康、回收进程组、订阅事件流。内核二进制、profile 的 package.json 结构、cordis 配置、session 格式——一概不动。接入一个新内核 = 加一个 `KernelAdapter` 实现并注册进 `adapters()`，通用实例模型一行不动。
+**0 侵入内核**：外壳通过 `KernelAdapter` trait 与每个内核族对接。`DshAdapter`（active）负责 DeepSeek Harness 的实例准备；`McodeAdapter`（mock）证明通用实例模型能容纳第二种内核。外壳只做三件事：拉起实例前准备 home / profile / workspace / 端口 / customSkillDirs；启动时把 `DSH_HOME`、`DSH_CUSTOM_SKILL_DIRS` 等环境变量塞给进程；跑起来后用 WebSocket / HTTP 探测健康、回收进程组、订阅事件流。内核二进制、profile 结构、cordis 配置、session 格式——一概不动。接入新内核 = 加一个 `KernelAdapter` 实现并注册进 `adapters()`，通用实例模型一行不动。
 
 ```
 +------------------------------ dsh-xlink (Tauri v2) ------------------------------+
@@ -45,34 +45,34 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
 +----------------------------------------------------------------------------------+
 ```
 
-- **内置工作台**：外壳在本地起 `dsh web`，用专用窗口加载其 Web UI，免去手动开浏览器。打开工作台前会为发布包缺失的 source map 生成最小 sidecar，debug DevTools 不再出 404。
-- **官方对话快捷入口**：管理面板「概览」页的「打开官方对话」按钮拉起独立的 `official-chat` 窗口，固定加载 [chat.deepseek.com](https://chat.deepseek.com)。默认只初始化 DeepSeek 页签，千问与 MiniMax 在首次选择时才创建并保留本窗口状态，以降低首开 CPU、内存与网络开销。外壳只注入静态 chrome-row 顶部品牌条带 + 拉绳挂件，不跑常驻动画，避免 WKWebView 空闲时持续渲染。窗口不覆盖 user-agent：WebView2 本身就是真实的桌面版 Edge，原生 UA、`Sec-CH-UA` 与 `navigator.userAgentData` 一致（曾经改写成 Chrome 反而制造「HTTP 层报 Edge、JS 层报 Chrome」的自相矛盾，正是环境检测的特征）。专属目录同时充当持久化配置档案，DeepSeek 登录态跨重启保留；同一按钮在窗口已开时变为「关闭官方对话」，复用现有窗口并 `set_focus`。设计细节与 `OFFICIAL_CHAT_BROWSER_ARGS` 见 [docs/architecture.md](docs/architecture.md)。
-- **macOS / Windows 自定义标题栏**：管理面板在 macOS 和 Windows 上使用前端自绘的窗口标题栏，主色带从左到右以 5% 到 70% 的不透明度叠加深 Gitea 绿，并保留毛笔笔触纹理；dev 构建切换为同样规则的低亮度鲸眼红色系；Linux 暂保留系统标题栏。窗口按钮按各自平台惯例绘制——macOS 是左上角红黄绿交通灯；Windows 是右侧最小化 / 关闭按钮（46×32 命中区、10 px 细线字形，hover 覆浅色底，关闭 hover 变系统红；窗口不可缩放故不提供最大化）。无边框由 `tauri.conf.json` 的 `decorations: false` 在建窗时给定，macOS 的窗口按钮语义与系统原生一致。
-- **Windows 常驻通知区域**：Windows 上管理面板是常驻后台的——关闭与最小化都把窗口收进通知区域，并从任务栏移除它的按钮（`ITaskbarList::DeleteTab`，任务栏与 Alt+Tab 都不再留一个点了没反应的窗口）。内核、工作台、官方对话与更新检查继续运行。托盘图标是重新打开与退出的唯一入口——右键菜单「显示主界面 / 退出 dsh-xlink」、左键单击直接叫回窗口；真正退出走托盘菜单并复用「确认退出」流程（内核运行时会先询问，确认后依次停止内核、销毁窗口、退出进程）。从通知区域重新打开时会提示一次「刚才已收起到通知区域」——窗口在隐藏状态下收不到提示，避免看起来像崩溃。
-- **内核更新**：官方发布到 npm registry 的 `@deepseek-ai/dsh`（以及同名 `dsh-*` 依赖包）页面 [`https://www.npmjs.com/package/@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 与 GitHub `dsh-v<semver>` tag 一一对应。更新菜单直接读 npm registry 拿到全量版本与 `dist-tags`，可安装、切换、删除任意已发布版本；只有 npm registry 不可达时才回退 GitHub Releases API 与其 Atom feed。
-- **多内核并存**：P0–P8 阶段已落地——内核族注册表、实例切换、插件按实例物化、技能全局共享、数据迁移向导与 release threshold 验证。`KERNEL_FAMILY_DSH = "dsh"` / `KERNEL_FAMILY_MCODE = "mcode"` 共存于 `KernelAdapter::adapters()` 注册表。阶段性状态见 [docs/multi-kernel-migration-status-2026-09-19.md](docs/multi-kernel-migration-status-2026-09-19.md)，设计稿见 [docs/dsh-xlink-multi-kernel-design.md](docs/dsh-xlink-multi-kernel-design.md)。实际数据布局以 [docs/architecture.md §「多内核改造后的实际数据布局」](docs/architecture.md) 为准。
+- **内置工作台**：外壳在本地起 `dsh web`，用专用窗口加载其 Web UI。打开工作台前会为发布包缺失的 source map 生成最小 sidecar，debug DevTools 不再出 404。
+- **官方对话快捷入口**：管理面板「概览」页的「打开官方对话」按钮拉起独立的 `official-chat` 窗口，固定加载 [chat.deepseek.com](https://chat.deepseek.com)。默认只初始化 DeepSeek 页签，千问与 MiniMax 在首次选择时才创建并保留本窗口状态，以降低首开 CPU、内存与网络开销。外壳只注入静态 chrome-row 顶部品牌条带 + 拉绳挂件，不跑常驻动画，避免 WKWebView 空闲时持续渲染。窗口不覆盖 user-agent：WebView2 本身就是真实的桌面版 Edge，原生 UA、`Sec-CH-UA` 与 `navigator.userAgentData` 一致——曾经改写成 Chrome 反而制造「HTTP 层报 Edge、JS 层报 Chrome」的自相矛盾，正是环境检测的特征。专属目录同时充当持久化配置档案，DeepSeek 登录态跨重启保留；窗口已开时按钮变为「关闭官方对话」，复用现有窗口并 `set_focus`。设计细节与 `OFFICIAL_CHAT_BROWSER_ARGS` 见 [docs/architecture.md](docs/architecture.md)。
+- **macOS / Windows 自定义标题栏**：管理面板在 macOS 和 Windows 上使用前端自绘的窗口标题栏，主色带从左到右以 5% 到 70% 的不透明度叠加深 Gitea 绿，保留毛笔笔触纹理；dev 构建切换为低亮度鲸眼红色系；Linux 保留系统标题栏。窗口按钮按平台惯例绘制——macOS 是左上角红黄绿交通灯；Windows 是右侧最小化 / 关闭按钮（46×32 命中区、10 px 细线字形，hover 覆浅色底，关闭 hover 变系统红）。无边框由 `tauri.conf.json` 的 `decorations: false` 在建窗时给定。
+- **Windows 常驻通知区域**：Windows 上管理面板常驻后台——关闭与最小化都把窗口收进通知区域，并从任务栏移除它的按钮（`ITaskbarList::DeleteTab`，任务栏与 Alt+Tab 都不再留一个点了没反应的窗口）。内核、工作台、官方对话与更新检查继续运行。托盘图标是重新打开与退出的唯一入口——右键菜单「显示主界面 / 退出 dsh-xlink」、左键单击叫回窗口；真正退出走托盘菜单并复用「确认退出」流程。从通知区域重新打开时会提示一次「刚才已收起到通知区域」——窗口在隐藏状态下收不到提示，避免看起来像崩溃。
+- **内核更新**：npm registry 的 [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 与 GitHub `dsh-v<semver>` tag 一一对应。更新菜单直接读 npm registry 拿到全量版本与 `dist-tags`，可安装、切换、删除任意已发布版本；npm registry 不可达时才回退 GitHub Releases API 与其 Atom feed。
+
+> 多内核改造进度：P0–P8 已落地（内核族注册表、实例切换、插件按实例物化、技能全局共享、数据迁移向导、release threshold 验证）。`KERNEL_FAMILY_DSH = "dsh"` / `KERNEL_FAMILY_MCODE = "mcode"` 共存于 `KernelAdapter::adapters()` 注册表。状态见 [docs/multi-kernel-migration-status-2026-09-19.md](docs/multi-kernel-migration-status-2026-09-19.md)，设计稿见 [docs/dsh-xlink-multi-kernel-design.md](docs/dsh-xlink-multi-kernel-design.md)，实际数据布局以 [docs/architecture.md](docs/architecture.md) 为准。
 
 ## 功能
 
-- **一键启动 / 停止工作台**。「概览」页主按钮切换内核状态；同排的「打开工作台窗口」「打开官方对话」「查看日志」是并列的次级入口，不改变内核状态。
-- **打开官方对话**：拉起独立的官方对话窗口，按 `OFFICIAL_CHAT_TABS` 顺序排布 DeepSeek / 千问 / MiniMax 三个页签，与工作台窗口互不干扰。使用原生 Edge UA 与可持久化登录的专属 user-data 目录。窗口已开时按钮变为「关闭官方对话」并销毁当前窗口。
-- **多内核并存**：窗口顶部一排内核 tab——DSH（active）、mcode（mock，结构性已就位）等内核族并列。每个内核族可同时跑多个实例；概览页底部「实例切换器」tab 直接在主页面切实例。侧栏菜单、插件页、技能页、设置页都跟随当前实例，互不串。已迁移用户在「概览」页不再显示「数据迁移」入口（数据迁移向导在「设置」页常驻，可点进查看最近一次迁移）。
+- **一键启动 / 停止工作台**。「概览」页主按钮切换内核状态；同排的「打开工作台窗口」「打开官方对话」「查看日志」是次级入口，不改内核状态。
+- **打开官方对话**：拉起独立窗口，按 `OFFICIAL_CHAT_TABS` 顺序排布 DeepSeek / 千问 / MiniMax 三个页签，与工作台窗口互不干扰。使用原生 Edge UA 与可持久化登录的专属 user-data 目录。窗口已开时按钮变为「关闭官方对话」并销毁当前窗口。
+- **多内核并存**：内核 tab 中 DSH（active）、mcode（mock）等内核族并列。每个内核族可同时跑多个实例；概览页底部「实例切换器」tab 直接在主页面切换实例。侧栏菜单、插件页、技能页、设置页都跟随当前实例。已迁移用户在「概览」页不再显示「数据迁移」入口（向导在「设置」页常驻，可点进查看最近一次迁移）。
 - **更新菜单**：列出 npm registry [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 的所有发布版本（含预发布标记），可安装、切换活动版本、删除本地版本。
-- **内核安装通过 pnpm**：`node-linker=hoisted` 保持扁平 `node_modules`，内容寻址存储让重复安装更快；安装过程逐行流式显示在进度面板中，完整日志落盘 `~/.dsh-xlink/shell/release/logs/<kind>-install-<版本>-<日期>.log`（dev 壳则是 `~/.dsh-xlink/shell/dev/logs/dev-install-<版本>-<日期>.log`，`<日期>` 为本地日期）。下载先写临时文件，成功后才发布；npm 包由外壳进行路径受限、禁止链接和有展开大小上限的 Rust 解包，无需额外安装系统 `tar`。
-- **Node.js 自动检测与手动指定**：要求 `^22.19 || >=24`，与 dsh 的 engines 一致。自动发现 nvm（macOS/Linux `~/.nvm/versions/node/<v>/bin/node` 跟随 `alias/default` 链，Windows `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`），免去 GUI 启动看不到 nvm PATH 时改手动路径的步骤。检测为空时弹窗询问是否「帮我安装」——确认后自动下载官方 Node.js（v24 LTS，SHA-256 校验）到数据目录 `tools/node/`；概览页 Node 行随时可再次触发。已安装的托管运行时优先于环境检测，显式配置的 node 路径仍最高优先。
+- **内核安装通过 pnpm**：`node-linker=hoisted` 保持扁平 `node_modules`，内容寻址存储让重复安装更快。安装过程逐行流式显示在进度面板，完整日志落盘 `~/.dsh-xlink/shell/release/logs/<kind>-install-<版本>-<日期>.log`（dev 壳为 `~/.dsh-xlink/shell/dev/logs/dev-install-<版本>-<日期>.log`，`<日期>` 为本地日期）。下载先写临时文件、成功后才发布；npm 包由外壳做路径受限、禁止链接和有展开大小上限的 Rust 解包，无需额外安装系统 `tar`。
+- **Node.js 自动检测与手动指定**：要求 `^22.19 || >=24`，与 dsh 的 engines 一致。自动发现 nvm（macOS/Linux `~/.nvm/versions/node/<v>/bin/node` 跟随 `alias/default` 链，Windows `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`）。检测为空时弹窗询问是否「帮我安装」——确认后自动下载官方 Node.js（v24 LTS，SHA-256 校验）到数据目录 `tools/node/`；概览页 Node 行随时可再次触发。已安装的托管运行时优先于环境检测，显式配置的 node 路径仍最高优先。
 - **pnpm 路径可配置**（默认取 node 同目录或 PATH）。
-- **端口可配置**：release 默认 3090，`tauri dev` 下的 dev 壳默认 3091。设置页的「设置」卡只保留这一项可改的东西（插件接线 profile 名是固定值，跟着端口一起保存）。概览页「当前内核」标题旁的 ℹ️ 悬浮显示自动检测的 Node 环境结论；该卡的 Node.js 行提供「重新检测」（重新探测本机环境、不改设置，不达标时同排还有「自动安装」）。
-- **内核运行日志查看**；应用退出时自动回收内核子进程。
-- **任务完成通知**：macOS Dock 图标右上角系统数字角标、Windows 任务栏图标同款数字角标（系统原生角标 + 覆盖图标），两端同时弹一条系统通知气泡（「会话标题」已完成 · 用时 N 分 N 秒）。角标数字是已完成但用户未读的任务数——工作台窗口不在前台时完成的任务才计数（正在看工作台时不打扰），切回工作台或点面板的「全部已读」即清零。检测方式是让外壳以客户端的身份订阅内核自己的 WebSocket 流（`/api/remote.mux` 的 `$events` 判完成、`session/control` 取会话标题），不轮询、不占内核 CPU，内核没开窗口也照常工作。子代理会话不打扰，通知开关与「试听」提示音都在「设置 → 任务通知」里（造一条假完成的自检按钮只在 dev 构建里显示）。设计与取舍见 [docs/notification-design.md](docs/notification-design.md)。
-- **插件管理（按实例定制）**：社区插件（npm 包或 GitHub 仓库）由外壳统一管理，源存放在外壳自己的数据目录（`DSH_XLINK_HOME` 解析）。中央库一份，按实例各物化一份：每个实例把中央库的链接（默认，Windows 自动降级复制）落到自己的 `extensions/plugins/<id>/`，再由该实例自己的 `extensions/wiring.json` 记录 profile 接线——不同实例可以装不同插件、不同模式、不同启停状态，切换实例无需重装。GitHub 仓库地址安装时优先使用对应 GitHub Release 的 tarball 版本数据，Release 不可用时回退 git clone，其它 Git 地址保持原有 clone 行为。「插件中心」对接 [dshfind.com](https://dshfind.com/zh) 插件超市目录（分类 / 搜索 / 排序 / 已安装过滤，6 小时本地缓存，官方 market 兜底）。面板提供安装 / 卸载 / 更新 / 切换模式 / 同步，检测到新版本时在卡片与启动时提醒；卡片头部显示「N 个更新可用」红色数字圆点徽标。「同步」重新物化中央库中的插件，并清除外壳明确标记的已删除残留，保证外壳管理的插件状态与中央库一致。`link` 模式插件启动前会检查中央目录中的普通运行时依赖，缺失时自动用 pnpm 恢复。多实例隔离规则与权威目录布局见 [docs/architecture.md §「多内核改造后的实际数据布局」](docs/architecture.md)。
-- **插件面板信息架构**：单 panel 双 tab——「当前内核」显示本实例的安装 / 启停 / 更新；「已安装」展示全部实例的插件视图（含「本实例」标签 + 悬停提示）。面板骨架屏 + 并行加载 + 收紧切换动画以提升渲染速度。
-- **工作台健康自检**：工作台窗口自动监听白屏、运行时错误和未处理的 Promise 异常。外壳会把前端证据（异常类型与消息、`cause` 链、堆栈、页面地址）与今天的内核日志一起分析，归类为「疑似插件」「疑似内核」「前端 bundle 异常」「运行环境问题」或「暂未能归因」，并在事故面板展示证据和对应的处置入口。「前端 bundle 异常」不弹事故面板（页面仍在运行、这类异常没有可处置对象），只在概览页横幅提示，点「查看详情」展开完整证据——按提示先看日志、反馈错误消息，再考虑停用第三方插件或切换内核版本。完整设计见 [docs/troubleshooting.md](docs/troubleshooting.md)。
-- **技能管理（全局共享）**：与插件相反——社区技能（npm 包 / GitHub 仓库 / 本地文件夹）由外壳统一管理，源存放在 `DSH_XLINK_HOME/skills/packages/`，按包安装的粒度以链接（失败降级复制）物化进一份 v1 全局共享的活动视图（`skills/active/`）。所有内核实例、DSH 与未来的 mcode 都从同一份活动视图读，由各自适配器通过 `DSH_CUSTOM_SKILL_DIRS` 注入——多实例的技能视图天然一致，不需要每个实例各自维护一份。不改 cordis 配置、不装依赖、切换实例零操作。内核对技能根做文件监视，安装 / 卸载 / 更新对运行中的工作台即时生效，无需重启。安装前逐个校验 SKILL.md frontmatter（kebab-case `name` + `description` 必填），避免「装了却不出现」。已安装卡片在包头提供逐个启用 / 停用开关（粒度是单个技能），停用只把条目移出活动视图，包仍留在中央库，随时可恢复。中央库与活动视图的条目状态包括「未同步」——本地活动根条目与中央库记录不一致（如外部修改了源目录）时显示，提示用户先「重新同步」。多实例共享活动视图的设计理由见 [docs/architecture.md §「多内核改造后的实际数据布局」](docs/architecture.md)。
-- **数据迁移向导**：「设置」页常驻入口（未迁移亮色，已迁移灰色均可点进）。嵌入式 4 步向导——发现 → 选择 → 运行 → 完成 / 回滚。迁移运行期间走 `ProgressOverlay` 与安装内核 / 装插件共享同一进度 UI。凭据与会话首版不纳入迁移（旧版默认保守）；冲突策略默认 `SkipIfNewer`（保留用户后来修改）；旧源永不被删除（rollback 路径依赖）。完成后回主界面，顶部 banner 报告最近一次迁移的状态（不再展示完整历史）。完整设计见 [docs/migration-wizard-ui-proposal.md](docs/migration-wizard-ui-proposal.md)。
-- **模型用量统计**：概览页「当前内核」卡显示**最近 7 天**的 token 总用量（B / M / K 标准单位），点同排的「模型用量」弹出**独立可缩放窗口**（与日志查看器「全屏」同一条建窗路径；默认吸附主窗右侧、高度与本体一致，主窗拖动时 60fps 合帧跟随）。窗口提供 **6 档范围**：今日 / 7 天 / 15 天 / 30 天 / 60 天 / 90 天；顶部摘要卡包含「今日用量 / 日均用量 / 请求次数 / 活跃天数 / 最常用模型」瓦片，GitHub 式**活跃热力图**、按模型堆叠的**按天 Token 趋势**柱状图（token 数精确到小数点后两位），以及**模型用量**环形图（中心显示当前范围合计 token）+ 列表（每模型的 token 数与占比，列表自适应高度，滚动期间才显形滚动条）。统计口径是**最近 90 天**，超过 90 天的记录自动丢弃——窗口标题旁的 ℹ️ tooltip 与卡片悬浮提示都会说明这一点。数据来自本机内核的会话文件（`sessions/` 下的多帧 zstd JSONL，逐条读取模型回复自带的 token 计量，只认真实模型调用），按「天 × 模型」预聚合进一份增量账目（`<实例目录>/usage/state.json`，百 KB 量级），不保存任何会话原文；扫描按文件增量进行（只解新追加的帧、旧文件整跳过），首次全量秒级、之后毫秒级。窗口是只读的，每次打开都会强制重扫一次；账目按实例隔离，与壳的 release / dev 模式无关。机制与存储设计见 [docs/architecture.md](docs/architecture.md)。视觉布局见仓库顶部截图。
-- **套餐 / Token Plan 用量（云端）**：概览页「当前内核」卡下方的「套餐用量」独立卡片展示云端账户的剩余额度——MiniMax Token Plan 的 5 小时 / 周窗口**剩余百分比**（进度条按剩余量三档配色，附重置倒计时）、DeepSeek 按量账户的**货币余额**（多币种逐行，余额不足以发起调用时单独标红），以及智谱 GLM 编程套餐的 5 小时 / 周窗口**剩余百分比**（接口给的是已用百分比，展示口径统一换算为剩余）。注意能力边界：各云端 API 都**不提供绝对剩余 token 数**，这里只有百分比与金额，不做任何估算。**未在内核配置对应厂商凭据的分区自动隐藏**。卡片直接展示进度条、重置倒计时与查询时间，点「查看详情」弹出**独立窗口**（与模型用量窗口同一条建窗与吸附跟随路径，窗口内可刷新、可跳「模型用量」窗口、可前往模型设置）。**凭据复用当前内核模型设置**：外壳不收集、不保存任何 Key——查询用当前实例 / profile 已配置的模型凭据（工作台的模型设置是唯一凭据编辑入口），设置页只提供各 provider 的「测试连接」与「前往模型设置」入口。数据约 5 分钟更新一次，「刷新」立即重查；查询失败时保留上次成功数据并显示错误横幅，凭据失效（HTTP 401/403）后停止自动重试、点刷新才重试；缓存与展示都按实例隔离，切换实例不会看到别的实例的余额。MiniMax 查询套餐需用 Token Plan 页的订阅 Key（若与当前模型凭据不同，以真机验证为准，见设计文档步骤 0）。**智谱额度接口除 API Key 外还要求组织 / 项目上下文**：在环境变量、`<DSH_HOME>/.credentials.yaml` 的 refs 或 `.env` 里配置 `ZAI_CODING_CN_ORGANIZATION` / `ZAI_CODING_CN_PROJECT`（浏览器登录 bigmodel.cn 后，DevTools Network 面板中 `quota/limit` 请求的 `bigmodel-organization` / `bigmodel-project` 请求头即这两个值），可选 `ZAI_CODING_CN_PLAN_TYPE`（个人 = 1 / 团队 = 2，默认 1）；未配置时对应分区给出带获取方法的错误提示。机制与缓存设计见 [docs/architecture.md](docs/architecture.md) 与 [docs/subscription-usage-design.md](docs/subscription-usage-design.md)。
+- **端口可配置**：release 默认 3090，dev 壳默认 3091。设置页的「设置」卡只保留这一项可改的（插件接线 profile 名是固定值，跟着端口一起保存）。概览页「当前内核」标题旁的 ℹ️ 悬浮显示自动检测的 Node 环境结论；该卡的 Node.js 行提供「重新检测」与「自动安装」。
+- **任务完成通知**：macOS Dock 图标右上角数字角标、Windows 任务栏图标同款数字角标，两端同时弹一条系统通知气泡（「会话标题」已完成 · 用时 N 分 N 秒）。角标数字是已完成但用户未读的任务数——工作台不在前台时完成的任务才计数（正在看工作台时不打扰），切回工作台或点面板「全部已读」即清零。检测方式是让外壳以客户端身份订阅内核自己的 WebSocket 流（`/api/remote.mux` 的 `$events` 判完成、`session/control` 取会话标题），不轮询、不占内核 CPU。子代理会话不打扰，通知开关与「试听」提示音都在「设置 → 任务通知」里（自检按钮只在 dev 构建显示）。设计与取舍见 [docs/notification-design.md](docs/notification-design.md)。
+- **插件管理（按实例定制）**：社区插件（npm 包或 GitHub 仓库）由外壳统一管理，源存放在 `DSH_XLINK_HOME`。中央库一份，按实例各物化一份：每个实例把中央库的链接（默认，Windows 自动降级复制）落到自己的 `extensions/plugins/<id>/`，再由该实例自己的 `extensions/wiring.json` 记录 profile 接线。不同实例可以装不同插件、不同模式、不同启停状态，切换实例无需重装。GitHub 仓库地址安装时优先使用对应 GitHub Release 的 tarball 版本数据，Release 不可用时回退 git clone，其它 Git 地址保持原 clone 行为。「插件中心」对接 [dshfind.com](https://dshfind.com/zh) 插件超市目录（分类 / 搜索 / 排序 / 已安装过滤，6 小时本地缓存，官方 market 兜底）。面板提供安装 / 卸载 / 更新 / 切换模式 / 同步；检测到新版本时在卡片与启动时提醒；卡片头部显示「N 个更新可用」红色数字圆点徽标。「同步」重新物化中央库中的插件，并清除外壳明确标记的已删除残留。`link` 模式插件启动前会检查中央目录中的普通运行时依赖，缺失时自动用 pnpm 恢复。多实例隔离规则与权威目录布局见 [docs/architecture.md](docs/architecture.md)。
+- **插件面板信息架构**：单 panel 双 tab——「当前内核」显示本实例的安装 / 启停 / 更新；「已安装」展示全部实例的插件视图（含「本实例」标签 + 悬停提示）。面板骨架屏 + 并行加载 + 收紧切换动画。
+- **工作台健康自检**：工作台窗口自动监听白屏、运行时错误和未处理的 Promise 异常。外壳把前端证据（异常类型与消息、`cause` 链、堆栈、页面地址）与今天的内核日志一起分析，归类为「疑似插件」「疑似内核」「前端 bundle 异常」「运行环境问题」或「暂未能归因」，并在事故面板展示证据和对应的处置入口。「前端 bundle 异常」不弹事故面板（页面仍在运行、没有可处置对象），只在概览页横幅提示，点「查看详情」展开完整证据——按提示先看日志、反馈错误消息，再考虑停用第三方插件或切换内核版本。完整设计见 [docs/troubleshooting.md](docs/troubleshooting.md)。
+- **技能管理（全局共享）**：社区技能（npm 包 / GitHub 仓库 / 本地文件夹）由外壳统一管理，源存放在 `DSH_XLINK_HOME/skills/packages/`，按包安装的粒度以链接（失败降级复制）物化进一份 v1 全局共享的活动视图（`skills/active/`）。所有内核实例都从同一份活动视图读，由各自适配器通过 `DSH_CUSTOM_SKILL_DIRS` 注入。不改 cordis 配置、不装依赖、切换实例零操作。内核对技能根做文件监视，安装 / 卸载 / 更新对运行中的工作台即时生效，无需重启。安装前逐个校验 SKILL.md frontmatter（kebab-case `name` + `description` 必填），避免「装了却不出现」。已安装卡片在包头提供逐个启用 / 停用开关（粒度是单个技能），停用只把条目移出活动视图，包仍留在中央库，随时可恢复。中央库与活动视图的条目状态包括「未同步」——本地活动根条目与中央库记录不一致时显示，提示用户先「重新同步」。多实例共享活动视图的设计理由见 [docs/architecture.md](docs/architecture.md)。
+- **数据迁移向导**：「设置」页常驻入口（未迁移亮色，已迁移灰色均可点进）。嵌入式 4 步向导——发现 → 选择 → 运行 → 完成 / 回滚。迁移运行期间走 `ProgressOverlay` 与安装内核 / 装插件共享同一进度 UI。凭据与会话首版不纳入迁移（旧版默认保守）；冲突策略默认 `SkipIfNewer`（保留用户后来修改）；旧源永不被删除（rollback 路径依赖）。完成后回主界面，顶部 banner 报告最近一次迁移的状态。完整设计见 [docs/migration-wizard-ui-proposal.md](docs/migration-wizard-ui-proposal.md)。
+- **模型用量统计**：概览页「当前内核」卡显示**最近 7 天**的 token 总用量（B / M / K 标准单位），点同排的「模型用量」弹出**独立可缩放窗口**（与日志查看器「全屏」同一条建窗路径；默认吸附主窗右侧、高度与本体一致，主窗拖动时 60fps 合帧跟随）。窗口提供 **6 档范围**：今日 / 7 / 15 / 30 / 60 / 90 天；顶部摘要卡含「今日用量 / 日均用量 / 请求次数 / 活跃天数 / 最常用模型」瓦片，GitHub 式**活跃热力图**、按模型堆叠的**按天 Token 趋势**柱状图（token 数精确到小数点后两位），以及**模型用量**环形图（中心显示当前范围合计 token）+ 列表（每模型的 token 数与占比，列表自适应高度，滚动期间才显形滚动条）。统计口径是**最近 90 天**，超过 90 天的记录自动丢弃——窗口标题旁的 ℹ️ tooltip 与卡片悬浮提示都会说明这一点。数据来自本机内核的会话文件（`sessions/` 下的多帧 zstd JSONL，逐条读取模型回复自带的 token 计量，只认真实模型调用），按「天 × 模型」预聚合进一份增量账目（`<实例目录>/usage/state.json`，百 KB 量级），不保存任何会话原文；扫描按文件增量进行（只解新追加的帧、旧文件整跳过），首次全量秒级、之后毫秒级。窗口是只读的，每次打开都会强制重扫一次；账目按实例隔离，与壳的 release / dev 模式无关。视觉布局见仓库顶部截图，机制与存储设计见 [docs/architecture.md](docs/architecture.md)。
+- **套餐 / Token Plan 用量（云端）**：概览页「当前内核」卡下方的「套餐用量」独立卡片展示云端账户的剩余额度——MiniMax Token Plan 的 5 小时 / 周窗口**剩余百分比**（进度条按剩余量三档配色，附重置倒计时）、DeepSeek 按量账户的**货币余额**（多币种逐行，余额不足以发起调用时单独标红），以及智谱 GLM 编程套餐的 5 小时 / 周窗口**剩余百分比**（接口给的是已用百分比，展示口径统一换算为剩余）。注意：各云端 API 都**不提供绝对剩余 token 数**，这里只有百分比与金额，不做任何估算。**未在内核配置对应厂商凭据的分区自动隐藏**。卡片直接展示进度条、重置倒计时与查询时间，点「查看详情」弹出**独立窗口**（与模型用量窗口同一条建窗与吸附跟随路径，窗口内可刷新、可跳「模型用量」窗口、可前往模型设置）。**凭据复用当前内核模型设置**：外壳不收集、不保存任何 Key——查询用当前实例 / profile 已配置的模型凭据（工作台的模型设置是唯一凭据编辑入口），设置页只提供各 provider 的「测试连接」与「前往模型设置」入口。数据约 5 分钟更新一次，「刷新」立即重查；查询失败时保留上次成功数据并显示错误横幅，凭据失效（HTTP 401/403）后停止自动重试、点刷新才重试；缓存与展示都按实例隔离，切换实例不会看到别的实例的余额。MiniMax 查询套餐需用 Token Plan 页的订阅 Key（若与当前模型凭据不同，以真机验证为准，见设计文档步骤 0）。**智谱额度接口除 API Key 外还要求组织 / 项目上下文**：在环境变量、`<DSH_HOME>/.credentials.yaml` 的 refs 或 `.env` 里配置 `ZAI_CODING_CN_ORGANIZATION` / `ZAI_CODING_CN_PROJECT`（浏览器登录 bigmodel.cn 后，DevTools Network 面板中 `quota/limit` 请求的 `bigmodel-organization` / `bigmodel-project` 请求头即这两个值），可选 `ZAI_CODING_CN_PLAN_TYPE`（个人 = 1 / 团队 = 2，默认 1）；未配置时对应分区给出带获取方法的错误提示。机制与缓存设计见 [docs/architecture.md](docs/architecture.md) 与 [docs/subscription-usage-design.md](docs/subscription-usage-design.md)。
 - **日志查看器吸附跟随**：日志查看器接入与用量窗口同源的吸附 + 移动跟随逻辑——新建或调整大小的日志窗口默认吸附主窗右侧、高度与本体一致，主窗拖动时 60fps 合帧跟随，松手后停止；窗口始终独立可缩放，分隔条拖拽改为 pointer + rAF（关 transition）消除卡顿。
-- **内置补丁（内核补丁 / 小插件）**：随 dsh-xlink 发布包捆绑的自研内核补丁与小插件（`src-tauri/resources/patches/<id>/`，发布时进入 app 资源目录，与社区插件不同、无需第三方信任），默认不生效。在「设置 → 内核补丁」页自主选择「应用到当前内核」或「撤销补丁」；应用前自动备份被覆盖的原文件到 `~/.dsh-xlink/dsh/desktop/patches/backups/`，撤销时从备份还原，备份丢失时以内容 SHA-256 校验兜底、绝不盲目覆盖或删除。支持 `copy`（新增 / 覆盖文件）与 `replace`（精确字符串替换）两种文件操作，目标路径严格限制在内核目录内，可按 `minKernelVersion` / `maxKernelVersion` 声明适用内核版本范围。当补丁功能被官方内核采纳后可通过 `supersededSinceKernelVersion` 字段声明「从该内核版本起已被官方取代」，UI 把对应卡片折叠为「已并入官方内核」（删除线 + 默认收起 + 应用按钮禁用），用户可手动展开查看。应用记录持久化在 `~/.dsh-xlink/dsh/desktop/patches/state.json`，按「补丁 × 内核版本」隔离；工作台运行期间禁止操作。`dsh-file-perf`（dsh `@` 引用性能修复）已被官方 0.1.2-alpha.2 起直接采纳，卡片折叠为「已并入官方内核」；`dsh-session-perf`（历史会话列表加载提速）v1.3.0 锚定官方 0.1.5-alpha.2 ~ 0.1.5-rc.2；`dsh-escalation-same-mode`（同模式 sandbox 升级短路）v1.1.0 锚定 0.1.3-alpha.2。旧内核上的已应用记录仍可撤销。设计文档见 [docs/patch-management.md](docs/patch-management.md)。
+- **内置补丁（内核补丁 / 小插件）**：随 dsh-xlink 发布包捆绑的自研内核补丁与小插件（`src-tauri/resources/patches/<id>/`，发布时进入 app 资源目录，与社区插件不同、无需第三方信任），默认不生效。在「设置 → 内核补丁」页自主选择「应用到当前内核」或「撤销补丁」；应用前自动备份被覆盖的原文件到 `~/.dsh-xlink/dsh/desktop/patches/backups/`，撤销时从备份还原，备份丢失时以内容 SHA-256 校验兜底、绝不盲目覆盖或删除。支持 `copy`（新增 / 覆盖文件）与 `replace`（精确字符串替换）两种文件操作，目标路径严格限制在内核目录内，可按 `minKernelVersion` / `maxKernelVersion` 声明适用内核版本范围。当补丁功能被官方内核采纳后可通过 `supersededSinceKernelVersion` 字段声明「从该内核版本起已被官方取代」，UI 把对应卡片折叠为「已并入官方内核」（删除线 + 默认收起 + 应用按钮禁用），用户可手动展开查看。应用记录持久化在 `~/.dsh-xlink/dsh/desktop/patches/state.json`，按「补丁 × 内核版本」隔离；工作台运行期间禁止操作。`dsh-file-perf`（dsh `@` 引用性能修复）已被官方 0.1.2-alpha.2 起直接采纳；`dsh-session-perf`（历史会话列表加载提速）v1.3.0 锚定官方 0.1.5-alpha.2 ~ 0.1.5-rc.2；`dsh-escalation-same-mode`（同模式 sandbox 升级短路）v1.1.0 锚定 0.1.3-alpha.2。旧内核上的已应用记录仍可撤销。设计文档见 [docs/patch-management.md](docs/patch-management.md)。
 
 ## 目录结构
 
@@ -137,14 +137,12 @@ npm run build:mac-intel   # x86_64-apple-darwin（Intel Mac）
 npm run build:win         # x86_64-pc-windows-msvc
 ```
 
-根目录的 `pnpm-workspace.yaml` 让 pnpm 把本项目当独立根处理，直接跑 `pnpm install` 或 `npm install` 也行。
-
-产物位于 `src-tauri/target/release/bundle/`（macOS 为 `.dmg`，Windows 为 NSIS 安装包 `.exe`）。
+根目录的 `pnpm-workspace.yaml` 让 pnpm 把本项目当独立根处理，直接跑 `pnpm install` 或 `npm install` 也行。产物位于 `src-tauri/target/release/bundle/`（macOS 为 `.dmg`，Windows 为 NSIS 安装包 `.exe`）。
 
 ## 使用
 
 1. 启动桌面应用，打开管理面板。
-2. **Node.js 环境**：概览页「当前内核」的 Node.js 行显示实时检测结果，刚装完 Node 可点同排「重新检测」刷新（它只探测本机环境、不改设置）。不满足要求时点同排「自动安装」自动下载官方 Node.js 到数据目录（首次启动检测不到时会弹窗询问，点「帮我安装」同效），或手动安装 Node 22.19+、在 `<data_dir>/settings.json` 的 `node_path` 里手动指定路径。通过 nvm 管理的 Node 会被自动发现。
+2. **Node.js 环境**：概览页「当前内核」的 Node.js 行显示实时检测结果，刚装完 Node 可点同排「重新检测」刷新（只探测本机环境、不改设置）。不满足要求时点同排「自动安装」自动下载官方 Node.js 到数据目录（首次启动检测不到时会弹窗询问，点「帮我安装」同效），或手动安装 Node 22.19+、在 `<data_dir>/settings.json` 的 `node_path` 里手动指定路径。nvm 管理的 Node 会被自动发现。
 3. **内核更新**：应用启动时会扫描并列出本地已安装版本，进入「内核版本」页即可在左侧备用版本中切换。只有工作台已停止时才能切换；工作台启动或运行期间请先在「概览」页点击「关闭工作台」。点击「检查更新」只从 npm 获取官方发布列表，再选择未安装的版本点「安装」。安装通过 pnpm 执行，进度面板会实时滚动 pnpm 日志；pnpm 未安装时按提示 `npm install -g pnpm` 或在设置中指定 pnpm 路径。首次安装会自动成为活动版本，但不会启动内核；安装完成后请在「概览」页点击「启动工作台」。之后安装的版本不会覆盖当前活动版本，可随时在「已安装」列表中「切换」或「删除」。
 4. （可选）**插件** → 在「插件中心」按分类浏览、搜索（即时过滤）、按 Star / 更新时间排序后一键安装，或手动填写 npm 包名（如 `@ace-zone/dsh-market`）/ GitHub 仓库 URL 安装。安装前自动校验插件是否符合 dsh 规范（package.json / `dsh.bundle.patch` / 入口文件），安装完成后重启工作台（关闭后重新启动）生效。点击「同步」会对所有已安装内核重新物化中央插件库，并清除外壳标记的已删除插件残留。进入「内核版本」页后，每个已安装版本旁的信息图标可悬停查看该版本实际物化的插件、版本和链接 / 拷贝模式。
 5. （可选）**设置 → 内核补丁（内置）**：查看随当前 dsh-xlink 版本捆绑的内核补丁与小插件（来自本应用发布方，与社区插件不同），自主选择「应用到当前内核」或「撤销补丁」。应用前自动备份被覆盖的原文件、随时可撤销，状态与备份记录在 `~/.dsh-xlink/dsh/desktop/patches/`（dev 壳为 `~/.dsh-xlink/dsh/desktop-dev/patches/`）。工作台运行期间不能操作，请先关闭工作台；切换内核版本后需对新的活动版本重新应用。补丁与适用内核版本详见 [docs/patch-management.md](docs/patch-management.md)。
@@ -180,7 +178,7 @@ npm run build:win         # x86_64-pc-windows-msvc
 >
 > 签名说明：当前产物未做代码签名，Windows SmartScreen 与 macOS Gatekeeper 可能给出警告。加入签名（Apple Developer ID / Windows 代码签名证书 + 对应 secrets）后再去掉相关提示。
 
-## 常见启动失败与处理
+## 故障排查
 
 | 症状 | 排查 |
 | --- | --- |
@@ -189,14 +187,14 @@ npm run build:win         # x86_64-pc-windows-msvc
 | 编辑器 / IDE 报 `capabilities/default.json` 找不到 `$schema` | schema 文件在首次 `tauri build` 后由 `tauri-build` 生成；本项目移除了硬编码 `$schema` 引用，避免初次克隆时编辑器红字。 |
 | 升级后「已安装」列表为空 | 外壳元数据在 `~/.dsh-xlink/dsh/desktop/`（v0.2.x 平铺目录会自动搬入）；按上文「数据目录」提示确认目录位置，或重新安装内核。 |
 
-## 性能排查
+性能问题：
 
 - 工作台与官方对话的顶部品牌线采用静态渲染，不会在空闲时保持 WebKit 帧循环。安装包含 `src-tauri/src/titlebar-pulse.js` 修改的桌面壳后，需要完全退出并重新启动应用，再重新打开工作台；已存在的 WebView 不会自动替换初始化脚本。
 - `dsh-personal-center` 是第三方可选插件。桌面宠物的统计接口会同步读取并解压全部历史会话；会话较多时可能造成明显的 Node 磁盘 / CPU 阻塞。遇到周期性卡顿时，在个人配置中关闭桌面宠物和「会话状态」，需要统计时再手动打开 Token 用量页面。
 - `patchReload: live` 会启用 client-HMR 的 500 ms bundle `stat` 轮询。日常使用可改为 `startup` 并在 profile patch 中禁用 `client-hmr`；需要调试 client plugin 时再恢复 `live`，删除该禁用项。
 - 当前内核为 `0.1.5-alpha.2` ~ `0.1.5-rc.2` 时，可在「设置 → 内核补丁」停止工作台后应用 `dsh-session-perf`，减少会话列表的重复目录 / header 扫描；它不优化选中会话后的完整历史解压。
 
-## 已知限制与后续
+## 已知限制
 
 - **Node 运行时**：当前按需托管安装到数据目录（自动检测 → 一键装）；后续可考虑随发布包捆绑 Node sidecar（体积 +40 MB / 平台）。
 - **pnpm 依赖**：内核安装依赖用户环境中的 pnpm（未捆绑）；后续可评估 `corepack` 或 sidecar 方式随应用分发。
