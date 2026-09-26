@@ -3034,7 +3034,9 @@ struct WireOutcome {
     conflicts: Vec<String>,
 }
 
-/// 把中央库的插件依赖与 bundle 层应用到 profile 清单上。
+/// 把中央库的插件依赖与 bundle 层应用到 profile 清单上。非壳写入的 bundle
+/// 行（内核工作台官方插件开关写下的内核自带层、用户/CLI 手工添加）原样保留；
+/// 清退只针对壳写入过的托管条目。
 /// 纯函数（不碰 fs、不跑 pnpm），因此即使没有工具链也能对接线做单元测试。
 fn wire_manifest(
     root: &mut serde_json::Value,
@@ -3070,6 +3072,14 @@ fn wire_manifest(
     }
     let managed_names: std::collections::HashSet<&str> =
         claimed.keys().map(String::as_str).collect();
+    // retain 之前先抓取「托管依赖名」：壳写依赖与 bundle 行永远落在同一份
+    // manifest 里（单次原子写入），所以「依赖是托管 spec」是一条 bundle 行由
+    // 壳写入的唯一凭据，供下方 bundle 清退判定使用。
+    let managed_dep_names: std::collections::HashSet<String> = deps
+        .iter()
+        .filter(|(_, spec)| is_managed_spec(spec.as_str().unwrap_or("")))
+        .map(|(name, _)| name.clone())
+        .collect();
     deps.retain(|name, spec| {
         if !is_managed_spec(spec.as_str().unwrap_or("")) {
             return true; // 用户/CLI 管理的不动
@@ -3081,14 +3091,12 @@ fn wire_manifest(
         true
     });
 
-    // bundles：模板层与托管层重建，用户其他条目（CLI 添加等）原样保留。
-    // 已卸载的托管插件：依赖被清退后其层必须同步清退，否则内核启动会因无法
-    // 解析该 bundle 而失败——因此只保留依赖仍存在且非托管 spec 的层。
-    let kept_user_bundles: std::collections::HashSet<String> = deps
-        .iter()
-        .filter(|(_, spec)| !is_managed_spec(spec.as_str().unwrap_or("")))
-        .map(|(name, _)| name.clone())
-        .collect();
+    // bundles：模板层与托管层重建，其余条目原样保留——包括内核工作台官方
+    // 插件开关写下的 bundle 行（内核自带包，启用不需要 pnpm 依赖，因此没有
+    // dependencies 条目背书）与用户/CLI 手工添加的层。只清退壳自己写过的行：
+    // 卸载/隔离后托管依赖已被清退，层若不同步清退，内核启动会因无法解析该
+    // bundle 而失败。此前按「无依赖背书即视为残留」实现，把内核工作台写下的
+    // 官方插件层也当成卸载残留，每次重启内核都清掉一次（启用状态丢失）。
     let managed_bundles: Vec<String> = specs
         .values()
         .filter(|entry| entry.bundle)
@@ -3107,12 +3115,14 @@ fn wire_manifest(
         if seen.contains(&name) || template.contains(&name) || managed_bundles.contains(&name) {
             continue;
         }
-        if !kept_user_bundles.contains(&name) {
-            changed = true;
+        if !managed_dep_names.contains(&name) {
+            // 非壳写入（内核工作台官方插件开关 / 用户手工添加 / CLI 层）：保留。
+            seen.insert(name.clone());
+            next.push(name);
             continue;
         }
-        seen.insert(name.clone());
-        next.push(name);
+        // 壳写入过托管依赖、而依赖已随卸载/隔离清退：bundle 残留，同步清退。
+        changed = true;
     }
     for name in &managed_bundles {
         if !next.contains(name) {
@@ -5530,6 +5540,58 @@ mod tests {
             bundles,
             ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]
         );
+    }
+
+    #[test]
+    fn wire_manifest_keeps_dependency_free_bundle_rows() {
+        // 内核工作台「插件」页的官方插件开关（实验特性等）只在
+        // dsh.profile.bundles 里写一行包名、不写 dependencies——包随内核自带，
+        // 启用无需 pnpm 接线。每次启动都会跑接线调和，这类行必须原样保留，
+        // 否则开关状态在重启内核后就被清掉一次。壳写过的托管残留仍照常清退。
+        let mut root = serde_json::json!({
+            "name": "dsh-profile-web",
+            "private": true,
+            "dependencies": {
+                "gone-plugin": "link:../../desktop/kernels/1.0.0/plugins/gone-plugin",
+            },
+            "dsh": {
+                "profile": {
+                    "bundles": [
+                        "@deepseek-ai/dsh-base",
+                        "@deepseek-ai/dsh-web-app",
+                        "@deepseek-ai/dsh-experimental-agent-team-profile",
+                        "@deepseek-ai/dsh-experimental-auto-review",
+                        "gone-plugin"
+                    ],
+                },
+            },
+        });
+        let specs = BTreeMap::new();
+        let changed = wire_manifest(&mut root, &specs, "web")
+            .expect("wire")
+            .changed;
+        assert!(changed); // gone-plugin 残留被清退
+        let bundles: Vec<&str> = root["dsh"]["profile"]["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b.as_str())
+            .collect();
+        assert_eq!(
+            bundles,
+            [
+                "@deepseek-ai/dsh-base",
+                "@deepseek-ai/dsh-web-app",
+                "@deepseek-ai/dsh-experimental-agent-team-profile",
+                "@deepseek-ai/dsh-experimental-auto-review"
+            ]
+        );
+        // 再次调和（下一次内核启动）必须是稳态：清单不再变动，否则官方插件
+        // 开关会在每次重启时被反复改写。
+        let changed = wire_manifest(&mut root, &specs, "web")
+            .expect("wire again")
+            .changed;
+        assert!(!changed);
     }
 
     #[test]
