@@ -541,6 +541,15 @@ function goVersions() {
 </template>
 
 <style scoped>
+/* 概览两张卡收紧行内留白：卡片内边距与卡片间距减半（真机反馈纵向过散、
+   整窗出滚动条）。只作用于本面板，其他页的卡片不受影响。 */
+.card {
+  padding: 6px 8px;
+  gap: 4px;
+}
+.panel {
+  gap: 6px;
+}
 /* 信息行文本行高居中：胶囊 / 按钮与文本垂直对齐（grid 行默认顶对齐）。 */
 .kv dt,
 .kv dd {
