@@ -30,11 +30,11 @@ export const subscription = reactive({
 
 // --- 纯展示函数 ---------------------------------------------------------------
 
-/** 剩余百分比 → 配色档位：≥50 绿 / 20–49 警告 / <20 危险（与设计稿一致）。 */
+/** 剩余百分比 → 配色档位：≥70 绿 / 40–69.99 橙 / <39.99 红。 */
 export function percentLevel(percent) {
   const value = Number(percent);
-  if (!Number.isFinite(value) || value < 20) return 'danger';
-  if (value < 50) return 'warning';
+  if (!Number.isFinite(value) || value < 40) return 'danger';
+  if (value < 70) return 'warning';
   return 'ok';
 }
 
@@ -45,19 +45,11 @@ export function currencySymbol(currency) {
   return currency ? `${currency} ` : '';
 }
 
-/** 一行余额：`¥110.00（赠送 ¥10.00 · 充值 ¥100.00）`；0 / 缺省的赠送充值不展示。 */
+/** 一行余额：`余额：¥110.00`；赠送 / 充值明细不再展示，只显示总额。 */
 export function balanceText(balance) {
   if (!balance) return '';
   const symbol = currencySymbol(balance.currency);
-  const parts = [];
-  for (const key of ['granted', 'topped_up']) {
-    const raw = balance[key];
-    if (typeof raw !== 'string' || !raw.trim()) continue;
-    if (!(Number(raw) > 0)) continue;
-    parts.push(`${key === 'granted' ? '赠送' : '充值'} ${symbol}${raw.trim()}`);
-  }
-  const total = `${symbol}${(balance.total || '').trim()}`;
-  return parts.length ? `${total}（${parts.join(' · ')}）` : total;
+  return `余额：${symbol}${(balance.total || '').trim()}`;
 }
 
 /**
