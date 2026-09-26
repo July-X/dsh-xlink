@@ -2413,6 +2413,71 @@ main {
 
 /* --- 插件中心 --- */
 
+/* 标题行：标题 + 来源在左，「刷新数据」靠右。 */
+.plugin-center-head {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.plugin-center-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.plugin-center-title-row .plugin-center-refresh {
+  margin-left: auto;
+}
+
+/* tab 头右侧的动作组：「同步到所有内核」「检查更新」挂在 tab 条右端。 */
+.installed-tabs-wrap {
+  position: relative;
+}
+
+.installed-tabs-wrap .tabs-head-actions {
+  position: absolute;
+  right: 0;
+  /* 与 tab 文字同一行：el-tabs__item 高 40px，小按钮高 24px，
+     top 8px 让按钮中心与 tab 文字中心重合（不随 tab 内容长度移动）。 */
+  top: 8px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 收紧相邻按钮的默认 12px 左边距。 */
+.installed-tabs-wrap .tabs-head-actions .el-button + .el-button {
+  margin-left: 6px;
+}
+
+.plugin-center-title {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.plugin-center-source {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted, var(--text-dim, #999));
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* tab 标签里跟随的内核身份与版本号：小字号弱化，防止标签过长。 */
+.tab-label-sub {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted, var(--text-dim, #999));
+}
+
+/* 收紧两个 tab 之间的间隔，给右侧动作按钮留出同行空间。 */
+.installed-tabs .el-tabs__item {
+  padding: 0 8px;
+}
+
 .catalog-cats {
   display: flex;
   flex-wrap: wrap;
