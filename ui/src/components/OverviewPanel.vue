@@ -691,11 +691,6 @@ function goVersions() {
   color: var(--muted);
   font-weight: 600;
 }
-.plan-tier-head .plan-tier-percent {
-  /* 百分比与倒计时一起贴卡片右边缘，名称独占左侧。 */
-  margin-left: auto;
-  font-weight: 600;
-}
 .plan-tier-head .plan-tier-reset {
   margin-left: auto;
 }
@@ -724,34 +719,6 @@ function goVersions() {
 .age-pill .el-icon {
   font-size: 11px;
 }
-.plan-queried {
-  font-size: 12px;
-}
-/* 窄块内的 tier：名称 / 百分比 / 倒计时一行，进度条独占下一行。 */
-.plan-tier-col {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.plan-tier-head {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 6px;
-  font-size: 12px;
-  line-height: 1.5;
-}
-.plan-tier-head .plan-tier-name {
-  color: var(--muted);
-  font-weight: 600;
-}
-.plan-tier-head .plan-tier-percent {
-  margin-left: auto;
-  font-weight: 600;
-}
-.plan-tier-head .plan-tier-reset {
-  margin-left: auto;
-}
 .plan-tier-unlimited {
   font-weight: 600;
 }
@@ -776,7 +743,7 @@ function goVersions() {
   background: rgba(255, 255, 255, 0.08);
   overflow: hidden;
 }
-/* 剩余百分比：绝对定位水平垂直居中，黑色文字（白描边保证在绿/橙底上可读）。 */
+/* 剩余百分比：绝对定位水平垂直居中，白色文字（红档浅底上仍可读）。 */
 .plan-bar-percent {
   position: absolute;
   inset: 0;
@@ -803,12 +770,6 @@ function goVersions() {
 }
 .plan-bar-fill.level-danger {
   background: var(--el-color-danger);
-}
-.plan-tier-percent {
-  flex: none;
-  min-width: 56px;
-  text-align: right;
-  font-weight: 600;
 }
 .plan-tier-reset {
   flex: none;

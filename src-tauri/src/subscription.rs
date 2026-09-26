@@ -648,7 +648,7 @@ fn credential_rejected_message(provider: &str, status: u16) -> String {
             "MiniMax-CN"
         };
         format!(
-            "{label}凭据无效或无权限（HTTP {status}）。请到工作台的模型设置更新对应 provider 的              API Key（注意：查询套餐需用 Token Plan 页的订阅 Key，不是接口密钥页的按量 Key）"
+            "{label}凭据无效或无权限（HTTP {status}）。请到工作台的模型设置更新对应 provider 的 API Key（注意：查询套餐需用 Token Plan 页的订阅 Key，不是接口密钥页的按量 Key）"
         )
     }
 }
