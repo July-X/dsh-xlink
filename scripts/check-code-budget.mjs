@@ -309,7 +309,8 @@ const FILE_BUDGETS = {
 // 倒计时紧凑化（Timer icon + 1d15h）、按 provider 定制 401 文案——均为真机
 // 反馈的展示与功能迭代。28930 → 29000。
 // 倒计时紧凑化 + 刷新年龄胶囊（<1min / 12min / 3h）迭代 ~+50。
-const TOTAL_BUDGET = 29050;
+// 套餐类 provider 改左右自适应栅格（余额类单独成块），~+30。
+const TOTAL_BUDGET = 29080;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

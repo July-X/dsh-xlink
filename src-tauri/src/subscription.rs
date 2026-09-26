@@ -97,10 +97,10 @@ const USER_AGENT: &str = concat!("dsh-xlink/", env!("CARGO_PKG_VERSION"));
 
 fn provider_label(id: &str) -> &'static str {
     match id {
-        PROVIDER_MINIMAX_CN => "MiniMax（国内站）",
-        PROVIDER_MINIMAX_EN => "MiniMax（国际站）",
+        PROVIDER_MINIMAX_CN => "MiniMax-CN",
+        PROVIDER_MINIMAX_EN => "MiniMax-EN",
         PROVIDER_DEEPSEEK => "DeepSeek",
-        PROVIDER_ZAI_CODING_CN => "智谱 GLM",
+        PROVIDER_ZAI_CODING_CN => "GLM-CN",
         _ => "未知供应商",
     }
 }
@@ -643,9 +643,9 @@ fn credential_rejected_message(provider: &str, status: u16) -> String {
         )
     } else {
         let label = if provider == PROVIDER_MINIMAX_EN {
-            "MiniMax（国际站）"
+            "MiniMax-EN"
         } else {
-            "MiniMax（国内站）"
+            "MiniMax-CN"
         };
         format!(
             "{label}凭据无效或无权限（HTTP {status}）。请到工作台的模型设置更新对应 provider 的              API Key（注意：查询套餐需用 Token Plan 页的订阅 Key，不是接口密钥页的按量 Key）"
