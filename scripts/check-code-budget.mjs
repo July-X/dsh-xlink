@@ -140,7 +140,8 @@ const FILE_BUDGETS = {
   // DSH 模型凭据只读解析（credentials.rs）：profile cordis.patch.yml 的
   // provider apiKeyEnv 绑定、.credentials.yaml refs、.env 回退层与默认引用
   // 派生。凭据语义与内核对齐只有一处实现，独立成模块供 subscription.rs 复用。
-  'src-tauri/src/credentials.rs': 260,
+  // 260 → 270：refs 标量统一字符串化（YAML 数字写法如 `KEY: 2` 也是合法值）。
+  'src-tauri/src/credentials.rs': 270,
   // 云端套餐用量前端（subscription.js）：状态动作（keep-last-good 显式落地）
   // + 收起态摘要 / 余额行 / 进度条配色 / 重置倒计时等纯展示函数（node --test 直测）。
   'ui/src/subscription.js': 180,
