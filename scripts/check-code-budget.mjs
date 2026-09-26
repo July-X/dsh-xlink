@@ -147,7 +147,8 @@ const FILE_BUDGETS = {
   'ui/src/subscription.js': 180,
   // 套餐用量独立窗口根组件（open_subscription_window 弹出，?subscription=1 挂载）：
   // 双 provider 分区 + 进度条 / 余额行 + 错误横幅与 scoped 样式（同 UsageWindow 模式）。
-  'ui/src/SubscriptionWindow.vue': 340,
+  // 340 → 360：查询时间换成刷新 icon 胶囊（紧凑年龄值）。
+  'ui/src/SubscriptionWindow.vue': 360,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
 // 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有
@@ -307,7 +308,8 @@ const FILE_BUDGETS = {
 // provider 分块描边分割、DeepSeek 提到首位、tier 短名 5h/7d 与 ♾️ 无限周层、
 // 倒计时紧凑化（Timer icon + 1d15h）、按 provider 定制 401 文案——均为真机
 // 反馈的展示与功能迭代。28930 → 29000。
-const TOTAL_BUDGET = 29000;
+// 倒计时紧凑化 + 刷新年龄胶囊（<1min / 12min / 3h）迭代 ~+50。
+const TOTAL_BUDGET = 29050;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。
