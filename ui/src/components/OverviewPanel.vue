@@ -65,19 +65,19 @@ import { tildePath } from '../labels.js';
 // key，否则任何别的长任务都会让这个按钮转圈（P2-42）。
 const onInstallNode = () => withLoading('installNode', () => installNode());
 
-// 模型用量（近 7 天）：进入概览页就拉一次（60s 内复用，后端另有 45s 扫描
+// 模型用量（今日）：进入概览页就拉一次（60s 内复用，后端另有 45s 扫描
 // 新鲜度窗口）；原始值与 90 天保留策略进 tooltip。
 onMounted(() => {
   loadUsageSummary();
 });
-const usageWeekText = computed(() =>
-  usage.data ? formatTokens(usage.data.week_tokens) + ' tokens' : '—'
+const usageDayText = computed(() =>
+  usage.data ? formatTokens(usage.data.today_tokens) + ' tokens' : '—'
 );
 // 数据是异步到达的：tooltip 也要跟着 usage.data 走，用 computed 而不是常量。
-const usageWeekTip = computed(() =>
+const usageDayTip = computed(() =>
   usage.data
-    ? `最近 7 天 ${usage.data.week_tokens} tokens；模型用量统计只保留最近 ${RETENTION_DAYS} 天，更早的记录自动丢弃`
-    : `统计最近 ${RETENTION_DAYS} 天的模型用量，超过 ${RETENTION_DAYS} 天的记录自动丢弃`
+    ? `今日 ${usage.data.today_tokens} tokens；模型用量统计只保留最近 ${RETENTION_DAYS} 天，更早的记录自动丢弃`
+    : `统计今日的模型用量，历史记录保留最近 ${RETENTION_DAYS} 天，更早的自动丢弃`
 );
 
 // --- 套餐用量（云端额度 / 余额，与模型用量并列但互相独立） -------------------
@@ -311,9 +311,9 @@ function goVersions() {
             打开
           </el-button>
         </dd>
-        <dt>近 7 天用量</dt>
+        <dt>今日用量</dt>
         <dd class="kv-with-action">
-          <span :title="usageWeekTip">{{ usageWeekText }}</span>
+          <span :title="usageDayTip">{{ usageDayText }}</span>
           <el-button
             size="small"
             text
