@@ -9,7 +9,7 @@ import { reactive } from 'vue';
 import { invoke } from './bridge.js';
 import { formatActionError, toastActionError } from './notify.js';
 import { withLoading } from './loading.js';
-import { countdownLabel, relativeTimeLabel } from './labels.js';
+import { countdownFullLabel, countdownLabel, relativeTimeLabel } from './labels.js';
 
 // 概览卡片摘要的最小请求间隔：与 usage 卡片同款 TTL（后端另有 5 分钟缓存）。
 const SUMMARY_TTL_MS = 60_000;
@@ -92,16 +92,24 @@ export function queriedAtLabel(provider) {
   return relativeTimeLabel(provider.queried_at_ms);
 }
 
-/** 进度条一条 tier 的展示数据：剩余百分比、档位配色与重置倒计时。 */
+/** 进度条一条 tier 的展示数据：短名（5h / 7d）、剩余百分比、档位配色与重置倒计时。 */
 export function tierRow(tier, now = Date.now()) {
   if (!tier) return null;
+  const name = tier.name === '5h' ? '5h' : tier.name === 'weekly' ? '7d' : tier.name;
+  // 无限额度（如 MiniMax 无周限额套餐）：不渲染进度条，以 ♾️ 文本提示。
+  if (tier.unlimited) {
+    return { name, unlimited: true, percent: null, level: 'ok', countdown: null, countdownTitle: null, tip: '无限周额度' };
+  }
   const remaining = Number(tier.remaining_percent);
   const resetsIn = tier.resets_at_ms ? tier.resets_at_ms - now : null;
   return {
-    name: tier.name === '5h' ? '5 小时窗口' : tier.name === 'weekly' ? '本周窗口' : tier.name,
+    name,
+    unlimited: false,
     percent: Math.round(remaining),
     level: percentLevel(remaining),
+    // 紧凑倒计时（前置 icon 一起展示）；完整中文描述进 hover title。
     countdown: resetsIn == null ? null : countdownLabel(resetsIn),
+    countdownTitle: resetsIn == null ? null : countdownFullLabel(resetsIn),
     // tooltip 双向注明口径（剩余百分比与已用口径相反）。
     tip: `已用 ${Math.max(0, 100 - Math.round(remaining))}% · 剩余 ${Math.round(remaining)}%`,
   };
