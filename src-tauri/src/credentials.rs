@@ -280,10 +280,18 @@ pub fn load_refs(dsh_home: &Path) -> BTreeMap<String, String> {
     };
     let mut out = BTreeMap::new();
     for (key, value) in refs {
-        let (Some(key), Some(value)) = (key.as_str(), value.as_str()) else {
+        let Some(key) = key.as_str() else {
             continue;
         };
-        out.insert(key.to_string(), value.to_string());
+        // 标量统一字符串化：`KEY: 2` 这类数字 / 布尔写法也是合法凭据值
+        // （如组织 id），只认字符串会把它们静默丢掉。
+        let value = match value {
+            serde_yaml::Value::String(text) => text.clone(),
+            serde_yaml::Value::Number(number) => number.to_string(),
+            serde_yaml::Value::Bool(flag) => flag.to_string(),
+            _ => continue,
+        };
+        out.insert(key.to_string(), value);
     }
     out
 }

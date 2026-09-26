@@ -770,49 +770,43 @@ fn fetch_deepseek(provider: &str, key: &str) -> FetchOutcome {
 
 // --- 智谱（bigmodel.cn）编程套餐 ----------------------------------------------
 
-/// 智谱额度查询的组织 / 项目 / 套餐类型上下文。这三项不是秘密，但接口硬性
-/// 要求（缺组织 / 项目头返回空 `data`，缺 `type` 报「用户不存在 coding plan」），
-/// 与 Key 走同一条凭据解析链配置（环境变量 → `.credentials.yaml` refs → `.env`）。
-/// 获取方法：浏览器登录 bigmodel.cn 的 coding-plan 页，DevTools Network 面板
-/// 里 `quota/limit` 请求的 `bigmodel-organization` / `bigmodel-project` 头与
-/// `type` 查询参数即这三个值。
+/// 智谱额度查询的上下文。当前版本**仅支持个人套餐**（type=1，缺省）：
+/// 个人查询只需 Key，不需要组织 / 项目头——那两样是团队套餐的要件，
+/// 未配置就不随请求发送。`ZAI_CODING_CN_PLAN_TYPE` 若显式配成 2（团队）
+/// 会得到「仅支持个人套餐」的确定性提示，而不是一屏空数据让用户猜原因。
+/// 与 Key 走同一条凭据解析链配置（环境变量 → `.credentials.yaml` refs →
+/// `.env`）。
 #[derive(Debug)]
 struct ZhipuContext {
-    organization: String,
-    project: String,
+    organization: Option<String>,
+    project: Option<String>,
     plan_type: String,
 }
 
 impl ZhipuContext {
-    /// 从凭据解析链解析上下文；组织或项目缺失时返回带操作指引的错误文案。
+    /// 从凭据解析链解析上下文；组织 / 项目缺失不是错误。
     fn resolve(dsh_home: &std::path::Path) -> Result<Self, String> {
-        let organization = credentials::resolve(credentials::ZAI_ORGANIZATION_REF, dsh_home);
-        let project = credentials::resolve(credentials::ZAI_PROJECT_REF, dsh_home);
-        let organization = organization.value.filter(|v| !v.trim().is_empty());
-        let project = project.value.filter(|v| !v.trim().is_empty());
-        if organization.is_none() || project.is_none() {
-            return Err(format!(
-                "查询智谱套餐用量还需要组织 / 项目上下文：请在环境变量、\
-                 <DSH_HOME>/.credentials.yaml 的 refs 或 .env 中配置 \
-                 {} 与 {}（浏览器登录 bigmodel.cn 后，DevTools Network 面板里 \
-                 quota/limit 请求的 bigmodel-organization / bigmodel-project 请求头\
-                 即这两个值）；可选 {} 指定套餐类型（个人=1 / 团队=2，默认 1）",
-                credentials::ZAI_ORGANIZATION_REF,
-                credentials::ZAI_PROJECT_REF,
-                credentials::ZAI_PLAN_TYPE_REF
-            ));
-        }
-        let plan_type = credentials::resolve(credentials::ZAI_PLAN_TYPE_REF, dsh_home)
+        let organization = credentials::resolve(credentials::ZAI_ORGANIZATION_REF, dsh_home)
             .value
-            .and_then(|v| {
-                let v = v.trim().to_string();
-                (!v.is_empty()).then_some(v)
-            })
-            .unwrap_or_else(|| ZHIPU_PLAN_TYPE_DEFAULT.to_string());
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let project = credentials::resolve(credentials::ZAI_PROJECT_REF, dsh_home)
+            .value
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let configured_type = credentials::resolve(credentials::ZAI_PLAN_TYPE_REF, dsh_home)
+            .value
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        if configured_type.as_deref() == Some("2") {
+            return Err("当前版本仅支持智谱个人套餐（type=1），团队套餐暂不支持；\
+                 如需团队套餐支持请到项目仓库反馈"
+                .to_string());
+        }
         Ok(Self {
-            organization: organization.unwrap(),
-            project: project.unwrap(),
-            plan_type,
+            organization,
+            project,
+            plan_type: configured_type.unwrap_or_else(|| ZHIPU_PLAN_TYPE_DEFAULT.to_string()),
         })
     }
 }
@@ -820,21 +814,18 @@ impl ZhipuContext {
 fn fetch_zhipu(provider: &str, key: &str, dsh_home: &std::path::Path) -> FetchOutcome {
     let context = match ZhipuContext::resolve(dsh_home) {
         Ok(context) => context,
-        // 上下文未配置是确定性失败：Key 本身有效，不标 expired（照常 TTL 重试，
-        // 用户配好 org / project 后无需手动刷新也能恢复）。
+        // 套餐类型不受支持是确定性失败：Key 本身有效，不标 expired（照常
+        // TTL 重试，版本支持团队后无需手动刷新也能恢复）。
         Err(message) => return FetchOutcome::Deterministic(message, false),
     };
     let url = format!("{}?type={}", ZHIPU_QUOTA_ENDPOINT, context.plan_type);
-    let body = match http_get_json_ext(
-        provider,
-        &url,
-        key,
-        false,
-        &[
-            ("bigmodel-organization", context.organization.as_str()),
-            ("bigmodel-project", context.project.as_str()),
-        ],
-    ) {
+    // 组织 / 项目头是团队套餐要件；当前版本仅支持个人套餐，未配置就不发送。
+    let mut extra_headers: Vec<(&str, &str)> = Vec::new();
+    if let (Some(org), Some(project)) = (&context.organization, &context.project) {
+        extra_headers.push(("bigmodel-organization", org.as_str()));
+        extra_headers.push(("bigmodel-project", project.as_str()));
+    }
+    let body = match http_get_json_ext(provider, &url, key, false, &extra_headers) {
         Ok(body) => body,
         Err(outcome) => return outcome,
     };
@@ -1394,16 +1385,36 @@ mod tests {
     }
 
     #[test]
-    fn zhipu_missing_context_error_is_actionable() {
+    fn zhipu_personal_plan_needs_no_org_project_context() {
+        // 当前版本仅支持个人套餐：org / project 未配置不是错误，type 缺省 1。
         let dir = std::env::temp_dir().join(format!(
             "dsh-xlink-zhipu-ctx-{}-{}",
             std::process::id(),
             crate::process::epoch_millis()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let err = ZhipuContext::resolve(&dir).expect_err("未配置上下文必须报错");
-        assert!(err.contains(credentials::ZAI_ORGANIZATION_REF), "{err}");
-        assert!(err.contains("DevTools"), "要给出获取方法：{err}");
+        let context = ZhipuContext::resolve(&dir).expect("个人套餐无需组织 / 项目上下文");
+        assert_eq!(context.organization, None);
+        assert_eq!(context.project, None);
+        assert_eq!(context.plan_type, "1", "个人套餐是缺省 type");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn zhipu_team_plan_type_is_rejected_with_actionable_copy() {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-xlink-zhipu-team-{}-{}",
+            std::process::id(),
+            crate::process::epoch_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(".credentials.yaml"),
+            "version: 1\nrefs:\n  ZAI_CODING_CN_PLAN_TYPE: 2\n",
+        )
+        .unwrap();
+        let err = ZhipuContext::resolve(&dir).expect_err("团队套餐必须得到明确文案");
+        assert!(err.contains("个人套餐"), "{err}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1421,8 +1432,8 @@ mod tests {
         )
         .unwrap();
         let context = ZhipuContext::resolve(&dir).expect("refs 齐全应解析成功");
-        assert_eq!(context.organization, "org-test");
-        assert_eq!(context.project, "proj-test");
+        assert_eq!(context.organization.as_deref(), Some("org-test"));
+        assert_eq!(context.project.as_deref(), Some("proj-test"));
         assert_eq!(context.plan_type, "1", "个人套餐是缺省 type");
         std::fs::remove_dir_all(&dir).ok();
     }

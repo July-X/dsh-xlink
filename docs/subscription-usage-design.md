@@ -157,13 +157,13 @@ usage.rs 窗口承担，本功能的窗口里放一行入口指过去即可。
 | 必需请求头 | `bigmodel-organization: org-xxx`、`bigmodel-project: proj_xxx`（组织 / 项目上下文） |
 | 出处 | 未文档化的 Web 端点；调用要件由社区实现 [pi-glm-quota](https://github.com/focksor/pi-glm-quota) 实测（2026-07-30 套餐改版后的积分制套餐） |
 
-缺 `type` → 业务错误「当前用户不存在 coding plan」；缺组织 / 项目头 → 空 `data:{}`。
-这两个上下文值不是秘密，与 Key 走同一条解析链（环境变量 → `.credentials.yaml`
-refs → `.env`）配置：`ZAI_CODING_CN_ORGANIZATION` / `ZAI_CODING_CN_PROJECT` /
-`ZAI_CODING_CN_PLAN_TYPE`（缺省 1）。获取方法：浏览器登录 bigmodel.cn 的
-coding-plan 页，DevTools Network 面板里 `quota/limit` 请求的请求头与 `type`
-查询参数。上下文未配置是**确定性失败但不是凭据失效**（不标 expired，照常参与
-TTL 刷新，配好后自动恢复），错误文案内联给出上述获取方法。
+**当前版本仅支持个人套餐**（`type=1`，缺省）：个人查询只需 Key，不需要组织 /
+项目头。`ZAI_CODING_CN_ORGANIZATION` / `ZAI_CODING_CN_PROJECT`（团队套餐要件）
+与 `ZAI_CODING_CN_PLAN_TYPE` 仍走同一条解析链（环境变量 → `.credentials.yaml`
+refs → `.env`）可选配置：两项都配置时才随请求发送；`PLAN_TYPE` 显式配成 2
+（团队）是**确定性失败但不是凭据失效**（不标 expired，照常参与 TTL 刷新），
+错误文案内联说明「当前版本仅支持个人套餐」。另：refs 标量统一字符串化——
+`KEY: 2` 这类 YAML 数字写法也是合法值，只认字符串会静默丢掉。
 
 响应结构（关键字段）：
 
