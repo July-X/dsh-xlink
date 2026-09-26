@@ -2394,6 +2394,11 @@ main {
 .install-row {
   display: flex;
   gap: 8px;
+  /* 「手动安装」标题 与 输入框 之间留出间隔：标题与输入框贴脸会让用户
+     误以为输入框属于上一个区块（el-empty 空状态）。section-divider 自身
+     只调标题区上方间距（padding-top:12 + border-top），下沿与下一个兄弟
+     紧贴，所以从这一行起单独拉。 */
+  margin-top: 14px;
 }
 
 .install-row .el-input,
@@ -2478,122 +2483,130 @@ main {
   padding: 0 8px;
 }
 
-.catalog-cats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.cat-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 11px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease, transform 0.12s ease;
-}
-
-.cat-chip:hover {
-  color: var(--text);
-  border-color: rgba(79, 140, 255, 0.5);
-}
-
-.cat-chip:active {
-  transform: scale(0.95);
-}
-
-.cat-chip.active {
-  background: rgba(79, 140, 255, 0.16);
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.cat-count {
-  font-size: 10.5px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.09);
-}
-
-.catalog-list {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 8px;
-}
-
-.catalog-card {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.02);
-  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
-}
-
-.catalog-card:hover {
-  transform: translateY(-2px);
-  border-color: rgba(79, 140, 255, 0.45);
-  box-shadow: 0 6px 18px rgba(2, 6, 18, 0.35);
-}
-
-.catalog-card-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.catalog-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+/* 插件中心工具条：搜索框占主位，排序收在同一行右侧。 */
+/* 排序下拉紧贴 chip 行右端：宽度收窄以让位给左侧横滚的分类 chip。
+   排序不是「装插件」的入口，是「逛目录」的辅助，所以放 chip 同一行
+   语义自洽。 */
+.catalog-sort {
+  /* 6:4 分宽度由 flex 系数承担：分类 flex:6 / 排序 flex:4。
+     不写死 width，让两个 el-select 自适应伸缩；之前固定 96px 在
+     窄窗里会顶到分类下拉的尾部空间。 */
+  flex: 4 1 0;
   min-width: 0;
 }
 
-.catalog-name {
-  font-weight: 700;
-  font-size: 13.5px;
+.catalog-subbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* 「手动安装」输入框 与 分类筛选下拉 拉开间距：两个区域是不同心智，
+     紧挨着会被当成同一个筛选项。section-divider + 14px 已把标题与输入
+     框分开，这里再加 12px 把输入框与下拉分开，三块视觉节奏：
+     紧（标题↔输入框 14） → 松（输入框↔下拉 12） → 中（下拉↔条目 6）。 */
+  margin-top: 12px;
 }
 
-.catalog-stats {
-  color: var(--muted);
-  font-size: 11.5px;
+/* 分类筛选下拉与排序下拉 6:4 分宽度：分类用占主位的 el-select
+   （flex:6），排序收右侧（flex:4）。两者都不写死 width，让
+   el-select__wrapper 自适应伸缩。下拉选项直接拼好分类名 + 计数
+   （"皮肤主题（650）"），一眼看到完整列表；之前 chip 横滚 + 渐隐
+   遮罩的形式在 480px 窄窗里只露三四个、还遮住数字。 */
+.catalog-category {
+  flex: 6 1 0;
+  min-width: 0;
+}
+
+.catalog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* 分类下拉 ↔ 第一条插件条目之间 6px：与上方 chip 行/分类下拉 留一线
+     间距，让「筛选区」与「结果区」在视觉上断开。catalog-list 的 gap 只
+     在 children 之间生效，不会拉开与上一个 sibling 的距离，所以这里
+     必须用 margin-top。 */
+  margin-top: 6px;
+}
+
+/* 行式条目：原先是三段式卡片（标题行自由换行 + 描述 + 独立 tag 行），一张
+   约 90px，480px 窄窗一屏只看三四个。压成定高三行后约 70px——之前 62px 偏
+   挤，标题/描述/底栏三行间几乎没有呼吸感。行式条目不做上浮，密集列表里
+   整列 hover 时跳动比省下的高度更抢眼。 */
+.catalog-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 12px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+
+.catalog-row:hover {
+  border-color: rgba(79, 140, 255, 0.45);
+  background: rgba(79, 140, 255, 0.05);
+}
+
+.catalog-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 名称是标题行里唯一会长到溢出的元素，flex-shrink 只给它：版本号、分类标签
+   与「已验证」徽标内容都短，压它们只会把标签挤成省略号。 */
+.catalog-name {
+  font-weight: 700;
+  font-size: 13px;
+  flex: 0 1 auto;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.catalog-verified {
+  flex: none;
+  font-size: 10.5px;
+  color: #7fd6a4;
+  border: 1px solid rgba(127, 214, 164, 0.4);
+  border-radius: 999px;
+  padding: 0 6px;
 }
 
 .catalog-desc {
   margin: 0;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 12px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow: hidden;
 }
 
-.catalog-card-foot {
+.catalog-row-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  flex-wrap: wrap;
+  margin-top: 1px;
 }
 
-.catalog-tags {
-  display: inline-flex;
-  gap: 5px;
-  flex-wrap: wrap;
+.catalog-stats {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .catalog-actions {
   display: inline-flex;
-  gap: 6px;
+  align-items: center;
+  gap: 4px;
+  flex: none;
 }
 
 /* 目录卡片入场：交错淡入上浮（--i 由模板按序号写入，封顶 12 档）。 */
