@@ -98,13 +98,6 @@ const items = computed(() => filteredCatalog(keys.value));
 const shownItems = computed(() => items.value.slice(0, pluginStore.shown));
 const hasMore = computed(() => items.value.length > pluginStore.shown);
 
-const countText = computed(() => {
-  const total = pluginStore.catalogItems.length;
-  if (!total) return '';
-  const verified = pluginStore.catalogItems.filter((i) => i.verified).length;
-  return '结果 ' + items.value.length + ' 条 · 收录 ' + total + ' 款 · 已验证 ' + verified + ' 款';
-});
-
 const catChips = computed(() => {
   const counts = new Map();
   pluginStore.catalogItems.forEach((item) => counts.set(item.category, (counts.get(item.category) || 0) + 1));
@@ -184,9 +177,8 @@ const currentInstanceLabel = computed(() => {
   const active = store.view && store.view.kernel && store.view.kernel.active;
   return active ? `${family} · ${active}` : family;
 });
-const currentTabLabel = computed(() =>
-  currentInstanceLabel.value ? `当前内核（${currentInstanceLabel.value}）` : '当前内核',
-);
+// 版本号单独拆出来用小字号渲染，避免 tab 标签过长与右侧动作按钮挤在一起。
+const currentTabSub = computed(() => currentInstanceLabel.value);
 const currentTabTip = '只管理顶栏当前选中的内核：同步、模式与卸载都只作用于它。';
 const installedTabTip = '本机插件库：安装新插件，对比各内核的装载状态。';
 // 排序规则：把默认实例（is_default=true）排第一个，其余按 id 升序——
@@ -243,22 +235,27 @@ function instanceChipType(row, instanceId) {
       <p>第三方插件由社区提供，本工具不对其安全性负责，请自行甄别。</p>
     </div>
     <div class="card entity-card">
-      <div class="card-head">
-        <el-tooltip placement="top" effect="dark" :content="installTip">
-          <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
-        </el-tooltip>
-        <span class="head-meta">
-          <el-button text :icon="Switch" :disabled="globalBusy" @click="syncPlugins">同步到所有内核</el-button>
+      <div class="card-head plugin-center-head">
+        <div class="plugin-center-title-row">
+          <span class="plugin-center-title">插件中心</span>
+          <el-tooltip placement="top" effect="dark" :content="installTip">
+            <span class="plugin-center-source">
+              <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
+              数据来源于
+              <a href="https://dshfind.com/zh" target="_blank" rel="noreferrer">dshfind.com</a>
+            </span>
+          </el-tooltip>
           <el-button
-            text
+            class="plugin-center-refresh"
+            size="small"
             :icon="Refresh"
-            :loading="isLoading('checkPluginUpdates')"
+            :loading="isLoading('catalogReload')"
             :disabled="globalBusy"
-            @click="checkPluginUpdates({ busy: true, toastOnUpdates: true })"
+            @click="loadCatalog(true)"
           >
-            检查更新
+            刷新数据
           </el-button>
-        </span>
+        </div>
       </div>
       <el-alert
         v-if="view && view.warning"
@@ -273,7 +270,20 @@ function instanceChipType(row, instanceId) {
            安装针对插件库，不属于某个内核，故不放在当前内核 tab。两个 tab
            共用 pluginStore.view.rows；顶栏切默认实例后，当前内核 tab 自动
            跟随新默认实例。 -->
-      <el-tabs v-model="installedTab" class="installed-tabs">
+      <div class="installed-tabs-wrap">
+        <span class="tabs-head-actions">
+          <el-button size="small" :icon="Switch" :disabled="globalBusy" @click="syncPlugins">同步内核</el-button>
+          <el-button
+            size="small"
+            :icon="Refresh"
+            :loading="isLoading('checkPluginUpdates')"
+            :disabled="globalBusy"
+            @click="checkPluginUpdates({ busy: true, toastOnUpdates: true })"
+          >
+            检查更新
+          </el-button>
+        </span>
+        <el-tabs v-model="installedTab" class="installed-tabs">
         <el-tab-pane name="all">
           <template #label>
             <el-tooltip placement="bottom-start" effect="dark" :content="installedTabTip">
@@ -346,21 +356,7 @@ function instanceChipType(row, instanceId) {
             </el-input>
           </div>
 
-          <h3 class="section-divider">
-            插件中心
-            <span class="head-meta" style="margin-left: auto">
-              <span class="muted">{{ countText }}</span>
-              <el-button text :icon="Refresh" :loading="isLoading('catalogReload')" :disabled="globalBusy" @click="loadCatalog(true)">
-                刷新目录
-              </el-button>
-            </span>
-          </h3>
-          <p class="muted" style="margin: 0">
-            来自 <a href="https://dshfind.com/zh" target="_blank" rel="noreferrer">dshfind.com</a>
-            插件超市目录，点击「安装」即可装到本机插件库并接入所有内核。
-          </p>
           <div class="install-row">
-            <el-input v-model="pluginStore.query" placeholder="搜索插件名称、描述、标签…" spellcheck="false" clearable />
             <el-select v-model="pluginStore.sort" style="max-width: 130px" title="排序">
               <el-option value="stars" label="Star 最多" />
               <el-option value="updated" label="最近更新" />
@@ -434,7 +430,10 @@ function instanceChipType(row, instanceId) {
         <el-tab-pane name="current">
           <template #label>
             <el-tooltip placement="bottom-start" effect="dark" :content="currentTabTip">
-              <span class="tab-label">{{ currentTabLabel }}</span>
+              <span class="tab-label">
+                当前内核
+                <span v-if="currentTabSub" class="tab-label-sub">（{{ currentTabSub }}）</span>
+              </span>
             </el-tooltip>
           </template>
           <div class="entity-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
@@ -556,6 +555,7 @@ function instanceChipType(row, instanceId) {
       </div>
         </el-tab-pane>
       </el-tabs>
+      </div>
     </div>
   </section>
 </template>
