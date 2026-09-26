@@ -127,7 +127,7 @@ const lastFetched = computed(() => {
           <!-- MiniMax：5h / 周窗口进度。周窗口未激活的套餐不渲染（避免恒满格假数据）。 -->
           <template v-if="row.provider.kind === 'plan'">
             <div v-for="tier in row.tiers" :key="tier.name" class="sub-tier">
-              <span class="sub-tier-name">{{ tier.name }}</span>
+              <span class="sub-tier-name">{{ tier.name === '5h' ? '5 小时限额' : tier.name === '7d' ? '周限额' : tier.name }}</span>
               <div class="sub-bar" role="img" :aria-label="tier.tip" :title="tier.tip">
                 <i :class="'sub-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
               </div>
@@ -283,7 +283,7 @@ const lastFetched = computed(() => {
 }
 .sub-tier-name {
   flex: none;
-  width: 76px;
+  width: 90px;
   color: var(--muted);
 }
 .sub-bar {

@@ -311,7 +311,10 @@ const FILE_BUDGETS = {
 // 倒计时紧凑化 + 刷新年龄胶囊（<1min / 12min / 3h）迭代 ~+50。
 // 套餐类 provider 改左右自适应栅格（余额类单独成块；上轮样式替换未命中，
 // 本轮真正落地 grid + 窄块 tier 形态），~+60。
-const TOTAL_BUDGET = 29140;
+// 概览卡分区标题旁的刷新 icon 支持按 provider 单独刷新：subscription.js 加
+// 单分区合并与在途去重（Rust 按 provider 查询只返回该分区），OverviewPanel
+// 年龄胶囊改为可点按钮（加载态旋转），29140 → 29210。
+const TOTAL_BUDGET = 29210;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。
