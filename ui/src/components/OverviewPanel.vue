@@ -99,6 +99,10 @@ const planRows = computed(() =>
       queriedCompact: queriedAgeCompact(provider),
     }))
 );
+// 余额类（DeepSeek）单独成块；套餐类（MiniMax / GLM…）进左右自适应栅格，
+// 新增的 provider 依次往后排，flex-wrap 自动换行。
+const balanceRows = computed(() => planRows.value.filter((row) => row.provider.kind === 'balance'));
+const planBlockRows = computed(() => planRows.value.filter((row) => row.provider.kind === 'plan'));
 function onRefreshPlan() {
   refreshSubscription();
 }
@@ -496,31 +500,14 @@ function goVersions() {
           show-icon
           class="plan-error"
         />
-        <div v-for="row in planRows" :key="row.provider.id" class="plan-provider">
+        <div v-for="row in balanceRows" :key="row.provider.id" class="plan-provider">
           <div class="plan-provider-head">
             <span class="plan-provider-name">{{ row.provider.label }}</span>
             <span v-if="row.queriedCompact" class="age-pill" :title="'查询于 ' + row.queried">
               <el-icon><Refresh /></el-icon>{{ row.queriedCompact }}
             </span>
           </div>
-          <template v-if="row.provider.kind === 'plan'">
-            <div v-for="tier in row.tiers" :key="tier.name" class="plan-tier">
-              <span class="plan-tier-name">{{ tier.name }}</span>
-              <template v-if="tier.unlimited">
-                <span class="plan-tier-unlimited" :title="tier.tip">♾️ 无限周额度</span>
-              </template>
-              <template v-else>
-                <div class="plan-bar" role="img" :aria-label="tier.tip" :title="tier.tip">
-                  <i :class="'plan-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
-                </div>
-                <span class="plan-tier-percent">剩余 {{ tier.percent }}%</span>
-                <span class="muted plan-tier-reset" :title="tier.countdownTitle">
-                  <el-icon v-if="tier.countdown" class="plan-reset-icon"><Timer /></el-icon>{{ tier.countdown || '' }}
-                </span>
-              </template>
-            </div>
-          </template>
-          <template v-else-if="row.provider.kind === 'balance'">
+          <template v-if="row.provider.kind === 'balance'">
             <div v-for="(text, index) in row.balances" :key="index" class="plan-balance">
               <span>{{ text }}</span>
               <span v-if="row.provider.is_available === false" class="plan-balance-unavailable">
@@ -528,7 +515,6 @@ function goVersions() {
               </span>
             </div>
           </template>
-          <!-- 短状态词：完整可操作文案在上面横幅，这里不重复铺长文。 -->
           <p
             v-if="row.shortState"
             class="plan-state"
@@ -536,6 +522,37 @@ function goVersions() {
           >
             {{ row.shortState }}
           </p>
+        </div>
+        <!-- 套餐类：左右自适应栅格，新增 provider 依次往后排。 -->
+        <div class="plan-grid">
+          <div v-for="row in planBlockRows" :key="row.provider.id" class="plan-provider">
+            <div class="plan-provider-head">
+              <span class="plan-provider-name">{{ row.provider.label }}</span>
+              <span v-if="row.queriedCompact" class="age-pill" :title="'查询于 ' + row.queried">
+                <el-icon><Refresh /></el-icon>{{ row.queriedCompact }}
+              </span>
+            </div>
+            <div v-for="tier in row.tiers" :key="tier.name" class="plan-tier-col">
+              <div class="plan-tier-head">
+                <span class="plan-tier-name">{{ tier.name }}</span>
+                <span v-if="tier.unlimited" class="plan-tier-unlimited">♾️ 无限周额度</span>
+                <span v-else class="plan-tier-percent">剩余 {{ tier.percent }}%</span>
+                <span class="muted plan-tier-reset" :title="tier.countdownTitle">
+                  <el-icon v-if="tier.countdown" class="plan-reset-icon"><Timer /></el-icon>{{ tier.countdown || '' }}
+                </span>
+              </div>
+              <div v-if="!tier.unlimited" class="plan-bar" role="img" :aria-label="tier.tip" :title="tier.tip">
+                <i :class="'plan-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
+              </div>
+            </div>
+            <p
+              v-if="row.shortState"
+              class="plan-state"
+              :class="{ 'plan-state-bad': row.provider.fetch_error || row.provider.credential_status === 'expired' || row.provider.error }"
+            >
+              {{ row.shortState }}
+            </p>
+          </div>
         </div>
         <p v-if="!planRows.length" class="muted" style="margin: 0">尚未查询，点击右上角「刷新」获取。</p>
       </div>
@@ -645,12 +662,28 @@ function goVersions() {
 .plan-queried {
   font-size: 12px;
 }
-.plan-tier {
+/* 窄块内的 tier：名称 / 百分比 / 倒计时一行，进度条独占下一行。 */
+.plan-tier-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.plan-tier-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   font-size: 12px;
   line-height: 1.5;
+}
+.plan-tier-head .plan-tier-name {
+  color: var(--muted);
+  font-weight: 600;
+}
+.plan-tier-head .plan-tier-percent {
+  font-weight: 600;
+}
+.plan-tier-head .plan-tier-reset {
+  margin-left: auto;
 }
 .plan-tier-unlimited {
   font-weight: 600;
