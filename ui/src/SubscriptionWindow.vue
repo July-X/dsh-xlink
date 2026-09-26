@@ -124,17 +124,21 @@ const lastFetched = computed(() => {
             <span v-else class="sub-section-hint">尚未查询成功</span>
           </div>
 
-          <!-- MiniMax：5h / 周窗口进度。周窗口未激活的套餐不渲染（避免恒满格假数据）。 -->
+          <!-- MiniMax：5h / 周窗口进度。无周限额套餐的周层带 unlimited 标记，
+               以 ♾️ 文案呈现、不渲染进度条（避免「剩余 null%」与恒满格假数据）。 -->
           <template v-if="row.provider.kind === 'plan'">
             <div v-for="tier in row.tiers" :key="tier.name" class="sub-tier">
               <span class="sub-tier-name">{{ tier.name === '5h' ? '5 小时限额' : tier.name === '7d' ? '周限额' : tier.name }}</span>
-              <div class="sub-bar" role="img" :aria-label="tier.tip" :title="tier.tip">
-                <i :class="'sub-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
-              </div>
-              <span class="sub-tier-percent">剩余 {{ tier.percent }}%</span>
-              <span class="muted sub-tier-reset">
-                {{ tier.countdown ? tier.countdown + '后重置' : '重置时间未知' }}
-              </span>
+              <span v-if="tier.unlimited" class="sub-tier-unlimited">♾️ 无限周额度</span>
+              <template v-else>
+                <div class="sub-bar" role="img" :aria-label="tier.tip" :title="tier.tip">
+                  <i :class="'sub-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
+                </div>
+                <span class="sub-tier-percent">剩余 {{ tier.percent }}%</span>
+                <span class="muted sub-tier-reset">
+                  {{ tier.countdown ? tier.countdown + '后重置' : '重置时间未知' }}
+                </span>
+              </template>
             </div>
             <p v-if="!row.tiers.length && !row.shortState" class="muted sub-empty">暂无窗口数据。</p>
           </template>

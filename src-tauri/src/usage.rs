@@ -675,7 +675,14 @@ fn derive_view(doc: &UsageStateDoc, now_ms: u64) -> UsageView {
     let mut models: Vec<ModelUsageView> = models.into_values().collect();
     models.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.key.cmp(&b.key)));
     let total_tokens = days.iter().map(|d| d.tokens).sum();
-    let today_tokens = days.last().map(|d| d.tokens).unwrap_or(0);
+    // 今日口径按日期字符串精确匹配，不取 days.last()：晚于今天的异常日期
+    // （时钟漂移 / 手工改过的 session 文件）会被下面的 extend 追加到序列末尾。
+    let today_key = date_string_of_ms(now_ms);
+    let today_tokens = days
+        .iter()
+        .find(|d| d.date == today_key)
+        .map(|d| d.tokens)
+        .unwrap_or(0);
     UsageView {
         retention_days: RETENTION_DAYS,
         last_scanned_at_ms: doc.last_scanned_at_ms,
@@ -1052,6 +1059,46 @@ mod tests {
             .expect("零日应补齐");
         assert_eq!(zero.tokens, 0);
         assert_eq!(zero.requests, 0);
+    }
+
+    #[test]
+    fn derive_view_today_survives_future_dated_entries() {
+        // 时钟漂移 / 手工改过的 session 文件可能产出晚于今天的日期键；
+        // 它会被 extend 追加到 days 末尾，今日口径必须仍按日期精确命中今天。
+        let now = process::epoch_millis();
+        let today = date_string_of_ms(now);
+        let tomorrow = date_string_of_ms(now + 86_400_000);
+        let mut doc = UsageStateDoc::default();
+        let mut entry = FileEntry::default();
+        entry.days.entry(today.clone()).or_default().insert(
+            "a/Alpha".into(),
+            ModelDay {
+                requests: 1,
+                input: 30,
+                output: 3,
+                cache_read: 0,
+                cache_write: 0,
+            },
+        );
+        entry.days.entry(tomorrow.clone()).or_default().insert(
+            "a/Alpha".into(),
+            ModelDay {
+                requests: 7,
+                input: 700,
+                output: 70,
+                cache_read: 0,
+                cache_write: 0,
+            },
+        );
+        doc.files.insert("f".into(), entry);
+
+        let view = derive_view(&doc, now);
+        assert_eq!(
+            view.days.last().unwrap().date,
+            tomorrow,
+            "前置：未来日确实被追加到末尾（days.last() 不可用作今日口径）"
+        );
+        assert_eq!(view.today_tokens, 33, "今日只数今天的日账，不被未来日顶替");
     }
 
     #[test]
