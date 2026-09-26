@@ -134,8 +134,8 @@ pub struct UsageView {
     pub tracked_files: usize,
     pub total_tokens: u64,
     pub total_requests: u64,
-    /// 最近 7 个本地日历日（含今天）的总用量——概览卡片上的数字。
-    pub week_tokens: u64,
+    /// 今日（本地日历日）的总用量——概览卡片上的数字。
+    pub today_tokens: u64,
     /// 窗口内有用量记录的天数。
     pub active_days: u64,
     pub top_model: Option<String>,
@@ -603,10 +603,9 @@ fn date_string_of_ms(ms: u64) -> String {
 }
 
 /// 把账目求和成面板视图：`days` 恒覆盖整个 90 天窗口（缺的日期补零），
-/// `week_tokens` 是最近 7 个本地日历日的用量（卡片口径）。
+/// `today_tokens` 是今日（本地日历日）的用量（卡片口径）。
 fn derive_view(doc: &UsageStateDoc, now_ms: u64) -> UsageView {
     let cutoff = cutoff_date_string(now_ms);
-    let week_cutoff = date_string_of_ms(now_ms.saturating_sub(6 * 86_400_000));
     let mut models: BTreeMap<String, ModelUsageView> = BTreeMap::new();
     let mut by_day: BTreeMap<String, DayUsageView> = BTreeMap::new();
     for entry in doc.files.values() {
@@ -676,18 +675,14 @@ fn derive_view(doc: &UsageStateDoc, now_ms: u64) -> UsageView {
     let mut models: Vec<ModelUsageView> = models.into_values().collect();
     models.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.key.cmp(&b.key)));
     let total_tokens = days.iter().map(|d| d.tokens).sum();
-    let week_tokens = days
-        .iter()
-        .filter(|d| d.date.as_str() >= week_cutoff.as_str())
-        .map(|d| d.tokens)
-        .sum();
+    let today_tokens = days.last().map(|d| d.tokens).unwrap_or(0);
     UsageView {
         retention_days: RETENTION_DAYS,
         last_scanned_at_ms: doc.last_scanned_at_ms,
         tracked_files: doc.files.len(),
         total_tokens,
         total_requests: days.iter().map(|d| d.requests).sum(),
-        week_tokens,
+        today_tokens,
         active_days: days.iter().filter(|d| d.requests > 0).count() as u64,
         top_model: models.first().map(|m| m.key.clone()),
         models,
@@ -994,7 +989,7 @@ mod tests {
     }
 
     #[test]
-    fn derive_view_sums_models_fills_zero_days_and_computes_week() {
+    fn derive_view_sums_models_fills_zero_days_and_computes_today() {
         let now = process::epoch_millis();
         let today = date_string_of_ms(now);
         let three_days_ago = date_string_of_ms(now - 3 * 86_400_000);
@@ -1038,8 +1033,9 @@ mod tests {
         assert_eq!(view.total_requests, 4);
         assert_eq!(view.active_days, 2);
         assert_eq!(
-            view.week_tokens, view.total_tokens,
-            "全部记录都在最近 7 天内"
+            view.today_tokens,
+            100 + 10 + 50 + 5,
+            "今日只含今天的日账，不含 3 天前的"
         );
         assert_eq!(view.top_model.as_deref(), Some("a/Alpha"));
         assert_eq!(view.models[0].key, "a/Alpha");
@@ -1091,13 +1087,13 @@ mod tests {
         let started = std::time::Instant::now();
         let view = usage_view(true).expect("全量扫描应成功");
         println!(
-            "usage_view(force) 耗时 {:?}: files={} days={} total={} requests={} week={} top={:?}",
+            "usage_view(force) 耗时 {:?}: files={} days={} total={} requests={} today={} top={:?}",
             started.elapsed(),
             view.tracked_files,
             view.days.len(),
             view.total_tokens,
             view.total_requests,
-            view.week_tokens,
+            view.today_tokens,
             view.top_model,
         );
         // 第二次全量扫描是纯增量：只有新追加的帧会被解。

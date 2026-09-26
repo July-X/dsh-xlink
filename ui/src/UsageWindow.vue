@@ -42,8 +42,8 @@ onMounted(() => {
 
 const data = computed(() => usage.data);
 
-// 时间范围：Rust 恒返回完整 90 天，这里只做展示层切片。
-const rangeDays = ref(90);
+// 时间范围：Rust 恒返回完整 90 天，这里只做展示层切片；默认落在 7 天。
+const rangeDays = ref(7);
 const rangeLabel = computed(
   () => (RANGE_OPTIONS.find((opt) => opt.days === rangeDays.value) || {}).label || '90 天'
 );
