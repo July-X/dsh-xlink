@@ -591,6 +591,11 @@ function goVersions() {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /* 分块展示：描边 + 微底色 + 圆角，与独立窗口的 provider 分区同语言。 */
+  border: 1px solid var(--el-border-color-extra-light);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--el-fill-color-light);
 }
 .plan-provider-head {
   display: flex;
