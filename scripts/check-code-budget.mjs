@@ -303,9 +303,11 @@ const FILE_BUDGETS = {
 // 时间标签（+33）、paths/permissions/capability 接线（+40）。功能按设计稿
 // docs/subscription-usage-design.md 落地：凭据复用内核模型设置（外壳不收集 Key）、
 // 每 provider 独立状态、缓存按实例隔离，均为安全边界，无法复用既有模块。
-// 27300 → 28900。概览页「套餐用量」从行内入口改为独立卡 + 摘要行短状态词 /
-// 按 provider 定制 401 文案（真机截图反馈的三处显示问题），~+20 行，28900 → 28930。
-const TOTAL_BUDGET = 28930;
+// 27300 → 28900。概览页「套餐用量」从行内入口改为独立卡直接展示（无折叠）、
+// provider 分块描边分割、DeepSeek 提到首位、tier 短名 5h/7d 与 ♾️ 无限周层、
+// 倒计时紧凑化（Timer icon + 1d15h）、按 provider 定制 401 文案——均为真机
+// 反馈的展示与功能迭代。28930 → 29000。
+const TOTAL_BUDGET = 29000;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

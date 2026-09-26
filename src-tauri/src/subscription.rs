@@ -170,12 +170,16 @@ impl InstanceScope {
 // --- 缓存文档 -----------------------------------------------------------------
 
 /// 一个额度层（5h / 周）：`remaining_percent` 是**剩余**百分比。
+/// `unlimited == true` 表示无限额度（如 MiniMax 无周限额套餐）：前端以
+/// 「7d ♾️ 无限周额度」呈现，不渲染进度条。
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
 pub struct CacheTier {
     pub name: String,
     pub remaining_percent: f64,
     #[serde(default)]
     pub resets_at_ms: Option<u64>,
+    #[serde(default)]
+    pub unlimited: bool,
 }
 
 /// 一个币种的余额行。金额是数字字符串，透传展示、不转浮点参与计算。
@@ -257,6 +261,7 @@ pub struct TierView {
     pub name: String,
     pub remaining_percent: f64,
     pub resets_at_ms: Option<u64>,
+    pub unlimited: bool,
 }
 
 /// 一个币种余额的前端视图。
@@ -545,6 +550,7 @@ fn build_provider_view(
                 name: tier.name.clone(),
                 remaining_percent: tier.remaining_percent,
                 resets_at_ms: tier.resets_at_ms,
+                unlimited: tier.unlimited,
             })
             .collect(),
         balances: entry
@@ -886,6 +892,7 @@ fn parse_zhipu_tiers(body: &str) -> Result<Vec<CacheTier>, String> {
                 name: name.to_string(),
                 remaining_percent: clamp_percent(100.0 - used),
                 resets_at_ms: limit.get("nextResetTime").and_then(parse_epoch_ms),
+                unlimited: false,
             },
         ));
     }
@@ -901,9 +908,10 @@ const UNRECOGNIZED_STRUCTURE: &str = "接口返回了无法识别的数据结构
 /// 解析 MiniMax `/coding_plan/remains` 响应为 tier 列表。
 ///
 /// 只取 `model_remains[]` 中 `model_name == "general"` 的条目（编程套餐）；
-/// 周层仅当 `current_weekly_status == 1` 时激活（`status == 3` 表示无周限额，
-/// 不产出周条目，避免渲染一条永远满格的假数据）；空数组 / 字段缺失返回空
-/// 列表（UI 显示「未查询到套餐额度」），结构类型漂移才报错。
+/// 周层 `current_weekly_status == 1` 时按百分比激活，`status == 3` 表示
+/// **无周限额**——产出 `unlimited` 周层（前端渲染「7d ♾️ 无限周额度」），
+/// 避免被当成「有周额度但恰好满格」；空数组 / 字段缺失返回空列表（UI 显示
+/// 「暂无额度数据」），结构类型漂移才报错。
 fn parse_minimax_tiers(body: &str) -> Result<Vec<CacheTier>, String> {
     let value: serde_json::Value = serde_json::from_str(body)
         .map_err(|_| format!("接口返回了无法解析的数据（非 JSON）。{UNRECOGNIZED_STRUCTURE}"))?;
@@ -942,19 +950,31 @@ fn parse_minimax_tiers(body: &str) -> Result<Vec<CacheTier>, String> {
             name: "5h".to_string(),
             remaining_percent: clamp_percent(percent),
             resets_at_ms: item.get("end_time").and_then(parse_epoch_ms),
+            unlimited: false,
         });
     }
-    if item.get("current_weekly_status").and_then(|v| v.as_i64()) == Some(1) {
-        if let Some(percent) = item
-            .get("current_weekly_remaining_percent")
-            .and_then(|v| v.as_f64())
-        {
-            tiers.push(CacheTier {
-                name: "weekly".to_string(),
-                remaining_percent: clamp_percent(percent),
-                resets_at_ms: item.get("weekly_end_time").and_then(parse_epoch_ms),
-            });
+    match item.get("current_weekly_status").and_then(|v| v.as_i64()) {
+        Some(1) => {
+            if let Some(percent) = item
+                .get("current_weekly_remaining_percent")
+                .and_then(|v| v.as_f64())
+            {
+                tiers.push(CacheTier {
+                    name: "weekly".to_string(),
+                    remaining_percent: clamp_percent(percent),
+                    resets_at_ms: item.get("weekly_end_time").and_then(parse_epoch_ms),
+                    ..CacheTier::default()
+                });
+            }
         }
+        // 无周限额：显式的无限标记，而不是「恒为 100」的满格进度条。
+        Some(3) => tiers.push(CacheTier {
+            name: "weekly".to_string(),
+            remaining_percent: 100.0,
+            unlimited: true,
+            ..CacheTier::default()
+        }),
+        _ => {}
     }
     Ok(tiers)
 }
@@ -1196,7 +1216,7 @@ mod tests {
     }
 
     #[test]
-    fn minimax_weekly_status_3_means_no_weekly_tier() {
+    fn minimax_weekly_status_3_marks_unlimited_week() {
         let body = r#"{
             "model_remains": [
                 {
@@ -1211,10 +1231,11 @@ mod tests {
         let tiers = parse_minimax_tiers(body).expect("应解析成功");
         assert_eq!(
             tiers.len(),
-            1,
-            "status == 3 的周层不得产出（恒满格的假数据）"
+            2,
+            "status == 3 产出显式的无限周层（前端渲染 ♾️）"
         );
-        assert_eq!(tiers[0].name, "5h");
+        assert_eq!(tiers[1].name, "weekly");
+        assert!(tiers[1].unlimited, "必须带无限标记，进度条不渲染百分比");
     }
 
     #[test]
@@ -1673,6 +1694,7 @@ mod refresh_tests {
                         name: "5h".to_string(),
                         remaining_percent: 73.2,
                         resets_at_ms: Some(NOW_MS + 3_600_000),
+                        unlimited: false,
                     }],
                 })
             },

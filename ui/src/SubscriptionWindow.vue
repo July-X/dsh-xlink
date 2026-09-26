@@ -9,7 +9,7 @@
 // 能力边界（设计稿）：两家云端 API 都不提供绝对剩余 token 数——MiniMax 只给
 // 剩余百分比，DeepSeek 只有货币余额，不虚构任何 token 数字。
 import { computed, onMounted, watchEffect } from 'vue';
-import { Refresh, InfoFilled, TopRight, Setting } from '@element-plus/icons-vue';
+import { Refresh, InfoFilled, TopRight, Setting, Timer } from '@element-plus/icons-vue';
 import { ioActive, isLoading } from './loading.js';
 import { invoke } from './bridge.js';
 import { toastActionError } from './notify.js';
@@ -298,6 +298,10 @@ const lastFetched = computed(() => {
   min-width: 108px;
   text-align: right;
 }
+.sub-tier-unlimited {
+  flex: 1;
+  font-weight: 600;
+}
 .sub-balance {
   display: flex;
   align-items: center;
@@ -336,5 +340,14 @@ const lastFetched = computed(() => {
   background: rgba(0, 0, 0, 0.18);
   color: var(--muted);
   font-size: 12px;
+}
+.sub-reset-icon {
+  font-size: 12px;
+  vertical-align: -2px;
+}
+.sub-tier-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
 </style>

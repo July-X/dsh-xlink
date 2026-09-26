@@ -36,7 +36,7 @@ const {
   providerView,
   subscription,
 } = await import('../src/subscription.js');
-const { countdownLabel, relativeTimeLabel } = await import('../src/labels.js');
+const { countdownLabel, countdownFullLabel, relativeTimeLabel } = await import('../src/labels.js');
 
 test('percentLevel 按剩余百分比三档配色', () => {
   assert.equal(percentLevel(73.2), 'ok');
@@ -104,13 +104,22 @@ test('collectErrors 汇总 provider 级错误，成功时为空', () => {
   assert.deepEqual(errors, ['A：网络不可达']);
 });
 
+test('tierRow 对无限周额度输出 ♾️ 标记，不产进度数据', () => {
+  const row = tierRow({ name: 'weekly', unlimited: true, remaining_percent: 100 }, Date.now());
+  assert.equal(row.name, '7d');
+  assert.equal(row.unlimited, true);
+  assert.equal(row.percent, null);
+  assert.equal(row.tip, '无限周额度');
+});
+
 test('tierRow 产出档位 / 倒计时 / 双向口径 tooltip', () => {
   const now = 1_761_308_400_000;
   const row = tierRow({ name: '5h', remaining_percent: 73.2, resets_at_ms: now + 3 * 3600_000 + 47 * 60_000 }, now);
-  assert.equal(row.name, '5 小时窗口');
+  assert.equal(row.name, '5h');
   assert.equal(row.percent, 73);
   assert.equal(row.level, 'ok');
-  assert.equal(row.countdown, '3 小时 47 分');
+  assert.equal(row.countdown, '3h47m');
+  assert.equal(row.countdownTitle, '3 小时 47 分后重置');
   assert.equal(row.tip, '已用 27% · 剩余 73%');
   const expired = tierRow({ name: 'weekly', remaining_percent: 5, resets_at_ms: now - 1000 }, now);
   assert.equal(expired.countdown, '已重置');
@@ -127,9 +136,11 @@ test('queriedAtLabel 只对成功查询过的时间出文案', () => {
 test('countdownLabel / relativeTimeLabel 的时间口径', () => {
   assert.equal(countdownLabel(0), '已重置');
   assert.equal(countdownLabel(-5), '已重置');
-  assert.equal(countdownLabel(59 * 60_000), '59 分钟');
-  assert.equal(countdownLabel(3 * 3600_000 + 47 * 60_000), '3 小时 47 分');
-  assert.equal(countdownLabel(4 * 86_400_000 + 11 * 3600_000), '4 天 11 小时');
+  assert.equal(countdownLabel(59 * 60_000), '59m');
+  assert.equal(countdownLabel(3 * 3600_000 + 47 * 60_000), '3h47m');
+  assert.equal(countdownLabel(4 * 86_400_000 + 11 * 3600_000), '4d11h');
+  assert.equal(countdownFullLabel(4 * 86_400_000 + 11 * 3600_000), '4 天 11 小时后重置');
+  assert.equal(countdownFullLabel(45 * 60_000), '45 分钟后重置');
   assert.equal(relativeTimeLabel(0), '');
 });
 

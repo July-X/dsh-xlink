@@ -9,6 +9,7 @@ import { computed, onMounted, ref } from 'vue';
 import {
   InfoFilled,
   SwitchButton,
+  Timer,
   TopRight,
   Document,
   ChatDotRound,
@@ -501,11 +502,18 @@ function goVersions() {
           <template v-if="row.provider.kind === 'plan'">
             <div v-for="tier in row.tiers" :key="tier.name" class="plan-tier">
               <span class="plan-tier-name">{{ tier.name }}</span>
-              <div class="plan-bar" role="img" :aria-label="tier.tip" :title="tier.tip">
-                <i :class="'plan-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
-              </div>
-              <span class="plan-tier-percent">剩余 {{ tier.percent }}%</span>
-              <span class="muted plan-tier-reset">{{ tier.countdown ? tier.countdown + '后重置' : '' }}</span>
+              <template v-if="tier.unlimited">
+                <span class="plan-tier-unlimited" :title="tier.tip">♾️ 无限周额度</span>
+              </template>
+              <template v-else>
+                <div class="plan-bar" role="img" :aria-label="tier.tip" :title="tier.tip">
+                  <i :class="'plan-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
+                </div>
+                <span class="plan-tier-percent">剩余 {{ tier.percent }}%</span>
+                <span class="muted plan-tier-reset" :title="tier.countdownTitle">
+                  <el-icon v-if="tier.countdown" class="plan-reset-icon"><Timer /></el-icon>{{ tier.countdown || '' }}
+                </span>
+              </template>
             </div>
           </template>
           <template v-else-if="row.provider.kind === 'balance'">
@@ -582,7 +590,7 @@ function goVersions() {
 .plan-body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 .plan-error {
   --el-alert-padding: 6px 10px;
@@ -602,6 +610,7 @@ function goVersions() {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
+  line-height: 1.4;
 }
 .plan-provider-name {
   font-weight: 600;
@@ -614,6 +623,18 @@ function goVersions() {
   display: flex;
   align-items: center;
   gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.plan-tier-unlimited {
+  font-weight: 600;
+}
+.plan-tier-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.plan-reset-icon {
   font-size: 12px;
 }
 .plan-tier-name {
