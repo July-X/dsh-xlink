@@ -52,6 +52,7 @@ import {
   tierRow,
   balanceText,
   queriedAtLabel,
+  queriedAgeCompact,
 } from '../subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents.js';
 import { tildePath } from '../labels.js';
@@ -95,6 +96,7 @@ const planRows = computed(() =>
       balances: provider.kind === 'balance' ? provider.balances.map((balance) => balanceText(balance)) : [],
       shortState: providerShortState(provider),
       queried: queriedAtLabel(provider),
+      queriedCompact: queriedAgeCompact(provider),
     }))
 );
 function onRefreshPlan() {
@@ -497,7 +499,9 @@ function goVersions() {
         <div v-for="row in planRows" :key="row.provider.id" class="plan-provider">
           <div class="plan-provider-head">
             <span class="plan-provider-name">{{ row.provider.label }}</span>
-            <span v-if="row.queried" class="muted plan-queried">查询于 {{ row.queried }}</span>
+            <span v-if="row.queriedCompact" class="age-pill" :title="'查询于 ' + row.queried">
+              <el-icon><Refresh /></el-icon>{{ row.queriedCompact }}
+            </span>
           </div>
           <template v-if="row.provider.kind === 'plan'">
             <div v-for="tier in row.tiers" :key="tier.name" class="plan-tier">
@@ -624,6 +628,19 @@ function goVersions() {
 .plan-provider-name {
   font-weight: 600;
   font-size: 13px;
+}
+.age-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 8px;
+  border: 1px solid var(--el-border-color-extra-light);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.age-pill .el-icon {
+  font-size: 11px;
 }
 .plan-queried {
   font-size: 12px;

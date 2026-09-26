@@ -45,6 +45,20 @@ export function relativeTimeLabel(ms) {
   return `${days} 天前`;
 }
 
+/** 数据年龄（紧凑）：`<1min` / `12min` / `3h` / `2d`，配合刷新 icon 组成胶囊。
+ *  完整中文描述用 [`relativeTimeLabel`]。 */
+export function relativeAgeCompact(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  const seconds = Math.max(0, Math.floor((Date.now() - value) / 1000));
+  if (seconds < 60) return '<1min';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
 /** 重置倒计时（紧凑）：剩余毫秒 → `1d15h` / `3h47m` / `45m`；已过期为「已重置」。
  *  完整中文描述用 [`countdownFullLabel`]，放 hover title。 */
 export function countdownLabel(msLeft) {

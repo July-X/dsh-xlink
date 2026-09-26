@@ -9,7 +9,7 @@ import { reactive } from 'vue';
 import { invoke } from './bridge.js';
 import { formatActionError, toastActionError } from './notify.js';
 import { withLoading } from './loading.js';
-import { countdownFullLabel, countdownLabel, relativeTimeLabel } from './labels.js';
+import { countdownFullLabel, countdownLabel, relativeAgeCompact, relativeTimeLabel } from './labels.js';
 
 // 概览卡片摘要的最小请求间隔：与 usage 卡片同款 TTL（后端另有 5 分钟缓存）。
 const SUMMARY_TTL_MS = 60_000;
@@ -86,10 +86,16 @@ export function providerShortState(provider) {
   return null;
 }
 
-/** 展开态「查询于 X 前」；从未成功查询时返回 null。 */
+/** 展开态「查询于 X 前」（完整中文，hover title 用）；从未成功查询时返回 null。 */
 export function queriedAtLabel(provider) {
   if (!provider || !provider.queried_at_ms) return null;
   return relativeTimeLabel(provider.queried_at_ms);
+}
+
+/** 数据年龄紧凑值（`<1min` / `12min` / `3h`），配刷新 icon 组成胶囊。 */
+export function queriedAgeCompact(provider) {
+  if (!provider || !provider.queried_at_ms) return null;
+  return relativeAgeCompact(provider.queried_at_ms);
 }
 
 /** 进度条一条 tier 的展示数据：短名（5h / 7d）、剩余百分比、档位配色与重置倒计时。 */

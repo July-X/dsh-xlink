@@ -21,6 +21,7 @@ import {
   tierRow,
   balanceText,
   queriedAtLabel,
+  queriedAgeCompact,
 } from './subscription.js';
 import { openUsageWindow } from './usage.js';
 
@@ -49,6 +50,7 @@ const rows = computed(() =>
       provider.kind === 'balance' ? provider.balances.map((balance) => balanceText(balance)) : [],
     shortState: providerShortState(provider),
     queried: queriedAtLabel(provider),
+    queriedCompact: queriedAgeCompact(provider),
   }))
 );
 const hasConfigured = computed(() => rows.value.length > 0);
@@ -112,9 +114,14 @@ const lastFetched = computed(() => {
         <section v-for="row in rows" :key="row.provider.id" class="sub-section">
           <div class="sub-section-head">
             <h3>{{ row.provider.label }}{{ row.provider.kind === 'plan' ? ' Token Plan' : ' 按量余额' }}</h3>
-            <span class="sub-section-hint">
-              {{ row.queried ? `查询于 ${row.queried}` : '尚未查询成功' }}
+            <span
+              v-if="row.queriedCompact"
+              class="age-pill"
+              :title="'查询于 ' + row.queried"
+            >
+              <el-icon><Refresh /></el-icon>{{ row.queriedCompact }}
             </span>
+            <span v-else class="sub-section-hint">尚未查询成功</span>
           </div>
 
           <!-- MiniMax：5h / 周窗口进度。周窗口未激活的套餐不渲染（避免恒满格假数据）。 -->
@@ -181,6 +188,20 @@ const lastFetched = computed(() => {
 </template>
 
 <style scoped>
+.age-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 8px;
+  border: 1px solid var(--el-border-color-extra-light);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.age-pill .el-icon {
+  font-size: 11px;
+}
+
 .subwin {
   height: 100vh;
   display: flex;

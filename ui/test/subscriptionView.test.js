@@ -36,7 +36,7 @@ const {
   providerView,
   subscription,
 } = await import('../src/subscription.js');
-const { countdownLabel, countdownFullLabel, relativeTimeLabel } = await import('../src/labels.js');
+const { countdownLabel, countdownFullLabel, relativeTimeLabel, relativeAgeCompact } = await import('../src/labels.js');
 
 test('percentLevel 按剩余百分比三档配色', () => {
   assert.equal(percentLevel(73.2), 'ok');
@@ -142,6 +142,11 @@ test('countdownLabel / relativeTimeLabel 的时间口径', () => {
   assert.equal(countdownFullLabel(4 * 86_400_000 + 11 * 3600_000), '4 天 11 小时后重置');
   assert.equal(countdownFullLabel(45 * 60_000), '45 分钟后重置');
   assert.equal(relativeTimeLabel(0), '');
+  const now = Date.now();
+  assert.equal(relativeAgeCompact(now - 30_000), '<1min');
+  assert.equal(relativeAgeCompact(now - 12 * 60_000), '12min');
+  assert.equal(relativeAgeCompact(now - 3 * 3600_000), '3h');
+  assert.equal(relativeAgeCompact(now - 2 * 86_400_000), '2d');
 });
 
 test('providerView 从共享状态取视图，失败路径不清空 data（keep-last-good）', async () => {
