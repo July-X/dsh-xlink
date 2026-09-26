@@ -38,12 +38,13 @@ const {
 } = await import('../src/subscription.js');
 const { countdownLabel, countdownFullLabel, relativeTimeLabel, relativeAgeCompact } = await import('../src/labels.js');
 
-test('percentLevel 按剩余百分比三档配色', () => {
+test('percentLevel 按剩余百分比三档配色（≥70 绿 / 40–69.99 橙 / <39.99 红）', () => {
+  assert.equal(percentLevel(100), 'ok');
   assert.equal(percentLevel(73.2), 'ok');
-  assert.equal(percentLevel(50), 'ok');
-  assert.equal(percentLevel(49.9), 'warning');
-  assert.equal(percentLevel(20), 'warning');
-  assert.equal(percentLevel(19.9), 'danger');
+  assert.equal(percentLevel(70), 'ok');
+  assert.equal(percentLevel(69.9), 'warning');
+  assert.equal(percentLevel(40), 'warning');
+  assert.equal(percentLevel(39.9), 'danger');
   assert.equal(percentLevel(0), 'danger');
   assert.equal(percentLevel(undefined), 'danger', '非数字按最危险档处理');
 });
@@ -55,13 +56,13 @@ test('currencySymbol 映射币种，未知币种退回代码', () => {
   assert.equal(currencySymbol(''), '');
 });
 
-test('balanceText 透传金额字符串并省略零值赠送 / 充值', () => {
+test('balanceText 只展示「余额：¥x」总额，不拼接赠送 / 充值明细', () => {
   assert.equal(
     balanceText({ currency: 'CNY', total: '110.00', granted: '10.00', topped_up: '100.00' }),
-    '¥110.00（赠送 ¥10.00 · 充值 ¥100.00）'
+    '余额：¥110.00'
   );
-  assert.equal(balanceText({ currency: 'USD', total: '5.21', granted: '0.00', topped_up: '5.21' }), '$5.21（充值 $5.21）');
-  assert.equal(balanceText({ currency: 'CNY', total: '88.00' }), '¥88.00');
+  assert.equal(balanceText({ currency: 'USD', total: '5.21', granted: '0.00', topped_up: '5.21' }), '余额：$5.21');
+  assert.equal(balanceText({ currency: 'CNY', total: '88.00' }), '余额：¥88.00');
   assert.equal(balanceText(null), '');
 });
 
