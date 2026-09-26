@@ -65,18 +65,20 @@ import './theme.css';
 import App from './App.vue';
 import LogViewerWindow from './LogViewerWindow.vue';
 import OfficialChatTabs from './components/OfficialChatTabs.vue';
+import SubscriptionWindow from './SubscriptionWindow.vue';
 import UsageWindow from './UsageWindow.vue';
 
 const params = new URLSearchParams(location.search);
 const isLogViewer = params.has('log');
 const isChatStrip = params.has('chatstrip');
 const isUsageViewer = params.has('usage');
+const isSubscriptionViewer = params.has('subscription');
 const isMacOS = /Macintosh|Mac OS X/.test(navigator.userAgent);
 const isWindows = /Windows NT/.test(navigator.userAgent);
 const usesCustomTitlebar = isMacOS || isWindows;
 
 // 管理面板主窗口在 macOS / Windows 使用自绘标题栏；其它本地窗口继续使用各自的布局。
-if (usesCustomTitlebar && !isLogViewer && !isChatStrip && !isUsageViewer) {
+if (usesCustomTitlebar && !isLogViewer && !isChatStrip && !isUsageViewer && !isSubscriptionViewer) {
   document.body.classList.add('custom-titlebar-shell');
 }
 
@@ -86,7 +88,9 @@ const root = isLogViewer
     ? OfficialChatTabs
     : isUsageViewer
       ? UsageWindow
-      : App;
+      : isSubscriptionViewer
+        ? SubscriptionWindow
+        : App;
 
 const app = createApp(root);
 [

@@ -33,6 +33,9 @@ pub const USAGE_VIEWER_SIZE: WindowSize = WindowSize {
     width: 760.0,
     height: 800.0,
 };
+/// 套餐用量窗口（subscription.rs 弹出）。尺寸直接复用 USAGE_VIEWER_SIZE：
+/// 两类窗口都是「主壳旁的只读数据面板」，没有理由长成两个尺寸。
+pub const SUBSCRIPTION_VIEWER_LABEL: &str = "subscription-viewer";
 pub const LOG_VIEWER_LABEL: &str = "log-viewer";
 pub const LOG_VIEWER_SIZE: WindowSize = WindowSize {
     width: 960.0,
@@ -280,5 +283,6 @@ mod tests {
                 height: 720.0
             }
         );
+        assert_eq!(SUBSCRIPTION_VIEWER_LABEL, "subscription-viewer");
     }
 }

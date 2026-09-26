@@ -28,6 +28,7 @@
 
 mod archive;
 mod commands;
+mod credentials;
 mod env;
 mod error;
 mod guard;
@@ -49,6 +50,7 @@ mod releases;
 mod settings;
 mod skills;
 mod state;
+mod subscription;
 #[cfg(target_os = "windows")]
 mod tray;
 mod updater;
@@ -133,6 +135,7 @@ pub fn run() {
             // 短路掉，不影响 setup 流程。
             window::attach_dock_listener(app.handle(), window::USAGE_VIEWER_LABEL);
             window::attach_dock_listener(app.handle(), window::LOG_VIEWER_LABEL);
+            window::attach_dock_listener(app.handle(), window::SUBSCRIPTION_VIEWER_LABEL);
 
             // 家族命名空间：data_dir 按（注册表里）默认实例的内核族解析到
             // `<xlink_home>/<family>/desktop[-dev]/`，并把 v0.2.x 的平铺
@@ -311,6 +314,9 @@ pub fn run() {
             // 模型用量统计：扫描与聚合都住在 usage.rs，不经 commands.rs。
             usage::get_model_usage,
             usage::open_usage_window,
+            // 云端套餐用量：查询、缓存与建窗都住在 subscription.rs。
+            subscription::get_subscription_usage,
+            subscription::open_subscription_window,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| {

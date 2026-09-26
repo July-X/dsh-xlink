@@ -1,9 +1,10 @@
 <script setup>
-// 设置：Web UI 端口、任务完成通知、可选的数据迁移入口。内置补丁（内核补丁 / 小插件）
-// 入口已隐藏——最新内核已包含相关修复，不再需要从设置页应用；后端 `patch_status` /
-// `patch_apply` / `patch_revert` 与 `ui/src/patches.js` 仍保留，便于旧内核撤销。
-// 卡片顺序：设置 → 任务通知 → 数据迁移（默认折叠）。迁移是旧版兼容路径，启动期
-// 一次性弹窗（MigrationPrompt）才是首次迁移的主入口，日常用不到。
+// 设置：Web UI 端口、任务完成通知、可选的数据迁移入口。套餐用量查询不设卡：
+// 概览页的「套餐用量」卡已提供数据展示 / 刷新 / 测试入口，凭据本身在工作台
+// 模型设置里维护。内置补丁（内核补丁 / 小插件）入口已隐藏——最新内核已包含
+// 相关修复，不再需要从设置页应用；后端 `patch_status` / `patch_apply` /
+// `patch_revert` 与 `ui/src/patches.js` 仍保留，便于旧内核撤销。
+// 卡片顺序：设置 → 任务通知 → 数据迁移（默认折叠）。
 import { computed, onMounted, ref, watch } from 'vue';
 import { ArrowDown, ArrowUp, Bell, Check, Headset, QuestionFilled } from '@element-plus/icons-vue';
 import { store, saveSettings } from '../store.js';
@@ -33,6 +34,10 @@ watch(
   },
   { immediate: true }
 );
+
+function onSave() {
+  saveSettings(port.value, profile.value);
+}
 
 // 进入设置页时刷新通知状态（事件流连接可能已经变化）。
 watch(
@@ -64,10 +69,6 @@ async function onTestNotification() {
       `已模拟一次任务完成：${badgeTarget.value}上的角标已更新，系统通知也已发出。` +
       '没看到气泡时，请在系统通知设置里允许 dsh-xlink（下面若有环境说明，先按它处理）。';
   }
-}
-
-function onSave() {
-  saveSettings(port.value, profile.value);
 }
 
 // 迁移过 = 历史非空，未迁移 = 历史为空。
@@ -235,3 +236,6 @@ onMounted(() => {
     </div>
   </section>
 </template>
+
+<style scoped>
+</style>

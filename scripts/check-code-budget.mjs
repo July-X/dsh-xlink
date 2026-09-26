@@ -130,6 +130,23 @@ const FILE_BUDGETS = {
   // 700 → 780：范围切换 + 时间范围档位（~+50）与热力图/趋势两个共享 hover
   // 明细浮层（~+60）——都是展示层增量，拆文件只会让浮层与图形结构分家。
   'ui/src/UsageWindow.vue': 830,
+  // 云端套餐用量（subscription.rs）：MiniMax Token Plan / DeepSeek 余额查询、
+  // 5 分钟缓存文档（state.rs 容错读 + 原子写）、Key 指纹绑定（换 Key / 清 Key
+  // 作废旧条目）、redact_key 脱敏、三态 Key patch、expired 跳过自动刷新、
+  // get_subscription_usage / open_subscription_window 命令（生产代码 877 行，
+  // 测试另计；含按 provider 定制的凭据失效文案与失败日志集中记录）。查询 +
+  // 缓存 + 解析同生共死，不宜再拆；对应设计稿 docs/subscription-usage-design.md。
+  'src-tauri/src/subscription.rs': 900,
+  // DSH 模型凭据只读解析（credentials.rs）：profile cordis.patch.yml 的
+  // provider apiKeyEnv 绑定、.credentials.yaml refs、.env 回退层与默认引用
+  // 派生。凭据语义与内核对齐只有一处实现，独立成模块供 subscription.rs 复用。
+  'src-tauri/src/credentials.rs': 260,
+  // 云端套餐用量前端（subscription.js）：状态动作（keep-last-good 显式落地）
+  // + 收起态摘要 / 余额行 / 进度条配色 / 重置倒计时等纯展示函数（node --test 直测）。
+  'ui/src/subscription.js': 180,
+  // 套餐用量独立窗口根组件（open_subscription_window 弹出，?subscription=1 挂载）：
+  // 双 provider 分区 + 进度条 / 余额行 + 错误横幅与 scoped 样式（同 UsageWindow 模式）。
+  'ui/src/SubscriptionWindow.vue': 340,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
 // 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有
@@ -277,7 +294,17 @@ const FILE_BUDGETS = {
 //（+~20），lib.rs 双挂 attach_dock_listener（usage-viewer 760×800 +
 // log-viewer 960×720，+~10）；净 ~+22 行，与上述 +7 合计 ~+30，预算上调
 // 130 是给后续「用量窗口换库 / 日志联动」一类连续作业预留余量。
-const TOTAL_BUDGET = 27300;
+// 云端套餐用量（commit ...）：subscription.rs（双 provider 云端查询 + 实例级缓存 +
+// 凭据指纹绑定 + 实例/profile 绑定 + 建窗，717 行）、credentials.rs（内核模型凭据
+// 只读解析：profile apiKeyEnv / .credentials.yaml / .env，243 行）、subscription.js
+// （keep-last-good 状态 + 展示纯函数，152 行）、SubscriptionWindow.vue（独立窗口，
+// 313 行）、设置页凭据状态卡（+130）、概览套餐用量行与展开卡（+170）、labels.js
+// 时间标签（+33）、paths/permissions/capability 接线（+40）。功能按设计稿
+// docs/subscription-usage-design.md 落地：凭据复用内核模型设置（外壳不收集 Key）、
+// 每 provider 独立状态、缓存按实例隔离，均为安全边界，无法复用既有模块。
+// 27300 → 28900。概览页「套餐用量」从行内入口改为独立卡 + 摘要行短状态词 /
+// 按 provider 定制 401 文案（真机截图反馈的三处显示问题），~+20 行，28900 → 28930。
+const TOTAL_BUDGET = 28930;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

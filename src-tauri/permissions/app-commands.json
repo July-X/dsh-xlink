@@ -85,8 +85,17 @@
           "migration_skip_set",
           "migration_skip_clear",
           "get_model_usage",
-          "open_usage_window"
+          "open_usage_window",
+          "get_subscription_usage",
+          "open_subscription_window"
         ]
+      }
+    },
+    {
+      "identifier": "allow-subscription-viewer",
+      "description": "Read-only cloud subscription usage for the standalone subscription window (label \"subscription-viewer\", opened by the overview card's「套餐用量」button via open_subscription_window). The window renders the cached/fetched MiniMax token-plan tiers and DeepSeek balances via get_subscription_usage, jumps to the local model-usage window via open_usage_window, and opens the workbench via open_harness so the user can edit the model credentials it reuses — no write, settings or lifecycle commands.",
+      "commands": {
+        "allow": ["get_subscription_usage", "open_usage_window", "open_harness"]
       }
     },
     {

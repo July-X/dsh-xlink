@@ -17,6 +17,8 @@ pub enum AppError {
     Patch(String),
     #[error("模型用量统计错误：{0}")]
     Usage(String),
+    #[error("订阅用量查询错误：{0}")]
+    Subscription(String),
     #[error("桌面端更新错误：{0}")]
     Update(String),
 }

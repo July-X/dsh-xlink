@@ -45,6 +45,11 @@ notify-rust = "4"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake", "url"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 解析 DSH 内核的凭据与 profile 配置（`<DSH_HOME>/.credentials.yaml` 的 refs、
+# `profiles/<name>/cordis.patch.yml` 的 provider `apiKeyEnv`）——subscription.rs
+# 复用当前内核模型凭据查询用量时只读这两类 YAML。serde_yaml 0.9 纯 Rust 实现，
+# CI 的 Intel macOS / Windows 交叉编译不受影响（与 tungstenite 不开 TLS 同理）。
+serde_yaml = "0.9"
 # 补丁应用/撤销的内容校验（state.json 记录修改后文件哈希）。
 sha2 = "0.10"
 # 老 packument 只有 `dist.shasum`（sha1）时的下载校验回退。刻意复用 tungstenite
