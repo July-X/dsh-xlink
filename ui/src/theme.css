@@ -1232,6 +1232,9 @@ main {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
+  /* 桌面壳宽度固定（480），内容一律纵向滚动：横向溢出是布局 bug 的表现，
+     直接隐藏，不让面板出现横向滚动条（网格列 / 胶囊等均已自适应换行）。 */
+  overflow-x: hidden;
   padding: 18px;
 }
 

@@ -639,7 +639,7 @@ function goVersions() {
    更宽窗口自动三列；新增 provider 依次往后排。 */
 .plan-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
   gap: 8px;
 }
 .plan-grid .plan-provider {
@@ -654,7 +654,8 @@ function goVersions() {
 .plan-tier-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 4px 6px;
   font-size: 12px;
   line-height: 1.5;
 }
@@ -672,7 +673,8 @@ function goVersions() {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   line-height: 1.4;
 }
 .plan-provider-name {
@@ -704,7 +706,8 @@ function goVersions() {
 .plan-tier-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 4px 6px;
   font-size: 12px;
   line-height: 1.5;
 }
@@ -771,7 +774,8 @@ function goVersions() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   font-size: 12px;
 }
 .plan-balance-unavailable {
