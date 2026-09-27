@@ -2517,6 +2517,23 @@ main {
   margin-left: auto;
 }
 
+/* 预检开关行：开关 + 一行灰字说明，紧贴「刷新数据」下方。 */
+.precheck-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.precheck-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: help;
+}
+
 /* tab 头右侧的动作组：「同步到所有内核」「检查更新」挂在 tab 条右端。 */
 .installed-tabs-wrap {
   position: relative;

@@ -34,6 +34,8 @@ import {
   filteredCatalog,
   loadCatalog,
   installPlugin,
+  precheckPlugin,
+  setPrecheckEnabled,
   updatePlugin,
   setPluginMode,
   resolvePluginQuarantine,
@@ -49,12 +51,39 @@ import { instanceStore, familyLabel } from '../instance.js';
 
 const view = computed(() => pluginStore.view);
 
+// 安装预检开关。默认开启（后端 `plugin_precheck` 为 null 时按 true 解释），
+// 关掉后「安装」不再起临时内核——用户明确表示信任这个来源时才需要。
+const precheckOn = computed(() => {
+  const value = store.view && store.view.settings && store.view.settings.pluginPrecheck;
+  return value === undefined || value === null ? true : !!value;
+});
+
+const precheckBusy = ref(false);
+
+async function togglePrecheck(value) {
+  precheckBusy.value = true;
+  try {
+    await setPrecheckEnabled(value);
+  } finally {
+    precheckBusy.value = false;
+  }
+}
+
 // 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进卡片头左
 // 侧的小图标气泡里——与技能页保持一致；下方 tab 文字「已安装」与「当前内核」
 // 自身即可承担章节名，卡片头不再单独挂「已安装」标题。
 const installTip =
   '插件统一存放于 ~/.dsh-xlink/dsh-plugins/，切换内核无需重装；安装完成后自动校验是否符合 ' +
   'dsh 插件规范，内核重启后生效。';
+
+// 预检开关的说明。必须写清「预检到底验了什么、没验什么」——用户把它当成
+// 安全保证是最危险的误解：它只覆盖内核启动阶段，页面加载后的运行时异常
+// 仍由工作台窗口的健康自检负责。
+const precheckTip =
+  '开启后，点「安装」会先在一个一次性沙盒实例里真的装一次、真的启动一次内核，' +
+  '确认没问题才装到当前实例；装坏了会原样撤销，你的环境不受影响。代价是多花十几秒。' +
+  '注意：预检只覆盖内核启动阶段（进程存活、端口监听、HTTP 应答、启动日志），' +
+  '工作台页面加载后的运行时异常不在其中。';
 
 // --- 已安装列表 ---
 
@@ -271,6 +300,25 @@ function instanceChipType(row, instanceId) {
             刷新数据
           </el-button>
         </div>
+        <!-- 预检开关与「刷新数据」同排：两者都是「装之前先决定策略」的动作，
+             放在同一行，用户第一次装插件时自然会先看到它。 -->
+        <div class="precheck-toggle-row">
+          <el-switch
+            :model-value="precheckOn"
+            :loading="precheckBusy"
+            :disabled="globalBusy"
+            inline-prompt
+            active-text="预检"
+            inactive-text="直装"
+            @update:model-value="togglePrecheck"
+          />
+          <el-tooltip placement="top" effect="dark" :content="precheckTip">
+            <span class="precheck-toggle-label">
+              <el-icon><InfoFilled /></el-icon>
+              安装前先在沙盒实例里试装并启动一次
+            </span>
+          </el-tooltip>
+        </div>
       </div>
       <el-alert
         v-if="view && view.warning"
@@ -443,16 +491,31 @@ function instanceChipType(row, instanceId) {
                     />
                   </el-tooltip>
                   <el-button v-if="isInstalled(item, keys)" size="small" disabled>已安装</el-button>
-                  <el-button
-                    v-else
-                    size="small"
-                    type="primary"
-                    :icon="Download"
-                    :disabled="globalBusy"
-                    @click="installPlugin(item.spec)"
-                  >
-                    安装
-                  </el-button>
+                  <template v-else>
+                    <!-- 预检开启时，「安装」本身就带预检：点了会先在沙盒里
+                         起一次临时内核验证，通过才真正装上。旁边再给一枚
+                         独立的「仅预检」，供用户想在装之前先看一眼报告、
+                         又不想真的装进去时使用。 -->
+                    <el-button
+                      v-if="!precheckOn"
+                      size="small"
+                      text
+                      :icon="InfoFilled"
+                      :disabled="globalBusy"
+                      @click="precheckPlugin(item.spec)"
+                    >
+                      预检
+                    </el-button>
+                    <el-button
+                      size="small"
+                      type="primary"
+                      :icon="Download"
+                      :disabled="globalBusy"
+                      @click="precheckOn ? precheckPlugin(item.spec) : installPlugin(item.spec)"
+                    >
+                      安装
+                    </el-button>
+                  </template>
                 </span>
               </div>
             </div>

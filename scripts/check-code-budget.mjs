@@ -74,7 +74,21 @@ const FILE_BUDGETS = {
   // 1900 → 1910。
   // 1910 → 1915：三个查看器窗口建出后调用 window::snap_to_main 做吸附校正
   // （外框高度对齐主壳 + 补偿 Windows 不可见缩放边框贴紧主窗）。
-  'src-tauri/src/commands.rs': 1915,
+  // 安装预检：2 条 Tauri 命令（plugin_precheck_install /
+  // plugin_set_precheck）+ 共享 run_precheck_command + merge_settings 新增
+  // 预检开关继承 + 对应断言，约 +71 行。预检的事务主体刻意不放这里——
+  // 见新文件 precheck.rs。
+  'src-tauri/src/commands.rs': 1990,
+  // 安装预检的沙盒生命周期共享层：一次性实例 id / 端口分配 / 目录骨架、
+  // 适配器启动与就绪看护、环回 HTTP 存活确认、日志标记扫描、残留回收、
+  // 证据另存，以及 Verdict / PrecheckReport 两个对外类型。
+  // **刻意与「装什么」无关**：技能预检将来直接复用同一套起停与探测。
+  'src-tauri/src/sandbox.rs': 560,
+  // 安装预检的两段式事务：中央库字节级快照与回滚、基线差分判定、
+  // 提交（物化 + 接线）与报告装配。放在独立文件而不是塞进已 2964 行的
+  // plugins.rs，是为了两件事：插件模块读不懂、预检想复用到技能上也
+  // 无从下手。plugins.rs 侧只暴露 `store_file` 一条可见性缝。
+  'src-tauri/src/precheck.rs': 450,
   // P6 step 2+3+4：迁移向导后端——ConflictPolicy / MigrationStatus /
   // MigrationItemReport / MigrationReport / run_migration / migrate_one /
   // decide_entry / backup_existing / copy_one / copy_tree_inner +
@@ -367,7 +381,22 @@ const FILE_BUDGETS = {
 // 列表样式（+62）；notifications.js 增问 / 答字段与时间 / 时长格式化
 // （+42）；SettingsPanel 增最近完成列表（+30）。均为新增能力，
 // 重复区间数仍为 6。
-const TOTAL_BUDGET = 29760;
+// 29760 → 30630：插件安装沙盒预检。净增约 870 行，几乎全部落在**两个新
+// 文件**里，这是本条预算第一次因为「开新文件」而不是「撑大老文件」而
+// 上调：
+//   · sandbox.rs（新增 ~533 行）：一次性沙盒实例的 id / 端口 / 目录、适配
+//     器启动与就绪看护、环回 HTTP 探测、日志标记扫描、残留回收、报告类型。
+//   · precheck.rs（新增 ~446 行）：字节级快照回滚、基线差分判定、提交。
+//   · commands.rs（1915 → 1990）：2 条命令 + 共享 runner + 合并断言 +71。
+//   · PrecheckDialog.vue（新增 ~150 行）+ theme.css（+19）开关行 +
+//     plugins.js / store.js / progress.js 前端接线（~+40）。
+// plugins.rs **未上调**（仍 2964 / 2980）：预检的事务主体一开始写进去会
+// +215，改为抽成 precheck.rs 后回到原预算。重复区间数仍为 7。
+//
+// ⚠ 这次上调让「总量只许因删除而下调」这条自我约束第一次被破例。真正的
+// 修法是把总量门禁换成「单文件上限 + 新增能力必须开新文件」两条，后者在
+// 本次靠「plugins.rs 未上调」兑现了一半，但规则本身还没进脚本。
+const TOTAL_BUDGET = 30630;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

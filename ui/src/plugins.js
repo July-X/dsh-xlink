@@ -6,7 +6,7 @@ import { toast, toastSuccess, toastActionError } from './notify.js';
 import { withLoading } from './loading.js';
 import { withProgress } from './progress.js';
 import { createStatusSource, createUpdateChecker, singleFlight } from './async.js';
-import { refreshAll } from './store.js';
+import { store, refreshAll } from './store.js';
 
 // dshfind.com 分类 id → 中文标签，数组顺序即界面顺序，与
 // https://dshfind.com/zh/plugins 上的筛选分组保持一致。
@@ -261,6 +261,50 @@ export function installPlugin(specFromCatalog) {
     },
     (channel) => ({ spec: raw, onEvent: channel })
   );
+}
+
+// 安装前先在一次性沙盒实例里真的装一次、真的起一次内核，通过了才安装到
+// 当前实例。报告有三态，通过与否由 `PrecheckDialog` 如实呈现，不在这里
+// 折成一句「完成 / 失败」——那会把「没能验证」说成「没问题」。
+export function precheckPlugin(specFromCatalog) {
+  const fromCatalog = !!(specFromCatalog || '').trim();
+  const raw = (specFromCatalog || '').trim() || pluginStore.spec.trim();
+  if (!raw) {
+    toast('请先填写仓库地址或 npm 包名', 4000, 'warning');
+    return Promise.resolve(false);
+  }
+  if (!fromCatalog) {
+    pluginStore.spec = '';
+  }
+  return withProgress(
+    {
+      cmd: 'plugin_precheck_install',
+      // 会起两次临时内核（一次基线、一次带插件），文案必须让用户知道
+      // 这不是卡住了。
+      start: '正在预检 ' + raw + '（要启动两次临时内核，请稍候）…',
+      onResult: showPrecheckReport,
+    },
+    (channel) => ({ spec: raw, onEvent: channel })
+  );
+}
+
+function showPrecheckReport(report) {
+  if (!report) return;
+  store.precheckReport = report;
+  store.precheckVisible = true;
+}
+
+// 安装预检开关。关闭后「安装」直接装、不再起临时内核。
+export function setPrecheckEnabled(enabled) {
+  return invoke('plugin_set_precheck', { enabled })
+    .then((value) => {
+      toastSuccess(value ? '已开启安装预检' : '已关闭安装预检');
+      return refreshAll();
+    })
+    .catch((e) => {
+      toastActionError('切换安装预检失败', e, '请稍后重试；若持续失败请查看日志');
+      return false;
+    });
 }
 
 export function updatePlugin(id) {

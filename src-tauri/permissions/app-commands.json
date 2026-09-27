@@ -47,6 +47,8 @@
           "plugin_status",
           "kernel_plugin_list",
           "plugin_install",
+          "plugin_precheck_install",
+          "plugin_set_precheck",
           "plugin_update",
           "plugin_uninstall",
           "plugin_sync",

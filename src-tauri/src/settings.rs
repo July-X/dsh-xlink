@@ -47,6 +47,18 @@ pub struct Settings {
     pub notify_away_only: Option<bool>,
     /// 通知是否带提示音。
     pub notify_sound: Option<bool>,
+    /// 插件安装前是否先在沙盒实例里预检一次。
+    ///
+    /// `None` = 用户从未设置过（走 [`crate::plugins::precheck_enabled`] 的
+    /// 默认值），而不是「关闭」——与上面三个通知开关同样的理由：用 `bool`
+    /// 会让每次面板「保存设置」都把用户的选择静默重置。
+    pub plugin_precheck: Option<bool>,
+}
+
+/// 安装预检是否生效。**默认开启**：预检只多花十几秒，却能在装坏插件时保住
+/// 用户整个工作环境；关掉它必须是用户自己做的决定，而不是默认值。
+pub fn plugin_precheck_enabled(settings: &Settings) -> bool {
+    settings.plugin_precheck.unwrap_or(true)
 }
 
 impl Default for Settings {
@@ -60,6 +72,7 @@ impl Default for Settings {
             notify_enabled: None,
             notify_away_only: None,
             notify_sound: None,
+            plugin_precheck: None,
         }
     }
 }
