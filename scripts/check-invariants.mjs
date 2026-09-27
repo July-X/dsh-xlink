@@ -465,6 +465,49 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
   }
 }
 
+// --- 9. CSS 自定义属性：var() 引用必须有定义 ---------------------------------
+//
+// 事故来源：code-review-2026-09-27 的 H4。`--text-muted` / `--surface-soft`
+// 被 KernelTabs 与 MigrationPanel 引用了 8 处，却从未在 :root 定义。CSS 自定义
+// 属性没有回退值时整条声明在 computed-value time 非法 → 被丢弃 → 继承父级，
+// 于是「压低非激活 tab 权重」「弱化提示文字」的设计全部静默失效，而**不产生
+// 任何构建错误或构建警告**，102 个 test:ui 与原有 10 项不变量都发现不了。
+//
+// 这类缺陷靠人读代码只能碰运气，因此钉成门禁。带回退值的引用
+// （`var(--x, #999)`）不在管辖范围内——有回退就不算静默失效。JS 里通过
+// `:style` 注入的自定义属性（`--sidebar-width`）由父组件负责，命中回退时
+// 同样不受影响。
+{
+  const srcDir = join(root, 'ui/src');
+  const defined = new Set(
+    [...readFileSync(join(srcDir, 'theme.css'), 'utf8').matchAll(/^\s*(--[a-z0-9-]+)\s*:/gm)].map(
+      (m) => m[1],
+    ),
+  );
+  const missing = new Map();
+  for (const file of walk(srcDir, ['.css', '.vue', '.js'])) {
+    const text = readFileSync(file, 'utf8');
+    for (const match of text.matchAll(/var\(\s*(--[a-z0-9-]+)\s*([,)])/g)) {
+      // 名字后面跟逗号 = 带了回退值（`var(--x, #999)`），有定义与否都不会
+      // 静默失效；跟右括号 = 没给回退，才需要 theme.css 里真有定义。
+      if (match[2] === ',') continue;
+      const name = match[1];
+      if (defined.has(name) || missing.has(name)) continue;
+      missing.set(name, show(file));
+    }
+  }
+  if (missing.size > 0) {
+    for (const [name, where] of missing) {
+      fail(
+        'css-var',
+        `${where} 引用了 ${name}，但 theme.css 没有定义它（且未给回退值）——整条声明会被浏览器丢弃并继承父级，样式静默失效`,
+      );
+    }
+  } else {
+    note('CSS 变量引用完整：无回退的 var() 全部有定义');
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);

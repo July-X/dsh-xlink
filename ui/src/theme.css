@@ -12,6 +12,16 @@
   --border: rgba(255, 255, 255, 0.1);
   --text: #e8ecf7;
   --muted: #9aa4bf;
+  /* --text-muted / --surface-soft 曾被 KernelTabs 与 MigrationPanel 引用但
+     从未在这里定义。CSS 自定义属性无回退值时整条声明在 computed-value
+     time 非法 → 被丢弃 → 继承父级，于是「压低非激活 tab 权重」「弱化提示
+     文字」的设计全部静默失效（不产生构建错误，也不产生构建警告，
+     check-invariants 与 test:ui 都发现不了）。这里补上定义：
+     --text-muted 是正文与背景之间的中间档，比 --muted 再暗一档，专用于
+     「同级但不该抢注意力」的元素；--surface-soft 是比 --card 更实一点的
+     浅底，给需要可读但不该做成卡片的说明块用。 */
+  --text-muted: #7b86a4;
+  --surface-soft: rgba(255, 255, 255, 0.035);
   --accent: #4f8cff;
   --accent-2: #22d3ee;
   --good: #34d399;
