@@ -222,6 +222,25 @@ fn resolve_home() -> PathBuf {
 
 /// 中央库根目录：`paths::skills_store_root()` 即
 /// `<xlink_home>/skills/packages/`。`home` 形参保留仅为兼容既有调用站点——
+/// 当前活动视图里**实际存在**的条目名（排序后）。
+///
+/// 快照模块要的是「内核此刻会读到哪些技能」，而活动目录本身就是那个
+/// 事实——它可能被用户手工删过、与中央库记录不一致（面板会显示「未同步」）。
+/// 所以这里读目录而不是读中央库：中央库记的是"装了什么"，活动目录记的是
+/// "现在生效什么"，环境指纹要的是后者。
+pub fn active_entry_names() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(paths::skills_active_root())
+        .map(|dir| {
+            dir.flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| !n.starts_with('.'))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
 /// P5 起中央库严格走 Xlink home，活动视图独立走 `paths::skills_active_root()`。
 pub fn store_dir(_home: &Path) -> PathBuf {
     paths::skills_store_root()

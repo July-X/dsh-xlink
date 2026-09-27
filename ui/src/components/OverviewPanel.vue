@@ -63,6 +63,7 @@ import {
   queriedAgeCompact,
 } from '../subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents.js';
+import SnapshotCard from './SnapshotCard.vue';
 import { tildePath } from '../labels.js';
 import { confirmDialog } from '../notify.js';
 
@@ -469,6 +470,11 @@ function goVersions() {
         尚未安装可用内核，请先到「内核版本」页安装。
       </p>
     </div>
+
+    <!-- 环境回退点（安全网 P0，只读）。放在套餐用量之后、实例区之前：
+         它讲的是「这套配置曾经是什么样」，与用量 / 额度这类度量无关，
+         挨着实例区比挨着用量卡更合上下文。 -->
+    <SnapshotCard />
 
     <!-- 套餐用量：独立只读卡，内容直接展示（无折叠）。MiniMax 双窗口进度 +
          DeepSeek 余额行；完整可操作错误文案只在顶部横幅出现，provider 分区

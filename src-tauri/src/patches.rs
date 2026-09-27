@@ -494,6 +494,20 @@ fn read_state(data_dir: &Path) -> PatchState {
     crate::state::load_lossy(&state_file(data_dir))
 }
 
+/// 只读列出「当前内核上已应用的补丁 id」。
+///
+/// 快照模块（[`crate::snapshot`]）需要把已应用补丁集并进环境指纹，但不该
+/// 因此拿到整个 [`PatchState`]——那里面还有备份路径、时间戳等与指纹无关
+/// 的字段。给一条最小只读缝，比让它 `pub(crate)` 整个状态结构更窄。
+pub fn applied_patch_ids(data_dir: &Path, kernel_version: &str) -> Vec<String> {
+    read_state(data_dir)
+        .applied
+        .into_iter()
+        .filter(|item| item.kernel_version == kernel_version)
+        .map(|item| item.id)
+        .collect()
+}
+
 /// 读-改-写路径用的读取：记录损坏时返回可操作的错误。
 fn read_state_checked(data_dir: &Path) -> Result<PatchState, AppError> {
     crate::state::load_checked(&state_file(data_dir), STATE)
