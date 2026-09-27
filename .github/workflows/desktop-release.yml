@@ -246,10 +246,10 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
       - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
       - name: Run Rust Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
 
   build:
     name: Build ${{ matrix.name }}
@@ -312,7 +312,10 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm exec tauri build
+        # `-- --locked` 是给 tauri 的 runner（cargo）透传参数，作用在真正
+        # 打进安装包的那次编译上：没有它，release 用的依赖集可能与仓库里
+        # 被 review 过的 Cargo.lock 不同，且没有任何门禁会发现（H3）。
+        run: pnpm exec tauri build -- --locked
 
       - name: Normalize macOS updater asset names
         if: matrix.name == 'macos-intel'

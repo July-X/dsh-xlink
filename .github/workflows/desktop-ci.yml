@@ -88,14 +88,18 @@ jobs:
           }
           NODE
 
+      # cargo fmt 不接受 --locked（它是纯格式化器，不解析依赖图），因此下面
+      # 只有 test / clippy / check 三处带 --locked。作用是让「实际编译与打包
+      # 用的依赖集」必须等于仓库里被 review 过的 Cargo.lock——此前全线裸跑，
+      # 依赖可以在无人察觉的情况下漂移。
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
       - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
       - name: Run Rust Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
 
   # Windows 专属代码（托盘、Job Object、PowerShell 进程查询、反斜杠路径处理、
   # `%ComSpec% /C` 分支）在 macOS 上一次也不会被编译。只靠发布流水线发现问题的
@@ -125,4 +129,4 @@ jobs:
           printf '<!doctype html><html><body></body></html>\n' > ui/dist/index.html
 
       - name: Check Windows-only code paths
-        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked --all-targets
