@@ -5,7 +5,7 @@
 // 「打开工作台窗口 / 打开官方对话窗口」在对应服务开启后作为次级入口从第二行动态浮现。
 // 「当前内核」的 Node.js 行另带「重新检测」（探测本机环境，不改设置）；Node
 // 环境结论悬浮在卡标题旁的 ℹ️ 上（原「桌面端设置」卡已并入这个 tooltip）。
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import {
   InfoFilled,
   Timer,
@@ -52,7 +52,11 @@ import {
   refreshSubscription,
   refreshSubscriptionProvider,
   isProviderRefreshing,
+  isProviderHidden,
+  hideProvider,
   providerShortState,
+  failurePromptPending,
+  markFailurePrompted,
   tierRow,
   balanceText,
   queriedAtLabel,
@@ -60,6 +64,7 @@ import {
 } from '../subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents.js';
 import { tildePath } from '../labels.js';
+import { confirmDialog } from '../notify.js';
 
 // 进度窗口是全局的（任何长任务都会让它可见），按钮的加载态必须绑定自己的
 // key，否则任何别的长任务都会让这个按钮转圈（P2-42）。
@@ -91,9 +96,10 @@ onMounted(() => {
   loadSubscriptionSummary();
 });
 // 工作台里改完凭据回到概览：数据拉取动作自带 TTL，这里不额外触发。
+// planRows 额外滤掉「用户选择隐藏」的分区（key 配了但一直查不到数据）。
 const planRows = computed(() =>
   ((subscription.data && subscription.data.providers) || [])
-    .filter((provider) => provider.configured)
+    .filter((provider) => provider.configured && !isProviderHidden(provider.id))
     .map((provider) => ({
       provider,
       tiers: provider.kind === 'plan' ? provider.tiers.map((tier) => tierRow(tier)).filter(Boolean) : [],
@@ -107,6 +113,13 @@ const planRows = computed(() =>
 // 新增的 provider 依次往后排，flex-wrap 自动换行。
 const balanceRows = computed(() => planRows.value.filter((row) => row.provider.kind === 'balance'));
 const planBlockRows = computed(() => planRows.value.filter((row) => row.provider.kind === 'plan'));
+// 所有 configured 分区都被隐藏时给出一句说明，而不是误导性的「尚未查询」。
+const allHidden = computed(
+  () =>
+    ((subscription.data && subscription.data.providers) || []).some((p) => p.configured) &&
+    planRows.value.length === 0 &&
+    ((subscription.data && subscription.data.providers) || []).some((p) => isProviderHidden(p.id))
+);
 function onRefreshPlan() {
   refreshSubscription();
 }
@@ -114,6 +127,27 @@ function onRefreshPlan() {
 function onRefreshProvider(id) {
   refreshSubscriptionProvider(id);
 }
+
+// 「查不到数据 → 是否隐藏」提示：configured 但处于失败态的分区，本会话内
+// 只问一次；确认后隐藏（localStorage 记住，查询成功自动恢复），取消则不再问。
+watch(
+  () => subscription.data,
+  async (view) => {
+    for (const provider of (view && view.providers) || []) {
+      if (!failurePromptPending(provider)) continue;
+      markFailurePrompted(provider.id);
+      const reason = providerShortState(provider) || '查询失败';
+      const hide = await confirmDialog(
+        '套餐用量',
+        `${provider.label} 无法取到数据（${reason}）。是否隐藏该项？` +
+          '隐藏后不会再展示与报错，下次查询成功（包括重启后的首次查询）会自动恢复显示。',
+        '隐藏',
+        '保留'
+      );
+      if (hide) hideProvider(provider.id);
+    }
+  }
+);
 
 const kernel = computed(() => store.view && store.view.kernel);
 const node = computed(() => store.view && store.view.node);
@@ -449,7 +483,8 @@ function goVersions() {
                 当前支持 MiniMax（国内站 / 国际站）Token Plan 的 5 小时 / 周窗口剩余百分比、
                 DeepSeek 按量账户余额（多币种），以及智谱 GLM 编程套餐的 5 小时 / 周窗口剩余百分比。
                 数据缓存 5 分钟，点「刷新」立即重新查询。凭据复用工作台模型设置；
-                未在内核配置对应厂商时，相应分区自动隐藏。
+                未在内核配置对应厂商时，相应分区自动隐藏；配置了但一直查不到数据时，
+                会询问是否隐藏该项，之后查询成功（含重启后的首次查询）自动恢复。
               </div>
             </template>
             <el-icon class="card-info-icon"><InfoFilled /></el-icon>
@@ -569,7 +604,10 @@ function goVersions() {
             </p>
           </div>
         </div>
-        <p v-if="!planRows.length" class="muted" style="margin: 0">尚未查询，点击右上角「刷新」获取。</p>
+        <p v-if="allHidden" class="muted" style="margin: 0">
+          查不到数据的分区已按你的选择隐藏；修复凭据并成功查询（或重启后自动首查）后会自动恢复。
+        </p>
+        <p v-else-if="!planRows.length" class="muted" style="margin: 0">尚未查询，点击右上角「刷新」获取。</p>
       </div>
     </div>
 
@@ -737,7 +775,12 @@ function goVersions() {
 }
 .plan-bar {
   position: relative;
-  flex: 1;
+  /* 不能写 flex: 1：父级 .plan-tier-col 是**纵向** flex，flex-basis 0% 作用于
+     高度并压过 height: 10px，WebView2（Chromium）上进度条会被压成 0 高
+     （WebKit 对自动最小尺寸的实现不同，macOS 上看不出来）。宽度交给
+     纵向 flex 的默认 cross 拉伸即可。 */
+  flex: none;
+  width: 100%;
   height: 10px;
   border-radius: 5px;
   background: rgba(255, 255, 255, 0.08);

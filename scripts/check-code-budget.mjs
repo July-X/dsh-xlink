@@ -70,7 +70,9 @@ const FILE_BUDGETS = {
   // （wry 无 handler 时 macOS 取消导航 / Windows 标记已处理），点击会
   // 静默失效；处理器把 http(s) 外链交给系统默认浏览器（~+15 行）。
   // 1900 → 1910。
-  'src-tauri/src/commands.rs': 1910,
+  // 1910 → 1915：三个查看器窗口建出后调用 window::snap_to_main 做吸附校正
+  // （外框高度对齐主壳 + 补偿 Windows 不可见缩放边框贴紧主窗）。
+  'src-tauri/src/commands.rs': 1915,
   // P6 step 2+3+4：迁移向导后端——ConflictPolicy / MigrationStatus /
   // MigrationItemReport / MigrationReport / run_migration / migrate_one /
   // decide_entry / backup_existing / copy_one / copy_tree_inner +
@@ -148,7 +150,9 @@ const FILE_BUDGETS = {
   'src-tauri/src/credentials.rs': 270,
   // 云端套餐用量前端（subscription.js）：状态动作（keep-last-good 显式落地）
   // + 收起态摘要 / 余额行 / 进度条配色 / 重置倒计时等纯展示函数（node --test 直测）。
-  'ui/src/subscription.js': 180,
+  // 180 → 210：失效 provider 的「提示 → 隐藏 → 查询成功自动恢复」状态机
+  // （localStorage 持久 + 会话首查 force + collectErrors 跳过已隐藏项）。
+  'ui/src/subscription.js': 210,
   // 套餐用量独立窗口根组件（open_subscription_window 弹出，?subscription=1 挂载）：
   // 双 provider 分区 + 进度条 / 余额行 + 错误横幅与 scoped 样式（同 UsageWindow 模式）。
   // 340 → 360：查询时间换成刷新 icon 胶囊（紧凑年龄值）。
@@ -337,7 +341,16 @@ const FILE_BUDGETS = {
 //   「已安装 / 当前内核」双 tab 与任何 Rust 命令。
 //   theme.css（+64）：行式条目 + 工具条 + chip 横滚 + 计数行样式；删掉
 //   .catalog-card 系列后仍为净增。共 +173，预算上调 240 留余量。
-const TOTAL_BUDGET = 29450;
+//
+// 29450 → 29520：三处真机（Windows）反馈修复。window.rs 吸附几何抽
+// snap_to_main / dock_insets / inner_height_matched_to（建出后按实测外框
+// 校正：外框高度对齐主壳 + 补偿 Windows 不可见缩放边框，三类查看器窗口
+// 共用）；subscription.js 增加失效 provider 的「提示 → 隐藏 → 查询成功自动
+// 恢复」状态机（localStorage 持久 + 会话首查 force）；OverviewPanel.vue
+// 弹确认框 + 隐藏过滤 + 进度条 flex 塌陷修复（WebView2 上纵向 flex 的
+// flex-basis 0% 把 .plan-bar 压成 0 高）。均为新增能力而非复制粘贴，
+// 重复区间数仍为 6。
+const TOTAL_BUDGET = 29520;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

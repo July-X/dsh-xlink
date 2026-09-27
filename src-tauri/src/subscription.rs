@@ -1114,8 +1114,12 @@ pub async fn open_subscription_window(app: tauri::AppHandle) -> Result<(), Strin
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);
             }
-            let result = builder
-                .build()
+            let result = builder.build();
+            if result.is_ok() {
+                // 建出后以实测外框校正：外框高度对齐主壳 + 补偿不可见边框贴紧。
+                crate::window::snap_to_main(&handle, crate::window::SUBSCRIPTION_VIEWER_LABEL);
+            }
+            let result = result
                 .map(|_| ())
                 .map_err(|e| format!("打开套餐用量窗口失败：{e}。请重试"));
             let _ = tx.send(result);

@@ -35,6 +35,10 @@ const {
   queriedAtLabel,
   providerView,
   subscription,
+  failurePromptPending,
+  markFailurePrompted,
+  isProviderHidden,
+  hideProvider,
 } = await import('../src/subscription.js');
 const { countdownLabel, countdownFullLabel, relativeTimeLabel, relativeAgeCompact } = await import('../src/labels.js');
 
@@ -103,6 +107,63 @@ test('collectErrors 汇总 provider 级错误，成功时为空', () => {
     ],
   });
   assert.deepEqual(errors, ['A：网络不可达']);
+});
+
+test('providerStateText 覆盖三类失败态：本次失败 / 凭据失效 / 业务错误', () => {
+  assert.equal(providerStateText({ fetch_error: '网络不可达' }), '网络不可达');
+  assert.equal(providerStateText({ credential_status: 'expired' }), '凭据已失效');
+  assert.equal(providerStateText({ error: '业务错误（1004）' }), '业务错误（1004）');
+  assert.equal(providerStateText({ credential_status: 'valid' }), null);
+  assert.equal(providerStateText({}), null);
+  assert.equal(providerStateText(null), null);
+});
+
+test('查不到数据时提示隐藏：hideProvider 被记住、collectErrors 不再提及、成功自动恢复', async () => {
+  const failing = {
+    providers: [
+      { id: 'deepseek', label: 'DeepSeek', configured: true, fetch_error: '凭据无效（HTTP 401）' },
+      { id: 'minimax-cn', label: 'MiniMax-CN', configured: true, kind: 'plan', tiers: [{ remaining_percent: 50 }] },
+    ],
+  };
+  // 配了 key 但失败 → 需要提示；提示过 / 已隐藏 / 未配置 → 不再提示。
+  assert.equal(failurePromptPending(failing.providers[0]), true);
+  assert.equal(failurePromptPending(failing.providers[1]), false);
+  assert.equal(failurePromptPending({ id: 'x', configured: false, fetch_error: 'x' }), false);
+  markFailurePrompted('deepseek');
+  assert.equal(failurePromptPending(failing.providers[0]), false, '本会话内不重复打扰');
+
+  hideProvider('deepseek');
+  assert.equal(isProviderHidden('deepseek'), true);
+  assert.deepEqual(
+    collectErrors(failing),
+    [],
+    '隐藏后错误横幅不再提及（分区本身也不再渲染）'
+  );
+
+  // 查询成功（换 key 后拿到数据）→ 自动恢复显示，横幅口径同时恢复。
+  const previousInvoke = window.__TAURI__.core.invoke;
+  window.__TAURI__.core.invoke = () =>
+    Promise.resolve({
+      providers: [
+        {
+          id: 'deepseek',
+          label: 'DeepSeek',
+          configured: true,
+          kind: 'balance',
+          balances: [{ currency: 'CNY', total: '9.90' }],
+          queried_at_ms: 1,
+        },
+      ],
+    });
+  try {
+    const { refreshSubscription } = await import('../src/subscription.js');
+    await refreshSubscription();
+    assert.equal(isProviderHidden('deepseek'), false, '查询成功后自动恢复显示');
+    assert.deepEqual(subscription.errors, []);
+    assert.equal(providerView('deepseek').balances[0].total, '9.90');
+  } finally {
+    window.__TAURI__.core.invoke = previousInvoke;
+  }
 });
 
 test('tierRow 对无限周额度输出 ♾️ 标记，不产进度数据', () => {
