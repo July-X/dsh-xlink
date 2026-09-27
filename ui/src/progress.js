@@ -110,7 +110,12 @@ export function withProgress(labels, task, options = {}) {
     progress.resetLog();
     progress.set(labels.start);
     try {
-      await invoke(labels.cmd, task(channel));
+      const result = await invoke(labels.cmd, task(channel));
+      // 少数命令的返回值本身就是交付物（安装预检的报告），`onResult`
+      // 让它们在刷新面板之前先被消费掉；不传则与原来一样丢弃。
+      if (labels.onResult) {
+        labels.onResult(result);
+      }
       if (labels.done) {
         toastSuccess(labels.done);
       }

@@ -325,7 +325,24 @@ fn merge_settings(
         notify_enabled: incoming.notify_enabled.or(previous.notify_enabled),
         notify_away_only: incoming.notify_away_only.or(previous.notify_away_only),
         notify_sound: incoming.notify_sound.or(previous.notify_sound),
+        // 预检开关同理：面板「保存设置」只发端口与 profile，不该顺手把用户
+        // 关掉的安装预检重新打开。
+        plugin_precheck: incoming.plugin_precheck.or(previous.plugin_precheck),
     }
+}
+
+/// 打开 / 关闭「安装前先做沙盒预检」。返回生效后的取值，供 UI 立即回显。
+///
+/// 独立命令而不是塞进 `save_settings`：预检开关属于「插件」卡片，和端口 /
+/// profile 那张「设置」卡不是同一件事，混在一起会让面板的保存语义继续
+/// 含糊不清。
+#[tauri::command]
+pub async fn plugin_set_precheck(enabled: bool) -> Result<bool, String> {
+    let mode = settings::current_mode();
+    let mut current = settings::load_for_shell(mode);
+    current.plugin_precheck = Some(enabled);
+    settings::save_for_shell(mode, &current).map_err(|e| e.to_string())?;
+    Ok(enabled)
 }
 
 /// 把日志文件名拆成排序键 `(基名, 代次)`，用于「最新者优先」的稳定排序。
@@ -687,6 +704,7 @@ mod settings_merge_tests {
             notify_enabled: Some(false),
             notify_away_only: Some(false),
             notify_sound: Some(true),
+            plugin_precheck: Some(false),
         };
         // 面板发来的请求：只有 port / profile，其余字段被 serde default 填成 None。
         let incoming = settings::Settings {
@@ -711,6 +729,11 @@ mod settings_merge_tests {
         );
         assert_eq!(merged.notify_away_only, Some(false));
         assert_eq!(merged.notify_sound, Some(true));
+        assert_eq!(
+            merged.plugin_precheck,
+            Some(false),
+            "面板没提到的预检开关必须继承磁盘现值，否则用户关掉的预检会被一次「保存设置」偷偷打开"
+        );
 
         // 显式清空（空串）不被现值覆盖：`Some("")` 是"这次要清掉"。
         let clear = settings::Settings {
@@ -2158,6 +2181,90 @@ pub async fn plugin_install(
             plugins::install(data_dir, settings, pnpm_exe, &spec, &mode, progress).map(|_| ())
         },
     )
+    .await
+}
+
+/// 插件安装预检：先在一个一次性沙盒实例里真的装一次、真的起一次内核，
+/// 通过了才把包安装到当前实例。
+///
+/// 与 [`plugin_install`] 的区别只有一处，但它是关键的那处：**目标实例是
+/// 沙盒**。取源、完整性校验、manifest 校验、物化、profile 接线走的都是
+/// 生产同一条路径，所以「预检通过」验证的是真实安装本身，而不是它的某种
+/// 近似。预检期间真实实例的 `extensions/` 与 `wiring.json` 不变；判定失败
+/// 时中央库按字节回滚，用户看到的最终状态与点安装之前完全一致。
+///
+/// 进度通道会额外播报「建立环境基线」「验证插件」等阶段，失败时报告里的
+/// `evidence` 是沙盒内核的启动日志末尾。
+#[tauri::command]
+pub async fn plugin_precheck_install(
+    app: AppHandle,
+    spec: String,
+    mode: Option<String>,
+    on_event: Channel<String>,
+) -> Result<crate::sandbox::PrecheckReport, String> {
+    let mode = mode.unwrap_or_else(|| String::from("link"));
+    run_precheck_command(
+        app,
+        on_event,
+        move |data_dir, settings, pnpm_exe, node_path, progress| {
+            let (family, instance_id) = plugins::default_instance_key();
+            crate::precheck::plugin_install(
+                &family,
+                &instance_id,
+                data_dir,
+                settings,
+                pnpm_exe,
+                node_path,
+                &spec,
+                &mode,
+                progress,
+            )
+        },
+    )
+    .await
+}
+
+/// [`run_plugin_command`] 的预检变体：除了 pnpm 还要交出 node 可执行文件
+/// （沙盒要靠它派生临时内核），并且要**返回**报告而不是 `()`。
+///
+/// 生命周期锁在整个预检期间持有：预检要起两次内核、期间会写中央库并可能
+/// 向真实实例接线。用户在预检跑完之前无法「关闭工作台」是刻意的——此时放
+/// 行走会让看护与接线同时改同一份 profile。
+async fn run_precheck_command(
+    app: AppHandle,
+    on_event: Channel<String>,
+    op: impl FnOnce(
+            &Path,
+            &settings::Settings,
+            &Path,
+            &Path,
+            &mut dyn FnMut(&str),
+        ) -> Result<crate::sandbox::PrecheckReport, AppError>
+        + Send
+        + 'static,
+) -> Result<crate::sandbox::PrecheckReport, String> {
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    blocking(move || -> Result<crate::sandbox::PrecheckReport, String> {
+        let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
+        let settings = settings::load_for_shell(settings::current_mode());
+        let node_info = cached_node(&state, &settings);
+        let promise_send = on_event.clone();
+        let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, move |msg| {
+            let _ = promise_send.send(msg.to_string());
+        })?;
+        let mut progress = |msg: &str| {
+            let _ = on_event.send(msg.to_string());
+        };
+        op(
+            &data_dir,
+            &settings,
+            &pnpm_exe,
+            Path::new(&node_info.path),
+            &mut progress,
+        )
+        .map_err(|e| e.to_string())
+    })
     .await
 }
 

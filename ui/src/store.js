@@ -26,6 +26,11 @@ export const store = reactive({
   // 事故面板（IncidentModal）的展示状态。
   incident: null,
   incidentVisible: false,
+  // 插件安装预检的报告与展示状态（PrecheckDialog）。报告有三态
+  // ——通过 / 未通过 / 未能验证——所以不能折成一个布尔：把「没能验证」
+  // 画成「通过」会让用户以为插件已经过检验。
+  precheckReport: null,
+  precheckVisible: false,
   // 外壳自更新：available 版本号 + 安装渠道的阶段文案。
   shellUpdateVersion: '',
   shellUpdateText: '',

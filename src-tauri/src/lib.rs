@@ -43,10 +43,12 @@ mod patches;
 mod paths;
 mod pkg;
 mod plugins;
+mod precheck;
 mod process;
 mod quarantine;
 mod registry;
 mod releases;
+mod sandbox;
 mod settings;
 mod skills;
 mod state;
@@ -175,6 +177,18 @@ pub fn run() {
             if let Err(error) = crate::instance::ensure_default_registered(&data_dir) {
                 eprintln!("dsh-xlink: 默认实例注册失败（{error}）");
             }
+            // 回收上一次预检崩溃留下的沙盒实例目录。这些目录对用户没有任何
+            // 价值，却会让实例目录越攒越多，也会让人以为系统里真有一个叫
+            // 「沙盒预检」的实例。放在实例注册之后，保证随后 `load_registry`
+            // 看到的是干净状态。族列表取自适配器注册表——接入新内核只需在
+            // `adapters()` 里追加实现，这里自动跟上。
+            for adapter in crate::kernel_adapter::adapters() {
+                let family = adapter.family();
+                let removed = crate::sandbox::sweep_stale(family);
+                if removed > 0 {
+                    eprintln!("dsh-xlink: 回收了 {removed} 个残留的预检沙盒目录（{family}）");
+                }
+            }
             // 内核 home 一次性搬迁：多内核改造前内核一直以默认 `~/.dsh` 运行
             // （旧启动路径从不注入 `DSH_HOME`），会话 / 凭据 / profile 都在
             // 那里；改造后内核经 `DSH_HOME` 指向实例目录，不搬迁等于让用户
@@ -272,6 +286,8 @@ pub fn run() {
             commands::plugin_status,
             commands::kernel_plugin_list,
             commands::plugin_install,
+            commands::plugin_precheck_install,
+            commands::plugin_set_precheck,
             commands::plugin_update,
             commands::plugin_uninstall,
             commands::plugin_sync,

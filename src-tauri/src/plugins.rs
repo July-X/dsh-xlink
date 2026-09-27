@@ -493,7 +493,10 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn store_file(data_dir: &Path) -> PathBuf {
+/// 预检事务（[`crate::precheck`]）要按字节快照与回滚 `store.json`，因此这
+/// 条路径必须跨模块可见。它是**唯一**暴露给预检的中央库内部路径——预检
+/// 不该自己拼 `store_dir`，否则中央库布局一变，预检就会静默回滚错文件。
+pub(crate) fn store_file(data_dir: &Path) -> PathBuf {
     store_dir(data_dir).join(STORE_FILE)
 }
 
@@ -509,7 +512,10 @@ fn store_plugin_dir(data_dir: &Path, id: &str) -> PathBuf {
 ///
 /// 解析失败（注册表 JSON 损坏）时同样 fallback：让插件模块在
 /// `setup()` 阶段或迁移完成之前仍然能读写出 extensions 目录。
-fn default_instance_key() -> (String, String) {
+///
+/// 命令层要写入的 `(family, id)` 也走这里，避免两处各写一份 fallback
+/// 而在某次重构后悄悄分叉。
+pub(crate) fn default_instance_key() -> (String, String) {
     if let Ok(registry) = crate::instance::load_registry() {
         if let Some(id) = registry.default_instance_id.as_deref() {
             if !id.is_empty() {
