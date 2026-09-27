@@ -101,6 +101,10 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
+  # DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)：量窗口的**可见帧**。
+  # 主壳（无装饰+阴影）与副窗（带装饰）的 rect 里都含不可见缩放边框，
+  # 客户区/外框坐标推不出「窗口看起来从哪开始」，吸附贴齐必须按可见帧算。
+  "Win32_Graphics_Dwm",
   "Win32_Security",
   "Win32_System_Diagnostics_Debug",
   "Win32_System_JobObjects",
