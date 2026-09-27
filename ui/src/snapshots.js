@@ -64,6 +64,8 @@ export async function previewRestore(id) {
 
 export function closeRestorePreview() {
   snapshotStore.restoreVisible = false;
+  // 只清待确认的差异，**不清** lastOutcome：用户点「知道了」之后如果还想
+  // 回顾"刚才那步到底成了没"，结果必须还在。
   snapshotStore.pendingDiff = null;
 }
 
@@ -81,6 +83,8 @@ export function runRestore(id) {
       onResult: (outcome) => {
         snapshotStore.pendingDiff = null;
         snapshotStore.lastOutcome = outcome;
+        // 结果也要在同一个弹窗里展示，用户不该再去别处找"到底成功了没"。
+        snapshotStore.restoreVisible = true;
       },
     },
     (channel) => ({ id, onEvent: channel }),
@@ -168,8 +172,28 @@ export function diffBlockedNote(diff) {
   if (!diff || !diff.blocked_count) return '';
   return (
     `其中 ${diff.blocked_count} 处无法自动完成` +
-    '（已标注原因）。可以先恢复能恢复的部分，剩下���手动处理。'
+    '（已标注原因）。可以先恢复能恢复的部分，剩下的手动处理。'
   );
+}
+
+/**
+ * 恢复结果的总结句。`verified` 是恢复后用一次性沙盒内核**实测**过的标记：
+ * 没验过就要说没验过——让"没验"看起来像"验过没问题"是这类工具最容易
+ * 犯也最伤害信任的错。
+ */
+export function outcomeHeadline(outcome) {
+  if (!outcome) return '';
+  const applied = (outcome.applied || []).length;
+  const skipped = (outcome.skipped || []).length;
+  const base = applied
+    ? `已按回退点改了 ${applied} 处`
+    : '没有需要改动的条目';
+  if (!skipped) {
+    return outcome.verified
+      ? `${base}，并已用临时内核实测：环境可以正常启动。`
+      : `${base}，但这次没能做启动实测（详见下方）。`;
+  }
+  return `${base}；另有 ${skipped} 处没能完成，见下方列表。`;
 }
 
 /** 面板顶部的结论句。空列表与"有回退点"必须说不同的话。 */

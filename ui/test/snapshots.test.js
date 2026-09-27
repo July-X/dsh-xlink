@@ -37,6 +37,7 @@ const {
   diffKindLabel,
   diffHeadline,
   diffBlockedNote,
+  outcomeHeadline,
 } = await import('../src/snapshots.js');
 
 test('打点原因给出中文名，未知值原样透出而不是被吞掉', () => {
@@ -112,4 +113,31 @@ test('有动不了的条目时必须把这个数摆到用户面前', () => {
   // 全都能恢复时不啰嗦。
   assert.equal(diffBlockedNote({ blocked_count: 0 }), '');
   assert.equal(diffBlockedNote(null), '');
+});
+
+test('恢复结果必须区分"实测通过"和"没能实测"', () => {
+  // 这条是 P1 最后一块：让"没验"看起来像"验过没问题"，是这类工具最容易
+  // 犯也最伤害信任的错。
+  const verified = outcomeHeadline({ applied: ['a'], skipped: [], verified: true });
+  assert.match(verified, /实测/);
+  assert.match(verified, /可以正常启动/);
+  assert.doesNotMatch(verified, /没能做启动实测/);
+
+  const unverified = outcomeHeadline({ applied: ['a'], skipped: [], verified: false });
+  assert.match(unverified, /没能做启动实测/);
+  assert.doesNotMatch(unverified, /可以正常启动/);
+});
+
+test('有没能完成的条目时，数量与实测状态都要说', () => {
+  const text = outcomeHeadline({
+    applied: ['a', 'b'],
+    skipped: ['x 不在中央库', 'y 失败'],
+    verified: true,
+  });
+  assert.match(text, /2 处/);
+  assert.match(text, /没能完成/);
+});
+
+test('空结果不编句子', () => {
+  assert.equal(outcomeHeadline(null), '');
 });

@@ -27,6 +27,8 @@
 )]
 
 mod archive;
+mod bisect;
+mod bisect_cmd;
 mod commands;
 mod credentials;
 mod env;
@@ -48,6 +50,7 @@ mod process;
 mod quarantine;
 mod registry;
 mod releases;
+mod restore;
 mod sandbox;
 mod settings;
 mod skills;
@@ -58,6 +61,7 @@ mod subscription;
 mod tray;
 mod updater;
 mod usage;
+mod verify;
 mod version;
 mod window;
 
@@ -290,6 +294,10 @@ pub fn run() {
             commands::plugin_precheck_install,
             commands::plugin_set_precheck,
             commands::snapshot_list,
+            bisect_cmd::bisect_view,
+            bisect_cmd::bisect_start,
+            bisect_cmd::bisect_probe,
+            bisect_cmd::bisect_abort,
             commands::snapshot_preview_restore,
             commands::snapshot_restore,
             commands::plugin_update,
