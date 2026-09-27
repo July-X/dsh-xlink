@@ -82,15 +82,21 @@ const FILE_BUDGETS = {
   // record_pre_change / run_plugin_mutation_command / snapshot_list 三条
   // 共用路径 + start_kernel 的 startup-ok 钩子 + activate_version 的打点
   // 位置。指纹、存储、裁剪全在 snapshot.rs。
-  'src-tauri/src/commands.rs': 2050,
-  // 安全网 P0：环境快照。指纹计算（可重建的声明而非备份）、快照文档读写
-  // （走 state.rs 骨架）、裁剪策略（高权重优先 + 永不丢 last-known-good）、
-  // 两个打点的入栈规则，以及给面板的只读视图。**不含**恢复与二分定位
-  // ——那是 P1 / P2。
-  'src-tauri/src/snapshot.rs': 580,
-  // P0 的前端只读面：状态 + 纯展示函数（打点原因中文化、摘要拼装、
-  // 空状态与"还没有成功启动记录"说两句不同的话）。
-  'ui/src/snapshots.js': 110,
+  // 2050 → 2110：P1 的两条恢复命令（snapshot_preview_restore /
+  // snapshot_restore）。**刻意拆成两条**——预览与执行分开，用户才可能
+  // 先看见将要失去什么再点确认。
+  'src-tauri/src/commands.rs': 2110,
+  // 安全网 P0 + P1：环境快照。指纹计算（可重建的声明而非备份）、快照文档
+  // 读写（走 state.rs 骨架）、裁剪策略（高权重优先 + 永不丢 last-known-good）、
+  // 两个打点的入栈规则、给面板的只读视图，以及 P1 的差异计算与恢复执行
+  // （只改差异项 + 先备份 + 不删数据 + 动不了的照实报）。
+  // **不含**二分定位——那是 P2。
+  'src-tauri/src/snapshot.rs': 670,
+  // P0 + P1 的前端状态与展示函数：打点原因中文化、摘要拼装、空状态的三句
+  // 话，以及恢复预览的维度标签 / 标题 / 动不了的条数提示。
+  'ui/src/snapshots.js': 145,
+  // P1 的恢复确认弹窗：把「将要失去什么」和「动不了什么」分成两栏列出。
+  'ui/src/components/SnapshotRestoreDialog.vue': 175,
   // P0 的概览页卡片。刻意**只读**：提前放"一键回退"会让用户在没看清
   // 差异的情况下丢配置。
   'ui/src/components/SnapshotCard.vue': 170,
@@ -411,20 +417,19 @@ const FILE_BUDGETS = {
 // ⚠ 这次上调让「总量只许因删除而下调」这条自我约束第一次被破例。真正的
 // 修法是把总量门禁换成「单文件上限 + 新增能力必须开新文件」两条，后者在
 // 本次靠「plugins.rs 未上调」兑现了一半，但规则本身还没进脚本。
-// 30630 → 31280：安全网 P0（环境快照，只读）。净增约 650 行，同样几乎全部
-// 落在**新文件**里：
-//   · snapshot.rs（新增 ~564 行）：指纹 + 存储 + 裁剪 + 打点 + 只读视图。
-//   · SnapshotCard.vue（新增 ~164）+ snapshots.js（新增 ~103）+ 概览页接线。
-//   · commands.rs（1990 → 2050）：8 个打点的调度位置。
-//   · skills.rs / patches.rs 各开一条只读缝（+12 / +8）——活动条目名与
-//     已应用补丁 id 的定义权在各自模块，快照只消费不重新解释。
-//   · ui/test/snapshots.test.js：4 条纯函数断言（不计入生产预算）。
+// 31280 → 31960：安全网 P1（手动恢复）。净增约 680 行：
+//   · snapshot.rs 580 → 655：差异计算（内核 / 插件集与模式 / 技能启用位 /
+//     补丁，只报不动）+ 恢复执行（先备份 pre-restore、逐条落地、单条失败
+//     不打断其余、动不了的进 skipped）。
+//   · SnapshotRestoreDialog.vue（新增 ~164）+ snapshots.js 增 P1 展示函数。
+//   · commands.rs（2050 → 2101）：两条恢复命令。skills.rs / patches.rs /
+//     plugins.rs 各开一条只读或窄缝（合计 +20）。
 // plugins.rs / guard.rs / kernel.rs **未上调**。
 //
-// ⚠ 这是连续第二次上调总量。P0 与 P1 都遵守「新能力开新文件、不撑大老
-// 文件」，但总量门禁本身仍然只会在新功能面前让步——真正该做的是把它
-// 换成「单文件上限 + 新增能力必须开新文件」两条规则，那条规则还没进脚本。
-const TOTAL_BUDGET = 31280;
+// ⚠ 连续第三次上调总量。P0 / P1 都遵守「新能力开新文件、不撑大老文件」，
+// 但总量门禁本身仍然只会在新功能面前让步——真正该做的是把它换成
+// 「单文件上限 + 新增能力必须开新文件」两条规则，那条规则还没进脚本。
+const TOTAL_BUDGET = 31960;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

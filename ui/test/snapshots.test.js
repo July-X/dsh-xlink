@@ -29,7 +29,15 @@ globalThis.requestAnimationFrame = (cb) => {
   return 1;
 };
 
-const { reasonLabel, reasonHint, entrySummary, headline } = await import('../src/snapshots.js');
+const {
+  reasonLabel,
+  reasonHint,
+  entrySummary,
+  headline,
+  diffKindLabel,
+  diffHeadline,
+  diffBlockedNote,
+} = await import('../src/snapshots.js');
 
 test('打点原因给出中文名，未知值原样透出而不是被吞掉', () => {
   assert.equal(reasonLabel('startup-ok'), '成功启动过');
@@ -74,4 +82,34 @@ test('三种列表状态说三句不同的话', () => {
   // 把它说成普通计数会让用户误以为已经验证过。
   const noGood = headline({ entries: [{}], has_last_known_good: false });
   assert.match(noGood, /还没有一次「成功启动」记录/);
+});
+
+// —— P1：恢复预览的纯展示函数 ——
+
+test('恢复动作按维度给出中文标签，未知值原样透出', () => {
+  assert.equal(diffKindLabel('plugin-disable'), '插件');
+  assert.equal(diffKindLabel('patch-revert'), '补丁');
+  assert.equal(diffKindLabel('weird-new-thing'), 'weird-new-thing');
+});
+
+test('没有改动时，恢复是空操作——确认按钮必须据此禁用', () => {
+  const text = diffHeadline({ changes: [], blocked_count: 0 });
+  assert.match(text, /完全一致/);
+  assert.match(text, /不会做任何改动/, '空操作要说清"什么都不用做"');
+});
+
+test('有改动时标题带上改动条数，用户不用数', () => {
+  const text = diffHeadline({ changes: [{}, {}], blocked_count: 0 });
+  assert.match(text, /2 处改动/);
+});
+
+test('有动不了的条目时必须把这个数摆到用户面前', () => {
+  // 这条是 P1 的核心：动不了的条目如果在确认之前没说，用户就是在一个
+  // 不完整的承诺上点的确认。
+  const note = diffBlockedNote({ blocked_count: 3 });
+  assert.match(note, /3 处无法自动完成/);
+  assert.match(note, /已标注原因/);
+  // 全都能恢复时不啰嗦。
+  assert.equal(diffBlockedNote({ blocked_count: 0 }), '');
+  assert.equal(diffBlockedNote(null), '');
 });

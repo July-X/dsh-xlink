@@ -241,6 +241,43 @@ pub fn active_entry_names() -> Vec<String> {
     names
 }
 
+/// 「包 id / 条目名」形式的**已启用**技能引用（排序后）。
+///
+/// 与 [`active_entry_names`] 分工明确，别混用：
+/// - 活动条目名回答「此刻内核读到哪些」——环境指纹用它，因为它认的是
+///   **效果**，哪怕活动目录被人手工改过也照样如实反映；
+/// - 本函数回答「哪些开关是开的、分别属于哪个包」——**恢复**必须用它，因为
+///   只知道条目名无法反推包；[`set_enabled`] 的入参就是 (包 id, 条目名)。
+///
+/// 指纹只认效果、恢复只认来源，两者都要，所以两个都记。
+pub fn enabled_skill_refs() -> Vec<String> {
+    let mut refs: Vec<String> = load_store(&crate::paths::dirs_home())
+        .items
+        .iter()
+        .flat_map(|item| {
+            item.skills
+                .iter()
+                .filter(|entry| entry.enabled)
+                .map(move |entry| format!("{}/{}", item.id, entry.name))
+        })
+        .collect();
+    refs.sort();
+    refs
+}
+
+/// 中央库里是否还存在这个包的这条技能。
+///
+/// 环境恢复（[`crate::snapshot`]）在**用户确认之前**就要如实回答"这条能不能
+/// 恢复"——包里没这条技能时，恢复是无源之水，事后才告诉用户等于让他在
+/// 不知情的情况下拿到一次不完整的还原。
+pub fn skill_exists(pkg_id: &str, entry_name: &str) -> bool {
+    load_store(&crate::paths::dirs_home())
+        .items
+        .iter()
+        .find(|item| item.id == pkg_id)
+        .is_some_and(|item| item.skills.iter().any(|entry| entry.name == entry_name))
+}
+
 /// P5 起中央库严格走 Xlink home，活动视图独立走 `paths::skills_active_root()`。
 pub fn store_dir(_home: &Path) -> PathBuf {
     paths::skills_store_root()

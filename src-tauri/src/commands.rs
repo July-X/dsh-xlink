@@ -364,6 +364,71 @@ pub async fn snapshot_list(
     .await
     .map_err(|e: tauri::Error| e.to_string())
 }
+/// 预览「回到某个回退点」将要做什么。
+///
+/// 与 `snapshot_restore` **分成两条命令**是刻意的：用户要先看见将要失去
+/// 什么，再点确认。合一意味着要点一次「恢复」才知道后果，而那时已经点了。
+#[tauri::command]
+pub async fn snapshot_preview_restore(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<crate::snapshot::RestoreDiff, String> {
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (family, instance_id) = plugins::default_instance_key();
+        let settings = settings::load_for_shell(settings::current_mode());
+        crate::snapshot::diff(
+            &data_dir,
+            &family,
+            &instance_id,
+            &settings.profile,
+            settings.port,
+            &id,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e: tauri::Error| e.to_string())?
+}
+
+/// 真正执行恢复。**必须先调过 [`snapshot_preview_restore`]** 并让用户确认
+/// 过差异——这里不再问一次，重复确认会把人问烦，而首次确认才是有信息量的
+/// 那一次。
+#[tauri::command]
+pub async fn snapshot_restore(
+    app: AppHandle,
+    id: String,
+    on_event: Channel<String>,
+) -> Result<crate::snapshot::RestoreOutcome, String> {
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    let promise_send = on_event.clone();
+    blocking(move || -> Result<crate::snapshot::RestoreOutcome, String> {
+        let state = app.state::<AppState>();
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
+        let settings = settings::load_for_shell(settings::current_mode());
+        let node_info = cached_node(&state, &settings);
+        let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, move |msg| {
+            let _ = promise_send.send(msg.to_string());
+        })?;
+        let (family, instance_id) = plugins::default_instance_key();
+        let mut progress = |msg: &str| {
+            let _ = on_event.send(msg.to_string());
+        };
+        crate::snapshot::restore(
+            &data_dir,
+            &family,
+            &instance_id,
+            &settings.profile,
+            settings.port,
+            &pnpm_exe,
+            &id,
+            &mut progress,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn plugin_set_precheck(enabled: bool) -> Result<bool, String> {
     let mode = settings::current_mode();

@@ -290,6 +290,8 @@ pub fn run() {
             commands::plugin_precheck_install,
             commands::plugin_set_precheck,
             commands::snapshot_list,
+            commands::snapshot_preview_restore,
+            commands::snapshot_restore,
             commands::plugin_update,
             commands::plugin_uninstall,
             commands::plugin_sync,

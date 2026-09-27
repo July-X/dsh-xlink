@@ -722,7 +722,10 @@ fn ensure_store_npmrc(data_dir: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-fn store_item(data_dir: &Path, id: &str) -> Option<StoreItem> {
+/// 按 id 取中央库条目。环境恢复（[`crate::snapshot`]）重新启用插件时要先确认
+/// 源还在——中央库条目没了就没有东西可以物化，那条恢复必须报"不可恢复"而不是
+/// 空跑一遍。
+pub(crate) fn store_item(data_dir: &Path, id: &str) -> Option<StoreItem> {
     load_store(data_dir)
         .items
         .into_iter()

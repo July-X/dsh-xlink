@@ -9,16 +9,18 @@
 //   · 有快照但从没有一次成功启动 → 说清"还不是良好证据"
 //   · 文档损坏 → 如实说「读不出来」，**不能**说成「从来没有过回退点」
 import { computed, onMounted } from 'vue';
-import { InfoFilled, Refresh } from '@element-plus/icons-vue';
+import { InfoFilled, Refresh, RefreshLeft } from '@element-plus/icons-vue';
 import {
   snapshotStore,
   loadSnapshots,
+  previewRestore,
   reasonLabel,
   reasonHint,
   entrySummary,
   entryTimeLabel,
   headline,
 } from '../snapshots.js';
+import { globalBusy, isLoading, withLoading } from '../loading.js';
 
 const view = computed(() => snapshotStore.view);
 const entries = computed(() => (view.value && view.value.entries) || []);
@@ -27,6 +29,18 @@ const entries = computed(() => (view.value && view.value.entries) || []);
 const drifted = computed(
   () => entries.value.length > 0 && entries.value.every((entry) => !entry.is_current)
 );
+
+// 「回到上一个能跑起来的组合」：默认目标就是 last-known-good，不让用户在
+// 一堆时间戳里挑——那正是"我昨天还能用"这句话想表达的东西。
+const canRestore = computed(
+  () => !!(view.value && view.value.has_last_known_good && view.value.last_known_good_id)
+);
+
+function restoreLastGood() {
+  const id = view.value && view.value.last_known_good_id;
+  if (!id) return Promise.resolve(null);
+  return withLoading('snapshotPreview', () => previewRestore(id));
+}
 
 onMounted(() => {
   if (!view.value) {
@@ -47,23 +61,39 @@ onMounted(() => {
               之前，桌面端都会记下「当时那套配置长什么样」：内核版本、插件集与物化模式、
               启用的技能、已应用的补丁。
               <br />
-              现在只能查看，还不能一键回退——回退会先给你看差异再动手，避免在没看清的
-              情况下丢配置。快照里不含任何凭据或 API Key。
+              「回到良好状态」会先把将要发生的改动列给你看，确认后才动手；动手前还会自动
+              把当前环境另存一份。插件与技能只会被停用，不会被卸载或删除。
+              快照里不含任何凭据或 API Key。
             </div>
           </template>
           <el-icon class="card-info-icon"><InfoFilled /></el-icon>
         </el-tooltip>
       </h2>
-      <el-button
-        round
-        size="small"
-        :icon="Refresh"
-        :loading="snapshotStore.loading"
-        title="重新读取回退点"
-        @click="loadSnapshots(true)"
-      >
-        刷新
-      </el-button>
+      <span class="snapshot-head-actions">
+        <el-button
+          v-if="canRestore"
+          round
+          size="small"
+          type="primary"
+          :icon="RefreshLeft"
+          :loading="isLoading('snapshotPreview')"
+          :disabled="globalBusy"
+          title="回到最近一次被成功启动验证过的那套配置"
+          @click="restoreLastGood"
+        >
+          回到良好状态
+        </el-button>
+        <el-button
+          round
+          size="small"
+          :icon="Refresh"
+          :loading="snapshotStore.loading"
+          title="重新读取回退点"
+          @click="loadSnapshots(true)"
+        >
+          刷新
+        </el-button>
+      </span>
     </div>
 
     <el-alert
@@ -80,7 +110,7 @@ onMounted(() => {
 
     <el-alert
       v-if="drifted"
-      title="当前环境的配置与每一个回退点都不同（可能是你手工改过插件目录）。回退功能上线后，恢复前会先让你确认差异。"
+      title="当前环境的配置与每一个回退点都不同（可能是你手工改过插件目录）。恢复时会按你确认的时刻计算差异。"
       type="info"
       :closable="false"
       show-icon
@@ -108,6 +138,12 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.snapshot-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .snapshot-headline {
   margin: 0 0 10px;
   color: var(--text-muted);

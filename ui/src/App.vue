@@ -31,6 +31,7 @@ import ProgressOverlay from './components/ProgressOverlay.vue';
 import LogModal from './components/LogModal.vue';
 import IncidentModal from './components/IncidentModal.vue';
 import PrecheckDialog from './components/PrecheckDialog.vue';
+import SnapshotRestoreDialog from './components/SnapshotRestoreDialog.vue';
 import DebugPanel from './components/DebugPanel.vue';
 import WindowTitleBar from './components/WindowTitleBar.vue';
 
@@ -280,6 +281,7 @@ onUnmounted(() => {
     <LogModal />
     <IncidentModal />
     <PrecheckDialog />
+    <SnapshotRestoreDialog />
     <DebugPanel />
     <!-- 主窗口 mount 后弹窗：检测到旧版数据 + 用户未拒绝过时弹。
          MigrationPanel 是「数据迁移」侧栏面板（手动重跳 / 查历史 / 回滚），

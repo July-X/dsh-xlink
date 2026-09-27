@@ -9,6 +9,7 @@
 import { reactive } from 'vue';
 import { invoke } from './bridge.js';
 import { withLoading } from './loading.js';
+import { withProgress } from './progress.js';
 import { relativeTimeLabel } from './labels.js';
 
 export const snapshotStore = reactive({
@@ -17,6 +18,11 @@ export const snapshotStore = reactive({
   loading: false,
   /** 文档损坏提示。有它时列表可能为空，但**不等于**"从来没有过回退点"。 */
   warning: '',
+  /** 待确认的差异（恢复预览弹窗用）；null = 弹窗关闭。 */
+  pendingDiff: null,
+  restoreVisible: false,
+  /** 上一次恢复的结果。kept / skipped 分开存，因为"没能恢复"必须能回看。 */
+  lastOutcome: null,
 });
 
 /** 拉一次快照列表。静默失败：概览页不该因为一个只读卡拉不到就把横幅顶起来。 */
@@ -40,6 +46,45 @@ export function loadSnapshots(manual = false) {
     return snapshotStore.view;
   };
   return manual ? withLoading('snapshotReload', run) : run();
+}
+
+// —— P1：差异预览与恢复 ——
+
+/** 预览「回到某个回退点」将要做什么。**不**改任何东西。
+ *
+ * 与恢复分成两次调用是刻意的：用户要先看见将要失去什么再点确认。合一
+ * 意味着要点一次「恢复」才知道后果，而那时已经点了。
+ */
+export async function previewRestore(id) {
+  const diff = await invoke('snapshot_preview_restore', { id });
+  snapshotStore.pendingDiff = diff;
+  snapshotStore.restoreVisible = true;
+  return diff;
+}
+
+export function closeRestorePreview() {
+  snapshotStore.restoreVisible = false;
+  snapshotStore.pendingDiff = null;
+}
+
+/**
+ * 执行恢复。返回结果里区分「动了什么」与「没能动什么」——后者不能被
+ * 吞掉，否则用户会以为已经完全回到目标配置。
+ */
+export function runRestore(id) {
+  return withProgress(
+    {
+      cmd: 'snapshot_restore',
+      start: '正在恢复环境 …',
+      // 结果逐条读（动了什么 / 跳过了什么 / 恢复前的备份 id），所以在
+      // withProgress 的 onResult 里消费，不走 done 那句固定文案。
+      onResult: (outcome) => {
+        snapshotStore.pendingDiff = null;
+        snapshotStore.lastOutcome = outcome;
+      },
+    },
+    (channel) => ({ id, onEvent: channel }),
+  );
 }
 
 // —— 纯展示函数（node --test 可直接覆盖）——
@@ -88,6 +133,43 @@ export function entrySummary(entry) {
 
 export function entryTimeLabel(entry) {
   return relativeTimeLabel(entry.created_at_ms);
+}
+
+/** 差异维度的中文标签。未知值原样透出。 */
+export function diffKindLabel(kind) {
+  const labels = {
+    kernel: '内核',
+    'plugin-mode': '插件模式',
+    'plugin-enable': '插件',
+    'plugin-disable': '插件',
+    'skill-enable': '技能',
+    'skill-disable': '技能',
+    'patch-apply': '补丁',
+    'patch-revert': '补丁',
+  };
+  return labels[kind] || kind;
+}
+
+/**
+ * 恢复确认框的标题。一句话讲清"从哪回到哪"，让用户不用回忆自己点的是
+ * 哪一条。
+ */
+export function diffHeadline(diff) {
+  if (!diff) return '';
+  if (!diff.changes.length) {
+    return '当前环境与这个回退点完全一致，恢复不会做任何改动。';
+  }
+  const n = diff.changes.length;
+  return `将把环境恢复到这个回退点，共 ${n} 处改动。`;
+}
+
+/** 有动不了的条目时，确认框必须把这个数摆出来。 */
+export function diffBlockedNote(diff) {
+  if (!diff || !diff.blocked_count) return '';
+  return (
+    `其中 ${diff.blocked_count} 处无法自动完成` +
+    '（已标注原因）。可以先恢复能恢复的部分，剩下���手动处理。'
+  );
 }
 
 /** 面板顶部的结论句。空列表与"有回退点"必须说不同的话。 */
