@@ -4,12 +4,12 @@
 
 ## 时序
 
-1. `preflight` 在 Intel macOS runner 上校验来源 commit、tag 格式，以及 `package.json` 与 `src-tauri/tauri.conf.json` 的版本一致性。
+1. `preflight` 在 Intel macOS runner 上校验来源 commit、tag 格式，以及**三处**版本一致性：`package.json`、`src-tauri/tauri.conf.json`、**`src-tauri/Cargo.toml`**。第三处不能漏：Cargo 的 `version` 是 `CARGO_PKG_VERSION` 的来源，而 `releases.rs` 把它当对外 User-Agent（`dsh-xlink/<版本>`），漏同步会让外壳向 npm registry / GitHub 自称另一个版本。
 2. `quality` 与两个平台的 `build` 在预检通过后并行启动。质量门禁继续执行 UI 测试、UI 构建、bundle 预算、Rust 格式检查、测试和 Clippy；构建矩阵只包含 `macos-15-intel` 与 `windows-latest`，`max-parallel: 2`。
 3. 平台 `build` 只执行签名构建并上传 Actions artifact，不创建或修改 GitHub Release。这样质量检查不会留下半成品，两个平台也不再争用同一份 `latest.json`。
 4. `publish` 只在预检、质量门禁和两个平台构建全部成功后运行。它下载两个 artifact，校验五个安装/更新文件各有且只有一份，由 `scripts/generate-updater-manifest.mjs` 生成 `latest.json`，再一次性上传全部资产。
 5. 新 Release 先以 draft 形式接收完整资产，上传结束后才转换为正式 release；最终 `draft=false`、`prerelease=false`，因此 `releases/latest/download/latest.json` 在发布完成时才对用户可见。
-6. `publish` 的最后一步做端到端校验：读回 Release 的真实资产集合并断言恰好 6 个，再拉取更新端点断言它报告的版本就是本次发布的版本、且每个平台资产都能以 HTTP 200 下载。这是「用户到底能不能收到更新」的唯一端到端检查。
+6. 端到端校验分两段：**draft 阶段**（`Normalize draft assets before publishing`，在转正之前）读回 Release 的真实资产 id 与 name，删除计划外资产并断言恰好 6 个且逐名吻合；**转正之后**（`Verify published release`）再拉取更新端点，断言它报告的版本就是本次发布的版本、且每个平台资产都能以 HTTP 200 下载。后者才是「用户到底能不能收到更新」的唯一端到端检查——资产数量断言放在转正前，是为了在 Release 还是 draft 时就能发现上传漏项而不必先把它公开。
 
 手动 dispatch 没有现成 tag 时，`publish` 会把当前 `main` commit 创建为 `desktop-v<version>` tag；tag 已存在时仅复用对应的 draft Release，正式 Release 会直接拒绝覆盖。版本文件未同步、tag 不在 `main` 或任一构建产物缺失都会在发布前失败。
 

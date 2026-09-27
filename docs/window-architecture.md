@@ -25,14 +25,15 @@
 
 ### 独立窗口
 
-当前有两种独立窗口：
+当前有**三种**独立窗口：
 
 | label | 创建入口 | 内容 | 默认规格 | 能力 |
 | --- | --- | --- | --- | --- |
-| `usage-viewer` | `usage::open_usage_window` | `?usage=1` | 760×800 | 吸附、跟随、可缩放 |
-| `log-viewer` | `commands::open_log_window` | `?log=<name>` | 960×720 | 吸附、跟随、可缩放 |
+| `usage-viewer` | `usage::open_usage_window` | `?usage=1` | 760×800（`USAGE_VIEWER_SIZE`） | 吸附、跟随、可缩放 |
+| `subscription-viewer` | `subscription::open_subscription_window` | `?subscription=1` | 760×800（复用 `USAGE_VIEWER_SIZE`） | 吸附、跟随、可缩放 |
+| `log-viewer` | `commands::open_log_window` | `?log=<name>` | 960×720（`LOG_VIEWER_SIZE`） | 吸附、跟随、可缩放 |
 
-两者都在独立 OS 线程创建 WebView。原因是 Windows 上在命令线程同步创建 WebView 可能死锁；创建结果通过 `mpsc` 返回，调用方在 blocking worker 中等待并提供 20 秒超时。
+三者都在独立 OS 线程创建 WebView。原因是 Windows 上在命令线程同步创建 WebView 可能死锁；创建结果通过 `mpsc` 返回，调用方在 blocking worker 中等待并提供 20 秒超时。
 
 ### 裸窗口与子 WebView
 
@@ -124,7 +125,7 @@ let dock = handle.get_webview_window("main").and_then(|main| {
 - `set_focus` 是平台能力上的折中：tao 没有“提升 z-order 但不抢焦点”的统一 API。当前行为每个拖动回合只触发一次，仍可能让焦点短暂落到副窗；若产品要求拖动主窗时焦点始终留在主窗，需要按平台增加原生 adapter，而不是在通用模块中继续堆条件分支。
 - 跟随只处理 `Moved`。如果未来主窗口允许缩放，必须同时监听 `Resized`，并重新计算所有已吸附窗口；当前主窗口不可缩放，所以不监听是合理的。
 - 副窗口被用户手动拖走后，下一次主窗口移动会把它重新拉回吸附位置。当前语义是“弹出窗口始终跟随”，若未来需要“用户拖走后脱离”，应增加显式 docking 状态，而不是通过坐标猜测。
-- `open_log_window` 和 `open_usage_window` 仍各自复制了“销毁旧窗口、创建线程、20 秒等待、错误包装”的建窗样板。它们现在只是两个调用点，暂不需要为了抽象而抽象；当第三个或第四个独立窗口出现时，应再提取一个窗口创建 adapter，并让该 adapter 明确处理 label、URL、尺寸、背景色、超时和错误文案。
+- `open_log_window` / `open_usage_window` / `open_subscription_window` 各自复制了「销毁旧窗口、创建线程、20 秒等待、错误包装」的建窗样板。原先「两个调用点，暂不抽象」的判断已过期——`subscription-viewer` 出现后是**三个**。其中 `subscription-viewer` 的规格直接复用 `USAGE_VIEWER_SIZE`，正是样板里唯一真正不同的字段。提取窗口创建 adapter 的收益前提已具备，应让 adapter 明确处理 label、URL、尺寸、背景色、超时和错误文案。
 - 当前没有真实多显示器/缩放比的自动化窗口测试。纯函数测试能覆盖几何规则，但不能证明 Tauri 在 macOS/Windows 上返回的 `outer_position`、`outer_size` 和 `current_monitor` 口径完全一致。发布前仍需要两平台手工验证。
 
 ## 测试与验证边界

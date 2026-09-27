@@ -31,7 +31,7 @@
 | 形态 | npm 包 / git 仓库，package.json 声明 bundle 层 | 目录 `<name>/SKILL.md` 或平文件 `<name>.md`，frontmatter 声明元数据 |
 | 构建 | 中央库内 pnpm install + prepare 构建 | **无构建**，Markdown 即产物 |
 | 接线 | 改写 profile package.json + pnpm install 铺 node_modules | **无接线**，内核内建扫描固定根 |
-| 物化目标 | 每个内核版本的 plugins/ 目录各自一份 | 所有内核共享同一个 `<DSH_HOME>/skills` → **无按内核物化** |
+| 物化目标 | 每个实例的 extensions/plugins/ 目录各自一份 | `<DSH_XLINK_HOME>/skills/active/` 全局共享一份（v1）→ **无按实例物化** |
 | 生效时机 | 重启内核（profile 层启动时快照） | 文件监视即时失效重发现 |
 | 切换内核 | 补物化 + 改写依赖路径 + pnpm install | **无操作** |
 
@@ -44,11 +44,11 @@
 | 100 | project-dsh | `<projectRoot>/.dsh/skills` | 项目级覆盖全局（壳不写） |
 | 200 | project-agents | `<projectRoot>/.agents/skills` | 同上 |
 | 300 | custom | `Config.customSkillDirs` | 壳不使用（需改 cordis 配置） |
-| 400 | **user-dsh** | **`<DSH_HOME>/skills`** | **壳的物化目标（接线点）** |
+| 400 | **user-dsh** | **`<DSH_HOME>/skills`**（`DSH_HOME` = 实例 home 目录） | **壳的接线点** |
 | 500 | user-agents | `<agentsHome>/skills` | 用户手放技能，壳只读展示 |
 | 600 | bundled | `Config.bundledSkillDir` | 打包技能，壳不涉及 |
 
-壳定位 dsh home 复用 `kernel::data_dir` 已建立的解析顺序（`DSH_HOME` → `~/.dsh`），保证壳写的目录与内核读的目录永远一致。
+壳定位 dsh home 走 `kernel::data_dir` 的解析顺序（`DSH_DESKTOP_DATA_DIR` 覆写 → `<DSH_XLINK_HOME>/<family>/desktop[-dev]/` → app-data 回退），再由启动时注入 `DSH_HOME` 指向**实例**的 home 目录，保证壳写的目录与内核读的目录永远一致。
 
 内核侧约束（壳的校验规则与其对齐，fail loud 在壳这一层完成）：
 
@@ -60,18 +60,25 @@
 ## 目录布局
 
 ```text
-~/.dsh/                              # dsh home（DSH_HOME 可重定向，与内核共用解析顺序）
-├── skills-store/                    # 中央技能库（权威副本，壳独占写入）
-│   ├── store.json                   # 清单：包条目（来源/版本/mode）+ 每技能条目（名称/enabled/路径）
-│   └── <pkg-id>/                    # 一个包的源（npm tarball 解包或 git checkout）
-│       ├── .dsh-source.json         # id/来源/版本/拉取时间
-│       └── …                        # 包内容，可含一个或多个技能
-├── skills/                          # 内核读取的用户级根（user-dsh, rank 400）＝物化视图
-│   ├── <skill-name> → ../skills-store/<pkg-id>/<…>/   # link 模式：指向中央库内技能目录
-│   └── <skill-name>.md → ../skills-store/<pkg-id>/<…>.md
-└── desktop/
-    └── skills-catalog.json          # 社区目录缓存（TTL 6 小时，同 plugins-catalog.json）
+<DSH_XLINK_HOME>/                   # 默认 ~/.dsh-xlink（DSH_XLINK_HOME 可重定向）
+├── skills/                         # 技能的两个子层（P5 起拆分）
+│   ├── packages/                   # 中央技能库（经校验的源包，壳独占写入）
+│   │   ├── store.json              # 清单：包条目（来源/版本/mode）+ 每技能条目（名称/enabled/路径）
+│   │   └── <pkg-id>/               # 一个包的源（npm tarball 解包或 git checkout）
+│   │       ├── .dsh-source.json    # id/来源/版本/拉取时间
+│   │       └── …                   # 包内容，可含一个或多个技能
+│   └── active/                     # 活动视图（内核实际读取），**所有 DSH 实例共享一份**（v1）
+│       ├── <skill-name> → ../packages/<pkg-id>/<…>/   # link 模式：指向中央库内技能目录
+│       └── <skill-name>.md → ../packages/<pkg-id>/<…>.md
+└── kernels/<family>/instances/<id>/home/
+    └── skills/                     # 该实例的 DSH_HOME/skills，实例级技能根
 ```
+
+三个路径层级各有归属，不要混：`packages/` 是**中央库**（壳写），`active/` 是**全局活动视图**（壳写、多个实例共读），`instances/<id>/home/skills/` 是**实例根**（随 DSH_HOME 注入内核）。v1 的启用状态全局共享，实例级覆盖是后续版本的事（见设计稿 §9.1）。
+
+P5 之前的旧布局 `<xlink_home>/skills/` 既当中央库又当活动根，现已由 `legacy_dsh_skills_root` / `legacy_dsh_skills_store` 作为**只读兼容入口**取代。
+
+**关于 `skills-catalog.json`（规划中，未实现）**：它要与插件侧的 `plugins-catalog.json` 同构，是「社区技能目录」的本地缓存。插件侧的做法是 `plugins::fetch_catalog`——优先拉 `https://dshfind.com/api/plugins-data`，不可达时回退到参考市场，`CATALOG_TTL_SECS` 内直接读缓存，过滤掉无法安装的条目后 `atomic_write` 落盘；UI 在这份缓存列表上做搜索与分类筛选，因此筛选是即时的。技能侧规划了同样的机制（`skills.rs` 里对应 `scan / materialize / check_updates / catalog / install / …` 那一列），但 `CATALOG_CACHE_FILE`、`fetch_catalog` 与浏览 UI **都还没写**——`skills.rs` 里搜不到 `skills.catalog` 任何形式的引用。所以当前技能只能靠「手动安装」行输入来源 spec 安装，没有社区目录可逛。将来实现时它会落在 `<xlink_home>/<family>/desktop[-dev]/skills-catalog.json`，与插件缓存同目录同 TTL。
 
 技能 fetch 不经过 pnpm，git 的有限输出直接进入错误消息与进度面板；npm tarball 由 Rust 解包器校验并发布，不依赖系统 tar，因此不设 `logs/skill-*.log`。
 
@@ -141,6 +148,8 @@ v1 只提供手动安装：与插件面板同款的「`<input>` 地址 + 回车�
 | `settings.rs` | 无新字段（接线点固定） |
 
 frontmatter 校验是内核规则的壳侧前置：解析器只取 frontmatter 顶层 `name` / `description`（带引号去引号），无法解析或不符合 kebab-case 的候选按"内核也会忽略"处理——安装时以警告形式展示并跳过，整包一个可用技能都没有才失败。这比内核的静默忽略更响，避免"装了却不出现"。启动对账 `skills::reconcile()`：清理三段式暂存残留、为启用技能补链/修复断链、清退停用技能的残留、清扫指向中央库但不在清单中的孤儿链接（用户手放的文件与非本库链接一律不动）；失败写入 store.warning 由面板展示。
+
+**暂存残留的清理为什么必须发生在「读标记」之前**（`recover_staging`）：`.tmp-*` 是 fetch 阶段的暂存目录，**刻意不打 id 标记**——`stamp_id_marker` 内部走 `atomic_write`，只有 rename 成功才会出现正式的 `.dsh-id`；而提前盖章正是当初修 Windows `ERROR_DIR_NOT_EMPTY` 的方案（见 `pkg::new_staging_dir` 注释）。所以「创建暂存目录 → 写标记」之间崩溃的残留读不到 id，而 `pkg::recover_staging_dir` 里 `StagingKind::Tmp => true` 的无条件回收分支对这类残留是**够不到的死代码**。正确做法与 `plugins.rs` 一致：读不到标记的暂存目录直接回收——它还没 rename 成交付目录，从来不是用户数据。名字以暂存前缀开头的**正式**目录（npm 允许 `tmp-foo` 这类名字）靠 `id == name` 判断豁免，不能被误删。
 
 ## 已知取舍
 

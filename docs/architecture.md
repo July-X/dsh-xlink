@@ -2,7 +2,7 @@
 
 桌面壳的模块布局、数据流与数据目录约定。约定性约束（必须照做）见 [AGENTS.md](../AGENTS.md)。
 
-下一阶段的多内核数据目录与扩展管理方案见 [dsh-xlink 多内核数据目录与扩展管理设计](dsh-xlink-multi-kernel-design.md)，对应的实施顺序见 [开发计划](dsh-xlink-multi-kernel-development-plan.md)。这两份文档是设计稿，当前代码仍按本文后续章节描述的旧布局运行。
+多内核数据目录与扩展管理的设计稿见 [dsh-xlink 多内核数据目录与扩展管理设计](dsh-xlink-multi-kernel-design.md)，对应的实施顺序见 [开发计划](dsh-xlink-multi-kernel-development-plan.md)。这两份是**设计稿**（P0–P8 已落地），当前代码的实际布局以本文「多内核改造后的实际数据布局」一节为准。
 
 ## 模块
 
@@ -40,7 +40,7 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 
 ## 日志规范
 
-`<data_dir>/logs/` 下每个 `.log` 文件都按统一的命名规范落盘，便于 `list_log_files` 列表稳定、用户/支持方一眼区分 build 类型与日期：
+Shell 日志目录 `~/.dsh-xlink/shell/<release|dev>/logs/`（`paths::shell_logs_dir(mode)`）下每个 `.log` 文件都按统一的命名规范落盘，便于 `list_log_files` 列表稳定、用户/支持方一眼区分 build 类型与日期。注意这个目录**不在 data_dir 里**——`kernel::logs_dir()` 刻意忽略形参直接返回 `shell_logs_dir()`，因为日志要跨内核族共享；旧版 kernel data dir 下的 `logs/` 仅作为只读兼容路径供 P6 迁移向导扫描历史日志。
 
 - **文件名格式**：`<kind>-<name>-<YYYY-MM-DD>.log`，其中：
   - `kind` = `release`（release build）或 `dev`（`tauri dev`），与 Shell 日志目录 `shell/<release|dev>/` 及 data_dir 的 `desktop/` / `desktop-dev/` 分槽保持一致。
@@ -52,6 +52,11 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 - **例外（fixed-path 模式）**：插件构建日志位于 `<plugin_dir>/.dsh-build.log`（插件卸载时一并清理），不属于上述规范——`run_pnpm_at` / `RotatingLog::new_at_path` 仍保证实时落盘与尺寸上限，但不应用 build kind / 日期前缀。
 
 `list_log_files` 仅按 `.log` 后缀扫描目录、按文件名字典序倒序排；最新的 `<kind>-kernel-<today>.log` 自动落到第一个 tab，符合用户「最近一次启动最相关」的预期。`read_log_file` 接受任意裸文件名（不含路径分隔符），所以新旧命名都通过同一组 Tauri 命令入口暴露给 UI。
+
+## 桌面端自身更新
+
+以下两条不属于日志规范，单列一节：
+
 - `updater.rs`：`tauri-plugin-updater` 包装，启动 3 秒后后台检查并 emit `shell-update-available`。安装前先下载并校验签名，再写入 `pending-shell-update.json`，随后拉起安装器并重启。Windows 新版本管理面板完成首次状态刷新后，通过 `confirm_shell_ready` 清理 `/UPDATE` 路径跳过的旧安装和 updater 临时目录；同一安装目录不调用旧卸载器，而是直接移除历史 exe 和默认快捷方式，清理失败则保留标记等待下次启动重试。
 - `lib.rs`：装配 + `setup()` 取目录（必须走 `kernel::data_dir`）+ `RunEvent::Exit` 兜底回收内核进程组。`harness` 与 `official-chat` 两个 webview 窗口通过 `capabilities/harness-remote.json` / `capabilities/official-chat-remote.json` 分别绑定 ACL；拉绳挂件只需要 `allow-focus-main-shell` 这条 IPC 命令，URL 都精确钉死（`http://127.0.0.1:*` / `https://chat.deepseek.com/*` 等三个官方对话 origin，不开通 wildcard 域名）。`harness-remote.json` 直接授 `allow-focus-main-shell`，`official-chat-remote.json` 不授任何命令（拉绳属于窗口 chrome，由 `official-chat-strip` 页签栏 webview 承载、走 `allow-official-chat-tabs` 这条本地权限）。
 
@@ -112,7 +117,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 ## 多内核改造后的实际数据布局
 
-> 本节描述当前代码（HEAD `89932eb`）已经落地的多实例数据布局。完整设计与开发计划见
+> 本节描述当前代码已经落地的多实例数据布局。完整设计与开发计划见
 > [dsh-xlink-multi-kernel-design.md](dsh-xlink-multi-kernel-design.md) 与
 > [dsh-xlink-multi-kernel-development-plan.md](dsh-xlink-multi-kernel-development-plan.md)。
 > 阶段性 commit 快照见 [multi-kernel-migration-status-2026-09-19.md](multi-kernel-migration-status-2026-09-19.md)。
@@ -130,8 +135,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 ├── shell/<mode>/                  # release / dev Shell 自己的设置 / UI 状态 / 日志
 │   ├── settings.json              # Shell 设置（不含任何模型凭据）
 │   └── logs/                      # Shell 日志（含 subscription 查询错误日志）
-├── kernels/<family>/              # 内核按 family 分目录
-│   ├── versions/<version>/        # 内核二进制安装位置（family = dsh / mcode）
+├── kernels/<family>/              # 实例目录（family = dsh / mcode）
 │   └── instances/<id>/            # 每个实例独立的 workspace + DSH home + runtime
 │       ├── home/                  # 该实例的 DSH_HOME（profile / sessions / credentials）
 │       ├── extensions/plugins/<id>/ # 插件物化目录（**多实例隔离**）
@@ -139,6 +143,11 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 │       ├── usage/state.json       # 模型用量增量账目（usage.rs，按实例隔离）
 │       ├── subscription-cache.json # 云端套餐用量缓存（subscription.rs，按实例隔离）
 │       └── workspace/              # 内核进程 cwd
+├── <family>/desktop[-dev]/        # Shell 运行时目录（**当前内核安装落在这里**）
+│   ├── active.txt                 # 活动内核版本
+│   ├── kernel.pid                 # 工作台进程锁
+│   ├── plugins-catalog.json       # 社区插件目录缓存（TTL 6 小时）
+│   └── kernels/<version>/         # 内核安装产物：node_modules/ + package.json + pnpm-lock.yaml
 ├── dsh-plugins/                   # 插件中央库（**全局共享**）
 ├── skills/
 │   ├── packages/<id>/             # 技能中央库（**全局共享**）
@@ -149,15 +158,32 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 └── xlink.json                     # Xlink 自身的元数据
 ```
 
+### 内核安装路径：P1 布局已备好，但安装链路仍走旧位
+
+**这一节描述的是 v0.3.3-rc.3 的真实状态，不是设计意图。**
+
+`paths.rs` 同时提供两套内核安装路径，**当前只有旧的那套在用**：
+
+| | 路径 | 谁在用 | 实机 |
+| --- | --- | --- | --- |
+| 旧（实际生效） | `<xlink_home>/<family>/desktop[-dev]/kernels/<version>/` | `kernel::install_version` → `kernel_dir(data_dir, version)`；`list_installed` / `set_active` / `active.txt` / 前端"已安装版本"列表全走这里 | `~/.dsh-xlink/dsh/desktop/kernels/0.1.7-rc.1`、`0.1.7-rc.2` |
+| 新（已备好未迁） | `<xlink_home>/kernels/<family>/versions/<version>/` | 只有 `DshAdapter::resolve_install_dir` 读它 | `~/.dsh-xlink/kernels/dsh/` 下**只有 `instances/`，`versions/` 根本不存在** |
+
+`paths::kernels_root()` / `kernel_versions_dir()` / `kernel_version_dir()` 的注释已经写明这个状态：「P1 阶段内核安装目录**仍位于旧版 data_dir**，本函数仅用于规划新位置与将来的实例注册。调用方在 P2 之前不应往这里写。」`DshAdapter::resolve_install_dir` 内部的 legacy 兜底是**打桩**（直接返回 `None`），真正的旧位兜底在调用方 `resolve_install_root` 那一层做。
+
+**因此排查内核安装问题时看旧位，不要去 `kernels/<family>/versions/` 找。** 把安装链路迁到新位是代码改动，不在文档对齐范围内；迁移完成前两套路径会继续并存，届时本文需要同步更新。
+
+另一条容易被忽略的事实：**release 与 dev 壳各装一份独立内核，互不共享。** `tauri dev` 用 `desktop-dev/`，安装包用 `desktop/`，两边的 `kernels/<version>/` 与 `active.txt` 都是分开的——在 dev 壳里"安装新版本"不会影响 release 壳，反之亦然。这也是同一台机器上 `desktop/kernels/` 与 `desktop-dev/kernels/` 各有两份相同版本目录的原因。
+
 ### DSH home（`~/.dsh/`：旧版默认 home，已并入实例 home）
 
 旧版外壳不注入 `DSH_HOME`，内核一直以默认 `~/.dsh/` 运行，这里因此积累了内核的用户数据（`profiles/`、`sessions/`、`storages/`、`synapse/`、`attachments/`、`logs/`、`.credentials.yaml`、`settings.yaml*`、`cordis.patch.yml`、`dsh-taskboard*.json`、`.anonymous-user-id`、`llm-deepseek/`、`cache/`）。壳启动时 `instance::migrate_legacy_dsh_home_if_needed` 会把这些条目**递归并入**默认实例的 `instances/<id>/home/`：目标已有的条目以目标为准（接线产物更新）、缺失的移入，`node_modules` 不动（由 `ensure_wiring` 按 package.json 重建）。迁移标记记录 schema 版本，升级后会补跑新增的数据项；活动 `settings.yaml` 缺失时，从 `settings.yaml.imported` 复制恢复，原归档保留。清单外的外壳旧目录（`desktop[-dev]/`、`plugins/`、`skills*`）原样保留，归迁移向导管：
 
-- `<DSH_HOME>/desktop[-dev]/kernels/<version>/` — 内核 legacy 安装位置（`resolve_install_dir` 兜底）
-- `<DSH_HOME>/desktop[-dev]/{active.txt, kernel.pid, port, logs/}` — Shell 状态 / 内核进程锁 / 日志
+- `<xlink_home>/<family>/desktop[-dev]/kernels/<version>/` — **当前**内核安装位置（`install_version` 写入；`resolve_install_root` 的 legacy 兜底也指向这里）
+- `<xlink_home>/<family>/desktop[-dev]/{active.txt, kernel.pid, quarantine.json}` — Shell 状态 / 内核进程锁 / 隔离记录（`logs/` **不**在这里，见「日志规范」）
 - `<DSH_HOME>/desktop[-dev>/plugins.json` — **旧** 插件中央库（已迁到 `<DSH_XLINK_HOME>/dsh-plugins/`）
 - `<DSH_HOME>/desktop[-dev>/store.json` — **旧** 技能中央库（已迁到 `skills/packages/`）
-- `<DSH_HOME>/desktop[-dev]/skills/` — **旧** 技能活动视图（已迁到 `skills/active/`）
+- `<xlink_home>/<family>/desktop[-dev]/skills/` — **旧** 技能活动视图（已迁到 `skills/active/`）
 
 **旧 → 新** 路径映射由 `migration::LegacySource` 表达，迁移向导 `migration::run_migration` 按这个映射把旧布局导入新布局（**旧源永不被删除**——rollback 路径依赖）。中央库清单 `store.json` 不走整文件复制/跳过：任何冲突策略下都按条目 `id` **合并**进目标清单（目标已有条目优先、只补缺失条目），否则目标侧清单一旦比源「新」（哪怕内容是测试夹具泄漏之类的错误数据），源记录就永远迁不进来。技能活动视图里的符号链接会被解引用成**内容拷贝**落地（跨根链接不保留），这些拷贝在清单里没有物化指纹——启用时按「内容与中央库源逐字节一致即收编」自动补记账（`skills::ensure_entry` 的 `identical_unowned_copy`），内容不一致的同名条目仍按冲突拒绝。
 

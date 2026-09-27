@@ -2,7 +2,13 @@
 
 > 关联设计：[dsh-xlink 多内核数据目录与扩展管理设计](dsh-xlink-multi-kernel-design.md)
 >
-> 状态：计划稿，尚未开始实现
+> **状态：计划稿，P0–P8 已完成（2026-09-27 核对）**。本文是**实施计划的历史记录**，
+> 各阶段勾选项反映当时的进度，不是当前状态；多实例的落地现状见
+> [multi-kernel-migration-status-2026-09-19.md](multi-kernel-migration-status-2026-09-19.md)，
+> 数据布局见 [architecture.md](architecture.md)。
+>
+> **尚未实现的部分**：第二内核适配器（`McodeAdapter` 目前是 `kernel-binary-sidecar-seam.md`
+> 里的 seam 占位，见 `kernel_adapter.rs`），因此 UI 上的内核 tab 切换目前只对 DSH 生效。
 
 ## 1. 开发原则
 
