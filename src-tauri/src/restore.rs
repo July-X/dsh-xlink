@@ -265,9 +265,10 @@ pub fn restore(
         return Ok(RestoreOutcome {
             skipped: Vec::new(),
             applied: Vec::new(),
-            // 空操作即"当前环境与目标一致"，不需要再起一次内核去证明它
-            // 起得来——它此刻就是用户正在用的环境。
-            verified: true,
+            // 空操作**不等于**"验过了"。什么都没改也就什么都没验，界面必须
+            // 把它画成第三种样子，而不是借用"实测通过"那一句。
+            verification: Verification::NotNeeded,
+            verification_detail: String::new(),
             resulting_fingerprint: plan.current_fingerprint,
             backup_snapshot_id: String::new(),
         });
@@ -341,18 +342,27 @@ pub fn restore(
     // 规则 5：**恢复完自己验一次**。恢复的产物是"配置已回到目标"，只有真的
     // 起得来才算数——这里用一次性沙盒内核走一遍真实启动链（与 P2 二分复用
     // 同一套判据），不碰用户的真实工作台。
+    // 放行的是**当前这套**（已恢复）配置：中央库条目减去隔离表。恢复刚把该
+    // 停用的写进 quarantine，所以过滤结果正好是目标回退点描述的那一套。
+    let blocked = crate::quarantine::ids(data_dir);
+    let allow = move |item: &crate::plugins::StoreItem| !blocked.contains(&item.id);
     let probe = crate::verify::probe_once(
         data_dir,
         family,
-        instance,
         &crate::settings::load_for_shell(crate::settings::current_mode()),
+        pnpm_exe,
         node_path,
+        &allow,
         on_progress,
     );
-    let verified = probe.ready;
+    let verification = if probe.ready {
+        Verification::Verified
+    } else {
+        Verification::Failed
+    };
     if !probe.ready {
         skipped.push(format!(
-            "配置已按回退点改好，但**沙盒自检没能起来**（{}）。这不代表回退失败——\
+            "配置已按回退点改好，但沙盒自检没能起来（{}）。这不代表回退失败——\
              也可能是这个回退点本身就不是一个能起来的环境；请点「启动工作台」看真实结果，\
              或回到更早的回退点再试",
             probe.detail
@@ -363,7 +373,12 @@ pub fn restore(
     Ok(RestoreOutcome {
         skipped,
         applied,
-        verified,
+        verification,
+        verification_detail: if probe.ready {
+            String::new()
+        } else {
+            probe.detail
+        },
         resulting_fingerprint,
         backup_snapshot_id: backup_id,
     })
@@ -446,6 +461,23 @@ fn apply_one(
     }
 }
 
+/// 恢复后到底有没有真的实测过。三态而不是布尔。
+///
+/// `NotNeeded`（本次没有任何改动，因此根本没起内核）与 `Verified`（真装了
+/// 目标配置、起了沙盒内核、应答了）在界面上**必须**是两种不同的东西——
+/// 把"没测"画成"测过没问题"是这类工具最容易犯也最伤害信任的错，而一个
+/// 布尔字段表达不了"没测"，只能表达"没测成"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Verification {
+    /// 沙盒里装上恢复后的配置起过一次内核，正常应答。
+    Verified,
+    /// 测了，但没起来。细节看 [`RestoreOutcome::verification_detail`]。
+    Failed,
+    /// 本次没有任何改动，因此没有起内核去证明它起得来。
+    NotNeeded,
+}
+
 /// 一次恢复实际动了什么。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -454,9 +486,11 @@ pub struct RestoreOutcome {
     pub skipped: Vec<String>,
     /// 真正动了的条目。
     pub applied: Vec<String>,
-    /// 恢复后是否用一次性沙盒内核**实测过**。`false` 时 `skipped` 里必有
-    /// 说明——不能让"没验过"看起来像"验过没问题"。
-    pub verified: bool,
+    /// 恢复后的实测状态，三态。
+    pub verification: Verification,
+    /// `Failed` 时的可读原因；其余两态为空。UI 必须把它显示出来，不能只
+    /// 显示一个"未通过"让人自己猜。
+    pub verification_detail: String,
     /// 恢复完成后的环境指纹。**不等于**目标快照指纹时，说明有东西没能恢复。
     pub resulting_fingerprint: String,
     /// 恢复前的状态存到了哪（`pre-restore` 快照 id）。恢复失败要能再恢复回来。

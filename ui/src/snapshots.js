@@ -128,15 +128,15 @@ export function reasonHint(reason) {
 export function entrySummary(entry) {
   // 计数一律走 `|| 0`：后端结构上一定给得出这些数字，但面板不该把
   // "undefined" 当成一个数量显示给用户——那比显示 0 更让人怀疑数据坏了。
-  const parts = [`内核 ${entry.kernel_version || '未知'}`];
-  parts.push(`插件 ${entry.plugin_count || 0}`);
-  parts.push(`技能 ${entry.skill_count || 0}`);
-  parts.push(`补丁 ${entry.patch_count || 0}`);
+  const parts = [`内核 ${entry.kernelVersion || '未知'}`];
+  parts.push(`插件 ${entry.pluginCount || 0}`);
+  parts.push(`技能 ${entry.skillCount || 0}`);
+  parts.push(`补丁 ${entry.patchCount || 0}`);
   return parts.join(' · ');
 }
 
 export function entryTimeLabel(entry) {
-  return relativeTimeLabel(entry.created_at_ms);
+  return relativeTimeLabel(entry.createdAtMs);
 }
 
 /** 差异维度的中文标签。未知值原样透出。 */
@@ -169,17 +169,44 @@ export function diffHeadline(diff) {
 
 /** 有动不了的条目时，确认框必须把这个数摆出来。 */
 export function diffBlockedNote(diff) {
-  if (!diff || !diff.blocked_count) return '';
+  if (!diff || !diff.blockedCount) return '';
   return (
-    `其中 ${diff.blocked_count} 处无法自动完成` +
+    `其中 ${diff.blockedCount} 处无法自动完成` +
     '（已标注原因）。可以先恢复能恢复的部分，剩下的手动处理。'
   );
 }
 
 /**
- * 恢复结果的总结句。`verified` 是恢复后用一次性沙盒内核**实测**过的标记：
- * 没验过就要说没验过——让"没验"看起来像"验过没问题"是这类工具最容易
- * 犯也最伤害信任的错。
+ * 三种实测状态在界面上必须是**三种不同的东西**。
+ *
+ * `verified`   真的把恢复后的配置装进一次性沙盒、起过一次内核、应答了。
+ * `failed`     测了，没起来。
+ * `not-needed` 本次没有任何改动，因此**什么都没测**。
+ *
+ * 最后一态是三态里最容易被吞掉的那个：没改东西顺手当成"验过了"，就等于
+ * 凭空多给了一句用户没得到过的保证。
+ */
+export function verificationView(outcome) {
+  const state = (outcome && outcome.verification) || 'not-needed';
+  switch (state) {
+    case 'verified':
+      return { type: 'success', label: '启动实测通过：恢复后的配置在一次性沙盒内核里正常应答。' };
+    case 'failed':
+      return {
+        type: 'warning',
+        label: '启动实测未通过：恢复后的配置在沙盒内核里没能起来。这不代表回退失败——请点「启动工作台」看真实结果，或回到更早的回退点再试。',
+      };
+    default:
+      return {
+        type: 'info',
+        label: '本次没有改动任何条目，因此没有做启动实测（没有东西需要验证）。',
+      };
+  }
+}
+
+/**
+ * 恢复结果的总结句。实测状态与"没能完成"的条数**都要说**——任一单独出现
+ * 都会让用户对恢复到了什么程度产生错误印象。
  */
 export function outcomeHeadline(outcome) {
   if (!outcome) return '';
@@ -188,11 +215,7 @@ export function outcomeHeadline(outcome) {
   const base = applied
     ? `已按回退点改了 ${applied} 处`
     : '没有需要改动的条目';
-  if (!skipped) {
-    return outcome.verified
-      ? `${base}，并已用临时内核实测：环境可以正常启动。`
-      : `${base}，但这次没能做启动实测（详见下方）。`;
-  }
+  if (!skipped) return base;
   return `${base}；另有 ${skipped} 处没能完成，见下方列表。`;
 }
 
@@ -202,7 +225,7 @@ export function headline(view) {
   if (!view.entries.length) {
     return '还没有回退点。启动一次工作台，或改动一次配置，这里就会记下当时那套配置。';
   }
-  if (!view.has_last_known_good) {
+  if (!view.hasLastKnownGood) {
     return '已经记下 ' + view.entries.length + ' 个回退点，但还没有一次「成功启动」记录——';
   }
   return '已记下 ' + view.entries.length + ' 个回退点。';

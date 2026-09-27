@@ -403,25 +403,21 @@ pub fn next_trial(family: &str, instance: &str) -> Option<Vec<String>> {
     Some(remaining[..remaining.len() / 2].to_vec())
 }
 
-/// 这一轮该**关掉**哪些（= 剩余集合减去本轮启用的）。它们会在试完之后被
-/// 记进 `cleared`，但**试的当下**必须真的从 profile 接线里摘掉——否则这一
-/// 轮什么都没排除掉。
-pub fn disabled_during(trial: &[String], family: &str, instance: &str) -> Vec<String> {
-    let session = load(family, instance);
-    let trial_set: std::collections::BTreeSet<&String> = trial.iter().collect();
-    session
-        .candidates
-        .iter()
-        .filter(|id| !trial_set.contains(id) && !session.cleared.contains(id))
-        .cloned()
-        .collect()
-}
-
-/// 排查用的候选项：当前实例启用着的插件 + 启用的技能。
+/// 排查用的候选项：**当前实例启用着的插件**。
 ///
 /// 刻意**不含**补丁与内核版本：补丁有独立备份与独立 UI，自动改它爆炸半径
 /// 太大（与 P1 恢复的取舍同源）；内核版本切换代价高，按设计稿 §6.4 走
 /// 一次廉价的前置二分，不塞进 n 元候选。
+///
+/// 刻意**不含技能**，这是一次有意识的收窄而不是遗漏。技能的活动视图
+/// [`crate::skills::active_entry_names`] 不收实例参数——技能是**全局**的，
+/// 没有 per-instance 的接线可写。要在沙盒里"二分技能"，只能去改用户的全局
+/// 技能状态，那比它要诊断的问题更危险。而如果只是把技能名塞进候选、却
+/// 在试探时匹配不到任何插件条目，技能就会**一轮都没被真正试过**却照样参与
+/// 分治，最后收敛到一个冤枉的插件上——这正是本模块存在的意义要防的事。
+///
+/// 技能要做到可二分，前置条件是它先变成 per-instance 且有独立的接线接口。
+/// 在那之前，不查比查错更诚实。
 pub fn candidates(data_dir: &Path) -> Vec<String> {
     let mut out: Vec<String> = crate::plugins::load_store(data_dir)
         .items
@@ -430,7 +426,6 @@ pub fn candidates(data_dir: &Path) -> Vec<String> {
         .map(|item| item.id.clone())
         .collect();
     out.sort();
-    out.extend(crate::skills::active_entry_names());
     out
 }
 

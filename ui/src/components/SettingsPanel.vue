@@ -4,11 +4,18 @@
 // 模型设置里维护。内置补丁（内核补丁 / 小插件）入口已隐藏——最新内核已包含
 // 相关修复，不再需要从设置页应用；后端 `patch_status` / `patch_apply` /
 // `patch_revert` 与 `ui/src/patches.js` 仍保留，便于旧内核撤销。
-// 卡片顺序：设置 → 任务通知 → 数据迁移（默认折叠）。
+// 卡片顺序：设置 → 任务通知 → 数据迁移（默认折叠）→ 环境回退点 → 深入排查。
+// 安全网这两张卡原本挂在概览页，但它们是**故障时才用得上的兜底**，不是日常
+// 要看的东西：概览页是开机第一屏，在那儿常年摆着两个「一切正常」的空态卡
+// 既占地方又稀释真正要看的内容（当前内核、用量、额度）。挪到设置页后，
+// 概览保持干净，而出事时它们与「数据迁移」这条同属"环境出问题时才动"的
+// 入口并排摆在一起，上下文也对得上。
 import { computed, onMounted, ref, watch } from 'vue';
 import { ArrowDown, ArrowUp, Bell, Check, Headset, QuestionFilled } from '@element-plus/icons-vue';
 import { store, saveSettings } from '../store.js';
 import { migrationStore, loadMigrationHistory } from '../migration.js';
+import SnapshotCard from './SnapshotCard.vue';
+import BisectPanel from './BisectPanel.vue';
 import {
   notificationStore,
   refreshNotificationStatus,
@@ -265,6 +272,13 @@ onMounted(() => {
         </el-button>
       </template>
     </div>
+
+    <!-- 环境回退点（安全网 P0/P1）。「数据迁移」是"环境出问题时才动"的入口，
+         回退点是同一条链的下半段：先回到曾经良好的状态，回退解决不了才轮到
+         下面的「深入排查」。两张卡挨着摆，顺序即救生顺序。 -->
+    <SnapshotCard />
+
+    <BisectPanel />
   </section>
 </template>
 

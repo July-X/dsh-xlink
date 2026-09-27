@@ -32,7 +32,7 @@ const title = computed(() =>
 const evidenceOpen = ref(false);
 
 // 「查看日志」只在报告真的给出了落盘路径时才有意义（预检通过时为空串）。
-const evidencePath = computed(() => report.value.evidence_path || '');
+const evidencePath = computed(() => report.value.evidencePath || '');
 
 function openLog() {
   store.precheckVisible = false;
@@ -55,8 +55,8 @@ function close() {
     <div class="precheck">
       <div class="precheck-head">
         <el-tag :type="verdict.type" effect="dark" size="large">{{ verdict.label }}</el-tag>
-        <span v-if="report.plugin_name" class="precheck-name">{{ report.plugin_name }}</span>
-        <span v-if="report.duration_ms" class="precheck-cost">耗时 {{ (report.duration_ms / 1000).toFixed(1) }} 秒</span>
+        <span v-if="report.pluginName" class="precheck-name">{{ report.pluginName }}</span>
+        <span v-if="report.durationMs" class="precheck-cost">耗时 {{ (report.durationMs / 1000).toFixed(1) }} 秒</span>
       </div>
 
       <p v-if="report.summary" class="precheck-summary">{{ report.summary }}</p>

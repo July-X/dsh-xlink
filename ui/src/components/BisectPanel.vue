@@ -19,22 +19,34 @@ import {
   stepTitle,
   stepClassName,
 } from '../bisect.js';
-import { globalBusy, isLoading, withLoading } from '../loading.js';
+import { globalBusy, isLoading } from '../loading.js';
+import { workbenchActiveNow } from '../store.js';
 
 const view = computed(() => bisectStore.view);
 const conclusion = computed(() => conclusionView(view.value && view.value.conclusion));
 const steps = computed(() => (view.value && view.value.steps) || []);
 const running = computed(() => !!(view.value && view.value.running));
 
+// 工作台运行时不做排查：那时环境正在被真实内核占用，排查的结论也会和
+// 用户眼前的现象对不上。恢复早就用同一条理由拒绝，这里保持一致。
+const workbenchRunning = computed(() => workbenchActiveNow());
+
 // 候选不足 3 个时后端会拒绝；按钮提前置灰并说明原因，比点了再报错好。
 const canStart = computed(() => {
   if (running.value) return false;
+  if (workbenchRunning.value) return false;
   if (!view.value) return true; // 还没拉过：允许点，让后端给准确原因
-  return (view.value.candidate_count || 0) >= 3 || (view.value.cleared || []).length > 0;
+  return (view.value.candidateCount || 0) >= 3 || (view.value.cleared || []).length > 0;
+});
+
+const startHint = computed(() => {
+  if (workbenchRunning.value) return '工作台正在运行，请先关闭工作台再排查';
+  if (running.value) return '排查进行中';
+  return '按嫌疑度逐轮缩小可疑范围';
 });
 
 function onStart() {
-  return withLoading('bisectStart', () => startBisect());
+  return startBisect();
 }
 
 onMounted(() => {
@@ -83,9 +95,9 @@ onMounted(() => {
           size="small"
           type="primary"
           :icon="Search"
-          :loading="isLoading('bisectStart')"
+          :loading="isLoading('bisectRun')"
           :disabled="!canStart || globalBusy"
-          title="按嫌疑度逐轮缩小可疑范围"
+          :title="startHint"
           @click="onStart"
         >
           {{ view && (view.cleared || []).length ? '继续排查' : '开始排查' }}
@@ -98,8 +110,8 @@ onMounted(() => {
       <p class="bisect-headline">{{ bisectHeadline(view) }}</p>
 
       <el-alert
-        v-if="conclusion.members.length"
-        :title="'最小可疑集合：' + conclusion.members.join('、')"
+        v-if="view.conclusion"
+        :title="conclusion.label + (conclusion.members.length ? '：' + conclusion.members.join('、') : '')"
         :type="conclusion.type"
         :closable="false"
         show-icon

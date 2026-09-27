@@ -166,10 +166,15 @@ const FILE_BUDGETS = {
   'src-tauri/src/restore.rs': 560,
   // P0 + P1 的前端状态与展示函数：打点原因中文化、摘要拼装、空状态的三句
   // 话，以及恢复预览的维度标签 / 标题 / 动不了的条数提示。
-  // 145 → 155：P2 追加 outcomeHeadline（区分"实测通过"与"没能实测"）。
-  'ui/src/snapshots.js': 155,
+  // 145 → 155：P2 追加 outcomeHeadline。
+  // 155 → 180：`verificationView` 三态（verified / failed / not-needed）从
+  // outcomeHeadline 里独立出来——三态各自带配色与整句文案，塞回一个函数
+  // 只会让它同时负责"怎么说"和"算什么颜色"。
+  'ui/src/snapshots.js': 180,
   // P1 的恢复确认弹窗：把「将要失去什么」和「动不了什么」分成两栏列出。
-  'ui/src/components/SnapshotRestoreDialog.vue': 200,
+  // 200 → 215：实测告警改由 `alert` computed 决定，需要"有没能完成的条目
+  // 就降级成 warning"这条交叉规则，以及失败原因的第二行展示。
+  'ui/src/components/SnapshotRestoreDialog.vue': 215,
   // P2 二分定位的会话与步骤记录。与判定逻辑分开：这里只管"试了什么、
   // 结果如何、排除了谁"，怎么试由命令层驱动 verify::probe_once。
   // 收尾只有三种取值，**没有"找到根因"**——组合效应会让二分停在不可修
@@ -178,13 +183,19 @@ const FILE_BUDGETS = {
   // 二分定位的 Tauri 命令壳。**被反棘轮逼出来的**：四条命令加 rounds_estimate
   // 原本要进 commands.rs，而那条规则不许把一个 2110 行的文件继续撑大。
   // 这组命令只服务二分一件事、内部高度耦合，自成模块也确实更清楚。
-  'src-tauri/src/bisect_cmd.rs': 120,
+  // 120 → 140：每轮真正装进沙盒的插件白名单 + 工作台运行态守卫。
+  'src-tauri/src/bisect_cmd.rs': 140,
   // 「起一次沙盒内核看它起不来」的共享判据：P1 恢复后自检与 P2 二分试探
   // 共用。判据一旦有两份实现就会分叉，而分叉出来的那个会让二分**静默收敛
   // 到错误答案**——它把"没试成"当成"起来了"。
-  'src-tauri/src/verify.rs': 90,
+  // 90 → 120：**把被测配置装进沙盒**这一步。少了它，这个函数起的是
+  // 零插件零技能的裸内核，等于在另一个问题上做判定。
+  'src-tauri/src/verify.rs': 120,
   // P2 的前端状态与展示函数：结局映射（无"根因"）、轮数估算、每轮标题与配色。
-  'ui/src/bisect.js': 110,
+  // 110 → 175：`startBisect` 现在**真的把每一轮跑完**（循环 invoke
+  // bisect_probe），外加 abort 的错误提示与刷新。只发起不驱动的话，面板会
+  // 永远停在"排查进行中 … 请耐心等"。
+  'ui/src/bisect.js': 175,
   // P2 的排查面板：逐轮显示"在试哪一半 / 上一轮结果 / 已排除几个 / 还要几轮"。
   'ui/src/components/BisectPanel.vue': 180,
   // P0 的概览页卡片。刻意**只读**：提前放"一键回退"会让用户在没看清
@@ -531,7 +542,11 @@ const FILE_BUDGETS = {
 //      时就超标。
 // 总量只留一道软上限：它是"本版允许的最大规模"，随新能力一起调整，但
 // 每次上调都要求在这个数字旁边写清"这一版多了什么、为什么该独立成文件"。
-const TOTAL_BUDGET = 32900;
+// 32900 → 33050：这一版多出来的 43 行全部是**修复**而非新能力——
+// `verify.rs` 里"把被测配置装进沙盒"的那一步、`bisect.js` 里把每一轮
+// 真正驱动完的循环、`snapshots.js` 里实测三态的独立呈现。三个文件都还在
+// 各自的 200 行以内，离 800 行硬顶很远。
+const TOTAL_BUDGET = 33050;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

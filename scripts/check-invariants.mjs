@@ -508,6 +508,84 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
   }
 }
 
+// --- 9. IPC 字段契约：前端读的名字必须是后端真的发出来的名字 ---------------
+//
+// 这一项来自一次真实事故：安全网 P0/P1 的整套面板在读 snake_case，而 Rust
+// 侧 `RestoreDiff` / `SnapshotListView` / `BisectView` 全部是
+// `rename_all = "camelCase"`。结果是「回到良好状态」点了没反应（id 恒为
+// undefined，`if (!id) return` 直接短路）、动不了的条目数恒不显示、每条快照
+// 的四个维度全渲染成「未知 / 0」、二分「开始排查」按钮恒置灰——而编译、
+// 单测、代码预算三道门禁全绿，因为前端测试喂的是**手写的 snake_case 夹具**，
+// 从来没有一份真实响应穿过它。
+//
+// 修好之后把这条钉死：凡是 Rust 里声明了会改名序列化的结构体，其字段的
+// snake_case 形式在前端被读到就是错的。
+
+/// `snake_case` → `camelCase`，与 serde 的 rename_all = "camelCase" 对齐。
+function toCamel(name) {
+  return name.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
+}
+
+const renamedFields = new Map(); // snake → { camel, struct, file }
+{
+  const srcDir = join(root, 'src-tauri', 'src');
+  for (const file of readdirSync(srcDir)) {
+    if (!file.endsWith('.rs')) continue;
+    const text = readFileSync(join(srcDir, file), 'utf8');
+    const re =
+      /#\[derive\([^)]*Serialize[^)]*\)\]\s*#\[serde\(rename_all\s*=\s*"camelCase"\)\]\s*pub struct\s+(\w+)\s*\{([^}]*)\}/gs;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const [, structName, body] = m;
+      for (const field of body.matchAll(/pub\s+([a-z][a-z0-9_]*)\s*:/g)) {
+        renamedFields.set(field[1], {
+          camel: toCamel(field[1]),
+          struct: structName,
+          file,
+        });
+      }
+    }
+  }
+}
+
+if (renamedFields.size > 0) {
+  const uiDir = join(root, 'ui', 'src');
+  const badReads = new Map();
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!/\.(js|vue)$/.test(entry.name)) continue;
+      const rel = relative(uiDir, full);
+      const text = readFileSync(full, 'utf8');
+      for (const access of text.matchAll(/\.([a-z][a-z0-9]*(?:_[a-z0-9]+)+)/g)) {
+        const hit = renamedFields.get(access[1]);
+        if (!hit) continue;
+        const line = text.slice(0, access.index).split('\n').length;
+        badReads.set(
+          `${rel}:${line}`,
+          `${rel}:${line} 读 .${access[1]}，但 Rust 的 ${hit.struct}.${hit.camel} 才是实际发出的名字（${hit.file}）`,
+        );
+      }
+    }
+  };
+  walk(uiDir);
+  for (const message of badReads.values()) {
+    fail(
+      'ipc-fields',
+      `${message} —— 取到的是 undefined：字段会静默变成「未知 / 0」，或让按钮直接失灵`,
+    );
+  }
+  if (badReads.size === 0) {
+    note(
+      `IPC 字段契约：前端没有读任何会被 camelCase 改名的字段（已覆盖 ${renamedFields.size} 个）`,
+    );
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);

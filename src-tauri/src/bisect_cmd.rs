@@ -55,13 +55,21 @@ pub async fn bisect_start(
     crate::commands::blocking(move || -> Result<bisect::BisectView, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
+        // 工作台运行时环境正被真实内核占用，此时排查出来的现象与用户眼前
+        // 对不上。与 `restore` 同一条理由，后端也要拦住，不能只靠 UI 置灰。
+        let settings = settings::load_for_shell(settings::current_mode());
+        if crate::kernel::workbench_running(&data_dir, &settings) {
+            return Err(
+                "工作台正在运行，无法排查。请先在概览页点「关闭工作台」，再重新发起排查".into(),
+            );
+        }
         let (family, instance_id) = plugins::default_instance_key();
         let candidates = bisect::candidates(&data_dir);
         // 候选太少时二分得不偿失（逐个停用更快），在后端就说清楚，而不是
         // 让用户点一次再读一句报错。
         if candidates.len() < bisect::MIN_CANDIDATES {
             return Err(format!(
-                "可排查的扩展只有 {} 个，逐个停用比二分更快，请直接在插件 / 技能面板里处理",
+                "可排查的插件只有 {} 个，逐个停用比二分更快，请直接在插件面板里处理",
                 candidates.len()
             ));
         }
@@ -105,15 +113,24 @@ pub async fn bisect_probe(
             trial.len()
         ));
         let node_info = crate::commands::cached_node(&state, &settings);
+        let (_, pnpm_exe) = crate::commands::promise_pnpm(&data_dir, &node_info, |msg| {
+            let _ = promise_send.send(msg.to_string());
+        })?;
         let mut progress = |msg: &str| {
             let _ = promise_send.send(msg.to_string());
         };
+        // 本轮**只把 trial 里那几个装进沙盒**，其余的既不物化也不进 profile
+        // 清单——内核因此真的在"缺另外一半"的状态下启动。分治的全部前提就在
+        // 这几行：装错一半，结论就是错的，而且不会报任何错。
+        let trial_set: std::collections::BTreeSet<String> = trial.iter().cloned().collect();
+        let allow = move |item: &crate::plugins::StoreItem| trial_set.contains(&item.id);
         let result = crate::verify::probe_once(
             &data_dir,
             &family,
-            &instance_id,
             &settings,
+            &pnpm_exe,
             std::path::Path::new(&node_info.path),
+            &allow,
             &mut progress,
         );
         let outcome = match result.verdict {

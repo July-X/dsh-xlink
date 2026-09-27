@@ -63,8 +63,6 @@ import {
   queriedAgeCompact,
 } from '../subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents.js';
-import SnapshotCard from './SnapshotCard.vue';
-import BisectPanel from './BisectPanel.vue';
 import { tildePath } from '../labels.js';
 import { confirmDialog } from '../notify.js';
 
@@ -472,14 +470,9 @@ function goVersions() {
       </p>
     </div>
 
-    <!-- 环境回退点（安全网 P0，只读）。放在套餐用量之后、实例区之前：
-         它讲的是「这套配置曾经是什么样」，与用量 / 额度这类度量无关，
-         挨着实例区比挨着用量卡更合上下文。 -->
-    <SnapshotCard />
-
-    <!-- 深入排查（安全网 P2）。紧跟回退点卡：两者是同一条救生链的前后两段
-         ——先「回到良好状态」，回退解决不了时才需要「定位到底哪里坏」。 -->
-    <BisectPanel />
+    <!-- 安全网（环境回退点 / 深入排查）已挪到设置页，紧跟「数据迁移」下方。
+         它们是故障时才用得上的兜底，常年摆在开机第一屏只会稀释真正要看的
+         内容。 -->
 
     <!-- 套餐用量：独立只读卡，内容直接展示（无折叠）。MiniMax 双窗口进度 +
          DeepSeek 余额行；完整可操作错误文案只在顶部横幅出现，provider 分区
