@@ -198,7 +198,7 @@ ctx.sessionProjections.onChanged((session, key, value, seq) => {
 事件，它的完成会被当成普通任务。代价是偶发的一条多余通知，换取的是实现简单
 （不需要为每次通知去查一次 2 MB 的会话列表）。
 
-### 3.6 标题的来源与代价（小结）
+### 3.5 标题的来源与代价（小结）
 
 | 来源 | 覆盖 | 代价 |
 | --- | --- | --- |
@@ -208,7 +208,7 @@ ctx.sessionProjections.onChanged((session, key, value, seq) => {
 | `session/list` 快照 | 仅当前三条都不可用时兜底（老内核） | 每个内核进程最多一次，约 0.5 s 内核 CPU |
 | 都没有 | — | 文案回退成 `未命名会话 <id 前 8 位>` |
 
-### 3.5 认证、重连与退避
+### 3.6 认证、重连与退避
 
 - 认证：每次连接都重新从当天内核日志里取**最后一条** launch token 并换一次
   cookie。内核重启会签发新 token，旧 cookie 立刻失效——"每次重连都重新认证"

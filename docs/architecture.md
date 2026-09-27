@@ -181,8 +181,8 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 - `<xlink_home>/<family>/desktop[-dev]/kernels/<version>/` — **当前**内核安装位置（`install_version` 写入；`resolve_install_root` 的 legacy 兜底也指向这里）
 - `<xlink_home>/<family>/desktop[-dev]/{active.txt, kernel.pid, quarantine.json}` — Shell 状态 / 内核进程锁 / 隔离记录（`logs/` **不**在这里，见「日志规范」）
-- `<DSH_HOME>/desktop[-dev>/plugins.json` — **旧** 插件中央库（已迁到 `<DSH_XLINK_HOME>/dsh-plugins/`）
-- `<DSH_HOME>/desktop[-dev>/store.json` — **旧** 技能中央库（已迁到 `skills/packages/`）
+- `<DSH_HOME>/desktop[-dev]/plugins.json` — **旧** 插件中央库（已迁到 `<DSH_XLINK_HOME>/dsh-plugins/`）
+- `<DSH_HOME>/desktop[-dev]/store.json` — **旧** 技能中央库（已迁到 `skills/packages/`）
 - `<xlink_home>/<family>/desktop[-dev]/skills/` — **旧** 技能活动视图（已迁到 `skills/active/`）
 
 **旧 → 新** 路径映射由 `migration::LegacySource` 表达，迁移向导 `migration::run_migration` 按这个映射把旧布局导入新布局（**旧源永不被删除**——rollback 路径依赖）。中央库清单 `store.json` 不走整文件复制/跳过：任何冲突策略下都按条目 `id` **合并**进目标清单（目标已有条目优先、只补缺失条目），否则目标侧清单一旦比源「新」（哪怕内容是测试夹具泄漏之类的错误数据），源记录就永远迁不进来。技能活动视图里的符号链接会被解引用成**内容拷贝**落地（跨根链接不保留），这些拷贝在清单里没有物化指纹——启用时按「内容与中央库源逐字节一致即收编」自动补记账（`skills::ensure_entry` 的 `identical_unowned_copy`），内容不一致的同名条目仍按冲突拒绝。
