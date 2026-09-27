@@ -4,8 +4,11 @@
 // - migration_preview / migration_rollback / migration_list
 // - migration_run(policy, on_progress) — on_progress 是 Tauri Channel，
 //   每完成一源 emit MigrationProgress，前端用它更新进度条 + 文字步骤
-// - migration_skip_get / _set / _clear — 用户拒绝状态持久化到
-//   <xlink_home>/migration-skipped.json（用户点过一次「否」后不再弹）
+// - migration_skip_get / _set / _clear — 「不再弹启动提示」状态持久化到
+//   <xlink_home>/kernels/migration-skipped.json：用户点过一次「否」
+//   （reason=declined），或最近一次迁移全部成功后由后端自动写入
+//   （reason=migrated——旧源永不删除，不记这条迁移过的用户每次重启
+//   都会被再次询问）
 //
 // UI 形态：
 // - 主窗口 mount 后检测遗留数据 + skip 状态 → 满足条件弹 el-dialog
@@ -269,6 +272,11 @@ export async function maybeOpenMigrationPrompt() {
     );
   migrationStore.hasMigratable = hasMigration;
   if (!hasMigration) return false;
+  // 有迁移历史就不再在启动时弹窗（含部分失败 / 回滚过的用户）——说明
+  // 用户至少主动处理过一次迁移，再问就是打扰；手动入口在「设置 → 数据
+  // 迁移」。旧版本（<0.3.3）迁移成功不写 skip 标记，历史是这类用户
+  // 唯一的静音信号，兜底掉已迁移机器上的重复弹窗。
+  if ((history || []).length > 0) return false;
   // 后端 skip 状态失败 → 跟没拒绝过一样，不阻拦弹窗
   const skipped = await loadMigrationSkip();
   if (skipped) return false;

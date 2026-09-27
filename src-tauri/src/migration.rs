@@ -332,6 +332,13 @@ where
         .map_err(|e| AppError::Io(format!("无法创建备份目录 {}：{e}", backup_root.display())))?;
 
     let preview = preview_migration();
+    // 先记下本次真正搬了内容的来源——preview 在下面的循环里被消费。
+    let sources_with_content: Vec<LegacySource> = preview
+        .items
+        .iter()
+        .filter(|item| item.file_count > 0 || item.total_bytes > 0)
+        .map(|item| item.source)
+        .collect();
     let total = preview.items.len() as u32;
     on_progress(MigrationProgress {
         step: 0,
@@ -362,6 +369,19 @@ where
         });
         items.push(report);
     }
+    // 全部来源都成功处理（含空源跳过）→ 自动写「已迁移」静音标记，下次
+    // 启动不再弹迁移提示。旧源永不删除，光看遗留数据永远判定「可迁移」，
+    // 没有这条记录迁移成功的用户每次重启都会被重新询问。写失败按尽力
+    // 而为处理——标记只是启动提示的静音手段，迁移本身已完成，失败最多
+    // 让下次启动再问一次；把整个命令报错反而会让用户误以为迁移失败。
+    if items.iter().all(|it| {
+        matches!(
+            it.status,
+            MigrationStatus::Copied | MigrationStatus::Skipped
+        )
+    }) {
+        let _ = set_migration_skipped(MigrationSkipReason::Migrated, sources_with_content);
+    }
     Ok(MigrationReport {
         migration_id: migration_id.to_string(),
         backup_root,
@@ -369,19 +389,35 @@ where
     })
 }
 
-/// 用户拒绝迁移的持久化状态：写到 `<data_dir>/migration-skipped.json`。
-/// 「主窗口启动弹窗」检测到 skip=true 时不弹；用户在「数据迁移」侧栏面板
-/// 里手动 `clear_migration_skip` 之后才会重新弹。
+/// 用户拒绝迁移的持久化状态：写到 `<xlink_home>/kernels/migration-skipped.json`。
+/// 「主窗口启动弹窗」检测到 skip=true 时不弹。两种写入路径：用户在弹窗点
+/// 「否」（[`MigrationSkipReason::Declined`]）；`run_migration` 全部来源成功
+/// 处理后由后端自动写入（[`MigrationSkipReason::Migrated`]——旧源永不删除，
+/// 不记这条迁移成功的用户每次重启都会被再次询问）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationSkip {
-    /// 用户点击「否」时记录的 epoch 毫秒。后续想加「7 天后再问」时复用。
+    /// 写入时刻的 epoch 毫秒。后续想加「7 天后再问」时复用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skipped_at_ms: Option<u64>,
-    /// 用户拒绝时遗留下来的来源列表——只用作日志/审计，不参与"是否再问"的
-    /// 判断（用户拒绝过一次后，无论数据是否变化都按 skip=true 处理）。
+    /// 记录来源（拒绝 / 已迁移）——审计与「7 天后再问」策略区分用；旧版
+    /// 本写的文件没有该字段，读出 `None` 仍按静音处理。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<MigrationSkipReason>,
+    /// 触发记录时的来源列表——只用作日志/审计，不参与"是否再问"的
+    /// 判断（标记存在即静音，无论数据是否变化）。
     #[serde(default)]
     pub sources: Vec<LegacySource>,
+}
+
+/// [`MigrationSkip::reason`] 的取值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MigrationSkipReason {
+    /// 用户在启动弹窗点了「否」。
+    Declined,
+    /// 最近一次迁移全部来源成功处理（含空源跳过），后端自动记录。
+    Migrated,
 }
 
 fn skip_state_file() -> PathBuf {
@@ -394,10 +430,14 @@ pub fn is_migration_skipped() -> bool {
     doc.skipped_at_ms.is_some()
 }
 
-/// 记录用户拒绝。
-pub fn set_migration_skipped(sources: Vec<LegacySource>) -> Result<(), AppError> {
+/// 记录静音状态（拒绝或已迁移）。
+pub fn set_migration_skipped(
+    reason: MigrationSkipReason,
+    sources: Vec<LegacySource>,
+) -> Result<(), AppError> {
     let doc = MigrationSkip {
         skipped_at_ms: Some(crate::process::epoch_millis()),
+        reason: Some(reason),
         sources,
     };
     crate::state::save(
@@ -1453,6 +1493,75 @@ mod tests {
             r1.backup_root.exists() && r2.backup_root.exists(),
             "两次 backup 目录都必须存在"
         );
+    }
+
+    #[test]
+    fn run_migration_success_marks_skip_state() {
+        // 回归：迁移全部成功后必须自动写「已迁移」静音标记。旧源永不
+        // 删除，光看遗留数据永远「可迁移」——没有这条记录，迁移成功的
+        // 用户每次重启都会被启动弹窗再次询问（issue：Windows dev 重启
+        // 反复弹迁移提示）。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy");
+        fs::write(plugins_legacy.join("store.json"), "{}").expect("store");
+
+        assert!(!is_migration_skipped(), "迁移前不应处于静音状态");
+        let report = run_migration(ConflictPolicy::SkipIfNewer).expect("migration succeeds");
+        assert!(report
+            .items
+            .iter()
+            .all(|i| matches!(i.status, MigrationStatus::Copied | MigrationStatus::Skipped)));
+        assert!(is_migration_skipped(), "迁移成功后必须处于静音状态");
+
+        let doc: MigrationSkip = crate::state::load_lossy(&skip_state_file());
+        assert_eq!(doc.reason, Some(MigrationSkipReason::Migrated));
+        assert!(
+            doc.sources.contains(&LegacySource::Plugins),
+            "审计字段必须记录本次搬运的来源：{:?}",
+            doc.sources
+        );
+    }
+
+    #[test]
+    fn run_migration_failure_does_not_mark_skip_state() {
+        // 部分来源失败（这里让目标路径是个普通文件，create_dir_all 必败）
+        // → 不能写静音标记，下次启动还应该再问，给用户重试机会。
+        let home = TempHome::new();
+        let plugins_legacy = LegacySource::Plugins.path();
+        fs::create_dir_all(&plugins_legacy).expect("legacy");
+        fs::write(plugins_legacy.join("store.json"), "{}").expect("store");
+        // 目标位置放一个普通文件——create_dir_all 对已存在文件路径必报错。
+        let target = LegacySource::Plugins.target();
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).expect("target parent");
+        }
+        fs::write(&target, "not-a-dir").expect("target as file");
+
+        let report = run_migration(ConflictPolicy::SkipIfNewer).expect("run returns report");
+        let plugins_item = report
+            .items
+            .iter()
+            .find(|i| i.source == LegacySource::Plugins)
+            .expect("plugins item");
+        assert_eq!(plugins_item.status, MigrationStatus::Failed);
+        assert!(!is_migration_skipped(), "存在失败来源时不能静音");
+    }
+
+    #[test]
+    fn skip_state_records_declined_reason() {
+        // 弹窗点「否」路径（migration_skip_set 命令 → set_migration_skipped）：
+        // reason=declined，与后端自动写的 migrated 区分，供审计/再问策略用。
+        let home = TempHome::new();
+        set_migration_skipped(
+            MigrationSkipReason::Declined,
+            vec![LegacySource::SkillsActive],
+        )
+        .expect("write skip");
+        assert!(is_migration_skipped());
+        let doc: MigrationSkip = crate::state::load_lossy(&skip_state_file());
+        assert_eq!(doc.reason, Some(MigrationSkipReason::Declined));
+        assert_eq!(doc.sources, vec![LegacySource::SkillsActive]);
     }
 
     /// 把 mtime 推到比 `baseline` 晚 10 秒——用于构造"目标比源新"场景。

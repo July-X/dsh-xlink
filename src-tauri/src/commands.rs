@@ -2361,9 +2361,12 @@ pub async fn migration_skip_get() -> Result<bool, String> {
 
 /// 记录用户拒绝迁移（弹窗点「否」时调）。`sources` 是这次弹窗扫描到的
 /// 来源列表，写进 skip 文件供审计/日志用，不参与"是否再问"的判断。
+/// 迁移成功路径的静音由 `migration_run` 后端自动写入（reason=migrated），
+/// 不经过这条命令。
 #[tauri::command]
 pub async fn migration_skip_set(sources: Vec<migration::LegacySource>) -> Result<(), String> {
-    migration::set_migration_skipped(sources).map_err(|e| e.to_string())
+    migration::set_migration_skipped(migration::MigrationSkipReason::Declined, sources)
+        .map_err(|e| e.to_string())
 }
 
 /// 清除拒绝标记——用户在「数据迁移」侧栏面板手动重跳时调。
