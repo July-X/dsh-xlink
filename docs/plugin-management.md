@@ -26,46 +26,51 @@
 | 词 | 含义 |
 | --- | --- |
 | 插件（plugin） | 一个 npm 包或 git 仓库，其 package.json 声明 `dsh.bundle`（profile 层）和/或 `dsh.client`（Web 客户端代码），或仅作为普通依赖供其他插件使用 |
-| 中央库（store） | `~/.dsh/plugins/`，插件源的唯一权威副本 |
-| 物化（materialize） | 把一个中央库插件以链接或复制的方式落到某个内核安装目录 |
+| 中央库（store） | `<DSH_XLINK_HOME>/dsh-plugins/`（默认 `~/.dsh-xlink/dsh-plugins/`），插件源的唯一权威副本 |
+| 物化（materialize） | 把一个中央库插件以链接或复制的方式落到某个**实例**的 `extensions/plugins/` 目录 |
 | 接线（wiring） | 把插件以依赖 + bundle 层的形式登记进 profile，使内核启动时真正加载它 |
 
 ## 目录布局
 
+P4 起插件的一切都以**实例** `(family, instance_id)` 为隔离单位。以下 `<DSH_XLINK_HOME>` 默认是
+`~/.dsh-xlink`（`paths::DSH_XLINK_HOME_ENV` 可覆盖）：
+
 ```text
-~/.dsh/                          # dsh home（DSH_HOME 可重定向）
-├── plugins/                     # 中央插件库（外壳与所有内核共享，不属任何内核）
-│   ├── store.json               # 已安装插件清单（来源/版本/模式/profile/更新时间）
-│   └── <plugin-id>/             # 一个插件的源（npm 包解包或 git checkout）
-│       ├── package.json         # 插件自身清单（dsh.bundle / dsh.client 声明）
-│       ├── .dsh-source.json     # 外壳写入：id/来源/版本/拉取时间
-│       └── node_modules/        # 仅 link 模式需要：插件自身依赖（hoisted）
-├── profiles/<profile>/          # 内核共享的 profile（切换内核后原样保留）
-│   ├── package.json             # dependencies 指向活动内核的物化目录；dsh.profile.bundles 含插件层
-│   └── cordis.patch.yml         # 用户自己的 patch 层，外壳不改写
-└── desktop/
-    ├── active.txt               # 活动内核版本
-    ├── plugins-catalog.json     # 社区目录缓存（TTL 6 小时）
-    └── kernels/<version>/
-        ├── plugins/             # 该内核内部读取插件的目录（物化目标）
-        │   ├── <plugin-id>/     # = 指向中央库的符号链接（link 模式）或真实副本（copy 模式）
-        │   └── .meta/<plugin-id>.json   # 物化记录 {mode, version, syncedAt}
-        └── node_modules/        # 内核本体（不写入任何插件）
+<DSH_XLINK_HOME>/
+├── dsh-plugins/                     # 中央插件库（外壳与所有内核共享，不属任何内核）
+│   ├── store.json                   # 已安装插件清单（来源/版本/模式/profile/更新时间）
+│   └── <plugin-id>/                 # 一个插件的源（npm 包解包或 git checkout）
+│       ├── package.json             # 插件自身清单（dsh.bundle / dsh.client 声明）
+│       ├── .dsh-source.json         # 外壳写入：id/来源/版本/拉取时间
+│       └── node_modules/            # 仅 link 模式需要：插件自身依赖（hoisted）
+├── <family>/desktop[-dev]/          # Shell 运行时目录（active.txt / catalog 缓存 / 内核安装）
+│   ├── active.txt                   # 活动内核版本
+│   ├── plugins-catalog.json         # 社区目录缓存（TTL 6 小时）
+│   └── kernels/<version>/           # 内核安装产物（node_modules/ 在这里）
+└── kernels/<family>/instances/<id>/ # 一个实例的根目录
+    ├── home/profiles/<profile>/     # profile（接线落在这里；切换内核后原样保留）
+    │   ├── package.json             # dependencies 指向本实例的物化目录；dsh.profile.bundles 含插件层
+    │   └── cordis.patch.yml         # 用户自己的 patch 层，外壳不改写
+    └── extensions/plugins/          # 物化目标：内核真正读取插件的目录
+        ├── <plugin-id>/             # = 指向中央库的符号链接（link 模式）或真实副本（copy 模式）
+        └── <plugin-id>/.dsh-meta.json   # 物化记录 {mode, version, syncedAt}，随插件同目录
 ```
 
-插件 id 由包名/仓库名映射：`/` 替换为 `__`（如 `@ace-zone/dsh-market` → `@ace-zone__dsh-market`）。
+注意 `.dsh-meta.json` 落在**插件目录内部**（`<plugin-id>/.dsh-meta.json`），不是旧版的独立
+`.meta/<plugin-id>.json` 目录。插件 id 由包名/仓库名映射：`/` 替换为 `__`
+（如 `@ace-zone/dsh-market` → `@ace-zone__dsh-market`）。
 
 ## 安装流程
 
 以「安装一个 npm 插件」为例（git 插件同理，仓库 URL 作来源）：
 
-1. **拉取进中央库**：npm 来源查询 registry 文档，取 `dist-tags.latest`（或用户指定版本）与 `dist.tarball`，先将 tarball 流式写入 `.part` 临时文件，下载完整后再 rename；GitHub 仓库来源优先查询对应仓库的 Releases API，未锁定时选择非 draft Release 中最高的 semver `tag_name`，锁定 `#tag` 时只查询该 tag，并使用响应中的 `tag_name` 构造绑定到该仓库的 GitHub API tarball 地址（`tarball_url` 仅作为 Release 可下载元数据）下载源码归档。两类归档都由 Rust 解包器校验：npm 只接受 `package/` 根，GitHub 只接受单一顶层根，二者都拒绝绝对/父级路径、符号链接、硬链接和特殊文件并限制条目数与展开体积，最后发布到 `~/.dsh/plugins/<id>/`，写入 `.dsh-source.json` 与 `store.json`。GitHub Release API、tarball 下载或解包不可用时，未锁定来源回退到原有最高 semver tag 的 `git clone`，锁定来源按指定 tag clone；非 GitHub Git 地址始终走 clone。
+1. **拉取进中央库**：npm 来源查询 registry 文档，取 `dist-tags.latest`（或用户指定版本）与 `dist.tarball`，先将 tarball 流式写入 `.part` 临时文件，下载完整后再 rename；GitHub 仓库来源优先查询对应仓库的 Releases API，未锁定时选择非 draft Release 中最高的 semver `tag_name`，锁定 `#tag` 时只查询该 tag，并使用响应中的 `tag_name` 构造绑定到该仓库的 GitHub API tarball 地址（`tarball_url` 仅作为 Release 可下载元数据）下载源码归档。两类归档都由 Rust 解包器校验：npm 只接受 `package/` 根，GitHub 只接受单一顶层根，二者都拒绝绝对/父级路径、符号链接、硬链接和特殊文件并限制条目数与展开体积，最后发布到 `<DSH_XLINK_HOME>/dsh-plugins/<id>/`，写入 `.dsh-source.json` 与 `store.json`。GitHub Release API、tarball 下载或解包不可用时，未锁定来源回退到原有最高 semver tag 的 `git clone`，锁定来源按指定 tag clone；非 GitHub Git 地址始终走 clone。
 2. **安装自身依赖**：仅 link 模式需要。中央库里的插件目录不是 pnpm 工作区的一部分，链接后 Node 会从该目录的 `node_modules` 解析插件依赖，所以通常在库内执行一次 `pnpm install`（hoisted，日志落盘 `logs/plugin-<id>.log`）。如果 Git 仓库声明了尚未生成入口的 `prepare`，fetch 阶段会先在暂存目录中安装依赖并执行 `prepare`；后续 link 安装复用这次已经就绪的 `node_modules`，不会再次安装。插件声明的 `peerDependencies`（如 `cordis`、`@deepseek-ai/dsh-*` 服务定义）从活动内核的 `node_modules` 里链接（或复制）进库内 `node_modules`，记录在 `.dsh-peers.json`（按内核版本），切换内核时自动重解析——保证与内核共享同一份 cordis 实例；copy 模式不需要这些：profile 的 pnpm 会负责插件的传递依赖，peer 走内核目录的父级查找天然可达。
 3. **按内核物化**：对每个已安装内核执行物化（见下节）。新安装的内核在安装完成后同样物化。
-4. **接线**：把插件登记进 `~/.dsh/profiles/<profile>/package.json`：
-   - `dependencies["<包名>"] = "link:../../desktop/kernels/<活动版本>/plugins/<id>"`（link 模式）
-   - `dependencies["<包名>"] = "file:../../desktop/kernels/<活动版本>/plugins/<id>"`（copy 模式）
-   - dev 壳（`tauri dev`）的物化目标在 `desktop-dev/` 下，写出的 spec 相应含 `desktop-dev/kernels/`。依赖是否由壳接管（卸载/隔离时清退）按 spec 的尾部路径结构 `kernels/<version>/plugins/<id>` 判定，与数据目录名无关；其余 spec（版本号、指向任意目录的 link/file）视为用户/CLI 管理，接线校正不动。
+4. **接线**：把插件登记进**该实例**的 profile（`<DSH_XLINK_HOME>/kernels/<family>/instances/<id>/home/profiles/<profile>/package.json`）：
+   - `dependencies["<包名>"] = "link:../../extensions/plugins/<id>"`（link 模式）
+   - `dependencies["<包名>"] = "file:../../extensions/plugins/<id>"`（copy 模式）
+   - 相对路径由 `relative_path(profile_dir, instance_extension_plugin_dir)` 现算，因此不随 release / dev 或目录名变化。依赖是否由壳接管（卸载/隔离时清退）由 `is_managed_spec` 按**尾部路径结构**判定：P4 起的 `.../extensions/plugins/<id>`（尾三段 `id` / `plugins` / `extensions`）与历史四段 `kernels/<version>/plugins/<id>` 都算托管，其余 spec（版本号、指向任意目录的 link/file）视为用户/CLI 管理，接线校正不动。**刻意不按 `desktop/` / `desktop-dev/` 目录名判断**——`DSH_DESKTOP_DATA_DIR` 覆写出的 spec 会被误判成用户自管。
    - 若插件清单声明 `dsh.bundle`，把包名追加进 `dsh.profile.bundles`（去重、保留模板层）。
    - 内核工作台「插件」页的官方插件开关（如实验特性）只向 `dsh.profile.bundles` 追加一行包名、不写 `dependencies`——这些包随内核自带，启用无需 pnpm 接线。每次启动的接线调和解析 bundle 行时按「是否伴随托管依赖」判断归属：没有托管依赖背书的行（官方插件开关、用户/CLI 手工添加）原样保留，只有外壳自己写过的行才在卸载/隔离后随托管依赖一起清退；因此官方插件的启用状态在重启内核后保持不变。
    - 在 profile 目录运行 `pnpm install`（profile 自带 pnpm-workspace.yaml，hoisted/peers 语义与 `dsh plugin` 一致），使 `node_modules/<包名>` 指向物化目录。内核启动时 Loader 按 bundle 名从 profile 解析并应用其 patch 层，与 `dsh plugin add` 行为一致。
@@ -75,14 +80,14 @@
 
 | 模式 | 内核侧产物 | 优点 | 缺点 |
 | --- | --- | --- | --- |
-| link（默认，优先尝试） | `kernels/<v>/plugins/<id>` 是指向中央库的符号链接（Windows 上 junction） | 省空间；更新直达；切换内核零拷贝 | 依赖符号链接支持；内核目录不自包含 |
+| link（默认，优先尝试） | 实例 `extensions/plugins/<id>` 是指向中央库的符号链接（Windows 上 junction） | 省空间；更新直达；切换内核零拷贝 | 依赖符号链接支持；内核目录不自包含 |
 | copy（链接失败/用户选择） | 真实目录副本（跳过未变化的文件） | 内核自包含，中央库移动/删除后照常运行；Windows 无链接权限问题 | 更新需重新同步并重跑 profile pnpm install；占空间 |
 
 每个插件记录期望模式；Windows 上链接尝试失败时自动降级为 copy 并在 UI 明示。物化元数据记录实际模式与版本，供「待同步」状态与更新提醒判断。
 
 ## 全量同步与残留清理
 
-管理面板的「同步」是跨内核的对账动作，不只处理当前活动版本：它先按 `store.json` 将中央库中的每个插件重新物化到所有已安装内核，再逐个扫描各内核的 `plugins/` 目录。中央库已删除、但带有外壳 `.meta/<id>.json` 所有权记录的目录会被删除；已失效的符号链接也会被清除，连同对应元数据一起收尾。这样所有由外壳管理的物化结果都与中央库成员一致，即使之前卸载因文件锁只完成了一部分，下一次同步也能清理每个内核中的历史残留。
+管理面板的「同步」是**对当前实例**的对账动作（`sweep_instance_orphans`，作用域是该实例的 `extensions/plugins/`），不跨实例也不跨内核：它先按 `store.json` 把中央库中的每个插件重新物化，再扫描物化目录。物化目录里的条目分四类处理——在 `store` 里且目标存在的保留；不在 `store` 里但已失效（dangling link）的清理；不在 `store` 里但带 `.dsh-meta.json` 所有权记录的清理（用户手动放进 `extensions/` 的目录也算外壳托管）；**既不在 `store` 里、又不是链接、也没有 meta 的外来条目原样保留**。这样所有由外壳管理的物化结果都与中央库成员一致，即使之前卸载因文件锁只完成了一部分，下一次同步也能清理残留。
 
 内核版本页的「已安装」列表会在每个版本号旁显示信息图标；悬停后按需读取该版本的 `plugins/` 目录，展示实际存在的插件、版本、链接/拷贝模式，以及未同步或中央库已移除状态。Tooltip 默认不显示，离开图标后自动隐藏。
 

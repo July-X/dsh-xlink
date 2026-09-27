@@ -1,7 +1,10 @@
 # dsh-xlink 套餐 / Token Plan 用量展示设计
 
 > 本文档描述桌面外壳的「云端套餐用量」功能：查询并展示 MiniMax Token Plan 的双窗口额度
-> 进度与 DeepSeek 按量余额。参考实现是
+> 进度、DeepSeek 按量余额与智谱 GLM 编程套餐的双窗口额度。当前代码实际接入 **4 个 provider**
+> （`subscription.rs` 的 `PROVIDER_ORDER`：`minimax_cn` / `minimax_en` / `deepseek` /
+> `zai_coding_cn`），下面各章按「套餐类（plan）/ 余额类（balance）」两种形态统一描述。
+> 参考实现是
 > [cc-switch](https://github.com/farion1231/cc-switch)（Rust + Tauri，MIT）的
 > `services/coding_plan.rs` 与 `services/balance.rs`，接口字段以其源码为核对基准。
 >

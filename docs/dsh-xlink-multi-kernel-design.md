@@ -1,10 +1,12 @@
 # dsh-xlink 多内核数据目录与扩展管理设计
 
-> 状态：设计稿，尚未实现
+> **状态：设计稿，P0–P8 已实现（2026-09-27 核对）**。本文描述的是**设计意图**，
+> 不是当前行为——请以 [architecture.md](architecture.md) 的「多内核改造后的实际数据布局」
+> 与「窗口模型」「插件与技能」各章为准。两者不一致时以 architecture.md 为准。
 >
 > 日期：2026-09-19
 
-本文把 dsh-xlink 定义为一个可以管理多个内核的桌面 Shell。本文中的 DSH 指 DeepSeek Harness。当前实现主要围绕一个 DSH 内核工作，外壳的 release/dev 构建模式也参与了内核数据目录选择。新设计会把这两件事拆开：release 和 dev 只描述 dsh-xlink Shell，内核、版本和运行实例由独立的数据模型管理。
+本文把 dsh-xlink 定义为一个可以管理多个内核的桌面 Shell。本文的 DSH 指 DeepSeek Harness。**已实现**：当前外壳已按此设计拆开了 release/dev 构建模式与内核数据模型，内核、版本与运行实例由独立的数据模型管理（见 `instance.rs` / `paths.rs`）。
 
 ## 1. 结论
 
