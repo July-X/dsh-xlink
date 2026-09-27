@@ -1417,7 +1417,12 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);
             }
-            let result = builder.build().map(|_| ()).map_err(|e| {
+            let result = builder.build();
+            if result.is_ok() {
+                // 建出后以实测外框校正：外框高度对齐主壳 + 补偿不可见边框贴紧。
+                crate::window::snap_to_main(&handle, crate::window::LOG_VIEWER_LABEL);
+            }
+            let result = result.map(|_| ()).map_err(|e| {
                 format!("打开日志窗口失败：{e}。可改用主面板的「查看日志」弹窗，或重试")
             });
             let _ = tx.send(result);

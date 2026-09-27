@@ -14,6 +14,32 @@ import { countdownFullLabel, countdownLabel, relativeAgeCompact, relativeTimeLab
 // 概览卡片摘要的最小请求间隔：与 usage 卡片同款 TTL（后端另有 5 分钟缓存）。
 const SUMMARY_TTL_MS = 60_000;
 
+// 每个会话（每次启动外壳）的首次加载强制越过缓存：Rust 侧对 expired 凭据
+// 的条目不做自动重试，不强制的话「下次启动发现 key 可用」永远发现不了——
+// 一次启动多打三个查询接口，换来隐藏项能自动恢复显示。
+let sessionFirstLoad = true;
+
+// 本会话内已经弹过「是否隐藏」提示的 provider：不重复打扰；查询成功后
+// 清除，之后若再次失败可以再问一次。
+const failurePromptAsked = new Set();
+
+/** 该 provider 是否还需要弹「是否隐藏」提示（configured、处于失败态
+ * （providerStateText 非 null）、未隐藏、本会话没问过）。 */
+export function failurePromptPending(provider) {
+  return (
+    !!provider &&
+    provider.configured === true &&
+    providerStateText(provider) !== null &&
+    !isProviderHidden(provider.id) &&
+    !failurePromptAsked.has(provider.id)
+  );
+}
+
+/** 记下「已提示过」，用户取消时也不会在本次会话内反复弹。 */
+export function markFailurePrompted(id) {
+  failurePromptAsked.add(id);
+}
+
 // 与 Rust 侧 kind 字段同源的展示配置。
 export const PLAN_KIND = 'plan';
 export const BALANCE_KIND = 'balance';
@@ -29,6 +55,49 @@ export const subscription = reactive({
   errors: [],
   loadedAt: 0,
 });
+
+// --- 隐藏查不到数据的 provider（提示 → 隐藏 → 成功自动恢复） -----------------
+// key 配了但一直查不到数据（key 错误 / 凭据失效）时，概览卡会弹确认框问用户
+// 是否隐藏该项；选择存 localStorage（跨启动保留），之后某次查询一旦成功
+// （包括下次启动的强制首查）就自动恢复显示并清除记录。
+const HIDDEN_STORAGE_KEY = 'dshxlink.subscription.hiddenProviders';
+const hiddenProviderIds = reactive(loadHiddenIds());
+
+function loadHiddenIds() {
+  try {
+    const list = JSON.parse(window.localStorage.getItem(HIDDEN_STORAGE_KEY) || '[]');
+    return Array.isArray(list) ? list.filter((id) => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistHiddenIds() {
+  try {
+    window.localStorage.setItem(HIDDEN_STORAGE_KEY, JSON.stringify([...hiddenProviderIds]));
+  } catch {
+    // 持久化失败只影响跨启动记忆，会话内的行为不受影响。
+  }
+}
+
+/** 该 provider 是否被用户选择隐藏（概览卡不再展示、错误横幅不再提及）。 */
+export function isProviderHidden(id) {
+  return hiddenProviderIds.includes(id);
+}
+
+/** 隐藏一个 provider（用户在「查不到数据」提示里确认后调用）。 */
+export function hideProvider(id) {
+  if (!id || hiddenProviderIds.includes(id)) return;
+  hiddenProviderIds.push(id);
+  persistHiddenIds();
+}
+
+function unhideProvider(id) {
+  const at = hiddenProviderIds.indexOf(id);
+  if (at < 0) return;
+  hiddenProviderIds.splice(at, 1);
+  persistHiddenIds();
+}
 
 // --- 纯展示函数 ---------------------------------------------------------------
 
@@ -115,10 +184,13 @@ export function tierRow(tier, now = Date.now()) {
   };
 }
 
-/** 从视图收集错误文案（provider 级），供横幅展示；无错误返回空数组。 */
+/** 从视图收集错误文案（provider 级），供横幅展示；无错误返回空数组。
+ * 已被用户隐藏的 provider 不再提及——它们本来就因为「查不到数据」被隐藏，
+ * 恢复显示由查询成功自动触发，横幅重复报错只会让隐藏失去意义。 */
 export function collectErrors(view) {
   const errors = [];
   for (const provider of (view && view.providers) || []) {
+    if (isProviderHidden(provider.id)) continue;
     const text = providerStateText(provider);
     if (text) errors.push(`${provider.label}：${text}`);
   }
@@ -127,6 +199,14 @@ export function collectErrors(view) {
 
 function applyView(data) {
   subscription.data = data;
+  for (const provider of (data && data.providers) || []) {
+    // providerStateText 非 null 即「本次失败 / 凭据失效 / 业务错误」；其余
+    // 视为查询成功（或 keep-last-good 且未带新错误），自动恢复被隐藏的分区。
+    if (providerStateText(provider) === null) {
+      unhideProvider(provider.id);
+      failurePromptAsked.delete(provider.id);
+    }
+  }
   subscription.errors = collectErrors(data);
   subscription.loadedAt = Date.now();
 }
@@ -150,13 +230,17 @@ export function isProviderRefreshing(id) {
 
 // --- 状态动作 ---------------------------------------------------------------
 
-/** 概览卡片：TTL 内复用上次结果。失败只写 errors，不动 data（keep-last-good）。 */
+/** 概览卡片：TTL 内复用上次结果。失败只写 errors，不动 data（keep-last-good）。
+ * 会话首次加载强制越过缓存（见 sessionFirstLoad）：让「key 修好了」在下一次
+ * 启动时就能被发现，被隐藏的分区随之自动恢复。 */
 export async function loadSubscriptionSummary() {
   if (subscription.loadedAt && Date.now() - subscription.loadedAt < SUMMARY_TTL_MS) {
     return subscription.data;
   }
+  const force = sessionFirstLoad;
+  sessionFirstLoad = false;
   try {
-    applyView(await invoke('get_subscription_usage', { provider: null, force: false }));
+    applyView(await invoke('get_subscription_usage', { provider: null, force }));
   } catch (e) {
     subscription.errors = [formatActionError('查询套餐用量失败', e, '已保留上次结果，可点击刷新重试')];
   }

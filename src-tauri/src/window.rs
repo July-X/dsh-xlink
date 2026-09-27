@@ -2,13 +2,17 @@
 //
 // 「吸附」指打开时把窗口贴在主窗右侧（主窗贴近屏幕右缘时自动翻左侧）、
 // 与主窗顶边对齐（底部超出行程则上移夹回屏内），让两个窗口看起来像同一
-// 个工作区。「移动跟随」指主窗被拖动时，副窗通过主窗的 `on_window_event`
-// 监听 `Moved` 事件按合帧窗口（~60fps）持续 `set_position`，始终保持吸附；
-// 每轮拖动开始先把副窗提到最前（set_focus），连动穿过其他应用窗口时不被压在后面。
+// 个工作区。builder 阶段只能按逻辑目标尺寸落位；窗口建出后 [`snap_to_main`]
+// 再以实测外框校正一次：外框高度对齐主壳（带装饰窗口的标题栏不再多出一截）、
+// 补偿 Windows 不可见缩放边框把两窗贴紧。「移动跟随」指主窗被拖动时，副窗
+// 通过主窗的 `on_window_event` 监听 `Moved` 事件按合帧窗口（~60fps）持续
+// `set_position`，始终保持吸附；每轮拖动开始先把副窗提到最前（set_focus），
+// 连动穿过其他应用窗口时不被压在后面。
 //
-// 这两条路径被日志查看器（`commands::open_log_window`）和模型用量窗口
-// （`usage::open_usage_window`）共用——它们的差别只是窗口尺寸与 label，
-// 几何算法完全一致。共用的好处是 dock / 跟随的行为绝对不会「一个修一个忘」。
+// 这两条路径被日志查看器（`commands::open_log_window`）、模型用量窗口
+// （`usage::open_usage_window`）与套餐用量窗口（`subscription.rs`）共用——
+// 它们的差别只是窗口尺寸与 label，几何算法完全一致。共用的好处是 dock /
+// 跟随的行为绝对不会「一个修一个忘」。
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -20,7 +24,7 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(15);
 /// 副窗提到最前再进入跟随。
 const DRAG_START_QUIET: Duration = Duration::from_millis(400);
 
-use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewWindow, WindowEvent};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowSize {
@@ -43,13 +47,25 @@ pub const LOG_VIEWER_SIZE: WindowSize = WindowSize {
 };
 
 /// 吸附 X（物理像素）：优先把窗口贴在主窗右侧；右侧放不下就翻到主窗左侧。
-pub fn dock_x(main_x: i32, main_w: i32, win_w: i32, mon_x: i32, mon_w: i32) -> i32 {
+/// `inset_left` / `inset_right` 是副窗外框左右的**不可见边框**宽度（Windows
+/// 带装饰窗口的 rect 左右各含约 7 逻辑像素的缩放边框，直接按外框对齐会在
+/// 两窗之间留出一条可见缝隙）：右侧贴齐时副窗可见左缘落在主窗右缘，
+/// 左侧贴齐时副窗可见右缘落在主窗左缘。
+pub fn dock_x(
+    main_x: i32,
+    main_w: i32,
+    win_w: i32,
+    mon_x: i32,
+    mon_w: i32,
+    inset_left: i32,
+    inset_right: i32,
+) -> i32 {
     let monitor_right = mon_x.saturating_add(mon_w);
     let right = main_x.saturating_add(main_w);
     let preferred = if right.saturating_add(win_w) <= monitor_right {
-        right
+        right.saturating_sub(inset_left)
     } else {
-        main_x.saturating_sub(win_w)
+        main_x.saturating_sub(win_w.saturating_sub(inset_right))
     };
     clamp_position(preferred, mon_x, mon_w, win_w)
 }
@@ -76,6 +92,8 @@ fn clamp_position(position: i32, monitor_start: i32, monitor_size: i32, window_s
 
 /// 计算指定尺寸下的吸附位置（物理像素）。主窗不在（理论上不会）或取不
 /// 到显示器信息时返回 `None`，调用方据此决定是否落到默认居中。
+/// 此时副窗尚未建出、量不到不可见边框，按 0 估计——建出后由
+/// [`snap_to_main`] 以实测值校正。
 pub fn compute_dock_position(main: &WebviewWindow, window_size: WindowSize) -> Option<(i32, i32)> {
     let scale = main.scale_factor().ok()?;
     let pos = main.outer_position().ok()?;
@@ -92,7 +110,15 @@ pub fn compute_dock_position(main: &WebviewWindow, window_size: WindowSize) -> O
         height_phys,
         *m_pos,
         *m_size,
+        DockInsets::default(),
     ))
+}
+
+/// 副窗外框左右的不可见边框（物理像素）。`Default`（全 0）即「按外框对齐」。
+#[derive(Clone, Copy, Default)]
+pub struct DockInsets {
+    left: i32,
+    right: i32,
 }
 
 fn compute_dock_position_physical(
@@ -102,6 +128,7 @@ fn compute_dock_position_physical(
     window_height: i32,
     monitor_position: PhysicalPosition<i32>,
     monitor_size: tauri::PhysicalSize<u32>,
+    insets: DockInsets,
 ) -> (i32, i32) {
     let x = dock_x(
         main_position.x,
@@ -109,6 +136,8 @@ fn compute_dock_position_physical(
         window_width,
         monitor_position.x,
         monitor_size.width as i32,
+        insets.left,
+        insets.right,
     );
     let y = dock_y(
         main_position.y,
@@ -123,6 +152,7 @@ fn compute_dock_position_for_target(
     main: &WebviewWindow,
     main_position: PhysicalPosition<i32>,
     target_size: tauri::PhysicalSize<u32>,
+    insets: DockInsets,
 ) -> Option<(i32, i32)> {
     let main_size = main.outer_size().ok()?;
     let monitor = main.current_monitor().ok().flatten()?;
@@ -133,7 +163,87 @@ fn compute_dock_position_for_target(
         target_size.height as i32,
         *monitor.position(),
         *monitor.size(),
+        insets,
     ))
+}
+
+/// 量出副窗外框左右的不可见边框（物理像素，见 [`dock_x`]）。`inner_position`
+/// 与 `outer_position` 的差是窗口 rect 到客户区的偏移，外框宽减内框宽再扣掉
+/// 左偏移即右边框。macOS 带装饰窗口横向内外重合，量出本来就是 0；任何一项
+/// 取不到都按全 0 处理（退化为按外框对齐）。
+pub fn dock_insets(win: &WebviewWindow) -> DockInsets {
+    let (Ok(outer_pos), Ok(inner_pos), Ok(outer), Ok(inner)) = (
+        win.outer_position(),
+        win.inner_position(),
+        win.outer_size(),
+        win.inner_size(),
+    ) else {
+        return DockInsets::default();
+    };
+    let left = (inner_pos.x - outer_pos.x).max(0);
+    let right = (outer.width as i32 - inner.width as i32 - left).max(0);
+    DockInsets { left, right }
+}
+
+/// 与主窗外框高度对齐所需的副窗内框高度（物理像素）。`chrome_height` 是副窗
+/// 自身的装饰高度（外框 − 内框，Windows 上为标题栏 + 边框）。装饰吃掉空间
+/// 后装不下 `min_inner` 就返回 None，调用方保持原尺寸不动。
+fn inner_height_matched_to(main_height: i32, chrome_height: i32, min_inner: i32) -> Option<i32> {
+    let desired = main_height.checked_sub(chrome_height)?;
+    (desired >= min_inner).then_some(desired)
+}
+
+/// 建窗后的吸附校正（三类查看器窗口共用）：builder 阶段只有逻辑目标尺寸，
+/// 带装饰窗口的真实外框（标题栏 + 不可见缩放边框）要等窗口建出来才能量到。
+/// 这里以实测为准做两件事：
+/// 1. **高度对齐**：把副窗外框高度调到与主窗外框一致——`inner_size(…, 800)`
+///    建出的窗口外框比 800 高出整个标题栏，视觉上就比主壳长出一截（Windows
+///    上尤其明显）；
+/// 2. **贴紧**：按 [`dock_insets`] 补偿不可见边框后重新落位（右侧放不下翻
+///    左侧，均夹在主窗所在屏幕内）。
+///
+/// 主窗不在（理论不会）或量不到尺寸时保持 builder 落下的位置不动。
+pub fn snap_to_main(handle: &AppHandle, label: &'static str) {
+    let (Some(main), Some(win)) = (
+        handle.get_webview_window("main"),
+        handle.get_webview_window(label),
+    ) else {
+        return;
+    };
+    let Ok(main_pos) = main.outer_position() else {
+        return;
+    };
+    let Ok(main_size) = main.outer_size() else {
+        return;
+    };
+    let Ok(win_outer) = win.outer_size() else {
+        return;
+    };
+    let Ok(win_inner) = win.inner_size() else {
+        return;
+    };
+    // 1) 外框高度与主窗对齐（宽度不动：可缩放窗口的默认宽度已定，拉伸交给
+    //    用户）。先定尺寸再落位，落位按“目标外框高度 == 主窗外框高度”计算，
+    //    不依赖尺寸调整是否已即时生效。
+    let chrome = win_outer.height.saturating_sub(win_inner.height) as i32;
+    if let Some(inner_h) = inner_height_matched_to(main_size.height as i32, chrome, 200) {
+        let scale = win.scale_factor().unwrap_or(1.0);
+        let _ = win.set_size(LogicalSize::new(
+            win_inner.width as f64 / scale,
+            inner_h as f64 / scale,
+        ));
+    }
+    // 2) 补偿不可见边框贴紧主窗。
+    let insets = dock_insets(&win);
+    let Some((x, y)) = compute_dock_position_for_target(
+        &main,
+        main_pos,
+        tauri::PhysicalSize::new(win_outer.width, main_size.height),
+        insets,
+    ) else {
+        return;
+    };
+    let _ = win.set_position(PhysicalPosition::new(x, y));
 }
 
 /// 返回物理像素，WebviewWindowBuilder 的 `position` 要的是逻辑像素。
@@ -210,9 +320,15 @@ pub fn attach_dock_listener(app: &AppHandle, target_label: &'static str) {
                 let Ok(target_size) = target.outer_size() else {
                     continue;
                 };
-                let Some((x, y)) =
-                    compute_dock_position_for_target(&main_for_worker, main_position, target_size)
-                else {
+                // 与 snap_to_main 同一套补偿：拖动跟随时也按不可见边框贴紧，
+                // 否则开窗时贴住的缝隙会在第一次拖动后重新出现。
+                let insets = dock_insets(&target);
+                let Some((x, y)) = compute_dock_position_for_target(
+                    &main_for_worker,
+                    main_position,
+                    target_size,
+                    insets,
+                ) else {
                     continue;
                 };
                 last_apply = Some(now);
@@ -240,12 +356,26 @@ mod tests {
     /// 吸附 X：主窗在屏幕中部时贴主窗右侧；主窗贴近右缘时翻到主窗左侧。
     #[test]
     fn dock_x_prefers_right_side_and_flips_left_when_offscreen() {
+        // 无不可见边框（macOS 内外框重合）时的基线。
         // 主窗在屏幕中部：吸附到主窗右缘。
-        assert_eq!(dock_x(100, 480, 760, 0, 1920), 580);
+        assert_eq!(dock_x(100, 480, 760, 0, 1920, 0, 0), 580);
         // 主窗贴屏幕右缘（1440+480 = 1920）：右侧放不下 → 贴到主窗左侧。
-        assert_eq!(dock_x(1440, 480, 760, 0, 1920), 680);
+        assert_eq!(dock_x(1440, 480, 760, 0, 1920, 0, 0), 680);
         // 副屏在左侧（负坐标）同样成立：贴主窗左侧 = main_x − 窗宽。
-        assert_eq!(dock_x(-1000, 480, 760, -1920, 1920), -1760);
+        assert_eq!(dock_x(-1000, 480, 760, -1920, 1920, 0, 0), -1760);
+    }
+
+    /// 不可见边框补偿（Windows 带装饰窗口）：右侧贴齐时把可见左缘压到主窗
+    /// 右缘（x = 右缘 − 左边框）；翻左侧时把可见右缘压到主窗左缘
+    /// （x = 主窗 x − 窗宽 + 右边框）。
+    #[test]
+    fn dock_x_compensates_invisible_borders() {
+        // 右侧贴齐：可见左缘 = 572 + 8 = 580 = 主窗右缘。
+        assert_eq!(dock_x(100, 480, 760, 0, 1920, 8, 8), 572);
+        // 主窗贴屏幕右缘：翻左侧，可见右缘 = 688 + 760 − 8 = 1440 = 主窗 x。
+        assert_eq!(dock_x(1440, 480, 760, 0, 1920, 8, 8), 688);
+        // DPI 1.5 下边框更宽：7 × 1.5 ≈ 10，补偿量同样生效。
+        assert_eq!(dock_x(100, 480, 760, 0, 1920, 11, 11), 569);
     }
 
     /// 吸附 Y：与主窗顶对齐；底部超出行程则上移夹回屏内。
@@ -259,9 +389,21 @@ mod tests {
         assert_eq!(dock_y(-200, 800, -400, 1000), -200);
     }
 
+    /// 外框高度对齐：内框 = 主窗外框高度 − 副窗装饰高度；装饰吃掉空间后
+    /// 装不下最小内框时返回 None（保持原尺寸，避免负内框 / 过分压缩）。
+    #[test]
+    fn inner_height_matched_to_subtracts_chrome_and_gives_up_when_too_small() {
+        // Windows：主壳外框 800 逻辑像素，副窗标题栏 + 边框吃掉 32 物理像素。
+        assert_eq!(inner_height_matched_to(800, 32, 200), Some(768));
+        // 恰好用尽：内框为 0 也不该给（远小于最小内框）。
+        assert_eq!(inner_height_matched_to(32, 32, 200), None);
+        // 装饰比主窗还高（不可能出现，防御 checked_sub 下溢）。
+        assert_eq!(inner_height_matched_to(100, 120, 200), None);
+    }
+
     #[test]
     fn dock_position_clamps_oversized_windows_to_monitor_origin() {
-        assert_eq!(dock_x(100, 480, 3_000, 0, 1_920), 0);
+        assert_eq!(dock_x(100, 480, 3_000, 0, 1_920, 0, 0), 0);
         assert_eq!(dock_y(100, 2_000, 0, 1_080), 0);
     }
 
