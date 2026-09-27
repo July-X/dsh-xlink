@@ -64,6 +64,7 @@ import {
 } from '../subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents.js';
 import SnapshotCard from './SnapshotCard.vue';
+import BisectPanel from './BisectPanel.vue';
 import { tildePath } from '../labels.js';
 import { confirmDialog } from '../notify.js';
 
@@ -475,6 +476,10 @@ function goVersions() {
          它讲的是「这套配置曾经是什么样」，与用量 / 额度这类度量无关，
          挨着实例区比挨着用量卡更合上下文。 -->
     <SnapshotCard />
+
+    <!-- 深入排查（安全网 P2）。紧跟回退点卡：两者是同一条救生链的前后两段
+         ——先「回到良好状态」，回退解决不了时才需要「定位到底哪里坏」。 -->
+    <BisectPanel />
 
     <!-- 套餐用量：独立只读卡，内容直接展示（无折叠）。MiniMax 双窗口进度 +
          DeepSeek 余额行；完整可操作错误文案只在顶部横幅出现，provider 分区

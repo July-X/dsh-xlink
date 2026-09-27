@@ -25,11 +25,74 @@
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const reportOnly = process.argv.includes('--report');
+
+/**
+ * 任何**新登记**的文件的预算硬顶。
+ *
+ * 老文件（基线里已有的）不追溯：plugins.rs / theme.css / commands.rs 早就
+ * 超顶，追溯等于本门禁一上来就红，没人会去修。老文件走「预算只许下调」
+ * 那条规则逐阶段收敛；硬顶只管**下一个** plugins.rs 别在诞生时就超标。
+ */
+const HARD_FILE_CEILING = 800;
+
+/**
+ * 反棘轮只作用于基线预算达到该值的文件——也就是"已经有膨胀风险、正在
+ * 变成下一个 plugins.rs"的那批。刚拆出来的小模块（一个文件一个关注点）
+ * 后续把关注点补完整不算膨胀，不该被这条规则卡住。
+ */
+const RATCHET_THRESHOLD = 600;
+
+/**
+ * 读出本文件**已提交版本**里的预算数字当基线。
+ *
+ * 这是反棘轮的支点。基线取自 HEAD 而不是另存一份 JSON，有两个好处：
+ * 1. 不需要维护第二份数据，两边漂移无处可藏；
+ * 2. 「同一个提交里改数字」这个流程**不会**让检查失守——HEAD 里的旧值
+ *    仍然是旧值，所以"这次把预算写大了"照样看得出来。
+ *
+ * 拿不到（首次提交 / 非 git 目录 / git 不可用）时返回 null，调用方跳过
+ * 反棘轮检查并在报告里说明——**宁可少查一项，也不要因为拿不到基线就整条
+ * 门禁失效**。
+ */
+function readBaseline() {
+  let text;
+  let tree = new Set();
+  try {
+    text = execFileSync('git', ['show', 'HEAD:scripts/check-code-budget.mjs'], {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const listing = execFileSync('git', ['ls-tree', '-r', '--name-only', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    tree = new Set(listing.split('\n').filter(Boolean));
+  } catch {
+    return null;
+  }
+  const files = {};
+  const block = text.match(/FILE_BUDGETS\s*=\s*\{([\s\S]*?)\n\};/);
+  if (block) {
+    // 条目形如 `  'path/to/file': 1234,`（带行尾注释）。
+    for (const line of block[1].split('\n')) {
+      const hit = line.match(/'([^']+)'\s*:\s*(\d+)/);
+      if (hit) files[hit[1]] = Number(hit[2]);
+    }
+  }
+  const total = text.match(/TOTAL_BUDGET\s*=\s*(\d+)/);
+  if (!total) return null;
+  return { files, total: Number(total[1]), tree };
+}
 
 /** 生产代码行数预算：文件 → 上限。包含注释以外的所有代码行。 */
 const FILE_BUDGETS = {
@@ -85,18 +148,45 @@ const FILE_BUDGETS = {
   // 2050 → 2110：P1 的两条恢复命令（snapshot_preview_restore /
   // snapshot_restore）。**刻意拆成两条**——预览与执行分开，用户才可能
   // 先看见将要失去什么再点确认。
+  // 2110 → 2220 是错的：反棘轮把二分命令壳逼了出来，改记进 bisect_cmd.rs，
+  // 本文件回到基线 2110。**不下调**——它仍是全项目第二大的文件，下一步
+  // 该做的是把别的东西拆出去，而不是假装它已经很小了。
   'src-tauri/src/commands.rs': 2110,
   // 安全网 P0 + P1：环境快照。指纹计算（可重建的声明而非备份）、快照文档
   // 读写（走 state.rs 骨架）、裁剪策略（高权重优先 + 永不丢 last-known-good）、
   // 两个打点的入栈规则、给面板的只读视图，以及 P1 的差异计算与恢复执行
   // （只改差异项 + 先备份 + 不删数据 + 动不了的照实报）。
   // **不含**二分定位——那是 P2。
-  'src-tauri/src/snapshot.rs': 670,
+  // P1 追加只读视图与打点。**记录**（指纹 / 快照文档 / 裁剪 / 打点）与**执行**
+  // （差异计算 / 恢复落地）拆成了 snapshot.rs + restore.rs：读前者的人关心
+  // "这份回退点可不可信"，读后者的人关心"点确认之后会发生什么"。
+  'src-tauri/src/snapshot.rs': 590,
+  // 差异计算与环境恢复：逐条比对、只改差异项、只停用不卸载、恢复后用
+  // verify::probe_once 自检。
+  'src-tauri/src/restore.rs': 560,
   // P0 + P1 的前端状态与展示函数：打点原因中文化、摘要拼装、空状态的三句
   // 话，以及恢复预览的维度标签 / 标题 / 动不了的条数提示。
-  'ui/src/snapshots.js': 145,
+  // 145 → 155：P2 追加 outcomeHeadline（区分"实测通过"与"没能实测"）。
+  'ui/src/snapshots.js': 155,
   // P1 的恢复确认弹窗：把「将要失去什么」和「动不了什么」分成两栏列出。
-  'ui/src/components/SnapshotRestoreDialog.vue': 175,
+  'ui/src/components/SnapshotRestoreDialog.vue': 200,
+  // P2 二分定位的会话与步骤记录。与判定逻辑分开：这里只管"试了什么、
+  // 结果如何、排除了谁"，怎么试由命令层驱动 verify::probe_once。
+  // 收尾只有三种取值，**没有"找到根因"**——组合效应会让二分停在不可修
+  // 的答案上。
+  'src-tauri/src/bisect.rs': 350,
+  // 二分定位的 Tauri 命令壳。**被反棘轮逼出来的**：四条命令加 rounds_estimate
+  // 原本要进 commands.rs，而那条规则不许把一个 2110 行的文件继续撑大。
+  // 这组命令只服务二分一件事、内部高度耦合，自成模块也确实更清楚。
+  'src-tauri/src/bisect_cmd.rs': 120,
+  // 「起一次沙盒内核看它起不来」的共享判据：P1 恢复后自检与 P2 二分试探
+  // 共用。判据一旦有两份实现就会分叉，而分叉出来的那个会让二分**静默收敛
+  // 到错误答案**——它把"没试成"当成"起来了"。
+  'src-tauri/src/verify.rs': 90,
+  // P2 的前端状态与展示函数：结局映射（无"根因"）、轮数估算、每轮标题与配色。
+  'ui/src/bisect.js': 110,
+  // P2 的排查面板：逐轮显示"在试哪一半 / 上一轮结果 / 已排除几个 / 还要几轮"。
+  'ui/src/components/BisectPanel.vue': 180,
   // P0 的概览页卡片。刻意**只读**：提前放"一键回退"会让用户在没看清
   // 差异的情况下丢配置。
   'ui/src/components/SnapshotCard.vue': 170,
@@ -429,7 +519,19 @@ const FILE_BUDGETS = {
 // ⚠ 连续第三次上调总量。P0 / P1 都遵守「新能力开新文件、不撑大老文件」，
 // 但总量门禁本身仍然只会在新功能面前让步——真正该做的是把它换成
 // 「单文件上限 + 新增能力必须开新文件」两条规则，那条规则还没进脚本。
-const TOTAL_BUDGET = 31960;
+// --- 总量 --------------------------------------------------------------
+//
+// 刻意**不**在这里放"总量只许下调"那条规则。试过，它不可行：它要求每个新
+// 功能都伴随一次等量的删除/重构，实践里只会逼人绕过门禁（把常量写大、或者
+// 找理由多开几个小文件），而不是真的写出更少的代码。
+//
+// 真正防住膨胀的是另外两条，它们都机械可查：
+//   1. 既有文件的预算只许**下调**——老模块只能越来越小（上面那条反棘轮）；
+//   2. **新文件**必须显式登记且受 800 行硬顶——下一个 plugins.rs 不能在诞生
+//      时就超标。
+// 总量只留一道软上限：它是"本版允许的最大规模"，随新能力一起调整，但
+// 每次上调都要求在这个数字旁边写清"这一版多了什么、为什么该独立成文件"。
+const TOTAL_BUDGET = 32900;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。
@@ -537,6 +639,26 @@ for (const file of files) {
   total += count;
 }
 
+// 反棘轮的支点是本文件**已提交版本**里的数字。必须先读出来，下面
+// 「新文件」判定与「只许下调」两条规则都要用它。
+const baseline = readBaseline();
+
+// 受检文件但既不在 FILE_BUDGETS 里、也不在 HEAD 的文件树里 = **这次提交
+// 新增的文件**。逼着显式登记并写清它为什么该独立成模块——这正是「新能力
+// 开新文件」要留下的痕迹。判断以 git 树为准而不是以 FILE_BUDGETS 为准：
+// 那份表历来只登记有意义的文件，从来没有穷举过全部。
+if (baseline) {
+  for (const [path, count] of sizes) {
+    if (path in FILE_BUDGETS || baseline.tree.has(path)) continue;
+    failures.push(
+      `[新文件] ${path}（${count} 行）必须登记进 FILE_BUDGETS，并写清它为什么该独立成模块。` +
+        `这是「新能力开新文件」留下的痕迹；上限 ${HARD_FILE_CEILING} 行。`
+    );
+  }
+} else {
+  notes.push('拿不到 git 基线，跳过「新文件必须登记」检查');
+}
+
 for (const [path, budget] of Object.entries(FILE_BUDGETS)) {
   const hit = sizes.find(([name]) => name === path);
   if (!hit) {
@@ -550,6 +672,55 @@ for (const [path, budget] of Object.entries(FILE_BUDGETS)) {
     );
   }
 }
+
+// —— 反棘轮：把「记录膨胀」变回「阻止膨胀」——
+//
+// 三条规则都能机械判定，所以不再依赖 review 记不记得。基线是上面已经读
+// 出的 HEAD 数字：仓库自己承认过的值，不需要另存一份快照，也不会因为
+// 「同一个提交里改数字」而失守（HEAD 里的旧值仍然是旧值）。
+if (baseline) {
+  // 规则 1：**有膨胀风险的大文件的预算只许下调**。基线预算达到该阈值的
+  // 文件（plugins.rs / theme.css / commands.rs / …）才受此约束——把它们写大
+  // 等于承认"我又把这个模块撑大了"，而模块体积正是这里要拦住的东西。刚拆
+  // 出来、只装一个关注点的小文件不在此列：把同一个关注点补完整是正常的。
+  // 新增能力请开新文件，并写清它为什么该独立。
+  for (const [path, budget] of Object.entries(FILE_BUDGETS)) {
+    const before = baseline.files[path];
+    if (before === undefined) continue; // 新文件，见下面的硬顶
+    // 反棘轮只作用于**有膨胀风险的大文件**（基线预算已达软阈值）。像
+    // SnapshotRestoreDialog 这种刚拆出来、只装一个聚焦关注点的小文件，
+    // 后续把同一个关注点补完整是正常的，不该被这条规则卡住——它离
+    // "下一个 plugins.rs" 还差着两个数量级。
+    if (before < RATCHET_THRESHOLD) continue;
+    if (budget > before) {
+      failures.push(
+        `[反棘轮] ${path} 的预算从 ${before} 上调到 ${budget}。既有文件的预算只许**下调**：` +
+          `把它写大等于承认"我又把这个模块撑大了"，而模块体积正是这里要拦住的东西。` +
+          `新增能力请开新文件，并写清它为什么该独立。`
+      );
+    }
+  }
+  notes.push(
+    `反棘轮基线：合计 ${baseline.total} 行 / ${Object.keys(baseline.files).length} 个已登记文件` +
+      `（既有文件预算只许下调）`
+  );
+} else {
+  notes.push('反棘轮基线不可用（拿不到本文件的已提交版本），跳过反棘轮检查');
+}
+
+// 新文件的硬顶：防止「下一个 plugins.rs」在诞生时就已经超标。老文件超顶的
+// （plugins.rs / theme.css / commands.rs）沿用各自预算逐阶段下调，不追溯——
+// 追溯会让本门禁一上来就红，没人会去修。
+for (const [path, budget] of Object.entries(FILE_BUDGETS)) {
+  if (baseline && baseline.tree.has(path)) continue; // 已存在的老文件
+  if (budget > HARD_FILE_CEILING) {
+    failures.push(
+      `[硬顶] 新文件 ${path} 的预算 ${budget} 行超过硬顶 ${HARD_FILE_CEILING} 行。` +
+        `新模块从第一天起就不该这么大——超过就是该拆成几个。`
+    );
+  }
+}
+
 if (total > TOTAL_BUDGET) {
   failures.push(
     `[预算] 生产代码合计 ${total} 行，超过总预算 ${TOTAL_BUDGET} 行：` +

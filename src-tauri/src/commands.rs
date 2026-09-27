@@ -144,7 +144,9 @@ pub struct StatusView {
 /// 改用本助手之前，本文件里手工写 `spawn_blocking(...).await.map_err(|e| e.to_string())?`
 /// 有 20 多处，每处的 `JoinError` 都会把 tauri 的英文 "task panicked" /
 /// "task was cancelled" 直接甩到 UI 上；这里统一换成带下一步的中文文案。
-async fn blocking<T, E>(f: impl FnOnce() -> Result<T, E> + Send + 'static) -> Result<T, String>
+pub(crate) async fn blocking<T, E>(
+    f: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, String>
 where
     T: Send + 'static,
     E: ToString + Send + 'static,
@@ -199,7 +201,7 @@ pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<St
 
 /// 通过 per-app 缓存解析 Node 运行时；只有 `node_path` 设置发生变化
 /// 时才会触发一次新的探测。“帮我安装”成功后由 `install_node` 主动清缓存。
-fn cached_node(state: &AppState, settings: &settings::Settings) -> node::NodeInfo {
+pub(crate) fn cached_node(state: &AppState, settings: &settings::Settings) -> node::NodeInfo {
     let data_dir = state.data_dir.clone();
     let key = settings.node_path.clone();
     // 命中缓存时立刻返回；未命中则**先释放锁**再探测。
@@ -372,12 +374,12 @@ pub async fn snapshot_list(
 pub async fn snapshot_preview_restore(
     state: State<'_, AppState>,
     id: String,
-) -> Result<crate::snapshot::RestoreDiff, String> {
+) -> Result<crate::restore::RestoreDiff, String> {
     let data_dir = state.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (family, instance_id) = plugins::default_instance_key();
         let settings = settings::load_for_shell(settings::current_mode());
-        crate::snapshot::diff(
+        crate::restore::diff(
             &data_dir,
             &family,
             &instance_id,
@@ -399,10 +401,10 @@ pub async fn snapshot_restore(
     app: AppHandle,
     id: String,
     on_event: Channel<String>,
-) -> Result<crate::snapshot::RestoreOutcome, String> {
+) -> Result<crate::restore::RestoreOutcome, String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
     let promise_send = on_event.clone();
-    blocking(move || -> Result<crate::snapshot::RestoreOutcome, String> {
+    blocking(move || -> Result<crate::restore::RestoreOutcome, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let settings = settings::load_for_shell(settings::current_mode());
@@ -414,13 +416,14 @@ pub async fn snapshot_restore(
         let mut progress = |msg: &str| {
             let _ = on_event.send(msg.to_string());
         };
-        crate::snapshot::restore(
+        crate::restore::restore(
             &data_dir,
             &family,
             &instance_id,
             &settings.profile,
             settings.port,
             &pnpm_exe,
+            Path::new(&node_info.path),
             &id,
             &mut progress,
         )
@@ -429,6 +432,11 @@ pub async fn snapshot_restore(
     .await
 }
 
+/// 打开 / 关闭「安装前先做沙盒预检」。返回生效后的取值，供 UI 立即回显。
+///
+/// 独立命令而不是塞进 `save_settings`：预检开关属于「插件」卡片，和端口 /
+/// profile 那张「设置」卡不是同一件事，混在一起会让面板的保存语义继续
+/// 含糊不清。
 #[tauri::command]
 pub async fn plugin_set_precheck(enabled: bool) -> Result<bool, String> {
     let mode = settings::current_mode();
