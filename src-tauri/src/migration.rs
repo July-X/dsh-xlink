@@ -1223,6 +1223,14 @@ mod tests {
     fn legacy_source_target_matches_new_layout_paths() {
         // 直接锁定源 → 目标的映射——这是迁移向导的核心契约：preview 与
         // 复制步骤都按这个表来。任何改动都必须先改这里 + 改测试。
+        //
+        // 必须持住 env 锁：并行的 TempHome 测试会把 `DSH_XLINK_HOME` 指到
+        // 各自的临时目录，不持锁的话 `plugins_store_root()` 与 `target()`
+        // 两次取值可能落在不同的 env 上，断言就和别的线程赛跑（间歇失败）。
+        let guard = crate::tests::scoped_xlink_home(
+            &std::env::temp_dir().join("dsh-migration-layout-check"),
+        );
+        let _ = &guard;
         use LegacySource::*;
         let cases = [
             (Plugins, plugins_store_root()),
