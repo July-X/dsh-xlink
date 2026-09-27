@@ -309,3 +309,47 @@ test('设置页的 loading key 与模块内登记的一致', async () => {
     assert.ok(panel.includes(`isLoading('${key}')`), `SettingsPanel 必须为 ${key} 绑定 loading`);
   }
 });
+
+test('完成记录带最近一轮对话（问 / 答），缺失字段回落空串', async () => {
+  const { normalizeNotificationStatus } = await import('../src/notifications.js');
+  const status = normalizeNotificationStatus({
+    items: [
+      {
+        sessionId: 'abc',
+        title: '修复通知文案',
+        finishedAtMs: 1_761_308_400_000,
+        durationMs: 200_000,
+        lastPrompt: '通知功能应该显示最近一次对话',
+        lastResponse: '已加上：通知与列表都带问 / 答和完成时间',
+      },
+      { sessionId: 'legacy', title: '老内核会话', finishedAtMs: 5, durationMs: 0, lastPrompt: 42 },
+    ],
+  });
+  assert.equal(status.items.length, 2);
+  assert.equal(status.items[0].lastPrompt, '通知功能应该显示最近一次对话');
+  assert.equal(status.items[0].lastResponse, '已加上：通知与列表都带问 / 答和完成时间');
+  // 非字符串回落空串：老内核没有 turnOutline 投影，列表省略问 / 答行。
+  assert.equal(status.items[1].lastPrompt, '');
+  assert.equal(status.items[1].lastResponse, '');
+});
+
+test('formatNotifyTime：当天 HH:MM，跨天带 MM-DD，非法时间戳空串', async () => {
+  const { formatNotifyTime } = await import('../src/notifications.js');
+  // 固定「现在」，避免测试对真实时钟敏感。
+  const now = new Date(2026, 8, 27, 14, 30).getTime(); // 本地 2026-09-27 14:30
+  const sameDay = new Date(2026, 8, 27, 9, 5).getTime();
+  assert.equal(formatNotifyTime(sameDay, now), '09:05');
+  const earlier = new Date(2026, 7, 1, 8, 0).getTime();
+  assert.equal(formatNotifyTime(earlier, now), '08-01 08:00');
+  assert.equal(formatNotifyTime(0, now), '');
+  assert.equal(formatNotifyTime(Number.NaN, now), '');
+});
+
+test('formatNotifyDuration 与 Rust format_duration 同口径', async () => {
+  const { formatNotifyDuration } = await import('../src/notifications.js');
+  assert.equal(formatNotifyDuration(0), '');
+  assert.equal(formatNotifyDuration(999), '');
+  assert.equal(formatNotifyDuration(200_000), '3 分 20 秒');
+  assert.equal(formatNotifyDuration(59 * 60_000 + 12_000), '59 分 12 秒');
+  assert.equal(formatNotifyDuration(7_560_000), '2 小时 6 分');
+});

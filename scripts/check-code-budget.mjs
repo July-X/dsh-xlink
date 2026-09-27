@@ -43,7 +43,9 @@ const FILE_BUDGETS = {
   // 新增搜索框工具条、分类 chip 单行横滚、结果计数行与 .catalog-row
   // 行式条目样式；旧 .catalog-card / .catalog-card-head / .catalog-title /
   // .catalog-card-foot / .catalog-tags 随之删除，净 +62。
-  'ui/src/theme.css': 3160,
+  // 3160 → 3225：通知卡「最近完成」列表样式（.notify-items / .notify-item /
+  // 问答角色徽标，~+62）。
+  'ui/src/theme.css': 3225,
   // P4 step 3：物化路径切到实例 extensions/plugins/<id>/，抽出 materialize_inner
   // 共享逻辑、新增 materialize_one_for_instance / remove_materialized_for_instance
   // / sweep_instance_orphans / default_instance_key / seed_default_instance_for_tests
@@ -98,7 +100,11 @@ const FILE_BUDGETS = {
   // 1050 → 1090：会话标题改为订阅 `session/control`（baseline 播种 + 标题投影帧
   // 保鲜 + 老内核退回 session/list 快照），这部分逻辑与 Center 同生共死，拆出去
   // 只会把状态机切成两半。详见 docs/notification-design.md §3.3。
-  'src-tauri/src/notify.rs': 1090,
+  // 1090 → 1170：通知带「最近一轮对话」——Center 增 `last_turns` 表
+  // （turnOutline 投影末项；baseline / 投影帧 / session/list / api-session/added
+  // 四个来源共用一套吸收逻辑）+ CompletedTask 增 lastPrompt / lastResponse +
+  // 通知正文带最近对话与「完成于 HH:MM」。与标题同源同命，不拆分。
+  'src-tauri/src/notify.rs': 1170,
   'src-tauri/src/guard.rs': 940,
   'ui/src/store.js': 430,
   // 多内核改造 P0：新路径模块（paths.rs）。包含 ShellMode、xlink_home、shell
@@ -355,7 +361,13 @@ const FILE_BUDGETS = {
 // `run_migration_with_progress` 全部成功后自动写静音标记（~+40 含测试）；
 // migration.js 的 maybeOpenMigrationPrompt 加迁移历史兜底（+3）。
 // migration.rs 预算 800 → 830，总预算 +60 留余量。
-const TOTAL_BUDGET = 29580;
+// 29580 → 29760：任务完成通知带「最近一轮对话 + 完成时间」。notify.rs
+// 增 last_turns 表（turnOutline 投影末项，四个来源共用一套吸收逻辑）与
+// CompletedTask.lastPrompt / lastResponse（+73）；theme.css 通知卡最近完成
+// 列表样式（+62）；notifications.js 增问 / 答字段与时间 / 时长格式化
+// （+42）；SettingsPanel 增最近完成列表（+30）。均为新增能力，
+// 重复区间数仍为 6。
+const TOTAL_BUDGET = 29760;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

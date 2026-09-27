@@ -54,7 +54,34 @@ function normalizeItem(raw) {
     cwd: typeof item.cwd === 'string' ? item.cwd : '',
     finishedAtMs: Number.isFinite(item.finishedAtMs) ? item.finishedAtMs : 0,
     durationMs: Number.isFinite(item.durationMs) && item.durationMs > 0 ? item.durationMs : 0,
+    // 最近一轮对话（turnOutline 投影末项；老内核拿不到为空字符串）。
+    lastPrompt: typeof item.lastPrompt === 'string' ? item.lastPrompt : '',
+    lastResponse: typeof item.lastResponse === 'string' ? item.lastResponse : '',
   };
+}
+
+/// 完成时刻 → 展示文案：当天只给 `HH:MM`，更早的带 `MM-DD` 前缀；
+/// 时间戳非法返回空串。
+export function formatNotifyTime(ms, now = Date.now()) {
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return '';
+  const hhmm = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  if (new Date(now).toDateString() === date.toDateString()) return hhmm;
+  return `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${hhmm}`;
+}
+
+/// 运行时长 → 展示文案（与 Rust 侧 `format_duration` 同口径）：
+/// `3 分 20 秒` / `2 小时 5 分`；不足 1 秒返回空串。
+export function formatNotifyDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 1000) return '';
+  const seconds = Math.floor(ms / 1000);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  if (hours > 0) return `${hours} 小时 ${minutes} 分`;
+  if (minutes > 0) return `${minutes} 分 ${rest} 秒`;
+  return `${rest} 秒`;
 }
 
 /// 把 Rust 返回的 NotificationStatus（camelCase）规范化成设置页可直接用的形状。
