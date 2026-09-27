@@ -16,6 +16,8 @@ import {
   markNotificationsRead,
   sendTestNotification,
   testNotificationSound,
+  formatNotifyTime,
+  formatNotifyDuration,
 } from '../notifications.js';
 import { globalBusy, isLoading } from '../loading.js';
 
@@ -126,7 +128,8 @@ onMounted(() => {
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">
-              任务完成后挂未读角标并发送系统通知气泡。
+              任务完成后挂未读角标并发送系统通知气泡；通知与下方「最近完成」列表
+              会带会话的最近一轮对话（问 / 答）与完成时间。
             </div>
           </template>
           <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
@@ -203,6 +206,34 @@ onMounted(() => {
         :closable="false"
         show-icon
       />
+
+      <!-- 最近完成记录：每条带完成时刻与最近一轮对话（提问 + 回复预览）。
+           系统通知气泡里是同一段文案；这里让用户回来也能翻到。 -->
+      <ul v-if="notificationStore.items.length" class="notify-items">
+        <li
+          v-for="item in notificationStore.items"
+          :key="item.sessionId + '-' + item.finishedAtMs"
+          class="notify-item"
+        >
+          <div class="notify-item-head">
+            <span class="notify-item-title" :title="item.cwd">{{ item.title }}</span>
+            <span class="notify-item-time">
+              {{ formatNotifyTime(item.finishedAtMs) || '时间未知'
+                }}<template v-if="formatNotifyDuration(item.durationMs)">
+                · 用时 {{ formatNotifyDuration(item.durationMs) }}</template>
+            </span>
+          </div>
+          <p v-if="item.lastPrompt" class="notify-item-line" :title="item.lastPrompt">
+            <span class="notify-item-role">问</span>{{ item.lastPrompt }}
+          </p>
+          <p v-if="item.lastResponse" class="notify-item-line" :title="item.lastResponse">
+            <span class="notify-item-role">答</span>{{ item.lastResponse }}
+          </p>
+        </li>
+      </ul>
+      <p v-else class="muted notify-hint">
+        还没有完成记录；任务完成后这里会显示会话名、最近一次对话与完成时间。
+      </p>
     </div>
 
     <div class="card" :class="{ 'card-collapsed': !migrationExpanded }">

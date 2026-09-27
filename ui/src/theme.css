@@ -1621,6 +1621,78 @@ main {
   color: var(--muted);
 }
 
+/* 最近完成记录列表：会话名 + 完成时刻一行，问 / 答各一行（单行省略，
+   全文在 title 悬浮里）。480px 窄列里每条压成三行。 */
+.notify-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notify-item {
+  border: 1px solid var(--el-border-color-extra-light);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: var(--el-fill-color-light);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.notify-item-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.notify-item-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notify-item-time {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.notify-item-line {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 问 / 答角色标签：小徽标让两行内容一眼可分，答行用品牌色区分。 */
+.notify-item-role {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  line-height: 16px;
+  background: var(--el-fill-color);
+  color: var(--muted);
+}
+
+.notify-item-line + .notify-item-line .notify-item-role {
+  color: var(--accent);
+}
+
 /* 与「模拟一次任务完成」同排的一句说明：按钮旁的次要文字，不能撑高按钮行。 */
 .notify-test-hint {
   flex: 1 1 auto;

@@ -270,6 +270,22 @@ DPI 下按 20/24 绘制——给一张 32×32 的源图让系统缩小，比给 
 `NSUserNotificationDefaultSoundName`、Windows 传 `Default`），关闭时不设置任何
 声音——两端不设置即为静音。
 
+#### 通知正文（最近一轮对话 + 完成时间）
+
+```
+「会话标题」已完成 · 用时 3 分 20 秒
+最近对话：<turnOutline 末项的 prompt>
+完成于 14:32
+```
+
+「最近对话」来自内核的 `turnOutline` 投影（每轮的 prompt / response 预览，
+内核侧已截断）。数据与标题同源同路：`session/control` baseline、`turnOutline`
+投影变化帧、`session/list` 快照、`api-session/added` 摘要四个来源共用一套
+吸收逻辑写入 Center 的 `last_turns` 表；会话完成（`api-session/status` 转
+idle）时把末项带进 `CompletedTask`。老内核没有该投影时两行为空、正文整行
+省略，退回「标题 + 用时」；设置页「任务通知」卡的**最近完成列表**逐条展示
+同一份数据（会话名、完成时刻、用时、问 / 答预览）。
+
 #### 「试听提示音」为什么单独走一条通道（`notification_test_sound`）
 
 面板上的「试听」按钮**不发通知**，而是直接调系统的提示音接口：

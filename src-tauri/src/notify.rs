@@ -122,6 +122,10 @@ pub struct CompletedTask {
     pub finished_at_ms: u64,
     /// 本次任务运行时长（毫秒）；没观察到开始时刻时为 0。
     pub duration_ms: u64,
+    /// 最近一轮对话的用户提问（`turnOutline` 投影末项；拿不到为空）。
+    pub last_prompt: String,
+    /// 最近一轮对话的助手回复预览（内核已截断；拿不到为空）。
+    pub last_response: String,
 }
 
 /// 解析后的通知设置（磁盘上的 `Option` 在此收敛成具体取值）。
@@ -162,6 +166,14 @@ struct RunningTurn {
     started_at_ms: u64,
 }
 
+/// 会话最近一轮对话（`turnOutline` 投影的末项）——通知里展示「最近一次
+/// 对话」用。内核在每轮开始时写入 prompt、回复过程中更新 response。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LastTurn {
+    prompt: String,
+    response: String,
+}
+
 /// 标题流（`session/control`）在**当前这条连接**上的状态。重连即重置。
 #[derive(Debug, Clone, Copy)]
 struct TitlesStream {
@@ -185,6 +197,9 @@ struct Center {
     /// 快照）、标题投影的变化帧（新建会话标题生成 / 手动改名 / 清空）、以及
     /// `api-session/added` 的摘要；老内核上没有控制流时退回 `session/list` 快照。
     titles: HashMap<String, String>,
+    /// 会话 id → 最近一轮对话。来源与标题相同（`turnOutline` 投影随每轮
+    /// 开始 / 回复更新实时推送），完成时取出来放进通知。
+    last_turns: HashMap<String, LastTurn>,
     /// 会话 id → 最近一次判定的完成时刻，用于丢弃重连后重放的完成事件。
     last_finished: HashMap<String, u64>,
     watching: bool,
@@ -202,6 +217,7 @@ impl Center {
             running: HashMap::new(),
             subagents: HashSet::new(),
             titles: HashMap::new(),
+            last_turns: HashMap::new(),
             last_finished: HashMap::new(),
             watching: false,
             last_error: None,
@@ -321,6 +337,8 @@ pub fn send_test(app: &AppHandle) -> NotificationStatus {
         cwd: String::new(),
         finished_at_ms: crate::process::epoch_millis(),
         duration_ms: 0,
+        last_prompt: "这是一条模拟的任务完成通知".into(),
+        last_response: String::new(),
     };
     {
         let mut center = center();
@@ -701,9 +719,10 @@ fn fallback_session_titles(cookie: &str, port: u16) {
         center.titles_stream.fallback_done = true;
     }
     match fetch_session_titles(cookie, port) {
-        Ok(titles) => {
+        Ok((titles, turns)) => {
             let mut center = center();
             center.titles.extend(titles);
+            center.last_turns.extend(turns);
             center.titles_seeded = true;
         }
         Err(error) => {
@@ -907,6 +926,11 @@ fn record_status(
         .get(&format!("{session_id}#cwd"))
         .cloned()
         .unwrap_or_default();
+    let last_turn = center
+        .last_turns
+        .get(session_id)
+        .cloned()
+        .unwrap_or_default();
     center.last_finished.insert(session_id.to_string(), now_ms);
     Some(CompletedTask {
         session_id: session_id.to_string(),
@@ -916,6 +940,8 @@ fn record_status(
         duration_ms: started
             .map(|turn| now_ms.saturating_sub(turn.started_at_ms))
             .unwrap_or(0),
+        last_prompt: last_turn.prompt,
+        last_response: last_turn.response,
     })
 }
 
@@ -950,8 +976,12 @@ fn fetch_auth_cookie(launch_url: &str, port: u16) -> Result<String, String> {
     Ok(pair)
 }
 
-/// 一次性读取全部会话标题（每个内核进程最多一次）。
-fn fetch_session_titles(cookie: &str, port: u16) -> Result<HashMap<String, String>, String> {
+/// `session/list` 兜底快照的一次抓取结果：标题表（含 `<id>#cwd` 审计项）
+/// 与最近一轮对话表。
+type TitlesSnapshot = (HashMap<String, String>, HashMap<String, LastTurn>);
+
+/// 一次性读取全部会话标题与最近一轮对话（每个内核进程最多一次）。
+fn fetch_session_titles(cookie: &str, port: u16) -> Result<TitlesSnapshot, String> {
     let agent = loopback_agent(Duration::from_secs(20));
     let body = serde_json::json!({
         "type": "client-request",
@@ -983,24 +1013,27 @@ fn fetch_session_titles(cookie: &str, port: u16) -> Result<HashMap<String, Strin
         .and_then(Value::as_array)
         .ok_or_else(|| "session/list 响应缺少 items 字段（内核版本可能不兼容）".to_string())?;
     let mut titles = HashMap::new();
+    let mut turns: HashMap<String, LastTurn> = HashMap::new();
     for item in items {
         let Some(id) = item.get("sessionId").and_then(Value::as_str) else {
             continue;
         };
         let id = normalize_session_id(id);
-        if let Some(title) = item
-            .get("projections")
-            .and_then(|p| p.get("values"))
-            .and_then(|v| v.get("title"))
-            .and_then(Value::as_str)
-        {
-            titles.insert(id.clone(), title.to_string());
+        if let Some(values) = item.get("projections").and_then(|p| p.get("values")) {
+            if let Some(title) = values.get("title").and_then(Value::as_str) {
+                titles.insert(id.clone(), title.to_string());
+            }
+            if let Some(outline) = values.get("turnOutline").and_then(Value::as_array) {
+                if let Some(turn) = last_turn_from_outline(outline) {
+                    turns.insert(id.clone(), turn);
+                }
+            }
         }
         if let Some(cwd) = item.get("cwd").and_then(Value::as_str) {
             titles.insert(format!("{id}#cwd"), cwd.to_string());
         }
     }
-    Ok(titles)
+    Ok((titles, turns))
 }
 
 /// 只访问回环地址、不跟随重定向、不读系统代理的 agent。
@@ -1113,12 +1146,44 @@ const DEFAULT_SOUND: &str = "Default";
 
 /// 通知正文：会话标题 + 用时。
 fn notification_body(task: &CompletedTask) -> String {
+    notification_body_with_time(task, &format_local_hm(task.finished_at_ms))
+}
+
+/// 通知正文（`time_label` 是本地化的完成时刻，单独抽出来让文案可单测）：
+///
+/// ```text
+/// 「标题」已完成 · 用时 3 分 20 秒
+/// 最近对话：<最后一轮的提问>
+/// 完成于 14:32
+/// ```
+fn notification_body_with_time(task: &CompletedTask, time_label: &str) -> String {
     let duration = format_duration(task.duration_ms);
-    if duration.is_empty() {
+    let head = if duration.is_empty() {
         format!("「{}」已完成", task.title)
     } else {
         format!("「{}」已完成 · 用时 {}", task.title, duration)
+    };
+    let mut lines = vec![head];
+    if !task.last_prompt.is_empty() {
+        lines.push(format!("最近对话：{}", task.last_prompt));
     }
+    if !time_label.is_empty() {
+        lines.push(format!("完成于 {time_label}"));
+    }
+    lines.join("\n")
+}
+
+/// 完成时刻 → 本地 `HH:MM`；时间戳非法时返回空串（调用方省略该行）。
+fn format_local_hm(ms: u64) -> String {
+    let Ok(datetime) = time::OffsetDateTime::from_unix_timestamp_nanos(
+        (ms as i64).saturating_mul(1_000_000) as i128,
+    ) else {
+        return String::new();
+    };
+    datetime
+        .to_offset(time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC))
+        .format(&time::macros::format_description!("[hour]:[minute]"))
+        .unwrap_or_default()
 }
 
 /// 毫秒 → 人类可读时长；不足 1 秒或未知时返回空串。
@@ -1164,7 +1229,7 @@ fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
-/// 记下 `api-session/added` 里的会话摘要（标题、cwd、子代理标记）。
+/// 记下 `api-session/added` 里的会话摘要（标题、cwd、子代理标记、最近一轮）。
 fn remember_session(center: &mut Center, summary: &Value) {
     let Some(raw_id) = summary.get("sessionId").and_then(Value::as_str) else {
         return;
@@ -1176,13 +1241,8 @@ fn remember_session(center: &mut Center, summary: &Value) {
         center.subagents.insert(id);
         return;
     }
-    if let Some(title) = summary
-        .get("projections")
-        .and_then(|p| p.get("values"))
-        .and_then(|v| v.get("title"))
-        .and_then(Value::as_str)
-    {
-        center.titles.insert(id.clone(), title.to_string());
+    if let Some(values) = summary.get("projections").and_then(|p| p.get("values")) {
+        absorb_projection_values(center, raw_id, values);
     }
     if let Some(cwd) = summary.get("cwd").and_then(Value::as_str) {
         center.titles.insert(format!("{id}#cwd"), cwd.to_string());
@@ -1213,7 +1273,8 @@ fn handle_control_item(app: &AppHandle, item: &Value) {
     }
 }
 
-/// 用 baseline 播种标题表：`projections[<sessionId>].values.title`。
+/// 用 baseline 播种标题表：`projections[<sessionId>].values` 里既有标题也有
+/// `turnOutline`（最近一轮对话），一并入表。
 fn seed_titles_from_baseline(center: &mut Center, baseline: Option<&Value>) {
     let Some(block) = baseline
         .and_then(|b| b.get("projections"))
@@ -1222,30 +1283,82 @@ fn seed_titles_from_baseline(center: &mut Center, baseline: Option<&Value>) {
         return;
     };
     for (raw_id, entry) in block {
-        let title = entry
-            .get("values")
-            .and_then(|v| v.get("title"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        set_title(center, raw_id, title);
+        if let Some(values) = entry.get("values") {
+            absorb_projection_values(center, raw_id, values);
+        }
     }
 }
 
-/// 应用一条标题投影变化帧：`{sessionId, key: "title", value: string | null}`。
-///
-/// 返回是否真的改了标题表（调用方据此决定要不要广播给面板）。
-fn apply_title_projection(center: &mut Center, frame: &Value) -> bool {
-    if frame.get("key").and_then(Value::as_str) != Some("title") {
+/// 把一份投影 values（baseline / `session/list` / `api-session/added` 共有的
+/// 形状）吸收进通知中心：标题与最近一轮对话。返回是否有变化。
+fn absorb_projection_values(center: &mut Center, raw_id: &str, values: &Value) -> bool {
+    let mut changed = false;
+    if let Some(title) = values.get("title").and_then(Value::as_str) {
+        changed |= set_title(center, raw_id, title);
+    }
+    if let Some(outline) = values.get("turnOutline").and_then(Value::as_array) {
+        changed |= set_last_turn(center, raw_id, outline);
+    }
+    changed
+}
+
+/// 从 `turnOutline` 数组取最近一轮（末项）；空数组 / 字段缺失返回 None。
+fn last_turn_from_outline(outline: &[Value]) -> Option<LastTurn> {
+    let last = outline.last()?;
+    let text = |key: &str| {
+        last.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let turn = LastTurn {
+        prompt: text("prompt"),
+        response: text("response"),
+    };
+    // 两字段全空说明这轮还没有实质内容（刚创建的占位项），不值得记。
+    if turn.prompt.is_empty() && turn.response.is_empty() {
+        return None;
+    }
+    Some(turn)
+}
+
+/// 写入 / 更新一个会话的最近一轮对话。返回是否真的变了。
+fn set_last_turn(center: &mut Center, raw_id: &str, outline: &[Value]) -> bool {
+    let Some(turn) = last_turn_from_outline(outline) else {
+        return false;
+    };
+    let id = normalize_session_id(raw_id);
+    if center.last_turns.get(&id) == Some(&turn) {
         return false;
     }
+    center.last_turns.insert(id, turn);
+    true
+}
+
+/// 应用一条投影变化帧：`{sessionId, key, value}`。认两类 key——`title`
+/// （字符串，改名 / 生成 / 清空）与 `turnOutline`（数组，每轮开始 / 回复
+/// 更新时整表推送，取末项作最近一轮对话）。
+///
+/// 返回是否真的改了表（调用方据此决定要不要广播给面板）。
+fn apply_title_projection(center: &mut Center, frame: &Value) -> bool {
     let Some(raw_id) = frame.get("sessionId").and_then(Value::as_str) else {
         return false;
     };
-    let title = frame
-        .get("value")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    set_title(center, raw_id, title)
+    match frame.get("key").and_then(Value::as_str) {
+        Some("title") => {
+            let title = frame
+                .get("value")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            set_title(center, raw_id, title)
+        }
+        Some("turnOutline") => match frame.get("value").and_then(Value::as_array) {
+            Some(outline) => set_last_turn(center, raw_id, outline),
+            None => false,
+        },
+        _ => false,
+    }
 }
 
 /// 写入 / 清除一条标题，并同步面板里那条完成记录——通知历史不该停在旧名字上
@@ -1644,6 +1757,127 @@ mod tests {
         assert!(!center2.titles.contains_key("abc"));
     }
 
+    /// 最近一轮对话（`turnOutline` 投影）从 baseline 播种、随投影帧更新，
+    /// 完成时被带进通知记录——「最近一次对话」功能的整条链路。
+    #[test]
+    fn turn_outline_flows_into_completed_task() {
+        let mut center = Center::new();
+
+        // baseline：常驻会话的投影快照里带 turnOutline（真实内核的形状）。
+        seed_titles_from_baseline(
+            &mut center,
+            Some(&serde_json::json!({
+                "projections": {
+                    "session-abc": {
+                        "values": {
+                            "title": "修复通知文案",
+                            "turnOutline": [
+                                { "turn": 1, "prompt": "第一轮提问", "response": "第一轮回复" },
+                                { "turn": 2, "prompt": "发布 rc.3", "response": "发布完成 ✅" },
+                            ],
+                        },
+                    },
+                },
+            })),
+        );
+        assert_eq!(
+            center.last_turns.get("abc").map(|t| t.prompt.as_str()),
+            Some("发布 rc.3"),
+            "取末项作为最近一轮"
+        );
+
+        // 完成事件把最近一轮带进记录。
+        record_status(&mut center, "abc", true, 1_000);
+        let task = record_status(&mut center, "abc", false, 2_000).expect("完成记录");
+        assert_eq!(task.last_prompt, "发布 rc.3");
+        assert_eq!(task.last_response, "发布完成 ✅");
+
+        // 新一轮开始：turnOutline 投影帧整表推送，末项更新。
+        assert!(apply_title_projection(
+            &mut center,
+            &serde_json::json!({
+                "sessionId": "session-abc",
+                "key": "turnOutline",
+                "value": [
+                    { "turn": 1, "prompt": "第一轮提问", "response": "第一轮回复" },
+                    { "turn": 2, "prompt": "发布 rc.3", "response": "发布完成 ✅" },
+                    { "turn": 3, "prompt": "通知功能应该显示最近一次对话", "response": "" },
+                ],
+            }),
+        ));
+        assert_eq!(
+            center.last_turns.get("abc").map(|t| t.prompt.as_str()),
+            Some("通知功能应该显示最近一次对话")
+        );
+
+        // 内容量不变的重复帧不算变化，避免无谓广播。
+        assert!(!apply_title_projection(
+            &mut center,
+            &serde_json::json!({ "sessionId": "session-abc", "key": "turnOutline", "value": [
+                { "turn": 1, "prompt": "第一轮提问", "response": "第一轮回复" },
+                { "turn": 2, "prompt": "发布 rc.3", "response": "发布完成 ✅" },
+                { "turn": 3, "prompt": "通知功能应该显示最近一次对话", "response": "" },
+            ] }),
+        ));
+
+        // 没有实质内容的占位项（prompt / response 全空）不入表。
+        assert!(!apply_title_projection(
+            &mut center,
+            &serde_json::json!({ "sessionId": "session-blank", "key": "turnOutline", "value": [
+                { "turn": 1, "prompt": "", "response": "" },
+            ] }),
+        ));
+        assert!(!center.last_turns.contains_key("blank"));
+
+        // 拿不到 turnOutline 的会话（老内核 / 新会话）：记录里两字段为空，
+        // 通知退回「标题 + 用时」的老文案。
+        let unknown = record_status(&mut center, "no-outline", false, 3_000).expect("完成记录");
+        assert_eq!(unknown.last_prompt, "");
+        assert_eq!(unknown.last_response, "");
+    }
+
+    /// 通知正文：标题 + 用时之外，还要带「最近对话」与「完成于 HH:MM」；
+    /// 拿不到最近对话时省略该行，拿不到完成时刻时省略时间行。
+    #[test]
+    fn notification_body_carries_last_conversation_and_finish_time() {
+        let with_all = CompletedTask {
+            session_id: "abc".into(),
+            title: "修复通知文案".into(),
+            cwd: String::new(),
+            finished_at_ms: 1,
+            duration_ms: 200_000,
+            last_prompt: "通知功能应该显示最近一次对话".into(),
+            last_response: String::new(),
+        };
+        assert_eq!(
+            notification_body_with_time(&with_all, "14:32"),
+            "「修复通知文案」已完成 · 用时 3 分 20 秒\n\
+             最近对话：通知功能应该显示最近一次对话\n\
+             完成于 14:32"
+        );
+
+        // 老内核拿不到 turnOutline：退回「标题 + 用时 + 完成时间」。
+        let no_turn = CompletedTask {
+            last_prompt: String::new(),
+            last_response: String::new(),
+            ..with_all.clone()
+        };
+        assert_eq!(
+            notification_body_with_time(&no_turn, "14:32"),
+            "「修复通知文案」已完成 · 用时 3 分 20 秒\n完成于 14:32"
+        );
+
+        // 时长未知 / 完成时刻不可解析：对应片段整行省略，不留空行。
+        let minimal = CompletedTask {
+            duration_ms: 0,
+            ..with_all.clone()
+        };
+        assert_eq!(
+            notification_body_with_time(&minimal, ""),
+            "「修复通知文案」已完成\n最近对话：通知功能应该显示最近一次对话"
+        );
+    }
+
     /// 完成记录里的名字要跟着投影更新走：面板展示的历史不该停在旧标题上。
     #[test]
     fn title_projection_refreshes_recorded_items() {
@@ -1654,6 +1888,8 @@ mod tests {
             cwd: String::new(),
             finished_at_ms: 1,
             duration_ms: 0,
+            last_prompt: String::new(),
+            last_response: String::new(),
         });
 
         assert!(apply_title_projection(
@@ -1923,10 +2159,15 @@ mod live_tests {
         let _ = socket.close(None);
 
         // 标题快照：同一条认证路径上的第二个接口，通知文案依赖它。
-        let titles = fetch_session_titles(&cookie, port).expect("应能读取会话标题");
+        let (titles, turns) = fetch_session_titles(&cookie, port).expect("应能读取会话标题");
         assert!(
             titles.keys().any(|key| !key.ends_with("#cwd")),
             "本机应至少有一个带标题的会话"
+        );
+        // turnOutline 是较新内核才有的投影：老内核上为空不算失败，只打印观察。
+        eprintln!(
+            "dsh-xlink: session/list 里带最近一轮对话的会话数：{}",
+            turns.len()
         );
     }
 
