@@ -84,7 +84,7 @@ const FILE_BUDGETS = {
   // is_store_manifest + merge_store_manifest）+ 合并回归测试 + 共享 env
   // 守卫 scoped_xlink_home_unset 的调用方改造。合并语义是修复「目标清单
   // 被泄漏数据顶新导致源记录永远迁不进来」的根因，逻辑必须留在迁移层。
-  'src-tauri/src/migration.rs': 800,
+  'src-tauri/src/migration.rs': 830,
   'src-tauri/src/skills.rs': 1490,
   'src-tauri/src/patches.rs': 1250,
   // B 类日志 family/instance_id 接入：kernel_log_spec / install_log_spec /
@@ -350,7 +350,12 @@ const FILE_BUDGETS = {
 // 弹确认框 + 隐藏过滤 + 进度条 flex 塌陷修复（WebView2 上纵向 flex 的
 // flex-basis 0% 把 .plan-bar 压成 0 高）。均为新增能力而非复制粘贴，
 // 重复区间数仍为 6。
-const TOTAL_BUDGET = 29520;
+// 29520 → 29580：迁移弹窗重复提示修复。migration.rs 加
+// `MigrationSkipReason` 枚举 + `MigrationSkip.reason` 审计字段 +
+// `run_migration_with_progress` 全部成功后自动写静音标记（~+40 含测试）；
+// migration.js 的 maybeOpenMigrationPrompt 加迁移历史兜底（+3）。
+// migration.rs 预算 800 → 830，总预算 +60 留余量。
+const TOTAL_BUDGET = 29580;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。
