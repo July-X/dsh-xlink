@@ -51,6 +51,7 @@ mod releases;
 mod sandbox;
 mod settings;
 mod skills;
+mod snapshot;
 mod state;
 mod subscription;
 #[cfg(target_os = "windows")]
@@ -288,6 +289,7 @@ pub fn run() {
             commands::plugin_install,
             commands::plugin_precheck_install,
             commands::plugin_set_precheck,
+            commands::snapshot_list,
             commands::plugin_update,
             commands::plugin_uninstall,
             commands::plugin_sync,

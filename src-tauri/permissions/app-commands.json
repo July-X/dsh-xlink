@@ -49,6 +49,7 @@
           "plugin_install",
           "plugin_precheck_install",
           "plugin_set_precheck",
+          "snapshot_list",
           "plugin_update",
           "plugin_uninstall",
           "plugin_sync",

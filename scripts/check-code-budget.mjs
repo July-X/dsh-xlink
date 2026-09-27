@@ -78,7 +78,22 @@ const FILE_BUDGETS = {
   // plugin_set_precheck）+ 共享 run_precheck_command + merge_settings 新增
   // 预检开关继承 + 对应断言，约 +71 行。预检的事务主体刻意不放这里——
   // 见新文件 precheck.rs。
-  'src-tauri/src/commands.rs': 1990,
+  // 1990 → 2050：安全网 P0 的 8 个打点。命令层只放「调度」：
+  // record_pre_change / run_plugin_mutation_command / snapshot_list 三条
+  // 共用路径 + start_kernel 的 startup-ok 钩子 + activate_version 的打点
+  // 位置。指纹、存储、裁剪全在 snapshot.rs。
+  'src-tauri/src/commands.rs': 2050,
+  // 安全网 P0：环境快照。指纹计算（可重建的声明而非备份）、快照文档读写
+  // （走 state.rs 骨架）、裁剪策略（高权重优先 + 永不丢 last-known-good）、
+  // 两个打点的入栈规则，以及给面板的只读视图。**不含**恢复与二分定位
+  // ——那是 P1 / P2。
+  'src-tauri/src/snapshot.rs': 580,
+  // P0 的前端只读面：状态 + 纯展示函数（打点原因中文化、摘要拼装、
+  // 空状态与"还没有成功启动记录"说两句不同的话）。
+  'ui/src/snapshots.js': 110,
+  // P0 的概览页卡片。刻意**只读**：提前放"一键回退"会让用户在没看清
+  // 差异的情况下丢配置。
+  'ui/src/components/SnapshotCard.vue': 170,
   // 安装预检的沙盒生命周期共享层：一次性实例 id / 端口分配 / 目录骨架、
   // 适配器启动与就绪看护、环回 HTTP 存活确认、日志标记扫描、残留回收、
   // 证据另存，以及 Verdict / PrecheckReport 两个对外类型。
@@ -396,7 +411,20 @@ const FILE_BUDGETS = {
 // ⚠ 这次上调让「总量只许因删除而下调」这条自我约束第一次被破例。真正的
 // 修法是把总量门禁换成「单文件上限 + 新增能力必须开新文件」两条，后者在
 // 本次靠「plugins.rs 未上调」兑现了一半，但规则本身还没进脚本。
-const TOTAL_BUDGET = 30630;
+// 30630 → 31280：安全网 P0（环境快照，只读）。净增约 650 行，同样几乎全部
+// 落在**新文件**里：
+//   · snapshot.rs（新增 ~564 行）：指纹 + 存储 + 裁剪 + 打点 + 只读视图。
+//   · SnapshotCard.vue（新增 ~164）+ snapshots.js（新增 ~103）+ 概览页接线。
+//   · commands.rs（1990 → 2050）：8 个打点的调度位置。
+//   · skills.rs / patches.rs 各开一条只读缝（+12 / +8）——活动条目名与
+//     已应用补丁 id 的定义权在各自模块，快照只消费不重新解释。
+//   · ui/test/snapshots.test.js：4 条纯函数断言（不计入生产预算）。
+// plugins.rs / guard.rs / kernel.rs **未上调**。
+//
+// ⚠ 这是连续第二次上调总量。P0 与 P1 都遵守「新能力开新文件、不撑大老
+// 文件」，但总量门禁本身仍然只会在新功能面前让步——真正该做的是把它
+// 换成「单文件上限 + 新增能力必须开新文件」两条规则，那条规则还没进脚本。
+const TOTAL_BUDGET = 31280;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

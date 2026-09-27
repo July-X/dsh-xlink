@@ -319,6 +319,16 @@ pub fn instance_extension_meta_file(family: &str, id: &str, plugin_id: &str) -> 
     instance_extension_plugin_dir(family, id, plugin_id).join(".dsh-meta.json")
 }
 
+/// 给定实例的快照文档：`<...>/snapshots/state.json`。
+///
+/// 快照按实例存放而不是全局——「上一个能跑起来的组合」是**某一个实例**
+/// 的事实，跨实例共享会让 A 实例的插件组合被误当成 B 实例的良好状态。
+pub fn instance_snapshot_file(family: &str, id: &str) -> PathBuf {
+    instance_dir(family, id)
+        .join("snapshots")
+        .join("state.json")
+}
+
 /// 给定实例的 wiring 状态文件：`<...>/extensions/wiring.json`。
 ///
 /// 记录每个插件的 link/copy 模式、内容指纹与是否被 `disabled`。

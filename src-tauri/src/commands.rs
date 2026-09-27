@@ -336,6 +336,34 @@ fn merge_settings(
 /// 独立命令而不是塞进 `save_settings`：预检开关属于「插件」卡片，和端口 /
 /// profile 那张「设置」卡不是同一件事，混在一起会让面板的保存语义继续
 /// 含糊不清。
+/// 读当前实例的快照列表（安全网 P0 的只读面）。
+///
+/// 刻意**不含**恢复动作：P0 只负责让用户看得见「昨天那套配置是什么」，
+/// 恢复要等 P1 的差异预览 + 二次确认。提前放一个「一键回退」按钮会让用户
+/// 在没看清将要发生什么的情况下丢配置。
+#[tauri::command]
+pub async fn snapshot_list(
+    state: State<'_, AppState>,
+) -> Result<crate::snapshot::SnapshotListView, String> {
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (family, instance_id) = plugins::default_instance_key();
+        let settings = settings::load_for_shell(settings::current_mode());
+        let mut view = crate::snapshot::list(
+            &data_dir,
+            &family,
+            &instance_id,
+            &settings.profile,
+            settings.port,
+        );
+        // 展示路径容错读（面板还得能打开），但必须把「读到的是空文档」
+        // 说出来——否则用户会以为"从来没有过回退点"。
+        view.warning = crate::snapshot::warning(&family, &instance_id);
+        view
+    })
+    .await
+    .map_err(|e: tauri::Error| e.to_string())
+}
 #[tauri::command]
 pub async fn plugin_set_precheck(enabled: bool) -> Result<bool, String> {
     let mode = settings::current_mode();
@@ -656,11 +684,15 @@ pub async fn activate_version(app: AppHandle, version: String) -> Result<(), Str
     blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
+        let settings = settings::load_for_shell(settings::current_mode());
+        // 换内核版本是安全网最该兜住的那一类变更：新版本 + 旧插件的组合
+        // 正是"昨天还能用今天起不来"最常见的来源。打点必须在 set_active
+        // **之前**——之后打就只会记下已经换过的状态。
+        record_pre_change(&data_dir, &settings);
         // 切换会在下一次启动时生效，但为了避免运行中的服务与活动指针
         // 不一致，kernel::set_active 会要求工作台已经停止。
         kernel::set_active(&data_dir, &version).map_err(|e| e.to_string())?;
         // 重新接线插件到新活动内核（失败不阻断切换，原因进入插件卡片警告）
-        let settings = settings::load_for_shell(settings::current_mode());
         let node_info = cached_node(&state, &settings);
         let _ = plugins::ensure_wiring_quiet(&data_dir, &settings, &node_info);
         Ok(())
@@ -905,6 +937,25 @@ pub async fn start_kernel(
         // 有人订阅"就等于任务完成通知静默失效。
         if crate::kernel_running(&app) {
             crate::notify::start_watcher(&app);
+        }
+        // 安全网 P0：启动成功且**没有事故** → 打一个 `startup-ok` 快照。
+        // 这是唯一能确立「上一个能跑起来的组合」的时点：安装完成、用户点
+        // 确定都不代表能跑起来，只有真正起来并应答过才算。
+        //
+        // 刻意要求 `incident.is_none()`：带事故启动的实例不算"良好"——比如
+        // 看护停用了两个插件才起来的环境，把它记成 last-known-good，等于让
+        // P1 恢复时把"停用过的状态"当成用户原本的样子。
+        if report.running && report.incident.is_none() {
+            if let Err(error) = crate::snapshot::record(
+                &data_dir,
+                family,
+                instance_id,
+                &settings.profile,
+                settings.port,
+                crate::snapshot::reason::STARTUP_OK,
+            ) {
+                eprintln!("dsh-xlink: 记录启动快照失败：{error}");
+            }
         }
         Ok(report)
     })
@@ -2159,6 +2210,41 @@ async fn run_plugin_command(
     .await
 }
 
+/// 安全网 P0：用户主动变更配置**之前**打一个 `pre-change` 快照。
+///
+/// **只打点、绝不阻断**。快照写不进去（磁盘满、文档损坏）绝不能让用户的
+/// 安装 / 卸载失败——那等于用安全网反过来卡住用户正事。失败只写 stderr。
+fn record_pre_change(data_dir: &Path, settings: &settings::Settings) {
+    let (family, instance_id) = plugins::default_instance_key();
+    if let Err(error) = crate::snapshot::record(
+        data_dir,
+        &family,
+        &instance_id,
+        &settings.profile,
+        settings.port,
+        crate::snapshot::reason::PRE_CHANGE,
+    ) {
+        eprintln!("dsh-xlink: 记录变更前快照失败：{error}");
+    }
+}
+
+/// 变更类插件命令的入口：先打回退点，再走 [`run_plugin_command`]。
+///
+/// 读类命令（检查更新、拉目录）**不能**用它——那些动作不改配置，打一个
+/// 「变更前」快照是假的，会把真有价值的回退点挤掉。
+async fn run_plugin_mutation_command(
+    app: AppHandle,
+    on_event: Channel<String>,
+    op: impl FnOnce(&Path, &settings::Settings, &Path, &mut dyn FnMut(&str)) -> Result<(), AppError>
+        + Send
+        + 'static,
+) -> Result<(), String> {
+    let data_dir = app.state::<AppState>().data_dir.clone();
+    let settings = settings::load_for_shell(settings::current_mode());
+    record_pre_change(&data_dir, &settings);
+    run_plugin_command(app, on_event, op).await
+}
+
 /// 把一个社区插件（npm 包名或 git URL）安装到中央商店，物化到每个内
 /// 核，并完成 profile 接线。
 ///
@@ -2174,7 +2260,7 @@ pub async fn plugin_install(
     on_event: Channel<String>,
 ) -> Result<(), String> {
     let mode = mode.unwrap_or_else(|| String::from("link"));
-    run_plugin_command(
+    run_plugin_mutation_command(
         app,
         on_event,
         move |data_dir, settings, pnpm_exe, progress| {
@@ -2275,7 +2361,7 @@ pub async fn plugin_update(
     id: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    run_plugin_command(
+    run_plugin_mutation_command(
         app,
         on_event,
         move |data_dir, settings, pnpm_exe, progress| {
@@ -2292,7 +2378,7 @@ pub async fn plugin_uninstall(
     id: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    run_plugin_command(
+    run_plugin_mutation_command(
         app,
         on_event,
         move |data_dir, settings, pnpm_exe, progress| {
@@ -2521,7 +2607,7 @@ async fn run_plugin_command_instance(
 /// 重新物化所有内容并重新接线 profile（「同步」按钮）。
 #[tauri::command]
 pub async fn plugin_sync(app: AppHandle, on_event: Channel<String>) -> Result<(), String> {
-    run_plugin_command(
+    run_plugin_mutation_command(
         app,
         on_event,
         move |data_dir, settings, pnpm_exe, progress| {
@@ -2539,7 +2625,7 @@ pub async fn plugin_set_mode(
     mode: String,
     on_event: Channel<String>,
 ) -> Result<(), String> {
-    run_plugin_command(
+    run_plugin_mutation_command(
         app,
         on_event,
         move |data_dir, settings, pnpm_exe, progress| {
@@ -2586,7 +2672,7 @@ pub async fn plugin_resolve(
 ) -> Result<(), String> {
     match action.as_str() {
         "remove" => {
-            run_plugin_command(
+            run_plugin_mutation_command(
                 app,
                 on_event,
                 move |data_dir, settings, pnpm_exe, progress| {

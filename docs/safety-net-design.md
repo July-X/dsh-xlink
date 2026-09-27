@@ -154,10 +154,9 @@ fingerprint = sha256(
 
 ### 4.3 保留策略
 
-- 最多 **10 份**，超了按 `preference` 权重丢最旧的（见下表）；
-- `startup-ok` 权重最低（最容易重复）；
-- `pre-change` 权重最高（用户马上要用）；
-- **永不删除当前 last-known-good**，哪怕它是最旧的。
+- 最多 **10 份**，超了按权重丢最旧的：`pre-change` 权重 2 > `manual` 1 > `startup-ok` 0；
+- 同指纹不重复入库（见 §3.3 的理由）；
+- **永不删除当前 last-known-good**，哪怕它是最旧的、权重最低的。裁剪时先把它放进保护区再填剩余位置，这条有测试钉死（`prune_never_drops_the_last_known_good`）。
 
 保留策略要简单到能被人记住。10 份 + 三档权重，够了。
 
@@ -297,18 +296,24 @@ UI 文案必须区分三种结束状态：**定位到最小坏集合** / **未�
 ### 8.1 快照索引
 
 ```jsonc
-// <instance_dir>/snapshots/index.json
+// <instance_dir>/snapshots/state.json
 {
   "schema": 1,
-  "lastKnownGood": "snap-1f3a9c2b",   // 指向 index 里 reason=startup-ok 且最新的一份
+  // 存**指纹**而不是 id（与下方初稿不同）：它要表达的是"这套配置被成功
+  // 启动验证过"，而不是"文档里这一行"。指纹由配置本身算出，比任何命名
+  // 约定都更贴近那个不变量。P0 落地时按此实现。
+  "lastKnownGood": "9c2e4b1a7f0d",
   "entries": [
-    { "id": "snap-9d2b", "createdAtMs": 1790490000000, "reason": "startup-ok",
-      "fingerprint": "9c2e…", "weight": 0 },
-    { "id": "snap-1f3a", "createdAtMs": 1790400000000, "reason": "pre-change",
-      "fingerprint": "77ab…", "weight": 2 }
+    { "id": "snap-9c2e4b1a", "createdAtMs": 1790490000000, "reason": "startup-ok",
+      "fingerprint": "9c2e4b1a7f0d", "kernelVersion": "0.1.5-rc.2",
+      "plugins": [ { "id": "dsh-market", "mode": "link" } ] },
+    { "id": "snap-77ab19d3", "createdAtMs": 1790400000000, "reason": "pre-change",
+      "fingerprint": "77ab19d3e0c5" }
   ]
 }
 ```
+
+索引与快照内容放在**同一个文档**里（P0 落地时相对初稿的改动）：保留上限只有 10 份，单文件一次原子写就够；「一份索引 + 每份一个文件」会引入"索引指向的详情丢了"这种不一致状态，而它换不来任何好处。
 
 ### 8.2 二分会话
 
