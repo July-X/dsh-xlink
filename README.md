@@ -70,7 +70,7 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
 - **技能管理（全局共享）**：社区技能（npm 包 / GitHub 仓库 / 本地文件夹）由外壳统一管理，源存放在 `DSH_XLINK_HOME/skills/packages/`，按包安装的粒度以链接（失败降级复制）物化进一份 v1 全局共享的活动视图（`skills/active/`）。所有内核实例都从同一份活动视图读，由各自适配器通过 `DSH_CUSTOM_SKILL_DIRS` 注入。不改 cordis 配置、不装依赖、切换实例零操作。内核对技能根做文件监视，安装 / 卸载 / 更新对运行中的工作台即时生效，无需重启。安装前逐个校验 SKILL.md frontmatter（kebab-case `name` + `description` 必填），避免「装了却不出现」。已安装卡片在包头提供逐个启用 / 停用开关（粒度是单个技能），停用只把条目移出活动视图，包仍留在中央库，随时可恢复。中央库与活动视图的条目状态包括「未同步」——本地活动根条目与中央库记录不一致时显示，提示用户先「重新同步」。多实例共享活动视图的设计理由见 [docs/architecture.md](docs/architecture.md)。
 - **数据迁移向导**：「设置」页常驻入口（未迁移亮色，已迁移灰色均可点进）。嵌入式 4 步向导——发现 → 选择 → 运行 → 完成 / 回滚。迁移运行期间走 `ProgressOverlay` 与安装内核 / 装插件共享同一进度 UI。凭据与会话首版不纳入迁移（旧版默认保守）；冲突策略默认 `SkipIfNewer`（保留用户后来修改）；旧源永不被删除（rollback 路径依赖）。启动弹窗只在从未处理过迁移时出现：成功迁移（后端自动记录静音标记）、点过「否」或已有迁移历史（含旧版本迁完、部分失败与回滚过的用户）重启后都不再被询问，需要时从「设置 → 数据迁移」手动重跳。完成后回主界面，顶部 banner 报告最近一次迁移的状态。完整设计见 [docs/migration-wizard-ui-proposal.md](docs/migration-wizard-ui-proposal.md)。
 - **模型用量统计**：概览页「当前内核」卡显示**最近 7 天**的 token 总用量（B / M / K 标准单位），点同排的「模型用量」弹出**独立可缩放窗口**（与日志查看器「全屏」同一条建窗路径；默认吸附主窗右侧、高度与本体一致，主窗拖动时 60fps 合帧跟随）。窗口提供 **6 档范围**：今日 / 7 / 15 / 30 / 60 / 90 天；顶部摘要卡含「今日用量 / 日均用量 / 请求次数 / 活跃天数 / 最常用模型」瓦片，GitHub 式**活跃热力图**、按模型堆叠的**按天 Token 趋势**柱状图（token 数精确到小数点后两位），以及**模型用量**环形图（中心显示当前范围合计 token）+ 列表（每模型的 token 数与占比，列表自适应高度，滚动期间才显形滚动条）。统计口径是**最近 90 天**，超过 90 天的记录自动丢弃——窗口标题旁的 ℹ️ tooltip 与卡片悬浮提示都会说明这一点。数据来自本机内核的会话文件（`sessions/` 下的多帧 zstd JSONL，逐条读取模型回复自带的 token 计量，只认真实模型调用），按「天 × 模型」预聚合进一份增量账目（`<实例目录>/usage/state.json`，百 KB 量级），不保存任何会话原文；扫描按文件增量进行（只解新追加的帧、旧文件整跳过），首次全量秒级、之后毫秒级。窗口是只读的，每次打开都会强制重扫一次；账目按实例隔离，与壳的 release / dev 模式无关。视觉布局见仓库顶部截图，机制与存储设计见 [docs/architecture.md](docs/architecture.md)。
-- **套餐 / Token Plan 用量（云端）**：概览页「当前内核」卡下方的「套餐用量」独立卡片展示云端账户的剩余额度——MiniMax Token Plan 的 5 小时 / 周窗口**剩余百分比**（进度条按剩余量三档配色，附重置倒计时）、DeepSeek 按量账户的**货币余额**（多币种逐行，余额不足以发起调用时单独标红），以及智谱 GLM 编程套餐的 5 小时 / 周窗口**剩余百分比**（接口给的是已用百分比，展示口径统一换算为剩余）。注意：各云端 API 都**不提供绝对剩余 token 数**，这里只有百分比与金额，不做任何估算。**未在内核配置对应厂商凭据的分区自动隐藏**。卡片直接展示进度条、重置倒计时与查询时间，点「查看详情」弹出**独立窗口**（与模型用量窗口同一条建窗与吸附跟随路径，窗口内可刷新、可跳「模型用量」窗口、可前往模型设置）。**凭据复用当前内核模型设置**：外壳不收集、不保存任何 Key——查询用当前实例 / profile 已配置的模型凭据（工作台的模型设置是唯一凭据编辑入口），设置页只提供各 provider 的「测试连接」与「前往模型设置」入口。数据约 5 分钟更新一次，「刷新」立即重查；查询失败时保留上次成功数据并显示错误横幅，凭据失效（HTTP 401/403）后停止自动重试、点刷新才重试；配置了凭据但一直查不到数据的分区，会询问是否隐藏该项（隐藏选择被记住、不再展示与报错），之后某次查询成功（含每次启动外壳时的首次强制查询）会自动恢复显示；缓存与展示都按实例隔离，切换实例不会看到别的实例的余额。MiniMax 查询套餐需用 Token Plan 页的订阅 Key（若与当前模型凭据不同，以真机验证为准，见设计文档步骤 0）。**智谱额度接口除 API Key 外还要求组织 / 项目上下文**：在环境变量、`<DSH_HOME>/.credentials.yaml` 的 refs 或 `.env` 里配置 `ZAI_CODING_CN_ORGANIZATION` / `ZAI_CODING_CN_PROJECT`（浏览器登录 bigmodel.cn 后，DevTools Network 面板中 `quota/limit` 请求的 `bigmodel-organization` / `bigmodel-project` 请求头即这两个值），可选 `ZAI_CODING_CN_PLAN_TYPE`（个人 = 1 / 团队 = 2，默认 1）；未配置时对应分区给出带获取方法的错误提示。机制与缓存设计见 [docs/architecture.md](docs/architecture.md) 与 [docs/subscription-usage-design.md](docs/subscription-usage-design.md)。
+- **套餐 / Token Plan 用量（云端）**：概览页「当前内核」卡下方的「套餐用量」独立卡片展示云端账户的剩余额度，共 **4 个分区**（`subscription.rs` 的 `PROVIDER_ORDER` 固定展示顺序：DeepSeek → MiniMax-CN → MiniMax-EN → 智谱 GLM）。DeepSeek 与 MiniMax-EN 是**货币余额**（多币种逐行，余额不足以发起调用时单独标红）；MiniMax-CN 的 5 小时 / 周窗口与智谱 GLM 编程套餐的 5 小时 / 周窗口是**剩余百分比**（进度条按剩余量三档配色，附重置倒计时；智谱接口给的是已用百分比，展示口径统一换算为剩余）。注意：各云端 API 都**不提供绝对剩余 token 数**，这里只有百分比与金额，不做任何估算。**未在内核配置对应厂商凭据的分区自动隐藏**。卡片直接展示进度条、重置倒计时与查询时间，点「查看详情」弹出**独立窗口**（与模型用量窗口同一条建窗与吸附跟随路径，窗口内可刷新、可跳「模型用量」窗口、可前往模型设置）。**凭据复用当前内核模型设置**：外壳不收集、不保存任何 Key——查询用当前实例 / profile 已配置的模型凭据（工作台的模型设置是唯一凭据编辑入口），设置页只提供各 provider 的「测试连接」与「前往模型设置」入口。数据约 5 分钟更新一次，「刷新」立即重查；查询失败时保留上次成功数据并显示错误横幅，凭据失效（HTTP 401/403）后停止自动重试、点刷新才重试；配置了凭据但一直查不到数据的分区，会询问是否隐藏该项（隐藏选择被记住、不再展示与报错），之后某次查询成功（含每次启动外壳时的首次强制查询）会自动恢复显示；缓存与展示都按实例隔离，切换实例不会看到别的实例的余额。MiniMax 查询套餐需用 Token Plan 页的订阅 Key（若与当前模型凭据不同，以真机验证为准，见设计文档步骤 0）。**智谱额度接口除 API Key 外还要求组织 / 项目上下文**：在环境变量、`<DSH_HOME>/.credentials.yaml` 的 refs 或 `.env` 里配置 `ZAI_CODING_CN_ORGANIZATION` / `ZAI_CODING_CN_PROJECT`（浏览器登录 bigmodel.cn 后，DevTools Network 面板中 `quota/limit` 请求的 `bigmodel-organization` / `bigmodel-project` 请求头即这两个值），可选 `ZAI_CODING_CN_PLAN_TYPE`（个人 = 1 / 团队 = 2，默认 1）；未配置时对应分区给出带获取方法的错误提示。机制与缓存设计见 [docs/architecture.md](docs/architecture.md) 与 [docs/subscription-usage-design.md](docs/subscription-usage-design.md)。
 - **日志查看器吸附跟随**：日志查看器接入与用量窗口同源的吸附 + 移动跟随逻辑——新建或调整大小的日志窗口默认吸附主窗右侧、高度与本体一致，主窗拖动时 60fps 合帧跟随，松手后停止；窗口始终独立可缩放，分隔条拖拽改为 pointer + rAF（关 transition）消除卡顿。
 - **内置补丁（内核补丁 / 小插件）**：随 dsh-xlink 发布包捆绑的自研内核补丁与小插件（`src-tauri/resources/patches/<id>/`，发布时进入 app 资源目录，与社区插件不同、无需第三方信任），默认不生效。在「设置 → 内核补丁」页自主选择「应用到当前内核」或「撤销补丁」；应用前自动备份被覆盖的原文件到 `~/.dsh-xlink/dsh/desktop/patches/backups/`，撤销时从备份还原，备份丢失时以内容 SHA-256 校验兜底、绝不盲目覆盖或删除。支持 `copy`（新增 / 覆盖文件）与 `replace`（精确字符串替换）两种文件操作，目标路径严格限制在内核目录内，可按 `minKernelVersion` / `maxKernelVersion` 声明适用内核版本范围。当补丁功能被官方内核采纳后可通过 `supersededSinceKernelVersion` 字段声明「从该内核版本起已被官方取代」，UI 把对应卡片折叠为「已并入官方内核」（删除线 + 默认收起 + 应用按钮禁用），用户可手动展开查看。应用记录持久化在 `~/.dsh-xlink/dsh/desktop/patches/state.json`，按「补丁 × 内核版本」隔离；工作台运行期间禁止操作。`dsh-file-perf`（dsh `@` 引用性能修复）已被官方 0.1.2-alpha.2 起直接采纳；`dsh-session-perf`（历史会话列表加载提速）v1.3.0 锚定官方 0.1.5-alpha.2 ~ 0.1.5-rc.2；`dsh-escalation-same-mode`（同模式 sandbox 升级短路）v1.1.0 锚定 0.1.3-alpha.2。旧内核上的已应用记录仍可撤销。设计文档见 [docs/patch-management.md](docs/patch-management.md)。
 
@@ -90,31 +90,55 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
 ├── assets/                   # 全仓库图标母版
 │   ├── whale-icon.svg        # 完整细节母版（黑鲸 + 红眼，用于 ≥128px）
 │   ├── whale-icon-small.svg  # 小尺寸母版（红眼夸大版，用于 ≤64px）
+│   ├── whale-head.svg        # 托盘/角标专用母版
 │   └── whale-icon-512.png    # 512px 位图（脚本从 whale-icon.svg 渲染）
 ├── scripts/
-│   └── build-icons.sh        # 从双 SVG 母版生成 Tauri 和面板图标
+│   ├── build-icons.sh        # 从双 SVG 母版生成 Tauri 和面板图标
+│   ├── install.mjs           # 依赖安装（pnpm 优先，缺失回退 npm）
+│   ├── check-invariants.mjs  # 命令注册 / capability / 版本 / CSS 变量等不变量门禁
+│   ├── check-code-budget.mjs # 生产代码行数预算 + 重复区间门禁
+│   ├── check-ui-bindings.mjs # UI 模板绑定可解析性检查
+│   ├── generate-updater-manifest.mjs / normalize-release-assets.mjs  # 发布制品处理
+│   └── verify-dsh-*.mjs      # 内置补丁的只读验证脚本
 └── src-tauri/                # Tauri v2 Rust 进程
     ├── tauri.conf.json       # frontendDist → ../ui/dist；resources 捆绑 patches/
     ├── Cargo.toml / Cargo.lock
     ├── capabilities/         # 各窗口的访问权限
     ├── icons/                # 应用图标集
+    ├── permissions/          # 本地 IPC 命令白名单
     ├── resources/
     │   └── patches/<id>/     # 内置补丁清单与载荷（随发布包进入 app 资源目录）
-    └── src/
-        ├── main.rs / lib.rs  # 入口与装配（含退出时回收内核）
+    └── src/                  # 共 29 个模块，按职责分组如下
+        ├── lib.rs / main.rs  # 入口与装配（含退出时回收内核）
         ├── commands.rs       # Tauri 命令（含插件/技能/补丁/迁移与窗口操作）
         ├── kernel.rs         # 安装 / active / 启动 / 停止 / 端口探测
         ├── kernel_adapter.rs # 多内核族适配器（DSH / mcode 等）
+        ├── instance.rs       # 实例注册表、runtime 状态、目录与生命周期串行化
+        ├── paths.rs          # 全部路径解析（DSH_XLINK_HOME / DSH_HOME 单一入口）
         ├── migration.rs      # 数据迁移向导后端（preview / run / rollback / list）
         ├── notify.rs         # 任务完成通知：事件流订阅、未读角标、系统通知气泡
         ├── plugins.rs        # 插件中央库、物化、接线与更新
-        ├── patches.rs        # 内置补丁：清单、备份、应用/撤销、状态
         ├── skills.rs         # 技能中央库、物化、启停与更新
+        ├── patches.rs        # 内置补丁：清单、备份、应用/撤销、状态
+        ├── subscription.rs   # 云端套餐用量（MiniMax / DeepSeek / 智谱，含 MiniMax 国际站）
+        ├── usage.rs          # 本地模型用量账目（增量扫描 + 聚合）
         ├── releases.rs       # 官方发布列表（npm registry → GitHub 回退）
+        ├── updater.rs        # 桌面端自身更新与安装残留清理
+        ├── tray.rs           # 通知区域图标与托盘菜单
+        ├── window.rs         # 窗口创建、吸附几何与拖动跟随
+        ├── process.rs        # 子进程执行、PATH 合并、进程组回收、日志轮转
+        ├── credentials.rs    # 凭据只读解析（不落盘到日志）
+        ├── guard.rs          # 启动看护与疑似插件问题归因
+        ├── quarantine.rs     # 插件隔离记录
+        ├── archive.rs        # tar / zip 归档解包校验
+        ├── registry.rs       # npm registry 地址解析（默认 npmmirror）
         ├── pkg.rs            # 插件与技能共用的包取源层
         ├── state.rs          # JSON 状态文档读写骨架
         ├── node.rs           # Node/pnpm 检测与版本校验
         ├── node_install.rs   # 托管 Node.js 安装（按需下载到数据目录）
+        ├── env.rs            # PATH 合并（含 Windows 注册表用户环境变量）
+        ├── version.rs        # 版本号读取
+        ├── error.rs          # AppError 错误类型
         └── settings.rs       # settings.json 读写
 ```
 
@@ -155,7 +179,7 @@ npm run build:win         # x86_64-pc-windows-msvc
 
 - 外壳数据（已装内核 `kernels/`、活动指针 `active.txt`、补丁 `patches/`、隔离记录 `quarantine.json` 等）：`~/.dsh-xlink/dsh/desktop/`（release 壳）或 `~/.dsh-xlink/dsh/desktop-dev/`（dev 壳）。将来接入新内核族（如 mcode）会得到各自独立的 `~/.dsh-xlink/mcode/desktop[-dev]/`。可用 `DSH_XLINK_HOME` 重定向整个根目录，`DSH_DESKTOP_DATA_DIR` 完整覆盖外壳数据目录
 - 外壳自身日志与每壳设置（release / dev 分槽）：`~/.dsh-xlink/shell/<release|dev>/`（`logs/`、`settings.json`、`ui-state.json`）
-- 多内核相关（内核版本与实例 `kernels/<族>/`、中央插件库 `dsh-plugins/`、技能库 `skills/`）：权威布局见 [docs/architecture.md §「多内核改造后的实际数据布局」](docs/architecture.md)
+- 多内核相关（实例 `kernels/<族>/instances/<id>/`、中央插件库 `dsh-plugins/`、技能库 `skills/`）：权威布局见 [docs/architecture.md §「多内核改造后的实际数据布局」](docs/architecture.md)。注意**已安装内核仍在上一条的 `desktop[-dev]/kernels/<版本>/` 下**——`kernels/<族>/versions/` 是为多内核备好但尚未启用的位置，实机不存在
 - 内核自身数据（会话、凭据、配置、profile）：实例内核 home `~/.dsh-xlink/kernels/dsh/instances/<id>/home/`——启动内核时外壳以 `DSH_HOME` 环境变量注入，内核进程的全部用户数据都落在这里，不再使用 `~/.dsh`
 
 > 从 v0.2.x 升级：平铺的 `~/.dsh-xlink/desktop[-dev]/` 会在新版首次启动时自动整体搬进 `~/.dsh-xlink/dsh/`；搬迁失败时继续使用旧目录，数据不会丢失。更早版本（元数据在系统应用数据目录或 `~/.dsh/desktop/`）的数据不再被读取，如需保留请手动移入上述外壳数据目录。
@@ -169,9 +193,9 @@ npm run build:win         # x86_64-pc-windows-msvc
 - 支持平台：**Intel macOS**（`macos-15-intel`，`.dmg`）+ **Windows x86_64**（`windows-latest`，NSIS `.exe`）
 - 触发方式：
   - 手动在 Actions 页从 `main` 触发 `workflow_dispatch`（使用当前 `package.json` 版本，推荐，后续版本可复用 Rust 编译缓存）
-  - 推送 tag：先同步 `package.json` 与 `src-tauri/tauri.conf.json` 的 `version`，再 `git tag desktop-v<version>` 并推送
+  - 推送 tag：先同步 `package.json`、`src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 三处 `version`，再 `git tag desktop-v<version>` 并推送（`Cargo.toml` 那处是 `CARGO_PKG_VERSION` 的来源，会被当作对外 User-Agent，preflight 会校验三处一致）
 - 发布来源限定为 `main` 分支，产物发布为正式 release，不是 draft 或 prerelease。
-- 发布前质量门禁：UI 回归测试与生产构建、JavaScript 700 kB / CSS 180 kB bundle 预算、Rust `cargo test`、`cargo fmt --check` 和 `cargo clippy -D warnings` 全部通过后才允许发布。
+- 发布前质量门禁：UI 回归测试与生产构建、JavaScript 700 kB / CSS 230 kB bundle 预算、Rust `cargo test`、`cargo fmt --check` 和 `cargo clippy -D warnings` 全部通过后才允许发布。
 - 发布提速：预检通过后，质量门禁与 Intel macOS、Windows 两个构建 job 并行运行；平台 job 只上传 Actions artifact，全部成功后由独立的 publish job 一次性创建正式 Release 与 `latest.json`。`max-parallel: 2`、pnpm store、Cargo registry 和按平台隔离的 Cargo target 都启用缓存，Rust release 使用 thin LTO 与 16 个 codegen units。缓存只在 `main` 分支保存，手动发布可跨版本复用；直接推送新 tag 通常会冷启动。详细时序与排障见 [`docs/release.md`](docs/release.md)。
 
 > GitHub Actions 首次建立缓存时仍会经历冷启动；runner 排队、缓存服务和网络波动也不属于 workflow 可控的构建时间。
@@ -199,6 +223,6 @@ npm run build:win         # x86_64-pc-windows-msvc
 - **Node 运行时**：当前按需托管安装到数据目录（自动检测 → 一键装）；后续可考虑随发布包捆绑 Node sidecar（体积 +40 MB / 平台）。
 - **pnpm 依赖**：内核安装依赖用户环境中的 pnpm（未捆绑）；后续可评估 `corepack` 或 sidecar 方式随应用分发。
 - **端口冲突**：若 3090（dev 壳为 3091，以设置页显示为准）已被其他进程占用，先停止外部服务，或在设置页改用其它端口——注意「工作台运行期间不能改端口」，需先关闭工作台再保存。
-- **安全**：应用通过 Webview 加载本地 `http://127.0.0.1` 的 Harness 页面并暴露版本管理命令；仅信任官方 `deepseek-ai` 仓库与 npm 的 `@deepseek-ai` 命名空间。插件和技能是第三方内容 / 任意代码，安装前请自行确认来源；社区目录条目保留「未验证」标记。npm 包解包拒绝绝对路径、父级路径、符号链接、硬链接和特殊文件，并限制条目数与展开体积。外壳自己下载的 tarball 一律逐字节校验：优先用 registry 元数据的 `dist.integrity`（SRI，取最强且受支持的 sha512 / sha256），只有它没有可用摘要时才回退到老 packument 的 `dist.shasum`（sha1），两条都没有则拒绝安装。镜像只影响取源，信任边界不动——包名仍限定 `@deepseek-ai` 命名空间，下载的 tarball 仍逐字节校验，因此镜像不能替代对第三方代码的审计。
+- **安全**：应用通过 Webview 加载本地 `http://127.0.0.1` 的 Harness 页面并暴露版本管理命令。**`@deepseek-ai` 命名空间限制只覆盖内核与托管 Node 两条路径**（包名在 `kernel.rs` 硬编码、托管 Node 版本与 SHA-256 硬编码），**不覆盖插件与技能**——`plugins.rs` / `skills.rs` 对 npm 包名只做字符类校验，`lodash`、`@attacker/backdoor` 都能安装。插件和技能是第三方内容 / 任意代码，安装前请自行确认来源；社区目录条目保留「未验证」标记。npm 包解包拒绝绝对路径、父级路径、符号链接、硬链接和特殊文件，并限制条目数与展开体积。外壳自己下载的 tarball 一律逐字节校验：优先用 registry 元数据的 `dist.integrity`（SRI，取最强且受支持的 sha512 / sha256），只有它没有可用摘要时才回退到老 packument 的 `dist.shasum`（sha1），两条都没有则拒绝安装。镜像（默认 npmmirror）只影响取源，不影响信任判定；`DSH_NPM_REGISTRY` 目前接受 `http://`，部署到不可信网络时请自行确认。
 - **插件链接模式**：依赖文件系统符号链接支持（Windows 需要开发者模式，失败会自动降级为复制模式并在行内显示「复制」徽标）。
 - **自动更新**：桌面端使用 `tauri-plugin-updater` 下载并校验签名。Windows 更新重启后，管理面板完成首次状态刷新即会清理更新前的旧安装目录、快捷方式和 updater 临时目录；清理失败会保留标记，并在下次启动重试。

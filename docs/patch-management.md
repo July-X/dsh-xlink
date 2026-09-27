@@ -31,7 +31,8 @@ src-tauri/resources/patches/<patch-id>/       # 随发布包内置的资源（ta
                                               # 一个补丁覆盖多个包时按包名分目录，
                                               # 避免同名文件（如 index.js）互相冲突
 
-<data_dir>/patches/                          # 运行时状态（data_dir = ~/.dsh/desktop[-dev]/）
+<data_dir>/patches/                          # 运行时状态（data_dir = <xlink_home>/<family>/desktop[-dev]/
+                                             # 默认 ~/.dsh-xlink/dsh/desktop[-dev]/，DSH_XLINK_HOME 可重定根）
   state.json                                 # 应用记录
   backups/<patch-id>/<内核版本>/<相对路径>     # 应用时备份的原文件
 ```
