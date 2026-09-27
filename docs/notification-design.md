@@ -185,7 +185,7 @@ ctx.sessionProjections.onChanged((session, key, value, seq) => {
 | 控制流可用 | baseline 播种 + 投影帧保鲜，**不再**调 `session/list` |
 | 内核不认 `session/control`（`{"type":"error"}`）、流中断、或 5 s 内没有 baseline | 退回一次 `session/list` 全量快照（每条连接最多一次；失败留给下次重连重试） |
 
-每条连接还会顺手重置这套状态（`titles_stream`），所以内核重启后重连能重新播种。
+每条连接还会顺手重置这套状态（`titles_stream`），所以内核重启后重连能重新播种。`last_turns` 同理按连接生命周期清空——**已完成任务的正文不受影响**，因为 `last_prompt` / `last_response` 在完成那一刻已经拷进 `CompletedTask`。
 
 ### 3.4 子代理会话过滤
 
@@ -198,7 +198,7 @@ ctx.sessionProjections.onChanged((session, key, value, seq) => {
 事件，它的完成会被当成普通任务。代价是偶发的一条多余通知，换取的是实现简单
 （不需要为每次通知去查一次 2 MB 的会话列表）。
 
-### 3.4 标题的来源与代价（小结）
+### 3.6 标题的来源与代价（小结）
 
 | 来源 | 覆盖 | 代价 |
 | --- | --- | --- |
@@ -363,10 +363,29 @@ struct Center {
     running: HashMap<SessionId, Turn>,  // running:true 时记下开始时刻
     subagents: HashSet<SessionId>,      // 不打扰的子代理会话
     titles: HashMap<SessionId, String>, // 标题 / cwd 缓存
+    last_turns: HashMap<SessionId, LastTurn>, // 最近一轮对话（prompt / response 预览）
     watching: bool,                     // $events 流是否就绪
     last_error: Option<String>,         // 最近一次失败的可操作说明
 }
 ```
+
+`CompletedTask` 是通知正文与设置页「最近完成列表」共用的记录：
+
+```rust
+struct CompletedTask {
+    session_id: String,
+    title: String,
+    cwd: String,
+    finished_at_ms: u64,   // 完成时刻（unix 毫秒），通知正文用它渲染「完成于 HH:MM」
+    duration_ms: u64,      // 运行时长；没观察到开始时刻时为 0
+    last_prompt: String,   // 最近一轮的用户提问；拿不到为空
+    last_response: String, // 最近一轮的助手回复预览（内核已截断）；拿不到为空
+}
+```
+
+`last_prompt` / `last_response` 来自 `Center::last_turns`，在任务完成那一刻拷进
+`CompletedTask`——之后即使连接断开或该会话被清出，通知里已经带着的内容不会丢。
+两者都拿不到时通知正文省略这一段，只留「标题 + 用时 + 完成于 HH:MM」。
 
 - **时长**：`running:true` 到 `running:false` 之间的墙钟差；只在连接期间观察到
   开始时刻时才显示（否则文案省略"用时"）。
@@ -451,7 +470,7 @@ cargo test --lib notify
 #   · $events 的 open 帧字段名 + 就绪帧里的 clientId
 #   · session/list 标题快照（老内核的兜底路径）
 #   · session/control 的 baseline → 标题表（回归：通知里的会话名）
-DSH_DESKTOP_DATA_DIR=~/.dsh/desktop DSH_XLINK_LIVE_PORT=<端口> \
+DSH_DESKTOP_DATA_DIR=~/.dsh-xlink/dsh/desktop DSH_XLINK_LIVE_PORT=<端口> \
   cargo test --lib -- --ignored live_ --nocapture
 
 # 前端：设置页的通知动作、规范化与 loading key
@@ -499,7 +518,7 @@ AppUserModelID），安装版（NSIS）不受影响。
 # 1) launch token → cookie
 curl -s -c /tmp/c.txt -o /dev/null -w '%{http_code}\n' \
   "$(rg -o 'http://127\.0\.0\.1:[0-9]+/\?token=[A-Za-z0-9_-]+' \
-      ~/.dsh/desktop/logs/*kernel*.log | tail -1)"      # → 303
+      ~/.dsh-xlink/shell/release/logs/*kernel*.log | tail -1)"      # → 303
 
 # 2) $events 流（需要内核在跑）：用 Rust 集成测试代替手写脚本
 #    DSH_XLINK_LIVE_PORT=<端口> cargo test --lib -- --ignored live_ --nocapture

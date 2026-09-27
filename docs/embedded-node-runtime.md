@@ -23,6 +23,14 @@
 
 `settings.node_path（显式） > resource_dir/embedded-node（内置，默认） > PATH/nvm/常见位置（兜底）`
 
+> ⚠️ 上面这条是**捆绑方案**的优先级，已否决。实际落地的托管安装（见开头「决策更新」）是：
+>
+> `settings.node_path（显式） > <data_dir>/tools/node/v24.20.0/bin/node（按需托管安装） > PATH/nvm/常见位置（兜底）`
+>
+> 对应 `node.rs::resolve` → `probe_managed()` → `node_install::managed_node_exe()`。
+> 注意托管目录**带版本子目录** `v24.20.0/`，不是平铺的 `tools/node/`；`node_install.rs`
+> 里也不存在 `tools/npm-global`，下载暂存走 `tools/downloads/`。
+
 ## 关键事实（实测/一手来源）
 
 | 事实 | 数值 | 来源 |
@@ -86,7 +94,13 @@
 信息源：`otool -l` 实测 minos=13.5 vs 本仓库 tauri.conf.json。分量：**实施前必须
 决策**，否则旧 Mac 用户拿到不可执行的内置运行时。
 
-## 实施面改动清单（逐处落点）
+## 捆绑方案的实施面改动清单（**已否决，留档**）
+
+> 以下清单属于**已被否决的捆绑方案**，不是当前实现。实际落地的是开头的「按需托管安装」：
+> `node_install.rs` 下载 v24.20.0 到 `tools/node/`，`node.rs::resolve` 的顺序是
+> **显式配置 → 托管运行时 → 环境检测**。这些条目仅在将来「体积敏感场景」重新权衡时参考，
+> 执行前需重新核对 `node_install.rs` 的现状——其中 pnpm 与 UI 两条已被托管方案以不同方式
+> 满足（pnpm 装到 `tools/npm-global`，UI 区分「托管运行时」与外部检测结果）。
 
 1. **打包**：build 脚本（`beforeBuildCommand` 或 `npm run deps` 同款）下载对应
    平台 node 产物 → 校验 SHASUMS256 → 解出单文件到
@@ -107,6 +121,9 @@
 
 ## POC 验证步骤（本机 darwin 可直接执行）
 
+> 同样是**捆绑方案**的验证路径，已否决。托管方案的等价验证是「不配置任何 Node →
+> 装内核 → 启动工作台 → 切版本」，由 `node_install.rs` 的单测与真机手动覆盖。
+
 1. 资源化：`mkdir -p src-tauri/resources/embedded-node` 并把
    `/tmp/node-v24.20.0-darwin-x64/bin/node` 与 `LICENSE` 拷入。
 2. `node.rs` 加内置候选 + 优先级测试；`cargo check`。
@@ -115,6 +132,12 @@
 4. 装一个带原生依赖的插件（如 node-pty），验证 node-gyp 构建与 `.node` 加载。
 5. 打包对比：NSIS/DMG 增量约 36–52 MB（zip/tar 下载体积，NSIS 有压缩）；CI 里
    复验签名 + notarization；Windows 同法（node.exe + corepack.cmd 资源化）。
+
+> 关于「36–52 MB」这个数字：它原本指**捆绑方案的安装包增量**，随方案否决已不适用于
+> 安装包——现在 `tauri.conf.json` 的 `bundle.resources` 只映射 `patches`，没有
+> `embedded-node`，安装包与升级包都不携带 Node 二进制。同样的量级现在表现为**用户首次
+> 托管安装时的一次性下载量**（`node_install.rs::artifact_for_platform`：win-x64 约 36 MB、
+> darwin-x64 约 52 MB、darwin-arm64 约 51 MB、linux-x64 约 51 MB、linux-arm64 约 50 MB）。
 
 ## 已知坑
 
