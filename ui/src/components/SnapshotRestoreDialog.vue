@@ -18,6 +18,7 @@ import {
   diffHeadline,
   diffBlockedNote,
   outcomeHeadline,
+  verificationView,
 } from '../snapshots.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 
@@ -27,8 +28,19 @@ const restorable = computed(() => changes.value.filter((item) => item.restorable
 const blocked = computed(() => changes.value.filter((item) => !item.restorable));
 const nothingToDo = computed(() => changes.value.length === 0);
 
+// 三态实测结论。有条目没能完成时即便实测通过也要降级成 warning——
+// 绿色横幅配"另有 N 处没能完成"是自相矛盾的。
+const alert = computed(() => {
+  const view = verificationView(snapshotStore.lastOutcome);
+  const unfinished = ((snapshotStore.lastOutcome || {}).skipped || []).length;
+  if (unfinished && view.type === 'success') {
+    return { type: 'warning', label: `${view.label}（但仍有条目没能完成，见下方）` };
+  }
+  return view;
+});
+
 function confirm() {
-  const id = diff.value && diff.value.snapshot_id;
+  const id = diff.value && diff.value.snapshotId;
   if (!id) return;
   closeRestorePreview();
   return runRestore(id);
@@ -39,7 +51,7 @@ function confirm() {
 const canPartial = computed(() => blocked.value.length > 0 && restorable.value.length > 0);
 
 const partial = async () => {
-  const id = diff.value && diff.value.snapshot_id;
+  const id = diff.value && diff.value.snapshotId;
   if (!id) return;
   await withLoading('snapshotPartialRestore', () => runRestore(id));
 };
@@ -58,7 +70,7 @@ const partial = async () => {
         <p class="restore-headline">{{ diffHeadline(diff) }}</p>
 
         <el-alert
-          v-if="diff.current_drifted"
+          v-if="diff.currentDrifted"
           title="当前环境与任何回退点都不同（可能手工改过插件目录）。下面的差异按你确认的时刻计算。"
           type="info"
           :closable="false"
@@ -103,22 +115,22 @@ const partial = async () => {
         </template>
       </template>
 
-      <!-- 恢复结果：改了哪些、没验成的是什么、没能完成的是什么。三个都要
-           说，"没验"绝不能画成"验过没问题"。 -->
+      <!-- 恢复结果：改了哪些、实测是什么结论、没能完成的是什么。三个都要
+           说，"没测"绝不能画成"测过没问题"，"没改东西所以没测"也不能借用
+           "实测通过"那一句。 -->
       <template v-else-if="snapshotStore.lastOutcome">
         <p class="restore-headline">{{ outcomeHeadline(snapshotStore.lastOutcome) }}</p>
         <el-alert
-          :type="snapshotStore.lastOutcome.verified ? 'success' : 'warning'"
+          :type="alert.type"
           :closable="false"
           show-icon
           class="restore-alert"
         >
-          <template #title>
-            {{
-              snapshotStore.lastOutcome.verified
-                ? '启动实测通过：这套配置能正常起起来。'
-                : '未能做启动实测：这不等于恢复失败，请点「启动工作台」看真实结果。'
-            }}
+          <template #title>{{ alert.label }}</template>
+          <template v-if="snapshotStore.lastOutcome.verificationDetail" #default>
+            <span class="restore-alert-detail">{{
+              snapshotStore.lastOutcome.verificationDetail
+            }}</span>
           </template>
         </el-alert>
         <template v-if="(snapshotStore.lastOutcome.skipped || []).length">

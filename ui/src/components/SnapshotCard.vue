@@ -27,17 +27,17 @@ const entries = computed(() => (view.value && view.value.entries) || []);
 
 // 至少有一条不是"此刻仍生效"，才值得提示"当前环境已被手工改过"。
 const drifted = computed(
-  () => entries.value.length > 0 && entries.value.every((entry) => !entry.is_current)
+  () => entries.value.length > 0 && entries.value.every((entry) => !entry.isCurrent)
 );
 
 // 「回到上一个能跑起来的组合」：默认目标就是 last-known-good，不让用户在
 // 一堆时间戳里挑——那正是"我昨天还能用"这句话想表达的东西。
 const canRestore = computed(
-  () => !!(view.value && view.value.has_last_known_good && view.value.last_known_good_id)
+  () => !!(view.value && view.value.hasLastKnownGood && view.value.lastKnownGoodId)
 );
 
 function restoreLastGood() {
-  const id = view.value && view.value.last_known_good_id;
+  const id = view.value && view.value.lastKnownGoodId;
   if (!id) return Promise.resolve(null);
   return withLoading('snapshotPreview', () => previewRestore(id));
 }
@@ -124,10 +124,10 @@ onMounted(() => {
           <el-tooltip placement="top" effect="dark" :content="reasonHint(entry.reason)">
             <span class="snapshot-item-reason">{{ reasonLabel(entry.reason) }}</span>
           </el-tooltip>
-          <el-tag v-if="entry.last_known_good" type="success" size="small" effect="plain">
+          <el-tag v-if="entry.lastKnownGood" type="success" size="small" effect="plain">
             启动验证过
           </el-tag>
-          <el-tag v-if="entry.is_current" type="info" size="small" effect="plain">
+          <el-tag v-if="entry.isCurrent" type="info" size="small" effect="plain">
             当前仍生效
           </el-tag>
         </div>

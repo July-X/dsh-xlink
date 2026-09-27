@@ -38,7 +38,7 @@ test('三种结局各有各的说法，没有「找到根因」这种取值', ()
   assert.deepEqual(minimal.members, ['dsh-x']);
 
   const notInSet = conclusionView({ kind: 'not-in-set', members: [] });
-  assert.equal(notInSet.label, '原因不在插件与技能里');
+  assert.equal(notInSet.label, '原因不在插件里');
 
   const aborted = conclusionView({ kind: 'aborted' });
   assert.equal(aborted.label, '排查已中断');
@@ -68,7 +68,7 @@ test('轮数估算等于 ceil(log2(n))，与后端同判据', () => {
 
 test('进行中时把"还要几轮"和"每轮要起一次内核"都说出来', () => {
   // 用户最怕的是以为卡死。耗时预期与剩余轮数缺一不可。
-  const text = bisectHeadline({ running: true, remaining: 12, candidate_count: 16 });
+  const text = bisectHeadline({ running: true, remaining: 12, candidateCount: 16 });
   assert.match(text, /12 个待排除/);
   assert.match(text, /4 轮/);
   assert.match(text, /临时内核/);
@@ -76,15 +76,15 @@ test('进行中时把"还要几轮"和"每轮要起一次内核"都说出来', (
 });
 
 test('进行中但只剩一个候选时不再承诺轮数', () => {
-  const text = bisectHeadline({ running: true, remaining: 1, candidate_count: 16 });
+  const text = bisectHeadline({ running: true, remaining: 1, candidateCount: 16 });
   assert.match(text, /0 轮/);
 });
 
 test('还没开始 / 已中断说不同的话', () => {
-  const none = bisectHeadline({ running: false, conclusion: null, candidate_count: 0 });
+  const none = bisectHeadline({ running: false, conclusion: null, candidateCount: 0 });
   assert.match(none, /还没有排查记录/);
 
-  const partial = bisectHeadline({ running: false, conclusion: null, candidate_count: 8 });
+  const partial = bisectHeadline({ running: false, conclusion: null, candidateCount: 8 });
   assert.match(partial, /已中断/);
   assert.match(partial, /接着/, '中断后要说明重新发起能续上');
 });
@@ -106,4 +106,30 @@ test('配色按结果分三类', () => {
   assert.equal(stepClassName({ outcome: 'fail' }), 'step-fail');
   assert.equal(stepClassName({ outcome: 'pass' }), 'step-pass');
   assert.equal(stepClassName({ outcome: 'inconclusive' }), 'step-unknown');
+});
+
+test('三种终局都必须说得出话——曾经三种 headline 全是空串', () => {
+  // 回归钉子：`bisectHeadline` 读的是 `conclusionView().text`，而
+  // `conclusionView` 只返回 `{label,type,members}`，于是三种终局在面板上
+  // 什么都不显示。上面那条"未知 kind"用例防不住——它防的是没被渲染的值。
+  for (const kind of ['minimal-bad-set', 'not-in-set', 'aborted']) {
+    const view = { running: false, candidateCount: 8, conclusion: { kind, members: [] } };
+    const text = bisectHeadline(view);
+    assert.ok(text && text.length > 0, `${kind} 的结论句不能是空的`);
+  }
+});
+
+test('后端写好的结论文案优先于前端兜底', () => {
+  // Rust 侧的 text 带着"这不等于根因"的免责声明，不能被前端另写一句覆盖。
+  const text = bisectHeadline({
+    running: false,
+    candidateCount: 8,
+    conclusion: {
+      kind: 'minimal-bad-set',
+      members: ['dsh-x'],
+      text: '能解释现象的最小集合是 { dsh-x }。这不等于根因。',
+    },
+  });
+  assert.match(text, /不等于根因/);
+  assert.match(text, /dsh-x/);
 });
