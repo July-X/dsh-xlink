@@ -1846,13 +1846,29 @@ fn recover_staging(home: &Path) {
         } else {
             continue;
         };
-        let Some(id) = fs::read_to_string(entry.path().join(ID_MARKER))
+        let marker = fs::read_to_string(entry.path().join(ID_MARKER))
             .ok()
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-        else {
+            .filter(|s| !s.is_empty());
+        let Some(id) = marker else {
+            // 没有 id 标记的暂存目录：`.tmp-*` 在 fetch 阶段**刻意不打标记**
+            // （`stamp_id_marker` 走 `atomic_write`，rename 成功才有正式标记；
+            // 而提前盖章是当初修 Windows `ERROR_DIR_NOT_EMPTY` 的方案，见
+            // `pkg::new_staging_dir` 的注释）。因此「创建暂存目录 → 写下
+            // 标记」之间崩溃的残留永远读不到 id，`.tmp-*` 永远不会进
+            // `recover_staging_dir` 的分组——那里 `StagingKind::Tmp => true`
+            // 的无条件回收分支对 fetch 残留是**够不到的死代码**。
+            // 现象是崩溃残留无限堆积：实测 30 秒内 23 个 `.tmp-*` 躺在中央库。
+            // 它们从来不是用户数据（还没 rename 成交付目录），直接回收。
+            // 与 `plugins.rs` 的同名分支保持一致。
+            let _ = fs::remove_dir_all(entry.path());
             continue;
         };
+        if id == name {
+            // 名字以暂存前缀开头的技能：它的 final 目录自带标记，不能把
+            // 自己当成残留暂存删掉。
+            continue;
+        }
         by_id.entry(id).or_default().push((kind, entry.path()));
     }
 
@@ -1920,6 +1936,38 @@ mod tests {
             format!("---\nname: {name}\ndescription: {description}\n---\n\nBody.\n"),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn recover_staging_reclaims_unmarked_staging_dirs() {
+        // 回归：`.tmp-*` 在 fetch 阶段刻意不打 id 标记（`stamp_id_marker` 走
+        // `atomic_write`，rename 成功才有正式标记），所以"创建暂存目录 →
+        // 写标记"之间崩溃的残留读不到 id。此前这里只 `continue`，于是崩溃
+        // 残留永久堆积——实测中央库里 30 秒内堆了 23 个。
+        let home = TestHome::new();
+        let store = store_dir(&home.root());
+
+        // 无标记的 fetch 残留：只有 atomic_write 的中间态，没有 `.dsh-id`。
+        let orphan = store.join(".tmp-12345-1789818492411873000");
+        fs::create_dir_all(orphan.join("keep")).unwrap();
+        fs::write(orphan.join("..dsh-id.tmp-12345-1-0"), "x\n").unwrap();
+
+        // 同名的正式技能目录：带标记，必须活下来。
+        let real = store.join("github.com__owner__repo");
+        write_bundle(&real, "skills/deep", "deep-one", "nested bundle");
+        fs::write(real.join(ID_MARKER), "github.com__owner__repo\n").unwrap();
+
+        // 名字以暂存前缀开头的线上目录（npm 允许 `tmp-foo` 这类名字）：
+        // 它的 final 目录自带标记，不能被当成残留删掉。
+        let prefixed = store.join(".tmp-foo");
+        write_bundle(&prefixed, "skills/one", "one", "prefixed id");
+        fs::write(prefixed.join(ID_MARKER), ".tmp-foo\n").unwrap();
+
+        recover_staging(&home.root());
+
+        assert!(!orphan.exists(), "无标记的 .tmp-* 残留必须被回收");
+        assert!(real.exists(), "带标记的正式目录不能被删");
+        assert!(prefixed.exists(), "名字以暂存前缀开头的正式目录不能被删");
     }
 
     #[test]
