@@ -134,12 +134,25 @@ function onQuitConfirmRequest(event) {
   confirmDialog(title, detail, payload.from_tray ? '退出' : '关闭并退出')
     .then((ok) => {
       if (!ok) return null;
+      // 停内核失败时**不退出**：catch 只提示不 resolve，走下面的错误分支收口。
+      // 旧写法把 catch 挂在内层，catch 返回 undefined 让 Promise 继续 resolve，
+      // 于是 stop_kernel 失败后照样执行 confirm_close_shell——内核还在跑，
+      // 主壳却已经销毁，用户既看不到端口被占也失去重新停止的入口。
       const stop = kernelRunning
-        ? invoke('stop_kernel').catch((e) => toastError('关闭工作台失败：' + e))
+        ? invoke('stop_kernel').catch((e) => {
+            toastError('关闭工作台失败：' + e + '，已取消退出');
+            throw e;
+          })
         : Promise.resolve();
       return stop
         .then(() => invoke('confirm_close_shell'))
-        .catch((e) => toastError('退出失败：' + e + '（请手动关闭窗口）', 6000));
+        .catch((e) => {
+          if (kernelRunning) {
+            toastError('工作台可能仍在运行，请从概览页停止后再退出', 6000);
+            return;
+          }
+          toastError('退出失败：' + e + '（请手动关闭窗口）', 6000);
+        });
     })
     .finally(() => {
       quitConfirmPending = false;

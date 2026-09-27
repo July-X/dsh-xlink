@@ -30,6 +30,7 @@ import {
   SOURCES,
 } from '../migration.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
+import { confirmDialog } from '../notify.js';
 import { store } from '../store.js';
 import { tildePath } from '../labels.js';
 
@@ -87,9 +88,15 @@ async function onRun() {
 }
 
 async function onRollback(migrationId) {
-  if (!confirm(`确认回滚迁移 ${migrationId}？回滚会从 backup 恢复目标，迁移前的旧源不会被删除。`)) {
-    return;
-  }
+  // 不用原生 confirm()：WKWebView 未实现 runJavaScriptConfirmPanelWithMessage
+  // 时它不弹 UI 且直接返回 false，于是 macOS 上点「回滚」是纯空操作，
+  // migration_rollback 根本不会发出（见 notify.js 顶部同一约束）。
+  const ok = await confirmDialog(
+    '回滚迁移？',
+    `确认回滚迁移 ${migrationId}？回滚会从 backup 恢复目标，迁移前的旧源不会被删除。`,
+    '回滚'
+  );
+  if (!ok) return;
   await withLoading('migrationRollback', () => rollbackMigration(migrationId));
 }
 
