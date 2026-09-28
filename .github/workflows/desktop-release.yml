@@ -308,14 +308,89 @@ jobs:
           fi
           pnpm exec node scripts/check-signing-keys.mjs
 
+      - name: Reclaim space and clear stale disk images (macOS)
+        if: matrix.name == 'macos-intel'
+        # DMG 封装是这条流水线里唯一已知会偶发失败的一步：desktop-v0.3.4 的
+        # 首次发布就挂在这里（`failed to run bundle_dmg.sh`），重跑才过。
+        # 原因几乎都在环境而不在代码，依次是：
+        #   1. 上一轮遗留的 /Volumes 挂载让 `hdiutil attach` 失败；
+        #   2. 可用空间不足让 `hdiutil create` 中途失败；
+        #   3. `hdiutil` 在 runner 负载高时超时。
+        # 三件事在这里一并收敛。空间不足时**报出可读的数字**并直接失败，
+        # 而不是等 bundler 抛一句它自己吞掉了 stderr 的
+        # "failed to run bundle_dmg.sh"——那句话不指向任何原因。
+        run: |
+          set -uo pipefail
+          echo "::group::清理前的磁盘空间"
+          df -h / /System/Volumes/Data 2>&1 || true
+          echo "::endgroup::"
+
+          for vol in /Volumes/*; do
+            [[ -d "$vol" ]] || continue
+            if mount | grep -qF " on $vol "; then
+              echo "卸载残留挂载：$vol"
+              hdiutil detach -force "$vol" >/dev/null 2>&1 \
+                || sudo hdiutil detach -force "$vol" >/dev/null 2>&1 \
+                || true
+            fi
+          done
+
+          # runner 预置的大缓存，本次构建一样都重建得出来。
+          sudo rm -rf /Library/Developer/Xcode/DerivedData/* 2>/dev/null || true
+          rm -rf ~/Library/Developer/Xcode/DerivedData/* 2>/dev/null || true
+          rm -rf ~/Library/Caches/org.swift.swiftpm 2>/dev/null || true
+
+          avail_kb=$(df -k /System/Volumes/Data | awk 'NR==2 {print $4}')
+          echo "清理后可用空间：$((avail_kb / 1024 / 1024)) GiB"
+          if [[ "${avail_kb:-0}" -lt 6291456 ]]; then
+            echo "::error::可用空间不足 6 GiB，DMG 封装几乎必然失败。请改用更大的 runner 或把 release 产物分批构建。"
+            exit 1
+          fi
+
       - name: Build signed desktop bundle
+        shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          IS_MACOS: ${{ matrix.name == 'macos-intel' }}
         # `-- --locked` 是给 tauri 的 runner（cargo）透传参数，作用在真正
         # 打进安装包的那次编译上：没有它，release 用的依赖集可能与仓库里
         # 被 review 过的 Cargo.lock 不同，且没有任何门禁会发现（H3）。
-        run: pnpm exec tauri build -- --locked
+        #
+        # macOS 额外重试三次。代价可以忽略：Rust 产物留在 target/ 里，第二次
+        # `tauri build` 只重跑打包（秒级），不会重编那 5 分钟。全部失败时把
+        # 诊断打出来——Tauri 的 bundler 吞掉 `bundle_dmg.sh` 的 stderr，
+        # 只留一句不含任何原因的 "failed to run bundle_dmg.sh"。
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            if pnpm exec tauri build -- --locked; then
+              exit 0
+            fi
+            if [[ "$IS_MACOS" != "true" ]]; then
+              exit 1
+            fi
+            echo "::warning::tauri build 第 ${attempt} 次失败（macOS DMG 封装偶发），清挂载后重试"
+            for vol in /Volumes/*; do
+              [[ -d "$vol" ]] || continue
+              if mount | grep -qF " on $vol "; then
+                hdiutil detach -force "$vol" >/dev/null 2>&1 || true
+              fi
+            done
+            sleep 15
+          done
+
+          echo "::group::DMG 封装诊断（Tauri bundler 吞掉了这里的真实报错）"
+          echo "--- hdiutil info：找失败时残留的挂载 ---"
+          hdiutil info 2>&1 | head -40 || true
+          echo "--- bundle/dmg 目录：看 .dmg 与脚本是否留下了半成品 ---"
+          ls -la src-tauri/target/release/bundle/dmg/ 2>&1 || true
+          echo "--- 实际执行的 bundle_dmg.sh（问题多半在这里面）---"
+          cat src-tauri/target/release/bundle/dmg/bundle_dmg.sh 2>&1 || true
+          echo "--- 磁盘空间 ---"
+          df -h / /System/Volumes/Data 2>&1 || true
+          echo "::endgroup::"
+          exit 1
 
       - name: Normalize macOS updater asset names
         if: matrix.name == 'macos-intel'
