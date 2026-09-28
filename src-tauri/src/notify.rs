@@ -1153,9 +1153,14 @@ fn notification_body(task: &CompletedTask) -> String {
 ///
 /// ```text
 /// 「标题」已完成 · 用时 3 分 20 秒
-/// 最近对话：<最后一轮的提问>
+/// 💬 <最后一轮的用户提问，截断>
 /// 完成于 14:32
 /// ```
+///
+/// 那一行用**图标**而不是「最近对话：」这类文字标签。通知正文是一段纯文本，
+/// 没有可供排版的元素，而"这一行是什么"必须靠前缀自己说清——文字标签在
+/// 通知气泡里既占宽度又和上方标题的措辞混在一起，扫一眼分不出哪行是结论、
+/// 哪行是上下文。💬 与本项目「官方对话」用的是同一个符号，词汇一致。
 fn notification_body_with_time(task: &CompletedTask, time_label: &str) -> String {
     let duration = format_duration(task.duration_ms);
     let head = if duration.is_empty() {
@@ -1164,13 +1169,34 @@ fn notification_body_with_time(task: &CompletedTask, time_label: &str) -> String
         format!("「{}」已完成 · 用时 {}", task.title, duration)
     };
     let mut lines = vec![head];
-    if !task.last_prompt.is_empty() {
-        lines.push(format!("最近对话：{}", task.last_prompt));
+    // 提问可能很长，而通知气泡在 macOS 上最多三行、Windows 上更短：全量塞进去
+    // 会把完成时刻挤出可视区，那行恰恰是用户判断"刚才那次"的关键信息。
+    let prompt = truncate_prompt(&task.last_prompt);
+    if !prompt.is_empty() {
+        lines.push(format!("{PROMPT_ICON} {prompt}"));
     }
     if !time_label.is_empty() {
         lines.push(format!("完成于 {time_label}"));
     }
     lines.join("\n")
+}
+
+/// 提问行的前缀图标。与「官方对话」按钮同用 💬，让"这一行是对话"这件事
+/// 不用读文字也能认出来。
+const PROMPT_ICON: &str = "💬";
+
+/// 提问截断：先去掉首尾空白（提问常带换行），超长则取前 15 个字符加省略号。
+///
+/// 按**字符**而不是字节——中文按字节截会切出半个字，通知里就是一个乱码方块。
+/// 加省略号是因为不加以色列会被读成"他就说了这么多"，而实际是被截断的。
+/// 截断只发生在展示层：`CompletedTask.last_prompt` 存的始终是完整原文
+/// （设置页的「最近完成列表」还要用它做悬浮全文）。
+fn truncate_prompt(prompt: &str) -> String {
+    let chars: Vec<char> = prompt.trim().chars().collect();
+    if chars.len() <= 15 {
+        return prompt.trim().to_string();
+    }
+    chars[..15].iter().collect::<String>() + "…"
 }
 
 /// 完成时刻 → 本地 `HH:MM`；时间戳非法时返回空串（调用方省略该行）。
@@ -1852,7 +1878,7 @@ mod tests {
         assert_eq!(
             notification_body_with_time(&with_all, "14:32"),
             "「修复通知文案」已完成 · 用时 3 分 20 秒\n\
-             最近对话：通知功能应该显示最近一次对话\n\
+             💬 通知功能应该显示最近一次对话\n\
              完成于 14:32"
         );
 
@@ -1874,8 +1900,72 @@ mod tests {
         };
         assert_eq!(
             notification_body_with_time(&minimal, ""),
-            "「修复通知文案」已完成\n最近对话：通知功能应该显示最近一次对话"
+            "「修复通知文案」已完成\n💬 通知功能应该显示最近一次对话"
         );
+    }
+
+    /// 超长提问只取前 15 个字符，并且**按字符**截——按字节截中文会切出半个字，
+    /// 通知里就是一个乱码方块。这条钉住的是"不出现半个字"这个事实。
+    #[test]
+    fn long_prompt_is_truncated_by_character_not_byte() {
+        let long = "把安全网的二分定位功能从概览页挪到设置页并重新调整卡片顺序";
+        assert_eq!(truncate_prompt(long), "把安全网的二分定位功能从概览页…");
+        // 15 个字 + 省略号。
+        assert_eq!(truncate_prompt(long).chars().count(), 16);
+
+        // 正好 15 个字符：不加省略号。
+        let exact = "一二三四五六七八九十甲乙丙丁戊";
+        assert_eq!(exact.chars().count(), 15);
+        assert_eq!(truncate_prompt(exact), exact);
+        // 15 个中文字符 = 45 字节：按字节截会只留下 5 个字，这里必须是 15 个。
+        assert_eq!(exact.len(), 45);
+    }
+
+    /// 提问常带首尾换行；不先 trim 的话，空行会让通知多出一段空白，
+    /// 而只有空白的提问还可能被截成"…"，看起来像真的说了什么。
+    #[test]
+    fn prompt_is_trimmed_before_display_and_measurement() {
+        assert_eq!(truncate_prompt("\n  启动游戏  \n"), "启动游戏");
+        assert_eq!(truncate_prompt("   \n  "), "");
+        // 空白的提问不该在通知里留下一行"最近提问：…"。
+        let blank = CompletedTask {
+            session_id: "abc".into(),
+            title: "修复通知文案".into(),
+            cwd: String::new(),
+            finished_at_ms: 1,
+            duration_ms: 200_000,
+            last_prompt: "\n \n".into(),
+            last_response: String::new(),
+        };
+        let body = notification_body_with_time(&blank, "14:32");
+        assert!(!body.contains(PROMPT_ICON), "空白提问不该占一行：{body}");
+    }
+
+    /// 提问行靠**图标**自报家门，不靠「最近对话：」这类文字标签。
+    ///
+    /// 文字标签在通知气泡里既占宽度，又和上方标题的措辞混在一起，扫一眼
+    /// 分不出哪行是结论、哪行是上下文。这条钉住"前缀是图标"这个决定，
+    /// 免得后来有人觉得"加个文字更清楚"又改回去。
+    #[test]
+    fn prompt_line_is_marked_by_icon_not_a_text_label() {
+        let task = CompletedTask {
+            session_id: "abc".into(),
+            title: "reiview 最近的改动".into(),
+            cwd: String::new(),
+            finished_at_ms: 1,
+            duration_ms: 28_000,
+            last_prompt: "启动游戏，我看看效果".into(),
+            last_response: String::new(),
+        };
+        let body = notification_body(&task);
+        let prompt_line = body
+            .lines()
+            .find(|line| line.contains("启动游戏"))
+            .expect("通知里应当有提问那一行");
+        assert!(prompt_line.starts_with(PROMPT_ICON), "{prompt_line}");
+        // 不再有「最近对话：」/「最近提问：」这种前缀。
+        assert!(!prompt_line.contains("最近对话"), "{prompt_line}");
+        assert!(!prompt_line.contains("最近提问"), "{prompt_line}");
     }
 
     /// 完成记录里的名字要跟着投影更新走：面板展示的历史不该停在旧标题上。
