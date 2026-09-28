@@ -51,7 +51,13 @@ pub fn app_id(app: &tauri::AppHandle) -> &str {
 /// `NSUserNotificationCenter` backend，不经过 `UNUserNotificationCenter` 的授权，
 /// 所以 macOS「系统设置 → 通知」里看到的 dsh-xlink 永远是无权限状态——在那里勾上
 /// 也没用。把"没有授权"报成"投递不了"是误诊。
-pub fn blocked(app: &tauri::AppHandle) -> bool {
+/// `app` 只有 Windows 分支用得上（要拿本应用的 AppUserModelID 去问系统），
+/// macOS 上按 `current_exe()` 判 bundle 就够了——不 `allow` 的话，macOS 的
+/// `cargo clippy -- -D warnings` 会以 `unused variable: app` 挡住发布
+/// （desktop-v0.3.5-rc.1 第一次 Quality gates 就是这么挂的）。
+pub fn blocked(
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] app: &tauri::AppHandle,
+) -> bool {
     #[cfg(target_os = "macos")]
     if !in_app_bundle() {
         return true;
