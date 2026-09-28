@@ -41,6 +41,7 @@ mod migration;
 mod node;
 mod node_install;
 mod notify;
+mod notify_gate;
 mod patches;
 mod paths;
 mod pkg;

@@ -262,8 +262,8 @@ pub fn status(app: &AppHandle) -> NotificationStatus {
         items: center.items.iter().cloned().collect(),
         watching: center.watching,
         last_error: center.last_error.clone(),
-        notifications_blocked: notifications_blocked(),
-        environment_note: environment_note(),
+        notifications_blocked: crate::notify_gate::blocked(app),
+        environment_note: crate::notify_gate::note(app),
         platform: std::env::consts::OS.to_string(),
     }
 }
@@ -313,7 +313,7 @@ pub fn mark_all_read(app: &AppHandle) -> NotificationStatus {
 /// 自检入口：**模拟一次任务完成**——未读 +1、刷新系统角标、弹一条系统通知。
 ///
 /// 为什么要把三件事一起做，而不是只发一条通知：通知气泡是否出现由操作系统
-/// 决定（macOS 上未打包的构建根本投递不了，见 [`environment_note`]），只发通知
+/// 决定（macOS 上未打包的构建根本投递不了，见 [`crate::notify_gate`]），只发通知
 /// 的自检会让用户误以为"整套功能没生效"；把角标一起走一遍，用户点一次就能在
 /// Dock / 任务栏上看到数字，从而把「功能没做」和「系统不放行通知」区分开。
 ///
@@ -350,7 +350,7 @@ pub fn send_test(app: &AppHandle) -> NotificationStatus {
     }
     sync_badge(app);
     let result = show_toast(app, "", &notification_body(&task), config.sound);
-    center().last_error = result.err();
+    remember_toast_error(app, result);
     let status = status(app);
     broadcast(app, &status);
     status
@@ -359,7 +359,7 @@ pub fn send_test(app: &AppHandle) -> NotificationStatus {
 /// 试听提示音：只播一声系统提示音，不碰未读、角标与通知气泡。
 ///
 /// 刻意**不做成"发一条带声音的系统通知"**：macOS 上未打包的 dev 构建根本投递
-/// 不了通知（见 [`environment_note`]），而试听最常在 dev 期使用——那样按一次
+/// 不了通知（见 [`crate::notify_gate`]），而试听最常在 dev 期使用——那样按一次
 /// 什么都听不到，反而像是"提示音坏了"。直接调系统的提示音接口：与通知气泡用的
 /// 默认提示音同源，且不依赖通知权限、不派生子进程。
 pub fn play_test_sound() -> Result<(), String> {
@@ -418,56 +418,6 @@ fn beep_result(played: bool) -> Result<(), String> {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn platform_alert_sound() -> Result<(), String> {
     Err("当前平台不支持试听提示音：dsh-xlink 只随 macOS 与 Windows 分发。".into())
-}
-
-/// 当前运行环境对系统通知的限制（`true` = 通知投递会被阻塞）。
-///
-/// macOS 的系统通知按**应用 bundle** 归属：`tauri dev` / `cargo run` 跑的是
-/// `target/debug/dsh-xlink` 这个裸可执行文件，系统找不到 bundle —— 实测
-/// `usernoted` 会把请求挂到父进程（Terminal）名下、`NotificationCenter` 记录
-/// `Unable to find valid bundle`，通知因此不会以 dsh-xlink 的名义出现。这是平台
-/// 约束，壳无法绕过，只能如实告诉用户"用安装版验证"。角标不受影响（它直接作用
-/// 在 Dock / 任务栏上）。
-///
-/// 桌面壳用 `notify-rust` 的 `NSUserNotificationCenter` backend，**不**经过
-/// `UNUserNotificationCenter` 的权限授权，因此"macOS 系统设置 → 通知"里看到的
-/// dsh-xlink 永远是无权限状态——在那里勾上也没用。本文把 `notifications_blocked`
-/// 限定为"通知事实上无法投递"的情形（dev 构建 / 后续若切到 UN backend 则检测授权
-/// 状态），避免给打包版用户展示一条误以为是权限问题的说明。
-fn notifications_blocked() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        let in_bundle = std::env::current_exe()
-            .map(|path| path.to_string_lossy().contains(".app/Contents/MacOS/"))
-            .unwrap_or(false);
-        if !in_bundle {
-            return true;
-        }
-    }
-    false
-}
-
-/// 当前运行环境的限制说明（仅在 [`notifications_blocked`] 为 `true` 时返回）。
-///
-/// 设置页拿到 `notifications_blocked = true` 但 `environment_note = None` 的
-/// 组合时仍不展示任何说明——保留 `notifications_blocked` 作为开关字段，方便以后
-/// 加更多阻塞场景而不需要同步改前端条件。
-fn environment_note() -> Option<String> {
-    if !notifications_blocked() {
-        return None;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        return Some(
-            "当前是未打包的开发构建：macOS 按应用 bundle 归属系统通知，找不到 bundle 时\
-             通知不会以 dsh-xlink 的名义投递（角标仍然正常）。要验证通知气泡，请用安装版，\
-             或先执行 `npm run build -- --debug` 再运行 \
-             `src-tauri/target/debug/bundle/macos/dsh-xlink.app`。"
-                .into(),
-        );
-    }
-    #[allow(unreachable_code)]
-    None
 }
 
 /// 工作台窗口的前台状态变化。用户切回工作台即视为"看过结果了"，未读清零。
@@ -870,9 +820,7 @@ fn on_session_status(app: &AppHandle, session_id: &str, running: bool) {
     }
     let body = notification_body(&task);
     let result = show_toast(app, "", &body, config.sound);
-    if let Err(error) = result {
-        center().last_error = Some(error);
-    }
+    remember_toast_error(app, result);
     broadcast_now(app);
 }
 
@@ -1118,12 +1066,19 @@ fn badge_text(unread: u32) -> Option<String> {
 /// 壳只需要 Rust 侧的发送能力，而 `notify-rust` 本来就是该插件的后端，因此直接
 /// 依赖它：两端行为一致，且不碰任何 webview。
 fn show_toast(app: &AppHandle, title: &str, body: &str, sound: bool) -> Result<(), String> {
+    // Windows：系统通知被关掉时，WinRT 的 `Show` 依然返回 S_OK，气泡却不会出现，
+    // 角标照常变——只看返回值就当成功，等于骗用户"已经提醒你了"。在这里如实
+    // 报错，`last_error` 与设置页的环境说明都会指向同一个下一步。
+    #[cfg(target_os = "windows")]
+    if crate::notify_gate::blocked(app) {
+        return Err(crate::notify_gate::WINDOWS_DISABLED.to_string());
+    }
     let mut notification = notify_rust::Notification::new();
     notification.summary(title).body(body);
     // Windows 必须带上 AppUserModelID，toast 才归属到本应用；未安装的构建没有
     // 对应的快捷方式，系统会退回 PowerShell 身份（已知限制，安装版正常）。
     #[cfg(target_os = "windows")]
-    notification.app_id(app.config().identifier.as_str());
+    notification.app_id(crate::notify_gate::app_id(app));
     // 两端的"系统默认提示音"取值不同：macOS 认这个符号名（它就是
     // NSUserNotificationDefaultSoundName 常量的字面值），Windows 认 "Default"。
     // 不设置时两端都是静音。
@@ -1140,6 +1095,30 @@ fn show_toast(app: &AppHandle, title: &str, body: &str, sound: bool) -> Result<(
              开发模式（未打包 / 未安装的构建）下两端都可能发不出通知，用安装版可排除这一项"
         )
     })
+}
+
+/// 该不该把这次发送失败记进 `lastError`。
+///
+/// **错误就是那句环境说明本身时不记**。被平台挡住时，`show_toast` 报出来的正是
+/// [`crate::notify_gate`] 已经在设置页展示的那句话——再存一份，用户在同一屏上就会
+/// 看到三份一模一样的文字：顶部 toast（`lastError` 触发的页内提示）、灰字环境说明、
+/// 黄色告警框。同一个事实说三遍不是"更显眼"，是"这功能坏了三次"。
+///
+/// 判据是**字符串相同**，不是"环境被挡住了"：真正出乎意料的失败（权限被撤、API
+/// 报错）哪怕发生在同一个被挡住的构建里，也必须原样留在 `lastError` 里——把它一并
+/// 吞掉，用户就永远不知道出了别的事。
+fn should_record_toast_error(error: &str, environment_note: Option<&str>) -> bool {
+    environment_note != Some(error)
+}
+
+/// 把发送结果记进 `lastError`（去重后）。
+fn remember_toast_error(app: &AppHandle, result: Result<(), String>) {
+    if let Some(error) = result
+        .err()
+        .filter(|error| should_record_toast_error(error, crate::notify_gate::note(app).as_deref()))
+    {
+        center().last_error = Some(error);
+    }
 }
 
 /// 请求系统默认提示音时传给各平台的取值（见 [`show_toast`]）。
@@ -1592,6 +1571,25 @@ fn badge_image(unread: u32) -> tauri::image::Image<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 同一条说明只出现一次：错误与环境说明逐字相同时不记 `lastError`
+    /// （否则顶部 toast + 灰字 + 黄色告警会把同一句话说三遍），**其它失败一律照记**。
+    #[test]
+    fn toast_error_is_recorded_unless_it_repeats_the_environment_note() {
+        let note = "Windows 的系统通知当前被系统关闭…";
+        assert!(
+            !should_record_toast_error(note, Some(note)),
+            "与环境说明逐字相同 = 同一件事，不该再记一遍"
+        );
+        assert!(
+            should_record_toast_error("系统通知发送失败（权限被撤）", Some(note)),
+            "被挡住的环境里也可能出别的错，不能一并吞掉"
+        );
+        assert!(
+            should_record_toast_error("任何失败", None),
+            "没有环境阻塞时，所有失败都要记"
+        );
+    }
 
     #[test]
     fn badge_text_clears_at_zero_and_caps() {

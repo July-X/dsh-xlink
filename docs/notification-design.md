@@ -264,7 +264,38 @@ DPI 下按 20/24 绘制——给一张 32×32 的源图让系统缩小，比给 
 | 平台 | 后端 | 注意 |
 | --- | --- | --- |
 | macOS | `mac-notification-sys` → `NSUserNotificationCenter` | 不需要授权弹窗，也不需要 App 已被签名/打包；未打包的 dev 二进制可能发不出去，错误会被面板显示出来 |
-| Windows | WinRT toast（`tauri-winrt-notification`） | 必须带 AppUserModelID（`app.config().identifier`）；**只有安装版**（NSIS 创建的开始菜单快捷方式提供该 ID）才显示应用名与图标，开发模式会以 PowerShell 身份出现，属系统层面限制 |
+| Windows | WinRT toast（`tauri-winrt-notification`） | 必须带 AppUserModelID（`app.config().identifier`，经 `notify_gate::app_id` 取）。**系统通知被关时 `Show` 仍返回 S_OK**——见 §4.4 |
+
+#### 4.4 「只有角标、没有横幅」：Windows 通知总开关
+
+2026-09-28 实测（本机 Windows 11）：设置 → 系统 → 通知里的**总开关关着**时，
+`ToastNotifier::Show` 照常返回 `S_OK`，`notify-rust` 也就照样 `Ok(())`——但气泡
+不出现，通知中心里也没有记录，**壳拿不到任何错误**。同一时刻角标照常变：角标走
+`ITaskbarList3::SetOverlayIcon`（任务栏 API），与通知平台毫无关系。「只有数字红点、
+没有横幅」就是这么来的——两者从来不是同一套东西，排查时别把它们当成一个功能的两半。
+
+实测记录：总开关关闭时 `ToastNotifier::Setting()` 对**任意** AUMID 都返回
+`DisabledForUser`——本应用 `com.zhongxingxing.dsh-xlink`、
+`Microsoft.Windows.PowerShell`、`Windows.Defender.SecurityCenter`、
+`com.nvidia.nvapp` 无一例外；同一时刻
+`HKCU\Software\Microsoft\Windows\CurrentVersion\PushNotifications\ToastEnabled` = 0。
+反过来，用 `CreateToastNotifier()`（不指定 AUMID）直接失败
+（`0x80070490 找不到元素`），所以"不传 app_id 就完事"不是退路。
+
+`notify_gate.rs` 据此在两处如实上报，而不是让失败静过去：
+
+| 位置 | 行为 |
+| --- | --- |
+| `status()` | `notifications_blocked = true` + `environment_note` = 指向「设置 → 系统 → 通知」的说明，设置页以灰字展示；轮询每 2.5 s 一次，用户打开开关后说明自动消失 |
+| `show_toast()` | 返回该说明作为错误，但 `remember_toast_error` **不把它记进 `lastError`**：同一句话已经由设置页的灰字展示，再记一份就是顶部 toast + 灰字 + 黄色告警框把同一句话说三遍。判据是**逐字相同**（两个常量同源），不是"环境被挡住了"——真正出乎意料的失败哪怕发生在同一个被挡住的构建里，也照实留在 `lastError` |
+
+判定用 `ToastNotifier::Setting()` 而不是读那个 `ToastEnabled` 注册表值：前者是
+系统的权威接口，一次覆盖「用户关了总开关」「只关了本应用」「组策略禁用」三种情形。
+只把 `Enabled` 当放行，其余取值一律按阻塞处理。**问不到就按没被关处理**——宁可少
+显示一条说明，也不谎报"你的通知被关了"，后者会让用户去翻一个根本关着的开关。
+
+macOS 侧的同类判定（未打包构建拿不到应用 bundle）也一并搬进了 `notify_gate.rs`：
+与状态机无关的"平台这一关卡没卡住"归它管，`notify.rs` 只回答"要不要弹"。
 
 提示音：`sound = true` 时请求系统默认提示音（macOS 传
 `NSUserNotificationDefaultSoundName`、Windows 传 `Default`），关闭时不设置任何
@@ -427,6 +458,7 @@ struct CompletedTask {
 | WebSocket 断开 | 面板 `watching=false` + 最近错误 | 1→20 s 退避重连；通知在该内核进程内暂时缺失 |
 | 内核版本改了事件名/协议 | 无通知，面板显示 `lastError` | 只记录、不重试风暴（退避上限 20 s），不影响其它功能 |
 | 系统通知被拒/不可用 | `lastError` 给出具体平台指引 | 角标仍然工作（角标不依赖通知权限） |
+| **Windows 通知总开关被关** | 设置页灰字（**只此一处**，见 §4.4） | `ToastNotifier::Show` 仍返回 S_OK，只能靠 `Setting()` 主动发现；**角标不受影响** |
 | 跑的是未打包构建（`tauri dev` / `cargo run`） | 面板灰字提示"系统通知不会以本应用名义投递" | 照常尝试投递；**角标不受影响**。原因见 §4.3 |
 | 未读积压 | 角标显示 `999+` | 焦点回到工作台或点「全部已读」即清零 |
 | 内核没有 `session/control`（老版本 / 协议漂移） | 无感 | 记一行日志，退回一次 `session/list` 标题快照（§3.3） |
@@ -531,8 +563,10 @@ CI 的 Windows job 会跑到；本机是 macOS 时用
 4. 真实链路：启动工作台 → 发一条会跑一两分钟的任务 → **切到别的应用** → 任务跑完后
    角标 +1 且弹出系统通知 → 切回工作台 → 角标清零。
 
-Windows 上未安装的构建会以 PowerShell 名义显示通知（系统要求开始菜单快捷方式提供
-AppUserModelID），安装版（NSIS）不受影响。
+**Windows 上先确认总开关**：设置 → 系统 → 通知里的通知开关**关着时，气泡永远不出现**，
+而壳看不到任何错误（`Show` 返回 S_OK，§4.4）。dev 壳里「模拟一次任务完成」点了不会有
+横幅，按钮上方/下方的灰字环境说明会讲清原因并指到那个开关——**只有那一处**。
+角标与气泡是两条独立的通路：角标出现只说明状态机在工作，证明不了通知通路可用。
 
 ## 10. 已核验的事实（复核用）
 
@@ -562,7 +596,8 @@ curl -s -b /tmp/c.txt -H 'content-type: application/json' \
 | 事件里的 `sessionId` 是裸 uuid，`session/list` 里带 `session-` 前缀 | 实测（`api-session/added` 的 `parentSessionId` 反而是带前缀的形式） |
 | macOS 角标 = `NSDockTile.setBadgeLabel` | `tao/src/platform_impl/macos/badge.rs` |
 | Windows 覆盖图标 = `ITaskbarList3::SetOverlayIcon` | `tao/src/platform_impl/windows/window.rs` |
-| Windows toast 必须带 AppUserModelID（未安装时退回 PowerShell 身份） | `tauri-winrt-notification`（`Toast::new(app_id)`），`notify-rust` 的 `app_id` 仅在 Windows 上存在 |
+| Windows toast 必须带 AppUserModelID（`Toast::new(app_id)`），`notify-rust` 不传时用 `Microsoft.Windows.PowerShell` 兜底 | `tauri-winrt-notification`（`Toast::new` / `Toast::POWERSHELL_APP_ID`）、`notify-rust` 的 `src/windows.rs` |
+| **通知总开关关闭时 `ToastNotifier::Show` 返回 S_OK 而不显示**；`Setting()` 对任意 AUMID 都是 `DisabledForUser` | 实测（本机，2026-09-28）：`CreateToastNotifierWithId(...).Show()` → `Ok(())` + 通知中心无记录；`Setting()` → `DisabledForUser`（本应用 / PowerShell / Defender / NVIDIA 一致）；`HKCU\…\PushNotifications\ToastEnabled` = 0；`CreateToastNotifier()`（不带 AUMID）→ `0x80070490` |
 | 插件式通知会在每个 webview 注入 shim 并调用 `is_permission_granted` | `tauri-plugin-notification` 的 `src/lib.rs`（`.js_init_script`）与 `src/init-iife.js` |
 | macOS 上未打包进程的通知被丢弃 / 归到父进程名下 | 系统日志：`usernoted: Sending request for permission for com.apple.Terminal with path …/target/debug/dsh-xlink`、`NotificationCenter: Unable to find valid bundle with backupPath: …` |
 | `sound_name` 的"系统默认提示音"取值：macOS `NSUserNotificationDefaultSoundName`、Windows `Default` | `mac-notification-sys` 的 `Sound` 取值表、`tauri-winrt-notification` 的 `impl FromStr for Sound`（Windows 未设置声音 = `<audio silent="true" />`） |
