@@ -448,6 +448,22 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
       note(`EP 组件注册完整：模板用到 ${used.size} 种，全部已在 main.js 注册`);
     }
 
+    // 反方向：注册了却没有任何模板用到的组件，同样是错的——它把 `theme-chalk`
+    // 的样式一起打进产物，而 CI 的 CSS 预算是硬的。`el-table`（17 KB）就是这样
+    // 在 MigrationPanel 改用自绘表格之后留在 main.js 里，白占了一个组件的体积，
+    // 直到 UI CSS 只剩 838 字节余量才被发现。本仓库没有动态 `<component :is>`
+    // 引用 EP 组件的写法（只有面板切换与图标），所以这里不会出现误报。
+    const unused = [...registered.keys()].filter((name) => !used.has(name));
+    if (unused.length > 0) {
+      fail(
+        'ep-unused',
+        `main.js 注册了 ${unused.join('、')}，但没有任何模板用到——它们的样式会白进产物包` +
+          '（CI 的 UI CSS 预算因此少掉相应体积）。请删掉 main.js 里的 import、style 与注册项。',
+      );
+    } else {
+      note(`EP 组件无冗余注册：注册的 ${registered.size} 种全部有模板在用`);
+    }
+
     // group 类组件没有模型时，子项的独立 :model-value 会被组模式忽略：
     // checkbox 进入 group 后读的是 group 的模型值，点了没反应（迁移向导
     // 来源勾选因此整个失效）。凡是用 group 就必须绑模型。
