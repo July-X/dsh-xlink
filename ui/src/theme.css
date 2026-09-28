@@ -1138,9 +1138,12 @@ body.rel-build .sidebar {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  /* icon 与文字的间隔 10px → 7px、行内左右内边距 12px → 9px：导航项只有
+     icon + 两到四个字，撑开一点就显松散；收紧后一排/一列都更聚拢，指示条
+     （.menu-item.active::before）与 hover 底色的贴边距离也随之收紧。 */
+  gap: 7px;
   width: 100%;
-  padding: 9px 12px;
+  padding: 9px 9px;
   border: none;
   border-radius: 10px;
   background: transparent;
@@ -1188,8 +1191,11 @@ body.rel-build .sidebar {
   }
 }
 
+/* 导航 icon 放大到 20px：菜单项的语义几乎全靠 icon（仪表盘 / 方块 / 插头 /
+   魔杖 / 齿轮），16px 在 480px 窄窗里细得看不出形状。与按钮行的 20px 对齐，
+   侧栏与卡片内两处 icon 是同一套重量。 */
 .menu-item .el-icon {
-  font-size: 16px;
+  font-size: 20px;
 }
 
 /* 待更新数字角标：App 图标徽标那种红色数字圆点，不放文字——具体含义
@@ -1372,10 +1378,30 @@ main {
   flex-wrap: wrap;
 }
 
-/* 主操作按钮的 icon 放大到 18px：动作方向（启动/停止、打开/关闭）主要靠
-   icon 表达，太小的图标看不清语义。仅作用于概览按钮行，不影响其他页面。 */
+/* 面板内按钮的横向间距只由容器的 flex gap 负责。Element 给**每一个**
+   .el-button 都加了 margin-left: 12px，与 .btn-row / .card-head 自己的
+   gap 叠加后相邻按钮实际相距 20px 以上——概览主按钮全是 type="text"
+   （无底色无描边），这 20px 全是空白，两枚按钮的文字看着像隔了一条街，
+   再加一枚就换行。面板内一律清零这条左外边距。
+   选择器带 .panel 前缀而不是全局清零：确认框（confirmDialog）、弹窗、
+   tooltip / 下拉浮层都由 Element 自己排版，teleport 到 body 不在 .panel
+   内，分隔正是靠这条 12px——全局清零会把「取消 / 确定」粘在一起。 */
+.panel .el-button {
+  margin-left: 0;
+}
+
+/* 主操作按钮的 icon 放大到 20px（与侧栏导航 icon 同重）：动作方向（启动/停止、
+   打开/关闭）主要靠 icon 表达，太小的图标看不清语义。仅作用于概览按钮行，
+   不影响其他页面。 */
 .btn-row .el-button .el-icon {
-  font-size: 18px;
+  font-size: 20px;
+}
+
+/* 按钮内 icon 与文字的间隔收窄：Element 默认 6px（large 8px），一排三个按钮
+   时每枚各差 2px，480px 窄窗里整行看着松。权重与 Element 那条相同，靠源序
+   生效——theme.css 在 element-plus 样式之后加载（见 main.js 的 import 顺序）。 */
+.el-button [class*='el-icon'] + span {
+  margin-left: 4px;
 }
 
 /* 概览「当前内核」卡的次级按钮行：仅在工作台 / 官方对话开启后从下方淡入。
@@ -3465,15 +3491,22 @@ body.pane-dragging .log-tabs {
     font-size: 12px;
     padding: 5px 10px;
   }
+  /* 菜单在窄布局里是横向一排：项间距收到 2px（原 4px），六个项里只要多出
+     「数据迁移」就会顶到换行——flex-wrap 会把它甩到第二行，整条 chrome 变两
+     排。项自身的左右 padding 见下面 .menu-item。 */
   .menu {
     flex-direction: row;
     flex-wrap: wrap;
     flex: 0 0 auto;
     margin-top: auto;
+    gap: 2px;
   }
+  /* 横排项的左右 padding 10px → 7px：窄布局下激活态没有底色（见下条
+     .menu-item.active），pill 不显示，10px 就只是两段空白；连同 icon↔文字
+     的 7px，整项占宽省下 6px。上下 6px 不动，触摸/点击高度保持原样。 */
   .menu-item {
     width: auto;
-    padding: 6px 10px;
+    padding: 6px 7px;
     font-size: 13px;
   }
   /* 窄布局菜单激活态：只用文字高亮（品牌蓝 + 加粗），不要底线与背景。 */
@@ -3533,8 +3566,12 @@ body.pane-dragging .log-tabs {
     min-width: 96px;
     flex: 1 1 auto;
   }
+  /* 概览按钮行左右内边距 12px → 6px：这些按钮大多是 type="text"，没有底色
+     也没有描边，左右 padding 是纯空白（Element 对 text 按钮本来给的是 0，是
+     这条规则又补回来的），12px 会把一排按钮撑到换行。上下 8px 不动，按钮
+     高度照旧；「更新并重启」那种带底色的按钮留 6px 也不至于挤。 */
   .card .btn-row .el-button {
-    padding: 8px 12px;
+    padding: 8px 6px;
     font-size: 13px;
   }
 }
