@@ -1108,7 +1108,7 @@ pub fn diagnose_runtime(
         node_path: Path::new(""),
         pnpm_exe: Path::new(""),
         family: crate::instance::KERNEL_FAMILY_DSH,
-        instance_id: crate::instance::DEFAULT_INSTANCE_ID,
+        instance_id: crate::instance::resolve_default().1,
     });
     let store_items = plugins::load_store(data_dir).items;
     let kernel_label = kernel::read_active(data_dir).unwrap_or_default();

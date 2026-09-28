@@ -193,6 +193,7 @@ npm run build:win         # x86_64-pc-windows-msvc
 - 外壳自身日志与每壳设置（release / dev 分槽）：`~/.dsh-xlink/shell/<release|dev>/`（`logs/`、`settings.json`、`ui-state.json`）
 - 多内核相关（实例 `kernels/<族>/instances/<id>/`、中央插件库 `dsh-plugins/`、技能库 `skills/`）：权威布局见 [docs/architecture.md §「多内核改造后的实际数据布局」](docs/architecture.md)。注意**已安装内核仍在上一条的 `desktop[-dev]/kernels/<版本>/` 下**——`kernels/<族>/versions/` 是为多内核备好但尚未启用的位置，实机不存在
 - 内核自身数据（会话、凭据、配置、profile）：实例内核 home `~/.dsh-xlink/kernels/dsh/instances/<id>/home/`——启动内核时外壳以 `DSH_HOME` 环境变量注入，内核进程的全部用户数据都落在这里，不再使用 `~/.dsh`
+- **dev 壳与 release 壳各有各的默认实例**：release 用 `default`，dev 用 `default-dev`（首次启动时自动建立），端口也分开（3090 / 3091），两套环境可以同时跑。分家的原因：共用一个实例时，dev 换一次内核版本或改一次插件接线就会重写共享的 profile 接线，dev 更新中央库里的插件源码还会被 link 物化直接送到 release 正在跑的内核上——release 的工作台会当场崩掉。代价是 dev 实例初始是干净的（看不到 release 的会话历史与第三方插件，需要的话在插件页点「同步」把中央库的插件物化过去）。两个壳若仍指向同一实例且那个内核还活着，插件与内核版本变更会被拒绝并告诉你先停哪一边
 
 > 从 v0.2.x 升级：平铺的 `~/.dsh-xlink/desktop[-dev]/` 会在新版首次启动时自动整体搬进 `~/.dsh-xlink/dsh/`；搬迁失败时继续使用旧目录，数据不会丢失。更早版本（元数据在系统应用数据目录或 `~/.dsh/desktop/`）的数据不再被读取，如需保留请手动移入上述外壳数据目录。
 >

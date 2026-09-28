@@ -19,7 +19,6 @@ use url::Url;
 use crate::error::AppError;
 use crate::instance::{self, InstanceRecord};
 use crate::migration;
-use crate::paths;
 use crate::process::{build_log_kind, read_tail, LogSpec};
 use crate::quarantine;
 use crate::{guard, kernel, node, patches, plugins, releases, settings, skills, updater};
@@ -757,6 +756,11 @@ pub async fn activate_version(app: AppHandle, version: String) -> Result<(), Str
     blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
+        // 换版本会重跑插件接线 = 改写实例的 profile package.json。落在一个
+        // 另一个壳正跑着的实例上，那边的工作台会当场崩掉（实测：dev 切内核
+        // → release 工作台白屏），所以先问一句实例归谁管。
+        let (family, instance_id) = instance::resolve_default();
+        instance::ensure_instance_mutable(family, instance_id, "切换内核版本")?;
         let settings = settings::load_for_shell(settings::current_mode());
         // 换内核版本是安全网最该兜住的那一类变更：新版本 + 旧插件的组合
         // 正是"昨天还能用今天起不来"最常见的来源。打点必须在 set_active
@@ -2313,6 +2317,10 @@ async fn run_plugin_mutation_command(
 ) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
     let settings = settings::load_for_shell(settings::current_mode());
+    // 装完新内核要重跑插件接线，同样会改写实例 profile：先确认这个实例没被
+    // 另一个壳的内核占着。
+    let (family, instance_id) = instance::resolve_default();
+    instance::ensure_instance_mutable(family, instance_id, "安装内核")?;
     record_pre_change(&data_dir, &settings);
     run_plugin_command(app, on_event, op).await
 }
@@ -2662,6 +2670,9 @@ async fn run_plugin_command_instance(
     blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
+        // 目标实例由调用方显式给出（实例页的按实例操作），守卫按这个 id 判，
+        // 不是按当前壳的默认实例。
+        instance::ensure_instance_mutable(&family, &id, "改动这个实例的插件")?;
         let settings = settings::load_for_shell(settings::current_mode());
         let node_info = cached_node(&state, &settings);
         let promise_send = on_event.clone();
@@ -2970,14 +2981,16 @@ pub async fn list_instances() -> Result<Vec<InstanceSummary>, String> {
     blocking(move || -> Result<Vec<InstanceSummary>, String> {
         let _guard = crate::lock(instance::lifecycle_mutex());
         let registry = instance::load_registry().map_err(|e| format!("读取实例注册表失败：{e}"))?;
-        let mode = paths::ShellMode::current();
         let summaries = registry
             .instances
             .iter()
             .map(|record| {
                 let runtime = instance::load_runtime(&record.kernel_family, &record.id);
-                let is_default =
-                    registry.default_instance_id.as_deref() == Some(record.id.as_str());
+                // 「默认」按**当前壳**判定，不看注册表里那个共享字段：dev 与
+                // release 各有各的默认实例（`default` / `default-dev`），共享
+                // 字段只服务 `default_family()` 的族解析，拿它标 UI 会让两个壳
+                // 互相把对方的实例标成"默认"。
+                let is_default = record.id == instance::resolve_default().1;
                 InstanceSummary {
                     record: record.clone(),
                     runtime,
@@ -2985,9 +2998,6 @@ pub async fn list_instances() -> Result<Vec<InstanceSummary>, String> {
                 }
             })
             .collect::<Vec<_>>();
-        // 按模式筛 default：每个 Shell 模式独立记住自己的 default，
-        // 但目前 UI 不区分模式，简单地把任何 default 都标 true。
-        let _ = mode;
         Ok(summaries)
     })
     .await
@@ -3225,7 +3235,9 @@ mod workbench_url_tests {
         let log_path = kernel::current_kernel_log_path(
             &root,
             crate::instance::KERNEL_FAMILY_DSH,
-            crate::instance::DEFAULT_INSTANCE_ID,
+            // 夹具必须跟生产同一套解析：默认实例按壳分家（dev 壳是
+            // `default-dev`），写死 `default` 会让夹具与被测代码看不同的日志。
+            crate::instance::resolve_default().1,
         );
         fs::create_dir_all(log_path.parent().expect("log parent")).expect("create log dir");
         fs::write(
