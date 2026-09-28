@@ -29,9 +29,10 @@ function callWindow(method, label, hint) {
 
 // 仍然走 Tauri close()，让 Rust 侧已有的窗口关闭处理继续生效：Windows 上
 // 它会拦截这次关闭并收进通知区域（内核与工作台继续后台运行，重新打开与
-// 退出都在托盘菜单里），macOS 上维持原有语义。「已收起」的提示由 Rust 的
-// shell-hidden-to-tray 事件驱动（见 App.vue），这里不重复提示——否则窗口
-// 已经隐藏，toast 也没人看得见。
+// 退出都在托盘菜单里），macOS 上维持原有语义。「程序还在后台、去哪找它」的
+// 提示不在这里发：收起时窗口已经隐藏，页内提示没人看得见，它由 Rust 在
+// **从通知区域恢复**时补发的 shell-restored-from-tray 驱动（见 App.vue），
+// 而且每次启动只发一次——这里再讲一遍就成了重复打扰。
 function closeWindow() {
   const hint = isWindowsTitlebar
     ? '可改用系统快捷键（Alt+F4），或用右下角托盘图标的右键菜单退出'
