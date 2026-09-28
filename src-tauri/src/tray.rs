@@ -8,7 +8,7 @@
 //! `prevent_close()` 并隐藏窗口。macOS 不参与（那里最小化/关闭沿用系统语义，
 //! Dock 承担常驻入口），所以整个模块按 `cfg(windows)` 编译。
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -207,14 +207,18 @@ pub fn refresh_icon(app: &AppHandle) {
     }
 }
 
-/// 连续关闭（用户反复点 X）时不要刷屏：只有距上次提示超过该间隔才再发一次。
-const CLOSE_HINT_INTERVAL_MS: u64 = 4000;
-
-static LAST_CLOSE_HINT_AT: AtomicU64 = AtomicU64::new(0);
-
 /// 主窗口当前是否处于"被收起进通知区域"的状态。恢复时据此决定要不要补发提示
-/// ——`hide_to_tray` 当场发的那条渲染在已隐藏的窗口里，用户看不到（P1-3）。
+/// ——`hide_to_tray` 当场发的提示渲染在已隐藏的窗口里，用户看不到（P1-3）。
 static HIDDEN_TO_TRAY: AtomicBool = AtomicBool::new(false);
+
+/// 「从通知区域恢复时补发提示」这件事每次启动只做一次。
+///
+/// 恢复只可能由用户主动触发（点托盘图标、左键单击，或工作台拉绳把面板叫回来），
+/// 所以他此刻正看着窗口、也刚证明自己知道怎么把它叫回来——再讲一遍"程序还在
+/// 后台、点托盘图标可重新打开"只有遮挡之嫌。首次恢复仍然要讲：那是唯一可能
+/// 形成心智模型的时刻（否则窗口连同任务栏按钮一起消失像是崩了）。放在这里而
+/// 不放前端，是为了让"每次启动一次"在 webview 重新加载后依然成立。
+static RESTORE_HINT_SHOWN: AtomicBool = AtomicBool::new(false);
 
 /// 建立托盘图标。必须在事件循环启动前的 `setup` 里调用。
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
@@ -285,10 +289,16 @@ pub fn show_main_shell(app: &AppHandle) {
     let _ = window.set_always_on_top(true);
     let _ = window.set_always_on_top(false);
     let _ = window.set_focus();
-    // 收起时那条 `shell-hidden-to-tray` 是画在**刚被隐藏**的窗口里的，用户看不到
-    // （P1-3）。提示只有在窗口可见时才讲得通，所以从收起状态恢复时补发一条：此刻
-    // 用户正看着界面，"刚才去哪了、怎么再找回来"才有意义。
-    if HIDDEN_TO_TRAY.swap(false, Ordering::Relaxed) {
+    // 收起时那条提示是画在**刚被隐藏**的窗口里的，用户看不到（P1-3）。提示只有
+    // 在窗口可见时才讲得通，所以从收起状态恢复时补发一条：此刻用户正看着界面，
+    // "刚才去哪了、怎么再找回来"才说得清。
+    //
+    // 但恢复必然是用户自己点出来的，他刚证明自己知道怎么把窗口叫回来，所以
+    // 每次启动只补发这一次（见 [`RESTORE_HINT_SHOWN`]），其余恢复一律静默——
+    // 每一次都弹一条盖住标题栏的横幅，代价远大于收益。
+    if HIDDEN_TO_TRAY.swap(false, Ordering::Relaxed)
+        && !RESTORE_HINT_SHOWN.swap(true, Ordering::Relaxed)
+    {
         let _ = app.emit("shell-restored-from-tray", ());
     }
 }
@@ -303,26 +313,7 @@ pub fn intercept_close(app: &AppHandle, label: &str, api: &tauri::CloseRequestAp
     }
     api.prevent_close();
     hide_to_tray(app);
-    notify_hidden_once(app);
     true
-}
-
-/// 首次（以及隔一会儿之后）收起窗口时告诉用户「程序还在跑、去哪找它」，
-/// 否则窗口连同任务栏按钮一起消失时会像是崩了。连续收起按
-/// [`CLOSE_HINT_INTERVAL_MS`] 节流，避免刷屏。
-pub fn notify_hidden_once(app: &AppHandle) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let last = LAST_CLOSE_HINT_AT.load(Ordering::Relaxed);
-    if now.saturating_sub(last) >= CLOSE_HINT_INTERVAL_MS
-        && LAST_CLOSE_HINT_AT
-            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-    {
-        let _ = app.emit("shell-hidden-to-tray", ());
-    }
 }
 
 /// 托盘菜单的「退出」：复用前端已有的「确认退出」流程。

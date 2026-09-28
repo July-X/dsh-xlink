@@ -1651,7 +1651,6 @@ pub fn minimize_shell(
             return Err("主壳窗口不存在（label: main）".to_string());
         }
         crate::tray::hide_to_tray(&app);
-        crate::tray::notify_hidden_once(&app);
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
