@@ -5,6 +5,13 @@
 //
 // tab 只显示内核族名（DSH / mcode）：注册表实例 id（如 default）是实现细节，
 // 多内核并存且都能同时启动时，id 不构成用户需要关心的差异，故不再展示。
+//
+// 一个族只画一个 tab。同族多实例是常态而不是边角：dev 壳的 default-dev 与
+// release 壳的 default 都属 dsh 族，两个都注册进同一份注册表后，这里会画出
+// 两个一模一样、看上去还都「已启用」的 DSH——既分不清谁是谁，也像有两个内
+// 核并列。同族多实例时保留**当前选中的那个**：它是这一族此刻真正在服务的实
+// 例，选中态不会因为去重落到别人头上。去重只作用于这排页签，插件页「所有
+// 实例」仍拿到完整实例列表。
 import { computed, onMounted } from 'vue';
 import { Refresh } from '@element-plus/icons-vue';
 import { store, refreshAll } from '../store.js';
@@ -12,16 +19,26 @@ import { globalBusy, isLoading, withLoading } from '../loading.js';
 import { instanceStore, loadInstances, setDefaultInstance, familyLabel } from '../instance.js';
 import { toastActionError } from '../notify.js';
 
-// 标签按实例 id 稳定排序，选中项不换位，避免连续点击时目标移动。
+// 按内核族去重，同族保留选中项；排序键从实例 id 换成族名——去重之后决定顺序的
+// 是族，而族不随点击变化，连续点击仍不会让目标移位。
 const instanceTabs = computed(() => {
-  const list = instanceStore.list.slice();
-  list.sort((a, b) => {
-    return a.record.id.localeCompare(b.record.id);
-  });
-  return list.map((it) => ({
-    id: it.record.id,
-    family: familyLabel(it.record.kernel_family),
-  }));
+  const byFamily = new Map();
+  for (const it of instanceStore.list) {
+    const family = it.record.kernel_family;
+    const kept = byFamily.get(family);
+    if (!kept || it.record.id === instanceStore.defaultInstanceId) {
+      byFamily.set(family, it);
+    }
+  }
+  return [...byFamily.values()]
+    .map((it) => ({
+      id: it.record.id,
+      family: familyLabel(it.record.kernel_family),
+      // 去重后同族实例的差异只能靠 hover 得知（「默认实例（dev 壳）」这类
+      // 实例标签）；标签文字本身仍是族名，不因多一个实例就变宽。
+      title: it.record.label || it.record.id,
+    }))
+    .sort((a, b) => a.family.localeCompare(b.family));
 });
 
 onMounted(() => {
@@ -54,6 +71,7 @@ const retryInstances = () => withLoading('loadInstances', () => loadInstances().
         :disabled="instanceStore.switching || globalBusy || store.starting"
         :aria-busy="isLoading('switchInstance')"
         :aria-current="tab.id === instanceStore.defaultInstanceId ? 'true' : undefined"
+        :title="tab.title"
         @click="pickInstance(tab.id)"
       >
         {{ tab.family }}
