@@ -189,7 +189,11 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 ### 多实例隔离
 
-- 插件物化按 `(family, instance_id)` 隔离：`extensions/plugins/<id>/` 在每个实例独立维护；默认实例 `default`，其他实例由用户创建。
+- 插件物化按 `(family, instance_id)` 隔离：`extensions/plugins/<id>/` 在每个实例独立维护；其他实例由用户创建。
+- **dev 壳与 release 壳各有各的默认实例**：release 用 `default`，dev 用 `default-dev`（`instance::default_instance_id_for`）。壳自己的数据目录早就分家了（`desktop/` 与 `desktop-dev/`），实例此前没有，于是两边共用同一棵 DSH home——`profiles/web/`（profile 接线）、`extensions/plugins/`（插件物化）、会话、凭据全是同一份。实测后果：dev 装完新内核重跑一次接线就把 release 正在跑的内核的 profile 换掉（`dev-plugin-wiring` 日志 11:19:02），dev 更新中央库里的插件源码（link 物化）release 内核立刻改用新代码——工作台当场抛 `scope '…' rendered without an installed adapter`，页面白屏。分家后两边的实例端口也分开（3090 / 3091），可以同时跑。
+- **注册表的 `default_instance_id` 是共享的一份，dev 壳不得改写它**——它是 `data_dir` 族解析的输入，被改会让 release 下次启动指向 dev 的实例。`ensure_default_registered` 只在「无人认领」且由 release 创建时写入。
+- **历史数据只进 release 实例**（`instance::legacy_migration_target`）：`~/.dsh` 的会话/凭据若跟着当前壳走，dev 先跑就会把 release 的历史搬进 `default-dev`。
+- 实例正被**另一个壳**的内核占用时，装/卸/更新插件、切物化模式、切内核版本会被拒绝（`instance::ensure_instance_mutable`）。pid 文件里记了启动方的壳模式（第三段 `release` / `dev`，旧格式读不出时按"认不出"放行），活体判定复用 `kernel::pid_is_kernel` 而不是裸的进程存在性——pid 会被系统复用。
 - 技能活动视图 v1 **全局共享**（`skills/active/`）。`KernelAdapter::custom_skill_dirs` 已预留接口（`DshAdapter` 返回 `vec![skills_active_root()]`，`start` 通过 `DSH_CUSTOM_SKILL_DIRS` env 注入）；DSH 端升级支持时不需要改 Xlink 代码。
 - 实例端口 / PID / 锁由 `crate::instance::InstanceRegistry` 集中管理；`DSH_XLINK_HOME` 与 `DSH_HOME` 不在同一进程级 mutex 下，但 `start_instance` / `stop_instance` 都通过 `lifecycle_mutex()` 串行化。
 

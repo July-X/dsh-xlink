@@ -515,18 +515,15 @@ fn store_plugin_dir(data_dir: &Path, id: &str) -> PathBuf {
 ///
 /// 命令层要写入的 `(family, id)` 也走这里，避免两处各写一份 fallback
 /// 而在某次重构后悄悄分叉。
+/// 当前壳的默认实例（family + id）。
+///
+/// **不读注册表的 `default_instance_id`**：那份是 dev / release 共用的一份，
+/// dev 壳若跟着它走就等于用回 release 的实例（profile 接线、插件物化、会话
+/// 全是同一棵），这正是两套环境互相踩的入口。要换实例请用实例页显式创建，
+/// 不要动这里。
 pub(crate) fn default_instance_key() -> (String, String) {
-    if let Ok(registry) = crate::instance::load_registry() {
-        if let Some(id) = registry.default_instance_id.as_deref() {
-            if !id.is_empty() {
-                return (instance::KERNEL_FAMILY_DSH.to_string(), id.to_string());
-            }
-        }
-    }
-    (
-        instance::KERNEL_FAMILY_DSH.to_string(),
-        instance::DEFAULT_INSTANCE_ID.to_string(),
-    )
+    let (family, id) = crate::instance::resolve_default();
+    (family.to_string(), id.to_string())
 }
 
 /// P4 起插件物化目标走实例级 `extensions/plugins/<id>/`。

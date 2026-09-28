@@ -47,8 +47,10 @@ pub const CURRENT_INSTANCE_SCHEMA_VERSION: u32 = 1;
 /// 当前实例运行时 schema 版本。
 pub const CURRENT_RUNTIME_SCHEMA_VERSION: u32 = 1;
 
-/// 默认实例 id：旧版用户第一次启动 dsh-xlink 时迁移得到的实例。
+/// release 壳的默认实例 id：旧版用户第一次启动 dsh-xlink 时迁移得到的实例。
 pub const DEFAULT_INSTANCE_ID: &str = "default";
+/// dev 壳的默认实例 id。**与 release 分家**，见 [`default_instance_id`]。
+pub const DEV_DEFAULT_INSTANCE_ID: &str = "default-dev";
 /// 当前唯一已知的内核族；未来 mcode 通过 [`KERNEL_FAMILY_DSH`] 之外的新增
 /// 常量表达（并落到 [`crate::paths::kernels_root`] 下的独立目录）。
 pub const KERNEL_FAMILY_DSH: &str = "dsh";
@@ -56,19 +58,48 @@ pub const KERNEL_FAMILY_DSH: &str = "dsh";
 /// 当前仅供 mock adapter 与注册表使用；接入真实 mcode CLI 时再扩展能力声明。
 pub const KERNEL_FAMILY_MCODE: &str = "mcode";
 
-/// 默认实例元组（family + id）——legacy 单实例时代向多实例过渡期间
-/// 的「占位默认实例」。所有 hard-coded `(KERNEL_FAMILY_DSH,
-/// DEFAULT_INSTANCE_ID)` caller（`guard::GuardDeps`、
-/// `commands::kernel_workbench_url_from_log`、`notify::*`、
-/// `kernel::start()` 等共 8 处）应改走 `resolve_default()`，
-/// 未来 P8 UI 决策落地后由 [`InstanceRegistry::default_instance_id`]
-/// 接管——所有 caller 自动跟进，无需散落修改。
+/// **当前壳**的默认实例 id：release 用 [`DEFAULT_INSTANCE_ID`]，dev 用
+/// [`DEV_DEFAULT_INSTANCE_ID`]。
+///
+/// 两个壳必须分家。壳自己的数据目录早就分家了（`desktop/` 与 `desktop-dev/`，
+/// 见 [`crate::paths::shell_dir`]），但**实例没有**——两边共用同一个默认实例，
+/// 于是共用同一棵 DSH home：`profiles/web/`（profile 接线）、`extensions/plugins/`
+/// （插件物化）、会话、凭据。实测后果：dev 装完新内核重跑一次接线，就把
+/// release 正在跑的内核的 profile 换掉了；dev 更新中央库里的插件源码，release
+/// 的内核通过 link 立刻改用新代码——工作台当场抛出
+/// `scope '…' rendered without an installed adapter`，页面白屏。
+///
+/// 端口随之分开（实例记录里的 `port` 来自各自的 settings：3090 / 3091），
+/// 两套环境可以同时跑。
+pub fn default_instance_id() -> &'static str {
+    default_instance_id_for(crate::settings::current_mode())
+}
+
+/// 模式 → 默认实例 id 的映射。抽出来只为能在一个构建里同时测到两种模式
+/// （`current_mode()` 由 `debug_assertions` 决定，测试进程恒为 dev）。
+pub fn default_instance_id_for(mode: crate::paths::ShellMode) -> &'static str {
+    match mode {
+        crate::paths::ShellMode::Dev => DEV_DEFAULT_INSTANCE_ID,
+        crate::paths::ShellMode::Release => DEFAULT_INSTANCE_ID,
+    }
+}
+
+/// 当前壳的默认实例元组（family + id）。所有生产 caller 都应走这里，
+/// 不要 hard-code `DEFAULT_INSTANCE_ID`——那正是两套环境互相踩的入口。
 ///
 /// 返回 `(&'static str, &'static str)` 而非结构体：caller 现有的
 /// `kernel_log_spec(family, id)` / `current_kernel_log_path(data_dir,
 /// family, id)` 等签名是 `(family, id)` 形式，元组更对称
 /// 调用；引入结构体会让 caller 解构 + 重建，徒增行数。
 pub fn resolve_default() -> (&'static str, &'static str) {
+    (KERNEL_FAMILY_DSH, default_instance_id())
+}
+
+/// 历史数据（`~/.dsh` 里的会话/凭据/profile）永远只搬进 **release** 实例。
+///
+/// 不能跟着 [`default_instance_id`] 走：谁先跑谁搬走的话，dev 壳会把 release
+/// 用户的历史数据搬进 `default-dev`，release 侧打开工作台就是空的。
+pub fn legacy_migration_target() -> (&'static str, &'static str) {
     (KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID)
 }
 
@@ -345,26 +376,31 @@ pub fn save_registry(registry: &InstanceRegistry) -> Result<(), RegistryError> {
 pub fn ensure_default_registered(data_dir: &Path) -> Result<(), String> {
     let _guard = crate::lock(lifecycle_mutex());
     let mut registry = load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
-    if registry.get(DEFAULT_INSTANCE_ID).is_some() {
+    let id = default_instance_id();
+    if registry.get(id).is_some() {
         return Ok(());
     }
     let now_ms = crate::process::epoch_millis();
     let settings = crate::settings::load_for_shell(crate::settings::current_mode());
     let active = crate::kernel::read_active(data_dir);
-    let mut record = InstanceRecord::new(
-        DEFAULT_INSTANCE_ID,
-        KERNEL_FAMILY_DSH,
-        settings.port,
-        now_ms,
-    );
+    let mut record = InstanceRecord::new(id, KERNEL_FAMILY_DSH, settings.port, now_ms);
     record.kernel_version = active;
-    record.label = Some("默认实例（迁移自旧版）".to_string());
+    record.label = Some(if id == DEFAULT_INSTANCE_ID {
+        "默认实例（迁移自旧版）".to_string()
+    } else {
+        "默认实例（dev 壳）".to_string()
+    });
     ensure_instance_dirs(&record).map_err(|e| format!("准备实例目录失败：{e}"))?;
     save_record_to_disk(&record).map_err(|e| format!("写入实例记录失败：{e}"))?;
     registry
         .add(record)
         .map_err(|e| format!("注册表拒绝该 id：{e}"))?;
-    registry.default_instance_id = Some(DEFAULT_INSTANCE_ID.to_string());
+    // 注册表的 `default_instance_id` 是**共享**的一份：dev 壳绝不能把它改成
+    // `default-dev`，否则 release 壳下一次启动就会把 data_dir / 事故分析指向
+    // dev 的实例。只在还没人认领时写入，且只有 release 认领。
+    if registry.default_instance_id.is_none() && id == DEFAULT_INSTANCE_ID {
+        registry.default_instance_id = Some(id.to_string());
+    }
     save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))
 }
 
@@ -655,14 +691,16 @@ pub fn load_runtime(family: &str, id: &str) -> InstanceRuntime {
     }
 }
 
-/// 写入单独的 PID 文件。旧格式（只写 pid）保留向后兼容；新格式按
-/// `pid port\n` 写入。
+/// 写入单独的 PID 文件。格式依次是 `pid`、`port`、`shell`——`shell` 记的是
+/// 启动这个内核的**壳**（`release` / `dev`），用来在两个壳指向同一实例时认出
+/// 「这个实例归另一个壳管」。旧格式（只写 pid）保留向后兼容。
 pub fn write_pid(family: &str, id: &str, pid: u32, port: u16) -> Result<(), String> {
     let path = instance_pid_file(family, id);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    atomic_write(&path, format!("{pid} {port}\n").as_bytes()).map_err(|e| e.to_string())
+    let shell = crate::settings::current_mode().as_str();
+    atomic_write(&path, format!("{pid} {port} {shell}\n").as_bytes()).map_err(|e| e.to_string())
 }
 
 /// 读取 PID 文件，兼容只写 pid 的旧格式。
@@ -670,6 +708,8 @@ pub fn write_pid(family: &str, id: &str, pid: u32, port: u16) -> Result<(), Stri
 pub struct PidRecord {
     pub pid: u32,
     pub port: Option<u16>,
+    /// 启动这个内核的壳；旧文件没有这一段时为 `None`（= 认不出来）。
+    pub shell: Option<&'static str>,
 }
 
 pub fn read_pid(family: &str, id: &str) -> Option<PidRecord> {
@@ -678,7 +718,61 @@ pub fn read_pid(family: &str, id: &str) -> Option<PidRecord> {
     let mut parts = text.split_whitespace();
     let pid = parts.next()?.parse().ok()?;
     let port = parts.next().and_then(|value| value.parse::<u16>().ok());
-    Some(PidRecord { pid, port })
+    let shell = parts.next().and_then(known_shell_mode);
+    Some(PidRecord { pid, port, shell })
+}
+
+fn known_shell_mode(raw: &str) -> Option<&'static str> {
+    match raw {
+        "release" => Some("release"),
+        "dev" => Some("dev"),
+        _ => None,
+    }
+}
+
+/// 这个实例的内核是不是**另一个壳**启动的、且那个进程还活着。
+///
+/// 用于「改动实例前先问一句」：装/卸插件、切物化模式、切内核版本都会重写
+/// 实例的 profile 接线与插件物化，落在另一个壳正跑着的内核上，工作台会当场
+/// 崩掉（实测：dev 切内核 → release 工作台白屏）。pid 文件里记了启动方的
+/// 壳模式，因此能直接认出主人，而不必靠端口猜。
+///
+/// 认不出来时（旧格式文件、pid 已退出）返回 `None`——**宁可放行也不误伤**：
+/// 误报会挡住用户自己对自己实例的正常操作，而漏报只会在两壳真撞上时少一次提醒。
+pub fn instance_owned_by_other_shell(family: &str, id: &str) -> Option<PidRecord> {
+    let record = read_pid(family, id)?;
+    let owner = record.shell?;
+    if owner == crate::settings::current_mode().as_str() {
+        return None;
+    }
+    // 复用内核侧那套「这个 pid 现在还是一个 dsh web 内核吗」的校验（命令行
+    // 身份 + 端口活体），而不是裸的进程存在性：pid 会被系统复用，认错了
+    // 就把一个无关进程当成「另一个壳正在用」。
+    crate::kernel::pid_is_kernel(record.pid, record.port).then_some(record)
+}
+
+/// 阻断类错误要说清「谁占着、怎么解」——用户照着做就能继续，而不是只知道自己
+/// 被拒了。抽成纯函数是为了能直接测文案要素。
+fn blocked_message(record: &PidRecord, action: &str) -> String {
+    let port = record
+        .port
+        .map(|port| format!("、端口 {port}"))
+        .unwrap_or_default();
+    format!(
+        "这个实例正被另一个 dsh-xlink（{} 壳，进程 {}{port}）使用，不能{action}——\
+         它的内核还在跑，改接线会当场弄坏那边的工作台。\
+         请先在那个壳里停止该实例的内核，或改用别的实例。",
+        record.shell.unwrap_or("未知"),
+        record.pid,
+    )
+}
+
+/// 改动实例级状态前的互斥检查：实例正被另一个壳的内核占用时拒绝。
+pub fn ensure_instance_mutable(family: &str, id: &str, action: &str) -> Result<(), String> {
+    match instance_owned_by_other_shell(family, id) {
+        Some(record) => Err(blocked_message(&record, action)),
+        None => Ok(()),
+    }
 }
 
 /// 单独写入端口文件（用于 runtime 期间的 hot patch）。
@@ -976,7 +1070,7 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
     }
 
-    /// pid / port 写入与读取必须保持一致，包括只有 pid 的旧格式。
+    /// pid / port / 所属壳写入与读取必须保持一致，包括只有 pid 的旧格式。
     #[test]
     fn pid_record_handles_old_and_new_format() {
         let home = temp_dir("pid");
@@ -987,7 +1081,75 @@ mod tests {
         let pid = read_pid(KERNEL_FAMILY_DSH, "default").expect("read pid");
         assert_eq!(pid.pid, 12345);
         assert_eq!(pid.port, Some(3090));
+        assert_eq!(pid.shell, Some(crate::settings::current_mode().as_str()));
+        // 旧格式（只写 pid）仍要读得出来，只是认不出主人。
+        std::fs::write(instance_pid_file(KERNEL_FAMILY_DSH, "default"), "777\n").expect("写旧格式");
+        let old = read_pid(KERNEL_FAMILY_DSH, "default").expect("读旧格式");
+        assert_eq!((old.pid, old.port, old.shell), (777, None, None));
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 跨壳守卫：pid 文件记着**另一个壳**且那个 pid 还活着时，实例不可改动；
+    /// 认不出主人（旧格式）、主人就是自己、进程已退出这三种情况一律放行——
+    /// 误报会挡住用户对自己实例的正常操作。
+    #[test]
+    fn instance_is_mutable_unless_another_shell_owns_it() {
+        let home = temp_dir("guard");
+        let _xlink = scoped_xlink_home(&home);
+        let record = sample_record("default", 3090, KERNEL_FAMILY_DSH);
+        ensure_instance_dirs(&record).expect("ensure dirs");
+        let pid_path = instance_pid_file(KERNEL_FAMILY_DSH, "default");
+        let mine = crate::settings::current_mode().as_str();
+        let other = if mine == "dev" { "release" } else { "dev" };
+
+        // 认不出主人（旧格式）→ 放行。
+        std::fs::write(&pid_path, "4242 3090\n").expect("写旧格式");
+        assert!(ensure_instance_mutable(KERNEL_FAMILY_DSH, "default", "测试").is_ok());
+
+        // 主人是自己 → 放行（自己启的内核当然能改）。
+        std::fs::write(&pid_path, format!("4242 3090 {mine}\n")).expect("写自己");
+        assert!(ensure_instance_mutable(KERNEL_FAMILY_DSH, "default", "测试").is_ok());
+
+        // 主人是另一个壳，但那个 pid 已经不是 dsh 内核（测试里是本进程，
+        // 命令行对不上）→ 放行。这是 `pid_is_kernel` 的身份校验在兜底，
+        // 免得把一个无关进程当成"另一个壳正在用"。
+        std::fs::write(&pid_path, format!("{} 3090 {other}\n", std::process::id()))
+            .expect("写别的壳");
+        assert!(ensure_instance_mutable(KERNEL_FAMILY_DSH, "default", "测试").is_ok());
+
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 阻断类错误必须说清"谁占着、怎么解"——用户照着做就能继续，
+    /// 而不是只知道自己被拒了。钉住的是真实的文案构造函数。
+    #[test]
+    fn blocked_message_names_the_owner_and_the_way_out() {
+        let record = PidRecord {
+            pid: 42,
+            port: Some(3090),
+            shell: Some("release"),
+        };
+        let message = blocked_message(&record, "切换内核版本");
+        for needle in [
+            "另一个 dsh-xlink",
+            "release 壳",
+            "进程 42",
+            "端口 3090",
+            "切换内核版本",
+            "停止该实例的内核",
+        ] {
+            assert!(message.contains(needle), "消息缺少要素：{needle}");
+        }
+        // 旧格式文件认不出主人时也要能说清，而不是留下空洞的「未知」占位。
+        let unknown = blocked_message(
+            &PidRecord {
+                pid: 7,
+                port: None,
+                shell: None,
+            },
+            "装插件",
+        );
+        assert!(unknown.contains("进程 7") && unknown.contains("装插件"));
     }
 
     /// `ensure_instance_dirs` 必须创建 DSH 期望的全部子目录。
@@ -1064,12 +1226,84 @@ mod tests {
     fn resolve_default_returns_dsh_default_pair() {
         let (family, instance_id) = resolve_default();
         assert_eq!(family, KERNEL_FAMILY_DSH);
-        assert_eq!(instance_id, DEFAULT_INSTANCE_ID);
+        assert_eq!(instance_id, default_instance_id());
         // 元组对齐 caller 现有签名：`kernel_log_spec(family, id)` 、
         // `current_kernel_log_path(data_dir, family, id)` —— 解构即可，
         // 无需结构体中间层。
         let (f, i) = resolve_default();
-        assert_eq!((f, i), (KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID));
+        assert_eq!((f, i), (KERNEL_FAMILY_DSH, default_instance_id()));
+    }
+
+    /// 两个壳必须各有各的默认实例：共用一个实例时，dev 改一次插件接线 /
+    /// 换一次内核版本，release 正在跑的工作台就会崩（实测：dev 切内核 →
+    /// release 工作台白屏）。`current_mode()` 由 `debug_assertions` 决定，
+    /// 测试进程恒为 dev，所以映射抽成 `default_instance_id_for` 单独测。
+    #[test]
+    fn default_instance_is_scoped_per_shell() {
+        use crate::paths::ShellMode;
+        assert_eq!(
+            default_instance_id_for(ShellMode::Release),
+            DEFAULT_INSTANCE_ID
+        );
+        assert_eq!(
+            default_instance_id_for(ShellMode::Dev),
+            DEV_DEFAULT_INSTANCE_ID
+        );
+        // 两种 id 都要能当路径段用（否则落盘时才炸）。
+        for id in [DEFAULT_INSTANCE_ID, DEV_DEFAULT_INSTANCE_ID] {
+            crate::paths::validate_id_component(id).expect("实例 id 必须合法");
+        }
+    }
+
+    /// 历史数据只搬进 release 实例：dev 壳先跑也不能把 `~/.dsh` 搬进自己的
+    /// 实例，否则 release 用户打开工作台看到的是空的。
+    #[test]
+    fn legacy_migration_always_targets_the_release_instance() {
+        assert_eq!(
+            legacy_migration_target(),
+            (KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID)
+        );
+    }
+
+    /// dev 壳首次启动要建**自己**的实例，并且**不许**把注册表里已被 release
+    /// 认领的 `default_instance_id` 改成自己的——那份是共享的，被改会让
+    /// release 壳下次启动把数据目录与事故分析指向 dev 的实例。
+    #[test]
+    fn dev_shell_registers_its_own_instance_without_stealing_the_shared_default() {
+        let home = temp_dir("ensure-default");
+        let _xlink = scoped_xlink_home(&home);
+        let data_dir = home.join("shell-data");
+        std::fs::create_dir_all(&data_dir).expect("data dir");
+        std::fs::write(data_dir.join("active.txt"), "0.1.7-rc.2\n").expect("active");
+
+        // 先替 release 建好默认实例并认领 registry default。
+        let mut registry = load_or_migrate(None, 3090);
+        let mut release = sample_record(DEFAULT_INSTANCE_ID, 3090, KERNEL_FAMILY_DSH);
+        release.kernel_version = Some("0.1.7-rc.2".to_string());
+        registry.add(release).expect("add release");
+        registry.default_instance_id = Some(DEFAULT_INSTANCE_ID.to_string());
+        save_registry(&registry).expect("seed registry");
+
+        ensure_default_registered(&data_dir).expect("ensure current default");
+
+        let after = load_registry().expect("load registry");
+        assert!(
+            after.get(default_instance_id()).is_some(),
+            "壳必须建出当前模式自己的实例（当前模式 = {}）",
+            default_instance_id()
+        );
+        assert_eq!(
+            after.default_instance_id.as_deref(),
+            Some(DEFAULT_INSTANCE_ID),
+            "dev 壳不得改写共享的 registry default"
+        );
+        // 幂等：再跑一次不报错也不重复建。
+        ensure_default_registered(&data_dir).expect("第二次仍然幂等");
+        assert_eq!(
+            load_registry().expect("load").instances.len(),
+            after.instances.len()
+        );
+        std::fs::remove_dir_all(&home).ok();
     }
 
     // --- 内核 home 搬迁 -----------------------------------------------------

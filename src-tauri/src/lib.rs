@@ -200,9 +200,12 @@ pub fn run() {
             // 那里；改造后内核经 `DSH_HOME` 指向实例目录，不搬迁等于让用户
             // 面对一个空工作台。失败不阻塞启动：数据原封留在 `~/.dsh`，下次
             // 启动自动重试（逐项并入，可安全续跑）。
+            // 历史数据只搬进 release 实例（`legacy_migration_target`）：dev 壳与
+            // release 壳各有各的默认实例，谁先跑谁搬走的话 release 的历史就丢了。
+            let (legacy_family, legacy_instance) = crate::instance::legacy_migration_target();
             if let Err(error) = crate::instance::migrate_legacy_dsh_home_if_needed(
-                &family,
-                crate::instance::DEFAULT_INSTANCE_ID,
+                legacy_family,
+                legacy_instance,
                 &crate::paths::dirs_home().join(".dsh"),
             ) {
                 eprintln!(
