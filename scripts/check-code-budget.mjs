@@ -241,6 +241,13 @@ const FILE_BUDGETS = {
   // 四个来源共用一套吸收逻辑）+ CompletedTask 增 lastPrompt / lastResponse +
   // 通知正文带最近对话与「完成于 HH:MM」。与标题同源同命，不拆分。
   'src-tauri/src/notify.rs': 1170,
+  // 2026-09-28 新增：系统通知通道的可用性判定（Windows「设置 → 系统 → 通知」
+  // 被关时 `ToastNotifier::Show` 仍返回 S_OK 而气泡不出现，macOS 未打包构建
+  // 同样投递不出）。单独成文件而不是并进 notify.rs，是因为它与状态机无关——
+  // notify.rs 只回答"要不要弹"，这里只回答"平台这一关卡没卡住"；混在一起会
+  // 让一个 1170 行、只许下调的文件再多一处平台分支。约 56 行代码（其余是解释
+  // 这两种静默失败的文档）。
+  'src-tauri/src/notify_gate.rs': 120,
   'src-tauri/src/guard.rs': 940,
   'ui/src/store.js': 430,
   // 多内核改造 P0：新路径模块（paths.rs）。包含 ShellMode、xlink_home、shell

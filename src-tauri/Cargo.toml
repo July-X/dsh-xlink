@@ -113,6 +113,12 @@ windows-sys = { version = "0.61", features = [
   "Win32_UI_HiDpi",
   "Win32_UI_WindowsAndMessaging",
 ] }
+# `notify_gate.rs` 问 Windows "本应用的通知权限现在是什么状态"
+# （`ToastNotifier::Setting()`）。这个 API 只存在于 WinRT，windows-sys 没有，只能用
+# `windows` crate——而它本来就经 `tauri-winrt-notification`（`notify-rust` 的
+# Windows 后端）进了依赖图，这里只是把已在编译的那个 crate 直接用起来：不新增依赖
+# crate，也不新增编译单元，只打开 `UI_Notifications` 这一个 feature。
+windows = { version = "0.61", features = ["Foundation", "UI_Notifications"] }
 
 [profile.release]
 strip = true
