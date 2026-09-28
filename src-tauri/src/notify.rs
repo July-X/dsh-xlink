@@ -349,7 +349,7 @@ pub fn send_test(app: &AppHandle) -> NotificationStatus {
         center.unread = center.unread.saturating_add(1);
     }
     sync_badge(app);
-    let result = show_toast(app, "任务已完成", &notification_body(&task), config.sound);
+    let result = show_toast(app, "", &notification_body(&task), config.sound);
     center().last_error = result.err();
     let status = status(app);
     broadcast(app, &status);
@@ -869,7 +869,7 @@ fn on_session_status(app: &AppHandle, session_id: &str, running: bool) {
         sync_badge(app);
     }
     let body = notification_body(&task);
-    let result = show_toast(app, "任务已完成", &body, config.sound);
+    let result = show_toast(app, "", &body, config.sound);
     if let Err(error) = result {
         center().last_error = Some(error);
     }
@@ -1104,6 +1104,10 @@ fn badge_text(unread: u32) -> Option<String> {
 
 /// 弹一条系统通知气泡。
 ///
+/// **标题刻意留空**：正文第一行「📋 会话标题 ✅ · 用时」本身已经是标题了，
+/// 再加一行「任务已完成」只是把同一件事说两遍，还把真正有信息的正文往下挤
+/// （macOS 气泡最多三行）。原先的 `summary` 传的是「任务已完成」。
+///
 /// 直接用 `notify-rust`，**不用** `tauri-plugin-notification`：那个插件在
 /// `init()` 里会往每一个 webview（内核工作台、三个官方对话站点、日志窗口……）
 /// 注入一段 JS shim，而它在 macOS 上页面一加载就调用
@@ -1152,21 +1156,25 @@ fn notification_body(task: &CompletedTask) -> String {
 /// 通知正文（`time_label` 是本地化的完成时刻，单独抽出来让文案可单测）：
 ///
 /// ```text
-/// 「标题」已完成 · 用时 3 分 20 秒
+/// 📋 标题 ✅ · 用时 3 分 20 秒
 /// 💬 <最后一轮的用户提问，截断>
 /// 完成于 14:32
 /// ```
 ///
-/// 那一行用**图标**而不是「最近对话：」这类文字标签。通知正文是一段纯文本，
-/// 没有可供排版的元素，而"这一行是什么"必须靠前缀自己说清——文字标签在
-/// 通知气泡里既占宽度又和上方标题的措辞混在一起，扫一眼分不出哪行是结论、
-/// 哪行是上下文。💬 与本项目「官方对话」用的是同一个符号，词汇一致。
+/// 三个符号各管一件事，全都是因为**文字标签在通知气泡里既占宽度又和邻近行
+/// 的措辞混在一起**，扫一眼分不出哪行是结论、哪行是上下文：
+///
+/// - 标题行原本是「标题」已完成。`「」`换成 📋——"这是个任务"；`已完成`换成
+///   ✅——"它完了"。**两个都留是有意的**：📋 说"是什么"，✅ 说"怎么样"，砍掉
+///   任何一个都得读文字才补得回来。字面量内联而非提成常量，是因为本文件已经
+///   顶在代码预算的棘轮上限上，多一行常量就得从别处砍等量的逻辑。
+/// - 提问行的 💬 与本项目「官方对话」用的是同一个符号，词汇一致。
 fn notification_body_with_time(task: &CompletedTask, time_label: &str) -> String {
     let duration = format_duration(task.duration_ms);
     let head = if duration.is_empty() {
-        format!("「{}」已完成", task.title)
+        format!("📋 {} ✅", task.title)
     } else {
-        format!("「{}」已完成 · 用时 {}", task.title, duration)
+        format!("📋 {} ✅ · 用时 {}", task.title, duration)
     };
     let mut lines = vec![head];
     // 提问可能很长，而通知气泡在 macOS 上最多三行、Windows 上更短：全量塞进去
@@ -1877,7 +1885,7 @@ mod tests {
         };
         assert_eq!(
             notification_body_with_time(&with_all, "14:32"),
-            "「修复通知文案」已完成 · 用时 3 分 20 秒\n\
+            "📋 修复通知文案 ✅ · 用时 3 分 20 秒\n\
              💬 通知功能应该显示最近一次对话\n\
              完成于 14:32"
         );
@@ -1890,7 +1898,7 @@ mod tests {
         };
         assert_eq!(
             notification_body_with_time(&no_turn, "14:32"),
-            "「修复通知文案」已完成 · 用时 3 分 20 秒\n完成于 14:32"
+            "📋 修复通知文案 ✅ · 用时 3 分 20 秒\n完成于 14:32"
         );
 
         // 时长未知 / 完成时刻不可解析：对应片段整行省略，不留空行。
@@ -1900,7 +1908,7 @@ mod tests {
         };
         assert_eq!(
             notification_body_with_time(&minimal, ""),
-            "「修复通知文案」已完成\n💬 通知功能应该显示最近一次对话"
+            "📋 修复通知文案 ✅\n💬 通知功能应该显示最近一次对话"
         );
     }
 
@@ -1966,6 +1974,42 @@ mod tests {
         // 不再有「最近对话：」/「最近提问：」这种前缀。
         assert!(!prompt_line.contains("最近对话"), "{prompt_line}");
         assert!(!prompt_line.contains("最近提问"), "{prompt_line}");
+    }
+
+    /// 标题行用**两个**符号：`📋` 顶替 `「」`（这是个任务），`✅` 顶替
+    /// 「已完成」（它完了）。
+    ///
+    /// 两个都留是刻意的：📋 说"是什么"，✅ 说"怎么样"，砍掉任何一个都得读
+    /// 文字才补得回来。这条钉住"两个都在"，免得后来有人嫌图标多又砍成一个。
+    #[test]
+    fn title_line_carries_both_a_task_icon_and_a_done_symbol() {
+        let task = CompletedTask {
+            session_id: "abc".into(),
+            title: "测试通知".into(),
+            cwd: String::new(),
+            finished_at_ms: 1,
+            duration_ms: 28_000,
+            last_prompt: "这是一条模拟的任务完成通知".into(),
+            last_response: String::new(),
+        };
+        let body = notification_body(&task);
+        let head = body.lines().next().expect("通知至少有一行");
+        assert!(head.starts_with("📋 测试通知 ✅"), "{head}");
+        // 「」与「已完成」都不该再出现在正文里。
+        assert!(!body.contains('「'), "{body}");
+        assert!(!body.contains("已完成"), "{body}");
+
+        // 用时未知时同样保留两个符号，只是不再追加时长片段。
+        let no_duration = CompletedTask {
+            duration_ms: 0,
+            ..task
+        };
+        assert_eq!(
+            notification_body_with_time(&no_duration, "08:39")
+                .lines()
+                .next(),
+            Some("📋 测试通知 ✅")
+        );
     }
 
     /// 完成记录里的名字要跟着投影更新走：面板展示的历史不该停在旧标题上。
