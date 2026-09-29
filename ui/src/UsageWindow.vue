@@ -22,6 +22,7 @@ import {
   donutSlices,
   sliceDays,
   summarizeDays,
+  modelName,
   weekdayLabel,
   RANGE_OPTIONS,
   RETENTION_DAYS,
@@ -370,7 +371,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
                   <template v-if="hoverRow.parts.length">
                     <div v-for="part in hoverRow.parts" :key="part.key" class="usage-tip-row">
                       <i class="usage-tip-chip" :style="{ background: partColor(part.key) }"></i>
-                      <span class="usage-tip-model" :title="part.key">{{ part.key }}</span>
+                      <span class="usage-tip-model" :title="part.key">{{ modelName(part.key) }}</span>
                       <span class="usage-tip-tokens">{{ formatTokens(part.tokens) }}</span>
                       <span class="usage-tip-pct">{{ formatPercent(part.tokens / (hoverRow.tokens || 1)) }}</span>
                     </div>
