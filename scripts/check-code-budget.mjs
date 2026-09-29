@@ -678,7 +678,13 @@ const FILE_BUDGETS = {
 // 被打崩。对策是给装包工具降优先级（保留双壳并行调试），外加把壳侧那些
 //「只有后果没有原因」的动作落盘——此前它们只 eprintln，而 GUI 应用的 stderr
 // 在 Windows 上根本没有去处。
-const TOTAL_BUDGET = 34050;
+// 34050 → 34065：store_relocate.rs（净增 11）。跨卷回退的复制中途失败会留下
+// 半个 plugins/dsh/，而迁移的入场条件是 root.exists()——半截目录一旦留下就
+// 永久短路重试：全量数据还在 dsh-plugins/ 里，用户看到的却是一份残缺的插件
+// 列表（dev 侧的对称形态 9b31db4 已修）。回退抽成 copy_legacy_store 以便直接
+// 测「中途失败要清掉半截目标」：rename 失败只在跨卷时发生、测试造不出来，
+// 复制中途失败用 mode-000 子目录制造（root 环境下该夹具无效，跳过）。
+const TOTAL_BUDGET = 34065;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。
