@@ -8,11 +8,12 @@
 // guard 侧 P2-3/P2-4 的文案修复。口径收在这里，新增 cause 只需要改一处。
 
 /// 已知归因。未知值按证据回退，最后落到 `unknown`。
-const KNOWN_CAUSES = ['plugin', 'kernel', 'frontend', 'env', 'unknown'];
+const KNOWN_CAUSES = ['plugin', 'kernel', 'kernel-boot', 'frontend', 'env', 'unknown'];
 
 const TITLES = {
   plugin: '工作台异常：疑似插件问题',
   kernel: '工作台异常：疑似内核问题',
+  'kernel-boot': '工作台异常：内核启动顺序未就绪',
   frontend: '工作台异常：前端 bundle 异常',
   env: '工作台异常：运行环境问题',
   unknown: '工作台异常：暂未能归因',
@@ -21,6 +22,7 @@ const TITLES = {
 const CAUSE_LABELS = {
   plugin: '判断：疑似插件问题',
   kernel: '判断：疑似内核问题',
+  'kernel-boot': '判断：内核前端模块启动顺序未就绪（非插件问题）',
   frontend: '判断：前端 bundle 异常（未定位到包名）',
   env: '判断：运行环境问题（本次未改动插件配置）',
   unknown: '判断：暂未能归因',
@@ -49,6 +51,8 @@ export function incidentCauseLabel(value) {
 /// 概览页横幅的标题。前端异常不弹模态框，横幅是它唯一的入口，所以单独一句。
 export function incidentBannerTitle(value) {
   const cause = incidentCause(value);
+  // 装配未就绪是唯一一种页面会自愈的：工作台正在自动重载，横幅只说明发生过。
+  if ((value && value.health && value.health.kind) === 'slot-assembly') return '工作台自检：客户端模块重新装配中（已自动恢复）';
   if (cause === 'frontend') return '工作台自检：前端异常（页面正常）';
   if (cause === 'env') return '工作台启动失败：运行环境问题';
   return '启动容错已介入';
@@ -76,6 +80,7 @@ const HEALTH_KIND_LABELS = {
   'runtime-error': '运行时错误',
   'unhandled-rejection': '未处理的 Promise 异常',
   'bundle-load-failure': '内核客户端模块 bundle 加载失败',
+  'slot-assembly': '客户端模块装配未就绪（页面已自动重载一次）',
 };
 
 export function incidentHealthKindLabel(kind) {

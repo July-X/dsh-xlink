@@ -22,9 +22,10 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::kernel_evidence::is_ambiguous_combo_line;
 use crate::process::read_tail;
 use crate::quarantine::{self, QuarantineItem};
-use crate::{kernel, plugins, settings};
+use crate::{kernel, kernel_evidence, plugins, settings};
 
 /// 看门狗在判定启动挂起并杀掉进程前，会等待派生内核应答端口的最长时
 /// 间。健康的 `dsh web` 在几秒之内就能监听端口；30 秒足以覆盖慢速磁
@@ -358,30 +359,6 @@ fn bundle_member(line: &str, name: &str) -> bool {
     false
 }
 
-/// 行内内核 client-modules 组合路由的成员数。
-///
-/// 形态：`/plugins/??<包名>/client.js,<包名>/client.js&rev=<hash>`（见内核的
-/// `dsh-client-modules`：`comboUrl`）。`None` 表示这一行里没有组合路由。
-fn combo_route_members(line: &str) -> Option<usize> {
-    const ROUTE: &str = "/plugins/??";
-    let start = line.find(ROUTE)? + ROUTE.len();
-    let rest = &line[start..];
-    let end = rest
-        .find(|c: char| c.is_whitespace() || matches!(c, '&' | '"' | '\'' | ')' | ']' | '<' | '>'))
-        .unwrap_or(rest.len());
-    let members = rest[..end]
-        .split(',')
-        .filter(|member| !member.is_empty())
-        .count();
-    (members > 0).then_some(members)
-}
-
-/// 这一行是否只是「多成员组合 bundle」的地址：一个脚本里同时打着多个包，里面出现
-/// 任何包名都不能作为指向该包的证据。
-fn is_ambiguous_combo_line(line: &str) -> bool {
-    matches!(combo_route_members(line), Some(members) if members > 1)
-}
-
 /// `line` 中是否出现 `<anchor><name>`，且 `<name>` 之后是路径段边界（或行尾）。
 ///
 /// 与 `has_kernel_package_ref` 的边界规则**故意不同**，不要合并：那里锚定的是包
@@ -447,15 +424,13 @@ pub fn attribute(
     }
 
     if suspects.is_empty() {
-        // 内核安装损坏信号：任何指向 `@deepseek-ai/dsh-*` 包，或者内核
-        // 自有 client-module loader 的错误形态行。该命名空间被内核发
-        // 行版保留（内建的 `client-ui-*`、`base`、`web-app`、`headless`
-        // 等），所以一旦命中，定义上就不可能是社区插件。我们还接受一
-        // 小组内核 Loader 在其预打包 chunk 表过时（启动时暴露的 build-
-        // time externals drift）时输出的特定短语：这些短语在不同内核版
-        // 本间稳定且很少变动，因此保守的规则是「命中其中任何一条」，
-        // 而非「只匹配我们今天认识的那几条」。
-        let Some(idx) = lines.iter().position(|line| is_kernel_evidence_line(line)) else {
+        // 内核安装损坏信号：任何指向 `@deepseek-ai/dsh-*` 包，或者内核自有
+        // loader / 渲染器输出的固定文案的错误行（判据见 `kernel_evidence`——
+        // 命名空间锚定、多成员组合路由的拒绝规则、两组内核短语都在那边）。
+        let Some(idx) = lines
+            .iter()
+            .position(|line| is_error_line(line) && kernel_evidence::is_kernel_evidence(line))
+        else {
             return suspects;
         };
         suspects.push(Suspect {
@@ -466,49 +441,6 @@ pub fn attribute(
         });
     }
     suspects
-}
-
-/// 判断 `line` 是否既呈现错误形态，又指向内核内部组件（内核的包命
-/// 名空间，或已知的 client-module loader 短语）。保守地：调用方必须
-/// 已经先按 `is_error_line` 的形态匹配确认这一行确实是错误，所以本
-/// 辅助函数只是在其之上叠加一个「是否归我们管？」的问题。
-fn is_kernel_evidence_line(line: &str) -> bool {
-    if !is_error_line(line) {
-        return false;
-    }
-    // 同 `is_anchored_plugin_hit`：Windows 上包路径是反斜杠形态，
-    // `@deepseek-ai\dsh\lib\bin.js` 也必须能命中内核命名空间（P2-5）。
-    let normalized = line.replace('\\', "/");
-    // 任何提到内核命名空间包名的错误。边界判断很关键：
-    // `@deepseek-ai/dsh/` 覆盖根入口文件（例如
-    // `@deepseek-ai/dsh/lib/bin.js`），而 `@deepseek-ai/dsh-` 覆盖
-    // 内核随附的所有内建 client module（例如
-    // `@deepseek-ai/dsh-client-ui-theme`）。以非字母数字的分隔符锚定
-    // 可以避免一个名叫 `@scope/dsh-foo` 的社区插件仅凭 `dsh` 子串被
-    // 误当成内核包。
-    //
-    // 例外是多成员组合 bundle 的地址：那一个脚本里同时打着第三方插件的
-    // bundle，命中其中的内核包名并不能证明帧落在内核那一段上，归到内核
-    // 就等于把插件的错记到内核头上（P2 级归因误报）。这种行留给
-    // `diagnose_runtime` 的「前端 bundle」分支如实说明未定位到包名。
-    if has_kernel_package_ref(&normalized) && !is_ambiguous_combo_line(&normalized) {
-        return true;
-    }
-    // 稳定的内核 Loader 短语。这些是内核 client-module loader 在预打
-    // 包 chunk 表缺少某条目时输出的特定字符串；识别它们使得故障面板
-    // 能把空白 / 加载失败的报告路由到对应的内核版本，而不是留下一个
-    // 空洞的「暂未能归因」。
-    const KERNEL_LOADER_PHRASES: [&str; 6] = [
-        "client-modules",
-        "build-time externals drift",
-        "missed the module table",
-        "platform seed word",
-        "not a materialized module",
-        "no registered package factory",
-    ];
-    KERNEL_LOADER_PHRASES
-        .iter()
-        .any(|phrase| line.contains(phrase))
 }
 
 /// 明确的「环境类」启动失败特征。
@@ -538,29 +470,6 @@ fn environment_failure(log_tail: &str) -> Option<String> {
         .iter()
         .find(|marker| lower.contains(*marker))
         .map(|marker| (*marker).to_string())
-}
-
-/// 当且仅当 `line` 引用了内核自己的包命名空间（`@deepseek-ai/dsh` 后
-/// 接非字母数字边界）时返回 true。不应匹配 `@deepseek-ai/dshfoo`——
-/// 那是（假设存在的）名字里碰巧含有 `dsh` 的社区包，并非内核。
-fn has_kernel_package_ref(line: &str) -> bool {
-    const NEEDLE: &str = "@deepseek-ai/dsh";
-    let mut start = 0;
-    while let Some(idx) = line[start..].find(NEEDLE) {
-        let after = start + idx + NEEDLE.len();
-        // 手写一个「下一个字符（如果有）是否为非字母数字边界？」的判
-        // 断——`Option::is_none_or` 是 1.77 之后才有的，`Cargo.toml`
-        // 中的 MSRV 门禁会拒绝在此调用该方法。
-        let boundary_ok = match line[after..].chars().next() {
-            None => true,
-            Some(c) => !c.is_ascii_alphanumeric(),
-        };
-        if boundary_ok {
-            return true;
-        }
-        start = after;
-    }
-    false
 }
 
 fn suspect_records(suspects: &[Suspect], reason: String) -> Vec<QuarantineItem> {
@@ -997,6 +906,11 @@ fn has_client_bundle_frames(evidence: &str) -> bool {
         .any(|line| line.contains(FRONTEND_STACK_PREFIX) && line.contains("/plugins/"))
 }
 
+/// 健康证据里是否出现内核渲染器的槽位装配不变量（判据见 [`kernel_evidence`]）。
+fn is_kernel_slot_failure(evidence: &str) -> bool {
+    kernel_evidence::is_slot_failure(evidence)
+}
+
 /// 「前端 bundle」这一类事故的文案。
 ///
 /// 判断只说证据支持的事（异常来自客户端模块 bundle、但没有包名），并且明确
@@ -1009,7 +923,7 @@ fn frontend_bundle_wording() -> (String, String) {
             "工作台页面抛出了一个未处理的前端异常，异常来自内核服务的客户端模块 bundle（/plugins/），但证据里没有包名，无法区分内核内置组件与第三方插件；工作台本身仍在运行。",
         ),
         String::from(
-            "请用「打开日志」查看内核侧记录，并把上方自检证据里的「消息」一并反馈（它指出具体是哪段代码或哪条数据不合法）；若该提示反复出现，可先在插件页停用第三方插件后重启验证，再到内核版本页切换其他版本。",
+            "请先关闭并重新打开工作台窗口——前端异常有相当一部分是启动顺序问题，刷新一次就会消失。若反复出现，请用「打开日志」查看内核侧记录，并把上方自检证据里的「消息」一并反馈（它指出具体是哪段代码或哪条数据不合法）；确认与第三方插件相关后，再到插件页停用它们验证。",
         ),
     )
 }
@@ -1158,6 +1072,12 @@ pub fn diagnose_runtime(
     if cause == "unknown" && has_client_bundle_frames(&evidence) {
         cause = "frontend";
     }
+    // 内核槽位装配不变量单独成一类：归因仍然是内核，但它需要的第一动作和
+    // 「内核组件出错」完全不同——这是启动顺序没就绪，刷新一次通常就好了，
+    // 而「切版本 / 重装内核」是重得多的动作，不该被排在最前面。
+    if cause == "kernel" && is_kernel_slot_failure(&evidence) {
+        cause = "kernel-boot";
+    }
     let mut attempts = vec![attempt];
 
     let (message, hint) = match cause {
@@ -1225,6 +1145,24 @@ pub fn diagnose_runtime(
             (
                 String::from("工作台页面异常，错误证据指向当前内核组件，未自动修改插件。"),
                 String::from("请先查看完整内核日志，再到内核版本页切换其他版本；仍失败时删除当前版本后重新安装。"),
+            )
+        }
+        "kernel-boot" => {
+            // 内核自己的装配不变量。**第一动作是刷新工作台而不是换版本**：这条
+            // 绝大多数是启动顺序没就绪——应用挂载抢在某个客户端模块激活之前，
+            // 刷新一次就过去了。把它说成「切版本 / 重装」会让用户为一个几秒钟
+            // 能自愈的竞态去做重得多的动作；反过来，让用户去停用第三方插件更糟
+            // ——那正是 AGENTS.md 明令要避免的「把功劳记到插件头上」。
+            attempts.push(String::from(
+                "错误来自内核渲染器的槽位装配不变量（启动顺序未就绪），归因到内核版本，未隔离任何插件",
+            ));
+            (
+                String::from(
+                    "工作台没能完成客户端装配：内核的前端模块在启动顺序上没赶上（不是插件问题，没有隔离任何插件）。工作台窗口仍在运行。",
+                ),
+                String::from(
+                    "请先**关闭并重新打开工作台窗口**（这类启动顺序问题多数刷新一次就恢复）；反复出现时，再到内核版本页切换到其他版本试一次，仍不行则向内核侧反馈自检证据里的错误原文。",
+                ),
             )
         }
         _ => {
@@ -1505,62 +1443,6 @@ mod tests {
     }
 
     #[test]
-    fn is_kernel_evidence_line_recognises_loader_phrases() {
-        // 内核 client-module loader 在其 chunk 表过时时会输出的确切短语。其
-        // 中任何一条单独出现，都必须在错误行上触发内核分支。
-        assert!(is_kernel_evidence_line(
-            "Error: client-modules: require('x') missed the module table"
-        ));
-        assert!(is_kernel_evidence_line(
-            "Error: a build-time externals drift was detected"
-        ));
-        assert!(is_kernel_evidence_line(
-            "Error: missed the module table for chunk abc"
-        ));
-        assert!(is_kernel_evidence_line(
-            "Error: not a platform seed word: foo"
-        ));
-        assert!(is_kernel_evidence_line(
-            "Error: not a materialized module: bar"
-        ));
-        assert!(is_kernel_evidence_line(
-            "Error: no registered package factory for baz"
-        ));
-        // 命名空间规则覆盖更广范围的错误。
-        assert!(is_kernel_evidence_line(
-            "Error: failed to load @deepseek-ai/dsh-base/lib/index.js"
-        ));
-        // 非错误的行永远不算内核证据，即便它们提到了某个内核 Loader
-        // 短语（例如进度行 "client-modules: pre-bundling 12 chunks" 也
-        // 不能被标记）。
-        assert!(!is_kernel_evidence_line(
-            "client-modules: pre-bundling 12 chunks"
-        ));
-        // 既不提命名空间也不提 Loader 短语的行，也不算内核证据。
-        assert!(!is_kernel_evidence_line("Error: EADDRINUSE: port in use"));
-    }
-
-    #[test]
-    fn has_kernel_package_ref_anchors_on_boundary() {
-        // 内核命名空间的匹配：内核在日志中实际产生的各种形式（根包、子包、
-        // 带引号、在括号里、名字后紧跟一个闭括号）。
-        assert!(has_kernel_package_ref("@deepseek-ai/dsh/lib/bin.js"));
-        assert!(has_kernel_package_ref(
-            "(@deepseek-ai/dsh-client-ui-theme):"
-        ));
-        assert!(has_kernel_package_ref(
-            "require(\"@deepseek-ai/dsh-client-runtime/client\")"
-        ));
-        assert!(has_kernel_package_ref("'@deepseek-ai/dsh-base'"));
-        // 边界不匹配：名字碰巧含有 `dsh`（或 `dshfoo`）的社区插件不应
-        // 该被标成内核包。
-        assert!(!has_kernel_package_ref("@scope/dsh-foo"));
-        assert!(!has_kernel_package_ref("@scope/dshfoo"));
-        // 没有 scope 的裸子串也算不匹配（根本没有 `@deepseek-ai/dsh`）。
-        assert!(!has_kernel_package_ref("dsh-foo"));
-    }
-
-    #[test]
     fn runtime_cause_prefers_plugin_evidence_and_defaults_to_unknown() {
         assert_eq!(runtime_cause(&[]), "unknown");
         assert_eq!(
@@ -1796,32 +1678,6 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
     }
 
     #[test]
-    fn combo_route_members_counts_members() {
-        assert_eq!(
-            combo_route_members(
-                "Error: 前端堆栈：f@http://127.0.0.1:4090/plugins/??a/client.js&rev=1:2:3"
-            ),
-            Some(1)
-        );
-        assert_eq!(
-            combo_route_members(
-                "Error: 前端堆栈：f@http://127.0.0.1:4090/plugins/??a/client.js,b/client.js&rev=1:2:3"
-            ),
-            Some(2)
-        );
-        // `/plugins/<包名>/client.js`（source map 里的来源名）不是组合路由。
-        assert_eq!(
-            combo_route_members("Error: 前端堆栈：f@http://127.0.0.1:4090/plugins/a/client.js:2:3"),
-            None
-        );
-        // 同一个包在组合 URL 里出现两次也只算两次成员——它依然是多成员脚本。
-        assert_eq!(
-            combo_route_members("/plugins/??a/client.js,a/client.js&rev=1"),
-            Some(2)
-        );
-    }
-
-    #[test]
     fn bundle_member_requires_a_whole_member_segment() {
         // 单成员组合路由与 map 里的 `/plugins/<包名>/client.js` 都算。
         assert!(bundle_member(
@@ -1888,7 +1744,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             .is_empty(),
             "多成员组合里的插件名不能作为指向该插件的证据"
         );
-        assert!(!is_kernel_evidence_line(
+        assert!(!kernel_evidence::is_kernel_evidence(
             "Error: 前端堆栈：at validateRecord (http://127.0.0.1:4090/plugins/??ghost-plugin/client.js,@deepseek-ai/dsh-api-session-controller/client.js&rev=abc:148814:26)"
         ));
     }
@@ -1963,6 +1819,81 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
         );
 
         cleanup(&data_dir);
+    }
+
+    /// 2026-09-29 本机实测（release 实例、内核 0.2.0-rc.1）的真实证据：工作台
+    /// 抛 `scope 'session-maybe' rendered without an installed adapter`，栈顶帧落
+    /// 在 57 个成员的组合 bundle 上。此前这条与 MACOS_BUNDLE_STACK 同形，判成
+    /// 「前端 bundle 异常（未定位到包名）」，并建议用户去停用第三方插件——而它
+    /// 是内核渲染器自己的装配不变量，停用插件既治不了、又把无辜插件写进了嫌疑。
+    const KERNEL_BOOT_STACK: &str = concat!(
+        "Error: scope 'session-maybe' rendered without an installed adapter\n",
+        "    at ScopeProvider (http://127.0.0.1:3090/plugins/??@deepseek-ai/dsh-client-ui-open-in-app/client.js,",
+        "@deepseek-ai/dsh-client-ui-layout/client.js,@deepseek-ai/dsh-client-ui-renderer/client.js,",
+        "dsh-opencode-session/client.js&rev=6630933a6dc2:23417:34)\n",
+        "    at Nl (http://127.0.0.1:3090/assets/index-Dy0OhsZ5.js:54:17263)",
+    );
+
+    #[test]
+    fn runtime_kernel_slot_invariant_is_attributed_to_the_kernel_not_to_plugins() {
+        let (data_dir, _xlink_home) = temp_data_dir("kernel-boot");
+        write_store(
+            &data_dir,
+            r#"{"schemaVersion":1,"items":[{"id":"ghost-plugin","name":"ghost-plugin"}]}"#,
+        );
+        let report = HealthReport {
+            kind: "runtime-error".into(),
+            message: "Uncaught Error: scope 'session-maybe' rendered without an installed adapter"
+                .into(),
+            stack: KERNEL_BOOT_STACK.into(),
+            page_url: "http://127.0.0.1:3090/".into(),
+        };
+
+        let (family, instance_id) = crate::instance::resolve_default();
+        let incident = diagnose_runtime(&data_dir, family, instance_id, report);
+
+        assert_eq!(
+            incident.cause, "kernel-boot",
+            "内核渲染器的槽位装配不变量必须单独成类：{}",
+            incident.message
+        );
+        assert!(
+            incident
+                .suspects
+                .iter()
+                .all(|suspect| suspect.kind != "plugin"),
+            "不得把任何插件写进嫌疑：{:?}",
+            incident.suspects
+        );
+        assert!(
+            crate::quarantine::load(&data_dir).items.is_empty(),
+            "启动顺序问题不得隔离任何插件"
+        );
+        let hint = incident.hint.clone().unwrap_or_default();
+        assert!(
+            hint.contains("重新打开工作台"),
+            "第一动作必须是刷新工作台，而不是换版本或停插件：{hint}"
+        );
+        assert!(
+            !hint.contains("停用"),
+            "这类事故不许把停用插件摆在前面：{hint}"
+        );
+
+        cleanup(&data_dir);
+    }
+
+    /// 归到 `kernel-boot` 的前提是内核证据成立；一条不带内核字样的前端异常不该
+    /// 蹭到这个类（否则「先刷新」会变成所有前端异常的通用建议）。
+    #[test]
+    fn plain_frontend_error_does_not_become_kernel_boot() {
+        let report = HealthReport {
+            kind: "runtime-error".into(),
+            message: "TypeError: x is not a function".into(),
+            stack: MACOS_BUNDLE_STACK.into(),
+            page_url: "http://127.0.0.1:4090/".into(),
+        };
+        let evidence = runtime_evidence(&report, "");
+        assert!(!is_kernel_slot_failure(&evidence));
     }
 
     /// 单成员组合路由里的插件名是强证据，仍必须走自动隔离路径——修多成员误报
@@ -2109,7 +2040,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
         assert_eq!(suspects[0].id, "ghost-plugin");
 
         assert!(
-            is_kernel_evidence_line(
+            kernel_evidence::is_kernel_evidence(
                 r"Error: Cannot find module 'C:\Users\me\kernels\0.1.5\node_modules\@deepseek-ai\dsh\lib\bin.js'"
             ),
             "反斜杠形态的内核包路径同样要命中内核命名空间"

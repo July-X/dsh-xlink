@@ -27,12 +27,23 @@ test('环境类事故是头等归因，不再回落成「暂未能归因」', ()
 });
 
 test('每种已知归因都有自己的标题与判断标签', () => {
-  const causes = ['plugin', 'kernel', 'frontend', 'env', 'unknown'];
+  const causes = ['plugin', 'kernel', 'kernel-boot', 'frontend', 'env', 'unknown'];
   const titles = causes.map((cause) => incidentTitle({ cause }));
   const labels = causes.map((cause) => incidentCauseLabel({ cause }));
   assert.equal(new Set(titles).size, causes.length, '标题不能重复');
   assert.equal(new Set(labels).size, causes.length, '判断标签不能重复');
   assert.equal(incidentTitle({ cause: 'unknown' }), '工作台异常：暂未能归因');
+});
+
+test('内核启动顺序未就绪单独成类，不与「内核组件出错」混为一谈', () => {
+  // 两者归因都是内核，但第一动作不同：一个是刷新工作台多半就好了，一个是查
+  // 日志 / 换版本。混成一条，「先刷新」就会被稀释成又一条泛泛建议。
+  const boot = { cause: 'kernel-boot' };
+  assert.equal(incidentCause(boot), 'kernel-boot');
+  assert.match(incidentTitle(boot), /启动顺序/);
+  assert.match(incidentCauseLabel(boot), /非插件问题/);
+  assert.doesNotMatch(incidentCauseLabel(boot), /暂未能归因/);
+  assert.equal(incidentDestination(boot), 'versions', '落点仍是内核版本页');
 });
 
 test('老记录缺 cause 时按嫌疑对象回退，未知取值回落到 unknown', () => {

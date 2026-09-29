@@ -146,26 +146,31 @@ onMounted(() => {
                   >
                     切换
                   </el-button>
-                  <el-popconfirm
-                    title="确认删除该版本？"
-                    confirm-button-text="删除"
-                    cancel-button-text="取消"
-                    width="200"
-                    @confirm="removeVersion(v.version)"
-                  >
-                    <template #reference>
-                      <el-button
-                        size="small"
-                        type="danger"
-                        plain
-                        :icon="Delete"
-                        :loading="isLoading('remove:' + v.version)"
-                        :disabled="globalBusy"
-                      >
-                        删除
-                      </el-button>
-                    </template>
-                  </el-popconfirm>
+                <el-popconfirm
+                  title="确认删除该版本？"
+                  confirm-button-text="删除"
+                  cancel-button-text="取消"
+                  width="200"
+                  @confirm="removeVersion(v.version)"
+                >
+                  <template #reference>
+                    <!-- 删除同样会大面积改动内核安装目录（一个 450 MB、几万个文件
+                         的 remove_dir_all），所以与「切换」共用同一条禁令：工作台
+                         启动或运行期间不许动。切换那条守卫是加过的，删除这条原先
+                         漏了——面板上也不该让按钮看起来比实际允许的更宽松。 -->
+                    <el-button
+                      size="small"
+                      type="danger"
+                      plain
+                      :icon="Delete"
+                      :loading="isLoading('remove:' + v.version)"
+                      :disabled="globalBusy || workbenchActiveNow()"
+                      title="工作台启动或运行期间不能删除内核版本"
+                    >
+                      删除
+                    </el-button>
+                  </template>
+                </el-popconfirm>
                 </template>
               </span>
             </div>
@@ -204,7 +209,8 @@ onMounted(() => {
                   size="small"
                   type="primary"
                   :icon="Download"
-                  :disabled="globalBusy"
+                  :disabled="globalBusy || workbenchActiveNow()"
+                  title="工作台启动或运行期间不能安装内核版本"
                   @click="installVersion(r.version)"
                 >
                   安装

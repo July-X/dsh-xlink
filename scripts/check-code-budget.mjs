@@ -249,6 +249,13 @@ const FILE_BUDGETS = {
   // 这两种静默失败的文档）。
   'src-tauri/src/notify_gate.rs': 120,
   'src-tauri/src/guard.rs': 940,
+  // 从 guard.rs 拆出的「证据判读」层：只回答「这一行指向内核还是指向某个插件」，
+  // 不回答「该怎么处置」。独立成文件有两个理由：① 判据的内核侧（命名空间锚定 +
+  // 多成员组合路由的拒绝规则）与插件侧（bundle_member / has_segment_path）必须
+  // 并排可读——把两套相反的边界规则隔着一个 900 行的文件，正是当初它们被写成
+  // 同一个宽进出的来源；② guard.rs 是只许下调的反棘轮文件，而 2026-09-29 新增的
+  // 内核槽位装配不变量判据必须落在它够得着的地方。60 行，离 800 行硬顶很远。
+  'src-tauri/src/kernel_evidence.rs': 80,
   'ui/src/store.js': 430,
   // 多内核改造 P0：新路径模块（paths.rs）。包含 ShellMode、xlink_home、shell
   // /kernels/skills/state/cache 解析、legacy resolver、id 校验与基础数据
