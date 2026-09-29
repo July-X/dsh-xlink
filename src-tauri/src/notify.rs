@@ -1052,7 +1052,7 @@ fn badge_text(unread: u32) -> Option<String> {
 
 /// 弹一条系统通知气泡。
 ///
-/// **标题刻意留空**：正文第一行「📋 会话标题 ✅ · 用时」本身已经是标题了，
+/// **标题刻意留空**：正文第一行「📋 会话标题 ✅」本身已经是标题了，
 /// 再加一行「任务已完成」只是把同一件事说两遍，还把真正有信息的正文往下挤
 /// （macOS 气泡最多三行）。原先的 `summary` 传的是「任务已完成」。
 ///
@@ -1127,18 +1127,18 @@ const DEFAULT_SOUND: &str = "NSUserNotificationDefaultSoundName";
 #[cfg(target_os = "windows")]
 const DEFAULT_SOUND: &str = "Default";
 
-/// 通知正文：会话标题 + 用时。
-fn notification_body(task: &CompletedTask) -> String {
-    notification_body_with_time(task, &format_local_hm(task.finished_at_ms))
-}
-
-/// 通知正文（`time_label` 是本地化的完成时刻，单独抽出来让文案可单测）：
+/// 通知正文：会话标题 + 最近一次对话 + 用时。
 ///
 /// ```text
-/// 📋 标题 ✅ · 用时 3 分 20 秒
+/// 📋 标题 ✅
 /// 💬 <最后一轮的用户提问，截断>
-/// 完成于 14:32
+/// 用时 3 分 20 秒
 /// ```
+///
+/// **完成时刻不进正文**。通知讲的是"刚刚发生的这一轮"，而时刻是这条通知最不缺
+/// 的信息：macOS 横幅根本不显示时间（只有通知中心里的条目带），Windows 气泡同样
+/// 不带，正文里再写一遍等于替系统说它不会说的话，还白占一行。真要知道几点完成
+/// 的用户去「设置 → 任务通知」的最近完成列表，那里逐条列了完成时间与用时。
 ///
 /// 三个符号各管一件事，全都是因为**文字标签在通知气泡里既占宽度又和邻近行
 /// 的措辞混在一起**，扫一眼分不出哪行是结论、哪行是上下文：
@@ -1148,22 +1148,21 @@ fn notification_body(task: &CompletedTask) -> String {
 ///   任何一个都得读文字才补得回来。字面量内联而非提成常量，是因为本文件已经
 ///   顶在代码预算的棘轮上限上，多一行常量就得从别处砍等量的逻辑。
 /// - 提问行的 💬 与本项目「官方对话」用的是同一个符号，词汇一致。
-fn notification_body_with_time(task: &CompletedTask, time_label: &str) -> String {
-    let duration = format_duration(task.duration_ms);
-    let head = if duration.is_empty() {
-        format!("📋 {} ✅", task.title)
-    } else {
-        format!("📋 {} ✅ · 用时 {}", task.title, duration)
-    };
-    let mut lines = vec![head];
+fn notification_body(task: &CompletedTask) -> String {
+    let mut lines = vec![format!("📋 {} ✅", task.title)];
     // 提问可能很长，而通知气泡在 macOS 上最多三行、Windows 上更短：全量塞进去
-    // 会把完成时刻挤出可视区，那行恰恰是用户判断"刚才那次"的关键信息。
+    // 会把尾行的用时挤出可视区，那行恰恰是用户判断"刚才跑了多久"的关键信息。
     let prompt = truncate_prompt(&task.last_prompt);
     if !prompt.is_empty() {
         lines.push(format!("{PROMPT_ICON} {prompt}"));
     }
-    if !time_label.is_empty() {
-        lines.push(format!("完成于 {time_label}"));
+    // 用时排在最近一次对话之后，不挂在标题行：它量的就是那一轮，紧跟其后才
+    // 读得出"这次跑了多久"。原先写成 `📋 标题 ✅ · 用时 3 分 20 秒`，既把标题
+    // 撑长，又让气泡里最先被截掉的恰好是标题——长会话名只剩半句，后面缀着的
+    // 时长还占着位置。没观察到开始时刻（`duration_ms` 为 0）就整行省略。
+    let duration = format_duration(task.duration_ms);
+    if !duration.is_empty() {
+        lines.push(format!("用时 {duration}"));
     }
     lines.join("\n")
 }
@@ -1184,19 +1183,6 @@ fn truncate_prompt(prompt: &str) -> String {
         return prompt.trim().to_string();
     }
     chars[..15].iter().collect::<String>() + "…"
-}
-
-/// 完成时刻 → 本地 `HH:MM`；时间戳非法时返回空串（调用方省略该行）。
-fn format_local_hm(ms: u64) -> String {
-    let Ok(datetime) = time::OffsetDateTime::from_unix_timestamp_nanos(
-        (ms as i64).saturating_mul(1_000_000) as i128,
-    ) else {
-        return String::new();
-    };
-    datetime
-        .to_offset(time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC))
-        .format(&time::macros::format_description!("[hour]:[minute]"))
-        .unwrap_or_default()
 }
 
 /// 毫秒 → 人类可读时长；不足 1 秒或未知时返回空串。
@@ -1862,16 +1848,16 @@ mod tests {
         assert!(!center.last_turns.contains_key("blank"));
 
         // 拿不到 turnOutline 的会话（老内核 / 新会话）：记录里两字段为空，
-        // 通知退回「标题 + 用时」的老文案。
+        // 通知退回「标题 + 尾行度量」的老文案。
         let unknown = record_status(&mut center, "no-outline", false, 3_000).expect("完成记录");
         assert_eq!(unknown.last_prompt, "");
         assert_eq!(unknown.last_response, "");
     }
 
-    /// 通知正文：标题 + 用时之外，还要带「最近对话」与「完成于 HH:MM」；
-    /// 拿不到最近对话时省略该行，拿不到完成时刻时省略时间行。
+    /// 通知正文：标题之外，还要带「最近对话」与尾行的用时；拿不到最近对话时
+    /// 省略该行，用时未知时省略尾行。
     #[test]
-    fn notification_body_carries_last_conversation_and_finish_time() {
+    fn notification_body_carries_last_conversation_and_duration() {
         let with_all = CompletedTask {
             session_id: "abc".into(),
             title: "修复通知文案".into(),
@@ -1882,32 +1868,62 @@ mod tests {
             last_response: String::new(),
         };
         assert_eq!(
-            notification_body_with_time(&with_all, "14:32"),
-            "📋 修复通知文案 ✅ · 用时 3 分 20 秒\n\
+            notification_body(&with_all),
+            "📋 修复通知文案 ✅\n\
              💬 通知功能应该显示最近一次对话\n\
-             完成于 14:32"
+             用时 3 分 20 秒"
         );
 
-        // 老内核拿不到 turnOutline：退回「标题 + 用时 + 完成时间」。
+        // 老内核拿不到 turnOutline：退回「标题 + 尾行用时」。
         let no_turn = CompletedTask {
             last_prompt: String::new(),
             last_response: String::new(),
             ..with_all.clone()
         };
         assert_eq!(
-            notification_body_with_time(&no_turn, "14:32"),
-            "📋 修复通知文案 ✅ · 用时 3 分 20 秒\n完成于 14:32"
+            notification_body(&no_turn),
+            "📋 修复通知文案 ✅\n用时 3 分 20 秒"
         );
 
-        // 时长未知 / 完成时刻不可解析：对应片段整行省略，不留空行。
+        // 时长未知：尾行省略，不写"用时 0 秒"，也不留空行。
         let minimal = CompletedTask {
             duration_ms: 0,
             ..with_all.clone()
         };
         assert_eq!(
-            notification_body_with_time(&minimal, ""),
+            notification_body(&minimal),
             "📋 修复通知文案 ✅\n💬 通知功能应该显示最近一次对话"
         );
+    }
+
+    /// **用时排在最近一次对话之后**，且正文里**不出现完成时刻**。
+    ///
+    /// 挂在标题行有两个坏处：长会话名在气泡里先被截断，而紧跟着的时长却占着
+    /// 位置；而且那行度量的是「这一轮跑了多久」，紧跟在这一轮本身之后才读得出来。
+    /// 完成时刻则根本不该进正文——横幅（macOS 与 Windows）本来就不显示时间，
+    /// 正文再写一遍是替系统说它不会说的话，还白占一行。这条钉住"用时在最后
+    /// 一行、正文没有时刻"，免得后来有人觉得"补个时间更清楚"又加回来。
+    #[test]
+    fn duration_is_appended_after_the_last_conversation_not_to_the_title() {
+        let task = CompletedTask {
+            session_id: "abc".into(),
+            title: "hover 后只需要显示模型名".into(),
+            cwd: String::new(),
+            finished_at_ms: 1,
+            duration_ms: 145_000,
+            last_prompt: "hover 后只需要显示模型名".into(),
+            last_response: String::new(),
+        };
+        let body = notification_body(&task);
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 3, "{body}");
+        assert_eq!(lines[0], "📋 hover 后只需要显示模型名 ✅");
+        assert!(lines[1].starts_with(PROMPT_ICON), "{body}");
+        assert_eq!(lines[2], "用时 2 分 25 秒", "{body}");
+        assert!(!lines[0].contains("用时"), "标题行不该再带时长：{body}");
+        // 完成时刻只在设置页「最近完成列表」里有，正文不重复。
+        assert!(!body.contains("完成于"), "{body}");
+        assert!(!body.contains("00:01"), "{body}");
     }
 
     /// 超长提问只取前 15 个字符，并且**按字符**截——按字节截中文会切出半个字，
@@ -1943,7 +1959,7 @@ mod tests {
             last_prompt: "\n \n".into(),
             last_response: String::new(),
         };
-        let body = notification_body_with_time(&blank, "14:32");
+        let body = notification_body(&blank);
         assert!(!body.contains(PROMPT_ICON), "空白提问不该占一行：{body}");
     }
 
@@ -1997,15 +2013,13 @@ mod tests {
         assert!(!body.contains('「'), "{body}");
         assert!(!body.contains("已完成"), "{body}");
 
-        // 用时未知时同样保留两个符号，只是不再追加时长片段。
+        // 用时未知时同样保留两个符号，只是不再追加尾行。
         let no_duration = CompletedTask {
             duration_ms: 0,
             ..task
         };
         assert_eq!(
-            notification_body_with_time(&no_duration, "08:39")
-                .lines()
-                .next(),
+            notification_body(&no_duration).lines().next(),
             Some("📋 测试通知 ✅")
         );
     }
