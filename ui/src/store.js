@@ -131,16 +131,19 @@ function incidentKey(incident) {
   ].join('|');
 }
 
-// 「前端 bundle 异常」：页面仍在运行时的前端异常（内核 client-modules 的 bundle 抛错，
-// 但堆栈里没有包名，既无法指认插件也无法指认内核）。这类报告没有可处置的对象，弹模态
-// 框只会打断用户——只记录事实并交给概览横幅；横幅上的「查看详情」带 force 打开面板。
-// 有强证据（插件/内核）的报告、启动失败、以及 blank（白屏）一律照旧弹面板：那里有用户
-// 能做的动作，或者页面确实不可用。
+// 「前端 bundle 异常」：页面仍在运行时的前端异常（内核 client-modules 的 bundle 抛错或
+// 加载失败，但证据里没有可归因的包名，既无法指认插件也无法指认内核）。这类报告没有可处置
+// 的对象，弹模态框只会打断用户——只记录事实并交给概览横幅；横幅上的「查看详情」带 force
+// 打开面板。有强证据（插件/内核）的报告、启动失败、以及 blank（白屏）一律照旧弹面板：
+// 那里有用户能做的动作，或者页面确实不可用。
+//
+// `bundle-load-failure` 只在**多成员**组合路由上才会落到 `cause === 'frontend'`——
+// 单成员 URL 能被归因成插件或内核，那时有真正的处置入口，照旧弹面板。
 export function isNonFatalFrontendIncident(incident) {
   if (!incident || incident.recovered) return false;
   if (incident.cause !== 'frontend') return false;
   const kind = (incident.health && incident.health.kind) || '';
-  return kind === 'unhandled-rejection' || kind === 'runtime-error';
+  return kind === 'unhandled-rejection' || kind === 'runtime-error' || kind === 'bundle-load-failure';
 }
 
 export function showIncident(incident, options = {}) {

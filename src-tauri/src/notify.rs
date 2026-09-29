@@ -1493,6 +1493,7 @@ fn render_badge(unread: u32) -> (Vec<u8>, u32) {
 
 /// 覆盖在角标上的文字像素：把画布坐标映射回点阵格子。
 #[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
 fn inside_text(
     fx: f32,
     fy: f32,
@@ -2120,7 +2121,7 @@ mod windows_badge_tests {
             assert!(!opaque.is_empty(), "{count} 应画出角标");
             // 所有不透明像素都落在画布内（下标由 chunks_exact 保证），且角标
             // 必须贴着右上角：最右一列与最上一行都要有内容。
-            let (w, h) = (size as u32, size as u32);
+            let (w, h) = (size, size);
             let max_x = opaque.iter().map(|i| i % w).max().unwrap();
             let min_y = opaque.iter().map(|i| i / w).min().unwrap();
             assert_eq!(max_x, w - 1, "{count} 的角标应贴住右边缘");

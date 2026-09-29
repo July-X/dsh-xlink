@@ -1,7 +1,7 @@
 // Vite 构建配置：管理面板是 Vue 3 + Element Plus 单页应用，源码在 ui/src，
 // 产物输出到 ui/dist（tauri.conf.json 的 frontendDist 指向它）。
-// `tauri dev` 经 beforeDevCommand 起 dev server（devUrl 5173），
-// `tauri build` 经 beforeBuildCommand 跑 `vite build`。
+// `tauri dev` 经 beforeDevCommand 起 dev server（devUrl 5174，端口由
+// `scripts/dev.mjs` 统一），`tauri build` 经 beforeBuildCommand 跑 `vite build`。
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 
@@ -27,7 +27,13 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    // 端口由 `scripts/dev.mjs` 统一决定（`DSH_DEV_PORT`，`pnpm run dev 5190`
+    // 或 `DSH_DEV_PORT=5190 pnpm run dev`），默认 5174。**这个数字必须与
+    // `scripts/dev.mjs` 的 `DEFAULT_PORT` 和 `tauri.conf.json` 的 `devUrl`
+    // 一致**，`scripts/dev-port.test.mjs` 会盯住。
+    port: Number(process.env.DSH_DEV_PORT) || 5174,
+    // 保持 true：端口被别人占着时宁可报错退出，也不要静默顺延——顺延之后
+    // tauri 的 devUrl 会指向一个并不提供本项目的页面，症状比冲突本身难查。
     strictPort: true,
   },
 });

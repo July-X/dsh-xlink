@@ -20,7 +20,8 @@
 
 ```sh
 npm run deps                      # 安装依赖（pnpm 优先，缺失回退 npm）
-npm run dev                       # tauri dev（自动先起 vite dev server，5173 热更新）
+npm run dev                       # tauri dev（自动先起 vite dev server，5174 热更新）
+npm run dev 5190                  # 同上但换端口；vite 的 server.port 与 tauri 的 devUrl 由 scripts/dev.mjs 统一（DSH_DEV_PORT）
 npm run dev:ui                    # 只起管理面板 dev server（纯前端迭代，浏览器里无 Tauri 桥）
 npm run build                     # 本机构建（.dmg / NSIS；自动先 vite build → ui/dist）
 npm run build:ui                  # 只构建管理面板 → ui/dist

@@ -242,8 +242,53 @@ test('health probe source keeps its command contract and retry guards', () => {
   assert.match(probeSource, /pageUrl:/);
   assert.match(probeSource, /unhandledrejection/);
   assert.match(probeSource, /runtime-error/);
+  assert.match(probeSource, /bundle-load-failure/);
   assert.match(probeSource, /describeError/);
   assert.match(probeSource, /reported = true/);
   assert.match(probeSource, /maxReportAttempts/);
   assert.match(probeSource, /reportInFlight/);
+});
+
+test('health probe reports the bundle URL when a client module script fails to load', async () => {
+  // 组合路由的查询串是包名唯一的出处：内核静默丢掉加载失败的模块行之后，
+  // 工作台只会抛启动顺序错误，而那类堆栈落在多成员组合上、壳按设计拒绝
+  // 据此归因。漏掉这条上报，事故面板就只剩一句「未定位到包名」。
+  const url = 'http://127.0.0.1:3090/plugins/??dsh-ui-only/client.js&rev=ab12cd';
+  const { handlers, calls } = loadProbe();
+
+  handlers.error({ target: { tagName: 'SCRIPT', src: url } });
+  await Promise.resolve();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'report_harness_fault');
+  assert.equal(calls[0].args.kind, 'bundle-load-failure');
+  assert.equal(calls[0].args.stack, url);
+  assert.match(calls[0].args.message, /\/plugins\/\?\?dsh-ui-only\/client\.js/);
+  assert.equal(calls[0].args.pageUrl, 'http://127.0.0.1:3090');
+});
+
+test('a bundle load failure outranks the runtime error it causes', async () => {
+  const { handlers, calls } = loadProbe();
+
+  handlers.error({
+    target: {
+      tagName: 'SCRIPT',
+      src: 'http://127.0.0.1:3090/plugins/??a/client.js,b/client.js&rev=1',
+    },
+  });
+  handlers.error({ message: "renderSlot('root') before any 'root' registration (boot order)" });
+  await Promise.resolve();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args.kind, 'bundle-load-failure');
+});
+
+test('health probe keeps ignoring resource failures outside the bundle route', async () => {
+  const { handlers, calls } = loadProbe();
+
+  handlers.error({ target: { tagName: 'SCRIPT', src: 'http://127.0.0.1:3090/assets/index.js' } });
+  handlers.error({ target: { tagName: 'IMG', src: 'http://127.0.0.1:3090/plugins/logo.png' } });
+  await Promise.resolve();
+
+  assert.equal(calls.length, 0);
 });

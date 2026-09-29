@@ -17,7 +17,7 @@
   "type": "module",
   "scripts": {
     "deps": "node scripts/install.mjs",
-    "dev": "tauri dev",
+    "dev": "node scripts/dev.mjs",
     "dev:ui": "vite",
     "build": "tauri build",
     "build:ui": "vite build",

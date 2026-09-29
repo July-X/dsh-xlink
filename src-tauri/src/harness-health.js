@@ -96,8 +96,47 @@
     return parts.join(" ← ");
   }
 
+  /**
+   * 客户端模块 bundle 的 `<script>` 加载失败所对应的地址，不是地址就返回空串。
+   *
+   * 资源失败事件不带 JS 栈，但事件目标带 `src`——而 `src` 是**唯一**带完整
+   * `/plugins/??<包名>/client.js,…&rev=…` 组合路由的地方。包名只活在这个查询串
+   * 里：内核把加载失败的模块行静默丢掉之后，工作台随后只会抛
+   * `renderSlot('root') before any 'root' registration (boot order)` 这类启动
+   * 顺序错误，而那类堆栈落在**多成员**组合上，壳按设计拒绝据此归因（见
+   * `guard.rs` 的 `is_ambiguous_combo_line`），于是证据里一个包名都没有。
+   *
+   * 只认 `/plugins/`：那条路由只服务客户端模块 bundle，页面上其它资源失败
+   * （图片、字体、第三方脚本）仍然无害，不该占用一次性上报。
+   */
+  function bundleScriptUrl(target) {
+    if (!target || String(target.tagName || "").toUpperCase() !== "SCRIPT") return "";
+    var src = String(target.src || "");
+    return src.indexOf("/plugins/") >= 0 ? src : "";
+  }
+
+  function recordBundleFailure(url) {
+    // 一次事故只报第一条：内核按启动顺序分批请求组合路由，先失败的那批才是
+    // 因，后面那些「退而改用自己的单资源 URL」的重试失败只是它的连带。
+    // 也因此后面真正的 `runtime-error` 不再覆盖它——因果先于症状。
+    if (reported || pendingReport) return;
+    pendingReport = {
+      kind: "bundle-load-failure",
+      message: "内核客户端模块 bundle 加载失败：" + url,
+      stack: url,
+      pageUrl: clip(window.location && window.location.href, 1000)
+    };
+    sendReport();
+  }
+
   window.addEventListener("error", function (event) {
-    // 资源错误没有有用的 JS 栈，且通常无害（例如可选的图片），
+    // bundle 加载失败优先于一切可执行错误上报：它是因，上面那条不是。
+    var bundleUrl = bundleScriptUrl(event && event.target);
+    if (bundleUrl) {
+      recordBundleFailure(bundleUrl);
+      return;
+    }
+    // 其余资源错误没有有用的 JS 栈，且通常无害（例如可选的图片），
     // 这里只上报可执行错误。
     var error = event && event.error;
     var message = event && event.message;
