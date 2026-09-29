@@ -109,10 +109,19 @@ fn seed_dev_store_once(root: &Path) {
         }
     }
     if let Err(error) = crate::plugins::copy_dir_recursive(&source, root) {
+        // **清掉半截目标**再报错：`copy_dir_recursive` 先 `create_dir_all(to)`
+        // 才读源，失败时会留下一个空目录；而 `seed_dev_store_once` 的入场条件是
+        // `root.exists()`，空目录一旦留下就再也补不上种子，dev 的插件列表会
+        // 永久停在空状态。两个壳同时启动、release 抢先 rename 走时就会走到这里。
+        let leftover = std::fs::remove_dir_all(root);
         eprintln!(
-            "plugins: dev 中央库种子复制失败（{} -> {}）：{error}；dev 壳的插件列表将从空开始，不影响 release",
+            "plugins: dev 中央库种子复制失败（{} -> {}）：{error}；dev 壳的插件列表将从空开始，不影响 release{}",
             source.display(),
-            root.display()
+            root.display(),
+            match leftover {
+                Ok(()) => "（已清掉未完成的空目录，下次启动会重试）".to_string(),
+                Err(clean) => format!("（清理未完成目录也失败：{clean}，需手动删除）"),
+            }
         );
     }
 }

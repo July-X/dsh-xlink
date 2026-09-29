@@ -282,7 +282,17 @@ fn merge_workspace_registry(entry: &MisplacedWorkspace, outcome: &mut MisplacedR
             }
             json!({
                 "unit": { "name": "workspace", "version": 2 },
-                "global": { "initialized": true, "workspaceIds": [] },
+                // 这三个字段内核的 unit 文档里都有（见本模块测试的 write_registry）。
+                // 缺了它们，合并出来的清单在一个还不存在的实例上就是残的：没有
+                // 默认工作区、没有归档与置顶。**不动**它们是另一条纪律——已经
+                // 存在的目标实例里那是用户的当前选择，不归本次回收管。
+                "global": {
+                    "initialized": true,
+                    "workspaceIds": [],
+                    "archivedSessionIds": [],
+                    "pinnedSessionIds": [],
+                    "defaultWorkspaceId": Value::Null,
+                },
                 "tables": { "workspaces": {} },
             })
         }
@@ -349,8 +359,18 @@ fn merge_workspace_registry(entry: &MisplacedWorkspace, outcome: &mut MisplacedR
                 doc["tables"]["workspaces"][&key]["sessionIds"] = Value::Array(merged);
             }
             None => {
-                // 全新工作区：整条收编，并把 id 追加到工作区清单。
-                doc["tables"]["workspaces"][holder_id] = workspace.clone();
+                // 全新工作区：收编，但**只写确实复制过来的会话**。整条
+                // `workspace.clone()` 会把没复制成功的 id 也写进去——工作台
+                // 里那就是一条点不开的历史，比不收编更糟（与本函数开头
+                // 第二条纪律同源：`Some` 分支补的也一直是 `available`）。
+                let mut adopted = workspace.clone();
+                adopted["sessionIds"] = Value::Array(
+                    available
+                        .iter()
+                        .map(|id| Value::String(id.clone()))
+                        .collect(),
+                );
+                doc["tables"]["workspaces"][holder_id] = adopted;
                 let mut list = doc["global"]["workspaceIds"]
                     .as_array()
                     .cloned()
@@ -571,6 +591,7 @@ fn copy_recursive(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::scoped_xlink_home;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -677,11 +698,16 @@ mod tests {
     /// 持有者集合：另一个壳的默认实例恒在里面，**不依赖注册表里有没有它**，
     /// 而且自己永远不算自己的持有者。
     ///
-    /// 断的是 [`holder_ids`]（纯判定）而不是 [`holder_homes`]（要解析路径）——
-    /// 后者依赖 `DSH_XLINK_HOME`，整跑时拿到的是别的测试留下的临时 home，
-    /// 断言就成了「那个目录碰巧在不在」的 flaky。
+    /// 必须持 `scoped_xlink_home`：`holder_ids` 内部会
+    /// `load_registry_for(mode)`，那是要经 `DSH_XLINK_HOME` 解析出
+    /// `state/instances*.json` 的——它和 `holder_homes` 一样碰真实路径，只是
+    /// 读的不是 home 目录而已。没有这把 guard，单跑时读的是用户机器上真实的
+    /// 注册表，并发时读的是别的测试留下的临时 home（后者会让断言变成「那个
+    /// 目录碰巧在不在」的 flaky）。
     #[test]
     fn holder_ids_include_the_other_shell_default_but_never_self() {
+        let home = temp_dir("holder-ids");
+        let _xlink = scoped_xlink_home(&home);
         let family = crate::instance::KERNEL_FAMILY_DSH;
         let release_view = holder_ids(family, "default");
         assert!(
@@ -696,6 +722,7 @@ mod tests {
             "dev 实例的持有者集合必须含 release 默认实例：{dev_view:?}"
         );
         assert!(!dev_view.contains("default-dev"), "自己不算自己的持有者");
+        std::fs::remove_dir_all(&home).ok();
     }
 
     /// 写一份 `workspace.json`（字段与内核的 unit 文档一致）。
@@ -793,6 +820,57 @@ mod tests {
 
         // 幂等：再跑一次扫描不该再报缺口（否则 UI 的卡片永远消不掉）
         assert!(scan_workspace_registry(&holder, &mine, "default-dev").is_none());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 只复制过来一部分会话目录时，收编**只能写已到位的那些**。整条
+    /// `workspace.clone()` 会把没复制成功的 id 也写进清单，工作台里那就是
+    /// 一条点不开的历史——比不收编更糟。
+    #[test]
+    fn merge_adopts_only_the_sessions_that_actually_landed() {
+        let base = temp_dir("registry-partial");
+        let holder = base.join("holder");
+        let mine = base.join("mine");
+        write_registry(
+            &holder,
+            json!({
+                "ws-a": {
+                    "path": "C:\\ws\\a",
+                    "title": "a",
+                    "sessionIds": ["session-ok", "session-missing"]
+                }
+            }),
+            "ws-a",
+        );
+        // 两个会话都在持有者侧，但只有 session-ok 的目录真的复制到了本实例
+        // （磁盘满 / 权限 / 竞争都会造成这种半截状态）。
+        fs::create_dir_all(holder.join("sessions/--C-ws-a--/session-ok")).unwrap();
+        fs::create_dir_all(holder.join("sessions/--C-ws-a--/session-missing")).unwrap();
+        fs::create_dir_all(mine.join("sessions/--C-ws-a--/session-ok")).unwrap();
+
+        let entry = scan_workspace_registry(&holder, &mine, "default-dev").expect("有缺口");
+        let mut outcome = MisplacedRecovery::default();
+        merge_workspace_registry(&entry, &mut outcome);
+        assert!(
+            !outcome.failed.is_empty(),
+            "部分缺失必须照实汇报，不能当成全成功：{:?}",
+            outcome.failed
+        );
+
+        let merged: Value =
+            serde_json::from_str(&fs::read_to_string(mine.join(WORKSPACE_REGISTRY)).unwrap())
+                .unwrap();
+        let ids = merged["tables"]["workspaces"]["ws-a"]["sessionIds"]
+            .as_array()
+            .expect("工作区条目应被收编");
+        assert_eq!(
+            ids,
+            &vec![Value::String("session-ok".to_string())],
+            "清单里只允许出现确实复制过来的会话"
+        );
+        let list = merged["global"]["workspaceIds"].as_array().unwrap();
+        assert_eq!(list.len(), 1, "工作区本身要收编进清单：{list:?}");
 
         let _ = fs::remove_dir_all(&base);
     }

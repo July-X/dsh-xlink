@@ -150,18 +150,18 @@ mod tests {
         )
     }
 
-    fn seed_shared(home: &Path) {
+    /// 种一份拆分前的共享注册表，**返回写入的字节**——调用方要拿它比对
+    /// 「dev 认领 / dev 写入之后 release 那份一个字节都没动」。
+    fn seed_shared(home: &Path) -> Vec<u8> {
         let mut registry = InstanceRegistry::default();
         registry.add(record("default")).expect("add release");
         registry.add(record("default-dev")).expect("add dev");
         registry.add(record("scratch")).expect("add user-made");
         registry.default_instance_id = Some("default-dev".to_string());
         std::fs::create_dir_all(home.join("state")).unwrap();
-        std::fs::write(
-            home.join("state/instances.json"),
-            serde_json::to_string_pretty(&registry).unwrap(),
-        )
-        .unwrap();
+        let text = serde_json::to_string_pretty(&registry).unwrap();
+        std::fs::write(home.join("state/instances.json"), &text).unwrap();
+        text.into_bytes()
     }
 
     /// 两个壳各写各的文件，互不影响：这是拆分的全部意义。
@@ -169,14 +169,17 @@ mod tests {
     fn each_shell_writes_only_its_own_registry_file() {
         let home = temp_home("scoped");
         let _guard = scoped_xlink_home(&home);
-        seed_shared(&home);
+        let seeded = seed_shared(&home);
 
         ensure_scoped(ShellMode::Dev).expect("dev adopts");
         let dev_file = home.join("state/instances-dev.json");
         assert!(dev_file.is_file(), "dev 必须有自己的注册表文件");
-        assert!(
-            !home.join("state/instances.json").exists() || true,
-            "release 的文件保持原样（release 还没启动过）"
+        // release 的文件保持原样（release 还没启动过）。**比字节**：原先写成
+        // `!exists() || true`，恒真、什么也没断言，等于给这条纪律留了个假哨兵。
+        assert_eq!(
+            std::fs::read(home.join("state/instances.json")).expect("release 文件仍在"),
+            seeded,
+            "dev 认领不得改动 release 那份共享注册表"
         );
 
         // dev 改自己的文件：release 那份一个字节都不许动。
