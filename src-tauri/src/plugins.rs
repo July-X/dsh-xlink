@@ -428,7 +428,39 @@ pub struct PluginSpec {
 /// 仍按"传 `data_dir`"语义调用，签名统一不破坏；`data_dir` 只在 `reconcile_store`
 /// 等少数入口函数里还会用作 legacy 兜底。
 pub fn store_dir(_data_dir: &Path) -> PathBuf {
-    crate::paths::plugins_store_root()
+    let root = crate::paths::plugins_store_root();
+    seed_dev_store_once(&root);
+    root
+}
+
+/// dev 壳首次解析中央库时，从历史共享的 `dsh-plugins/` 复制一份种子。
+///
+/// 两个壳曾经共用一份中央库，于是 dev 壳里已装的插件都在那个共享目录里。切成
+/// 独立的 `dsh-plugins-dev/` 之后它会是空的，dev 壳的插件列表会**凭空清空**——
+/// 数据没丢，但用户看到的是一个空列表。这里一次性复制过去，避免那种体验断裂。
+///
+/// 三条自律：
+/// - **release 永远不触发**（`plugins_store_root()` 本身就等于历史路径）；
+/// - **只做一次**（目标目录已存在就直接返回），不覆盖 dev 自己的后续改动；
+/// - **失败不阻塞启动**，只留 stderr——种子是体验优化，不是功能前提。
+fn seed_dev_store_once(root: &Path) {
+    if crate::settings::current_mode() != crate::paths::ShellMode::Dev {
+        return;
+    }
+    if root.exists() {
+        return;
+    }
+    let legacy = crate::paths::legacy_shared_plugins_store_root();
+    if legacy == *root || !legacy.is_dir() {
+        return;
+    }
+    if let Err(error) = copy_dir_recursive(&legacy, root) {
+        eprintln!(
+            "plugins: dev 中央库种子复制失败（{} -> {}）：{error}；dev 壳的插件列表将从空开始，不影响 release",
+            legacy.display(),
+            root.display()
+        );
+    }
 }
 
 /// Legacy 中央库根目录：`<xlink_home>/plugins/`，仅在 [`migrate_legacy_store`]
