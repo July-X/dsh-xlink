@@ -110,12 +110,30 @@ pub fn legacy_migration_target() -> (&'static str, &'static str) {
 /// 都能改它，就会出现「dev 壳点一下页签，release 壳下次启动就把 data_dir
 /// 指到 dev 的实例」。壳自己的选择存在壳自己的 settings
 /// （`shell/<mode>/settings.json`）里，见 [`set_current_instance_id`]。
+///
+/// 选择还必须是本壳注册表里**真实存在**的实例：注册表分家
+/// （[`crate::registry_split`]）之前两边共用一份文件，release 壳可以（且
+/// 真的可能）把壳内选择切到 `default-dev` 并存进自己的 settings；分家收敛后
+/// 那个 id 会从本壳注册表里让位消失，而 settings 里的值没人清。不校验的话，
+/// 「找回历史会话」会把会话回收到**另一个壳的实例**里，列表的「默认」高亮
+/// 也会一个都对不上。注册表读不出来（损坏等瞬态）时**保留**选择：读失败
+/// 不等于实例不存在，静默丢掉用户的显式选择更糟。
 pub fn current_instance_id() -> String {
     let chosen =
         crate::settings::load_for_shell(crate::settings::current_mode()).current_instance_id;
-    match chosen {
-        Some(id) if !id.trim().is_empty() => id,
-        _ => default_instance_id().to_string(),
+    let Some(id) = chosen else {
+        return default_instance_id().to_string();
+    };
+    if id.trim().is_empty() {
+        return default_instance_id().to_string();
+    }
+    match load_registry() {
+        Ok(registry) if registry.get(&id).is_some() => id,
+        // 选择已从本壳注册表里消失（对方默认实例让位 / 实例被删）：回退到
+        // 按壳分家的默认值，别让壳停在一个不属于它的实例上。
+        Ok(_) => default_instance_id().to_string(),
+        // 注册表暂时读不出来：无从证明选择已失效，按用户的选择走。
+        Err(_) => id,
     }
 }
 
@@ -1479,6 +1497,54 @@ mod tests {
             DEV_DEFAULT_INSTANCE_ID,
             "空白选择必须回退，不能被当成一个真实实例 id"
         );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 壳内选择指向一个**已不在本壳注册表里**的实例时必须回退：那个 id 多半
+    /// 是分家让位掉的对方默认实例（registry_split 之前两边共用一份文件，
+    /// release 壳确实可能选中过 `default-dev` 并存进自己的 settings），照走会把
+    /// 「找回历史会话」回收到另一个壳的实例里。注册表读不出来时则保留选择——
+    /// 读失败不等于实例不存在，静默丢掉用户的显式选择更糟。
+    #[test]
+    fn a_selection_missing_from_the_registry_falls_back_to_the_shell_default() {
+        let home = temp_dir("stale-selection");
+        let _xlink = scoped_xlink_home(&home);
+        // 种一份只含本壳默认实例的注册表；选择指向 release 的默认实例。
+        let mut registry = InstanceRegistry::default();
+        registry
+            .add(sample_record(
+                DEV_DEFAULT_INSTANCE_ID,
+                3091,
+                KERNEL_FAMILY_DSH,
+            ))
+            .expect("add dev default");
+        save_registry(&registry).expect("seed registry");
+
+        set_current_instance_id(DEFAULT_INSTANCE_ID).expect("select release default");
+        assert_eq!(
+            current_instance_id(),
+            DEV_DEFAULT_INSTANCE_ID,
+            "选择已从本壳注册表消失，必须回退本壳默认，而不是照 settings 里的陈旧值走"
+        );
+
+        // 选择重新出现在注册表里时照常生效。
+        let mut registry = load_registry().expect("load");
+        registry
+            .add(sample_record("work", 3100, KERNEL_FAMILY_DSH))
+            .expect("add work");
+        save_registry(&registry).expect("save");
+        set_current_instance_id("work").expect("select work");
+        assert_eq!(current_instance_id(), "work");
+
+        // 注册表损坏（读不出来）时保留选择。
+        std::fs::write(crate::paths::instances_registry_file(), "{ not valid json")
+            .expect("corrupt registry");
+        assert_eq!(
+            current_instance_id(),
+            "work",
+            "注册表读不出来时按用户的选择走，静默丢掉显式选择更糟"
+        );
+
         std::fs::remove_dir_all(&home).ok();
     }
 
