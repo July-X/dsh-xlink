@@ -175,18 +175,33 @@ fn same_release_line(a: &str, b: &str) -> bool {
 /// - **不跨 `major.minor`**：`0.1.7-rc.2` 顶 `0.2.0-rc.2` 跨了一整个 minor，
 ///   内部接口可能已经改过。那种情况宁可不装——本函数返回 `None`，由
 ///   [`describe_install_failure`] 如实告诉用户「上游发布不完整，换个内核版本」。
-/// - **不跨稳定性语义**：预发布版与正式版的兼容承诺不同，但同版本线内的
-///   `0.2.0-rc.1` → `0.2.0-rc.2` 属于同一批次，差异是一步之遥，取舍成立。
+/// - **不跨稳定性语义**：预发布版与正式版的兼容承诺不同，正式版的需求不能
+///   用一个 RC 顶——那种情况宁可不装。`0.2.0-rc.1` → `0.2.0-rc.2` 属于同一
+///   批次、同一稳定性层级，取舍成立。
 fn pick_fallback(requested: &str, published: &BTreeSet<String>) -> Option<String> {
     published
         .iter()
         .filter(|candidate| {
             crate::version::is_valid_kernel_version(candidate)
                 && same_release_line(candidate, requested)
+                && is_pre_release(candidate) == is_pre_release(requested)
                 && crate::version::cmp_versions(candidate, requested) == std::cmp::Ordering::Less
         })
         .max_by(|a, b| crate::version::cmp_versions(a, b))
         .cloned()
+}
+
+/// 有没有预发布段。**不能靠 `cmp_versions` 顺带挡**：`0.2.0-rc.2 < 0.2.0` 在
+/// 语义化里成立（`version.rs` 对「预发布 vs 正式」返回 `Less`），所以只判
+/// 「严格更低」会把正式版的需求悄悄换成 RC，而提示文案只说「已改钉到同一
+/// 版本线上已发布的较低版本」，用户看不出装出来的是个 RC。
+fn is_pre_release(version: &str) -> bool {
+    version
+        .strip_prefix('v')
+        .unwrap_or(version)
+        .split_once('-')
+        .map(|(_, pre)| !pre.is_empty())
+        .unwrap_or(false)
 }
 
 // ─── 解析 pnpm 的「缺版本」报错 ───────────────────────────────────────────
@@ -458,8 +473,28 @@ mod tests {
         );
         assert_eq!(
             pick_fallback("0.2.1", &published),
+            None,
+            "请求正式版而同一 minor 里只剩 RC 时不能拿 RC 顶：稳定性语义不同，\
+             且提示文案不会告诉用户装出来的是个 RC"
+        );
+    }
+
+    /// 稳定性层级必须一致：正式版的需求不能被一个 RC 悄悄顶掉。
+    /// `cmp_versions` 认为 `0.2.0-rc.2 < 0.2.0`（语义化如此），所以只判
+    /// 「严格更低」是挡不住的——这条测试钉的就是那个缺口。
+    #[test]
+    fn fallback_never_crosses_from_stable_to_pre_release() {
+        let published = versions(&["0.2.0-rc.1", "0.2.0-rc.2"]);
+        assert_eq!(
+            pick_fallback("0.2.0", &published),
+            None,
+            "正式版 0.2.0 未发布时不能退到 0.2.0-rc.2"
+        );
+        // 反向：RC 的需求退到更低的 RC 仍然成立。
+        assert_eq!(
+            pick_fallback("0.2.0-rc.3", &published),
             Some("0.2.0-rc.2".to_string()),
-            "请求的补丁版本整条都没有时仍应留在 0.2.x 内，且取最大的较低者"
+            "同一稳定性层级内仍然只退到更低"
         );
     }
 
