@@ -17,7 +17,7 @@ use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowBuilder, Win
 use url::Url;
 
 use crate::error::AppError;
-use crate::instance::{self, InstanceRecord};
+use crate::instance::{self};
 use crate::migration;
 use crate::process::{build_log_kind, read_tail, LogSpec};
 use crate::quarantine;
@@ -329,6 +329,10 @@ fn merge_settings(
         // 预检开关同理：面板「保存设置」只发端口与 profile，不该顺手把用户
         // 关掉的安装预检重新打开。
         plugin_precheck: incoming.plugin_precheck.or(previous.plugin_precheck),
+        // 本壳当前服务的实例只由 `set_default_instance` 写。与上面几个开关一起
+        // 继承现值：面板保存端口时请求里没有这个字段，被 `#[serde(default)]` 填成
+        // `None` 就等于把用户切好的实例悄悄退回默认。
+        current_instance_id: previous.current_instance_id.clone(),
     }
 }
 
@@ -814,6 +818,7 @@ mod settings_merge_tests {
             notify_away_only: Some(false),
             notify_sound: Some(true),
             plugin_precheck: Some(false),
+            current_instance_id: Some("work".into()),
         };
         // 面板发来的请求：只有 port / profile，其余字段被 serde default 填成 None。
         let incoming = settings::Settings {
@@ -842,6 +847,12 @@ mod settings_merge_tests {
             merged.plugin_precheck,
             Some(false),
             "面板没提到的预检开关必须继承磁盘现值，否则用户关掉的预检会被一次「保存设置」偷偷打开"
+        );
+        assert_eq!(
+            merged.current_instance_id.as_deref(),
+            Some("work"),
+            "本壳切好的实例同样必须继承：面板保存端口时请求里没有这个字段，\
+             被 serde default 填成 None 就等于把用户切到的实例悄悄退回默认"
         );
 
         // 显式清空（空串）不被现值覆盖：`Some("")` 是"这次要清掉"。
@@ -2958,14 +2969,22 @@ pub async fn skill_check_updates() -> Result<Vec<skills::SkillUpdateInfo>, Strin
 // 多内核改造 P2 把"实例"作为管理单位引入。下面的命令暴露给 UI：
 //   - list_instances / get_instance：列 / 查
 //   - create_instance / delete_instance / rename_instance：增删改
-//   - set_default_instance：当前 Shell 模式记住默认实例
+//   - set_default_instance：切到某个实例
 //   - start_instance / stop_instance / restart_instance：生命周期
-//   - ensure_default_instance_migrated：从旧 active.txt + settings 迁移
 //
-// 旧 start_kernel / stop_kernel 仍按 legacy data_dir 单实例工作，但
-// 在 setup() 中会先 ensure_default_instance_migrated，把现有用户的
-// active.txt + settings 吸收为一个名为 crate::instance::DEFAULT_INSTANCE_ID 的实例，让 UI 能
-// 立刻看到「我的实例」。
+// 旧 start_kernel / stop_kernel 仍按 legacy data_dir 单实例工作，但 setup()
+// 在 [`crate::instance::ensure_default_registered`] 里会先把现有用户的
+// active.txt + settings 吸收为当前壳的默认实例，让 UI 能立刻看到「我的实例」。
+//
+// **「把旧状态吸收成默认实例」只有一个入口：`ensure_default_registered`。**
+// 这里曾挂过一个同名的 Tauri 命令 `ensure_default_instance_migrated`，
+// 前端从来没有调用者（全仓只有权限清单和注释提到它），而它把 id hard-code 成
+// `DEFAULT_INSTANCE_ID` —— dev 壳一旦走到它，就会往共享注册表里塞一条名为
+// `default`、端口取 dev 的 3091、`kernel_version` 为空的幽灵记录，并把共享指针
+// 一并改写掉（下面 `set_default_instance` 当年犯的是同一个错，只是它是活的）。
+// 两条纪律因此写进门禁（`scripts/check-invariants.mjs`）：
+//   ① 生产代码里 `InstanceRecord::new` 的 id 实参不得是常量；
+//   ② 注册表那个共享的 `default_instance_id` 只准 `instance.rs` 写。
 
 /// UI 看到的实例摘要：注册表条目 + 运行时状态。
 #[derive(serde::Serialize)]
@@ -2986,11 +3005,10 @@ pub async fn list_instances() -> Result<Vec<InstanceSummary>, String> {
             .iter()
             .map(|record| {
                 let runtime = instance::load_runtime(&record.kernel_family, &record.id);
-                // 「默认」按**当前壳**判定，不看注册表里那个共享字段：dev 与
-                // release 各有各的默认实例（`default` / `default-dev`），共享
-                // 字段只服务 `default_family()` 的族解析，拿它标 UI 会让两个壳
-                // 互相把对方的实例标成"默认"。
-                let is_default = record.id == instance::resolve_default().1;
+                // 「默认」按**当前壳**判定：用户切过页签就用他选的那个，否则用
+                // 按壳分家的默认值。不看注册表里那个共享字段——它是 release 壳
+                // 的族解析输入，拿它标 UI 会让两个壳互相把对方的实例标成"默认"。
+                let is_default = record.id == instance::current_instance_id();
                 InstanceSummary {
                     record: record.clone(),
                     runtime,
@@ -3024,16 +3042,17 @@ pub async fn create_instance(
         registry
             .add(record.clone())
             .map_err(|e| format!("注册表拒绝该 id：{e}"))?;
-        if registry.default_instance_id.is_none() {
-            registry.default_instance_id = Some(record.id.clone());
-        }
+        // 刻意**不**认领共享的 `default_instance_id`：那一份是 release 壳族解析的
+        // 输入（`instance::default_family`），dev 壳建个实例就把它抢走，会让
+        // release 壳下次启动把 data_dir 指到不相干的实例上。认领只发生在 setup 的
+        // `ensure_default_registered` 里，且只在无人认领时、由 release 执行。
         instance::save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))?;
         let runtime = instance::load_runtime(&record.kernel_family, &record.id);
         let _ = data_dir;
         Ok(InstanceSummary {
             record,
             runtime,
-            is_default: registry.default_instance_id.as_deref() == Some(id.as_str()),
+            is_default: instance::current_instance_id() == id,
         })
     })
     .await
@@ -3044,6 +3063,7 @@ pub async fn create_instance(
 pub async fn delete_instance(app: AppHandle, id: String) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
     blocking(move || -> Result<(), String> {
+        let _guard = crate::lock(instance::lifecycle_mutex());
         let registry = instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
         let Some(record) = registry.get(&id).cloned() else {
             return Err(format!("实例 {id} 不存在"));
@@ -3055,7 +3075,23 @@ pub async fn delete_instance(app: AppHandle, id: String) -> Result<(), String> {
         let mut registry = registry;
         registry.remove(&id);
         if registry.default_instance_id.as_deref() == Some(id.as_str()) {
-            registry.default_instance_id = registry.instances.first().map(|r| r.id.clone());
+            // 置 `None` 而不是改指某个兄弟实例：这个共享字段只表达「release 壳的
+            // 默认实例是哪一个」，指向别人就等于让 `default_family()` 按一个不相干
+            // 的实例去解析族目录。置 `None` 后 setup 的 `ensure_default_registered`
+            // 会在下次启动把它重建回来。
+            registry.default_instance_id = None;
+        }
+        // 本壳自己选中的就是被删的那个 → 退回按壳分家的默认值，别让壳停在一个
+        // 已经不存在的实例上。
+        let mode = crate::settings::current_mode();
+        if crate::settings::load_for_shell(mode)
+            .current_instance_id
+            .as_deref()
+            == Some(id.as_str())
+        {
+            let mut settings = crate::settings::load_for_shell(mode);
+            settings.current_instance_id = None;
+            crate::settings::save_for_shell(mode, &settings).map_err(|e| e.to_string())?;
         }
         instance::save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))?;
         let _ = data_dir;
@@ -3064,17 +3100,23 @@ pub async fn delete_instance(app: AppHandle, id: String) -> Result<(), String> {
     .await
 }
 
-/// UI 切换当前 Shell 模式的默认实例。
+/// UI 把本壳切到某个实例。
+///
+/// **只写壳自己的 settings**，绝不碰注册表里那份共享的 `default_instance_id`
+/// ——它是 release 壳 `data_dir` 族解析的输入（见 [`instance::default_family`]）。
+/// 当年这个命令直接 `registry.default_instance_id = Some(id)`，后果是 dev 壳在
+/// 顶部点一下页签就把共享指针永久改成了 `default-dev`，而
+/// `ensure_default_registered` 的认领条件是「无人认领」，被改之后它再也不会
+/// 纠正回来，只能手改注册表文件。
 #[tauri::command]
 pub async fn set_default_instance(id: String) -> Result<(), String> {
     blocking(move || -> Result<(), String> {
-        let mut registry = instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
+        let _guard = crate::lock(instance::lifecycle_mutex());
+        let registry = instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
         if registry.get(&id).is_none() {
             return Err(format!("实例 {id} 不存在"));
         }
-        registry.default_instance_id = Some(id);
-        instance::save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))?;
-        Ok(())
+        instance::set_current_instance_id(&id)
     })
     .await
 }
@@ -3142,49 +3184,6 @@ pub async fn restart_instance(
 ) -> Result<kernel::InstanceStartReport, String> {
     stop_instance(app.clone(), id.clone()).await?;
     start_instance(app, id).await
-}
-
-/// 仅 setup 期使用：从旧 active.txt + shell settings 派生 crate::instance::DEFAULT_INSTANCE_ID
-/// 实例并写入磁盘。旧用户的内核二进制仍在 legacy `kernels/<version>/`，
-/// 不搬到新位置；实例记录里只记录 kernel_family + kernel_version，
-/// 启动时按 family + version 找到对应安装目录。
-#[tauri::command]
-pub async fn ensure_default_instance_migrated(
-    state: State<'_, AppState>,
-) -> Result<Option<InstanceSummary>, String> {
-    let data_dir = state.data_dir.clone();
-    blocking(move || -> Result<Option<InstanceSummary>, String> {
-        let _guard = crate::lock(instance::lifecycle_mutex());
-        let mut registry = instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
-        if registry.get(instance::DEFAULT_INSTANCE_ID).is_some() {
-            return Ok(None);
-        }
-        let now_ms = crate::process::epoch_millis();
-        let settings = settings::load_for_shell(settings::current_mode());
-        let active = kernel::read_active(&data_dir);
-        let mut record = InstanceRecord::new(
-            instance::DEFAULT_INSTANCE_ID,
-            instance::KERNEL_FAMILY_DSH,
-            settings.port,
-            now_ms,
-        );
-        record.kernel_version = active;
-        record.label = Some("默认实例（迁移自旧版）".to_string());
-        instance::ensure_instance_dirs(&record).map_err(|e| format!("准备实例目录失败：{e}"))?;
-        instance::save_record_to_disk(&record).map_err(|e| format!("写入实例记录失败：{e}"))?;
-        registry
-            .add(record.clone())
-            .map_err(|e| format!("注册表拒绝该 id：{e}"))?;
-        registry.default_instance_id = Some(record.id.clone());
-        instance::save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))?;
-        let runtime = instance::load_runtime(&record.kernel_family, &record.id);
-        Ok(Some(InstanceSummary {
-            record,
-            runtime,
-            is_default: true,
-        }))
-    })
-    .await
 }
 
 #[cfg(test)]

@@ -85,7 +85,6 @@
           "start_instance",
           "stop_instance",
           "restart_instance",
-          "ensure_default_instance_migrated",
           "migration_preview",
           "migration_run",
           "migration_rollback",

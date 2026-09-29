@@ -24,7 +24,17 @@
  *      覆盖 github-actions——钉住的 SHA 只能靠 Dependabot 推进，缺了它策略就是空话。
  *   8. UI 模板里用到的 `el-*` 组件都已在 main.js 注册——本项目不引入 unplugin
  *      自动导入器，漏注册的组件在构建与测试全绿的情况下被当未知自定义元素
- *      原样渲染（P8 双 tab 因此整页平铺、迁移向导的勾选/单选全部失效）。
+ *      原样渲染（P8 双 tab 因此整页平铺、迁移向导的勾选/单选全部失效）。反向
+ *      也查：注册了却没人用的组件会把 `theme-chalk` 的样式白打进产物，撞穿
+ *      CI 的 CSS 预算（`el-table` 赖在 main.js 里，直到 UI CSS 只剩 838 字节
+ *      余量才被发现）。本仓库没有动态 `<component :is>` 引用 EP 组件的写法，
+ *      所以 `registered ⊆ used` 不会误报。
+ *   9. 前端读的 IPC 字段名与 Rust 侧 `rename_all = "camelCase"` 发出的名字对得上
+ *      ——整套快照 UI 曾一直在读 snake_case，「回到良好状态」点了没反应、二分
+ *      按钮恒置灰，而单测全绿（夹具是手写的 snake_case，没有真实响应穿过）。
+ *  10. 生产代码里 `InstanceRecord::new` 的 id 实参不得是常量。
+ *  11. 注册表那个共享的 `default_instance_id` 只准 `instance.rs` 指向具体实例。
+ *      （第 10、11 条的由来见下方注释。）
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -599,6 +609,118 @@ if (renamedFields.size > 0) {
     note(
       `IPC 字段契约：前端没有读任何会被 camelCase 改名的字段（已覆盖 ${renamedFields.size} 个）`,
     );
+  }
+}
+
+// --- 10/11. 实例归属的两条硬纪律 --------------------------------------------
+//
+// 这两条来自一次真实的排查事故。dev 与 release 两个壳把自己的数据目录分家了
+// （`desktop/` 与 `desktop-dev/`），实例却还共用同一个默认实例——于是 dev 换一次
+// 内核版本、重跑一次 `profiles/web/` 接线，就落在 release 正在跑的内核上，工作台
+// 当场白屏（`scope '…' rendered without an installed adapter`）。分家之后又留下一条
+// 幽灵记录：注册表里除 `default-dev` 外还多出一条 `default`，端口被写成 dev 的 3091、
+// `kernel_version` 为空。
+//
+// 追了两轮才定位到写入者：一个**前端从不调用**的 Tauri 命令
+// `ensure_default_instance_migrated`，它把 id 写死成 `DEFAULT_INSTANCE_ID`。dev 壳
+// 走到它就会往**共享**注册表里塞一条属于 release 名字的记录，并顺手改掉共享指针。
+//
+// 教训不能只留在 commit message 里。这两条检查把它变成机械可查的：
+//   ① 生产代码里 `InstanceRecord::new` 的 id 实参不得是常量——常量意味着「这条路径
+//      不管当前是哪个壳，都会造出同一个 id 的记录」；
+//   ② 注册表那个 `default_instance_id` 是 dev 与 release 共享的一份，是
+//      `instance::default_family()` 解析 `data_dir` 的输入，因此只准 `instance.rs`
+//      写。壳自己「切到哪个实例」属于壳内状态，走 `settings.current_instance_id`。
+
+/** 去掉 `#[cfg(test)]` 整块与行注释，只留下真正的生产代码。
+ *
+ * **行号必须对齐**：注释与测试块各自替换成等长的空串，而不是从数组里删掉，
+ * 否则下面报出来的行号会指到不相干的地方（测试块一长就偏出去几十行）。
+ */
+function productionRust(text) {
+  const lines = text.split('\n');
+  const kept = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim();
+    if (/^#\[cfg\(.*\btest\b.*\)\]$/.test(trimmed)) {
+      let depth = 0;
+      let seen = false;
+      kept.push('');
+      for (i += 1; i < lines.length; i += 1) {
+        kept.push('');
+        const code = lines[i].replace(/\/\/.*$/, '');
+        depth += (code.match(/\{/g) || []).length - (code.match(/\}/g) || []).length;
+        if (code.includes('{')) seen = true;
+        if (seen && depth <= 0) break;
+      }
+      continue;
+    }
+    kept.push(trimmed.startsWith('//') ? '' : lines[i].replace(/\/\/.*$/, ''));
+  }
+  return kept.join('\n');
+}
+
+{
+  const srcDir = join(root, 'src-tauri', 'src');
+  const rustFiles = readdirSync(srcDir).filter((name) => name.endsWith('.rs'));
+
+  // ① 实例 id 不得 hard-code。
+  const hardCodedIds = [];
+  for (const file of rustFiles) {
+    const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
+    lines.forEach((line, index) => {
+      const call = /InstanceRecord::new\(\s*([^,)]+)/.exec(line);
+      if (!call) return;
+      const arg = call[1].trim();
+      const isConstant =
+        /^(instance::)?(DEV_)?DEFAULT_INSTANCE_ID$/.test(arg) || /^"[^"]*"$/.test(arg);
+      if (isConstant) {
+        hardCodedIds.push(
+          `${file}:${index + 1} 造实例时把 id 写死成 ${arg}——dev 壳与 release 壳会造出同一个 id`,
+        );
+      }
+    });
+  }
+  if (hardCodedIds.length > 0) {
+    for (const message of hardCodedIds) {
+      fail(
+        'instance-id-constant',
+        `${message}。当前壳的实例 id 走 instance::default_instance_id()` +
+          '（或 current_instance_id()），常量会造出不属于这个壳的记录。',
+      );
+    }
+  } else {
+    note(`实例 id 不写死：生产代码里 ${rustFiles.length} 个文件没有常量实参`);
+  }
+
+  // ② 共享的 default_instance_id 只准 instance.rs **指向**某个 id。
+  //    清空（`= None`）不算抢：那是把指针还原成「无人认领」，setup 的
+  //    `ensure_default_registered` 会按 release 的默认值把它重建回来——删掉被指向的
+  //    实例后清空指针是**修复**（跨壳误认领之后唯一的自愈路径），必须留着。
+  const sharedWriters = [];
+  for (const file of rustFiles) {
+    if (file === 'instance.rs') continue; // 唯一合法的写者
+    const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
+    lines.forEach((line, index) => {
+      const assign = /\.default_instance_id\s*=(?!=)\s*(.+?);?\s*$/.exec(line);
+      if (!assign) return;
+      if (/^None\s*$/.test(assign[1].trim())) return; // 清空是修复，不是抢
+      sharedWriters.push(`${file}:${index + 1}`);
+    });
+  }
+  if (sharedWriters.length > 0) {
+    for (const where of sharedWriters) {
+      fail(
+        'shared-registry-default',
+        `${where} 把注册表的 default_instance_id 指向了某个实例 —— 那是 dev 与 release 共享的一份，` +
+          '也是 instance::default_family() 解析 data_dir 的输入：被任意一个壳改掉，' +
+          '另一个壳下次启动就会把数据目录指到不相干的实例上，而它不可自愈' +
+          '（ensure_default_registered 只在「无人认领」时认领）。壳内选择请写 ' +
+          'settings.current_instance_id。（清空成 None 不算——那是修复。）',
+      );
+    }
+  } else {
+    note('共享的 default_instance_id 只有 instance.rs 会指向具体实例');
   }
 }
 
