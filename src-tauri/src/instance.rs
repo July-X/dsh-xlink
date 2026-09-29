@@ -103,12 +103,43 @@ pub fn legacy_migration_target() -> (&'static str, &'static str) {
     (KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID)
 }
 
+/// 本壳当前服务的实例 id：用户在顶部页签切换过的优先，否则按壳分家的默认值。
+///
+/// 刻意**不读**注册表的 `default_instance_id` 字段——那是一份共享状态，
+/// 由 [`crate::instance::default_family`] 用来解析 `data_dir` 的族；两个壳
+/// 都能改它，就会出现「dev 壳点一下页签，release 壳下次启动就把 data_dir
+/// 指到 dev 的实例」。壳自己的选择存在壳自己的 settings
+/// （`shell/<mode>/settings.json`）里，见 [`set_current_instance_id`]。
+pub fn current_instance_id() -> String {
+    let chosen =
+        crate::settings::load_for_shell(crate::settings::current_mode()).current_instance_id;
+    match chosen {
+        Some(id) if !id.trim().is_empty() => id,
+        _ => default_instance_id().to_string(),
+    }
+}
+
+/// 记住本壳当前服务的实例。**只写壳自己的 settings**，绝不碰注册表里那份
+/// 共享的 `default_instance_id`。
+pub fn set_current_instance_id(id: &str) -> Result<(), String> {
+    let mode = crate::settings::current_mode();
+    let mut settings = crate::settings::load_for_shell(mode);
+    settings.current_instance_id = Some(id.to_string());
+    crate::settings::save_for_shell(mode, &settings)
+}
+
 /// 壳当前服务的内核族：注册表中默认实例的 `kernel_family`。
 ///
 /// 注册表不可读、没有默认实例或找不到对应记录时回退 DSH——与
 /// [`resolve_default`] 的兜底口径一致。setup 期用它把 data_dir 解析到
 /// `<xlink_home>/<family>/desktop[-dev]/`，让 mcode 等新内核族将来接入时
 /// 天然拿到自己的族目录。
+///
+/// **这一个字段是 dev 与 release 共享的**：它落在 `<xlink_home>/state/instances.json`
+/// 里，两个壳读的是同一份。因此它是 release 壳的族解析输入，也**只准** release
+/// 写（见 [`ensure_default_registered`]）——任何别的写者都会让另一个壳下次启动
+/// 时把 `data_dir` 解析到不相干的族目录。壳自己「当前服务哪个实例」的选择走
+/// [`current_instance_id`]，不经过这里。
 pub fn default_family() -> String {
     if let Ok(registry) = load_registry() {
         if let Some(id) = registry.default_instance_id.as_deref() {
@@ -361,18 +392,19 @@ pub fn save_registry(registry: &InstanceRegistry) -> Result<(), RegistryError> {
     Ok(())
 }
 
-/// 确保默认实例已注册（同步版本，给 lib.rs setup() 直接调）。
+/// 确保默认实例已注册（给 `lib.rs setup()` 直接调的**唯一**入口）。
 ///
 /// 旧版壳首次启动时没走过实例系统，`<xlink_home>/state/instances.json`
-/// 不存在。setup() 在 [`crate::commands::ensure_default_instance_migrated`]
-/// 命令暴露给前端之外，**也**主动跑一次同样的逻辑——把现有用户从
-/// 旧 `active.txt + settings` 迁过来的状态灌进实例系统，避免
-/// [`list_instances`] 返回空导致顶部 dropdown「加载中」与
-/// PluginsPanel「所有实例」tab 显示「实例注册表加载失败」。
+/// 不存在。不主动跑这一步，顶部 dropdown 会一直显示「加载中」、
+/// PluginsPanel「所有实例」tab 会显示「实例注册表加载失败」。
 ///
-/// 与 [`crate::commands::ensure_default_instance_migrated`] 函数体一致，
-/// 抽出来是为了避开 setup 闭包内的 `spawn_blocking`——setup 是 `FnOnce`
-/// 同步闭包，必须在主线程里串行做完才能继续启动。
+/// 抽成同步函数是为了避开 setup 闭包内的 `spawn_blocking`——setup 是
+/// `FnOnce` 同步闭包，必须在主线程里串行做完才能继续启动。
+///
+/// 曾经还有一个功能完全相同的 Tauri 命令供前端调用，它把 id 写死成
+/// `DEFAULT_INSTANCE_ID`；dev 壳一旦走到它，就会往共享注册表里塞一条名为
+/// `default`、端口取 dev 的 3091、`kernel_version` 为空的幽灵记录。命令连同
+/// 它的权限条目已删除，这里是仅剩的入口。
 pub fn ensure_default_registered(data_dir: &Path) -> Result<(), String> {
     let _guard = crate::lock(lifecycle_mutex());
     let mut registry = load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
@@ -1302,6 +1334,70 @@ mod tests {
         assert_eq!(
             load_registry().expect("load").instances.len(),
             after.instances.len()
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    // --- 壳内「当前实例」的选择：只落在壳自己的 settings 里 ------------------
+
+    /// 用户切实例**不得**改写注册表里那份共享的 `default_instance_id`。
+    ///
+    /// 这条曾经真的坏过：`commands::set_default_instance` 直接
+    /// `registry.default_instance_id = Some(id)`，dev 壳在顶部点一下页签就把
+    /// 共享指针永久改成 `default-dev`。它不可自愈——`ensure_default_registered`
+    /// 的认领条件是「无人认领」，指针一旦被改就再也轮不到它纠正，只能手改
+    /// `<xlink_home>/state/instances.json`。而这个字段是
+    /// [`default_family`] 解析 `data_dir` 的输入，等于让一个壳改掉另一个壳的
+    /// 数据目录。
+    #[test]
+    fn selecting_an_instance_never_touches_the_shared_registry_default() {
+        let home = temp_dir("current-instance");
+        let _xlink = scoped_xlink_home(&home);
+        // release 已认领共享指针；同时预置两个实例，供「切换」挑一个非默认的。
+        let mut registry = load_or_migrate(None, 3090);
+        registry
+            .add(sample_record(DEFAULT_INSTANCE_ID, 3090, KERNEL_FAMILY_DSH))
+            .expect("add default");
+        registry
+            .add(sample_record("work", 3100, KERNEL_FAMILY_DSH))
+            .expect("add work");
+        registry.default_instance_id = Some(DEFAULT_INSTANCE_ID.to_string());
+        save_registry(&registry).expect("seed registry");
+
+        // 未选过时回退到按壳分家的默认值（测试进程恒为 dev 壳）。
+        assert_eq!(current_instance_id(), DEV_DEFAULT_INSTANCE_ID);
+
+        set_current_instance_id("work").expect("select work");
+        assert_eq!(current_instance_id(), "work", "壳内选择必须被记住");
+
+        let after = load_registry().expect("load registry");
+        assert_eq!(
+            after.default_instance_id.as_deref(),
+            Some(DEFAULT_INSTANCE_ID),
+            "壳内选择绝不写共享指针：它只属于壳自己的 settings.json"
+        );
+        assert_eq!(after.instances.len(), 2, "也不该顺手增删实例条目");
+
+        // 清掉选择后回到按壳分家的默认值，而不是停在被删掉的实例上。
+        let mode = crate::settings::current_mode();
+        let mut settings = crate::settings::load_for_shell(mode);
+        settings.current_instance_id = None;
+        crate::settings::save_for_shell(mode, &settings).expect("clear selection");
+        assert_eq!(current_instance_id(), DEV_DEFAULT_INSTANCE_ID);
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 空串与纯空白的选择按「没选过」处理：它们会一路传到
+    /// `default_family()` 之后把 `data_dir` 解析到一个不存在的实例上。
+    #[test]
+    fn a_blank_selection_falls_back_to_the_shell_default() {
+        let home = temp_dir("blank-selection");
+        let _xlink = scoped_xlink_home(&home);
+        set_current_instance_id("   ").expect("write blank");
+        assert_eq!(
+            current_instance_id(),
+            DEV_DEFAULT_INSTANCE_ID,
+            "空白选择必须回退，不能被当成一个真实实例 id"
         );
         std::fs::remove_dir_all(&home).ok();
     }

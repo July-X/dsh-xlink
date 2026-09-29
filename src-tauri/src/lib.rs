@@ -175,8 +175,9 @@ pub fn run() {
             // 灌进实例注册表。旧版壳首次启动或升级到 P8 之后的 dev 跑，
             // 实例系统都是空——不主动跑这一步，顶部 dropdown 会一直显示
             // 「加载中」、PluginsPanel「所有实例」tab 会显示「实例注册表
-            // 加载失败」。这是 setup 期的兜底；前端 [`ensure_default_instance_migrated`]
-            // 仍然暴露给显式重置 / 调试用。
+            // 加载失败」。这里是**唯一**入口：曾经还有一个前端从不调用的同名
+            // Tauri 命令，它把 id 写死成 `DEFAULT_INSTANCE_ID`，dev 壳走到它就会
+            // 往共享注册表里塞一条名为 `default`、端口取 dev 的 3091 的幽灵记录。
             //
             // 必须**早于** `app.manage(AppState { data_dir, ... })`——后者
             // 会 move 走 data_dir，之后再借用就拿不到了。
@@ -334,7 +335,6 @@ pub fn run() {
             commands::start_instance,
             commands::stop_instance,
             commands::restart_instance,
-            commands::ensure_default_instance_migrated,
             // P6：迁移向导命令。
             commands::migration_preview,
             commands::migration_run,

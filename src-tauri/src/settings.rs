@@ -53,6 +53,15 @@ pub struct Settings {
     /// 默认值），而不是「关闭」——与上面三个通知开关同样的理由：用 `bool`
     /// 会让每次面板「保存设置」都把用户的选择静默重置。
     pub plugin_precheck: Option<bool>,
+    /// **本壳**当前服务的实例 id。`None` = 用户没切过，回退到
+    /// [`crate::instance::current_instance_id`] 里按壳分家的那个默认值。
+    ///
+    /// **刻意不进注册表**：`instances.json` 的 `default_instance_id` 是 dev 壳与
+    /// release 壳**共享**的一份，它是 [`crate::instance::default_family`] 解析
+    /// `data_dir` 的输入。让任何一壳改它，等于让一个壳改掉另一个壳的族目录。
+    /// 壳自己的选择只落在壳自己的 settings 里——dev 与 release 的 settings
+    /// 本来就是两份文件（`shell/<mode>/settings.json`）。
+    pub current_instance_id: Option<String>,
 }
 
 /// 安装预检是否生效。**默认开启**：预检只多花十几秒，却能在装坏插件时保住
@@ -73,6 +82,7 @@ impl Default for Settings {
             notify_away_only: None,
             notify_sound: None,
             plugin_precheck: None,
+            current_instance_id: None,
         }
     }
 }

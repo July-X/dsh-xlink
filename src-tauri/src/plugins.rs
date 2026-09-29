@@ -504,23 +504,15 @@ fn store_plugin_dir(data_dir: &Path, id: &str) -> PathBuf {
     store_dir(data_dir).join(id)
 }
 
-/// 当前 Shell 模式记住的默认实例 `(family, id)`。注册表尚未写入时
-/// fallback 到 `(KERNEL_FAMILY_DSH, "default")` —— 这条 fallback 与
-/// `commands::ensure_default_instance_migrated` 的迁移目标一致；旧用户
-/// 第一次启动时这条路径会写出真正的 default 记录，第二次启动就走注册表
-/// 读到的 `default_instance_id`。
-///
-/// 解析失败（注册表 JSON 损坏）时同样 fallback：让插件模块在
-/// `setup()` 阶段或迁移完成之前仍然能读写出 extensions 目录。
-///
-/// 命令层要写入的 `(family, id)` 也走这里，避免两处各写一份 fallback
-/// 而在某次重构后悄悄分叉。
 /// 当前壳的默认实例（family + id）。
 ///
 /// **不读注册表的 `default_instance_id`**：那份是 dev / release 共用的一份，
 /// dev 壳若跟着它走就等于用回 release 的实例（profile 接线、插件物化、会话
 /// 全是同一棵），这正是两套环境互相踩的入口。要换实例请用实例页显式创建，
 /// 不要动这里。
+///
+/// 解析失败（注册表 JSON 损坏）时同样 fallback 到 `(KERNEL_FAMILY_DSH, <壳默认>)`：
+/// 让插件模块在 `setup()` 阶段或迁移完成之前仍然能读写出 extensions 目录。
 pub(crate) fn default_instance_key() -> (String, String) {
     let (family, id) = crate::instance::resolve_default();
     (family.to_string(), id.to_string())
@@ -4050,10 +4042,9 @@ fn refresh_store_peers(data_dir: &Path, item: &StoreItem, active: &str) -> Resul
 /// `default_instance_key()` 走"从注册表读 default"这条生产路径。
 ///
 /// 同时种入 `default`（端口 3090，默认）与 `work`（端口 3091，备选）两
-/// 个实例——跨实例隔离测试用后者。仅测试用：跳过
-/// `commands::ensure_default_instance_migrated` 内部的 blocking + tauri
-/// state 逻辑，直接落一份 `InstanceRegistry` 与一份 `InstanceRecord`
-/// 到 disk。生产流程里这一步由 setup 阶段的前端调用 tauri command 完成。
+/// 个实例——跨实例隔离测试用后者。仅测试用：跳过生产路径里 `setup()` 调
+/// `instance::ensure_default_registered` 的取目录与落盘，直接写一份
+/// `InstanceRegistry` 与 `InstanceRecord` 到 disk。
 #[cfg(test)]
 fn seed_default_instance_for_tests(_home: &Path) {
     use crate::instance::{
@@ -4117,8 +4108,8 @@ mod tests {
         /// `let (home, _guard) = TestHome::new();`。
         ///
         /// P4：创建时同时注册一个默认实例 record，模拟生产里
-        /// `commands::ensure_default_instance_migrated` 在 setup 阶段写出
-        /// 的实例条目。这样 `default_instance_key()` 走"从注册表读 default"
+        /// `instance::ensure_default_registered` 在 setup 阶段写出的
+        /// 实例条目。这样 `default_instance_key()` 走"从注册表读 default"
         /// 这条生产路径，而不是 fallback 到 `(dsh, "default")` 的兜底分支。
         pub(super) fn new() -> (Self, crate::tests::EnvGuard) {
             let nano = SystemTime::now()
