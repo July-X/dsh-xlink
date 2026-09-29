@@ -56,20 +56,44 @@ fn move_legacy_store_once(root: &Path) {
         ),
         // 跨卷时 rename 不可用，退回复制；失败只留 stderr，不阻塞启动——
         // 迁移是体验优化，中央库为空不该让整个壳起不来。
-        Err(rename_error) => match crate::plugins::copy_dir_recursive(&legacy, root) {
-            Ok(()) => {
-                eprintln!(
-                    "plugins: 中央库跨卷已复制到 {}（rename 失败：{rename_error}）",
-                    root.display()
-                );
-                let _ = std::fs::remove_dir_all(&legacy);
-            }
-            Err(copy_error) => eprintln!(
-                "plugins: 中央库从 {} 迁移失败（{rename_error}；复制也失败：{copy_error}）；\
-                 插件列表可能为空，不影响 release 内核与工作台",
-                legacy.display()
-            ),
-        },
+        Err(rename_error) => copy_legacy_store(&legacy, root, &rename_error),
+    }
+}
+
+/// 跨卷回退：rename 已失败，把整棵中央库**复制**过来，成功后删源。
+///
+/// 抽出来（而不是内联在 [`move_legacy_store_once`] 里）只为能直接测「中途
+/// 失败要清掉半截目标」——rename 失败本身只在跨卷时发生，测试造不出来，
+/// 而复制中途失败可以（mode-000 的子目录）。
+///
+/// 失败时**清掉半截目标**再报错：`copy_dir_recursive` 先 `create_dir_all(to)`
+/// 才读源，失败时会留下半个 `plugins/dsh/`；而 `move_legacy_store_once` 的
+/// 入场条件是 `root.exists()`，半截目录一旦留下就永久短路重试——全量数据
+/// 还在 `dsh-plugins/` 里，用户看到的却是一份残缺的插件列表。目标始终是
+/// 源的一份副本，删了不丢东西，下次启动自然重试（与 `seed_dev_store_once`
+/// 的清理同一纪律）。
+fn copy_legacy_store(legacy: &Path, root: &Path, rename_error: &std::io::Error) {
+    match crate::plugins::copy_dir_recursive(legacy, root) {
+        Ok(()) => {
+            eprintln!(
+                "plugins: 中央库跨卷已复制到 {}（rename 失败：{rename_error}）",
+                root.display()
+            );
+            let _ = std::fs::remove_dir_all(legacy);
+        }
+        Err(copy_error) => {
+            let leftover = std::fs::remove_dir_all(root);
+            eprintln!(
+                "plugins: 中央库从 {} 迁移到 {} 失败（{rename_error}；复制也失败：{copy_error}）；\
+                 插件列表可能为空，不影响 release 内核与工作台{}",
+                legacy.display(),
+                root.display(),
+                match leftover {
+                    Ok(()) => "（已清掉未完成的半截目录，下次启动会重试）".to_string(),
+                    Err(clean) => format!("（清理未完成目录也失败：{clean}，需手动删除）"),
+                }
+            );
+        }
     }
 }
 
@@ -240,5 +264,64 @@ mod tests {
             !home.root.join("plugins").exists(),
             "连命名空间父目录都不该被建出来"
         );
+    }
+
+    /// 跨卷复制**中途**失败时必须清掉半截目标：`root.exists()` 是迁移的入场
+    /// 条件，半截 `plugins/dsh/` 一旦留下就永久短路重试——全量数据还在
+    /// `dsh-plugins/` 里，用户看到的却是一份残缺的插件列表。rename 失败只在
+    /// 跨卷时发生、测试造不出来，因此直接测回退函数；复制中途失败用一个
+    /// mode-000 的子目录制造（读到它时 EACCES，此时 `first.txt` 已拷过去）。
+    /// 与 `seed_dev_store_once` 的清理同一纪律，那边修的是 dev 侧的对称形态。
+    #[test]
+    #[cfg(unix)]
+    fn a_partial_cross_volume_copy_is_cleaned_up_so_retry_stays_possible() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // root 不受 mode-000 约束（读目录照样成功），夹具会失效——那种环境
+        // 下跳过而不是让断言以「半截目标没被清掉」的假象失败。
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("store_relocate: 以 root 运行，mode-000 夹具无效，跳过本用例");
+            return;
+        }
+        let _home = TempXlink::new();
+        let legacy = crate::paths::legacy_shared_plugins_store_root();
+        let release = crate::paths::plugins_store_root_for(ShellMode::Release);
+
+        std::fs::create_dir_all(legacy.join("some-plugin").join("sub")).unwrap();
+        std::fs::write(legacy.join("store.json"), "{}").unwrap();
+        std::fs::write(legacy.join("some-plugin").join("first.txt"), "1").unwrap();
+        std::fs::write(
+            legacy.join("some-plugin").join("sub").join("second.txt"),
+            "2",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            legacy.join("some-plugin").join("sub"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+
+        copy_legacy_store(&legacy, &release, &std::io::Error::other("cross-volume"));
+
+        assert!(
+            !release.exists(),
+            "半截目标必须被清掉，否则下次启动 root.exists() 直接短路，迁移永不重试"
+        );
+        assert!(
+            legacy.join("store.json").is_file()
+                && legacy.join("some-plugin").join("first.txt").is_file(),
+            "源必须原封不动——它是全量数据的所在地"
+        );
+        assert!(
+            legacy.join("some-plugin").is_dir(),
+            "读不进去的子目录也仍在源里（断言它本身只需父目录的 r+x）"
+        );
+
+        // 收尾前恢复权限，TempXlink 的 Drop 才能删掉这块临时目录。
+        std::fs::set_permissions(
+            legacy.join("some-plugin").join("sub"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
     }
 }
