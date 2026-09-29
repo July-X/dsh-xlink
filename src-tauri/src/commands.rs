@@ -711,6 +711,12 @@ pub async fn install_kernel(
             let _ = on_event.send(msg.to_string());
         };
         let (node_path, pnpm_exe) = promise_pnpm(&data_dir, &node_info, &mut send)?;
+        // 与 `remove_version` 对齐：装内核同样会大面积改动 `kernels/` 树（一次
+        // 两万多个文件），跨壳时还可能写到对方正在服务的实例上。「工作台必须已
+        // 停止」那条已经放进 [`kernel::install_version`] 本身——放在那里而不是命令
+        // 层，任何 caller 都绕不过去。
+        let (family, instance_id) = instance::resolve_default();
+        instance::ensure_instance_mutable(family, instance_id, "安装内核版本")?;
         // `install_version` 需要 node 可执行文件的完整路径——既用它本身
         // 在安装结束后启动 smoke-load 探针（见
         // `kernel::smoke_load_native_modules`），又把它所在目录前置到
@@ -792,6 +798,12 @@ pub async fn remove_version(app: AppHandle, version: String) -> Result<(), Strin
     blocking(move || {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
+        // 与 `activate_version` 对齐：先问实例归谁管。删内核版本这条原先谁都不
+        // 拦，是唯一一条会在运行中的服务旁边大面积改动 `kernels/` 树的路。
+        // 「工作台必须已停止」那条已经放进 [`kernel::uninstall`] 本身——放在那里
+        // 而不是命令层，任何 caller 都绕不过去。
+        let (family, instance_id) = instance::resolve_default();
+        instance::ensure_instance_mutable(family, instance_id, "删除内核版本")?;
         kernel::uninstall(&data_dir, &version).map_err(|e| app_err(&data_dir, e))
     })
     .await
@@ -1191,9 +1203,13 @@ pub async fn report_harness_fault(
         return Err(String::from("工作台自检只能由 harness 窗口报告"));
     }
     let kind = bounded_health_text("类型", kind, 80, true)?;
+    // `slot-assembly` 是客户端模块装配未就绪（内核渲染器的槽位不变量），页面
+    // 在上报之后会自己重载一次。归因仍按证据走内核（`guard.rs` 的
+    // `SLOT_PHRASES`），但管理面板只上横幅不弹面板——工作台会自己回来。
+    // 同一条证据若在额度用掉之后再次上报，页面会改用 `runtime-error` 弹面板。
     if !matches!(
         kind.as_str(),
-        "blank" | "runtime-error" | "unhandled-rejection" | "bundle-load-failure"
+        "blank" | "runtime-error" | "unhandled-rejection" | "bundle-load-failure" | "slot-assembly"
     ) {
         return Err(String::from("工作台自检类型无效，请重新打开工作台"));
     }

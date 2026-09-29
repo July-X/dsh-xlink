@@ -163,6 +163,34 @@ test('incidents with an actionable suspect or a blank page still interrupt', asy
     health: { ...frontendIncident.health, kind: 'blank' },
   });
   assert.equal(store.incidentVisible, true, '白屏报告不受降级影响');
+
+  // 内核启动顺序未就绪：归因明确、第一动作具体（刷新工作台），所以照旧弹面板，
+  // 不适用「前端 bundle 异常」那套只上横幅的降级。
+  store.incidentVisible = false;
+  showIncident({ ...frontendIncident, cause: 'kernel-boot' });
+  assert.equal(store.incidentVisible, true);
+});
+
+test('the page self-heals a slot assembly failure, so it only banners', async () => {
+  // 降级由 kind 决定而不是 cause：这一类的归因是 kernel-boot（证据指向内核），
+  // 但页面会在 3 秒后自己重载回来，没有需要用户立刻处理的事——弹模态框只会
+  // 被随后的刷新吃掉一半。
+  const { store, showIncident, isNonFatalFrontendIncident } = await import('../src/store.js');
+  const healed = { ...frontendIncident, cause: 'kernel-boot' };
+  healed.health = { ...frontendIncident.health, kind: 'slot-assembly' };
+
+  assert.equal(isNonFatalFrontendIncident(healed), true);
+  store.incidentVisible = false;
+  showIncident(healed);
+  assert.equal(store.incidentVisible, false, '会自愈的一律只上横幅');
+
+  // 额度用掉之后页面改报 runtime-error，那时必须弹——刷新救不回来，用户要动作。
+  const spent = { ...frontendIncident, cause: 'kernel-boot' };
+  spent.health = { ...frontendIncident.health, kind: 'runtime-error' };
+  assert.equal(isNonFatalFrontendIncident(spent), false);
+  store.incidentVisible = false;
+  showIncident(spent);
+  assert.equal(store.incidentVisible, true);
 });
 
 test('an unattributable bundle load failure degrades to the banner like its symptom', async () => {

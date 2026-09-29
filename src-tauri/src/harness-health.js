@@ -129,6 +129,77 @@
     sendReport();
   }
 
+  /**
+   * 内核客户端渲染器（`dsh-client-ui-renderer`）抛出的槽位装配不变量。
+   *
+   * 命中它们意味着：模块图在页面活着的时候被换掉了，而换图的那一瞬间
+   * `dsh-client-ui-session` 被销毁——`slots.installScope` 的 effect disposer
+   * 把 `session` 作用域摘掉了（渲染器 `client.js:1466`），`ScopeProvider` 恰好在
+   * 「已删除、尚未重装」的窗口里重渲染，于是整个工作台抛这一句、页面变死。
+   *
+   * 2026-09-29 实测的触发方式：在内核服务期间删除一个**没有被使用**的同级内核
+   * 目录（25643 个文件 / 34.2 s）。内核的文件监视器把这场事件风暴当成模块图
+   * 变更——即使变化发生在一个它根本不服务的目录里——于是 6 秒后页面就死了，
+   * 而内核 HTTP 全程 200。
+   *
+   * 与文案一并取自渲染器的抛点，列表与 `guard.rs` 的 `SLOT_PHRASES` 对齐。
+   */
+  var SLOT_ASSEMBLY_PHRASES = [
+    "rendered without an installed adapter",
+    "renderSlot('root') before any 'root' registration",
+    "rendered outside the root standard-source provider",
+    "rendered outside its scope provider"
+  ];
+
+  // 自动恢复只允许试一次，且这个额度是**整个窗口会话**的（存在 sessionStorage，
+  // 跨刷新存活），所以绝不会出现「刷新 → 又坏 → 再刷新」的循环。
+  var RECOVERY_FLAG = "dsh-harness-slot-recovery";
+
+  function recoverySpent() {
+    try {
+      return window.sessionStorage.getItem(RECOVERY_FLAG) === "1";
+    } catch (error) {
+      return true;
+    }
+  }
+
+  function spendRecovery() {
+    try {
+      window.sessionStorage.setItem(RECOVERY_FLAG, "1");
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function isSlotAssemblyFailure(text) {
+    var haystack = String(text || "");
+    for (var i = 0; i < SLOT_ASSEMBLY_PHRASES.length; i += 1) {
+      if (haystack.indexOf(SLOT_ASSEMBLY_PHRASES[i]) >= 0) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 装配不变量撞上之后：记一笔，然后自愈一次。
+   *
+   * 报告先发、刷新后延——刷新会连同本页的内存一起丢掉，证据必须先落到
+   * `last-incident.json`。这一次走 `slot-assembly`，管理面板只上横幅不弹面板
+   * （工作台会自己回来，没有需要用户立刻处理的事）；额度用掉之后再撞上同样
+   * 的错，就退回普通的 `runtime-error` 弹面板——那时刷新救不回来，用户确实
+   * 需要动作（多半是换一个内核版本）。
+   */
+  function handleSlotAssemblyFailure(text, stack) {
+    if (recoverySpent() || !spendRecovery()) {
+      invokeReport("runtime-error", text, stack);
+      return;
+    }
+    invokeReport("slot-assembly", text, stack);
+    window.setTimeout(function () {
+      window.location.reload();
+    }, 3000);
+  }
+
   window.addEventListener("error", function (event) {
     // bundle 加载失败优先于一切可执行错误上报：它是因，上面那条不是。
     var bundleUrl = bundleScriptUrl(event && event.target);
@@ -141,11 +212,12 @@
     var error = event && event.error;
     var message = event && event.message;
     if (!error && !message) return;
-    invokeReport(
-      "runtime-error",
-      message || describeError(error) || errorText(error),
-      errorText(error)
-    );
+    var text = message || describeError(error) || errorText(error);
+    if (isSlotAssemblyFailure(text) || isSlotAssemblyFailure(errorText(error))) {
+      handleSlotAssemblyFailure(text, errorText(error));
+      return;
+    }
+    invokeReport("runtime-error", text, errorText(error));
   }, true);
 
   window.addEventListener("unhandledrejection", function (event) {

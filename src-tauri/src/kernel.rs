@@ -506,21 +506,24 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
 
 /// 检查工作台是否已经停止。活动版本切换会改变下一次启动使用的内核；
 /// 工作台启动或运行期间必须先停止，避免当前服务与 active 指针指向不同版本。
-fn ensure_workbench_stopped(data_dir: &Path) -> Result<(), AppError> {
+///
+/// `action` 填进提示语（「切换内核」/「删除内核版本」）——共用一条守卫但不能共用
+/// 一句话：对着一个正在删除的按钮说「请先停止工作台后再切换内核」会让用户以为自己
+/// 点错了地方。
+pub(crate) fn ensure_workbench_stopped(data_dir: &Path, action: &str) -> Result<(), AppError> {
     let settings = settings::load_for_shell(settings::current_mode());
     if workbench_running(data_dir, &settings) {
         return Err(AppError::Kernel(format!(
-            "工作台正在启动或运行（端口 {}），请先点击「关闭工作台」停止工作台后再切换内核",
+            "工作台正在启动或运行（端口 {}），请先点击「关闭工作台」停止工作台后再{action}",
             settings.port
         )));
     }
     Ok(())
 }
-
 /// 切换 `start` 将运行的已安装版本。只有工作台已停止时才能切换，避免
 /// 运行中的服务与 `active.txt` 指向不同版本。
 pub fn set_active(data_dir: &Path, version: &str) -> Result<(), AppError> {
-    ensure_workbench_stopped(data_dir)?;
+    ensure_workbench_stopped(data_dir, "切换内核")?;
     if !kernel_dir(data_dir, version).join(KERNEL_BIN_REL).is_file() {
         return Err(AppError::Kernel(format!(
             "版本 {version} 未安装或安装不完整"
@@ -530,12 +533,19 @@ pub fn set_active(data_dir: &Path, version: &str) -> Result<(), AppError> {
 }
 
 /// 删除一个已安装的版本。若该版本是当前激活版本，调用方需先停止内核。
+///
+/// **工作台运行期间一律拒绝**，与 [`set_active`] 同一条纪律。删一个「不用」的
+/// 版本看着与运行中的内核无关，实则被删的目录就在运行中内核的安装根底下：那是
+/// 一个 450 MB、几万个文件的 `remove_dir_all`。两个壳指向同一实例时更是可能删到
+/// **另一个壳正在服务**的那一份——所以守卫放在这里而不是命令层，任何 caller 都
+/// 绕不过去。
 pub fn uninstall(data_dir: &Path, version: &str) -> Result<(), AppError> {
     if read_active(data_dir).as_deref() == Some(version) {
         return Err(AppError::Kernel(format!(
             "正在使用版本 {version}，请先停止并切换到其他版本"
         )));
     }
+    ensure_workbench_stopped(data_dir, "删除内核版本")?;
     let dir = kernel_dir(data_dir, version);
     if !dir.exists() {
         return Err(AppError::Kernel(format!("版本 {version} 未安装")));
@@ -603,6 +613,15 @@ fn rotate_install_logs(logs: &Path, keep: &Path) {
 ///
 /// `on_progress` 会收到人类可读的阶段消息以及每一条原始安装日志行，
 /// 让 UI 在安装运行期间可以实时展示输出。
+///
+/// **工作台运行期间拒绝**，与 [`uninstall`] 同一纪律，而且理由更硬：安装会往
+/// `kernels/<version>` 里解压 450 MB、两万多个文件（实测 0.1.7-rc.2 的一次删除
+/// 用时 34.2 s / 25643 个文件，安装只会更多）。内核的文件监视器会把这场
+/// 文件系统事件风暴当成模块图变更，**即使变化发生在一个它根本不服务的目录里**
+/// （2026-09-29 实测：删除一个未被使用的 0.1.7-rc.2，6 秒后运行中的工作台抛
+/// `scope 'session-maybe' rendered without an installed adapter`，而内核 HTTP 全程
+/// 200、boot rev 从 `d46638d97b76` 变成 `b3516d7cee6d`）。所以「装一个新内核」和
+/// 「删一个旧内核」是同一个 bug 的两个入口，必须一起堵。
 pub fn install_version(
     family: &str,
     data_dir: &Path,
@@ -611,6 +630,7 @@ pub fn install_version(
     version: &str,
     on_progress: impl FnMut(&str),
 ) -> Result<(), AppError> {
+    ensure_workbench_stopped(data_dir, "安装内核版本")?;
     let dir = kernel_dir(data_dir, version);
     // 全新安装失败时把目录整个删掉。
     //
@@ -902,7 +922,7 @@ fn install_version_into(
         // 文案；只有「怎么处理」这类通用建议需要在这里补。文案里保留日志
         // 路径，让用户能把完整 require 堆栈交给支持。
         return Err(AppError::Kernel(format!(
-            "内核依赖的可加载性校验失败：{reason}。若探针输出里出现 `Cannot find module` 或 `NODE_MODULE_VERSION`，说明当前平台的 prebuild 未随 optionalDependencies 下载或与本机 Node 版本不匹配（重试安装或切换到其他内核版本）；若只有退出码而没有探针输出，说明 Node 探针进程本身没能启动，日志与「设置 → 运行时」里显示的 Node 路径可用于定位。完整日志：{}",
+            "内核依赖的可加载性校验失败：{reason}。若探针输出里出现 `MISSING`（后面跟着包名与「被谁需要」），说明这个依赖根本没被下载下来，通常是安装过程被中断或网络中断（重试安装即可）；出现 `Cannot find module` 或 `NODE_MODULE_VERSION` 则说明当前平台的 prebuild 未随 optionalDependencies 下载或与本机 Node 版本不匹配（重试安装或切换到其他内核版本）；若只有退出码而没有探针输出，说明 Node 探针进程本身没能启动，日志与「设置 → 运行时」里显示的 Node 路径可用于定位。完整日志：{}",
             log_path.display()
         )));
     }
@@ -1137,11 +1157,60 @@ for (const t of targets) {{
     console.error('PROBE-FAIL ' + t + ' LOAD_FAILED ' + (e && e.code || '') + ' ' + (e && e.message || e));
   }}
 }}
+
+// 依赖闭包检查：@deepseek-ai/* 里每个包**声明**的依赖都必须真的躺在
+// `node_modules/<名字>/package.json` 上。
+//
+// 上面那份 targets 是手写的，测的是原生模块。纯 JS 的传递依赖没人管，于是
+// 2026-09-29 撞上一次真实的漏判：dev 壳的 0.2.0-rc.1 少装了约 2400 个文件，
+// `undici` 只剩一个读不出内容的悬空入口，手写清单里没有它、`verify_native_modules`
+// 也只看 `.node` 文件，于是安装被判成功、版本被列成「已安装」，直到第一次启动
+// 才以 `Cannot find package '…/node_modules/undici/index.js' imported from
+// …/@deepseek-ai/dsh-http-proxy/lib/index.js` 的形式炸在用户面前。
+//
+// 从已安装的树反推要测什么，而不是再维护一份手写清单：新增依赖时不必改壳。
+//
+// **判存在性必须看文件系统，不能用 `require.resolve`**：内核的依赖里有相当一批
+// 是 ESM-only（`@earendil-works/pi-ai`、`@deepseek-ai/dsh-web-frontend`、
+// `@deepseek-ai/node-addon-system` …），它们的 `exports` 映射里只有 `import`
+// 条件，CJS 的 `require` 条件查不到，于是 `require.resolve` 报
+// `ERR_PACKAGE_PATH_NOT_EXPORTED`——包明明装得好好的。这个误判在第一次实跑时
+// 立刻炸了出来（762 条依赖边里 4 条假阳性，把一个好安装判成了坏的）。
+// hoisted node-linker 下所有顶层包平铺在 `kernel_dir/node_modules`，直接看文件
+// 既绕开 exports，又能同时覆盖 scoped 与非 scoped 名字。
+//
+// optionalDependencies 一律跳过——平台相关子包在当前平台本来就装不上，
+// 那不是安装事故（与上面 targets 的处理同一条理由）。
+const fs = require('fs');
+const path = require('path');
+const nodeModules = path.join(process.cwd(), 'node_modules');
+const scopeDir = path.join(nodeModules, '@deepseek-ai');
+let scoped = [];
+try {{ scoped = fs.readdirSync(scopeDir).filter((n) => n.indexOf('.') !== 0); }} catch (e) {{}}
+let checkedDeps = 0;
+for (const name of scoped) {{
+  let manifest;
+  try {{
+    manifest = JSON.parse(fs.readFileSync(path.join(scopeDir, name, 'package.json'), 'utf8'));
+  }} catch (e) {{ continue; }}
+  const optional = manifest.optionalDependencies || {{}};
+  const deps = manifest.dependencies || {{}};
+  for (const dep of Object.keys(deps)) {{
+    if (Object.prototype.hasOwnProperty.call(optional, dep)) continue;
+    checkedDeps += 1;
+    if (!fs.existsSync(path.join(nodeModules, ...dep.split('/'), 'package.json'))) {{
+      const label = dep + ' (required by @deepseek-ai/' + name + ')';
+      fail.push({{ pkg: dep, code: 'MISSING', message: 'node_modules 下找不到 ' + dep + '，它是 @deepseek-ai/' + name + ' 的依赖' }});
+      console.error('PROBE-FAIL ' + label + ' MISSING');
+    }}
+  }}
+}}
+
 if (fail.length === 0) {{
-  console.log('PROBE-OK ' + targets.length);
+  console.log('PROBE-OK ' + targets.length + ' targets, ' + checkedDeps + ' dependency edges');
   process.exit(0);
 }}
-console.error('PROBE-FAIL-COUNT ' + fail.length + '/' + targets.length);
+console.error('PROBE-FAIL-COUNT ' + fail.length + '/' + (targets.length + checkedDeps));
 process.exit(2);
 "#
     )
@@ -2596,6 +2665,82 @@ mod tests {
         );
         let err = result.unwrap_err();
         assert!(err.contains("探针"), "错误文案应当提到探针：{err}");
+    }
+
+    /// 2026-09-29 真实漏判的回归：dev 壳的 0.2.0-rc.1 少装了约 2400 个文件，
+    /// `undici` 只剩一个读不出内容的悬空入口。手写的 smoke targets 里没有它，
+    /// `verify_native_modules` 也只看 `.node` 文件——于是安装被判成功、版本被列成
+    /// 2026-09-29 真实漏判的回归：dev 壳的 0.2.0-rc.1 少装了约 2400 个文件，
+    /// `undici` 只剩一个读不出内容的悬空入口。手写的 smoke targets 里没有它，
+    /// `verify_native_modules` 也只看 `.node` 文件——于是安装被判成功、版本被列成
+    /// 「已安装」，直到启动时才炸。这里钉住「作用域包的纯 JS 依赖不存在必须报错」，
+    /// 错误信息里还要带上**是谁**需要它，否则用户仍然无从下手。
+    ///
+    /// 同时钉住反面：ESM-only 的包**不得**被误判。内核有一批依赖的 `exports` 里
+    /// 只有 `import` 条件（`@earendil-works/pi-ai`、`@deepseek-ai/dsh-web-frontend`、
+    /// `@deepseek-ai/node-addon-system` …），第一版用 `require.resolve` 判存在性，
+    /// 实跑立刻报出 4 条 `ERR_PACKAGE_PATH_NOT_EXPORTED` 假阳性，把好安装判成坏的。
+    /// 所以这一条必须是「包在位、探针放过」。
+    #[test]
+    fn smoke_load_flags_a_missing_ordinary_dependency_but_not_an_esm_only_one() {
+        let Some(node) = find_system_node() else {
+            eprintln!("smoke_load_flags_a_missing_ordinary_dependency_but_not_an_esm_only_one: 跳过（未找到 node）");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "dsh-smoke-load-depgraph-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let node_modules = root.join("node_modules");
+        let scoped = node_modules.join("@deepseek-ai").join("dsh-http-proxy");
+        fs::create_dir_all(&scoped).unwrap();
+        fs::write(
+            scoped.join("package.json"),
+            r#"{"name":"@deepseek-ai/dsh-http-proxy","version":"0.0.0","dependencies":{"dsh-nonexistent-pkg":"1.0.0","dsh-esm-only-pkg":"1.0.0","dsh-platform-optional":"1.0.0"},"optionalDependencies":{"dsh-platform-optional":"1.0.0"}}"#,
+        )
+        .unwrap();
+        // ESM-only：exports 只有 import 条件，require.resolve 必然报
+        // ERR_PACKAGE_PATH_NOT_EXPORTED。包在位就不该被判成缺失。
+        let esm = node_modules.join("dsh-esm-only-pkg");
+        fs::create_dir_all(&esm).unwrap();
+        fs::write(
+            esm.join("package.json"),
+            r#"{"name":"dsh-esm-only-pkg","version":"1.0.0","type":"module","exports":{".":{"import":"./index.mjs"}}}"#,
+        )
+        .unwrap();
+        fs::write(esm.join("index.mjs"), "export default 1;\n").unwrap();
+        let logs_dir = root.join("logs");
+        fs::create_dir_all(&logs_dir).unwrap();
+        let log_spec = install_log_spec(KERNEL_FAMILY_DSH, "", "smoke-depgraph");
+        let mut captured = Vec::<String>::new();
+        let outcome = smoke_load_native_modules(&node, &root, &logs_dir, &log_spec, &mut |line| {
+            captured.push(line.to_string())
+        });
+
+        assert!(
+            outcome.is_err(),
+            "装不出来的传递依赖必须让安装失败，而不是留到启动时"
+        );
+        let all = captured.join("\n");
+        assert!(
+            all.contains("PROBE-FAIL")
+                && all.contains("dsh-nonexistent-pkg")
+                && all.contains("dsh-http-proxy"),
+            "报错必须点名缺失的包与它的依赖方：{all}"
+        );
+        assert!(
+            !all.contains("dsh-esm-only-pkg"),
+            "ESM-only 的包在位就不该被判成缺失（exports 只有 import 条件）：{all}"
+        );
+        assert!(
+            !all.contains("dsh-platform-optional"),
+            "optionalDependencies 在当前平台装不上是正常的，不该报错：{all}"
+        );
+        fs::remove_dir_all(&root).unwrap();
     }
 
     /// smoke-load 通过路径：构造一个让探针「至少不报 UNRESOLVED」的场景，

@@ -37,6 +37,7 @@ mod guard;
 mod instance;
 mod kernel;
 mod kernel_adapter;
+mod kernel_evidence;
 mod migration;
 mod node;
 mod node_install;

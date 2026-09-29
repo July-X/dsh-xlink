@@ -139,10 +139,20 @@ function incidentKey(incident) {
 //
 // `bundle-load-failure` 只在**多成员**组合路由上才会落到 `cause === 'frontend'`——
 // 单成员 URL 能被归因成插件或内核，那时有真正的处置入口，照旧弹面板。
+//
+// `slot-assembly`（内核客户端模块装配未就绪）是另一种「没有需要用户立刻做的事」
+// 的报告：页面在记下证据之后会自己重载一次，工作台会回来，弹模态框只会被 3 秒后
+// 的刷新吃掉一半，体感比重载本身更糟。额度用掉后再撞上同样的错，页面会改用
+// `runtime-error` 上报，那时照旧弹面板。
+// 降级由 **kind** 而不是 cause 决定，因为「要不要打断用户」取决于页面会不会自己
+// 恢复，而那只有上报方知道。`slot-assembly` 是唯一一种会自愈的：页面记下证据后
+// 3 秒自动重载一次（额度用掉后再撞上就改报 `runtime-error`，那时照旧弹面板）。
+// 其余三种是「用户看得见但没法当场处置」的前端异常，归因通常是 frontend。
 export function isNonFatalFrontendIncident(incident) {
   if (!incident || incident.recovered) return false;
-  if (incident.cause !== 'frontend') return false;
   const kind = (incident.health && incident.health.kind) || '';
+  if (kind === 'slot-assembly') return true;
+  if (incident.cause !== 'frontend') return false;
   return kind === 'unhandled-rejection' || kind === 'runtime-error' || kind === 'bundle-load-failure';
 }
 
