@@ -26,6 +26,7 @@
     reason = "多内核改造预留 API（实例范围命令 / 端口分配 / 适配器骨架）"
 )]
 
+mod activate;
 mod archive;
 mod bisect;
 mod bisect_cmd;
@@ -118,10 +119,21 @@ fn check_main_window_minimizable(app: &tauri::App) {
 
 /// 应用入口；由 `main.rs` 调用。
 pub fn run() {
+    // 单实例守卫必须排在**一切**之前：Windows 上点系统通知横幅会让系统再
+    // 拉起一个本 exe（未打包应用的默认激活行为）。第二个进程绝不能走到
+    // `setup()`——那里会 `reap_orphans` 回收内核，等于用户点一下通知就把
+    // 自己正在跑的内核杀了。抢不到唯一实例时，意图转交给在跑的那个就退出。
+    if activate::claim_or_handoff() == activate::Startup::HandedOff {
+        return;
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            // 激活通道监听：接收「点通知横幅回到工作台」的交接请求。排在
+            // setup 最前面，让它与 `claim_or_handoff` 之间只隔一个建窗过程。
+            activate::serve(app.handle());
+
             // 管理面板在 macOS / Windows 上使用本地 Vue 标题栏绘制交通灯和品牌
             // 背景：这两个平台的「无边框」由 `tauri.conf.json` 的 `decorations:
             // false` 在**建窗时**给定，这里刻意不再调 `set_decorations(false)`。
@@ -468,6 +480,14 @@ pub fn run() {
             if label == tray::MAIN_WINDOW {
                 tray::refresh_icon(handle);
             }
+        }
+        // macOS：应用被重新打开（点 Dock 图标、点通知横幅）。系统此时已经把
+        // 壳带回前台了，再把**工作台**一并抬到台前——通知横幅点一下就该看到
+        // 任务结果，而不是停在管理面板上。工作台没开过时什么都不做（见
+        // `activate::raise_workbench_if_open` 的理由）。
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = &event {
+            activate::raise_workbench_if_open(handle);
         }
         if let tauri::RunEvent::Exit = event {
             // 在绕过退出提示的那些退出路径（macOS 上的 Cmd+Q、操作系统
