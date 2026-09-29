@@ -225,6 +225,16 @@ onMounted(() => {
   // 任务完成通知的状态由 Rust 侧持有（角标也在那边），它每次变化都会广播
   // 一份快照；面板据此自动刷新未读数，不需要用户点「刷新」。
   registerAppListener('notification-status', (e) => applyNotificationStatus(e && e.payload));
+  // 「点通知横幅回到工作台」失败（例如这期间内核已经停了）。横幅点击是静默的，
+  // 窗口没动时用户只会以为"点了没反应"——Rust 已把管理面板叫回前台，这里
+  // 负责把他为什么还在面板上、该做什么讲清楚。
+  registerAppListener('workbench-activate-failed', (e) => {
+    const reason = String((e && e.payload) || '未知原因');
+    toastError(
+      `回到工作台失败：${reason}。可先在概览页确认工作台状态（若已停止，重新启动后任务现场仍会保留）`,
+      8000
+    );
+  });
 
   // 目录与更新检查由 activePanel watcher 按需触发；外壳检查由 Rust 后台任务负责。
 });

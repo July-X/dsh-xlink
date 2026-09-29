@@ -248,6 +248,17 @@ const FILE_BUDGETS = {
   // 让一个 1170 行、只许下调的文件再多一处平台分支。约 56 行代码（其余是解释
   // 这两种静默失败的文档）。
   'src-tauri/src/notify_gate.rs': 120,
+  // 2026-09-29 新增：点系统通知横幅「回到工作台」的单实例交接。未打包应用的
+  // 通知被点中时，Windows 启动的是本 exe 而不是"叫醒"已运行的窗口；第二个
+  // 进程若照常走完 setup 会 reap_orphans 杀掉在跑的内核。独立成文件而不是
+  // 并进 notify.rs：它与"要不要弹这条通知"的状态机完全无关，关心它的是启动
+  // 顺序（lib.rs 的 run() 第一行）与窗口行为（commands::open_harness），
+  // 放进去会让一个 1170 行、只许下调的文件多出一处平台分支。
+  // 260 → 280：补上跨进程抢前台（AttachThreadInput + BringWindowToTop +
+  // SetForegroundWindow）。这是实测逼出来的：只做管道交接时窗口会被拉回
+  // 可见，却抢不到前台——Windows 的前台锁对非前台进程静默失败，用户看到的
+  // 仍然是"点了没反应"。
+  'src-tauri/src/activate.rs': 280,
   'src-tauri/src/guard.rs': 940,
   // 从 guard.rs 拆出的「证据判读」层：只回答「这一行指向内核还是指向某个插件」，
   // 不回答「该怎么处置」。独立成文件有两个理由：① 判据的内核侧（命名空间锚定 +

@@ -99,6 +99,14 @@ libc = "0.2"
 # System_Diagnostics_Debug 只服务「试听提示音」的 `MessageBeep`（notify.rs）：
 # 它播放用户声音方案里的通知类音效，不引入任何新依赖。
 [target.'cfg(windows)'.dependencies]
+# System_Storage_FileSystem / System_IO 两个特性只服务「点通知横幅回到工作台」
+# 的进程间交接（activate.rs）：未打包应用的通知被点中时 Windows 启动的是本
+# exe 而不是"叫醒"已运行的窗口，因此需要一个具名互斥体判"是不是第一个"、
+# 一条命名管道（ConnectNamedPipe 的 OVERLAPPED 形参要 System_IO）把
+# 「回到工作台」这条 8 字节的指令交给它。UI_Input_KeyboardAndMouse 服务同一件事的
+# 另一半：跨进程抢前台要 AttachThreadInput + SetFocus（Windows 的前台锁会让
+# 非前台进程的 SetForegroundWindow 静默失败）。windows-sys 已在依赖图里，
+# 这里只多开三个命名空间，不新增 crate。
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   # DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)：量窗口的**可见帧**。
@@ -106,11 +114,15 @@ windows-sys = { version = "0.61", features = [
   # 客户区/外框坐标推不出「窗口看起来从哪开始」，吸附贴齐必须按可见帧算。
   "Win32_Graphics_Dwm",
   "Win32_Security",
+  "Win32_Storage_FileSystem",
   "Win32_System_Diagnostics_Debug",
+  "Win32_System_IO",
   "Win32_System_JobObjects",
+  "Win32_System_Pipes",
   "Win32_System_Registry",
   "Win32_System_Threading",
   "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
 # `notify_gate.rs` 问 Windows "本应用的通知权限现在是什么状态"
