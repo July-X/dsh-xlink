@@ -17,6 +17,7 @@ use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowBuilder, Win
 use url::Url;
 
 use crate::error::AppError;
+use crate::harness_window;
 use crate::instance::{self};
 use crate::migration;
 use crate::process::{build_log_kind, read_tail, LogSpec};
@@ -106,6 +107,8 @@ pub struct AppState {
     /// 就只把窗口带到台前，不重新导航（导航等于销毁并重建整个工作台前端
     /// 状态）。仅在内核重启签发新 token 时才需要真正跳转。
     pub harness_url: Mutex<Option<String>>,
+    /// 工作台 webview 的加载观测量，看门狗逻辑见 [`crate::harness_window`]。
+    pub harness_page: Mutex<harness_window::HarnessPage>,
 }
 
 /// 管理面板首次渲染所需的全部信息。
@@ -178,6 +181,9 @@ pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<St
     tauri::async_runtime::spawn_blocking(move || {
         let settings = settings::load_for_shell(settings::current_mode());
         let kernel_status = kernel::status(&data_dir, &settings);
+        // 工作台窗口的加载看门狗挂在既有轮询上，不另起定时器：它本来每 2.5s
+        // 就跑一次，而「页面没起来」这件事只有轮询能顺带看出来。
+        harness_window::reload_stalled(&app, kernel_status.running);
         let quarantine_doc = quarantine::load(&data_dir);
         let state = app.state::<AppState>();
         let node_info = cached_node(&state, &settings);
@@ -1519,6 +1525,17 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                         .initialization_script(include_str!("pullstring-launcher.js"))
                         .initialization_script(include_str!("harness-health.js"))
                         .initialization_script(include_str!("workbench-history-guard.js"))
+                        .on_page_load({
+                            let handle = handle.clone();
+                            move |_webview, payload| {
+                                use tauri::webview::PageLoadEvent;
+                                let state = handle.state::<AppState>();
+                                harness_window::observe(
+                                    &state,
+                                    payload.event() == PageLoadEvent::Started,
+                                );
+                            }
+                        })
                         .build()
                         .map(|_| ())
                         .map_err(|e| format!("无法创建工作台窗口：{e}"));

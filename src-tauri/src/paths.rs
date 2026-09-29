@@ -194,8 +194,40 @@ pub fn shell_logs_dir(mode: ShellMode) -> PathBuf {
     shell_dir(mode).join("logs")
 }
 
-/// 插件中央库根目录：`<xlink_home>/dsh-plugins/`。
+/// 插件中央库根目录，按壳模式分开：`dsh-plugins/`（release）/ `dsh-plugins-dev/`
+/// （debug）。
+///
+/// **release 保持原路径不动**——它是真实用户在用的目录，改名等于凭空搬走用户的
+/// 插件。dev 走新目录，两棵中央库从此互不相干。
+///
+/// 为什么必须分开：中央库里的插件源码会被 `link` 物化进具体实例的
+/// `profiles/web/node_modules`。共用一份时，dev 更新某���插件的源码会直接落到
+/// release 正在跑的内核上——工作台立刻白屏（实测 `scope '…' rendered without
+/// an installed adapter`，见 `docs/troubleshooting.md`）。内核安装树早就按模式
+/// 分家了（`desktop[-dev]/`），中央库是漏掉的那一半。
+///
+/// 代价与补救见 [`crate::plugins::store_dir`]：dev 首次遇到空目录时会从共享的
+/// `dsh-plugins/` 复制一份种子过去，避免 dev 壳的插件列表凭空清空。
 pub fn plugins_store_root() -> PathBuf {
+    plugins_store_root_for(crate::settings::current_mode())
+}
+
+/// 同 [`plugins_store_root`]，但模式显式传入。
+///
+/// 抽出来只为能在一个构建里同时测到两种模式（`current_mode()` 由
+/// `debug_assertions` 决定，测试进程恒为 dev），与 `shell_dir(mode)` /
+/// `default_instance_id_for(mode)` 同一写法。
+pub fn plugins_store_root_for(mode: ShellMode) -> PathBuf {
+    match mode {
+        ShellMode::Release => xlink_home().join("dsh-plugins"),
+        ShellMode::Dev => xlink_home().join("dsh-plugins-dev"),
+    }
+}
+
+/// 插件中央库的**历史共享路径**（两个壳曾共用它）。
+///
+/// 只用于一次性种子复制与迁移回退：新代码不要拿它当中央库根，否则又变回共享。
+pub fn legacy_shared_plugins_store_root() -> PathBuf {
     xlink_home().join("dsh-plugins")
 }
 
@@ -847,6 +879,24 @@ mod integration_paths_tests {
         assert_eq!(legacy_dsh_plugins_root(), fake.join("plugins"));
         assert_eq!(legacy_dsh_skills_store(), fake.join("skills-store"));
         assert_eq!(legacy_dsh_skills_root(), fake.join("skills"));
+    }
+
+    /// 插件中央库必须按壳模式分开：dev 壳更新插件源码时，若与 release 共用一份
+    /// 中央库，改动会被 link 物化到 release 正在跑的内核上（工作台白屏）。
+    /// release 保持历史路径不动，真实用户的数据不搬家。
+    #[test]
+    fn plugins_store_root_is_split_per_shell_mode() {
+        let xlink_dir = temp_dir("xlink-store-split");
+        let _xlink = scoped_xlink_home(&xlink_dir);
+
+        let release = plugins_store_root_for(ShellMode::Release);
+        let dev = plugins_store_root_for(ShellMode::Dev);
+
+        assert_ne!(release, dev, "两个壳的中央库必须是两棵不同的树");
+        assert_eq!(release, xlink_dir.join("dsh-plugins"), "release 不得改路径");
+        assert_eq!(dev, xlink_dir.join("dsh-plugins-dev"));
+        // 历史共享路径仍然可解析——dev 的种子复制依赖它。
+        assert_eq!(legacy_shared_plugins_store_root(), release);
     }
 
     /// 新路径与 legacy 路径在同一 DSH_HOME 覆盖下应保持正交：新路径永远
