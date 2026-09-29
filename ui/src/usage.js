@@ -68,6 +68,17 @@ export function weekdayLabel(date) {
   return WEEKDAY_LABELS[(new Date(Date.UTC(year, month - 1, day)).getUTCDay() + 6) % 7];
 }
 
+// `provider/model` 键 → 模型名（只留斜杠后的部分）。展示位一律只出模型名：
+// provider 前缀太长会把名字挤成「zai-coding-cn/glm-5…」，而模型名才是用户
+// 认得出的东西；provider 在模型列表里另有单独一列。拿不到斜杠时（趋势图里
+// 合成的「其他」段）原样返回，键只按**第一个**斜杠拆——键形如
+// `opencode-go/openai/gpt` 时模型名仍是 `openai/gpt`。
+export function modelName(key) {
+  const text = String(key ?? '');
+  const slash = text.indexOf('/');
+  return slash >= 0 ? text.slice(slash + 1) : text;
+}
+
 // 把一段日序列聚合成该范围的汇总：总 tokens / 请求次数 / 活跃天数与
 // 按模型合计（tokens 降序）。模型的 provider / model 从键拆回，供列表
 // 行展示；范围内拿不到每模型的请求次数（日账只存 tokens），需要时再扩
@@ -91,7 +102,7 @@ export function summarizeDays(days) {
       return {
         key,
         provider: slash >= 0 ? key.slice(0, slash) : key,
-        model: slash >= 0 ? key.slice(slash + 1) : '',
+        model: modelName(key),
         tokens: modelTokens,
       };
     })

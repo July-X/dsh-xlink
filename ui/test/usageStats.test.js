@@ -33,6 +33,7 @@ const {
   modelColor,
   sliceDays,
   summarizeDays,
+  modelName,
   weekdayLabel,
   RANGE_OPTIONS,
 } = await import('../src/usage.js');
@@ -198,8 +199,21 @@ test('summarizeDays 聚合 tokens / 请求 / 活跃天与按模型降序合计',
   assert.equal(s.models[0].provider, 'a');
   assert.equal(s.models[0].model, 'Alpha');
   assert.equal(s.models[1].model, 'Beta');
-  // 无分隔符的模型键整串当 provider，model 留空——列表行展示不缺字段。
+  // 无分隔符的模型键整串当 provider，model 回退成整串——展示位
+  // （列表行 / hover 明细）拿到的都是它自己，不至于留空。
   const odd = summarizeDays([{ tokens: 5, requests: 1, models: { weird: 5 } }]);
   assert.equal(odd.models[0].provider, 'weird');
-  assert.equal(odd.models[0].model, '');
+  assert.equal(odd.models[0].model, 'weird');
+});
+
+test('modelName 只留斜杠后的模型名，provider 前缀不外露', () => {
+  assert.equal(modelName('zai-coding-cn/glm-5.3-flash'), 'glm-5.3-flash');
+  assert.equal(modelName('minimax-cn/MiniMax-M3.1-Flash-Preview'), 'MiniMax-M3.1-Flash-Preview');
+  assert.equal(modelName('z-2api/gpt-6-luna'), 'gpt-6-luna');
+  // 模型名自带斜杠（`opencode-go/openai/gpt`）只按第一个斜杠拆。
+  assert.equal(modelName('opencode-go/openai/gpt'), 'openai/gpt');
+  // 趋势图里合成的「其他」段没有斜杠，原样透出。
+  assert.equal(modelName('其他'), '其他');
+  assert.equal(modelName('glm-5.3'), 'glm-5.3');
+  assert.equal(modelName(undefined), '');
 });
