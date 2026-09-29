@@ -139,7 +139,6 @@ test('frontend bundle incidents are recorded without opening the modal', async (
   // store 是 reactive：读回来的是代理，按字段比较。
   assert.equal(store.lastIncident.cause, 'frontend');
   assert.equal(store.lastIncident.message, frontendIncident.message, '但必须记进概览横幅');
-
   // 概览横幅的「查看详情」显式要求时仍然打开面板，证据不会丢失。
   showIncident(store.lastIncident, { force: true });
   assert.equal(store.incidentVisible, true);
@@ -164,4 +163,31 @@ test('incidents with an actionable suspect or a blank page still interrupt', asy
     health: { ...frontendIncident.health, kind: 'blank' },
   });
   assert.equal(store.incidentVisible, true, '白屏报告不受降级影响');
+});
+
+test('an unattributable bundle load failure degrades to the banner like its symptom', async () => {
+  // 多成员组合路由上的 bundle 加载失败仍然拿不到包名（壳按设计拒绝按成员逐个
+  // 匹配），所以它和它引发的启动顺序错误一样没有可处置对象，同样只上横幅。
+  const { store, showIncident, isNonFatalFrontendIncident } = await import('../src/store.js');
+  const bundleIncident = {
+    ...frontendIncident,
+    health: {
+      kind: 'bundle-load-failure',
+      message: '内核客户端模块 bundle 加载失败：http://127.0.0.1:3090/plugins/??a/client.js,b/client.js&rev=1',
+      stack: 'http://127.0.0.1:3090/plugins/??a/client.js,b/client.js&rev=1',
+      page_url: 'http://127.0.0.1:3090/',
+    },
+  };
+
+  assert.equal(isNonFatalFrontendIncident(bundleIncident), true);
+  store.incidentVisible = false;
+  store.lastIncident = null;
+  showIncident(bundleIncident);
+  assert.equal(store.incidentVisible, false);
+  assert.equal(store.lastIncident.health.kind, 'bundle-load-failure', '但失败地址要留在证据里');
+
+  // 反过来：能被归因的 bundle 失败是有处置入口的，照旧弹面板。
+  store.incidentVisible = false;
+  showIncident({ ...bundleIncident, cause: 'kernel' });
+  assert.equal(store.incidentVisible, true);
 });

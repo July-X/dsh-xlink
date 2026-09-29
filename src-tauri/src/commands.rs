@@ -1193,7 +1193,7 @@ pub async fn report_harness_fault(
     let kind = bounded_health_text("类型", kind, 80, true)?;
     if !matches!(
         kind.as_str(),
-        "blank" | "runtime-error" | "unhandled-rejection"
+        "blank" | "runtime-error" | "unhandled-rejection" | "bundle-load-failure"
     ) {
         return Err(String::from("工作台自检类型无效，请重新打开工作台"));
     }

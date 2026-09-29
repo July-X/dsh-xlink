@@ -1673,6 +1673,67 @@ mod tests {
         assert_eq!(suspects[0].id, "ghost");
     }
 
+    /// 自检新增的 `bundle-load-failure`：`<script>` 加载失败事件不带 JS 栈，
+    /// 但带 `src`。内核对加载失败的模块行是**静默丢弃**的，工作台随后只会抛
+    /// `renderSlot('root') before any 'root' registration (boot order)` 这类启动
+    /// 顺序错误，而那类堆栈落在多成员组合上、按设计拒绝归因——所以这条上报是
+    /// 唯一能把包名带进证据的路径。
+    #[test]
+    fn bundle_load_failure_names_the_plugin_from_the_script_url() {
+        let report = HealthReport {
+            kind: "bundle-load-failure".into(),
+            message: "内核客户端模块 bundle 加载失败：http://127.0.0.1:3090/plugins/ghost/client.js?rev=ab12".into(),
+            stack: "http://127.0.0.1:3090/plugins/ghost/client.js?rev=ab12".into(),
+            page_url: "http://127.0.0.1:3090".into(),
+        };
+        let suspects = attribute(
+            &runtime_evidence(&report, ""),
+            &[store_item("ghost", "ghost")],
+            "1.0.0",
+        );
+        assert_eq!(suspects.len(), 1);
+        assert_eq!(suspects[0].kind, "plugin");
+        assert_eq!(suspects[0].id, "ghost");
+    }
+
+    /// 同一个上报落在一个内核包的单资源 URL 上时归因到内核版本，而不是插件。
+    #[test]
+    fn bundle_load_failure_names_the_kernel_package() {
+        let report = HealthReport {
+            kind: "bundle-load-failure".into(),
+            message: String::new(),
+            stack:
+                "http://127.0.0.1:3090/plugins/@deepseek-ai/dsh-client-ui-layout/client.js?rev=ab12"
+                    .into(),
+            page_url: "http://127.0.0.1:3090".into(),
+        };
+        let suspects = attribute(
+            &runtime_evidence(&report, ""),
+            &[store_item("ghost", "ghost")],
+            "1.0.0",
+        );
+        assert_eq!(suspects.len(), 1);
+        assert_eq!(suspects[0].kind, "kernel");
+        assert_eq!(suspects[0].id, "1.0.0");
+    }
+
+    /// 多成员组合仍然是「前端 bundle 异常（未定位到包名）」：那一个脚本里同时
+    /// 打着多个包，按成员逐个匹配会把同批的旁观者写进隔离清单。新上报只是把
+    /// 完整地址摆到证据里，**不放宽**这条拒绝规则。
+    #[test]
+    fn bundle_load_failure_stays_unattributed_for_a_multi_member_combo() {
+        let url = "http://127.0.0.1:3090/plugins/??ghost/client.js,@deepseek-ai/dsh-client-ui-layout/client.js&rev=ab12";
+        let report = HealthReport {
+            kind: "bundle-load-failure".into(),
+            message: String::new(),
+            stack: url.into(),
+            page_url: "http://127.0.0.1:3090".into(),
+        };
+        let evidence = runtime_evidence(&report, "");
+        assert!(attribute(&evidence, &[store_item("ghost", "ghost")], "1.0.0").is_empty());
+        assert!(has_client_bundle_frames(&evidence));
+    }
+
     #[test]
     fn excerpt_caps_long_evidence() {
         let long_line = format!("Error: {}", "x".repeat(2000));

@@ -7,6 +7,10 @@ import {
   incidentCauseLabel,
   incidentDestination,
   incidentDestinationLabel,
+  incidentHealthKindLabel,
+  incidentHealthPlainText,
+  incidentHealthSections,
+  bundleRouteMembers,
   incidentTitle,
 } from '../src/incidents.js';
 
@@ -72,4 +76,81 @@ test('两个组件共用同一份归因口径，不再各写一份白名单', ()
       `${file} 又出现了本地 cause 白名单，请改用 incidents.js`,
     );
   }
+});
+
+test('自检类型印成人话，后端新增的字面量原样透出而不是空白', () => {
+  assert.equal(incidentHealthKindLabel('bundle-load-failure'), '内核客户端模块 bundle 加载失败');
+  assert.equal(incidentHealthKindLabel('runtime-error'), '运行时错误');
+  assert.equal(incidentHealthKindLabel('unhandled-rejection'), '未处理的 Promise 异常');
+  assert.equal(incidentHealthKindLabel('blank'), '页面空白（无可见内容）');
+  assert.equal(incidentHealthKindLabel('brand-new-kind'), 'brand-new-kind');
+  assert.equal(incidentHealthKindLabel(''), '');
+});
+
+test('组合路由里的包名被拆出来给人看', () => {
+  // 真实事故形态：一行 57 个成员的组合地址，此前整段塞进一个 <pre>，没人读得动。
+  const combo =
+    'http://127.0.0.1:3090/plugins/??@deepseek-ai/dsh-client-ui-open-in-app/client.js,' +
+    '@deepseek-ai/dsh-api-gateway/client.js,dsh-opencode-session/client.js&rev=1473b6fd8f68';
+  assert.deepEqual(bundleRouteMembers(combo), [
+    '@deepseek-ai/dsh-client-ui-open-in-app',
+    '@deepseek-ai/dsh-api-gateway',
+    'dsh-opencode-session',
+  ]);
+  // 单资源形态（内核回退到自己的一个资源 URL 时）同样要认。
+  assert.deepEqual(bundleRouteMembers('http://127.0.0.1:3090/plugins/dsh-sidebar/client.chat.js?rev=ab'), [
+    'dsh-sidebar',
+  ]);
+  // 重复出现只保留一份，顺序按首次出现。
+  assert.deepEqual(bundleRouteMembers(`${combo}\n${combo}`).length, 3);
+  assert.deepEqual(bundleRouteMembers(''), []);
+  assert.deepEqual(bundleRouteMembers(null), []);
+  assert.deepEqual(bundleRouteMembers('at RootOutlet (http://127.0.0.1:3090/plugins/:148814:26)'), []);
+});
+
+test('证据分段把最有用的一项顶出来，其余原样保留', () => {
+  const health = {
+    kind: 'bundle-load-failure',
+    message:
+      '内核客户端模块 bundle 加载失败：http://127.0.0.1:3090/plugins/??dsh-a/client.js,dsh-b/client.js&rev=1',
+    stack: 'http://127.0.0.1:3090/plugins/??dsh-a/client.js,dsh-b/client.js&rev=1',
+    page_url: 'http://127.0.0.1:3090/',
+  };
+  const sections = incidentHealthSections(health);
+  assert.deepEqual(
+    sections.map((section) => section.label),
+    ['类型', '涉及的客户端模块（2 个）', '原始证据', '页面']
+  );
+  assert.equal(sections[0].text, '内核客户端模块 bundle 加载失败');
+  assert.deepEqual(sections[1].members, ['dsh-a', 'dsh-b']);
+  // 消息只是「前缀 + 那个地址」，地址已单列成一节、证据里也原样在，不重复印。
+  assert.equal(sections.some((section) => section.label === '消息'), false);
+  assert.deepEqual(incidentHealthSections(null), []);
+});
+
+test('普通运行时错误的「消息」不会被这条去重规则吃掉', () => {
+  const sections = incidentHealthSections({
+    kind: 'runtime-error',
+    message: '组件初始化失败',
+    stack: 'Error: 组件初始化失败\n    at mount (http://127.0.0.1:3090/plugins/ghost/main.js:1:1)',
+    page_url: 'http://127.0.0.1:3090/',
+  });
+  assert.deepEqual(
+    sections.map((section) => section.label),
+    ['类型', '消息', '原始证据', '页面']
+  );
+  assert.equal(sections[1].text, '组件初始化失败');
+});
+
+test('复制证据给出的是分段后的完整文本', () => {
+  const text = incidentHealthPlainText({
+    kind: 'bundle-load-failure',
+    message: '加载失败：http://127.0.0.1:3090/plugins/??dsh-a/client.js&rev=1',
+    stack: 'http://127.0.0.1:3090/plugins/??dsh-a/client.js&rev=1',
+    page_url: 'http://127.0.0.1:3090/',
+  });
+  assert.match(text, /类型：内核客户端模块 bundle 加载失败/);
+  assert.match(text, /涉及的客户端模块（1 个）：dsh-a/);
+  assert.match(text, /页面：http:\/\/127\.0\.0\.1:3090\//);
+  assert.equal(incidentHealthPlainText(null), '');
 });

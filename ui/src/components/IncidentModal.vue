@@ -1,8 +1,8 @@
 <script setup>
 // 启动容错事故面板：工作台启动失败被自动屏蔽后，把裁决权交给用户——
 // 每个嫌疑对象可展开错误证据，并选择移除 / 重新启用；直接关闭即保持禁用。
-import { computed, reactive } from 'vue';
-import { Document, Close, RefreshLeft, Delete, View, Hide, Connection } from '@element-plus/icons-vue';
+import { computed, reactive, ref } from 'vue';
+import { Document, Close, RefreshLeft, Delete, View, Hide, Connection, CopyDocument } from '@element-plus/icons-vue';
 import { store, globalBusy } from '../store.js';
 import { withLoading, isLoading } from '../loading.js';
 import { resolvePluginQuarantine } from '../plugins.js';
@@ -13,6 +13,8 @@ import {
   incidentCauseLabel,
   incidentDestination,
   incidentDestinationLabel,
+  incidentHealthSections,
+  incidentHealthPlainText,
 } from '../incidents.js';
 
 const incident = computed(() => store.incident);
@@ -28,18 +30,32 @@ const causeLabel = computed(() => incidentCauseLabel(incident.value));
 const destination = computed(() => incidentDestination(incident.value));
 const destinationLabel = computed(() => incidentDestinationLabel(destination.value));
 
-const healthText = computed(() => {
-  const health = incident.value && incident.value.health;
-  if (!health) return '';
-  return [
-    health.kind && `类型：${health.kind}`,
-    health.message && `消息：${health.message}`,
-    health.stack && `堆栈：\n${health.stack}`,
-    health.page_url && `页面：${health.page_url}`,
-  ]
-    .filter(Boolean)
-    .join('\n');
+// 当前内核版本：同一份证据在不同版本上的含义完全不同（客户端模块列表逐版变化），
+// 排障时它是第一个要对照的事实，埋在证据堆里等于没有。
+const kernelVersion = computed(() => {
+  const kernel = store.view && store.view.kernel;
+  return (kernel && kernel.active) || '';
 });
+
+// 证据拆成带标签的分段：组合路由那种一行几十个包名的地址单独放一节并列出包名，
+// 其余原样保留，不丢任何原始信息。
+const healthSections = computed(() => incidentHealthSections(incident.value && incident.value.health));
+
+const copied = ref(false);
+
+async function copyEvidence() {
+  const text = incidentHealthPlainText(incident.value && incident.value.health);
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    copied.value = true;
+    window.setTimeout(() => {
+      copied.value = false;
+    }, 2000);
+  } catch {
+    copied.value = false;
+  }
+}
 
 function goDestination() {
   close();
@@ -92,11 +108,28 @@ async function resolveSuspect(id, action) {
 
     <div v-if="incident" class="incident-body" style="display: flex; flex-direction: column; gap: 12px">
       <p style="margin: 0">{{ incident.message || '' }}</p>
+      <p v-if="kernelVersion" class="muted" style="margin: 0">当前内核版本：{{ kernelVersion }}</p>
       <el-tag class="incident-cause" effect="plain" size="small">{{ causeLabel }}</el-tag>
 
-      <details v-if="healthText" class="incident-health">
+      <details v-if="healthSections.length" class="incident-health">
         <summary>查看前端自检证据</summary>
-        <pre>{{ healthText }}</pre>
+        <div class="evidence-toolbar">
+          <el-button size="small" text :icon="CopyDocument" @click="copyEvidence">
+            {{ copied ? '已复制' : '复制证据' }}
+          </el-button>
+        </div>
+        <div v-for="section in healthSections" :key="section.label" class="evidence-row">
+          <span class="evidence-label">{{ section.label }}</span>
+          <div v-if="section.members" class="evidence-members">
+            <el-tag v-for="name in section.members.slice(0, 16)" :key="name" size="small" effect="plain" type="info">
+              {{ name }}
+            </el-tag>
+            <span v-if="section.members.length > 16" class="muted">
+              …另有 {{ section.members.length - 16 }} 个，点「复制证据」取完整列表
+            </span>
+          </div>
+          <pre v-else class="evidence-text">{{ section.text }}</pre>
+        </div>
       </details>
 
       <div class="incident-list">
@@ -164,3 +197,13 @@ async function resolveSuspect(id, action) {
     </div>
   </el-dialog>
 </template>
+
+<style scoped>
+/* 证据分段：标签定宽右对齐，右侧内容各自滚动。放在组件内而不是 theme.css——
+   后者是只许下调的反棘轮大文件，事故面板的排版不值得从它那里借预算。 */
+.evidence-toolbar { display: flex; justify-content: flex-end; margin-top: 4px; }
+.evidence-row { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; }
+.evidence-label { flex: 0 0 104px; color: var(--muted); font-size: 12.5px; line-height: 20px; text-align: right; }
+.evidence-members { display: flex; flex-wrap: wrap; gap: 4px; max-height: 220px; overflow-y: auto; }
+.evidence-text { flex: 1; min-width: 0; margin-top: 0 !important; }
+</style>
