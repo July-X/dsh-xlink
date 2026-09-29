@@ -231,7 +231,33 @@ const FILE_BUDGETS = {
   // (DSH, "default")——P8 UI 决策后由真实 instance_id 替换。约 +11 行。
   // 1290 → 1380：内核安装依赖锁步对账（scan_dsh_version_skew /
   // write_kernel_workspace_yaml / write_kernel_stub / 安装二遍钉版）。
+  // 2026-09-29：这三个函数连同「上游漏发精确钉版时降级重试」一起搬进
+  // kernel_deps.rs，kernel.rs 同步从 744 回到 721 行；预算数字不动。
   'src-tauri/src/kernel.rs': 1380,
+  // 2026-09-29 新增（265 行代码，其余是解释这次事故的文档）。它回答
+  // 「内核安装时，每个官方子包究竟装哪个版本」这一个关注点：写 stub /
+  // pnpm-workspace.yaml 的 overrides、装完扫锁步错位、以及 pnpm 报
+  // ERR_PNPM_NO_MATCHING_VERSION 时的降级兜底（2026-09-29 实测内核
+  // 0.2.0-rc.2 依赖的 @deepseek-ai/dsh-client-ui-settings-account@0.2.0-rc.2
+  // 在官方与镜像 registry 上都不存在，pnpm 直接拒绝解析，整条安装失败）。
+  // 三者共用同一份 overrides 数据，拆开只会让「谁在决定钉版」变得看不懂；
+  // 而它们都不属于 kernel.rs 的「起进程 / 判成败」，继续堆在那里只会推高
+  // 一个只许下调的文件的实际行数。
+  'src-tauri/src/kernel_deps.rs': 300,
+  // 2026-09-29 新增（27 行代码，其余是解释「为什么 eprintln 不算数」的文档）。
+  // 壳是 GUI 应用，stderr 在 Windows 上没有任何去处，而**只有后果、没有原因**
+  // 的动作恰恰只走 stderr（工作台窗口自动重载、给 pnpm 降优先级）。这个模块
+  // 给它们一个落盘出口：沿用按日轮转的约定，因此自动出现在「查看日志」面板。
+  // 单独成文件而不是塞进 process.rs，是因为 process.rs 只剩 9 行预算，且
+  // 「事件落盘」与「子进程执行」是两个关注点。
+  'src-tauri/src/shell_events.rs': 80,
+  // 2026-09-29 新增（36 行代码，其余是这次事故的取证结论）。装内核时 pnpm
+  // 硬链接数万文件 + node-gyp 编译，把 CPU 与磁盘打满，同机另一个壳的
+  // WebView2 渲染进程被打崩，表现为工作台莫名 reload 并撞上内核的启动顺序
+  // 竞态。把**装包工具**降到 BELOW_NORMAL 让它们让路，保留双壳并行调试——
+  // 比「另一个壳的工作台在跑就禁止装内核」代价小得多。只降 pnpm/npm/npx：
+  // Node 探针降优先级会误报「原生模块加载失败」，那是更糟的假阴性。
+  'src-tauri/src/child_priority.rs': 80,
   'src-tauri/src/process.rs': 1180,
   // 1050 → 1090：会话标题改为订阅 `session/control`（baseline 播种 + 标题投影帧
   // 保鲜 + 老内核退回 session/list 快照），这部分逻辑与 Center 同生共死，拆出去
@@ -637,7 +663,22 @@ const FILE_BUDGETS = {
 //    `instances.json` / `instances-dev.json` 之后这三类跨壳竞态从根上消失，
 //    instance.rs 里「只有 release 能写共享指针」那条防御也随之撤销（谁写都只
 //    写自己那份文件）。这次多出来的净增全部在「隔离」上，没有一行是功能。
-const TOTAL_BUDGET = 33720;
+// 33720 → 33960：kernel_deps.rs（265 行）。内核 0.2.0-rc.2 的锁步依赖里有一条
+// 断边——`@deepseek-ai/dsh-client-ui-settings-account@0.2.0-rc.2` 被
+// `dsh-web-app` 精确钉住，而它在官方与镜像 registry 上都没发布，pnpm 在解析
+// 阶段就拒绝整棵依赖树，用户装不上内核（2026-09-29 实测）。壳的处理是失败后
+// 查一次 registry、给断边各选一个同版本线的较低版本钉进 overrides 再重试，并
+// 在进度面板与最终总结里明说降级了什么。选版规则（只退到同 major.minor 的较低
+// 版本）、pnpm 报错解析与三条失败文案都带测试。同期 kernel.rs 从 744 回到 721，
+// 净增全部是这块新能力。
+// 33960 → 34050：shell_events.rs（27）+ child_priority.rs（36）+ harness_window.rs
+// 接入（+10）。2026-09-29 实测：dev 壳装内核的 8 秒里 release 壳的工作台
+// webview 被重载并撞上内核的启动顺序竞态——同一时刻 release 内核一行输出都没有，
+// 所以不是两棵安装树互相污染，而是 pnpm 把 CPU 与磁盘打满、WebView2 渲染进程
+// 被打崩。对策是给装包工具降优先级（保留双壳并行调试），外加把壳侧那些
+//「只有后果没有原因」的动作落盘——此前它们只 eprintln，而 GUI 应用的 stderr
+// 在 Windows 上根本没有去处。
+const TOTAL_BUDGET = 34050;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

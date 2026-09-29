@@ -1212,6 +1212,10 @@ fn run_with_progress_log(
     mut on_progress: impl FnMut(&str),
 ) -> io::Result<ExitStatus> {
     let mut child = spawn(exe, args, cwd, extra_path_dirs)?;
+    // 装包任务降优先级：它会把 CPU 与磁盘打满，而同一台机器上可能还开着
+    // 另一个壳的工作台（WebView2 渲染进程被打崩会表现为页面莫名 reload）。
+    // 只对 pnpm / npm 生效，Node 探针等保持正常优先级。详见 child_priority。
+    crate::child_priority::deprioritize(exe, &child);
     let stdout = child.stdout.take().expect("child stdout was piped");
     let stderr = child.stderr.take().expect("child stderr was piped");
 

@@ -146,6 +146,9 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
         ├── quarantine.rs     # 插件隔离记录
         ├── archive.rs        # tar / zip 归档解包校验
         ├── registry.rs       # npm registry 地址解析（默认 npmmirror）
+        ├── kernel_deps.rs    # 内核依赖钉版：锁步错位对账 + 上游漏发时降级兜底
+        ├── child_priority.rs # 装包任务降优先级（别抢另一个壳的工作台）
+        ├── shell_events.rs   # 壳侧事件落盘（GUI 应用的 stderr 没有去处）
         ├── pkg.rs            # 插件与技能共用的包取源层
         ├── state.rs          # JSON 状态文档读写骨架
         ├── node.rs           # Node/pnpm 检测与版本校验

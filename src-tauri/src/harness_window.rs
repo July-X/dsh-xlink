@@ -12,6 +12,11 @@
 //!
 //! 这个看门狗最大的风险不是「该重载时不重载」，而是反过来——把用户的窗口变成
 //! 一个自己跟自己打架的东西。三条自律写在 [`should_reload_harness`] 上。
+//!
+//! **可观测性**：触发条件与重载结果都落 `shell_events`（`harness-window.log`，
+//! 「查看日志」面板里可见），不靠 `eprintln!`——GUI 应用的 stderr 在 Windows
+//! 上没有任何去处，而"页面闪了一下"这种只有后果没有原因的现象，没有这条
+//! 日志就只能靠时间戳对猜。
 
 use std::time::{Duration, Instant};
 
@@ -47,10 +52,16 @@ pub struct HarnessPage {
 }
 
 /// 记一次加载事件。挂在工作台窗口的 `on_page_load` 上。
+///
+/// 两侧都落一条事件日志：只有重载时留痕的话，事后看到的是"某时刻页面闪了
+/// 一下"，而看不到它**卡了多久**、**卡从什么时候开始**——那才是判断是内核
+/// 慢、是机器忙、还是看门狗本身误判的依据。
 pub fn observe(state: &AppState, started: bool) {
     let mut page = crate::lock(&state.harness_page);
     if started {
         page.pending_since = Some(Instant::now());
+        drop(page);
+        crate::shell_events::record(HARNESS_WINDOW_LOG, "工作台页面开始加载");
     } else {
         page.pending_since = None;
     }
@@ -91,17 +102,27 @@ pub fn reload_stalled(app: &AppHandle, kernel_running: bool) {
         // 会让这一次重载不计数，等于把上限变成无限。
         page.reloads += 1;
         page.pending_since = None;
-        eprintln!(
-            "dsh-xlink: 工作台窗口超过 {}s 没有加载完成，已自动重载（第 {} 次，上限 {}）",
+        // **落盘而不是 eprintln**：壳是 GUI 应用，stderr 在 Windows 上没有
+        // 任何去处，而"页面闪了一下"这种只有后果、没有原因的动作恰恰只能靠
+        // 这里留痕——用户报障时我们要能回答"壳当时做过什么"。
+        let message = format!(
+            "工作台窗口超过 {}s 没有加载完成，已自动重载（第 {} 次，上限 {}）",
             LOAD_TIMEOUT.as_secs(),
             page.reloads,
             MAX_RELOADS
         );
+        eprintln!("dsh-xlink: {message}");
+        crate::shell_events::record(HARNESS_WINDOW_LOG, &message);
     }
     if let Err(error) = reload_window(&window) {
         eprintln!("dsh-xlink: 工作台窗口重载失败：{error}");
+        crate::shell_events::record(HARNESS_WINDOW_LOG, &format!("工作台窗口重载失败：{error}"));
     }
 }
+
+/// 本模块事件日志的逻辑名（落 `<kind>-harness-window-<date>.log`，出现在
+/// 「查看日志」面板的列表里）。
+const HARNESS_WINDOW_LOG: &str = "harness-window";
 
 fn reload_window(window: &WebviewWindow) -> Result<(), String> {
     window.reload().map_err(|e| e.to_string())
