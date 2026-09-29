@@ -272,7 +272,11 @@ function toggleSource(src) {
           重新打开工作台窗口即可看到；源目录不会被删除。
         </p>
         <ul class="misplaced-list">
-          <li v-for="dir in misplacedDirs" :key="dir.name" class="misplaced-item">
+          <li
+            v-for="dir in misplacedDirs"
+            :key="`${dir.holder}:${dir.name}`"
+            class="misplaced-item"
+          >
             <span class="misplaced-name">{{ dir.name }}</span>
             <span class="misplaced-meta">
               在实例 {{ dir.holder }} · {{ dir.entries.length }} 个条目 ·
