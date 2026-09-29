@@ -889,6 +889,73 @@ pub fn ensure_instance_mutable(family: &str, id: &str, action: &str) -> Result<(
     }
 }
 
+/// 这个实例的内核是否还在跑——**不管哪个壳拉起的**——并返回活体证据。
+///
+/// 供「运行期会写进实例 home」的合并类操作用（找回历史会话、恢复配置）：把
+/// 状态缓存在内存里的是**目标实例自己的内核**，而用户自建实例在注册表分家后
+/// 有意留在两份注册表里，另一个壳完全可能正跑着它。
+///
+/// 判据是实例 pid 文件 + [`crate::kernel::pid_is_kernel`] 的活体校验（pid 会被
+/// 系统复用，裸的「进程存在」会误伤）。端口优先取 pid 文件里记的**启动时刻**
+/// 端口——注册表端口可能在内核启动之后又被改过，拿新端口验旧进程会漏检；两处
+/// 都给不出端口时放行，与 [`instance_owned_by_other_shell`] 同一取舍。
+///
+/// pid 文件缺失时退回端口监听者自己证明身份：内核启动那一步写 pid 文件是
+/// `let _ =`（写失败不阻断启动，`kernel::start_instance`），只认 pid 文件会在
+/// 「内核活着但没留下 pid 记录」时漏检，合并进去的清单会被它下一次落盘覆盖。
+pub fn instance_kernel_running(family: &str, id: &str) -> Option<PidRecord> {
+    let record_port = load_registry()
+        .ok()
+        .and_then(|registry| registry.get(id).map(|record| record.port))
+        .or_else(|| load_record_from_disk(family, id).map(|record| record.port));
+    let Some(record) = read_pid(family, id) else {
+        let port = record_port?;
+        let listener = crate::kernel::port_listen_pid(port)?;
+        return crate::kernel::pid_is_kernel(listener, Some(port)).then_some(PidRecord {
+            pid: listener,
+            port: Some(port),
+            // 认不出主人（没有 pid 文件就没有壳段），文案据此指回概览页。
+            shell: None,
+        });
+    };
+    let port = record.port.or(record_port)?;
+    crate::kernel::pid_is_kernel(record.pid, Some(port)).then_some(PidRecord {
+        port: Some(port),
+        ..record
+    })
+}
+
+/// 「实例的内核还在跑」阻断文案：谁在跑、为什么现在不能做、下一步去哪停。
+///
+/// 抽到共享层是因为 [`crate::home_recovery`] 与 [`crate::restore`] 面对的是同一
+/// 条纪律（内核把状态缓存在内存里，运行期写入会被它下一次落盘覆盖），两处各写
+/// 一份文案必然漂移。`record` 取自 [`instance_kernel_running`]，端口一定是它
+/// 实际校验过的那一个。
+pub fn instance_kernel_running_message(record: &PidRecord, id: &str, action: &str) -> String {
+    let port_hint = record
+        .port
+        .map(|port| format!("、端口 {port}"))
+        .unwrap_or_default();
+    let reason = "内核把状态缓存在内存里，运行期间的改动会被它下一次落盘整个覆盖";
+    // `shell: None` = 旧格式 pid 文件或没有 pid 文件，认不出主人。这种情况按
+    // 本壳处理：概览页的「关闭工作台」对用户永远是一个可尝试的下一步。
+    match record
+        .shell
+        .filter(|owner| *owner != crate::settings::current_mode().as_str())
+    {
+        Some(owner) => format!(
+            "实例 {id} 正被另一个 dsh-xlink（{owner} 壳，进程 {}{port_hint}）使用，\
+             无法{action}：{reason}。请先在那个壳里停止该实例，再回这里重试",
+            record.pid,
+        ),
+        None => format!(
+            "实例 {id} 的内核还在运行（进程 {}{port_hint}），无法{action}：{reason}。\
+             请先在概览页点「关闭工作台」停止它，再重试",
+            record.pid,
+        ),
+    }
+}
+
 /// 单独写入端口文件（用于 runtime 期间的 hot patch）。
 pub fn write_port(family: &str, id: &str, port: u16) -> Result<(), String> {
     let path = instance_port_file(family, id);
@@ -1264,6 +1331,87 @@ mod tests {
             "装插件",
         );
         assert!(unknown.contains("进程 7") && unknown.contains("装插件"));
+    }
+
+    /// 实例级活体判据：pid 文件不在时改问端口，而不是直接放行。内核启动那
+    /// 一步写 pid 是 `let _ =`，写失败照样把内核拉起来了——只认 pid 文件会在
+    /// 「内核活着但没留下 pid 记录」时漏检，合并进去的清单会被它下一次落盘
+    /// 整个覆盖。正向识别交给 `pid_is_kernel`（它自己已有三层校验的测试），
+    /// 这里钉的是**判据的边界**：宁可放行也不误伤。
+    #[test]
+    fn instance_kernel_running_asks_the_port_when_there_is_no_pid_file() {
+        let home = temp_dir("kernel-running");
+        let _xlink = scoped_xlink_home(&home);
+        // ① 记录与 pid 都没有：无从查证，放行。
+        assert!(instance_kernel_running(KERNEL_FAMILY_DSH, "default").is_none());
+
+        // ② 端口被一个**非内核**进程占着：不得当成"这个实例的内核在跑"。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let record = sample_record("default", port, KERNEL_FAMILY_DSH);
+        save_record_to_disk(&record).expect("写实例记录");
+        assert!(
+            instance_kernel_running(KERNEL_FAMILY_DSH, "default").is_none(),
+            "端口上的监听者不是 dsh 内核时必须放行，误报会挡住用户的正常操作"
+        );
+
+        // ③ pid 文件在、但进程早退了：活体校验挡住，放行。
+        write_pid(KERNEL_FAMILY_DSH, "default", std::process::id(), port).expect("写 pid");
+        assert!(
+            instance_kernel_running(KERNEL_FAMILY_DSH, "default").is_none(),
+            "命令行身份对不上时不得认领（pid 会被系统复用）"
+        );
+        drop(listener);
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 阻断文案要按「谁在跑」分流：对方壳拉起的指明去那个壳停；本壳或认不出
+    /// 壳的指回概览页。pid + 端口是两个壳并列运行时唯一能对上号的线索。
+    #[test]
+    fn kernel_running_message_points_at_the_right_shell() {
+        let mine = PidRecord {
+            pid: 1,
+            port: Some(3091),
+            shell: Some(crate::settings::current_mode().as_str()),
+        };
+        let own = instance_kernel_running_message(&mine, "default-dev", "找回历史会话");
+        assert!(own.contains("关闭工作台"), "{own}");
+        assert!(own.contains("进程 1") && own.contains("端口 3091"), "{own}");
+        assert!(!own.contains("另一个"), "{own}");
+
+        // 旧格式 pid 文件（没有壳段）认不出主人，同样指回概览页。
+        let unknown = instance_kernel_running_message(
+            &PidRecord {
+                pid: 1,
+                port: None,
+                shell: None,
+            },
+            "default-dev",
+            "找回历史会话",
+        );
+        assert!(unknown.contains("关闭工作台"), "{unknown}");
+        assert!(!unknown.contains("另一个"), "{unknown}");
+
+        // 另一个壳拉起的：报出壳、进程、端口，并指明去那个壳里停。
+        let other = PidRecord {
+            pid: 4321,
+            port: Some(3090),
+            shell: Some("__other__"),
+        };
+        let message = instance_kernel_running_message(&other, "default", "恢复配置");
+        for needle in [
+            "另一个 dsh-xlink",
+            "__other__ 壳",
+            "4321",
+            "3090",
+            "那个壳",
+            "恢复配置",
+        ] {
+            assert!(
+                message.contains(needle),
+                "消息缺少要素：{needle}｜{message}"
+            );
+        }
     }
 
     /// `ensure_instance_dirs` 必须创建 DSH 期望的全部子目录。

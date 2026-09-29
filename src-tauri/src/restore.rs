@@ -281,6 +281,15 @@ pub fn restore(
             "工作台正在运行，无法恢复配置。请先在概览页点「关闭工作台」，再重试".into(),
         ));
     }
+    // 本壳工作台的判据之外还要问**实例**这一层：用户自建实例在注册表分家后
+    // 有意留在两份注册表里，另一个 dsh-xlink 完全可能正跑着它，而恢复要改的
+    // 正是那个实例的 profile 接线与插件物化。与「找回历史会话」同一条纪律、
+    // 同一个判据与同一份文案（`instance::instance_kernel_running`）。
+    if let Some(record) = crate::instance::instance_kernel_running(family, instance) {
+        return Err(AppError::Io(
+            crate::instance::instance_kernel_running_message(&record, instance, "恢复配置"),
+        ));
+    }
 
     // 规则 1：先备份。备份失败**必须**中止恢复——没有回退点的恢复不能做。
     let backup = snapshot::record(
