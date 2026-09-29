@@ -261,7 +261,8 @@ fn scan_workspace_registry(
 ///   那是本实例用户的当前选择，与别的实例无关；
 /// - 写盘走 `atomic_write`，中途失败不会留下半个 JSON。
 ///
-/// 需要工作台已停止（`recover_misplaced_home` 的调用方负责挡）：内核把
+/// 需要目标实例的内核未在运行（`home_recovery_cmd` 的命令层负责挡，判据按
+/// **实例** pid 文件而非本壳工作台——另一个壳也可能正跑着这个实例）：内核把
 /// storages 缓存在内存里，它下一次落盘会把这里的合并整个覆盖掉。
 fn merge_workspace_registry(entry: &MisplacedWorkspace, outcome: &mut MisplacedRecovery) {
     let Some(src) = read_workspaces(&entry.source) else {
