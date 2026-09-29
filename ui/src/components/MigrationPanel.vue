@@ -14,12 +14,17 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { ArrowDown, Check, Refresh, RefreshLeft } from '@element-plus/icons-vue';
 import {
   migrationStore,
+  misplacedStore,
   resetMigrationStore,
   loadMigrationPreview,
   runMigration,
   rollbackMigration,
   clearMigrationSkip,
   reopenMigrationPrompt,
+  loadMisplacedScan,
+  recoverMisplacedHome,
+  misplacedFileCount,
+  misplacedTotalBytes,
   sourceDisplayName,
   sourceBackupKey,
   conflictPolicyDisplayName,
@@ -30,7 +35,7 @@ import {
   SOURCES,
 } from '../migration.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
-import { confirmDialog } from '../notify.js';
+import { confirmDialog, toast } from '../notify.js';
 import { store } from '../store.js';
 import { tildePath } from '../labels.js';
 
@@ -56,7 +61,73 @@ const runResultItems = computed(() => {
 onMounted(async () => {
   resetMigrationStore();
   await withLoading('migrationPreview', () => loadMigrationPreview());
+  // 「搬错实例」的历史会话扫描：只读，且失败不打扰用户（见 migration.js
+  // loadMisplacedScan 的注释）。不并进上面那个 withLoading——它有自己的
+  // loading key，失败时也不会把迁移预览一起拖成失败态。
+  await loadMisplacedScan();
 });
+
+// 「找回历史会话」卡片：别的实例 home 里有本实例缺的东西时才出现。
+// 两类内容——会话目录（正文）与工作区注册表（工作台的会话清单来源）。
+// 只搬目录不合并清单，会话就在磁盘上却永远不显示（2026-09-29 本机实测）。
+const misplacedDirs = computed(() => {
+  const scan = misplacedStore.scan;
+  if (!scan || !Array.isArray(scan.dirs)) return [];
+  return scan.dirs;
+});
+const misplacedWorkspaces = computed(() => {
+  const scan = misplacedStore.scan;
+  if (!scan || !Array.isArray(scan.workspaces)) return [];
+  return scan.workspaces;
+});
+const misplacedVisible = computed(
+  () => misplacedDirs.value.length > 0 || misplacedWorkspaces.value.length > 0
+);
+
+async function onRecoverMisplaced() {
+  const scan = misplacedStore.scan;
+  if (!scan) return;
+  const holders = Array.from(
+    new Set([
+      ...misplacedDirs.value.map((d) => d.holder),
+      ...misplacedWorkspaces.value.map((w) => w.holder),
+    ])
+  );
+  const wsSessions = misplacedWorkspaces.value.reduce(
+    (acc, w) => acc + (w.session_count || 0),
+    0
+  );
+  // 恢复前的确认必须说清「会失去什么」：源侧数据**不删**，因此这里能承诺
+  // 「随时可以再删一次本实例的副本退回原状」，而不是像回滚那样先备份后覆盖。
+  const ok = await confirmDialog(
+    '找回历史会话？',
+    `把实例 ${holders.join('、')} 里的 ${misplacedFileCount(scan)} 个会话 / 附件文件` +
+      `（${formatBytes(misplacedTotalBytes(scan))}）复制到本实例 ${tildePath(scan.home)}，` +
+      `并把 ${wsSessions} 个会话登记进本实例的会话清单（不登记的话文件在磁盘上、工作台里也不显示）。` +
+      '源目录原样保留、不删除；本实例已有的同名会话不会被覆盖。' +
+      '需要先关闭工作台：工作台运行时内核会用自己的内存缓存覆盖会话清单。',
+    '复制到本实例'
+  );
+  if (!ok) return;
+  let result;
+  try {
+    result = await withLoading('homeRecovery', () => recoverMisplacedHome());
+  } catch (e) {
+    toast(`找回历史会话失败：${e && e.message ? e.message : e}。可在「数据迁移」面板重新扫描后重试`, 8000);
+    return;
+  }
+  const failed = (result && result.failed) || [];
+  if (failed.length > 0) {
+    toast(`部分条目没能收编（${failed.length} 条）：${failed[0]}。其余已完成，源目录未改动`, 9000);
+  } else {
+    const copied = ((result && result.copied) || []).length;
+    const ws = ((result && result.workspaces) || []).length;
+    toast(
+      `已复制 ${copied} 个条目、收编 ${ws} 个工作区到本实例；源目录未改动。重新打开工作台窗口即可看到`,
+      7000
+    );
+  }
+}
 
 async function refreshPreview() {
   await withLoading('migrationPreview', () => loadMigrationPreview());
@@ -193,6 +264,44 @@ function toggleSource(src) {
           仅显示最近一次迁移；更早的 {{ historyHiddenCount }} 次备份仍保留在 backups/ 目录，未删除。
         </p>
       </div>
+      <div v-if="misplacedVisible" class="misplaced">
+        <h3>找回历史会话</h3>
+        <p class="hint">
+          检测到其它实例的 home 里有本实例没有的会话数据（通常是旧版本把
+          <code>~/.dsh</code> 并进了错误的实例）。复制过来<strong>并登记进本实例的会话清单</strong>后，
+          重新打开工作台窗口即可看到；源目录不会被删除。
+        </p>
+        <ul class="misplaced-list">
+          <li v-for="dir in misplacedDirs" :key="dir.name" class="misplaced-item">
+            <span class="misplaced-name">{{ dir.name }}</span>
+            <span class="misplaced-meta">
+              在实例 {{ dir.holder }} · {{ dir.entries.length }} 个条目 ·
+              {{ dir.file_count }} 个文件 · {{ formatBytes(dir.total_bytes) }}
+            </span>
+          </li>
+          <li
+            v-for="ws in misplacedWorkspaces"
+            :key="ws.holder"
+            class="misplaced-item"
+          >
+            <span class="misplaced-name">会话清单</span>
+            <span class="misplaced-meta">
+              实例 {{ ws.holder }} 有 {{ ws.session_count }} 个会话未登记在本实例 ·
+              {{ ws.paths.length }} 个工作区
+            </span>
+          </li>
+        </ul>
+        <footer class="step-actions">
+          <el-button
+            type="primary"
+            :loading="isLoading('homeRecovery')"
+            :icon="RefreshLeft"
+            @click="onRecoverMisplaced"
+          >
+            复制到本实例
+          </el-button>
+        </footer>
+      </div>
       <footer class="step-actions">
         <el-button @click="refreshPreview" :icon="Refresh" :loading="isLoading('migrationPreview')">
           重新扫描
@@ -238,7 +347,7 @@ function toggleSource(src) {
       </el-radio-group>
 
       <div class="credentials-note">
-        <p><strong>说明</strong>：凭据与会话<strong>不</strong>纳入首版迁移。如需迁移，参考内核升级指南手动复制。</p>
+        <p><strong>说明</strong>：凭据与会话<strong>不</strong>纳入上面这套旧布局迁移（那套处理的是「上一代壳留下的目录」）。如果历史会话是落在<strong>另一个实例</strong>的 home 里，请用「发现」步里的「找回历史会话」卡片——它走的是只复制、不删除的回收路径。</p>
       </div>
 
       <footer class="step-actions">
@@ -352,6 +461,29 @@ function toggleSource(src) {
 .result-summary .hint { margin: 0; }
 .history { margin-top: 16px; }
 .history h3 { margin: 0 0 6px; font-size: 13px; }
+/* 「找回历史会话」卡片：与迁移主体是两条独立路径（一个搬旧布局目录，一个把
+   误入他处的会话复制回来），所以用一块独立底色而不是塞进 preview-table——
+   混在一张表里会让人以为点「下一步」也会把它一起搬。 */
+.misplaced {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--surface-soft);
+}
+.misplaced h3 { margin: 0 0 6px; font-size: 13px; }
+.misplaced-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.misplaced-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+.misplaced-name { font-weight: 600; }
+.misplaced-meta { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 /* 历史迁移本来用 el-table，但表头 + 单元格 padding 在窄列里把整行顶到 36px+
    高，且自带一些不能改的垂直留白。改用 grid 布局直接控制紧凑度。 */
 .history-list {

@@ -429,38 +429,10 @@ pub struct PluginSpec {
 /// 等少数入口函数里还会用作 legacy 兜底。
 pub fn store_dir(_data_dir: &Path) -> PathBuf {
     let root = crate::paths::plugins_store_root();
-    seed_dev_store_once(&root);
+    // 旧布局 `dsh-plugins/` → `plugins/dsh[-dev]/` 的一次性搬迁住在
+    // `store_relocate`：它与中央库的条目逻辑无关，留在本文件只会顶高预算。
+    crate::store_relocate::ensure_ready(crate::settings::current_mode(), &root);
     root
-}
-
-/// dev 壳首次解析中央库时，从历史共享的 `dsh-plugins/` 复制一份种子。
-///
-/// 两个壳曾经共用一份中央库，于是 dev 壳里已装的插件都在那个共享目录里。切成
-/// 独立的 `dsh-plugins-dev/` 之后它会是空的，dev 壳的插件列表会**凭空清空**——
-/// 数据没丢，但用户看到的是一个空列表。这里一次性复制过去，避免那种体验断裂。
-///
-/// 三条自律：
-/// - **release 永远不触发**（`plugins_store_root()` 本身就等于历史路径）；
-/// - **只做一次**（目标目录已存在就直接返回），不覆盖 dev 自己的后续改动；
-/// - **失败不阻塞启动**，只留 stderr——种子是体验优化，不是功能前提。
-fn seed_dev_store_once(root: &Path) {
-    if crate::settings::current_mode() != crate::paths::ShellMode::Dev {
-        return;
-    }
-    if root.exists() {
-        return;
-    }
-    let legacy = crate::paths::legacy_shared_plugins_store_root();
-    if legacy == *root || !legacy.is_dir() {
-        return;
-    }
-    if let Err(error) = copy_dir_recursive(&legacy, root) {
-        eprintln!(
-            "plugins: dev 中央库种子复制失败（{} -> {}）：{error}；dev 壳的插件列表将从空开始，不影响 release",
-            legacy.display(),
-            root.display()
-        );
-    }
 }
 
 /// Legacy 中央库根目录：`<xlink_home>/plugins/`，仅在 [`migrate_legacy_store`]
@@ -473,7 +445,20 @@ pub fn legacy_store_dir(_data_dir: &Path) -> PathBuf {
     crate::paths::xlink_home().join(STORE_SUBDIR)
 }
 
-/// 把 legacy `<home>/plugins/` 整目录搬到新 `<xlink_home>/dsh-plugins/`。
+/// `path` 是不是**当前**布局的中央库根（`plugins/dsh/` 或 `plugins/dsh-dev/`）。
+///
+/// 与 [`legacy_store_dir`] 成对使用：那条路径曾经是中央库本身，现在被重新
+/// 征用成命名空间，两种身份叠在同一层，判别只能靠「它是不是当前根」。
+fn is_current_store_root(path: &Path) -> bool {
+    [
+        crate::paths::ShellMode::Release,
+        crate::paths::ShellMode::Dev,
+    ]
+    .iter()
+    .any(|mode| crate::paths::plugins_store_root_for(*mode) == path)
+}
+
+/// 把 legacy `<home>/plugins/` 整目录搬到新中央库根 `plugins/dsh[-dev]/`。
 ///
 /// 一次性迁移：成功一次后 legacy 目录被保留但写入路径不再使用，未来 P6
 /// 迁移向导完成后再统一清掉。新位置已有 `store.json` 时跳过整体搬迁，
@@ -490,6 +475,17 @@ pub fn migrate_legacy_store(data_dir: &Path) -> std::io::Result<()> {
     // 写入的源文件不被覆盖。store.json 同样采用"目标优先"。
     for entry in std::fs::read_dir(&legacy_root)?.flatten() {
         let from = entry.path();
+        // `<xlink_home>/plugins/` 这条路径被新布局**重新征用**成命名空间
+        // （内层 `dsh/` / `dsh-dev/` 才是中央库，见 `paths::plugins_root`）。
+        // 它同时又是 v0.2.x 的中央库位置，于是这里会在 legacy 根里撞见**当前**
+        // 中央库目录本身——照搬就是「把中央库复制进它自己」：目标落在源目录
+        // 内部，递归复制时新产生的目录又出现在同一次遍历里，目录无限生长直到
+        // 栈溢出（2026-09-29 实测：`cargo test` 里 plugins::store_orphan_tests
+        // 三条全灭，报 STATUS_STACK_OVERFLOW）。只认「不是当前中央库根」的那
+        // 些条目是 legacy 插件目录。
+        if is_current_store_root(&from) {
+            continue;
+        }
         let to = new_root.join(entry.file_name());
         if to.exists() {
             continue;
@@ -511,7 +507,11 @@ pub fn migrate_legacy_store(data_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+/// 递归复制目录，供中央库内的目录级搬迁使用（legacy → 新布局、中央库内层
+/// 插件目录）。`pub(crate)` 是因为 `store_relocate` 的跨卷回退要用**同一份**
+/// 严格实现——换 `pkg::copy_tree` 的简化版会跳过 symlink，pnpm 管理的
+/// `node_modules` 几乎全由 symlink 构成，复制过去是一棵断链的树。
+pub(crate) fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)?.flatten() {
         let src = entry.path();
@@ -6320,6 +6320,54 @@ mod tests {
         let text = std::fs::read_to_string(new_plugin.join("package.json")).unwrap();
         assert!(text.contains("\"new\""), "新位置的内容不应被覆盖");
         let _ = std::fs::remove_dir_all(&legacy_home);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 新布局把 `<xlink_home>/plugins/` 重新征用成命名空间（内层 `dsh/` /
+    /// `dsh-dev/` 才是中央库），而它同时是 v0.2.x 的中央库位置——`migrate_legacy_store`
+    /// 必须在 legacy 根里**跳过当前中央库目录本身**。
+    ///
+    /// 不跳过的后果不是「多复制一份」而是「复制进自己」：目标落在源目录内部，
+    /// 递归复制时新产生的子目录又出现在同一次遍历里，目录无限生长直到栈溢出。
+    /// 这条测试在修复前会让 `cargo test` 直接 STATUS_STACK_OVERFLOW（不是断言
+    /// 失败，是整个测试进程死掉），所以它同时是那次事故的回归钉子。
+    #[test]
+    fn migrate_legacy_store_never_copies_the_current_store_into_itself() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-plugins-namespace-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let data_dir = home.join("desktop");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let legacy_root = legacy_store_dir(&data_dir);
+        // 命名空间里已经有当前中央库：它必须被原样跳过。
+        let dev_root = crate::paths::plugins_store_root_for(crate::paths::ShellMode::Dev);
+        std::fs::create_dir_all(dev_root.join("installed-plugin")).unwrap();
+        std::fs::write(dev_root.join("store.json"), b"{}").unwrap();
+        // 同处还有一个真正的 v0.2.x 遗留插件目录：它仍然要搬。
+        let legacy_plugin = legacy_root.join("legacy-plugin");
+        std::fs::create_dir_all(&legacy_plugin).unwrap();
+        std::fs::write(legacy_plugin.join("package.json"), b"{}").unwrap();
+
+        migrate_legacy_store(&data_dir).expect("migrate");
+
+        assert!(
+            dev_root.join("legacy-plugin/package.json").is_file(),
+            "真正的 legacy 插件目录仍然要搬进当前中央库"
+        );
+        assert!(
+            !dev_root.join("dsh-dev").exists(),
+            "中央库不得被复制进它自己：{dev_root:?} 下不该出现第二个 dsh-dev"
+        );
+        assert!(
+            !dev_root.join("store.json/dsh-dev").exists(),
+            "清单文件同样不得被当成目录往里复制"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 }

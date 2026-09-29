@@ -194,20 +194,21 @@ pub fn shell_logs_dir(mode: ShellMode) -> PathBuf {
     shell_dir(mode).join("logs")
 }
 
-/// 插件中央库根目录，按壳模式分开：`dsh-plugins/`（release）/ `dsh-plugins-dev/`
+/// 插件中央库根目录，按壳模式分开：`plugins/dsh/`（release）/ `plugins/dsh-dev/`
 /// （debug）。
 ///
-/// **release 保持原路径不动**——它是真实用户在用的目录，改名等于凭空搬走用户的
-/// 插件。dev 走新目录，两棵中央库从此互不相干。
+/// 两层含义与 `data_dir` 的 `desktop[-dev]/` 对齐：外层 `plugins/` 是「插件
+/// 中央库」这一类东西的命名空间，内层按**内核族**（`dsh`）+ 壳模式分家——将来
+/// 还有别的内核族时，这里天然能各自展开，而不必再往 `xlink_home()` 根上摊。
 ///
-/// 为什么必须分开：中央库里的插件源码会被 `link` 物化进具体实例的
-/// `profiles/web/node_modules`。共用一份时，dev 更新某���插件的源码会直接落到
+/// 为什么必须按模式分开：中央库里的插件源码会被 `link` 物化进具体实例的
+/// `profiles/web/node_modules`。共用一份时，dev 更新某个插件的源码会直接落到
 /// release 正在跑的内核上——工作台立刻白屏（实测 `scope '…' rendered without
 /// an installed adapter`，见 `docs/troubleshooting.md`）。内核安装树早就按模式
 /// 分家了（`desktop[-dev]/`），中央库是漏掉的那一半。
 ///
-/// 代价与补救见 [`crate::plugins::store_dir`]：dev 首次遇到空目录时会从共享的
-/// `dsh-plugins/` 复制一份种子过去，避免 dev 壳的插件列表凭空清空。
+/// 存量数据的搬运见 [`crate::plugins::store_dir`]：已发布版本用的是
+/// `dsh-plugins/`，那里必须整体搬过来，不能让用户的插件凭空消失。
 pub fn plugins_store_root() -> PathBuf {
     plugins_store_root_for(crate::settings::current_mode())
 }
@@ -218,15 +219,26 @@ pub fn plugins_store_root() -> PathBuf {
 /// `debug_assertions` 决定，测试进程恒为 dev），与 `shell_dir(mode)` /
 /// `default_instance_id_for(mode)` 同一写法。
 pub fn plugins_store_root_for(mode: ShellMode) -> PathBuf {
-    match mode {
-        ShellMode::Release => xlink_home().join("dsh-plugins"),
-        ShellMode::Dev => xlink_home().join("dsh-plugins-dev"),
-    }
+    // 内层目录名必须与 `instance::KERNEL_FAMILY_DSH` 同一个常量：中央库按内核族
+    // 分家，将来加新族时这里自然多出一层，而不是再往 `xlink_home()` 根上摊名字。
+    // `-dev` 后缀与 `data_dir` 的 `desktop[-dev]/` 保持同一套命名规则。
+    let family = crate::instance::KERNEL_FAMILY_DSH;
+    let name = match mode {
+        ShellMode::Release => family.to_string(),
+        ShellMode::Dev => format!("{family}-dev"),
+    };
+    plugins_root().join(name)
 }
 
-/// 插件中央库的**历史共享路径**（两个壳曾共用它）。
+/// 插件中央库的命名空间根：`<xlink_home>/plugins/`。
+pub fn plugins_root() -> PathBuf {
+    xlink_home().join("plugins")
+}
+
+/// 已发布版本用过的插件中央库路径（两个壳曾共用它）：`<xlink_home>/dsh-plugins/`。
 ///
-/// 只用于一次性种子复制与迁移回退：新代码不要拿它当中央库根，否则又变回共享。
+/// 只用于一次性搬运：存量用户的数据在这里，新代码不要拿它当中央库根，否则又
+/// 变回两个壳共享一份。
 pub fn legacy_shared_plugins_store_root() -> PathBuf {
     xlink_home().join("dsh-plugins")
 }
@@ -391,9 +403,31 @@ pub fn state_root() -> PathBuf {
     xlink_home().join("state")
 }
 
-/// 实例注册表：`<xlink_home>/state/instances.json`。
+/// 实例注册表：`release` 是 `state/instances.json`，`dev` 是
+/// `state/instances-dev.json`。
+///
+/// **两个壳各持一份**，不是「同一份里靠字段区分」。共用一份注册表意味着两个
+/// 进程读-改-写同一个文件，而互斥只在进程内（`lifecycle_mutex` 是进程级
+/// Mutex），跨进程没有任何序列化——两份文件从根上消除这类竞态，也让「dev 壳
+/// 删实例 / 建实例」不再能改到 release 壳的列表。
+///
+/// release **沿用原文件名**而不是换新名字：已发布版本用的就是
+/// `state/instances.json`，release 侧零搬迁；dev 侧第一次启动时由
+/// [`crate::registry_split`] 从共享的旧文件里认领一份（见该模块的拆分规则）。
 pub fn instances_registry_file() -> PathBuf {
-    state_root().join("instances.json")
+    instances_registry_file_for(crate::settings::current_mode())
+}
+
+/// 指定壳模式的注册表路径。`mode` 由编译期常量决定（`debug_assertions`），
+/// 与 `shell_dir(mode)` / `default_instance_id_for(mode)` 同一写法。
+pub fn instances_registry_file_for(mode: ShellMode) -> PathBuf {
+    // `-dev` 后缀与 `data_dir` 的 `desktop[-dev]/` 同一套命名规则：release
+    // 保持原名（不搬存量用户的文件），dev 加后缀。
+    let name = match mode {
+        ShellMode::Release => "instances.json",
+        ShellMode::Dev => "instances-dev.json",
+    };
+    state_root().join(name)
 }
 
 /// 可重建的下载 / registry 缓存目录：`<xlink_home>/cache/`。
@@ -893,10 +927,21 @@ mod integration_paths_tests {
         let dev = plugins_store_root_for(ShellMode::Dev);
 
         assert_ne!(release, dev, "两个壳的中央库必须是两棵不同的树");
-        assert_eq!(release, xlink_dir.join("dsh-plugins"), "release 不得改路径");
-        assert_eq!(dev, xlink_dir.join("dsh-plugins-dev"));
-        // 历史共享路径仍然可解析——dev 的种子复制依赖它。
-        assert_eq!(legacy_shared_plugins_store_root(), release);
+        // 层级：<xlink_home>/plugins/<族>，内层与内核族同名。
+        assert_eq!(release, xlink_dir.join("plugins").join("dsh"));
+        assert_eq!(dev, xlink_dir.join("plugins").join("dsh-dev"));
+        // 内层名字必须跟着内核族走，将来加新族时自然多出一层。
+        assert_eq!(
+            release.file_name().unwrap(),
+            crate::instance::KERNEL_FAMILY_DSH,
+            "内层目录名必须等于内核族名"
+        );
+        // 历史共享路径仍然可解析——迁移与种子复制都依赖它。
+        assert_eq!(
+            legacy_shared_plugins_store_root(),
+            xlink_dir.join("dsh-plugins")
+        );
+        assert_ne!(legacy_shared_plugins_store_root(), release);
     }
 
     /// 新路径与 legacy 路径在同一 DSH_HOME 覆盖下应保持正交：新路径永远

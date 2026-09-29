@@ -36,6 +36,8 @@ mod env;
 mod error;
 mod guard;
 mod harness_window;
+mod home_recovery;
+mod home_recovery_cmd;
 mod instance;
 mod kernel;
 mod kernel_adapter;
@@ -53,6 +55,7 @@ mod precheck;
 mod process;
 mod quarantine;
 mod registry;
+mod registry_split;
 mod releases;
 mod restore;
 mod sandbox;
@@ -60,6 +63,7 @@ mod settings;
 mod skills;
 mod snapshot;
 mod state;
+mod store_relocate;
 mod subscription;
 #[cfg(target_os = "windows")]
 mod tray;
@@ -195,6 +199,15 @@ pub fn run() {
             //
             // 必须**早于** `app.manage(AppState { data_dir, ... })`——后者
             // 会 move 走 data_dir，之后再借用就拿不到了。
+            // 注册表按壳模式分文件（`state/instances.json` / `instances-dev.json`）：
+            // 两个壳各持一份，跨进程的读-改-写从「同一个文件两把进程内锁」变成
+            // 「两个互不相干的文件」，跨壳竞态从根上消失。必须在下面注册默认实例
+            // **之前**跑——认领要读本壳那份文件，dev 壳第一次启动时那份还不存在。
+            if let Err(error) =
+                crate::registry_split::ensure_scoped(crate::settings::current_mode())
+            {
+                eprintln!("dsh-xlink: 实例注册表分家失败（{error}）；本壳将退回共享的旧文件");
+            }
             if let Err(error) = crate::instance::ensure_default_registered(&data_dir) {
                 eprintln!("dsh-xlink: 默认实例注册失败（{error}）");
             }
@@ -355,6 +368,8 @@ pub fn run() {
             commands::migration_run,
             commands::migration_rollback,
             commands::migration_list,
+            home_recovery_cmd::scan_misplaced_home,
+            home_recovery_cmd::recover_misplaced_home,
             commands::migration_skip_get,
             commands::migration_skip_set,
             commands::migration_skip_clear,

@@ -128,22 +128,31 @@ pub fn set_current_instance_id(id: &str) -> Result<(), String> {
     crate::settings::save_for_shell(mode, &settings)
 }
 
-/// 壳当前服务的内核族：注册表中默认实例的 `kernel_family`。
-///
-/// 注册表不可读、没有默认实例或找不到对应记录时回退 DSH——与
-/// [`resolve_default`] 的兜底口径一致。setup 期用它把 data_dir 解析到
+/// 壳当前服务的内核族。setup 期用它把 data_dir 解析到
 /// `<xlink_home>/<family>/desktop[-dev]/`，让 mcode 等新内核族将来接入时
 /// 天然拿到自己的族目录。
 ///
-/// **这一个字段是 dev 与 release 共享的**：它落在 `<xlink_home>/state/instances.json`
-/// 里，两个壳读的是同一份。因此它是 release 壳的族解析输入，也**只准** release
-/// 写（见 [`ensure_default_registered`]）——任何别的写者都会让另一个壳下次启动
-/// 时把 `data_dir` 解析到不相干的族目录。壳自己「当前服务哪个实例」的选择走
-/// [`current_instance_id`]，不经过这里。
+/// **解析顺序刻意只走壳自己的状态**，一级都不读共享指针：
+/// 1. 本壳当前服务的实例（`settings.current_instance_id`——两个壳各一份）；
+/// 2. 本壳按编译模式分家的默认实例（`default_instance_id`：release `default`、
+///    dev `default-dev`）；
+/// 3. `KERNEL_FAMILY_DSH`。
+///
+/// 曾经的第一级是注册表里那个**共享**的 `default_instance_id`。它是一份被两个壳
+/// 读写的可变字段，而 `data_dir` 是内核安装树（`active.txt` + `kernels/<version>/`
+/// 几百 MB）所在的位置——让「本壳的数据目录」取决于「另一个壳上次写了什么」，
+/// 是一次典型的跨壳竞态：谁先写谁赢，而写错的一方**不自愈**（认领条件是
+/// 「无人认领」，指针被占后永远轮不到它纠正）。UI 上还完全看不见它：列表里的
+/// 「默认」高亮读的是 per-shell 的 `current_instance_id`，与本字段无关。
+///
+/// 现在 `default_instance_id` 只剩**兼容用途**（旧版本构建会读它，见
+/// [`ensure_default_registered`] 的修复逻辑），不再是任何决策的输入。要新增
+/// 族解析分支时走上面的三级，别把这个字段接回去——`check:invariants` 第 12 项
+/// 会拦住。
 pub fn default_family() -> String {
     if let Ok(registry) = load_registry() {
-        if let Some(id) = registry.default_instance_id.as_deref() {
-            if let Some(record) = registry.instances.iter().find(|item| item.id == id) {
+        for candidate in [current_instance_id(), default_instance_id().to_string()] {
+            if let Some(record) = registry.instances.iter().find(|item| item.id == candidate) {
                 return record.kernel_family.clone();
             }
         }
@@ -362,8 +371,14 @@ impl InstanceRegistry {
 /// 读取注册表：文件不存在返回空注册表（首次启动），损坏返回错误并由调用方
 /// 决定是否备份原文件后回退到空。
 pub fn load_registry() -> Result<InstanceRegistry, RegistryError> {
+    load_registry_for(crate::settings::current_mode())
+}
+
+/// 读取**指定壳模式**的注册表。分文件后只有两处需要指定模式：setup 里的拆分
+/// 步骤与回收路径（要读另一个壳的那份）。其余一律走 [`load_registry`]。
+pub fn load_registry_for(mode: crate::paths::ShellMode) -> Result<InstanceRegistry, RegistryError> {
     use crate::process::{read_state_file, StateRead};
-    let path = instances_registry_file();
+    let path = crate::paths::instances_registry_file_for(mode);
     match read_state_file::<InstanceRegistry>(&path) {
         StateRead::Loaded(value) => {
             if !value.is_compatible() {
@@ -379,17 +394,24 @@ pub fn load_registry() -> Result<InstanceRegistry, RegistryError> {
     }
 }
 
-/// 原子写入注册表。
-pub fn save_registry(registry: &InstanceRegistry) -> Result<(), RegistryError> {
-    let path = instances_registry_file();
+/// 原子写入注册表到**指定路径**。分文件之后只有 [`crate::registry_split`] 的
+/// 认领步骤需要指定路径；其余一律走 [`save_registry`]，不要自己拼路径。
+pub fn save_registry_to(registry: &InstanceRegistry, path: &Path) -> Result<(), RegistryError> {
     let text = serde_json::to_string_pretty(registry)
         .map_err(|e| RegistryError::Serialize(e.to_string()))?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| RegistryError::Io(e.to_string()))?;
     }
-    atomic_write(&path, format!("{text}\n").as_bytes())
+    atomic_write(path, format!("{text}\n").as_bytes())
         .map_err(|e| RegistryError::Io(e.to_string()))?;
     Ok(())
+}
+
+/// 原子写入**本壳**的注册表文件（`state/instances.json` 或
+/// `state/instances-dev.json`，按壳模式分家，见
+/// [`crate::paths::instances_registry_file`]）。
+pub fn save_registry(registry: &InstanceRegistry) -> Result<(), RegistryError> {
+    save_registry_to(registry, &instances_registry_file())
 }
 
 /// 确保默认实例已注册（给 `lib.rs setup()` 直接调的**唯一**入口）。
@@ -409,31 +431,73 @@ pub fn ensure_default_registered(data_dir: &Path) -> Result<(), String> {
     let _guard = crate::lock(lifecycle_mutex());
     let mut registry = load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
     let id = default_instance_id();
-    if registry.get(id).is_some() {
+    let mut dirty = false;
+    if registry.get(id).is_none() {
+        let now_ms = crate::process::epoch_millis();
+        let settings = crate::settings::load_for_shell(crate::settings::current_mode());
+        let active = crate::kernel::read_active(data_dir);
+        let mut record = InstanceRecord::new(id, KERNEL_FAMILY_DSH, settings.port, now_ms);
+        record.kernel_version = active;
+        record.label = Some(if id == DEFAULT_INSTANCE_ID {
+            "默认实例（迁移自旧版）".to_string()
+        } else {
+            "默认实例（dev 壳）".to_string()
+        });
+        ensure_instance_dirs(&record).map_err(|e| format!("准备实例目录失败：{e}"))?;
+        save_record_to_disk(&record).map_err(|e| format!("写入实例记录失败：{e}"))?;
+        registry
+            .add(record)
+            .map_err(|e| format!("注册表拒绝该 id：{e}"))?;
+        dirty = true;
+    }
+    if claim_default_pointer(&mut registry) {
+        dirty = true;
+    }
+    if !dirty {
         return Ok(());
     }
-    let now_ms = crate::process::epoch_millis();
-    let settings = crate::settings::load_for_shell(crate::settings::current_mode());
-    let active = crate::kernel::read_active(data_dir);
-    let mut record = InstanceRecord::new(id, KERNEL_FAMILY_DSH, settings.port, now_ms);
-    record.kernel_version = active;
-    record.label = Some(if id == DEFAULT_INSTANCE_ID {
-        "默认实例（迁移自旧版）".to_string()
-    } else {
-        "默认实例（dev 壳）".to_string()
-    });
-    ensure_instance_dirs(&record).map_err(|e| format!("准备实例目录失败：{e}"))?;
-    save_record_to_disk(&record).map_err(|e| format!("写入实例记录失败：{e}"))?;
-    registry
-        .add(record)
-        .map_err(|e| format!("注册表拒绝该 id：{e}"))?;
-    // 注册表的 `default_instance_id` 是**共享**的一份：dev 壳绝不能把它改成
-    // `default-dev`，否则 release 壳下一次启动就会把 data_dir / 事故分析指向
-    // dev 的实例。只在还没人认领时写入，且只有 release 认领。
-    if registry.default_instance_id.is_none() && id == DEFAULT_INSTANCE_ID {
-        registry.default_instance_id = Some(id.to_string());
-    }
     save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))
+}
+
+/// 实例被删除时维护本壳注册表里的 `default_instance_id`：被删的正是它指向的
+/// 那个，就**置空**而不是改指某个兄弟实例。置空是修复（`check:invariants`
+/// 第 11 项明确放行），下次启动由 [`claim_default_pointer`] 按本壳默认值重建。
+///
+/// 抽出来是为了让「谁在维护这个字段」只有 `instance.rs` 一处——
+/// `check:invariants` 第 12 项禁止 `instance.rs` 之外**读**它。
+pub fn forget_default_pointer(registry: &mut InstanceRegistry, removed_id: &str) {
+    if registry.default_instance_id.as_deref() == Some(removed_id) {
+        registry.default_instance_id = None;
+    }
+}
+
+/// 认领**本壳**的默认实例指针，返回是否发生了写入。
+///
+/// 字段名沿用历史：它曾经是两个壳共享的一份（`state/instances.json`），2026-09-29
+/// 起注册表按壳模式分文件（`instances.json` / `instances-dev.json`），它也随之变成
+/// **每壳各有一份**。于是原��那套「只有 release 能写」的防御性限制没有存在理由了：
+/// 谁写都只写自己那份文件，dev 壳的认领动不了 release 的任何状态。
+///
+/// 仍然要「指错了就改回来」：分文件之前被写坏的 `default-dev` 会随共享文件一起
+/// 被 release 认领进来（拷的是整份），而它与本壳的语义相反。认领按本壳的默认值
+/// 覆盖一次即可，顺带把这类历史垃圾清掉。
+fn claim_default_pointer(registry: &mut InstanceRegistry) -> bool {
+    claim_default_pointer_for(registry, default_instance_id())
+}
+
+/// [`claim_default_pointer`] 的可测形态：`shell_id` 由调用方给出。测试进程恒为
+/// dev 壳，release 分支在这里拿不到——不抽出来就只能上 release 验这条修复。
+fn claim_default_pointer_for(registry: &mut InstanceRegistry, shell_id: &str) -> bool {
+    if registry.default_instance_id.as_deref() == Some(shell_id) {
+        return false;
+    }
+    let previous = registry.default_instance_id.clone();
+    registry.default_instance_id = Some(shell_id.to_string());
+    eprintln!(
+        "dsh-xlink: 本壳注册表的 default_instance_id 原为 {previous:?}，已认领为 {shell_id}\
+         （该字段按壳模式分文件，dev 壳写不到 release 那份）"
+    );
+    true
 }
 
 // --- 内核 home 的一次性搬迁（~/.dsh → 实例 DSH_HOME）------------------------
@@ -1297,24 +1361,29 @@ mod tests {
         );
     }
 
-    /// dev 壳首次启动要建**自己**的实例，并且**不许**把注册表里已被 release
-    /// 认领的 `default_instance_id` 改成自己的——那份是共享的，被改会让
-    /// release 壳下次启动把数据目录与事故分析指向 dev 的实例。
+    /// dev 壳首次启动要建**自己**的实例，并写**自己的**注册表文件
+    ///（`state/instances-dev.json`）。release 那份一个字节都不许动。
+    ///
+    /// 旧版这里断言的是「dev 不得改写共享的 `default_instance_id`」——那是
+    /// 两个壳共用一个文件时的约束。注册表按壳模式分文件（`registry_split`）
+    /// 之后约束从「不许写」变成「写不到」：dev 写的是另一个文件。这条测试现在
+    /// 钉的是更强的事实——**release 那份文件的内容逐字节不变**。
     #[test]
-    fn dev_shell_registers_its_own_instance_without_stealing_the_shared_default() {
+    fn dev_shell_writes_only_its_own_registry_file() {
         let home = temp_dir("ensure-default");
         let _xlink = scoped_xlink_home(&home);
         let data_dir = home.join("shell-data");
         std::fs::create_dir_all(&data_dir).expect("data dir");
         std::fs::write(data_dir.join("active.txt"), "0.1.7-rc.2\n").expect("active");
 
-        // 先替 release 建好默认实例并认领 registry default。
+        // 先替 release 在**它自己那份**文件里建好实例并认领指针。
         let mut registry = load_or_migrate(None, 3090);
         let mut release = sample_record(DEFAULT_INSTANCE_ID, 3090, KERNEL_FAMILY_DSH);
         release.kernel_version = Some("0.1.7-rc.2".to_string());
         registry.add(release).expect("add release");
         registry.default_instance_id = Some(DEFAULT_INSTANCE_ID.to_string());
-        save_registry(&registry).expect("seed registry");
+        let release_file = crate::paths::instances_registry_file_for(ShellMode::Release);
+        crate::instance::save_registry_to(&registry, &release_file).expect("seed release");
 
         ensure_default_registered(&data_dir).expect("ensure current default");
 
@@ -1326,8 +1395,19 @@ mod tests {
         );
         assert_eq!(
             after.default_instance_id.as_deref(),
+            Some(DEV_DEFAULT_INSTANCE_ID),
+            "本壳文件里的指针指向本壳自己的默认实例"
+        );
+        let release_registry =
+            crate::instance::load_registry_for(ShellMode::Release).expect("load release file");
+        assert!(
+            release_registry.get(DEV_DEFAULT_INSTANCE_ID).is_none(),
+            "dev 壳不得把自己的实例写进 release 的注册表文件"
+        );
+        assert_eq!(
+            release_registry.default_instance_id.as_deref(),
             Some(DEFAULT_INSTANCE_ID),
-            "dev 壳不得改写共享的 registry default"
+            "release 的指针不受 dev 壳影响"
         );
         // 幂等：再跑一次不报错也不重复建。
         ensure_default_registered(&data_dir).expect("第二次仍然幂等");
@@ -1398,6 +1478,87 @@ mod tests {
             current_instance_id(),
             DEV_DEFAULT_INSTANCE_ID,
             "空白选择必须回退，不能被当成一个真实实例 id"
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    // --- 族解析不得读共享指针 ------------------------------------------------
+
+    /// [`default_family`] 解析的是**本壳**的数据目录，因此它的输入只能是本壳
+    /// 自己的状态。共享指针 `default_instance_id` 被写成什么、乃至指向一个
+    /// 根本不存在的实例，都不许影响结果——那正是 2026-09-28 那次跨壳干扰的形状
+    /// （`data_dir` 装的是内核安装树，解析错了等于「内核不见了」且无任何报错）。
+    #[test]
+    fn default_family_ignores_the_shared_registry_pointer() {
+        let home = temp_dir("family-ignores-pointer");
+        let _xlink = scoped_xlink_home(&home);
+        // 指针指向 dev 的实例；本壳（测试进程恒为 dev）服务的是自己的实例。
+        let mut registry = load_or_migrate(None, 3091);
+        registry
+            .add(sample_record(
+                DEFAULT_INSTANCE_ID,
+                3090,
+                KERNEL_FAMILY_MCODE,
+            ))
+            .expect("add release");
+        registry
+            .add(sample_record(
+                DEV_DEFAULT_INSTANCE_ID,
+                3091,
+                KERNEL_FAMILY_DSH,
+            ))
+            .expect("add dev");
+        registry.default_instance_id = Some(DEV_DEFAULT_INSTANCE_ID.to_string());
+        save_registry(&registry).expect("seed");
+
+        assert_eq!(
+            default_family(),
+            KERNEL_FAMILY_DSH,
+            "本壳的族必须由本壳的实例决定，而不是共享指针指向谁"
+        );
+
+        // 指针指向一个不存在的实例时同样不影响——旧版本留下的垃圾值不该有威力。
+        let mut registry = load_registry().expect("load");
+        registry.default_instance_id = Some("gone-after-delete".to_string());
+        save_registry(&registry).expect("seed bogus");
+        assert_eq!(default_family(), KERNEL_FAMILY_DSH);
+
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 每个壳在自己的注册表文件里认领**自己**的默认实例：分文件之前 dev 壳被
+    /// 禁止写这个字段（那时它写的是别人的文件），分文件之后谁写都只影响自己，
+    /// 那条限制随之撤销。顺带把历史写坏的值（对方的指针留在本壳这份文件里）
+    /// 改回本壳的默认值。
+    #[test]
+    fn each_shell_claims_its_own_default_in_its_own_file() {
+        let home = temp_dir("pointer-claim");
+        let _xlink = scoped_xlink_home(&home);
+        let mut registry = load_or_migrate(None, 3090);
+        // 历史垃圾：dev 那份文件里留着 release 写下的指针。
+        registry.default_instance_id = Some(DEFAULT_INSTANCE_ID.to_string());
+
+        // dev 壳：认领自己的，写的是 `instances-dev.json`。
+        assert!(
+            claim_default_pointer_for(&mut registry, DEV_DEFAULT_INSTANCE_ID),
+            "认领 dev 自己的默认实例（把对方的指针顶掉）"
+        );
+        assert_eq!(
+            registry.default_instance_id.as_deref(),
+            Some(DEV_DEFAULT_INSTANCE_ID)
+        );
+        // release 壳：把指错的值改回自己的。
+        assert!(
+            claim_default_pointer_for(&mut registry, DEFAULT_INSTANCE_ID),
+            "release 必须把指错的指针改回来"
+        );
+        assert_eq!(
+            registry.default_instance_id.as_deref(),
+            Some(DEFAULT_INSTANCE_ID)
+        );
+        assert!(
+            !claim_default_pointer_for(&mut registry, DEFAULT_INSTANCE_ID),
+            "已经正确时不该反复写盘"
         );
         std::fs::remove_dir_all(&home).ok();
     }

@@ -148,15 +148,39 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 │   ├── kernel.pid                 # 工作台进程锁
 │   ├── plugins-catalog.json       # 社区插件目录缓存（TTL 6 小时）
 │   └── kernels/<version>/         # 内核安装产物：node_modules/ + package.json + pnpm-lock.yaml
-├── dsh-plugins/                   # 插件中央库（**全局共享**）
+├── plugins/                          # 插件中央库的命名空间（内层按内核族 + 壳模式分家）
+│   ├── dsh/                          #   release 壳的中央库（存量由 dsh-plugins/ 搬入）
+│   └── dsh-dev/                      #   dev 壳的中央库（首次从 release 那份复制种子）
 ├── skills/
-│   ├── packages/<id>/             # 技能中央库（**全局共享**）
-│   └── active/                    # 技能活动视图（**v1 全局共享**——DSH 通过 customSkillDirs 接入）
-├── state/                         # 实例注册表 / PID 文件 / 端口锁
+│   ├── packages/<id>/             # 技能中央库（**两个壳共享**——见下「有意共享」）
+│   └── active/                    # 技能活动视图（**两个壳共享**——DSH 经 customSkillDirs 接入）
+├── state/                         # 端口锁 + 实例注册表
+│   ├── instances.json             #   release 壳的实例注册表（沿用已发布版本的路径）
+│   └── instances-dev.json         #   dev 壳的实例注册表（2026-09-29 起按壳模式分文件）
 ├── cache/                         # nodejs / 内核下载缓存
 ├── backups/<migration_id>/        # 迁移向导的 backup（回滚时按此还原）
 └── xlink.json                     # Xlink 自身的元数据
 ```
+
+### 两个壳之间共享什么（2026-09-29 逐条核对）
+
+判据只有一条：**可变的、两个进程会同时碰的状态一律分家**。逐条结果：
+
+| 数据 | 位置 | 谁在写 |
+| --- | --- | --- |
+| Shell 设置 / 日志 | `shell/<mode>/` | 各写各的 |
+| 内核安装树 / `active.txt` | `<family>/desktop[-dev]/` | 各写各的 |
+| **实例注册表** | `state/instances.json` / `state/instances-dev.json` | **各写各的**（`registry_split`） |
+| 实例目录 / DSH home / 插件物化 | `kernels/<family>/instances/<id>/` | 按实例 id 天然分开 |
+| **插件中央库** | `plugins/dsh/` / `plugins/dsh-dev/` | **各写各的**（`store_relocate`） |
+| 技能中央库 / 活动视图 | `skills/packages/` + `skills/active/` | **两个壳共享——有意为之** |
+| 社区插件目录缓存 | `<family>/desktop[-dev]/plugins-catalog.json` | 各写各的 |
+
+**注册表为什么必须分文件**（2026-09-29 改）：此前两个壳共用一个 `state/instances.json`，而它的互斥只到进程级（`instance::lifecycle_mutex` 是进程级 Mutex）——两个进程对同一个文件做读-改-写没有任何序列化，后写的那份会把前一份的记录整条盖掉；此外 dev 壳删一个实例会改到 release 壳顶部页签的列表。`registry_split::ensure_scoped` 在 setup 期一次性拆分：自己的文件不存在就从共享的旧文件**拷**一份（拷不是搬——对方还没认领时它也得能读到同样的记录），对方认领之后把自己这份里的对方默认实例记录删掉。规则顺序无关、可重复跑，细节见该模块文档。分完之后「只有 release 能写共享指针」那条防御性限制随之撤销——谁写都只写自己那份文件。**代价与目的同源**：顶部页签不再列出另一个壳的实例。
+
+**技能为什么继续共享**（2026-09-29 维护者决定）：它是「可读的源码 + 启用清单」，dev 侧装一个新技能只会让 release 的技能列表多一项可见内容，**不影响工作台（webui）的会话 / 模型 / 插件**。这与插件中央库共享造成的后果是**两类不同的问题**，别混谈：插件中央库是 dev 改**源码** → 被 `link` 物化进 release 正在跑的实例 → 内核当场抛 `scope '…' rendered without an installed adapter` 白屏；技能这边只是清单里多一行。
+
+**族解析一级都不读注册表指针**：`instance::default_family` → `kernel::data_dir` 只走本壳自己的状态（本壳当前实例 → 本壳默认实例 → `dsh`）。`data_dir` 装的是内核安装树（`active.txt` + `kernels/<version>/` 几百 MB），让它取决于「另一个壳上次写了什么」就是跨壳竞态——`check:invariants` 第 12 项禁止任何生产代码读 `default_instance_id` 做决策。
 
 ### 内核安装路径：P1 布局已备好，但安装链路仍走旧位
 
@@ -181,11 +205,31 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 - `<xlink_home>/<family>/desktop[-dev]/kernels/<version>/` — **当前**内核安装位置（`install_version` 写入；`resolve_install_root` 的 legacy 兜底也指向这里）
 - `<xlink_home>/<family>/desktop[-dev]/{active.txt, kernel.pid, quarantine.json}` — Shell 状态 / 内核进程锁 / 隔离记录（`logs/` **不**在这里，见「日志规范」）
-- `<DSH_HOME>/desktop[-dev]/plugins.json` — **旧** 插件中央库（已迁到 `<DSH_XLINK_HOME>/dsh-plugins/`）
+- `<DSH_HOME>/desktop[-dev]/plugins.json` — **旧** 插件中央库（已迁到 `<DSH_XLINK_HOME>/plugins/dsh/`）
+- `<xlink_home>/dsh-plugins/` — **已发布版本**的插件中央库，两个壳曾共用（2026-09-29 由 `store_relocate` 整体搬进 `plugins/dsh/`，dev 壳复制一份到 `plugins/dsh-dev/`）
 - `<DSH_HOME>/desktop[-dev]/store.json` — **旧** 技能中央库（已迁到 `skills/packages/`）
 - `<xlink_home>/<family>/desktop[-dev]/skills/` — **旧** 技能活动视图（已迁到 `skills/active/`）
 
 **旧 → 新** 路径映射由 `migration::LegacySource` 表达，迁移向导 `migration::run_migration` 按这个映射把旧布局导入新布局（**旧源永不被删除**——rollback 路径依赖）。中央库清单 `store.json` 不走整文件复制/跳过：任何冲突策略下都按条目 `id` **合并**进目标清单（目标已有条目优先、只补缺失条目），否则目标侧清单一旦比源「新」（哪怕内容是测试夹具泄漏之类的错误数据），源记录就永远迁不进来。技能活动视图里的符号链接会被解引用成**内容拷贝**落地（跨根链接不保留），这些拷贝在清单里没有物化指纹——启用时按「内容与中央库源逐字节一致即收编」自动补记账（`skills::ensure_entry` 的 `identical_unowned_copy`），内容不一致的同名条目仍按冲突拒绝。
+
+### 「搬错实例」的历史会话回收（`home_recovery.rs`）
+
+`legacy_migration_target()` 把 `~/.dsh` 的历史锁定只搬进 release 实例，**防的是再犯**。它防不了已经犯的：2026-09-28 11:51 dev 壳跑过旧逻辑，把用户的历史会话并进了 `default-dev`，而这道闸门 12:09 才落地（commit `713bb40`）——release 侧工作台从此是空列表，`~/.dsh` 已空、搬不动第二次，数据没丢，只是不在本实例的 `DSH_HOME` 里。
+
+`home_recovery` 是那条缺失的回收路径，纪律与 `restore` 同一套：
+
+- **只读扫描先行**：`scan_misplaced_home(family, id)` 列出「别的实例 home 里有、而本实例没有」的条目。持有者集合 = 另一个壳的默认实例 id（编译期常量，不依赖注册表是否完整）+ 注册表里同族的其它实例，**自己不算自己的持有者**。
+- **要搬两样，少一样用户仍然看不到**：
+  1. `sessions/<工作区>/session-<uuid>/`（连同 `attachments/`）——会话正文；
+  2. `<home>/storages/workspace.json` 里的**工作区条目**——会话列表的来源。
+
+  第 2 样是 2026-09-29 在本机实测出来的：只把 `sessions/` 拷过去，内核确实重新解析了那个会话（`storages/session_projcache/` 出现新条目），但工作台里**仍然不显示**——内核列会话读的不是目录，而是 `workspace.json` 的 `tables.workspaces[<wsId>].sessionIds`（目标实例那份是当天新建的，里面没有那个工作区）。因此它是 **JSON 合并**而不是目录复制，且只在「本实例确实有该会话目录」时才登记 id——收编一个指向不存在会话的条目，会留下一条打不开的历史。合并遵守：同一**路径**的工作区以目标为准、只在 `sessionIds` 尾部补缺；`defaultWorkspaceId` / `archivedSessionIds` / `pinnedSessionIds` 一个都不动；目标文件**损坏时不做任何事**（绝不拿空骨架覆盖用户的清单）；写盘走 `atomic_write`。
+- **其它目录一律不碰**：`profiles/` 是接线按本实例 `package.json` 重建的 pnpm 产物（源侧那棵可能连着别的实例的依赖），`logs/` 归壳，storages 里其它内容由内核按当前工作区现写，凭据是单文件、由工作台的凭据界面单独管理。
+- **复制而不是搬家**：`recover_misplaced_home` 只写目标，**源永不删除**；目标已有的同名条目一律跳过（扫描与点击之间可能有另一个壳写进了同名会话，执行前再挡一次）。
+- **要求工作台已停止**（与 `restore` 同一条）：内核把 storages 缓存在内存里，运行中合并进去的清单会被它下一次落盘整个覆盖，用户看到的是「点了没反应」。命令层直接拒绝并给出下一步。
+- **部分失败照实报**：`MisplacedRecovery` 分 `copied` / `skipped` / `workspaces` / `failed` 四段，UI 逐条显示，不假装全成。
+
+UI 挂在「数据迁移」面板的「找回历史会话」卡片（`MigrationPanel.vue`，进入面板时只读扫描一次）。它与迁移向导那 4 个源**不是一回事**：那套处理「上一代壳留下的旧布局目录」，带 backup + 整目录覆盖语义；会话不能那样搬——`BackupAndOverwrite` 会拿新数据换掉本实例已有的会话。
 
 ### 多实例隔离
 

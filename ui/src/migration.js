@@ -107,6 +107,63 @@ export const promptStore = reactive({
   runResult: null,
 });
 
+/** 「搬错实例」的历史会话回收（后端 home_recovery）。
+ *
+ * 与上面三个源**不是一回事**：`LegacySource` 是「上一代壳留下的旧布局」，
+ * 这里说的是「`~/.dsh` 的历史被并进了**另一个实例**的 DSH_HOME」——2026-09-28
+ * dev 壳在闸门落地前 15 分钟取走了 release 的会话，release 侧工作台从此是空
+ * 列表。数据没丢，只是不在本实例的 `DSH_HOME` 里，因此走独立的扫描 / 复制
+ * 两条命令，不复用迁移向导的 backup + 覆盖语义（那套会整目录覆盖，对会话
+ * 来说等于拿新数据换旧数据）。
+ *
+ * 回收要搬**两样**：会话目录（正文）与 `storages/workspace.json` 里的工作区
+ * 条目（工作台的会话清单来源）。只搬目录是不够的——文件在磁盘上、清单里没有
+ * 那一行，工作台里就是不显示（2026-09-29 本机实测）。
+ *
+ * 两条命令都用 snake_case 字段（`dirs` / `workspaces` / `file_count` /
+ * `total_bytes` / `session_count`），与 migration.rs 同一条链路一致。 */
+export const misplacedStore = reactive({
+  /** scan_misplaced_home 的结果；null = 还没查过 / 查失败。 */
+  scan: null,
+  /** recover_misplaced_home 的结果（逐条汇报）。 */
+  recovered: null,
+});
+
+/** 全部缺失条目的文件数（后端的 total_files() 是方法，不参与序列化）。 */
+export function misplacedFileCount(scan) {
+  if (!scan || !Array.isArray(scan.dirs)) return 0;
+  return scan.dirs.reduce((acc, d) => acc + (d.file_count || 0), 0);
+}
+
+/** 全部缺失条目的字节数。 */
+export function misplacedTotalBytes(scan) {
+  if (!scan || !Array.isArray(scan.dirs)) return 0;
+  return scan.dirs.reduce((acc, d) => acc + (d.total_bytes || 0), 0);
+}
+
+/** 只读扫描别的实例 home 里本实例缺的历史会话。
+ *
+ * 失败**不 toast**：这是一条「发现用户可能需要自己没注意到的东西」的旁路，
+ * 查不到就当作没有，不该在打开面板时弹一条与用户动作无关的错误。 */
+export async function loadMisplacedScan() {
+  try {
+    misplacedStore.scan = await invoke('scan_misplaced_home');
+    return misplacedStore.scan;
+  } catch {
+    misplacedStore.scan = null;
+    return null;
+  }
+}
+
+/** 把缺失条目复制进本实例 home。源永不删除、目标已有条目永不覆盖。 */
+export async function recoverMisplacedHome() {
+  const result = await invoke('recover_misplaced_home');
+  misplacedStore.recovered = result;
+  // 复制完再扫一次：成功的话卡片会自然消失，用户不需要手动刷新。
+  await loadMisplacedScan();
+  return result;
+}
+
 /** 默认重置（每次进入向导时调用）。 */
 export function resetMigrationStore() {
   migrationStore.activeStep = 0;

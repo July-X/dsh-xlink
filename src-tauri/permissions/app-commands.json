@@ -92,6 +92,8 @@
           "migration_skip_get",
           "migration_skip_set",
           "migration_skip_clear",
+          "scan_misplaced_home",
+          "recover_misplaced_home",
           "get_model_usage",
           "open_usage_window",
           "get_subscription_usage",
