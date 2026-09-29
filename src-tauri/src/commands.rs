@@ -2676,6 +2676,10 @@ pub async fn migration_skip_get() -> Result<bool, String> {
     Ok(migration::is_migration_skipped())
 }
 
+// 「搬错实例」的会话回收命令（scan_misplaced_home / recover_misplaced_home）
+// 住在 `home_recovery_cmd.rs`：它们与其余 70 多条命令没有任何共享逻辑，留在
+// 这里只会顶高一个只许下调的预算。
+
 /// 记录用户拒绝迁移（弹窗点「否」时调）。`sources` 是这次弹窗扫描到的
 /// 来源列表，写进 skip 文件供审计/日志用，不参与"是否再问"的判断。
 /// 迁移成功路径的静音由 `migration_run` 后端自动写入（reason=migrated），
@@ -3107,13 +3111,10 @@ pub async fn delete_instance(app: AppHandle, id: String) -> Result<(), String> {
         instance::delete_instance_dirs(&record).map_err(|e| format!("清理实例目录失败：{e}"))?;
         let mut registry = registry;
         registry.remove(&id);
-        if registry.default_instance_id.as_deref() == Some(id.as_str()) {
-            // 置 `None` 而不是改指某个兄弟实例：这个共享字段只表达「release 壳的
-            // 默认实例是哪一个」，指向别人就等于让 `default_family()` 按一个不相干
-            // 的实例去解析族目录。置 `None` 后 setup 的 `ensure_default_registered`
-            // 会在下次启动把它重建回来。
-            registry.default_instance_id = None;
-        }
+        // 被删的正是本壳默认指针指向的那个 → 置空（指针的维护只在 instance.rs
+        // 里做，见 `instance::forget_default_pointer`）。置 `None` 而不是改指某个
+        // 兄弟实例：下次启动的 `ensure_default_registered` 会按本壳默认值重建。
+        instance::forget_default_pointer(&mut registry, &id);
         // 本壳自己选中的就是被删的那个 → 退回按壳分家的默认值，别让壳停在一个
         // 已经不存在的实例上。
         let mode = crate::settings::current_mode();

@@ -722,6 +722,39 @@ function productionRust(text) {
   } else {
     note('共享的 default_instance_id 只有 instance.rs 会指向具体实例');
   }
+
+  // ③ 共享的 default_instance_id **不得被读**来决定路径 / 族。
+  //
+  // 这份指针曾��� `default_family()` 解析 `data_dir` 的输入，而 `data_dir` 装的是
+  // 内核安装树（active.txt + kernels/<version>/ 几百 MB）。让「本壳的数据目录」
+  // 取决于「另一个壳上次写了什么」是一次典型的跨壳竞态：谁先写谁赢，写错的
+  // 一方还不自愈（认领条件是「无人认领」）。2026-09-29 起族解析只走壳自己的
+  // 状态（本壳当前实例 → 本壳默认实例 → dsh），该字段降级为**只写不读**的
+  // 旧版本兼容位。这条检查让「不要接回去」变成机械可查的。
+  const sharedReaders = [];
+  for (const file of rustFiles) {
+    if (file === 'instance.rs') continue; // 唯一合法的维护者
+    const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
+    lines.forEach((line, index) => {
+      // 写（`= `）由 ② 管；这里只抓读：取值 / 比较 / 传给函数。
+      if (/\.default_instance_id\s*(=[^=]|\+=)/.test(line)) return;
+      if (!/\.default_instance_id\b/.test(line)) return;
+      sharedReaders.push(`${file}:${index + 1}`);
+    });
+  }
+  if (sharedReaders.length > 0) {
+    for (const where of sharedReaders) {
+      fail(
+        'shared-registry-read',
+        `${where} 读了注册表里共享的 default_instance_id —— 那是 dev 与 release 共享的一份可变字段：` +
+          '任何一壳写入都可能让另一壳下次启动把数据目录（= 内核安装树）指到不相干的地方，' +
+          '且写错的一方不自愈。要按实例解析，先看 instance::current_instance_id()（壳内选择，' +
+          '两个壳各一份）或 instance::default_family()（已只走壳自己的状态）。',
+      );
+    }
+  } else {
+    note('共享的 default_instance_id 无人读作决策依据');
+  }
 }
 
 // --- 结果 --------------------------------------------------------------------

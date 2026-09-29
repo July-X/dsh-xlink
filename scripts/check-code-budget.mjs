@@ -274,6 +274,35 @@ const FILE_BUDGETS = {
   // 同一个宽进出的来源；② guard.rs 是只许下调的反棘轮文件，而 2026-09-29 新增的
   // 内核槽位装配不变量判据必须落在它够得着的地方。60 行，离 800 行硬顶很远。
   'src-tauri/src/kernel_evidence.rs': 80,
+  // 2026-09-29：插件中央库的一次性目录搬迁（`dsh-plugins/` → `plugins/dsh[-dev]/`）
+  // 从 plugins.rs 拆出。拆的理由有两条，都不是「文件太长了」：① 搬迁只关心旧目录
+  // 在不在、要不要搬、搬失败怎么办，不读 store.json、不碰物化指纹——中央库的条目
+  // 逻辑在 plugins.rs，目录级的一次性动作在这里，两者是不同层；② plugins.rs 是
+  // 反棘轮文件（只许下调），把新逻辑留在那里只能靠调数字过门禁，而调数字正是
+  // AGENTS.md 禁止的反应。生产代码约 75 行。
+  'src-tauri/src/store_relocate.rs': 120,
+  // 2026-09-29：「搬错实例」的遗留数据回收（sessions / attachments）。2026-09-28
+  // dev 壳在闸门落地前 15 分钟把 `~/.dsh` 的历史会话并进了 default-dev，release
+  // 侧工作台从此是空列表，而 `~/.dsh` 已空、搬不动第二次——instance.rs 只写了
+  // 「防再犯」的闸门，没有「已犯怎么办」的回收路径。独立成文件的理由同上：扫描 /
+  // 复制 / 合并的主体不碰实例注册表与生命周期，留在 instance.rs 只会顶高那条
+  // 540 行的预算。生产代码 185 → 408：多出来的是 `workspace.json` 的合并——会话
+  // 列表由它决定，只搬目录的话文件在磁盘上、工作台里仍然不显示（2026-09-29 本机
+  // 实测）。408 行离 800 行硬顶还有一半距离。
+  'src-tauri/src/home_recovery.rs': 430,
+  // 同一条回收路径的 Tauri 命令壳（scan / recover 两条）。与 commands.rs 其余
+  // 70 多条命令没有共享逻辑，留在那里只能靠上调数字过反棘轮——`bisect_cmd.rs`
+  // 是同一处理由。生产代码约 30 行。
+  'src-tauri/src/home_recovery_cmd.rs': 60,
+  // 2026-09-29：实例注册表按壳模式**分文件**的一次性拆分（`state/instances.json`
+  // / `state/instances-dev.json`）。之前两个壳共用一个文件，于是：跨进程读-改-写
+  // 没有任何序列化（互斥只是进程级 Mutex）、dev 壳删/建实例会改到 release 的列表、
+  // 以及「本壳服务哪个实例」这类指针写在共享文件里。拆开之后这三类跨壳竞态从根上
+  // 消失，instance.rs 里原有的「只有 release 能写共享指针」那套防御也随之撤销。
+  // 独立成文件有两个理由：① 拆分规则（认领 / 让位 / 顺序无关 / 幂等）是一套独立
+  // 的迁移状态机，塞进 instance.rs 会顶高那条已经贴着 540 的预算；② 它只服务
+  // 启动期的一次性动作，与实例生命周期（建/启/停/删）无关。生产代码 72 行。
+  'src-tauri/src/registry_split.rs': 110,
   'ui/src/store.js': 430,
   // 多内核改造 P0：新路径模块（paths.rs）。包含 ShellMode、xlink_home、shell
   // /kernels/skills/state/cache 解析、legacy resolver、id 校验与基础数据
@@ -585,7 +614,30 @@ const FILE_BUDGETS = {
 // 动（`incidents.js` 的分段 + 面板渲染，共约 70 行，落在既有的 157 行共享层
 // 里、没有新开文件）。没有这两处，切内核后前端崩了既归因不到具体包名，用户
 // 也只能拿到「未定位到包名」这句话。
-const TOTAL_BUDGET = 33120;
+// 33120 → 33660：目录搬迁收尾 + 「搬错实例」的会话回收。
+// ① store_relocate.rs（~75 行）：插件中央库 `dsh-plugins/` → `plugins/dsh[-dev]/`
+//    的一次性搬迁从 plugins.rs 拆出。**不是净增**——plugins.rs 同期从 3027 回到
+//    2957（反棘轮基线 2980），这一进一出才是它该有的形状：新逻辑留在只许下调的
+//    大文件里，唯一能过的门禁是调数字，而调数字正是 AGENTS.md 禁止的反应。
+// ② home_recovery.rs（408）+ home_recovery_cmd.rs（30）+ 前端卡片与 store（~75）：
+//    2026-09-28 dev 壳在闸门落地前 15 分钟把 `~/.dsh` 的历史会话并进了
+//    default-dev，release 侧工作台从此是空列表，而 `~/.dsh` 已空、搬不动第二次。
+//    instance.rs 只写了「防再犯」的闸门（legacy_migration_target），没有「已经
+//    犯了呢」的回收路径——用户因此既看不见自己的数据，也没有产品内的出路。
+//    回收要搬两样：会话目录（复制）与 `storages/workspace.json`（**合并**——
+//    工作台的会话列表读的是它，只搬目录的话文件在磁盘上却永远不显示，2026-09-29
+//    本机实测）。第二样是这次多出来的 ~220 行，规则是：只登记本实例确实有会话
+//    目录的 id、同一路径以目标为准只补缺、目标文件损坏时绝不用空骨架覆盖、
+//    写盘走 atomic_write、且要求工作台已停止（内核内存缓存会覆盖清单）。
+//    commands.rs 与 plugins.rs 同期都回到基线以下（新逻辑一律拆出去）。
+// ③ registry_split.rs（72）+ instance.rs / paths.rs / lib.rs 的接线（~25）：
+//    实例注册表按壳模式分文件。此前两个壳共用 `state/instances.json`，而互斥只
+//    到进程级——跨进程的读-改-写没有任何序列化，dev 壳删一个实例会改到 release
+//    的列表，「本壳服务哪个实例」的指针也写在共享文件里。拆成
+//    `instances.json` / `instances-dev.json` 之后这三类跨壳竞态从根上消失，
+//    instance.rs 里「只有 release 能写共享指针」那条防御也随之撤销（谁写都只
+//    写自己那份文件）。这次多出来的净增全部在「隔离」上，没有一行是功能。
+const TOTAL_BUDGET = 33720;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。
