@@ -888,6 +888,16 @@ function productionRust(text) {
     }
     // 判据必须落在那条动作**里面**：动作与判据被拆开时，命令层只该看到动作。
     const harnessSrc = productionRust(readFileSync(join(srcDir, 'harness_window.rs'), 'utf8'));
+    // 证据必须真的在 Incident 上：命令层是从 `incident.health` 取出来递给判据的
+    // （commands.rs 是反棘轮文件，不能为了留一份副本多写三行）。`diagnose_runtime`
+    // 把它设成 None 的话，`if let Some(health)` 那一步会静默跳过，**第三层整个不工作
+    // 且没有任何线索**——与 ACL 事故同一类。它的提前返回路径由
+    // `existing.health.as_ref() == Some(&report)` 这个条件保证带着 health，所以这里
+    // 只需钉住唯一那个构造点。
+    const guardSrc = productionRust(readFileSync(join(srcDir, 'guard.rs'), 'utf8'));
+    if (!/fn diagnose_runtime\([\s\S]*?health: Some\(report\)/.test(guardSrc)) {
+      selfHealMisses.push('guard::diagnose_runtime 不再把 health 带在 Incident 上');
+    }
     const actionLines = harnessSrc.split('\n');
     const actionStart = actionLines.findIndex((line) => line.startsWith('pub fn recreate_after_fault('));
     if (actionStart >= 0) {
