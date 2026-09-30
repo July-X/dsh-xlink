@@ -746,7 +746,17 @@ const FILE_BUDGETS = {
 // `shadowing_skill_entries`）此前已存在且面板已在报，缺的只是一个可点的处置——
 // 而处置复用的是 skills.rs 里早就有的 `keep_aside`（仅因多收一个 reason 参数
 // 提为 `pub(crate)`），没有第二套改名逻辑。
-const TOTAL_BUDGET = 34520;
+// 34520 → 34560：跨壳停机守卫从**硬拦**降级为**提示**（2026-09-30）。kernel.rs
+// +19（`OtherShellWorkbench` 结构体 + `KernelStatus` 字段 + `warn_other_shell_workbench`，
+// 期间删掉了 `ensure_workbench_stopped` 那条硬拦入口，所以净增不是全量）、
+// VersionsPanel.vue +13（版本页把后果与出路提前说清楚，不让用户点完才知道对面可能
+// 黑屏）。instance.rs 那条阻断文案**原地改成提示文案**，净增约 0——同一个事实
+// （谁占着、进程、端口）只该有一份措辞，两份文案必然漂移。
+// 净增的是**一条用户可见的出路**，不是新概念：跨壳判据
+// （`instance::workbench_running_in_other_shell`）此前就存在且此前只用来看「要不要
+// 拦」，现在只用来「说不拦的理由与恢复办法」。反棘轮（单文件只许下调）未触发，
+// kernel.rs / instance.rs 的单文件预算一个数字都没动。
+const TOTAL_BUDGET = 34560;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

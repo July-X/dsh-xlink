@@ -23,6 +23,22 @@ import VersionPluginsTip from './VersionPluginsTip.vue';
 
 const KERNEL_RELEASES_URL = 'https://github.com/deepseek-ai/deepseek-harness/releases';
 const kernel = computed(() => store.view && store.view.kernel);
+// 后端 `KernelStatus.other_shell_workbench`（该结构体是 snake_case 序列化，
+// 与 settings_warning 同一个约定）。
+const otherShellWorkbench = computed(
+  () => (kernel.value && kernel.value.other_shell_workbench) || null
+);
+const otherShellWorkbenchText = computed(() => {
+  const other = otherShellWorkbench.value;
+  if (!other) return '';
+  const port = other.port ? `、端口 ${other.port}` : '';
+  return (
+    `另一个 dsh-xlink（${other.shell} 壳）的工作台正在运行（实例 ${other.instance}` +
+    `、进程 ${other.pid}${port}）。装 / 删内核仍可继续：它要写入两万个文件并编译原生模块，` +
+    '机器最忙的时候那个工作台可能短暂卡住、甚至黑屏。两个壳的安装树不相交，不会有数据' +
+    '互相影响；卡住或黑屏了，在那个壳的概览页点「刷新工作台」即可恢复。'
+  );
+});
 
 function openKernelReleases() {
   return withLoading('openKernelReleases', () => openExternalLink(KERNEL_RELEASES_URL, '内核发布页'));
@@ -99,6 +115,18 @@ onMounted(() => {
       </div>
 
       <el-alert v-if="store.settingsWarning" :title="store.settingsWarning" type="warning" :closable="false" show-icon />
+
+      <!-- 另一个壳的工作台在跑：**不拦**装 / 删内核（双壳并行是壳存在的理由），
+           但后果必须在点之前说清楚——对面可能卡住或黑屏，而恢复只要点一下
+           「刷新工作台」。文案不写「不能」，也不写「请先去关掉」：那会把用户
+           送去关一个他正在用的工作台。 -->
+      <el-alert
+        v-if="otherShellWorkbench"
+        :title="otherShellWorkbenchText"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
 
       <el-alert v-if="store.releaseWarning" :title="store.releaseWarning" type="warning" :closable="false" show-icon />
 
