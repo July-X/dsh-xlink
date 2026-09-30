@@ -472,7 +472,16 @@ const FILE_BUDGETS = {
   // 与周列对齐、趋势堆叠、饼图扇区等纯展示函数（node --test 直测）。
   // 160 → 180：实际落地比估的多（数字格式、模型配色 ring、热力 tooltip
   // 阈值再加注释）；另含 heatLevels / heatmapColumns 的 doc 注释。
-  'ui/src/usage.js': 180,
+  // 180 → 190：修「概览与用量窗口显示两个今日用量」（2026-09-30 用户实测：
+  // 卡片 0 tokens、窗口 12.09M）。两处新增都是这个 bug 的必要组成：
+  //   · `todayUsage(data)`——「今日」的唯一口径。窗口此前自己取
+  //     `sliceDays(days, 1)` 的最后一天，而后端会把晚于今天的异常日期追加到
+  //     序列末尾，所以「最后一天」未必是今天；卡片读后端的 `today_tokens`。
+  //     同一个数两套算法，迟早显示成两个数。
+  //   · `setUsageAutoRefresh(on)`——概览卡片此前只在 onMounted 拉一次就再也不
+  //     更新，窗口却每次打开都 force 重扫还带手动刷新。现在挂载期间 60s 对一次
+  //     账，卸载即停；间隔取 TTL 本身，闲置时一个请求都不发。
+  'ui/src/usage.js': 190,
   // 模型用量统计（UsageWindow.vue）：独立窗口根组件（open_usage_window 弹出，
   // ?usage=1 挂载）——摘要卡 + 热力图 + 堆叠柱状趋势 + 环形图/列表与
   // scoped 样式，全 CSS/内联 SVG 不引图表库。
@@ -933,7 +942,15 @@ const FILE_BUDGETS = {
 // skill_conflict.rs 188 → 155（它自己那个只认 `metadata.version` 的小解析器
 // 删掉，改用同一套）——「判据有两份实现就会分叉」那条纪律的第一次实际兑现。
 // 反棘轮三个文件本轮仍是零增长。
-const TOTAL_BUDGET = 35810;
+// 35810 → 35840（2026-09-30 晚）：修「概览与用量窗口显示两个今日用量」。
+// 用户实测同一份统计两个数（卡片 0 tokens、窗口 12.09M），查下来是两处成因：
+// 口径分叉（卡片读后端 today_tokens、窗口取 days 的最后一天）与卡片永不刷新。
+// 净增约 30 行：usage.js +10（todayUsage 唯一口径 + setUsageAutoRefresh）、
+// usage.rs +2（today_requests，与 today_tokens 同一次匹配算出）、UsageWindow
+// 与 OverviewPanel 各 +2、App.vue +4（接上已有的切页 / 可见性刷新钩子）、
+// usageStats.test.js +2。check-invariants 第 ⑦ 项之五钉接线——实测把窗口改回
+// 旧算法，14 个 usage 单测全绿。
+const TOTAL_BUDGET = 35840;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

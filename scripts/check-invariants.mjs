@@ -1075,6 +1075,58 @@ function productionRust(text) {
     }
   }
 
+  // ⑦之五：「今日用量」在两个面板上必须是**同一份**口径，且概览卡片必须会刷新。
+  //
+  // 同形状的老毛病，2026-09-30 用户实测撞上：概览卡片显示 0 tokens，而独立的
+  // 「模型用量」窗口显示 12.09M，同一份统计两个数。查下来是两处独立成因：
+  //   ① 口径分叉——卡片读后端的 `today_tokens`（按本地日历日精确匹配），窗口
+  //      自己取 `sliceDays(days, 1)` 的**最后一天**；而 Rust 恰恰会把晚于今天
+  //      的异常日期（时钟漂移 / 手改 session）追加到序列末尾，所以「最后一天」
+  //      未必是今天。`612ecde` 当时在后端把 `days.last()` 换成精确匹配，窗口
+  //      这侧却原样留着同一个坑。
+  //   ② 卡片只在 `onMounted` 拉一次就再也不更新，窗口每次打开都 force 重扫还带
+  //      手动刷新——卡片那侧永远不会自己追上。
+  // 两处都是「纯函数测得再准，摘掉调用照样全绿」：实测把窗口改回
+  // `sliceDays(days, 1)`，14 个 usage 单测全绿。这里钉接线形状。
+  {
+    const misses = [];
+    const usageJs = readFileSync(join(root, 'ui', 'src', 'usage.js'), 'utf8');
+    const window = readFileSync(join(root, 'ui', 'src', 'UsageWindow.vue'), 'utf8');
+    const overview = readFileSync(join(root, 'ui', 'src', 'components', 'OverviewPanel.vue'), 'utf8');
+    const app = readFileSync(join(root, 'ui', 'src', 'App.vue'), 'utf8');
+    // ① 唯一口径：usage.js 导出 todayUsage，窗口与卡片都走它。
+    if (!/export function todayUsage\(/.test(usageJs)) {
+      misses.push('usage.js 不再导出 todayUsage（今日口径失去唯一出处）');
+    }
+    // 判「摘要卡里那个 today 变量从哪来」，而不是全文找 sliceDays(…, 1)：
+    // 范围切换器（今日 / 7 / 15 天）**本来就该**按所选范围切片，那里出现
+    // `sliceDays(days, rangeDays)` 是正确的；而解释旧坑的注释里也写着
+    // `sliceDays(days, 1)`。第一版检查就是这么写的，两处都误报。
+    if (!/const today = todayUsage\(/.test(window)) {
+      misses.push('用量窗口的「今日用量」不再取 todayUsage(data)');
+    }
+    // ② 卡片会刷新：挂载起定时器、卸载停掉，窗口重新可见时立即对账。
+    if (!/setUsageAutoRefresh\(true\)/.test(overview)) {
+      misses.push('概览卡片不再起定时刷新（它会永远停在挂载那一刻的快照）');
+    }
+    if (!/setUsageAutoRefresh\(false\)/.test(overview)) {
+      misses.push('概览卡片卸载时不停止定时刷新（离开面板后仍在空转）');
+    }
+    if (!/loadUsageSummary\(\)/.test(app)) {
+      misses.push('窗口重新可见 / 切回概览时不再立即对账（要等满一个刷新周期）');
+    }
+    if (misses.length > 0) {
+      fail(
+        'usage-today-agreement',
+        `${misses.join('、')}——概览卡片与「模型用量」窗口会为同一份统计显示两个数` +
+          '（2026-09-30 用户实测：卡片 0 tokens、窗口 12.09M）。注意：usage 单测抓不到' +
+          '这些，实测把窗口改回 sliceDays(days, 1) 之后 14 个测试照样全绿。',
+      );
+    } else {
+      note('「今日用量」两个面板同一口径，且概览卡片会定期与切回时刷新');
+    }
+  }
+
   // ⑦ 三处「接线」，单测都抓不到。
   //
   // 共同形状：**判据 / 组件本身是对的，某个人把它接到某处时漏了**。前两轮各吃过一次

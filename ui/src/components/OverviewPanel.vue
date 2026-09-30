@@ -5,7 +5,7 @@
 // 「打开工作台窗口 / 打开官方对话窗口」在对应服务开启后作为次级入口从第二行动态浮现。
 // 「当前内核」的 Node.js 行另带「重新检测」（探测本机环境，不改设置）；Node
 // 环境结论悬浮在卡标题旁的 ℹ️ 上（原「桌面端设置」卡已并入这个 tooltip）。
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch, onUnmounted } from 'vue';
 import {
   InfoFilled,
   Timer,
@@ -46,7 +46,14 @@ import {
 import { progress } from '../progress.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 import { openLogsWindow } from '../logs.js';
-import { loadUsageSummary, openUsageWindow, usage, formatTokens, RETENTION_DAYS } from '../usage.js';
+import {
+  loadUsageSummary,
+  setUsageAutoRefresh,
+  openUsageWindow,
+  usage,
+  formatTokens,
+  RETENTION_DAYS,
+} from '../usage.js';
 import {
   subscription,
   loadSubscriptionSummary,
@@ -76,7 +83,11 @@ const onInstallNode = () => withLoading('installNode', () => installNode());
 // 新鲜度窗口）；原始值与 90 天保留策略进 tooltip。
 onMounted(() => {
   loadUsageSummary();
+  // 挂载期间定期对账：此前这张卡片只在挂载时拉一次就再也不更新，而独立的
+  // 「模型用量」窗口每次打开都重扫还带手动刷新——同一份统计于是长期对不上。
+  setUsageAutoRefresh(true);
 });
+onUnmounted(() => setUsageAutoRefresh(false));
 const usageDayText = computed(() =>
   usage.data ? formatTokens(usage.data.today_tokens) + ' tokens' : '—'
 );
