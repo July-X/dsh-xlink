@@ -124,49 +124,16 @@ fn detail_for(target: &Path, source: &Path) -> String {
 
 /// 读一份技能条目 frontmatter 里的 `metadata.version`（目录包读 `SKILL.md`）。
 ///
-/// 有意只取这一个字段：它**只用于拼告警文案**，一个读不出来就让文案退回
-/// 通用说法，不影响判据，因此不需要完整 YAML，也不该因此把技能拒掉。
+/// 解析在 `skill_frontmatter`：frontmatter 有两个消费者，各写一份解析器就会
+/// 分叉，而分叉出来的那份会让「面板上显示的版本」与「文案里说的版本」对不上。
+/// 读不出来返回 `None`，调用方据此退回通用说法——**判据不依赖它**。
 fn frontmatter_version(path: &Path) -> Option<String> {
     let file = if path.is_dir() {
         path.join("SKILL.md")
     } else {
         path.to_path_buf()
     };
-    let text = fs::read_to_string(&file).ok()?;
-    let body = text.strip_prefix('\u{feff}').unwrap_or(&text);
-    let mut lines = body.lines();
-    if lines.next()?.trim_end() != "---" {
-        return None;
-    }
-    // `metadata:` 之后的第一个缩进 `version:` 才算数：顶层 `version:` 属于
-    // 别的键（frontmatter 顶层没有这个约定），认错会把无关字段报成版本。
-    let mut in_metadata = false;
-    for line in lines {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if line == "---" || line == "..." {
-            return None;
-        }
-        let indented = line.starts_with(' ') || line.starts_with('\t');
-        if !indented {
-            in_metadata = line.trim_end().starts_with("metadata:");
-            continue;
-        }
-        if in_metadata {
-            if let Some((key, value)) = line.trim().split_once(':') {
-                if key.trim() == "version" {
-                    return normalize_version(value.trim());
-                }
-            }
-        }
-    }
-    None
-}
-
-/// 去掉引号与前导 `v`，让 `v3.1.0` 与 `3.1.0` 能被比成同一份。
-fn normalize_version(raw: &str) -> Option<String> {
-    let value = raw.trim().trim_matches(['"', '\'']);
-    let value = value.strip_prefix('v').unwrap_or(value);
-    (!value.is_empty()).then(|| value.to_string())
+    crate::skill_frontmatter::version(&fs::read_to_string(file).ok()?)
 }
 
 /// 面板顶部告警的一整段。没有冲突时是 `None`。

@@ -70,6 +70,7 @@ mod sandbox;
 mod settings;
 mod shell_events;
 mod skill_conflict;
+mod skill_frontmatter;
 mod skill_shadow;
 mod skills;
 mod snapshot;
