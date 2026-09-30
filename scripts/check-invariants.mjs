@@ -559,9 +559,12 @@ function toCamel(name) {
 const renamedFields = new Map(); // snake → { camel, struct, file }
 {
   const srcDir = join(root, 'src-tauri', 'src');
-  for (const file of readdirSync(srcDir)) {
-    if (!file.endsWith('.rs')) continue;
-    const text = readFileSync(join(srcDir, file), 'utf8');
+  // 递归：判据的覆盖面不该取决于文件放在哪一层。src-tauri/src 一旦分目录，
+  // 非递归的 readdirSync 会让下面四项检查**静默失去覆盖**——不报错，只是再也
+  // 看不到那些文件了。
+  for (const rel of walk(srcDir, ['.rs'])) {
+    const file = rel.slice(srcDir.length + 1);
+    const text = readFileSync(rel, 'utf8');
     const re =
       /#\[derive\([^)]*Serialize[^)]*\)\]\s*#\[serde\(rename_all\s*=\s*"camelCase"\)\]\s*pub struct\s+(\w+)\s*\{([^}]*)\}/gs;
     let m;
@@ -666,7 +669,8 @@ function productionRust(text) {
 
 {
   const srcDir = join(root, 'src-tauri', 'src');
-  const rustFiles = readdirSync(srcDir).filter((name) => name.endsWith('.rs'));
+  // 递归，理由同上面那处：分目录后非递归扫描会静默漏掉子目录里的文件。
+  const rustFiles = walk(srcDir, ['.rs']).map((full) => full.slice(srcDir.length + 1));
 
   // ① 实例 id 不得 hard-code。
   const hardCodedIds = [];
@@ -1347,7 +1351,8 @@ function productionRust(text) {
 // 而全部测试照样全绿。与第 13 项同一类：判据是对的，接线漏了没人知道。
 {
   const srcDir = join(root, 'src-tauri', 'src');
-  const rustFiles = readdirSync(srcDir).filter((name) => name.endsWith('.rs'));
+  // 递归，理由同上面那处：分目录后非递归扫描会静默漏掉子目录里的文件。
+  const rustFiles = walk(srcDir, ['.rs']).map((full) => full.slice(srcDir.length + 1));
   const builders = [];
   for (const file of rustFiles) {
     const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
@@ -1463,7 +1468,8 @@ function productionRust(text) {
 //      任何错，坏掉的症状只是用户再也复制不出东西。
 {
   const srcDir = join(root, 'src-tauri', 'src');
-  const rustFiles = readdirSync(srcDir).filter((name) => name.endsWith('.rs'));
+  // 递归，理由同上面那处：分目录后非递归扫描会静默漏掉子目录里的文件。
+  const rustFiles = walk(srcDir, ['.rs']).map((full) => full.slice(srcDir.length + 1));
   const remoteChains = [];
   for (const file of rustFiles) {
     const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
