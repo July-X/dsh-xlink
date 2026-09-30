@@ -136,6 +136,10 @@ pub struct UsageView {
     pub total_requests: u64,
     /// 今日（本地日历日）的总用量——概览卡片上的数字。
     pub today_tokens: u64,
+    /// 今日的请求次数。与 [`Self::today_tokens`] 由**同一次**精确匹配算出：
+    /// 曾经只回 tokens，窗口的「今日 N tokens · N 次」只好自己去 `days` 里找
+    /// 那一天，于是「今日」在这条链路上有了两套定义。
+    pub today_requests: u64,
     /// 窗口内有用量记录的天数。
     pub active_days: u64,
     pub top_model: Option<String>,
@@ -678,11 +682,11 @@ fn derive_view(doc: &UsageStateDoc, now_ms: u64) -> UsageView {
     // 今日口径按日期字符串精确匹配，不取 days.last()：晚于今天的异常日期
     // （时钟漂移 / 手工改过的 session 文件）会被下面的 extend 追加到序列末尾。
     let today_key = date_string_of_ms(now_ms);
-    let today_tokens = days
+    let (today_tokens, today_requests) = days
         .iter()
         .find(|d| d.date == today_key)
-        .map(|d| d.tokens)
-        .unwrap_or(0);
+        .map(|d| (d.tokens, d.requests))
+        .unwrap_or((0, 0));
     UsageView {
         retention_days: RETENTION_DAYS,
         last_scanned_at_ms: doc.last_scanned_at_ms,
@@ -690,6 +694,7 @@ fn derive_view(doc: &UsageStateDoc, now_ms: u64) -> UsageView {
         total_tokens,
         total_requests: days.iter().map(|d| d.requests).sum(),
         today_tokens,
+        today_requests,
         active_days: days.iter().filter(|d| d.requests > 0).count() as u64,
         top_model: models.first().map(|m| m.key.clone()),
         models,
@@ -1103,6 +1108,11 @@ mod tests {
             "前置：未来日确实被追加到末尾（days.last() 不可用作今日口径）"
         );
         assert_eq!(view.today_tokens, 33, "今日只数今天的日账，不被未来日顶替");
+        // tokens 与 requests 由**同一次**匹配算出。曾经只回 tokens，窗口的
+        // 「今日 N tokens · N 次」只好自己去 days 里找那一天——「今日」于是有了
+        // 两套定义，两个面板能为同一份统计显示两个数。
+        assert_eq!(view.today_requests, 1, "今日请求次数与 tokens 同源");
+        assert_ne!(view.today_requests, 7, "未来日的 7 次不得顶替今日的 1 次");
     }
 
     #[test]

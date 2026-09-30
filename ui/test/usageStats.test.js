@@ -25,6 +25,7 @@ Object.defineProperty(globalThis, 'navigator', {
 
 const {
   formatTokens,
+  todayUsage,
   formatPercent,
   heatLevels,
   heatmapColumns,
@@ -216,4 +217,35 @@ test('modelName 只留斜杠后的模型名，provider 前缀不外露', () => {
   assert.equal(modelName('其他'), '其他');
   assert.equal(modelName('glm-5.3'), 'glm-5.3');
   assert.equal(modelName(undefined), '');
+});
+
+// 「今日」在概览卡片与独立窗口曾经是两套定义：卡片读后端的 `today_tokens`，
+// 窗口自己取日序列的**最后一天**。而 Rust 会把晚于今天的异常日期（时钟漂移
+// / 手改 session 文件）追加到序列末尾——于是「最后一天」未必是今天，两个面板
+// 会为同一份统计显示两个数。窗口已于 2026-09-30 改走同一条口径。
+test('todayUsage 只认后端的今日口径，晚于今天的异常日期顶替不了它', () => {
+  const data = {
+    today_tokens: 12_091_449,
+    today_requests: 116,
+    // 序列末尾那条是 2026-10-05 的异常数据，量比今天大得多。
+    days: [
+      { date: '2026-09-30', tokens: 12_091_449, requests: 116 },
+      { date: '2026-10-05', tokens: 999_999_999, requests: 4242 },
+    ],
+  };
+  const today = todayUsage(data);
+  assert.equal(today.tokens, 12_091_449, '今日用量取 today_tokens，不取序列最后一天');
+  assert.equal(today.requests, 116);
+  // 旧实现（sliceDays(days, 1)）在这个数据上会给出 999_999_999。
+  const legacy = data.days[data.days.length - 1];
+  assert.equal(legacy.tokens, 999_999_999);
+});
+
+test('todayUsage 对缺字段与坏输入都退化为 0，不产生 NaN', () => {
+  assert.deepEqual(todayUsage(null), { tokens: 0, requests: 0 });
+  assert.deepEqual(todayUsage({}), { tokens: 0, requests: 0 });
+  assert.deepEqual(todayUsage({ today_tokens: '12091449', today_requests: '116' }), {
+    tokens: 12_091_449,
+    requests: 116,
+  });
 });

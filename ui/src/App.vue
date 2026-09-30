@@ -16,6 +16,7 @@ import {
 import { loadCatalog, checkPluginUpdates } from './plugins.js';
 import { loadInstances } from './instance.js';
 import { checkSkillUpdates } from './skills.js';
+import { loadUsageSummary } from './usage.js';
 import { applyNotificationStatus } from './notifications.js';
 import { maybeOpenMigrationPrompt } from './migration.js';
 import KernelTabs from './components/KernelTabs.vue';
@@ -170,6 +171,11 @@ function refreshActivePanelData() {
     checkPluginUpdates({ busy: false, toastOnUpdates: true });
   } else if (store.activePanel === 'skills') {
     checkSkillUpdates({ busy: false, toastOnUpdates: true });
+  } else if (store.activePanel === 'overview') {
+    // 概览卡片上的「今日用量」：窗口重新可见 / 切回概览时立即对一次账。
+    // 概览页自己挂着 60s 定时刷新，但窗口从后台回来的那一刻正是用户要读数的
+    // 那一刻，等下一个 tick 只会让两个面板的数字继续差着。TTL 守卫兜底。
+    loadUsageSummary();
   }
 }
 

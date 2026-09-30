@@ -251,3 +251,30 @@ export async function refreshUsage() {
     usage.loading = false;
   }
 }
+
+/// 「今日」的唯一口径。概览卡片与独立窗口**都走这里**。
+///
+/// 这不是封装洁癖：两处各算各的必然漂移。窗口此前取 `sliceDays(days, 1)`
+/// ——日序列的最后一天——而 Rust 恰恰会把**晚于今天的异常日期**（时钟漂移 /
+/// 手改 session 文件）追加到序列末尾，所以「最后一天」未必是今天
+/// （`612ecde` 当时在后端把 `days.last()` 换成按日期精确匹配，窗口这侧却
+/// 原样留着同一个坑）。tokens 与 requests 由后端**同一次**匹配算出，这里
+/// 不做任何再推导，也就无从分叉。
+export function todayUsage(data) {
+  return {
+    tokens: Number((data && data.today_tokens) || 0),
+    requests: Number((data && data.today_requests) || 0),
+  };
+}
+
+// 概览卡片挂载期间的定时刷新。卡片此前**只在 onMounted 拉一次**就再也不更新，
+// 而独立窗口每次打开都 force 重扫还带手动刷新——同一份统计于是长期对不上，
+// 且卡片那侧永远不会自己追上。间隔取 SUMMARY_TTL_MS，让 TTL 守卫自己决定
+// 何时真的发请求：闲置时不发，最多 60s 落后一次账。
+let refreshTimer = null;
+
+export function setUsageAutoRefresh(on) {
+  if (on === (refreshTimer !== null)) return;
+  if (!on) clearInterval(refreshTimer);
+  refreshTimer = on ? setInterval(() => loadUsageSummary(), SUMMARY_TTL_MS) : null;
+}

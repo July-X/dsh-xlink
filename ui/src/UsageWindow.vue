@@ -22,6 +22,7 @@ import {
   donutSlices,
   sliceDays,
   summarizeDays,
+  todayUsage,
   modelName,
   weekdayLabel,
   RANGE_OPTIONS,
@@ -56,8 +57,10 @@ const rangeText = computed(() => (rangeDays.value === 1 ? '今日' : `近 ${rang
 
 const summaries = computed(() => {
   const s = rangeSummary.value;
-  // 今日用量与所选范围无关：恒取日序列的最后一天（Rust 恒补齐到今天）。
-  const today = summarizeDays(sliceDays(data.value && data.value.days, 1));
+  // 今日用量与所选范围无关，取后端那一份（按本地日历日精确匹配）。此前这里
+  // 取 `sliceDays(days, 1)` 的最后一天，而后端会把晚于今天的异常日期追加到
+  // 序列末尾——于是窗口与概览卡片对「今日」有两套定义，同一份统计会显示两个数。
+  const today = todayUsage(data.value);
   const top = s.models[0];
   return [
     {
