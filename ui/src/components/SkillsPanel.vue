@@ -15,6 +15,7 @@ import {
   uninstallSkill,
   setSkillEnabled,
   moveAsideShadowedSkills,
+  moveAsideConflictingSkills,
   checkSkillUpdates,
 } from '../skills.js';
 import { openExternalLink, confirmDialog } from '../notify.js';
@@ -43,6 +44,28 @@ async function moveAsideShadowed() {
   );
   if (!ok) return;
   await withLoading(SHADOW_KEY, moveAsideShadowedSkills);
+}
+
+// 活动视图里被同名条目占住、启用必然失败的条目。与 shadowed 同一条纪律：判据
+// 在后端（view.conflicts），这里只把路径与来由摆到确认框里，不去解析告警文案。
+// 这条曾是一个只有「关闭」的死胡同——判据已经精确到具体文件，按钮却不存在。
+const conflicts = computed(() => (view.value && view.value.conflicts) || []);
+const CONFLICT_KEY = 'moveAsideConflicts';
+
+async function moveAsideConflicts() {
+  const lines = conflicts.value.map(
+    (e) => tildePath(e.path) + '（' + e.detail + '）'
+  );
+  const ok = await confirmDialog(
+    '移走占位的同名条目？',
+    '下面这些条目占着技能在活动视图里的位置，但它们不归技能库所有，所以启用一定失败。\n' +
+      '它们会被改名（文件名加时间戳后缀），不会删除；改回原名即可恢复：\n\n' +
+      lines.join('\n') +
+      '\n\n移走之后回到上面的开关上点「启用」即可。',
+    '改名让路'
+  );
+  if (!ok) return;
+  await withLoading(CONFLICT_KEY, moveAsideConflictingSkills);
 }
 
 // 技能启停：面板此前只提供安装/卸载/更新/重新同步，启停虽然有完整的后端能力
@@ -112,8 +135,8 @@ const storeTip = computed(() => {
         :closable="false"
         show-icon
       />
-      <!-- 告警的出路。按钮只在判据非空时出现（`view.shadowed`），文案自带的
-           「删掉上面列出的条目」是兜底——判据与路径都由后端给出。 -->
+      <!-- 告警的出路。按钮只在判据非空时出现（`view.shadowed` / `view.conflicts`），
+           文案自带的「删掉上面列出的条目」是兜底——判据与路径都由后端给出。 -->
       <div v-if="shadowed.length" class="shadow-actions">
         <span class="muted">
           这 {{ shadowed.length }} 份盖住了壳管理的同名条目，移走前请确认下面列出的路径。
@@ -127,6 +150,21 @@ const storeTip = computed(() => {
           @click="moveAsideShadowed"
         >
           移走被盖住的条目
+        </el-button>
+      </div>
+      <div v-if="conflicts.length" class="shadow-actions">
+        <span class="muted">
+          这 {{ conflicts.length }} 个技能的位置被占着，现在点启用一定会失败，移走前请确认下面列出的路径。
+        </span>
+        <el-button
+          size="small"
+          type="warning"
+          plain
+          :loading="isLoading(CONFLICT_KEY)"
+          :disabled="globalBusy"
+          @click="moveAsideConflicts"
+        >
+          移走冲突条目
         </el-button>
       </div>
 

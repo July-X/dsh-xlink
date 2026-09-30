@@ -167,6 +167,9 @@ pub struct SkillStatus {
     /// 被更高优先级根盖住的活动条目。告警文案是给人读的，这里是给按钮读的：
     /// UI 据此决定要不要给出「移走被盖住的条目」，**不得**去解析 warning 字符串。
     pub shadowed: Vec<crate::skill_shadow::ShadowedEntry>,
+    /// 活动视图里被同名条目占住、启用必然失败的条目。判据在后端（`skill_conflict`），
+    /// 面板据它决定要不要给「移走冲突条目」，**不得**去解析 warning 字符串。
+    pub conflicts: Vec<crate::skill_conflict::ConflictEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -219,7 +222,7 @@ fn expand_tilde(path: &Path) -> PathBuf {
 /// 被启动的 kernel 自行解析出的 dsh home（`DSH_HOME` 环境变量或 `~/.dsh`）。
 /// 外壳必须写入 kernel 实际读取的那个目录，因此这里镜像 kernel 的解析顺序，
 /// 而不从外壳的数据目录派生（`DSH_DESKTOP_DATA_DIR` 可能将其重定向到别处）。
-fn resolve_home() -> PathBuf {
+pub(crate) fn resolve_home() -> PathBuf {
     expand_tilde(
         &std::env::var_os("DSH_HOME")
             .map(PathBuf::from)
@@ -305,14 +308,20 @@ pub fn skills_root(_home: &Path) -> PathBuf {
     paths::skills_active_root()
 }
 
-/// 单个技能的活动根条目：目录包以其 frontmatter 名建立链接；
-/// 扁平文件则变为 `<name>.md`，使条目读起来就像技能本身。
-fn skill_target_path(_home: &Path, entry: &SkillEntry) -> PathBuf {
+/// 单个技能在**给定根**下的落点：目录包以其 frontmatter 名建目录，扁平文件
+/// 变为 `<name>.md`，使条目读起来就像技能本身。落点算术与「活动根在哪」分成
+/// 两处，是为了让判据能在临时目录上跑（测试不许碰用户真实数据）。
+pub(crate) fn target_path_in(active: &Path, entry: &SkillEntry) -> PathBuf {
     if entry.path.ends_with(".md") {
-        paths::skills_active_root().join(format!("{}.md", entry.name))
+        active.join(format!("{}.md", entry.name))
     } else {
-        paths::skills_active_root().join(&entry.name)
+        active.join(&entry.name)
     }
+}
+
+/// 活动根里的那一份。
+pub(crate) fn skill_target_path(_home: &Path, entry: &SkillEntry) -> PathBuf {
+    target_path_in(&paths::skills_active_root(), entry)
 }
 
 /// 将包/仓库/文件夹名映射为文件系统安全的中央库 id。规则与插件中央库一致：
@@ -986,7 +995,7 @@ fn make_entry_link(source: &Path, target: &Path, is_file: bool) -> io::Result<()
 
 /// 解析中央库一侧的链接来源：把符号链接的中央库条目展开到真实位置，
 /// 让活动根的链接保持直接（避免出现双重符号链接链）。
-fn resolved_source(path: &Path) -> PathBuf {
+pub(crate) fn resolved_source(path: &Path) -> PathBuf {
     fs::symlink_metadata(path)
         .ok()
         .filter(|m| m.file_type().is_symlink())
@@ -1024,7 +1033,7 @@ struct Materialized {
 /// 一个条目（文件或目录）的内容指纹：文件取内容的 sha256；目录取
 /// "相对路径 + 内容 sha256" 排序后再哈希。符号链接不跟随（避免把链接目标
 /// 卷进指纹），链接自身的所有权由链接判定负责。
-fn fingerprint_path(path: &Path) -> Option<String> {
+pub(crate) fn fingerprint_path(path: &Path) -> Option<String> {
     use sha2::{Digest, Sha256};
 
     let md = fs::symlink_metadata(path).ok()?;
@@ -1114,7 +1123,7 @@ fn link_resolves_to(target: &Path, source: &Path) -> bool {
 ///    所有权证据。
 ///
 /// 两者都不成立时返回 `false`：用户手放的、或落地后被改写过的条目一律不动。
-fn entry_is_owned(target: &Path, source: &Path, entry: &SkillEntry) -> bool {
+pub(crate) fn entry_is_owned(target: &Path, source: &Path, entry: &SkillEntry) -> bool {
     if link_resolves_to(target, source) {
         return true;
     }
@@ -1131,7 +1140,7 @@ fn entry_is_owned(target: &Path, source: &Path, entry: &SkillEntry) -> bool {
 /// 的 `materialized_sha256`——`entry_is_owned` 因此认不出来。内容与源完全
 /// 一致时不存在"用户工作成果"问题，调用方可以安全收编（symlink 一律
 /// 返回 false：链接指向哪由 `link_resolves_to` 判，不在这里越权）。
-fn identical_unowned_copy(target: &Path, md: &fs::Metadata, source: &Path) -> bool {
+pub(crate) fn identical_unowned_copy(target: &Path, md: &fs::Metadata, source: &Path) -> bool {
     (md.is_file() || md.is_dir()) && fingerprint_path(target) == fingerprint_path(source)
 }
 
@@ -1191,10 +1200,7 @@ fn ensure_entry(
                 AppError::Io(format!("无法收编同名同内容条目 {}：{e}", target.display()))
             })?;
         } else if !replace_owned {
-            return Err(AppError::Skill(format!(
-                "技能名冲突：活动根中已存在同名条目 {} 且不来自当前技能包；可能来自其他技能包或手动放置，请先处理该条目",
-                target.display()
-            )));
+            return Err(crate::skill_conflict::conflict_error(&target, &source));
         } else {
             // 本商店没有认领它（用户改写过 / 手工放置），但调用方要求覆盖：**不能
             // 直接删除**——`entry_is_owned` 为假既可能是"本商店上一版留下的陈旧副本"，
@@ -1633,6 +1639,7 @@ fn status_for_home(home: &Path) -> SkillStatus {
              也可以自己删掉上面列出的条目，或换一个技能名。"
         )
     });
+    let conflicts = crate::skill_conflict::list();
     SkillStatus {
         rows,
         skills_root: root.display().to_string(),
@@ -1640,8 +1647,12 @@ fn status_for_home(home: &Path) -> SkillStatus {
         updates,
         last_checked_at: store.last_checked_at,
         // 清单完整性优先于流程性警告：前者解释了为什么列表是空的。
-        warning: integrity_warning.or(store.warning).or(shadow_warning),
+        warning: integrity_warning
+            .or(store.warning)
+            .or(shadow_warning)
+            .or(crate::skill_conflict::warning(&conflicts)),
         shadowed,
+        conflicts,
     }
 }
 
