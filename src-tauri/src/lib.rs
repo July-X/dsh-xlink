@@ -47,6 +47,7 @@ mod kernel_adapter;
 mod kernel_deps;
 mod kernel_evidence;
 mod migration;
+mod net_proxy;
 mod node;
 mod node_install;
 mod notify;
