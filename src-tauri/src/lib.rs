@@ -38,6 +38,7 @@ mod error;
 mod guard;
 mod harness_cmd;
 mod harness_draft;
+mod harness_media;
 mod harness_window;
 mod home_recovery;
 mod home_recovery_cmd;

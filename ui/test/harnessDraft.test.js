@@ -11,7 +11,6 @@ const source = readFileSync(new URL('../../src-tauri/src/harness-draft.js', impo
 /** 造一个可编辑元素。kind 为 'lexical' 时没有 value、只有 innerText——内核的会话
  *  输入框是 Lexical 富文本编辑器（contenteditable），不是 textarea。 */
 function makeEditable({ kind = 'lexical', text = '', id = 'composer', visible = true } = {}) {
-  const listeners = {};
   const el = {
     tagName: kind === 'textarea' ? 'TEXTAREA' : 'DIV',
     id,
@@ -23,12 +22,14 @@ function makeEditable({ kind = 'lexical', text = '', id = 'composer', visible = 
     readOnly: false,
     focused: false,
     events: [],
+    // 页面挂在这个元素上的事件处理器。假内核就是靠它「接住」一次粘贴的。
+    on: {},
     focus() {
       el.focused = true;
     },
     dispatchEvent(event) {
       el.events.push(event.type);
-      listeners[`${id}:${event.type}`]?.(event);
+      el.on[event.type]?.(event);
       return true;
     },
     getBoundingClientRect() {
@@ -36,6 +37,19 @@ function makeEditable({ kind = 'lexical', text = '', id = 'composer', visible = 
     },
   };
   return el;
+}
+
+/** 造一张附件轨道上的缩略图。src 必须是 `blob:` —— 那正是「还没发出去的草稿图」
+ *  与「会话历史里的图」的分别（后者走 http(s) 地址）。 */
+function makeImage({ name = 'probe.png', visible = true } = {}) {
+  return {
+    tagName: 'IMG',
+    src: `blob:fake-${name}-${Math.random().toString(16).slice(2)}`,
+    alt: name,
+    getBoundingClientRect() {
+      return visible ? { width: 64, height: 64 } : { width: 0, height: 0 };
+    },
+  };
 }
 
 function makeEnv({
@@ -46,14 +60,28 @@ function makeEnv({
   execCommandWorks = true,
   execCommandSilent = false,
   tauriReadyAfter = 0,
+  hasCard = true,
+  images = [],
+  pasteAccepts = true,
+  fetchWorks = true,
 } = {}) {
   const timers = [];
   const intervals = [];
   const handlers = {};
   const invocations = [];
   const execCalls = [];
+  const pastes = [];
   // `__TAURI__` 就绪时刻的探针：0 = 一开始就在；N = 第 N 次查它时才出现。
   let tauriLookups = 0;
+
+  // composer 卡片（`[data-composer-card]`）：编辑器、附件轨道、文件选择框都在它里面。
+  const card = hasCard
+    ? {
+        querySelectorAll(selector) {
+          return selector === 'img[src^="blob:"]' ? images : [];
+        },
+      }
+    : null;
 
   const fakeDocument = {
     activeElement: active,
@@ -62,6 +90,9 @@ function makeEnv({
     },
     querySelectorAll() {
       return editables;
+    },
+    querySelector(selector) {
+      return selector === '[data-composer-card]' ? card : null;
     },
     // insertText 成功时按浏览器的行为把文字放进元素——真实编辑器随后会更新
     // 自己的内部 state。这里照做，脚本的「读回来核对」才有东西可核对。
@@ -102,15 +133,58 @@ function makeEnv({
     addEventListener(name, handler) {
       handlers[`window:${name}`] = handler;
     },
-    // 定时器按 kind 记：脚本用 setTimeout 做「停顿后记草稿」与退避重试，用
-    // setInterval 做「轮询等 composer 出现」。不分开的話「一次引爆全部」会把
-    // 「__TAURI__ 还没就绪」这个前提自己引爆掉——那种测试看着在跑，其实什么也没验。
-    setInterval(fn) {
-      timers.push({ kind: 'interval', fn });
-      intervals.push(fn);
-      return timers.length;
+    // blob: URL 只有在这个页面里读得到字节——页面一换掉就没了，所以采集必须趁
+    // 页面还活着的时候做完。给一份固定的字节，方便断言。
+    fetch(url) {
+      if (fetchWorks === false) return Promise.reject(new Error('blob read failed'));
+      return Promise.resolve({
+        ok: true,
+        arrayBuffer() {
+          return Promise.resolve(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]).buffer);
+        },
+        headers: { get: () => 'image/png' },
+      });
     },
-    clearInterval() {},
+    btoa,
+    atob,
+    File: class {
+      constructor(parts, name, options) {
+        this.parts = parts;
+        this.name = name;
+        this.type = options?.type;
+      }
+    },
+    DataTransfer: class {
+      constructor() {
+        // 真 DataTransfer 的 items 既可迭代又有 add —— 缺一个就会让「派发 paste」
+        //  那条路在测试里假失败。
+        const list = [];
+        list.add = (file) => list.push({ kind: 'file', file });
+        this.items = list;
+      }
+    },
+    ClipboardEvent: class {
+      constructor(type, init) {
+        this.type = type;
+        this.clipboardData = init.clipboardData;
+        this.defaultPrevented = false;
+      }
+    },
+    // 定时器按 kind 记：脚本用 setTimeout 做「停顿后记草稿」与退避重试，用
+    // setInterval 做「轮询等 composer 出现」与「注入后核对」。不分开的話「一次引爆全部」
+    // 会把「__TAURI__ 还没就绪」这个前提自己引爆掉——那种测试看着在跑，其实什么也没验。
+    setInterval(fn) {
+      const entry = { kind: 'interval', fn, id: timers.length + 1, cleared: false };
+      timers.push(entry);
+      intervals.push(entry);
+      return entry.id;
+    },
+    // 真 clearInterval 真的会停：不然「注入后核对」那一圈会一遍遍回调 done()，
+    // 把「只该发生一次」的放回 / 清盘变成十几次——那种测试看着在跑，其实什么也没验。
+    clearInterval(id) {
+      const entry = timers.find((t) => t.id === id);
+      if (entry) entry.cleared = true;
+    },
     setTimeout(fn) {
       timers.push({ kind: 'timeout', fn });
       return timers.length;
@@ -119,11 +193,25 @@ function makeEnv({
   };
   fakeWindow.top = fakeWindow;
   fakeWindow.self = fakeWindow;
+  // 假内核：编辑器上的 paste 处理器把 File 变成轨道上的一张缩略图——这正是真机上
+  // Lexical PASTE_COMMAND → intakeFiles → createDrafts 的结果。
+  if (editables.length) {
+    editables[0].on.paste = (event) => {
+      pastes.push(event);
+      event.defaultPrevented = true;
+      if (!pasteAccepts) return;
+      for (const item of event.clipboardData.items) {
+        images.push(makeImage({ name: item.file.name }));
+      }
+    };
+  }
 
   runInNewContext(source, {
     window: fakeWindow,
     document: fakeDocument,
     Promise,
+    btoa,
+    atob,
     Event: class {
       constructor(type) {
         this.type = type;
@@ -141,15 +229,15 @@ function makeEnv({
   const fireAll = () => {
     const pending = timers.slice();
     timers.length = 0;
-    pending.forEach((t) => t.fn());
+    pending.filter((t) => !t.cleared).forEach((t) => t.fn());
   };
-  /** 让每个 interval 再走一拍，**不消费**。`fireAll` 是「烧掉排着的」，
+  /** 让每个**没被清掉**的 interval 再走一拍，**不消费**。`fireAll` 是「烧掉排着的」，
    *  只能用来走第一拍——而「发送之后」发生的事在第二拍上（监视是轮询的）。 */
   const tickIntervals = () => {
-    intervals.forEach((fn) => fn());
+    intervals.filter((t) => !t.cleared).forEach((t) => t.fn());
   };
 
-  return { handlers, invocations, execCalls, timers, editables, fireTimeouts, fireAll, tickIntervals };
+  return { handlers, invocations, execCalls, timers, editables, images, pastes, fireTimeouts, fireAll, tickIntervals };
 }
 
 test('停止输入后把当前输入框内容交给壳', async () => {
@@ -408,4 +496,189 @@ test('输入框一直有字时监视不重复写盘', () => {
     1,
     '内容没变就不该再写盘',
   );
+});
+
+/* ── 图片草稿这一组 ────────────────────────────────────────────────────────
+ *
+ * 图片在核心里不是编辑器的一部分，而是 composer 卡片上一排 `blob:` 缩略图，字节只
+ * 活在那个页面里。所以：① 采集只能在页面还活着时读 blob；② 恢复只能走 paste
+ * （真机实测：文件选择框那条路被 React 的 value tracker 吃掉）；③ 写回去与否要
+ * **核对**轨道上真的多了图，不能以「事件派发成功」当作恢复成功。 */
+
+const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test('粘贴进来的截图会被读成字节交给壳', async () => {
+  const composer = makeEditable({ text: '看看这张' });
+  const env = makeEnv({
+    editables: [composer],
+    active: composer,
+    images: [makeImage({ name: 'shot.png' })],
+  });
+
+  env.handlers['document:input']();
+  env.fireAll();
+  await settled();
+  await settled();
+
+  const stash = env.invocations.find((c) => c.command === 'stash_harness_draft');
+  assert.ok(stash, '有图就该记一次草稿');
+  assert.equal(stash.args.images.length, 1, '一张图');
+  assert.equal(stash.args.images[0].name, 'shot.png');
+  assert.equal(stash.args.images[0].mime, 'image/png');
+  assert.equal(
+    atob(stash.args.images[0].data),
+    String.fromCharCode(...new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])),
+    '必须是原始字节：img.src 是浏览器转码过的显示图，存它等于给用户换了一张图',
+  );
+});
+
+test('只有图没打字时也要存（只发图是最容易漏的那一种）', async () => {
+  const composer = makeEditable({ text: '' });
+  const env = makeEnv({ editables: [composer], active: composer, images: [makeImage()] });
+
+  env.handlers['document:input']();
+  env.fireAll();
+  await settled();
+  await settled();
+
+  const stash = env.invocations.find((c) => c.command === 'stash_harness_draft');
+  assert.ok(stash, '没有文字不代表没有东西要保管');
+  assert.equal(stash.args.text, '');
+  assert.equal(stash.args.images.length, 1);
+});
+
+test('图没了（发出去或被删）要作废——哪怕一个字都没打过', async () => {
+  const composer = makeEditable({ text: '' });
+  const env = makeEnv({ editables: [composer], active: composer, images: [makeImage()] });
+
+  env.handlers['document:input']();
+  env.fireAll();
+  await settled();
+  await settled();
+  assert.equal(env.invocations.filter((c) => c.command === 'stash_harness_draft').length, 1);
+
+  env.images.length = 0; // 发送（清空编辑器）会把轨道一起清掉
+  env.tickIntervals();
+
+  assert.equal(
+    env.invocations.filter((c) => c.command === 'clear_harness_draft').length,
+    1,
+    '只盯文字的话，图没了草稿会一直留在盘上',
+  );
+});
+
+test('恢复：图回到附件轨道上，文字照旧', async () => {
+  const composer = makeEditable({ text: '' });
+  const draft = {
+    href: 'http://127.0.0.1:3090/?session=abc',
+    text: '上次没发出去的',
+    images: [{ name: 'shot.png', mime: 'image/png', data: btoa('PNG-BYTES') }],
+  };
+  const env = makeEnv({ editables: [composer], takeResult: draft });
+
+  env.fireAll();
+  await settled();
+  await settled();
+  env.tickIntervals(); // 推进「注入后核对」那一拍
+  await settled();
+
+  assert.equal(env.pastes.length, 1, '必须走 paste：文件选择框那条路真机上收不下');
+  const files = env.pastes[0].clipboardData.items.map((i) => i.file);
+  assert.equal(files.length, 1);
+  assert.equal(files[0].name, 'shot.png');
+  assert.equal(files[0].type, 'image/png');
+  assert.equal(env.images.length, 1, '轨道上必须真的多出一张图');
+  assert.equal(composer.innerText, '上次没发出去的');
+});
+
+test('内核没收下图时：文字已回去就清盘，不留一份会重复的草稿', async () => {
+  // pasteAccepts: false = 事件派发出去了，轨道上却没多出图。那就是假恢复。
+  // 文字这时已经回到输入框了——再把整份放回去，只会让**下一次空的输入框**收到
+  // 一份重复的文字。宁可丢掉图，也不要留一份会自己冒出来的草稿。
+  const composer = makeEditable({ text: '' });
+  const draft = {
+    href: 'http://127.0.0.1:3090/?session=abc',
+    text: '上次没发出去的',
+    images: [{ name: 'shot.png', mime: 'image/png', data: btoa('PNG-BYTES') }],
+  };
+  const env = makeEnv({ editables: [composer], takeResult: draft, pasteAccepts: false });
+
+  env.fireAll();
+  await settled();
+  await settled();
+  for (let i = 0; i < 40; i += 1) {
+    env.tickIntervals();
+    await settled();
+  }
+
+  assert.equal(env.images.length, 0, '轨道上确实一张都没多');
+  assert.equal(composer.innerText, '上次没发出去的', '文字还是要回去');
+  assert.equal(
+    env.invocations.filter((c) => c.command === 'stash_harness_draft' && c.args.images.length > 0).length,
+    0,
+    '带图的那一份绝不放回：文字已经回去了，再放回只会造成重复',
+  );
+  assert.ok(
+    env.invocations.filter((c) => c.command === 'clear_harness_draft').length >= 1,
+    '草稿要清掉：留在盘上就是下一次打开工作台时的凭空冒出',
+  );
+});
+
+test('两样都没成时把整份放回（输入框还空着 ⇒ 干净的重试）', async () => {
+  const composer = makeEditable({ text: '' });
+  const draft = {
+    href: 'http://127.0.0.1:3090/?session=abc',
+    text: '上次没发出去的',
+    images: [{ name: 'shot.png', mime: 'image/png', data: btoa('PNG-BYTES') }],
+  };
+  const env = makeEnv({
+    editables: [composer],
+    takeResult: draft,
+    pasteAccepts: false,
+    execCommandWorks: false,
+  });
+
+  env.fireAll();
+  await settled();
+  await settled();
+  for (let i = 0; i < 40; i += 1) {
+    env.tickIntervals();
+    await settled();
+  }
+
+  const back = env.invocations.filter((c) => c.command === 'stash_harness_draft');
+  assert.equal(back.length, 1, '什么都没恢复就必须放回去等下一次页面加载');
+  assert.equal(back[0].args.text, '上次没发出去的');
+  assert.equal(back[0].args.images.length, 1, '图要一起放回：只放文字等于删掉用户的截图');
+});
+
+test('没有 composer 卡片时**不取**草稿：取走一张图却没地方放等于删掉它', () => {
+  const composer = makeEditable({ text: '' });
+  const draft = {
+    href: 'http://127.0.0.1:3090/?session=abc',
+    text: '',
+    images: [{ name: 'shot.png', mime: 'image/png', data: btoa('PNG-BYTES') }],
+  };
+  const env = makeEnv({ editables: [composer], takeResult: draft, hasCard: false });
+
+  env.fireAll();
+
+  assert.equal(
+    env.invocations.find((c) => c.command === 'take_harness_draft'),
+    undefined,
+    'take 是读走即删的：没有落点就别取',
+  );
+});
+
+test('取回来的草稿没有图（本次改动之前写下的）也能恢复', async () => {
+  const composer = makeEditable({ text: '' });
+  const draft = { href: 'http://127.0.0.1:3090/?session=abc', text: '旧草稿' };
+  const env = makeEnv({ editables: [composer], takeResult: draft });
+
+  env.fireAll();
+  await settled();
+  await settled();
+
+  assert.equal(composer.innerText, '旧草稿');
+  assert.equal(env.pastes.length, 0, '没有图就不该派发 paste');
 });

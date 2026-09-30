@@ -95,16 +95,20 @@ pub fn harness_reload_backoff() -> u64 {
     crate::package_activity::recovery_backoff().as_millis() as u64
 }
 
-/// 页面把「输入框里还没发出去的那段话」交给壳。
+/// 页面把「输入框里还没发出去的东西」交给壳：一段文字，外加还没发出去的那几张图。
 ///
 /// 调它的是注入脚本 `harness-draft.js`，时机是**用户停止输入一会儿之后**而不是
 /// 页面卸载时——卸载那一刻再发起 IPC，多半等不到回程（页面已经没了）。见
 /// [`crate::harness_draft`] 模块开头对「为什么经过壳而不是只放 sessionStorage」的
 /// 说明。
 #[tauri::command]
-pub fn stash_harness_draft(href: String, text: String) {
+pub fn stash_harness_draft(
+    href: String,
+    text: String,
+    images: Option<Vec<crate::harness_media::ImageInput>>,
+) {
     let (family, id) = crate::instance::resolve_default();
-    crate::harness_draft::stash(family, id, &href, &text);
+    crate::harness_draft::stash(family, id, &href, &text, images.as_deref().unwrap_or(&[]));
 }
 
 /// 页面报告「输入框空了」：把盘上那份草稿删掉。
@@ -120,12 +124,12 @@ pub fn clear_harness_draft() {
     crate::harness_draft::clear(family, id);
 }
 
-/// 页面起来后取走草稿（**读走即删**）。
+/// 页面起来后取走草稿（**读走即删**；图片以 base64 内联在返回值里）。
 ///
 /// 调用方必须**先确认页面上有可写的输入框**再调它：取走即删是「草稿不变成垃圾」
 /// 与「草稿不变成惊吓」的分界，而页面侧找不到输入框的那次调用会把草稿吞掉。
 #[tauri::command]
-pub fn take_harness_draft() -> Option<crate::harness_draft::Draft> {
+pub fn take_harness_draft() -> Option<crate::harness_draft::RestoredDraft> {
     let (family, id) = crate::instance::resolve_default();
     crate::harness_draft::take(family, id)
 }

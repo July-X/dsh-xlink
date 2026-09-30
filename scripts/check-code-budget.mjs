@@ -344,12 +344,25 @@ const FILE_BUDGETS = {
   'src-tauri/src/install_isolation.rs': 90,
   // 工作台未发送草稿的存续（2026-09-30，新建）。它该独立成一个文件而不是塞进
   // harness_cmd.rs：**它是数据**（一段纯文本 + 落盘位置 + 取走即删 + 过期 +
-  // 「输入框一空即作废」），harness_cmd.rs 里全是 Tauri 命令与「该不该动手」的判据；
-  // 它有 7 个测试，其中四个钉的是「什么时候**不该**把草稿交出去 / 不该留着它」。
+  // 「既没字也没图即作废」），harness_cmd.rs 里全是 Tauri 命令与「该不该动手」的判据；
+  // 它有 12 个测试，其中六个钉的是「什么时候**不该**把草稿交出去 / 不该留着它」。
   // 把数据与命令分开，下次改取走语义时不必翻命令层。注入脚本 `harness-draft.js`
   // **不计入预算**（check-code-budget 只数 src-tauri/src 的 .rs 与 ui/src），
-  // 它的 11 个测试在 `ui/test/harnessDraft.test.js`（已登记进 test:ui）。
-  'src-tauri/src/harness_draft.rs': 70,
+  // 它的 22 个测试在 `ui/test/harnessDraft.test.js`（已登记进 test:ui）。
+  //
+  // 70 → 130（2026-09-30，加图片草稿）：**图片的字节与上限搬去了 harness_media.rs**，
+  // 本文件只留「什么时候有、什么时候作废」这层生命周期；搬完之后剩下的增长是「只发图
+  // 不发字也算有东西」「图没了也要作废」这两条判据与它们的测试。按规则 ① 的正确反应
+  // 是把新逻辑拆出去而不是调数字——**拆过了**，这里调的是拆完之后的余量。
+  'src-tauri/src/harness_draft.rs': 130,
+  // 草稿图片的字节与上限（2026-09-30，加图片草稿时新建）。独立成文件的理由是
+  // **它回答的不是同一个问题**：harness_draft.rs 答「草稿什么时候存在、什么时候作废」，
+  // 这里答「一段二进制怎么进出这个进程、存不下时丢哪几张」。混在一起的后果是 base64
+  // 的位运算淹掉草稿本身的语义，而调上限的人分不清自己动的是哪一半。它与
+  // harness_draft 共享的只有那个落盘目录的路径，所以自己持有它。
+  // 6 个测试：base64 的已知向量与三种补位、写入读回逐字节不变、超限按「先到先留」
+  // 丢弃并报出张数、坏 base64 整张丢掉、换内容不留旧图。
+  'src-tauri/src/harness_media.rs': 150,
   // 2026-09-30：出网路由（`net_proxy.rs`，新建）。它回答的唯一问题是
   // **访问 GitHub 的请求该走哪条路**：先本机系统代理（环境变量 → Windows
   // Internet Settings 注册表 / macOS `scutil --proxy`），代理不通再直连。
@@ -866,7 +879,7 @@ const FILE_BUDGETS = {
 // 不是新概念：reqwest 本来就认环境变量代理，缺的是**系统设置**那一半，以及
 // 「代理优先、直连兜底」的顺序。合计 34999 行，预算留 50 行余量。updater.rs
 // 本身没有可下调的余地（新逻辑全在 net_proxy.rs）。重复区间数不变。
-const TOTAL_BUDGET = 35250;
+const TOTAL_BUDGET = 35440;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
@@ -878,6 +891,18 @@ const TOTAL_BUDGET = 35250;
 // 能力，也不是复制粘贴（两处模板共用同一个 balanceRow）。Rust 侧零改动：
 // 三个字段早就在 CacheBalance / BalanceView 里透传。反棘轮（plugins.rs /
 // theme.css / commands.rs）一个数字没动。
+// 35250 → 35440（2026-09-30 晚，草稿加图片）：用户要求草稿连「还没发出去的图」
+// 一起保管。净增 ~190 行，落在四个文件里：
+//   · harness_media.rs 143 行（新文件，登记见上）：图片的 base64 收发、三个上限、
+//     媒体目录的「整目录重建」自愈。编解码是自己写的（不引依赖），占 60 行。
+//   · harness_draft.rs 70 → 130：留下「什么时候有、什么时候作废」，图片的字节
+//     搬走。净增的是「只发图不发字也算有东西」「图没了也要作废」两条判据。
+//   · harness_cmd.rs +8：`stash_harness_draft` 多一个 `images` 形参。
+//   · 其余是文档与测试，不计入预算。
+// 注入脚本 `harness-draft.js` **不计入**（预算只数 .rs 与 ui/src），那边的增长由
+// `ui/test/harnessDraft.test.js` 的 22 个测试兜着。**没有**为省预算去动反棘轮文件
+// （plugins.rs / theme.css / commands.rs 一个数字没动），也没有复制粘贴第二份
+// 编解码——两边共用 harness_media 里的同一份。
 // 35120 → 35230（2026-09-30 傍晚）：横幅按实际残余风险门控——新模块
 // install_isolation.rs 66 行（登记见上）、kernel.rs +~40（InstalledVersion 的
 // shared_storage、other_shell_tree_shared、门控与装 / 删提示改为按采样条件触发）、
