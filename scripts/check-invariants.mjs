@@ -961,6 +961,41 @@ function productionRust(text) {
     } else {
       note('注入脚本 invoke 的参数名与 Rust 命令形参一致');
     }
+
+    // ⑥之半：**命令名**也要对得上。注入脚本跑在 harness 窗口里，那是个 remote
+    //    origin（http://127.0.0.1:<port>），Tauri's ACL 默认拒它的一切 invoke，
+    //    只有 capabilities/harness-remote.json 里显式授过的那几条能用。
+    //
+    //    2026-09-30 实测踩中：两条草稿命令登记进了 app-commands.json（第 1、2 项
+    //    因此都绿），却**没授给 harness 窗口**——真机上 invoke 被 ACL 直接拒，
+    //    而脚本的 `.catch` 把它吞掉，于是「草稿功能完全不工作」且没有任何线索。
+    //    dev 下不出来（dev 壳用的是本地 origin 的宽松路径）。这正是 a5ddedb 已经
+    //    吃过一次的亏（`install_node` 漏进白名单，8 个发布版本里 100% 失败）。
+    const granted = new Set();
+    const capabilityFile = join(root, 'src-tauri', 'capabilities', 'harness-remote.json');
+    if (existsSync(capabilityFile)) {
+      const capability = JSON.parse(readFileSync(capabilityFile, 'utf8'));
+      for (const permission of capability.permissions ?? []) {
+        const declared = JSON.parse(readFileSync(join(root, 'src-tauri', 'permissions', 'app-commands.json'), 'utf8'));
+        const entry = (declared.permission ?? []).find((item) => item.identifier === permission);
+        for (const command of entry?.commands?.allow ?? []) granted.add(command);
+      }
+    }
+    const invokeRe = /invoke\(\s*'([a-z_]+)'/g;
+    let invokeMatch;
+    while ((invokeMatch = invokeRe.exec(draftJs)) !== null) {
+      if (invokeMatch[1] === 'take_harness_draft' || invokeMatch[1] === 'stash_harness_draft') {
+        if (!granted.has(invokeMatch[1])) {
+          fail(
+            'harness-invoke-params',
+            `注入脚本 invoke 了 ${invokeMatch[1]}，但 harness 窗口没有被授权它——` +
+              '真机上会被 ACL 直接拒，而脚本的 .catch 把错误吞掉，症状是「功能完全不工作」' +
+              '且没有任何线索。请在 capabilities/harness-remote.json 的 permissions 里加对应的' +
+              'allow-* 条目（并在 permissions/app-commands.json 里声明它）。',
+          );
+        }
+      }
+    }
   }
 
   // ⑦ 三处「接线」，单测都抓不到。
