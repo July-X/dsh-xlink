@@ -33,11 +33,16 @@ const SHADOW_KEY = 'moveAsideShadowed';
 // 不写的地方，用户点确认之前有权先看见。
 // 文案是纯文本——`confirmDialog` 没开 dangerouslyUseHTMLString，写 Markdown
 // 星号会原样显示出来。
+// 两个「改名让路」确认框共用的那句：改的是名不是内容。两个对话框只差
+// 「为什么移」与「移走之后做什么」，那段共用的话不必各写一遍——上一次就是
+// 因为各写一遍才出现逐字重复。
+const RENAME_NOTICE = '下面这些条目会被改名（文件名加时间戳后缀），不会删除；改回原名即可恢复：';
+
 async function moveAsideShadowed() {
   const lines = shadowed.value.map((e) => tildePath(e.path) + '（盖住 ' + e.skill + '）');
   const ok = await confirmDialog(
     '移走被盖住的条目？',
-    '下面这些条目会被改名（文件名加时间戳后缀），不会删除；改回原名即可恢复：\n\n' +
+    RENAME_NOTICE + '\n' +
       lines.join('\n') +
       '\n\n移走后，壳管理的启停与更新才会对它们生效。',
     '改名让路'
@@ -59,7 +64,7 @@ async function moveAsideConflicts() {
   const ok = await confirmDialog(
     '移走占位的同名条目？',
     '下面这些条目占着技能在活动视图里的位置，但它们不归技能库所有，所以启用一定失败。\n' +
-      '它们会被改名（文件名加时间戳后缀），不会删除；改回原名即可恢复：\n\n' +
+      RENAME_NOTICE + '\n' +
       lines.join('\n') +
       '\n\n移走之后回到上面的开关上点「启用」即可。',
     '改名让路'

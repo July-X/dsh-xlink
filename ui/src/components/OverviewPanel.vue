@@ -475,7 +475,7 @@ function goVersions() {
             :icon="RefreshRight"
             :loading="isLoading('forceReloadHarness')"
             :disabled="globalBusy"
-            title="工作台黑屏 / 卡死时的手动出路：拆掉整个窗口再打开（会换掉渲染进程）。窗口里的滚动位置、侧栏、终端会回到初始状态，会话不受影响"
+            title="黑屏 / 卡死时的手动出路：重建工作台窗口，渲染进程会换掉。窗口内的滚动位置、侧栏与终端回到初始状态，会话不受影响"
             @click="forceReloadHarnessWindow"
           >
             刷新工作台
@@ -513,11 +513,9 @@ function goVersions() {
           <el-tooltip placement="bottom-start" :show-after="80">
             <template #content>
               <div class="card-info-tooltip">
-                当前支持 MiniMax（国内站 / 国际站）Token Plan 的 5 小时 / 周窗口剩余百分比、
-                DeepSeek 按量账户余额（多币种），以及智谱 GLM 编程套餐的 5 小时 / 周窗口剩余百分比。
+                MiniMax（国内站 / 国际站）与智谱的 5 小时 / 周窗口余额、DeepSeek 按量余额（多币种）。
                 数据缓存 5 分钟，点「刷新」立即重新查询。凭据复用工作台模型设置；
-                未在内核配置对应厂商时，相应分区自动隐藏；配置了但一直查不到数据时，
-                会询问是否隐藏该项，之后查询成功（含重启后的首次查询）自动恢复。
+                未在内核配置对应厂商时，相应分区自动隐藏。
               </div>
             </template>
             <el-icon class="card-info-icon"><InfoFilled /></el-icon>

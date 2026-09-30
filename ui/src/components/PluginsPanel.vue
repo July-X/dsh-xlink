@@ -43,7 +43,7 @@ import {
   uninstallPlugin,
   checkPluginUpdates,
 } from '../plugins.js';
-import { originLabel } from '../labels.js';
+import { originLabel, tildePath } from '../labels.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 import { openExternalLink } from '../notify.js';
 import { store } from '../store.js';
@@ -72,9 +72,18 @@ async function togglePrecheck(value) {
 // 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进卡片头左
 // 侧的小图标气泡里——与技能页保持一致；下方 tab 文字「已安装」与「当前内核」
 // 自身即可承担章节名，卡片头不再单独挂「已安装」标题。
-const installTip =
-  '插件统一存放于 ~/.dsh-xlink/dsh-plugins/，切换内核无需重装；安装完成后自动校验是否符合 ' +
-  'dsh 插件规范，内核重启后生效。';
+// 存储位置读后端返回的真实路径（`PluginStatus.store_root`），与技能页的
+// `storeTip` 同一做法。此前这里写死 `~/.dsh-xlink/dsh-plugins/`——那是
+// legacy 路径，`store_relocate` 早已把中央库整体搬进 `plugins/dsh/`，用户
+// 照着提示去找会找到一个不存在的目录。同一份路径在 `paths.rs` 与 Vue 里各写
+// 一遍，前端那份不参与编译也不会报错，只能靠人看出来。
+const installTip = computed(() => {
+  const store = tildePath(view.value && view.value.store_root) || '~/.dsh-xlink/plugins/dsh/';
+  return (
+    '插件统一存放于 ' + store +
+    '，切换内核无需重装；安装完成后自动校验是否符合 dsh 插件规范，内核重启后生效。'
+  );
+});
 
 // 预检开关的说明。必须写清「预检到底验了什么、没验什么」——用户把它当成
 // 安全保证是最危险的误解：它只覆盖内核启动阶段，页面加载后的运行时异常
