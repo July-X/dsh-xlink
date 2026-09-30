@@ -1230,8 +1230,11 @@ pub async fn report_harness_fault(
         stack,
         page_url,
     };
+    // 换窗口要用 AppHandle，而下面那个 blocking 闭包按值收走了它——留一份给响应
+    // 回来之后的那一步。
+    let recreate_app = app.clone();
     let data_dir = app.state::<AppState>().data_dir.clone();
-    blocking(move || -> Result<guard::Incident, String> {
+    let incident = blocking(move || -> Result<guard::Incident, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let (family, instance_id) = instance::resolve_default();
@@ -1241,7 +1244,14 @@ pub async fn report_harness_fault(
         }
         Ok(incident)
     })
-    .await
+    .await?;
+    // **响应回去之后**再问要不要换窗口：要拆掉的正是发起这次 IPC 的那个 webview，
+    // 在它的响应还没回去时就拆，等于让这次调用回不去。证据不必另外留一份——
+    // `Incident` 自带那份 `health`，判据与动作都在 harness_window 里。
+    if let Some(health) = &incident.health {
+        harness_window::recreate_after_fault(&recreate_app, health);
+    }
+    Ok(incident)
 }
 
 fn bounded_health_text(

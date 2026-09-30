@@ -856,6 +856,62 @@ function productionRust(text) {
   } else {
     note('内核树只有本壳守卫能阻断，跨壳判据只提示不拦（双壳并行）');
   }
+
+  // ⑤ 工作台自愈链必须**接到底**：黑屏之后壳要自己换窗口，而不是弹个面板就停着。
+  //
+  // 2026-09-30 实测的形状：`harness_window::fault_needs_new_window` 把「刷新已经
+  // 救不回来」判得一清二楚，**却没有任何生产调用方**——只有测试引用它。于是链条的
+  // 末端是：页面自己刷过一次、没刷好、壳弹一个事故面板、**窗口停在黑屏上**。而手动
+  // 「刷新工作台」（同一个 `recreate`）恰恰证明换窗口能救回来。是**漏接**，不是判断
+  // 为「不该接」。
+  //
+  // 写成机械检查的理由和第 12 项一样，而且更硬：**单测永远抓不到它**。纯函数
+  // 测得再准，摘掉调用它照样全绿（第一版就是这么骗过去的——把
+  // `port_open(settings.port)` 改成 `false`，判据测试依然 ok）。要能抓住，判据就
+  // 必须落到「命令层那个函数体里同时出现了判据与 recreate」这种**接线**的形状上。
+  {
+    const commandsSrc = productionRust(readFileSync(join(srcDir, 'commands.rs'), 'utf8'));
+    const lines = commandsSrc.split('\n');
+    const start = lines.findIndex((line) => line.startsWith('pub async fn report_harness_fault('));
+    const selfHealMisses = [];
+    if (start < 0) {
+      selfHealMisses.push('commands.rs 里找不到 report_harness_fault —— 工作台页面报故障的入口没了');
+    } else {
+      let body = '';
+      for (let i = start; i < lines.length; i += 1) {
+        body += `${lines[i]}\n`;
+        if (lines[i] === '}') break;
+      }
+      if (!body.includes('harness_window::recreate_after_fault')) {
+        selfHealMisses.push('没有走「黑屏后自己换窗口」那条动作');
+      }
+    }
+    // 判据必须落在那条动作**里面**：动作与判据被拆开时，命令层只该看到动作。
+    const harnessSrc = productionRust(readFileSync(join(srcDir, 'harness_window.rs'), 'utf8'));
+    const actionLines = harnessSrc.split('\n');
+    const actionStart = actionLines.findIndex((line) => line.startsWith('pub fn recreate_after_fault('));
+    if (actionStart >= 0) {
+      let actionBody = '';
+      for (let i = actionStart; i < actionLines.length; i += 1) {
+        actionBody += `${actionLines[i]}\n`;
+        if (actionLines[i] === '}') break;
+      }
+      if (!actionBody.includes('should_recreate_after_fault')) {
+        selfHealMisses.push('recreate_after_fault 里没有问判据，等于无脑重建');
+      }
+    }
+    if (selfHealMisses.length > 0) {
+      fail(
+        'harness-self-heal-wiring',
+        `report_harness_fault ${selfHealMisses.join('、')}——` +
+          '工作台黑屏后壳就只会弹一个事故面板然后停在那儿。手动「刷新工作台」走的是同一个 ' +
+          '`harness_window::recreate`，它能救回来，自动链没走这一步是漏接。' +
+          '注意：这一项单测抓不到（纯函数测得再准，摘掉调用它照样全绿）。',
+      );
+    } else {
+      note('工作台自愈链接到了 recreate（黑屏后自己换窗口）');
+    }
+  }
 }
 
 // --- 结果 --------------------------------------------------------------------
