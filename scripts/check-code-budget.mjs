@@ -86,17 +86,32 @@ function readBaseline() {
   // 全被当成新文件，逼着为它们补预算、还撞上 800 行硬顶。文件名跨目录唯一，
   // 拿它当「这份代码以前存在过」的判据，比路径可靠。
   const names = new Set([...tree].map((entry) => entry.split('/').pop()));
+  // 路径无关的基线表：文件名 -> 基线预算。搬移后按路径查不到，只能按名字查。
+  const fileBudgets = new Map();
   const block = text.match(/FILE_BUDGETS\s*=\s*\{([\s\S]*?)\n\};/);
   if (block) {
     // 条目形如 `  'path/to/file': 1234,`（带行尾注释）。
     for (const line of block[1].split('\n')) {
       const hit = line.match(/'([^']+)'\s*:\s*(\d+)/);
-      if (hit) files[hit[1]] = Number(hit[2]);
+      if (hit) {
+        files[hit[1]] = Number(hit[2]);
+        fileBudgets.set(moduleId(hit[1]), Number(hit[2]));
+      }
     }
   }
   const total = text.match(/TOTAL_BUDGET\s*=\s*(\d+)/);
   if (!total) return null;
-  return { files, total: Number(total[1]), tree, names };
+  return { files, total: Number(total[1]), tree, names, fileBudgets };
+}
+
+/** 一个 .rs 路径的「模块标识」：`src/usage.rs` 与 `src/usage/mod.rs` 都是
+ *  `usage`。搬进子目录后登记路径常写成 `mod.rs`，按文件名查基线会查空——
+ * 反棘轮于是对搬过的大文件失效，那正是它最该管的一批。 */
+function moduleId(path) {
+  const name = path.split('/').pop();
+  if (name !== 'mod.rs' && name !== 'mod.rs.bak') return name.replace(/\.rs$/, '');
+  const parts = path.split('/');
+  return parts[parts.length - 2] || name;
 }
 
 /** 生产代码行数预算：文件 → 上限。包含注释以外的所有代码行。 */
@@ -1138,8 +1153,12 @@ if (baseline) {
   // 出来、只装一个关注点的小文件不在此列：把同一个关注点补完整是正常的。
   // 新增能力请开新文件，并写清它为什么该独立。
   for (const [path, budget] of Object.entries(FILE_BUDGETS)) {
-    const before = baseline.files[path];
-    if (before === undefined) continue; // 新文件，见下面的硬顶
+    // 基线按**路径**查不到时退回按**文件名**查：文件被搬进子目录后路径变了，
+    // 直接 `continue` 等于让这条规则对搬过的文件失效——而 plugins.rs(2968)、
+    // commands.rs(2110)、skills.rs(1490) 正是最需要它的那批。「新文件」那条
+    // 判据已经按文件名认过搬移，这里不认就是同一个洞的两半。
+    const before = baseline.files[path] ?? baseline.fileBudgets.get(moduleId(path));
+    if (before === undefined) continue; // 真·新文件，见下面的硬顶
     // 反棘轮只作用于**有膨胀风险的大文件**（基线预算已达软阈值）。像
     // SnapshotRestoreDialog 这种刚拆出来、只装一个聚焦关注点的小文件，
     // 后续把同一个关注点补完整是正常的，不该被这条规则卡住——它离
