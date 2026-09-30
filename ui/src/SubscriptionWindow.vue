@@ -334,22 +334,21 @@ const lastFetched = computed(() => {
 .sub-balance {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 4px 10px;
   font-size: 13px;
   padding: 2px 0;
 }
 .sub-balance-text {
   font-weight: 600;
 }
-/* 余额明细行（赠金 / 充值）：独占一行，与总额主行区分口径。 */
+/* 余额：总额与赠金 / 充值明细同行并排，告警仍靠右。 */
 .sub-balance-detail {
-  width: 100%;
   color: var(--muted);
   font-size: 12px;
 }
 .sub-balance-unavailable {
+  margin-left: auto;
   color: var(--el-color-danger);
   font-weight: 600;
 }

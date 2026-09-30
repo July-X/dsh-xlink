@@ -848,18 +848,17 @@ function goVersions() {
 .plan-balance {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   flex-wrap: wrap;
   gap: 4px 8px;
   font-size: 12px;
 }
+/* 余额：总额与赠金 / 充值明细同行并排（gap 隔开），告警仍靠右。 */
 .plan-balance-unavailable {
+  margin-left: auto;
   color: var(--el-color-danger);
   font-weight: 600;
 }
-/* 余额明细行（赠金 / 充值）：独占一行，与总额主行区分口径。 */
 .plan-balance-detail {
-  width: 100%;
   color: var(--muted);
 }
 .plan-state {
