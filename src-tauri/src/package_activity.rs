@@ -189,6 +189,42 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
     }
 
+    /// 端到端把三段接起来：**装包开始 → 看门狗真的变宽 → 装包结束 → 恢复原样**。
+    ///
+    /// 前面几组测试各测一段：信标读出来对不对、阈值算得对不对。**中间那一段没人
+    /// 测**——而它正是最可能悄悄断掉的地方（`begin` 写了别的文件、`load_timeout`
+    /// 读的另一个键、两个函数各测各的都绿，串起来却不通）。看门狗每轮问的正是
+    /// `load_timeout()`，所以这里也从它问起。
+    #[test]
+    fn the_watchdog_widens_while_a_package_op_is_in_flight_and_narrows_after() {
+        let home = std::env::temp_dir().join(format!("pkg-activity-e2e-{}", std::process::id()));
+        let _xlink = scoped_xlink_home(&home);
+        std::fs::create_dir_all(&home).expect("create home");
+
+        let idle = load_timeout();
+        assert_eq!(
+            idle,
+            crate::harness_window::LOAD_TIMEOUT,
+            "平时就是那个门槛"
+        );
+
+        begin("安装内核版本");
+        let busy = load_timeout();
+        assert!(
+            busy > idle,
+            "装包期间看门狗必须变宽——不变宽就等于这一层没接上：{idle:?} -> {busy:?}"
+        );
+        assert!(busy <= ACTIVITY_LOAD_CAP, "但必须有硬顶：{busy:?}");
+
+        end();
+        assert_eq!(
+            load_timeout(),
+            idle,
+            "装包结束必须立刻恢复原样，否则这一次装包会永久放宽对面的看门狗"
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
     /// 装包活动期间**不重载**——这一层存在的全部理由。
     ///
     /// 2026-09-30 实测：dev 壳装内核的 10 秒里，release 壳的工作台在第 5 秒被
