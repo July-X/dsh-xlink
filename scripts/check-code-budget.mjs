@@ -454,11 +454,16 @@ const FILE_BUDGETS = {
   // + 收起态摘要 / 余额行 / 进度条配色 / 重置倒计时等纯展示函数（node --test 直测）。
   // 180 → 210：失效 provider 的「提示 → 隐藏 → 查询成功自动恢复」状态机
   // （localStorage 持久 + 会话首查 force + collectErrors 跳过已隐藏项）。
-  'ui/src/subscription.js': 210,
+  // 210 → 220：`balanceText` → `balanceRow`，按 DeepSeek 的 `total_balance` /
+  // `granted_balance` / `topped_up_balance` 三个字段分别产出主行、明细行与
+  // hover title（只透传金额，不转浮点）；设计稿本就要求逐条展示这三项。
+  'ui/src/subscription.js': 220,
   // 套餐用量独立窗口根组件（open_subscription_window 弹出，?subscription=1 挂载）：
   // 双 provider 分区 + 进度条 / 余额行 + 错误横幅与 scoped 样式（同 UsageWindow 模式）。
   // 340 → 360：查询时间换成刷新 icon 胶囊（紧凑年龄值）。
-  'ui/src/SubscriptionWindow.vue': 360,
+  // 360 → 370：余额块多一行赠金 / 充值明细（含 flex-wrap 与明细行样式），
+  // 与概览卡共用 subscription.js 的 balanceRow。
+  'ui/src/SubscriptionWindow.vue': 370,
   // 2026-09-30：壳自己窗口的右键菜单策略（新建，10 行）。主面板 / 日志 /
   // 用量 / 套餐 / 官方对话页签栏共用这个 SPA 入口，所以「禁右键、留左键复制」
   // 在前端只有这一处落点；工作台与三个官方对话内容 webview 走 Rust 侧的
@@ -861,7 +866,18 @@ const FILE_BUDGETS = {
 // 不是新概念：reqwest 本来就认环境变量代理，缺的是**系统设置**那一半，以及
 // 「代理优先、直连兜底」的顺序。合计 34999 行，预算留 50 行余量。updater.rs
 // 本身没有可下调的余地（新逻辑全在 net_proxy.rs）。重复区间数不变。
-const TOTAL_BUDGET = 35230;
+const TOTAL_BUDGET = 35250;
+// 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
+// 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
+//   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
+//     （总额）/ 明细行（赠金、充值分别列）/ hover title（等式口径）三个字段。
+//   · ui/src/SubscriptionWindow.vue +3、ui/src/components/OverviewPanel.vue +6：
+//     余额块多一行明细 + 样式，模板结构其余部分不动。
+// 设计稿 docs/subscription-usage-design.md 的解析规则本来就写着「逐条展示：
+// 币种、总额、赠送（未过期）、充值」，这次是把前端欠掉的展示补齐，不是新增
+// 能力，也不是复制粘贴（两处模板共用同一个 balanceRow）。Rust 侧零改动：
+// 三个字段早就在 CacheBalance / BalanceView 里透传。反棘轮（plugins.rs /
+// theme.css / commands.rs）一个数字没动。
 // 35120 → 35230（2026-09-30 傍晚）：横幅按实际残余风险门控——新模块
 // install_isolation.rs 66 行（登记见上）、kernel.rs +~40（InstalledVersion 的
 // shared_storage、other_shell_tree_shared、门控与装 / 删提示改为按采样条件触发）、
