@@ -50,6 +50,7 @@ mod node;
 mod node_install;
 mod notify;
 mod notify_gate;
+mod package_activity;
 mod patches;
 mod paths;
 mod pkg;

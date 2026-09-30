@@ -612,6 +612,17 @@ pub fn uninstall(data_dir: &Path, version: &str) -> Result<(), AppError> {
     // 由版本页的告警承担（`KernelStatus.other_shell_workbench`）。
     let mut to_log_only = |_: &str| {};
     warn_other_shell_workbench("删除内核版本", &mut to_log_only);
+    // 几十秒的 remove_dir_all：打信标，让对面壳的看门狗别把这段时间里的「慢」
+    // 判成「死」。见 package_activity 模块的文档。
+    crate::package_activity::begin("删除内核版本");
+    let removed = remove_kernel_dir(data_dir, version);
+    crate::package_activity::end();
+    removed
+}
+
+/// 真正执行删除。**与守卫、信标分开成一条**：守卫要在写盘之前跑完，信标要在
+/// 写盘期间一直亮着，两者夹住这一段才对得上。
+fn remove_kernel_dir(data_dir: &Path, version: &str) -> Result<(), AppError> {
     let dir = kernel_dir(data_dir, version);
     if !dir.exists() {
         return Err(AppError::Kernel(format!("版本 {version} 未安装")));
@@ -712,7 +723,12 @@ pub fn install_version(
     // 重装（目录本来就存在）时保留残骸，让用户能对比或手动处理；残骸没有入口
     // 文件，因此不会被 `list_installed` 列出（见该函数的判据）。
     let existed_before = dir.exists();
+    // 两万个文件 + node-gyp：打信标，让对面壳的看门狗别把这段时间里的「慢」判成
+    // 「死」（见 package_activity 模块的文档）。**装包失败也必须撤**，否则壳崩在
+    // 装包中途会把对面放宽到 TTL 到期。
+    crate::package_activity::begin("安装内核版本");
     let outcome = install_version_into(family, data_dir, node_exe, pnpm_exe, version, on_progress);
+    crate::package_activity::end();
     if outcome.is_err() && !existed_before {
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1987,6 +2003,16 @@ enum ProcessState {
     Alive,
     Gone,
     Unknown,
+}
+
+/// 这个 pid 是否**确定**已经不在了。
+///
+/// 只在「明确死」时返回 `true`：查询工具本身跑不起来（沙盒挡住、二进制缺失）时
+/// 返回 `false`——我们什么都不知道，不能把「不知道」当成「没了」。调用方
+/// （[`crate::package_activity`]）据此提前作废跨壳信标，而到期时刻仍然兜着底，
+/// 所以这里的保守方向代价很小：最多多放宽一次看门狗。
+pub(crate) fn process_is_definitely_gone(pid: u32) -> bool {
+    process_state(pid) == ProcessState::Gone
 }
 
 /// 查询进程存活状态（尽力而为，不猜）。

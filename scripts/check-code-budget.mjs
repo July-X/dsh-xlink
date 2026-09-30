@@ -231,6 +231,13 @@ const FILE_BUDGETS = {
   // **动手的人**分开，与 snapshot.rs / restore.rs 那对「回退点可信吗」/
   // 「点确认会发生什么」是同一种分法。66 行代码（+200 行含文档与测试）。
   'src-tauri/src/skill_shadow.rs': 70,
+  // 跨壳装包活动信标（2026-09-30，新建）。为什么它该独立成一个文件而不是塞进
+  // harness_window.rs：**写**这一侧在 kernel.rs 的装 / 删两端，**读**那一侧在
+  // harness_window.rs 的看门狗里，两边都不肯为了对方把自己长成一个什么都管的
+  // 模块——正是 AGENTS.md 里 `pkg.rs` / `state.rs` 那条「跨模块重复先提共享层」的
+  // 同一刀法。内容与路径解析都不复杂（46 行代码 + 文档与 2 个测试），复杂的是
+  // 「它为什么可以是唯一一处跨壳可变数据」那三条自律，写在 paths.rs 的路径函数上。
+  'src-tauri/src/package_activity.rs': 80,
   'src-tauri/src/patches.rs': 1250,
   // B 类日志 family/instance_id 接入：kernel_log_spec / install_log_spec /
   // current_kernel_log_path / install_version / install_version_into 加形参；
@@ -317,7 +324,16 @@ const FILE_BUDGETS = {
   // `reset_budget`、证据前缀修正）。本文件基线 120 远低于 RATCHET_THRESHOLD，
   // 上调在规则内，但**那次改造落地时应把超出的部分拆出去或写清为什么该独立**，
   // 届时把数字收回 120 附近。拆分方案不在本次范围内——本次只加一个按钮。
-  'src-tauri/src/harness_window.rs': 190,
+  // 190 → 195（2026-09-30，装包活动标记那一层）：**先把上一条记的债还了一部分**
+  // ——阈值策略（`ACTIVITY_LOAD_CAP` / `effective_load_timeout` / 三个测试）整体搬进
+  // package_activity.rs，因为「装包期间看门狗该等多久」属于**装包活动**这个关注点
+  // 的策略，不是窗口管理的一部分。搬完之后本文件 192 行，净增的 2 行是
+  // `should_reload` / `should_recreate` 多收一个 `timeout` 形参（判据本身不该知道
+  // 装包信标的事，阈值由调用方算好传进来）。
+  // 「拆回 120 附近」那笔债**仍未还**：175 行那次顶高的成因（instance 侧跨壳判定）
+  // 早已搬走，剩下的 `recreate` / `open` / `build` 三条建窗链仍在本文件内。那是
+  // 下一次碰这块时该做的事，不在本次范围。
+  'src-tauri/src/harness_window.rs': 195,
   'src-tauri/src/guard.rs': 940,
   // 从 guard.rs 拆出的「证据判读」层：只回答「这一行指向内核还是指向某个插件」，
   // 不回答「该怎么处置」。独立成文件有两个理由：① 判据的内核侧（命名空间锚定 +
@@ -756,7 +772,17 @@ const FILE_BUDGETS = {
 // （`instance::workbench_running_in_other_shell`）此前就存在且此前只用来看「要不要
 // 拦」，现在只用来「说不拦的理由与恢复办法」。反棘轮（单文件只许下调）未触发，
 // kernel.rs / instance.rs 的单文件预算一个数字都没动。
-const TOTAL_BUDGET = 34560;
+// 34560 → 34680：让「对面装内核」不再打断本壳工作台，**第一层**（2026-09-30）。
+// package_activity.rs 新文件 46 行（见 FILE_BUDGETS）+ harness_window.rs +26
+// （`effective_load_timeout` / `ACTIVITY_LOAD_CAP`、两个纯函数多收一个 timeout 形参、
+// 3 个测试）+ kernel.rs +14（装 / 删两端各打 / 撤信标、`remove_kernel_dir` 拆成一条
+// 让守卫与写盘正好夹住信标、`process_is_definitely_gone` 把**已有的**三态存活探测
+// 开给信标用——没有第二份实现）+ paths.rs +4（信标路径 + 为「它是唯一一处跨壳可变
+// 数据」写下三条自律）。
+// 净增的是**一处判据的准确度**：看门狗原来只有「慢」与「死」两个概念，而装包时页面
+// 确实只是慢。2026-09-30 那次黑屏的成因不是内核先坏，而是**看门狗在机器最忙的那
+// 一刻重载了页面**，重载才是放大器。余量留给第二 / 三层，不在这里一次要满。
+const TOTAL_BUDGET = 34680;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。
