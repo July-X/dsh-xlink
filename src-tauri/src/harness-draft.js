@@ -102,31 +102,41 @@
     }, IDLE_MS);
   }
 
-  /* 把一段文字写进空着的输入框。
+  /* 把一段文字写进空着的输入框，**返回它到底有没有真的进去**。
    *
-   * 用 `execCommand('insertText')` 而不是直接改 DOM：它触发的是浏览器真实的输入
-   * 路径，编辑器（内核用的是 Lexical，一个 contenteditable 富文本编辑器）会按自己
-   * 的方式接到这次输入并更新内部 state。直接写 textContent 只会让**看起来**有字，
-   * 一发送就没了——那比不恢复更糟。
-   */
+   * 为什么用 `execCommand('insertText')` 而不是直接改 DOM：它触发的是浏览器真实的
+   * 输入路径。已装内核 0.2.0-rc.2 的 `dsh-client-ui-conversation/lib/client.js` 里，
+   * Lexical 在编辑器根上注册了 `beforeinput` 处理器并按 `inputType` 分支（含
+   * `insertText`）——**execCommand 走的正是真实打字走的那一条**，编辑器会据此更新
+   * 自己的内部 state。
+   *
+   * 直接写 `textContent` 则是**「看起来有字、一发送就没」**：那比不恢复更糟，所以
+   * 这里不做那种假恢复。写不进去就如实告诉调用方，让它把草稿**放回去**等下一次
+   * 页面加载——用户丢过一次的东西，不能因为恢复失败再丢一次。
+   *
+   * 只有 `textarea` / `input` 才走赋值 + `input` 事件的退路：那两个是普通控件，赋值
+   * 就是它们的真实状态。 */
   function fill(el, text) {
     el.focus();
+    if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+      el.value = text;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return String(el.value || '') === String(text);
+    }
     var placed = false;
     try {
       placed = document.execCommand('insertText', false, text);
     } catch (error) {
       placed = false;
     }
-    if (!placed) {
-      // 老 WebView / execCommand 被禁时的退路：直接赋值 + 派发 input 事件。
-      if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
-        el.value = text;
-      } else {
-        el.textContent = text;
-      }
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-    el.dispatchEvent(new Event('input', { bubbles: true }));
+    if (!placed) return false;
+    // execCommand 返回 true 也可能被编辑器吞掉（beforeinput 被 preventDefault 却没有
+    // 真的应用），所以**读回来核对**。只比对开头几个字：编辑器可能规范化空白，逐字
+    // 相等会把一次成功的恢复判成失败。
+    var landed = String(textOf(el) || '');
+    var head = String(text || '').trim().slice(0, 4);
+    if (!head) return true;
+    return landed.indexOf(head) >= 0;
   }
 
   /* 找一个**空着**的可编辑元素。取 DOM 顺序最后一个：composer 在页面底部，而页面
@@ -156,10 +166,25 @@
       if (draft.href && String(window.location.href) !== String(draft.href)) return;
       var el = emptyEditable();
       if (!el) return;
+      var ok = false;
       try {
-        fill(el, draft.text);
+        ok = fill(el, draft.text);
+      } catch (error) {
+        ok = false;
+      }
+      if (ok) {
         window.__DSH_HARNESS_DRAFT_RESTORED__ = true;
-      } catch (error) { /* 写不进去就算了，不要打断页面 */ }
+        return;
+      }
+      // **写不进去就把草稿放回去**。`take` 已经把它从盘上拿走了，这时候不还回去
+      // 就等于「恢复失败」直接等于「内容丢失」——而用户为这件事抱怨过一次了。
+      // 放回去之后下一次页面加载还会再试（这期间输入框仍然是空的，不会覆盖）。
+      try {
+        Promise.resolve(api.invoke('stash_harness_draft', {
+          href: String(draft.href || window.location.href),
+          text: String(draft.text)
+        })).catch(function () { /* 管理面板已关闭，那真没辙了 */ });
+      } catch (error) { /* 同上 */ }
     }).catch(function () { /* 管理面板已关闭 */ });
   }
 

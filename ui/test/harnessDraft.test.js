@@ -38,7 +38,14 @@ function makeEditable({ kind = 'lexical', text = '', id = 'composer', visible = 
   return el;
 }
 
-function makeEnv({ editables = [], active = null, takeResult = null, href = 'http://127.0.0.1:3090/?session=abc' } = {}) {
+function makeEnv({
+  editables = [],
+  active = null,
+  takeResult = null,
+  href = 'http://127.0.0.1:3090/?session=abc',
+  execCommandWorks = true,
+  execCommandSilent = false,
+} = {}) {
   const timers = [];
   const handlers = {};
   const invocations = [];
@@ -52,8 +59,20 @@ function makeEnv({ editables = [], active = null, takeResult = null, href = 'htt
     querySelectorAll() {
       return editables;
     },
+    // insertText 成功时按浏览器的行为把文字放进元素——真实编辑器随后会更新
+    // 自己的内部 state。这里照做，脚本的「读回来核对」才有东西可核对。
     execCommand(command, showUi, value) {
       execCalls.push({ command, value });
+      if (command !== 'insertText') return false;
+      if (execCommandWorks === false) return false;
+      // execCommand 报成功但编辑器其实吞掉了（beforeinput 被 preventDefault 却
+      // 没有真的应用）——那正是「读回来核对」要抓的形状。
+      if (execCommandSilent === true) return true;
+      const target = editables.find((el) => el.focused) || editables[0];
+      if (target) {
+        if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') target.value = value;
+        else target.innerText = value;
+      }
       return true;
     },
   };
@@ -130,8 +149,10 @@ test('输入框是空的就不记——磁盘上不该出现空草稿', () => {
 });
 
 test('恢复用 execCommand 写回，而不是直接改 DOM', async () => {
-  // execCommand 触发浏览器真实的输入路径，编辑器（Lexical）会接到这次输入并更新
-  // 内部 state；直接写 textContent 只是「看起来有字」，一发送就没了——那比不恢复更糟。
+  // execCommand 触发浏览器真实的输入路径。已装内核 0.2.0-rc.2 的
+  // dsh-client-ui-conversation/lib/client.js 里，Lexical 在编辑器根上注册了
+  // beforeinput 处理器并按 inputType 分支（含 insertText）——execCommand 走的正是
+  // 真实打字走的那一条。直接改 textContent 只会「看起来有字」，一发送就没了。
   const composer = makeEditable({ text: '' });
   const draft = { href: 'http://127.0.0.1:3090/?session=abc', text: '上次没发出去的话' };
   const env = makeEnv({ editables: [composer], takeResult: draft });
@@ -144,8 +165,48 @@ test('恢复用 execCommand 写回，而不是直接改 DOM', async () => {
   const exec = env.execCalls.find((c) => c.command === 'insertText');
   assert.ok(exec, '必须走 insertText');
   assert.equal(exec.value, '上次没发出去的话');
-  assert.ok(composer.events.includes('input'), '写完要派发 input，编辑器才知道内容变了');
   assert.ok(composer.focused, '写之前要聚焦，否则编辑器可能把这次输入归到别处');
+  // contenteditable 上**不**再补派 `input`：编辑器走的是 beforeinput，补一个合成
+  // `input` 既多余又会让人以为「派发 input 就能让编辑器认下这段字」——那恰恰是
+  // 之前那条假恢复的错处。真正确认「进去了」的是读回来核对。
+  assert.equal(composer.innerText, '上次没发出去的话', '写进去之后元素里得有那段字');
+});
+
+test('execCommand 被拒时把草稿放回去——恢复失败不能等于内容丢失', async () => {
+  // `take` 是读走即删的。写不进去又不还回去，用户就为了这件事抱怨过一次了。
+  const composer = makeEditable({ text: '' });
+  const draft = { href: 'http://127.0.0.1:3090/?session=abc', text: '上次没发出去的话' };
+  const env = makeEnv({ editables: [composer], takeResult: draft, execCommandWorks: false });
+
+  for (const fn of env.timers) fn();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const back = env.invocations.filter((c) => c.command === 'stash_harness_draft');
+  assert.equal(back.length, 1, '写不进去必须把草稿放回去，等下一次页面加载再试');
+  assert.equal(back[0].args.text, '上次没发出去的话');
+  assert.equal(
+    String(composer.innerText || '').trim(),
+    '',
+    '不许留下「看起来有字」的假恢复——那比不恢复更糟：用户会以为内容还在，一发送就没了',
+  );
+});
+
+test('execCommand 报成功但编辑器其实吞掉了，同样要当作失败', async () => {
+  // beforeinput 被 preventDefault 却没有真的应用——返回 true，元素里仍然是空的。
+  // 只看返回值会把这次恢复判成成功，于是用户看着空输入框以为内容没了。
+  const composer = makeEditable({ text: '' });
+  const draft = { href: 'http://127.0.0.1:3090/?session=abc', text: '上次没发出去的话' };
+  const env = makeEnv({ editables: [composer], takeResult: draft, execCommandSilent: true });
+
+  for (const fn of env.timers) fn();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const back = env.invocations.filter((c) => c.command === 'stash_harness_draft');
+  assert.equal(back.length, 1, '读回来核对没过就要当作失败并把草稿放回去');
 });
 
 test('地址变了就不写回去——宁可丢掉，也不能把话写到错的会话里', async () => {
