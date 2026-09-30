@@ -79,18 +79,30 @@
     return best;
   }
 
+  /* `__TAURI__` 在注入脚本执行的那一刻**不一定已经就绪**——`harness-health.js`
+   * 为此专门写了 `scheduleReportRetry`，那份代码是踩过的证据。这里同样不能「拿不到
+   * 就当没事」：那等于这一次的草稿静默不落盘，正是用户抱怨的那件事。取不到就
+   * 退避重试几次；重试期间输入框里的内容还在，下一次停顿还会再记。 */
+  var MAX_TAURI_RETRIES = 4;
+  var tauriRetries = 0;
+
   function stashNow() {
     var api = tauri();
-    if (!api) return;
+    if (!api) {
+      if (tauriRetries >= MAX_TAURI_RETRIES) return;
+      tauriRetries += 1;
+      window.setTimeout(stashNow, 200 * tauriRetries);
+      return;
+    }
+    tauriRetries = 0;
     var text = currentText();
     if (!text || !text.trim()) return;
     try {
-      // 不 await：输入框还在用，抢着等一次 IPC 只会让打字发涩。失败也不重试——
-      // 下一次停顿还会再记。
+      // 不 await：输入框还在用，抢着等一次 IPC 只会让打字发涩。
       Promise.resolve(api.invoke('stash_harness_draft', {
         href: String(window.location && window.location.href || ''),
         text: text
-      })).catch(function () { /* 管理面板已关闭等情况，下一次停顿再说 */ });
+      })).catch(function () { /* 管理面板已关闭等情况，下一次停顿还会再记 */ });
     } catch (error) { /* 同上 */ }
   }
 
