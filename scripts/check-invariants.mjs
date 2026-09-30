@@ -912,6 +912,56 @@ function productionRust(text) {
       note('工作台自愈链接到了 recreate（黑屏后自己换窗口）');
     }
   }
+
+  // ⑥ 注入脚本 `invoke` 时传的对象键，必须与 Rust 命令的形参名逐个对得上。
+  //
+  // 这一类漂移**四处都不报**：JS 那边拼错一个键、编译不过、测试照过、门禁照过——
+  // 后果是那条命令反序列化失败，而调用方的 `.catch` 把它吞掉，于是「草稿功能突然
+  // 不工作了」而没有任何线索。2026-09-30 已经在**返回值**上栽过一次同类的
+  // （`settings_warning` 与 camelCase 的对不上，靠一个单测才抓到），这里是入参
+  // 那一侧。命令名由第 3 项查（已注册 + 已授权），参数名要单独查。
+  {
+    const draftJs = readFileSync(join(srcDir, 'harness-draft.js'), 'utf8');
+    const cmdSrc = productionRust(readFileSync(join(srcDir, 'harness_cmd.rs'), 'utf8'));
+    /** Rust 形参名：只取简单标识，跳过 `app: AppHandle` 之类的注入参数。 */
+    const rustParams = (fnName) => {
+      const hit = new RegExp(`pub fn ${fnName}\\(([^)]*)\\)`).exec(cmdSrc);
+      if (!hit) return null;
+      return hit[1]
+        .split(',')
+        .map((piece) => piece.split(':')[0].trim())
+        .filter((name) => /^[a-z_][a-z0-9_]*$/.test(name));
+    };
+    const paramMisses = [];
+    // 脚本里每一处 `invoke('<cmd>', { … })` 的对象键。
+    const callRe = /invoke\(\s*'([a-z_]+)'\s*,\s*\{([\s\S]*?)\}\s*\)/g;
+    let match;
+    while ((match = callRe.exec(draftJs)) !== null) {
+      const command = match[1];
+      const keys = [...match[2].matchAll(/(^|[{,\s])([a-z_][a-z0-9_]*)\s*:/g)].map((k) => k[2]);
+      const expected = rustParams(command);
+      if (expected === null) continue; // 命令不在 harness_cmd.rs 里，第 3 项管
+      for (const key of keys) {
+        if (!expected.includes(key)) {
+          paramMisses.push(
+            `${command} 的入参对不上：脚本传了 ${key}，Rust 那边没有这个形参（现有 ${expected.join(' / ') || '无'}）`,
+          );
+        }
+      }
+    }
+    if (paramMisses.length > 0) {
+      // 同一个命令可能在脚本里有两处调用（存一次、放回去一次），报两遍只是噪音。
+      for (const message of new Set(paramMisses)) {
+        fail(
+          'harness-invoke-params',
+          `${message}。反序列化失败会被调用方的 .catch 吞掉，于是草稿功能静默失效` +
+            '——编译不报、测试不红、门禁不响。改名字要两边一起改。',
+        );
+      }
+    } else {
+      note('注入脚本 invoke 的参数名与 Rust 命令形参一致');
+    }
+  }
 }
 
 // --- 结果 --------------------------------------------------------------------
