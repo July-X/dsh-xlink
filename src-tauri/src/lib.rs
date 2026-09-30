@@ -322,6 +322,7 @@ pub fn run() {
             commands::stop_kernel,
             commands::open_harness,
             harness_cmd::harness_force_reload,
+            harness_cmd::harness_reload_backoff,
             harness_cmd::stash_harness_draft,
             harness_cmd::take_harness_draft,
             commands::report_harness_fault,

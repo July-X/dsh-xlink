@@ -8,6 +8,7 @@
   "permissions": [
     "allow-focus-main-shell",
     "allow-report-harness-fault",
+    "allow-harness-reload-backoff",
     "allow-stash-harness-draft",
     "allow-take-harness-draft"
   ]

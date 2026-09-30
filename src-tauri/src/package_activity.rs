@@ -1,26 +1,33 @@
-//! 跨壳装包活动信标：让**服务中的那个壳**知道「对面正在把机器打满」。
+//! 跨壳装包活动信标：让**另一个壳的恢复动作**知道「风还没停」。
 //!
-//! ## 它解决的是一次误判，不是一次数据事故
+//! ## 它到底解决什么（2026-09-30 定案，历史结论有两处要更正）
 //!
-//! 2026-09-30 实测：dev 壳装内核的 10 秒里，release 壳的工作台在 10:32:47 重载、
-//! 10:32:48 撞上内核的启动顺序竞态后黑屏。**重载不是原因，是放大器**——看门狗的
-//! 判据是「`Started` 之后 15s 没等到 `Finished`」，而装包时页面不是坏了，是**慢**：
-//! pnpm 硬链接数万文件加 node-gyp 编译把 CPU 与磁盘打满，15s 很容易超。看门狗分不清
-//! 「慢」和「死」，于是把一次正常的慢加载判成故障，重载又恰好落在机器最忙的那一刻。
+//! 这个模块最初的动机是「装包把机器打满 → 对面页面加载被拖过看门狗 15s 阈值 →
+//! 看门狗把慢判成死并重载」。**那条路径在真机上从未触发过**：当天五次装/删
+//! 事故里，对面壳的看门狗重载计数为 0——页面不是被看门狗杀的，是被**内核自己**
+//! 换模块换死的（机制见 [`crate::kernel::install_version`] 的文档注释：pnpm store
+//! 的 inode 共享 + NTFS ChangeTime + `dsh-client-hmr` 每 500ms 的 stat 轮询把
+//! 链接数噪声当成 bundle 重建推给活页面）。打满机器的说法（14 核 / 64GB / NVMe
+//! 被一次 9 秒的纯硬链接安装打满）从硬件上就不成立。
 //!
-//! 所以这里做的事很窄：**装包期间把对面看门狗的耐心放宽**（[`crate::harness_window`]
-//! 的 [`effective_load_timeout`](crate::harness_window::effective_load_timeout)），
-//! 让那 10 秒里根本不会触发重载。它**不阻止**装包，也**不能**让内核的启动顺序竞态
-//! 消失——那件事归内核仓库。
+//! 真正需要这只表的是**恢复侧**：15:36:3x 的页面自愈刷新与自动重建先后落进
+//! 卸载风暴，几秒内又死一次。所以信标如今的职责排序是：
+//!
+//! 1. [`recovery_backoff`]——恢复动作（页面自愈刷新 / 壳重建）动手前先问它，
+//!    风没停就别落子。**主职**。
+//! 2. [`load_timeout`]——看门狗阈值放宽。留着当防御（万一真有页面被拖慢的
+//!    场景），但它不再是这套信标存在的理由。
+//!
+//! 它**不阻止**装包，也**不能**让内核的槽位装配竞态消失——那件事归内核仓库。
 //!
 //! ## 为什么是一个文件、为什么放在 xlink_home 根上
 //!
-//! 两个壳的树、注册表、插件中央库、端口都分家了，但**机器资源是共享的**，而共享
-//! 的东西没法只放在一边。这是 AGENTS.md 那张表之外唯一一处有意的跨壳可变数据，三条
+//! 两个壳的树、注册表、插件中央库、端口都分家了，但「对面包活动」这条消息
+//! 没法只放在一边。这是 AGENTS.md 那张表之外唯一一处有意的跨壳可变数据，三条
 //! 自律把它限制成一个信标而不是状态：
 //!
 //! 1. **内容与用户数据无关**：只有「谁在装、装到什么时候为止」。删掉它，唯一后果是
-//!    对面更容易把自己的看门狗误判成故障。
+//!    对面的恢复动作落点变差（更容易落进风暴）。
 //! 2. **自过期**：内容带到期时刻，读方发现过期一律当没有。壳崩了也不会把对面的
 //!    看门狗永久放宽。
 //! 3. **原子写 + 唯一写者语义**：两个壳都可能写，谁在装谁写，结束时各自删。冲突的
@@ -57,12 +64,29 @@ struct Beacon {
 /// 慢但没死，多等几十秒无害），要么信标已经陈旧（按原判据处理才是对的）。
 pub const ACTIVITY_LOAD_CAP: Duration = Duration::from_secs(120);
 
+/// 恢复退避的上限。页面不能无限期黑着等——信标可能被一次卡死的装包拖着
+/// （TTL 10 分钟），到点就照常动手，后面还有壳侧重建与手动「刷新工作台」两层
+/// 兜底（两侧上限不同：页面 [`crate::harness_window::QUIET_WAIT_CAP`] 更长）。
+pub const RECOVERY_BACKOFF_CAP: Duration = Duration::from_secs(120);
+
+/// 自动恢复动作（页面自愈刷新 / 壳重建窗口）动手前应退避多久；`ZERO` 表示风已停。
+///
+/// 这是信标如今的**主职**：2026-09-30 真机数据里，看门狗「把慢判成死」那条路径
+/// 一次都没触发过，反而是**恢复动作落进风暴**各死了一次（页面 3s 自愈刷新、
+/// 壳自动重建）。有界退避让刷新落点等到风停——那时一次就能成。
+pub fn recovery_backoff() -> Duration {
+    remaining()
+        .map(|left| left.min(RECOVERY_BACKOFF_CAP))
+        .unwrap_or(Duration::ZERO)
+}
+
 /// 本次页面加载的有效阈值。看门狗每轮问一次。
 ///
-/// **为什么要有这一层**：2026-09-30 实测 dev 壳装内核的 10 秒里，release 壳的
-/// 工作台在第 5 秒被自己的看门狗判成故障并重载，重载又恰好落在机器最忙的那一刻，
-/// 撞上内核的启动顺序竞态黑屏。**重载不是原因，是放大器**——看门狗原来只有「慢」
-/// 与「死」两个概念，而装包时页面确实只是慢。这一层做的事就是让那 10 秒里它分得清。
+/// 这是信标的**防御性**用途（主职是 [`recovery_backoff`]）：装包期间对面壳的
+/// 页面加载可能真的变慢（下载缓存被挤、杀毒扫描变多），放宽阈值让看门狗别在
+/// 那种时刻把「慢」判成「死」。这条路径真机至今没有触发过（2026-09-30 五次
+/// 事故里看门狗重载计数为 0——页面是被内核换模块换死的，不是被看门狗杀的），
+/// 留着它是因为代价为零、方向正确。
 pub fn load_timeout() -> Duration {
     effective_load_timeout(remaining())
 }
@@ -225,11 +249,9 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
     }
 
-    /// 装包活动期间**不重载**——这一层存在的全部理由。
-    ///
-    /// 2026-09-30 实测：dev 壳装内核的 10 秒里，release 壳的工作台在第 5 秒被
-    /// 自己的看门狗判成故障并重载，重载恰好落在机器最忙的那一刻，撞上内核的启动
-    /// 顺序竞态黑屏。**重载不是原因，是放大器**。这里钉的就是「那一刻不重载」。
+    /// 装包活动期间**不重载**——看门狗的防御性放宽（真机至今未触发过这条路径，
+    /// 2026-09-30 五次事故里页面都是被内核换模块换死的，不是被看门狗杀的；
+    /// 留着它是因为方向正确、代价为零）。
     #[test]
     fn a_slow_load_during_a_package_install_is_not_treated_as_a_stall() {
         let base = crate::harness_window::LOAD_TIMEOUT;
@@ -240,7 +262,7 @@ mod tests {
         assert_eq!(timeout, Duration::from_secs(80));
         assert!(
             !crate::harness_window::should_reload(Some(since), true, 0, timeout),
-            "装包期间把「慢」判成「死」，重载恰好落在机器最忙的那一刻——这正是 2026-09-30 黑屏的成因"
+            "装包期间把「慢」判成「死」是这套防御要挡的方向"
         );
         // 同一个 30s，装包结束后就是该重载的。放宽只对活动窗口生效。
         assert!(crate::harness_window::should_reload(
@@ -250,6 +272,49 @@ mod tests {
             effective_load_timeout(None)
         ));
         let _ = base;
+    }
+
+    /// 恢复退避是信标如今的**主职**：风没停给正数、风停给 0、且有上限——页面
+    /// 不能无限期黑着等一个可能卡死的装包。2026-09-30 实测：落在风暴中的自愈
+    /// 刷新与自动重建都在几秒内又死一次，落点比次数重要。
+    #[test]
+    fn recovery_backoff_tracks_the_beacon_but_never_exceeds_the_cap() {
+        let home = std::env::temp_dir().join(format!("pkg-backoff-{}", std::process::id()));
+        let _xlink = scoped_xlink_home(&home);
+        std::fs::create_dir_all(&home).expect("create home");
+        let file = crate::paths::package_activity_file();
+        std::fs::create_dir_all(file.parent().unwrap()).expect("create dir");
+        let beacon_with = |ms: u64| {
+            write_beacon(&Beacon {
+                shell: "dev".into(),
+                action: "删除内核版本".into(),
+                pid: std::process::id(),
+                until_ms: now_ms() + ms,
+            })
+        };
+
+        // 没有活动 ⇒ 立刻可以动手。
+        assert_eq!(recovery_backoff(), Duration::ZERO);
+
+        // 活动还剩约 30s ⇒ 退避接近剩余时间（在 Cap 内）。
+        beacon_with(30_000);
+        let backoff = recovery_backoff();
+        assert!(
+            backoff > Duration::from_secs(20) && backoff <= Duration::from_secs(30),
+            "退避应接近剩余时间：{backoff:?}"
+        );
+
+        // 活动还剩 9 分钟 ⇒ 退避封顶在 RECOVERY_BACKOFF_CAP，而不是跟着 TTL 走。
+        beacon_with(540_000);
+        assert_eq!(
+            recovery_backoff(),
+            RECOVERY_BACKOFF_CAP,
+            "页面不能无限期黑着等——到点照常动手，后面还有壳侧重建与手动兜底"
+        );
+
+        end();
+        assert_eq!(recovery_backoff(), Duration::ZERO, "风停了就该立刻放行");
+        std::fs::remove_dir_all(&home).ok();
     }
 
     /// 放宽必须有硬顶：信标里写着 10 分钟的到期时刻，照它走等于把关掉看门狗

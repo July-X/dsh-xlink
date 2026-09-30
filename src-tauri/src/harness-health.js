@@ -137,10 +137,12 @@
    * 把 `session` 作用域摘掉了（渲染器 `client.js:1466`），`ScopeProvider` 恰好在
    * 「已删除、尚未重装」的窗口里重渲染，于是整个工作台抛这一句、页面变死。
    *
-   * 2026-09-29 实测的触发方式：在内核服务期间删除一个**没有被使用**的同级内核
-   * 目录（25643 个文件 / 34.2 s）。内核的文件监视器把这场事件风暴当成模块图
-   * 变更——即使变化发生在一个它根本不服务的目录里——于是 6 秒后页面就死了，
-   * 而内核 HTTP 全程 200。
+   * 2026-09-30 定案的触发机制（此前注释把它归给「文件监视器事件风暴」，不准）：
+   * pnpm 的内容寻址 store 让两个壳的内核树与 store **共享 inode**，而 NTFS 上
+   * 硬链接数增减会更新 ChangeTime——对面装 / 删内核时，内核 `dsh-client-hmr`
+   * 每 500ms 的 bundle stat 轮询把这些 ctime 噪声当成「bundle 重建」推给**活页面**
+   * （SSE `rebuilt` 帧 → 换模块 → 本条不变量）。当天五次装 / 删全部在 4~6 秒内
+   * 打死对面的工作台页面，与 CPU / 磁盘负载无关。
    *
    * 与文案一并取自渲染器的抛点，列表与 `guard.rs` 的 `SLOT_PHRASES` 对齐。
    */
@@ -188,16 +190,46 @@
    * （工作台会自己回来，没有需要用户立刻处理的事）；额度用掉之后再撞上同样
    * 的错，就退回普通的 `runtime-error` 弹面板——那时刷新救不回来，用户确实
    * 需要动作（多半是换一个内核版本）。
+   *
+   * 刷新的**落点**要对（2026-09-30 实测：落在对面卸载内核风暴中间的那次自愈
+   * 刷新，几秒后又撞死一次）：先问壳要一个退避毫秒数（`harness_reload_backoff`
+   * 读跨壳装包信标），风没停就等，风停了再刷。IPC 不可用 / 失败时按老行为立刻
+   * 刷新——退避是优化，不是前提；轮数有上限，防一次卡死的装包把页面无限期晾黑。
    */
+  var RELOAD_BACKOFF_MAX_POLLS = 30;
+
+  function reloadWhenQuiet(polls) {
+    if (polls >= RELOAD_BACKOFF_MAX_POLLS) {
+      window.setTimeout(function () { window.location.reload(); }, 3000);
+      return;
+    }
+    var tauri = window.__TAURI__ && window.__TAURI__.core;
+    if (!tauri || typeof tauri.invoke !== "function") {
+      window.setTimeout(function () { window.location.reload(); }, 3000);
+      return;
+    }
+    Promise.resolve(tauri.invoke("harness_reload_backoff")).then(function (ms) {
+      if (ms > 0) {
+        window.setTimeout(function () {
+          reloadWhenQuiet(polls + 1);
+        }, Math.min(ms + 500, 5000));
+        return;
+      }
+      // 风已停：保底 3 秒再刷——报告先落地（`last-incident.json`），
+      // 刷新会连同本页内存一起丢掉。
+      window.setTimeout(function () { window.location.reload(); }, 3000);
+    }).catch(function () {
+      window.setTimeout(function () { window.location.reload(); }, 3000);
+    });
+  }
+
   function handleSlotAssemblyFailure(text, stack) {
     if (recoverySpent() || !spendRecovery()) {
       invokeReport("runtime-error", text, stack);
       return;
     }
     invokeReport("slot-assembly", text, stack);
-    window.setTimeout(function () {
-      window.location.reload();
-    }, 3000);
+    reloadWhenQuiet(0);
   }
 
   window.addEventListener("error", function (event) {

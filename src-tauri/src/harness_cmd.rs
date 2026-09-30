@@ -85,6 +85,16 @@ pub async fn harness_force_reload(app: AppHandle) -> Result<(), String> {
     .await
 }
 
+/// 页面自愈刷新前问一句「现在该不该等」：返回建议退避的毫秒数（0 = 立刻刷）。
+///
+/// 调它的是 `harness-health.js` 的槽位自愈路径。2026-09-30 实测：那次 3 秒自愈
+/// 刷新落在对面卸载内核的风暴中间，新加载的页面几秒后又撞死一次——刷新本身
+/// 没错，错在**落点**。信标让页面知道「风还没停」；等风停再刷，一次就能成。
+#[tauri::command]
+pub fn harness_reload_backoff() -> u64 {
+    crate::package_activity::recovery_backoff().as_millis() as u64
+}
+
 /// 页面把「输入框里还没发出去的那段话」交给壳。
 ///
 /// 调它的是注入脚本 `harness-draft.js`，时机是**用户停止输入一会儿之后**而不是
