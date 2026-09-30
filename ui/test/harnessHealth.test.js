@@ -292,3 +292,115 @@ test('health probe keeps ignoring resource failures outside the bundle route', a
 
   assert.equal(calls.length, 0);
 });
+
+/// 槽位自愈的**落点**要对：2026-09-30 实测，落在对面卸载内核风暴中间的那次
+/// 自愈刷新几秒后又撞死一次。刷新前先问 `harness_reload_backoff`，风没停就等。
+function slotSelfHealHarness({ backoff = () => 0, rejectBackoff = false, withoutBridge = false } = {}) {
+  const handlers = {};
+  const timers = [];
+  const calls = [];
+  const state = new Map();
+  let reloaded = 0;
+  const fakeWindow = {
+    top: null,
+    self: null,
+    location: {
+      href: 'http://127.0.0.1:3090',
+      reload() {
+        reloaded += 1;
+      },
+    },
+    sessionStorage: {
+      getItem(key) {
+        return state.get(key) ?? null;
+      },
+      setItem(key, value) {
+        state.set(key, String(value));
+      },
+    },
+    addEventListener(name, handler) {
+      handlers[name] = handler;
+    },
+    setTimeout(handler, delay) {
+      timers.push({ handler, delay });
+      return timers.length;
+    },
+  };
+  if (!withoutBridge) {
+    fakeWindow.__TAURI__ = {
+      core: {
+        invoke(command) {
+          calls.push(command);
+          if (command === 'harness_reload_backoff') {
+            return rejectBackoff ? Promise.reject(new Error('信标读不了')) : Promise.resolve(backoff());
+          }
+          return Promise.resolve({});
+        },
+      },
+    };
+  }
+  fakeWindow.top = fakeWindow;
+  fakeWindow.self = fakeWindow;
+  const fakeDocument = {
+    readyState: 'loading',
+    addEventListener(name, handler) {
+      handlers['document:' + name] = handler;
+    },
+  };
+  runInNewContext(probeSource, { window: fakeWindow, document: fakeDocument, Promise });
+  return { handlers, timers, calls, reloaded: () => reloaded };
+}
+
+const SLOT_MESSAGE = "Uncaught Error: scope 'session-maybe' rendered without an installed adapter";
+
+test('slot self-heal waits out a cross-shell package storm before reloading', async () => {
+  const rig = slotSelfHealHarness({ backoff: () => 90_000 });
+  rig.handlers.error({ message: SLOT_MESSAGE });
+  await Promise.resolve();
+  await Promise.resolve();
+  // 第一轮：先上报（slot-assembly），再问退避，得到 90000 ⇒ 安排一个 ≤5s 的轮询。
+  assert.equal(rig.calls[0], 'report_harness_fault');
+  assert.equal(rig.calls[1], 'harness_reload_backoff');
+  assert.equal(rig.timers.length, 1);
+  assert.ok(rig.timers[0].delay <= 5000, `轮询间隔必须封顶 5s：${rig.timers[0].delay}`);
+  assert.equal(rig.reloaded(), 0, '风没停不许刷新');
+});
+
+test('slot self-heal reloads once the storm is over', async () => {
+  let backoffMs = 90_000;
+  const rig = slotSelfHealHarness({ backoff: () => backoffMs });
+  rig.handlers.error({ message: SLOT_MESSAGE });
+  await Promise.resolve();
+  await Promise.resolve();
+  // 风停了：下一轮问出 0 ⇒ 保底 3 秒后刷新（报告先落地）。
+  backoffMs = 0;
+  rig.timers.shift().handler();
+  await Promise.resolve();
+  await Promise.resolve();
+  const reloadTimer = rig.timers.shift();
+  assert.equal(reloadTimer.delay, 3000, '风停后保底 3 秒再刷新');
+  reloadTimer.handler();
+  assert.equal(rig.reloaded(), 1);
+});
+
+test('slot self-heal falls back to the old reload behavior when the beacon is unreadable', async () => {
+  const rig = slotSelfHealHarness({ rejectBackoff: true });
+  rig.handlers.error({ message: SLOT_MESSAGE });
+  await Promise.resolve();
+  await Promise.resolve();
+  const reloadTimer = rig.timers.shift();
+  assert.equal(reloadTimer.delay, 3000, 'IPC 失败按老行为：3 秒后刷新');
+  reloadTimer.handler();
+  assert.equal(rig.reloaded(), 1, '退避是优化不是前提——读不了信标也要自愈');
+});
+
+test('slot self-heal reloads without a Tauri bridge at all', async () => {
+  const rig = slotSelfHealHarness({ withoutBridge: true });
+  rig.handlers.error({ message: SLOT_MESSAGE });
+  await Promise.resolve();
+  // 无桥时报告会先安排 500ms 的重试定时器；刷新定时器是 3000ms 的那个。
+  const reloadTimer = rig.timers.find((entry) => entry.delay === 3000);
+  assert.ok(reloadTimer, `应有 3 秒的刷新定时器：${rig.timers.map((t) => t.delay).join(', ')}`);
+  reloadTimer.handler();
+  assert.equal(rig.reloaded(), 1);
+});

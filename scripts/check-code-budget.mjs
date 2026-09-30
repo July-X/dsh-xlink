@@ -333,7 +333,7 @@ const FILE_BUDGETS = {
   // 「拆回 120 附近」那笔债**仍未还**：175 行那次顶高的成因（instance 侧跨壳判定）
   // 早已搬走，剩下的 `recreate` / `open` / `build` 三条建窗链仍在本文件内。那是
   // 下一次碰这块时该做的事，不在本次范围。
-  'src-tauri/src/harness_window.rs': 220,
+  'src-tauri/src/harness_window.rs': 310,
   // 工作台未发送草稿的存续（2026-09-30，新建）。它该独立成一个文件而不是塞进
   // harness_cmd.rs：**它是数据**（一段纯文本 + 落盘位置 + 取走即删 + 过期），
   // harness_cmd.rs 里全是 Tauri 命令与「该不该动手」的判据；而且它有 4 个测试，
@@ -824,6 +824,13 @@ const FILE_BUDGETS = {
 // harness_window.rs 195 → 220：本文件基线远低于 RATCHET_THRESHOLD，上调在规则内。
 // 上面记的「拆回 120 附近」那笔债**仍未还**，但候选已经收窄成 `recreate` /
 // `open` / `build` 三条建窗链——下一步该拆的是它们，不是自愈判据。
+// 35000 → 35050 / harness_window.rs 220 → 310：黑屏根因定案后的第四轮
+// （2026-09-30 下午）。真机数据推翻了「每进程只重建一次」的闸（重建落在卸载
+// 风暴中间、4 秒后又死、额度已尽、用户晾在黑屏上 25 秒），harness_window.rs
+// +90：`recreate_when_quiet`（等风停的后台等待者）、预算账本从 `rebuilt: bool`
+// 换成「次数 + 冷却」、`on_navigation` 导航观测、以及对应的测试与文档。
+// 总量 35050 → 35120 同一笔。反棘轮（plugins.rs / theme.css / commands.rs）
+// 一个数字没动；commands.rs 本轮零增长（新命令落在 harness_cmd.rs）。
 // 34790 → 35000：更新检查（以及下载更新）**优先走本机系统代理、失败再直连**
 // （2026-09-30 用户实测：系统里明明开着代理，检查更新却直连 GitHub 后报
 // `error sending request for url`）。净增约 190 行，几乎全在一个新文件里：
@@ -836,7 +843,7 @@ const FILE_BUDGETS = {
 // 不是新概念：reqwest 本来就认环境变量代理，缺的是**系统设置**那一半，以及
 // 「代理优先、直连兜底」的顺序。合计 34999 行，预算留 50 行余量。updater.rs
 // 本身没有可下调的余地（新逻辑全在 net_proxy.rs）。重复区间数不变。
-const TOTAL_BUDGET = 35050;
+const TOTAL_BUDGET = 35120;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

@@ -909,6 +909,15 @@ function productionRust(text) {
       if (!actionBody.includes('should_recreate_after_fault')) {
         selfHealMisses.push('recreate_after_fault 里没有问判据，等于无脑重建');
       }
+      // 2026-09-30 下午的真机数据：自动重建落在对面卸载内核的风暴中间
+      // （15:36:32 重建 → 15:36:40 新窗口又撞死）。「等风停再动手」如果只写在
+      // commit message 里，下一次重构就会把它接丢——和判据没人调是同一类洞。
+      if (!actionBody.includes('recreate_when_quiet')) {
+        selfHealMisses.push(
+          'recreate_after_fault 没走「等风停再重建」（recreate_when_quiet）——' +
+            '风暴中间重建等于再掷一次骰子（2026-09-30 实测：重建 4 秒后新窗口又死）',
+        );
+      }
     }
     if (selfHealMisses.length > 0) {
       fail(
@@ -931,7 +940,10 @@ function productionRust(text) {
   // （`settings_warning` 与 camelCase 的对不上，靠一个单测才抓到），这里是入参
   // 那一侧。命令名由第 3 项查（已注册 + 已授权），参数名要单独查。
   {
-    const draftJs = readFileSync(join(srcDir, 'harness-draft.js'), 'utf8');
+    const harnessScripts = ['harness-draft.js', 'harness-health.js'].map((name) => ({
+      name,
+      source: readFileSync(join(srcDir, name), 'utf8'),
+    }));
     const cmdSrc = productionRust(readFileSync(join(srcDir, 'harness_cmd.rs'), 'utf8'));
     /** Rust 形参名：只取简单标识，跳过 `app: AppHandle` 之类的注入参数。 */
     const rustParams = (fnName) => {
@@ -942,29 +954,37 @@ function productionRust(text) {
         .map((piece) => piece.split(':')[0].trim())
         .filter((name) => /^[a-z_][a-z0-9_]*$/.test(name));
     };
+    /** Tauri 命令参数走 camelCase→snake_case 的自动映射（`pageUrl` ⇒ `page_url`）。 */
+    const toSnake = (key) => key.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
     const paramMisses = [];
-    // 脚本里每一处 `invoke('<cmd>', { … })` 的对象键。
-    const callRe = /invoke\(\s*'([a-z_]+)'\s*,\s*\{([\s\S]*?)\}\s*\)/g;
-    let match;
-    while ((match = callRe.exec(draftJs)) !== null) {
-      const command = match[1];
-      const keys = [...match[2].matchAll(/(^|[{,\s])([a-z_][a-z0-9_]*)\s*:/g)].map((k) => k[2]);
-      const expected = rustParams(command);
-      if (expected === null) continue; // 命令不在 harness_cmd.rs 里，第 3 项管
-      for (const key of keys) {
-        if (!expected.includes(key)) {
-          paramMisses.push(
-            `${command} 的入参对不上：脚本传了 ${key}，Rust 那边没有这个形参（现有 ${expected.join(' / ') || '无'}）`,
-          );
+    // 每个注入脚本里每一处 `invoke('<cmd>', { … })` 的对象键。引号两种都认：
+    // harness-draft.js 用单引号、harness-health.js 用双引号——只认一种的检查会
+    // 对另一个脚本**整体失明**（旧版就是这样，ACL 那半从未覆盖过
+    // `report_harness_fault`，直到反向验抓住这个洞）。
+    const callRe = /invoke\(\s*['"]([a-z_]+)['"]\s*,\s*\{([\s\S]*?)\}\s*\)/g;
+    for (const { name, source } of harnessScripts) {
+      let match;
+      callRe.lastIndex = 0;
+      while ((match = callRe.exec(source)) !== null) {
+        const command = match[1];
+        const keys = [...match[2].matchAll(/(^|[{,\s])([a-z_][a-zA-Z0-9]*)\s*:/g)].map((k) => k[2]);
+        const expected = rustParams(command);
+        if (expected === null) continue; // 命令不在 harness_cmd.rs 里，第 3 项管
+        for (const key of keys) {
+          if (!expected.includes(toSnake(key))) {
+            paramMisses.push(
+              `${name} 里 ${command} 的入参对不上：脚本传了 ${key}，Rust 那边没有这个形参（现有 ${expected.join(' / ') || '无'}）`,
+            );
+          }
         }
       }
     }
     if (paramMisses.length > 0) {
-      // 同一个命令可能在脚本里有两处调用（存一次、放回去一次），报两遍只是噪音。
+      // 同一个命令可能在脚本里有多处调用（存一次、放回去一次），报两遍只是噪音。
       for (const message of new Set(paramMisses)) {
         fail(
           'harness-invoke-params',
-          `${message}。反序列化失败会被调用方的 .catch 吞掉，于是草稿功能静默失效` +
+          `${message}。反序列化失败会被调用方的 .catch 吞掉，于是那项功能静默失效` +
             '——编译不报、测试不红、门禁不响。改名字要两边一起改。',
         );
       }
@@ -991,14 +1011,15 @@ function productionRust(text) {
         for (const command of entry?.commands?.allow ?? []) granted.add(command);
       }
     }
-    const invokeRe = /invoke\(\s*'([a-z_]+)'/g;
-    let invokeMatch;
-    while ((invokeMatch = invokeRe.exec(draftJs)) !== null) {
-      if (invokeMatch[1] === 'take_harness_draft' || invokeMatch[1] === 'stash_harness_draft') {
+    const invokeRe = /invoke\(\s*['"]([a-z_]+)['"]/g;
+    const aclMisses = new Set();
+    for (const { name, source } of harnessScripts) {
+      let invokeMatch;
+      invokeRe.lastIndex = 0;
+      while ((invokeMatch = invokeRe.exec(source)) !== null) {
         if (!granted.has(invokeMatch[1])) {
-          fail(
-            'harness-invoke-params',
-            `注入脚本 invoke 了 ${invokeMatch[1]}，但 harness 窗口没有被授权它——` +
+          aclMisses.add(
+            `${name} 里 invoke 了 ${invokeMatch[1]}，但 harness 窗口没有被授权它——` +
               '真机上会被 ACL 直接拒，而脚本的 .catch 把错误吞掉，症状是「功能完全不工作」' +
               '且没有任何线索。请在 capabilities/harness-remote.json 的 permissions 里加对应的' +
               'allow-* 条目（并在 permissions/app-commands.json 里声明它）。',
@@ -1006,6 +1027,7 @@ function productionRust(text) {
         }
       }
     }
+    for (const message of aclMisses) fail('harness-invoke-params', message);
   }
 
   // ⑦ 三处「接线」，单测都抓不到。
@@ -1076,6 +1098,32 @@ function productionRust(text) {
 
     if (draftMisses.length === 0) {
       note('工作台建窗路径都注入了草稿脚本，装 / 删内核两端都打了信标');
+    }
+
+    // ③ 内核安装必须用 `package-import-method=copy`：与 pnpm store 硬链接共享
+    //    inode 的树，会被**任何**一次链接数变化（装 / 删任意版本、用户自己的
+    //    pnpm 项目）在 NTFS 上更新 ChangeTime，而内核 `dsh-client-hmr` 每 500ms
+    //    的 bundle stat 轮询把这种噪声当成「模块重建」推给**活页面**——
+    //    2026-09-30 五次装 / 删全部在 4~6 秒内打死对面正在服务的工作台页面，
+    //    与 CPU / 磁盘负载无关（那次安装只跑 9.2s、全部从 store 复用）。
+    //    copy 让树持有全新 inode，装 / 删从此物理上碰不到对面的任何文件。
+    //    这个参数被删掉时编译不报、测试不红——只有这条机械检查会响。
+    {
+      const kernelInstallSrc = productionRust(
+        readFileSync(join(srcDir, 'kernel.rs'), 'utf8'),
+      );
+      if (!kernelInstallSrc.includes('--config.package-import-method=copy')) {
+        fail(
+          'kernel-install-isolated-inodes',
+          'kernel.rs 的 pnpm 安装参数里没有 --config.package-import-method=copy —— ' +
+            '内核树会重新与 pnpm store 共享 inode，对面正在服务的工作台页面会再次被' +
+            '装 / 删内核打死（2026-09-30 实证机制：链接数变化 → NTFS ChangeTime → ' +
+            'client-hmr 的 500ms stat 轮询误判 bundle 重建 → 活页面换模块 → 槽位不变量' +
+            '崩溃。见 AGENTS.md「装包任务不许惊动另一个壳的工作台」）。',
+        );
+      } else {
+        note('内核安装用 copy 落盘：树与 pnpm store 不共享 inode');
+      }
     }
   }
 }

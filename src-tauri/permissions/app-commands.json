@@ -15,6 +15,13 @@
       }
     },
     {
+      "identifier": "allow-harness-reload-backoff",
+      "description": "Allow the loopback harness webview to ask how many milliseconds its self-heal reload should back off while a cross-shell package operation is in flight. Measured on 2026-09-30: a reload that landed mid-uninstall died again within seconds; the reload itself was right, its timing was not. The command only reads the package-activity beacon.",
+      "commands": {
+        "allow": ["harness_reload_backoff"]
+      }
+    },
+    {
       "identifier": "allow-stash-harness-draft",
       "description": "Allow the loopback harness webview to hand the shell the text the user has typed but not yet sent, so it survives a reload or a window rebuild. The script calls it ~600ms after typing stops, not on unload (an IPC started while the page is going away rarely lands).",
       "commands": {
@@ -51,6 +58,7 @@
           "stop_kernel",
           "open_harness",
           "harness_force_reload",
+          "harness_reload_backoff",
           "stash_harness_draft",
           "take_harness_draft",
           "report_harness_fault",

@@ -554,14 +554,14 @@ pub(crate) fn ensure_own_shell_stopped(data_dir: &Path, action: &str) -> Result<
 /// 在 [`ensure_own_shell_stopped`] 之上加一道**不阻断**的跨壳提示。
 ///
 /// 另一个壳的工作台在跑时装 / 删内核**照做**，只把后果与出路报一遍（进度面板 +
-/// 「查看日志」）。为什么不硬拦：那个「跨壳文件监视器互相惊动」的理由查不实
-/// ——内核全树没有一处 chokidar 盯内核安装树，`bootRev` 零命中；对得上的是**机器
-/// 资源争用**（pnpm + node-gyp 打满 CPU 与磁盘 → 对方页面加载被拖过看门狗阈值 →
-/// 自动重载 → 撞上启动顺序竞态），而它已经有对症的另一半（`child_priority.rs`
-/// 降优先级）。为概率性争用废掉双壳并行，比例不对。完整论证与实测见
-/// [`crate::instance::other_shell_workbench_notice`] 的文档注释。
+/// 「查看日志」）。跨壳惊动的机制已实证（见 [`crate::instance::other_shell_workbench_notice`]
+/// 的文档注释：pnpm store 的 inode 共享 + NTFS ChangeTime + 内核 `client-hmr` 的
+/// stat 轮询，不是「资源争用」），新版安装用 `copy` 已把**装**的路径根治；**删**
+/// 旧版硬链接树仍可能惊动对面的页面一次（自愈会等风停后恢复）。为这一次可自愈
+/// 的惊动废掉双壳并行，比例不对——降优先级（`child_priority.rs`）与 inode 隔离
+/// 才是对症的另一半。
 ///
-/// 写日志而不是只提示：这条提示**发生在一次两万个文件的写盘风暴里**，用户那时
+/// 写日志而不是只提示：这条提示**发生在一次两万个文件的写盘里**，用户那时
 /// 正在看进度面板；不出现在日志里就等于没说（AGENTS.md「用户看得见后果的后台
 /// 动作必须落盘」）。
 ///
@@ -612,8 +612,10 @@ pub fn uninstall(data_dir: &Path, version: &str) -> Result<(), AppError> {
     // 由版本页的告警承担（`KernelStatus.other_shell_workbench`）。
     let mut to_log_only = |_: &str| {};
     warn_other_shell_workbench("删除内核版本", &mut to_log_only);
-    // 几十秒的 remove_dir_all：打信标，让对面壳的看门狗别把这段时间里的「慢」
-    // 判成「死」。见 package_activity 模块的文档。
+    // 几十秒的 remove_dir_all：打信标，让对面壳的恢复动作（页面自愈刷新 /
+    // 壳重建窗口）知道「风还没停」，别把刷新落进风暴里（2026-09-30 实测：落在
+    // 风暴中的自愈刷新与自动重建都在几秒内又死一次）。看门狗的阈值放宽也走
+    // 同一信标。见 package_activity 模块的文档。
     crate::package_activity::begin("删除内核版本");
     let removed = remove_kernel_dir(data_dir, version);
     crate::package_activity::end();
@@ -692,13 +694,21 @@ fn rotate_install_logs(logs: &Path, keep: &Path) {
 /// 让 UI 在安装运行期间可以实时展示输出。
 ///
 /// **工作台运行期间拒绝**，与 [`uninstall`] 同一纪律，而且理由更硬：安装会往
-/// `kernels/<version>` 里解压 450 MB、两万多个文件（实测 0.1.7-rc.2 的一次删除
-/// 用时 34.2 s / 25643 个文件，安装只会更多）。内核的文件监视器会把这场
-/// 文件系统事件风暴当成模块图变更，**即使变化发生在一个它根本不服务的目录里**
-/// （2026-09-29 实测：删除一个未被使用的 0.1.7-rc.2，6 秒后运行中的工作台抛
-/// `scope 'session-maybe' rendered without an installed adapter`，而内核 HTTP 全程
-/// 200、boot rev 从 `d46638d97b76` 变成 `b3516d7cee6d`）。所以「装一个新内核」和
-/// 「删一个旧内核」是同一个 bug 的两个入口，必须一起堵。
+/// `kernels/<version>` 里落 450 MB、两万多个文件（实测 0.1.7-rc.2 的一次删除
+/// 用时 34.2 s / 25643 个文件，安装只会更多）。
+///
+/// 跨壳惊动的机制 **2026-09-30 已实证**（当天五次装/删，对面正在服务的工作台
+/// 页面全部在 4~6 秒内死掉，与 CPU / 磁盘负载无关——那次安装只跑了 9.2 秒且
+/// 全部从 store 复用）：pnpm 默认把包**硬链接**进树，而 store 按**文件内容**
+/// 寻址，两个壳的树与 store 里内容相同的文件是同一个 inode；NTFS 上硬链接数
+/// 增减会更新 ChangeTime（mtime 不动），内核 `dsh-client-hmr` 每 500ms 对每个
+/// 客户端 bundle 做一次 stat 轮询，把这些 ctime 噪声当成「bundle 重建」推给
+/// **活页面**，页面在换模块的窗口里撞
+/// `scope 'session-maybe' rendered without an installed adapter` 死掉。
+/// 所以「装一个新内核」和「删一个旧内核」是同一个 bug 的两个入口，必须一起堵：
+/// 安装用 `package-import-method=copy` 让新树不与任何路径共享 inode（见
+/// [`install_version_into`] 的参数注释）。**旧版硬链接装的树仍会互相惊动**——
+/// 卸载它时对面的页面可能黑一次（自愈会等风停后恢复），重装一次该版本即彻底隔离。
 pub fn install_version(
     family: &str,
     data_dir: &Path,
@@ -723,9 +733,10 @@ pub fn install_version(
     // 重装（目录本来就存在）时保留残骸，让用户能对比或手动处理；残骸没有入口
     // 文件，因此不会被 `list_installed` 列出（见该函数的判据）。
     let existed_before = dir.exists();
-    // 两万个文件 + node-gyp：打信标，让对面壳的看门狗别把这段时间里的「慢」判成
-    // 「死」（见 package_activity 模块的文档）。**装包失败也必须撤**，否则壳崩在
-    // 装包中途会把对面放宽到 TTL 到期。
+    // 两万个文件 + node-gyp：打信标。它的主职是让对面壳的**恢复动作**（页面自愈
+    // 刷新 / 壳重建）知道「风还没停、别急着落子」（2026-09-30 实测：落在风暴中
+    // 的刷新与重建都在几秒内又死一次），看门狗的阈值放宽捎带同一份信标。
+    // **装包失败也必须撤**，否则壳崩在装包中途会把对面放宽到 TTL 到期。
     crate::package_activity::begin("安装内核版本");
     let outcome = install_version_into(family, data_dir, node_exe, pnpm_exe, version, on_progress);
     crate::package_activity::end();
@@ -785,6 +796,16 @@ fn install_version_into(
         "--prefix",
         prefix,
         "--config.node-linker=hoisted",
+        // **树必须与 pnpm store 不共享 inode**（2026-09-30 五次装/删全部 4~6 秒内
+        // 打死对面正在服务的工作台页面，实证机制，见本函数文档注释）。store 按
+        // **文件内容**寻址：两个壳的树与 store 里内容相同的文件是同一个 inode，
+        // 而 NTFS 上硬链接数增减会更新 ChangeTime——内核 `dsh-client-hmr` 每
+        // 500ms stat 轮询把这些 ctime 噪声当成模块重建推给**活页面**，页面在
+        // 换模块的窗口里撞 `scope 'session-maybe' rendered without an installed
+        // adapter` 死掉。`copy` 让树持有全新 inode，装/删从此物理上碰不到对面
+        // 的任何文件；代价是每个版本真实占盘约 450 MB、安装慢几秒。
+        // `scripts/check-invariants.mjs` 有机械检查钉住这个参数不得被删。
+        "--config.package-import-method=copy",
         PNPM_NO_STRICT_DEP_BUILDS,
         PNPM_ALLOW_ALL_BUILDS,
         PNPM_REPORTER,
