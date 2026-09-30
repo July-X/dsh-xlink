@@ -245,7 +245,7 @@ UI 挂在「数据迁移」面板的「找回历史会话」卡片（`MigrationP
 - **把旧状态吸收成默认实例只有一个入口**：`instance::ensure_default_registered`，由 `setup()` 同步调用。它按当前壳决定 id（`default` / `default-dev`），且只在「无人认领」时由 release 认领共享指针。
 - **历史数据只进 release 实例**（`instance::legacy_migration_target`）：`~/.dsh` 的会话/凭据若跟着当前壳走，dev 先跑就会把 release 的历史搬进 `default-dev`。
 - 实例正被**另一个壳**的内核占用时，装/卸/更新插件、切物化模式、切内核版本会被拒绝（`instance::ensure_instance_mutable`）。pid 文件里记了启动方的壳模式（第三段 `release` / `dev`，旧格式读不出时按"认不出"放行），活体判定复用 `kernel::pid_is_kernel` 而不是裸的进程存在性——pid 会被系统复用。
-- 技能活动视图 v1 **全局共享**（`skills/active/`）。`KernelAdapter::custom_skill_dirs` 已预留接口（`DshAdapter` 返回 `vec![skills_active_root()]`，`start` 通过 `DSH_CUSTOM_SKILL_DIRS` env 注入）；DSH 端升级支持时不需要改 Xlink 代码。
+- 技能活动视图 v1 **全局共享**（`skills/active/`），但**接线是按实例写的**：`kernel_adapter::ensure_skill_wiring` 在每次 `prepare_instance`（即每次启动工作台）时向该实例的 `$DSH_HOME/cordis.patch.yml` 追加一条 `xlink-skill-filesystem` loader 行，把活动视图作为 `customSkillDirs` 交给内核。`KernelAdapter::custom_skill_dirs` 仍返回 `vec![skills_active_root()]`，`start` 也仍写 `DSH_CUSTOM_SKILL_DIRS`——但已装内核 0.2.0-rc.2 不读那个 env（`customSkillDirs` 只从插件配置读），env 只是留给未来内核版本的兜底。共享的是「活动视图」这一份数据，接线文件本身天然属于实例目录。取舍与验证见 [skill-management.md §「技能接线」](skill-management.md#技能接线壳怎么让内核看见活动视图)。
 - 实例端口 / PID / 锁由 `crate::instance::InstanceRegistry` 集中管理；`DSH_XLINK_HOME` 与 `DSH_HOME` 不在同一进程级 mutex 下，但 `start_instance` / `stop_instance` 都通过 `lifecycle_mutex()` 串行化。
 
 ### 第二内核可扩展性（`KernelAdapter` trait）

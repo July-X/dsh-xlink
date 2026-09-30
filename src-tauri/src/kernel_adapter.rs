@@ -279,11 +279,13 @@ impl KernelAdapter for DshAdapter {
     }
 
     fn custom_skill_dirs(&self) -> Vec<PathBuf> {
-        // P5 起 Xlink 维护一份「共享技能活动视图」（设计稿 §9.1）——
-        // `<xlink_home>/skills/active/`。DSH 端目前尚未官方支持通过 env
-        // 注入额外 skill 目录，但保留这条接口让 DSH 升级时不需要再改
-        // Xlink 侧；`start` 会主动把它写进 `DSH_CUSTOM_SKILL_DIRS` env
-        // 供未来版本的 DSH 消费。
+        // 壳管理的技能活动视图（设计稿 §9.1）——`<xlink_home>/skills/active/`。
+        // 2026-09-30 实测：已装内核 0.2.0-rc.2 **不读** `DSH_CUSTOM_SKILL_DIRS`
+        // （全树 3481 个 js/d.ts 无一处 `process.env.DSH_CUSTOM_SKILL_DIRS`），
+        // 它只从 `cordis.patch.yml` 的插件配置读 `customSkillDirs`——所以真正
+        // 接通内核的是 [`ensure_skill_wiring`] 写的那一行 loader 配置。
+        // 这条 env 仍然留着：内核一旦补上回退（对齐 `agentsHome` 的既有写法），
+        // 不必改壳就能生效，而在那之前它无害。
         vec![paths::skills_active_root()]
     }
 
@@ -329,20 +331,42 @@ impl KernelAdapter for DshAdapter {
         // `fatal uncaught exception`（exit status 1），且安全模式不触及该文件、
         // 重试永远复现。这里除首次写入正确模板外，还把历史构建写出的坏模板
         // **字节级匹配**后原位改写；用户或内核写入的任何其他内容不动。
-        const PATCH_YML_TEMPLATE: &str = "# dsh-xlink managed cordis patch\n[]\n";
         const PATCH_YML_BROKEN: &str = "# dsh-xlink managed cordis patch\nschema_version: 1\n";
+        // 早期构建写出的**合法**占位模板，现在已是历史形状。它同样是「没有
+        // 接线」的状态，且顶层的 `[]` 与后面追加的 patch 条目不能共存于同一个
+        // YAML 文档（空流式序列已经结束了一个文档），因此一并按字节匹配后重写。
+        const PATCH_YML_LEGACY: &str = "# dsh-xlink managed cordis patch\n[]\n";
+        const PATCH_YML_HEADER: &str = "# dsh-xlink managed cordis patch\n";
         let patch_yml = home.join("cordis.patch.yml");
-        match std::fs::read_to_string(&patch_yml) {
-            Ok(text) if text == PATCH_YML_BROKEN => {
-                std::fs::write(&patch_yml, PATCH_YML_TEMPLATE)
-                    .map_err(|e| AdapterError::Io(e.to_string()))?;
+        let existing = match std::fs::read_to_string(&patch_yml) {
+            Ok(text) if text == PATCH_YML_BROKEN || text == PATCH_YML_LEGACY => {
+                PATCH_YML_HEADER.to_string()
             }
-            Ok(_) => {}
+            Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::write(&patch_yml, PATCH_YML_TEMPLATE)
-                    .map_err(|e| AdapterError::Io(e.to_string()))?;
+                PATCH_YML_HEADER.to_string()
             }
             Err(error) => return Err(AdapterError::Io(error.to_string())),
+        };
+        // 技能接线写不进去**不能让工作台起不来**（少一批技能 ≠ 内核不可用），
+        // 但它是「用户看得见后果」的动作，必须留下可查的痕迹。
+        match ensure_skill_wiring(&existing, &paths::skills_active_root()) {
+            Ok(next) if next != existing => {
+                if let Err(error) = crate::process::atomic_write(&patch_yml, next.as_bytes()) {
+                    let line = format!(
+                        "技能接线写入失败（{}）：{error}；工作台看不到壳管理的技能",
+                        patch_yml.display()
+                    );
+                    crate::shell_events::record("skill-wiring", &line);
+                    eprintln!("{line}");
+                }
+            }
+            Ok(_) => {}
+            Err(why) => {
+                let line = format!("跳过技能接线（{why}）：{}", patch_yml.display());
+                crate::shell_events::record("skill-wiring", &line);
+                eprintln!("{line}");
+            }
         }
         Ok(())
     }
@@ -388,10 +412,10 @@ impl KernelAdapter for DshAdapter {
             // `$DSH_HOME/profiles/<name>/`，此处显式声明以防命令覆盖。
             .env("DSH_PROFILE", &record.profile);
         // P5：把 [`custom_skill_dirs`] 通过 `DSH_CUSTOM_SKILL_DIRS` 注入
-        // ——以 PATH 风格冒号分隔。DSH 端目前尚未官方支持 env 注入技能
-        // 目录，这条 env 是**接口预留**；DSH 端升级后（自定义 skill dir
-        // 协议稳定）不需要再改 Xlink 这边。空列表时**不**写 env，避免
-        // 把空字符串污染到 DSH 端。
+        // ——以 PATH 风格冒号分隔。**当前内核不消费它**（见 `custom_skill_dirs`
+        // 的注释），接通靠的是 `prepare_instance` 写进 `cordis.patch.yml` 的
+        // 接线行；这条 env 是给「内核补上回退」那天留的，空列表时**不**写，
+        // 避免把空字符串污染到 DSH 端。
         let skill_dirs = self.custom_skill_dirs();
         if !skill_dirs.is_empty() {
             let joined = skill_dirs
@@ -431,6 +455,91 @@ impl KernelAdapter for DshAdapter {
         }
         Ok(child)
     }
+}
+
+// ─── 技能接线：把壳的活动视图告诉内核 ─────────────────────────────────────
+
+/// 壳在实例 `cordis.patch.yml` 里插入的 loader 行 id。
+///
+/// **不能**复用内核自带的 `skill-filesystem` 行 id：`dsh-web-app` 明确把宿主层
+/// 那一行 `disabled: true`（同文件注释写着「preset 拥有本地发现」），按 id 打
+/// 补丁只会改到那个被禁用的行，等于什么都没接上。插入一条**自己的**行才是
+/// 内核自己说的「deployment 级 provider」——它注册进全局层，所有 session 的
+/// scope chain 都会读到。
+const SKILL_WIRING_ROW_ID: &str = "xlink-skill-filesystem";
+
+/// 活动视图路径在 patch 文件里的写法：YAML 双引号标量，而双引号标量的转义
+/// 规则与 JSON 字符串**完全一致**，所以直接用 `serde_json` 编码。Windows 的
+/// 家目录路径带大量 `\`，单引号写法虽然不转义反斜杠、却要在路径含 `'` 时手工
+/// 加倍——交给 serde 就没有这类边角。
+fn skill_wiring_path_token(active: &Path) -> String {
+    serde_json::to_string(&active.to_string_lossy()).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+/// 生成接线用的 patch 条目（一个 `insert`，把新行挂进实例的 loader 树）。
+///
+/// `includeDefaultRoots: false` 是关键：这一行只提供壳管理的活动视图，不再重复
+/// 扫 `<DSH_HOME>/skills`、`<agentsHome>/skills`、项目根与打包根——那些是 preset
+/// 自己的 `skill-filesystem` 行负责的（它们各自带 `customSkillDirs` 指向
+/// agent-preset 包内的 skills）。`providerName` 也与 preset 的 `filesystem` 区分
+/// 开：同一层里两个同名 provider 只会让后来者拿到一个空壳 disposer。
+///
+/// **不要**改用 `DSH_BUNDLED_SKILL_DIR`：它是内核唯一读的技能目录 env，但对应
+/// 的根带 `trustedHost: true`——把社区技能标成「随应用打包的可信技能」是安全
+/// 语义的错配。
+fn skill_wiring_block(active: &Path) -> String {
+    format!(
+        "- insert:\n    - id: {SKILL_WIRING_ROW_ID}\n      name: '@deepseek-ai/dsh-skill-filesystem'\n      config:\n        providerName: xlink\n        includeDefaultRoots: false\n        customSkillDirs:\n          - {}\n",
+        skill_wiring_path_token(active)
+    )
+}
+
+/// 顶层是不是一个 patch 列表。只有列表（空、或以 `-` 起头的条目）才允许追加。
+fn looks_like_patch_list(text: &str) -> bool {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        return trimmed.starts_with('-');
+    }
+    true
+}
+
+/// 返回补上技能接线行之后的 patch 文本；已经就位时原样返回。
+///
+/// 三条纪律：
+///
+/// 1. **只追加，不改写**。patch 按 id 定位、**后写覆盖先写**，所以路径变了就
+///    再追加一行新的，旧的自然失效；用户自己写的条目一律原样保留。
+/// 2. **不碰看不懂的文件**。顶层不是列表时返回 `Err` 而不是硬写——patch 文件
+///    是内核 fail-loud 的输入（历史上一次坏模板就让内核启动即崩），由壳把它
+///    改成语法错误是最坏的结果。
+/// 3. **空列表等价于什么都没有**。`[]` 结束了一个 YAML 文档，后面再跟块序列
+///    是语法错误，所以只有空内容时才把头注释 + 接线行写成整份文件。
+fn ensure_skill_wiring(existing: &str, active: &Path) -> Result<String, String> {
+    let token = skill_wiring_path_token(active);
+    if existing.contains(SKILL_WIRING_ROW_ID) && existing.contains(&token) {
+        return Ok(existing.to_string());
+    }
+    if !looks_like_patch_list(existing) {
+        return Err("cordis.patch.yml 顶层不是 patch 列表，不追加以免破坏内核启动".into());
+    }
+    let has_entries = existing.lines().any(|line| {
+        let trimmed = line.trim();
+        !trimmed.is_empty() && !trimmed.starts_with('#')
+    });
+    let mut next = existing.to_string();
+    if has_entries {
+        if !next.ends_with('\n') {
+            next.push('\n');
+        }
+        next.push('\n');
+    } else if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(&skill_wiring_block(active));
+    Ok(next)
 }
 
 // ─── mcode 适配器（mock / dry-run）────────────────────────────────────────
@@ -667,11 +776,20 @@ mod tests {
             "缺 cordis.patch.yml：{}",
             patch_yml.display()
         );
-        // dsh-app-boot 要求顶层数组：占位模板必须是 `[]`，不能是映射。
+        // dsh-app-boot 要求顶层数组：壳管理的这份文件必须是一条 patch 列表，
+        // 且列表里必须有技能接线行（否则工作台看不到壳管理的技能）。
         let patch_text = std::fs::read_to_string(&patch_yml).unwrap();
         assert!(
-            patch_text.trim_end().ends_with("[]"),
-            "cordis.patch.yml 必须是顶层数组，实际：{patch_text:?}"
+            patch_text.contains(SKILL_WIRING_ROW_ID),
+            "cordis.patch.yml 缺技能接线行，实际：{patch_text:?}"
+        );
+        assert!(
+            patch_text.contains(&skill_wiring_path_token(&paths::skills_active_root())),
+            "接线行必须指向共享活动视图，实际：{patch_text:?}"
+        );
+        assert!(
+            !patch_text.lines().any(|line| line.trim() == "[]"),
+            "顶层的 [] 会结束整个 YAML 文档，不能与后面的 patch 条目共存：{patch_text:?}"
         );
         // package.json 内容含 schema_version 与 kernel_family。
         let text = std::fs::read_to_string(&profile_pkg).unwrap();
@@ -680,8 +798,9 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
     }
 
-    /// 历史构建写出的坏模板（`schema_version: 1` 映射）必须被原位修复成
-    /// 顶层数组；用户改过的内容不得被碰。
+    /// 历史构建写出的坏模板（`schema_version: 1` 映射）必须被原位修复；
+    /// 早期的合法占位模板（顶层 `[]`）也必须换成带接线行的列表。
+    /// 用户改过的内容不得被删改，只允许在末尾追加壳自己的行。
     #[test]
     fn prepare_instance_repairs_broken_patch_template() {
         let home = temp_dir("patch-repair");
@@ -690,6 +809,7 @@ mod tests {
         let record = sample_record();
         crate::instance::ensure_instance_dirs(&record).expect("ensure dirs");
         let patch_yml = DshAdapter::dsh_home_for(&record).join("cordis.patch.yml");
+        let active = paths::skills_active_root();
         std::fs::create_dir_all(patch_yml.parent().unwrap()).unwrap();
 
         // 坏模板：字节级匹配历史构建的输出 → 修复。
@@ -699,21 +819,104 @@ mod tests {
         )
         .unwrap();
         adapter.prepare_instance(&record).expect("prepare");
-        assert_eq!(
-            std::fs::read_to_string(&patch_yml).unwrap(),
-            "# dsh-xlink managed cordis patch\n[]\n",
-            "坏模板必须原位改写为顶层数组"
+        let repaired = std::fs::read_to_string(&patch_yml).unwrap();
+        assert!(
+            repaired.contains(SKILL_WIRING_ROW_ID)
+                && repaired.contains(&skill_wiring_path_token(&active)),
+            "坏模板必须被改写成带技能接线的列表，实际：{repaired:?}"
         );
 
-        // 用户内容：不得被触碰。
+        // 早期的合法占位模板：顶层 `[]` 同样要换成带接线行的列表。
+        std::fs::write(&patch_yml, "# dsh-xlink managed cordis patch\n[]\n").unwrap();
+        adapter.prepare_instance(&record).expect("prepare");
+        let upgraded = std::fs::read_to_string(&patch_yml).unwrap();
+        assert!(
+            upgraded.contains(SKILL_WIRING_ROW_ID)
+                && !upgraded.lines().any(|line| line.trim() == "[]"),
+            "旧占位模板必须被升级成带接线的列表，实际：{upgraded:?}"
+        );
+
+        // 用户自己的 patch 条目：不得被覆盖，只在其后追加壳的行。
         std::fs::write(&patch_yml, "- my: patch\n").unwrap();
         adapter.prepare_instance(&record).expect("prepare");
-        assert_eq!(
-            std::fs::read_to_string(&patch_yml).unwrap(),
-            "- my: patch\n",
-            "用户自己的 patch 内容不得被覆盖"
+        let merged = std::fs::read_to_string(&patch_yml).unwrap();
+        assert!(
+            merged.starts_with("- my: patch\n"),
+            "用户自己的 patch 内容不得被覆盖，实际：{merged:?}"
+        );
+        assert!(
+            merged.contains(SKILL_WIRING_ROW_ID),
+            "壳的接线行必须追加在用户内容之后，实际：{merged:?}"
         );
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 接线行必须幂等：反复 prepare 不该让文件无限增长。
+    #[test]
+    fn prepare_instance_writes_skill_wiring_once() {
+        let home = temp_dir("patch-idempotent");
+        let _xlink = scoped_xlink_home(&home);
+        let adapter = DshAdapter;
+        let record = sample_record();
+        crate::instance::ensure_instance_dirs(&record).expect("ensure dirs");
+        adapter.prepare_instance(&record).expect("prepare");
+        let patch_yml = DshAdapter::dsh_home_for(&record).join("cordis.patch.yml");
+        let first = std::fs::read_to_string(&patch_yml).unwrap();
+        adapter.prepare_instance(&record).expect("prepare");
+        assert_eq!(
+            first,
+            std::fs::read_to_string(&patch_yml).unwrap(),
+            "重复 prepare 不得改动已经就位的接线文件"
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 活动视图路径随 `DSH_XLINK_HOME` 变化时必须补写新行（旧行因后写覆盖
+    /// 先写而自动失效），而不是留着一条指向旧目录的死接线。
+    #[test]
+    fn ensure_skill_wiring_appends_a_new_row_for_a_moved_view() {
+        let old_view = PathBuf::from("/xlink-a/skills/active");
+        let new_view = PathBuf::from("/xlink-b/skills/active");
+        let first = ensure_skill_wiring("# head\n", &old_view).unwrap();
+        let second = ensure_skill_wiring(&first, &new_view).unwrap();
+        assert!(second.contains(&skill_wiring_path_token(&old_view)));
+        assert!(
+            second
+                .trim_end()
+                .ends_with(skill_wiring_block(&new_view).trim_end()),
+            "新行必须追加在最后——patch 是后写覆盖先写，实际：{second:?}"
+        );
+    }
+
+    /// 顶层不是列表的文件一律不碰：patch 文件是内核 fail-loud 的输入，壳没有
+    /// 资格把它改成另一种语法。
+    #[test]
+    fn ensure_skill_wiring_refuses_a_non_list_file() {
+        let broken = "schema_version: 1\n";
+        assert!(ensure_skill_wiring(broken, Path::new("/x/skills/active")).is_err());
+    }
+
+    /// 接线文本逐字节钉死：这份 YAML 要被内核的 loader 解析，格式变了就是
+    /// 内核启动失败（历史上一次坏模板就 fatal 过），而"YAML 仍然合法"这件事
+    /// Rust 侧没有任何工具能验，只能把期望值写死。
+    #[test]
+    fn skill_wiring_block_text_is_pinned() {
+        let block = skill_wiring_block(Path::new("/xlink/skills/active"));
+        assert_eq!(
+            block,
+            "- insert:\n    - id: xlink-skill-filesystem\n      name: '@deepseek-ai/dsh-skill-filesystem'\n      config:\n        providerName: xlink\n        includeDefaultRoots: false\n        customSkillDirs:\n          - \"/xlink/skills/active\"\n"
+        );
+    }
+
+    /// Windows 家目录路径的 `\` 必须被转义，否则 YAML 双引号标量里它是转义
+    /// 起始符，整份 patch 文件会解析成别的东西。
+    #[test]
+    fn skill_wiring_escapes_windows_paths() {
+        let block = skill_wiring_block(Path::new(r"C:\Users\zxx\.dsh-xlink\skills\active"));
+        assert!(
+            block.contains(r#"- "C:\\Users\\zxx\\.dsh-xlink\\skills\\active""#),
+            "路径必须按 JSON 规则转义，实际：{block:?}"
+        );
     }
 
     /// `resolve_install_root` 在 legacy 路径命中时返回 legacy 目录。

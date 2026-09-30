@@ -444,6 +444,26 @@ export function openHarnessWindow() {
   );
 }
 
+// 「刷新工作台」（按钮文案）对应的动作：换掉整个窗口（内核侧换掉整个 webview，
+// 因此也换掉了渲染进程）。它内部叫 forceReload 是因为机制确实是强制重载而不是
+// 普通刷新——**文案说用户得到什么，代码名说它到底做了什么**，两件事分开记。
+// 它是**看门狗覆盖不到**的那类黑屏的手动出路——渲染进程被打崩时页面
+// 早就加载完成过，看门狗的判据（Started 之后没等到 Finished）永远不会触发，而
+// `reload()` 落在同一块死掉的文档上仍然是黑的。换窗口会丢页面里的前端运行时状态
+// （滚动位置、侧栏、终端），会话在服务端不受影响，所以失败/成功提示要说清。
+export function forceReloadHarnessWindow() {
+  return withLoading('forceReloadHarness', () =>
+    invoke('harness_force_reload').catch((e) =>
+      toastActionError(
+        '刷新工作台失败',
+        e,
+        '若工作台窗口已经关闭，请改用「工作台窗口」重新打开；内核未运行时先启动工作台',
+        6000
+      )
+    )
+  );
+}
+
 // 官方会话窗口由 Rust 管理；命令完成后立即刷新状态，让按钮文案同步窗口实际状态。
 export function toggleOfficialChat() {
   const open = !!(store.view && store.view.official_chat_open);

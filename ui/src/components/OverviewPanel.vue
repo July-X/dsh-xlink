@@ -16,6 +16,7 @@ import {
   VideoPlay,
   VideoPause,
   Refresh,
+  RefreshRight,
   FolderOpened,
   Download,
   Box,
@@ -32,6 +33,7 @@ import {
   startWorkbench,
   stopWorkbench,
   openHarnessWindow,
+  forceReloadHarnessWindow,
   toggleOfficialChat,
   openOfficialChatWindow,
   openDataDir,
@@ -435,8 +437,12 @@ function goVersions() {
         </el-button>
       </div>
 
-      <!-- 第二行：仅在对应服务开启后出现，作为「打开 X 窗口」的次级入口；
-           视觉上压低权重（缩进 + ghost 风格），与第一行的主按钮做明显区分。 -->
+      <!-- 第二行：仅在对应服务开启后出现，作为窗口层的次级入口；
+           视觉上压低权重（缩进 + ghost 风格），与第一行的主按钮做明显区分。
+           「工作台窗口 / 官方对话窗口」只把窗口带到台前，「刷新工作台」是唯一的
+           **动作**——它换掉整个工作台窗口（见 harness_cmd）。三者都不改变内核
+           状态，所以按 AGENTS.md 的 IA 规则与「查看日志」同属次级入口这一排，
+           不许往主按钮旁边堆会启停内核的动作。 -->
       <Transition name="subrow">
         <div v-if="running || officialChatOpen" class="btn-row btn-row-sub">
           <el-button
@@ -450,6 +456,18 @@ function goVersions() {
             @click="openHarnessWindow"
           >
             工作台窗口
+          </el-button>
+          <el-button
+            v-if="running"
+            class="btn-sub"
+            size="small"
+            :icon="RefreshRight"
+            :loading="isLoading('forceReloadHarness')"
+            :disabled="globalBusy"
+            title="工作台黑屏 / 卡死时的手动出路：拆掉整个窗口再打开（会换掉渲染进程）。窗口里的滚动位置、侧栏、终端会回到初始状态，会话不受影响"
+            @click="forceReloadHarnessWindow"
+          >
+            刷新工作台
           </el-button>
           <el-button
             v-if="officialChatOpen"

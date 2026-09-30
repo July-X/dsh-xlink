@@ -956,6 +956,85 @@ pub fn instance_kernel_running_message(record: &PidRecord, id: &str, action: &st
     }
 }
 
+/// **另一个壳**（不是本壳）还有哪个工作台在跑。动内核安装树之前的最后一句。
+///
+/// **为什么不能只问本壳**：两棵安装树物理不相交（`desktop/` 与 `desktop-dev/`），
+/// 插件中央库也按壳分家了，但装包是一次两万个文件的事件风暴。2026-09-30 本机
+/// 实测：dev 壳装内核 `0.2.0-rc.1` 的那 10 秒（10:32:42 → 10:32:52）里，release
+/// 壳的工作台在 10:32:47 重新加载，10:32:48 抛出 `scope 'session-maybe' rendered
+/// without an installed adapter` 并从此黑屏（`last-incident.json` 的 `at`）——内核
+/// HTTP 全程 200，release 内核那 10 秒里一行输出都没有。而挂在
+/// [`crate::kernel::install_version`] / `uninstall` / `set_active` 上的闸门
+/// （[`crate::kernel::ensure_workbench_stopped`]）只读**本壳**的 `data_dir` 与配置
+/// 端口，对另一个壳正在服务的工作台一无所知。
+///
+/// 候选 = 另一个壳注册表里的全部实例 **加上**它的默认实例。默认实例必须无条件
+/// 补上：另一个壳可能从没在这台机器上启动过（注册表文件还不存在），而那台机器
+/// 上最可能正在跑的恰恰是它的默认实例。判据复用 [`instance_kernel_running`]
+/// （pid 文件 + 端口活体验证），读不出就当没有——误报会挡住用户对自己实例的正常
+/// 操作，而漏报只在两壳真撞上时少一次提醒。
+pub fn workbench_running_in_other_shell() -> Option<(ShellMode, String, PidRecord)> {
+    let mine = crate::settings::current_mode();
+    for mode in [ShellMode::Release, ShellMode::Dev] {
+        if mode == mine {
+            continue;
+        }
+        for (family, id) in other_shell_candidates(mode) {
+            if let Some(record) = instance_kernel_running(&family, &id) {
+                return Some((mode, id, record));
+            }
+        }
+    }
+    None
+}
+
+/// 另一个壳可能正在服务的实例候选（判据见 [`workbench_running_in_other_shell`]）。
+fn other_shell_candidates(mode: ShellMode) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    if let Ok(registry) = load_registry_for(mode) {
+        for record in &registry.instances {
+            let pair = (record.kernel_family.clone(), record.id.clone());
+            if !out.contains(&pair) {
+                out.push(pair);
+            }
+        }
+    }
+    let fallback = (
+        KERNEL_FAMILY_DSH.to_string(),
+        default_instance_id_for(mode).to_string(),
+    );
+    if !out.contains(&fallback) {
+        out.push(fallback);
+    }
+    out
+}
+
+/// 「另一个壳的工作台在跑，不能动内核树」的阻断文案。
+///
+/// 与 [`instance_kernel_running_message`] 保持同一套要素（谁占着 / 为什么现在
+/// 不能做 / 下一步去哪停），但**理由必须换掉**：那边挡的是「改接线会被运行中的
+/// 内核整个覆盖」，这边挡的是「几万文件的写盘事件风暴会把那边正在服务的工作台
+/// 打死」——后者已经两次实测发生（2026-09-29 删除同级别名内核目录、2026-09-30 dev
+/// 壳装新内核），且刷新救不回来。文案里不说清代价，用户只会以为壳在无谓挡路。
+pub fn other_shell_workbench_message(
+    mode: ShellMode,
+    id: &str,
+    record: &PidRecord,
+    action: &str,
+) -> String {
+    let port_hint = record
+        .port
+        .map(|port| format!("、端口 {port}"))
+        .unwrap_or_default();
+    format!(
+        "另一个 dsh-xlink（{mode} 壳）的工作台正在运行（实例 {id}，进程 {}{port_hint}），不能{action}：\
+         装 / 删内核是一次两万个文件的事件风暴，正在服务的工作台有概率当场黑屏且刷新不回来\
+         （2026-09-30 本机实测：dev 壳装内核的 10 秒里 release 壳的工作台变黑）。\
+         请先在那个壳的概览页点「关闭工作台」，再回来重试。",
+        record.pid,
+    )
+}
+
 /// 单独写入端口文件（用于 runtime 期间的 hot patch）。
 pub fn write_port(family: &str, id: &str, port: u16) -> Result<(), String> {
     let path = instance_port_file(family, id);

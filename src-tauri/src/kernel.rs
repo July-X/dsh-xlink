@@ -511,12 +511,23 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
 /// `action` 填进提示语（「切换内核」/「删除内核版本」）——共用一条守卫但不能共用
 /// 一句话：对着一个正在删除的按钮说「请先停止工作台后再切换内核」会让用户以为自己
 /// 点错了地方。
+///
+/// **本壳没有工作台还不够**：另一个壳的工作台同样扛不住装包事件风暴（实测见
+/// [`crate::instance::workbench_running_in_other_shell`]）。这道门以前只看本壳的
+/// `data_dir` 与配置端口，于是 dev 壳装内核时 release 壳的工作台黑屏，而两个壳
+/// 各自都以为问题与自己无关——2026-09-30 的现场就是这样：dev 装内核的 10 秒里
+/// release 的工作台变黑且刷新不回来，壳这边一行相关日志都没留下。
 pub(crate) fn ensure_workbench_stopped(data_dir: &Path, action: &str) -> Result<(), AppError> {
     let settings = settings::load_for_shell(settings::current_mode());
     if workbench_running(data_dir, &settings) {
         return Err(AppError::Kernel(format!(
             "工作台正在启动或运行（端口 {}），请先点击「关闭工作台」停止工作台后再{action}",
             settings.port
+        )));
+    }
+    if let Some((mode, id, record)) = instance::workbench_running_in_other_shell() {
+        return Err(AppError::Kernel(instance::other_shell_workbench_message(
+            mode, &id, &record, action,
         )));
     }
     Ok(())
