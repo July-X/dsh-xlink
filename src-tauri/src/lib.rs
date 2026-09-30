@@ -36,6 +36,7 @@ mod credentials;
 mod env;
 mod error;
 mod guard;
+mod harness_cmd;
 mod harness_window;
 mod home_recovery;
 mod home_recovery_cmd;
@@ -316,6 +317,7 @@ pub fn run() {
             commands::start_kernel,
             commands::stop_kernel,
             commands::open_harness,
+            harness_cmd::harness_force_reload,
             commands::report_harness_fault,
             commands::open_log_window,
             commands::open_official_chat,

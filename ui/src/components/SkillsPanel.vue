@@ -17,6 +17,7 @@ import {
   checkSkillUpdates,
 } from '../skills.js';
 import { openExternalLink } from '../notify.js';
+import { tildePath } from '../labels.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 
 const view = computed(() => skillStore.view);
@@ -35,12 +36,17 @@ function toggleSkill(row, skill, enabled) {
 }
 
 // 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进标题旁的
-// 信息气泡；路径优先用后端返回的真实根目录，拿不到时回退到约定路径。
+// 信息气泡；两条路径都由后端返回（`store_root` 中央库 / `skills_root` 活动视图），
+// 并按迁移面板的同一套规则把 home 折叠成 `~`。这里曾经把 `~/.dsh/skills-store/`
+// 写死在前端，而 P5 之后中央库早已搬到 `skills/packages/`——后端搬了家、提示还
+// 指着旧目录，正是「同一份路径在前端与 Rust 各写一遍」的必然结果。
 const storeTip = computed(() => {
-  const root = (view.value && view.value.skills_root) || '~/.dsh/skills/';
+  const v = view.value || {};
+  const store = tildePath(v.store_root) || '~/.dsh-xlink/skills/packages/';
+  const active = tildePath(v.skills_root) || '~/.dsh-xlink/skills/active/';
   return (
-    '技能统一存放于 ~/.dsh/skills-store/，以链接方式进入内核读取的 ' +
-    root +
+    '技能统一存放于 ' + store +
+    '，以链接方式进入内核读取的 ' + active +
     '（链接失败自动降级复制）。安装与卸载对运行中的工作台即时生效，无需重启。'
   );
 });
@@ -72,9 +78,13 @@ const storeTip = computed(() => {
           </el-button>
         </span>
       </div>
+      <!-- 警告文案自带可执行的下一步（清单损坏、清单缺失、被同名条目盖住…），
+           模板**不要**再统一追加「重启应用会自动修复」：那对「清单缺失」是假的
+           （reconcile 不会凭空重建 store.json），对「被盖住」更是假的（重启什么
+           都不会改变内核的 rank 次序）——一句对两条都不成立的建议，比没有更糟。 -->
       <el-alert
         v-if="view && view.warning"
-        :title="view.warning + '（重启应用会自动修复；也可尝试重新安装对应技能包）'"
+        :title="view.warning"
         type="warning"
         :closable="false"
         show-icon

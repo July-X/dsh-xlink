@@ -3,10 +3,12 @@
 > 本文档描述桌面外壳的技能管理功能：中央存储、物化到内核读取路径、启用/禁用、更新提醒与社区目录。
 > 设计参照 [plugin-management.md](plugin-management.md)（社区插件管理）的同构模式，并按技能的本质差异做了简化。用户文档见 [README.md](../README.md)。
 
-> **状态（2026-09-19）**：本文档部分章节描述的是单内核时代的中央库与活动视图布局。
-> 多内核改造落地后，中央库已迁到 Xlink home 的 `skills/packages/`，活动视图迁到
-> `skills/active/`（v1 全局共享）；`KernelAdapter::custom_skill_dirs` 接口已预留，
-> 通过 `DSH_CUSTOM_SKILL_DIRS` 环境变量接入内核。
+> **状态（2026-09-30）**：多内核改造落地后，中央库已迁到 Xlink home 的 `skills/packages/`，活动视图迁到
+> `skills/active/`（v1 全局共享）。内核侧的接入**已闭环**：壳在每个实例的
+> `cordis.patch.yml` 里插一条自己的 `skill-filesystem` 行，把活动视图作为
+> `customSkillDirs` 交给内核（`DSH_CUSTOM_SKILL_DIRS` 只是留给未来内核版本的
+> 兜底，当前内核不读它）——机制、取舍与验证见
+> [「技能接线」一节](#技能接线壳怎么让内核看见活动视图)。
 > 权威路径说明见
 > [architecture.md §「多内核改造后的实际数据布局」](architecture.md)
 > 与阶段性状态快照
@@ -18,7 +20,7 @@
 用户可以把社区技能（GitHub 仓库、npm 包、本地文件夹）安装到本地，由桌面外壳统一管理，并且：
 
 1. **集中管理**：所有技能源存放在 dsh home 下专属目录，绝不写入任何内核安装目录。
-2. **零接线生效**：内核的 `dsh-skill-filesystem` 自带扫描 `<DSH_HOME>/skills`，物化即被读取；不改 cordis 配置、不动 profile、不装依赖。
+2. **零接线生效**（设计意图，接入方式见[「技能接线」一节](#技能接线壳怎么让内核看见活动视图)）：壳把技能物化进 `skills/active/`，由内核的 `dsh-skill-filesystem` 读；不改 cordis 配置、不动 profile、不装依赖。
 3. **热生效**：利用内核对技能根的文件监视（chokidar → `skills/change`），安装/卸载/启用/禁用对**运行中的工作台即时生效**，无需重启内核。
 4. **更新提醒**：管理界面在有新版本时提醒一键更新；支持社区目录浏览与搜索。
 
@@ -43,8 +45,8 @@
 | --- | --- | --- | --- |
 | 100 | project-dsh | `<projectRoot>/.dsh/skills` | 项目级覆盖全局（壳不写） |
 | 200 | project-agents | `<projectRoot>/.agents/skills` | 同上 |
-| 300 | custom | `Config.customSkillDirs` | 壳不使用（需改 cordis 配置） |
-| 400 | **user-dsh** | **`<DSH_HOME>/skills`**（`DSH_HOME` = 实例 home 目录） | **壳的接线点** |
+| 300 | custom | `Config.customSkillDirs` | **壳的接线点**（`skills/active/`，P5 起）——壳在实例 `cordis.patch.yml` 里插自己的行，见[「技能接线」一节](#技能接线壳怎么让内核看见活动视图) |
+| 400 | user-dsh | `<DSH_HOME>/skills`（`DSH_HOME` = 实例 home 目录） | 内核默认根，**壳不写**（P5 之前才是壳的接线点） |
 | 500 | user-agents | `<agentsHome>/skills` | 用户手放技能，壳只读展示 |
 | 600 | bundled | `Config.bundledSkillDir` | 打包技能，壳不涉及 |
 
@@ -67,14 +69,14 @@
 │   │   └── <pkg-id>/               # 一个包的源（npm tarball 解包或 git checkout）
 │   │       ├── .dsh-source.json    # id/来源/版本/拉取时间
 │   │       └── …                   # 包内容，可含一个或多个技能
-│   └── active/                     # 活动视图（内核实际读取），**所有 DSH 实例共享一份**（v1）
+│   └── active/                     # 活动视图（壳写的唯一生效面），**所有 DSH 实例共享一份**（v1）
 │       ├── <skill-name> → ../packages/<pkg-id>/<…>/   # link 模式：指向中央库内技能目录
 │       └── <skill-name>.md → ../packages/<pkg-id>/<…>.md
 └── kernels/<family>/instances/<id>/home/
     └── skills/                     # 该实例的 DSH_HOME/skills，实例级技能根
 ```
 
-三个路径层级各有归属，不要混：`packages/` 是**中央库**（壳写），`active/` 是**全局活动视图**（壳写、多个实例共读），`instances/<id>/home/skills/` 是**实例根**（随 DSH_HOME 注入内核）。v1 的启用状态全局共享，实例级覆盖是后续版本的事（见设计稿 §9.1）。
+三个路径层级各有归属，不要混：`packages/` 是**中央库**（壳写），`active/` 是**全局活动视图**（壳写、多个实例共读），`instances/<id>/home/skills/` 是**实例根**（内核默认技能根，壳不写）。v1 的启用状态全局共享，实例级覆盖是后续版本的事（见设计稿 §9.1）。
 
 P5 之前的旧布局 `<xlink_home>/skills/` 既当中央库又当活动根，现已由 `legacy_dsh_skills_root` / `legacy_dsh_skills_store` 作为**只读兼容入口**取代。
 
@@ -92,7 +94,7 @@ P5 之前的旧布局 `<xlink_home>/skills/` 既当中央库又当活动根，�
 
 1. **fetch 进中央库**：npm 取 `dist-tags.latest`（或指定版本）下载 tarball，完整写入 `.part` 后再发布，由 Rust 解包器只接受 `package/` 根并拒绝越界路径、链接和特殊文件；git 深度克隆也通过有界输出捕获。写 `.dsh-source.json` 与 store.json。
 2. **扫描与校验（fail loud）**：在包内探测技能入口——任意目录下的真实 `SKILL.md`（探测深度 ≤3 层，覆盖根即技能与常见 monorepo 布局）及顶层平铺 `*.md`；逐个解析 frontmatter，校验 kebab-case `name` + 非 `description`。符号链接（含目录与 `SKILL.md` 文件）一律不视为技能入口，避免 `git clone` 保留的装饰性重定向（如 blader/humanizer v2.11.1+ 的 `skills/<name>/SKILL.md → ../../SKILL.md`）把同一技能重复计入。一个技能都没有 → 安装失败并给出原因；包内重名（frontmatter name 冲突）→ 整包拒绝。
-3. **物化到活动根**：对每个校验通过的技能，在 `<DSH_HOME>/skills/` 建链接指向中央库内的技能目录/文件，条目名 = frontmatter `name`。macOS/Linux 用符号链接；Windows 上**目录用 junction**（`mklink /J`，普通用户即可创建，不需要 `SeCreateSymbolicLinkPrivilege`），**扁平 `.md` 文件用文件符号链接**。链接创建失败时降级为整树复制，实际模式记入 store.json 并回显到面板的模式 chip。
+3. **物化到活动根**：对每个校验通过的技能，在 `<DSH_XLINK_HOME>/skills/active/` 建链接指向中央库内的技能目录/文件，条目名 = frontmatter `name`。macOS/Linux 用符号链接；Windows 上**目录用 junction**（`mklink /J`，普通用户即可创建，不需要 `SeCreateSymbolicLinkPrivilege`），**扁平 `.md` 文件用文件符号链接**。链接创建失败时降级为整树复制，实际模式记入 store.json 并回显到面板的模式 chip。
 4. **所有权凭据**：无论链接还是复制，落地后都会把活动根条目的**内容指纹**（sha256）写进 store.json 的 `materialized_sha256`。判定"这个条目归本商店所有"时接受两种证据——链接解析到中央库源，或内容与记录的指纹一致；两者都不成立（用户手放的、落地后被改写过的）一律不动。指纹是 copy 模式唯一可用的凭据：没有它，复制出来的副本无法与用户自己的同名目录区分，卸载会静默失效。
 5. **无第 5 步**：不跑 pnpm、不改 profile——插件流程里最重的两步在这里不存在。
 6. **生效反馈**：壳探测内核端口是否在监听；运行中提示"已对工作台即时生效"，未运行提示"下次启动自动可用"。
@@ -110,7 +112,7 @@ P5 之前的旧布局 `<xlink_home>/skills/` 既当中央库又当活动根，�
 
 ## 切换内核 / 多内核
 
-所有内核版本共享同一个 `<DSH_HOME>/skills`，且技能不进任何内核的 node_modules 解析路径，因此：
+所有内核版本共享同一个 `<DSH_XLINK_HOME>/skills/active/`，且技能不进任何内核的 node_modules 解析路径，因此：
 
 - `activate_version` / `start_kernel` 对技能**零操作**（插件需要的 ensure_wiring 校正在这里不存在）。
 - dev 壳（desktop-dev）与 release 壳共享技能视图——用户级技能本就该全局一致，不存在 settings.json 那类争抢问题。
@@ -150,6 +152,95 @@ v1 只提供手动安装：与插件面板同款的「`<input>` 地址 + 回车�
 frontmatter 校验是内核规则的壳侧前置：解析器只取 frontmatter 顶层 `name` / `description`（带引号去引号），无法解析或不符合 kebab-case 的候选按"内核也会忽略"处理——安装时以警告形式展示并跳过，整包一个可用技能都没有才失败。这比内核的静默忽略更响，避免"装了却不出现"。启动对账 `skills::reconcile()`：清理三段式暂存残留、为启用技能补链/修复断链、清退停用技能的残留、清扫指向中央库但不在清单中的孤儿链接（用户手放的文件与非本库链接一律不动）；失败写入 store.warning 由面板展示。
 
 **暂存残留的清理为什么必须发生在「读标记」之前**（`recover_staging`）：`.tmp-*` 是 fetch 阶段的暂存目录，**刻意不打 id 标记**——`stamp_id_marker` 内部走 `atomic_write`，只有 rename 成功才会出现正式的 `.dsh-id`；而提前盖章正是当初修 Windows `ERROR_DIR_NOT_EMPTY` 的方案（见 `pkg::new_staging_dir` 注释）。所以「创建暂存目录 → 写标记」之间崩溃的残留读不到 id，而 `pkg::recover_staging_dir` 里 `StagingKind::Tmp => true` 的无条件回收分支对这类残留是**够不到的死代码**。正确做法与 `plugins.rs` 一致：读不到标记的暂存目录直接回收——它还没 rename 成交付目录，从来不是用户数据。名字以暂存前缀开头的**正式**目录（npm 允许 `tmp-foo` 这类名字）靠 `id == name` 判断豁免，不能被误删。
+
+## 技能接线：壳怎么让内核看见活动视图
+
+> 2026-09-30 落地。P5 起壳把技能物化进 `skills/active/`，交给内核的方式是
+> `DshAdapter::custom_skill_dirs()` → `start` 写 `DSH_CUSTOM_SKILL_DIRS`。**已装内核
+> 0.2.0-rc.2 并不消费这个 env**：
+
+```text
+$ grep -r "CUSTOM_SKILL" <install>/node_modules/@deepseek-ai   # 3481 个 js/mjs/cjs/ts/d.ts
+no CUSTOM_SKILL match
+```
+
+`dsh-skill-filesystem` 确实有 `customSkillDirs`（`Config` schema，默认 `[]`），但它
+**只从插件配置读**——`cordis.patch.yml` 里某个 `skill-filesystem` 行的 `config:` 段。
+对照组能说明 env 注入本身是内核认可的机制：`agentsHome` 明确回退到
+`process.env.DSH_AGENTS_HOME`，技能目录没有这条回退。也就是说 P5 之后的半年里
+「装得上、内核看不见」，而 README、UI 提示气泡与本文档都按已生效在写。
+
+### 现在怎么接的
+
+壳在**每个实例**的 `$DSH_HOME/cordis.patch.yml` 里追加一条自己的 loader 行
+（`kernel_adapter::ensure_skill_wiring`，`prepare_instance` 每次启动都跑）：
+
+```yaml
+# dsh-xlink managed cordis patch
+- insert:
+    - id: xlink-skill-filesystem
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: xlink
+        includeDefaultRoots: false
+        customSkillDirs:
+          - "C:\\Users\\<user>\\.dsh-xlink\\skills\\active"
+```
+
+四条设计决定，每条都有代价：
+
+- **插入自己的行，不改内核那一行**。`dsh-web-app` 把宿主层的 `skill-filesystem`
+  明确 `disabled: true`（同文件注释：preset 拥有本地发现），按 id 打补丁只会改到
+  那个被禁用的行。`dsh-web-app` 注释里点名的「deployment 级 provider —— 宿主层
+  的 skill-filesystem 行」正是这条新行的角色：它注册进全局层，每个 session 的
+  scope chain 都会读到。
+- **`includeDefaultRoots: false`**。这一行只提供壳管理的活动视图；`<DSH_HOME>/skills`、
+  `<agentsHome>/skills`、项目根与打包根由各 preset 自己的 `skill-filesystem` 行负责
+  （它们各自带 `customSkillDirs` 指向 agent-preset 包内的 skills）。不去重复扫。
+- **`providerName: xlink`**。同一层里两个同名 provider，后来者只会拿到一个空壳
+  disposer（内核对重复 provider 名是这么处理的），与 preset 的 `filesystem` 区分开。
+- **不用 `DSH_BUNDLED_SKILL_DIR`**。它是内核唯一读的技能目录 env，但对应的根带
+  `trustedHost: true`——把社区技能标成「随应用打包的可信技能」是安全语义的错配。
+
+写入规则：**只追加，不改写**。patch 按 id 定位、后写覆盖先写，所以活动视图路径变了
+（`DSH_XLINK_HOME` 改了）就再追加一行，旧的自然失效；用户自己写的条目一律原样保留。
+顶层不是列表时**不碰**——patch 文件是内核 fail-loud 的输入（历史上一次坏模板就让内核
+启动即崩），壳没有资格把它改成另一种语法。写失败不阻断启动（少一批技能 ≠ 内核不可用），
+但会走 `shell_events::record` 落到「查看日志」。
+
+`DSH_CUSTOM_SKILL_DIRS` 仍然留着：内核哪天补上 env 回退（对齐 `agentsHome` 的既有
+写法）不必改壳就能生效，在那之前它无害。
+
+### 验证
+
+`dsh --profile web --dump-config` 会打印**与启动同一份**组合结果（内核自己的注释：
+dump "can never drift from what boots"），实测能看到上面那行；再进一步，起一次真实
+内核、建一个 session、走 `skills/list` RPC，活动视图里的技能出现在该 session 的技能
+目录中（探针跑在临时 `DSH_HOME` 上，结束后已清理）。
+
+### 仍然盖不住的情况：更高优先级的同名条目
+
+内核的 rank 定死了次序，壳改不动：`<projectRoot>/.dsh/skills`（100）与
+`<projectRoot>/.agents/skills`（200）排在壳的 custom 根（300）**前面**。而内核找
+项目根的方式是从会话工作目录向上找第一个 `.git`——实例工作区都在家目录之下，
+所以**家目录带 `.git` 时它就是那个项目根**（2026-09-30 本机实测：确实有 `~/.git`），
+于是 `~/.dsh/skills`（P5 之前的活动视图残留）与 `~/.agents/skills` 实际扮演「项目级」
+角色。后果：与那里同名的技能，壳管理的更新对它不生效（内核一直在读那份旧的）。
+
+反过来也必须成立：**家目录没有 `.git` 时什么都不报**。那时 `~/.dsh/skills` 根本不会
+被扫，而 `~/.agents/skills` 只是 `user-agents`（rank **500**）——它排在 custom **之后**，
+壳的同名技能赢。把 500 当成能盖住 300 的根，报出来的就是假警告，而假警告会让人去删
+一个正在生效的文件。判据因此同时依赖「`~/.git` 存在」与「那份文件确实在」两件事，
+`paths::shadowing_skill_roots(home)` / `shadowing_skill_entries(active, home)` 两条纯
+函数把这件事做完，测试用临时家目录夹具把正反两面都钉住。
+
+壳不删那些路径（P5 之后不再往那里写，它们是用户数据），只如实报告：面板顶部 warning
+列出被盖住的技能与盖住它的文件，并给出两条出路——删掉那份条目，或换一个技能名。
+设计稿里「面板在检测到同名冲突时展示『将被项目级覆盖』提示」这条承诺，此前一直没有实现。
+
+**警告文案自带可执行的下一步，模板不要再统一追加「重启应用会自动修复」**：那对
+「清单缺失」是假的（`reconcile` 不会凭空重建 `store.json`），对「被盖住」更是假的
+（重启改变不了内核的 rank 次序）。一句对两条都不成立的建议，比没有建议更糟。
 
 ## 已知取舍
 

@@ -156,6 +156,10 @@ pub struct SkillStatus {
     pub rows: Vec<SkillRow>,
     /// kernel 读取的用户技能根的展示路径。
     pub skills_root: String,
+    /// 技能中央库（已校验源包）的展示路径。UI 的存储位置提示必须**读这份
+    /// 数据**：面板此前把 `~/.dsh/skills-store/` 写死在前端，而 P5 之后中央库
+    /// 早已搬到 `skills/packages/`，提示指着一个壳根本不再读的目录。
+    pub store_root: String,
     /// 已知存在更新版本的包数量。
     pub updates: usize,
     pub last_checked_at: Option<String>,
@@ -1604,13 +1608,31 @@ fn status_for_home(home: &Path) -> SkillStatus {
             updated_at: item.updated_at.clone(),
         });
     }
+    // 判据在 paths：只有家目录本身就是内核眼里的「项目根」（`~/.git` 存在）
+    // 时它才会返回非空，理由与 rank 算术见 `paths::shadowing_skill_roots`。
+    let shadowed =
+        paths::shadowing_skill_entries(&paths::skills_active_root(), &paths::dirs_home());
+    let shadow_warning = (!shadowed.is_empty()).then(|| {
+        let listed = shadowed
+            .iter()
+            .map(|(name, path)| format!("{name}（{}）", path.display()))
+            .collect::<Vec<_>>()
+            .join("、");
+        format!(
+            "这些技能在更高优先级的根里有同名条目，内核读的是那一份，壳管理的更新对它们不生效：{listed}。\
+             原因：内核从会话工作目录向上找第一个带 .git 的目录当项目根，而你的家目录里有 .git，\
+             于是家目录下的 .dsh/skills 与 .agents/skills 排在壳的活动视图之前。\
+             删掉上面列出的条目，或换一个技能名。"
+        )
+    });
     SkillStatus {
         rows,
         skills_root: root.display().to_string(),
+        store_root: store_dir(home).display().to_string(),
         updates,
         last_checked_at: store.last_checked_at,
         // 清单完整性优先于流程性警告：前者解释了为什么列表是空的。
-        warning: integrity_warning.or(store.warning),
+        warning: integrity_warning.or(store.warning).or(shadow_warning),
     }
 }
 

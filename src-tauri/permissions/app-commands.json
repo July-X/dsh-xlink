@@ -36,6 +36,7 @@
           "start_kernel",
           "stop_kernel",
           "open_harness",
+          "harness_force_reload",
           "report_harness_fault",
           "open_log_window",
           "open_official_chat",

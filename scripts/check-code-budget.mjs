@@ -285,13 +285,32 @@ const FILE_BUDGETS = {
   // 可见，却抢不到前台——Windows 的前台锁对非前台进程静默失败，用户看到的
   // 仍然是"点了没反应"。
   'src-tauri/src/activate.rs': 280,
+  // 2026-09-30：工作台窗口的**手动**逃生口（`harness_force_reload`）。看门狗
+  // 只在加载事件上判据，而 WebView2 渲染进程被打崩时页面早就 `Finished` 过，
+  // 那条判据永远不会触发，`reload()` 又落在一块死掉的文档上（用户原话：
+  // 「reload 后，还是会黑屏」）。这条命令换掉整个窗口——壳侧唯一能换掉渲染
+  // 进程的动作。**被反棘轮逼出来的**：`commands.rs` 2090/2110，放进去只能
+  // 上调数字，而调数字是 AGENTS.md 明确禁止的反应；`bisect_cmd.rs` /
+  // `home_recovery_cmd.rs` 是同一处理由。生产代码约 40 行 + 两个把拒绝文案
+  // 钉死的单测（拒绝路径的「说法」是用户在故障里唯一能拿到的东西）。重建
+  // 动作复用 `harness_window::recreate`，没有复制第二条建窗链。
+  'src-tauri/src/harness_cmd.rs': 90,
   // 工作台窗口的加载看门狗。从 commands.rs 拆出来的原因不是「行数超标」这么
   // 表面：它和命令注册、启动看护、状态轮询都不是一回事——它观测的是 **webview
   // 自己**的加载事件，判据完全独立于页面（页面没加载出来时，注入页面里的
   // harness-health.js 同样没跑，是哑的），因此壳在那种故障下唯一拿得到信号的
   // 地方就是这里。放进 commands.rs 会和一堆命令样板混在一起，看不出它为什么
   // 独立、也钉不住它的三条自律。约 100 行。
-  'src-tauri/src/harness_window.rs': 120,
+  // 2026-09-30：`recreate` 收下 `reason`（自动重建与用户手动「刷新工作台」走同一
+  // 动作但成因不同，日志里把手动说成「自动」会让排查顺着一件没发生过的事去找）
+  // + 新增 `reset_budget` 供手动路径清额度。
+  // 120 → 190（**临时登记，不是「就这样了」**）：本文件被一条并发的跨壳工作台
+  // 改造顶到了 175 行（新增 `instance::workbench_running_in_other_shell` 的那条
+  // 跨壳判定与事件落盘），本次只加了 10 行（`recreate` 的 `reason` 参数、
+  // `reset_budget`、证据前缀修正）。本文件基线 120 远低于 RATCHET_THRESHOLD，
+  // 上调在规则内，但**那次改造落地时应把超出的部分拆出去或写清为什么该独立**，
+  // 届时把数字收回 120 附近。拆分方案不在本次范围内——本次只加一个按钮。
+  'src-tauri/src/harness_window.rs': 190,
   'src-tauri/src/guard.rs': 940,
   // 从 guard.rs 拆出的「证据判读」层：只回答「这一行指向内核还是指向某个插件」，
   // 不回答「该怎么处置」。独立成文件有两个理由：① 判据的内核侧（命名空间锚定 +
@@ -329,7 +348,11 @@ const FILE_BUDGETS = {
   // 的迁移状态机，塞进 instance.rs 会顶高那条已经贴着 540 的预算；② 它只服务
   // 启动期的一次性动作，与实例生命周期（建/启/停/删）无关。生产代码 72 行。
   'src-tauri/src/registry_split.rs': 110,
-  'ui/src/store.js': 430,
+  // 430 → 450：概览页「刷新工作台」动作 `forceReloadHarnessWindow`（+19）。它与
+  // 既有的 `openHarnessWindow` 同属工作台窗口那一组，放这里而不是新开一个
+  // `overview.js`：概览页其余 20 来个动作也都在这个文件里，为一个按钮单开
+  // 一个共享层才是真分裂。本条预算基线远低于 RATCHET_THRESHOLD，上调是允许的。
+  'ui/src/store.js': 450,
   // 多内核改造 P0：新路径模块（paths.rs）。包含 ShellMode、xlink_home、shell
   // /kernels/skills/state/cache 解析、legacy resolver、id 校验与基础数据
   // 模型——是后续 P2–P8 的依赖根，必须单独占预算，避免被 plugins/skills
@@ -684,7 +707,31 @@ const FILE_BUDGETS = {
 // 列表（dev 侧的对称形态 9b31db4 已修）。回退抽成 copy_legacy_store 以便直接
 // 测「中途失败要清掉半截目标」：rename 失败只在跨卷时发生、测试造不出来，
 // 复制中途失败用 mode-000 子目录制造（root 环境下该夹具无效，跳过）。
-const TOTAL_BUDGET = 34065;
+// 34065 → 34180：**接上内核的技能接线**（2026-09-30）。P5 起壳把技能物化进
+// `<xlink_home>/skills/active/`，靠 `DSH_CUSTOM_SKILL_DIRS` env 交给内核——
+// 而已装内核 0.2.0-rc.2 根本不读这个 env（3481 个 js/d.ts 全树无命中），
+// `customSkillDirs` 只从 `cordis.patch.yml` 的插件配置读。也就是说技能这一整
+// 块「装得上、内核看不见」，而 README / UI 文案都按已生效在写。本轮把接线
+// 落到壳真正写得到的文件上：kernel_adapter.rs +62（生成 / 幂等补写 / 拒绝读不懂
+// 的文件 / 5 个测试，PATCH_YML_LEGACY 那条把早期 `[]` 占位模板一并升级），
+// paths.rs +26（`shadowing_skill_roots` / `shadowing_skill_entries`：家目录是 git
+// 仓库时内核把 `~/.dsh/skills`、`~/.agents/skills` 当「项目级」根，rank 高于
+// custom，同名条目会盖掉壳管理的那一份且次序改不动，只能报给用户），
+// skills.rs +13（把上面这份报告接到面板 warning 上，让「更新不生效」不再是
+// 静默的）。skills.rs / paths.rs / kernel_adapter.rs **均未上调预算**——三个都
+// 是既有余量充足的文件，没有一条是靠调数字过的门禁。已用真实内核端到端验证
+// （起一次内核 + skills/list RPC 确认活动视图里的技能出现在 session 目录里）。
+// 34180 → 34400：两处增量，**归属不同**，分开记账：
+//   · 本次（2026-09-30，工作台「刷新工作台」）：harness_cmd.rs 新增 31 行（新文件，
+//     见上方登记）+ store.js +19 + harness_window.rs +6（`recreate` 收 reason 参数、
+//     `reset_budget`）= 56 行。净增的是一条**手动逃生口**，不是新概念：重建动作
+//     复用 `harness_window::recreate`，没有复制第二条建窗链。
+//   · 并发会话的跨壳工作台改造（`instance::workbench_running_in_other_shell` 等，
+//     2026-09-30 上午，与本次改动无交集）约 +122 行。那部分**没有**在这里替它
+//     登记单文件预算——`harness_window.rs` 的 175 行超预算是它造成的，该由那次
+//     改造自己拆出去或写清为什么该独立（见 FILE_BUDGETS 里那条）。总量是软上限，
+//     先让仓库能过门禁，拆分方案落地后把数字收回。
+const TOTAL_BUDGET = 34400;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

@@ -473,6 +473,58 @@ pub fn legacy_dsh_skills_root() -> PathBuf {
     legacy_dsh_home().join("skills")
 }
 
+/// 内核可能排在壳的活动视图**之前**的两个技能根，仅当 `home` 本身就是内核
+/// 眼里的「项目根」时才成立。
+///
+/// 壳的技能走 `customSkillDirs`（rank 300）。内核在它前面还扫两个「项目级」根：
+/// `<projectRoot>/.dsh/skills`（rank 100）与 `<projectRoot>/.agents/skills`（rank
+/// 200），而 `projectRoot` 是**从会话工作目录向上第一个带 `.git` 的目录**。实例
+/// 工作区都在家目录之下，所以家目录带 `.git` 时它就是那个项目根——2026-09-30
+/// 本机实测正是如此，于是 `~/.dsh/skills`（P5 之前的活动视图残留）实际扮演
+/// 「项目级」角色，会盖掉壳管理的那一份。
+///
+/// **家目录没有 `.git` 时必须返回空**，这不是保守而是算术：`~/.dsh/skills`
+/// 根本不会被扫，而 `~/.agents/skills` 只是 `user-agents`（rank 500）——它排在
+/// custom **之后**，壳的同名技能赢。把 500 当成能盖住 300 的根，报出来的就是假
+/// 警告，而假警告会让人去删一个正在生效的文件。
+pub fn shadowing_skill_roots(home: &Path) -> Vec<PathBuf> {
+    if !home.join(".git").exists() {
+        return Vec::new();
+    }
+    vec![
+        home.join(".dsh").join("skills"),
+        home.join(".agents").join("skills"),
+    ]
+}
+
+/// 活动视图里被 [`shadowing_skill_roots`] 同名盖住的条目。
+///
+/// 返回 `(条目名, 盖住它的路径)`，按活动视图的目录顺序、逐根判定。壳不改这些
+/// 路径（P5 之后不再往那里写），只把它们报告给用户。
+pub fn shadowing_skill_entries(active: &Path, home: &Path) -> Vec<(String, PathBuf)> {
+    let roots = shadowing_skill_roots(home);
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    let mut shadowed = Vec::new();
+    let Ok(entries) = std::fs::read_dir(active) else {
+        return shadowed;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let stem = name.strip_suffix(".md").unwrap_or(&name).to_string();
+        for root in &roots {
+            for candidate in [root.join(&stem), root.join(format!("{stem}.md"))] {
+                if candidate.exists() {
+                    shadowed.push((stem.clone(), candidate));
+                    break;
+                }
+            }
+        }
+    }
+    shadowed
+}
+
 /// 验证 `s` 能否作为一段 id / 路径组件使用。拒绝：
 ///
 /// - 空字符串。
@@ -993,5 +1045,50 @@ mod integration_paths_tests {
         // 都以 `/logs` 结尾。
         assert!(release.ends_with("logs"));
         assert!(dev.ends_with("logs"));
+    }
+
+    /// 活动视图里被更高优先级根同名盖住的条目必须被认出来：目录包与平铺
+    /// `.md` 两种形态都要认，且**不改动**那些路径（壳不再往那里写）。
+    ///
+    /// `home` 由测试传临时目录，不碰真实家目录——`dirs_home()` 读的是
+    /// `HOME`/`USERPROFILE`，而本仓库的 env 守卫只覆盖 `DSH_HOME` /
+    /// `DSH_XLINK_HOME`（见开发规则里那条「测试永远不许碰用户真实数据」）。
+    #[test]
+    fn shadowing_skill_entries_reports_same_name_in_higher_rank_roots() {
+        let xlink_dir = temp_dir("shadow-xlink");
+        let home = temp_dir("shadow-home");
+        let _xlink = scoped_xlink_home(&xlink_dir);
+        let active = skills_active_root();
+        std::fs::create_dir_all(active.join("xlink-shadow-only-in-active")).unwrap();
+        std::fs::write(
+            active.join("xlink-shadow-flat.md"),
+            "---\nname: xlink-shadow-flat\n---\n",
+        )
+        .unwrap();
+        let project_dsh = home.join(".dsh").join("skills");
+        std::fs::create_dir_all(&project_dsh).unwrap();
+
+        // 家目录不是项目根（没有 .git）时一律不报：那两个目录要么不被扫，
+        // 要么只是 rank 500 的 user-agents——排在壳的活动视图**之后**。
+        std::fs::write(project_dsh.join("xlink-shadow-flat.md"), "old").unwrap();
+        assert!(
+            shadowing_skill_entries(&active, &home).is_empty(),
+            "家目录没有 .git 时不得报覆盖（那会让人去删正在生效的文件）"
+        );
+
+        // 家目录成了项目根 → 同名条目被盖住。
+        std::fs::create_dir_all(home.join(".git")).unwrap();
+        let shadowed = shadowing_skill_entries(&active, &home);
+        assert_eq!(shadowed.len(), 1, "只应报出被盖住的那一条：{shadowed:?}");
+        assert_eq!(shadowed[0].0, "xlink-shadow-flat");
+        assert_eq!(shadowed[0].1, project_dsh.join("xlink-shadow-flat.md"));
+
+        // 目录形态（`<root>/<name>/SKILL.md`）同样要认。
+        std::fs::create_dir_all(project_dsh.join("xlink-shadow-only-in-active")).unwrap();
+        let shadowed = shadowing_skill_entries(&active, &home);
+        assert_eq!(shadowed.len(), 2, "目录形态也要报出：{shadowed:?}");
+
+        std::fs::remove_dir_all(&xlink_dir).ok();
+        std::fs::remove_dir_all(&home).ok();
     }
 }
