@@ -69,6 +69,7 @@
           "skill_update",
           "skill_uninstall",
           "skill_set_enabled",
+          "skill_move_aside_shadowed",
           "skill_check_updates",
           "patch_status",
           "patch_apply",

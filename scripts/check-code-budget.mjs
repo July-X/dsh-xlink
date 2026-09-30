@@ -224,6 +224,13 @@ const FILE_BUDGETS = {
   // 被泄漏数据顶新导致源记录永远迁不进来」的根因，逻辑必须留在迁移层。
   'src-tauri/src/migration.rs': 830,
   'src-tauri/src/skills.rs': 1490,
+  // 「被更高优先级的根盖住」的处置：把盖住的那几份**改名让路**（只改名不删）。
+  // 独立成文件的两条理由：① skills.rs 只剩 10 行余量，这条能力（判据 + 落点
+  // 复核 + 改名 + 4 个测试）放进去只能靠调数字过门禁，而它是 1480 行的大文件；
+  // ② 判据本身在 paths.rs（纯函数，只读），执行在这里——**读判据的人**与
+  // **动手的人**分开，与 snapshot.rs / restore.rs 那对「回退点可信吗」/
+  // 「点确认会发生什么」是同一种分法。66 行代码（+200 行含文档与测试）。
+  'src-tauri/src/skill_shadow.rs': 70,
   'src-tauri/src/patches.rs': 1250,
   // B 类日志 family/instance_id 接入：kernel_log_spec / install_log_spec /
   // current_kernel_log_path / install_version / install_version_into 加形参；
@@ -731,7 +738,15 @@ const FILE_BUDGETS = {
 //     登记单文件预算——`harness_window.rs` 的 175 行超预算是它造成的，该由那次
 //     改造自己拆出去或写清为什么该独立（见 FILE_BUDGETS 里那条）。总量是软上限，
 //     先让仓库能过门禁，拆分方案落地后把数字收回。
-const TOTAL_BUDGET = 34400;
+// 34400 → 34520：技能「被高优先级根盖住」的处置（2026-09-30）。skill_shadow.rs
+// 新文件 66 行（见 FILE_BUDGETS）+ commands.rs +12（一条 Tauri 命令）+
+// skills.rs +4（`SkillStatus.shadowed` 字段与 warning 文案指向新按钮）+
+// SkillsPanel.vue / skills.js +31（确认框列出会被改名的路径，按钮带 loading）。
+// 净增是**一条用户可见的出路**，不是新概念：判据（paths.rs 的
+// `shadowing_skill_entries`）此前已存在且面板已在报，缺的只是一个可点的处置——
+// 而处置复用的是 skills.rs 里早就有的 `keep_aside`（仅因多收一个 reason 参数
+// 提为 `pub(crate)`），没有第二套改名逻辑。
+const TOTAL_BUDGET = 34520;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

@@ -77,6 +77,22 @@ export function setSkillEnabled(id, name, enabled) {
   );
 }
 
+/// 把盖住活动视图的同名条目改名让路（只改名，不删除；回退 = 改回原名）。
+///
+/// 判据在后端（`~/.git` 存在且 `~/.dsh/skills`、`~/.agents/skills` 里有同名
+/// 条目），这里只发命令：列表与落点由后端给，前端不拼路径。
+export function moveAsideShadowedSkills() {
+  return withProgress(
+    {
+      cmd: 'skill_move_aside_shadowed',
+      start: '正在移走盖住活动视图的同名条目 …',
+      done: '盖住活动视图的同名条目已改名让路' + effectSuffix(),
+      fail: '移走失败',
+    },
+    (channel) => ({ onEvent: channel })
+  );
+}
+
 // 手动检查挂按钮 loading；面板进入时低频自检，启动期间失败静默。
 // 策略（TTL / 逐包失败退避 / 互斥 / 去重 / 提示）见 async.js 的 createUpdateChecker。
 export const checkSkillUpdates = createUpdateChecker({
