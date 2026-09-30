@@ -306,6 +306,7 @@ fn build(app: &AppHandle, url: &Url, backdrop: Color) -> Result<(), String> {
         .initialization_script(include_str!("titlebar-pulse.js"))
         .initialization_script(include_str!("pullstring-launcher.js"))
         .initialization_script(include_str!("harness-health.js"))
+        .initialization_script(include_str!("harness-draft.js"))
         .initialization_script(include_str!("workbench-history-guard.js"))
         .on_page_load({
             let handle = app.clone();

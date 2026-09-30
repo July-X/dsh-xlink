@@ -37,6 +37,8 @@
           "stop_kernel",
           "open_harness",
           "harness_force_reload",
+          "stash_harness_draft",
+          "take_harness_draft",
           "report_harness_fault",
           "open_log_window",
           "open_official_chat",
