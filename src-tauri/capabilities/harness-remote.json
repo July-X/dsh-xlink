@@ -1,9 +1,14 @@
 {
   "identifier": "harness-remote",
-  "description": "The workbench page is a remote origin (http://127.0.0.1:<kernel port>), so Tauri's ACL denies its invokes by default. Grant only the pull-string launcher's command. The wildcard port covers the release/debug defaults (3090/3091) and any custom port in settings.json; the origin is still pinned to loopback and the harness window.",
+  "description": "The workbench page is a remote origin (http://127.0.0.1:<kernel port>), so Tauri's ACL denies its invokes by default. Grant only what the injected workbench scripts actually call. The wildcard port covers the release/debug defaults (3090/3091) and any custom port in settings.json; the origin is still pinned to loopback and the harness window.",
   "windows": ["harness"],
   "remote": {
     "urls": ["http://127.0.0.1:*"]
   },
-  "permissions": ["allow-focus-main-shell", "allow-report-harness-fault"]
+  "permissions": [
+    "allow-focus-main-shell",
+    "allow-report-harness-fault",
+    "allow-stash-harness-draft",
+    "allow-take-harness-draft"
+  ]
 }
