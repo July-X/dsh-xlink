@@ -140,6 +140,7 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
         ├── usage.rs          # 本地模型用量账目（增量扫描 + 聚合）
         ├── releases.rs       # 官方发布列表（npm registry → GitHub 回退）
         ├── updater.rs        # 桌面端自身更新与安装残留清理
+        ├── net_proxy.rs      # 出网路由：系统代理探测（先代理，失败再直连）
         ├── tray.rs           # 通知区域图标与托盘菜单
         ├── window.rs         # 窗口创建、吸附几何与拖动跟随
         ├── process.rs        # 子进程执行、PATH 合并、进程组回收、日志轮转
@@ -247,4 +248,4 @@ npm run build:win         # x86_64-pc-windows-msvc
 - **端口冲突**：若 3090（dev 壳为 3091，以设置页显示为准）已被其他进程占用，先停止外部服务，或在设置页改用其它端口——注意「工作台运行期间不能改端口」，需先关闭工作台再保存。
 - **安全**：应用通过 Webview 加载本地 `http://127.0.0.1` 的 Harness 页面并暴露版本管理命令。**`@deepseek-ai` 命名空间限制只覆盖内核与托管 Node 两条路径**（包名在 `kernel.rs` 硬编码、托管 Node 版本与 SHA-256 硬编码），**不覆盖插件与技能**——`plugins.rs` / `skills.rs` 对 npm 包名只做字符类校验，`lodash`、`@attacker/backdoor` 都能安装。插件和技能是第三方内容 / 任意代码，安装前请自行确认来源；社区目录条目保留「未验证」标记。npm 包解包拒绝绝对路径、父级路径、符号链接、硬链接和特殊文件，并限制条目数与展开体积。外壳自己下载的 tarball 一律逐字节校验：优先用 registry 元数据的 `dist.integrity`（SRI，取最强且受支持的 sha512 / sha256），只有它没有可用摘要时才回退到老 packument 的 `dist.shasum`（sha1），两条都没有则拒绝安装。镜像（默认 npmmirror）只影响取源，不影响信任判定；`DSH_NPM_REGISTRY` 目前接受 `http://`，部署到不可信网络时请自行确认。
 - **插件链接模式**：依赖文件系统符号链接支持（Windows 需要开发者模式，失败会自动降级为复制模式并在行内显示「复制」徽标）。
-- **自动更新**：桌面端使用 `tauri-plugin-updater` 下载并校验签名。Windows 更新重启后，管理面板完成首次状态刷新即会清理更新前的旧安装目录、快捷方式和 updater 临时目录；清理失败会保留标记，并在下次启动重试。
+- **自动更新**：桌面端使用 `tauri-plugin-updater` 下载并校验签名。检查更新与下载更新都**优先走本机系统代理**（先读 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 环境变量，再读 Windows「Internet Settings」注册表 / macOS 系统网络设置），代理连不上时自动改走直连——因此开着代理、但代理软件此刻没运行时不会把更新检查堵死。失败提示会列出本次试过的每一条路。Windows 更新重启后，管理面板完成首次状态刷新即会清理更新前的旧安装目录、快捷方式和 updater 临时目录；清理失败会保留标记，并在下次启动重试。

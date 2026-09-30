@@ -7,9 +7,13 @@
 //! 更新才会出现在这里——而且仅当该 release 被标记为 "latest"，
 //! GitHub 允许 prerelease 也被标记为 latest。
 
+use std::future::Future;
 use std::path::Path;
 #[cfg(any(test, all(windows, not(debug_assertions))))]
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Mutex;
+use std::time::Duration;
 
 #[cfg(any(test, all(windows, not(debug_assertions))))]
 use serde::Deserialize;
@@ -17,9 +21,22 @@ use serde::Serialize;
 #[cfg(all(windows, not(debug_assertions)))]
 use tauri::Manager;
 use tauri::{AppHandle, Emitter};
-use tauri_plugin_updater::{Error as UpdaterError, UpdaterExt};
+use tauri_plugin_updater::{Error as UpdaterError, Update, Updater, UpdaterExt};
 
 use crate::error::AppError;
+use crate::net_proxy::{self, Route};
+use crate::shell_events;
+
+/// 插件默认**不设任何超时**：认证门户、只完成 TCP 握手却不回包的企业代理、
+/// 卡死的 CDN 连接都会让请求永不返回。而 UI 侧 `withExclusiveLoading` 会让
+/// globalBusy 长期为真——几乎所有 IO 按钮被禁用且没有取消入口，用户只能退出
+/// 应用，更新却根本没装上。`read_timeout` 约束的是"两次读取之间的间隔"，
+/// 因此对慢速但持续传输的连接是安全的。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// 检查只取一个小 JSON，和下面的下载用同一个值就够。
+const CHECK_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// 下载路径放宽到 60 秒，避免慢速网络下大文件传输被误判为超时。
+const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 概览页对外壳自身版本状态的展示信息。
 #[derive(Debug, Clone, Serialize)]
@@ -187,46 +204,145 @@ fn explain_updater_error(e: UpdaterError) -> String {
     }
 }
 
+/// 一次尝试（走某一条路由）的返回值。用装箱 future 是为了让「按顺序试」
+/// 这一段只有一份实现，`check` 与 `install` 两条路径共用。
+type Attempt<'a, T> = Pin<Box<dyn Future<Output = Result<T, UpdaterError>> + Send + 'a>>;
+
+/// 按顺序试 `routes`，第一条走通的就返回它。
+///
+/// 走完全部路由仍未成功时返回 `Failed`，但**带的是最后一次**的失败——回退本身
+/// 已经逐条落进 `shell-update-route` 事件日志，用户看到的那一条错误只该讲
+/// 最后一次发生了什么。
+async fn run_routes<'a, T: Send>(
+    routes: &'a [Route],
+    mut attempt: impl FnMut(&'a Route) -> Attempt<'a, T>,
+) -> Routed<T> {
+    let total = routes.len();
+    let mut last: Option<UpdaterError> = None;
+    for (index, route) in routes.iter().enumerate() {
+        match attempt(route).await {
+            Ok(value) => return Routed::Done(value),
+            Err(error) => {
+                // 访问成功但 endpoint 上没有已发布的 release：空状态，不是错误。
+                // 放在**还有路由可试**时也不能就此收工——企业网关对任何地址回
+                // 404 是常见行为，把它当成"没有更新"就会静默漏掉一次更新。
+                let empty = matches!(error, UpdaterError::ReleaseNotFound);
+                if index + 1 == total || !(empty || should_try_next(&error)) {
+                    shell_events::record(
+                        "shell-update-route",
+                        &format!("{} 失败：{error}", route.describe()),
+                    );
+                    return if empty {
+                        Routed::Empty
+                    } else {
+                        Routed::Failed(error)
+                    };
+                }
+                shell_events::record(
+                    "shell-update-route",
+                    &format!(
+                        "{} 失败（{error}），改试{}",
+                        route.describe(),
+                        routes[index + 1].describe()
+                    ),
+                );
+                last = Some(error);
+            }
+        }
+    }
+    // `routes()` 恒以直连兜底，循环里必然 return；空列表只可能来自调用方写错。
+    Routed::Failed(last.unwrap_or(UpdaterError::EmptyEndpoints))
+}
+
+/// 走完全部路由之后的结果。
+enum Routed<T> {
+    /// 某条路由走通了，`T` 是那条路由的返回值。
+    Done(T),
+    /// 访问成功，但 endpoint 上没有已发布的 release：空状态，不是错误。
+    Empty,
+    /// 全部路由都没走通。
+    Failed(UpdaterError),
+}
+
+/// 这次失败该不该换下一条路由再试。
+///
+/// **只有传输层失败才回退**：连不上 / 超时 / TLS / DNS / 代理不可用。签名校验、
+/// 清单解析、版本号解析、URL 无效这几类换一条路只会同样地失败，而重试一遍
+/// 等于让"第二次也这样"盖住第一次的真正原因。`ReleaseNotFound` 不在这里——
+/// 它在 `run_routes` 里单独判，因为那里还要处理它的「空状态」那层含义。
+fn should_try_next(error: &UpdaterError) -> bool {
+    matches!(error, UpdaterError::Reqwest(_) | UpdaterError::Network(_))
+}
+
+/// 全部路由都没走通时的用户文案：说清试过哪几条路，以及下一步能做什么。
+fn describe_failure(routes: &[Route], error: UpdaterError) -> String {
+    let tried = routes
+        .iter()
+        .map(Route::describe)
+        .collect::<Vec<_>>()
+        .join(" → ");
+    format!(
+        "{tried} 均失败：{}。请确认系统代理软件正在运行（关掉系统代理后本应用会\
+         改走直连）；本次尝试的逐条记录在「查看日志」里的 shell-update-route。",
+        explain_updater_error(error)
+    )
+}
+
+/// 按一条路由组装 updater 客户端。
+fn updater_via(
+    app: &AppHandle,
+    route: &Route,
+    read_timeout: Duration,
+) -> Result<Updater, UpdaterError> {
+    let builder = app.updater_builder().configure_client(move |builder| {
+        builder
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(read_timeout)
+    });
+    match route {
+        // 直连是**真的**直连：显式关掉代理，包括环境变量里的那一个。回退到
+        // 直连却仍被 `HTTPS_PROXY` 拉回代理，等于把同一条路试两遍。
+        Route::Direct => builder.no_proxy(),
+        Route::Proxy { url, .. } => builder.proxy(url.clone()),
+    }
+    .build()
+}
+
+/// 沿一条路由检查更新，返回已发布更新对应的版本。
+async fn check_via(
+    app: &AppHandle,
+    route: &Route,
+    read_timeout: Duration,
+) -> Result<Option<String>, UpdaterError> {
+    Ok(updater_via(app, route, read_timeout)?
+        .check()
+        .await?
+        .map(|update: Update| update.version))
+}
+
 /// 把当前运行版本与最新已发布版本做比较。
+///
+/// 先按 `net_proxy::routes()` 给出的顺序试：探测到系统代理就走代理，代理自己
+/// 不通再退回直连。`Ok(None)` 有两种来源——endpoint 上确实没有更新，以及访问
+/// 到了 endpoint 但那里没有已发布的 release（空状态，后台检查保持静默，手动
+/// 按钮仅展示当前版本）。两者都不是错误。
 pub async fn check(app: &AppHandle) -> Result<ShellUpdateInfo, AppError> {
     let current = app.package_info().version.to_string();
-    let update = match app
-        .updater_builder()
-        // 插件默认**不设任何超时**：认证门户、只完成 TCP 握手却不回包的企业代理、
-        // 卡死的 CDN 连接都会让 check 永不返回。而 UI 侧 `withExclusiveLoading`
-        // 会让 globalBusy 长期为真——几乎所有 IO 按钮被禁用且没有取消入口，用户
-        // 只能退出应用，更新却根本没装上。read_timeout 约束的是"两次读取之间的
-        // 间隔"，因此对慢速但持续传输的连接是安全的。
-        .configure_client(|builder| {
-            builder
-                .connect_timeout(std::time::Duration::from_secs(15))
-                .read_timeout(std::time::Duration::from_secs(30))
+    let routes = net_proxy::routes();
+    let outcome = {
+        let app = app.clone();
+        run_routes(&routes, move |route| {
+            let app = app.clone();
+            Box::pin(async move { check_via(&app, route, CHECK_READ_TIMEOUT).await })
         })
-        .build()
-        .map_err(|e| AppError::Update(format!("初始化失败：{e}")))?
-        .check()
         .await
-    {
-        Ok(Some(update)) => Some(update.version),
-        Ok(None) => None,
-        // 在已配置的 endpoint 上访问不到任何已发布的 release。
-        // 可能仓库从未发布过桌面端 release；也可能所有发布的 release
-        // 都还是 draft（GitHub 对 /releases/latest/download/ 隐藏 draft）；
-        // 也可能是 endpoint 配置错误，服务器一直返回非清单 HTML。仅凭
-        // 这个信号无法区分「还没有 release」和「endpoint 损坏」——全新
-        // 仓库、仅 draft 的 release 和错误的 URL 都会触发它。把这种
-        // 情况视为空状态：后台检查保持静默，手动按钮仅展示当前版本。
-        // 后续真正发布的 release 会通过正常路径出现。
-        //
-        // 真正的错误（网络不通、TLS 失败、签名不匹配、清单损坏、URL
-        // 语法无效……）仍走 `explain_updater_error`。
-        Err(UpdaterError::ReleaseNotFound) => None,
-        Err(other) => return Err(AppError::Update(explain_updater_error(other))),
     };
-    Ok(ShellUpdateInfo {
-        current,
-        available: update,
-    })
+    let available = match outcome {
+        Routed::Done(version) => version,
+        Routed::Empty => None,
+        Routed::Failed(error) => return Err(AppError::Update(describe_failure(&routes, error))),
+    };
+    Ok(ShellUpdateInfo { current, available })
 }
 
 /// 启动后短时间执行一次启动期检查；结果通过事件送达 UI，
@@ -244,34 +360,19 @@ pub fn spawn_background_check(app: &AppHandle) {
     });
 }
 
-/// 下载待安装的更新、完成安装并重启到新版本。在替换任何文件之前，
-/// updater 会用固定公钥校验 minisign 签名。
-pub async fn install(
+/// 沿一条路由走完「检查 → 下载 → 验签」，返回那条路由上的 `Update` 与
+/// 安装包字节。`Update` 要带回调用方：`install` 是它的方法，而回退到直连
+/// 之后拿到的是另一个 `Update`（`download` 用的是各自那条路由的客户端）。
+async fn download_via(
     app: &AppHandle,
-    data_dir: &Path,
-    on_progress: impl FnMut(&str) + Send,
-) -> Result<(), AppError> {
-    #[cfg(all(windows, not(debug_assertions)))]
-    let current_version = app.package_info().version.to_string();
-    let update = app
-        .updater_builder()
-        // 与 check 同样的理由：不设超时会让"下载安装"永远挂住。下载路径的读取
-        // 间隔放宽到 60 秒，避免慢速网络下大文件传输被误判为超时。
-        .configure_client(|builder| {
-            builder
-                .connect_timeout(std::time::Duration::from_secs(15))
-                .read_timeout(std::time::Duration::from_secs(60))
-        })
-        .build()
-        .map_err(|e| AppError::Update(format!("初始化失败：{e}")))?
+    route: &Route,
+    progress: &Mutex<impl FnMut(&str) + Send>,
+) -> Result<(Update, Vec<u8>), UpdaterError> {
+    let update = updater_via(app, route, DOWNLOAD_READ_TIMEOUT)?
         .check()
-        .await
-        .map_err(|e| AppError::Update(explain_updater_error(e)))?
-        .ok_or_else(|| AppError::Update("当前已是最新版本".into()))?;
+        .await?
+        .ok_or(UpdaterError::ReleaseNotFound)?;
     let version = update.version.clone();
-    // download 接收两个回调，两者都会上报进度；
-    // 让它们共享同一个 sink，sink 放在 mutex 后面。
-    let progress = std::sync::Mutex::new(on_progress);
     let mut downloaded = 0_u64;
     let bytes = update
         .download(
@@ -283,17 +384,50 @@ pub async fn install(
                 let total_mb = total
                     .map(|t| format!("{:.1} MB", t as f64 / 1_048_576.0))
                     .unwrap_or_else(|| "?".into());
-                crate::lock(&progress)(&format!(
+                crate::lock(progress)(&format!(
                     "正在下载 v{version}（{received_mb} / {total_mb}）…"
                 ));
             },
-            || crate::lock(&progress)("下载完成，正在校验并安装…"),
+            || crate::lock(progress)("下载完成，正在校验并安装…"),
         )
+        .await?;
+    Ok((update, bytes))
+}
+
+/// 下载待安装的更新、完成安装并重启到新版本。在替换任何文件之前，
+/// updater 会用固定公钥校验 minisign 签名。
+///
+/// 出网的部分（检查 + 下载）走的是与 `check` 同一套路由：先系统代理，
+/// 代理不通再直连。**安装本体不走网络**，因此不在这套路由里。
+pub async fn install(
+    app: &AppHandle,
+    data_dir: &Path,
+    on_progress: impl FnMut(&str) + Send,
+) -> Result<(), AppError> {
+    #[cfg(all(windows, not(debug_assertions)))]
+    let current_version = app.package_info().version.to_string();
+    let routes = net_proxy::routes();
+    // download 接收两个回调，两者都会上报进度；
+    // 让它们共享同一个 sink，sink 放在 mutex 后面。
+    let progress = Mutex::new(on_progress);
+    let downloaded = {
+        let app = app.clone();
+        let progress = &progress;
+        run_routes(&routes, move |route| {
+            let app = app.clone();
+            let progress = progress;
+            Box::pin(async move { download_via(&app, route, progress).await })
+        })
         .await
-        .map_err(|e| AppError::Update(format!("下载或签名校验失败：{e}")))?;
+    };
+    let (update, bytes) = match downloaded {
+        Routed::Done(downloaded) => downloaded,
+        Routed::Empty => return Err(AppError::Update("当前已是最新版本".into())),
+        Routed::Failed(error) => return Err(AppError::Update(describe_failure(&routes, error))),
+    };
 
     #[cfg(all(windows, not(debug_assertions)))]
-    write_pending_update(data_dir, &current_version, &version)?;
+    write_pending_update(data_dir, &current_version, &update.version)?;
 
     #[cfg(any(not(windows), debug_assertions))]
     let _ = data_dir;
@@ -301,8 +435,7 @@ pub async fn install(
     // `Update::install` 是同步实现（把安装包落盘，再派生安装器或替换 .app），
     // 在 async 上下文里直接调用会阻塞一个 tokio worker 线程——Windows 上还要
     // 等 NSIS 起来，可能几十秒。交给 blocking 线程池，并在它返回之后再重启。
-    let installer = update.clone();
-    tauri::async_runtime::spawn_blocking(move || installer.install(bytes))
+    tauri::async_runtime::spawn_blocking(move || update.install(bytes))
         .await
         .map_err(|e| AppError::Update(format!("安装线程异常结束：{e}")))?
         .map_err(|e| AppError::Update(format!("安装失败：{e}")))?;
@@ -719,6 +852,129 @@ mod tests {
         );
     }
 
+    /// 「先代理、失败再直连」是这次改动的全部承诺，因此逐条钉死：
+    /// 传输层失败才轮到直连，清单解析失败换一条路只会同样地失败。
+    fn test_routes() -> Vec<Route> {
+        vec![
+            Route::Proxy {
+                url: url::Url::parse("http://127.0.0.1:7890").expect("测试地址合法"),
+                source: "测试来源",
+            },
+            Route::Direct,
+        ]
+    }
+
+    /// `run_routes` 会把每次回退写进壳侧事件日志（GUI 应用的 stderr 在
+    /// Windows 上没有去处），所以每个用例都必须先持住 `scoped_xlink_home`，
+    /// 让那些行写进临时目录而不是用户的真实日志目录。
+    fn temp_home(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "dsh-updater-{tag}-{}-{}",
+            std::process::id(),
+            crate::process::epoch_millis()
+        ))
+    }
+
+    #[test]
+    fn a_transport_failure_falls_back_to_direct() {
+        let home = temp_home("fallback");
+        let _xlink_home = crate::tests::scoped_xlink_home(&home);
+        let routes = test_routes();
+        let tried: std::sync::Arc<std::sync::Mutex<usize>> = Default::default();
+        let seen = tried.clone();
+        let outcome = tauri::async_runtime::block_on(run_routes(&routes, |route| {
+            let attempt = {
+                let mut seen = seen.lock().unwrap();
+                *seen += 1;
+                *seen
+            };
+            let is_proxy = matches!(route, Route::Proxy { .. });
+            Box::pin(async move {
+                if attempt == 1 && is_proxy {
+                    Err(UpdaterError::Network("代理端口没人听".into()))
+                } else {
+                    Ok("v9.9.9")
+                }
+            }) as Attempt<'_, &'static str>
+        }));
+        assert!(
+            matches!(outcome, Routed::Done("v9.9.9")),
+            "代理失败后应改走直连并返回它的结果"
+        );
+        assert_eq!(*tried.lock().unwrap(), 2, "只应试两条路");
+        drop(_xlink_home);
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 企业网关对任何地址回 404 是常见行为。代理那条路回 `ReleaseNotFound`
+    /// 时不能就此收工——那会把一次真实存在的更新静默漏掉。
+    #[test]
+    fn release_not_found_on_the_proxy_still_tries_direct() {
+        let home = temp_home("empty");
+        let _xlink_home = crate::tests::scoped_xlink_home(&home);
+        let outcome = tauri::async_runtime::block_on(run_routes(&test_routes(), |route| {
+            let is_proxy = matches!(route, Route::Proxy { .. });
+            Box::pin(async move {
+                if is_proxy {
+                    Err(UpdaterError::ReleaseNotFound)
+                } else {
+                    Ok("v9.9.9")
+                }
+            }) as Attempt<'_, &'static str>
+        }));
+        assert!(matches!(outcome, Routed::Done("v9.9.9")));
+        drop(_xlink_home);
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 清单解析 / 签名校验这类失败换一条路只会同样地失败，重试一遍还会
+    /// 让「第二次也这样」盖住第一次的真正原因。
+    #[test]
+    fn a_manifest_failure_does_not_retry_another_route() {
+        let home = temp_home("terminal");
+        let _xlink_home = crate::tests::scoped_xlink_home(&home);
+        let tried: std::sync::Arc<std::sync::Mutex<usize>> = Default::default();
+        let seen = tried.clone();
+        let outcome = tauri::async_runtime::block_on(run_routes(&test_routes(), |_route| {
+            *seen.lock().unwrap() += 1;
+            let json_err: UpdaterError = serde_json::from_str::<serde_json::Value>("not json")
+                .unwrap_err()
+                .into();
+            Box::pin(async move { Err(json_err) }) as Attempt<'_, &'static str>
+        }));
+        assert!(matches!(outcome, Routed::Failed(_)));
+        assert_eq!(*tried.lock().unwrap(), 1, "不可回退的失败只试一条路");
+        drop(_xlink_home);
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 错误文案必须说清试过哪几条路——用户看到的是「检查更新失败」这一个
+    /// 现象，而下一步（起代理软件 / 关系统代理）取决于走的到底是哪条路。
+    #[test]
+    fn failure_message_names_every_route_it_tried() {
+        let json_err: UpdaterError = serde_json::from_str::<serde_json::Value>("not json")
+            .unwrap_err()
+            .into();
+        let msg = describe_failure(&test_routes(), json_err);
+        assert!(msg.contains("http://127.0.0.1:7890"), "缺代理地址：{msg}");
+        assert!(msg.contains("直连"), "缺直连这一条：{msg}");
+        assert!(msg.contains("JSON 解析失败"), "缺真正的原因：{msg}");
+    }
+
+    /// 传输层失败才换路；`Reqwest` 那一支在本 crate 外构造不出来（reqwest
+    /// 不是直接依赖），而它正是线上真正会走的那一支，靠 `Network` 钉住同一
+    /// 条规则。
+    #[test]
+    fn only_transport_failures_are_worth_another_route() {
+        assert!(should_try_next(&UpdaterError::Network("下载失败".into())));
+        let json_err: UpdaterError = serde_json::from_str::<serde_json::Value>("not json")
+            .unwrap_err()
+            .into();
+        assert!(!should_try_next(&json_err));
+        let io_err: UpdaterError = std::io::Error::other("boom").into();
+        assert!(!should_try_next(&io_err));
+    }
+
     #[test]
     fn pending_update_is_ready_only_for_its_target_version() {
         let pending = PendingShellUpdate {
@@ -733,24 +989,32 @@ mod tests {
         assert!(!pending.is_ready_for("0.1.2-rc.15"));
     }
 
+    /// 清理判定要用的路径必须是**本机意义上的绝对路径**。`Path::is_absolute`
+    /// 在 Windows 上对 `/install/x.exe` 返回 false，写死 POSIX 路径会让下面
+    /// 两个用例在 Windows 上一红一假绿：同目录那条直接红，而"拒绝不支持的
+    /// 可执行文件"那条因为同一原因根本没走到文件名校验那一支。
+    fn rooted(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(name)
+    }
+
     #[test]
     fn cleanup_rejects_unsupported_or_relative_previous_executables() {
-        let current = std::path::Path::new("/new/dsh-xlink/dsh-xlink.exe");
+        let current = rooted("new/dsh-xlink/dsh-xlink.exe");
 
         let relative = std::path::Path::new("old/dsh-desktop.exe");
-        assert!(previous_install_dir_for_cleanup(relative, current).is_err());
+        assert!(previous_install_dir_for_cleanup(relative, &current).is_err());
 
-        let unrelated = std::path::Path::new("/old/not-our-app.exe");
-        assert!(previous_install_dir_for_cleanup(unrelated, current).is_err());
+        let unrelated = rooted("old/not-our-app.exe");
+        assert!(previous_install_dir_for_cleanup(&unrelated, &current).is_err());
     }
 
     #[test]
     fn cleanup_skips_uninstaller_when_previous_and_current_share_directory() {
-        let previous = std::path::Path::new("/install/dsh-desktop.exe");
-        let current = std::path::Path::new("/install/dsh-xlink.exe");
+        let previous = rooted("install/dsh-desktop.exe");
+        let current = rooted("install/dsh-xlink.exe");
 
         assert_eq!(
-            previous_install_dir_for_cleanup(previous, current).unwrap(),
+            previous_install_dir_for_cleanup(&previous, &current).unwrap(),
             None
         );
     }

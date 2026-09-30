@@ -1080,6 +1080,51 @@ function productionRust(text) {
   }
 }
 
+// --- 14. 出网路由：唯一入口，且「直连」必须真的绕开代理 ----------------------
+//
+// 2026-09-30 用户实测：「系统里明明开着代理，检查更新却直连 GitHub 然后超时」
+// （reqwest 只认环境变量，不认系统设置；壳是 GUI 程序，继承不到命令行里那些
+// 变量）。修法是 `net_proxy::routes()` 给出**有序**路由、`updater` 按序试。
+// 这里的两条接线**单测抓不到**：路由表是纯函数，测的是形状而不是「真的走了
+// 代理」；而 `Route::Direct => no_proxy()` 只影响真实客户端的行为——把它删掉，
+// 回退到直连的那一次仍会被 `HTTPS_PROXY` 拉回代理，等于把同一条路试两遍，
+// 而全部测试照样全绿。与第 13 项同一类：判据是对的，接线漏了没人知道。
+{
+  const srcDir = join(root, 'src-tauri', 'src');
+  const rustFiles = readdirSync(srcDir).filter((name) => name.endsWith('.rs'));
+  const builders = [];
+  for (const file of rustFiles) {
+    const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
+    lines.forEach((line, index) => {
+      if (line.includes('.updater_builder()')) builders.push({ file, line: index + 1, window: lines.slice(index, index + 12).join('\n') });
+    });
+  }
+  if (builders.length !== 1 || builders[0].file !== 'updater.rs') {
+    fail(
+      'net-route',
+      `生产代码里 updater_builder() 出现 ${builders.length} 次` +
+        `（${builders.map((hit) => `${hit.file}:${hit.line}`).join('、') || '一处都没有'}）——` +
+        '它必须只有一处，且在 updater.rs 的 updater_via 里。新增 GitHub 出网路径请' +
+        '复用 net_proxy::routes()，不要另起一个客户端。',
+    );
+  } else {
+    const window = builders[0].window;
+    const missing = ['Route::Direct', 'no_proxy(', 'Route::Proxy', '.proxy('].filter(
+      (token) => !window.includes(token),
+    );
+    if (missing.length > 0) {
+      fail(
+        'net-route',
+        `updater.rs:${builders[0].line} 的客户端构造缺 ${missing.join(' / ')}——` +
+          '「直连」必须显式 no_proxy()（否则回退仍被 HTTPS_PROXY 拉回代理，等于同一条' +
+          '路试两遍），「代理」必须显式 .proxy()（reqwest 默认不读系统设置）。',
+      );
+    } else {
+      note('出网客户端只有一处构造，且直连 / 代理两条都显式接上了');
+    }
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);

@@ -58,6 +58,12 @@ Shell 日志目录 `~/.dsh-xlink/shell/<release|dev>/logs/`（`paths::shell_logs
 以下两条不属于日志规范，单列一节：
 
 - `updater.rs`：`tauri-plugin-updater` 包装，启动 3 秒后后台检查并 emit `shell-update-available`。安装前先下载并校验签名，再写入 `pending-shell-update.json`，随后拉起安装器并重启。Windows 新版本管理面板完成首次状态刷新后，通过 `confirm_shell_ready` 清理 `/UPDATE` 路径跳过的旧安装和 updater 临时目录；同一安装目录不调用旧卸载器，而是直接移除历史 exe 和默认快捷方式，清理失败则保留标记等待下次启动重试。
+- **出网路由：先系统代理，失败再直连**（`net_proxy.rs`，2026-09-30）。壳访问 GitHub 只有这一条路径（检查更新 + 下载更新），而它此前**完全不看系统代理**：tauri-plugin-updater 用的 reqwest 只认 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 环境变量，读 Windows 注册表 / macOS 系统网络设置的那条路（hyper-util 的 `client-proxy-system`）没开——它会带进 `windows-registry` 与 `system-configuration` 两个 crate。壳是 GUI 程序、从资源管理器启动，继承不到用户为命令行设的变量，于是「系统里明明开着代理，更新检查却直连 GitHub 然后超时」（用户实测：`error sending request for url (https://github.com/July-X/dsh-xlink/releases/latest/download/latest.json)`）。`net_proxy::routes()` 按「环境变量 → 平台系统设置」探测，返回**有序**的路由表：探测到代理是 `[代理, 直连]`，没有是 `[直连]`，末位恒为直连；`updater::run_routes` 按序试，第一条走通就返回。
+  - 只回退**传输层**失败（`Reqwest` / `Network`）：签名校验、清单解析、版本号解析、URL 无效换一条路只会同样地失败，重试一遍还会让「第二次也这样」盖住第一次的真正原因。`ReleaseNotFound` 也算可回退——企业网关对任何地址回 404 是常见行为，把它当成「没有更新」就会静默漏掉一次更新。
+  - 直连路由用 `no_proxy()` **显式**关掉代理（含环境变量里的那个）：回退到直连却仍被 `HTTPS_PROXY` 拉回代理，等于把同一条路试两遍。
+  - 每次回退与最终失败都落 `shell-update-route` 事件日志（自动出现在「查看日志」面板）；失败文案点名试过的每一条路——用户看到的是「检查更新失败」一个现象，而下一步（起代理软件 / 关系统代理）取决于走的到底是哪条路。
+  - 平台读法：Windows 读 `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings` 的 `ProxyEnable` + `ProxyServer`（两者必须**同一个 hive 成对读**，拿 HKCU 的开关配 HKLM 的地址会得到用户从没配过的组合），`ProxyServer` 的两种写法（`host:port` 与 `http=…;https=…;socks=…`）都认，`socks=` 跳过（reqwest 没开 socks 特性）；macOS 解析 `scutil --proxy` 的字典转储。两份解析都是纯函数，在任何平台直接测。
+  - **不归这一层管**：WebView2 / WKWebView 本身就跟随系统代理，pnpm / npm 读的是 npm 自己的 proxy 配置。再来第二条 Rust 出网路径时应当复用 `net_proxy::routes()`，不要复制一份探测逻辑。
 - `lib.rs`：装配 + `setup()` 取目录（必须走 `kernel::data_dir`）+ `RunEvent::Exit` 兜底回收内核进程组。`harness` 与 `official-chat` 两个 webview 窗口通过 `capabilities/harness-remote.json` / `capabilities/official-chat-remote.json` 分别绑定 ACL；拉绳挂件只需要 `allow-focus-main-shell` 这条 IPC 命令，URL 都精确钉死（`http://127.0.0.1:*` / `https://chat.deepseek.com/*` 等三个官方对话 origin，不开通 wildcard 域名）。`harness-remote.json` 直接授 `allow-focus-main-shell`，`official-chat-remote.json` 不授任何命令（拉绳属于窗口 chrome，由 `official-chat-strip` 页签栏 webview 承载、走 `allow-official-chat-tabs` 这条本地权限）。
 
 ## 内核生命周期

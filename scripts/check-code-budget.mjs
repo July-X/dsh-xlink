@@ -342,6 +342,17 @@ const FILE_BUDGETS = {
   // （check-code-budget 只数 src-tauri/src 的 .rs 与 ui/src），它的 7 个测试在
   // `ui/test/harnessDraft.test.js`（已登记进 test:ui）。
   'src-tauri/src/harness_draft.rs': 70,
+  // 2026-09-30：出网路由（`net_proxy.rs`，新建）。它回答的唯一问题是
+  // **访问 GitHub 的请求该走哪条路**：先本机系统代理（环境变量 → Windows
+  // Internet Settings 注册表 / macOS `scutil --proxy`），代理不通再直连。
+  // 为什么必须独立成文件而不是塞进 updater.rs：① 它与「更新」无关——pnpm
+  // 与 WebView2 各自的代理来源是另外两套机制，但**读法与回退策略**只有这一
+  // 份，再来第二条出网路径时应当复用它而不是复制；② updater.rs 已经 680 行
+  // 生产代码，代理探测（两个平台的原生读法 + 两份纯解析函数 + 它们的测试）
+  // 放进去会顶高一个只许下调的邻近文件。平台相关的读法各自带 cfg，纯解析
+  // 函数（注册表 `ProxyServer` 两种写法、`scutil` 字典转储、地址归一化）
+  // 可以在任何平台直接测。
+  'src-tauri/src/net_proxy.rs': 180,
   'src-tauri/src/guard.rs': 940,
   // 从 guard.rs 拆出的「证据判读」层：只回答「这一行指向内核还是指向某个插件」，
   // 不回答「该怎么处置」。独立成文件有两个理由：① 判据的内核侧（命名空间锚定 +
@@ -813,7 +824,19 @@ const FILE_BUDGETS = {
 // harness_window.rs 195 → 220：本文件基线远低于 RATCHET_THRESHOLD，上调在规则内。
 // 上面记的「拆回 120 附近」那笔债**仍未还**，但候选已经收窄成 `recreate` /
 // `open` / `build` 三条建窗链——下一步该拆的是它们，不是自愈判据。
-const TOTAL_BUDGET = 34790;
+// 34790 → 35000：更新检查（以及下载更新）**优先走本机系统代理、失败再直连**
+// （2026-09-30 用户实测：系统里明明开着代理，检查更新却直连 GitHub 后报
+// `error sending request for url`）。净增约 190 行，几乎全在一个新文件里：
+//   · net_proxy.rs（新增，见 FILE_BUDGETS）：系统代理探测（环境变量 /
+//     Windows Internet Settings 注册表 / macOS `scutil --proxy`）+ 纯解析
+//     函数 + 4 个测试。
+//   · updater.rs +80：把「按顺序试路由」收成 `run_routes` 一份实现，`check`
+//     与 `install` 两条路径共用；新增 `should_try_next`（只回退传输层失败）与
+//     `describe_failure`（错误文案点名试过的每一条路）。
+// 不是新概念：reqwest 本来就认环境变量代理，缺的是**系统设置**那一半，以及
+// 「代理优先、直连兜底」的顺序。合计 34999 行，预算留 50 行余量。updater.rs
+// 本身没有可下调的余地（新逻辑全在 net_proxy.rs）。重复区间数不变。
+const TOTAL_BUDGET = 35050;
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。
