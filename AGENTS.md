@@ -86,6 +86,8 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 
 版本发布由 `.github/workflows/desktop-release.yml` 负责。发布前必须确认 `package.json` 与 `src-tauri/tauri.conf.json` 的 `version` 完全一致，并且版本提交已经推送到 `main`。workflow 使用 `TAURI_SIGNING_PRIVATE_KEY` 给更新制品签名，`releaseDraft` 与 `prerelease` 必须保持为 `false`，以保证 updater 的 latest endpoint 可用。
 
+**默认只提交，不推送**（2026-09-30 起）。改完代码跑完门禁就 `git commit`，`git push` / `git push origin <tag>` / 建远程 tag 一律**先问过用户**再做——推远端不可逆，而且这台机器上常有并行会话往同一个工作树提交，推之前必须先看 `git log --oneline origin/main..HEAD`，确认要推的提交里**有没有别人的**（并行会话的改动会跟着一起上去）。想看未推送的有什么就 `git status -sb` 报「领先 N 个提交」，不要自作主张推。
+
 ### 发布触发
 
 - tag 格式固定为 `desktop-v<version>`，例如 `desktop-v0.1.2-rc.7`。
