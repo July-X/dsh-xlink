@@ -11,7 +11,7 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
                                    │              │
                               settings.rs    releases.rs（npm registry → GitHub 回退）
                                    │
-              ~/.dsh-xlink/{shell/<mode>/, kernels/<family>/, dsh-plugins/, skills/}
+              ~/.dsh-xlink/{shell/<mode>/, kernels/<family>/, plugins/<family>/, skills/}
               + ~/.dsh-xlink/<family>/desktop[-dev]/{kernels/, active.txt, patches/, quarantine.json}
 ```
 
