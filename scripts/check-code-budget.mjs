@@ -459,6 +459,16 @@ const FILE_BUDGETS = {
   // 双 provider 分区 + 进度条 / 余额行 + 错误横幅与 scoped 样式（同 UsageWindow 模式）。
   // 340 → 360：查询时间换成刷新 icon 胶囊（紧凑年龄值）。
   'ui/src/SubscriptionWindow.vue': 360,
+  // 2026-09-30：壳自己窗口的右键菜单策略（新建，10 行）。主面板 / 日志 /
+  // 用量 / 套餐 / 官方对话页签栏共用这个 SPA 入口，所以「禁右键、留左键复制」
+  // 在前端只有这一处落点；工作台与三个官方对话内容 webview 走 Rust 侧的
+  // `src-tauri/src/no-context-menu.js`（注入脚本不计入本门禁），两侧的接线由
+  // `scripts/check-invariants.mjs` 第 16 项钉住。独立成文件而不是塞进
+  // main.js：main.js 是所有窗口的入口且已 140 行，而这一条是**有测试的
+  // 行为**（ui/test/noContextMenu.test.js 直接对它造假事件流），塞进入口
+  // 就只能对着源码字符串断言。本次 10 行落在总量既有余量内，TOTAL_BUDGET
+  // 不动。
+  'ui/src/noContextMenu.js': 20,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
 // 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有
