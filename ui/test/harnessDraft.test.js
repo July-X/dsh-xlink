@@ -45,11 +45,14 @@ function makeEnv({
   href = 'http://127.0.0.1:3090/?session=abc',
   execCommandWorks = true,
   execCommandSilent = false,
+  tauriReadyAfter = 0,
 } = {}) {
   const timers = [];
   const handlers = {};
   const invocations = [];
   const execCalls = [];
+  // `__TAURI__` 就绪时刻的探针：0 = 一开始就在；N = 第 N 次查它时才出现。
+  let tauriLookups = 0;
 
   const fakeDocument = {
     activeElement: active,
@@ -81,25 +84,33 @@ function makeEnv({
     top: null,
     self: null,
     location: { href },
-    __TAURI__: {
-      core: {
-        invoke(command, args) {
-          invocations.push({ command, args });
-          if (command === 'take_harness_draft') return Promise.resolve(takeResult);
-          return Promise.resolve();
+    // tauriReadyAfter > 0 时先不给 __TAURI__，模拟「注入脚本跑得比 Tauri 的桥早」。
+    get __TAURI__() {
+      tauriLookups += 1;
+      if (tauriLookups <= tauriReadyAfter) return undefined;
+      return {
+        core: {
+          invoke(command, args) {
+            invocations.push({ command, args });
+            if (command === 'take_harness_draft') return Promise.resolve(takeResult);
+            return Promise.resolve();
+          },
         },
-      },
+      };
     },
     addEventListener(name, handler) {
       handlers[`window:${name}`] = handler;
     },
+    // 定时器按 kind 记：脚本用 setTimeout 做「停顿后记草稿」与退避重试，用
+    // setInterval 做「轮询等 composer 出现」。不分开的話「一次引爆全部」会把
+    // 「__TAURI__ 还没就绪」这个前提自己引爆掉——那种测试看着在跑，其实什么也没验。
     setInterval(fn) {
-      timers.push(fn);
+      timers.push({ kind: 'interval', fn });
       return timers.length;
     },
     clearInterval() {},
     setTimeout(fn) {
-      timers.push(fn);
+      timers.push({ kind: 'timeout', fn });
       return timers.length;
     },
     clearTimeout() {},
@@ -118,7 +129,20 @@ function makeEnv({
     },
   });
 
-  return { handlers, invocations, execCalls, timers, editables };
+  /** 烧掉当前排着的 timeout（按先后），一个一个来。interval 留给别的用例。 */
+  const fireTimeouts = () => {
+    const pending = timers.filter((t) => t.kind === 'timeout');
+    timers.length = 0;
+    pending.forEach((t) => t.fn());
+  };
+  /** 一次性烧掉所有定时器（不关心顺序的用例用）。 */
+  const fireAll = () => {
+    const pending = timers.slice();
+    timers.length = 0;
+    pending.forEach((t) => t.fn());
+  };
+
+  return { handlers, invocations, execCalls, timers, editables, fireTimeouts, fireAll };
 }
 
 test('停止输入后把当前输入框内容交给壳', async () => {
@@ -126,7 +150,7 @@ test('停止输入后把当前输入框内容交给壳', async () => {
   const env = makeEnv({ editables: [composer], active: composer });
 
   env.handlers['document:input']();
-  for (const fn of env.timers) fn();
+  env.fireAll();
 
   const stash = env.invocations.find((c) => c.command === 'stash_harness_draft');
   assert.ok(stash, '停顿之后必须记一次草稿');
@@ -139,7 +163,7 @@ test('输入框是空的就不记——磁盘上不该出现空草稿', () => {
   const env = makeEnv({ editables: [composer], active: composer });
 
   env.handlers['document:input']();
-  for (const fn of env.timers) fn();
+  env.fireAll();
 
   assert.equal(
     env.invocations.find((c) => c.command === 'stash_harness_draft'),
@@ -157,7 +181,7 @@ test('恢复用 execCommand 写回，而不是直接改 DOM', async () => {
   const draft = { href: 'http://127.0.0.1:3090/?session=abc', text: '上次没发出去的话' };
   const env = makeEnv({ editables: [composer], takeResult: draft });
 
-  for (const fn of env.timers) fn();
+  env.fireAll();
   // 取草稿是异步的（IPC），写回发生在它 resolve 之后。
   await Promise.resolve();
   await Promise.resolve();
@@ -178,7 +202,7 @@ test('execCommand 被拒时把草稿放回去——恢复失败不能等于内�
   const draft = { href: 'http://127.0.0.1:3090/?session=abc', text: '上次没发出去的话' };
   const env = makeEnv({ editables: [composer], takeResult: draft, execCommandWorks: false });
 
-  for (const fn of env.timers) fn();
+  env.fireAll();
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
@@ -200,7 +224,7 @@ test('execCommand 报成功但编辑器其实吞掉了，同样要当作失败',
   const draft = { href: 'http://127.0.0.1:3090/?session=abc', text: '上次没发出去的话' };
   const env = makeEnv({ editables: [composer], takeResult: draft, execCommandSilent: true });
 
-  for (const fn of env.timers) fn();
+  env.fireAll();
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
@@ -214,7 +238,7 @@ test('地址变了就不写回去——宁可丢掉，也不能把话写到错�
   const draft = { href: 'http://127.0.0.1:3090/?session=OLD', text: '另一个会话里的话' };
   const env = makeEnv({ editables: [composer], takeResult: draft, href: 'http://127.0.0.1:3090/?session=NEW' });
 
-  for (const fn of env.timers) fn();
+  env.fireAll();
   await Promise.resolve();
   await Promise.resolve();
 
@@ -226,7 +250,7 @@ test('绝不覆盖用户自己新敲的内容', () => {
   const draft = { href: 'http://127.0.0.1:3090/?session=abc', text: '旧草稿' };
   const env = makeEnv({ editables: [composer], takeResult: draft });
 
-  for (const fn of env.timers) fn();
+  env.fireAll();
 
   assert.equal(env.execCalls.length, 0, '输入框非空时不得写入');
   assert.equal(
@@ -239,7 +263,7 @@ test('绝不覆盖用户自己新敲的内容', () => {
 test('页面上还没有可写的地方时不取草稿（取走即删，顺序反了就吞掉了）', () => {
   const env = makeEnv({ editables: [], takeResult: { href: 'x', text: 'y' } });
 
-  for (const fn of env.timers) fn();
+  env.fireAll();
 
   assert.equal(
     env.invocations.find((c) => c.command === 'take_harness_draft'),
@@ -253,7 +277,30 @@ test('隐藏的输入框不算（折叠面板里的那个不该被当成 compose
   const env = makeEnv({ editables: [hidden], active: hidden });
 
   env.handlers['document:input']();
-  for (const fn of env.timers) fn();
+  env.fireAll();
 
   assert.equal(env.invocations.find((c) => c.command === 'stash_harness_draft'), undefined);
+});
+
+test('__TAURI__ 还没就绪时要重试，而不是静默放弃这一次的草稿', () => {
+  // harness-health.js 为此专门写过 scheduleReportRetry——那份代码是踩过的证据。
+  // 拿不到就当没事，等于这一次的草稿静默不落盘，正是用户抱怨的那件事。
+  const composer = makeEditable({ text: '正在输入的一段话' });
+  const env = makeEnv({ editables: [composer], active: composer, tauriReadyAfter: 2 });
+
+  env.handlers['document:input']();
+  env.fireAll();
+  assert.equal(
+    env.invocations.filter((c) => c.command === 'stash_harness_draft').length,
+    0,
+    '__TAURI__ 没就绪时不该硬发 invoke',
+  );
+  assert.ok(env.timers.length > 0, '必须排一次重试，而不是就此放弃');
+
+  // 重试触发两轮之后 __TAURI__ 就绪 —— 这一次必须真的记下来。
+  env.fireTimeouts();
+  env.fireTimeouts();
+  const stashed = env.invocations.filter((c) => c.command === 'stash_harness_draft');
+  assert.equal(stashed.length, 1, '重试到 __TAURI__ 就绪后必须记下草稿');
+  assert.equal(stashed[0].args.text, '正在输入的一段话');
 });
