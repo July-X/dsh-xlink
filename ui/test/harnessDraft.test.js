@@ -48,6 +48,7 @@ function makeEnv({
   tauriReadyAfter = 0,
 } = {}) {
   const timers = [];
+  const intervals = [];
   const handlers = {};
   const invocations = [];
   const execCalls = [];
@@ -106,6 +107,7 @@ function makeEnv({
     // 「__TAURI__ 还没就绪」这个前提自己引爆掉——那种测试看着在跑，其实什么也没验。
     setInterval(fn) {
       timers.push({ kind: 'interval', fn });
+      intervals.push(fn);
       return timers.length;
     },
     clearInterval() {},
@@ -141,8 +143,13 @@ function makeEnv({
     timers.length = 0;
     pending.forEach((t) => t.fn());
   };
+  /** 让每个 interval 再走一拍，**不消费**。`fireAll` 是「烧掉排着的」，
+   *  只能用来走第一拍——而「发送之后」发生的事在第二拍上（监视是轮询的）。 */
+  const tickIntervals = () => {
+    intervals.forEach((fn) => fn());
+  };
 
-  return { handlers, invocations, execCalls, timers, editables, fireTimeouts, fireAll };
+  return { handlers, invocations, execCalls, timers, editables, fireTimeouts, fireAll, tickIntervals };
 }
 
 test('停止输入后把当前输入框内容交给壳', async () => {
@@ -303,4 +310,102 @@ test('__TAURI__ 还没就绪时要重试，而不是静默放弃这一次的草�
   const stashed = env.invocations.filter((c) => c.command === 'stash_harness_draft');
   assert.equal(stashed.length, 1, '重试到 __TAURI__ 就绪后必须记下草稿');
   assert.equal(stashed[0].args.text, '正在输入的一段话');
+});
+
+/* ── 「已经发出去的消息不该再回来」这一组 ──────────────────────────────────
+ *
+ * 2026-09-30 用户原话：「对话回填功能，需要注意，已经发送的消息，下次打开工作台
+ * 不应该再次填充在输入区域」。根因是草稿只有「写」没有「作废」：发送时编辑器被
+ * 程序化清空（**不派发 input**），盘上那一份就一直留着，而恢复那侧看到的是一段
+ * 「新鲜的草稿」——它无从知道那句话已经在会话里了。 */
+
+test('用户发出去了：输入框一空就把盘上那份作废', () => {
+  const composer = makeEditable({ text: '已经发出去的一句话' });
+  const env = makeEnv({ editables: [composer], active: composer });
+
+  env.handlers['document:input']();
+  env.fireAll();
+  assert.equal(
+    env.invocations.filter((c) => c.command === 'stash_harness_draft').length,
+    1,
+    '先决条件：停顿之后确实记下了草稿，否则这个用例什么也没验',
+  );
+
+  // 按下发送：Lexical 是**程序化**清空编辑器的，没有 input 事件可听。真实编辑器
+  // 是把文本节点删掉，所以 innerText 与 textContent 一起清（textOf 会回退到后者）。
+  composer.innerText = '';
+  composer.textContent = '';
+  env.tickIntervals();
+
+  const cleared = env.invocations.filter((c) => c.command === 'clear_harness_draft');
+  assert.equal(cleared.length, 1, '必须清掉：留着它，下次打开工作台它就自己坐回输入框');
+});
+
+test('页面上一个可编辑元素都没有时**不**作废', () => {
+  // 黑屏那一刻很可能正是 composer 消失的时候（作用域装配失败 → 整棵树被摘掉）。
+  // 这时的「空」不是「用户把话发出去了」，在这里清盘等于亲手删掉他唯一没发出去的
+  // 那一段——比多留一份已发送的消息糟糕得多。
+  const composer = makeEditable({ text: '还没发出去的一段话' });
+  const env = makeEnv({ editables: [composer], active: composer });
+
+  env.handlers['document:input']();
+  env.fireAll();
+  assert.equal(env.invocations.filter((c) => c.command === 'stash_harness_draft').length, 1);
+
+  env.editables.length = 0; // 页面塌了：composer 整个不在
+  env.tickIntervals();
+
+  assert.equal(
+    env.invocations.filter((c) => c.command === 'clear_harness_draft').length,
+    0,
+    '页面坏掉时的「空」不是「发出去了」，草稿得留着等页面回来',
+  );
+});
+
+test('本页没存过东西时不作废——恢复失败放回去的那份是唯一一份', () => {
+  // 写不进去时脚本会把草稿放回盘上等下一次页面加载；那一刻本页从未存过东西，
+  // 而输入框正是空的。监视若在这里清盘，删掉的就是用户唯一的一份。
+  const composer = makeEditable({ text: '' });
+  const draft = { href: 'http://127.0.0.1:3090/?session=abc', text: '上次没发出去的话' };
+  const env = makeEnv({ editables: [], takeResult: draft, execCommandWorks: false });
+
+  env.fireAll();
+  env.editables.push(composer); // composer 这时才装配出来
+  env.tickIntervals();
+  return Promise.resolve()
+    .then(() => Promise.resolve())
+    .then(() => {
+      assert.equal(
+        env.invocations.filter((c) => c.command === 'stash_harness_draft').length,
+        1,
+        '写不进去必须先放回去',
+      );
+      env.tickIntervals();
+      assert.equal(
+        env.invocations.filter((c) => c.command === 'clear_harness_draft').length,
+        0,
+        '本页没存过东西就不该清——那一份是恢复失败放回去的唯一一份',
+      );
+    });
+});
+
+test('输入框一直有字时监视不重复写盘', () => {
+  // 监视每秒钟走一次。要是每次都写，输入框里停着一段不打字的草稿就会变成每秒一
+  // 次磁盘写，还把过期时间一直往后推——两个都不该发生。
+  const composer = makeEditable({ text: '停在这里的一段话' });
+  const env = makeEnv({ editables: [composer], active: composer });
+
+  env.handlers['document:input']();
+  env.fireAll();
+  assert.equal(env.invocations.filter((c) => c.command === 'stash_harness_draft').length, 1);
+
+  env.tickIntervals();
+  env.tickIntervals();
+  env.tickIntervals();
+
+  assert.equal(
+    env.invocations.filter((c) => c.command === 'stash_harness_draft').length,
+    1,
+    '内容没变就不该再写盘',
+  );
 });

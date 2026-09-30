@@ -10,6 +10,12 @@
  * 丢的）。草稿比额度重要得多。
  *
  * 存的是输入框里那**一段纯文本** + 当时的页面地址，不存会话内容、不存任何凭据。
+ *
+ * 另一半职责是**作废**：用户把话发出去之后（Lexical 程序化清空编辑器，不派发
+ * `input`），盘上那份必须删掉——否则下次打开工作台，那条**已经发出去的消息**会
+ * 自己坐回输入框（2026-09-30 用户原话：「已经发送的消息，下次打开工作台不应该
+ * 再次填充在输入区域」）。所以本页的每次动作都过一次 `stashNow`：有字就存，没字
+ * 且本页存过就清。
  */
 (function () {
   if (window.top !== window.self || window.__DSH_HARNESS_DRAFT__) return;
@@ -21,9 +27,22 @@
   // 等输入框出现多久。页面起来后内核的客户端模块要装配，composer 不是立刻就在的。
   var FIND_TIMEOUT_MS = 15000;
   var FIND_INTERVAL_MS = 250;
+  // 多久看一眼「输入框是不是已经空了」。用户按下发送时 Lexical 是**程序化**清空
+  // 编辑器的，不派发 `input`——光靠监听看不到「发出去了」，而那一刻正是盘上那份
+  // 必须作废的时候（见下面的 pending）。
+  var WATCH_INTERVAL_MS = 1000;
 
   var idleTimer = null;
   var restored = false;
+  /* 上一次看到输入框里是什么；null = 页面上一个可见的可编辑元素都没有。监视只
+   * 在它**变了**时才动作，否则输入框里一直有字时每秒写一次盘。 */
+  var lastSeen = null;
+  /* 「这一页里，输入框有过内容，而且已经交给壳了」。
+   *
+   * 它是**清盘**的闸：只删本页自己存过的那一份。恢复失败时放回盘上的草稿不算——
+   * 那时输入框正是空的，若也算进去，下一轮监视会把刚放回去的东西删掉，而用户为
+   * 「内容丢了」抱怨过一次了。 */
+  var pending = false;
 
   function tauri() {
     var api = window.__TAURI__ && window.__TAURI__.core;
@@ -95,8 +114,29 @@
       return;
     }
     tauriRetries = 0;
+    // 页面上一个可见的可编辑元素都没有 ⇒ composer 还没装配，或者页面正在崩。
+    // **这时候的「空」不是「用户把话发出去了」**：黑屏那一刻很可能正是 composer
+    // 消失的时候，在这里清盘等于亲手删掉用户唯一没发出去的那一段。
+    if (!editables().length) return;
     var text = currentText();
-    if (!text || !text.trim()) return;
+    if (text && text.trim()) {
+      pending = true;
+      invokeStash(text);
+      return;
+    }
+    // 输入框空了，而本页确实存过东西：那句话要么发出去了，要么被用户自己删了。
+    // 两种情况都不该再有草稿——留着它，下次打开工作台就会把**已经发出去的那条
+    // 消息**填回输入框（2026-09-30 用户原话）。
+    if (!pending) return;
+    pending = false;
+    try {
+      Promise.resolve(api.invoke('clear_harness_draft')).catch(function () { /* 壳已关闭，随它去 */ });
+    } catch (error) { /* 同上 */ }
+  }
+
+  function invokeStash(text) {
+    var api = tauri();
+    if (!api) return;
     try {
       // 不 await：输入框还在用，抢着等一次 IPC 只会让打字发涩。
       Promise.resolve(api.invoke('stash_harness_draft', {
@@ -104,6 +144,20 @@
         text: text
       })).catch(function () { /* 管理面板已关闭等情况，下一次停顿还会再记 */ });
     } catch (error) { /* 同上 */ }
+  }
+
+  /* 监视输入框变空。刻意不点「发送」按钮、不监听 Enter：内核换一版就可能换掉
+   * class 名与文案，而「可编辑元素里的字没了」这件事本身与内核的版本无关。
+   *
+   * 两条纪律：① **只在内容真的变了时才动作**——否则输入框里一直有字时每秒写一次
+   * 盘；② 用户还在打字（停顿判据排着队）时只更新 `lastSeen`，不抢在 600ms 之前
+   * 写盘，连续打字仍然合并成一次。 */
+  function watchComposer() {
+    var text = editables().length ? currentText() : null;
+    if (text === lastSeen) return;
+    lastSeen = text;
+    if (idleTimer) return;
+    stashNow();
   }
 
   function scheduleStash() {
@@ -208,6 +262,11 @@
   // 的补充，且刻意不阻塞。
   window.addEventListener('beforeunload', function () { stashNow(); });
   window.addEventListener('pagehide', function () { stashNow(); });
+
+  // 监视：这一整页都在跑，直到页面自己被换掉。它存在的唯一理由是「用户发出去了」
+  // 这件事不会派发 `input`——而那一秒盘上还留着那句已经送达的消息，下一次打开
+  // 工作台它就会自己坐回输入框。
+  window.setInterval(watchComposer, WATCH_INTERVAL_MS);
 
   // 恢复：轮询到 composer 出现为止。内核的客户端模块要装配一段时间。
   var waited = 0;

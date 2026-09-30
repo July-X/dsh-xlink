@@ -36,6 +36,13 @@
       }
     },
     {
+      "identifier": "allow-clear-harness-draft",
+      "description": "Allow the loopback harness webview to drop the stashed draft once the composer is empty again. Sending a message clears the Lexical editor programmatically, which fires no input event, so the page reports the emptiness itself; without this command the already-sent message would sit on disk and be typed back into the composer the next time the workbench opens. Separate from stash_harness_draft on purpose: the reason to delete lives in the page's state ('we stashed something and now there is nothing'), not in the text.",
+      "commands": {
+        "allow": ["clear_harness_draft"]
+      }
+    },
+    {
       "identifier": "allow-local-commands",
       "description": "Allow every app command from the shell's own local windows (the management panel). Defining ANY app-level permission flips Tauri from 'app commands are open to local windows' to 'app commands require an explicit grant', so this permission restores the pre-existing behavior for the local UI. Maintenance: every command added to `tauri::generate_handler!` in lib.rs must be listed here, or its invoke from the panel fails with 'not allowed. Command not found'. This invariant is enforced by scripts/check-invariants.mjs in CI.",
       "commands": {
@@ -61,6 +68,7 @@
           "harness_reload_backoff",
           "stash_harness_draft",
           "take_harness_draft",
+          "clear_harness_draft",
           "report_harness_fault",
           "open_log_window",
           "open_official_chat",

@@ -343,12 +343,12 @@ const FILE_BUDGETS = {
   // 它再长 90 行，而这不是「安装」逻辑，是「安装的物化方式」的探针。
   'src-tauri/src/install_isolation.rs': 90,
   // 工作台未发送草稿的存续（2026-09-30，新建）。它该独立成一个文件而不是塞进
-  // harness_cmd.rs：**它是数据**（一段纯文本 + 落盘位置 + 取走即删 + 过期），
-  // harness_cmd.rs 里全是 Tauri 命令与「该不该动手」的判据；而且它有 4 个测试，
-  // 其中三个钉的是「什么时候**不该**把草稿交出去」。把数据与命令分开，下次改
-  // 取走语义时不必翻命令层。注入脚本 `harness-draft.js` **不计入预算**
-  // （check-code-budget 只数 src-tauri/src 的 .rs 与 ui/src），它的 7 个测试在
-  // `ui/test/harnessDraft.test.js`（已登记进 test:ui）。
+  // harness_cmd.rs：**它是数据**（一段纯文本 + 落盘位置 + 取走即删 + 过期 +
+  // 「输入框一空即作废」），harness_cmd.rs 里全是 Tauri 命令与「该不该动手」的判据；
+  // 它有 7 个测试，其中四个钉的是「什么时候**不该**把草稿交出去 / 不该留着它」。
+  // 把数据与命令分开，下次改取走语义时不必翻命令层。注入脚本 `harness-draft.js`
+  // **不计入预算**（check-code-budget 只数 src-tauri/src 的 .rs 与 ui/src），
+  // 它的 11 个测试在 `ui/test/harnessDraft.test.js`（已登记进 test:ui）。
   'src-tauri/src/harness_draft.rs': 70,
   // 2026-09-30：出网路由（`net_proxy.rs`，新建）。它回答的唯一问题是
   // **访问 GitHub 的请求该走哪条路**：先本机系统代理（环境变量 → Windows
