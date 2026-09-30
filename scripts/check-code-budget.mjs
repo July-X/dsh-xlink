@@ -334,6 +334,14 @@ const FILE_BUDGETS = {
   // 早已搬走，剩下的 `recreate` / `open` / `build` 三条建窗链仍在本文件内。那是
   // 下一次碰这块时该做的事，不在本次范围。
   'src-tauri/src/harness_window.rs': 310,
+  // install_isolation.rs（2026-09-30 傍晚，新建）：回答「这棵已安装的内核树
+  // 是否仍与其他目录共享 inode」——采样读硬链接数（Windows 走
+  // GetFileInformationByHandle，Unix 走 stat 的 st_nlink）。独立成模块的理由：
+  // 跨平台 FFI + 采样策略自成一体，被 kernel.rs 三处（版本列表的
+  // shared_storage、横幅门控、装 / 删提示）共用，且有自己的测试面（临时树里
+  // 造真实硬链接来钉两个判定方向与保守方向）。塞进 kernel.rs 会让 1380 行的
+  // 它再长 90 行，而这不是「安装」逻辑，是「安装的物化方式」的探针。
+  'src-tauri/src/install_isolation.rs': 90,
   // 工作台未发送草稿的存续（2026-09-30，新建）。它该独立成一个文件而不是塞进
   // harness_cmd.rs：**它是数据**（一段纯文本 + 落盘位置 + 取走即删 + 过期），
   // harness_cmd.rs 里全是 Tauri 命令与「该不该动手」的判据；而且它有 4 个测试，
@@ -843,7 +851,12 @@ const FILE_BUDGETS = {
 // 不是新概念：reqwest 本来就认环境变量代理，缺的是**系统设置**那一半，以及
 // 「代理优先、直连兜底」的顺序。合计 34999 行，预算留 50 行余量。updater.rs
 // 本身没有可下调的余地（新逻辑全在 net_proxy.rs）。重复区间数不变。
-const TOTAL_BUDGET = 35120;
+const TOTAL_BUDGET = 35230;
+// 35120 → 35230（2026-09-30 傍晚）：横幅按实际残余风险门控——新模块
+// install_isolation.rs 66 行（登记见上）、kernel.rs +~40（InstalledVersion 的
+// shared_storage、other_shell_tree_shared、门控与装 / 删提示改为按采样条件触发）、
+// instance.rs 文案重写净持平。反棘轮（plugins.rs / theme.css / commands.rs）
+// 一个数字没动。
 // 6 → 8（临时，随日志侧栏分支收敛回 6）：新增的两处都在该分支正在重构的
 // LogViewerWindow.vue（:119 / :157）——与用量窗口无关。该分支落地时应把
 // 两段并入 LogSidebar / 共享动作后再把数字收回。

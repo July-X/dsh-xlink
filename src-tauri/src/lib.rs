@@ -41,6 +41,7 @@ mod harness_draft;
 mod harness_window;
 mod home_recovery;
 mod home_recovery_cmd;
+mod install_isolation;
 mod instance;
 mod kernel;
 mod kernel_adapter;
