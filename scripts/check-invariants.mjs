@@ -35,7 +35,10 @@
  *  10. 生产代码里 `InstanceRecord::new` 的 id 实参不得是常量。
  *  11. 注册表那个共享的 `default_instance_id` 只准 `instance.rs` 指向具体实例。
  *  12. 内核树的三条变更动作只有**本壳**守卫能阻断，跨壳判据只提示不拦。
- *      （第 10、11 条的由来见下方注释，第 12 条见文件末尾的 ④。）
+ *      （第 10、11 条的由来见下方注释，第 12 条见文件末尾的 ④；第 13、14 条
+ *      只在脚本里带注释。）
+ *  15. 面板里的资源（`<img src>` / CSS `url()`）不许指向远端，且以 `/` 开头的
+ *      路径必须真的存在于 `ui/public`——WebView 出不出网不由我们决定。
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -1208,6 +1211,66 @@ function productionRust(text) {
     } else {
       note('出网客户端只有一处构造，且直连 / 代理两条都显式接上了');
     }
+  }
+}
+
+// --- 15. 面板的资源不许出网，且本地路径必须真的存在 ---------------------------
+//
+// 版本面板的 npm 标志曾经是 `<img src="https://avatars.githubusercontent.com/…">`：
+// 一行代码、构建全绿、单测全绿，而它每次渲染都要出网取一次——WebView 出不出网
+// 取决于用户那台机器（`tauri.conf.json` 的 `csp` 是 null，没有任何东西拦它），
+// 断网或墙内时那 16px 就是一个白方块，`.brand-logo` 的 `background: #fff` 正好
+// 把它垫成一块看得见的白砖。这类故障没有任何一条既有门禁会响，所以这里补两条：
+// ① 模板 / CSS / 入口 HTML 里不许出现**页面自己去取**的 `http(s)://` 资源；
+// ② 以 `/` 开头的 `src` 必须能在 `ui/public` 里找到文件——写错一个字与出网一样，
+//    同样是一个静默的空图。
+//
+// 判据只认「页面自己去取」，**不认用户点了要打开外链**：`<a href="https://…">`
+// 是有意为之的用户动作（面板里本来就有好几处，另有走 `openExternalLink` 的按钮），
+// 第一版判据把 `href` 一并查了，插件中心的 dshfind.com 与技能页的 GitHub topic
+// 两个链接当场误报——凡是把「正当的外链」也拦下来的检查，最后都会被改成拦不住
+// 任何东西。`<link href>` 是另一回事：样式表与字体确实由页面去取，所以照拦。
+{
+  const publicDir = join(root, 'ui', 'public');
+  const remote = [];
+  const missing = [];
+  const files = [...walk(join(root, 'ui/src'), ['.vue', '.js', '.css'])];
+  const entry = join(root, 'ui', 'index.html');
+  if (existsSync(entry)) files.push(entry);
+  for (const file of files) {
+    const lines = readFileSync(file, 'utf8').split('\n');
+    lines.forEach((line, index) => {
+      const where = `${show(file)}:${index + 1}`;
+      if (
+        /(?:^|[\s:(])src\s*=\s*["'][^"']*https?:\/\//.test(line) ||
+        /<link\b[^>]*href\s*=\s*["']https?:\/\//.test(line) ||
+        /url\(\s*["']?https?:\/\//.test(line) ||
+        /@import\s+(?:url\()?\s*["']?https?:\/\//.test(line)
+      ) {
+        remote.push(where);
+      }
+      for (const match of line.matchAll(/(?:^|[\s:(])src\s*=\s*["'](\/[^"'#?]+)["']/g)) {
+        // `/src/**` 是 Vite 自己解析的源码路径、`/assets/**` 是构建产物，都不是
+        // public 里的静态资源，拿它们去 ui/public 查只会永远报红。
+        if (/^\/(?:src|assets|@)\b/.test(match[1])) continue;
+        if (!existsSync(join(publicDir, match[1]))) missing.push(`${where} → ${match[1]}`);
+      }
+    });
+  }
+  const problems = [
+    ...remote.map((where) => `${where}（远端资源）`),
+    ...missing.map((where) => `${where}（ui/public 里没有这个文件）`),
+  ];
+  if (problems.length > 0) {
+    fail(
+      'ui-assets-local',
+      `面板里有 ${problems.length} 处资源没有真正落在本地：${problems.join('、')}——` +
+        `WebView 出不出网不由我们决定，离线 / 墙内时它就是一个空图，页面上没有任何报错。` +
+        `请把资源放进 ui/public/ 并保留来源与许可声明（docs/icon-design.md` +
+        `「面板里的第三方标志」）。用户点击打开的外链（<a href>）不在此列。`,
+    );
+  } else {
+    note('面板资源全部来自 ui/public，没有远端地址');
   }
 }
 

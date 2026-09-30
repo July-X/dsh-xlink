@@ -2,6 +2,21 @@
 
 全仓库图标的三张母版、bundle 套板规则与增量构建触发。约定性约束见 [AGENTS.md](../AGENTS.md)。
 
+## 面板里的第三方标志
+
+**面板里出现的任何标志都必须来自 `ui/public/` 下的本地文件，不许写远端 `http(s)://` 地址。**
+
+版本面板「npm 发布」那一行的标志过去是
+`<img src="https://avatars.githubusercontent.com/u/6078720?s=200&v=4">`：一行代码，构建、单测、CSS 预算全绿，而它每次渲染都要出网取一次。`tauri.conf.json` 的 `csp` 是 `null`，没有任何东西拦这个请求，于是**出不出网完全取决于用户那台机器**——断网、墙内、或公司网关拉黑 `avatars.githubusercontent.com` 时，那 16px 就是一个空图，而 `.brand-logo` 的 `background: #fff` 正好把它垫成一块看得见的白砖。取不到图时页面上没有任何错误信息。
+
+规则：
+
+- 标志一律进 `ui/public/`，矢量优先（SVG），构建时由 Vite 原样拷进 `ui/dist/`，运行时从 `tauri://` / `http://127.0.0.1` 本地协议取。
+- **保留来源与许可声明**。当前只有 `ui/public/npm-logo.svg`（Devicon 的 `icons/npm/npm-original.svg`，MIT, © 2015 konpa；npm 标志本身是 npm, Inc. 的商标，这里只用它指代 npm 这个包来源）。第三方标志若换成许可更严格的来源（CC-BY-SA 之类），在同一条注释里写清署名要求。
+- 图形数据要与现用的那张**同一个标志**。Simple Icons 的 `npm` 图标虽然也是 CC0 且只有 317 字节，但它是另一个图形（方块里一个抽象的方框，不是 npm 的标志），换它等于顺手改了品牌；比对方法是把它与线上那张头像并排渲染，不是看文件名像不像。
+- 门禁：`check:invariants` 第 15 项同时查「不许出现远端地址」与「以 `/` 开头的 `src` 在 `ui/public` 里必须存在」。写错路径与指向远端是同一种故障（页面渲染成空图），所以两条都要拦。
+- 面板上其余图标仍走 `@element-plus/icons-vue`（那是本地 npm 依赖，不出网）；需要品牌标志时 Element Plus 里没有，才落到上面这条规则。
+
 ## 母版
 
 ```
