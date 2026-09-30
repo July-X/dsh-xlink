@@ -1128,6 +1128,28 @@ function productionRust(text) {
         note('内核安装用 copy 落盘：树与 pnpm store 不共享 inode');
       }
 
+      // ③之又半：跨壳横幅必须**按实际残余风险门控**（2026-09-30 傍晚）。
+      //    机制定案的推论：风险 = 本壳有共享 inode 的旧树 × 对面正在服务的树
+      //    也共享；两侧任一独立，任何装 / 删都物理碰不到对方。此前横幅无条件
+      //    常驻——用户把版本全部重装隔离之后它还挂在脸上，等于警告在撒谎。
+      //    门控的形状：status 的映射必须**以 `.filter(` 接在判据后面**，且判据
+      //    里引用 install_isolation 的采样。退回无条件 `.map(` 编译不报、测试
+      //    不红，只有这条会响。
+      if (
+        !/other_shell_workbench: instance::workbench_running_in_other_shell\(\)\s*\.filter\(/.test(
+          kernelInstallSrc,
+        )
+      ) {
+        fail(
+          'cross-shell-notice-single-source',
+          'kernel.rs 的跨壳横幅映射没有先 .filter( 门控——它会在两侧树都隔离后' +
+            '仍然常驻，警告比没有更坏（用户已完成隔离却还被吓唬）。映射必须先按' +
+            '「本壳有共享 inode 的版本 && 对面正在服务的树也共享」过滤（install_isolation）。',
+        );
+      } else {
+        note('跨壳横幅按实际残余风险门控（两侧任一独立即消失）');
+      }
+
       // ③之半：跨壳横幅文案**单源**。真相源是 instance.rs 的
       //    other_shell_workbench_notice（措辞契约有测试钉住）；状态映射必须从它
       //    取文案，VersionsPanel.vue 只许渲染 `notice`、不许再自己拼。2026-09-30

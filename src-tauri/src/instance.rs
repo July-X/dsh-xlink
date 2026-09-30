@@ -1015,31 +1015,24 @@ fn other_shell_candidates(mode: ShellMode) -> Vec<(String, String)> {
 
 /// 另一个壳的工作台在跑时装 / 删内核**要告诉用户什么**——**不再阻断**。
 ///
-/// 2026-09-30 之前这里是硬拦，理由写的是「跨壳文件监视器互相惊动」，当天下午
-/// 那个说法被实证推翻、机制也定案了：pnpm 的内容寻址 store 让两个壳的内核树与
-/// store **共享 inode**（内容相同的文件是同一个文件），NTFS 上硬链接数增减会更新
-/// ChangeTime，内核 `dsh-client-hmr` 每 500ms 的 bundle stat 轮询把这些噪声当成
-/// 「模块重建」推给**活页面**——五次装 / 删全部在 4~6 秒内打死对面的工作台页面，
-/// 与 CPU / 磁盘负载无关。装包参数已改 `package-import-method=copy`（新树全新
-/// inode，物理隔离），**删旧版硬链接树**仍会惊动对面的页面一次（自愈会等风停后
-/// 自己恢复）。为这一次可自愈的惊动硬拦，比例不对——对症的是 inode 隔离与
-/// 降优先级（`child_priority.rs`）。
-pub fn other_shell_workbench_notice(
-    mode: ShellMode,
-    id: &str,
-    record: &PidRecord,
-    action: &str,
-) -> String {
+/// 2026-09-30 之前这里是硬拦；当天机制定案（pnpm store 的 inode 共享 + NTFS
+/// ChangeTime + 内核 `client-hmr` 的 stat 轮询，全文见模块文档与 AGENTS.md）后，
+/// 安装改 `package-import-method=copy` 根治了**装**的路径。这条文案因此只在
+/// **真有残余风险**时出现（调用侧已按 [`crate::install_isolation`] 的采样门控）：
+/// 本壳还挂着共享 inode 的旧树、且对面正在服务的那棵树也是共享的。两侧任一
+/// 独立，任何装 / 删都物理碰不到对方——那时安静就是正确表达。
+pub fn other_shell_workbench_notice(mode: ShellMode, id: &str, record: &PidRecord) -> String {
     let port_hint = record
         .port
         .map(|port| format!("、端口 {port}"))
         .unwrap_or_default();
     format!(
         "另一个 dsh-xlink（{mode} 壳）的工作台正在运行（实例 {id}，进程 {}{port_hint}）。\
-         本次{action}用的是独立的文件存储，正常情况下对面不受影响；若这次删的是\
-         旧版安装的内核，它的文件仍与对面共享存储，对面的工作台页面可能被短暂\
-         惊动一次（会等风停后自己恢复）。没恢复的话，在那个壳的概览页\
-         点「刷新工作台」即可。",
+         本壳还装有旧版方式安装的内核（文件仍与其他目录共享存储，版本页里带\
+         「共享存储」标记的就是）：删除或重装那种版本会短暂惊动对面的页面\
+         （它会等风停后自己恢复）。把带标记的版本卸载后重装一次即彻底隔离，\
+         这条提示随之消失；期间对面没恢复的话，在那个壳的概览页点\
+         「刷新工作台」即可。",
         record.pid,
     )
 }
@@ -1401,21 +1394,23 @@ mod tests {
             port: Some(3090),
             shell: Some("release"),
         };
-        let notice =
-            other_shell_workbench_notice(ShellMode::Release, "default", &record, "安装内核版本");
+        let notice = other_shell_workbench_notice(ShellMode::Release, "default", &record);
 
-        // 要素齐全：谁占着、哪个壳、实例、进程、端口、本次动作。
+        // 要素齐全：谁占着、哪个壳、实例、进程、端口，以及**指路的标记**
+        // （「共享存储」是版本页行上真实存在的标记，文案必须指向它，
+        // 用户才知道重装哪一个）。
         for needle in [
             "另一个 dsh-xlink",
             "release 壳",
             "实例 default",
             "进程 37652",
             "端口 3090",
-            "安装内核版本",
+            "共享存储",
+            "卸载后重装",
         ] {
             assert!(notice.contains(needle), "提示缺少要素：{needle}｜{notice}");
         }
-        // 出路必须写出来——否则用户看到「可能黑屏」却不知道怎么办。
+        // 出路必须写出来——否则用户看到「可能惊动」却不知道怎么办。
         assert!(
             notice.contains("刷新工作台"),
             "提示没告诉用户怎么恢复：{notice}"

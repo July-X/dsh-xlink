@@ -66,7 +66,7 @@ const WEB_FRONTEND_PACKAGE: &str = "@deepseek-ai/dsh-web-frontend";
 pub(crate) const EMPTY_SOURCE_MAP: &str = r#"{"version":3,"sources":[],"names":[],"mappings":""}"#;
 
 /// 已安装包中内核 CLI 入口的相对路径。
-const KERNEL_BIN_REL: &str = "node_modules/@deepseek-ai/dsh/lib/bin.js";
+pub(crate) const KERNEL_BIN_REL: &str = "node_modules/@deepseek-ai/dsh/lib/bin.js";
 const MAX_ORPHAN_CANDIDATES: usize = 256;
 
 /// 磁盘上已安装的一个内核版本。
@@ -77,6 +77,10 @@ pub struct InstalledVersion {
     /// 仅内核入口文件（`KERNEL_BIN_REL`）的大小——一种廉价的完整性信号，
     /// 而非整个安装的占用体积。
     pub size_bytes: u64,
+    /// 该版本的树是否仍与其他目录共享 inode（旧版硬链接安装，
+    /// [`crate::install_isolation`] 的采样判定）。`true` ⇒ 删除 / 重装它会
+    /// 短暂惊动对面正在用的工作台（自愈兜底）；卸载后重装一次即隔离。
+    pub shared_storage: bool,
 }
 
 /// 另一个壳正在服务的工作台。
@@ -454,15 +458,18 @@ pub fn list_installed(data_dir: &Path) -> Vec<InstalledVersion> {
             if !entry.metadata().map(|m| m.is_dir()).unwrap_or(false) {
                 continue;
             }
-            let Ok(size) =
-                fs::metadata(kernel_dir(data_dir, &name).join(KERNEL_BIN_REL)).map(|m| m.len())
-            else {
+            let dir = kernel_dir(data_dir, &name);
+            let Ok(size) = fs::metadata(dir.join(KERNEL_BIN_REL)).map(|m| m.len()) else {
                 continue;
             };
             out.push(InstalledVersion {
                 version: name,
                 active: false,
                 size_bytes: size,
+                // 采样读硬链接数（纯元数据，每版本约 30 次打开）：旧版硬链接
+                // 树 ⇒ true，copy 新树 ⇒ false。版本页据此标「共享存储」、
+                // 横幅据此决定还出不出现。
+                shared_storage: crate::install_isolation::tree_shares_inodes(&dir),
             });
         }
     }
@@ -515,6 +522,11 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
         .as_ref()
         .map(|v| kernel_dir(data_dir, v).join(KERNEL_BIN_REL).is_file())
         .unwrap_or(false);
+    // 横幅的出现场景按**实际残余风险**门控（2026-09-30 定案机制的推论）：
+    // 风险 = 删 / 重装本壳某棵共享 inode 的树 × 对面正在服务的树也共享
+    // （两侧任一独立，任何装 / 删都物理碰不到对方）。本壳全部版本都重装成
+    // copy 之后横幅消失——它不再无条件常驻吓唬已经完成隔离的用户。
+    let cross_shell_risk = installed.iter().any(|v| v.shared_storage);
     KernelStatus {
         installed,
         active,
@@ -528,17 +540,17 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
         // settings 可能已经是"回退后的默认值"。
         settings_warning: crate::settings::load_checked_for_shell(crate::settings::current_mode())
             .1,
-        other_shell_workbench: instance::workbench_running_in_other_shell().map(
-            |(mode, id, record)| OtherShellWorkbench {
+        other_shell_workbench: instance::workbench_running_in_other_shell()
+            .filter(|(mode, _, _)| cross_shell_risk && other_shell_tree_shared(*mode))
+            .map(|(mode, id, record)| OtherShellWorkbench {
                 shell: mode.to_string(),
                 instance: id.clone(),
                 pid: record.pid,
                 port: record.port,
                 // 横幅文案与进度面板 / 日志用的是**同一条**来源：机制定案改文案时
                 // 只改 instance.rs 一处，版本页跟着变（前端不再自己拼）。
-                notice: instance::other_shell_workbench_notice(mode, &id, &record, "装 / 删内核"),
-            },
-        ),
+                notice: instance::other_shell_workbench_notice(mode, &id, &record),
+            }),
     }
 }
 
@@ -567,10 +579,11 @@ pub(crate) fn ensure_own_shell_stopped(data_dir: &Path, action: &str) -> Result<
 /// 另一个壳的工作台在跑时装 / 删内核**照做**，只把后果与出路报一遍（进度面板 +
 /// 「查看日志」）。跨壳惊动的机制已实证（见 [`crate::instance::other_shell_workbench_notice`]
 /// 的文档注释：pnpm store 的 inode 共享 + NTFS ChangeTime + 内核 `client-hmr` 的
-/// stat 轮询，不是「资源争用」），新版安装用 `copy` 已把**装**的路径根治；**删**
-/// 旧版硬链接树仍可能惊动对面的页面一次（自愈会等风停后恢复）。为这一次可自愈
-/// 的惊动废掉双壳并行，比例不对——降优先级（`child_priority.rs`）与 inode 隔离
-/// 才是对症的另一半。
+/// stat 轮询，不是「资源争用」）。**调用方必须先确认本次动作真有跨壳风险**——
+/// 删 / 重装一棵共享 inode 的树（[`crate::install_isolation::tree_shares_inodes`]）；
+/// 全新安装（copy 落盘）与删除已隔离的树都不再提示，安静就是「没有风险」的
+/// 正确表达。为一次可自愈的惊动废掉双壳并行，比例不对——降优先级
+/// （`child_priority.rs`）与 inode 隔离才是对症的另一半。
 ///
 /// 写日志而不是只提示：这条提示**发生在一次两万个文件的写盘里**，用户那时
 /// 正在看进度面板；不出现在日志里就等于没说（AGENTS.md「用户看得见后果的后台
@@ -580,13 +593,29 @@ pub(crate) fn ensure_own_shell_stopped(data_dir: &Path, action: &str) -> Result<
 /// 策略的正确形态是「没有 `?` 可接」——跨壳判据一旦能变成阻断，代价就是废掉双壳
 /// 并行。要新增跨壳检查点，只能新增 `workbench_running_in_other_shell` 的调用点，
 /// 那由 `scripts/check-invariants.mjs` 第 12 项挡住。
-pub(crate) fn warn_other_shell_workbench(action: &str, on_notice: &mut dyn FnMut(&str)) {
+pub(crate) fn warn_other_shell_workbench(on_notice: &mut dyn FnMut(&str)) {
     let Some((mode, id, record)) = instance::workbench_running_in_other_shell() else {
         return;
     };
-    let notice = instance::other_shell_workbench_notice(mode, &id, &record, action);
+    let notice = instance::other_shell_workbench_notice(mode, &id, &record);
     on_notice(&notice);
     crate::shell_events::record("kernel-other-shell", &notice);
+}
+
+/// 对面壳**正在服务**的那棵内核树是否仍共享 inode。
+///
+/// 工作台运行期间 `set_active` 被本壳守卫挡住，所以对面的 `active.txt` 指向的
+/// 就是它正在服务的那棵树。读不到对面的激活版本（对面从没启动过 / 目录被移走）
+/// 按 `true` 处理：横幅的误判方向是「多提示一次」，不是「漏一次惊动」。
+fn other_shell_tree_shared(mode: crate::paths::ShellMode) -> bool {
+    let family = instance::default_family();
+    let other_dir = crate::paths::family_runtime_dir(&family, mode);
+    match read_active(&other_dir) {
+        Some(version) => {
+            crate::install_isolation::tree_shares_inodes(&kernel_dir(&other_dir, &version))
+        }
+        None => true,
+    }
 }
 
 /// 切换 `start` 将运行的已安装版本。只有工作台已停止时才能切换，避免
@@ -619,10 +648,13 @@ pub fn uninstall(data_dir: &Path, version: &str) -> Result<(), AppError> {
         )));
     }
     ensure_own_shell_stopped(data_dir, "删除内核版本")?;
+    // 只有仍共享 inode 的旧树才提示（隔离树的删除物理上碰不到对面）。
     // 删除没有进度通道（签名早于进度面板），提示因此只落日志；点之前的那一份
     // 由版本页的告警承担（`KernelStatus.other_shell_workbench`）。
-    let mut to_log_only = |_: &str| {};
-    warn_other_shell_workbench("删除内核版本", &mut to_log_only);
+    if crate::install_isolation::tree_shares_inodes(&kernel_dir(data_dir, version)) {
+        let mut to_log_only = |_: &str| {};
+        warn_other_shell_workbench(&mut to_log_only);
+    }
     // 几十秒的 remove_dir_all：打信标，让对面壳的恢复动作（页面自愈刷新 /
     // 壳重建窗口）知道「风还没停」，别把刷新落进风暴里（2026-09-30 实测：落在
     // 风暴中的自愈刷新与自动重建都在几秒内又死一次）。看门狗的阈值放宽也走
@@ -729,12 +761,14 @@ pub fn install_version(
     on_progress: impl FnMut(&str),
 ) -> Result<(), AppError> {
     ensure_own_shell_stopped(data_dir, "安装内核版本")?;
-    // 另一个壳的工作台在跑：**照装**，但把后果与出路说清楚（进度面板 + 日志）。
-    // 用户正在等一次几分钟的装包，最需要知道的就是「对面可能会卡，黑屏了点
-    // 刷新工作台能回来」。
     let mut on_progress = on_progress;
-    warn_other_shell_workbench("安装内核版本", &mut on_progress);
     let dir = kernel_dir(data_dir, version);
+    // 跨壳提示只在**真有风险**时说：全新安装（copy 落盘）碰不到对面的任何
+    // 文件，安静即正确；只有「覆盖一棵仍共享 inode 的旧树」的重装会惊动对面
+    // ——pnpm 重排那棵树时硬链接数会变。
+    if dir.exists() && crate::install_isolation::tree_shares_inodes(&dir) {
+        warn_other_shell_workbench(&mut on_progress);
+    }
     // 全新安装失败时把目录整个删掉。
     //
     // 半成品目录（pnpm 跑到一半、原生模块没编译出来、smoke 探针失败）会被

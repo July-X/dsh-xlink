@@ -133,6 +133,23 @@ onMounted(() => {
             <el-empty v-if="!kernel || kernel.installed.length === 0" description="尚未安装任何内核。" :image-size="64" />
             <div v-for="v in kernel ? kernel.installed : []" :key="v.version" class="installed-row">
               <span class="release-ver">{{ v.version }}</span>
+              <!-- 旧版硬链接安装的树（文件仍与其他目录共享存储）：删除 / 重装它会
+                   短暂惊动对面正在用的工作台（会自愈）。卸载后重装一次即隔离，
+                   标记随之消失。旧后端没有该字段时标记隐藏。 -->
+              <el-tooltip
+                v-if="v.shared_storage"
+                content="旧版方式安装：文件仍与其他目录共享存储，删除或重装会短暂惊动对面正在用的工作台（会自动恢复）。卸载后重装一次即彻底隔离。"
+                placement="top"
+              >
+                <el-tag
+                  size="small"
+                  type="warning"
+                  effect="plain"
+                  style="margin-left: 8px"
+                >
+                  共享存储
+                </el-tag>
+              </el-tooltip>
               <span class="release-actions">
                 <el-tooltip
                   effect="dark"
