@@ -1538,6 +1538,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                         .initialization_script(include_str!("harness-health.js"))
                         .initialization_script(include_str!("harness-draft.js"))
                         .initialization_script(include_str!("workbench-history-guard.js"))
+                        .initialization_script(include_str!("no-context-menu.js"))
                         .on_page_load({
                             let handle = handle.clone();
                             move |_webview, payload| {
@@ -1749,7 +1750,8 @@ fn add_official_chat_tab(
         .data_directory(profile_dir.to_path_buf())
         .additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)
         .initialization_script(include_str!("titlebar-pulse.js"))
-        .initialization_script(include_str!("chat-fingerprint.js"));
+        .initialization_script(include_str!("chat-fingerprint.js"))
+        .initialization_script(include_str!("no-context-menu.js"));
     // data_store_identifier 只在 macOS 存在；用 cfg 下的绑定遮蔽代替
     // `let mut`，其他平台不会留下 unused_mut 告警。
     #[cfg(target_os = "macos")]

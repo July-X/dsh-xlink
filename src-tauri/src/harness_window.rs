@@ -451,9 +451,11 @@ pub fn open(app: &AppHandle, url: Url, backdrop: Color) -> Result<(), String> {
 ///   注册 new-window handler 时，macOS 的 WKWebView UIDelegate 返回 nil、Windows
 ///   的 WebView2 标记已处理），点击因此静默失效。http(s) 外链交系统浏览器，其余
 ///   scheme 一律拒绝——不在壳内长出无主窗口。
-/// - 四条 `initialization_script`：标题栏品牌条带 / 拉绳小台灯 / 健康自愈探针 /
-///   历史会话保护。缺 source map 时由 `kernel::prepare_workbench_source_maps` 在
-///   服务端文件层补齐，不依赖覆盖不了的 DevTools 内部网络请求。
+/// - 六条 `initialization_script`：标题栏品牌条带 / 拉绳小台灯 / 健康自愈探针 /
+///   未发送草稿 / 历史会话保护 / 禁右键菜单（`no-context-menu.js`——只取消
+///   `contextmenu` 的默认行为，左键选词与 Ctrl/⌘+C 复制照旧）。缺 source map 时由
+///   `kernel::prepare_workbench_source_maps` 在服务端文件层补齐，不依赖覆盖不了的
+///   DevTools 内部网络请求。
 /// - `on_page_load`：把加载事件喂给 [`observe`]。
 fn build(app: &AppHandle, url: &Url, backdrop: Color) -> Result<(), String> {
     let link_opener = app.clone();
@@ -494,6 +496,7 @@ fn build(app: &AppHandle, url: &Url, backdrop: Color) -> Result<(), String> {
         .initialization_script(include_str!("harness-health.js"))
         .initialization_script(include_str!("harness-draft.js"))
         .initialization_script(include_str!("workbench-history-guard.js"))
+        .initialization_script(include_str!("no-context-menu.js"))
         .on_page_load({
             let handle = app.clone();
             move |_webview, payload| {

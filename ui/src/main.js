@@ -30,6 +30,7 @@ import { ElTooltip } from 'element-plus/es/components/tooltip/index.mjs';
 import zhCn from 'element-plus/es/locale/lang/zh-cn';
 import { homeDir } from './bridge.js';
 import { setDisplayHomeDir } from './labels.js';
+import { disableContextMenu } from './noContextMenu.js';
 import 'element-plus/es/components/alert/style/css.mjs';
 import 'element-plus/es/components/button/style/css.mjs';
 import 'element-plus/es/components/checkbox/style/css.mjs';
@@ -77,6 +78,12 @@ const usesCustomTitlebar = isMacOS || isWindows;
 if (usesCustomTitlebar && !isLogViewer && !isChatStrip && !isUsageViewer && !isSubscriptionViewer) {
   document.body.classList.add('custom-titlebar-shell');
 }
+
+// 右键菜单在壳自己的**所有**窗口里都关掉（主面板 / 日志 / 用量 / 套餐 / 官方
+// 对话页签栏——它们共用这个入口），因此只在这里调一次，且必须早于任何组件
+// 挂载：晚一步就会有一段窗口期里菜单还在。工作台与三个官方对话内容 webview
+// 加载的是别人的页面，由 `src-tauri/src/no-context-menu.js` 注入。
+disableContextMenu();
 
 const root = isLogViewer
   ? LogViewerWindow

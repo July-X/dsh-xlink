@@ -50,6 +50,7 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
 - **macOS / Windows 自定义标题栏**：管理面板在 macOS 和 Windows 上使用前端自绘的窗口标题栏，主色带从左到右以 5% 到 70% 的不透明度叠加深 Gitea 绿，保留毛笔笔触纹理；dev 构建切换为低亮度鲸眼红色系；Linux 保留系统标题栏。窗口按钮按平台惯例绘制——macOS 是左上角红黄绿交通灯；Windows 是右侧最小化 / 关闭按钮（46×32 命中区、10 px 细线字形，hover 覆浅色底，关闭 hover 变系统红）。无边框由 `tauri.conf.json` 的 `decorations: false` 在建窗时给定。
 - **Windows 常驻通知区域**：Windows 上管理面板常驻后台——关闭与最小化都把窗口收进通知区域，并从任务栏移除它的按钮（`ITaskbarList::DeleteTab`，任务栏与 Alt+Tab 都不再留一个点了没反应的窗口）。内核、工作台、官方对话与更新检查继续运行。托盘图标是重新打开与退出的唯一入口——右键菜单「显示主界面 / 退出 dsh-xlink」、左键单击叫回窗口；真正退出走托盘菜单并复用「确认退出」流程。从通知区域重新打开时，每次启动**只在第一次**提示「刚才已收起到通知区域」（4 秒）——窗口在隐藏状态下收不到页内提示，靠它避免看起来像崩溃；此后收起与恢复一律静默，不再打扰。
 - **内核更新**：npm registry 的 [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 与 GitHub `dsh-v<semver>` tag 一一对应。更新菜单直接读 npm registry 拿到全量版本与 `dist-tags`，可安装、切换、删除任意已发布版本；npm registry 不可达时才回退 GitHub Releases API 与其 Atom feed。
+- **窗口内不弹右键菜单**：管理面板（含日志、模型用量、套餐用量与官方对话页签栏这几个独立窗口）、工作台窗口、官方对话的三个页签里按右键都不再弹菜单，页面自绘的右键菜单也一并取消。**左键拖选与 Ctrl/⌘+C 复制照旧可用**——禁的只是菜单，不是选中。安装新版本后需要重新打开工作台与官方对话窗口，已存在的 WebView 不会自动替换注入脚本。
 
 > 多内核改造进度：P0–P8 已落地（内核族注册表、实例切换、插件按实例物化、技能全局共享、数据迁移向导、release threshold 验证）。`KERNEL_FAMILY_DSH = "dsh"` / `KERNEL_FAMILY_MCODE = "mcode"` 共存于 `KernelAdapter::adapters()` 注册表。状态见 [docs/multi-kernel-migration-status-2026-09-19.md](docs/multi-kernel-migration-status-2026-09-19.md)，设计稿见 [docs/dsh-xlink-multi-kernel-design.md](docs/dsh-xlink-multi-kernel-design.md)，实际数据布局以 [docs/architecture.md](docs/architecture.md) 为准。
 

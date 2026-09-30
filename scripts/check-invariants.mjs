@@ -1296,6 +1296,131 @@ function productionRust(text) {
   }
 }
 
+// --- 16. 三个窗口族都禁用右键菜单，且不许连左键复制一起禁 --------------------
+//
+// 需求只有一句话（「主界面、工作台、官方对话窗口都禁用鼠标右键菜单，保留左键
+// 复制」），落点却是三处：壳自己的五个窗口共用 SPA 入口（`ui/src/
+// noContextMenu.js`，由 `main.js` 装一次）、工作台、官方对话三个内容 webview
+// （Rust 侧注入 `no-context-menu.js`）。**行为测试钉不住接线**：测试直接对着
+// 脚本跑，把某一处接线删掉它照样全绿，而症状只是「从某个入口打开的窗口右键
+// 菜单还在」——不报任何错。因此这里钉三条：
+//
+//   ① **每一条加载外部页面的建窗链**都必须注入 `no-context-menu.js`。按
+//      `WebviewUrl::External(` 所在的顶层函数去找，而不是按文件数出现次数：
+//      工作台有**两条**建窗链（`commands.rs::open_harness` 是用户点「启动工作台」
+//      走的那条，`harness_window::build` 是自愈链条 / 手动刷新走的那条），
+//      漏一条的症状正是「有时右键菜单还在」，而按次数计的判据恰好抓不住这种
+//      漏法。将来新增远程窗口同样会被这条拦住。
+//   ② `main.js` 必须 import 并调用 `disableContextMenu()`，且调用在
+//      `app.mount` 之前（晚一步会有一段窗口期菜单还在）。
+//   ③ 两份实现都不许出现 `user-select` 或对 `copy` / `select` / `mousedown`
+//      的监听——「禁右键」写成「禁选中」是这条需求最常见的写错方式，它不报
+//      任何错，坏掉的症状只是用户再也复制不出东西。
+{
+  const srcDir = join(root, 'src-tauri', 'src');
+  const rustFiles = readdirSync(srcDir).filter((name) => name.endsWith('.rs'));
+  const remoteChains = [];
+  for (const file of rustFiles) {
+    const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
+    lines.forEach((line, index) => {
+      if (!line.includes('WebviewUrl::External(')) return;
+      // 建窗链的边界取「所在顶层函数的收尾大括号」：链本身跨十几行，而函数
+      // 体内的缩进代码不会在第 0 列出现 `}`。
+      let end = lines.length;
+      for (let i = index + 1; i < lines.length; i += 1) {
+        if (lines[i] === '}') {
+          end = i;
+          break;
+        }
+      }
+      remoteChains.push({
+        file,
+        line: index + 1,
+        body: lines.slice(index, end).join('\n'),
+      });
+    });
+  }
+  const unwired = remoteChains.filter((chain) => !chain.body.includes('no-context-menu.js'));
+  if (remoteChains.length === 0) {
+    fail(
+      'no-context-menu',
+      '生产代码里找不到任何 WebviewUrl::External 的建窗链——判据本身失效了，' +
+        '先确认这条检查还能匹配到建窗代码，再谈它绿不绿。',
+    );
+  } else if (unwired.length > 0) {
+    for (const chain of unwired) {
+      fail(
+        'no-context-menu',
+        `${chain.file}:${chain.line} 这条加载外部页面的建窗链没有注入 no-context-menu.js——` +
+          `右键菜单会从**这个入口打开的窗口**里照常弹出来（工作台有 open_harness 与 ` +
+          `harness_window::build 两条链，两条都要接；官方对话的每个内容 webview 走 ` +
+          `add_official_chat_tab）。本地 SPA 窗口不在此列：它们由 ui/src/noContextMenu.js 负责。`,
+      );
+    }
+  } else {
+    note(`${remoteChains.length} 条远程建窗链都注入了禁右键脚本（${remoteChains.map((c) => `${c.file}:${c.line}`).join('、')}）`);
+  }
+
+  // ② 壳自己的窗口：入口必须真的调用一次，且早于挂载。
+  const mainJs = read('ui/src/main.js');
+  const entryProblems = [];
+  if (!/import \{ disableContextMenu \} from '\.\/noContextMenu\.js';/.test(mainJs)) {
+    entryProblems.push('没有 import disableContextMenu');
+  }
+  const call = mainJs.indexOf('disableContextMenu();');
+  if (call === -1) entryProblems.push('没有调用 disableContextMenu()');
+  else if (mainJs.indexOf("app.mount('#app')") !== -1 && call > mainJs.indexOf("app.mount('#app')")) {
+    entryProblems.push('调用在 app.mount 之后，会有一段窗口期菜单还在');
+  }
+  if (entryProblems.length > 0) {
+    fail(
+      'no-context-menu',
+      `ui/src/main.js ${entryProblems.join('；')}——主面板 / 日志 / 用量 / 套餐 / 官方对话页签栏` +
+        `共用这一个入口，漏在这里就是五个窗口的右键菜单全都还在，而任何行为测试都不会红。`,
+    );
+  } else {
+    note('壳自己的窗口在入口装一次禁右键策略，且早于组件挂载');
+  }
+
+  // ③ 「禁右键」不许顺手变成「禁选中」。
+  // 判据前先剥注释，理由与上面 `productionRust` 相同：两份实现里都写着
+  // 「刻意**不**写 user-select」，照字面查会把这句话本身当成违规——第一版
+  // 就是这么误报的。`//` 前是 `:` 时不当作行注释（`https://…` 这类 URL）。
+  const stripJsComments = (text) =>
+    text
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .map((line) => line.replace(/(^|[^:])\/\/.*$/, '$1'))
+      .join('\n');
+  const implementations = [
+    'src-tauri/src/no-context-menu.js',
+    'ui/src/noContextMenu.js',
+  ];
+  const killsSelection = [];
+  for (const file of implementations) {
+    const source = stripJsComments(read(file));
+    const userSelect = /user-select/i.test(source);
+    const guarded = [...source.matchAll(/addEventListener\(\s*['"]([^'"]+)['"]/g)].map(
+      (match) => match[1],
+    );
+    const stolen = guarded.filter((type) => type !== 'contextmenu');
+    if (userSelect || stolen.length > 0) {
+      killsSelection.push(
+        `${file}${userSelect ? ' 写了 user-select' : ''}${stolen.length ? ` 监听了 ${stolen.join(' / ')}` : ''}`,
+      );
+    }
+  }
+  if (killsSelection.length > 0) {
+    fail(
+      'no-context-menu',
+      `${killsSelection.join('；')}——这条需求禁的是**右键菜单**，不是选中：左键拖选与 Ctrl/⌘+C 复制必须照旧可用。` +
+        `写 user-select 或拦下 copy 不会报任何错，症状只是用户再也复制不出东西。`,
+    );
+  } else {
+    note('两份实现都只取消 contextmenu，没碰选中与复制');
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);
