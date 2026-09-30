@@ -86,7 +86,15 @@ pub fn observe(state: &AppState, started: bool) {
 ///
 /// 抽成纯函数是因为它是这里唯一有分支的地方，而真正难测的恰恰是**不该重载的
 /// 那几条**：真正干活的那段要 `AppHandle` 和真实 webview，测不起。
-pub fn should_reload(pending_since: Option<Instant>, kernel_running: bool, reloads: u8) -> bool {
+///
+/// `timeout` 由调用方按 [`crate::package_activity::load_timeout`] 算好后传进来
+/// ——判据本身不该知道装包信标的事，阈值策略住在那个模块里。
+pub fn should_reload(
+    pending_since: Option<Instant>,
+    kernel_running: bool,
+    reloads: u8,
+    timeout: Duration,
+) -> bool {
     let Some(since) = pending_since else {
         return false;
     };
@@ -95,7 +103,7 @@ pub fn should_reload(pending_since: Option<Instant>, kernel_running: bool, reloa
     if !kernel_running || reloads >= MAX_RELOADS {
         return false;
     }
-    since.elapsed() >= LOAD_TIMEOUT
+    since.elapsed() >= timeout
 }
 
 /// 重载额度已经用完、页面**仍然**没加载完时，是否该换一整个窗口。
@@ -107,11 +115,12 @@ pub fn should_recreate(
     kernel_running: bool,
     reloads: u8,
     already_rebuilt: bool,
+    timeout: Duration,
 ) -> bool {
     if already_rebuilt || !kernel_running || reloads < MAX_RELOADS {
         return false;
     }
-    pending_since.is_some_and(|since| since.elapsed() >= LOAD_TIMEOUT)
+    pending_since.is_some_and(|since| since.elapsed() >= timeout)
 }
 
 /// 页面报上来的故障，是不是「刷新已经救不回来」的那一种。
@@ -148,8 +157,11 @@ pub fn reload_stalled(app: &AppHandle, kernel_running: bool) {
         let page = crate::lock(&state.harness_page);
         (page.pending_since, page.reloads, page.rebuilt)
     };
-    if !should_reload(pending, kernel_running, reloads) {
-        if should_recreate(pending, kernel_running, reloads, rebuilt) {
+    // 装包活动期间放宽阈值：对面在把机器打满时，本壳页面加载慢是应该的，
+    // 不是故障。见 package_activity::load_timeout 的文档注释（2026-09-30 实测的由来）。
+    let timeout = crate::package_activity::load_timeout();
+    if !should_reload(pending, kernel_running, reloads, timeout) {
+        if should_recreate(pending, kernel_running, reloads, rebuilt, timeout) {
             let _ = recreate(app, "刷新后仍未加载出来");
         }
         return;
@@ -344,27 +356,32 @@ mod tests {
     #[test]
     fn a_loaded_page_is_never_reloaded() {
         // 已经 Finished ⇒ pending_since 是 None ⇒ 永不重载。
-        assert!(!should_reload(None, true, 0));
+        assert!(!should_reload(None, true, 0, LOAD_TIMEOUT));
     }
 
     #[test]
     fn a_page_still_within_the_timeout_is_left_alone() {
         let start = Instant::now();
-        assert!(!should_reload(Some(start), true, 0));
+        assert!(!should_reload(Some(start), true, 0, LOAD_TIMEOUT));
     }
 
     #[test]
     fn a_stalled_page_is_reloaded_once_when_the_kernel_is_serving() {
         let long_ago = Instant::now() - LOAD_TIMEOUT - Duration::from_secs(1);
-        assert!(should_reload(Some(long_ago), true, 0));
+        assert!(should_reload(Some(long_ago), true, 0, LOAD_TIMEOUT));
         // 额度用完就停手：刷新救不回来的故障，重试一万次还是救不回来。
-        assert!(!should_reload(Some(long_ago), true, MAX_RELOADS));
+        assert!(!should_reload(
+            Some(long_ago),
+            true,
+            MAX_RELOADS,
+            LOAD_TIMEOUT
+        ));
     }
 
     #[test]
     fn a_dead_kernel_is_never_papered_over_by_reloading() {
         let long_ago = Instant::now() - LOAD_TIMEOUT - Duration::from_secs(1);
-        assert!(!should_reload(Some(long_ago), false, 0));
+        assert!(!should_reload(Some(long_ago), false, 0, LOAD_TIMEOUT));
     }
 
     /// 门槛必须是「慢但正常」与「卡死」之间的分界，不能贴着任何一边。实测首屏
@@ -390,15 +407,45 @@ mod tests {
     fn a_new_window_comes_only_after_the_reload_budget_is_spent() {
         let long_ago = Instant::now() - LOAD_TIMEOUT - Duration::from_secs(1);
         // 额度没用完 ⇒ 还在走 reload 那条路，不许重建。
-        assert!(!should_recreate(Some(long_ago), true, 0, false));
+        assert!(!should_recreate(
+            Some(long_ago),
+            true,
+            0,
+            false,
+            LOAD_TIMEOUT
+        ));
         // 额度用完 + 页面仍未加载完 ⇒ 换窗口。
-        assert!(should_recreate(Some(long_ago), true, MAX_RELOADS, false));
+        assert!(should_recreate(
+            Some(long_ago),
+            true,
+            MAX_RELOADS,
+            false,
+            LOAD_TIMEOUT
+        ));
         // 已经重建过一次 ⇒ 绝不来第二遍。
-        assert!(!should_recreate(Some(long_ago), true, MAX_RELOADS, true));
+        assert!(!should_recreate(
+            Some(long_ago),
+            true,
+            MAX_RELOADS,
+            true,
+            LOAD_TIMEOUT
+        ));
         // 页面已经加载完（pending_since 为空）⇒ 没什么要救的。
-        assert!(!should_recreate(None, true, MAX_RELOADS, false));
+        assert!(!should_recreate(
+            None,
+            true,
+            MAX_RELOADS,
+            false,
+            LOAD_TIMEOUT
+        ));
         // 内核挂了 ⇒ 该重启内核，重建窗口只会掩盖它。
-        assert!(!should_recreate(Some(long_ago), false, MAX_RELOADS, false));
+        assert!(!should_recreate(
+            Some(long_ago),
+            false,
+            MAX_RELOADS,
+            false,
+            LOAD_TIMEOUT
+        ));
     }
 
     /// 判据必须与页面自愈的额度对齐：`slot-assembly` 是第一次（页面会自己刷新，
