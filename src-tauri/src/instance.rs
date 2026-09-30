@@ -956,23 +956,26 @@ pub fn instance_kernel_running_message(record: &PidRecord, id: &str, action: &st
     }
 }
 
-/// **另一个壳**（不是本壳）还有哪个工作台在跑。动内核安装树之前的最后一句。
+/// **另一个壳**（不是本壳）还有哪个工作台在跑。装 / 删内核前把后果说清楚。
 ///
-/// **为什么不能只问本壳**：两棵安装树物理不相交（`desktop/` 与 `desktop-dev/`），
-/// 插件中央库也按壳分家了，但装包是一次两万个文件的事件风暴。2026-09-30 本机
-/// 实测：dev 壳装内核 `0.2.0-rc.1` 的那 10 秒（10:32:42 → 10:32:52）里，release
-/// 壳的工作台在 10:32:47 重新加载，10:32:48 抛出 `scope 'session-maybe' rendered
-/// without an installed adapter` 并从此黑屏（`last-incident.json` 的 `at`）——内核
-/// HTTP 全程 200，release 内核那 10 秒里一行输出都没有。而挂在
-/// [`crate::kernel::install_version`] / `uninstall` / `set_active` 上的闸门
-/// （[`crate::kernel::ensure_workbench_stopped`]）只读**本壳**的 `data_dir` 与配置
-/// 端口，对另一个壳正在服务的工作台一无所知。
+/// **它现在只提示、不阻断**（[`crate::kernel::warn_other_shell_workbench`] 是唯一
+/// 生产调用方，另一个是 `status` 让 UI 在点之前显示）。曾经它是硬拦，理由写的是
+/// 「装包是两万个文件的事件风暴，内核的文件监视器会把它当成模块图变更」——**那个
+/// 机制查不实**，实测见 [`other_shell_workbench_notice`] 的文档注释。
+///
+/// **为什么还要问**：两棵安装树物理不相交、插件中央库也按壳分家了，但**机器资源
+/// 是共享的**。2026-09-30 本机实测：dev 壳装内核 `0.2.0-rc.1` 的那 10 秒
+/// （10:32:42 → 10:32:52）里，release 壳的工作台在 10:32:47 重新加载、10:32:48
+/// 抛出 `scope 'session-maybe' rendered without an installed adapter` 并从此黑屏
+/// （`last-incident.json` 的 `at`）——内核 HTTP 全程 200，**release 内核那 10 秒
+/// 里一行输出都没有**（它没被惊动，出事的是客户端）。
 ///
 /// 候选 = 另一个壳注册表里的全部实例 **加上**它的默认实例。默认实例必须无条件
 /// 补上：另一个壳可能从没在这台机器上启动过（注册表文件还不存在），而那台机器
 /// 上最可能正在跑的恰恰是它的默认实例。判据复用 [`instance_kernel_running`]
-/// （pid 文件 + 端口活体验证），读不出就当没有——误报会挡住用户对自己实例的正常
-/// 操作，而漏报只在两壳真撞上时少一次提醒。
+/// （pid 文件 + 端口活体验证），读不出就当没有——**提示**误报的代价是用户以为对面
+/// 在跑（多一句警告），**阻断**误报的代价是把用户挡在自己机器上（双壳并行直接
+/// 没了），这也是它只提示的一个理由。
 pub fn workbench_running_in_other_shell() -> Option<(ShellMode, String, PidRecord)> {
     let mine = crate::settings::current_mode();
     for mode in [ShellMode::Release, ShellMode::Dev] {
@@ -1390,6 +1393,47 @@ mod tests {
         assert!(ensure_instance_mutable(KERNEL_FAMILY_DSH, "default", "测试").is_ok());
 
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 跨壳提示的文案**不得**变回阻断措辞，而且必须带恢复出路。
+    ///
+    /// 钉的是「提示不拦」这条策略在**用户看得见的那句话**里的形态。文案是最容易
+    /// 漂回去的地方：代码改对了、把 `warn` 又接成一次拒绝之前，往往先有人把
+    /// 「不能装 / 请先去关掉」写回文案——那时读代码的人会觉得拦得对。
+    #[test]
+    fn other_shell_notice_warns_without_blocking_and_says_how_to_recover() {
+        let record = PidRecord {
+            pid: 37652,
+            port: Some(3090),
+            shell: Some("release"),
+        };
+        let notice =
+            other_shell_workbench_notice(ShellMode::Release, "default", &record, "安装内核版本");
+
+        // 要素齐全：谁占着、哪个壳、实例、进程、端口、本次动作。
+        for needle in [
+            "另一个 dsh-xlink",
+            "release 壳",
+            "实例 default",
+            "进程 37652",
+            "端口 3090",
+            "安装内核版本",
+        ] {
+            assert!(notice.contains(needle), "提示缺少要素：{needle}｜{notice}");
+        }
+        // 出路必须写出来——否则用户看到「可能黑屏」却不知道怎么办。
+        assert!(
+            notice.contains("刷新工作台"),
+            "提示没告诉用户怎么恢复：{notice}"
+        );
+
+        // 阻断措辞一律不许回来。「不能」与「请先…再重试」是硬拦那版的原话。
+        for banned in ["不能", "请先在那个壳", "再回来重试", "无法"] {
+            assert!(
+                !notice.contains(banned),
+                "跨壳提示里出现了阻断措辞「{banned}」——它现在是提示不是拦截：{notice}"
+            );
+        }
     }
 
     /// 阻断类错误必须说清"谁占着、怎么解"——用户照着做就能继续，
