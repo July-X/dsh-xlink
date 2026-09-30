@@ -60,7 +60,7 @@ import {
   failurePromptPending,
   markFailurePrompted,
   tierRow,
-  balanceText,
+  balanceRow,
   queriedAtLabel,
   queriedAgeCompact,
 } from '../subscription.js';
@@ -105,7 +105,7 @@ const planRows = computed(() =>
     .map((provider) => ({
       provider,
       tiers: provider.kind === 'plan' ? provider.tiers.map((tier) => tierRow(tier)).filter(Boolean) : [],
-      balances: provider.kind === 'balance' ? provider.balances.map((balance) => balanceText(balance)) : [],
+      balances: provider.kind === 'balance' ? provider.balances.map((balance) => balanceRow(balance)) : [],
       shortState: providerShortState(provider),
       queried: queriedAtLabel(provider),
       queriedCompact: queriedAgeCompact(provider),
@@ -573,8 +573,10 @@ function goVersions() {
             </button>
           </div>
           <template v-if="row.provider.kind === 'balance'">
-            <div v-for="(text, index) in row.balances" :key="index" class="plan-balance">
-              <span>{{ text }}</span>
+            <div v-for="(item, index) in row.balances" :key="index" class="plan-balance" :title="item.tip">
+              <span>{{ item.main }}</span>
+              <!-- 赠金 / 充值与总额分开列（总额含赠金），独占一行。 -->
+              <span v-if="item.detail" class="plan-balance-detail">{{ item.detail }}</span>
               <span v-if="row.provider.is_available === false" class="plan-balance-unavailable">
                 余额不足，无法发起调用
               </span>
@@ -854,6 +856,11 @@ function goVersions() {
 .plan-balance-unavailable {
   color: var(--el-color-danger);
   font-weight: 600;
+}
+/* 余额明细行（赠金 / 充值）：独占一行，与总额主行区分口径。 */
+.plan-balance-detail {
+  width: 100%;
+  color: var(--muted);
 }
 .plan-state {
   margin: 0;

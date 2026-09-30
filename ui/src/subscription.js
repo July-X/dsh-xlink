@@ -116,11 +116,33 @@ export function currencySymbol(currency) {
   return currency ? `${currency} ` : '';
 }
 
-/** 一行余额：`余额：¥110.00`；赠送 / 充值明细不再展示，只显示总额。 */
-export function balanceText(balance) {
-  if (!balance) return '';
+/**
+ * 余额一行的展示数据（DeepSeek `/user/balance` 的 `balance_infos[]` 逐条）：
+ * `main` 是总额主行，`detail` 把 `granted_balance`（赠金）与
+ * `topped_up_balance`（充值）**分别列出**——三者口径不同（总额含赠金），
+ * 只显示总额会让人看不出余额里有多少是会过期的赠金。`tip` 是 hover title，
+ * 用等式口径把三者讲清。
+ *
+ * 金额是接口给的数字字符串，只做「加货币符号 + 裁空白」的透传，**不转浮点
+ * 参与任何计算**（与 docs/subscription-usage-design.md 的解析规则一致）；
+ * 缺失的分量（接口没给 / 不是字符串）不补零、不猜，明细行直接留空。
+ */
+export function balanceRow(balance) {
+  if (!balance) return null;
   const symbol = currencySymbol(balance.currency);
-  return `余额：${symbol}${(balance.total || '').trim()}`;
+  const amount = (value) => `${symbol}${(value || '').trim()}`;
+  const parts = [
+    { label: '赠金', hint: '赠金（未过期）：', value: balance.granted },
+    { label: '充值', hint: '充值：', value: balance.topped_up },
+  ].filter((part) => typeof part.value === 'string' && part.value.trim());
+  const total = amount(balance.total);
+  return {
+    main: `余额：${total}`,
+    detail: parts.map((part) => `${part.label} ${amount(part.value)}`).join(' · '),
+    tip: parts.length
+      ? `总余额 ${total} ＝ ${parts.map((part) => `${part.hint}${amount(part.value)}`).join(' ＋ ')}`
+      : `总余额 ${total}（接口未返回赠送 / 充值明细）`,
+  };
 }
 
 /**

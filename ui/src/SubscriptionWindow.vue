@@ -19,7 +19,7 @@ import {
   refreshSubscription,
   providerShortState,
   tierRow,
-  balanceText,
+  balanceRow,
   queriedAtLabel,
   queriedAgeCompact,
 } from './subscription.js';
@@ -47,7 +47,9 @@ const rows = computed(() =>
     provider,
     tiers: provider.kind === 'plan' ? provider.tiers.map((tier) => tierRow(tier)).filter(Boolean) : [],
     balances:
-      provider.kind === 'balance' ? provider.balances.map((balance) => balanceText(balance)) : [],
+      provider.kind === 'balance'
+        ? provider.balances.map((balance) => balanceRow(balance)).filter(Boolean)
+        : [],
     shortState: providerShortState(provider),
     queried: queriedAtLabel(provider),
     queriedCompact: queriedAgeCompact(provider),
@@ -143,10 +145,12 @@ const lastFetched = computed(() => {
             <p v-if="!row.tiers.length && !row.shortState" class="muted sub-empty">暂无窗口数据。</p>
           </template>
 
-          <!-- DeepSeek：多币种余额逐行；is_available=false 时单独标红。 -->
+          <!-- DeepSeek：多币种余额逐行，主行总额 + 赠金 / 充值明细行；
+               is_available=false 时单独标红。 -->
           <template v-else-if="row.provider.kind === 'balance'">
-            <div v-for="(text, index) in row.balances" :key="index" class="sub-balance">
-              <span class="sub-balance-text">{{ text }}</span>
+            <div v-for="(item, index) in row.balances" :key="index" class="sub-balance" :title="item.tip">
+              <span class="sub-balance-text">{{ item.main }}</span>
+              <span v-if="item.detail" class="sub-balance-detail">{{ item.detail }}</span>
               <span v-if="row.provider.is_available === false" class="sub-balance-unavailable">
                 余额不足，无法发起调用
               </span>
@@ -331,12 +335,19 @@ const lastFetched = computed(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
   font-size: 13px;
   padding: 2px 0;
 }
 .sub-balance-text {
   font-weight: 600;
+}
+/* 余额明细行（赠金 / 充值）：独占一行，与总额主行区分口径。 */
+.sub-balance-detail {
+  width: 100%;
+  color: var(--muted);
+  font-size: 12px;
 }
 .sub-balance-unavailable {
   color: var(--el-color-danger);

@@ -27,7 +27,7 @@ Object.defineProperty(globalThis, 'navigator', {
 const {
   percentLevel,
   currencySymbol,
-  balanceText,
+  balanceRow,
   providerStateText,
   providerShortState,
   collectErrors,
@@ -60,14 +60,26 @@ test('currencySymbol 映射币种，未知币种退回代码', () => {
   assert.equal(currencySymbol(''), '');
 });
 
-test('balanceText 只展示「余额：¥x」总额，不拼接赠送 / 充值明细', () => {
-  assert.equal(
-    balanceText({ currency: 'CNY', total: '110.00', granted: '10.00', topped_up: '100.00' }),
-    '余额：¥110.00'
-  );
-  assert.equal(balanceText({ currency: 'USD', total: '5.21', granted: '0.00', topped_up: '5.21' }), '余额：$5.21');
-  assert.equal(balanceText({ currency: 'CNY', total: '88.00' }), '余额：¥88.00');
-  assert.equal(balanceText(null), '');
+test('balanceRow 把总额与赠金 / 充值分开列（DeepSeek 三个字段口径不同）', () => {
+  const row = balanceRow({ currency: 'CNY', total: '16.64', granted: '4.64', topped_up: '12.00' });
+  assert.equal(row.main, '余额：¥16.64');
+  assert.equal(row.detail, '赠金 ¥4.64 · 充值 ¥12.00', '赠金与充值必须分别标出');
+  assert.equal(row.tip, '总余额 ¥16.64 ＝ 赠金（未过期）：¥4.64 ＋ 充值：¥12.00');
+});
+
+test('balanceRow 金额只透传不运算：缺字段不补零，只有充值时也照常显示', () => {
+  const onlyTopped = balanceRow({ currency: 'USD', total: '5.21', granted: null, topped_up: '5.21' });
+  assert.equal(onlyTopped.main, '余额：$5.21');
+  assert.equal(onlyTopped.detail, '充值 $5.21', '赠金缺失就只列充值，不补 0');
+  assert.equal(onlyTopped.tip, '总余额 $5.21 ＝ 充值：$5.21');
+  // 两项都缺（接口只给总额）→ 明细行留空，hover 明确说明而不是编一个 0。
+  const bare = balanceRow({ currency: 'CNY', total: '88.00' });
+  assert.equal(bare.main, '余额：¥88.00');
+  assert.equal(bare.detail, '');
+  assert.equal(bare.tip, '总余额 ¥88.00（接口未返回赠送 / 充值明细）');
+  // 零值也照常透传展示（0.00 是接口给的事实，不当作「没有」）。
+  assert.equal(balanceRow({ currency: 'CNY', total: '0.00', granted: '0.00', topped_up: '0.00' }).detail, '赠金 ¥0.00 · 充值 ¥0.00');
+  assert.equal(balanceRow(null), null);
 });
 
 test('providerStateText 只承载完整错误文案（横幅用）', () => {
