@@ -2382,6 +2382,47 @@ mod tests {
         fs::remove_dir_all(&root).expect("remove test data");
     }
 
+    /// `KernelStatus` 里跨壳那一项的**序列化字段名**是前端读的那个键。
+    ///
+    /// 这条值得单独钉：`VersionsPanel.vue` 读的是 `kernel.other_shell_workbench`
+    ///（snake_case，与同一结构体的 `settings_warning` 同一约定），而 Rust 侧
+    /// `#[derive(Serialize)]` 不带 `rename_all` —— 两边各写一遍，谁改了另一边都
+    /// 不会报错，症状是**告警静默不出现**（读到 `undefined`，`v-if` 直接跳过）。
+    /// `check-invariants` 第 9 项只覆盖 `rename_all = "camelCase"` 的那批结构体，
+    /// 盖不到这里，所以在这儿钉。
+    #[test]
+    fn other_shell_workbench_field_name_matches_what_the_panel_reads() {
+        let status = KernelStatus {
+            installed: Vec::new(),
+            active: None,
+            active_installed: false,
+            running: false,
+            port: 3091,
+            data_dir: "~/.dsh-xlink/dsh/desktop-dev".into(),
+            settings_warning: None,
+            other_shell_workbench: Some(OtherShellWorkbench {
+                shell: "release".into(),
+                instance: "default".into(),
+                pid: 37652,
+                port: Some(3090),
+            }),
+        };
+        let json = serde_json::to_value(&status).expect("KernelStatus should serialize");
+        let other = json
+            .get("other_shell_workbench")
+            .unwrap_or_else(|| panic!("前端读的是 other_shell_workbench，实际：{json}"));
+        assert_eq!(other["shell"], "release");
+        assert_eq!(other["instance"], "default");
+        assert_eq!(other["pid"], 37652);
+        assert_eq!(other["port"], 3090);
+        // 反向：camelCase 那个键**不该**存在。哪天给这个结构体加了 rename_all
+        // 而前端没跟着改，症状正是上面那句「告警静默不出现」——那正是要拦的方向。
+        assert!(
+            json.get("otherShellWorkbench").is_none(),
+            "字段名变成 camelCase 了，VersionsPanel.vue 读的还是 snake_case：{json}"
+        );
+    }
+
     /// 反向断言：端口上的**无关**监听者不再被当作"工作台在运行"，因此
     /// 不会错误地阻止切换内核版本。
     #[test]
