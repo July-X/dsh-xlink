@@ -194,6 +194,45 @@ pub fn reload_stalled(app: &AppHandle, kernel_running: bool) {
     }
 }
 
+/// 页面报上来「刷新已经救不回来」之后，壳要不要换一整个窗口。
+///
+/// 这是**黑屏自愈的最后一环**，也是 2026-09-30 那次用户看得见的最后一步：此前
+/// [`fault_needs_new_window`] 算得出这个答案却**没有任何生产调用方**——它只在测试
+/// 里被断言。于是那条链的末端是：页面自己刷过一次、没刷好、壳弹一个事故面板，
+/// 然后**窗口就停在黑屏上**。而手动「刷新工作台」（同一个 [`recreate`]）已经证明
+/// 换窗口能救回来——自动链没有走这一步，是漏接而不是判断为「不该」。
+///
+/// `kernel_running` 与 [`should_recreate`] 同一条纪律：内核真的没在跑时换窗口只是
+/// 把同一个连接失败重新渲染一遍，掩盖它比不换更糟。「每进程只重建一次」那道闸在
+/// [`recreate`] 里面，不在这里重复。
+pub fn should_recreate_after_fault(
+    kind: &str,
+    message: &str,
+    stack: &str,
+    kernel_running: bool,
+) -> bool {
+    kernel_running && fault_needs_new_window(kind, message, stack)
+}
+
+/// 上面那个判据的**动作**，与判据放在一处：命令层只该递证据，不该知道「黑屏之后
+/// 要换一个窗口」这件事是怎么做的——`commands.rs` 是反棘轮文件，而这里才是自愈
+/// 链条该待的地方。
+///
+/// 生命周期锁与 `recreate` 内部那道「每进程只重建一次」的闸都照旧：这道函数是
+/// **补上**自动链的末端，不是放开重建次数。
+pub fn recreate_after_fault(app: &AppHandle, health: &crate::guard::HealthReport) {
+    // 内核是否在服务由这一层自己问：命令层不该为了调一个自愈动作而先去读设置与
+    // 探端口（`commands.rs` 是反棘轮文件，那里每多一行都要从别处省一行）。
+    let settings = crate::settings::load_for_shell(crate::settings::current_mode());
+    let serving = crate::kernel::port_open(settings.port);
+    if !should_recreate_after_fault(&health.kind, &health.message, &health.stack, serving) {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let _lifecycle_guard = crate::lock(&state.lifecycle);
+    let _ = recreate(app, "刷新后页面仍报同一处槽位故障");
+}
+
 /// 拆掉工作台窗口再原样建一个。自愈链条的**最后一级**。
 ///
 /// `reason` 是这次重建的**成因**，它会原样进事件日志：自动重建与用户手动
@@ -468,5 +507,35 @@ mod tests {
         ));
         // 空白页有自己的归因与处置，不走这一级。
         assert!(!fault_needs_new_window("blank", &message, ""));
+    }
+
+    /// 这一层曾经**算了却没人调**——`fault_needs_new_window` 只有测试引用它，
+    /// 生产代码里一处都没有。于是自动链的末端是「弹个事故面板，然后停在黑屏上」，
+    /// 而手动「刷新工作台」（同一个 `recreate`）证明换窗口能救回来。**判据是对的，
+    /// 是没接上**——所以这里钉的是「什么时候该换」，以及内核没在跑时**不该**换。
+    #[test]
+    fn a_repeated_slot_failure_while_serving_asks_for_a_new_window() {
+        let phrase = crate::kernel_evidence::SLOT_PHRASES[0];
+        let message = format!("Uncaught Error: scope 'session-maybe' {phrase}");
+        assert!(should_recreate_after_fault(
+            "runtime-error",
+            &message,
+            "",
+            true
+        ));
+        // 内核真的没在跑时换窗口，只是把同一个连接失败重新渲染一遍。
+        assert!(!should_recreate_after_fault(
+            "runtime-error",
+            &message,
+            "",
+            false
+        ));
+        // 第一次撞上（页面会自己刷新）仍然不换——否则壳与页面各刷一次。
+        assert!(!should_recreate_after_fault(
+            "slot-assembly",
+            &message,
+            "",
+            true
+        ));
     }
 }
