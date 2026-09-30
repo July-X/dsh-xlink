@@ -10,6 +10,7 @@
     "allow-report-harness-fault",
     "allow-harness-reload-backoff",
     "allow-stash-harness-draft",
-    "allow-take-harness-draft"
+    "allow-take-harness-draft",
+    "allow-clear-harness-draft"
   ]
 }

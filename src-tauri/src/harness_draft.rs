@@ -21,7 +21,12 @@
 //!
 //! 只有输入框里那**一段纯文本**，外加当时的页面地址。不存会话内容（服务端有），
 //! 不存任何凭据。取回是**一次性**的：读走即删，所以几天后误开工作台不会凭空冒出一
-//! 段旧话。页面侧找不到可写的输入框时**不取**（`take` 是读+删，见下）。
+// 段旧话。页面侧找不到可写的输入框时**不取**（`take` 是读+删，见下）。
+//!
+//! 反过来也成立：**输入框空了就是作废**。用户把话发出去之后，编辑器被程序化清空，
+//! 那一刻盘上那一份就成了「已经送达却还躺在磁盘上的一句」，下一次打开工作台它会
+//! 自己坐回输入框。`stash` 收到空文本即删除，页面另有 `clear_harness_draft` 走
+//! 同样的语义——见 [`stash`]。
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -59,14 +64,21 @@ fn draft_file(family: &str, id: &str) -> std::path::PathBuf {
     crate::paths::instance_runtime_dir(family, id).join("harness-draft.json")
 }
 
-/// 记下草稿。**空文本不记**——那意味着「用户没有正在输入的东西」，写一个空文件
-/// 只会让恢复那侧多做一次无意义的判断。
+/// 记下草稿。**空文本 = 没有正在输入的东西** ⇒ 盘上那一份已经作废（多半是用户
+/// 刚把它发了出去），**清掉**。
+///
+/// 这一条不是洁癖，是 2026-09-30 用户明说的那条：「已经发送的消息，下次打开工作台
+/// 不应该再次填充在输入区域」。只写不清的话，磁盘上会一直留着那句已送达的话，而
+/// 恢复那侧看到的只是一段「新鲜的草稿」——它不知道那句话已经躺在会话里了。
+/// 同样的道理适用于**超长**文本：我们保管不了现在这段，就不该拿回一段更旧的、其实
+/// 早就不是用户正在写的东西。
 ///
 /// 写失败只落 stderr：**这条路径跑在页面重载的临界点上，绝不能反过来把重载搞挂。**
 pub fn stash(family: &str, id: &str, href: &str, text: &str) {
     // 判「有没有东西」用 trim，**存的是原文**。用户丢过一次的东西回来时再被悄悄
     // 改掉（哪怕只是首尾空白）是二次伤害；而 trim 后为空的那一串本来就不值得存。
     if text.trim().is_empty() || text.chars().count() > MAX_DRAFT_CHARS {
+        clear(family, id);
         return;
     }
     let draft = Draft {
@@ -107,7 +119,8 @@ pub fn take(family: &str, id: &str) -> Option<Draft> {
     Some(draft)
 }
 
-/// 显式丢弃草稿（输入框恢复成功后调用；用户把那段话发出去之后也会自然过期）。
+/// 显式丢弃草稿。三个调用方：输入框恢复成功后、页面报告「输入框空了」（多半是
+/// 用户把它发出去了）、以及 `stash` 收到空文本时的兜底。
 pub fn clear(family: &str, id: &str) {
     let _ = std::fs::remove_file(draft_file(family, id));
 }
@@ -168,6 +181,56 @@ mod tests {
 
         stash(KERNEL_FAMILY, "default", "http://x/", "");
         stash(KERNEL_FAMILY, "default", "http://x/", "   \n\t  ");
+        assert!(take(KERNEL_FAMILY, "default").is_none());
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// **已经发出去的那句话不会再被交回来。** 空输入不只是「不写」，它必须把之前
+    /// 存的那一份**删掉**——否则它会静静躺在盘上，等用户下次打开工作台时自己坐回
+    /// 输入框，而恢复那侧无从知道那句话已经在会话里了（2026-09-30 用户原话）。
+    #[test]
+    fn an_emptied_composer_drops_what_was_stashed() {
+        let home = temp_home("sent");
+        let _xlink = scoped_xlink_home(&home);
+        std::fs::create_dir_all(&home).expect("create home");
+
+        stash(KERNEL_FAMILY, "default", "http://x/", "已经发出去的一句话");
+        stash(KERNEL_FAMILY, "default", "http://x/", "");
+        assert!(
+            take(KERNEL_FAMILY, "default").is_none(),
+            "输入框一空就必须作废：留着就是下次打开工作台时的凭空冒出"
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 装不下的那段也不该把更旧的一段留下来顶替它：那份旧草稿已经不代表用户正在
+    /// 写的东西，恢复它等于写回一段错的话。
+    #[test]
+    fn an_oversized_input_drops_the_stale_draft() {
+        let home = temp_home("oversized");
+        let _xlink = scoped_xlink_home(&home);
+        std::fs::create_dir_all(&home).expect("create home");
+
+        stash(KERNEL_FAMILY, "default", "http://x/", "用户正在写的话");
+        let too_long = "长".repeat(MAX_DRAFT_CHARS + 1);
+        stash(KERNEL_FAMILY, "default", "http://x/", &too_long);
+        assert!(
+            take(KERNEL_FAMILY, "default").is_none(),
+            "存不下现在这段时，交回一段更旧的话比不交更糟"
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// `clear` 之后草稿真的不在盘上——它是「作废」那半边唯一的落点。
+    #[test]
+    fn clearing_removes_the_draft() {
+        let home = temp_home("clear");
+        let _xlink = scoped_xlink_home(&home);
+        std::fs::create_dir_all(&home).expect("create home");
+
+        stash(KERNEL_FAMILY, "default", "http://x/", "还没发出去的话");
+        clear(KERNEL_FAMILY, "default");
+        assert!(!draft_file(KERNEL_FAMILY, "default").exists());
         assert!(take(KERNEL_FAMILY, "default").is_none());
         std::fs::remove_dir_all(&home).ok();
     }

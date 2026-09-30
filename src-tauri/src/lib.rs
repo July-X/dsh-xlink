@@ -326,6 +326,7 @@ pub fn run() {
             harness_cmd::harness_reload_backoff,
             harness_cmd::stash_harness_draft,
             harness_cmd::take_harness_draft,
+            harness_cmd::clear_harness_draft,
             commands::report_harness_fault,
             commands::open_log_window,
             commands::open_official_chat,

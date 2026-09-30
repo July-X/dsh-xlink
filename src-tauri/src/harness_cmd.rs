@@ -107,6 +107,19 @@ pub fn stash_harness_draft(href: String, text: String) {
     crate::harness_draft::stash(family, id, &href, &text);
 }
 
+/// 页面报告「输入框空了」：把盘上那份草稿删掉。
+///
+/// 绝大多数时候那句话是**已经发出去**的（发送时编辑器被程序化清空，不派发
+/// `input`，页面自己派 `clear` 不现实）。不清的后果用户已经说过一次：下次打开
+/// 工作台，那条已发送的消息会自己坐回输入框。取值形态与「没在输入」时调用
+/// `stash_harness_draft` 相同——但**必须独立成一条命令**：清盘的理由不在文本里，
+/// 而在「本页曾经存过、现在没了」这个状态上。
+#[tauri::command]
+pub fn clear_harness_draft() {
+    let (family, id) = crate::instance::resolve_default();
+    crate::harness_draft::clear(family, id);
+}
+
 /// 页面起来后取走草稿（**读走即删**）。
 ///
 /// 调用方必须**先确认页面上有可写的输入框**再调它：取走即删是「草稿不变成垃圾」
