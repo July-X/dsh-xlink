@@ -118,11 +118,35 @@
     return String(el.innerText || el.textContent || '');
   }
 
-  /* 读当前正在输入的那段话。优先「用户正在敲的那个元素」——它一定是 composer；
-   * 页面刚打开、焦点还在别处时退回到「有内容的那个可编辑元素」。
+  /* composer 里的编辑器：`data-composer-card` 内那个；卡片不在（内核换版改了
+   * 结构）就取**最后一个**可见可编辑元素——composer 在页面底部，理由与
+   * `emptyEditable` 相同。 */
+  function composerEditable() {
+    var card = composerCard();
+    if (card && typeof card.querySelectorAll === 'function') {
+      var inside = card.querySelectorAll(
+        'textarea, [contenteditable="true"], [contenteditable=""]',
+      );
+      for (var i = 0; i < inside.length; i += 1) {
+        if (isVisible(inside[i])) return inside[i];
+      }
+    }
+    var list = editables();
+    return list.length ? list[list.length - 1] : null;
+  }
+
+  /* 读当前正在输入的那段话：composer 里的那个。
    *
-   * 聚焦元素**也要过可见性**：面板折叠之后那个输入框仍可能是 `activeElement`，
-   * 照着它存草稿就会把用户根本看不见的东西当成「正在输入的话」。 */
+   * 聚焦元素优先——它一定是 composer。**聚焦元素也要过可见性**：面板折叠之后
+   * 那个输入框仍可能是 `activeElement`，照着它存草稿就会把用户根本看不见的东西
+   * 当成「正在输入的话」。
+   *
+   * 焦点不在可编辑元素上时，这里一度退回到「所有可见可编辑元素里**文字最长的**
+   * 那个」，那是错的：`stashNow` 用 `currentText()` 是否为空来判断「这句话是不是
+   * 已经发出去了」，而页面上任何别的输入框（搜索框里残留的旧查询最常见）都会让
+   * 它恒为非空——于是 `clear_harness_draft` 永远不触发，盘上那份**已经发出去的**
+   * 草稿留到下次重启才被填回输入框，同时那一份还被覆盖成别的框里的字
+   * （2026-09-30 用户原话）。 */
   function currentText() {
     var active = document.activeElement;
     if (
@@ -132,13 +156,8 @@
     ) {
       return textOf(active);
     }
-    var list = editables();
-    var best = '';
-    for (var i = 0; i < list.length; i += 1) {
-      var text = textOf(list[i]);
-      if (text.length > best.length) best = text;
-    }
-    return best;
+    var el = composerEditable();
+    return el ? textOf(el) : '';
   }
 
   /* `__TAURI__` 在注入脚本执行的那一刻**不一定已经就绪**——`harness-health.js`
@@ -319,15 +338,16 @@
     return landed.indexOf(head) >= 0;
   }
 
-  /* 找一个**空着**的可编辑元素。取 DOM 顺序最后一个：composer 在页面底部，而页面
-   * 里若有别的（搜索框、标题输入），它们在上面。绝不覆盖已有内容——那可能是用户
-   * 回来之后自己新敲的。 */
+  /* 找那个**空着**的 composer。绝不覆盖已有内容——那可能是用户回来之后自己新敲的。
+   *
+   * 判据同样只认 composer（`composerEditable`），与 `currentText` 一致。此前这里
+   * 是「DOM 顺序里最后一个空的可编辑元素」：页面上若有个空的搜索框排在 composer
+   * **上方**（而 composer 里正有用户新敲的字），倒着找会先撞上那个空搜索框，于是
+   * 草稿被写进搜索框而不是对话输入框——与 `currentText` 那个「取最长的」是同一类
+   * 毛病的两面：都把「页面上的某个输入框」当成了「composer」。 */
   function emptyEditable() {
-    var list = editables();
-    for (var i = list.length - 1; i >= 0; i -= 1) {
-      if (!textOf(list[i]).trim()) return list[i];
-    }
-    return null;
+    var el = composerEditable();
+    return el && !textOf(el).trim() ? el : null;
   }
 
   /* 恢复分两步，顺序不能反：先在页面上找到能写的地方，**再**去壳里取草稿。

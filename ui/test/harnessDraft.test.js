@@ -237,7 +237,14 @@ function makeEnv({
     intervals.filter((t) => !t.cleared).forEach((t) => t.fn());
   };
 
-  return { handlers, invocations, execCalls, timers, editables, images, pastes, fireTimeouts, fireAll, tickIntervals };
+  /** 切换焦点。发送后内核清空编辑器并把焦点带走，此时 `currentText()` 走的是
+   *  「取所有可见可编辑元素里最长的那个」那条退路——而它正是「是否已发送」的
+   *  判据，所以这个切换是复现的前提，不是可选的装饰。 */
+  const setActive = (element) => {
+    fakeDocument.activeElement = element;
+  };
+
+  return { handlers, invocations, execCalls, timers, editables, images, pastes, setActive, fireTimeouts, fireAll, tickIntervals };
 }
 
 test('停止输入后把当前输入框内容交给壳', async () => {
@@ -681,4 +688,64 @@ test('取回来的草稿没有图（本次改动之前写下的）也能恢复',
 
   assert.equal(composer.innerText, '旧草稿');
   assert.equal(env.pastes.length, 0, '没有图就不该派发 paste');
+});
+
+// 2026-09-30 用户报：已经发出去的消息，重启工作台后又被填回输入框。
+//
+// 复现的关键是页面上**还有别的可见可编辑元素**。`currentText()` 在焦点不落在
+// 可编辑元素上时，退回「取所有可见可编辑元素里文字最长的那个」——而
+// `stashNow()` 判断「这句话是不是已经发出去了」用的正是它是否为空。页面上任何
+// 别的输入框（搜索框里残留的旧查询最常见）都会让它恒为非空，于是
+// `clear_harness_draft` 永远不触发，盘上那份已发送的草稿留到下次重启才被回填。
+test('发送后清盘：页面上还有别的可见输入框时也必须触发 clear_harness_draft', async () => {
+  // 搜索框：用户早先搜过，词还留在框里。composer 本身发送后是空的。
+  const search = makeEditable({ id: 'search', text: '上一次的搜索词' });
+  const composer = makeEditable({ id: 'composer', text: '' });
+  const env = makeEnv({ editables: [search, composer], active: composer });
+
+  // ① 用户在 composer 里打字，停顿 600ms → 落盘。
+  composer.innerText = '这条已经发出去了';
+  env.handlers['document:input']?.({ target: composer });
+  env.fireTimeouts();
+  assert.ok(
+    env.invocations.some((c) => c.command === 'stash_harness_draft'),
+    '前置：这条应当先被存下来',
+  );
+
+  // ② 发送：编辑器被程序化清空，焦点随之离开（内核不会派发 input 事件）。
+  composer.innerText = '';
+  env.setActive({ tagName: 'BODY' });
+
+  // ③ 监视的那一拍跑起来。
+  env.tickIntervals();
+
+  assert.ok(
+    env.invocations.some((c) => c.command === 'clear_harness_draft'),
+    '输入框空了而本页存过东西，必须清掉盘上那份——否则下次重启会把已发送的消息填回去',
+  );
+});
+
+// 恢复路径的同一根因：`emptyEditable` 过去取「DOM 顺序里最后一个空的可编辑
+// 元素」。页面上方若有个空搜索框、而 composer 里已经有用户回来之后新敲的字，倒着
+// 找会跳过非空的 composer、撞上那个空搜索框——草稿于是被写进搜索框，而不是那个
+// 要接住它的对话输入框。用户看到的则是「草稿不见了，对话框里也不是它」。
+test('composer 里已有内容时不恢复，且绝不上方那个空输入框', async () => {
+  const search = makeEditable({ id: 'search', text: '' });
+  const composer = makeEditable({ id: 'composer', text: '我自己刚敲的' });
+  const env = makeEnv({
+    editables: [search, composer],
+    active: composer,
+    takeResult: { href: 'http://127.0.0.1:3090/?session=abc', text: '之前没发出去的', images: [] },
+  });
+
+  env.fireAll();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(search.innerText, '', '绝不能把草稿写进上方那个空搜索框');
+  assert.equal(composer.innerText, '我自己刚敲的', '也不能覆盖用户自己刚敲的内容');
+  assert.ok(
+    env.invocations.some((c) => c.command === 'stash_harness_draft'),
+    '写不进去就把草稿放回去，恢复失败不能等于内容丢失',
+  );
 });
