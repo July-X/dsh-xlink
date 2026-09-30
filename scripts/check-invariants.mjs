@@ -34,7 +34,7 @@
  *      按钮恒置灰，而单测全绿（夹具是手写的 snake_case，没有真实响应穿过）。
  *  10. 生产代码里 `InstanceRecord::new` 的 id 实参不得是常量。
  *  11. 注册表那个共享的 `default_instance_id` 只准 `instance.rs` 指向具体实例。
- *  12. 内核树的三条变更动作各走各的停机守卫：装 / 删拦跨壳，切换不拦。
+ *  12. 内核树的三条变更动作只有**本壳**守卫能阻断，跨壳判据只提示不拦。
  *      （第 10、11 条的由来见下方注释，第 12 条见文件末尾的 ④。）
  */
 
@@ -757,24 +757,24 @@ function productionRust(text) {
     note('共享的 default_instance_id 无人读作决策依据');
   }
 
-  // ④ 内核树的三条变更动作各有各的停机守卫，走错一条就是误伤或漏防。
+  // ④ 内核树的三条变更动作：**只有本壳守卫能阻断**，跨壳一律「提示不拦」。
   //
-  // 跨壳停机守卫（`ensure_workbench_stopped`）拦的是「装 / 删内核那两万个文件的
-  // 事件风暴把另一个壳正在服务的工作台打死」——2026-09-29 删除未被使用的
-  // 0.1.7-rc.2、2026-09-30 dev 壳安装 0.2.0-rc.1，两次都把对方的工作台打成黑屏
-  // 且刷新不回来。而**切换版本够不着对方**：它写的是本壳树里的 `active.txt` 一个
-  // 文件，两棵安装树物理不相交（`desktop/` vs `desktop-dev/`），另一个壳的内核
-  // 只读它自己那棵树。
+  // 2026-09-30 这条走过一次弯路，值得把过程记在这里。三条动作一度共用一条
+  // `ensure_workbench_stopped`，它对**另一个壳**的工作台也硬拦，理由是「内核的
+  // 文件监视器会把事件风暴当成模块图变更，即使变化发生在它根本不服务的目录里」。
+  // **那个机制查不实**：装了 0.2.0-rc.2 的内核全树只有四处 chokidar（凭据文件、
+  // `fs.watch` 点名的 target 且 depth 0、profile 的 patch 文件、技能根），没有一处
+  // 盯内核安装树，`bootRev` 零命中。对得上的是**机器资源争用**：pnpm 硬链接 + node-gyp
+  // 打满 CPU 与磁盘 → 对方页面加载被拖过看门狗阈值 → 自动重载 → 撞上启动顺序竞态
+  // （release 内核那 10 秒一行输出都没有，它没被惊动，出事的是客户端）。
   //
-  // 2026-09-30 三条动作共用一条守卫，于是 release 壳开着工作台时 dev 壳切不了
-  // 内核版本，阻断文案里写的是「两万个文件的事件风暴」——而那一次只写了一个几字节
-  // 的指针文件。用户看到的是「dev、release 不是分家了吗」，而分家确实在：分的是
-  // **路径**，这条守卫拦的是**另一维**的共享资源（同一块盘、同一个 WebView2 渲染
-  // 进程池）。两条不矛盾，合起来才说得清。
+  // 概率性的资源争用配一条硬拦，代价是**废掉双壳并行**——而双壳并行正是 dev 壳
+  // 存在的理由。降优先级（`child_priority.rs`）才是对症的那一半。跨壳因此降级为
+  // `warn_other_shell_workbench`：照做，但把后果与出路说清楚。
   //
-  // 为什么写成机械检查而不是单测：`instance_kernel_running` 的**正向**判据要求真有
-  // 一个 dsh 内核在跑（pid 活体 + `command_is_kernel` 身份校验），单测里造不出来，
-  // 于是「谁走哪条」在测试里钉不住。这里能钉住，而且能在有人把它改回去时立刻报。
+  // **本壳那条守卫必须留着**：装 / 删改的是自己脚下那棵树，运行中的内核就在里面。
+  // 写这条检查是因为「谁走哪条」钉不住：`instance_kernel_running` 的正向判据要求
+  // 真有一个 dsh 内核在跑（pid 活体 + `command_is_kernel` 身份校验），单测造不出来。
   const kernelSrc = productionRust(readFileSync(join(srcDir, 'kernel.rs'), 'utf8'));
   const fnBody = (name) => {
     const lines = kernelSrc.split('\n');
@@ -785,38 +785,76 @@ function productionRust(text) {
     }
     return null;
   };
-  // 该查哪条守卫：动作 → 期望的守卫名。
-  const guardByAction = [
-    ['set_active', 'ensure_own_shell_stopped'],
-    ['install_version', 'ensure_workbench_stopped'],
-    ['uninstall', 'ensure_workbench_stopped'],
-  ];
   const guardMisses = [];
-  for (const [action, expected] of guardByAction) {
+  // ① 三条动作都必须过本壳守卫。
+  for (const action of ['set_active', 'install_version', 'uninstall']) {
     const body = fnBody(action);
     if (body === null) {
       guardMisses.push(`kernel.rs 里找不到 ${action} —— 守卫的去向就无从检查了`);
       continue;
     }
-    const wrong = expected === 'ensure_workbench_stopped' ? 'ensure_own_shell_stopped' : 'ensure_workbench_stopped';
-    if (body.includes(expected)) continue;
+    if (!body.includes('ensure_own_shell_stopped(')) {
+      guardMisses.push(`kernel.rs 的 ${action} 没有调用 ensure_own_shell_stopped —— 本壳工作台运行期间必须拦住`);
+    }
+  }
+  // ② 旧的跨壳硬拦入口不得复活（名字一旦回来，就有人会再挂一个 Err 上去）。
+  //    只查 kernel.rs：`patches::ensure_workbench_stopped` 是**另一个**同名函数
+  //    （补丁应用 / 撤销的停机守卫），与跨壳判据无关，别把它算进来。
+  if (kernelSrc.includes('ensure_workbench_stopped(')) {
+    guardMisses.push(`kernel.rs 又出现了 ensure_workbench_stopped —— 跨壳判据已降级为提示，硬拦入口不该复活`);
+  }
+  // ③ 跨壳判据的调用点只允许在 kernel.rs 的提示与状态两处，且**不得**出现在
+  //    任何会 return Err 的路径上——这正是「提示不拦」的可查形式。定义行本身
+  //    （`pub fn workbench_running_in_other_shell(`）不算调用点。
+  const otherShellCallSites = [];
+  for (const file of rustFiles) {
+    const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
+    lines.forEach((line, index) => {
+      if (!line.includes('workbench_running_in_other_shell(')) return;
+      if (/^\s*(pub(\(crate\))?\s+)?fn\s+workbench_running_in_other_shell\b/.test(line)) return;
+      otherShellCallSites.push(`${file}:${index + 1}`);
+    });
+  }
+  const unexpected = otherShellCallSites.filter((where) => !where.startsWith('kernel.rs:'));
+  if (unexpected.length > 0) {
     guardMisses.push(
-      `kernel.rs 的 ${action} 走的是${body.includes(wrong) ? '另一条' : '（两者都不是）'}` +
-        `停机守卫——期望 ${expected}`,
+      `${unexpected.join('、')} 调用了 workbench_running_in_other_shell —— 跨壳判据只该出现在 ` +
+        'kernel.rs 的 warn_other_shell_workbench（提示）与 status（让 UI 在点之前看见）两处',
+    );
+  }
+  if (otherShellCallSites.length !== 2) {
+    guardMisses.push(
+      `workbench_running_in_other_shell 在生产代码里出现了 ${otherShellCallSites.length} 个调用点` +
+        '（期望 2：warn_other_shell_workbench 与 status）—— 多出来的那个八成是在某个 ' +
+        'Result 路径上把它接成了阻断，那正是要挡回来的改法',
+    );
+  }
+  // ④ 跨壳提示的**返回类型必须是无**。这是唯一挡得住「把提示接成一次拒绝」的
+  //    形式：签名返回 `()`，调用方就没有 `?` 可接；要新增跨壳检查点只能新增调用
+  //    点，而那由 ③ 计数。**只按名字查是不够的**——第一版检查就栽在这里：它只禁
+  //    `ensure_workbench_stopped` 这个名字，于是「把 warn 的返回值接成 Err」一路
+  //    畅通，检查始终绿着。
+  const warnSignature = /fn\s+warn_other_shell_workbench[\s\S]*?\{/.exec(kernelSrc);
+  if (warnSignature === null) {
+    guardMisses.push('kernel.rs 里找不到 warn_other_shell_workbench —— 跨壳提示的落点没了');
+  } else if (warnSignature[0].includes('->')) {
+    guardMisses.push(
+      `warn_other_shell_workbench 的返回类型变成了 ${warnSignature[0].split('->')[1].split('{')[0].trim()}` +
+        ' —— 跨壳判据降级为提示后就该返回无，返回一个值等于把「接成阻断」的路重新打开',
     );
   }
   if (guardMisses.length > 0) {
     for (const message of guardMisses) {
       fail(
         'kernel-stop-guard-scope',
-        `${message}。装 / 删内核要写两万个文件，跨壳守卫必须拦（` +
-          'workbench_running_in_other_shell），否则会把另一个壳的工作台打成黑屏；' +
-          '切换版本只写本壳树的 active.txt 一个文件，跨壳守卫拦它纯属误伤——' +
-          '两个壳的安装树物理不相交，另一个壳够不着它。',
+        `${message}。本壳守卫（ensure_own_shell_stopped）三条动作都要过——装 / 删改的是` +
+          '自己脚下那棵树，运行中的内核就在里面。跨壳判据只负责**提示**：另一个壳可能因' +
+          '机器资源争用而卡住或黑屏，但两个壳的安装树物理不相交、不碰数据，恢复只要在' +
+          '那个壳点「刷新工作台」——为它硬拦住整个动作，等于废掉双壳并行。',
       );
     }
   } else {
-    note('内核树三条动作各走各的停机守卫：装 / 删拦跨壳，切换不拦');
+    note('内核树只有本壳守卫能阻断，跨壳判据只提示不拦（双壳并行）');
   }
 }
 

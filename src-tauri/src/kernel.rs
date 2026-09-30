@@ -79,6 +79,20 @@ pub struct InstalledVersion {
     pub size_bytes: u64,
 }
 
+/// 另一个壳正在服务的工作台。
+///
+/// **只报不拦**：它的存在只是让版本页在用户点之前就把后果说清楚（见
+/// [`warn_other_shell_workbench`]）。判据在
+/// [`crate::instance::workbench_running_in_other_shell`]。
+#[derive(Debug, Clone, Serialize)]
+pub struct OtherShellWorkbench {
+    /// 占用方的壳模式（`release` / `dev`）。
+    pub shell: String,
+    pub instance: String,
+    pub pid: u32,
+    pub port: Option<u16>,
+}
+
 /// UI 在每次状态刷新时渲染的快照。
 #[derive(Debug, Clone, Serialize)]
 pub struct KernelStatus {
@@ -95,6 +109,10 @@ pub struct KernelStatus {
     /// 无声回退到默认值，不提示的话用户只会看到"工作台跑到别的端口去了"。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settings_warning: Option<String>,
+    /// 另一个壳的工作台。非空时 UI 必须显示它：装 / 删内核不因此被拒，但后果
+    /// 要在点之前就说清楚——对面可能卡住或黑屏，而恢复只要点一下「刷新工作台」。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub other_shell_workbench: Option<OtherShellWorkbench>,
 }
 
 /// 壳的元数据根目录，按以下优先级解析：
@@ -502,6 +520,14 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
         // settings 可能已经是"回退后的默认值"。
         settings_warning: crate::settings::load_checked_for_shell(crate::settings::current_mode())
             .1,
+        other_shell_workbench: instance::workbench_running_in_other_shell().map(
+            |(mode, id, record)| OtherShellWorkbench {
+                shell: mode.to_string(),
+                instance: id,
+                pid: record.pid,
+                port: record.port,
+            },
+        ),
     }
 }
 
@@ -525,35 +551,33 @@ pub(crate) fn ensure_own_shell_stopped(data_dir: &Path, action: &str) -> Result<
     Ok(())
 }
 
-/// 在 [`ensure_own_shell_stopped`] 之上再加一道跨壳判据。
+/// 在 [`ensure_own_shell_stopped`] 之上加一道**不阻断**的跨壳提示。
 ///
-/// **本壳没有工作台还不够**：另一个壳的工作台同样扛不住装包事件风暴（实测见
-/// [`crate::instance::workbench_running_in_other_shell`]）。这道门以前只看本壳的
-/// `data_dir` 与配置端口，于是 dev 壳装内核时 release 壳的工作台黑屏，而两个壳
-/// 各自都以为问题与自己无关——2026-09-30 的现场就是这样：dev 装内核的 10 秒里
-/// release 的工作台变黑且刷新不回来，壳这边一行相关日志都没留下。
+/// 另一个壳的工作台在跑时装 / 删内核**照做**，只把后果与出路报一遍（进度面板 +
+/// 「查看日志」）。为什么不硬拦：那个「跨壳文件监视器互相惊动」的理由查不实
+/// ——内核全树没有一处 chokidar 盯内核安装树，`bootRev` 零命中；对得上的是**机器
+/// 资源争用**（pnpm + node-gyp 打满 CPU 与磁盘 → 对方页面加载被拖过看门狗阈值 →
+/// 自动重载 → 撞上启动顺序竞态），而它已经有对症的另一半（`child_priority.rs`
+/// 降优先级）。为概率性争用废掉双壳并行，比例不对。完整论证与实测见
+/// [`crate::instance::other_shell_workbench_notice`] 的文档注释。
 ///
-/// **只有装 / 删走这一条，切换不走**（`set_active` 用
-/// [`ensure_own_shell_stopped`]）。理由不是「切换风险小」，是**够不着**：装 / 删会把
-/// 两万个文件写进磁盘事件风暴，而内核的文件监视器把「一个它根本不服务的目录里的
-/// 变化」也当成模块图变更；切换版本写的是本壳树里的 `active.txt` 一个文件，两棵
-/// 安装树物理不相交（`desktop/` vs `desktop-dev/`），另一个壳的内核只读它自己那棵
-/// 树——dev 壳改这个指针，release 侧的 stat / watch 上留不下任何痕迹。
-/// 2026-09-30 用户侧实测的反面：release 壳开着工作台时 dev 壳切不了内核版本，
-/// 阻断理由写的是「两万个文件的事件风暴」，而那一次只写了一个几字节的指针文件。
+/// 写日志而不是只提示：这条提示**发生在一次两万个文件的写盘风暴里**，用户那时
+/// 正在看进度面板；不出现在日志里就等于没说（AGENTS.md「用户看得见后果的后台
+/// 动作必须落盘」）。
 ///
-/// 与壳的分家不矛盾：那一条分的是**路径**（树、注册表、插件中央库、端口、实例 id），
-/// 这一条拦的是**另一维**的共享资源——同一块盘、同一个 WebView2 渲染进程池。
-/// `scripts/check-invariants.mjs` 把「谁走哪条」钉成机械检查。
-pub(crate) fn ensure_workbench_stopped(data_dir: &Path, action: &str) -> Result<(), AppError> {
-    ensure_own_shell_stopped(data_dir, action)?;
-    if let Some((mode, id, record)) = instance::workbench_running_in_other_shell() {
-        return Err(AppError::Kernel(instance::other_shell_workbench_message(
-            mode, &id, &record, action,
-        )));
-    }
-    Ok(())
+/// **返回 `()` 是刻意的**：`Result` / `Option` 都能被调用方接成一次拒绝，而这条
+/// 策略的正确形态是「没有 `?` 可接」——跨壳判据一旦能变成阻断，代价就是废掉双壳
+/// 并行。要新增跨壳检查点，只能新增 `workbench_running_in_other_shell` 的调用点，
+/// 那由 `scripts/check-invariants.mjs` 第 12 项挡住。
+pub(crate) fn warn_other_shell_workbench(action: &str, on_notice: &mut dyn FnMut(&str)) {
+    let Some((mode, id, record)) = instance::workbench_running_in_other_shell() else {
+        return;
+    };
+    let notice = instance::other_shell_workbench_notice(mode, &id, &record, action);
+    on_notice(&notice);
+    crate::shell_events::record("kernel-other-shell", &notice);
 }
+
 /// 切换 `start` 将运行的已安装版本。只有工作台已停止时才能切换，避免
 /// 运行中的服务与 `active.txt` 指向不同版本。
 pub fn set_active(data_dir: &Path, version: &str) -> Result<(), AppError> {
@@ -569,20 +593,25 @@ pub fn set_active(data_dir: &Path, version: &str) -> Result<(), AppError> {
     write_active(data_dir, Some(version))
 }
 
-/// 删除一个已安装的版本。若该版本是当前激活版本，调用方需先停止内核。
+/// 删除一个已装版本。若该版本是当前激活版本，调用方需先停止内核。
 ///
-/// **工作台运行期间一律拒绝**，与 [`set_active`] 同一条纪律。删一个「不用」的
+/// **本壳工作台运行期间一律拒绝**，与 [`set_active`] 同一条纪律。删一个「不用」的
 /// 版本看着与运行中的内核无关，实则被删的目录就在运行中内核的安装根底下：那是
 /// 一个 450 MB、几万个文件的 `remove_dir_all`。两个壳指向同一实例时更是可能删到
 /// **另一个壳正在服务**的那一份——所以守卫放在这里而不是命令层，任何 caller 都
-/// 绕不过去。
+/// 绕不过去。**另一个壳的工作台不阻断**（只提示后果与出路，见
+/// [`warn_other_shell_workbench`]）。
 pub fn uninstall(data_dir: &Path, version: &str) -> Result<(), AppError> {
     if read_active(data_dir).as_deref() == Some(version) {
         return Err(AppError::Kernel(format!(
             "正在使用版本 {version}，请先停止并切换到其他版本"
         )));
     }
-    ensure_workbench_stopped(data_dir, "删除内核版本")?;
+    ensure_own_shell_stopped(data_dir, "删除内核版本")?;
+    // 删除没有进度通道（签名早于进度面板），提示因此只落日志；点之前的那一份
+    // 由版本页的告警承担（`KernelStatus.other_shell_workbench`）。
+    let mut to_log_only = |_: &str| {};
+    warn_other_shell_workbench("删除内核版本", &mut to_log_only);
     let dir = kernel_dir(data_dir, version);
     if !dir.exists() {
         return Err(AppError::Kernel(format!("版本 {version} 未安装")));
@@ -667,7 +696,12 @@ pub fn install_version(
     version: &str,
     on_progress: impl FnMut(&str),
 ) -> Result<(), AppError> {
-    ensure_workbench_stopped(data_dir, "安装内核版本")?;
+    ensure_own_shell_stopped(data_dir, "安装内核版本")?;
+    // 另一个壳的工作台在跑：**照装**，但把后果与出路说清楚（进度面板 + 日志）。
+    // 用户正在等一次几分钟的装包，最需要知道的就是「对面可能会卡，黑屏了点
+    // 刷新工作台能回来」。
+    let mut on_progress = on_progress;
+    warn_other_shell_workbench("安装内核版本", &mut on_progress);
     let dir = kernel_dir(data_dir, version);
     // 全新安装失败时把目录整个删掉。
     //
