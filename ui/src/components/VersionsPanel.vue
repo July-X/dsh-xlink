@@ -24,20 +24,16 @@ import VersionPluginsTip from './VersionPluginsTip.vue';
 const KERNEL_RELEASES_URL = 'https://github.com/deepseek-ai/deepseek-harness/releases';
 const kernel = computed(() => store.view && store.view.kernel);
 // 后端 `KernelStatus.other_shell_workbench`（该结构体是 snake_case 序列化，
-// 与 settings_warning 同一个约定）。
+// 与 settings_warning 同一个约定）。`notice` 是后端生成的完整文案——横幅只
+// 渲染它，不再自己拼：这份文案的真相源在 `instance::other_shell_workbench_notice`，
+// 措辞契约由 Rust 侧测试钉住。旧版后端没有这个字段时横幅整体隐藏（空串），
+// 而不是渲染一个空框。
 const otherShellWorkbench = computed(
   () => (kernel.value && kernel.value.other_shell_workbench) || null
 );
 const otherShellWorkbenchText = computed(() => {
   const other = otherShellWorkbench.value;
-  if (!other) return '';
-  const port = other.port ? `、端口 ${other.port}` : '';
-  return (
-    `另一个 dsh-xlink（${other.shell} 壳）的工作台正在运行（实例 ${other.instance}` +
-    `、进程 ${other.pid}${port}）。装 / 删内核仍可继续：它要写入两万个文件并编译原生模块，` +
-    '机器最忙的时候那个工作台可能短暂卡住、甚至黑屏。两个壳的安装树不相交，不会有数据' +
-    '互相影响；卡住或黑屏了，在那个壳的概览页点「刷新工作台」即可恢复。'
-  );
+  return (other && other.notice) || '';
 });
 
 function openKernelReleases() {
@@ -117,11 +113,11 @@ onMounted(() => {
       <el-alert v-if="store.settingsWarning" :title="store.settingsWarning" type="warning" :closable="false" show-icon />
 
       <!-- 另一个壳的工作台在跑：**不拦**装 / 删内核（双壳并行是壳存在的理由），
-           但后果必须在点之前说清楚——对面可能卡住或黑屏，而恢复只要点一下
-           「刷新工作台」。文案不写「不能」，也不写「请先去关掉」：那会把用户
-           送去关一个他正在用的工作台。 -->
+           但后果必须在点之前说清楚。文案真相源在 Rust（other_shell_workbench_notice，
+           措辞契约有测试钉住），这里只渲染 `notice`；旧版后端没有该字段时整条
+           隐藏（空串），不渲染空框。 -->
       <el-alert
-        v-if="otherShellWorkbench"
+        v-if="otherShellWorkbenchText"
         :title="otherShellWorkbenchText"
         type="warning"
         :closable="false"

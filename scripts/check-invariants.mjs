@@ -1124,6 +1124,44 @@ function productionRust(text) {
       } else {
         note('内核安装用 copy 落盘：树与 pnpm store 不共享 inode');
       }
+
+      // ③之半：跨壳横幅文案**单源**。真相源是 instance.rs 的
+      //    other_shell_workbench_notice（措辞契约有测试钉住）；状态映射必须从它
+      //    取文案，VersionsPanel.vue 只许渲染 `notice`、不许再自己拼。2026-09-30
+      //    下午用户截图里的横幅就是这么漂出来的：机制定案后 Rust 文案改对了，
+      //    Vue 里那份自己拼的旧文案（「机器最忙…甚至黑屏」）还挂在用户脸上——
+      //    与「数据目录不许在前端写死」同一类病：前端那份不参与编译，错了没人报。
+      const vueSrc = readFileSync(
+        join(root, 'ui', 'src', 'components', 'VersionsPanel.vue'),
+        'utf8',
+      );
+      const singleSourceMisses = [];
+      if (!kernelInstallSrc.includes('other_shell_workbench_notice(')) {
+        singleSourceMisses.push(
+          'kernel.rs 里没有 other_shell_workbench_notice( 调用——横幅文案的真相源断了，' +
+            '状态映射退回自己拼字符串就会再漂移出一份旧机制的说法',
+        );
+      }
+      if (!vueSrc.includes('other.notice')) {
+        singleSourceMisses.push(
+          'VersionsPanel.vue 没有渲染 other.notice——横幅要么没接上后端文案，' +
+            '要么又在本地拼了一份（必然漂移）',
+        );
+      }
+      for (const stale of ['仍可继续', '两万个文件并编译原生模块']) {
+        if (vueSrc.includes(stale)) {
+          singleSourceMisses.push(
+            `VersionsPanel.vue 又出现了自拼文案（「${stale}」）——横幅只许渲染 other.notice`,
+          );
+        }
+      }
+      if (singleSourceMisses.length > 0) {
+        for (const message of singleSourceMisses) {
+          fail('cross-shell-notice-single-source', message);
+        }
+      } else {
+        note('跨壳横幅文案单源：Rust 生成，前端只渲染 notice');
+      }
     }
   }
 }

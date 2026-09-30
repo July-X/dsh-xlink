@@ -84,6 +84,12 @@ pub struct InstalledVersion {
 /// **只报不拦**：它的存在只是让版本页在用户点之前就把后果说清楚（见
 /// [`warn_other_shell_workbench`]）。判据在
 /// [`crate::instance::workbench_running_in_other_shell`]。
+///
+/// `notice` 是**给版本页横幅的完整文案**，由 [`crate::instance::other_shell_workbench_notice`]
+/// 生成。文案只住在这一处（有测试钉住措辞契约），前端只渲染不再自己拼——
+/// 2026-09-30 下午的教训：机制定案后 Rust 侧的文案改对了，VersionsPanel.vue
+/// 里还留着一份自己拼的旧文案，两处各写一份必然漂移（与「数据目录不许在
+/// 前端写死」是同一类病，症状也一样：前端那份不参与编译，错了没人报）。
 #[derive(Debug, Clone, Serialize)]
 pub struct OtherShellWorkbench {
     /// 占用方的壳模式（`release` / `dev`）。
@@ -91,6 +97,8 @@ pub struct OtherShellWorkbench {
     pub instance: String,
     pub pid: u32,
     pub port: Option<u16>,
+    /// 版本页横幅的完整文案（含占用方信息、真实机制与恢复出路）。
+    pub notice: String,
 }
 
 /// UI 在每次状态刷新时渲染的快照。
@@ -523,9 +531,12 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
         other_shell_workbench: instance::workbench_running_in_other_shell().map(
             |(mode, id, record)| OtherShellWorkbench {
                 shell: mode.to_string(),
-                instance: id,
+                instance: id.clone(),
                 pid: record.pid,
                 port: record.port,
+                // 横幅文案与进度面板 / 日志用的是**同一条**来源：机制定案改文案时
+                // 只改 instance.rs 一处，版本页跟着变（前端不再自己拼）。
+                notice: instance::other_shell_workbench_notice(mode, &id, &record, "装 / 删内核"),
             },
         ),
     }
@@ -2437,6 +2448,10 @@ mod tests {
     /// 不会报错，症状是**告警静默不出现**（读到 `undefined`，`v-if` 直接跳过）。
     /// `check-invariants` 第 9 项只覆盖 `rename_all = "camelCase"` 的那批结构体，
     /// 盖不到这里，所以在这儿钉。
+    ///
+    /// `notice` 额外钉一层：它是**横幅文案的唯一真相源**（前端只渲染、不再自己
+    /// 拼）。2026-09-30 下午实测过漂移的代价——机制定案后 Rust 文案改对了，
+    /// Vue 里那份自己拼的旧文案还挂在用户脸上。
     #[test]
     fn other_shell_workbench_field_name_matches_what_the_panel_reads() {
         let status = KernelStatus {
@@ -2452,6 +2467,7 @@ mod tests {
                 instance: "default".into(),
                 pid: 37652,
                 port: Some(3090),
+                notice: "测试文案".into(),
             }),
         };
         let json = serde_json::to_value(&status).expect("KernelStatus should serialize");
@@ -2462,6 +2478,10 @@ mod tests {
         assert_eq!(other["instance"], "default");
         assert_eq!(other["pid"], 37652);
         assert_eq!(other["port"], 3090);
+        assert_eq!(
+            other["notice"], "测试文案",
+            "前端横幅渲染的就是这个键，改名 = 告警静默消失：{json}"
+        );
         // 反向：camelCase 那个键**不该**存在。哪天给这个结构体加了 rename_all
         // 而前端没跟着改，症状正是上面那句「告警静默不出现」——那正是要拦的方向。
         assert!(
