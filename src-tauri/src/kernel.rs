@@ -505,19 +505,16 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
     }
 }
 
-/// 检查工作台是否已经停止。活动版本切换会改变下一次启动使用的内核；
+/// 检查**本壳**的工作台是否已经停止。活动版本切换会改变下一次启动使用的内核；
 /// 工作台启动或运行期间必须先停止，避免当前服务与 active 指针指向不同版本。
+///
+/// 这条与另一个壳无关，三条内核树动作（装 / 删 / 切）都要过：它维护的是本壳内部
+/// 「运行中的服务与 `active.txt` 指向同一个版本」这条不变量。
 ///
 /// `action` 填进提示语（「切换内核」/「删除内核版本」）——共用一条守卫但不能共用
 /// 一句话：对着一个正在删除的按钮说「请先停止工作台后再切换内核」会让用户以为自己
 /// 点错了地方。
-///
-/// **本壳没有工作台还不够**：另一个壳的工作台同样扛不住装包事件风暴（实测见
-/// [`crate::instance::workbench_running_in_other_shell`]）。这道门以前只看本壳的
-/// `data_dir` 与配置端口，于是 dev 壳装内核时 release 壳的工作台黑屏，而两个壳
-/// 各自都以为问题与自己无关——2026-09-30 的现场就是这样：dev 装内核的 10 秒里
-/// release 的工作台变黑且刷新不回来，壳这边一行相关日志都没留下。
-pub(crate) fn ensure_workbench_stopped(data_dir: &Path, action: &str) -> Result<(), AppError> {
+pub(crate) fn ensure_own_shell_stopped(data_dir: &Path, action: &str) -> Result<(), AppError> {
     let settings = settings::load_for_shell(settings::current_mode());
     if workbench_running(data_dir, &settings) {
         return Err(AppError::Kernel(format!(
@@ -525,6 +522,31 @@ pub(crate) fn ensure_workbench_stopped(data_dir: &Path, action: &str) -> Result<
             settings.port
         )));
     }
+    Ok(())
+}
+
+/// 在 [`ensure_own_shell_stopped`] 之上再加一道跨壳判据。
+///
+/// **本壳没有工作台还不够**：另一个壳的工作台同样扛不住装包事件风暴（实测见
+/// [`crate::instance::workbench_running_in_other_shell`]）。这道门以前只看本壳的
+/// `data_dir` 与配置端口，于是 dev 壳装内核时 release 壳的工作台黑屏，而两个壳
+/// 各自都以为问题与自己无关——2026-09-30 的现场就是这样：dev 装内核的 10 秒里
+/// release 的工作台变黑且刷新不回来，壳这边一行相关日志都没留下。
+///
+/// **只有装 / 删走这一条，切换不走**（`set_active` 用
+/// [`ensure_own_shell_stopped`]）。理由不是「切换风险小」，是**够不着**：装 / 删会把
+/// 两万个文件写进磁盘事件风暴，而内核的文件监视器把「一个它根本不服务的目录里的
+/// 变化」也当成模块图变更；切换版本写的是本壳树里的 `active.txt` 一个文件，两棵
+/// 安装树物理不相交（`desktop/` vs `desktop-dev/`），另一个壳的内核只读它自己那棵
+/// 树——dev 壳改这个指针，release 侧的 stat / watch 上留不下任何痕迹。
+/// 2026-09-30 用户侧实测的反面：release 壳开着工作台时 dev 壳切不了内核版本，
+/// 阻断理由写的是「两万个文件的事件风暴」，而那一次只写了一个几字节的指针文件。
+///
+/// 与壳的分家不矛盾：那一条分的是**路径**（树、注册表、插件中央库、端口、实例 id），
+/// 这一条拦的是**另一维**的共享资源——同一块盘、同一个 WebView2 渲染进程池。
+/// `scripts/check-invariants.mjs` 把「谁走哪条」钉成机械检查。
+pub(crate) fn ensure_workbench_stopped(data_dir: &Path, action: &str) -> Result<(), AppError> {
+    ensure_own_shell_stopped(data_dir, action)?;
     if let Some((mode, id, record)) = instance::workbench_running_in_other_shell() {
         return Err(AppError::Kernel(instance::other_shell_workbench_message(
             mode, &id, &record, action,
@@ -535,7 +557,10 @@ pub(crate) fn ensure_workbench_stopped(data_dir: &Path, action: &str) -> Result<
 /// 切换 `start` 将运行的已安装版本。只有工作台已停止时才能切换，避免
 /// 运行中的服务与 `active.txt` 指向不同版本。
 pub fn set_active(data_dir: &Path, version: &str) -> Result<(), AppError> {
-    ensure_workbench_stopped(data_dir, "切换内核")?;
+    // 只过本壳那条，不走跨壳判据：两个壳的安装树物理不相交，切版本写的是本壳
+    // 树里的 `active.txt` 一个文件，另一个壳的工作台够不着它。理由与事故见
+    // `ensure_workbench_stopped` 的文档注释。
+    ensure_own_shell_stopped(data_dir, "切换内核")?;
     if !kernel_dir(data_dir, version).join(KERNEL_BIN_REL).is_file() {
         return Err(AppError::Kernel(format!(
             "版本 {version} 未安装或安装不完整"
