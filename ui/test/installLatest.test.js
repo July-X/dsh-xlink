@@ -81,7 +81,7 @@ globalThis.cancelAnimationFrame = () => {};
 test('latest release install keeps one exclusive lease across fetch and install', async () => {
   const [{ installLatestRelease }, { withExclusive }] = await Promise.all([
     import('../src/store.js'),
-    import('../src/loading.js'),
+    import('../src/shell/loading.js'),
   ]);
 
   const run = installLatestRelease();

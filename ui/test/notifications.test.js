@@ -103,7 +103,7 @@ globalThis.requestAnimationFrame = (callback) => {
 globalThis.cancelAnimationFrame = () => {};
 
 test('状态规范化：字段缺失回落默认值', async () => {
-  const { normalizeNotificationStatus } = await import('../src/notifications.js');
+  const { normalizeNotificationStatus } = await import('../src/incidents/notifications.js');
 
   assert.deepEqual(normalizeNotificationStatus(null), {
     enabled: true,
@@ -138,7 +138,7 @@ test('状态规范化：字段缺失回落默认值', async () => {
 });
 
 test('状态规范化：完成记录裁剪到 8 条并补齐字段', async () => {
-  const { normalizeNotificationStatus } = await import('../src/notifications.js');
+  const { normalizeNotificationStatus } = await import('../src/incidents/notifications.js');
 
   const items = Array.from({ length: 10 }, (_, i) => ({
     sessionId: 's' + i,
@@ -163,7 +163,7 @@ test('状态规范化：完成记录裁剪到 8 条并补齐字段', async () =>
 });
 
 test('refreshNotificationStatus 读取状态并写进 store', async () => {
-  const { notificationStore, refreshNotificationStatus } = await import('../src/notifications.js');
+  const { notificationStore, refreshNotificationStatus } = await import('../src/incidents/notifications.js');
 
   nextStatus = statusPayload({ unread: 3, enabled: false, platform: 'windows' });
   await refreshNotificationStatus();
@@ -177,7 +177,7 @@ test('refreshNotificationStatus 读取状态并写进 store', async () => {
 
 test('保存开关把三个 camelCase 字段一起传给 notification_save_settings', async () => {
   const { notificationStore, refreshNotificationStatus, saveNotificationSettings } = await import(
-    '../src/notifications.js'
+    '../src/incidents/notifications.js'
   );
 
   nextStatus = statusPayload({ enabled: true, notifyAwayOnly: true, sound: true });
@@ -200,7 +200,7 @@ test('保存开关把三个 camelCase 字段一起传给 notification_save_setti
 
 test('保存失败时开关回滚，不停在没生效的状态', async () => {
   const { notificationStore, refreshNotificationStatus, saveNotificationSettings } = await import(
-    '../src/notifications.js'
+    '../src/incidents/notifications.js'
   );
 
   nextStatus = statusPayload({ enabled: true, notifyAwayOnly: true, sound: true });
@@ -214,7 +214,7 @@ test('保存失败时开关回滚，不停在没生效的状态', async () => {
 
 test('markNotificationsRead 后未读归零', async () => {
   const { notificationStore, refreshNotificationStatus, markNotificationsRead } = await import(
-    '../src/notifications.js'
+    '../src/incidents/notifications.js'
   );
 
   nextStatus = statusPayload({ unread: 5 });
@@ -235,7 +235,7 @@ test('markNotificationsRead 后未读归零', async () => {
 });
 
 test('模拟任务完成：命令成功但 lastError 非空按失败处理', async () => {
-  const { notificationStore, sendTestNotification } = await import('../src/notifications.js');
+  const { notificationStore, sendTestNotification } = await import('../src/incidents/notifications.js');
 
   nextStatus = statusPayload({
     lastError: '系统拒绝了通知权限，请在「系统设置 - 通知」里允许 dsh-xlink 后重试',
@@ -251,7 +251,7 @@ test('模拟任务完成：命令成功但 lastError 非空按失败处理', asy
 
 test('试听提示音：只调播放命令，不动未读与状态', async () => {
   const { notificationStore, refreshNotificationStatus, testNotificationSound } = await import(
-    '../src/notifications.js'
+    '../src/incidents/notifications.js'
   );
 
   nextStatus = statusPayload({ unread: 2, sound: true });
@@ -268,7 +268,7 @@ test('试听提示音：只调播放命令，不动未读与状态', async () =>
 });
 
 test('环境限制说明（未打包构建）被规范化成只读提示', async () => {
-  const { notificationStore, refreshNotificationStatus } = await import('../src/notifications.js');
+  const { notificationStore, refreshNotificationStatus } = await import('../src/incidents/notifications.js');
 
   nextStatus = statusPayload({ environmentNote: '  当前是未打包的开发构建  ' });
   await refreshNotificationStatus();
@@ -280,7 +280,7 @@ test('环境限制说明（未打包构建）被规范化成只读提示', async
 });
 
 test('读取失败时静默保留旧值，手动刷新才提示', async () => {
-  const { notificationStore, refreshNotificationStatus } = await import('../src/notifications.js');
+  const { notificationStore, refreshNotificationStatus } = await import('../src/incidents/notifications.js');
 
   nextStatus = statusPayload({ unread: 2, watching: true });
   await refreshNotificationStatus();
@@ -298,7 +298,7 @@ test('设置页的 loading key 与模块内登记的一致', async () => {
   // key 写错时按钮永远不会转圈，而且没有任何报错——这类"看起来点了没反应"
   // 只能靠文本断言钉住（与 updateChecks.test.js 钉 notify.js 的做法一致）。
   const fs = await import('node:fs');
-  const panel = fs.readFileSync('ui/src/components/SettingsPanel.vue', 'utf8');
+  const panel = fs.readFileSync('ui/src/shell/SettingsPanel.vue', 'utf8');
   for (const key of [
     // notificationRefresh 随 cd780b5「通知卡精简」移除：面板不再有手动刷新按钮。
     'notificationMarkRead',
@@ -311,7 +311,7 @@ test('设置页的 loading key 与模块内登记的一致', async () => {
 });
 
 test('完成记录带最近一轮对话（问 / 答），缺失字段回落空串', async () => {
-  const { normalizeNotificationStatus } = await import('../src/notifications.js');
+  const { normalizeNotificationStatus } = await import('../src/incidents/notifications.js');
   const status = normalizeNotificationStatus({
     items: [
       {
@@ -334,7 +334,7 @@ test('完成记录带最近一轮对话（问 / 答），缺失字段回落空�
 });
 
 test('formatNotifyTime：当天 HH:MM，跨天带 MM-DD，非法时间戳空串', async () => {
-  const { formatNotifyTime } = await import('../src/notifications.js');
+  const { formatNotifyTime } = await import('../src/incidents/notifications.js');
   // 固定「现在」，避免测试对真实时钟敏感。
   const now = new Date(2026, 8, 27, 14, 30).getTime(); // 本地 2026-09-27 14:30
   const sameDay = new Date(2026, 8, 27, 9, 5).getTime();
@@ -346,7 +346,7 @@ test('formatNotifyTime：当天 HH:MM，跨天带 MM-DD，非法时间戳空串'
 });
 
 test('formatNotifyDuration 与 Rust format_duration 同口径', async () => {
-  const { formatNotifyDuration } = await import('../src/notifications.js');
+  const { formatNotifyDuration } = await import('../src/incidents/notifications.js');
   assert.equal(formatNotifyDuration(0), '');
   assert.equal(formatNotifyDuration(999), '');
   assert.equal(formatNotifyDuration(200_000), '3 分 20 秒');

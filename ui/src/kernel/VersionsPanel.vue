@@ -1,0 +1,267 @@
+<script setup>
+// 内核版本：左列已安装（切换 / 删除），右列 npm 发布（仅安装）。
+// 「切换」必须基于本地已安装版本，避免误把尚未安装的远端版本当成可立刻启用的内核。
+// 「检查更新」从 npm registry 拉取版本列表。
+//
+// 面板挂载时主动调一次 refreshAll()，让「已安装」列表在用户进到这一页时就是最新的，
+// 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
+import { computed, onMounted, reactive } from 'vue';
+import { Refresh, Download, Promotion, Delete, InfoFilled, TopRight } from '@element-plus/icons-vue';
+import {
+  store,
+  refreshAll,
+  checkUpdates,
+  installVersion,
+  activateVersion,
+  removeVersion,
+  workbenchActiveNow,
+} from '../store.js';
+import { invoke } from '../shell/bridge.js';
+import { openExternalLink } from '../shell/notify.js';
+import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
+import VersionPluginsTip from './VersionPluginsTip.vue';
+
+const KERNEL_RELEASES_URL = 'https://github.com/deepseek-ai/deepseek-harness/releases';
+const kernel = computed(() => store.view && store.view.kernel);
+// 后端 `KernelStatus.other_shell_workbench`（该结构体是 snake_case 序列化，
+// 与 settings_warning 同一个约定）。`notice` 是后端生成的完整文案——横幅只
+// 渲染它，不再自己拼：这份文案的真相源在 `instance::other_shell_workbench_notice`，
+// 措辞契约由 Rust 侧测试钉住。旧版后端没有这个字段时横幅整体隐藏（空串），
+// 而不是渲染一个空框。
+const otherShellWorkbench = computed(
+  () => (kernel.value && kernel.value.other_shell_workbench) || null
+);
+const otherShellWorkbenchText = computed(() => {
+  const other = otherShellWorkbench.value;
+  return (other && other.notice) || '';
+});
+
+function openKernelReleases() {
+  return withLoading('openKernelReleases', () => openExternalLink(KERNEL_RELEASES_URL, '内核发布页'));
+}
+
+// 每个已安装内核的插件快照只在 Tooltip 即将显示时读取，避免页面初次
+// 渲染就为所有内核发起 IPC。已成功读取的版本会复用缓存。
+const versionPlugins = reactive({});
+
+function versionPluginSlot(version) {
+  if (!versionPlugins[version]) {
+    versionPlugins[version] = {
+      loading: false,
+      loaded: false,
+      error: null,
+      rows: [],
+    };
+  }
+  return versionPlugins[version];
+}
+
+async function loadVersionPlugins(version) {
+  const slot = versionPluginSlot(version);
+  if (slot.loaded || slot.loading) return;
+
+  slot.loading = true;
+  slot.error = null;
+  try {
+    slot.rows = (await invoke('kernel_plugin_list', { version })) || [];
+    slot.loaded = true;
+  } catch (e) {
+    // 失败**不**置 `loaded`：旧实现把它一起置真，于是这次失败被永久缓存，
+    // 之后每次悬浮都直接命中"已加载"分支，tooltip 永远不会重试（P2-37）。
+    slot.error = e && e.message ? e.message : String(e);
+    slot.loaded = false;
+  } finally {
+    slot.loading = false;
+  }
+}
+
+const emptyPluginSnapshot = Object.freeze({
+  loading: false,
+  loaded: false,
+  error: null,
+  rows: [],
+});
+
+function pluginSnapshot(version) {
+  return versionPlugins[version] || emptyPluginSnapshot;
+}
+
+const installedVersions = computed(() => {
+  const set = new Set();
+  if (kernel.value) {
+    kernel.value.installed.forEach((v) => set.add(v.version));
+  }
+  return set;
+});
+
+// 进版本面板就重新扫描本地内核列表，与 npm 发布列解耦——
+onMounted(() => {
+  refreshAll();
+});
+</script>
+
+<template>
+  <section class="panel">
+    <div class="card">
+      <div class="card-head">
+        <h2>内核版本</h2>
+        <span class="head-meta">
+          <span class="muted">已安装 {{ kernel ? kernel.installed.length : '—' }} 个</span>
+        </span>
+      </div>
+
+      <el-alert v-if="store.settingsWarning" :title="store.settingsWarning" type="warning" :closable="false" show-icon />
+
+      <!-- 另一个壳的工作台在跑：**不拦**装 / 删内核（双壳并行是壳存在的理由），
+           但后果必须在点之前说清楚。文案真相源在 Rust（other_shell_workbench_notice，
+           措辞契约有测试钉住），这里只渲染 `notice`；旧版后端没有该字段时整条
+           隐藏（空串），不渲染空框。 -->
+      <el-alert
+        v-if="otherShellWorkbenchText"
+        :title="otherShellWorkbenchText"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+
+      <el-alert v-if="store.releaseWarning" :title="store.releaseWarning" type="warning" :closable="false" show-icon />
+
+      <div class="updates-lists">
+        <div class="list-group">
+          <h3>已安装</h3>
+          <div class="installed-list">
+            <el-empty v-if="!kernel || kernel.installed.length === 0" description="尚未安装任何内核。" :image-size="64" />
+            <div v-for="v in kernel ? kernel.installed : []" :key="v.version" class="installed-row">
+              <span class="release-ver">{{ v.version }}</span>
+              <!-- 旧版硬链接安装的树（文件仍与其他目录共享存储）：删除 / 重装它会
+                   短暂惊动对面正在用的工作台（会自愈）。卸载后重装一次即隔离，
+                   标记随之消失。旧后端没有该字段时标记隐藏。 -->
+              <el-tooltip
+                v-if="v.shared_storage"
+                content="旧版方式安装：文件仍与其他目录共享存储，删除或重装会短暂惊动对面正在用的工作台（会自动恢复）。卸载后重装一次即彻底隔离。"
+                placement="top"
+              >
+                <el-tag
+                  size="small"
+                  type="warning"
+                  effect="plain"
+                  style="margin-left: 8px"
+                >
+                  共享存储
+                </el-tag>
+              </el-tooltip>
+              <span class="release-actions">
+                <el-tooltip
+                  effect="dark"
+                  popper-class="kernel-plugin-tooltip"
+                  placement="right-start"
+                  :fallback-placements="['left-start', 'bottom-start', 'top-start']"
+                  :boundaries-padding="12"
+                  trigger="hover"
+                  :show-after="160"
+                  :hide-after="120"
+                  :offset="8"
+                  :show-arrow="true"
+                  @before-show="loadVersionPlugins(v.version)"
+                >
+                  <button
+                    type="button"
+                    class="installed-tip-trigger"
+                    :aria-label="'查看 ' + v.version + ' 的插件'"
+                  >
+                    <el-icon class="installed-tip-icon"><InfoFilled /></el-icon>
+                  </button>
+                  <template #content>
+                    <VersionPluginsTip :snapshot="pluginSnapshot(v.version)" :version="v.version" />
+                  </template>
+                </el-tooltip>
+                <el-tag v-if="v.active" type="success" size="small" effect="dark">当前使用</el-tag>
+                <template v-else>
+                  <el-button
+                    size="small"
+                    :icon="Promotion"
+                    :loading="isLoading('activate:' + v.version)"
+                    :disabled="globalBusy || workbenchActiveNow()"
+                    title="工作台启动或运行期间不能切换内核"
+                    @click="activateVersion(v.version)"
+                  >
+                    切换
+                  </el-button>
+                <el-popconfirm
+                  title="确认删除该版本？"
+                  confirm-button-text="删除"
+                  cancel-button-text="取消"
+                  width="200"
+                  @confirm="removeVersion(v.version)"
+                >
+                  <template #reference>
+                    <!-- 删除同样会大面积改动内核安装目录（一个 450 MB、几万个文件
+                         的 remove_dir_all），所以与「切换」共用同一条禁令：工作台
+                         启动或运行期间不许动。切换那条守卫是加过的，删除这条原先
+                         漏了——面板上也不该让按钮看起来比实际允许的更宽松。 -->
+                    <el-button
+                      size="small"
+                      type="danger"
+                      plain
+                      :icon="Delete"
+                      :loading="isLoading('remove:' + v.version)"
+                      :disabled="globalBusy || workbenchActiveNow()"
+                      title="工作台启动或运行期间不能删除内核版本"
+                    >
+                      删除
+                    </el-button>
+                  </template>
+                </el-popconfirm>
+                </template>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="list-group">
+          <h3 class="list-head-with-logo">
+            <img class="brand-logo" src="/npm-logo.svg" alt="npm" />
+            <span>npm 发布</span>
+            <span class="release-list-actions">
+              <el-button class="release-check-button" text :icon="Refresh" :loading="isLoading('checkUpdates')" :disabled="globalBusy" @click="checkUpdates">
+                检查更新
+              </el-button>
+              <el-button
+                text
+                :icon="TopRight"
+                :loading="isLoading('openKernelReleases')"
+                :disabled="globalBusy"
+                @click="openKernelReleases"
+              >
+                打开发布页
+              </el-button>
+            </span>
+          </h3>
+          <div class="release-list">
+            <p v-if="store.releases.length === 0" class="muted" style="margin: 0">
+              点击「检查更新」获取官方发布列表。
+            </p>
+            <div v-for="r in store.releases" :key="r.version" class="release-row">
+              <span class="release-ver">{{ r.version }}</span>
+              <span class="release-actions">
+                <el-tag v-if="installedVersions.has(r.version)" size="small" effect="plain">已安装</el-tag>
+                <el-button
+                  v-if="!installedVersions.has(r.version)"
+                  size="small"
+                  type="primary"
+                  :icon="Download"
+                  :disabled="globalBusy || workbenchActiveNow()"
+                  title="工作台启动或运行期间不能安装内核版本"
+                  @click="installVersion(r.version)"
+                >
+                  安装
+                </el-button>
+                <el-tag v-if="r.prerelease" type="info" size="small" effect="plain">预发布</el-tag>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</template>

@@ -39,8 +39,8 @@ const {
   markFailurePrompted,
   isProviderHidden,
   hideProvider,
-} = await import('../src/subscription.js');
-const { countdownLabel, countdownFullLabel, relativeTimeLabel, relativeAgeCompact } = await import('../src/labels.js');
+} = await import('../src/subscription/subscription.js');
+const { countdownLabel, countdownFullLabel, relativeTimeLabel, relativeAgeCompact } = await import('../src/shell/labels.js');
 
 test('percentLevel 按剩余百分比三档配色（≥70 绿 / 40–69.99 橙 / <39.99 红）', () => {
   assert.equal(percentLevel(100), 'ok');
@@ -168,7 +168,7 @@ test('查不到数据时提示隐藏：hideProvider 被记住、collectErrors �
       ],
     });
   try {
-    const { refreshSubscription } = await import('../src/subscription.js');
+    const { refreshSubscription } = await import('../src/subscription/subscription.js');
     await refreshSubscription();
     assert.equal(isProviderHidden('deepseek'), false, '查询成功后自动恢复显示');
     assert.deepEqual(subscription.errors, []);
@@ -224,7 +224,7 @@ test('countdownLabel / relativeTimeLabel 的时间口径', () => {
 });
 
 test('providerView 从共享状态取视图，失败路径不清空 data（keep-last-good）', async () => {
-  const { refreshSubscription } = await import('../src/subscription.js');
+  const { refreshSubscription } = await import('../src/subscription/subscription.js');
   const previousInvoke = window.__TAURI__.core.invoke;
   // bridge.invoke 每次调用都读 core.invoke 属性，替换即生效。
   window.__TAURI__.core.invoke = () => Promise.reject(new Error('网络断了'));

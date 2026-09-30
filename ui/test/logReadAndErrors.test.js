@@ -46,7 +46,7 @@ Object.defineProperty(globalThis, 'navigator', {
 });
 
 test('re-issuing a log read while one is in flight is not swallowed', async () => {
-  const { logModal, loadActiveLog } = await import('../src/logs.js');
+  const { logModal, loadActiveLog } = await import('../src/logs/logs.js');
   logModal.activeName = 'kernel.log';
 
   const first = loadActiveLog();
@@ -67,7 +67,7 @@ test('re-issuing a log read while one is in flight is not swallowed', async () =
 });
 
 test('render errors are captured with a readable message and can be cleared', async () => {
-  const { renderErrors, reportRenderError, clearRenderError } = await import('../src/errors.js');
+  const { renderErrors, reportRenderError, clearRenderError } = await import('../src/shell/errors.js');
   clearRenderError();
   assert.equal(renderErrors.message, '');
 
@@ -108,7 +108,7 @@ test('render errors are captured with a readable message and can be cleared', as
 });
 
 test('action errors gain a next step while backend guidance is preserved', async () => {
-  const { formatActionError } = await import('../src/notify.js');
+  const { formatActionError } = await import('../src/shell/notify.js');
 
   // 英文原始错误（reqwest/ureq 直出）→ 补上可操作的下一步。
   const english = formatActionError('启动失败', new Error('error sending request for url'));

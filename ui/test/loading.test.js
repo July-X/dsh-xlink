@@ -10,7 +10,7 @@ const deferred = () => {
 };
 
 test('exclusive lease rejects overlap and releases after completion', async () => {
-  const { globalBusy, isExclusiveBusy, withExclusive, withExclusiveLoading, isLoading } = await import('../src/loading.js');
+  const { globalBusy, isExclusiveBusy, withExclusive, withExclusiveLoading, isLoading } = await import('../src/shell/loading.js');
   const gate = deferred();
   const first = withExclusiveLoading('test-exclusive', () => gate.promise);
 

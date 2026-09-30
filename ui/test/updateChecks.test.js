@@ -104,7 +104,7 @@ globalThis.requestAnimationFrame = (callback) => {
 globalThis.cancelAnimationFrame = () => {};
 
 test('failed plugin update checks do not consume the success TTL', async () => {
-  const { checkPluginUpdates } = await import('../src/plugins.js');
+  const { checkPluginUpdates } = await import('../src/plugins/plugins.js');
 
   // 第一次探测整体失败：不推进成功 TTL，所以第二次仍然真的跑。
   assert.equal(await checkPluginUpdates({ busy: true }), null);
@@ -122,7 +122,7 @@ test('failed plugin update checks do not consume the success TTL', async () => {
 test('failed skill update checks back off, and manual checks bypass the backoff', async () => {
   // P2-12：逐包失败不推进成功 TTL（后端语义如此），但自动路径必须有一个退避窗口，
   // 否则切页 / 回焦 / 长任务结束都会重跑全量探测（git 来源会真的起子进程）。
-  const { checkSkillUpdates } = await import('../src/skills.js');
+  const { checkSkillUpdates } = await import('../src/skills/skills.js');
 
   const before = skillChecks;
   const first = await checkSkillUpdates({ busy: false });
@@ -141,8 +141,8 @@ test('failed skill update checks back off, and manual checks bypass the backoff'
 });
 
 test('手动更新检查不置全局 busy、不挡互斥任务', async () => {
-  const { checkPluginUpdates } = await import('../src/plugins.js');
-  const { globalBusy, isExclusiveBusy, isLoading, withExclusive } = await import('../src/loading.js');
+  const { checkPluginUpdates } = await import('../src/plugins/plugins.js');
+  const { globalBusy, isExclusiveBusy, isLoading, withExclusive } = await import('../src/shell/loading.js');
 
   // 挂住探测，观察「检查进行中」的全局状态。
   const gate = deferred();
@@ -166,7 +166,7 @@ test('手动更新检查不置全局 busy、不挡互斥任务', async () => {
 
 test('内核「检查更新」同样只挂按钮 loading，不进互斥租约', async () => {
   const { store, checkUpdates } = await import('../src/store.js');
-  const { globalBusy, isExclusiveBusy, isLoading } = await import('../src/loading.js');
+  const { globalBusy, isExclusiveBusy, isLoading } = await import('../src/shell/loading.js');
 
   const gate = deferred();
   fetchReleasesGate = gate;
@@ -188,7 +188,7 @@ test('提示与确认框显式抬到进度浮层之上', async () => {
   // 确认）会被浮层盖住且点不到，而任务未失败时浮层没有关闭按钮——用户看到的是
   // "点了没反应"。这里钉住两侧的关系：notify 显式给 zIndex，且高于浮层。
   const fs = await import('node:fs');
-  const notify = fs.readFileSync('ui/src/notify.js', 'utf8');
+  const notify = fs.readFileSync('ui/src/shell/notify.js', 'utf8');
   assert.match(notify, /zIndex: NOTIFY_Z_INDEX/, 'ElMessage 必须显式指定 zIndex');
   assert.match(notify, /NOTIFY_Z_INDEX = PROGRESS_OVERLAY_Z_INDEX \+ 1000/);
 

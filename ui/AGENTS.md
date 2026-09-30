@@ -4,9 +4,31 @@
 
 技术栈：Vue 3 + Element Plus 单页应用，Vite 构建到 `ui/dist/`（即 `tauri.conf.json` 的 `frontendDist`）。
 
+## 目录约定
+
+`ui/src/` **按功能分目录**，不要往根目录平铺。2026-09-30 重组过一次：当时 50 个文件（23 个 `.js` + 22 个 `.vue`）全堆在根目录与 `components/` 下，找一个面板得先把整个目录扫一遍。
+
+```
+ui/src/
+├── main.js / App.vue / store.js / theme.css   # 入口、壳、全局状态，就这四个留根
+├── shell/          # 壳自身：导航、概览、设置 + 跨面板共用基础设施
+├── kernel/         # 内核版本与实例
+├── plugins/        # 插件中心、补丁、安装预检
+├── skills/         # 技能
+├── diagnostics/    # 安全网 P0/P1/P2：环境回退点与二分定位
+├── usage/          # 本地 token 统计
+├── subscription/   # 云端套餐用量
+├── incidents/      # 工作台事故与任务通知
+├── logs/           # 日志查看器
+├── migration/      # 数据迁移向导
+└── official-chat/  # 官方对话
+```
+
+一条功能的状态、动作与面板**放在同一个目录里**。新增功能先问它属于哪一格；确实跨格的共享件放 `shell/`。搬文件时注意三处会跟着失效：`check-code-budget.mjs` 的 `FILE_BUDGETS` 按**路径**登记，`check-invariants.mjs` 有几处硬编码的 `ui/src/...`，`ui/test/*.test.js` 里的`readFileSync('ui/src/...')` 也是字符串路径——三者都要一起改。
+
 ## 与 Rust 的边界
 
-- 状态与动作集中在 `store.js` / `plugins.js` / `skills.js` / `progress.js` / `logs.js`，异步样板（在途去重、静默刷新、更新检查策略）在 `async.js`，组件只读状态、调动作。
+- 全局状态在 `store.js`（留根），各功能的状态与动作在**自己那一格**（`plugins/plugins.js`、`skills/skills.js`、`logs/logs.js`…），异步样板（在途去重、静默刷新、更新检查策略）在 `shell/async.js`，组件只读状态、调动作。
 - 与 Rust 的通信**只允许**走 `bridge.js` 的 `invoke` / `Channel`。组件里不直接碰 `window.__TAURI__`（注入脚本那一侧除外，且那是 `src-tauri/src/*.js`）。
 - 触发 IO 的按钮必须挂 loading（`loading.js` 的 `withLoading(key, …)` + `:loading="isLoading(key)"`）；长任务走 `progress.js` 的 `withProgress`。
 - 改完跑 `npm run build:ui`。
@@ -26,7 +48,7 @@
 
 这三条在两侧各有一半，改任一侧都要同时看另一份：
 
-- **禁右键菜单**：壳自己的五个窗口走 `ui/src/noContextMenu.js`（`main.js` 在 `app.mount` 之前调一次），这一半归本文件；工作台与官方对话三个内容 webview 加载的是**别人的**页面，走 Rust 注入的 `no-context-menu.js`，`check-invariants` 第 16 项按「每条 `WebviewUrl::External` 建窗链」逐条查——**另一半见 [src-tauri/AGENTS.md §禁右键菜单](../src-tauri/AGENTS.md)**。
+- **禁右键菜单**：壳自己的五个窗口走 `ui/src/shell/noContextMenu.js`（`main.js` 在 `app.mount` 之前调一次），这一半归本文件；工作台与官方对话三个内容 webview 加载的是**别人的**页面，走 Rust 注入的 `no-context-menu.js`，`check-invariants` 第 16 项按「每条 `WebviewUrl::External` 建窗链」逐条查——**另一半见 [src-tauri/AGENTS.md §禁右键菜单](../src-tauri/AGENTS.md)**。
 - **预检三态**：`precheck.rs` 的 `Verdict::as_str()` 与 `PrecheckDialog.vue` 的判定表靠字符串对齐，有测试钉死（`precheck::tests::verdict_strings_match_the_ui_contract`），改一边不改另一边会把"未通过"画成"通过"。判定为什么必须三态、基线为什么必须先跑，见 [src-tauri/AGENTS.md §预检](../src-tauri/AGENTS.md)。
 - **「今日用量」只有一套口径**：概览卡片与独立「模型用量」窗口都读后端的 `today_tokens` / `today_requests`（`usage.js::todayUsage`）。窗口此前取 `sliceDays(days, 1)` 的最后一天，而后端会把晚于今天的异常日期追加到序列末尾——同一份统计会显示成两个数。`check-invariants` 第 ⑦ 项之五钉住接线。
 

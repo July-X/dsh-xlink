@@ -30,7 +30,7 @@ const {
   bisectHeadline,
   stepTitle,
   stepClassName,
-} = await import('../src/bisect.js');
+} = await import('../src/diagnostics/bisect.js');
 
 test('三种结局各有各的说法，没有「找到根因」这种取值', () => {
   const minimal = conclusionView({ kind: 'minimal-bad-set', members: ['dsh-x'] });

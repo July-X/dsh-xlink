@@ -96,7 +96,7 @@ const catalog = [
   },
 ];
 
-const mod = await import('../src/plugins.js');
+const mod = await import('../src/plugins/plugins.js');
 const { pluginStore, filteredCatalog, matchParts, hasActiveFilter, resetCatalogFilters, CATALOG_PAGE } = mod;
 
 function reset() {

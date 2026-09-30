@@ -2,10 +2,10 @@
 // 应用骨架：侧栏 + 面板切换 + 全局浮层（进度 / 日志 / 事故），
 // 以及启动时的事件监听、轮询与静默自检的编排。
 import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue';
-import { invoke, listen } from './bridge.js';
-import { toast, toastError, confirmDialog } from './notify.js';
-import { renderErrors, clearRenderError, reloadPanel } from './errors.js';
-import { globalBusy, ioActive } from './loading.js';
+import { invoke, listen } from './shell/bridge.js';
+import { toast, toastError, confirmDialog } from './shell/notify.js';
+import { renderErrors, clearRenderError, reloadPanel } from './shell/errors.js';
+import { globalBusy, ioActive } from './shell/loading.js';
 import {
   store,
   refreshAll,
@@ -13,28 +13,28 @@ import {
   showShellUpdateBanner,
   showIncident,
 } from './store.js';
-import { loadCatalog, checkPluginUpdates } from './plugins.js';
-import { loadInstances } from './instance.js';
-import { checkSkillUpdates } from './skills.js';
-import { loadUsageSummary } from './usage.js';
-import { applyNotificationStatus } from './notifications.js';
-import { maybeOpenMigrationPrompt } from './migration.js';
-import KernelTabs from './components/KernelTabs.vue';
-import SideBar from './components/SideBar.vue';
-import OverviewPanel from './components/OverviewPanel.vue';
-import VersionsPanel from './components/VersionsPanel.vue';
-import PluginsPanel from './components/PluginsPanel.vue';
-import SkillsPanel from './components/SkillsPanel.vue';
-import SettingsPanel from './components/SettingsPanel.vue';
-import MigrationPanel from './components/MigrationPanel.vue';
-import MigrationPrompt from './components/MigrationPrompt.vue';
-import ProgressOverlay from './components/ProgressOverlay.vue';
-import LogModal from './components/LogModal.vue';
-import IncidentModal from './components/IncidentModal.vue';
-import PrecheckDialog from './components/PrecheckDialog.vue';
-import SnapshotRestoreDialog from './components/SnapshotRestoreDialog.vue';
-import DebugPanel from './components/DebugPanel.vue';
-import WindowTitleBar from './components/WindowTitleBar.vue';
+import { loadCatalog, checkPluginUpdates } from './plugins/plugins.js';
+import { loadInstances } from './kernel/instance.js';
+import { checkSkillUpdates } from './skills/skills.js';
+import { loadUsageSummary } from './usage/usage.js';
+import { applyNotificationStatus } from './incidents/notifications.js';
+import { maybeOpenMigrationPrompt } from './migration/migration.js';
+import KernelTabs from './kernel/KernelTabs.vue';
+import SideBar from './shell/SideBar.vue';
+import OverviewPanel from './shell/OverviewPanel.vue';
+import VersionsPanel from './kernel/VersionsPanel.vue';
+import PluginsPanel from './plugins/PluginsPanel.vue';
+import SkillsPanel from './skills/SkillsPanel.vue';
+import SettingsPanel from './shell/SettingsPanel.vue';
+import MigrationPanel from './migration/MigrationPanel.vue';
+import MigrationPrompt from './migration/MigrationPrompt.vue';
+import ProgressOverlay from './shell/ProgressOverlay.vue';
+import LogModal from './logs/LogModal.vue';
+import IncidentModal from './incidents/IncidentModal.vue';
+import PrecheckDialog from './plugins/PrecheckDialog.vue';
+import SnapshotRestoreDialog from './diagnostics/SnapshotRestoreDialog.vue';
+import DebugPanel from './shell/DebugPanel.vue';
+import WindowTitleBar from './shell/WindowTitleBar.vue';
 
 const PANELS = {
   overview: OverviewPanel,

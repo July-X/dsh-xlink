@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { DEFAULT_OFFICIAL_CHAT_TABS, resolveOfficialChatTabs } from '../src/components/officialChatTabs.js';
+import { DEFAULT_OFFICIAL_CHAT_TABS, resolveOfficialChatTabs } from '../src/official-chat/officialChatTabs.js';
 
 test('keeps the three configured tabs in the fallback list', () => {
   assert.deepEqual(DEFAULT_OFFICIAL_CHAT_TABS, [

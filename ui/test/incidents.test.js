@@ -12,7 +12,7 @@ import {
   incidentHealthSections,
   bundleRouteMembers,
   incidentTitle,
-} from '../src/incidents.js';
+} from '../src/incidents/incidents.js';
 
 // Rust 侧 guard.rs 会产出 cause = "env"（端口被占用 / 权限 / 磁盘等环境类失败）。
 // 前端两个组件此前各自维护一份白名单，都漏了 env，于是后端给出的明确环境原因在面板上
@@ -77,9 +77,11 @@ test('环境类事故的下一步是设置页，而不是内核版本页', () =>
 });
 
 test('两个组件共用同一份归因口径，不再各写一份白名单', () => {
-  for (const file of ['ui/src/components/OverviewPanel.vue', 'ui/src/components/IncidentModal.vue']) {
+  for (const file of ['ui/src/shell/OverviewPanel.vue', 'ui/src/incidents/IncidentModal.vue']) {
     const source = readFileSync(file, 'utf8');
-    assert.match(source, /from '\.\.\/incidents\.js'/, `${file} 必须从共享层取归因口径`);
+    // 判据是「从共享层取归因口径」，不是「从哪个目录取」——ui/src 按模块重组后
+    // 目录会变，把路径写进断言只会让重组变成测试失败。
+    assert.match(source, /from '[^']*incidents\.js'/, `${file} 必须从共享层取归因口径`);
     // 白名单如果又抄回组件里，这里立刻变红（这正是当初漏掉 env 的形态）。
     assert.doesNotMatch(
       source,

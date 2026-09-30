@@ -39,7 +39,7 @@ const {
   diffBlockedNote,
   outcomeHeadline,
   verificationView,
-} = await import('../src/snapshots.js');
+} = await import('../src/diagnostics/snapshots.js');
 
 test('打点原因给出中文名，未知值原样透出而不是被吞掉', () => {
   assert.equal(reasonLabel('startup-ok'), '成功启动过');

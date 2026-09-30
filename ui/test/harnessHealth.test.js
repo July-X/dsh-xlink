@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { shouldReportBlankHarness } from '../src/harnessHealth.js';
+import { shouldReportBlankHarness } from '../src/shell/harnessHealth.js';
 
 const probeSource = readFileSync(new URL('../../src-tauri/src/harness-health.js', import.meta.url), 'utf8');
 
