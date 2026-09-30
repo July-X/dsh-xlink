@@ -203,7 +203,7 @@ onMounted(() => {
 
         <div class="list-group">
           <h3 class="list-head-with-logo">
-            <img class="brand-logo" src="https://avatars.githubusercontent.com/u/6078720?s=200&v=4" alt="npm" />
+            <img class="brand-logo" src="/npm-logo.svg" alt="npm" />
             <span>npm 发布</span>
             <span class="release-list-actions">
               <el-button class="release-check-button" text :icon="Refresh" :loading="isLoading('checkUpdates')" :disabled="globalBusy" @click="checkUpdates">
