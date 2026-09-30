@@ -551,43 +551,9 @@ fn is_kebab_case(name: &str) -> bool {
 /// 不知情的情况下看到一个不可见的技能，因此无法解析的 frontmatter
 /// 会直接拒绝该候选，而不是信任它。
 fn parse_skill_markdown(text: &str) -> Option<(String, String)> {
-    let mut lines = text.trim_start_matches('\u{feff}').lines();
-    if lines.next()?.trim_end() != "---" {
-        return None;
-    }
-    let mut name: Option<String> = None;
-    let mut description: Option<String> = None;
-    for line in lines {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if line == "---" || line == "..." {
-            break;
-        }
-        // 只接受顶层键：跳过嵌套映射、列表、块字符串。
-        if line.starts_with(' ') || line.starts_with('\t') || line.starts_with('-') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = strip_quotes(value.trim());
-        match key.trim() {
-            "name" if name.is_none() => name = Some(value.to_string()),
-            "description" if description.is_none() => description = Some(value.to_string()),
-            _ => {}
-        }
-    }
-    let name = name?;
-    let description = description?;
+    let fm = crate::skill_frontmatter::parse(text)?;
+    let (name, description) = (fm.name?, fm.description?);
     (!name.is_empty() && !description.is_empty()).then_some((name, description))
-}
-
-fn strip_quotes(value: &str) -> &str {
-    for q in ['"', '\''] {
-        if value.starts_with(q) && value.ends_with(q) && value.len() >= 2 {
-            return &value[1..value.len() - 1];
-        }
-    }
-    value
 }
 
 // --- 包扫描 ---------------------------------------------------------------

@@ -250,6 +250,17 @@ const FILE_BUDGETS = {
   // 判据没点名的文件。它离 800 行硬顶还有 600 多行，与 verify.rs(120)、
   // bisect_cmd.rs(140)、harness_window.rs(195) 同一量级。
   'src-tauri/src/skill_conflict.rs': 190,
+  // 技能 frontmatter 的解析（2026-09-30，新建）。修的是 `description: |` 这类
+  // YAML 块标量被读成字面量 `"|"` —— store.json 里存下 `"description": "|"`，
+  // 面板 tooltip 显示的也是 `"|"`。**它几乎不报错**：`"|"` 是非空字符串，技能
+  // 照样被接受、照样能启用，只是说明全丢了。
+  // 独立成文件的三条理由：① skills.rs 反棘轮「只许下调」，块标量那套状态机
+  // 放不进去；② frontmatter 有**两个**消费者（包扫描 + skill_conflict 的版本
+  // 证据），各写一份解析器就会分叉，而分叉出来的那份会让「面板显示的版本」与
+  // 「文案里说的版本」对不上；③ 解析器是纯函数，拆出来后能单独测，不必拉起
+  // 整个技能栈。搬完之后 skills.rs 1486 → 1454（反棘轮方向），skill_conflict.rs
+  // 188 → 155（一套 frontmatter 解析，不是两套）。
+  'src-tauri/src/skill_frontmatter.rs': 205,
   // 跨壳装包活动信标（2026-09-30，新建）。为什么它该独立成一个文件而不是塞进
   // harness_window.rs：**写**这一侧在 kernel.rs 的装 / 删两端，**读**那一侧在
   // harness_window.rs 的看门狗里，两边都不肯为了对方把自己长成一个什么都管的
@@ -914,7 +925,15 @@ const FILE_BUDGETS = {
 // （plugins.rs / theme.css / commands.rs）本轮零增长：新命令落在新模块里，
 // 那是 `bisect_cmd.rs` / `home_recovery_cmd.rs` 的同一处理由。合计 35658 行，
 // 预算留 42 行余量。重复区间数不变。
-const TOTAL_BUDGET = 35700;
+// 35700 → 35810（2026-09-30 晚，接上一条）：修 `description: |` 被读成字面量
+// `"|"`。净增约 102 行，全部落在一个新文件里：
+//   · skill_frontmatter.rs（新增，见 FILE_BUDGETS）205 行：YAML 块标量
+//     （`|` / `>` + chomping）加 `metadata.version` 的状态机。
+// 同一笔里两个既有文件**都变小了**：skills.rs 1486 → 1454（解析器搬出去），
+// skill_conflict.rs 188 → 155（它自己那个只认 `metadata.version` 的小解析器
+// 删掉，改用同一套）——「判据有两份实现就会分叉」那条纪律的第一次实际兑现。
+// 反棘轮三个文件本轮仍是零增长。
+const TOTAL_BUDGET = 35810;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
