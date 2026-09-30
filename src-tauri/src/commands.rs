@@ -2936,7 +2936,7 @@ pub async fn skill_status() -> Result<skills::SkillStatus, String> {
 /// 技能商店命令的共享主体：在 blocking worker 上运行 `skills::` 操作，
 /// 并通过通道把进度转发出去。技能不需要 pnpm / profile 接线，因此这
 /// 条路径比 `run_plugin_command` 更精简。
-async fn run_skill_command(
+pub(crate) async fn run_skill_command(
     app: AppHandle,
     on_event: Channel<String>,
     op: impl FnOnce(&mut dyn FnMut(&str)) -> Result<(), AppError> + Send + 'static,

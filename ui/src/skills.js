@@ -93,6 +93,23 @@ export function moveAsideShadowedSkills() {
   );
 }
 
+/// 把占住活动视图位置、且不归技能库所有的那几份同名条目改名让路
+/// （只改名，不删除；回退 = 改回原名）。
+///
+/// 判据在后端（`skill_conflict`），这里只发命令：列表、落点与「是哪两个版本」
+/// 都由后端给，前端不拼路径、不解析告警文案。
+export function moveAsideConflictingSkills() {
+  return withProgress(
+    {
+      cmd: 'skill_move_aside_conflicts',
+      start: '正在移走占位的同名条目 …',
+      done: '占位的同名条目已改名让路，现在可以点启用了' + effectSuffix(),
+      fail: '移走失败',
+    },
+    (channel) => ({ onEvent: channel })
+  );
+}
+
 // 手动检查挂按钮 loading；面板进入时低频自检，启动期间失败静默。
 // 策略（TTL / 逐包失败退避 / 互斥 / 去重 / 提示）见 async.js 的 createUpdateChecker。
 export const checkSkillUpdates = createUpdateChecker({

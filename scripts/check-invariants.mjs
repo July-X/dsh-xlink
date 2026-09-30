@@ -1033,6 +1033,48 @@ function productionRust(text) {
     for (const message of aclMisses) fail('harness-invoke-params', message);
   }
 
+  // ⑦之四：技能「活动视图里被同名条目占住」的两处接线。
+  //
+  // 与本组前三条同形状，且是**实测过**的洞：判据 `skill_conflict::list()` 是纯
+  // 函数、测试也覆盖得严（正反两面都钉了），但 2026-09-30 把
+  // `skills::status()` 里那一句调用摘掉之后，`cargo test` 630 项全绿、这道门禁
+  // 也全绿——而面板上的「移走冲突条目」从此再也不出现，用户重新回到「只有关闭
+  // 的对话框」。判据准不准与判据有没有被调用是两件事，这里钉的是后者。
+  {
+    const misses = [];
+    const statusSrc = productionRust(readFileSync(join(srcDir, 'skills.rs'), 'utf8'));
+    // ① 状态视图必须真的调判据，且把结果交给 `conflicts` 字段——字段在而恒为空，
+    //    UI 的 `v-if="conflicts.length"` 永远不成立，按钮永远不出现。
+    if (!/let conflicts\s*=\s*crate::skill_conflict::list\(\)/.test(statusSrc)) {
+      misses.push('skills::status() 不再调用 skill_conflict::list()');
+    }
+    if (!/SkillStatus\s*\{[\s\S]*?\n\s*conflicts,/.test(statusSrc)) {
+      misses.push('SkillStatus 不再把判据结果交给 conflicts 字段（按钮将永不出现）');
+    }
+    // ② 告警文案与按钮必须指向同一个动作：`ensure_entry` 的拒绝文案里写着
+    //    「点告警下方的『移走冲突条目』」，按钮若改名或删掉，那句话就指向了一个
+    //    面板上不存在的东西。命令名由第 1、2 项查（已注册 + 已授权），这里查文案。
+    const conflictSrc = productionRust(readFileSync(join(srcDir, 'skill_conflict.rs'), 'utf8'));
+    const panelSrc = readFileSync(join(root, 'ui', 'src', 'components', 'SkillsPanel.vue'), 'utf8');
+    const errorCopy = /pub\(crate\) fn conflict_error[\s\S]*?\n\}/.exec(conflictSrc)?.[0] ?? '';
+    if (!errorCopy.includes('移走冲突条目')) {
+      misses.push('启用冲突的报错文案不再指向「移走冲突条目」这个按钮');
+    }
+    if (!panelSrc.includes('>\n          移走冲突条目\n        </el-button>')) {
+      misses.push('技能面板上不再有「移走冲突条目」按钮（报错的出路会指向一个不存在的按钮）');
+    }
+    if (misses.length > 0) {
+      fail(
+        'skill-conflict-wiring',
+        `${misses.join('、')}——技能启用撞上同名条目时，用户拿到的仍然是一个只有` +
+          '「关闭」的死胡同。注意：判据本身测得再准，摘掉调用它照样全绿' +
+          '（2026-09-30 实测：摘掉后 cargo test 630 项与本门禁都绿）。',
+      );
+    } else {
+      note('技能同名冲突的判据接到了状态视图与面板按钮上（启用失败有出路）');
+    }
+  }
+
   // ⑦ 三处「接线」，单测都抓不到。
   //
   // 共同形状：**判据 / 组件本身是对的，某个人把它接到某处时漏了**。前两轮各吃过一次

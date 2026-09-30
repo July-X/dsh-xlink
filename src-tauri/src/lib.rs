@@ -69,6 +69,7 @@ mod restore;
 mod sandbox;
 mod settings;
 mod shell_events;
+mod skill_conflict;
 mod skill_shadow;
 mod skills;
 mod snapshot;
@@ -364,6 +365,7 @@ pub fn run() {
             commands::skill_uninstall,
             commands::skill_set_enabled,
             commands::skill_move_aside_shadowed,
+            skill_conflict::skill_move_aside_conflicts,
             commands::skill_check_updates,
             commands::notification_status,
             commands::notification_mark_read,
