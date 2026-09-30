@@ -1526,6 +1526,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                         .initialization_script(include_str!("titlebar-pulse.js"))
                         .initialization_script(include_str!("pullstring-launcher.js"))
                         .initialization_script(include_str!("harness-health.js"))
+                        .initialization_script(include_str!("harness-draft.js"))
                         .initialization_script(include_str!("workbench-history-guard.js"))
                         .on_page_load({
                             let handle = handle.clone();
