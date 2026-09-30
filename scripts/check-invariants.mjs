@@ -962,6 +962,77 @@ function productionRust(text) {
       note('注入脚本 invoke 的参数名与 Rust 命令形参一致');
     }
   }
+
+  // ⑦ 三处「接线」，单测都抓不到。
+  //
+  // 共同形状：**判据 / 组件本身是对的，某个人把它接到某处时漏了**。前两轮各吃过一次
+  // （`fault_needs_new_window` 算了没人调；草稿脚本漏注入一条建窗路径），所以这里
+  // 把三处接线都变成机械检查而不是留在 commit message 里。
+  {
+    const rustFilesWithScripts = rustFiles.filter((file) =>
+      productionRust(readFileSync(join(srcDir, file), 'utf8')).includes('initialization_script('),
+    );
+    // ① 凡是注入了 harness-health.js 的建窗路径，都必须也注入 harness-draft.js。
+    //    用「同一文件 ±6 行内」近似同一条 builder 链——够挡住「新增一条建窗路径时
+    //    照抄了健康脚本、忘了草稿脚本」这种漏，而那正是 2026-09-30 commit message
+    //    里写着「查不出来」的那一种。
+    const draftMisses = [];
+    for (const file of rustFilesWithScripts) {
+      const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
+      lines.forEach((line, index) => {
+        if (!line.includes('harness-health.js')) return;
+        const window = lines.slice(Math.max(0, index - 6), index + 7).join('\n');
+        if (!window.includes('harness-draft.js')) {
+          draftMisses.push(`${file}:${index + 1} 注入了 harness-health.js 却没注入 harness-draft.js`);
+        }
+      });
+    }
+    if (draftMisses.length > 0) {
+      for (const message of draftMisses) {
+        fail(
+          'harness-wiring',
+          `${message}——那条建窗路径上没发出去的话不会被保管，重载 / 重建之后输入框会是空的。` +
+            '两条脚本是成对的，加一条路径要一起加。',
+        );
+      }
+    }
+
+    // ② 装 / 删内核两端必须各打一次信标、撤一次。
+    const kernelBody = (name) => {
+      const lines = productionRust(readFileSync(join(srcDir, 'kernel.rs'), 'utf8')).split('\n');
+      const start = lines.findIndex((line) => new RegExp(`^pub fn ${name}\\b`).test(line));
+      if (start < 0) return null;
+      for (let i = start; i < lines.length; i += 1) {
+        if (lines[i] === '}') return lines.slice(start, i + 1).join('\n');
+      }
+      return null;
+    };
+    for (const action of ['install_version', 'uninstall']) {
+      const body = kernelBody(action);
+      if (body === null) {
+        draftMisses.push(`kernel.rs 里找不到 ${action}，信标接线无从检查`);
+        continue;
+      }
+      if (!body.includes('package_activity::begin(')) {
+        fail(
+          'harness-wiring',
+          `kernel::${action} 没有打装包信标——对面壳的看门狗不会知道机器正在被打满，` +
+            '于是把「慢」判成「死」并重载（2026-09-30 实测的成因）。',
+        );
+      }
+      if (!body.includes('package_activity::end(')) {
+        fail(
+          'harness-wiring',
+          `kernel::${action} 打了信标却不撤——这一次装包会永久放宽对面壳的看门狗` +
+            `（直到 10 分钟到期，或直到壳重启）。`,
+        );
+      }
+    }
+
+    if (draftMisses.length === 0) {
+      note('工作台建窗路径都注入了草稿脚本，装 / 删内核两端都打了信标');
+    }
+  }
 }
 
 // --- 结果 --------------------------------------------------------------------
