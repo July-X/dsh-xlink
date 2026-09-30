@@ -42,7 +42,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1072,6 +1072,57 @@ function productionRust(text) {
       );
     } else {
       note('技能同名冲突的判据接到了状态视图与面板按钮上（启用失败有出路）');
+    }
+  }
+
+  // ⑦之六：前端不许把**已搬迁的**数据目录写进用户可见文案。
+  //
+  // AGENTS.md 那条「数据目录不许在前端写死」是本项目的既有纪律，而它此前的
+  // 落地方式是**靠人看**：2026-09-30 走查发现插件页的气泡仍写着
+  // `~/.dsh-xlink/dsh-plugins/`，而 `store_relocate` 早已把中央库整体搬进
+  // `plugins/dsh/`，用户照着提示去找会找到一个不存在的目录。同一句提示的技能页
+  // 版本读的是后端 `SkillStatus.store_root`，那边是对的——修一边漏一边。
+  //
+  // 钉的是**路径上下文里的已搬迁目录名**，不是「不许出现这两个词」：迁移向导把
+  // `skills-store` 当**逻辑来源 id** 用（`SOURCES` 里的值显示成「旧技能中央库」），
+  // 那是历史数据的位置、不是当前存储位置。第一版为此开了整文件豁免，实测根本
+  // 用不上——判据要求目录名前面带 `~/` 或 `/`，裸 id 天然不命中——留着只是给
+  // 将来在迁移页里写死一条真路径留了个静默的口子。
+  {
+    const LEGACY = ['dsh-plugins', 'skills-store'];
+    const offenders = [];
+    const uiFiles = [];
+    const collectUi = (dir) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) collectUi(full);
+        else if (/\.(vue|js)$/.test(entry.name)) uiFiles.push(full);
+      }
+    };
+    collectUi(join(root, 'ui', 'src'));
+    for (const file of uiFiles) {
+      const rel = file.split(sep).slice(-3).join('/');
+      const lines = readFileSync(file, 'utf8').split('\n');
+      lines.forEach((line, i) => {
+        const code = line.replace(/\/\/.*$/, '').replace(/\/\*.*?\*\//g, '');
+        if (!/['"`]/.test(code)) return;
+        for (const name of LEGACY) {
+          // 只在「看起来是路径」时才算：存储位置提示里的目录名。
+          if (new RegExp(`(~/|/)\\s*${name}\\b|~\\/\\.[\\w.-]*${name}`).test(code)) {
+            offenders.push(`${rel}:${i + 1} 文案里出现已搬迁的目录 ${name}`);
+          }
+        }
+      });
+    }
+    if (offenders.length > 0) {
+      fail(
+        'no-legacy-paths-in-ui',
+        `${offenders.join('；')}——这些目录已被 store_relocate 整体搬走，不再是「存放于」的答案；` +
+          '用户照着提示找会找不到。请让该提示读后端返回的真实路径（PluginStatus / SkillStatus 的 ' +
+          'store_root），前端只负责 tildePath 折叠。',
+      );
+    } else {
+      note('前端文案里没有已搬迁的数据目录（存储位置提示读后端返回的真实路径）');
     }
   }
 

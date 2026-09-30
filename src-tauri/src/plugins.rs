@@ -213,6 +213,11 @@ pub struct PluginStatus {
     pub rows: Vec<PluginRow>,
     pub profile: String,
     pub active_kernel: Option<String>,
+    /// 插件中央库的展示路径。UI 的存储位置提示**必须读这份数据**：前端此前把
+    /// `~/.dsh-xlink/dsh-plugins/` 写死在气泡里，而那已是 legacy 路径
+    /// （`store_relocate` 早已整体搬进 `plugins/dsh/`），用户照着找一个不存在
+    /// 的目录。技能页的同一处提示读的是 `SkillStatus.store_root`，那边是对的。
+    pub store_root: String,
     /// 已知存在更新版本的插件数量。
     pub updates: usize,
     pub last_checked_at: Option<String>,
@@ -3907,6 +3912,7 @@ pub fn status_for_instance(
         rows,
         profile: settings.profile.clone(),
         active_kernel: active,
+        store_root: store_dir(data_dir).display().to_string(),
         updates,
         last_checked_at: store.last_checked_at,
         // 清单完整性优先于流程性警告：前者解释了为什么列表是空的。
