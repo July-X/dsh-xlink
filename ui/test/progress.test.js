@@ -26,7 +26,7 @@ globalThis.document = {
 };
 
 test('progress log bounds individual lines and total retained text', async () => {
-  const { progress } = await import('../src/progress.js');
+  const { progress } = await import('../src/shell/progress.js');
   progress.resetLog();
   progress.appendLog('\x1b[31m' + 'x'.repeat(20 * 1024) + '\x1b[0m');
   for (let index = 0; index < 40; index += 1) {

@@ -2,14 +2,14 @@
 // 面板组件从这里读 view / releases，动作函数保留原零构建版的行为契约：
 // 启动编排、启停确认、外壳更新横幅、首次运行引导、2.5s 轮询。
 import { reactive, computed } from 'vue';
-import { invoke, makeChannel } from './bridge.js';
-import { toast, toastSuccess, toastActionError, confirmDialog } from './notify.js';
-import { globalBusy, isLoading, withExclusive, withExclusiveLoading, withLoading, isExclusiveBusy } from './loading.js';
-import { withProgress, progress } from './progress.js';
-import { singleFlight } from './async.js';
-import { refreshPlugins } from './plugins.js';
-import { refreshSkills } from './skills.js';
-import { showLogs } from './logs.js';
+import { invoke, makeChannel } from './shell/bridge.js';
+import { toast, toastSuccess, toastActionError, confirmDialog } from './shell/notify.js';
+import { globalBusy, isLoading, withExclusive, withExclusiveLoading, withLoading, isExclusiveBusy } from './shell/loading.js';
+import { withProgress, progress } from './shell/progress.js';
+import { singleFlight } from './shell/async.js';
+import { refreshPlugins } from './plugins/plugins.js';
+import { refreshSkills } from './skills/skills.js';
+import { showLogs } from './logs/logs.js';
 
 export const store = reactive({
   // get_status 的完整返回：{ kernel, node, settings, shell_version, dev_build, shell_mode, quarantined, last_incident, official_chat_open }

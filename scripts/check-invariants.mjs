@@ -356,7 +356,7 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
     fail('titlebar', 'src-tauri/src/lib.rs 缺少 check_main_window_minimizable 自检（黄灯回归哨兵被删了）');
   }
 
-  const titlebar = read('ui/src/components/WindowTitleBar.vue');
+  const titlebar = read('ui/src/shell/WindowTitleBar.vue');
   const minimizeWindow = titlebar.match(/function minimizeWindow\s*\([^)]*\)\s*\{[\s\S]*?\n\}/);
   if (!minimizeWindow) {
     fail('titlebar', 'WindowTitleBar.vue 里找不到 minimizeWindow()（脚本需要更新）');
@@ -1055,7 +1055,7 @@ function productionRust(text) {
     //    「点告警下方的『移走冲突条目』」，按钮若改名或删掉，那句话就指向了一个
     //    面板上不存在的东西。命令名由第 1、2 项查（已注册 + 已授权），这里查文案。
     const conflictSrc = productionRust(readFileSync(join(srcDir, 'skill_conflict.rs'), 'utf8'));
-    const panelSrc = readFileSync(join(root, 'ui', 'src', 'components', 'SkillsPanel.vue'), 'utf8');
+    const panelSrc = readFileSync(join(root, 'ui', 'src', 'skills', 'SkillsPanel.vue'), 'utf8');
     const errorCopy = /pub\(crate\) fn conflict_error[\s\S]*?\n\}/.exec(conflictSrc)?.[0] ?? '';
     if (!errorCopy.includes('移走冲突条目')) {
       misses.push('启用冲突的报错文案不再指向「移走冲突条目」这个按钮');
@@ -1141,9 +1141,9 @@ function productionRust(text) {
   // `sliceDays(days, 1)`，14 个 usage 单测全绿。这里钉接线形状。
   {
     const misses = [];
-    const usageJs = readFileSync(join(root, 'ui', 'src', 'usage.js'), 'utf8');
-    const window = readFileSync(join(root, 'ui', 'src', 'UsageWindow.vue'), 'utf8');
-    const overview = readFileSync(join(root, 'ui', 'src', 'components', 'OverviewPanel.vue'), 'utf8');
+    const usageJs = readFileSync(join(root, 'ui', 'src', 'usage', 'usage.js'), 'utf8');
+    const window = readFileSync(join(root, 'ui', 'src', 'usage', 'UsageWindow.vue'), 'utf8');
+    const overview = readFileSync(join(root, 'ui', 'src', 'shell', 'OverviewPanel.vue'), 'utf8');
     const app = readFileSync(join(root, 'ui', 'src', 'App.vue'), 'utf8');
     // ① 唯一口径：usage.js 导出 todayUsage，窗口与卡片都走它。
     if (!/export function todayUsage\(/.test(usageJs)) {
@@ -1302,7 +1302,7 @@ function productionRust(text) {
       //    Vue 里那份自己拼的旧文案（「机器最忙…甚至黑屏」）还挂在用户脸上——
       //    与「数据目录不许在前端写死」同一类病：前端那份不参与编译，错了没人报。
       const vueSrc = readFileSync(
-        join(root, 'ui', 'src', 'components', 'VersionsPanel.vue'),
+        join(root, 'ui', 'src', 'kernel', 'VersionsPanel.vue'),
         'utf8',
       );
       const singleSourceMisses = [];
@@ -1509,7 +1509,9 @@ function productionRust(text) {
   // ② 壳自己的窗口：入口必须真的调用一次，且早于挂载。
   const mainJs = read('ui/src/main.js');
   const entryProblems = [];
-  if (!/import \{ disableContextMenu \} from '\.\/noContextMenu\.js';/.test(mainJs)) {
+  // 路径随 ui/src 的模块重组变过（noContextMenu.js 在 shell/ 下），判据只认
+  // 「入口确实 import 了它」，不把目录结构也钉进来——结构变了这条检查就该失效。
+  if (!/import \{ disableContextMenu \} from '[^']*noContextMenu\.js';/.test(mainJs)) {
     entryProblems.push('没有 import disableContextMenu');
   }
   const call = mainJs.indexOf('disableContextMenu();');
@@ -1539,7 +1541,7 @@ function productionRust(text) {
       .join('\n');
   const implementations = [
     'src-tauri/src/no-context-menu.js',
-    'ui/src/noContextMenu.js',
+    'ui/src/shell/noContextMenu.js',
   ];
   const killsSelection = [];
   for (const file of implementations) {

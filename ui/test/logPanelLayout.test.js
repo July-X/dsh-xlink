@@ -55,7 +55,7 @@ function makeLocalStorageStub() {
 test('loadSidebarWidth 落回默认值：key 缺失 / 值非法 / 越界', async () => {
   const ls = makeLocalStorageStub();
   globalThis.localStorage = ls;
-  const { loadSidebarWidth } = await import('../src/logs.js');
+  const { loadSidebarWidth } = await import('../src/logs/logs.js');
 
   // 没有这个 key
   assert.equal(loadSidebarWidth('absent.modal', 'modal'), 220);
@@ -75,7 +75,7 @@ test('loadSidebarWidth 落回默认值：key 缺失 / 值非法 / 越界', async
 test('loadSidebarWidth 两个变体（modal / window）的默认值与上下限不同', async () => {
   const ls = makeLocalStorageStub();
   globalThis.localStorage = ls;
-  const { loadSidebarWidth } = await import('../src/logs.js');
+  const { loadSidebarWidth } = await import('../src/logs/logs.js');
 
   ls.clear();
   // 主面板弹窗偏窄，独立窗口偏宽
@@ -92,7 +92,7 @@ test('loadSidebarWidth 两个变体（modal / window）的默认值与上下限�
 test('saveSidebarWidth 写入后 loadSidebarWidth 能读到', async () => {
   const ls = makeLocalStorageStub();
   globalThis.localStorage = ls;
-  const { loadSidebarWidth, saveSidebarWidth } = await import('../src/logs.js');
+  const { loadSidebarWidth, saveSidebarWidth } = await import('../src/logs/logs.js');
 
   ls.clear();
   saveSidebarWidth('round.modal', 312);
@@ -102,7 +102,7 @@ test('saveSidebarWidth 写入后 loadSidebarWidth 能读到', async () => {
 test('localStorage 不可用（隐私模式）时 helper 落回默认值而不抛', async () => {
   // 直接置空 globalThis.localStorage 模拟「不可用」
   globalThis.localStorage = null;
-  const { loadSidebarWidth, saveSidebarWidth } = await import('../src/logs.js');
+  const { loadSidebarWidth, saveSidebarWidth } = await import('../src/logs/logs.js');
 
   assert.doesNotThrow(() => loadSidebarWidth('any', 'window'));
   assert.equal(loadSidebarWidth('any', 'window'), 240);
@@ -110,7 +110,7 @@ test('localStorage 不可用（隐私模式）时 helper 落回默认值而不�
 });
 
 test('bindScrollAutoHide 加 / 移 .is-scrolling 类 + 监听器清理', async () => {
-  const { bindScrollAutoHide } = await import('../src/logs.js');
+  const { bindScrollAutoHide } = await import('../src/logs/logs.js');
 
   const events = [];
   const classList = new Set();
@@ -146,7 +146,7 @@ test('bindScrollAutoHide 加 / 移 .is-scrolling 类 + 监听器清理', async (
 });
 
 test('bindScrollAutoHide 对 null / undefined 容错', async () => {
-  const { bindScrollAutoHide } = await import('../src/logs.js');
+  const { bindScrollAutoHide } = await import('../src/logs/logs.js');
   // 不抛异常，返回的解绑函数也可空跑
   assert.doesNotThrow(() => bindScrollAutoHide(null));
   assert.doesNotThrow(() => bindScrollAutoHide(undefined));

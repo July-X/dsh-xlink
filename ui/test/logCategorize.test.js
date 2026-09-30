@@ -31,7 +31,7 @@ Object.defineProperty(globalThis, 'navigator', {
 });
 
 test('parseLogFilename extracts the logical name from every supported format', async () => {
-  const { parseLogFilename } = await import('../src/logs.js');
+  const { parseLogFilename } = await import('../src/logs/logs.js');
 
   // 壳级三段格式（kind / name / date）
   assert.equal(parseLogFilename('release-kernel-2026-09-24.log').name, 'kernel');
@@ -59,7 +59,7 @@ test('parseLogFilename extracts the logical name from every supported format', a
 });
 
 test('categorizeLogFile routes every file to the correct bucket', async () => {
-  const { categorizeLogFile, LOG_CATEGORIES } = await import('../src/logs.js');
+  const { categorizeLogFile, LOG_CATEGORIES } = await import('../src/logs/logs.js');
 
   // 所有声明过的桶 ID 都必须能命中，否则 LOG_CATEGORIES 与实现脱节
   const ids = new Set(LOG_CATEGORIES.map((c) => c.id));
@@ -101,7 +101,7 @@ test('categorizeLogFile routes every file to the correct bucket', async () => {
 });
 
 test('groupLogFiles groups, preserves within-group order, and drops empty buckets', async () => {
-  const { groupLogFiles } = await import('../src/logs.js');
+  const { groupLogFiles } = await import('../src/logs/logs.js');
 
   const files = [
     // 已按 list_log_files 的「基名逆序 + 代次升序」排好，组内必须保留该顺序

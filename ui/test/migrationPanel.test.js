@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-const panel = readFileSync('ui/src/components/MigrationPanel.vue', 'utf8');
+const panel = readFileSync('ui/src/migration/MigrationPanel.vue', 'utf8');
 
 test('迁移历史行直接 v-for 渲染，回滚按钮按行挂 loading', () => {
   // 2b02867 把 el-table 换成纯 div 行列表：slot scope 已不存在，

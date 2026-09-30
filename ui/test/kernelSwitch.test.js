@@ -42,8 +42,8 @@ const instances = (selected) => ['a', 'b'].map((id) => ({
 }));
 
 test('instance reads deduplicate and a stale list cannot undo a switch', async () => {
-  const { instanceStore, loadInstances, setDefaultInstance } = await import('../src/instance.js');
-  const { globalBusy } = await import('../src/loading.js');
+  const { instanceStore, loadInstances, setDefaultInstance } = await import('../src/kernel/instance.js');
+  const { globalBusy } = await import('../src/shell/loading.js');
   instanceStore.list = instances('a');
   instanceStore.defaultInstanceId = 'a';
   const read = deferred(), write = deferred(), refresh = deferred();
@@ -80,8 +80,8 @@ test('instance reads deduplicate and a stale list cannot undo a switch', async (
 });
 
 test('failed instance reads retain selection and retries recover; failed writes release busy state', async () => {
-  const { instanceStore, loadInstances, setDefaultInstance } = await import('../src/instance.js');
-  const { globalBusy, withExclusive } = await import('../src/loading.js');
+  const { instanceStore, loadInstances, setDefaultInstance } = await import('../src/kernel/instance.js');
+  const { globalBusy, withExclusive } = await import('../src/shell/loading.js');
   instanceStore.list = instances('a');
   instanceStore.defaultInstanceId = 'a';
   instanceInvoke = () => Promise.reject(new Error('registry unavailable'));

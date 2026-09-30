@@ -37,7 +37,7 @@ const {
   modelName,
   weekdayLabel,
   RANGE_OPTIONS,
-} = await import('../src/usage.js');
+} = await import('../src/usage/usage.js');
 
 test('formatTokens 走 B / M / K 标准单位，精确到两位小数', () => {
   assert.equal(formatTokens(0), '0');

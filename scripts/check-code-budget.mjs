@@ -81,6 +81,11 @@ function readBaseline() {
     return null;
   }
   const files = {};
+  // HEAD 树里的**文件名**集合（去掉目录）。搬移换了路径，`tree.has(path)`
+  // 于是判不出「这是搬过来的」——2026-09-30 ui/src 按模块重组时，搬过的文件
+  // 全被当成新文件，逼着为它们补预算、还撞上 800 行硬顶。文件名跨目录唯一，
+  // 拿它当「这份代码以前存在过」的判据，比路径可靠。
+  const names = new Set([...tree].map((entry) => entry.split('/').pop()));
   const block = text.match(/FILE_BUDGETS\s*=\s*\{([\s\S]*?)\n\};/);
   if (block) {
     // 条目形如 `  'path/to/file': 1234,`（带行尾注释）。
@@ -91,7 +96,7 @@ function readBaseline() {
   }
   const total = text.match(/TOTAL_BUDGET\s*=\s*(\d+)/);
   if (!total) return null;
-  return { files, total: Number(total[1]), tree };
+  return { files, total: Number(total[1]), tree, names };
 }
 
 /** 生产代码行数预算：文件 → 上限。包含注释以外的所有代码行。 */
@@ -170,11 +175,11 @@ const FILE_BUDGETS = {
   // 155 → 180：`verificationView` 三态（verified / failed / not-needed）从
   // outcomeHeadline 里独立出来——三态各自带配色与整句文案，塞回一个函数
   // 只会让它同时负责"怎么说"和"算什么颜色"。
-  'ui/src/snapshots.js': 180,
+  'ui/src/diagnostics/snapshots.js': 180,
   // P1 的恢复确认弹窗：把「将要失去什么」和「动不了什么」分成两栏列出。
   // 200 → 215：实测告警改由 `alert` computed 决定，需要"有没能完成的条目
   // 就降级成 warning"这条交叉规则，以及失败原因的第二行展示。
-  'ui/src/components/SnapshotRestoreDialog.vue': 215,
+  'ui/src/diagnostics/SnapshotRestoreDialog.vue': 215,
   // P2 二分定位的会话与步骤记录。与判定逻辑分开：这里只管"试了什么、
   // 结果如何、排除了谁"，怎么试由命令层驱动 verify::probe_once。
   // 收尾只有三种取值，**没有"找到根因"**——组合效应会让二分停在不可修
@@ -195,12 +200,12 @@ const FILE_BUDGETS = {
   // 110 → 175：`startBisect` 现在**真的把每一轮跑完**（循环 invoke
   // bisect_probe），外加 abort 的错误提示与刷新。只发起不驱动的话，面板会
   // 永远停在"排查进行中 … 请耐心等"。
-  'ui/src/bisect.js': 175,
+  'ui/src/diagnostics/bisect.js': 175,
   // P2 的排查面板：逐轮显示"在试哪一半 / 上一轮结果 / 已排除几个 / 还要几轮"。
-  'ui/src/components/BisectPanel.vue': 180,
+  'ui/src/diagnostics/BisectPanel.vue': 180,
   // P0 的概览页卡片。刻意**只读**：提前放"一键回退"会让用户在没看清
   // 差异的情况下丢配置。
-  'ui/src/components/SnapshotCard.vue': 170,
+  'ui/src/diagnostics/SnapshotCard.vue': 170,
   // 安装预检的沙盒生命周期共享层：一次性实例 id / 端口分配 / 目录骨架、
   // 适配器启动与就绪看护、环回 HTTP 存活确认、日志标记扫描、残留回收、
   // 证据另存，以及 Verdict / PrecheckReport 两个对外类型。
@@ -481,7 +486,7 @@ const FILE_BUDGETS = {
   //   · `setUsageAutoRefresh(on)`——概览卡片此前只在 onMounted 拉一次就再也不
   //     更新，窗口却每次打开都 force 重扫还带手动刷新。现在挂载期间 60s 对一次
   //     账，卸载即停；间隔取 TTL 本身，闲置时一个请求都不发。
-  'ui/src/usage.js': 190,
+  'ui/src/usage/usage.js': 190,
   // 模型用量统计（UsageWindow.vue）：独立窗口根组件（open_usage_window 弹出，
   // ?usage=1 挂载）——摘要卡 + 热力图 + 堆叠柱状趋势 + 环形图/列表与
   // scoped 样式，全 CSS/内联 SVG 不引图表库。
@@ -489,7 +494,7 @@ const FILE_BUDGETS = {
   // 不可压缩；用法与 LogViewerWindow 同模式（独立窗口根组件 + scoped CSS）。
   // 700 → 780：范围切换 + 时间范围档位（~+50）与热力图/趋势两个共享 hover
   // 明细浮层（~+60）——都是展示层增量，拆文件只会让浮层与图形结构分家。
-  'ui/src/UsageWindow.vue': 830,
+  'ui/src/usage/UsageWindow.vue': 830,
   // 云端套餐用量（subscription.rs）：MiniMax Token Plan / DeepSeek 余额查询、
   // 5 分钟缓存文档（state.rs 容错读 + 原子写）、Key 指纹绑定（换 Key / 清 Key
   // 作废旧条目）、redact_key 脱敏、三态 Key patch、expired 跳过自动刷新、
@@ -509,13 +514,13 @@ const FILE_BUDGETS = {
   // 210 → 220：`balanceText` → `balanceRow`，按 DeepSeek 的 `total_balance` /
   // `granted_balance` / `topped_up_balance` 三个字段分别产出主行、明细行与
   // hover title（只透传金额，不转浮点）；设计稿本就要求逐条展示这三项。
-  'ui/src/subscription.js': 220,
+  'ui/src/subscription/subscription.js': 220,
   // 套餐用量独立窗口根组件（open_subscription_window 弹出，?subscription=1 挂载）：
   // 双 provider 分区 + 进度条 / 余额行 + 错误横幅与 scoped 样式（同 UsageWindow 模式）。
   // 340 → 360：查询时间换成刷新 icon 胶囊（紧凑年龄值）。
   // 360 → 370：余额块多一行赠金 / 充值明细（含 flex-wrap 与明细行样式），
   // 与概览卡共用 subscription.js 的 balanceRow。
-  'ui/src/SubscriptionWindow.vue': 370,
+  'ui/src/subscription/SubscriptionWindow.vue': 370,
   // 2026-09-30：壳自己窗口的右键菜单策略（新建，10 行）。主面板 / 日志 /
   // 用量 / 套餐 / 官方对话页签栏共用这个 SPA 入口，所以「禁右键、留左键复制」
   // 在前端只有这一处落点；工作台与三个官方对话内容 webview 走 Rust 侧的
@@ -525,7 +530,7 @@ const FILE_BUDGETS = {
   // 行为**（ui/test/noContextMenu.test.js 直接对它造假事件流），塞进入口
   // 就只能对着源码字符串断言。本次 10 行落在总量既有余量内，TOTAL_BUDGET
   // 不动。
-  'ui/src/noContextMenu.js': 20,
+  'ui/src/shell/noContextMenu.js': 20,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
 // 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有
@@ -1097,6 +1102,7 @@ const baseline = readBaseline();
 if (baseline) {
   for (const [path, count] of sizes) {
     if (path in FILE_BUDGETS || baseline.tree.has(path)) continue;
+    if (baseline.names.has(path.split('/').pop())) continue; // 搬移，不是新文件
     failures.push(
       `[新文件] ${path}（${count} 行）必须登记进 FILE_BUDGETS，并写清它为什么该独立成模块。` +
         `这是「新能力开新文件」留下的痕迹；上限 ${HARD_FILE_CEILING} 行。`
@@ -1160,6 +1166,7 @@ if (baseline) {
 // 追溯会让本门禁一上来就红，没人会去修。
 for (const [path, budget] of Object.entries(FILE_BUDGETS)) {
   if (baseline && baseline.tree.has(path)) continue; // 已存在的老文件
+  if (baseline && baseline.names.has(path.split('/').pop())) continue; // 搬移过来的
   if (budget > HARD_FILE_CEILING) {
     failures.push(
       `[硬顶] 新文件 ${path} 的预算 ${budget} 行超过硬顶 ${HARD_FILE_CEILING} 行。` +

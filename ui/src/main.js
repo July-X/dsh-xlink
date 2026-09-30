@@ -5,7 +5,7 @@
 // URL 带 ?chatstrip=1 时挂载 OfficialChatTabs（官方对话窗口的页签栏，
 // 该 webview 同时承载拉绳挂件，不再有独立的 launcher 路由）。
 import { createApp } from 'vue';
-import { reportRenderError } from './errors.js';
+import { reportRenderError } from './shell/errors.js';
 import { ElAlert } from 'element-plus/es/components/alert/index.mjs';
 import { ElButton } from 'element-plus/es/components/button/index.mjs';
 import { ElCheckbox } from 'element-plus/es/components/checkbox/index.mjs';
@@ -28,9 +28,9 @@ import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs';
 import { ElTag } from 'element-plus/es/components/tag/index.mjs';
 import { ElTooltip } from 'element-plus/es/components/tooltip/index.mjs';
 import zhCn from 'element-plus/es/locale/lang/zh-cn';
-import { homeDir } from './bridge.js';
-import { setDisplayHomeDir } from './labels.js';
-import { disableContextMenu } from './noContextMenu.js';
+import { homeDir } from './shell/bridge.js';
+import { setDisplayHomeDir } from './shell/labels.js';
+import { disableContextMenu } from './shell/noContextMenu.js';
 import 'element-plus/es/components/alert/style/css.mjs';
 import 'element-plus/es/components/button/style/css.mjs';
 import 'element-plus/es/components/checkbox/style/css.mjs';
@@ -60,10 +60,10 @@ import 'element-plus/es/components/tooltip/style/css.mjs';
 import 'element-plus/theme-chalk/dark/css-vars.css';
 import './theme.css';
 import App from './App.vue';
-import LogViewerWindow from './LogViewerWindow.vue';
-import OfficialChatTabs from './components/OfficialChatTabs.vue';
-import SubscriptionWindow from './SubscriptionWindow.vue';
-import UsageWindow from './UsageWindow.vue';
+import LogViewerWindow from './logs/LogViewerWindow.vue';
+import OfficialChatTabs from './official-chat/OfficialChatTabs.vue';
+import SubscriptionWindow from './subscription/SubscriptionWindow.vue';
+import UsageWindow from './usage/UsageWindow.vue';
 
 const params = new URLSearchParams(location.search);
 const isLogViewer = params.has('log');

@@ -8,7 +8,7 @@ import test from 'node:test';
 const read = (path) => readFileSync(path, 'utf8');
 
 test('技能启停动作接的是后端 skill_set_enabled 命令', () => {
-  const skills = read('ui/src/skills.js');
+  const skills = read('ui/src/skills/skills.js');
   assert.match(skills, /export function setSkillEnabled\(id, name, enabled\)/);
   assert.match(skills, /cmd: 'skill_set_enabled'/);
   assert.match(skills, /\(\{ id, name, enabled, onEvent: channel \}\)/);
@@ -24,7 +24,7 @@ test('前端载荷的参数名与 Rust 命令签名逐字对齐', () => {
 });
 
 test('面板逐个技能暴露开关，并挂按条目的 loading', () => {
-  const panel = read('ui/src/components/SkillsPanel.vue');
+  const panel = read('ui/src/skills/SkillsPanel.vue');
   assert.match(panel, /setSkillEnabled/);
   assert.match(panel, /v-for="skill in row\.skills"/);
   // loading 必须是按条目 key，而不是全局 globalBusy（P2-10 / P2-42 那类死绑定）。
@@ -33,7 +33,7 @@ test('面板逐个技能暴露开关，并挂按条目的 loading', () => {
 });
 
 test('启停开关位于包头动作区，不渲染下方技能清单', () => {
-  const panel = read('ui/src/components/SkillsPanel.vue');
+  const panel = read('ui/src/skills/SkillsPanel.vue');
   const actions = panel.indexOf('<div class="entity-actions skill-row-actions">');
   assert.ok(actions >= 0);
   assert.match(panel.slice(actions), /v-for="skill in row\.skills"[\s\S]*<el-switch/);
@@ -41,18 +41,18 @@ test('启停开关位于包头动作区，不渲染下方技能清单', () => {
 });
 
 test('条目该在却不在时给出提示，而不是静默显示为已启用', () => {
-  const panel = read('ui/src/components/SkillsPanel.vue');
+  const panel = read('ui/src/skills/SkillsPanel.vue');
   assert.match(panel, /skill\.enabled && !skill\.present/);
   assert.match(panel, /条目缺失/);
 });
 
 test('启停开关不依赖技能清单或弹层', () => {
-  const panel = read('ui/src/components/SkillsPanel.vue');
+  const panel = read('ui/src/skills/SkillsPanel.vue');
   assert.doesNotMatch(panel, /skill-list|skill-item|skill-toggle-popover|skillCountText/);
 });
 
 test('包版本 tag 与包名同行，长说明收进单行 Tooltip', () => {
-  const panel = read('ui/src/components/SkillsPanel.vue');
+  const panel = read('ui/src/skills/SkillsPanel.vue');
   const theme = read('ui/src/theme.css');
   assert.match(panel, /class="entity-name"[\s\S]*class="meta-version"/);
   assert.match(panel, /<el-tooltip v-if="row\.description"[\s\S]*:content="row\.description"/);

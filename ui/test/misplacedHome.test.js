@@ -30,10 +30,10 @@ globalThis.requestAnimationFrame = (cb) => {
   return 1;
 };
 
-const panel = readFileSync('ui/src/components/MigrationPanel.vue', 'utf8');
+const panel = readFileSync('ui/src/migration/MigrationPanel.vue', 'utf8');
 
 const { misplacedFileCount, misplacedTotalBytes, misplacedStore } = await import(
-  '../src/migration.js'
+  '../src/migration/migration.js'
 );
 
 // 后端 MisplacedScan 沿用 migration.rs 同一条链路的 snake_case（`file_count` /

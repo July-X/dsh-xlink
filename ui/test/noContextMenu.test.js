@@ -3,9 +3,9 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 
-import { disableContextMenu } from '../src/noContextMenu.js';
+import { disableContextMenu } from '../src/shell/noContextMenu.js';
 
-// 壳自己的窗口走 ui/src/noContextMenu.js，工作台与三个官方对话内容 webview 走
+// 壳自己的窗口走 ui/src/shell/noContextMenu.js，工作台与三个官方对话内容 webview 走
 // src-tauri/src/no-context-menu.js（Rust 注入的 IIFE，没有导出，按
 // harnessHealth.test.js 的做法在 vm 里造一个假页面跑它）。两侧是同一件事的两处
 // 落点，断言的是**行为**——事件被取消、左键选中与复制不受影响——而不是源码里
@@ -60,7 +60,7 @@ function runInjected(win) {
 }
 
 const IMPLS = [
-  ['ui/src/noContextMenu.js', (win) => disableContextMenu(win)],
+  ['ui/src/shell/noContextMenu.js', (win) => disableContextMenu(win)],
   ['src-tauri/src/no-context-menu.js', runInjected],
 ];
 
@@ -120,7 +120,7 @@ test('主界面入口装的是同一份策略，且早于任何组件挂载', ()
   // 接线形状：漏掉这一次调用不会让任何行为测试变红（它们直接对着模块跑），
   // 症状只是面板里右键菜单照弹——所以这里对着入口源码钉一次。
   const entry = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.match(entry, /import \{ disableContextMenu \} from '\.\/noContextMenu\.js';/);
+  assert.match(entry, /import \{ disableContextMenu \} from '[^']*noContextMenu\.js';/);
   const call = entry.indexOf('disableContextMenu();');
   assert.notEqual(call, -1, 'main.js 没有调用 disableContextMenu()');
   assert.ok(call < entry.indexOf("app.mount('#app')"), '必须在挂载组件之前装上');
