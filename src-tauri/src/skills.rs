@@ -164,6 +164,9 @@ pub struct SkillStatus {
     pub updates: usize,
     pub last_checked_at: Option<String>,
     pub warning: Option<String>,
+    /// 被更高优先级根盖住的活动条目。告警文案是给人读的，这里是给按钮读的：
+    /// UI 据此决定要不要给出「移走被盖住的条目」，**不得**去解析 warning 字符串。
+    pub shadowed: Vec<crate::skill_shadow::ShadowedEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -1197,7 +1200,10 @@ fn ensure_entry(
             // 直接删除**——`entry_is_owned` 为假既可能是"本商店上一版留下的陈旧副本"，
             // 也可能是"用户改了内容"，两者在指纹上无法区分，而删掉后者就是无备份地
             // 销毁用户的工作（P0-6）。一律改名保留现场，由调用方把路径报给用户。
-            kept_aside = Some(keep_aside(&target)?);
+            kept_aside = Some(keep_aside(
+                &target,
+                "它与技能库条目同名，且不是技能库放置的（可能被本地修改过）",
+            )?);
         }
     }
     if let Some(parent) = target.parent() {
@@ -1236,8 +1242,11 @@ fn ensure_entry(
 /// 覆盖用户内容之前必须留一份现场：`replace_owned` 的调用方（reconcile 修复、
 /// 更新刷新）本意是替换**本商店自己留下的陈旧副本**，但"用户改写过"与"陈旧"
 /// 在指纹上无法区分，所以一律保留而不是删除（P0-6）。改名带时间戳，避免连续
-/// 两次冲突互相覆盖。
-fn keep_aside(target: &Path) -> Result<String, AppError> {
+/// 两次冲突互相覆盖；落点不再以 `.md` 结尾，所以移走之后内核也不会再扫它。
+///
+/// `reason` 是这条现场为什么被保留的一句话，出现在失败文案里——同一个动作
+/// 有两个来由（中央库同名 / 被高优先级根盖住），共用实现但不能共用说法。
+pub(crate) fn keep_aside(target: &Path, reason: &str) -> Result<String, AppError> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -1254,8 +1263,7 @@ fn keep_aside(target: &Path) -> Result<String, AppError> {
     }
     fs::rename(target, &candidate).map_err(|e| {
         AppError::Skill(format!(
-            "技能 {} 与技能库条目同名，且不是技能库放置的（可能被本地修改过）；\
-             无法把它备份为 {}（{e}）。请手动处理该条目后重试",
+            "{reason}；无法把 {} 改名保留为 {}（{e}）。请手动处理该条目后重试",
             target.display(),
             candidate.display()
         ))
@@ -1610,19 +1618,19 @@ fn status_for_home(home: &Path) -> SkillStatus {
     }
     // 判据在 paths：只有家目录本身就是内核眼里的「项目根」（`~/.git` 存在）
     // 时它才会返回非空，理由与 rank 算术见 `paths::shadowing_skill_roots`。
-    let shadowed =
-        paths::shadowing_skill_entries(&paths::skills_active_root(), &paths::dirs_home());
+    let shadowed = crate::skill_shadow::list();
     let shadow_warning = (!shadowed.is_empty()).then(|| {
         let listed = shadowed
             .iter()
-            .map(|(name, path)| format!("{name}（{}）", path.display()))
+            .map(|entry| format!("{}（{}）", entry.skill, entry.path))
             .collect::<Vec<_>>()
             .join("、");
         format!(
             "这些技能在更高优先级的根里有同名条目，内核读的是那一份，壳管理的更新对它们不生效：{listed}。\
              原因：内核从会话工作目录向上找第一个带 .git 的目录当项目根，而你的家目录里有 .git，\
              于是家目录下的 .dsh/skills 与 .agents/skills 排在壳的活动视图之前。\
-             删掉上面列出的条目，或换一个技能名。"
+             点下面的「移走被盖住的条目」即可让路（只改名，不删除）；\
+             也可以自己删掉上面列出的条目，或换一个技能名。"
         )
     });
     SkillStatus {
@@ -1633,6 +1641,7 @@ fn status_for_home(home: &Path) -> SkillStatus {
         last_checked_at: store.last_checked_at,
         // 清单完整性优先于流程性警告：前者解释了为什么列表是空的。
         warning: integrity_warning.or(store.warning).or(shadow_warning),
+        shadowed,
     }
 }
 

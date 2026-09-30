@@ -22,7 +22,9 @@ use crate::instance::{self};
 use crate::migration;
 use crate::process::{build_log_kind, read_tail, LogSpec};
 use crate::quarantine;
-use crate::{guard, kernel, node, patches, plugins, releases, settings, skills, updater};
+use crate::{
+    guard, kernel, node, patches, plugins, releases, settings, skill_shadow, skills, updater,
+};
 
 /// `open_official_chat` 加载到专用 `official-chat` webview 中的
 /// DeepSeek 官方对话入口。
@@ -2991,6 +2993,20 @@ pub async fn skill_set_enabled(
 ) -> Result<(), String> {
     run_skill_command(app, on_event, move |progress| {
         skills::set_enabled(&id, &name, enabled, progress)
+    })
+    .await
+}
+
+/// 把盖住活动视图的那几份同名条目**改名让路**（只改名，不删除；回退 = 改回
+/// 原名）。面板上的「移走被盖住的条目」，不要求工作台停止——内核 watcher 会
+/// 自己发现，壳管理的那一份当场接管。
+#[tauri::command]
+pub async fn skill_move_aside_shadowed(
+    app: AppHandle,
+    on_event: Channel<String>,
+) -> Result<(), String> {
+    run_skill_command(app, on_event, move |progress| {
+        skill_shadow::move_aside_shadowed(progress)
     })
     .await
 }

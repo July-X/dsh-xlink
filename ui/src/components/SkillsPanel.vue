@@ -14,13 +14,36 @@ import {
   updateSkill,
   uninstallSkill,
   setSkillEnabled,
+  moveAsideShadowedSkills,
   checkSkillUpdates,
 } from '../skills.js';
-import { openExternalLink } from '../notify.js';
+import { openExternalLink, confirmDialog } from '../notify.js';
 import { tildePath } from '../labels.js';
 import { globalBusy, isLoading, withLoading } from '../loading.js';
 
 const view = computed(() => skillStore.view);
+
+// 被更高优先级的根盖住的活动条目。判据在后端，UI 只负责把它变成一个可点的
+// 出路——告警文案是给人读的，不能让前端去解析那句话来决定显不显示按钮。
+const shadowed = computed(() => (view.value && view.value.shadowed) || []);
+const SHADOW_KEY = 'moveAsideShadowed';
+
+// 确认框必须列出会被动到哪几条：这是一次改名（不是删除），但落点在壳平时
+// 不写的地方，用户点确认之前有权先看见。
+// 文案是纯文本——`confirmDialog` 没开 dangerouslyUseHTMLString，写 Markdown
+// 星号会原样显示出来。
+async function moveAsideShadowed() {
+  const lines = shadowed.value.map((e) => tildePath(e.path) + '（盖住 ' + e.skill + '）');
+  const ok = await confirmDialog(
+    '移走被盖住的条目？',
+    '下面这些条目会被改名（文件名加时间戳后缀），不会删除；改回原名即可恢复：\n\n' +
+      lines.join('\n') +
+      '\n\n移走后，壳管理的启停与更新才会对它们生效。',
+    '改名让路'
+  );
+  if (!ok) return;
+  await withLoading(SHADOW_KEY, moveAsideShadowedSkills);
+}
 
 // 技能启停：面板此前只提供安装/卸载/更新/重新同步，启停虽然有完整的后端能力
 // （skill_set_enabled + enabled:false 语义 + 启动对账），却只能在面板外直接调命令。
@@ -89,6 +112,23 @@ const storeTip = computed(() => {
         :closable="false"
         show-icon
       />
+      <!-- 告警的出路。按钮只在判据非空时出现（`view.shadowed`），文案自带的
+           「删掉上面列出的条目」是兜底——判据与路径都由后端给出。 -->
+      <div v-if="shadowed.length" class="shadow-actions">
+        <span class="muted">
+          这 {{ shadowed.length }} 份盖住了壳管理的同名条目，移走前请确认下面列出的路径。
+        </span>
+        <el-button
+          size="small"
+          type="warning"
+          plain
+          :loading="isLoading(SHADOW_KEY)"
+          :disabled="globalBusy"
+          @click="moveAsideShadowed"
+        >
+          移走被盖住的条目
+        </el-button>
+      </div>
 
       <div class="entity-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
         <el-empty v-if="!view || !view.rows || view.rows.length === 0" description="尚未安装任何技能包。" :image-size="48" />
@@ -214,3 +254,16 @@ const storeTip = computed(() => {
     </div>
   </section>
 </template>
+
+<style scoped>
+/* 告警与它的出路排成一行：告警条本身要占满宽度，按钮跟在下面一行右侧，
+   不去挤 `el-alert` 的可点区域。 */
+.shadow-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+</style>
