@@ -1,12 +1,12 @@
 # AGENTS.md — `src-tauri/`（Tauri Rust 进程）
 
-本文件是根 [AGENTS.md](../AGENTS.md) 的**后端分支**。根文件里的「范围」「数据目录」「发布」各章对后端同样适用；这里只收**改 `src-tauri/**` 之前必须知道**的约束。改前端（`ui/**`）请看 [ui/AGENTS.md](../ui/AGENTS.md)，别把两边的规则混着套。
+根 [AGENTS.md](../AGENTS.md) 的后端分支。根文件里的「范围」「数据目录」「发布」各章对后端同样适用，这里只收改 `src-tauri/**` 之前要知道的约束。前端见 [ui/AGENTS.md](../ui/AGENTS.md)。
 
 提交前跑 `cargo clippy --all-targets`（零警告基线）与 `cargo fmt`。
 
 ## 错误信息
 
-- **错误信息必须包含可操作的下一步与相关日志路径。** `AppError::Skill(...)` / `AppError::Io(...)` 那些字符串是用户**唯一**能拿到的东西（GUI 应用里 `eprintln!` 在 Windows 上没有去处），写成「操作失败」等于让用户自己猜。写不出来就先问「出事了他查什么」，查不到说明这个设计还没完成。
+- **错误信息必须包含可操作的下一步与相关日志路径。** `AppError::Skill(...)` / `AppError::Io(...)` 那些字符串是用户**唯一**能拿到的东西（GUI 应用里 `eprintln!` 在 Windows 上没有去处），写成「操作失败」等于让用户自己猜。写不出来就先问一句「出事了他查什么」，查不到说明这个设计还没完成。
 
 ## 进程、出网与落盘
 
