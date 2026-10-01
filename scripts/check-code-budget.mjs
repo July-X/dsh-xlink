@@ -1074,7 +1074,13 @@ const FILE_BUDGETS = {
 // process.rs +8（两个退避常量 + next_poll_step + 循环两行）、lifecycle.rs
 // 净 +2（lsof_tcp_args 与判据拆分主体是挪位置，注释与测试不计入）、
 // instance.rs 观察路径换判据只改名。反棘轮文件本轮零增长。
-const TOTAL_BUDGET = 36090;
+// 36090 → 36100（2026-10-01 晚）：概览「当前内核」活动版本徽标加 git tag 图标。
+// 净增 6 行，全在 OverviewPanel.vue：图标 import 1 行、模板里的 el-icon 1 行、
+// 胶囊改 .age-pill 同款 flex 结构 3 行 + 图标字号一行式规则 1 行。样式放组件
+// 而非 theme.css（后者是只许下调的反棘轮文件，且这是组件私有样式），单文件
+// 预算不动。设计理由写进文件头 `//` 区——门禁的 codeLineCount 只剥 `//` 与
+// 多行 /* */，写在模板里的 `<!-- -->` 注释是按行计费的。
+const TOTAL_BUDGET = 36100;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
