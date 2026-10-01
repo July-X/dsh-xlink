@@ -207,6 +207,12 @@ jobs:
       - name: Check cross-file invariants
         run: pnpm run check:invariants
 
+      - name: Check code budget
+        # 此前只在 desktop-ci.yml 的 quality job 里跑，发布这条通道缺席
+        # （review M12）。防膨胀的门禁漏在发布通道上，等于「发出去的那份
+        # 不受膨胀约束」。
+        run: pnpm run check:code-budget
+
       - name: Run UI tests
         run: pnpm run test:ui
 
@@ -223,24 +229,9 @@ jobs:
         run: pnpm run build:ui
 
       - name: Enforce UI bundle budgets
-        run: |
-          node --input-type=module <<'NODE'
-          import { readdirSync, statSync } from 'node:fs';
-
-          const assets = 'ui/dist/assets';
-          const totalBytes = (suffix) =>
-            readdirSync(assets)
-              .filter((name) => name.endsWith(suffix))
-              .reduce((total, name) => total + statSync(`${assets}/${name}`).size, 0);
-          const jsBytes = totalBytes('.js');
-          const cssBytes = totalBytes('.css');
-
-          console.log(`UI JavaScript: ${jsBytes} bytes (budget: 700000)`);
-          console.log(`UI CSS: ${cssBytes} bytes (budget: 230000)`);
-          if (jsBytes > 700000 || cssBytes > 230000) {
-            process.exitCode = 1;
-          }
-          NODE
+        # 判据本体在 scripts/check-ui-bundle-budget.mjs：此前这段 heredoc 在
+        # 本文件与 desktop-ci.yml 各内联一份，已经漂移过一次（review M12）。
+        run: node scripts/check-ui-bundle-budget.mjs
 
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check

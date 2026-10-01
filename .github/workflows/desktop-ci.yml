@@ -67,26 +67,9 @@ jobs:
         run: pnpm run build:ui
 
       - name: Enforce UI bundle budgets
-        run: |
-          node --input-type=module <<'NODE'
-          import { readdirSync, statSync } from 'node:fs';
-
-          const assets = 'ui/dist/assets';
-          const totalBytes = (suffix) =>
-            readdirSync(assets)
-              .filter((name) => name.endsWith(suffix))
-              .reduce((total, name) => total + statSync(`${assets}/${name}`).size, 0);
-          const jsBytes = totalBytes('.js');
-          const cssBytes = totalBytes('.css');
-
-          console.log(`UI JavaScript: ${jsBytes} bytes (budget: 700000)`);
-          // 与 desktop-release.yml 的 Enforce UI bundle budgets 保持同一预算：
-          // 2026-09 多内核改版后实测 CSS 205076 字节，180k 会把所有 CI 都拦下。
-          console.log(`UI CSS: ${cssBytes} bytes (budget: 230000)`);
-          if (jsBytes > 700000 || cssBytes > 230000) {
-            process.exitCode = 1;
-          }
-          NODE
+        # 判据本体在 scripts/check-ui-bundle-budget.mjs：此前这段 heredoc 在
+        # 本文件与 desktop-release.yml 各内联一份，已经漂移过一次（review M12）。
+        run: node scripts/check-ui-bundle-budget.mjs
 
       # cargo fmt 不接受 --locked（它是纯格式化器，不解析依赖图），因此下面
       # 只有 test / clippy / check 三处带 --locked。作用是让「实际编译与打包
