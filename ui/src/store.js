@@ -170,10 +170,10 @@ export function showIncident(incident, options = {}) {
   store.incidentVisible = true;
 }
 
-function requestStatus(force = false) {
+function requestStatus(force = false, source = 'unknown') {
   if (!force && statusInFlight) return statusInFlight;
   const requestSeq = beginStatusRequest();
-  const request = invoke('get_status')
+  const request = invoke('get_status', { source })
     .then((view) => {
       const applied = applyStatus(view, requestSeq);
       return { view, applied };
@@ -190,7 +190,7 @@ function requestStatus(force = false) {
 // 同一时刻只保留一次全量刷新：动作完成后的刷新与页面进入时的刷新合并。
 const runRefreshAll = singleFlight(async () => {
   try {
-    await requestStatus(true);
+    await requestStatus(true, 'refresh');
     await Promise.all([refreshPlugins(), refreshSkills()]);
   } catch (e) {
     toastActionError('读取状态失败', e, '请确认应用仍在运行；若持续失败，重启应用后重试');
@@ -209,7 +209,7 @@ export async function pollStatus() {
   try {
     const previousRunning = lastRunning;
     const ownsRequest = statusInFlight === null;
-    const result = await requestStatus();
+    const result = await requestStatus(false, 'poll');
     if (!ownsRequest || !result.applied) return;
     const changed = previousRunning !== null && result.view.kernel.running !== previousRunning;
     if (changed && result.view.kernel.running && !store.starting) {

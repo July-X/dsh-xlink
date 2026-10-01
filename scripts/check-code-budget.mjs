@@ -223,7 +223,7 @@ const FILE_BUDGETS = {
   'src-tauri/src/kernel/mod.rs': 10,
   'src-tauri/src/plugins/mod.rs': 10,
   'src-tauri/src/skills/mod.rs': 10,
-  'src-tauri/src/diagnostics/mod.rs': 10,
+  'src-tauri/src/diagnostics/mod.rs': 11,
   'src-tauri/src/harness/mod.rs': 10,
   'src-tauri/src/usage/mod.rs': 10,
   'src-tauri/src/notify/mod.rs': 10,
@@ -509,6 +509,9 @@ const FILE_BUDGETS = {
   // 函数（注册表 `ProxyServer` 两种写法、`scutil` 字典转储、地址归一化）
   // 可以在任何平台直接测。
   'src-tauri/src/pkg/net_proxy.rs': 180,
+  // get_status 的可关闭性能采样与状态快照编排独立成模块：v0.5.0 之前默认开启，
+  // 之后默认关闭；开启时只负责结构化记录，不把观测逻辑继续塞进命令层。
+  'src-tauri/src/diagnostics/perf.rs': 160,
   'src-tauri/src/diagnostics/guard.rs': 940,
   // 从 guard.rs 拆出的「证据判读」层：只回答「这一行指向内核还是指向某个插件」，
   // 不回答「该怎么处置」。独立成文件有两个理由：① 判据的内核侧（命名空间锚定 +
@@ -1062,7 +1065,10 @@ const FILE_BUDGETS = {
 // 35840 → 36010（2026-09-30 晚，src-tauri/src 按功能分目录）。净增约 170 行：
 // 11 个 mod.rs（约 60 行）与三个大文件因路径多一级而增加的引用行（见 FILE_BUDGETS
 // 里 2026-09-30 那条）。没有新增功能。预算是软上限，按实测登记。
-const TOTAL_BUDGET = 36010;
+// 36010 → 36080：新增 get_status 性能采样与 diagnostics 编排；v0.5.0 之前默认
+// 开启以收集真实性能数据，之后默认关闭，仍可由 DSH_XLINK_PERF 显式覆盖。
+// 额外 10 行余量覆盖版本默认判定与显式关闭分支，不改变单文件预算。
+const TOTAL_BUDGET = 36080;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
