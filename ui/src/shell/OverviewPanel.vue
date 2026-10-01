@@ -5,6 +5,8 @@
 // 「打开工作台窗口 / 打开官方对话窗口」在对应服务开启后作为次级入口从第二行动态浮现。
 // 「当前内核」的 Node.js 行另带「重新检测」（探测本机环境，不改设置）；Node
 // 环境结论悬浮在卡标题旁的 ℹ️ 上（原「桌面端设置」卡已并入这个 tooltip）。
+// 活动版本徽标里的 tag 图标是刻意的：内核版本按 git tag 发版（tag 格式
+// desktop-v<version>），标成「标签」比裸版本号贴切，也与「内核版本」页对得上。
 import { computed, onMounted, ref, watch, onUnmounted } from 'vue';
 import {
   InfoFilled,
@@ -26,6 +28,7 @@ import {
   Connection,
   View,
   TrendCharts,
+  PriceTag,
 } from '@element-plus/icons-vue';
 import {
   store,
@@ -303,6 +306,7 @@ function goVersions() {
           <el-icon class="card-info-icon"><InfoFilled /></el-icon>
         </el-tooltip>
         <span class="kernel-version" :title="'活动内核版本：' + ((kernel && kernel.active) || '未选择')">
+          <el-icon class="kernel-version-tag"><PriceTag /></el-icon>
           {{ (kernel && kernel.active) || '未选择' }}
         </span>
       </h2>
@@ -694,7 +698,13 @@ function goVersions() {
   padding: 1px 8px;
   border: 1px solid var(--el-border-color-extra-light);
   border-radius: 999px;
+  /* 版本号前有 tag 图标，胶囊改用 .age-pill 同款 flex 结构（对齐方式与图标间距
+     都对齐那一条，避免同文件里两种胶囊基线不一致）。 */
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
+.kernel-version .kernel-version-tag { font-size: 11px; }
 /* 分区刷新按钮：复用年龄胶囊外观，但可点击；禁用（查询中）降透明度。 */
 .age-pill-btn {
   border: none;
