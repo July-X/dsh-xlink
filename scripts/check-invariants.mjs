@@ -39,6 +39,10 @@
  *      只在脚本里带注释。）
  *  15. 面板里的资源（`<img src>` / CSS `url()`）不许指向远端，且以 `/` 开头的
  *      路径必须真的存在于 `ui/public`——WebView 出不出网不由我们决定。
+ *  16. 跨模块 `use` 不得无条件引用只在某个 `target_os` 下定义的条目。Windows
+ *      target 只在发布流水线里被编译一次（`check:rust` 只编宿主 target，Quality
+ *      gates 跑在 ubuntu 上也不是 Windows），所以这类错误一次就是一次完整发布
+ *      ——rc.2 在 2026-10-01 为此连炸两次。
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -1688,6 +1692,103 @@ function productionRust(text) {
   } else {
     note('两份实现都只取消 contextmenu，没碰选中与复制');
   }
+}
+
+// --- 16. 跨模块 import 不得无条件引用只在某个 target_os 下定义的条目 --------
+//
+// 为什么这条要存在：Windows target 只在发布流水线里被编译一次。`check:rust`
+// 只编宿主 target（macOS），CI 的 Quality gates 跑在 ubuntu 上也不是 Windows——
+// 所以只影响 Windows 的编译错误，必然要烧掉一次**完整发布**（两平台构建 +
+// 20~30 分钟）才暴露。2026-10-01 的 rc.2 因此连炸两次，第二次就是这个：
+// 19b2d8a 把常量从 commands.rs 搬进 harness/official_chat.rs 时带着
+// `#[cfg(target_os = "macos")]`，但新加的 `use` 没带，Windows 侧 E0432。
+//
+// 判据：收齐「只在 target_os 门控下定义、且没有通用定义」的条目名，再找
+// 自身不带 target_os 门控的 `use crate::…`。跨文件取并集是**故意保守**的：
+// 只要任何文件里存在该名字的无门控定义就不报——宁可漏报，不可误报。
+
+/// 一条 `#[cfg]` 是不是「限定到某个 os」的正向门控。
+/// `not(target_os = …)` 是反向的，说明它在**其它**平台上有定义，按通用处理。
+const restrictsToOneOs = (attr) =>
+  attr.startsWith('#[cfg') && attr.includes('target_os') && !/not\s*\(\s*target_os/.test(attr);
+
+/// `src-tauri/src` 下的全部 Rust 源文件，仓库相对、正斜杠分隔。
+const RUST_SOURCES = walk(join(root, 'src-tauri/src'), ['.rs']).map((full) =>
+  relative(root, full).split(sep).join('/'),
+);
+
+const osRestrictedItems = () => {
+  const items = new Map();
+  for (const rel of RUST_SOURCES) {
+    const lines = read(rel).split('\n');
+    for (let i = 0; i < lines.length; i += 1) {
+      const decl = lines[i].match(
+        /^\s*(?:pub(?:\(crate\))?\s+)?(?:const|static|fn|struct|enum|type)\s+([A-Za-z_]\w*)/,
+      );
+      if (!decl) continue;
+      // 往上收集紧邻的属性行（`#[…]` 连续若干行）。
+      let attr = '';
+      for (let j = i - 1; j >= 0 && lines[j].trim().startsWith('#['); j -= 1) {
+        attr = `${lines[j].trim()} ${attr}`;
+      }
+      const entry = items.get(decl[1]) ?? { oses: new Set(), open: false };
+      if (restrictsToOneOs(attr)) {
+        const os = attr.match(/target_os\s*=\s*"(\w+)"/);
+        if (os) entry.oses.add(os[1]);
+      } else {
+        entry.open = true;
+      }
+      items.set(decl[1], entry);
+    }
+  }
+  // `open` = 存在不带正向 os 门控的定义 → 该名字不是 os 专属。
+  return new Map([...items].filter(([, v]) => !v.open && v.oses.size > 0));
+};
+
+const osRestricted = osRestrictedItems();
+const ungatedOsImports = [];
+for (const rel of RUST_SOURCES) {
+  const lines = read(rel).split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!/^\s*use\s+crate/.test(lines[i])) continue;
+    // use 可能是多行花括号列表，收到闭合为止。
+    let statement = lines[i];
+    let end = i;
+    while (statement.includes('{') && !statement.includes('}') && end + 1 < lines.length) {
+      end += 1;
+      statement += ` ${lines[end].trim()}`;
+    }
+    let attr = '';
+    for (let j = i - 1; j >= 0 && lines[j].trim().startsWith('#['); j -= 1) {
+      attr = `${lines[j].trim()} ${attr}`;
+    }
+    if (attr.includes('target_os')) {
+      i = end;
+      continue;
+    }
+    for (const name of osRestricted.keys()) {
+      if (new RegExp(`\\b${name}\\b`).test(statement)) {
+        ungatedOsImports.push(
+          `${rel}:${i + 1} 无条件 use ${name}（它只在 ${[...osRestricted.get(name).oses].join('/')} 下定义）`,
+        );
+      }
+    }
+    i = end;
+  }
+}
+if (ungatedOsImports.length > 0) {
+  const advice =
+    '给 import 加上与定义相同的 target_os 门控，不要给常量编一个跨平台的假定义：' +
+    '本机编不了非宿主 target（交叉 C 工具链 / 交叉 sysroot 都不具备），' +
+    '这类错误只有 Windows 流水线会报。';
+  fail(
+    'os-gated-import',
+    `${ungatedOsImports.join('；')}——这些条目在别的平台上不存在，无条件 import 会让那个平台的编译期直接报 E0432。${advice}`,
+  );
+} else {
+  note(
+    `${osRestricted.size} 个 target_os 专属条目的跨模块 import 都带门控（Windows 侧不会 E0432）`,
+  );
 }
 
 // --- 结果 --------------------------------------------------------------------
