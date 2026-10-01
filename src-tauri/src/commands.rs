@@ -7,10 +7,15 @@
 use crate::harness::official_chat::{
     current_official_chat_layout, logical_window_size, official_chat_initial_size,
     official_chat_layout, official_chat_layout_plausible, should_relayout_official_chat,
-    OfficialChatLayout, OFFICIAL_CHAT_BROWSER_ARGS, OFFICIAL_CHAT_DATA_STORE_IDENTIFIER,
-    OFFICIAL_CHAT_INITIAL_HEIGHT, OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_STRIP_LABEL,
-    OFFICIAL_CHAT_TABS, OFFICIAL_CHAT_WINDOW_LABEL,
+    OfficialChatLayout, OFFICIAL_CHAT_BROWSER_ARGS, OFFICIAL_CHAT_INITIAL_HEIGHT,
+    OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_STRIP_LABEL, OFFICIAL_CHAT_TABS,
+    OFFICIAL_CHAT_WINDOW_LABEL,
 };
+// 这个常量只在 macOS 上有定义（WKWebView 的 data store 标识符），而唯一
+// 的使用点同样带 `#[cfg(target_os = "macos")]`。import 也必须带同一道门控：
+// 无条件导入会让 Windows 侧编译期就报 E0432（2026-10-01 的 rc.2 就死在这）。
+#[cfg(target_os = "macos")]
+use crate::harness::official_chat::OFFICIAL_CHAT_DATA_STORE_IDENTIFIER;
 use crate::kernel;
 use crate::migration;
 use crate::node;
