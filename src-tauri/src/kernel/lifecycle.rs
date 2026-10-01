@@ -68,7 +68,21 @@ pub(crate) const EMPTY_SOURCE_MAP: &str = r#"{"version":3,"sources":[],"names":[
 
 /// 已安装包中内核 CLI 入口的相对路径。
 pub(crate) const KERNEL_BIN_REL: &str = "node_modules/@deepseek-ai/dsh/lib/bin.js";
-const MAX_ORPHAN_CANDIDATES: usize = 256;
+/// 启动期孤儿回收最多探测多少个 dsh web 进程候选。
+///
+/// 每个候选在 macOS 上要 spawn 一次 `lsof`（本机实测单次约 40ms），所以这个
+/// 上界直接决定 `setup()` 最坏情况下冻结多久。旧的 256 意味着最坏约 10s
+/// 启动无响应，而多出来的那 248 次探测并不改变判断：只有 cwd 命中
+/// `data_dir` 的候选会被杀，其余候选只是各自白等一次 `lsof`。
+///
+/// 8 是按「一台机器上正常有几个内核」定的：每个实例跑一个内核、实例通常
+/// 个位数，反复崩溃留下的孤儿也远少于 8 个。
+///
+/// **给出去的东西**：候选超过 8 个时这是按 pid 升序采样，可能漏掉属于本
+/// `data_dir` 的那个孤儿。漏掉的方向是安全的——行为退回「端口已被占用，
+/// 另一次启动继续回收」，而多探测只会更卡。每次启动都会杀掉它看见的孤儿，
+/// 所以真堆到 8 个以上也会在两三次启动内收敛。
+const MAX_ORPHAN_CANDIDATES: usize = 8;
 
 /// 磁盘上已安装的一个内核版本。
 #[derive(Debug, Clone, Serialize)]
@@ -1725,8 +1739,9 @@ pub fn reap_orphans(data_dir: &Path) {
         if !success {
             return;
         }
-        // 每个候选项都可能触发一次有界的 lsof/ps 探测，因此不能让
-        // 启动期清理与不可信的进程列表规模成正比。
+        // 探测成本随候选数线性增长，所以采到上界就停，而不是跑完整份 ps
+        // （进程列表规模不可信）。上界的取值与取舍见
+        // [`MAX_ORPHAN_CANDIDATES`]。
         let mut candidates = 0usize;
         for line in text.lines() {
             if candidates >= MAX_ORPHAN_CANDIDATES {
