@@ -178,7 +178,14 @@ const FILE_BUDGETS = {
   // 旧 API 委托到新 API，加上 step 3 注释 / 测试 setup helper 的尾段）。
   // 物化/卸载/同步/状态/模式切换是同一概念的同步代码，留在同一文件比
   // 拆出去更易维护。
-  'src-tauri/src/plugins/center.rs': 2980,
+  'src-tauri/src/plugins/center.rs': 2932,
+  // 2980 → 2932：删掉 P4 留下的旧签名壳共 11 项（`sync_kernels` /
+  // `materialize_one` / `remove_materialized` / `sweep_kernel_orphans` /
+  // `sweep_all_kernel_orphans` / `read_meta` / `write_meta` /
+  // `kernel_plugins_dir` / `kernel_plugin_dir` / `kernel_meta_file` /
+  // `META_SUBDIR`），它们都是「函数体只有一行委托 + 弃用它的形参」的过渡壳。
+  // 连带把 6 个仍用旧签名调用的测试改到主路径——那些测试从 P4 之后就没跟着
+  // 更新，一直在验证一条没人走的分支，现在改的是真在跑的那条。
   // P4 step 4：4 条实例范围 Tauri 命令 plugin_install_instance /
   // plugin_uninstall_instance / plugin_sync_instance / plugin_status_instance
   // + 共享 run_plugin_command_instance 主体，约 +75 行。
