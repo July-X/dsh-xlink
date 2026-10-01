@@ -918,7 +918,7 @@ pub fn instance_kernel_running(family: &str, id: &str) -> Option<PidRecord> {
     let Some(record) = read_pid(family, id) else {
         let port = record_port?;
         let listener = crate::kernel::lifecycle::port_listen_pid(port)?;
-        return crate::kernel::lifecycle::pid_is_kernel(listener, Some(port)).then_some(
+        return crate::kernel::lifecycle::pid_is_kernel_identity(listener, Some(port)).then_some(
             PidRecord {
                 pid: listener,
                 port: Some(port),
@@ -928,7 +928,12 @@ pub fn instance_kernel_running(family: &str, id: &str) -> Option<PidRecord> {
         );
     };
     let port = record.port.or(record_port)?;
-    crate::kernel::lifecycle::pid_is_kernel(record.pid, Some(port)).then_some(PidRecord {
+    // 只查身份与命令行里的 `--port`，不反查端口活体：这条判据每 2.5 秒随状态
+    // 轮询跑一次（跨壳那一份更是在 `workbench_running_in_other_shell` 里对着
+    // 另一个壳的每个实例各跑一遍），而少一条判据只会让它更倾向于"还在跑"，
+    // 守卫的误判方向因此始终是"多挡一次用户操作"。理由见
+    // `crate::kernel::lifecycle::pid_is_kernel_identity`。
+    crate::kernel::lifecycle::pid_is_kernel_identity(record.pid, Some(port)).then_some(PidRecord {
         port: Some(port),
         ..record
     })

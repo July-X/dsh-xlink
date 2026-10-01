@@ -870,6 +870,19 @@ pub const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(600);
 const RUN_CAPTURE_MAX_BYTES: usize = 4 * 1024 * 1024;
 const RUN_CAPTURE_READER_GRACE: Duration = Duration::from_millis(500);
 
+/// 等待子进程退出时的**首次**退避步长，以及它的上限。
+///
+/// 2026-10-01 的 perf 采样实测：等待循环此前固定 `sleep(50ms)`，于是每一次
+/// 调用 `ps` / `lsof` / `netstat` 都要额外付 25~50ms 的**纯睡眠**——工具本身
+/// 早就退出了，壳还在等。管理面板每 2.5 秒轮询一次状态，一轮派生 3~4 个子
+/// 进程，这笔账就记成了每次轮询 600ms 里的 400ms（`kernel_workbench_running`
+/// 段 p50 469ms，而 `ps` 实测本身只要个位数毫秒）。
+///
+/// 改成指数退避：快命令几乎立刻被看见（第一拍 200µs），慢命令退到 20ms 上限，
+/// 因此 `git clone` 这类长任务既不会多花 CPU，超时精度也不受影响。
+const RUN_CAPTURE_POLL_MIN: Duration = Duration::from_micros(200);
+const RUN_CAPTURE_POLL_MAX: Duration = Duration::from_millis(20);
+
 fn isolate_process(cmd: &mut Command) {
     #[cfg(unix)]
     {
@@ -955,6 +968,12 @@ fn wait_capture_reader(
     }
 }
 
+/// 下一拍的退避步长：翻倍并封顶。抽成函数是为了让「第一拍必须远小于
+/// 一次短命令的耗时、且随长命令退到上限」这条性质可以被单测直接断言。
+fn next_poll_step(current: Duration) -> Duration {
+    (current * 2).min(RUN_CAPTURE_POLL_MAX)
+}
+
 fn run_capture_command_bytes(cmd: Command, label: &str) -> io::Result<(bool, Vec<u8>, Vec<u8>)> {
     run_capture_command_bytes_with_timeout(cmd, label, RUN_CAPTURE_TIMEOUT)
 }
@@ -984,6 +1003,7 @@ fn run_capture_command_bytes_with_timeout(
     let deadline = started + timeout;
     let mut stdout_capture = None;
     let mut stderr_capture = None;
+    let mut poll_step = RUN_CAPTURE_POLL_MIN;
     let status = loop {
         if stdout_capture.is_none() {
             match stdout_reader.try_recv() {
@@ -1026,7 +1046,8 @@ fn run_capture_command_bytes_with_timeout(
                         format!("{label} timed out after {} seconds", timeout.as_secs()),
                     ));
                 }
-                std::thread::sleep(remaining.min(Duration::from_millis(50)));
+                std::thread::sleep(remaining.min(poll_step));
+                poll_step = next_poll_step(poll_step);
             }
             Err(error) => {
                 terminate_process_tree(&mut child);
@@ -1653,6 +1674,58 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static PROCESS_TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// 等待子进程退出的退避序列必须**从亚毫秒起步**、再封顶。
+    ///
+    /// 2026-10-01 的 perf 采样实测：此前等待循环固定 `sleep(50ms)`，于是每
+    /// 一次调用短工具都要白付 25~50ms——`ps` 自己只要几毫秒，壳却在补觉。管
+    /// 理面板每 2.5 秒一轮状态、一轮 3~4 个子进程，这笔账就是几百毫秒。
+    #[test]
+    fn capture_poll_backoff_starts_sub_millisecond_and_saturates() {
+        assert!(
+            RUN_CAPTURE_POLL_MIN < Duration::from_millis(1),
+            "第一拍必须远小于一次短命令的耗时：{:?}",
+            RUN_CAPTURE_POLL_MIN
+        );
+        assert!(
+            RUN_CAPTURE_POLL_MAX <= Duration::from_millis(50),
+            "上限不得超过旧的固定 50ms 粒度：{:?}",
+            RUN_CAPTURE_POLL_MAX
+        );
+        // 短命令（几个毫秒）必须在**头几拍**内就被看见：累加到上限前就已覆盖 100ms。
+        let mut step = RUN_CAPTURE_POLL_MIN;
+        let mut covered = Duration::ZERO;
+        let mut steps = 0;
+        while covered < Duration::from_millis(100) {
+            covered += step;
+            step = next_poll_step(step);
+            steps += 1;
+            assert!(steps < 32, "退避没有封顶");
+        }
+        assert!(steps <= 12, "退避收敛太慢：{steps} 拍才覆盖 100ms");
+    }
+
+    /// 端到端：连着跑 40 次极短的命令，总耗时必须远低于「每次固定睡 50ms」
+    /// 的旧行为（那需要 2 秒以上）。
+    ///
+    /// 用次数而不是单次来放大差距，是为了让判据在 CI 上被别的测试抢满 CPU 时
+    /// 仍然稳：40 次 spawn 的真实成本约 200ms，阈值给到 1.2 秒仍有 5 倍余量，
+    /// 而旧的固定 50ms 粒度会超过 2 秒。
+    #[test]
+    fn many_short_captures_do_not_pay_a_fixed_sleep_each_time() {
+        let started = Instant::now();
+        for index in 0..40 {
+            let (ok, output) =
+                run_capture("/bin/echo", &[&index.to_string()]).expect("echo 必须能跑起来");
+            assert!(ok);
+            assert_eq!(output.trim(), index.to_string());
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(1200),
+            "40 次极短命令耗时 {elapsed:?}——等待循环又把固定睡眠加回来了"
+        );
+    }
 
     #[test]
     fn rotated_backups_keep_the_log_extension() {

@@ -260,7 +260,7 @@ npm run build:win         # x86_64-pc-windows-msvc
 
 性能问题：
 
-- 管理面板状态采样在 `v0.5.0` 之前默认开启，日志位于「查看日志」里的 `perf-status-<日期>.log`，可按 `source=poll/refresh` 聚合 `total_us` 与各分段耗时；`v0.5.0` 及之后默认关闭，可用 `DSH_XLINK_PERF=1` 开启、`DSH_XLINK_PERF=0` 关闭。
+- 管理面板状态采样在 `v0.5.0` 之前默认开启，日志位于「查看日志」里的 `<构建>-perf-status-<日期>.log`（release 壳为 `release-perf-status-…`，dev 壳为 `dev-perf-status-…`），可按 `source=poll/refresh` 聚合 `total_us` 与各分段耗时；`v0.5.0` 及之后默认关闭，可用 `DSH_XLINK_PERF=1` 开启、`DSH_XLINK_PERF=0` 关闭。
 - 工作台与官方对话的顶部品牌线采用静态渲染，不会在空闲时保持 WebKit 帧循环。安装包含 `src-tauri/src/titlebar-pulse.js` 修改的桌面壳后，需要完全退出并重新启动应用，再重新打开工作台；已存在的 WebView 不会自动替换初始化脚本。
 - `dsh-personal-center` 是第三方可选插件。桌面宠物的统计接口会同步读取并解压全部历史会话；会话较多时可能造成明显的 Node 磁盘 / CPU 阻塞。遇到周期性卡顿时，在个人配置中关闭桌面宠物和「会话状态」，需要统计时再手动打开 Token 用量页面。
 - `patchReload: live` 会启用 client-HMR 的 500 ms bundle `stat` 轮询。日常使用可改为 `startup` 并在 profile patch 中禁用 `client-hmr`；需要调试 client plugin 时再恢复 `live`，删除该禁用项。

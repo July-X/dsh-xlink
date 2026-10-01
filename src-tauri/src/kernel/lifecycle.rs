@@ -577,16 +577,15 @@ pub(crate) fn status_with_perf(
         crate::shell::settings::load_checked_for_shell(crate::shell::settings::current_mode()).1;
     perf.end("kernel_settings_warning", warning_started);
     let other_shell_started = perf.start();
-    let status = KernelStatus {
-        installed,
-        active,
-        active_installed,
-        running,
-        port: settings.port,
-        data_dir: display_short(data_dir),
-        settings_warning,
-        other_shell_workbench: shell::instance::workbench_running_in_other_shell()
-            .filter(|(mode, _, _)| cross_shell_risk && other_shell_tree_shared(*mode))
+    // 跨壳探测**只有在本壳确实还有共享 inode 的版本时才可能改变结果**，而
+    // `Option::filter` 的接收者是无条件求值的：此前即便 `cross_shell_risk` 为
+    // false（全部版本都已重装成 copy 隔离），每 2.5 秒一次的跨壳 pid + 端口
+    // 探测照跑不误，结果随后就被 filter 丢掉。2026-10-01 的 perf 采样实测这段
+    // 约 165ms，而且因为计时挂在 `.inspect()` 上（只在横幅真出现时才记），
+    // 在日志里**完全不可见**——`kernel_total` 与各子段之和对不上就是这个洞。
+    let other_shell_workbench = if cross_shell_risk {
+        shell::instance::workbench_running_in_other_shell()
+            .filter(|(mode, _, _)| other_shell_tree_shared(*mode))
             .map(|(mode, id, record)| OtherShellWorkbench {
                 shell: mode.to_string(),
                 instance: id.clone(),
@@ -596,7 +595,19 @@ pub(crate) fn status_with_perf(
                 // 只改 instance.rs 一处，版本页跟着变（前端不再自己拼）。
                 notice: shell::instance::other_shell_workbench_notice(mode, &id, &record),
             })
-            .inspect(|_| perf.end("kernel_other_shell", other_shell_started)),
+    } else {
+        None
+    };
+    perf.end("kernel_other_shell", other_shell_started);
+    let status = KernelStatus {
+        installed,
+        active,
+        active_installed,
+        running,
+        port: settings.port,
+        data_dir: display_short(data_dir),
+        settings_warning,
+        other_shell_workbench,
     };
     perf.end("kernel_total", total_started);
     status
@@ -1650,10 +1661,10 @@ pub fn stop_instance(family: &str, id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// 判断指定实例的工作台是否真的在运行（按 pid 文件 + 端口 + 身份校验）。
+/// 判断指定实例的工作台是否真的在运行（按 pid 文件 + 身份校验）。
 pub fn instance_workbench_pid(family: &str, id: &str, port: u16) -> Option<u32> {
     let pid = shell::instance::read_pid(family, id).map(|r| r.pid)?;
-    if !pid_is_kernel(pid, Some(port)) {
+    if !pid_is_kernel_identity(pid, Some(port)) {
         return None;
     }
     Some(pid)
@@ -1915,16 +1926,32 @@ pub(crate) fn port_listen_pid(port: u16) -> Option<u32> {
 
 #[cfg(unix)]
 pub(crate) fn port_listen_pid_lsof(port: u16) -> Option<u32> {
-    let port_arg = port.to_string();
-    let (success, stdout, _) = crate::shell::process::run_capture_output(
-        "lsof",
-        &["-nP", "-iTCP", &port_arg, "-sTCP:LISTEN", "-t"],
-    )
-    .ok()?;
+    let args = lsof_tcp_args(port);
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (success, stdout, _) = crate::shell::process::run_capture_output("lsof", &borrowed).ok()?;
     if !success {
         return None;
     }
     stdout.lines().next().and_then(|s| s.trim().parse().ok())
+}
+
+/// lsof 查 TCP 监听者的完整参数表，其中**端口必须与协议连写**（`-iTCP:3090`），
+/// 不能拆成 `-iTCP` 与 `3090` 两个参数。
+///
+/// 2026-10-01 实测：拆开传时 lsof 把 `3090` 当成 **文件名**（`names` 参数），
+/// 于是它照扫全表、给三个不存在的路径各报一次 status error、再把 usage 打到
+/// stderr，最后以退出码 1 结束——**恒定返回 `None`**。后果不是"慢一点"，
+/// 而是 macOS 上 [`pid_is_kernel`] 的第三层（端口活体验证）从未真正生效过：
+/// `ss` 在 macOS 不存在，兜底也拿不到 pid，整条第三层形同虚设，而
+/// `ensure_own_shell_stopped` 这类守卫正是靠它挡 pid 复用。
+#[cfg(unix)]
+fn lsof_tcp_args(port: u16) -> [String; 4] {
+    [
+        "-nP".to_string(),
+        format!("-iTCP:{port}"),
+        "-sTCP:LISTEN".to_string(),
+        "-t".to_string(),
+    ]
 }
 
 #[cfg(unix)]
@@ -2187,19 +2214,56 @@ pub(crate) fn port_listener_identity(port: u16) -> ListenerIdentity {
     }
 }
 
-/// 判断 `pid` 是否是服务于指定端口的 dsh 内核。三层防护：
-/// 1. 命令行必须含 `@deepseek-ai/dsh/lib/bin.js`，挡住被复用 pid 的无关进程；
-/// 2. 命令行 `--port` 必须等于给定端口，挡住跨 profile（dev 3091 / release 3090）
-///    的壳误把对方的内核认作自己；
-/// 3. 给定端口时再向 OS 反查一次监听该端口的 pid，必须等于本 pid，挡住 pid 文件
-///    陈旧、内核早已退出但 OS 把 pid 复用给另一个进程的情况——单看命令行残留
-///    无法区分这一类，端口活体验证是唯一可信的"这还是不是同一个内核"判据。
+/// 判断 `pid` 是否是服务于指定端口的 dsh 内核，且**当前确实在监听那个端口**。
+/// 三层防护，语义见 [`pid_is_kernel_identity`] 的第 1、2 层加下面这第 3 层：
+/// 给定端口时再向 OS 反查一次监听该端口的 pid，必须等于本 pid，挡住 pid 文件
+/// 陈旧、内核早已退出但 OS 把 pid 复用给另一个进程的情况——单看命令行残留
+/// 无法区分这一类，端口活体验证是唯一可信的"这还是不是同一个内核"判据。
+///
+/// **只在马上要按 pid 发信号时用它**（[`kill_pid`]）：第 3 层要派生一次
+/// `lsof`（macOS 上要遍历内核进程表，2026-10-01 perf 采样实测占单次状态轮询
+/// 469ms 里的绝大部分），而每 2.5 秒跑一次的状态观察路径不需要它——见
+/// [`pid_is_kernel_identity`]。
 ///
 /// 传 `None` 时跳过第 2、3 层，只保留"这个 pid 现在是否仍是一个 dsh web 内核"
 /// 的身份与存活校验。调用方在已经持有更强证据时（例如 pid 文件属于本 data dir、
 /// 或已用 cwd 精确匹配过）应当传 `None`——端口会随用户的设置变化，把它当成
 /// 身份的一部分会让改过端口的内核彻底失去追踪，见 [`workbench_pid`]。
 pub(crate) fn pid_is_kernel(pid: u32, port: Option<u16>) -> bool {
+    if !pid_is_kernel_identity(pid, port) {
+        return false;
+    }
+    // 查询失败（lsof / ss / netstat 缺失或沙盒阻断）时不要把已
+    // 经命令行验证过的内核误判为不可信——让 stop_kernel 的端口反查
+    // 兜底接手。
+    match port.and_then(port_listen_pid) {
+        Some(listener_pid) => listener_pid == pid,
+        None => true,
+    }
+}
+
+/// 判断 `pid` 是否是 dsh 内核，命令行里的 `--port` 与给定端口一致。前两层：
+/// 1. 命令行必须含 `@deepseek-ai/dsh/lib/bin.js`，挡住被复用 pid 的无关进程；
+/// 2. 命令行 `--port` 必须等于给定端口，挡住跨 profile（dev 3091 / release 3090）
+///    的壳误把对方的内核认作自己。
+///
+/// **状态轮询走这条而不是 [`pid_is_kernel`]**：第 3 层的端口活体反查每 2.5 秒
+/// 一次，每次派生 `lsof`，而 2026-10-01 的 perf 采样实测整段
+/// `kernel_workbench_running` p50 就是 469ms——其中绝大部分是子进程等待循环
+/// 的固定 50ms 睡眠与 lsof 全表扫描，不是任何真实的判据成本。
+///
+/// 去掉第 3 层**不是把判据放松到危险的方向**，理由三条：
+/// - 少一条判据只能让本函数**更倾向于返回 true**（"还在跑"）。所有拿它当
+///   守卫的路径——装 / 删 / 切内核的 [`ensure_own_shell_stopped`]、找回历史
+///   会话与恢复配置的 `instance_kernel_running`——误判方向都是"多挡一次用户
+///   操作"，不是"在两个内核同时服务同一 data dir 时放行"；
+/// - 真正会发信号的那条路径不受影响：[`kill_pid`] 内部自己再跑一遍完整的
+///   [`pid_is_kernel`]（含第 3 层），被复用给别的实例的 pid 到那里仍然是 no-op；
+/// - pid 被复用给**另一个 dsh 内核**这个唯一会骗过前两层的场景，需要那个内核
+///   恰好抢到同一个 pid、同一个 `--port`，且本壳的 pid 文件同时陈旧；此时
+///   本壳读到的是"另一个实例的内核在跑"，动作仍然停在守卫上（保守方向），
+///   而 [`workbench_pid`] 的第二层兜底会在端口上重新定位真正的监听者。
+pub(crate) fn pid_is_kernel_identity(pid: u32, port: Option<u16>) -> bool {
     let Some(command) = process_command(pid) else {
         return false;
     };
@@ -2235,14 +2299,7 @@ pub(crate) fn pid_is_kernel(pid: u32, port: Option<u16>) -> bool {
     if !port_arg_matches {
         return false;
     }
-    // 端口活体验证：OS 反查"当前谁在监听该端口"，必须等于本 pid。
-    // 查询失败（lsof / ss / netstat 缺失或沙盒阻断）时不要把已
-    // 经命令行验证过的内核误判为不可信——让 stop_kernel 的端口反查
-    // 兜底接手。
-    match port_listen_pid(port) {
-        Some(listener_pid) => listener_pid == pid,
-        None => true,
-    }
+    true
 }
 
 /// 本 data dir 的内核当前是否真的在运行，并返回它的 pid。
@@ -2264,17 +2321,19 @@ pub(crate) fn pid_is_kernel(pid: u32, port: Option<u16>) -> bool {
 ///    运行」。
 pub fn workbench_pid(data_dir: &Path, settings: &Settings) -> Option<u32> {
     if let Some(record) = read_pid_record(data_dir) {
-        // 带端口的记录走完整判据（身份 + 命令行里的 `--port` 一致 + 该端口的
-        // 监听者就是本 pid）。pid 被复用给另一个 dsh 内核时，第 2 层会挡住它：
-        // 那是另一个实例的内核，不属于本 data dir，更不能被我们杀掉（P2-1）。
-        if pid_is_kernel(record.pid, record.port) {
+        // 记录里带端口时查命令行里的 `--port` 是否一致——pid 被复用给另一个 dsh
+        // 内核时这一层会挡住它：那是另一个实例的内核，不属于本 data dir，更不能
+        // 被我们杀掉（P2-1）。端口活体那一层不在这里跑，理由见
+        // `pid_is_kernel_identity`；真正发信号前 `kill_pid` 会自己再跑一遍。
+        if pid_is_kernel_identity(record.pid, record.port) {
             return Some(record.pid);
         }
     }
     if port_open(settings.port) {
         if let Some(pid) = port_listen_pid(settings.port) {
-            // 这里已知监听端口就是 `settings.port`，把端口一起传下去让判据完整。
-            if pid_is_kernel(pid, Some(settings.port)) {
+            // 这里的 pid **就是**从 `settings.port` 上反查出来的监听者，端口活体
+            // 那一层按定义已经成立，重复再问一次只会多派生一个 lsof。
+            if pid_is_kernel_identity(pid, Some(settings.port)) {
                 return Some(pid);
             }
         }
@@ -2322,6 +2381,151 @@ pub fn kill_pid(pid: u32, port: Option<u16>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// lsof / ss 至少有一个能用。两者都没有的精简镜像里，涉及"OS 反查端口
+    /// 监听者"的断言会被跳过，而不是让 CI 假红——但形状检查（`lsof_tcp_filter`）
+    /// 永远跑，它才是这次修复真正要钉住的东西。
+    #[cfg(unix)]
+    fn port_probe_available() -> bool {
+        ["lsof", "ss"].iter().any(|tool| {
+            crate::shell::process::run_capture(tool, &["-h"]).is_ok()
+                || std::path::Path::new(&format!("/usr/bin/{tool}")).exists()
+                || std::path::Path::new(&format!("/bin/{tool}")).exists()
+        })
+    }
+
+    /// lsof 的端口过滤必须与协议**连写成一个参数**。
+    ///
+    /// 拆成 `["-iTCP", "3090"]` 时 lsof 把 `3090` 当成文件名（`names` 参数）：
+    /// 照扫全表、给三个不存在的路径各报一次 status error、usage 打到 stderr，
+    /// 最后以退出码 1 结束。实测结果是恒 `None`，于是 macOS 上 `pid_is_kernel`
+    /// 的第三层（端口活体验证）**从未真正生效过**。
+    #[cfg(unix)]
+    #[test]
+    fn lsof_tcp_args_keep_the_port_attached_to_the_protocol() {
+        let args = lsof_tcp_args(3090);
+        assert_eq!(
+            args[1], "-iTCP:3090",
+            "端口必须与协议连写成一个参数：{args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "3090"),
+            "端口单独成一个参数会被 lsof 当成文件名（names），整条命令恒定失败：{args:?}"
+        );
+    }
+
+    /// 端到端：真的绑一个监听 socket，让 lsof 把它认出来。
+    ///
+    /// 这是上面那条形状检查的**行为版**——改回拆分参数时它会红（返回 None），
+    /// 而形状检查只保证参数长得对、不保证 lsof 真认得。
+    #[cfg(unix)]
+    #[test]
+    fn port_listen_pid_lsof_finds_this_process_on_a_real_socket() {
+        if !port_probe_available() {
+            eprintln!("跳过：lsof 与 ss 都不在");
+            return;
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 监听 socket");
+        let port = listener.local_addr().expect("local_addr").port();
+        assert_eq!(
+            port_listen_pid_lsof(port),
+            Some(std::process::id()),
+            "lsof 必须能认出本进程在 {port} 上的监听 socket"
+        );
+        drop(listener);
+    }
+
+    /// 两层判据与三层判据的分工：观察路径（[`workbench_pid`] /
+    /// [`instance_workbench_pid`] / `instance_kernel_running`）只查身份，
+    /// 真正要按 pid 发信号前（[`kill_pid`]）仍然要求端口活体验证。
+    ///
+    /// 诱饵进程在命令行里声称 `--port <本测试自己占着的端口>`——命令行对得上，
+    /// 但那个端口的监听者是测试进程而不是诱饵。少一条判据只能让判据**更倾向于
+    /// 认**，这正是"观察路径走两层、发信号路径走三层"能成立的前提。
+    #[cfg(unix)]
+    #[test]
+    fn identity_skips_port_liveness_while_the_strict_check_still_enforces_it() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let mut child = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                &format!("sleep 5; true @deepseek-ai/dsh/lib/bin.js --port {port}"),
+            ])
+            .spawn()
+            .expect("spawn decoy");
+        let pid = child.id();
+        let mut identity = false;
+        for _ in 0..40 {
+            if pid_is_kernel_identity(pid, Some(port)) {
+                identity = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            identity,
+            "诱饵的身份两层应当成立：{:?}",
+            process_command(pid)
+        );
+        if port_probe_available() {
+            assert!(
+                !pid_is_kernel(pid, Some(port)),
+                "端口活体验证仍必须挡住「命令行声称这个端口、但监听者是别人」"
+            );
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(listener);
+    }
+
+    /// 状态采样必须**无条件**记录跨壳探测这一段。
+    ///
+    /// 2026-10-01 之前计时挂在 `Option::inspect` 上，只有横幅真出现时才记。
+    /// 于是这一段在日志里完全不可见：`kernel_total` 与各子段之和**对不上**，
+    /// 多出来的约 165ms 没人知道花在哪——而它恰恰是每 2.5 秒对着另一个壳的
+    /// 每个实例各做一遍 pid + 端口探测。看不见的开销不会被优化。
+    #[test]
+    fn status_perf_always_records_the_cross_shell_segment() {
+        let root = workbench_test_dir("perf-other-shell");
+        let _xlink_home = scoped_xlink_home(&root);
+        let mut perf = crate::diagnostics::perf::PerfSample::new("get_status", Some("poll"));
+        if perf.start().is_none() {
+            eprintln!("跳过：本构建默认关闭 perf 采样（v0.5.0 起）");
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        // 空 data dir ⇒ `cross_shell_risk` 为 false ⇒ 短路后根本不探测，
+        // 但这一段**仍然必须被计时**。
+        let settings = Settings {
+            port: 0,
+            ..Settings::default()
+        };
+        let status = status_with_perf(&root, &settings, &mut perf);
+        perf.finish();
+        assert!(
+            status.other_shell_workbench.is_none(),
+            "没有共享存储时不该出现跨壳横幅"
+        );
+
+        let logs = crate::shell::paths::shell_logs_dir(shell::settings::current_mode());
+        let line = fs::read_dir(&logs)
+            .expect("perf 日志目录应已创建")
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.contains("perf-status") && n.ends_with(".log"))
+            })
+            .map(|path| fs::read_to_string(path).expect("读回 perf 日志"))
+            .expect("状态采样必须留下 perf-status 日志");
+        assert!(
+            line.contains("kernel_other_shell_us="),
+            "跨壳探测段没有被计时（此前只在横幅出现时才记）：{line}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
 
     /// `netstat -ano` 的真实形状（保留中文 Windows 的本地化表头，因为表头
     /// 行也在被解析的输入里）。
