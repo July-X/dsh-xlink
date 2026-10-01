@@ -122,31 +122,16 @@ fn app_err(data_dir: &Path, e: impl std::fmt::Display) -> String {
 // --- 状态 --------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<StatusView, String> {
+pub async fn get_status(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source: Option<String>,
+) -> Result<StatusView, String> {
     let data_dir = state.data_dir.clone();
     // 文件探测和端口检查在 blocking worker 上运行：如果作为同步命令，
     // 这个轮询会每几秒就霸占 Tauri 的主线程。
     blocking(move || {
-        let settings = settings::load_for_shell(settings::current_mode());
-        let kernel_status = kernel::lifecycle::status(&data_dir, &settings);
-        // 工作台窗口的加载看门狗挂在既有轮询上，不另起定时器：它本来每 2.5s
-        // 就跑一次，而「页面没起来」这件事只有轮询能顺带看出来。
-        harness_window::reload_stalled(&app, kernel_status.running);
-        let quarantine_doc = quarantine::load(&data_dir);
-        let state = app.state::<AppState>();
-        let node_info = cached_node(&state, &settings);
-        let official_chat_open = app.get_window(OFFICIAL_CHAT_WINDOW_LABEL).is_some();
-        let view = StatusView {
-            shell_version: app.package_info().version.to_string(),
-            dev_build: cfg!(debug_assertions),
-            shell_mode: crate::shell::paths::ShellMode::current(),
-            kernel: kernel_status,
-            node: node_info,
-            quarantined: quarantine_doc.items,
-            last_incident: guard::load_incident(&data_dir),
-            settings,
-            official_chat_open,
-        };
+        let view = crate::diagnostics::perf::collect_status(&app, &data_dir, source.as_deref());
         Ok::<_, std::convert::Infallible>(view)
     })
     .await

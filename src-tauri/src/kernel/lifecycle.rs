@@ -465,8 +465,17 @@ pub fn logs_dir(_data_dir: &Path) -> PathBuf {
 /// 每 2.5s 轮询都会调用本函数）。入口存在但原生模块缺失的**晚期**失败仍会被列出，
 /// 那部分由启动前的 `verify_installed_version` 三重判定负责报错。
 pub fn list_installed(data_dir: &Path) -> Vec<InstalledVersion> {
+    let mut perf = crate::diagnostics::perf::PerfSample::disabled();
+    list_installed_with_perf(data_dir, &mut perf)
+}
+
+fn list_installed_with_perf(
+    data_dir: &Path,
+    perf: &mut crate::diagnostics::perf::PerfSample,
+) -> Vec<InstalledVersion> {
     let dir = kernels_dir(data_dir);
     let mut out = Vec::new();
+    let inode_started = perf.start();
     if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -491,6 +500,7 @@ pub fn list_installed(data_dir: &Path) -> Vec<InstalledVersion> {
             });
         }
     }
+    perf.end("kernel_inode_scan", inode_started);
     out
 }
 
@@ -533,33 +543,48 @@ pub fn with_active(installed: &mut [InstalledVersion], active: Option<&str>) {
 
 /// 组装完整的状态快照。
 pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
-    let mut installed = list_installed(data_dir);
+    let mut perf = crate::diagnostics::perf::PerfSample::disabled();
+    status_with_perf(data_dir, settings, &mut perf)
+}
+
+pub(crate) fn status_with_perf(
+    data_dir: &Path,
+    settings: &Settings,
+    perf: &mut crate::diagnostics::perf::PerfSample,
+) -> KernelStatus {
+    let total_started = perf.start();
+    let mut installed = list_installed_with_perf(data_dir, perf);
+    let active_started = perf.start();
     let active = read_active(data_dir);
+    perf.end("kernel_read_active", active_started);
     with_active(&mut installed, active.as_deref());
+    let active_installed_started = perf.start();
     let active_installed = active
         .as_ref()
         .map(|v| kernel_dir(data_dir, v).join(KERNEL_BIN_REL).is_file())
         .unwrap_or(false);
+    perf.end("kernel_active_installed", active_installed_started);
     // 横幅的出现场景按**实际残余风险**门控（2026-09-30 定案机制的推论）：
     // 风险 = 删 / 重装本壳某棵共享 inode 的树 × 对面正在服务的树也共享
     // （两侧任一独立，任何装 / 删都物理碰不到对方）。本壳全部版本都重装成
     // copy 之后横幅消失——它不再无条件常驻吓唬已经完成隔离的用户。
     let cross_shell_risk = installed.iter().any(|v| v.shared_storage);
-    KernelStatus {
+    let running_started = perf.start();
+    let running = workbench_running(data_dir, settings);
+    perf.end("kernel_workbench_running", running_started);
+    let warning_started = perf.start();
+    let settings_warning =
+        crate::shell::settings::load_checked_for_shell(crate::shell::settings::current_mode()).1;
+    perf.end("kernel_settings_warning", warning_started);
+    let other_shell_started = perf.start();
+    let status = KernelStatus {
         installed,
         active,
         active_installed,
-        // 不以配置端口判活：内核可能绑在用户改端口之前的那个端口上，
-        // 详见 [`workbench_pid`]。
-        running: workbench_running(data_dir, settings),
+        running,
         port: settings.port,
         data_dir: display_short(data_dir),
-        // 与 `settings` 参数同样的读取路径，但保留诊断：调用方传进来的
-        // settings 可能已经是"回退后的默认值"。
-        settings_warning: crate::shell::settings::load_checked_for_shell(
-            crate::shell::settings::current_mode(),
-        )
-        .1,
+        settings_warning,
         other_shell_workbench: shell::instance::workbench_running_in_other_shell()
             .filter(|(mode, _, _)| cross_shell_risk && other_shell_tree_shared(*mode))
             .map(|(mode, id, record)| OtherShellWorkbench {
@@ -570,8 +595,11 @@ pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
                 // 横幅文案与进度面板 / 日志用的是**同一条**来源：机制定案改文案时
                 // 只改 instance.rs 一处，版本页跟着变（前端不再自己拼）。
                 notice: shell::instance::other_shell_workbench_notice(mode, &id, &record),
-            }),
-    }
+            })
+            .inspect(|_| perf.end("kernel_other_shell", other_shell_started)),
+    };
+    perf.end("kernel_total", total_started);
+    status
 }
 
 /// 检查**本壳**的工作台是否已经停止。活动版本切换会改变下一次启动使用的内核；
