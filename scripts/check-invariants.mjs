@@ -516,6 +516,47 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
   }
 }
 
+// --- 8.5 icon-only 按钮必须有无障碍名称 -------------------------------------
+//
+// 事故来源：code-review-2026-09-27 的 L3。`circle` + `:icon` 的按钮**对屏幕
+// ��读器是空的**——可访问名只能来自文本、`aria-label` 或 `aria-labelledby`，
+// 而图标本身不是文本。外层 `el-tooltip` 只在鼠标悬停时才出现，键盘与读屏
+// 用户永远看不到它，于是这些按钮等于不存在。八个按钮全是插件/技能的更新、
+// 打开仓库、卸载这类**唯一的**操作入口。
+//
+// 这类缺陷没有任何构建期信号：Vue 不校验 aria 属性，test:ui 也钉不住「一个
+// 按钮该叫什么」。所以钉进门禁。判据取「`circle` 且有 `:icon`」这一形状——
+// 本仓库的 icon-only 按钮一律同时带这两个属性，带了 `circle` 就是视觉上只剩
+// 图标；带 `aria-label` 或可见文本（插槽文本）即通过。
+{
+  const missingAria = [];
+  for (const file of walk(join(root, 'ui/src'), ['.vue'])) {
+    const text = readFileSync(file, 'utf8');
+    // 按 `<el-button` 起、到配对的 `>` 止取属性块。自闭合的 `<el-button … />`
+    // 同样覆盖（`circle` 的用法全是自闭合）。
+    for (const match of text.matchAll(/<el-button\b([\s\S]*?)\/>/g)) {
+      const attrs = match[1];
+      if (!/\bcircle\b/.test(attrs)) continue;
+      if (!/:icon=|v-bind:icon=/.test(attrs)) continue;
+      if (/\baria-label(?:ledby)?=/.test(attrs)) continue;
+      const line = text.slice(0, match.index).split('\n').length;
+      missingAria.push(`${relative(root, file).split(sep).join('/')}:${line}`);
+    }
+  }
+  if (missingAria.length > 0) {
+    for (const where of missingAria) {
+      fail(
+        'a11y-icon-button',
+        `${where} 是只有图标的按钮，却没有 aria-label —— 屏幕阅读器读不出它是什么，` +
+          '鼠标用户看得见的 tooltip 对键盘与读屏用户不存在。补 :aria-label="\'动作 \' + 实体名"，' +
+          '照同一文件里 el-switch :aria-label 的写法。',
+      );
+    }
+  } else {
+    note('icon-only 按钮都带 aria-label');
+  }
+}
+
 // --- 9. CSS 自定义属性：var() 引用必须有定义 ---------------------------------
 //
 // 事故来源：code-review-2026-09-27 的 H4。`--text-muted` / `--surface-soft`
