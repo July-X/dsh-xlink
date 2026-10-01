@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 
-const scriptPath = path.resolve("src-tauri/src/titlebar-pulse.js");
-const source = fs.readFileSync(scriptPath, "utf8");
+import { readShellSource } from "./lib/shell-source.mjs";
+
+// 按文件名定位，不写死 `src-tauri/src/titlebar-pulse.js`：注入脚本 2026-10-01
+// 搬进了 `harness/`，写死路径的话这条测试会以 ENOENT 变红，而它要查的契约
+// （没有常驻动画）一个字都没变。解析器见 lib/shell-source.mjs 的文件头。
+const source = readShellSource("titlebar-pulse.js");
 
 test("标题栏注入脚本不包含常驻渲染动画", () => {
   assert.doesNotMatch(source, /@keyframes/);

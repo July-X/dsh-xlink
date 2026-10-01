@@ -4,6 +4,34 @@
 
 提交前跑 `cargo clippy --all-targets`（零警告基线）与 `cargo fmt`。
 
+## 目录约定
+
+`src-tauri/src/` **按功能分目录**，不要往根目录平铺。2026-10-01 重组过一次：当时 60 多个 `.rs` 加 6 个注入脚本 `.js` 全堆在根目录，找一个模块得先把整个目录扫一遍。分组与 `ui/src/` 对齐，一层目录说清一件事。
+
+```
+src-tauri/src/
+├── lib.rs / main.rs / commands.rs        # 入口、setup、面板命令层，就这三个留根
+├── shell/          # 壳自身：进程、路径、实例、状态、设置、窗口、托盘、错误
+├── kernel/         # 内核生命周期：安装、钉版、适配器、看护退避（lifecycle.rs）
+├── harness/        # 工作台窗口：建窗 / 自愈 / 草稿与附件 / 官方对话 + 注入脚本
+├── plugins/        # 插件中央库、补丁、安装预检、沙盒
+├── skills/         # 技能中央库、物化、同名冲突
+├── diagnostics/    # 安全网：启动看护、环境回退点、恢复后自检、二分定位
+├── migration/      # 迁移向导与找回历史会话
+├── pkg/            # 取源与出网：npm/GitHub、归档、发布列表、自身更新
+├── node/           # Node 检测与托管安装
+├── notify/         # 任务通知与「点通知回到工作台」
+└── usage/          # 用量：本地 token 账目、云端套餐、凭据只读解析
+```
+
+三条约定：
+
+- **子模块声明为 `pub(crate) mod x;`，不做 `pub use x::*` 重导出。** glob 重导出在两个子模块导出同名符号时会变成「歧义」，而显式路径 `crate::<组>::<模块>::X` 既无歧义，也保留了「这个符号来自哪个模块」的信息——这在 `shell/`（14 个模块）和 `pkg/` 这种大组里是刚需。
+- **`lib.rs` 只声明组，不声明叶子。** 加一个模块要改两处（组内 `mod.rs` + 该组自己的调用点），这是有意的：组目录的存在就是为了让「有哪些模块」这件事在一个文件里看得全。
+- **搬文件时会跟着失效的东西，已经全部改成按 basename 认了**——`scripts/lib/shell-source.mjs`（门禁脚本与 UI 测试共用的一份解析器）、`check-invariants.mjs` 的 `baseName()` / `inFile()`、`check-code-budget.mjs` 的 `isKnownBlob()` / `moduleId()`。**新增判据时照这个来**：判据要问的是「哪个模块」，不是「文件在哪一层」。2026-10-01 那次重组的实测代价：9 项不变量一次性转红、5 个测试 ENOENT 挂掉、`check-invariants` 自己在启动阶段就崩——红的原因与要检查的东西全都无关。反过来说，`FILE_BUDGETS` 里登记的**路径**仍要跟着改（那是给人看的），但**反棘轮比对**按模块标识走，所以搬过的文件不会被当成新文件。
+
+本文下面各章沿用**不带目录的文件名**（`kernel.rs`、`paths.rs`、`harness_draft.rs`…）指代模块，指的是同名文件，上表给出它现在在哪。
+
 ## 错误信息
 
 - **错误信息必须包含可操作的下一步与相关日志路径。** `AppError::Skill(...)` / `AppError::Io(...)` 那些字符串是用户**唯一**能拿到的东西（GUI 应用里 `eprintln!` 在 Windows 上没有去处），写成「操作失败」等于让用户自己猜。写不出来就先问一句「出事了他查什么」，查不到说明这个设计还没完成。
@@ -17,7 +45,7 @@
 
 ## 窗口与注入脚本
 
-- **窗口里一律禁右键菜单，但一个字都不许碰「选中」**（2026-09-30）。三类窗口各有一处落点：壳自己的五个窗口（`main` / 日志 / 用量 / 套餐 / 官方对话页签栏）共用 SPA 入口，走 `ui/src/noContextMenu.js`（`main.js` 在 `app.mount` 之前调一次）；工作台与官方对话三个内容 webview 加载的是**别人的**页面，走 Rust 注入的 `src-tauri/src/no-context-menu.js`（`window` 捕获阶段 `preventDefault` + `stopImmediatePropagation`，页面自绘的菜单才一并拦掉）。**左键拖选与 Ctrl/⌘+C 复制必须照旧可用**：写 `user-select: none` 或拦下 `copy` 不会报任何错，症状只是用户再也复制不出东西。`check:invariants` 第 16 项按「每条 `WebviewUrl::External` 建窗链」逐条查——工作台有**两条**建窗链（`commands.rs::open_harness` 走用户点击那条，`harness_window::build` 走自愈 / 手动刷新那条），历史上 `harness-draft.js` 就是因为要接两处才留下这条隐患，**新增远程窗口或改这两条链时别只改一处**。引擎层的菜单（Wry `with_default_context_menus` / WebView2 `AreDefaultContextMenusEnabled`）在 Tauri 2.11 上没有对外接口，这一层只能靠 DOM 事件取消。
+- **窗口里一律禁右键菜单，但一个字都不许碰「选中」**（2026-09-30）。三类窗口各有一处落点：壳自己的五个窗口（`main` / 日志 / 用量 / 套餐 / 官方对话页签栏）共用 SPA 入口，走 `ui/src/shell/noContextMenu.js`（`main.js` 在 `app.mount` 之前调一次）；工作台与官方对话三个内容 webview 加载的是**别人的**页面，走 Rust 注入的 `src-tauri/src/harness/no-context-menu.js`（`window` 捕获阶段 `preventDefault` + `stopImmediatePropagation`，页面自绘的菜单才一并拦掉）。**左键拖选与 Ctrl/⌘+C 复制必须照旧可用**：写 `user-select: none` 或拦下 `copy` 不会报任何错，症状只是用户再也复制不出东西。`check:invariants` 第 16 项按「每条 `WebviewUrl::External` 建窗链」逐条查——工作台有**两条**建窗链（`commands.rs::open_harness` 走用户点击那条，`harness_window::build` 走自愈 / 手动刷新那条），历史上 `harness-draft.js` 就是因为要接两处才留下这条隐患，**新增远程窗口或改这两条链时别只改一处**。引擎层的菜单（Wry `with_default_context_menus` / WebView2 `AreDefaultContextMenusEnabled`）在 Tauri 2.11 上没有对外接口，这一层只能靠 DOM 事件取消。
 - 工作台草稿的注入脚本 `harness-draft.js` 与编解码 `harness_media.rs` 也归本侧：它们注入进**别人的**页面，只能经 `capabilities/harness-remote.json` 授权后 invoke，**命令声明与 capability 两处都漏就是真机上 ACL 静默拒、`.catch` 吞掉、功能完全不工作**。
 
 ## 内核安装与跨壳

@@ -1,0 +1,7142 @@
+//! 社区插件管理：位于 dsh-xlink home 下的中央库、按内核物化（link 或 copy）、
+//! profile 接线以及更新检查。
+//!
+//! 所有插件源码统一保存在 `<home>/plugins/`（即中央库），绝不放入内核安装
+//! 目录内。每一个已安装的内核都从自己的 `<data_dir>/kernels/<version>/plugins/`
+//! 目录读取插件，该目录由桌面壳从中央库物化而来，方式可以是 symlink（link 模式，
+//! 默认）或真实拷贝（copy 模式）。活动内核的 profile（`profiles/<profile>/`）
+//! 随后把每个插件声明为指向该物化目录的依赖；当插件声明了 `dsh.bundle` 时
+//! 再叠加一层 bundle 层，整体镜像内核 plugin CLI 产出的结构。这样切换内核
+//! 永远不需要重新安装，只需重新物化并重接线。
+//!
+//! 设计说明见桌面交付物中的 `docs/plugin-management.md`。
+
+use crate::kernel;
+use crate::node;
+use crate::pkg;
+use crate::pkg::fetch::git_latest_tag;
+use crate::pkg::fetch::is_newer_than;
+use crate::pkg::fetch::looks_like_semver;
+use crate::pkg::fetch::new_staging_dir;
+use crate::pkg::fetch::remove_link;
+use std::collections::BTreeMap;
+use std::fs;
+use std::io;
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+use serde::{Deserialize, Serialize};
+use url::Url;
+
+use crate::pkg::fetch::{split_npm_spec, stamp_id_marker, write_source_marker, ID_MARKER};
+use crate::pkg::releases::{http_get_file, http_get_npm_latest, http_get_string};
+use crate::plugins::quarantine;
+use crate::shell::error::AppError;
+use crate::shell::instance;
+use crate::shell::paths;
+use crate::shell::process::{atomic_write, run_capture};
+use crate::shell::version::cmp_versions;
+use crate::{commands, shell::settings};
+
+/// 桌面壳将插件接入的默认 profile（即内核的 web 表面）。
+pub const DEFAULT_PROFILE: &str = "web";
+/// 桌面壳 home 下的中央库目录名。
+const STORE_SUBDIR: &str = "plugins";
+/// 位于中央库目录内的插件清单文件。
+const STORE_FILE: &str = "store.json";
+/// 每个中央库条目内的取源标记文件。
+/// 社区目录的主要数据源：dshfind.com 插件超市的全量目录（原 dsh-plugin.org
+/// hub 的新站点；`/api/plugins-data` 是它的公开目录 JSON，站点页面在 `/zh`）。
+const HUB_CATALOG_URL: &str = "https://dshfind.com/api/plugins-data";
+/// 社区目录的回退数据源：参考市场的插件列表，在 hub 不可达时使用。
+const MARKET_CATALOG_URL: &str =
+    "https://raw.githubusercontent.com/losebird/dsh-plugin-market/main/registry/all.json";
+/// 桌面壳数据目录下的目录缓存文件。
+const CATALOG_CACHE_FILE: &str = "plugins-catalog.json";
+/// 目录缓存的新鲜度窗口。
+const CATALOG_TTL_SECS: u64 = 6 * 3600;
+/// 内核 plugins 目录内的物化元数据目录名。
+const META_SUBDIR: &str = ".meta";
+/// pnpm `link:`（symlink）依赖的 spec 前缀。
+const SPEC_LINK: &str = "link:";
+/// pnpm `file:`（中央库拷贝）依赖的 spec 前缀。
+const SPEC_FILE: &str = "file:";
+
+// --- 数据模型 ------------------------------------------------------------
+
+/// 中央库中一个已安装的插件条目。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StoreItem {
+    /// 文件系统安全的插件键（包名/仓库名，斜杠已替换）。
+    pub id: String,
+    /// 显示名称（npm 包名或仓库简称）。
+    pub name: String,
+    /// 取源方式：npm 或 git。
+    pub origin: String,
+    /// 取源地址：npm 包名（可附 `@version`）或 git URL（可附 `#tag`）。
+    pub source: String,
+    pub installed_version: String,
+    /// 已知的最新版本，由 check_updates 刷新。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
+    /// 期望的物化模式：link 或 copy。
+    pub mode: String,
+    /// 源是否锁定了版本（npm `@version` / git `#tag`）。
+    pub pinned: bool,
+    /// 自纪元以来的秒数，仅供展示。
+    pub installed_at: String,
+    /// 最近一次拉取距纪元的秒数，仅供展示。
+    pub updated_at: String,
+    /// 给用户看的仓库 URL（git 来源插件）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl Default for StoreItem {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            origin: String::from("npm"),
+            source: String::new(),
+            installed_version: String::new(),
+            latest_version: None,
+            mode: String::from("link"),
+            pinned: false,
+            installed_at: String::new(),
+            updated_at: String::new(),
+            repo_url: None,
+            description: None,
+        }
+    }
+}
+
+/// 持久化的中央库文档。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Store {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u32,
+    pub items: Vec<StoreItem>,
+    #[serde(rename = "lastCheckedAt", skip_serializing_if = "Option::is_none")]
+    pub last_checked_at: Option<String>,
+    /// 最近一次接线/安装失败后向 UI 展示的告警，若无则为空。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+impl Default for Store {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            items: Vec::new(),
+            last_checked_at: None,
+            warning: None,
+        }
+    }
+}
+
+/// 每个内核的物化记录，每个插件对应一个 JSON 文件。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct KernelMeta {
+    /// 磁盘上的实际模式：link 或 copy。
+    mode: String,
+    /// 本次物化对应的中央库版本。
+    version: String,
+    synced_at: String,
+    /// 实际模式是 link→copy 的**降级**结果，而不是用户选择的模式。
+    ///
+    /// 没有这个标志就无法区分"用户想要 link 但系统不给权限（已降级）"与
+    /// "用户主动选择了 copy"：前者每次启动都重试建链、必然失败、然后整树重拷，
+    /// 而后者在用户切回 link 时必须真的重新物化。
+    #[serde(default)]
+    fallback: bool,
+}
+
+/// 管理界面渲染的一行数据。
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginRow {
+    pub id: String,
+    pub name: String,
+    pub origin: String,
+    pub source: String,
+    pub installed_version: String,
+    pub latest_version: Option<String>,
+    pub pinned: bool,
+    /// 中央库中记录的期望模式。
+    pub desired_mode: String,
+    /// 默认实例中的实际模式（仅当已物化时）。
+    ///
+    /// P8 起 PluginRow 同时携带 [`Self::instances`] 全量 per-instance 视图。
+    /// 该字段保留仅为兼容单实例 UI（PluginsPanel.vue 旧渲染路径），由
+    /// 默认实例的状态填入；新 UI 应直接读 `instances` map。
+    pub actual_mode: Option<String>,
+    /// 默认实例中的物化是否完整且与当前版本一致。
+    pub synced: bool,
+    /// 默认实例的 profile 是否已经加载了此插件。
+    pub wired: bool,
+    /// 启动看护禁用此插件时的隔离记录；
+    /// `None` 表示该插件正常参与接线。
+    pub quarantined: Option<quarantine::QuarantineItem>,
+    pub repo_url: Option<String>,
+    pub description: Option<String>,
+    pub installed_at: String,
+    pub updated_at: String,
+    /// 每个实例在该插件上的状态（P8）。key 是实例 id（与
+    /// [`instance::InstanceRecord::id`] 一致）；注册表里已被删的实例不会
+    /// 出现在这里。物化与 wiring 都是实例私有的，quarantine 仍全局共享
+    /// （一个插件在所有实例上同时被隔离），所以每个实例都填同一份。
+    #[serde(default)]
+    pub instances: BTreeMap<String, PluginInstanceState>,
+}
+
+/// 单个实例上的插件状态（P8）。PluginRow.instances 的 value 类型。
+///
+/// 设计要点：所有字段都从文件系统读出（不在前端再算一遍），保证 UI
+/// 切 tab 时不需要重新发起 invoke；同时 legacy 字段（`actual_mode` /
+/// `synced` / `wired` / `quarantined`）也由「默认实例」的状态填一份，
+/// 单实例 UI 不需要做任何改动。
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginInstanceState {
+    /// 该实例是否已经把插件物化到 `extensions/plugins/<id>/`。
+    pub materialized: bool,
+    /// 物化模式（`link` / `copy`）；未物化时为 `None`。
+    pub actual_mode: Option<String>,
+    /// 物化是否与中央库的 `installed_version` 一致（不计 `synced_at`）。
+    pub synced: bool,
+    /// 该实例的 profile 是否加载了此插件。
+    pub wired: bool,
+    /// 全局 quarantine 标记的一份镜像（quarantine 是全局文档）。
+    pub quarantined: Option<quarantine::QuarantineItem>,
+}
+
+/// 管理界面所需的插件汇总状态。
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginStatus {
+    pub rows: Vec<PluginRow>,
+    pub profile: String,
+    pub active_kernel: Option<String>,
+    /// 插件中央库的展示路径。UI 的存储位置提示**必须读这份数据**：前端此前把
+    /// `~/.dsh-xlink/dsh-plugins/` 写死在气泡里，而那已是 legacy 路径
+    /// （`store_relocate` 早已整体搬进 `plugins/dsh/`），用户照着找一个不存在
+    /// 的目录。技能页的同一处提示读的是 `SkillStatus.store_root`，那边是对的。
+    pub store_root: String,
+    /// 已知存在更新版本的插件数量。
+    pub updates: usize,
+    pub last_checked_at: Option<String>,
+    pub warning: Option<String>,
+}
+
+/// 在插件中心展示的一条目录条目。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogItem {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub description: String,
+    pub stars: u64,
+    #[serde(default)]
+    pub forks: u64,
+    pub downloads: u64,
+    pub verified: bool,
+    pub repo: Option<String>,
+    /// 安装 spec：npm 包名或 git URL（已知时附 `#tag`）。
+    pub spec: String,
+    /// npm 或 git，由条目的安装方式推导。
+    pub origin: String,
+    pub category: String,
+    /// 最新发布版本字符串（可能带前导 `v`）。
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// 上游最近更新的 ISO 时间戳（已知时）。
+    #[serde(default)]
+    pub updated: String,
+    /// 给用户看的详情页（dshfind.com 或仓库）。
+    #[serde(default)]
+    pub detail_url: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubRelease {
+    #[serde(rename = "tag_name")]
+    tag_name: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    tarball_url: String,
+}
+
+/// 解析公共 GitHub 仓库地址为 `owner/repo`。只有明确属于
+/// `github.com` 的 HTTPS/SSH/git 地址才会进入 Release 优先路径；其它
+/// Git 主机继续使用原有的 clone 流程。
+fn github_repo_path(source: &str) -> Option<String> {
+    let source = source
+        .trim()
+        .split_once('#')
+        .map(|(head, _)| head)
+        .unwrap_or(source.trim());
+
+    let path = if let Some(rest) = source.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        if !host.eq_ignore_ascii_case("github.com") || path.contains('?') {
+            return None;
+        }
+        path.trim_matches('/').to_string()
+    } else {
+        let parsed = Url::parse(source)
+            .or_else(|_| Url::parse(&format!("https://{source}")))
+            .ok()?;
+        let supported_scheme = match parsed.scheme() {
+            "https" => {
+                parsed.username().is_empty()
+                    && parsed.password().is_none()
+                    && parsed.port().map(|port| port == 443).unwrap_or(true)
+            }
+            "ssh" | "git+ssh" => {
+                (parsed.username().is_empty() || parsed.username().eq_ignore_ascii_case("git"))
+                    && parsed.password().is_none()
+                    && parsed.port().map(|port| port == 22).unwrap_or(true)
+            }
+            "git" => {
+                parsed.username().is_empty()
+                    && parsed.password().is_none()
+                    && parsed.port().map(|port| port == 9418).unwrap_or(true)
+            }
+            _ => false,
+        };
+        if !parsed
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case("github.com"))
+            || !supported_scheme
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return None;
+        }
+        parsed.path().trim_matches('/').to_string()
+    };
+
+    let mut parts = path.split('/');
+    let owner = parts.next()?;
+    let repo_raw = parts.next()?;
+    let repo = repo_raw.strip_suffix(".git").unwrap_or(repo_raw);
+    if parts.next().is_some() {
+        return None;
+    }
+    if !valid_github_segment(owner) || !valid_github_segment(repo) {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
+}
+
+fn valid_github_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment != "."
+        && segment != ".."
+        && !segment
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '\\' | '?' | '#' | '%'))
+}
+
+fn encode_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+fn github_release_endpoint(repo: &str, pin: Option<&str>) -> String {
+    let repo_path = repo
+        .split('/')
+        .map(encode_path_segment)
+        .collect::<Vec<_>>()
+        .join("/");
+    let base = format!("https://api.github.com/repos/{repo_path}/releases");
+    match pin {
+        Some(tag) => format!("{base}/tags/{}", encode_path_segment(tag)),
+        None => format!("{base}?per_page=100"),
+    }
+}
+
+fn github_tarball_url(repo: &str, tag: &str) -> String {
+    let repo_path = repo
+        .split('/')
+        .map(encode_path_segment)
+        .collect::<Vec<_>>()
+        .join("/");
+    format!(
+        "https://api.github.com/repos/{repo_path}/tarball/{}",
+        encode_path_segment(tag)
+    )
+}
+
+fn select_latest_github_release(
+    releases: impl IntoIterator<Item = GithubRelease>,
+) -> Option<GithubRelease> {
+    releases
+        .into_iter()
+        .filter(|release| {
+            !release.draft
+                && looks_like_semver(&release.tag_name)
+                && !release.tarball_url.trim().is_empty()
+        })
+        .max_by(|a, b| cmp_versions(&a.tag_name, &b.tag_name))
+}
+
+fn fetch_github_release(source: &str, pin: Option<&str>) -> Result<Option<GithubRelease>, String> {
+    let Some(repo) = github_repo_path(source) else {
+        return Ok(None);
+    };
+    let url = github_release_endpoint(&repo, pin);
+    let body = http_get_string(&url, Some("application/vnd.github+json"))?;
+    if let Some(tag) = pin {
+        let release: GithubRelease =
+            serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
+        return Ok((!release.draft
+            && release.tag_name == tag
+            && !release.tag_name.is_empty()
+            && !release.tarball_url.trim().is_empty())
+        .then_some(release));
+    }
+    let releases: Vec<GithubRelease> =
+        serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
+    Ok(select_latest_github_release(releases))
+}
+
+#[derive(Debug, Clone)]
+pub struct PluginSpec {
+    pub origin: String,
+    /// npm 包名或 git URL。
+    pub source: String,
+    /// 可选的版本钉（npm semver）或 tag（git）。
+    pub pin: Option<String>,
+    /// 文件系统安全的中央库 id。
+    pub id: String,
+    /// 显示名称。
+    pub name: String,
+    /// git 来源下给用户看的仓库 URL。
+    pub repo_url: Option<String>,
+}
+
+// --- 路径 ------------------------------------------------------------------
+
+/// 中央库根目录：P4 起迁到 `<xlink_home>/dsh-plugins/`（参见
+/// [`crate::shell::paths::plugins_store_root`]），与 `<home>/desktop[-dev]/` 下的
+/// legacy 位置并列；`reconcile_store` 首次执行时把 legacy `<home>/plugins/`
+/// 整目录搬过去，确保存量用户的中央库不丢。
+///
+/// **保留 `data_dir` 形参**是兼容性设计——`plugins.rs` 内 13 个公开函数
+/// 仍按"传 `data_dir`"语义调用，签名统一不破坏；`data_dir` 只在 `reconcile_store`
+/// 等少数入口函数里还会用作 legacy 兜底。
+pub fn store_dir(_data_dir: &Path) -> PathBuf {
+    let root = crate::shell::paths::plugins_store_root();
+    // 旧布局 `dsh-plugins/` → `plugins/dsh[-dev]/` 的一次性搬迁住在
+    // `store_relocate`：它与中央库的条目逻辑无关，留在本文件只会顶高预算。
+    crate::shell::store_relocate::ensure_ready(crate::shell::settings::current_mode(), &root);
+    root
+}
+
+/// Legacy 中央库根目录：`<xlink_home>/plugins/`，仅在 [`migrate_legacy_store`]
+/// 与 [`reconcile_store`] 的兜底逻辑里用到；新代码不应再使用。
+///
+/// 固定从 `xlink_home()` 派生而不是 `data_dir.parent()`：data_dir 自家族
+/// 命名空间改造后多了一层 `<family>/`，沿用 parent 派生会让这个「历史上
+/// 曾存在过的平铺位置」随 data_dir 漂移、扫不到真正留在原地的旧数据。
+pub fn legacy_store_dir(_data_dir: &Path) -> PathBuf {
+    crate::shell::paths::xlink_home().join(STORE_SUBDIR)
+}
+
+/// `path` 是不是**当前**布局的中央库根（`plugins/dsh/` 或 `plugins/dsh-dev/`）。
+///
+/// 与 [`legacy_store_dir`] 成对使用：那条路径曾经是中央库本身，现在被重新
+/// 征用成命名空间，两种身份叠在同一层，判别只能靠「它是不是当前根」。
+fn is_current_store_root(path: &Path) -> bool {
+    [
+        crate::shell::paths::ShellMode::Release,
+        crate::shell::paths::ShellMode::Dev,
+    ]
+    .iter()
+    .any(|mode| crate::shell::paths::plugins_store_root_for(*mode) == path)
+}
+
+/// 把 legacy `<home>/plugins/` 整目录搬到新中央库根 `plugins/dsh[-dev]/`。
+///
+/// 一次性迁移：成功一次后 legacy 目录被保留但写入路径不再使用，未来 P6
+/// 迁移向导完成后再统一清掉。新位置已有 `store.json` 时跳过整体搬迁，
+/// 只把 legacy 中尚不存在的子目录按需拷贝，避免覆盖新逻辑已写入的元数据。
+pub fn migrate_legacy_store(data_dir: &Path) -> std::io::Result<()> {
+    let new_root = crate::shell::paths::plugins_store_root();
+    std::fs::create_dir_all(&new_root)?;
+    let legacy_root = legacy_store_dir(data_dir);
+    if !legacy_root.exists() {
+        return Ok(());
+    }
+    // 单层目录级复制：legacy/<plugin-id>/ → new_root/<plugin-id>/。
+    // 使用 fs::copy 跨目录移动时如果目标已存在就跳过——保证新逻辑已
+    // 写入的源文件不被覆盖。store.json 同样采用"目标优先"。
+    for entry in std::fs::read_dir(&legacy_root)?.flatten() {
+        let from = entry.path();
+        // `<xlink_home>/plugins/` 这条路径被新布局**重新征用**成命名空间
+        // （内层 `dsh/` / `dsh-dev/` 才是中央库，见 `paths::plugins_root`）。
+        // 它同时又是 v0.2.x 的中央库位置，于是这里会在 legacy 根里撞见**当前**
+        // 中央库目录本身——照搬就是「把中央库复制进它自己」：目标落在源目录
+        // 内部，递归复制时新产生的目录又出现在同一次遍历里，目录无限生长直到
+        // 栈溢出（2026-09-29 实测：`cargo test` 里 plugins::store_orphan_tests
+        // 三条全灭，报 STATUS_STACK_OVERFLOW）。只认「不是当前中央库根」的那
+        // 些条目是 legacy 插件目录。
+        if is_current_store_root(&from) {
+            continue;
+        }
+        let to = new_root.join(entry.file_name());
+        if to.exists() {
+            continue;
+        }
+        let copy_result = if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)
+        } else {
+            std::fs::copy(&from, &to).map(|_| ())
+        };
+        if let Err(error) = copy_result {
+            // 单条失败不影响整体迁移——记到 stderr 让用户看见。
+            eprintln!(
+                "dsh-xlink: legacy 插件中央库搬迁失败 {} → {}: {error}",
+                from.display(),
+                to.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// 递归复制目录，供中央库内的目录级搬迁使用（legacy → 新布局、中央库内层
+/// 插件目录）。`pub(crate)` 是因为 `store_relocate` 的跨卷回退要用**同一份**
+/// 严格实现——换 `pkg::copy_tree` 的简化版会跳过 symlink，pnpm 管理的
+/// `node_modules` 几乎全由 symlink 构成，复制过去是一棵断链的树。
+pub(crate) fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)?.flatten() {
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&src, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst).map(|_| ())?;
+        }
+    }
+    Ok(())
+}
+
+/// 预检事务（[`crate::plugins::precheck`]）要按字节快照与回滚 `store.json`，因此这
+/// 条路径必须跨模块可见。它是**唯一**暴露给预检的中央库内部路径——预检
+/// 不该自己拼 `store_dir`，否则中央库布局一变，预检就会静默回滚错文件。
+pub(crate) fn store_file(data_dir: &Path) -> PathBuf {
+    store_dir(data_dir).join(STORE_FILE)
+}
+
+fn store_plugin_dir(data_dir: &Path, id: &str) -> PathBuf {
+    store_dir(data_dir).join(id)
+}
+
+/// 当前壳的默认实例（family + id）。
+///
+/// **不读注册表的 `default_instance_id`**：那份是 dev / release 共用的一份，
+/// dev 壳若跟着它走就等于用回 release 的实例（profile 接线、插件物化、会话
+/// 全是同一棵），这正是两套环境互相踩的入口。要换实例请用实例页显式创建，
+/// 不要动这里。
+///
+/// 解析失败（注册表 JSON 损坏）时同样 fallback 到 `(KERNEL_FAMILY_DSH, <壳默认>)`：
+/// 让插件模块在 `setup()` 阶段或迁移完成之前仍然能读写出 extensions 目录。
+pub(crate) fn default_instance_key() -> (String, String) {
+    let (family, id) = crate::shell::instance::resolve_default();
+    (family.to_string(), id.to_string())
+}
+
+/// P4 起插件物化目标走实例级 `extensions/plugins/<id>/`。
+///
+/// 旧 `kernel_plugins_dir` 返回 `<data_dir>/kernels/<version>/plugins/`，
+/// 已经作废 —— 物化目标必须按实例隔离。保留 `data_dir, version` 形参仅为
+/// 兼容既有调用站点（测试也走这条）；内部走实例 API，`version` 形参被忽略。
+fn kernel_plugins_dir(_data_dir: &Path, _version: &str) -> PathBuf {
+    let (family, id) = default_instance_key();
+    paths::instance_extensions_plugins_dir(&family, &id)
+}
+
+fn kernel_plugin_dir(_data_dir: &Path, _version: &str, id: &str) -> PathBuf {
+    let (family, instance_id) = default_instance_key();
+    paths::instance_extension_plugin_dir(&family, &instance_id, id)
+}
+
+fn kernel_meta_file(_data_dir: &Path, _version: &str, id: &str) -> PathBuf {
+    let (family, instance_id) = default_instance_key();
+    paths::instance_extension_meta_file(&family, &instance_id, id)
+}
+
+/// P4 起 profile 严格走 `instance_dsh_home/profiles/<profile>/`。旧
+/// `profile_dir` 拼接 `data_dir/../profiles/<profile>/` 的回退路径已废弃
+/// —— 新实例没有与旧路径一一对应的目录，无法再 fallback。`data_dir`
+/// 形参保留仅为兼容既有调用站点；内部走实例 API。
+fn profile_dir(_data_dir: &Path, profile: &str) -> PathBuf {
+    let (family, id) = default_instance_key();
+    paths::instance_profile_dir(&family, &id, profile)
+}
+
+fn wiring_log_spec() -> crate::shell::process::LogSpec {
+    crate::shell::process::LogSpec::new(crate::shell::process::build_log_kind(), "plugin-wiring")
+}
+
+fn wiring_log_path(data_dir: &Path) -> PathBuf {
+    let logs = kernel::lifecycle::logs_dir(data_dir);
+    wiring_log_spec().path_for(&logs, &crate::shell::process::current_date_string())
+}
+
+fn plugin_log_spec(id: &str) -> crate::shell::process::LogSpec {
+    crate::shell::process::LogSpec::new(
+        crate::shell::process::build_log_kind(),
+        format!("plugin-{id}"),
+    )
+}
+
+fn plugin_log_path(data_dir: &Path, id: &str) -> PathBuf {
+    let logs = kernel::lifecycle::logs_dir(data_dir);
+    plugin_log_spec(id).path_for(&logs, &crate::shell::process::current_date_string())
+}
+
+/// 将包名/仓库名映射为文件系统安全的中央库 id。之后路径穿越在结构上已不可能：
+/// 斜杠会被替换为双下划线，`.` / 空段会直接拒绝。空白字符同样会被拒绝，因为
+/// npm 包名和 GitHub `owner/repo` 字符串都是单一 token —— 形如
+/// `dsh plugin remove @scope/pkg` 的字符串走到这里意味着调用方忘了在
+/// `split_dsh_plugin_cli` 里剥掉 CLI 前缀，中央库 id 不应该默默吞下它。
+pub fn id_for_name(raw: &str) -> Result<String, AppError> {
+    let name = raw.trim();
+    if name.is_empty() || name.len() > 200 {
+        return Err(AppError::Plugin("插件名称为空或过长".into()));
+    }
+    if name.chars().any(|c| c.is_whitespace()) {
+        return Err(AppError::Plugin(format!(
+            "非法的插件名称 {name:?}（包含空白字符）"
+        )));
+    }
+    for part in name.split('/') {
+        if part.is_empty() || part == "." || part == ".." {
+            return Err(AppError::Plugin(format!(
+                "非法的插件名称 {name:?}（包含空段或 ..）"
+            )));
+        }
+    }
+    Ok(name.replace('/', "__"))
+}
+
+/// 为一次「更新」构造 spec：来源照旧，但 **id 以记录为准**。
+///
+/// `parse_spec` 只算得出"基础" id，而名称冲突时安装用的是带短哈希后缀的 id
+/// （P2-24）。若不覆盖，更新会把新版本发布到另一个目录，旧目录继续留在内核里
+/// —— UI 说更新成功、跑的仍是旧代码。抽成函数是为了能单测这条不变量（真正的
+/// `update_unlocked` 需要联网拉取）。
+fn spec_for_update(item: &StoreItem) -> Result<PluginSpec, AppError> {
+    let mut spec = parse_spec(&item.source)?;
+    spec.id = item.id.clone();
+    Ok(spec)
+}
+
+/// 名称的短哈希后缀，用于消解 id 冲突（取 SHA-256 前 6 个十六进制字符）。
+///
+/// 选哈希而不是递增序号：id 必须是**名称的确定性函数**，否则重新安装同一个
+/// 包会算出不同的 id，把「已安装」判断和 store 行对上号这件事变成靠运气。
+fn short_name_hash(name: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(name.as_bytes());
+    format!("{:x}", hasher.finalize())[..6].to_string()
+}
+
+/// 为一个待安装的插件分配 id。
+///
+/// `id_for_name` 的 `/` → `__` 映射不是单射：npm 包 `owner__repo` 与 git 仓库
+/// `owner/repo` 会算出同一个 id，于是后安装的那个会覆盖前一个的源码、store 行
+/// 与内核接线（P2-24）。
+///
+/// 这里在**保留既有 id 不变**的前提下消解冲突（因此不需要迁移任何已安装的
+/// 插件）：基础 id 没被占用、或已被同名插件占用（更新路径）时照旧使用它；
+/// 被**别的**名字占用时追加名称的短哈希后缀。后缀同样由名称确定，所以重装 /
+/// 重试会得到同一个 id，而不是每次都生成新的。
+fn allocate_id(data_dir: &Path, spec: &PluginSpec) -> Result<String, AppError> {
+    let store = load_store(data_dir);
+    let occupied_by_other = |id: &str| {
+        store
+            .items
+            .iter()
+            .any(|item| item.id == id && item.name != spec.name)
+    };
+    if !occupied_by_other(&spec.id) {
+        return Ok(spec.id.clone());
+    }
+    let candidate = format!("{}-{}", spec.id, short_name_hash(&spec.name));
+    if !occupied_by_other(&candidate) {
+        return Ok(candidate);
+    }
+    Err(AppError::Plugin(format!(
+        "插件 {} 的 id（{}）与库中已有插件冲突，且加消歧后缀的 {} 也已被占用。\
+         请先卸载冲突的插件，或换一个包名 / 仓库地址后重试",
+        spec.name, spec.id, candidate
+    )))
+}
+
+// --- 中央库持久化 --------------------------------------------------------
+
+fn store_mutation_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// 锁定插件商店的清单变更。网络探测应在锁外执行，实际写回时再取得这把
+/// 锁，以免一次慢请求阻塞用户的安装或卸载操作。
+pub fn lock_store() -> std::sync::MutexGuard<'static, ()> {
+    crate::lock(store_mutation_lock())
+}
+
+/// 插件清单的读写上下文。损坏必须中止而不是当空清单：
+/// `store.json` 一旦被当成空清单，同一次启动里 `sweep_kernel_orphans` 会删掉
+/// 活动内核中所有外壳管理的物化目录、`wire_manifest` 会清退 profile 的全部
+/// 托管依赖，随后写库再把原文件覆盖掉——一次杀软短暂锁文件就能造成用户插件
+/// 的静默丢失。
+const STORE_STATE: crate::shell::state::StateCtx = crate::shell::state::StateCtx {
+    corrupt: |reason| {
+        format!(
+            "插件清单损坏，为避免覆盖已安装插件的记录，本次操作已中止（{reason}）。请修复或删除该文件后重试；工作台本身仍可正常启动"
+        )
+    },
+    kind: AppError::Plugin,
+};
+
+/// 展示路径用的容错读取：文件不存在或损坏都返回空清单。
+///
+/// **只读**：任何"读-改-写"路径都必须用 [`load_store_checked`]。
+pub fn load_store(data_dir: &Path) -> Store {
+    crate::shell::state::load_lossy(&store_file(data_dir))
+}
+
+/// 读-改-写路径用的读取：清单损坏时返回可操作的错误，而不是拿空清单去覆盖
+/// 用户的数据。
+pub fn load_store_checked(data_dir: &Path) -> Result<Store, AppError> {
+    crate::shell::state::load_checked(&store_file(data_dir), STORE_STATE)
+}
+
+fn save_store_unlocked(data_dir: &Path, store: &Store) -> Result<(), AppError> {
+    crate::shell::state::save(&store_file(data_dir), store, STORE_STATE)?;
+    ensure_store_npmrc(data_dir)
+}
+
+/// 在中央库目录写入本地 `.npmrc`。新版 pnpm 默认 `minimumReleaseAge` 为
+/// 约 3 天，这样锁定在 dev/rc 版本上的条目也能直接安装而无需等待；同时把
+/// registry 镜像固定为桌面壳已在使用的镜像，让仅镜像可见的 scoped 包也能解析。
+/// 任何内容不一致都会重写一遍，使先前（错误的）配置能在原位得到修正；
+/// `save_store` 在每次写库时都会调用本函数，所以内容一致时不会触碰磁盘、
+/// 避免无谓的写入。
+fn ensure_store_npmrc(data_dir: &Path) -> Result<(), AppError> {
+    let npmrc = store_dir(data_dir).join(".npmrc");
+    let registry = crate::pkg::registry::npm_registry_base();
+    let text =
+        format!("minimumReleaseAge=0\nregistry={registry}\n@deepseek-ai:registry={registry}\n");
+    if fs::read_to_string(&npmrc)
+        .map(|existing| existing == text)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    atomic_write(&npmrc, text.as_bytes()).map_err(|e| AppError::Io(e.to_string()))?;
+    Ok(())
+}
+
+/// 按 id 取中央库条目。环境恢复（[`crate::diagnostics::snapshot`]）重新启用插件时要先确认
+/// 源还在——中央库条目没了就没有东西可以物化，那条恢复必须报"不可恢复"而不是
+/// 空跑一遍。
+pub(crate) fn store_item(data_dir: &Path, id: &str) -> Option<StoreItem> {
+    load_store(data_dir)
+        .items
+        .into_iter()
+        .find(|item| item.id == id)
+}
+
+fn upsert_item_unlocked(data_dir: &Path, item: StoreItem) -> Result<(), AppError> {
+    let mut store = load_store_checked(data_dir)?;
+    if let Some(existing) = store.items.iter_mut().find(|i| i.id == item.id) {
+        // `id_for_name` 的映射不是单射：`/` → `__` 让 npm 包 `owner__repo` 与
+        // git 仓库 `owner/repo` 落到同一个 id（P2-24）。直接覆盖会把前一个插件
+        // 的源码、store 行与内核接线一起换成另一个包，而且没有任何提示。
+        // 改映射要迁移既有安装，所以这里先做**冲突检测**：来源不同就拒绝，
+        // 让用户显式先卸载。
+        if existing.source != item.source || existing.name != item.name {
+            return Err(AppError::Plugin(format!(
+                "插件 id {} 已被「{}」（来源 {}）占用，无法再安装「{}」（来源 {}）：\
+                 这两个名称映射到同一个 id。请先卸载已安装的那个，或用不同的包名/仓库地址",
+                item.id, existing.name, existing.source, item.name, item.source
+            )));
+        }
+        *existing = item;
+    } else {
+        store.items.push(item);
+    }
+    save_store_unlocked(data_dir, &store)
+}
+
+#[cfg(test)]
+pub(crate) fn upsert_item(data_dir: &Path, item: StoreItem) -> Result<(), AppError> {
+    let _store_guard = lock_store();
+    upsert_item_unlocked(data_dir, item)
+}
+
+fn remove_item_unlocked(data_dir: &Path, id: &str) -> Result<(), AppError> {
+    let mut store = load_store_checked(data_dir)?;
+    store.items.retain(|item| item.id != id);
+    save_store_unlocked(data_dir, &store)
+}
+
+/// 从给定的 meta 文件路径读取物化记录；文件不存在 / JSON 损坏均返回 `None`，
+/// 由调用方自行决定「无记录 = 视为 fresh」或「无记录 = 视为坏掉」。
+fn read_instance_meta(meta_path: &Path) -> Option<KernelMeta> {
+    let text = fs::read_to_string(meta_path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// 把物化记录原子写入指定 meta 文件；父目录缺失时自动创建。
+fn write_meta_at(meta_path: &Path, meta: &KernelMeta) -> Result<(), AppError> {
+    if let Some(parent) = meta_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
+    }
+    let text = serde_json::to_string(meta).map_err(|e| AppError::Io(e.to_string()))?;
+    atomic_write(meta_path, text.as_bytes()).map_err(|e| AppError::Io(e.to_string()))
+}
+
+/// 读取默认实例下指定插件的物化记录。
+fn read_meta(data_dir: &Path, version: &str, id: &str) -> Option<KernelMeta> {
+    read_instance_meta(&kernel_meta_file(data_dir, version, id))
+}
+
+/// 把物化记录写入默认实例下指定插件的 meta 文件。
+fn write_meta(data_dir: &Path, version: &str, id: &str, meta: &KernelMeta) -> Result<(), AppError> {
+    write_meta_at(&kernel_meta_file(data_dir, version, id), meta)
+}
+
+// --- spec 解析 -------------------------------------------------------------
+
+/// 尝试从安装 spec 中剥出 `dsh plugin ... add <pkg>` 这类 CLI 调用形式。
+/// 返回请求的 profile（若有）以及余下解析器能直接使用的裸包 spec。对于
+/// 不匹配 CLI 形式的输入返回 `None`，这些会继续走现有的 npm / git /
+/// owner-repo 解析分支。
+///
+/// 桌面壳只接受内核 `dsh plugin` 命令的手动安装形式：`add` 和 `install`
+/// （内核将二者视为别名）。`remove` / `update` / `list` 一律拒绝，
+/// 以避免粘贴进来的命令把用户只想安装的插件误卸载。`--profile`（或 `-p`）
+/// 标志会被解析但忽略：桌面壳始终将插件接入 `DEFAULT_PROFILE`（`web`）；
+/// 支持多 profile 的事另外追踪。
+///
+/// 识别的形式：
+///
+/// ```text
+/// dsh plugin add <pkg>
+/// dsh plugin install <pkg>
+/// dsh plugin --profile web add <pkg>
+/// dsh plugin -p web install <pkg>
+/// ```
+///
+/// 内核可能接受的尾随标志（`--save-dev`、`--force` …）会被静默丢弃 —— 桌面壳
+/// 的解析器只需要拿到包 spec 即可。
+fn split_dsh_plugin_cli(spec: &str) -> Option<(Option<String>, String)> {
+    let s = spec.trim();
+    let after_dsh = s.strip_prefix("dsh ")?;
+    let after_plugin = after_dsh.trim_start().strip_prefix("plugin")?;
+    let args = after_plugin.trim();
+
+    let mut profile: Option<String> = None;
+    let mut package: Option<String> = None;
+    let mut iter = args.split_whitespace();
+    while let Some(arg) = iter.next() {
+        match arg {
+            "--profile" | "-p" => {
+                profile = iter.next().map(str::to_string);
+            }
+            "add" | "install" => {
+                // 动词后的第一个位置参数就是包 spec。尾随标志不必追踪
+                // —— 手动安装流程用不到，丢掉即可。
+                package = iter.next().map(str::to_string);
+                break;
+            }
+            _ => {
+                // 未知的前置标志 —— 直接放弃，让常规的 npm / git 解析器接手。
+                // 这样能捕获用户不小心输入的 `dsh plugin something`。
+                return None;
+            }
+        }
+    }
+    package.map(|p| (profile, p))
+}
+
+/// 尝试从安装 spec 中剥出包管理器安装命令（`npm install <pkg>`、
+/// `pnpm add <pkg>`、`yarn add <pkg>`、`bun add <pkg>` …）。返回裸包 spec；
+/// 不匹配该形式的输入返回 `None`，继续走常规的 npm / git / owner-repo 解析。
+///
+/// 标志无论出现在哪里（动词前后、包 spec 前后）都会被静默丢弃。桌面壳不
+/// 关心 `--save-dev` / `--global` / `--registry` —— 所有接受的写法最终都会
+/// 落到 `<dsh_home>/plugins/` 下的同一中央库路径。接受的动词只有
+/// `install` / `i` / `add`（npm 的 `install` 和 `i` 是同一动作的别名；
+/// `add` 是较新的别名，与 pnpm / yarn / bun 保持一致）。
+///
+/// 识别的形式（前缀可为 `npm` / `pnpm` / `yarn` / `bun` 任一）：
+///
+/// ```text
+/// npm install <pkg>
+/// npm i @scope/pkg@1.2.3
+/// pnpm add owner/repo
+/// yarn add https://github.com/o/r.git#v1
+/// npm install --save-dev <pkg>      ← --save-dev 丢弃
+/// ```
+fn split_package_manager_cli(spec: &str) -> Option<String> {
+    // 四种包管理器共享同一套动词词汇 `install` / `i` / `add`，差别只在二进制前缀。
+    const VERBS: &[&str] = &["install", "i", "add"];
+
+    let s = spec.trim();
+    let rest = s
+        .strip_prefix("npm ")
+        .or_else(|| s.strip_prefix("pnpm "))
+        .or_else(|| s.strip_prefix("yarn "))
+        .or_else(|| s.strip_prefix("bun "))?;
+
+    let mut saw_verb = false;
+    for token in rest.split_whitespace() {
+        if !saw_verb {
+            if VERBS.contains(&token) {
+                saw_verb = true;
+            }
+            // 动词前的任何内容（如 `npm --silent install <pkg>` 这类二进制前缀
+            // 标志）都会被丢弃。
+            continue;
+        }
+        // 动词之后，取第一个非标志的位置参数。其前的任何标志
+        // （如 `npm i -D <pkg>`）会被静默跳过。
+        if token.starts_with('-') {
+            continue;
+        }
+        return Some(token.to_string());
+    }
+    None
+}
+
+/// 把安装请求解析为 `PluginSpec`。可接受的形式：
+///   - 内核完整的 `dsh plugin [--profile X] (add|install) <pkg>` CLI 调用
+///     （其中可选的 `--profile` / `-p` 标志被忽略 —— 桌面壳始终接入活动 profile）；
+///   - 带可选 `@version` 钉的 npm 包名，包括 `@scope/name`；
+///   - git URL（`https://…`、`git@…` 或 `github.com/owner/name`）；
+///   - 裸的 `owner/repo` 简写，可附 `#tag`。
+pub fn parse_spec(spec: &str) -> Result<PluginSpec, AppError> {
+    let s = spec.trim().trim_end_matches('/');
+    if s.is_empty() || s.len() > 500 {
+        return Err(AppError::Plugin("安装地址为空或过长".into()));
+    }
+    // 先尝试 `dsh plugin ... add <pkg>`：方便从内核文档或 ChatGPT 建议里
+    // 直接复制粘贴。helper 会剥出包 spec 并递归，让下游所有分支
+    // （npm / git / owner-repo）保持单一真相源。
+    if let Some((_profile, pkg)) = split_dsh_plugin_cli(s) {
+        return parse_spec(&pkg);
+    }
+    // 标准包管理器安装语法（`npm install <pkg>`、`pnpm add <pkg>`、
+    // `yarn add <pkg>`、`bun add <pkg>`）。同样的递归 —— 标志被丢弃，
+    // 抽出的 spec 走相同的 npm / git / owner-repo 流水线。
+    if let Some(pkg) = split_package_manager_cli(s) {
+        return parse_spec(&pkg);
+    }
+    if s.starts_with("git@") || s.contains("://") || s.contains("github.com/") {
+        // git 来源：[url][#tag]
+        let (url, pin) = match s.split_once('#') {
+            Some((u, tag)) if !u.is_empty() && !tag.is_empty() => (u, Some(tag.to_string())),
+            _ => (s, None),
+        };
+        let repo_url = github_repo_path(url).map(|repo| format!("https://github.com/{repo}"));
+        let id = id_for_name(&pkg::fetch::repo_id_base(url))?;
+        let name = url
+            .trim_end_matches(".git")
+            .rsplit('/')
+            .next()
+            .unwrap_or(url)
+            .to_string();
+        return Ok(PluginSpec {
+            origin: "git".into(),
+            source: url.to_string(),
+            pin,
+            id,
+            name,
+            repo_url,
+        });
+    }
+    // owner/repo 简写：非 npm 样式（不含 @ 且含斜杠）按 GitHub 仓库处理
+    if s.contains('/') && !s.starts_with('@') {
+        // 同样的 #tag 切分逻辑，让 `owner/repo#v1.2.3` 这种简写也能
+        // 落到 fetch_git 的 tag 路径，而不是把 #tag 拼进 URL 然后
+        // git ls-remote 永远拿不到。
+        let (repo_path, pin) = match s.split_once('#') {
+            Some((repo, tag)) if !repo.is_empty() && !tag.is_empty() => {
+                (repo, Some(tag.to_string()))
+            }
+            _ => (s, None),
+        };
+        let github = format!("https://github.com/{repo_path}.git");
+        let id = id_for_name(repo_path)?;
+        return Ok(PluginSpec {
+            origin: "git".into(),
+            source: github,
+            pin,
+            id,
+            name: repo_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(repo_path)
+                .to_string(),
+            repo_url: Some(format!("https://github.com/{repo_path}")),
+        });
+    }
+    // npm 来源
+    let (name, pin) = split_npm_spec(s).map_err(AppError::Plugin)?;
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-._@/".contains(c))
+    {
+        return Err(AppError::Plugin(format!("非法的 npm 包名 {spec:?}")));
+    }
+    let id = id_for_name(&name)?;
+    Ok(PluginSpec {
+        origin: "npm".into(),
+        source: name.clone(),
+        pin,
+        id,
+        name,
+        repo_url: None,
+    })
+}
+
+// --- 版本比较 -----------------------------------------------------------
+// 与内核发布列表共用：`crate::shell::version::cmp_versions`。
+
+// --- 取源 ----------------------------------------------------------------
+
+/// 进行中取源目录的前缀（`.tmp-<pid>-<ts>`）。配合 `.dsh-id` 标记，
+/// 让 `reconcile_store` 能按插件 id 暂存目录归类，而不必从目录名里解析 id
+///（目录名可能含 `-`）。
+const TMP_PREFIX: &str = "tmp-";
+/// 已通过 `validate_plugin`、等待发布的取源结果的前缀。
+/// `.new-<pid>-<ts>` 只在校验完成到最终 rename 到 `final_dir` 之间存在。
+const NEW_PREFIX: &str = "new-";
+/// `final_dir` → `new_dir` 切换过程中被挪到一旁的旧活动插件目录的前缀。
+/// `.backup-<pid>-<ts>` 会一直保留到发布成功、下一次清理把它移除；中途崩溃
+/// 时它是 `reconcile_store` 回滚到已知可用旧版本的安全网。
+const BACKUP_PREFIX: &str = "backup-";
+/// 把插件拉取到中央库的暂存 tmp 目录，校验后再以崩溃安全的方式发布到
+/// `final_dir`。返回新的中央库条目，沿用原 mode 与 latest。`pnpm_exe` 用于
+/// 构建那些提交里不含 `lib/` 的 git 来源插件。
+///
+/// fetch → validate → publish 三段使用三种暂存名，使得任何步骤崩溃时，
+/// 线上插件（`final_dir`）只会落到两种可恢复状态之一：要么指向旧版本
+/// （在切换开始前原封不动地保留），要么指向新版本（发布 rename 之前校验
+/// 已通过）。`final_dir` 短暂缺失的中间态会在下次启动时由 `reconcile_store`
+/// 调和；当 `.new-*` 与 `.backup-*` 都从崩溃中幸存时，它倾向于回滚到旧版本
+/// —— 新内容已经在磁盘上并通过校验，用户重试只需再次触发发布步骤。
+fn fetch_into_store(
+    data_dir: &Path,
+    pnpm_exe: &Path,
+    spec: &PluginSpec,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(StoreItem, bool), AppError> {
+    let store = store_dir(data_dir);
+    fs::create_dir_all(&store).map_err(|e| AppError::Io(e.to_string()))?;
+    let tmp = new_staging_dir(&store, TMP_PREFIX).map_err(|e| AppError::Io(e.to_string()))?;
+    // 写入 `.dsh-id` 标记必须等到 fetch_* 返回之后再做：`git clone` 要求目标
+    // 目录为空，若标记文件在拉取时已经存在，它会直接中止并报
+    // "destination path '...' already exists and is not an empty directory"。
+    // npm 流程的 tarball 解压倒是会顺手把标记覆盖掉，所以「先盖章再 fetch」
+    // 只在 npm 流程上偶然能跑通。在这里盖章 —— 等暂存树已经在磁盘上、
+    // 且 fetch 已校验目录为空 —— 既能让 `reconcile_store` 在校验/发布期间
+    // 拿到所需的身份信息，标记又会跟着内容一起被 `tmp → new` 的 rename
+    // 一起带走。
+
+    let fetched = match spec.origin.as_str() {
+        "npm" => fetch_npm(spec, &tmp, on_progress).map(|version| (version, false)),
+        "git" => fetch_git(spec, &tmp, pnpm_exe, on_progress),
+        other => Err(AppError::Plugin(format!("未知来源 {other:?}"))),
+    };
+    let (version, dependencies_ready) = match fetched {
+        Ok(value) => value,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+    };
+    stamp_id_marker(&tmp, &spec.id).map_err(|e| AppError::Io(e.to_string()))?;
+
+    on_progress("正在校验插件是否符合 dsh 规范");
+    if let Err(e) = validate_plugin(&tmp) {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+
+    // 把内容原子地换到 `final_dir`。三段式 rename（tmp → new → final_dir，
+    // 同时把旧的 final 停到 backup）保证中途崩溃时线上插件仍可恢复。每个
+    // rename 目标在 rename 成功前都保持空目录，这样 Windows 上 `MoveFileEx`
+    // （对非空目录返回 ERROR_DIR_NOT_EMPTY）就不会阻塞安装。
+    //
+    // 错误策略：每一步都把失败往上抛，而不是吞掉。如果 rename 把校验过的
+    // 内容放到了 `new` 但发布到 `final_dir` 失败，就把上一个 `final_dir` 从
+    // `backup` 恢复回来，避免用户被卡在插件被卸载的状态。如果恢复本身也
+    // 失败，函数会带着已暂存的状态返回错误，留给下次启动时 `reconcile_store`
+    // 修补。
+    let new = new_staging_dir(&store, NEW_PREFIX).map_err(|e| AppError::Io(e.to_string()))?;
+    if let Err(e) = fs::rename(&tmp, &new) {
+        // `tmp` 还保留着校验过的内容；留在磁盘上，让重试 /
+        // `reconcile_store` 还有机会把它提升上去。
+        return Err(AppError::Io(format!("将暂存目录提升到 .new-* 失败：{e}")));
+    }
+
+    let final_dir = store_plugin_dir(data_dir, &spec.id);
+    let backup = new_staging_dir(&store, BACKUP_PREFIX).map_err(|e| AppError::Io(e.to_string()))?;
+    if final_dir.exists() {
+        if let Err(e) = fs::rename(&final_dir, &backup) {
+            // `new` 携带着校验过的内容；`final_dir` 是刚刚拒绝移动的线上插件。
+            // 直接把 `new` 提升上去并附带一条非致命告警，避免把校验过的内容
+            // 晾在一边 —— 用户明确请求安装了这个插件。
+            if fs::rename(&new, &final_dir).is_err() {
+                let _ = fs::remove_dir_all(&new);
+                return Err(AppError::Io(format!("备份旧版本失败且无法发布新版本：{e}")));
+            }
+            return Err(AppError::Io(format!(
+                "插件已发布，但备份旧版本失败（{e}）；下次更新若失败将无法回滚"
+            )));
+        }
+        // rename 已经落定，现在再给 backup 打上标记 —— 后续若有 swap 把
+        // backup 留下来变成孤儿，`reconcile_store` 还要靠标记把目录跟
+        // 插件 id 关联起来。
+        if let Err(e) = stamp_id_marker(&backup, &spec.id) {
+            eprintln!(
+                "dsh-xlink: warning, could not stamp id marker on backup of {}: {e}",
+                spec.id
+            );
+        }
+    }
+
+    if let Err(e) = fs::rename(&new, &final_dir) {
+        // 回滚：旧版本现在在 `backup` 里，恢复回 `final_dir`。如果成功，
+        // `new` 就变成遗留的 `.new-*`，留给下次启动时 `reconcile_store`
+        // 提升；如果失败，两份状态都在磁盘上，由恢复扫描调和。
+        if fs::rename(&backup, &final_dir).is_err() {
+            return Err(AppError::Io(format!("发布新版本失败且回滚旧版本失败：{e}")));
+        }
+        return Err(AppError::Io(format!("发布新版本失败，已回滚到旧版本：{e}")));
+    }
+
+    // 同步清理现在多余的 backup。这里的失败要对用户可见：永远留下
+    // `.backup-*` 会不断堆积死目录，`reconcile_store` 虽然通常会在下次
+    // 启动时清理，但不一定能从真正的「崩溃中断的 swap」中把它们分辨出来。
+    if backup.exists() {
+        if let Err(e) = fs::remove_dir_all(&backup) {
+            return Err(AppError::Io(format!(
+                "插件已发布成功，但清理备份目录失败：{e}（下次启动时 reconcile_store 会接手）"
+            )));
+        }
+    }
+
+    write_source_marker(&final_dir, &spec.id, &spec.origin, &spec.source, &version)?;
+
+    let now = crate::shell::process::epoch_secs_string();
+    let existing = store_item(data_dir, &spec.id);
+    Ok((
+        StoreItem {
+            id: spec.id.clone(),
+            name: spec.name.clone(),
+            origin: spec.origin.clone(),
+            source: spec.source.clone(),
+            installed_version: version,
+            latest_version: existing.as_ref().and_then(|e| e.latest_version.clone()),
+            mode: existing
+                .as_ref()
+                .map(|e| e.mode.clone())
+                .unwrap_or_else(|| String::from("link")),
+            pinned: spec.pin.is_some(),
+            installed_at: existing
+                .as_ref()
+                .map(|e| e.installed_at.clone())
+                .unwrap_or_else(|| now.clone()),
+            updated_at: now,
+            repo_url: spec.repo_url.clone(),
+            description: None,
+        },
+        dependencies_ready,
+    ))
+}
+
+/// 调和被中断更新遗留下来的暂存目录。每次启动都能安全调用；正常路径
+///（没有遗留暂存）只跑一次 `read_dir` 扫描，不做 rename 或删除。
+///
+/// 按插件 id 划分的恢复规则如下：
+///
+/// | `final_dir` | `.new-*` | `.backup-*` | `.tmp-*` | 处理动作 |
+/// | --- | --- | --- | --- | --- |
+/// | 存在 | 任意 | 任意 | 任意 | 移除全部暂存（发布后清理或残留尝试） |
+/// | 不存在 | 否 | 是 | 否 | 回滚：rename `.backup-*` 为 `final_dir` |
+/// | 不存在 | 是 | 否 | 否 | 发布：rename `.new-*` 为 `final_dir` |
+/// | 不存在 | 是 | 是 | 任意 | 回滚（更稳妥；用户保留已知的上一可用版本） |
+/// | 不存在 | 否 | 否 | 是 | 未完成的取源；移除 `.tmp-*` |
+/// | 不存在 | 是 | 是 | 是 | 回滚 + 移除 tmp |
+///
+/// 当同一 id 留下多个暂存目录时（罕见但可能 —— 比如上一次恢复流程自身崩溃
+/// 中断），保留最新的那一份：`.tmp-*` 一律丢弃（从未通过校验）；在
+/// `.new-*` / `.backup-*` 之间，后缀字典序最大者胜出（时间戳 + pid 自然
+/// 排成最新在最后），其余较老的对等目录会被移除。
+pub fn reconcile_store(data_dir: &Path) {
+    // P4：启动期一次性把 legacy `<home>/plugins/` 搬到新位置。失败仅打
+    // 日志，不阻断后续 reconcile。
+    let _ = migrate_legacy_store(data_dir);
+    let store = store_dir(data_dir);
+    let Ok(entries) = fs::read_dir(&store) else {
+        return;
+    };
+
+    let mut by_id: std::collections::HashMap<String, Vec<(pkg::fetch::StagingKind, PathBuf)>> =
+        std::collections::HashMap::new();
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        // `.tmp-` 是引入标记前的旧命名方式；当前的暂存目录统一使用
+        // `tmp-` / `new-` / `backup-`（见 `new_staging_dir`）。
+        let kind = if name.starts_with(TMP_PREFIX) || name.starts_with(".tmp-") {
+            pkg::fetch::StagingKind::Tmp
+        } else if name.starts_with(NEW_PREFIX) {
+            pkg::fetch::StagingKind::New
+        } else if name.starts_with(BACKUP_PREFIX) {
+            pkg::fetch::StagingKind::Backup
+        } else {
+            continue;
+        };
+        let marker = fs::read_to_string(entry.path().join(ID_MARKER))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let Some(id) = marker else {
+            // 没有 id 标记的暂存目录：是创建暂存目录和打标记之间崩溃（或是更早
+            // 版本对暂存目录采用了不同命名）的残留。它从来不是用户数据 —— 直接
+            // 回收，避免无限堆积。
+            let _ = fs::remove_dir_all(entry.path());
+            continue;
+        };
+        if id == name {
+            // 名字以暂存前缀开头的线上插件（npm 允许 `tmp-foo` 这类名字）：
+            // 它的 final 目录自带标记，不能把它自己当成残留暂存分组。
+            continue;
+        }
+        by_id.entry(id).or_default().push((kind, entry.path()));
+    }
+
+    // 本轮恢复流程处理过的 id：它们的目录是"已验证但还没记账"的救援对象，
+    // 不能被下面的孤儿清理顺手删掉（那会把恢复动作当场撤销）。
+    let recovered_ids: std::collections::HashSet<String> = by_id.keys().cloned().collect();
+
+    for (id, items) in by_id {
+        // 恢复表在 pkg.rs：两个中央库共用同一张，避免只改一半。
+        pkg::fetch::recover_staging_dir(&store.join(&id), items);
+    }
+
+    // 最后处理"已发布但没记账"的孤儿目录。
+    //
+    // 只有清单文件**确实存在且能解析**时才清扫。`load_store_checked` 把
+    // `Missing` 归为"空清单"对全新安装是对的，但对清扫是灾难：清单文件不存在
+    // 时"没有任何记录"会被解读成"中央库里每个带标记的目录都是孤儿"，用户已装的
+    // 插件目录会被物理删除。而应用自己的错误提示恰恰建议用户"修复或删除该文件
+    // 后重试"，也就是亲手制造这个形态（P0-3）。
+    match load_store_for_sweep(data_dir) {
+        Ok(Some(doc)) => sweep_unrecorded_store_dirs(data_dir, &doc, &recovered_ids),
+        Ok(None) => {
+            let marked = marked_store_dirs(data_dir);
+            if !marked.is_empty() {
+                eprintln!(
+                    "dsh-xlink: store.json 不存在，但中央库里有 {} 个带标记的插件目录；\
+                     已保留现场，不做孤儿清理（请恢复或修复 store.json 后重试）",
+                    marked.len()
+                );
+            }
+        }
+        Err(error) => {
+            eprintln!("dsh-xlink: store.json 读取失败（{error}），跳过中央库孤儿目录清理")
+        }
+    }
+}
+
+/// 清扫路径专用的读取：区分"清单文件不存在"与"清单存在且为空"。
+///
+/// `load_store_checked` 把两者都归为"空清单"（对写路径是安全的），但清扫必须
+/// 区分：文件不存在往往意味着"清单丢了/被删了"，把它当成空清单会删光用户的
+/// 插件库（P0-3）。
+fn load_store_for_sweep(data_dir: &Path) -> Result<Option<Store>, AppError> {
+    match crate::shell::process::read_state_file(&store_file(data_dir)) {
+        crate::shell::process::StateRead::Loaded(store) => Ok(Some(store)),
+        crate::shell::process::StateRead::Missing => Ok(None),
+        crate::shell::process::StateRead::Corrupt { reason } => {
+            Err(AppError::Plugin(format!("插件清单损坏（{reason}）")))
+        }
+    }
+}
+
+/// 中央库里"带着外壳 id 标记、且目录名与标记一致"的目录。
+///
+/// 清扫与"清单缺失时的现场告警"共用同一份判据，避免两处漂移；暂存前缀
+/// （`.tmp-` / `.new-` / `.bak-`）与没有标记的目录一律不算——后者不是外壳发布的。
+fn marked_store_dirs(data_dir: &Path) -> Vec<(String, PathBuf)> {
+    let root = store_dir(data_dir);
+    let Ok(entries) = fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.')
+            || name.starts_with(TMP_PREFIX)
+            || name.starts_with(NEW_PREFIX)
+            || name.starts_with(BACKUP_PREFIX)
+        {
+            continue;
+        }
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let marker = fs::read_to_string(path.join(ID_MARKER))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let Some(id) = marker else {
+            continue;
+        };
+        if id != name {
+            continue;
+        }
+        out.push((id, path));
+    }
+    out
+}
+
+/// 删除"带着外壳 id 标记、但 `store.json` 里没有对应记录"的中央库目录。
+///
+/// 发布目录与写 store 行不是原子的：`fetch_into_store` 先把校验过的内容
+/// rename 进 `store/<id>`，`upsert_item_unlocked` 之后才记账。中间崩溃（或
+/// 记账失败）就留下一个孤儿目录 —— 面板不显示、"同步"不处理、`uninstall`
+/// 直接拒绝，用户只能去手删（P2-20）。
+///
+/// 三重保险，避免误删用户数据：
+/// 1. 只在 `store.json` **能正常读出**时调用（损坏时按"没有记录"处理会把整个
+///    插件库清空）；
+/// 2. 只动名字与自身 id 标记一致、且不带任何暂存前缀的目录；
+/// 3. 没有 id 标记的目录一律不碰（不是外壳发布的）；
+/// 4. 跳过本轮恢复流程处理过的 id —— 那是"已验证内容等着记账"的救援对象。
+fn sweep_unrecorded_store_dirs(
+    data_dir: &Path,
+    doc: &Store,
+    recovered_ids: &std::collections::HashSet<String>,
+) {
+    for (id, path) in marked_store_dirs(data_dir) {
+        if recovered_ids.contains(&id) || doc.items.iter().any(|item| item.id == id) {
+            continue;
+        }
+        eprintln!("dsh-xlink: 清理未记账的插件目录 {id}（store.json 中没有对应记录）");
+        let _ = fs::remove_dir_all(&path);
+    }
+}
+
+fn fetch_npm(
+    spec: &PluginSpec,
+    dest: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<String, AppError> {
+    crate::pkg::fetch::fetch_npm_package(&spec.source, spec.pin.as_deref(), dest, on_progress)
+        .map_err(AppError::Plugin)
+}
+
+fn try_fetch_github_release(
+    spec: &PluginSpec,
+    dest: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Option<String> {
+    let repo = github_repo_path(&spec.source)?;
+    on_progress(&format!("正在查询 GitHub Release：{repo}"));
+    let release = match fetch_github_release(&spec.source, spec.pin.as_deref()) {
+        Ok(Some(release)) => release,
+        Ok(None) => {
+            on_progress(&format!("{repo} 没有可用的 GitHub Release，回退 git clone"));
+            return None;
+        }
+        Err(error) => {
+            on_progress(&format!("GitHub Release 查询失败：{error}，回退 git clone"));
+            return None;
+        }
+    };
+
+    on_progress(&format!(
+        "正在下载 GitHub Release {repo}@{} …",
+        release.tag_name
+    ));
+    let tarball = dest.join(".github-release.tar.gz");
+    let tarball_url = github_tarball_url(&repo, &release.tag_name);
+    if let Err(error) = http_get_file(&tarball_url, &tarball) {
+        let _ = fs::remove_file(&tarball);
+        on_progress(&format!(
+            "GitHub Release tarball 下载失败：{error}，回退 git clone"
+        ));
+        return None;
+    }
+    if let Err(error) = crate::pkg::archive::extract_github_tarball(&tarball, dest) {
+        let _ = fs::remove_file(&tarball);
+        on_progress(&format!(
+            "GitHub Release tarball 解包失败：{error}，回退 git clone"
+        ));
+        return None;
+    }
+    let _ = fs::remove_file(&tarball);
+    Some(release.tag_name)
+}
+
+fn fetch_git(
+    spec: &PluginSpec,
+    dest: &Path,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(String, bool), AppError> {
+    // 公共 GitHub 仓库通常把可运行的构建结果发布在 Release 对应的源码
+    // tarball 中。先走这条不依赖本机 git 的路径；API、下载或归档不可用时
+    // 再回退到原有 clone 流程，保留任意 Git 主机和私有仓库的兼容性。
+    if github_repo_path(&spec.source).is_some() {
+        if let Some(version) = try_fetch_github_release(spec, dest, on_progress) {
+            let dependencies_ready = build_git_plugin(dest, pnpm_exe, on_progress)?;
+            return Ok((version, dependencies_ready));
+        }
+    }
+    fetch_git_clone(spec, dest, pnpm_exe, on_progress)
+}
+
+fn fetch_git_clone(
+    spec: &PluginSpec,
+    dest: &Path,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(String, bool), AppError> {
+    // 探测和 clone 都走 `process::command_with_path`，让继承的 PATH 包含
+    // 用户的工具位置。Windows 上 GUI 子系统的 release 构建在启动时只能
+    // 看到 system PATH；而 Git for Windows 注册在用户 PATH
+    // （`HKCU\Environment\Path`），这里直接 `Command::new("git")` 会得到
+    // "command not found"，用户就会看到误导性的「未找到 git」错误，
+    // 尽管 `git` 在他们打开的任何 cmd.exe 里都能正常运行。
+    if !matches!(run_capture("git", &["--version"]), Ok((true, _))) {
+        return Err(AppError::Plugin(
+            "未找到 git（git 来源的插件需要 git；请先安装 git）".into(),
+        ));
+    }
+
+    // 决定要 checkout 什么。
+    // - pinned：spec 已经给出 `#tag`，直接使用。
+    // - unpinned：挑选远端发布的最高 semver tag，让磁盘上保存的
+    //   `installed_version` 与 `check_updates` 要对比的字符串形态一致。
+    //   没有 semver tag 的仓库回退到默认分支（HEAD 短 hash）；
+    //   `is_newer_than` 会专门处理这种回退情况，避免新 tag 因为段数
+    //   看上去比 hash「更新」。
+    let branch = match spec.pin.as_ref() {
+        Some(tag) => Some(tag.clone()),
+        None => match git_latest_tag(&spec.source) {
+            Ok(Some(tag)) => Some(tag),
+            Ok(None) => None,
+            Err(e) => {
+                return Err(AppError::Plugin(format!("查询最新 tag 失败：{e}")));
+            }
+        },
+    };
+
+    on_progress(&format!("正在克隆 {}", spec.source));
+    let mut cmd = crate::shell::process::command_with_path("git");
+    cmd.arg("clone").arg("--depth").arg("1");
+    if let Some(tag) = &branch {
+        cmd.arg("--branch").arg(tag);
+    }
+    cmd.arg(&spec.source).arg(dest);
+    // 与技能侧同理：clone 是网络操作，30 秒的默认上限会把一次正常的浅克隆
+    // 变成"无法运行 git"。很多 dsh 插件没有 GitHub Release，clone 是主路径。
+    let output = crate::shell::process::run_command_capture_with_timeout(
+        cmd,
+        "git clone",
+        crate::shell::process::GIT_CLONE_TIMEOUT,
+    )
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            AppError::Io(format!(
+                "git clone 超时（{} 分钟）：仓库较大或网络较慢，请重试，或改用带 Release 的来源",
+                crate::shell::process::GIT_CLONE_TIMEOUT.as_secs() / 60
+            ))
+        } else {
+            AppError::Io(format!("无法运行 git：{e}"))
+        }
+    })?;
+    let (success, stdout, stderr) = output;
+    if !success {
+        // 优先反向查找 "fatal:" / "error:" 行；找不到就退回到最后一行
+        // 非空 stderr，再退回 "，请检查地址与网络" 兜底文案。
+        let detail = stderr
+            .lines()
+            .rev()
+            .find(|l| {
+                let t = l.trim_start();
+                t.starts_with("fatal:") || t.starts_with("error:")
+            })
+            .or_else(|| stderr.lines().rev().find(|l| !l.trim().is_empty()))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let stdout_tail = stdout
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let mut msg = String::from("git clone 失败");
+        if !detail.is_empty() {
+            msg.push_str(&format!("：{detail}"));
+        } else if !stdout_tail.is_empty() {
+            msg.push_str(&format!("：{stdout_tail}"));
+        } else {
+            msg.push_str("，请检查地址与网络");
+        }
+        return Err(AppError::Plugin(msg));
+    }
+    let dependencies_ready = build_git_plugin(dest, pnpm_exe, on_progress)?;
+    if let Some(tag) = branch {
+        return Ok((tag, dependencies_ready));
+    }
+    // 未锁定的仓库且没有任何 semver tag：克隆的是默认分支；记录下 HEAD
+    // 的 hash，让 source marker 仍能指向稳定的内容，用户也能看出当前
+    // 拥有的是哪个 commit。
+    let dest_str = dest.to_str().unwrap_or("");
+    let (ok, out) = run_capture("git", &["-C", dest_str, "rev-parse", "--short", "HEAD"])
+        .map_err(|e| AppError::Io(e.to_string()))?;
+    Ok((
+        if ok {
+            out.trim().to_string()
+        } else {
+            String::from("head")
+        },
+        dependencies_ready,
+    ))
+}
+
+/// 在 Git 来源获取完成后立刻构建一个 git 来源插件。
+///
+/// Git 仓库把构建产物放在 `.gitignore` 里（`lib/` 从来不会被提交），所以
+/// 刚获取下来的树不能满足加载器，直到构建完为止。包自身的 `prepare`
+/// 脚本正是 npm 官方为这种场景提供的钩子；通过 pnpm 跑它能让工具链解析
+/// 留在插件内部完成。尽力而为：当 `prepare` 不存在时插件必须自带预构建
+/// 产物，且 `validate_plugin` 仍会守住最终状态，所以只有当声明的 prepare
+/// 真的失败时，这里才会报告失败。
+fn build_git_plugin(
+    dest: &Path,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<bool, AppError> {
+    let root = match read_plugin_manifest(dest) {
+        Ok(root) => root,
+        Err(_) => return Ok(false), // 真正的错误由 validate_plugin 报告
+    };
+    let has_prepare = root
+        .get("scripts")
+        .and_then(|s| s.get("prepare"))
+        .and_then(|p| p.as_str())
+        .map(|p| !p.is_empty())
+        .unwrap_or(false);
+    let main = root.get("main").and_then(|m| m.as_str()).unwrap_or("");
+    let entry_ready = !main.is_empty()
+        && (dest.join(main).is_file() || dest.join(format!("{main}.js")).is_file());
+    // 预构建的仓库：什么都不用做。「声明了 prepare 但还没构建」才是常见情况。
+    if !has_prepare || entry_ready {
+        return Ok(false);
+    }
+    // 构建脚本需要依赖来定位工具（tsdown 等）。install_store_deps 之后会在
+    // link 模式下跑一次，但太晚 —— 入口检查在这之前发生，且 copy 模式根本不会
+    // 跑 install_store_deps。
+    on_progress("正在安装插件依赖并构建（pnpm，git 来源需要生成 lib/）");
+    let log_path = dest.join(".dsh-build.log");
+    let args = [
+        "install",
+        "--ignore-workspace",
+        "--config.node-linker=hoisted",
+        kernel::lifecycle::PNPM_REPORTER,
+        kernel::lifecycle::PNPM_NO_STRICT_DEP_BUILDS,
+        "--config.enable-pre-post-scripts=true",
+    ];
+    // 当 enable-pre-post-scripts 打开时，pnpm 会在 install 之后自动跑包的
+    // `prepare` 生命周期脚本。`pnpm_exe.parent()` 被前置到子进程的 PATH 里，
+    // 让生命周期 shell 能解析到 `node`（以及任何同目录里有 shebang 的工具），
+    // 即使 GUI 进程继承到的 PATH 只有 launchd 的、不含用户的 Homebrew / nvm
+    // bin 目录；少了这一步 prepare 步骤会返回 127 并报
+    // `env: node: No such file or directory`。
+    let pnpm_dir = pnpm_exe.parent().unwrap_or(Path::new("."));
+    // 构建日志放在插件自己的目录里；不做按日轮转，也不带构建种类标记
+    // —— 插件卸载时该文件会被一起删掉，所以固定路径反而最合适。
+    let status = kernel::lifecycle::run_pnpm_at(
+        pnpm_exe,
+        &args,
+        dest,
+        &log_path,
+        &[pnpm_dir],
+        &mut *on_progress,
+    )
+    .map_err(|e| {
+        AppError::Plugin(format!(
+            "无法运行 pnpm（{e}），请确认 Node.js 与 pnpm 可用，详情见日志：{}",
+            log_path.display()
+        ))
+    })?;
+    if !status.success() {
+        return Err(AppError::Plugin(format!(
+            "插件构建失败（退出码 {:?}）：`prepare` 未成功生成入口。详情见 {}",
+            status.code(),
+            log_path.display()
+        )));
+    }
+    Ok(true)
+}
+
+fn read_plugin_manifest(plugin_root: &Path) -> Result<serde_json::Value, serde_json::Error> {
+    let text =
+        fs::read_to_string(plugin_root.join("package.json")).map_err(serde_json::Error::io)?;
+    serde_json::from_str(&text)
+}
+
+/// 将 package.json 中的依赖名解析到插件自己的 node_modules，拒绝通过
+/// manifest 把检查路径带出插件目录。npm 包名只允许普通段或 `@scope/name`。
+fn store_dependency_path(plugin_root: &Path, name: &str) -> Option<PathBuf> {
+    if name.is_empty() || name.contains('\\') {
+        return None;
+    }
+    let mut path = plugin_root.join("node_modules");
+    for segment in name.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return None;
+        }
+        path.push(segment);
+    }
+    Some(path)
+}
+
+/// link 模式插件从中央库真实路径加载，因此其普通 dependencies 必须存在
+/// 于中央库自身；profile 的 `link:` 依赖不会替共享目录安装这些包。
+fn store_dependencies_ready(plugin_root: &Path) -> bool {
+    let Ok(root) = read_plugin_manifest(plugin_root) else {
+        return false;
+    };
+    let Some(dependencies) = root.get("dependencies").and_then(|d| d.as_object()) else {
+        return true;
+    };
+    dependencies.keys().all(|name| {
+        store_dependency_path(plugin_root, name)
+            .map(|path| path.join("package.json").is_file())
+            .unwrap_or(false)
+    })
+}
+
+/// 插件目录是否声明了运行时依赖。
+fn manifest_has_deps(plugin_root: &Path) -> bool {
+    let Ok(root) = read_plugin_manifest(plugin_root) else {
+        return false;
+    };
+    root.get("dependencies")
+        .and_then(|d| d.as_object())
+        .map(|d| !d.is_empty())
+        .unwrap_or(false)
+}
+
+/// 插件是否声明了 bundle 层。
+fn manifest_is_bundle(plugin_root: &Path) -> bool {
+    let Ok(root) = read_plugin_manifest(plugin_root) else {
+        return false;
+    };
+    root.get("dsh")
+        .and_then(|d| d.get("bundle"))
+        .and_then(|b| b.get("patch"))
+        .and_then(|p| p.as_str())
+        .map(|p| !p.is_empty())
+        .unwrap_or(false)
+}
+
+/// 内核加载已安装插件所需满足的条件：可解析的 package.json 且带 name；包
+/// 声明 bundle 层时对应的 patch 文件必须存在；无论是否带 bundle 都要有可
+/// 解析的 `main` / `exports` 入口。紧随 fetch 之后运行，让不合规的包
+/// 在安装阶段就大声失败，而不是拖到下次内核启动才崩。
+///
+/// 即使有 bundle 层，入口检查也必须执行：插件常常两者都声明（bundle 改写
+/// 客户端 UI，`main` 加载服务端一半）。一旦在 bundle 分支提前返回，git
+/// 来源的安装就会在缺少构建产物（`lib/` 被 .gitignore 掉）时也通过，
+/// 然后内核在解析 ESM 时崩溃。
+fn validate_plugin(dir: &Path) -> Result<(), AppError> {
+    let root = read_plugin_manifest(dir)
+        .map_err(|_| AppError::Plugin("不符合 dsh 插件规范：缺少可解析的 package.json".into()))?;
+    let name = root.get("name").and_then(|n| n.as_str()).unwrap_or("");
+    if name.is_empty() {
+        return Err(AppError::Plugin(
+            "不符合 dsh 插件规范：package.json 缺少 name 字段".into(),
+        ));
+    }
+    if let Some(patch) = root
+        .get("dsh")
+        .and_then(|d| d.get("bundle"))
+        .and_then(|b| b.get("patch"))
+        .and_then(|p| p.as_str())
+    {
+        if patch.is_empty() || !dir.join(patch).is_file() {
+            return Err(AppError::Plugin(format!(
+                "不符合 dsh 插件规范：声明了 bundle 层但包内找不到 patch 文件 {patch:?}，内核启动将无法加载该层"
+            )));
+        }
+        // 不提前返回：下面的运行时入口检查仍然必需。
+    }
+    let has_exports = root.get("exports").is_some();
+    if !has_exports {
+        let main = root.get("main").and_then(|m| m.as_str()).unwrap_or("");
+        if main.is_empty() {
+            return Err(AppError::Plugin(
+                "不符合 dsh 插件规范：既未声明 dsh.bundle.patch，也没有 main/exports 入口，内核无法加载"
+                    .into(),
+            ));
+        }
+        // Node 解析 main 时允许省略 .js 后缀，两者都接受。
+        if dir.join(main).is_file() || dir.join(format!("{main}.js")).is_file() {
+            return Ok(());
+        }
+        return Err(AppError::Plugin(format!(
+            "不符合 dsh 插件规范：main 入口 {main:?} 在包内不存在，内核无法加载。git 来源的插件通常需要在包内执行一次构建（如 `pnpm run prepare`）生成 lib/"
+        )));
+    }
+    Ok(())
+}
+
+/// 在中央库目录里安装插件自身的依赖。只有 link 模式需要这一步（copy 模式
+/// 由 profile 自己的 pnpm 负责）。
+fn install_store_deps(
+    data_dir: &Path,
+    pnpm_exe: &Path,
+    id: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    let dir = store_plugin_dir(data_dir, id);
+    let log_path = plugin_log_path(data_dir, id);
+    if !manifest_has_deps(&dir) {
+        return Ok(());
+    }
+    on_progress("正在安装插件自身依赖（pnpm）");
+
+    // 删除任何残留的 lockfile，让 pnpm 重新解析时不会撞上因
+    // minimumReleaseAge 而禁止最近发布的 rc 版本的条目。没有 lockfile 时
+    // 直接重新解析 registry，永远是安全的。
+    let lockfile = dir.join("pnpm-lock.yaml");
+    if lockfile.is_file() {
+        fs::remove_file(&lockfile).ok();
+    }
+
+    let args = [
+        "install",
+        "--ignore-workspace",
+        "--config.node-linker=hoisted",
+        kernel::lifecycle::PNPM_REPORTER,
+        kernel::lifecycle::PNPM_NO_STRICT_DEP_BUILDS,
+    ];
+    let extra_paths = pnpm_extra_paths(data_dir, pnpm_exe);
+    let extra_refs: Vec<&Path> = extra_paths.iter().map(|dir| dir.as_path()).collect();
+    // 插件安装日志放在桌面壳的日志目录下；使用按日命名的写入器，让跨午夜的
+    // 长安装落在两个文件里，且基于 spec 的文件名前缀让 dev / release 在弹窗
+    // 标签列表里能直观地区分开。
+    let status = kernel::lifecycle::run_pnpm(
+        pnpm_exe,
+        &args,
+        &dir,
+        &kernel::lifecycle::logs_dir(data_dir),
+        &plugin_log_spec(id),
+        &extra_refs,
+        &mut *on_progress,
+    )
+    .map_err(|e| {
+        AppError::Plugin(format!(
+            "无法运行 pnpm（{e}），请确认 Node.js 与 pnpm 可用，详情见日志：{}",
+            log_path.display()
+        ))
+    })?;
+    if !status.success() && !dir.join("node_modules").is_dir() {
+        return Err(AppError::Plugin(format!(
+            "插件依赖安装失败（退出码 {:?}），详情见日志：{}",
+            status.code(),
+            log_path.display()
+        )));
+    }
+    if !status.success() {
+        on_progress(
+            "注意：pnpm 以非零退出码结束（多为依赖构建脚本被忽略所致），插件依赖已基本就绪",
+        );
+    }
+    if !store_dependencies_ready(&dir) {
+        return Err(AppError::Plugin(format!(
+            "插件依赖未完整安装（package.json 中声明的依赖仍有缺失），详情见日志：{}",
+            log_path.display()
+        )));
+    }
+    Ok(())
+}
+
+// --- 物化 ----------------------------------------------------------------
+
+/// 把一个插件从中央库物化到目标目录，方式是 link（symlink，Windows 上是
+/// junction）或 copy，结果写在 `meta_path` 里。返回实际采用的模式。
+///
+/// 这是物化的**纯函数**版：不依赖 `data_dir` 或 `version`，纯粹把
+/// `source → target` 摆好并写 meta。所有路径都已在上层解析好
+///（默认实例 → `instance_extensions_plugin_dir` 等）。
+///
+/// 注意 `target` 必须在调本函数前不存在——否则链接判定（`symlink_metadata`
+/// + `read_link`）会因为目标已经存在而误判「健康」。本函数第一步就清旧
+///   产物（`remove_materialized_at`），让链接重新建在干净目录上。
+fn materialize_inner(
+    source: &Path,
+    target: &Path,
+    meta_path: &Path,
+    item: &StoreItem,
+    log_path: &Path,
+) -> Result<String, AppError> {
+    let meta = read_instance_meta(meta_path);
+
+    // 一次性解析中央库路径：如果中央库源本身就是一个 symlink（比如 git 来源
+    // 的插件直接克隆到中央库），用真实文件系统位置，让内核插件目录拿到
+    // 一条直接链接 —— 避免双重 symlink 链把 Node 的 realpath 弄断。
+    let resolved_source = fs::symlink_metadata(source)
+        .ok()
+        .filter(|m| m.file_type().is_symlink())
+        .and_then(|_| fs::read_link(source).ok())
+        .unwrap_or_else(|| source.to_path_buf());
+
+    // 中央库包目录必须真实可解析：清单记录可能因外部事故（夹具泄漏、手工
+    // 清理、迁移中断）指向一个已经不存在的包，或包目录本身是条悬空链接。
+    // 缺包时在这里失败并给出可操作的下一步——照常往下走会 `make_dir_link`
+    // 建出一条**悬空链接**，`target.exists()` 跟随链接判 false，于是每轮
+    // 同步都重复「建悬空链接 → 报未就绪」，错误文案还引导用户去点一个
+    // 永远修不好的「同步」。
+    if !resolved_source.exists() {
+        return Err(AppError::Plugin(format!(
+            "中央库缺少插件包 {}（解析 {} 失败：包目录不存在），无法接入内核。请卸载该插件后重新安装；若需保留数据请先检查备份目录",
+            item.id,
+            source.display()
+        )));
+    }
+
+    let synced_version_matches = meta
+        .as_ref()
+        .map(|m| m.version == item.installed_version)
+        .unwrap_or(false);
+    // 已降级的副本保持现状：期望 link、上次却因为权限落成 copy 时，不要再试一次
+    // （在无符号链接权限的 Windows 上必然失败）并整树重拷——含 node_modules 的
+    // 插件可达两万文件，那是每次启动内核都要付的代价。用户主动切换模式时
+    // `set_mode_unlocked` 会删掉 meta，从而强制重新物化。
+    let fallback_copy = meta
+        .as_ref()
+        .map(|m| m.fallback && m.mode == "copy" && item.mode == "link")
+        .unwrap_or(false);
+    let fresh =
+        synced_version_matches && meta.as_ref().map(|m| m.mode == item.mode).unwrap_or(false);
+    let satisfied = fresh || (synced_version_matches && fallback_copy);
+
+    if satisfied && target.exists() {
+        // 按**记录的实际形态**判断健康度：copy（用户选的或降级来的）落地的是
+        // 真实目录/文件，"目标必须是符号链接"对它恒为假——旧代码因此每次启动
+        // 都判定"不健康"并整树重删重拷。
+        let recorded_copy = meta.as_ref().map(|m| m.mode == "copy").unwrap_or(false);
+        let target_ok = if recorded_copy {
+            fs::symlink_metadata(target)
+                .map(|m| !m.file_type().is_symlink())
+                .unwrap_or(false)
+        } else {
+            // 上一次运行可能留下了一条过时的双重 symlink 链，即便记录的版本和
+            // 模式都没变 —— 落到下面去重建一条正确的直接链接。
+            fs::symlink_metadata(target)
+                .ok()
+                .filter(|m| m.file_type().is_symlink())
+                .and_then(|_| fs::read_link(target).ok())
+                .map(|link| link == resolved_source)
+                .unwrap_or(false)
+        };
+        if target_ok {
+            return Ok(meta.map(|m| m.mode).unwrap_or_else(|| item.mode.clone()));
+        }
+    }
+
+    // 清除旧产物（错误残留：非链接目录、指向别处的链接或旧版本副本）
+    remove_materialized_at(target, meta_path);
+
+    let mut actual = item.mode.clone();
+    if item.mode == "link" && make_dir_link(&resolved_source, target).is_err() {
+        // 链接失败（Windows 权限、文件系统不支持）→ 降级复制
+        actual = String::from("copy");
+        eprintln!(
+            "dsh-xlink: link failed for {}; falling back to copy",
+            item.id
+        );
+    }
+    if actual == "copy" {
+        copy_tree(source, target).map_err(|e| {
+            AppError::Io(format!(
+                "复制插件 {} 到内核失败：{e}。请关闭工作台后点击「同步」重试；若持续失败请查看日志 {}",
+                item.id,
+                log_path.display()
+            ))
+        })?;
+    }
+    if !target.exists() {
+        return Err(AppError::Plugin(format!(
+            "插件装载失败：{} 未能在实例 extensions 中就绪，请点「同步」重试；若持续失败请查看日志 {}",
+            item.id,
+            log_path.display()
+        )));
+    }
+    write_meta_at(
+        meta_path,
+        &KernelMeta {
+            fallback: actual != item.mode,
+            mode: actual.clone(),
+            version: item.installed_version.clone(),
+            synced_at: crate::shell::process::epoch_secs_string(),
+        },
+    )?;
+    Ok(actual)
+}
+
+/// P4 主路径：把一个插件物化到默认实例的 `extensions/plugins/<id>/`。
+///
+/// 这是默认实例的物化入口；具体实例范围命令走
+/// [`materialize_one_for_instance`]（下一步落地），单实例隔离测试与
+/// 多实例 UI 都用后者。
+pub fn materialize_one(
+    _data_dir: &Path,
+    version: &str,
+    item: &StoreItem,
+) -> Result<String, AppError> {
+    let (family, id) = default_instance_key();
+    materialize_one_for_instance(&family, &id, item, version)
+}
+
+/// P4 主路径：把一个插件物化到指定实例的 `extensions/plugins/<id>/`。
+///
+/// `version` 形参保留仅为与 [`materialize_one`] 对齐；实例物化目标不再
+/// 按 version 切分，`extensions/plugins/` 在实例生命周期内持续存在，
+/// 切换内核版本只需要重链 `node_modules`，不动插件目录。
+pub fn materialize_one_for_instance(
+    family: &str,
+    instance_id: &str,
+    item: &StoreItem,
+    _version: &str,
+) -> Result<String, AppError> {
+    let source = store_plugin_dir(&paths::plugins_store_root(), &item.id);
+    let target = paths::instance_extension_plugin_dir(family, instance_id, &item.id);
+    let meta_path = paths::instance_extension_meta_file(family, instance_id, &item.id);
+    let log_path = wiring_log_path(
+        paths::xlink_metadata_file()
+            .parent()
+            .unwrap_or_else(|| Path::new(".")),
+    );
+    materialize_inner(&source, &target, &meta_path, item, &log_path)
+}
+
+/// 从给定的物化目录里移除插件（link 或 copy 残留），并删 meta。
+fn remove_materialized_at(target: &Path, meta_path: &Path) {
+    match fs::symlink_metadata(target) {
+        Ok(md) if md.file_type().is_symlink() => remove_link(target),
+        Ok(_) => {
+            let _ = fs::remove_dir_all(target);
+        }
+        Err(_) => {}
+    }
+    let _ = fs::remove_file(meta_path);
+}
+
+/// P4 主路径：从指定实例的 extensions 中移除插件。
+fn remove_materialized_for_instance(family: &str, instance_id: &str, plugin_id: &str) {
+    let target = paths::instance_extension_plugin_dir(family, instance_id, plugin_id);
+    let meta_path = paths::instance_extension_meta_file(family, instance_id, plugin_id);
+    remove_materialized_at(&target, &meta_path);
+}
+
+/// 旧 API：默认实例的物化移除 —— 委托到 [`remove_materialized_for_instance`]。
+/// `data_dir, version` 形参保留仅为兼容既有调用站点。
+fn remove_materialized(data_dir: &Path, version: &str, id: &str) {
+    let (family, instance_id) = default_instance_key();
+    remove_materialized_for_instance(&family, &instance_id, id);
+    // 形参 `data_dir, version` 仅用于保留旧签名：物化目标已迁到实例
+    // extensions，version 与 data_dir 不再决定清理范围。
+    let _ = (data_dir, version);
+}
+
+/// P4 主路径：清理指定实例 extensions 里中央库已不再持有的插件条目。
+///
+/// 卸载时撞上 Windows 文件锁、或手工删除中央库目录后留下的残留。仅在以下
+/// 两种情况清理：桌面壳能证明该条目归它所有（有 `.dsh-meta.json` 记录），
+/// 或者条目已经损坏（symlink 的目标已消失）；用户手工放进 extensions/plugins
+/// 目录的任何东西都保留不动。以中央库成员身份而非接线过滤器为依据，保证
+/// 被隔离的插件也能保留物化。
+fn sweep_instance_orphans(family: &str, instance_id: &str, store: &Store) {
+    let dir = paths::instance_extensions_plugins_dir(family, instance_id);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if store.items.iter().any(|i| i.id == name) {
+            continue;
+        }
+        let path = entry.path();
+        let dangling_link = fs::symlink_metadata(&path)
+            .ok()
+            .filter(|m| m.file_type().is_symlink())
+            .map(|_| !path.exists()) // exists() 会顺着链接追到目标上
+            .unwrap_or(false);
+        let shell_owned = paths::instance_extension_meta_file(family, instance_id, &name).is_file();
+        if dangling_link || shell_owned {
+            remove_materialized_for_instance(family, instance_id, &name);
+        }
+    }
+}
+
+/// 旧 API：默认实例的扩展清理 —— 委托到 [`sweep_instance_orphans`]。
+fn sweep_kernel_orphans(data_dir: &Path, version: &str, store: &Store) {
+    let (family, instance_id) = default_instance_key();
+    sweep_instance_orphans(&family, &instance_id, store);
+    let _ = (data_dir, version);
+}
+
+#[cfg(unix)]
+fn make_dir_link(source: &Path, target: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(source, target)
+}
+
+#[cfg(windows)]
+fn make_dir_link(source: &Path, target: &Path) -> io::Result<()> {
+    std::os::windows::fs::symlink_dir(source, target)
+}
+
+/// 递归地把 source 复制到 target，替换任何已存在的内容。每个 IO 错误都
+/// 带上失败的路径 —— 一句裸的 "系统找不到指定的文件 (os error 2)" 出现在
+/// 含 2 万文件的 `node_modules` 复制里根本无法定位。树中损坏的 symlink
+/// 会打 warning 后跳过，而不是中断整次复制：Windows 上一个悬空链接（比如
+/// 内核目标移走后的同伴链接）会让 `fs::copy` 报 os error 2，尽管它周围
+/// 一切正常。
+fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
+    // 源根的规范化路径：符号链接只有在解析后仍落在这个根**之内**时才被跟随。
+    // 越界链接（插件树里 `payload -> /Users/<user>` 这类）会把宿主的整棵树拷进
+    // 内核插件目录——磁盘被填满，私有文件也进入内核进程与插件代码可读的范围。
+    let root = fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
+    copy_tree_at(source, target, &mut Vec::new(), &root)
+}
+
+/// 符号链接解析后是否落在源根之外。解析失败（悬空链接）返回 `false`，
+/// 交由调用方的 metadata 分支处理。
+fn link_escapes_root(link: &Path, root: &Path) -> bool {
+    match fs::canonicalize(link) {
+        Ok(resolved) => !resolved.starts_with(root),
+        Err(_) => false,
+    }
+}
+
+fn link_points_to_ancestor(path: &Path, ancestors: &[PathBuf]) -> bool {
+    let Ok(target) = fs::read_link(path) else {
+        return false;
+    };
+    let resolved = if target.is_absolute() {
+        target
+    } else {
+        path.parent().unwrap_or_else(|| Path::new(".")).join(target)
+    };
+    let resolved = fs::canonicalize(&resolved).unwrap_or(resolved);
+    ancestors.iter().any(|ancestor| ancestor == &resolved)
+}
+
+/// `ancestors` 保存了当前递归栈上每个目录的规范化路径。copy 模式会顺着
+/// 目录链接继续走（拷贝出来的树不能依赖链接能力），而在 macOS / Linux 上
+/// pnpm 的 `node_modules` 几乎全由 symlink 构成 —— 循环依赖会形成链接环，
+/// 这里通过检测目录的规范化路径是否已在祖先列表里来抓住它们。菱形结构
+///（两个链接指向同一兄弟）不是环，会直接放行。
+fn copy_tree_at(
+    source: &Path,
+    target: &Path,
+    ancestors: &mut Vec<PathBuf>,
+    root: &Path,
+) -> io::Result<()> {
+    let canonical = fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
+    if ancestors.contains(&canonical) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("目录树存在循环链接：{}", source.display()),
+        ));
+    }
+    ancestors.push(canonical);
+    let result = copy_tree_inner(source, target, ancestors, root);
+    ancestors.pop();
+    result
+}
+
+fn copy_tree_inner(
+    source: &Path,
+    target: &Path,
+    ancestors: &mut Vec<PathBuf>,
+    root: &Path,
+) -> io::Result<()> {
+    if target.is_symlink() {
+        remove_link(target);
+        if target.is_symlink() {
+            // 链接清不掉：再沿它拷贝就会写到它的目标里去（可能就是中央库本身）。
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("无法清除旧的链接 {}，请关闭工作台后重试", target.display()),
+            ));
+        }
+    } else if target.exists() {
+        let _ = fs::remove_dir_all(target);
+    }
+    fs::create_dir_all(target).map_err(|e| {
+        io::Error::new(e.kind(), format!("创建目录 {} 失败：{e}", target.display()))
+    })?;
+    let entries = fs::read_dir(source).map_err(|e| {
+        io::Error::new(e.kind(), format!("读取目录 {} 失败：{e}", source.display()))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            io::Error::new(e.kind(), format!("遍历目录 {} 失败：{e}", source.display()))
+        })?;
+        let from = entry.path();
+        let to = target.join(entry.file_name());
+        // `file_type` 不会顺着链接走：symlink 即使目标是一个目录，也会以
+        // symlink 的形态报告。Windows 上的 junction 则会显示为普通目录，
+        // 直接顺着拷贝即可，这正好契合 copy 模式「不依赖链接能力」的承诺。
+        let file_type = entry.file_type().map_err(|e| {
+            io::Error::new(e.kind(), format!("读取 {} 的类型失败：{e}", from.display()))
+        })?;
+        if file_type.is_symlink() {
+            if link_points_to_ancestor(&from, ancestors) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("目录树存在循环链接：{}", from.display()),
+                ));
+            }
+            // 越界链接不跟随：它指向源根之外，跟随会把宿主机的目录树整棵拷进
+            // 内核插件目录（磁盘被填满，私有文件进入内核与插件可读范围）。
+            if link_escapes_root(&from, root) {
+                eprintln!(
+                    "dsh-xlink: skipping symlink that escapes the package root: {}",
+                    from.display()
+                );
+                continue;
+            }
+            // 沿链接走一次来分类；悬空链接拷不动，但也不能因此打断整棵树。
+            match fs::metadata(&from) {
+                Ok(md) if md.is_dir() => copy_tree_at(&from, &to, ancestors, root)?,
+                Ok(_) => copy_file(&from, &to)?,
+                Err(e) => {
+                    eprintln!(
+                        "dsh-xlink: skipping dangling symlink {} during copy: {e}",
+                        from.display()
+                    );
+                    continue;
+                }
+            }
+        } else if file_type.is_dir() {
+            copy_tree_at(&from, &to, ancestors, root)?;
+        } else {
+            copy_file(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// 把单个文件复制到 `to`，覆盖任何已存在的内容；错误信息同时带上两条路径，
+/// 失败时能精确指向问题文件。
+fn copy_file(from: &Path, to: &Path) -> io::Result<()> {
+    let _ = fs::remove_file(to);
+    fs::copy(from, to)
+        .map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("复制 {} → {} 失败：{e}", from.display(), to.display()),
+            )
+        })
+        .map(|_| ())
+}
+
+/// 把插件物化到默认实例的 `extensions/plugins/<id>/`。
+///
+/// P4 起插件物化按实例隔离（多实例隔离由 P5+ 命令驱动）：同一份中央库
+/// 入口被不同实例独立物化到各自 `extensions/plugins/`。这里只对默认
+/// 实例生效；具体实例的命令走 [`sync_for_instance`]。
+pub fn sync_kernels(data_dir: &Path, item: &StoreItem) -> Result<(), AppError> {
+    let (family, instance_id) = default_instance_key();
+    sync_kernels_for_instance(&family, &instance_id, data_dir, item)
+}
+
+/// 把插件物化到指定实例的 `extensions/plugins/<id>/`。实例范围命令
+///（`plugin_install_instance` / `plugin_sync_instance` 等）的入口之一。
+pub fn sync_kernels_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    item: &StoreItem,
+) -> Result<(), AppError> {
+    let version = kernel::lifecycle::read_active(data_dir).unwrap_or_default();
+    materialize_one_for_instance(family, instance_id, item, &version)?;
+    Ok(())
+}
+
+// --- profile 接线 --------------------------------------------------------
+
+/// 计算 `from_dir` 到 `to` 的相对路径（两者在同一根目录下）；当没有公共前缀
+/// 时返回绝对路径。
+fn relative_path(from_dir: &Path, to: &Path) -> PathBuf {
+    let to_path = to;
+    let from: Vec<Component> = from_dir.components().collect();
+    let to: Vec<Component> = to_path.components().collect();
+    let mut common = 0;
+    while common < from.len() && common < to.len() && from[common] == to[common] {
+        common += 1;
+    }
+    if common == 0 {
+        return to_path.to_path_buf();
+    }
+    let mut out = PathBuf::new();
+    for _ in common..from.len() {
+        out.push("..");
+    }
+    for part in &to[common..] {
+        out.push(part.as_os_str());
+    }
+    out
+}
+
+/// `package.json` 中 dependency spec 要用的正斜杠路径字符串。
+fn spec_path_string(rel: &Path) -> String {
+    rel.to_string_lossy().replace('\\', "/")
+}
+
+/// 新建 profile 时的模板 bundle，对应内核的 profile 模板。
+fn template_bundles(profile: &str) -> Vec<String> {
+    match profile {
+        "web" => vec![
+            String::from("@deepseek-ai/dsh-base"),
+            String::from("@deepseek-ai/dsh-web-app"),
+        ],
+        "headless" => vec![
+            String::from("@deepseek-ai/dsh-base"),
+            String::from("@deepseek-ai/dsh-headless"),
+        ],
+        _ => vec![String::from("@deepseek-ai/dsh-base")],
+    }
+}
+
+/// 把 profile 清单读成可变的 JSON 树（未知字段会原样保留）。profile
+/// 目录尚未初始化时返回 `None`。
+fn read_profile_json(
+    data_dir: &Path,
+    profile: &str,
+) -> Result<Option<serde_json::Value>, AppError> {
+    let path = profile_dir(data_dir, profile).join("package.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|e| AppError::Io(e.to_string()))
+}
+
+/// P8 实例范围版：profile 路径走指定实例的
+/// `instance_profile_dir(family, instance_id, profile)/package.json`。
+/// 旧 `read_profile_json` 仍按默认实例工作（不破坏既有 caller）。
+fn read_profile_json_for_instance(
+    _data_dir: &Path,
+    family: &str,
+    instance_id: &str,
+    profile: &str,
+) -> Result<Option<serde_json::Value>, AppError> {
+    let path = paths::instance_profile_dir(family, instance_id, profile).join("package.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|e| AppError::Io(e.to_string()))
+}
+
+fn write_profile_json(
+    data_dir: &Path,
+    profile: &str,
+    root: &serde_json::Value,
+) -> Result<(), AppError> {
+    let path = profile_dir(data_dir, profile).join("package.json");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
+    }
+    let text = serde_json::to_string_pretty(root).map_err(|e| AppError::Io(e.to_string()))?;
+    atomic_write(&path, format!("{text}\n").as_bytes()).map_err(|e| AppError::Io(e.to_string()))
+}
+
+/// 按内核相同的方式初始化 profile 清单，但提前把模板 bundle 列表写进去，
+/// 这样首次启动前就能完成接线。
+fn ensure_profile(data_dir: &Path, profile: &str) -> Result<(), AppError> {
+    let dir = profile_dir(data_dir, profile);
+    let manifest_path = dir.join("package.json");
+    if fs::metadata(&manifest_path).is_ok() {
+        return Ok(());
+    }
+    fs::create_dir_all(&dir).map_err(|e| AppError::Io(e.to_string()))?;
+    let root = serde_json::json!({
+        "name": format!("dsh-profile-{profile}"),
+        "private": true,
+        "dependencies": {},
+        "dsh": { "profile": { "bundles": template_bundles(profile) } }
+    });
+    write_profile_json(data_dir, profile, &root)?;
+    let patch = dir.join("cordis.patch.yml");
+    if !patch.exists() {
+        let _ = atomic_write(&patch, b"# Your patch layer for this dsh profile.\n[]\n");
+    }
+    let workspace = dir.join("pnpm-workspace.yaml");
+    let needs_workspace = !workspace.exists()
+        || fs::read_to_string(&workspace)
+            .map(|t| !t.contains("minimumReleaseAge: 0"))
+            .unwrap_or(false);
+    if needs_workspace {
+        let _ = atomic_write(
+            &workspace,
+            b"packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\nminimumReleaseAge: 0\n",
+        );
+    }
+    Ok(())
+}
+
+/// 判断 profile 中的 dependency spec 是否由桌面壳写入（指向某个实例的
+/// `extensions/plugins/<id>` 或 P4 之前的 `kernels/<version>/plugins/<id>`）。
+/// 用来防止清退误伤 CLI 管理的依赖。
+///
+/// 桌面壳写出的 spec 末尾要么是 P4 的 `.../extensions/plugins/<id>`，要么是
+/// P4 之前已经落盘的旧布局 `.../kernels/<version>/plugins/<id>`——两种都
+/// 必须识别为托管，否则 P4 升级时旧 spec 残留会被当成用户/CLI 依赖保留，
+/// 卸载时留不下清退，内核启动时解析悬空 bundle 崩溃。
+///
+/// 基于数据目录名（`desktop/` / `desktop-dev/`）匹配会把
+/// `DSH_DESKTOP_DATA_DIR` 覆写出的 spec 误判为用户自管的——必须按尾部布局
+/// 而不是按目录名判断。
+fn is_managed_spec(spec: &str) -> bool {
+    let Some(path) = spec
+        .strip_prefix(SPEC_LINK)
+        .or_else(|| spec.strip_prefix(SPEC_FILE))
+    else {
+        return false;
+    };
+    let segs: Vec<&str> = path.split('/').rev().collect();
+    if segs.len() < 3 {
+        return false;
+    }
+    // P4 起的实例布局：`.../extensions/plugins/<id>` —— 尾三段
+    // (id, "plugins", "extensions")。
+    if segs.len() >= 3 && segs[1] == "plugins" && segs[2] == "extensions" {
+        return !segs[0].is_empty();
+    }
+    // P4 之前的多版本布局：`.../kernels/<version>/plugins/<id>` —— 尾四段
+    // (id, "plugins", version, "kernels")。`version` 与 `id` 都不得为空。
+    if segs.len() >= 4 && segs[1] == "plugins" && segs[3] == "kernels" {
+        return !segs[0].is_empty() && !segs[2].is_empty();
+    }
+    false
+}
+
+/// 决定哪些中央库条目参与物化与 profile 接线的过滤器。启动看护会把要排除
+/// 的插件传进来，从而实现「不加载特定插件」的重启。
+pub type WiringFilter<'a> = dyn Fn(&StoreItem) -> bool + 'a;
+
+/// 按中央库对活动内核的 profile 清单进行调和，排除隔离注册表中命名的插件
+/// （见 [`crate::diagnostics::guard`]）。
+pub fn ensure_wiring(
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(usize, bool), AppError> {
+    let (family, instance_id) = default_instance_key();
+    ensure_wiring_for_instance(
+        &family,
+        &instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )
+}
+
+/// 按中央库对**指定实例**的 profile 清单进行调和（实例范围命令入口）。
+/// 隔离过滤仍在全局 quarantine 文档里读——它是中央库级别的状态，不会
+/// 按实例分裂。
+pub fn ensure_wiring_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(usize, bool), AppError> {
+    let blocked = quarantine::ids(data_dir);
+    ensure_wiring_filtered(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        &move |item| !blocked.contains(&item.id),
+        on_progress,
+    )
+}
+
+/// link 模式下插件源码从中央库路径加载，profile 的 `link:` 接线不会替中央
+/// 库安装普通 dependencies。插件目录可能被用户手工清理，或在切换内核、
+/// pnpm 重建后丢失 node_modules；启动前发现这种状态时沿用安装阶段的依赖
+/// 修复流程，让后面的内核加载拿到完整的运行时依赖。
+fn ensure_store_dependencies(
+    data_dir: &Path,
+    item: &StoreItem,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    if item.mode != "link" {
+        return Ok(());
+    }
+    let plugin_root = store_plugin_dir(data_dir, &item.id);
+    if !manifest_has_deps(&plugin_root) || store_dependencies_ready(&plugin_root) {
+        return Ok(());
+    }
+    on_progress(&format!(
+        "检测到插件 {} 的运行时依赖缺失，正在恢复 …",
+        item.name
+    ));
+    ensure_store_npmrc(data_dir).ok();
+    install_store_deps(data_dir, pnpm_exe, &item.id, on_progress)
+}
+
+/// 按中央库对活动内核的 profile 清单进行调和：把每个允许条目对应的依赖
+/// 设置为已物化的目录，维护 bundle 层，活动内核变更时重写 spec。当清单发生
+/// 变更或 profile 的 `node_modules` 缺失时运行 `pnpm install`。被过滤掉的
+/// 条目既不会被物化也不会被接线，其遗留的托管依赖与 bundle 层会被清退
+/// —— 这正是内核能在缺少这些插件时启动的原因。
+///
+/// manifest 写入具有事务性：pnpm 失败时回滚 manifest，因为无法解析的
+/// bundles 条目会让内核在启动时崩溃。即使中央库为空也照常调和，让卸载最后
+/// 一个插件时把残留清掉，而不会留下无法解析的层。
+///
+/// 返回 `(wired_count, changed)`。
+///
+/// P4 起物化与清扫的目标由 `family + instance_id` 决定（实例范围命令
+/// 通过 [`ensure_wiring_for_instance`] 显式传入，默认实例命令通过
+/// [`default_instance_key`] fallback 进来）。`profile` 路径同样走实例
+/// `instance_profile_dir`，隔离仍读全局 quarantine 文档——它是中央库
+/// 级别状态，不会按实例分裂。
+pub fn ensure_wiring_filtered(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    allow: &WiringFilter<'_>,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(usize, bool), AppError> {
+    // 接线会物化/清扫各实例的 extensions/plugins 目录并改写 profile 的托管
+    // 依赖，属于"读-改-写"路径：清单损坏时绝不能用空清单继续，
+    // 否则 `sweep_instance_orphans` 会删掉本实例里全部物化目录、
+    // `wire_manifest` 会清退 profile 的全部托管依赖（P0-5）。
+    let store = load_store_checked(data_dir)?;
+    ensure_profile(data_dir, &settings.profile)?;
+
+    // 物化活动实例，再据插件清单决定 bundle 层；没有活动实例且仍有插件时
+    // 等内核装好再接线（store 为空则继续，让下面的清退逻辑跑掉残留）。
+    // 被过滤器排除的插件（如启动看护隔离的嫌疑插件）既不物化也不进清单，
+    // 内核因此在缺少它们的状态下完成启动。
+    //
+    // 单个插件物化失败不中止整轮接线：失败项不进清单（manifest 随之把它
+    // 清退，内核不带它启动），其余插件照常接线，最后聚合报错。否则一个
+    // 损坏的插件会让卸载残留的清退永远跑不到，故障在 store warning 里
+    // 越积越多。
+    let mut specs: BTreeMap<String, WireSpec> = BTreeMap::new();
+    let mut failures: Vec<String> = Vec::new();
+    match kernel::lifecycle::read_active(data_dir) {
+        Some(active) => {
+            for item in store.items.iter().filter(|item| allow(item)) {
+                let result = ensure_store_dependencies(data_dir, item, pnpm_exe, on_progress)
+                    .and_then(|_| refresh_store_peers(data_dir, item, &active))
+                    .and_then(|_| materialize_one_for_instance(family, instance_id, item, &active));
+                match result {
+                    Ok(actual) => {
+                        let prefix = if actual == "copy" {
+                            SPEC_FILE
+                        } else {
+                            SPEC_LINK
+                        };
+                        let target =
+                            paths::instance_extension_plugin_dir(family, instance_id, &item.id);
+                        let rel = relative_path(&profile_dir(data_dir, &settings.profile), &target);
+                        specs.insert(
+                            item.id.clone(),
+                            WireSpec {
+                                name: item.name.clone(),
+                                spec: format!("{prefix}{}", spec_path_string(&rel)),
+                                bundle: manifest_is_bundle(&target),
+                            },
+                        );
+                    }
+                    Err(e) => failures.push(format!("{}（{e}）", item.name)),
+                }
+            }
+            sweep_instance_orphans(family, instance_id, &store);
+        }
+        None if !store.items.is_empty() => return Ok((0, false)),
+        None => {}
+    }
+
+    let mut root = read_profile_json(data_dir, &settings.profile)?
+        .ok_or_else(|| AppError::Plugin("profile 尚未初始化".into()))?;
+    let previous = root.clone();
+    let outcome = wire_manifest(&mut root, &specs, &settings.profile)?;
+    let changed = outcome.changed;
+    failures.extend(outcome.conflicts);
+
+    // manifest 没变但 node_modules 缺失（上次 pnpm 失败或目录被清）也必须
+    // 重装，否则 bundles 里的层解析不了，内核启动即崩。
+    let profile = profile_dir(data_dir, &settings.profile);
+    let node_modules_missing = !profile.join("node_modules").is_dir();
+    if changed || node_modules_missing {
+        if changed {
+            write_profile_json(data_dir, &settings.profile, &root)?;
+        }
+        on_progress("正在同步 profile 依赖（pnpm install）");
+        let status = run_profile_install(data_dir, &settings.profile, pnpm_exe, on_progress)?;
+        if !status.success() {
+            if changed {
+                let _ = write_profile_json(data_dir, &settings.profile, &previous);
+            }
+            return Err(AppError::Plugin(format!(
+                "pnpm install 在 profile 中失败（退出码 {:?}），已回滚 profile 配置，详情见日志：{}",
+                status.code(),
+                wiring_log_path(data_dir).display()
+            )));
+        }
+    }
+    if !failures.is_empty() {
+        return Err(AppError::Plugin(format!(
+            "部分插件未能接入内核：{}。其余插件已正常接线；修复后点击「同步」重试",
+            failures.join("；")
+        )));
+    }
+    // 同名冲突时只有一条真正接入了 profile，计数要如实。
+    let wired = specs
+        .values()
+        .map(|entry| entry.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    Ok((wired, changed))
+}
+
+/// 在指定 profile 目录下跑 `pnpm install`，返回它的退出状态，让调用方各自
+/// 实施回滚语义。flag 与中央库层级的 install 保持一致：profile 只需要一个
+/// 可用的 node_modules，既有的产物回退机制在 pnpm 报告 ignored-builds 误报
+/// 时也兜得住。`pnpm_exe.parent()` 被前置到子进程的 PATH 里，让任何带
+/// Node shebang 的生命周期脚本都能找到与启动 pnpm 相同的 `node`。
+/// 供 pnpm 子进程使用的额外 PATH 目录。
+///
+/// 两个目录都需要：`pnpm` 自己的 shim 目录（它的 shebang 与同目录工具），以及
+/// **托管 node 的目录**——npm 全局 prefix 与 node 的安装目录经常不是同一个，
+/// 只前置 pnpm 目录时，包的生命周期脚本（`prepare` / `install`）里的
+/// `#!/usr/bin/env node` 会以 127 失败，而错误信息只会说"无法运行 pnpm"。
+/// 走托管安装（`帮我安装 Node.js`）的用户尤其会撞上这一条。
+fn pnpm_extra_paths(data_dir: &Path, pnpm_exe: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = vec![pnpm_exe
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()];
+    if let Some(node) = crate::node::node_install::managed_node_exe(data_dir) {
+        if let Some(parent) = node.parent() {
+            let parent = parent.to_path_buf();
+            if !dirs.contains(&parent) {
+                dirs.push(parent);
+            }
+        }
+    }
+    dirs
+}
+
+fn run_profile_install(
+    data_dir: &Path,
+    profile_name: &str,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<std::process::ExitStatus, AppError> {
+    // 写入器在按日 spec 内部维持稳定的路径；每行都重新解析路径，跨午夜的
+    // 轮转仍能落到正确的文件里。这里不再单独暴露路径 —— 命名由 spec 负责。
+    let extra_paths = pnpm_extra_paths(data_dir, pnpm_exe);
+    let extra_refs: Vec<&Path> = extra_paths.iter().map(|dir| dir.as_path()).collect();
+    // Profile 接线日志会被启动看护下所有 profile install 流程共享，因此
+    // 放在桌面壳的日志目录下，按日轮转，并打上构建种类标记。
+    kernel::lifecycle::run_pnpm(
+        pnpm_exe,
+        &[
+            "install",
+            kernel::lifecycle::PNPM_REPORTER,
+            kernel::lifecycle::PNPM_NO_STRICT_DEP_BUILDS,
+        ],
+        &profile_dir(data_dir, profile_name),
+        &kernel::lifecycle::logs_dir(data_dir),
+        &wiring_log_spec(),
+        &extra_refs,
+        on_progress,
+    )
+    .map_err(|e| AppError::Io(format!("无法运行 pnpm（{e}）")))
+}
+
+/// profile 清单的原始文本，在启动看护改写接线之前抓取，这样放弃时能
+/// 精准恢复用户原本的内容。
+pub fn snapshot_profile_manifest_text(data_dir: &Path, profile: &str) -> Option<String> {
+    fs::read_to_string(profile_dir(data_dir, profile).join("package.json")).ok()
+}
+
+/// 恢复先前抓取过的清单，并重新同步 node_modules。缺少快照时保留当前
+/// manifest、只重跑 install —— 这是文件本身丢失时能拿出的最好修复。
+pub fn restore_profile_manifest(
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    previous: Option<&str>,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    let path = profile_dir(data_dir, &settings.profile).join("package.json");
+    if let Some(text) = previous {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
+        }
+        atomic_write(&path, text.as_bytes()).map_err(|e| AppError::Io(e.to_string()))?;
+    }
+    on_progress("正在恢复 profile 依赖（pnpm install）");
+    let status = run_profile_install(data_dir, &settings.profile, pnpm_exe, on_progress)?;
+    if !status.success() {
+        return Err(AppError::Plugin(format!(
+            "pnpm install 在恢复后的 profile 中失败（退出码 {:?}），详情见日志：{}",
+            status.code(),
+            wiring_log_path(data_dir).display()
+        )));
+    }
+    Ok(())
+}
+
+/// 写入（或清除）中央库向用户展示的告警。安静的接线流程和启动看护的
+/// 首次重试修复共用此函数，确保两处展示给用户的告警与插件卡片旁的内容一致。
+pub fn set_store_warning(data_dir: &Path, warning: Option<String>) {
+    let _store_guard = lock_store();
+    // 读-改-写：清单损坏时保持原文件不动，绝不拿空清单覆盖它。这个函数由
+    // 启动看护每一轮都会调用，一旦退化成"写空清单"，损坏即刻变成永久丢失。
+    let Ok(mut store) = load_store_checked(data_dir) else {
+        return;
+    };
+    store.warning = warning;
+    let _ = save_store_unlocked(data_dir, &store);
+}
+
+/// 给同步命令（切换内核 / 启动）用的安静接线：失败时只写入中央库供
+/// `plugin_status.warning` 展示，不会阻塞动作。复用调用方缓存好的 node
+/// 探测结果，让切换内核时不会再 spawn 第二次 `node --version`。
+pub fn ensure_wiring_quiet(
+    data_dir: &Path,
+    settings: &settings::Settings,
+    node_info: &node::detect::NodeInfo,
+) -> Result<(), String> {
+    let (_, pnpm_exe) = commands::promise_pnpm(data_dir, node_info, |_| {})?;
+    let mut noop = |_: &str| {};
+    match ensure_wiring(data_dir, settings, &pnpm_exe, &mut noop) {
+        Ok(_) => {
+            set_store_warning(data_dir, None);
+            Ok(())
+        }
+        Err(e) => {
+            set_store_warning(data_dir, Some(e.to_string()));
+            Err(e.to_string())
+        }
+    }
+}
+
+// --- 更新检查 -----------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateInfo {
+    pub id: String,
+    pub latest: Option<String>,
+    pub error: Option<String>,
+}
+
+/// 把每个中央库条目对照其来源的最新版本检查一遍，结果写回中央库供 UI
+/// 角标使用。
+pub fn check_updates(data_dir: &Path) -> Result<Vec<UpdateInfo>, AppError> {
+    // 网络请求不能持有商店锁，否则一次 GitHub/npm 超时会阻塞安装、卸载和
+    // 启动修复。提交阶段会重新读取当前清单，并用 installed_version 做
+    // 乐观冲突校验，避免旧结果覆盖刚完成的安装或更新。
+    let snapshot = {
+        let _store_guard = lock_store();
+        load_store(data_dir)
+            .items
+            .into_iter()
+            .filter(|item| item.origin != "local")
+            .collect::<Vec<_>>()
+    };
+    let mut out = Vec::new();
+    let mut probes = Vec::with_capacity(snapshot.len());
+    for item in snapshot {
+        let (latest, error) = match item.origin.as_str() {
+            "npm" => match http_get_npm_latest(&item.source) {
+                Ok(latest) => (latest, None),
+                Err(e) => (None, Some(e)),
+            },
+            "git" => match git_latest(&item) {
+                Ok(v) => (v, None),
+                Err(e) => (None, Some(e)),
+            },
+            _ => (None, None),
+        };
+        let newer =
+            latest.filter(|v| is_newer_than(v, &item.installed_version, &item.origin, item.pinned));
+        probes.push((
+            item.id.clone(),
+            item.installed_version.clone(),
+            newer.clone(),
+        ));
+        out.push(UpdateInfo {
+            id: item.id.clone(),
+            latest: newer,
+            error,
+        });
+    }
+
+    let _store_guard = lock_store();
+    // 写路径必须用严格读取：清单损坏时 `load_store` 会回落成空清单，而下面就是
+    // `save_store_unlocked`——一次读失败会把用户真实的插件记录原子覆盖掉（P0-2）。
+    // 技能侧的同一函数早已改用严格读取，这里补齐。
+    let mut store = load_store_checked(data_dir)?;
+    for (id, installed_version, latest) in probes {
+        if let Some(current) = store.items.iter_mut().find(|item| item.id == id) {
+            if current.installed_version == installed_version {
+                current.latest_version = latest;
+            }
+        }
+    }
+    store.last_checked_at = Some(crate::shell::process::epoch_secs_string());
+    save_store_unlocked(data_dir, &store)?;
+    Ok(out)
+}
+
+/// git 来源插件的最新版本：GitHub 仓库优先取非 draft Release 中最高的 semver
+/// tag；其它 Git 来源或 GitHub Release 不可用时回退到远端最高 semver tag。
+/// `fetch_git` 把 `installed_version` 也对齐成同样的形态（要么是 tag，要么
+/// 回退为 HEAD hash），这样 `is_newer_than` 就可以直接比较二者。
+///
+/// 未锁定分支跟随最高的已发布版本而非分支 HEAD —— 这样即使开发者 push 了
+/// 新 commit 但尚未发版，也不会显得比用户上次安装的版本「更新」。插件作者
+/// 通过 Release 或 tag 发布版本，而发布版本才是用户希望被通知的内容。
+fn git_latest(item: &StoreItem) -> Result<Option<String>, String> {
+    let mut release_error = None;
+    if github_repo_path(&item.source).is_some() {
+        match fetch_github_release(&item.source, None) {
+            Ok(Some(release)) => return Ok(Some(release.tag_name)),
+            Ok(None) => {}
+            Err(error) => release_error = Some(error),
+        }
+    }
+
+    match git_latest_tag(&item.source) {
+        Ok(version) => Ok(version),
+        Err(git_error) => match release_error {
+            Some(release_error) => Err(format!(
+                "GitHub Releases 与 git tags 均不可用（GitHub：{release_error}；git：{git_error}）"
+            )),
+            None => Err(git_error),
+        },
+    }
+}
+
+// --- 目录 ----------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct CatalogDoc {
+    #[serde(default)]
+    items: Vec<CatalogRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogRaw {
+    id: String,
+    name: String,
+    #[serde(rename = "type", default)]
+    kind: String,
+    #[serde(default)]
+    package: Option<String>,
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    stars: u64,
+    #[serde(default)]
+    downloads: u64,
+    #[serde(default)]
+    verified: bool,
+    #[serde(rename = "install", default)]
+    install: Option<CatalogInstall>,
+    #[serde(default)]
+    category: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogInstall {
+    #[serde(default)]
+    method: String,
+}
+
+/// dshfind.com 的全量目录载荷（`/api/plugins-data`，插件超市网页与桌面端共用）。
+#[derive(Debug, Deserialize)]
+struct FindEnvelope {
+    #[serde(default)]
+    plugins: Vec<FindRaw>,
+    /// fullName → locale → 人工翻译的短描述；中文文案优先于条目自带的英文描述。
+    #[serde(default, rename = "i18nDescriptions")]
+    i18n_descriptions: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+/// dshfind.com（原 dsh-plugin.org hub 的继任站点）的一条目录条目。
+#[derive(Debug, Deserialize)]
+struct FindRaw {
+    /// `owner/name`，全站唯一键。
+    #[serde(default, rename = "fullName")]
+    full_name: String,
+    /// 仓库短名，即插件 slug。
+    #[serde(default)]
+    name: String,
+    /// 作者 slug（GitHub owner）。
+    #[serde(default)]
+    owner: String,
+    /// GitHub 仓库地址。
+    #[serde(default)]
+    url: String,
+    /// 描述（英文为主；中文见 i18nDescriptions）。
+    #[serde(default)]
+    description: String,
+    /// 标签。
+    #[serde(default)]
+    tags: Vec<String>,
+    /// star 数。
+    #[serde(default)]
+    stars: u64,
+    /// 上游最近推送时间（ISO 8601）。
+    #[serde(default, rename = "pushedAt")]
+    pushed_at: String,
+    /// 分类 id（skin / ui / agent / memory / client / channel / tools / fun / resource）。
+    #[serde(default)]
+    category: String,
+    /// 累计下载量（对象形态；缺失表示没有可报的数字）。
+    #[serde(default)]
+    downloads: Option<FindDownloads>,
+    /// 官方出品（DeepSeek 官方或官方生态组织）。
+    #[serde(default, rename = "isOfficial")]
+    is_official: bool,
+    /// 优质项目（运营推荐标记）。
+    #[serde(default, rename = "isFeatured")]
+    is_featured: bool,
+}
+
+/// dshfind 的下载量对象（渠道 + 总数）。
+#[derive(Debug, Deserialize)]
+struct FindDownloads {
+    #[serde(default)]
+    total: u64,
+}
+
+impl FindRaw {
+    /// 把一条 dshfind 条目规整成共享的目录条目。dshfind 收录的是挂了
+    /// `dsh-plugin` topic 的 GitHub 仓库，安装方式探测数据（npm 分发 / 仅
+    /// git / 需自行构建）不进入公开目录接口，因此统一从 GitHub 仓库安装 ——
+    /// `plugin_install` 会优先走 Release tarball，不可用时回退 git clone，
+    /// 卡片上的来源展示与安装行为一致，不会再出现误导性的 npm 404。
+    fn into_item(self, i18n: &BTreeMap<String, BTreeMap<String, String>>) -> CatalogItem {
+        let description = i18n
+            .get(&self.full_name)
+            .and_then(|m| m.get("zh"))
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .unwrap_or_else(|| self.description.clone());
+        let repo = if !self.full_name.is_empty() {
+            Some(self.full_name.clone())
+        } else {
+            // fullName 缺失时用 GitHub 地址还原 `owner/repo`。
+            github_repo_path(&self.url)
+        };
+        let spec = repo
+            .as_ref()
+            .map(|r| format!("https://github.com/{r}.git"))
+            .unwrap_or_default();
+        let detail_url = if !self.owner.is_empty() && !self.name.is_empty() {
+            format!(
+                "https://dshfind.com/zh/plugins/{}/{}",
+                self.owner, self.name
+            )
+        } else {
+            repo.as_ref()
+                .map(|r| format!("https://github.com/{r}"))
+                .unwrap_or_default()
+        };
+        CatalogItem {
+            id: self.name.clone(),
+            name: self.name,
+            kind: String::new(),
+            description,
+            stars: self.stars,
+            forks: 0,
+            downloads: self.downloads.map(|d| d.total).unwrap_or(0),
+            verified: self.is_official || self.is_featured,
+            repo,
+            spec,
+            origin: "git".to_string(),
+            category: self.category,
+            version: String::new(),
+            tags: self.tags,
+            updated: self.pushed_at,
+            detail_url,
+        }
+    }
+}
+
+/// 把一条参考市场条目规整成共享的目录条目。
+fn from_market_raw(raw: CatalogRaw) -> CatalogItem {
+    let npm_origin = raw.package.is_some()
+        || raw
+            .install
+            .as_ref()
+            .map(|i| matches!(i.method.as_str(), "npm" | "pnpm" | "dsh-plugin-add"))
+            .unwrap_or(false);
+    let (origin, spec) = if npm_origin {
+        (
+            "npm",
+            raw.package.clone().unwrap_or_else(|| raw.name.clone()),
+        )
+    } else if let Some(repo) = &raw.repo {
+        let tag = raw.version.as_deref().filter(|v| {
+            let head = v
+                .strip_prefix('v')
+                .unwrap_or(v)
+                .split_once('-')
+                .map(|(h, _)| h)
+                .unwrap_or(v);
+            let parts: Vec<&str> = head.split('.').collect();
+            parts.len() >= 2 && parts[..2].iter().all(|s| s.parse::<u64>().is_ok())
+        });
+        let base = format!("https://github.com/{repo}.git");
+        (
+            "git",
+            match tag {
+                Some(t) => format!("{base}#{t}"),
+                None => base,
+            },
+        )
+    } else {
+        ("git", raw.repo.clone().unwrap_or_default())
+    };
+    let detail_url = raw
+        .repo
+        .as_ref()
+        .map(|r| format!("https://github.com/{r}"))
+        .unwrap_or_default();
+    CatalogItem {
+        id: raw.id,
+        name: raw.name,
+        kind: raw.kind,
+        description: raw.description.unwrap_or_default(),
+        stars: raw.stars,
+        forks: 0,
+        downloads: raw.downloads,
+        verified: raw.verified,
+        repo: raw.repo,
+        spec,
+        origin: origin.to_string(),
+        category: raw.category,
+        version: raw.version.unwrap_or_default(),
+        tags: Vec::new(),
+        updated: String::new(),
+        detail_url,
+    }
+}
+
+/// 丢掉插件中心无法安装的目录条目：解析不出取源地址的条目（dshfind 条目
+/// 缺 fullName、市场条目 git 分支缺 repo）在「安装」时会对着空 spec 报错，
+/// 不该出现在卡片上。旧版本缓存的 npm 条目 spec 都非空，照常通过。
+fn filter_installable(items: Vec<CatalogItem>) -> Vec<CatalogItem> {
+    items.into_iter().filter(|i| !i.spec.is_empty()).collect()
+}
+
+/// 拉取社区目录，把规整后的条目缓存 `CATALOG_TTL_SECS`（`force` 跳过缓存）。
+/// dshfind.com 插件超市（原 dsh-plugin.org hub 的新站点）是主要数据源；
+/// 不可达时回退到参考市场的列表。缓存内容始终过滤掉无法安装的条目。
+fn fetch_catalog(data_dir: &Path, force: bool) -> Result<Vec<CatalogItem>, String> {
+    let cache = data_dir.join(CATALOG_CACHE_FILE);
+    let fresh = !force
+        && fs::metadata(&cache)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| m.elapsed().ok().map(|e| e.as_secs() < CATALOG_TTL_SECS))
+            .unwrap_or(false);
+    if fresh {
+        if let Ok(text) = fs::read_to_string(&cache) {
+            if let Ok(items) = serde_json::from_str::<Vec<CatalogItem>>(&text) {
+                return Ok(filter_installable(items));
+            }
+        }
+    }
+    let hub = http_get_string(HUB_CATALOG_URL, None).and_then(|body| {
+        serde_json::from_str::<FindEnvelope>(&body)
+            .map_err(|e: serde_json::Error| e.to_string())
+            .map(|env| {
+                let FindEnvelope {
+                    plugins,
+                    i18n_descriptions,
+                } = env;
+                plugins
+                    .into_iter()
+                    .map(|raw| raw.into_item(&i18n_descriptions))
+                    .collect::<Vec<_>>()
+            })
+    });
+    let items = match hub {
+        Ok(items) if !items.is_empty() => items,
+        _ => {
+            let body = http_get_string(MARKET_CATALOG_URL, None)?;
+            let doc: CatalogDoc =
+                serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
+            doc.items.into_iter().map(from_market_raw).collect()
+        }
+    };
+    let items = filter_installable(items);
+    if fs::create_dir_all(data_dir).is_ok() {
+        if let Ok(text) = serde_json::to_string(&items) {
+            let _ = atomic_write(&cache, text.as_bytes());
+        }
+    }
+    Ok(items)
+}
+
+/// 按 star 数排序的完整社区目录（`force` 跳过缓存）。搜索与分类筛选
+/// 放在 UI 端，这样对缓存列表做筛选就是即时的。
+pub fn catalog(data_dir: &Path, force: bool) -> Result<Vec<CatalogItem>, AppError> {
+    let mut items = fetch_catalog(data_dir, force)
+        .map_err(|e| AppError::Plugin(format!("目录获取失败：{e}")))?;
+    items.sort_by_key(|a| std::cmp::Reverse(a.stars));
+    Ok(items)
+}
+
+/// profile 清单里的一条托管接线。以**插件 id** 为键：两个不同的插件可能
+/// 共用同一个包名（例如 npm `@scope/pkg` 与另一个来源里同名的包），用名字
+/// 当键会让后一条静默覆盖前一条，而 UI 依据 `deps` 里的名字判断"已接线"，
+/// 于是两行都显示已接线（P2-21）。
+struct WireSpec {
+    /// 写进 `dependencies` / `bundles` 的包名。
+    name: String,
+    /// 依赖 spec（`link:` / `file:` 前缀 + 相对路径）。
+    spec: String,
+    /// 该插件是否提供 bundle 层。
+    bundle: bool,
+}
+
+/// 接线结果：清单是否变化，以及因同名而未被接线的冲突说明。
+struct WireOutcome {
+    changed: bool,
+    conflicts: Vec<String>,
+}
+
+/// 把中央库的插件依赖与 bundle 层应用到 profile 清单上。非壳写入的 bundle
+/// 行（内核工作台官方插件开关写下的内核自带层、用户/CLI 手工添加）原样保留；
+/// 清退只针对壳写入过的托管条目。
+/// 纯函数（不碰 fs、不跑 pnpm），因此即使没有工具链也能对接线做单元测试。
+fn wire_manifest(
+    root: &mut serde_json::Value,
+    specs: &BTreeMap<String, WireSpec>,
+    profile: &str,
+) -> Result<WireOutcome, AppError> {
+    let mut changed = false;
+    let mut conflicts: Vec<String> = Vec::new();
+    let deps = root
+        .get_mut("dependencies")
+        .and_then(|d| d.as_object_mut())
+        .ok_or_else(|| AppError::Plugin("profile manifest 缺少 dependencies".into()))?;
+    // 一个包名只能有一条依赖：同名时按 id 顺序取第一个（BTreeMap 保证顺序
+    // 确定），其余的记录冲突并跳过 —— 让用户看到"装了但没接线"，而不是让
+    // 两条互相覆盖、UI 还都显示已接线。
+    let mut claimed: BTreeMap<String, String> = BTreeMap::new();
+    for (id, entry) in specs {
+        if let Some(owner) = claimed.get(&entry.name) {
+            conflicts.push(format!(
+                "{}（id {id}）与 {} 共用包名 {}，只有前者接入 profile",
+                entry.name, owner, entry.name
+            ));
+            continue;
+        }
+        claimed.insert(entry.name.clone(), id.clone());
+        if deps.get(&entry.name).and_then(|s| s.as_str()) != Some(entry.spec.as_str()) {
+            deps.insert(
+                entry.name.clone(),
+                serde_json::Value::String(entry.spec.clone()),
+            );
+            changed = true;
+        }
+    }
+    let managed_names: std::collections::HashSet<&str> =
+        claimed.keys().map(String::as_str).collect();
+    // retain 之前先抓取「托管依赖名」：壳写依赖与 bundle 行永远落在同一份
+    // manifest 里（单次原子写入），所以「依赖是托管 spec」是一条 bundle 行由
+    // 壳写入的唯一凭据，供下方 bundle 清退判定使用。
+    let managed_dep_names: std::collections::HashSet<String> = deps
+        .iter()
+        .filter(|(_, spec)| is_managed_spec(spec.as_str().unwrap_or("")))
+        .map(|(name, _)| name.clone())
+        .collect();
+    deps.retain(|name, spec| {
+        if !is_managed_spec(spec.as_str().unwrap_or("")) {
+            return true; // 用户/CLI 管理的不动
+        }
+        if !managed_names.contains(name.as_str()) {
+            changed = true;
+            return false;
+        }
+        true
+    });
+
+    // bundles：模板层与托管层重建，其余条目原样保留——包括内核工作台官方
+    // 插件开关写下的 bundle 行（内核自带包，启用不需要 pnpm 依赖，因此没有
+    // dependencies 条目背书）与用户/CLI 手工添加的层。只清退壳自己写过的行：
+    // 卸载/隔离后托管依赖已被清退，层若不同步清退，内核启动会因无法解析该
+    // bundle 而失败。此前按「无依赖背书即视为残留」实现，把内核工作台写下的
+    // 官方插件层也当成卸载残留，每次重启内核都清掉一次（启用状态丢失）。
+    let managed_bundles: Vec<String> = specs
+        .values()
+        .filter(|entry| entry.bundle)
+        .map(|entry| entry.name.clone())
+        .collect();
+    let template: Vec<String> = template_bundles(profile);
+    let mut next: Vec<String> = template.clone();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let bundles = root
+        .get_mut("dsh")
+        .and_then(|d| d.get_mut("profile"))
+        .and_then(|p| p.get_mut("bundles"))
+        .and_then(|b| b.as_array_mut())
+        .ok_or_else(|| AppError::Plugin("profile manifest 缺少 dsh.profile.bundles".into()))?;
+    for name in bundles.iter().filter_map(|b| b.as_str().map(String::from)) {
+        if seen.contains(&name) || template.contains(&name) || managed_bundles.contains(&name) {
+            continue;
+        }
+        if !managed_dep_names.contains(&name) {
+            // 非壳写入（内核工作台官方插件开关 / 用户手工添加 / CLI 层）：保留。
+            seen.insert(name.clone());
+            next.push(name);
+            continue;
+        }
+        // 壳写入过托管依赖、而依赖已随卸载/隔离清退：bundle 残留，同步清退。
+        changed = true;
+    }
+    for name in &managed_bundles {
+        if !next.contains(name) {
+            next.push(name.clone());
+        }
+    }
+    let current: Vec<String> = bundles
+        .iter()
+        .filter_map(|b| b.as_str().map(String::from))
+        .collect();
+    if next != current {
+        *bundles = next.into_iter().map(serde_json::Value::String).collect();
+        changed = true;
+    }
+    Ok(WireOutcome { changed, conflicts })
+}
+
+// --- 编排 ----------------------------------------------------------------
+
+/// 安装一个插件：拉取到中央库、link 模式下在中央库装依赖、物化到默认实例
+/// 的 `extensions/plugins/`、接入活动 profile。
+///
+/// 中央库（store.json / `<home>/dsh-plugins/`）由所有实例共享；物化与
+/// profile 接线按实例隔离（实例范围命令走 [`install_for_instance`]）。
+pub fn install(
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    spec_str: &str,
+    mode: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<StoreItem, AppError> {
+    let _store_guard = lock_store();
+    let (family, instance_id) = default_instance_key();
+    install_for_instance(
+        &family,
+        &instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        spec_str,
+        mode,
+        on_progress,
+    )
+}
+
+/// 实例范围安装：中央库写入仍走全局 `data_dir`，物化与 profile 接线走
+/// 指定实例的 `extensions/plugins/<id>/`。多实例 UI（P5 阶段）通过
+/// 这条入口让每个实例各自隔离地接插件。
+#[allow(clippy::too_many_arguments)]
+pub fn install_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    spec_str: &str,
+    mode: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<StoreItem, AppError> {
+    install_unlocked(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        spec_str,
+        mode,
+        on_progress,
+    )
+}
+
+/// 从 GitHub 风格的 spec 提取可能的 npm 包名候选。DSH 插件作者通常把
+/// 包发布为 `<repo-name>` 或 `dsh-<repo-name>`，所以对 GitHub 来源先按
+/// 这两个候选尝试 npm install（更快、有版本号、预构建），都失败再回退
+/// 到 git clone。带 `#tag` 的 spec 是用户明确指定的版本，走 git 以使用
+/// 对应 tag —— npm 上对应版本的发布不一定存在，硬猜反而容易装错。
+fn npm_candidates_from_github_spec(spec: &str) -> Option<Vec<String>> {
+    if spec.contains('#') {
+        return None;
+    }
+    let s = spec.trim_end_matches('/').trim_end_matches(".git");
+
+    let repo_path = if let Some(rest) = s.strip_prefix("git@github.com:") {
+        rest.to_string()
+    } else if let Some(rest) = s.strip_prefix("https://github.com/") {
+        rest.to_string()
+    } else if let Some(rest) = s.strip_prefix("http://github.com/") {
+        rest.to_string()
+    } else if let Some(rest) = s.strip_prefix("github.com/") {
+        rest.to_string()
+    } else if s.contains('/')
+        && !s.starts_with('@')
+        && !s.contains("://")
+        && !s.contains(' ')
+        && !s.contains('\t')
+    {
+        // `owner/repo` 简写：不是 URL、不是 scope，也不是包管理器 CLI（含空格）
+        s.to_string()
+    } else {
+        return None;
+    };
+
+    let parts: Vec<&str> = repo_path.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let repo_name = parts[parts.len() - 1].to_lowercase();
+    if repo_name.is_empty()
+        || !repo_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-._~".contains(c))
+    {
+        return None;
+    }
+
+    let mut candidates = Vec::new();
+    candidates.push(repo_name.clone());
+    if !repo_name.starts_with("dsh-") {
+        candidates.push(format!("dsh-{}", repo_name));
+    }
+    Some(candidates)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_unlocked(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    spec_str: &str,
+    mode: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<StoreItem, AppError> {
+    // 插件中心安装：GitHub 来源先尝试作者的 npm 包（更快、有版本号、
+    // 预构建），npm 包不可用时回退到 GitHub 仓库安装。npm 安装走的是同
+    // 一份 `install_unlocked`，失败时 `fetch_into_store` 会回滚已写入的
+    // 中央库目录，状态干净。
+    if let Some(npm_candidates) = npm_candidates_from_github_spec(spec_str) {
+        for npm_name in &npm_candidates {
+            on_progress(&format!("尝试 npm 包 {} …", npm_name));
+            let mut silent = |_: &str| {};
+            match install_unlocked(
+                family,
+                instance_id,
+                data_dir,
+                settings,
+                pnpm_exe,
+                npm_name,
+                mode,
+                &mut silent,
+            ) {
+                Ok(item) => {
+                    on_progress(&format!("已通过 npm 安装 {}", npm_name));
+                    return Ok(item);
+                }
+                Err(error) => {
+                    // `install_unlocked` 在**写完 store 行之后**的任何一步失败
+                    // （物化、profile 接线）都会留下一个已记账的插件。此时若继续
+                    // 按 git 来源安装，用户会多出一个自己没要求的 npm 插件行——
+                    // 它已进 store.json，下次同步就参与接线，而进度里只有一句
+                    // "npm 包不可用"。取源/校验阶段失败则不会留痕（`fetch_into_store`
+                    // 自带回滚），那种情况才继续尝试下一个候选。
+                    // 按名称（而不是重新推导的 id）查记录：名称冲突时真正的 id
+                    // 带消歧后缀，用基础 id 查会漏掉这条残留（P2-24）。
+                    let left_behind = load_store(data_dir)
+                        .items
+                        .iter()
+                        .any(|entry| &entry.name == npm_name || &entry.source == npm_name);
+                    if left_behind {
+                        return Err(AppError::Plugin(format!(
+                            "npm 包 {npm_name} 安装失败，但已在中央库留下记录（{error}）。请先在插件面板卸载它，再重试或改用 GitHub 来源——直接回退到 git 会装出两个功能重复的插件",
+                        )));
+                    }
+                    on_progress(&format!(
+                        "npm 包 {npm_name} 不可用（{error}），继续尝试其它候选"
+                    ));
+                }
+            }
+        }
+        on_progress("npm 包不可用，回退到 GitHub 仓库安装");
+    }
+
+    let mut spec = parse_spec(spec_str)?;
+    // 名称到 id 的映射不是单射，安装前按库内实际情况分配（必要时加短哈希后缀），
+    // 避免两个不同来源的插件互相覆盖（P2-24）。
+    spec.id = allocate_id(data_dir, &spec)?;
+    if store_item(data_dir, &spec.id).is_some() {
+        return Err(AppError::Plugin(format!(
+            "{} 已安装，请使用「更新」",
+            spec.name
+        )));
+    }
+    let (mut item, dependencies_ready) = fetch_into_store(data_dir, pnpm_exe, &spec, on_progress)?;
+    item.mode = if mode == "copy" { "copy" } else { "link" }.to_string();
+    if item.mode == "link" && !dependencies_ready {
+        // 在装依赖前先确保中央库级别的 `.npmrc` 已就绪，这样即使中央库是在
+        // 此修复部署之前创建的，`minimumReleaseAge` 排除也已生效。
+        ensure_store_npmrc(data_dir).ok();
+        install_store_deps(data_dir, pnpm_exe, &item.id, on_progress)?;
+    }
+    upsert_item_unlocked(data_dir, item.clone())?;
+    // 重装代表明确的重试意图：清掉历史隔离记录，否则新装的插件会被旧
+    // 记录挡在接线之外，表现为"装了却不生效"的哑故障。
+    let _ = quarantine::remove(data_dir, &item.id);
+    sync_kernels_for_instance(family, instance_id, data_dir, &item)?;
+    on_progress("正在接线到 profile");
+    ensure_wiring_for_instance(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )?;
+    Ok(item)
+}
+
+/// 更新一个插件：按同一源重新拉取、刷新中央库依赖、重新物化到默认实例、
+/// 重新接线。
+pub fn update(
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<StoreItem, AppError> {
+    let _store_guard = lock_store();
+    let (family, instance_id) = default_instance_key();
+    update_for_instance(
+        &family,
+        &instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        id,
+        on_progress,
+    )
+}
+
+/// 实例范围更新：中央库写入走全局 `data_dir`，物化与 profile 接线走
+/// 指定实例。
+pub fn update_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<StoreItem, AppError> {
+    update_unlocked(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        id,
+        on_progress,
+    )
+}
+
+fn update_unlocked(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<StoreItem, AppError> {
+    let item =
+        store_item(data_dir, id).ok_or_else(|| AppError::Plugin("插件不在中央库中".into()))?;
+    if item.pinned {
+        return Err(AppError::Plugin(format!(
+            "{} 已锁定版本 {}，如需升级请重新安装（不带版本号）",
+            item.name, item.installed_version
+        )));
+    }
+    let spec = spec_for_update(&item)?;
+    on_progress(&format!("正在更新 {}", item.name));
+    let (mut updated, dependencies_ready) =
+        fetch_into_store(data_dir, pnpm_exe, &spec, on_progress)?;
+    updated.mode = item.mode.clone();
+    if updated.mode == "link" && !dependencies_ready {
+        ensure_store_npmrc(data_dir).ok();
+        install_store_deps(data_dir, pnpm_exe, &updated.id, on_progress)?;
+    }
+    // 把 latest_version 同步到刚刚安装的版本，让 UI 角标在更新成功之后
+    // 立刻清掉。否则 `check_updates` 的旧结果会留下来，角标一直显示用户
+    // 刚刚安装完成的「幻影新版本」。之后 `check_updates` 仍能在远端
+    // 这次拉取之后又前进时重新抬高 `latest_version`。
+    updated.latest_version = Some(updated.installed_version.clone());
+    upsert_item_unlocked(data_dir, updated.clone())?;
+    // 与 install 同理：更新是明确的重试意图，历史隔离记录不再适用。
+    let _ = quarantine::remove(data_dir, &updated.id);
+    sync_kernels_for_instance(family, instance_id, data_dir, &updated)?;
+    on_progress("正在同步 profile");
+    ensure_wiring_for_instance(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )?;
+    // copy 模式的更新必须**额外**重跑一次 profile 安装。
+    //
+    // pnpm 的 `file:` 依赖是在 `install` 时被硬链接/拷贝进 profile 的
+    // `node_modules` 的，而接线判定看的是"manifest 文本有没有变 + node_modules
+    // 在不在"——两者都没变，于是常规接线直接跳过重装，内核继续按 profile 里的
+    // 旧副本解析 bundle：UI 显示"已更新"，重启后跑的还是旧代码。这一次额外的
+    // pnpm install 是幂等的，代价几秒，换来的是"更新真的生效"。
+    if updated.mode == "copy" {
+        run_profile_install(data_dir, &settings.profile, pnpm_exe, on_progress)?;
+    }
+    Ok(updated)
+}
+
+/// 在所有位置移除一个插件：中央库、本实例物化、profile 接线。
+///
+/// 部分清理之后仍可重试卸载：如果中央库条目已经不在，仅当隔离注册表里
+/// 仍然挂着同一个插件时，卸载请求才会被接受。这让事件响应动作能继续
+/// 清理残留的隔离/profile 状态，又不会把「任意一个缺失的 id」当成卸载
+/// 成功。
+pub fn uninstall(
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    let _store_guard = lock_store();
+    let (family, instance_id) = default_instance_key();
+    uninstall_for_instance(
+        &family,
+        &instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        id,
+        on_progress,
+    )
+}
+
+/// 实例范围卸载：中央库删除走全局 `data_dir`，本实例物化移除走
+/// `extensions/plugins/<id>/`，profile 接线重跑让 manifest 不再引用本插件。
+pub fn uninstall_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    uninstall_unlocked(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        id,
+        on_progress,
+    )
+}
+
+fn uninstall_unlocked(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    let has_store_item = store_item(data_dir, id).is_some();
+    if !has_store_item
+        && !quarantine::load(data_dir)
+            .items
+            .iter()
+            .any(|item| item.id == id)
+    {
+        return Err(AppError::Plugin("插件不在中央库中".into()));
+    }
+    if !has_store_item {
+        on_progress("正在清理插件残留");
+    }
+    // 先删中央库目录：Windows 上被运行中的内核持有的文件会让
+    // `remove_dir_all` 失败；在这里失败就停下，其它状态原封不动，让用户
+    // 关掉工作台再重试。以前把错误吞掉，会留下桌面壳既不能接线也删除
+    // 不掉的孤儿中央库目录。
+    let store_path = store_plugin_dir(data_dir, id);
+    match fs::remove_dir_all(&store_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(AppError::Io(format!(
+                "无法删除插件目录 {}：{e}。文件可能正被运行中的内核占用，请关闭工作台后重试卸载",
+                store_path.display()
+            )));
+        }
+    }
+    // P4 起物化目标走本实例 `extensions/plugins/<id>/`，删除走
+    // `remove_materialized_for_instance`；`for installed in list_installed`
+    // 的旧循环在多实例下不再必要——同一份中央库目录被多实例共享，物化
+    // 是按实例隔离的；卸载一个插件只删**该实例**的物化，其它实例
+    // 仍保留自己的物化（如果它们各自装过的话）。
+    remove_materialized_for_instance(family, instance_id, id);
+    remove_item_unlocked(data_dir, id)?;
+    // 隔离记录随卸载一并清除：残留记录会在用户日后重装同名插件时把它挡
+    // 在接线之外，形成"装了却不生效"的哑故障。
+    quarantine::remove(data_dir, id)?;
+    ensure_wiring_for_instance(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )?;
+    Ok(())
+}
+
+/// 把期望模式重新应用到本实例，并重新接线。
+pub fn set_mode(
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    mode: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    let _store_guard = lock_store();
+    let (family, instance_id) = default_instance_key();
+    set_mode_for_instance(
+        &family,
+        &instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        id,
+        mode,
+        on_progress,
+    )
+}
+
+/// 实例范围模式切换：中央库条目更新走全局 `data_dir`，物化重做走本实例。
+#[allow(clippy::too_many_arguments)]
+pub fn set_mode_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    mode: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    set_mode_unlocked(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        id,
+        mode,
+        on_progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn set_mode_unlocked(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    mode: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    if mode != "link" && mode != "copy" {
+        return Err(AppError::Plugin("模式只能是 link 或 copy".into()));
+    }
+    let mut item =
+        store_item(data_dir, id).ok_or_else(|| AppError::Plugin("插件不在中央库中".into()))?;
+    let needs_store_deps = mode == "link"
+        && (item.mode != "link" || !store_plugin_dir(data_dir, id).join("node_modules").is_dir());
+    // 切换模式必须强制重新物化：否则"版本与形态都没变"的短路判定会让旧的
+    // 落地结果原样留着，用户点了切换却看不到任何变化。删掉 meta 即可让下一次
+    // materialize 走全新落地。P4 起 meta 文件走实例 `extensions/plugins/<id>/.dsh-meta.json`。
+    let meta_path = paths::instance_extension_meta_file(family, instance_id, id);
+    let _ = fs::remove_file(&meta_path);
+    item.mode = mode.to_string();
+    upsert_item_unlocked(data_dir, item.clone())?;
+    if needs_store_deps {
+        install_store_deps(data_dir, pnpm_exe, id, on_progress)?;
+    }
+    sync_kernels_for_instance(family, instance_id, data_dir, &item)?;
+    ensure_wiring_for_instance(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )?;
+    Ok(())
+}
+
+/// 清理默认实例 extensions 里归桌面壳所有的插件残留。`ensure_wiring`
+/// 只对活动实例生效，所以这一步必须由显式的全实例同步自己负责。
+///
+/// P4 起物化按实例隔离；多实例的清理在 P5 阶段补——这里仅对默认实例
+/// 生效，避免清理路径穿越到不归本实例的 extensions。
+fn sweep_all_kernel_orphans(data_dir: &Path, store: &Store) {
+    let _ = data_dir;
+    let (family, instance_id) = default_instance_key();
+    sweep_instance_orphans(&family, &instance_id, store);
+}
+
+/// 物化所有插件并重新接线（对应「同步」按钮）。
+pub fn sync_all(
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    let _store_guard = lock_store();
+    let (family, instance_id) = default_instance_key();
+    sync_for_instance(
+        &family,
+        &instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )
+}
+
+/// 实例范围同步：对每个 store item 在指定实例的 `extensions/plugins/`
+/// 下重新物化、清扫孤儿、重接线。
+pub fn sync_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    sync_all_unlocked(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )
+}
+
+fn sync_all_unlocked(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    // 清扫路径：清单读不出来时绝不能当成"没有插件"，否则会把本实例
+    // extensions/plugins/ 里所有物化目录当成孤儿删掉。
+    let store = load_store_checked(data_dir)?;
+    for item in &store.items {
+        sync_kernels_for_instance(family, instance_id, data_dir, item)?;
+    }
+    sweep_instance_orphans(family, instance_id, &store);
+    ensure_wiring_for_instance(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        on_progress,
+    )?;
+    Ok(())
+}
+
+/// 拼装 UI 的状态快照（不发起网络请求）。
+pub fn status(data_dir: &Path, settings: &settings::Settings) -> PluginStatus {
+    let (family, instance_id) = default_instance_key();
+    status_for_instance(&family, &instance_id, data_dir, settings)
+}
+
+/// 实例范围状态：物化目标走指定实例的 `extensions/plugins/<id>/`，
+/// 中央库仍读全局 `store.json`。
+///
+/// `family` 当前未在函数体内引用——签名保留是为与 `status_for_kernel_*`
+/// 对齐，未来按 family 路由时不用改 caller；当前的 per-instance 视图在
+/// `instances map` 里只携带 instance_id，物化与 wiring 状态本就按实例
+/// 计算，不再单独看 family。
+pub fn status_for_instance(
+    _family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+) -> PluginStatus {
+    let mut integrity_warning: Option<String> = None;
+    let store = match crate::shell::process::read_state_file(&store_file(data_dir)) {
+        crate::shell::process::StateRead::Loaded(store) => store,
+        crate::shell::process::StateRead::Missing => {
+            // 清单文件不存在但中央库里还有带标记的目录：多半是清单丢了（或用户
+            // 按提示删掉了损坏的清单）。目录会被保留，但面板读不到它们的记录，
+            // 必须明确告诉用户"东西还在、怎么找回来"，否则看起来就是插件全没了
+            // （P0-3）。
+            let kept = marked_store_dirs(data_dir);
+            if !kept.is_empty() {
+                integrity_warning = Some(format!(
+                    "插件清单（store.json）不存在，但中央库里还保留着 {} 个插件目录。\
+                     这些目录不会被清理，但面板在恢复清单之前无法显示它们；\
+                     请恢复备份的 store.json，或对每个插件点「安装」重新记账。",
+                    kept.len()
+                ));
+            }
+            Store::default()
+        }
+        crate::shell::process::StateRead::Corrupt { reason } => {
+            integrity_warning = Some(format!(
+                "插件清单损坏，已安装插件的记录暂时读不出来（{reason}）。\
+                 请优先修复该文件（它记录着每个插件的来源与接线状态）；\
+                 若只能删除，中央库里的插件目录会被保留，但需要重新安装这些插件才能恢复面板显示。\
+                 在修复之前不会写入任何插件状态，工作台仍可正常启动"
+            ));
+            Store::default()
+        }
+    };
+    let active = kernel::lifecycle::read_active(data_dir);
+    let quarantine_doc = quarantine::load(data_dir);
+    // P8：枚举注册表里所有实例，逐个计算该插件的物化 / wiring 状态。
+    // 注册表加载失败时降级为「只渲染当前实例」——单实例视角 UI 仍可工作，
+    // 只是 `instances` map 缺失，UI 上没有双 tab 的全部数据。
+    let registry = instance::load_registry().ok();
+
+    let mut rows = Vec::new();
+    let mut updates = 0;
+    for item in &store.items {
+        let quarantined = quarantine_doc
+            .items
+            .iter()
+            .find(|q| q.id == item.id)
+            .cloned();
+        // P8 per-instance 状态：循环每个注册表实例读物化 / wiring。
+        // 物化目录走实例 `extensions/plugins/<id>/`（P4）；profile 路径
+        // 同样走实例 `instance_profile_dir`（P4）。quarantine 仍全局共享，
+        // 所以每个实例的 `quarantined` 字段填同一份。
+        let mut instances_map: BTreeMap<String, PluginInstanceState> = BTreeMap::new();
+        if let Some(reg) = registry.as_ref() {
+            for rec in &reg.instances {
+                let meta_path =
+                    paths::instance_extension_meta_file(&rec.kernel_family, &rec.id, &item.id);
+                let target =
+                    paths::instance_extension_plugin_dir(&rec.kernel_family, &rec.id, &item.id);
+                let (actual_mode, synced) = match &active {
+                    Some(_version) => {
+                        let meta = read_instance_meta(&meta_path);
+                        let present = target.exists();
+                        let current = meta
+                            .as_ref()
+                            .map(|m| m.version == item.installed_version)
+                            .unwrap_or(false);
+                        (meta.map(|m| m.mode), present && current)
+                    }
+                    None => (None, false),
+                };
+                let wired = read_profile_json_for_instance(
+                    data_dir,
+                    &rec.kernel_family,
+                    &rec.id,
+                    &rec.profile,
+                )
+                .ok()
+                .flatten()
+                .as_ref()
+                .and_then(|m| m.get("dependencies"))
+                .and_then(|d| d.get(&item.name))
+                .and_then(|s| s.as_str())
+                .map(is_managed_spec)
+                .unwrap_or(false);
+                instances_map.insert(
+                    rec.id.clone(),
+                    PluginInstanceState {
+                        materialized: target.exists(),
+                        actual_mode,
+                        synced,
+                        wired,
+                        quarantined: quarantined.clone(),
+                    },
+                );
+            }
+        }
+        // 当前实例（status_for_instance 接收的 family+id）的状态复制到
+        // legacy 字段，保持单实例 UI（PluginsPanel 旧渲染路径）继续工作。
+        let cur = instances_map.get(instance_id);
+        let actual_mode = cur.and_then(|s| s.actual_mode.clone());
+        let synced = cur.map(|s| s.synced).unwrap_or(false);
+        let wired = cur.map(|s| s.wired).unwrap_or(false);
+        // 锁定版本（npm `@1.2.3` / git `#tag`）不参与「N 个更新」计数：
+        // `update_unlocked` 对 pinned 一律拒绝并提示重新安装，把它算成可更新
+        // 只会让用户点到一个必然失败的按钮（P2-22）。
+        if !item.pinned
+            && item
+                .latest_version
+                .as_deref()
+                .map(|l| is_newer_than(l, &item.installed_version, &item.origin, item.pinned))
+                .unwrap_or(false)
+        {
+            updates += 1;
+        }
+        // UI 每行的「有更新」角标只判断 `row.latest_version` 是否为真，而不
+        // 再重跑版本比较，所以当记录的「latest」不再新于用户实际安装的版本
+        // 时，我们就把这个字段隐藏。否则在更新成功（latest == installed）
+        // 以及 `update()` 显式把 `latest_version = installed_version` 同步
+        // 之后，行内角标仍会一直挂着。上面顶层 counts 已经为 `N 个更新`
+        // 徽标做过同样的过滤。
+        let row_latest = item
+            .latest_version
+            .as_deref()
+            .filter(|_| !item.pinned)
+            .filter(|l| is_newer_than(l, &item.installed_version, &item.origin, item.pinned))
+            .map(|s| s.to_string());
+        rows.push(PluginRow {
+            id: item.id.clone(),
+            name: item.name.clone(),
+            origin: item.origin.clone(),
+            source: item.source.clone(),
+            installed_version: item.installed_version.clone(),
+            latest_version: row_latest,
+            pinned: item.pinned,
+            desired_mode: item.mode.clone(),
+            actual_mode,
+            synced,
+            wired,
+            quarantined,
+            repo_url: item.repo_url.clone(),
+            description: item.description.clone(),
+            installed_at: item.installed_at.clone(),
+            updated_at: item.updated_at.clone(),
+            instances: instances_map,
+        });
+    }
+    PluginStatus {
+        rows,
+        profile: settings.profile.clone(),
+        active_kernel: active,
+        store_root: store_dir(data_dir).display().to_string(),
+        updates,
+        last_checked_at: store.last_checked_at,
+        // 清单完整性优先于流程性警告：前者解释了为什么列表是空的。
+        warning: integrity_warning.or(store.warning),
+    }
+}
+
+/// 在 `kernels/<version>/plugins/` 下物化好的一个插件。由
+/// [`kernel_plugin_list`] 返回，让管理 UI 鼠标悬停在版本行上时能看到内核
+/// 当前磁盘上确实存在的插件 —— 包括已经从中央库移除但桌面壳仍保留的条目，
+/// 以及用户手工放进去的外来条目。
+#[derive(Debug, Clone, Serialize)]
+pub struct KernelPluginRow {
+    pub id: String,
+    /// 已知时取自中央库的解析后显示名称；否则与 `id` 相同，让外部/手工目录
+    /// 在 tooltip 里也有标签可看。
+    pub name: String,
+    pub version: String,
+    /// "link" 或 "copy" —— `.meta` 记录为准。目录没有 `.meta` 标记（手工
+    /// 条目）时为 `None`。
+    pub mode: Option<String>,
+    /// 磁盘上的条目是否仍然匹配记录的中央库版本（不计 `synced_at`）。为
+    /// `false` 时 tooltip 会展示「未同步」提示。
+    pub synced: bool,
+    /// 中央库当前是否仍持有对应条目。这里为 `false` 意味着插件已从中央库
+    /// 删除但内核还留着残留 —— 给用户一个清理信号很有用。
+    pub in_store: bool,
+}
+
+/// 抓取默认实例 `extensions/plugins/` 下物化的所有插件快照。
+///
+/// P4 起插件按实例隔离（多实例 UI 在 P5 落地），版本面板在这里一次性
+/// 列出默认实例里实际物化的插件。`version` 形参保留仅为兼容既有调用
+/// 站点（[KernelPluginRow] 仍然报告 `version` 字段，但版本信息来自
+/// 中央库的 `installed_version` 而非物化目录里的 `kernels/<version>/`）。
+pub fn kernel_plugin_list(data_dir: &Path, version: &str) -> Vec<KernelPluginRow> {
+    let _ = (data_dir, version); // 形参仅为兼容签名
+    let (family, instance_id) = default_instance_key();
+    let mut rows = Vec::new();
+    let plugins_dir = paths::instance_extensions_plugins_dir(&family, &instance_id);
+    let entries = match fs::read_dir(&plugins_dir) {
+        Ok(it) => it,
+        Err(_) => return rows,
+    };
+    // 中央库名字查询，让刚被删除的插件也能解析出标签，而不是只显示裸 id。
+    let store_doc = load_store(&paths::plugins_store_root());
+    let store_index: std::collections::HashMap<&str, &StoreItem> = store_doc
+        .items
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy().into_owned();
+        if name_str.starts_with('.') {
+            continue;
+        }
+        let id = name_str;
+        let dir = entry.path();
+        let meta_path = paths::instance_extension_meta_file(&family, &instance_id, &id);
+        let meta = read_instance_meta(&meta_path);
+        let present = dir.exists();
+        let store_item = store_index.get(id.as_str()).copied();
+        let synced = match (&meta, store_item) {
+            (Some(meta), Some(item)) => present && meta.version == item.installed_version,
+            (Some(_), None) => present,
+            _ => false,
+        };
+        let (display_name, version, in_store) = match store_item {
+            Some(item) => (item.name.clone(), item.installed_version.clone(), true),
+            None => (
+                id.clone(),
+                meta.as_ref().map(|m| m.version.clone()).unwrap_or_default(),
+                false,
+            ),
+        };
+        rows.push(KernelPluginRow {
+            id,
+            name: display_name,
+            version,
+            mode: meta.map(|m| m.mode),
+            synced,
+            in_store,
+        });
+    }
+    rows.sort_by_key(|a| a.name.to_lowercase());
+    rows
+}
+
+/// 把活动内核 `node_modules` 中 link 模式插件的 peerDependencies 解析进
+/// 中央库目录，让插件的 import 走查时能找到和内核相同的 cordis / dsh-*
+/// 实例。记录在 `.dsh-peers.json` 中，按内核版本区分，切换内核时会重跑。
+fn refresh_store_peers(data_dir: &Path, item: &StoreItem, active: &str) -> Result<(), AppError> {
+    if item.mode != "link" {
+        return Ok(());
+    }
+    let plugin_root = store_plugin_dir(data_dir, &item.id);
+    let meta_path = plugin_root.join(".dsh-peers.json");
+    let meta: serde_json::Value = fs::read_to_string(&meta_path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if meta.get("kernel").and_then(|k| k.as_str()) == Some(active)
+        && meta.get("peers").and_then(|p| p.as_array()).is_some()
+    {
+        return Ok(()); // 已为该内核解析过
+    }
+    let Ok(manifest) = read_plugin_manifest(&plugin_root) else {
+        return Ok(());
+    };
+    let Some(peers) = manifest.get("peerDependencies").and_then(|p| p.as_object()) else {
+        return Ok(());
+    };
+    let kernel_mm = kernel::lifecycle::kernel_dir(data_dir, active).join("node_modules");
+    let mut linked: Vec<String> = Vec::new();
+    for name in peers.keys() {
+        let target = kernel_mm.join(name);
+        if !target.exists() {
+            continue;
+        }
+        let dest = plugin_root.join("node_modules").join(name);
+        // "已存在"不足以说明它指向正确的地方：切换内核之后，插件库里可能还留着
+        // 一条指向上一个内核的链接（`dest.exists()` 照样为真）。继续沿用会让插件
+        // 在内核 B 下 import 到内核 A 的 cordis / @deepseek-ai/*——两份实例、
+        // 重复注入、服务找不到；A 被卸载后还会变成悬空链接。
+        let dest_meta = fs::symlink_metadata(&dest).ok();
+        let dest_is_link = dest_meta
+            .as_ref()
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(false);
+        if dest_is_link {
+            let points_at_current =
+                match (fs::canonicalize(&dest).ok(), fs::canonicalize(&target).ok()) {
+                    (Some(current), Some(want)) => current == want,
+                    _ => false,
+                };
+            if points_at_current {
+                // 已经解析到当前内核：记进 peers，使 meta 如实反映磁盘状态。
+                linked.push(name.clone());
+                continue;
+            }
+            // 指向别处（通常是上一个内核）：清掉后重建。
+            remove_link(&dest);
+        } else if dest_meta.is_some() {
+            // 真实存在的目录/文件（npm 装进来的或 hoisted 的）：不动它，
+            // 也不记进 peers——它不是我们建的链接。
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if make_dir_link(&target, &dest).is_err() {
+            // 链接不可用（Windows 权限等）→ 复制一份，解析不依赖链接能力
+            let _ = copy_tree(&target, &dest);
+        }
+        linked.push(name.clone());
+    }
+    let text = serde_json::json!({ "kernel": active, "peers": linked });
+    if let Ok(text) = serde_json::to_string(&text) {
+        let _ = atomic_write(&meta_path, text.as_bytes());
+    }
+    Ok(())
+}
+/// 在测试 home 下种入一组实例 record 与 `default_instance_id`，让
+/// `default_instance_key()` 走"从注册表读 default"这条生产路径。
+///
+/// 同时种入 `default`（端口 3090，默认）与 `work`（端口 3091，备选）两
+/// 个实例——跨实例隔离测试用后者。仅测试用：跳过生产路径里 `setup()` 调
+/// `instance::ensure_default_registered` 的取目录与落盘，直接写一份
+/// `InstanceRegistry` 与 `InstanceRecord` 到 disk。
+#[cfg(test)]
+fn seed_default_instance_for_tests(_home: &Path) {
+    use crate::shell::instance::{
+        InstanceRecord, InstanceRegistry, DEFAULT_INSTANCE_ID, KERNEL_FAMILY_DSH,
+    };
+    let now_ms = crate::shell::process::epoch_millis();
+    let seed = |id: &str, port: u16| -> Option<InstanceRecord> {
+        let mut record = InstanceRecord::new(id, KERNEL_FAMILY_DSH, port, now_ms);
+        // 不指定 kernel_version：让 `kernel::read_active` 在测试里仍然走
+        // `<data_dir>/active.txt` 的 legacy 路径——多数插件测试不依赖具体版本。
+        record.kernel_version = None;
+        if let Err(error) = instance::ensure_instance_dirs(&record) {
+            eprintln!("dsh-xlink: 测试无法创建实例目录（{error}）");
+            return None;
+        }
+        if let Err(error) = instance::save_record_to_disk(&record) {
+            eprintln!("dsh-xlink: 测试无法写入实例记录（{error}）");
+            return None;
+        }
+        Some(record)
+    };
+    let Some(default_record) = seed(DEFAULT_INSTANCE_ID, 3090) else {
+        return;
+    };
+    let work_record = seed("work", 3091);
+    let mut registry = InstanceRegistry {
+        default_instance_id: Some(DEFAULT_INSTANCE_ID.to_string()),
+        ..InstanceRegistry::default()
+    };
+    registry.instances.push(default_record);
+    if let Some(work) = work_record {
+        registry.instances.push(work);
+    }
+    if let Err(error) = instance::save_registry(&registry) {
+        eprintln!("dsh-xlink: 测试无法写入注册表（{error}）");
+    }
+}
+#[cfg(test)]
+mod tests {
+    #![allow(unused_variables)]
+
+    use super::*;
+
+    use std::time::SystemTime;
+
+    use crate::pkg::fetch::{latest_tag, looks_like_semver, resolve_npm_version, NpmDoc};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TEST_HOME_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    /// 每个测试独占的一次性 home，drop 时清理。
+    pub(super) struct TestHome(PathBuf);
+
+    impl TestHome {
+        /// P4：构造时把 `DSH_XLINK_HOME` 指向 TestHome，让
+        /// `paths::plugins_store_root()` 解析到 TestHome 内的 `dsh-plugins/`。
+        /// 返回的 [`crate::tests::EnvGuard`] 持有进程级互斥锁，离开
+        /// 作用域时还原 env 并放行下一个测试——避免并行测试互相踩
+        /// `DSH_XLINK_HOME`。
+        ///
+        /// **调用方必须把 EnvGuard 与 TestHome 绑在同一作用域**——通常
+        /// `let (home, _guard) = TestHome::new();`。
+        ///
+        /// P4：创建时同时注册一个默认实例 record，模拟生产里
+        /// `instance::ensure_default_registered` 在 setup 阶段写出的
+        /// 实例条目。这样 `default_instance_key()` 走"从注册表读 default"
+        /// 这条生产路径，而不是 fallback 到 `(dsh, "default")` 的兜底分支。
+        pub(super) fn new() -> (Self, crate::tests::EnvGuard) {
+            let nano = SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let base =
+                std::env::temp_dir().join(format!("dsh-plugins-test-{}", std::process::id()));
+            let seq = TEST_HOME_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let home = base.join(format!("{nano}-{seq}"));
+            fs::create_dir_all(&home).expect("test home");
+            let guard = crate::tests::scoped_xlink_home(&home);
+            seed_default_instance_for_tests(&home);
+            (TestHome(home), guard)
+        }
+
+        pub(super) fn data_dir(&self) -> PathBuf {
+            self.0.join("desktop")
+        }
+    }
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn parses_npm_specs() {
+        assert_eq!(parse_spec("dsh-market").unwrap().origin, "npm");
+        let scoped = parse_spec("@ace-zone/dsh-market").unwrap();
+        assert_eq!(scoped.origin, "npm");
+        assert_eq!(scoped.source, "@ace-zone/dsh-market");
+        assert_eq!(scoped.pin, None);
+        let pinned = parse_spec("@ace-zone/dsh-market@0.1.66").unwrap();
+        assert_eq!(pinned.pin.as_deref(), Some("0.1.66"));
+        assert_eq!(pinned.id, "@ace-zone__dsh-market");
+        let unpinned = parse_spec("dsh-market@1.2.3").unwrap();
+        assert_eq!(unpinned.source, "dsh-market");
+        assert_eq!(unpinned.pin.as_deref(), Some("1.2.3"));
+    }
+
+    #[test]
+    fn filter_installable_drops_empty_spec_entries() {
+        // 插件中心只展示「安装」按钮有实际取源地址的条目：dshfind 条目缺
+        // fullName、市场条目 git 分支缺 repo 都会解析出空 spec，装不了。
+        let mk = |id: &str, name: &str, origin: &str, spec: &str, repo: Option<&str>| CatalogItem {
+            id: id.into(),
+            name: name.into(),
+            kind: String::new(),
+            description: String::new(),
+            stars: 0,
+            forks: 0,
+            downloads: 0,
+            verified: false,
+            repo: repo.map(str::to_string),
+            spec: spec.into(),
+            origin: origin.into(),
+            category: String::new(),
+            version: String::new(),
+            tags: vec![],
+            updated: String::new(),
+            detail_url: String::new(),
+        };
+        let npm_item = mk("a", "a", "npm", "@scope/a", Some("owner/a"));
+        let git_item = mk("b", "b", "git", "https://github.com/owner/b.git", None);
+        let broken = mk("c", "c", "git", "", None);
+
+        let out = filter_installable(vec![npm_item.clone(), git_item.clone(), broken]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, "a");
+        assert_eq!(out[1].id, "b");
+        // 空输入是 no-op。
+        assert!(filter_installable(vec![]).is_empty());
+        // 全部可安装的列表原样穿透。
+        assert_eq!(
+            filter_installable(vec![npm_item.clone(), git_item, npm_item]).len(),
+            3
+        );
+    }
+
+    #[test]
+    fn resolves_npm_version_through_dist_tags() {
+        // 把版本钉到 "latest" 时应当先经 `dist-tags.latest` 跳到 registry
+        // 实际发布的 semver —— 少了这一步，字面量 `"latest"` 会直接被当成
+        // `versions` 的 key，用户就会看到「没有可下载的 tarball」，即使
+        // 这个包以及它的 tarball 都已存在（用户机器上 @linxin666/dsh-liangshen
+        // 触发的 bug）。
+        let doc: NpmDoc = serde_json::from_str(
+            r#"{
+                "dist-tags": {"latest": "0.3.2", "next": "1.0.0-rc.1"},
+                "versions": {
+                    "0.3.2": {},
+                    "1.0.0-rc.1": {},
+                    "0.1.0": {}
+                }
+            }"#,
+        )
+        .expect("npm doc");
+        assert_eq!(
+            resolve_npm_version(&doc, None),
+            ("0.3.2".into(), "latest".into())
+        );
+        assert_eq!(
+            resolve_npm_version(&doc, Some("latest")),
+            ("0.3.2".into(), "latest".into())
+        );
+        assert_eq!(
+            resolve_npm_version(&doc, Some("next")),
+            ("1.0.0-rc.1".into(), "next".into())
+        );
+        // 字面量 semver 钉：保留 pin 原样，让调用方的 `versions[<pin>]`
+        // 查询暴露精确的错误信息。
+        assert_eq!(
+            resolve_npm_version(&doc, Some("1.0.0-rc.1")),
+            ("1.0.0-rc.1".into(), "1.0.0-rc.1".into())
+        );
+        assert_eq!(
+            resolve_npm_version(&doc, Some("9.9.9")),
+            ("9.9.9".into(), "9.9.9".into())
+        );
+
+        // 没有 `dist-tags.latest`：`None` 返回空字符串，错误信息会变成
+        // 「找不到包 … 或其 latest 标记」。
+        let doc: NpmDoc = serde_json::from_str(r#"{"versions": {"1.0.0": {}}}"#).unwrap();
+        assert_eq!(
+            resolve_npm_version(&doc, None),
+            ("".into(), "latest".into())
+        );
+    }
+
+    #[test]
+    fn parses_package_manager_install_cli() {
+        // 用户从文档里粘贴的精确形态：`npm i @scope/pkg@v`。
+        let spec = parse_spec("npm i @linxin666/dsh-liangshen").unwrap();
+        assert_eq!(spec.origin, "npm");
+        assert_eq!(spec.source, "@linxin666/dsh-liangshen");
+        assert_eq!(spec.pin, None);
+
+        // `install` 与 `add` 两种动词，遍及四种包管理器前缀。
+        let spec = parse_spec("npm install @scope/pkg@1.2.3").unwrap();
+        assert_eq!(spec.source, "@scope/pkg");
+        assert_eq!(spec.pin.as_deref(), Some("1.2.3"));
+        assert_eq!(parse_spec("pnpm add owner/repo").unwrap().origin, "git");
+        assert_eq!(parse_spec("yarn add owner/repo").unwrap().origin, "git");
+        assert_eq!(
+            parse_spec("bun add @scope/pkg@latest").unwrap().source,
+            "@scope/pkg"
+        );
+
+        // 包 spec 前的标志（`--save-dev`、`-D`）会被静默丢弃。
+        // `npm i -D <pkg>` 与 `npm install --save-dev <pkg>` 都会归并
+        // 为裸的包 spec。
+        let spec = parse_spec("npm i -D @scope/pkg@1.0.0").unwrap();
+        assert_eq!(spec.source, "@scope/pkg");
+        let spec = parse_spec("npm install --save-dev @scope/pkg@1.0.0").unwrap();
+        assert_eq!(spec.source, "@scope/pkg");
+
+        // `npm install`（无包 spec）会落到 npm 解析分支，并对空白字符
+        // 大声报错，让用户看到可操作的错误而不是一次悄无声息的 no-op。
+        assert!(parse_spec("npm install").is_err());
+    }
+
+    #[test]
+    fn parses_dsh_plugin_cli_form() {
+        // 完整的 `dsh plugin --profile X add <pkg>` 形态是内核交付的规范
+        // 命令 —— 用户从文档 / 聊天建议里粘贴，桌面壳必须按原样接受。
+        let spec =
+            parse_spec("dsh plugin --profile web add @linxin666/dsh-liangshen@latest").unwrap();
+        assert_eq!(spec.origin, "npm");
+        assert_eq!(spec.source, "@linxin666/dsh-liangshen");
+        assert_eq!(spec.pin.as_deref(), Some("latest"));
+
+        // 不带 `--profile` 标志：仍能解析包 spec。
+        let spec = parse_spec("dsh plugin add @linxin666/dsh-liangshen@latest").unwrap();
+        assert_eq!(spec.origin, "npm");
+        assert_eq!(spec.source, "@linxin666/dsh-liangshen");
+        assert_eq!(spec.pin.as_deref(), Some("latest"));
+
+        // 在内核 CLI 中 `install` 是 `add` 的别名。
+        let spec = parse_spec("dsh plugin install @scope/pkg@1.2.3").unwrap();
+        assert_eq!(spec.source, "@scope/pkg");
+        assert_eq!(spec.pin.as_deref(), Some("1.2.3"));
+
+        // 短 `-p` 标志。
+        let spec = parse_spec("dsh plugin -p web add owner/repo#v1.0.0").unwrap();
+        assert_eq!(spec.origin, "git");
+        assert_eq!(spec.source, "https://github.com/owner/repo.git");
+        assert_eq!(spec.pin.as_deref(), Some("v1.0.0"));
+
+        // `dsh plugin … remove` / `update` / `list` 不是安装动词；手动
+        // 安装 UI 必须拒绝它们，避免粘贴的命令误把插件卸载掉。
+        assert!(parse_spec("dsh plugin remove @scope/pkg").is_err());
+        assert!(parse_spec("dsh plugin list").is_err());
+    }
+
+    #[test]
+    fn validate_plugin_checks_the_load_contract() {
+        let (home, _guard) = TestHome::new();
+        let dir = home.0.join("plugin");
+        fs::create_dir_all(&dir).expect("plugin dir");
+
+        // 没有 package.json：拒绝
+        assert!(validate_plugin(&dir).is_err());
+
+        // bundle 层声明了 patch 但文件缺失：拒绝
+        fs::write(
+            dir.join("package.json"),
+            r#"{"name":"p","dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}"#,
+        )
+        .expect("manifest");
+        assert!(validate_plugin(&dir).is_err());
+
+        // patch 文件补齐但无运行时入口：仍拒绝，bundle 层不能替代 main/exports
+        fs::write(dir.join("cordis.patch.yml"), "patches: []\n").expect("patch");
+        assert!(validate_plugin(&dir).is_err());
+
+        // 普通依赖型插件：main 指向真实文件才放行
+        fs::write(
+            dir.join("package.json"),
+            r#"{"name":"p","main":"lib/index.js"}"#,
+        )
+        .expect("manifest");
+        assert!(validate_plugin(&dir).is_err());
+        fs::create_dir_all(dir.join("lib")).expect("lib");
+        fs::write(dir.join("lib/index.js"), "module.exports = {}\n").expect("entry");
+        assert!(validate_plugin(&dir).is_ok());
+
+        // bundle 层 + 有效运行时入口：放行
+        fs::write(
+            dir.join("package.json"),
+            r#"{"name":"p","main":"lib/index.js","dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}"#,
+        )
+        .expect("manifest");
+        assert!(validate_plugin(&dir).is_ok());
+
+        // exports 入口存在即放行（Node 自己解析其目标）
+        fs::write(
+            dir.join("package.json"),
+            r#"{"name":"p","exports":"./lib/index.js"}"#,
+        )
+        .expect("manifest");
+        assert!(validate_plugin(&dir).is_ok());
+
+        // 既无 bundle 也无入口：拒绝
+        fs::write(dir.join("package.json"), r#"{"name":"p"}"#).expect("manifest");
+        assert!(validate_plugin(&dir).is_err());
+    }
+
+    #[test]
+    fn find_entry_normalizes_to_catalog_item() {
+        // 完整正文载荷：dshfind 的公开目录是 `{ plugins, i18nDescriptions }`
+        // 信封；中文描述优先，安装统一走 GitHub 仓库。
+        let body = r#"{"plugins":[{"fullName":"liustack/modlens","name":"modlens","owner":"liustack",
+            "url":"https://github.com/liustack/modlens","description":"The first vision plugin.",
+            "tags":["vision"],"stars":3497,"pushedAt":"2026-08-20T20:05:55Z","category":"tools",
+            "isOfficial":false,"isFeatured":true}],
+            "i18nDescriptions":{"liustack/modlens":{"zh":"首个 DSH 视觉插件。"}}}"#;
+        let env: FindEnvelope = serde_json::from_str(body).expect("find envelope");
+        let FindEnvelope {
+            plugins,
+            i18n_descriptions,
+        } = env;
+        let item = plugins
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_item(&i18n_descriptions);
+        assert_eq!(item.origin, "git");
+        assert_eq!(item.spec, "https://github.com/liustack/modlens.git");
+        assert_eq!(item.repo.as_deref(), Some("liustack/modlens"));
+        assert_eq!(item.category, "tools");
+        assert_eq!(item.stars, 3497);
+        assert!(item.verified, "isFeatured 条目应标记为已验证");
+        assert_eq!(item.description, "首个 DSH 视觉插件。");
+        assert_eq!(
+            item.detail_url,
+            "https://dshfind.com/zh/plugins/liustack/modlens"
+        );
+
+        // fullName 缺失时可用 GitHub 地址还原 `owner/repo`；两者都没有
+        // 才无法解析取源地址，过滤器应把它丢掉。
+        let env: FindEnvelope = serde_json::from_str(
+            r#"{"plugins":[
+                {"name":"x","description":"d"},
+                {"name":"plug","owner":"owner","url":"https://github.com/Owner/Plug"}
+            ]}"#,
+        )
+        .expect("find envelope");
+        let FindEnvelope {
+            plugins,
+            i18n_descriptions,
+        } = env;
+        let items: Vec<CatalogItem> = plugins
+            .into_iter()
+            .map(|raw| raw.into_item(&i18n_descriptions))
+            .collect();
+        assert!(items[0].spec.is_empty());
+        assert_eq!(items[1].spec, "https://github.com/Owner/Plug.git");
+        let kept = filter_installable(items);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name, "plug");
+    }
+
+    #[test]
+    fn find_entry_falls_back_to_english_and_flags_official() {
+        // 没有中文翻译时用条目自带描述；官方条目视为「已验证」。
+        let env: FindEnvelope = serde_json::from_str(
+            r#"{"plugins":[{"fullName":"deepseek-ai/deepseek-harness","name":"deepseek-harness",
+                "owner":"deepseek-ai","description":"Everything is a plugin.",
+                "downloads":{"channel":"npm","total":1234},"isOfficial":true}]}"#,
+        )
+        .expect("find envelope");
+        let FindEnvelope {
+            plugins,
+            i18n_descriptions,
+        } = env;
+        let item = plugins
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_item(&i18n_descriptions);
+        assert_eq!(item.origin, "git");
+        assert_eq!(
+            item.spec,
+            "https://github.com/deepseek-ai/deepseek-harness.git"
+        );
+        assert_eq!(item.description, "Everything is a plugin.");
+        assert_eq!(item.downloads, 1234);
+        assert!(item.verified);
+        assert_eq!(
+            item.detail_url,
+            "https://dshfind.com/zh/plugins/deepseek-ai/deepseek-harness"
+        );
+    }
+
+    #[test]
+    fn npm_candidates_from_github_spec_https() {
+        // 普通仓库：先试 `<repo-name>`，再加 `dsh-<repo-name>`。
+        assert_eq!(
+            npm_candidates_from_github_spec("https://github.com/owner/modlens"),
+            Some(vec!["modlens".to_string(), "dsh-modlens".to_string()])
+        );
+    }
+
+    #[test]
+    fn npm_candidates_from_github_spec_dsh_prefix() {
+        // 仓库名已经以 `dsh-` 开头：候选只有它自己，避免重复请求。
+        assert_eq!(
+            npm_candidates_from_github_spec("https://github.com/owner/dsh-zhipu"),
+            Some(vec!["dsh-zhipu".to_string()])
+        );
+    }
+
+    #[test]
+    fn npm_candidates_from_github_spec_git_ssh_and_owner_repo() {
+        assert_eq!(
+            npm_candidates_from_github_spec("git@github.com:owner/repo.git"),
+            Some(vec!["repo".to_string(), "dsh-repo".to_string()])
+        );
+        assert_eq!(
+            npm_candidates_from_github_spec("owner/repo"),
+            Some(vec!["repo".to_string(), "dsh-repo".to_string()])
+        );
+    }
+
+    #[test]
+    fn npm_candidates_from_github_spec_with_tag_returns_none() {
+        // 带 `#tag` 的 spec 是用户明确指定的版本，npm 上的对应版本不一
+        // 定存在，硬猜容易装错，直接走 git。
+        assert_eq!(
+            npm_candidates_from_github_spec("https://github.com/owner/repo#v1.0.0"),
+            None
+        );
+    }
+
+    #[test]
+    fn npm_candidates_from_github_spec_rejects_npm_shapes() {
+        // 已经是 npm 形态（或带 scope）的 spec 不要再走一遍 npm 探测。
+        assert_eq!(npm_candidates_from_github_spec("modlens"), None);
+        assert_eq!(npm_candidates_from_github_spec("@scope/pkg"), None);
+        assert_eq!(npm_candidates_from_github_spec("npm i @scope/pkg"), None);
+    }
+
+    #[test]
+    fn recognizes_github_sources_for_release_lookup() {
+        assert_eq!(
+            github_repo_path("https://github.com/Owner/Repo.git"),
+            Some("Owner/Repo".into())
+        );
+        assert_eq!(
+            github_repo_path("https://github.com/Owner/Repo/"),
+            Some("Owner/Repo".into())
+        );
+        assert_eq!(
+            github_repo_path("git@github.com:Owner/Repo.git"),
+            Some("Owner/Repo".into())
+        );
+        assert_eq!(
+            github_repo_path("ssh://git@github.com/Owner/Repo.git"),
+            Some("Owner/Repo".into())
+        );
+        assert_eq!(
+            github_repo_path("git+ssh://git@github.com/Owner/Repo.git"),
+            Some("Owner/Repo".into())
+        );
+        assert_eq!(
+            github_repo_path("git://github.com/Owner/Repo.git"),
+            Some("Owner/Repo".into())
+        );
+        assert_eq!(
+            github_repo_path("github.com/Owner/Repo"),
+            Some("Owner/Repo".into())
+        );
+
+        // 只有真正的 github.com 仓库进入 Release API；其它 Git 主机、伪造
+        // 域名、HTTP/认证/异常端口地址、带查询串的地址和多余路径都必须
+        // 保留在 clone 回退路径。
+        assert_eq!(github_repo_path("http://github.com/Owner/Repo.git"), None);
+        assert_eq!(
+            github_repo_path("https://user@github.com/Owner/Repo.git"),
+            None
+        );
+        assert_eq!(
+            github_repo_path("https://github.com:444/Owner/Repo.git"),
+            None
+        );
+        assert_eq!(
+            github_repo_path("ssh://git@github.com:2222/Owner/Repo.git"),
+            None
+        );
+        assert_eq!(github_repo_path("https://gitlab.com/Owner/Repo.git"), None);
+        assert_eq!(
+            github_repo_path("https://github.com.evil/Owner/Repo.git"),
+            None
+        );
+        assert_eq!(
+            github_repo_path("https://github.com/Owner/Repo.git?download=1"),
+            None
+        );
+        assert_eq!(
+            github_repo_path("https://github.com/Owner/Repo%2Fother.git"),
+            None
+        );
+        assert_eq!(
+            github_repo_path("https://github.com/Owner/Repo/releases"),
+            None
+        );
+    }
+
+    #[test]
+    fn builds_github_release_endpoints() {
+        assert_eq!(
+            github_release_endpoint("Owner/Repo", None),
+            "https://api.github.com/repos/Owner/Repo/releases?per_page=100"
+        );
+        assert_eq!(
+            github_release_endpoint("Owner/Repo", Some("release/v1.2.3")),
+            "https://api.github.com/repos/Owner/Repo/releases/tags/release%2Fv1.2.3"
+        );
+        assert_eq!(
+            github_tarball_url("Owner/Repo", "release/v1.2.3"),
+            "https://api.github.com/repos/Owner/Repo/tarball/release%2Fv1.2.3"
+        );
+    }
+
+    #[test]
+    fn selects_latest_usable_github_release() {
+        let release = |tag: &str, draft: bool, tarball_url: &str| GithubRelease {
+            tag_name: tag.into(),
+            draft,
+            tarball_url: tarball_url.into(),
+        };
+        let releases = vec![
+            release(
+                "v1.0.0",
+                false,
+                "https://api.github.com/repos/o/r/tarball/v1.0.0",
+            ),
+            release(
+                "v2.0.0",
+                true,
+                "https://api.github.com/repos/o/r/tarball/v2.0.0",
+            ),
+            release(
+                "v1.10.0-rc.1",
+                false,
+                "https://codeload.github.com/o/r/tar.gz/v1.10.0-rc.1",
+            ),
+            release(
+                "nightly",
+                false,
+                "https://api.github.com/repos/o/r/tarball/nightly",
+            ),
+            release("v1.9.0", false, "https://example.com/archive.tar.gz"),
+        ];
+        let selected = select_latest_github_release(releases).expect("release");
+        assert_eq!(selected.tag_name, "v1.10.0-rc.1");
+    }
+
+    #[test]
+    fn parses_git_specs() {
+        let url = parse_spec("https://github.com/losebird/dsh-plugin-market").unwrap();
+        assert_eq!(url.origin, "git");
+        assert!(url.source.starts_with("https://"));
+        let pinned = parse_spec("https://github.com/o/r.git#v1.2.3").unwrap();
+        assert_eq!(pinned.pin.as_deref(), Some("v1.2.3"));
+        let ssh = parse_spec("git@github.com:o/r.git").unwrap();
+        assert_eq!(ssh.origin, "git");
+        let shorthand = parse_spec("losebird/dsh-plugin-market").unwrap();
+        assert_eq!(shorthand.origin, "git");
+        assert_eq!(
+            shorthand.source,
+            "https://github.com/losebird/dsh-plugin-market.git"
+        );
+        assert_eq!(shorthand.id, "losebird__dsh-plugin-market");
+    }
+
+    #[test]
+    fn rejects_path_traversal_ids() {
+        assert!(id_for_name("a/../b").is_err());
+        assert!(id_for_name("..").is_err());
+        assert!(id_for_name("").is_err());
+        assert!(id_for_name("a//b").is_err());
+    }
+
+    #[test]
+    fn picks_latest_tag() {
+        let tags = ["v1.2.3", "v1.2.0", "v0.9.0", "v2.0.0-rc.1"];
+        assert_eq!(
+            latest_tag(tags.iter().copied()).as_deref(),
+            Some("v2.0.0-rc.1")
+        );
+        assert_eq!(
+            latest_tag(["1.2.3", "1.10.0"].iter().copied()).as_deref(),
+            Some("1.10.0")
+        );
+        assert_eq!(latest_tag(["not-a-version"].iter().copied()), None);
+    }
+
+    #[test]
+    fn detects_semver_shape() {
+        // 至少两段数字是 tag 过滤器和更新比较器共同依赖的门槛；其它形态
+        // 都视作 hash。
+        assert!(looks_like_semver("v0.15.0"));
+        assert!(looks_like_semver("0.15.0"));
+        assert!(looks_like_semver("1.2.3-rc.1"));
+        assert!(!looks_like_semver("v646c91c"));
+        assert!(!looks_like_semver("head"));
+        assert!(!looks_like_semver("1"));
+        assert!(!looks_like_semver(""));
+    }
+
+    #[test]
+    fn newer_than_handles_hash_vs_semver() {
+        // npm / 锁定的 git 走 semver 排序。未锁定的 git 分支现在也保存
+        // 了远端的最高 tag（通过 `fetch_git`），同样进入同一条 semver 排序路径。
+        assert!(is_newer_than("v0.15.0", "v0.14.0", "npm", false));
+        assert!(!is_newer_than("v0.14.0", "v0.15.0", "npm", false));
+        assert!(is_newer_than("v1.0.0", "v0.15.0", "git", true));
+        // 注意：`is_newer_than` 只回答"版本号上是否更新"，**不**回答"这个条目
+        // 能不能更新"。锁定版本（pinned）的过滤发生在 status / check_updates
+        // 里（见 `pinned_items_never_advertise_an_update`）。
+        assert!(is_newer_than("v0.15.0", "v0.14.0", "npm", true));
+        assert!(is_newer_than("v0.16.0", "v0.15.0", "git", false));
+        assert!(!is_newer_than("v0.15.0", "v0.15.0", "git", false));
+
+        // 回退路径：未锁定的 git 来源、仓库无任何可用 semver tag 时，
+        // `installed_version` 记录为 HEAD 短 hash。远端 `latest` 是 tag，
+        // 纯 semver 比较会单纯因为段数判断为 Greater。改用字符串相等判断，
+        // 避免新 tag 看上去永远「更新」。
+        assert!(!is_newer_than("v0.15.0", "v646c91c", "git", false));
+        assert!(is_newer_than("vNEW1", "v646c91c", "git", false));
+        assert!(!is_newer_than("v646c91c", "v646c91c", "git", false));
+        // 锁定 + hash 形态的 latest 不会进入特殊分支；cmp_versions 会把
+        // hash 排在任何 semver tag 之下。
+        assert!(is_newer_than("v0.15.0", "v646c91c", "git", true));
+    }
+
+    #[test]
+    fn computes_relative_paths() {
+        let from = Path::new("/home/u/.dsh/profiles/web");
+        let to = Path::new("/home/u/.dsh/desktop/kernels/0.1.1/plugins/x");
+        // profile spec 始终经过 spec_path_string，它会按平台规则把路径
+        // 分隔符归一为正斜杠。
+        assert_eq!(
+            spec_path_string(&relative_path(from, to)),
+            "../../desktop/kernels/0.1.1/plugins/x"
+        );
+        assert_eq!(relative_path(from, from), PathBuf::new());
+    }
+
+    #[test]
+    fn store_round_trips() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let item = StoreItem {
+            id: "test-plugin-1".into(),
+            name: "test-plugin".into(),
+            origin: "npm".into(),
+            source: "test-plugin".into(),
+            installed_version: "1.0.0".into(),
+            latest_version: None,
+            mode: "link".into(),
+            pinned: false,
+            installed_at: "1".into(),
+            updated_at: "2".into(),
+            repo_url: None,
+            description: None,
+        };
+        upsert_item(&data_dir, item.clone()).expect("save");
+        let loaded = load_store(&data_dir);
+        assert_eq!(loaded.items.len(), 1);
+        assert_eq!(loaded.items[0].id, "test-plugin-1");
+        assert!(store_dir(&data_dir).starts_with(home.0.as_path()));
+    }
+
+    #[test]
+    fn materialize_link_then_copy() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let id = "mat-plugin";
+        let source = store_plugin_dir(&data_dir, id);
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("package.json"), "{}").unwrap();
+        let item = StoreItem {
+            id: id.into(),
+            name: "mat-plugin".into(),
+            origin: "npm".into(),
+            source: "mat-plugin".into(),
+            installed_version: "1.0.0".into(),
+            latest_version: None,
+            mode: "link".into(),
+            pinned: false,
+            installed_at: String::new(),
+            updated_at: String::new(),
+            repo_url: None,
+            description: None,
+        };
+        let version = "0.1.1";
+        let actual = materialize_one(&data_dir, version, &item).expect("materialize");
+        // 链接失败（Windows 无开发者模式、受限文件系统、沙箱）会降级为 copy，
+        // 两种结果都是合法行为；能链接时必须真的是链接。
+        assert!(actual == "link" || actual == "copy");
+        let target = kernel_plugin_dir(&data_dir, version, id);
+        assert!(target.exists());
+        if actual == "link" {
+            assert!(target.is_symlink());
+        }
+        let actual = materialize_one(&data_dir, version, &item).expect("idempotent");
+        assert!(actual == "link" || actual == "copy");
+
+        // copy 模式覆盖
+        let mut copy_item = item.clone();
+        copy_item.mode = "copy".to_string();
+        let actual = materialize_one(&data_dir, version, &copy_item).expect("copy");
+        assert_eq!(actual, "copy");
+        assert!(target.join("package.json").is_file());
+        let meta = read_meta(&data_dir, version, id).expect("meta");
+        assert_eq!(meta.mode, "copy");
+        assert_eq!(meta.version, "1.0.0");
+    }
+
+    /// 切换内核后，插件库里指向上一个内核的 peer 链接必须被重链到当前内核。
+    ///
+    /// 旧代码用 `dest.exists()` 判断"已安装"：一条指向**上一个内核**的链接照样
+    /// 为真，于是它被跳过、`meta.peers` 记成空数组，而早退条件只看 kernel 字段
+    /// ——从此每次启动都命中早退，永不重链。插件在内核 B 下 import 到内核 A 的
+    /// cordis / @deepseek-ai/*，两份实例、重复注入；A 卸载后还会变成悬空链接。
+    #[cfg(unix)]
+    #[test]
+    fn refresh_store_peers_relinks_links_pointing_at_the_old_kernel() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let id = "peer-plugin";
+        let plugin_root = store_plugin_dir(&data_dir, id);
+        fs::create_dir_all(&plugin_root).unwrap();
+        fs::write(
+            plugin_root.join("package.json"),
+            r#"{"name":"peer-plugin","peerDependencies":{"cordis":"*"}}"#,
+        )
+        .unwrap();
+
+        // 两个内核各自带一份 cordis。
+        for version in ["0.1.1", "0.1.2"] {
+            let peer =
+                kernel::lifecycle::kernel_dir(&data_dir, version).join("node_modules/cordis");
+            fs::create_dir_all(&peer).unwrap();
+            fs::write(peer.join("index.js"), format!("// cordis {version}")).unwrap();
+        }
+
+        let item = StoreItem {
+            id: id.into(),
+            mode: "link".into(),
+            ..StoreItem::default()
+        };
+        refresh_store_peers(&data_dir, &item, "0.1.1").expect("首次解析");
+        let dest = plugin_root.join("node_modules/cordis");
+        let first = fs::canonicalize(&dest).expect("canonicalize first");
+        assert!(first.to_string_lossy().contains("0.1.1"), "{first:?}");
+
+        // 切到 0.1.2：必须重链，而不是因为"目标已存在"就跳过。
+        refresh_store_peers(&data_dir, &item, "0.1.2").expect("切换内核后重链");
+        let second = fs::canonicalize(&dest).expect("canonicalize second");
+        assert!(
+            second.to_string_lossy().contains("0.1.2"),
+            "切换内核后 peer 链接必须指向新内核，实际：{}",
+            second.display()
+        );
+    }
+
+    /// copy 模式（包括 link→copy 降级）的短路判定必须对**真实目录**成立。
+    ///
+    /// 旧判定要求"目标本身必须是符号链接"，对副本恒为假，于是每次启动内核都会
+    /// `remove_materialized` + 整树 `copy_tree`——含 node_modules 的插件可达
+    /// 两万文件，中途失败还会留下半棵树。
+    #[test]
+    fn copy_materialization_short_circuits_on_resync() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let id = "copy-short-circuit";
+        let source = store_plugin_dir(&data_dir, id);
+        fs::create_dir_all(source.join("lib")).unwrap();
+        fs::write(source.join("package.json"), "{}").unwrap();
+        fs::write(source.join("lib/index.js"), "module.exports = 1;\n").unwrap();
+
+        let item = StoreItem {
+            id: id.into(),
+            name: id.into(),
+            origin: "npm".into(),
+            source: id.into(),
+            installed_version: "1.0.0".into(),
+            latest_version: None,
+            mode: "copy".into(),
+            pinned: false,
+            installed_at: String::new(),
+            updated_at: String::new(),
+            repo_url: None,
+            description: None,
+        };
+        let version = "0.1.1";
+        assert_eq!(
+            materialize_one(&data_dir, version, &item).expect("首次物化"),
+            "copy"
+        );
+
+        let target = kernel_plugin_dir(&data_dir, version, id);
+        // 标记文件不在中央库里：它一旦消失，就说明目标被整树重拷过。
+        fs::write(target.join("RESYNC-MARKER"), b"x").unwrap();
+        assert_eq!(
+            materialize_one(&data_dir, version, &item).expect("二次物化"),
+            "copy"
+        );
+        assert!(
+            target.join("RESYNC-MARKER").exists(),
+            "版本与形态都没变时必须短路，不得整树重删重拷"
+        );
+
+        // 模拟 link→copy 降级：meta 记 fallback，而期望模式仍是 link。
+        let mut link_item = item.clone();
+        link_item.mode = "link".into();
+        write_meta(
+            &data_dir,
+            version,
+            id,
+            &KernelMeta {
+                fallback: true,
+                mode: "copy".into(),
+                version: link_item.installed_version.clone(),
+                synced_at: crate::shell::process::epoch_secs_string(),
+            },
+        )
+        .expect("write fallback meta");
+        fs::write(target.join("RESYNC-MARKER"), b"x").unwrap();
+        assert_eq!(
+            materialize_one(&data_dir, version, &link_item).expect("降级态再物化"),
+            "copy"
+        );
+        assert!(
+            target.join("RESYNC-MARKER").exists(),
+            "已降级的副本必须保持现状，而不是每次启动都重试建链并整树重拷"
+        );
+    }
+
+    #[test]
+    fn copy_tree_reports_failing_path() {
+        let (home, _guard) = TestHome::new();
+        let missing = home.0.join("no-such-source");
+        let err = copy_tree(&missing, &home.0.join("out")).expect_err("missing source must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no-such-source"),
+            "error must name the failing path, got: {msg}"
+        );
+    }
+
+    /// 指向源根之外的符号链接不得被跟随：跟随会把宿主机的目录树整棵拷进内核
+    /// 插件目录——磁盘被填满，私有文件也进入内核进程与插件代码可读的范围。
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_skips_links_escaping_the_source_root() {
+        let (home, _guard) = TestHome::new();
+        let outside = home.0.join("outside");
+        fs::create_dir_all(outside.join("private")).unwrap();
+        fs::write(outside.join("private/secret.txt"), "secret").unwrap();
+
+        let source = home.0.join("src");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("index.js"), "ok").unwrap();
+        std::os::unix::fs::symlink(&outside, source.join("payload")).unwrap();
+
+        let target = home.0.join("dst");
+        copy_tree(&source, &target).expect("copy should succeed");
+
+        assert!(target.join("index.js").is_file(), "普通文件必须照常拷贝");
+        assert!(
+            !target.join("payload/private/secret.txt").exists(),
+            "越界链接不得被跟随（否则整棵宿主目录会被拷进内核插件目录）"
+        );
+    }
+
+    #[test]
+    fn copy_tree_skips_dangling_symlink() {
+        let (home, _guard) = TestHome::new();
+        let source = home.0.join("src-tree");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("real.txt"), "hi").unwrap();
+        // 目标已经消失的 symlink：Windows 上 `fs::copy` 对它会报 os error 2，
+        // 以前会让整次目录拷贝都终止。
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(source.join("gone.txt"), source.join("link.txt"));
+        #[cfg(windows)]
+        let linked =
+            std::os::windows::fs::symlink_file(source.join("gone.txt"), source.join("link.txt"));
+        if linked.is_err() {
+            return; // 当前环境没有 symlink 权限
+        }
+        let target = home.0.join("dst-tree");
+        copy_tree(&source, &target).expect("dangling link must not abort the copy");
+        assert_eq!(fs::read_to_string(target.join("real.txt")).unwrap(), "hi");
+        assert!(!target.join("link.txt").exists());
+    }
+
+    #[test]
+    fn copy_tree_aborts_on_link_cycle() {
+        let (home, _guard) = TestHome::new();
+        let source = home.0.join("cycle-tree");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("real.txt"), "hi").unwrap();
+        // 指向自身祖先的目录链接：macOS / Linux 上 pnpm 循环依赖产生的
+        // 形态，那里 `node_modules` 全部是 symlink。拷贝必须以清晰的错误
+        // 失败，而不是无休止地递归。
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&source, source.join("loop"));
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir(&source, source.join("loop"));
+        if linked.is_err() {
+            return; // 当前环境没有 symlink 权限
+        }
+        let err = copy_tree(&source, &home.0.join("dst-cycle")).expect_err("cycle must fail");
+        assert!(
+            err.to_string().contains("循环链接"),
+            "error explains the cycle, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reconcile_reaps_unmarked_staging_dirs() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let store = store_dir(&data_dir);
+        fs::create_dir_all(&store).unwrap();
+        write_fake_plugin(&store.join("live-plugin"), "1.0.0");
+        // `.dsh-id` 标记之前的崩溃残留，加上更早版本的 `.tmp-` 命名：
+        // 没有标记，从来不是用户数据。
+        fs::create_dir_all(store.join(format!("{TMP_PREFIX}1-2"))).unwrap();
+        fs::create_dir_all(store.join(".tmp-legacy-3")).unwrap();
+        reconcile_store(&data_dir);
+        assert!(!store.join(format!("{TMP_PREFIX}1-2")).exists());
+        assert!(!store.join(".tmp-legacy-3").exists());
+        assert!(store.join("live-plugin").is_dir());
+    }
+
+    #[test]
+    fn reconcile_keeps_live_plugin_named_like_staging() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let store = store_dir(&data_dir);
+        fs::create_dir_all(&store).unwrap();
+        // npm 允许名字带 staging 前缀（`tmp-foo`）：final 目录自带标记，
+        // 不能把它自己当成残留暂存清扫掉。
+        let id = format!("{TMP_PREFIX}foo");
+        mark_staging(&store.join(&id), &id);
+        write_fake_plugin(&store.join(&id), "1.0.0");
+        reconcile_store(&data_dir);
+        assert!(store.join(&id).join("package.json").is_file());
+    }
+
+    #[test]
+    fn sweep_removes_only_owned_or_broken_orphans() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let version = "9.9.9";
+        let item = StoreItem {
+            id: "live".into(),
+            name: "live".into(),
+            origin: "npm".into(),
+            source: "live".into(),
+            installed_version: "1.0.0".into(),
+            latest_version: None,
+            mode: "copy".into(),
+            pinned: false,
+            installed_at: String::new(),
+            updated_at: String::new(),
+            repo_url: None,
+            description: None,
+        };
+        upsert_item(&data_dir, item).expect("store");
+        let store = load_store(&data_dir);
+        let plugins = kernel_plugins_dir(&data_dir, version);
+        fs::create_dir_all(plugins.join("live")).unwrap();
+        // 桌面壳所有的孤儿：`.meta` 记录证明这是壳自己放进去的。
+        fs::create_dir_all(plugins.join("ghost")).unwrap();
+        write_meta(
+            &data_dir,
+            version,
+            "ghost",
+            &KernelMeta {
+                fallback: false,
+                mode: "copy".into(),
+                version: "1.0.0".into(),
+                synced_at: "1".into(),
+            },
+        )
+        .expect("meta");
+        // 损坏的孤儿：中央库目标已经消失的 symlink。
+        #[cfg(unix)]
+        let linked =
+            std::os::unix::fs::symlink(plugins.join("missing-target"), plugins.join("dangler"));
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir(
+            plugins.join("missing-target"),
+            plugins.join("dangler"),
+        );
+        let has_link = linked.is_ok();
+        // 外部条目：无 meta、非链接 —— 留给用户处理。
+        fs::create_dir_all(plugins.join("foreign")).unwrap();
+
+        sweep_kernel_orphans(&data_dir, version, &store);
+
+        assert!(plugins.join("live").exists());
+        assert!(!plugins.join("ghost").exists());
+        assert!(read_meta(&data_dir, version, "ghost").is_none());
+        if has_link {
+            assert!(!plugins.join("dangler").exists());
+        }
+        assert!(plugins.join("foreign").exists());
+    }
+
+    #[test]
+    fn kernel_plugin_list_scans_materialized_entries() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let version = "1.0.0";
+
+        let bin = kernel::lifecycle::kernel_dir(&data_dir, version)
+            .join("node_modules/@deepseek-ai/dsh/lib");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("bin.js"), "").unwrap();
+
+        // 中央库一个插件：内核目录带有有效的 link 元数据；另一个中央库项目
+        // 在内核目录中仍是旧版本，Tooltip 应明确显示它尚未同步。
+        let store = store_dir(&data_dir);
+        write_fake_plugin(&store.join("live-plugin"), "1.0.0");
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "live-plugin".into(),
+                name: "live-plugin".into(),
+                origin: "npm".into(),
+                source: "live-plugin".into(),
+                installed_version: "1.0.0".into(),
+                latest_version: None,
+                pinned: false,
+                mode: "link".into(),
+                repo_url: None,
+                description: None,
+                installed_at: "0".into(),
+                updated_at: "0".into(),
+            },
+        )
+        .expect("upsert store");
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "stale-plugin".into(),
+                name: "stale-plugin".into(),
+                origin: "npm".into(),
+                source: "stale-plugin".into(),
+                installed_version: "2.0.0".into(),
+                latest_version: None,
+                pinned: false,
+                mode: "copy".into(),
+                repo_url: None,
+                description: None,
+                installed_at: "0".into(),
+                updated_at: "0".into(),
+            },
+        )
+        .expect("upsert stale store");
+        let plugins = kernel_plugins_dir(&data_dir, version);
+        fs::create_dir_all(plugins.join("live-plugin")).unwrap();
+        write_meta(
+            &data_dir,
+            version,
+            "live-plugin",
+            &KernelMeta {
+                fallback: false,
+                mode: "link".into(),
+                version: "1.0.0".into(),
+                synced_at: "1".into(),
+            },
+        )
+        .unwrap();
+        fs::create_dir_all(plugins.join("stale-plugin")).unwrap();
+        write_meta(
+            &data_dir,
+            version,
+            "stale-plugin",
+            &KernelMeta {
+                fallback: false,
+                mode: "copy".into(),
+                version: "1.0.0".into(),
+                synced_at: "1".into(),
+            },
+        )
+        .unwrap();
+        // 手工目录：没有 meta 也没有 store 项目，应当原样出现并标 in_store=false。
+        fs::create_dir_all(plugins.join("manual")).unwrap();
+
+        let rows = kernel_plugin_list(&data_dir, version);
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"live-plugin"));
+        assert!(ids.contains(&"manual"));
+
+        let live = rows.iter().find(|r| r.id == "live-plugin").unwrap();
+        assert_eq!(live.name, "live-plugin");
+        assert_eq!(live.version, "1.0.0");
+        assert_eq!(live.mode.as_deref(), Some("link"));
+        assert!(live.in_store);
+        assert!(live.synced);
+
+        let stale = rows.iter().find(|r| r.id == "stale-plugin").unwrap();
+        assert!(stale.in_store);
+        assert!(!stale.synced);
+        assert_eq!(stale.mode.as_deref(), Some("copy"));
+
+        let manual = rows.iter().find(|r| r.id == "manual").unwrap();
+        assert_eq!(manual.name, "manual");
+        assert!(manual.mode.is_none());
+        assert!(!manual.in_store);
+    }
+
+    #[test]
+    fn sync_all_sweeps_removed_plugins_from_every_kernel() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let versions = ["1.0.0", "2.0.0"];
+
+        for version in versions {
+            let bin = kernel::lifecycle::kernel_dir(&data_dir, version)
+                .join("node_modules/@deepseek-ai/dsh/lib");
+            fs::create_dir_all(&bin).unwrap();
+            fs::write(bin.join("bin.js"), "").unwrap();
+
+            let plugins = kernel_plugins_dir(&data_dir, version);
+            fs::create_dir_all(plugins.join("ghost")).unwrap();
+            write_meta(
+                &data_dir,
+                version,
+                "ghost",
+                &KernelMeta {
+                    fallback: false,
+                    mode: "copy".into(),
+                    version: "1.0.0".into(),
+                    synced_at: "1".into(),
+                },
+            )
+            .unwrap();
+        }
+
+        // 把 profile 调和留在 no-op 路径上，让这个测试只考察 sync_all
+        // 的全内核物化清理。
+        let profile = profile_dir(&data_dir, DEFAULT_PROFILE);
+        fs::create_dir_all(profile.join("node_modules")).unwrap();
+        fs::write(
+            profile.join("package.json"),
+            r#"{"name":"dsh-profile-web","private":true,"dependencies":{},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app"]}}}"#,
+        )
+        .unwrap();
+
+        let mut noop = |_: &str| {};
+        sync_all(
+            &data_dir,
+            &settings::Settings::default(),
+            Path::new("pnpm"),
+            &mut noop,
+        )
+        .unwrap();
+
+        for version in versions {
+            assert!(!kernel_plugin_dir(&data_dir, version, "ghost").exists());
+            assert!(read_meta(&data_dir, version, "ghost").is_none());
+        }
+    }
+
+    #[test]
+    fn wiring_survives_single_plugin_failure() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let version = "9.9.9";
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::write(data_dir.join("active.txt"), format!("{version}\n")).unwrap();
+        let mk_item = |id: &str, name: &str| StoreItem {
+            id: id.into(),
+            name: name.into(),
+            origin: "npm".into(),
+            source: name.into(),
+            installed_version: "1.0.0".into(),
+            latest_version: None,
+            // copy 模式让期望的 profile spec 保持确定性：link 模式在没有
+            // symlink 权限的机器上会静默降级为 copy，导致 spec 前缀翻转。
+            mode: "copy".into(),
+            pinned: false,
+            installed_at: String::new(),
+            updated_at: String::new(),
+            repo_url: None,
+            description: None,
+        };
+        write_fake_plugin(&store_plugin_dir(&data_dir, "healthy"), "1.0.0");
+        upsert_item(&data_dir, mk_item("healthy", "healthy-plugin")).expect("healthy");
+        // 损坏：中央库里有登记，但目录已经不见了。
+        upsert_item(&data_dir, mk_item("broken", "broken-plugin")).expect("broken");
+        // profile 已经为健康插件单独接好线，因此成功执行后 manifest
+        // 保持不变，也根本不会 shell out 到 pnpm。
+        let profile = profile_dir(&data_dir, "web");
+        fs::create_dir_all(profile.join("node_modules")).unwrap();
+        let manifest = serde_json::json!({
+            "name": "dsh-profile-web",
+            "private": true,
+            "dependencies": {
+                "healthy-plugin": "file:../../desktop/kernels/9.9.9/plugins/healthy"
+            },
+            "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"] } }
+        });
+        fs::write(
+            profile.join("package.json"),
+            serde_json::to_string_pretty(&manifest).unwrap() + "\n",
+        )
+        .unwrap();
+
+        let mut noop = |_: &str| {};
+        let err = ensure_wiring(
+            &data_dir,
+            &settings::Settings::default(),
+            Path::new("pnpm"),
+            &mut noop,
+        )
+        .expect_err("the broken plugin must surface as an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("broken-plugin"),
+            "error names the failed plugin: {msg}"
+        );
+        // 健康插件仍然被物化，manifest 也保留它的接线 —— 一个坏插件不再
+        // 拖垮其他所有插件。
+        assert!(kernel_plugin_dir(&data_dir, version, "healthy")
+            .join("package.json")
+            .is_file());
+        let on_disk = fs::read_to_string(profile.join("package.json")).unwrap();
+        assert!(on_disk.contains("healthy-plugin"));
+    }
+
+    #[test]
+    fn refreshes_peers_from_active_kernel() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let id = "peer-plugin";
+        let version = "2.0.0";
+        // 假内核：node_modules 里有插件声明但中央库没有的 peer
+        let kernel_mm = kernel::lifecycle::kernel_dir(&data_dir, version).join("node_modules");
+        fs::create_dir_all(kernel_mm.join("@deepseek-ai/dsh-base")).unwrap();
+        fs::write(kernel_mm.join("@deepseek-ai/dsh-base/package.json"), "{}").unwrap();
+        fs::write(data_dir.join("active.txt"), format!("{version}\n")).unwrap();
+        let plugin_root = store_plugin_dir(&data_dir, id);
+        fs::create_dir_all(&plugin_root).unwrap();
+        let manifest = serde_json::json!({
+            "name": "peer-plugin",
+            "peerDependencies": { "@deepseek-ai/dsh-base": "*" },
+        });
+        fs::write(
+            plugin_root.join("package.json"),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+        let item = StoreItem {
+            id: id.into(),
+            name: "peer-plugin".into(),
+            origin: "npm".into(),
+            source: "peer-plugin".into(),
+            installed_version: "1.0.0".into(),
+            latest_version: None,
+            mode: "link".into(),
+            pinned: false,
+            installed_at: String::new(),
+            updated_at: String::new(),
+            repo_url: None,
+            description: None,
+        };
+        refresh_store_peers(&data_dir, &item, version).expect("peers");
+        let dest = plugin_root.join("node_modules/@deepseek-ai/dsh-base");
+        assert!(dest.exists(), "peer 应被链接/复制进中央库");
+        assert!(dest.join("package.json").is_file());
+        // 幂等：同内核再跑一次不重复（存在即跳过）
+        refresh_store_peers(&data_dir, &item, version).expect("peers again");
+        assert!(dest.exists());
+    }
+
+    #[test]
+    fn store_dependencies_are_not_ready_until_each_declared_dependency_exists() {
+        let (home, _guard) = TestHome::new();
+        let plugin_root = store_plugin_dir(&home.data_dir(), "dependency-plugin");
+        fs::create_dir_all(&plugin_root).unwrap();
+        fs::write(
+            plugin_root.join("package.json"),
+            r#"{
+                "name":"dependency-plugin",
+                "dependencies": {
+                    "@deepseek-ai/dsh-settings":"^0.1.0",
+                    "@deepseek-ai/schemastery":"^3.18.0"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!store_dependencies_ready(&plugin_root));
+
+        let settings = plugin_root.join("node_modules/@deepseek-ai/dsh-settings");
+        fs::create_dir_all(&settings).unwrap();
+        fs::write(settings.join("package.json"), "{}").unwrap();
+        assert!(!store_dependencies_ready(&plugin_root));
+
+        let schemastery = plugin_root.join("node_modules/@deepseek-ai/schemastery");
+        fs::create_dir_all(&schemastery).unwrap();
+        fs::write(schemastery.join("package.json"), "{}").unwrap();
+        assert!(store_dependencies_ready(&plugin_root));
+    }
+
+    #[test]
+    fn wire_manifest_reports_name_collisions_instead_of_silently_dropping_one() {
+        // P2-21：两个不同 id 的插件共用同一个包名时，旧实现（以 name 为键）
+        // 会让后写入的那条静默覆盖前一条，而 UI 只看 `deps` 里有没有这个名字，
+        // 于是两行都显示"已接线"。现在以 id 为键并显式报告冲突。
+        let mut root = serde_json::json!({
+            "dependencies": {},
+            "dsh": { "profile": { "bundles": [] } },
+        });
+        let mut specs: BTreeMap<String, WireSpec> = BTreeMap::new();
+        specs.insert(
+            "aaa__pkg".to_string(),
+            WireSpec {
+                name: "shared-name".to_string(),
+                spec: "link:../../kernels/0.1.5/plugins/aaa__pkg".to_string(),
+                bundle: false,
+            },
+        );
+        specs.insert(
+            "bbb__pkg".to_string(),
+            WireSpec {
+                name: "shared-name".to_string(),
+                spec: "link:../../kernels/0.1.5/plugins/bbb__pkg".to_string(),
+                bundle: false,
+            },
+        );
+
+        let outcome = wire_manifest(&mut root, &specs, "web").expect("wire");
+        assert!(outcome.changed);
+        assert_eq!(outcome.conflicts.len(), 1, "必须报告一次同名冲突");
+        assert!(
+            outcome.conflicts[0].contains("shared-name"),
+            "冲突说明要带上包名：{:?}",
+            outcome.conflicts
+        );
+        // 按 id 顺序取第一个，行为确定而不是随机覆盖。
+        assert_eq!(
+            root["dependencies"]["shared-name"].as_str().unwrap(),
+            "link:../../kernels/0.1.5/plugins/aaa__pkg"
+        );
+    }
+
+    #[test]
+    fn wire_manifest_applies_and_prunes() {
+        let mut root = serde_json::json!({
+            "name": "dsh-profile-web",
+            "private": true,
+            "dependencies": {
+                "other": "1.0.0",
+                "old-plugin": "link:../../desktop/kernels/1.0.0/plugins/old-plugin",
+            },
+            "dsh": {
+                "profile": {
+                    "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "old-plugin"],
+                },
+            },
+        });
+        let mut specs: BTreeMap<String, WireSpec> = BTreeMap::new();
+        specs.insert(
+            "new-plugin".to_string(),
+            WireSpec {
+                name: "new-plugin".to_string(),
+                spec: "link:../../desktop/kernels/9.9.9/plugins/new-plugin".to_string(),
+                bundle: true,
+            },
+        );
+        specs.insert(
+            "plain-plugin".to_string(),
+            WireSpec {
+                name: "plain-plugin".to_string(),
+                spec: "link:../../desktop/kernels/9.9.9/plugins/plain-plugin".to_string(),
+                bundle: false,
+            },
+        );
+
+        let changed = wire_manifest(&mut root, &specs, "web")
+            .expect("wire")
+            .changed;
+        assert!(changed);
+        let deps = root["dependencies"].as_object().expect("deps");
+        assert_eq!(
+            deps["new-plugin"].as_str().unwrap(),
+            "link:../../desktop/kernels/9.9.9/plugins/new-plugin"
+        );
+        assert!(deps.contains_key("plain-plugin"));
+        assert!(deps.contains_key("other")); // 用户/CLI 条目保留
+        assert!(!deps.contains_key("old-plugin")); // 已卸载条目清退
+        let bundles: Vec<&str> = root["dsh"]["profile"]["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b.as_str())
+            .collect();
+        assert!(bundles.contains(&"@deepseek-ai/dsh-base"));
+        assert!(bundles.contains(&"new-plugin"));
+        assert!(!bundles.contains(&"plain-plugin")); // 非 bundle 不进层
+        assert!(!bundles.contains(&"old-plugin"));
+
+        let changed = wire_manifest(&mut root, &specs, "web")
+            .expect("wire again")
+            .changed;
+        assert!(!changed);
+    }
+
+    #[test]
+    fn is_managed_spec_matches_shell_layout_not_dir_name() {
+        // release 壳（desktop/）与 dev 壳（desktop-dev/）写出的 spec 都必须
+        // 识别为托管，否则 dev 卸载残留会被当成用户依赖保留，内核启动时
+        // 解析悬空 bundle 崩溃（regression：WIRED_MARK 只匹配 "desktop/kernels/"）。
+        assert!(is_managed_spec(
+            "link:../../desktop/kernels/1.0.0/plugins/x"
+        ));
+        assert!(is_managed_spec(
+            "link:../../desktop-dev/kernels/0.1.1-rc.2/plugins/x"
+        ));
+        // DSH_DESKTOP_DATA_DIR 覆盖为任意目录名时写出的 spec（common==0 时
+        // relative_path 产出绝对路径）。
+        assert!(is_managed_spec(
+            "file:C:/Users/u/.dsh/desktop/kernels/1/plugins/x"
+        ));
+        assert!(is_managed_spec(
+            "link:/Volumes/ext/dsh-shell/kernels/1/plugins/@scope__pkg"
+        ));
+        // 非托管：用户/CLI 依赖——版本号、任意 link/file 目标、路径里
+        // kernels/plugins 不构成尾部布局、空的 version/id 段。
+        assert!(!is_managed_spec("^1.0.0"));
+        assert!(!is_managed_spec("link:../packages/my-plugin"));
+        assert!(!is_managed_spec("file:../vendor/kernels/pkg"));
+        assert!(!is_managed_spec(
+            "link:../../desktop/plugins/1.0.0/kernels/x"
+        ));
+        assert!(!is_managed_spec("link:../../desktop/kernels//plugins/x"));
+        assert!(!is_managed_spec("link:../../desktop/kernels/1/plugins/"));
+    }
+
+    #[test]
+    fn wire_manifest_prunes_dev_shell_residue() {
+        // dev 壳卸载插件后 manifest 残留的 desktop-dev spec 必须被清退：
+        // 空 specs（安全模式/最后一个插件被卸载）下依赖与 bundle 层一起消失，
+        // 只留下模板层。用户/CLI 条目不受影响。
+        let mut root = serde_json::json!({
+            "name": "dsh-profile-web",
+            "private": true,
+            "dependencies": {
+                "other": "1.0.0",
+                "dsh-synapse": "link:../../desktop-dev/kernels/0.1.1-rc.2/plugins/github.com__liangmianya__dsh-synapse",
+            },
+            "dsh": {
+                "profile": {
+                    "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-synapse"],
+                },
+            },
+        });
+        let specs = BTreeMap::new();
+        let changed = wire_manifest(&mut root, &specs, "web")
+            .expect("wire")
+            .changed;
+        assert!(changed);
+        let deps = root["dependencies"].as_object().expect("deps");
+        assert!(!deps.contains_key("dsh-synapse")); // dev 壳卸载残留清退
+        assert!(deps.contains_key("other")); // 用户/CLI 条目保留
+        let bundles: Vec<&str> = root["dsh"]["profile"]["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b.as_str())
+            .collect();
+        assert_eq!(
+            bundles,
+            ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]
+        );
+    }
+
+    #[test]
+    fn wire_manifest_keeps_dependency_free_bundle_rows() {
+        // 内核工作台「插件」页的官方插件开关（实验特性等）只在
+        // dsh.profile.bundles 里写一行包名、不写 dependencies——包随内核自带，
+        // 启用无需 pnpm 接线。每次启动都会跑接线调和，这类行必须原样保留，
+        // 否则开关状态在重启内核后就被清掉一次。壳写过的托管残留仍照常清退。
+        let mut root = serde_json::json!({
+            "name": "dsh-profile-web",
+            "private": true,
+            "dependencies": {
+                "gone-plugin": "link:../../desktop/kernels/1.0.0/plugins/gone-plugin",
+            },
+            "dsh": {
+                "profile": {
+                    "bundles": [
+                        "@deepseek-ai/dsh-base",
+                        "@deepseek-ai/dsh-web-app",
+                        "@deepseek-ai/dsh-experimental-agent-team-profile",
+                        "@deepseek-ai/dsh-experimental-auto-review",
+                        "gone-plugin"
+                    ],
+                },
+            },
+        });
+        let specs = BTreeMap::new();
+        let changed = wire_manifest(&mut root, &specs, "web")
+            .expect("wire")
+            .changed;
+        assert!(changed); // gone-plugin 残留被清退
+        let bundles: Vec<&str> = root["dsh"]["profile"]["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b.as_str())
+            .collect();
+        assert_eq!(
+            bundles,
+            [
+                "@deepseek-ai/dsh-base",
+                "@deepseek-ai/dsh-web-app",
+                "@deepseek-ai/dsh-experimental-agent-team-profile",
+                "@deepseek-ai/dsh-experimental-auto-review"
+            ]
+        );
+        // 再次调和（下一次内核启动）必须是稳态：清单不再变动，否则官方插件
+        // 开关会在每次重启时被反复改写。
+        let changed = wire_manifest(&mut root, &specs, "web")
+            .expect("wire again")
+            .changed;
+        assert!(!changed);
+    }
+
+    #[test]
+    fn wire_manifest_rewrites_cross_shell_specs() {
+        // manifest 由 dev 壳接线，release 壳重新接线时 spec 重写为本壳的
+        // kernel plugins 目录。
+        let mut root = serde_json::json!({
+            "name": "dsh-profile-web",
+            "private": true,
+            "dependencies": {
+                "dsh-synapse": "link:../../desktop-dev/kernels/0.1.1-rc.2/plugins/github.com__liangmianya__dsh-synapse",
+            },
+            "dsh": {
+                "profile": {
+                    "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-synapse"],
+                },
+            },
+        });
+        let mut specs: BTreeMap<String, WireSpec> = BTreeMap::new();
+        specs.insert(
+            "dsh-synapse".to_string(),
+            WireSpec {
+                name: "dsh-synapse".to_string(),
+                spec: "link:../../desktop/kernels/0.1.1-rc.2/plugins/github.com__liangmianya__dsh-synapse"
+                    .to_string(),
+                bundle: true,
+            },
+        );
+        let changed = wire_manifest(&mut root, &specs, "web")
+            .expect("wire")
+            .changed;
+        assert!(changed);
+        assert_eq!(
+            root["dependencies"]["dsh-synapse"].as_str().unwrap(),
+            "link:../../desktop/kernels/0.1.1-rc.2/plugins/github.com__liangmianya__dsh-synapse"
+        );
+        let bundles: Vec<&str> = root["dsh"]["profile"]["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b.as_str())
+            .collect();
+        assert!(bundles.contains(&"dsh-synapse"));
+    }
+
+    #[test]
+    fn spec_path_uses_forward_slashes() {
+        #[cfg(windows)]
+        let rel = PathBuf::from("..\\..\\desktop\\kernels\\1\\plugins\\x");
+        #[cfg(not(windows))]
+        let rel = PathBuf::from("../../desktop/kernels/1/plugins/x");
+        assert_eq!(spec_path_string(&rel), "../../desktop/kernels/1/plugins/x");
+    }
+
+    #[test]
+    fn settings_profile_defaults_to_web() {
+        let s = settings::Settings::default();
+        assert_eq!(s.profile, DEFAULT_PROFILE);
+        assert_eq!(DEFAULT_PROFILE, "web");
+    }
+
+    #[test]
+    fn status_flags_stale_materialization() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let version = "1.0.0";
+        fs::create_dir_all(kernel::lifecycle::kernel_dir(&data_dir, version)).unwrap();
+        fs::write(data_dir.join("active.txt"), format!("{version}\n")).unwrap();
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "stale-plugin".into(),
+                name: "stale-plugin".into(),
+                origin: "npm".into(),
+                source: "stale-plugin".into(),
+                installed_version: "2.0.0".into(),
+                latest_version: Some("3.0.0".into()),
+                mode: "link".into(),
+                pinned: false,
+                installed_at: String::new(),
+                updated_at: String::new(),
+                repo_url: None,
+                description: None,
+            },
+        )
+        .expect("save");
+        let settings = settings::Settings::default();
+        let view = status(&data_dir, &settings);
+        assert_eq!(view.rows.len(), 1);
+        assert!(!view.rows[0].synced);
+        assert_eq!(view.updates, 1);
+        assert_eq!(view.rows[0].latest_version.as_deref(), Some("3.0.0"));
+    }
+
+    /// `update()` 把 `latest_version` 同步为 `installed_version` 之后，
+    /// UI 不应再渲染「有更新」角标。`status()` 行必须隐藏 `latest_version`，
+    /// 让按行的 UI 检查（判断字段是否为真）停止显示那条幽灵通知。顶层
+    /// 总数已经单独过滤过。
+    #[test]
+    fn status_hides_latest_when_not_newer_than_installed() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "synced-plugin".into(),
+                name: "synced-plugin".into(),
+                origin: "npm".into(),
+                source: "synced-plugin".into(),
+                installed_version: "1.2.3".into(),
+                latest_version: Some("1.2.3".into()),
+                mode: "link".into(),
+                pinned: false,
+                installed_at: String::new(),
+                updated_at: String::new(),
+                repo_url: None,
+                description: None,
+            },
+        )
+        .expect("save");
+        let settings = settings::Settings::default();
+        let view = status(&data_dir, &settings);
+        assert_eq!(view.updates, 0);
+        assert!(
+            view.rows[0].latest_version.is_none(),
+            "row.latest_version must be hidden when it equals installed_version, got {:?}",
+            view.rows[0].latest_version
+        );
+    }
+
+    #[test]
+    fn pinned_items_never_advertise_an_update() {
+        // P2-22：锁定版本的条目标成「有更新」，但 `update()` 对 pinned 一律
+        // 拒绝（提示重新安装）—— 用户点下去必然失败。计数与行内角标都必须
+        // 忽略 pinned，npm 与 git 来源一视同仁。
+        for (origin, installed, latest) in
+            [("npm", "1.2.3", "1.3.0"), ("git", "v0.14.0", "v0.15.0")]
+        {
+            let (home, _guard) = TestHome::new();
+            let data_dir = home.data_dir();
+            upsert_item(
+                &data_dir,
+                StoreItem {
+                    id: "locked-plugin".into(),
+                    name: "locked-plugin".into(),
+                    origin: origin.into(),
+                    source: "locked-plugin@1.2.3".into(),
+                    installed_version: installed.into(),
+                    latest_version: Some(latest.into()),
+                    mode: "link".into(),
+                    pinned: true,
+                    installed_at: String::new(),
+                    updated_at: String::new(),
+                    repo_url: None,
+                    description: None,
+                },
+            )
+            .expect("save");
+            let settings = settings::Settings::default();
+            let view = status(&data_dir, &settings);
+            assert_eq!(view.updates, 0, "{origin} 的锁定版本不该计入更新数");
+            assert!(
+                view.rows[0].latest_version.is_none(),
+                "{origin} 的锁定版本不该显示「有更新」角标，实际 {:?}",
+                view.rows[0].latest_version
+            );
+        }
+    }
+
+    #[test]
+    fn status_keeps_latest_when_newer_than_installed() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "behind-plugin".into(),
+                name: "behind-plugin".into(),
+                origin: "npm".into(),
+                source: "behind-plugin".into(),
+                installed_version: "1.0.0".into(),
+                latest_version: Some("2.0.0".into()),
+                mode: "link".into(),
+                pinned: false,
+                installed_at: String::new(),
+                updated_at: String::new(),
+                repo_url: None,
+                description: None,
+            },
+        )
+        .expect("save");
+        let settings = settings::Settings::default();
+        let view = status(&data_dir, &settings);
+        assert_eq!(view.updates, 1);
+        assert_eq!(view.rows[0].latest_version.as_deref(), Some("2.0.0"));
+    }
+
+    /// 启动看护产生的隔离记录必须出现在插件行上，让管理 UI 能够按插件
+    /// 给出「重新启用 / 卸载」的决策，而不是等用户发现某个集成悄无声息
+    /// 地不见。
+    #[test]
+    fn status_attaches_quarantine_record_to_row() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "bad-plugin".into(),
+                name: "bad-plugin".into(),
+                origin: "npm".into(),
+                source: "bad-plugin".into(),
+                installed_version: "1.0.0".into(),
+                latest_version: None,
+                mode: "link".into(),
+                pinned: false,
+                installed_at: String::new(),
+                updated_at: String::new(),
+                repo_url: None,
+                description: None,
+            },
+        )
+        .expect("save");
+        quarantine::add_all(
+            &data_dir,
+            &[quarantine::QuarantineItem {
+                id: "bad-plugin".into(),
+                name: "bad-plugin".into(),
+                reason: "测试隔离".into(),
+                evidence: "Error: boom".into(),
+                at: 1,
+            }],
+        )
+        .expect("quarantine");
+
+        let view = status(&data_dir, &settings::Settings::default());
+        assert_eq!(view.rows.len(), 1);
+        let record = view.rows[0]
+            .quarantined
+            .as_ref()
+            .expect("row must carry the quarantine record");
+        assert_eq!(record.reason, "测试隔离");
+
+        // 重新启用会把记录一起丢掉，行上的隔离标记也跟着没了。
+        quarantine::remove(&data_dir, "bad-plugin").expect("remove");
+        let view = status(&data_dir, &settings::Settings::default());
+        assert!(view.rows[0].quarantined.is_none());
+    }
+
+    #[test]
+    fn uninstall_cleans_stale_quarantine_when_store_item_is_missing() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let id = "dsh-flowglass";
+        fs::create_dir_all(&data_dir).expect("data dir");
+        quarantine::add_all(
+            &data_dir,
+            &[quarantine::QuarantineItem {
+                id: id.into(),
+                name: id.into(),
+                reason: "启动失败".into(),
+                evidence: "Error: missing dependency".into(),
+                at: 1,
+            }],
+        )
+        .expect("quarantine");
+
+        // 这是 dev 壳上报的部分清理状态：中央库条目和 profile 接线都
+        // 已经不在了，但还有一条老的隔离记录需要清掉。
+        let profile = profile_dir(&data_dir, "web");
+        fs::create_dir_all(profile.join("node_modules")).expect("node_modules");
+        let manifest = serde_json::json!({
+            "name": "dsh-profile-web",
+            "private": true,
+            "dependencies": {},
+            "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"] } }
+        });
+        fs::write(
+            profile.join("package.json"),
+            serde_json::to_string_pretty(&manifest).expect("manifest") + "\n",
+        )
+        .expect("write manifest");
+
+        let mut noop = |_: &str| {};
+        uninstall(
+            &data_dir,
+            &settings::Settings::default(),
+            Path::new("pnpm"),
+            id,
+            &mut noop,
+        )
+        .expect("stale quarantine should be removable");
+
+        assert!(quarantine::load(&data_dir).items.is_empty());
+        let cleaned: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(profile.join("package.json")).expect("cleaned manifest"),
+        )
+        .expect("cleaned json");
+        let bundles = cleaned["dsh"]["profile"]["bundles"]
+            .as_array()
+            .expect("bundles");
+        assert!(!bundles.iter().any(|bundle| bundle.as_str() == Some(id)));
+    }
+
+    /// 辅助函数：在暂存目录里写入 `.dsh-id` 标记，让恢复扫描能把它与
+    /// 对应的 `final_dir` 归到一组。
+    fn mark_staging(dir: &Path, id: &str) {
+        fs::create_dir_all(dir).expect("mkdir staging");
+        fs::write(dir.join(ID_MARKER), format!("{id}\n")).expect("write marker");
+    }
+
+    fn write_fake_plugin(dir: &Path, tag: &str) {
+        fs::create_dir_all(dir).expect("mkdir plugin");
+        let pkg = format!(r#"{{"name":"p","version":"{tag}","main":"lib/index.js"}}"#);
+        fs::write(dir.join("package.json"), pkg).expect("manifest");
+        fs::create_dir_all(dir.join("lib")).expect("lib");
+        fs::write(dir.join("lib/index.js"), "module.exports={}").expect("entry");
+    }
+
+    #[test]
+    fn reconcile_is_noop_when_no_staging_dirs() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let store = store_dir(&data_dir);
+        fs::create_dir_all(&store).unwrap();
+        // 仅有线上插件、周围没有任何暂存目录。
+        write_fake_plugin(&store.join("live-plugin"), "1.0.0");
+        reconcile_store(&data_dir);
+        assert!(store.join("live-plugin").is_dir());
+        let entries: Vec<_> = fs::read_dir(&store)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.starts_with(TMP_PREFIX)
+                    || n.starts_with(NEW_PREFIX)
+                    || n.starts_with(BACKUP_PREFIX)
+            })
+            .collect();
+        assert!(entries.is_empty(), "no staging should remain");
+    }
+
+    #[test]
+    fn reconcile_without_store_file_keeps_marked_store_dirs() {
+        // P0-3：清单文件**不存在**（丢了，或用户按提示删掉了损坏的清单）时，
+        // 中央库里带外壳标记的目录必须原样保留。`load_store_checked` 把 `Missing`
+        // 归为空清单对写路径是安全下界，但清扫路径照此执行就会把用户已装的插件
+        // 目录物理删掉——而应用自己的错误提示恰恰建议用户删除那个文件。
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let store = store_dir(&data_dir);
+        fs::create_dir_all(&store).unwrap();
+        mark_staging(&store.join("kept-plugin"), "kept-plugin");
+        write_fake_plugin(&store.join("kept-plugin"), "1.0.0");
+        assert!(!store_file(&data_dir).exists(), "前置条件：清单文件不存在");
+
+        reconcile_store(&data_dir);
+        assert!(
+            store.join("kept-plugin").is_dir(),
+            "清单文件缺失不得触发孤儿目录清理"
+        );
+
+        // 边界不变：清单文件存在且能解析时，未记账的目录仍会被清掉。
+        save_store_unlocked(&data_dir, &Store::default()).unwrap();
+        reconcile_store(&data_dir);
+        assert!(
+            !store.join("kept-plugin").exists(),
+            "清单存在（空）时未记账的目录仍应被清理"
+        );
+    }
+
+    #[test]
+    fn reconcile_reverts_to_backup_when_final_missing_and_both_staging_present() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let store = store_dir(&data_dir);
+        fs::create_dir_all(&store).unwrap();
+
+        // 在 `final → backup` 与 `new → final` 之间崩溃：final_dir 缺失，
+        // backup（旧版）和 new（已校验）都从崩溃中幸存。
+        let id = "p";
+        mark_staging(&store.join(format!("{BACKUP_PREFIX}1-1")), id);
+        write_fake_plugin(&store.join(format!("{BACKUP_PREFIX}1-1")), "1.0.0");
+        mark_staging(&store.join(format!("{NEW_PREFIX}2-2")), id);
+        write_fake_plugin(&store.join(format!("{NEW_PREFIX}2-2")), "2.0.0");
+
+        reconcile_store(&data_dir);
+
+        // 回滚：backup 胜出，新的暂存被丢弃。
+        let final_dir = store.join(id);
+        let final_manifest = fs::read_to_string(final_dir.join("package.json")).unwrap();
+        assert!(
+            final_manifest.contains("\"version\":\"1.0.0\""),
+            "expected revert to old version, got: {final_manifest}"
+        );
+        assert!(!store.join(format!("{NEW_PREFIX}2-2")).exists());
+        assert!(!store.join(format!("{BACKUP_PREFIX}1-1")).exists());
+    }
+
+    #[test]
+    fn reconcile_promotes_new_when_only_new_survives() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let store = store_dir(&data_dir);
+        fs::create_dir_all(&store).unwrap();
+
+        // 在 `tmp → new` 之后、`final → backup` 之前崩溃：final 缺失，
+        // 只有 `.new-*` 幸存，恢复流程会发布它。
+        let id = "p";
+        mark_staging(&store.join(format!("{NEW_PREFIX}3-3")), id);
+        write_fake_plugin(&store.join(format!("{NEW_PREFIX}3-3")), "2.5.0");
+
+        reconcile_store(&data_dir);
+
+        let final_dir = store.join(id);
+        let final_manifest = fs::read_to_string(final_dir.join("package.json")).unwrap();
+        assert!(
+            final_manifest.contains("\"version\":\"2.5.0\""),
+            "expected publish of new version, got: {final_manifest}"
+        );
+        assert!(!store.join(format!("{NEW_PREFIX}3-3")).exists());
+    }
+
+    #[test]
+    fn reconcile_discards_tmp_only() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let store = store_dir(&data_dir);
+        fs::create_dir_all(&store).unwrap();
+
+        // 在校验前的拉取中途崩溃：只有 `.tmp-*` 幸存。
+        let id = "p";
+        mark_staging(&store.join(format!("{TMP_PREFIX}4-4")), id);
+        write_fake_plugin(&store.join(format!("{TMP_PREFIX}4-4")), "0.0.1");
+
+        reconcile_store(&data_dir);
+
+        assert!(!store.join(format!("{TMP_PREFIX}4-4")).exists());
+        assert!(!store.join(id).exists());
+    }
+
+    #[test]
+    fn reconcile_cleans_stale_staging_when_live_plugin_present() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let store = store_dir(&data_dir);
+        fs::create_dir_all(&store).unwrap();
+
+        // 线上插件存在；一次完成的更新留下的 `.backup-*` 没被清掉
+        // （发布后的清理没跑）。恢复流程直接丢弃它。
+        let id = "live";
+        write_fake_plugin(&store.join(id), "3.0.0");
+        mark_staging(&store.join(format!("{BACKUP_PREFIX}5-5")), id);
+        write_fake_plugin(&store.join(format!("{BACKUP_PREFIX}5-5")), "2.0.0");
+        mark_staging(&store.join(format!("{NEW_PREFIX}6-6")), id);
+        write_fake_plugin(&store.join(format!("{NEW_PREFIX}6-6")), "3.0.0");
+
+        reconcile_store(&data_dir);
+
+        assert!(store.join(id).is_dir());
+        assert!(!store.join(format!("{BACKUP_PREFIX}5-5")).exists());
+        assert!(!store.join(format!("{NEW_PREFIX}6-6")).exists());
+    }
+
+    #[test]
+    fn reconcile_picks_newest_when_multiple_staging_dirs_share_id() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let store = store_dir(&data_dir);
+        fs::create_dir_all(&store).unwrap();
+
+        // 两次失败的更新交错：final 缺失，同一 id 下两份 backup 与两份
+        // new 同时幸存。最新的（后缀字典序最大者）胜出；较老的对等目录
+        // 被移除。
+        let id = "p";
+        mark_staging(&store.join(format!("{BACKUP_PREFIX}1-1")), id);
+        write_fake_plugin(&store.join(format!("{BACKUP_PREFIX}1-1")), "0.9.0");
+        mark_staging(&store.join(format!("{BACKUP_PREFIX}2-2")), id);
+        write_fake_plugin(&store.join(format!("{BACKUP_PREFIX}2-2")), "1.0.0");
+        mark_staging(&store.join(format!("{NEW_PREFIX}3-3")), id);
+        write_fake_plugin(&store.join(format!("{NEW_PREFIX}3-3")), "1.5.0");
+        mark_staging(&store.join(format!("{NEW_PREFIX}4-4")), id);
+        write_fake_plugin(&store.join(format!("{NEW_PREFIX}4-4")), "2.0.0");
+
+        reconcile_store(&data_dir);
+
+        // 两份 new 都存在 → 回滚到最新的 backup（id 2-2）；两份 new 全部移除。
+        let final_dir = store.join(id);
+        let final_manifest = fs::read_to_string(final_dir.join("package.json")).unwrap();
+        assert!(
+            final_manifest.contains("\"version\":\"1.0.0\""),
+            "expected freshest backup as the revert target, got: {final_manifest}"
+        );
+        assert!(!store.join(format!("{BACKUP_PREFIX}1-1")).exists());
+        assert!(!store.join(format!("{BACKUP_PREFIX}2-2")).exists());
+        assert!(!store.join(format!("{NEW_PREFIX}3-3")).exists());
+        assert!(!store.join(format!("{NEW_PREFIX}4-4")).exists());
+    }
+
+    /// `new_staging_dir` 返回的是一个没有任何标记的空目录。标记的写入
+    /// 由调用方负责：在 rename 目标上预先盖章就是当初 Windows 上
+    /// ERROR_DIR_NOT_EMPTY 的失败模式（Windows 的 `MoveFileEx` 会拒绝
+    /// 非空目标），所以暂存目录的创建 API 必须把路径留空，由
+    /// `stamp_id_marker` 在 rename 成功后再补上标记。
+    #[test]
+    fn new_staging_dir_returns_empty_dir_without_marker() {
+        let (home, _guard) = TestHome::new();
+        let store = store_dir(&home.data_dir());
+        let dir = new_staging_dir(&store, TMP_PREFIX).expect("create staging");
+        assert!(dir.is_dir(), "staging dir must exist");
+        let entries: Vec<_> = fs::read_dir(&dir).unwrap().collect();
+        assert!(
+            entries.is_empty(),
+            "staging dir must be empty so fs::rename can land on it; got {:?}",
+            entries
+                .iter()
+                .map(|e| e.as_ref().unwrap().file_name())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// `stamp_id_marker` 写入的是 `reconcile_store` 用来按插件 id 给暂存
+    /// 目录分组的标记。盖章之后，目录里恰好只剩这一个文件（标记本身）。
+    #[test]
+    fn stamp_id_marker_writes_marker_file() {
+        let (home, _guard) = TestHome::new();
+        let dir = store_dir(&home.data_dir()).join("marker-target");
+        fs::create_dir_all(&dir).unwrap();
+        stamp_id_marker(&dir, "test-plugin").expect("stamp");
+        let content = fs::read_to_string(dir.join(ID_MARKER)).unwrap();
+        assert_eq!(content, "test-plugin\n");
+    }
+
+    /// 同一测试里的两次 `new_staging_dir` 调用必须落在不同的路径上。
+    /// nanos + pid 方案在一切实际时间尺度下都能保持唯一；第二次调用不能
+    /// 与第一次冲突，更不能把第一次清理掉。
+    #[test]
+    fn new_staging_dir_paths_do_not_collide() {
+        let (home, _guard) = TestHome::new();
+        let store = store_dir(&home.data_dir());
+        let a = new_staging_dir(&store, TMP_PREFIX).expect("first");
+        let b = new_staging_dir(&store, TMP_PREFIX).expect("second");
+        assert_ne!(a, b, "two staging dirs must have distinct paths");
+        assert!(a.is_dir());
+        assert!(b.is_dir());
+    }
+
+    /// `new_staging_dir` 会在调用方传入一个可能被复用的路径时清理已存在的
+    /// 目标目录。我们在两次调用之间预先在 helper 期望的路径上放一个过期
+    // 目录来模拟残留 —— helper 内部的 `remove_dir_all` 必须能清掉它。
+    // 在旧的「吞掉错误」实现里，残留会原样穿透过去，导致 Windows 上
+    // `fs::rename` 因 ERROR_DIR_NOT_EMPTY 而失败。
+    #[test]
+    fn new_staging_dir_clears_stale_target() {
+        let (home, _guard) = TestHome::new();
+        let store = store_dir(&home.data_dir());
+        // 种下与 helper 第一次调用期望路径匹配的过期残留。
+        let first = new_staging_dir(&store, TMP_PREFIX).expect("first call");
+        let stale_id_marker = first.join(ID_MARKER);
+        fs::write(&stale_id_marker, "stale-test\n").unwrap();
+        // 第二次调用会落在不同的路径（nanos 漂移），但「同路径重试」要求
+        // 清理步骤在目录被复用前完成 —— 验证 helper 的 remove 步骤对第一条
+        // 路径确实有效。
+        let _ = fs::remove_dir_all(&first);
+        let second = new_staging_dir(&store, TMP_PREFIX).expect("second call");
+        assert!(second.is_dir());
+        assert!(!stale_id_marker.exists(), "stale marker must be gone");
+    }
+
+    /// 清单损坏时不得被当成空清单。
+    ///
+    /// 这是静默数据丢失的通用形态：`store.json` 解析失败后退化成空清单，
+    /// 同一次启动里 `sweep_kernel_orphans` 会删掉活动内核中所有外壳管理的
+    /// 物化目录、`wire_manifest` 会清退 profile 的全部托管依赖，随后写库再把
+    /// 原文件覆盖掉——用户装过的插件就此消失。
+    #[test]
+    fn corrupt_store_is_never_treated_as_empty() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        fs::create_dir_all(store_dir(&data_dir)).expect("store dir");
+        let damaged = "{ this is not json";
+        fs::write(store_file(&data_dir), damaged).expect("write damaged store");
+
+        let item = StoreItem {
+            id: "test-plugin-1".into(),
+            name: "test-plugin".into(),
+            origin: "npm".into(),
+            source: "test-plugin".into(),
+            installed_version: "1.0.0".into(),
+            latest_version: None,
+            mode: "link".into(),
+            pinned: false,
+            installed_at: "1".into(),
+            updated_at: "2".into(),
+            repo_url: None,
+            description: None,
+        };
+        let error = upsert_item(&data_dir, item).expect_err("读-改-写路径必须拒绝执行");
+        assert!(
+            error.to_string().contains("损坏"),
+            "错误信息应说明清单损坏，实际：{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(store_file(&data_dir)).expect("read store"),
+            damaged,
+            "损坏的原文件不得被覆盖"
+        );
+        // 展示路径仍然可用（只是列表为空），UI 会通过 status.warning 说明原因。
+        assert!(load_store(&data_dir).items.is_empty());
+
+        // 清扫路径同样必须拒绝：不能把"读不出来"当成"没有插件"。
+        let sweep_error = sync_all(
+            &data_dir,
+            &settings::Settings::default(),
+            Path::new("/nonexistent/pnpm"),
+            &mut |_| {},
+        )
+        .expect_err("清扫路径必须拒绝在损坏清单上运行");
+        assert!(sweep_error.to_string().contains("损坏"), "{sweep_error}");
+    }
+
+    /// P4：legacy `<home>/plugins/<id>/` 必须被搬到新 `<xlink_home>/dsh-plugins/<id>/`。
+    #[test]
+    fn migrate_legacy_store_copies_unknown_plugin() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-plugins-p4-migrate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        // legacy 模拟：`<legacy_home>/desktop[-dev]/` 结构。`legacy_store_dir`
+        // 通过 `data_dir.parent()` 取 `<legacy_home>`，所以 `data_dir` 必须是
+        // `<legacy_home>/desktop`。
+        let legacy_home = std::env::temp_dir().join(format!(
+            "dsh-plugins-p4-migrate-legacy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&legacy_home).unwrap();
+        let data_dir = legacy_home.join("desktop");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let legacy_root = legacy_store_dir(&data_dir);
+        let plugin_dir = legacy_root.join("legacy-plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("package.json"), b"{}").unwrap();
+
+        migrate_legacy_store(&data_dir).expect("migrate");
+        let new_root = crate::shell::paths::plugins_store_root();
+        assert!(new_root.join("legacy-plugin/package.json").is_file());
+        // legacy 目录保留（用户可手动清理）。
+        assert!(legacy_root.exists());
+        let _ = std::fs::remove_dir_all(&legacy_home);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// P4：迁移不应覆盖新位置已有的同名插件。
+    #[test]
+    fn migrate_legacy_store_does_not_overwrite_newer_target() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-plugins-p4-no-overwrite-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let legacy_home = std::env::temp_dir().join(format!(
+            "dsh-plugins-p4-no-overwrite-legacy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&legacy_home).unwrap();
+        let data_dir = legacy_home.join("desktop");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let legacy_root = legacy_store_dir(&data_dir);
+        let plugin_dir = legacy_root.join("plugin-x");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("package.json"), b"{\"from\":\"legacy\"}").unwrap();
+
+        let new_root = crate::shell::paths::plugins_store_root();
+        std::fs::create_dir_all(&new_root).unwrap();
+        let new_plugin = new_root.join("plugin-x");
+        std::fs::create_dir_all(&new_plugin).unwrap();
+        std::fs::write(new_plugin.join("package.json"), b"{\"from\":\"new\"}").unwrap();
+
+        migrate_legacy_store(&data_dir).expect("migrate");
+        let text = std::fs::read_to_string(new_plugin.join("package.json")).unwrap();
+        assert!(text.contains("\"new\""), "新位置的内容不应被覆盖");
+        let _ = std::fs::remove_dir_all(&legacy_home);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 新布局把 `<xlink_home>/plugins/` 重新征用成命名空间（内层 `dsh/` /
+    /// `dsh-dev/` 才是中央库），而它同时是 v0.2.x 的中央库位置——`migrate_legacy_store`
+    /// 必须在 legacy 根里**跳过当前中央库目录本身**。
+    ///
+    /// 不跳过的后果不是「多复制一份」而是「复制进自己」：目标落在源目录内部，
+    /// 递归复制时新产生的子目录又出现在同一次遍历里，目录无限生长直到栈溢出。
+    /// 这条测试在修复前会让 `cargo test` 直接 STATUS_STACK_OVERFLOW（不是断言
+    /// 失败，是整个测试进程死掉），所以它同时是那次事故的回归钉子。
+    #[test]
+    fn migrate_legacy_store_never_copies_the_current_store_into_itself() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-plugins-namespace-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let data_dir = home.join("desktop");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let legacy_root = legacy_store_dir(&data_dir);
+        // 命名空间里已经有当前中央库：它必须被原样跳过。
+        let dev_root =
+            crate::shell::paths::plugins_store_root_for(crate::shell::paths::ShellMode::Dev);
+        std::fs::create_dir_all(dev_root.join("installed-plugin")).unwrap();
+        std::fs::write(dev_root.join("store.json"), b"{}").unwrap();
+        // 同处还有一个真正的 v0.2.x 遗留插件目录：它仍然要搬。
+        let legacy_plugin = legacy_root.join("legacy-plugin");
+        std::fs::create_dir_all(&legacy_plugin).unwrap();
+        std::fs::write(legacy_plugin.join("package.json"), b"{}").unwrap();
+
+        migrate_legacy_store(&data_dir).expect("migrate");
+
+        assert!(
+            dev_root.join("legacy-plugin/package.json").is_file(),
+            "真正的 legacy 插件目录仍然要搬进当前中央库"
+        );
+        assert!(
+            !dev_root.join("dsh-dev").exists(),
+            "中央库不得被复制进它自己：{dev_root:?} 下不该出现第二个 dsh-dev"
+        );
+        assert!(
+            !dev_root.join("store.json/dsh-dev").exists(),
+            "清单文件同样不得被当成目录往里复制"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
+#[cfg(test)]
+mod id_collision_tests {
+    #![allow(unused_variables)]
+
+    use super::tests::TestHome;
+    use super::*;
+
+    fn item(id: &str, name: &str, source: &str) -> StoreItem {
+        StoreItem {
+            id: id.into(),
+            name: name.into(),
+            origin: "npm".into(),
+            source: source.into(),
+            installed_version: "1.0.0".into(),
+            latest_version: None,
+            mode: "link".into(),
+            pinned: false,
+            installed_at: String::new(),
+            updated_at: String::new(),
+            repo_url: None,
+            description: None,
+        }
+    }
+
+    fn spec_for(id: &str, name: &str, source: &str, origin: &str) -> PluginSpec {
+        PluginSpec {
+            origin: origin.into(),
+            source: source.into(),
+            pin: None,
+            id: id.into(),
+            name: name.into(),
+            repo_url: None,
+        }
+    }
+
+    #[test]
+    fn first_come_keeps_the_base_id_and_others_get_a_stable_suffix() {
+        // P2-24：`owner__repo`（npm）与 `owner/repo`（git）都会算出 id
+        // `owner__repo`。旧实现让第二个覆盖第一个；现在第一个保留基础 id，
+        // 第二个拿到确定性的消歧后缀。
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let npm = spec_for("owner__repo", "owner__repo", "owner__repo", "npm");
+        // git 来源的 name 只有仓库名（`parse_spec` 取 URL 最后一段），npm 包名
+        // 才是 `owner__repo` —— id 基础值相同、名字不同，正是冲突的判据。
+        let git = spec_for(
+            "owner__repo",
+            "repo",
+            "https://github.com/owner/repo.git",
+            "git",
+        );
+
+        let npm_id = allocate_id(&data_dir, &npm).expect("空库直接用基础 id");
+        assert_eq!(npm_id, "owner__repo");
+        upsert_item(&data_dir, item(&npm_id, &npm.name, &npm.source)).expect("first");
+
+        let git_id = allocate_id(&data_dir, &git).expect("冲突时加后缀");
+        assert_ne!(git_id, "owner__repo", "不能与已安装的插件抢同一个 id");
+        // 后缀必须由**名称**确定（而不是随机/递增），否则重装会不断生成新 id。
+        assert_eq!(
+            git_id,
+            format!("owner__repo-{}", short_name_hash("repo")),
+            "消歧后缀应当是名称的短哈希"
+        );
+
+        // 确定性：重试 / 重新安装必须算出同一个 id，否则会不断堆积新目录。
+        assert_eq!(allocate_id(&data_dir, &git).unwrap(), git_id);
+        // 同一个来源再次安装仍然命中同一个 id（更新路径）。
+        assert_eq!(allocate_id(&data_dir, &npm).unwrap(), npm_id);
+
+        // 两个插件可以共存，各自有独立的 store 行与目录 id。
+        upsert_item(&data_dir, item(&git_id, &git.name, &git.source)).expect("second");
+        let store = load_store(&data_dir);
+        assert_eq!(store.items.len(), 2);
+        assert!(store
+            .items
+            .iter()
+            .any(|i| i.id == npm_id && i.name == "owner__repo"));
+        assert!(store
+            .items
+            .iter()
+            .any(|i| i.id == git_id && i.name == "repo"));
+    }
+
+    #[test]
+    fn update_keeps_the_recorded_id_even_when_it_carries_a_suffix() {
+        // 名称冲突时记录里的 id 带后缀，而 parse_spec 只会算出基础 id：更新若
+        // 不覆盖，新版本会被发布到另一个目录，内核里跑的还是旧代码。
+        let suffixed = item(
+            "owner__repo-abc123",
+            "owner/repo",
+            "https://github.com/owner/repo.git",
+        );
+        let spec = spec_for_update(&suffixed).expect("git 来源可解析");
+        assert_eq!(spec.id, "owner__repo-abc123", "id 必须以记录为准");
+        // git 来源的展示名只取仓库名（`owner/repo` → `repo`），id 才带 owner。
+        assert_eq!(spec.name, "repo");
+        assert_eq!(spec.source, "https://github.com/owner/repo.git");
+
+        // 普通（无后缀）记录同样保持不变。
+        let plain = item("dsh-flowglass", "dsh-flowglass", "dsh-flowglass");
+        assert_eq!(spec_for_update(&plain).unwrap().id, "dsh-flowglass");
+    }
+
+    #[test]
+    fn unsuffixed_names_keep_their_historic_ids() {
+        // 保留既有 id 是"不需要迁移"的前提：不冲突的名称必须一个字都不变。
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        for name in ["dsh-flowglass", "@scope/pkg", "plain"] {
+            let spec = spec_for(&id_for_name(name).unwrap(), name, name, "npm");
+            assert_eq!(allocate_id(&data_dir, &spec).unwrap(), spec.id);
+        }
+    }
+
+    #[test]
+    fn colliding_ids_do_not_silently_replace_a_different_plugin() {
+        // P2-24：npm `owner__repo` 与 git `owner/repo` 都映射到 id
+        // `owner__repo`。旧实现直接覆盖，前一个插件的记录与源码被无声换掉。
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        upsert_item(&data_dir, item("owner__repo", "owner__repo", "owner__repo")).expect("first");
+
+        let error = upsert_item(
+            &data_dir,
+            item(
+                "owner__repo",
+                "owner/repo",
+                "https://github.com/owner/repo.git",
+            ),
+        )
+        .expect_err("不同来源复用同一 id 必须被拒绝");
+        let text = error.to_string();
+        assert!(text.contains("owner__repo"), "要说清冲突的 id：{text}");
+        assert!(text.contains("卸载"), "要给出下一步：{text}");
+
+        // 原有记录保持不变。
+        let store = load_store(&data_dir);
+        assert_eq!(store.items.len(), 1);
+        assert_eq!(store.items[0].source, "owner__repo");
+    }
+
+    #[test]
+    fn re_upserting_the_same_source_still_updates_in_place() {
+        // 冲突检测不能挡住正常的"重新记账"（同步/更新都会 upsert 同一来源）。
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        upsert_item(&data_dir, item("p", "p", "p")).expect("first");
+        let mut updated = item("p", "p", "p");
+        updated.installed_version = "2.0.0".into();
+        upsert_item(&data_dir, updated).expect("同一来源必须允许更新");
+
+        let store = load_store(&data_dir);
+        assert_eq!(store.items.len(), 1);
+        assert_eq!(store.items[0].installed_version, "2.0.0");
+    }
+
+    // --- P4 step 5：多实例隔离 / 接线 / 指纹 / 断链测试 ------------------
+
+    /// 共享的"中央库条目"构造 helper：P4 起物化只对默认实例生效（其它实例
+    /// 由 `_for_instance` 系列函数驱动）。本测试里也用同样的 item；中央库
+    /// 入口在跨实例隔离测试里只造一份，但分别投到两个实例的 extensions/。
+    fn store_item_with_id(id: &str, version: &str) -> StoreItem {
+        StoreItem {
+            id: id.into(),
+            name: id.into(),
+            origin: "npm".into(),
+            source: id.into(),
+            installed_version: version.into(),
+            latest_version: None,
+            mode: "link".into(),
+            pinned: false,
+            installed_at: String::new(),
+            updated_at: String::new(),
+            repo_url: None,
+            description: None,
+        }
+    }
+
+    /// 给中央库写一份"已取源"目录（最小合法 package.json），后续物化能 link
+    /// 上即可。TestHome 已经把 `DSH_XLINK_HOME` 切到 home，`plugins_store_root()`
+    /// 解析到 `<home>/dsh-plugins/`，所以 store_plugin_dir 不用绝对路径。
+    fn seed_store_plugin(id: &str) {
+        let dir = paths::plugins_store_root().join(id);
+        fs::create_dir_all(&dir).expect("seed plugin dir");
+        fs::write(dir.join("package.json"), "{}").expect("seed package.json");
+    }
+
+    /// 把 `item` 写进中央库 store，并装一份"已取源"中央库目录。
+    fn seed_store_item_with_source(item: &StoreItem) {
+        seed_store_plugin(&item.id);
+        upsert_item_unlocked(&paths::plugins_store_root(), item.clone()).expect("upsert");
+    }
+
+    #[test]
+    fn materialize_for_instance_does_not_touch_other_instances() {
+        // 在 default 与 work 两个实例上分别物化同一份中央库插件；
+        // 物化目录必须互不串：default 走 `<...>/instances/dsh/default/...`，
+        // work 走 `<...>/instances/dsh/work/...`。一个实例的物化失败
+        // 也不应该污染另一个实例的 meta / extensions/plugins 目录。
+        let (home, _guard) = TestHome::new();
+        let item = store_item_with_id("iso-plugin", "1.0.0");
+        seed_store_item_with_source(&item);
+
+        // 默认实例物化。
+        materialize_one_for_instance(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item,
+            "0.1.1",
+        )
+        .expect("default materialize");
+
+        // work 实例物化。
+        materialize_one_for_instance(instance::KERNEL_FAMILY_DSH, "work", &item, "0.1.1")
+            .expect("work materialize");
+
+        let default_target = paths::instance_extension_plugin_dir(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item.id,
+        );
+        let work_target =
+            paths::instance_extension_plugin_dir(instance::KERNEL_FAMILY_DSH, "work", &item.id);
+        assert!(default_target.exists(), "default 实例必须已物化");
+        assert!(work_target.exists(), "work 实例必须已物化");
+
+        // 两个实例的 meta 各自独立——删 work 的 meta 不会影响 default。
+        let work_meta =
+            paths::instance_extension_meta_file(instance::KERNEL_FAMILY_DSH, "work", &item.id);
+        let default_meta = paths::instance_extension_meta_file(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item.id,
+        );
+        fs::remove_file(&work_meta).expect("删 work meta");
+        assert!(default_meta.is_file(), "default meta 必须仍在");
+    }
+
+    #[test]
+    fn materialize_missing_central_package_fails_without_dangling_link() {
+        // 回归：清单记录还在、中央库包目录已不存在（夹具泄漏 / 手工清理 /
+        // 迁移中断都可能造成）时，物化必须**立即失败**且不在实例 extensions
+        // 里留下悬空链接——修复前照常 make_dir_link，随后 `target.exists()`
+        // 跟随悬空链接判 false 报「未就绪，点击同步重试」：每轮同步都重复
+        // 建悬空链接，错误永远修不好。
+        let (home, _guard) = TestHome::new();
+        let item = store_item_with_id("ghost", "1.0.0");
+        upsert_item_unlocked(&paths::plugins_store_root(), item.clone()).expect("upsert");
+
+        let err = materialize_one_for_instance(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item,
+            "0.1.1",
+        )
+        .expect_err("缺包必须失败");
+        assert!(
+            err.to_string().contains("中央库缺少插件包"),
+            "错误必须指明缺包与下一步：{err}"
+        );
+
+        let target = paths::instance_extension_plugin_dir(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item.id,
+        );
+        assert!(
+            fs::symlink_metadata(&target).is_err(),
+            "不允许在实例 extensions 里留下悬空链接"
+        );
+    }
+
+    #[test]
+    fn uninstall_for_instance_leaves_other_instances_materialization_intact() {
+        // 默认实例卸一个插件，不能影响 work 实例的物化：中央库目录虽然
+        // 是共享的，但物化目标是按实例分裂的；其他实例的 extensions/plugins
+        // 保留，等价于"该插件仍在那些实例里可用"。
+        let (home, _guard) = TestHome::new();
+        let item = store_item_with_id("split-uninstall", "1.0.0");
+        seed_store_item_with_source(&item);
+        materialize_one_for_instance(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item,
+            "0.1.1",
+        )
+        .expect("default materialize");
+        materialize_one_for_instance(instance::KERNEL_FAMILY_DSH, "work", &item, "0.1.1")
+            .expect("work materialize");
+
+        // 默认实例卸载（直接调 helper，跳过 store 中央库写入，因为本测试
+        // 主要观察物化隔离）。
+        remove_materialized_for_instance(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item.id,
+        );
+
+        let default_target = paths::instance_extension_plugin_dir(
+            instance::KERNEL_FAMILY_DSH,
+            instance::DEFAULT_INSTANCE_ID,
+            &item.id,
+        );
+        let work_target =
+            paths::instance_extension_plugin_dir(instance::KERNEL_FAMILY_DSH, "work", &item.id);
+        assert!(!default_target.exists(), "默认实例物化目录必须被卸掉");
+        assert!(work_target.exists(), "work 实例物化目录必须保留");
+        // 中央库目录也保留——其他实例仍在引用。
+        let store_plugin = paths::plugins_store_root().join(&item.id);
+        assert!(
+            store_plugin.is_dir(),
+            "中央库目录被多实例共享，不能随单实例卸载删除"
+        );
+    }
+
+    #[test]
+    fn sweep_instance_orphans_removes_only_dangling_or_owned_links() {
+        // 物化目录里有三类条目：
+        //   1) 在 store 里、且 extensions 里有目标 → 保留
+        //   2) 不在 store 里、是 dangling link（目标已删）→ 清理
+        //   3) 不在 store 里、有 meta（用户手动放进 extensions 的目录也算托管）→ 清理
+        //   4) 不在 store 里、既不是 link 也没 meta（用户手放的外来条目）→ 保留
+        let (home, _guard) = TestHome::new();
+        let family = instance::KERNEL_FAMILY_DSH;
+        let instance_id = "default";
+        let plugins_dir = paths::instance_extensions_plugins_dir(family, instance_id);
+        fs::create_dir_all(&plugins_dir).expect("extensions dir");
+
+        // 类型 1：在 store 里 + 中央库目录在 → 物化后正常 link。
+        let kept = "kept";
+        seed_store_plugin(kept);
+        let item = store_item_with_id(kept, "1.0.0");
+        upsert_item_unlocked(&paths::plugins_store_root(), item.clone()).expect("upsert");
+        materialize_one_for_instance(family, instance_id, &item, "0.1.1")
+            .expect("materialize kept");
+        // 把中央库目录删掉，让"用户手放的外来条目"判定生效——
+        // 我们要确保 sweep 只对 dangling 或 owned 出手，不会误删正常条目。
+        // 这里 kept 仍然在 store 里，sweep 不应清它。
+
+        // 类型 2：dangling link（目标不存在）。与文件内其他测试同一套路：
+        // 平台各自的 symlink API；Windows 上建链需要管理员 / 开发者模式，
+        // 失败时 dangling 不存在，类型 2 的断言退化为恒真，其余类型照常覆盖。
+        let dangling = paths::instance_extensions_plugins_dir(family, instance_id).join("dangling");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink("/nonexistent/path/target", &dangling);
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir("/nonexistent/path/target", &dangling);
+        let _ = linked;
+
+        // 类型 3：meta 在 + 不在 store 里（应被 sweep 当成 owned 清掉）。
+        let owned = "owned-orphan";
+        let owned_dir = paths::instance_extension_plugin_dir(family, instance_id, owned);
+        fs::create_dir_all(&owned_dir).expect("owned dir");
+        let owned_meta = paths::instance_extension_meta_file(family, instance_id, owned);
+        fs::write(&owned_meta, r#"{"mode":"link","version":"1.0.0"}"#).expect("meta");
+
+        // 类型 4：不在 store、没 meta 的真实目录（外来条目）→ 保留。
+        let foreign = "foreign";
+        let foreign_dir = paths::instance_extension_plugin_dir(family, instance_id, foreign);
+        fs::create_dir_all(&foreign_dir).expect("foreign dir");
+        fs::write(foreign_dir.join("README.md"), "user dropped this").expect("readme");
+
+        let store = load_store(&paths::plugins_store_root());
+        sweep_instance_orphans(family, instance_id, &store);
+
+        // 类型 1 保留。
+        assert!(
+            paths::instance_extension_plugin_dir(family, instance_id, kept).exists(),
+            "kept 必须在 store 里，sweep 不能清掉"
+        );
+        // 类型 2 已清理。
+        assert!(!dangling.exists(), "dangling link 必须被 sweep 清掉");
+        // 类型 3 已清理（含 meta）。
+        assert!(
+            !owned_dir.exists() && !owned_meta.exists(),
+            "有 meta 但不在 store 的目录必须被 sweep 当作 owned 清掉"
+        );
+        // 类型 4 保留。
+        assert!(
+            foreign_dir.exists(),
+            "外来条目（无 meta）必须保留，sweep 不能误删"
+        );
+    }
+
+    #[test]
+    fn materialize_meta_fingerprint_detects_stale_version_across_kernel_change() {
+        // 内容指纹：meta 记录 installed_version 与 synced_at；切换内核版本时
+        // 即使 mode 形同，version 不同也会让 `synced = false`，UI 能立刻
+        // 看到"未同步"提示。这是 P0 反复强调的"形态相同也要区分版本"约束。
+        let (home, _guard) = TestHome::new();
+        let family = instance::KERNEL_FAMILY_DSH;
+        let instance_id = "default";
+        let item_v1 = store_item_with_id("finger", "1.0.0");
+        seed_store_item_with_source(&item_v1);
+        materialize_one_for_instance(family, instance_id, &item_v1, "0.1.1")
+            .expect("materialize v1");
+
+        let meta_path = paths::instance_extension_meta_file(family, instance_id, &item_v1.id);
+        let meta_v1 = read_instance_meta(&meta_path).expect("v1 meta");
+        assert_eq!(meta_v1.version, "1.0.0");
+        // mode 在受限沙箱里可能被降级成 copy（无法 symlink）——两条都合法，
+        // 不能把"应当是 link"硬绑进断言；下面 v2 同理。
+        assert!(meta_v1.mode == "link" || meta_v1.mode == "copy");
+
+        // 把中央库插件的 installed_version 改成 2.0.0，重新物化——meta 必须
+        // 被刷新到新版本，旧 1.0.0 不能误判"仍然同步"。
+        let mut item_v2 = item_v1.clone();
+        item_v2.installed_version = "2.0.0".into();
+        upsert_item_unlocked(&paths::plugins_store_root(), item_v2.clone()).expect("upsert v2");
+        materialize_one_for_instance(family, instance_id, &item_v2, "0.1.1")
+            .expect("materialize v2");
+
+        let meta_v2 = read_instance_meta(&meta_path).expect("v2 meta");
+        assert_eq!(
+            meta_v2.version, "2.0.0",
+            "meta 必须更新到新版本，UI 据此显示「未同步」时不能误用旧 version"
+        );
+    }
+
+    // ---------- P8 PluginRow.instances 视图 ----------
+
+    /// 准备一个最小可物化的实例 extensions/plugins/<id>/ 目录，并写入与
+    /// 中央库 `installed_version` 一致的 .meta，让 `materialized + synced`
+    /// 同时为 `true`。P8 测试都用它来构造「实例已同步」状态。同时把活动
+    /// 内核版本写入 `data_dir/active.txt`——`status_for_instance` 里
+    /// `match &active { Some(version) => ... }` 只有在内核活跃时才会填
+    /// `actual_mode` / `synced`，不写 active.txt 的话 .meta 永远读不到。
+    fn materialize_synced(
+        family: &str,
+        instance_id: &str,
+        plugin_id: &str,
+        installed_version: &str,
+        mode: &str,
+        active_version: &str,
+        data_dir: &Path,
+    ) {
+        let target = paths::instance_extension_plugin_dir(family, instance_id, plugin_id);
+        fs::create_dir_all(&target).expect("materialize target");
+        fs::write(target.join("index.js"), "// placeholder\n").expect("write placeholder");
+        let meta_path = paths::instance_extension_meta_file(family, instance_id, plugin_id);
+        let meta = KernelMeta {
+            mode: mode.to_string(),
+            version: installed_version.to_string(),
+            synced_at: "2026-09-19T00:00:00Z".to_string(),
+            fallback: false,
+        };
+        write_meta_at(&meta_path, &meta).expect("write meta");
+        fs::create_dir_all(data_dir).expect("data_dir");
+        fs::write(data_dir.join("active.txt"), active_version).expect("active.txt");
+    }
+
+    /// `status_for_instance` 在 PluginRow.instances 里把注册表里每个实例
+    /// 的物化 / wiring 状态各算一份：`default` 实例已物化且 wired，`work`
+    /// 实例未物化（`materialized = false`，`synced = false`），同时 legacy
+    /// 字段（`wired` / `synced` / `actual_mode`）由默认实例的状态填一份，
+    /// 单实例 UI 不需要再改代码。
+    #[test]
+    fn status_row_instances_per_instance_state() {
+        use crate::shell::instance::{DEFAULT_INSTANCE_ID, KERNEL_FAMILY_DSH};
+
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "shared-plugin".into(),
+                name: "shared-plugin".into(),
+                origin: "npm".into(),
+                source: "shared-plugin".into(),
+                installed_version: "1.0.0".into(),
+                latest_version: None,
+                mode: "link".into(),
+                pinned: false,
+                installed_at: String::new(),
+                updated_at: String::new(),
+                repo_url: None,
+                description: None,
+            },
+        )
+        .expect("save store item");
+        // default 实例已物化 + wired；work 实例没动。
+        materialize_synced(
+            KERNEL_FAMILY_DSH,
+            DEFAULT_INSTANCE_ID,
+            "shared-plugin",
+            "1.0.0",
+            "link",
+            "0.5.0",
+            &data_dir,
+        );
+        let default_profile =
+            paths::instance_profile_dir(KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID, "web")
+                .join("package.json");
+        fs::create_dir_all(default_profile.parent().unwrap()).expect("profile dir");
+        // wiring 要求 spec 以 "link:" / "file:" 开头并指向 P4 起的
+        // extensions/plugins/<id> 布局（见 is_managed_spec）。写绝对路径，
+        // 测试环境 DSH_XLINK_HOME 已经被 TestHome 注入到临时目录。
+        let link_target = paths::instance_extension_plugin_dir(
+            KERNEL_FAMILY_DSH,
+            DEFAULT_INSTANCE_ID,
+            "shared-plugin",
+        );
+        let spec = format!("link:{}", link_target.display());
+        fs::write(
+            &default_profile,
+            format!(r#"{{"dependencies":{{"shared-plugin":"{}"}}}}"#, spec),
+        )
+        .expect("profile manifest");
+
+        let settings = settings::Settings::default();
+        let view =
+            status_for_instance(KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID, &data_dir, &settings);
+        assert_eq!(view.rows.len(), 1, "中央库一条 → 一行");
+        let row = &view.rows[0];
+
+        // legacy 字段保留 = 默认实例状态：单实例 UI 不需要任何改动。
+        assert_eq!(row.actual_mode.as_deref(), Some("link"));
+        assert!(row.synced, "default 实例已物化，synced 应为 true");
+        assert!(row.wired, "default 实例 profile 已加载，wired 应为 true");
+
+        // P8 instances map：两个实例都在；状态各自独立。
+        assert_eq!(row.instances.len(), 2, "注册表里 default + work 都应出现");
+        let default_state = row
+            .instances
+            .get(DEFAULT_INSTANCE_ID)
+            .expect("default 实例状态缺失");
+        assert!(default_state.materialized);
+        assert!(default_state.synced);
+        assert!(default_state.wired);
+        assert_eq!(default_state.actual_mode.as_deref(), Some("link"));
+        let work_state = row.instances.get("work").expect("work 实例状态缺失");
+        assert!(!work_state.materialized, "work 未物化");
+        assert!(!work_state.synced);
+        assert!(!work_state.wired);
+        assert!(work_state.actual_mode.is_none());
+    }
+
+    /// `status_for_instance("work")` 把 legacy 字段切到 work 实例：
+    /// 它没物化、没 wiring，所以 legacy 全 false。证明 legacy 字段跟随
+    /// 调用方传入的 instance_id，而不是固定走默认实例。
+    #[test]
+    fn status_row_legacy_fields_follow_called_instance() {
+        use crate::shell::instance::{DEFAULT_INSTANCE_ID, KERNEL_FAMILY_DSH};
+
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "shared-plugin".into(),
+                name: "shared-plugin".into(),
+                origin: "npm".into(),
+                source: "shared-plugin".into(),
+                installed_version: "1.0.0".into(),
+                latest_version: None,
+                mode: "link".into(),
+                pinned: false,
+                installed_at: String::new(),
+                updated_at: String::new(),
+                repo_url: None,
+                description: None,
+            },
+        )
+        .expect("save");
+        // 只物化 default；work 没物化。
+        materialize_synced(
+            KERNEL_FAMILY_DSH,
+            DEFAULT_INSTANCE_ID,
+            "shared-plugin",
+            "1.0.0",
+            "link",
+            "0.5.0",
+            &data_dir,
+        );
+
+        let settings = settings::Settings::default();
+        let view = status_for_instance(KERNEL_FAMILY_DSH, "work", &data_dir, &settings);
+        let row = &view.rows[0];
+        // legacy 字段切到 work 视角：work 没物化、profile 没接线。
+        assert!(row.actual_mode.is_none());
+        assert!(!row.synced);
+        assert!(!row.wired);
+        // 但 instances map 里两个实例都还在。
+        assert_eq!(row.instances.len(), 2);
+        assert!(row.instances.get(DEFAULT_INSTANCE_ID).unwrap().materialized);
+        assert!(!row.instances.get("work").unwrap().materialized);
+    }
+
+    /// 物化目录存在但 `.meta` 记录的 version 与 installed_version 不一致时，
+    /// per-instance `synced = false`，`materialized = true`（目录在）。
+    /// `actual_mode` 仍按 .meta 填——UI 据此可以区分「目录在但版本对不上」
+    /// 与「完全没物化」两种状态。
+    #[test]
+    fn status_row_distinguishes_present_but_stale_materialization() {
+        use crate::shell::instance::{DEFAULT_INSTANCE_ID, KERNEL_FAMILY_DSH};
+
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "stale-plugin".into(),
+                name: "stale-plugin".into(),
+                origin: "npm".into(),
+                source: "stale-plugin".into(),
+                installed_version: "2.0.0".into(), // 中央库最新是 2.0.0
+                latest_version: None,
+                mode: "copy".into(),
+                pinned: false,
+                installed_at: String::new(),
+                updated_at: String::new(),
+                repo_url: None,
+                description: None,
+            },
+        )
+        .expect("save");
+        // 物化目录存在；.meta 记录的 version 是旧版 1.0.0。
+        let target = paths::instance_extension_plugin_dir(
+            KERNEL_FAMILY_DSH,
+            DEFAULT_INSTANCE_ID,
+            "stale-plugin",
+        );
+        fs::create_dir_all(&target).expect("target");
+        fs::write(target.join("index.js"), "// old version\n").expect("file");
+        let meta_path = paths::instance_extension_meta_file(
+            KERNEL_FAMILY_DSH,
+            DEFAULT_INSTANCE_ID,
+            "stale-plugin",
+        );
+        let meta = KernelMeta {
+            mode: "copy".to_string(),
+            version: "1.0.0".to_string(), // 故意不一致
+            synced_at: "2026-09-19T00:00:00Z".to_string(),
+            fallback: false,
+        };
+        write_meta_at(&meta_path, &meta).expect("meta");
+        fs::create_dir_all(&data_dir).expect("data_dir");
+        fs::write(data_dir.join("active.txt"), "0.5.0").expect("active.txt");
+
+        let settings = settings::Settings::default();
+        let view =
+            status_for_instance(KERNEL_FAMILY_DSH, DEFAULT_INSTANCE_ID, &data_dir, &settings);
+        let row = &view.rows[0];
+        let state = row
+            .instances
+            .get(DEFAULT_INSTANCE_ID)
+            .expect("default instance state");
+        assert!(state.materialized, "目录存在 → materialized = true");
+        assert!(!state.synced, "version 不一致 → synced = false");
+        assert_eq!(state.actual_mode.as_deref(), Some("copy"));
+    }
+}
+
+#[cfg(test)]
+mod store_orphan_tests {
+    #![allow(unused_variables)]
+
+    use super::tests::TestHome;
+    use super::*;
+
+    fn marked_dir(data_dir: &Path, id: &str) -> PathBuf {
+        let dir = store_dir(data_dir).join(id);
+        fs::create_dir_all(&dir).unwrap();
+        stamp_id_marker(&dir, id).unwrap();
+        dir
+    }
+
+    #[test]
+    fn unrecorded_marked_dir_is_swept_but_user_dirs_survive() {
+        // P2-20：发布目录与写 store 行非原子，中间崩溃会留下无记录的目录：
+        // 面板不显示、同步不管、uninstall 拒绝，只能手删。
+        //
+        // 前置条件：清扫只在**清单文件存在**时执行（P0-3）。这里写一份空的合法
+        // 清单，代表"清单在、只是没有这个目录的记录"；清单文件整体缺失时的行为
+        // 由 `reconcile_without_store_file_keeps_marked_store_dirs` 单独钉住。
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let orphan = marked_dir(&data_dir, "orphan-plugin");
+        save_store_unlocked(&data_dir, &Store::default()).unwrap();
+        // 用户自己放进去的目录（没有外壳标记）不能被误删。
+        let user_dir = store_dir(&data_dir).join("user-notes");
+        fs::create_dir_all(&user_dir).unwrap();
+        fs::write(user_dir.join("readme.txt"), b"mine").unwrap();
+
+        reconcile_store(&data_dir);
+
+        assert!(!orphan.exists(), "无记录的已发布目录必须被清理");
+        assert!(
+            user_dir.join("readme.txt").is_file(),
+            "没有外壳标记的目录不是我们的数据，必须保留"
+        );
+    }
+
+    #[test]
+    fn staging_recovery_is_not_undone_by_the_orphan_sweep() {
+        // 交互回归：reconcile 会把幸存的 `.new-*` 提升成正式目录（"已验证但
+        // 还没记账"的救援对象），孤儿清理不能在同一轮里把它删掉。
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let staging = store_dir(&data_dir).join(format!("{NEW_PREFIX}0-1-rescued"));
+        fs::create_dir_all(&staging).unwrap();
+        stamp_id_marker(&staging, "rescued-plugin").unwrap();
+        fs::write(staging.join("package.json"), b"{}").unwrap();
+
+        reconcile_store(&data_dir);
+
+        let promoted = store_plugin_dir(&data_dir, "rescued-plugin");
+        assert!(
+            promoted.join("package.json").is_file(),
+            "恢复出来的目录必须留在原地"
+        );
+    }
+
+    #[test]
+    fn recorded_dir_and_corrupt_store_are_left_alone() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let kept = marked_dir(&data_dir, "kept-plugin");
+        upsert_item(
+            &data_dir,
+            StoreItem {
+                id: "kept-plugin".into(),
+                name: "kept-plugin".into(),
+                origin: "npm".into(),
+                source: "kept-plugin".into(),
+                installed_version: "1.0.0".into(),
+                latest_version: None,
+                mode: "link".into(),
+                pinned: false,
+                installed_at: String::new(),
+                updated_at: String::new(),
+                repo_url: None,
+                description: None,
+            },
+        )
+        .expect("save");
+
+        reconcile_store(&data_dir);
+        assert!(kept.exists(), "有记录的插件目录不能被清理");
+
+        // store.json 损坏时必须一个都不删：否则会把整个插件库清空。
+        let other = marked_dir(&data_dir, "another-orphan");
+        fs::write(store_file(&data_dir), b"{ broken").unwrap();
+        reconcile_store(&data_dir);
+        assert!(
+            other.exists() && kept.exists(),
+            "store.json 读不出来时不允许清理任何目录"
+        );
+    }
+}

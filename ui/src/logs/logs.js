@@ -31,12 +31,12 @@ export const LOG_CATEGORIES = [
   { id: 'other', label: '其它日志' },
 ];
 
-// 已知内核族（与 `src-tauri/src/registry.rs::KERNEL_FAMILY_*` 对齐），
+// 已知内核族（与 `src-tauri/src/pkg/registry.rs::KERNEL_FAMILY_*` 对齐），
 // 用这份白名单区分实例感知格式与壳级格式，避免按 `-` 段数判定时把
 // `release-install-0.1.2-rc.6-...` 这种 name 自带 `-` 的壳级日志误归类。
 const KNOWN_FAMILIES = new Set(['dsh', 'mcode']);
 
-// 文件名格式（定义在 `src-tauri/src/process.rs::log_file_name`）：
+// 文件名格式（定义在 `src-tauri/src/shell/process.rs::log_file_name`）：
 // - 壳级：`<kind>-<name>-<date>.log`（name 可含 `-`）
 // - 实例感知：`<kind>-<family>-<instance_id>-<name>-<date>.log`
 // 同时支持旧轮转备份 `<base>.log.<n>` 与新轮转备份 `<base>.<n>.log` 两种命名。

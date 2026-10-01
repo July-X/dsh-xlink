@@ -45,6 +45,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { shellSourcePath, shellSourceLabel } from './lib/shell-source.mjs';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const failures = [];
 const notes = [];
@@ -66,6 +68,25 @@ const isSafeRelativePath = (raw) => {
 const note = (message) => notes.push(message);
 const read = (rel) => readFileSync(join(root, rel), 'utf8');
 const readJson = (rel) => JSON.parse(read(rel));
+
+// 单文件判据一律按 basename 定位，不写死 `src-tauri/src/...` 完整路径。理由、
+// 踩过的坑与「为什么重名要抛错而不是猜」写在 lib/shell-source.mjs 的文件头；
+// 门禁脚本与 UI 测试共用这一份实现——两套解析器迟早只修得上一套。
+const shellSource = (fileName) => readFileSync(shellSourcePath(fileName), 'utf8');
+
+/** 相对路径的 basename：`kernel/lifecycle.rs` → `lifecycle.rs`。 */
+const baseName = (relPath) => relPath.split(sep).pop();
+
+/** `where` 形如 `kernel/lifecycle.rs:549`——问「是不是落在 baseName 这个模块里」。
+ *
+ *  判据里的「这个文件」必须按 basename 认，不能按相对路径认。2026-10-01
+ *  `src-tauri/src` 分目录后，一批「唯一合法的写者 / 落点」白名单全部失配：
+ *  `kernel.rs` 变成了 `kernel/lifecycle.rs`、`instance.rs` 变成
+ * `shell/instance.rs`，于是本该只报一次的**真违规**被报成「出现在
+ * kernel/lifecycle.rs:549、603」——红的原因与要检查的东西无关。与
+ * `findShellSource` 同源：路径是摆放，basename 才是模块的身份。
+ */
+const inFile = (where, name) => baseName(String(where).split(':')[0]) === name;
 
 /** 递归收集指定后缀的文件（跳过 node_modules 与构建产物）。 */
 function walk(dir, suffixes) {
@@ -707,7 +728,7 @@ function productionRust(text) {
   //    实例后清空指针是**修复**（跨壳误认领之后唯一的自愈路径），必须留着。
   const sharedWriters = [];
   for (const file of rustFiles) {
-    if (file === 'instance.rs') continue; // 唯一合法的写者
+    if (baseName(file) === 'instance.rs') continue; // 唯一合法的写者
     const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
     lines.forEach((line, index) => {
       const assign = /\.default_instance_id\s*=(?!=)\s*(.+?);?\s*$/.exec(line);
@@ -741,7 +762,7 @@ function productionRust(text) {
   // 旧版本兼容位。这条检查让「不要接回去」变成机械可查的。
   const sharedReaders = [];
   for (const file of rustFiles) {
-    if (file === 'instance.rs') continue; // 唯一合法的维护者
+    if (baseName(file) === 'instance.rs') continue; // 唯一合法的维护者
     const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
     lines.forEach((line, index) => {
       // 写（`= `）由 ② 管；这里只抓读：取值 / 比较 / 传给函数。
@@ -782,7 +803,10 @@ function productionRust(text) {
   // **本壳那条守卫必须留着**：装 / 删改的是自己脚下那棵树，运行中的内核就在里面。
   // 写这条检查是因为「谁走哪条」钉不住：`instance_kernel_running` 的正向判据要求
   // 真有一个 dsh 内核在跑（pid 活体 + `command_is_kernel` 身份校验），单测造不出来。
-  const kernelSrc = productionRust(readFileSync(join(srcDir, 'kernel.rs'), 'utf8'));
+  const kernelSrc = productionRust(shellSource('lifecycle.rs'));
+  // 文案里点名文件时用解析出来的真实路径，别写死 `kernel.rs`——模块搬进
+  // kernel/ 之后，那三个字已经指不到任何文件，报错会让人去翻一个不存在的地方。
+  const kernelFile = shellSourceLabel('lifecycle.rs');
   const fnBody = (name) => {
     const lines = kernelSrc.split('\n');
     const start = lines.findIndex((line) => new RegExp(`^pub(\\(crate\\))? fn ${name}\\b`).test(line));
@@ -797,18 +821,18 @@ function productionRust(text) {
   for (const action of ['set_active', 'install_version', 'uninstall']) {
     const body = fnBody(action);
     if (body === null) {
-      guardMisses.push(`kernel.rs 里找不到 ${action} —— 守卫的去向就无从检查了`);
+      guardMisses.push(`${kernelFile} 里找不到 ${action} —— 守卫的去向就无从检查了`);
       continue;
     }
     if (!body.includes('ensure_own_shell_stopped(')) {
-      guardMisses.push(`kernel.rs 的 ${action} 没有调用 ensure_own_shell_stopped —— 本壳工作台运行期间必须拦住`);
+      guardMisses.push(`${kernelFile} 的 ${action} 没有调用 ensure_own_shell_stopped —— 本壳工作台运行期间必须拦住`);
     }
   }
   // ② 旧的跨壳硬拦入口不得复活（名字一旦回来，就有人会再挂一个 Err 上去）。
   //    只查 kernel.rs：`patches::ensure_workbench_stopped` 是**另一个**同名函数
   //    （补丁应用 / 撤销的停机守卫），与跨壳判据无关，别把它算进来。
   if (kernelSrc.includes('ensure_workbench_stopped(')) {
-    guardMisses.push(`kernel.rs 又出现了 ensure_workbench_stopped —— 跨壳判据已降级为提示，硬拦入口不该复活`);
+    guardMisses.push(`${kernelFile} 又出现了 ensure_workbench_stopped —— 跨壳判据已降级为提示，硬拦入口不该复活`);
   }
   // ③ 跨壳判据的调用点只允许在 kernel.rs 的提示与状态两处，且**不得**出现在
   //    任何会 return Err 的路径上——这正是「提示不拦」的可查形式。定义行本身
@@ -822,11 +846,11 @@ function productionRust(text) {
       otherShellCallSites.push(`${file}:${index + 1}`);
     });
   }
-  const unexpected = otherShellCallSites.filter((where) => !where.startsWith('kernel.rs:'));
+  const unexpected = otherShellCallSites.filter((where) => !inFile(where, 'lifecycle.rs'));
   if (unexpected.length > 0) {
     guardMisses.push(
       `${unexpected.join('、')} 调用了 workbench_running_in_other_shell —— 跨壳判据只该出现在 ` +
-        'kernel.rs 的 warn_other_shell_workbench（提示）与 status（让 UI 在点之前看见）两处',
+        `${kernelFile} 的 warn_other_shell_workbench（提示）与 status（让 UI 在点之前看见）两处`,
     );
   }
   if (otherShellCallSites.length !== 2) {
@@ -843,7 +867,7 @@ function productionRust(text) {
   //    畅通，检查始终绿着。
   const warnSignature = /fn\s+warn_other_shell_workbench[\s\S]*?\{/.exec(kernelSrc);
   if (warnSignature === null) {
-    guardMisses.push('kernel.rs 里找不到 warn_other_shell_workbench —— 跨壳提示的落点没了');
+    guardMisses.push(`${kernelFile} 里找不到 warn_other_shell_workbench —— 跨壳提示的落点没了`);
   } else if (warnSignature[0].includes('->')) {
     guardMisses.push(
       `warn_other_shell_workbench 的返回类型变成了 ${warnSignature[0].split('->')[1].split('{')[0].trim()}` +
@@ -877,7 +901,7 @@ function productionRust(text) {
   // `port_open(settings.port)` 改成 `false`，判据测试依然 ok）。要能抓住，判据就
   // 必须落到「命令层那个函数体里同时出现了判据与 recreate」这种**接线**的形状上。
   {
-    const commandsSrc = productionRust(readFileSync(join(srcDir, 'commands.rs'), 'utf8'));
+    const commandsSrc = productionRust(shellSource('commands.rs'));
     const lines = commandsSrc.split('\n');
     const start = lines.findIndex((line) => line.startsWith('pub async fn report_harness_fault('));
     const selfHealMisses = [];
@@ -894,14 +918,14 @@ function productionRust(text) {
       }
     }
     // 判据必须落在那条动作**里面**：动作与判据被拆开时，命令层只该看到动作。
-    const harnessSrc = productionRust(readFileSync(join(srcDir, 'harness_window.rs'), 'utf8'));
+    const harnessSrc = productionRust(shellSource('harness_window.rs'));
     // 证据必须真的在 Incident 上：命令层是从 `incident.health` 取出来递给判据的
     // （commands.rs 是反棘轮文件，不能为了留一份副本多写三行）。`diagnose_runtime`
     // 把它设成 None 的话，`if let Some(health)` 那一步会静默跳过，**第三层整个不工作
     // 且没有任何线索**——与 ACL 事故同一类。它的提前返回路径由
     // `existing.health.as_ref() == Some(&report)` 这个条件保证带着 health，所以这里
     // 只需钉住唯一那个构造点。
-    const guardSrc = productionRust(readFileSync(join(srcDir, 'guard.rs'), 'utf8'));
+    const guardSrc = productionRust(shellSource('guard.rs'));
     if (!/fn diagnose_runtime\([\s\S]*?health: Some\(report\)/.test(guardSrc)) {
       selfHealMisses.push('guard::diagnose_runtime 不再把 health 带在 Incident 上');
     }
@@ -947,11 +971,11 @@ function productionRust(text) {
   // （`settings_warning` 与 camelCase 的对不上，靠一个单测才抓到），这里是入参
   // 那一侧。命令名由第 3 项查（已注册 + 已授权），参数名要单独查。
   {
-    const harnessScripts = ['harness-draft.js', 'harness-health.js'].map((name) => ({
+    const harnessScripts = ['harness/harness-draft.js', 'harness/harness-health.js'].map((name) => ({
       name,
       source: readFileSync(join(srcDir, name), 'utf8'),
     }));
-    const cmdSrc = productionRust(readFileSync(join(srcDir, 'harness_cmd.rs'), 'utf8'));
+    const cmdSrc = productionRust(shellSource('harness_cmd.rs'));
     /** Rust 形参名：只取简单标识，跳过 `app: AppHandle` 之类的注入参数。 */
     const rustParams = (fnName) => {
       const hit = new RegExp(`pub fn ${fnName}\\(([^)]*)\\)`).exec(cmdSrc);
@@ -1046,10 +1070,13 @@ function productionRust(text) {
   // 的对话框」。判据准不准与判据有没有被调用是两件事，这里钉的是后者。
   {
     const misses = [];
-    const statusSrc = productionRust(readFileSync(join(srcDir, 'skills.rs'), 'utf8'));
+    const statusSrc = productionRust(shellSource('manage.rs'));
     // ① 状态视图必须真的调判据，且把结果交给 `conflicts` 字段——字段在而恒为空，
     //    UI 的 `v-if="conflicts.length"` 永远不成立，按钮永远不出现。
-    if (!/let conflicts\s*=\s*crate::skill_conflict::list\(\)/.test(statusSrc)) {
+    // 判据按 **basename** 匹配，不写死 `crate::skill_conflict::` 这条路径：
+    // skills 分目录后它变成 `crate::skills::skill_conflict::`，而这条要查的
+    // 契约是「status 有没有真的调 list()」，与调用方写成几级路径无关。
+    if (!/let conflicts\s*=\s*[\w:]*skill_conflict::list\(\)/.test(statusSrc)) {
       misses.push('skills::status() 不再调用 skill_conflict::list()');
     }
     if (!/SkillStatus\s*\{[\s\S]*?\n\s*conflicts,/.test(statusSrc)) {
@@ -1058,7 +1085,7 @@ function productionRust(text) {
     // ② 告警文案与按钮必须指向同一个动作：`ensure_entry` 的拒绝文案里写着
     //    「点告警下方的『移走冲突条目』」，按钮若改名或删掉，那句话就指向了一个
     //    面板上不存在的东西。命令名由第 1、2 项查（已注册 + 已授权），这里查文案。
-    const conflictSrc = productionRust(readFileSync(join(srcDir, 'skill_conflict.rs'), 'utf8'));
+    const conflictSrc = productionRust(shellSource('skill_conflict.rs'));
     const panelSrc = readFileSync(join(root, 'ui', 'src', 'skills', 'SkillsPanel.vue'), 'utf8');
     const errorCopy = /pub\(crate\) fn conflict_error[\s\S]*?\n\}/.exec(conflictSrc)?.[0] ?? '';
     if (!errorCopy.includes('移走冲突条目')) {
@@ -1199,9 +1226,9 @@ function productionRust(text) {
     for (const file of rustFilesWithScripts) {
       const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
       lines.forEach((line, index) => {
-        if (!line.includes('harness-health.js')) return;
+        if (!line.includes('harness/harness-health.js')) return;
         const window = lines.slice(Math.max(0, index - 6), index + 7).join('\n');
-        if (!window.includes('harness-draft.js')) {
+        if (!window.includes('harness/harness-draft.js')) {
           draftMisses.push(`${file}:${index + 1} 注入了 harness-health.js 却没注入 harness-draft.js`);
         }
       });
@@ -1218,7 +1245,7 @@ function productionRust(text) {
 
     // ② 装 / 删内核两端必须各打一次信标、撤一次。
     const kernelBody = (name) => {
-      const lines = productionRust(readFileSync(join(srcDir, 'kernel.rs'), 'utf8')).split('\n');
+      const lines = productionRust(shellSource('lifecycle.rs')).split('\n');
       const start = lines.findIndex((line) => new RegExp(`^pub fn ${name}\\b`).test(line));
       if (start < 0) return null;
       for (let i = start; i < lines.length; i += 1) {
@@ -1229,7 +1256,7 @@ function productionRust(text) {
     for (const action of ['install_version', 'uninstall']) {
       const body = kernelBody(action);
       if (body === null) {
-        draftMisses.push(`kernel.rs 里找不到 ${action}，信标接线无从检查`);
+        draftMisses.push(`${kernelFile} 里找不到 ${action}，信标接线无从检查`);
         continue;
       }
       if (!body.includes('package_activity::begin(')) {
@@ -1262,12 +1289,12 @@ function productionRust(text) {
     //    这个参数被删掉时编译不报、测试不红——只有这条机械检查会响。
     {
       const kernelInstallSrc = productionRust(
-        readFileSync(join(srcDir, 'kernel.rs'), 'utf8'),
+        shellSource('lifecycle.rs'),
       );
       if (!kernelInstallSrc.includes('--config.package-import-method=copy')) {
         fail(
           'kernel-install-isolated-inodes',
-          'kernel.rs 的 pnpm 安装参数里没有 --config.package-import-method=copy —— ' +
+          `${kernelFile} 的 pnpm 安装参数里没有 --config.package-import-method=copy —— ` +
             '内核树会重新与 pnpm store 共享 inode，对面正在服务的工作台页面会再次被' +
             '装 / 删内核打死（2026-09-30 实证机制：链接数变化 → NTFS ChangeTime → ' +
             'client-hmr 的 500ms stat 轮询误判 bundle 重建 → 活页面换模块 → 槽位不变量' +
@@ -1284,14 +1311,18 @@ function productionRust(text) {
       //    门控的形状：status 的映射必须**以 `.filter(` 接在判据后面**，且判据
       //    里引用 install_isolation 的采样。退回无条件 `.map(` 编译不报、测试
       //    不红，只有这条会响。
+      // 同样按 basename 认 `instance::`：分目录后实际调用是
+      // `shell::instance::workbench_running_in_other_shell()`，写死少一级
+      // 就会让这条判据对着改过的代码报「没有 .filter( 门控」——红的原因与
+      // 要检查的东西无关。
       if (
-        !/other_shell_workbench: instance::workbench_running_in_other_shell\(\)\s*\.filter\(/.test(
+        !/other_shell_workbench:\s*[\w:]*instance::workbench_running_in_other_shell\(\)\s*\.filter\(/.test(
           kernelInstallSrc,
         )
       ) {
         fail(
           'cross-shell-notice-single-source',
-          'kernel.rs 的跨壳横幅映射没有先 .filter( 门控——它会在两侧树都隔离后' +
+          `${kernelFile} 的跨壳横幅映射没有先 .filter( 门控——它会在两侧树都隔离后` +
             '仍然常驻，警告比没有更坏（用户已完成隔离却还被吓唬）。映射必须先按' +
             '「本壳有共享 inode 的版本 && 对面正在服务的树也共享」过滤（install_isolation）。',
         );
@@ -1312,7 +1343,7 @@ function productionRust(text) {
       const singleSourceMisses = [];
       if (!kernelInstallSrc.includes('other_shell_workbench_notice(')) {
         singleSourceMisses.push(
-          'kernel.rs 里没有 other_shell_workbench_notice( 调用——横幅文案的真相源断了，' +
+          `${kernelFile} 里没有 other_shell_workbench_notice( 调用——横幅文案的真相源断了，` +
             '状态映射退回自己拼字符串就会再漂移出一份旧机制的说法',
         );
       }
@@ -1360,7 +1391,7 @@ function productionRust(text) {
       if (line.includes('.updater_builder()')) builders.push({ file, line: index + 1, window: lines.slice(index, index + 12).join('\n') });
     });
   }
-  if (builders.length !== 1 || builders[0].file !== 'updater.rs') {
+  if (builders.length !== 1 || baseName(builders[0].file) !== 'updater.rs') {
     fail(
       'net-route',
       `生产代码里 updater_builder() 出现 ${builders.length} 次` +
@@ -1491,6 +1522,10 @@ function productionRust(text) {
       });
     });
   }
+  // `include_str!` 的相对路径是**相对所在文件**解析的：commands.rs 在 src/
+  // 根，写 `harness/no-context-menu.js`；harness_window.rs 与它同在 harness/，
+  // 写 `no-context-menu.js`。两条都指同一份文件，所以这里只认 basename——
+  // 写死任一侧的完整路径，另一侧就会以「这条建窗链没注入」变红，而注入好好的。
   const unwired = remoteChains.filter((chain) => !chain.body.includes('no-context-menu.js'));
   if (remoteChains.length === 0) {
     fail(
@@ -1545,13 +1580,15 @@ function productionRust(text) {
       .split('\n')
       .map((line) => line.replace(/(^|[^:])\/\/.*$/, '$1'))
       .join('\n');
+  // 两份实现各自按自己的规则定位：壳侧注入脚本按文件名在 src-tauri/src 下找
+  // （它 2026-10-01 搬进了 harness/），面板侧在 ui/src 下且路径稳定。
   const implementations = [
-    'src-tauri/src/no-context-menu.js',
-    'ui/src/shell/noContextMenu.js',
+    { file: shellSourceLabel('no-context-menu.js'), source: shellSource('no-context-menu.js') },
+    { file: 'ui/src/shell/noContextMenu.js', source: read('ui/src/shell/noContextMenu.js') },
   ];
   const killsSelection = [];
-  for (const file of implementations) {
-    const source = stripJsComments(read(file));
+  for (const { file, source: raw } of implementations) {
+    const source = stripJsComments(raw);
     const userSelect = /user-select/i.test(source);
     const guarded = [...source.matchAll(/addEventListener\(\s*['"]([^'"]+)['"]/g)].map(
       (match) => match[1],

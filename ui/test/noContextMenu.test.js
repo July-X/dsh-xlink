@@ -2,18 +2,15 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
+import { readShellSource, shellSourceLabel } from '../../scripts/lib/shell-source.mjs';
 
 import { disableContextMenu } from '../src/shell/noContextMenu.js';
 
 // 壳自己的窗口走 ui/src/shell/noContextMenu.js，工作台与三个官方对话内容 webview 走
-// src-tauri/src/no-context-menu.js（Rust 注入的 IIFE，没有导出，按
-// harnessHealth.test.js 的做法在 vm 里造一个假页面跑它）。两侧是同一件事的两处
-// 落点，断言的是**行为**——事件被取消、左键选中与复制不受影响——而不是源码里
-// 有没有某个字符串。
-const injectedSource = readFileSync(
-  new URL('../../src-tauri/src/no-context-menu.js', import.meta.url),
-  'utf8',
-);
+// src-tauri 注入的 no-context-menu.js（IIFE，没有导出，按 harnessHealth.test.js 的
+// 做法在 vm 里造一个假页面跑它）。两侧是同一件事的两处落点，断言的是**行为**
+// ——事件被取消、左键选中与复制不受影响——而不是源码里有没有某个字符串。
+const injectedSource = readShellSource('no-context-menu.js');
 
 /** 一个够用的假 window：记录所有注册上来的监听器，按注册顺序派发。 */
 function makeWindow({ top = 'self' } = {}) {
@@ -61,7 +58,7 @@ function runInjected(win) {
 
 const IMPLS = [
   ['ui/src/shell/noContextMenu.js', (win) => disableContextMenu(win)],
-  ['src-tauri/src/no-context-menu.js', runInjected],
+  [shellSourceLabel('no-context-menu.js'), runInjected],
 ];
 
 for (const [name, install] of IMPLS) {

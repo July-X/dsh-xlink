@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
+import { readShellSource } from '../../scripts/lib/shell-source.mjs';
 import { shouldReportBlankHarness } from '../src/shell/harnessHealth.js';
 
-const probeSource = readFileSync(new URL('../../src-tauri/src/harness-health.js', import.meta.url), 'utf8');
+const probeSource = readShellSource('harness-health.js');
 
 test('reports only an empty harness without meaningful rendered content', () => {
   assert.equal(shouldReportBlankHarness({}), true);
