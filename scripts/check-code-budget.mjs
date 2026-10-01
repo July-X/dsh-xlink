@@ -1080,7 +1080,14 @@ const FILE_BUDGETS = {
 // 而非 theme.css（后者是只许下调的反棘轮文件，且这是组件私有样式），单文件
 // 预算不动。设计理由写进文件头 `//` 区——门禁的 codeLineCount 只剥 `//` 与
 // 多行 /* */，写在模板里的 `<!-- -->` 注释是按行计费的。
-const TOTAL_BUDGET = 36100;
+// 36100 → 36120（2026-10-01 深夜）：Node 冷启动探测下线（perf 首条 refresh
+// 的 node 段 497ms）。净增 20 行生产代码：lib.rs +9（warm_node_cache：后台
+// 线程预热缓存，与 WebView 加载并行）、node/detect.rs +7（候选去重
+// push_unique——PATH 命中与 common_locations 列出同一条绝对路径，同一个
+// 二进制此前要派生两次 node --version，壳进程里一次 ~250ms）及调用点。
+// 两个文件均不在 FILE_BUDGETS 登记表（老文件），只计入总量。
+// 反棘轮文件本轮零增长。
+const TOTAL_BUDGET = 36120;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

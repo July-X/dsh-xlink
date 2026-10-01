@@ -91,6 +91,31 @@ fn check_main_window_minimizable(app: &tauri::App) {
     });
 }
 
+/// 启动期把 Node 运行时缓存焐热（在后台线程里跑一次 `cached_node`）。
+///
+/// 探测要派生 `node --version`，壳进程里一次派生 ~250ms（fork 要逐区域复制
+/// WKWebView 的 ~4900 个 VM 区域，见 lifecycle.rs 的 `process_command` 注释），
+/// 冷探测几百毫秒。首条 `get_status` 在面板 webview 加载完成后才会来（晚于
+/// setup 数百毫秒到数秒），后台线程大概率已经把缓存填上，这笔钱不再记进第一
+/// 条状态刷新——2026-10-01 perf 实测首条 refresh 的 `node` 段 497ms（同一
+/// 二进制被探测两遍，另见 detect.rs 的候选去重）。
+///
+/// 竞态无害：`cached_node` 在探测前先释放锁，与首条轮询撞车只是多一次幂等的
+/// 探测（P2-27）。预热线程起不来也不阻断启动——退化成今天的同步探测。
+pub(crate) fn warm_node_cache(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("dsh-node-warm".to_string())
+        .spawn(move || {
+            let settings = shell::settings::load_for_shell(shell::settings::current_mode());
+            let state = handle.state::<commands::AppState>();
+            let _ = commands::cached_node(&state, &settings);
+        });
+    if spawned.is_err() {
+        eprintln!("dsh-xlink: Node 缓存预热线程未启动；首次状态刷新将同步探测");
+    }
+}
+
 /// 应用入口；由 `main.rs` 调用。
 pub fn run() {
     // 单实例守卫必须排在**一切**之前：Windows 上点系统通知横幅会让系统再
@@ -241,6 +266,15 @@ pub fn run() {
                 eprintln!("dsh-xlink: 已清理 {removed} 个过期日志文件（保留 30 天 / 200 MiB）");
             }
             pkg::updater::spawn_background_check(app.handle());
+            // Node 运行时缓存预热：探测要派生 `node --version`，壳进程里
+            // 一次派生 ~250ms（fork 逐区域复制 WKWebView 的 ~4900 个 VM
+            // 区域），冷探测几百毫秒。放到后台线程与 WebView 加载并行——
+            // 首条 `get_status` 在面板加载完成后才会来（晚于 setup 数百
+            // 毫秒到数秒），大概率已经命中热缓存，这笔钱不再记进第一条
+            // 状态刷新（2026-10-01 perf 实测首条 refresh 的 node 段 497ms，
+            // 修复后应归零）。竞态无害：cached_node 在探测前释放锁，
+            // 撞车只是多一次幂等探测（P2-27）。
+            warm_node_cache(app.handle());
             // Windows：建立通知区域图标。管理面板在这里是「常驻后台」的
             // ——关闭与最小化都只是收起窗口，托盘是唯一的重开与退出入口，
             // 所以它必须在任何窗口可能被收起之前就绪。失败不阻断启动：

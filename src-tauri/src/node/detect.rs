@@ -401,14 +401,35 @@ pub(crate) fn nvm_candidates() -> Vec<PathBuf> {
 /// 自动检测顺序下的 node 可执行候选：PATH 命中（启动 shell 解析到的——
 /// 终端里 `nvm use` 之后的 dev shell 会落在这里）优先，
 /// 其次是 nvm 管理的安装，最后是常见的系统位置。
+///
+/// 已收过的路径不再收第二次：PATH 扫描找到 `/usr/local/bin/node` 后，
+/// `common_locations` 会再次列出同一条绝对路径——每探测一个候选要派生一次
+/// `node --version`，而壳进程里一次派生 ~250ms（fork 逐区域复制 WKWebView
+/// 的 ~4900 个 VM 区域，见 lifecycle.rs 的 process_command 注释），2026-10-01
+/// perf 实测冷探测 497ms ≈ 同一个二进制探测了两遍。重复条目不带任何额外信息。
 fn environment_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(found) = from_path() {
         out.push(found);
     }
-    out.extend(nvm_candidates());
-    out.extend(common_locations().into_iter().filter(|p| p.is_file()));
+    push_unique(&mut out, nvm_candidates());
+    push_unique(
+        &mut out,
+        common_locations()
+            .into_iter()
+            .filter(|p| p.is_file())
+            .collect(),
+    );
     out
+}
+
+/// 追加候选并去重（保持既有顺序，后到的重复路径丢弃）。
+fn push_unique(out: &mut Vec<PathBuf>, extra: Vec<PathBuf>) {
+    for path in extra {
+        if !out.contains(&path) {
+            out.push(path);
+        }
+    }
 }
 
 /// 对有序的环境候选进行探测的结果。
@@ -697,6 +718,33 @@ mod tests {
     use super::*;
     #[cfg(not(windows))]
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// 候选追加必须去重：PATH 扫描与 `common_locations` 会列出同一条绝对
+    /// 路径（最常见的是 `/usr/local/bin/node`），而每探测一个候选要派生一次
+    /// `node --version`——壳进程里一次派生 ~250ms，重复条目等于白付一次。
+    /// 2026-10-01 perf 实测冷探测 497ms ≈ 同一个二进制探测了两遍。
+    #[test]
+    fn candidate_merge_drops_repeated_paths_and_keeps_order() {
+        let mut out = vec![PathBuf::from("/usr/local/bin/node")];
+        push_unique(&mut out, vec![PathBuf::from("/opt/homebrew/bin/node")]);
+        // 与已收路径重复 → 丢弃；新路径 → 追加在末尾，顺序不变。
+        push_unique(
+            &mut out,
+            vec![
+                PathBuf::from("/usr/local/bin/node"),
+                PathBuf::from("/usr/bin/node"),
+            ],
+        );
+        assert_eq!(
+            out,
+            vec![
+                PathBuf::from("/usr/local/bin/node"),
+                PathBuf::from("/opt/homebrew/bin/node"),
+                PathBuf::from("/usr/bin/node"),
+            ],
+            "重复路径必须被丢弃，且既有顺序不得被打乱"
+        );
+    }
 
     /// `temp_root` 的顺序编号，使并行测试不会在同一个
     /// `std::env::temp_dir()` 暂存空间上冲突。仅由 `cfg(not(windows))`
