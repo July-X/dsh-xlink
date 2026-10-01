@@ -10,8 +10,8 @@
 //! `tauri dev` 默认会打开所有编译期 warning。多内核改造（P0–P8 共 9 个
 //! stage）有意保留了一批「预留 API」——例如 [`commands::plugin_install_instance`]
 //! / [`commands::plugin_sync_instance`] 等实例范围命令、
-//! [`instance::allocate_port`] / [`instance::InstanceLock`] 等端口与锁原语、
-//! [`kernel_adapter::AdapterCapability`] / [`kernel_adapter::resolve_install_root`]
+//! [`shell::instance::allocate_port`] / [`shell::instance::InstanceLock`] 等端口与锁原语、
+//! [`kernel::kernel_adapter::AdapterCapability`] / [`kernel::kernel_adapter::resolve_install_root`]
 //! 等适配器 trait 骨架——它们是后续 PR 启用 per-instance 写动作、第二内核
 //! 接入的入口，删了就找不回来。下面这条 `allow(dead_code)` 让
 //! `cargo check` / `cargo test` 都静默这一类预留 API 的 dead_code 警告；
@@ -26,64 +26,21 @@
     reason = "多内核改造预留 API（实例范围命令 / 端口分配 / 适配器骨架）"
 )]
 
-mod activate;
-mod archive;
-mod bisect;
-mod bisect_cmd;
-mod child_priority;
+// 按功能分模块（2026-09-30）。每个目录一个 mod.rs，子模块声明为 `pub(crate)`，
+// 于是外部写 `crate::<组>::<模块>::X`——分目录改的是文件的摆放，不是调用方
+// 要记的路径形状。
 mod commands;
-mod credentials;
-mod env;
-mod error;
-mod guard;
-mod harness_cmd;
-mod harness_draft;
-mod harness_media;
-mod harness_window;
-mod home_recovery;
-mod home_recovery_cmd;
-mod install_isolation;
-mod instance;
+mod diagnostics;
+mod harness;
 mod kernel;
-mod kernel_adapter;
-mod kernel_deps;
-mod kernel_evidence;
 mod migration;
-mod net_proxy;
 mod node;
-mod node_install;
 mod notify;
-mod notify_gate;
-mod package_activity;
-mod patches;
-mod paths;
 mod pkg;
 mod plugins;
-mod precheck;
-mod process;
-mod quarantine;
-mod registry;
-mod registry_split;
-mod releases;
-mod restore;
-mod sandbox;
-mod settings;
-mod shell_events;
-mod skill_conflict;
-mod skill_frontmatter;
-mod skill_shadow;
+mod shell;
 mod skills;
-mod snapshot;
-mod state;
-mod store_relocate;
-mod subscription;
-#[cfg(target_os = "windows")]
-mod tray;
-mod updater;
 mod usage;
-mod verify;
-mod version;
-mod window;
 
 use std::sync::Mutex;
 
@@ -140,7 +97,7 @@ pub fn run() {
     // 拉起一个本 exe（未打包应用的默认激活行为）。第二个进程绝不能走到
     // `setup()`——那里会 `reap_orphans` 回收内核，等于用户点一下通知就把
     // 自己正在跑的内核杀了。抢不到唯一实例时，意图转交给在跑的那个就退出。
-    if activate::claim_or_handoff() == activate::Startup::HandedOff {
+    if notify::activate::claim_or_handoff() == notify::activate::Startup::HandedOff {
         return;
     }
     let app = tauri::Builder::default()
@@ -149,7 +106,7 @@ pub fn run() {
         .setup(|app| {
             // 激活通道监听：接收「点通知横幅回到工作台」的交接请求。排在
             // setup 最前面，让它与 `claim_or_handoff` 之间只隔一个建窗过程。
-            activate::serve(app.handle());
+            notify::activate::serve(app.handle());
 
             // 管理面板在 macOS / Windows 上使用本地 Vue 标题栏绘制交通灯和品牌
             // 背景：这两个平台的「无边框」由 `tauri.conf.json` 的 `decorations:
@@ -166,20 +123,23 @@ pub fn run() {
             check_main_window_minimizable(app);
 
             // 副窗吸附跟随：模型用量窗口 + 日志查看器共用同一套 dock /
-            // 移动跟随逻辑（详见 `window::attach_dock_listener`）。主窗拖动时
+            // 移动跟随逻辑（详见 `shell::window::attach_dock_listener`）。主窗拖动时
             // 副窗按合帧窗口（~60fps）持续 set_position，保持贴在主窗右侧。
             // 两个监听器都挂在 main 的 on_window_event 上，事件源单一不
             // 会形成两窗互拉的回环；未开的窗口由 `get_webview_window`
             // 短路掉，不影响 setup 流程。
-            window::attach_dock_listener(app.handle(), window::USAGE_VIEWER_LABEL);
-            window::attach_dock_listener(app.handle(), window::LOG_VIEWER_LABEL);
-            window::attach_dock_listener(app.handle(), window::SUBSCRIPTION_VIEWER_LABEL);
+            shell::window::attach_dock_listener(app.handle(), shell::window::USAGE_VIEWER_LABEL);
+            shell::window::attach_dock_listener(app.handle(), shell::window::LOG_VIEWER_LABEL);
+            shell::window::attach_dock_listener(
+                app.handle(),
+                shell::window::SUBSCRIPTION_VIEWER_LABEL,
+            );
 
             // 家族命名空间：data_dir 按（注册表里）默认实例的内核族解析到
             // `<xlink_home>/<family>/desktop[-dev]/`，并把 v0.2.x 的平铺
             // 目录（`<xlink_home>/desktop[-dev]/`）一次性搬迁进去。
-            let family = crate::instance::default_family();
-            let data_dir = kernel::data_dir(app.handle(), &family);
+            let family = crate::shell::instance::default_family();
+            let data_dir = kernel::lifecycle::data_dir(app.handle(), &family);
             // 把解析出的 data dir 打到 stderr，让同时运行 `tauri dev` 与
             // 已安装 release 壳的开发者能一眼看出到底是哪一个
             // （release → `~/.dsh-xlink/<family>/desktop/`，debug →
@@ -200,7 +160,7 @@ pub fn run() {
             // 运行，同一项目目录上两个内核会向同一会话日志追加内容，
             // 导致日志损坏（seq gap）。必须早于 start_kernel，否则
             // start_kernel 会观察到「端口已被占用」，把孤儿当作健康实例。
-            kernel::reap_orphans(&data_dir);
+            kernel::lifecycle::reap_orphans(&data_dir);
             // 实例系统：把现有用户从旧 active.txt + settings 迁过来的状态
             // 灌进实例注册表。旧版壳首次启动或升级到 P8 之后的 dev 跑，
             // 实例系统都是空——不主动跑这一步，顶部 dropdown 会一直显示
@@ -216,11 +176,11 @@ pub fn run() {
             // 「两个互不相干的文件」，跨壳竞态从根上消失。必须在下面注册默认实例
             // **之前**跑——认领要读本壳那份文件，dev 壳第一次启动时那份还不存在。
             if let Err(error) =
-                crate::registry_split::ensure_scoped(crate::settings::current_mode())
+                crate::shell::registry_split::ensure_scoped(crate::shell::settings::current_mode())
             {
                 eprintln!("dsh-xlink: 实例注册表分家失败（{error}）；本壳将退回共享的旧文件");
             }
-            if let Err(error) = crate::instance::ensure_default_registered(&data_dir) {
+            if let Err(error) = crate::shell::instance::ensure_default_registered(&data_dir) {
                 eprintln!("dsh-xlink: 默认实例注册失败（{error}）");
             }
             // 回收上一次预检崩溃留下的沙盒实例目录。这些目录对用户没有任何
@@ -228,9 +188,9 @@ pub fn run() {
             // 「沙盒预检」的实例。放在实例注册之后，保证随后 `load_registry`
             // 看到的是干净状态。族列表取自适配器注册表——接入新内核只需在
             // `adapters()` 里追加实现，这里自动跟上。
-            for adapter in crate::kernel_adapter::adapters() {
+            for adapter in crate::kernel::kernel_adapter::adapters() {
                 let family = adapter.family();
-                let removed = crate::sandbox::sweep_stale(family);
+                let removed = crate::plugins::sandbox::sweep_stale(family);
                 if removed > 0 {
                     eprintln!("dsh-xlink: 回收了 {removed} 个残留的预检沙盒目录（{family}）");
                 }
@@ -242,11 +202,12 @@ pub fn run() {
             // 启动自动重试（逐项并入，可安全续跑）。
             // 历史数据只搬进 release 实例（`legacy_migration_target`）：dev 壳与
             // release 壳各有各的默认实例，谁先跑谁搬走的话 release 的历史就丢了。
-            let (legacy_family, legacy_instance) = crate::instance::legacy_migration_target();
-            if let Err(error) = crate::instance::migrate_legacy_dsh_home_if_needed(
+            let (legacy_family, legacy_instance) =
+                crate::shell::instance::legacy_migration_target();
+            if let Err(error) = crate::shell::instance::migrate_legacy_dsh_home_if_needed(
                 legacy_family,
                 legacy_instance,
-                &crate::paths::dirs_home().join(".dsh"),
+                &crate::shell::paths::dirs_home().join(".dsh"),
             ) {
                 eprintln!(
                     "dsh-xlink: 内核数据搬迁 ~/.dsh 未完成（{error}）；\
@@ -259,7 +220,7 @@ pub fn run() {
                 lifecycle: Mutex::new(()),
                 node_cache: Mutex::new(None),
                 harness_url: Mutex::new(None),
-                harness_page: Mutex::new(harness_window::HarnessPage::default()),
+                harness_page: Mutex::new(harness::harness_window::HarnessPage::default()),
             });
             // 历史数据迁移（plugin 中央库搬迁 / skill store 整合）不再在
             // setup() 里自动跑——主窗口 mount 后由 [`migration_prompt`]
@@ -271,22 +232,22 @@ pub fn run() {
             // 日志目录的启动期修复：把旧命名（`X.log.1`，扩展名是 `1`）的
             // 轮转备份改名为 `X.1.log`，它们此前永远不出现在日志面板里。
             // 纯改名、失败即跳过，不影响启动。
-            let logs_dir = kernel::logs_dir(&app.state::<AppState>().data_dir);
-            crate::process::migrate_legacy_rotated_logs(&logs_dir);
+            let logs_dir = kernel::lifecycle::logs_dir(&app.state::<AppState>().data_dir);
+            crate::shell::process::migrate_legacy_rotated_logs(&logs_dir);
             // 过期日志清理：每个「日期 × kind」三代 × 8 MiB 且日期只增不减，
             // 不裁剪会长期累积到 GB 级（P2-62）。
-            let removed = crate::process::prune_old_logs(&logs_dir);
+            let removed = crate::shell::process::prune_old_logs(&logs_dir);
             if removed > 0 {
                 eprintln!("dsh-xlink: 已清理 {removed} 个过期日志文件（保留 30 天 / 200 MiB）");
             }
-            updater::spawn_background_check(app.handle());
+            pkg::updater::spawn_background_check(app.handle());
             // Windows：建立通知区域图标。管理面板在这里是「常驻后台」的
             // ——关闭与最小化都只是收起窗口，托盘是唯一的重开与退出入口，
             // 所以它必须在任何窗口可能被收起之前就绪。失败不阻断启动：
             // 没有托盘时窗口仍可正常使用，只是「收起后只能靠重新启动找回」
             // 这一退化行为，代价写进日志供排查。
             #[cfg(target_os = "windows")]
-            if let Err(error) = tray::setup(app.handle()) {
+            if let Err(error) = shell::tray::setup(app.handle()) {
                 eprintln!(
                     "dsh-xlink: 无法建立通知区域图标（{error}）；\
                      关闭按钮仍会把窗口收进后台，但届时只能通过重新启动应用找回界面。\
@@ -325,11 +286,11 @@ pub fn run() {
             commands::start_kernel,
             commands::stop_kernel,
             commands::open_harness,
-            harness_cmd::harness_force_reload,
-            harness_cmd::harness_reload_backoff,
-            harness_cmd::stash_harness_draft,
-            harness_cmd::take_harness_draft,
-            harness_cmd::clear_harness_draft,
+            harness::harness_cmd::harness_force_reload,
+            harness::harness_cmd::harness_reload_backoff,
+            harness::harness_cmd::stash_harness_draft,
+            harness::harness_cmd::take_harness_draft,
+            harness::harness_cmd::clear_harness_draft,
             commands::report_harness_fault,
             commands::open_log_window,
             commands::open_official_chat,
@@ -344,10 +305,10 @@ pub fn run() {
             commands::plugin_precheck_install,
             commands::plugin_set_precheck,
             commands::snapshot_list,
-            bisect_cmd::bisect_view,
-            bisect_cmd::bisect_start,
-            bisect_cmd::bisect_probe,
-            bisect_cmd::bisect_abort,
+            diagnostics::bisect_cmd::bisect_view,
+            diagnostics::bisect_cmd::bisect_start,
+            diagnostics::bisect_cmd::bisect_probe,
+            diagnostics::bisect_cmd::bisect_abort,
             commands::snapshot_preview_restore,
             commands::snapshot_restore,
             commands::plugin_update,
@@ -366,7 +327,7 @@ pub fn run() {
             commands::skill_uninstall,
             commands::skill_set_enabled,
             commands::skill_move_aside_shadowed,
-            skill_conflict::skill_move_aside_conflicts,
+            skills::skill_conflict::skill_move_aside_conflicts,
             commands::skill_check_updates,
             commands::notification_status,
             commands::notification_mark_read,
@@ -387,17 +348,17 @@ pub fn run() {
             commands::migration_run,
             commands::migration_rollback,
             commands::migration_list,
-            home_recovery_cmd::scan_misplaced_home,
-            home_recovery_cmd::recover_misplaced_home,
+            migration::home_recovery_cmd::scan_misplaced_home,
+            migration::home_recovery_cmd::recover_misplaced_home,
             commands::migration_skip_get,
             commands::migration_skip_set,
             commands::migration_skip_clear,
             // 模型用量统计：扫描与聚合都住在 usage.rs，不经 commands.rs。
-            usage::get_model_usage,
-            usage::open_usage_window,
+            usage::local::get_model_usage,
+            usage::local::open_usage_window,
             // 云端套餐用量：查询、缓存与建窗都住在 subscription.rs。
-            subscription::get_subscription_usage,
-            subscription::open_subscription_window,
+            usage::subscription::get_subscription_usage,
+            usage::subscription::open_subscription_window,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| {
@@ -421,7 +382,7 @@ pub fn run() {
     // 管理窗口的关闭请求分两条路：
     //   · Windows（托盘常驻）：关闭只是把窗口收进通知区域，内核与工作台继续
     //     运行；只有托盘菜单的「退出」才走确认与退出流程。这条分支在
-    //     `tray::intercept_close` 里实现，并且**优先**于退出确认——否则每次
+    //     `shell::tray::intercept_close` 里实现，并且**优先**于退出确认——否则每次
     //     点 X 都会弹一次「完全退出？」，与「收起后台」的语义自相矛盾。
     //   · 其它平台：沿用原有询问语义。内核仍在运行或 official-chat 仍打开时
     //     `prevent_close()` 并通知 UI 询问用户是否完全退出；UI 接着运行
@@ -446,7 +407,7 @@ pub fn run() {
             // Windows：把关闭改写成「收进托盘」，不再询问是否退出
             //（退出改由托盘菜单显式发起）。
             #[cfg(target_os = "windows")]
-            if tray::intercept_close(handle, label, api) {
+            if shell::tray::intercept_close(handle, label, api) {
                 return;
             }
             // 只拦截管理窗口的关闭按钮；harness 工作台 webview
@@ -477,7 +438,7 @@ pub fn run() {
         }
         // 工作台窗口的前台状态：用户切回工作台即视为"看过结果了"，未读角标
         // 清零。只认 `harness`——用户盯着管理面板时并不算看到了对话结果，
-        // 那种情况下仍然应该收到通知（见 `notify::set_workbench_focused`）。
+        // 那种情况下仍然应该收到通知（见 `notify::task::set_workbench_focused`）。
         if let tauri::RunEvent::WindowEvent {
             label,
             event: WindowEvent::Focused(focused),
@@ -485,7 +446,7 @@ pub fn run() {
         } = &event
         {
             if label == "harness" {
-                notify::set_workbench_focused(handle, *focused);
+                notify::task::set_workbench_focused(handle, *focused);
             }
         }
         // 窗口被销毁（用户点系统的关闭按钮、或 `stop_kernel` 的 `destroy()`）
@@ -499,7 +460,7 @@ pub fn run() {
         } = &event
         {
             if label == "harness" {
-                notify::set_workbench_focused(handle, false);
+                notify::task::set_workbench_focused(handle, false);
             }
         }
         // 显示缩放变化（窗口被拖到另一块 DPI 不同的屏幕，或系统缩放被改）后按新的
@@ -513,17 +474,17 @@ pub fn run() {
             ..
         } = &event
         {
-            if label == tray::MAIN_WINDOW {
-                tray::refresh_icon(handle);
+            if label == shell::tray::MAIN_WINDOW {
+                shell::tray::refresh_icon(handle);
             }
         }
         // macOS：应用被重新打开（点 Dock 图标、点通知横幅）。系统此时已经把
         // 壳带回前台了，再把**工作台**一并抬到台前——通知横幅点一下就该看到
         // 任务结果，而不是停在管理面板上。工作台没开过时什么都不做（见
-        // `activate::raise_workbench_if_open` 的理由）。
+        // `notify::activate::raise_workbench_if_open` 的理由）。
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen { .. } = &event {
-            activate::raise_workbench_if_open(handle);
+            notify::activate::raise_workbench_if_open(handle);
         }
         if let tauri::RunEvent::Exit = event {
             // 在绕过退出提示的那些退出路径（macOS 上的 Cmd+Q、操作系统
@@ -540,33 +501,36 @@ pub fn run() {
                 {
                     let mut guard = lock(&state.running);
                     if let Some(mut child) = guard.take() {
-                        let _ = kernel::stop(&mut child);
+                        let _ = kernel::lifecycle::stop(&mut child);
                     }
                 }
                 let data_dir = state.data_dir.clone();
-                let current = settings::load_for_shell(settings::current_mode());
+                let current = shell::settings::load_for_shell(shell::settings::current_mode());
                 // 判据同样不看配置端口：内核可能绑在用户改端口之前的那个
                 // 端口上，用当前配置端口探测会漏掉它，让它继续占着端口活到
                 // 下一次启动。
-                if let Some(pid) = kernel::workbench_pid(&data_dir, &current) {
+                if let Some(pid) = kernel::lifecycle::workbench_pid(&data_dir, &current) {
                     // 同 stop_kernel：带上记录里的启动端口（P2-1）。
-                    kernel::kill_pid(pid, kernel::recorded_kernel_port(&data_dir));
+                    kernel::lifecycle::kill_pid(
+                        pid,
+                        kernel::lifecycle::recorded_kernel_port(&data_dir),
+                    );
                 }
-                kernel::clear_pid(&data_dir);
+                kernel::lifecycle::clear_pid(&data_dir);
             }
             // 事件订阅线程是壳自己的：退出前显式停掉并等在途的重连/读循环
             // 收尾，避免进程退出时留下一个还在往已销毁的 AppHandle 上发事件
             // 的线程。
-            notify::stop_watcher();
+            notify::task::stop_watcher();
         }
     });
 }
 
 /// 把管理面板主窗口恢复到前台（`show` + 取消最小化 + 前台聚焦）。
 ///
-/// 按平台分发到唯一一份实现：Windows 用 [`tray::show_main_shell`]（与托盘图标
+/// 按平台分发到唯一一份实现：Windows 用 [`shell::tray::show_main_shell`]（与托盘图标
 /// 的「显示主界面」共用同一份），其它平台就地实现。**不要把实现挪回本函数、
-/// 再让 `tray::show_main_shell` 回调它**——那会构成无限递归，Windows 上点托盘
+/// 再让 `shell::tray::show_main_shell` 回调它**——那会构成无限递归，Windows 上点托盘
 /// 图标会直接 `thread 'main' has overflowed its stack`（首版即如此）。
 ///
 /// Windows 上必须做一次 always-on-top 往返：焦点经 IPC 到达时
@@ -574,7 +538,7 @@ pub fn run() {
 /// 最前；其它平台是无害的 no-op。
 pub(crate) fn show_main_shell(handle: &tauri::AppHandle) {
     #[cfg(target_os = "windows")]
-    tray::show_main_shell(handle);
+    shell::tray::show_main_shell(handle);
     #[cfg(not(target_os = "windows"))]
     {
         let Some(window) = handle.get_webview_window("main") else {
@@ -592,7 +556,7 @@ pub(crate) fn show_main_shell(handle: &tauri::AppHandle) {
 ///
 /// 内存中的句柄只有在内核**确实还活着**时才算数：内核自行退出或被外部杀掉
 /// 之后句柄仍留在槽位里，只看 `is_some()` 会让这里一直撒谎（关窗时弹出一个
-/// 与实际状态矛盾的确认为）。句柄失效后回落到 [`kernel::workbench_running`]，
+/// 与实际状态矛盾的确认为）。句柄失效后回落到 [`kernel::lifecycle::workbench_running`]，
 /// 它同样不以配置端口为判据——内核可能绑在用户改端口之前的那个端口上。
 ///
 /// 对 crate 内公开：托盘菜单的「退出」要用它判断是否需要先弹确认。
@@ -615,9 +579,9 @@ pub(crate) fn kernel_running(handle: &tauri::AppHandle) -> bool {
             *guard = None;
         }
     }
-    kernel::workbench_running(
+    kernel::lifecycle::workbench_running(
         &state.data_dir,
-        &settings::load_for_shell(settings::current_mode()),
+        &shell::settings::load_for_shell(shell::settings::current_mode()),
     )
 }
 
@@ -655,7 +619,7 @@ pub(crate) mod tests {
     impl EnvVar {
         fn name(&self) -> &'static str {
             match self {
-                EnvVar::XlinkHome => crate::paths::DSH_XLINK_HOME_ENV,
+                EnvVar::XlinkHome => crate::shell::paths::DSH_XLINK_HOME_ENV,
                 EnvVar::DshHome => "DSH_HOME",
             }
         }
@@ -698,7 +662,7 @@ pub(crate) mod tests {
 
     /// 进入作用域时拿锁、**移除** `DSH_XLINK_HOME`；drop 时还原 env 并释放
     /// 锁。测「缺省解析到 `~/.dsh-xlink`」这类默认路径时必须走这里，不能
-    /// 裸调 `env::remove_var`——后者只在本地锁里串行，拦不住别的模块正持
+    /// 裸调 `shell::env::remove_var`——后者只在本地锁里串行，拦不住别的模块正持
     /// 着 [`scoped_xlink_home`] 往临时目录写文件，env 一被摘掉那些写入就
     /// 全部落到用户真实的 `~/.dsh-xlink`（夹具泄漏进真实数据的根因）。
     pub(crate) fn scoped_xlink_home_unset() -> EnvGuard {

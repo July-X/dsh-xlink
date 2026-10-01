@@ -4,6 +4,19 @@
 //! 进程）以及持久化的 `settings.json` 工作。长时间运行的操作（内核
 //! 安装）会放到主线程之外，并通过 `tauri::ipc::Channel` 汇报进度。
 
+use crate::harness::official_chat::{
+    current_official_chat_layout, logical_window_size, official_chat_initial_size,
+    official_chat_layout, official_chat_layout_plausible, should_relayout_official_chat,
+    OfficialChatLayout, OFFICIAL_CHAT_BROWSER_ARGS, OFFICIAL_CHAT_DATA_STORE_IDENTIFIER,
+    OFFICIAL_CHAT_INITIAL_HEIGHT, OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_STRIP_LABEL,
+    OFFICIAL_CHAT_TABS, OFFICIAL_CHAT_WINDOW_LABEL,
+};
+use crate::kernel;
+use crate::migration;
+use crate::node;
+use crate::plugins;
+use crate::shell;
+use crate::skills;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -13,84 +26,17 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::webview::{Color, NewWindowResponse};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, State, Webview};
-use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowBuilder, WindowEvent};
+use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowBuilder};
 use url::Url;
 
-use crate::error::AppError;
-use crate::harness_window;
-use crate::instance::{self};
-use crate::migration;
-use crate::process::{build_log_kind, read_tail, LogSpec};
-use crate::quarantine;
+use crate::harness::harness_window;
+use crate::plugins::quarantine;
+use crate::shell::error::AppError;
+use crate::shell::process::{build_log_kind, read_tail, LogSpec};
 use crate::{
-    guard, kernel, node, patches, plugins, releases, settings, skill_shadow, skills, updater,
+    diagnostics::guard, pkg::releases, pkg::updater, plugins::patches, shell::settings,
+    skills::skill_shadow,
 };
-
-/// `open_official_chat` 加载到专用 `official-chat` webview 中的
-/// DeepSeek 官方对话入口。
-///
-/// 该窗口不覆盖用户代理：WebView2 引擎本身就是真正的桌面 Edge/Chromium
-/// 构建。覆盖 UA 字符串会在请求头里声称是 Chrome，但 `Sec-CH-UA` 客户
-/// 端提示和原生 `navigator.userAgentData` 仍然报出真正的 Edge 品牌——
-/// 这种跨层不一致正是环境检测会盯上的东西，所以诚实的身份也是一致
-/// 的身份。
-pub const OFFICIAL_CHAT_URL: &str = "https://chat.deepseek.com";
-
-// WKWebView 在 macOS 上把 cookies 和 localStorage 存到这个标识符下。
-// 在跨发布版之间保持 ID 稳定，并区分别名为 debug 与 release 的数据。
-#[cfg(all(target_os = "macos", debug_assertions))]
-const OFFICIAL_CHAT_DATA_STORE_IDENTIFIER: [u8; 16] = *b"dsh-chat-dev-001";
-#[cfg(all(target_os = "macos", not(debug_assertions)))]
-const OFFICIAL_CHAT_DATA_STORE_IDENTIFIER: [u8; 16] = *b"dsh-chat-rel-001";
-
-/// 传给 `official-chat` webview 的 Chromium feature 开关。
-///
-/// `additional_browser_args` 会**替换** wry 自带的默认集合
-/// （`--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`），
-/// 因此这里把相关条目重新声明一遍，避免悄悄被重新启用：少了这些项
-/// 之后，WebView2 会显示 SmartScreen 拦截页以及只有 Edge 才有的浮层
-/// UI，而普通桌面 Chrome 是不会有这些东西的。在此基础上，
-/// `AutomationControlled`（既作为浏览器 feature，又作为 blink runtime
-/// 标志位）阻止 Chromium 在引擎层就上报 `navigator.webdriver = true`，
-/// 让任何 initialization_script 都没机会遮盖它；`TranslateUI` /
-/// `InterestFeedContentSuggestions` 则压制更多 Edge-only 的界面。只有
-/// WebView2 后端会消费这些浏览器参数；macOS / Linux 会忽略它们，因此
-/// builder 的接线不必分平台分支。同一个 user-data 目录必须配一致的参
-/// 数（per-folder options），这也是 [`open_official_chat`] 把这个常
-/// 量与专用 user-data 目录配对使用的原因。
-pub const OFFICIAL_CHAT_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,AutomationControlled,TranslateUI,InterestFeedContentSuggestions --disable-blink-features=AutomationControlled";
-
-/// 第二个官方对话页签：通义千问（qianwen）。
-pub const OFFICIAL_CHAT_QIANWEN_URL: &str = "https://www.qianwen.com";
-
-/// 第三个官方对话页签：MiniMax agent。
-pub const OFFICIAL_CHAT_MINIMAX_URL: &str = "https://agent.minimaxi.com";
-
-/// 官方对话窗口页签栏中按展示顺序排列的固定页签。第一个条目是打开时
-/// 默认激活的页签。增加一行即可增加一个页签——strip webview 在运行
-/// 时通过 [`official_chat_tabs`] 发现这份列表，而内容 webview 是在
-/// 被选中时才惰性创建的，所以初次打开时不会加载任何其它站点。
-pub const OFFICIAL_CHAT_TABS: &[(&str, &str)] = &[
-    ("DeepSeek", OFFICIAL_CHAT_URL),
-    ("千问", OFFICIAL_CHAT_QIANWEN_URL),
-    ("MiniMax", OFFICIAL_CHAT_MINIMAX_URL),
-];
-
-/// 裸窗口的 label。一个 `Window`（不是 `WebviewWindow`）承载 strip 加
-/// 每个页签对应的一个子 `Webview`；关窗时它们会一并被拆解。
-const OFFICIAL_CHAT_WINDOW_LABEL: &str = "official-chat";
-/// 用于渲染页签栏的本地 SPA webview（`index.html?chatstrip=1`）。它保
-/// 留 `window.__TAURI__`——`chat-fingerprint.js` 不在这里注入——
-/// 因此可以调用 [`official_chat_tabs`] / [`switch_official_chat_tab`]。
-/// 拉绳小台灯也放在这里，因为在 Tauri 2.11 / wry 0.55.1 这版上，子
-/// WebView 的透明效果并不可靠。紧凑的小台灯和页签控件可以共用同一个
-/// 38px 高的 strip。
-const OFFICIAL_CHAT_STRIP_LABEL: &str = "official-chat-strip";
-/// 被钉在顶部的页签栏的逻辑高度。紧凑的 24×38 台灯 SVG 正好放进
-/// 38px 高的页签栏中。
-const OFFICIAL_CHAT_INITIAL_WIDTH: f64 = 1366.0;
-const OFFICIAL_CHAT_INITIAL_HEIGHT: f64 = 768.0;
-const OFFICIAL_CHAT_STRIP_HEIGHT: f64 = 38.0;
 
 /// 以 Tauri managed state 形式注册的共享 Shell 状态。
 pub struct AppState {
@@ -103,13 +49,13 @@ pub struct AppState {
     /// 询每几秒就会跑一次；如果每次轮询都重新探测 `node --version`，
     /// 就会产生进程派生（Windows 上进程创建开销大），但解析结果其实
     /// 只在设置改变或机器的 Node 安装变化时才会变。
-    pub node_cache: Mutex<Option<(Option<String>, node::NodeInfo)>>,
+    pub node_cache: Mutex<Option<(Option<String>, node::detect::NodeInfo)>>,
     /// 工作台 webview 当前这一次加载所使用的入口 URL（含 launch token）。
     /// 「打开工作台窗口」据此判断已有窗口是否还持有有效地址：token 没变
     /// 就只把窗口带到台前，不重新导航（导航等于销毁并重建整个工作台前端
     /// 状态）。仅在内核重启签发新 token 时才需要真正跳转。
     pub harness_url: Mutex<Option<String>>,
-    /// 工作台 webview 的加载观测量，看门狗逻辑见 [`crate::harness_window`]。
+    /// 工作台 webview 的加载观测量，看门狗逻辑见 [`crate::harness::harness_window`]。
     pub harness_page: Mutex<harness_window::HarnessPage>,
 }
 
@@ -125,9 +71,9 @@ pub struct StatusView {
     /// 当前 Shell 的构建模式（release / dev）。P1 之后用来替代部分场景下
     /// 含糊的"dev 文字"，明确告诉用户「这是 dsh-xlink 自己的 dev/release
     /// 构建，不影响内核数据」。UI 仍可同时使用 `dev_build` 来做色彩区分。
-    pub shell_mode: crate::paths::ShellMode,
-    pub kernel: kernel::KernelStatus,
-    pub node: node::NodeInfo,
+    pub shell_mode: crate::shell::paths::ShellMode,
+    pub kernel: kernel::lifecycle::KernelStatus,
+    pub node: node::detect::NodeInfo,
     pub settings: settings::Settings,
     /// 启动防护已经停用的插件。概览页据此渲染横幅，使得即便工作台
     /// 跑在安全模式下也不会对缺失的内容保持沉默。
@@ -166,7 +112,7 @@ where
 }
 
 // 读取用于展示的定长文本文件尾部——已迁移到
-// `crate::process::read_tail`，以便启动防护以同样的方式读取。
+// `crate::shell::process::read_tail`，以便启动防护以同样的方式读取。
 ///
 /// 不可被 UI 吞掉的 web-app 级错误前缀。
 fn app_err(data_dir: &Path, e: impl std::fmt::Display) -> String {
@@ -182,7 +128,7 @@ pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<St
     // 这个轮询会每几秒就霸占 Tauri 的主线程。
     tauri::async_runtime::spawn_blocking(move || {
         let settings = settings::load_for_shell(settings::current_mode());
-        let kernel_status = kernel::status(&data_dir, &settings);
+        let kernel_status = kernel::lifecycle::status(&data_dir, &settings);
         // 工作台窗口的加载看门狗挂在既有轮询上，不另起定时器：它本来每 2.5s
         // 就跑一次，而「页面没起来」这件事只有轮询能顺带看出来。
         harness_window::reload_stalled(&app, kernel_status.running);
@@ -193,7 +139,7 @@ pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<St
         StatusView {
             shell_version: app.package_info().version.to_string(),
             dev_build: cfg!(debug_assertions),
-            shell_mode: crate::paths::ShellMode::current(),
+            shell_mode: crate::shell::paths::ShellMode::current(),
             kernel: kernel_status,
             node: node_info,
             quarantined: quarantine_doc.items,
@@ -208,7 +154,10 @@ pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<St
 
 /// 通过 per-app 缓存解析 Node 运行时；只有 `node_path` 设置发生变化
 /// 时才会触发一次新的探测。“帮我安装”成功后由 `install_node` 主动清缓存。
-pub(crate) fn cached_node(state: &AppState, settings: &settings::Settings) -> node::NodeInfo {
+pub(crate) fn cached_node(
+    state: &AppState,
+    settings: &settings::Settings,
+) -> node::detect::NodeInfo {
     let data_dir = state.data_dir.clone();
     let key = settings.node_path.clone();
     // 命中缓存时立刻返回；未命中则**先释放锁**再探测。
@@ -223,13 +172,13 @@ pub(crate) fn cached_node(state: &AppState, settings: &settings::Settings) -> no
             }
         }
     }
-    let info = node::resolve(settings, &data_dir);
+    let info = node::detect::resolve(settings, &data_dir);
     *crate::lock(&state.node_cache) = Some((key, info.clone()));
     info
 }
 
 #[tauri::command]
-pub async fn detect_node(state: State<'_, AppState>) -> Result<node::NodeInfo, String> {
+pub async fn detect_node(state: State<'_, AppState>) -> Result<node::detect::NodeInfo, String> {
     // 检测会忽略任何已配置的路径：它报告的是环境自身的探测结果，这样
     // UI 就能据它预填设置。解析过程对每个环境候选（PATH + nvm 管理的
     // 安装 + 系统位置）可能派生一个子进程——把这些进程派生放到 Tauri
@@ -238,7 +187,7 @@ pub async fn detect_node(state: State<'_, AppState>) -> Result<node::NodeInfo, S
     let info = tauri::async_runtime::spawn_blocking(move || {
         let mut s = settings::load_for_shell(settings::current_mode());
         s.node_path = None;
-        node::resolve(&s, &data_dir)
+        node::detect::resolve(&s, &data_dir)
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -261,11 +210,12 @@ pub async fn install_node(app: AppHandle, on_event: Channel<String>) -> Result<(
     blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
-        let logs_dir = kernel::logs_dir(&data_dir);
+        let logs_dir = kernel::lifecycle::logs_dir(&data_dir);
         let mut send = |msg: &str| {
             let _ = on_event.send(msg.to_string());
         };
-        let installed = crate::node_install::verify_or_install(&data_dir, &logs_dir, &mut send)?;
+        let installed =
+            crate::node::node_install::verify_or_install(&data_dir, &logs_dir, &mut send)?;
         if installed.is_some() {
             // 用 crate::lock 而不是裸 lock()：锁被毒化时也要把缓存清掉，
             // 否则下一次 get_status 仍会报告旧的（不存在的）Node 运行时。
@@ -293,7 +243,7 @@ pub async fn save_settings(
         // 改掉配置端口会让状态页把"运行中"读成"未运行"；用户随后点一次
         // 「启动工作台」就会在同一 data dir 上拉起第二个内核，两个内核写
         // 同一份会话日志（`seq gap` 损坏）。其余设置可以随时改。
-        if settings.port != previous.port && kernel::workbench_running(&data_dir, &previous) {
+        if settings.port != previous.port && kernel::lifecycle::workbench_running(&data_dir, &previous) {
             return Err(format!(
                 "工作台正在运行，无法修改端口（当前 {}，新值 {}）。请先点击「关闭工作台」停止工作台，再回来保存设置",
                 previous.port, settings.port
@@ -357,12 +307,12 @@ fn merge_settings(
 #[tauri::command]
 pub async fn snapshot_list(
     state: State<'_, AppState>,
-) -> Result<crate::snapshot::SnapshotListView, String> {
+) -> Result<crate::diagnostics::snapshot::SnapshotListView, String> {
     let data_dir = state.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (family, instance_id) = plugins::default_instance_key();
+        let (family, instance_id) = plugins::center::default_instance_key();
         let settings = settings::load_for_shell(settings::current_mode());
-        let mut view = crate::snapshot::list(
+        let mut view = crate::diagnostics::snapshot::list(
             &data_dir,
             &family,
             &instance_id,
@@ -371,7 +321,7 @@ pub async fn snapshot_list(
         );
         // 展示路径容错读（面板还得能打开），但必须把「读到的是空文档」
         // 说出来——否则用户会以为"从来没有过回退点"。
-        view.warning = crate::snapshot::warning(&family, &instance_id);
+        view.warning = crate::diagnostics::snapshot::warning(&family, &instance_id);
         view
     })
     .await
@@ -385,12 +335,12 @@ pub async fn snapshot_list(
 pub async fn snapshot_preview_restore(
     state: State<'_, AppState>,
     id: String,
-) -> Result<crate::restore::RestoreDiff, String> {
+) -> Result<crate::diagnostics::restore::RestoreDiff, String> {
     let data_dir = state.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (family, instance_id) = plugins::default_instance_key();
+        let (family, instance_id) = plugins::center::default_instance_key();
         let settings = settings::load_for_shell(settings::current_mode());
-        crate::restore::diff(
+        crate::diagnostics::restore::diff(
             &data_dir,
             &family,
             &instance_id,
@@ -412,34 +362,36 @@ pub async fn snapshot_restore(
     app: AppHandle,
     id: String,
     on_event: Channel<String>,
-) -> Result<crate::restore::RestoreOutcome, String> {
+) -> Result<crate::diagnostics::restore::RestoreOutcome, String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
     let promise_send = on_event.clone();
-    blocking(move || -> Result<crate::restore::RestoreOutcome, String> {
-        let state = app.state::<AppState>();
-        let _lifecycle_guard = crate::lock(&state.lifecycle);
-        let settings = settings::load_for_shell(settings::current_mode());
-        let node_info = cached_node(&state, &settings);
-        let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, move |msg| {
-            let _ = promise_send.send(msg.to_string());
-        })?;
-        let (family, instance_id) = plugins::default_instance_key();
-        let mut progress = |msg: &str| {
-            let _ = on_event.send(msg.to_string());
-        };
-        crate::restore::restore(
-            &data_dir,
-            &family,
-            &instance_id,
-            &settings.profile,
-            settings.port,
-            &pnpm_exe,
-            Path::new(&node_info.path),
-            &id,
-            &mut progress,
-        )
-        .map_err(|e| e.to_string())
-    })
+    blocking(
+        move || -> Result<crate::diagnostics::restore::RestoreOutcome, String> {
+            let state = app.state::<AppState>();
+            let _lifecycle_guard = crate::lock(&state.lifecycle);
+            let settings = settings::load_for_shell(settings::current_mode());
+            let node_info = cached_node(&state, &settings);
+            let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, move |msg| {
+                let _ = promise_send.send(msg.to_string());
+            })?;
+            let (family, instance_id) = plugins::center::default_instance_key();
+            let mut progress = |msg: &str| {
+                let _ = on_event.send(msg.to_string());
+            };
+            crate::diagnostics::restore::restore(
+                &data_dir,
+                &family,
+                &instance_id,
+                &settings.profile,
+                settings.port,
+                &pnpm_exe,
+                Path::new(&node_info.path),
+                &id,
+                &mut progress,
+            )
+            .map_err(|e| e.to_string())
+        },
+    )
     .await
 }
 
@@ -541,7 +493,7 @@ fn collect_log_entries(dir: &Path) -> std::io::Result<Vec<LogFileEntry>> {
 /// 同一份滚动里同时看到实时的内核日志以及昨天的安装尝试。
 #[tauri::command]
 pub async fn list_log_files(state: State<'_, AppState>) -> Result<Vec<LogFileEntry>, String> {
-    let dir = kernel::logs_dir(&state.data_dir);
+    let dir = kernel::lifecycle::logs_dir(&state.data_dir);
     blocking(move || collect_log_entries(&dir).map_err(|e| e.to_string())).await
 }
 
@@ -566,7 +518,7 @@ fn validate_log_name(name: &str) -> Result<(), String> {
 #[tauri::command]
 pub async fn read_log_file(state: State<'_, AppState>, name: String) -> Result<String, String> {
     validate_log_name(&name)?;
-    let logs_dir = kernel::logs_dir(&state.data_dir);
+    let logs_dir = kernel::lifecycle::logs_dir(&state.data_dir);
     let path = logs_dir.join(&name);
     if !path.starts_with(&logs_dir) {
         return Err(format!("日志路径越界：{name}"));
@@ -642,7 +594,7 @@ pub async fn fetch_releases() -> Result<releases::ReleaseList, String> {
 /// pnpm，缺失时通过 npm 自动安装。返回 (node_path, pnpm_exe)。
 pub fn promise_pnpm(
     data_dir: &Path,
-    node_info: &node::NodeInfo,
+    node_info: &node::detect::NodeInfo,
     mut on_progress: impl FnMut(&str),
 ) -> Result<(PathBuf, PathBuf), String> {
     if !node_info.ok {
@@ -657,13 +609,14 @@ pub fn promise_pnpm(
     // 的同一个按日轮转的 writer 会把日志追加到当天的文件里。「构建类
     // 型 + 日期」前缀让偶尔同机并存的 dev 与 release 尝试不会互相手
     // 覆。
-    let logs_dir = kernel::logs_dir(data_dir);
+    let logs_dir = kernel::lifecycle::logs_dir(data_dir);
     let epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let pnpm_log_spec = LogSpec::new(build_log_kind(), format!("pnpm-install-{epoch}"));
-    let pnpm = node::ensure_pnpm(&s, &node_dir, &logs_dir, &pnpm_log_spec, &mut on_progress)?;
+    let pnpm =
+        node::detect::ensure_pnpm(&s, &node_dir, &logs_dir, &pnpm_log_spec, &mut on_progress)?;
     Ok((PathBuf::from(node_info.path.clone()), pnpm))
 }
 
@@ -675,7 +628,7 @@ pub fn promise_pnpm(
 /// `verb` 是本次操作的中文动词，`next_step` 是给用户的下一步；两者由调用点
 /// 给出，这样每条命令的可见文案各自保持不变。
 fn require_kernel_version(version: &str, verb: &str, next_step: &str) -> Result<(), String> {
-    if !crate::version::is_valid_kernel_version(version) {
+    if !crate::shell::version::is_valid_kernel_version(version) {
         return Err(format!(
             "版本号 {version:?} 形态非法，拒绝{verb}；{next_step}"
         ));
@@ -723,8 +676,8 @@ pub async fn install_kernel(
         // 两万多个文件），跨壳时还可能写到对方正在服务的实例上。「工作台必须已
         // 停止」那条已经放进 [`kernel::install_version`] 本身——放在那里而不是命令
         // 层，任何 caller 都绕不过去。
-        let (family, instance_id) = instance::resolve_default();
-        instance::ensure_instance_mutable(family, instance_id, "安装内核版本")?;
+        let (family, instance_id) = shell::instance::resolve_default();
+        shell::instance::ensure_instance_mutable(family, instance_id, "安装内核版本")?;
         // `install_version` 需要 node 可执行文件的完整路径——既用它本身
         // 在安装结束后启动 smoke-load 探针（见
         // `kernel::smoke_load_native_modules`），又把它所在目录前置到
@@ -733,8 +686,8 @@ pub async fn install_kernel(
         // `node` 的 lifecycle 脚本都能解析到它，即便 GUI 进程继承
         // 到的只是 macOS .app 包那种 launchd-only PATH——这是 nvm 管
         // 理的安装里很常见的场景。
-        kernel::install_version(
-            crate::instance::KERNEL_FAMILY_DSH,
+        kernel::lifecycle::install_version(
+            crate::shell::instance::KERNEL_FAMILY_DSH,
             &data_dir,
             &node_path,
             &pnpm_exe,
@@ -756,8 +709,8 @@ fn complete_kernel_install(
 ) -> Result<(), String> {
     // 首次安装的内核会自动设为活动版本，之后的安装不再改动当前活动版
     // 本；安装完成后保持停止状态，由用户从「概览」页明确启动工作台。
-    if kernel::read_active(data_dir).is_none() {
-        kernel::set_active(data_dir, version).map_err(|e| e.to_string())?;
+    if kernel::lifecycle::read_active(data_dir).is_none() {
+        kernel::lifecycle::set_active(data_dir, version).map_err(|e| e.to_string())?;
         on_progress(&format!("已切换到版本 {version}"));
     }
     Ok(())
@@ -777,8 +730,8 @@ pub async fn activate_version(app: AppHandle, version: String) -> Result<(), Str
         // 换版本会重跑插件接线 = 改写实例的 profile package.json。落在一个
         // 另一个壳正跑着的实例上，那边的工作台会当场崩掉（实测：dev 切内核
         // → release 工作台白屏），所以先问一句实例归谁管。
-        let (family, instance_id) = instance::resolve_default();
-        instance::ensure_instance_mutable(family, instance_id, "切换内核版本")?;
+        let (family, instance_id) = shell::instance::resolve_default();
+        shell::instance::ensure_instance_mutable(family, instance_id, "切换内核版本")?;
         let settings = settings::load_for_shell(settings::current_mode());
         // 换内核版本是安全网最该兜住的那一类变更：新版本 + 旧插件的组合
         // 正是"昨天还能用今天起不来"最常见的来源。打点必须在 set_active
@@ -786,10 +739,10 @@ pub async fn activate_version(app: AppHandle, version: String) -> Result<(), Str
         record_pre_change(&data_dir, &settings);
         // 切换会在下一次启动时生效，但为了避免运行中的服务与活动指针
         // 不一致，kernel::set_active 会要求工作台已经停止。
-        kernel::set_active(&data_dir, &version).map_err(|e| e.to_string())?;
+        kernel::lifecycle::set_active(&data_dir, &version).map_err(|e| e.to_string())?;
         // 重新接线插件到新活动内核（失败不阻断切换，原因进入插件卡片警告）
         let node_info = cached_node(&state, &settings);
-        let _ = plugins::ensure_wiring_quiet(&data_dir, &settings, &node_info);
+        let _ = plugins::center::ensure_wiring_quiet(&data_dir, &settings, &node_info);
         Ok(())
     })
     .await
@@ -810,9 +763,9 @@ pub async fn remove_version(app: AppHandle, version: String) -> Result<(), Strin
         // 拦，是唯一一条会在运行中的服务旁边大面积改动 `kernels/` 树的路。
         // 「工作台必须已停止」那条已经放进 [`kernel::uninstall`] 本身——放在那里
         // 而不是命令层，任何 caller 都绕不过去。
-        let (family, instance_id) = instance::resolve_default();
-        instance::ensure_instance_mutable(family, instance_id, "删除内核版本")?;
-        kernel::uninstall(&data_dir, &version).map_err(|e| app_err(&data_dir, e))
+        let (family, instance_id) = shell::instance::resolve_default();
+        shell::instance::ensure_instance_mutable(family, instance_id, "删除内核版本")?;
+        kernel::lifecycle::uninstall(&data_dir, &version).map_err(|e| app_err(&data_dir, e))
     })
     .await
 }
@@ -903,8 +856,8 @@ mod kernel_install_tests {
                 .as_nanos()
         ));
         let version = "0.1.2-alpha.test";
-        let bin =
-            kernel::kernel_dir(&data_dir, version).join("node_modules/@deepseek-ai/dsh/lib/bin.js");
+        let bin = kernel::lifecycle::kernel_dir(&data_dir, version)
+            .join("node_modules/@deepseek-ai/dsh/lib/bin.js");
         fs::create_dir_all(bin.parent().expect("kernel bin parent")).expect("create kernel");
         fs::write(&bin, b"// test kernel").expect("write kernel marker");
         settings::save(
@@ -918,8 +871,8 @@ mod kernel_install_tests {
 
         let mut progress = |_message: &str| {};
         let result = complete_kernel_install(&data_dir, version, &mut progress);
-        let active = kernel::read_active(&data_dir);
-        let port_open = kernel::port_open(0);
+        let active = kernel::lifecycle::read_active(&data_dir);
+        let port_open = kernel::lifecycle::port_open(0);
         let pid_file_exists = data_dir.join("kernel.pid").is_file();
         fs::remove_dir_all(&data_dir).expect("remove test data");
 
@@ -978,7 +931,7 @@ fn replace_child_slot(slot: &Mutex<Option<Child>>, child: Child) -> Option<Strin
 /// 文件，用户看不到，而两个内核同时占着同一个数据目录是需要人去处理的事，
 /// 因此调用方要把它放进 `StartReport` 让面板提示（见 `start_kernel`）。
 fn register_child(state: &AppState, data_dir: &Path, port: u16, child: Child) -> Option<String> {
-    kernel::write_pid(data_dir, child.id(), port);
+    kernel::lifecycle::write_pid(data_dir, child.id(), port);
     replace_child_slot(&state.running, child)
 }
 
@@ -1022,7 +975,7 @@ pub async fn start_kernel(
         // 受防护的重试会通过 pnpm 重新接线插件；预先解析 pnpm，使得工具链
         // 缺失时能在第一次尝试前就失败，而不是在流程中途才报错。
         let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, &mut send)?;
-        let (family, instance_id) = instance::resolve_default();
+        let (family, instance_id) = shell::instance::resolve_default();
         let deps = guard::GuardDeps {
             data_dir: &data_dir,
             settings: &settings,
@@ -1044,7 +997,7 @@ pub async fn start_kernel(
         // `start_watcher` 幂等，重复调用不会叠加线程；反过来，"内核在跑却没
         // 有人订阅"就等于任务完成通知静默失效。
         if crate::kernel_running(&app) {
-            crate::notify::start_watcher(&app);
+            crate::notify::task::start_watcher(&app);
         }
         // 安全网 P0：启动成功且**没有事故** → 打一个 `startup-ok` 快照。
         // 这是唯一能确立「上一个能跑起来的组合」的时点：安装完成、用户点
@@ -1054,13 +1007,13 @@ pub async fn start_kernel(
         // 看护停用了两个插件才起来的环境，把它记成 last-known-good，等于让
         // P1 恢复时把"停用过的状态"当成用户原本的样子。
         if report.running && report.incident.is_none() {
-            if let Err(error) = crate::snapshot::record(
+            if let Err(error) = crate::diagnostics::snapshot::record(
                 &data_dir,
                 family,
                 instance_id,
                 &settings.profile,
                 settings.port,
-                crate::snapshot::reason::STARTUP_OK,
+                crate::diagnostics::snapshot::reason::STARTUP_OK,
             ) {
                 eprintln!("dsh-xlink: 记录启动快照失败：{error}");
             }
@@ -1098,7 +1051,7 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
         let stop_outcome = {
             let mut guard = crate::lock(&state.running);
             match guard.take() {
-                Some(mut child) => kernel::stop(&mut child),
+                Some(mut child) => kernel::lifecycle::stop(&mut child),
                 None => Ok(()),
             }
         };
@@ -1108,14 +1061,14 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
         // （pid 文件，或配置端口上的内核身份校验），`kill_pid` 内部还会再校
         // 验一遍 pid 仍指向 dsh 内核，因此被复用给无关进程的 pid 是 no-op。
         let current = settings::load_for_shell(settings::current_mode());
-        if let Some(pid) = kernel::workbench_pid(&data_dir, &current) {
+        if let Some(pid) = kernel::lifecycle::workbench_pid(&data_dir, &current) {
             // 带上记录里的启动端口：完整三层校验才挡得住「pid 被复用给另一个
             // dsh 内核」这一类误杀（P2-1）。
-            kernel::kill_pid(pid, kernel::recorded_kernel_port(&data_dir));
+            kernel::lifecycle::kill_pid(pid, kernel::lifecycle::recorded_kernel_port(&data_dir));
         }
         // pid 记录的清理必须无条件执行：内存句柄停止失败时若提前返回，下一次
         // 启动会带着一份陈旧的 pid 记录继续跑，而进程可能还活着。
-        kernel::clear_pid(&data_dir);
+        kernel::lifecycle::clear_pid(&data_dir);
         // 状态已经收敛，但把停止失败如实报给 UI——那通常意味着进程杀不掉，
         // 属于用户需要知道的事。
         stop_outcome.map_err(|e| e.to_string())
@@ -1124,8 +1077,8 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
 
     // 内核没了，事件流也就没有意义：停掉订阅线程，并把角标摘掉（残留的未读
     // 数字会指向一个已经不存在的工作台）。
-    crate::notify::stop_watcher();
-    crate::notify::mark_all_read(&handle);
+    crate::notify::task::stop_watcher();
+    crate::notify::task::mark_all_read(&handle);
     stop_result
 }
 
@@ -1136,8 +1089,8 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn notification_status(
     app: AppHandle,
-) -> Result<crate::notify::NotificationStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || crate::notify::status(&app))
+) -> Result<crate::notify::task::NotificationStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::notify::task::status(&app))
         .await
         .map_err(|e| format!("读取通知状态失败：{e}。请重试"))
 }
@@ -1146,9 +1099,9 @@ pub async fn notification_status(
 #[tauri::command]
 pub async fn notification_mark_read(
     app: AppHandle,
-) -> Result<crate::notify::NotificationStatus, String> {
+) -> Result<crate::notify::task::NotificationStatus, String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || crate::notify::mark_all_read(&handle))
+    tauri::async_runtime::spawn_blocking(move || crate::notify::task::mark_all_read(&handle))
         .await
         .map_err(|e| format!("清除未读标记失败：{e}。请重试"))
 }
@@ -1160,10 +1113,10 @@ pub async fn notification_save_settings(
     enabled: bool,
     notify_away_only: bool,
     sound: bool,
-) -> Result<crate::notify::NotificationStatus, String> {
+) -> Result<crate::notify::task::NotificationStatus, String> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        crate::notify::save_settings(&handle, enabled, notify_away_only, sound)
+        crate::notify::task::save_settings(&handle, enabled, notify_away_only, sound)
     })
     .await
     .map_err(|e| format!("保存通知设置失败：{e}。请重试"))?
@@ -1179,9 +1132,9 @@ pub async fn notification_save_settings(
 #[tauri::command]
 pub async fn notification_test(
     app: AppHandle,
-) -> Result<crate::notify::NotificationStatus, String> {
+) -> Result<crate::notify::task::NotificationStatus, String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || crate::notify::send_test(&handle))
+    tauri::async_runtime::spawn_blocking(move || crate::notify::task::send_test(&handle))
         .await
         .map_err(|e| format!("发送测试通知失败：{e}。请重试"))
 }
@@ -1192,7 +1145,7 @@ pub async fn notification_test(
 /// 的非阻塞调用，不涉及进程、网络或目录树（AGENTS.md 的实现约定）。
 #[tauri::command]
 pub fn notification_test_sound() -> Result<(), String> {
-    crate::notify::play_test_sound()
+    crate::notify::task::play_test_sound()
 }
 
 /// 接收来自 harness webview 的一次性健康报告，并按当前内核日志对其进
@@ -1237,7 +1190,7 @@ pub async fn report_harness_fault(
     let incident = blocking(move || -> Result<guard::Incident, String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
-        let (family, instance_id) = instance::resolve_default();
+        let (family, instance_id) = shell::instance::resolve_default();
         let incident = guard::diagnose_runtime(&data_dir, family, instance_id, report);
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.emit("harness-fault", &incident);
@@ -1321,7 +1274,7 @@ pub(crate) fn kernel_workbench_url_from_log(
     port: u16,
 ) -> Option<String> {
     let tail = read_tail(
-        &kernel::current_kernel_log_path(data_dir, family, instance_id),
+        &kernel::lifecycle::current_kernel_log_path(data_dir, family, instance_id),
         16 * 1024,
     );
     let needle = format!("http://127.0.0.1:{port}/?token=");
@@ -1340,7 +1293,7 @@ fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String,
     const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
     const URL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
     const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
-    let (family, instance_id) = instance::resolve_default();
+    let (family, instance_id) = shell::instance::resolve_default();
 
     let fallback = format!("http://127.0.0.1:{port}");
     let deadline = std::time::Instant::now() + URL_TIMEOUT;
@@ -1360,7 +1313,7 @@ fn kernel_workbench_url(data_dir: &std::path::Path, port: u16) -> Result<String,
         if std::time::Instant::now() >= deadline {
             return Err(format!(
                 "无法确认内核工作台地址，请打开日志后重试（日志：{}）",
-                kernel::current_kernel_log_path(data_dir, family, instance_id).display()
+                kernel::lifecycle::current_kernel_log_path(data_dir, family, instance_id).display()
             ));
         }
         std::thread::sleep(POLL_INTERVAL);
@@ -1416,13 +1369,17 @@ pub(crate) fn chrome_backdrop(app: &AppHandle) -> Color {
 /// （端口空闲、查不到 pid、命令行读不出来）时返回 `None` 保持原有宽松行为——
 /// 收紧到 Unknown 会让「内核在跑但 pid 反查失败」的正常场景打不开工作台，
 /// 那是比误开一个网页严重得多的回归。
-fn harness_port_conflict(port: u16, identity: kernel::ListenerIdentity) -> Option<String> {
+fn harness_port_conflict(
+    port: u16,
+    identity: kernel::lifecycle::ListenerIdentity,
+) -> Option<String> {
     match identity {
-        kernel::ListenerIdentity::NotKernel => Some(format!(
+        kernel::lifecycle::ListenerIdentity::NotKernel => Some(format!(
             "端口 {port} 被另一个程序占用，它不是 dsh 内核。\
              请先结束占用该端口的程序，或在「设置」里换一个端口后重试"
         )),
-        kernel::ListenerIdentity::Kernel | kernel::ListenerIdentity::Unknown => None,
+        kernel::lifecycle::ListenerIdentity::Kernel
+        | kernel::lifecycle::ListenerIdentity::Unknown => None,
     }
 }
 
@@ -1433,11 +1390,11 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let settings = settings::load_for_shell(settings::current_mode());
-        if !kernel::port_open(settings.port) {
+        if !kernel::lifecycle::port_open(settings.port) {
             // 内核可能仍在**旧**端口上服务（用户改过端口设置，或 settings.json
             // 被手工改过）。这种情况下让用户反复点「启动工作台」是死路，
             // 直接给出唯一能收敛状态的下一步。
-            if kernel::workbench_pid(&data_dir, &settings).is_some() {
+            if kernel::lifecycle::workbench_pid(&data_dir, &settings).is_some() {
                 return Err(format!(
                     "端口 {} 上没有工作台，但检测到内核仍在运行。请先点击「关闭工作台」停止它，再重新启动工作台",
                     settings.port
@@ -1451,7 +1408,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         // 端口上有监听者，但它必须是内核：无关程序占着端口时不能把它当
         // 工作台打开（P2-6）。
         if let Some(reason) =
-            harness_port_conflict(settings.port, kernel::port_listener_identity(settings.port))
+            harness_port_conflict(settings.port, kernel::lifecycle::port_listener_identity(settings.port))
         {
             return Err(reason);
         }
@@ -1463,7 +1420,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         // focus，并跳过探针与 source map 准备这些慢路径。
         if let Some(existing) = app.get_webview_window("harness") {
             let loaded = crate::lock(&state.harness_url).clone();
-            let (family, instance_id) = instance::resolve_default();
+            let (family, instance_id) = shell::instance::resolve_default();
             let latest = kernel_workbench_url_from_log(
                 &data_dir,
                 family,
@@ -1490,7 +1447,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
             return Ok(());
         }
 
-        kernel::prepare_workbench_source_maps(&data_dir);
+        kernel::lifecycle::prepare_workbench_source_maps(&data_dir);
         let resolved = kernel_workbench_url(&data_dir, settings.port)?;
         let url = Url::parse(&resolved).map_err(|e| e.to_string())?;
         *crate::lock(&state.harness_url) = Some(resolved);
@@ -1533,12 +1490,12 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                             }
                             NewWindowResponse::Deny
                         })
-                        .initialization_script(include_str!("titlebar-pulse.js"))
-                        .initialization_script(include_str!("pullstring-launcher.js"))
-                        .initialization_script(include_str!("harness-health.js"))
-                        .initialization_script(include_str!("harness-draft.js"))
-                        .initialization_script(include_str!("workbench-history-guard.js"))
-                        .initialization_script(include_str!("no-context-menu.js"))
+                        .initialization_script(include_str!("harness/titlebar-pulse.js"))
+                        .initialization_script(include_str!("harness/pullstring-launcher.js"))
+                        .initialization_script(include_str!("harness/harness-health.js"))
+                        .initialization_script(include_str!("harness/harness-draft.js"))
+                        .initialization_script(include_str!("harness/workbench-history-guard.js"))
+                        .initialization_script(include_str!("harness/no-context-menu.js"))
                         .on_page_load({
                             let handle = handle.clone();
                             move |_webview, payload| {
@@ -1580,7 +1537,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
 /// 建，这样打开另一个文件时不需要跨窗口消息；而该窗口是只读的，丢
 /// 掉一个查看器也不会损失任何东西。
 ///
-/// **吸附 + 移动跟随**：与 `usage::open_usage_window` 共用 `crate::window`
+/// **吸附 + 移动跟随**：与 `usage::open_usage_window` 共用 `crate::shell::window`
 /// 的 dock 算法——打开时贴在主窗右侧、顶边对齐（与用量窗口并排的两栏工作
 /// 区），主窗拖动时由 `window::attach_dock_listener`（lib.rs setup 阶段挂
 /// 上）按合帧窗口持续 set_position，保持吸附状态。
@@ -1609,7 +1566,10 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
             // 吸附定位与用量窗口共用一套算法：贴主窗右侧、顶边对齐，
             // 右侧放不下翻左侧；物理坐标换算成逻辑坐标交给 builder。
             let dock = handle.get_webview_window("main").and_then(|main| {
-                crate::window::dock_position_logical(&main, crate::window::LOG_VIEWER_SIZE)
+                crate::shell::window::dock_position_logical(
+                    &main,
+                    crate::shell::window::LOG_VIEWER_SIZE,
+                )
             });
             let mut builder = WebviewWindowBuilder::new(
                 &handle,
@@ -1618,8 +1578,8 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
             )
             .title(format!("日志 - {name}"))
             .inner_size(
-                crate::window::LOG_VIEWER_SIZE.width,
-                crate::window::LOG_VIEWER_SIZE.height,
+                crate::shell::window::LOG_VIEWER_SIZE.width,
+                crate::shell::window::LOG_VIEWER_SIZE.height,
             )
             .resizable(true)
             .background_color(backdrop);
@@ -1629,7 +1589,7 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
             let result = builder.build();
             if result.is_ok() {
                 // 建出后以实测外框校正：外框高度对齐主壳 + 补偿不可见边框贴紧。
-                crate::window::snap_to_main(&handle, crate::window::LOG_VIEWER_LABEL);
+                crate::shell::window::snap_to_main(&handle, crate::shell::window::LOG_VIEWER_LABEL);
             }
             let result = result.map(|_| ()).map_err(|e| {
                 format!("打开日志窗口失败：{e}。可改用主面板的「查看日志」弹窗，或重试")
@@ -1712,7 +1672,7 @@ pub fn minimize_shell(
         if app.get_webview_window("main").is_none() {
             return Err("主壳窗口不存在（label: main）".to_string());
         }
-        crate::tray::hide_to_tray(&app);
+        crate::shell::tray::hide_to_tray(&app);
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
@@ -1724,13 +1684,6 @@ pub fn minimize_shell(
 fn official_chat_mutation_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
-}
-
-fn current_official_chat_layout(window: &tauri::Window) -> OfficialChatLayout {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let phys = window.inner_size().unwrap_or_default();
-    let (width, height) = official_chat_initial_size(phys.width, phys.height, scale);
-    official_chat_layout(width, height)
 }
 
 fn add_official_chat_tab(
@@ -1749,9 +1702,9 @@ fn add_official_chat_tab(
         .background_color(backdrop)
         .data_directory(profile_dir.to_path_buf())
         .additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)
-        .initialization_script(include_str!("titlebar-pulse.js"))
-        .initialization_script(include_str!("chat-fingerprint.js"))
-        .initialization_script(include_str!("no-context-menu.js"));
+        .initialization_script(include_str!("harness/titlebar-pulse.js"))
+        .initialization_script(include_str!("harness/chat-fingerprint.js"))
+        .initialization_script(include_str!("harness/no-context-menu.js"));
     // data_store_identifier 只在 macOS 存在；用 cfg 下的绑定遮蔽代替
     // `let mut`，其他平台不会留下 unused_mut 告警。
     #[cfg(target_os = "macos")]
@@ -1803,10 +1756,12 @@ fn ensure_official_chat_tab(
 
 /// 在带页签的窗口中打开 DeepSeek 官方对话。
 ///
-/// 一个裸露的 `tauri::Window`（label [`OFFICIAL_CHAT_WINDOW_LABEL`]）
-/// 承载一个钉在顶部的页签栏 webview（[`OFFICIAL_CHAT_STRIP_LABEL`]，
-/// 本地 SPA 路由 `index.html?chatstrip=1`），再加上 [`OFFICIAL_CHAT_TABS`]
-/// 中每个条目对应的一个惰性创建的内容 webview。默认的内容 webview 在
+/// 一个裸露的 `tauri::Window`（label
+/// [`harness::official_chat::OFFICIAL_CHAT_WINDOW_LABEL`]）承载一个钉在
+/// 顶部的页签栏 webview（[`harness::official_chat::OFFICIAL_CHAT_STRIP_LABEL`]，
+/// 本地 SPA 路由 `index.html?chatstrip=1`），再加上
+/// [`harness::official_chat::OFFICIAL_CHAT_TABS`] 中每个条目对应的一个
+/// 惰性创建的内容 webview。默认的内容 webview 在
 /// 打开时即创建；其它远程页面在被选中时挂载。只有处于激活状态的内容
 /// webview 会被显示，已挂载的页面在页签切换之间会保留其状态。
 /// [`relayout_official_chat`] 在每次 resize 时把页签栏钉在顶部，让内
@@ -1820,12 +1775,12 @@ fn ensure_official_chat_tab(
 ///
 /// 登录持久化沿用单窗口时代的策略：每个内容 webview 共享
 /// `<data_dir>/webview-official-chat`（Windows 上的 user-data 文件
-/// 夹）/ [`OFFICIAL_CHAT_DATA_STORE_IDENTIFIER`]（macOS），所以
+/// 夹）/ [`harness::official_chat::OFFICIAL_CHAT_DATA_STORE_IDENTIFIER`]（macOS），所以
 /// cookies、localStorage、IndexedDB 都能跨 Shell 重启保留。存储由浏览
 /// 器按 origin 隔离，因此即便共享同一个存储，DeepSeek 与千问页签也
 /// 不会相互冲突。WebView2 还要求同一个 user-data 目录下的所有环境配
 /// 置完全一致；每个内容 webview 都传入相同的
-/// [`OFFICIAL_CHAT_BROWSER_ARGS`]，所以「共享文件夹」这条约束是成立
+/// [`harness::official_chat::OFFICIAL_CHAT_BROWSER_ARGS`]，所以「共享文件夹」这条约束是成立
 /// 的。strip webview 是本地 SPA 内容，所以它豁免
 /// `chat-fingerprint.js` 的注入，保留 `window.__TAURI__` 以便调用
 /// [`official_chat_tabs`] / [`switch_official_chat_tab`]。
@@ -1929,7 +1884,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                     WebviewUrl::App("index.html?chatstrip=1".into()),
                 )
                 .background_color(backdrop)
-                .initialization_script(include_str!("pullstring-launcher.js"));
+                .initialization_script(include_str!("harness/pullstring-launcher.js"));
                 window
                     .add_child(
                         strip_builder,
@@ -1980,85 +1935,6 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
         Some(Err(e)) => Err(e),
         None => Err("官方对话窗口创建线程已结束，未返回结果".to_string()),
     }
-}
-
-/// 把 Tao 的物理 client-area 尺寸转换为逻辑点。
-fn logical_window_size(width: u32, height: u32, scale: f64) -> Option<(f64, f64)> {
-    if !scale.is_finite() || scale <= 0.0 {
-        return None;
-    }
-    let width = width as f64 / scale;
-    let height = height as f64 / scale;
-    if width <= 0.0 || height <= 0.0 {
-        return None;
-    }
-    Some((width, height))
-}
-
-fn official_chat_initial_size(width: u32, height: u32, scale: f64) -> (f64, f64) {
-    logical_window_size(width, height, scale)
-        .filter(|(width, height)| {
-            *width >= OFFICIAL_CHAT_STRIP_HEIGHT && *height >= OFFICIAL_CHAT_STRIP_HEIGHT
-        })
-        .unwrap_or((OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT))
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct OfficialChatLayout {
-    width: f64,
-    height: f64,
-    strip_height: f64,
-    content_y: f64,
-    content_height: f64,
-}
-
-fn official_chat_layout(width: f64, height: f64) -> OfficialChatLayout {
-    let width = width.max(0.0);
-    let height = height.max(0.0);
-    OfficialChatLayout {
-        width,
-        height,
-        strip_height: OFFICIAL_CHAT_STRIP_HEIGHT.min(height),
-        content_y: OFFICIAL_CHAT_STRIP_HEIGHT.min(height),
-        content_height: (height - OFFICIAL_CHAT_STRIP_HEIGHT).max(0.0),
-    }
-}
-
-/// 判断某个逻辑布局是否合理到可以应用到子 webview。AppKit 在刚创建
-/// 完一个 macOS 窗口之后可能立刻报告一个极小的临时 client size；把这
-/// 种布局应用上去会在每次 relayout 时把 strip 和内容 webview 都缩回去。
-/// 该判断与 [`official_chat_initial_size`] 中的初始尺寸兜底相互呼应；
-/// 真正的布局 bug 修复落在 window builder 的 title-bar style 上（见
-/// `open_official_chat`）。
-fn official_chat_layout_plausible(layout: OfficialChatLayout) -> bool {
-    layout.width >= OFFICIAL_CHAT_STRIP_HEIGHT && layout.height >= OFFICIAL_CHAT_STRIP_HEIGHT
-}
-
-/// 能使原生子视图 frame 失效的事件。
-#[derive(Clone, Copy)]
-enum OfficialChatRelayoutTrigger {
-    Geometry,
-    Focused(bool),
-    Other,
-}
-
-fn should_relayout_for_trigger(trigger: OfficialChatRelayoutTrigger) -> bool {
-    matches!(
-        trigger,
-        OfficialChatRelayoutTrigger::Geometry | OfficialChatRelayoutTrigger::Focused(true)
-    )
-}
-
-/// 判断某个原生 window 事件是否会改变子视图的几何信息。
-fn should_relayout_official_chat(event: &WindowEvent) -> bool {
-    let trigger = match event {
-        WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-            OfficialChatRelayoutTrigger::Geometry
-        }
-        WindowEvent::Focused(focused) => OfficialChatRelayoutTrigger::Focused(*focused),
-        _ => OfficialChatRelayoutTrigger::Other,
-    };
-    should_relayout_for_trigger(trigger)
 }
 
 fn relayout_official_chat(app: &AppHandle) {
@@ -2287,11 +2163,13 @@ fn reposition_near(app: &AppHandle, window: &tauri::WebviewWindow, x: f64, y: f6
 
 /// 插件商店以及按内核粒度的物化状态快照。
 #[tauri::command]
-pub async fn plugin_status(state: State<'_, AppState>) -> Result<plugins::PluginStatus, String> {
+pub async fn plugin_status(
+    state: State<'_, AppState>,
+) -> Result<plugins::center::PluginStatus, String> {
     let data_dir = state.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let settings = settings::load_for_shell(settings::current_mode());
-        plugins::status(&data_dir, &settings)
+        plugins::center::status(&data_dir, &settings)
     })
     .await
     .map_err(|e| e.to_string())
@@ -2304,17 +2182,19 @@ pub async fn plugin_status(state: State<'_, AppState>) -> Result<plugins::Plugin
 pub async fn kernel_plugin_list(
     state: State<'_, AppState>,
     version: String,
-) -> Result<Vec<plugins::KernelPluginRow>, String> {
+) -> Result<Vec<plugins::center::KernelPluginRow>, String> {
     // `version` 会被当作路径段拼进 `kernels/<version>/plugins`，这里同样只接受
     // 已安装列表里的形态。这是只读查询，沿用原来的短文案——`require_kernel_version`
     // 需要操作动词，套上去会改掉用户看到的措辞。
-    if !crate::version::is_valid_kernel_version(&version) {
+    if !crate::shell::version::is_valid_kernel_version(&version) {
         return Err(format!("版本号 {version:?} 形态非法"));
     }
     let data_dir = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || plugins::kernel_plugin_list(&data_dir, &version))
-        .await
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        plugins::center::kernel_plugin_list(&data_dir, &version)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// 插件商店命令的共享主体：基于已经缓存好的 node 探测来解析 pnpm
@@ -2350,14 +2230,14 @@ async fn run_plugin_command(
 /// **只打点、绝不阻断**。快照写不进去（磁盘满、文档损坏）绝不能让用户的
 /// 安装 / 卸载失败——那等于用安全网反过来卡住用户正事。失败只写 stderr。
 fn record_pre_change(data_dir: &Path, settings: &settings::Settings) {
-    let (family, instance_id) = plugins::default_instance_key();
-    if let Err(error) = crate::snapshot::record(
+    let (family, instance_id) = plugins::center::default_instance_key();
+    if let Err(error) = crate::diagnostics::snapshot::record(
         data_dir,
         &family,
         &instance_id,
         &settings.profile,
         settings.port,
-        crate::snapshot::reason::PRE_CHANGE,
+        crate::diagnostics::snapshot::reason::PRE_CHANGE,
     ) {
         eprintln!("dsh-xlink: 记录变更前快照失败：{error}");
     }
@@ -2378,8 +2258,8 @@ async fn run_plugin_mutation_command(
     let settings = settings::load_for_shell(settings::current_mode());
     // 装完新内核要重跑插件接线，同样会改写实例 profile：先确认这个实例没被
     // 另一个壳的内核占着。
-    let (family, instance_id) = instance::resolve_default();
-    instance::ensure_instance_mutable(family, instance_id, "安装内核")?;
+    let (family, instance_id) = shell::instance::resolve_default();
+    shell::instance::ensure_instance_mutable(family, instance_id, "安装内核")?;
     record_pre_change(&data_dir, &settings);
     run_plugin_command(app, on_event, op).await
 }
@@ -2403,7 +2283,8 @@ pub async fn plugin_install(
         app,
         on_event,
         move |data_dir, settings, pnpm_exe, progress| {
-            plugins::install(data_dir, settings, pnpm_exe, &spec, &mode, progress).map(|_| ())
+            plugins::center::install(data_dir, settings, pnpm_exe, &spec, &mode, progress)
+                .map(|_| ())
         },
     )
     .await
@@ -2426,14 +2307,14 @@ pub async fn plugin_precheck_install(
     spec: String,
     mode: Option<String>,
     on_event: Channel<String>,
-) -> Result<crate::sandbox::PrecheckReport, String> {
+) -> Result<crate::plugins::sandbox::PrecheckReport, String> {
     let mode = mode.unwrap_or_else(|| String::from("link"));
     run_precheck_command(
         app,
         on_event,
         move |data_dir, settings, pnpm_exe, node_path, progress| {
-            let (family, instance_id) = plugins::default_instance_key();
-            crate::precheck::plugin_install(
+            let (family, instance_id) = plugins::center::default_instance_key();
+            crate::plugins::precheck::plugin_install(
                 &family,
                 &instance_id,
                 data_dir,
@@ -2464,32 +2345,34 @@ async fn run_precheck_command(
             &Path,
             &Path,
             &mut dyn FnMut(&str),
-        ) -> Result<crate::sandbox::PrecheckReport, AppError>
+        ) -> Result<crate::plugins::sandbox::PrecheckReport, AppError>
         + Send
         + 'static,
-) -> Result<crate::sandbox::PrecheckReport, String> {
+) -> Result<crate::plugins::sandbox::PrecheckReport, String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
-    blocking(move || -> Result<crate::sandbox::PrecheckReport, String> {
-        let state = app.state::<AppState>();
-        let _lifecycle_guard = crate::lock(&state.lifecycle);
-        let settings = settings::load_for_shell(settings::current_mode());
-        let node_info = cached_node(&state, &settings);
-        let promise_send = on_event.clone();
-        let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, move |msg| {
-            let _ = promise_send.send(msg.to_string());
-        })?;
-        let mut progress = |msg: &str| {
-            let _ = on_event.send(msg.to_string());
-        };
-        op(
-            &data_dir,
-            &settings,
-            &pnpm_exe,
-            Path::new(&node_info.path),
-            &mut progress,
-        )
-        .map_err(|e| e.to_string())
-    })
+    blocking(
+        move || -> Result<crate::plugins::sandbox::PrecheckReport, String> {
+            let state = app.state::<AppState>();
+            let _lifecycle_guard = crate::lock(&state.lifecycle);
+            let settings = settings::load_for_shell(settings::current_mode());
+            let node_info = cached_node(&state, &settings);
+            let promise_send = on_event.clone();
+            let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, move |msg| {
+                let _ = promise_send.send(msg.to_string());
+            })?;
+            let mut progress = |msg: &str| {
+                let _ = on_event.send(msg.to_string());
+            };
+            op(
+                &data_dir,
+                &settings,
+                &pnpm_exe,
+                Path::new(&node_info.path),
+                &mut progress,
+            )
+            .map_err(|e| e.to_string())
+        },
+    )
     .await
 }
 
@@ -2504,7 +2387,7 @@ pub async fn plugin_update(
         app,
         on_event,
         move |data_dir, settings, pnpm_exe, progress| {
-            plugins::update(data_dir, settings, pnpm_exe, &id, progress).map(|_| ())
+            plugins::center::update(data_dir, settings, pnpm_exe, &id, progress).map(|_| ())
         },
     )
     .await
@@ -2521,7 +2404,7 @@ pub async fn plugin_uninstall(
         app,
         on_event,
         move |data_dir, settings, pnpm_exe, progress| {
-            plugins::uninstall(data_dir, settings, pnpm_exe, &id, progress)
+            plugins::center::uninstall(data_dir, settings, pnpm_exe, &id, progress)
         },
     )
     .await
@@ -2548,7 +2431,7 @@ pub async fn plugin_install_instance(
         app,
         on_event,
         move |family, instance_id, data_dir, settings, pnpm_exe, progress| {
-            plugins::install_for_instance(
+            plugins::center::install_for_instance(
                 family,
                 instance_id,
                 data_dir,
@@ -2580,7 +2463,7 @@ pub async fn plugin_uninstall_instance(
         app,
         on_event,
         move |family, instance_id, data_dir, settings, pnpm_exe, progress| {
-            plugins::uninstall_for_instance(
+            plugins::center::uninstall_for_instance(
                 family,
                 instance_id,
                 data_dir,
@@ -2609,7 +2492,14 @@ pub async fn plugin_sync_instance(
         app,
         on_event,
         move |family, instance_id, data_dir, settings, pnpm_exe, progress| {
-            plugins::sync_for_instance(family, instance_id, data_dir, settings, pnpm_exe, progress)
+            plugins::center::sync_for_instance(
+                family,
+                instance_id,
+                data_dir,
+                settings,
+                pnpm_exe,
+                progress,
+            )
         },
     )
     .await
@@ -2622,11 +2512,11 @@ pub async fn plugin_status_instance(
     family: String,
     id: String,
     state: State<'_, AppState>,
-) -> Result<plugins::PluginStatus, String> {
+) -> Result<plugins::center::PluginStatus, String> {
     let data_dir = state.data_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let settings = settings::load_for_shell(settings::current_mode());
-        plugins::status_for_instance(&family, &id, &data_dir, &settings)
+        plugins::center::status_for_instance(&family, &id, &data_dir, &settings)
     })
     .await
     .map_err(|e| e.to_string())
@@ -2637,8 +2527,8 @@ pub async fn plugin_status_instance(
 /// 读旧布局来源 + 文件数 + 字节数，生成完整预览。**只读**——不创建
 /// 任何目录、不触碰源 / 目标。UI 用它给用户展示「这次会搬哪些」。
 #[tauri::command]
-pub async fn migration_preview() -> Result<migration::MigrationPreview, String> {
-    tauri::async_runtime::spawn_blocking(migration::preview_migration)
+pub async fn migration_preview() -> Result<migration::wizard::MigrationPreview, String> {
+    tauri::async_runtime::spawn_blocking(migration::wizard::preview_migration)
         .await
         .map_err(|e| e.to_string())
 }
@@ -2649,11 +2539,11 @@ pub async fn migration_preview() -> Result<migration::MigrationPreview, String> 
 /// 让「数据迁移」弹窗实时显示进度条 + 当前步骤文字。
 #[tauri::command]
 pub async fn migration_run(
-    policy: migration::ConflictPolicy,
-    on_progress: Channel<migration::MigrationProgress>,
-) -> Result<migration::MigrationReport, String> {
+    policy: migration::wizard::ConflictPolicy,
+    on_progress: Channel<migration::wizard::MigrationProgress>,
+) -> Result<migration::wizard::MigrationReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        migration::run_migration_with_progress(policy, |progress| {
+        migration::wizard::run_migration_with_progress(policy, |progress| {
             // Channel.send 失败 = 前端已经断开（比如用户关掉了弹窗）。
             // 这不影响后端继续完成迁移（写 backup 是主要的可观察副作用），
             // 只是不再推消息；前端的弹窗后续读 `migration_list()` 仍能拿到
@@ -2669,17 +2559,21 @@ pub async fn migration_run(
 /// 把 migration_id 对应的 backup 还原回目标位置。找不到 backup 时
 /// 返回 `AppError`，UI 据此弹「没找到可回滚的迁移」。
 #[tauri::command]
-pub async fn migration_rollback(migration_id: String) -> Result<migration::RollbackReport, String> {
-    tauri::async_runtime::spawn_blocking(move || migration::rollback_migration(&migration_id))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+pub async fn migration_rollback(
+    migration_id: String,
+) -> Result<migration::wizard::RollbackReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        migration::wizard::rollback_migration(&migration_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 /// 列出所有历史迁移（按 backup 目录 mtime 倒序）。
 #[tauri::command]
-pub async fn migration_list() -> Result<Vec<migration::MigrationSummary>, String> {
-    tauri::async_runtime::spawn_blocking(migration::list_migrations)
+pub async fn migration_list() -> Result<Vec<migration::wizard::MigrationSummary>, String> {
+    tauri::async_runtime::spawn_blocking(migration::wizard::list_migrations)
         .await
         .map_err(|e| e.to_string())
 }
@@ -2688,7 +2582,7 @@ pub async fn migration_list() -> Result<Vec<migration::MigrationSummary>, String
 /// 是否要问用户。
 #[tauri::command]
 pub async fn migration_skip_get() -> Result<bool, String> {
-    Ok(migration::is_migration_skipped())
+    Ok(migration::wizard::is_migration_skipped())
 }
 
 // 「搬错实例」的会话回收命令（scan_misplaced_home / recover_misplaced_home）
@@ -2700,15 +2594,20 @@ pub async fn migration_skip_get() -> Result<bool, String> {
 /// 迁移成功路径的静音由 `migration_run` 后端自动写入（reason=migrated），
 /// 不经过这条命令。
 #[tauri::command]
-pub async fn migration_skip_set(sources: Vec<migration::LegacySource>) -> Result<(), String> {
-    migration::set_migration_skipped(migration::MigrationSkipReason::Declined, sources)
-        .map_err(|e| e.to_string())
+pub async fn migration_skip_set(
+    sources: Vec<migration::wizard::LegacySource>,
+) -> Result<(), String> {
+    migration::wizard::set_migration_skipped(
+        migration::wizard::MigrationSkipReason::Declined,
+        sources,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// 清除拒绝标记——用户在「数据迁移」侧栏面板手动重跳时调。
 #[tauri::command]
 pub async fn migration_skip_clear() -> Result<(), String> {
-    migration::clear_migration_skipped().map_err(|e| e.to_string())
+    migration::wizard::clear_migration_skipped().map_err(|e| e.to_string())
 }
 
 /// 实例范围插件命令的共享主体：与 [`run_plugin_command`] 类似，但额外
@@ -2735,7 +2634,7 @@ async fn run_plugin_command_instance(
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         // 目标实例由调用方显式给出（实例页的按实例操作），守卫按这个 id 判，
         // 不是按当前壳的默认实例。
-        instance::ensure_instance_mutable(&family, &id, "改动这个实例的插件")?;
+        shell::instance::ensure_instance_mutable(&family, &id, "改动这个实例的插件")?;
         let settings = settings::load_for_shell(settings::current_mode());
         let node_info = cached_node(&state, &settings);
         let promise_send = on_event.clone();
@@ -2757,7 +2656,7 @@ pub async fn plugin_sync(app: AppHandle, on_event: Channel<String>) -> Result<()
         app,
         on_event,
         move |data_dir, settings, pnpm_exe, progress| {
-            plugins::sync_all(data_dir, settings, pnpm_exe, progress)
+            plugins::center::sync_all(data_dir, settings, pnpm_exe, progress)
         },
     )
     .await
@@ -2775,7 +2674,7 @@ pub async fn plugin_set_mode(
         app,
         on_event,
         move |data_dir, settings, pnpm_exe, progress| {
-            plugins::set_mode(data_dir, settings, pnpm_exe, &id, &mode, progress)
+            plugins::center::set_mode(data_dir, settings, pnpm_exe, &id, &mode, progress)
         },
     )
     .await
@@ -2785,9 +2684,9 @@ pub async fn plugin_set_mode(
 #[tauri::command]
 pub async fn plugin_check_updates(
     state: State<'_, AppState>,
-) -> Result<Vec<plugins::UpdateInfo>, String> {
+) -> Result<Vec<plugins::center::UpdateInfo>, String> {
     let data_dir = state.data_dir.clone();
-    blocking(move || plugins::check_updates(&data_dir)).await
+    blocking(move || plugins::center::check_updates(&data_dir)).await
 }
 
 /// 完整的社区目录；搜索和过滤在 UI 中基于这份缓存列表进行。`force`
@@ -2796,9 +2695,9 @@ pub async fn plugin_check_updates(
 pub async fn plugin_catalog(
     state: State<'_, AppState>,
     force: bool,
-) -> Result<Vec<plugins::CatalogItem>, String> {
+) -> Result<Vec<plugins::center::CatalogItem>, String> {
     let data_dir = state.data_dir.clone();
-    blocking(move || plugins::catalog(&data_dir, force)).await
+    blocking(move || plugins::center::catalog(&data_dir, force)).await
 }
 
 /// 处理一次启动故障中的一项被隔离插件。
@@ -2822,7 +2721,7 @@ pub async fn plugin_resolve(
                 app,
                 on_event,
                 move |data_dir, settings, pnpm_exe, progress| {
-                    plugins::uninstall(data_dir, settings, pnpm_exe, &id, progress)
+                    plugins::center::uninstall(data_dir, settings, pnpm_exe, &id, progress)
                 },
             )
             .await
@@ -2832,7 +2731,7 @@ pub async fn plugin_resolve(
             blocking(move || -> Result<(), String> {
                 let state = app.state::<AppState>();
                 let _lifecycle_guard = crate::lock(&state.lifecycle);
-                let _store_guard = plugins::lock_store();
+                let _store_guard = plugins::center::lock_store();
                 quarantine::remove(&data_dir, &id).map_err(|e| e.to_string())?;
                 let settings = settings::load_for_shell(settings::current_mode());
                 let node_info = cached_node(&state, &settings);
@@ -2840,7 +2739,7 @@ pub async fn plugin_resolve(
                 // 息——只跑一次 profile 重新同步。
                 let mut noop = |_: &str| {};
                 let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, &mut noop)?;
-                plugins::ensure_wiring(&data_dir, &settings, &pnpm_exe, &mut noop)
+                plugins::center::ensure_wiring(&data_dir, &settings, &pnpm_exe, &mut noop)
                     .map(|_| ())
                     .map_err(|e| e.to_string())
             })
@@ -2927,8 +2826,8 @@ pub async fn patch_revert(
 
 /// 技能商店以及按技能的 active-root 状态快照。
 #[tauri::command]
-pub async fn skill_status() -> Result<skills::SkillStatus, String> {
-    tauri::async_runtime::spawn_blocking(skills::status)
+pub async fn skill_status() -> Result<skills::manage::SkillStatus, String> {
+    tauri::async_runtime::spawn_blocking(skills::manage::status)
         .await
         .map_err(|e| e.to_string())
 }
@@ -2964,7 +2863,7 @@ pub async fn skill_install(
     on_event: Channel<String>,
 ) -> Result<(), String> {
     run_skill_command(app, on_event, move |progress| {
-        skills::install(&spec, "link", progress).map(|_| ())
+        skills::manage::install(&spec, "link", progress).map(|_| ())
     })
     .await
 }
@@ -2977,7 +2876,7 @@ pub async fn skill_update(
     on_event: Channel<String>,
 ) -> Result<(), String> {
     run_skill_command(app, on_event, move |progress| {
-        skills::update(&id, progress).map(|_| ())
+        skills::manage::update(&id, progress).map(|_| ())
     })
     .await
 }
@@ -2990,7 +2889,7 @@ pub async fn skill_uninstall(
     on_event: Channel<String>,
 ) -> Result<(), String> {
     run_skill_command(app, on_event, move |progress| {
-        skills::uninstall(&id, progress)
+        skills::manage::uninstall(&id, progress)
     })
     .await
 }
@@ -3005,7 +2904,7 @@ pub async fn skill_set_enabled(
     on_event: Channel<String>,
 ) -> Result<(), String> {
     run_skill_command(app, on_event, move |progress| {
-        skills::set_enabled(&id, &name, enabled, progress)
+        skills::manage::set_enabled(&id, &name, enabled, progress)
     })
     .await
 }
@@ -3026,8 +2925,8 @@ pub async fn skill_move_aside_shadowed(
 
 /// 检查每个已安装的技能包在其来源处是否有更新版本。
 #[tauri::command]
-pub async fn skill_check_updates() -> Result<Vec<skills::SkillUpdateInfo>, String> {
-    blocking(skills::check_updates).await
+pub async fn skill_check_updates() -> Result<Vec<skills::manage::SkillUpdateInfo>, String> {
+    blocking(skills::manage::check_updates).await
 }
 
 // ─── P2：实例管理命令 ────────────────────────────────────────────────────
@@ -3039,7 +2938,7 @@ pub async fn skill_check_updates() -> Result<Vec<skills::SkillUpdateInfo>, Strin
 //   - start_instance / stop_instance / restart_instance：生命周期
 //
 // 旧 start_kernel / stop_kernel 仍按 legacy data_dir 单实例工作，但 setup()
-// 在 [`crate::instance::ensure_default_registered`] 里会先把现有用户的
+// 在 [`crate::shell::instance::ensure_default_registered`] 里会先把现有用户的
 // active.txt + settings 吸收为当前壳的默认实例，让 UI 能立刻看到「我的实例」。
 //
 // **「把旧状态吸收成默认实例」只有一个入口：`ensure_default_registered`。**
@@ -3055,8 +2954,8 @@ pub async fn skill_check_updates() -> Result<Vec<skills::SkillUpdateInfo>, Strin
 /// UI 看到的实例摘要：注册表条目 + 运行时状态。
 #[derive(serde::Serialize)]
 pub struct InstanceSummary {
-    pub record: instance::InstanceRecord,
-    pub runtime: instance::InstanceRuntime,
+    pub record: shell::instance::InstanceRecord,
+    pub runtime: shell::instance::InstanceRuntime,
     pub is_default: bool,
 }
 
@@ -3064,17 +2963,18 @@ pub struct InstanceSummary {
 #[tauri::command]
 pub async fn list_instances() -> Result<Vec<InstanceSummary>, String> {
     blocking(move || -> Result<Vec<InstanceSummary>, String> {
-        let _guard = crate::lock(instance::lifecycle_mutex());
-        let registry = instance::load_registry().map_err(|e| format!("读取实例注册表失败：{e}"))?;
+        let _guard = crate::lock(shell::instance::lifecycle_mutex());
+        let registry =
+            shell::instance::load_registry().map_err(|e| format!("读取实例注册表失败：{e}"))?;
         let summaries = registry
             .instances
             .iter()
             .map(|record| {
-                let runtime = instance::load_runtime(&record.kernel_family, &record.id);
+                let runtime = shell::instance::load_runtime(&record.kernel_family, &record.id);
                 // 「默认」按**当前壳**判定：用户切过页签就用他选的那个，否则用
                 // 按壳分家的默认值。不看注册表里那个共享字段——它是 release 壳
                 // 的族解析输入，拿它标 UI 会让两个壳互相把对方的实例标成"默认"。
-                let is_default = record.id == instance::current_instance_id();
+                let is_default = record.id == shell::instance::current_instance_id();
                 InstanceSummary {
                     record: record.clone(),
                     runtime,
@@ -3097,14 +2997,21 @@ pub async fn create_instance(
 ) -> Result<InstanceSummary, String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
     blocking(move || -> Result<InstanceSummary, String> {
-        let _guard = crate::lock(instance::lifecycle_mutex());
-        let now_ms = crate::process::epoch_millis();
-        let mut record =
-            instance::InstanceRecord::new(id.clone(), instance::KERNEL_FAMILY_DSH, port, now_ms);
+        let _guard = crate::lock(shell::instance::lifecycle_mutex());
+        let now_ms = crate::shell::process::epoch_millis();
+        let mut record = shell::instance::InstanceRecord::new(
+            id.clone(),
+            shell::instance::KERNEL_FAMILY_DSH,
+            port,
+            now_ms,
+        );
         record.label = label;
-        instance::ensure_instance_dirs(&record).map_err(|e| format!("准备实例目录失败：{e}"))?;
-        instance::save_record_to_disk(&record).map_err(|e| format!("写入实例记录失败：{e}"))?;
-        let mut registry = instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
+        shell::instance::ensure_instance_dirs(&record)
+            .map_err(|e| format!("准备实例目录失败：{e}"))?;
+        shell::instance::save_record_to_disk(&record)
+            .map_err(|e| format!("写入实例记录失败：{e}"))?;
+        let mut registry =
+            shell::instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
         registry
             .add(record.clone())
             .map_err(|e| format!("注册表拒绝该 id：{e}"))?;
@@ -3112,13 +3019,13 @@ pub async fn create_instance(
         // 输入（`instance::default_family`），dev 壳建个实例就把它抢走，会让
         // release 壳下次启动把 data_dir 指到不相干的实例上。认领只发生在 setup 的
         // `ensure_default_registered` 里，且只在无人认领时、由 release 执行。
-        instance::save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))?;
-        let runtime = instance::load_runtime(&record.kernel_family, &record.id);
+        shell::instance::save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))?;
+        let runtime = shell::instance::load_runtime(&record.kernel_family, &record.id);
         let _ = data_dir;
         Ok(InstanceSummary {
             record,
             runtime,
-            is_default: instance::current_instance_id() == id,
+            is_default: shell::instance::current_instance_id() == id,
         })
     })
     .await
@@ -3129,34 +3036,36 @@ pub async fn create_instance(
 pub async fn delete_instance(app: AppHandle, id: String) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
     blocking(move || -> Result<(), String> {
-        let _guard = crate::lock(instance::lifecycle_mutex());
-        let registry = instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
+        let _guard = crate::lock(shell::instance::lifecycle_mutex());
+        let registry =
+            shell::instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
         let Some(record) = registry.get(&id).cloned() else {
             return Err(format!("实例 {id} 不存在"));
         };
-        if kernel::instance_workbench_running(&record.kernel_family, &id, record.port) {
+        if kernel::lifecycle::instance_workbench_running(&record.kernel_family, &id, record.port) {
             return Err(format!("实例 {id} 仍在运行，请先停止后再删除"));
         }
-        instance::delete_instance_dirs(&record).map_err(|e| format!("清理实例目录失败：{e}"))?;
+        shell::instance::delete_instance_dirs(&record)
+            .map_err(|e| format!("清理实例目录失败：{e}"))?;
         let mut registry = registry;
         registry.remove(&id);
         // 被删的正是本壳默认指针指向的那个 → 置空（指针的维护只在 instance.rs
         // 里做，见 `instance::forget_default_pointer`）。置 `None` 而不是改指某个
         // 兄弟实例：下次启动的 `ensure_default_registered` 会按本壳默认值重建。
-        instance::forget_default_pointer(&mut registry, &id);
+        shell::instance::forget_default_pointer(&mut registry, &id);
         // 本壳自己选中的就是被删的那个 → 退回按壳分家的默认值，别让壳停在一个
         // 已经不存在的实例上。
-        let mode = crate::settings::current_mode();
-        if crate::settings::load_for_shell(mode)
+        let mode = crate::shell::settings::current_mode();
+        if crate::shell::settings::load_for_shell(mode)
             .current_instance_id
             .as_deref()
             == Some(id.as_str())
         {
-            let mut settings = crate::settings::load_for_shell(mode);
+            let mut settings = crate::shell::settings::load_for_shell(mode);
             settings.current_instance_id = None;
-            crate::settings::save_for_shell(mode, &settings).map_err(|e| e.to_string())?;
+            crate::shell::settings::save_for_shell(mode, &settings).map_err(|e| e.to_string())?;
         }
-        instance::save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))?;
+        shell::instance::save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))?;
         let _ = data_dir;
         Ok(())
     })
@@ -3174,12 +3083,13 @@ pub async fn delete_instance(app: AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn set_default_instance(id: String) -> Result<(), String> {
     blocking(move || -> Result<(), String> {
-        let _guard = crate::lock(instance::lifecycle_mutex());
-        let registry = instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
+        let _guard = crate::lock(shell::instance::lifecycle_mutex());
+        let registry =
+            shell::instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
         if registry.get(&id).is_none() {
             return Err(format!("实例 {id} 不存在"));
         }
-        instance::set_current_instance_id(&id)
+        shell::instance::set_current_instance_id(&id)
     })
     .await
 }
@@ -3190,38 +3100,41 @@ pub async fn set_default_instance(id: String) -> Result<(), String> {
 pub async fn start_instance(
     app: AppHandle,
     id: String,
-) -> Result<kernel::InstanceStartReport, String> {
+) -> Result<kernel::lifecycle::InstanceStartReport, String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
-    blocking(move || -> Result<kernel::InstanceStartReport, String> {
-        let _guard = crate::lock(instance::lifecycle_mutex());
-        let settings = settings::load_for_shell(settings::current_mode());
-        // 不走 cached_node —— instance 启动可能发生在面板不知道的实例上；
-        // 至少重探一次避免拿旧缓存拒绝。
-        let node_info = {
-            use crate::node::resolve as node_resolve;
-            let mut probe = settings.clone();
-            probe.node_path = None;
-            node_resolve(&probe, &data_dir)
-        };
-        if !node_info.ok {
-            return Err(node_info.reason.clone());
-        }
-        let node_path = PathBuf::from(node_info.path.clone());
-        let family = instance::KERNEL_FAMILY_DSH;
-        let child = kernel::start_instance(family, &id, &data_dir, &node_path, &settings)
-            .map_err(|e| format!("{e}"))?;
-        let now_ms = crate::process::epoch_millis();
-        let mut runtime = instance::load_runtime(family, &id);
-        runtime.status = instance::InstanceStatus::Running;
-        runtime.last_updated_ms = now_ms;
-        runtime.port = Some(settings.port);
-        let _ = instance::save_runtime(family, &id, &runtime);
-        Ok(kernel::InstanceStartReport {
-            instance_id: id,
-            started: child.is_some(),
-            warning: None,
-        })
-    })
+    blocking(
+        move || -> Result<kernel::lifecycle::InstanceStartReport, String> {
+            let _guard = crate::lock(shell::instance::lifecycle_mutex());
+            let settings = settings::load_for_shell(settings::current_mode());
+            // 不走 cached_node —— instance 启动可能发生在面板不知道的实例上；
+            // 至少重探一次避免拿旧缓存拒绝。
+            let node_info = {
+                use crate::node::detect::resolve as node_resolve;
+                let mut probe = settings.clone();
+                probe.node_path = None;
+                node_resolve(&probe, &data_dir)
+            };
+            if !node_info.ok {
+                return Err(node_info.reason.clone());
+            }
+            let node_path = PathBuf::from(node_info.path.clone());
+            let family = shell::instance::KERNEL_FAMILY_DSH;
+            let child =
+                kernel::lifecycle::start_instance(family, &id, &data_dir, &node_path, &settings)
+                    .map_err(|e| format!("{e}"))?;
+            let now_ms = crate::shell::process::epoch_millis();
+            let mut runtime = shell::instance::load_runtime(family, &id);
+            runtime.status = shell::instance::InstanceStatus::Running;
+            runtime.last_updated_ms = now_ms;
+            runtime.port = Some(settings.port);
+            let _ = shell::instance::save_runtime(family, &id, &runtime);
+            Ok(kernel::lifecycle::InstanceStartReport {
+                instance_id: id,
+                started: child.is_some(),
+                warning: None,
+            })
+        },
+    )
     .await
 }
 
@@ -3230,9 +3143,9 @@ pub async fn start_instance(
 pub async fn stop_instance(app: AppHandle, id: String) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
     blocking(move || -> Result<(), String> {
-        let _guard = crate::lock(instance::lifecycle_mutex());
-        let family = instance::KERNEL_FAMILY_DSH;
-        kernel::stop_instance(family, &id).map_err(|e| format!("{e}"))?;
+        let _guard = crate::lock(shell::instance::lifecycle_mutex());
+        let family = shell::instance::KERNEL_FAMILY_DSH;
+        kernel::lifecycle::stop_instance(family, &id).map_err(|e| format!("{e}"))?;
         let _ = data_dir;
         Ok(())
     })
@@ -3244,7 +3157,7 @@ pub async fn stop_instance(app: AppHandle, id: String) -> Result<(), String> {
 pub async fn restart_instance(
     app: AppHandle,
     id: String,
-) -> Result<kernel::InstanceStartReport, String> {
+) -> Result<kernel::lifecycle::InstanceStartReport, String> {
     stop_instance(app.clone(), id.clone()).await?;
     start_instance(app, id).await
 }
@@ -3294,12 +3207,12 @@ mod workbench_url_tests {
         // `log_path`，否则夹具会写进用户真实的 `~/.dsh-xlink` 日志，
         // 而被测代码在临时目录里什么也读不到。
         let _xlink_home = crate::tests::scoped_xlink_home(&root);
-        let log_path = kernel::current_kernel_log_path(
+        let log_path = kernel::lifecycle::current_kernel_log_path(
             &root,
-            crate::instance::KERNEL_FAMILY_DSH,
+            crate::shell::instance::KERNEL_FAMILY_DSH,
             // 夹具必须跟生产同一套解析：默认实例按壳分家（dev 壳是
             // `default-dev`），写死 `default` 会让夹具与被测代码看不同的日志。
-            crate::instance::resolve_default().1,
+            crate::shell::instance::resolve_default().1,
         );
         fs::create_dir_all(log_path.parent().expect("log parent")).expect("create log dir");
         fs::write(
@@ -3345,102 +3258,6 @@ mod workbench_url_tests {
             result,
             Ok(format!("http://127.0.0.1:{port}/?token={current_token}"))
         );
-    }
-}
-
-#[cfg(test)]
-mod official_chat_layout_tests {
-    use super::*;
-
-    #[test]
-    fn converts_retina_pixels_to_logical_points_once() {
-        assert_eq!(logical_window_size(2732, 1536, 2.0), Some((1366.0, 768.0)),);
-        assert_eq!(logical_window_size(1366, 768, 0.0), None);
-    }
-
-    #[test]
-    fn ignores_tiny_provisional_window_metrics_for_initial_layout() {
-        assert_eq!(
-            official_chat_initial_size(1366, 6, 1.0),
-            (OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT),
-        );
-        assert_eq!(
-            official_chat_initial_size(6, 768, 1.0),
-            (OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT),
-        );
-        assert_eq!(official_chat_initial_size(2732, 1536, 2.0), (1366.0, 768.0),);
-    }
-
-    #[test]
-    fn reserves_the_strip_once_for_content() {
-        let layout = official_chat_layout(1366.0, 768.0);
-
-        assert_eq!(layout.width, 1366.0);
-        assert_eq!(layout.height, 768.0);
-        assert_eq!(layout.strip_height, OFFICIAL_CHAT_STRIP_HEIGHT);
-        assert_eq!(layout.content_y, OFFICIAL_CHAT_STRIP_HEIGHT);
-        assert_eq!(layout.content_height, 730.0);
-    }
-
-    #[test]
-    fn clamps_layout_when_window_is_shorter_than_the_strip() {
-        let layout = official_chat_layout(640.0, 24.0);
-
-        assert_eq!(layout.width, 640.0);
-        assert_eq!(layout.height, 24.0);
-        assert_eq!(layout.strip_height, 24.0);
-        assert_eq!(layout.content_y, 24.0);
-        assert_eq!(layout.content_height, 0.0);
-    }
-
-    #[test]
-    fn relayout_rejects_tiny_provisional_layouts_that_collapse_macos_windows() {
-        // AppKit 在 macOS 上创建窗口后会立刻报告几像素大小的临时 client
-        // size；如果照此应用，strip 和内容 webview 都会坍缩成那条窄
-        // 缝。relayout 必须保留上一次良好的 frame。
-        assert!(!official_chat_layout_plausible(official_chat_layout(
-            1366.0, 3.0,
-        )));
-        assert!(!official_chat_layout_plausible(official_chat_layout(
-            4.0, 768.0,
-        )));
-        // 一个真实的窗口总是至少和页签栏一样大。
-        assert!(official_chat_layout_plausible(official_chat_layout(
-            1366.0, 768.0,
-        )));
-    }
-
-    #[test]
-    fn every_official_chat_tab_uses_the_same_content_region() {
-        let layout = official_chat_layout(1366.0, 768.0);
-        let regions: Vec<_> = OFFICIAL_CHAT_TABS
-            .iter()
-            .map(|_| (layout.width, layout.content_y, layout.content_height))
-            .collect();
-
-        assert_eq!(regions.len(), 3);
-        assert!(regions.windows(2).all(|pair| pair[0] == pair[1]));
-    }
-
-    #[test]
-    fn relayouts_for_geometry_events_but_not_focus_loss() {
-        assert!(should_relayout_for_trigger(
-            OfficialChatRelayoutTrigger::Geometry,
-        ));
-        assert!(should_relayout_for_trigger(
-            OfficialChatRelayoutTrigger::Focused(true),
-        ));
-        assert!(!should_relayout_for_trigger(
-            OfficialChatRelayoutTrigger::Focused(false),
-        ));
-        assert!(!should_relayout_for_trigger(
-            OfficialChatRelayoutTrigger::Other,
-        ));
-
-        assert!(should_relayout_official_chat(&WindowEvent::Resized(
-            tauri::PhysicalSize::new(1366, 768),
-        )));
-        assert!(!should_relayout_official_chat(&WindowEvent::Focused(false)));
     }
 }
 
@@ -3571,7 +3388,7 @@ mod harness_open_tests {
     fn refuses_to_open_a_port_held_by_a_known_non_kernel() {
         // P2-6 残留：端口被无关程序占用时，面板此前会把这个端口当工作台
         // 打开 —— 用户看到的是别人的网页。
-        let reason = harness_port_conflict(3090, kernel::ListenerIdentity::NotKernel)
+        let reason = harness_port_conflict(3090, kernel::lifecycle::ListenerIdentity::NotKernel)
             .expect("已知的非内核监听者必须被拒绝");
         assert!(reason.contains("3090"), "理由里要带上端口：{reason}");
         assert!(reason.contains("设置"), "要给出可操作的下一步：{reason}");
@@ -3579,10 +3396,12 @@ mod harness_open_tests {
 
     #[test]
     fn allows_the_kernel_and_unknown_listeners() {
-        assert!(harness_port_conflict(3090, kernel::ListenerIdentity::Kernel).is_none());
+        assert!(harness_port_conflict(3090, kernel::lifecycle::ListenerIdentity::Kernel).is_none());
         // 身份未知时必须保持宽松：读不到命令行不等于"不是内核"，收紧会让
         // pid 反查失败的用户打不开工作台。
-        assert!(harness_port_conflict(3090, kernel::ListenerIdentity::Unknown).is_none());
+        assert!(
+            harness_port_conflict(3090, kernel::lifecycle::ListenerIdentity::Unknown).is_none()
+        );
     }
 }
 

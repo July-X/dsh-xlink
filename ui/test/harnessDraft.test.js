@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
+import { readShellSource } from '../../scripts/lib/shell-source.mjs';
 
 // 注入脚本本身是 IIFE，没有导出；这里按 harnessHealth.test.js 的做法在 vm 里
 // 造一个假页面跑它，断言的是**行为**（什么时候存草稿、什么时候写回去），不是源码
 // 里有没有某个字符串。
-const source = readFileSync(new URL('../../src-tauri/src/harness-draft.js', import.meta.url), 'utf8');
+const source = readShellSource('harness-draft.js');
 
 /** 造一个可编辑元素。kind 为 'lexical' 时没有 value、只有 innerText——内核的会话
  *  输入框是 Lexical 富文本编辑器（contenteditable），不是 textarea。 */

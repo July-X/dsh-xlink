@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { readShellSource } from '../../scripts/lib/shell-source.mjs';
 
 // 技能启停的后端能力（`skill_set_enabled` + `enabled:false` 语义 + 启动对账）一直是完整的，
 // 但 v1 面板从未调用过它：`docs/skill-management.md` 把它记为「尚未接线」，用户只能靠整包
@@ -15,7 +16,7 @@ test('技能启停动作接的是后端 skill_set_enabled 命令', () => {
 });
 
 test('前端载荷的参数名与 Rust 命令签名逐字对齐', () => {
-  const commands = read('src-tauri/src/commands.rs');
+  const commands = readShellSource('commands.rs');
   const signature = commands.match(/pub async fn skill_set_enabled\(([\s\S]*?)\)\s*->/);
   assert.ok(signature, 'commands.rs 里必须能找到 skill_set_enabled 的签名');
   for (const param of ['id: String', 'name: String', 'enabled: bool', 'on_event: Channel<String>']) {

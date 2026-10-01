@@ -6,10 +6,12 @@
 
 ## 模块
 
+`src-tauri/src/` 自 2026-10-01 起**按功能分目录**（`shell/` `kernel/` `harness/` `plugins/` `skills/` `diagnostics/` `migration/` `pkg/` `node/` `notify/` `usage/`），只有 `lib.rs` / `main.rs` / `commands.rs` 留根。下面的条目按**不带目录的文件名**指代模块——目录归属与新增模块该放哪一格见 [src-tauri/AGENTS.md](../src-tauri/AGENTS.md#目录约定)。
+
 ```
-ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel.rs / plugins.rs / patches.rs ──▶ pnpm/git 子进程
+ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel/ / plugins/ ──▶ pnpm/git 子进程
                                    │              │
-                              settings.rs    releases.rs（npm registry → GitHub 回退）
+                        shell/settings.rs    pkg/releases.rs（npm registry → GitHub 回退）
                                    │
               ~/.dsh-xlink/{shell/<mode>/, kernels/<family>/, plugins/<family>/, skills/}
               + ~/.dsh-xlink/<family>/desktop[-dev]/{kernels/, active.txt, patches/, quarantine.json}
@@ -147,7 +149,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 > [dsh-xlink-multi-kernel-development-plan.md](dsh-xlink-multi-kernel-development-plan.md)。
 > 阶段性 commit 快照见 [multi-kernel-migration-status-2026-09-19.md](multi-kernel-migration-status-2026-09-19.md)。
 
-### 路径解析分工（`src-tauri/src/paths.rs`）
+### 路径解析分工（`src-tauri/src/shell/paths.rs`）
 
 `paths.rs` 是路径解析的单一入口。**两套正交环境变量**：
 - `DSH_XLINK_HOME`：Xlink 自身的数据目录（`<xlink_home>/`）。中央库 / 活动视图 / 备份 / cache / state 都在这里。
@@ -271,7 +273,7 @@ UI 挂在「数据迁移」面板的「找回历史会话」卡片（`MigrationP
 
 ### 第二内核可扩展性（`KernelAdapter` trait）
 
-`src-tauri/src/kernel_adapter.rs` 的 `KernelAdapter` trait + `adapters()` 注册表容纳多内核族：
+`src-tauri/src/kernel/kernel_adapter.rs` 的 `KernelAdapter` trait + `adapters()` 注册表容纳多内核族：
 - `DshAdapter`（active）—— DSH 的具体实现
 - `McodeAdapter`（mock，P7 阶段）—— 所有物化 / 启动返回 `VersionNotInstalled`，能力位全空；证明通用实例模型能容纳第二种内核
 - 真实接入新内核只需替换对应 adapter 的方法实现，**不**需要改 `KernelAdapter` trait 或 `adapters()` 注册表

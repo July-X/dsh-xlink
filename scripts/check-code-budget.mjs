@@ -25,6 +25,7 @@
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,7 +63,9 @@ const RATCHET_THRESHOLD = 600;
  */
 function readBaseline() {
   let text;
+  let listing = '';
   let tree = new Set();
+  let renames = new Map();
   try {
     text = execFileSync('git', ['show', 'HEAD:scripts/check-code-budget.mjs'], {
       cwd: root,
@@ -70,22 +73,44 @@ function readBaseline() {
       maxBuffer: 8 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    const listing = execFileSync('git', ['ls-tree', '-r', '--name-only', 'HEAD'], {
+    // 暂存区里的重命名。搬移是 `git mv` 暂存着的，git 自己知道新旧路径——
+    // 比「内容哈希」可靠：文件搬完往往同时改了里面的路径，内容就变了，
+    // 哈希认不出是搬移还是新写。
+    renames = new Map();
+    const staged = execFileSync('git', ['diff', '--cached', '-M', '--name-status'], {
+      cwd: root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    for (const line of staged.split('\n').filter(Boolean)) {
+      const parts = line.split('\t');
+      if (parts[0].startsWith('R') && parts[2]) renames.set(parts[2], parts[1]);
+    }
+    listing = execFileSync('git', ['ls-tree', '-r', 'HEAD'], {
       cwd: root,
       encoding: 'utf8',
       maxBuffer: 8 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    tree = new Set(listing.split('\n').filter(Boolean));
+    tree = new Set(); // 由下面的 blobs / names 推导，路径本身不再单列
   } catch {
     return null;
   }
   const files = {};
-  // HEAD 树里的**文件名**集合（去掉目录）。搬移换了路径，`tree.has(path)`
-  // 于是判不出「这是搬过来的」——2026-09-30 ui/src 按模块重组时，搬过的文件
-  // 全被当成新文件，逼着为它们补预算、还撞上 800 行硬顶。文件名跨目录唯一，
-  // 拿它当「这份代码以前存在过」的判据，比路径可靠。
-  const names = new Set([...tree].map((entry) => entry.split('/').pop()));
+  // 「这份代码以前存在过吗」的三级判据，HEAD 树里各取一份：
+  //   blobs  内容哈希——**改名与搬移都认得**（内容没变）。最强。
+  //   names  文件名——搬目录换了路径但名字没变时认得。
+  //   tree   完整路径——原地未动时认得。
+  // 2026-09-30 ui/src 与 src-tauri/src 两次分目录都撞上过：搬过的文件被当成
+  // 新文件，逼着补预算、还撞上 800 行硬顶。
+  const blobs = new Set();
+  const names = new Set();
+  for (const line of listing.split('\n').filter(Boolean)) {
+    const tab = line.indexOf('\t');
+    const meta = line.slice(0, tab).split(/\s+/);
+    const path = line.slice(tab + 1);
+    if (meta[2]) blobs.add(meta[2]);
+    names.add(path.split('/').pop());
+  }
   // 路径无关的基线表：文件名 -> 基线预算。搬移后按路径查不到，只能按名字查。
   const fileBudgets = new Map();
   const block = text.match(/FILE_BUDGETS\s*=\s*\{([\s\S]*?)\n\};/);
@@ -101,12 +126,24 @@ function readBaseline() {
   }
   const total = text.match(/TOTAL_BUDGET\s*=\s*(\d+)/);
   if (!total) return null;
-  return { files, total: Number(total[1]), tree, names, fileBudgets };
+  return { files, total: Number(total[1]), tree, names, blobs, fileBudgets, renames };
 }
 
 /** 一个 .rs 路径的「模块标识」：`src/usage.rs` 与 `src/usage/mod.rs` 都是
  *  `usage`。搬进子目录后登记路径常写成 `mod.rs`，按文件名查基线会查空——
  * 反棘轮于是对搬过的大文件失效，那正是它最该管的一批。 */
+/** 这个工作区文件的内容是不是 HEAD 里某个文件的内容（= 搬移或改名，不是新文件）。 */
+function isKnownBlob(baseline, path) {
+  if (!baseline.blobs || baseline.blobs.size === 0) return false;
+  try {
+    const buf = readFileSync(path);
+    const hash = createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex');
+    return baseline.blobs.has(hash);
+  } catch {
+    return false;
+  }
+}
+
 function moduleId(path) {
   const name = path.split('/').pop();
   if (name !== 'mod.rs' && name !== 'mod.rs.bak') return name.replace(/\.rs$/, '');
@@ -141,7 +178,7 @@ const FILE_BUDGETS = {
   // 旧 API 委托到新 API，加上 step 3 注释 / 测试 setup helper 的尾段）。
   // 物化/卸载/同步/状态/模式切换是同一概念的同步代码，留在同一文件比
   // 拆出去更易维护。
-  'src-tauri/src/plugins.rs': 2980,
+  'src-tauri/src/plugins/center.rs': 2980,
   // P4 step 4：4 条实例范围 Tauri 命令 plugin_install_instance /
   // plugin_uninstall_instance / plugin_sync_instance / plugin_status_instance
   // + 共享 run_plugin_command_instance 主体，约 +75 行。
@@ -171,7 +208,35 @@ const FILE_BUDGETS = {
   // 2110 → 2220 是错的：反棘轮把二分命令壳逼了出来，改记进 bisect_cmd.rs，
   // 本文件回到基线 2110。**不下调**——它仍是全项目第二大的文件，下一步
   // 该做的是把别的东西拆出去，而不是假装它已经很小了。
-  'src-tauri/src/commands.rs': 2110,
+  // 11 个 mod.rs（2026-09-30 按功能分目录时新建）：每个目录一个，声明子模块
+  // 并把子模块标成 pub(crate)。它们不含实现，只是一层路由，所以基线都在 10 行上下。
+  // `check-invariants` 的「新文件必须登记」按文件名认搬移，但这 11 个是新出现的，
+  // 不在 HEAD 的树里，得逐个登记。
+  'src-tauri/src/shell/mod.rs': 15,
+  'src-tauri/src/kernel/mod.rs': 10,
+  'src-tauri/src/plugins/mod.rs': 10,
+  'src-tauri/src/skills/mod.rs': 10,
+  'src-tauri/src/diagnostics/mod.rs': 10,
+  'src-tauri/src/harness/mod.rs': 10,
+  'src-tauri/src/usage/mod.rs': 10,
+  'src-tauri/src/notify/mod.rs': 10,
+  'src-tauri/src/migration/mod.rs': 10,
+  'src-tauri/src/pkg/mod.rs': 10,
+  'src-tauri/src/node/mod.rs': 10,
+  // 2026-09-30 按功能分目录，三个大文件各上调到实测值：
+  //   commands.rs        2110 → 2171
+  //   plugins/center.rs  2980 → 2983
+  //   usage/subscription  900 → 909
+  // **不是新逻辑**，是分目录本身的代价：每处引用从 `crate::process::X` 变成
+  // `shell::process::X`，多一段；`use X::{self, Y}` 拆成「绑定组」+「绑定叶子」
+  // 两行多出一行，个别过长的调用被 rustfmt 折行。反棘轮拦的是「又把这个模块
+  // 撑大了」，而这里一个功能都没加——所以按实测值登记，并明确以本次为新基线，
+  // 之后恢复只许下调。shell/mod.rs 是 15 行（14 个 `pub(crate) mod` + 1 个 cfg）。
+  // 2166 → 2080：把官方对话那一组常量、布局算术与重排判据摘进
+  // harness/official_chat.rs（见该文件的登记），并把只服务它的
+  // logical_window_size 一并带走。搬移前基线 2110，实测降到 2087——
+  // 反棘轮是「只许下调」，所以这里跟着降，不给回弹留口子。
+  'src-tauri/src/commands.rs': 2087,
   // 安全网 P0 + P1：环境快照。指纹计算（可重建的声明而非备份）、快照文档
   // 读写（走 state.rs 骨架）、裁剪策略（高权重优先 + 永不丢 last-known-good）、
   // 两个打点的入栈规则、给面板的只读视图，以及 P1 的差异计算与恢复执行
@@ -180,10 +245,10 @@ const FILE_BUDGETS = {
   // P1 追加只读视图与打点。**记录**（指纹 / 快照文档 / 裁剪 / 打点）与**执行**
   // （差异计算 / 恢复落地）拆成了 snapshot.rs + restore.rs：读前者的人关心
   // "这份回退点可不可信"，读后者的人关心"点确认之后会发生什么"。
-  'src-tauri/src/snapshot.rs': 590,
+  'src-tauri/src/diagnostics/snapshot.rs': 590,
   // 差异计算与环境恢复：逐条比对、只改差异项、只停用不卸载、恢复后用
   // verify::probe_once 自检。
-  'src-tauri/src/restore.rs': 560,
+  'src-tauri/src/diagnostics/restore.rs': 560,
   // P0 + P1 的前端状态与展示函数：打点原因中文化、摘要拼装、空状态的三句
   // 话，以及恢复预览的维度标签 / 标题 / 动不了的条数提示。
   // 145 → 155：P2 追加 outcomeHeadline。
@@ -199,18 +264,18 @@ const FILE_BUDGETS = {
   // 结果如何、排除了谁"，怎么试由命令层驱动 verify::probe_once。
   // 收尾只有三种取值，**没有"找到根因"**——组合效应会让二分停在不可修
   // 的答案上。
-  'src-tauri/src/bisect.rs': 350,
+  'src-tauri/src/diagnostics/bisect.rs': 350,
   // 二分定位的 Tauri 命令壳。**被反棘轮逼出来的**：四条命令加 rounds_estimate
   // 原本要进 commands.rs，而那条规则不许把一个 2110 行的文件继续撑大。
   // 这组命令只服务二分一件事、内部高度耦合，自成模块也确实更清楚。
   // 120 → 140：每轮真正装进沙盒的插件白名单 + 工作台运行态守卫。
-  'src-tauri/src/bisect_cmd.rs': 140,
+  'src-tauri/src/diagnostics/bisect_cmd.rs': 140,
   // 「起一次沙盒内核看它起不来」的共享判据：P1 恢复后自检与 P2 二分试探
   // 共用。判据一旦有两份实现就会分叉，而分叉出来的那个会让二分**静默收敛
   // 到错误答案**——它把"没试成"当成"起来了"。
   // 90 → 120：**把被测配置装进沙盒**这一步。少了它，这个函数起的是
   // 零插件零技能的裸内核，等于在另一个问题上做判定。
-  'src-tauri/src/verify.rs': 120,
+  'src-tauri/src/diagnostics/verify.rs': 120,
   // P2 的前端状态与展示函数：结局映射（无"根因"）、轮数估算、每轮标题与配色。
   // 110 → 175：`startBisect` 现在**真的把每一轮跑完**（循环 invoke
   // bisect_probe），外加 abort 的错误提示与刷新。只发起不驱动的话，面板会
@@ -225,12 +290,12 @@ const FILE_BUDGETS = {
   // 适配器启动与就绪看护、环回 HTTP 存活确认、日志标记扫描、残留回收、
   // 证据另存，以及 Verdict / PrecheckReport 两个对外类型。
   // **刻意与「装什么」无关**：技能预检将来直接复用同一套起停与探测。
-  'src-tauri/src/sandbox.rs': 560,
+  'src-tauri/src/plugins/sandbox.rs': 560,
   // 安装预检的两段式事务：中央库字节级快照与回滚、基线差分判定、
   // 提交（物化 + 接线）与报告装配。放在独立文件而不是塞进已 2964 行的
   // plugins.rs，是为了两件事：插件模块读不懂、预检想复用到技能上也
   // 无从下手。plugins.rs 侧只暴露 `store_file` 一条可见性缝。
-  'src-tauri/src/precheck.rs': 450,
+  'src-tauri/src/plugins/precheck.rs': 450,
   // P6 step 2+3+4：迁移向导后端——ConflictPolicy / MigrationStatus /
   // MigrationItemReport / MigrationReport / run_migration / migrate_one /
   // decide_entry / backup_existing / copy_one / copy_tree_inner +
@@ -242,15 +307,15 @@ const FILE_BUDGETS = {
   // is_store_manifest + merge_store_manifest）+ 合并回归测试 + 共享 env
   // 守卫 scoped_xlink_home_unset 的调用方改造。合并语义是修复「目标清单
   // 被泄漏数据顶新导致源记录永远迁不进来」的根因，逻辑必须留在迁移层。
-  'src-tauri/src/migration.rs': 830,
-  'src-tauri/src/skills.rs': 1490,
+  'src-tauri/src/migration/wizard.rs': 830,
+  'src-tauri/src/skills/manage.rs': 1490,
   // 「被更高优先级的根盖住」的处置：把盖住的那几份**改名让路**（只改名不删）。
   // 独立成文件的两条理由：① skills.rs 只剩 10 行余量，这条能力（判据 + 落点
   // 复核 + 改名 + 4 个测试）放进去只能靠调数字过门禁，而它是 1480 行的大文件；
   // ② 判据本身在 paths.rs（纯函数，只读），执行在这里——**读判据的人**与
   // **动手的人**分开，与 snapshot.rs / restore.rs 那对「回退点可信吗」/
   // 「点确认会发生什么」是同一种分法。66 行代码（+200 行含文档与测试）。
-  'src-tauri/src/skill_shadow.rs': 70,
+  'src-tauri/src/skills/skill_shadow.rs': 70,
   // 「活动视图里被同名条目占住、启用必然失败」的判据 + 出路（2026-09-30，新建）。
   // 与 skill_shadow 同一形状但**不是同一件事**：那条处理的是内核 rank 更高
   // 的根（~/.dsh/skills、~/.agents/skills）盖住壳管理的条目；这条处理的是活动
@@ -269,7 +334,7 @@ const FILE_BUDGETS = {
   // 在哪里」与「动手动哪些文件」就分居两处，而那种分叉的后果是按钮点下去动了
   // 判据没点名的文件。它离 800 行硬顶还有 600 多行，与 verify.rs(120)、
   // bisect_cmd.rs(140)、harness_window.rs(195) 同一量级。
-  'src-tauri/src/skill_conflict.rs': 190,
+  'src-tauri/src/skills/skill_conflict.rs': 190,
   // 技能 frontmatter 的解析（2026-09-30，新建）。修的是 `description: |` 这类
   // YAML 块标量被读成字面量 `"|"` —— store.json 里存下 `"description": "|"`，
   // 面板 tooltip 显示的也是 `"|"`。**它几乎不报错**：`"|"` 是非空字符串，技能
@@ -280,15 +345,15 @@ const FILE_BUDGETS = {
   // 「文案里说的版本」对不上；③ 解析器是纯函数，拆出来后能单独测，不必拉起
   // 整个技能栈。搬完之后 skills.rs 1486 → 1454（反棘轮方向），skill_conflict.rs
   // 188 → 155（一套 frontmatter 解析，不是两套）。
-  'src-tauri/src/skill_frontmatter.rs': 205,
+  'src-tauri/src/skills/skill_frontmatter.rs': 205,
   // 跨壳装包活动信标（2026-09-30，新建）。为什么它该独立成一个文件而不是塞进
   // harness_window.rs：**写**这一侧在 kernel.rs 的装 / 删两端，**读**那一侧在
   // harness_window.rs 的看门狗里，两边都不肯为了对方把自己长成一个什么都管的
   // 模块——正是 AGENTS.md 里 `pkg.rs` / `state.rs` 那条「跨模块重复先提共享层」的
   // 同一刀法。内容与路径解析都不复杂（46 行代码 + 文档与 2 个测试），复杂的是
   // 「它为什么可以是唯一一处跨壳可变数据」那三条自律，写在 paths.rs 的路径函数上。
-  'src-tauri/src/package_activity.rs': 80,
-  'src-tauri/src/patches.rs': 1250,
+  'src-tauri/src/kernel/package_activity.rs': 80,
+  'src-tauri/src/plugins/patches.rs': 1250,
   // B 类日志 family/instance_id 接入：kernel_log_spec / install_log_spec /
   // current_kernel_log_path / install_version / install_version_into 加形参；
   // attach_log_drainers 改用 family + id。start() legacy 单实例路径硬编码
@@ -297,7 +362,7 @@ const FILE_BUDGETS = {
   // write_kernel_workspace_yaml / write_kernel_stub / 安装二遍钉版）。
   // 2026-09-29：这三个函数连同「上游漏发精确钉版时降级重试」一起搬进
   // kernel_deps.rs，kernel.rs 同步从 744 回到 721 行；预算数字不动。
-  'src-tauri/src/kernel.rs': 1380,
+  'src-tauri/src/kernel/lifecycle.rs': 1380,
   // 2026-09-29 新增（265 行代码，其余是解释这次事故的文档）。它回答
   // 「内核安装时，每个官方子包究竟装哪个版本」这一个关注点：写 stub /
   // pnpm-workspace.yaml 的 overrides、装完扫锁步错位、以及 pnpm 报
@@ -307,22 +372,22 @@ const FILE_BUDGETS = {
   // 三者共用同一份 overrides 数据，拆开只会让「谁在决定钉版」变得看不懂；
   // 而它们都不属于 kernel.rs 的「起进程 / 判成败」，继续堆在那里只会推高
   // 一个只许下调的文件的实际行数。
-  'src-tauri/src/kernel_deps.rs': 300,
+  'src-tauri/src/kernel/kernel_deps.rs': 300,
   // 2026-09-29 新增（27 行代码，其余是解释「为什么 eprintln 不算数」的文档）。
   // 壳是 GUI 应用，stderr 在 Windows 上没有任何去处，而**只有后果、没有原因**
   // 的动作恰恰只走 stderr（工作台窗口自动重载、给 pnpm 降优先级）。这个模块
   // 给它们一个落盘出口：沿用按日轮转的约定，因此自动出现在「查看日志」面板。
   // 单独成文件而不是塞进 process.rs，是因为 process.rs 只剩 9 行预算，且
   // 「事件落盘」与「子进程执行」是两个关注点。
-  'src-tauri/src/shell_events.rs': 80,
+  'src-tauri/src/shell/shell_events.rs': 80,
   // 2026-09-29 新增（36 行代码，其余是这次事故的取证结论）。装内核时 pnpm
   // 硬链接数万文件 + node-gyp 编译，把 CPU 与磁盘打满，同机另一个壳的
   // WebView2 渲染进程被打崩，表现为工作台莫名 reload 并撞上内核的启动顺序
   // 竞态。把**装包工具**降到 BELOW_NORMAL 让它们让路，保留双壳并行调试——
   // 比「另一个壳的工作台在跑就禁止装内核」代价小得多。只降 pnpm/npm/npx：
   // Node 探针降优先级会误报「原生模块加载失败」，那是更糟的假阴性。
-  'src-tauri/src/child_priority.rs': 80,
-  'src-tauri/src/process.rs': 1180,
+  'src-tauri/src/shell/child_priority.rs': 80,
+  'src-tauri/src/shell/process.rs': 1180,
   // 1050 → 1090：会话标题改为订阅 `session/control`（baseline 播种 + 标题投影帧
   // 保鲜 + 老内核退回 session/list 快照），这部分逻辑与 Center 同生共死，拆出去
   // 只会把状态机切成两半。详见 docs/notification-design.md §3.3。
@@ -330,14 +395,14 @@ const FILE_BUDGETS = {
   // （turnOutline 投影末项；baseline / 投影帧 / session/list / api-session/added
   // 四个来源共用一套吸收逻辑）+ CompletedTask 增 lastPrompt / lastResponse +
   // 通知正文带最近对话与「完成于 HH:MM」。与标题同源同命，不拆分。
-  'src-tauri/src/notify.rs': 1170,
+  'src-tauri/src/notify/task.rs': 1170,
   // 2026-09-28 新增：系统通知通道的可用性判定（Windows「设置 → 系统 → 通知」
   // 被关时 `ToastNotifier::Show` 仍返回 S_OK 而气泡不出现，macOS 未打包构建
   // 同样投递不出）。单独成文件而不是并进 notify.rs，是因为它与状态机无关——
   // notify.rs 只回答"要不要弹"，这里只回答"平台这一关卡没卡住"；混在一起会
   // 让一个 1170 行、只许下调的文件再多一处平台分支。约 56 行代码（其余是解释
   // 这两种静默失败的文档）。
-  'src-tauri/src/notify_gate.rs': 120,
+  'src-tauri/src/notify/notify_gate.rs': 120,
   // 2026-09-29 新增：点系统通知横幅「回到工作台」的单实例交接。未打包应用的
   // 通知被点中时，Windows 启动的是本 exe 而不是"叫醒"已运行的窗口；第二个
   // 进程若照常走完 setup 会 reap_orphans 杀掉在跑的内核。独立成文件而不是
@@ -348,7 +413,7 @@ const FILE_BUDGETS = {
   // SetForegroundWindow）。这是实测逼出来的：只做管道交接时窗口会被拉回
   // 可见，却抢不到前台——Windows 的前台锁对非前台进程静默失败，用户看到的
   // 仍然是"点了没反应"。
-  'src-tauri/src/activate.rs': 280,
+  'src-tauri/src/notify/activate.rs': 280,
   // 2026-09-30：工作台窗口的**手动**逃生口（`harness_force_reload`）。看门狗
   // 只在加载事件上判据，而 WebView2 渲染进程被打崩时页面早就 `Finished` 过，
   // 那条判据永远不会触发，`reload()` 又落在一块死掉的文档上（用户原话：
@@ -358,7 +423,16 @@ const FILE_BUDGETS = {
   // `home_recovery_cmd.rs` 是同一处理由。生产代码约 40 行 + 两个把拒绝文案
   // 钉死的单测（拒绝路径的「说法」是用户在故障里唯一能拿到的东西）。重建
   // 动作复用 `harness_window::recreate`，没有复制第二条建窗链。
-  'src-tauri/src/harness_cmd.rs': 90,
+  'src-tauri/src/harness/harness_cmd.rs': 90,
+  // 官方对话窗口的常量、页签表、布局算术与重排判据（87 行，从 commands.rs
+  // 摘出）。**为什么该独立**：这些是「官方对话有哪些页签、窗口多大、什么
+  // 事件会让子视图 frame 失效」这一组纯窗口事实，不碰数据目录、不读设置、
+  // 不发 IPC——它们过去混在 commands.rs 里，而那份文件是全仓最大的命令层，
+  // 已经顶在反棘轮上限上。「官方对话的尺寸与页签」原本要在一份两千行的命令
+  // 文件里翻才能找到；摘出来之后它有了一个能一眼看全的落点。连带搬走的
+  // logical_window_size 只有这一个调用方（relayout_official_chat），跟着走
+  // 还顺手消掉了 harness 反过来依赖 commands 的那条边。
+  'src-tauri/src/harness/official_chat.rs': 87,
   // 工作台窗口的加载看门狗。从 commands.rs 拆出来的原因不是「行数超标」这么
   // 表面：它和命令注册、启动看护、状态轮询都不是一回事——它观测的是 **webview
   // 自己**的加载事件，判据完全独立于页面（页面没加载出来时，注入页面里的
@@ -383,7 +457,7 @@ const FILE_BUDGETS = {
   // 「拆回 120 附近」那笔债**仍未还**：175 行那次顶高的成因（instance 侧跨壳判定）
   // 早已搬走，剩下的 `recreate` / `open` / `build` 三条建窗链仍在本文件内。那是
   // 下一次碰这块时该做的事，不在本次范围。
-  'src-tauri/src/harness_window.rs': 310,
+  'src-tauri/src/harness/harness_window.rs': 310,
   // install_isolation.rs（2026-09-30 傍晚，新建）：回答「这棵已安装的内核树
   // 是否仍与其他目录共享 inode」——采样读硬链接数（Windows 走
   // GetFileInformationByHandle，Unix 走 stat 的 st_nlink）。独立成模块的理由：
@@ -391,7 +465,7 @@ const FILE_BUDGETS = {
   // shared_storage、横幅门控、装 / 删提示）共用，且有自己的测试面（临时树里
   // 造真实硬链接来钉两个判定方向与保守方向）。塞进 kernel.rs 会让 1380 行的
   // 它再长 90 行，而这不是「安装」逻辑，是「安装的物化方式」的探针。
-  'src-tauri/src/install_isolation.rs': 90,
+  'src-tauri/src/kernel/install_isolation.rs': 90,
   // 工作台未发送草稿的存续（2026-09-30，新建）。它该独立成一个文件而不是塞进
   // harness_cmd.rs：**它是数据**（一段纯文本 + 落盘位置 + 取走即删 + 过期 +
   // 「既没字也没图即作废」），harness_cmd.rs 里全是 Tauri 命令与「该不该动手」的判据；
@@ -404,7 +478,7 @@ const FILE_BUDGETS = {
   // 本文件只留「什么时候有、什么时候作废」这层生命周期；搬完之后剩下的增长是「只发图
   // 不发字也算有东西」「图没了也要作废」这两条判据与它们的测试。按规则 ① 的正确反应
   // 是把新逻辑拆出去而不是调数字——**拆过了**，这里调的是拆完之后的余量。
-  'src-tauri/src/harness_draft.rs': 130,
+  'src-tauri/src/harness/harness_draft.rs': 130,
   // 草稿图片的字节与上限（2026-09-30，加图片草稿时新建）。独立成文件的理由是
   // **它回答的不是同一个问题**：harness_draft.rs 答「草稿什么时候存在、什么时候作废」，
   // 这里答「一段二进制怎么进出这个进程、存不下时丢哪几张」。混在一起的后果是 base64
@@ -412,7 +486,7 @@ const FILE_BUDGETS = {
   // harness_draft 共享的只有那个落盘目录的路径，所以自己持有它。
   // 6 个测试：base64 的已知向量与三种补位、写入读回逐字节不变、超限按「先到先留」
   // 丢弃并报出张数、坏 base64 整张丢掉、换内容不留旧图。
-  'src-tauri/src/harness_media.rs': 150,
+  'src-tauri/src/harness/harness_media.rs': 150,
   // 2026-09-30：出网路由（`net_proxy.rs`，新建）。它回答的唯一问题是
   // **访问 GitHub 的请求该走哪条路**：先本机系统代理（环境变量 → Windows
   // Internet Settings 注册表 / macOS `scutil --proxy`），代理不通再直连。
@@ -423,22 +497,22 @@ const FILE_BUDGETS = {
   // 放进去会顶高一个只许下调的邻近文件。平台相关的读法各自带 cfg，纯解析
   // 函数（注册表 `ProxyServer` 两种写法、`scutil` 字典转储、地址归一化）
   // 可以在任何平台直接测。
-  'src-tauri/src/net_proxy.rs': 180,
-  'src-tauri/src/guard.rs': 940,
+  'src-tauri/src/pkg/net_proxy.rs': 180,
+  'src-tauri/src/diagnostics/guard.rs': 940,
   // 从 guard.rs 拆出的「证据判读」层：只回答「这一行指向内核还是指向某个插件」，
   // 不回答「该怎么处置」。独立成文件有两个理由：① 判据的内核侧（命名空间锚定 +
   // 多成员组合路由的拒绝规则）与插件侧（bundle_member / has_segment_path）必须
   // 并排可读——把两套相反的边界规则隔着一个 900 行的文件，正是当初它们被写成
   // 同一个宽进出的来源；② guard.rs 是只许下调的反棘轮文件，而 2026-09-29 新增的
   // 内核槽位装配不变量判据必须落在它够得着的地方。60 行，离 800 行硬顶很远。
-  'src-tauri/src/kernel_evidence.rs': 80,
+  'src-tauri/src/kernel/kernel_evidence.rs': 80,
   // 2026-09-29：插件中央库的一次性目录搬迁（`dsh-plugins/` → `plugins/dsh[-dev]/`）
   // 从 plugins.rs 拆出。拆的理由有两条，都不是「文件太长了」：① 搬迁只关心旧目录
   // 在不在、要不要搬、搬失败怎么办，不读 store.json、不碰物化指纹——中央库的条目
   // 逻辑在 plugins.rs，目录级的一次性动作在这里，两者是不同层；② plugins.rs 是
   // 反棘轮文件（只许下调），把新逻辑留在那里只能靠调数字过门禁，而调数字正是
   // AGENTS.md 禁止的反应。生产代码约 75 行。
-  'src-tauri/src/store_relocate.rs': 120,
+  'src-tauri/src/shell/store_relocate.rs': 120,
   // 2026-09-29：「搬错实例」的遗留数据回收（sessions / attachments）。2026-09-28
   // dev 壳在闸门落地前 15 分钟把 `~/.dsh` 的历史会话并进了 default-dev，release
   // 侧工作台从此是空列表，而 `~/.dsh` 已空、搬不动第二次——instance.rs 只写了
@@ -447,11 +521,11 @@ const FILE_BUDGETS = {
   // 540 行的预算。生产代码 185 → 408：多出来的是 `workspace.json` 的合并——会话
   // 列表由它决定，只搬目录的话文件在磁盘上、工作台里仍然不显示（2026-09-29 本机
   // 实测）。408 行离 800 行硬顶还有一半距离。
-  'src-tauri/src/home_recovery.rs': 430,
+  'src-tauri/src/migration/home_recovery.rs': 430,
   // 同一条回收路径的 Tauri 命令壳（scan / recover 两条）。与 commands.rs 其余
   // 70 多条命令没有共享逻辑，留在那里只能靠上调数字过反棘轮——`bisect_cmd.rs`
   // 是同一处理由。生产代码约 30 行。
-  'src-tauri/src/home_recovery_cmd.rs': 60,
+  'src-tauri/src/migration/home_recovery_cmd.rs': 60,
   // 2026-09-29：实例注册表按壳模式**分文件**的一次性拆分（`state/instances.json`
   // / `state/instances-dev.json`）。之前两个壳共用一个文件，于是：跨进程读-改-写
   // 没有任何序列化（互斥只是进程级 Mutex）、dev 壳删/建实例会改到 release 的列表、
@@ -460,7 +534,7 @@ const FILE_BUDGETS = {
   // 独立成文件有两个理由：① 拆分规则（认领 / 让位 / 顺序无关 / 幂等）是一套独立
   // 的迁移状态机，塞进 instance.rs 会顶高那条已经贴着 540 的预算；② 它只服务
   // 启动期的一次性动作，与实例生命周期（建/启/停/删）无关。生产代码 72 行。
-  'src-tauri/src/registry_split.rs': 110,
+  'src-tauri/src/shell/registry_split.rs': 110,
   // 430 → 450：概览页「刷新工作台」动作 `forceReloadHarnessWindow`（+19）。它与
   // 既有的 `openHarnessWindow` 同属工作台窗口那一组，放这里而不是新开一个
   // `overview.js`：概览页其余 20 来个动作也都在这个文件里，为一个按钮单开
@@ -470,24 +544,24 @@ const FILE_BUDGETS = {
   // /kernels/skills/state/cache 解析、legacy resolver、id 校验与基础数据
   // 模型——是后续 P2–P8 的依赖根，必须单独占预算，避免被 plugins/skills
   // 这两个大文件吞噬。
-  'src-tauri/src/paths.rs': 600,
+  'src-tauri/src/shell/paths.rs': 600,
   // P2：实例注册表 + 锁 + 端口分配 + runtime/pid 文件读写 + DSH home
   // 子目录创建 + 默认实例迁移钩子。约 470 行（含 11 个测试 setup 与
   // 路径解析注释）。
   // 2026-09-23：新增内核 home 一次性搬迁（~/.dsh → 实例 DSH_HOME）——递归
   // 并入 / 原子移动 / 跨卷回退 / 幂等标记，~+64 行，470 → 540。
-  'src-tauri/src/instance.rs': 540,
+  'src-tauri/src/shell/instance.rs': 540,
   // P3：KernelAdapter trait + AdapterCapabilities + DshAdapter 首实现
   // （DSH_HOME / DSH_PROFILE 注入、profile/package.json 与 cordis.patch.yml
   // 模板、resolve_install_dir 双查找）。约 430 行（含 9 个测试）。
-  'src-tauri/src/kernel_adapter.rs': 620,
+  'src-tauri/src/kernel/kernel_adapter.rs': 620,
   // 模型用量统计（usage.rs）：内核 session 多帧 zstd 流的增量扫描（ruzstd
   // 帧级解码 + offset checkpoint + 坏帧停驻）、按「天 × 模型」预聚合与 90 天
   // 保留剪枝、汇总视图派生与 get_model_usage / open_usage_window 命令，
   // 外加主窗拖动吸附跟随（dock_x / dock_y / docked_position / 事件监听）。
   // 扫描是唯一数据通路，与账目结构同生共死，不宜再拆。生产代码约 665 行
   // （测试另计）。
-  'src-tauri/src/usage.rs': 700,
+  'src-tauri/src/usage/local.rs': 700,
   // 模型用量统计（usage.js）：窗口/卡片状态动作 + B/M/K 单位、热力图分级
   // 与周列对齐、趋势堆叠、饼图扇区等纯展示函数（node --test 直测）。
   // 160 → 180：实际落地比估的多（数字格式、模型配色 ring、热力 tooltip
@@ -516,12 +590,16 @@ const FILE_BUDGETS = {
   // get_subscription_usage / open_subscription_window 命令（生产代码 877 行，
   // 测试另计；含按 provider 定制的凭据失效文案与失败日志集中记录）。查询 +
   // 缓存 + 解析同生共死，不宜再拆；对应设计稿 docs/subscription-usage-design.md。
-  'src-tauri/src/subscription.rs': 900,
+  // 911 → 896：分目录后模块路径变长（`credentials` → `usage::credentials`），
+  // 单行调用点被 rustfmt 折成两行，一处折行乘以几十处调用点就是 +11 行。
+  // 修法不是抬预算，是把各模块按 basename 引进文件内，让体内调用点回到
+  // `process::epoch_millis()` 这种长度——可读性也一并回来了。
+  'src-tauri/src/usage/subscription.rs': 896,
   // DSH 模型凭据只读解析（credentials.rs）：profile cordis.patch.yml 的
   // provider apiKeyEnv 绑定、.credentials.yaml refs、.env 回退层与默认引用
   // 派生。凭据语义与内核对齐只有一处实现，独立成模块供 subscription.rs 复用。
   // 260 → 270：refs 标量统一字符串化（YAML 数字写法如 `KEY: 2` 也是合法值）。
-  'src-tauri/src/credentials.rs': 270,
+  'src-tauri/src/usage/credentials.rs': 270,
   // 云端套餐用量前端（subscription.js）：状态动作（keep-last-good 显式落地）
   // + 收起态摘要 / 余额行 / 进度条配色 / 重置倒计时等纯展示函数（node --test 直测）。
   // 180 → 210：失效 provider 的「提示 → 隐藏 → 查询成功自动恢复」状态机
@@ -970,7 +1048,10 @@ const FILE_BUDGETS = {
 // 与 OverviewPanel 各 +2、App.vue +4（接上已有的切页 / 可见性刷新钩子）、
 // usageStats.test.js +2。check-invariants 第 ⑦ 项之五钉接线——实测把窗口改回
 // 旧算法，14 个 usage 单测全绿。
-const TOTAL_BUDGET = 35840;
+// 35840 → 36010（2026-09-30 晚，src-tauri/src 按功能分目录）。净增约 170 行：
+// 11 个 mod.rs（约 60 行）与三个大文件因路径多一级而增加的引用行（见 FILE_BUDGETS
+// 里 2026-09-30 那条）。没有新增功能。预算是软上限，按实测登记。
+const TOTAL_BUDGET = 36010;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
@@ -1117,7 +1198,9 @@ const baseline = readBaseline();
 if (baseline) {
   for (const [path, count] of sizes) {
     if (path in FILE_BUDGETS || baseline.tree.has(path)) continue;
-    if (baseline.names.has(path.split('/').pop())) continue; // 搬移，不是新文件
+    if (baseline.names.has(path.split('/').pop())) continue; // 搬移
+    if (isKnownBlob(baseline, path)) continue; // 改名：内容没变
+    if (baseline.renames.has(path)) continue; // git 记录的重命名
     failures.push(
       `[新文件] ${path}（${count} 行）必须登记进 FILE_BUDGETS，并写清它为什么该独立成模块。` +
         `这是「新能力开新文件」留下的痕迹；上限 ${HARD_FILE_CEILING} 行。`
@@ -1157,7 +1240,10 @@ if (baseline) {
     // 直接 `continue` 等于让这条规则对搬过的文件失效——而 plugins.rs(2968)、
     // commands.rs(2110)、skills.rs(1490) 正是最需要它的那批。「新文件」那条
     // 判据已经按文件名认过搬移，这里不认就是同一个洞的两半。
-    const before = baseline.files[path] ?? baseline.fileBudgets.get(moduleId(path));
+    const oldPath = baseline.renames.get(path);
+    const before = baseline.files[path]
+      ?? baseline.fileBudgets.get(moduleId(path))
+      ?? (oldPath ? baseline.fileBudgets.get(moduleId(oldPath)) : undefined);
     if (before === undefined) continue; // 真·新文件，见下面的硬顶
     // 反棘轮只作用于**有膨胀风险的大文件**（基线预算已达软阈值）。像
     // SnapshotRestoreDialog 这种刚拆出来、只装一个聚焦关注点的小文件，
@@ -1185,7 +1271,9 @@ if (baseline) {
 // 追溯会让本门禁一上来就红，没人会去修。
 for (const [path, budget] of Object.entries(FILE_BUDGETS)) {
   if (baseline && baseline.tree.has(path)) continue; // 已存在的老文件
-  if (baseline && baseline.names.has(path.split('/').pop())) continue; // 搬移过来的
+  if (baseline && baseline.names.has(path.split('/').pop())) continue; // 搬移
+  if (baseline && isKnownBlob(baseline, path)) continue; // 改名
+  if (baseline && baseline.renames.has(path)) continue; // git 记录的重命名
   if (budget > HARD_FILE_CEILING) {
     failures.push(
       `[硬顶] 新文件 ${path} 的预算 ${budget} 行超过硬顶 ${HARD_FILE_CEILING} 行。` +

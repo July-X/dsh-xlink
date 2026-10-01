@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { readShellSource } from '../../scripts/lib/shell-source.mjs';
 
 const read = (path) => readFileSync(path, 'utf8');
 
@@ -9,8 +10,12 @@ const read = (path) => readFileSync(path, 'utf8');
 // 用户不会去看的地方，这件事就没人处理。契约横跨三个文件，所以在这里钉住：
 // commands.rs 把它放进报告 → guard.rs 的 StartReport 带 warning 字段（有值才出现）
 // → store.js 把它弹成提示。
+//
+// 壳侧两个文件按**文件名**定位（见 scripts/lib/shell-source.mjs）：它们
+// 2026-10-01 刚从 `src-tauri/src/` 平铺搬进 `diagnostics/`，写死路径的话这条
+// 测试会在下一次目录改版时以 ENOENT 变红，而契约一个字都没变。
 test('非致命启动异常必须从 stderr 走到面板提示', () => {
-  const commands = read('src-tauri/src/commands.rs');
+  const commands = readShellSource('commands.rs');
   assert.match(
     commands,
     /report\.warning = Some\(warning\)/,
@@ -22,7 +27,7 @@ test('非致命启动异常必须从 stderr 走到面板提示', () => {
     'register_child 必须把 warning 返回给调用方（只写 stderr 就回到原样了）',
   );
 
-  const guard = read('src-tauri/src/guard.rs');
+  const guard = readShellSource('guard.rs');
   assert.match(guard, /pub warning: Option<String>/, 'StartReport 必须带 warning 字段');
   assert.match(
     guard,
