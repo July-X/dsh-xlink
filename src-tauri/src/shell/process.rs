@@ -974,6 +974,48 @@ fn next_poll_step(current: Duration) -> Duration {
     (current * 2).min(RUN_CAPTURE_POLL_MAX)
 }
 
+/// 测试专用：记录**当前线程**在等待循环里请求过的纯睡眠——累计值与单次最大值。
+///
+/// 端到端测试要证明的是「每次调用不再付一笔固定 50ms 的纯睡眠」。这件事有两条
+/// 与机器速度无关的判据，而墙钟耗时一条都没有：
+///
+/// * **单次最大值**。循环请求的睡眠恒为 `remaining.min(poll_step)`，而 `poll_step`
+///   从 [`RUN_CAPTURE_POLL_MIN`] 翻倍到 [`RUN_CAPTURE_POLL_MAX`] 后封顶，所以单次
+///   请求**在结构上不可能**超过 20ms；旧的固定 50ms 则每次都是 50ms。判据取
+///   25ms，落在两者之间且离上限有一倍余量——它由代码结构保证，与 CPU 快慢、
+///   runner 负载、子进程被调度多久都无关，永远不会假红。
+/// * **累计值**。取旧的固定 50ms 行为的地板（40 次 ≥2000ms）作上界，语义是
+///   「不比修复前更差」。它确实随机器变化（子进程活得久，拍数就多），所以只当
+///   粗护栏，不当精确判据。
+///
+/// 用 `#[cfg(test)]` 圈起来，生产构建里这段记账不存在，热路径上也不会多花一次
+/// 原子操作。thread_local 而非全局静态：cargo test 默认多线程并发，同一进程里
+/// 别的用例也会调用 `run_capture`，共享计数器会互相污染。
+#[cfg(test)]
+thread_local! {
+    static CAPTURE_SLEEP: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+fn record_capture_sleep(requested: Duration) {
+    CAPTURE_SLEEP.with(|cell| {
+        let (total, max) = cell.get();
+        cell.set((
+            total + requested.as_nanos() as u64,
+            max.max(requested.as_nanos() as u64),
+        ));
+    });
+}
+
+/// 取出并清零（累计、单次最大），供单测在「跑一段操作」前后取差值。
+#[cfg(test)]
+fn take_capture_sleep() -> (Duration, Duration) {
+    CAPTURE_SLEEP.with(|cell| {
+        let (total, max) = cell.replace((0, 0));
+        (Duration::from_nanos(total), Duration::from_nanos(max))
+    })
+}
+
 fn run_capture_command_bytes(cmd: Command, label: &str) -> io::Result<(bool, Vec<u8>, Vec<u8>)> {
     run_capture_command_bytes_with_timeout(cmd, label, RUN_CAPTURE_TIMEOUT)
 }
@@ -1046,7 +1088,10 @@ fn run_capture_command_bytes_with_timeout(
                         format!("{label} timed out after {} seconds", timeout.as_secs()),
                     ));
                 }
-                std::thread::sleep(remaining.min(poll_step));
+                let slept = remaining.min(poll_step);
+                #[cfg(test)]
+                record_capture_sleep(slept);
+                std::thread::sleep(slept);
                 poll_step = next_poll_step(poll_step);
             }
             Err(error) => {
@@ -1705,14 +1750,21 @@ mod tests {
         assert!(steps <= 12, "退避收敛太慢：{steps} 拍才覆盖 100ms");
     }
 
-    /// 端到端：连着跑 40 次极短的命令，总耗时必须远低于「每次固定睡 50ms」
-    /// 的旧行为（那需要 2 秒以上）。
+    /// 端到端：连着跑 40 次极短的命令，等待循环**单次请求的纯睡眠**不得超过
+    /// 25ms，累计也不得越过旧的固定 50ms 行为的地板。
     ///
-    /// 用次数而不是单次来放大差距，是为了让判据在 CI 上被别的测试抢满 CPU 时
-    /// 仍然稳：40 次 spawn 的真实成本约 200ms，阈值给到 1.2 秒仍有 5 倍余量，
-    /// 而旧的固定 50ms 粒度会超过 2 秒。
+    /// 判据不量墙钟。2026-10-01 这个版本用的是「40 次总耗时 < 1.2s」并按本机
+    /// 0.2s 的 spawn 成本留了 5 倍余量，结果在 GitHub runner 上同样这 40 次要
+    /// 2.1s 而连红两次——那 2.1s 几乎全是 fork/exec 的真实成本，与被测性质
+    /// （有没有付固定睡眠）毫无关系，却足以穿透按本机标定的阈值。
+    ///
+    /// 改判睡眠请求本身：单次上界由 `poll_step` 的封顶在结构上保证，25ms 落在
+    /// [`RUN_CAPTURE_POLL_MAX`]（20ms）与旧的 50ms 之间，永不假红；累计上界取
+    /// 旧行为的地板，语义是「不比修复前更差」。
     #[test]
     fn many_short_captures_do_not_pay_a_fixed_sleep_each_time() {
+        // 本线程可能已跑过别的用例，先清零再开始计量。
+        let _ = take_capture_sleep();
         let started = Instant::now();
         for index in 0..40 {
             let (ok, output) =
@@ -1721,9 +1773,16 @@ mod tests {
             assert_eq!(output.trim(), index.to_string());
         }
         let elapsed = started.elapsed();
+        let (total, max) = take_capture_sleep();
         assert!(
-            elapsed < Duration::from_millis(1200),
-            "40 次极短命令耗时 {elapsed:?}——等待循环又把固定睡眠加回来了"
+            max < Duration::from_millis(25),
+            "单次纯睡眠请求达到 {max:?}——退避上限失效（当前 {RUN_CAPTURE_POLL_MAX:?}），\
+             等待循环又被改回固定睡眠了（累计 {total:?} / 总耗时 {elapsed:?}）"
+        );
+        assert!(
+            total < Duration::from_millis(2000),
+            "40 次极短命令累计请求了 {total:?} 纯睡眠（总耗时 {elapsed:?}）——\
+             已达到旧的固定 50ms 行为的地板"
         );
     }
 
