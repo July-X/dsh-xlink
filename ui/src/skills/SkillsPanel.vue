@@ -218,6 +218,7 @@ const storeTip = computed(() => {
                 type="primary"
                 circle
                 :icon="Download"
+                :aria-label="'更新技能 ' + row.name + ' 到 ' + row.latest_version"
                 :disabled="globalBusy"
                 @click="updateSkill(row.id)"
               />
@@ -228,6 +229,7 @@ const storeTip = computed(() => {
                 size="small"
                 circle
                 :icon="Refresh"
+                :aria-label="'重新同步 ' + row.name"
                 :disabled="globalBusy"
                 @click="updateSkill(row.id)"
               />
@@ -238,6 +240,7 @@ const storeTip = computed(() => {
                 size="small"
                 circle
                 :icon="TopRight"
+                :aria-label="'在浏览器打开 ' + row.name + ' 的仓库'"
                 :disabled="globalBusy"
                 @click="openExternalLink(row.repo_url, '仓库地址')"
               />
@@ -256,6 +259,7 @@ const storeTip = computed(() => {
                   size="small"
                   circle
                   :icon="Delete"
+                  :aria-label="'卸载技能包 ' + row.name"
                   :disabled="globalBusy"
                 />
               </template>

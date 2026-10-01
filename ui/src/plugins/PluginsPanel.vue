@@ -619,6 +619,7 @@ function instanceChipType(row, instanceId) {
                   size="small"
                   circle
                   :icon="RefreshLeft"
+                  :aria-label="'恢复启用 ' + row.name"
                   :disabled="globalBusy"
                   @click="resolvePluginQuarantine(row.id, 'enable')"
                 />
@@ -630,6 +631,7 @@ function instanceChipType(row, instanceId) {
                   type="primary"
                   circle
                   :icon="Download"
+                  :aria-label="'更新插件 ' + row.name + ' 到 ' + row.latest_version"
                   :disabled="globalBusy"
                   @click="updatePlugin(row.id)"
                 />
@@ -640,6 +642,7 @@ function instanceChipType(row, instanceId) {
                   size="small"
                   circle
                   :icon="TopRight"
+                  :aria-label="'在浏览器打开 ' + row.name + ' 的仓库'"
                   :disabled="globalBusy"
                   @click="openExternalLink(row.repo_url, '仓库地址')"
                 />
@@ -658,6 +661,7 @@ function instanceChipType(row, instanceId) {
                     size="small"
                     circle
                     :icon="Delete"
+                    :aria-label="'卸载插件 ' + row.name"
                     :disabled="globalBusy"
                   />
                 </template>
