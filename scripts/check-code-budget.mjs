@@ -1068,7 +1068,13 @@ const FILE_BUDGETS = {
 // 36010 → 36080：新增 get_status 性能采样与 diagnostics 编排；v0.5.0 之前默认
 // 开启以收集真实性能数据，之后默认关闭，仍可由 DSH_XLINK_PERF 显式覆盖。
 // 额外 10 行余量覆盖版本默认判定与显式关闭分支，不改变单文件预算。
-const TOTAL_BUDGET = 36080;
+// 36080 → 36090（2026-10-01 晚）：性能采样指出的状态轮询热点修复——子进程
+// 等待循环从固定 50ms 睡眠改指数退避、lsof 端口参数连写修复、身份判据与
+// 端口活体反查拆分（观察路径不再每 2.5s 派生 lsof）。净增 10 行生产代码：
+// process.rs +8（两个退避常量 + next_poll_step + 循环两行）、lifecycle.rs
+// 净 +2（lsof_tcp_args 与判据拆分主体是挪位置，注释与测试不计入）、
+// instance.rs 观察路径换判据只改名。反棘轮文件本轮零增长。
+const TOTAL_BUDGET = 36090;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

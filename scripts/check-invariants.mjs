@@ -1398,8 +1398,14 @@ function productionRust(text) {
       // `shell::instance::workbench_running_in_other_shell()`，写死少一级
       // 就会让这条判据对着改过的代码报「没有 .filter( 门控」——红的原因与
       // 要检查的东西无关。
+      // 2026-10-01 起接受两种形状：旧的内联 `other_shell_workbench:` 字段初始化，
+      // 与新的 `let other_shell_workbench = if cross_shell_risk { … }` 短路——后者
+      // 是 perf 采样逼出来的加强（无共享版本时连探测都不做，省掉每 2.5s 一轮的
+      // 跨壳 pid + 端口探测）。**两种形状都必须保留 `.filter(`**；去掉
+      // `if cross_shell_risk` 短路（探测照跑、结果被 filter 丢掉）同样不匹配——
+      // 那是白烧 CPU 的回归，也要拦。
       if (
-        !/other_shell_workbench:\s*[\w:]*instance::workbench_running_in_other_shell\(\)\s*\.filter\(/.test(
+        !/(?:other_shell_workbench:|let other_shell_workbench = if cross_shell_risk \{)\s*[\w:]*instance::workbench_running_in_other_shell\(\)\s*\.filter\(/.test(
           kernelInstallSrc,
         )
       ) {
