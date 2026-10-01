@@ -1,9 +1,9 @@
 // 针对 pullstring-launcher.js 的无头冒烟测试：提供一个最小 DOM 桩，
 // 运行脚本，再模拟一次拉动，并断言灯泡点亮以及 focus_main_shell 命令
 // 被调用。运行命令：node scripts/smoke-pullstring.mjs
-import { readFileSync } from "node:fs";
+import { readShellSource } from "./lib/shell-source.mjs";
 
-const src = readFileSync(new URL("../src-tauri/src/pullstring-launcher.js", import.meta.url), "utf8");
+const src = readShellSource("pullstring-launcher.js");
 
 let invoked = [];
 const listeners = {};
