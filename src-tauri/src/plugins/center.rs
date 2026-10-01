@@ -55,8 +55,6 @@ const MARKET_CATALOG_URL: &str =
 const CATALOG_CACHE_FILE: &str = "plugins-catalog.json";
 /// 目录缓存的新鲜度窗口。
 const CATALOG_TTL_SECS: u64 = 6 * 3600;
-/// 内核 plugins 目录内的物化元数据目录名。
-const META_SUBDIR: &str = ".meta";
 /// pnpm `link:`（symlink）依赖的 spec 前缀。
 const SPEC_LINK: &str = "link:";
 /// pnpm `file:`（中央库拷贝）依赖的 spec 前缀。
@@ -560,26 +558,6 @@ pub(crate) fn default_instance_key() -> (String, String) {
     (family.to_string(), id.to_string())
 }
 
-/// P4 起插件物化目标走实例级 `extensions/plugins/<id>/`。
-///
-/// 旧 `kernel_plugins_dir` 返回 `<data_dir>/kernels/<version>/plugins/`，
-/// 已经作废 —— 物化目标必须按实例隔离。保留 `data_dir, version` 形参仅为
-/// 兼容既有调用站点（测试也走这条）；内部走实例 API，`version` 形参被忽略。
-fn kernel_plugins_dir(_data_dir: &Path, _version: &str) -> PathBuf {
-    let (family, id) = default_instance_key();
-    paths::instance_extensions_plugins_dir(&family, &id)
-}
-
-fn kernel_plugin_dir(_data_dir: &Path, _version: &str, id: &str) -> PathBuf {
-    let (family, instance_id) = default_instance_key();
-    paths::instance_extension_plugin_dir(&family, &instance_id, id)
-}
-
-fn kernel_meta_file(_data_dir: &Path, _version: &str, id: &str) -> PathBuf {
-    let (family, instance_id) = default_instance_key();
-    paths::instance_extension_meta_file(&family, &instance_id, id)
-}
-
 /// P4 起 profile 严格走 `instance_dsh_home/profiles/<profile>/`。旧
 /// `profile_dir` 拼接 `data_dir/../profiles/<profile>/` 的回退路径已废弃
 /// —— 新实例没有与旧路径一一对应的目录，无法再 fallback。`data_dir`
@@ -814,16 +792,6 @@ fn write_meta_at(meta_path: &Path, meta: &KernelMeta) -> Result<(), AppError> {
     }
     let text = serde_json::to_string(meta).map_err(|e| AppError::Io(e.to_string()))?;
     atomic_write(meta_path, text.as_bytes()).map_err(|e| AppError::Io(e.to_string()))
-}
-
-/// 读取默认实例下指定插件的物化记录。
-fn read_meta(data_dir: &Path, version: &str, id: &str) -> Option<KernelMeta> {
-    read_instance_meta(&kernel_meta_file(data_dir, version, id))
-}
-
-/// 把物化记录写入默认实例下指定插件的 meta 文件。
-fn write_meta(data_dir: &Path, version: &str, id: &str, meta: &KernelMeta) -> Result<(), AppError> {
-    write_meta_at(&kernel_meta_file(data_dir, version, id), meta)
 }
 
 // --- spec 解析 -------------------------------------------------------------
@@ -1921,25 +1889,10 @@ fn materialize_inner(
     Ok(actual)
 }
 
-/// P4 主路径：把一个插件物化到默认实例的 `extensions/plugins/<id>/`。
-///
-/// 这是默认实例的物化入口；具体实例范围命令走
-/// [`materialize_one_for_instance`]（下一步落地），单实例隔离测试与
-/// 多实例 UI 都用后者。
-pub fn materialize_one(
-    _data_dir: &Path,
-    version: &str,
-    item: &StoreItem,
-) -> Result<String, AppError> {
-    let (family, id) = default_instance_key();
-    materialize_one_for_instance(&family, &id, item, version)
-}
-
 /// P4 主路径：把一个插件物化到指定实例的 `extensions/plugins/<id>/`。
 ///
-/// `version` 形参保留仅为与 [`materialize_one`] 对齐；实例物化目标不再
-/// 按 version 切分，`extensions/plugins/` 在实例生命周期内持续存在，
-/// 切换内核版本只需要重链 `node_modules`，不动插件目录。
+/// 实例物化目标不按 version 切分，`extensions/plugins/` 在实例生命周期内
+/// 持续存在，切换内核版本只需要重链 `node_modules`，不动插件目录。
 pub fn materialize_one_for_instance(
     family: &str,
     instance_id: &str,
@@ -1976,16 +1929,6 @@ fn remove_materialized_for_instance(family: &str, instance_id: &str, plugin_id: 
     remove_materialized_at(&target, &meta_path);
 }
 
-/// 旧 API：默认实例的物化移除 —— 委托到 [`remove_materialized_for_instance`]。
-/// `data_dir, version` 形参保留仅为兼容既有调用站点。
-fn remove_materialized(data_dir: &Path, version: &str, id: &str) {
-    let (family, instance_id) = default_instance_key();
-    remove_materialized_for_instance(&family, &instance_id, id);
-    // 形参 `data_dir, version` 仅用于保留旧签名：物化目标已迁到实例
-    // extensions，version 与 data_dir 不再决定清理范围。
-    let _ = (data_dir, version);
-}
-
 /// P4 主路径：清理指定实例 extensions 里中央库已不再持有的插件条目。
 ///
 /// 卸载时撞上 Windows 文件锁、或手工删除中央库目录后留下的残留。仅在以下
@@ -2016,13 +1959,6 @@ fn sweep_instance_orphans(family: &str, instance_id: &str, store: &Store) {
             remove_materialized_for_instance(family, instance_id, &name);
         }
     }
-}
-
-/// 旧 API：默认实例的扩展清理 —— 委托到 [`sweep_instance_orphans`]。
-fn sweep_kernel_orphans(data_dir: &Path, version: &str, store: &Store) {
-    let (family, instance_id) = default_instance_key();
-    sweep_instance_orphans(&family, &instance_id, store);
-    let _ = (data_dir, version);
 }
 
 #[cfg(unix)]
@@ -2180,16 +2116,6 @@ fn copy_file(from: &Path, to: &Path) -> io::Result<()> {
             )
         })
         .map(|_| ())
-}
-
-/// 把插件物化到默认实例的 `extensions/plugins/<id>/`。
-///
-/// P4 起插件物化按实例隔离（多实例隔离由 P5+ 命令驱动）：同一份中央库
-/// 入口被不同实例独立物化到各自 `extensions/plugins/`。这里只对默认
-/// 实例生效；具体实例的命令走 [`sync_for_instance`]。
-pub fn sync_kernels(data_dir: &Path, item: &StoreItem) -> Result<(), AppError> {
-    let (family, instance_id) = default_instance_key();
-    sync_kernels_for_instance(&family, &instance_id, data_dir, item)
 }
 
 /// 把插件物化到指定实例的 `extensions/plugins/<id>/`。实例范围命令
@@ -3678,17 +3604,6 @@ fn set_mode_unlocked(
     Ok(())
 }
 
-/// 清理默认实例 extensions 里归桌面壳所有的插件残留。`ensure_wiring`
-/// 只对活动实例生效，所以这一步必须由显式的全实例同步自己负责。
-///
-/// P4 起物化按实例隔离；多实例的清理在 P5 阶段补——这里仅对默认实例
-/// 生效，避免清理路径穿越到不归本实例的 extensions。
-fn sweep_all_kernel_orphans(data_dir: &Path, store: &Store) {
-    let _ = data_dir;
-    let (family, instance_id) = default_instance_key();
-    sweep_instance_orphans(&family, &instance_id, store);
-}
-
 /// 物化所有插件并重新接线（对应「同步」按钮）。
 pub fn sync_all(
     data_dir: &Path,
@@ -4796,25 +4711,34 @@ mod tests {
             description: None,
         };
         let version = "0.1.1";
-        let actual = materialize_one(&data_dir, version, &item).expect("materialize");
+        let (family, instance_id) = default_instance_key();
+        let actual = materialize_one_for_instance(&family, &instance_id, &item, version)
+            .expect("materialize");
         // 链接失败（Windows 无开发者模式、受限文件系统、沙箱）会降级为 copy，
         // 两种结果都是合法行为；能链接时必须真的是链接。
         assert!(actual == "link" || actual == "copy");
-        let target = kernel_plugin_dir(&data_dir, version, id);
+        let target = paths::instance_extension_plugin_dir(&family, &instance_id, id);
         assert!(target.exists());
         if actual == "link" {
             assert!(target.is_symlink());
         }
-        let actual = materialize_one(&data_dir, version, &item).expect("idempotent");
+        let actual = materialize_one_for_instance(&family, &instance_id, &item, version)
+            .expect("idempotent");
         assert!(actual == "link" || actual == "copy");
 
         // copy 模式覆盖
         let mut copy_item = item.clone();
         copy_item.mode = "copy".to_string();
-        let actual = materialize_one(&data_dir, version, &copy_item).expect("copy");
+        let actual =
+            materialize_one_for_instance(&family, &instance_id, &copy_item, version).expect("copy");
         assert_eq!(actual, "copy");
         assert!(target.join("package.json").is_file());
-        let meta = read_meta(&data_dir, version, id).expect("meta");
+        let meta = read_instance_meta(&paths::instance_extension_meta_file(
+            &family,
+            &instance_id,
+            id,
+        ))
+        .expect("meta");
         assert_eq!(meta.mode, "copy");
         assert_eq!(meta.version, "1.0.0");
     }
@@ -4897,16 +4821,17 @@ mod tests {
             description: None,
         };
         let version = "0.1.1";
+        let (family, instance_id) = default_instance_key();
         assert_eq!(
-            materialize_one(&data_dir, version, &item).expect("首次物化"),
+            materialize_one_for_instance(&family, &instance_id, &item, version).expect("首次物化"),
             "copy"
         );
 
-        let target = kernel_plugin_dir(&data_dir, version, id);
+        let target = paths::instance_extension_plugin_dir(&family, &instance_id, id);
         // 标记文件不在中央库里：它一旦消失，就说明目标被整树重拷过。
         fs::write(target.join("RESYNC-MARKER"), b"x").unwrap();
         assert_eq!(
-            materialize_one(&data_dir, version, &item).expect("二次物化"),
+            materialize_one_for_instance(&family, &instance_id, &item, version).expect("二次物化"),
             "copy"
         );
         assert!(
@@ -4917,10 +4842,8 @@ mod tests {
         // 模拟 link→copy 降级：meta 记 fallback，而期望模式仍是 link。
         let mut link_item = item.clone();
         link_item.mode = "link".into();
-        write_meta(
-            &data_dir,
-            version,
-            id,
+        write_meta_at(
+            &paths::instance_extension_meta_file(&family, &instance_id, id),
             &KernelMeta {
                 fallback: true,
                 mode: "copy".into(),
@@ -4931,7 +4854,8 @@ mod tests {
         .expect("write fallback meta");
         fs::write(target.join("RESYNC-MARKER"), b"x").unwrap();
         assert_eq!(
-            materialize_one(&data_dir, version, &link_item).expect("降级态再物化"),
+            materialize_one_for_instance(&family, &instance_id, &link_item, version)
+                .expect("降级态再物化"),
             "copy"
         );
         assert!(
@@ -5058,6 +4982,7 @@ mod tests {
     fn sweep_removes_only_owned_or_broken_orphans() {
         let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
+        let (family, instance_id) = default_instance_key();
         let version = "9.9.9";
         let item = StoreItem {
             id: "live".into(),
@@ -5075,14 +5000,12 @@ mod tests {
         };
         upsert_item(&data_dir, item).expect("store");
         let store = load_store(&data_dir);
-        let plugins = kernel_plugins_dir(&data_dir, version);
+        let plugins = paths::instance_extensions_plugins_dir(&family, &instance_id);
         fs::create_dir_all(plugins.join("live")).unwrap();
         // 桌面壳所有的孤儿：`.meta` 记录证明这是壳自己放进去的。
         fs::create_dir_all(plugins.join("ghost")).unwrap();
-        write_meta(
-            &data_dir,
-            version,
-            "ghost",
+        write_meta_at(
+            &paths::instance_extension_meta_file(&family, &instance_id, "ghost"),
             &KernelMeta {
                 fallback: false,
                 mode: "copy".into(),
@@ -5104,11 +5027,16 @@ mod tests {
         // 外部条目：无 meta、非链接 —— 留给用户处理。
         fs::create_dir_all(plugins.join("foreign")).unwrap();
 
-        sweep_kernel_orphans(&data_dir, version, &store);
+        sweep_instance_orphans(&family, &instance_id, &store);
 
         assert!(plugins.join("live").exists());
         assert!(!plugins.join("ghost").exists());
-        assert!(read_meta(&data_dir, version, "ghost").is_none());
+        assert!(read_instance_meta(&paths::instance_extension_meta_file(
+            &family,
+            &instance_id,
+            "ghost"
+        ))
+        .is_none());
         if has_link {
             assert!(!plugins.join("dangler").exists());
         }
@@ -5119,6 +5047,7 @@ mod tests {
     fn kernel_plugin_list_scans_materialized_entries() {
         let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
+        let (family, instance_id) = default_instance_key();
         let version = "1.0.0";
 
         let bin = kernel::lifecycle::kernel_dir(&data_dir, version)
@@ -5166,12 +5095,10 @@ mod tests {
             },
         )
         .expect("upsert stale store");
-        let plugins = kernel_plugins_dir(&data_dir, version);
+        let plugins = paths::instance_extensions_plugins_dir(&family, &instance_id);
         fs::create_dir_all(plugins.join("live-plugin")).unwrap();
-        write_meta(
-            &data_dir,
-            version,
-            "live-plugin",
+        write_meta_at(
+            &paths::instance_extension_meta_file(&family, &instance_id, "live-plugin"),
             &KernelMeta {
                 fallback: false,
                 mode: "link".into(),
@@ -5181,10 +5108,8 @@ mod tests {
         )
         .unwrap();
         fs::create_dir_all(plugins.join("stale-plugin")).unwrap();
-        write_meta(
-            &data_dir,
-            version,
-            "stale-plugin",
+        write_meta_at(
+            &paths::instance_extension_meta_file(&family, &instance_id, "stale-plugin"),
             &KernelMeta {
                 fallback: false,
                 mode: "copy".into(),
@@ -5223,6 +5148,7 @@ mod tests {
     fn sync_all_sweeps_removed_plugins_from_every_kernel() {
         let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
+        let (family, instance_id) = default_instance_key();
         let versions = ["1.0.0", "2.0.0"];
 
         for version in versions {
@@ -5231,12 +5157,10 @@ mod tests {
             fs::create_dir_all(&bin).unwrap();
             fs::write(bin.join("bin.js"), "").unwrap();
 
-            let plugins = kernel_plugins_dir(&data_dir, version);
+            let plugins = paths::instance_extensions_plugins_dir(&family, &instance_id);
             fs::create_dir_all(plugins.join("ghost")).unwrap();
-            write_meta(
-                &data_dir,
-                version,
-                "ghost",
+            write_meta_at(
+                &paths::instance_extension_meta_file(&family, &instance_id, "ghost"),
                 &KernelMeta {
                     fallback: false,
                     mode: "copy".into(),
@@ -5267,13 +5191,19 @@ mod tests {
         .unwrap();
 
         for version in versions {
-            assert!(!kernel_plugin_dir(&data_dir, version, "ghost").exists());
-            assert!(read_meta(&data_dir, version, "ghost").is_none());
+            assert!(!paths::instance_extension_plugin_dir(&family, &instance_id, "ghost").exists());
+            assert!(read_instance_meta(&paths::instance_extension_meta_file(
+                &family,
+                &instance_id,
+                "ghost"
+            ))
+            .is_none());
         }
     }
 
     #[test]
     fn wiring_survives_single_plugin_failure() {
+        let (family, instance_id) = default_instance_key();
         let (home, _guard) = TestHome::new();
         let data_dir = home.data_dir();
         let version = "9.9.9";
@@ -5332,9 +5262,11 @@ mod tests {
         );
         // 健康插件仍然被物化，manifest 也保留它的接线 —— 一个坏插件不再
         // 拖垮其他所有插件。
-        assert!(kernel_plugin_dir(&data_dir, version, "healthy")
-            .join("package.json")
-            .is_file());
+        assert!(
+            paths::instance_extension_plugin_dir(&family, &instance_id, "healthy")
+                .join("package.json")
+                .is_file()
+        );
         let on_disk = fs::read_to_string(profile.join("package.json")).unwrap();
         assert!(on_disk.contains("healthy-plugin"));
     }
