@@ -45,6 +45,7 @@ src-tauri/src/
 
 ## 窗口与注入脚本
 
+- **每个窗口都要有底色，包括 `tauri.conf.json` 里声明的主面板**（2026-10-01）。没有它时 WKWebView 在文档首帧之前一律绘制纯白，`background_color` 在 macOS 上完全看不到效果（窗口底色被 webview 盖住）——症状是启动时闪一屏白、加载慢的观感，而它其实一秒就好了。运行时创建的 8 处 webview 一直传着 `background_color(backdrop)`，唯独主面板是 conf 里声明的、启动时用户看到的那一个，一直漏着。补的是 `"backgroundColor": "#0b1020"`，取自 `theme.css` 的 `--bg`（面板是**纯深色**：`:root { color-scheme: dark }`，没有浅色变体，也没有 JS 切类名，所以写死深色不会在切主题时闪错）。**注意别照抄工作台那个 `chrome_backdrop()` 的 `#16171a`**——那是给工作台 / 官方对话这些加载**第三方页面**的窗口用的中性底色，面板自己的底是蓝调的 `#0b1020`，两者不是一个东西。改窗口时顺手问一句「这个窗口首帧之前是什么颜色」。
 - **窗口里一律禁右键菜单，但一个字都不许碰「选中」**（2026-09-30）。三类窗口各有一处落点：壳自己的五个窗口（`main` / 日志 / 用量 / 套餐 / 官方对话页签栏）共用 SPA 入口，走 `ui/src/shell/noContextMenu.js`（`main.js` 在 `app.mount` 之前调一次）；工作台与官方对话三个内容 webview 加载的是**别人的**页面，走 Rust 注入的 `src-tauri/src/harness/no-context-menu.js`（`window` 捕获阶段 `preventDefault` + `stopImmediatePropagation`，页面自绘的菜单才一并拦掉）。**左键拖选与 Ctrl/⌘+C 复制必须照旧可用**：写 `user-select: none` 或拦下 `copy` 不会报任何错，症状只是用户再也复制不出东西。`check:invariants` 第 16 项按「每条 `WebviewUrl::External` 建窗链」逐条查——工作台有**两条**建窗链（`commands.rs::open_harness` 走用户点击那条，`harness_window::build` 走自愈 / 手动刷新那条），历史上 `harness-draft.js` 就是因为要接两处才留下这条隐患，**新增远程窗口或改这两条链时别只改一处**。引擎层的菜单（Wry `with_default_context_menus` / WebView2 `AreDefaultContextMenusEnabled`）在 Tauri 2.11 上没有对外接口，这一层只能靠 DOM 事件取消。
 - 工作台草稿的注入脚本 `harness-draft.js` 与编解码 `harness_media.rs` 也归本侧：它们注入进**别人的**页面，只能经 `capabilities/harness-remote.json` 授权后 invoke，**命令声明与 capability 两处都漏就是真机上 ACL 静默拒、`.catch` 吞掉、功能完全不工作**。
 
