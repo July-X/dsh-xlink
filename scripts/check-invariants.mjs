@@ -516,6 +516,44 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
   }
 }
 
+// --- 8.6 Tauri 命令不许裸调 spawn_blocking ---------------------------------
+//
+// 事故来源：code-review-2026-09-27 的 L5。9 条命令写成了
+// `spawn_blocking(…).await.map_err(|e| e.to_string())?`，于是后台任务 panic 时
+// `JoinError` 被原样 `to_string()` 成一句英文 `task panicked` 透给用户——GUI
+// 应用里这是他唯一能拿到的东西，而它不含任何可操作的下一步（AGENTS.md：
+// 「错误信息必须包含可操作的下一步与相关日志路径」）。
+//
+// `blocking()` 助手已经把这条路径写对了：panic 时给出「后台任务异常结束…
+// 请在终端用 `npm run dev` 启动以便看到完整输出」。本检查要求命令层统一走它。
+//
+// 判据是「`#[tauri::command]` 函数体里出现 `spawn_blocking(`」。注释里的
+// 字面量已被剥离，不受影响；`blocking()` 助手自身的实现**在命令函数之外**，
+// 因此不会被这条误伤。
+{
+  const commandsSrc = productionRust(read('src-tauri/src/commands.rs'));
+  const bareCalls = [];
+  for (const match of commandsSrc.matchAll(/pub async fn ([a-z0-9_]+)\([^)]*\)[^{]*\{/g)) {
+    // 取函数体到下一处 `^}` 为止（命令都是顶层独立函数，缩进 0）。
+    const start = match.index + match[0].length;
+    const end = commandsSrc.indexOf('\n}', start);
+    const body = commandsSrc.slice(start, end < 0 ? start + 4000 : end);
+    if (body.includes('spawn_blocking(')) bareCalls.push(match[1]);
+  }
+  if (bareCalls.length > 0) {
+    for (const name of bareCalls) {
+      fail(
+        'blocking-join-error',
+        `commands::${name} 裸调 spawn_blocking —— 后台任务 panic 时 JoinError 会被 ` +
+          "to_string() 成一句英文 `task panicked` 透给用户，不含任何可操作的下一步。" +
+          '改用同文件的 blocking() 助手，它已经把这条路径的文案写对了。',
+      );
+    }
+  } else {
+    note('命令层不再裸调 spawn_blocking：panic 提示统一走 blocking()');
+  }
+}
+
 // --- 8.5 icon-only 按钮必须有无障碍名称 -------------------------------------
 //
 // 事故来源：code-review-2026-09-27 的 L3。`circle` + `:icon` 的按钮**对屏幕

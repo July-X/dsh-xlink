@@ -243,7 +243,11 @@ const FILE_BUDGETS = {
   // harness/official_chat.rs（见该文件的登记），并把只服务它的
   // logical_window_size 一并带走。搬移前基线 2110，实测降到 2087——
   // 反棘轮是「只许下调」，所以这里跟着降，不给回弹留口子。
-  'src-tauri/src/commands.rs': 2087,
+  // 2087 → 2061：18 条命令从裸 `spawn_blocking(…).await.map_err(|e| e.to_string())?`
+  // 换到 `blocking()` 助手（review L5），panic 提示统一带上可操作的下一步。
+  // 净减 26 行不是因为删了功能，是因为「自己拼 spawn_blocking + 自己写
+  // map_err」比调一个助手长。
+  'src-tauri/src/commands.rs': 2061,
   // 安全网 P0 + P1：环境快照。指纹计算（可重建的声明而非备份）、快照文档
   // 读写（走 state.rs 骨架）、裁剪策略（高权重优先 + 永不丢 last-known-good）、
   // 两个打点的入栈规则、给面板的只读视图，以及 P1 的差异计算与恢复执行

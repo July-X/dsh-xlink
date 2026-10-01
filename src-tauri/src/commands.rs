@@ -126,7 +126,7 @@ pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<St
     let data_dir = state.data_dir.clone();
     // 文件探测和端口检查在 blocking worker 上运行：如果作为同步命令，
     // 这个轮询会每几秒就霸占 Tauri 的主线程。
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let settings = settings::load_for_shell(settings::current_mode());
         let kernel_status = kernel::lifecycle::status(&data_dir, &settings);
         // 工作台窗口的加载看门狗挂在既有轮询上，不另起定时器：它本来每 2.5s
@@ -136,7 +136,7 @@ pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<St
         let state = app.state::<AppState>();
         let node_info = cached_node(&state, &settings);
         let official_chat_open = app.get_window(OFFICIAL_CHAT_WINDOW_LABEL).is_some();
-        StatusView {
+        let view = StatusView {
             shell_version: app.package_info().version.to_string(),
             dev_build: cfg!(debug_assertions),
             shell_mode: crate::shell::paths::ShellMode::current(),
@@ -146,10 +146,10 @@ pub async fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<St
             last_incident: guard::load_incident(&data_dir),
             settings,
             official_chat_open,
-        }
+        };
+        Ok::<_, std::convert::Infallible>(view)
     })
     .await
-    .map_err(|e| e.to_string())
 }
 
 /// 通过 per-app 缓存解析 Node 运行时；只有 `node_path` 设置发生变化
@@ -184,13 +184,12 @@ pub async fn detect_node(state: State<'_, AppState>) -> Result<node::detect::Nod
     // 安装 + 系统位置）可能派生一个子进程——把这些进程派生放到 Tauri
     // 主线程之外。
     let data_dir = state.data_dir.clone();
-    let info = tauri::async_runtime::spawn_blocking(move || {
+    let info = blocking(move || {
         let mut s = settings::load_for_shell(settings::current_mode());
         s.node_path = None;
-        node::detect::resolve(&s, &data_dir)
+        Ok::<_, std::convert::Infallible>(node::detect::resolve(&s, &data_dir))
     })
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
     // 把新鲜结果写回缓存（键与 `cached_node` 一致：此时 `node_path` 视为未配置）：
     // 「检测 Node.js」是用户装好 Node 之后的第一个动作，不回写的话随后的「启动
     // 工作台」仍会命中旧的 `ok: false`（P2-8）。只在成功时写，失败结论留给下一次
@@ -309,7 +308,7 @@ pub async fn snapshot_list(
     state: State<'_, AppState>,
 ) -> Result<crate::diagnostics::snapshot::SnapshotListView, String> {
     let data_dir = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let (family, instance_id) = plugins::center::default_instance_key();
         let settings = settings::load_for_shell(settings::current_mode());
         let mut view = crate::diagnostics::snapshot::list(
@@ -322,10 +321,9 @@ pub async fn snapshot_list(
         // 展示路径容错读（面板还得能打开），但必须把「读到的是空文档」
         // 说出来——否则用户会以为"从来没有过回退点"。
         view.warning = crate::diagnostics::snapshot::warning(&family, &instance_id);
-        view
+        Ok::<_, std::convert::Infallible>(view)
     })
     .await
-    .map_err(|e: tauri::Error| e.to_string())
 }
 /// 预览「回到某个回退点」将要做什么。
 ///
@@ -337,7 +335,7 @@ pub async fn snapshot_preview_restore(
     id: String,
 ) -> Result<crate::diagnostics::restore::RestoreDiff, String> {
     let data_dir = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let (family, instance_id) = plugins::center::default_instance_key();
         let settings = settings::load_for_shell(settings::current_mode());
         crate::diagnostics::restore::diff(
@@ -351,7 +349,6 @@ pub async fn snapshot_preview_restore(
         .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e: tauri::Error| e.to_string())?
 }
 
 /// 真正执行恢复。**必须先调过 [`snapshot_preview_restore`]** 并让用户确认
@@ -523,9 +520,7 @@ pub async fn read_log_file(state: State<'_, AppState>, name: String) -> Result<S
     if !path.starts_with(&logs_dir) {
         return Err(format!("日志路径越界：{name}"));
     }
-    tauri::async_runtime::spawn_blocking(move || read_tail(&path, 16 * 1024))
-        .await
-        .map_err(|e| e.to_string())
+    blocking(move || Ok::<_, std::convert::Infallible>(read_tail(&path, 16 * 1024))).await
 }
 
 /// 在操作系统文件管理器中显示 Shell 的数据目录。
@@ -1090,9 +1085,7 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
 pub async fn notification_status(
     app: AppHandle,
 ) -> Result<crate::notify::task::NotificationStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || crate::notify::task::status(&app))
-        .await
-        .map_err(|e| format!("读取通知状态失败：{e}。请重试"))
+    blocking(move || Ok::<_, std::convert::Infallible>(crate::notify::task::status(&app))).await
 }
 
 /// 全部标记为已读：未读计数清零，macOS Dock / Windows 任务栏的数字角标摘掉。
@@ -1101,9 +1094,8 @@ pub async fn notification_mark_read(
     app: AppHandle,
 ) -> Result<crate::notify::task::NotificationStatus, String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || crate::notify::task::mark_all_read(&handle))
+    blocking(move || Ok::<_, std::convert::Infallible>(crate::notify::task::mark_all_read(&handle)))
         .await
-        .map_err(|e| format!("清除未读标记失败：{e}。请重试"))
 }
 
 /// 保存任务通知的三个开关。其余设置原样保留。
@@ -1115,11 +1107,8 @@ pub async fn notification_save_settings(
     sound: bool,
 ) -> Result<crate::notify::task::NotificationStatus, String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::notify::task::save_settings(&handle, enabled, notify_away_only, sound)
-    })
-    .await
-    .map_err(|e| format!("保存通知设置失败：{e}。请重试"))?
+    blocking(move || crate::notify::task::save_settings(&handle, enabled, notify_away_only, sound))
+        .await
 }
 
 /// 发一条测试通知，用于确认系统通知权限与通路可用。
@@ -1134,9 +1123,8 @@ pub async fn notification_test(
     app: AppHandle,
 ) -> Result<crate::notify::task::NotificationStatus, String> {
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || crate::notify::task::send_test(&handle))
+    blocking(move || Ok::<_, std::convert::Infallible>(crate::notify::task::send_test(&handle)))
         .await
-        .map_err(|e| format!("发送测试通知失败：{e}。请重试"))
 }
 
 /// 试听提示音：只播放一声系统提示音，不动未读、角标与通知气泡。
@@ -1927,9 +1915,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
             let _ = tx.send(result);
         })
         .map_err(|e| e.to_string())?;
-    let built = tauri::async_runtime::spawn_blocking(move || rx.recv().ok())
-        .await
-        .map_err(|e| e.to_string())?;
+    let built = blocking(move || Ok::<_, std::convert::Infallible>(rx.recv().ok())).await?;
     match built {
         Some(Ok(())) => Ok(()),
         Some(Err(e)) => Err(e),
@@ -2167,12 +2153,11 @@ pub async fn plugin_status(
     state: State<'_, AppState>,
 ) -> Result<plugins::center::PluginStatus, String> {
     let data_dir = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let settings = settings::load_for_shell(settings::current_mode());
-        plugins::center::status(&data_dir, &settings)
+        Ok::<_, std::convert::Infallible>(plugins::center::status(&data_dir, &settings))
     })
     .await
-    .map_err(|e| e.to_string())
 }
 
 /// 列出物化到 `kernels/<version>/plugins/` 之下的每一个插件。由版本
@@ -2190,11 +2175,10 @@ pub async fn kernel_plugin_list(
         return Err(format!("版本号 {version:?} 形态非法"));
     }
     let data_dir = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        plugins::center::kernel_plugin_list(&data_dir, &version)
+    blocking(move || {
+        Ok::<_, std::convert::Infallible>(plugins::center::kernel_plugin_list(&data_dir, &version))
     })
     .await
-    .map_err(|e| e.to_string())
 }
 
 /// 插件商店命令的共享主体：基于已经缓存好的 node 探测来解析 pnpm
@@ -2514,12 +2498,13 @@ pub async fn plugin_status_instance(
     state: State<'_, AppState>,
 ) -> Result<plugins::center::PluginStatus, String> {
     let data_dir = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let settings = settings::load_for_shell(settings::current_mode());
-        plugins::center::status_for_instance(&family, &id, &data_dir, &settings)
+        Ok::<_, std::convert::Infallible>(plugins::center::status_for_instance(
+            &family, &id, &data_dir, &settings,
+        ))
     })
     .await
-    .map_err(|e| e.to_string())
 }
 
 // --- 迁移向导（P6 step 4 后端命令） -------------------------------------
@@ -2528,9 +2513,7 @@ pub async fn plugin_status_instance(
 /// 任何目录、不触碰源 / 目标。UI 用它给用户展示「这次会搬哪些」。
 #[tauri::command]
 pub async fn migration_preview() -> Result<migration::wizard::MigrationPreview, String> {
-    tauri::async_runtime::spawn_blocking(migration::wizard::preview_migration)
-        .await
-        .map_err(|e| e.to_string())
+    blocking(|| Ok::<_, std::convert::Infallible>(migration::wizard::preview_migration())).await
 }
 
 /// 执行迁移：按 policy 处理冲突、写入 backup（旧源永不被删除）。
@@ -2542,7 +2525,7 @@ pub async fn migration_run(
     policy: migration::wizard::ConflictPolicy,
     on_progress: Channel<migration::wizard::MigrationProgress>,
 ) -> Result<migration::wizard::MigrationReport, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         migration::wizard::run_migration_with_progress(policy, |progress| {
             // Channel.send 失败 = 前端已经断开（比如用户关掉了弹窗）。
             // 这不影响后端继续完成迁移（写 backup 是主要的可观察副作用），
@@ -2552,8 +2535,6 @@ pub async fn migration_run(
         })
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())
 }
 
 /// 把 migration_id 对应的 backup 还原回目标位置。找不到 backup 时
@@ -2562,18 +2543,13 @@ pub async fn migration_run(
 pub async fn migration_rollback(
     migration_id: String,
 ) -> Result<migration::wizard::RollbackReport, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        migration::wizard::rollback_migration(&migration_id)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())
+    blocking(move || migration::wizard::rollback_migration(&migration_id)).await
 }
 
 /// 列出所有历史迁移（按 backup 目录 mtime 倒序）。
 #[tauri::command]
 pub async fn migration_list() -> Result<Vec<migration::wizard::MigrationSummary>, String> {
-    tauri::async_runtime::spawn_blocking(migration::wizard::list_migrations)
+    blocking(|| Ok::<_, std::convert::Infallible>(migration::wizard::list_migrations()))
         .await
         .map_err(|e| e.to_string())
 }
@@ -2827,9 +2803,7 @@ pub async fn patch_revert(
 /// 技能商店以及按技能的 active-root 状态快照。
 #[tauri::command]
 pub async fn skill_status() -> Result<skills::manage::SkillStatus, String> {
-    tauri::async_runtime::spawn_blocking(skills::manage::status)
-        .await
-        .map_err(|e| e.to_string())
+    blocking(|| Ok::<_, std::convert::Infallible>(skills::manage::status())).await
 }
 
 /// 技能商店命令的共享主体：在 blocking worker 上运行 `skills::` 操作，
