@@ -2109,7 +2109,27 @@ mod command_cache {
 /// 不报错，只是输出空串，若把空串当成 `Some("")` 返回，调用方就会得出"这个 pid
 /// 存在但不是内核"的结论（`ListenerIdentity::NotKernel`），于是「打开工作台」被
 /// 误拒、并让用户去结束一个根本不存在的进程。空输出同样意味着"无法据此判断身份"。
+///
+/// 平台分工（同一个问题的三份代价账，2026-10-01 定案）：
+/// - **macOS**：先走 [`process_command_procargs`] 的 sysctl 快路径（一次系统调用，
+///   实测 ~20µs），失败才回退 `ps`。不能让轮询路径派生 `ps`：壳进程内嵌
+///   WKWebView 后持有 ~4900 个 VM 区域，而 `isolate_process` 的 `setsid` 走
+///   `pre_exec`，会强制 std 放弃 posix_spawn 改走 fork+exec——xnu 的 fork 要
+///   逐区域复制地址空间结构，实测一次派生 ~280ms。修完子进程等待循环后
+///   `kernel_workbench_running` p50 仍卡在 279ms，`vmmap` 数出 4874 个区域
+///   才对上账；换 sysctl 后该段回到微秒级。
+/// - **Linux**：`ps` 派生（本仓库不发布 Linux，仅开发自用；fork 在 Linux 上
+///   没有这笔逐区域复制的账）。
+/// - **Windows**：`Get-CimInstance` 派生 + 几秒缓存（P2-9），与 macOS 的
+///   sysctl 是同一类"别在轮询路径上派生子进程"的对策，只是平台没有
+///   等价的单系统调用读法。
 fn process_command(pid: u32) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(command) = process_command_procargs(pid) {
+            return Some(command);
+        }
+    }
     #[cfg(unix)]
     {
         crate::shell::process::run_capture("ps", &["-p", &pid.to_string(), "-o", "command="])
@@ -2133,6 +2153,90 @@ fn process_command(pid: u32) -> Option<String> {
         command_cache::put(pid, value.clone());
         value
     }
+}
+
+/// macOS 上用 `sysctl(KERN_PROCARGS2)` 读目标进程的 argv——`ps` 自己内部就是
+/// 这么实现的，所以这不是"换一种判据"，只是把它派生进程的那层壳剥掉。
+///
+/// 失败（进程不存在、权限、缓冲区形状不认识）返回 `None`，调用方回退 `ps`：
+/// 快路径只许快、不许改变语义。
+#[cfg(target_os = "macos")]
+fn process_command_procargs(pid: u32) -> Option<String> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::pid_t];
+    let mut len = 0usize;
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || len < 4 {
+        return None;
+    }
+    let mut buf = vec![0u8; len];
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    parse_procargs(&buf[..len])
+}
+
+/// 解析 `KERN_PROCARGS2` 缓冲区为空格连接的命令行（与 `ps -o command=` 同形）。
+///
+/// 布局（2026-10-01 对真机 node 进程逐字节核对）：`[argc: i32 本机序]` 之后先
+/// 存**一份可执行文件路径**，再跟 argc 个 argv 字符串，然后才是环境变量——路径
+/// 与 argv[0] 相同（绝大多数 spawn）时它会重复出现，直接取前 argc 个会把最后一个
+/// 参数吃掉（实测正好丢了 `--port 3090` 的 `3090`）。`ps` 的输出取的是 argv 本尊，
+/// 所以字符串数 ≥ argc+1 时丢掉首个。老系统可能没有那份路径前缀，此时串数恰好
+/// 等于 argc，按原样取——两种形状都认，任何别的形状都返回 `None` 走 `ps` 兜底。
+#[cfg(target_os = "macos")]
+fn parse_procargs(buf: &[u8]) -> Option<String> {
+    if buf.len() < 4 {
+        return None;
+    }
+    let argc = u32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    // 合法 argv 数量的常识上界：真进程到不了，垃圾数据到得了。
+    if argc == 0 || argc > 1024 {
+        return None;
+    }
+    let mut strings: Vec<String> = Vec::with_capacity(argc + 1);
+    let mut pos = 4;
+    while pos < buf.len() && strings.len() <= argc {
+        while pos < buf.len() && buf[pos] == 0 {
+            pos += 1;
+        }
+        let start = pos;
+        while pos < buf.len() && buf[pos] != 0 {
+            pos += 1;
+        }
+        if pos == start {
+            break;
+        }
+        // 与 ps 路径同口径：非法 UTF-8 按替换字符处理，而不是整体失败。
+        strings.push(String::from_utf8_lossy(&buf[start..pos]).into_owned());
+    }
+    let argv: &[String] = if strings.len() > argc {
+        &strings[1..1 + argc]
+    } else if strings.len() == argc {
+        &strings[..]
+    } else {
+        return None;
+    };
+    let joined = argv.join(" ");
+    (!joined.trim().is_empty()).then_some(joined)
 }
 
 /// 进程存活探测的三态结果。
@@ -2411,6 +2515,73 @@ mod tests {
         assert!(
             !args.iter().any(|arg| arg == "3090"),
             "端口单独成一个参数会被 lsof 当成文件名（names），整条命令恒定失败：{args:?}"
+        );
+    }
+
+    /// `KERN_PROCARGS2` 缓冲区在 argc 之后带**可执行路径前缀**（与 argv[0] 相同
+    /// 时重复出现）。直接取前 argc 个字符串会把最后一个参数吃掉——2026-10-01
+    /// 实测正好丢掉 `--port 3090` 的 `3090`，那会让身份判据永远认不出内核。
+    /// 解析必须：串数 > argc 时丢首个、== argc 时原样取、不足时整体拒绝。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn procargs_layout_drops_the_duplicated_exec_path() {
+        fn build(argc: u32, strings: &[&str]) -> Vec<u8> {
+            let mut buf = argc.to_ne_bytes().to_vec();
+            for s in strings {
+                buf.extend_from_slice(s.as_bytes());
+                buf.push(0);
+            }
+            buf
+        }
+        // 真机形状（vmmap 对着 node 进程逐字节核对过）：路径 + argv，共 argc+1 串。
+        let dup = build(
+            3,
+            &[
+                "/bin/sh",
+                "/bin/sh",
+                "-c",
+                "sleep 5; true @deepseek-ai/dsh --port 3090",
+            ],
+        );
+        assert_eq!(
+            parse_procargs(&dup).as_deref(),
+            Some("/bin/sh -c sleep 5; true @deepseek-ai/dsh --port 3090"),
+            "带路径前缀的布局必须丢首个串，否则末参被吃掉"
+        );
+        // 老系统形状：恰好 argc 串，没有路径前缀。
+        let plain = build(2, &["/bin/ps", "-p 123"]);
+        assert_eq!(
+            parse_procargs(&plain).as_deref(),
+            Some("/bin/ps -p 123"),
+            "无前缀布局按原样取 argc 串"
+        );
+        // 不足 argc 串（缓冲区被截断 / 垃圾数据）：拒绝，走 ps 兜底。
+        let truncated = build(4, &["only", "two"]);
+        assert!(
+            parse_procargs(&truncated).is_none(),
+            "串数不足必须返回 None"
+        );
+        assert!(parse_procargs(&[]).is_none(), "空缓冲区必须返回 None");
+    }
+
+    /// 端到端：sysctl 快路径必须能读出**本测试进程自己**的命令行。
+    ///
+    /// 这是上面布局测试的行为版——解析规则写对了，但 sysctl 调用本身坏了
+    ///（mib 顺序、长度两段式）时只有这条会红。回退 `ps` 能掩盖这条的另一半
+    /// 故障面，所以这里直接测 `process_command_procargs` 而不是 `process_command`。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn procargs_reads_this_process_command_line() {
+        let exe = std::env::current_exe().expect("current_exe");
+        let name = exe
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("测试二进制名");
+        let command =
+            process_command_procargs(std::process::id()).expect("sysctl 必须能读本进程 argv");
+        assert!(
+            command.contains(name),
+            "本进程命令行应含测试二进制名 {name}，实际：{command}"
         );
     }
 
