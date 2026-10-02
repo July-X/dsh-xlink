@@ -103,10 +103,12 @@ pub fn status() -> Result<AutostartStatus, String> {
             note: None,
         },
     };
-    // 「登录时启动工作台」是依附于登录项的：没开登录项时它不生效，把话讲
-    // 出来比让用户以为两个开关各管各的更省事。
+    // 「开机启动工作台」是依附于「开机自启动」的：没开后者时它不生效，把话
+    // 讲出来比让用户以为两个开关各管各的更省事。**引号里的名字必须与
+    // `SettingsPanel.vue` 的 label 逐字一致**——写错一个���，用户在界面上就
+    // 找不到这条提示在说哪个开关。
     if !status.enabled && status.kernel {
-        status.note = Some("「登录时启动工作台」需要先打开「登录时自动启动」才会生效".to_string());
+        status.note = Some("「开机启动工作台」需要先打开「开机自启动」才会生效".to_string());
     }
     Ok(status)
 }
