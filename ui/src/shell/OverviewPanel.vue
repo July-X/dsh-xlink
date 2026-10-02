@@ -668,6 +668,19 @@ function goVersions() {
   align-items: center;
   flex-wrap: wrap;
 }
+/* 信息行的纵向行距大头不在 gap，在行盒本身。带操作按钮的三行（Node.js /
+   数据目录 / 今日用量）被 Element 的 small 按钮 24px 外框顶高，而按钮文字
+   只有 12px——上下各 6px 是纯空气。裸文本行按 13px × 1.5 只有 19.5px，
+   于是同一张卡里五行行高参差约 4px，gap 再怎么调也只是在错高上补空气。
+   收到 20px 后五行统一等于文本行盒，gap 才真的成了唯一的行距来源。
+   横向 padding 保持 Element 默认的 11px 不动：这些是无底色 text 按钮，
+   padding 看不见、只负责可点面积，砍它等于悄悄缩小热区。 */
+.kv {
+  row-gap: 4px;
+}
+.kv .el-button {
+  height: 20px;
+}
 /* 信息行里的状态胶囊比品牌区小一号；并抵消窄窗媒体查询的
    `.status-pill { margin-left: auto }`——那条规则是为品牌行右推准备的，
    在信息行里会把胶囊推到整行最右（与下方文本列错位）。 */
