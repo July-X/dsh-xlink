@@ -125,7 +125,31 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 窗口能力的复用接口、接入流程和当前代码审查见 [窗口核心能力设计与代码审查](window-architecture.md)。
 
-- `main`（管理面板）：`tauri.conf.json` 里配置为主窗口；加载 `ui/` 静态资源，`capabilities/default.json` 拥有全部本地命令权限。macOS / Windows 的无边框由 `tauri.conf.json` 的 `decorations: false` 在**建窗时**给定——不要在 `setup` 里用 `set_decorations(false)` 事后改：那次改动会重算 macOS 的 `NSWindowStyleMask` 并抹掉 `Miniaturizable`，标题栏黄灯随之静默失效（根因与验证见 [troubleshooting.md](troubleshooting.md)）；前端 `WindowTitleBar.vue` 自绘窗口按钮、拖拽区和标题栏：macOS 是左上角交通灯，Windows 是右侧 46×32 的最小化 / 关闭按钮（Windows 11 标准尺寸与反馈）；release 使用从左到右 5% 到 70% 不透明度的深 Gitea 绿色笔刷，dev 使用同样规则的低亮度鲸眼红色笔刷；Linux 暂保留原生标题栏。Windows 上该窗口**常驻后台**：`tray.rs` 在 `setup` 里建立通知区域图标（`icons/tray-{dark,light}-{16,20,24,32,40,48}.png` 十二档都由 `include_image!` 编译期解码：按 `Personalize\SystemUsesLightTheme` 选浅色/深色两套（浅色套板、深色透明底 + 白边），按 `GetSystemMetricsForDpi(SM_CXSMICON, …)` 选档，`watch_theme` 的后台线程等注册表变化换帧、`WindowEvent::ScaleFactorChanged` 重取——见 [icon-design.md](icon-design.md)；右键菜单「显示主界面 / 退出 dsh-xlink」、左键单击叫回窗口）；`RunEvent::WindowEvent::CloseRequested` 先经 `tray::intercept_close` 接管——`prevent_close()` 后走 `tray::hide_to_tray()`（`set_skip_taskbar(true)` 即 `ITaskbarList::DeleteTab`，再 `hide()`；收起那一刻窗口已隐藏，页内提示谁也看不见，因此**收起时不再广播任何事件**），标题栏最小化按钮则走 `minimize_shell` 命令落到同一个 `hide_to_tray()`。因此关闭与最小化都只是收起窗口（内核、工作台、官方对话照常运行，任务栏与 Alt+Tab 不再保留一个点了没反应的条目），恢复时 `tray::show_main_shell()` 先 `set_skip_taskbar(false)` 再 `show()` + 聚焦，并按 `HIDDEN_TO_TRAY` 判定「确实是被收起的」而非从别处叫回——**每次启动只在第一次这样的恢复上**广播 `shell-restored-from-tray`（`RESTORE_HINT_SHOWN` 一票制），前端据此弹 4 秒的「刚才已收起到通知区域」页内提示（这是唯一能讲清「程序还在后台、怎么找回来」的可见时刻，久了也确实会像崩了）；恢复一定由用户点托盘图标或工作台拉绳触发，他刚证明自己知道怎么叫回来，所以第二次起一律静默。因此关闭与最小化都只是收起窗口（内核、工作台、官方对话照常运行，任务栏与 Alt+Tab 不再保留一个点了没反应的条目），恢复时 `tray::show_main_shell()` 先 `set_skip_taskbar(false)` 再 `show()` + 聚焦。退出改由托盘菜单发起：它把窗口叫回前台并广播与系统关闭按钮相同的 `request-quit-confirm`，前端确认后依次执行 `stop_kernel` → `confirm_close_shell`（销毁全部窗口 + `app.exit(0)`）。恢复动作每个平台只有一份实现（Windows 在 `tray::show_main_shell`，其它平台在 `lib::show_main_shell`），`lib::show_main_shell` 只做平台分发，工作台拉绳的 `focus_main_shell` 与托盘共用。
+- `main`（管理面板）：`tauri.conf.json` 里配置为主窗口；加载 `ui/` 静态资源，`capabilities/default.json` 拥有全部本地命令权限。macOS / Windows 的无边框由 `tauri.conf.json` 的 `decorations: false` 在**建窗时**给定——不要在 `setup` 里用 `set_decorations(false)` 事后改：那次改动会重算 macOS 的 `NSWindowStyleMask` 并抹掉 `Miniaturizable`，标题栏黄灯随之静默失效（根因与验证见 [troubleshooting.md](troubleshooting.md)）；前端 `WindowTitleBar.vue` 自绘窗口按钮、拖拽区和标题栏：macOS 是左上角交通灯，Windows 是右侧 46×32 的最小化 / 关闭按钮（Windows 11 标准尺寸与反馈）；release 使用从左到右 5% 到 70% 不透明度的深 Gitea 绿色笔刷，dev 使用同样规则的低亮度鲸眼红色笔刷；Linux 暂保留原生标题栏。
+
+### 后台常驻（2026-10-02 起两平台统一）
+
+关闭与最小化**都只是收起窗口**，内核、工作台与事件流继续运行；真正退出只由常驻入口图标的右键菜单「退出 Dsh-Xlink」发起，退出前若内核在跑会先经 `request-quit-confirm` 问一句。行为这一层在 `shell::resident`（跨平台唯一一份），两端只提供图标与菜单：
+
+- **Windows**：`shell::tray`，通知区域托盘。十二档 `icons/tray-{dark,light}-{16,20,24,32,40,48}.png` 由 `include_image!` 编译期解码：按 `Personalize\SystemUsesLightTheme` 选浅色 / 深色两套，按 `GetSystemMetricsForDpi(SM_CXSMICON, …)` 选档，`watch_theme` 的后台线程等注册表变化换帧、`WindowEvent::ScaleFactorChanged` 重取（见 [icon-design.md](icon-design.md)）；收起时额外 `set_skip_taskbar(true)`（`ITaskbarList::DeleteTab`），恢复时补回。
+- **macOS**：`shell::menu_bar`，菜单栏状态项。图标是**模板图**（`icons/menubar-{22,44}.png`，纯黑 + alpha），系统按菜单栏明暗自动反色——macOS 既不广播主题变化，我们也无法预知当前值，模板图是唯一正确形态。收起时顺带 `set_activation_policy(Accessory)` 把面板移出 Dock，恢复时改回 `Regular`。
+
+菜单接线（「显示 / 退出」两项 + 左键叫回窗口）两端共用 `resident::build_background_menu`，只传各自的图标与文案。两端各写一份时曾有 14 行逐字重复（`check-code-budget` 抓到的），而真正危险的是「退出」只改一端：用户会点到一个不响应的菜单项，界面上没有任何症状。
+
+`CloseRequested` 一律经 `resident::intercept_close` 接管（`prevent_close()` 后隐藏），与平台无关。收起那一刻窗口已隐藏，页内提示谁也看不见，因此**收起时不广播任何事件**；改由 Rust 在**从后台恢复**时补发 `shell-restored-from-background`，每次启动只发一次（`RESTORE_HINT_SHOWN` 一票制），前端弹 4 秒提示——这是唯一能讲清「程序还在后台、怎么找回来」的可见时刻。恢复动作全仓只有一份实现（`resident::show_main_shell`），`lib::show_main_shell` 与工作台拉绳的 `focus_main_shell` 都调它；**不要把动作抄回调用方**：Windows 上两边互调过一次，直接 `thread 'main' has overflowed its stack`。
+
+### 登录自启（`shell::autostart`）
+
+两个开关，**默认都关**：
+
+- **登录时自动启动**：注册系统登录项。macOS 写 `~/Library/LaunchAgents/com.july-x.dsh-xlink[.dev].plist`（`RunAtLoad`，不用 `SMAppService`——它要求应用已签名且装在 `/Applications`，而 `npm run dev` 直接跑 `target/debug/` 时注册会静默失败，恰是最需要验证的场景）；Windows 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`（`windows-sys` 已在依赖里，`tray.rs` 也在用它读主题键）。dev 与 release 各注册自己那一份，标签不同。
+- **登录时启动工作台**（`Settings::autostart_kernel`）：登录项拉起后连内核一起起。默认关——开机就占端口、起 node 进程、订阅事件流，多数用户不需要。
+
+登录项里存的命令是 `"<current_exe>" --autostart`。**标记只认独立的那个 token**（`detect_autostart_arg` 逐参数比 `== "--autostart"`）：内核进程的命令行里也可能出现这个词（`dsh web` 的参数由用户自由填写），用 `contains` 扫整串会把那些情况误判成登录项拉起，于是面板凭空消失而用户没点过任何按钮。
+
+自启拉起时**不显示面板**（`setup` 里在建窗可见前就 `hide()`），菜单栏 / 托盘图标是全部可见痕迹；是否顺带起内核由 `should_launch_kernel_on_autostart` 三重判定：开关已开 ∧ 本次确为登录项拉起 ∧ 已安装版本存在。启动在**后台线程**发起（要派生 pnpm / node / 内核并等端口就绪，最坏几分钟，而 `setup` 跑在 Tauri 主线程上）。`start_kernel_blocking` 是 `start_kernel` 拆出的无 Channel 主体——自启那一刻没有任何前端在场，进度只能落 stderr（进日志文件），伪造一个 `Channel` 没有意义。
+
+**内核仍随壳一起停**（用户 2026-10-02 拍板）：常驻指「关窗不退出」，不是「壳退出后内核继续服务」。`RunEvent::Exit` 回收内核的逻辑一行没改，因此不需要跨进程认领协议，也就不会出现「壳退出了端口还被谁占着」「下次启动认不认得这个孤儿」那类问题。
 - dev 调试面板（仅 dev 构建，`ui/src/components/DebugPanel.vue`）：右下角 🪛 浮按钮打开，唯一动作是「模拟正式版外观」。打开后把 `rel-build` 类挂上 body（复用 release 的绿渐变背景），**并收起 dev 专属内容**——设置页的「模拟一次任务完成」、概览页版本号的「（dev）」后缀，以及面板里那份钩子速查。它们只读 `store.devUi`（= `dev_build && !releasePreview`，由 `store.applyBuildClass()` 唯一写入，首帧从 body 类兜底以免 HMR 后 dev 入口先隐藏再闪回）：新增 dev 专属内容时必须走同一字段，否则 release 预览只演出了半个正式版。**浮按钮不走这个字段**：它在两种模式下都留在右下角（预览中换成 Gitea 绿以示区分），否则切进 release 预览就没有回头的入口了——刻意不做键盘快捷键，切换靠这个按钮。预览标志只在内存里，重启应用即复位；预览只改界面，不改外壳行为（`dev_build` 仍是 true，Rust 侧一概不动）。**面板不会在切换预览时自动收起**：Element Plus 的 switch 在 `handleChange` 里先发 `change`、再用 `nextTick` 写模板 ref `input.value.checked`，同步卸载开关会让那个回调拿到 `null`，在控制台留下一条 `Unhandled Promise Rejection: Cannot set properties of null (setting 'checked')`（实测于 element-plus 2.14.5）。要收起面板请另找时机，不要挂在 `@change` 触发的 watch 上。
 
 - `harness`（工作台）：`open_harness` 在新 OS 线程里 `WebviewWindowBuilder::new(...).label("harness")`，先对日志中的 launch-token URL（旧版内核则对裸地址）做 loopback HTTP 探针，确认可用后加载；不设 `closable(false)`——macOS 交通灯红灯与 Windows × 关闭按钮保持可用，用户可随时自己收起工作台窗口，内核与任务继续在后台运行、随时可经「打开工作台窗口」重新打开，收起窗口不会丢内核会话；由 `stop_kernel` 用 `destroy()` 主动回收窗口并停止内核。`capabilities/harness-remote.json` 仅授权 `allow-focus-main-shell` 与 `allow-report-harness-fault`，URL 锁 `http://127.0.0.1:*`；后者还会在 Rust 命令层校验 webview label 必须是 `harness`。打开前由 `kernel::prepare_workbench_source_maps` 扫描当前内核的前端 `dist`，为 npm 包中保留 `sourceMappingURL` 但缺失的 `.map` 生成最小 sidecar；不改内核 JS，目录只读时也不阻断工作台启动。

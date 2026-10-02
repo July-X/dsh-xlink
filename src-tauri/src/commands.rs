@@ -280,6 +280,8 @@ fn merge_settings(
         // 继承现值：面板保存端口时请求里没有这个字段，被 `#[serde(default)]` 填成
         // `None` 就等于把用户切好的实例悄悄退回默认。
         current_instance_id: previous.current_instance_id.clone(),
+        // 登录后自动拉起工作台的开关同理：只由 `autostart_set_kernel` 写。
+        autostart_kernel: incoming.autostart_kernel.or(previous.autostart_kernel),
     }
 }
 
@@ -777,6 +779,7 @@ mod settings_merge_tests {
             notify_sound: Some(true),
             plugin_precheck: Some(false),
             current_instance_id: Some("work".into()),
+            autostart_kernel: Some(true),
         };
         // 面板发来的请求：只有 port / profile，其余字段被 serde default 填成 None。
         let incoming = settings::Settings {
@@ -811,6 +814,12 @@ mod settings_merge_tests {
             Some("work"),
             "本壳切好的实例同样必须继承：面板保存端口时请求里没有这个字段，\
              被 serde default 填成 None 就等于把用户切到的实例悄悄退回默认"
+        );
+        assert_eq!(
+            merged.autostart_kernel,
+            Some(true),
+            "「登录时启动工作台」同样必须继承：它在「后台常驻」卡片里设置，\
+             而面板的「保存设置」只发端口与 profile，两者不是同一张卡"
         );
 
         // 显式清空（空串）不被现值覆盖：`Some("")` 是"这次要清掉"。
@@ -938,6 +947,26 @@ pub async fn start_kernel(
     // 接线和子进程派生都是阻塞的（pnpm、进程创建）；把它们放到 blocking
     // worker 上，而不是 Tauri 的主线程。
     blocking(move || -> Result<guard::StartReport, String> {
+        let mut send = |msg: &str| {
+            let _ = on_event.send(msg.to_string());
+        };
+        start_kernel_blocking(&app, &data_dir, &mut send)
+    })
+    .await
+}
+
+/// 启动内核的实际主体。**不接 Channel**，由调用方决定进度消息去哪。
+///
+/// 抽出这一层是为了登录自启：那是壳自己在 `setup` 里发起的（用户不开面板，
+/// 没人能消费进度流），拿不到也不该伪造一个 Channel——`Channel` 的存在意义
+/// 是把进度推到某个前端，而自启那一刻没有任何前端在场。进度改落 stderr，
+/// 出问题时进日志文件，够排查。
+pub(crate) fn start_kernel_blocking(
+    app: &AppHandle,
+    data_dir: &Path,
+    send: &mut dyn FnMut(&str),
+) -> Result<guard::StartReport, String> {
+    {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let settings = settings::load_for_shell(settings::current_mode());
@@ -954,25 +983,22 @@ pub async fn start_kernel(
             return Err(node_info.reason.clone());
         }
         let node_path = PathBuf::from(node_info.path.clone());
-        let mut send = |msg: &str| {
-            let _ = on_event.send(msg.to_string());
-        };
         // 受防护的重试会通过 pnpm 重新接线插件；预先解析 pnpm，使得工具链
         // 缺失时能在第一次尝试前就失败，而不是在流程中途才报错。
-        let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, &mut send)?;
+        let (_, pnpm_exe) = promise_pnpm(data_dir, &node_info, &mut *send)?;
         let (family, instance_id) = shell::instance::resolve_default();
         let deps = guard::GuardDeps {
-            data_dir: &data_dir,
+            data_dir,
             settings: &settings,
             node_path: &node_path,
             pnpm_exe: &pnpm_exe,
             family,
             instance_id,
         };
-        let (mut report, child) = guard::guarded_start(&deps, &mut send);
+        let (mut report, child) = guard::guarded_start(&deps, send);
         if let Some(child) = child {
             // 非致命异常照样要进日志文件（stderr）与面板（report.warning）。
-            if let Some(warning) = register_child(&state, &data_dir, settings.port, child) {
+            if let Some(warning) = register_child(&state, data_dir, settings.port, child) {
                 eprintln!("dsh-xlink: {warning}");
                 report.warning = Some(warning);
             }
@@ -981,8 +1007,8 @@ pub async fn start_kernel(
         // ——`guarded_start` 的 no-op 分支）：确保事件订阅线程在跑。
         // `start_watcher` 幂等，重复调用不会叠加线程；反过来，"内核在跑却没
         // 有人订阅"就等于任务完成通知静默失效。
-        if crate::kernel_running(&app) {
-            crate::notify::task::start_watcher(&app);
+        if crate::kernel_running(app) {
+            crate::notify::task::start_watcher(app);
         }
         // 安全网 P0：启动成功且**没有事故** → 打一个 `startup-ok` 快照。
         // 这是唯一能确立「上一个能跑起来的组合」的时点：安装完成、用户点
@@ -993,7 +1019,7 @@ pub async fn start_kernel(
         // P1 恢复时把"停用过的状态"当成用户原本的样子。
         if report.running && report.incident.is_none() {
             if let Err(error) = crate::diagnostics::snapshot::record(
-                &data_dir,
+                data_dir,
                 family,
                 instance_id,
                 &settings.profile,
@@ -1004,8 +1030,7 @@ pub async fn start_kernel(
             }
         }
         Ok(report)
-    })
-    .await
+    }
 }
 
 /// 停止内核并关闭工作台窗口，让 UI 的「关闭工作台」能拆掉整个工作台，
@@ -1630,17 +1655,20 @@ pub fn focus_main_shell(app: AppHandle, x: Option<f64>, y: Option<f64>) -> Resul
     Ok(())
 }
 
-/// Windows 标题栏的最小化按钮：与关闭一致，把窗口收进通知区域并从任务栏
-/// 移除按钮（托盘是唯一的恢复入口）。
+/// 标题栏的最小化按钮：**Windows** 上与关闭一致，把窗口收进通知区域并从
+/// 任务栏移除按钮（托盘是唯一的恢复入口）。
 ///
 /// 不复用 `Window::minimize()`：那会把窗口最小化到任务栏，而这里要的是
-/// 「任务栏不显示、只在托盘里」——`tray::hide_to_tray` 会
-/// `ITaskbarList::DeleteTab` 再隐藏窗口。
+/// 「任务栏不显示、只在托盘里」——隐藏时会走 `ITaskbarList::DeleteTab`。
+///
+/// **macOS 不走这里**：它的黄灯沿用系统语义（最小化到 Dock，Dock 上仍有
+/// 窗口条目）。Dock 保留一个能点回来的窗口条目，正是「最小化」该有的样子；
+/// 若也把它收进菜单栏，用户就失去了唯一符合直觉的恢复入口。前端只在
+/// Windows 分支调这条命令（见 `WindowTitleBar.vue`）。
 ///
 /// 命令在所有平台都注册（`generate_handler!` 的条目形态要保持「一个名字
 /// 一项」，`scripts/check-invariants.mjs` 是按 `,` 切分那段列表核对的），
-/// 但只有 Windows 会真的动手：其它平台没有托盘，收起来就再也找不回来，
-/// 所以这里直接返回，前端也只在 Windows 分支调用它。
+/// 其它平台直接返回 `Ok(())`——一个什么都不做的命令不该让前端拿到错误。
 #[tauri::command]
 pub fn minimize_shell(
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] app: AppHandle,

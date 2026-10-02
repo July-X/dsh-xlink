@@ -143,6 +143,24 @@ for s in 16 20 24 32 40 48; do
   cp "$TMP/tray-light-$s.png" "$ICONS/tray-light-$s.png"
 done
 
+# macOS menu bar 图标：**模板图**（black + alpha），只出 22 与 44 两档。
+#
+# 模板图是 macOS menu bar 唯一正确的形态：系统按当前菜单栏明暗自动反色，
+# 我们不需要（也拿不到）主题变化事件——托盘那套「监听注册表换帧」的逻辑在
+# macOS 上根本无处施展。红眼这一处彩色细节会随模板化丢失，menu bar 图标因此
+# 只有鲸鱼剪影；菜单栏位高仅 22pt，彩色细节在那里本就读不出来。
+#
+# 尺寸 22/44 对应 1x/2x，够用且不需要按 DPI 运行时重选（menu bar 不接受
+# 多倍图外的任意尺寸，系统会自行缩放我们给的那一档）。
+for s in 22 44; do
+  magick "$TMP/head-$s.png" \
+    \( "$TMP/head-$s.png" -alpha extract -threshold 50% \) \
+    -alpha off -compose CopyOpacity -composite \
+    -fill black -colorize 100 \
+    -type TrueColorAlpha -depth 8 -define png:color-type=6 \
+    "$ICONS/menubar-$s.png"
+done
+
 # Windows .ico：按尺寸分别提供帧，128 以下使用小尺寸变体。
 magick \
   "$TMP/small-32-plate.png" "$TMP/small-16-plate.png" "$TMP/small-24-plate.png" \

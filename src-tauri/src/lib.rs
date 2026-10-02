@@ -45,7 +45,7 @@ mod usage;
 use std::sync::Mutex;
 
 use commands::AppState;
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Manager, WindowEvent};
 
 /// 锁定一个互斥锁；当另一个线程 panic 时取回内部值。
 pub fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -125,6 +125,15 @@ pub fn run() {
     if notify::activate::claim_or_handoff() == notify::activate::Startup::HandedOff {
         return;
     }
+    // 登录自启标记要在建窗**之前**判定：`setup` 里要据此决定面板是否可见，
+    // 而那时窗口已经建好、马上要显示。早判一帧都不会有「闪一下再消失」。
+    //
+    // 排在单实例守卫之后是有意的：被交接走的第二个进程（用户点了通知横幅
+    // 或又双击了一次图标）不是登录项拉起的，它不参与这个判断——它连
+    // `setup` 都走不到。
+    shell::resident::mark_started_by_autostart(shell::resident::detect_autostart_arg(
+        std::env::args(),
+    ));
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -275,19 +284,83 @@ pub fn run() {
             // 修复后应归零）。竞态无害：cached_node 在探测前释放锁，
             // 撞车只是多一次幂等探测（P2-27）。
             warm_node_cache(app.handle());
-            // Windows：建立通知区域图标。管理面板在这里是「常驻后台」的
-            // ——关闭与最小化都只是收起窗口，托盘是唯一的重开与退出入口，
-            // 所以它必须在任何窗口可能被收起之前就绪。失败不阻断启动：
-            // 没有托盘时窗口仍可正常使用，只是「收起后只能靠重新启动找回」
-            // 这一退化行为，代价写进日志供排查。
-            #[cfg(target_os = "windows")]
-            if let Err(error) = shell::tray::setup(app.handle()) {
+            // 建立常驻入口图标：Windows 是通知区域托盘，macOS 是菜单栏。
+            // 2026-10-02 起两平台语义统一——关闭与最小化都只是收起窗口，
+            // 程序继续在后台运行，重开与退出都在图标菜单里，所以它必须在
+            // 任何窗口可能被收起之前就绪。失败不阻断启动：没有图标时窗口
+            // 仍可正常使用，只是「收起后只能靠重新启动找回」这一退化行为，
+            // 代价写进日志供排查。
+            if let Err(error) = shell::resident::setup(app.handle()) {
                 eprintln!(
-                    "dsh-xlink: 无法建立通知区域图标（{error}）；\
+                    "dsh-xlink: 无法建立常驻入口图标（{error}）；\
                      关闭按钮仍会把窗口收进后台，但届时只能通过重新启动应用找回界面。\
                      若界面显示异常，重启应用重试；仍失败请用 `npm run dev` 在终端启动，\
                      连同上面的完整输出一起反馈。"
                 );
+            }
+            // 登录自启拉起时不显示面板：开机弹一个窗口挡在用户面前，正是
+            // 自动启动最招人烦的地方。必须在**任何窗口可见之前**判定并隐藏，
+            // 否则用户会看到面板闪一下再消失。图标已经建好（上面），所以
+            // 隐藏之后程序仍在后台，菜单栏 / 托盘图标是全部可见痕迹。
+            if shell::resident::started_by_autostart() {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+                eprintln!(
+                    "dsh-xlink: 由系统登录项拉起，管理面板已收进后台；\
+                     点菜单栏 / 托盘图标可打开界面。"
+                );
+                // 用户显式开了「登录后自动启动工作台」才顺带起内核（默认关）。
+                // 判定与失败处理都在 `should_launch_kernel_on_autostart` /
+                // `start_kernel_blocking` 里，这里只负责发起。
+                //
+                // **必须派后台线程**：启动要派生 pnpm / node / 内核进程并阻塞
+                // 等端口就绪，最坏几分钟（受防护的重试会重装依赖）。而
+                // `setup` 跑在 Tauri 主线程上、后面还跟着事件循环启动——
+                // 在这儿等几分钟等于开机后几分钟界面无响应。
+                let autostart_handle = app.handle().clone();
+                let spawned = std::thread::Builder::new()
+                    .name("dsh-autostart-kernel".to_string())
+                    .spawn(move || {
+                        let data_dir = autostart_handle
+                            .try_state::<AppState>()
+                            .map(|state| state.data_dir.clone());
+                        let Some(data_dir) = data_dir else {
+                            return;
+                        };
+                        // 版本没装时不起（`None` → 不做），而不是起了再失败：
+                        // 开机那一刻用户不在跟前，失败日志没人看得见。
+                        let active = kernel::lifecycle::read_active(&data_dir);
+                        if !shell::autostart::should_launch_kernel_on_autostart(active.as_deref()) {
+                            eprintln!("dsh-xlink: 登录自启未拉起工作台（开关关闭或内核未安装）");
+                            return;
+                        }
+                        let mut log = |message: &str| eprintln!("dsh-xlink: [自启] {message}");
+                        match commands::start_kernel_blocking(
+                            &autostart_handle,
+                            &data_dir,
+                            &mut log,
+                        ) {
+                            Ok(report) if report.running => {
+                                eprintln!("dsh-xlink: [自启] 工作台已在后台启动");
+                            }
+                            Ok(report) => {
+                                eprintln!(
+                                    "dsh-xlink: [自启] 工作台未能启动：{}",
+                                    report
+                                        .warning
+                                        .clone()
+                                        .unwrap_or_else(|| "未知原因".to_string())
+                                );
+                            }
+                            Err(error) => {
+                                eprintln!("dsh-xlink: [自启] 启动工作台失败：{error}");
+                            }
+                        }
+                    });
+                if spawned.is_err() {
+                    eprintln!("dsh-xlink: 登录自启线程未启动；工作台需要手动开启");
+                }
             }
             // 在 debug 构建中自动打开管理窗口的 DevTools。
             // Tauri 的 webview 快捷键（`Cmd+Option+I`、`Cmd+Shift+I`、
@@ -333,6 +406,11 @@ pub fn run() {
             commands::switch_official_chat_tab,
             commands::focus_main_shell,
             commands::minimize_shell,
+            // 后台常驻与登录自启（2026-10-02）。三条命令都在 shell::autostart
+            // 里，不进 commands.rs——那里只剩调度与端口 / 插件那几族。
+            shell::autostart::autostart_status,
+            shell::autostart::autostart_set,
+            shell::autostart::autostart_set_kernel,
             commands::plugin_status,
             commands::kernel_plugin_list,
             commands::plugin_install,
@@ -409,28 +487,25 @@ pub fn run() {
             std::process::exit(1);
         });
 
-    // 在壳退出时回收内核，使 app 退出后不会留下仍在服务的 dsh web 进程。
-    // 内存中的 child 覆盖本会话启动的内核；pid 文件覆盖上一次壳运行
-    // （例如崩溃后）留下的孤儿，由 `kill_pid` 的内核检查把关。
+    // 管理窗口的关闭请求**一律**只把窗口收进后台，内核与工作台继续运行；
+    // 真正退出只由常驻入口图标菜单里的「退出 dsh-xlink」发起。
     //
-    // 管理窗口的关闭请求分两条路：
-    //   · Windows（托盘常驻）：关闭只是把窗口收进通知区域，内核与工作台继续
-    //     运行；只有托盘菜单的「退出」才走确认与退出流程。这条分支在
-    //     `shell::tray::intercept_close` 里实现，并且**优先**于退出确认——否则每次
-    //     点 X 都会弹一次「完全退出？」，与「收起后台」的语义自相矛盾。
-    //   · 其它平台：沿用原有询问语义。内核仍在运行或 official-chat 仍打开时
-    //     `prevent_close()` 并通知 UI 询问用户是否完全退出；UI 接着运行
-    //     `stop_kernel`（运行时）然后 `confirm_close_shell`，销毁所有窗口并
-    //     退出事件循环。没有这一提示，用户可能关掉面板却留下占用端口的孤儿
-    //     内核，下次启动会因为误导性的「端口已被占用」诊断而失败，直到下一次
-    //     壳启动时才回收该孤儿。
+    // 2026-10-02 之前这里按平台分叉：Windows 收进托盘，macOS 在内核运行
+    // 时弹「完全退出？」。同一份产品两种心智模型，用户换平台只能靠试。现在
+    // 两端统一，实现在 `shell::resident`（托盘 / 菜单栏只提供图标与菜单，
+    // 行为这一层只有一份）。
+    //
+    // 「内核在跑要不要问一句」这个诉求没有丢，只是挪了位置：托盘 / 菜单栏的
+    // 「退出」走 `resident::request_quit`，它把窗口叫回前台并广播
+    // `request-quit-confirm`，前端照旧弹确认、再依次 `stop_kernel` 与
+    // `confirm_close_shell`。问的是**真要结束时**，而不是每次收起。
     //
     // 提示路径不能依赖 `RunEvent::Exit` 来拆窗口：`confirm_close_shell`
     // 会销毁主窗口，但事件循环只在最后一个窗口消失时才结束（macOS 上
     // 即便如此也不结束——需要显式 exit），所以一个仍打开的 `official-chat`
     // 窗口会让循环（以及 app）继续存活，却无人关闭它。因此下面的 Exit
-    // 分支只是绕过提示的那些退出（Cmd+Q、操作系统关机、
-    // Windows/Linux 上无需警告时最后窗口的自动关闭）的回退路径。
+    // 分支只是绕过提示的那些退出（Cmd+Q、操作系统关机、无需警告时最后
+    // 窗口的自动关闭）的回退路径。
     app.run(|handle, event| {
         if let tauri::RunEvent::WindowEvent {
             label,
@@ -438,37 +513,11 @@ pub fn run() {
             ..
         } = &event
         {
-            // Windows：把关闭改写成「收进托盘」，不再询问是否退出
-            //（退出改由托盘菜单显式发起）。
-            #[cfg(target_os = "windows")]
-            if shell::tray::intercept_close(handle, label, api) {
+            // 主窗口：收进后台而不是退出。官方对话等副窗不在此列——它由
+            // 面板驱动（面板退出时一并关闭），单独点它的 X 属于真关闭。
+            if shell::resident::intercept_close(handle, label, api) {
                 return;
             }
-            // 只拦截管理窗口的关闭按钮；harness 工作台 webview
-            //（标签 "harness"）可以无需确认直接关闭，因为它自身不持有
-            // 内核句柄。
-            let official_chat_open = handle.get_window("official-chat").is_some();
-            if label == "main" && (kernel_running(handle) || official_chat_open) {
-                // 内核仍在运行或官方聊天窗口已打开：在拆除壳之前先询问
-                // 用户——确认退出则一并关闭。prevent_close() 暂停关闭；
-                // UI 要么确认（在运行时停止内核，然后调用
-                // confirm_close_shell），要么取消，让所有窗口保持原样。
-                // 这里不会销毁任何东西，因此取消操作不会把 official-chat
-                // 窗口一起带走。
-                api.prevent_close();
-                if let Some(window) = handle.get_webview_window("main") {
-                    let _ = window.emit(
-                        "request-quit-confirm",
-                        serde_json::json!({
-                            "kernel_running": kernel_running(handle),
-                            "official_chat_open": official_chat_open,
-                        }),
-                    );
-                }
-            }
-            // 不是主窗口，或内核与官方聊天都不需要警告：让关闭继续。
-            // 下面的 Exit 分支会在每次真实退出时级联关闭 official-chat
-            // webview，并回收上次崩溃留下的 pid 文件。
         }
         // 工作台窗口的前台状态：用户切回工作台即视为"看过结果了"，未读角标
         // 清零。只认 `harness`——用户盯着管理面板时并不算看到了对话结果，
@@ -521,6 +570,15 @@ pub fn run() {
             notify::activate::raise_workbench_if_open(handle);
         }
         if let tauri::RunEvent::Exit = event {
+            // 回收内核，使 app 退出后不会留下仍在服务的 dsh web 进程。
+            // 内存中的 child 覆盖本会话启动的内核；pid 文件覆盖上一次壳
+            // 运行（例如崩溃后）留下的孤儿，由 `kill_pid` 的内核检查把关。
+            //
+            // **「后台常驻」不改变这一段**：常驻指的是关窗之后内核继续跑
+            // （2026-10-02 拍板，内核随壳一起停），所以退出时该收的照样收。
+            // 换句话说这里不需要跨进程认领协议，也就不会出现「壳退出了
+            // 端口还被谁占着」「下次启动认不认得这个孤儿」那类问题。
+            //
             // 在绕过退出提示的那些退出路径（macOS 上的 Cmd+Q、操作系统
             // 关机、无需警告时的最后窗口自动关闭）上级联关闭 official-chat
             // 这个由面板驱动的窗口。确认退出路径已经在退出循环前通过
@@ -562,28 +620,20 @@ pub fn run() {
 
 /// 把管理面板主窗口恢复到前台（`show` + 取消最小化 + 前台聚焦）。
 ///
-/// 按平台分发到唯一一份实现：Windows 用 [`shell::tray::show_main_shell`]（与托盘图标
-/// 的「显示主界面」共用同一份），其它平台就地实现。**不要把实现挪回本函数、
-/// 再让 `shell::tray::show_main_shell` 回调它**——那会构成无限递归，Windows 上点托盘
-/// 图标会直接 `thread 'main' has overflowed its stack`（首版即如此）。
+/// 把管理面板主窗口恢复到前台（`show` + 取消最小化 + 前台聚焦）。
+///
+/// 2026-10-02 起实现**只有一份**，在 [`shell::resident::show_main_shell`]：
+/// 常驻语义既然已经两平台统一，这里就没有可分发的差异了。曾经这个函数按
+/// 平台各写一份，而 `shell::tray::show_main_shell` 又回调它——Windows 上点
+/// 托盘图标直接 `thread 'main' has overflowed its stack`（首版即如此）。
+/// **不要把动作挪回本函数**：托盘 / 菜单栏图标、工作台拉绳
+/// （`focus_main_shell`）与系统 Dock 激活都调它，抄一份就会漂。
 ///
 /// Windows 上必须做一次 always-on-top 往返：焦点经 IPC 到达时
 /// `SetForegroundWindow` 会被系统静默忽略，先置顶再解除才能让窗口真正浮到
 /// 最前；其它平台是无害的 no-op。
 pub(crate) fn show_main_shell(handle: &tauri::AppHandle) {
-    #[cfg(target_os = "windows")]
-    shell::tray::show_main_shell(handle);
-    #[cfg(not(target_os = "windows"))]
-    {
-        let Some(window) = handle.get_webview_window("main") else {
-            return;
-        };
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_always_on_top(true);
-        let _ = window.set_always_on_top(false);
-        let _ = window.set_focus();
-    }
+    shell::resident::show_main_shell(handle);
 }
 
 /// 内核当前是否在对外服务。

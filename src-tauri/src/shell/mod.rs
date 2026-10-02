@@ -4,13 +4,17 @@
 //! 子模块导出同名符号时会变成「歧义」，而显式路径 `crate::<组>::<模块>::X`
 //! 既无歧义，也保留了「这个符号来自哪个模块」的信息。
 
+pub(crate) mod autostart;
 pub(crate) mod child_priority;
 pub(crate) mod env;
 pub(crate) mod error;
 pub(crate) mod instance;
+#[cfg(target_os = "macos")]
+pub(crate) mod menu_bar;
 pub(crate) mod paths;
 pub(crate) mod process;
 pub(crate) mod registry_split;
+pub(crate) mod resident;
 pub(crate) mod settings;
 pub(crate) mod shell_events;
 pub(crate) mod state;

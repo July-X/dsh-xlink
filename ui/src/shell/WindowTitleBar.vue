@@ -11,6 +11,12 @@
 // Windows 上这两个按钮都只把窗口收进通知区域（托盘常驻，程序继续在后台
 // 运行）：关闭走窗口 close 请求、由 Rust 侧统一改写为「收起 + 移除任务栏
 // 按钮」，最小化走 minimize_shell。真正退出只在托盘菜单的「退出」。
+//
+// **macOS 的关闭按钮同样只收进菜单栏**（2026-10-02 起两平台统一，Rust 侧
+// `shell::resident::intercept_close` 拦的是窗口 close 请求，与平台无关）。
+// 交通灯的「红」原本读作退出，2026-10-02 之后它读作「收起」——这是有意的
+// 取舍，代价是 macOS 用户第一次点红灯会看不到窗口消失的反馈，图标菜单是
+// 唯一的回��入口。最小化仍沿用系统语义（进 Dock），那盏黄灯不参与常驻。
 import { hasWindowControls, invoke, windowAction } from './bridge.js';
 import { toastError } from './notify.js';
 
@@ -27,22 +33,23 @@ function callWindow(method, label, hint) {
   });
 }
 
-// 仍然走 Tauri close()，让 Rust 侧已有的窗口关闭处理继续生效：Windows 上
-// 它会拦截这次关闭并收进通知区域（内核与工作台继续后台运行，重新打开与
-// 退出都在托盘菜单里），macOS 上维持原有语义。「程序还在后台、去哪找它」的
-// 提示不在这里发：收起时窗口已经隐藏，页内提示没人看得见，它由 Rust 在
-// **从通知区域恢复**时补发的 shell-restored-from-tray 驱动（见 App.vue），
-// 而且每次启动只发一次——这里再讲一遍就成了重复打扰。
+// 仍然走 Tauri close()，让 Rust 侧已有的窗口关闭处理继续生效：它会拦截
+// 这次关闭并收进后台（内核与工作台继续运行，重新打开与退出都在图标菜单
+// 里）。「程序还在后台、去哪找它」的提示不在这里发：收起时窗口已经隐藏，
+// 页内提示没人看得见，它由 Rust 在**从后台恢复**时补发的
+// shell-restored-from-background 驱动（见 App.vue），而且每次启动只发一次
+// ——这里再讲一遍就成了重复打扰。
 function closeWindow() {
   const hint = isWindowsTitlebar
     ? '可改用系统快捷键（Alt+F4），或用右下角托盘图标的右键菜单退出'
-    : '可改用系统快捷键（Cmd+W / Cmd+M）';
+    : '可改用系统快捷键（Cmd+W），或点菜单栏鲸鱼图标的右键菜单退出';
   callWindow('close', '关闭窗口', hint);
 }
 
 function minimizeWindow() {
   // Windows：最小化与关闭语义一致——都收进通知区域并从任务栏移除按钮，
-  // 只有托盘图标能把窗口叫回来（macOS 保持系统原生最小化到 Dock）。
+  // 只有托盘图标能把窗口叫回来（macOS 保持系统原生最小化到 Dock：Dock 上
+  // 仍有窗口条目，语义不与「退出」混淆）。
   // 失败提示里不能给 Win+↓：那条快捷键是收进任务栏，与这里的语义相反，
   // 会让人以为「窗口还在任务栏上」。
   if (isWindowsTitlebar) {
@@ -68,8 +75,8 @@ function minimizeWindow() {
       <button
         type="button"
         class="mac-titlebar__light mac-titlebar__light--close"
-        aria-label="关闭窗口"
-        title="关闭"
+        aria-label="关闭窗口（收进后台）"
+        title="关闭窗口（收进后台，程序继续运行）"
         @click.stop="closeWindow"
       ></button>
       <button

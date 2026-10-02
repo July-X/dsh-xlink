@@ -33,6 +33,12 @@ fn main() {
         "icons/tray-light-32.png",
         "icons/tray-light-40.png",
         "icons/tray-light-48.png",
+        // macOS 菜单栏图标（2026-10-02）：同样由 `menu_bar.rs` 的
+        // `include_image!` 在编译期嵌入（1x / 2x 两档模板图，系统按菜单栏
+        // 明暗自动反色）。漏声明的后果与托盘十二档一样：换掉图标后
+        // cargo 不重新编译，菜单栏会一直停在旧图，而磁盘上已经是新设计。
+        "icons/menubar-22.png",
+        "icons/menubar-44.png",
     ] {
         println!("cargo:rerun-if-changed={icon}");
     }

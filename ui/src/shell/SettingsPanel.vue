@@ -27,6 +27,12 @@ import {
   formatNotifyDuration,
 } from '../incidents/notifications.js';
 import { globalBusy, isLoading } from './loading.js';
+import {
+  autostartStore,
+  refreshAutostartStatus,
+  setAutostartEnabled,
+  setAutostartKernel,
+} from './autostart.js';
 
 const port = ref(undefined);
 // 固定值（默认 web）：保存时仍要原样回传，否则 Rust 侧的合并会把 profile 覆盖。
@@ -48,12 +54,14 @@ function onSave() {
   saveSettings(port.value, profile.value);
 }
 
-// 进入设置页时刷新通知状态（事件流连接可能已经变化）。
+// 进入设置页时刷新通知与自启状态（事件流连接可能已经变化，登录项也可能被
+// 用户在系统设置里改过）。
 watch(
   () => store.activePanel,
   (panel) => {
     if (panel === 'settings') {
       refreshNotificationStatus();
+      refreshAutostartStatus();
     }
   },
   { immediate: true }
@@ -127,6 +135,58 @@ onMounted(() => {
           </div>
         </el-form-item>
       </el-form>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title-with-tip">
+        后台常驻
+        <el-tooltip placement="bottom-start" :show-after="80">
+          <template #content>
+            <div class="card-info-tooltip">
+              关闭窗口只是把它收进后台：内核与工作台继续运行，点菜单栏
+              （macOS）或托盘（Windows）图标可重新打开。真正退出只在图标
+              右键菜单的「退出 Dsh-Xlink」，退出前若内核在跑会先问你一句。
+            </div>
+          </template>
+          <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
+        </el-tooltip>
+      </h2>
+      <el-form class="notify-form" label-width="152px" label-position="left">
+        <el-form-item label="关窗后留在后台">
+          <div class="notify-inline">
+            <el-switch :model-value="true" disabled />
+            <span class="muted">始终开启：关窗不退出，图标菜单里可退出</span>
+          </div>
+        </el-form-item>
+        <el-form-item label="登录时自动启动">
+          <el-switch
+            :model-value="autostartStore.enabled"
+            :loading="isLoading('autostartSet')"
+            @change="(value) => setAutostartEnabled(value)"
+          />
+        </el-form-item>
+        <el-form-item label="登录时启动工作台">
+          <div class="notify-inline">
+            <el-switch
+              :model-value="autostartStore.kernel"
+              :loading="isLoading('autostartSetKernel')"
+              @change="(value) => setAutostartKernel(value)"
+            />
+            <span class="muted">开机即起内核，占端口并订阅事件流</span>
+          </div>
+        </el-form-item>
+      </el-form>
+      <p class="muted notify-hint">
+        自动启动只把 dsh-xlink 拉进后台，<strong>不显示面板</strong>；
+        要用时点菜单栏 / 托盘图标。内核随应用一起退出，退出后下次启动需重新开启工作台。
+      </p>
+      <el-alert
+        v-if="autostartStore.note"
+        :title="autostartStore.note"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
     </div>
 
     <div class="card">

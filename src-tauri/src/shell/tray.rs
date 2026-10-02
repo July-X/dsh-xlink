@@ -4,24 +4,24 @@
 //! 把主窗口收起来，内核、官方对话与更新检查继续运行；真正的退出走托盘右键
 //! 菜单的「退出」。托盘图标因此必须存在——没有它就等于「窗口消失且无法找回」。
 //!
-//! 关闭语义的唯一实现在 [`intercept_close`]：它在窗口关闭请求上调用
-//! `prevent_close()` 并隐藏窗口。macOS 不参与（那里最小化/关闭沿用系统语义，
-//! Dock 承担常驻入口），所以整个模块按 `cfg(windows)` 编译。
+//! **关闭语义与 macOS 已统一**（2026-10-02），实现在
+//! [`crate::shell::resident`]：本模块只负责 Windows 特有的那几件事——
+//! 按 DPI 与任务栏主题选帧、`ITaskbarList` 删任务栏按钮、监听注册表主题变化。
+//! 「收起 / 恢复 / 退出」这三个动作刻意不在这里另写一份，两端各有一份就会
+//! 漂移（2026-10-02 之前 macOS 走的就是另一套语义）。macOS 对端见
+//! [`crate::shell::menu_bar`]。
+//!
+//! 整个模块按 `cfg(windows)` 编译。
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::tray::TrayIconBuilder;
+use tauri::{AppHandle, Manager};
 
 /// 主管理窗口的 label（与 `tauri.conf.json`、其它命令保持一致）。
 pub const MAIN_WINDOW: &str = "main";
 /// 托盘图标 id：`refresh_icon` 靠它取回同一个托盘项写新帧。
 const TRAY_ID: &str = "main-tray";
-/// 托盘菜单项：把主窗口调回前台。
-const MENU_SHOW: &str = "tray-show";
-/// 托盘菜单项：真正退出（复用前端已有的退出确认流程）。
-const MENU_QUIT: &str = "tray-quit";
+// 菜单项（显示 / 退出）的 id 与接线都在 `resident::build_background_menu`，
+// 与 macOS 菜单栏共用一份——见该函数的文档注释。
 
 /// 托盘图标的全部档位：由 `scripts/build-icons.sh` 从 `assets/whale-head.svg`
 /// 生成的 `tray-*.png`——整条鲸鱼 + 放大的红眼。两套帧对应两种任务栏主题，
@@ -207,48 +207,15 @@ pub fn refresh_icon(app: &AppHandle) {
     }
 }
 
-/// 主窗口当前是否处于"被收起进通知区域"的状态。恢复时据此决定要不要补发提示
-/// ——`hide_to_tray` 当场发的提示渲染在已隐藏的窗口里，用户看不到（P1-3）。
-static HIDDEN_TO_TRAY: AtomicBool = AtomicBool::new(false);
-
-/// 「从通知区域恢复时补发提示」这件事每次启动只做一次。
-///
-/// 恢复只可能由用户主动触发（点托盘图标、左键单击，或工作台拉绳把面板叫回来），
-/// 所以他此刻正看着窗口、也刚证明自己知道怎么把它叫回来——再讲一遍"程序还在
-/// 后台、点托盘图标可重新打开"只有遮挡之嫌。首次恢复仍然要讲：那是唯一可能
-/// 形成心智模型的时刻（否则窗口连同任务栏按钮一起消失像是崩了）。放在这里而
-/// 不放前端，是为了让"每次启动一次"在 webview 重新加载后依然成立。
-static RESTORE_HINT_SHOWN: AtomicBool = AtomicBool::new(false);
-
 /// 建立托盘图标。必须在事件循环启动前的 `setup` 里调用。
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, MENU_SHOW, "显示主界面", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, MENU_QUIT, "退出 dsh-xlink", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
-
-    TrayIconBuilder::with_id(TRAY_ID)
+    let builder = TrayIconBuilder::with_id(TRAY_ID)
         .icon(tray_icon(app))
         .tooltip("dsh-xlink 桌面管理台")
-        // 右键出菜单；左键在下面单独处理成「显示主界面」——Windows 上单击
+        // 右键出菜单；左键在共用接线里处理成「显示主界面」——Windows 上单击
         // 托盘图标把窗口叫回来，比让用户先右键再选更顺手。
-        .show_menu_on_left_click(false)
-        .menu(&menu)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            MENU_SHOW => show_main_shell(app),
-            MENU_QUIT => request_quit(app),
-            _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                show_main_shell(tray.app_handle());
-            }
-        })
-        .build(app)?;
+        .show_menu_on_left_click(false);
+    super::resident::build_background_menu(builder, app, "显示主界面", "退出 dsh-xlink")?;
     // 托盘项建好之后再起主题监听：用户切浅/深色模式时换另一套帧（见 [`watch_theme`]）。
     watch_theme(app);
     Ok(())
@@ -258,79 +225,26 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 ///
 /// `set_skip_taskbar(true)` 走的是 `ITaskbarList::DeleteTab`，会把任务栏按钮
 /// 直接删掉——只 `hide()` 不够：窗口虽然不可见，任务栏按钮与 Alt+Tab 条目
-/// 仍在，点它会得到一个空窗口。恢复时（[`show_main_shell`]）必须加回来，
-/// 否则窗口回来也不在任务栏上。
+/// 仍在，点它会得到一个空窗口。恢复时（[`super::resident::show_main_shell`]）
+/// 必须加回来，否则窗口回来也不在任务栏上。
 pub fn hide_to_tray(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
-        return;
-    };
-    let _ = window.set_skip_taskbar(true);
-    let _ = window.hide();
-    // 记下"是被我们收起的"：只有从该状态恢复时才需要补发提示（P1-3）。
-    HIDDEN_TO_TRAY.store(true, Ordering::Relaxed);
+    super::resident::hide_to_shell(app);
 }
 
 /// 把主窗口从隐藏 / 最小化状态恢复到前台。
 ///
-/// 与工作台拉绳（`commands::focus_main_shell`）共用同一套动作，但**动作只能
-/// 写在这一处**：`crate::show_main_shell` 在 Windows 上会调回本函数，如果本
-/// 函数再回调它就是一个无限递归（首版就是这么写的，点托盘图标直接
-/// `thread 'main' has overflowed its stack`）。所以这里直接做窗口操作，
-/// `crate::show_main_shell` 只是「按平台选实现」的分发点。
+/// 与工作台拉绳（`commands::focus_main_shell`）共用同一套动作，而动作本身在
+/// [`super::resident::show_main_shell`]。本函数只做 Windows 独有的一件事：
+/// 补回任务栏按钮（`DeleteTab` 之后窗口即便可见也不会回到任务栏，顺序反了
+/// 会让用户看到一个「没有任务栏按钮」的窗口）。
+///
+/// **这里不能反过来调 `crate::show_main_shell`**：那个函数在 Windows 上就是
+/// 本模块的「按平台选实现」分发点，两边互调是无限递归（首版即如此，点托盘
+/// 图标直接 `thread 'main' has overflowed its stack`）。
 pub fn show_main_shell(app: &AppHandle) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
         return;
     };
-    // 先恢复任务栏条目再显示：`DeleteTab` 之后窗口即便可见也不会回到任务栏，
-    // 顺序反了会让用户看到一个「没有任务栏按钮」的窗口。
     let _ = window.set_skip_taskbar(false);
-    let _ = window.unminimize();
-    let _ = window.show();
-    let _ = window.set_always_on_top(true);
-    let _ = window.set_always_on_top(false);
-    let _ = window.set_focus();
-    // 收起时那条提示是画在**刚被隐藏**的窗口里的，用户看不到（P1-3）。提示只有
-    // 在窗口可见时才讲得通，所以从收起状态恢复时补发一条：此刻用户正看着界面，
-    // "刚才去哪了、怎么再找回来"才说得清。
-    //
-    // 但恢复必然是用户自己点出来的，他刚证明自己知道怎么把窗口叫回来，所以
-    // 每次启动只补发这一次（见 [`RESTORE_HINT_SHOWN`]），其余恢复一律静默——
-    // 每一次都弹一条盖住标题栏的横幅，代价远大于收益。
-    if HIDDEN_TO_TRAY.swap(false, Ordering::Relaxed)
-        && !RESTORE_HINT_SHOWN.swap(true, Ordering::Relaxed)
-    {
-        let _ = app.emit("shell-restored-from-tray", ());
-    }
-}
-
-/// 关闭请求的常驻化处理：把主窗口收进托盘而不是退出进程。
-///
-/// 返回 `true` 表示这次关闭已被接管（调用方应停止后续处理）。`prevent_close()`
-/// 必须在这里就调用，否则窗口会真的开始关闭。
-pub fn intercept_close(app: &AppHandle, label: &str, api: &tauri::CloseRequestApi) -> bool {
-    if label != MAIN_WINDOW {
-        return false;
-    }
-    api.prevent_close();
-    hide_to_tray(app);
-    true
-}
-
-/// 托盘菜单的「退出」：复用前端已有的「确认退出」流程。
-///
-/// 退出路径不能在这里直接 `app.exit()`——内核仍在运行时需要先问用户，
-/// 并让前端依次执行 `stop_kernel` 与 `confirm_close_shell`。所以这里只把
-/// 窗口叫回前台并广播同一条 `request-quit-confirm` 事件，与操作系统关闭
-/// 按钮走完全相同的分支。
-fn request_quit(app: &AppHandle) {
-    let official_chat_open = app.get_window("official-chat").is_some();
-    show_main_shell(app);
-    let _ = app.emit(
-        "request-quit-confirm",
-        serde_json::json!({
-            "kernel_running": crate::kernel_running(app),
-            "official_chat_open": official_chat_open,
-            "from_tray": true,
-        }),
-    );
+    super::resident::show_main_shell(app);
 }
