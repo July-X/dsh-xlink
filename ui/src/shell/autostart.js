@@ -7,8 +7,8 @@
 //
 // 三个开关的关系（Rust 侧 `should_launch_kernel_on_autostart` 是最终判据）：
 //   · 后台常驻：关窗不退出，内核继续跑。**默认开**，无开关（行为已是新的）。
-//   · 登录时自动启动：注册系统登录项。默认关——开机就多一个后台程序。
-//   · 登录时启动工作台：登录项拉起后连内核一起起。默认关，且**依赖上一条**。
+//   · 开机自启动：注册系统登录项。默认关——开机就多一个后台程序。
+//   · 开机启动工作台：登录项拉起后连内核一起起。默认关，且**依赖上一条**。
 import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
 import { toastActionError, toastSuccess } from '../shell/notify.js';
@@ -29,7 +29,7 @@ const SET_KERNEL_KEY = 'autostartSetKernel';
 
 export const autostartStore = reactive({
   ...FALLBACKS,
-  // 「登录时启动工作台」是壳自己的设置（不是系统登录项），由
+  // 「开机启动工作台」是壳自己的设置（不是系统登录项），由
   // autostart_status 顺带带回，省掉一次单独的命令往返。
   kernel: false,
   // 本次进程是不是由登录项拉起来的。用来给一句实话：此刻没有面板，
@@ -83,16 +83,16 @@ export function setAutostartEnabled(enabled) {
       if (!applyStatus(status)) autostartStore.enabled = enabled;
       if (enabled) {
         toastSuccess(
-          '已设置登录时自动启动：下次开机后 dsh-xlink 会在后台运行，点菜单栏 / 托盘图标打开'
+          '已设置开机自启动：下次开机后 dsh-xlink 会在后台运行，点菜单栏 / 托盘图标打开'
         );
       } else {
-        toastSuccess('已关闭登录时自动启动');
+        toastSuccess('已关闭开机自启动');
       }
       return true;
     } catch (e) {
       Object.assign(autostartStore, previous);
       toastActionError(
-        '设置登录时自动启动失败',
+        '设置开机自启动失败',
         e,
         '请检查系统是否允许本应用修改登录项（macOS：系统设置 → 隐私与安全性；Windows：登录项权限）',
         8000

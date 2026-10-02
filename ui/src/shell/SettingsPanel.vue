@@ -143,9 +143,11 @@ onMounted(() => {
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">
-              关闭窗口只是把它收进后台：内核与工作台继续运行，点菜单栏
-              （macOS）或托盘（Windows）图标可重新打开。真正退出只在图标
-              右键菜单的「退出 Dsh-Xlink」，退出前若内核在跑会先问你一句。
+              关闭窗口只是把它收进后台，内核与工作台继续运行。重新打开与退出都在菜单栏
+              （macOS）/ 托盘（Windows）图标的右键菜单里，退出前若内核在跑会先问你一句。
+              <br />
+              「开机自启动」只把程序拉进后台、不显示面板。内核默认不随之启动；打开「开机启动工作台」
+              才会开机即起，占着端口并订阅事件流。内核始终随程序一起退出。
             </div>
           </template>
           <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
@@ -153,33 +155,23 @@ onMounted(() => {
       </h2>
       <el-form class="notify-form" label-width="152px" label-position="left">
         <el-form-item label="关窗后留在后台">
-          <div class="notify-inline">
-            <el-switch :model-value="true" disabled />
-            <span class="muted">始终开启：关窗不退出，图标菜单里可退出</span>
-          </div>
+          <el-switch :model-value="true" disabled />
         </el-form-item>
-        <el-form-item label="登录时自动启动">
+        <el-form-item label="开机自启动">
           <el-switch
             :model-value="autostartStore.enabled"
             :loading="isLoading('autostartSet')"
             @change="(value) => setAutostartEnabled(value)"
           />
         </el-form-item>
-        <el-form-item label="登录时启动工作台">
-          <div class="notify-inline">
-            <el-switch
-              :model-value="autostartStore.kernel"
-              :loading="isLoading('autostartSetKernel')"
-              @change="(value) => setAutostartKernel(value)"
-            />
-            <span class="muted">开机即起内核，占端口并订阅事件流</span>
-          </div>
+        <el-form-item label="开机启动工作台">
+          <el-switch
+            :model-value="autostartStore.kernel"
+            :loading="isLoading('autostartSetKernel')"
+            @change="(value) => setAutostartKernel(value)"
+          />
         </el-form-item>
       </el-form>
-      <p class="muted notify-hint">
-        自动启动只把 dsh-xlink 拉进后台，<strong>不显示面板</strong>；
-        要用时点菜单栏 / 托盘图标。内核随应用一起退出，退出后下次启动需重新开启工作台。
-      </p>
       <el-alert
         v-if="autostartStore.note"
         :title="autostartStore.note"
