@@ -389,7 +389,14 @@ function formatBytes(bytes) {
                   dsh-xlink 在本机占用的磁盘分布，只读。<br />
                   按目录树展开统计，不跟随软链（内核树里 pnpm 的软链指向
                   store，跟随会把同一份字节数数两遍），因此这是上界。
-                  硬链接复用也无法在纯目录遍历层面识别。
+                  硬链接复用也无法在纯目录遍历层面识别。<br />
+                  <!-- 「多久扫一次、这组数字什么时候的」都收在这里：它们是
+                       解释「该信几分」的注脚，不是每屏都要读的主信息。
+                       占一行位置只为说「一天刷一次」，不值。扫描时刻尤其
+                       不能丢——它挪进来后仍要能被随时问到。 -->
+                  <span v-if="diskUsage.loaded && diskUsage.measuredAt">
+                    {{ formatStamp(diskUsage.measuredAt) }}统计，每 24 小时后台自动刷新一次。
+                  </span>
                 </div>
               </template>
               <el-icon class="card-info-icon"><InfoFilled /></el-icon>
@@ -415,10 +422,6 @@ function formatBytes(bytes) {
             </el-button>
           </span>
         </div>
-
-        <p v-if="diskUsage.loaded && diskUsage.measuredAt" class="muted usage-stamp">
-          {{ formatStamp(diskUsage.measuredAt) }}统计，每 24 小时后台自动刷新一次。
-        </p>
 
         <div v-if="diskUsage.loaded" class="usage-groups">
           <div v-for="group in diskUsage.groups" :key="group.id" class="usage-tile">
@@ -519,15 +522,10 @@ function formatBytes(bytes) {
 
 .usage-idle,
 .usage-empty,
-.usage-unreadable,
-.usage-stamp {
+.usage-unreadable {
   font-size: 11.5px;
   margin: 0;
   line-height: 1.6;
-}
-
-.usage-stamp {
-  margin: 2px 0 8px;
 }
 
 .usage-unreadable {
@@ -597,7 +595,9 @@ function formatBytes(bytes) {
 .usage-tile-label {
   font-weight: 600;
   color: var(--text);
-  font-size: 11.5px;
+  /* 11.5 → 11：与缩小后的主数字（12.5）拉开一级差，标题才不会与数字
+     抢同一档的视觉重量。 */
+  font-size: 11px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -605,7 +605,10 @@ function formatBytes(bytes) {
 }
 
 .usage-tile-total {
-  font-size: 15px;
+  /* 15 → 12.5：瓦片只有 186px 宽，主数字占到 15px 时「内核版本」四字
+     与「878.2 MB」之间只剩 6px，选标题就只能截到「内核版…」。收到 12.5
+     后两者都在一屏里读得全，而这行本来就是扫一眼比大小，不是逐位核对。 */
+  font-size: 12.5px;
   font-weight: 700;
   color: var(--text);
   white-space: nowrap;
