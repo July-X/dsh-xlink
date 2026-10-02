@@ -1155,7 +1155,11 @@ const FILE_BUDGETS = {
 //
 // 反棘轮大文件本轮**零增长**：theme.css 回到 3151 行未动，commands.rs /
 // plugins/center.rs 未动。
-const TOTAL_BUDGET = 37150;
+// 37150 → 37200（2026-10-03）：磁盘占用报表改双列布局。
+// 纯样式与模板结构调整，+27 行（网格定义、条目两行栅格、跨列提醒）。
+// 顺带把上一笔 `971ae56`（npm 列表限高）欠的 7 行补上——那笔只改了
+// 22 行样式却没同步 TOTAL_BUDGET，本次一并结清。
+const TOTAL_BUDGET = 37200;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

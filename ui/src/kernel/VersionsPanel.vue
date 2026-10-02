@@ -380,17 +380,21 @@ function formatBytes(bytes) {
           <div v-for="group in diskUsage.groups" :key="group.id" class="usage-group">
             <div class="usage-group-head">
               <span class="usage-group-label">{{ group.label }}</span>
-              <span class="muted">
-                {{ formatBytes(group.bytes) }} · {{ group.sharePercent }}%
+              <span class="muted usage-group-total">
+                {{ formatBytes(group.bytes) }}
+                <em>{{ group.sharePercent }}%</em>
               </span>
             </div>
             <ul v-if="group.entries.length" class="usage-entries">
               <li v-for="entry in group.entries" :key="entry.id" class="usage-entry">
                 <span class="usage-entry-name" :title="entry.path">{{ entry.label }}</span>
+                <span class="usage-entry-bytes">{{ formatBytes(entry.bytes) }}</span>
+                <!-- 条形移到独立一行：两列布局下每格只有约一半宽，名称与
+                     数字挤在同一行会把条形压到几十像素，几乎读不出比例。
+                     独占一行后条形拿到整格宽度，「谁比谁大」才看得出来。 -->
                 <span class="usage-bar" aria-hidden="true">
                   <span class="usage-bar-fill" :style="{ width: entry.sharePercent + '%' }"></span>
                 </span>
-                <span class="usage-entry-bytes">{{ formatBytes(entry.bytes) }}</span>
               </li>
             </ul>
             <p v-else class="muted usage-empty">这一类当前没有内容。</p>
@@ -475,10 +479,28 @@ function formatBytes(bytes) {
   margin-top: 10px;
   /* 路径可能很长，允许断行而不是撑破卡片。 */
   word-break: break-all;
+  /* 它不是「某一类」，是横跨全表的一句提醒。网格里不给它跨列，它会被
+     塞进第一格、与「内核版本」并排，读起来像是内核版本读不到。 */
+  grid-column: 1 / -1;
+}
+
+/* 四个分类在宽屏并排成两列。此前是一条竖列从内核版本一路排到备份，
+   纵向吃掉大半屏，而右侧留着一大片空白——横向空间白白浪费，纵向却要
+   靠外层滚动才能看全。
+   `minmax(280px, 1fr)` + `auto-fit`：能放两列就两列，窗口再窄自动回落
+   一列，不需要断点（面板宽度由用户拖窗口决定，断点猜不准）。 */
+.usage-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 4px 28px;
+  align-items: start;
 }
 
 .usage-group {
   margin-top: 12px;
+  /* 不加卡片底色：四组内容已经靠「粗标题 + 缩进」分清了，再套一层框会
+     让整张卡片看起来像俄罗斯套娃。 */
+  min-width: 0;
 }
 
 .usage-group-head {
@@ -492,6 +514,21 @@ function formatBytes(bytes) {
 .usage-group-label {
   font-weight: 600;
   color: var(--text);
+  /* 长标题（实例数据（会话与附件））在窄格子里要能换行，否则会把右边的
+     数字挤出格子。 */
+  min-width: 0;
+}
+
+.usage-group-total {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 百分比用斜体弱化：它只是参考量，字节数才是要看的主数。 */
+.usage-group-total em {
+  font-style: normal;
+  opacity: 0.65;
+  margin-left: 4px;
 }
 
 /* 数字用等宽字形：逐行对齐才好比较大小。 */
@@ -506,12 +543,16 @@ function formatBytes(bytes) {
   padding: 0;
 }
 
+/* 每条占两行：上行「名称 … 字节数」，下行整格宽的条形。
+   两列布局下每格只有约一半窗口宽，名称、数字、条形挤一行会把条形压到
+   几十像素——比例差 10 倍的两条看上去也差不多长，那条形就白画了。 */
 .usage-entry {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 88px 68px;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 3px;
+  padding: 4px 0;
   font-size: 11.5px;
 }
 
@@ -523,8 +564,10 @@ function formatBytes(bytes) {
 }
 
 .usage-bar {
-  height: 5px;
-  border-radius: 3px;
+  /* 跨两列：grid-column: 1 / -1 让条形独占一行并撑满整格。 */
+  grid-column: 1 / -1;
+  height: 4px;
+  border-radius: 2px;
   background: var(--bg-soft);
   overflow: hidden;
 }
@@ -532,7 +575,7 @@ function formatBytes(bytes) {
 .usage-bar-fill {
   display: block;
   height: 100%;
-  border-radius: 3px;
+  border-radius: 2px;
   background: var(--accent);
   /* 极小的条目也要看得见：宽度按 sharePercent，但设下限，
      否则 0.01% 的插件库会渲染成一条看不见的线。 */
@@ -542,5 +585,6 @@ function formatBytes(bytes) {
 .usage-entry-bytes {
   text-align: right;
   color: var(--muted);
+  white-space: nowrap;
 }
 </style>
