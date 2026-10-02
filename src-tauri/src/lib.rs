@@ -31,6 +31,7 @@
 // 要记的路径形状。
 mod commands;
 mod diagnostics;
+mod diskusage;
 mod harness;
 mod kernel;
 mod migration;
@@ -406,6 +407,8 @@ pub fn run() {
             commands::switch_official_chat_tab,
             commands::focus_main_shell,
             commands::minimize_shell,
+            // 磁盘占用报表（只读，无删除入口——见 diskusage.rs 的模块文档）。
+            diskusage::disk_usage,
             // 后台常驻与登录自启（2026-10-02）。三条命令都在 shell::autostart
             // 里，不进 commands.rs——那里只剩调度与端口 / 插件那几族。
             shell::autostart::autostart_status,

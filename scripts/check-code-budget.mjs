@@ -259,6 +259,13 @@ const FILE_BUDGETS = {
   'src-tauri/src/shell/resident.rs': 120,
   'src-tauri/src/shell/menu_bar.rs': 105,
   'src-tauri/src/shell/autostart.rs': 360,
+  // 2026-10-02 磁盘占用报表（只读，无删除入口）。独立成模块的理由：
+  // ① 它是**纯读 + 纯计算**，不碰任何状态机——塞进 `commands.rs` 会把一个
+  //    290ms 的全盘 walk 混进那堆生命周期命令里，让两边都更难读；
+  // ② `measure(data_dir, home)` 把两个根目录都做成**参数**，测试因此能指向
+  //    临时目录。这条是硬要求：它一旦内部去调 `xlink_home()`，测试就会
+  //    扫到用户真实的 `~/.dsh-xlink`，而那里的三个用例都会写临时文件。
+  'src-tauri/src/diskusage.rs': 210,
   'ui/src/shell/autostart.js': 90,
   // 2026-09-30 按功能分目录，三个大文件各上调到实测值：
   //   commands.rs        2110 → 2171
@@ -1117,7 +1124,7 @@ const FILE_BUDGETS = {
 // 二进制此前要派生两次 node --version，壳进程里一次 ~250ms）及调用点。
 // 两个文件均不在 FILE_BUDGETS 登记表（老文件），只计入总量。
 // 反棘轮文件本轮零增长。
-// 36120 → 36800（2026-10-02）：「后台常驻 / 自动启动」。净增 680 行，落在六个文件里：
+// 36120 → 37000（2026-10-02）：「后台常驻 / 自动启动」。净增 680 行，落在六个文件里：
 //   · shell/resident.rs 113（新文件）：跨平台常驻语义 + 托盘/菜单栏共用的菜单接线。
 //   · shell/menu_bar.rs 78（新文件）：macOS 菜单栏图标（模板图，cfg(macos)）
 //     + 两条测试（模板图必须纯黑 + alpha；1x/2x 两档必须都在）。
@@ -1136,7 +1143,19 @@ const FILE_BUDGETS = {
 // plugins/center.rs / commands.rs 都没涨（commands.rs 实测 2060 ≤ 预算 2061，
 // 反而降了 1 行）。门禁同时抓到 tray.rs 与 menu_bar.rs 有 14 行逐字重复
 // （「退出」接线），已收进 resident.rs 的共用段，重复区间从 6 处降到 5 处。
-const TOTAL_BUDGET = 36800;
+// 36800 → 37150（2026-10-02）：磁盘占用报表（只读）。净增 350 行：
+//   · src-tauri/src/diskusage.rs 196（新文件）：四个分类的逐目录 walk
+//     （内核版本 / 实例数据 / 插件技能备份 / 壳日志）、字节降序、占比计算、
+//     读不到的目录如实上报。**不提供任何删除入口**——本机实测最大的一块是
+//     实例 DSH home 352M（用户会话与附件），壳无法替用户判断哪块该删。
+//   · VersionsPanel.vue 约 +230：按需加载的槽位、字节格式化、一个只读卡片、
+//     以及它的 scoped 样式。**样式放在组件里而不是 theme.css**：后者是反
+//     棘轮大文件（预算只许下调），把 80 行组件私有样式塞进去会让它当场
+//     超预算（实测 3151 → 3238，预算 3225）。拆到组件里两处都不欠账。
+//
+// 反棘轮大文件本轮**零增长**：theme.css 回到 3151 行未动，commands.rs /
+// plugins/center.rs 未动。
+const TOTAL_BUDGET = 37150;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
