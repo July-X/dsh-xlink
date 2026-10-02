@@ -469,11 +469,13 @@ function formatBytes(bytes) {
    于是变成两层滚动条，鼠标滚轮归属变得难猜。限高到 3 条 + 内部滚动后，
    外层滚动条的位置与行为不变，只把长列表收进自己的容器里。
 
-   3 条按「行高 ≈ 37px（8+8 padding + 13px 字）+ 2 个 6px gap」算，留
-   4px 余量避免最后一条被裁掉半行。 */
+   91px ≈ 恰好 3 条。行距收紧后行高 ≈ 30px（`.release-row` 的 5+5 padding
+   + ~20px 内容 + 2px border），`30 × 3 + 2 × 2（gap 从 6 收到 2）= 94`，
+   留 3px 余量取 91。**宁可少露半行也不裁半行**——被裁掉半截的那一条会被
+   读成「这一条被压扁了」，而它其实是滚动区里正常的一部分。 */
 
 .release-list {
-  max-height: 123px;
+  max-height: 91px;
   overflow-y: auto;
   /* 触屏 / 触控板甩到列表尽头时不要连带触发页面级手势——否则在列表底部
      再滚一下，页面会跟着跳，用户以为列表没到底。 */
@@ -534,42 +536,69 @@ function formatBytes(bytes) {
   grid-column: 1 / -1;
 }
 
-/* 四个分类在宽屏并排成两列。参照「套餐用量」窗口里 `.usage-overview-stats`
-   的做法：瓦片卡片（浅底 + 细边框 + 圆角 10）比裸文字列表更容易扫读——每格
-   的「标题 / 主数字」自成一块，视线不需要在四组之间来回找分隔线。
-   auto-fit + minmax(280px, 1fr)：能放两列就两列，窗口再窄自动回落一列，
-   不需要断点（面板宽度由用户拖窗口决定，断点猜不准）。 */
+/* 四个分类**左右各一个**，宽屏并排两列。参照「套餐用量」窗口里
+   `.usage-overview-stats` 的做法：瓦片卡片（浅底 + 细边框 + 圆角 10）
+   比裸文字列表更容易扫读——每格的「标题 / 主数字」自成一块。
+
+   **下限从 280 收到 186 不是随手调的**：本机面板在 480 CSS px 宽的窗口里
+   只有约 424px 可用（截图 960px @2x 减去面板与卡片内边距），而
+   `280 × 2 + 8 = 568 > 424` ——auto-fit 因此判定「放不下两列」，直接回落
+   成一列，于是用户看到的还是竖排（这正是 2026-10-03 反馈的现象：代码里
+   已经是两列，界面上却仍是一列）。186 是能让 `186 × 2 + 8 = 380 ≤ 424`
+   在最小窗口成立的下限：再小瓦片里的「标题 + 数字」就会挤在一行而省略，
+   那还不如一列。
+
+   用 auto-fit 而不是断点：面板宽度由用户拖窗口决定，断点猜不准；
+   auto-fit 让它自己数能塞下几列，窗口再窄就回落一列。 */
 .usage-groups {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(186px, 1fr));
   gap: 8px;
-  align-items: start;
+  /* `stretch`（默认）而不是 `start`：四格条目数不同（内核 2 条、实例
+     2 条、日志 2 条、商店 3 条），`start` 会让每格按自己的内容收高，
+     同一行里两格的底边就错开——那不叫「左右对称」。拉齐之后右侧多出
+     的空白留在格内，视觉上反而是齐的。 */
+  align-items: stretch;
 }
 
+/* 四格内容长短不一时，让条目区从底部往上排，短的那一格也不会把瓦片
+   撑得比邻居高——底边对齐比「顶部对齐 + 各自高度」更接近对称。 */
 .usage-tile {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 10px;
-  /* 6/10：与「套餐用量」的摘要卡一致；长标题交给下方的 ellipsis。 */
-  padding: 7px 10px 8px;
+  /* 7/9/8：与「套餐用量」的摘要卡一致。 */
+  padding: 7px 9px 8px;
   min-width: 0;
+  /* 条目多的那格把邻居撑到同样高，底边因此对齐（见 .usage-groups 的
+     align-items 注释）。 */
+  display: flex;
+  flex-direction: column;
 }
 
+/* 标题与主数字**上下两行**，不并排。
+   186px 的格子里并排放不下：「实例数据（会话与附件）」这种标题加上
+   `350.1 MB` 会互相挤到省略号，而这两个都是要看清的东西。改成上下后
+   标题能换行、数字独占一行，瓦片反而更矮——两列并排的纵向收益正好
+   用在这里。 */
 .usage-tile-head {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
 }
 
 .usage-tile-label {
   font-weight: 600;
   color: var(--text);
-  min-width: 0;
+  font-size: 11.5px;
+  /* 允许换行（窄格里的长标题），但不超过两行——三行会把瓦片撑得比
+     右边那一列高，两列就不再对齐。 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
 }
 
 .usage-tile-total {

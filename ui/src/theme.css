@@ -1832,7 +1832,9 @@ main {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  /* 8 → 4：「已安装 / npm 发布」两个分组标题与其下列表之间的缝，
+     加上列表自身的行距，两处叠加就是截图里那一大段空白。 */
+  gap: 4px;
 }
 
 .list-head-with-logo,
@@ -2034,7 +2036,10 @@ main {
 .release-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  /* 6 → 2：行与行之间那一条缝在两列布局下被左右分栏放大，视觉上像
+     「每行自己占一格」，而实际只是相邻的两行。收到 2px 后一屏能多看
+     一条，密度接近「套餐用量」里的明细表。 */
+  gap: 2px;
 }
 
 .installed-row,
@@ -2043,7 +2048,10 @@ main {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 10px;
+  /* 8/10 → 5/8：Element Plus 的 small 按钮本身就带 24px 高的内边距，
+     行内再加 8px 上下，一行就撑到 40px 以上。收到 5px 后按钮与版本号
+     仍在一条基线上，但整列少掉近三成高度。 */
+  padding: 5px 8px;
   border-radius: 10px;
   border: 1px solid transparent;
   transition: background 0.16s ease, border-color 0.16s ease;
