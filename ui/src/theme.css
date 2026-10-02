@@ -1257,10 +1257,11 @@ main {
 .panel {
   display: flex;
   flex-direction: column;
-  /* 12 → 8：卡片与卡片之间不需要一屏到底的呼吸。卡片本身有底色 + 描边，
-     两张卡的分界靠那条描边就够读出来了，12px 的间隙是在同一件东西上
-     强调两遍（2026-10-03 用户「缩小行间距 gap，让界面紧凑起来」）。 */
-  gap: 8px;
+  /* 12 → 8 → 6：卡片与卡片之间不需要一屏到底的呼吸。卡片本身有底色 + 1px
+     描边，两张卡的分界靠那条描边就够读出来，12px 的间隙是在同一件东西上
+     强调两遍（2026-10-03 用户两轮「缩小行间距 gap，让界面紧凑起来」）。
+     不收到 4 及以下：描边贴着描边会读成一块分不开的面，而不是两张卡。 */
+  gap: 6px;
 }
 
 /* 面板切换动效：轻淡入 + 上浮。out-in 模式下旧面板完全离场后新面板才
@@ -1586,29 +1587,34 @@ main {
   transition: transform 0.18s ease;
 }
 
-/* 设置页「任务通知」卡片：三个开关一项一行。el-form-item__content 默认
-   line-height: 32px（为单行输入框准备），与开关同排的说明 / 试听按钮要自己
-   压回正常行高，并把 flex 行撑满可用宽度（默认的 content 是 flex 行，
-   子项不伸缩就会挤在左侧）。
-   form-item 默认 margin-bottom 22px 在 3 个开关下显得过宽（≈44px 空白），
-   先收到 12px、再收到 **6px**：12 + 12 = 24px 的两段空白，抵得上一整个开关行
-   的高度（2026-10-03 用户「缩小行间距」）。不收到 4px 及以下——这一行的
-   点击目标是整个 label + 开关，贴太紧会读成两行叠在一起。卡片自身 gap 仍
-   是 8px，间隔靠 form 内部处理，外部不会留多余空白。
-   「后台常驻」卡片复用同一条规则，两张卡的行距一起收。 */
+/* 设置页「后台常驻」与「任务通知」两张卡共用的一组规则：三个开关一项一行。
+   两张卡间距的**大头不在 margin-bottom 上，在行盒本身**，三处必须一起改，
+   少改任何一处那一行都还是 32px（实测行距 38px = 32 行盒 + 6 margin）：
+
+   ① .el-switch 的外框 32px。真正可点的 `.el-switch__core` 只有 20px（EP 自己
+      写死），外框那 12px 是纯空气——压到 24px 是**把空白收掉，可点区域一颗
+      像素没动**。别再往下压：20px 的 core 再贴边，两行会读成叠在一起。
+   ② .el-form-item__label / __content 的 32px。EP 给这两个写死 32px（为单行
+      输入框准备），设置页这三行里没有输入框，最高的就是那个 20px 的开关。
+      **label 必须一起改**：EP 同样给它写了 `height: 32px`，只改 content 的话
+      高的还是 label 那一侧，行高一点不落。同一行里的说明文字（11.5px）与
+      「试听」文字按钮在 24px 行盒里放得下。
+   ③ margin-bottom 6 → 4。间隔靠 form 内部处理，外部不留多余空白。
+      收完行距 38 → 28px（24 行盒 + 4 margin）。 */
 .notify-form .el-form-item {
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .notify-form .el-form-item:last-child {
   margin-bottom: 0;
 }
-.notify-section-hint {
-  margin: 0;
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--muted);
+.notify-form .el-switch {
+  height: 24px;
 }
-
+.notify-form .el-form-item__label,
+.notify-form .el-form-item__content {
+  height: 24px;
+  line-height: 24px;
+}
 .notify-inline {
   display: flex;
   align-items: center;
@@ -1845,15 +1851,10 @@ main {
   gap: 4px;
 }
 
-.list-head-with-logo,
-.card-head-with-logo,
-.list-head-with-tip {
+.list-head-with-logo {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.list-head-with-logo {
   flex-wrap: wrap;
 }
 
@@ -2463,11 +2464,6 @@ main {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 4px;
   text-transform: lowercase;
-}
-
-.origin-chip-local {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.04);
 }
 
 /* 落地模式 chip：链接用 success 调，复制走中性色，与 el-tag 视觉一致但
