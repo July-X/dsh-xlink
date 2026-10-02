@@ -3491,7 +3491,12 @@ body.pane-dragging .log-tabs {
     flex-direction: column;
     align-items: stretch;
     gap: 10px;
-    padding: 12px 14px;
+    /* 窄布局是顶部 chrome 栏，它的下内边距与 main 的上内边距是**同一个**
+       视觉缝隙的两半（12 + 16 = 28px，再加 .menu-item 自己的 6px 下内边距，
+       菜单文字到面板卡片顶共 35px）。侧栏是菜单的容器，它下面不需要"留白"，
+       留白是内容区自己的事——所以下内边距收到 6px，与 main 上内边距各让一半
+       （2026-10-03 用户「压缩主菜单和下方功能区的 gap」）。上/左右不动。 */
+    padding: 12px 14px 6px;
     border-right: none;
     border-bottom: 1px solid var(--border);
   }
@@ -3541,7 +3546,11 @@ body.pane-dragging .log-tabs {
   }
   main {
     overflow-y: auto;
-    padding: 16px;
+    /* 上 16 → 10：与上面 .sidebar 的下内边距 12 → 6 配对，两处各让一半，
+       合计省 12px（菜单文字到卡片顶 35 → 23px）。左右与下不动——内容区
+       左右的留白是和面板卡片内边距叠出来的一层，下内边距关系到「内容到窗口
+       底」，收紧它会让长列表末尾贴边。 */
+    padding: 10px 16px 16px;
   }
   /* kv：窄值列压缩标签列宽，保住 URL / 路径可读性。 */
   .kv {

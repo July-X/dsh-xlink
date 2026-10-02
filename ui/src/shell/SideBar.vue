@@ -47,8 +47,17 @@ const visibleMenu = computed(() =>
       <img src="/whale-icon.png" alt="" width="64" height="64" />
       <div>
         <h2>DeepSeek</h2>
-        <p>Harness</p>
-        <p class="subtitle">桌面管理台</p>
+        <!-- 「桌面管理台」与 Harness 同行而不是另起一行：它是副标不是第二行
+             标题，摆成两行会让品牌区读起来像两个并列的名字（2026-10-03 用户
+             要求）。仍然挂在 .subtitle 上，沿用全局 muted 小字样式；外面这层
+             <p> 继续吃 .brand div > p:not(.subtitle) 的 14px/700，所以 Harness
+             的字重字号一个字没动。窄窗（应用固定 480px）下两者约 118px，远小于
+             品牌区可用宽度；宽布局（侧栏 208px）放不下时靠 flex-wrap 退回两行，
+             与改动前一致，不会把 logo 挤下去。 -->
+        <p class="brand-tagline">
+          <span>Harness</span>
+          <span class="subtitle">桌面管理台</span>
+        </p>
       </div>
       <!-- 桌面端自更新检查入口（原概览页按钮）：业务逻辑不变，仍走
            checkShellUpdate(true)，发现新版本时在概览页横幅里安装。 -->
@@ -94,6 +103,22 @@ const visibleMenu = computed(() =>
 </template>
 
 <style scoped>
+/* 品牌区第二行：「Harness」+ 副标「桌面管理台」同行。gap 6px 足以分开主副而
+   不会让两者读成两个词组（更紧会像「Harness桌面管理台」是一个名字）。 */
+.brand-tagline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  /* 宽布局侧栏只有 208px，放不下时整体退回两行——这正是改动前的排法，
+     降级而不是把 logo 顶走。 */
+  flex-wrap: wrap;
+}
+/* 副标必须自己把字重压回常规：它继承外层 <p> 的 700，那是给 Harness 的。
+   限定在 .brand-tagline 之内，不去动全局 .subtitle——那个类名还被
+   MigrationPanel 的副标复用（见 theme.css 的 .subtitle）。 */
+.brand-tagline .subtitle {
+  font-weight: 400;
+}
 /* 版本号 + 「更新」胶囊按钮上下堆叠（真机反馈横向一排太宽）。 */
 .brand-actions {
   display: flex;
