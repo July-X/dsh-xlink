@@ -40,6 +40,16 @@ pub struct UsageEntry {
     pub id: String,
     /// 展示名。与 `id` 多数时候相同，留出「日志目录」这类需要人话的场景。
     pub label: String,
+    /// 悬停全文，`label` 是它的缩写。
+    ///
+    /// 两者分开的理由是**版面**：瓦片只有 186px 宽，条目行还要给字节数留位，
+    /// 「正式版（dsh）」这种带限定词的写法会把名称挤到截断，而限定词在
+    /// 同一张瓦片里往往已经由分类标题说过了。空串表示「与 `label` 相同」。
+    ///
+    /// 缩写规则只在这里定：**不能**由前端按「含括号就砍掉」之类的规则反推
+    /// ——那正是 `dev-work` 被改写成「开发版-work」那类事故的形状（见下方
+    /// `friendly_id` 的注释）。哪些部分是冗余的，只有拼得出这个名字的地方知道。
+    pub detail: String,
     /// 字节数。**不预先格式化**成字符串：大小单位的中文习惯（`MB` vs
     /// `MiB`、`1.2G` vs `1.16 GB`）在前端改一次比后端改一次省事，而且
     /// 前端还要按它排序。
@@ -61,6 +71,9 @@ pub struct UsageGroup {
     pub id: String,
     /// 分类名。直接给用户看。
     pub label: String,
+    /// 分类的悬停全文，`label` 是它的缩写（`实例数据` ← `实例数据（会话与附件）`）。
+    /// 语义与 `UsageEntry::detail` 一致，空串表示与 `label` 相同。
+    pub detail: String,
     /// 该分类自身占用的字节数（含子项）。
     pub bytes: u64,
     /// 该分类占全部分类的百分比。
@@ -150,15 +163,22 @@ fn percent(part: u64, whole: u64) -> f64 {
     }
 }
 
+/// 分类下待统计的一行：(条目 id、缩写展示名、悬停全文、路径)。
+///
+/// 四个 `String` 挨在一起容易看串，所以给个名字；`build_group` 的调用处因此
+/// 不用再对着元组位置猜哪一栏是路径。
+type Row = (String, String, String, PathBuf);
+
 /// 组装一个分类：算总和、补占比、按字节降序。
-fn build_group(id: &str, label: &str, raw: Vec<(String, String, PathBuf)>) -> UsageGroup {
+fn build_group(id: &str, label: &str, detail: &str, raw: Vec<Row>) -> UsageGroup {
     let mut entries: Vec<UsageEntry> = raw
         .into_iter()
-        .map(|(entry_id, entry_label, path)| {
+        .map(|(entry_id, entry_label, entry_detail, path)| {
             let bytes = dir_size(&path).unwrap_or(0);
             UsageEntry {
                 id: entry_id,
                 label: entry_label,
+                detail: entry_detail,
                 bytes,
                 share_percent: 0.0,
                 path: path.display().to_string(),
@@ -174,6 +194,7 @@ fn build_group(id: &str, label: &str, raw: Vec<(String, String, PathBuf)>) -> Us
     UsageGroup {
         id: id.to_string(),
         label: label.to_string(),
+        detail: detail.to_string(),
         bytes,
         share_percent: 0.0,
         entries,
@@ -205,12 +226,13 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
             if version.starts_with('.') {
                 continue;
             }
-            kernel_rows.push((version.clone(), version, entry.path()));
+            // 版本号没有可砍的限定词，detail 留空（前端回落到 label）。
+            kernel_rows.push((version.clone(), version, String::new(), entry.path()));
         }
     } else {
         unreadable.push(kernels.display().to_string());
     }
-    groups.push(build_group("kernels", "内核版本", kernel_rows));
+    groups.push(build_group("kernels", "内核版本", "", kernel_rows));
 
     // ② 实例：`<home>/kernels/<family>/instances/<id>/`。这一栏装的是**用户
     //    自己的会话与附件**，占的往往不比内核少（本机 352M vs 507M），而
@@ -246,8 +268,11 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
                         "default-dev" => "开发版".to_string(),
                         other => other.to_string(),
                     };
+                    // 缩写只留实例名，限定词「（内核族）」收进悬停：它在同一张
+                    // 瓦片里对每一条都一样，写在行内是三份重复。
                     instance_rows.push((
                         id.clone(),
+                        friendly_id.clone(),
                         format!("{friendly_id}（{family_name}）"),
                         instance.path(),
                     ));
@@ -257,8 +282,12 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
             unreadable.push(family_dir.display().to_string());
         }
     }
+    // 分类名在瓦片里只有 186px 宽，「实例数据（会话与附件）」会被截成
+    // 「实例数据（会话与附…」，而「装的是用户会话」这句恰恰是最不能省的
+    // ——它告诉用户这 352M 不是可回收的缓存。缩写上行，全文进悬停。
     groups.push(build_group(
         "instances",
+        "实例数据",
         "实例数据（会话与附件）",
         instance_rows,
     ));
@@ -272,10 +301,10 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
         ("backups", "备份", home.join("backups")),
     ] {
         if path.is_dir() {
-            store_rows.push((id.to_string(), label.to_string(), path));
+            store_rows.push((id.to_string(), label.to_string(), String::new(), path));
         }
     }
-    groups.push(build_group("stores", "插件 / 技能 / 备份", store_rows));
+    groups.push(build_group("stores", "插件 / 技能 / 备份", "", store_rows));
 
     // ④ 壳日志。两个壳各一份，分开列——它们本就是分开写的
     //（`registry_split` 那一套），合在一起会让人以为日志是共享的。
@@ -299,8 +328,11 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
                 "release" => "正式版",
                 other => other,
             };
+            // 「壳日志」四个字在分类标题上已经有了，行内再写一遍是废话；
+            // 缩写只留「正式版 / 开发版」，全文进悬停。
             log_rows.push((
                 format!("logs-{name}"),
+                friendly.to_string(),
                 format!("壳日志（{friendly}）"),
                 logs,
             ));
@@ -308,7 +340,7 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
     } else {
         unreadable.push(shell_root.display().to_string());
     }
-    groups.push(build_group("logs", "壳日志", log_rows));
+    groups.push(build_group("logs", "壳日志", "", log_rows));
 
     let total: u64 = groups.iter().map(|group| group.bytes).sum();
     for group in &mut groups {
@@ -541,9 +573,10 @@ mod tests {
         let group = build_group(
             "g",
             "组",
+            "",
             vec![
-                ("small".into(), "小".into(), small),
-                ("big".into(), "大".into(), big),
+                ("small".into(), "小".into(), String::new(), small),
+                ("big".into(), "大".into(), String::new(), big),
             ],
         );
         assert_eq!(group.bytes, 1000);
@@ -584,15 +617,16 @@ mod tests {
 
         let usage = measure(&data_dir, home.path());
 
+        // 行内只放缩写，「壳日志」四个字已由分类标题说过一遍。
         let logs = usage.groups.iter().find(|g| g.id == "logs").unwrap();
         let labels: Vec<&str> = logs.entries.iter().map(|e| e.label.as_str()).collect();
         assert!(
-            labels.contains(&"壳日志（正式版）"),
-            "release 壳应显示为正式版：{labels:?}"
+            labels.contains(&"正式版") && labels.contains(&"开发版"),
+            "release / dev 壳应显示为正式版 / 开发版：{labels:?}"
         );
         assert!(
-            labels.contains(&"壳日志（开发版）"),
-            "dev 壳应显示为开发版：{labels:?}"
+            !labels.iter().any(|l| l.contains("壳日志")),
+            "分类标题已经说过一遍，行内不该重复：{labels:?}"
         );
         assert!(
             !labels
@@ -604,16 +638,69 @@ mod tests {
         let instances = usage.groups.iter().find(|g| g.id == "instances").unwrap();
         let labels: Vec<&str> = instances.entries.iter().map(|e| e.label.as_str()).collect();
         assert!(
-            labels.contains(&"正式版（dsh）") && labels.contains(&"开发版（dsh）"),
+            labels.contains(&"正式版") && labels.contains(&"开发版"),
             "默认实例应显示为版本名：{labels:?}"
         );
         assert!(
-            labels.contains(&"dev-work（dsh）"),
+            labels.contains(&"dev-work"),
             "用户自建的实例名必须原样保留：{labels:?}"
         );
         // id 本身是缓存键与路径标识，不许被改写。
         let ids: Vec<&str> = instances.entries.iter().map(|e| e.id.as_str()).collect();
         assert!(ids.contains(&"default-dev"), "id 保持目录原名：{ids:?}");
+    }
+
+    /// 缩写只是排版手段，**信息不许跟着缩写一起丢**：凡是行内被砍掉的限定词，
+    /// 都必须原样出现在悬停全文 `detail` 里。
+    ///
+    /// 这条钉的是「缩写 + 悬停」这个新形态的固有风险：后端把名字改短的那一刻，
+    /// 很容易顺手把「内核族是哪个」「装的是会话还是内核」这些只有全名才说得清
+    /// 的事实一起删掉，而界面上看不出来——数字照常显示，只是用户再也没法从
+    /// 报表判断那 352M 是不是自己的会话。
+    ///
+    /// 反向验：把 `detail` 全填成 `label`（等于回到「只有缩写」），本用例必须
+    /// 变红；把 instances 分类的 detail 清空，也必须变红。
+    #[test]
+    fn short_labels_keep_the_full_text_for_hover() {
+        let home = TempTree::new("short-labels");
+        let data_dir = home.path().join("dsh").join("desktop");
+        tree(
+            &home.path().join("kernels/dsh/instances/default"),
+            &[("s.json", 10)],
+        );
+        tree(&home.path().join("shell/release/logs"), &[("a.log", 5)]);
+        tree(&data_dir.join("kernels/0.2.0-rc.2"), &[("k", 10)]);
+
+        let usage = measure(&data_dir, home.path());
+
+        let instances = usage.groups.iter().find(|g| g.id == "instances").unwrap();
+        assert_eq!(instances.label, "实例数据", "瓦片上行内只放缩写");
+        assert_eq!(
+            instances.detail, "实例数据（会话与附件）",
+            "「装的是用户会话」这句不能因为缩写而消失"
+        );
+        let inst = instances
+            .entries
+            .iter()
+            .find(|e| e.id == "default")
+            .unwrap();
+        assert_eq!(inst.label, "正式版");
+        assert_eq!(inst.detail, "正式版（dsh）", "内核族名只在悬停里也别丢");
+
+        let logs = usage.groups.iter().find(|g| g.id == "logs").unwrap();
+        let log = logs
+            .entries
+            .iter()
+            .find(|e| e.id == "logs-release")
+            .unwrap();
+        assert_eq!(log.label, "正式版");
+        assert_eq!(log.detail, "壳日志（正式版）");
+
+        // 没有冗余可砍的分类/条目：detail 留空，前端回落到 label。
+        let kernels = usage.groups.iter().find(|g| g.id == "kernels").unwrap();
+        assert_eq!(kernels.label, "内核版本");
+        assert_eq!(kernels.detail, "");
+        assert_eq!(kernels.entries[0].detail, "");
     }
 
     /// 新鲜度判定：一天内不算陈旧，超过就重扫。
@@ -745,10 +832,12 @@ mod tests {
             .find(|g| g.id == "instances")
             .expect("应有实例分类");
         assert_eq!(instances.bytes, 1200);
+        // 「装的是用户数据」这句现在在悬停全文里（瓦片上行内只放「实例数据」），
+        // 但它一句都不能少——少了用户就会把这 352M 当成可回收的缓存。
         assert!(
-            instances.label.contains("会话"),
-            "实例分类标题要说明装的是用户数据：{}",
-            instances.label
+            instances.detail.contains("会话"),
+            "实例分类要说明装的是用户数据：{}",
+            instances.detail
         );
         assert_eq!(instances.entries[0].id, "default");
 

@@ -270,7 +270,12 @@ const FILE_BUDGETS = {
   // 一天新鲜度」那层缓存（读 / 写缓存、陈旧判定、后台重扫线程、事件回填）
   // 与钉住它的四条测试。缓存那层有**两处必须测的边界**：时钟为 0、时钟
   // 回拨（`saturating_sub` 写成 `wrapping_sub` 会让缓存永久失效且不报错）。
-  'src-tauri/src/diskusage.rs': 270,
+  // 270 → 282：「缩写 + 悬停全文」这一层。`UsageEntry` / `UsageGroup` 各多一个
+  // `detail` 字段，`build_group` 多收一个分类 detail 参数，四个行产出点各多给
+  // 一栏，另加 `Row` 类型别名（四个 String 挨在一起容易看串）与钉住它的测试。
+  // 涨的是**字段**，不是逻辑：缩写规则没有第二份实现，仍只有拼得出名字的那
+  // 个地方知道哪些限定词冗余。本文件基线远低于 RATCHET_THRESHOLD，上调在规则内。
+  'src-tauri/src/diskusage.rs': 282,
   'ui/src/shell/autostart.js': 90,
   // 2026-09-30 按功能分目录，三个大文件各上调到实测值：
   //   commands.rs        2110 → 2171

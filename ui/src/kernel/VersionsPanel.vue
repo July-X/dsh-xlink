@@ -426,7 +426,10 @@ function formatBytes(bytes) {
         <div v-if="diskUsage.loaded" class="usage-groups">
           <div v-for="group in diskUsage.groups" :key="group.id" class="usage-tile">
             <div class="usage-tile-head">
-              <span class="usage-tile-label" :title="group.label">{{ group.label }}</span>
+              <!-- 行内放缩写、全文进悬停：186px 的瓦片放不下「实例数据（会话与附件）」，
+                   而「装的是用户会话」这句恰恰最不能被截掉。detail 为空表示与
+                   label 相同（后端只在真有冗余可砍时才给 detail）。 -->
+              <span class="usage-tile-label" :title="group.detail || group.label">{{ group.label }}</span>
               <span class="usage-tile-total">{{ formatBytes(group.bytes) }}</span>
             </div>
             <div class="usage-tile-share">
@@ -440,7 +443,12 @@ function formatBytes(bytes) {
             </div>
             <ul v-if="group.entries.length" class="usage-entries">
               <li v-for="entry in group.entries" :key="entry.id" class="usage-entry">
-                <span class="usage-entry-name" :title="entry.path">{{ entry.label }}</span>
+                <!-- 悬停先给人话全名，再给路径：缩写（正式版）在同一张瓦片里
+                     可能重名，真正能区分它们的是内核族与目录。 -->
+                <span
+                  class="usage-entry-name"
+                  :title="entry.detail ? entry.detail + '\n' + entry.path : entry.path"
+                >{{ entry.label }}</span>
                 <span class="usage-entry-bytes">{{ formatBytes(entry.bytes) }}</span>
               </li>
             </ul>
@@ -605,12 +613,22 @@ function formatBytes(bytes) {
 }
 
 .usage-tile-total {
-  /* 15 → 12.5：瓦片只有 186px 宽，主数字占到 15px 时「内核版本」四字
-     与「878.2 MB」之间只剩 6px，选标题就只能截到「内核版…」。收到 12.5
-     后两者都在一屏里读得全，而这行本来就是扫一眼比大小，不是逐位核对。 */
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--text);
+  /* 12.5 → 11.5：比标题还低半档，字面上就让「量出来的数」退到标题后面。
+     高度不许因此长出来——正文 line-height 是 1.5，12.5px 的裸文本行盒 18.75px；
+     这里 11.5 × 1.45 + 上下各 1px 描边 ≈ 18.7px，正好持平，瓦片头不增重。 */
+  font-size: 11.5px;
+  line-height: 1.45;
+  font-weight: 600;
+  /* 风格区分靠两件事，都不是「再调一次字号」：
+     ① 颜色——标题是 --text（说这是什么），容量是 --accent（这是一个量出来的值）；
+     ② 形状——标题是裸文本，容量是胶囊。两个 11px 上下的文本并排，不换底色
+        就还是「标题 + 标题」，而这一行恰恰不该被读成一句标题。
+     胶囊的写法沿用本仓已有的 chip 词汇（.status-pill / .brand-update）。 */
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
   white-space: nowrap;
   /* 不许被标题挤掉——见 .usage-tile-head 上面的取舍说明。 */
   flex-shrink: 0;
