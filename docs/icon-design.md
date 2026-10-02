@@ -29,7 +29,7 @@ assets/
 
 面板顶栏只按 60 CSS px 显示 `ui/public/whale-icon.png`（由 `whale-icon-small.svg` 渲染 128px）；小尺寸下细节是亚像素，必须简化。
 
-`whale-head.svg` 是托盘专用：**整条鲸鱼**（几何与 `whale-icon-small.svg` 同源）+ 在眼心放大 2.4 倍的红眼，整个内容再缩到 88% 居中。`build-icons.sh` 由它渲染**两套**帧，`tray.rs` 按任务栏主题选一套、按显示缩放选一档：
+`whale-head.svg` 供**两个常驻入口**共用（Windows 托盘与 macOS 菜单栏）：**整条鲸鱼**（几何与 `whale-icon-small.svg` 同源）+ 在眼心放大 2.4 倍的红眼，整个内容再缩到 88% 居中。`build-icons.sh` 由它渲染 Windows 的**两套**帧，`tray.rs` 按任务栏主题选一套、按显示缩放选一档：
 
 | 帧 | 用在 | 做法 | 为什么 |
 | --- | --- | --- | --- |
@@ -46,6 +46,7 @@ assets/
 
 - `src-tauri/icons` 全套（按尺寸选母版合成 ico/icns）
 - `src-tauri/icons/tray-{dark,light}-{16,20,24,32,40,48}.png`（由 `whale-head.svg`：深色任务栏那套是透明底 + 按档栅格白描边，浅色那套是套板）
+- `src-tauri/icons/menubar-{22,44}.png`（macOS 菜单栏模板图，见下节）
 - `assets/whale-icon-512.png`
 - `ui/public/whale-icon.png`（小母版渲染 128px）
 
@@ -63,6 +64,18 @@ macOS Dock 不给图标加任何背景或蒙版（圆角是 artwork 自带的约
 2. 把鲸鱼缩到瓦片的 75%（≈画布的 60%）居中叠上
 
 三个反面教材：瓦片铺满画布 → 视觉上比其他 Dock 图标大一圈；角落压成白色 → 读作硬白方块；没有瓦片全透明 → 只剩黑色鲸鱼剪影。
+
+## macOS 菜单栏图标
+
+`src-tauri/icons/menubar-{22,44}.png`（1x / 2x），由 `whale-head.svg` 渲染后**转成模板图**：取原图 alpha 作遮罩，整体填黑。`menu_bar.rs` 建托盘项时必须带 `icon_as_template(true)`，否则图标会带着固定颜色被原样画在菜单栏里。
+
+**为什么必须是模板图而不是像托盘那样准备两套**：菜单栏的明暗由系统决定（浅色桌面 = 菜单栏深色，反之亦然），而 macOS **既不广播主题变化、我们也无法预知当前值**。托盘那套「读 `SystemUsesLightTheme` + 后台线程等注册表变化换帧」在 macOS 上根本无处施展——`watch_theme` 只存在于 `tray.rs`，且 `tray.rs` 是 `cfg(windows)`。模板图把这件事交给系统：它按当前菜单栏底色自动反色，我们只需要交出一张黑图。
+
+代价是红眼这处彩色细节随模板化丢失，菜单栏图标因此只有鲸鱼剪影。22pt 的位高上彩色细节本就读不出来，这个损失是划算的。
+
+**为什么只出 22 / 44 两档**：菜单栏高度固定 22pt，不存在通知区域那套「按 `SM_CXSMICON` 在 6 档里选」的问题（`tray.rs` 需要自己选帧是因为 `tray-icon` 走 `CreateIcon(w, h)` 按图片自身尺寸建 HICON，尺寸不对只能被系统缩放；菜单栏由 AppKit 托管，系统会自行取合适的那一档，44 那档在 Retina 上就是 2x 资源）。
+
+核对方法：22px 档应有约 27% 的不透明像素（22×22=484，实测 133）且**只有黑 + 透明两种颜色**——出现第三种颜色说明 `-fill black -colorize 100` 那步没生效，那样的图被当成模板图时不会被反色，会以深色画在浅色菜单栏上等于看不见。
 
 Windows 通知区域（托盘）图标 `src-tauri/icons/tray-{dark,light}-{16,20,24,32,40,48}.png` 是上面唯一的例外：浅色任务栏那套**就是要套板**（与桌面图标同一套板规则，见上一节），深色那套保持透明底 + 栅格白描边。理由是通知区域的底色不归我们管，随"Windows 模式"在浅色（约 `#F3F3F3`）与深色（约 `#202020`）之间切：白瓦片在浅色任务栏上几乎看不见、等于内边距，在深色任务栏上却是一块刺眼的白方块；透明底 + 白边则相反。十二档都由 `tray.rs` 用 `include_image!` 在编译期解码成 RGBA，运行时按 `Personalize\SystemUsesLightTheme`（`taskbar_is_light`）选一套、按 `GetSystemMetricsForDpi(SM_CXSMICON, …)` 选不小于槽位边长的最小一档；主题变化由 `watch_theme` 的后台线程等注册表变化（切换后立刻换帧），显示缩放变化由 `WindowEvent::ScaleFactorChanged` 触发重取。为什么必须自己选帧：`tray-icon` 把 RGBA 交给 Windows 时走的是 `CreateIcon(w, h)`（按图片自身尺寸建 HICON），尺寸不对就只能由 shell 缩放——那样自带的 16px 帧永远显示不出来，最小档还要多挨一次缩放。
 

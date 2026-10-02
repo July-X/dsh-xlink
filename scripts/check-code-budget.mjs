@@ -219,7 +219,9 @@ const FILE_BUDGETS = {
   // 并把子模块标成 pub(crate)。它们不含实现，只是一层路由，所以基线都在 10 行上下。
   // `check-invariants` 的「新文件必须登记」按文件名认搬移，但这 11 个是新出现的，
   // 不在 HEAD 的树里，得逐个登记。
-  'src-tauri/src/shell/mod.rs': 15,
+  // 15 → 19：2026-10-02 后台常驻追加 3 条（autostart / menu_bar[macos] /
+  // resident），tray 保留 cfg(windows)。仍是一层路由，没有实现。
+  'src-tauri/src/shell/mod.rs': 19,
   'src-tauri/src/kernel/mod.rs': 10,
   'src-tauri/src/plugins/mod.rs': 10,
   'src-tauri/src/skills/mod.rs': 10,
@@ -230,6 +232,34 @@ const FILE_BUDGETS = {
   'src-tauri/src/migration/mod.rs': 10,
   'src-tauri/src/pkg/mod.rs': 10,
   'src-tauri/src/node/mod.rs': 10,
+  // 2026-10-02「后台常驻 / 自动启动」四个新文件。三条独立的理由：
+  //
+  // ① resident.rs（81 行）——**跨平台常驻语义只有这一份**。托盘（Windows）
+  //    与菜单栏（macOS）只提供图标与菜单，隐藏 / 恢复 / 退出请求三个动作
+  //    全在这里，两端各写一份就会漂：2026-10-02 之前 macOS 走的确实就是另一套
+  //    语义（关闭 = 退出），用户得重新学一遍。放进 shell/ 而不是 lib.rs，
+  //    是因为 lib.rs 只做「按平台分发」，不该承载行为。
+  // ② menu_bar.rs（46 行）——macOS 图标与菜单。按 `cfg(macos)` 编译，与
+  //    `tray.rs`（cfg(windows)）严格对偶。**独立成文件是为了让两端各自持有
+  //    平台特有的那部分**：tray 有 DPI 选帧与注册表主题监听，menu bar 有
+  //    模板图与 ActivationPolicy 降级，两边共有的动作已经在 ① 里了。
+  // ③ autostart.rs（331 行，其中生产代码 190）——登录项读写 + 三条 Tauri
+  //    命令 + 启动判定。独立成模块有两个理由：写 / 读 / 删**会碰用户真实的
+  //    系统登录项**（`~/Library/LaunchAgents`、`HKCU\...\Run`），必须与
+  //    「面板显示什么」分开，便于给它的测试划出「不许动真实条目」的边界；
+  //    平台实现（plist vs 注册表）自成一块 cfg 模块，混进 shell/ 的任何现有
+  //    文件都会让那块 cfg 占掉大半篇幅。
+  // ④ ui/src/shell/autostart.js（84 行）——与通知设置同形状的状态 + 动作。
+  //    与 notifications.js 一样是「Rust 持真相、前端只读 + 保存」，放在
+  //    shell/ 下是因为它服务设置页、不属于任何业务面板。
+  // 90 → 113：把托盘 / 菜单栏**共用的菜单接线**也收进来了（`build_background_menu`
+  //    + 菜单 id）。原先两端各写一份，`check-code-budget` 的重复区间检查抓到
+  //    了 14 行逐字相同；更值得担心的是「退出」这条接线只改一端就会让用户点
+  //    到一个不响应的菜单项，而那在界面上没有任何症状。共用之后这里反而变短。
+  'src-tauri/src/shell/resident.rs': 120,
+  'src-tauri/src/shell/menu_bar.rs': 105,
+  'src-tauri/src/shell/autostart.rs': 360,
+  'ui/src/shell/autostart.js': 90,
   // 2026-09-30 按功能分目录，三个大文件各上调到实测值：
   //   commands.rs        2110 → 2171
   //   plugins/center.rs  2980 → 2983
@@ -1087,7 +1117,26 @@ const FILE_BUDGETS = {
 // 二进制此前要派生两次 node --version，壳进程里一次 ~250ms）及调用点。
 // 两个文件均不在 FILE_BUDGETS 登记表（老文件），只计入总量。
 // 反棘轮文件本轮零增长。
-const TOTAL_BUDGET = 36120;
+// 36120 → 36800（2026-10-02）：「后台常驻 / 自动启动」。净增 680 行，落在六个文件里：
+//   · shell/resident.rs 113（新文件）：跨平台常驻语义 + 托盘/菜单栏共用的菜单接线。
+//   · shell/menu_bar.rs 78（新文件）：macOS 菜单栏图标（模板图，cfg(macos)）
+//     + 两条测试（模板图必须纯黑 + alpha；1x/2x 两档必须都在）。
+//   · shell/autostart.rs 199（新文件，生产部分）：登录项读写（macOS LaunchAgent
+//     plist / Windows HKCU\...\Run）+ 三条 Tauri 命令 + 启动判定。其中
+//     `should_launch_kernel_given` 是为可测性抽出的纯函数——不抽就测不了：
+//     判据第一个条件读磁盘设置（测试机上默认关），删掉第二个条件测试照样绿，
+//     2026-10-02 首次反向验就是被这一点骗过去的。
+//   · ui/src/shell/autostart.js 84（新文件）：与通知设置同形状的状态与动作。
+//   · lib.rs +40：关闭语义从「按平台分叉」改成「一律收进后台」（净减，但补了
+//     自启隐藏与自启拉起内核的两段）、start_kernel 拆出无 Channel 的主体。
+//   · commands.rs -1：start_kernel_blocking 是纯搬迁，净增只有 minimize_shell 的
+//     文档与 merge_settings 一行。
+// 换来的东西：两平台关闭语义统一（此前 macOS 关窗即退出）、macOS 有了常驻入口
+// （此前完全没有）、开机自启可配。**反棘轮文件本轮零增长**——theme.css /
+// plugins/center.rs / commands.rs 都没涨（commands.rs 实测 2060 ≤ 预算 2061，
+// 反而降了 1 行）。门禁同时抓到 tray.rs 与 menu_bar.rs 有 14 行逐字重复
+// （「退出」接线），已收进 resident.rs 的共用段，重复区间从 6 处降到 5 处。
+const TOTAL_BUDGET = 36800;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

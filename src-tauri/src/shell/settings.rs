@@ -63,6 +63,13 @@ pub struct Settings {
     /// 壳自己的选择只落在壳自己的 settings 里——dev 与 release 的 settings
     /// 本来就是两份文件（`shell/<mode>/settings.json`）。
     pub current_instance_id: Option<String>,
+    /// 登录后是否自动把工作台（内核）也拉起来。`None` = 用户从未设置过。
+    ///
+    /// 与 `autostart.rs` 的登录项**刻意分开存**：开不开登录项是「系统要不要
+    /// 拉起壳」，要不要连内核一起起是「拉起之后占不占端口 / 起不起 node 进程」。
+    /// 两者代价不同、用户接受度也不同，合成一个开关等于逼用户二选一。
+    /// 默认**关**——开机就占端口、订阅事件流，多数用户不需要。
+    pub autostart_kernel: Option<bool>,
 }
 
 /// 安装预检是否生效。**默认开启**：预检只多花十几秒，却能在装坏插件时保住
@@ -84,8 +91,16 @@ impl Default for Settings {
             notify_sound: None,
             plugin_precheck: None,
             current_instance_id: None,
+            autostart_kernel: None,
         }
     }
+}
+
+/// 登录后是否自动拉起工作台。**默认关**：开机就占端口、起 node 进程、
+/// 订阅事件流，多数用户不需要（与三个通知开关同样的理由：用 `bool` 会让
+/// 每次面板「保存设置」都把用户的选择静默重置）。
+pub fn autostart_kernel_enabled(settings: &Settings) -> bool {
+    settings.autostart_kernel.unwrap_or(false)
 }
 
 /// 设置文件在 `data_dir` 下的路径。**仅用于旧版 data_dir 解析**——P1 之后
