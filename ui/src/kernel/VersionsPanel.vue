@@ -5,8 +5,8 @@
 //
 // 面板挂载时主动调一次 refreshAll()，让「已安装」列表在用户进到这一页时就是最新的，
 // 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
-import { computed, onMounted, reactive } from 'vue';
-import { Refresh, Download, Promotion, Delete, InfoFilled, TopRight } from '@element-plus/icons-vue';
+import { computed, onBeforeUnmount, onMounted, reactive } from 'vue';
+import { Refresh, Download, Promotion, Delete, InfoFilled, TopRight, Loading } from '@element-plus/icons-vue';
 import {
   store,
   refreshAll,
@@ -16,7 +16,7 @@ import {
   removeVersion,
   workbenchActiveNow,
 } from '../store.js';
-import { invoke } from '../shell/bridge.js';
+import { invoke, listen } from '../shell/bridge.js';
 import { openExternalLink } from '../shell/notify.js';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 import VersionPluginsTip from './VersionPluginsTip.vue';
@@ -94,20 +94,38 @@ const installedVersions = computed(() => {
   return set;
 });
 
-// 进版本面板就重新扫描本地内核列表，与 npm 发布列解耦——
+// 扫描时刻 → 「今天 14:20」/「10 月 1 日 14:20」。
+//
+// 只显示**日期 + 时刻**、不显示秒：这张表的精度是「天」，给到秒会让人
+// 误以为数字在秒级变化。超过一天的直接标日期——「3 天前统计」比一个
+// 具体日期更需要被看见。
+function formatStamp(ms) {
+  const at = new Date(Number(ms));
+  if (Number.isNaN(at.getTime()) || !ms) return '';
+  const now = Date.now();
+  const days = Math.floor((now - ms) / 86400000);
+  const hm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+  if (days >= 1) return `${days} 天前（${at.getMonth() + 1} 月 ${at.getDate()} 日 ${hm}）`;
+  if (days === 0) return `今天 ${hm}`;
+  return `昨天 ${hm}`;
+}
+
+// 进面板就取一次：有缓存立刻显示，缓存陈旧时后端后台重扫并回填。
+// **不再需要用户点「统计」**——那 290ms 的全盘 walk 已经挪到后台线程，
+// 挡住首屏没有任何理由。
 onMounted(() => {
   refreshAll();
-  // 占用报表**不**跟着自动算：一次全量扫描要走 2.5 万个文件（本机实测
-  // 290ms），放在进面板时算会让「点进版本页」这件事变慢，而用户未必想
-  // 看占用。按需加载（点按钮），读过一次就缓存。
+  loadDiskUsage();
 });
 
-// 磁盘占用：按需加载 + 缓存。
+// 磁盘占用：两段式加载（用户 2026-10-03 拍板）。
 //
-// 沿用上方插件快照那套「槽位」写法（`loaded` 与 `error` 分开），但语义有
-// 一处**故意不同**：插件快照失败时不置 `loaded`，以便下次悬浮重试；而占用
-// 失败就**保持失败态**并显示原因——它是一次全盘扫描，重试三次也还是失败
-// 的（多半是权限问题），让按钮反复可点只会诱导用户空转。真要重来请刷新页面。
+// `invoke('disk_usage')` **立刻返回**——有缓存就返回缓存（哪怕一天前的），
+// 没有才同步扫一次。缓存陈旧时后端另外起线程重扫，扫完通过
+// `disk-usage-refreshed` 事件回填。于是进面板时数字马上在（不用等那
+// 290ms 的全盘 walk），随后自己更新到最新值。参照 `usage.js` 的
+// `loadUsageSummary` + `setUsageAutoRefresh` 那一套「先给上次结果、
+// 静默跟上」的形状。
 const diskUsage = reactive({
   loading: false,
   loaded: false,
@@ -115,27 +133,61 @@ const diskUsage = reactive({
   total: 0,
   groups: [],
   unreadable: [],
+  // 扫描时刻（毫秒）。显示出来是为了让用户知道眼前这组数字有多旧——
+  // 一张不标注时间的占用表，用户无从判断该信几分。
+  measuredAt: 0,
+  // 后台重扫中：只在已有数据时显示，不遮住已经显示出来的缓存。
+  refreshing: false,
 });
+
+function applyDiskReport(report) {
+  // 数值一律过一遍 Number：后端字段缺失时拿到 undefined，会在
+  // formatBytes 里被 `Number.isFinite` 兜成 0，但 `total` 若直接
+  // 参与模板拼接就会渲染成 "NaN" 或 "undefined"。
+  diskUsage.total = Number(report.total) || 0;
+  diskUsage.groups = report.groups || [];
+  diskUsage.unreadable = report.unreadable || [];
+  diskUsage.measuredAt = Number(report.measuredAt) || 0;
+  diskUsage.loaded = true;
+}
 
 async function loadDiskUsage() {
   if (diskUsage.loading) return;
   diskUsage.loading = true;
   diskUsage.error = null;
   try {
-    const report = await invoke('disk_usage');
-    // 数值一律过一遍 Number：后端字段缺失时拿到 undefined，会在
-    // formatBytes 里被 `Number.isFinite` 兜成 0，但 `total` 若直接
-    // 参与模板拼接就会渲染成 "NaN" 或 "undefined"。
-    diskUsage.total = Number(report.total) || 0;
-    diskUsage.groups = report.groups || [];
-    diskUsage.unreadable = report.unreadable || [];
-    diskUsage.loaded = true;
+    applyDiskReport(await invoke('disk_usage'));
   } catch (e) {
     diskUsage.error = e && e.message ? e.message : String(e);
   } finally {
     diskUsage.loading = false;
   }
 }
+
+// 后台重扫完成：新数字自己替换旧数字，界面不跳一下、不闪一下。
+// Tauri 的事件把数据放在 `e.payload` 上（与 `harness-fault` 同一约定），
+// 所以先取 payload 再判空——直接把 `e` 当报表用会读到 undefined，
+// 于是「静默失败」看起来像「后台没扫」。
+//
+// 监听放在**组件**里而不是 App.vue：这段逻辑只有本面板关心，而 App.vue 的
+// `registerAppListener` 会攒到应用销毁才统一退订；面板可以被反复挂载
+// （切页签），组件级订阅随卸载释放才不漏。
+let diskUnlisten = null;
+listen('disk-usage-refreshed', (e) => {
+  diskUsage.refreshing = false;
+  const report = e && e.payload;
+  if (!diskUsage.loaded || !report) return;
+  applyDiskReport(report);
+})
+  .then((unlisten) => {
+    if (typeof unlisten === 'function') diskUnlisten = unlisten;
+  })
+  // 订阅失败不该让整张卡不可用：数字已经在界面上了，只是不会自动刷新。
+  .catch(() => {});
+
+onBeforeUnmount(() => {
+  if (diskUnlisten) diskUnlisten();
+});
 
 // 字节 → 人类可读。**不在 Rust 侧格式化**：单位与小数位是显示决策，而这张
 // 表还要按字节排序、按百分比画条——后端给原始字节，前端怎么排都不会让
@@ -347,24 +399,16 @@ function formatBytes(bytes) {
             <span v-if="diskUsage.loaded" class="usage-total">
               合计 {{ formatBytes(diskUsage.total) }}
             </span>
+            <el-icon v-if="diskUsage.refreshing" class="usage-refreshing" :title="'后台正在重新扫描…'">
+              <Loading />
+            </el-icon>
             <el-button
-              v-if="!diskUsage.loaded"
+              v-if="diskUsage.loaded"
               size="small"
               text
               :icon="Refresh"
               :loading="diskUsage.loading"
-              @click="loadDiskUsage"
-            >
-              统计
-            </el-button>
-            <el-button
-              v-else
-              size="small"
-              text
-              :icon="Refresh"
-              :loading="diskUsage.loading"
-              :disabled="diskUsage.error !== null"
-              title="重新统计目录占用"
+              :title="'立即重新统计（平时每天自动扫一次）'"
               @click="loadDiskUsage"
             >
               刷新
@@ -372,25 +416,28 @@ function formatBytes(bytes) {
           </span>
         </div>
 
-        <p v-if="diskUsage.error" class="muted usage-error">
-          统计失败：{{ diskUsage.error }}
+        <p v-if="diskUsage.loaded && diskUsage.measuredAt" class="muted usage-stamp">
+          {{ formatStamp(diskUsage.measuredAt) }}统计，每 24 小时后台自动刷新一次。
         </p>
 
-        <div v-else-if="diskUsage.loaded" class="usage-groups">
-          <div v-for="group in diskUsage.groups" :key="group.id" class="usage-group">
-            <div class="usage-group-head">
-              <span class="usage-group-label">{{ group.label }}</span>
-              <span class="muted usage-group-total">
-                {{ formatBytes(group.bytes) }}
-                <em>{{ group.sharePercent }}%</em>
+        <div v-if="diskUsage.loaded" class="usage-groups">
+          <div v-for="group in diskUsage.groups" :key="group.id" class="usage-tile">
+            <div class="usage-tile-head">
+              <span class="usage-tile-label">{{ group.label }}</span>
+              <span class="usage-tile-total">{{ formatBytes(group.bytes) }}</span>
+            </div>
+            <div class="usage-tile-share">
+              <span class="usage-bar" aria-hidden="true">
+                <span
+                  class="usage-bar-fill"
+                  :style="{ width: group.sharePercent + '%' }"
+                ></span>
               </span>
+              <span class="usage-tile-percent">{{ group.sharePercent }}%</span>
             </div>
             <ul v-if="group.entries.length" class="usage-entries">
               <li v-for="entry in group.entries" :key="entry.id" class="usage-entry">
                 <span class="usage-entry-name" :title="entry.path">{{ entry.label }}</span>
-                <span class="usage-bar" aria-hidden="true">
-                  <span class="usage-bar-fill" :style="{ width: entry.sharePercent + '%' }"></span>
-                </span>
                 <span class="usage-entry-bytes">{{ formatBytes(entry.bytes) }}</span>
               </li>
             </ul>
@@ -402,9 +449,15 @@ function formatBytes(bytes) {
           </p>
         </div>
 
-        <p v-else-if="!diskUsage.loading" class="muted usage-idle">
-          点「统计」扫描本机占用。目录较多时需要几百毫秒。
-        </p>
+        <p v-else-if="diskUsage.loading" class="muted usage-idle">正在统计本机占用…</p>
+        <div v-else class="usage-idle">
+          <p class="muted" style="margin: 0">
+            统计失败：{{ diskUsage.error || '未知原因' }}
+          </p>
+          <el-button size="small" text :icon="Refresh" @click="loadDiskUsage">
+            重试
+          </el-button>
+        </div>
       </div>
     </div>
   </section>
@@ -460,20 +513,20 @@ function formatBytes(bytes) {
 }
 
 .usage-idle,
-.usage-error,
 .usage-empty,
-.usage-unreadable {
+.usage-unreadable,
+.usage-stamp {
   font-size: 11.5px;
   margin: 0;
   line-height: 1.6;
 }
 
-.usage-error {
-  color: var(--bad);
+.usage-stamp {
+  margin: 2px 0 8px;
 }
 
 .usage-unreadable {
-  margin-top: 10px;
+  margin-top: 2px;
   /* 路径可能很长，允许断行而不是撑破卡片。 */
   word-break: break-all;
   /* 它不是「某一类」，是横跨全表的一句提醒。网格里不给它跨列，它会被
@@ -481,26 +534,28 @@ function formatBytes(bytes) {
   grid-column: 1 / -1;
 }
 
-/* 四个分类在宽屏并排成两列。此前是一条竖列从内核版本一路排到备份，
-   纵向吃掉大半屏，而右侧留着一大片空白——横向空间白白浪费，纵向却要
-   靠外层滚动才能看全。
-   `minmax(280px, 1fr)` + `auto-fit`：能放两列就两列，窗口再窄自动回落
-   一列，不需要断点（面板宽度由用户拖窗口决定，断点猜不准）。 */
+/* 四个分类在宽屏并排成两列。参照「套餐用量」窗口里 `.usage-overview-stats`
+   的做法：瓦片卡片（浅底 + 细边框 + 圆角 10）比裸文字列表更容易扫读——每格
+   的「标题 / 主数字」自成一块，视线不需要在四组之间来回找分隔线。
+   auto-fit + minmax(280px, 1fr)：能放两列就两列，窗口再窄自动回落一列，
+   不需要断点（面板宽度由用户拖窗口决定，断点猜不准）。 */
 .usage-groups {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 4px 28px;
+  gap: 8px;
   align-items: start;
 }
 
-.usage-group {
-  margin-top: 12px;
-  /* 不加卡片底色：四组内容已经靠「粗标题 + 缩进」分清了，再套一层框会
-     让整张卡片看起来像俄罗斯套娃。 */
+.usage-tile {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  /* 6/10：与「套餐用量」的摘要卡一致；长标题交给下方的 ellipsis。 */
+  padding: 7px 10px 8px;
   min-width: 0;
 }
 
-.usage-group-head {
+.usage-tile-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -508,31 +563,102 @@ function formatBytes(bytes) {
   font-size: 12px;
 }
 
-.usage-group-label {
+.usage-tile-label {
   font-weight: 600;
   color: var(--text);
-  /* 长标题（实例数据（会话与附件））在窄格子里要能换行，否则会把右边的
-     数字挤出格子。 */
   min-width: 0;
-}
-
-.usage-group-total {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  flex-shrink: 0;
 }
 
-/* 百分比用斜体弱化：它只是参考量，字节数才是要看的主数。 */
-.usage-group-total em {
-  font-style: normal;
-  opacity: 0.65;
-  margin-left: 4px;
-}
-
-/* 数字用等宽字形：逐行对齐才好比较大小。 */
-.usage-group-head .muted,
-.usage-entry-bytes {
+.usage-tile-total {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+
+/* 分类自己的占比条 + 百分比：回答「这块占全部的多少」。条目里不再重复
+   画条——四张瓦片各画一次条、每张下面还有 N 个条目也画条，图会碎成一片
+   蓝，而人只会先看分类级的那个。 */
+.usage-tile-share {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 5px 0 0;
+}
+
+.usage-tile-percent {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-bar {
+  flex: 1;
+  min-width: 0;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  /* 极小的分类也要看得见：宽度按 sharePercent，但设下限，否则 0.02% 的
+     备份会渲染成一条看不见的线。 */
+  min-width: 2px;
+}
+
+.usage-entries {
+  list-style: none;
+  margin: 7px 0 0;
+  padding: 0;
+  /* 顶部一道细线，把「分类自己的数」与「下面这些条目」分开。 */
+  border-top: 1px solid var(--border);
+  padding-top: 5px;
+}
+
+.usage-entry {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+  font-size: 11.5px;
+}
+
+.usage-entry-name {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-entry-bytes {
+  color: var(--text);
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-refreshing {
+  animation: usage-spin 1.1s linear infinite;
+  color: var(--muted);
+}
+
+@keyframes usage-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 
 .usage-entries {
   list-style: none;
