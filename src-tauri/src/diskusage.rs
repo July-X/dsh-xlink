@@ -30,10 +30,10 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// 单个占用条目。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageEntry {
     /// 条目 id（版本号 / 实例 id / 固定分类名），前端用它做缓存键。
@@ -54,7 +54,7 @@ pub struct UsageEntry {
 }
 
 /// 一组占用条目（同一父目录下的并列项）。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageGroup {
     /// 分类 id，例如 `kernels` / `instances` / `logs`。
@@ -69,7 +69,11 @@ pub struct UsageGroup {
 }
 
 /// 完整报表。
-#[derive(Debug, Clone, Serialize)]
+///
+/// `Deserialize` 是为了读回自己的缓存文件（`disk_usage` 的两段式返回）。
+/// 注意四个子结构体**也要**能反序列化——只给顶层加 derive 会在读缓存时
+/// 报一个看不出所以然的错。
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiskUsage {
     /// 所有分类的字节合计。
@@ -317,16 +321,63 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
         total,
         // 秒级足够：这张表不是秒级变化的量，毫秒只是让「这次是新算的」
         // 与「这是十分钟前的缓存」能被区分开。
-        measured_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0),
+        measured_at: now_millis(),
         unreadable,
         groups,
     }
 }
 
-/// 读一次磁盘占用。扫描在 blocking worker 上跑，不占主线程。
+/// 缓存文件：`<data_dir>/disk-usage-cache.json`。
+///
+/// **放 data_dir 而不是 xlink_home 根上**：它按壳模式分家（`desktop` /
+/// `desktop-dev`），dev 与 release 看到的数字不会互相覆盖。放根上就得再
+/// 自己拼一层模式后缀，收益为零。
+fn cache_file(data_dir: &Path) -> PathBuf {
+    data_dir.join("disk-usage-cache.json")
+}
+
+/// 缓存多久算新鲜：**一天**（用户 2026-10-03 拍板）。
+///
+/// 一天是这类量的自然尺度——磁盘占用是被「装了一个内核 / 攒了一批会话」
+/// 推动的，而那两件事都不按分钟发生。更短会让每次进面板都重扫 2.5 万个
+/// 文件（290ms 看着不多，但它在 blocking worker 上、且这台机器的盘可能
+/// 更慢）；更长则会让刚装完内核的用户看到一天前的数字，反而失真。
+const FRESH_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// 报表是否还需要重新扫。`measured_at` 是毫秒时间戳。
+pub fn is_stale(report: &DiskUsage, now_ms: u64) -> bool {
+    // `measured_at == 0` = 测不出时刻（系统时钟落在 1970 之前）。判成陈旧
+    // 去重扫一次就好：那是无法比较的输入，重扫完就会用正常值覆盖它。
+    if report.measured_at == 0 {
+        return true;
+    }
+    // `now < measured_at` = 系统时钟被往回调了。此时 `now - measured_at`
+    // 在无符号减法下会绕成巨大值，把一次新鲜的缓存判成「永远过期」，
+    // 于是每次都重扫。宁可当成新鲜，等时钟追上再说。
+    now_ms.saturating_sub(report.measured_at) > FRESH_MS
+}
+
+fn read_cache(data_dir: &Path) -> Option<DiskUsage> {
+    let text = std::fs::read_to_string(cache_file(data_dir)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn write_cache(data_dir: &Path, report: &DiskUsage) {
+    let Ok(text) = serde_json::to_string(report) else {
+        return;
+    };
+    // 缓存丢了只是下次多扫一次，不该因此打扰用户：失败只落 stderr。
+    if let Err(error) = crate::shell::process::atomic_write(&cache_file(data_dir), text.as_bytes())
+    {
+        eprintln!("dsh-xlink: 写入磁盘占用缓存失败：{error}");
+    }
+}
+
+/// 读一次磁盘占用：**先给缓存，后台重扫**（用户 2026-10-03 拍板）。
+///
+/// 两段式返回而不是「等扫完再返回」：用户点开面板立刻看到数字（哪怕是
+/// 一天前的），不等那 290ms；扫描在后台线程完成后通过事件回填，数字自己
+/// 更新。缓存新鲜时**不重扫**——那正是「一天一次」的意义。
 #[tauri::command]
 pub async fn disk_usage(app: tauri::AppHandle) -> Result<DiskUsage, String> {
     let data_dir = app
@@ -336,10 +387,47 @@ pub async fn disk_usage(app: tauri::AppHandle) -> Result<DiskUsage, String> {
         return Err("应用状态尚未就绪".to_string());
     };
     let home = crate::shell::paths::xlink_home();
-    crate::commands::blocking(move || -> Result<DiskUsage, String> {
-        Ok(measure(&data_dir, &home))
-    })
-    .await
+    let now_ms = now_millis();
+
+    // ① 先给缓存。读到且新鲜就直接返回，连后台线程都不起。
+    if let Some(cached) = read_cache(&data_dir) {
+        if !is_stale(&cached, now_ms) {
+            return Ok(cached);
+        }
+        // ② 缓存陈旧：**先用它**把界面填上，再后台重扫。
+        let scan_dir = data_dir.clone();
+        spawn_refresh(app, scan_dir, home);
+        return Ok(cached);
+    }
+
+    // ③ 没有任何缓存（首次运行）：只能同步扫一次，否则界面上什么都没有。
+    let report = measure(&data_dir, &home);
+    write_cache(&data_dir, &report);
+    Ok(report)
+}
+
+/// 后台重扫，完成后把新报表广播给面板。
+fn spawn_refresh(app: tauri::AppHandle, data_dir: PathBuf, home: PathBuf) {
+    let spawned = std::thread::Builder::new()
+        .name("dsh-disk-usage".to_string())
+        .spawn(move || {
+            let report = measure(&data_dir, &home);
+            write_cache(&data_dir, &report);
+            if let Err(error) = app.emit("disk-usage-refreshed", &report) {
+                eprintln!("dsh-xlink: 广播磁盘占用刷新失败：{error}");
+            }
+        });
+    if let Err(error) = spawned {
+        eprintln!("dsh-xlink: 磁盘占用后台扫描未启动：{error}");
+    }
+}
+
+/// 当前毫秒时间戳。抽出来是为了让 `is_stale` 的测试能喂固定值。
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -526,6 +614,88 @@ mod tests {
         // id 本身是缓存键与路径标识，不许被改写。
         let ids: Vec<&str> = instances.entries.iter().map(|e| e.id.as_str()).collect();
         assert!(ids.contains(&"default-dev"), "id 保持目录原名：{ids:?}");
+    }
+
+    /// 新鲜度判定：一天内不算陈旧，超过就重扫。
+    #[test]
+    fn freshness_window_is_one_day() {
+        let mut report = DiskUsage {
+            total: 100,
+            measured_at: 1_000_000_000_000,
+            unreadable: Vec::new(),
+            groups: Vec::new(),
+        };
+        // 刚扫完：一小时内必须是新鲜的，否则「一天一次」变成了「每次都扫」。
+        assert!(!is_stale(&report, report.measured_at + 60 * 60 * 1000));
+        // 23 小时 59 分：仍然新鲜（留出边界余量，别让"差一分钟"就重扫）。
+        assert!(!is_stale(&report, report.measured_at + FRESH_MS - 1));
+        // 超过一天：重扫。
+        assert!(is_stale(&report, report.measured_at + FRESH_MS + 1));
+        // 测不出时刻（0）：判成陈旧、去重扫一次，下一轮会用正常值覆盖。
+        // 「宁可当新鲜」那句话是针对**时钟回拨**的，不是针对这个 0。
+        report.measured_at = 0;
+        assert!(is_stale(&report, 2_000_000_000_000));
+    }
+
+    /// 时钟被往回调时不能把新鲜缓存判成永远过期。
+    ///
+    /// 无符号减法下 `now < measured_at` 会绕成巨大值，`> FRESH_MS` 立刻成立
+    /// ——于是**每次调用都重扫**，而缓存形同虚设（用户把系统时间调回去几
+    /// 个小时就会撞上）。
+    #[test]
+    fn clock_going_backwards_does_not_invalidate_cache() {
+        let report = DiskUsage {
+            total: 100,
+            measured_at: 1_700_000_000_000,
+            unreadable: Vec::new(),
+            groups: Vec::new(),
+        };
+        assert!(
+            !is_stale(&report, 1_600_000_000_000),
+            "now < measured_at 时应保持新鲜，不能每��都重扫"
+        );
+    }
+
+    /// 缓存能原样读回，且落在 data_dir 内（dev / release 各存一份，互不覆盖）。
+    #[test]
+    fn cache_round_trips_inside_data_dir() {
+        let home = TempTree::new("cache-home");
+        let data_dir = home.path().join("dsh").join("desktop");
+        tree(
+            &data_dir.join("kernels"),
+            &[("0.1.0/pkg/a.bin", 1234), ("0.2.0/pkg/b.bin", 4321)],
+        );
+
+        let report = measure(&data_dir, home.path());
+        write_cache(&data_dir, &report);
+
+        let back = read_cache(&data_dir).expect("缓存应能读回");
+        assert_eq!(back.total, report.total);
+        assert_eq!(back.measured_at, report.measured_at);
+        assert_eq!(back.groups.len(), report.groups.len());
+        assert_eq!(
+            back.groups[0].entries[0].bytes,
+            report.groups[0].entries[0].bytes
+        );
+        assert_eq!(
+            cache_file(&data_dir),
+            data_dir.join("disk-usage-cache.json"),
+            "缓存必须落在 data_dir 里，让 dev / release 各持一份"
+        );
+    }
+
+    /// 缓存文件损坏时返回 None，而不是让整个命令失败。
+    ///
+    /// 反向验：把文件写成半截 JSON，`read_cache` 必须给 None——下一次
+    /// 调用会退回同步扫描，用户看到的是「重新算的数字」，而不是一张
+    /// 永远空白的报表卡在界面上。
+    #[test]
+    fn corrupt_cache_falls_back_to_a_rescan() {
+        let home = TempTree::new("cache-corrupt");
+        let data_dir = home.path().join("dsh").join("desktop");
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::write(cache_file(&data_dir), b"{\"total\": 1, \"gro").unwrap();
+        assert!(read_cache(&data_dir).is_none(), "半截 JSON 必须读作 None");
     }
 
     /// 端到端：造出两个内核版本，验证分类、总量与「实例不是内核」这条区分。
