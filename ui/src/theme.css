@@ -1825,7 +1825,9 @@ main {
 .updates-lists {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  /* 14 → 8：「已安装 / npm 发布」两列之间那道竖缝，在两列都很窄时
+     反而成了整块最宽的空白。两列内容都是短行，8px 足够分得开。 */
+  gap: 8px;
 }
 
 .list-group {
