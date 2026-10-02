@@ -1167,7 +1167,30 @@ const FILE_BUDGETS = {
 // plugins/center.rs 未动。
 // 37220 → 37340（2026-10-03）：占用报表改瓦片卡片布局 + 两段式加载与一天
 // 新鲜度缓存。+120 行：Rust 缓存层约 46、UI 约 74。
-const TOTAL_BUDGET = 37340;
+// 37340 → 37380（2026-10-03 早）：启动时默认做一次内核更新检查。+40 行：
+//   · src-tauri/src/pkg/releases.rs 约 +18：`ReleaseOverview` 结构（发布列表 +
+//     「可升级到哪一版」）与纯函数 `newest_upgrade`。版本比较**复用既有的**
+//     `shell::version::cmp_versions`（该模块本来就 import 着它给三个 fetch_*
+//     排序用），前端因此不需要第二份 semver 实现——`0.2.0` 与 `0.2.0-rc.1`
+//     的先后判错会让每次启动都误报「有新版本」。6 条单测覆盖预发布段、
+//     「基线取已装最新而非活动版本」、空安装集与空列表。
+//     **刻意不把 upgrade 并进 `ReleaseList`**：那个结构的结果会进 60 秒进程
+//     缓存，而「可升级到哪一版」取决于本机装了些什么，缓存会把它端给下一个
+//     调用者。拆成两个类型，缓存里就只剩与本机无关的纯网络结果。
+//   · src-tauri/src/kernel/lifecycle.rs 约 +11：`release_overview` 组装
+//     两者。放这层是因为已装版本本就归它管（`kernel → pkg` 已有先例：
+//     `kernel_deps.rs` 就这么调 `pkg::registry` / `pkg::releases`）。
+//   · ui/src/store.js 约 +6：`checkUpdates(manual)` 补静默路径——不弹提示，
+//     失败**不清空**已有列表（网络抖一下就把好数据抹掉，页面会从「有列表」
+//     跳回「点击获取」，比没检查更像故障）。
+//   · ui/src/App.vue 约 +5：启动钩子里发一次 `checkUpdates(false)`。
+//   · ui/test/updateChecks.test.js 约 +0（净减）：新增 2 条静默路径测试，
+//     抽出重复的 mock 分支抵掉。
+// **反棘轮文件本轮零增长**：theme.css 未动；commands.rs 从 2064 拆回 **2061
+// 正好等于预算**——组装逻辑一开始就堆错了地方，搬去 lifecycle.rs 之后命令
+// 层退回纯转发（`blocking(|| lifecycle::release_overview(&data_dir)).await`），
+// 连签名都不用为它拆行。未上调任何 FILE_BUDGETS。
+const TOTAL_BUDGET = 37380;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

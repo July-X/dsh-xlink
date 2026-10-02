@@ -7,6 +7,9 @@ let skillChecks = 0;
 // 挂住不返回，让测试能在「探测进行中」观察全局按钮状态。
 let pluginCheckGate = null;
 let fetchReleasesGate = null;
+// 静默路径的两条分支要用：一份带 upgrade 的成功结果、一份整体失败。
+let fetchReleasesResult = { releases: [], warning: '' };
+let fetchReleasesFail = false;
 const deferred = () => {
   let resolve;
   const promise = new Promise((res) => {
@@ -45,7 +48,8 @@ globalThis.window = {
             fetchReleasesGate = null;
             return gate.promise;
           }
-          return Promise.resolve({ releases: [], warning: '' });
+          if (fetchReleasesFail) return Promise.reject(new Error('registry unreachable'));
+          return Promise.resolve(fetchReleasesResult);
         }
         if (command === 'skill_check_updates') {
           skillChecks += 1;
@@ -86,6 +90,13 @@ const makeElement = () => ({
   insertBefore() {},
 });
 const body = makeElement();
+// 提示（toast）最终由 Element 的 ElMessage 渲染进 body。数着往 body 挂节点的
+// 次数就能判断「这次到底弹没弹提示」——静默路径的价值全在「没出声」上，
+// 只断言 store 状态证明不了这一点。
+let bodyAppends = 0;
+body.appendChild = () => {
+  bodyAppends += 1;
+};
 globalThis.document = {
   createElement: makeElement,
   createElementNS: makeElement,
@@ -180,6 +191,58 @@ test('内核「检查更新」同样只挂按钮 loading，不进互斥租约', 
   await pending;
   assert.equal(isLoading('checkUpdates'), false);
   assert.equal(store.releases.length, 1);
+});
+
+test('内核发布列表的启动自检静默：挂 loading、失败清空列表、失败弹提示', async () => {
+  const { store, checkUpdates } = await import('../src/store.js');
+  const { isLoading } = await import('../src/shell/loading.js');
+
+  // 先摆一份「已经拿到的」列表在 store 里：静默路径失败时它必须原样留下。
+  fetchReleasesResult = { releases: [{ version: '0.1.7-rc.2', prerelease: false }], warning: '' };
+  fetchReleasesFail = false;
+  await checkUpdates(false);
+  assert.equal(store.releases.length, 1);
+
+  const gate = deferred();
+  fetchReleasesGate = gate;
+  const pending = checkUpdates(false);
+  assert.equal(isLoading('checkUpdates'), false, '启动自检没有按钮可挂，绝不能占着 loading');
+  gate.resolve(fetchReleasesResult);
+  await pending;
+
+  // 整体失败：不弹提示，也不把上一份好数据抹掉。抹掉的话页面会从「有列表」
+  // 跳回「点击获取」，比没检查更像故障。
+  const before = bodyAppends;
+  fetchReleasesFail = true;
+  await checkUpdates(false);
+  assert.equal(bodyAppends, before, '静默路径失败不许弹提示');
+  assert.equal(store.releases.length, 1, '静默路径失败不许清空已有列表');
+  fetchReleasesFail = false;
+});
+
+test('启动自检发现有可升级版本时提示一次，手动点击则不重复提示', async () => {
+  const { checkUpdates } = await import('../src/store.js');
+
+  const upgradeResult = {
+    releases: [{ version: '0.2.0-rc.2', prerelease: true }],
+    warning: '',
+    upgrade: '0.2.0-rc.2',
+  };
+
+  // 启动自检：人不在内核版本页，不说就没人知道。
+  fetchReleasesResult = upgradeResult;
+  const before = bodyAppends;
+  await checkUpdates(false);
+  assert.equal(bodyAppends, before + 1, '启动自检发现新版本必须提示一次');
+
+  // 手动点击：用户正盯着列表，那一行的「安装」按钮就在眼前，再弹是重复。
+  await checkUpdates(true);
+  assert.equal(bodyAppends, before + 1, '手动点击不重复提示');
+
+  // 没有可升级版本时启动自检也必须安静。
+  fetchReleasesResult = { releases: upgradeResult.releases, warning: '', upgrade: null };
+  await checkUpdates(false);
+  assert.equal(bodyAppends, before + 1, '已是最新时启动自检不许提示');
 });
 
 test('提示与确认框显式抬到进度浮层之上', async () => {
