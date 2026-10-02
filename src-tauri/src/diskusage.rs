@@ -232,9 +232,19 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
                         continue;
                     }
                     let family_name = family.file_name().to_string_lossy().to_string();
+                    // 默认实例的 id 带着壳模式后缀（`default` / `default-dev`），
+                    // 那是目录名的技术形态。**只映射这两个已知值**，不按
+                    // 「含 dev 就改写」的规则去动其它 id——用户自建的实例
+                    // 可能叫 `dev-work`、`my-dev-env` 之类，那是他们自己起的
+                    // 名字，报表没有资格改写。
+                    let friendly_id = match id.as_str() {
+                        "default" => "正式版".to_string(),
+                        "default-dev" => "开发版".to_string(),
+                        other => other.to_string(),
+                    };
                     instance_rows.push((
                         id.clone(),
-                        format!("{family_name} / {id}"),
+                        format!("{friendly_id}（{family_name}）"),
                         instance.path(),
                     ));
                 }
@@ -265,6 +275,12 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
 
     // ④ 壳日志。两个壳各一份，分开列——它们本就是分开写的
     //（`registry_split` 那一套），合在一起会让人以为日志是共享的。
+    //
+    // 目录名 `dev` / `release` 在这里是**壳模式的技术标识**，报表是给用户
+    // 看的，说 `壳日志（dev）` 等于把内部枚举值直接倒给人，而它对「我想
+    // 知道哪份日志占地方」这个问题毫无帮助。换成「开发版 / 正式版」——
+    // 同一对壳的另一种叫法，用户不需要知道 debug / release 这两个词与
+    // 端口 3091 / 3090 的对应关系也能分清是哪一份。
     let mut log_rows = Vec::new();
     let shell_root = home.join("shell");
     if let Ok(modes) = std::fs::read_dir(&shell_root) {
@@ -274,7 +290,16 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
                 continue;
             }
             let name = mode.file_name().to_string_lossy().to_string();
-            log_rows.push((format!("logs-{name}"), format!("壳日志（{name}）"), logs));
+            let friendly = match name.as_str() {
+                "dev" => "开发版",
+                "release" => "正式版",
+                other => other,
+            };
+            log_rows.push((
+                format!("logs-{name}"),
+                format!("壳日志（{friendly}）"),
+                logs,
+            ));
         }
     } else {
         unreadable.push(shell_root.display().to_string());
@@ -442,6 +467,65 @@ mod tests {
             (sum - 100.0).abs() < 0.01,
             "占比之和应约等于 100，实得 {sum}"
         );
+    }
+
+    /// `dev` / `release` 是壳模式的**技术标识**，报表给用户看时换成
+    /// 「开发版 / 正式版」；但只换这两个已知值，用户自建的实例名一律原样。
+    ///
+    /// 反向验：把映射改成「id 里含 `dev` 就改写」，`dev-work` 这个用户
+    /// 自建的实例会被改成「开发版-work」——用户自己起的名字被壳改写，
+    /// 而他无从知道那对应的是哪个目录。
+    #[test]
+    fn shell_modes_read_as_editions_but_custom_names_survive() {
+        let home = TempTree::new("edition-labels");
+        let data_dir = home.path().join("dsh").join("desktop");
+        tree(
+            &home.path().join("kernels/dsh/instances/default"),
+            &[("s.json", 10)],
+        );
+        tree(
+            &home.path().join("kernels/dsh/instances/default-dev"),
+            &[("s.json", 10)],
+        );
+        tree(
+            &home.path().join("kernels/dsh/instances/dev-work"),
+            &[("s.json", 10)],
+        );
+        tree(&home.path().join("shell/release/logs"), &[("a.log", 5)]);
+        tree(&home.path().join("shell/dev/logs"), &[("a.log", 5)]);
+
+        let usage = measure(&data_dir, home.path());
+
+        let logs = usage.groups.iter().find(|g| g.id == "logs").unwrap();
+        let labels: Vec<&str> = logs.entries.iter().map(|e| e.label.as_str()).collect();
+        assert!(
+            labels.contains(&"壳日志（正式版）"),
+            "release 壳应显示为正式版：{labels:?}"
+        );
+        assert!(
+            labels.contains(&"壳日志（开发版）"),
+            "dev 壳应显示为开发版：{labels:?}"
+        );
+        assert!(
+            !labels
+                .iter()
+                .any(|l| l.contains("release") || l.contains("dev）")),
+            "不该把技术标识直接倒给人：{labels:?}"
+        );
+
+        let instances = usage.groups.iter().find(|g| g.id == "instances").unwrap();
+        let labels: Vec<&str> = instances.entries.iter().map(|e| e.label.as_str()).collect();
+        assert!(
+            labels.contains(&"正式版（dsh）") && labels.contains(&"开发版（dsh）"),
+            "默认实例应显示为版本名：{labels:?}"
+        );
+        assert!(
+            labels.contains(&"dev-work（dsh）"),
+            "用户自建的实例名必须原样保留：{labels:?}"
+        );
+        // id 本身是缓存键与路径标识，不许被改写。
+        let ids: Vec<&str> = instances.entries.iter().map(|e| e.id.as_str()).collect();
+        assert!(ids.contains(&"default-dev"), "id 保持目录原名：{ids:?}");
     }
 
     /// 端到端：造出两个内核版本，验证分类、总量与「实例不是内核」这条区分。
