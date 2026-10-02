@@ -388,13 +388,10 @@ function formatBytes(bytes) {
             <ul v-if="group.entries.length" class="usage-entries">
               <li v-for="entry in group.entries" :key="entry.id" class="usage-entry">
                 <span class="usage-entry-name" :title="entry.path">{{ entry.label }}</span>
-                <span class="usage-entry-bytes">{{ formatBytes(entry.bytes) }}</span>
-                <!-- 条形移到独立一行：两列布局下每格只有约一半宽，名称与
-                     数字挤在同一行会把条形压到几十像素，几乎读不出比例。
-                     独占一行后条形拿到整格宽度，「谁比谁大」才看得出来。 -->
                 <span class="usage-bar" aria-hidden="true">
                   <span class="usage-bar-fill" :style="{ width: entry.sharePercent + '%' }"></span>
                 </span>
+                <span class="usage-entry-bytes">{{ formatBytes(entry.bytes) }}</span>
               </li>
             </ul>
             <p v-else class="muted usage-empty">这一类当前没有内容。</p>
@@ -543,16 +540,19 @@ function formatBytes(bytes) {
   padding: 0;
 }
 
-/* 每条占两行：上行「名称 … 字节数」，下行整格宽的条形。
-   两列布局下每格只有约一半窗口宽，名称、数字、条形挤一行会把条形压到
-   几十像素——比例差 10 倍的两条看上去也差不多长，那条形就白画了。 */
+/* 每条**单行**三段：名称 / 条形 / 字节数。
+   试过让条形独占第二行（名称+数字一行、条形一行），纵向省不下来反而多
+   费一行——而条形在两列布局下拿到的宽度差别不大，不值当。保持单行后
+   一条就是一条的高度，列表整体最紧凑。 */
 .usage-entry {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: baseline;
-  column-gap: 8px;
-  row-gap: 3px;
-  padding: 4px 0;
+  /* 条形列不给固定宽（`1fr`）：名称可能长（`default-dev`）也可能短
+     （`0.2.0`），给它固定宽会让短名称的条形白白少一截。数字列 `auto`
+     按最宽的那个值对齐，逐行才可比。 */
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  padding: 3px 0;
   font-size: 11.5px;
 }
 
@@ -564,8 +564,6 @@ function formatBytes(bytes) {
 }
 
 .usage-bar {
-  /* 跨两列：grid-column: 1 / -1 让条形独占一行并撑满整格。 */
-  grid-column: 1 / -1;
   height: 4px;
   border-radius: 2px;
   background: var(--bg-soft);

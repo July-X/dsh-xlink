@@ -265,7 +265,9 @@ const FILE_BUDGETS = {
   // ② `measure(data_dir, home)` 把两个根目录都做成**参数**，测试因此能指向
   //    临时目录。这条是硬要求：它一旦内部去调 `xlink_home()`，测试就会
   //    扫到用户真实的 `~/.dsh-xlink`，而那里的三个用例都会写临时文件。
-  'src-tauri/src/diskusage.rs': 210,
+  // 210 → 220：加「壳模式 / 默认实例 id 显示为版本名」那两处映射
+  // （`dev` / `release` → 开发版 / 正式版）与钉住它的那条测试。
+  'src-tauri/src/diskusage.rs': 220,
   'ui/src/shell/autostart.js': 90,
   // 2026-09-30 按功能分目录，三个大文件各上调到实测值：
   //   commands.rs        2110 → 2171
@@ -1155,11 +1157,9 @@ const FILE_BUDGETS = {
 //
 // 反棘轮大文件本轮**零增长**：theme.css 回到 3151 行未动，commands.rs /
 // plugins/center.rs 未动。
-// 37150 → 37200（2026-10-03）：磁盘占用报表改双列布局。
-// 纯样式与模板结构调整，+27 行（网格定义、条目两行栅格、跨列提醒）。
-// 顺带把上一笔 `971ae56`（npm 列表限高）欠的 7 行补上——那笔只改了
-// 22 行样式却没同步 TOTAL_BUDGET，本次一并结清。
-const TOTAL_BUDGET = 37200;
+// 37200 → 37220（2026-10-03）：占用报表条目改回单行三段（名称 / 条形 /
+// 字节数）+ dev/release 显示为「开发版 / 正式版」。+20 行。
+const TOTAL_BUDGET = 37220;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
