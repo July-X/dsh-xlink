@@ -77,6 +77,7 @@
           "switch_official_chat_tab",
           "focus_main_shell",
           "minimize_shell",
+          "disk_usage",
           "autostart_status",
           "autostart_set",
           "autostart_set_kernel",

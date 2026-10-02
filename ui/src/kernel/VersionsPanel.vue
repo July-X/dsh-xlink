@@ -97,7 +97,66 @@ const installedVersions = computed(() => {
 // 进版本面板就重新扫描本地内核列表，与 npm 发布列解耦——
 onMounted(() => {
   refreshAll();
+  // 占用报表**不**跟着自动算：一次全量扫描要走 2.5 万个文件（本机实测
+  // 290ms），放在进面板时算会让「点进版本页」这件事变慢，而用户未必想
+  // 看占用。按需加载（点按钮），读过一次就缓存。
 });
+
+// 磁盘占用：按需加载 + 缓存。
+//
+// 沿用上方插件快照那套「槽位」写法（`loaded` 与 `error` 分开），但语义有
+// 一处**故意不同**：插件快照失败时不置 `loaded`，以便下次悬浮重试；而占用
+// 失败就**保持失败态**并显示原因——它是一次全盘扫描，重试三次也还是失败
+// 的（多半是权限问题），让按钮反复可点只会诱导用户空转。真要重来请刷新页面。
+const diskUsage = reactive({
+  loading: false,
+  loaded: false,
+  error: null,
+  total: 0,
+  groups: [],
+  unreadable: [],
+});
+
+async function loadDiskUsage() {
+  if (diskUsage.loading) return;
+  diskUsage.loading = true;
+  diskUsage.error = null;
+  try {
+    const report = await invoke('disk_usage');
+    // 数值一律过一遍 Number：后端字段缺失时拿到 undefined，会在
+    // formatBytes 里被 `Number.isFinite` 兜成 0，但 `total` 若直接
+    // 参与模板拼接就会渲染成 "NaN" 或 "undefined"。
+    diskUsage.total = Number(report.total) || 0;
+    diskUsage.groups = report.groups || [];
+    diskUsage.unreadable = report.unreadable || [];
+    diskUsage.loaded = true;
+  } catch (e) {
+    diskUsage.error = e && e.message ? e.message : String(e);
+  } finally {
+    diskUsage.loading = false;
+  }
+}
+
+// 字节 → 人类可读。**不在 Rust 侧格式化**：单位与小数位是显示决策，而这张
+// 表还要按字节排序、按百分比画条——后端给原始字节，前端怎么排都不会让
+// 「排序用字符串比较」这种错重新长出来。
+//
+// 用 1024 进制并按 1000 归一（507MB 显示成 495 MB）——文件系统的真实语义，
+// 与 Finder / `du -h` 一致，用户拿另一个工具对得上数。
+const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  let index = 0;
+  let scaled = value;
+  while (scaled >= 1024 && index < UNITS.length - 1) {
+    scaled /= 1024;
+    index += 1;
+  }
+  // 字节本身不显示小数（12 B 不会写成 "12.0 B"），其余保留一位。
+  const digits = index === 0 ? 0 : 1;
+  return `${scaled.toFixed(digits)} ${UNITS[index]}`;
+}
 </script>
 
 <template>
@@ -262,6 +321,204 @@ onMounted(() => {
           </div>
         </div>
       </div>
+
+      <!-- 磁盘占用：只读视图，**没有任何删除入口**（2026-10-02 拍板）。
+           理由是这里没有安全边界可守——最大的两块是内核 node_modules 与
+           实例 DSH home（后者装的是用户会话与附件），壳无法替用户判断
+           哪块该删。给只读数字，用户自己用 Finder 处理，壳就不必在
+           「删错了」和「不敢删」之间二选一。 -->
+      <div class="disk-usage">
+        <div class="card-head">
+          <h2>
+            磁盘占用
+            <el-tooltip placement="bottom-start" :show-after="80">
+              <template #content>
+                <div class="card-info-tooltip">
+                  dsh-xlink 在本机占用的磁盘分布，只读。<br />
+                  按目录树展开统计，不跟随软链（内核树里 pnpm 的软链指向
+                  store，跟随会把同一份字节数数两遍），因此这是上界。
+                  硬链接复用也无法在纯目录遍历层面识别。
+                </div>
+              </template>
+              <el-icon class="card-info-icon"><InfoFilled /></el-icon>
+            </el-tooltip>
+          </h2>
+          <span class="head-meta">
+            <span v-if="diskUsage.loaded" class="usage-total">
+              合计 {{ formatBytes(diskUsage.total) }}
+            </span>
+            <el-button
+              v-if="!diskUsage.loaded"
+              size="small"
+              text
+              :icon="Refresh"
+              :loading="diskUsage.loading"
+              @click="loadDiskUsage"
+            >
+              统计
+            </el-button>
+            <el-button
+              v-else
+              size="small"
+              text
+              :icon="Refresh"
+              :loading="diskUsage.loading"
+              :disabled="diskUsage.error !== null"
+              title="重新统计目录占用"
+              @click="loadDiskUsage"
+            >
+              刷新
+            </el-button>
+          </span>
+        </div>
+
+        <p v-if="diskUsage.error" class="muted usage-error">
+          统计失败：{{ diskUsage.error }}
+        </p>
+
+        <div v-else-if="diskUsage.loaded" class="usage-groups">
+          <div v-for="group in diskUsage.groups" :key="group.id" class="usage-group">
+            <div class="usage-group-head">
+              <span class="usage-group-label">{{ group.label }}</span>
+              <span class="muted">
+                {{ formatBytes(group.bytes) }} · {{ group.sharePercent }}%
+              </span>
+            </div>
+            <ul v-if="group.entries.length" class="usage-entries">
+              <li v-for="entry in group.entries" :key="entry.id" class="usage-entry">
+                <span class="usage-entry-name" :title="entry.path">{{ entry.label }}</span>
+                <span class="usage-bar" aria-hidden="true">
+                  <span class="usage-bar-fill" :style="{ width: entry.sharePercent + '%' }"></span>
+                </span>
+                <span class="usage-entry-bytes">{{ formatBytes(entry.bytes) }}</span>
+              </li>
+            </ul>
+            <p v-else class="muted usage-empty">这一类当前没有内容。</p>
+          </div>
+
+          <p v-if="diskUsage.unreadable.length" class="muted usage-unreadable">
+            以下目录读不到，未计入合计：{{ diskUsage.unreadable.join('、') }}
+          </p>
+        </div>
+
+        <p v-else-if="!diskUsage.loading" class="muted usage-idle">
+          点「统计」扫描本机占用。目录较多时需要几百毫秒。
+        </p>
+      </div>
     </div>
   </section>
 </template>
+
+<style scoped>
+/* 磁盘占用报表的样式**放在这里而不是 theme.css**：theme.css 是反棘轮
+   大文件（预算只许下调），而这份样式只被本组件用。拆出去的同时也让
+   「哪段样式属于哪张卡片」变得可查。变量沿用 theme.css 的全局色板
+   （--text / --muted / --bg-soft / --accent / --bad），scoped 不会改
+   变它们的取值。 */
+
+.disk-usage {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.disk-usage h2 {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.usage-total {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.usage-idle,
+.usage-error,
+.usage-empty,
+.usage-unreadable {
+  font-size: 11.5px;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.usage-error {
+  color: var(--bad);
+}
+
+.usage-unreadable {
+  margin-top: 10px;
+  /* 路径可能很长，允许断行而不是撑破卡片。 */
+  word-break: break-all;
+}
+
+.usage-group {
+  margin-top: 12px;
+}
+
+.usage-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.usage-group-label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* 数字用等宽字形：逐行对齐才好比较大小。 */
+.usage-group-head .muted,
+.usage-entry-bytes {
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-entries {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.usage-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px 68px;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 11.5px;
+}
+
+.usage-entry-name {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-soft);
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  /* 极小的条目也要看得见：宽度按 sharePercent，但设下限，
+     否则 0.01% 的插件库会渲染成一条看不见的线。 */
+  min-width: 2px;
+}
+
+.usage-entry-bytes {
+  text-align: right;
+  color: var(--muted);
+}
+</style>

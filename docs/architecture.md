@@ -150,6 +150,21 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 自启拉起时**不显示面板**（`setup` 里在建窗可见前就 `hide()`），菜单栏 / 托盘图标是全部可见痕迹；是否顺带起内核由 `should_launch_kernel_on_autostart` 三重判定：开关已开 ∧ 本次确为登录项拉起 ∧ 已安装版本存在。启动在**后台线程**发起（要派生 pnpm / node / 内核并等端口就绪，最坏几分钟，而 `setup` 跑在 Tauri 主线程上）。`start_kernel_blocking` 是 `start_kernel` 拆出的无 Channel 主体——自启那一刻没有任何前端在场，进度只能落 stderr（进日志文件），伪造一个 `Channel` 没有意义。
 
 **内核仍随壳一起停**（用户 2026-10-02 拍板）：常驻指「关窗不退出」，不是「壳退出后内核继续服务」。`RunEvent::Exit` 回收内核的逻辑一行没改，因此不需要跨进程认领协议，也就不会出现「壳退出了端口还被谁占着」「下次启动认不认得这个孤儿」那类问题。
+
+## 磁盘占用（`src-tauri/src/diskusage.rs`）
+
+**只读报表，刻意没有任何删除入口**（用户 2026-10-02 拍板）。四个分类：内核版本（`<data_dir>/kernels/<version>/`）、实例数据（`<xlink_home>/kernels/<family>/instances/<id>/`）、插件 / 技能 / 备份、壳日志（两个壳分开列，因为它们本就是分开写的）。UI 在内核版本面板底部，按需加载——一次全量 walk 本机实测 290ms / 25828 个文件，放进 `onMounted` 会让「点进版本页」变慢，而用户未必想看占用。
+
+**不给删除入口的理由不是怕担责，而是这里没有安全边界可守**：本机实测最大的两块是内核 `node_modules`（507M）与**实例 DSH home**（352M，装的是用户会话与附件）。壳无法替用户判断那 352M 里哪些他还记得要——按分类给删除按钮，等于把不可逆操作交给一个做不了这个判断的一方。给只读数字，用户自己用 Finder 处理。
+
+三条实现上的硬性约定：
+
+- **不跟随符号链接**。用 `entry.file_type()`（lstat 语义）而不是 `path.is_dir()`（stat 语义）：内核树里 pnpm 的软链指向 store，跟随会把同一份字节数数两遍。`du` 不加 `-l` 也是这个口径。反向验时改成跟随，1000 字节的用例直接变成 3000（目录软链被走进去两轮）。
+- **`measure(data_dir, home)` 把两个根目录做成参数**。不是图省事：它一旦内部调 `xlink_home()`，测试就会扫到用户真实的 `~/.dsh-xlink` 并往里写临时文件。参数化让测试能指向临时目录。
+- **读不到的目录如实上报**（`unreadable` 字段），不静默吞掉。少算了一块却报「合计 1.4G」比不报更糟——用户会以为那就是全部。
+
+`DiskUsage.total` 字段叫 `total` 而不是 `total_bytes`：`check-invariants` 的 ipc-fields 那条按**字段名全局**匹配（扫到任何 camelCase 结构体字段就把其 snake 形式记为「前端读到就是错的」，不区分同名字段属于哪个结构体），而 `migration::wizard` 的 `MigrationItemPreview.total_bytes` 刻意**不**套 `rename_all`（迁移面板那条链路统一走 snake_case）。两者撞名会被误判成 9 处前端 bug。改名比削弱门禁便宜——那条判据本身是对的，前端读 snake_case 拿到 undefined 这类 bug 真的存在，它只是分不清归属。
+
 - dev 调试面板（仅 dev 构建，`ui/src/components/DebugPanel.vue`）：右下角 🪛 浮按钮打开，唯一动作是「模拟正式版外观」。打开后把 `rel-build` 类挂上 body（复用 release 的绿渐变背景），**并收起 dev 专属内容**——设置页的「模拟一次任务完成」、概览页版本号的「（dev）」后缀，以及面板里那份钩子速查。它们只读 `store.devUi`（= `dev_build && !releasePreview`，由 `store.applyBuildClass()` 唯一写入，首帧从 body 类兜底以免 HMR 后 dev 入口先隐藏再闪回）：新增 dev 专属内容时必须走同一字段，否则 release 预览只演出了半个正式版。**浮按钮不走这个字段**：它在两种模式下都留在右下角（预览中换成 Gitea 绿以示区分），否则切进 release 预览就没有回头的入口了——刻意不做键盘快捷键，切换靠这个按钮。预览标志只在内存里，重启应用即复位；预览只改界面，不改外壳行为（`dev_build` 仍是 true，Rust 侧一概不动）。**面板不会在切换预览时自动收起**：Element Plus 的 switch 在 `handleChange` 里先发 `change`、再用 `nextTick` 写模板 ref `input.value.checked`，同步卸载开关会让那个回调拿到 `null`，在控制台留下一条 `Unhandled Promise Rejection: Cannot set properties of null (setting 'checked')`（实测于 element-plus 2.14.5）。要收起面板请另找时机，不要挂在 `@change` 触发的 watch 上。
 
 - `harness`（工作台）：`open_harness` 在新 OS 线程里 `WebviewWindowBuilder::new(...).label("harness")`，先对日志中的 launch-token URL（旧版内核则对裸地址）做 loopback HTTP 探针，确认可用后加载；不设 `closable(false)`——macOS 交通灯红灯与 Windows × 关闭按钮保持可用，用户可随时自己收起工作台窗口，内核与任务继续在后台运行、随时可经「打开工作台窗口」重新打开，收起窗口不会丢内核会话；由 `stop_kernel` 用 `destroy()` 主动回收窗口并停止内核。`capabilities/harness-remote.json` 仅授权 `allow-focus-main-shell` 与 `allow-report-harness-fault`，URL 锁 `http://127.0.0.1:*`；后者还会在 Rust 命令层校验 webview label 必须是 `harness`。打开前由 `kernel::prepare_workbench_source_maps` 扫描当前内核的前端 `dist`，为 npm 包中保留 `sourceMappingURL` 但缺失的 `.map` 生成最小 sidecar；不改内核 JS，目录只读时也不阻断工作台启动。
