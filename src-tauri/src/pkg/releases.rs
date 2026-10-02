@@ -448,6 +448,42 @@ pub struct ReleaseList {
     pub warning: Option<String>,
 }
 
+/// 交给前端的完整视图：发布列表 **加上** 本机能升级到哪一版。
+///
+/// **刻意不并进 [`ReleaseList`]**：`list_releases` 的返回值会进 60 秒进程缓存，
+/// 而「可升级到哪一版」取决于本机已装了些什么。把按本机状态算出来的字段放进
+/// 会被缓存的结构，缓存就会把上一次调用的答案端给下一个调用者——而那可能属于
+/// 另一份已装集合。拆成两个类型，缓存里就只剩与本机无关的纯网络结果。
+#[derive(Debug, Serialize, Clone)]
+pub struct ReleaseOverview {
+    pub releases: Vec<ReleaseInfo>,
+    pub warning: Option<String>,
+    /// 发布列表里比本机已装最新一版更新的那一版；已是最新则 `None`。
+    pub upgrade: Option<String>,
+}
+
+/// 发布列表中比本机已装版本更新的那一版；没有更新的（或列表为空）则 `None`。
+///
+/// 基线取**已装最新**而不是活动版本：用户可能有意把活动内核停在某个旧版本上
+/// （某个插件只在那一版验证过）。只要那版已经装好，就不该每次启动都催他升到
+/// 自己明确不选的那一版。
+///
+/// 不依赖入参的排列顺序：各 `fetch_*` 末尾确实都按版本倒序排过，但判据不该
+/// 建在「调用方拿到的这份恰好是最新的」上——多源合并、预发布剔除都可能打乱它。
+/// 收 `&[String]` 而不是 `&[InstalledVersion]`，是为了让 `pkg/`（取源与出网）
+/// 不必依赖 `kernel/`（内核安装树）这一侧的类型。
+pub fn newest_upgrade(installed: &[String], releases: &[ReleaseInfo]) -> Option<String> {
+    let newest_installed = installed.iter().max_by(|a, b| cmp_versions(a, b));
+    releases
+        .iter()
+        .filter(|r| match newest_installed {
+            Some(v) => cmp_versions(&r.version, v) == std::cmp::Ordering::Greater,
+            None => true,
+        })
+        .max_by(|a, b| cmp_versions(&a.version, &b.version))
+        .map(|r| r.version.clone())
+}
+
 /// 列出官方 kernel 发布版本，按从新到旧排序。
 ///
 /// 数据源顺序：
@@ -649,6 +685,77 @@ mod tests {
             releases: vec![sample_release(version)],
             warning: None,
         }
+    }
+
+    /// 按给定顺序构造发布列表（刻意不预先排序：判据不该依赖入参顺序）。
+    fn releases_in_order(versions: &[&str]) -> Vec<ReleaseInfo> {
+        versions.iter().map(|v| sample_release(v)).collect()
+    }
+
+    fn installed(versions: &[&str]) -> Vec<String> {
+        versions.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn upgrade_picks_the_newest_published_above_the_newest_installed() {
+        let list = releases_in_order(&["0.2.0-rc.2", "0.1.7-rc.2"]);
+        assert_eq!(
+            newest_upgrade(&installed(&["0.1.7-rc.2"]), &list),
+            Some("0.2.0-rc.2".to_string())
+        );
+    }
+
+    #[test]
+    fn no_upgrade_when_everything_published_is_already_installed() {
+        let list = releases_in_order(&["0.2.0-rc.2", "0.1.7-rc.2"]);
+        assert_eq!(
+            newest_upgrade(&installed(&["0.1.7-rc.2", "0.2.0-rc.2"]), &list),
+            None
+        );
+    }
+
+    /// 基线取**已装最新**而不是活动版本：用户有意停在旧版时不该被反复催。
+    #[test]
+    fn baseline_is_the_newest_installed_not_the_active_one() {
+        // 装着 rc.1 与 rc.2（rc.2 活动），npm 上只有 rc.2：没有可升的。
+        let list = releases_in_order(&["0.2.0-rc.2"]);
+        assert_eq!(
+            newest_upgrade(&installed(&["0.2.0-rc.1", "0.2.0-rc.2"]), &list),
+            None
+        );
+    }
+
+    /// 预发布段必须参与比较：0.2.0-rc.1 高于 0.2.0-rc.0，0.2.0 正式版又高于
+    /// 同一号的所有 rc。判据写错这一条会让每次启动都报「有新版本」。
+    #[test]
+    fn prerelease_ordering_is_respected() {
+        let rc1 = releases_in_order(&["0.2.0-rc.1"]);
+        assert_eq!(
+            newest_upgrade(&installed(&["0.2.0-rc.0"]), &rc1),
+            Some("0.2.0-rc.1".to_string())
+        );
+        let stable = releases_in_order(&["0.2.0"]);
+        assert_eq!(
+            newest_upgrade(&installed(&["0.2.0-rc.9"]), &stable),
+            Some("0.2.0".to_string())
+        );
+        // 反向：正式版已在手，rc 不该再被说成「更新」。
+        assert_eq!(
+            newest_upgrade(&installed(&["0.2.0"]), &releases_in_order(&["0.2.0-rc.1"])),
+            None
+        );
+    }
+
+    /// 一切从简：没装任何内核时，列表里最新的那一版就是要装的那一版。
+    #[test]
+    fn empty_install_set_takes_the_newest_published() {
+        let list = releases_in_order(&["0.1.7-rc.2", "0.2.0-rc.2", "0.2.0-rc.1"]);
+        assert_eq!(newest_upgrade(&[], &list), Some("0.2.0-rc.2".to_string()));
+    }
+
+    #[test]
+    fn empty_release_list_has_no_upgrade() {
+        assert_eq!(newest_upgrade(&installed(&["0.1.0"]), &[]), None);
     }
 
     fn err(message: &str) -> Result<Vec<ReleaseInfo>, String> {

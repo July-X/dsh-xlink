@@ -469,6 +469,30 @@ pub fn list_installed(data_dir: &Path) -> Vec<InstalledVersion> {
     list_installed_with_perf(data_dir, &mut perf)
 }
 
+/// 组装交给前端的内核发布视图：发布列表 **加上** 本机能升级到哪一版。
+///
+/// 「可升级到哪一版」在装内核这一侧算，不在取源那一侧算：`list_releases` 是纯
+/// 网络操作、结果进 60 秒进程缓存，而这个答案取决于本机装了些什么；把按本机
+/// 状态算出来的字段放进会被缓存的结构，缓存就会把上一次的答案端给下一个调用者。
+///
+/// 放这层而不是 `commands.rs`：已装版本本来就归本模块管，而命令层在本仓库的
+/// 反棘轮预算里，只许越来越小。
+///
+/// 错误在这一层就转成 `String`：`commands.rs` 那条命令是纯转发，不必为转一次
+/// 错误类型多留两行。
+pub fn release_overview(data_dir: &Path) -> Result<crate::pkg::releases::ReleaseOverview, String> {
+    let list = crate::pkg::releases::list_releases().map_err(|e| e.to_string())?;
+    let installed: Vec<String> = list_installed(data_dir)
+        .into_iter()
+        .map(|v| v.version)
+        .collect();
+    Ok(crate::pkg::releases::ReleaseOverview {
+        upgrade: crate::pkg::releases::newest_upgrade(&installed, &list.releases),
+        releases: list.releases,
+        warning: list.warning,
+    })
+}
+
 fn list_installed_with_perf(
     data_dir: &Path,
     perf: &mut crate::diagnostics::perf::PerfSample,

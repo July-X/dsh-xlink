@@ -93,6 +93,13 @@ Shell 日志目录 `~/.dsh-xlink/shell/<release|dev>/logs/`（`paths::shell_logs
   - **内核侧的两个缺陷仍归内核仓库**（见 AGENTS.md「范围」）：`client-hmr` 把 stat 噪声当重建推给活页面；换模块窗口里的槽位装配不变量会崩。四层是把用户看得见的损害压到接近零并消灭触发源，不是替内核修 bug。
 - **壳侧事件落盘**（`shell_events.rs`，2026-09-29）：壳是 GUI 应用，`eprintln!` 在 Windows 上没有任何去处，而**只有后果、没有原因**的动作恰恰只走它（工作台窗口自动重载、给 pnpm 降优先级）。`shell_events::record(<逻辑名>, <行>)` 追加到 `<shell_logs_dir>/<kind>-<name>-<date>.log`，因此**自动出现在「查看日志」面板**（`list_log_files` 按 `.log` 收整个目录）。写失败只落 stderr，绝不阻断调用方。`harness_window` 的加载看门狗现在把「开始加载 / 加载完成 / 超时自动重载」都记进 `harness-window.log`——此前这类现象只能靠时间戳对猜。
 - 切换活动内核只允许在**本壳**工作台已停止时执行：版本页在启动或运行期间禁用“切换”，`kernel::set_active` 经 `ensure_own_shell_stopped` 检查本壳的配置端口并拒绝运行中的服务，用户必须先调用 `stop_kernel`。**这条不管另一个壳**，理由见上面「跨壳判据只提示，不阻断」。
+- **启动时默认做一次内核发布检查**（2026-10-03）：`App.vue` 的 `onMounted` 发一次 `checkUpdates(false)`，用户进内核版本页时列表已经就位，不必先点「检查更新」。**静默路径失败时不弹提示、也不清空 `store.releases`**——启动时网络抖一下就把上一份好数据抹掉，页面会从「有列表」跳回「点击获取」，比没检查更像故障。用户拍板不加 TTL，每次启动都真的打一次（后端仍有 60 秒进程缓存，所以刚开就手点不会打第二遍）。
+  - **「可升级到哪一版」在 Rust 算**（`kernel::lifecycle::release_overview` → `pkg::releases::newest_upgrade`），前端因此不需要第二份 semver 实现。比较函数复用既有的 `shell::version::cmp_versions`——`releases.rs` 本来就 import 着它给三个 `fetch_*` 排序。这条判错代价是静默但持续的：`0.2.0` 与 `0.2.0-rc.1` 的先后一旦判反，每次启动都会误报「有新版本」。6 条单测钉住预发布段、空安装集、空列表。
+  - **基线取「已装最新」而不是「活动版本」**：用户可能有意把活动内核停在某个旧版本上（某个插件只在那一版验证过）。只要那版已经装好，就不该每次启动都催他升到自己明确不选的那一版。
+  - **`upgrade` 刻意不并进 `ReleaseList`**，而是新结构 `ReleaseOverview`：`list_releases` 的结果会进 60 秒进程缓存，而「可升级到哪一版」取决于本机装了些什么——放进会被缓存的结构，缓存就会把上一次的答案端给下一个调用者。拆成两个类型，缓存里只剩与本机无关的纯网络结果。
+  - 组装逻辑放 `lifecycle.rs` 而不是 `commands.rs`：已装版本本就归前者管（`kernel → pkg` 已有先例，`kernel_deps.rs` 就这么调 `pkg::registry` / `pkg::releases`），而命令层在本仓库的反棘轮预算里只许越来越小。
+  - **一条已知边界**：`--autostart` 启动时窗口是收起的，此时发出来的 toast 用户看不见、到点自消。数据本身不受影响——他打开应用进内核版本页就能看到那一版与「安装」按钮，提示只是顺手指个路，不是唯一入口。
+  - 对照：桌面端自身的更新检查**本来就已经自动**，且不走前端——`lib.rs` 的 `setup()` 里起 `updater::spawn_background_check`，3 秒后查、命中就发 `shell-update-available` 事件。插件 / 技能的更新检查则由 `activePanel` watcher 按需触发，开局停在概览页时不发。
 
 ## 数据目录
 

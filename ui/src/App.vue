@@ -10,6 +10,7 @@ import {
   store,
   refreshAll,
   pollStatus,
+  checkUpdates,
   showShellUpdateBanner,
   showIncident,
 } from './store.js';
@@ -209,6 +210,16 @@ onMounted(() => {
   // 在根组件保证它启动即加载（顶部内核 tab 组件本身也在这个层级渲染）。
   loadInstances().catch(() => {});
 
+  // 内核发布列表：启动静默拉一次，用户进内核版本页时列表已经就位，不必先点
+  // 一下「检查更新」。静默路径的失败处理见 store.js 的 checkUpdates 注释
+  // （不弹提示、不清空已有列表）。后端有 60 秒进程缓存，用户刚开就手动点
+  // 「检查更新」不会打第二次网络。
+  //
+  // 一条已知边界：`--autostart` 启动时窗口是收起的，此时发出来的 toast
+  // 用户看不见、到点自消。数据本身不受影响——他打开应用进内核版本页就能
+  // 看到那一版与「安装」按钮，提示只是顺手指个路，不是唯一入口。
+  checkUpdates(false);
+
   // 状态轮询：窗口隐藏时整个跳过；重新可见时立即补一轮。
   pollTimer = setInterval(pollStatus, 2500);
   document.addEventListener('visibilitychange', onVisibilityChange);
@@ -249,7 +260,9 @@ onMounted(() => {
     );
   });
 
-  // 目录与更新检查由 activePanel watcher 按需触发；外壳检查由 Rust 后台任务负责。
+  // 目录与更新检查（插件 / 技能）由 activePanel watcher 按需触发；桌面端自身的
+  // 更新检查由 Rust 后台任务负责（updater::spawn_background_check，setup 里起），
+  // 不走前端。内核发布列表的启动自检在上面 onMounted 里发一次。
 });
 
 onUnmounted(() => {

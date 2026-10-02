@@ -268,23 +268,37 @@ async function maybePromptNodeInstall() {
 
 // --- 内核版本 ---------------------------------------------------------------
 
-// 检查更新是只读探测（拉 npm 发布列表）：只挂本按钮 loading，不持互斥租约、
-// 不置 globalBusy——探测期间其他面板的按钮照常可用；切换 / 安装 / 启停的
-// 互斥由它们自己的租约与 workbenchActiveNow 守卫负责。
-export function checkUpdates() {
-  return withLoading('checkUpdates', async () => {
+// 内核发布列表。手动点击与启动自检走同一条路，只有「要不要出声」不同。
+//
+// 手动（默认）：只挂「检查更新」按钮的 loading，不持互斥租约、不置
+// globalBusy——探测期间其他面板的按钮照常可用；切换 / 安装 / 启停的互斥
+// 由它们自己的租约与 workbenchActiveNow 守卫负责。失败清空列表并弹提示：
+// 用户刚点的，他需要知道这次没拿到。
+//
+// 启动自检（`manual = false`）：静默，且失败**不清空** `store.releases`。
+// 启动时网络抖一下就把上一份好数据抹掉，页面会从「有列表」跳回「点击获取」，
+// 比没检查更像故障；不弹提示是因为用户此刻多半没在看内核版本页。
+//
+// `upgrade` 只在静默路径上报：手动点的人正盯着列表，「安装」按钮就在那一行，
+// 再弹一次是重复；启动自检时人不在这一页，不说就没人知道。
+export function checkUpdates(manual = true) {
+  const run = async () => {
     try {
       const list = await invoke('fetch_releases');
       store.releases = list.releases || [];
       store.releaseWarning = list.warning || '';
       if (store.releases.length === 0) {
-        toast('没有获取到官方发布，请稍后再试', 4000, 'warning');
+        if (manual) toast('没有获取到官方发布，请稍后再试', 4000, 'warning');
+      } else if (!manual && list.upgrade) {
+        toast('内核有新版本 ' + list.upgrade + '，可到「内核版本」页安装', 6000);
       }
     } catch (e) {
+      if (!manual) return;
       store.releases = [];
       toastActionError('获取发布失败', e, '请检查网络或代理设置后重试；也可到 GitHub Releases 手动下载', 6000);
     }
-  });
+  };
+  return manual ? withLoading('checkUpdates', run) : run();
 }
 
 export function installVersion(version, options = {}) {

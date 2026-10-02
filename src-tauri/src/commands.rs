@@ -39,8 +39,8 @@ use crate::plugins::quarantine;
 use crate::shell::error::AppError;
 use crate::shell::process::{build_log_kind, read_tail, LogSpec};
 use crate::{
-    diagnostics::guard, pkg::releases, pkg::updater, plugins::patches, shell::settings,
-    skills::skill_shadow,
+    diagnostics::guard, pkg::releases::ReleaseOverview, pkg::updater, plugins::patches,
+    shell::settings, skills::skill_shadow,
 };
 
 /// 以 Tauri managed state 形式注册的共享 Shell 状态。
@@ -570,11 +570,15 @@ pub async fn confirm_shell_ready(app: AppHandle, state: State<'_, AppState>) -> 
 
 // --- 发行版 ------------------------------------------------------------------
 
-/// 为更新菜单获取官方内核发行版列表。
+/// 为更新菜单获取官方内核发行版列表，并顺带算出本机可升级到哪一版。
+///
+/// 组装逻辑在 `kernel::lifecycle::release_overview`：已装版本归那一侧管，
+/// 「可升级到哪一版」也按本机状态算，命令层只做转发。
 #[tauri::command]
-pub async fn fetch_releases() -> Result<releases::ReleaseList, String> {
+pub async fn fetch_releases(state: State<'_, AppState>) -> Result<ReleaseOverview, String> {
+    let data_dir = state.data_dir.clone();
     // ureq 是同步的；把这步会阻塞的 HTTPS 请求放到主线程之外。
-    blocking(releases::list_releases).await
+    blocking(move || kernel::lifecycle::release_overview(&data_dir)).await
 }
 
 /// 针对已经探测好的 node（调用方缓存的 `node::NodeInfo`）来解析
