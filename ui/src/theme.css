@@ -1257,7 +1257,10 @@ main {
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  /* 12 → 8：卡片与卡片之间不需要一屏到底的呼吸。卡片本身有底色 + 描边，
+     两张卡的分界靠那条描边就够读出来了，12px 的间隙是在同一件东西上
+     强调两遍（2026-10-03 用户「缩小行间距 gap，让界面紧凑起来」）。 */
+  gap: 8px;
 }
 
 /* 面板切换动效：轻淡入 + 上浮。out-in 模式下旧面板完全离场后新面板才
@@ -1587,11 +1590,14 @@ main {
    line-height: 32px（为单行输入框准备），与开关同排的说明 / 试听按钮要自己
    压回正常行高，并把 flex 行撑满可用宽度（默认的 content 是 flex 行，
    子项不伸缩就会挤在左侧）。
-   form-item 默认 margin-bottom 22px 在 3 个开关下显得过宽（≈44px 空白），用
-   12px 收紧；卡片自身 gap 已经是 8px，间隔靠 form 内部处理，外部不会留
-   多余空白。 */
+   form-item 默认 margin-bottom 22px 在 3 个开关下显得过宽（≈44px 空白），
+   先收到 12px、再收到 **6px**：12 + 12 = 24px 的两段空白，抵得上一整个开关行
+   的高度（2026-10-03 用户「缩小行间距」）。不收到 4px 及以下——这一行的
+   点击目标是整个 label + 开关，贴太紧会读成两行叠在一起。卡片自身 gap 仍
+   是 8px，间隔靠 form 内部处理，外部不会留多余空白。
+   「后台常驻」卡片复用同一条规则，两张卡的行距一起收。 */
 .notify-form .el-form-item {
-  margin-bottom: 12px;
+  margin-bottom: 6px;
 }
 .notify-form .el-form-item:last-child {
   margin-bottom: 0;
