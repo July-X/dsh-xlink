@@ -423,7 +423,7 @@ function formatBytes(bytes) {
         <div v-if="diskUsage.loaded" class="usage-groups">
           <div v-for="group in diskUsage.groups" :key="group.id" class="usage-tile">
             <div class="usage-tile-head">
-              <span class="usage-tile-label">{{ group.label }}</span>
+              <span class="usage-tile-label" :title="group.label">{{ group.label }}</span>
               <span class="usage-tile-total">{{ formatBytes(group.bytes) }}</span>
             </div>
             <div class="usage-tile-share">
@@ -495,8 +495,11 @@ function formatBytes(bytes) {
    变它们的取值。 */
 
 .disk-usage {
-  margin-top: 18px;
-  padding-top: 16px;
+  /* 18+16 → 10+12：这一段是「版本列表」与「磁盘占用」两个功能区之间的
+     分隔。上面已经有 1px 边框在划界，34px 的内外边距让那道线看起来是
+     「浮」在半空中的，两段之间反而缺了紧密度。 */
+  margin-top: 10px;
+  padding-top: 12px;
   border-top: 1px solid var(--border);
 }
 
@@ -567,8 +570,9 @@ function formatBytes(bytes) {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 10px;
-  /* 7/9/8：与「套餐用量」的摘要卡一致。 */
-  padding: 7px 9px 8px;
+  /* 6/9/6：比上一版再收 1px。瓦片只有标题、条形、条目三块，padding
+     每多 1px，两列并排的收益就被吃掉一点。 */
+  padding: 6px 9px;
   min-width: 0;
   /* 条目多的那格把邻居撑到同样高，底边因此对齐（见 .usage-groups 的
      align-items 注释）。 */
@@ -576,15 +580,17 @@ function formatBytes(bytes) {
   flex-direction: column;
 }
 
-/* 标题与主数字**上下两行**，不并排。
-   186px 的格子里并排放不下：「实例数据（会话与附件）」这种标题加上
-   `350.1 MB` 会互相挤到省略号，而这两个都是要看清的东西。改成上下后
-   标题能换行、数字独占一行，瓦片反而更矮——两列并排的纵向收益正好
-   用在这里。 */
+/* 标题与主数字**同一行**：标题在左吃掉剩余空间，数字靠右且永不收缩。
+   中间试过上下两行（186px 并排放不下长标题），但那让每张瓦片多占一行
+   高度——而两列并排省纵向正是这里的目的。同行的前提是**数字不许被挤**：
+   `flex-shrink: 0` + 标题 `ellipsis`，长标题（`实例数据（会话与附件）`）
+   截断成「实例数据（会话…」而 `350.1 MB` 完整可读。取舍明确：宁可少看
+   几个字（点瓦片有 title），不可看不清主数字。 */
 .usage-tile-head {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -592,13 +598,10 @@ function formatBytes(bytes) {
   font-weight: 600;
   color: var(--text);
   font-size: 11.5px;
-  /* 允许换行（窄格里的长标题），但不超过两行——三行会把瓦片撑得比
-     右边那一列高，两列就不再对齐。 */
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  min-width: 0;
   overflow: hidden;
-  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .usage-tile-total {
@@ -606,6 +609,8 @@ function formatBytes(bytes) {
   font-weight: 700;
   color: var(--text);
   white-space: nowrap;
+  /* 不许被标题挤掉——见 .usage-tile-head 上面的取舍说明。 */
+  flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
 
@@ -616,7 +621,8 @@ function formatBytes(bytes) {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 5px 0 0;
+  /* 5 → 3：标题与占比条紧挨着，它们说的是同一件事（这块多大）。 */
+  margin: 3px 0 0;
 }
 
 .usage-tile-percent {
@@ -631,6 +637,8 @@ function formatBytes(bytes) {
   min-width: 0;
   height: 4px;
   border-radius: 2px;
+  /* 白色低透明度而不是 `--bg-soft`：瓦片底色**就是** `--bg-soft`，用
+     同一个值画轨道等于什么都没画，占据的百分比条看不出「还剩多少」。 */
   background: rgba(255, 255, 255, 0.08);
   overflow: hidden;
 }
@@ -647,11 +655,11 @@ function formatBytes(bytes) {
 
 .usage-entries {
   list-style: none;
-  margin: 7px 0 0;
+  margin: 6px 0 0;
   padding: 0;
   /* 顶部一道细线，把「分类自己的数」与「下面这些条目」分开。 */
   border-top: 1px solid var(--border);
-  padding-top: 5px;
+  padding-top: 4px;
 }
 
 .usage-entry {
@@ -659,7 +667,9 @@ function formatBytes(bytes) {
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
-  padding: 2px 0;
+  /* 2 → 1：瓦片里每条只有名称与字节数两段，2px 的行距在两列并排时
+     显得比内容本身还松。 */
+  padding: 1px 0;
   font-size: 11.5px;
 }
 
@@ -686,58 +696,5 @@ function formatBytes(bytes) {
   to {
     transform: rotate(360deg);
   }
-}
-
-
-.usage-entries {
-  list-style: none;
-  margin: 6px 0 0;
-  padding: 0;
-}
-
-/* 每条**单行**三段：名称 / 条形 / 字节数。
-   试过让条形独占第二行（名称+数字一行、条形一行），纵向省不下来反而多
-   费一行——而条形在两列布局下拿到的宽度差别不大，不值当。保持单行后
-   一条就是一条的高度，列表整体最紧凑。 */
-.usage-entry {
-  display: grid;
-  /* 条形列不给固定宽（`1fr`）：名称可能长（`default-dev`）也可能短
-     （`0.2.0`），给它固定宽会让短名称的条形白白少一截。数字列 `auto`
-     按最宽的那个值对齐，逐行才可比。 */
-  grid-template-columns: minmax(72px, auto) minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 10px;
-  padding: 3px 0;
-  font-size: 11.5px;
-}
-
-.usage-entry-name {
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.usage-bar {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--bg-soft);
-  overflow: hidden;
-}
-
-.usage-bar-fill {
-  display: block;
-  height: 100%;
-  border-radius: 2px;
-  background: var(--accent);
-  /* 极小的条目也要看得见：宽度按 sharePercent，但设下限，
-     否则 0.01% 的插件库会渲染成一条看不见的线。 */
-  min-width: 2px;
-}
-
-.usage-entry-bytes {
-  text-align: right;
-  color: var(--muted);
-  white-space: nowrap;
 }
 </style>
