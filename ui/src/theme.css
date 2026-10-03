@@ -29,9 +29,7 @@
   --warn: #fbbf24;
   --tooltip-bg: #161e3d;
   --tooltip-border: rgba(79, 140, 255, 0.42);
-  --whale-eye: #ff2d30;
   --whale-eye-bright: #ff5a5e;
-  --whale-eye-soft: #ffd9d9;
   /* release 顶部色带的 Gitea brand 绿：与 dev 构建的鲸眼红呈现对称。
      取自 Gitea `--color-logo #609926`（web_src/css/themes/theme-gitea-{dark,light}.css，
      go-gitea/gitea PR #34639 引入）。状态胶囊的呼吸点继续用 --good #34d399，
@@ -1756,24 +1754,6 @@ main {
 }
 .el-button:not(.is-loading):active {
   transform: scale(0.96);
-}
-
-/* 官方对话按钮的颜色随其动作语义切换：
-   - chat 未开（label = "打开官方对话"，带 .official-chat-closed）：鲸鱼蓝
-     --accent #4f8cff（品牌主色，open 动作）。原本依赖 Element 文字按钮默认色
-     = --el-color-primary = #4f8cff 即可，但显式声明以脱离对 Element 默认色键的
-     隐式依赖（避免上游色键变动时被无声改色）。
-   - chat 已开（label = "关闭官方对话"，带 .official-chat-open）：--whale-eye
-     #ff2d30 红眼（危险/停止动作语义，与 open 的蓝形成红↔蓝对照；原先用 --good
-     绿易被误读为「运行中」状态，故改为红眼）。 */
-.el-button.official-chat-closed {
-  color: var(--accent);
-}
-
-.el-button.official-chat-open,
-.el-button.official-chat-open:hover,
-.el-button.official-chat-open:focus-visible {
-  color: var(--whale-eye);
 }
 
 /* 首次运行 / 容错横幅。 */

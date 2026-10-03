@@ -165,11 +165,14 @@ const FILE_BUDGETS = {
   // .catalog-card-foot / .catalog-tags 随之删除，净 +62。
   // 3160 → 3225：通知卡「最近完成」列表样式（.notify-items / .notify-item /
   // 问答角色徽标，~+62）。
+  // 3011 → 3001：清掉上一条改版（按钮配色换成 .btn-chat / .btn-danger）遗留的
+  // 死规则 .el-button.official-chat-open / .official-chat-closed，外加因此失去
+  // 唯一消费者的 --whale-eye 与本来就没人用的 --whale-eye-soft。
   // 3225 → 3011：移除内核版本行前面那个插件快照 tooltip（用户 2026-10-03）。
   // 带走的：.installed-tip-trigger / .installed-tip-icon 与 .installed-tip* 整族
   // 内容样式，加上 .kernel-plugin-tooltip 的局部覆盖，共 151 行。.el-popper.is-dark
   // 的全局主题对齐**留着**——卡片标题的 ℹ️ 等 tooltip 还在用那套。净 -134。
-  'ui/src/theme.css': 3011,
+  'ui/src/theme.css': 3001,
   // P4 step 3：物化路径切到实例 extensions/plugins/<id>/，抽出 materialize_inner
   // 共享逻辑、新增 materialize_one_for_instance / remove_materialized_for_instance
   // / sweep_instance_orphans / default_instance_key / seed_default_instance_for_tests
@@ -1177,6 +1180,8 @@ const FILE_BUDGETS = {
 // plugins/center.rs 未动。
 // 37220 → 37340（2026-10-03）：占用报表改瓦片卡片布局 + 两段式加载与一天
 // 新鲜度缓存。+120 行：Rust 缓存层约 46、UI 约 74。
+// 37063 → 37053：同一天第三笔，清官方对话按钮的遗留死规则与两个死 token，
+// 净 -10。
 // 37380 → 37063（2026-10-03 稍）：移除版本行前面的插件快照 tooltip。净 -317，
 // 是**删除还回来的**、没有为它上调任何数字。整条链一次清干净：UI 组件
 // `VersionPluginsTip.vue`、VersionsPanel 里的槽位与懒加载、theme.css 的
@@ -1209,7 +1214,7 @@ const FILE_BUDGETS = {
 // 正好等于预算**——组装逻辑一开始就堆错了地方，搬去 lifecycle.rs 之后命令
 // 层退回纯转发（`blocking(|| lifecycle::release_overview(&data_dir)).await`），
 // 连签名都不用为它拆行。未上调任何 FILE_BUDGETS。
-const TOTAL_BUDGET = 37063;
+const TOTAL_BUDGET = 37053;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
