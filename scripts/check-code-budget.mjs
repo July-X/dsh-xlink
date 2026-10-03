@@ -1192,14 +1192,16 @@ const FILE_BUDGETS = {
 // FILE_BUDGETS），删掉的是 SideBar 的 .brand-version（9 行）与 OverviewPanel
 // 的 .kernel-version（17 行）两处各自的局部实现。**反棘轮文件本轮零增长**：
 // theme.css 一个字没动，样式全在新组件的 scoped 块里。
-// 37069 → 37074：同一天第五笔，npm 发布列表限高 91 → 120px + 上下边缘半透明
-// 渐变，并把「磁盘占用」区的纵向间距压掉 23px 把整页按回一屏（用户真机指
-// 窗口右边缘那条页面级纵向滚动条）。+5 行全在 VersionsPanel.vue：成对的
-// `-webkit-mask` / `mask` 简写 2 行（WebKit 要前缀、标准属性要留；渐变体写成
-// 一行才守得住这 2 行，长属性 `mask-image` 折行会变成 6 行）、`.card-head` 的
-// scoped 覆盖 3 行（theme.css 里 6px → 3px，本组件两处各省 3px；scoped 选择器
-// 多带一个属性选择器，只有本组件受影响）。间距压缩全是改数值，0 行。
-// **反棘轮文件本轮零增长**：theme.css 一个字没动。
+// 37074 → 37087：npm 发布列表加边框 + 底色加深，与上方「已安装」区做出 UI
+// 区分，并把上下边缘的半透明过渡区 8 → 12px（都是用户真机截图上明确要的）。
+// +13 行全在 VersionsPanel.vue：模板里给滚动区包一层 `.release-list-box`
+// （+2）、该层的 border / border-radius / background（+4）、其余是模板块
+// 整体重排的行数变化。
+// **为什么要多包一层**：边框若与滚动容器是同一个元素，它会被 mask 一起
+// 淡掉——那恰好推翻「把滚动区域的边框显示出来」这条要求。边框画在外层、
+// mask 只作用在内层的内容上，两者才互不干扰（已在夹具里对着验证）。
+// 渐变区只能加到 12px：行内文字上下各留 ≈ 13px 空白，再大就开始啃字，
+// 要更大的过渡区得先引入 JS 测量是否溢出。
 // 37063 → 37053：同一天第三笔，清官方对话按钮的遗留死规则与两个死 token，
 // 净 -10。
 // 37380 → 37063（2026-10-03 稍）：移除版本行前面的插件快照 tooltip。净 -317，
@@ -1234,7 +1236,7 @@ const FILE_BUDGETS = {
 // 正好等于预算**——组装逻辑一开始就堆错了地方，搬去 lifecycle.rs 之后命令
 // 层退回纯转发（`blocking(|| lifecycle::release_overview(&data_dir)).await`），
 // 连签名都不用为它拆行。未上调任何 FILE_BUDGETS。
-const TOTAL_BUDGET = 37074;
+const TOTAL_BUDGET = 37087;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

@@ -277,27 +277,35 @@ function formatBytes(bytes) {
               </el-button>
             </span>
           </h3>
-          <div class="release-list">
-            <p v-if="store.releases.length === 0" class="muted" style="margin: 0">
-              点击「检查更新」获取官方发布列表。
-            </p>
-            <div v-for="r in store.releases" :key="r.version" class="release-row">
-              <span class="release-ver">{{ r.version }}</span>
-              <span class="release-actions">
-                <el-tag v-if="installedVersions.has(r.version)" size="small" effect="plain">已安装</el-tag>
-                <el-button
-                  v-if="!installedVersions.has(r.version)"
-                  size="small"
-                  type="primary"
-                  :icon="Download"
-                  :disabled="globalBusy || workbenchActiveNow()"
-                  title="工作台启动或运行期间不能安装内核版本"
-                  @click="installVersion(r.version)"
-                >
-                  安装
-                </el-button>
-                <el-tag v-if="r.prerelease" type="info" size="small" effect="plain">预发布</el-tag>
-              </span>
+          <!-- 边框与底色画在**外层** `.release-list-box`，滚动区在里层。原因是
+               mask 只该作用在「内容」上：边框若与滚动容器是同一个元素，它会被
+               mask 一起淡掉，那恰好推翻「把滚动区域的边框显示出来」这条要求。
+               底色用 --bg-soft（实色 #121831），比卡片自身的 rgba(255,255,255,.05)
+               深一档，与上方「已安装」那片裸行区分开——那片是直接铺在卡片上的
+               行，这片是一个可滚动的子区域，长得不一样才读得出「这块能滚」。 -->
+          <div class="release-list-box">
+            <div class="release-list">
+              <p v-if="store.releases.length === 0" class="muted" style="margin: 0">
+                点击「检查更新」获取官方发布列表。
+              </p>
+              <div v-for="r in store.releases" :key="r.version" class="release-row">
+                <span class="release-ver">{{ r.version }}</span>
+                <span class="release-actions">
+                  <el-tag v-if="installedVersions.has(r.version)" size="small" effect="plain">已安装</el-tag>
+                  <el-button
+                    v-if="!installedVersions.has(r.version)"
+                    size="small"
+                    type="primary"
+                    :icon="Download"
+                    :disabled="globalBusy || workbenchActiveNow()"
+                    title="工作台启动或运行期间不能安装内核版本"
+                    @click="installVersion(r.version)"
+                  >
+                    安装
+                  </el-button>
+                  <el-tag v-if="r.prerelease" type="info" size="small" effect="plain">预发布</el-tag>
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -417,6 +425,15 @@ function formatBytes(bytes) {
    787px）里，120px 限高时内容底在 y≈797、**溢出约 10px**——所以「加高」与
    「不滚动」在 120px 处差一点，需要由下面的 `.disk-usage` 间距压缩补上。 */
 
+/* 外层：边框 + 底色。它是**不参与滚动、也不参与 mask** 的一层——用户要看到
+   完整的框，而 mask 只该让「内容」在边缘淡出。圆角 10px 与 `.installed-row`、
+   `.usage-tile` 同一档。 */
+.release-list-box {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft);
+}
+
 .release-list {
   max-height: 120px;
   overflow-y: auto;
@@ -429,14 +446,13 @@ function formatBytes(bytes) {
   /* 上下边缘半透明：裁到边缘的那一条淡出，而不是被硬切。被切掉半截的一条
      会被读成「这一条被压扁了」，淡出才读得成「下面还有」。
 
-     渐变区 8px 是量出来的上限，不是随手取的：行高 ≈ 36px、行内文字上下各留
-     ≈ 13px 空白，8px 落在空白里——所以**内容不满高时也不会削到文字**，
-     不需要额外判断是否溢出。（真要溢出时另说：`.release-row` 极窄窗下换成
-     两行文字时，末行下缘会淡掉 8px，症状轻微，不值得为它引入 JS 测量。）
+     渐变区 8 → **12px**（用户要求「加大」）：12px 仍小于行内文字上下各
+     ≈ 13px 的空白，所以**内容不满高时也不会削到文字**，不需要额外判断是否
+     溢出。再往上加就会啃到字了——真要更大的过渡区，得先引入 JS 测溢出。
 
      mask 默认相对 border-box 且不随滚动内容移动，固在容器可视区上。 */
-  -webkit-mask: linear-gradient(to bottom, transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
-  mask: linear-gradient(to bottom, transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
+  -webkit-mask: linear-gradient(to bottom, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
+  mask: linear-gradient(to bottom, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
 }
 
 /* 已安装的版本通常只有一两条（用户很少囤），不设限高——加了反而让
@@ -459,10 +475,12 @@ function formatBytes(bytes) {
 }
 
 /* `.card-head` 是 theme.css 的全局类（6px 下边距 + 1px 边框），这里在
-   scoped 里覆盖成 3px：本组件有两处（内核版本 / 磁盘占用），各省 3px。
+   scoped 里覆盖成 2px：本组件有两处（内核版本 / 磁盘占用），各省 4px。
+   2px 而不是 0，是为了给「npm 发布列表新加的那圈边框」腾出它需要的 2px——
+   那圈边框让整页又高 2px，这一处不收就又要冒出页面滚动条。
    scoped 选择器多带一个属性选择器，权重高于全局那条，只有本组件受影响。 */
 .card-head {
-  padding-bottom: 3px;
+  padding-bottom: 2px;
 }
 
 .disk-usage h2 {
