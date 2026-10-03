@@ -341,6 +341,12 @@ mod platform {
             .collect();
         let mut key = std::ptr::null_mut();
         // SAFETY: 同上；KEY_SET_VALUE 而非 KEY_ALL_ACCESS，最小权限。
+        // 第 9 个参数 `lpdwdisposition`（这次调用是「是新建还是打开」的出参）
+        // 2026-10-03 之前漏传，整个 Windows 构建直接编译不过：windows-sys 0.61
+        // 起经 `windows_link::link!` 生成的签名是完整的 9 参数版本，只要它、
+        // 传空指针表示「不关心」即可（winreg 的等价调用也是这么做的）。
+        // **本地 macOS 的 `cargo check` 永远发现不了这一类错误**——整段代码在
+        // `#[cfg(target_os = "windows")]` 里，见本文件顶部的门控说明。
         let status = unsafe {
             RegCreateKeyExW(
                 HKEY_CURRENT_USER,
@@ -351,6 +357,7 @@ mod platform {
                 KEY_SET_VALUE,
                 std::ptr::null(),
                 &mut key,
+                std::ptr::null_mut(),
             )
         };
         if status != ERROR_SUCCESS || key.is_null() {

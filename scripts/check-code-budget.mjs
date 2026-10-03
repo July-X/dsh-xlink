@@ -1202,6 +1202,9 @@ const FILE_BUDGETS = {
 // mask 只作用在内层的内容上，两者才互不干扰（已在夹具里对着验证）。
 // 渐变区只能加到 12px：行内文字上下各留 ≈ 13px 空白，再大就开始啃字，
 // 要更大的过渡区得先引入 JS 测量是否溢出。
+// 37087 → 37088：修 Windows 构建失败——shell/autostart.rs 的 RegCreateKeyExW
+// 漏传第 9 个参数 lpdwdisposition，windows-sys 0.61 起签名是完整 9 参数版。
+// 纯 bug 修复，+1 行就是那个参数。
 // 37063 → 37053：同一天第三笔，清官方对话按钮的遗留死规则与两个死 token，
 // 净 -10。
 // 37380 → 37063（2026-10-03 稍）：移除版本行前面的插件快照 tooltip。净 -317，
@@ -1236,7 +1239,7 @@ const FILE_BUDGETS = {
 // 正好等于预算**——组装逻辑一开始就堆错了地方，搬去 lifecycle.rs 之后命令
 // 层退回纯转发（`blocking(|| lifecycle::release_overview(&data_dir)).await`），
 // 连签名都不用为它拆行。未上调任何 FILE_BUDGETS。
-const TOTAL_BUDGET = 37087;
+const TOTAL_BUDGET = 37088;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
