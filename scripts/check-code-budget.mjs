@@ -1192,6 +1192,15 @@ const FILE_BUDGETS = {
 // FILE_BUDGETS），删掉的是 SideBar 的 .brand-version（9 行）与 OverviewPanel
 // 的 .kernel-version（17 行）两处各自的局部实现。**反棘轮文件本轮零增长**：
 // theme.css 一个字没动，样式全在新组件的 scoped 块里。
+// 37069 → 37071：npm 发布列表的上下边缘加半透明渐变 + 限高 91 → 120px
+// （用户真机截图圈出，并要求「不能出现页面级纵向滚动条」）。+2 行全是
+// VersionsPanel.vue 里成对的 `-webkit-mask` / `mask` 简写（WebKit 要前缀、
+// 标准属性要留），max-height 改数值不占行数。渐变体写成一行是为了守住这 2
+// 行——`mask-image` 长属性折行会变成 3 行 × 2 = 6 行。渐变区 8px 由行高实测
+// 反推（行高 ≈ 36px、行内文字上下各 ≈ 13px 空白），所以内容不满高时也不需要
+// JS 测量是否溢出——这正是敢只写 2 行的依据。
+// 120px 不是随手取的：真机 475px 窗口实测，整页 763px 视口下 91px 时余量
+// 29px、120px 时余量 0。加高与「不滚动」共同把上限钉在这里。
 // 37063 → 37053：同一天第三笔，清官方对话按钮的遗留死规则与两个死 token，
 // 净 -10。
 // 37380 → 37063（2026-10-03 稍）：移除版本行前面的插件快照 tooltip。净 -317，
@@ -1226,7 +1235,7 @@ const FILE_BUDGETS = {
 // 正好等于预算**——组装逻辑一开始就堆错了地方，搬去 lifecycle.rs 之后命令
 // 层退回纯转发（`blocking(|| lifecycle::release_overview(&data_dir)).await`），
 // 连签名都不用为它拆行。未上调任何 FILE_BUDGETS。
-const TOTAL_BUDGET = 37069;
+const TOTAL_BUDGET = 37071;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
