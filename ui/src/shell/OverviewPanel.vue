@@ -32,8 +32,8 @@ import {
 // 版本 tag 图标改用 Lucide：EP 的 PriceTag 是实心票券造型，在 11px 下糊成一团
 // 黑点，认不出是「标签」；Lucide 的 Tag 是 2px 描边的小挂牌，缩到这个尺寸仍读得
 // 出轮廓。Lucide 授权 ISC，`@lucide/vue` 按图标名 tree-shake，只打进用到的那几枚。
-// 别名成 TagIcon：同文件里还有一排 `el-tag`，光看 `<Tag />` 分不清说的是哪一个。
-import { Tag as TagIcon } from '@lucide/vue';
+// 图标与徽标外壳都搬进了共享的 VersionBadge 组件——侧栏那一处用的是同一个，
+// 本文件不再单独引 Lucide。
 import {
   store,
   showIncident,
@@ -80,6 +80,7 @@ import {
 } from '../subscription/subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents/incidents.js';
 import { tildePath } from './labels.js';
+import VersionBadge from './VersionBadge.vue';
 import { confirmDialog } from './notify.js';
 
 // 进度窗口是全局的（任何长任务都会让它可见），按钮的加载态必须绑定自己的
@@ -309,10 +310,9 @@ function goVersions() {
           </template>
           <el-icon class="card-info-icon"><InfoFilled /></el-icon>
         </el-tooltip>
-        <span class="kernel-version" :title="'活动内核版本：' + ((kernel && kernel.active) || '未选择')">
-          <TagIcon :size="11" />
+        <VersionBadge class="kernel-version" :title="'活动内核版本：' + ((kernel && kernel.active) || '未选择')">
           {{ (kernel && kernel.active) || '未选择' }}
-        </span>
+        </VersionBadge>
       </h2>
       <dl class="kv">
         <dt>运行状态</dt>
@@ -705,22 +705,10 @@ function goVersions() {
   gap: 8px;
   width: 100%;
 }
+/* 活动版本徽标本身走共享的 VersionBadge（分段式：蓝底图标 + 暗底文字），
+   侧栏品牌区那一处是同一个组件。这里只留右推这一件事。 */
 .kernel-version {
   margin-left: auto;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--muted);
-  font-family: var(--el-font-family, inherit);
-  letter-spacing: 0.02em;
-  padding: 1px 8px;
-  border: 1px solid var(--el-border-color-extra-light);
-  border-radius: 999px;
-  /* 版本号前有 tag 图标，胶囊改用 .age-pill 同款 flex 结构（对齐方式与图标间距
-     都对齐那一条，避免同文件里两种胶囊基线不一致）。图标尺寸走 Lucide 的 size
-     属性而不是 CSS——它是带 width/height 属性的 svg，font-size 管不到它。 */
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
 }
 /* 分区刷新按钮：复用年龄胶囊外观，但可点击；禁用（查询中）降透明度。 */
 .age-pill-btn {

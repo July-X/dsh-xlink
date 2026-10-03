@@ -698,6 +698,13 @@ const FILE_BUDGETS = {
   // 就只能对着源码字符串断言。本次 10 行落在总量既有余量内，TOTAL_BUDGET
   // 不动。
   'ui/src/shell/noContextMenu.js': 20,
+  // ⑤ ui/src/shell/VersionBadge.vue（38 行）——分段式版本号徽标：左「蓝底 +
+  // 深色 tag 图标」、右「暗底 + muted 文字」。**同一个组件被侧栏品牌区与概览
+  // 「当前内核」卡两处使用**，两处都在说「这是一个版本号」，各写一份必然漂。
+  // 独立成组件而不是把样式塞进 theme.css：那份是反棘轮文件、只许越来越小，
+  // 而这条规则只服务这一个组件；也不塞进 SideBar / OverviewPanel 任一侧的
+  // scoped 样式——那样另一侧就得复制一份。
+  'ui/src/shell/VersionBadge.vue': 38,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
 // 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有
@@ -1180,6 +1187,11 @@ const FILE_BUDGETS = {
 // plugins/center.rs 未动。
 // 37220 → 37340（2026-10-03）：占用报表改瓦片卡片布局 + 两段式加载与一天
 // 新鲜度缓存。+120 行：Rust 缓存层约 46、UI 约 74。
+// 37053 → 37069：同一天第四笔，版本号徽标改成分段式（用户给的参考图）。
+// +16 全部在新组件 ui/src/shell/VersionBadge.vue（38 行，已登记进
+// FILE_BUDGETS），删掉的是 SideBar 的 .brand-version（9 行）与 OverviewPanel
+// 的 .kernel-version（17 行）两处各自的局部实现。**反棘轮文件本轮零增长**：
+// theme.css 一个字没动，样式全在新组件的 scoped 块里。
 // 37063 → 37053：同一天第三笔，清官方对话按钮的遗留死规则与两个死 token，
 // 净 -10。
 // 37380 → 37063（2026-10-03 稍）：移除版本行前面的插件快照 tooltip。净 -317，
@@ -1214,7 +1226,7 @@ const FILE_BUDGETS = {
 // 正好等于预算**——组装逻辑一开始就堆错了地方，搬去 lifecycle.rs 之后命令
 // 层退回纯转发（`blocking(|| lifecycle::release_overview(&data_dir)).await`），
 // 连签名都不用为它拆行。未上调任何 FILE_BUDGETS。
-const TOTAL_BUDGET = 37053;
+const TOTAL_BUDGET = 37069;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
