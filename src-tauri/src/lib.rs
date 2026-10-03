@@ -415,7 +415,6 @@ pub fn run() {
             shell::autostart::autostart_set,
             shell::autostart::autostart_set_kernel,
             commands::plugin_status,
-            commands::kernel_plugin_list,
             commands::plugin_install,
             commands::plugin_precheck_install,
             commands::plugin_set_precheck,

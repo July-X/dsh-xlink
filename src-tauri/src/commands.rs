@@ -709,7 +709,7 @@ fn complete_kernel_install(
 
 #[tauri::command]
 pub async fn activate_version(app: AppHandle, version: String) -> Result<(), String> {
-    // 命令边界的最后一道闸（与 install_kernel / kernel_plugin_list 同一判据）：
+    // 命令边界的最后一道闸（与 install_kernel 同一判据）：
     // 版本号是路径段，`".."` 之类的形态会被写进 active.txt，之后每次启动都按它
     // 去拼 `kernels/<version>/bin.js`（P1-7）。
     require_kernel_version(&version, "切换", "请从「内核版本」页的已安装列表中选择版本")?;
@@ -2178,27 +2178,6 @@ pub async fn plugin_status(
     blocking(move || {
         let settings = settings::load_for_shell(settings::current_mode());
         Ok::<_, std::convert::Infallible>(plugins::center::status(&data_dir, &settings))
-    })
-    .await
-}
-
-/// 列出物化到 `kernels/<version>/plugins/` 之下的每一个插件。由版本
-/// 面板里按版本悬浮提示使用，让用户能查看每个已安装内核在磁盘上实
-/// 际带有什么。
-#[tauri::command]
-pub async fn kernel_plugin_list(
-    state: State<'_, AppState>,
-    version: String,
-) -> Result<Vec<plugins::center::KernelPluginRow>, String> {
-    // `version` 会被当作路径段拼进 `kernels/<version>/plugins`，这里同样只接受
-    // 已安装列表里的形态。这是只读查询，沿用原来的短文案——`require_kernel_version`
-    // 需要操作动词，套上去会改掉用户看到的措辞。
-    if !crate::shell::version::is_valid_kernel_version(&version) {
-        return Err(format!("版本号 {version:?} 形态非法"));
-    }
-    let data_dir = state.data_dir.clone();
-    blocking(move || {
-        Ok::<_, std::convert::Infallible>(plugins::center::kernel_plugin_list(&data_dir, &version))
     })
     .await
 }

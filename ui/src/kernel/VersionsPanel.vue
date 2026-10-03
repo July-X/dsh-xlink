@@ -19,7 +19,6 @@ import {
 import { invoke, listen } from '../shell/bridge.js';
 import { openExternalLink } from '../shell/notify.js';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
-import VersionPluginsTip from './VersionPluginsTip.vue';
 
 const KERNEL_RELEASES_URL = 'https://github.com/deepseek-ai/deepseek-harness/releases';
 const kernel = computed(() => store.view && store.view.kernel);
@@ -38,52 +37,6 @@ const otherShellWorkbenchText = computed(() => {
 
 function openKernelReleases() {
   return withLoading('openKernelReleases', () => openExternalLink(KERNEL_RELEASES_URL, '内核发布页'));
-}
-
-// 每个已安装内核的插件快照只在 Tooltip 即将显示时读取，避免页面初次
-// 渲染就为所有内核发起 IPC。已成功读取的版本会复用缓存。
-const versionPlugins = reactive({});
-
-function versionPluginSlot(version) {
-  if (!versionPlugins[version]) {
-    versionPlugins[version] = {
-      loading: false,
-      loaded: false,
-      error: null,
-      rows: [],
-    };
-  }
-  return versionPlugins[version];
-}
-
-async function loadVersionPlugins(version) {
-  const slot = versionPluginSlot(version);
-  if (slot.loaded || slot.loading) return;
-
-  slot.loading = true;
-  slot.error = null;
-  try {
-    slot.rows = (await invoke('kernel_plugin_list', { version })) || [];
-    slot.loaded = true;
-  } catch (e) {
-    // 失败**不**置 `loaded`：旧实现把它一起置真，于是这次失败被永久缓存，
-    // 之后每次悬浮都直接命中"已加载"分支，tooltip 永远不会重试（P2-37）。
-    slot.error = e && e.message ? e.message : String(e);
-    slot.loaded = false;
-  } finally {
-    slot.loading = false;
-  }
-}
-
-const emptyPluginSnapshot = Object.freeze({
-  loading: false,
-  loaded: false,
-  error: null,
-  rows: [],
-});
-
-function pluginSnapshot(version) {
-  return versionPlugins[version] || emptyPluginSnapshot;
 }
 
 const installedVersions = computed(() => {
@@ -262,30 +215,6 @@ function formatBytes(bytes) {
                 </el-tag>
               </el-tooltip>
               <span class="release-actions">
-                <el-tooltip
-                  effect="dark"
-                  popper-class="kernel-plugin-tooltip"
-                  placement="right-start"
-                  :fallback-placements="['left-start', 'bottom-start', 'top-start']"
-                  :boundaries-padding="12"
-                  trigger="hover"
-                  :show-after="160"
-                  :hide-after="120"
-                  :offset="8"
-                  :show-arrow="true"
-                  @before-show="loadVersionPlugins(v.version)"
-                >
-                  <button
-                    type="button"
-                    class="installed-tip-trigger"
-                    :aria-label="'查看 ' + v.version + ' 的插件'"
-                  >
-                    <el-icon class="installed-tip-icon"><InfoFilled /></el-icon>
-                  </button>
-                  <template #content>
-                    <VersionPluginsTip :snapshot="pluginSnapshot(v.version)" :version="v.version" />
-                  </template>
-                </el-tooltip>
                 <el-tag v-if="v.active" type="success" size="small" effect="dark">当前使用</el-tag>
                 <template v-else>
                   <el-button

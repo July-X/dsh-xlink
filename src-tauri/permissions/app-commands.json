@@ -82,7 +82,6 @@
           "autostart_set",
           "autostart_set_kernel",
           "plugin_status",
-          "kernel_plugin_list",
           "plugin_install",
           "plugin_precheck_install",
           "plugin_set_precheck",
