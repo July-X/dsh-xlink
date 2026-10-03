@@ -7,14 +7,12 @@
 // 占位，现由 PluginsPanel 顶部渲染（见 theme.css 的 .panel-notice）。
 import { computed } from 'vue';
 import { Odometer, Box, Connection, MagicStick, SetUp, Refresh, Right } from '@element-plus/icons-vue';
-// 桌面端版本号前的 tag 图标，与概览「当前内核」卡里那枚同一个 Lucide 图标——
-// 两处都在说「这是一个版本号」，就该长成同一张脸。别名理由见 OverviewPanel。
-import { Tag as TagIcon } from '@lucide/vue';
 import { store, checkShellUpdate } from '../store.js';
 import { globalBusy, isLoading } from './loading.js';
 import { pluginStore } from '../plugins/plugins.js';
 import { skillStore } from '../skills/skills.js';
 import { migrationStore } from '../migration/migration.js';
+import VersionBadge from './VersionBadge.vue';
 
 const MENU = [
   { id: 'overview', label: '概览', icon: Odometer },
@@ -65,10 +63,9 @@ const visibleMenu = computed(() =>
       <!-- 桌面端自更新检查入口（原概览页按钮）：业务逻辑不变，仍走
            checkShellUpdate(true)，发现新版本时在概览页横幅里安装。 -->
       <div class="brand-actions">
-        <span class="brand-version" :title="'桌面端版本 ' + (shellVersionText || '未知')">
-          <TagIcon :size="11" />
+        <VersionBadge :title="'桌面端版本 ' + (shellVersionText || '未知')">
           {{ shellVersionText || '…' }}
-        </span>
+        </VersionBadge>
         <el-button
           class="brand-update"
           text
@@ -130,17 +127,6 @@ const visibleMenu = computed(() =>
   align-items: flex-end;
   gap: 3px;
   margin-left: auto;
-}
-/* 品牌区的桌面端版本号：muted 小字，替代概览卡的版本行。图标与文字同行居中，
-   尺寸同样走 Lucide 的 size 属性——svg 带 width/height，font-size 缩不动它。 */
-.brand-version {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 11px;
-  color: var(--muted);
-  white-space: nowrap;
-  line-height: 1;
 }
 /* 「更新」胶囊：描边 + 半透明底，与状态胶囊同一视觉语言。 */
 .brand-update {
