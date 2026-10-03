@@ -321,7 +321,11 @@ mod platform {
     /// **两边都必须归一成裸路径再往外交**，否则同一个比较函数在两端得到
     /// 两种形态：macOS 那边是路径、Windows 这边是整串命令，stale 判定会
     /// 永远为真，用户每次进设置页都被告知「条目已失效」。
-    fn exe_path_of(command: &str) -> Option<String> {
+    /// **可见性**：`pub(super)` 是被同文件里的 `mod tests` 逼出来的——三条
+    /// 归一化测试都从 `platform::exe_path_of(..)` 调它，而 release 构建不编译
+    /// `#[cfg(test)]`，所以这个 E0603 只有 `cargo check --all-targets`（也就是
+    /// CI 的 Windows compile check）才现形，本地 macOS 门禁照样全绿。
+    pub(super) fn exe_path_of(command: &str) -> Option<String> {
         let quoted = command.starts_with('"');
         let rest = if quoted {
             command.strip_prefix('"')?.split_once('"')?.0
