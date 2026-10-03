@@ -412,17 +412,10 @@ function formatBytes(bytes) {
    91 → 120px（2026-10-03，真机反馈）：行高实测 ≈ 36px，91px 只装得下 2 整行
    + 53%，第三行被硬切掉一半。120px 装 3 整行 + 33%。
 
-   **120 不是随手取的，是被另一条要求钉死的上限**：同一轮用户要求「不能出现
-   页面级纵向滚动条」。按真机 475px 窗口实测（475 窗口 − 8×2 边距 = 459 卡片
-   宽，卡片内容 411px 足以让 `.usage-groups` 的 auto-fit 保持 2×2），整页
-   763px 视口下 **91px 时余量 29px、120px 时余量 0**。也就是说「加高」与
-   「不滚动」共同框死了这个数：再加 1px 就溢出。
-
-   **余量 0 意味着它靠内容恰好凑齐**：多装一个内核版本、npm 多列出一条、磁盘
-   占用多一个分类，都会立刻顶出滚动条。要真正留出余量得动 `.disk-usage`
-   （276px，占整页 45%），而它的间距已经被前几轮反复收过（`minmax` 下限
-   280→186、瓦片 padding「比上一版再收 1px」、占比条 margin 5→3），再压
-   收益递减；真正的解是把它折叠起来，那是功能改动，等用户拍板。 */
+   **120px 是被另一条要求钉死的上限**：同一轮用户要求「不能出现页面级纵向
+   滚动条」，并用红箭头指着窗口右边缘那条。真机实测（498×815 窗口、可视高
+   787px）里，120px 限高时内容底在 y≈797、**溢出约 10px**——所以「加高」与
+   「不滚动」在 120px 处差一点，需要由下面的 `.disk-usage` 间距压缩补上。 */
 
 .release-list {
   max-height: 120px;
@@ -456,12 +449,20 @@ function formatBytes(bytes) {
    变它们的取值。 */
 
 .disk-usage {
-  /* 18+16 → 10+12：这一段是「版本列表」与「磁盘占用」两个功能区之间的
-     分隔。上面已经有 1px 边框在划界，34px 的内外边距让那道线看起来是
-     「浮」在半空中的，两段之间反而缺了紧密度。 */
-  margin-top: 10px;
-  padding-top: 12px;
+  /* 18+16 → 10+12 → **6+9**：这一段是「版本列表」与「磁盘占用」两个功能区
+     之间的分隔，上面已经有 1px 边框在划界。10+12 又把整页顶出一屏——真机
+     实测 120px 限高时溢出约 10px，箭头指着窗口右边缘那条滚动条。9 是在
+     边框与标题之间留的呼吸，6 是它与上一段的距离；再往下压标题就贴线了。 */
+  margin-top: 6px;
+  padding-top: 9px;
   border-top: 1px solid var(--border);
+}
+
+/* `.card-head` 是 theme.css 的全局类（6px 下边距 + 1px 边框），这里在
+   scoped 里覆盖成 3px：本组件有两处（内核版本 / 磁盘占用），各省 3px。
+   scoped 选择器多带一个属性选择器，权重高于全局那条，只有本组件受影响。 */
+.card-head {
+  padding-bottom: 3px;
 }
 
 .disk-usage h2 {
@@ -512,7 +513,9 @@ function formatBytes(bytes) {
 .usage-groups {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(186px, 1fr));
-  gap: 8px;
+  /* 8 → 6：两行瓦片之间的横缝。瓦片自己有边框和底色，6px 足够分得开，
+     而 2px 刚好是这一轮从页面里挤出来的高度的一部分。 */
+  gap: 6px;
   /* `stretch`（默认）而不是 `start`：四格条目数不同（内核 2 条、实例
      2 条、日志 2 条、商店 3 条），`start` 会让每格按自己的内容收高，
      同一行里两格的底边就错开——那不叫「左右对称」。拉齐之后右侧多出
@@ -527,8 +530,11 @@ function formatBytes(bytes) {
   border: 1px solid var(--border);
   border-radius: 10px;
   /* 6/9/6：比上一版再收 1px。瓦片只有标题、条形、条目三块，padding
-     每多 1px，两列并排的收益就被吃掉一点。 */
-  padding: 6px 9px;
+     每多 1px，两列并排的收益就被吃掉一点。
+     6 → 3（纵向）：这一轮把整页压回一屏，两行瓦片各省 6px。横向的 9px
+     不动——那 9px 正是「内核版本 878.2 MB / 实例数据 350.1 MB」两格
+     并排时的可读下限（见 .usage-tile-head 的取舍说明）。 */
+  padding: 3px 9px;
   min-width: 0;
   /* 条目多的那格把邻居撑到同样高，底边因此对齐（见 .usage-groups 的
      align-items 注释）。 */
@@ -592,8 +598,8 @@ function formatBytes(bytes) {
   display: flex;
   align-items: center;
   gap: 6px;
-  /* 5 → 3：标题与占比条紧挨着，它们说的是同一件事（这块多大）。 */
-  margin: 3px 0 0;
+  /* 5 → 3 → 2：标题与占比条紧挨着，它们说的是同一件事（这块多大）。 */
+  margin: 2px 0 0;
 }
 
 .usage-tile-percent {
@@ -626,7 +632,9 @@ function formatBytes(bytes) {
 
 .usage-entries {
   list-style: none;
-  margin: 6px 0 0;
+  /* 6 → 4：占比条与条目之间已经有一道 border-top 在分界，4px 够读出
+     「下面换了一层」，不必给到 6。 */
+  margin: 4px 0 0;
   padding: 0;
   /* 顶部一道细线，把「分类自己的数」与「下面这些条目」分开。 */
   border-top: 1px solid var(--border);
