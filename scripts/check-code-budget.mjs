@@ -190,6 +190,20 @@ const FILE_BUDGETS = {
   // 本文件原先正好卡在 2932 = 预算上——它是 72 个已登记文件里最贴线的一个，
   // 这次顺带把它从线上拽下来。净 -61。
   'src-tauri/src/plugins/center.rs': 2871,
+  // 2026-10-05：插件目录的**检索**层（catalog.rs）。面板把关键词 / 分类 /
+  // 排序三个参数作为一个整体交给它，搜完只回一页。
+  // 独立成文件的三条理由：
+  // ① center.rs 是 2871 行的反棘轮文件（只许下调），筛选规则放不进去；
+  // ② 它与 center.rs 答的不是同一个问题——center 答「目录从哪来、多久过期、
+  // 主源挂了回退哪」，这里答「这一页是哪几条」。取源留在 center、筛选留在
+  // 这里，两份都不重复；把两者揉进一个文件，那 9 MB JSON 的取用路径与
+  // 筛选路径就会缠在一起，谁改都怕碰坏另一半。
+  // ③ 筛选规则是纯函数（不碰 fs、不出网），拆出来后 10 条单测不用起临时
+  // home、不用等网络——**测筛选规则不该付一次网络往返的钱**。
+  // 命令壳（plugin_catalog_search）也在这里：它只有 10 行转发，拆成
+  // `catalog_cmd.rs` 反而多一层壳（与 bisect_cmd.rs / harness_cmd.rs 的
+  // 分法不同，那两组是「有实质逻辑的命令」）。
+  'src-tauri/src/plugins/catalog.rs': 150,
   // 2980 → 2932：删掉 P4 留下的旧签名壳共 11 项（`sync_kernels` /
   // `materialize_one` / `remove_materialized` / `sweep_kernel_orphans` /
   // `sweep_all_kernel_orphans` / `read_meta` / `write_meta` /
@@ -234,7 +248,9 @@ const FILE_BUDGETS = {
   // resident），tray 保留 cfg(windows)。仍是一层路由，没有实现。
   'src-tauri/src/shell/mod.rs': 19,
   'src-tauri/src/kernel/mod.rs': 10,
-  'src-tauri/src/plugins/mod.rs': 10,
+  // 10 → 11：2026-10-05 追加 catalog（插件目录检索层）。仍是一层路由，
+  // 没有实现——同 shell/mod.rs 那条 15 → 19 的先例。
+  'src-tauri/src/plugins/mod.rs': 11,
   'src-tauri/src/skills/mod.rs': 10,
   'src-tauri/src/diagnostics/mod.rs': 11,
   'src-tauri/src/harness/mod.rs': 10,
@@ -1246,37 +1262,51 @@ const FILE_BUDGETS = {
 // 正好等于预算**——组装逻辑一开始就堆错了地方，搬去 lifecycle.rs 之后命令
 // 层退回纯转发（`blocking(|| lifecycle::release_overview(&data_dir)).await`），
 // 连签名都不用为它拆行。未上调任何 FILE_BUDGETS。
-// 37088 → 37110（2026-10-05）：登录自启 / Dock 恢复修复，净 +22，逐处交代：
+// 37088 → 37221（2026-10-05）：插件目录检索搬进后端，面板加搜索框与
+// 「插件仓库」分组。+133 行，逐处交代：
+//   · **新文件** src-tauri/src/plugins/catalog.rs +146：关键词 / 分类 / 排序
+//     三个参数的检索层（相关度三档、updated 何时接管、limit 硬顶 200、
+//     分类计数随关键词走）+ 一条 10 行的命令转发。
+//   · src-tauri/src/plugins/mod.rs +1：多一个 `pub(crate) mod`（见上面那条）。
+//   · src-tauri/src/commands.rs **-8**：删掉 `plugin_catalog`——「把 1.7 万条
+//     整份搬进 webview 再在浏览器里筛」这条路径整体作废，连同它的 ACL 授权。
+//   · ui/src/plugins/plugins.js 约 -20：客户端那套 `catalogMeta` /
+//     `matchScore` / `filteredCatalog` / `hasActiveFilter` /
+//     `resetCatalogFilters` 全部删掉，**筛选规则从此只有 Rust 那一份**。
+//   · ui/src/plugins/PluginsPanel.vue 约 +16：搜索框、分组标题、三个控件
+//     各自的提交动作，减去旧的三处 computed 与防抖 watcher。
+//   · theme.css **零增长**：搜索框复用 `.install-row`（它本来就是「一行一个
+//     输入框」的通用形态），分组标题复用 `.section-divider`，计数复用
+//     `.muted`——一条新样式都不加，3001 的反棘轮才守得住。
+// 37221 → 37243（2026-10-05）：登录自启 / Dock 恢复修复，净 +22，逐处交代：
 //   · src-tauri/src/lib.rs +12：自启收起改走 `resident::hide_to_shell`（裸
 //     `hide()` 会在 macOS 留下点不动的 Dock 图标）与 `RunEvent::Reopen` 兜底
 //     `show_main_shell` 的接线与注释（check:invariants 第 17 项的由来）。
 //   · src-tauri/src/notify/activate.rs +10：`raise_workbench_if_open` 改返回
 //     bool——「没抬到工作台」必须让调用方知道，否则兜底接不上。
-// 37110 → 37143（2026-10-05）：内核版本页「npm 发布」吃掉页面剩余高度——
+// 37243 → 37276（2026-10-05）：内核版本页「npm 发布」吃掉页面剩余高度——
 // VersionsPanel.vue +33 scoped 布局：面板钉满 main 可视高，纵向滚动收进
 // 发布列表内部，日常状态不再出外层滚动条（用户要求；矮窗兜底仍归 main）。
-// 37143 → 37179（2026-10-05）：发布列表边缘淡出加大范围与力度（12 → 22px、
-// 边缘 6px 全透明），并按旧注释的预言补上 JS 测溢出——mask 只在真正可滚时
-// 生效，短列表的首尾行不再被无谓削掉。VersionsPanel.vue +36。
-// 37179 → 37184（同日第三轮收敛）：淡出改为静止覆盖带——滚动区域内完全
+// 37276 → 37312（同日）：发布列表边缘淡出加大范围与力度（12 → 22px、边缘
+// 6px 全透明），并按旧注释的预言补上 JS 测溢出——mask 只在真正可滚时生效，
+// 短列表的首尾行不再被无谓削掉。VersionsPanel.vue +36。
+// 37312 → 37317（同日第三轮收敛）：淡出改为静止覆盖带——滚动区域内完全
 // 正常显示，半透明只发生在上下两条 absolute 渐变带上（mask 版会把淡出吃
 // 进可视区，用户指出不对）。VersionsPanel.vue +5。
-// 37184 → 37201（同日第四轮）：带子挪到盒子**外侧**并弧形外扩（用户手绘
+// 37317 → 37334（同日第四轮）：带子挪到盒子**外侧**并弧形外扩（用户手绘
 // 示意）——外溢视口（等量负 margin + padding 把滚动窗口越出边框 20px）让
 // 行滚出边框仍可见，弧形带在盒子外接手遮盖；标题行与磁盘占用抬 z:2 保
 // 可点可见。VersionsPanel.vue +17。
-// 37201 → 37202（同日）：外溢深度 20 → 15px（20 压到上下文本），五处引用
+// 37334 → 37335（同日）：外溢深度 20 → 15px（20 压到上下文本），五处引用
 // 收敛为 --release-bleed 一个变量（带回退值，css-var 门禁要求）。
-// 37202 → 37211（同日）：深度 15 → 12px；带子改半透明（峰值 0.9、外缘回落
+// 37335 → 37344（同日）：深度 15 → 12px；带子改半透明（峰值 0.9、外缘回落
 // 0.15）——背景是网格纹理 + 玻璃卡片，不透明实色块会显出一块异质矩形
 // （用户指出「和原本的 UI 不匹配」）。VersionsPanel.vue +9。
-// 37211 → 37215（2026-10-05）：「收进后台」提示补发判据收紧为消费式双旗
-// （登录自启后的第一次唤回静默；tray.rs 置位 +1，resident.rs 语义表测试
-// 挤进既有余量）。
-// 37215 → 37245（2026-10-05）：toast 增加可勾选的「不再提示」
-// （toastWithCheckbox 通用入口 + App.vue 监听器改造，localStorage 跨启动
-// 保留、分壳生效）。+30。
-const TOTAL_BUDGET = 37245;
+// 37344 → 37345（同日）：「收进后台」提示补发判据收紧（登录自启后的第一次
+// 唤回静默，resident.rs +3 / commands.rs +3 - 抵扣）。
+// 37345 → 37375（同日）：toast 增加可勾选的「不再提示」（toastWithCheckbox
+// 通用入口 + App.vue 监听器改造，localStorage 跨启动保留、分壳生效）。
+const TOTAL_BUDGET = 37375;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
