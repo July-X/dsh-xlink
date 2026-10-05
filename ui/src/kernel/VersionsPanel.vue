@@ -47,12 +47,10 @@ const installedVersions = computed(() => {
   return set;
 });
 
-// 发布列表的上下淡出**只在真正溢出时生效**（2026-10-05 用户要求加大范围与
-// 力度）。过渡区从 12px 加到 22px 后已明显超过行内空白（≈13px），若像旧版
-// 那样常驻，不满高的短列表会被无谓削掉首尾行——旧注释里「再往上加就得先
-// 引入 JS 测溢出」预言的就是这一步，现在补上。ResizeObserver 兜住窗口 /
-// flex 引起的容器尺寸变化，watch 兜住发布列表内容变化；mask 不参与布局，
-// 两个来源交替不会振荡。
+// 发布列表的上下淡出带**只在真正溢出时渲染**（2026-10-05 用户要求加大范围
+// 与力度）。ResizeObserver 兜住窗口 / flex 引起的容器尺寸变化，watch 兜住
+// 发布列表内容变化；覆盖带 absolute 定位、不参与布局，两个来源交替不会
+// 振荡。
 const releaseListEl = ref(null);
 const releasesScrollable = ref(false);
 function measureReleaseOverflow() {
@@ -311,7 +309,6 @@ function formatBytes(bytes) {
             <div
               ref="releaseListEl"
               class="release-list"
-              :class="{ 'release-list--overflowing': releasesScrollable }"
             >
               <p v-if="store.releases.length === 0" class="muted" style="margin: 0">
                 点击「检查更新」获取官方发布列表。
@@ -335,6 +332,13 @@ function formatBytes(bytes) {
                 </span>
               </div>
             </div>
+            <!-- 边缘淡出带（2026-10-05 用户两轮收敛后的最终形态）：滚动区域内
+                 的内容**完全正常显示**，半透明只发生在上下两条**静止的覆盖带**
+                 上——行滚到底下时被渐变底色逐渐盖住，而不是内容自身被 mask
+                 淡化。只在真正溢出时渲染（短列表不挂带子）；pointer-events
+                 必须关掉，否则带子会挡住底下行的点击与滚轮。 -->
+            <div v-if="releasesScrollable" class="release-fade release-fade--top" aria-hidden="true"></div>
+            <div v-if="releasesScrollable" class="release-fade release-fade--bottom" aria-hidden="true"></div>
           </div>
         </div>
       </div>
@@ -460,6 +464,9 @@ function formatBytes(bytes) {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg-soft);
+  /* 边缘淡出带的定位基准：带子 absolute 盖在滚动区的上下边界上（见下方
+     `.release-fade`）。 */
+  position: relative;
 }
 
 .release-list {
@@ -472,35 +479,33 @@ function formatBytes(bytes) {
   padding-right: 4px;
 }
 
-/* 上下边缘半透明：裁到边缘的那一条淡出，而不是被硬切。被切掉半截的一条
-   会被读成「这一条被压扁了」，淡出才读得成「下面还有」。
+/* 边缘淡出带（2026-10-05 两轮收敛的最终形态）：滚动区域内的内容完全正常
+   显示，半透明只发生在上下两条**静止的覆盖带**上——行滚到底下时被渐变
+   底色逐渐盖住，而不是内容自身被 mask 淡化（上一版 mask 的毛病是淡出吃
+   进了可视区，边缘的行在滚动区域内就是半透明的）。
 
-   **只在真正溢出时生效**（`releasesScrollable`，见脚本侧注释）：过渡区
-   12 → **22px**（2026-10-05 用户要求「加大范围和力度」）后已超过行内文字
-   上下各 ≈13px 的空白，常驻 mask 会把不满高的短列表的首尾行无谓削掉。
+   范围与力度：带高 22px（12 → 22，用户要求「加大」）；外缘先保持 6px
+   **全遮挡**再起坡，被裁的那条干脆隐去，「下面还有」的暗示更明确。底色
+   用盒子自己的 --bg-soft（实色），与盒子背景无缝衔接。带子只在真正溢出
+   时渲染（模板侧 v-if），pointer-events: none 必须有——否则带子会挡住
+   底下行的点击与滚轮。z-index 压过行内容。 */
+.release-fade {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  height: 22px;
+  pointer-events: none;
+  z-index: 1;
+}
 
-   力度加大体现在两处：① 渐变区 12 → 22px；② 边缘先保持 6px **全透明**
-   再起坡——旧 12px 线性版在最边缘处仍有约 50% 可见度，现在是明确的
-   「看不见」，被裁的那一条更干脆地让位给「下面还有」的暗示。
+.release-fade--top {
+  top: 1px;
+  background: linear-gradient(to bottom, var(--bg-soft) 0 6px, transparent);
+}
 
-   mask 默认相对 border-box 且不随滚动内容移动，固在容器可视区上。 */
-.release-list--overflowing {
-  -webkit-mask: linear-gradient(
-    to bottom,
-    transparent 0,
-    transparent 6px,
-    #000 22px,
-    #000 calc(100% - 22px),
-    transparent calc(100% - 6px)
-  );
-  mask: linear-gradient(
-    to bottom,
-    transparent 0,
-    transparent 6px,
-    #000 22px,
-    #000 calc(100% - 22px),
-    transparent calc(100% - 6px)
-  );
+.release-fade--bottom {
+  bottom: 1px;
+  background: linear-gradient(to top, var(--bg-soft) 0 6px, transparent);
 }
 
 /* 已安装的版本通常只有一两条（用户很少囤），不设限高——加了反而让
