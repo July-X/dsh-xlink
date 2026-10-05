@@ -1,15 +1,30 @@
-// 插件中心搜索枚举：相关度排序、命中高亮、筛选状态复位。
+// 插件仓库搜索的**接线**：面板上那三个控件（关键词 / 分类 / 排序）一起发给
+// 后端，回来的一页落进 store，分类下拉的计数由后端给的分类统计拼出来。
 //
-// 这一块此前**完全没有测试**，因为搜索功能本身是坏的——pluginStore.query
-// 有状态、有过滤、有防抖 watcher，却没有输入框绑定它。补上入口后这里把
-// 行为钉住，防止又退回「命中与否不分先后」的二值过滤。
+// 筛选与排序的规则本身（相关度三档、updated 何时接管、limit 硬顶）在 Rust 侧
+// `plugins/catalog.rs` 里，那边有对应的单测；这里钉的是**浏览器这一侧**：
+// 发了什么、存了什么、什么时候才发。相关度排序曾经在前端也有一份实现，
+// 两份规则迟早会漂——搬走之后前端就不该再有第二份。
 import assert from 'node:assert/strict';
 import test from 'node:test';
+
+const calls = [];
+// 下一次 plugin_catalog_search 的返回；置 null 表示那次要失败。
+let nextPage = { items: [], total: 0, counts: {} };
+let failNext = false;
 
 globalThis.window = {
   __TAURI__: {
     core: {
-      invoke() {
+      invoke(command, args) {
+        calls.push({ command, args });
+        if (command === 'plugin_catalog_search') {
+          if (failNext) {
+            failNext = false;
+            return Promise.reject(new Error('catalog unreachable'));
+          }
+          return Promise.resolve(nextPage);
+        }
         return Promise.resolve([]);
       },
       Channel: class {
@@ -41,6 +56,13 @@ const makeElement = () => ({
   insertBefore() {},
 });
 const body = makeElement();
+// 提示（toast）最终由 Element 的 ElMessage 渲染进 body。数着往 body 挂节点的
+// 次数就能判断「这次到底弹没弹提示」——用户自己发起的搜索失败必须出声，
+// 面板打开时那次静默搜索失败则不该打扰他。
+let bodyAppends = 0;
+body.appendChild = () => {
+  bodyAppends += 1;
+};
 globalThis.document = {
   createElement: makeElement,
   createElementNS: makeElement,
@@ -57,165 +79,148 @@ globalThis.requestAnimationFrame = (callback) => {
 };
 globalThis.cancelAnimationFrame = () => {};
 
-// 目录夹具刻意按「相关度与星数相反」的顺序摆放：只有真的按相关度排序，
-// 下面的断言才会通过；沿用目录原序则会失败。
-// 三档相关度各一：名称前缀 agent-toolkit、名称中段 my-agent-plugin、
-// 仅描述命中 zzz-mention-model（名字里刻意不带 agent）。
-const catalog = [
-  {
-    name: 'zzz-mention-model',
-    description: '一个只在描述里提了一句 agent 的插件',
-    category: 'tools',
-    tags: ['misc'],
-    stars: 900,
-    updated: '2026-01-05T00:00:00Z',
-  },
-  {
-    name: 'agent-toolkit',
-    description: '给 agent 用的工具箱',
-    category: 'agent',
-    tags: ['agent'],
-    stars: 10,
-    updated: '2026-01-01T00:00:00Z',
-  },
-  {
-    name: 'my-agent-plugin',
-    description: '名字里带 agent',
-    category: 'agent',
-    tags: [],
-    stars: 5,
-    updated: '2026-01-02T00:00:00Z',
-  },
-  {
-    name: 'theme-dark',
-    description: '深色皮肤',
-    category: 'skin',
-    tags: ['theme'],
-    stars: 800,
-    updated: '2026-02-01T00:00:00Z',
-  },
-];
-
 const mod = await import('../src/plugins/plugins.js');
-const { pluginStore, filteredCatalog, matchParts, hasActiveFilter, resetCatalogFilters, CATALOG_PAGE } = mod;
+const {
+  pluginStore,
+  searchCatalog,
+  submitCatalogSearch,
+  refineCatalog,
+  loadCatalog,
+  catalogCategories,
+  CATALOG_CATEGORIES,
+  CATALOG_PAGE,
+} = mod;
+
+const lastCall = () => calls[calls.length - 1].args;
+const searchCalls = () => calls.filter((c) => c.command === 'plugin_catalog_search');
 
 function reset() {
-  resetCatalogFilters();
+  calls.length = 0;
+  pluginStore.query = '';
+  pluginStore.category = 'all';
   pluginStore.sort = 'stars';
-  pluginStore.catalogItems = catalog;
-  pluginStore.view = null;
+  pluginStore.shown = CATALOG_PAGE;
+  pluginStore.catalogItems = [];
+  pluginStore.catalogTotal = 0;
+  pluginStore.catalogCounts = {};
+  pluginStore.catalogLoaded = false;
 }
 
-const names = (items) => items.map((item) => item.name);
-
-test('搜索按相关度排序：名称前缀 > 名称中段 > 仅描述命中', () => {
-  reset();
-  pluginStore.query = 'agent';
-  // 星数最高的 zzz-mention-model 只在描述里命中 agent，排最后。
-  assert.deepEqual(names(filteredCatalog(new Set())), [
-    'agent-toolkit',
-    'my-agent-plugin',
-    'zzz-mention-model',
-  ]);
-});
-
-test('相关度同级时保持目录原序（后端已按 star 排好）', () => {
-  reset();
-  // 两个条目都只在描述里命中 agent（同级 = 1），且刻意让 aaa 排在 zzz 前面：
-  // filteredCatalog 不再对同级做二次排序——目录顺序本身来自后端（star 序），
-  // 任何额外重排都会把这层含义弄掉。
-  pluginStore.catalogItems = [
-    { name: 'aaa-mention-model', description: '描述里提到 agent', category: 'tools', stars: 20, updated: '2026-01-05T00:00:00Z' },
-    { name: 'zzz-mention-model', description: '描述里提到 agent', category: 'tools', stars: 900, updated: '2026-01-06T00:00:00Z' },
-  ];
-  pluginStore.query = 'agent';
-  assert.deepEqual(names(filteredCatalog(new Set())), ['aaa-mention-model', 'zzz-mention-model']);
-});
-
-test('有关键词时「最近更新」不接管排序', () => {
-  reset();
-  pluginStore.sort = 'updated';
-  pluginStore.query = 'agent';
-  // 若让 updated 接管，updated 最晚的 my-agent-plugin 会排到第一位。
-  assert.deepEqual(names(filteredCatalog(new Set())), [
-    'agent-toolkit',
-    'my-agent-plugin',
-    'zzz-mention-model',
-  ]);
-});
-
-test('没有关键词时「最近更新」按时间倒序', () => {
-  reset();
-  pluginStore.sort = 'updated';
-  assert.deepEqual(names(filteredCatalog(new Set())), [
-    'theme-dark',
-    'zzz-mention-model',
-    'my-agent-plugin',
-    'agent-toolkit',
-  ]);
-});
-
-test('未命中的条目被剔除，不是排在末尾', () => {
-  reset();
-  pluginStore.query = 'theme';
-  assert.deepEqual(names(filteredCatalog(new Set())), ['theme-dark']);
-});
-
-test('关键词大小写与首尾空白不敏感', () => {
-  reset();
-  pluginStore.query = '  AGENT  ';
-  assert.equal(filteredCatalog(new Set()).length, 3);
-});
-
-test('分类与安装状态筛选和搜索取交集', () => {
+test('三个参数一起发给后端，另带分页与分类中文名', async () => {
   reset();
   pluginStore.query = 'agent';
   pluginStore.category = 'agent';
-  assert.deepEqual(names(filteredCatalog(new Set())), ['agent-toolkit', 'my-agent-plugin']);
+  pluginStore.sort = 'updated';
+  nextPage = { items: [{ name: 'a' }], total: 7, counts: { agent: 7 } };
+  await searchCatalog();
 
-  // 已安装筛选：只留命中且已装的。
-  const keys = new Set(['my-agent-plugin']);
-  pluginStore.category = 'all';
-  pluginStore.filter = 'installed';
-  assert.deepEqual(names(filteredCatalog(keys)), ['my-agent-plugin']);
-  pluginStore.filter = 'not-installed';
-  assert.deepEqual(names(filteredCatalog(keys)), ['agent-toolkit', 'zzz-mention-model']);
+  const args = lastCall();
+  assert.equal(args.query, 'agent');
+  assert.equal(args.category, 'agent');
+  assert.equal(args.sort, 'updated');
+  assert.equal(args.limit, CATALOG_PAGE, 'limit 就是已显示条数，「显示更多」靠累加它翻页');
+  assert.equal(args.force, false);
+  // 分类中文名随请求带过去，后端才搜得到「记忆」这类中文关键词。
+  assert.equal(args.labels.memory, '记忆上下文');
+  assert.equal(Object.keys(args.labels).length, CATALOG_CATEGORIES.length);
 });
 
-test('matchParts 只切第一处命中，空查询原样返回', () => {
-  assert.deepEqual(matchParts('agent', ''), [{ text: 'agent', hit: false }]);
-  assert.deepEqual(matchParts('agent', 'agent'), [{ text: 'agent', hit: true }]);
-  assert.deepEqual(matchParts('my-agent-plugin', 'AGENT'), [
-    { text: 'my-', hit: false },
-    { text: 'agent', hit: true },
-    { text: '-plugin', hit: false },
-  ]);
-  assert.deepEqual(matchParts('nothing-here', 'zzz'), [{ text: 'nothing-here', hit: false }]);
-  // 名称缺字段时不能抛：渲染成一段空文本即可。
-  assert.deepEqual(matchParts(null, 'a'), [{ text: '', hit: false }]);
-  assert.deepEqual(matchParts(undefined, undefined), [{ text: '', hit: false }]);
-});
-
-test('hasActiveFilter 反映三类筛选，resetCatalogFilters 全部复位', () => {
+test('回的一页落进 store：items / total / counts 各归各位', async () => {
   reset();
-  assert.equal(hasActiveFilter(), false);
-  pluginStore.query = '  ';
-  assert.equal(hasActiveFilter(), false, '纯空白不算筛选');
+  nextPage = { items: [{ name: 'a' }, { name: 'b' }], total: 128, counts: { agent: 96, skin: 32 } };
+  await searchCatalog();
+  assert.equal(pluginStore.catalogItems.length, 2);
+  assert.equal(pluginStore.catalogTotal, 128, 'total 是命中总数，不是本页长度');
+  assert.deepEqual(pluginStore.catalogCounts, { agent: 96, skin: 32 });
+  assert.equal(pluginStore.catalogLoaded, true);
+});
 
-  pluginStore.query = 'agent';
-  assert.equal(hasActiveFilter(), true);
-  resetCatalogFilters();
-  assert.equal(hasActiveFilter(), false);
-  assert.equal(pluginStore.query, '');
+test('输入框回车才提交：修剪空白并回到第一页', async () => {
+  reset();
+  pluginStore.shown = CATALOG_PAGE * 3;
+  await submitCatalogSearch('  memory  ');
+  assert.equal(pluginStore.query, 'memory');
   assert.equal(pluginStore.shown, CATALOG_PAGE);
+  assert.equal(lastCall().query, 'memory');
+});
 
-  pluginStore.category = 'skin';
-  assert.equal(hasActiveFilter(), true);
-  resetCatalogFilters();
-  assert.equal(pluginStore.category, 'all');
+test('切分类 / 切排序带上新选择并重置分页', async () => {
+  reset();
+  pluginStore.shown = CATALOG_PAGE * 2;
+  await refineCatalog({ category: 'skin', shown: CATALOG_PAGE });
+  assert.equal(lastCall().category, 'skin');
+  assert.equal(lastCall().limit, CATALOG_PAGE);
 
-  pluginStore.filter = 'installed';
-  assert.equal(hasActiveFilter(), true);
-  resetCatalogFilters();
-  assert.equal(pluginStore.filter, 'all');
+  await refineCatalog({ sort: 'updated', shown: CATALOG_PAGE });
+  assert.equal(lastCall().sort, 'updated');
+  assert.equal(lastCall().category, 'skin', '上一次选的分类还在，不是被重置回 all');
+});
+
+test('「显示更多」把 limit 累加上去，分页条数跟着涨', async () => {
+  reset();
+  nextPage = { items: [{ name: 'a' }], total: 100, counts: {} };
+  await refineCatalog({ shown: pluginStore.shown + CATALOG_PAGE });
+  assert.equal(lastCall().limit, CATALOG_PAGE * 2);
+});
+
+test('刷新数据带 force（跳过目录缓存窗口重新拉取）', async () => {
+  reset();
+  await searchCatalog({ force: true, loud: true });
+  assert.equal(lastCall().force, true);
+});
+
+test('面板已经载过目录就不再打后端', async () => {
+  reset();
+  nextPage = { items: [{ name: 'a' }], total: 1, counts: {} };
+  await loadCatalog();
+  assert.equal(searchCalls().length, 1);
+  await loadCatalog();
+  assert.equal(searchCalls().length, 1, '重复打开面板不该重搜');
+  await searchCatalog();
+  assert.equal(searchCalls().length, 2, '但用户自己触发的搜索照发');
+});
+
+test('用户发起的搜索失败会出声，且不让转圈停不下来', async () => {
+  reset();
+  nextPage = { items: [{ name: 'stale' }], total: 1, counts: { skin: 1 } };
+  await searchCatalog();
+  const appendsBefore = bodyAppends;
+
+  failNext = true;
+  await submitCatalogSearch('boom');
+  assert.ok(bodyAppends > appendsBefore, '失败必须弹提示，不能让用户对着不动的一页发呆');
+  assert.equal(pluginStore.catalogLoaded, true, '看门狗式的终态：spinner 一定要关');
+  assert.deepEqual(
+    pluginStore.catalogItems.map((i) => i.name),
+    ['stale'],
+    '失败时保留上一轮结果，比清空成空列表好'
+  );
+});
+
+test('面板打开时那次静默搜索失败不弹提示', async () => {
+  reset();
+  const appendsBefore = bodyAppends;
+  failNext = true;
+  await loadCatalog();
+  assert.equal(bodyAppends, appendsBefore);
+  assert.equal(pluginStore.catalogLoaded, true);
+});
+
+test('分类下拉由后端计数拼出：中文名 + 表外分类兜底', async () => {
+  reset();
+  nextPage = { items: [], total: 128, counts: { agent: 96, skin: 32, weird: 4 } };
+  await searchCatalog();
+
+  const chips = catalogCategories();
+  // 顺序跟着 CATALOG_CATEGORIES（皮肤主题在 Agent 增强前面），不是按计数大小。
+  assert.deepEqual(
+    chips.map((c) => [c.id, c.count]),
+    [['all', 128], ['skin', 32], ['agent', 96], ['weird', 4]]
+  );
+  assert.equal(chips[1].label, '皮肤主题');
+  assert.equal(chips[2].label, 'Agent 增强');
+  // 回退数据源（参考市场）的分类不在 dshfind 那九类里，id 本身就是标签。
+  assert.equal(chips[3].label, 'weird');
+  // 本轮没命中的分类不列出来（下拉里点它只会得到空列表）。
+  assert.ok(!chips.some((c) => c.id === 'memory'));
 });

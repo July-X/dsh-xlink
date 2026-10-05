@@ -128,6 +128,11 @@ P4 起插件的一切都以**实例** `(family, instance_id)` 为隔离单位。
 
 「插件中心」优先从 [dshfind.com](https://dshfind.com/zh)（原 dsh-plugin.org hub 的新站点）的公开目录接口 `/api/plugins-data` 拉取（缓存 6 小时，不可达时回退到参考实现 `losebird/dsh-plugin-market` 的 `registry/all.json`）。管理面板支持按名称/描述/分类搜索并一键安装：
 
+- **检索在壳这一侧完成，不在浏览器里**（2026-10-05）。`/api/plugins-data` 只提供全量目录（约 1.7 万条、9 MB），**没有任何服务端检索接口**（`?q=` / `?category=` 一律被忽略，返回的还是全量）。因此面板把**关键词 / 分类 / 排序三个参数**一起发给 `plugin_catalog_search`（`plugins/catalog.rs`），由它在取好的目录上筛出**一页**（默认 24 条、上限 200）返回。旧路径是「整份 9 MB 过一次 IPC → 常驻成 JS 对象图 → 每次按键在 webview 里重扫 1.7 万条」，现已作废，`plugin_catalog` 命令连同它的 ACL 授权一并删除。
+- 相关度分三档：名称前缀 > 名称中段 > 其余字段（描述 / 仓库 / 分类 / 标签）。有关键词时相关度优先，排序下拉让位；没有关键词时排序下拉才接管。同级保持目录原序（star 降序），稳定排序，结果不会自己乱跳。
+- 分类下拉的计数由后端按**本次关键词**统计（不受当前分类影响），所以「全部（128）」与「记忆上下文（37）」讲的是同一次搜索的两面，改分类前就能看见那一类还剩多少。分类中文名随请求带下去（`CATALOG_CATEGORIES` 是唯一定义，Rust 侧不抄），否则搜「记忆」只能命中描述里恰好带这两个字的少数条目。
+- 关键词**回车才提交**：一次搜索要走一次 IPC 并在 1.7 万条上扫一遍（release 实测约 90–110 ms），逐字触发等于每敲一个字母发一次。
+
 - dshfind 条目是挂了 `dsh-plugin` topic 的 GitHub 仓库，安装优先走 npm：候选包名 `<repo-name>` 与 `dsh-<repo-name>`，命中 npm registry 的预构建包时直接安装；都没有时回退到 GitHub 安装（优先 Release tarball，没有可用 Release 时回退 git clone 跟随默认分支）。带 `#tag` 的 spec 是用户明确指定的版本，直接走 git 以使用对应 tag；中文描述优先取自条目的 i18n 翻译；
 - 回退市场条目 `package` 字段存在 → 按 npm 包安装；否则按 `repo` 的 git URL 安装（GitHub 地址优先使用 Release tarball，使用条目里的 `spec`/tag 锁定版本；没有可用 Release 时回退 git clone，无 tag 则跟随默认分支）；
 - 每个条目展示类型/star/下载量/验证标记，「详情」跳转 dshfind 中文详情页（回退条目跳转 GitHub）。官方 [dsh-plugin topic 页](https://github.com/topics/dsh-plugin) 作为浏览入口链接常驻卡片。

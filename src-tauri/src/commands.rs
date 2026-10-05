@@ -2666,16 +2666,9 @@ pub async fn plugin_check_updates(
     blocking(move || plugins::center::check_updates(&data_dir)).await
 }
 
-/// 完整的社区目录；搜索和过滤在 UI 中基于这份缓存列表进行。`force`
-/// 可以跳过缓存窗口（对应「刷新目录」）。
-#[tauri::command]
-pub async fn plugin_catalog(
-    state: State<'_, AppState>,
-    force: bool,
-) -> Result<Vec<plugins::center::CatalogItem>, String> {
-    let data_dir = state.data_dir.clone();
-    blocking(move || plugins::center::catalog(&data_dir, force)).await
-}
+// 社区目录的**搜索**命令（`plugin_catalog_search`）在 `plugins::catalog`：
+// 关键词 / 分类 / 排序三个参数一起交给它，搜完只回一页。原先那条「把 1.7
+// 万条整份搬进 webview 再在浏览器里筛」的 `plugin_catalog` 随它一起删掉了。
 
 /// 处理一次启动故障中的一项被隔离插件。
 ///

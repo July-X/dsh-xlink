@@ -171,7 +171,8 @@ function refreshActivePanelData() {
   if (store.activePanel === 'plugins') {
     // 目录与更新检查互不依赖（更新检查不消费 catalog 的结果），并行跑；
     // 原来的 .then 串行让冷启动多等一趟网络才发起第二趟。
-    loadCatalog(false);
+    // 静默：这次搜索是打开面板带出来的，用户没做任何操作，失败不弹提示。
+    loadCatalog();
     checkPluginUpdates({ busy: false, toastOnUpdates: true });
   } else if (store.activePanel === 'skills') {
     checkSkillUpdates({ busy: false, toastOnUpdates: true });

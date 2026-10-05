@@ -438,7 +438,10 @@ pub fn run() {
             commands::plugin_sync,
             commands::plugin_set_mode,
             commands::plugin_check_updates,
-            commands::plugin_catalog,
+            // 插件目录检索：关键词 / 分类 / 排序由面板作为一个整体发来。
+            // 不进 commands.rs——它和这三个控件的筛选规则同生共死，见
+            // plugins/catalog.rs 的模块文档。
+            plugins::catalog::plugin_catalog_search,
             commands::plugin_resolve,
             commands::patch_status,
             commands::patch_apply,

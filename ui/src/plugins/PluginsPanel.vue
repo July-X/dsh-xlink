@@ -6,7 +6,7 @@
 //   · 已安装：本机插件库清单（每个插件 + 每个实例一枚 chip，按 instance_id
 //     在 PluginRow.instances map 里查状态）+ 全部获取入口（手动安装 +
 //     插件中心）——安装动作针对的是插件库，不属于某个内核。
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, ref } from 'vue';
 import {
   Refresh,
   Switch,
@@ -20,19 +20,21 @@ import {
   InfoFilled,
   WarningFilled,
   Warning,
+  Search,
 } from '@element-plus/icons-vue';
 import {
   pluginStore,
   catalogLoading,
-  CATALOG_CATEGORIES,
   CATALOG_PAGE,
+  catalogCategories,
   categoryLabel,
   formatCount,
   formatUpdated,
   installedKeys,
   isInstalled,
-  filteredCatalog,
-  loadCatalog,
+  searchCatalog,
+  submitCatalogSearch,
+  refineCatalog,
   installPlugin,
   precheckPlugin,
   setPrecheckEnabled,
@@ -130,57 +132,49 @@ function togglePluginMode(row) {
   );
 }
 
-// --- 插件中心 ---
+// --- 插件仓库 ---
+//
+// 这一段列的是**远端**目录（dshfind.com），上方那段是本机已装的。列表本身
+// 由后端搜好送回一页（见 plugins.js 的 searchCatalog），所以这里没有一行
+// 筛选逻辑，只有「把三个控件的选择交出去」。
 
 const keys = computed(() => installedKeys());
-const items = computed(() => filteredCatalog(keys.value));
-const shownItems = computed(() => items.value.slice(0, pluginStore.shown));
-const hasMore = computed(() => items.value.length > pluginStore.shown);
+// 已经是后端筛好、排序好的一页了：直接就是这一页，不再二次过滤。
+const items = computed(() => pluginStore.catalogItems);
+const hasMore = computed(() => pluginStore.catalogTotal > pluginStore.shown);
+const catChips = computed(() => catalogCategories());
 
-const catChips = computed(() => {
-  const counts = new Map();
-  pluginStore.catalogItems.forEach((item) => counts.set(item.category, (counts.get(item.category) || 0) + 1));
-  const chips = [{ id: 'all', label: '全部', count: pluginStore.catalogItems.length }];
-  CATALOG_CATEGORIES.forEach(([id, label]) => {
-    if (counts.get(id)) chips.push({ id, label, count: counts.get(id) });
-  });
-  counts.forEach((count, id) => {
-    if (id && !CATALOG_CATEGORIES.some(([key]) => key === id)) chips.push({ id, label: id, count });
-  });
-  return chips;
-});
+// 搜索框里的草稿。**只有回车才提交**：一次搜索要走一次 IPC 并在远端目录
+// （1.7 万条）上扫一遍，逐字触发等于用户每敲一个字母就发一次。草稿不进
+// store——只有提交后的 query 才是「当前这次搜索的条件」。
+const searchText = ref(pluginStore.query);
 
-// el-select v-model 直接改 pluginStore.category，但用户切分类后需要把
-// shown 重置回首屏——chip 时代 pickCategory 包了这两步，改下拉后拆开
-// 显式调用，免得「翻到第 3 页切分类仍卡在第 3 页」的隐形 bug。
+function search() {
+  return submitCatalogSearch(searchText.value);
+}
+
+// el-select 的 v-model 直接改 pluginStore.category / sort，但改动必须同时
+// 触发一次远端搜索并把分页拉回第一页，否则会留下「翻到第 3 页切分类仍卡在
+// 第 3 页」这种隐形 bug。
 function pickCategory(id) {
-  pluginStore.category = id;
-  pluginStore.shown = CATALOG_PAGE;
+  refineCatalog({ category: id, shown: CATALOG_PAGE });
+}
+
+function pickSort(id) {
+  refineCatalog({ sort: id, shown: CATALOG_PAGE });
 }
 
 function showMore() {
-  pluginStore.shown += CATALOG_PAGE;
+  refineCatalog({ shown: pluginStore.shown + CATALOG_PAGE });
 }
 
-// 搜索输入 150ms 防抖；排序 / 筛选变更立即重置分页。
-let queryTimer = null;
-watch(
-  () => pluginStore.query,
-  () => {
-    clearTimeout(queryTimer);
-    queryTimer = setTimeout(() => {
-      queryTimer = null;
-      pluginStore.shown = CATALOG_PAGE;
-    }, 150);
-  }
-);
-watch([() => pluginStore.sort, () => pluginStore.filter], () => {
-  pluginStore.shown = CATALOG_PAGE;
-});
-
-onUnmounted(() => {
-  if (queryTimer) clearTimeout(queryTimer);
-  queryTimer = null;
+// 没命中时怎么措辞：是自己收窄了条件（换关键词或分类），还是目录本身就没
+// 拉到（网络 / 代理），两者的下一步完全不同。
+const emptyHint = computed(() => {
+  if (pluginStore.catalogTotal > 0) return '';
+  return pluginStore.query || pluginStore.category !== 'all'
+    ? '没有匹配的插件，换个关键词或分类试试。'
+    : '目录为空或加载失败，点「刷新数据」重试。';
 });
 
 function detailUrl(item) {
@@ -304,7 +298,7 @@ function instanceChipType(row, instanceId) {
             :icon="Refresh"
             :loading="isLoading('catalogReload')"
             :disabled="globalBusy"
-            @click="loadCatalog(true)"
+            @click="searchCatalog({ force: true, loud: true })"
           >
             刷新数据
           </el-button>
@@ -428,14 +422,41 @@ function instanceChipType(row, instanceId) {
             </el-input>
           </div>
 
-          <!-- 枚举区不再重复「插件中心 / 来自 dshfind.com」标题：上方卡片头
-               已经有一份（还带跳转链接），这里再来一次是纯重复，且白占一行。
-               手动安装输入框与下面的分类筛选拉开间距：两者是「装单个包」与
-               「按分类筛选」两件事，紧挨着容易被当成同一个输入区。 -->
+          <!-- 本机那一份到这里为止：上面是已装清单与手动安装（本地仓库），
+               下面开始是 dshfind.com 上的远端目录。用一道分组标题切开，
+               否则「手动安装」输入框与「插件仓库」搜索框会被当成同一个
+               输入区，而两者的搜索对象根本不是一回事（本机 vs 远端）。 -->
+          <h3 class="section-divider">
+            插件仓库
+            <span class="muted">来自 dshfind.com</span>
+          </h3>
+          <!-- 搜索框独占一行，放在分类下拉之前：三个控件挤一行时 480px
+               窄窗里每个只剩 140px，「全部（17.5k）」这类带计数的选项会
+               先被截断。关键词也最常用，占主位合理。 -->
+          <div class="install-row">
+            <el-input
+              v-model="searchText"
+              placeholder="搜索插件名 / 描述 / 标签，回车搜索"
+              spellcheck="false"
+              clearable
+              @keyup.enter="search"
+              @clear="search"
+            >
+              <template #prefix>
+                <el-icon><Search /></el-icon>
+              </template>
+              <template #suffix>
+                <span class="muted" title="按 Enter 在插件仓库里搜索">↵</span>
+              </template>
+            </el-input>
+          </div>
+
           <!-- 分类筛选用下拉与排序并列：原本是单行横滚的 chip，10 个分类 +
                「全部」在 480px 窄窗里横滚只能看到三四个，渐隐遮罩又挡掉
                选项前的数字，用户压根看不到完整列表。改成下拉后所有分类 +
-               计数都明确展示，排序下拉占主位、分类筛选收同一行右侧。 -->
+               计数都明确展示，排序下拉占主位、分类筛选收同一行右侧。
+               三个控件任一变动都重新搜一次（后端在那份 1.7 万条的远端
+               目录上筛），下拉里的计数是**本次关键词下**各类还剩多少。 -->
           <div class="catalog-subbar">
             <el-select
               v-model="pluginStore.category"
@@ -450,22 +471,33 @@ function instanceChipType(row, instanceId) {
                 :label="chip.count ? `${chip.label}（${formatCount(chip.count)}）` : chip.label"
               />
             </el-select>
-            <el-select v-model="pluginStore.sort" class="catalog-sort" title="排序">
+            <el-select v-model="pluginStore.sort" class="catalog-sort" title="排序" @change="pickSort">
               <el-option value="stars" label="Star 最多" />
               <el-option value="updated" label="最近更新" />
             </el-select>
           </div>
 
-          <div v-if="!pluginStore.catalogLoaded" v-loading="catalogLoading" style="min-height: 120px" element-loading-text="目录加载中…"></div>
+          <!-- 加载态分两种，别混成一种：首次打开时手上**没有**结果可留，
+               才用 120px 的空槽 + 遮罩；重新搜索（回车 / 切分类 / 排序 /
+               显示更多）时旧结果留在原地、盖一层遮罩——整页塌成一个 120px
+               的块再撑回来（一页 24 条约 1700px），每次按键闪一下比转圈
+               更难受。条件必须带上 `items.length`：只判 `!catalogLoaded`
+               的话，重新搜索也会走空槽那条，遮罩等于白写。 -->
+          <div
+            v-if="!pluginStore.catalogLoaded && items.length === 0"
+            v-loading="catalogLoading"
+            style="min-height: 120px"
+            element-loading-text="正在搜索插件仓库…"
+          ></div>
           <p v-else-if="items.length === 0" class="muted" style="margin: 0">
-            {{ pluginStore.catalogItems.length ? '没有匹配的插件，换个关键词或分类试试。' : '目录为空或加载失败，点「刷新数据」重试。' }}
+            {{ emptyHint }}
           </p>
-          <TransitionGroup v-else name="catalog" tag="div" class="catalog-list">
+          <TransitionGroup v-else v-loading="catalogLoading" name="catalog" tag="div" class="catalog-list">
             <!-- 行式条目：原先是三段式卡片（标题行自由换行 + 描述 + tag 行），
                  一张约 90px，一屏只看三四个。改成「标题 / 描述 / 底部」定高
                  三行后约 62px，枚举效率显著提升。 -->
             <div
-              v-for="(item, index) in shownItems"
+              v-for="(item, index) in items"
               :key="item.spec || item.name"
               class="catalog-row"
               :style="{ '--i': index }"
@@ -530,12 +562,11 @@ function instanceChipType(row, instanceId) {
             </div>
           </TransitionGroup>
 
-          <!-- 加载中必须连它一起藏：hasMore 只看 catalogItems（上一轮的
-               旧数据），刷新期间照常渲染会让人误以为「列表已出来但卡住」
-               ——转圈的 mask 和「还有 N 个」同框就是这个原因。 -->
+          <!-- 「还有 N 个」按**后端报的总命中数**算，不是本页长度减已显示：
+               列表现在是后端分页送回来的，本页长度永远等于 shown。 -->
           <div v-if="pluginStore.catalogLoaded && hasMore" class="catalog-more">
             <el-button text :icon="ArrowDown" @click="showMore">
-              显示更多（还有 {{ items.length - pluginStore.shown }} 个）
+              显示更多（还有 {{ pluginStore.catalogTotal - pluginStore.shown }} 个）
             </el-button>
           </div>
         </el-tab-pane>
