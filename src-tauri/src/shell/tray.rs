@@ -229,6 +229,10 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 /// 必须加回来，否则窗口回来也不在任务栏上。
 pub fn hide_to_tray(app: &AppHandle) {
     super::resident::hide_to_shell(app);
+    // 最小化是**用户主动**的收起：置位后，本进程第一次恢复时会补发「收进
+    // 后台」提示（登录自启的隐藏不走这里，开机后第一次唤回是静默的——
+    // 见 `resident::consume_restore_hint`）。
+    super::resident::mark_hidden_by_user();
 }
 
 /// 把主窗口从隐藏 / 最小化状态恢复到前台。

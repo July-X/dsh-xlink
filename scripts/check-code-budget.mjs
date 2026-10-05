@@ -267,7 +267,11 @@ const FILE_BUDGETS = {
   //    + 菜单 id）。原先两端各写一份，`check-code-budget` 的重复区间检查抓到
   //    了 14 行逐字相同；更值得担心的是「退出」这条接线只改一端就会让用户点
   //    到一个不响应的菜单项，而那在界面上没有任何症状。共用之后这里反而变短。
-  'src-tauri/src/shell/resident.rs': 120,
+  // 113 → 123（2026-10-05）：「收进后台」提示的补发判据收紧为消费式双旗
+  // （RESTORE_HINT_SHOWN + HIDDEN_BY_USER，见 consume_restore_hint）——登录
+  // 自启藏壳后的第一次唤回不再弹「刚刚把窗口收进了后台」（用户反馈经常
+  // 触发），外加完整语义表测试。
+  'src-tauri/src/shell/resident.rs': 123,
   'src-tauri/src/shell/menu_bar.rs': 105,
   'src-tauri/src/shell/autostart.rs': 360,
   // 2026-10-02 磁盘占用报表（只读，无删除入口）。独立成模块的理由：
@@ -1266,7 +1270,10 @@ const FILE_BUDGETS = {
 // 37202 → 37211（同日）：深度 15 → 12px；带子改半透明（峰值 0.9、外缘回落
 // 0.15）——背景是网格纹理 + 玻璃卡片，不透明实色块会显出一块异质矩形
 // （用户指出「和原本的 UI 不匹配」）。VersionsPanel.vue +9。
-const TOTAL_BUDGET = 37211;
+// 37211 → 37215（2026-10-05）：「收进后台」提示补发判据收紧为消费式双旗
+// （登录自启后的第一次唤回静默；tray.rs 置位 +1，resident.rs 语义表测试
+// 挤进既有余量）。
+const TOTAL_BUDGET = 37215;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
