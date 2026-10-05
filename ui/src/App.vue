@@ -3,7 +3,7 @@
 // 以及启动时的事件监听、轮询与静默自检的编排。
 import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue';
 import { invoke, listen } from './shell/bridge.js';
-import { toast, toastError, confirmDialog } from './shell/notify.js';
+import { toast, toastError, confirmDialog, toastWithCheckbox } from './shell/notify.js';
 import { renderErrors, clearRenderError, reloadPanel } from './shell/errors.js';
 import { globalBusy, ioActive } from './shell/loading.js';
 import {
@@ -235,12 +235,19 @@ onMounted(() => {
   // 恢复一定是用户点常驻图标（或拉工作台拉绳）主动做出来的，他刚证明自己知道
   // 怎么把窗口叫回来，重复讲只会挡视线：Rust 侧只在本进程发生过一次用户收起
   // （关窗 / Windows 最小化）之后的**第一次恢复**补发这个事件——登录自启的
-  // 隐藏不算用户动作，开机后第一次唤回是静默的；这里也把停留压到 4 秒，不再
-  // 用横幅盖住标题栏八秒。其余恢复一律静默。
+  // 隐藏不算用户动作，开机后第一次唤回是静默的。其余恢复一律静默。
+  //
+  // toast 上带「不再提示」勾选（2026-10-05 用户要求）：勾选写 localStorage
+  // （跨启动保留；dev 与 release 两个 webview 各存各的，偏好天然分壳），
+  // 此后这个壳里该提示永远静默。停留给到 8 秒，用户得有时间注意到勾选框。
+  const RESTORE_HINT_SUPPRESSED_KEY = 'restore-hint-suppressed';
   registerAppListener('shell-restored-from-background', () => {
-    toast(
+    if (localStorage.getItem(RESTORE_HINT_SUPPRESSED_KEY) === '1') return;
+    toastWithCheckbox(
       '刚才只是把窗口收进了后台：程序继续运行，点菜单栏 / 托盘的鲸鱼图标可重新打开，右键菜单里可退出',
-      4000
+      '不再提示',
+      () => localStorage.setItem(RESTORE_HINT_SUPPRESSED_KEY, '1'),
+      8000
     );
   });
   registerAppListener('harness-fault', (e) => {
