@@ -5,7 +5,7 @@
 //
 // 面板挂载时主动调一次 refreshAll()，让「已安装」列表在用户进到这一页时就是最新的，
 // 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
-import { computed, onBeforeUnmount, onMounted, reactive } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { Refresh, Download, Promotion, Delete, InfoFilled, TopRight, Loading } from '@element-plus/icons-vue';
 import {
   store,
@@ -46,6 +46,30 @@ const installedVersions = computed(() => {
   }
   return set;
 });
+
+// 发布列表的上下淡出**只在真正溢出时生效**（2026-10-05 用户要求加大范围与
+// 力度）。过渡区从 12px 加到 22px 后已明显超过行内空白（≈13px），若像旧版
+// 那样常驻，不满高的短列表会被无谓削掉首尾行——旧注释里「再往上加就得先
+// 引入 JS 测溢出」预言的就是这一步，现在补上。ResizeObserver 兜住窗口 /
+// flex 引起的容器尺寸变化，watch 兜住发布列表内容变化；mask 不参与布局，
+// 两个来源交替不会振荡。
+const releaseListEl = ref(null);
+const releasesScrollable = ref(false);
+function measureReleaseOverflow() {
+  const el = releaseListEl.value;
+  releasesScrollable.value = !!el && el.scrollHeight > el.clientHeight + 1;
+}
+let releaseResizeObserver = null;
+onMounted(() => {
+  measureReleaseOverflow();
+  releaseResizeObserver = new ResizeObserver(measureReleaseOverflow);
+  releaseResizeObserver.observe(releaseListEl.value);
+});
+onBeforeUnmount(() => releaseResizeObserver?.disconnect());
+watch(
+  () => store.releases,
+  () => measureReleaseOverflow(),
+);
 
 // 扫描时刻 → 「今天 14:20」/「10 月 1 日 14:20」。
 //
@@ -284,7 +308,11 @@ function formatBytes(bytes) {
                深一档，与上方「已安装」那片裸行区分开——那片是直接铺在卡片上的
                行，这片是一个可滚动的子区域，长得不一样才读得出「这块能滚」。 -->
           <div class="release-list-box">
-            <div class="release-list">
+            <div
+              ref="releaseListEl"
+              class="release-list"
+              :class="{ 'release-list--overflowing': releasesScrollable }"
+            >
               <p v-if="store.releases.length === 0" class="muted" style="margin: 0">
                 点击「检查更新」获取官方发布列表。
               </p>
@@ -435,7 +463,6 @@ function formatBytes(bytes) {
 }
 
 .release-list {
-  max-height: 120px;
   overflow-y: auto;
   /* 触屏 / 触控板甩到列表尽头时不要连带触发页面级手势——否则在列表底部
      再滚一下，页面会跟着跳，用户以为列表没到底。 */
@@ -443,16 +470,37 @@ function formatBytes(bytes) {
   /* 滚动条默认贴在容器右缘，而外层卡片有内边距，短列表时看不出来，
      长列表时那条「悬空的轨道」很显眼。留 4px 把它拉近卡片边框。 */
   padding-right: 4px;
-  /* 上下边缘半透明：裁到边缘的那一条淡出，而不是被硬切。被切掉半截的一条
-     会被读成「这一条被压扁了」，淡出才读得成「下面还有」。
+}
 
-     渐变区 8 → **12px**（用户要求「加大」）：12px 仍小于行内文字上下各
-     ≈ 13px 的空白，所以**内容不满高时也不会削到文字**，不需要额外判断是否
-     溢出。再往上加就会啃到字了——真要更大的过渡区，得先引入 JS 测溢出。
+/* 上下边缘半透明：裁到边缘的那一条淡出，而不是被硬切。被切掉半截的一条
+   会被读成「这一条被压扁了」，淡出才读得成「下面还有」。
 
-     mask 默认相对 border-box 且不随滚动内容移动，固在容器可视区上。 */
-  -webkit-mask: linear-gradient(to bottom, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
-  mask: linear-gradient(to bottom, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
+   **只在真正溢出时生效**（`releasesScrollable`，见脚本侧注释）：过渡区
+   12 → **22px**（2026-10-05 用户要求「加大范围和力度」）后已超过行内文字
+   上下各 ≈13px 的空白，常驻 mask 会把不满高的短列表的首尾行无谓削掉。
+
+   力度加大体现在两处：① 渐变区 12 → 22px；② 边缘先保持 6px **全透明**
+   再起坡——旧 12px 线性版在最边缘处仍有约 50% 可见度，现在是明确的
+   「看不见」，被裁的那一条更干脆地让位给「下面还有」的暗示。
+
+   mask 默认相对 border-box 且不随滚动内容移动，固在容器可视区上。 */
+.release-list--overflowing {
+  -webkit-mask: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 6px,
+    #000 22px,
+    #000 calc(100% - 22px),
+    transparent calc(100% - 6px)
+  );
+  mask: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 6px,
+    #000 22px,
+    #000 calc(100% - 22px),
+    transparent calc(100% - 6px)
+  );
 }
 
 /* 已安装的版本通常只有一两条（用户很少囤），不设限高——加了反而让
