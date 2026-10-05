@@ -1263,7 +1263,10 @@ const FILE_BUDGETS = {
 // 可点可见。VersionsPanel.vue +17。
 // 37201 → 37202（同日）：外溢深度 20 → 15px（20 压到上下文本），五处引用
 // 收敛为 --release-bleed 一个变量（带回退值，css-var 门禁要求）。
-const TOTAL_BUDGET = 37202;
+// 37202 → 37211（同日）：深度 15 → 12px；带子改半透明（峰值 0.9、外缘回落
+// 0.15）——背景是网格纹理 + 玻璃卡片，不透明实色块会显出一块异质矩形
+// （用户指出「和原本的 UI 不匹配」）。VersionsPanel.vue +9。
+const TOTAL_BUDGET = 37211;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
