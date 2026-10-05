@@ -309,6 +309,7 @@ function formatBytes(bytes) {
             <div
               ref="releaseListEl"
               class="release-list"
+              :class="{ 'release-list--bleed': releasesScrollable }"
             >
               <p v-if="store.releases.length === 0" class="muted" style="margin: 0">
                 点击「检查更新」获取官方发布列表。
@@ -479,33 +480,59 @@ function formatBytes(bytes) {
   padding-right: 4px;
 }
 
-/* 边缘淡出带（2026-10-05 两轮收敛的最终形态）：滚动区域内的内容完全正常
-   显示，半透明只发生在上下两条**静止的覆盖带**上——行滚到底下时被渐变
-   底色逐渐盖住，而不是内容自身被 mask 淡化（上一版 mask 的毛病是淡出吃
-   进了可视区，边缘的行在滚动区域内就是半透明的）。
+/* 边缘淡出带（2026-10-05 第三轮收敛的最终形态）：带子在盒子的**外侧**，
+   方向朝滚动区域外扩——行滚出盒子边框后并不消失，而是进入外溢区，被
+   弧形带逐渐盖住直至隐去。滚动区域内自始至终完全正常。
 
-   范围与力度：带高 22px（12 → 22，用户要求「加大」）；外缘先保持 6px
-   **全遮挡**再起坡，被裁的那条干脆隐去，「下面还有」的暗示更明确。底色
-   用盒子自己的 --bg-soft（实色），与盒子背景无缝衔接。带子只在真正溢出
-   时渲染（模板侧 v-if），pointer-events: none 必须有——否则带子会挡住
-   底下行的点击与滚轮。z-index 压过行内容。 */
+   外溢区的来历：`.release-list--bleed` 用「等量负 margin + padding」把
+   滚动窗口上下各外推 20px（布局尺寸不变——负 margin 恰好抵消 padding），
+   行因此能滚出边框仍可见；外侧带子接手遮盖。带子只在真正溢出时渲染
+   （模板侧 v-if），pointer-events: none 防止挡住底下内容的点击。
+
+   弧形（用户手绘示意）：覆盖力沿水平方向向两侧衰减（mask 90deg 渐变），
+   中间外扩最深、两端收敛——而不是上下两条等宽直线。上下两带的遮盖色
+   分别取带子落点处的背景：上带落在卡片内（白 5% 叠 --bg 的合成色，
+   color-mix 现算，旧引擎回退到等值字面量），下带落在面板底（--bg）。
+
+   遮挡关系：标题行（.list-head-with-logo）与磁盘占用块显式抬到 z:2，
+   压过外溢区与带子——它们的文字与按钮必须可点、可见；行残影从它们
+   底下穿过。 */
 .release-fade {
   position: absolute;
   left: 1px;
   right: 1px;
-  height: 22px;
+  height: 20px;
   pointer-events: none;
   z-index: 1;
+  -webkit-mask: linear-gradient(90deg, transparent 0, #000 14%, #000 86%, transparent 100%);
+  mask: linear-gradient(90deg, transparent 0, #000 14%, #000 86%, transparent 100%);
 }
 
 .release-fade--top {
-  top: 1px;
-  background: linear-gradient(to bottom, var(--bg-soft) 0 6px, transparent);
+  top: -20px;
+  background: linear-gradient(to top, transparent 0, #171c2b 100%);
+  background: linear-gradient(to top, transparent 0, color-mix(in srgb, #fff 5%, var(--bg)) 100%);
 }
 
 .release-fade--bottom {
-  bottom: 1px;
-  background: linear-gradient(to top, var(--bg-soft) 0 6px, transparent);
+  bottom: -20px;
+  background: linear-gradient(to bottom, transparent 0, var(--bg) 100%);
+}
+
+/* 外溢视口：只在真正溢出时展开（不溢出时盒子尺寸与改前一致）。 */
+.release-list--bleed {
+  padding-top: 20px;
+  padding-bottom: 20px;
+  margin-top: -20px;
+  margin-bottom: -20px;
+}
+
+/* 「npm 发布」标题行抬到外溢视口与上侧淡出带（z:1）之上：行滚出上边框的
+   残影会进入标题行的地界，标题与「检查更新 / 打开发布页」按钮必须可见
+   可点（z 抬高 = 命中测试也归它，按钮不会被外溢区挡住）。 */
+.list-head-with-logo {
+  position: relative;
+  z-index: 2;
 }
 
 /* 已安装的版本通常只有一两条（用户很少囤），不设限高——加了反而让
@@ -525,6 +552,10 @@ function formatBytes(bytes) {
   margin-top: 6px;
   padding-top: 9px;
   border-top: 1px solid var(--border);
+  /* 抬到发布列表的外溢视口与淡出带（z:1）之上：列表行滚出下边框后的残影
+     从这块的边缘底下穿过，而「磁盘占用」标题与「刷新」按钮必须可见可点。 */
+  position: relative;
+  z-index: 2;
 }
 
 /* `.card-head` 是 theme.css 的全局类（6px 下边距 + 1px 边框），这里在
