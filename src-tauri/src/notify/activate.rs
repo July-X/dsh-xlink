@@ -149,20 +149,30 @@ pub fn force_foreground(window: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "windows"))]
 pub fn force_foreground(_window: &tauri::WebviewWindow) {}
 
-/// 只把**已经开着**的工作台窗口抬到台前；没开过就什么都不做。
+/// 只把**已经开着**的工作台窗口抬到台前；没开过就返回 `false`（返回 `true`
+/// 表示工作台存在且已被抬到台前）。
 ///
 /// 与 [`focus_workbench`] 分开是因为入口的**意图**不同：Windows 的通知横幅
 /// 交接来自"用户明确要去看结果"，工作台没开就替他开一个；而 macOS 的
 /// `RunEvent::Reopen` 同时覆盖点 Dock 图标这类"我只是把应用叫回来"的动作，
 /// 对它来说凭空开一个工作台窗口（或者在没开过时弹一条「回到工作台失败」）
-/// 都是打扰。没有已开的工作台时，系统本来就已经把管理面板带回前台了。
-pub fn raise_workbench_if_open(app: &AppHandle) {
+/// 都是打扰。
+///
+/// 「没开过就什么都不做」**不能理解成调用方也可以什么都不做**：macOS 的
+/// 激活只把进程带到前台，**不会替我们把 `hide()` 掉的窗口重新显示出来**
+/// （orderOut 的窗口不在系统的「可见窗口」清单里，这里的注释此前宣称
+/// "系统本来就已经把管理面板带回前台了"，是错的——2026-10-05 重启实测
+/// 打脸）。所以返回 `false` 时调用方必须自己调
+/// [`crate::shell::resident::show_main_shell`] 兜底，否则用户点的是一枚
+/// 点了没反应的图标。
+pub fn raise_workbench_if_open(app: &AppHandle) -> bool {
     let Some(window) = app.get_webview_window("harness") else {
-        return;
+        return false;
     };
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
+    true
 }
 
 /// 单实例守卫是否生效。

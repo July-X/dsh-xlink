@@ -192,7 +192,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 菜单接线（「显示 / 退出」两项 + 左键叫回窗口）两端共用 `resident::build_background_menu`，只传各自的图标与文案。两端各写一份时曾有 14 行逐字重复（`check-code-budget` 抓到的），而真正危险的是「退出」只改一端：用户会点到一个不响应的菜单项，界面上没有任何症状。
 
-`CloseRequested` 一律经 `resident::intercept_close` 接管（`prevent_close()` 后隐藏），与平台无关。收起那一刻窗口已隐藏，页内提示谁也看不见，因此**收起时不广播任何事件**；改由 Rust 在**从后台恢复**时补发 `shell-restored-from-background`，每次启动只发一次（`RESTORE_HINT_SHOWN` 一票制），前端弹 4 秒提示——这是唯一能讲清「程序还在后台、怎么找回来」的可见时刻。恢复动作全仓只有一份实现（`resident::show_main_shell`），`lib::show_main_shell` 与工作台拉绳的 `focus_main_shell` 都调它；**不要把动作抄回调用方**：Windows 上两边互调过一次，直接 `thread 'main' has overflowed its stack`。
+`CloseRequested` 一律经 `resident::intercept_close` 接管（`prevent_close()` 后隐藏），与平台无关。收起那一刻窗口已隐藏，页内提示谁也看不见，因此**收起时不广播任何事件**；改由 Rust 在**从后台恢复**时补发 `shell-restored-from-background`，每次启动只发一次（`RESTORE_HINT_SHOWN` 一票制），前端弹 4 秒提示——这是唯一能讲清「程序还在后台、怎么找回来」的可见时刻。恢复与收起各只有一份实现（`resident::show_main_shell` / `resident::hide_to_shell`），`lib::show_main_shell` 与工作台拉绳的 `focus_main_shell` 都调前者；**不要把动作抄回调用方**：Windows 上两边互调过一次，直接 `thread 'main' has overflowed its stack`。收起裸调 `window.hide()` 绕开 `hide_to_shell` 的代价是 2026-10-05 实测过的：macOS 激活等级没降到 Accessory，进程带着「在运行」小点的 Dock 图标、零可见窗口地挂在后台；且 macOS 的激活不会替我们显示 `hide()` 掉的窗口，所以 `RunEvent::Reopen` 抬不到工作台时必须兜底调 `show_main_shell`，否则那枚 Dock 图标点了没反应——接线由 `check:invariants` 第 17 项钉住。
 
 ### 登录自启（`shell::autostart`）
 
@@ -203,7 +203,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 登录项里存的命令是 `"<current_exe>" --autostart`。**标记只认独立的那个 token**（`detect_autostart_arg` 逐参数比 `== "--autostart"`）：内核进程的命令行里也可能出现这个词（`dsh web` 的参数由用户自由填写），用 `contains` 扫整串会把那些情况误判成登录项拉起，于是面板凭空消失而用户没点过任何按钮。
 
-自启拉起时**不显示面板**（`setup` 里在建窗可见前就 `hide()`），菜单栏 / 托盘图标是全部可见痕迹；是否顺带起内核由 `should_launch_kernel_on_autostart` 三重判定：开关已开 ∧ 本次确为登录项拉起 ∧ 已安装版本存在。启动在**后台线程**发起（要派生 pnpm / node / 内核并等端口就绪，最坏几分钟，而 `setup` 跑在 Tauri 主线程上）。`start_kernel_blocking` 是 `start_kernel` 拆出的无 Channel 主体——自启那一刻没有任何前端在场，进度只能落 stderr（进日志文件），伪造一个 `Channel` 没有意义。
+自启拉起时**不显示面板**（`setup` 里在建窗可见前就经 `resident::hide_to_shell` 收进后台——必须走它而不是裸 `hide()`，否则 macOS 上激活等级留在 Regular，Dock 会挂一枚点了没反应的「在运行」图标，见「后台常驻」一节），菜单栏 / 托盘图标是全部可见痕迹；是否顺带起内核由 `should_launch_kernel_on_autostart` 三重判定：开关已开 ∧ 本次确为登录项拉起 ∧ 已安装版本存在。启动在**后台线程**发起（要派生 pnpm / node / 内核并等端口就绪，最坏几分钟，而 `setup` 跑在 Tauri 主线程上）。`start_kernel_blocking` 是 `start_kernel` 拆出的无 Channel 主体——自启那一刻没有任何前端在场，进度只能落 stderr（进日志文件），伪造一个 `Channel` 没有意义。
 
 **内核仍随壳一起停**（用户 2026-10-02 拍板）：常驻指「关窗不退出」，不是「壳退出后内核继续服务」。`RunEvent::Exit` 回收内核的逻辑一行没改，因此不需要跨进程认领协议，也就不会出现「壳退出了端口还被谁占着」「下次启动认不认得这个孤儿」那类问题。
 
@@ -421,6 +421,8 @@ P8 在「已上线」与「即将发布」两个层面把多实例状态暴露�
 - **插件面板单 panel + 双 tab**（commit `9df8ed8` + `83186d2`；命名随 2026-09 IA 调整）：
   - 「当前内核」tab 沿用旧 entity-row 渲染（状态走 `PluginRow` legacy 字段），只做管理（同步 / 接线 / 模式切换 / 卸载），不带安装入口
   - 「已安装」tab 是本机插件库清单 + 获取入口：每个插件 + 每个实例一枚 chip（family · id · 状态），数据来自 `PluginRow.instances: BTreeMap<instance_id, PluginInstanceState>`；手动安装与插件中心也归这页——安装针对的是插件库，不属于某个内核
+  - 这一页按**来源**分两组（2026-10-05）：上半是本机已装清单 + 手动安装（本地仓库），下半是「插件仓库」分组（dshfind.com 远端目录），各带一个输入框。两者搜索的对象根本不是一回事，切开才不至于被当成同一个输入区
+  - 目录检索走 `plugin_catalog_search`（`plugins/catalog.rs`）：三个参数（关键词 / 分类 / 排序）一起发过去、只回一页。`/api/plugins-data` 没有服务端检索接口，「搜索」只能是壳在取好的 9 MB 目录上做——但**做在壳里而不是 webview 里**，一次搜索过 IPC 的只有 24 条
   - 后端 `status_for_instance` 内部枚举 `instance::load_registry()`，每个实例算一份 state 填进 map——单次 invoke 带回全实例状态，省去切 tab 再发请求的延迟
 - **默认实例解析器**（commit `1053040` 等）：`instance::resolve_default()` 返回 `(&'static str, &'static str)` 元组（family + id），9 处 production caller + test fixture 全接入；后续 `InstanceRegistry::default_instance_id` 接管时 caller 自动跟进，无需再扫
 

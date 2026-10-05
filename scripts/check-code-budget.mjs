@@ -1239,7 +1239,13 @@ const FILE_BUDGETS = {
 // 正好等于预算**——组装逻辑一开始就堆错了地方，搬去 lifecycle.rs 之后命令
 // 层退回纯转发（`blocking(|| lifecycle::release_overview(&data_dir)).await`），
 // 连签名都不用为它拆行。未上调任何 FILE_BUDGETS。
-const TOTAL_BUDGET = 37088;
+// 37088 → 37110（2026-10-05）：登录自启 / Dock 恢复修复，净 +22，逐处交代：
+//   · src-tauri/src/lib.rs +12：自启收起改走 `resident::hide_to_shell`（裸
+//     `hide()` 会在 macOS 留下点不动的 Dock 图标）与 `RunEvent::Reopen` 兜底
+//     `show_main_shell` 的接线与注释（check:invariants 第 17 项的由来）。
+//   · src-tauri/src/notify/activate.rs +10：`raise_workbench_if_open` 改返回
+//     bool——「没抬到工作台」必须让调用方知道，否则兜底接不上。
+const TOTAL_BUDGET = 37110;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

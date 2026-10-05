@@ -43,6 +43,12 @@
  *      target 只在发布流水线里被编译一次（`check:rust` 只编宿主 target，Quality
  *      gates 跑在 ubuntu 上也不是 Windows），所以这类错误一次就是一次完整发布
  *      ——rc.2 在 2026-10-01 为此连炸两次。
+ *  17. 常驻的两条接线（2026-10-05「重启后 Dock 有启动状态、看不到主界面」的
+ *      两半成因）：① lib.rs 里不得裸调 `window.hide()`，自启收起必须走
+ *      `resident::hide_to_shell`——裸 hide 不降 macOS 激活等级，进程带着
+ *      Regular 等级、零可见窗口地挂在 Dock 上；② `RunEvent::Reopen` 抬不到
+ *      工作台时必须兜底 `show_main_shell`——macOS 的激活不会替我们显示
+ *      `hide()` 掉的窗口，缺了它那枚 Dock 图标点了没反应。
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -1795,6 +1801,83 @@ if (ungatedOsImports.length > 0) {
   note(
     `${osRestricted.size} 个 target_os 专属条目的跨模块 import 都带门控（Windows 侧不会 E0432）`,
   );
+}
+
+// --- 17. 常驻接线：自启收起走 hide_to_shell，Reopen 兜底 show_main_shell -----
+//
+// 2026-10-05 用户重启实测：登录自启拉起后 Dock 上挂着带「在运行」小点的图标，
+// 点它没反应，主界面出不来。两半成因，都是"判据是对的、接线漏了没人知道"：
+// ① 自启分支裸调 `window.hide()` 而没走 `resident::hide_to_shell`，macOS 的
+//    激活等级没降到 Accessory——进程以 Regular 等级、零可见窗口留在 Dock 里
+//    （真机 `lsappinfo` 实测 `type="Foreground"`）；
+// ② `RunEvent::Reopen` 只抬工作台，注释却假设"没开工作台时系统已把管理面板
+//    带回前台"——错的：macOS 的激活不会替我们显示 `hide()` 掉（orderOut）的
+//    窗口。两半各自单看都能被"菜单栏图标才是入口"的设计说辞盖过去，合在一起
+//    就是用户唯一看得见的痕迹（Dock 图标）成了一个死按钮。
+// 单测抓不到这两条：它们都是 macOS 窗口管理器的运行时行为，测试进程里没有
+// NSApp 可断言，只能钉接线形状。
+{
+  const libLines = productionRust(read('src-tauri/src/lib.rs')).split('\n');
+
+  // ① 收起动作全仓只有一份实现：lib.rs 不许出现裸 `.hide(`。
+  const rawHides = [];
+  libLines.forEach((line, index) => {
+    if (/\.hide\(/.test(line)) rawHides.push(`lib.rs:${index + 1} ${line.trim()}`);
+  });
+  if (rawHides.length > 0) {
+    fail(
+      'resident-wiring',
+      `${rawHides.join('；')}——窗口收起必须走 shell::resident::hide_to_shell（它会顺带在 ` +
+        'macOS 上把激活等级降到 Accessory、Windows 上补 skip-taskbar），裸 hide 会把进程 ' +
+        '以「Dock 有图标但没有任何窗口」的状态留在后台。',
+    );
+  }
+
+  // ② 自启分支必须真的调到 hide_to_shell。
+  const autostartIdx = libLines.findIndex((line) => /started_by_autostart\(\)\s*\{/.test(line));
+  if (autostartIdx < 0) {
+    fail('resident-wiring', 'lib.rs 里找不到 `started_by_autostart()` 分支——自启收起逻辑被挪走了？');
+  } else {
+    let end = autostartIdx + 1;
+    while (
+      end < libLines.length &&
+      end - autostartIdx < 60 &&
+      libLines[end].trim() !== '}'
+    ) {
+      end += 1;
+    }
+    const body = libLines.slice(autostartIdx, end).join('\n');
+    if (!body.includes('hide_to_shell')) {
+      fail(
+        'resident-wiring',
+        `lib.rs:${autostartIdx + 1} 的自启分支没有调 shell::resident::hide_to_shell——` +
+          '登录拉起的面板只被裸 hide，macOS 上会留下点不动的 Dock 图标（2026-10-05 事故）。',
+      );
+    }
+  }
+
+  // ③ Reopen 抬不到工作台时必须兜底 show_main_shell。
+  const reopenIdx = libLines.findIndex((line) => line.includes('RunEvent::Reopen'));
+  if (reopenIdx < 0) {
+    fail('resident-wiring', 'lib.rs 里找不到 RunEvent::Reopen 分支——macOS 的 Dock 激活没有接线？');
+  } else {
+    const body = libLines.slice(reopenIdx, reopenIdx + 8).join('\n');
+    const missing = ['raise_workbench_if_open', 'show_main_shell'].filter(
+      (token) => !body.includes(token),
+    );
+    if (missing.length > 0) {
+      fail(
+        'resident-wiring',
+        `lib.rs:${reopenIdx + 1} 的 Reopen 分支缺 ${missing.join(' / ')}——` +
+          'macOS 的激活不会替我们显示 hide() 掉的窗口：抬不到工作台时必须自己把管理面板叫回来，' +
+          '否则点 Dock 图标什么都不会发生。',
+      );
+    }
+  }
+
+  if (rawHides.length === 0 && autostartIdx >= 0 && reopenIdx >= 0) {
+    note('常驻接线完整：自启收起走 hide_to_shell，Reopen 兜底 show_main_shell');
+  }
 }
 
 // --- 结果 --------------------------------------------------------------------
