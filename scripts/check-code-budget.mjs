@@ -698,13 +698,15 @@ const FILE_BUDGETS = {
   // 就只能对着源码字符串断言。本次 10 行落在总量既有余量内，TOTAL_BUDGET
   // 不动。
   'ui/src/shell/noContextMenu.js': 20,
-  // ⑤ ui/src/shell/VersionBadge.vue（38 行）——分段式版本号徽标：左「蓝底 +
-  // 深色 tag 图标」、右「暗底 + muted 文字」。**同一个组件被侧栏品牌区与概览
-  // 「当前内核」卡两处使用**，两处都在说「这是一个版本号」，各写一份必然漂。
-  // 独立成组件而不是把样式塞进 theme.css：那份是反棘轮文件、只许越来越小，
-  // 而这条规则只服务这一个组件；也不塞进 SideBar / OverviewPanel 任一侧的
-  // scoped 样式——那样另一侧就得复制一份。
-  'ui/src/shell/VersionBadge.vue': 38,
+  // ⑤ ui/src/shell/VersionBadge.vue——分段式版本号徽标：左「纯色底 + tag
+  // 图标」（icon prop 两档：accent 蓝底 / black 黑底）、右「暗底 + muted 文字」。
+  // **同一个组件被侧栏品牌区与概览「当前内核」卡两处使用**，两处都在说
+  // 「这是一个版本号」，各写一份必然漂。独立成组件而不是把样式塞进
+  // theme.css：那份是反棘轮文件、只许越来越小，而这条规则只服务这一个组件；
+  // 也不塞进 SideBar / OverviewPanel 任一侧的 scoped 样式——那样另一侧就得
+  // 复制一份。38 → 52（2026-10-05）：新增 icon prop 的黑底变体（prop 校验 +
+  // 变体类绑定 + 黑底样式块），用户要求概览「当前内核」卡的图标段用黑色。
+  'ui/src/shell/VersionBadge.vue': 52,
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
 // 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有

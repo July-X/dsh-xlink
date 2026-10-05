@@ -29,10 +29,11 @@ const MENU = [
 
 // 桌面端版本号：「（dev）」后缀是 release-only 钩子（dev 构建里标出来，
 // 开了 release 预览就按正式版隐藏）。展示在品牌区「更新」按钮旁，
-// 概览卡不再重复一行。
+// 概览卡不再重复一行。不带「v」前缀（2026-10-05 用户要求）：后端给的
+// 就是纯版本号，徽标里只显示它。
 const shellVersionText = computed(() => {
   if (!store.view) return '';
-  return 'v' + store.view.shell_version + (store.devUi ? '（dev）' : '');
+  return store.view.shell_version + (store.devUi ? '（dev）' : '');
 });
 
 // 过滤掉 `show()` 返回 false 的菜单项——数据迁移默认隐藏，扫描到遗留
