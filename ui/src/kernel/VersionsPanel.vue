@@ -165,8 +165,8 @@ function formatBytes(bytes) {
 </script>
 
 <template>
-  <section class="panel">
-    <div class="card">
+  <section class="panel kernel-panel">
+    <div class="card kernel-card">
       <div class="card-head">
         <h2>内核版本</h2>
         <span class="head-meta">
@@ -692,6 +692,60 @@ function formatBytes(bytes) {
 @keyframes usage-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+/* 「npm 发布」吃掉页面剩余高度（2026-10-05 用户要求）：面板钉满 main 的
+   可视高度，卡片列弹性伸展，纵向滚动只发生在发布列表内部——日常状态下
+   外层 main 不再出现纵向滚动条。选择器都挂 .kernel-card / .list-group 前缀
+   压过 theme.css 窄窗媒体查询里的 `max-height: none; overflow-y: visible`
+   （那里是「滚动只交给外层 main」的旧约定，本页改为「滚动只交给内层
+   列表」，两页规则不同就得分开写，不能动全局）。min-height: 0 一路铺到
+   列表，缺任何一环 flex 子项都会拒绝收缩、把页面重新撑出外层滚动条。
+   兜底：窗口矮到上方静态内容（警示条 + 已安装列表 + 磁盘占用）本身都
+   放不下时，列表收缩到内容高、main 的滚动条照常出现——可达性优先于
+   「无外层滚动条」，那条规则只在正常窗口尺寸下成立。 */
+.kernel-panel {
+  height: 100%;
+  min-height: 0;
+}
+
+.kernel-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.kernel-card .updates-lists {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.kernel-card .list-group {
+  min-height: 0;
+}
+
+.kernel-card .release-list-box {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.kernel-card .list-group .release-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+}
+
+/* 窄布局（应用固定 480px，主题的 760px 断点内）两列变一列：已安装组收成
+   自然高（auto），npm 组拿走剩余高度（下限 120px，即旧的 max-height 档）。
+   宽布局不设行模板——两列同排、行为与改前一致，滚动仍归外层 main。 */
+@media (max-width: 760px) {
+  .kernel-card .updates-lists {
+    grid-template-rows: auto minmax(120px, 1fr);
   }
 }
 </style>

@@ -1248,7 +1248,10 @@ const FILE_BUDGETS = {
 //     `show_main_shell` 的接线与注释（check:invariants 第 17 项的由来）。
 //   · src-tauri/src/notify/activate.rs +10：`raise_workbench_if_open` 改返回
 //     bool——「没抬到工作台」必须让调用方知道，否则兜底接不上。
-const TOTAL_BUDGET = 37110;
+// 37110 → 37143（2026-10-05）：内核版本页「npm 发布」吃掉页面剩余高度——
+// VersionsPanel.vue +33 scoped 布局：面板钉满 main 可视高，纵向滚动收进
+// 发布列表内部，日常状态不再出外层滚动条（用户要求；矮窗兜底仍归 main）。
+const TOTAL_BUDGET = 37143;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
