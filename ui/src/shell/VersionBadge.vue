@@ -1,8 +1,9 @@
-<!-- 版本号徽标：左「纯色底 + tag 图标」、右「暗底 + muted 文字」的分段式。
+<!-- 版本号徽标：左「tag 图标」、右「暗底 + muted 文字」的分段式。
      侧栏品牌区与概览「当前内核」卡共用这一份——两处都在说「这是一个版本号」，
      就该长成同一张脸，抄一份就会漂（ui/AGENTS.md §图标的同一条纪律）。
      图标段有两档语气（icon prop）：accent（默认，蓝底深描边，侧栏品牌区）、
-     black（黑底浅描边，概览「当前内核」卡，2026-10-05 用户要求）。
+     black（无底色 + 黑色图形，概览「当前内核」卡；2026-10-05 两轮收敛：
+     蓝底 → 黑底 → 无底黑图形）。
      样式留在组件里而不进 theme.css：后者是反棘轮文件，只许越来越小，
      而这条规则只服务这一个组件。 -->
 <template>
@@ -35,6 +36,10 @@ defineProps({
   border-radius: 5px;
   overflow: hidden;
   font-size: 13px;
+  /* 字重必须钉住：概览那处挂在 .card h2（700）里，不钉就把粗体渗进徽标，
+     与侧栏品牌区（常规体）同字号不同字重——2026-10-05 用户指出两边字体
+     不一致，根因就是这个继承。 */
+  font-weight: 400;
 }
 /* 模板里必须写 <TagIcon>：<script setup> 只把**绑定名**暴露给模板，
    `import { Tag as TagIcon }` 绑的是 TagIcon，写 <Tag> 会被当成未知元素、
@@ -52,11 +57,11 @@ defineProps({
   color: var(--bg);
   background: var(--accent);
 }
-/* 黑色变体（概览「当前内核」卡）：纯黑方块的语气比品牌蓝更中性，描边换成
-   浅色（--text）才读得出图形——深描边压在黑底上就是一团糊。 */
+/* 黑色变体（概览「当前内核」卡）：图标段**无底色**，tag 图形本体用黑色——
+   与蓝底变体的差别只在图形与底色，分段结构与外框不变。 */
 .version-badge--black .version-badge-icon {
-  color: var(--text);
-  background: #000;
+  color: #000;
+  background: transparent;
 }
 .version-badge-text {
   padding: 0 8px;

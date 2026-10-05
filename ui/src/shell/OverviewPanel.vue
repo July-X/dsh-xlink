@@ -709,8 +709,8 @@ function goVersions() {
   gap: 8px;
   width: 100%;
 }
-/* 活动版本徽标本身走共享的 VersionBadge（分段式：黑底图标 + 暗底文字，
-   icon="black"——2026-10-05 用户要求这里用黑色图标段，侧栏品牌区保持蓝底），
+/* 活动版本徽标本身走共享的 VersionBadge（分段式：无底黑图形 + 暗底文字，
+   icon="black"——2026-10-05 用户两轮收敛后的最终形态，侧栏品牌区保持蓝底），
    侧栏品牌区那一处是同一个组件。这里只留右推这一件事。 */
 .kernel-version {
   margin-left: auto;
