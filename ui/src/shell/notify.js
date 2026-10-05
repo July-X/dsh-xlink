@@ -1,6 +1,8 @@
 // 轻提示与确认框：统一走 Element Plus 的 ElMessage / ElMessageBox。
 // WKWebView 没有原生 confirm()，ElMessageBox 是页内实现，天然可用。
+import { h, ref } from 'vue';
 import { ElMessage } from 'element-plus/es/components/message/index.mjs';
+import { ElCheckbox } from 'element-plus/es/components/checkbox/index.mjs';
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs';
 import { openExternal } from './bridge.js';
 
@@ -25,6 +27,35 @@ export function toastSuccess(message, ms = 3200) {
 
 export function toastError(message, ms = 5000) {
   toast(message, ms, 'error');
+}
+
+/// 带勾选项的长提示（2026-10-05，「收进后台」toast 的「不再提示」专用）：
+/// 文案后跟一个 checkbox，勾选**即时**回调 `onCheck`（调用方自行持久化）
+/// 并立刻收起 toast——勾了还挂着，等于邀请用户再读一遍不想看的内容。
+/// 时长给到 8s：比普通 toast 长，用户得有时间注意到并勾选。
+export function toastWithCheckbox(message, checkboxLabel, onCheck, ms = 8000) {
+  const checked = ref(false);
+  const instance = ElMessage({
+    message: h('span', { class: 'toast-with-checkbox' }, [
+      h('span', null, message),
+      h(
+        ElCheckbox,
+        {
+          modelValue: checked.value,
+          'onUpdate:modelValue': (value) => {
+            checked.value = value;
+            if (value) {
+              onCheck();
+              instance.close();
+            }
+          },
+        },
+        { default: () => checkboxLabel },
+      ),
+    ]),
+    duration: ms,
+    zIndex: NOTIFY_Z_INDEX,
+  });
 }
 
 /// 把后端/桥接错误统一成「发生了什么 + 下一步 + 去哪里看日志」的提示。

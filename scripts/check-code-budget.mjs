@@ -1273,7 +1273,10 @@ const FILE_BUDGETS = {
 // 37211 → 37215（2026-10-05）：「收进后台」提示补发判据收紧为消费式双旗
 // （登录自启后的第一次唤回静默；tray.rs 置位 +1，resident.rs 语义表测试
 // 挤进既有余量）。
-const TOTAL_BUDGET = 37215;
+// 37215 → 37245（2026-10-05）：toast 增加可勾选的「不再提示」
+// （toastWithCheckbox 通用入口 + App.vue 监听器改造，localStorage 跨启动
+// 保留、分壳生效）。+30。
+const TOTAL_BUDGET = 37245;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
