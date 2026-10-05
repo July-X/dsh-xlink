@@ -1254,7 +1254,10 @@ const FILE_BUDGETS = {
 // 37143 → 37179（2026-10-05）：发布列表边缘淡出加大范围与力度（12 → 22px、
 // 边缘 6px 全透明），并按旧注释的预言补上 JS 测溢出——mask 只在真正可滚时
 // 生效，短列表的首尾行不再被无谓削掉。VersionsPanel.vue +36。
-const TOTAL_BUDGET = 37179;
+// 37179 → 37184（同日第三轮收敛）：淡出改为静止覆盖带——滚动区域内完全
+// 正常显示，半透明只发生在上下两条 absolute 渐变带上（mask 版会把淡出吃
+// 进可视区，用户指出不对）。VersionsPanel.vue +5。
+const TOTAL_BUDGET = 37184;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
