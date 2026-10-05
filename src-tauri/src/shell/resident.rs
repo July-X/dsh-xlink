@@ -24,15 +24,37 @@ use tauri::{AppHandle, Emitter, Manager};
 /// 主管理窗口的 label（与 `tauri.conf.json`、其它命令保持一致）。
 pub const MAIN_WINDOW: &str = "main";
 
-/// 「从后台恢复时补发提示」每次进程只发一次。
+/// 「从后台恢复时补发提示」每个进程最多发一次，且只在本进程发生过用户
+/// 收起之后。
 ///
 /// 恢复只可能由用户主动触发（点托盘 / menu bar 图标、点通知横幅、点 Dock
 /// 图标），所以他此刻正看着窗口、也刚证明自己知道怎么把它叫回来——再讲一遍
-/// 「程序还在后台、点图标可重新打开」只有遮挡之嫌。首次恢复仍然要讲：那
-/// 是唯一可能形成心智模型的时刻（否则窗口连同任务栏按钮一起消失，像是崩
-/// 了）。放在 Rust 侧而不是前端，是为了让「每次启动一次」在 webview 重新
-/// 加载后依然成立。
+/// 「程序还在后台、点图标可重新打开」只有遮挡之嫌。放在 Rust 侧而不是前端，
+/// 是为了让「每次进程最多一次」在 webview 重新加载后依然成立。
 static RESTORE_HINT_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// 本进程里是否发生过一次**用户主动**的收起（点关闭按钮 / Windows 最小化）。
+/// 登录自启的隐藏不算——那不是用户做的动作，恢复时也没有「刚刚去哪了」
+/// 可解释。2026-10-05 用户反馈「提示经常触发」后的收紧：登录自启藏起壳后
+/// 的第一次唤回不再弹提示（见 [`consume_restore_hint`]）。
+static HIDDEN_BY_USER: AtomicBool = AtomicBool::new(false);
+
+/// 用户主动收起时置位。见 [`consume_restore_hint`]。
+pub fn mark_hidden_by_user() {
+    HIDDEN_BY_USER.store(true, Ordering::Relaxed);
+}
+
+/// 本次恢复要不要补发「收进后台」提示。三个条件缺一不发：
+/// ① 本进程还没讲过（`RESTORE_HINT_SHOWN`，每个进程生命周期最多一次）；
+/// ② 本进程发生过用户收起（登录自启的隐藏不算）；
+/// ③ 消费式：讲过或用过即清旗，同一轮的后续恢复一律静默。
+/// 拆成纯函数是为了能在无窗口的测试里钉住这组语义。
+fn consume_restore_hint() -> bool {
+    if RESTORE_HINT_SHOWN.swap(true, Ordering::Relaxed) {
+        return false;
+    }
+    HIDDEN_BY_USER.swap(false, Ordering::Relaxed)
+}
 
 /// 进程是否由系统登录项拉起（`--autostart`）。
 ///
@@ -121,12 +143,14 @@ pub fn show_main_shell(app: &AppHandle) {
     let _ = window.set_always_on_top(false);
     let _ = window.set_focus();
 
-    // 「程序还在后台、去哪找它」这条提示只在**从后台恢复**时补发，且每次
-    // 启动只发一次——提示画在刚被隐藏的窗口里时用户根本看不到。
-    if RESTORE_HINT_SHOWN.swap(true, Ordering::Relaxed) {
-        return;
+    // 「程序还在后台、去哪找它」这条提示的补发条件（2026-10-05 收紧，见
+    // `consume_restore_hint`）：本进程发生过一次用户收起之后的第一次恢复。
+    // 此前是「每次启动后第一次恢复」必发——登录自启把壳藏在后台，用户开机
+    // 后第一次点鲸鱼图标就被讲一遍「刚刚把窗口收进了后台」，可他本进程里
+    // 根本没收起过任何东西，提示对不上动作，体感就是「经常触发」。
+    if consume_restore_hint() {
+        let _ = app.emit("shell-restored-from-background", ());
     }
-    let _ = app.emit("shell-restored-from-background", ());
 }
 
 /// 真正退出的发起方。
@@ -168,6 +192,9 @@ pub fn intercept_close(app: &AppHandle, label: &str, api: &tauri::CloseRequestAp
     }
     api.prevent_close();
     hide_to_shell(app);
+    // 这是**用户主动**的收起：置位后，本进程第一次恢复时会补发「收进后台」
+    // 提示（登录自启的隐藏不走这里，所以开机后的第一次唤回是静默的）。
+    mark_hidden_by_user();
     true
 }
 
@@ -259,5 +286,29 @@ mod tests {
     #[test]
     fn both_release_platforms_are_supported() {
         assert!(supported(), "Windows 与 macOS 都必须有托盘 / menu bar 入口");
+    }
+
+    /// 补发判据（`consume_restore_hint`）的完整语义表：没收起过 → 静默
+    /// （登录自启后第一次唤回就在这条路上）；收起过 → 第一次恢复补发、同
+    /// 进程后续恢复静默；进程讲过一次后，再收起也不再发。直接操作两个全局
+    /// 旗（本文件外没有别的测试碰它们），结束前清干净。
+    #[test]
+    fn restore_hint_needs_a_session_hide_and_fires_once() {
+        // 没收起过：恢复也静默。
+        RESTORE_HINT_SHOWN.store(false, Ordering::Relaxed);
+        HIDDEN_BY_USER.store(false, Ordering::Relaxed);
+        assert!(!consume_restore_hint());
+        // 收起过：第一次恢复补发，同进程后续恢复静默。
+        mark_hidden_by_user();
+        RESTORE_HINT_SHOWN.store(false, Ordering::Relaxed);
+        assert!(consume_restore_hint());
+        assert!(!consume_restore_hint());
+        // 进程已经讲过：再收起也不再发。
+        RESTORE_HINT_SHOWN.store(false, Ordering::Relaxed);
+        mark_hidden_by_user();
+        assert!(!consume_restore_hint());
+        // 收尾清旗，不给其它测试留状态。
+        RESTORE_HINT_SHOWN.store(false, Ordering::Relaxed);
+        HIDDEN_BY_USER.store(false, Ordering::Relaxed);
     }
 }

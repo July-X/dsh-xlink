@@ -37,8 +37,8 @@ function callWindow(method, label, hint) {
 // 这次关闭并收进后台（内核与工作台继续运行，重新打开与退出都在图标菜单
 // 里）。「程序还在后台、去哪找它」的提示不在这里发：收起时窗口已经隐藏，
 // 页内提示没人看得见，它由 Rust 在**从后台恢复**时补发的
-// shell-restored-from-background 驱动（见 App.vue），而且每次启动只发一次
-// ——这里再讲一遍就成了重复打扰。
+// shell-restored-from-background 驱动（见 App.vue），而且只在本进程发生过
+// 用户收起之后的第一次恢复发一次——这里再讲一遍就成了重复打扰。
 function closeWindow() {
   const hint = isWindowsTitlebar
     ? '可改用系统快捷键（Alt+F4），或用右下角托盘图标的右键菜单退出'
