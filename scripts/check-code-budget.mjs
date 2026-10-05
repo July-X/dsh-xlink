@@ -1251,7 +1251,10 @@ const FILE_BUDGETS = {
 // 37110 → 37143（2026-10-05）：内核版本页「npm 发布」吃掉页面剩余高度——
 // VersionsPanel.vue +33 scoped 布局：面板钉满 main 可视高，纵向滚动收进
 // 发布列表内部，日常状态不再出外层滚动条（用户要求；矮窗兜底仍归 main）。
-const TOTAL_BUDGET = 37143;
+// 37143 → 37179（2026-10-05）：发布列表边缘淡出加大范围与力度（12 → 22px、
+// 边缘 6px 全透明），并按旧注释的预言补上 JS 测溢出——mask 只在真正可滚时
+// 生效，短列表的首尾行不再被无谓削掉。VersionsPanel.vue +36。
+const TOTAL_BUDGET = 37179;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
