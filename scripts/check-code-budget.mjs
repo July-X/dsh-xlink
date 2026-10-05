@@ -1257,7 +1257,11 @@ const FILE_BUDGETS = {
 // 37179 → 37184（同日第三轮收敛）：淡出改为静止覆盖带——滚动区域内完全
 // 正常显示，半透明只发生在上下两条 absolute 渐变带上（mask 版会把淡出吃
 // 进可视区，用户指出不对）。VersionsPanel.vue +5。
-const TOTAL_BUDGET = 37184;
+// 37184 → 37201（同日第四轮）：带子挪到盒子**外侧**并弧形外扩（用户手绘
+// 示意）——外溢视口（等量负 margin + padding 把滚动窗口越出边框 20px）让
+// 行滚出边框仍可见，弧形带在盒子外接手遮盖；标题行与磁盘占用抬 z:2 保
+// 可点可见。VersionsPanel.vue +17。
+const TOTAL_BUDGET = 37201;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
