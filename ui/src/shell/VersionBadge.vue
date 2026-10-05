@@ -1,10 +1,12 @@
-<!-- 版本号徽标：左「蓝底 + 深色 tag 图标」、右「暗底 + muted 文字」的分段式。
+<!-- 版本号徽标：左「纯色底 + tag 图标」、右「暗底 + muted 文字」的分段式。
      侧栏品牌区与概览「当前内核」卡共用这一份——两处都在说「这是一个版本号」，
      就该长成同一张脸，抄一份就会漂（ui/AGENTS.md §图标的同一条纪律）。
+     图标段有两档语气（icon prop）：accent（默认，蓝底深描边，侧栏品牌区）、
+     black（黑底浅描边，概览「当前内核」卡，2026-10-05 用户要求）。
      样式留在组件里而不进 theme.css：后者是反棘轮文件，只许越来越小，
      而这条规则只服务这一个组件。 -->
 <template>
-  <span class="version-badge">
+  <span class="version-badge" :class="{ 'version-badge--black': icon === 'black' }">
     <span class="version-badge-icon"><TagIcon :size="13" :stroke-width="2.2" /></span>
     <span class="version-badge-text"><slot /></span>
   </span>
@@ -12,6 +14,15 @@
 
 <script setup>
 import { Tag as TagIcon } from '@lucide/vue';
+
+defineProps({
+  /** 图标段配色：'accent'（蓝底，默认）| 'black'（黑底，概览当前内核卡）。 */
+  icon: {
+    type: String,
+    default: 'accent',
+    validator: (value) => ['accent', 'black'].includes(value),
+  },
+});
 </script>
 
 <style scoped>
@@ -40,6 +51,12 @@ import { Tag as TagIcon } from '@lucide/vue';
   padding: 0 5px;
   color: var(--bg);
   background: var(--accent);
+}
+/* 黑色变体（概览「当前内核」卡）：纯黑方块的语气比品牌蓝更中性，描边换成
+   浅色（--text）才读得出图形——深描边压在黑底上就是一团糊。 */
+.version-badge--black .version-badge-icon {
+  color: var(--text);
+  background: #000;
 }
 .version-badge-text {
   padding: 0 8px;
