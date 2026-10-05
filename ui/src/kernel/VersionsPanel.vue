@@ -496,13 +496,14 @@ function formatBytes(bytes) {
    弧形（用户手绘示意）：覆盖力沿水平方向向两侧衰减（mask 90deg 渐变），
    中间外扩最深、两端收敛——而不是上下两条等宽直线。
 
-   **带子本身必须半透明**（2026-10-05 用户指出实色块「和原本的 UI 不匹
-   配」）：背景是网格纹理 + 半透明玻璃卡片，不透明实色盖上去就是一块
-   纹理消失的异质矩形。所以峰值只到 0.9、外缘回落到 0.15——纹理从底下
-   透出，外缘渐变回近乎透明再交给裁剪，不出现硬切边。遮盖色的色相取
-   带子落点处的背景合成色：上带落在卡片内（白 5% 叠 --bg ≈ #171c2b），
-   下带落在面板底（--bg = #0b1020）；主题是固定深色（无浅色变体），
-   字面量与注释配对，主题改动时这里要跟着改。 */
+   **带子本身必须半透明、渐变单调向外加重**（2026-10-05 用户两轮纠正）：
+   背景是网格纹理 + 半透明玻璃卡片，不透明实色盖上去就是一块纹理消失的
+   异质矩形——所以峰值只到 0.9，纹理隐约透出，与玻璃 UI 匹配；方向为
+   盒边处全透明（内容正常）、**越往外遮得越重，外缘最重**（曾在外缘回落
+   到 0.15，视觉上成了「往外越来越淡」，方向反了，用户指出）。遮盖色的
+   色相取带子落点处的背景合成色：上带落在卡片内（白 5% 叠 --bg ≈
+   #171c2b），下带落在面板底（--bg = #0b1020）；主题是固定深色（无浅色
+   变体），字面量与注释配对，主题改动时这里要跟着改。 */
 .release-fade {
   position: absolute;
   left: 1px;
@@ -516,22 +517,12 @@ function formatBytes(bytes) {
 
 .release-fade--top {
   top: calc(-1 * var(--release-bleed, 12px));
-  background: linear-gradient(
-    to top,
-    transparent 0,
-    rgba(23, 28, 43, 0.9) 70%,
-    rgba(23, 28, 43, 0.15) 100%
-  );
+  background: linear-gradient(to top, transparent 0, rgba(23, 28, 43, 0.9) 100%);
 }
 
 .release-fade--bottom {
   bottom: calc(-1 * var(--release-bleed, 12px));
-  background: linear-gradient(
-    to bottom,
-    transparent 0,
-    rgba(11, 16, 32, 0.9) 70%,
-    rgba(11, 16, 32, 0.15) 100%
-  );
+  background: linear-gradient(to bottom, transparent 0, rgba(11, 16, 32, 0.9) 100%);
 }
 
 /* 外溢视口：只在真正溢出时展开（不溢出时盒子尺寸与改前一致）。 */
