@@ -300,13 +300,21 @@ pub fn run() {
                 );
             }
             // 登录自启拉起时不显示面板：开机弹一个窗口挡在用户面前，正是
-            // 自动启动最招人烦的地方。必须在**任何窗口可见之前**判定并隐藏，
+            // 自动启动最招人烦的地方。必须在**任何窗口可见之前**判定并收起，
             // 否则用户会看到面板闪一下再消失。图标已经建好（上面），所以
-            // 隐藏之后程序仍在后台，菜单栏 / 托盘图标是全部可见痕迹。
+            // 收起之后程序仍在后台，菜单栏 / 托盘图标是全部可见痕迹。
+            //
+            // 收起必须走 [`shell::resident::hide_to_shell`] 这一份实现，不能
+            // 裸调 `window.hide()`：那份实现还会在 macOS 上把激活等级降到
+            // Accessory（Windows 上补 skip-taskbar）。只 hide 的话进程带着
+            // Regular 等级、零可见窗口地留在 Dock 里——图标上挂着「在运行」
+            // 的小点，点它又什么都不会发生（`RunEvent::Reopen` 原先只抬工作
+            // 台）。2026-10-05 重启实测：登录项拉起后 `lsappinfo` 报该进程
+            // `type="Foreground"`，Dock 常驻图标 + 无窗口，正是「Dock 有启动
+            // 状态、看不到主界面」报告的直接成因。接线由 check:invariants
+            // 第 17 项钉住。
             if shell::resident::started_by_autostart() {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
-                }
+                shell::resident::hide_to_shell(app.handle());
                 eprintln!(
                     "dsh-xlink: 由系统登录项拉起，管理面板已收进后台；\
                      点菜单栏 / 托盘图标可打开界面。"
@@ -563,13 +571,17 @@ pub fn run() {
                 shell::tray::refresh_icon(handle);
             }
         }
-        // macOS：应用被重新打开（点 Dock 图标、点通知横幅）。系统此时已经把
-        // 壳带回前台了，再把**工作台**一并抬到台前——通知横幅点一下就该看到
-        // 任务结果，而不是停在管理面板上。工作台没开过时什么都不做（见
-        // `notify::activate::raise_workbench_if_open` 的理由）。
+        // macOS：应用被重新打开（点 Dock 图标、点通知横幅）。工作台开着就把它
+        // 抬到台前——通知横幅点一下就该看到任务结果，而不是停在管理面板上。
+        // 工作台没开时**必须自己把管理面板叫回来**：macOS 的激活只把进程带到
+        // 前台，不会替我们显示 `hide()` 掉的窗口；缺了这步兜底，Dock 上那枚
+        // 「在运行」的图标点了没反应（2026-10-05 重启实测）。接线由
+        // check:invariants 第 17 项钉住。
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen { .. } = &event {
-            notify::activate::raise_workbench_if_open(handle);
+            if !notify::activate::raise_workbench_if_open(handle) {
+                shell::resident::show_main_shell(handle);
+            }
         }
         if let tauri::RunEvent::Exit = event {
             // 回收内核，使 app 退出后不会留下仍在服务的 dsh web 进程。
