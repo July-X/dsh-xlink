@@ -1261,7 +1261,9 @@ const FILE_BUDGETS = {
 // 示意）——外溢视口（等量负 margin + padding 把滚动窗口越出边框 20px）让
 // 行滚出边框仍可见，弧形带在盒子外接手遮盖；标题行与磁盘占用抬 z:2 保
 // 可点可见。VersionsPanel.vue +17。
-const TOTAL_BUDGET = 37201;
+// 37201 → 37202（同日）：外溢深度 20 → 15px（20 压到上下文本），五处引用
+// 收敛为 --release-bleed 一个变量（带回退值，css-var 门禁要求）。
+const TOTAL_BUDGET = 37202;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
