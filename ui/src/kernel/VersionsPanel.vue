@@ -468,6 +468,10 @@ function formatBytes(bytes) {
   /* 边缘淡出带的定位基准：带子 absolute 盖在滚动区的上下边界上（见下方
      `.release-fade`）。 */
   position: relative;
+  /* 外溢/淡出的统一深度（2026-10-05：20px 会压到上下文本，收到 15px）。
+     外溢视口 padding/margin 与带子高度/偏移全部引用这一个变量，调深度
+     只改这一行。 */
+  --release-bleed: 15px;
 }
 
 .release-list {
@@ -501,7 +505,7 @@ function formatBytes(bytes) {
   position: absolute;
   left: 1px;
   right: 1px;
-  height: 20px;
+  height: var(--release-bleed, 15px);
   pointer-events: none;
   z-index: 1;
   -webkit-mask: linear-gradient(90deg, transparent 0, #000 14%, #000 86%, transparent 100%);
@@ -509,22 +513,22 @@ function formatBytes(bytes) {
 }
 
 .release-fade--top {
-  top: -20px;
+  top: calc(-1 * var(--release-bleed, 15px));
   background: linear-gradient(to top, transparent 0, #171c2b 100%);
   background: linear-gradient(to top, transparent 0, color-mix(in srgb, #fff 5%, var(--bg)) 100%);
 }
 
 .release-fade--bottom {
-  bottom: -20px;
+  bottom: calc(-1 * var(--release-bleed, 15px));
   background: linear-gradient(to bottom, transparent 0, var(--bg) 100%);
 }
 
 /* 外溢视口：只在真正溢出时展开（不溢出时盒子尺寸与改前一致）。 */
 .release-list--bleed {
-  padding-top: 20px;
-  padding-bottom: 20px;
-  margin-top: -20px;
-  margin-bottom: -20px;
+  padding-top: var(--release-bleed, 15px);
+  padding-bottom: var(--release-bleed, 15px);
+  margin-top: calc(-1 * var(--release-bleed, 15px));
+  margin-bottom: calc(-1 * var(--release-bleed, 15px));
 }
 
 /* 「npm 发布」标题行抬到外溢视口与上侧淡出带（z:1）之上：行滚出上边框的
