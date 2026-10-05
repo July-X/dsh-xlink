@@ -468,10 +468,10 @@ function formatBytes(bytes) {
   /* 边缘淡出带的定位基准：带子 absolute 盖在滚动区的上下边界上（见下方
      `.release-fade`）。 */
   position: relative;
-  /* 外溢/淡出的统一深度（2026-10-05：20px 会压到上下文本，收到 15px）。
-     外溢视口 padding/margin 与带子高度/偏移全部引用这一个变量，调深度
-     只改这一行。 */
-  --release-bleed: 15px;
+  /* 外溢/淡出的统一深度（2026-10-05：20 → 15 → 12px，20/15 都会压到上下
+     文本）。外溢视口 padding/margin 与带子高度/偏移全部引用这一个变量，
+     调深度只改这一行。 */
+  --release-bleed: 12px;
 }
 
 .release-list {
@@ -484,28 +484,30 @@ function formatBytes(bytes) {
   padding-right: 4px;
 }
 
-/* 边缘淡出带（2026-10-05 第三轮收敛的最终形态）：带子在盒子的**外侧**，
+/* 边缘淡出带（2026-10-05 第四轮收敛的最终形态）：带子在盒子的**外侧**，
    方向朝滚动区域外扩——行滚出盒子边框后并不消失，而是进入外溢区，被
    弧形带逐渐盖住直至隐去。滚动区域内自始至终完全正常。
 
    外溢区的来历：`.release-list--bleed` 用「等量负 margin + padding」把
-   滚动窗口上下各外推 20px（布局尺寸不变——负 margin 恰好抵消 padding），
-   行因此能滚出边框仍可见；外侧带子接手遮盖。带子只在真正溢出时渲染
+   滚动窗口上下各外推（布局尺寸不变——负 margin 恰好抵消 padding），行
+   因此能滚出边框仍可见；外侧带子接手遮盖。带子只在真正溢出时渲染
    （模板侧 v-if），pointer-events: none 防止挡住底下内容的点击。
 
    弧形（用户手绘示意）：覆盖力沿水平方向向两侧衰减（mask 90deg 渐变），
-   中间外扩最深、两端收敛——而不是上下两条等宽直线。上下两带的遮盖色
-   分别取带子落点处的背景：上带落在卡片内（白 5% 叠 --bg 的合成色，
-   color-mix 现算，旧引擎回退到等值字面量），下带落在面板底（--bg）。
+   中间外扩最深、两端收敛——而不是上下两条等宽直线。
 
-   遮挡关系：标题行（.list-head-with-logo）与磁盘占用块显式抬到 z:2，
-   压过外溢区与带子——它们的文字与按钮必须可点、可见；行残影从它们
-   底下穿过。 */
+   **带子本身必须半透明**（2026-10-05 用户指出实色块「和原本的 UI 不匹
+   配」）：背景是网格纹理 + 半透明玻璃卡片，不透明实色盖上去就是一块
+   纹理消失的异质矩形。所以峰值只到 0.9、外缘回落到 0.15——纹理从底下
+   透出，外缘渐变回近乎透明再交给裁剪，不出现硬切边。遮盖色的色相取
+   带子落点处的背景合成色：上带落在卡片内（白 5% 叠 --bg ≈ #171c2b），
+   下带落在面板底（--bg = #0b1020）；主题是固定深色（无浅色变体），
+   字面量与注释配对，主题改动时这里要跟着改。 */
 .release-fade {
   position: absolute;
   left: 1px;
   right: 1px;
-  height: var(--release-bleed, 15px);
+  height: var(--release-bleed, 12px);
   pointer-events: none;
   z-index: 1;
   -webkit-mask: linear-gradient(90deg, transparent 0, #000 14%, #000 86%, transparent 100%);
@@ -513,14 +515,23 @@ function formatBytes(bytes) {
 }
 
 .release-fade--top {
-  top: calc(-1 * var(--release-bleed, 15px));
-  background: linear-gradient(to top, transparent 0, #171c2b 100%);
-  background: linear-gradient(to top, transparent 0, color-mix(in srgb, #fff 5%, var(--bg)) 100%);
+  top: calc(-1 * var(--release-bleed, 12px));
+  background: linear-gradient(
+    to top,
+    transparent 0,
+    rgba(23, 28, 43, 0.9) 70%,
+    rgba(23, 28, 43, 0.15) 100%
+  );
 }
 
 .release-fade--bottom {
-  bottom: calc(-1 * var(--release-bleed, 15px));
-  background: linear-gradient(to bottom, transparent 0, var(--bg) 100%);
+  bottom: calc(-1 * var(--release-bleed, 12px));
+  background: linear-gradient(
+    to bottom,
+    transparent 0,
+    rgba(11, 16, 32, 0.9) 70%,
+    rgba(11, 16, 32, 0.15) 100%
+  );
 }
 
 /* 外溢视口：只在真正溢出时展开（不溢出时盒子尺寸与改前一致）。 */
