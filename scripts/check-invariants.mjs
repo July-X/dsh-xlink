@@ -619,17 +619,34 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
 // 同样不受影响。
 {
   const srcDir = join(root, 'ui/src');
-  const defined = new Set(
-    [...readFileSync(join(srcDir, 'theme.css'), 'utf8').matchAll(/^\s*(--[a-z0-9-]+)\s*:/gm)].map(
-      (m) => m[1],
-    ),
-  );
+  // **定义**来自所有 `.css` 与 `.vue` 里的 `:root`，不再只认 theme.css。
+  //
+  // 2026-10-06：这条判据写的时候全仓只有 theme.css 一份样式表，定义收在它
+  // 上面是「唯一定义处」这个事实的**记述**，不是一条设计决定。而浮层层级
+  // 阶梯（--z-*）按审查意见 P1-01 必须写在一处，而 theme.css 恰在反棘轮上限
+  // （3001/3001）上一行都加不了——那份阶梯于是落进 diagnostics.css。
+  //
+  // 把它改成扫全部 CSS 是**修正**而不是放宽：门禁要保的不变量是「没有静默失效
+  // 的 var() 引用」，而 `:root` 自定义属性本来就是全局的，定义在哪个样式表里
+  // 运行时没有区别。这个改动只可能减少假阳性，不可能放过一个真缺失。
+  //
+  // `.vue` 只认 `:root` 内的定义：组件的 `<style scoped>` 里定义的变量是**局部
+  // 的**，别的文件用不到，收进来会让判据失明。
+  const defined = new Set();
+  const collect = (text, onlyRoot) => {
+    const source = onlyRoot
+      ? [...text.matchAll(/:root\s*\{([^}]*)\}/g)].map((m) => m[1]).join('\n')
+      : text;
+    for (const m of source.matchAll(/(^|[;{\s])(--[a-z0-9-]+)\s*:/g)) defined.add(m[2]);
+  };
+  for (const file of walk(srcDir, ['.css'])) collect(readFileSync(file, 'utf8'), false);
+  for (const file of walk(srcDir, ['.vue'])) collect(readFileSync(file, 'utf8'), true);
   const missing = new Map();
   for (const file of walk(srcDir, ['.css', '.vue', '.js'])) {
     const text = readFileSync(file, 'utf8');
     for (const match of text.matchAll(/var\(\s*(--[a-z0-9-]+)\s*([,)])/g)) {
       // 名字后面跟逗号 = 带了回退值（`var(--x, #999)`），有定义与否都不会
-      // 静默失效；跟右括号 = 没给回退，才需要 theme.css 里真有定义。
+      // 静默失效；跟右括号 = 没给回退，才需要真有定义。
       if (match[2] === ',') continue;
       const name = match[1];
       if (defined.has(name) || missing.has(name)) continue;
@@ -640,7 +657,7 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
     for (const [name, where] of missing) {
       fail(
         'css-var',
-        `${where} 引用了 ${name}，但 theme.css 没有定义它（且未给回退值）——整条声明会被浏览器丢弃并继承父级，样式静默失效`,
+        `${where} 引用了 ${name}，但没有任何样式表在 :root 里定义它（且未给回退值）——整条声明会被浏览器丢弃并继承父级，样式静默失效`,
       );
     }
   } else {

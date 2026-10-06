@@ -246,22 +246,48 @@ test('启动自检发现有可升级版本时提示一次，手动点击则不�
 });
 
 test('提示与确认框显式抬到进度浮层之上', async () => {
-  // P2-11：Element Plus 的默认 z-index 基线是 2000 + 自增计数，恒低于进度浮层的
-  // 3000。长任务进行中弹出的确认框（托盘「退出」的二次确认、补丁的「清除记录」
+  // P2-11：Element Plus 的默认 z-index 基线是 2000 + 自增计数，恒低于进度浮层。
+  // 长任务进行中弹出的确认框（托盘「退出」的二次确认、补丁的「清除记录」
   // 确认）会被浮层盖住且点不到，而任务未失败时浮层没有关闭按钮——用户看到的是
   // "点了没反应"。这里钉住两侧的关系：notify 显式给 zIndex，且高于浮层。
+  //
+  // 2026-10-06（审查 P1-01）：`.progress-overlay` 的 z-index 从字面量改成了
+  // `var(--z-progress)`，浮层层级改成从 CSS 阶梯读。这条断言随之改成**比较两边
+  // 解析出来的值**——它现在多钉住一件事：notify 的兜底字面量必须与 CSS 阶梯
+  // 一致，否则无 DOM 环境下（单测）算出来的层级会与真机不同。
   const fs = await import('node:fs');
   const notify = fs.readFileSync('ui/src/shell/notify.js', 'utf8');
   assert.match(notify, /zIndex: NOTIFY_Z_INDEX/, 'ElMessage 必须显式指定 zIndex');
   assert.match(notify, /NOTIFY_Z_INDEX = PROGRESS_OVERLAY_Z_INDEX \+ 1000/);
+  assert.match(notify, /getPropertyValue\('--z-progress'\)/, '浮层层级必须从 CSS 阶梯读，不能在 JS 里再写一份');
 
-  const css = fs.readFileSync('ui/src/theme.css', 'utf8');
-  const overlayMatch = css.match(/\.progress-overlay\s*\{[^}]*z-index:\s*(\d+)/s);
-  assert.ok(overlayMatch, '必须能从 theme.css 读到 .progress-overlay 的 z-index');
-  const notifyMatch = notify.match(/PROGRESS_OVERLAY_Z_INDEX = (\d+)/);
-  assert.ok(notifyMatch, 'notify.js 必须声明浮层 z-index 常量');
+  const diag = fs.readFileSync('ui/src/diagnostics/diagnostics.css', 'utf8');
+  const ladder = (name) => {
+    const match = diag.match(new RegExp(`--${name}:\\s*(\\d+)`));
+    return match ? Number(match[1]) : null;
+  };
+  const progress = ladder('z-progress');
+  const diagnosis = ladder('z-diagnosis');
+  assert.ok(progress, 'CSS 阶梯里必须有 --z-progress');
+  assert.ok(diagnosis, 'CSS 阶梯里必须有 --z-diagnosis');
+
+  // 诊断层必须高于进度浮层，否则「查看启动诊断」点进去被浮层的遮罩盖住
+  // （审查 P1-01 的正题）。
   assert.ok(
-    Number(notifyMatch[1]) + 1000 > Number(overlayMatch[1]),
-    '提示层级必须高于浮层'
+    diagnosis > progress,
+    `诊断层(${diagnosis})必须高于进度浮层(${progress})`
+  );
+  // 提示还要高于诊断层：确认框可能是在诊断层里弹的。
+  assert.ok(
+    progress + 1000 > diagnosis,
+    `提示层级(${progress + 1000})必须高于诊断层(${diagnosis})`
+  );
+  // notify 的兜底字面量与 CSS 阶梯一致。
+  const fallback = notify.match(/const fallback = (\d+)/);
+  assert.ok(fallback, 'notify.js 必须声明读不到 CSS 时的兜底层级');
+  assert.equal(
+    Number(fallback[1]),
+    progress,
+    'notify 的兜底字面量与 CSS 阶梯不一致：单测无 DOM 时算出的层级会与真机不同'
   );
 });

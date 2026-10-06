@@ -326,16 +326,46 @@ pub fn latest(family: &str, instance: &str, kind: &str) -> Option<RunSummary> {
 /// 运行记录会被导出、可能被用户整份贴进求助帖。折叠 `~/` 之外的完整 home
 /// 路径是隐私要求（截图求助时暴露用户名），令牌形状则是**内容**要求——
 /// 日志里出现 `sk-…` 的概率不为零，而这份 JSON 的读者是用户和论坛。
+///
+/// **home 取 [`crate::shell::paths::dirs_home`] 而不是裸读 `$HOME`**：Windows
+/// 上 `HOME` 常常根本不设（只有 `USERPROFILE`），裸读会让
+/// `C:\Users\用户名\…` 原样留在记录里，而内核日志路径恰恰来自那里。2026-10-06
+/// 审查（docs/runtime-diagnostics-review-2026-10-06.md P1-07）抓到的就是这一条。
+/// 路径层那份解析已经处理了 Unix / Windows 两边，这里不重写。
 pub fn sanitize(text: &str) -> String {
+    sanitize_with_roots(text, &home_roots())
+}
+
+/// 需要折叠的路径根：用户 home，加上可能覆盖它的 `DSH_XLINK_HOME`。
+fn home_roots() -> Vec<PathBuf> {
+    let mut roots = vec![crate::shell::paths::dirs_home()];
+    if let Some(custom) = std::env::var_os("DSH_XLINK_HOME") {
+        roots.push(PathBuf::from(custom));
+    }
+    roots
+}
+
+/// 真正的折叠逻辑，**不读环境**。
+///
+/// 拆出来不是为了好看：它让 Windows / 自定义数据根这两条路径能被**纯函数
+/// 测试**覆盖。第一版是直接 `set_var("HOME")` / `remove_var("HOME")` 写测试的，
+/// 结果那条 `remove_var` 漏到了并发的 `shell::autostart` 测试里（它断言
+/// 「HOME 一定存在」），一次 `cargo test` 红了四条不相关的用例。仓库自己的
+/// 纪律写着「裸 `std::env::set_var` 拦不住别的测试正持着同一把 env 锁」——
+/// 这次是它自己撞上了。
+fn sanitize_with_roots(text: &str, roots: &[PathBuf]) -> String {
     const MAX_CHARS: usize = 480;
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    // 长的先折：两者有包含关系时（数据根就在 home 下），先折短的会让长的
+    // 永远匹配不上——`~/…` 已经把前缀替掉了。
+    let mut ordered: Vec<&PathBuf> = roots.iter().collect();
+    ordered.sort_by_key(|path| std::cmp::Reverse(path.display().to_string().len()));
     let mut out = text.to_string();
-    if !home.as_os_str().is_empty() {
-        let home = home.display().to_string();
-        if home.len() > 1 {
-            out = out.replace(&home, "~");
+    for root in ordered {
+        let root = root.display().to_string();
+        // 长度 1 的根（Windows 的 `C:\`、某些环境下的 `/`）折掉会把整台机器
+        // 上所有路径都变成 `~/…`，比不折更糟。
+        if root.len() > 1 {
+            out = out.replace(&root, "~");
         }
     }
     out = strip_token_shapes(&out);
@@ -437,42 +467,18 @@ fn text_at(chars: &[char], start: usize, needle: &str) -> bool {
 
 /// 生成运行记录 id：`run-<日期>-<时间>-<随机后缀>`。
 ///
-/// 日期与时间取**本地时区**（`current_date_string`），因为它出现在用户看得到
-/// 的地方；而排序永远用 [`DiagnosticRun::started_at_ms`]，不解析这个字符串。
+/// 日期与时间取**本地时区**（`shell::localtime` 的三个格式化，共用同一份
+/// 偏移换算），因为它出现在用户看得到的地方；
+/// 而排序永远用 [`DiagnosticRun::started_at_ms`]，不解析这个字符串——**格式
+/// 不变**，历史记录照旧可读。
 pub fn new_run_id() -> String {
     use std::time::UNIX_EPOCH;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
+    let now = SystemTime::now();
+    let since_epoch = now.duration_since(UNIX_EPOCH).unwrap_or_default();
     let date = crate::shell::process::current_date_string();
-    let stamp = local_hms(secs);
-    let nanos = now.subsec_nanos() % 0xffff;
-    format!(
-        "run-{}-{}-{:04x}",
-        date.replace('-', ""),
-        stamp.replace(':', ""),
-        nanos
-    )
-}
-
-/// 本地 `HHMMSS`。
-fn local_hms(secs: u64) -> String {
-    let local = secs + local_offset_secs(secs);
-    let day = local % 86_400;
-    format!("{:02}{:02}{:02}", day / 3600, (day % 3600) / 60, day % 60)
-}
-
-/// 本地时区相对 UTC 的偏移秒数。Rust std 没有时区 API，这里按「本地时间 =
-/// UTC + 偏移」反解一次：把 epoch 秒当本地时间读一遍 UTC 时钟，得到的就是
-/// 该时刻的本地分量。
-fn local_offset_secs(secs: u64) -> u64 {
-    use std::time::UNIX_EPOCH;
-    let local = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    local.saturating_sub(secs)
+    let stamp = crate::shell::localtime::local_hms_string(now);
+    let nanos = since_epoch.subsec_nanos() % 0xffff;
+    format!("run-{}-{}-{:04x}", date.replace('-', ""), stamp, nanos)
 }
 
 // --- 写入 ------------------------------------------------------------------
@@ -996,6 +1002,99 @@ mod tests {
         assert!(!text.contains("sk-abcdef1234567890"), "key 必须被抹掉");
         assert!(!text.contains("ghp_secretvalue"), "token 必须被抹掉");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sanitize_folds_a_windows_user_profile_path() {
+        // 审查 P1-07：Windows 上 `HOME` 常常根本不设，只有 `USERPROFILE`。
+        // 裸读 `$HOME` 的实现会把 `C:\Users\用户名\…` 原样留在运行记录里，
+        // 而内核日志路径恰恰来自那里——用户整份贴进求助帖就等于贴了用户名。
+        //
+        // **纯函数测试，不改环境变量**：第一版用 `remove_var("HOME")` 模拟
+        // Windows，那条 remove 漏到了并发的 `shell::autostart` 用例，一次
+        // cargo test 红了四条与本功能无关的测试。
+        let profile = PathBuf::from(r"C:\Users\tester\AppData");
+        let text = sanitize_with_roots(
+            r"内核日志在 C:\Users\tester\AppData\Local\dsh\logs\kernel.log",
+            &[profile],
+        );
+        assert!(
+            !text.contains("tester"),
+            "Windows 用户名不能留在运行记录里：{text}"
+        );
+        assert!(text.contains(r"~\Local\dsh\logs\kernel.log"), "{text}");
+    }
+
+    #[test]
+    fn sanitize_folds_a_relocated_data_root_that_carries_a_user_name() {
+        // `DSH_XLINK_HOME` 能把数据根搬到任意目录（外置盘、测试目录），那条
+        // 路径里同样可能带用户名——只折 home 折不掉它。
+        let moved = PathBuf::from("/Volumes/外置盘/tester-home/data");
+        let text = sanitize_with_roots(
+            "/Volumes/外置盘/tester-home/data/dsh/desktop/active.txt",
+            &[moved],
+        );
+        assert!(!text.contains("tester"), "{text}");
+        assert!(text.contains("~/dsh/desktop/active.txt"), "{text}");
+    }
+
+    #[test]
+    fn a_longer_root_is_folded_before_a_shorter_one_containing_it() {
+        // 数据根就在 home 下时，两者有包含关系。先折短的会让长的永远匹配不上
+        // ——`~/…` 已经把前缀替掉了，而那条路径里带的用户名也就留下了。
+        let home = PathBuf::from("/Users/tester");
+        let moved = PathBuf::from("/Users/tester/external/data");
+        let text = sanitize_with_roots(
+            "/Users/tester/external/data/dsh/active.txt",
+            &[home.clone(), moved.clone()],
+        );
+        assert!(!text.contains("tester"), "{text}");
+        // 短的根仍然能折它自己那部分（长根没覆盖到的地方）。
+        assert_eq!(
+            sanitize_with_roots("/Users/tester/notes.txt", &[home, moved]),
+            "~/notes.txt"
+        );
+    }
+
+    #[test]
+    fn a_one_character_root_is_never_folded() {
+        // Windows 的 `C:\`、某些环境下的 `/`：折掉它会把整台机器上所有路径
+        // 都变成 `~/…`，那比不折更糟——证据直接失效。
+        let text = sanitize_with_roots("C:\\Users\\tester\\notes.txt", &[PathBuf::from("C:\\")]);
+        assert!(text.contains("tester"), "{text}");
+    }
+
+    #[test]
+    fn a_run_id_uses_local_time_for_both_its_date_and_its_clock() {
+        // 审查 P2-04：日期按本地偏移、时刻按「当前时间 - 现在」估的偏移，
+        // 两者在东八区会差 8 小时——runId 里出现「昨天的日期配明天的时间」。
+        // 断言的是**两者自洽**（同一份偏移），不硬编码某个时区的值，那会让
+        // 测试在 CI 换时区后假红。
+        let id = new_run_id();
+        let rest = id.strip_prefix("run-").expect("runId 格式未变");
+        let mut parts = rest.split('-');
+        let date = parts.next().expect("日期段");
+        let clock = parts.next().expect("时刻段");
+        assert_eq!(date.len(), 8, "日期必须是 YYYYMMDD：{id}");
+        assert_eq!(clock.len(), 6, "时刻必须是 HHMMSS：{id}");
+        let hour: u32 = clock[..2].parse().expect("小时");
+        assert!(hour < 24, "小时必须在本地时区的取值范围内：{id}");
+        let minute: u32 = clock[2..4].parse().expect("分钟");
+        assert!(minute < 60, "{id}");
+
+        // 本地日期与本地时刻必须来自同一次换算：把此刻的本地日期还原出来，
+        // 应当与 id 里的日期段一致（同一天内成立；跨午夜那一瞬不成立，
+        // 所以只断言格式与取值范围，不做跨日断言）。
+        let local_date = crate::shell::process::current_date_string().replace('-', "");
+        if local_date == date {
+            // 同一天：小时应当接近现在的小时（±1 容忍跨小时的取整）。
+            let local_clock = crate::shell::localtime::local_hms_string(SystemTime::now());
+            let now_hour: u32 = local_clock[..2].parse().unwrap_or(0);
+            assert!(
+                (hour as i32 - now_hour as i32).abs() <= 1,
+                "同一天里 runId 的时刻 {clock} 与本地现在 {local_clock} 对不上"
+            );
+        }
     }
 
     #[test]

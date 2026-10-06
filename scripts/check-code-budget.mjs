@@ -246,7 +246,8 @@ const FILE_BUDGETS = {
   // 不在 HEAD 的树里，得逐个登记。
   // 15 → 19：2026-10-02 后台常驻追加 3 条（autostart / menu_bar[macos] /
   // resident），tray 保留 cfg(windows)。仍是一层路由，没有实现。
-  'src-tauri/src/shell/mod.rs': 19,
+  // 19 → 20：localtime 进来了（见那条）。仍是一层路由，没有实现。
+  'src-tauri/src/shell/mod.rs': 20,
   'src-tauri/src/kernel/mod.rs': 10,
   // 10 → 11：2026-10-05 追加 catalog（插件目录检索层）。仍是一层路由，
   // 没有实现——同 shell/mod.rs 那条 15 → 19 的先例。
@@ -395,6 +396,12 @@ const FILE_BUDGETS = {
   // 「结论会骗人」的高发处。
   // 249 → 252 同理：cargo fmt 的换行，不是新增逻辑。
   'src-tauri/src/diagnostics/operation_run.rs': 252,
+  // 本地日历时间的换算与格式化（审查 P2-04）。**独立成模块而不是留在
+  // process.rs**：那份是反棘轮文件只许变小，而加东西的唯一出路是拆；
+  // 更重要的是它此前有三份实现（进程杂项、事件日志、运行记录 id），
+  // 三处的时区回退路径不同，于是两份时间戳对不齐——而它们的作用恰恰是
+  // 互相对齐。约 15 行是单测（三格式同源、纪元前回退）。
+  'src-tauri/src/shell/localtime.rs': 59,
   // 快照与恢复的 Tauri 命令壳（从 commands.rs 搬出，见那条）。三条命令构成
   // 一个完整动作：看见回退点 → 看差异 → 执行。留在 commands.rs 时那份文件
   // 因接上运行记录而越过反棘轮的 2047；门禁给出的唯一出路是拆，与其为 4 行
@@ -451,11 +458,18 @@ const FILE_BUDGETS = {
   // 150 → 169：恢复 / 排查诊断的打开与加载。四条加载路径的取数逻辑抽成
   // 一个 fetchRunDetail——它们只差 kind、loading key 与空态文案三点，复制
   // 四份之后改一处忘一处，漂掉的恰恰是用户第一次看到的那句话。
-  'ui/src/diagnostics/diagnostics.js': 169,
+  // 169 → 191：按 kind 分派的统一入口（审查 P1-05）、记录加载时落证据路径
+  // （P1-02）、解析器带出信封里的 runId（P2-01）。
+  'ui/src/diagnostics/diagnostics.js': 191,
   // 诊断层的**动作代理**（设计 §8.2）。与 `diagnostics.js` 分开是因为职责
   // 不同：那边管「现在在看什么」，这边管「用户点了会发生什么」——混在一起
   // 每次加动作都要重新读一遍状态定义才能确认没写错层。
-  'ui/src/diagnostics/diagnostic-actions.js': 60,
+  // 60 → 67：补齐 P2-02 点名的动作（打开事故 / 打开工作台 / 恢复变更前 /
+  // 刷新内核状态）。本文件开头写着「组件只调这里的动作」，而剩下那一半靠
+  // 自觉——下一个人一定会直接 import，所以先补齐再说。另有 P1-05 验收里的
+  // 「操作完成后刷新最近操作」：预检与启动跑完各刷一次，否则概览那张卡停在
+  // 上一次的结果上，而那正是「用户可能还没意识到插件已装上」的那类误导。
+  'ui/src/diagnostics/diagnostic-actions.js': 67,
   // 阶段 / 状态 / 归因的中文名与语义色。**未知取值必须显式显示**——丢掉
   // 会让时间线出现一个洞，而那正是新版才有、最值得看的部分。文案集中
   // 在这里，改文案不该牵动落盘格式。
@@ -466,18 +480,25 @@ const FILE_BUDGETS = {
   // （OPERATION_HEADLINE + headlineFor）。**刻意不与 RUN_HEADLINE 合并**：
   // 那张表每句话的主语都是「工作台」，套到恢复上会写出「工作台已启动」这种
   // 与操作毫无关系的结论。
-  'ui/src/diagnostics/diagnostic-labels.js': 158,
+  // 158 → 194：阶段序列与阶段进度统计（审查 P2-03）。「完成 N / M 个阶段」
+  // 里的 M 必须来自一份显式的阶段集合——拿事件条数当分母，一个阶段推三条
+  // 事件就会显示成「完成 3 / 6」而实际只走了两步。
+  'ui/src/diagnostics/diagnostic-labels.js': 194,
   // 诊断层的独立样式。刻意不进 theme.css：后者是反棘轮文件（只许越来越
   // 小），而诊断层是自成一块的样式，抄进共享文件会让"哪段样式属于哪层"
   // 变得看不出来。
-  'ui/src/diagnostics/diagnostics.css': 250,
+  // 250 → 253：浮层层级阶梯（审查 P1-01）。见下面那段注释——它既是值也是
+  // 五个叠面顺序的唯一说明。
+  'ui/src/diagnostics/diagnostics.css': 253,
   // 诊断层外壳：覆盖当前面板而非另开窗口（启动失败时用户正要回到日志 /
   // 换端口 / 回退快照，跨窗口拖拽是白费力气）。头部固定
   // [返回] 标题 [主操作]，标题单行省略以守住 480 宽。
   // 100 → 108：多两种 kind 的路由（恢复 / 排查共用 OperationDiagnosis），
   // 以及一个 NEEDS_FETCH 判定——恢复与排查的记录是「做完之后」才成型的，
   // 头部那个刷新按钮对它们同样有意义。
-  'ui/src/diagnostics/DiagnosisShell.vue': 108,
+  // 108 → 136：四个视图的刷新各走各的 loading key 并合成一个头部状态（P2-03），
+  // 插件页无报告时退到仅运行记录视图（P1-05）。
+  'ui/src/diagnostics/DiagnosisShell.vue': 136,
   // 诊断层头部的「更多」菜单项与复制逻辑（设计 §2.5.5）。独立成文件是因为
   // 那边只管「头部结构 + 三个视图的路由」，这里是「每页各自有哪些低频动作」
   // 的映射表；混在一起后加一项菜单要重读一遍路由代码才能确认没写错层。
@@ -488,19 +509,23 @@ const FILE_BUDGETS = {
   // 差异只在头部那句话与阶段的中文名，都在 diagnostic-labels.js 里按 kind
   // 查表，不各写一份模板。这里**不放任何会改变状态的动作**：用户在结论还
   // 不确定的页面上误点恢复，代价是真实的配置。
-  'ui/src/diagnostics/OperationDiagnosis.vue': 90,
+  // 90 → 99：通用模式（没有候选插件上下文时看的就是一条运行记录本身），
+  // 阶段计数改用阶段序列。
+  'ui/src/diagnostics/OperationDiagnosis.vue': 99,
   // 启动与预检共用的阶段时间线。三条硬规则：按 seq 排（不按字符串）、
   // 默认只展开第一个失败阶段、状态不只靠颜色表达。
   'ui/src/diagnostics/RunTimeline.vue': 90,
   // 启动诊断页：结论 + 归因 + 下一步 + 阶段时间线 + 证据索引 + 主动作。
   // 重试**复用** store 的启动编排而不是另写一份，否则两处会各自漂移。
   // 顶部主动作按设计 §5.2 只留一个：成功去开工作台，失败再试一次。
-  'ui/src/diagnostics/StartupDiagnosis.vue': 135,
+  // 135 → 138：阶段计数改用阶段序列，事故 / 工作台两个动作改走动作代理（P2-02）。
+  'ui/src/diagnostics/StartupDiagnosis.vue': 138,
   // 插件安全诊断页。呈现**已有**预检结论而不重跑一次：用户在意的是刚才
   // 那次安装，重跑沙盒要几十秒，而结论并不会因此改变。
   // 四块：候选信息卡（来源 / 完整性 / 物化方式 / 影响范围）、五段实验流程
   // 时间线、通过但有告警、折叠的证据与风险。
-  'ui/src/diagnostics/PluginDiagnosis.vue': 220,
+  // 220 → 221：详细事件收进折叠区（P2-06）、恢复按钮按有无快照 id 改名（P1-04）。
+  'ui/src/diagnostics/PluginDiagnosis.vue': 221,
   // 预检的来源类型与完整性摘要映射。**纯函数、无依赖**——数据加载刻意不
   // 在这里：把它塞进「映射表」会让这份表变成半个 store，下次有人加字段就会
   // 发现「反正这里已经能 invoke 了」。
@@ -508,7 +533,10 @@ const FILE_BUDGETS = {
   // 内核状态诊断页。**刻意只读 store 里已有的快照**——用户点「查看状态」
   // 的语义是"告诉我这份状态是什么意思"，不是"再探一次"。字段只取后端
   // 真有的（版本 / 运行 / 端口 / 数据目录），不编 pid 与运行时长。
-  'ui/src/diagnostics/KernelStatusDiagnosis.vue': 80,
+  // 80 → 94：「刷新状态」此前是个**无操作**按钮（审查 P1-06）——点了没反应，
+  // 而用户以为自己已经拿到新状态。现在它真的重读，并显示读到的时刻；
+  // 读失败时保留上一次的值并说明它可能过期（设计 §9.4）。
+  'ui/src/diagnostics/KernelStatusDiagnosis.vue': 94,
   // 概览页控制塔：需要关注 / 系统健康 / 最近操作。独立成组件是因为概览页
   // 已 900 行且在反棘轮上，而这三块与「当前内核」卡片是并列关系。
   // 系统健康按设计 §7.2 列全七行（内核 / 运行时 / Node / 插件接线 / 技能
@@ -611,7 +639,12 @@ const FILE_BUDGETS = {
   // 比「另一个壳的工作台在跑就禁止装内核」代价小得多。只降 pnpm/npm/npx：
   // Node 探针降优先级会误报「原生模块加载失败」，那是更糟的假阴性。
   'src-tauri/src/shell/child_priority.rs': 80,
-  'src-tauri/src/shell/process.rs': 1180,
+  // 1180 → 1157：本地时间的换算与格式化搬去 shell/localtime.rs（审查 P2-04）。
+  // 起因是运行记录 id 的时刻算错了：日期按本地偏移、时刻按「当前时间 - 现在」
+  // 估的偏移，在东八区两者差 8 小时。而根因不只是那个估算——**全仓有三处
+  // 各写一份本地时间**（日志文件名的日期戳、事件日志的时刻、runId 的时刻），
+  // 收成一处是唯一能加东西又不违反反棘轮的地方。
+  'src-tauri/src/shell/process.rs': 1157,
   // 1050 → 1090：会话标题改为订阅 `session/control`（baseline 播种 + 标题投影帧
   // 保鲜 + 老内核退回 session/list 快照），这部分逻辑与 Center 同生共死，拆出去
   // 只会把状态机切成两半。详见 docs/notification-design.md §3.3。
@@ -1459,7 +1492,7 @@ const FILE_BUDGETS = {
 // 249 行是 operation_run.rs（含 110 行单测），86 行是从 commands.rs 搬过来的
 // snapshot_cmd.rs（**净减** 78 行，那份反棘轮文件因此从 2047 降到 1969，预算
 // 同步下调）。也就是说真正的新逻辑不到 200 行，其余是接线与测试。
-const TOTAL_BUDGET = 40750;
+const TOTAL_BUDGET = 41000;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

@@ -11,12 +11,15 @@
 import { computed, watch } from 'vue';
 import { ArrowLeft, MoreFilled, Refresh } from '@element-plus/icons-vue';
 import { store } from '../store.js';
+import { isLoading } from '../shell/loading.js';
 import {
   closeDiagnosis,
   diagnosticStore,
   loadOperationDiagnosis,
+  loadPluginRun,
   loadStartupDiagnosis,
 } from './diagnostics.js';
+import { loadKernelStatusDiagnosis } from './diagnostic-actions.js';
 import { moreItems, onMore } from './diagnosis-more-menu.js';
 import { kindLabel } from './diagnostic-labels.js';
 import StartupDiagnosis from './StartupDiagnosis.vue';
@@ -68,7 +71,26 @@ const subtitle = computed(() => {
 // 恢复 / 排查的记录是在操作**做完之后**才成型的（恢复要等自检、排查要等
 // 结论），所以头部这个刷新按钮对它们同样有意义——排查跑完自动回来、或者
 // 用户从另一个窗口看着它跑完，都靠这一下。
-const reload = computed(() => NEEDS_FETCH.includes(diagnosticStore.active?.kind));
+const reload = computed(() => diagnosticStore.active?.kind !== 'plugin');
+
+// 插件页在没有报告时退到「仅运行记录」视图（从概览进去的预检就是这种）。
+// 那一栏要显示的是记录本身，说清「没有候选插件上下文」而不是显示
+// 「未知插件」——后者暗示"知道是哪个但显示不出来"，而真相是不知道。
+const pluginWithoutReport = computed(
+  () =>
+    diagnosticStore.active?.kind === 'plugin' &&
+    !(diagnosticStore.active.spec && diagnosticStore.active.spec.report)
+);
+
+// 四个视图的刷新各用一个 loading key（它们读的是不同的东西），但头部只有
+// 一个刷新按钮——把它做成四个条件的或会读不动，这里合成一个布尔。
+const REFRESH_KEYS = [
+  'startupDiagnosisReload',
+  'operationDiagnosisReload',
+  'kernelStatusReload',
+  'precheckRunReload',
+];
+const refreshing = computed(() => REFRESH_KEYS.some((key) => isLoading(key)));
 
 function back() {
   const panel = closeDiagnosis();
@@ -78,10 +100,19 @@ function back() {
   emit('back');
 }
 
+/**
+ * 头部的刷新。
+ *
+ * **四个视图共用这一个动作**（设计 §2.5.4：loading 只显示在触发它的按钮
+ * 上）。此前内核视图的刷新落在这里是个**无操作**——菜单项和按钮都在，读
+ * 什么也没发生（审查 P1-06）。
+ */
 function onRefresh() {
   const kind = diagnosticStore.active?.kind;
-  // 两种 kind 各自按 id 拉：换「最近一条」会让用户在刷新里看到另一件事。
+  // 按 id 拉：换「最近一条」会让用户在刷新里看到另一件事。
   if (kind === 'startup') loadStartupDiagnosis(diagnosticStore.active.runId, true);
+  else if (kind === 'kernel') loadKernelStatusDiagnosis(true);
+  else if (kind === 'plugin') loadPluginRun(diagnosticStore.active.runId, true);
   else if (reload.value) loadOperationDiagnosis(diagnosticStore.active.runId, kind, true);
 }
 
@@ -102,12 +133,18 @@ function onRefresh() {
       <h2 class="diagnosis__title">
         {{ title }}<span v-if="subtitle" class="diag-card__aside"> · {{ subtitle }}</span>
       </h2>
+      <!-- 头部刷新与页面内刷新是**同一个动作**（设计 §2.5.4），因此共用同一个
+           loading key；此前这个按钮完全不转 loading，而页面底部的那个转，
+           于是用户按了头部按钮之后没有任何反馈（审查 P2-03）。
+           四个 key 都算进来：不同视图的刷新走不同的 key，图标却只有一个。 -->
       <button
         v-if="reload"
         class="diagnosis__icon-btn"
         type="button"
+        :disabled="refreshing"
+        :aria-busy="refreshing"
         aria-label="刷新诊断记录"
-        title="刷新诊断记录"
+        :title="refreshing ? '正在刷新' : '刷新诊断记录'"
         @click="onRefresh"
       >
         <el-icon :size="16"><Refresh /></el-icon>
@@ -135,11 +172,16 @@ function onRefresh() {
     </header>
 
     <div class="diagnosis__body">
-      <StartupDiagnosis v-if="diagnosticStore.active?.kind === 'startup'" />
-      <PluginDiagnosis v-else-if="diagnosticStore.active?.kind === 'plugin'" />
+      <StartupDiagnosis v-if="kind === 'startup'" />
+      <!-- 插件页只在**有报告**时渲染候选插件视图。报告只存在于刚才那次预检
+           的返回值里，从概览/控制塔进来时没有——那时的正确答案是一条运行
+           记录，不是「未知插件」（审查 P1-05）。 -->
       <OperationDiagnosis
-        v-else-if="kind === 'restore' || kind === 'bisect'"
+        v-else-if="kind === 'plugin' && pluginWithoutReport"
+        generic
       />
+      <PluginDiagnosis v-else-if="kind === 'plugin'" />
+      <OperationDiagnosis v-else-if="kind === 'restore' || kind === 'bisect'" />
       <KernelStatusDiagnosis v-else />
     </div>
   </section>

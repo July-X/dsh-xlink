@@ -16,10 +16,6 @@ use std::sync::{
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use time::format_description::FormatItem;
-use time::macros::format_description;
-use time::OffsetDateTime;
-
 static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// 隐藏 Windows 否则会为子进程闪烁的 console 窗口。其他平台上为 no-op。
@@ -373,13 +369,23 @@ pub fn build_log_kind() -> &'static str {
     }
 }
 
-/// 将 `SystemTime` 格式化为日志文件名中使用的本地日期戳 `YYYY-MM-DD`。
-/// `time` crate 的默认 features 包含 `local-offset`，转换使用用户所在时区——
-/// UTC 日期会在用户感知的本地时间的不同时刻翻转日志，把同一个用户日
-/// 拆到两个文件里。
-pub fn current_date_string() -> String {
-    local_date_string(SystemTime::now())
-}
+/// 为指定构建类型与本地日期下的具名日志拼装日志文件名。集中在此，
+/// 让所有调用方（内核日志、安装日志、插件日志……）都遵循同一格式，
+/// 这也是 `list_log_files` 与弹窗标签列表对用户保持稳定的根本。
+///
+/// **实例感知格式**（dev plan §4 release threshold）：当 `family` 与
+/// `instance_id` 都非空时，文件名带上内核族与实例 id，区分多实例下
+/// 同 family / version 的并发运行——
+/// `release-dsh-default-kernel-2026-09-19.log`。仅用于内核 / 安装日志。
+///
+/// 仅 `kind` 命中（`family` / `instance_id` 为空）的壳级日志（插件
+/// 接线、节点安装、p2p 同步……）保留旧格式 `release-kernel-2026-09-19.log`，
+/// 避免无谓的破坏性变更。
+/// 本地日期的即时形式。**转发给 [`crate::shell::localtime`]**：全仓共有
+/// 三处要算本地时间（这里、事件日志、运行记录 id），分散写会各走各的时区。
+/// 本函数保留是因为它是 8 处调用方的既有路径，删掉它属于一次与本轮无关的
+/// 改名潮——真要收敛调用点应当单独一次做完，而不是塞进一个功能提交里。
+pub use crate::shell::localtime::current_date_string;
 
 /// 自 Unix 纪元起的秒数。取不到时钟（系统时间早于 1970）时返回 0。
 ///
@@ -407,35 +413,6 @@ pub fn epoch_secs_string() -> String {
     epoch_secs().to_string()
 }
 
-/// `pub(crate)`：模型用量统计（usage.rs）按同一口径给用量记录打本地日历日，
-/// 不能各写一份本地日期格式化（日期口径一漂移，热力图就会把同一天拆成两格）。
-pub(crate) fn local_date_string(time: SystemTime) -> String {
-    let Ok(duration) = time.duration_since(UNIX_EPOCH) else {
-        return String::from("1970-01-01");
-    };
-    let Ok(datetime) = OffsetDateTime::from_unix_timestamp(duration.as_secs() as i64) else {
-        return String::from("1970-01-01");
-    };
-    let local =
-        datetime.to_offset(time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC));
-    const DATE_FORMAT: &[FormatItem<'static>] = format_description!("[year]-[month]-[day]");
-    local
-        .format(&DATE_FORMAT)
-        .unwrap_or_else(|_| String::from("1970-01-01"))
-}
-
-/// 为指定构建类型与本地日期下的具名日志拼装日志文件名。集中在此，
-/// 让所有调用方（内核日志、安装日志、插件日志……）都遵循同一格式，
-/// 这也是 `list_log_files` 与弹窗标签列表对用户保持稳定的根本。
-///
-/// **实例感知格式**（dev plan §4 release threshold）：当 `family` 与
-/// `instance_id` 都非空时，文件名带上内核族与实例 id，区分多实例下
-/// 同 family / version 的并发运行——
-/// `release-dsh-default-kernel-2026-09-19.log`。仅用于内核 / 安装日志。
-///
-/// 仅 `kind` 命中（`family` / `instance_id` 为空）的壳级日志（插件
-/// 接线、节点安装、p2p 同步……）保留旧格式 `release-kernel-2026-09-19.log`，
-/// 避免无谓的破坏性变更。
 pub fn log_file_name(
     kind: &str,
     family: &str,
@@ -702,7 +679,7 @@ impl RotatingLog {
             mode: LogMode::Fixed {
                 path: path.to_path_buf(),
             },
-            current_date: local_date_string(SystemTime::now()),
+            current_date: crate::shell::localtime::local_date_string(SystemTime::now()),
             current_path: path.to_path_buf(),
             writer: None,
             bytes: 0,
@@ -744,7 +721,7 @@ impl RotatingLog {
         // 一个真实的字节数。
         let size = file.metadata().map(|m| m.len()).unwrap_or(0);
         self.current_path = path;
-        self.current_date = local_date_string(SystemTime::now());
+        self.current_date = crate::shell::localtime::local_date_string(SystemTime::now());
         self.writer = Some(file);
         self.bytes = size;
         Ok(())
@@ -753,7 +730,7 @@ impl RotatingLog {
     fn resolve_path(&self) -> PathBuf {
         match &self.mode {
             LogMode::Dated { logs_dir, spec } => {
-                let today = local_date_string(SystemTime::now());
+                let today = crate::shell::localtime::local_date_string(SystemTime::now());
                 spec.path_for(logs_dir, &today)
             }
             LogMode::Fixed { path } => path.clone(),
@@ -766,7 +743,7 @@ impl RotatingLog {
         // 落在正确的文件里。Fixed 模式从不按日期轮转。
         let needed = line.len() as u64 + 1;
         let date_rolled = matches!(self.mode, LogMode::Dated { .. })
-            && self.current_date != local_date_string(SystemTime::now());
+            && self.current_date != crate::shell::localtime::local_date_string(SystemTime::now());
         if date_rolled || self.bytes.saturating_add(needed) > KERNEL_LOG_MAX_BYTES {
             self.open_for_today()?;
         }
