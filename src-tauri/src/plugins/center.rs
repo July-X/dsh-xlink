@@ -2161,21 +2161,6 @@ fn spec_path_string(rel: &Path) -> String {
     rel.to_string_lossy().replace('\\', "/")
 }
 
-/// 新建 profile 时的模板 bundle，对应内核的 profile 模板。
-fn template_bundles(profile: &str) -> Vec<String> {
-    match profile {
-        "web" => vec![
-            String::from("@deepseek-ai/dsh-base"),
-            String::from("@deepseek-ai/dsh-web-app"),
-        ],
-        "headless" => vec![
-            String::from("@deepseek-ai/dsh-base"),
-            String::from("@deepseek-ai/dsh-headless"),
-        ],
-        _ => vec![String::from("@deepseek-ai/dsh-base")],
-    }
-}
-
 /// 把 profile 清单读成可变的 JSON 树（未知字段会原样保留）。profile
 /// 目录尚未初始化时返回 `None`。
 fn read_profile_json(
@@ -2224,34 +2209,18 @@ fn write_profile_json(
 
 /// 按内核相同的方式初始化 profile 清单，但提前把模板 bundle 列表写进去，
 /// 这样首次启动前就能完成接线。
+///
+/// 清单的形状归 [`crate::kernel::profile_manifest`] 一家管（它同时是内核启动
+/// 的契约，不只是接线需要的东西）。这里额外只做一件 `seed` 不做的事：在 profile
+/// 目录里放一份 `cordis.patch.yml` 占位——那是 profile 级 patch 层，与
+/// `prepare_instance` 写在 `$DSH_HOME/` 根下的那一份是两个文件。
 fn ensure_profile(data_dir: &Path, profile: &str) -> Result<(), AppError> {
     let dir = profile_dir(data_dir, profile);
-    let manifest_path = dir.join("package.json");
-    if fs::metadata(&manifest_path).is_ok() {
-        return Ok(());
-    }
-    fs::create_dir_all(&dir).map_err(|e| AppError::Io(e.to_string()))?;
-    let root = serde_json::json!({
-        "name": format!("dsh-profile-{profile}"),
-        "private": true,
-        "dependencies": {},
-        "dsh": { "profile": { "bundles": template_bundles(profile) } }
-    });
-    write_profile_json(data_dir, profile, &root)?;
+    crate::kernel::profile_manifest::seed(&dir, profile)
+        .map_err(|e| AppError::Io(format!("无法初始化 profile 目录 {}：{e}", dir.display())))?;
     let patch = dir.join("cordis.patch.yml");
     if !patch.exists() {
         let _ = atomic_write(&patch, b"# Your patch layer for this dsh profile.\n[]\n");
-    }
-    let workspace = dir.join("pnpm-workspace.yaml");
-    let needs_workspace = !workspace.exists()
-        || fs::read_to_string(&workspace)
-            .map(|t| !t.contains("minimumReleaseAge: 0"))
-            .unwrap_or(false);
-    if needs_workspace {
-        let _ = atomic_write(
-            &workspace,
-            b"packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\nminimumReleaseAge: 0\n",
-        );
     }
     Ok(())
 }
@@ -3071,7 +3040,7 @@ fn wire_manifest(
         .filter(|entry| entry.bundle)
         .map(|entry| entry.name.clone())
         .collect();
-    let template: Vec<String> = template_bundles(profile);
+    let template: Vec<String> = crate::kernel::profile_manifest::template_bundles(profile);
     let mut next: Vec<String> = template.clone();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let bundles = root
