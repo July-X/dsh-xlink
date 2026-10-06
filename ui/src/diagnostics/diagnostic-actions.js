@@ -92,9 +92,28 @@ export function openEvidence(path) {
  * （审查 P1-06）：点了没反应，而用户以为自己已经拿到了新状态——那比没有
  * 这个按钮更糟。`fresh: true` 让它走真正的重新读取而不是复用缓存。
  *
- * loading key 与页面内按钮共用同一个：设计 §2.5.4 要求异步动作的 loading
- * 只显示在触发它的按钮上，头部和页面底部的刷新是**同一个动作**，两个 key
+ * loading key 供头部 ⟳ 与「更多」菜单的 refresh 项共用：设计 §2.5.4 要求异步
+ * 动作的 loading 只显示在触发它的按钮上，而这两处是**同一个动作**，两个 key
  * 会让两个按钮一起转。
+ *
+ * **内核状态页的底部按钮栏已于 2026-10-07 删除**（用户：与顶部按钮功能重复）。
+ * 记录在这里是因为「为什么删」比「删了什么」更要紧——那一版留着两个入口，
+ * 而它们的行为并不一致：
+ *   · 头部 ⟳ 与「更多」菜单的 refresh 项都经 `DiagnosisShell.onRefresh()`，
+ *     落到本函数；**页面底部那个按钮自己直接调本函数，绕过了 onRefresh**。
+ *     `diagnosis-more-menu.js` 里写着「菜单与页面主操作是同一个动作（都走
+ *     onRefresh），不是两份实现」——底部那份恰好是反例。
+ *   · 「查看完整日志」：菜单第一项走 `openEvidence(diagnosticStore
+ *     .evidencePath)`，页面底部那份走无参的 `openEvidence()`。本文件上方
+ *     `openEvidence` 的 `path || diagnosticStore.evidencePath` 说明两者等价，
+ *     所以删掉不改变行为。
+ * 连带删掉的还有页面里只为该按钮服务的 `viewLogs()` 与 `Refresh` / `isLoading`
+ * / `loadKernelStatusDiagnosis` / `openEvidence` 四个 import。
+ *
+ * `.diag-actions` 这个类**仍然保留**，另有三个诊断页在用（StartupDiagnosis 的
+ * 「刷新 / 查看完整日志 / 查看事故」、OperationDiagnosis 的「刷新 / 查看完整
+ * 日志」、PluginDiagnosis 的「查看日志 / 刷新 / 恢复」）——它们的动作还没进
+ * 顶部菜单，收掉它们的按钮栏会直接删掉用户唯一的入口。
  */
 export function loadKernelStatusDiagnosis(manual = false) {
   const task = () =>
