@@ -140,6 +140,27 @@ test('控制塔的线只挂在 --tower 上，不从基线漏过去', () => {
   assert.ok(overview.includes('ControlTower'), 'ControlTower 仍只出现在概览页');
 });
 
+test('空态的纵向留白只对控制塔收，5 个诊断窗口的基线保持 24px', () => {
+  const css = read('diagnostics/diagnostics.css');
+  // `.diag-empty` 只有两处用法：概览页 ControlTower 的「最近操作」，以及 5 个
+  // 独立诊断窗口的 RunTimeline。用户 2026-10-06 明确要求后者不动，而基线
+  // `padding: 24px 8px` 正是它靠的——把 24 写小会让那 5 页的空时间线忽然
+  // 贴到卡片边。覆盖必须限定在 `.diag-card--tower` 上。
+  const base = css.match(/^\.diag-empty \{([^}]*)\}/m);
+  assert.ok(base, '必须能找到 .diag-empty 基线');
+  assert.match(base[1], /padding:\s*24px 8px/, '基线的 24px 上下留白属于 5 个诊断窗口，不许被收');
+
+  const override = css.match(/\.diag-card--tower \.diag-empty \{([^}]*)\}/);
+  assert.ok(override, '必须能找到 .diag-card--tower .diag-empty 覆盖规则');
+  assert.match(
+    override[1],
+    /padding-block:\s*1[0-2]px/,
+    `控制塔空态的纵向留白应在 10–12px，实际 ${override[1].trim()}`
+  );
+  // 横向那 8px 是居中文案左右的呼吸，用 padding 简写会一起清掉。
+  assert.doesNotMatch(override[1], /(^|[^-])padding:/, '用 padding-block，不要 padding 简写（会清掉横向 8px）');
+});
+
 test('规范本身写在 ui/AGENTS.md 里，不只是代码里', () => {
   const doc = readFileSync(resolve('ui/AGENTS.md'), 'utf8');
   assert.match(doc, /每张卡片的标题与内容之间必须有 1px 分割线/, 'ui/AGENTS.md 必须写明标题分割线这条规范');
