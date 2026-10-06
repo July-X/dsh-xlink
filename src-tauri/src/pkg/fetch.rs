@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
@@ -210,9 +210,23 @@ pub fn is_newer_than(latest: &str, installed: &str, origin: &str, pinned: bool) 
 
 /// `git ls-remote --tags` 拿到的最高 semver tag；仓库没有 tag 或命令失败时
 /// 返回 `None`（调用方回退到 clone 后的 HEAD hash）。
+/// `git ls-remote` 的超时。它是一次网络查询，用不得 `run_capture` 那个
+/// 30 秒的本地工具默认值。
+const LS_REMOTE_TIMEOUT: Duration = Duration::from_secs(60);
+
 pub fn git_latest_tag(source: &str) -> Result<Option<String>, String> {
-    let (ok, out) = crate::shell::process::run_capture("git", &["ls-remote", "--tags", source])
-        .map_err(|e| e.to_string())?;
+    // `ls-remote` 是网络调用，和 clone 同理：系统里配了代理就用它，没配就直连。
+    // 超时不用 `run_capture` 的 30 秒默认值——那是对 `git --version` 这类
+    // 本地命令设的，套在一个要走网络的查询上等于「网络稍慢就查不到版本」。
+    let mut cmd = crate::shell::process::command_with_path("git");
+    crate::shell::env::apply_proxy_env(&mut cmd);
+    cmd.args(["ls-remote", "--tags", source]);
+    let (ok, out, _stderr) = crate::shell::process::run_command_capture_with_timeout(
+        cmd,
+        "git ls-remote",
+        LS_REMOTE_TIMEOUT,
+    )
+    .map_err(|e| e.to_string())?;
     if !ok {
         return Ok(None);
     }

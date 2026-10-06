@@ -860,6 +860,7 @@ fn fetch_git(
 
     on_progress(&format!("正在克隆 {}", spec.source));
     let mut cmd = crate::shell::process::command_with_path("git");
+    crate::shell::env::apply_proxy_env(&mut cmd);
     cmd.arg("clone").arg("--depth").arg("1");
     if let Some(tag) = &branch {
         cmd.arg("--branch").arg(tag);
