@@ -5,9 +5,8 @@
 // 这里给时间线、证据索引和下一步；事故面板负责处置嫌疑插件、恢复操作。
 import { computed } from 'vue';
 import { Refresh } from '@element-plus/icons-vue';
-import { openHarnessWindow, showIncident, startWorkbench, store } from '../store.js';
-import { showLogs } from '../logs/logs.js';
-import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
+import { openHarnessWindow, showIncident, store } from '../store.js';
+import { globalBusy, isLoading } from '../shell/loading.js';
 import RunTimeline from './RunTimeline.vue';
 import {
   causeLabel,
@@ -18,7 +17,8 @@ import {
   RUN_HEADLINE,
   statusMeta,
 } from './diagnostic-labels.js';
-import { diagnosticStore, loadStartupDiagnosis } from './diagnostics.js';
+import { diagnosticStore, getLastRunId, loadStartupDiagnosis } from './diagnostics.js';
+import { openEvidence, startStartupDiagnosis } from './diagnostic-actions.js';
 
 const run = computed(() => diagnosticStore.currentRun);
 const meta = computed(() => statusMeta(run.value?.status));
@@ -57,11 +57,15 @@ const canRetry = computed(() => isRetryable(run.value?.status));
 const hasRun = computed(() => !!run.value);
 
 function reload() {
-  return loadStartupDiagnosis(run.value?.id, true);
+  // 优先按 id 拉，不按「最近一条」：用户可能正在看一条**历史**记录，
+  // 此时点刷新若换成最近那条，看到的就是另一件事。
+  return loadStartupDiagnosis(run.value?.id || getLastRunId(), true);
 }
 
 function viewLogs() {
-  showLogs();
+  // 走诊断层的 `openEvidence`（设计 §8.2）：证据路径记在诊断状态里，
+  // 日志读取仍复用日志模块——诊断层自己读文件会让两处的截断与分类漂移。
+  openEvidence();
 }
 
 function openIncident() {
@@ -81,10 +85,9 @@ function openWorkbench() {
 }
 
 async function retry() {
-  // 复用 store 的启动编排（同一个 loading key / 进度面板 / 事故弹窗）——
-  // **不复用**会让「从诊断页重试」和「从概览启动」变成两份实现，将来
-  // 一处改了另一处不跟。
-  await withLoading('startupDiagnosisRetry', startWorkbench);
+  // 走诊断层的 `startStartupDiagnosis`（设计 §8.2）：它复用 store 的启动
+  // 编排，但**用诊断层自己的 loading key**，所以按钮转的是这一页的那个。
+  await startStartupDiagnosis();
   await reload();
 }
 </script>

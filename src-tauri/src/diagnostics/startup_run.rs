@@ -264,6 +264,10 @@ pub(crate) fn finish(
                 String::from("工作台未在本次启动后运行，且没有留下可归因的事故记录"),
             ),
         };
+    // 命令返回值里的 runId 必须与事件信封里的同一个（设计 §4.3 最后一条）。
+    // 前端拿它确认「我拉到的是不是刚才这条」——靠「最近一条」去猜的话，
+    // 两次启动挨得近就会读到上一条的时间线。
+    report.run_id = Some(recorder.id().to_string());
     if let Err(error) = recorder.finish(final_status, &final_cause, &final_summary, Some(&evidence))
     {
         eprintln!("dsh-xlink: 写入启动诊断记录失败：{error}");
@@ -500,6 +504,7 @@ mod tests {
             safe_mode: false,
             incident,
             warning: None,
+            run_id: None,
         }
     }
 
@@ -664,6 +669,31 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(&home);
         }
+    }
+
+    #[test]
+    fn finish_puts_the_same_run_id_in_the_report_and_the_incident() {
+        // 设计 §4.3：命令返回值里的 runId 与事件中的必须一致。前端拿它
+        // 确认「我拉到的是不是刚才这条」，不一致就会读到上一次的时间线。
+        let home = temp_home("same-id");
+        let _guard = scoped_xlink_home(&home);
+        let mut recorder = run::Recorder::begin(
+            "dsh",
+            "default",
+            run::kind::STARTUP,
+            "0.2.1",
+            "web",
+            Default::default(),
+        );
+        let mut report = report(false, Some(incident("内核启动失败", "kernel")));
+        finish(&mut recorder, &mut report, &home, "dsh", "default", 3090);
+        assert_eq!(report.run_id.as_deref(), Some(recorder.id()));
+        assert_eq!(
+            report.incident.as_ref().and_then(|i| i.run_id.as_deref()),
+            Some(recorder.id()),
+            "事故引用与命令返回值必须指向同一条记录"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

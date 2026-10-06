@@ -153,3 +153,18 @@ test('插件诊断没有 runId 时不当作错误', () => {
     assert.equal(diag.diagnosticStore.error, '', '空 runId 不该留下错误提示');
   });
 });
+
+
+// —— §4.3：命令返回值与事件中的 runId 必须一致 ——
+
+test('刷新优先按 id 拉详情，不按「最近一条」猜', async () => {
+  // 两次启动挨得近时「最近一条」可能是上一条，用户会看到与刚才无关的
+  // 时间线。store.js 存住后端回填的 id，诊断页按它拉。
+  const store = await import('../src/store.js');
+  store.setLastRunId('run-current');
+  assert.equal(store.getLastRunId(), 'run-current');
+  // 空值必须被规整成空串而不是 undefined：'runId || ...' 的兜底分支
+  // 依赖它，undefined 会让 `||` 走对分支但比较时行为不一致。
+  store.setLastRunId(undefined);
+  assert.equal(store.getLastRunId(), '');
+});

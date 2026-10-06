@@ -110,6 +110,41 @@ pub mod stage {
     pub const REPORT: &str = "report";
 }
 
+/// 看护报告的阶段。
+///
+/// **放在模型层而不是看护里**：看护只负责说「发生了什么」，而「怎么说、
+/// 在哪落盘」是诊断层的事。枚举若留在 `guard.rs`，`startup_run` 就要反过来
+/// 引用看护，形成环；放在这里两边都只依赖模型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchPhase {
+    /// 工作台本来就在跑，本次未重复启动。
+    AlreadyRunning,
+    /// 开始派生内核进程。
+    Spawning,
+    /// 端口上已经有东西在应答。
+    AlreadyServing,
+    /// 进程已派生，等端口就绪。
+    WaitingReady,
+    /// 端口已应答。
+    PortReady,
+    /// 派生失败。
+    SpawnFailed,
+    /// 就绪前退出。
+    Exited,
+    /// 等待就绪超时。
+    TimedOut,
+    /// 正在停用嫌疑插件后重试。
+    RetryPlugins,
+    /// 正在进入安全模式后重试。
+    RetrySafeMode,
+    /// 环境类问题，已跳过插件归因。
+    EnvironmentBlocked,
+    /// 正在准备插件接线。
+    Wiring,
+    /// 插件接线已就绪。
+    WiringReady,
+}
+
 /// 一次运行中的单个阶段事件。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
