@@ -137,8 +137,12 @@ function close() {
       <el-button @click="close">知道了</el-button>
       <!-- 「应用变更」是**这次预检之后唯一会改动真实实例的动作**，所以它
            是主按钮。禁用的那两种情况必须说清为什么而不是灰着就完事——
-           一个不说理由的灰按钮会让人以为界面坏了。 -->
-      <el-tooltip :content="canApply ? '' : applyDisabledReason" placement="top">
+           一个不说理由的灰按钮会让人以为界面坏了。
+           `:disabled="canApply"` 而不是把 content 传成空串：空 content 的
+           el-tooltip **照样弹出一个空的 popper**，用户看到的是按钮上方一个
+           没有字的气泡（2026-10-07 实机）。要「什么都不说」就得让 tooltip
+           整个不出现。`PluginDiagnosis.vue` 那一处是同一份，两边要一起改。 -->
+      <el-tooltip :content="applyDisabledReason" :disabled="canApply" placement="top">
         <span>
           <el-button
             v-if="!report.installed"
