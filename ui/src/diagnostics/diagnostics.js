@@ -16,6 +16,7 @@
 import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
 import { withLoading } from '../shell/loading.js';
+import { confirmDialog, toastActionError, toastSuccess } from '../shell/notify.js';
 import { sortedBySeq } from './diagnostic-labels.js';
 
 export const diagnosticStore = reactive({
@@ -304,6 +305,41 @@ export function loadRecentRuns(kind, manual = false) {
     return diagnosticStore.recentRuns;
   };
   return manual ? withLoading('diagnosticRunsReload', run) : run();
+}
+
+/**
+ * 清除本实例的全部诊断记录。
+ *
+ * **先确认再删**：删掉的 `failure` 记录正是用户下次排查故障时唯一的现场，
+ * 一次误点就再也回不来了。确认框的文案因此必须说清「删的是什么、删了会
+ * 怎样」，而不是笼统一句「确定吗」。
+ *
+ * 删完立刻 `loadRecentRuns`：清空后那行「最近操作」要真的变成空态，
+ * 留着上一条已不存在的记录会让用户以为删除没生效。
+ *
+ * 失败时**保留** `recentRuns` 并报错：`clear` 可能是详情已删、索引没重写
+ * （见 `run::clear` 的说明），那正是最需要让用户立刻看见的一种失败。
+ */
+export function clearDiagnosticRuns() {
+  const run = async () => {
+    const ok = await confirmDialog(
+      '清除诊断记录',
+      '将删除本实例的全部启动、预检、恢复与排查记录，无法恢复。'
+        + '内核、插件与技能不受影响。',
+      '清除',
+    );
+    if (!ok) return false;
+    try {
+      const removed = await invoke('diagnostic_run_clear');
+      await loadRecentRuns(null);
+      toastSuccess(`已清除 ${removed} 条诊断记录`);
+      return true;
+    } catch (e) {
+      toastActionError('清除诊断记录失败', e, '请重试；若仍失败，重启桌面端会再扫一次');
+      return false;
+    }
+  };
+  return withLoading('diagnosticRunsClear', run);
 }
 
 /**

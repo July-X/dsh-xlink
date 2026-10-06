@@ -247,7 +247,25 @@ const FILE_BUDGETS = {
   // 15 → 19：2026-10-02 后台常驻追加 3 条（autostart / menu_bar[macos] /
   // resident），tray 保留 cfg(windows)。仍是一层路由，没有实现。
   // 19 → 20：localtime 进来了（见那条）。仍是一层路由，没有实现。
-  'src-tauri/src/shell/mod.rs': 20,
+  // 20 → 21：stream（带超时的流式子进程捕获，git clone 用）进来了。仍是一层
+  // 路由，没有实现。
+  'src-tauri/src/shell/mod.rs': 21,
+  // 带超时的流式子进程输出捕获。**为什么不复用 `process::run_with_progress`**：
+  // 那条是给「pnpm 装包 + 跑原生模块构建」设计的，它强制两件 git clone 都不想要的
+  // 事——把输出轮转落进 `logs/`（而 clone 的输出紧接着就被 on_progress 收进诊断
+  // 记录，同一段 `Receiving objects: 43%` 在磁盘上存两份，且 LOG_RETENTION_DAYS
+  // = 30 让它一个月不散），以及 30 分钟固定上限（装包确实可能要那么久，clone 卡满
+  // 5 分钟就该让用户换来源）。`process.rs` 又是 1157/1157 的反棘轮文件，塞不下。
+  // 真正该共享的那几件（quiet / isolate_process / read_capped_line /
+  // terminate_process_tree）全部沿用 `process` 里的同一份实现，没有重造。
+  // 2026-10-06：`git clone --progress` 让进度面板实时显示百分比，此前 12KB/s 的
+  // 直连是一段十分钟不动的空白，用户分不清「在慢慢拉」和「已经卡死」。
+  // 111 → 117：补两处自审出来的缺口。一是**总量**封顶（`read_capped_line` 只
+  // 封单行 64 KiB；一个把 stdout 当日志转储的子进程能把内存吃光，而 clone
+  // 达不到这个数——它防的是明天那种调用方）。二是超时后补 `child.wait()`：Rust
+  // 的 `Child` 在 drop 时**不会**自动 wait，不收这一下，超时的 git 会在进程表
+  // 里留一条僵尸直到壳退出。
+  'src-tauri/src/shell/stream.rs': 117,
   'src-tauri/src/kernel/mod.rs': 10,
   // 10 → 11：2026-10-05 追加 catalog（插件目录检索层）。仍是一层路由，
   // 没有实现——同 shell/mod.rs 那条 15 → 19 的先例。
@@ -446,12 +464,24 @@ const FILE_BUDGETS = {
   // 525 → 533：`Recorder::attach` —— 接续一条已落盘但没收尾的记录。二分
   // 跨 N 次命令调用，recorder 活不过命令边界，不接续就得每次重开一条，把
   // 一次排查切成互不相干的好几条。
-  'src-tauri/src/diagnostics/run.rs': 533,
+  // 533 → 585：`sweep_orphans`（启动清扫索引里查不到的孤儿详情）+ `clear`
+  // （用户主动清空整段历史）。**孤儿是真缺口不是洁癖**：详情文件先落地、
+  // 索引后写入，壳在两者之间被强杀就留下一个列表读不到的 `run-*.json`，
+  // 它带着整份事件流一直占盘。`prune` 只清「被 20 条上限挤掉」的，够不着它。
+  // 三个新测试里有两个当场抓出实现 bug：(1) 文件名 `{id}.json` 而 id 自带
+  // `run-` 前缀，剥掉前缀再比索引会把每一条都当成孤儿；(2) 更要命的一条——
+  // 拿 `load_index` 的容错空索引去比对，索引一损坏就会把用户全部诊断历史
+  // 当孤儿抹干净。改成 `load_checked`，损坏时一个都不删。
+  'src-tauri/src/diagnostics/run.rs': 585,
   // 运行记录的只读命令壳。刻意**没有** prune 命令：裁剪是写入侧
   // `Recorder::finish` 的职责，给前端一条命令就等于开一个能被随手调用的
   // 删除路径。三条命令的 `spawn_blocking` 走 `commands::blocking` 助手，
   // 免得 JoinError 的英文原文直接甩到面板上。
-  'src-tauri/src/diagnostics/run_cmd.rs': 55,
+  // 55 → 59：`diagnostic_run_clear`。**它不推翻上面「刻意没有 prune 命令」
+  // 那条纪律**：prune 是自动裁剪（超 20 条被动触发），给它一条前端命令毫无
+  // 意义且等于开一个能被随手调用的删除路径；`clear` 是用户明确说「这段历史
+  // 我不要了」，没有自动决策成分在里面，删的就是他刚看过一眼的那份列表。
+  'src-tauri/src/diagnostics/run_cmd.rs': 59,
   // 启动诊断的编排层：开记录 → 逐阶段打点 → 收尾归因 + 事故引用。
   // **被反棘轮逼出来的**：这些逻辑"只在启动诊断这条路径上成立"，原先要
   // 直接写进 2000 行的 commands.rs，而那条规则不许把超阈值文件继续撑大。
@@ -465,7 +495,10 @@ const FILE_BUDGETS = {
   // 四份之后改一处忘一处，漂掉的恰恰是用户第一次看到的那句话。
   // 169 → 191：按 kind 分派的统一入口（审查 P1-05）、记录加载时落证据路径
   // （P1-02）、解析器带出信封里的 runId（P2-01）。
-  'ui/src/diagnostics/diagnostics.js': 191,
+  // 191 → 213：`clearDiagnosticRuns`。走既有的 `confirmDialog` + `withLoading`
+  // + `toastSuccess`，不新造一套确认与提示——确认框的 z-index 那些坑已经踩过
+  // 一轮了。删完立刻 `loadRecentRuns`：清空后那行「最近操作」要真的变空态。
+  'ui/src/diagnostics/diagnostics.js': 213,
   // 诊断层的**动作代理**（设计 §8.2）。与 `diagnostics.js` 分开是因为职责
   // 不同：那边管「现在在看什么」，这边管「用户点了会发生什么」——混在一起
   // 每次加动作都要重新读一遍状态定义才能确认没写错层。
@@ -513,7 +546,12 @@ const FILE_BUDGETS = {
   // 12 行：门禁的 codeLineCount 只剥 `//` 与 `/* */`，**独立的 `}` 会按代码行
   // 计**，一条两声明的规则分四行写就多收 3 行。本文件通篇一行一规则，跟着走。
   // 第二轮 274 → 285：「更多」弹层补 padding / hover / 图标对齐（+11）。
-  'ui/src/diagnostics/diagnostics.css': 285,
+  // 285 → 287：标题行上的小动作按钮（`.diag-card__action`）。+2 而非更多：
+  // hover 与 disabled 各写成一行（连注释共 2 条规则 / 2 行代码）。边框、背景、
+  // 字体全部显式声明，因为**全局没有裸 button 的默认样式**，不写就是一个
+  // 系统灰方块。不动共享的 `.diag-card__aside`（11 处引用，其中
+  // DiagnosisShell 把它当标题后缀用，给它加 flex 会改掉那处的表现）。
+  'ui/src/diagnostics/diagnostics.css': 287,
   // 诊断层外壳：覆盖当前面板而非另开窗口（启动失败时用户正要回到日志 /
   // 换端口 / 回退快照，跨窗口拖拽是白费力气）。头部固定
   // [返回] 标题 [主操作]，标题单行省略以守住 480 宽。
@@ -574,7 +612,9 @@ const FILE_BUDGETS = {
   // 系统健康按设计 §7.2 列全七行（内核 / 运行时 / Node / 插件接线 / 技能
   // 注册 / 日志 / 快照）。`unavailable` 是一等状态：读失败时**不能**显示成
   // 「正常」——用户看到一片正常会以为系统没事，而真相是这一项没读到。
-  'ui/src/diagnostics/ControlTower.vue': 210,
+  // 210 → 215：「最近操作」卡标题行右侧加「清除记录」按钮。入口挂在标题行而
+  // 不是记录行内：它针对的是**整段历史**，贴在某一条旁边会让人以为只删那一条。
+  'ui/src/diagnostics/ControlTower.vue': 215,
   // 安装预检的两段式事务：中央库字节级快照与回滚、基线差分判定、
   // 提交（物化 + 接线）与报告装配。放在独立文件而不是塞进已 2964 行的
   // plugins.rs，是为了两件事：插件模块读不懂、预检想复用到技能上也
@@ -1588,7 +1628,24 @@ const FILE_BUDGETS = {
 // 的事）。用户在系统里明明配了代理，clone 却绕开它直连——2026-10-06 实测 12 KB/s
 // 爬 GitHub，10 分钟拉不完一个插件仓库。优先用已有环境变量，其次系统设置；一个
 // 都没探测到就不注入，照直连。
-const TOTAL_BUDGET = 41365;
+// 41365 → 41568（2026-10-06 晚，用户「git 拉取卡住」实测反馈）。净增 203 行：
+//   · src-tauri/src/shell/stream.rs 新增 111：带超时的流式子进程捕获。git clone
+//     换上 `--progress` + 逐行回传，进度面板实时显示 `Receiving objects: N%`。
+//     此前用 run_command_capture_with_timeout 一次性捕获，12KB/s 的直连下是
+//     十分钟不动的空白——用户无法区分「在慢慢拉」和「已经卡死」。
+//   · diagnostics/run.rs +37：sweep_orphans + clear。孤儿详情是真缺口（§17.7）：
+//     详情先落地、索引后写入，壳在两者之间被强杀就留下列表读不到的文件。
+//   · 其余 +55 分布在 run_cmd / diagnostics.js / ControlTower.vue / mod.rs /
+//     manage.rs，是上面两条的命令层、动作层与入口。
+// 同轮把 GIT_CLONE_TIMEOUT 从 600s 压到 300s：等满 10 分钟等到的仍是一次必然
+// 失败的超时，早点失败早点能换来源重试。
+// 反棘轮一个数字没动：process.rs 仍 1157/1157（改动只有 `pub(crate)` 可见性与
+// 常量值，都在 codeLineCount 之外），center.rs 2825 → 2817。
+// 41574 → 41578：`sweep_orphans` 的索引损坏保护。`load_index` 是容错读，损坏时
+// 同样返回空索引——拿它去比对孤儿，磁盘上每一条详情文件都会被当成孤儿删掉，
+// 一次启动抹掉用户全部诊断历史。改走 `load_checked`（+4 行，钉在 run.rs 那条
+// 注释里并配了一条反向验的单测）。这条比它多出来的 4 行便宜得多。
+const TOTAL_BUDGET = 41578;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

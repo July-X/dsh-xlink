@@ -289,7 +289,7 @@ pub fn script_capture(
 const MAX_OUTPUT_LINE_BYTES: usize = 64 * 1024;
 const OUTPUT_QUEUE_CAPACITY: usize = 256;
 
-fn read_capped_line<R: BufRead>(
+pub(crate) fn read_capped_line<R: BufRead>(
     reader: &mut R,
     buffer: &mut Vec<u8>,
 ) -> io::Result<Option<String>> {
@@ -843,7 +843,12 @@ fn spawn_log_drain<R: Read + Send + 'static>(stream: R, logger: Arc<Mutex<Rotati
 const RUN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 /// `git clone` 的上限：浅克隆在慢网络或大仓库下远超 30 秒，而它恰恰是很多
 /// 插件（GitHub Release 不可用时）的主安装路径。
-pub const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(600);
+///
+/// 2026-10-06 实测把这从 10 分钟压到 5 分钟：用户在 12~16KB/s 的直连速率下
+/// 等满 10 分钟，等到的仍然是一次必然失败的超时——那 5 分钟里他除了看着
+/// 一个不动的进度条什么也做不了，早点失败早点能换来源重试。配合
+/// `--progress` 的流式输出，卡住时至少看得见 git 到哪一步了。
+pub const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
 const RUN_CAPTURE_MAX_BYTES: usize = 4 * 1024 * 1024;
 const RUN_CAPTURE_READER_GRACE: Duration = Duration::from_millis(500);
 
@@ -860,7 +865,7 @@ const RUN_CAPTURE_READER_GRACE: Duration = Duration::from_millis(500);
 const RUN_CAPTURE_POLL_MIN: Duration = Duration::from_micros(200);
 const RUN_CAPTURE_POLL_MAX: Duration = Duration::from_millis(20);
 
-fn isolate_process(cmd: &mut Command) {
+pub(crate) fn isolate_process(cmd: &mut Command) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

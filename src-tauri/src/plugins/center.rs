@@ -1435,54 +1435,48 @@ fn fetch_git_clone(
     // 系统里配了代理，clone 照样绕开它直连。系统里没配就不注入，照直连。
     crate::shell::env::apply_proxy_env(&mut cmd);
     cmd.arg("clone").arg("--depth").arg("1");
+    // `--progress` 是这份命令流式的前提：git 察觉输出不是 TTY 时会把进度条
+    // 从 `\r` 覆盖改写成逐行，于是每一行都能被立即读出并送进进度面板。少了
+    // 它，12KB/s 的直连就是一段十分钟不动的空白——用户分不清「在慢慢拉」
+    // 和「已经卡死」。
+    cmd.arg("--progress");
     if let Some(tag) = &branch {
         cmd.arg("--branch").arg(tag);
     }
     cmd.arg(&spec.source).arg(dest);
-    // 与技能侧同理：clone 是网络操作，30 秒的默认上限会把一次正常的浅克隆
-    // 变成"无法运行 git"。很多 dsh 插件没有 GitHub Release，clone 是主路径。
-    let output = crate::shell::process::run_command_capture_with_timeout(
-        cmd,
-        "git clone",
-        crate::shell::process::GIT_CLONE_TIMEOUT,
-    )
-    .map_err(|e| {
-        if e.kind() == std::io::ErrorKind::TimedOut {
-            AppError::Io(format!(
+    // 流式而不是一次性捕获：进度面板要能实时显示 git 到哪一步了，超时才
+    // 从「一句话等十分钟」变成「看得见百分比地等五分钟」。超时沿用技能侧的
+    // 同一常量，让两侧对「clone 该等多久」保持一个答案。
+    let cloned =
+        crate::shell::stream::capture(&mut cmd, crate::shell::process::GIT_CLONE_TIMEOUT, |line| {
+            on_progress(line)
+        })
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::TimedOut {
+                AppError::Io(format!(
                 "git clone 超时（{} 分钟）：仓库较大或网络较慢，请重试，或改用带 Release 的来源",
                 crate::shell::process::GIT_CLONE_TIMEOUT.as_secs() / 60
             ))
-        } else {
-            AppError::Io(format!("无法运行 git：{e}"))
-        }
-    })?;
-    let (success, stdout, stderr) = output;
-    if !success {
-        // 优先反向查找 "fatal:" / "error:" 行；找不到就退回到最后一行
-        // 非空 stderr，再退回 "，请检查地址与网络" 兜底文案。
-        let detail = stderr
+            } else {
+                AppError::Io(format!("无法运行 git：{e}"))
+            }
+        })?;
+    if !cloned.success {
+        let detail = cloned
+            .output
             .lines()
             .rev()
             .find(|l| {
                 let t = l.trim_start();
                 t.starts_with("fatal:") || t.starts_with("error:")
             })
-            .or_else(|| stderr.lines().rev().find(|l| !l.trim().is_empty()))
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let stdout_tail = stdout
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
+            .or_else(|| cloned.output.lines().rev().find(|l| !l.trim().is_empty()))
             .unwrap_or("")
             .trim()
             .to_string();
         let mut msg = String::from("git clone 失败");
         if !detail.is_empty() {
             msg.push_str(&format!("：{detail}"));
-        } else if !stdout_tail.is_empty() {
-            msg.push_str(&format!("：{stdout_tail}"));
         } else {
             msg.push_str("，请检查地址与网络");
         }

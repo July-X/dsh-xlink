@@ -772,6 +772,94 @@ pub fn prune(family: &str, instance: &str, index: &mut RunIndex, pinned: &HashSe
     }
 }
 
+/// 删掉「索引里已经没有、但详情文件还在」的孤儿记录，返回删除个数。
+///
+/// [`prune`] 只清「被 20 条上限挤掉」的那几条。孤儿是另一类：详情文件先
+/// 落地、索引后写入，壳在两者之间被强杀（用户拔电源、任务管理器结束
+/// 进程）就会留下一个索引里查不到的 `run-*.json`。它们对用户完全不可见——
+/// 列表读索引——却会一直占着磁盘，而详情文件带着整份事件流，单条可达
+/// 几百 KB。启动时扫一遍，让磁盘状态回到索引描述的样子。
+///
+/// **只删 `run-` 前缀的 `.json`**：目录里可能还有别的文件（`index.json`
+/// 本身、未来的附属产物），按前缀认领才不会误伤。
+///
+/// **索引读不出来时一个都不删**，这是本函数最要紧的一条。`load_index` 是
+/// 容错读：`index.json` 损坏时它同样返回空索引。若拿这份空索引去比对，
+/// 磁盘上**每一条**详情文件都会变成「孤儿」，一次启动就把用户的全部诊断
+/// 历史抹干净——而起因只是一次半截写入。因此这里走 `load_checked`：文件
+/// 不存在是正常路径（`Missing` → 空索引 → 目录本来就是空的），损坏则
+/// 原地返回 0，把「删不删」的判断交给用户下次自己处理。
+pub fn sweep_orphans(family: &str, instance: &str) -> usize {
+    let dir = runs_dir(family, instance);
+    if !dir.is_dir() {
+        return 0;
+    }
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    let index: RunIndex =
+        match crate::shell::state::load_checked(&index_path(family, instance), ctx()) {
+            Ok(index) => index,
+            Err(_) => return 0,
+        };
+    let known: HashSet<String> = index.entries.iter().map(|entry| entry.id.clone()).collect();
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        // 详情文件名就是 `{run_id}.json`，而 run_id 本身以 `run-` 开头
+        // （见 `run-<时刻>-<后缀>`），所以比对的键是**带前缀的** stem。
+        // 剥掉前缀再比会把每一条记录都当成孤儿——这正是这条单测抓到的。
+        let Some(stem) = name.strip_suffix(".json") else {
+            continue;
+        };
+        if !stem.starts_with("run-") || known.contains(stem) {
+            continue;
+        }
+        if std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// 清空本实例的全部运行记录，返回删除的详情文件个数。
+///
+/// 与 [`sweep_orphans`] 的区别是它**连索引一起清空**：这是用户在控制塔
+/// 点「清除诊断记录」时的语义——要的是「这段历史我不要了」，而不是「把
+/// 你看不见的东西顺手删掉」。因此被事故引用的那条**也不豁免**：那是用户
+/// 明确表达的删除意图，`prune` 的引用保护是给自动裁剪用的自动决策让路。
+///
+/// 索引按 [`SCHEMA`] 重写成空文档而不是删文件：删掉它会让下一次
+/// `load_index` 走 `load_lossy` 的空值分支，那条分支的文案是「索引无法
+/// 解析」，会让一个刚被用户主动清空的目录看起来像损坏。
+///
+/// 返回 `Err` 只有一种情况：详情文件已删但索引没能重写。那时旧的
+/// `index.json` 仍列着已被删掉的记录，用户会在列表里点进一片「记录不存
+/// 在」——这必须让用户看见，不能当无事发生。
+pub fn clear(family: &str, instance: &str) -> Result<usize, AppError> {
+    let dir = runs_dir(family, instance);
+    let mut removed = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let orphaned = name
+                .to_str()
+                .and_then(|n| n.strip_prefix("run-"))
+                .is_some_and(|rest| rest.ends_with(".json"));
+            if orphaned && std::fs::remove_file(entry.path()).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    let index: RunIndex = RunIndex {
+        schema: SCHEMA,
+        ..RunIndex::default()
+    };
+    crate::shell::state::save(&index_path(family, instance), &index, ctx())?;
+    Ok(removed)
+}
+
 /// 当前应当被保护、不参与裁剪的记录 id。
 ///
 /// 只认「事故面板正在展示的那次」：`last-incident.json` 里引用的运行 id。
@@ -801,6 +889,123 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).expect("temp home");
         home
+    }
+
+    /// 写一份索引，entries 全部用给定的 id。
+    fn seed_index(ids: &[&str]) {
+        let index: RunIndex = RunIndex {
+            schema: SCHEMA,
+            entries: ids
+                .iter()
+                .map(|id| RunSummary {
+                    id: (*id).to_string(),
+                    kind: kind::STARTUP.to_string(),
+                    status: status::SUCCESS.to_string(),
+                    cause: String::new(),
+                    summary: String::new(),
+                    started_at_ms: 0,
+                    finished_at_ms: None,
+                    event_count: 0,
+                })
+                .collect(),
+        };
+        std::fs::create_dir_all(runs_dir("dsh", "default")).unwrap();
+        crate::shell::state::save(&index_path("dsh", "default"), &index, ctx()).unwrap();
+    }
+
+    #[test]
+    fn sweep_orphans_deletes_only_details_the_index_no_longer_lists() {
+        let home = temp_home("sweep");
+        let _guard = scoped_xlink_home(&home);
+        seed_index(&["run-kept"]);
+        std::fs::create_dir_all(runs_dir("dsh", "default")).unwrap();
+        std::fs::write(run_path("dsh", "default", "run-kept"), "{}").unwrap();
+        // 详情先落地、索引后写入，壳在两者之间被强杀：索引里没有，文件在。
+        std::fs::write(run_path("dsh", "default", "run-half-written"), "{}").unwrap();
+        let removed = sweep_orphans("dsh", "default");
+        assert_eq!(removed, 1, "只删索引里查不到的那一个");
+        assert!(
+            run_path("dsh", "default", "run-kept").exists(),
+            "索引里还列着的详情不能被当成孤儿删掉"
+        );
+        assert!(!run_path("dsh", "default", "run-half-written").exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sweep_orphans_deletes_nothing_when_the_index_is_corrupt() {
+        let home = temp_home("sweep-corrupt");
+        let _guard = scoped_xlink_home(&home);
+        let dir = runs_dir("dsh", "default");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 半个 JSON：一次被强杀的写入留下的正是这种文件。
+        std::fs::write(index_path("dsh", "default"), "{\"schema\":1,\"entr").unwrap();
+        std::fs::write(run_path("dsh", "default", "run-a"), "{}").unwrap();
+        std::fs::write(run_path("dsh", "default", "run-b"), "{}").unwrap();
+        // `load_index` 是容错读，损坏时返回空索引。拿那份空索引去比对，磁盘上
+        // 每一条详情文件都会变成「孤儿」——一次启动抹掉全部诊断历史。
+        assert!(
+            load_index("dsh", "default").entries.is_empty(),
+            "前提：容错读给出空索引"
+        );
+        assert_eq!(
+            sweep_orphans("dsh", "default"),
+            0,
+            "索引读不出来时一个都不能删"
+        );
+        assert!(run_path("dsh", "default", "run-a").exists());
+        assert!(run_path("dsh", "default", "run-b").exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sweep_orphans_leaves_unrelated_files_alone() {
+        let home = temp_home("sweep-keep");
+        let _guard = scoped_xlink_home(&home);
+        seed_index(&["run-kept"]);
+        let dir = runs_dir("dsh", "default");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 未来可能出现的附属产物、以及索引本身，都不在 run- 前缀的认领范围内。
+        std::fs::write(dir.join("thumbnails.json"), "{}").unwrap();
+        let before = std::fs::read_to_string(index_path("dsh", "default")).unwrap();
+        assert_eq!(sweep_orphans("dsh", "default"), 0);
+        assert!(
+            dir.join("thumbnails.json").exists(),
+            "非 run- 前缀的文件不能被误删"
+        );
+        assert_eq!(
+            std::fs::read_to_string(index_path("dsh", "default")).unwrap(),
+            before,
+            "清扫只删详情文件，不许改索引"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn clear_empties_both_index_and_details() {
+        let home = temp_home("clear");
+        let _guard = scoped_xlink_home(&home);
+        seed_index(&["run-a", "run-b"]);
+        std::fs::write(run_path("dsh", "default", "run-a"), "{}").unwrap();
+        std::fs::write(run_path("dsh", "default", "run-b"), "{}").unwrap();
+        std::fs::write(runs_dir("dsh", "default").join("thumbnails.json"), "{}").unwrap();
+        assert_eq!(clear("dsh", "default").expect("清空成功"), 2);
+        assert!(
+            load_index("dsh", "default").entries.is_empty(),
+            "索引要一起清空"
+        );
+        assert!(!run_path("dsh", "default", "run-a").exists());
+        // 重写成空文档而不是删文件：删掉会让下一次读走「索引无法解析」那条
+        // 损坏文案，而用户刚刚亲手清空过一次。
+        assert!(
+            index_path("dsh", "default").exists(),
+            "索引文件要保留，只是变空"
+        );
+        assert!(
+            runs_dir("dsh", "default").join("thumbnails.json").exists(),
+            "清除只认 run- 前缀的详情文件"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

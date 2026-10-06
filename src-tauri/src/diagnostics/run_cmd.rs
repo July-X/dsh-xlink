@@ -1,16 +1,20 @@
-//! 运行记录的 Tauri 命令层（`run.rs` 的对外只读口）。
+//! 运行记录的 Tauri 命令层。
 //!
-//! **只读，且没有副作用**：这两条命令不启动内核、不出网、不改快照，
+//! 三条读命令**只读，且没有副作用**：它们不启动内核、不出网、不改快照，
 //! 也**不创建**运行记录。用户打开「查看启动诊断」不应该凭空多出一条
-//! 「诊断被查看了」的记录——那会让列表自己长出噪声，用户下次再看时
+//! 「诊断被查看」的记录——那会让列表自己长出噪声，用户下次再看时
 //! 会以为壳在他没操作的时候启动过工作台。
+//!
+//! 唯一的写命令是用户明确点出来的 [`diagnostic_run_clear`]：它删掉的东西
+//! 全部是**这台机器上只服务于本壳的诊断历史**，不碰内核安装树、实例 home、
+//! 插件中央库或技能库。
 //!
 //! 实例解析一律走 [`instance::resolve_default`]：诊断记录是**某一个实例**
 //! 的事实，让调用方自己传 family/instance 只会让前端有机会读到另一个实例
 //! 的启动现场。它也正是写入侧（`startup_run` / `precheck`）解析的那一份，
 //! 读写不同源会让「刚启动完去看诊断」读了个空列表。
 //!
-//! 三条命令的 `spawn_blocking` 一律走 [`crate::commands::blocking`]：裸调用
+//! 命令的 `spawn_blocking` 一律走 [`crate::commands::blocking`]：裸调用
 //! 把 `JoinError` 的英文原文直接甩到 UI 上。
 use crate::diagnostics::run;
 use crate::shell::instance;
@@ -77,4 +81,20 @@ pub async fn diagnostic_run_latest(
         )
     })
     .await
+}
+
+/// 清除本实例的全部诊断记录，返回删除的详情文件个数。
+///
+/// 与 [`run::sweep_orphans`] 的分工：那条在启动期自动跑，只清「索引里
+/// 已经查不到、用户也看不见」的孤儿文件；这条是用户主动点的，要的是
+/// 「这段历史我不要了」——连索引一起清，被事故引用的那条也不豁免。
+///
+/// 返回 `Err` 时详情文件已删但索引没能重写（详见 [`run::clear`]），用户
+/// 会看到一句明确的失败而不是一个假的「已清除」。
+#[tauri::command]
+pub async fn diagnostic_run_clear(_state: State<'_, AppState>) -> Result<usize, String> {
+    let (family, instance_id) = instance::resolve_default();
+    crate::commands::blocking(move || run::clear(family, instance_id))
+        .await
+        .map_err(|error| error.to_string())
 }
