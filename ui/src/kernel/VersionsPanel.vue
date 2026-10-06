@@ -184,6 +184,49 @@ function formatBytes(bytes) {
   const digits = index === 0 ? 0 : 1;
   return `${scaled.toFixed(digits)} ${UNITS[index]}`;
 }
+
+// --- 四个占用类型的配色与说明 ---
+//
+// 两件事按 group.id 走，不按 label：**label 是文案，会改**（「实例数据」改成
+// 「会话数据」不该让配色和说明一起失配），id 是契约，后端 build_group 的第一个
+// 实参，一一对应且不会随手改。
+//
+// 配色取自 usage.js 的 MODEL_COLORS 同源色板（同一个图表家族里用同一套色，
+// 两张图并排时「蓝=哪一类」不会各说各话），但**不复用那个导出**：那是模型色，
+// 语义是「哪个 LLM」；这里是占用类型，两边各自增删条目时互不牵动。
+// 未知 id 回落 --accent：新加一类忘了配色时仍然看得见，而不是渲染成空白。
+const USAGE_TYPES = {
+  kernels: {
+    color: '#4f8cff',
+    tip: '各个已安装的内核版本及其依赖。删掉不用的版本即可回收，不影响在用的那个。',
+  },
+  instances: {
+    color: '#22d3ee',
+    tip: '实例的数据目录，装的是你的会话与附件。这是你的数据，删了就没了，壳不提供删除。',
+  },
+  stores: {
+    color: '#34d399',
+    tip: '插件、技能与备份的中央库。删掉会在下次需要时重新下载。',
+  },
+  logs: {
+    color: '#fbbf24',
+    tip: '壳自身的运行日志，出问题排查时要看。可以随时清空。',
+  },
+};
+
+function usageColor(group) {
+  const found = USAGE_TYPES[group && group.id];
+  return found ? found.color : 'var(--accent)';
+}
+
+// 说明文案。`detail`（后端给的缩写全名，如「实例数据（会话与附件）」）只在上面
+// 那句没提到它时补一行——「内核版本」这种 detail 为空的分类不会多出一行废话。
+function groupTip(group) {
+  const found = USAGE_TYPES[group && group.id];
+  const base = found ? found.tip : 'dsh-xlink 占用的一部分。';
+  const extra = group && group.detail && !base.includes(group.detail) ? group.detail : '';
+  return extra ? base + '（' + extra + '）' : base;
+}
 </script>
 
 <template>
@@ -344,7 +387,7 @@ function formatBytes(bytes) {
         </div>
       </div>
 
-      <!-- 磁盘占用：只读视图，**没有任何删除入口**（2026-10-02 拍板）。
+      <!-- 磁盘用量：只读视图，**没有任何删除入口**（2026-10-02 拍板）。
            理由是这里没有安全边界可守——最大的两块是内核 node_modules 与
            实例 DSH home（后者装的是用户会话与附件），壳无法替用户判断
            哪块该删。给只读数字，用户自己用 Finder 处理，壳就不必在
@@ -352,7 +395,7 @@ function formatBytes(bytes) {
       <div class="disk-usage">
         <div class="card-head">
           <h2>
-            磁盘占用
+            磁盘用量
             <el-tooltip placement="bottom-start" :show-after="80">
               <template #content>
                 <div class="card-info-tooltip">
@@ -394,12 +437,28 @@ function formatBytes(bytes) {
         </div>
 
         <div v-if="diskUsage.loaded" class="usage-groups">
-          <div v-for="group in diskUsage.groups" :key="group.id" class="usage-tile">
+          <div
+            v-for="group in diskUsage.groups"
+            :key="group.id"
+            class="usage-tile"
+            :style="{ '--usage-color': usageColor(group) }"
+          >
             <div class="usage-tile-head">
-              <!-- 行内放缩写、全文进悬停：186px 的瓦片放不下「实例数据（会话与附件）」，
-                   而「装的是用户会话」这句恰恰最不能被截掉。detail 为空表示与
-                   label 相同（后端只在真有冗余可砍时才给 detail）。 -->
-              <span class="usage-tile-label" :title="group.detail || group.label">{{ group.label }}</span>
+              <!-- 标题挂 tooltip 而不是原生 title：四类占用的**可回收性完全不同**
+                   （内核能删、实例数据是用户会话、插件技能可重下、日志随时可清），
+                   而瓦片标题只有 11px、宽 186px，装不下这句话。原生 title 要悬停
+                   1s 才出、样式也跟界面不一致，这里改用 EP tooltip。
+                   内容优先级：**这句「这是什么、能不能删」> 缩写全名**——前者是
+                   用户点进来真正要答的问题。detail（后端给的缩写全名）只在与
+                   标题不同且上面没覆盖到时才补一行。 -->
+              <el-tooltip placement="bottom-start" :show-after="80">
+                <template #content>
+                  <div class="card-info-tooltip usage-type-tip">
+                    {{ groupTip(group) }}
+                  </div>
+                </template>
+                <span class="usage-tile-label">{{ group.label }}</span>
+              </el-tooltip>
               <span class="usage-tile-total">{{ formatBytes(group.bytes) }}</span>
             </div>
             <div class="usage-tile-share">
@@ -676,6 +735,23 @@ function formatBytes(bytes) {
   white-space: nowrap;
 }
 
+/* 标题前的小圆点：四个占用类型各一色，与占比条、容量胶囊共用同一个
+   `--usage-color`。**不是装饰**——四张瓦片的标题都是「内核版本 / 实例数据 /
+   插件… / 壳日志」这类中性词，光看文字分不出「哪块能删、哪块是你的数据」，
+   而这正是用户悬停之前就该先看到的区分。 */
+.usage-tile-label::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 5px;
+  /* `vertical-align: 1px` 让圆点与 11px 文字的中线对齐：默认 baseline 会让圆点
+     坐在基线上、视觉上偏下。 */
+  vertical-align: 1px;
+  background: var(--usage-color, var(--accent));
+}
+
 .usage-tile-total {
   /* 12.5 → 11.5：比标题还低半档，字面上就让「量出来的数」退到标题后面。
      高度不许因此长出来——正文 line-height 是 1.5，12.5px 的裸文本行盒 18.75px；
@@ -688,7 +764,7 @@ function formatBytes(bytes) {
      ② 形状——标题是裸文本，容量是胶囊。两个 11px 上下的文本并排，不换底色
         就还是「标题 + 标题」，而这一行恰恰不该被读成一句标题。
      胶囊的写法沿用本仓已有的 chip 词汇（.status-pill / .brand-update）。 */
-  color: var(--accent);
+  color: var(--usage-color, var(--accent));
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -717,6 +793,14 @@ function formatBytes(bytes) {
   font-variant-numeric: tabular-nums;
 }
 
+/* 分类说明气泡。`.card-info-tooltip` 是 theme.css 的全局类（卡片标题 ℹ️ 用的
+   那一套），这里只收一处宽度：那句话最长 40 多字，默认宽度会折成四五行，
+   而 tooltip 挂在瓦片标题上、用户是「扫一眼确认能不能删」，不该读一段小字。 */
+.usage-type-tip {
+  max-width: 260px;
+  line-height: 1.6;
+}
+
 .usage-bar {
   flex: 1;
   min-width: 0;
@@ -732,7 +816,10 @@ function formatBytes(bytes) {
   display: block;
   height: 100%;
   border-radius: 2px;
-  background: var(--accent);
+  /* 分类自己的颜色（`--usage-color` 由模板按 group.id 注入瓦片，四个占用类型
+     各一色）。未知 id 由 usageColor() 回落成 --accent，CSS 里的第二层兜底是
+     给「模板没注入」这种情况的——比如某个测试直接渲染瓦片。 */
+  background: var(--usage-color, var(--accent));
   /* 极小的分类也要看得见：宽度按 sharePercent，但设下限，否则 0.02% 的
      备份会渲染成一条看不见的线。 */
   min-width: 2px;
