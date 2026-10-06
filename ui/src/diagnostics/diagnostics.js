@@ -35,6 +35,8 @@ export const diagnosticStore = reactive({
   liveEvents: [],
   loading: false,
   error: '',
+  /** 最近一次点开的证据路径（设计 §8.2 的 `openEvidence` 记在这里）。 */
+  evidencePath: '',
 });
 
 /**
@@ -110,6 +112,8 @@ export function visibleEvents() {
  * 这条路径，它们不知道具体 id，也不该知道（id 是后端的实现细节）。
  */
 export function openStartupDiagnosis(runId, sourcePanel) {
+  // 调用方没给 id 时**不猜**：交给 `loadStartupDiagnosis` 去问后端「最近一次」。
+  // 在这里塞一个陈旧的 id 会让用户点进来看到上次那条。
   diagnosticStore.active = { kind: 'startup', runId: runId || '' };
   diagnosticStore.sourcePanel = sourcePanel || '';
   diagnosticStore.error = '';
@@ -222,3 +226,7 @@ export function loadPluginRun(runId, manual = false) {
 export function latestSummary() {
   return diagnosticStore.recentRuns[0] || null;
 }
+
+// 最近一次启动的运行记录 id 直接转发 `store.js` 那一份，避免组件为了读一个
+// id 而跨层 import store——诊断层的所有状态入口都该是这里。
+export { getLastRunId } from '../store.js';

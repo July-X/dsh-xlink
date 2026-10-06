@@ -327,6 +327,9 @@ pub fn plugin_install(
             None,
         );
         report.run_id = recorder.id().to_string();
+        // 这条路径**照样会装上插件**（fail-open），所以来源信息比别的路径更
+        // 重要：用户是在「预检没做」的情况下把一个包装进实例的。
+        fill_source_info(&mut report, spec_str, mode, family, target_instance);
         let item = plugins::center::install_for_instance(
             family,
             target_instance,
@@ -553,6 +556,60 @@ mod tests {
     use super::*;
     use crate::tests::scoped_xlink_home;
     use std::fs;
+
+    /// 来源信息必须在**每一条**返回路径上填满。
+    ///
+    /// 漏填的那条在 UI 上表现为「来源未知」——而漏掉的恰恰可能是
+    /// fail-open 那条：用户是在「预检没做」的情况下把一个包装进实例的，
+    /// 那时他最需要知道装的是哪个地址的什么版本。
+    #[test]
+    fn source_info_is_filled_for_every_npm_spec() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-src-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _guard = scoped_xlink_home(&home);
+        fs::create_dir_all(&home).expect("home");
+
+        let mut report = sandbox::PrecheckReport::new("id", "name", sandbox::Verdict::Inconclusive);
+        fill_source_info(
+            &mut report,
+            "npm install @scope/pkg@1.2.3",
+            "link",
+            "dsh",
+            "default",
+        );
+        assert_eq!(report.source_kind, "npm", "取源类型要能区分 npm / github");
+        assert_eq!(report.source_label, "@scope/pkg");
+        assert_eq!(
+            report.pin, "1.2.3",
+            "版本钉必须带出来：同一个包名不同版本是两份东西"
+        );
+        assert_eq!(report.materialize, "link");
+        assert_eq!(report.target_instance, "default");
+        // 解析失败不编造来源：宁可显示「来源未知」，也不能让用户以为装的是
+        // 官方包。
+        let mut bad = sandbox::PrecheckReport::new("id", "name", sandbox::Verdict::Fail);
+        fill_source_info(
+            &mut bad,
+            "这不是一个合法的安装请求",
+            "copy",
+            "dsh",
+            "default",
+        );
+        assert_eq!(bad.source_label, "", "解析失败时来源必须留空而不是编一个");
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn integrity_label_never_calls_an_unverified_download_verified() {
+        use crate::plugins::sandbox::integrity;
+        assert!(!integrity::label(integrity::SHA1).contains("较强"));
+        assert!(integrity::label(integrity::NONE).contains("未能"));
+        assert!(integrity::label(integrity::SHA512).contains("sha512"));
+    }
 
     /// 预检的**全部**安全承诺就是这一条：判失败之后，中央库要回到用户点
     /// 「安装」之前的样子——不多一条 store 行、不多一个插件目录、字节级

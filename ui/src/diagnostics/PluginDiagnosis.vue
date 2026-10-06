@@ -12,7 +12,7 @@
 //    「白屏前最后一次正常启动里也出现了」的唯一线索。
 // ③ **首屏不显示凭据、会话正文与环境变量。** 折叠区里也只给路径与摘要。
 import { computed, onMounted } from 'vue';
-import { showLogs } from '../logs/logs.js';
+import { openEvidence } from './diagnostic-actions.js';
 import { store } from '../store.js';
 import { loadSnapshots } from './snapshots.js';
 import { closeDiagnosis, diagnosticStore, loadPluginRun } from './diagnostics.js';
@@ -133,7 +133,9 @@ const risks = computed(() => {
 });
 
 function viewLogs() {
-  showLogs();
+  // 沙盒日志是这次预检的**主证据**，路径一起传过去：诊断层记下它，
+  // 日志读取仍走日志模块（设计 §8.2 最后一条动作）。
+  openEvidence(report.value?.evidencePath);
 }
 
 /**

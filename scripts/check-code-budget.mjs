@@ -389,7 +389,7 @@ const FILE_BUDGETS = {
   // 版的阶段静默丢掉。
   // 500 行里有约 180 行是单测（写失败不改结果、引用保护、脱敏形状、
   // 事件预算、未知取值往返）——那些是这套模型最容易回归的地方。
-  'src-tauri/src/diagnostics/run.rs': 505,
+  'src-tauri/src/diagnostics/run.rs': 525,
   // 运行记录的只读命令壳。刻意**没有** prune 命令：裁剪是写入侧
   // `Recorder::finish` 的职责，给前端一条命令就等于开一个能被随手调用的
   // 删除路径。三条命令的 `spawn_blocking` 走 `commands::blocking` 助手，
@@ -403,7 +403,11 @@ const FILE_BUDGETS = {
   // 诊断层的共享状态与动作：通道消息解析（结构化事件 / 纯文本双路）、
   // 实时事件流、打开与返回。**解析规则只有一份**——进度浮层与 store 各有
   // 一个 makeChannel 消费点，各写一份解析就会漂成两种行为。
-  'ui/src/diagnostics/diagnostics.js': 145,
+  'ui/src/diagnostics/diagnostics.js': 150,
+  // 诊断层的**动作代理**（设计 §8.2）。与 `diagnostics.js` 分开是因为职责
+  // 不同：那边管「现在在看什么」，这边管「用户点了会发生什么」——混在一起
+  // 每次加动作都要重新读一遍状态定义才能确认没写错层。
+  'ui/src/diagnostics/diagnostic-actions.js': 60,
   // 阶段 / 状态 / 归因的中文名与语义色。**未知取值必须显式显示**——丢掉
   // 会让时间线出现一个洞，而那正是新版才有、最值得看的部分。文案集中
   // 在这里，改文案不该牵动落盘格式。
@@ -696,7 +700,7 @@ const FILE_BUDGETS = {
   // 既有的 `openHarnessWindow` 同属工作台窗口那一组，放这里而不是新开一个
   // `overview.js`：概览页其余 20 来个动作也都在这个文件里，为一个按钮单开
   // 一个共享层才是真分裂。本条预算基线远低于 RATCHET_THRESHOLD，上调是允许的。
-  'ui/src/store.js': 450,
+  'ui/src/store.js': 455,
   // 多内核改造 P0：新路径模块（paths.rs）。包含 ShellMode、xlink_home、shell
   // /kernels/skills/state/cache 解析、legacy resolver、id 校验与基础数据
   // 模型——是后续 P2–P8 的依赖根，必须单独占预算，避免被 plugins/skills
@@ -1379,7 +1383,7 @@ const FILE_BUDGETS = {
 // 与 guard.rs 恰恰因为反棘轮被反向拆出了 startup_run.rs（两者都没有上调
 // 预算，而是各自回到基线以下）。总量是软上限，按设计文档要求的范围就该有
 // 这个量级。
-const TOTAL_BUDGET = 40000;
+const TOTAL_BUDGET = 40100;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

@@ -113,6 +113,13 @@ pub struct StartReport {
     /// stderr：用户看不到，两个内核同时占着同一个数据目录这件事就没人处理。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+    /// 本次启动的运行记录 id（`run.rs`）。
+    ///
+    /// **前端靠它确认「我拿到的是不是事件里那条」**（设计 §4.3 最后一条）。
+    /// 没有它，前端只能靠「最近一条」去猜——两次启动挨得近时就会读到
+    /// 上一条的时间线，而那份记录描述的是上一次的事。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 /// 防护模块启动子进程、重新接线以及回滚所需的一切信息。
 pub struct GuardDeps<'a> {
@@ -131,73 +138,33 @@ pub struct GuardDeps<'a> {
     pub observer: Option<&'a mut dyn StageObserver>,
 }
 
-/// 看护的阶段观察者。
+/// 看护的阶段观察者。实现见 [`crate::diagnostics::startup_run::WatchObserver`]。
 ///
-/// **为什么是 trait 而不是直接把 `Recorder` 塞进 `GuardDeps`**：看护是本仓
-/// 最大的文件之一，在代码预算的反棘轮上。把「阶段标识 + 中文文案」这套
-/// 诊断专用的话术放在看护里，就是把两件无关的事焊在一起——于是每次加一个
-/// 启动阶段都要改看护，而看护的每次改动都要重新论证预算。抽成 trait 之后
-/// 看护只说「发生了什么」（`WatchPhase`），怎么说、在哪落盘由
-/// [`crate::diagnostics::startup_run`] 决定。
-// 事故持久化住在 `startup_run`：那才是「事故文件属于哪条诊断链」的答案所在，
-// 而看护只负责产生事故。
+/// 阶段枚举 [`WatchPhase`] 定义在模型层（`run`）而不是这里：看护只负责说
+/// 「发生了什么」，而「怎么说、在哪落盘」是诊断层的事。枚举若留在本文件，
+/// `startup_run` 就要反过来引用看护，形成环。
+pub use super::run::WatchPhase;
+
+/// 事故持久化住在 `startup_run`：那才是「事故文件属于哪条诊断链」的答案所在，
+/// 而看护只负责产生事故。
 use super::startup_run::{clear_incident, load_incident, save_incident};
+
+pub trait StageObserver {
+    /// 一个阶段推进了。`attempt` 只在看护重试时给。
+    fn on_stage(&mut self, phase: WatchPhase, attempt: Option<u32>);
+}
 
 /// 事故归因的读时改判（见 `startup_run::load_incident`）。
 pub(crate) fn reclassify(incident: &mut Incident) {
     reclassify_frontend_bundle_incident(incident);
 }
 
-/// 事故文件路径（`startup_run::incident_path` 的同义薄封装，供本模块测试用）。
+/// 事故文件路径。本模块的测试要断言它落过盘，而事故持久化本体已经搬到
+/// `startup_run`。
 #[cfg(test)]
 fn incident_path(data_dir: &Path) -> PathBuf {
     super::startup_run::incident_path(data_dir)
 }
-
-/// 看护的阶段观察者。
-///
-/// **为什么是 trait 而不是直接把 `Recorder` 塞进 `GuardDeps`**：看护是本仓
-/// 最大的文件之一，在代码预算的反棘轮上。把「阶段标识 + 中文文案」这套
-/// 诊断专用的话术放在看护里，就是把两件无关的事焊在一起——于是每次加一个
-/// 启动阶段都要改看护，而看护的每次改动都要重新论证预算。抽成 trait 之后
-/// 看护只说「发生了什么」（`WatchPhase`），怎么说、在哪落盘由
-/// [`crate::diagnostics::startup_run`] 决定。
-pub trait StageObserver {
-    /// 一个阶段推进了。`attempt` 只在看护重试时给。
-    fn on_stage(&mut self, phase: WatchPhase, attempt: Option<u32>);
-}
-
-/// 看护报告的阶段。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WatchPhase {
-    /// 工作台本来就在跑，本次未重复启动。
-    AlreadyRunning,
-    /// 开始派生内核进程。
-    Spawning,
-    /// 端口上已经有东西在应答。
-    AlreadyServing,
-    /// 进程已派生，等端口就绪。
-    WaitingReady,
-    /// 端口已应答。
-    PortReady,
-    /// 派生失败。
-    SpawnFailed,
-    /// 就绪前退出。
-    Exited,
-    /// 等待就绪超时。
-    TimedOut,
-    /// 正在停用嫌疑插件后重试。
-    RetryPlugins,
-    /// 正在进入安全模式后重试。
-    RetrySafeMode,
-    /// 环境类问题，已跳过插件归因。
-    EnvironmentBlocked,
-    /// 正在准备插件接线。
-    Wiring,
-    /// 插件接线已就绪。
-    WiringReady,
-}
-
 impl GuardDeps<'_> {
     /// 报一个阶段（第 1 次尝试不带 attempt）。
     fn observe(&mut self, phase: WatchPhase) {
@@ -615,6 +582,7 @@ pub fn guarded_start(
                 safe_mode: false,
                 incident: None,
                 warning: None,
+                run_id: None,
             },
             None,
         );
@@ -645,6 +613,7 @@ pub fn guarded_start(
                 safe_mode: !prior_quarantine.items.is_empty(),
                 incident: None,
                 warning: None,
+                run_id: None,
             },
             child,
         );
@@ -719,6 +688,7 @@ pub fn guarded_start(
                         safe_mode: true,
                         incident: Some(incident),
                         warning: None,
+                        run_id: None,
                     },
                     child2,
                 );
@@ -797,6 +767,7 @@ pub fn guarded_start(
                         safe_mode: true,
                         incident: Some(incident),
                         warning: None,
+                        run_id: None,
                     },
                     child3,
                 );
@@ -882,6 +853,7 @@ pub fn guarded_start(
             safe_mode: false,
             incident: Some(incident),
             warning: None,
+            run_id: None,
         },
         None,
     )
@@ -1265,6 +1237,7 @@ mod tests {
             running: true,
             safe_mode: false,
             incident: None,
+            run_id: None,
             warning: Some(String::from(
                 "上一个内核进程（pid 42）仍在运行，已交给后台线程等待其退出；\
                  同一数据目录下不应同时存在两个内核，请确认是否有残留进程",
@@ -1279,6 +1252,7 @@ mod tests {
         assert!(warning.contains("残留进程"), "后端文案自带下一步：{json}");
         let quiet = StartReport {
             warning: None,
+            run_id: None,
             ..base
         };
         let json = serde_json::to_value(&quiet).expect("序列化 StartReport");

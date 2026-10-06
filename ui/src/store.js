@@ -122,6 +122,15 @@ export function workbenchActiveNow() {
 
 let shownIncidentKey = '';
 
+// 最近一次启动的运行记录 id。**刻意不放进 `diagnosticStore`**：它属于
+// 「这次启动」的产物，而 diagnosticStore 是「诊断层当前在看什么」的视图
+// 状态——启动在诊断层关闭时也会发生，混在一起会让诊断页显示一条与它无关
+// 的 id（设计 §4.3：返回值与事件里的 runId 必须一致）。
+let lastRunId = '';
+
+export const setLastRunId = (id) => (lastRunId = String(id || ''));
+export const getLastRunId = () => lastRunId;
+
 function incidentKey(incident) {
   const health = incident.health || {};
   return [
@@ -397,6 +406,10 @@ export function startWorkbench() {
     progress.set('正在启动工作台…');
     try {
       const report = await invoke('start_kernel', channel ? { onEvent: channel } : {});
+      // 记住后端回填的 runId（设计 §4.3）：它是「刚才这条」的权威标识。
+      // 诊断页据此按 id 拉详情，而不是取「最近一条」——两次启动挨得近时
+      // 「最近一条」可能还是上一次。
+      setLastRunId(report && report.runId ? report.runId : '');
       if (!report || !report.running) {
         const error = new Error(
           (report && report.incident && report.incident.message) || '内核未能启动，详情见日志'
