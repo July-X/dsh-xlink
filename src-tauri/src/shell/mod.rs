@@ -20,6 +20,7 @@ pub(crate) mod settings;
 pub(crate) mod shell_events;
 pub(crate) mod state;
 pub(crate) mod store_relocate;
+pub(crate) mod stream;
 #[cfg(target_os = "windows")]
 pub(crate) mod tray;
 pub(crate) mod version;

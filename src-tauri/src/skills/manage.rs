@@ -861,30 +861,31 @@ fn fetch_git(
     on_progress(&format!("正在克隆 {}", spec.source));
     let mut cmd = crate::shell::process::command_with_path("git");
     crate::shell::env::apply_proxy_env(&mut cmd);
-    cmd.arg("clone").arg("--depth").arg("1");
+    cmd.arg("clone").arg("--depth").arg("1").arg("--progress");
     if let Some(tag) = &branch {
         cmd.arg("--branch").arg(tag);
     }
     cmd.arg(&spec.source).arg(dest);
     // clone 是网络操作：默认的 30 秒上限在慢网络或大仓库下必然超时，而很多技能
-    // 包只有 git 来源。用专用的长超时，并把超时包装成可操作的中文提示。
-    let (success, _stdout, stderr) = crate::shell::process::run_command_capture_with_timeout(
-        cmd,
-        "git clone",
-        crate::shell::process::GIT_CLONE_TIMEOUT,
-    )
-    .map_err(|e| {
-        if e.kind() == std::io::ErrorKind::TimedOut {
-            AppError::Io(format!(
+    // 包只有 git 来源。与插件侧共用同一件流式捕获，用户能实时看到百分比，而
+    // 不是对着一个不动的进度条等满五分钟。
+    let cloned =
+        crate::shell::stream::capture(&mut cmd, crate::shell::process::GIT_CLONE_TIMEOUT, |line| {
+            on_progress(line)
+        })
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::TimedOut {
+                AppError::Io(format!(
                 "git clone 超时（{} 分钟）：仓库较大或网络较慢，请重试，或改用带 Release 的来源",
                 crate::shell::process::GIT_CLONE_TIMEOUT.as_secs() / 60
             ))
-        } else {
-            AppError::Io(format!("无法运行 git：{e}"))
-        }
-    })?;
-    if !success {
-        let detail = stderr
+            } else {
+                AppError::Io(format!("无法运行 git：{e}"))
+            }
+        })?;
+    if !cloned.success {
+        let detail = cloned
+            .output
             .lines()
             .rev()
             .find(|line| !line.trim().is_empty())

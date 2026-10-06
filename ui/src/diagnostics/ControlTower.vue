@@ -12,12 +12,14 @@
 //   成功记录不给按钮——它没什么可诊断的。
 import { computed } from 'vue';
 import { store } from '../store.js';
+import { isLoading } from '../shell/loading.js';
 import { entryTimeLabel, snapshotStore } from './snapshots.js';
 import { skillStore } from '../skills/skills.js';
 import { logModal } from '../logs/logs.js';
 import { showLogs } from '../logs/logs.js';
 import { incidentCauseLabel, incidentTitle } from '../incidents/incidents.js';
 import {
+  clearDiagnosticRuns,
   diagnosticStore,
   loadRecentRuns,
   openRunDiagnosis,
@@ -252,7 +254,20 @@ function openDiagnosis() {
   <div class="diag-card diag-card--tower">
     <h3 class="diag-card__title">
       <span>最近操作</span>
-      <span class="diag-card__aside">启动 / 预检 / 恢复 / 排查</span>
+      <span class="diag-card__aside">
+        启动 / 预检 / 恢复 / 排查
+        <!-- 清除入口挂在标题行而不是行内：它是**面向整段历史**的动作，
+             不是对某一条记录的操作。放在记录旁边会让人以为点一下只删那一条。 -->
+        <button
+          v-if="latestRun"
+          type="button"
+          class="diag-card__action"
+          :disabled="isLoading('diagnosticRunsClear')"
+          @click="clearDiagnosticRuns"
+        >
+          {{ isLoading('diagnosticRunsClear') ? '清除中…' : '清除记录' }}
+        </button>
+      </span>
     </h3>
     <div v-if="latestRun" class="diag-rows">
       <button

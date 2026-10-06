@@ -275,6 +275,16 @@ pub fn run() {
             if removed > 0 {
                 eprintln!("dsh-xlink: 已清理 {removed} 个过期日志文件（保留 30 天 / 200 MiB）");
             }
+            // 诊断记录的孤儿详情清扫。`prune` 只清「被 20 条上限挤掉」的
+            // 那些；详情文件先落地、索引后写入，壳在两者之间被强杀就会留下
+            // 索引里查不到的 `run-*.json`——列表读索引看不到它们，它们却带着
+            // 整份事件流一直占盘。按本壳的默认实例扫一次，与 prune_old_logs
+            // 同一个位置：都属于「不需要用户授权的清理」。写失败不阻塞启动。
+            let (diag_family, diag_instance) = crate::shell::instance::resolve_default();
+            let orphaned = crate::diagnostics::run::sweep_orphans(diag_family, diag_instance);
+            if orphaned > 0 {
+                eprintln!("dsh-xlink: 已清理 {orphaned} 个索引里已不存在的诊断详情文件");
+            }
             pkg::updater::spawn_background_check(app.handle());
             // Node 运行时缓存预热：探测要派生 `node --version`，壳进程里
             // 一次派生 ~250ms（fork 逐区域复制 WKWebView 的 ~4900 个 VM
@@ -435,6 +445,7 @@ pub fn run() {
             diagnostics::run_cmd::diagnostic_run_list,
             diagnostics::run_cmd::diagnostic_run_get,
             diagnostics::run_cmd::diagnostic_run_latest,
+            diagnostics::run_cmd::diagnostic_run_clear,
             diagnostics::snapshot_cmd::snapshot_preview_restore,
             diagnostics::snapshot_cmd::snapshot_restore,
             commands::plugin_update,

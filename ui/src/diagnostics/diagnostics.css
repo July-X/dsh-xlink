@@ -56,7 +56,6 @@
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
   flex: none;
 }
 
@@ -131,6 +130,14 @@
   font-weight: 400;
   color: var(--muted);
 }
+
+/* 标题行上的小动作按钮（清除诊断记录）。用 ghost 形态：它是对**整段
+ * 历史**的低频操作，不该和卡片标题争夺注意力。边框 / 背景 / 字体全部
+ * 显式写——全局没有裸 button 的默认样式，不写就是一个系统灰方块。 */
+.diag-card__action { margin-left: 8px; padding: 1px 8px; font-size: 11px; line-height: 1.4; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; transition: color 120ms ease, background 120ms ease; }
+.diag-card__action:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.12); }
+/* 清除进行中：按钮已经 disable，再加一层弱化，用户才知道不是没点上。 */
+.diag-card__action:disabled { opacity: 0.5; cursor: default; }
 
 /* 摘要卡的标题行：状态 + 归因。**颜色不是唯一信息载体**——每个状态都
  * 带文字（设计稿 §2.5.6），色弱用户与截图都要能读出状态。 */
@@ -276,7 +283,6 @@
   width: 100%;
   padding: 9px 0;
   border: none;
-  border-bottom: 1px solid var(--border);
   background: transparent;
   color: var(--text);
   font-size: 13px;
@@ -320,43 +326,63 @@
 .diag-rows--grid .diag-row { padding: 8px 0; border-bottom: none; }
 .diag-rows--grid .diag-row:nth-child(even) { border-left: 1px solid var(--border); padding-left: 14px; }
 
-/* --- 控制塔专用：把三张卡收进 ~234px（2026-10-06） ------------------------
+/* --- 控制塔专用（2026-10-06）---------------------------------------------
  *
  * 概览页的控制塔是**正文之前**的一段：它在 480px 窄窗里占掉 326.5px，而它
  * 答的三件事（有没有要处理的、四个子系统状态、上次运行结果）真正要读的只有
- * 读数本身。按 480×800 窗口实测的盒模型拆分，改动是：
+ * 读数本身。两条改动：
  *
- *   卡片 padding 12 → 8、行 padding 9/8 → 6、标题与行的 line-height 1.5 → 1.35
- *   （13px 文字，1.35 的行距对密集面板够读）
+ * 一、**收盒子**：卡片 padding 12 → 8、行 padding 9/8 → 6、标题与行的
+ *    line-height 1.5 → 1.35（13px 文字，1.35 的行距对密集面板够读）。
+ *    行盒从 37.5 收到 29.55px：仍是可点的行（macOS 紧凑列表行同量级），但
+ *    再收就会顶到「看不出哪里能点」那条线，所以停在 6px padding 而不是继续
+ *    压行高。
  *
- *   需要关注 91 → 70.1｜系统健康 124.5 → 99.65｜最近操作 91 → 70.1
- *   合计 326.5 → 251.85（省 74.65px）；再把 margin-bottom 归零见下 → **233.85**
+ * 二、**补标题分割线**（见下）。
  *
- * 行盒从 37.5 收到 29.55px：仍是可点的行（macOS 紧凑列表行同量级），但再收
- * 就会顶到「看不出哪里能点」那条线，所以停在 6px padding 而不是继续压行高。
+ * 实测（dev server + getComputedStyle / getBoundingClientRect，浏览器
+ * viewport 711 宽、窄窗媒体查询命中）：需要关注 80.09｜系统健康 109.64｜
+ * 最近操作 139.95（这条是**空态**：还没有运行记录时多一行居中文案 + 上下留白，
+ * 真实会话里会短得多，别拿它当常态）。不要再引用早期注释里那几个互相算不拢
+ * 的绝对值（326.5 / 251.85 / 233.85），它们来自不同的测量条件。
  *
- * **`margin-bottom: 0` 是必需的，且不能只删掉**：ControlTower 是**三个根节点**
- * 的多根组件，Vue 会把它们提升成 `<section class="panel">` 的直接子节点，于是
- * 三张卡都是 `.panel` 这个 flex 容器的 flex item，`.panel` 的 `gap: 6px` 作用
- * 在它们之间。flex 容器的外边距**不折叠**、直接叠在 gap 上，所以
+ * **关于 `margin-bottom: 0`（必需，且不能只删掉）**：ControlTower 是**三个根
+ * 节点**的多根组件，Vue 会把它们提升成 `<section class="panel">` 的直接子
+ * 节点，于是三张卡都是 `.panel` 这个 flex 容器的 flex item，`.panel` 的
+ * `gap: 6px` 作用在它们之间。flex 容器的外边距**不折叠**、直接叠在 gap 上，
+ * 所以
  *   gap 6 + margin-bottom 6 = **12px**（前三块）  vs  gap 6 = **6px**（两个 .card）
  * 同一列里两种缝，概览页一眼就能看出不齐（2026-10-06 用户指出）。用户参照的
  * 是「当前内核↔套餐用量」那一段，也就是 6px——即 `.panel` 的 gap 本身。
  * 写 0 而不是删这条声明：`.diag-card` 基线带 `margin-bottom: 10px`，作用域
  * 选择器只在**它自己声明过的属性上**赢过基线；删掉声明等于让 10px 原样回来。
- * 实测（dev server，`getBoundingClientRect`）：改前 12.00 / 12.00 / 12.00 / 6.00，
- * 改后 6.00 × 4。
+ * 实测：改前 12.00 / 12.00 / 12.00 / 6.00，改后 6.00 × 4。
  *
- * 该约定已升格为**全前端默认**，记在 `ui/AGENTS.md §间距`：功能块之间的缝由
- * 容器 gap 统一提供，卡片不再自带 `margin-bottom`。
+ * **关于标题分割线**：`.card > h2` 与 `.card-head` 一直有
+ * `border-bottom: 1px solid var(--border)`，`.diag-card__title` 却没有——于是
+ * 同一页里「当前内核 / 套餐用量」有线、概览页顶上的三张控制塔卡无线，用户一眼
+ * 看出不齐。补上后五处完全一致（实测都是 `1px solid rgba(255,255,255,0.1)`）。
  *
- * **限定在 `--tower`，不改全局**：`.diag-card` / `.diag-row` 还被 5 个诊断页
- * 共用（KernelStatus / Startup / Plugin / Operation / DiagnosisShell），那些
- * 页面装在 `.diagnosis`（另一个容器，没有 `.panel` 的 gap），间距由卡片自己的
- * `margin-bottom: 10px` 提供。把那 5 页一起归零会让它们**完全贴死**，所以
- * 「卡片不带 margin-bottom」只对 `.panel` 里的块成立，不是全局规则。
+ * 样式照 `.card > h2` 抄：`padding-bottom: 6px` + 那条线。**`margin-bottom`
+ * 从 5 删掉、回到基线的 8**，数字不是凑的——`.diag-card` 没有 gap，标题到内容
+ * 靠 title 的 margin（8），而 `.card` 靠容器 gap（theme.css 基线也是 8），
+ * 两边指的是同一个数。所以每张卡因此 +10px（1 线 + 6 padding + margin 5→8）。
  *
- * 两条写法上的坑，都不是审美问题：
+ * 「线到内容」的距离**不由这条规范钉死**：概览页的卡被同文件的 scoped
+ * `.card { padding: 6px 8px; gap: 4px }` 收过（线到内容 4px），而控制塔是
+ * 8px，设置/插件/技能页那些用 theme.css 基线的卡也是 8px。线在哪、什么颜色、
+ * 标题下方留 6px 内边距是统一的；线到内容那段空隙交给各卡片自己的间距机制，
+ * 与 `ui/AGENTS.md §间距`「缝由容器统一提供」是同一条原则。
+ *
+ * **限定在 `--tower`，不改全局**：`.diag-card` / `.diag-row` / `.diag-card__title`
+ * 还被 5 个诊断页共用（KernelStatus / Startup / Plugin / Operation /
+ * DiagnosisShell），那些页面装在 `.diagnosis`（另一个容器，没有 `.panel` 的
+ * gap），间距由卡片自己的 `margin-bottom: 10px` 提供。2026-10-06 用户明确
+ * 要求「只管概览页与面板内的卡，5 个独立诊断窗口不动」——所以分割线也只挂在
+ * `--tower` 上，基线 `.diag-card__title` 保持无线。把那 5 页一起加上线是本文
+ * 明令禁止的顺带变更。
+ *
+ * 三条写法上的坑，都不是审美问题：
  *   · 卡片用 `.diag-card.diag-card--tower`（0,2,0）而不是单类——它与 `.diag-card`
  *     同为 (0,1,0)，写成单类就只能靠「写在后面」取胜，而文件里后来插一条规则
  *     就会静默失效。
@@ -364,10 +390,16 @@
  *     `.diag-rows--grid .diag-row:nth-child(even)` 的列分隔靠 `padding-left: 14px`，
  *     它与本条的 `padding-block` 同为 (0,2,0)；用简写 `padding` 会把列分隔的
  *     14px 左内边距一起清成 0，两列读数贴在一起而**没有任何报错**。
+ *   · **量 CSS 之前先确认 dev server 真的在服务改后的文件。** 这次的教训：改完
+ *     文件后旧的 vite 进程仍在按缓存发 CSS，`curl` 到的还是改动前的那条规则，
+ *     页面 reload 也一样。截图里「好像有线」——那其实是 body 的背景网格。
+ *     判据是 `curl localhost:<port>/src/diagnostics/diagnostics.css` 里的规则原文
+ *     与磁盘一致，不一致就换端口重起（`npx vite --port 5199 --strictPort`），
+ *     不要去猜「是不是 HMR 没生效」。
  */
 .diag-card.diag-card--tower { padding: 8px; margin-bottom: 0; }
 
-.diag-card--tower .diag-card__title { margin-bottom: 5px; line-height: 1.35; }
+.diag-card--tower .diag-card__title { padding-bottom: 6px; border-bottom: 1px solid var(--border); line-height: 1.35; }
 
 .diag-card--tower .diag-row { padding-block: 6px; line-height: 1.35; }
 
