@@ -1763,3 +1763,53 @@ Windows 注册表读法 / `proxy_env_for_children` / `apply_proxy_env`，接上�
 三层全空，7890 / 7897 / 1087 / 8888 等端口无监听，所以这个改动在**那台机器上
 不会让 clone 变快**。它修的是「用户配了代理而应用看不见」这一类，验证靠的是
 `parse_scutil_proxy` 的样例解析，不是在那台机器上端到端测出来的。
+
+## 25. 空 content 的 tooltip 弹出一个没字的气泡（2026-10-07）
+
+用户实机反馈：预检通过后，鼠标放到「应用变更」上，按钮上方出现一个**没有字
+的气泡**（截图里能看到那个空的 popper 外壳）。用户原话「tooltip 没显示」。
+
+### 25.1 根因
+
+两处「应用变更」按钮都这么写：
+
+```vue
+<el-tooltip :content="canApply ? '' : applyDisabledReason" placement="top">
+```
+
+意图没错——**只在按钮灰掉时说为什么**。错在达成方式：element-plus 的可见性判据
+**只看 `disabled` 与 `open`，完全不看 `content` 是否为空**。装着的源码里
+（`node_modules/element-plus/es/components/tooltip/src/content.vue_…mjs`）：
+
+```js
+const shouldShow = computed(() => (props.disabled ? false : unref(open)));
+```
+
+于是 `canApply` 为真时 content 是空串，popper **照样弹**，只是里面没有字。
+正确写法是让 tooltip 整个不出现：
+
+```vue
+<el-tooltip :content="applyDisabledReason" :disabled="canApply" placement="top">
+```
+
+### 25.2 同一个 bug 有两份
+
+`plugins/PrecheckDialog.vue` 与 `diagnostics/PluginDiagnosis.vue` 的
+`canApply` / `applyDisabledReason` 是**同一份逻辑的两处落点**，坏法也一模一样。
+两处一起改，并各留一句「为什么不能用空串」的注释——那句注释就是防下一个人
+再抄回去的。
+
+### 25.3 为什么补一条扫描测试
+
+这类错误是**沉默的**：页面上看不出哪里写错了，控制台也不报，只有用户盯着那个
+气泡才知道。而抄一份不会有人立刻发现——它就是在两份文件里各存在了一轮。
+
+`ui/test/tooltipEmptyContent.test.js` 扫全 `ui/src`：任何 `el-tooltip` 用空
+串表达「没什么要说」就红。其中第一条断言是**扫到的东西得超过 20 个**——
+选择器写错时后面的断言会全部静默通过，「门禁在跑、一直绿、但什么都没查」
+比没有门禁更糟。
+
+反向验做过：把 `PrecheckDialog.vue` 改回 `:content="canApply ? '' : ..."`，
+两条断言精确报红（`空 content 仍会弹出空壳气泡` 与 `:disabled="canApply"`）；
+恢复后 3 条全绿。**红是改坏的当次的红**，恢复用的是 python 改写（mtime 前进），
+不是 `cp` 回灌，不存在「编的还是改坏的产物」那个坑。

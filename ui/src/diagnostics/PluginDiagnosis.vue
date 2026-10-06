@@ -310,7 +310,15 @@ onMounted(() => {
     <el-button v-if="report?.installed" @click="openRestore">
       {{ canRestoreDirectly ? '恢复变更前状态' : '查看快照列表' }}
     </el-button>
-    <el-tooltip v-if="report && !report.installed" :content="canApply ? '' : applyDisabledReason" placement="top">
+    <!-- 同 `PrecheckDialog.vue` 那一处：空 content 的 el-tooltip 仍会弹出一个
+         空 popper（按钮上方一个没字的气泡），要「什么都不说」得用
+         `:disabled`，不能靠传空串。两边改一处就要改另一处。 -->
+    <el-tooltip
+      v-if="report && !report.installed"
+      :content="applyDisabledReason"
+      :disabled="canApply"
+      placement="top"
+    >
       <span>
         <el-button
           type="primary"

@@ -551,7 +551,10 @@ const FILE_BUDGETS = {
   // 字体全部显式声明，因为**全局没有裸 button 的默认样式**，不写就是一个
   // 系统灰方块。不动共享的 `.diag-card__aside`（11 处引用，其中
   // DiagnosisShell 把它当标题后缀用，给它加 flex 会改掉那处的表现）。
-  'ui/src/diagnostics/diagnostics.css': 287,
+  // 287 → 288：+1 来自并行会话给控制塔空态收纵向留白（`.diag-empty` 的
+  // `padding-block` 覆盖），**不是本轮工作**。提到这里是不想让那行卡在门禁上，
+  // 归属写清楚以免日后误记成本轮产物。
+  'ui/src/diagnostics/diagnostics.css': 288,
   // 诊断层外壳：覆盖当前面板而非另开窗口（启动失败时用户正要回到日志 /
   // 换端口 / 回退快照，跨窗口拖拽是白费力气）。头部固定
   // [返回] 标题 [主操作]，标题单行省略以守住 480 宽。
@@ -595,7 +598,11 @@ const FILE_BUDGETS = {
   // 已安装」那两句（审查 P1-03）。判据与文案都在模板里说清，是因为用户是
   // 在这里第一次看见「预检没有改动当前实例」这个事实。
   // 250 → 254：头部补时刻与过期提醒（与另外两个诊断视图同一份口径）。
-  'ui/src/diagnostics/PluginDiagnosis.vue': 254,
+  // 254 → 262：「应用变更」那个 tooltip 改用 `:disabled`（见
+  // `ui/test/tooltipEmptyContent.test.js`：空 content 仍会弹空壳气泡）。属性多了
+  // 一行就得拆成多行写，加上把**为什么不能用空串**写进注释——这条注释就是
+  // 防下一个人再抄回 `canApply ? '' : reason` 的，压缩它等于把 bug 的成因删掉。
+  'ui/src/diagnostics/PluginDiagnosis.vue': 262,
   // 预检的来源类型与完整性摘要映射。**纯函数、无依赖**——数据加载刻意不
   // 在这里：把它塞进「映射表」会让这份表变成半个 store，下次有人加字段就会
   // 发现「反正这里已经能 invoke 了」。
@@ -1645,7 +1652,7 @@ const FILE_BUDGETS = {
 // 同样返回空索引——拿它去比对孤儿，磁盘上每一条详情文件都会被当成孤儿删掉，
 // 一次启动抹掉用户全部诊断历史。改走 `load_checked`（+4 行，钉在 run.rs 那条
 // 注释里并配了一条反向验的单测）。这条比它多出来的 4 行便宜得多。
-const TOTAL_BUDGET = 41578;
+const TOTAL_BUDGET = 41591;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
