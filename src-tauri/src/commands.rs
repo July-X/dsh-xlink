@@ -34,6 +34,7 @@ use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Sta
 use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowBuilder};
 use url::Url;
 
+use crate::diagnostics::startup_run;
 use crate::harness::harness_window;
 use crate::plugins::quarantine;
 use crate::shell::error::AppError;
@@ -583,7 +584,7 @@ pub async fn fetch_releases(state: State<'_, AppState>) -> Result<ReleaseOvervie
 
 /// 针对已经探测好的 node（调用方缓存的 `node::NodeInfo`）来解析
 /// pnpm，缺失时通过 npm 自动安装。返回 (node_path, pnpm_exe)。
-pub fn promise_pnpm(
+pub(crate) fn promise_pnpm(
     data_dir: &Path,
     node_info: &node::detect::NodeInfo,
     mut on_progress: impl FnMut(&str),
@@ -928,7 +929,12 @@ fn replace_child_slot(slot: &Mutex<Option<Child>>, child: Child) -> Option<Strin
 /// 返回值是「句柄槽位里原来那个内核还活着」这类非致命异常：写 stderr 只进日志
 /// 文件，用户看不到，而两个内核同时占着同一个数据目录是需要人去处理的事，
 /// 因此调用方要把它放进 `StartReport` 让面板提示（见 `start_kernel`）。
-fn register_child(state: &AppState, data_dir: &Path, port: u16, child: Child) -> Option<String> {
+pub(crate) fn register_child(
+    state: &AppState,
+    data_dir: &Path,
+    port: u16,
+    child: Child,
+) -> Option<String> {
     kernel::lifecycle::write_pid(data_dir, child.id(), port);
     replace_child_slot(&state.running, child)
 }
@@ -974,65 +980,55 @@ pub(crate) fn start_kernel_blocking(
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let settings = settings::load_for_shell(settings::current_mode());
-        let mut node_info = cached_node(&state, &settings);
-        if !node_info.ok {
-            // 缓存可能已经过期：用户在壳运行期间用安装器 / nvm 装好了 Node，而缓存
-            // 只在安装内核与托管 Node 时作废。启动是低频动作，这里强制重探一次再
-            // 决定，避免「检测 Node.js」刚报成功、「启动工作台」仍拿旧结论拒绝
-            // （P2-8）。
-            *crate::lock(&state.node_cache) = None;
-            node_info = cached_node(&state, &settings);
-        }
-        if !node_info.ok {
-            return Err(node_info.reason.clone());
-        }
+        let (family, instance_id) = shell::instance::resolve_default();
+        // 运行记录从**解析实例之后**才开：Node 探测与 pnpm 解析仍在前面，
+        // 那两步也要进时间线，所以记录本身要更早开，只是它的 family /
+        // instance 需要先解析一次。这里复用同一次解析，不重复走注册表。
+        let kernel_version = crate::kernel::lifecycle::read_active(data_dir).unwrap_or_default();
+        let mut recorder = startup_run::begin(
+            send,
+            family,
+            instance_id,
+            &kernel_version,
+            &settings.profile,
+            data_dir,
+        );
+        let node_info = startup_run::resolve_node(send, &mut recorder, &state, &settings)?;
         let node_path = PathBuf::from(node_info.path.clone());
         // 受防护的重试会通过 pnpm 重新接线插件；预先解析 pnpm，使得工具链
         // 缺失时能在第一次尝试前就失败，而不是在流程中途才报错。
-        let (_, pnpm_exe) = promise_pnpm(data_dir, &node_info, &mut *send)?;
-        let (family, instance_id) = shell::instance::resolve_default();
-        let deps = guard::GuardDeps {
+        let pnpm_exe = startup_run::resolve_pnpm(send, &mut recorder, data_dir, &node_info)?;
+        let mut deps = guard::GuardDeps {
             data_dir,
             settings: &settings,
             node_path: &node_path,
             pnpm_exe: &pnpm_exe,
             family,
             instance_id,
+            // 看护把每次尝试的阶段推进写进同一条时间线。
+            observer: Some(&mut startup_run::WatchObserver::new(&mut recorder)),
         };
-        let (mut report, child) = guard::guarded_start(&deps, send);
-        if let Some(child) = child {
-            // 非致命异常照样要进日志文件（stderr）与面板（report.warning）。
-            if let Some(warning) = register_child(&state, data_dir, settings.port, child) {
-                eprintln!("dsh-xlink: {warning}");
-                report.warning = Some(warning);
-            }
-        }
-        // 内核已经在服务（本次是新拉起的，或者端口上本来就有一个健康实例
-        // ——`guarded_start` 的 no-op 分支）：确保事件订阅线程在跑。
-        // `start_watcher` 幂等，重复调用不会叠加线程；反过来，"内核在跑却没
-        // 有人订阅"就等于任务完成通知静默失效。
-        if crate::kernel_running(app) {
-            crate::notify::task::start_watcher(app);
-        }
-        // 安全网 P0：启动成功且**没有事故** → 打一个 `startup-ok` 快照。
-        // 这是唯一能确立「上一个能跑起来的组合」的时点：安装完成、用户点
-        // 确定都不代表能跑起来，只有真正起来并应答过才算。
-        //
-        // 刻意要求 `incident.is_none()`：带事故启动的实例不算"良好"——比如
-        // 看护停用了两个插件才起来的环境，把它记成 last-known-good，等于让
-        // P1 恢复时把"停用过的状态"当成用户原本的样子。
-        if report.running && report.incident.is_none() {
-            if let Err(error) = crate::diagnostics::snapshot::record(
-                data_dir,
-                family,
-                instance_id,
-                &settings.profile,
-                settings.port,
-                crate::diagnostics::snapshot::reason::STARTUP_OK,
-            ) {
-                eprintln!("dsh-xlink: 记录启动快照失败：{error}");
-            }
-        }
+        let (mut report, child) = guard::guarded_start(&mut deps, send);
+        startup_run::flush(send, &mut recorder);
+        startup_run::after_started(app, &state, data_dir, settings.port, child, &mut report);
+        startup_run::record_good_snapshot(
+            send,
+            &mut recorder,
+            &report,
+            data_dir,
+            family,
+            instance_id,
+            &settings.profile,
+            settings.port,
+        );
+        startup_run::finish(
+            &mut recorder,
+            &mut report,
+            data_dir,
+            family,
+            instance_id,
+            settings.port,
+        );
         Ok(report)
     }
 }

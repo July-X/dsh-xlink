@@ -393,6 +393,14 @@ pub fn instance_snapshot_file(family: &str, id: &str) -> PathBuf {
         .join("state.json")
 }
 
+/// 给定实例的运行记录目录：`<...>/diagnostics/runs/`（`run.rs`）。
+///
+/// 按实例存放，与快照同一条理由：「上一次启动到底停在哪一步」是**某一个
+/// 实例**的事实。放全局会让 dev 壳的失败记录出现在 release 实例的启动诊断里。
+pub fn instance_diagnostics_runs_dir(family: &str, id: &str) -> PathBuf {
+    instance_dir(family, id).join("diagnostics").join("runs")
+}
+
 /// 给定实例的 wiring 状态文件：`<...>/extensions/wiring.json`。
 ///
 /// 记录每个插件的 link/copy 模式、内容指纹与是否被 `disabled`。

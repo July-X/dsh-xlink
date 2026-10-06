@@ -2,8 +2,9 @@
 // 启动容错事故面板：工作台启动失败被自动屏蔽后，把裁决权交给用户——
 // 每个嫌疑对象可展开错误证据，并选择移除 / 重新启用；直接关闭即保持禁用。
 import { computed, reactive, ref } from 'vue';
-import { Document, Close, RefreshLeft, Delete, View, Hide, Connection, CopyDocument } from '@element-plus/icons-vue';
+import { Document, Close, RefreshLeft, Delete, View, Hide, Connection, CopyDocument, Tickets } from '@element-plus/icons-vue';
 import { store, globalBusy } from '../store.js';
+import { openStartupDiagnosis } from '../diagnostics/diagnostics.js';
 import { withLoading, isLoading } from '../shell/loading.js';
 import { resolvePluginQuarantine } from '../plugins/plugins.js';
 import { showLogs } from '../logs/logs.js';
@@ -72,6 +73,12 @@ function toggleEvidence(id) {
   }
 }
 
+/** 跳到那次启动的完整诊断记录（runId 由后端在写事故时一并落下）。 */
+function openStartupRun() {
+  openStartupDiagnosis(incident.value?.runId || '', store.activePanel);
+  close();
+}
+
 function close() {
   store.incidentVisible = false;
 }
@@ -101,6 +108,12 @@ async function resolveSuspect(id, action) {
       <div style="display: flex; align-items: center; gap: 8px">
         <span style="font-weight: 700; font-size: 15px">{{ title }}</span>
         <span style="flex: 1"></span>
+        <!-- 事故与运行记录是同一次启动的两面：这里给时间线与证据索引，
+             弹窗继续负责处置嫌疑插件。少了这个入口，用户看到「工作台异常」
+             之后只能自己去找那份阶段记录。 -->
+        <el-button v-if="incident && incident.runId" text :icon="Tickets" @click="openStartupRun">
+          查看启动诊断
+        </el-button>
         <el-button text :icon="Document" @click="showLogs">打开日志</el-button>
         <el-button text :icon="Close" @click="close">关闭</el-button>
       </div>

@@ -53,7 +53,7 @@ pub struct Suspect {
 }
 /// 一次防护式启动的结果，持久化到数据目录中，使故障信息在 Shell 重
 /// 启后仍能保留，并被后续消息引用。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Incident {
     /// 停用某些插件后的重试是否成功启动了工作台。
     pub recovered: bool,
@@ -80,6 +80,13 @@ pub struct Incident {
     /// 获的前端健康证据。
     #[serde(default)]
     pub health: Option<HealthReport>,
+    /// 写下这份事故的那次启动的运行记录 id（`run.rs`）。
+    ///
+    /// 事故面板的「查看启动诊断」靠它跳到那条运行记录；运行记录的裁剪
+    /// 也靠它做引用保护——删掉一条正被事故面板展示的记录，会让用户在
+    /// 处置故障的路上点进一个空页面。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 /// 由注入的 Shell 探针发送的前端健康信号。命令层会在该结构被写入故
 /// 障文件前对每一段字符串做校验并加上长度上限，避免坏页面无限增长故
@@ -119,6 +126,90 @@ pub struct GuardDeps<'a> {
     pub family: &'a str,
     /// 实例 id。
     pub instance_id: &'a str,
+    /// 启动诊断的阶段观察者；`None` = 本次启动不落记录（测试与不关心诊断
+    /// 的调用方）。
+    pub observer: Option<&'a mut dyn StageObserver>,
+}
+
+/// 看护的阶段观察者。
+///
+/// **为什么是 trait 而不是直接把 `Recorder` 塞进 `GuardDeps`**：看护是本仓
+/// 最大的文件之一，在代码预算的反棘轮上。把「阶段标识 + 中文文案」这套
+/// 诊断专用的话术放在看护里，就是把两件无关的事焊在一起——于是每次加一个
+/// 启动阶段都要改看护，而看护的每次改动都要重新论证预算。抽成 trait 之后
+/// 看护只说「发生了什么」（`WatchPhase`），怎么说、在哪落盘由
+/// [`crate::diagnostics::startup_run`] 决定。
+// 事故持久化住在 `startup_run`：那才是「事故文件属于哪条诊断链」的答案所在，
+// 而看护只负责产生事故。
+use super::startup_run::{clear_incident, load_incident, save_incident};
+
+/// 事故归因的读时改判（见 `startup_run::load_incident`）。
+pub(crate) fn reclassify(incident: &mut Incident) {
+    reclassify_frontend_bundle_incident(incident);
+}
+
+/// 事故文件路径（`startup_run::incident_path` 的同义薄封装，供本模块测试用）。
+#[cfg(test)]
+fn incident_path(data_dir: &Path) -> PathBuf {
+    super::startup_run::incident_path(data_dir)
+}
+
+/// 看护的阶段观察者。
+///
+/// **为什么是 trait 而不是直接把 `Recorder` 塞进 `GuardDeps`**：看护是本仓
+/// 最大的文件之一，在代码预算的反棘轮上。把「阶段标识 + 中文文案」这套
+/// 诊断专用的话术放在看护里，就是把两件无关的事焊在一起——于是每次加一个
+/// 启动阶段都要改看护，而看护的每次改动都要重新论证预算。抽成 trait 之后
+/// 看护只说「发生了什么」（`WatchPhase`），怎么说、在哪落盘由
+/// [`crate::diagnostics::startup_run`] 决定。
+pub trait StageObserver {
+    /// 一个阶段推进了。`attempt` 只在看护重试时给。
+    fn on_stage(&mut self, phase: WatchPhase, attempt: Option<u32>);
+}
+
+/// 看护报告的阶段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchPhase {
+    /// 工作台本来就在跑，本次未重复启动。
+    AlreadyRunning,
+    /// 开始派生内核进程。
+    Spawning,
+    /// 端口上已经有东西在应答。
+    AlreadyServing,
+    /// 进程已派生，等端口就绪。
+    WaitingReady,
+    /// 端口已应答。
+    PortReady,
+    /// 派生失败。
+    SpawnFailed,
+    /// 就绪前退出。
+    Exited,
+    /// 等待就绪超时。
+    TimedOut,
+    /// 正在停用嫌疑插件后重试。
+    RetryPlugins,
+    /// 正在进入安全模式后重试。
+    RetrySafeMode,
+    /// 环境类问题，已跳过插件归因。
+    EnvironmentBlocked,
+    /// 正在准备插件接线。
+    Wiring,
+    /// 插件接线已就绪。
+    WiringReady,
+}
+
+impl GuardDeps<'_> {
+    /// 报一个阶段（第 1 次尝试不带 attempt）。
+    fn observe(&mut self, phase: WatchPhase) {
+        self.observe_attempt(phase, None);
+    }
+
+    /// 报一个阶段，并标明这是第几次尝试。
+    fn observe_attempt(&mut self, phase: WatchPhase, attempt: Option<u32>) {
+        if let Some(observer) = self.observer.as_deref_mut() {
+            observer.on_stage(phase, attempt);
+        }
+    }
 }
 fn kernel_log_path(deps: &GuardDeps<'_>) -> PathBuf {
     // 取当天的轮转内核日志的末尾；更早日期的文件仍然可以通过
@@ -179,9 +270,11 @@ impl BootVerdict {
 /// 结果，以及在 `Ready` 路径上的存活子进程（调用方将其注册到应用状
 /// 态）；失败路径会消费掉子进程。
 fn boot_once(
-    deps: &GuardDeps<'_>,
+    deps: &mut GuardDeps<'_>,
     on_progress: &mut dyn FnMut(&str),
+    attempt: Option<u32>,
 ) -> (BootVerdict, Option<Child>) {
+    deps.observe(WatchPhase::Spawning);
     // 唯一拉起路径走实例适配器：`start_instance` 内部同步壳侧权威状态
     // （settings 端口 / profile、active.txt 版本）进实例记录，并由适配器
     // 注入 `DSH_HOME` / `DSH_PROFILE`——漏注入会让内核回退默认 `~/.dsh`，
@@ -193,33 +286,47 @@ fn boot_once(
         deps.node_path,
         deps.settings,
     ) {
-        Ok(None) => (
-            // 端口在流程中途已经开始应答（另一个 Shell 实例或残留的孤
-            // 儿进程抢到了这个端口）。这里视为已就绪；孤儿进程的回收
-            // 由 Shell 启动时的 reap_orphans 负责。
-            BootVerdict::Ready,
-            None,
-        ),
-        Ok(Some(mut child)) => match watch_child(&mut child, deps.settings.port) {
-            WatchVerdict::Ready => (BootVerdict::Ready, Some(child)),
-            WatchVerdict::Exited(status) => {
-                let _ = child.wait();
-                on_progress(&format!("内核进程在就绪前退出（{status}）"));
-                (
-                    BootVerdict::Failed(format!("内核进程在就绪前退出（{status}）")),
-                    None,
-                )
+        Ok(None) => {
+            deps.observe(WatchPhase::AlreadyServing);
+            (
+                // 端口在流程中途已经开始应答（另一个 Shell 实例或残留的孤
+                // 儿进程抢到了这个端口）。这里视为已就绪；孤儿进程的回收
+                // 由 Shell 启动时的 reap_orphans 负责。
+                BootVerdict::Ready,
+                None,
+            )
+        }
+        Ok(Some(mut child)) => {
+            deps.observe(WatchPhase::WaitingReady);
+            match watch_child(&mut child, deps.settings.port) {
+                WatchVerdict::Ready => {
+                    deps.observe(WatchPhase::PortReady);
+                    (BootVerdict::Ready, Some(child))
+                }
+                WatchVerdict::Exited(status) => {
+                    let _ = child.wait();
+                    on_progress(&format!("内核进程在就绪前退出（{status}）"));
+                    deps.observe_attempt(WatchPhase::Exited, attempt);
+                    (
+                        BootVerdict::Failed(format!("内核进程在就绪前退出（{status}）")),
+                        None,
+                    )
+                }
+                WatchVerdict::Hung => {
+                    let _ = child.wait();
+                    deps.observe_attempt(WatchPhase::TimedOut, attempt);
+                    (BootVerdict::Hung, None)
+                }
             }
-            WatchVerdict::Hung => {
-                let _ = child.wait();
-                (BootVerdict::Hung, None)
-            }
-        },
+        }
         Err(e) => {
             on_progress(&format!("无法拉起内核进程：{e}"));
             // 这是"根本没起来"，不是"起来又崩了"：日志里没有任何可归因的插件
             // 证据，把它当成普通失败会让看护去停用一批无辜插件。
-            (BootVerdict::SpawnFailed(e.to_string()), None)
+            {
+                deps.observe_attempt(WatchPhase::SpawnFailed, attempt);
+                (BootVerdict::SpawnFailed(e.to_string()), None)
+            }
         }
     }
 }
@@ -484,37 +591,11 @@ fn refresh_wiring(
 fn log_tail(deps: &GuardDeps<'_>) -> String {
     read_tail(&kernel_log_path(deps), LOG_TAIL_BYTES)
 }
-// --- 故障持久化 ---------------------------------------------------------------
-fn incident_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("last-incident.json")
-}
-/// 持久化故障信息，使其在 Shell 重启后仍然存在；尽力而为地写，因为
-/// 写入失败不能掩盖用户正在等待的启动结果。
-fn save_incident(data_dir: &Path, incident: &Incident) {
-    crate::shell::state::save_best_effort(&incident_path(data_dir), incident);
-}
-/// 在一次干净、正常的启动后清除已记录的故障——否则这份陈旧的报告
-/// 会与刚刚健康启动的工作台相矛盾。
-fn clear_incident(data_dir: &Path) {
-    let _ = std::fs::remove_file(incident_path(data_dir));
-}
-/// 读取最近一次记录的故障（供展示历史的命令使用）。
-///
-/// 读路径上会对旧记录重新判定一次「前端 bundle」这一类（见
-/// [`reclassify_frontend_bundle_incident`]）：判断与措辞的修复必须能作用到已经
-/// 落盘的事故上，否则升级外壳后概览横幅仍在念旧的「暂未能归因」文案。重新判定
-/// 是纯读操作：不写隔离、不改接线、也不回写文件。
-pub fn load_incident(data_dir: &Path) -> Option<Incident> {
-    let text = std::fs::read_to_string(incident_path(data_dir)).ok()?;
-    let mut incident: Incident = serde_json::from_str(&text).ok()?;
-    reclassify_frontend_bundle_incident(&mut incident);
-    Some(incident)
-}
 // --- 编排 --------------------------------------------------------------------
 /// 在启动防护下启动当前活动的内核。向 UI 返回报告，并在成功路径上
 /// 一起返回存活中的子进程（调用方把它注册到应用状态并记录其 pid）。
 pub fn guarded_start(
-    deps: &GuardDeps<'_>,
+    deps: &mut GuardDeps<'_>,
     on_progress: &mut dyn FnMut(&str),
 ) -> (StartReport, Option<Child>) {
     let port = deps.settings.port;
@@ -524,6 +605,9 @@ pub fn guarded_start(
     // 从而在同一 data dir 上拉起第二个内核（会话日志损坏），二是会把恰好
     // 占用该端口的无关进程误报成"工作台已在运行"。
     if kernel::lifecycle::workbench_running(deps.data_dir, deps.settings) {
+        // 幂等启动也留一条记录：概览的「最近操作」要能说清「工作台本来
+        // 就在跑」，而不是什么都不显示。
+        deps.observe(WatchPhase::AlreadyRunning);
         return (
             StartReport {
                 port,
@@ -535,7 +619,9 @@ pub fn guarded_start(
             None,
         );
     }
+    deps.observe(WatchPhase::Wiring);
     sync_wiring_record_warning(deps, on_progress);
+    deps.observe(WatchPhase::WiringReady);
     let store_items = plugins::center::load_store(deps.data_dir).items;
     let kernel_label = kernel::lifecycle::read_active(deps.data_dir).unwrap_or_default();
     let prior_quarantine = plugins::quarantine::load(deps.data_dir);
@@ -547,7 +633,7 @@ pub fn guarded_start(
     let mut quarantined_this_run = false;
     // 第 1 次尝试：完全按既有接线启动。
     on_progress("正在启动工作台…");
-    let (verdict, child) = boot_once(deps, on_progress);
+    let (verdict, child) = boot_once(deps, on_progress, None);
     // 没有子进程但得到 `Ready` 判定，意味着流程中途已有别的东西开始
     // 应答端口；这也属于一个正在运行的工作台。
     if matches!(verdict, BootVerdict::Ready) {
@@ -585,6 +671,9 @@ pub fn guarded_start(
         trail.push(format!(
             "检测到环境类失败特征（{marker}），跳过插件归因与安全模式"
         ));
+        // 环境类失败必须显式标成 environment：启动诊断的「下一步」完全
+        // 按 cause 生成，漏掉这一条就会让用户去处置无辜插件。
+        deps.observe(WatchPhase::EnvironmentBlocked);
     }
     let mut suspects = if plugin_ladder {
         attribute(&tail, &store_items, &kernel_label)
@@ -602,7 +691,8 @@ pub fn guarded_start(
         if plugins::quarantine::add_all(deps.data_dir, &records).is_ok() {
             quarantined_this_run = true;
             refresh_wiring(deps, on_progress, &mut trail);
-            let (verdict2, child2) = boot_once(deps, on_progress);
+            deps.observe_attempt(WatchPhase::RetryPlugins, Some(2));
+            let (verdict2, child2) = boot_once(deps, on_progress, Some(2));
             if matches!(verdict2, BootVerdict::Ready) {
                 trail.push("停用疑似插件后启动成功".to_string());
                 let incident = Incident {
@@ -619,6 +709,7 @@ pub fn guarded_start(
                     at: crate::shell::process::epoch_secs(),
                     cause: String::from("plugin"),
                     health: None,
+                    run_id: None,
                 };
                 save_incident(deps.data_dir, &incident);
                 return (
@@ -662,7 +753,8 @@ pub fn guarded_start(
         if plugins::quarantine::add_all(deps.data_dir, &records).is_ok() {
             quarantined_this_run = true;
             refresh_wiring(deps, on_progress, &mut trail);
-            let (verdict3, child3) = boot_once(deps, on_progress);
+            deps.observe_attempt(WatchPhase::RetrySafeMode, Some(3));
+            let (verdict3, child3) = boot_once(deps, on_progress, Some(3));
             if matches!(verdict3, BootVerdict::Ready) {
                 trail.push("安全模式（全部第三方插件停用）下启动成功".to_string());
                 // 把每个插件都报告为可疑项：用户必须按插件决定是移除还
@@ -695,6 +787,7 @@ pub fn guarded_start(
                     at: crate::shell::process::epoch_secs(),
                     cause: String::from("plugin"),
                     health: None,
+                    run_id: None,
                 };
                 save_incident(deps.data_dir, &incident);
                 return (
@@ -779,6 +872,7 @@ pub fn guarded_start(
         at: crate::shell::process::epoch_secs(),
         cause,
         health: None,
+        run_id: None,
     };
     save_incident(deps.data_dir, &incident);
     (
@@ -967,6 +1061,7 @@ pub fn diagnose_runtime(
         pnpm_exe: Path::new(""),
         family: crate::shell::instance::KERNEL_FAMILY_DSH,
         instance_id: crate::shell::instance::resolve_default().1,
+        observer: None,
     });
     let store_items = plugins::center::load_store(data_dir).items;
     let kernel_label = kernel::lifecycle::read_active(data_dir).unwrap_or_default();
@@ -1149,6 +1244,7 @@ pub fn diagnose_runtime(
         at: now,
         cause: cause.to_string(),
         health: Some(report),
+        run_id: None,
     };
     save_incident(data_dir, &incident);
     incident
@@ -1848,6 +1944,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
                 stack: MACOS_BUNDLE_STACK.to_string(),
                 page_url: String::from("http://127.0.0.1:4090/"),
             }),
+            run_id: None,
         };
         save_incident(&data_dir, &stored);
         let on_disk = std::fs::read_to_string(incident_path(&data_dir)).expect("read incident");
@@ -1892,6 +1989,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             at: 1,
             cause: String::from("plugin"),
             health: bundle_health,
+            run_id: None,
         };
         reclassify_frontend_bundle_incident(&mut with_suspect);
         assert_eq!(with_suspect.cause, "plugin");
@@ -1899,6 +1997,7 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
         let mut startup = Incident {
             cause: String::from("unknown"),
             health: None,
+            run_id: None,
             ..with_suspect.clone()
         };
         startup.suspects.clear();
@@ -1997,15 +2096,16 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
         )
         .expect("write store");
         let (family, instance_id) = crate::shell::instance::resolve_default();
-        let deps = GuardDeps {
+        let mut deps = GuardDeps {
             data_dir: &data_dir,
             settings: &settings,
             node_path: &fake_node,
             pnpm_exe: Path::new("/nonexistent/pnpm"),
             family,
             instance_id,
+            observer: None,
         };
-        let (report, child) = guarded_start(&deps, &mut |_| {});
+        let (report, child) = guarded_start(&mut deps, &mut |_| {});
         assert!(child.is_none(), "环境类失败不该留下内核进程");
         let incident = report.incident.expect("必须有事故面板");
         assert_eq!(incident.cause, "env", "环境类失败必须标成 env");
@@ -2078,15 +2178,16 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             "测试前置：store.json 必须能被解析，否则这个用例失去区分度"
         );
         let (family, instance_id) = crate::shell::instance::resolve_default();
-        let deps = GuardDeps {
+        let mut deps = GuardDeps {
             data_dir: &data_dir,
             settings: &settings,
             node_path: Path::new("/nonexistent/node"),
             pnpm_exe: Path::new("/nonexistent/pnpm"),
             family,
             instance_id,
+            observer: None,
         };
-        let (report, child) = guarded_start(&deps, &mut |_| {});
+        let (report, child) = guarded_start(&mut deps, &mut |_| {});
         assert!(child.is_none(), "内核不该被拉起来");
         assert!(
             !report.running,

@@ -8,6 +8,7 @@ import { computed, ref } from 'vue';
 import { View } from '@element-plus/icons-vue';
 import { store } from '../store.js';
 import { showLogs } from '../logs/logs.js';
+import { openPluginDiagnosis } from '../diagnostics/diagnostics.js';
 
 const report = computed(() => store.precheckReport || {});
 
@@ -20,6 +21,15 @@ const VERDICTS = {
 };
 
 const verdict = computed(() => VERDICTS[report.value.verdict] || VERDICTS.inconclusive);
+
+/** 打开插件安全诊断，并把本次报告一并带过去（诊断层不自己再跑一次预检）。 */
+function openFullDiagnosis() {
+  openPluginDiagnosis(
+    { id: report.value.pluginId, name: report.value.pluginName, report: report.value },
+    store.activePanel
+  );
+  close();
+}
 
 // 通过但带告警时，标题不能只说「通过」——那会把「启动日志里有可疑标记」
 // 这件事藏起来，而这恰恰是最值得用户停一下看一眼的情况。
@@ -74,6 +84,19 @@ function close() {
 
       <p v-if="report.hint" class="precheck-hint">{{ report.hint }}</p>
 
+      <!-- 完整的分阶段时间线（建沙盒 → 基线 → 装候选 → 探测）在诊断层里。
+           这里保留这个弹窗：它是一次性的「刚装完」告知，而诊断层是可以
+           随时回看的记录页，两者职责不同。 -->
+      <el-button
+        v-if="report.runId"
+        class="precheck-detail"
+        text
+        type="primary"
+        @click="openFullDiagnosis"
+      >
+        查看完整诊断
+      </el-button>
+
       <div v-if="report.evidence" class="precheck-evidence">
         <el-button text :icon="View" @click="evidenceOpen = !evidenceOpen">
           {{ evidenceOpen ? '收起启动日志' : '查看启动日志证据' }}
@@ -83,6 +106,7 @@ function close() {
     </div>
 
     <template #footer>
+      <el-button v-if="report.runId" @click="openFullDiagnosis">查看完整诊断</el-button>
       <el-button v-if="evidencePath" @click="openLog">打开日志</el-button>
       <el-button type="primary" @click="close">知道了</el-button>
     </template>

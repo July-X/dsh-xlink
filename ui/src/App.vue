@@ -19,6 +19,7 @@ import { loadInstances } from './kernel/instance.js';
 import { checkSkillUpdates } from './skills/skills.js';
 import { loadUsageSummary } from './usage/usage.js';
 import { applyNotificationStatus } from './incidents/notifications.js';
+import { diagnosticStore } from './diagnostics/diagnostics.js';
 import { maybeOpenMigrationPrompt } from './migration/migration.js';
 import KernelTabs from './kernel/KernelTabs.vue';
 import SideBar from './shell/SideBar.vue';
@@ -34,6 +35,7 @@ import LogModal from './logs/LogModal.vue';
 import IncidentModal from './incidents/IncidentModal.vue';
 import PrecheckDialog from './plugins/PrecheckDialog.vue';
 import SnapshotRestoreDialog from './diagnostics/SnapshotRestoreDialog.vue';
+import DiagnosisShell from './diagnostics/DiagnosisShell.vue';
 import DebugPanel from './shell/DebugPanel.vue';
 import WindowTitleBar from './shell/WindowTitleBar.vue';
 
@@ -337,5 +339,9 @@ onUnmounted(() => {
          MigrationPanel 是「数据迁移」侧栏面板（手动重跳 / 查历史 / 回滚），
          与本弹窗并存：弹窗负责首次发现提示，面板负责反复操作。 -->
     <MigrationPrompt />
+    <!-- 诊断层覆盖当前面板：启动失败时用户正要回到日志 / 换端口 / 回退快照，
+         另开窗口会让这些动作变成跨窗口来回拖。放在最后，z-index 高于
+         进度浮层与事故弹窗——用户点它就是要压住那些。 -->
+    <DiagnosisShell v-if="diagnosticStore.active" />
   </div>
 </template>
