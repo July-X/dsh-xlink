@@ -5,9 +5,11 @@
 // 会让用户以为插件已经过检验；画成「失败」则会让用户去卸一个无辜的包。
 // 所以这里的标题、配色、可执行动作都按三态分开，而不是拿一个布尔渲染两套。
 import { computed, ref } from 'vue';
-import { View } from '@element-plus/icons-vue';
+import { Check, View } from '@element-plus/icons-vue';
 import { store } from '../store.js';
-import { showLogs } from '../logs/logs.js';
+import { isLoading } from '../shell/loading.js';
+import { applyPluginChange } from './plugins.js';
+import { openLogsForReport } from '../logs/logs.js';
 import { openPluginDiagnosis } from '../diagnostics/diagnostics.js';
 
 const report = computed(() => store.precheckReport || {});
@@ -46,7 +48,24 @@ const evidencePath = computed(() => report.value.evidencePath || '');
 
 function openLog() {
   store.precheckVisible = false;
-  showLogs();
+  // 带上这份报告的证据路径，不带就是打开日志目录里的随便哪一份。
+  openLogsForReport(report.value);
+}
+
+/** 能不能应用：**只有预检通过**，且**还没装上**。 */
+const canApply = computed(() => report.value.verdict === 'pass' && !report.value.installed);
+
+const applyDisabledReason = computed(() => {
+  if (report.value.installed) return '已经装到当前实例了，不用再应用一次。';
+  if (report.value.verdict === 'fail')
+    return '预检没通过，应用会把这个插件装进一个已经确认起不来的实例。要装的话请先到插件中心关闭安装预检。';
+  if (report.value.verdict === 'inconclusive')
+    return '预检没能完成，这次没有拿到「装上去能起来」的证据。要装的话请先到插件中心关闭安装预检。';
+  return '预检还没跑，先做一次安装预检。';
+});
+
+function apply() {
+  return applyPluginChange(report.value.pluginId || '', report.value.verifiedAtMs || 0);
 }
 
 function close() {
@@ -70,6 +89,13 @@ function close() {
       </div>
 
       <p v-if="report.summary" class="precheck-summary">{{ report.summary }}</p>
+
+      <!-- 「验证通过」与「已经装上」是两件事，必须各占一行大字。用户看到
+           「预检通过」就以为插件在里面了，点「知道了」之后去工作台里找半天，
+           是这套工具最容易犯的错。 -->
+      <p v-if="!report.installed" class="precheck-notinstalled">
+        这次预检<b>没有改动</b>当前实例。插件只有在你点「应用变更」之后才会装上。
+      </p>
 
       <el-alert
         v-for="(warning, index) in report.warnings || []"
@@ -108,12 +134,38 @@ function close() {
     <template #footer>
       <el-button v-if="report.runId" @click="openFullDiagnosis">查看完整诊断</el-button>
       <el-button v-if="evidencePath" @click="openLog">打开日志</el-button>
-      <el-button type="primary" @click="close">知道了</el-button>
+      <el-button @click="close">知道了</el-button>
+      <!-- 「应用变更」是**这次预检之后唯一会改动真实实例的动作**，所以它
+           是主按钮。禁用的那两种情况必须说清为什么而不是灰着就完事——
+           一个不说理由的灰按钮会让人以为界面坏了。 -->
+      <el-tooltip :content="canApply ? '' : applyDisabledReason" placement="top">
+        <span>
+          <el-button
+            v-if="!report.installed"
+            type="primary"
+            :icon="Check"
+            :disabled="!canApply"
+            :loading="isLoading('pluginPrecheckApply')"
+            @click="apply"
+          >
+            应用变更
+          </el-button>
+        </span>
+      </el-tooltip>
     </template>
   </el-dialog>
 </template>
 
 <style scoped>
+.precheck-notinstalled {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent, #409eff);
+  background: var(--surface-soft, rgba(64, 158, 255, 0.08));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .precheck-head {
   display: flex;
   align-items: center;

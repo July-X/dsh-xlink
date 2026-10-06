@@ -84,6 +84,7 @@
           "plugin_status",
           "plugin_install",
           "plugin_precheck_install",
+          "plugin_precheck_apply",
           "plugin_set_precheck",
           "snapshot_list",
           "bisect_view",

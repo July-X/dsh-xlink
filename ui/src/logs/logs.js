@@ -322,3 +322,14 @@ export function openLogsWindow() {
       )
   );
 }
+
+/**
+ * 按一份预检报告打开它的证据日志。
+ *
+ * 预检报告里的 `evidencePath` 才是**这次预检**写到的那份沙盒日志；不传它
+ * 就只是打开日志列表的第一份文件（审查 P1-02）。预检通过时该字段为空串，
+ * 那时退回无参数的打开方式——没有证据可指，就不要假装有一份。
+ */
+export function openLogsForReport(report) {
+  return showLogs((report && report.evidencePath) || '');
+}

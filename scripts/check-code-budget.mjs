@@ -337,7 +337,12 @@ const FILE_BUDGETS = {
   // 先例让这一族命令自成模块，是本来就该做的事。顺带修掉一处旧伤：
   // plugin_set_precheck 的文档注释曾被挤到 snapshot_list 头上，两条命令
   // 共用一段说明。
-  'src-tauri/src/commands.rs': 1969,
+  // 1969 → 1925：两条插件预检命令（取证 + 应用）与它们共用的通道封装搬去
+  // plugins/precheck_cmd.rs。**这次是被逼出来的**：预检拆成两阶段后新加了
+  // plugin_precheck_apply，那份文件到了 1998，而反棘轮不允许上调 1969。差
+  // 的 29 行去挤格式只会把难读的东西留给下一个人——照 bisect_cmd.rs 与
+  // snapshot_cmd.rs 的先例拆更合适，拆完预算还能再降。
+  'src-tauri/src/commands.rs': 1925,
   // 安全网 P0 + P1：环境快照。指纹计算（可重建的声明而非备份）、快照文档
   // 读写（走 state.rs 骨架）、裁剪策略（高权重优先 + 永不丢 last-known-good）、
   // 两个打点的入栈规则、给面板的只读视图，以及 P1 的差异计算与恢复执行
@@ -525,7 +530,10 @@ const FILE_BUDGETS = {
   // 四块：候选信息卡（来源 / 完整性 / 物化方式 / 影响范围）、五段实验流程
   // 时间线、通过但有告警、折叠的证据与风险。
   // 220 → 221：详细事件收进折叠区（P2-06）、恢复按钮按有无快照 id 改名（P1-04）。
-  'ui/src/diagnostics/PluginDiagnosis.vue': 221,
+  // 221 → 250：两阶段的「应用变更」主操作 + 禁用理由，以及「验证通过 ≠
+  // 已安装」那两句（审查 P1-03）。判据与文案都在模板里说清，是因为用户是
+  // 在这里第一次看见「预检没有改动当前实例」这个事实。
+  'ui/src/diagnostics/PluginDiagnosis.vue': 250,
   // 预检的来源类型与完整性摘要映射。**纯函数、无依赖**——数据加载刻意不
   // 在这里：把它塞进「映射表」会让这份表变成半个 store，下次有人加字段就会
   // 发现「反正这里已经能 invoke 了」。
@@ -547,7 +555,14 @@ const FILE_BUDGETS = {
   // 提交（物化 + 接线）与报告装配。放在独立文件而不是塞进已 2964 行的
   // plugins.rs，是为了两件事：插件模块读不懂、预检想复用到技能上也
   // 无从下手。plugins.rs 侧只暴露 `store_file` 一条可见性缝。
-  'src-tauri/src/plugins/precheck.rs': 450,
+  // 450 → 451：两阶段之后 `commit` 换成了 `plugin_apply`（应用前打快照 +
+  // 走生产安装路径 + 重查守卫）。
+  'src-tauri/src/plugins/precheck.rs': 451,
+  // 插件预检的 Tauri 命令壳：取证（plugin_precheck_install）+ 应用
+  // （plugin_precheck_apply）+ 它们共用的 `run_precheck_command`（node / pnpm
+  // 准备、长任务通道、生命周期锁）。从 commands.rs 搬出——那份在反棘轮上，
+  // 而两条命令 + 一个封装本来就是一个自成一块的单元。
+  'src-tauri/src/plugins/precheck_cmd.rs': 103,
   // P6 step 2+3+4：迁移向导后端——ConflictPolicy / MigrationStatus /
   // MigrationItemReport / MigrationReport / run_migration / migrate_one /
   // decide_entry / backup_existing / copy_one / copy_tree_inner +
@@ -1492,7 +1507,7 @@ const FILE_BUDGETS = {
 // 249 行是 operation_run.rs（含 110 行单测），86 行是从 commands.rs 搬过来的
 // snapshot_cmd.rs（**净减** 78 行，那份反棘轮文件因此从 2047 降到 1969，预算
 // 同步下调）。也就是说真正的新逻辑不到 200 行，其余是接线与测试。
-const TOTAL_BUDGET = 41000;
+const TOTAL_BUDGET = 41100;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

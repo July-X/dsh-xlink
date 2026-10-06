@@ -277,10 +277,49 @@ export function precheckPlugin(specFromCatalog) {
       // 会起两次临时内核（一次基线、一次带插件），文案必须让用户知道
       // 这不是卡住了。
       start: '正在预检 ' + raw + '（要启动两次临时内核，请稍候）…',
+      // **跑完什么都没装**（两阶段契约，2026-10-06 用户拍板）。这句 done
+      // 刻意不说「已安装」——预检只证明「装上去能起来」，装不装由用户点
+      // 「应用变更」决定。含糊的文案会让用户以为插件已经在里面了。
+      done: '预检完成 · ' + raw + ' 还没有装进当前实例',
       onResult: showPrecheckReport,
     },
     (channel) => ({ spec: raw, onEvent: channel })
   );
+}
+
+/**
+ * 把预检通过的插件应用到当前实例（两阶段契约的第二阶段）。
+ *
+ * 只有**预检 verdict 为 `pass`** 时才可能有意义——那由调用方（预检对话框与
+ * 诊断页）决定是否显示这个按钮，后端不替 UI 做判断。
+ *
+ * 成功文案必须带上「不再重新验证」这一层：后端不会重跑沙盒，而用户在报告
+ * 确认之后可能过了几分钟。这两件事都在界面上说出来，比让用户自己推断
+ * 「刚才验的应该还算数」要诚实。
+ */
+export function applyPluginChange(specFromCatalog, verifiedAtMs) {
+  const raw = (specFromCatalog || '').trim() || pluginStore.spec.trim();
+  if (!raw) {
+    toast('没有可应用的插件来源，请先做一次安装预检', 4000, 'warning');
+    return Promise.resolve(false);
+  }
+  return withProgress(
+    {
+      cmd: 'plugin_precheck_apply',
+      start: '正在把 ' + raw + ' 装到当前实例 …',
+      done: '已安装 ' + raw + ' 到当前实例',
+    },
+    (channel) => ({ spec: raw, mode: 'link', verifiedAtMs: verifiedAtMs || 0, onEvent: channel })
+  ).then((report) => {
+    if (report) {
+      // 报告换成「已安装」这份：诊断页上「恢复变更前状态」要拿这里的
+      // preChangeSnapshotId，没有它那个按钮只能把用户丢到快照列表。
+      store.precheckReport = report;
+      store.precheckVisible = true;
+      toastSuccess(report.summary || ('已安装 ' + raw));
+    }
+    return refreshAll();
+  });
 }
 
 function showPrecheckReport(report) {

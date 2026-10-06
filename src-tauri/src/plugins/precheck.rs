@@ -45,7 +45,6 @@ macro_rules! precheck_stage {
     }};
 }
 
-use crate::plugins::center::StoreItem;
 use crate::plugins::sandbox;
 use crate::shell::error::AppError;
 use crate::shell::settings;
@@ -255,22 +254,13 @@ pub fn plugin_install(
             // 沙盒自己都建不起来：无从判断候选包好坏。按 fail-open 处理，仍
             // 然走正常安装（取源与完整性校验照样生效），但报告必须说清这次
             // 安装**没有经过启动验证**。
-            let item = plugins::center::install_for_instance(
-                family,
-                target_instance,
-                data_dir,
-                settings,
-                pnpm_exe,
-                spec_str,
-                mode,
-                on_progress,
-            )?;
-            let mut report =
-                sandbox::PrecheckReport::new(&item.id, &item.name, Verdict::Inconclusive);
-            report.installed = true;
+            // **不再直接安装**（两阶段契约，2026-10-06 用户拍板）：沙盒都建
+            // 不起来时没有任何证据支持安装，替他装上就是把「没验过」说成
+            // 「验过没问题」。这里如实返回 inconclusive，应用按钮据此禁用。
+            let mut report = sandbox::PrecheckReport::new("", spec_str, Verdict::Inconclusive);
             fill_source_info(&mut report, spec_str, mode, family, target_instance);
-            report.summary = format!("预检未能进行，插件已直接安装（未经启动验证）：{reason}");
-            report.hint = "这条提示说明预检环境本身不可用，与插件质量无关。可在插件中心关闭安装预检，或查看日志确认沙盒为何起不来。"
+            report.summary = format!("预检环境不可用，没有安装任何东西：{reason}");
+            report.hint = "这条提示说明预检环境本身不可用，与插件质量无关。可以在插件中心关闭安装预检后直接安装，或查看日志确认沙盒为何起不来。"
                 .into();
             report.duration_ms = started.elapsed().as_millis() as u64;
             // 归因 `environment`：沙盒起不来与候选插件无关，写成 plugin
@@ -285,10 +275,11 @@ pub fn plugin_install(
             let _ = recorder.finish(
                 run::status::INCONCLUSIVE,
                 run::cause::ENVIRONMENT,
-                &format!("预检环境不可用，插件已直接安装（未经启动验证）：{reason}"),
+                &format!("预检环境不可用，未安装任何插件：{reason}"),
                 None,
             );
             report.run_id = recorder.id().to_string();
+            report.verified_at_ms = crate::shell::process::epoch_millis();
             return Ok(report);
         }
     };
@@ -305,7 +296,7 @@ pub fn plugin_install(
     if !baseline.ready {
         let mut report = sandbox::PrecheckReport::new("", spec_str, Verdict::Inconclusive);
         report.summary = format!(
-            "环境基线就没能起来，预检无法进行：{}。已改为直接安装（未经启动验证）",
+            "环境基线就没能起来，预检无法进行：{}。没有安装任何东西",
             baseline.detail
         );
         report.evidence = baseline.log;
@@ -327,22 +318,9 @@ pub fn plugin_install(
             None,
         );
         report.run_id = recorder.id().to_string();
-        // 这条路径**照样会装上插件**（fail-open），所以来源信息比别的路径更
-        // 重要：用户是在「预检没做」的情况下把一个包装进实例的。
-        fill_source_info(&mut report, spec_str, mode, family, target_instance);
-        let item = plugins::center::install_for_instance(
-            family,
-            target_instance,
-            data_dir,
-            settings,
-            pnpm_exe,
-            spec_str,
-            mode,
-            on_progress,
-        )?;
-        report.plugin_id = item.id;
-        report.plugin_name = item.name;
-        report.installed = true;
+        report.verified_at_ms = crate::shell::process::epoch_millis();
+        // 同样**不装**（两阶段契约）：基线都没起来时这个候选包根本没被测过，
+        // 装上去等于把「没验过」说成「验过没问题」。
         fill_source_info(&mut report, spec_str, mode, family, target_instance);
         report.duration_ms = started.elapsed().as_millis() as u64;
         return Ok(report);
@@ -461,6 +439,7 @@ pub fn plugin_install(
             Some(&evidence),
         );
         report.run_id = recorder.id().to_string();
+        report.verified_at_ms = crate::shell::process::epoch_millis();
         return Ok(report);
     }
 
@@ -471,32 +450,25 @@ pub fn plugin_install(
         run::status::SUCCESS,
         &format!("候选插件通过启动验证：{}", candidate.detail)
     );
-    // 通过：把包物化到目标实例并接线。取源已经完成，这里只做本地链接。
-    on_progress("预检通过，正在安装到当前实例");
-    report.pre_change_snapshot_id = commit(
-        data_dir,
-        settings,
-        pnpm_exe,
-        family,
-        target_instance,
-        &item,
-        on_progress,
-    )?;
+    // **到此为止，什么都没装**（两阶段契约，2026-10-06 用户拍板）：预检只负责
+    // 取证，改接线是用户点「应用变更」之后的事。真实实例的 extensions/ 与
+    // wiring.json 在这一刻仍然与点「安装」之前逐字节相同。
+    on_progress("预检通过，等待你确认是否安装");
     report.summary = format!(
-        "预检通过：{} 已在沙盒实例中成功启动内核，并已安装到当前实例",
+        "预检通过：{} 已在沙盒实例中成功启动内核。**尚未安装**到当前实例。",
         item.name
     );
     if report.warnings.is_empty() {
-        report.hint = "预检只覆盖启动阶段（进程存活、端口监听、HTTP 应答与启动日志）。工作台页面加载后的运行时异常仍由工作台窗口的健康自检负责。".into();
+        report.hint = "点「应用变更」把它装到当前实例；应用前会自动打一份可回退的快照。预检只覆盖启动阶段（进程存活、端口监听、HTTP 应答与启动日志），工作台页面加载后的运行时异常仍由工作台窗口的健康自检负责。".into();
     } else {
-        report.hint = "预检通过，但启动日志里出现了可疑标记（见上）。建议安装后第一次打开工作台时留意是否白屏或报错；仍有问题可撤销该插件。".into();
+        report.hint = "预检通过，但启动日志里出现了可疑标记（见上）。你可以选择不装；要装的话点「应用变更」，应用后第一次打开工作台请留意是否白屏或报错。".into();
     }
     precheck_stage!(
         on_progress,
         &mut recorder,
         run::stage::REPORT,
         run::status::SUCCESS,
-        "预检通过，插件已安装到当前实例"
+        "预检通过，等待确认应用"
     );
     // 「通过但有告警」必须记成 warning 而不是 success：诊断页据此显示
     // 不同标题，压成普通通过就等于把告警藏起来了。
@@ -507,58 +479,107 @@ pub fn plugin_install(
     };
     let _ = recorder.finish(final_status, run::cause::UNKNOWN, &report.summary, None);
     report.run_id = recorder.id().to_string();
+    report.verified_at_ms = crate::shell::process::epoch_millis();
     Ok(report)
 }
 
-/// 把中央库里的某个条目物化到目标实例并接线。这是预检的「提交」阶段，
-/// 与 [`plugins::install_for_instance`] 尾部做的事完全一致——预检验证过
-/// 之后要走的正是这条路，不另开一条。
-fn commit(
+/// 用户确认后把插件应用到目标实例（两阶段契约的第二阶段）。
+///
+/// **走的就是生产安装路径本身**（`install_for_instance`），不另开一条——
+/// 预检那套沙盒事务验证的正是这条路径的等价物，应用时换成它才是「验过的
+/// 就是要跑的」。应用前打一份 pre-change 快照，用户装完发现不对能退回去。
+///
+/// 沙盒的验证**不重跑**：重跑一次要几十秒，而用户已经看过报告并确认过了。
+/// 代价要说清：预检与应用之间中央库可能已经变了（`pin` 为空时可能解析到
+/// 新版本），所以报告里会带上「未重新验证」这句，由界面显示而不是藏起来。
+#[allow(clippy::too_many_arguments)]
+pub fn plugin_apply(
+    family: &str,
+    target_instance: &str,
     data_dir: &Path,
     settings: &settings::Settings,
     pnpm_exe: &Path,
-    family: &str,
-    instance: &str,
-    item: &StoreItem,
+    spec_str: &str,
+    mode: &str,
+    verified_at_ms: u64,
     on_progress: &mut dyn FnMut(&str),
-) -> Result<String, AppError> {
-    // 改接线**之前**打一份 pre-change 快照（设计 §6.6）。`ensure_wiring` 会
-    // 物化/撤下这个插件的接线，那一步失败就是「用户的插件组合已经变了」，
-    // 没有快照的话他只能手工一个个停用找回。
-    //
-    // 打快照失败**不阻断**提交：预检已经通过了，用户等的是「装上」，
-    // 而快照是兜底不是前提——挡住了就是用一个可选的保险换一个硬失败。
-    //
-    // 快照的 id 要**交回报告**：诊断页的「恢复快照」据此直接打开这一份的
-    // 差异预览，而不是把用户丢回快照列表让他自己找是哪一份（审查 P1-04）。
-    // 没打出来时返回空串，UI 会把按钮改成「查看快照列表」并说明原因——
-    // 编一个 id 进去会让它去打开一个不存在的快照。
+) -> Result<sandbox::PrecheckReport, AppError> {
+    let _store_guard = plugins::center::lock_store();
+    // 守卫与预检同一条：目标实例的内核还在跑时改接线，等于在用户正工作的
+    // 时候动它的依赖。**这一步不能只在 UI 置灰**。
+    if let Some(record) = crate::shell::instance::instance_kernel_running(family, target_instance) {
+        return Err(AppError::Io(
+            crate::shell::instance::instance_kernel_running_message(
+                &record,
+                target_instance,
+                "安装插件",
+            ),
+        ));
+    }
+
+    // 快照在**任何写入之前**（设计 §6.6）。打不出来不阻断应用：用户等的是
+    // 「装上」，而快照是兜底不是前提——挡住了就是用一个可选的保险换一个
+    // 硬失败。但 id 要交回报告，让界面能显示「没有回退点」而不是假装有。
     let mut snapshot_id = String::new();
     match crate::diagnostics::snapshot::record(
         data_dir,
         family,
-        instance,
+        target_instance,
         &settings.profile,
         settings.port,
         crate::diagnostics::snapshot::reason::PRE_CHANGE,
     ) {
-        Ok(Some(snapshot)) => snapshot_id = snapshot.id,
+        Ok(Some(snapshot)) => {
+            snapshot_id = snapshot.id;
+            on_progress(&format!("已保存变更前状态（回退点 {snapshot_id}）"));
+        }
         Ok(None) => {}
         Err(error) => {
-            eprintln!("dsh-xlink: 预检通过但未能打 pre-change 快照：{error}");
-            on_progress(&format!("注意：未能保存变更前快照（{error}）"));
+            eprintln!("dsh-xlink: 应用前未能打 pre-change 快照：{error}");
+            on_progress(&format!(
+                "注意：未能保存变更前快照（{error}），装完无法一键退回"
+            ));
         }
     }
-    plugins::center::sync_kernels_for_instance(family, instance, data_dir, item)?;
-    plugins::center::ensure_wiring_for_instance(
+
+    on_progress("正在安装到当前实例");
+    let item = plugins::center::install_for_instance(
         family,
-        instance,
+        target_instance,
         data_dir,
         settings,
         pnpm_exe,
+        spec_str,
+        mode,
         on_progress,
     )?;
-    Ok(snapshot_id)
+
+    let mut report = sandbox::PrecheckReport::new(&item.id, &item.name, sandbox::Verdict::Pass);
+    report.installed = true;
+    report.pre_change_snapshot_id = snapshot_id;
+    fill_source_info(&mut report, spec_str, mode, family, target_instance);
+    report.summary = if report.pre_change_snapshot_id.is_empty() {
+        format!(
+            "已安装 {} 到当前实例（本次没有可回退的变更前快照）",
+            item.name
+        )
+    } else {
+        format!(
+            "已安装 {} 到当前实例。变更前的状态存为回退点 {}，结果不对可以退回去。",
+            item.name, report.pre_change_snapshot_id
+        )
+    };
+    // 这句必须出现在界面上：沙盒验证发生在 `verified_at_ms` 那一刻，用户点
+    // 应用时它可能已经是几分钟前，而版本钉为空时解析到的也可能是另一个版本。
+    report.hint = if verified_at_ms > 0 {
+        let ago_secs = crate::shell::process::epoch_millis().saturating_sub(verified_at_ms) / 1000;
+        format!(
+            "本次安装**没有重新做沙盒验证**，直接沿用 {ago_secs} 秒前那次预检的结论。若插件版本在此期间发生变化，预检结论不适用于当前安装的版本。"
+        )
+    } else {
+        "本次安装没有重新做沙盒验证。".to_string()
+    };
+    Ok(report)
 }
 
 #[cfg(test)]
