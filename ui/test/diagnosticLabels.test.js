@@ -482,3 +482,24 @@ test('诊断层的「更多」弹层不会被挤成逐字竖排', () => {
   // 触发器贴着窗口右缘：默认 bottom-start 会向右展开而放不下，向左对齐才稳。
   assert.match(shell, /placement="bottom-end"/);
 });
+
+test('诊断页必须说清这条记录是什么时候的', () => {
+  // 时刻不是装饰：一条几小时前的失败记录和刚才那次跑的一模一样，没有时刻
+  // 用户读到的就是「现在还是这样」。2026-10-06 用户拿着一张 18:09 的截图来报
+  // 「还是过不了检测」，而那时修复已落地一小时。
+  const old = { status: 'inconclusive', startedAtMs: Date.now() - 3 * 3600 * 1000 };
+  assert.match(labels.staleRunHint(old), /^这是 3 小时前那次运行的结果/);
+  assert.equal(labels.runAgeLabel(old), '3 小时前');
+  // 十分钟内不啰嗦。
+  const fresh = { status: 'inconclusive', startedAtMs: Date.now() - 60 * 1000 };
+  assert.equal(labels.staleRunHint(fresh), '');
+  // 成功的记录不催着重跑；还在跑的记录谈不上过期；缺时刻的不编。
+  assert.equal(labels.staleRunHint({ status: 'success', startedAtMs: old.startedAtMs }), '');
+  assert.equal(labels.staleRunHint({ status: 'running', startedAtMs: old.startedAtMs }), '');
+  assert.equal(labels.staleRunHint({ status: 'inconclusive' }), '');
+  // 三个诊断视图的 meta 行都要带时刻，抄一份就会漂。
+  for (const file of ['StartupDiagnosis.vue', 'OperationDiagnosis.vue', 'PluginDiagnosis.vue']) {
+    const src = readSrc(`diagnostics/${file}`);
+    assert.match(src, /runAgeLabel\(run\)/, `${file} 的头部必须显示这条记录有多旧`);
+  }
+});

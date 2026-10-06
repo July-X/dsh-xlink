@@ -13,10 +13,7 @@ import {
   durationLabel,
   evidenceLabel,
   isRetryable,
-  nextStepFor,
-  RUN_HEADLINE,
-  stageProgress,
-  statusMeta,
+  nextStepFor, RUN_HEADLINE, runAgeLabel, stageProgress, staleRunHint, statusMeta,
 } from './diagnostic-labels.js';
 import { diagnosticStore, getLastRunId, loadStartupDiagnosis } from './diagnostics.js';
 import {
@@ -119,11 +116,14 @@ async function retry() {
           · 完成 {{ progress.done }} / {{ progress.total }} 个阶段
           <template v-if="progress.failed">（{{ progress.failed }} 处失败）</template>
         </template>
+        <template v-if="runAgeLabel(run)"> · {{ runAgeLabel(run) }}</template>
       </template>
       <template v-else>还没有启动诊断记录</template>
     </p>
     <p v-if="run?.summary" class="diag-summary-text">{{ run.summary }}</p>
     <p v-if="nextStep" class="diag-next">{{ nextStep }}</p>
+    <!-- 过期提醒排在「下一步」之后：先说这条是什么结论，再提醒它是哪一次的。 -->
+    <p v-if="staleRunHint(run)" class="diag-next">{{ staleRunHint(run) }}</p>
   </div>
 
   <p v-if="diagnosticStore.error" class="diag-error">{{ diagnosticStore.error }}</p>
