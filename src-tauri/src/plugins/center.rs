@@ -1431,6 +1431,9 @@ fn fetch_git_clone(
 
     on_progress(&format!("正在克隆 {}", spec.source));
     let mut cmd = crate::shell::process::command_with_path("git");
+    // git 只认 gitconfig 与 `http_proxy`，看不见操作系统的代理设置——用户在
+    // 系统里配了代理，clone 照样绕开它直连。系统里没配就不注入，照直连。
+    crate::shell::env::apply_proxy_env(&mut cmd);
     cmd.arg("clone").arg("--depth").arg("1");
     if let Some(tag) = &branch {
         cmd.arg("--branch").arg(tag);

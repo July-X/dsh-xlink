@@ -1582,7 +1582,13 @@ const FILE_BUDGETS = {
 // +6、main.js +1（补一条 `dropdown/style/css.mjs` 导入）、菜单映射表 ±0
 // （icon 字段挂在既有行上）。CSS 产物从 218.6KB 涨到 229.3KB（预算 230KB），
 // 涨幅几乎全是那份漏掉的 `el-dropdown.css`——本来就该在产物里的东西。
-const TOTAL_BUDGET = 41237;
+// 41237 → 41365：git 子进程走系统代理（shell/env.rs 新增 ~90 行 + 三个调用点）。
+// git 只认 gitconfig 与 `http_proxy`，**完全看不见操作系统层面配的代理**，
+// 而 macOS 的 GUI 应用还不继承 shell rc 里的 `export http_proxy`（那是 launchd
+// 的事）。用户在系统里明明配了代理，clone 却绕开它直连——2026-10-06 实测 12 KB/s
+// 爬 GitHub，10 分钟拉不完一个插件仓库。优先用已有环境变量，其次系统设置；一个
+// 都没探测到就不注入，照直连。
+const TOTAL_BUDGET = 41365;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
