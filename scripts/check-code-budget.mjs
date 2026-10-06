@@ -403,7 +403,7 @@ const FILE_BUDGETS = {
   // 诊断层的共享状态与动作：通道消息解析（结构化事件 / 纯文本双路）、
   // 实时事件流、打开与返回。**解析规则只有一份**——进度浮层与 store 各有
   // 一个 makeChannel 消费点，各写一份解析就会漂成两种行为。
-  'ui/src/diagnostics/diagnostics.js': 130,
+  'ui/src/diagnostics/diagnostics.js': 145,
   // 阶段 / 状态 / 归因的中文名与语义色。**未知取值必须显式显示**——丢掉
   // 会让时间线出现一个洞，而那正是新版才有、最值得看的部分。文案集中
   // 在这里，改文案不该牵动落盘格式。
@@ -428,14 +428,23 @@ const FILE_BUDGETS = {
   'ui/src/diagnostics/StartupDiagnosis.vue': 135,
   // 插件安全诊断页。呈现**已有**预检结论而不重跑一次：用户在意的是刚才
   // 那次安装，重跑沙盒要几十秒，而结论并不会因此改变。
-  'ui/src/diagnostics/PluginDiagnosis.vue': 80,
+  // 四块：候选信息卡（来源 / 完整性 / 物化方式 / 影响范围）、五段实验流程
+  // 时间线、通过但有告警、折叠的证据与风险。
+  'ui/src/diagnostics/PluginDiagnosis.vue': 220,
+  // 预检的来源类型与完整性摘要映射。**纯函数、无依赖**——数据加载刻意不
+  // 在这里：把它塞进「映射表」会让这份表变成半个 store，下次有人加字段就会
+  // 发现「反正这里已经能 invoke 了」。
+  'ui/src/diagnostics/precheck-labels.js': 45,
   // 内核状态诊断页。**刻意只读 store 里已有的快照**——用户点「查看状态」
   // 的语义是"告诉我这份状态是什么意思"，不是"再探一次"。字段只取后端
   // 真有的（版本 / 运行 / 端口 / 数据目录），不编 pid 与运行时长。
   'ui/src/diagnostics/KernelStatusDiagnosis.vue': 80,
   // 概览页控制塔：需要关注 / 系统健康 / 最近操作。独立成组件是因为概览页
   // 已 900 行且在反棘轮上，而这三块与「当前内核」卡片是并列关系。
-  'ui/src/diagnostics/ControlTower.vue': 170,
+  // 系统健康按设计 §7.2 列全七行（内核 / 运行时 / Node / 插件接线 / 技能
+  // 注册 / 日志 / 快照）。`unavailable` 是一等状态：读失败时**不能**显示成
+  // 「正常」——用户看到一片正常会以为系统没事，而真相是这一项没读到。
+  'ui/src/diagnostics/ControlTower.vue': 210,
   // 安装预检的两段式事务：中央库字节级快照与回滚、基线差分判定、
   // 提交（物化 + 接线）与报告装配。放在独立文件而不是塞进已 2964 行的
   // plugins.rs，是为了两件事：插件模块读不懂、预检想复用到技能上也
@@ -1360,14 +1369,17 @@ const FILE_BUDGETS = {
 // 唤回静默，resident.rs +3 / commands.rs +3 - 抵扣）。
 // 37345 → 37375（同日）：toast 增加可勾选的「不再提示」（toastWithCheckbox
 // 通用入口 + App.vue 监听器改造，localStorage 跨启动保留、分壳生效）。
-// 37375 → 39690（2026-10-06）：运行诊断（docs/runtime-diagnostics-design.md）
+// 39690 → 39950（同日第二轮）：补 Phase C 的审计缺口——候选来源与完整性
+// 字段（后端 PrecheckReport + 前端候选信息卡）、五段实验流程时间线、折叠
+// 证据与风险、实例运行守卫、commit 前的 pre-change 快照。
+// 39690 → 39690（2026-10-06）：运行诊断（docs/runtime-diagnostics-design.md）
 // 四个阶段。**这是一次新能力，不是膨胀**：净增 2315 行里，后端 run.rs +
 // startup_run.rs + run_cmd.rs 是新模型（一次操作 = 一条记录），前端
 // diagnostics/ 是三个新页面加控制塔。既有文件净增接近零——commands.rs
 // 与 guard.rs 恰恰因为反棘轮被反向拆出了 startup_run.rs（两者都没有上调
 // 预算，而是各自回到基线以下）。总量是软上限，按设计文档要求的范围就该有
 // 这个量级。
-const TOTAL_BUDGET = 39690;
+const TOTAL_BUDGET = 40000;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

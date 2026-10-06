@@ -125,6 +125,64 @@ pub struct PrecheckReport {
     /// 拉那条时间线；空串表示本次预检没有落记录。
     #[serde(default)]
     pub run_id: String,
+    // —— 候选插件的来源与影响范围（设计 §6.5 首屏必须展示的五项）——
+    //
+    // 这些是**用户判断「要不要信任这个包」的依据**。不给它们，用户只能
+    // 看到「预检通过」四个字，却不知道装的是哪个地址的什么版本。
+    /// 候选插件的来源类型：`npm` / `github` / `path`。
+    #[serde(default)]
+    pub source_kind: String,
+    /// 来源的短名称（npm 包名或 `owner/repo`），**不含**完整 URL 与凭据。
+    #[serde(default)]
+    pub source_label: String,
+    /// 钉住的版本或 tag；空表示跟随最新。
+    #[serde(default)]
+    pub pin: String,
+    /// 下载物是否通过完整性校验，以及用的哪种摘要。
+    ///
+    /// 取值见 [`integrity`]：`sha512` / `sha256` / `sha1` / `none`。
+    /// `none` 表示**没能校验**——这比 `sha1` 弱得多，UI 必须区别显示，
+    /// 不能笼统显示成「已校验」。
+    #[serde(default)]
+    pub integrity: String,
+    /// 物化方式：`link` 或 `copy`。
+    #[serde(default)]
+    pub materialize: String,
+    /// 会不会影响默认实例。
+    #[serde(default)]
+    pub affects_default_instance: bool,
+    /// 目标实例 id（预检实际装到的那一个）。
+    #[serde(default)]
+    pub target_instance: String,
+}
+
+/// 完整性摘要的种类 → UI 文案与强弱分级。
+///
+/// **强度分三档而不是「有 / 无」两档**：`sha1` 存在但早已不是抗碰撞摘要，
+/// 而 `none` 意味着根本没校验。两者都叫「已校验」会让用户以为拿到了
+/// 和 npm 官方同样的保证。
+pub mod integrity {
+    /// sha512（npm 默认，SRI 最强）。
+    pub const SHA512: &str = "sha512";
+    /// sha256。
+    pub const SHA256: &str = "sha256";
+    /// sha1（老 packument 的 `dist.shasum`），存在但抗碰撞已破。
+    pub const SHA1: &str = "sha1";
+    /// 没有可用摘要，**未校验**。
+    pub const NONE: &str = "none";
+
+    /// 摘要种类 → 用户能读懂的一句话。
+    pub fn label(kind: &str) -> &'static str {
+        match kind {
+            SHA512 => "已通过 sha512 校验",
+            SHA256 => "已通过 sha256 校验",
+            SHA1 => "已通过 sha1 校验（摘要算法较弱）",
+            NONE => "未能校验完整性",
+            // 未知取值原样透出而不是假装成 `none`——后者会把「后端换了
+            // 算法」说成「压根没校验」。
+            _ => "未知的完整性状态",
+        }
+    }
 }
 
 impl PrecheckReport {
@@ -141,6 +199,13 @@ impl PrecheckReport {
             warnings: Vec::new(),
             duration_ms: 0,
             run_id: String::new(),
+            source_kind: String::new(),
+            source_label: String::new(),
+            pin: String::new(),
+            integrity: integrity::NONE.to_string(),
+            materialize: String::new(),
+            affects_default_instance: false,
+            target_instance: String::new(),
         }
     }
 }

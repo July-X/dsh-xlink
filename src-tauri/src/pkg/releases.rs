@@ -104,6 +104,26 @@ pub fn verify_download_integrity(
     Ok(Some("sha1"))
 }
 
+/// **不读文件**地报告「这次下载会用哪种摘要裁决」。
+///
+/// 诊断页要在安装**之前**就让用户看到完整性口径（设计 §6.5 要求首屏展示
+/// sha512 / sha256 校验结果）。[`verify_download_integrity`] 要等下载完成才能
+/// 调用，那时用户已经点过安装了——所以这里把选择逻辑单独暴露一份，与校验
+/// 本身共用 [`strongest_integrity`]，保证「显示的」和「执行的」不会分叉。
+///
+/// 返回 `sha512` / `sha256` / `sha1`；三者都没有时返回 `None`——那种情况
+/// [`verify_download_integrity`] 会 fail-closed 拒绝安装，UI 显示「未能校验」
+/// 是如实陈述，不是警告一个不会发生的未来。
+pub fn integrity_algorithm(integrity: Option<&str>, shasum: Option<&str>) -> Option<&'static str> {
+    if let Some((algorithm, _)) = strongest_integrity(integrity) {
+        return Some(algorithm);
+    }
+    shasum
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|_| "sha1")
+}
+
 /// 从 SRI 字符串里挑出「最强且受支持」的那条摘要：sha512 > sha256。
 ///
 /// 单独抽出来是因为 `verify_download_integrity` 要先知道"有没有可用的强摘要"，

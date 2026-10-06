@@ -616,6 +616,57 @@ mod tests {
     }
 
     #[test]
+    fn an_incident_blocks_the_startup_ok_snapshot() {
+        // 「启动成功但带事故」绝不能确立 last-known-good：看护停用了两个
+        // 插件才起来的环境被记成良好状态，恢复时就会把「停用过的样子」
+        // 当成用户原本的样子。
+        for (tag, start_report, expect_snapshot) in [
+            ("clean", report(true, None), true),
+            (
+                "incident",
+                report(true, Some(incident("停用两个插件后才起来", "plugin"))),
+                false,
+            ),
+            ("down", report(false, None), false),
+        ] {
+            let home = temp_home(&format!("snapshot-{tag}"));
+            let _guard = scoped_xlink_home(&home);
+            let mut recorder = run::Recorder::begin(
+                "dsh",
+                "default",
+                run::kind::STARTUP,
+                "0.2.1",
+                "web",
+                Default::default(),
+            );
+            record_good_snapshot(
+                &mut |_| {},
+                &mut recorder,
+                &start_report,
+                &home,
+                "dsh",
+                "default",
+                "web",
+                3090,
+            );
+            // 打了快照才有一条 RECORD_STARTUP_OK 事件；没打就没有。
+            // 读 recorder 内存态而不是落盘文件：没打快照的那条路径一次
+            // push 都不做，运行记录因此压根没落盘——那是设计使然，
+            // 不是什么坏了。
+            let recorded = recorder
+                .run()
+                .events
+                .iter()
+                .any(|e| e.stage == run::stage::RECORD_STARTUP_OK);
+            assert_eq!(
+                recorded, expect_snapshot,
+                "case {tag}: 只有「跑起来且无事故」才该确立 last-known-good"
+            );
+            let _ = std::fs::remove_dir_all(&home);
+        }
+    }
+
+    #[test]
     fn finish_writes_the_run_id_back_into_the_incident() {
         let home = temp_home("run-id");
         let _guard = scoped_xlink_home(&home);

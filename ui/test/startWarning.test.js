@@ -44,3 +44,38 @@ test('非致命启动异常必须从 stderr 走到面板提示', () => {
   assert.match(store, /if \(report\.warning\)/, 'store.js 必须处理启动结果里的 warning');
   assert.match(store, /toast\(report\.warning/, 'warning 必须以提示形式展示给用户');
 });
+
+
+// 诊断三页的入口与守卫。**源码契约测试**：这些都是「守卫」而不是行为——
+// 删掉一行 `if` 不会让任何功能立刻坏掉，只会让某个场景在用户手动绕过
+// UI 时失去拦截。行为测试覆盖不到「这行代码还在不在」。
+test('预检与二分都必须检查实例级内核是否在运行', () => {
+  const precheck = readShellSource('precheck.rs');
+  assert.match(
+    precheck,
+    /instance_kernel_running\(family, target_instance\)/,
+    '预检必须按实例 pid 判活：另一个壳可能正跑着用户自建实例（设计 §11.2）'
+  );
+  assert.match(
+    precheck,
+    /instance_kernel_running_message/,
+    '预检必须复用 instance.rs 那份文案——同一句话写两遍，迟早漏掉「先关闭再试」'
+  );
+
+  const bisect = readShellSource('bisect_cmd.rs');
+  assert.match(
+    bisect,
+    /instance_kernel_running\(&family, &instance_id\)/,
+    '二分同样必须按实例判活，不能只查本壳工作台'
+  );
+
+  // 三条路径共用同一句「先停止再重试」的引导。
+  for (const [name, src] of [['restore.rs', 'restore.rs'], ['precheck.rs', 'precheck.rs']]) {
+    const text = readShellSource(src);
+    assert.match(
+      text,
+      /instance_kernel_running_message/,
+      `${name} 必须用统一文案，否则用户看不到下一步该做什么`
+    );
+  }
+});

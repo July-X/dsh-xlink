@@ -60,6 +60,17 @@ pub async fn bisect_start(
             );
         }
         let (family, instance_id) = plugins::center::default_instance_key();
+        // 上面只看**本壳**的 data dir；用户自建实例有意留在两份注册表里，
+        // 另一个壳完全可能正跑着它（设计 §11.2 明确点名了这一条）。判据按
+        // 实例 pid 文件，与 restore / precheck 同一套。
+        if let Some(record) = crate::shell::instance::instance_kernel_running(&family, &instance_id)
+        {
+            return Err(crate::shell::instance::instance_kernel_running_message(
+                &record,
+                &instance_id,
+                "排查插件组合",
+            ));
+        }
         let candidates = bisect::candidates(&data_dir);
         // 候选太少时二分得不偿失（逐个停用更快），在后端就说清楚，而不是
         // 让用户点一次再读一句报错。

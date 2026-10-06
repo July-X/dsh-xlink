@@ -194,6 +194,30 @@ export function loadRecentRuns(kind, manual = false) {
   return manual ? withLoading('diagnosticRunsReload', run) : run();
 }
 
+/**
+ * 拉一次运行记录详情（插件诊断用）。
+ *
+ * 失败时**保留**上一次记录：清空会被用户读成「记录没了」，而事实是
+ * 拉取失败。`runId` 为空说明这次预检没落记录——那是正常路径（例如预检
+ * 在取源阶段就失败了），不是错误，所以直接返回 null 而不弹提示。
+ */
+export function loadPluginRun(runId, manual = false) {
+  const run = async () => {
+    if (!runId) return null;
+    diagnosticStore.loading = true;
+    try {
+      diagnosticStore.currentRun = await invoke('diagnostic_run_get', { runId });
+      return diagnosticStore.currentRun;
+    } catch (e) {
+      diagnosticStore.error = '读取预检阶段记录失败：' + String(e);
+      return null;
+    } finally {
+      diagnosticStore.loading = false;
+    }
+  };
+  return manual ? withLoading('precheckRunReload', run) : run();
+}
+
 /** 供概览消费的「最近一次操作」摘要。 */
 export function latestSummary() {
   return diagnosticStore.recentRuns[0] || null;
