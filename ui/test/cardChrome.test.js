@@ -92,20 +92,26 @@ test('标题的 padding-bottom 是 6px（线与标题文字之间的留白，与
   assert.equal(tower, cardHead, '两处标题的 padding-bottom 必须一致');
 });
 
-test('补线时 margin-bottom 回到基线 8px，而不是留一个 5px 的覆盖', () => {
+test('标题的 margin-bottom 归控制塔自己定，且必须显式写 6px', () => {
   const css = read('diagnostics/diagnostics.css');
   const override = css.match(/\.diag-card--tower \.diag-card__title \{([^}]*)\}/);
   assert.ok(override, '必须能找到 .diag-card--tower .diag-card__title 覆盖规则');
-  // 8 不是新数字：`.diag-card` 没有 gap，标题到内容靠 title 的 margin（8），
-  // 而 `.card` 靠容器 gap（theme.css 基线也是 8）——同一个数在两处的落点。
-  assert.doesNotMatch(
+  // 这条规则改过一次方向，两种写法各自都会出错，所以钉的是**结果**而不是
+  // 「删不写 margin-bottom」这个手法：
+  //   · 早先要求删掉覆盖、回到基线 8px，理由是 8 与 `.card` 基线 gap 是同一个数，
+  //     补线时另写一个 5px 就成了凭空多出来的第二个数。
+  //   · 2026-10-07 用户要求继续压纵向空白，于是控制塔整体降到「卡 4px / 行 4px」
+  //     这一档，它的「线到内容」也该跟着降到 6px——继续挂 8px 会让收紧只做了一半。
+  // 现在两种「写法」都会红：写 5px / 8px 这类随手值，或干脆删掉让标题回基线。
+  assert.match(
     override[1],
-    /margin-bottom/,
-    '覆盖里不该再写 margin-bottom：删掉它让标题回到基线的 8px，与 .card 的 gap 对齐'
+    /margin-bottom:\s*6px/,
+    `控制塔标题的「线到内容」应为 6px，实际 ${override[1].trim()}`
   );
+  // 基线仍是 8px：其余五个诊断窗口与别的卡片都靠它，一个数都不许动。
   const base = css.match(/^\.diag-card__title \{([^}]*)\}/m);
   assert.ok(base, '必须能找到 .diag-card__title 基线');
-  assert.match(base[1], /margin:\s*0 0 8px/, '基线的 margin 应为 0 0 8px');
+  assert.match(base[1], /margin:\s*0 0 8px/, '基线的 margin 应为 0 0 8px（其余卡片靠它）');
 });
 
 test('5 个独立诊断窗口的标题仍然无线（用户 2026-10-06 明确要求不动）', () => {
@@ -152,13 +158,13 @@ test('空态的纵向留白只对控制塔收，5 个诊断窗口的基线保持
 
   const override = css.match(/\.diag-card--tower \.diag-empty \{([^}]*)\}/);
   assert.ok(override, '必须能找到 .diag-card--tower .diag-empty 覆盖规则');
-  // 精确值而不是范围：写死 8px 是实测出来的配比（8 + 19.5 + 8 = 35.5，
+  // 精确值而不是范围：写死 6px 是实测出来的配比（6 + 19.5 + 6 = 31.5，
   // 对上数据行的 25.55 仍高出一截）。写成「小于某个数」会让「顺手收到 4px」
-  // 也过掉，而 4px 就贴到数据行的高度了，空态会被读成一条空记录。
+  // 也过掉，而 4px 加上卡内边距后空态几乎贴到卡片边，会被读成一条空记录。
   assert.match(
     override[1],
-    /padding-block:\s*8px/,
-    `控制塔空态的纵向留白应为 8px，实际 ${override[1].trim()}`
+    /padding-block:\s*6px/,
+    `控制塔空态的纵向留白应为 6px，实际 ${override[1].trim()}`
   );
   // 行高也是收益来源：一行字用 1.8 的行距只影响自己的盒高（23.4 → 19.5）。
   assert.match(override[1], /line-height:\s*1\.5/, '空态行高应为 1.5（单行文案下 1.8 只撑盒高）');
@@ -170,7 +176,13 @@ test('控制塔的卡 padding 与行 padding 收到紧凑档（2026-10-07 用户
   const css = read('diagnostics/diagnostics.css');
   const card = css.match(/\.diag-card\.diag-card--tower \{([^}]*)\}/);
   assert.ok(card, '必须能找到 .diag-card.diag-card--tower');
-  assert.match(card[1], /padding:\s*6px/, '控制塔卡内边距应为 6px（基线是 12px，五页诊断窗仍在用）');
+  // 纵向 4px、横向仍 6px：这次只收**高度**，横向那 6px 是卡片内文的左右留白，
+  // 跟着收会让读数贴到描边上。写成 `padding: 4px` 会把横向一起清掉。
+  assert.match(
+    card[1],
+    /padding:\s*4px 6px/,
+    `控制塔卡内边距应为「纵向 4px / 横向 6px」，实际 ${card[1].trim()}`
+  );
 
   const row = css.match(/\.diag-card--tower \.diag-row \{([^}]*)\}/);
   assert.ok(row, '必须能找到 .diag-card--tower .diag-row');
@@ -178,6 +190,29 @@ test('控制塔的卡 padding 与行 padding 收到紧凑档（2026-10-07 用户
   // 行高不收：1.35（13px → 17.55px）已经是密集面板的可读下限，再收会顶到
   // 「看不出哪里能点」那条线——收紧靠 padding，不靠压行高。
   assert.match(row[1], /line-height:\s*1\.35/, '控制塔行高保持 1.35，不再往下收');
+});
+
+test('标题「线到内容」的留白是 6px，而「标题到线」仍守住全局的 6px（2026-10-07 用户）', () => {
+  const css = read('diagnostics/diagnostics.css');
+  const title = css.match(/\.diag-card--tower \.diag-card__title \{([^}]*)\}/);
+  assert.ok(title, '必须能找到 .diag-card--tower .diag-card__title');
+
+  // 「线到内容」由 margin-bottom 决定，6px。这条正是用户截图里第一个箭头指的
+  // 那段空白。ui/AGENTS.md §卡片把这一段明确交给各卡片自己的间距机制，
+  // 所以控制塔自己定 6px 不算破规范。
+  assert.match(
+    title[1],
+    /margin-bottom:\s*6px/,
+    `标题线到内容的留白应为 6px，实际 ${title[1].trim()}`
+  );
+  // 「标题到线」不在这一轮动的范围内：它是 ui/AGENTS.md §卡片里**全前端统一**
+  // 的一条（概览页与四个面板的卡共用），单给控制塔改成 4px 会让上下相邻的卡
+  // 在同一屏里给出两种分割线间距。收紧该动的是这段，不是那段。
+  assert.match(
+    title[1],
+    /padding-bottom:\s*6px/,
+    '标题文字到分割线的 6px 是全前端统一规范，不许只给控制塔改'
+  );
 });
 
 test('内核状态页不再摆底部按钮栏，两个动作都留在顶部（2026-10-07 用户）', () => {
