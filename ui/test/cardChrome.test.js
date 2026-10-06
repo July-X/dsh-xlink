@@ -161,6 +161,59 @@ test('空态的纵向留白只对控制塔收，5 个诊断窗口的基线保持
   assert.doesNotMatch(override[1], /(^|[^-])padding:/, '用 padding-block，不要 padding 简写（会清掉横向 8px）');
 });
 
+test('内核状态页不再摆底部按钮栏，两个动作都留在顶部（2026-10-07 用户）', () => {
+  const vue = read('diagnostics/KernelStatusDiagnosis.vue');
+  const shell = read('diagnostics/DiagnosisShell.vue');
+  const menu = read('diagnostics/diagnosis-more-menu.js');
+
+  // ① 页面里不许再有 .diag-actions：两个按钮都已在顶部有入口（下方 ②③）。
+  //    这条挡的是「删掉按钮、却又手滑加回来」——重复入口不是排版问题，
+  //    是同一动作有两条实现路径。
+  //    **只扫类名、不扫裸字符串**：模板位置上必须留着那段注释说明为什么删，
+  //    而注释里出现 `.diag-actions` 这个词是应该的（第一版判据写成
+  //    `doesNotMatch(vue, /diag-actions/)`，结果被自己那段注释判红）。
+  assert.doesNotMatch(
+    vue,
+    /class="diag-actions"/,
+    '内核状态页不许再有底部按钮栏（.diag-actions），两个动作都留在顶部'
+  );
+
+  // ② 「刷新状态」：头部 ⟳ 走 DiagnosisShell 的 onRefresh，它对 kernel 分派
+  //    到 loadKernelStatusDiagnosis(true)；更多菜单的 refresh 项也走同一个
+  //    onRefresh。曾经页面底部那份自己调 loadKernelStatusDiagnosis，
+  //    **绕过 onRefresh**——与菜单里那句「不是两份实现」正好相反。
+  assert.match(
+    shell,
+    /kind === 'kernel'\) loadKernelStatusDiagnosis\(true\)/,
+    '顶部 ⟳ 必须经 onRefresh 分派到内核状态读取'
+  );
+  assert.match(
+    menu,
+    /key: 'refresh', label: '刷新状态'/,
+    '更多菜单里必须保留「刷新状态」项'
+  );
+
+  // ③ 「查看完整日志」：更多菜单第一项走
+  //    openEvidence(evidencePath)；原先页面底部那份是 openEvidence()，
+  //    无参时内部取的正是同一个 evidencePath，所以删掉不改变行为。
+  assert.match(menu, /key: 'logs', label: '查看完整日志'/, '更多菜单里必须保留「查看完整日志」项');
+  const actions = read('diagnostics/diagnostic-actions.js');
+  assert.match(
+    actions,
+    /path \|\| diagnosticStore\.evidencePath/,
+    'openEvidence 无参时必须落到 store 的 evidencePath，否则删掉页面底部入口会改变行为'
+  );
+});
+
+test('其余 3 个诊断页的 .diag-actions 仍在（它们的入口还没进顶部菜单）', () => {
+  const users = ['diagnostics/StartupDiagnosis.vue', 'diagnostics/OperationDiagnosis.vue', 'diagnostics/PluginDiagnosis.vue'];
+  for (const rel of users) {
+    assert.match(read(rel), /class="diag-actions"/, `${rel} 的底部操作栏不应被顺手删掉`);
+  }
+  // 类本身也不能从 CSS 里消失。
+  assert.match(read('diagnostics/diagnostics.css'), /^\.diag-actions \{/m);
+});
+
 test('规范本身写在 ui/AGENTS.md 里，不只是代码里', () => {
   const doc = readFileSync(resolve('ui/AGENTS.md'), 'utf8');
   assert.match(doc, /每张卡片的标题与内容之间必须有 1px 分割线/, 'ui/AGENTS.md 必须写明标题分割线这条规范');

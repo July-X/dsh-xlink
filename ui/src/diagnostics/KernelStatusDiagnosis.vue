@@ -10,11 +10,8 @@
 // pid、没有 uptime、没有 profile。编一个「运行时长」出来会骗用户——
 // 它拿不到 pid 是因为 pid 文件只在内核以受管方式启动时才写。
 import { computed } from 'vue';
-import { Refresh } from '@element-plus/icons-vue';
 import { store } from '../store.js';
-import { isLoading } from '../shell/loading.js';
 import { diagnosticStore } from './diagnostics.js';
-import { loadKernelStatusDiagnosis, openEvidence } from './diagnostic-actions.js';
 
 const kernel = computed(() => store.view?.kernel || {});
 const running = computed(() => !!kernel.value.running);
@@ -78,12 +75,6 @@ const rows = computed(() => {
  * 「工作台跑到别的端口去了」。
  */
 const settingsWarning = computed(() => kernel.value.settings_warning || '');
-
-function viewLogs() {
-  // 走诊断层的 `openEvidence`：它会带上这次记录里的内核日志路径，定位到
-  // 那一份而不是日志列表的第一份（审查 P1-02）。
-  openEvidence();
-}
 </script>
 
 <template>
@@ -121,14 +112,7 @@ function viewLogs() {
     </div>
   </div>
 
-  <div class="diag-actions">
-    <el-button
-      :icon="Refresh"
-      :loading="isLoading('kernelStatusReload')"
-      @click="loadKernelStatusDiagnosis(true)"
-    >
-      刷新状态
-    </el-button>
-    <el-button @click="viewLogs">查看完整日志</el-button>
-  </div>
+  <!-- 底部按钮栏已删（2026-10-07，用户：与顶部重复）：「刷新状态」走头部 ⟳ 的
+       onRefresh，「查看完整日志」在「更多」菜单第一项，两条路径与被删的按钮等价。
+       论证与另 3 个诊断页为何保留，见 diagnostic-actions.js。 -->
 </template>
