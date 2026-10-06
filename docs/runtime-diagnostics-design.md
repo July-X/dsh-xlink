@@ -1450,3 +1450,76 @@ profile：没有可监听的东西，于是正常退出（exit 0），且**一�
   `prepare_instance_repairs_a_stub_left_by_an_older_build`）。只测
   `profile_manifest` 自己不够——这次 bug 的本质就是两边各写各的形状，
   模块自己的测试全绿也照样漏。
+
+---
+
+## 20. 预检装进沙盒，接线却写进默认实例（2026-10-06）
+
+§19 修好之后发现的**方向相反**的问题：预检不再失败了，但它的「通过」证明不了任何事。
+
+### 20.1 现象与链路
+
+`precheck.rs` 走 `plugins::center::install_for_instance(family, sandbox.instance_id(), …)`，
+链条上每一步都收实例 id：
+
+```
+plugin_install → install_for_instance(sandbox) → install_unlocked
+  → ensure_store_dependencies / refresh_store_peers        （全局中央库）
+  → materialize_one_for_instance(family, sandbox_id, …)    ✅ 沙盒
+  → ensure_wiring_for_instance(family, sandbox_id, …)
+      → ensure_wiring_filtered(family, sandbox_id, …)
+```
+
+但 `ensure_wiring_filtered` 内部解析 profile 目录时用的是 `profile_dir(data_dir, profile)`，
+而它的实现是 `fn profile_dir(_data_dir: &Path, profile: &str)` + `default_instance_key()`
+——**形参 `data_dir` 被显式忽略**。于是下面五处全部指向默认实例：
+
+| 环节 | 原写法 | 落点 |
+| --- | --- | --- |
+| `ensure_profile` 初始化清单 | `profile_dir(data_dir, …)` | 默认实例 ❌ |
+| `read_profile_json` 读清单 | 同上 | 默认实例 ❌ |
+| `write_profile_json` 写清单 | 同上 | 默认实例 ❌ |
+| 依赖 spec 的相对基准 `relative_path` | 同上 | 默认实例 ❌ |
+| `node_modules` 缺失判据 / `run_profile_install` 的 cwd | 同上 | 默认实例 ❌ |
+
+`center.rs` 当时的文档注释还写着「`profile` 路径同样走实例 `instance_profile_dir`」——
+代码没做到。同一文件里确实有一个走对了的 `read_profile_json_for_instance`，但它**只被
+插件清单页读状态时用到**，写路径一处都没接。
+
+### 20.2 后果
+
+1. **预检的「通过」是空的**。沙盒内核启动时读的是沙盒自己的 DSH_HOME，profile 里
+   只有模板 bundle，候选插件根本不在——装插件后的那次启动与基线完全等价。
+2. **依赖 spec 指向 profile 目录之外**。`relative_path` 从默认实例的 profile 出发
+   去算沙盒的 `extensions/plugins/<id>`，得到的是一层 `../..`，spec 落在 profile 之外。
+3. **真实实例被改了**。「预检期间真实实例的 `extensions/` 与 `wiring.json` 不变」
+   这条承诺只守住了 `extensions/`；清单与真实实例的 `pnpm install` 都没守住。
+
+### 20.3 修法
+
+**profile 目录由调用方显式解析，helper 不再自己推。** `read_profile_json` /
+`write_profile_json` / `ensure_profile` / `run_profile_install` 的第一个形参从
+`data_dir` 换成解析好的 `profile_path`，`ensure_wiring_filtered` 开头解析一次
+`paths::instance_profile_dir(family, instance_id, …)`，全函数只认这一份。
+
+这样做的理由不是「顺手统一」：`data_dir` 能推出的只有默认实例那一份，**形参本身
+就编码不了「我要接线的实例是谁」**。留着 `_data_dir` 这种被忽略的形参，下一个人
+加一行调用时不会有任何编译期信号提醒他接错了实例。
+
+顺带删掉 `read_profile_json_for_instance`——它和改完的 `read_profile_json` 已经
+是同一个东西，留着两份就是 §19 那类 bug 的温床。
+
+两处**刻意保持默认实例**语义（启动看护的抓取 / 恢复路径作用的是工作台实例，
+不是沙盒）：`snapshot_profile_manifest_text` 与 `restore_profile_manifest`。
+
+### 20.4 测试
+
+`wiring_touches_the_wired_instances_profile_only`：给默认实例的 profile 摆一个
+哨兵清单，接线一个**非默认**实例，然后断言被接线实例的 profile 被初始化、
+默认实例的清单**一个字节都没变**。
+
+判据取的是不变量而不是某个具体插件——这条不变量与接线几个插件无关，而它一旦破了，
+界面上看不出任何异常：依赖 spec、`node_modules`、`pnpm` 的 cwd 三者各自看着都对。
+已反向验过（把 `profile_path` 改回 `profile_dir(data_dir, …)` 立刻红）。
+
+测试不 shell out 到 pnpm：被接线实例的 `node_modules` 预先在位，清单因此无需改动。

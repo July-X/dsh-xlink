@@ -2163,11 +2163,14 @@ fn spec_path_string(rel: &Path) -> String {
 
 /// 把 profile 清单读成可变的 JSON 树（未知字段会原样保留）。profile
 /// 目录尚未初始化时返回 `None`。
-fn read_profile_json(
-    data_dir: &Path,
-    profile: &str,
-) -> Result<Option<serde_json::Value>, AppError> {
-    let path = profile_dir(data_dir, profile).join("package.json");
+///
+/// **形参是解析好的 profile 目录而不是 `data_dir`**：接线要作用在**被接线的
+/// 那个实例**的 profile 上，而 `data_dir` 只能推出默认实例那一份。2026-10-06
+/// 实测过这个差别——安装预检把候选插件装进沙盒实例后，manifest 却写进了默认
+/// 实例，于是沙盒内核启动时读到的 profile 里根本没有那个插件，「预检通过」
+/// 什么都没证明。路径由调用方显式解析，这层不再有第二种可能。
+fn read_profile_json(profile_path: &Path) -> Result<Option<serde_json::Value>, AppError> {
+    let path = profile_path.join("package.json");
     let Ok(text) = fs::read_to_string(&path) else {
         return Ok(None);
     };
@@ -2176,30 +2179,8 @@ fn read_profile_json(
         .map_err(|e| AppError::Io(e.to_string()))
 }
 
-/// P8 实例范围版：profile 路径走指定实例的
-/// `instance_profile_dir(family, instance_id, profile)/package.json`。
-/// 旧 `read_profile_json` 仍按默认实例工作（不破坏既有 caller）。
-fn read_profile_json_for_instance(
-    _data_dir: &Path,
-    family: &str,
-    instance_id: &str,
-    profile: &str,
-) -> Result<Option<serde_json::Value>, AppError> {
-    let path = paths::instance_profile_dir(family, instance_id, profile).join("package.json");
-    let Ok(text) = fs::read_to_string(&path) else {
-        return Ok(None);
-    };
-    serde_json::from_str(&text)
-        .map(Some)
-        .map_err(|e| AppError::Io(e.to_string()))
-}
-
-fn write_profile_json(
-    data_dir: &Path,
-    profile: &str,
-    root: &serde_json::Value,
-) -> Result<(), AppError> {
-    let path = profile_dir(data_dir, profile).join("package.json");
+fn write_profile_json(profile_path: &Path, root: &serde_json::Value) -> Result<(), AppError> {
+    let path = profile_path.join("package.json");
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
     }
@@ -2214,11 +2195,14 @@ fn write_profile_json(
 /// 的契约，不只是接线需要的东西）。这里额外只做一件 `seed` 不做的事：在 profile
 /// 目录里放一份 `cordis.patch.yml` 占位——那是 profile 级 patch 层，与
 /// `prepare_instance` 写在 `$DSH_HOME/` 根下的那一份是两个文件。
-fn ensure_profile(data_dir: &Path, profile: &str) -> Result<(), AppError> {
-    let dir = profile_dir(data_dir, profile);
-    crate::kernel::profile_manifest::seed(&dir, profile)
-        .map_err(|e| AppError::Io(format!("无法初始化 profile 目录 {}：{e}", dir.display())))?;
-    let patch = dir.join("cordis.patch.yml");
+fn ensure_profile(profile_path: &Path, profile: &str) -> Result<(), AppError> {
+    crate::kernel::profile_manifest::seed(profile_path, profile).map_err(|e| {
+        AppError::Io(format!(
+            "无法初始化 profile 目录 {}：{e}",
+            profile_path.display()
+        ))
+    })?;
+    let patch = profile_path.join("cordis.patch.yml");
     if !patch.exists() {
         let _ = atomic_write(&patch, b"# Your patch layer for this dsh profile.\n[]\n");
     }
@@ -2363,7 +2347,12 @@ pub fn ensure_wiring_filtered(
     // 否则 `sweep_instance_orphans` 会删掉本实例里全部物化目录、
     // `wire_manifest` 会清退 profile 的全部托管依赖（P0-5）。
     let store = load_store_checked(data_dir)?;
-    ensure_profile(data_dir, &settings.profile)?;
+    // profile 目录**按本函数要接线的那个实例**解析，全函数只认这一份：
+    // 清单、依赖 spec 的相对基准、node_modules 判据、pnpm install 的 cwd
+    // 必须指同一处。混用两处会得到「物化在沙盒、接线在默认实例」这种状态，
+    // 而它表面上完全正常——只是被接线的实例拿不到插件。
+    let profile_path = paths::instance_profile_dir(family, instance_id, &settings.profile);
+    ensure_profile(&profile_path, &settings.profile)?;
 
     // 物化活动实例，再据插件清单决定 bundle 层；没有活动实例且仍有插件时
     // 等内核装好再接线（store 为空则继续，让下面的清退逻辑跑掉残留）。
@@ -2391,7 +2380,7 @@ pub fn ensure_wiring_filtered(
                         };
                         let target =
                             paths::instance_extension_plugin_dir(family, instance_id, &item.id);
-                        let rel = relative_path(&profile_dir(data_dir, &settings.profile), &target);
+                        let rel = relative_path(&profile_path, &target);
                         specs.insert(
                             item.id.clone(),
                             WireSpec {
@@ -2410,7 +2399,7 @@ pub fn ensure_wiring_filtered(
         None => {}
     }
 
-    let mut root = read_profile_json(data_dir, &settings.profile)?
+    let mut root = read_profile_json(&profile_path)?
         .ok_or_else(|| AppError::Plugin("profile 尚未初始化".into()))?;
     let previous = root.clone();
     let outcome = wire_manifest(&mut root, &specs, &settings.profile)?;
@@ -2419,17 +2408,16 @@ pub fn ensure_wiring_filtered(
 
     // manifest 没变但 node_modules 缺失（上次 pnpm 失败或目录被清）也必须
     // 重装，否则 bundles 里的层解析不了，内核启动即崩。
-    let profile = profile_dir(data_dir, &settings.profile);
-    let node_modules_missing = !profile.join("node_modules").is_dir();
+    let node_modules_missing = !profile_path.join("node_modules").is_dir();
     if changed || node_modules_missing {
         if changed {
-            write_profile_json(data_dir, &settings.profile, &root)?;
+            write_profile_json(&profile_path, &root)?;
         }
         on_progress("正在同步 profile 依赖（pnpm install）");
-        let status = run_profile_install(data_dir, &settings.profile, pnpm_exe, on_progress)?;
+        let status = run_profile_install(data_dir, &profile_path, pnpm_exe, on_progress)?;
         if !status.success() {
             if changed {
-                let _ = write_profile_json(data_dir, &settings.profile, &previous);
+                let _ = write_profile_json(&profile_path, &previous);
             }
             return Err(AppError::Plugin(format!(
                 "pnpm install 在 profile 中失败（退出码 {:?}），已回滚 profile 配置，详情见日志：{}",
@@ -2483,7 +2471,7 @@ fn pnpm_extra_paths(data_dir: &Path, pnpm_exe: &Path) -> Vec<PathBuf> {
 
 fn run_profile_install(
     data_dir: &Path,
-    profile_name: &str,
+    profile_path: &Path,
     pnpm_exe: &Path,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<std::process::ExitStatus, AppError> {
@@ -2500,7 +2488,7 @@ fn run_profile_install(
             kernel::lifecycle::PNPM_REPORTER,
             kernel::lifecycle::PNPM_NO_STRICT_DEP_BUILDS,
         ],
-        &profile_dir(data_dir, profile_name),
+        profile_path,
         &kernel::lifecycle::logs_dir(data_dir),
         &wiring_log_spec(),
         &extra_refs,
@@ -2524,7 +2512,8 @@ pub fn restore_profile_manifest(
     previous: Option<&str>,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(), AppError> {
-    let path = profile_dir(data_dir, &settings.profile).join("package.json");
+    let profile_path = profile_dir(data_dir, &settings.profile);
+    let path = profile_path.join("package.json");
     if let Some(text) = previous {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| AppError::Io(e.to_string()))?;
@@ -2532,7 +2521,7 @@ pub fn restore_profile_manifest(
         atomic_write(&path, text.as_bytes()).map_err(|e| AppError::Io(e.to_string()))?;
     }
     on_progress("正在恢复 profile 依赖（pnpm install）");
-    let status = run_profile_install(data_dir, &settings.profile, pnpm_exe, on_progress)?;
+    let status = run_profile_install(data_dir, &profile_path, pnpm_exe, on_progress)?;
     if !status.success() {
         return Err(AppError::Plugin(format!(
             "pnpm install 在恢复后的 profile 中失败（退出码 {:?}），详情见日志：{}",
@@ -3376,7 +3365,14 @@ fn update_unlocked(
     // 旧副本解析 bundle：UI 显示"已更新"，重启后跑的还是旧代码。这一次额外的
     // pnpm install 是幂等的，代价几秒，换来的是"更新真的生效"。
     if updated.mode == "copy" {
-        run_profile_install(data_dir, &settings.profile, pnpm_exe, on_progress)?;
+        // 与 `ensure_wiring_filtered` 同一处 profile 目录：装在哪个实例，
+        // 重装就跑在哪个实例的 cwd 里，否则等于给默认实例白跑一次。
+        run_profile_install(
+            data_dir,
+            &paths::instance_profile_dir(family, instance_id, &settings.profile),
+            pnpm_exe,
+            on_progress,
+        )?;
     }
     Ok(updated)
 }
@@ -3724,12 +3720,11 @@ pub fn status_for_instance(
                     }
                     None => (None, false),
                 };
-                let wired = read_profile_json_for_instance(
-                    data_dir,
+                let wired = read_profile_json(&paths::instance_profile_dir(
                     &rec.kernel_family,
                     &rec.id,
                     &rec.profile,
-                )
+                ))
                 .ok()
                 .flatten()
                 .as_ref()
@@ -5055,6 +5050,60 @@ mod tests {
         );
         let on_disk = fs::read_to_string(profile.join("package.json")).unwrap();
         assert!(on_disk.contains("healthy-plugin"));
+    }
+
+    /// 2026-10-06 回归：接线曾把 manifest 写进**默认实例**的 profile，而物化走的是
+    /// 被接线实例的 `extensions/`。于是安装预检把候选插件装进沙盒实例后，沙盒内核
+    /// 启动时读到的 profile 里根本没有它——「预检通过」什么都没证明，而真实实例的
+    /// 清单反倒被改了。
+    ///
+    /// 判据取「被接线实例的 profile 被写了，默认实例的**一个字节都没动**」。
+    /// 这条不变量与接线几个插件无关，而它一旦破了，界面上看不出任何异常：依赖
+    /// spec、node_modules、pnpm 的 cwd 三者各自看着都对。
+    #[test]
+    fn wiring_touches_the_wired_instances_profile_only() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let settings = settings::Settings::default();
+        let (default_family, default_id) = default_instance_key();
+        let sandbox = "sbx-wiring-test";
+
+        // 默认实例的 profile 先摆一个哨兵。接线若还往这里写，它会变。
+        let default_profile =
+            paths::instance_profile_dir(&default_family, &default_id, &settings.profile);
+        fs::create_dir_all(&default_profile).unwrap();
+        let sentinel = "{\"sentinel\":\"默认实例的清单不该被沙盒接线改写\"}\n";
+        fs::write(default_profile.join("package.json"), sentinel).unwrap();
+
+        // 被接线实例：node_modules 先在位，清单因此无需改动，于是整条路径
+        // 不会 shell out 到 pnpm——这条测试要的是落点，不是安装。
+        let sandbox_profile =
+            paths::instance_profile_dir(&default_family, sandbox, &settings.profile);
+        fs::create_dir_all(sandbox_profile.join("node_modules")).unwrap();
+
+        let mut noop = |_: &str| {};
+        ensure_wiring_for_instance(
+            &default_family,
+            sandbox,
+            &data_dir,
+            &settings,
+            Path::new("pnpm"),
+            &mut noop,
+        )
+        .expect("接线应成功");
+
+        let wired = sandbox_profile.join("package.json");
+        assert!(wired.is_file(), "被接线实例的 profile 必须被初始化");
+        let text = fs::read_to_string(&wired).unwrap();
+        assert!(
+            text.contains("dsh.profile.bundles") || text.contains("@deepseek-ai/dsh-web-app"),
+            "被接线实例的清单要是一份能启动内核的 profile，实际：{text}"
+        );
+        assert_eq!(
+            fs::read_to_string(default_profile.join("package.json")).unwrap(),
+            sentinel,
+            "接线只许写被接线实例的 profile"
+        );
     }
 
     #[test]
