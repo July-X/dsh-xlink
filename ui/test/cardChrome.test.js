@@ -152,13 +152,32 @@ test('空态的纵向留白只对控制塔收，5 个诊断窗口的基线保持
 
   const override = css.match(/\.diag-card--tower \.diag-empty \{([^}]*)\}/);
   assert.ok(override, '必须能找到 .diag-card--tower .diag-empty 覆盖规则');
+  // 精确值而不是范围：写死 8px 是实测出来的配比（8 + 19.5 + 8 = 35.5，
+  // 对上数据行的 25.55 仍高出一截）。写成「小于某个数」会让「顺手收到 4px」
+  // 也过掉，而 4px 就贴到数据行的高度了，空态会被读成一条空记录。
   assert.match(
     override[1],
-    /padding-block:\s*1[0-2]px/,
-    `控制塔空态的纵向留白应在 10–12px，实际 ${override[1].trim()}`
+    /padding-block:\s*8px/,
+    `控制塔空态的纵向留白应为 8px，实际 ${override[1].trim()}`
   );
+  // 行高也是收益来源：一行字用 1.8 的行距只影响自己的盒高（23.4 → 19.5）。
+  assert.match(override[1], /line-height:\s*1\.5/, '空态行高应为 1.5（单行文案下 1.8 只撑盒高）');
   // 横向那 8px 是居中文案左右的呼吸，用 padding 简写会一起清掉。
   assert.doesNotMatch(override[1], /(^|[^-])padding:/, '用 padding-block，不要 padding 简写（会清掉横向 8px）');
+});
+
+test('控制塔的卡 padding 与行 padding 收到紧凑档（2026-10-07 用户）', () => {
+  const css = read('diagnostics/diagnostics.css');
+  const card = css.match(/\.diag-card\.diag-card--tower \{([^}]*)\}/);
+  assert.ok(card, '必须能找到 .diag-card.diag-card--tower');
+  assert.match(card[1], /padding:\s*6px/, '控制塔卡内边距应为 6px（基线是 12px，五页诊断窗仍在用）');
+
+  const row = css.match(/\.diag-card--tower \.diag-row \{([^}]*)\}/);
+  assert.ok(row, '必须能找到 .diag-card--tower .diag-row');
+  assert.match(row[1], /padding-block:\s*4px/, `控制塔行内边距应为 4px，实际 ${row[1].trim()}`);
+  // 行高不收：1.35（13px → 17.55px）已经是密集面板的可读下限，再收会顶到
+  // 「看不出哪里能点」那条线——收紧靠 padding，不靠压行高。
+  assert.match(row[1], /line-height:\s*1\.35/, '控制塔行高保持 1.35，不再往下收');
 });
 
 test('内核状态页不再摆底部按钮栏，两个动作都留在顶部（2026-10-07 用户）', () => {
