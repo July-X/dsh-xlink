@@ -3,6 +3,11 @@
 // 启动编排、启停确认、外壳更新横幅、首次运行引导、2.5s 轮询。
 import { reactive, computed } from 'vue';
 import { invoke, makeChannel } from './shell/bridge.js';
+import {
+  clearLiveEvents,
+  diagnosticText,
+  ingestChannelMessage,
+} from './diagnostics/diagnostics.js';
 import { toast, toastSuccess, toastActionError, confirmDialog } from './shell/notify.js';
 import { globalBusy, isLoading, withExclusive, withExclusiveLoading, withLoading, isExclusiveBusy } from './shell/loading.js';
 import { withProgress, progress } from './shell/progress.js';
@@ -378,10 +383,17 @@ export function startWorkbench() {
   const run = withExclusive(async () => {
     store.starting = true;
     const channel = makeChannel((msg) => {
-      progress.appendLog(msg);
-      progress.set(msg.length > 60 ? msg.slice(0, 57) + '…' : msg);
+      // 启动通道里现在混着两种消息：结构化诊断事件（后端阶段推送）与纯文本。
+      // 两者都要能显示——诊断事件取它的 message，纯文本原样进日志区。
+      // 解析规则只有一份（diagnostics.js），这里不重复实现。
+      const text = ingestChannelMessage(msg) ? diagnosticText(msg) : msg;
+      progress.appendLog(text);
+      progress.set(text.length > 60 ? text.slice(0, 57) + '…' : text);
     });
     progress.resetLog();
+    // 换一次启动就换一条时间线：上一次的事件留在流里会被读成这次也卡在
+    // 同一个阶段。
+    clearLiveEvents();
     progress.set('正在启动工作台…');
     try {
       const report = await invoke('start_kernel', channel ? { onEvent: channel } : {});

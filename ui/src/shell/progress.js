@@ -7,6 +7,7 @@ import { invoke, makeChannel } from './bridge.js';
 import { toastSuccess, toastError } from './notify.js';
 import { withExclusive } from './loading.js';
 import { refreshAll } from '../store.js';
+import { diagnosticText, ingestChannelMessage } from '../diagnostics/diagnostics.js';
 
 const INSTALL_LOG_MAX_CHARS = 512 * 1024;
 const INSTALL_LOG_MAX_LINE_CHARS = 16 * 1024;
@@ -101,10 +102,15 @@ export const progress = reactive({
 
 // 长任务统一入口：channel 阶段消息进日志区与进度文案，busy 全程持锁，
 // 成功 toast + 刷新，失败保持面板开放。resolve(true/false) 供调用方追加提示。
+//
+// 通道消息首期可能是**纯文本**（pnpm 输出）或**结构化诊断事件**（JSON）。
+// 两条路都必须能显示：解析不了就当纯文本，绝不让一条看不懂格式的行把
+// 整个进度面板打挂。解析规则只有一份，在 `diagnostics.js` 里。
 export function withProgress(labels, task, options = {}) {
   const channel = makeChannel((msg) => {
-    progress.appendLog(msg);
-    progress.set(msg.length > 60 ? msg.slice(0, 57) + '…' : msg);
+    const text = ingestChannelMessage(msg) ? diagnosticText(msg) : msg;
+    progress.appendLog(text);
+    progress.set(text.length > 60 ? text.slice(0, 57) + '…' : text);
   });
   const execute = async () => {
     progress.resetLog();

@@ -8,6 +8,8 @@
 // 活动版本徽标里的 tag 图标是刻意的：内核版本按 git tag 发版（tag 格式
 // desktop-v<version>），标成「标签」比裸版本号贴切，也与「内核版本」页对得上。
 import { computed, onMounted, ref, watch, onUnmounted } from 'vue';
+import ControlTower from '../diagnostics/ControlTower.vue';
+import { loadRecentRuns, openKernelStatusDiagnosis } from '../diagnostics/diagnostics.js';
 import {
   InfoFilled,
   Timer,
@@ -91,6 +93,9 @@ const onInstallNode = () => withLoading('installNode', () => installNode());
 // 新鲜度窗口）；原始值与 90 天保留策略进 tooltip。
 onMounted(() => {
   loadUsageSummary();
+  // 控制塔的「最近操作」读这条记录。它是纯本地读取（后端只读索引文件），
+  // 不发网络请求，失败也只是这块显示「暂无」，因此不参与概览的慢网兜底。
+  loadRecentRuns(null);
   // 挂载期间定期对账：此前这张卡片只在挂载时拉一次就再也不更新，而独立的
   // 「模型用量」窗口每次打开都重扫还带手动刷新——同一份统计于是长期对不上。
   setUsageAutoRefresh(true);
@@ -276,6 +281,11 @@ function goVersions() {
 
 <template>
   <section class="panel">
+    <ControlTower
+      @open-incident="openIncidentDetails"
+      @go-panel="(name) => (store.activePanel = name)"
+    />
+
     <!-- 首次运行引导：未安装任何内核时给出两条路径——去版本页挑选，
          或直接安装当前最新稳定版。 -->
     <Transition name="panel">
@@ -317,6 +327,16 @@ function goVersions() {
         >
           {{ (kernel && kernel.active) || '未选择' }}
         </VersionBadge>
+        <!-- 「查看状态」进内核状态诊断：版本 / 运行 / 端口 / 数据目录的
+             一张读数表。它不探测，只解释用户眼前这份快照。 -->
+        <el-button
+          class="kernel-status-link"
+          text
+          size="small"
+          @click="openKernelStatusDiagnosis(store.activePanel)"
+        >
+          查看状态
+        </el-button>
       </h2>
       <dl class="kv">
         <dt>运行状态</dt>

@@ -121,6 +121,10 @@ pub struct PrecheckReport {
     pub warnings: Vec<String>,
     /// 预检耗时（毫秒）。
     pub duration_ms: u64,
+    /// 本次预检的运行记录 id（`diagnostics::run`）。插件安全诊断页靠它
+    /// 拉那条时间线；空串表示本次预检没有落记录。
+    #[serde(default)]
+    pub run_id: String,
 }
 
 impl PrecheckReport {
@@ -136,6 +140,7 @@ impl PrecheckReport {
             hint: String::new(),
             warnings: Vec::new(),
             duration_ms: 0,
+            run_id: String::new(),
         }
     }
 }

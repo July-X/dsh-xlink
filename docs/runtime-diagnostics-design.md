@@ -871,3 +871,73 @@ npm run check 已包含不变量、代码预算、Rust 测试、UI 测试、格�
 6. 每个阶段都先做窄窗口检查，再跑完整 npm run check。
 
 任何实现与本文冲突时，优先遵守根目录 AGENTS.md、ui/AGENTS.md、src-tauri/AGENTS.md 中的安全边界和测试隔离规则；如果需要改变数据目录、实例隔离、发布流程或插件信任边界，应先更新对应设计文档并重新评审。
+
+---
+
+## 16. 实现记录（2026-10-06）
+
+四个阶段按 §15 的顺序落地。**三处实现与本文不同，都改了实现而不是改文档**——
+理由逐条写在下面，因为它们都会影响下一个读这份文档的人。
+
+### 16.1 看护期间的阶段事件不推通道，返回后补发
+
+§4.1 期望「看护把事件推给 UI」实时显示。实际做法是看护只落盘，事件攒在
+`Recorder` 里，由 `startup_run::flush` 在 `guarded_start` 返回后一次补发。
+
+原因是借用关系：`guarded_start` 的进度回调是 `&mut dyn FnMut(&str)`，而
+`deps` 在整个看护期间独占 `&mut Recorder`。要让看护就地推通道，就得让
+`deps` 长期借用那个回调——命令层随后连 `recorder.finish()` 都做不了，
+整条启动路径编译不过。试过 `Rc<RefCell<dyn FnMut>>` 共享所有权，编译过了，
+但 `deps` 仍持有借用，命令层的 `recorder` 后续全部不可用。
+
+代价是启动最后一个阶段晚几毫秒出现在时间线上；换来的是看护的所有路径
+（含测试里的 `observer: None`）都不必理解通道。
+
+### 16.2 阶段文案住在 `startup_run`，看护只说「发生了什么」
+
+看护通过 `StageObserver` trait 上报 `WatchPhase`（无文案），文案与落盘由
+`startup_run` 决定。这是为了过 `check:code-budget` 的反棘轮：`guard.rs`
+基线 940 行、已登记且超阈值，预算只许下调。把十几个阶段标识 + 中文文案
+写进看护会让它涨到预算之上，而「拆出新模块」正是那条规则要求的反应。
+
+### 16.3 `RunEvidence` 的字段叫 `kernel_log` / `sandbox_log`，不是 `*_path`
+
+`check-invariants` 的 ipc-fields 项按**字段名**（不按结构）扫全前端。
+`Incident` 有一个同名、但**不参与 camelCase 改名**的 `log_path`；新结构若
+也叫 `log_path`，门禁会把 `store.js` 里合法的 `incident.log_path` 报成
+「读错字段名」。改字段名比改门禁便宜——但这是**权衡不是最优**：更彻底的做法
+是让门禁按结构区分，而那条改动会影响全部 9 个 camelCase 结构的判定。
+
+### 16.4 落地清单
+
+| 文件 | 职责 |
+| --- | --- |
+| `src-tauri/src/diagnostics/run.rs` | 运行记录模型、存储、裁剪、脱敏、通道信封 |
+| `src-tauri/src/diagnostics/run_cmd.rs` | 三条只读命令（无 prune） |
+| `src-tauri/src/diagnostics/startup_run.rs` | 启动诊断编排、事故持久化、看护阶段映射 |
+| `ui/src/diagnostics/diagnostics.js` | 共享状态与通道解析（唯一一份） |
+| `ui/src/diagnostics/diagnostic-labels.js` | stage / status / cause 的文案与语义色 |
+| `ui/src/diagnostics/DiagnosisShell.vue` | 覆盖式诊断层外壳 |
+| `ui/src/diagnostics/RunTimeline.vue` | 阶段时间线 |
+| `ui/src/diagnostics/StartupDiagnosis.vue` | 启动诊断页 |
+| `ui/src/diagnostics/PluginDiagnosis.vue` | 插件安全诊断页 |
+| `ui/src/diagnostics/KernelStatusDiagnosis.vue` | 内核状态诊断页 |
+| `ui/src/diagnostics/ControlTower.vue` | 概览控制塔三块 |
+
+入口四处：概览「查看状态」与控制塔的「最近操作」、预检弹窗「查看完整诊断」、
+事故面板「查看启动诊断」、进度浮层失败时的「查看启动诊断」。
+
+### 16.5 与 §5.2 对齐的两处
+
+- 卡片头部用**整句**（「工作台未能启动」）而不是短标签（「失败」）。短标签
+  留给时间线上的单个事件；卡片顶部是用户第一眼读的内容，只给一个标签等于
+  没说清什么没能启动。见 `diagnostic-labels.js` 的 `RUN_HEADLINE` 与
+  `STATUS_META` 分成两张表的原因。
+- 顶部**只保留一个主动作**：成功 → 「打开工作台」，失败 → 「重试启动」。
+  §5.2 明确要求「顶部只保留返回和一个主要动作」；两个都放会让用户在最需要
+  做决定的时刻多一次分辨。`inconclusive` 也给重试——证据不足时「再来
+  一次」是唯一能拿到新证据的办法。
+
+**未做**：窄窗口（480×800）的人工目视验收——自动化门禁全绿，但 §13.3 的
+视觉检查需要人在装好的机器上做。二分与恢复链的诊断视图（`restore` /
+`bisect` 两种 kind）已在模型里留位，前端尚未提供入口。

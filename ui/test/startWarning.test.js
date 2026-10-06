@@ -15,12 +15,17 @@ const read = (path) => readFileSync(path, 'utf8');
 // 2026-10-01 刚从 `src-tauri/src/` 平铺搬进 `diagnostics/`，写死路径的话这条
 // 测试会在下一次目录改版时以 ENOENT 变红，而契约一个字都没变。
 test('非致命启动异常必须从 stderr 走到面板提示', () => {
-  const commands = readShellSource('commands.rs');
+  // 2026-10-06：「把 warning 放进报告」这段搬进了 startup_run.rs。它属于
+  // 「启动流程的尾部」，而看护只管进程活没活起来；留在 commands.rs 里会让那
+  // 个已超反棘轮阈值的文件继续变大（2026-10-06 由 check:code-budget 逼出）。
+  // 契约没变，变的只是它住在哪个文件——所以按新归属断言。
+  const startup = readShellSource('startup_run.rs');
   assert.match(
-    commands,
+    startup,
     /report\.warning = Some\(warning\)/,
-    'commands.rs 必须把 register_child 的 warning 放进启动报告',
+    'startup_run.rs 必须把 register_child 的 warning 放进启动报告',
   );
+  const commands = readShellSource('commands.rs');
   assert.match(
     commands,
     /fn register_child\([\s\S]*?\) -> Option<String>/,

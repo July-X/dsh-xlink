@@ -32,6 +32,19 @@ use crate::plugins;
 use std::path::Path;
 use std::time::Instant;
 
+/// 预检阶段事件：写进运行记录并立刻推通道。
+///
+/// 与 `commands.rs` 的同名宏同一条纪律：通道里只发结构化信封
+/// （`run::channel_envelope`），进度浮层取它的 `message` 显示人话。
+macro_rules! precheck_stage {
+    ($send:expr, $recorder:expr, $stage:expr, $status:expr, $message:expr $(,)?) => {{
+        $recorder.push($stage, $status, $message, None, None);
+        for envelope in $recorder.take_pending() {
+            $send(&envelope);
+        }
+    }};
+}
+
 use crate::plugins::center::StoreItem;
 use crate::plugins::sandbox;
 use crate::shell::error::AppError;
@@ -146,6 +159,7 @@ pub fn plugin_install(
     mode: &str,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<sandbox::PrecheckReport, AppError> {
+    use crate::diagnostics::run;
     use crate::plugins::sandbox::Verdict;
     let _store_guard = plugins::center::lock_store();
     let started = Instant::now();
@@ -162,6 +176,23 @@ pub fn plugin_install(
         .and_then(|adapter| adapter.resolve_install_dir(&version))
         .unwrap_or_else(|| crate::kernel::lifecycle::kernel_dir(data_dir, &version));
 
+    // 运行记录在**读完内核版本之后**才开：预检跑的是这个版本的沙盒内核，
+    // 版本都读不到时根本没有一次可追溯的「预检」——那次只是一次安装。
+    let mut recorder = run::Recorder::begin(
+        family,
+        target_instance,
+        run::kind::PLUGIN_PRECHECK,
+        &version,
+        &settings.profile,
+        Default::default(),
+    );
+    precheck_stage!(
+        on_progress,
+        &mut recorder,
+        run::stage::SANDBOX_CREATE,
+        run::status::RUNNING,
+        "正在创建一次性沙盒环境"
+    );
     let mut sandbox = match sandbox::Sandbox::create(
         family,
         &version,
@@ -191,11 +222,34 @@ pub fn plugin_install(
             report.hint = "这条提示说明预检环境本身不可用，与插件质量无关。可在插件中心关闭安装预检，或查看日志确认沙盒为何起不来。"
                 .into();
             report.duration_ms = started.elapsed().as_millis() as u64;
+            // 归因 `environment`：沙盒起不来与候选插件无关，写成 plugin
+            // 会让用户去处置一个无辜的包。
+            precheck_stage!(
+                on_progress,
+                &mut recorder,
+                run::stage::SANDBOX_CREATE,
+                run::status::FAILURE,
+                &format!("预检环境不可用：{reason}")
+            );
+            let _ = recorder.finish(
+                run::status::INCONCLUSIVE,
+                run::cause::ENVIRONMENT,
+                &format!("预检环境不可用，插件已直接安装（未经启动验证）：{reason}"),
+                None,
+            );
+            report.run_id = recorder.id().to_string();
             return Ok(report);
         }
     };
 
     on_progress("正在建立环境基线：不装任何插件启动一次内核");
+    precheck_stage!(
+        on_progress,
+        &mut recorder,
+        run::stage::BASELINE,
+        run::status::RUNNING,
+        "正在建立环境基线（不装任何插件）"
+    );
     let baseline = probe_boot(&mut sandbox, &install_root, node_path, on_progress);
     if !baseline.ready {
         let mut report = sandbox::PrecheckReport::new("", spec_str, Verdict::Inconclusive);
@@ -206,6 +260,22 @@ pub fn plugin_install(
         report.evidence = baseline.log;
         report.hint = "先不装任何插件时内核在沙盒里也起不来，问题不在候选插件。请查看下方日志确认是内核版本、Node 环境还是端口问题；也可以在插件中心关闭安装预检。"
             .into();
+        precheck_stage!(
+            on_progress,
+            &mut recorder,
+            run::stage::BASELINE,
+            run::status::FAILURE,
+            &format!("环境基线未能启动：{}", baseline.detail)
+        );
+        // **候选插件不背这口锅**：基线就没起来时，任何归因到插件的结论都
+        // 没有事实基础。判 inconclusive 而不是 fail 是这一层存在的意义。
+        let _ = recorder.finish(
+            run::status::INCONCLUSIVE,
+            run::cause::ENVIRONMENT,
+            &format!("环境基线没能起来，无法判断候选插件：{}", baseline.detail),
+            None,
+        );
+        report.run_id = recorder.id().to_string();
         let item = plugins::center::install_for_instance(
             family,
             target_instance,
@@ -223,6 +293,20 @@ pub fn plugin_install(
         return Ok(report);
     }
 
+    precheck_stage!(
+        on_progress,
+        &mut recorder,
+        run::stage::BASELINE,
+        run::status::SUCCESS,
+        &format!("环境基线正常：{}", baseline.detail)
+    );
+    precheck_stage!(
+        on_progress,
+        &mut recorder,
+        run::stage::INSTALL_CANDIDATE,
+        run::status::RUNNING,
+        "正在把候选插件装入沙盒"
+    );
     // 取源 + 装进沙盒：走的就是生产安装路径本身，只是目标实例换成了沙盒。
     let snapshot = StoreSnapshot::capture(data_dir);
     let item = match plugins::center::install_for_instance(
@@ -241,11 +325,38 @@ pub fn plugin_install(
             // 一个已记账的插件。预检必须把它撤掉，否则「预检失败」反而让面板
             // 多出一行用户没要求的东西。
             snapshot.rollback(data_dir);
+            precheck_stage!(
+                on_progress,
+                &mut recorder,
+                run::stage::INSTALL_CANDIDATE,
+                run::status::FAILURE,
+                &format!("候选插件未能装入沙盒：{error}")
+            );
+            let _ = recorder.finish(
+                run::status::FAILURE,
+                run::cause::UNKNOWN,
+                &format!("候选插件安装失败：{error}"),
+                None,
+            );
             return Err(error);
         }
     };
 
+    precheck_stage!(
+        on_progress,
+        &mut recorder,
+        run::stage::INSTALL_CANDIDATE,
+        run::status::SUCCESS,
+        &format!("候选插件 {} 已装入沙盒", item.name)
+    );
     on_progress(&format!("正在验证插件 {} 能否带起内核", item.name));
+    precheck_stage!(
+        on_progress,
+        &mut recorder,
+        run::stage::PROBE_CANDIDATE,
+        run::status::RUNNING,
+        &format!("正在启动沙盒内核并探测 {}", item.name)
+    );
     let candidate = probe_boot(&mut sandbox, &install_root, node_path, on_progress);
 
     let mut report = sandbox::PrecheckReport::new(&item.id, &item.name, Verdict::Pass);
@@ -266,9 +377,42 @@ pub fn plugin_install(
         }
         report.hint = "这说明该插件与当前内核版本不兼容。可以换一个版本重试，或到插件中心向作者反馈；确认无问题也可以直接关闭预检后安装。"
             .into();
+        precheck_stage!(
+            on_progress,
+            &mut recorder,
+            run::stage::PROBE_CANDIDATE,
+            run::status::FAILURE,
+            &format!("装上 {} 之后内核起不来：{}", item.name, candidate.detail)
+        );
+        precheck_stage!(
+            on_progress,
+            &mut recorder,
+            run::stage::REPORT,
+            run::status::RUNNING,
+            "正在生成预检报告"
+        );
+        let evidence = run::RunEvidence {
+            kernel_log: None,
+            incident_id: None,
+            sandbox_log: report.evidence_path.clone().into(),
+        };
+        let _ = recorder.finish(
+            run::status::FAILURE,
+            run::cause::PLUGIN,
+            &report.summary,
+            Some(&evidence),
+        );
+        report.run_id = recorder.id().to_string();
         return Ok(report);
     }
 
+    precheck_stage!(
+        on_progress,
+        &mut recorder,
+        run::stage::PROBE_CANDIDATE,
+        run::status::SUCCESS,
+        &format!("候选插件通过启动验证：{}", candidate.detail)
+    );
     // 通过：把包物化到目标实例并接线。取源已经完成，这里只做本地链接。
     on_progress("预检通过，正在安装到当前实例");
     commit(
@@ -289,6 +433,22 @@ pub fn plugin_install(
     } else {
         report.hint = "预检通过，但启动日志里出现了可疑标记（见上）。建议安装后第一次打开工作台时留意是否白屏或报错；仍有问题可撤销该插件。".into();
     }
+    precheck_stage!(
+        on_progress,
+        &mut recorder,
+        run::stage::REPORT,
+        run::status::SUCCESS,
+        "预检通过，插件已安装到当前实例"
+    );
+    // 「通过但有告警」必须记成 warning 而不是 success：诊断页据此显示
+    // 不同标题，压成普通通过就等于把告警藏起来了。
+    let final_status = if report.warnings.is_empty() {
+        run::status::SUCCESS
+    } else {
+        run::status::WARNING
+    };
+    let _ = recorder.finish(final_status, run::cause::UNKNOWN, &report.summary, None);
+    report.run_id = recorder.id().to_string();
     Ok(report)
 }
 

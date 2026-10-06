@@ -59,6 +59,8 @@ import 'element-plus/es/components/tag/style/css.mjs';
 import 'element-plus/es/components/tooltip/style/css.mjs';
 import 'element-plus/theme-chalk/dark/css-vars.css';
 import './theme.css';
+// 诊断层样式独立于 theme.css：后者是反棘轮文件（只许越来越小）。
+import './diagnostics/diagnostics.css';
 import App from './App.vue';
 import LogViewerWindow from './logs/LogViewerWindow.vue';
 import OfficialChatTabs from './official-chat/OfficialChatTabs.vue';

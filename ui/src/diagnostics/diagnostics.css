@@ -1,0 +1,302 @@
+/* 诊断层样式。**独立于 theme.css**：theme.css 是反棘轮文件（只许越来越
+ * 小），而诊断层是三个新页面共用的自成一块的样式，抄进共享文件会让
+ * 共享文件继续变大，也会让「哪段样式属于哪层」变得看不出来。 */
+
+.diagnosis {
+  position: fixed;
+  inset: 0;
+  /* Tauri 自绘标题栏在 topbar 之下，诊断层从标题栏下方开始，标题栏按钮
+   * 仍然可点——把整个窗口盖住会让用户没法最小化。 */
+  top: var(--titlebar-height, 30px);
+  z-index: 2200;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+/* --- 页面头部 ------------------------------------------------------------
+ * 结构固定为 [返回] 标题 [主操作] [更多]。标题占满剩余空间并单行省略，
+ * 保证 480 宽下标题不会被按钮压住——这是设计稿 §2.5.3 的硬要求。 */
+.diagnosis__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.diagnosis__title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 返回 / 更多是 32×32 图标按钮。图标按钮不能只靠图形猜含义，返回按钮
+ * 因此始终带 aria-label（见 DiagnosisShell.vue）。 */
+.diagnosis__icon-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.diagnosis__icon-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.diagnosis__icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.diagnosis__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+/* --- 卡片 --------------------------------------------------------------- */
+.diag-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card);
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.diag-card__title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.diag-card__aside {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* 摘要卡的标题行：状态 + 归因。**颜色不是唯一信息载体**——每个状态都
+ * 带文字（设计稿 §2.5.6），色弱用户与截图都要能读出状态。 */
+.diag-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.diag-status__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted);
+}
+
+.diag-status__dot--ok { background: var(--good); }
+.diag-status__dot--warn { background: var(--warn); }
+.diag-status__dot--bad { background: var(--bad); }
+.diag-status__dot--active { background: var(--accent); }
+.diag-status__dot--unknown { background: var(--muted); }
+.diag-status__dot--muted { background: var(--muted); }
+
+.diag-meta {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.diag-summary-text {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.diag-next {
+  margin: 8px 0 0;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--text);
+}
+
+/* --- 时间线 ------------------------------------------------------------- */
+.diag-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.diag-timeline__row {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 7px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.diag-timeline__row:last-child { border-bottom: none; }
+
+/* 序号圆点。成功 / 失败 / 进行中三态靠颜色 + 里面的符号共同表达。 */
+.diag-timeline__mark {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+}
+
+/* 类名跟 `statusMeta` 的 tone 走（tone = 'ok'），取值跟 theme.css 的
+ * --good 走。两者不同名是刻意的：tone 是「这一行的语义」，而色板是
+ * 全局 token——将来把成功色从绿改成别的，只动 theme.css 一处。 */
+.diag-timeline__mark--ok { color: var(--good); border-color: rgba(52, 211, 153, 0.4); }
+.diag-timeline__mark--warn { color: var(--warn); border-color: rgba(251, 191, 36, 0.4); }
+.diag-timeline__mark--bad { color: var(--bad); border-color: rgba(248, 113, 113, 0.4); }
+.diag-timeline__mark--active { color: var(--accent); border-color: rgba(79, 140, 255, 0.5); }
+
+.diag-timeline__main { flex: 1; min-width: 0; }
+
+.diag-timeline__stage {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.diag-timeline__cost {
+  font-size: 11px;
+  color: var(--muted);
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* 看护重试的「第 N 次尝试」标记。三次尝试必须分开标，否则第 2 次成功
+ * 会把第 1 次的失败盖掉。 */
+.diag-timeline__attempt {
+  font-size: 11px;
+  color: var(--accent-2, var(--accent));
+  margin-left: 6px;
+}
+
+.diag-timeline__message {
+  margin: 3px 0 0;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--muted);
+  /* 长文案必须能换行，不能被裁成一行（设计稿 §13.3）。 */
+  overflow-wrap: anywhere;
+}
+
+.diag-timeline__actions {
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* --- 状态行（需要关注 / 系统健康 / 最近操作）-------------------------- */
+.diag-rows { margin: 0; }
+
+.diag-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.diag-row:last-child { border-bottom: none; }
+
+/* 只读行不可点：没有 cursor: pointer 与 hover 反馈，避免用户点了没反应。 */
+.diag-row--static { cursor: default; }
+.diag-row--static:hover { background: transparent; }
+
+.diag-row:hover:not(.diag-row--static) { background: rgba(255, 255, 255, 0.04); }
+
+.diag-row__label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.diag-row__value { flex: none; color: var(--muted); font-size: 12px; }
+.diag-row__arrow { flex: none; color: var(--muted); font-size: 12px; }
+
+.diag-row__value--ok { color: var(--good); }
+.diag-row__value--warn { color: var(--warn); }
+.diag-row__value--bad { color: var(--bad); }
+
+/* 底部操作栏。**不固定在视口底部**——它跟着内容流走，480×800 下固定会
+ * 压掉最后一张卡；内容不足时它自然就在末尾。 */
+.diag-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.diag-actions .el-button { flex: 1; }
+
+.diag-empty {
+  padding: 24px 8px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--muted);
+}
+
+.diag-error {
+  margin: 0 0 10px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.08);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+/* 用户要求减少动态效果时，时间线的当前阶段不做脉冲。 */
+@media (prefers-reduced-motion: reduce) {
+  .diagnosis__icon-btn { transition: none; }
+}
