@@ -387,9 +387,44 @@ impl Sandbox {
         }
     }
 
-    /// 对沙盒内核做一次 HTTP 存活确认。返回状态码。
+    /// 对沙盒内核做一次「它真的起来了」确认。返回它回的状态码。
+    ///
+    /// **判据是「在应答」，不是「回了 2xx」。** 0.1.2-alpha.1 起的内核在 browser
+    /// 入口前加了进程级 launch token，所以裸的 `GET /` 稳定返回 401。此前判据是
+    /// `(200..400)`，于是每一次预检都判「内核返回 HTTP 401」——而内核明明已经
+    /// 起来了，预检连装插件那一步都没走到（2026-10-06 实测，
+    /// run-20261006-210045-0f19）。401 / 403 / 404 都是**内核正常工作**的证据：
+    /// 服务器在监听、在路由、在跑鉴权中间件。
+    ///
+    /// **为什么不带令牌去探**：令牌是 `processLaunchToken()` 在进程内算出来的
+    /// （`dsh-client-connection/lib/index.js`），只能从内核启动时打印的那行
+    /// `dsh web: http://…/?token=…` 里取；而那行要等插件 `loader.await()` settle
+    /// 之后才打印，沙盒里实测 45 秒都不出现——把它当依赖只会把预检重新变成
+    /// 「等一个可能永不来的日志」。而且令牌**只对根路径生效**，`/api/health?token=…`
+    /// 仍然是 401，所以「换个不需要鉴权的健康端点」这条路也不存在。
+    ///
+    /// 5xx 不算就绪：服务器起来了但请求出错，正是「插件把页面搞坏了」的表现，
+    /// 得如实报出去，不能混进「环境基线正常」里。
     pub fn probe(&self) -> Result<u16, String> {
-        http_probe(self.record.port, "/")
+        /// 应答等待窗口。端口刚 listen 时请求还可能拿不到连接，给它一点余量；
+        /// 再长就是掩盖问题。
+        const ANSWER_WAIT: Duration = Duration::from_millis(2000);
+        const POLL: Duration = Duration::from_millis(150);
+
+        let port = self.record.port;
+        let deadline = std::time::Instant::now() + ANSWER_WAIT;
+        let mut last = format!("沙盒内核在 {ANSWER_WAIT:?} 内没有应答");
+        loop {
+            match http_probe(port, "/") {
+                Ok(code) if serves(code) => return Ok(code),
+                Ok(code) => last = format!("内核返回 HTTP {code}"),
+                Err(error) => last = error,
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(last);
+            }
+            std::thread::sleep(POLL);
+        }
     }
 
     /// 读启动日志末尾，供报告取证据。
@@ -459,6 +494,16 @@ fn watch(child: &mut Child, port: u16) -> WatchVerdict {
         }
         std::thread::sleep(Duration::from_millis(WATCH_POLL_MILLIS));
     }
+}
+
+/// 这个状态码是否说明「内核起来了」。
+///
+/// **任何状态码都证明服务器在应答**——包括 4xx：它拒绝了这个请求，说明它在
+/// 听着、在路由。带 launch token 的内核对裸 `GET /` 回 401，那正是它正常的
+/// 样子。5xx 是唯一的例外：起来了但处理请求出错，正是「页面被插件搞坏」的
+/// 表现，不能混进「环境基线正常」里。
+fn serves(code: u16) -> bool {
+    (100..500).contains(&code)
 }
 
 /// 极简 HTTP GET，只回答「内核是否在正常应答」这一个问题。刻意不引入
@@ -561,6 +606,22 @@ fn sanitize(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 判据钉死：带 launch token 的内核对裸 `GET /` 回 401，那是它正常的
+    /// 样子。此前判据是 `(200..400)`，于是每一次预检都判「内核返回 HTTP 401」
+    /// ——内核明明已经起来了，预检连装插件那一步都没走到
+    /// （run-20261006-210045-0f19）。
+    #[test]
+    fn any_http_answer_means_the_kernel_is_up_except_server_errors() {
+        for code in [200, 204, 301, 302, 400, 401, 403, 404, 429, 499] {
+            assert!(serves(code), "{code} 说明服务器在应答，应算就绪");
+        }
+        // 5xx：起来了但请求出错 —— 那正是「页面被插件搞坏」的表现，不能
+        // 混进「环境基线正常」里。
+        for code in [500, 502, 503] {
+            assert!(!serves(code), "{code} 是服务器错误，不能算就绪");
+        }
+    }
 
     #[test]
     fn sandbox_id_satisfies_path_component_rules() {
