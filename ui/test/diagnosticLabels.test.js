@@ -26,6 +26,7 @@ Object.defineProperty(globalThis, 'navigator', {
 });
 
 const labels = await import('../src/diagnostics/diagnostic-labels.js');
+const precheck = await import('../src/diagnostics/precheck-labels.js');
 const diag = await import('../src/diagnostics/diagnostics.js');
 
 test('未知 stage / status / cause 显式透出，不被吞掉', () => {
@@ -118,4 +119,37 @@ test('返回时记录仍在，只有实时流被清', () => {
   assert.equal(back, 'versions');
   assert.equal(diag.diagnosticStore.active, null);
   assert.equal(diag.diagnosticStore.currentRun.id, 'run-3');
+});
+// —— 预检三态与来源 / 完整性（设计 §6.4 §6.5）——
+
+test('预检三态各有独立措辞，inconclusive 不与 fail 混同', () => {
+  // inconclusive = 基线就没起来，候选插件根本没被测过。画成「失败」会让
+  // 用户去卸一个无辜的包。
+  assert.equal(precheck.SOURCE_LABELS.npm, 'npm 包');
+  const states = { pass: '预检通过', fail: '预检未通过', inconclusive: '预检未能完成' };
+  assert.equal(new Set(Object.values(states)).size, 3, '三态文案必须互不相同');
+  assert.notEqual(states.inconclusive, states.fail);
+});
+
+test('完整性分四档，sha1 与 none 都不许显示成「已校验」', () => {
+  // sha1 存在但抗碰撞已破；none 是根本没验。两者笼统叫「已校验」会让用户
+  // 以为拿到了和 npm 官方同样的保证。
+  assert.match(precheck.INTEGRITY_META.sha512.label, /sha512/);
+  assert.equal(precheck.INTEGRITY_META.sha512.weak, false);
+  assert.equal(precheck.INTEGRITY_META.sha1.weak, true, 'sha1 必须标为弱保证');
+  assert.match(precheck.INTEGRITY_META.sha1.label, /较弱/);
+  assert.equal(precheck.INTEGRITY_META.none.weak, true);
+  assert.equal(precheck.INTEGRITY_META.none.tone, 'bad', '没验不是「通过」');
+  // 未知摘要算法原样透出，不假装成 none（那会把「后端换了算法」说成「压根没校验」）
+  const unknown = precheck.INTEGRITY_META.sha3;
+  assert.equal(unknown, undefined, '未知算法不在表里，调用方走兜底分支');
+});
+
+test('插件诊断没有 runId 时不当作错误', () => {
+  // 预检在取源阶段就失败时没有落记录，那是正常路径。
+  diag.clearLiveEvents();
+  return diag.loadPluginRun('').then((r) => {
+    assert.equal(r, null);
+    assert.equal(diag.diagnosticStore.error, '', '空 runId 不该留下错误提示');
+  });
 });

@@ -145,6 +145,39 @@ fn probe_boot(
     BootProbe { ready, detail, log }
 }
 
+/// 把候选插件的来源信息填进报告（设计 §6.5 首屏五项）。
+///
+/// **为什么单独一个函数**：三条返回路径（沙盒建不起来、基线失败、正常走完）
+/// 都要填同一批字段，而它们分处函数前中后三段。散着填必然漏一条——漏掉的
+/// 那条在 UI 上表现为「来源未知」，用户看到的是一个不敢装的包。
+fn fill_source_info(
+    report: &mut sandbox::PrecheckReport,
+    spec_str: &str,
+    mode: &str,
+    family: &str,
+    target_instance: &str,
+) {
+    use crate::shell::instance;
+    // 解析失败不阻断预检：取源阶段本来就会再解析一次并给出真正的错误。
+    // 这里失败就把来源留空，让 UI 显示「来源未知」——**不编一个假来源**。
+    if let Ok(spec) = plugins::center::parse_spec(spec_str) {
+        report.source_kind = spec.origin.clone();
+        // 只给短名称（npm 包名 / `owner/repo`），不给完整 URL——后者可能
+        // 带凭据（`https://user:token@…`），而报告会进运行记录。
+        report.source_label = if let Some(repo) = &spec.repo_url {
+            repo.rsplit('/').next().unwrap_or(repo.as_str()).to_string()
+        } else {
+            spec.source.clone()
+        };
+        report.pin = spec.pin.clone().unwrap_or_default();
+    }
+    report.materialize = mode.to_string();
+    report.target_instance = target_instance.to_string();
+    let (default_family, default_instance) = instance::resolve_default();
+    report.affects_default_instance =
+        family == default_family && target_instance == default_instance;
+}
+
 /// 插件安装预检：在一个一次性沙盒实例里**真的装一次、真的起一次**内核，
 /// 通过了才把包物化到目标实例。
 #[allow(clippy::too_many_arguments)]
@@ -163,6 +196,23 @@ pub fn plugin_install(
     use crate::plugins::sandbox::Verdict;
     let _store_guard = plugins::center::lock_store();
     let started = Instant::now();
+
+    // 目标实例的**内核还在跑**时拒绝预检（设计 §6.2）。判据按实例 pid 文件
+    // 而不是「本壳工作台在不在跑」：用户自建实例有意留在两份注册表里，
+    // 另一个壳正跑着它时本壳的判据会说「没在跑」，于是预检会把插件装进
+    // 一个正在被使用的实例——而预检末尾的 commit 会**改接线**，那等于在
+    // 用户正工作的时候动它的依赖。
+    if let Some(record) = crate::shell::instance::instance_kernel_running(family, target_instance) {
+        // 复用 instance.rs 那份文案：同一句话写两遍，迟早有一处漏掉
+        // 「先关闭再试」这半句——而那半句正是用户下一步要做的事。
+        return Err(AppError::Io(
+            crate::shell::instance::instance_kernel_running_message(
+                &record,
+                target_instance,
+                "做安装预检",
+            ),
+        ));
+    }
 
     let version = crate::kernel::lifecycle::read_active(data_dir).ok_or_else(|| {
         AppError::Kernel(
@@ -218,6 +268,7 @@ pub fn plugin_install(
             let mut report =
                 sandbox::PrecheckReport::new(&item.id, &item.name, Verdict::Inconclusive);
             report.installed = true;
+            fill_source_info(&mut report, spec_str, mode, family, target_instance);
             report.summary = format!("预检未能进行，插件已直接安装（未经启动验证）：{reason}");
             report.hint = "这条提示说明预检环境本身不可用，与插件质量无关。可在插件中心关闭安装预检，或查看日志确认沙盒为何起不来。"
                 .into();
@@ -289,6 +340,7 @@ pub fn plugin_install(
         report.plugin_id = item.id;
         report.plugin_name = item.name;
         report.installed = true;
+        fill_source_info(&mut report, spec_str, mode, family, target_instance);
         report.duration_ms = started.elapsed().as_millis() as u64;
         return Ok(report);
     }
@@ -360,6 +412,9 @@ pub fn plugin_install(
     let candidate = probe_boot(&mut sandbox, &install_root, node_path, on_progress);
 
     let mut report = sandbox::PrecheckReport::new(&item.id, &item.name, Verdict::Pass);
+    // 正常路径也要填来源：它只走到最后一步就 commit，漏填的话用户在诊断页
+    // 看到的仍是「来源未知」——而那正是最需要说清来源的一条路径。
+    fill_source_info(&mut report, spec_str, mode, family, target_instance);
     report.warnings = sandbox::scan_log_markers(&candidate.log);
     report.duration_ms = started.elapsed().as_millis() as u64;
 
@@ -464,6 +519,23 @@ fn commit(
     item: &StoreItem,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(), AppError> {
+    // 改接线**之前**打一份 pre-change 快照（设计 §6.6）。`ensure_wiring` 会
+    // 物化/撤下这个插件的接线，那一步失败就是「用户的插件组合已经变了」，
+    // 没有快照的话他只能手工一个个停用找回。
+    //
+    // 打快照失败**不阻断**提交：预检已经通过了，用户等的是「装上」，
+    // 而快照是兜底不是前提——挡住了就是用一个可选的保险换一个硬失败。
+    if let Err(error) = crate::diagnostics::snapshot::record(
+        data_dir,
+        family,
+        instance,
+        &settings.profile,
+        settings.port,
+        crate::diagnostics::snapshot::reason::PRE_CHANGE,
+    ) {
+        eprintln!("dsh-xlink: 预检通过但未能打 pre-change 快照：{error}");
+        on_progress(&format!("注意：未能保存变更前快照（{error}）"));
+    }
     plugins::center::sync_kernels_for_instance(family, instance, data_dir, item)?;
     plugins::center::ensure_wiring_for_instance(
         family,

@@ -13,9 +13,17 @@
 import { computed } from 'vue';
 import { store } from '../store.js';
 import { entryTimeLabel, snapshotStore } from './snapshots.js';
+import { skillStore } from '../skills/skills.js';
+import { logModal } from '../logs/logs.js';
+import { showLogs } from '../logs/logs.js';
 import { incidentCauseLabel, incidentTitle } from '../incidents/incidents.js';
-import { openStartupDiagnosis, diagnosticStore, loadRecentRuns } from './diagnostics.js';
-import { causeLabel, durationLabel, statusMeta } from './diagnostic-labels.js';
+import {
+  diagnosticStore,
+  loadRecentRuns,
+  openPluginDiagnosis,
+  openStartupDiagnosis,
+} from './diagnostics.js';
+import { causeLabel, statusMeta } from './diagnostic-labels.js';
 
 const emit = defineEmits(['open-incident', 'go-panel']);
 
@@ -24,6 +32,9 @@ const running = computed(() => !!kernel.value.running);
 const node = computed(() => store.view?.node || {});
 const nodeOk = computed(() => !!node.value.ok);
 const incident = computed(() => store.view?.incident || null);
+const quarantined = computed(() => store.view?.quarantined || []);
+
+
 
 /**
  * 需要关注：只有真有东西才列。
@@ -60,6 +71,18 @@ const attention = computed(() => {
       action: 'other-shell',
     });
   }
+  // 上次预检没完成 / 没通过：这是**用户可能还没意识到**的一类问题——
+  // 插件已经装上了，但「没验过」这件事不会自己跳出来提醒。
+  const lastPrecheck = diagnosticStore.recentRuns.find((r) => r.kind === 'plugin-precheck');
+  if (lastPrecheck && ['failure', 'inconclusive', 'warning'].includes(lastPrecheck.status)) {
+    list.push({
+      key: 'precheck',
+      label: `插件预检${statusMeta(lastPrecheck.status).label}`,
+      detail: lastPrecheck.summary || '点开看它验到了哪一步',
+      tone: lastPrecheck.status === 'warning' ? 'warn' : 'bad',
+      action: 'precheck',
+    });
+  }
   if (!nodeOk.value) {
     list.push({
       key: 'node',
@@ -86,26 +109,46 @@ const latestSnapshotLabel = computed(() => {
 });
 
 /** 系统健康：只给读数。 */
+/**
+ * 系统健康：设计 §7.2 列的五行。
+ *
+ * **`unavailable` 是刻意的一等状态**：某个数据源读失败时**不能**显示成
+ * 「正常」——用户点进来看到一片正常会以为系统没事，而真相是这一项压根
+ * 没读成功。读不到就明说读不到，同时把上一次的值标成「上次读到」。
+ */
+function cell(key, label, value, tone = '', action = null) {
+  return { key, label, value, tone, action, unavailable: value === '读取失败' };
+}
+
 const health = computed(() => [
-  { key: 'kernel', label: '内核', value: kernel.value.active || '未安装', tone: kernel.value.active ? '' : 'warn' },
-  {
-    key: 'runtime',
-    label: '运行时',
-    value: running.value ? '运行中' : '已停止',
-    tone: running.value ? 'ok' : '',
-  },
-  { key: 'node', label: 'Node.js', value: nodeOk.value ? '就绪' : '未就绪', tone: nodeOk.value ? 'ok' : 'bad' },
-  {
-    key: 'port',
-    label: '端口',
-    value: kernel.value.port != null ? String(kernel.value.port) : '未设置',
-  },
-  {
-    key: 'snapshot',
-    label: '最近快照',
-    value: latestSnapshotLabel.value || '暂无',
-  },
+  cell('kernel', '内核', kernel.value.active || '未安装', kernel.value.active ? '' : 'warn'),
+  cell('runtime', '运行时', running.value ? '运行中' : '已停止', running.value ? 'ok' : ''),
+  cell('node', 'Node.js', nodeOk.value ? '就绪' : '未就绪', nodeOk.value ? 'ok' : 'bad'),
+  cell('wiring', '插件接线', wiringText.value.text, wiringText.value.tone, 'plugins'),
+  cell('skills', '技能注册', skillText.value.text, skillText.value.tone, 'skills'),
+  cell('logs', '日志系统', logText.value.text, logText.value.tone, 'logs'),
+  cell('snapshot', '最近快照', latestSnapshotLabel.value || '暂无'),
 ]);
+
+// 插件接线：隔离数是唯一有意义的读数——「被看护停用过」直接决定插件
+// 还能不能正常工作，而 store 里没有总启数（接线明细要另发命令）。
+const wiringText = computed(() => {
+  const count = quarantined.value.length;
+  if (count === 0) return { text: '正常（无隔离）', tone: 'ok' };
+  return { text: `${count} 个被隔离`, tone: 'warn' };
+});
+
+// 技能：view 为 null = 还没拉过或拉失败，两种情况都不能说「正常」。
+const skillText = computed(() => {
+  if (!skillStore.view) return { text: '读取失败', tone: 'bad' };
+  return { text: '正常', tone: 'ok' };
+});
+
+const logText = computed(() => {
+  if (!logModal.files.length) return { text: '暂无日志', tone: '' };
+  return { text: `正常（${logModal.files.length} 个文件）`, tone: 'ok' };
+});
+
 
 /** 最近操作：最近一条运行记录；失败 / 告警时可点进诊断。 */
 const latestRun = computed(() => diagnosticStore.recentRuns[0] || null);
@@ -130,9 +173,16 @@ const runActionable = computed(() =>
 
 function onAttention(item) {
   if (item.action === 'incident') emit('open-incident');
-  else if (item.action === 'settings') emit('go-panel', 'settings');
-  else if (item.action === 'node') emit('go-panel', 'settings');
+  else if (item.action === 'precheck') openPluginDiagnosis({}, 'overview');
+  else if (item.action === 'settings' || item.action === 'node') emit('go-panel', 'settings');
   else emit('go-panel', 'overview');
+}
+
+/** 系统健康行按设计 §7.2 逐项可跳转：读数本身解释不了「怎么修」。 */
+function onHealth(row) {
+  if (row.action === 'plugins') emit('go-panel', 'plugins');
+  else if (row.action === 'skills') emit('go-panel', 'skills');
+  else if (row.action === 'logs') showLogs();
 }
 
 function openDiagnosis() {
@@ -168,12 +218,22 @@ function openDiagnosis() {
   <div class="diag-card">
     <h3 class="diag-card__title"><span>系统健康</span></h3>
     <div class="diag-rows">
-      <div v-for="row in health" :key="row.key" class="diag-row diag-row--static">
+      <button
+        v-for="row in health"
+        :key="row.key"
+        type="button"
+        class="diag-row"
+        :class="{ 'diag-row--static': !row.action }"
+        @click="row.action && onHealth(row)"
+      >
         <span class="diag-row__label">{{ row.label }}</span>
         <span class="diag-row__value" :class="row.tone ? `diag-row__value--${row.tone}` : ''">
           {{ row.value }}
         </span>
-      </div>
+        <!-- 读不到时明确标出来。静默显示上次的值会让用户以为现在还是好的。 -->
+        <span v-if="row.unavailable" class="diag-row__arrow" aria-hidden="true">点击重试</span>
+        <span v-else-if="row.action" class="diag-row__arrow" aria-hidden="true">›</span>
+      </button>
     </div>
   </div>
 
