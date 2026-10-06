@@ -320,6 +320,57 @@
 .diag-rows--grid .diag-row { padding: 8px 0; border-bottom: none; }
 .diag-rows--grid .diag-row:nth-child(even) { border-left: 1px solid var(--border); padding-left: 14px; }
 
+/* --- 控制塔专用：把三张卡收进 ~234px（2026-10-06） ------------------------
+ *
+ * 概览页的控制塔是**正文之前**的一段：它在 480px 窄窗里占掉 326.5px，而它
+ * 答的三件事（有没有要处理的、四个子系统状态、上次运行结果）真正要读的只有
+ * 读数本身。按 480×800 窗口实测的盒模型拆分，改动是：
+ *
+ *   卡片 padding 12 → 8、行 padding 9/8 → 6、标题与行的 line-height 1.5 → 1.35
+ *   （13px 文字，1.35 的行距对密集面板够读）
+ *
+ *   需要关注 91 → 70.1｜系统健康 124.5 → 99.65｜最近操作 91 → 70.1
+ *   合计 326.5 → 251.85（省 74.65px）；再把 margin-bottom 归零见下 → **233.85**
+ *
+ * 行盒从 37.5 收到 29.55px：仍是可点的行（macOS 紧凑列表行同量级），但再收
+ * 就会顶到「看不出哪里能点」那条线，所以停在 6px padding 而不是继续压行高。
+ *
+ * **`margin-bottom: 0` 是必需的，且不能只删掉**：ControlTower 是**三个根节点**
+ * 的多根组件，Vue 会把它们提升成 `<section class="panel">` 的直接子节点，于是
+ * 三张卡都是 `.panel` 这个 flex 容器的 flex item，`.panel` 的 `gap: 6px` 作用
+ * 在它们之间。flex 容器的外边距**不折叠**、直接叠在 gap 上，所以
+ *   gap 6 + margin-bottom 6 = **12px**（前三块）  vs  gap 6 = **6px**（两个 .card）
+ * 同一列里两种缝，概览页一眼就能看出不齐（2026-10-06 用户指出）。用户参照的
+ * 是「当前内核↔套餐用量」那一段，也就是 6px——即 `.panel` 的 gap 本身。
+ * 写 0 而不是删这条声明：`.diag-card` 基线带 `margin-bottom: 10px`，作用域
+ * 选择器只在**它自己声明过的属性上**赢过基线；删掉声明等于让 10px 原样回来。
+ * 实测（dev server，`getBoundingClientRect`）：改前 12.00 / 12.00 / 12.00 / 6.00，
+ * 改后 6.00 × 4。
+ *
+ * 该约定已升格为**全前端默认**，记在 `ui/AGENTS.md §间距`：功能块之间的缝由
+ * 容器 gap 统一提供，卡片不再自带 `margin-bottom`。
+ *
+ * **限定在 `--tower`，不改全局**：`.diag-card` / `.diag-row` 还被 5 个诊断页
+ * 共用（KernelStatus / Startup / Plugin / Operation / DiagnosisShell），那些
+ * 页面装在 `.diagnosis`（另一个容器，没有 `.panel` 的 gap），间距由卡片自己的
+ * `margin-bottom: 10px` 提供。把那 5 页一起归零会让它们**完全贴死**，所以
+ * 「卡片不带 margin-bottom」只对 `.panel` 里的块成立，不是全局规则。
+ *
+ * 两条写法上的坑，都不是审美问题：
+ *   · 卡片用 `.diag-card.diag-card--tower`（0,2,0）而不是单类——它与 `.diag-card`
+ *     同为 (0,1,0)，写成单类就只能靠「写在后面」取胜，而文件里后来插一条规则
+ *     就会静默失效。
+ *   · 行用 **`padding-block`** 而不是 `padding`。上面那条
+ *     `.diag-rows--grid .diag-row:nth-child(even)` 的列分隔靠 `padding-left: 14px`，
+ *     它与本条的 `padding-block` 同为 (0,2,0)；用简写 `padding` 会把列分隔的
+ *     14px 左内边距一起清成 0，两列读数贴在一起而**没有任何报错**。
+ */
+.diag-card.diag-card--tower { padding: 8px; margin-bottom: 0; }
+
+.diag-card--tower .diag-card__title { margin-bottom: 5px; line-height: 1.35; }
+
+.diag-card--tower .diag-row { padding-block: 6px; line-height: 1.35; }
+
 /* 底部操作栏。**不固定在视口底部**——它跟着内容流走，480×800 下固定会
  * 压掉最后一张卡；内容不足时它自然就在末尾。 */
 .diag-actions {
@@ -379,9 +430,29 @@
   max-width: min(320px, calc(100vw - 24px));
 }
 
-/* 逐字断行在这里发生，靠 `white-space: nowrap` 从根上关掉。菜单项都很短，
-   宁可横向滚动也不要把它读成竖排的一个字。 */
+/* 菜单项的两条约束合成一条规则，不拆成两个同选择器的块——同选择器重复出现
+   本身就要靠「写在后面」决胜，后加的那条若漏了前面某条属性就是静默失效。
+   ① 逐字断行靠 `white-space: nowrap` 从根上关掉：菜单项都很短，宁可横向滚动
+      也不要把它读成竖排的一个字。
+   ② 变成「图标 + 文字」两段。EP 的 `.el-dropdown-menu__item` 本身没有
+      display:flex，图标会直接贴在文字前、中间没有缝。 */
 .diagnosis-more-popper .el-dropdown-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   white-space: nowrap;
   overflow-x: auto;
+}
+
+.diagnosis-more-popper .diagnosis-menu__icon {
+  flex: none;
+  color: var(--muted);
+}
+
+/* hover 时图标跟着文字一起提亮，而不是留一个灰点——图标与文字是同一件事的
+   两半，分成两种颜色读起来像两个控件。EP 的 hover 底色在补上 dropdown 样式
+   之后才存在（见 main.js 那条 import 的注释）。 */
+.diagnosis-more-popper .el-dropdown-menu__item:hover .diagnosis-menu__icon,
+.diagnosis-more-popper .el-dropdown-menu__item:focus .diagnosis-menu__icon {
+  color: var(--text);
 }

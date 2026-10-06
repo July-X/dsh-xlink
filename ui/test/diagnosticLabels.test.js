@@ -332,6 +332,79 @@ test('概览控制塔不重复正下方「当前内核」卡已经说过的话',
   assert.match(css, /\.diag-row__label \{[^}]*text-overflow: ellipsis/);
 });
 
+// 控制塔的三张卡压紧到 ~252px（用户 2026-10-06：概览页纵向空间被这三块占掉太多）。
+// 判据不写死具体数值——写死就变成「调间距时顺手改测试」的借口；这里只钉**结构**：
+// ① 三张卡都带 --tower；② 覆盖确实比基线紧；③ 行用 padding-block 而不是 padding。
+test('控制塔的紧凑化只落在 --tower 上，且行覆盖必须用 padding-block', () => {
+  const tower = readSrc('diagnostics/ControlTower.vue');
+  const css = readSrc('diagnostics/diagnostics.css');
+
+  // ① 三张卡都要挂上，否则漏挂的那张按基线渲染，三块高度参差不齐。
+  //    正则必须锚到类名结束：`diag-card__title` / `__aside` 前缀相同，用宽匹配
+  //    会把它们一起数进来（第一版就数出 8 个）。
+  const cards = tower.match(/class="diag-card( diag-card--tower)?"/g) || [];
+  assert.equal(cards.length, 3, '控制塔仍是三张卡');
+  for (const card of cards) {
+    assert.match(card, /diag-card--tower/, `${card} 必须带 diag-card--tower`);
+  }
+
+  // ② 覆盖必须比基线小，否则「紧凑化」只剩一个类名。
+  const base = css.match(/\.diag-card \{([^}]*)\}/);
+  const tight = css.match(/\.diag-card\.diag-card--tower \{([^}]*)\}/);
+  assert.ok(tight, '必须能找到 .diag-card.diag-card--tower 覆盖规则');
+  // 单位可选：`margin-bottom: 0` 合法地不带 px，要求 `\\d+px` 会解析成 NaN，
+  // 报错变成「NaN !== 0」——读起来像值算错了，其实是正则没匹配上。
+  const px = (body, key) => Number((body.match(new RegExp(`${key}:\\s*(\\d+)(?:px)?`)) || [])[1]);
+  assert.ok(
+    px(tight[1], 'padding') < px(base[1], 'padding'),
+    `控制塔卡片 padding 应小于基线 ${px(base[1], 'padding')}px`
+  );
+  // 必须**恰好是 0**，不是「小于基线」。小于基线会放过 6px——而 `.panel` 的 gap
+  // 就是 6px，flex 不折叠的 margin 会直接叠上去，实测那一列就变成 12/12/12/6
+  // 的不齐（2026-10-06 用户指出）。缝只由容器 gap 提供。
+  assert.equal(
+    px(tight[1], 'margin-bottom'),
+    0,
+    '控制塔卡片的下外边距必须是 0：间距由 .panel 的 gap 统一提供'
+  );
+  // 声明本身也必须在：作用域选择器只在**它自己声明过的属性上**赢过基线，
+  // 把这条声明删掉等于让 `.diag-card` 的 `margin-bottom: 10px` 原样回来。
+  assert.match(
+    tight[1],
+    /margin-bottom:\s*0(px)?\s*;/,
+    '必须显式写 margin-bottom: 0，删掉声明会让基线的 10px 回来'
+  );
+
+  // ③ **这一条是静默失效的守卫**：列分隔靠
+  //    `.diag-rows--grid .diag-row:nth-child(2n) { padding-left: 14px }`，
+  //    与 `.diag-card--tower .diag-row` 同为 (0,2,0)。把 `padding-block` 写成
+  //    简写 `padding` 就会把 14px 一起清成 0，两列读数贴在一起——不报错、
+  //    typecheck 与 build 全绿，只有看图才发现。
+  const rowOverride = css.match(/\.diag-card--tower \.diag-row \{([^}]*)\}/);
+  assert.ok(rowOverride, '必须能找到 .diag-card--tower .diag-row 覆盖规则');
+  assert.match(
+    rowOverride[1],
+    /padding-block:\s*\d+px/,
+    '行覆盖必须用 padding-block（简写 padding 会清掉列分隔的 padding-left）'
+  );
+  assert.doesNotMatch(
+    rowOverride[1],
+    /(^|[^-])padding:\s*\d/,
+    '行覆盖里不许出现 padding 简写'
+  );
+  // 列分隔本身也得还在。
+  assert.match(css, /\.diag-rows--grid \.diag-row:nth-child\(even\)[^}]*padding-left:\s*14px/);
+
+  // 基线本身不许被顺手改小：.diag-card / .diag-row 还被 5 个诊断页共用，
+  // 那些是独立窗口、内容量大、用户会逐条读。
+  assert.ok(px(base[1], 'padding') >= 10, '基线卡片 padding 不该跟着控制塔一起收');
+  const baseRow = css.match(/\.diag-row \{([^}]*)\}/);
+  assert.ok(
+    px(baseRow[1], 'padding') >= 8,
+    '基线行 padding 不该跟着控制塔一起收（诊断页仍在用）'
+  );
+});
+
 test('P1-05 最近操作按 kind 分派，四种都不落到启动时间线', async () => {
   const src = readSrc('diagnostics/diagnostics.js');
   // 分派表是契约：四类里前三类各有各的视图，plugin-precheck 走插件视图。

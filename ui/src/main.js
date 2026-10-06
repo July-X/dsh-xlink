@@ -40,6 +40,16 @@ import 'element-plus/es/components/alert/style/css.mjs';
 import 'element-plus/es/components/button/style/css.mjs';
 import 'element-plus/es/components/checkbox/style/css.mjs';
 import 'element-plus/es/components/dialog/style/css.mjs';
+// dropdown：**上面第 15 行 import 了这个组件，却漏了它的样式**，于是
+// `el-dropdown.css` 从没进过产物。`.el-dropdown-menu` 与
+// `.el-dropdown-menu__item` 的基础样式（padding、hover 底色、文字色、
+// transition）全部缺失：菜单还能弹出来——组件 JS 在——但它是一条**没有任何
+// 交互反馈的裸文字列表**，这正是「菜单太简陋、没有 hover」的全部原因。
+// 它也不会以任何形式报错：dev server、typecheck、build 全绿，只有看界面才发现。
+// 没有任何别处的 style/css.mjs 会传递地拉进它（tooltip / select / popconfirm
+// 各自只 import base + popper），所以必须显式写这一行。
+// 由 `ui/test/epStyles.test.js` 钉住：任何新 import 的 EP 组件都必须配一条 style。
+import 'element-plus/es/components/dropdown/style/css.mjs';
 import 'element-plus/es/components/empty/style/css.mjs';
 import 'element-plus/es/components/form/style/css.mjs';
 import 'element-plus/es/components/form-item/style/css.mjs';
