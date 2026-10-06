@@ -173,7 +173,13 @@ function onRefresh() {
         <template #dropdown>
           <el-dropdown-menu>
             <el-dropdown-item v-for="item in moreItems" :key="item.key" :command="item.key">
-              {{ item.label }}
+              <!-- 图标在文字**左边**，且是 flex 的固定项：菜单里三项有两项是复制，
+                   只靠文字区分时「复制运行记录编号」与「复制本次诊断摘要」只差最后
+                   三个字，扫读极易点错。`size` 走组件属性而不是 CSS font-size。 -->
+              <el-icon v-if="item.icon" class="diagnosis-menu__icon" :size="14">
+                <component :is="item.icon" />
+              </el-icon>
+              <span>{{ item.label }}</span>
             </el-dropdown-item>
           </el-dropdown-menu>
         </template>

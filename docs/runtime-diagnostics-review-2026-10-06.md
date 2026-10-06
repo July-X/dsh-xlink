@@ -252,6 +252,30 @@
 
 ## 4. 需要补齐的 P2 项
 
+### P1-08 “更多”弹层缺整套 Element Plus 样式：没有 padding、没有 hover（已修）
+
+发现于同日人工验收：用户报「菜单太简陋、没有 hover 效果」。
+
+当前证据：
+
+- `ui/src/main.js:15` import 了 `element-plus/es/components/dropdown/index.mjs`（菜单能弹出来），但样式导入清单里**没有** `dropdown/style/css.mjs`。
+- 编译产物里 `el-dropdown` 只出现 1 次——就是本仓自己的 `.diagnosis-more-popper` 覆写；EP 的 `.el-dropdown-menu` / `.el-dropdown-menu__item` 基础规则（padding、hover 底色、文字色、transition）**一条都没进产物**。
+- 没有任何别处的 `style/css.mjs` 会传递地拉进它：tooltip / select / popconfirm 各自只 import `base` + `popper`。「反正别的组件会带上」这个想当然在这里恰好是错的。
+
+修改意见（已在本轮全部落地）：
+
+1. 补 `import 'element-plus/es/components/dropdown/style/css.mjs';`。
+2. 菜单项改成「图标 + 文字」两段，复制类统一用 `CopyDocument`（与 `IncidentModal` 的「复制证据」同一枚），并给图标 `flex: none`——三项文字长度不同，图标若参与伸缩，三项的图标与文字间距会各不相同。
+3. 新增 `ui/test/epStyles.test.js`：凡是 `main.js` 里 import 的 EP 组件都必须配同目录的 style 导入，唯一豁免是 `config-provider`（它 theme-chalk 里是 0 字节，只做 provide）。
+
+为什么这一条值得单独钉：它的症状是「界面不对」，而 dev server、typecheck、`vite build`、全部单测**都绿**，没有任何一处会报错。同理，hover 底色最终取到 `--el-color-primary-light-9`，它在产物里同时有 EP 浅色默认的 `#ecf5ff`（近白）与 `html.dark` 的 `#1b2540`；靠的是 `html.dark`(0,1,1) 压过 `:root`(0,1,0)，一旦失效就是暗底上闪一块近白——也一并钉进测试。
+
+验收条件：
+
+- `npm run build:ui` 后产物里能搜到 `.el-dropdown-menu__item:not(.is-disabled):hover`。
+- 480×800 真机上打开「更多」，三项有 padding、悬停有底色变化、图标与文字左缘对齐。
+- 删掉 `main.js` 那条 style 导入，`ui/test/epStyles.test.js` 必须变红。
+
 ### P2-01 通道信封中的 runId 没有传到前端事件流
 
 后端 src-tauri/src/diagnostics/run.rs:488-494 已经把 runId 放进通道信封，但：

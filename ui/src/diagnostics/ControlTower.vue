@@ -204,7 +204,7 @@ function openDiagnosis() {
 </script>
 
 <template>
-  <div v-if="attention.length" class="diag-card">
+  <div v-if="attention.length" class="diag-card diag-card--tower">
     <h3 class="diag-card__title">
       <span>需要关注</span>
       <span class="diag-card__aside">{{ attention.length }} 项</span>
@@ -227,7 +227,7 @@ function openDiagnosis() {
     </div>
   </div>
 
-  <div class="diag-card">
+  <div class="diag-card diag-card--tower">
     <h3 class="diag-card__title"><span>系统健康</span></h3>
     <div class="diag-rows diag-rows--grid">
       <button
@@ -249,7 +249,7 @@ function openDiagnosis() {
     </div>
   </div>
 
-  <div class="diag-card">
+  <div class="diag-card diag-card--tower">
     <h3 class="diag-card__title">
       <span>最近操作</span>
       <span class="diag-card__aside">启动 / 预检 / 恢复 / 排查</span>

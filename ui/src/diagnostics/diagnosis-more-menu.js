@@ -10,28 +10,39 @@
 // 后加一项菜单要重新读一遍外壳的路由代码才能确认没写错层。
 import { computed } from 'vue';
 import { ElMessage } from 'element-plus';
+// 菜单项图标。**用 Element Plus 这一套而不是新引 Lucide**：EP 在这几个语义上
+// 都有可读性够的造型，而且本仓已经用同一枚 `CopyDocument` 表示「复制」
+// （IncidentModal 的「复制证据」），同一语义不许出现两种长相——要换得全仓一起换。
+// 缩到 14px 后 CopyDocument 仍是两张可辨的叠纸，不是实心色块。
+import { CopyDocument, Document, Link, Refresh } from '@element-plus/icons-vue';
 import { diagnosticStore } from './diagnostics.js';
 import { openEvidence } from './diagnostic-actions.js';
 import { kindLabel, causeLabel } from './diagnostic-labels.js';
 
-/** 当前页面的菜单项。内核页额外给「刷新状态」，插件页额外给「来源」。 */
+/**
+ * 当前页面的菜单项。内核页额外给「刷新状态」，插件页额外给「来源」。
+ *
+ * 每项都带 `icon`：三项里**两项是复制**，一项是查看日志——全靠文字区分时，
+ * 「复制运行记录编号」和「复制本次诊断摘要」只差最后三个字，扫读时容易点错，
+ * 而点错的代价是剪贴板里多一段没用的文本（用户不会立刻发现，得等到粘贴时）。
+ */
 export const moreItems = computed(() => {
   const runId = diagnosticStore.active?.runId || diagnosticStore.currentRun?.id;
-  const items = [{ key: 'logs', label: '查看完整日志' }];
+  const items = [{ key: 'logs', label: '查看完整日志', icon: Document }];
   if (runId) {
-    items.push({ key: 'copy-id', label: '复制运行记录编号' });
-    items.push({ key: 'copy-summary', label: '复制本次诊断摘要' });
+    items.push({ key: 'copy-id', label: '复制运行记录编号', icon: CopyDocument });
+    items.push({ key: 'copy-summary', label: '复制本次诊断摘要', icon: CopyDocument });
   }
   // 插件页额外给「来源」：低频，但正是用户贴求助帖时最缺的一段。
   const report = diagnosticStore.active?.spec?.report;
   if (diagnosticStore.active?.kind === 'plugin' && report) {
-    items.push({ key: 'copy-source', label: '查看插件来源' });
+    items.push({ key: 'copy-source', label: '查看插件来源', icon: Link });
   }
   // 内核页给「刷新状态」。菜单与页面主操作是**同一个动作**（都走
   // `onRefresh`），不是两份实现——设计 §2.5.3 明确要求主操作复用同一个
   // 动作函数和 loading key。
   if (diagnosticStore.active?.kind === 'kernel') {
-    items.unshift({ key: 'refresh', label: '刷新状态' });
+    items.unshift({ key: 'refresh', label: '刷新状态', icon: Refresh });
   }
   return items;
 });
