@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { basename, extname, resolve } from 'node:path';
 import test from 'node:test';
+import { SRC, allRules, classesOf, effectiveDeclaration } from './lib/css-cascade.mjs';
 
 // 功能块之间的默认间距 = 6px，由**容器**统一提供，块自己不再带 margin-bottom。
 // 这是 2026-10-06 用户拍板的默认约定（见 ui/AGENTS.md §间距），所有新 UI 按它写。
@@ -13,8 +14,6 @@ import test from 'node:test';
 // 按数值写的断言会被「顺手改成 6px」过掉，而 6px 恰恰是错的答案：它分不清
 // 「归零」和「又叠了一层」。所以这里算的是**最终生效值**。
 
-const SRC = resolve('ui/src');
-
 /** Vue 内建包装：大写，但不是本仓组件，根元素类要从它自己身上找。 */
 const BUILTIN_WRAPPERS = new Set([
   'Transition',
@@ -23,94 +22,6 @@ const BUILTIN_WRAPPERS = new Set([
   'Teleport',
   'Suspense',
 ]);
-
-/** @ui/src 下所有 `.css`，递归。 */
-function cssFiles(dir = SRC, out = []) {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const p = resolve(dir, entry.name);
-    if (entry.isDirectory()) cssFiles(p, out);
-    else if (extname(entry.name) === '.css') out.push(p);
-  }
-  return out;
-}
-
-/**
- * 把一段 CSS 拆成 `{selector, body}` 列表。**必须按花括号配对**，不能用
- * `/([^{}]+)\{([^}]*)\}/g`：那种写法遇到 `@media { .a { … } }` 会把内层规则
- * 整条吞掉（选择器截到 `@media (…)`，body 截到内层的第一个 `}`），于是
- * 媒体查询里的 margin-bottom 全部查不到。
- */
-function ruleBlocks(css) {
-  const out = [];
-  let i = 0;
-  while (i < css.length) {
-    const open = css.indexOf('{', i);
-    if (open < 0) break;
-    const prelude = css.slice(i, open).trim();
-    let depth = 1;
-    let j = open + 1;
-    while (j < css.length && depth > 0) {
-      if (css[j] === '{') depth++;
-      else if (css[j] === '}') depth--;
-      j++;
-    }
-    const inner = css.slice(open + 1, j - 1);
-    // 条件 at-rule（@media / @supports / @container / @layer）里仍是规则；
-    // @keyframes / @font-face 的内层是声明块，不是选择器，不能当规则收。
-    if (prelude.startsWith('@')) {
-      if (/^@(media|supports|container|layer)\b/.test(prelude)) out.push(...ruleBlocks(inner));
-    } else {
-      out.push({ selector: prelude, body: inner });
-    }
-    i = j;
-  }
-  return out;
-}
-
-/** CSS 特异度 (a,b,c)，够用即可。 */
-function specificity(selector) {
-  const s = selector.replace(/\([^)]*\)/g, '');
-  const ids = (s.match(/#[\w-]+/g) || []).length;
-  const classes = (s.match(/\.[\w-]+|\[[^\]]*\]|:[a-z-]+/gi) || []).length;
-  const elements = (s.match(/(^|[\s>+~,])\s*[a-z][\w-]*/gi) || []).length;
-  return ids * 10000 + classes * 100 + elements;
-}
-
-/** 选择器的**主语部分**（最后一个简单选择器）里的类——后代里的类不算元素自身。 */
-function subjectClasses(selector) {
-  const out = new Set();
-  for (const part of selector.split(',')) {
-    const subject = part.trim().split(/\s+/).pop();
-    if (!subject || /^[:[]/.test(subject)) continue;
-    for (const m of subject.matchAll(/\.([A-Za-z][\w-]*)/g)) out.add(m[1]);
-  }
-  return out;
-}
-
-/** 该类集合构成的元素，最终生效的 `margin-bottom`（没有则为 null）。 */
-function effectiveMarginBottom(classSet, rules) {
-  let best = null;
-  for (const rule of rules) {
-    const value = (rule.body.match(/(?<!-)margin-bottom:\s*([^;}]+)/) || [])[1];
-    if (value === undefined) continue;
-    const classes = subjectClasses(rule.selector);
-    if (classes.size === 0) continue;
-    // 主语里的类必须**全部**在这组元素身上，否则这条规则不适用。
-    if (![...classes].every((c) => classSet.has(c))) continue;
-    const spec = specificity(rule.selector);
-    if (!best || spec > best.spec) best = { spec, value: value.trim() };
-  }
-  return best && best.value;
-}
-
-/** 从 `class="a b c"` 里取出类名数组。 */
-function classesOf(attrs) {
-  const raw = (attrs.match(/class="([^"]*)"/) || [])[1] || '';
-  // 用 `m[0]` 而不是解构 `[, cls]`：这里没有捕获组，matchAll 产出长度 1 的
-  // 数组，`[, cls]` 拿到的是 undefined。收上来是一组 `undefined`，Set 仍
-  // 非空，判据照样显示「识别出 1 个子元素」，报错离真正的原因十万八千里。
-  return [...raw.matchAll(/[\w-]+/g)].map((m) => m[0]);
-}
 
 /** 每个 `.vue` 的**根元素**类名，按组件名索引。多根组件的每个根都会收进来。 */
 function rootClassesByComponent(dir = SRC, out = new Map()) {
@@ -187,20 +98,14 @@ test('.panel 的 gap 是 6px（功能块默认间距的落点）', () => {
 });
 
 test('.panel 的任何一个直接子元素都不自带 margin-bottom（按层叠后的生效值判）', () => {
-  const rules = [];
-  for (const file of cssFiles()) {
-    for (const rule of ruleBlocks(readFileSync(file, 'utf8'))) {
-      rules.push({ ...rule, file });
-    }
-  }
-
+  const rules = allRules();
   const children = panelChildren();
   // 四个面板加起来至少 6 种不同的类组合（概览 2 + 插件 2 + 技能 1 + 设置 2）。
   assert.ok(children.size >= 6, `应至少识别出 6 个 .panel 子元素组合，实际 ${children.size}`);
 
   const offenders = [];
   for (const [key, { where, set }] of children) {
-    const value = effectiveMarginBottom(set, rules);
+    const value = effectiveDeclaration(set, rules, 'margin-bottom');
     if (value && !/^(0|none)$/.test(value)) offenders.push(`  [${key}] → margin-bottom: ${value}  (${where})`);
   }
   assert.equal(
