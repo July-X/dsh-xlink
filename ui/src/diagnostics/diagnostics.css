@@ -349,8 +349,12 @@
  * 139.95）来自不同的测量条件，**不要再引用**。
  *
  * 每张卡的固定成本是「标题区」32.55px（标题行 17.55 + 分割线上方 6 + 线 1 +
- * 线到内容 8）。**它这一轮刻意没动**：再收 2px/张就得改 `ui/AGENTS.md` 里
- * 「标题线的 padding-bottom 是 6px」那条规范，为 4px 动一条规范不划算。
+ * 线到内容 8）。**2026-10-07 第二轮把后两项收了一档**：卡内边距纵向 6 → 4、
+ * 线到内容 8 → 6，标题区降到 28.55px（`padding: 4px 6px` 是纵向 4 / 横向 6——
+ * 这一轮只压**高度**，横向那 6px 是卡片内文的左右留白，跟着收会让读数贴到描边）。
+ * 剩下那一项（「标题到线」的 6px）**刻意没动**：`ui/AGENTS.md §卡片` 把它定成
+ * 全前端统一的一条，概览页与四个面板的卡共用同一份值，给控制塔单开一个 4px 会
+ * 让同一屏里上下相邻的卡给出两种分割线间距。
  *
  * **关于 `margin-bottom: 0`（必需，且不能只删掉）**：ControlTower 是**三个根
  * 节点**的多根组件，Vue 会把它们提升成 `<section class="panel">` 的直接子
@@ -403,9 +407,9 @@
  *     与磁盘一致，不一致就换端口重起（`npx vite --port 5199 --strictPort`），
  *     不要去猜「是不是 HMR 没生效」。
  */
-.diag-card.diag-card--tower { padding: 6px; margin-bottom: 0; }
+.diag-card.diag-card--tower { padding: 4px 6px; margin-bottom: 0; }
 
-.diag-card--tower .diag-card__title { padding-bottom: 6px; border-bottom: 1px solid var(--border); line-height: 1.35; }
+.diag-card--tower .diag-card__title { padding-bottom: 6px; margin-bottom: 6px; border-bottom: 1px solid var(--border); line-height: 1.35; }
 
 .diag-card--tower .diag-row { padding-block: 4px; line-height: 1.35; }
 
@@ -423,15 +427,17 @@
  *     地方的反而是那张**没有内容**的。
  *   二轮 12 → 8 且行高 1.8 → 1.5：留白已经不成比例了，剩下的收益全在
  *     `line-height`——一行字用 1.8 的行距只影响自己的盒高。8 + 19.5 + 8 = 35.5。
+ *   三轮 8 → 6：跟整卡一起降档。6 + 19.5 + 6 = 31.5，对上数据行的 25.55 仍
+ *     高出一截。
  *
- * 现在的配比：空态 35.5px vs 数据行 25.55px，仍高出一截才对——它是一句说明而
+ * 现在的配比：空态 31.5px vs 数据行 25.55px，仍高出一截才对——它是一句说明而
  * 不是可点行，挤到和数据行一样密会读成「这里有一条记录，只是读数是空的」。
  *
  * 用 `padding-block` 而不是 `padding`：横向那 8px 保留（居中文案左右要有
  * 呼吸），同时避免将来 `.diag-empty` 若长出带 `padding-left` 的修饰规则时被
  * 一起清掉。
  */
-.diag-card--tower .diag-empty { padding-block: 8px; line-height: 1.5; }
+.diag-card--tower .diag-empty { padding-block: 6px; line-height: 1.5; }
 
 /* 底部操作栏。**不固定在视口底部**——它跟着内容流走，480×800 下固定会
  * 压掉最后一张卡；内容不足时它自然就在末尾。 */
