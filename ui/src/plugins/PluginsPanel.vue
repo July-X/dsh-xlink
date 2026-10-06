@@ -417,7 +417,11 @@ function instanceChipType(row, instanceId) {
               @keyup.enter="installPlugin('')"
             >
               <template #suffix>
-                <span class="muted" title="按 Enter 开始安装">↵</span>
+                <span
+                  class="muted"
+                  :title="precheckOn ? '按 Enter 先做预检，确认后才会装上' : '按 Enter 开始安装'"
+                  >↵</span
+                >
               </template>
             </el-input>
           </div>
@@ -533,10 +537,11 @@ function instanceChipType(row, instanceId) {
                   </el-tooltip>
                   <el-button v-if="isInstalled(item, keys)" size="small" disabled>已安装</el-button>
                   <template v-else>
-                    <!-- 预检开启时，「安装」本身就带预检：点了会先在沙盒里
-                         起一次临时内核验证，通过才真正装上。旁边再给一枚
-                         独立的「仅预检」，供用户想在装之前先看一眼报告、
-                         又不想真的装进去时使用。 -->
+                    <!-- 预检开启时按**两阶段**走：先在沙盒里起一次临时内核
+                         验证（点了不装），用户在报告对话框里点「应用变更」
+                         才真的装上。因此预检开启时这枚按钮不能还叫「安装」——
+                         用户会以为点完就装好了。旁边那枚「预检」在预检关闭
+                         时才有意义：那时它是「不装只看一眼」的唯一入口。 -->
                     <el-button
                       v-if="!precheckOn"
                       size="small"
@@ -549,12 +554,12 @@ function instanceChipType(row, instanceId) {
                     </el-button>
                     <el-button
                       size="small"
-                      type="primary"
+                      :type="precheckOn ? 'default' : 'primary'"
                       :icon="Download"
                       :disabled="globalBusy"
                       @click="precheckOn ? precheckPlugin(item.spec) : installPlugin(item.spec)"
                     >
-                      安装
+                      {{ precheckOn ? '预检并安装' : '安装' }}
                     </el-button>
                   </template>
                 </span>

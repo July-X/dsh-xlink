@@ -8,5 +8,6 @@ pub(crate) mod catalog;
 pub(crate) mod center;
 pub(crate) mod patches;
 pub(crate) mod precheck;
+pub(crate) mod precheck_cmd;
 pub(crate) mod quarantine;
 pub(crate) mod sandbox;

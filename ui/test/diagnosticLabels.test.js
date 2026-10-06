@@ -375,3 +375,67 @@ test('P2-03 阶段计数按阶段集合算，不按事件条数', () => {
     assert.ok(labels.STAGE_SEQUENCES[kind]?.length, `${kind} 缺阶段序列`);
   }
 });
+
+// —— P1-03：两阶段契约（2026-10-06 用户拍板）—————————————————————
+//
+// 「预检通过」与「已经装上」是两件事。UI 上任何一处把它们混为一谈，用户就会
+// 在工作台里找半天为什么插件不在——所以这三条钉的是**文案与判据**，不是样式。
+
+test('P1-03 预检跑完不装；「应用变更」是唯一会改动真实实例的动作', () => {
+  const plugins = readSrc('plugins/plugins.js');
+  // 预检跑完的提示必须说清「还没装」——含糊的 done 文案是这套工具最容易犯的错。
+  // 只在 `precheckPlugin` 那段里查：预检关闭时走的 `installPlugin` 确实会装上，
+  // 它的「已安装」文案是对的。
+  const precheckFn = plugins.slice(plugins.indexOf('export function precheckPlugin'));
+  assert.match(precheckFn, /还没有装进当前实例/);
+  assert.ok(
+    !/done: '插件 ' \+ raw \+ ' 已安装/.test(precheckFn),
+    '预检的完成文案不得说「已安装」'
+  );
+  // 应用走的是独立命令，不是把预检再跑一遍。
+  assert.match(plugins, /cmd: 'plugin_precheck_apply'/);
+  // 后端那条命令存在且被授权。
+  const commands = readFileSync(resolve('src-tauri/src/plugins/precheck_cmd.rs'), 'utf8');
+  assert.match(commands, /pub async fn plugin_precheck_apply/);
+  // 注册在 generate_handler! 里，搬过模块也要在（曾经漏过一次 ACL）。
+  const lib = readFileSync(resolve('src-tauri/src/lib.rs'), 'utf8');
+  assert.match(lib, /plugins::precheck_cmd::plugin_precheck_apply/);
+  const acl = readFileSync(resolve('src-tauri/permissions/app-commands.json'), 'utf8');
+  assert.match(acl, /"plugin_precheck_apply"/, '新命令必须在 ACL 白名单里');
+});
+
+test('P1-03 只有预检通过且未安装时能应用，其余情况给出理由', () => {
+  const dialog = readSrc('plugins/PrecheckDialog.vue');
+  // 判据是 verdict === 'pass' && !installed，两条都要在。
+  assert.match(dialog, /report\.value\.verdict === 'pass' && !report\.value\.installed/);
+  // 禁用必须带理由：一个不说理由的灰按钮会让人以为界面坏了。
+  assert.match(dialog, /applyDisabledReason/);
+  assert.match(dialog, /预检没通过/);
+  assert.match(dialog, /预检没能完成/);
+  // 「没有改动当前实例」要单独占一行大字，不能只藏在 summary 里。
+  assert.match(dialog, /class="precheck-notinstalled"/);
+  assert.match(dialog, /没有改动<\/b>当前实例|这次预检<b>没有改动<\/b>/);
+});
+
+test('P1-03 后端两条 fail-open 路径都不再直接安装', () => {
+  const precheck = readFileSync(resolve('src-tauri/src/plugins/precheck.rs'), 'utf8');
+  // 沙盒建不起来 / 基线没起来：这两条路径此前是 fail-open（直接装上），
+  // 而「预检环境坏了」不构成装它的理由——那等于把「没验过」说成「验过没问题」。
+  assert.ok(
+    !/预检未能进行，插件已直接安装/.test(precheck),
+    '基线失败路径不得再直接安装'
+  );
+  assert.ok(
+    !/预检环境不可用，插件已直接安装/.test(precheck),
+    '沙盒失败路径不得再直接安装'
+  );
+  // 应用阶段照样重查守卫：置灰是给人看的，这条是给并发的。
+  const apply = precheck.slice(precheck.indexOf('pub fn plugin_apply'));
+  assert.match(apply, /instance_kernel_running\(/);
+  // 应用前打快照，且打不出来不阻断（它是兜底不是前提）。
+  assert.match(apply, /reason::PRE_CHANGE/);
+  assert.ok(
+    !/能否安装|Err\(AppError.*pre-change/.test(apply),
+    '快照失败不应变成硬失败'
+  );
+});

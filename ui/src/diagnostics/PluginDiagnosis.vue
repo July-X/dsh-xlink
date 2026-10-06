@@ -12,7 +12,9 @@
 //    「白屏前最后一次正常启动里也出现了」的唯一线索。
 // ③ **首屏不显示凭据、会话正文与环境变量。** 折叠区里也只给路径与摘要。
 import { computed, onMounted } from 'vue';
+import { isLoading } from '../shell/loading.js';
 import { openEvidence, restorePreChange } from './diagnostic-actions.js';
+import { applyPluginChange } from '../plugins/plugins.js';
 import { diagnosticStore, loadPluginRun } from './diagnostics.js';
 import { causeLabel, durationLabel, evidenceLabel, statusMeta } from './diagnostic-labels.js';
 import { INTEGRITY_META, SOURCE_LABELS } from './precheck-labels.js';
@@ -155,6 +157,20 @@ function openRestore() {
   return restorePreChange(preChangeSnapshotId.value);
 }
 
+// 「应用变更」是两阶段契约的第二阶段（2026-10-06 用户拍板）：预检只取证，
+// 装不装由用户在这里决定。判据是**预检通过且还没装上**——灰掉的那两种情况
+// 必须说清为什么，不能只留一个不动的按钮。
+const canApply = computed(() => report.value?.verdict === 'pass' && !report.value?.installed);
+const applyDisabledReason = computed(() => {
+  if (report.value?.installed) return '已经装到当前实例了。';
+  if (report.value?.verdict === 'fail') return '预检没通过，应用会把这个插件装进一个已确认起不来的实例。';
+  if (report.value?.verdict === 'inconclusive') return '预检没能完成，这次没有拿到「装上去能起来」的证据。';
+  return '这条记录里没有预检报告，无法判断能不能应用。';
+});
+function apply() {
+  return applyPluginChange(report.value?.pluginId || '', report.value?.verifiedAtMs || 0);
+}
+
 function reload() {
   return loadPluginRun(report.value?.runId, true);
 }
@@ -185,7 +201,12 @@ onMounted(() => {
     </p>
     <p v-if="report?.summary" class="diag-summary-text">{{ report.summary }}</p>
     <p v-if="report?.hint" class="diag-next">{{ report.hint }}</p>
-    <!-- inconclusive 必须说清「插件装上了但没验过」，否则用户会以为它被拦下了 -->
+    <!-- 「验证通过」与「已经装上」是两件事（两阶段契约）。反过来那半句同样要
+         说：没通过的插件**也可能已经装着**——那是从装上之后才打开的旧记录，
+         此时「应用变更」是禁用的，用户需要的是「卸载」而不是「应用」。 -->
+    <p v-if="report && !report.installed" class="diag-next">
+      当前实例<strong>还没有</strong>装上这个插件。下面的结论只说明「装上去能不能起来」。
+    </p>
     <p v-if="report?.installed && report?.verdict !== 'pass'" class="diag-error">
       这个插件已装到 {{ instanceText }}，但没有经过启动验证——上面的结论不适用于它。
     </p>
@@ -285,5 +306,17 @@ onMounted(() => {
     <el-button v-if="report?.installed" @click="openRestore">
       {{ canRestoreDirectly ? '恢复变更前状态' : '查看快照列表' }}
     </el-button>
+    <el-tooltip v-if="report && !report.installed" :content="canApply ? '' : applyDisabledReason" placement="top">
+      <span>
+        <el-button
+          type="primary"
+          :disabled="!canApply"
+          :loading="isLoading('pluginPrecheckApply')"
+          @click="apply"
+        >
+          应用变更
+        </el-button>
+      </span>
+    </el-tooltip>
   </div>
 </template>

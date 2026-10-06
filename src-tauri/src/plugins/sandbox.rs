@@ -154,6 +154,13 @@ pub struct PrecheckReport {
     /// 目标实例 id（预检实际装到的那一个）。
     #[serde(default)]
     pub target_instance: String,
+    /// 这次预检完成的时刻（epoch 毫秒）。
+    ///
+    /// 「应用变更」不重跑沙盒，而用户在报告上点确认可能已经是几分钟后——
+    /// 这个时刻要让界面拿得到，否则它只能写一句「没有重新验证」而说不出
+    /// 「沿用多久前的结论」。
+    #[serde(default)]
+    pub verified_at_ms: u64,
     /// 改接线**之前**那份快照的 id（`reason::PRE_CHANGE`）。
     ///
     /// 空串表示没打出来（打快照失败不阻断提交，见 `precheck::commit`），也
@@ -214,6 +221,7 @@ impl PrecheckReport {
             materialize: String::new(),
             affects_default_instance: false,
             target_instance: String::new(),
+            verified_at_ms: 0,
             pre_change_snapshot_id: String::new(),
         }
     }
