@@ -21,6 +21,8 @@ import {
   verificationView,
 } from './snapshots.js';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
+import { store } from '../store.js';
+import { openOperationDiagnosis } from './diagnostics.js';
 
 const diff = computed(() => snapshotStore.pendingDiff);
 const changes = computed(() => (diff.value && diff.value.changes) || []);
@@ -55,6 +57,12 @@ const partial = async () => {
   if (!id) return;
   await withLoading('snapshotPartialRestore', () => runRestore(id));
 };
+
+// 结果页才给入口。恢复的运行记录是从「实际动了哪些 + 自检是什么结论」这两
+// 件事推出来的，恢复还在跑的时候那些都还不存在——点开只会看到空时间线。
+function openRun() {
+  return openOperationDiagnosis('restore', store.activePanel);
+}
 </script>
 
 <template>
@@ -155,6 +163,7 @@ const partial = async () => {
 
     <template #footer>
       <el-button v-if="!diff" type="primary" @click="closeRestorePreview">知道了</el-button>
+      <el-button v-else-if="snapshotStore.lastOutcome" @click="openRun">查看恢复诊断</el-button>
       <template v-else>
         <el-button @click="closeRestorePreview" :disabled="globalBusy">取消</el-button>
         <el-button

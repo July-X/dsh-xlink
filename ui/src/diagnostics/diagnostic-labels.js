@@ -6,7 +6,7 @@
 // 的信息，正是他最想知道的。所以三张表都走「查不到 → 显式标未知」。
 import { tildePath } from '../shell/labels.js';
 
-/** 启动 / 预检阶段。顺序即时间线默认展示顺序。 */
+/** 启动 / 预检 / 恢复 / 排查的阶段。顺序即时间线默认展示顺序。 */
 export const STAGE_LABELS = {
   'resolve-instance': '解析实例',
   'detect-node': '检查 Node.js',
@@ -22,6 +22,16 @@ export const STAGE_LABELS = {
   'install-candidate': '安装候选插件',
   'probe-candidate': '启动沙盒并探测',
   report: '生成预检报告',
+  // 恢复（后端 `operation_run::restore_stage`）
+  prepare: '检查恢复条件',
+  apply: '写入回退点内容',
+  verify: '恢复后自检',
+  backup: '保存恢复前快照',
+  // 排查（后端 `operation_run::bisect_stage`）
+  select: '选定候选',
+  probe: '逐轮试探',
+  conclude: '收出结论',
+  abort: '中止排查',
 };
 
 /**
@@ -72,6 +82,50 @@ export const KIND_LABELS = {
   restore: '恢复诊断',
   bisect: '排查诊断',
 };
+
+/**
+ * 恢复 / 排查的卡片头部结论，按 kind 分开。
+ *
+ * **为什么不给这两种 kind 复用 `RUN_HEADLINE`**：那张表的每句话主语都是
+ * 「工作台」，而恢复做的是改配置、排查做的是缩小插件范围——套过去会写出
+ * 「工作台已启动」这种与操作毫无关系的结论。查不到就退回短标签，而不是
+ * 编一句。
+ *
+ * `bisect.success` 写「已收窄到最小可疑组合」而不是「已找到根因」：组合
+ * 效应会让二分停在一个不可修的答案上（设计 §11.1）。
+ */
+export const OPERATION_HEADLINE = {
+  restore: {
+    running: '正在恢复到所选回退点',
+    success: '已恢复到所选回退点',
+    warning: '已恢复，但有条目被跳过',
+    failure: '恢复没有完成',
+    inconclusive: '恢复已尝试，但证据不足以确认环境可用',
+    canceled: '已取消恢复',
+  },
+  bisect: {
+    running: '正在排查插件组合',
+    success: '已收窄到最小可疑组合',
+    warning: '排查收出了结论，但有轮次没能试成',
+    failure: '排查没能进行下去',
+    inconclusive: '证据不足，暂时无法判断',
+    canceled: '已取消排查',
+  },
+};
+
+/**
+ * 运行记录卡片头部的那一句结论。
+ *
+ * 四种 kind 各查各的表——这是**故意不合并**的：合并成一张就等于让「恢复
+ * 成功」复用「工作台已启动」的措辞，而那句话对恢复没有任何意义。
+ */
+export function headlineFor(run) {
+  const status = String(run?.status ?? '');
+  const kind = String(run?.kind ?? '');
+  const table = kind === 'startup' ? RUN_HEADLINE : OPERATION_HEADLINE[kind];
+  if (table && table[status]) return table[status];
+  return statusMeta(status).label;
+}
 
 /** 阶段中文名；未知阶段显式说明它是什么值，便于定位新版行为。 */
 export function stageLabel(stage) {

@@ -560,6 +560,31 @@ impl Recorder {
         }
     }
 
+    /// 接续一条**已落盘但还没收尾**的记录。
+    ///
+    /// 二分是多命令流程（`start` → `probe` ×N → `abort`），每条命令都是一次
+    /// 独立的调用，recorder 活不过命令边界。重新 [`Recorder::begin`] 一条会
+    /// 把一次排查拆成 N 条互不相干的记录——而「一次操作 = 一条记录」正是
+    /// 这套模型存在的理由：用户在时间线上要看到的是同一场排查的各轮试探，
+    /// 不是 N 场各自开头结尾都看不见的排查。
+    ///
+    /// `run.status` 若已不是 `running`（上一条命令已收尾过），这里照原样接
+    /// 续——调用方拿到的仍是那条已结束的记录，再推事件也只是往一个终态上
+    /// 追加，不比重新开一条更糟。
+    pub fn attach(family: &str, instance: &str, run: DiagnosticRun) -> Self {
+        let now = Instant::now();
+        Self {
+            family: family.to_string(),
+            instance: instance.to_string(),
+            run,
+            started: now,
+            last_at: now,
+            stage_started: std::collections::HashMap::new(),
+            pending: Vec::new(),
+            pinned: HashSet::new(),
+        }
+    }
+
     pub fn id(&self) -> &str {
         &self.run.id
     }

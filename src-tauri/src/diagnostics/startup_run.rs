@@ -170,6 +170,13 @@ pub(crate) fn load_incident(data_dir: &Path) -> Option<crate::diagnostics::guard
 /// **刻意要求 `incident.is_none()`**：带事故启动的实例不算"良好"——比如
 /// 看护停用了两个插件才起来的环境，把它记成 last-known-good，等于让恢复时
 /// 把"停用过的状态"当成用户原本的样子。
+///
+/// 八个参数是两组正交的东西：前三项是「往哪儿打」（通道 + 记录 + 报告），
+/// 后五项是「当前环境」，与 `snapshot::record` 的签名逐个对应。全仓调用它
+/// 的两处都把这五项原样传下去，抽成一个结构体只是让签名变好看，而
+/// `snapshot::record` / `restore` / `bisect` 那几条链仍然按五个散参传——
+/// 两套写法并存才是真的更难读。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn record_good_snapshot(
     send: &mut dyn FnMut(&str),
     recorder: &mut run::Recorder,

@@ -11,12 +11,18 @@
 import { computed, watch } from 'vue';
 import { ArrowLeft, MoreFilled, Refresh } from '@element-plus/icons-vue';
 import { store } from '../store.js';
-import { closeDiagnosis, diagnosticStore, loadStartupDiagnosis } from './diagnostics.js';
+import {
+  closeDiagnosis,
+  diagnosticStore,
+  loadOperationDiagnosis,
+  loadStartupDiagnosis,
+} from './diagnostics.js';
 import { moreItems, onMore } from './diagnosis-more-menu.js';
 import { kindLabel } from './diagnostic-labels.js';
 import StartupDiagnosis from './StartupDiagnosis.vue';
 import PluginDiagnosis from './PluginDiagnosis.vue';
 import KernelStatusDiagnosis from './KernelStatusDiagnosis.vue';
+import OperationDiagnosis from './OperationDiagnosis.vue';
 
 const emit = defineEmits(['back']);
 
@@ -25,21 +31,30 @@ const emit = defineEmits(['back']);
 // 只有「重新打开一次新的运行」才清（见 `openStartupDiagnosis`）。
 // kind 切换时按需拉取。`startup` 才需要拉——它的数据来自通道攒下的运行
 // 记录；插件与内核视图读的是 store 里已有的状态。
+//
+// `restore` / `bisect` 同样要拉：它们的记录是「做完之后回头看」的，入口又
+// 开在刚做完那件事旁边，进来时手上没有 id，得按 kind 去问最近一条。
+const NEEDS_FETCH = ['startup', 'restore', 'bisect'];
+/** 模板与 watch 共用同一份当前 kind——两份各读一次，早晚会在某次改动里
+ *  读到不同的值，而症状是「点了没反应」那种极难查的错。 */
+const kind = computed(() => diagnosticStore.active?.kind || '');
+
 watch(
   () => diagnosticStore.active?.kind,
-  (kind) => {
-    if (kind === 'startup' && !diagnosticStore.currentRun) {
-      loadStartupDiagnosis(diagnosticStore.active.runId);
-    }
+  (next) => {
+    if (!NEEDS_FETCH.includes(next) || diagnosticStore.currentRun) return;
+    if (next === 'startup') loadStartupDiagnosis(diagnosticStore.active.runId);
+    else loadOperationDiagnosis(diagnosticStore.active.runId, next);
   },
   { immediate: true }
 );
 
 const title = computed(() => {
-  const kind = diagnosticStore.active?.kind;
-  if (kind === 'startup') return kindLabel('startup');
-  if (kind === 'plugin') return kindLabel('plugin-precheck');
-  return kindLabel('kernel');
+  if (kind.value === 'plugin') return kindLabel('plugin-precheck');
+  if (kind.value === 'kernel') return kindLabel('kernel');
+  // 恢复与排查共用一个视图组件，但标题必须说清是哪一次操作——两者落在
+  // 同一层覆盖层里，不分标题的话用户返回时不知道自己从哪儿出来的。
+  return kindLabel(kind.value);
 });
 
 const subtitle = computed(() => {
@@ -50,7 +65,10 @@ const subtitle = computed(() => {
   return '';
 });
 
-const reload = computed(() => diagnosticStore.active?.kind === 'startup');
+// 恢复 / 排查的记录是在操作**做完之后**才成型的（恢复要等自检、排查要等
+// 结论），所以头部这个刷新按钮对它们同样有意义——排查跑完自动回来、或者
+// 用户从另一个窗口看着它跑完，都靠这一下。
+const reload = computed(() => NEEDS_FETCH.includes(diagnosticStore.active?.kind));
 
 function back() {
   const panel = closeDiagnosis();
@@ -61,9 +79,10 @@ function back() {
 }
 
 function onRefresh() {
-  if (diagnosticStore.active?.kind === 'startup') {
-    loadStartupDiagnosis(diagnosticStore.active.runId, true);
-  }
+  const kind = diagnosticStore.active?.kind;
+  // 两种 kind 各自按 id 拉：换「最近一条」会让用户在刷新里看到另一件事。
+  if (kind === 'startup') loadStartupDiagnosis(diagnosticStore.active.runId, true);
+  else if (reload.value) loadOperationDiagnosis(diagnosticStore.active.runId, kind, true);
 }
 
 </script>
@@ -118,6 +137,9 @@ function onRefresh() {
     <div class="diagnosis__body">
       <StartupDiagnosis v-if="diagnosticStore.active?.kind === 'startup'" />
       <PluginDiagnosis v-else-if="diagnosticStore.active?.kind === 'plugin'" />
+      <OperationDiagnosis
+        v-else-if="kind === 'restore' || kind === 'bisect'"
+      />
       <KernelStatusDiagnosis v-else />
     </div>
   </section>

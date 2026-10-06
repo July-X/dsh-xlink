@@ -9,25 +9,12 @@
 //! 的命令（`snapshot_list` / `snapshot_preview_restore` / `snapshot_restore`）
 //! 也留在了 `commands.rs` 之外——它们短、只做转发，拆出去反而多一层壳。
 use crate::commands::AppState;
+use crate::diagnostics::operation_run;
 use crate::plugins;
 use crate::shell::error::AppError;
 use crate::{diagnostics::bisect, shell::settings};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
-/// 二分的轮数上界估算（⌈log₂n⌉）。面板用它给"预计还要多久"一个量级，
-/// 而不是让用户对着一句"正在进行"干等。
-pub fn rounds_estimate(candidates: usize) -> usize {
-    if candidates <= 1 {
-        return 0;
-    }
-    let mut n = candidates;
-    let mut rounds = 0;
-    while n > 1 {
-        n = n.div_ceil(2);
-        rounds += 1;
-    }
-    rounds
-}
 /// 二分定位的只读视图（事故面板 / 概览页用）。
 #[tauri::command]
 pub async fn bisect_view(state: State<'_, AppState>) -> Result<bisect::BisectView, String> {
@@ -80,11 +67,27 @@ pub async fn bisect_start(
                 candidates.len()
             ));
         }
-        let view = bisect::begin(&family, &instance_id, candidates).map_err(err_string)?;
+        // 守卫全过了才开记录：被守卫拦下的发起根本没发生，留一条空记录只会
+        // 在「最近一次操作」里假装用户排查过一次。
+        let mut recorder =
+            operation_run::begin_bisect(&family, &instance_id, &settings.profile, &data_dir);
+        let view = match bisect::begin(
+            &family,
+            &instance_id,
+            candidates,
+            Some(recorder.id().to_string()),
+        ) {
+            Ok(view) => view,
+            Err(error) => {
+                operation_run::fail_bisect(&mut recorder, &error.to_string());
+                return Err(error.to_string());
+            }
+        };
+        operation_run::push_bisect_select(&mut recorder, &view);
         let _ = promise_send.send(format!(
             "开始排查：共 {} 个候选，按嫌疑度分 {} 轮左右",
             view.candidate_count,
-            rounds_estimate(view.candidate_count)
+            bisect::rounds_estimate(view.candidate_count)
         ));
         Ok(view)
     })
@@ -107,20 +110,43 @@ pub async fn bisect_probe(
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let settings = settings::load_for_shell(settings::current_mode());
         let (family, instance_id) = plugins::center::default_instance_key();
+        // 一次排查横跨 N 次调用，recorder 只能按会话里存的 id 接回来。接不上
+        // 就安静地不记这条——时间线少一轮试探，排查本身照常跑完。
+        let mut recorder = operation_run::attach_run(
+            &family,
+            &instance_id,
+            bisect::run_id(&family, &instance_id).as_deref(),
+        );
         // 没有下一轮就说明已经收尾，直接把当前视图交回去。
         let Some(trial) = bisect::next_trial(&family, &instance_id) else {
-            return Ok(bisect::view(&family, &instance_id));
+            let view = bisect::view(&family, &instance_id);
+            if let Some(recorder) = recorder.as_mut() {
+                operation_run::finish_bisect(recorder, &view);
+            }
+            return Ok(view);
         };
         let round = bisect::view(&family, &instance_id).rounds + 1;
+        let probe_label = trial.join("、");
+        let total =
+            bisect::rounds_estimate(bisect::view(&family, &instance_id).candidate_count) as u32;
         let _ = promise_send.send(format!(
-            "第 {round} 轮：只启用 {}（共 {} 个），观察能否启动 …",
-            trial.join("、"),
+            "第 {round} 轮：只启用 {probe_label}（共 {} 个），观察能否启动 …",
             trial.len()
         ));
         let node_info = crate::commands::cached_node(&state, &settings);
-        let (_, pnpm_exe) = crate::commands::promise_pnpm(&data_dir, &node_info, |msg| {
+        let (_, pnpm_exe) = match crate::commands::promise_pnpm(&data_dir, &node_info, |msg| {
             let _ = promise_send.send(msg.to_string());
-        })?;
+        }) {
+            Ok(pair) => pair,
+            Err(error) => {
+                // 沙盒起不来是环境问题，不是"这半边是好的"——不收尾的话这条
+                // 记录会永远停在 running，而排查其实已经做不下去了。
+                if let Some(recorder) = recorder.as_mut() {
+                    operation_run::fail_bisect(recorder, &error);
+                }
+                return Err(error);
+            }
+        };
         let mut progress = |msg: &str| {
             let _ = promise_send.send(msg.to_string());
         };
@@ -145,7 +171,28 @@ pub async fn bisect_probe(
             // 已排除，那比不做二分更糟。
             crate::plugins::sandbox::Verdict::Inconclusive => bisect::Outcome::Inconclusive,
         };
-        bisect::advance(&family, &instance_id, trial, outcome, result.evidence).map_err(err_string)
+        if let Some(recorder) = recorder.as_mut() {
+            // 这一轮**该不该记进时间线**按判据，不按"函数返回了"：Inconclusive
+            // 单独画出来，因为"没试成"和"这半边是好的"在排查里是两回事。
+            let (status, label) = operation_run::probe_verdict(result.verdict);
+            operation_run::push_bisect_round(
+                recorder,
+                round as u32,
+                total,
+                &probe_label,
+                status,
+                label,
+            );
+        }
+        let view = bisect::advance(&family, &instance_id, trial, outcome, result.evidence)
+            .map_err(err_string)?;
+        if let Some(recorder) = recorder.as_mut() {
+            // 收出结论的那一轮才收尾记录；还在跑就留着，下一轮接着推。
+            if view.conclusion.is_some() {
+                operation_run::finish_bisect(recorder, &view);
+            }
+        }
+        Ok(view)
     })
     .await
 }
@@ -155,12 +202,23 @@ pub async fn bisect_abort(state: State<'_, AppState>) -> Result<bisect::BisectVi
     let _ = state;
     let (family, instance_id) = plugins::center::default_instance_key();
     tauri::async_runtime::spawn_blocking(move || {
-        bisect::abort(
+        // 中止也要收尾记录：留着 running 的记录会让概览显示「排查进行中」，
+        // 而用户刚亲手把它停了。
+        let mut recorder = operation_run::attach_run(
+            &family,
+            &instance_id,
+            bisect::run_id(&family, &instance_id).as_deref(),
+        );
+        let view = bisect::abort(
             &family,
             &instance_id,
             "已手动停止排查。已排除的结果保留，重新发起会接着缩小范围。",
         )
-        .map_err(err_string)
+        .map_err(err_string)?;
+        if let Some(recorder) = recorder.as_mut() {
+            operation_run::finish_bisect(recorder, &view);
+        }
+        Ok(view)
     })
     .await
     .map_err(|e: tauri::Error| e.to_string())?

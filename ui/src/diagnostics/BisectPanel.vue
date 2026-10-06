@@ -20,7 +20,8 @@ import {
   stepClassName,
 } from './bisect.js';
 import { globalBusy, isLoading } from '../shell/loading.js';
-import { workbenchActiveNow } from '../store.js';
+import { store, workbenchActiveNow } from '../store.js';
+import { openOperationDiagnosis } from './diagnostics.js';
 
 const view = computed(() => bisectStore.view);
 const conclusion = computed(() => conclusionView(view.value && view.value.conclusion));
@@ -47,6 +48,17 @@ const startHint = computed(() => {
 
 function onStart() {
   return startBisect();
+}
+
+/**
+ * 打开这次排查的运行记录。
+ *
+ * 只在**有结论之后**给入口：排查跑的过程中时间线还少一半，这时候把它推给
+ * 用户，看到的是一条看不出所以然的半截记录。面板里那份实时视图继续负责
+ * 「进行中」，诊断层负责「回头复盘」。
+ */
+function openRun() {
+  return openOperationDiagnosis('bisect', store.activePanel);
 }
 
 onMounted(() => {
@@ -131,6 +143,10 @@ onMounted(() => {
           </li>
         </ol>
       </details>
+
+      <!-- 排查过程面板已经能复盘每一轮，所以这个入口只补一件事：把同一场
+           排查带进诊断层，和启动 / 预检的记录放在同一套口径下看。 -->
+      <el-button v-if="view.conclusion" size="small" @click="openRun">查看排查诊断</el-button>
     </template>
   </div>
 </template>

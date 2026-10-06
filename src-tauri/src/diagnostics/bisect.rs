@@ -114,6 +114,14 @@ pub struct BisectSession {
     /// 每一轮之前**排除**掉的成员，累加。面板据此显示"已排除 N 个"。
     #[serde(default)]
     pub cleared: Vec<String>,
+    /// 本次排查对应的运行记录 id（诊断时间线那边用）。
+    ///
+    /// **放在会话里而不是命令层的内存里**：二分是 `start` / `probe` ×N /
+    /// `abort` 一串独立命令，中间用户完全可以退出应用再回来接着排查。会话
+    /// 自己就跨命令存活，运行记录得跟着它一起活，否则恢复后推的事件会挂
+    /// 到一条新开的记录上，一次排查被切成两条互不相干的。
+    #[serde(default)]
+    pub run_id: Option<String>,
 }
 
 impl BisectSession {
@@ -182,6 +190,32 @@ fn save(family: &str, instance: &str, session: &BisectSession) -> Result<(), App
     shell::state::save(&session_file(family, instance), session, ctx())
 }
 
+/// 当前会话关联的运行记录 id。**走 `read_raw` 而不是 `load`**：`load` 会把
+/// 崩溃残留的会话就地改写成"已中断"，拿它当"还在进行"的判据会与写入侧
+/// 互相打架——写入侧刚 `begin` 的会话还没被谁改过，读一次就被判成结束了。
+pub fn run_id(family: &str, instance: &str) -> Option<String> {
+    read_raw(family, instance).run_id
+}
+
+/// 轮数上界估算（⌈log₂n⌉）。面板用它给"预计还要多久"一个量级，而不是让用户
+/// 对着一句"正在进行"干等；诊断时间线的首条事件也用它。
+///
+/// **原本住在 `bisect_cmd.rs`**，为了让命令层与诊断记录两边共用同一份算法
+/// 才挪到这里——同一件事有两个实现时，改一个忘另一个，界面上的"预计轮数"
+/// 就会和实际跑的轮数对不上。
+pub fn rounds_estimate(candidates: usize) -> usize {
+    if candidates <= 1 {
+        return 0;
+    }
+    let mut n = candidates;
+    let mut rounds = 0;
+    while n > 1 {
+        n = n.div_ceil(2);
+        rounds += 1;
+    }
+    rounds
+}
+
 /// 给面板的只读视图。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -224,6 +258,7 @@ pub fn begin(
     family: &str,
     instance: &str,
     mut candidates: Vec<String>,
+    run_id: Option<String>,
 ) -> Result<BisectView, AppError> {
     // 按嫌疑度降序已经在 `candidates` 里（由调用方按 `guard::attribute`
     // 的结论排好），但仍做一次去重：同一个插件 id 出现两次会让"试一半"算错。
@@ -248,6 +283,7 @@ pub fn begin(
         running: true,
         conclusion: None,
         cleared: Vec::new(),
+        run_id,
     };
     save(family, instance, &session)?;
     Ok(view(family, instance))
@@ -481,7 +517,7 @@ mod tests {
         let instance = "bisect-test";
         // 4 个候选，本轮试前 2 个且失败 → 后 2 个被排除。
         let candidates = vec!["a".into(), "b".into(), "c".into(), "d".into()];
-        begin(&family, instance, candidates).unwrap();
+        begin(&family, instance, candidates, None).unwrap();
         let trial = next_trial(&family, instance).unwrap();
         assert_eq!(trial, vec!["a".to_string(), "b".to_string()]);
 
@@ -510,6 +546,7 @@ mod tests {
             &family,
             instance,
             vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            None,
         )
         .unwrap();
         let trial = next_trial(&family, instance).unwrap();
@@ -530,6 +567,7 @@ mod tests {
             &family,
             instance,
             vec!["good".into(), "bad".into(), "other".into()],
+            None,
         )
         .unwrap();
         // 3 个候选的 `next_trial` 取前一半 = 1 个，不是 2 个。断言写清楚，
@@ -560,6 +598,7 @@ mod tests {
             &family,
             instance,
             ["a", "b", "c", "d"].map(String::from).to_vec(),
+            None,
         )
         .unwrap();
         // 4 个候选 → 本轮试前 2 个 [a,b] 且都失败 → 排除 [c,d]，剩 [a,b]
@@ -588,6 +627,7 @@ mod tests {
             &family,
             instance,
             vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            None,
         )
         .unwrap();
         let trial = next_trial(&family, instance).unwrap();
@@ -611,7 +651,7 @@ mod tests {
     #[test]
     fn refuses_too_few_candidates() {
         let (family, home, _guard) = seeded("too-few");
-        let err = begin(&family, "bisect-test", vec!["only".into()]).unwrap_err();
+        let err = begin(&family, "bisect-test", vec!["only".into()], None).unwrap_err();
         assert!(err.to_string().contains("逐个停用"));
         cleanup(&home);
     }
@@ -625,6 +665,7 @@ mod tests {
             &family,
             instance,
             vec!["a".into(), "a".into(), "b".into(), "c".into(), "".into()],
+            None,
         )
         .unwrap();
         assert_eq!(view.candidate_count, 3, "重复与空 id 必须被去掉");
@@ -640,6 +681,7 @@ mod tests {
             &family,
             instance,
             vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            None,
         )
         .unwrap();
         // 刚落盘时确实是 running=true。用 `read_raw` 而不是 `load` 断言——

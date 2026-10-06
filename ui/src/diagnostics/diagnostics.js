@@ -142,6 +142,21 @@ export function openKernelStatusDiagnosis(sourcePanel) {
 }
 
 /**
+ * 打开恢复 / 排查诊断。
+ *
+ * `runId` 留空时按 kind 取**最近一条**：恢复与排查都是「做完之后回头看」的
+ * 操作，入口本来就开在刚做完那件事旁边，那条最近记录就是它。
+ */
+export function openOperationDiagnosis(kind, sourcePanel, runId) {
+  diagnosticStore.active = { kind: kind || 'restore', runId: runId || '' };
+  diagnosticStore.sourcePanel = sourcePanel || '';
+  diagnosticStore.error = '';
+  diagnosticStore.currentRun = null;
+  clearLiveEvents();
+  return loadOperationDiagnosis(runId, kind).then(() => diagnosticStore.active);
+}
+
+/**
  * 返回上一个面板。
  *
  * **不清** currentRun / recentRuns：用户返回后再次打开要看的是同一条记录，
@@ -156,24 +171,33 @@ export function closeDiagnosis() {
 
 // —— 数据加载 ——
 
-/** 拉一条运行记录详情。手动触发（用户点刷新）才挂 loading key。 */
+/**
+ * 四条加载路径共用的取数逻辑。
+ *
+ * `latestKind` 只在**手上没有 id** 时用：问后端「最近一条这种 kind 的记录」。
+ * 查不到就是「还没有记录」，返回 null 而不是抛错——用户从没恢复过是很正常
+ * 的状态，那不该弹一条错误。
+ */
+async function fetchRunDetail(runId, latestKind) {
+  const id = runId || diagnosticStore.active?.runId;
+  if (!id) {
+    if (!latestKind) return null;
+    const latest = await invoke('diagnostic_run_latest', { kind: latestKind });
+    if (!latest) return null;
+    diagnosticStore.currentRun = await invoke('diagnostic_run_get', { runId: latest.id });
+    if (diagnosticStore.active) diagnosticStore.active.runId = latest.id;
+    return diagnosticStore.currentRun;
+  }
+  diagnosticStore.currentRun = await invoke('diagnostic_run_get', { runId: id });
+  return diagnosticStore.currentRun;
+}
+
+/** 拉一条启动运行记录详情。手动触发（用户点刷新）才挂 loading key。 */
 export function loadStartupDiagnosis(runId, manual = false) {
   const run = async () => {
     diagnosticStore.loading = true;
     try {
-      const id = runId || diagnosticStore.active?.runId;
-      if (!id) {
-        // 没有指定 id：取最近一次启动记录。拿不到就是「还没有记录」，
-        // 那是**正常**状态（用户从没启动过），不该弹错误。
-        const latest = await invoke('diagnostic_run_latest', { kind: 'startup' });
-        diagnosticStore.currentRun = latest
-          ? await invoke('diagnostic_run_get', { runId: latest.id })
-          : null;
-        if (latest) diagnosticStore.active.runId = latest.id;
-        return diagnosticStore.currentRun;
-      }
-      diagnosticStore.currentRun = await invoke('diagnostic_run_get', { runId: id });
-      return diagnosticStore.currentRun;
+      return await fetchRunDetail(runId, 'startup');
     } catch (e) {
       // 拉不到时**保留**上一次记录：不清空。清空会被读成「记录没了」。
       diagnosticStore.error = '读取启动诊断记录失败：' + String(e);
@@ -183,6 +207,29 @@ export function loadStartupDiagnosis(runId, manual = false) {
     }
   };
   return manual ? withLoading('startupDiagnosisReload', run) : run();
+}
+
+/**
+ * 拉一条恢复 / 排查运行记录详情。
+ *
+ * 与启动那条路径只差 kind、loading key 与空态文案——三点都做成参数而不是
+ * 复制一份函数：复制之后改一处忘一处，两个界面的空态就会漂，而漂掉的
+ * 恰恰是用户第一次看到的那句话。
+ */
+export function loadOperationDiagnosis(runId, kind, manual = false) {
+  const which = kind || diagnosticStore.active?.kind || 'restore';
+  const run = async () => {
+    diagnosticStore.loading = true;
+    try {
+      return await fetchRunDetail(runId, which);
+    } catch (e) {
+      diagnosticStore.error = '读取运行记录失败：' + String(e);
+      return null;
+    } finally {
+      diagnosticStore.loading = false;
+    }
+  };
+  return manual ? withLoading('operationDiagnosisReload', run) : run();
 }
 
 /** 拉最近运行记录列表（概览「最近一次操作」用）。 */
@@ -210,8 +257,7 @@ export function loadPluginRun(runId, manual = false) {
     if (!runId) return null;
     diagnosticStore.loading = true;
     try {
-      diagnosticStore.currentRun = await invoke('diagnostic_run_get', { runId });
-      return diagnosticStore.currentRun;
+      return await fetchRunDetail(runId, '');
     } catch (e) {
       diagnosticStore.error = '读取预检阶段记录失败：' + String(e);
       return null;
