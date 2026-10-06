@@ -151,8 +151,17 @@ function onRefresh() {
       </button>
       <!-- 更多菜单只收当前页面的**低频**动作（设计 §2.5.5）。会改变状态的
            操作（恢复、重启、删除）绝不藏在这里——它们必须以主操作或次要
-           操作明确呈现，藏在「更多」里等于让用户在不知情下改状态。 -->
-      <el-dropdown trigger="click" @command="(command) => onMore(command, onRefresh)">
+           操作明确呈现，藏在「更多」里等于让用户在不知情下改状态。
+           `teleported` 显式写出来而不是靠默认值：诊断层是 `position: fixed`
+           且 `overflow: hidden`，弹层留在里面会被裁掉，而裁掉的样子是
+           「菜单只剩最右边一条、还溢出窗口外」——比没有菜单更难懂。 -->
+      <el-dropdown
+        trigger="click"
+        teleported
+        placement="bottom-end"
+        popper-class="diagnosis-more-popper"
+        @command="(command) => onMore(command, onRefresh)"
+      >
         <button
           class="diagnosis__icon-btn"
           type="button"

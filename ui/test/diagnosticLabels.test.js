@@ -439,3 +439,25 @@ test('P1-03 后端两条 fail-open 路径都不再直接安装', () => {
     '快照失败不应变成硬失败'
   );
 });
+
+// —— 窄窗：诊断层浮层塌缩（2026-10-06 实机目视发现）——————————————————
+//
+// 症状是「显示不全」：右侧一条竖排的碎字，溢出到窗口外，把卡片右半边盖住。
+// 复现过：Element Plus 的 `.el-popper` 默认 `min-width: 10px` +
+// `overflow-wrap: break-word`，被挤到最小宽度时中文一个字一行。
+
+test('诊断层的「更多」弹层不会被挤成逐字竖排', () => {
+  const css = readSrc('diagnostics/diagnostics.css');
+  // 只给上限不够——它仍能塌到 EP 的 min-width:10px。
+  assert.match(css, /\.diagnosis-more-popper\s*\{[^}]*min-width:\s*148px/s);
+  // 只给下限也不够——菜单长时会顶出窗口。
+  assert.match(css, /max-width:\s*min\(320px, calc\(100vw - 24px\)\)/);
+  // 逐字断行要从根上关掉，否则宽度算错时菜单会读成竖排的一个字。
+  assert.match(css, /\.diagnosis-more-popper \.el-dropdown-menu__item\s*\{[^}]*white-space:\s*nowrap/s);
+
+  const shell = readSrc('diagnostics/DiagnosisShell.vue');
+  // 诊断层是 position:fixed + overflow:hidden，弹层必须 teleport 到 body。
+  assert.match(shell, /<el-dropdown[\s\S]{0,220}\bteleported\b/);
+  // 触发器贴着窗口右缘：默认 bottom-start 会向右展开而放不下，向左对齐才稳。
+  assert.match(shell, /placement="bottom-end"/);
+});

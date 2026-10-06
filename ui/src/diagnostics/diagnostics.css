@@ -333,3 +333,35 @@
 @media (prefers-reduced-motion: reduce) {
   .diagnosis__icon-btn { transition: none; }
 }
+
+/* --- 「更多」弹层 --------------------------------------------------------
+ *
+ * 2026-10-06：窄窗（约 480 宽）下「更多」菜单塌成一条竖排的碎字，还溢出到
+ * 窗口外——用户看到的是右侧一条只认得出单字的窄条。
+ *
+ * 根因是两条叠在一起：
+ *   ① Element Plus 的 `.el-popper` 默认 `min-width: 10px` + `overflow-wrap:
+ *      break-word`。被挤到最小宽度时，中文会被**一个字一行**地断掉——不是
+ *      溢出，是塌缩，而塌缩的菜单比宽菜单更容易被误认成「页面的一部分」。
+ *   ② 诊断层是 `position: fixed` + `overflow: hidden`。弹层一旦没被 teleport
+ *      到 body，就会被这一层的裁剪切掉，露出来的恰好是「最右边那条」。
+ *
+ * 所以这里给弹层一个**装得下菜单**的最小宽度、上限不超视口，并禁止逐字断行
+ * ——三样都要：只给上限，它仍能塌到 10px；只给下限，菜单长时又会顶出窗口。
+ *
+ * 第四样在 `DiagnosisShell.vue`：`placement="bottom-end"`。触发器贴着窗口右
+ * 缘，默认的 `bottom-start` 会让弹层**向右**展开（148px 宽的菜单在 480 宽的
+ * 窗口里放不下），改成对齐右缘向左展开就不存在这个问题——不依赖 Popper 的
+ * shift 兜底，那层兜底在 `overflow: hidden` 的祖先里并不总是生效。
+ */
+.diagnosis-more-popper {
+  min-width: 148px;
+  max-width: min(320px, calc(100vw - 24px));
+}
+
+/* 逐字断行在这里发生，靠 `white-space: nowrap` 从根上关掉。菜单项都很短，
+   宁可横向滚动也不要把它读成竖排的一个字。 */
+.diagnosis-more-popper .el-dropdown-menu__item {
+  white-space: nowrap;
+  overflow-x: auto;
+}
