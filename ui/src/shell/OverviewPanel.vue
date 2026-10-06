@@ -9,7 +9,11 @@
 // desktop-v<version>），标成「标签」比裸版本号贴切，也与「内核版本」页对得上。
 import { computed, onMounted, ref, watch, onUnmounted } from 'vue';
 import ControlTower from '../diagnostics/ControlTower.vue';
-import { loadRecentRuns, openKernelStatusDiagnosis } from '../diagnostics/diagnostics.js';
+import {
+  loadRecentRuns,
+  openKernelStatusDiagnosis,
+  openStartupDiagnosis,
+} from '../diagnostics/diagnostics.js';
 import {
   InfoFilled,
   Timer,
@@ -30,6 +34,7 @@ import {
   Connection,
   View,
   TrendCharts,
+  Tickets,
 } from '@element-plus/icons-vue';
 // 版本 tag 图标改用 Lucide：EP 的 PriceTag 是实心票券造型，在 11px 下糊成一团
 // 黑点，认不出是「标签」；Lucide 的 Tag 是 2px 描边的小挂牌，缩到这个尺寸仍读得
@@ -253,6 +258,11 @@ const guardTitle = computed(() => incidentBannerTitle(store.lastIncident));
 function openIncidentDetails() {
   showIncident(store.lastIncident, { force: true });
 }
+
+/** 从启动失败横幅进启动诊断（设计 §2.5.1 的三个入口之一）。 */
+function openStartupRun() {
+  openStartupDiagnosis(store.lastIncident?.runId || '', 'overview');
+}
 function goGuardDestination() {
   store.activePanel = guardDestination.value;
 }
@@ -425,6 +435,12 @@ function goVersions() {
           <div class="btn-row">
             <el-button size="small" type="warning" plain :icon="View" @click="openIncidentDetails">
               查看详情
+            </el-button>
+            <!-- 事故面板给的是「处置」——被停用了哪些插件、下一步做什么；
+                 启动诊断给的是「过程」——停在哪一步、每个阶段耗时多少。
+                 两者职责不同，不能用一个顶掉另一个（设计 §2.5.1 入口表）。 -->
+            <el-button size="small" text :icon="Tickets" @click="openStartupRun">
+              查看启动诊断
             </el-button>
             <el-button size="small" text :icon="Connection" @click="goGuardDestination">
               {{ guardDestinationLabel }}

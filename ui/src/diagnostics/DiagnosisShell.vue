@@ -9,9 +9,10 @@
 // 不被按钮压掉。返回是纯图标按钮，所以**必须带 aria-label**——它没有
 // 可见文字，靠形状猜不出是返回。
 import { computed, watch } from 'vue';
-import { ArrowLeft, Refresh } from '@element-plus/icons-vue';
+import { ArrowLeft, MoreFilled, Refresh } from '@element-plus/icons-vue';
 import { store } from '../store.js';
 import { closeDiagnosis, diagnosticStore, loadStartupDiagnosis } from './diagnostics.js';
+import { moreItems, onMore } from './diagnosis-more-menu.js';
 import { kindLabel } from './diagnostic-labels.js';
 import StartupDiagnosis from './StartupDiagnosis.vue';
 import PluginDiagnosis from './PluginDiagnosis.vue';
@@ -92,6 +93,26 @@ function onRefresh() {
       >
         <el-icon :size="16"><Refresh /></el-icon>
       </button>
+      <!-- 更多菜单只收当前页面的**低频**动作（设计 §2.5.5）。会改变状态的
+           操作（恢复、重启、删除）绝不藏在这里——它们必须以主操作或次要
+           操作明确呈现，藏在「更多」里等于让用户在不知情下改状态。 -->
+      <el-dropdown trigger="click" @command="(command) => onMore(command, onRefresh)">
+        <button
+          class="diagnosis__icon-btn"
+          type="button"
+          aria-label="更多操作"
+          title="更多操作"
+        >
+          <el-icon :size="16"><MoreFilled /></el-icon>
+        </button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item v-for="item in moreItems" :key="item.key" :command="item.key">
+              {{ item.label }}
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
     </header>
 
     <div class="diagnosis__body">

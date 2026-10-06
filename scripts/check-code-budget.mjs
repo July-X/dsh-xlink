@@ -422,7 +422,11 @@ const FILE_BUDGETS = {
   // 诊断层外壳：覆盖当前面板而非另开窗口（启动失败时用户正要回到日志 /
   // 换端口 / 回退快照，跨窗口拖拽是白费力气）。头部固定
   // [返回] 标题 [主操作]，标题单行省略以守住 480 宽。
-  'ui/src/diagnostics/DiagnosisShell.vue': 90,
+  'ui/src/diagnostics/DiagnosisShell.vue': 100,
+  // 诊断层头部的「更多」菜单项与复制逻辑（设计 §2.5.5）。独立成文件是因为
+  // 那边只管「头部结构 + 三个视图的路由」，这里是「每页各自有哪些低频动作」
+  // 的映射表；混在一起后加一项菜单要重读一遍路由代码才能确认没写错层。
+  'ui/src/diagnostics/diagnosis-more-menu.js': 95,
   // 启动与预检共用的阶段时间线。三条硬规则：按 seq 排（不按字符串）、
   // 默认只展开第一个失败阶段、状态不只靠颜色表达。
   'ui/src/diagnostics/RunTimeline.vue': 90,
@@ -1383,7 +1387,7 @@ const FILE_BUDGETS = {
 // 与 guard.rs 恰恰因为反棘轮被反向拆出了 startup_run.rs（两者都没有上调
 // 预算，而是各自回到基线以下）。总量是软上限，按设计文档要求的范围就该有
 // 这个量级。
-const TOTAL_BUDGET = 40100;
+const TOTAL_BUDGET = 40200;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
