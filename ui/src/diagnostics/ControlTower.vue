@@ -27,7 +27,6 @@ import { causeLabel, kindLabel, statusMeta } from './diagnostic-labels.js';
 const emit = defineEmits(['open-incident', 'go-panel']);
 
 const kernel = computed(() => store.view?.kernel || {});
-const running = computed(() => !!kernel.value.running);
 const node = computed(() => store.view?.node || {});
 const nodeOk = computed(() => !!node.value.ok);
 const incident = computed(() => store.view?.incident || null);
@@ -110,20 +109,24 @@ const latestSnapshotLabel = computed(() => {
 
 /** 系统健康：只给读数。 */
 /**
- * 系统健康：设计 §7.2 列的五行。
+ * 系统健康：四个**子系统的读数**。
  *
- * **`unavailable` 是刻意的一等状态**：某个数据源读失败时**不能**显示成
- * 「正常」——用户点进来看到一片正常会以为系统没事，而真相是这一项压根
- * 没读成功。读不到就明说读不到，同时把上一次的值标成「上次读到」。
+ * **为什么只剩四项**：内核版本、运行状态、Node.js 三行此前在这里各占一整行，
+ * 而它们在正下方「当前内核」卡里逐字重复一次（标题旁的版本徽标 + 「运行状态」
+ * 胶囊 + 「Node.js」行带完整路径与版本号），侧栏品牌区还有第三份状态胶囊。
+ * 同一句话说三遍不是冗余的排版，是把用户真正没读过的信息挤出屏幕。真正的
+ * 异常不该靠这些行来报——Node 不达标进「需要关注」（带跳转），内核没装进首屏
+ * callout，运行状态在「当前内核」卡。
+ *
+ * **`unavailable` 仍是一等状态**：某个数据源读失败时**不能**显示成「正常」——
+ * 用户点进来看到一片正常会以为系统没事，而真相是这一项压根没读成功。读不到
+ * 就明说读不到。
  */
 function cell(key, label, value, tone = '', action = null) {
   return { key, label, value, tone, action, unavailable: value === '读取失败' };
 }
 
 const health = computed(() => [
-  cell('kernel', '内核', kernel.value.active || '未安装', kernel.value.active ? '' : 'warn'),
-  cell('runtime', '运行时', running.value ? '运行中' : '已停止', running.value ? 'ok' : ''),
-  cell('node', 'Node.js', nodeOk.value ? '就绪' : '未就绪', nodeOk.value ? 'ok' : 'bad'),
   cell('wiring', '插件接线', wiringText.value.text, wiringText.value.tone, 'plugins'),
   cell('skills', '技能注册', skillText.value.text, skillText.value.tone, 'skills'),
   cell('logs', '日志系统', logText.value.text, logText.value.tone, 'logs'),
@@ -132,9 +135,10 @@ const health = computed(() => [
 
 // 插件接线：隔离数是唯一有意义的读数——「被看护停用过」直接决定插件
 // 还能不能正常工作，而 store 里没有总启数（接线明细要另发命令）。
+// 值为 0 时只说「无隔离」：绿色本身已经说了「正常」，再写一遍是同一句话。
 const wiringText = computed(() => {
   const count = quarantined.value.length;
-  if (count === 0) return { text: '正常（无隔离）', tone: 'ok' };
+  if (count === 0) return { text: '无隔离', tone: 'ok' };
   return { text: `${count} 个被隔离`, tone: 'warn' };
 });
 
@@ -144,9 +148,11 @@ const skillText = computed(() => {
   return { text: '正常', tone: 'ok' };
 });
 
+// 日志：只报**份数**。「正常（N 个文件）」里的「正常」在有文件时是废话，
+// 而没有文件那一档说「暂无」就够了。
 const logText = computed(() => {
-  if (!logModal.files.length) return { text: '暂无日志', tone: '' };
-  return { text: `正常（${logModal.files.length} 个文件）`, tone: 'ok' };
+  if (!logModal.files.length) return { text: '暂无', tone: '' };
+  return { text: `${logModal.files.length} 份`, tone: 'ok' };
 });
 
 
@@ -223,7 +229,7 @@ function openDiagnosis() {
 
   <div class="diag-card">
     <h3 class="diag-card__title"><span>系统健康</span></h3>
-    <div class="diag-rows">
+    <div class="diag-rows diag-rows--grid">
       <button
         v-for="row in health"
         :key="row.key"
