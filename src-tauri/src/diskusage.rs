@@ -109,6 +109,60 @@ pub struct DiskUsage {
     pub groups: Vec<UsageGroup>,
 }
 
+/// `disk_usage` 的返回：报表 **+ 本次是否已经在后台重扫**。
+///
+/// 为什么要多带这一个字段：前端有个「后台正在重新扫描…」的转圈标志，而在
+/// 加它之前**没有任何地方把它置为 true**——只有收到 `disk-usage-refreshed`
+/// 事件时才会被关掉。于是那个标志是个死标志，后台重扫期间用户零反馈，而这
+/// 恰恰是最需要反馈的时刻（数字停在旧值上，看着像卡住了）。
+///
+/// 补上这个信号不能靠前端猜：「缓存新鲜」与「缓存陈旧但重扫已经结束」在
+/// 前端长得一模一样，两条路径都会让 `invoke` 立即返回。所以判据只能由后端
+/// 给——它知道自己是「读缓存直接回」还是「顺手起了个后台线程」。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskUsageReply {
+    pub report: DiskUsage,
+    pub background_refresh: bool,
+}
+
+/// 这一次 `disk_usage` 该怎么走。抽成纯函数是为了能脱离 Tauri 测——
+/// 命令体里那几条分支的判据（尤其「强制优先于缓存新鲜度」）全在这里。
+///
+/// `Answer` 直接持有 [`DiskUsageReply`] 而不是把那两个字段再抄一遍：抄一遍
+/// 就多一处要同步的地方，而它们本来就是同一件事。
+enum Plan {
+    /// 立刻返回手上这份。`background_refresh` 为真表示同时已在后台重扫，
+    /// 前端据此点亮转圈并等 `disk-usage-refreshed` 回填。
+    Answer(DiskUsageReply),
+    /// 必须扫一次，返回的必须是**此刻**测出来的数。
+    Scan,
+}
+
+/// 决定这一次走哪条路。三个入参刻意都是纯值——`is_stale` 里的时钟回拨那类
+/// 边界得能喂固定值测。
+///
+/// `force` 排在新鲜度**之前**（用户 2026-10-07 报：「刷新按钮，没有正确扫描
+/// 磁盘占用」）：缓存新鲜时早先的实现直接 `return Ok(cached)`，连后台线程都
+/// 不起——于是「刷新」和「什么都不做」完全等价，界面上也没有任何差别。
+/// 而缓存一天只刷一次，意味着点按钮几乎永远落在这条分支上。
+fn plan(cached: Option<DiskUsage>, now_ms: u64, force: bool) -> Plan {
+    if force {
+        return Plan::Scan;
+    }
+    match cached {
+        Some(report) if !is_stale(&report, now_ms) => Plan::Answer(DiskUsageReply {
+            report,
+            background_refresh: false,
+        }),
+        Some(report) => Plan::Answer(DiskUsageReply {
+            report,
+            background_refresh: true,
+        }),
+        None => Plan::Scan,
+    }
+}
+
 /// 目录占用的字节数。不跟随符号链接。
 ///
 /// 不跟随是刻意的：内核安装树里 pnpm 用硬链接复用包（同一份内容多个
@@ -405,13 +459,21 @@ fn write_cache(data_dir: &Path, report: &DiskUsage) {
     }
 }
 
-/// 读一次磁盘占用：**先给缓存，后台重扫**（用户 2026-10-03 拍板）。
+/// 读一次磁盘占用：**先给缓存，后台重扫**（用户 2026-10-03 拍板），
+/// **除非调用方显式 `force`**（用户 2026-10-07 报刷新按钮不生效）。
 ///
 /// 两段式返回而不是「等扫完再返回」：用户点开面板立刻看到数字（哪怕是
 /// 一天前的），不等那 290ms；扫描在后台线程完成后通过事件回填，数字自己
 /// 更新。缓存新鲜时**不重扫**——那正是「一天一次」的意义。
+///
+/// `force` 是给「刷新」按钮用的：那是用户明说「现在就要新数字」，此时拿缓存
+/// 回他等于没听见。形状照 `usage::get_model_usage(force: Option<bool>)`——
+/// 同一份面板里的同类查询，共用一个约定比各发明一个强。
 #[tauri::command]
-pub async fn disk_usage(app: tauri::AppHandle) -> Result<DiskUsage, String> {
+pub async fn disk_usage(
+    app: tauri::AppHandle,
+    force: Option<bool>,
+) -> Result<DiskUsageReply, String> {
     let data_dir = app
         .try_state::<crate::AppState>()
         .map(|state| state.data_dir.clone());
@@ -419,27 +481,39 @@ pub async fn disk_usage(app: tauri::AppHandle) -> Result<DiskUsage, String> {
         return Err("应用状态尚未就绪".to_string());
     };
     let home = crate::shell::paths::xlink_home();
-    let now_ms = now_millis();
 
-    // ① 先给缓存。读到且新鲜就直接返回，连后台线程都不起。
-    if let Some(cached) = read_cache(&data_dir) {
-        if !is_stale(&cached, now_ms) {
-            return Ok(cached);
+    let force = force.unwrap_or(false);
+    match plan(read_cache(&data_dir), now_millis(), force) {
+        // ① 有缓存可给。只有后台线程**真的起来了**才报 `background_refresh`：
+        // 起不来却照报 true，前端那个转圈就永远停不下来，比没有转圈更糟。
+        Plan::Answer(mut reply) => {
+            if reply.background_refresh {
+                reply.background_refresh = spawn_refresh(app, data_dir.clone(), home.clone());
+            }
+            Ok(reply)
         }
-        // ② 缓存陈旧：**先用它**把界面填上，再后台重扫。
-        let scan_dir = data_dir.clone();
-        spawn_refresh(app, scan_dir, home);
-        return Ok(cached);
+        // ② 强制刷新，或压根没有缓存：老实扫一次再回。重活走
+        // `commands::blocking`（模块头那条约定），返回的一定是刚测的数。
+        Plan::Scan => {
+            let report = crate::commands::blocking(move || {
+                let report = measure(&data_dir, &home);
+                write_cache(&data_dir, &report);
+                Ok::<_, String>(report)
+            })
+            .await?;
+            Ok(DiskUsageReply {
+                report,
+                background_refresh: false,
+            })
+        }
     }
-
-    // ③ 没有任何缓存（首次运行）：只能同步扫一次，否则界面上什么都没有。
-    let report = measure(&data_dir, &home);
-    write_cache(&data_dir, &report);
-    Ok(report)
 }
 
-/// 后台重扫，完成后把新报表广播给面板。
-fn spawn_refresh(app: tauri::AppHandle, data_dir: PathBuf, home: PathBuf) {
+/// 后台重扫，完成后把新报表广播给面板。返回**线程是否真的起来了**。
+///
+/// 返回值不是装饰：它是 `disk-usage-refreshed` 事件会不会来的唯一可信预告。
+/// 报 true 而线程没起，前端那个转圈就再也没人关。
+fn spawn_refresh(app: tauri::AppHandle, data_dir: PathBuf, home: PathBuf) -> bool {
     let spawned = std::thread::Builder::new()
         .name("dsh-disk-usage".to_string())
         .spawn(move || {
@@ -449,8 +523,12 @@ fn spawn_refresh(app: tauri::AppHandle, data_dir: PathBuf, home: PathBuf) {
                 eprintln!("dsh-xlink: 广播磁盘占用刷新失败：{error}");
             }
         });
-    if let Err(error) = spawned {
-        eprintln!("dsh-xlink: 磁盘占用后台扫描未启动：{error}");
+    match spawned {
+        Ok(_) => true,
+        Err(error) => {
+            eprintln!("dsh-xlink: 磁盘占用后台扫描未启动：{error}");
+            false
+        }
     }
 }
 
@@ -701,6 +779,75 @@ mod tests {
         assert_eq!(kernels.label, "内核版本");
         assert_eq!(kernels.detail, "");
         assert_eq!(kernels.entries[0].detail, "");
+    }
+
+    /// 造一份「measured_at 在 now 之前 1 分钟」的缓存，够新鲜。
+    fn fresh_cache() -> DiskUsage {
+        DiskUsage {
+            total: 100,
+            measured_at: 1_700_000_000_000,
+            unreadable: Vec::new(),
+            groups: Vec::new(),
+        }
+    }
+
+    /// 回归：缓存新鲜时点「刷新」必须真扫一遍，不能回缓存。
+    ///
+    /// 用户 2026-10-07 报的 bug 就是这条——命令没有 `force`，新鲜缓存直接
+    /// `return Ok(cached)`，点按钮与什么都不点完全等价。本机实测当时缓存只有
+    /// 15.16 小时（远新于 24h），于是界面上的「合计 1.7 GB」是 15 小时前的数，
+    /// 而用户点了刷新、什么都没发生、界面上也看不出差别。
+    ///
+    /// **反向验**：把 `plan` 里 `force` 那个提前 return 删掉，本用例必须变红。
+    /// 它特意用**新鲜**缓存而不是陈旧的——陈旧缓存本来就会触发后台重扫，
+    /// 拿它当夹具会让这条用例在 bug 存在时**照样通过**。
+    #[test]
+    fn force_scans_even_when_the_cache_is_fresh() {
+        let now = fresh_cache().measured_at + 60 * 1000;
+        match plan(Some(fresh_cache()), now, true) {
+            Plan::Scan => {}
+            Plan::Answer(reply) => panic!(
+                "强制刷新时不得回缓存（background_refresh={}）——\
+                 这正是用户报的「刷新按钮没有正确扫描磁盘占用」",
+                reply.background_refresh
+            ),
+        }
+    }
+
+    /// 不强制的三条分支各自的行为，尤其是 `background_refresh` 只在
+    /// 「确实起了后台线程」时为真。
+    ///
+    /// 那一个布尔是前端「后台正在重新扫描…」转圈的唯一依据：报 true 而线程
+    /// 没起，转圈就永远停不下来。
+    #[test]
+    fn plan_without_force_keeps_the_two_stage_behaviour() {
+        let cache = fresh_cache();
+
+        // 新鲜：直接回缓存，**不**起后台线程。
+        match plan(Some(cache.clone()), cache.measured_at + 60 * 1000, false) {
+            Plan::Answer(reply) => {
+                assert_eq!(reply.report.total, 100);
+                assert!(
+                    !reply.background_refresh,
+                    "缓存新鲜时没有重扫在跑，转圈不该亮"
+                );
+            }
+            Plan::Scan => panic!("缓存新鲜时不该同步扫描"),
+        }
+
+        // 陈旧：先回旧数字，同时后台重扫。
+        match plan(Some(cache.clone()), cache.measured_at + FRESH_MS + 1, false) {
+            Plan::Answer(reply) => {
+                assert!(reply.background_refresh, "陈旧缓存必须起后台重扫")
+            }
+            Plan::Scan => panic!("陈旧缓存走后台，不该同步扫描"),
+        }
+
+        // 没有缓存：只能同步扫一次，否则界面上什么都没有。
+        match plan(None, cache.measured_at, false) {
+            Plan::Scan => {}
+            Plan::Answer(_) => panic!("首次运行没有缓存可给，必须同步扫"),
+        }
     }
 
     /// 新鲜度判定：一天内不算陈旧，超过就重扫。

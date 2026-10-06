@@ -142,3 +142,62 @@ test('类型色同时驱动圆点、占比条与容量胶囊三处', () => {
     `--usage-color 应至少出现在圆点、占比条、容量胶囊三处，实际 ${wired.length} 处`,
   );
 });
+
+// --- ③ 「刷新」按钮必须真的重扫（用户 2026-10-07 报）---
+//
+// 症状：点「刷新」数字纹丝不动。根因在 Rust 侧——`disk_usage` 压根没有
+// `force` 参数，缓存新鲜时直接 `return Ok(cached)`，连后台线程都不起。
+// 而缓存一天才刷一次，于是「点按钮」几乎永远落在这条分支上：按钮是个空动作，
+// 界面上还完全看不出它没生效。这条断言钉住前后两端都要传 force。
+
+test('「刷新」按钮传 force，而自动加载不传——两者语义相反，不能共用一次调用', () => {
+  assert.match(
+    versionsPanel,
+    /@click="loadDiskUsage\(true\)"/,
+    '刷新按钮必须传 force=true，否则拿到的是缓存（这正是用户报的 bug）',
+  );
+  // 自动加载仍走两段式：每次进面板都重扫 2.5 万个文件没道理。
+  // 连着 refreshAll 一起匹配，免得同一个文件里另一个 onMounted 被误配。
+  assert.match(
+    versionsPanel,
+    /onMounted\(\(\) => \{\s*refreshAll\(\);\s*loadDiskUsage\(\);/,
+    'onMounted 的自动加载必须是无参调用（默认不强制）',
+  );
+});
+
+test('后端把 force 排在新鲜度之前，且命令接受这个参数', () => {
+  assert.match(
+    diskusage,
+    /pub async fn disk_usage\(\s*app: tauri::AppHandle,\s*force: Option<bool>,?\s*\)/,
+    'disk_usage 必须接受 force: Option<bool>（与 usage::get_model_usage 同一形状）',
+  );
+  // 判据要落在「force 提前 return Scan」这一步。只断言函数签名的话，
+  // 参数收下了却被缓存分支忽略掉，照样是空按钮。
+  assert.match(
+    diskusage,
+    /fn plan\([^)]*force: bool[^)]*\)\s*->\s*Plan\s*\{\s*if force \{\s*return Plan::Scan;/s,
+    'plan() 里 force 必须先于新鲜度判定返回 Scan',
+  );
+  // 返回体带上 backgroundRefresh，否则前端那个「后台正在重新扫描…」转圈
+  // 永远没有置 true 的时机（它此前就是个死标志）。
+  assert.match(
+    diskusage,
+    /pub struct DiskUsageReply\s*\{[^}]*pub background_refresh: bool,/s,
+    'disk_usage 必须回传 background_refresh，让前端的转圈标志真的有信号可依',
+  );
+});
+
+test('前端拆开返回的 report 与 backgroundRefresh，并据此点亮转圈标志', () => {
+  assert.match(
+    versionsPanel,
+    /applyDiskReport\(reply\.report\)/,
+    '必须从 { report, backgroundRefresh } 里取出 report 再套用',
+  );
+  // refreshing 曾经是个**死标志**：只有收到事件时被置 false，没有任何地方
+  // 置 true。后台重扫期间数字停在旧值上、界面上零反馈，那是最需要反馈的时刻。
+  assert.match(
+    versionsPanel,
+    /diskUsage\.refreshing\s*=\s*Boolean\(reply\.backgroundRefresh\)/,
+    'refreshing 必须真的被置为 true——否则「后台正在重新扫描…」的转圈永远不出现',
+  );
+});
