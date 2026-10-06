@@ -604,7 +604,7 @@ fn cutoff_date_string(now_ms: u64) -> String {
 }
 
 fn date_string_of_ms(ms: u64) -> String {
-    process::local_date_string(UNIX_EPOCH + Duration::from_millis(ms))
+    crate::shell::localtime::local_date_string(UNIX_EPOCH + Duration::from_millis(ms))
 }
 
 /// 把账目求和成面板视图：`days` 恒覆盖整个 90 天窗口（缺的日期补零），

@@ -5,7 +5,7 @@
 // 这里给时间线、证据索引和下一步；事故面板负责处置嫌疑插件、恢复操作。
 import { computed } from 'vue';
 import { Refresh } from '@element-plus/icons-vue';
-import { openHarnessWindow, showIncident, store } from '../store.js';
+import { store } from '../store.js';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import RunTimeline from './RunTimeline.vue';
 import {
@@ -15,10 +15,16 @@ import {
   isRetryable,
   nextStepFor,
   RUN_HEADLINE,
+  stageProgress,
   statusMeta,
 } from './diagnostic-labels.js';
 import { diagnosticStore, getLastRunId, loadStartupDiagnosis } from './diagnostics.js';
-import { openEvidence, startStartupDiagnosis } from './diagnostic-actions.js';
+import {
+  openEvidence,
+  openWorkbenchWindow,
+  showIncidentFor,
+  startStartupDiagnosis,
+} from './diagnostic-actions.js';
 
 const run = computed(() => diagnosticStore.currentRun);
 const meta = computed(() => statusMeta(run.value?.status));
@@ -56,6 +62,10 @@ const canRetry = computed(() => isRetryable(run.value?.status));
 
 const hasRun = computed(() => !!run.value);
 
+// 「完成 N / M 个阶段」按阶段集合算，不按事件条数（审查 P2-03）——一个阶段
+// 推三条事件时用事件数会显示成「完成 3 / 8」而实际只走了两步。
+const progress = computed(() => stageProgress('startup', run.value?.events));
+
 function reload() {
   // 优先按 id 拉，不按「最近一条」：用户可能正在看一条**历史**记录，
   // 此时点刷新若换成最近那条，看到的就是另一件事。
@@ -69,7 +79,7 @@ function viewLogs() {
 }
 
 function openIncident() {
-  showIncident(incident.value, { force: true });
+  showIncidentFor(incident.value);
 }
 
 /**
@@ -81,7 +91,7 @@ function openIncident() {
  */
 const workbenchOpen = computed(() => store.view?.kernel?.running);
 function openWorkbench() {
-  openHarnessWindow();
+  openWorkbenchWindow();
 }
 
 async function retry() {
@@ -105,7 +115,10 @@ async function retry() {
       <template v-if="hasRun">
         {{ run?.kernelVersion || '未知版本' }} · 实例 {{ run?.instanceId }} ·
         耗时 {{ cost || '未知' }}
-        <template v-if="run?.eventCount"> · 共 {{ run?.eventCount }} 条记录</template>
+        <template v-if="progress.total">
+          · 完成 {{ progress.done }} / {{ progress.total }} 个阶段
+          <template v-if="progress.failed">（{{ progress.failed }} 处失败）</template>
+        </template>
       </template>
       <template v-else>还没有启动诊断记录</template>
     </p>
@@ -118,7 +131,7 @@ async function retry() {
   <div class="diag-card">
     <h3 class="diag-card__title">
       <span>启动阶段</span>
-      <span class="diag-card__aside">完成 {{ hasRun ? '部分' : '0' }} 个阶段</span>
+      <span class="diag-card__aside">完成 {{ progress.done }} / {{ progress.total }} 个阶段</span>
     </h3>
     <RunTimeline>
       <template #row-actions="{ event }">

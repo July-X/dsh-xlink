@@ -37,29 +37,48 @@ export const diagnosticStore = reactive({
   error: '',
   /** 最近一次点开的证据路径（设计 §8.2 的 `openEvidence` 记在这里）。 */
   evidencePath: '',
+  /**
+   * 内核状态页最后一次成功读取的时刻（epoch 毫秒，0 = 还没读过）。
+   *
+   * 记在这一层而不是后端：`KernelStatus` 描述的是**环境**，而「我什么时候
+   * 读的」是前端自己的读数事实，塞进那条命令的返回里只会让每个调用方都
+   * 带着一个只有诊断页关心的字段。0 而不是 `null` 是为了省一个分支判断。
+   */
+  kernelReadAt: 0,
 });
 
 /**
  * 解析一条通道消息。
  *
- * 返回 `{ event, text }`：`event` 非空表示这是一条结构化诊断事件，
+ * 返回 `{ event, text, runId }`：`event` 非空表示这是一条结构化诊断事件，
  * `text` 永远是人话文本（结构化事件也从它的 `message` 取），供进度面板
  * 无条件显示。
+ *
+ * **`runId` 一并返回**（审查 P2-01）：后端信封里已经带了它（`run.rs::channel_envelope`），
+ * 此前前端解析完就把它丢了，于是「事件属于哪次运行」这件事只能靠调用方
+ * 手里那个 id 猜——而 `store.js` 与 `progress.js` 两个消费点都传的是同一个
+ * 作用域变量，用户连着启动两次时迟到的消息就会被算到当前这次头上。
+ * 设计 §4.3 要求「事件 runId 与命令返回 runId 一致」，那是协议层的约定，
+ * 不该由前端重新推导。
  */
 export function parseChannelMessage(msg) {
   const text = String(msg ?? '');
-  if (!text.startsWith('{')) return { event: null, text };
+  if (!text.startsWith('{')) return { event: null, text, runId: '' };
   let payload;
   try {
     payload = JSON.parse(text);
   } catch {
     // 解析失败不是错误，是旧格式：pnpm 输出里就有大量 `{` 开头的行。
-    return { event: null, text };
+    return { event: null, text, runId: '' };
   }
   if (!payload || payload.type !== 'diagnostic-event' || !payload.event) {
-    return { event: null, text };
+    return { event: null, text, runId: '' };
   }
-  return { event: payload.event, text: String(payload.event.message || text) };
+  return {
+    event: payload.event,
+    text: String(payload.event.message || text),
+    runId: String(payload.runId || ''),
+  };
 }
 
 /** 一条通道消息的人话文本。诊断事件取它的 `message`，其余原样返回。 */
@@ -73,12 +92,16 @@ export function diagnosticText(msg) {
  * 返回 `true` 表示这是一条诊断事件（调用方据此决定要不要顺手刷新列表）。
  * 纯文本行直接返回 false，**不**进时间线——时间线只放用户能理解的阶段，
  * 把每一行 pnpm 输出都变成节点会让它彻底没法看。
+ *
+ * **`信封里的 runId` 优先于调用方传的那个**：信封是后端与这条事件一起生成的，
+ * 而调用方手里的是「当前正在跑的那次」的 id——两者不一致恰恰就是「迟到的
+ * 上一次消息」这种情况，用调用方的值会把它算到当前这次头上。
  */
 export function ingestChannelMessage(msg, runId) {
   const parsed = parseChannelMessage(msg);
   if (!parsed.event) return false;
   const event = { ...parsed.event };
-  if (runId) event.__runId = runId;
+  event.__runId = parsed.runId || runId || '';
   // 同一条 runId 的事件按 seq 追加；换了一条记录就重开时间线。
   const last = diagnosticStore.liveEvents[diagnosticStore.liveEvents.length - 1];
   if (!last || last.__runId !== event.__runId || Number(event.seq) > Number(last.seq)) {
@@ -123,13 +146,15 @@ export function openStartupDiagnosis(runId, sourcePanel) {
 }
 
 /** 打开插件安全诊断（候选插件视图）。 */
-export function openPluginDiagnosis(spec, sourcePanel) {
-  diagnosticStore.active = { kind: 'plugin', spec: spec || null };
+export function openPluginDiagnosis(spec, sourcePanel, runId) {
+  diagnosticStore.active = { kind: 'plugin', spec: spec || null, runId: runId || '' };
   diagnosticStore.sourcePanel = sourcePanel || '';
   diagnosticStore.error = '';
   diagnosticStore.currentRun = null;
   clearLiveEvents();
-  return Promise.resolve(diagnosticStore.active);
+  return loadPluginRun(runId || (spec && spec.report && spec.report.runId)).then(
+    () => diagnosticStore.active
+  );
 }
 
 /** 打开内核状态诊断（概览页的「查看状态」）。 */
@@ -154,6 +179,29 @@ export function openOperationDiagnosis(kind, sourcePanel, runId) {
   diagnosticStore.currentRun = null;
   clearLiveEvents();
   return loadOperationDiagnosis(runId, kind).then(() => diagnosticStore.active);
+}
+
+/**
+ * 按运行记录的类型分派到对应视图（审查 P1-05）。
+ *
+ * **此前控制塔无论什么 kind 都调 `openStartupDiagnosis`**：最近一条是恢复
+ * 或二分时，用户点「查看诊断」看到的是一条启动时间线——阶段名全对不上，
+ * 而他确实点的是「最近操作」。这不是配色问题，是**看错了记录**。
+ *
+ * `plugin-precheck` 没有报告时（从概览进去的就是这种情况，报告只存在于
+ * 刚才那次预检的返回值里）**不假装有插件上下文**：走仅运行记录视图，
+ * 显示状态、归因、证据与阶段时间线。拿空 spec 去填插件页，界面上会出现
+ * 「未知插件」——那是在说「我知道是哪个插件但没法显示」，而真相是不知道。
+ */
+export function openRunDiagnosis(run, sourcePanel) {
+  const summary = run || {};
+  const kind = String(summary.kind || 'startup');
+  if (kind === 'startup') return openStartupDiagnosis(summary.id || '', sourcePanel);
+  if (kind === 'restore' || kind === 'bisect') {
+    return openOperationDiagnosis(kind, sourcePanel, summary.id || '');
+  }
+  // plugin-precheck：有 runId 就带进去，让时间线有东西可读。
+  return openPluginDiagnosis({ id: '', name: '', report: null }, sourcePanel, summary.id || '');
 }
 
 /**
@@ -186,10 +234,23 @@ async function fetchRunDetail(runId, latestKind) {
     if (!latest) return null;
     diagnosticStore.currentRun = await invoke('diagnostic_run_get', { runId: latest.id });
     if (diagnosticStore.active) diagnosticStore.active.runId = latest.id;
+    rememberEvidence(diagnosticStore.currentRun);
     return diagnosticStore.currentRun;
   }
   diagnosticStore.currentRun = await invoke('diagnostic_run_get', { runId: id });
+  rememberEvidence(diagnosticStore.currentRun);
   return diagnosticStore.currentRun;
+}
+
+/**
+ * 记下这条记录最该看的那份证据，供「查看日志」在没传路径时回落。
+ *
+ * 沙盒日志优先于内核日志：前者是这次操作**直接产生**的，后者是常驻的那份，
+ * 排障时往往已经被别的运行覆盖（审查 P1-02）。
+ */
+function rememberEvidence(run) {
+  const evidence = (run && run.evidence) || {};
+  diagnosticStore.evidencePath = String(evidence.sandboxLog || evidence.kernelLog || '');
 }
 
 /** 拉一条启动运行记录详情。手动触发（用户点刷新）才挂 loading key。 */

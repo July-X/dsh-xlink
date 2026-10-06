@@ -18,10 +18,6 @@
 //! 因此**会自动出现在「查看日志」面板**——`list_log_files` 按 `.log` 收整个
 //! 壳日志目录，不需要为它单开 UI 入口。
 
-use time::format_description::FormatItem;
-use time::macros::format_description;
-use time::OffsetDateTime;
-
 use crate::shell::process::{
     build_log_kind, current_date_string, shell_logs_dir, LogSpec, RotatingLog,
 };
@@ -46,14 +42,12 @@ pub fn record(logical_name: &str, line: &str) {
     }
 }
 
-/// 本地时刻 `HH:MM:SS`。与 `process::local_date_string` 同源（都用本地
-/// 偏移量），否则两处时间戳会各走各的时区，对齐时反而要二次换算。
+/// 本地时刻 `HH:MM:SS`。**转发给 [`crate::shell::localtime`]**，不再自己算：
+/// 这里原来用 `now_local()`、那边用 `to_offset(current_local_offset())`，两者的
+/// 回退路径不同，时区信息不可用时两处会各走各的（一份退 UTC、一份退零值），
+/// 于是两份时间戳对不齐——而它们的作用恰恰是互相对齐。
 fn clock() -> String {
-    const CLOCK: &[FormatItem<'static>] = format_description!("[hour]:[minute]:[second]");
-    OffsetDateTime::now_local()
-        .ok()
-        .and_then(|now| now.format(CLOCK).ok())
-        .unwrap_or_else(|| String::from("--:--:--"))
+    crate::shell::localtime::local_clock_string(std::time::SystemTime::now())
 }
 
 #[cfg(test)]

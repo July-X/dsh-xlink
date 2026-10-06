@@ -473,7 +473,7 @@ pub fn plugin_install(
     );
     // 通过：把包物化到目标实例并接线。取源已经完成，这里只做本地链接。
     on_progress("预检通过，正在安装到当前实例");
-    commit(
+    report.pre_change_snapshot_id = commit(
         data_dir,
         settings,
         pnpm_exe,
@@ -521,14 +521,20 @@ fn commit(
     instance: &str,
     item: &StoreItem,
     on_progress: &mut dyn FnMut(&str),
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     // 改接线**之前**打一份 pre-change 快照（设计 §6.6）。`ensure_wiring` 会
     // 物化/撤下这个插件的接线，那一步失败就是「用户的插件组合已经变了」，
     // 没有快照的话他只能手工一个个停用找回。
     //
     // 打快照失败**不阻断**提交：预检已经通过了，用户等的是「装上」，
     // 而快照是兜底不是前提——挡住了就是用一个可选的保险换一个硬失败。
-    if let Err(error) = crate::diagnostics::snapshot::record(
+    //
+    // 快照的 id 要**交回报告**：诊断页的「恢复快照」据此直接打开这一份的
+    // 差异预览，而不是把用户丢回快照列表让他自己找是哪一份（审查 P1-04）。
+    // 没打出来时返回空串，UI 会把按钮改成「查看快照列表」并说明原因——
+    // 编一个 id 进去会让它去打开一个不存在的快照。
+    let mut snapshot_id = String::new();
+    match crate::diagnostics::snapshot::record(
         data_dir,
         family,
         instance,
@@ -536,8 +542,12 @@ fn commit(
         settings.port,
         crate::diagnostics::snapshot::reason::PRE_CHANGE,
     ) {
-        eprintln!("dsh-xlink: 预检通过但未能打 pre-change 快照：{error}");
-        on_progress(&format!("注意：未能保存变更前快照（{error}）"));
+        Ok(Some(snapshot)) => snapshot_id = snapshot.id,
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("dsh-xlink: 预检通过但未能打 pre-change 快照：{error}");
+            on_progress(&format!("注意：未能保存变更前快照（{error}）"));
+        }
     }
     plugins::center::sync_kernels_for_instance(family, instance, data_dir, item)?;
     plugins::center::ensure_wiring_for_instance(
@@ -548,7 +558,7 @@ fn commit(
         pnpm_exe,
         on_progress,
     )?;
-    Ok(())
+    Ok(snapshot_id)
 }
 
 #[cfg(test)]

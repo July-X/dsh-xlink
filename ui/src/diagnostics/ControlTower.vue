@@ -20,10 +20,9 @@ import { incidentCauseLabel, incidentTitle } from '../incidents/incidents.js';
 import {
   diagnosticStore,
   loadRecentRuns,
-  openPluginDiagnosis,
-  openStartupDiagnosis,
+  openRunDiagnosis,
 } from './diagnostics.js';
-import { causeLabel, statusMeta } from './diagnostic-labels.js';
+import { causeLabel, kindLabel, statusMeta } from './diagnostic-labels.js';
 
 const emit = defineEmits(['open-incident', 'go-panel']);
 
@@ -81,6 +80,7 @@ const attention = computed(() => {
       detail: lastPrecheck.summary || '点开看它验到了哪一步',
       tone: lastPrecheck.status === 'warning' ? 'warn' : 'bad',
       action: 'precheck',
+      run: lastPrecheck,
     });
   }
   if (!nodeOk.value) {
@@ -154,6 +154,9 @@ const logText = computed(() => {
 const latestRun = computed(() => diagnosticStore.recentRuns[0] || null);
 
 const runMeta = computed(() => statusMeta(latestRun.value?.status));
+// 四种 kind 都要说出来：只写「启动 / 预检 / 恢复」时，用户在一条排查记录
+// 上找不到「排查」两个字，只能猜自己看到的是不是同一件事（审查 P1-05）。
+const runKindLabel = computed(() => (latestRun.value ? kindLabel(latestRun.value.kind) : ''));
 const runDetail = computed(() => {
   const run = latestRun.value;
   if (!run) return '';
@@ -173,7 +176,9 @@ const runActionable = computed(() =>
 
 function onAttention(item) {
   if (item.action === 'incident') emit('open-incident');
-  else if (item.action === 'precheck') openPluginDiagnosis({}, 'overview');
+  // 预检项带的是**那一条运行记录**，不是空 spec：此前传 `{}` 过去，插件页
+  // 只能显示「未知插件」，时间线也是空的（审查 P1-05）。
+  else if (item.action === 'precheck') openRunDiagnosis(item.run, 'overview');
   else if (item.action === 'settings' || item.action === 'node') emit('go-panel', 'settings');
   else emit('go-panel', 'overview');
 }
@@ -185,8 +190,9 @@ function onHealth(row) {
   else if (row.action === 'logs') showLogs();
 }
 
+// 按记录类型分派，不再一律当启动诊断打开（审查 P1-05）。
 function openDiagnosis() {
-  openStartupDiagnosis(latestRun.value?.id || '', 'overview');
+  openRunDiagnosis(latestRun.value, 'overview');
   loadRecentRuns(null);
 }
 </script>
@@ -240,7 +246,7 @@ function openDiagnosis() {
   <div class="diag-card">
     <h3 class="diag-card__title">
       <span>最近操作</span>
-      <span class="diag-card__aside">启动 / 预检 / 恢复</span>
+      <span class="diag-card__aside">启动 / 预检 / 恢复 / 排查</span>
     </h3>
     <div v-if="latestRun" class="diag-rows">
       <button
@@ -250,7 +256,7 @@ function openDiagnosis() {
         @click="runActionable && openDiagnosis()"
       >
         <span class="diag-row__label">
-          {{ runMeta.label }}
+          {{ runKindLabel }} · {{ runMeta.label }}
           <span v-if="runDetail" class="diag-row__value">· {{ runDetail }}</span>
         </span>
         <span v-if="runActionable" class="diag-row__arrow" aria-hidden="true">›</span>

@@ -16,6 +16,16 @@ export const logModal = reactive({
   // boolean，切签或刷新时整块面板都在转圈，且 `withLoading` 对同一个 key
   // 的重入直接忽略 —— 大日志还没读完时再点「刷新」什么都不发生（P2-38）。
   loadingName: null,
+  /**
+   * 打开时点名要看的那份证据（完整路径或文件名，空串 = 没点名）。
+   *
+   * **与 `activeName` 分开存**：后者是「当前正在显示哪个签」，每切一次签就
+   * 变；前者是「这次打开是谁要的」，在整个弹层生命周期里不变。混成一个字段
+   * 的话，用户手动切到别的签之后一次刷新就会被拽回证据文件。
+   */
+  askedEvidence: '',
+  /** 点名的证据没找到时的原路径，用于说清「是哪一份不见了」。 */
+  missingEvidence: '',
 });
 
 /// 日志文件按用途分类；侧栏按此顺序自上而下渲染。`id` 是文件名 `name` 段
@@ -137,6 +147,9 @@ export function switchLogTab(name) {
     return loadActiveLog();
   }
   logModal.activeName = name;
+  // 用户自己选了签，「证据已清理」那条提示就此作废——它描述的是刚才那次
+  // 打开时的状态，继续挂着会让人以为现在显示的这份也是找不到的那份。
+  logModal.missingEvidence = '';
   return loadActiveLog();
 }
 
@@ -148,7 +161,22 @@ export function refreshLogTabs() {
       logModal.files = files || [];
       const names = logModal.files.map((f) => f.name);
       const keep = logModal.activeName && names.includes(logModal.activeName) ? logModal.activeName : null;
-      logModal.activeName = keep || names[0] || null;
+      if (keep) {
+        logModal.activeName = keep;
+        return loadActiveLog();
+      }
+      // 打开时点名了某一份证据（诊断层的「查看日志」会带上路径）：定位到它，
+      // **而不是**退回第一个签。见 [`resolvePreferred`]。
+      const preferred = resolvePreferred(names);
+      logModal.preferredName = null;
+      if (preferred === 'missing') {
+        logModal.missingEvidence = logModal.askedEvidence || '';
+        logModal.activeName = null;
+        logModal.content = `本次诊断的证据日志已不在 logs/ 目录里（${logModal.missingEvidence}）。可能已被轮转清理。点击左侧任一日志可查看现存文件。`;
+        return null;
+      }
+      logModal.missingEvidence = '';
+      logModal.activeName = preferred || names[0] || null;
       if (logModal.activeName) {
         return loadActiveLog();
       }
@@ -160,14 +188,38 @@ export function refreshLogTabs() {
     );
 }
 
-export function showLogs() {
+/**
+ * 打开时点名的那份证据，在现有文件里能不能找到。
+ *
+ * **只按文件名（basename）匹配，且只在 `list_log_files` 返回的集合里选**：
+ * 前端绝不把任意路径原样交给 `read_log_file`——那等于让调用方去读
+ * logs/ 之外的任意文件。传入的是完整路径还是文件名都吃，取最后一段。
+ *
+ * 返回文件名 / `null`（没点名，按普通流程走）/ `'missing'`（点名了但找不到）。
+ * `'missing'` 单列一个取值而不是复用 `null`：「没点名」与「点名了但已被清理」
+ * 在界面上的处置完全不同，后者必须说清而不是静默退回第一份。
+ */
+export function resolvePreferred(names) {
+  const asked = String(logModal.askedEvidence || '');
+  if (!asked) return null;
+  const base = asked.split(/[\\/]/).pop() || '';
+  if (!base) return 'missing';
+  return (names || []).includes(base) ? base : 'missing';
+}
+
+export function showLogs(preferredEvidencePath) {
   logModal.visible = true;
   logModal.activeName = null;
+  logModal.missingEvidence = '';
+  // 存的是**完整路径**（诊断记录里的证据就是这样），匹配时才取 basename。
+  logModal.askedEvidence = String(preferredEvidencePath || '');
   refreshLogTabs();
 }
 
 export function hideLogs() {
   logModal.visible = false;
+  logModal.askedEvidence = '';
+  logModal.missingEvidence = '';
 }
 
 /// 侧栏宽度持久化（localStorage）——主面板弹窗与独立全屏窗口共用，逻辑一致

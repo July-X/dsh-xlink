@@ -202,7 +202,7 @@ body {
 
 .mac-titlebar {
   position: relative;
-  z-index: 1001;
+  z-index: var(--z-titlebar);
   display: flex;
   flex: 0 0 32px;
   align-items: center;
@@ -2610,7 +2610,7 @@ main {
      会触发一次 withProgress；如果浮层压在弹层下面，进度文案、pnpm 日志和
      「关闭」按钮全部被遮罩盖住——界面看起来"点了没反应"，而按约定失败时
      进度面板要保持开放由用户手动关闭，此时它根本点不到。 */
-  z-index: 3000;
+  z-index: var(--z-progress);
   display: grid;
   place-items: center;
   background: rgba(4, 8, 20, 0.55);
@@ -2747,7 +2747,7 @@ body::after {
   left: 0;
   height: 3px;
   width: 38%;
-  z-index: 1000;
+  z-index: var(--z-titlebar-pulse);
   pointer-events: none;
   opacity: 0;
   background: linear-gradient(
@@ -2770,7 +2770,7 @@ body > [data-titlebar-pulse='2'] {
   left: 0;
   height: 3px;
   width: 38%;
-  z-index: 1000;
+  z-index: var(--z-titlebar-pulse);
   pointer-events: none;
   opacity: 0;
   background: linear-gradient(
@@ -3444,7 +3444,7 @@ body.pane-dragging .log-tabs {
   position: fixed;
   right: 14px;
   bottom: 14px;
-  z-index: 9998;
+  z-index: var(--z-debug-fab);
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -3644,7 +3644,7 @@ body.pane-dragging .log-tabs {
   top: 40px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 4000;
+  z-index: var(--z-render-fallback);
   width: min(720px, calc(100vw - 48px));
   display: flex;
   flex-direction: column;

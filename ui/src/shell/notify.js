@@ -6,13 +6,32 @@ import { ElCheckbox } from 'element-plus/es/components/checkbox/index.mjs';
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs';
 import { openExternal } from './bridge.js';
 
-// 进度浮层的 z-index（`theme.css` 的 `.progress-overlay`）。浮层必须压在
-// `el-dialog`（Element Plus 基线 2000）之上，否则事故面板里触发的长任务会把
-// 进度文案与「关闭」按钮盖住——那条路径按约定要由用户手动关闭。
-const PROGRESS_OVERLAY_Z_INDEX = 3000;
+/**
+ * 进度浮层的 z-index，**从 CSS 阶梯读**而不是在这里写死一个 3000。
+ *
+ * 之前这里是字面量，`.progress-overlay` 在 theme.css 里也是字面量，两份各改
+ * 各的——改了一边另一边就静默失配，而症状是「提示被浮层盖住」或「浮层被提示
+ * 盖住」，都不带任何报错。阶梯的唯一出处是 `diagnostics/diagnostics.css` 的
+ * `:root`（那里有整条顺序的说明），这里只读它。
+ *
+ * 读不到时（无 DOM 的单测环境）回落到同样的字面量：宁可与 CSS 漂一次，
+ * 也不能让整个模块 import 就炸。
+ */
+const PROGRESS_OVERLAY_Z_INDEX = (() => {
+  const fallback = 3000;
+  try {
+    const raw = getComputedStyle(document.documentElement)
+      .getPropertyValue('--z-progress')
+      .trim();
+    const value = Number.parseInt(raw, 10);
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  } catch {
+    return fallback;
+  }
+})();
 
 // 提示与确认框必须**高于**浮层：Element Plus 的默认基线是 2000 + 自增计数，
-// 恒低于浮层的 3000，于是长任务进行中弹的确认框（例如托盘「退出」的二次确认、
+// 恒低于浮层，于是长任务进行中弹的确认框（例如托盘「退出」的二次确认、
 // 补丁的「清除记录」确认）会被浮层遮住且点不到，而任务未失败时浮层没有关闭
 // 按钮——用户看到的是"点了没反应"（P2-11）。
 const NOTIFY_Z_INDEX = PROGRESS_OVERLAY_Z_INDEX + 1000;

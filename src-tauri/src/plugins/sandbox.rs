@@ -154,6 +154,14 @@ pub struct PrecheckReport {
     /// 目标实例 id（预检实际装到的那一个）。
     #[serde(default)]
     pub target_instance: String,
+    /// 改接线**之前**那份快照的 id（`reason::PRE_CHANGE`）。
+    ///
+    /// 空串表示没打出来（打快照失败不阻断提交，见 `precheck::commit`），也
+    /// 表示这条预检发生在快照机制之前。诊断页的「恢复快照」按钮据此直接
+    /// 打开**那一份**的差异预览，而不是把用户丢回快照列表让他自己找
+    /// （审查 P1-04）——按钮写着「恢复快照」却只给一个列表，两者是名不副实。
+    #[serde(default)]
+    pub pre_change_snapshot_id: String,
 }
 
 /// 完整性摘要的种类 → UI 文案与强弱分级。
@@ -206,6 +214,7 @@ impl PrecheckReport {
             materialize: String::new(),
             affects_default_instance: false,
             target_instance: String::new(),
+            pre_change_snapshot_id: String::new(),
         }
     }
 }

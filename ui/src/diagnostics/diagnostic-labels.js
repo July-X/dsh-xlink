@@ -127,6 +127,66 @@ export function headlineFor(run) {
   return statusMeta(status).label;
 }
 
+/**
+ * 一次运行**应该经过**的阶段（按 kind）。
+ *
+ * 存在的理由只有一个：「完成 N / M 个阶段」里的 M 必须来自这份集合。
+ * 拿事件条数当分母时，一个阶段推三条事件就会显示成「完成 3 / 6」而实际只
+ * 走了两步——数字看着在动，用户却对不上它指的是什么（审查 P2-03）。
+ *
+ * **与后端的 stage 常量逐条对应**（`startup_run` / `precheck` /
+ * `operation_run` 各自那组）。这里多写一份是因为「M」是**用户看到的承诺**，
+ * 后端那份是「实际会推的」；两者不一致时该改的是这里——M 少一个会让
+ * 永远到不了 100%，多一个会让永远差一步。
+ */
+export const STAGE_SEQUENCES = {
+  startup: [
+    'resolve-instance',
+    'detect-node',
+    'resolve-pnpm',
+    'prepare-wiring',
+    'spawn-kernel',
+    'wait-ready',
+    'health-check',
+    'record-startup-ok',
+  ],
+  'plugin-precheck': [
+    'sandbox-create',
+    'baseline',
+    'install-candidate',
+    'probe-candidate',
+    'report',
+  ],
+  restore: ['prepare', 'apply', 'verify', 'backup'],
+  bisect: ['select', 'probe', 'conclude'],
+};
+
+/**
+ * 阶段进度。
+ *
+ * `done` 只数**真正走到过**的阶段（出现过任一事件即算），`failed` 单列出来
+ * ——把失败也算进「完成」会让「完成 6 / 6」与一个失败结论同时出现。
+ * 未知 kind 退回按事件里出现过的 distinct stage 统计，`total` 为实际发生
+ * 过的数量：不知道序列时不编一个分母。
+ */
+export function stageProgress(kind, events) {
+  const list = Array.isArray(events) ? events : [];
+  const seen = new Set(list.map((event) => String(event?.stage ?? '')));
+  const sequence = STAGE_SEQUENCES[kind];
+  if (!sequence) {
+    return { total: seen.size, done: seen.size, failed: 0, running: 0, pending: 0 };
+  }
+  // 序列里没列过的 stage（新版新增、旧壳未知）**不计入分母**，但也别让它
+  // 从「完成」里消失：多一个分子会显示成 7/6。
+  const total = sequence.length;
+  const done = sequence.filter((stage) => seen.has(stage)).length;
+  const failed = list.filter((event) => String(event?.status) === 'failure').length;
+  const running = sequence.filter(
+    (stage) => list.some((event) => String(event?.stage) === stage && event.status === 'running')
+  ).length;
+  return { total, done, failed, running, pending: Math.max(0, total - done) };
+}
+
 /** 阶段中文名；未知阶段显式说明它是什么值，便于定位新版行为。 */
 export function stageLabel(stage) {
   const key = String(stage ?? '');

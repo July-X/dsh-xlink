@@ -19,22 +19,41 @@ import {
   evidenceLabel,
   headlineFor,
   nextStepFor,
+  stageProgress,
   statusMeta,
 } from './diagnostic-labels.js';
 import { diagnosticStore, loadOperationDiagnosis } from './diagnostics.js';
 import { openEvidence } from './diagnostic-actions.js';
+
+const props = defineProps({
+  /**
+   * 通用模式：不按 kind 定制标题与空态文案。
+   *
+   * 用于「只有一条运行记录、没有别的东西可看」的场景——从控制塔进��的插件
+   * 预检就是这样（报告只存在于刚才那次预检的返回值里）。那时按 kind 硬套
+   * 「恢复诊断」或「排查诊断」都是错的，标题得说清这里看的是什么。
+   */
+  generic: { type: Boolean, default: false },
+});
 
 const run = computed(() => diagnosticStore.currentRun);
 const kind = computed(() => String(diagnosticStore.active?.kind || 'restore'));
 const meta = computed(() => statusMeta(run.value?.status));
 const headline = computed(() => headlineFor(run.value || {}));
 
-// 「完成 N 个阶段」这个措辞对两种 kind 都成立：它们的时间线都是若干条阶段
-// 事件，不需要按 kind 分叉。
-const stageCount = computed(() => (run.value?.events || []).length);
-const emptyText = computed(() =>
-  kind.value === 'bisect' ? '还没有排查诊断记录' : '还没有恢复诊断记录'
-);
+// 「完成 N / M 个阶段」按**阶段集合**统计，不是事件条数（审查 P2-03）：
+// 一个阶段推三条事件时，用事件数算会显示成「完成 3 / 6」而实际只走了两步。
+const progress = computed(() => stageProgress(run.value?.kind || kind.value, run.value?.events));
+
+const stageTitle = computed(() => {
+  if (props.generic) return '阶段时间线';
+  return kind.value === 'bisect' ? '排查过程' : '恢复过程';
+});
+
+const emptyText = computed(() => {
+  if (props.generic) return '还没有这条运行记录的详情';
+  return kind.value === 'bisect' ? '还没有排查诊断记录' : '还没有恢复诊断记录';
+});
 
 const startedAt = computed(() => Number(run.value?.startedAtMs || 0));
 const finishedAt = computed(() => Number(run.value?.finishedAtMs || 0));
@@ -67,7 +86,7 @@ function reload() {
       <template v-if="hasRun">
         {{ run?.kernelVersion || '未知版本' }} · 实例 {{ run?.instanceId }} · 耗时
         {{ cost || '未知' }}
-        <template v-if="stageCount"> · 共 {{ stageCount }} 条记录</template>
+        <template v-if="progress.total"> · 阶段 {{ progress.done }} / {{ progress.total }}</template>
       </template>
       <template v-else>{{ emptyText }}</template>
     </p>
@@ -79,8 +98,8 @@ function reload() {
 
   <div class="diag-card">
     <h3 class="diag-card__title">
-      <span>{{ kind === 'bisect' ? '排查过程' : '恢复过程' }}</span>
-      <span class="diag-card__aside">共 {{ stageCount }} 个阶段</span>
+      <span>{{ stageTitle }}</span>
+      <span class="diag-card__aside">完成 {{ progress.done }} / {{ progress.total }} 个阶段</span>
     </h3>
     <RunTimeline>
       <template #row-actions="{ event }">

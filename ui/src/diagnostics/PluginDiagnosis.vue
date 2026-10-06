@@ -12,10 +12,8 @@
 //    「白屏前最后一次正常启动里也出现了」的唯一线索。
 // ③ **首屏不显示凭据、会话正文与环境变量。** 折叠区里也只给路径与摘要。
 import { computed, onMounted } from 'vue';
-import { openEvidence } from './diagnostic-actions.js';
-import { store } from '../store.js';
-import { loadSnapshots } from './snapshots.js';
-import { closeDiagnosis, diagnosticStore, loadPluginRun } from './diagnostics.js';
+import { openEvidence, restorePreChange } from './diagnostic-actions.js';
+import { diagnosticStore, loadPluginRun } from './diagnostics.js';
 import { causeLabel, durationLabel, evidenceLabel, statusMeta } from './diagnostic-labels.js';
 import { INTEGRITY_META, SOURCE_LABELS } from './precheck-labels.js';
 import RunTimeline from './RunTimeline.vue';
@@ -139,17 +137,22 @@ function viewLogs() {
 }
 
 /**
- * 跳到设置页的「快照与恢复」卡片。
+ * 「恢复快照」——直接打开**这次预检之前**那份快照的差异预览。
  *
- * **不自己弹恢复对话框**：恢复要走「差异预览 → 逐项确认」，那是
- * `SnapshotRestoreDialog` 已经做好的流程（设计 §6.6 的「恢复快照」按钮）。
- * 这里另起一套预览只会让两处的差异口径漂掉——而用户在恢复前看的
- * 必须是**同一份**差异。
+ * 此前这个按钮只 `loadSnapshots()` 然后把用户丢到设置页的快照列表：点的是
+ * 恢复，得到的却是一个列表，用户得自己猜哪一份是「变更前」（审查 P1-04）。
+ * 现在预检把 pre-change 快照的 id 交回报告（`preChangeSnapshotId`），这里
+ * 直接调现有的 `previewRestore` 打开 `SnapshotRestoreDialog`——**不另起一套
+ * 差异计算**，两处的差异口径必须一致，而用户在恢复前看的必须是同一份。
+ *
+ * 旧记录（快照机制之前、或打快照失败）没有这个 id：此时**如实改名**成
+ * 「查看快照列表」并说明不能自动定位，而不是猜一个 id 去打开。
  */
+const preChangeSnapshotId = computed(() => String(report.value?.preChangeSnapshotId || ''));
+const canRestoreDirectly = computed(() => !!preChangeSnapshotId.value);
+
 function openRestore() {
-  loadSnapshots();
-  store.activePanel = 'settings';
-  closeDiagnosis();
+  return restorePreChange(preChangeSnapshotId.value);
 }
 
 function reload() {
@@ -253,10 +256,14 @@ onMounted(() => {
     </ul>
   </div>
 
-  <div class="diag-card">
-    <h3 class="diag-card__title"><span>阶段时间线</span></h3>
+  <!-- 详细事件默认收起。页面上此前是「静态五段流程」+「RunTimeline」两条
+       时间线连排，表达的是同一批事件，480×800 下会把底部的主动作推出首屏
+       （审查 P2-06）。现在留下带「未执行」态的那条做主线（它回答「走到哪、
+       哪一步没走」），逐条事件收进折叠区（回答「那一步具体说了什么」）。 -->
+  <details v-if="(run?.events || []).length" class="diag-card">
+    <summary>详细事件（{{ (run?.events || []).length }} 条）</summary>
     <RunTimeline />
-  </div>
+  </details>
 
   <details v-if="risks.length" class="diag-card">
     <summary>证据与风险</summary>
@@ -272,7 +279,11 @@ onMounted(() => {
   <div class="diag-actions">
     <el-button @click="viewLogs">查看日志</el-button>
     <el-button :loading="diagnosticStore.loading" @click="reload">刷新</el-button>
-    <!-- 只给已安装的插件：没装上的插件没有「退回到变更前」这回事。 -->
-    <el-button v-if="report?.installed" @click="openRestore">恢复快照</el-button>
+    <!-- 只给已安装的插件：没装上的插件没有「退回到变更前」这回事。
+         没有 pre-change 快照 id 时改名成「查看快照列表」——按钮名必须等于
+         实际效果，不能写着「恢复」却只给一个列表（审查 P1-04）。 -->
+    <el-button v-if="report?.installed" @click="openRestore">
+      {{ canRestoreDirectly ? '恢复变更前状态' : '查看快照列表' }}
+    </el-button>
   </div>
 </template>
