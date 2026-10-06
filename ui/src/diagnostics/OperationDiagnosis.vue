@@ -17,10 +17,7 @@ import {
   causeLabel,
   durationLabel,
   evidenceLabel,
-  headlineFor,
-  nextStepFor,
-  stageProgress,
-  statusMeta,
+  headlineFor, nextStepFor, runAgeLabel, stageProgress, staleRunHint, statusMeta,
 } from './diagnostic-labels.js';
 import { diagnosticStore, loadOperationDiagnosis } from './diagnostics.js';
 import { openEvidence } from './diagnostic-actions.js';
@@ -87,11 +84,14 @@ function reload() {
         {{ run?.kernelVersion || '未知版本' }} · 实例 {{ run?.instanceId }} · 耗时
         {{ cost || '未知' }}
         <template v-if="progress.total"> · 阶段 {{ progress.done }} / {{ progress.total }}</template>
+        <template v-if="runAgeLabel(run)"> · {{ runAgeLabel(run) }}</template>
       </template>
       <template v-else>{{ emptyText }}</template>
     </p>
     <p v-if="run?.summary" class="diag-summary-text">{{ run.summary }}</p>
     <p v-if="nextStep" class="diag-next">{{ nextStep }}</p>
+    <!-- 过期提醒排在「下一步」之后：先说这条是什么结论，再提醒它是哪一次的。 -->
+    <p v-if="staleRunHint(run)" class="diag-next">{{ staleRunHint(run) }}</p>
   </div>
 
   <p v-if="diagnosticStore.error" class="diag-error">{{ diagnosticStore.error }}</p>

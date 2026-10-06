@@ -16,7 +16,9 @@ import { isLoading } from '../shell/loading.js';
 import { openEvidence, restorePreChange } from './diagnostic-actions.js';
 import { applyPluginChange } from '../plugins/plugins.js';
 import { diagnosticStore, loadPluginRun } from './diagnostics.js';
-import { causeLabel, durationLabel, evidenceLabel, statusMeta } from './diagnostic-labels.js';
+import {
+  causeLabel, durationLabel, evidenceLabel, runAgeLabel, staleRunHint, statusMeta,
+} from './diagnostic-labels.js';
 import { INTEGRITY_META, SOURCE_LABELS } from './precheck-labels.js';
 import RunTimeline from './RunTimeline.vue';
 
@@ -198,6 +200,7 @@ onMounted(() => {
       {{ spec.name || spec.id || '未知插件' }}
       <template v-if="report?.pin"> · {{ report.pin }}</template>
       <template v-if="cost"> · 预检耗时 {{ cost }}</template>
+      <template v-if="runAgeLabel(run)"> · {{ runAgeLabel(run) }}</template>
     </p>
     <p v-if="report?.summary" class="diag-summary-text">{{ report.summary }}</p>
     <p v-if="report?.hint" class="diag-next">{{ report.hint }}</p>
@@ -210,6 +213,7 @@ onMounted(() => {
     <p v-if="report?.installed && report?.verdict !== 'pass'" class="diag-error">
       这个插件已装到 {{ instanceText }}，但没有经过启动验证——上面的结论不适用于它。
     </p>
+    <p v-if="staleRunHint(run)" class="diag-next">{{ staleRunHint(run) }}</p>
   </div>
 
   <div class="diag-card">

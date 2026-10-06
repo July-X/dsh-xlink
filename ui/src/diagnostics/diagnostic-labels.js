@@ -4,7 +4,7 @@
 // status / cause（原样保留是 `run.rs` 的纪律），旧壳读到新取值时如果
 // 直接丢掉，用户看到的时间线会「缺一块」——而缺的那块恰恰是新版才有
 // 的信息，正是他最想知道的。所以三张表都走「查不到 → 显式标未知」。
-import { tildePath } from '../shell/labels.js';
+import { relativeTimeLabel, tildePath } from '../shell/labels.js';
 
 /** 启动 / 预检 / 恢复 / 排查的阶段。顺序即时间线默认展示顺序。 */
 export const STAGE_LABELS = {
@@ -224,6 +224,28 @@ export function durationLabel(ms) {
   if (!Number.isFinite(value) || value <= 0) return '';
   if (value < 1000) return `${Math.round(value)} 毫秒`;
   return `${(value / 1000).toFixed(1)} 秒`;
+}
+
+/**
+ * 这条记录是否已经过期到「结论只代表当时」，过期时给出那句提醒。
+ *
+ * 只对**已结束且不成功**的记录说：还在跑的记录谈不上过期（那是在进行时），
+ * 昨天成功的启动也不该让用户今天就觉得要重跑。十分钟为界——短于它用户多半
+ * 正盯着页面，长于它他多半已经忘了自己点过什么。
+ */
+const STALE_RUN_MS = 10 * 60 * 1000;
+
+export function runAgeLabel(run) {
+  return relativeTimeLabel(run?.startedAtMs);
+}
+
+export function staleRunHint(run) {
+  const status = String(run?.status ?? '');
+  const ended = status === 'failure' || status === 'inconclusive' || status === 'warning';
+  const started = Number(run?.startedAtMs || 0);
+  if (!ended || !Number.isFinite(started) || started <= 0) return '';
+  if (Date.now() - started < STALE_RUN_MS) return '';
+  return `这是 ${runAgeLabel(run)}那次运行的结果，不代表当前状态。重跑一次才会有新的结论。`;
 }
 
 /**
