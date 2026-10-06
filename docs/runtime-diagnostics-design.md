@@ -1363,3 +1363,90 @@ plugin_precheck_apply(spec)    → 守卫 → 打 pre-change 快照 → 走生�
 - **`cargo test --lib` 有 3 条既有失败**（`process_state_distinguishes_gone_from_unknown`、
   `wiring_survives_single_plugin_failure`、`restore_hint_needs_a_session_hide_and_fires_once`）。
   在**干净树上复现过**，与本轮改动无关。
+
+---
+
+## 19. 安装预检基线起不来：profile 清单差一个字段（2026-10-06）
+
+### 19.1 现象
+
+用户实机反馈「很多插件无法通过安装预检」，两张截图的结论一致：
+
+> 环境基线就没能起来，预检无法进行：沙盒内核在就绪前退出（exit status: 0）。没有安装任何东西
+
+与候选插件无关——**基线**（不装任何插件）就没起来，所以是系统性的。
+
+### 19.2 根因
+
+`DshAdapter::prepare_instance` 落给新实例的 `profiles/<profile>/package.json`
+是一个不带 `dsh.profile.bundles` 的 stub：
+
+```json
+{ "name": "dsh-xlink-instance-<id>", "private": true, "version": "0.0.0",
+  "schema_version": 1, "kernel_family": "dsh" }
+```
+
+内核把「profile 目录里有 `package.json`」当成**用户自定义 profile**，读出
+`dsh.profile.bundles` 求值——缺这个键就是空数组，于是它启动了一个**零插件**的
+profile：没有可监听的东西，于是正常退出（exit 0），且**一行日志都不打**。
+
+受控矩阵复验（每组只变一个变量，dsh 0.2.0-rc.2 + node 25.9，`dsh web --no-open`）：
+
+| profile 目录 | 结果 |
+| --- | --- |
+| 无 `package.json` | 正常起来，打印监听 URL |
+| `package.json` **带** `dsh.profile.bundles` | 正常起来 |
+| `package.json` **不带** `dsh.profile.bundles` | **exit 0，无任何输出** |
+
+`pnpm-workspace.yaml` 的内容、`cordis.patch.yml` 存不存在，都不影响这个结论。
+
+### 19.3 为什么此前没人发现
+
+- `plugins::center::ensure_profile` 写的是**正确**形状（带模板 bundle），但它
+  `if fs::metadata(&manifest_path).is_ok() { return Ok(()) }` —— 见到 stub 就早退，
+  永远补不上。所以两个写入方谁先跑谁定形状，而 `prepare_instance` 在建实例时必跑。
+- 旧的预检是 **fail-open**：基线起不来就直接装上。系统性的「起不来」因此被
+  静默吞掉，用户看到的只是「装上了」。§18 的两阶段契约把 fail-open 拆掉之后，
+  这个一直存在的缺陷才第一次以「预检未能完成」的形式显形——**症状变响了，
+  病一直没被治好**。
+
+### 19.4 修法
+
+清单的形状提成一个跨两侧的唯一落点 `kernel/profile_manifest.rs`：它是内核的
+启动契约，不只服务接线，所以**两个写入方都必须走它**。
+
+- `prepare_instance` 与 `ensure_profile` 都调 `profile_manifest::seed`。
+- `seed` 幂等，且**修存量**：文件已在但缺 `dependencies` / `dsh.profile.bundles`
+  时就地补齐，其余字段原样保留。存量实例已经被 stub 污染过，只在文件缺席时落
+  初值是不够的。
+- 判断「要不要修」只看键在不在、类型对不对，不看内容：`bundles: []` 是用户自己
+  表达「这个 profile 就是空的」，不该被改回去。
+- 清单读不出 JSON 时整份换成初始形状——那种清单内核本来就读不了，留着只会让
+  每次启动都失败。
+
+同时补上 §19.5 的取证缺口。
+
+### 19.5 顺带补的取证缺口
+
+`preserve_evidence` 此前**只在 fail 路径**调用，基线失败与沙盒创建失败两条路
+都没调；沙盒目录随 `Drop` 一起删，磁盘上什么都不剩。所以这次「最需要线索的那次」
+恰好没有线索（报告里的 `evidence` 还是空的，因为内核本身没打日志）。基线失败
+路径现在也取证。
+
+### 19.6 改掉的一条既有断言
+
+`prepare_instance_creates_dsh_home_layout` 原本断言清单含 `schema_version` 与
+`kernel_family`。这两个字段**只存在于那个 stub 里**，没有任何代码读过，本机
+真正跑得起来的实例也从来没有它们。断言钉的是 bug 产物上的装饰字段，不是契约，
+所以改钉 `dependencies` 与 `dsh.profile.bundles`。
+
+### 19.7 测试
+
+- `kernel::profile_manifest` 6 条：stub → 修复后带 bundles 且保留其它字段；
+  显式空 `bundles` 不动；壳自己写的清单不受损；读不出结构的整份替换；
+  `seed` 幂等；每个模板 profile 都带 base 层。
+- `kernel::kernel_adapter` 2 条：**从适配器产出侧**钉住这次回归
+  （`prepare_instance_leaves_a_profile_the_kernel_can_boot`、
+  `prepare_instance_repairs_a_stub_left_by_an_older_build`）。只测
+  `profile_manifest` 自己不够——这次 bug 的本质就是两边各写各的形状，
+  模块自己的测试全绿也照样漏。

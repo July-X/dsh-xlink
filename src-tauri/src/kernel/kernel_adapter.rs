@@ -27,6 +27,7 @@ use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
 
+use crate::kernel::profile_manifest;
 use crate::shell::instance::{InstanceRecord, KERNEL_FAMILY_DSH, KERNEL_FAMILY_MCODE};
 use crate::shell::paths;
 
@@ -297,33 +298,16 @@ impl KernelAdapter for DshAdapter {
             .map_err(|_e| AdapterError::InvalidProfile(record.profile.clone()))?;
         crate::shell::instance::ensure_instance_dirs(record)
             .map_err(|e| AdapterError::Io(e.to_string()))?;
-        // DSH 实例的 profile / pnpm-workspace / cordis.patch 模板。
-        // 这里只落空文件占位；P4 插件接线时再写入 bundle 列表。
+        // profile 目录的初值由 `profile_manifest::seed` 一家写：清单的**形状**
+        // 是内核的启动契约（缺 `dsh.profile.bundles` 时内核解析出零个插件就正常
+        // 退出，见该模块文档的实测矩阵）。这里此前落的是一个不带 bundle 的 stub，
+        // 于是每一次新建实例——包括每一次预检沙盒——都起不来内核。
         let home = Self::dsh_home_for(record);
-        let profile = home.join("profiles").join(&record.profile);
-        // ensure_instance_dirs 只准备 `home/profiles/` 父目录；profile
-        // 子目录由 DshAdapter 显式创建。
-        std::fs::create_dir_all(&profile).map_err(|e| AdapterError::Io(e.to_string()))?;
-        let package_json = profile.join("package.json");
-        if !package_json.exists() {
-            let stub = serde_json::json!({
-                "name": format!("dsh-xlink-instance-{}", record.id),
-                "private": true,
-                "version": "0.0.0",
-                "schema_version": 1,
-                "kernel_family": record.kernel_family,
-            });
-            std::fs::write(
-                &package_json,
-                format!("{}\n", serde_json::to_string_pretty(&stub).unwrap()),
-            )
-            .map_err(|e| AdapterError::Io(e.to_string()))?;
-        }
-        let workspace_yml = profile.join("pnpm-workspace.yaml");
-        if !workspace_yml.exists() {
-            std::fs::write(&workspace_yml, "packages:\n  - .\n")
-                .map_err(|e| AdapterError::Io(e.to_string()))?;
-        }
+        profile_manifest::seed(
+            &home.join("profiles").join(&record.profile),
+            &record.profile,
+        )
+        .map_err(|e| AdapterError::Io(format!("无法准备实例 profile 目录：{e}")))?;
         // dsh-app-boot 要求 `cordis.patch.yml`（可缺席）是**顶层 YAML 数组**
         // （loader patch 条目列表）。P3 起的占位模板曾写成 `schema_version: 1`
         // 映射——内核从不读默认 `~/.dsh` 下不存在的同名文件所以多年无恙，而
@@ -792,10 +776,23 @@ mod tests {
             !patch_text.lines().any(|line| line.trim() == "[]"),
             "顶层的 [] 会结束整个 YAML 文档，不能与后面的 patch 条目共存：{patch_text:?}"
         );
-        // package.json 内容含 schema_version 与 kernel_family。
+        // package.json 的形状是**内核的启动契约**，不是壳的记账簿。
+        // 2026-10-06 前这里断言的是 `schema_version` 与 `kernel_family` 两个
+        // 装饰字段——它们只存在于旧 stub 里，没有任何代码读过，本机真正跑得
+        // 起来的实例也从来没有它们，而那份 stub 恰恰是内核起不来的原因。
+        // 改钉真正决定成败的那两把钥匙。
         let text = std::fs::read_to_string(&profile_pkg).unwrap();
-        assert!(text.contains("kernel_family"));
-        assert!(text.contains("schema_version"));
+        let manifest: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(
+            !profile_manifest::needs_repair(&manifest),
+            "prepare_instance 落下的清单必须带 dependencies 与 dsh.profile.bundles，实际：{text}"
+        );
+        assert!(
+            manifest["dsh"]["profile"]["bundles"]
+                .as_array()
+                .is_some_and(|b| b.iter().any(|x| x == "@deepseek-ai/dsh-web-app")),
+            "web profile 必须带 web-app 层，实际：{text}"
+        );
         std::fs::remove_dir_all(&home).ok();
     }
 
@@ -868,6 +865,72 @@ mod tests {
             first,
             std::fs::read_to_string(&patch_yml).unwrap(),
             "重复 prepare 不得改动已经就位的接线文件"
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 2026-10-06 回归：`prepare_instance` 此前落的是一个**不带
+    /// `dsh.profile.bundles`** 的 stub。内核读到零个插件就正常退出（exit 0）
+    /// 且一行日志不打，于是每一个新建实例——包括每一次安装预检的沙盒——都
+    /// 起不来内核，报告里只剩「沙盒内核在就绪前退出（exit status: 0）」。
+    ///
+    /// 钉在**适配器的产出**这一侧而不是只测清单模块：那次 bug 的本质就是
+    /// 两边各写各的形状，只测 `profile_manifest` 自己的测试全绿也照样漏。
+    #[test]
+    fn prepare_instance_leaves_a_profile_the_kernel_can_boot() {
+        let home = temp_dir("prepare-bootable");
+        let _xlink = scoped_xlink_home(&home);
+        let adapter = DshAdapter;
+        let record = sample_record();
+        adapter.prepare_instance(&record).expect("prepare");
+
+        let manifest = DshAdapter::dsh_home_for(&record)
+            .join("profiles")
+            .join(&record.profile)
+            .join("package.json");
+        let root: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+        assert!(
+            !profile_manifest::needs_repair(&root),
+            "prepare_instance 产出的清单必须带 dependencies 与 dsh.profile.bundles，实际：{root}"
+        );
+        let bundles = root["dsh"]["profile"]["bundles"].as_array().unwrap();
+        assert!(
+            bundles.iter().any(|b| b == "@deepseek-ai/dsh-web-app"),
+            "web profile 必须带 web-app 层，否则内核启动后工作台是空的：{bundles:?}"
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 存量实例已经被那个 stub 污染过了（`ensure_profile` 见到 `package.json`
+    /// 存在就早退，永远补不上）。所以 `prepare_instance` 不能只在文件缺席时
+    /// 落初值，还必须把写坏的那份修回来——修的时候不许动别的字段。
+    #[test]
+    fn prepare_instance_repairs_a_stub_left_by_an_older_build() {
+        let home = temp_dir("prepare-repairs-stub");
+        let _xlink = scoped_xlink_home(&home);
+        let adapter = DshAdapter;
+        let record = sample_record();
+        crate::shell::instance::ensure_instance_dirs(&record).expect("ensure dirs");
+        let profile = DshAdapter::dsh_home_for(&record)
+            .join("profiles")
+            .join(&record.profile);
+        std::fs::create_dir_all(&profile).unwrap();
+        // 逐字节复刻旧构建写出的 stub——修不认得就等于没修。
+        std::fs::write(
+            profile.join("package.json"),
+            "{\n  \"name\": \"dsh-xlink-instance-default\",\n  \"private\": true,\n  \"version\": \"0.0.0\",\n  \"schema_version\": 1,\n  \"kernel_family\": \"dsh\"\n}\n",
+        )
+        .unwrap();
+
+        adapter.prepare_instance(&record).expect("prepare");
+        let root: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(profile.join("package.json")).unwrap())
+                .unwrap();
+        assert!(!profile_manifest::needs_repair(&root), "实际：{root}");
+        assert_eq!(
+            root["kernel_family"], "dsh",
+            "修清单不是重写清单：别的字段必须原样保留"
         );
         std::fs::remove_dir_all(&home).ok();
     }

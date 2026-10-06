@@ -560,7 +560,11 @@ const FILE_BUDGETS = {
   // 无从下手。plugins.rs 侧只暴露 `store_file` 一条可见性缝。
   // 450 → 451：两阶段之后 `commit` 换成了 `plugin_apply`（应用前打快照 +
   // 走生产安装路径 + 重查守卫）。
-  'src-tauri/src/plugins/precheck.rs': 451,
+  // 451 → 465：基线失败路径补 `preserve_evidence`。此前取证**只在 fail 路径**
+  // 调用，沙盒目录随 Drop 删掉，于是「最需要线索的那次」恰好没有线索——2026-10-06
+  // 排查预检基线失败时，报告里的 evidence 是空的、磁盘上也什么都不剩。
+  // 一次取证调用换一条可查路径，不拆模块。
+  'src-tauri/src/plugins/precheck.rs': 465,
   // 插件预检的 Tauri 命令壳：取证（plugin_precheck_install）+ 应用
   // （plugin_precheck_apply）+ 它们共用的 `run_precheck_command`（node / pnpm
   // 准备、长任务通道、生命周期锁）。从 commands.rs 搬出——那份在反棘轮上，
@@ -833,6 +837,13 @@ const FILE_BUDGETS = {
   // （DSH_HOME / DSH_PROFILE 注入、profile/package.json 与 cordis.patch.yml
   // 模板、resolve_install_dir 双查找）。约 430 行（含 9 个测试）。
   'src-tauri/src/kernel/kernel_adapter.rs': 620,
+  // profile 清单（profiles/<profile>/package.json）的初值、修复与模板 bundle
+  // 表。独立成文件是因为它有**两个**写入方——kernel_adapter 建实例时落初值、
+  // plugins/center 接线时改写——而清单的形状同时是内核的启动契约，不只服务
+  // 于接线：缺 `dsh.profile.bundles` 时内核解析出零个插件就 exit 0 且不打日志
+  // （2026-10-06 实测）。两边各写各的形状正是这个 bug 的成因，所以它必须
+  // 有一个跨两侧的唯一落点，而不是各自 inline 一份模板。
+  'src-tauri/src/kernel/profile_manifest.rs': 190,
   // 模型用量统计（usage.rs）：内核 session 多帧 zstd 流的增量扫描（ruzstd
   // 帧级解码 + offset checkpoint + 坏帧停驻）、按「天 × 模型」预聚合与 90 天
   // 保留剪枝、汇总视图派生与 get_model_usage / open_usage_window 命令，

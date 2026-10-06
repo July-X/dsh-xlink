@@ -10,3 +10,4 @@ pub(crate) mod kernel_deps;
 pub(crate) mod kernel_evidence;
 pub(crate) mod lifecycle;
 pub(crate) mod package_activity;
+pub(crate) mod profile_manifest;

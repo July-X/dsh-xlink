@@ -300,6 +300,17 @@ pub fn plugin_install(
             baseline.detail
         );
         report.evidence = baseline.log;
+        // 沙盒目录随 `Drop` 一起删掉，所以此刻就把内核日志另存一份。
+        // 2026-10-06 这次基线失败之所以查了半天，是因为这条路径**根本没有**
+        // 取证：报告里的 `evidence` 是一段空字符串（日志本身也是空的——内核
+        // 静默退出），沙盒目录又被删干净，磁盘上什么都不剩。fail 路径留了
+        // 取证、基线路径没留，等于「最需要线索的那次没线索」。
+        if let Some(path) = sandbox::preserve_evidence(data_dir, &sandbox, "baseline") {
+            crate::shell::shell_events::record(
+                "precheck",
+                &format!("环境基线未能启动，内核日志已存至 {}", path.display()),
+            );
+        }
         report.hint = "先不装任何插件时内核在沙盒里也起不来，问题不在候选插件。请查看下方日志确认是内核版本、Node 环境还是端口问题；也可以在插件中心关闭安装预检。"
             .into();
         precheck_stage!(
