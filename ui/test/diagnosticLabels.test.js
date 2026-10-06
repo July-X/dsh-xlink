@@ -224,3 +224,47 @@ test('§2.5.3 返回按钮带 aria-label（图标按钮不能只靠图形猜）'
   assert.match(backButton, /aria-label="返回"/, '图标按钮不能只靠图形猜含义');
   assert.match(backButton, /title="返回"/, '必须有可见的悬停提示');
 });
+
+// —— 恢复 / 排查的运行记录（设计 §4.1 的四种 kind）——
+//
+// 这两种 kind 走的是**同一套**状态与归因词表，但头部结论必须按 kind 各说各
+// 的：套用启动那张表会写出「工作台已启动」这种与恢复毫无关系的结论。
+
+test('§4.1 四种 kind 共用状态词表，但恢复与排查各有自己的结论措辞', () => {
+  // 恢复不得复用启动的措辞（「工作台已启动」对一次配置回退毫无意义）。
+  for (const status of ['running', 'success', 'warning', 'failure']) {
+    const restore = labels.headlineFor({ kind: 'restore', status });
+    const startup = labels.headlineFor({ kind: 'startup', status });
+    assert.notEqual(restore, startup, `恢复与启动在 ${status} 上的结论撞词了`);
+    assert.ok(restore && !restore.startsWith('工作台'), `恢复结论不该谈工作台：${restore}`);
+  }
+  assert.match(labels.headlineFor({ kind: 'restore', status: 'success' }), /恢复/);
+  assert.match(labels.headlineFor({ kind: 'restore', status: 'warning' }), /跳过/);
+});
+
+test('§11.1 二分的结论永远不叫「根因」', () => {
+  // 组合效应会让二分停在一个不可修的答案上，叫「根因」会让用户去卸一个
+  // 无辜的插件。这条断言把四种 kind 的全部状态都扫一遍。
+  for (const status of ['running', 'success', 'warning', 'failure', 'inconclusive', 'canceled']) {
+    const text = labels.headlineFor({ kind: 'bisect', status });
+    assert.ok(text, `${status} 没有结论文案`);
+    assert.ok(!/根因/.test(text), `二分在 ${status} 上说了「根因」：${text}`);
+  }
+  // 「收窄到」是刻意选的动词：它说的是证据支持的范围，不是一个确定的答案。
+  assert.match(labels.headlineFor({ kind: 'bisect', status: 'success' }), /收窄/);
+});
+
+test('未知 kind / 状态退回短标签，不编一句结论', () => {
+  // 编一句看着合理的话，比显示「未知状态（xxx）」危险得多：用户会照着它
+  // 去做决定，而那句话背后没有任何证据。
+  assert.equal(labels.headlineFor({ kind: 'restore', status: 'weird' }), labels.statusMeta('weird').label);
+  assert.equal(labels.headlineFor({ kind: 'brand-new', status: 'success' }), labels.statusMeta('success').label);
+  assert.equal(labels.headlineFor({}), labels.statusMeta('').label);
+});
+
+test('恢复与排查的阶段都有中文名（时间线不能出现「未知阶段」）', () => {
+  for (const stage of ['prepare', 'apply', 'verify', 'select', 'probe', 'conclude', 'abort']) {
+    const text = labels.stageLabel(stage);
+    assert.ok(!/未知阶段/.test(text), `${stage} 没有中文名：${text}`);
+  }
+});

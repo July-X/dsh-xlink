@@ -7,10 +7,12 @@
 pub(crate) mod bisect;
 pub(crate) mod bisect_cmd;
 pub(crate) mod guard;
+pub(crate) mod operation_run;
 pub(crate) mod perf;
 pub(crate) mod restore;
 pub(crate) mod run;
 pub(crate) mod run_cmd;
 pub(crate) mod snapshot;
+pub(crate) mod snapshot_cmd;
 pub mod startup_run;
 pub(crate) mod verify;

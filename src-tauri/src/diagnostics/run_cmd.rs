@@ -27,7 +27,7 @@ pub async fn diagnostic_run_list(
     let (family, instance_id) = instance::resolve_default();
     crate::commands::blocking(move || {
         Ok::<_, std::convert::Infallible>(
-            run::load_index(&family, &instance_id)
+            run::load_index(family, instance_id)
                 .entries
                 .into_iter()
                 .filter(|entry| match &kind {
@@ -52,7 +52,7 @@ pub async fn diagnostic_run_get(
 ) -> Result<Option<run::DiagnosticRun>, String> {
     let (family, instance_id) = instance::resolve_default();
     crate::commands::blocking(move || {
-        Ok::<_, std::convert::Infallible>(run::get(&family, &instance_id, &run_id))
+        Ok::<_, std::convert::Infallible>(run::get(family, instance_id, &run_id))
     })
     .await
 }
@@ -70,7 +70,7 @@ pub async fn diagnostic_run_latest(
     crate::commands::blocking(move || {
         let wanted = kind.unwrap_or_default();
         Ok::<_, std::convert::Infallible>(
-            run::load_index(&family, &instance_id)
+            run::load_index(family, instance_id)
                 .entries
                 .into_iter()
                 .find(|entry| wanted.is_empty() || entry.kind == wanted),

@@ -252,7 +252,8 @@ const FILE_BUDGETS = {
   // 没有实现——同 shell/mod.rs 那条 15 → 19 的先例。
   'src-tauri/src/plugins/mod.rs': 11,
   'src-tauri/src/skills/mod.rs': 10,
-  'src-tauri/src/diagnostics/mod.rs': 11,
+  // 11 → 12：snapshot_cmd 进来（快照三命令从 commands.rs 搬出，见那条）。
+  'src-tauri/src/diagnostics/mod.rs': 12,
   'src-tauri/src/harness/mod.rs': 10,
   'src-tauri/src/usage/mod.rs': 10,
   'src-tauri/src/notify/mod.rs': 10,
@@ -327,7 +328,15 @@ const FILE_BUDGETS = {
   // map_err」比调一个助手长。
   // 2061 → 2047：删掉 kernel_plugin_list 命令（随 tooltip 一起移除）。
   // 顺带清掉 activate_version 里一处提到它的陈旧注释。净 -14。
-  'src-tauri/src/commands.rs': 2047,
+  // 2047 → 1969：三条快照命令（snapshot_list / snapshot_preview_restore /
+  // snapshot_restore）搬去 diagnostics/snapshot_cmd.rs，净 -78。**这次是被
+  // 逼出来的**：给 snapshot_restore 接上运行记录（设计 §4.1 的 restore kind）
+  // 之后它到了 2051，而反棘轮不允许上调 2047。门禁给出的唯一出路是拆，
+  // 而为了 4 行去挤格式只会把难读的东西留给下一个人。照 bisect_cmd.rs 的
+  // 先例让这一族命令自成模块，是本来就该做的事。顺带修掉一处旧伤：
+  // plugin_set_precheck 的文档注释曾被挤到 snapshot_list 头上，两条命令
+  // 共用一段说明。
+  'src-tauri/src/commands.rs': 1969,
   // 安全网 P0 + P1：环境快照。指纹计算（可重建的声明而非备份）、快照文档
   // 读写（走 state.rs 骨架）、裁剪策略（高权重优先 + 永不丢 last-known-good）、
   // 两个打点的入栈规则、给面板的只读视图，以及 P1 的差异计算与恢复执行
@@ -355,12 +364,42 @@ const FILE_BUDGETS = {
   // 结果如何、排除了谁"，怎么试由命令层驱动 verify::probe_once。
   // 收尾只有三种取值，**没有"找到根因"**——组合效应会让二分停在不可修
   // 的答案上。
-  'src-tauri/src/diagnostics/bisect.rs': 350,
+  // 350 → 372：会话多带一个 run_id（跨命令接着写同一条运行记录，理由见
+  // operation_run 那条），另收进 rounds_estimate —— 原本在 bisect_cmd.rs 有
+  // 一份同算法的副本，两边各改一次，界面上的「预计轮数」就会和实际跑的轮数
+  // 对不上。少一份实现比多 22 行划算。
+  'src-tauri/src/diagnostics/bisect.rs': 372,
   // 二分定位的 Tauri 命令壳。**被反棘轮逼出来的**：四条命令加 rounds_estimate
   // 原本要进 commands.rs，而那条规则不许把一个 2110 行的文件继续撑大。
   // 这组命令只服务二分一件事、内部高度耦合，自成模块也确实更清楚。
   // 120 → 140：每轮真正装进沙盒的插件白名单 + 工作台运行态守卫。
-  'src-tauri/src/diagnostics/bisect_cmd.rs': 140,
+  // 140 → 169：接上运行记录（设计 §4.1 的 bisect kind）。二分是多命令流程，
+  // 每轮试探都是一次独立调用，所以每条命令都要 attach 回同一条 recorder、
+  // 推本轮事件、并在收出结论时收尾；另有 rounds_estimate 搬去 bisect.rs
+  // 之后少掉的 12 行。剩下的净增全是这条接线的收尾分支，删任何一处的后果
+  // 都是「记录永远停在进行中」。（169 → 183 是 cargo fmt 重排长表达式的换
+  // 行，不是又加了逻辑。）
+  'src-tauri/src/diagnostics/bisect_cmd.rs': 183,
+
+  // 给**已有成熟状态文件**的诊断操作补运行记录：恢复与二分（设计 §4.1 的
+  // 四种 kind）。
+  //
+  // **独立成模块而不是塞进 run.rs 或 restore.rs / bisect.rs**：启动与预检各有
+  // 专门的编排层，阶段事件是就地打的；而恢复与二分的判定逻辑早就写好并各带
+  // 一份状态文件，在它们内部插阶段事件会侵入那两条成熟路径——它们有各自的
+  // 测试与边界，重新接线的风险远大于收益。所以这两条链走旁路：命令层调它们
+  // 前后各打一次事件，结束时按**终态**而不是「调用成功」记账。
+  //
+  // 约 110 行是单测（跳过项不算成功、没测过不说成通过、二分不称根因、中止
+  // 不算成功、跨命令接续后 seq 仍然连续、未知 stage 原样保留）——这几条正是
+  // 「结论会骗人」的高发处。
+  // 249 → 252 同理：cargo fmt 的换行，不是新增逻辑。
+  'src-tauri/src/diagnostics/operation_run.rs': 252,
+  // 快照与恢复的 Tauri 命令壳（从 commands.rs 搬出，见那条）。三条命令构成
+  // 一个完整动作：看见回退点 → 看差异 → 执行。留在 commands.rs 时那份文件
+  // 因接上运行记录而越过反棘轮的 2047；门禁给出的唯一出路是拆，与其为 4 行
+  // 去挤格式，不如照 bisect_cmd.rs 的先例让这一族自成模块。
+  'src-tauri/src/diagnostics/snapshot_cmd.rs': 86,
   // 「起一次沙盒内核看它起不来」的共享判据：P1 恢复后自检与 P2 二分试探
   // 共用。判据一旦有两份实现就会分叉，而分叉出来的那个会让二分**静默收敛
   // 到错误答案**——它把"没试成"当成"起来了"。
@@ -373,7 +412,10 @@ const FILE_BUDGETS = {
   // 永远停在"排查进行中 … 请耐心等"。
   'ui/src/diagnostics/bisect.js': 175,
   // P2 的排查面板：逐轮显示"在试哪一半 / 上一轮结果 / 已排除几个 / 还要几轮"。
-  'ui/src/diagnostics/BisectPanel.vue': 180,
+  // 180 → 187：结论出来之后给一个「查看排查诊断」入口，把同一场排查带进
+  // 诊断层与启动 / 预检的记录同口径地看。只在有结论后给——跑的过程中时间线
+  // 还少一半，推给用户看到的是一条看不出所以然的半截记录。
+  'ui/src/diagnostics/BisectPanel.vue': 187,
   // P0 的概览页卡片。刻意**只读**：提前放"一键回退"会让用户在没看清
   // 差异的情况下丢配置。
   'ui/src/diagnostics/SnapshotCard.vue': 170,
@@ -389,7 +431,10 @@ const FILE_BUDGETS = {
   // 版的阶段静默丢掉。
   // 500 行里有约 180 行是单测（写失败不改结果、引用保护、脱敏形状、
   // 事件预算、未知取值往返）——那些是这套模型最容易回归的地方。
-  'src-tauri/src/diagnostics/run.rs': 525,
+  // 525 → 533：`Recorder::attach` —— 接续一条已落盘但没收尾的记录。二分
+  // 跨 N 次命令调用，recorder 活不过命令边界，不接续就得每次重开一条，把
+  // 一次排查切成互不相干的好几条。
+  'src-tauri/src/diagnostics/run.rs': 533,
   // 运行记录的只读命令壳。刻意**没有** prune 命令：裁剪是写入侧
   // `Recorder::finish` 的职责，给前端一条命令就等于开一个能被随手调用的
   // 删除路径。三条命令的 `spawn_blocking` 走 `commands::blocking` 助手，
@@ -403,7 +448,10 @@ const FILE_BUDGETS = {
   // 诊断层的共享状态与动作：通道消息解析（结构化事件 / 纯文本双路）、
   // 实时事件流、打开与返回。**解析规则只有一份**——进度浮层与 store 各有
   // 一个 makeChannel 消费点，各写一份解析就会漂成两种行为。
-  'ui/src/diagnostics/diagnostics.js': 150,
+  // 150 → 169：恢复 / 排查诊断的打开与加载。四条加载路径的取数逻辑抽成
+  // 一个 fetchRunDetail——它们只差 kind、loading key 与空态文案三点，复制
+  // 四份之后改一处忘一处，漂掉的恰恰是用户第一次看到的那句话。
+  'ui/src/diagnostics/diagnostics.js': 169,
   // 诊断层的**动作代理**（设计 §8.2）。与 `diagnostics.js` 分开是因为职责
   // 不同：那边管「现在在看什么」，这边管「用户点了会发生什么」——混在一起
   // 每次加动作都要重新读一遍状态定义才能确认没写错层。
@@ -414,7 +462,11 @@ const FILE_BUDGETS = {
   // 两张状态表是刻意的：`STATUS_META` 给时间线上的单个事件（短标签），
   // `RUN_HEADLINE` 给运行记录卡片的头部（整句）。混成一张会让卡片顶部
   // 只能显示「失败」——那等于没说清什么没能启动。
-  'ui/src/diagnostics/diagnostic-labels.js': 130,
+  // 130 → 158：恢复 / 排查的阶段中文名，以及按 kind 分开的卡片结论表
+  // （OPERATION_HEADLINE + headlineFor）。**刻意不与 RUN_HEADLINE 合并**：
+  // 那张表每句话的主语都是「工作台」，套到恢复上会写出「工作台已启动」这种
+  // 与操作毫无关系的结论。
+  'ui/src/diagnostics/diagnostic-labels.js': 158,
   // 诊断层的独立样式。刻意不进 theme.css：后者是反棘轮文件（只许越来越
   // 小），而诊断层是自成一块的样式，抄进共享文件会让"哪段样式属于哪层"
   // 变得看不出来。
@@ -422,11 +474,21 @@ const FILE_BUDGETS = {
   // 诊断层外壳：覆盖当前面板而非另开窗口（启动失败时用户正要回到日志 /
   // 换端口 / 回退快照，跨窗口拖拽是白费力气）。头部固定
   // [返回] 标题 [主操作]，标题单行省略以守住 480 宽。
-  'ui/src/diagnostics/DiagnosisShell.vue': 100,
+  // 100 → 108：多两种 kind 的路由（恢复 / 排查共用 OperationDiagnosis），
+  // 以及一个 NEEDS_FETCH 判定——恢复与排查的记录是「做完之后」才成型的，
+  // 头部那个刷新按钮对它们同样有意义。
+  'ui/src/diagnostics/DiagnosisShell.vue': 108,
   // 诊断层头部的「更多」菜单项与复制逻辑（设计 §2.5.5）。独立成文件是因为
   // 那边只管「头部结构 + 三个视图的路由」，这里是「每页各自有哪些低频动作」
   // 的映射表；混在一起后加一项菜单要重读一遍路由代码才能确认没写错层。
   'ui/src/diagnostics/diagnosis-more-menu.js': 95,
+
+  // 恢复 / 排查的阶段时间线（设计 §4.1）。两种 kind 共用一个组件：它们回答的
+  // 是同一个形状的问题——「这次操作停在哪一步、结论是什么、下一步能做什么」，
+  // 差异只在头部那句话与阶段的中文名，都在 diagnostic-labels.js 里按 kind
+  // 查表，不各写一份模板。这里**不放任何会改变状态的动作**：用户在结论还
+  // 不确定的页面上误点恢复，代价是真实的配置。
+  'ui/src/diagnostics/OperationDiagnosis.vue': 90,
   // 启动与预检共用的阶段时间线。三条硬规则：按 seq 排（不按字符串）、
   // 默认只展开第一个失败阶段、状态不只靠颜色表达。
   'ui/src/diagnostics/RunTimeline.vue': 90,
@@ -1387,7 +1449,17 @@ const FILE_BUDGETS = {
 // 与 guard.rs 恰恰因为反棘轮被反向拆出了 startup_run.rs（两者都没有上调
 // 预算，而是各自回到基线以下）。总量是软上限，按设计文档要求的范围就该有
 // 这个量级。
-const TOTAL_BUDGET = 40200;
+// **软上限**：刻意不做「只许下调」——试过，实践中只会逼人绕过门禁而不是真写出
+// 更少的代码。真正的收紧手段是上面那条「大文件只许下调」的规则，总量这条只在
+// 有人加了一整片新能力时要求他把账写清楚。
+//
+// 40200 → 40750：诊断功能补齐设计 §4.1 要求的**四种 kind**（此前只有 startup 与
+// plugin-precheck 两条接了运行记录，restore 与 bisect 被我单方面降级成了「未
+// 做」——那是对文档的错误解读，不是取舍）。净增 447 行分布在 7 个文件里：其中
+// 249 行是 operation_run.rs（含 110 行单测），86 行是从 commands.rs 搬过来的
+// snapshot_cmd.rs（**净减** 78 行，那份反棘轮文件因此从 2047 降到 1969，预算
+// 同步下调）。也就是说真正的新逻辑不到 200 行，其余是接线与测试。
+const TOTAL_BUDGET = 40750;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
