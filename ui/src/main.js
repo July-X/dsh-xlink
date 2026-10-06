@@ -8,6 +8,11 @@ import { createApp } from 'vue';
 import { reportRenderError } from './shell/errors.js';
 import { ElAlert } from 'element-plus/es/components/alert/index.mjs';
 import { ElButton } from 'element-plus/es/components/button/index.mjs';
+import {
+  ElDropdown,
+  ElDropdownItem,
+  ElDropdownMenu,
+} from 'element-plus/es/components/dropdown/index.mjs';
 import { ElCheckbox } from 'element-plus/es/components/checkbox/index.mjs';
 import { provideGlobalConfig } from 'element-plus/es/components/config-provider/index.mjs';
 import { ElDialog } from 'element-plus/es/components/dialog/index.mjs';
@@ -101,6 +106,9 @@ const app = createApp(root);
 [
   ElAlert,
   ElButton,
+  ElDropdown,
+  ElDropdownItem,
+  ElDropdownMenu,
   ElCheckbox,
   ElDialog,
   ElEmpty,

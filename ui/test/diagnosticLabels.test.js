@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { relative, resolve } from 'node:path';
 import test from 'node:test';
 
 // 运行诊断的展示映射与通道消息解析。**这两处是纯函数**：判断与措辞都在
@@ -24,6 +26,11 @@ Object.defineProperty(globalThis, 'navigator', {
   configurable: true,
   value: { userAgent: 'node' },
 });
+
+// 设计 §2.5.1 的入口表是**契约**：入口按用户正在处理的对象分配，缺一个
+// 入口等于那类场景下没有出路。源码断言而非行为测试——删掉一个按钮不会让
+// 任何测试变红，只会让用户在那个场景下找不到入口。
+const readSrc = (p) => readFileSync(resolve('ui/src', p), 'utf8');
 
 const labels = await import('../src/diagnostics/diagnostic-labels.js');
 const precheck = await import('../src/diagnostics/precheck-labels.js');
@@ -167,4 +174,53 @@ test('刷新优先按 id 拉详情，不按「最近一条」猜', async () => {
   // 依赖它，undefined 会让 `||` 走对分支但比较时行为不一致。
   store.setLastRunId(undefined);
   assert.equal(store.getLastRunId(), '');
+});
+
+
+// —— 设计 §2.5：入口与头部 ——
+
+test('§2.5.1 的三个入口位置都在', () => {
+  const overview = readSrc('shell/OverviewPanel.vue');
+  assert.match(overview, /openStartupDiagnosis/, '概览必须有启动诊断入口');
+  assert.match(overview, /openKernelStatusDiagnosis/, '概览必须有内核状态入口');
+  assert.match(
+    overview,
+    /查看启动诊断/,
+    '启动失败横幅要能直接进启动诊断（事故面板只给处置，不给过程）'
+  );
+
+  const precheck = readSrc('plugins/PrecheckDialog.vue');
+  assert.match(precheck, /openPluginDiagnosis/, '预检结果必须能进插件安全诊断');
+
+  const incident = readSrc('incidents/IncidentModal.vue');
+  assert.match(incident, /openStartupDiagnosis/, '事故面板必须能跳到那次启动的时间线');
+});
+
+test('§2.5.5 的更多菜单只收只读动作', () => {
+  const menu = readSrc('diagnostics/diagnosis-more-menu.js');
+  assert.match(menu, /查看完整日志/);
+  assert.match(menu, /复制运行记录编号/);
+  assert.match(menu, /复制本次诊断摘要/);
+  // 会改变状态的操作绝不能藏在「更多」里：用户在不知情下点了就把环境改了。
+  // **只看 label，不看整段源码**——注释里解释「为什么不放恢复」也会提到
+  // 「恢复」两个字，按全文匹配会把这条例外当成违规。
+  const labels = [...menu.matchAll(/label:\s*'([^']+)'/g)].map((m) => m[1]);
+  assert.ok(labels.length >= 3, '菜单项要能从 label 里读出来，否则这条断言是空的');
+  for (const forbidden of ['恢复', '重启', '删除', '卸载', '应用变更', '切换']) {
+    assert.ok(
+      !labels.some((label) => label.includes(forbidden)),
+      `「更多」菜单里不该出现会改状态的动作：${forbidden}（现有：${labels.join(' / ')}）`
+    );
+  }
+});
+
+test('§2.5.3 返回按钮带 aria-label（图标按钮不能只靠图形猜）', () => {
+  const shell = readSrc('diagnostics/DiagnosisShell.vue');
+  // 取「模板里第一个 button 到它闭合」这一段，而不是固定偏移——偏移量会
+  // 随模板重排失效，而这条断言要钉的是「这个按钮本身带齐了三样」。
+  const buttonStart = shell.indexOf('<button', shell.indexOf('<template>'));
+  const backButton = shell.slice(buttonStart, shell.indexOf('</button>', buttonStart));
+  assert.match(backButton, /type="button"/, '返回必须是 button 元素，保留键盘焦点');
+  assert.match(backButton, /aria-label="返回"/, '图标按钮不能只靠图形猜含义');
+  assert.match(backButton, /title="返回"/, '必须有可见的悬停提示');
 });
