@@ -93,7 +93,8 @@ onMounted(() => {
   loadDiskUsage();
 });
 
-// 磁盘占用：两段式加载（用户 2026-10-03 拍板）。
+// 磁盘占用：两段式加载（用户 2026-10-03 拍板），「刷新」按钮走强制重扫
+// （用户 2026-10-07 报「刷新按钮没有正确扫描磁盘占用」）。
 //
 // `invoke('disk_usage')` **立刻返回**——有缓存就返回缓存（哪怕一天前的），
 // 没有才同步扫一次。缓存陈旧时后端另外起线程重扫，扫完通过
@@ -101,6 +102,12 @@ onMounted(() => {
 // 290ms 的全盘 walk），随后自己更新到最新值。参照 `usage.js` 的
 // `loadUsageSummary` + `setUsageAutoRefresh` 那一套「先给上次结果、
 // 静默跟上」的形状。
+//
+// **自动加载与「刷新」按钮必须分开**：走的是同一个命令，但语义相反。
+// 自动加载要的是「有缓存就别扫」——每次进面板都重扫 2.5 万个文件没道理。
+// 按钮要的是「用户明说现在就要新数字」——此时回缓存等于没听见。缓存一天才
+// 刷一次，意味着点按钮几乎永远落在「缓存新鲜」这条分支上，不传 `force`
+// 的话按钮就永远是个空动作，而界面上完全看不出它没生效。
 const diskUsage = reactive({
   loading: false,
   loaded: false,
@@ -126,13 +133,21 @@ function applyDiskReport(report) {
   diskUsage.loaded = true;
 }
 
-async function loadDiskUsage() {
+async function loadDiskUsage(force = false) {
   if (diskUsage.loading) return;
   diskUsage.loading = true;
   diskUsage.error = null;
   try {
-    applyDiskReport(await invoke('disk_usage'));
+    // 返回的是 `{ report, backgroundRefresh }` 两段，不是报表本身。拆开是
+    // 因为「这次有没有后台重扫在跑」只有后端知道：缓存新鲜与重扫刚结束这两条
+    // 路径在前端长得一模一样，光看返回值猜不出来。
+    const reply = await invoke('disk_usage', { force });
+    // 拿不到报表就当失败：宁可留着旧数字并报错，也不要把界面清成一片 0 B。
+    if (!reply || !reply.report) throw new Error('磁盘用量返回为空');
+    diskUsage.refreshing = Boolean(reply.backgroundRefresh);
+    applyDiskReport(reply.report);
   } catch (e) {
+    diskUsage.refreshing = false;
     diskUsage.error = e && e.message ? e.message : String(e);
   } finally {
     diskUsage.loading = false;
@@ -429,7 +444,7 @@ function groupTip(group) {
               :icon="Refresh"
               :loading="diskUsage.loading"
               :title="'立即重新统计（平时每天自动扫一次）'"
-              @click="loadDiskUsage"
+              @click="loadDiskUsage(true)"
             >
               刷新
             </el-button>
