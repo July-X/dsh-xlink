@@ -494,7 +494,9 @@ const FILE_BUDGETS = {
   // 变得看不出来。
   // 250 → 253：浮层层级阶梯（审查 P1-01）。见下面那段注释——它既是值也是
   // 五个叠面顺序的唯一说明。
-  'ui/src/diagnostics/diagnostics.css': 253,
+  // 253 → 261：「更多」弹层的宽度约束与逐字断行禁令（窄窗实机发现的塌缩，
+  // 复现过：EP 的 .el-popper 默认 min-width:10px + break-word，中文被逐字断开）。
+  'ui/src/diagnostics/diagnostics.css': 261,
   // 诊断层外壳：覆盖当前面板而非另开窗口（启动失败时用户正要回到日志 /
   // 换端口 / 回退快照，跨窗口拖拽是白费力气）。头部固定
   // [返回] 标题 [主操作]，标题单行省略以守住 480 宽。
@@ -503,7 +505,8 @@ const FILE_BUDGETS = {
   // 头部那个刷新按钮对它们同样有意义。
   // 108 → 136：四个视图的刷新各走各的 loading key 并合成一个头部状态（P2-03），
   // 插件页无报告时退到仅运行记录视图（P1-05）。
-  'ui/src/diagnostics/DiagnosisShell.vue': 136,
+  // 136 → 145：下拉的 teleported / placement / popper-class 三个属性。
+  'ui/src/diagnostics/DiagnosisShell.vue': 145,
   // 诊断层头部的「更多」菜单项与复制逻辑（设计 §2.5.5）。独立成文件是因为
   // 那边只管「头部结构 + 三个视图的路由」，这里是「每页各自有哪些低频动作」
   // 的映射表；混在一起后加一项菜单要重读一遍路由代码才能确认没写错层。
@@ -1507,7 +1510,7 @@ const FILE_BUDGETS = {
 // 249 行是 operation_run.rs（含 110 行单测），86 行是从 commands.rs 搬过来的
 // snapshot_cmd.rs（**净减** 78 行，那份反棘轮文件因此从 2047 降到 1969，预算
 // 同步下调）。也就是说真正的新逻辑不到 200 行，其余是接线与测试。
-const TOTAL_BUDGET = 41100;
+const TOTAL_BUDGET = 41130;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
