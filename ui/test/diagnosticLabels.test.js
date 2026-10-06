@@ -311,6 +311,27 @@ test('P1-02 日志窗口定位到点名的那一份，而不是列表第一份',
   assert.equal(logs.resolvePreferred(names), 'missing');
 });
 
+test('概览控制塔不重复正下方「当前内核」卡已经说过的话', () => {
+  const tower = readSrc('diagnostics/ControlTower.vue');
+  const health = tower.slice(tower.indexOf('const health = computed'), tower.indexOf('const wiringText'));
+  // 三行读数在「当前内核」卡里逐字重复一次（版本徽标 / 运行状态胶囊 /
+  // Node.js 行），侧栏品牌区还有第三份。它们在 480px 窄窗里占掉 111px，
+  // 换来的信息量是零。异常另有出口：Node 不达标进「需要关注」，内核没装
+  // 进首屏 callout，运行状态在「当前内核」卡与侧栏。
+  for (const key of ['kernel', 'runtime', 'node']) {
+    assert.ok(
+      !new RegExp(`cell\\('${key}'`).test(health),
+      `系统健康不该再列 ${key}：它与正下方的「当前内核」卡重复`
+    );
+  }
+  // 剩下四项必须两列排布，否则一行四项还是会把概览顶下去。
+  assert.match(tower, /class="diag-rows diag-rows--grid"/);
+  const css = readSrc('diagnostics/diagnostics.css');
+  assert.match(css, /\.diag-rows--grid \{[^}]*grid-template-columns: repeat\(2/);
+  // 详情一律单行省略：诊断正文可能很长，卡片高度不该由日志长度决定。
+  assert.match(css, /\.diag-row__label \{[^}]*text-overflow: ellipsis/);
+});
+
 test('P1-05 最近操作按 kind 分派，四种都不落到启动时间线', async () => {
   const src = readSrc('diagnostics/diagnostics.js');
   // 分派表是契约：四类里前三类各有各的视图，plugin-precheck 走插件视图。

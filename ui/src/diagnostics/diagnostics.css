@@ -292,13 +292,33 @@
 
 .diag-row:hover:not(.diag-row--static) { background: rgba(255, 255, 255, 0.04); }
 
-.diag-row__label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* 标签行一律压成一行。诊断正文可能很长（预检失败时后端会把整段原因带回来），
+   在 480px 窄窗里换行成两三行，卡片高度就由日志长度决定了——用户看一眼
+   概览要滚三次。完整内容在点开后的诊断页里，那才是它该待的地方。
+   标签本身（"插件预检未能完成"）与详情在同一行里按先后顺序排布，省略号落在
+   末尾，所以先读到的一定是「出了什么事」，被砍掉的是原因的后半句。 */
+.diag-row__label {
+  flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .diag-row__value { flex: none; color: var(--muted); font-size: 12px; }
 .diag-row__arrow { flex: none; color: var(--muted); font-size: 12px; }
 
 .diag-row__value--ok { color: var(--good); }
 .diag-row__value--warn { color: var(--warn); }
 .diag-row__value--bad { color: var(--bad); }
+
+/* 系统健康的两列排布。四项读数挤成一列时占掉 311px（480px 宽实测），是整
+   屏的近四成，而它们回答的还是「子系统各处于什么状态」——两列放得下。
+   分隔线画在**列间**（偶数项左边框）而不是行间：`:nth-child(even)` 不依赖
+   条目数，将来第五项进来时行分隔线仍是对的，行分隔线则要跟着改。 */
+.diag-rows--grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 14px;
+}
+.diag-rows--grid .diag-row { padding: 8px 0; border-bottom: none; }
+.diag-rows--grid .diag-row:nth-child(even) { border-left: 1px solid var(--border); padding-left: 14px; }
 
 /* 底部操作栏。**不固定在视口底部**——它跟着内容流走，480×800 下固定会
  * 压掉最后一张卡；内容不足时它自然就在末尾。 */
