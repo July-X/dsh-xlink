@@ -1578,3 +1578,88 @@ plugin_install → install_for_instance(sandbox) → install_unlocked
 「诊断页必须说清这条记录是什么时候的」：纯函数侧钉住四种取值（3 小时前的
 inconclusive 出提示、1 分钟内不啰嗦、success 不催、缺时刻不编），源码侧钉住
 三个视图的 meta 行都带 `runAgeLabel(run)`。前端 32 条全绿。
+
+---
+
+## 22. 内核「起来了」被误判成 401（2026-10-06）
+
+§19 / §20 修好之后，用户重跑预检，仍然失败，但结论变了：
+
+```
+run-20261006-210045-0f19   kind=plugin-precheck  status=inconclusive
+归因：环境问题
+结论：环境基线没能起来，无法判断候选插件：内核返回 HTTP 401
+```
+
+**内核起来了**——比上次前进了一步（§19 之前是进程静默退出）。这一条是 HTTP 层的
+误判。
+
+### 22.1 根因
+
+0.1.2-alpha.1 起的内核在 browser 入口前加了**进程级 launch token**
+（`dsh-client-connection` 的 `BrowserAuth`），裸的 `GET /` 稳定回 401。而
+`Sandbox::probe` 的就绪判据是 `(200..400)`，`probe_boot` 又判了一遍——
+于是**401 被当成了「内核没起来」**。
+
+实机探测（dsh 0.2.0-rc.2，端口 39881）：
+
+| 请求 | 状态码 |
+| --- | --- |
+| `GET /` | **401** |
+| `GET /?token=<启动令牌>` | 200/303 |
+| `GET /api/health` | 401 |
+| `GET /health`、`/ping`、`/favicon.ico`（不存在的路径） | **404** |
+| `GET /api/health?token=…` | **401** |
+
+**不存在的路径回 404 而不是连接失败**——这本身就说明服务器在监听、在路由。
+401 / 404 都是「内核正常工作」的证据。
+
+### 22.2 为什么不去取令牌
+
+试过，走了三条路都不通：
+
+1. **抓启动日志里那行 `dsh web: http://…/?token=…`**。`announceReady()` 要等
+   插件 `loader.await()` settle 之后才打印（`dsh-web-app/lib/index.js`），
+   沙盒里实测 **45 秒都不出现**（日志文件 0 字节，`write_line` 是逐行 flush 的，
+   所以不是缓冲问题）。把它当依赖等于把预检改成「等一个可能永不来的日志」。
+2. **读 `$DSH_HOME/.credentials.yaml`**。里面有
+   `records.client-connection.browser-session.payload.secret`，实测拿它去探
+   **仍然 401**——那是凭据存储的签名密钥，不是入口令牌。
+   （顺带发现该文件里还有用户的真实 API key `refs`，所以它**不能**被当成
+   诊断证据落进报告。）
+3. **换个不需要鉴权的健康端点**。不存在。`authorizeIndex` 要求
+   `pathname === "/"`，令牌**只对根路径生效**，`/api/health?token=…` 依然 401。
+
+而 401 本身已经是「起来了」的充分证据——`launchToken` 是
+`processLaunchToken()` 在**进程内**算出来的，除打印那行之外没有别的出口。
+所以正确答案是**不要令牌**，而不是更努力地找它。
+
+### 22.3 修法
+
+判据从「回了 2xx/3xx」改成「**回了任何状态码**」：
+
+```rust
+fn serves(code: u16) -> bool { (100..500).contains(&code) }
+```
+
+任何状态码都证明服务器在应答——包括 4xx，它拒绝这个请求恰恰说明它在。5xx 是
+唯一的例外：起来了但处理请求出错，那正是「页面被插件搞坏」的表现，混进
+「环境基线正常」里会直接毁掉基线的意义。
+
+顺带把判据收敛到一处：`probe` 自己判（`Ok` = 起来了），`probe_boot` 不再
+重复一遍状态码区间——此前两处各判一次，改一处忘了另一处就是这个 bug。
+
+### 22.4 顺带修的取证缺口
+
+`report.evidence` 此前是内核日志尾部的**原文**，而 `PrecheckDialog.vue` 会把它
+原样渲染进 `<pre>`。内核日志里有 `?token=`，`.credentials.yaml` 更是用户真实
+的 API key——报告是会落进运行记录的东西，按 `run.rs` 的「记录不含凭据」纪律
+必须过一遍 `run::sanitize`。落盘那份日志不受影响（那是用户自己的机器）。
+
+### 22.5 验证与测试
+
+用**真实内核 + 真实沙盒**（`Sandbox::create` → `prepare_instance` → `start` →
+`probe`）跑通：`PROBE=Ok(401)`。临时诊断测试验完已删。
+
+单测 `any_http_answer_means_the_kernel_is_up_except_server_errors` 钉死判据：
+2xx/3xx/4xx 全部算就绪，5xx 不算。

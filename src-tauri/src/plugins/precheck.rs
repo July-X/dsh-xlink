@@ -131,12 +131,12 @@ fn probe_boot(
             log,
         };
     }
+    // `probe` 自己就判「什么算就绪」（2xx/3xx，且必须带得进去），所以这里
+    // 不再重复一遍状态码区间——两处各判一次，迟早有一处忘了带上启动令牌。
     let probe = sandbox.probe();
-    let (ready, detail) = match &probe {
-        // 3xx 也算正常应答：内核工作台根路径在没有会话时可能重定向。
-        Ok(code) if (200..400).contains(code) => (true, format!("内核应答 HTTP {code}")),
-        Ok(code) => (false, format!("内核返回 HTTP {code}")),
-        Err(error) => (false, error.clone()),
+    let (ready, detail) = match probe {
+        Ok(code) => (true, format!("内核应答 HTTP {code}")),
+        Err(error) => (false, error),
     };
     let log = sandbox.read_log_tail();
     sandbox.shutdown();
@@ -299,7 +299,11 @@ pub fn plugin_install(
             "环境基线就没能起来，预检无法进行：{}。没有安装任何东西",
             baseline.detail
         );
-        report.evidence = baseline.log;
+        // 报告里的证据会原样渲染进对话框的 <pre>，而内核启动那行带
+        // `?token=`——它是当前进程的入口凭据。落盘那份日志不受影响（那是用户
+        // 自己的机器），**进报告的这几行要过一遍脱敏**：`run.rs` 的纪律是
+        // 「记录不含凭据」，这条报告也是会落进运行记录的东西。
+        report.evidence = crate::diagnostics::run::sanitize(&baseline.log);
         // 沙盒目录随 `Drop` 一起删掉，所以此刻就把内核日志另存一份。
         // 2026-10-06 这次基线失败之所以查了半天，是因为这条路径**根本没有**
         // 取证：报告里的 `evidence` 是一段空字符串（日志本身也是空的——内核
@@ -418,7 +422,7 @@ pub fn plugin_install(
             "预检未通过：装上 {} 之后内核起不来（{}）。已撤销本次安装，你的环境没有被改动",
             item.name, candidate.detail
         );
-        report.evidence = candidate.log;
+        report.evidence = crate::diagnostics::run::sanitize(&candidate.log);
         if let Some(path) = sandbox::preserve_evidence(data_dir, &sandbox, &item.id) {
             report.evidence_path = path.to_string_lossy().into_owned();
         }
