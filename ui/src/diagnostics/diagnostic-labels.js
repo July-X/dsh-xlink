@@ -308,3 +308,37 @@ export function sortedBySeq(events) {
     (a, b) => Number(a?.seq ?? 0) - Number(b?.seq ?? 0)
   );
 }
+
+/**
+ * 折叠被终态取代的「进行中」事件。
+ *
+ * 每个阶段都是先推一条 `running`、再推一条终态（`startup_run` /
+ * `precheck` / `operation_run` 三处都是这个形状）。全部渲染出去，同一个阶段
+ * 就占两行，其中一行**永远**显示「进行中」——哪怕这次运行早已结束。摘要写着
+ * 「已完成」、时间线里却转着四个圈，两边自相矛盾，而用户没法判断该信哪个。
+ *
+ * **为什么是删掉一行，而不是把文案改成「已开始」**：那条 `running` 上的
+ * `durationMs` 是「距上一条事件的间隔」而不是本阶段耗时（`run.rs` 的 `push`
+ * 就是这么算的）。留着这行就必然挂着一个错义的秒数——截图里「2. 建立环境
+ * 基线 · 进行中 332 毫秒」就是这个错数，它量的是上一阶段尾巴，不是基线。
+ * 终态那条紧邻它，它的间隔恰好等于本阶段真实耗时，所以删掉顺带把行数对齐
+ * `STAGE_SEQUENCES` 的阶段数：之前 5 个阶段占 8 行，顶部「完成 5 / 5」的分母
+ * 与时间线对不上号。
+ *
+ * 只在**同 stage 且同 attempt** 内判定：看护重试会往同一个 `retry` 阶段推
+ * 好几轮，必须按轮次分别结算，跨轮折叠会把「第一次尝试开始了但没结论」抹掉。
+ * 没有后续终态的 `running` 一律保留——进程被杀时记录就停在进行中，那是真·
+ * 进行中（显示成什么该由运行的状态决定，不在这里编）。
+ */
+export function collapseSupersededRunning(events) {
+  const list = sortedBySeq(events);
+  // `seq` 的先后是判定的**一半**：一个阶段已经收尾之后又推出一条「开始」
+  // （报告阶段先出结论、后补一次收尾就是这样），它没有被谁取代，不能拿
+  // 前面那条早已过去的终态来顶替。
+  const settled = (event, other) =>
+    Number(other?.seq ?? 0) > Number(event?.seq ?? 0) &&
+    String(other?.status) !== 'running' &&
+    String(other?.stage ?? '') === String(event?.stage ?? '') &&
+    String(other?.attempt ?? '') === String(event?.attempt ?? '');
+  return list.filter((event) => !list.some((other) => settled(event, other)));
+}

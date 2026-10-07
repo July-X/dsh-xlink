@@ -676,8 +676,40 @@ impl Recorder {
         if let Some(evidence) = evidence {
             merge_evidence(&mut self.run.evidence, evidence);
         }
+        self.settle_dangling_stage(status);
         self.persist_index()?;
         self.persist_run()
+    }
+
+    /// 收尾前把**悬空**的进行中阶段补成终态。
+    ///
+    /// **为什么兜在模型层，而不是让每个 caller 自己记得发终态**：漏一条的
+    /// 时间线会永远差一步，而那一步在落盘记录里显示成一个**永远不会停的
+    /// 转圈**——用户读到的是「这一步卡死了」，而它其实早就结束了。逐条
+    /// 出口各写一遍的纪律已经漏过一次（预检「通过」那条出口忘了调
+    /// rollback），所以这次改成结构上没法跳过：不管哪条出口走到 `finish`，
+    /// 悬空的 `running` 都会被补齐。
+    ///
+    /// 终态直接取运行自己的判定：阶段悬空说明流程在它那里中止了，中止的
+    /// 原因就是这次运行的结论，没有更准确的说法可编。消息刻意**不**复制
+    /// `summary`——那句整段结论已经写在运行记录头部，事件消息是时间线上的
+    /// 一行，抄过来只会把它撑长。
+    fn settle_dangling_stage(&mut self, run_status: &str) {
+        // 克隆而非借用：`push` 要 `&mut self`，拿着 `events.last()` 的借用
+        // 调它过不了编译期。
+        let Some(event) = self.run.events.last().cloned() else {
+            return;
+        };
+        if event.status != status::RUNNING {
+            return;
+        }
+        self.push(
+            &event.stage,
+            run_status,
+            "该阶段没有走完，随本次运行一起结束",
+            event.attempt,
+            None,
+        );
     }
 
     /// 用户中止。语义上不同于失败：没有任何证据表明哪里错了。
@@ -1346,6 +1378,116 @@ mod tests {
             "第 10 次",
             "超预算时丢最旧的，保留尾部"
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn finish_settles_a_stage_left_running() {
+        // 2026-10-07 用户截图：预检的落盘记录里「1. 创建沙盒环境」永远转着圈，
+        // 摘要却已经写了「已完成」。悬空的 `running` 在历史记录里读起来就是
+        // 「这一步卡死了」，所以收尾时必须把它结掉——靠结构保证，而不是
+        // 指望每条出口都记得补一条终态（那条纪律已经漏过一次）。
+        let home = temp_home("settle");
+        let _guard = scoped_xlink_home(&home);
+        let mut rec = Recorder::begin(
+            "dsh",
+            "default",
+            kind::PLUGIN_PRECHECK,
+            "0.2.1",
+            "web",
+            HashSet::new(),
+        );
+        rec.push(
+            stage::SANDBOX_CREATE,
+            status::RUNNING,
+            "正在创建一次性沙盒环境",
+            None,
+            None,
+        );
+        rec.finish(
+            status::INCONCLUSIVE,
+            cause::ENVIRONMENT,
+            "环境基线没能起来",
+            None,
+        )
+        .unwrap();
+        let events = &rec.run().events;
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].stage, stage::SANDBOX_CREATE);
+        assert_eq!(
+            events[1].status,
+            status::INCONCLUSIVE,
+            "终态取运行自己的判定：流程在那个阶段中止了，没有更准确的说法"
+        );
+        // 落盘的那份同样不能留转圈——用户看的是重开页面后的历史记录。
+        // 断的是**最后一条**：前面的 `running` 由同阶段的终态取代，前端
+        // `collapseSupersededRunning` 会折叠掉；只有收尾那条才是「永远停不下」。
+        let id = rec.id().to_string();
+        let stored = get("dsh", "default", &id).expect("详情必须落盘");
+        assert_ne!(
+            stored.events.last().map(|e| e.status.as_str()),
+            Some(status::RUNNING),
+            "读回来的记录最后一条还在转圈，等于告诉用户这一步永远卡住了"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn finish_leaves_an_already_settled_stage_alone() {
+        let home = temp_home("settle-twice");
+        let _guard = scoped_xlink_home(&home);
+        let mut rec = Recorder::begin(
+            "dsh",
+            "default",
+            kind::PLUGIN_PRECHECK,
+            "0.2.1",
+            "web",
+            HashSet::new(),
+        );
+        rec.push(
+            stage::SANDBOX_CREATE,
+            status::RUNNING,
+            "正在创建",
+            None,
+            None,
+        );
+        rec.push(stage::SANDBOX_CREATE, status::SUCCESS, "已就绪", None, None);
+        rec.finish(status::SUCCESS, cause::UNKNOWN, "预检通过", None)
+            .unwrap();
+        assert_eq!(
+            rec.run().events.len(),
+            2,
+            "已结算的阶段不能再补一条，否则预检会凭空多出一个阶段"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn settle_carries_over_the_watchdog_attempt() {
+        // 补出来的终态属于「第 N 次尝试」那轮。丢了 attempt 它就会挂在第 1 次
+        // 头上，用户看到「第 1 次尝试失败」而其实失败的是第 2 次。
+        let home = temp_home("settle-attempt");
+        let _guard = scoped_xlink_home(&home);
+        let mut rec = Recorder::begin(
+            "dsh",
+            "default",
+            kind::STARTUP,
+            "0.2.1",
+            "web",
+            HashSet::new(),
+        );
+        rec.push(
+            stage::RETRY,
+            status::RUNNING,
+            "正在进入安全模式",
+            Some(2),
+            None,
+        );
+        rec.finish(status::FAILURE, cause::PLUGIN, "还是起不来", None)
+            .unwrap();
+        let last = rec.run().events.last().unwrap();
+        assert_eq!(last.attempt, Some(2));
+        assert_eq!(last.stage, stage::RETRY);
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -2113,6 +2113,45 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// [21] 预检阶段发了「正在…」就必须有终态出口
+//
+// 2026-10-07 用户截图：预检「通过」之后，时间线里「1. 创建沙盒环境」永远转着
+// 圈，而摘要已经写了「已完成」。根因在 `precheck.rs`——`SANDBOX_CREATE` 只在
+// **失败**路径补了终态，成功路径一条都没发。前端折叠救不了它：折叠只吃「被
+// 同阶段终态取代」的进行中，悬空的那条谁也取代不了。
+//
+// 这条判据只扫 `precheck.rs`，因为只有它把 `run::status::RUNNING` 直接写在宏
+// 调用里。`startup_run.rs` / `operation_run.rs` 走 `WatchText` 结构体的
+// `running_status` / `done_status` 字段对，扫不出配对关系——那两处靠
+// `Recorder::finish` 的兜底（见 `run.rs` 的 `settle_dangling_stage`）。而兜底
+// 只保证「收尾那条不是进行中」，管不到**中间**悬空的阶段。
+
+{
+  const src = read('src-tauri/src/plugins/precheck.rs');
+  const running = [
+    ...new Set([...src.matchAll(/run::stage::(\w+),\s*run::status::RUNNING/g)].map((m) => m[1])),
+  ];
+  if (running.length === 0) {
+    fail('precheck-stage-terminal', 'precheck.rs 里一个「正在…」都扫不到，判据失效');
+  } else {
+    // **只认 SUCCESS 出口**：这个 bug 的形状恰恰是「失败路径有终态、成功路径
+    // 没有」——`SANDBOX_CREATE` 原本只有一条 FAILURE 出口，若把 FAILURE 也算
+    // 数，判据对着自己要去防的那个洞说通过（2026-10-07 实测）。
+    const dangling = running.filter(
+      (stage) => !new RegExp(`run::stage::${stage},\\s*run::status::SUCCESS`).test(src)
+    );
+    for (const stage of dangling) {
+      fail(
+        'precheck-stage-terminal',
+        `预检阶段 ${stage} 发了「正在…」却没有任何终态出口——时间线上它会永远转圈`
+      );
+    }
+    if (!dangling.length) {
+      note(`${running.length} 个预检阶段的「正在…」都有终态出口（${running.join(' / ')}）`);
+    }
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);

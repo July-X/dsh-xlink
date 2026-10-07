@@ -10,7 +10,13 @@
 //    说明文字本身就是结论。
 import { computed, ref, watch } from 'vue';
 import { Check, Close, Loading } from '@element-plus/icons-vue';
-import { durationLabel, firstFailedEvent, stageLabel, statusMeta } from './diagnostic-labels.js';
+import {
+  collapseSupersededRunning,
+  durationLabel,
+  firstFailedEvent,
+  stageLabel,
+  statusMeta,
+} from './diagnostic-labels.js';
 import { visibleEvents } from './diagnostics.js';
 
 const props = defineProps({
@@ -18,7 +24,10 @@ const props = defineProps({
   expandable: { type: Boolean, default: true },
 });
 
-const events = computed(() => visibleEvents());
+// **必须经 `collapseSupersededRunning`**：直接渲染 `visibleEvents()` 会让每个
+// 阶段的「进行中」行永久留着——它记录的是阶段开始，而那不是当前状态。四个
+// 诊断窗口共用这一个组件，这条折叠是它们共同的前端契约。
+const events = computed(() => collapseSupersededRunning(visibleEvents()));
 
 // 默认展开项：第一个失败阶段。数据换了（用户点了刷新、或实时流接管）
 // 就重新选一次——展开项跟着旧的失败阶段不动，会让新记录看起来「什么都没发生」。

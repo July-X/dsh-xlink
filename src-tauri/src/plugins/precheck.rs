@@ -358,6 +358,15 @@ pub fn plugin_install(
             return Ok(report);
         }
     };
+    // 沙盒起来了就**当场**记终态。成功路径原先不发，于是「1. 创建沙盒环境」
+    // 永远停在进行中，而摘要已经写了「已完成」——同一次运行自己跟自己打架。
+    precheck_stage!(
+        on_progress,
+        &mut recorder,
+        run::stage::SANDBOX_CREATE,
+        run::status::SUCCESS,
+        "一次性沙盒环境已就绪"
+    );
 
     on_progress("正在建立环境基线：不装任何插件启动一次内核");
     precheck_stage!(
