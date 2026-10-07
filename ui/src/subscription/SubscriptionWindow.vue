@@ -298,7 +298,7 @@ const lastFetched = computed(() => {
   flex: 1;
   height: 10px;
   border-radius: 5px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-soft);
   overflow: hidden;
 }
 .sub-bar-fill {
@@ -372,7 +372,7 @@ const lastFetched = computed(() => {
   gap: 10px;
   padding: 7px 14px;
   border-top: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.18);
+  background: var(--overlay-faint);
   color: var(--text-secondary);
   font-size: 12px;
 }

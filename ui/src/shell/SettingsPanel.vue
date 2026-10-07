@@ -135,6 +135,9 @@ onMounted(() => {
               :precision="0"
               controls-position="right"
             />
+            <!-- 文案是「保存配置」而不是「保存设置」（设计说明 §5）：它保存的是
+                 **这一栏** —— 工作台 Web UI 端口 + profile 名。叫「保存设置」会
+                 让人以为它管的是整个设置页，而下面那些开关是各自即时生效的。 -->
             <el-button
               type="primary"
               :icon="Check"
@@ -142,7 +145,7 @@ onMounted(() => {
               :disabled="globalBusy"
               @click="onSave"
             >
-              保存设置
+              保存配置
             </el-button>
           </div>
         </el-form-item>

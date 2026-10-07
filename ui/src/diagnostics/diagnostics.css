@@ -89,7 +89,7 @@
 }
 
 .diagnosis__icon-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--overlay-soft);
   color: var(--text);
 }
 
@@ -131,11 +131,18 @@
   color: var(--text-secondary);
 }
 
+/* 「系统健康」卡头的汇总结论。设计稿给的是 `.health-ok`（绿色「全部正常」）；
+   有异常格时必须翻成红色——这句是用户扫标题行时唯一会读到的一句，它要是
+   恒绿，那一行坏掉反而比没有这句更危险。 */
+.diag-card__aside--bad {
+  color: var(--el-color-danger);
+}
+
 /* 标题行上的小动作按钮（清除诊断记录）。用 ghost 形态：它是对**整段
  * 历史**的低频操作，不该和卡片标题争夺注意力。边框 / 背景 / 字体全部
  * 显式写——全局没有裸 button 的默认样式，不写就是一个系统灰方块。 */
 .diag-card__action { margin-left: 8px; padding: 1px 8px; font-size: 11px; line-height: 1.4; color: var(--text-secondary); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; transition: color 120ms ease, background 120ms ease; }
-.diag-card__action:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.12); }
+.diag-card__action:hover:not(:disabled) { color: var(--text); background: var(--overlay-soft); border-color: var(--overlay-strong); }
 /* 清除进行中：按钮已经 disable，再加一层弱化，用户才知道不是没点上。 */
 .diag-card__action:disabled { opacity: 0.5; cursor: default; }
 
@@ -184,7 +191,7 @@
   padding: 9px 10px;
   border-radius: 10px;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--overlay-faint);
   font-size: 12px;
   line-height: 1.75;
   color: var(--text);
@@ -219,7 +226,7 @@
   font-size: 11px;
   line-height: 1;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--overlay-soft);
   color: var(--text-secondary);
 }
 
@@ -293,7 +300,7 @@
 .diag-row--static { cursor: default; }
 .diag-row--static:hover { background: transparent; }
 
-.diag-row:hover:not(.diag-row--static) { background: rgba(255, 255, 255, 0.04); }
+.diag-row:hover:not(.diag-row--static) { background: var(--overlay-soft); }
 
 /* 「还有 N 项 / 收起」是**展开控制**而不是一条待处理的问题，所以不带
  * hover 底色、不带箭头语义色——它和上面那些「处理」行长得越像，用户越容易
@@ -330,6 +337,20 @@
    单列的代价是这张卡从 2 行变 4 行（约 +60px）：概览页右栏在 748px 里原本到
    445 就结束，加完仍有余量，所以这个代价换得值。 */
 .diag-rows--grid { display: grid; }
+
+/* 概览页栅格里的落位。`ControlTower` 是 Vue 3 fragment，三张卡是它的三个
+   并列根节点，放进概览的 `.overview-grid` 后直接成为栅格子项——不拆组件、
+   不重复拉数据。但 DOM 顺序是「塔卡在前、内核卡在后」，与视觉顺序不一致，
+   所以按 `order` 排。用 `order` 而不是 `grid-row`：「需要关注」不存在时
+   行号会整体前移，写死行号就会在概览最干净的状态下留出一条空行。
+ *
+ * 2026-10-07 用户改过一次落位：「需要关注」从**首行整宽**移到**末行左半栏**，
+ * 与「最近操作」左右并排。理由是它原来占掉首行整宽，把「当前内核 / 系统健康」
+ * 挤到首屏之外——而那两张卡才是进这一页最常看的。异常清单挪到最下面仍然
+ * 一眼可见（它有导航角标），却不再抢首屏。 */
+.diag-card--health { order: 2; grid-column: 2; }
+.diag-card--attention { order: 4; grid-column: 1; }
+.diag-card--activity { order: 5; grid-column: 2; }
 
 /* --- 控制塔专用（2026-10-06）---------------------------------------------
  *
@@ -380,7 +401,7 @@
  * **关于标题分割线**：`.card > h2` 与 `.card-head` 一直有
  * `border-bottom: 1px solid var(--border)`，`.diag-card__title` 却没有——于是
  * 同一页里「当前内核 / 套餐用量」有线、概览页顶上的三张控制塔卡无线，用户一眼
- * 看出不齐。补上后五处完全一致（实测都是 `1px solid rgba(255,255,255,0.1)`）。
+ * 看出不齐。补上后五处完全一致（暗色下实测都是 `1px solid rgba(255,255,255,0.1)`）。
  *
  * 样式照 `.card > h2` 抄：`padding-bottom: 6px` + 那条线。**`margin-bottom`
  * 从 5 删掉、回到基线的 8**，数字不是凑的——`.diag-card` 没有 gap，标题到内容

@@ -85,6 +85,7 @@ import {
   queriedAgeCompact,
 } from '../subscription/subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents/incidents.js';
+import { instanceStore, familyLabel, loadInstances } from '../kernel/instance.js';
 import { tildePath } from './labels.js';
 import VersionBadge from './VersionBadge.vue';
 import { confirmDialog } from './notify.js';
@@ -124,25 +125,46 @@ onMounted(() => {
   // 未配置时不发请求：Rust 侧对未配置 provider 也只做凭据解析，不产生网络调用，
   // 但首次进入概览总得拉一次才知道配置状态——由 loadSubscriptionSummary 自行决定。
   loadSubscriptionSummary();
+  // 卡片 caption 要显示实例 id（设计稿的「DSH / default」）。单飞 + 失败静默：
+  // 拉不到就只显示族名，标题行不该因为一条装饰性读数而空着或报错。
+  loadInstances().catch(() => {});
 });
 // 工作台里改完凭据回到概览：数据拉取动作自带 TTL，这里不额外触发。
 // planRows 额外滤掉「用户选择隐藏」的分区（key 配了但一直查不到数据）。
+// 余额分区在概览卡的形状：设计稿 `.usage-balance-row`（「余额」标签 + 右侧
+// 14px 粗体总额）与 `.usage-balance-detail`（赠金 / 充值两枚并排小字）分两行，
+// 总额是这一格的主读数。`balanceRow` 返回的是给独立窗口用的单行文本
+// （`余额：¥16.62` / `赠金 ¥8.00 · 充值 ¥8.62`），这里按它自己定下的分隔符
+// 拆回结构化字段——分隔符与拆分同在 subscription.js，改那边要一起改这里。
+function balanceCardRow(balance) {
+  const row = balanceRow(balance);
+  if (!row) return null;
+  const [label, ...rest] = row.main.split('：');
+  return {
+    tip: row.tip,
+    label,
+    total: rest.join('：'),
+    parts: row.detail ? row.detail.split(' · ') : [],
+  };
+}
 const planRows = computed(() =>
   ((subscription.data && subscription.data.providers) || [])
     .filter((provider) => provider.configured && !isProviderHidden(provider.id))
     .map((provider) => ({
       provider,
       tiers: provider.kind === 'plan' ? provider.tiers.map((tier) => tierRow(tier)).filter(Boolean) : [],
-      balances: provider.kind === 'balance' ? provider.balances.map((balance) => balanceRow(balance)) : [],
+      balances:
+        provider.kind === 'balance'
+          ? provider.balances.map((balance) => balanceCardRow(balance)).filter(Boolean)
+          : [],
       shortState: providerShortState(provider),
       queried: queriedAtLabel(provider),
       queriedCompact: queriedAgeCompact(provider),
     }))
 );
-// 余额类（DeepSeek）单独成块；套餐类（MiniMax / GLM…）进左右自适应栅格，
-// 新增的 provider 依次往后排，flex-wrap 自动换行。
-const balanceRows = computed(() => planRows.value.filter((row) => row.provider.kind === 'balance'));
-const planBlockRows = computed(() => planRows.value.filter((row) => row.provider.kind === 'plan'));
+// 2026-10-07：原先按 kind 拆成 balanceRows（竖列）与 planBlockRows（栅格）
+// 两个 computed，模板里两个循环各写一遍 provider 头。设计稿的用法是「一格一家」，
+// 两个循环合成 planRows 一个即可，balanceRows / planBlockRows 随之删除。
 // 所有 configured 分区都被隐藏时给出一句说明，而不是误导性的「尚未查询」。
 const allHidden = computed(
   () =>
@@ -201,10 +223,43 @@ const officialChatOpen = computed(() => !!(store.view && store.view.official_cha
 const canStart = computed(() => !!(kernel.value && kernel.value.active && kernel.value.active_installed));
 const noKernel = computed(() => !!(kernel.value && (!kernel.value.installed || kernel.value.installed.length === 0)));
 
+// 卡片标题右侧的 caption（设计稿的「DSH / default」）：内核族 / 实例 id。
+// 回答的是「这张卡在说哪个内核」——顶部工作条已经给了实例标签，这里补的是
+// 内核族那半边，两处互补不重复。
+//
+// 两项都**只能**从 `instanceStore.list` 取，不能从 `store.view.kernel` 取：
+// `KernelStatus` 结构体里既没有 `family` 也没有实例 id 字段（它的字段是
+// installed / active / active_installed …），从 kernel 上读那个字段取到的
+// 是 undefined，而 `undefined || …` 会静默落到下一个兜底分支——
+// 门禁 `check:invariants` 的 [ipc-fields] 项当场把这条抓了出来。
+//
+// 实例 id 与族名取自**同一条记录**：只拿 defaultInstanceId 再另找族，两次
+// 查找可能落在不同实例上（切过默认实例的瞬间），拼出「DSH / default-dev」
+// 这种族与 id 不匹配的 caption。
+const kernelCaption = computed(() => {
+  const current = instanceStore.list.find((it) => it.record.id === instanceStore.defaultInstanceId);
+  if (!current) return familyLabel('dsh');
+  return `${familyLabel(current.record.kernel_family)} / ${current.record.id}`;
+});
+
 const nodeText = computed(() => {
   const n = shownNode.value;
   if (!n) return '—';
   return n.ok ? [tildePath(n.path), n.version].filter(Boolean).join('  ') : '未检测到可用 Node（' + n.reason + '）';
+});
+
+// 指标格里只放短值，完整内容进 title。
+// 2026-10-07：设计稿的 metrics 是三等分格，每格只有约 1/3 卡宽。原来竖列时
+// 「/usr/local/bin/node v25.9.0」这种全路径 + 版本号塞进去会把这一格撑到换行，
+// 而换行后的指标行高低不齐，比省略更难看。路径仍在 title 里，一个字都没丢。
+const nodeShortText = computed(() => {
+  const n = shownNode.value;
+  if (!n) return '—';
+  return n.ok ? n.version || '已就绪' : '未检测到';
+});
+const dataDirText = computed(() => {
+  const dir = kernel.value && kernel.value.data_dir;
+  return dir ? tildePath(dir) : '—';
 });
 
 const urlText = computed(() => (running.value ? 'http://127.0.0.1:' + kernel.value.port : '—'));
@@ -299,13 +354,15 @@ function goVersions() {
       </div>
     </div>
 
-    <div class="page-layout">
+    <!-- 概览主栅格：设计稿的 `.grid`（1.25fr / 0.75fr），行序由各卡的
+         `order` 决定，详见下面 `<ControlTower />` 那段注释。 -->
+    <div class="overview-grid">
       <!-- 首次运行引导：未安装任何内核时给出两条路径——去版本页挑选，
            或直接安装当前最新稳定版。横跨整行，因为它比下面任何一张卡都优先。 -->
       <Transition name="panel">
         <div
           v-if="noKernel && !store.starting && !running"
-          class="callout callout-firstrun page-layout__full"
+          class="callout callout-firstrun"
           role="alert"
         >
           <div class="callout-icon" aria-hidden="true">
@@ -327,106 +384,153 @@ function goVersions() {
       </Transition>
 
       <!-- 左列：当前内核。宽版下它是这一页最需要横向空间的一张卡——
-           地址、路径与用量条并排放得下，不必再一条一条竖着列。 -->
-      <div class="page-layout__col">
-        <div class="card">
-          <h2 class="kernel-title">
-            当前内核
-        <el-tooltip placement="bottom-start" :show-after="80">
-          <template #content>
-            <div class="card-info-tooltip">
-              <div>Node.js 环境</div>
-              <div>{{ nodeRequirementText }}</div>
+           地址、路径与用量条并排放得下，不必再一条一条竖着列。
+           2026-10-07 按设计稿重排：主操作（工作台 / 官网网页版）从卡底那排
+           提到卡头（它们是这一页最高频的两个动作，紧贴标题才不用视线下移），
+           读数从「一串 dt/dd 竖列」改成「大版本号 + 状态行 + 三格指标」——
+           竖列时每条读数独占一行，五行就把卡拉到和右栏一样高。 -->
+        <div class="card kernel-card">
+          <div class="card-head">
+            <div class="card-head-left">
+              <h2 class="kernel-title">
+                当前内核
+                <el-tooltip placement="bottom-start" :show-after="80">
+                  <template #content>
+                    <div class="card-info-tooltip">
+                      <div>Node.js 环境</div>
+                      <div>{{ nodeRequirementText }}</div>
+                    </div>
+                  </template>
+                  <el-icon class="card-info-icon"><InfoFilled /></el-icon>
+                </el-tooltip>
+              </h2>
+              <div class="kernel-header-actions">
+                <el-button
+                  :class="{ 'btn-danger': running }"
+                  size="small"
+                  :icon="running ? VideoPause : VideoPlay"
+                  :loading="store.starting"
+                  :disabled="toggleDisabled"
+                  :title="running ? '停止工作台' : '启动工作台'"
+                  @click="onToggle"
+                >
+                  工作台
+                </el-button>
+                <el-button
+                  :class="{ 'btn-chat': !officialChatOpen, 'btn-danger': officialChatOpen }"
+                  size="small"
+                  :icon="officialChatOpen ? CircleClose : ChatDotRound"
+                  :disabled="store.starting || globalBusy"
+                  :loading="isLoading('officialChat')"
+                  :title="officialChatOpen ? '关闭 DeepSeek 官网网页版' : '打开 DeepSeek 官网网页版'"
+                  @click="toggleOfficialChat"
+                >
+                  官网网页版
+                </el-button>
+              </div>
             </div>
-          </template>
-          <el-icon class="card-info-icon"><InfoFilled /></el-icon>
-        </el-tooltip>
-        <VersionBadge
-          class="kernel-version"
-          icon="black"
-          :title="'活动内核版本：' + ((kernel && kernel.active) || '未选择')"
-        >
-          {{ (kernel && kernel.active) || '未选择' }}
-        </VersionBadge>
-        <!-- 「查看状态」进内核状态诊断：版本 / 运行 / 端口 / 数据目录的
-             一张读数表。它不探测，只解释用户眼前这份快照。 -->
-        <el-button
-          class="kernel-status-link"
-          text
-          size="small"
-          @click="openKernelStatusDiagnosis(store.activePanel)"
-        >
-          查看状态
-        </el-button>
-      </h2>
-      <dl class="kv">
-        <dt>运行状态</dt>
-        <dd>
-          <!-- 品牌区同款状态胶囊（圆点 + 文本），语义一致：运行中 / 已停止 / 未安装。 -->
-          <span class="status-pill">
-            <span class="dot" :class="kernelStatus.cls"></span>
-            <span>{{ kernelStatus.text }}</span>
-          </span>
-        </dd>
-        <dt>工作台地址</dt>
-        <dd>{{ urlText }}</dd>
-        <dt>Node.js</dt>
-        <dd class="kv-with-action">
-          <span>{{ nodeText }}</span>
-          <el-button
-            v-if="shownNode && !shownNode.ok"
-            size="small"
-            text
-            type="primary"
-            :loading="isLoading('installNode')"
-            :disabled="globalBusy"
-            title="自动下载并安装官方 Node.js 到数据目录（需联网）"
-            @click="onInstallNode"
-          >
-            自动安装
-          </el-button>
-          <el-button
-            size="small"
-            text
-            :icon="Monitor"
-            :loading="isLoading('detectNode')"
-            :disabled="globalBusy"
-            title="重新探测本机环境里的 Node.js（不改设置；刚装完 Node 时用它刷新）"
-            @click="onDetectNode"
-          >
-            重新检测
-          </el-button>
-        </dd>
-        <dt>数据目录</dt>
-        <dd class="kv-with-action">
-          <span class="kv-path" :title="kernel && kernel.data_dir">{{ (kernel && kernel.data_dir) || '—' }}</span>
-          <el-button
-            size="small"
-            text
-            :icon="FolderOpened"
-            :loading="isLoading('openDataDir')"
-            title="在系统文件管理器中打开数据目录"
-            @click="openDataDir"
-          >
-            打开
-          </el-button>
-        </dd>
-        <dt>今日用量</dt>
-        <dd class="kv-with-action">
-          <span :title="usageDayTip">{{ usageDayText }}</span>
-          <el-button
-            size="small"
-            text
-            type="primary"
-            :icon="TrendCharts"
-            :loading="isLoading('openUsageWindow')"
-            title="在独立窗口中查看模型用量（热力图 / 趋势 / 按模型统计，最近 90 天）"
-            @click="openUsageWindow"
-          >
-            模型用量
-          </el-button>
-        </dd>
-      </dl>
+            <span class="card-caption">{{ kernelCaption }}</span>
+          </div>
+
+          <div class="kernel-summary">
+            <!-- 版本号与状态行同属一个竖向块（设计稿 `.kernel-summary` 里那层 div）。
+                 横排时状态胶囊会随内核状态换行到不同位置，读法不稳定。 -->
+            <div class="kernel-summary-main">
+              <VersionBadge
+                class="kernel-version"
+                icon="black"
+                :title="'活动内核版本：' + ((kernel && kernel.active) || '未选择')"
+              >
+                {{ (kernel && kernel.active) || '未选择' }}
+              </VersionBadge>
+              <div class="kernel-status-row">
+                <span class="status-pill">
+                  <span class="dot" :class="kernelStatus.cls"></span>
+                  <span>{{ kernelStatus.text }}</span>
+                </span>
+                <span class="kernel-detail">工作台地址 {{ urlText }}</span>
+                <!-- 「查看状态」进内核状态诊断：版本 / 运行 / 端口 / 数据目录的
+                     一张读数表。它不探测，只解释用户眼前这份快照。 -->
+                <el-button
+                  class="kernel-status-link"
+                  text
+                  size="small"
+                  @click="openKernelStatusDiagnosis(store.activePanel)"
+                >
+                  查看状态
+                </el-button>
+              </div>
+            </div>
+          </div>
+
+          <div class="metrics">
+            <div class="metric">
+              <div class="metric-label metric-label-with-action">
+                <span>Node.js</span>
+                <span class="metric-actions">
+                  <el-button
+                    v-if="shownNode && !shownNode.ok"
+                    size="small"
+                    text
+                    type="primary"
+                    :loading="isLoading('installNode')"
+                    :disabled="globalBusy"
+                    title="自动下载并安装官方 Node.js 到数据目录（需联网）"
+                    @click="onInstallNode"
+                  >
+                    自动安装
+                  </el-button>
+                  <el-button
+                    size="small"
+                    text
+                    :icon="Monitor"
+                    :loading="isLoading('detectNode')"
+                    :disabled="globalBusy"
+                    title="重新探测本机环境里的 Node.js（不改设置；刚装完 Node 时用它刷新）"
+                    @click="onDetectNode"
+                  >
+                    重新检测
+                  </el-button>
+                </span>
+              </div>
+              <div class="metric-value" :title="nodeText">{{ nodeShortText }}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label metric-label-with-action">
+                <span>今日用量</span>
+                <el-button
+                  size="small"
+                  text
+                  type="primary"
+                  :icon="TrendCharts"
+                  :loading="isLoading('openUsageWindow')"
+                  title="在独立窗口中查看模型用量（热力图 / 趋势 / 按模型统计，最近 90 天）"
+                  @click="openUsageWindow"
+                >
+                  模型用量
+                </el-button>
+              </div>
+              <div class="metric-value" :title="usageDayTip">{{ usageDayText }}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label metric-label-with-action">
+                <span>数据目录</span>
+                <el-button
+                  size="small"
+                  text
+                  :icon="FolderOpened"
+                  :loading="isLoading('openDataDir')"
+                  title="在系统文件管理器中打开数据目录"
+                  @click="openDataDir"
+                >
+                  打开
+                </el-button>
+              </div>
+              <div class="metric-value metric-value--path" :title="kernel && kernel.data_dir">
+                {{ dataDirText }}
+              </div>
+            </div>
+          </div>
 
       <el-alert
         v-if="store.shellUpdateVersion"
@@ -460,59 +564,46 @@ function goVersions() {
         </div>
       </div>
 
-      <!-- 第一行：主操作两件套（工作台 / 官网网页版）+ 可选外壳更新。
-           按钮只写名词不写「打开/关闭」：动作方向由 icon 表达——
-           - 工作台：▶ 启动（VideoPlay）/ ⏸ 停止（VideoPause）
-           - 官网网页版：💬 打开（ChatDotRound）/ ⏹ 关闭（CircleClose）
-           文字色仍随状态切换（关闭态淡红 btn-danger）。
-           全部用 type="text"（无底色无描边），仅靠文字色 + icon 区分。
+      <!-- 主操作两件套（工作台 / 官网网页版）已于 2026-10-07 提到卡头，与标题
+           同排——它们是这一页最高频的两个动作，贴在标题边上不用视线下移。
+           这里只留「更新并重启」：它条件出现（查到新版本才有），塞进卡头会
+           平时占位、偶尔把标题挤掉。按钮只写名词不写「打开/关闭」：动作方向
+           由 icon 表达——工作台 ▶ 启动（VideoPlay）/ ⏸ 停止（VideoPause），
+           官网网页版 💬 打开（ChatDotRound）/ ⏹ 关闭（CircleClose），文字色
+           随状态切换（关闭态淡红 btn-danger）。
 
-           「查看日志」原先在这一排（2026-10-07 迁走）：它与「系统健康 → 日志系统」
+           「查看日志」原先也在这一排（2026-10-07 迁走）：它与「系统健康 → 日志系统」
            是同一件事的两个入口，而两者做的事还不一样——按钮直接开独立全屏窗口
            （跳过列表），那一行走日志弹层。同一屏上两个日志入口、点开结果还
            不一致，用户没法建立预期。原先那条捷径已随之删除。现在全应用的日志
            入口统一走弹层（事故 / 预检 / 诊断页本来也都是同一个），要更大屏就在
-           弹层里点「全屏」。这一排因此只剩会改变内核状态与外窗口的动作。 -->
-      <div class="btn-row">
+           弹层里点「全屏」。 -->
+      <div v-if="store.shellUpdateVersion" class="btn-row">
         <el-button
-          :class="{ 'btn-danger': running }"
-          :icon="running ? VideoPause : VideoPlay"
-          :loading="store.starting"
-          :disabled="toggleDisabled"
-          :title="running ? '停止工作台' : '启动工作台'"
-          @click="onToggle"
-        >
-          工作台
-        </el-button>
-        <el-button
-          :class="{ 'btn-chat': !officialChatOpen, 'btn-danger': officialChatOpen }"
-          :icon="officialChatOpen ? CircleClose : ChatDotRound"
-          :disabled="store.starting || globalBusy"
-          :loading="isLoading('officialChat')"
-          :title="officialChatOpen ? '关闭 DeepSeek 官网网页版' : '打开 DeepSeek 官网网页版'"
-          @click="toggleOfficialChat"
-        >
-          官网网页版
-        </el-button>
-        <el-button
-          v-if="store.shellUpdateVersion"
           type="warning"
           :icon="Refresh"
           :loading="isLoading('installShellUpdate')"
           :disabled="globalBusy"
-           @click="installShellUpdate"
+          @click="installShellUpdate"
         >
           更新并重启
         </el-button>
       </div>
 
-      <!-- 第二行：仅在对应服务开启后出现，作为窗口层的次级入口；
-           视觉上压低权重（缩进 + ghost 风格），与第一行的主按钮做明显区分。
+      <!-- 次级入口：仅在对应服务开启后出现，作为窗口层的入口，视觉上压低权重
+           （缩进 + ghost 风格），与卡头的主按钮做明显区分。
            「工作台窗口 / 官网网页版窗口」只把窗口带到台前，「刷新工作台」是唯一的
            **动作**——它换掉整个工作台窗口（见 harness_cmd）。三者都不改变内核
            状态，所以按 AGENTS.md 的 IA 规则同属次级入口这一排，不许往主按钮
-           旁边堆会启停内核的动作。「查看日志」已迁到「系统健康 → 日志系统」
-           （2026-10-07），不再在这一排。 -->
+           旁边堆会启停内核的动作。
+
+           「查看日志」不在这一排（早于本轮就已移除）：它与下面「系统健康 →
+           日志系统」是同一件事的两个入口，而两者做的事还不一样——那个按钮直接
+           开独立全屏窗口（跳过列表），那一行走日志弹层。同一屏上两个日志入口、
+           点开结果还不一致，用户没法建立预期。
+           **独立日志窗口的能力没有因此丢失**：日志弹层右上角的「全屏」按钮就是
+           它（`LogModal.openLogWindow`），设计说明 §4 对独立窗口的要求说的是
+           「保留刷新、折叠侧栏和独立日志窗口入口」三项，都在弹层里。 -->
       <Transition name="subrow">
         <div v-if="running || officialChatOpen" class="btn-row btn-row-sub">
           <el-button
@@ -556,23 +647,33 @@ function goVersions() {
       <p v-if="!store.starting && !running && !canStart" class="muted" style="margin: 0">
         尚未安装可用内核，请先到「内核版本」页安装。
       </p>
-        </div>
-      </div>
+    </div>
 
-      <!-- 右列：控制塔（需要关注 / 系统健康 / 最近操作）与套餐用量。
-           它们都是「看一眼就走」的信息，不需要横向空间，竖着叠更省眼力。
-           安全网（环境回退点 / 深入排查）仍按原决策留在设置页，常年摆在开机
-           第一屏只会稀释真正要看的内容。 -->
-      <div class="page-layout__col">
-        <ControlTower
-          @open-incident="openIncidentDetails"
-          @go-panel="(name) => (store.activePanel = name)"
-        />
+      <!-- 2026-10-07 按设计稿改骨架。原先是「左右两列各自竖着堆」：左列只有
+           当前内核，右列堆控制塔三张卡 + 套餐用量，右列因此比左列长出一大截，
+           而左列下方空着半屏。设计稿的排布是按**行**走的：
+
+             第 1 行  需要关注（整宽，仅在有告警时出现）
+             第 2 行  当前内核（1.25fr） | 系统健康（0.75fr）
+             第 3 行  套餐用量（整宽）
+             第 4 行  最近操作（整宽）
+
+           实现方式：`<ControlTower />` 是 Vue 3 fragment（需要关注 / 系统健康 /
+           最近操作三张卡是它的三个并列根节点），放进这个 grid 后三张卡直接成为
+           栅格子项，**不需要拆成三个组件、也不会触发三次数据拉取**。
+           但它们的 DOM 顺序是「三张塔卡在前、内核卡在后」，与视觉顺序不一致，
+           所以每张卡显式给 `order` + `grid-column`：栅格按 order 排序后自动排布，
+           某张卡缺席时其余各归其位（`order` 方案对「需要关注」不存在的情况
+           免疫，写死 grid-row 就不会）。 -->
+      <ControlTower
+        @open-incident="openIncidentDetails"
+        @go-panel="(name) => (store.activePanel = name)"
+      />
 
         <!-- 套餐用量：独立只读卡，内容直接展示（无折叠）。MiniMax 双窗口进度 +
          DeepSeek 余额行；完整可操作错误文案只在顶部横幅出现，provider 分区
          仅用短状态词标注。凭据复用工作台模型设置，这张卡不带任何写操作。 -->
-        <div class="card">
+        <div class="card usage-card">
       <div class="card-head">
         <h2>
           套餐用量
@@ -634,40 +735,12 @@ function goVersions() {
           show-icon
           class="plan-error"
         />
-        <div v-for="row in balanceRows" :key="row.provider.id" class="plan-provider">
-          <div class="plan-provider-head">
-            <span class="plan-provider-name">{{ row.provider.label }}</span>
-            <button
-              type="button"
-              class="age-pill age-pill-btn"
-              :title="isProviderRefreshing(row.provider.id) ? '正在查询…' : '查询于 ' + row.queried + '，点击只刷新 ' + row.provider.label"
-              :disabled="isProviderRefreshing(row.provider.id)"
-              @click="onRefreshProvider(row.provider.id)"
-            >
-              <el-icon :class="{ 'is-loading': isProviderRefreshing(row.provider.id) }"><Refresh /></el-icon>{{ row.queriedCompact }}
-            </button>
-          </div>
-          <template v-if="row.provider.kind === 'balance'">
-            <div v-for="(item, index) in row.balances" :key="index" class="plan-balance" :title="item.tip">
-              <span>{{ item.main }}</span>
-              <!-- 赠金 / 充值与总额分开列（总额含赠金），独占一行。 -->
-              <span v-if="item.detail" class="plan-balance-detail">{{ item.detail }}</span>
-              <span v-if="row.provider.is_available === false" class="plan-balance-unavailable">
-                余额不足，无法发起调用
-              </span>
-            </div>
-          </template>
-          <p
-            v-if="row.shortState"
-            class="plan-state"
-            :class="{ 'plan-state-bad': row.provider.fetch_error || row.provider.credential_status === 'expired' || row.provider.error }"
-          >
-            {{ row.shortState }}
-          </p>
-        </div>
-        <!-- 套餐类：左右自适应栅格，新增 provider 依次往后排。 -->
+        <!-- 2026-10-07 按设计稿改成单一三列栅格：原先是「余额类竖着列一块 +
+             套餐类再进一个自适应栅格」两个循环，同一张卡里出现两种排布规则，
+             新增 provider 时还要决定它进哪个循环。planRows 本来就同时含两类，
+             一个循环按 kind 分支渲染就够，视觉规则也统一成「一格一家」。 -->
         <div class="plan-grid">
-          <div v-for="row in planBlockRows" :key="row.provider.id" class="plan-provider">
+          <div v-for="row in planRows" :key="row.provider.id" class="plan-provider">
             <div class="plan-provider-head">
               <span class="plan-provider-name">{{ row.provider.label }}</span>
               <button
@@ -680,19 +753,43 @@ function goVersions() {
                 <el-icon :class="{ 'is-loading': isProviderRefreshing(row.provider.id) }"><Refresh /></el-icon>{{ row.queriedCompact }}
               </button>
             </div>
+            <template v-if="row.provider.kind === 'balance'">
+              <div v-for="(item, index) in row.balances" :key="index" :title="item.tip">
+                <div class="plan-balance">
+                  <span class="plan-balance-label">{{ item.label }}</span>
+                  <strong class="plan-balance-total">{{ item.total }}</strong>
+                  <span v-if="row.provider.is_available === false" class="plan-balance-unavailable">
+                    余额不足，无法发起调用
+                  </span>
+                </div>
+                <div v-if="item.parts.length" class="plan-balance-detail">
+                  <span v-for="part in item.parts" :key="part">{{ part }}</span>
+                </div>
+              </div>
+            </template>
+            <!-- 设计稿 `.usage-tier-row`：`名称 22px | 进度条 1fr | 百分比 34px`
+                 一行栅格，条高 6px、百分比在条外右对齐。原先这里是「名称/倒计时
+                 一行 + 10px 进度条独占一行 + 百分比压在条中央」，两行占的高度
+                 是设计稿的两倍多。倒计时保留，但降级成条下的一行小字——
+                 它是次要读数，不该和额度条抢同一行的视觉权重。 -->
             <div v-for="tier in row.tiers" :key="tier.name" class="plan-tier-col">
-              <div class="plan-tier-head">
+              <div class="plan-tier-row">
                 <span class="plan-tier-name">{{ tier.name }}</span>
-                <span v-if="tier.unlimited" class="plan-tier-unlimited">♾️ 无限周额度</span>
-                <span class="muted plan-tier-reset" :title="tier.countdownTitle">
-                  <el-icon v-if="tier.countdown" class="plan-reset-icon"><Timer /></el-icon>{{ tier.countdown || '' }}
-                </span>
+                <div
+                  v-if="!tier.unlimited"
+                  class="plan-bar"
+                  role="img"
+                  :aria-label="tier.tip"
+                  :title="tier.tip"
+                >
+                  <i :class="'plan-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
+                </div>
+                <span v-else class="plan-tier-unlimited">♾️ 无限周额度</span>
+                <span v-if="!tier.unlimited" class="plan-tier-value">{{ tier.percent }}%</span>
               </div>
-              <div v-if="!tier.unlimited" class="plan-bar" role="img" :aria-label="tier.tip" :title="tier.tip">
-                <i :class="'plan-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
-                <!-- 剩余百分比居中显示在进度条上。 -->
-                <span class="plan-bar-percent">{{ tier.percent }}%</span>
-              </div>
+              <p v-if="tier.countdown" class="plan-tier-reset" :title="tier.countdownTitle">
+                <el-icon class="plan-reset-icon"><Timer /></el-icon>{{ tier.countdown }}
+              </p>
             </div>
             <p
               v-if="row.shortState"
@@ -709,7 +806,6 @@ function goVersions() {
         <p v-else-if="!planRows.length" class="muted" style="margin: 0">尚未查询，点击右上角「刷新」获取。</p>
       </div>
     </div>
-      </div>
     </div>
   </section>
 </template>
@@ -757,18 +853,139 @@ function goVersions() {
   width: 6px;
   height: 6px;
 }
-/* 「当前内核」标题行：标题 + ℹ️ 在左，活动版本徽标独占最右。 */
+/* 「当前内核」标题行：标题 + ℹ️ + 主操作按钮在左，实例 caption 在最右。 */
 .kernel-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  margin: 0;
 }
-/* 活动版本徽标本身走共享的 VersionBadge（分段式：无底黑图形 + 暗底文字，
-   icon="black"——2026-10-05 用户两轮收敛后的最终形态，侧栏品牌区保持蓝底），
-   侧栏品牌区那一处是同一个组件。这里只留右推这一件事。 */
-.kernel-version {
-  margin-left: auto;
+/* 卡头里的主操作：与标题同排，撑开可点区域之外不额外占位。 */
+.kernel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 概览主栅格。比例取设计稿 `.grid` 的 1.25fr / 0.75fr：左边的当前内核要放
+   大版本号 + 状态行 + 三格指标，右边的系统健康只有「名称 / 读数」两段，
+   1:1 会把左边挤到换行。右列的 280px 下限保证「技能注册 + 读取失败 +
+   点击重试」放得下（2026-10-07 由两列改单列就是为了这个，见 diagnostics.css）。 */
+.overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+  gap: 12px;
+  align-content: start;
+}
+/* 行序。栅格按 `order` 而非 DOM 顺序排布——`<ControlTower />` 是 fragment，
+   它的三张卡在 DOM 里连在一起，与视觉顺序不同。写成 `order` 而不是
+   `grid-row` 是因为「需要关注」缺席时行号会整体前移，order 对此免疫。
+   末行是「需要关注 | 最近操作」左右并排（2026-10-07 用户定的落位，两张卡的
+   order / grid-column 在 diagnostics.css 里）。 */
+.kernel-card { order: 1; grid-column: 1; }
+.usage-card { order: 3; grid-column: 1 / -1; }
+/* 首次运行引导比下面任何一张卡都优先，占第一行整宽。 */
+.callout-firstrun { order: 0; grid-column: 1 / -1; }
+
+/* 大版本号 + 状态行。版本号是这一页字号最大的一处读数：它回答「我现在跑的是
+   哪个内核」，而这条信息此前只是标题行右侧一个小徽标。
+   字号 18px、`padding: 13px 0 12px` 取设计稿 `.kernel-summary` / `.kernel-version`：
+   版本号与状态行在稿子里是**同一个竖向块**（版本号一行、状态行下一行），
+   此前这里把它们横排并允许换行，于是状态胶囊有时贴到版本号右侧、有时掉到下一行，
+   每种内核状态下这一行的读法都不一样。 */
+.kernel-summary {
+  display: flex;
+  align-items: start;
+  gap: 18px;
+  padding: 13px 0 12px;
+}
+.kernel-summary .kernel-version {
+  margin-left: 0;
+  font-size: 18px;
+}
+.kernel-summary-main {
+  min-width: 0;
+}
+.kernel-status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 8px;
+  min-width: 0;
+}
+.kernel-detail {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.kernel-status-row .kernel-status-link {
+  margin-left: 0;
+  padding: 0;
+  height: auto;
+}
+
+/* 三格指标：Node.js / 今日用量 / 数据目录。设计稿给的是 1fr 1fr 1fr，
+   格间用左边框分隔而不是留白——留白在暗色底上读不出「这里换一个维度了」。 */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.metric { min-width: 0; }
+.metric + .metric {
+  padding-left: 12px;
+  border-left: 1px solid var(--border-soft);
+}
+.metric-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
+  /* 放不下时让**动作**换行，而不是把「今日用量」拆成两行——指标名被拆开后
+     三格的标题高度就对不齐了，而那正是这一排要避免的 ragged 感。 */
+  flex-wrap: wrap;
+  min-height: 22px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.metric-label > span:first-child {
+  white-space: nowrap;
+}
+/* Node.js 格可能要同时挂「自动安装」和「重新检测」两个动作（前者只在
+   没探测到时出现）。挤不下就让它们换行，不要压字号或藏掉一个入口。 */
+.metric-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.metric-value {
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.metric-value--path {
+  font-family: ui-monospace, monospace;
+  font-weight: 400;
+}
+/* 指标格里的动作按钮收一收内边距。设计稿的 `.text-action` 本来就是无底色、
+   近零内边距的一行小字；Element Plus 的 small 按钮左右各 11px，一格只有约
+   141px 可用，「今日用量 + 📊模型用量」正好差一点放不下而折行，格子就比稿子
+   高了一截。收到 4px 后三格都能标签与动作同行。
+   **不要改成图标按钮**：去掉文字后「模型用量 / 重新检测 / 打开」三个入口靠
+   图形猜含义，比折行更糟。 */
+.metrics :deep(.el-button) {
+  height: auto;
+  padding-left: 4px;
+  padding-right: 4px;
+  font-size: 11px;
 }
 /* 分区刷新按钮：复用年龄胶囊外观，但可点击；禁用（查询中）降透明度。 */
 .age-pill-btn {
@@ -803,42 +1020,58 @@ function goVersions() {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  /* 分块展示：描边 + 微底色 + 圆角，与独立窗口的 provider 分区同语言。 */
+  /* 分块展示：描边 + 微底色 + 圆角，与独立窗口的 provider 分区同语言。
+     10px 圆角 / 6px 10px 内边距是原窗口里 provider 分区的写法；设计稿
+     `.usage-item` 走的是 6px 圆角 + 10px 四边内边距，这里对齐后者。 */
   border: 1px solid var(--el-border-color-extra-light);
-  border-radius: 10px;
-  padding: 6px 10px;
+  border-radius: 6px;
+  padding: 10px;
   background: var(--el-fill-color-light);
 }
-/* 套餐类：grid 自适应栅格。480 窗口稳定两列并排（MiniMax 与 GLM 同行），
-   更宽窗口自动三列；新增 provider 依次往后排。 */
+/* 设计稿 `.usage-grid` 是固定三列，不是自适应。1040 宽版下内容列约 790px，
+   `auto-fill minmax(170px,1fr)` 会排成四列，一家的「余额 / 额度条」被摊薄，
+   与稿子的三列节奏不符。固定三列 + 溢出换行，同一屏的横向对比关系才是
+   设计稿画的那一屏。 */
 .plan-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 .plan-grid .plan-provider {
   min-width: 0;
 }
-/* 窄块内的 tier：名称 / 百分比 / 倒计时一行，进度条独占下一行。 */
+/* 窄块内的 tier：设计稿 `.usage-tier-row` 的一行栅格。 */
 .plan-tier-col {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
-.plan-tier-head {
-  display: flex;
+.plan-tier-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 6px;
-  font-size: 12px;
-  line-height: 1.5;
+  gap: 7px;
+  min-height: 12px;
 }
-.plan-tier-head .plan-tier-name {
-  color: var(--text-secondary);
+.plan-tier-row .plan-bar {
+  margin-top: 0;
+}
+.plan-tier-name {
+  color: var(--text-muted);
+  font-size: 10px;
   font-weight: 600;
 }
-.plan-tier-head .plan-tier-reset {
-  margin-left: auto;
+.plan-tier-unlimited {
+  grid-column: 2 / -1;
+  font-size: 11px;
+  font-weight: 600;
+}
+.plan-tier-value {
+  min-width: 34px;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 650;
+  text-align: right;
 }
 .plan-provider-head {
   display: flex;
@@ -872,40 +1105,23 @@ function goVersions() {
   display: inline-flex;
   align-items: center;
   gap: 2px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 10px;
 }
 .plan-reset-icon {
-  font-size: 12px;
-}
-.plan-tier-name {
-  flex: none;
-  width: 68px;
-  color: var(--text-secondary);
+  font-size: 11px;
 }
 .plan-bar {
   position: relative;
-  /* 不能写 flex: 1：父级 .plan-tier-col 是**纵向** flex，flex-basis 0% 作用于
-     高度并压过 height: 10px，WebView2（Chromium）上进度条会被压成 0 高
-     （WebKit 对自动最小尺寸的实现不同，macOS 上看不出来）。宽度交给
-     纵向 flex 的默认 cross 拉伸即可。 */
-  flex: none;
+  /* 不能写 flex: 1：.plan-tier-row 是 grid，flex 属性不生效；这里只需要撑满
+     栅格给的 1fr 列。高度给设计稿的 6px——百分比已经移到条外，条内无文字，
+     10px 那条细带是给「条内压字」找的补偿，去掉压字后应当回到 6px。 */
   width: 100%;
-  height: 10px;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.08);
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border-soft);
   overflow: hidden;
-}
-/* 剩余百分比：绝对定位水平垂直居中，白色文字（红档浅底上仍可读）。 */
-.plan-bar-percent {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  line-height: 1;
-  font-weight: 600;
-  color: #fff;
-  pointer-events: none;
 }
 .plan-bar-fill {
   display: block;
@@ -922,28 +1138,37 @@ function goVersions() {
 .plan-bar-fill.level-danger {
   background: var(--el-color-danger);
 }
-.plan-tier-reset {
-  flex: none;
-  min-width: 96px;
-  /* inline-flex 容器不吃 text-align，用 justify-content 让图标+文字贴右缘。 */
-  justify-content: flex-end;
-  text-align: right;
-}
 .plan-balance {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  font-size: 12px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+/* 总额是这一格的主读数：14px 粗体。标签与明细统一 10px 次级灰。 */
+.plan-balance-label {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.plan-balance-total {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
 }
 /* 余额：总额与赠金 / 充值明细同行并排（gap 隔开），告警仍靠右。 */
 .plan-balance-unavailable {
   margin-left: auto;
   color: var(--el-color-danger);
   font-weight: 600;
+  font-size: 10px;
 }
 .plan-balance-detail {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 7px;
   color: var(--text-secondary);
+  font-size: 10px;
 }
 .plan-state {
   margin: 0;
