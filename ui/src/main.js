@@ -37,6 +37,7 @@ import { homeDir } from './shell/bridge.js';
 import { setDisplayHomeDir } from './shell/labels.js';
 import { disableContextMenu } from './shell/noContextMenu.js';
 import { applyTheme } from './shell/theme.js';
+import { followThemeBroadcast } from './shell/themeSync.js';
 import 'element-plus/es/components/alert/style/css.mjs';
 import 'element-plus/es/components/button/style/css.mjs';
 import 'element-plus/es/components/checkbox/style/css.mjs';
@@ -105,6 +106,11 @@ disableContextMenu();
 
 // 主题必须同样早于任何组件挂载：晚一步首帧会先画一帧错误主题再跳色。
 applyTheme();
+// 订阅主壳的主题广播：已开着的日志 / 用量 / 套餐 / 官网页签栏窗口不会因为
+// 别处改了 localStorage 就重绘（`storage` 事件不跨 webview），靠这条广播
+// 跟着换。四个副窗与主壳共用这个入口，所以只调一次、覆盖所有窗口类型。
+// 主壳自己发这条事件（`setTheme`），订阅不构成回环。
+followThemeBroadcast();
 
 const root = isLogViewer
   ? LogViewerWindow

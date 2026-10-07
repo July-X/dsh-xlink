@@ -37,6 +37,20 @@ export function listen(event, handler) {
   return tauriEvent.listen(event, handler);
 }
 
+/// 向**所有窗口**广播一个事件（Tauri 的 `emit` 本身是全局的）。
+///
+/// 主题联动用它：主壳切换后，已经开着的日志 / 用量 / 套餐 / 官网页签栏窗口
+/// 不会因为别的窗口改了 localStorage 就重绘——它们的 `html.dark` 是**加载时**
+/// 定下的，而 localStorage 没有 `storage` 事件跨 webview 生效。2026-10-08 用户
+/// 报「切换主题时弹出的 window 也要跟着改变」，根因就是这条链路缺失。
+///
+/// 只在主壳这一侧调用（切换主题的发起方）；副窗是接收方，不要回广播，
+/// 否则两扇副窗会互相触发。
+export function emit(event, payload) {
+  if (!tauriEvent) return Promise.resolve();
+  return tauriEvent.emit(event, payload);
+}
+
 /// 当前窗口句柄；桥接未注入（纯浏览器调试）时返回 null。
 function currentWindow() {
   if (!tauriWindow || typeof tauriWindow.getCurrentWindow !== 'function') return null;

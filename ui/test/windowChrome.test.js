@@ -63,6 +63,87 @@ test('原生主题只作用于本窗口，不批量改其他窗口', () => {
   );
 });
 
+// ---- 主壳切主题时，已开着的副窗跟着换 ------------------------------------
+//
+// 2026-10-08 用户报「切换主题时，弹出的 window 也要跟着改变」。
+// 根因不是样式，是**链路缺失**：主题真值在 localStorage，而 localStorage 的
+// `storage` 事件**不跨 webview 生效**——四个副窗各自是独立 webview，主壳改完
+// 存储，它们已经加载好的那份 `html.dark` 不会动。此前 `theme.js` 的注释把它
+// 写成了「下一次绘制就跟着变」，那句只在**窗口还没开**时才成立。
+
+test('切主题会广播给所有窗口（已开着的副窗靠它刷新）', () => {
+  const body = fnBody(read('../src/shell/theme.js'), 'setTheme');
+  assert.match(
+    body,
+    /broadcastTheme\(\s*next\s*\)/,
+    'setTheme 必须广播新主题，否则已开着的副窗永远停在旧主题',
+  );
+  // 广播必须在 applyTheme 之后：先把自己这扇窗改对，再通知别人。
+  assert.match(
+    body,
+    /applyTheme\(\);[\s\S]*?broadcastTheme\(\s*next\s*\);/,
+    '顺序是「先 applyTheme 再广播」——反过来的话主窗会慢一帧',
+  );
+});
+
+test('副窗收到广播后跑 applyTheme，内容与原生 chrome 同一步换', () => {
+  const body = fnBody(read('../src/shell/theme.js'), 'followThemeBroadcast');
+  assert.match(body, /subscribeThemeChanges\(/, '必须订阅主题广播');
+  assert.match(body, /applyTheme\(\)/, '副窗要自己跑一遍 applyTheme');
+  // 三步落地：真值、内容、原生 chrome。只推原生主题会只换标题栏、留下旧内容，
+  // 正是上面那条判据警告的割裂，只是方向反过来。
+  assert.match(body, /setThemeValue\(\s*next\s*\)/, '必须先改真值，否则内容与真值脱节');
+  assert.doesNotMatch(
+    body,
+    /setWindowTheme\(\s*next\s*\)/,
+    '不能只推原生主题：那样只换标题栏、内容留在旧主题',
+  );
+  // 事件可被同页脚本构造：非法值会让整窗落到既非 dark 也非浅色的主题上。
+  assert.match(body, /isKnownTheme\(\s*next\s*\)/, '必须校验收到的主题值');
+});
+
+test('传输层不许碰主题真值（theme.js 与 themeSync.js 不能互相 import 成环）', () => {
+  // theme.js 要调 themeSync 的 broadcastTheme；反向再 import 就是环。ESM 靠函数
+  // 声明提升能扛住，但真值 `theme` 是 const（TDZ），谁先谁后哪天换个顺序，
+  // 症状是「一进副窗就白屏」——那类 bug 极难定位，从结构上断掉。
+  const sync = read('../src/shell/themeSync.js');
+  assert.doesNotMatch(
+    sync.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, ''),
+    /from '\.\/theme\.js'/,
+    'themeSync 是传输层，不该 import 主题真值',
+  );
+  // 传输层也不该自己判断什么算合法主题——那是真值层的知识。
+  assert.doesNotMatch(
+    sync,
+    /THEMES|isKnownTheme|'dark'|'light'/,
+    '传输层不许自带主题白名单，否则与 theme.js 各有一份、必然漂',
+  );
+});
+
+test('广播只有主壳发，副窗不调 setTheme（否则两扇副窗互相触发）', () => {
+  const main = read('../src/main.js');
+  assert.match(main, /followThemeBroadcast\(\)/, '入口必须订阅广播');
+  // 订阅必须早于 createApp：晚一步副窗首帧会先画一帧旧主题再跳色。
+  const subAt = main.indexOf('followThemeBroadcast()');
+  const mountAt = main.indexOf('createApp(');
+  assert.ok(subAt > 0 && subAt < mountAt, '订阅必须早于 createApp');
+  // 四个副窗共用这一个入口，所以只调一次就覆盖所有窗口类型。
+  assert.equal((main.match(/followThemeBroadcast\(\)/g) || []).length, 1);
+  // setTheme（会广播）只在真值层导出，副窗拿不到；这一条防的是有人把
+  // followThemeBroadcast 换成调 setTheme。
+  assert.doesNotMatch(
+    fnBody(read('../src/shell/theme.js'), 'followThemeBroadcast'),
+    /setTheme\(/,
+    '副窗落地不许走 setTheme（它会广播，形成回环）',
+  );
+});
+
+test('emit 封装存在且不吞调用方的判断（纯浏览器调试下 resolve 空）', () => {
+  const body = fnBody(read('../src/shell/bridge.js'), 'emit');
+  assert.match(body, /tauriEvent/, '必须走 Tauri 的全局 emit');
+  assert.match(body, /Promise\.resolve\(\)/, '桥接缺失时 resolve 空而不是抛');
+});
+
 test('壳自有副窗都拿到 set-theme 权限，内核页面与官网页签窗不拿', () => {
   // 壳自有：内容就是本应用的 SPA，主题由 localStorage 决定。
   for (const cap of ['default', 'log-viewer', 'usage-viewer', 'subscription-viewer']) {

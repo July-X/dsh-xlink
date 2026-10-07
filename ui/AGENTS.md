@@ -70,13 +70,21 @@
 - **窗口 chrome 有两套：主窗自绘、副窗走原生，两套都得跟应用主题对齐**（2026-10-07 用户一张截图同时报出两处）
   - **副窗的原生标题栏跟主题走，不再钉死深色**。根因是两套机制各走各的：原生 chrome 由系统按窗口的 `NSWindow.appearance` 画，主题真值在 localStorage，Rust 建窗时读不到——于是 6 扇副窗一律 `.theme(Some(tauri::Theme::Dark))`，浅色用户打开「模型用量」就得到**浅色内容配深色标题栏**（标题文字几乎看不见）。修法是 `applyTheme()` 顺手把同一个 `theme.value` 推给 `bridge.setWindowTheme()`，纠正**本窗口**的原生 appearance；4 个壳自有的 capability 加 `core:window:allow-set-theme`。
     - **`theme.js` 仍是 `html.dark` 的唯一判据**，`setTheme` 只经 `applyTheme` 落一次。`window.setTheme()` 收的必须是 `theme.value` 本身——写死字面量会让「切了主题只换页面、不换标题栏」，判据点名盯的就是这一条。
-    - **只改本窗口，不批量改**（判据显式禁掉 `getAll` / `webview_windows` / `forEach`）：已开着的副窗不会因为主面板切了主题而重绘，它的 `html.dark` 是加载时定下的。批量改只会反向造出「深色内容 + 浅色标题栏」，同一道割裂换个方向。
+    - **只改本窗口的原生装饰，不批量改**（判据显式禁掉 `getAll` / `webview_windows` / `forEach`）：这条禁的是「Rust 侧批量把每个窗口的 appearance 换掉」——那样只换得来原生标题栏，换不来副窗的 `html.dark`，结果就是「深色内容 + 浅色标题栏」，同一道割裂换个方向。
+    - **已开着的副窗要跟着换，靠广播而不是批量改 chrome**（2026-10-08 用户报「切换主题时，弹出的 window 也要跟着改变」）。根因是**链路缺失**，不是样式：主题真值在 localStorage，而 `storage` 事件**不跨 webview 生效**，四个副窗各自是独立 webview，主壳改完存储，它们加载时定下的 `html.dark` 不会动。此前 `theme.js` 注释写的「下一次绘制就跟着变」只在**窗口还没开**时成立。
+      - 实现：`setTheme` 落地后 `broadcastTheme(next)` 发 `ui-theme-changed`（`bridge.emit`），各窗在 `main.js` 里 `followThemeBroadcast()` 订阅，收到后**自己跑一遍 `applyTheme()`**——内容与原生 chrome 同一步换，两个方向都不割裂。
+      - **副窗不许只调 `setWindowTheme`**：那只换标题栏、留下旧内容。判据显式禁掉这个形状，它正是上面那条割裂的反向版本。
+      - 订阅必须在 `createApp` 之前（与 `applyTheme()` 同处），晚一步副窗首帧会先画一帧旧主题再跳色；入口只调一次，四个副窗共用。副窗不调 `setTheme`（会互相触发）。
+      - 收到的事件值必须过 `THEMES.includes`：事件可被同页脚本构造，非法值会让整窗落到既非 `dark` 也非浅色的主题上。
     - **工作台与官网页签窗仍然钉死深色**（`harness_window.rs`、`official-chat-*` 不给 set-theme 授权）：那两扇窗的内容是内核 webui 与 `chat.deepseek.com` 这类别人的页面，让它们跟随本应用主题同样是割裂换方向。判据两头都查：给 `official-chat-strip.json` 补一条授权同样转红。
     - 剩下的建窗深色是**兜底**不是最终外观——页面挂载到纠正之间有一小段窗口期（冷启动闪一下）。彻底消掉得让 Rust 也读得到主题真值，那是把主题搬进 `Settings` 的大改，本轮不做。
   - **自绘交通灯按 macOS 原生的实测尺寸，不按设计稿**。参照物是同一张截图里那扇走原生装饰的窗口，1:1 量得：原生**直径 12px、中心间距 23px、灯组左缘距窗缘 7px**；实现此前是外框 12px、间距 20px、左缘 12px。改 `gap 8 → 11px`、`padding 0 12px → 0 7px`。
     - **「偏大」的不是直径，是挤**——两边直径本来就都是 12px。间距少 3px 让三点连成一坨，加上每点一圈 1px 深色描边衬得更粗。
     - **描边从 `border` 换成 `box-shadow: inset`**：全局 `* { box-sizing: border-box }` 下 `border: 1px` 会从这 12px 里各吃掉一侧，着色区只剩 10px，比原生的 12px 色块小一圈。inset 把同样的深色环画在色块**之内**。
     - **判据钉关系而不是字面量**（`width + gap === 23`）：只动其中一个也必须转光。另有两条断言「不许退回 `border: 1px` / `border-color`」与「三盏灯都得有 inset 环和填充色」。
+  - **窗口圆角与副窗交通灯都不是 CSS 画的，别去 CSS 里找**（2026-10-08 用户两张截图分别指出「副窗交通灯大小 / hover 要匹配系统」「window 边角圆角保持一致」）。实测与代码查证：
+    - **圆角由 macOS 窗口系统按窗口类型决定**。主壳 `decorations: false` + `backgroundColor: #29272C`（**不透明**）→ 系统不给它圆角，量到约 2px；副窗走原生装饰 → 系统给圆角，量到约 20 物理像素（≈10 逻辑像素，Screenshot 是 2x）。**给 `html` / `body` 写 `border-radius` 改不了窗口外轮廓**，不透明背景会把它填掉。要统一只有一个办法：建窗开 `transparent: true`，而 `lib.rs` 记着运行时碰窗口装饰会抹掉 `Miniaturizable` 样式位、**黄灯变死按钮**（`miniaturize:` 静默失败、`minimize()` 返回 `Ok()` 却什么都不做），为此留了 `check_main_window_minimizable` 回归哨兵。副窗可缩放、由我们建窗，风险低；主壳风险高。
+    - **副窗那三个灯是系统原生 chrome 画的，前端改不了它的大小、间距与 hover**——`WindowTitleBar.vue` 只挂在 `App.vue`，四个副窗都没有自绘标题栏。主壳的 `.mac-titlebar__light` 是自绘的，已经按原生实测值（直径 12 / 间距 23 / 左缘 7）对齐过。要让副窗也用同一份视觉，只能给副窗接自绘标题栏，那是较大改动。
     - 灯组左缘 7px 来自实测、带 ±1px 不确定度，**故意不钉字面量**——钉一个自己都没把握的数，只会让后来的人以为它是精确的。
   - 判据在 `ui/test/windowChrome.test.js`（8 条）。它和其余样式判据一样**先剥注释再断言**：本节写下的 `border: 1px` 与 `12px` 正是描述根因的原话，不剥就会被自己当成命中。
 - **动作按钮要跟着它作用的那个对象走**（2026-10-07 用户要求）。插件页的「刷新数据」刷的是 **dshfind.com 那份远端目录**，原先挂在整张卡（「插件管理」）的卡头靠右，等于让一个作用在右栏的按钮出现在左栏；现在落在右栏 `<h3 class="section-divider">插件中心</h3>` 那一行靠右。搬过去之后，下面那句「目录为空或加载失败，点「刷新数据」重试」才有个近处的按钮可指。
