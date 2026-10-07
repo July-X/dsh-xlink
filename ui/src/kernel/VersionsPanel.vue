@@ -343,7 +343,10 @@ function groupTip(group) {
             <img class="brand-logo" src="/npm-logo.svg" alt="npm" />
             <span>npm 发布</span>
             <span class="release-list-actions">
-              <el-button class="release-check-button" text :icon="Refresh" :loading="isLoading('checkUpdates')" :disabled="globalBusy" @click="checkUpdates">
+              <!-- `checkUpdates()` 带括号：`checkUpdates(manual = true)` 被裸引用时
+                   收到的是 MouseEvent，恰好与默认值同义所以今天看不出坏——但它是靠
+                   巧合对的，改默认值就会静默变坏。 -->
+              <el-button class="release-check-button" text :icon="Refresh" :loading="isLoading('checkUpdates')" :disabled="globalBusy" @click="checkUpdates()">
                 检查更新
               </el-button>
               <el-button
@@ -509,7 +512,7 @@ function groupTip(group) {
           <p class="muted" style="margin: 0">
             统计失败：{{ diskUsage.error || '未知原因' }}
           </p>
-          <el-button size="small" text :icon="Refresh" @click="loadDiskUsage">
+          <el-button size="small" text :icon="Refresh" @click="loadDiskUsage()">
             重试
           </el-button>
         </div>

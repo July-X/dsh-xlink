@@ -114,7 +114,10 @@ async function resolveSuspect(id, action) {
         <el-button v-if="incident && incident.runId" text :icon="Tickets" @click="openStartupRun">
           查看启动诊断
         </el-button>
-        <el-button text :icon="Document" @click="showLogs">打开日志</el-button>
+        <!-- `showLogs()` 带括号：裸写 `showLogs` 是方法引用，Vue 会把 MouseEvent
+             当成 `preferredEvidencePath` 传进去，于是弹层报「点名的证据找不到」——
+             而用户根本没点过任何证据。事故面板没有指定证据，所以这里显式空参。 -->
+        <el-button text :icon="Document" @click="showLogs()">打开日志</el-button>
         <el-button text :icon="Close" @click="close">关闭</el-button>
       </div>
     </template>
