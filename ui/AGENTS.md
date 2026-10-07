@@ -50,6 +50,27 @@ ui/src/
 
 搬文件时会跟着失效的东西，**2026-10-01 已经全部改成按 basename 认了**：`scripts/lib/shell-source.mjs`（门禁脚本与 UI 测试共用的一份解析器，读壳侧 Rust / 注入脚本源码的那几条测试都走它）、`check-invariants.mjs` 的 `baseName()` / `inFile()`、`check-code-budget.mjs` 的 `isKnownBlob()` / `moduleId()`。`ui/test/*.test.js` 里读**本仓前端**文件的相对路径仍按 `import.meta.url` 解析，本来就不受 Rust 侧目录影响。**新增判据时照这个来**：判据要问「哪个模块」，不是「文件在哪一层」——那一次重组的实测代价是 9 项不变量转红、5 个测试 ENOENT 挂掉、`check-invariants` 自己在启动阶段就崩，红的原因与要检查的东西全都无关。`FILE_BUDGETS` 里登记的**路径**仍要跟着改（那是给人看的），但反棘轮比对按模块标识走。
 
+## 待移除
+
+功能不是永久的。下面是**维护者已经决定到期就删**的东西；到期时按这份清单执行，不要临场重新判断「删到什么程度算干净」。
+
+### 数据迁移（v0.6.0 之后整体移除）
+
+维护者 2026-10-07 决定。过渡期内它是正式功能：**侧栏「系统」组里紧跟「设置」的常驻菜单**（设计稿 2550 行），设置页另留一行轻量入口。
+
+要删干净一共四块，**光删前端菜单不算数**——Rust 侧的命令与 capability 还挂着，前端删了只是入口消失、数据与代码都还在：
+
+| 位置 | 内容 | 行数 |
+| --- | --- | --- |
+| `ui/src/migration/` | `migration.js` / `MigrationPanel.vue` / `MigrationPrompt.vue` | ~1270 |
+| `src-tauri/src/migration/` | `wizard.rs` / `home_recovery.rs` / `home_recovery_cmd.rs` / `mod.rs` | ~2845 |
+| 入口 | `SideBar.vue` 系统组的菜单项、`SettingsPanel.vue` 那一行、`App.vue` 的面板挂载、`store.js` 里 `installLatestRelease` 之外的迁移调用 | — |
+| 副作用 | `capabilities` / `commands.rs` 的迁移命令注册、`check-invariants` 与 `ui/test/migrationPanel.test.js`、`misplacedHome.test.js` 等判据、`AGENTS.md` 与 `src-tauri/AGENTS.md` 里关于它的所有段落 | — |
+
+两处**不要**跟着删：`~/.dsh` 搬迁（`legacy_migration_target`，那是 v0.2.x 平铺目录的搬家，与本功能无关）、`store_relocate`（插件中央库搬迁）。名字里有 migration 但职责不同，凭名字一起删会出事。
+
+`home_recovery`（找回历史会话）严格说依附于本功能，删时一并走；但它读的是别的实例的 `sessions/`，**动手前先确认没有用户依赖它**——那条路径是 2026-09-28 事故（dev 壳提前并走 `~/.dsh`）的回收补救。
+
 ## 与 Rust 的边界
 
 - 全局状态在 `store.js`（留根），各功能的状态与动作在**自己那一格**（`plugins/plugins.js`、`skills/skills.js`、`logs/logs.js`…），异步样板（在途去重、静默刷新、更新检查策略）在 `shell/async.js`，组件只读状态、调动作。

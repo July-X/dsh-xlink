@@ -262,6 +262,58 @@ test('概览页不再有第二个日志入口（同一屏两个日志入口且�
   assert.match(controlTower, /showLogs\(\)/);
 });
 
+// --- 数据迁移的入口形态 -----------------------------------------------------
+//
+// 维护者 2026-10-07 决定：按设计稿独立成侧栏常驻菜单，放在「设置」下面；
+// 整个功能在 v0.6.0 之后整体移除。
+//
+// 设计稿自身有张力：2550 行的侧栏是无条件菜单项，而说明文档 §侧栏 写
+// 「数据迁移入口受旧数据发现状态控制…不应把条件入口强行固定成常驻功能」。
+// 这里以维护者的决定为准（**它是覆盖，不是两边都对**），理由与代价记在
+// `SideBar.vue` 那段注释里——过渡期内它是随时要能打开的正式功能，而入口必须
+// 先存在，才谈得上"到期删干净"。
+
+test('侧栏「数据迁移」是系统组里的常驻菜单项，紧跟在「设置」之后', () => {
+  const groups = sidebar.slice(sidebar.indexOf('const MENU_GROUPS'), sidebar.indexOf('// 桌面端版本号'));
+  // 系统组是最后一组
+  const sys = groups.slice(groups.lastIndexOf("label: '系统'"));
+  const settingsAt = sys.indexOf("id: 'settings'");
+  const migrationAt = sys.indexOf("id: 'migration'");
+  assert.ok(settingsAt >= 0, '系统组应有「设置」');
+  assert.ok(migrationAt >= 0, '系统组应有「数据迁移」');
+  assert.ok(migrationAt > settingsAt, '「数据迁移」必须排在「设置」下面');
+  // **常驻**：不再有 show / 条件渲染。此前它是条件项，只在
+  // 「从未迁移过 + 扫到遗留数据」时出现——那个条件在多数用户机器上不成立，
+  // 于是入口在侧栏凭空消失，而设置页那张卡成了唯一入口。
+  assert.doesNotMatch(sidebar, /migrationStore/);
+  assert.doesNotMatch(sys, /show:\s*\(\)/);
+});
+
+test('设置页不再有独立「数据迁移」大卡，只留一行入口（设计稿 2844 行）', () => {
+  const panel = readFileSync('ui/src/shell/SettingsPanel.vue', 'utf8');
+  // 入口仍在 —— 设计说明 §侧栏：「迁移完成后，设置页仍保留进入迁移功能的入口」。
+  assert.match(panel, /@click="store\.activePanel = 'migration'"/);
+  // 但它不再是那张默认折叠、带展开态的大卡。
+  assert.doesNotMatch(panel, /migrationExpanded/);
+  assert.doesNotMatch(panel, /card-head-toggle/);
+});
+
+test('v0.6.0 移除数据迁移的计划已登记在两份 AGENTS.md（删干净要动四处）', () => {
+  for (const rel of ['ui/AGENTS.md', 'AGENTS.md']) {
+    const text = readFileSync(rel, 'utf8');
+    assert.match(text, /v0\.6\.0/, `${rel} 应登记 v0.6.0 移除计划`);
+  }
+  const ui = readFileSync('ui/AGENTS.md', 'utf8');
+  // 四块都要在清单里：只删前端菜单、Rust 侧命令还挂着不算移除。
+  assert.match(ui, /ui\/src\/migration\//, '清单缺前端模块');
+  assert.match(ui, /src-tauri\/src\/migration\//, '清单缺 Rust 模块');
+  assert.match(ui, /capabilities|commands\.rs/, '清单缺命令注册');
+  assert.match(ui, /migrationPanel\.test\.js|misplacedHome\.test\.js/, '清单缺判据');
+  // 两处同名不同职责的必须点名不要删。
+  assert.match(ui, /legacy_migration_target/, '应点名 legacy_migration_target');
+  assert.match(ui, /store_relocate/, '应点名 store_relocate');
+});
+
 // --- 控制塔落位 -----------------------------------------------------------
 //
 // 2026-10-07 用户改过一次：末行是「需要关注 | 最近操作」**左右并排**，

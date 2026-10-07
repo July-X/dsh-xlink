@@ -1,17 +1,18 @@
 <script setup>
-// 设置：Web UI 端口、任务完成通知、可选的数据迁移入口。套餐用量查询不设卡：
-// 概览页的「套餐用量」卡已提供数据展示 / 刷新 / 测试入口，凭据本身在工作台
-// 模型设置里维护。内置补丁（内核补丁 / 小插件）入口已隐藏——最新内核已包含
-// 相关修复，不再需要从设置页应用；后端 `patch_status` / `patch_apply` /
+// 设置：Web UI 端口、任务完成通知、数据迁移的轻量入口、环境回退点、深入排查。
+// 套餐用量查询不设卡：概览页的「套餐用量」卡已提供数据展示 / 刷新 / 测试入口，
+// 凭据本身在工作台模型设置里维护。内置补丁（内核补丁 / 小插件）入口已隐藏——最新
+// 内核已包含相关修复，不再需要从设置页应用；后端 `patch_status` / `patch_apply` /
 // `patch_revert` 与 `ui/src/patches.js` 仍保留，便于旧内核撤销。
-// 卡片顺序：设置 → 任务通知 → 数据迁移（默认折叠）→ 环境回退点 → 深入排查。
-// 安全网这两张卡原本挂在概览页，但它们是**故障时才用得上的兜底**，不是日常
-// 要看的东西：概览页是开机第一屏，在那儿常年摆着两个「一切正常」的空态卡
-// 既占地方又稀释真正要看的内容（当前内核、用量、额度）。挪到设置页后，
-// 概览保持干净，而出事时它们与「数据迁移」这条同属"环境出问题时才动"的
-// 入口并排摆在一起，上下文也对得上。
+//
+// 卡片顺序：设置 → 任务通知 → 数据迁移 → 环境回退点 → 深入排查。
+// 后三张是**故障时才用得上的兜底**，不是日常要看的东西：概览页是开机第一屏，
+// 在那儿常年摆着两个「一切正常」的空态卡既占地方又稀释真正要看的内容（当前内核、
+// 用量、额度）。挪到设置页后概览保持干净，而出事时它们与「数据迁移」这条同属
+// "环境出问题时才动"的入口，并排摆在一起上下文也对得上。
+// 「数据迁移」本身的主入口是**侧栏菜单**（设计稿 2550 行，常驻），这里只留一行。
 import { computed, onMounted, ref, watch } from 'vue';
-import { ArrowDown, ArrowUp, Bell, Check, Headset, QuestionFilled } from '@element-plus/icons-vue';
+import { Bell, Check, Headset, QuestionFilled } from '@element-plus/icons-vue';
 import { store, saveSettings } from '../store.js';
 import { migrationStore, loadMigrationHistory } from '../migration/migration.js';
 import SnapshotCard from '../diagnostics/SnapshotCard.vue';
@@ -90,9 +91,9 @@ async function onTestNotification() {
 
 // 迁移过 = 历史非空，未迁移 = 历史为空。
 const migratedBefore = computed(() => migrationStore.history.length > 0);
-// 迁移卡片默认收起——首次进设置页不该被「去迁移」CTA 抢戏（启动期一次性弹窗才是
-// 主入口），日常也用不到。展开态留在组件实例里，跨切页会重置。
-const migrationExpanded = ref(false);
+// 迁移历史：设置页这一行要显示「已迁移 / 尚未迁移」，扫历史是唯一的判据
+// （migration_list 非空即迁移过）——没有别的信号可靠，hasMigratable 只说
+// 「扫得到」，迁移过的用户同样扫得到。
 onMounted(() => {
   loadMigrationHistory();
 });
@@ -312,34 +313,31 @@ onMounted(() => {
       </p>
     </div>
 
-    <div class="card" :class="{ 'card-collapsed': !migrationExpanded }">
-      <button
-        type="button"
-        class="card-head card-head-toggle"
-        :aria-expanded="migrationExpanded"
-        @click="migrationExpanded = !migrationExpanded"
-      >
+    <!-- 「数据迁移」在设置页是**一行**，不是一张独立大卡（设计稿 2844 行：它属于
+         「环境回退与诊断」那一组里的一个 `page-list-row`）。
+         改这一处的原因是侧栏有了常驻菜单（设计稿 2550 行）之后，同一个
+         `store.activePanel = 'migration'` 在这一屏里出现了两次、点开还是同一个
+         面板；而这张大卡默认折叠、展开后也只有一句话加一个按钮，占的篇幅与它
+         给的信息量不成比例。
+
+         **入口不能因此消失**：设计说明 §侧栏写的是「迁移完成后，设置页仍保留
+         进入迁移功能的入口」，设置页这一行就是那个入口——主入口是侧栏菜单，
+         这里留着的是「环境出问题时才动」那一组里的顺手一跳。
+         卡片顺序：设置 → 任务通知 → 数据迁移 → 环境回退点 → 深入排查。
+         整个功能在 v0.6.0 之后移除，届时这一行与侧栏菜单一并删（见
+         ui/AGENTS.md 的「待移除」一节）。 -->
+    <div class="card">
+      <div class="card-head">
         <h2>数据迁移</h2>
         <span class="migration-status">{{ migratedBefore ? '已迁移' : '尚未迁移' }}</span>
-        <el-icon class="migration-toggle-icon">
-          <component :is="migrationExpanded ? ArrowUp : ArrowDown" />
-        </el-icon>
-      </button>
-      <template v-if="migrationExpanded">
-        <p class="muted" style="margin: 0">
-          {{
-            migratedBefore
-              ? '已迁移过；可进入迁移页查看历史、重新运行或回滚。'
-              : '把旧版 dsh-xlink 的插件 / 技能导入多实例布局；旧源不会被删除，可随时回滚。'
-          }}
-        </p>
         <el-button
+          size="small"
           :type="migratedBefore ? 'default' : 'primary'"
           @click="store.activePanel = 'migration'"
         >
           {{ migratedBefore ? '查看数据迁移' : '去迁移' }}
         </el-button>
-      </template>
+      </div>
     </div>
 
     <!-- 环境回退点（安全网 P0/P1）。「数据迁移」是"环境出问题时才动"的入口，
