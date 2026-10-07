@@ -334,14 +334,14 @@ function openDiagnosis() {
   </div>
 
   <div class="diag-card diag-card--tower">
-    <h3 class="diag-card__title">
+    <!-- 空态：说明收进标题行右侧，`--bare` 去掉标题下的线与留白（依据见 diagnostics.css）。 -->
+    <h3 class="diag-card__title" :class="{ 'diag-card__title--bare': !latestRun }">
       <span>最近操作</span>
-      <span class="diag-card__aside">
+      <span v-if="latestRun" class="diag-card__aside">
         启动 / 预检 / 恢复 / 排查
         <!-- 清除入口挂在标题行而不是行内：它是**面向整段历史**的动作，
              不是对某一条记录的操作。放在记录旁边会让人以为点一下只删那一条。 -->
         <button
-          v-if="latestRun"
           type="button"
           class="diag-card__action"
           :disabled="isLoading('diagnosticRunsClear')"
@@ -350,6 +350,7 @@ function openDiagnosis() {
           {{ isLoading('diagnosticRunsClear') ? '清除中…' : '清除记录' }}
         </button>
       </span>
+      <span v-else class="diag-card__aside">还没有运行记录 · 启动工作台后显示上次结果</span>
     </h3>
     <div v-if="latestRun" class="diag-rows">
       <button
@@ -365,6 +366,5 @@ function openDiagnosis() {
         <span v-if="runActionable" class="diag-row__arrow" aria-hidden="true">›</span>
       </button>
     </div>
-    <p v-else class="diag-empty">还没有运行记录。启动一次工作台后，这里会显示上次的结果。</p>
   </div>
 </template>
