@@ -35,8 +35,25 @@
   - **它从第一天起就是空操作**，这是删它而不算丢功能的依据：页签按 `kernel_family` 去重，而后端只定义了 `dsh` 一个族（`mcode` 在 `paths.rs` 的注释与测试里都写着「将来的」）。一个族只会画出一个页签，而它必然就是当前那个，于是 `pickInstance` 每次都在 `defaultInstanceId === id` 那一步 `return false`。
   - **`instance.js` 的 `setDefaultInstance` 不许跟着删**——这一条是被测试顶回来才写下的。先前的版本把它连同 `instanceStore.switching` / `selectionRevision` 当死代码清掉，`ui/test/kernelSwitch.test.js` 当场变红（`setDefaultInstance is not a function`），顺带把整个 `test:ui` 拖挂六分钟。它不是「永远走不到的代码」，而是**没有调用方的 API**：那条测试钉着三条真实语义（读实例去重、**陈旧列表不能把一次切换的结果冲掉**、写入失败必须释放 busy），删函数就要连这套语义一起删，那是拿测试换行数。
     - **「没有调用方的 API」和「永远走不到的代码」是两回事**，前者留着、后者才清。判据钉住的不变量是：模板侧零调用 + 函数与 `selectionRevision` 仍在。
-  - **删掉的是「界面上的切实例」，不是「实例上下文」与「运行状态」**。后端 `set_default_instance` 仍在，`defaultInstanceId` 的读取路径一个没动：概览页「当前内核」卡头照旧渲染 `族名 / 实例 id`，插件页照旧按实例列出接线状态，运行状态胶囊（`.status-pill`，theme.css 共用词汇）照旧在概览页读同一个 `store.view.kernel`。**代价只有一个**：在概览以外的页面看不到「当前是哪个实例 / 工作台在不在跑」了。
+  - **删掉的是「界面上的切实例」，不是「运行状态」与「实例清单」**。后端 `set_default_instance` 仍在，运行状态胶囊（`.status-pill`，theme.css 共用词汇）照旧在概览页读同一个 `store.view.kernel`，插件页照旧按实例列出 `族名 · 实例 id`。代价：界面上不再有「当前是哪个实例」这一行常驻。
   - 真接入第二个内核族时切换器要重新做一遍，那时直接调 `setDefaultInstance` 即可，语义不必重新推敲。
+- **概览「当前内核」卡：主操作上移，实例 caption 删除**（2026-10-07 用户要求，**覆盖设计稿**）。原先「工作台 / 官网网页版」两个按钮窝在 `.card-head-left` 里，落在标题下面那一行的**左侧**，视线要往下再折一次才找得到；现在卡头只有两栏——`<h2 class="kernel-title">` 与 `<div class="kernel-header-actions">` 同属一个 `.card-head`。占着右侧位置的 caption「DSH / default-dev」按同一要求删除：卡里已经有一个大号活动内核版本号和它旁边的状态胶囊，族名与实例 id 是实现细节，多实例是开发与过渡期的事实。`kernelCaption` 连同概览页对实例注册表的整条引用（`instanceStore` / `familyLabel` / `loadInstances`）一并移除——**`App.vue` 仍在启动时加载实例列表，插件页不受影响**。
+  - 删 caption 时把那条教训留在原地：`KernelStatus` 结构体里既没有 `family` 也没有实例 id 字段（它的字段是 `installed` / `active` / `active_installed` …），从 kernel 上读那个字段取到的是 `undefined`，而 `undefined || …` 会静默落到下一个兜底分支——门禁 `check:invariants` 的 `[ipc-fields]` 项抓的就是这条。
+- **功能块标题整体放大一档**（2026-10-07 用户要求「所有功能块的 title 字体大小都需要放大」，**覆盖设计稿**）。设计稿 draft 1975 行 `.card-title` 是 13px；理由是**一个块的边界正是靠标题建立的**，标题太小等于没有块。
+
+  | 层级 | 原 | 现 |
+  | --- | --- | --- |
+  | 页面标题 `.page-title` | 18px | **21px** |
+  | 块标题 `.card h2` | 14px | **17px** |
+  | 块内小标题 `.card h3` | 13px | **15px** |
+  | 行式条目标题 `.page-list-title` | 12px | **15px** |
+  | 诊断层 `.diagnosis__title` | 15px | **17px** |
+  | 诊断层 `.diag-card__title` | 13px | **15px** |
+  | 标题旁的 ⓘ `.card-info-icon` | 14px | **16px** |
+
+  - **ⓘ 必须跟着长**：留在 14px 会读成「一个更小的另一个元素」，而不是「这个标题的补充说明」。
+  - **分区标题一并跟上**：`.callout-body h3` / `.debug-panel h3` / `.step-body h3` / `.history h3` / `.misplaced h3` / `.sub-section-head h3` / `.usage-section-head h3` 从 13-14px 抬到 **15px**，`.disk-usage h2` 抬到 **17px**，`.migration header h2` 抬到 **21px**（它是迁移页的页面标题）。漏掉任何一个，同屏里就会出现「块标题 17px、分区标题 13px」的倒挂层级。
+  - **判据用一条「全表扫」而不是逐个断言**：`.card h2` 的主语是**裸标签** `h2`，全仓有十来条同主语规则（`.migration header h2` 特异度 102 直接盖过 101；`.callout-body h3` 等同特异度但源码在后、靠 `>=` 决胜又轮番抢走），逐条 `effectiveDeclaration` 必然答出别的规则的值。所以除了点断言，还有一条扫全表断言「没有低于 15px 的 h2 / h3」一网打尽。
 - **判据扫模板，不扫全文**（`templateOf()`）。本仓每个模板都带着大段解释「为什么这么写」的中文注释，注释里经常**原样引用被判据的词**（「活动视图已同步」那条为什么不画、「插件中心那个 ⓘ」现在在哪）。按整份文件 `indexOf` / `doesNotMatch`，判据会把自己写的解释当成命中。**同一个坑本轮踩过三次，三次都是扫全文**。样式那边对应的是 `stripComments`，模板这边剥 HTML 注释（`stripComments` 只认 `/* */`，对 `<!-- -->` 无效）。
   - 同一条纪律对 **JS 文件注释也成立**：判「前端不再调 `set_default_instance`」时，裸匹配那个命令名会命中 `instance.js` 里正是在解释「这条命令还在后端、只是前端不再调」的注释——断言要写成 `invoke('set_default_instance'` 这种**真调用形态**。
   - 收尾边界取 `<style` 而不是 `<style scoped>`：`PluginsPanel` 没有自己的 scoped 块，写死 scoped 会在这类文件上直接断言挂掉。
@@ -45,7 +62,7 @@
   - **同目录的引用不算入口**：组件自家的 store 模块（`usage/usage.js` 里写着 `UsageWindow`）只是它自己的状态容器。第一版判据没排除它，结果把 `main.js` 的挂载点整段摘掉它照样绿。
 - **侧栏整体放大一档**（2026-10-07 用户要求「放大字体、icon」，**覆盖设计稿**）。设计稿 draft 509-524 行给的是 `font-size: 13px` / `gap: 11px`，实现此前照抄；现在是 `.nav-item` **15px**、`.sidebar__section-label` **12px**、`.nav-item__badge` **12px / 20px 圆点**、`.sidebar__footer` **12px**，间距同步抬（行 `padding 8px 10px`、`gap 11px`、分组 `gap 4px`、收起态 `padding 8px 0`）。224px 侧栏仍放得下最长的一项（「数据迁移」四字），748px 高的窗口里侧栏总高约 450px，余量充足。
   - **图标必须显式写死**（`.nav-item > .el-icon { font-size: 17px }`），不能只抬 `.nav-item` 的字号：Element Plus 的 `.el-icon` 是 `font-size: inherit` + 1em，只抬父级字号等于图标跟着等比长——那不算「图标被放大」。17 vs 15 是刻意的：图标读起来要比文字再大一点点才不显矮。收起态（只剩 icon 列）读到的是同一条规则。
-- **业务能力不因改版增减**：页签分组（工作台 / 资源 / 系统）、侧栏收起，都是把原有信息重新摆位，不是新功能。设计稿里没画的东西不要自己加；设计稿画了而我们判定不画的（顶部工作条、内核版本页两列栅格、侧栏 13px 字号），要在下面单独登记成一条有意偏差并写清理由。
+- **业务能力不因改版增减**：页签分组（工作台 / 资源 / 系统）、侧栏收起，都是把原有信息重新摆位，不是新功能。设计稿里没画的东西不要自己加；设计稿画了而我们判定不画的（顶部工作条、内核版本页两列栅格、侧栏 13px 字号、概览卡头实例 caption），要在下面单独登记成一条有意偏差并写清理由。
 - **侧栏底部那一行是工具区，收起开关也在里面**（2026-10-07 用户要求，**覆盖设计稿**）：稿子的 `.sidebar-footer` 只有「标签 + 版本 + 刷新 + 主题」四件，收起开关画在 `.brand` 右端（`docs/ui/dsh-xlink-ui-redesign-draft.html` 439-468 行）。现在是「标签 + 版本 + 收起 + 刷新 + 主题」五件，收起开关排在刷新之前。取舍是品牌行只留品牌，收起开关和它收起的侧栏右侧那排控件读起来是一件事；代价：224px 里版本号省略得更多，**收起态（64px）必须竖排**（横排要 100px，内容盒只有 48px，否则溢出到主区）。竖排用 `flex-direction: column` 写死，不靠 `flex-wrap`——那会让换不换行取决于实际渲染宽度。`.brand` 的 `position: relative` 随之删除（它只为浮在那儿的开关而存在），品牌行现在只有 logo 与文字。
 - **宽表格要给数字列显式列宽（`table-layout: fixed` + `nowrap`）**，并按内容量分别给值。宽版下自动布局会把表头竖排成「文件 / 数」、把 `896.7 KiB` 拆成两行；改成固定布局后列宽不再随内容生长，于是**宽度变成承重的**：给窄了不会换行，而是文字直接溢出表格右边界（迁移向导 2026-10-07 就把「大小」和「文件数」并进同一条 52px 规则，`896.7 KiB` 跑到了边框外）。**路径类长文本列不要 `nowrap`**，让它们折行——完整路径要看得见，截断比换行更容易读错。钉在 `ui/test/migrationPanel.test.js`。
   - **断言要取声明值，不要比原始子串**。同一天第一版断言比的是两段起点不同的 CSS 子串，结果把两列并进同一条规则它照样绿——**反向验时才发现它抓不到任何回归**。写成「抽 `nth-child(n)` 那条规则里的 `width` 再比值」之后，同一处改坏立刻转红。

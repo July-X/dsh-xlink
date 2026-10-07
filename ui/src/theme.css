@@ -801,15 +801,18 @@ main {
   gap: 10px;
 }
 
+/* 功能块标题。2026-10-07 用户要求整体放大：14px 在 1040 宽的窗口里读起来
+   「像脚注」——一个块的边界正是靠标题建立的，字太小等于没有块。17px 与正文
+   13px / 次要说明 11-12px 拉开两档，层级才立得住。 */
 .card h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: 17px;
   font-weight: 700;
 }
 
 .card h3 {
   margin: 0;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--text);
 }
@@ -991,7 +994,7 @@ main {
 .page-list-title {
   margin: 0;
   color: var(--text);
-  font-size: 12px;
+  font-size: 15px;
   font-weight: 650;
 }
 
@@ -1021,7 +1024,7 @@ main {
 
 .page-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 21px;
   font-weight: 700;
   line-height: 1.3;
 }
@@ -1364,8 +1367,10 @@ main {
   align-items: center;
   gap: 6px;
 }
+/* ⓘ 跟着块标题一起长：标题 14→17px 时图标留在 14px，读起来像一个更小的
+   另一个元素，而不是「这个标题的补充说明」。 */
 .card-info-icon {
-  font-size: 14px;
+  font-size: 16px;
   color: var(--text-secondary);
   cursor: help;
   transition: color 0.15s ease;
@@ -1535,7 +1540,7 @@ main {
 
 .callout-body h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: 15px;
 }
 
 .callout-body p {
@@ -3195,7 +3200,7 @@ body.pane-dragging .log-tabs {
 }
 .debug-panel h3 {
   margin: 0;
-  font-size: 13.5px;
+  font-size: 15px;
   font-weight: 700;
 }
 .debug-hint {

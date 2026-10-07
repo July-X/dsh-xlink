@@ -277,7 +277,7 @@ const lastFetched = computed(() => {
 }
 .sub-section-head h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: 15px;
 }
 .sub-section-hint {
   color: var(--text-secondary);
