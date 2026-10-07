@@ -9,9 +9,28 @@
 // 另一类判据是**模板结构**（用 / 网格用哪个元素承载落位）。这类不看 CSS：
 // `grid-column: 1/-1` 写在 `.usage-card` 上还是没写，是模板与栅格的组合事实。
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { allRulesIncludingVue, effectiveDeclaration, stripComments } from './lib/css-cascade.mjs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import {
+  SRC,
+  allRulesIncludingVue,
+  cssFiles,
+  effectiveDeclaration,
+  stripComments,
+} from './lib/css-cascade.mjs';
+
+/** `ui/src` 下所有 `.vue` 与 `.js`，递归。**必须带 `.js`**：独立窗口的挂载
+ *  点在 `main.js`（它按窗口类型挑根组件），只扫 `.vue` 会把「已经挂在窗口上了」
+ *  误判成「没有任何地方挂载」。 */
+function srcScriptFiles(dir = SRC, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = resolve(dir, entry.name);
+    if (entry.isDirectory()) srcScriptFiles(p, out);
+    else if (p.endsWith('.vue') || p.endsWith('.js')) out.push(p);
+  }
+  return out;
+}
 
 // 必须带 `.vue` 的 scoped 块：面板级样式大半写在组件里，只扫 `.css` 时
 // `.kernel-summary` / `.sidebar__theme-btn` 这些规则一条都查不到，判据会退化成
@@ -289,6 +308,43 @@ test('列表空态描述允许换行且限宽在容器内（插件页 / 技能�
 // 设计说明 §4 对独立窗口的要求是「日志查看 | LogModal.vue | 保留刷新、折叠
 // 侧栏和独立日志窗口入口」，这三项都在弹层里，所以入口没丢。这条判据钉的
 // 就是那三项——有人日后把它们删了，这里会红。
+
+// 设计说明 §独立窗口把十一个窗口 / 弹窗逐个列了出来，逐一标了「开发要求」。
+// 它们不像概览页的卡片那样显眼：删掉一个入口往往只表现为「某个菜单项不见了」，
+// 而那一行通常还有别的入口接着，肉眼扫不出来。这条判据把「文件在 + 还有调用方」
+// 一起钉住——只在文件树上存在、没有任何地方挂载的弹窗，和不存在是一回事。
+const WINDOW_ENTRY_POINTS = [
+  ['ui/src/usage/UsageWindow.vue', '模型用量'],
+  ['ui/src/subscription/SubscriptionWindow.vue', '套餐用量'],
+  ['ui/src/official-chat/OfficialChatTabs.vue', '官网对话'],
+  ['ui/src/logs/LogModal.vue', '日志查看'],
+  ['ui/src/shell/ProgressOverlay.vue', '长任务进度'],
+  ['ui/src/plugins/PrecheckDialog.vue', '插件预检'],
+  ['ui/src/incidents/IncidentModal.vue', '启动故障'],
+  ['ui/src/diagnostics/DiagnosisShell.vue', '诊断页面'],
+  ['ui/src/diagnostics/SnapshotRestoreDialog.vue', '环境回退确认'],
+  ['ui/src/diagnostics/SnapshotCard.vue', '环境回退入口'],
+  ['ui/src/migration/MigrationPrompt.vue', '迁移提示'],
+];
+
+test('设计说明 §独立窗口 列出的十一个窗口 / 弹窗都在，且都还有入口', () => {
+  for (const [rel, label] of WINDOW_ENTRY_POINTS) {
+    // rel 是**相对仓库根**的路径（判据表照抄说明文档里的写法），不要再拼 SRC。
+    assert.ok(existsSync(resolve(rel)), `${label}：缺 ${rel}`);
+    const name = rel.split('/').pop().replace('.vue', '');
+    const ownDir = resolve(rel, '..');
+    const refs = [];
+    for (const file of [...srcScriptFiles(), ...cssFiles()]) {
+      // **同目录的不算引用**。组件自家的 store 模块（`usage/usage.js` 引用
+      // `UsageWindow`）只是它自己的状态容器，不是入口——第一版判据没排除它，
+      // 结果把 main.js 里的挂载点整段摘掉它照样绿（反向验时才发现）。
+      // 入口必须来自这个组件**所在目录之外**：main.js / App.vue / 某个面板。
+      if (resolve(file, '..') === ownDir) continue;
+      if (readFileSync(file, 'utf8').includes(name)) refs.push(file);
+    }
+    assert.ok(refs.length > 0, `${label}（${name}）在自身目录之外没有任何地方挂载它，等于没有入口`);
+  }
+});
 
 test('日志弹层保留刷新、折叠侧栏与独立窗口入口（设计说明 §4 的硬要求）', () => {
   const modal = readFileSync('ui/src/logs/LogModal.vue', 'utf8');
