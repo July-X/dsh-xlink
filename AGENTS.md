@@ -1,6 +1,6 @@
 # AGENTS.md — dsh-xlink
 
-本仓库是 dsh-xlink 桌面应用的独立项目。模块布局与数据流见 [docs/architecture.md](docs/architecture.md)，用户文档见 [README.md](README.md)。
+本仓库是 dsh-xlink 桌面应用的独立项目。模块布局与数据流见 [docs/architecture/architecture.md](docs/architecture/architecture.md)，用户文档见 [README.md](README.md)。
 
 ## 范围
 
@@ -40,13 +40,13 @@ cargo fmt                         # rustfmt 格式化
 
 `npm run check` 是**提交前唯一该跑的那条**，别再手工拼下面这些：2026-10-01 那个 release-only 的编译错误（`#[cfg]` 归属被 `use` 打断，debug 全绿、release 报常量重定义）就是「只跑 `cargo check` + 只跑 `test:ui`」漏过去的，而那正是两个发布通道都编不出来的性质。`check:rust` 里的 `cargo check --release` 不能省——debug 与 release 的 cfg 覆盖面不同，只有 release 会现形。全量约 1 分钟（release 编译冷缓存时更久）。
 
-**门禁判据不许在 workflow 里内联**。UI 产物预算此前是同一段 heredoc 在 `desktop-ci.yml` 与 `desktop-release.yml` 各写一份，已经漂移过一次（`desktop-ci.yml` 那份多一段来历注释、release 那份没有），`check:code-budget` 还整条缺席在发布通道上（`docs/code-review-2026-09-27.md` M12 预言的正是这件事）。现在判据本体在 `scripts/check-ui-bundle-budget.mjs`，两个 workflow 都只调它；`npm run check` 也把它带上了——它此前只在 CI 跑，本地提交前那条总闸管不到，预算超标要等 CI 才发现。**产物不存在时脚本必须 exit 1 并说清前置命令**，静默跳过等于给出一道「通过」的假门禁。
+**门禁判据不许在 workflow 里内联**。UI 产物预算此前是同一段 heredoc 在 `desktop-ci.yml` 与 `desktop-release.yml` 各写一份，已经漂移过一次（`desktop-ci.yml` 那份多一段来历注释、release 那份没有），`check:code-budget` 还整条缺席在发布通道上（`docs/reviews/code-review-2026-09-27.md` M12 预言的正是这件事）。现在判据本体在 `scripts/check-ui-bundle-budget.mjs`，两个 workflow 都只调它；`npm run check` 也把它带上了——它此前只在 CI 跑，本地提交前那条总闸管不到，预算超标要等 CI 才发现。**产物不存在时脚本必须 exit 1 并说清前置命令**，静默跳过等于给出一道「通过」的假门禁。
 
 UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui/dist/`，即 `src-tauri/tauri.conf.json` 的 `frontendDist`）。状态与动作集中在 `ui/src/store.js` / `plugins.js` / `skills.js` / `progress.js` / `logs.js`，异步样板（在途去重、静默刷新、更新检查策略）在 `async.js`，组件只读状态、调动作；与 Rust 的通信只允许走 `ui/src/bridge.js` 的 invoke/Channel。触发 IO 的按钮必须挂 loading（`loading.js` 的 `withLoading(key, …)` + `:loading="isLoading(key)"`）；长任务走 `progress.js` 的 `withProgress`。改完 UI 跑 `npm run build:ui`；Rust 改动至少跑 `cargo check`，提交前跑 `npm run check`（它已经含 clippy 与 fmt，别再手工拼一遍）。
 
 ## 数据目录
 
-`kernel::data_dir` 按**内核族命名空间**解析：`<xlink_home>/<family>/desktop/`（release）或 `<xlink_home>/<family>/desktop-dev/`（debug），family 取实例注册表默认实例的内核族（`instance::default_family()`）；v0.2.x 的平铺目录 `<xlink_home>/desktop[-dev]/` 会在启动时自动整体搬入族目录，搬迁失败继续用旧目录。`lib.rs` 的 `setup()` 必须通过它取目录，不要绕回 `app_data_dir()`。debug 端口 3091，release 端口 3090（`kernel::DEFAULT_PORT`）；用户保存过的 port 优先于 `Settings::default()`。优先级与目录隔离原因见 [docs/architecture.md](docs/architecture.md)。
+`kernel::data_dir` 按**内核族命名空间**解析：`<xlink_home>/<family>/desktop/`（release）或 `<xlink_home>/<family>/desktop-dev/`（debug），family 取实例注册表默认实例的内核族（`instance::default_family()`）；v0.2.x 的平铺目录 `<xlink_home>/desktop[-dev]/` 会在启动时自动整体搬入族目录，搬迁失败继续用旧目录。`lib.rs` 的 `setup()` 必须通过它取目录，不要绕回 `app_data_dir()`。debug 端口 3091，release 端口 3090（`kernel::DEFAULT_PORT`）；用户保存过的 port 优先于 `Settings::default()`。优先级与目录隔离原因见 [docs/architecture/architecture.md](docs/architecture/architecture.md)。
 
 **两个壳之间只共享只读数据，可变状态一律分家**（2026-09-29 逐条整理）：
 
@@ -84,7 +84,7 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 - **代码预算门禁已改成反棘轮，不要绕开它**。`npm run check-code-budget` 现在从 git 读出本文件**已提交版本**的数字当基线（HEAD 里的旧值仍然是旧值，所以「同一个提交里改数字」这个流程不会让检查失守），并强制三条规则：① 基线预算 ≥ `RATCHET_THRESHOLD` 的**大文件只许下调**（plugins.rs / theme.css / commands.rs 只能越来越小）；② **新文件**必须显式登记进 `FILE_BUDGETS` 并写清为什么该独立，且受 `HARD_FILE_CEILING`（800 行）硬顶；③ 总量 `TOTAL_BUDGET` 是一道**软上限**（刻意不做"只许下调"——试过，实践中只会逼人绕过门禁而不是真写出更少的代码）。被规则 ① 拦下时的正确反应是**把新逻辑拆出去**，不是调数字。
 - **跨模块重复先提共享层**：包取源逻辑放 `pkg.rs`（插件与技能共用，只返回纯文本原因、错误分类由调用方决定），JSON 状态文档读写放 `state.rs`（容错读 / 校验读分开，文案由 `StateCtx` 提供），前端异步样板放 `ui/src/async.js`（`singleFlight` / `createStatusSource` / `createUpdateChecker`）。安装预检拆成两层：`sandbox.rs` 只管"起一个临时内核、探它、收摊"（与装什么无关，技能预检直接复用），`precheck.rs` 管两段式事务（快照 → 装进沙盒 → 探测 → 提交/回滚），`plugins.rs` 侧只暴露 `store_file` 一条可见性缝——**预检的事务主体不要写进 `plugins.rs`**，它已经 2964 行。`npm run check:code-budget` 按文件代码行数与重复区间数拦膨胀：要上调预算，必须在同一个提交里改 `scripts/check-code-budget.mjs` 的数字。
 - **反向验之前先确认「改动真的进了被测的那个产物」**。给机械检查或单测做反向验证（同义：故意弄坏 → 确认它会响）时，PowerShell 的 `Copy-Item` **保留源文件的 `LastWriteTime`**，于是「备份 → 改坏 → 跑测试（红）→ 恢复」这四步里，恢复那一步写回去的是**比改坏那一步更早的 mtime**，cargo / vite 判定无需重编译，第二次跑的还是改坏时的产物——结论会变成「恢复后仍然红」，而真相是**根本没重编**。2026-09-30 实测踩中：恢复后 `kernel::tests` 一直红，强制重编后全绿。恢复后补一句 `(Get-Item <file>).LastWriteTime = Get-Date` 再跑。同理，**反向验的红必须是「改坏的当次」的红**——中途任何一次重编失败都可能让红变成「编不过」而不是「断言不成立」，那不算验过。
-- 图标只从 `assets/whale-icon.svg`、`assets/whale-icon-small.svg` 与托盘专用的 `assets/whale-head.svg` 生成，规则见 [docs/icon-design.md](docs/icon-design.md)。**面板里的第三方标志（npm 等）另有一条规则**：必须是 `ui/public/` 下的本地矢量、不许写远端 URL，并保留来源与许可声明——`tauri.conf.json` 的 `csp` 是 `null`，远端 `<img>` 出不出网完全取决于用户那台机器，取不到时页面上只剩一块白砖且没有任何报错（版本面板过去就挂着 `avatars.githubusercontent.com` 的 npm 头像）；由 `check:invariants` 第 15 项钉住。
+- 图标只从 `assets/whale-icon.svg`、`assets/whale-icon-small.svg` 与托盘专用的 `assets/whale-head.svg` 生成，规则见 [docs/ui/icon-design.md](docs/ui/icon-design.md)。**面板里的第三方标志（npm 等）另有一条规则**：必须是 `ui/public/` 下的本地矢量、不许写远端 URL，并保留来源与许可声明——`tauri.conf.json` 的 `csp` 是 `null`，远端 `<img>` 出不出网完全取决于用户那台机器，取不到时页面上只剩一块白砖且没有任何报错（版本面板过去就挂着 `avatars.githubusercontent.com` 的 npm 头像）；由 `check:invariants` 第 15 项钉住。
 - **常驻行为只有一份实现，在 `shell/resident.rs`**（2026-10-02 起两平台统一）。关闭窗口一律只是收进后台（Windows 托盘 / macOS 菜单栏），真正退出只从图标菜单发起。这条纪律的代价是两处：`CloseRequested` 统一走 `resident::intercept_close`（不要按平台分叉回去），恢复动作统一走 `resident::show_main_shell`（`lib::show_main_shell` 与工作台拉绳的 `focus_main_shell` 都调它，**抄一份就会漂**——Windows 上两边互调过一次，直接 `thread 'main' has overflowed its stack`）。**收起同理只有 `resident::hide_to_shell` 一份**：2026-10-05 登录自启分支裸调 `window.hide()`，macOS 上激活等级没降到 Accessory，进程带着「在运行」小点的 Dock 图标、零可见窗口地挂在后台，点它还没反应（`RunEvent::Reopen` 只抬工作台，而 macOS 的激活不会替我们显示 `hide()` 掉的窗口——抬不到时必须兜底 `show_main_shell`），由 `check:invariants` 第 17 项钉住。收起那一刻窗口已隐藏、页内提示谁也看不见，所以**收起时不广播事件**，改由 Rust 在从后台恢复时补发 `shell-restored-from-background`（每个进程最多一次，且只在本进程发生过用户收起——关窗 / Windows 最小化——之后的第一次恢复；登录自启的隐藏不算，开机后第一次唤回静默，`consume_restore_hint` 双旗消费制）；改事件名要同时动 `App.vue` 与本文件，跨前后端。
 - **登录自启归系统，偏好归壳，两者分开**。`shell/autostart.rs` 只写系统登录项（macOS LaunchAgent plist / Windows `HKCU\...\Run`），「登录时启动工作台」是 `Settings::autostart_kernel` 里的一个 bool。**写 / 读 / 删会碰到用户真实的登录项，测试一律不许动它**——`autostart.rs` 的测试只覆盖纯逻辑（命令串拼装、`detect_autostart_arg` 只认独立 token、路径归一化、启动判据的三个条件），写路径只能人工在装好的机器上验证。
 

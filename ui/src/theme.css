@@ -1849,7 +1849,7 @@ main {
 }
 
 /* 品牌标志一律取 ui/public 下的本地矢量（当前只有 npm，规则见
-   docs/icon-design.md「面板里的第三方标志」）。WebView 能不能出网不由我们控制：
+   docs/ui/icon-design.md「面板里的第三方标志」）。WebView 能不能出网不由我们控制：
    远端 <img> 离线时是一块白方块，联网时每次渲染还欠一次网络请求。原来的
    `background: #fff` 是给那张远端头像垫底的，资源本地化之后它不再有意义。 */
 .brand-logo {

@@ -4,7 +4,7 @@ import test from 'node:test';
 import { readShellSource } from '../../scripts/lib/shell-source.mjs';
 
 // 技能启停的后端能力（`skill_set_enabled` + `enabled:false` 语义 + 启动对账）一直是完整的，
-// 但 v1 面板从未调用过它：`docs/skill-management.md` 把它记为「尚未接线」，用户只能靠整包
+// 但 v1 面板从未调用过它：`docs/features/extensions/skill-management.md` 把它记为「尚未接线」，用户只能靠整包
 // 卸载来收手。这组用例钉住「面板 → 动作 → 命令 → Rust 签名」这条链，避免它再次断掉。
 const read = (path) => readFileSync(path, 'utf8');
 

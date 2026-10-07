@@ -92,4 +92,4 @@ ui/src/
   - 尺寸走**组件的 `size` 属性**，不要用 CSS 的 `font-size`：Lucide 渲染的是带 `width`/`height` 属性的 `<svg>`，字体缩不动它。颜色靠 `stroke="currentColor"` 自动继承，不用显式设。
   - 「版本号徽标」只有一处实现：`shell/VersionBadge.vue`——分段式（左「蓝底 + 深色 tag 图标」、右「暗底 + muted 文字」）的胶囊，**侧栏品牌区与概览「当前内核」卡共用它**。同一语义不许两处各拼一个长得像的，也别把这条样式抄进任一侧的 scoped 块或 theme.css（后者是反棘轮文件，只许越来越小）。
 - **面板里的第三方标志（npm 等）**：必须是 `ui/public/` 下的本地矢量、不许写远端 URL，并保留来源与许可声明——`tauri.conf.json` 的 `csp` 是 `null`，远端 `<img>` 出不出网完全取决于用户那台机器，取不到时页面上只剩一块白砖且没有任何报错（版本面板过去就挂着 `avatars.githubusercontent.com` 的 npm 头像）。由 `check-invariants` 第 15 项钉住。图标库里的图形组件不算「第三方标志」——它随包进产物，不发网络请求。
-- 应用自身图标只从 `assets/*.svg` 母版生成，规则见 [docs/icon-design.md](../docs/icon-design.md)。
+- 应用自身图标只从 `assets/*.svg` 母版生成，规则见 [docs/ui/icon-design.md](../docs/ui/icon-design.md)。

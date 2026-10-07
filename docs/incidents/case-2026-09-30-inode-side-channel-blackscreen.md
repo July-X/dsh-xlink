@@ -1,6 +1,6 @@
 # 案例：dev 壳装 / 删内核打死 release 工作台（pnpm store 的 inode 侧信道，2026-09-30 定案）
 
-> 这是本仓库最重要的一类留存：**一次跨了三天的排查，三个理论先后被证据杀死，最后靠一条不经过任何路径的元数据侧信道定案**。结论已经进代码与 [AGENTS.md](../AGENTS.md)，本文记的是**完整证据链与排查方法**——下次遇到「两个分了家的东西仍然互相惊动」时，照这里的工具箱来。
+> 这是本仓库最重要的一类留存：**一次跨了三天的排查，三个理论先后被证据杀死，最后靠一条不经过任何路径的元数据侧信道定案**。结论已经进代码与 [AGENTS.md](../../AGENTS.md)，本文记的是**完整证据链与排查方法**——下次遇到「两个分了家的东西仍然互相惊动」时，照这里的工具箱来。
 
 ## 摘要
 
@@ -165,5 +165,5 @@ Remove-Item -Recurse -Force $t
 
 - 根治参数：`src-tauri/src/kernel.rs` 安装 args 里的 `--config.package-import-method=copy`（机械检查：`scripts/check-invariants.mjs` 的 `kernel-install-isolated-inodes`）
 - 恢复链：`src-tauri/src/harness_window.rs`（`recreate_when_quiet` / `MAX_REBUILDS` / `REBUILD_COOLDOWN` / `on_navigation`）、`src-tauri/src/package_activity.rs`（`recovery_backoff`）、`src-tauri/src/harness_cmd.rs`（`harness_reload_backoff` 命令 + ACL）、`src-tauri/src/harness-health.js`（`reloadWhenQuiet`）
-- 规则与机制叙事：[AGENTS.md](../AGENTS.md)「装 / 删内核不许惊动另一个壳的工作台」；[architecture.md](architecture.md)「分四层处理」；[troubleshooting.md](troubleshooting.md) 对应两行与残留缺口
+- 规则与机制叙事：[AGENTS.md](../../AGENTS.md)「装 / 删内核不许惊动另一个壳的工作台」；[architecture.md](../architecture/architecture.md)「分四层处理」；[troubleshooting.md](../operations/troubleshooting.md) 对应两行与残留缺口
 - 提交：`022a734`（2026-09-30）

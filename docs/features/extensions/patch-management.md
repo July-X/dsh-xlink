@@ -1,7 +1,7 @@
 # Patch（内置补丁 / 小插件）管理
 
 桌面壳随发布携带的自研内核补丁与小插件的设计、开发流程与实现说明。
-与社区插件（`docs/plugin-management.md`）的区别：补丁**随 dsh-xlink 发布包内置**（进入
+与社区插件（`docs/features/extensions/plugin-management.md`）的区别：补丁**随 dsh-xlink 发布包内置**（进入
 app bundle 资源目录），由本仓库维护、签名打包交付，用户只需选择「应用 / 撤销」，
 不存在第三方代码信任问题。
 

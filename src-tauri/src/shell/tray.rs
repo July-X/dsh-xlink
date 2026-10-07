@@ -35,7 +35,7 @@ const TRAY_ID: &str = "main-tray";
 ///   而不是系统图标；近黑的鲸体又必须靠这圈白边才认得出轮廓。
 ///
 /// 两套共十二档都用 `include_image!` 在编译期解码成 RGBA 常量，运行时不需要
-/// 图片解码依赖。几何与取舍见 `docs/icon-design.md`。
+/// 图片解码依赖。几何与取舍见 `docs/ui/icon-design.md`。
 const TRAY_FRAMES_DARK: [(i32, tauri::image::Image<'static>); 6] = [
     (16, tauri::include_image!("icons/tray-dark-16.png")),
     (20, tauri::include_image!("icons/tray-dark-20.png")),

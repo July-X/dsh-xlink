@@ -26,7 +26,7 @@
 //! 刻意**不轮询** `session/list`：那条 RPC 每次都要为全部会话重建投影，
 //! 实测一次约 2.1 MB / 0.5 s 内核 CPU——按通知所需的时间粒度（秒级）轮询会
 //! 常驻吃掉一个核，代价与该功能的收益完全不成比例（详见
-//! `docs/notification-design.md` 的「为什么不用轮询」）。
+//! `docs/features/notifications/notification-design.md` 的「为什么不用轮询」）。
 //!
 //! # 未读语义
 //!
@@ -2156,7 +2156,7 @@ mod windows_sound_tests {
 /// 覆盖的是整套实现里最容易写错、又最难在别处验证的一段：launch token 换
 /// cookie、WebSocket 握手（自定义 Cookie / Origin 头）、`$events` 的 open 帧
 /// 字段名、以及就绪帧。协议细节来自 `@deepseek-ai/dsh-api-gateway` 源码，见
-/// `docs/notification-design.md` 第 3 节。
+/// `docs/features/notifications/notification-design.md` 第 3 节。
 ///
 /// 用法（先让工作台跑起来，端口以设置页为准）：
 ///

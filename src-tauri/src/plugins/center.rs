@@ -9,7 +9,7 @@
 //! 再叠加一层 bundle 层，整体镜像内核 plugin CLI 产出的结构。这样切换内核
 //! 永远不需要重新安装，只需重新物化并重接线。
 //!
-//! 设计说明见桌面交付物中的 `docs/plugin-management.md`。
+//! 设计说明见桌面交付物中的 `docs/features/extensions/plugin-management.md`。
 
 use crate::kernel;
 use crate::node;

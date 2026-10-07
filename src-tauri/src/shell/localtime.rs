@@ -8,7 +8,7 @@
 //! ——而是**三处会各走各的时区**：`OffsetDateTime::now_local()` 与
 //! `to_offset(current_local_offset())` 在时区信息不可用时的回退不同，日期
 //! 走一份、时刻走另一份时，跨零点的记录会显示成"昨天的日期配今天的时间"。
-//! 2026-10-06 审查（docs/runtime-diagnostics-review-2026-10-06.md P2-04）抓到
+//! 2026-10-06 审查（docs/features/diagnostics/runtime-diagnostics-review-2026-10-06.md P2-04）抓到
 //! 的就是运行记录这一处；根因是同一件事写了两遍。
 //!
 //! 也因为 `process.rs` 在代码预算的**反棘轮**上（只许越来越小），把本地时间

@@ -3,7 +3,7 @@
 // 2026-10-01 从两个 workflow 的内联 heredoc 里抽出来——同一段脚本各写一遍
 // 必然漂移，而且**已经漂移过一次**：desktop-ci.yml 那份带着「2026-09 实测 CSS
 // 205076 字节，180k 会把所有 CI 都拦下」的来历注释，desktop-release.yml 那份
-// 没有（docs/code-review-2026-09-27.md M12 预言的正是这件事）。
+// 没有（docs/reviews/code-review-2026-09-27.md M12 预言的正是这件事）。
 //
 // 同时进了 `npm run check`：此前它只在 CI 跑，本地提交前那条总闸管不到它，
 // 于是「预算超标」这种纯本地就能发现的事要等到 CI 才发现。

@@ -787,7 +787,7 @@ const FILE_BUDGETS = {
   'src-tauri/src/shell/process.rs': 1157,
   // 1050 → 1090：会话标题改为订阅 `session/control`（baseline 播种 + 标题投影帧
   // 保鲜 + 老内核退回 session/list 快照），这部分逻辑与 Center 同生共死，拆出去
-  // 只会把状态机切成两半。详见 docs/notification-design.md §3.3。
+  // 只会把状态机切成两半。详见 docs/features/notifications/notification-design.md §3.3。
   // 1090 → 1170：通知带「最近一轮对话」——Center 增 `last_turns` 表
   // （turnOutline 投影末项；baseline / 投影帧 / session/list / api-session/added
   // 四个来源共用一套吸收逻辑）+ CompletedTask 增 lastPrompt / lastResponse +
@@ -1000,7 +1000,7 @@ const FILE_BUDGETS = {
   // 作废旧条目）、redact_key 脱敏、三态 Key patch、expired 跳过自动刷新、
   // get_subscription_usage / open_subscription_window 命令（生产代码 877 行，
   // 测试另计；含按 provider 定制的凭据失效文案与失败日志集中记录）。查询 +
-  // 缓存 + 解析同生共死，不宜再拆；对应设计稿 docs/subscription-usage-design.md。
+  // 缓存 + 解析同生共死，不宜再拆；对应设计稿 docs/features/subscription/subscription-usage-design.md。
   // 911 → 896：分目录后模块路径变长（`credentials` → `usage::credentials`），
   // 单行调用点被 rustfmt 折成两行，一处折行乘以几十处调用点就是 +11 行。
   // 修法不是抬预算，是把各模块按 basename 引进文件内，让体内调用点回到
@@ -1198,7 +1198,7 @@ const FILE_BUDGETS = {
 // （keep-last-good 状态 + 展示纯函数，152 行）、SubscriptionWindow.vue（独立窗口，
 // 313 行）、设置页凭据状态卡（+130）、概览套餐用量行与展开卡（+170）、labels.js
 // 时间标签（+33）、paths/permissions/capability 接线（+40）。功能按设计稿
-// docs/subscription-usage-design.md 落地：凭据复用内核模型设置（外壳不收集 Key）、
+// docs/features/subscription/subscription-usage-design.md 落地：凭据复用内核模型设置（外壳不收集 Key）、
 // 每 provider 独立状态、缓存按实例隔离，均为安全边界，无法复用既有模块。
 // 27300 → 28900。概览页「套餐用量」从行内入口改为独立卡直接展示（无折叠）、
 // provider 分块描边分割、DeepSeek 提到首位、tier 短名 5h/7d 与 ♾️ 无限周层、
@@ -1626,7 +1626,7 @@ const FILE_BUDGETS = {
 // 39690 → 39950（同日第二轮）：补 Phase C 的审计缺口——候选来源与完整性
 // 字段（后端 PrecheckReport + 前端候选信息卡）、五段实验流程时间线、折叠
 // 证据与风险、实例运行守卫、commit 前的 pre-change 快照。
-// 39690 → 39690（2026-10-06）：运行诊断（docs/runtime-diagnostics-design.md）
+// 39690 → 39690（2026-10-06）：运行诊断（docs/features/diagnostics/runtime-diagnostics-design.md）
 // 四个阶段。**这是一次新能力，不是膨胀**：净增 2315 行里，后端 run.rs +
 // startup_run.rs + run_cmd.rs 是新模型（一次操作 = 一条记录），前端
 // diagnostics/ 是三个新页面加控制塔。既有文件净增接近零——commands.rs
@@ -1735,7 +1735,7 @@ const TOTAL_BUDGET = 41831;
 //     （总额）/ 明细行（赠金、充值分别列）/ hover title（等式口径）三个字段。
 //   · ui/src/SubscriptionWindow.vue +3、ui/src/components/OverviewPanel.vue +6：
 //     余额块多一行明细 + 样式，模板结构其余部分不动。
-// 设计稿 docs/subscription-usage-design.md 的解析规则本来就写着「逐条展示：
+// 设计稿 docs/features/subscription/subscription-usage-design.md 的解析规则本来就写着「逐条展示：
 // 币种、总额、赠送（未过期）、充值」，这次是把前端欠掉的展示补齐，不是新增
 // 能力，也不是复制粘贴（两处模板共用同一个 balanceRow）。Rust 侧零改动：
 // 三个字段早就在 CacheBalance / BalanceView 里透传。反棘轮（plugins.rs /

@@ -5,7 +5,7 @@
 //! 内核补丁」页自主选择应用到当前激活内核，并可随时撤销。所有修改都以
 //! 原始文件备份 + 内容哈希校验保证可逆性，目标路径被严格约束在内核目录内。
 //!
-//! 设计说明与开发流程见 `docs/patch-management.md`。
+//! 设计说明与开发流程见 `docs/features/extensions/patch-management.md`。
 //!
 //! 运行时状态位于 `<data_dir>/patches/`：
 //!

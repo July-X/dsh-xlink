@@ -1,6 +1,6 @@
 # dsh-xlink 图标
 
-全仓库图标的三张母版、bundle 套板规则与增量构建触发。约定性约束见 [AGENTS.md](../AGENTS.md)。
+全仓库图标的三张母版、bundle 套板规则与增量构建触发。约定性约束见 [AGENTS.md](../../AGENTS.md)。
 
 ## 面板里的第三方标志
 

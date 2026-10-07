@@ -1,7 +1,7 @@
 # dsh-xlink 插件管理设计
 
 > 本文档描述桌面外壳的社区插件管理功能：集中存储、按内核物化、管理与更新界面。
-> 用户文档见 [README.md](../README.md) 的「插件管理」一节；本文档记录布局、流程与取舍。
+> 用户文档见 [README.md](../../../README.md) 的「插件管理」一节；本文档记录布局、流程与取舍。
 
 > **状态（2026-09-19，本文 2026-09-30 更正路径）**：本文档部分章节描述的是单内核时代的中央库与物化布局。
 > 多内核改造落地后中央库迁到 Xlink home，2026-09-29 又由 `store_relocate` 从
@@ -9,9 +9,9 @@
 > `dsh-plugins/` 是历史布局、不是现状。物化路径切到实例维度的
 > `extensions/plugins/<id>/`，profile 接线独立到每个实例的 `extensions/wiring.json`。
 > 权威路径说明见
-> [architecture.md §「多内核改造后的实际数据布局」](architecture.md)
+> [architecture.md §「多内核改造后的实际数据布局」](../../architecture/architecture.md)
 > 与阶段性状态快照
-> [multi-kernel-migration-status-2026-09-19.md](multi-kernel-migration-status-2026-09-19.md)。
+> [multi-kernel-migration-status-2026-09-19.md](../../architecture/multi-kernel/multi-kernel-migration-status-2026-09-19.md)。
 > P6 step 5 / P8 落地后本文会按新的实际行为重新校对；当前以代码为准。
 
 ## 目标

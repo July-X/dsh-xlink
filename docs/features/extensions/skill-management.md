@@ -1,7 +1,7 @@
 # dsh-xlink 技能（Skill）管理设计
 
 > 本文档描述桌面外壳的技能管理功能：中央存储、物化到内核读取路径、启用/禁用、更新提醒与社区目录。
-> 设计参照 [plugin-management.md](plugin-management.md)（社区插件管理）的同构模式，并按技能的本质差异做了简化。用户文档见 [README.md](../README.md)。
+> 设计参照 [plugin-management.md](plugin-management.md)（社区插件管理）的同构模式，并按技能的本质差异做了简化。用户文档见 [README.md](../../../README.md)。
 
 > **状态（2026-09-30）**：多内核改造落地后，中央库已迁到 Xlink home 的 `skills/packages/`，活动视图迁到
 > `skills/active/`（v1 全局共享）。内核侧的接入**已闭环**：壳在每个实例的
@@ -10,9 +10,9 @@
 > 兜底，当前内核不读它）——机制、取舍与验证见
 > [「技能接线」一节](#技能接线壳怎么让内核看见活动视图)。
 > 权威路径说明见
-> [architecture.md §「多内核改造后的实际数据布局」](architecture.md)
+> [architecture.md §「多内核改造后的实际数据布局」](../../architecture/architecture.md)
 > 与阶段性状态快照
-> [multi-kernel-migration-status-2026-09-19.md](multi-kernel-migration-status-2026-09-19.md)。
+> [multi-kernel-migration-status-2026-09-19.md](../../architecture/multi-kernel/multi-kernel-migration-status-2026-09-19.md)。
 > P6 step 5 / P8 落地后本文会按新的实际行为重新校对；当前以代码为准。
 
 ## 目标

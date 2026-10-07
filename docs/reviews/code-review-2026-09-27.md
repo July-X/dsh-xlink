@@ -3,7 +3,7 @@
 审查对象：`dsh-xlink@0.3.3-rc.3`（`main`，HEAD `b9e115c`；范围 `70f173c..b9e115c`，2026-09-11 ~ 09-27 的 227 个提交，144 文件，+35590 / −3758）。
 审查日期：2026-09-27。
 
-上一轮（`docs/code-review-2026-09-11.md`，rc.20）之后发生了两件事：开发速度从「22 提交 / 137 分钟 / +7841 行」跃升到「**227 提交 / 16 天 / +35590 行**」；同时「多实例」重构（P3→P8）铺开到了 `plugins.rs` / `commands.rs` / `kernel_adapter.rs` / `instance.rs` 全链路。本轮是那次重构**之后**的独立复核。
+上一轮（`docs/reviews/code-review-2026-09-11.md`，rc.20）之后发生了两件事：开发速度从「22 提交 / 137 分钟 / +7841 行」跃升到「**227 提交 / 16 天 / +35590 行**」；同时「多实例」重构（P3→P8）铺开到了 `plugins.rs` / `commands.rs` / `kernel_adapter.rs` / `instance.rs` 全链路。本轮是那次重构**之后**的独立复核。
 
 ## 审查方法与已执行的验证
 
@@ -18,7 +18,7 @@
 
 ### ⚠ 并发写入者：本轮审查的重要前提
 
-**审查期间工作区存在并发写入者**（与 `docs/code-review-2026-09-11.md:28-32` 记录的情况同类）。`git status` 显示 8 个非本轮修改的文件在 12:02–12:15 之间被改动：`README.md`、`docs/notification-design.md`、`scripts/check-code-budget.mjs`、`src-tauri/src/notify.rs`（+315）、`ui/src/components/SettingsPanel.vue`、`ui/src/notifications.js`（+27）、`ui/src/theme.css`（+72）、`ui/test/notifications.test.js`（+44），合计 +485 / −42。
+**审查期间工作区存在并发写入者**（与 `docs/reviews/code-review-2026-09-11.md:28-32` 记录的情况同类）。`git status` 显示 8 个非本轮修改的文件在 12:02–12:15 之间被改动：`README.md`、`docs/features/notifications/notification-design.md`、`scripts/check-code-budget.mjs`、`src-tauri/src/notify.rs`（+315）、`ui/src/components/SettingsPanel.vue`、`ui/src/notifications.js`（+27）、`ui/src/theme.css`（+72）、`ui/test/notifications.test.js`（+44），合计 +485 / −42。
 
 处理方式：
 
@@ -160,7 +160,7 @@ fn profile_dir(_data_dir: &Path, profile: &str) -> PathBuf {
 | H5 | 原生 `confirm()` 在 WKWebView 静默返回 false，macOS「回滚」是空操作 | `MigrationPanel.vue:90` | **5 分钟** |
 | H6 | `migration_run` 绕过 `withExclusive` / `withProgress`，可与内核启停并发写同一数据目录 | `migration.js:146` | 低 |
 | H7 | `dist.tarball` 无 host 校验，「已校验」字节可来自任意主机 | `pkg.rs:121-127` | ~8 行 |
-| H8 | `architecture.md:5` 与同文档 `:113` 自相矛盾，且钉死过期 SHA `89932eb` | `docs/architecture.md` | **5 分钟** |
+| H8 | `architecture.md:5` 与同文档 `:113` 自相矛盾，且钉死过期 SHA `89932eb` | `docs/architecture/architecture.md` | **5 分钟** |
 
 ### H3 详述
 

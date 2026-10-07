@@ -502,7 +502,7 @@ DeepSeek 侧用当前模型设置中的实际 provider 配置验证余额接口�
 
 ### 步骤 4：文档与单测收口
 
-- `docs/architecture.md` 模块清单加 `subscription.rs` 段（与 `usage.rs` 段并排）。
+- `docs/architecture/architecture.md` 模块清单加 `subscription.rs` 段（与 `usage.rs` 段并排）。
 - `README.md` 在「模型用量」旁补「套餐 / Token Plan 用量」一节（含能力边界声明、
   dsh 模型设置是唯一凭据入口、实例作用域和错误处理说明）。
 - 单测补齐：credential reference 解析与优先级、凭据文件容错读、缓存 schema / fingerprint、
