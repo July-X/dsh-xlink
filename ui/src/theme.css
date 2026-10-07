@@ -2134,15 +2134,11 @@ main {
   font-weight: 600;
 }
 
-.plugin-center-source {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--muted, var(--text-dim, #999));
-  white-space: nowrap;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
+/* `.plugin-center-source`（卡头上那句「数据来源于 dshfind.com」）已于 2026-10-07
+   删除：它的可见文字与 tooltip 内容说的不是同一件事（tooltip 讲的是插件存放路径与
+   生效规则），用户停在字上看到的是另一段话。改成纯 ⓘ 图标后，这条规则的载体没有了。
+   顺带一提，这条规则里的 `--muted` / `--text-dim` / `#999` 全是**旧 token 名**，
+   本轮 token 已全局改过名（见 ui/AGENTS.md），它只是因为没人引用才没暴露。 */
 
 /* tab 标签里跟随的内核身份与版本号：小字号弱化，防止标签过长。 */
 .tab-label-sub {
