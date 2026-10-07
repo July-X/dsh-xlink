@@ -204,6 +204,33 @@ body {
   padding: 0 12px;
 }
 
+/* 业务活动脉冲：App.vue 在按钮触发的 IO（withLoading / withProgress）或工作台
+   启动编排进行中时给 body 加 .pulse-active。旧版靠笔刷标题栏上的扫光层表达，
+   那两层已随素面标题栏删除——但这个回执不能跟着消失：点了按钮却毫无反应，
+   是用户最容易误判成「没点动」的地方（App.vue 里 PULSE_MIN_MS 那套逻辑就是
+   为它写的）。改成标题栏下缘一条 1px 主色细线来回扫，语义不变、语气收敛到
+   与新 chrome 相称。 */
+@keyframes titlebar-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+body.pulse-active .mac-titlebar::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: titlebar-sweep 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+
 .mac-titlebar__caption {
   position: absolute;
   inset: 0;
