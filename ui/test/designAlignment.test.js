@@ -907,24 +907,73 @@ test('卡头 ⓘ 是纯图标：可见文字与 tooltip 内容说的是同一件
   assert.doesNotMatch(stripComments(themeCss), /\.plugin-center-source/, '`.plugin-center-source` 已随模板删除');
 });
 
-// --- 设置页：右栏收成两张卡 -------------------------------------------------
+// --- 设置页：两栏的卡分别归哪一栏 -------------------------------------------
 //
-// 用户 2026-10-07 指出「左栏两张、右栏四张，左栏空一大截」，拍板按设计稿
-// draft 2844 合并成「环境回退与诊断」一张。原右栏四张（任务通知 / 数据迁移 /
-// 环境回退点 / 深入排查）同属「环境出问题时才动」，拆成四张只是把一个上下文
-// 摊成四段。下面几条钉的就是「两栏各两张 + 那一张里四行」这个形状。
+// 2026-10-07 用户指出「左栏两张、右栏四张，左栏空一大截」，拍板按设计稿
+// draft 2844 把后三张（数据迁移 / 环境回退点 / 深入排查）合并成「环境回退与
+// 诊断」一张——它们同属「环境出问题时才动」，拆成四张只是把一个上下文摊成四段。
+//
+// 2026-10-08 用户又把那张卡从右栏移到左栏、接在「后台常驻」下方。最终形状是
+// **左栏三张（工作台 / 后台常驻 / 环境回退与诊断）、右栏一张（任务通知）**。
+//
+// 下面这几条盯的不只是「有几张卡」，还有**每一张归哪一栏**。上一版判据只数了
+// `.card` 的总数、又只查了标题存在，于是名字里写着「右栏第二张」而实际从未判过
+// 第几栏——卡被搬走之后它照样绿（2026-10-08 实测）。所以这里按 `.page-layout__col`
+// 的位置切成两段分别断言：总数对、归属也对。
 const settingsPanel = readFileSync('ui/src/shell/SettingsPanel.vue', 'utf8');
 const settingsTpl = templateOf(settingsPanel);
 const snapshotCard = readFileSync('ui/src/diagnostics/SnapshotCard.vue', 'utf8');
 const bisectPanel = readFileSync('ui/src/diagnostics/BisectPanel.vue', 'utf8');
 
-test('设置页两栏各两张卡，右栏第二张是「环境回退与诊断」', () => {
+/** 设置页模板块按列切开：左栏 / 右栏各自的模板块文本。 */
+function settingsColumns() {
+  const at = [...settingsTpl.matchAll(/<div class="page-layout__col">/g)].map((m) => m.index);
+  assert.equal(at.length, 2, '设置页应是两列');
+  return { left: settingsTpl.slice(0, at[1]), right: settingsTpl.slice(at[1]) };
+}
+
+/**
+ * 设置页每张卡的标题，以及它落在哪一栏。
+ *
+ * **不能按字面搜标题再判它在哪一栏**：「工作台」这三个字在右栏那张卡里还作为
+ * 表单 label 出现（「工作台不在前台才通知」），按字面搜会得出「工作台也在右栏」
+ * 的结论。这里改为提取每张卡 `<h2>` 的**标题文字**，再按它在模板块里的位置归栏。
+ */
+function settingsCardTitles() {
+  const at = [...settingsTpl.matchAll(/<div class="page-layout__col">/g)].map((m) => m.index);
+  assert.equal(at.length, 2, '设置页应是两列');
+  return [...settingsTpl.matchAll(/<h2[^>]*>\s*([^<]+?)\s*</g)].map((m) => ({
+    title: m[1].trim(),
+    col: m.index < at[1] ? 'left' : 'right',
+  }));
+}
+
+test('设置页共四张卡，归属与顺序钉死：左三右一', () => {
   // 只数模板块里 `.card` 的直接出现次数：卡片真身是 `<div class="card">`，
-  // 组件自带的外框也已在本轮删掉（下面那条判据钉着）。
+  // 组件自带的外框也已删掉（下面那条判据钉着）。
   assert.equal((settingsTpl.match(/<div class="card">/g) || []).length, 4);
-  assert.match(settingsTpl, /<h2>环境回退与诊断<\/h2>/);
+  // 整体比对：栏位 + 标题 + 先后顺序一次说清。少比一项，下一次把卡搬回右栏
+  // 就又是绿的。
+  assert.deepEqual(settingsCardTitles(), [
+    { title: '工作台', col: 'left' },
+    { title: '后台常驻', col: 'left' },
+    { title: '环境回退与诊断', col: 'left' },
+    { title: '任务通知', col: 'right' },
+  ]);
+});
+
+test('「环境回退与诊断」的 caption 走 head-meta + muted', () => {
+  const { left, right } = settingsColumns();
+  assert.match(left, /<h2>环境回退与诊断<\/h2>/);
   // caption 走既有的 head-meta + muted，不为这一处新增 .card-caption。
-  assert.match(settingsTpl, /出问题时使用/);
+  assert.match(left, /出问题时使用/);
+  // 右栏只剩「任务通知」一张——它在内核事件流断开时会展开一大段环境说明与告警，
+  // 把排查入口压在它下面时，用户要先撞上告警才找得到自己要找的东西。
+  assert.equal(
+    (right.match(/<div class="card">/g) || []).length,
+    1,
+    '右栏应只剩「任务通知」一张',
+  );
 });
 
 test('「环境回退与诊断」是一张卡里的四个行式条目', () => {
