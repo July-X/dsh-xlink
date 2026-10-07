@@ -110,19 +110,6 @@ function close() {
 
       <p v-if="report.hint" class="precheck-hint">{{ report.hint }}</p>
 
-      <!-- 完整的分阶段时间线（建沙盒 → 基线 → 装候选 → 探测）在诊断层里。
-           这里保留这个弹窗：它是一次性的「刚装完」告知，而诊断层是可以
-           随时回看的记录页，两者职责不同。 -->
-      <el-button
-        v-if="report.runId"
-        class="precheck-detail"
-        text
-        type="primary"
-        @click="openFullDiagnosis"
-      >
-        查看完整诊断
-      </el-button>
-
       <div v-if="report.evidence" class="precheck-evidence">
         <el-button text :icon="View" @click="evidenceOpen = !evidenceOpen">
           {{ evidenceOpen ? '收起启动日志' : '查看启动日志证据' }}
@@ -132,6 +119,15 @@ function close() {
     </div>
 
     <template #footer>
+      <!-- 完整的分阶段时间线（建沙盒 → 基线 → 装候选 → 探测）在诊断层里。
+           这里保留这个弹窗：它是一次性的「刚装完」告知，而诊断层是可以随时
+           回看的记录页，两者职责不同。
+
+           「查看完整诊断」**只留 footer 这一处**（2026-10-07 用户：按钮重复）。
+           同一个动作原来在正文里还有一个文字按钮，与 footer 那枚并排出现在
+           同一屏，用户的箭头一开始指的正是正文那枚。动作级按钮统一放 footer，
+           正文只留说明文字——正文里再挂一枚同款按钮，用户会以为是两个不同的
+           动作（一个看时间线、一个只是「跳过去」），而它们其实完全等价。 -->
       <el-button v-if="report.runId" @click="openFullDiagnosis">查看完整诊断</el-button>
       <el-button v-if="evidencePath" @click="openLog">打开日志</el-button>
       <el-button @click="close">知道了</el-button>

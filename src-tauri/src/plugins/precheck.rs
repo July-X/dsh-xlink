@@ -115,6 +115,28 @@ impl StoreSnapshot {
     }
 }
 
+/// 预检期间的「一定还原」守卫：离开作用域（正常返回、提前 `return`、甚至
+/// panic）都在 `Drop` 里把中央库还原到快照时刻。
+///
+/// **为什么不靠「每条 `return` 之前记得调 `rollback`」**：那条路已经漏过一次。
+/// 2026-10-07 用户实测：预检通过后回到插件中心，那枚按钮直接显示「已安装」，
+/// 而同一份报告正文写着「尚未安装到当前实例」——因为候选包是用**生产安装路径**
+/// 装进**真实中央库**的（只有目标实例换成了沙盒），失败的两条出口都调了回滚，
+/// 唯独「装上并通过」这条把中央库留在了记账状态。面板的「已安装」判据读的就是
+/// 中央库清单，于是用户看到一份自己没要求过的安装。
+///
+/// 守卫把「一定还原」变成结构事实：新增出口不必记得补一行，漏不掉。
+struct StoreRestore<'a> {
+    snapshot: StoreSnapshot,
+    data_dir: &'a Path,
+}
+
+impl Drop for StoreRestore<'_> {
+    fn drop(&mut self) {
+        self.snapshot.rollback(self.data_dir);
+    }
+}
+
 /// 在沙盒里起一次内核、探一次 HTTP、收摊，读回日志。**任何**返回路径都
 /// 已经把子进程停掉，调用方拿到的 `sandbox` 可以安全地继续用。
 fn probe_boot(
@@ -413,7 +435,12 @@ pub fn plugin_install(
         "正在把候选插件装入沙盒"
     );
     // 取源 + 装进沙盒：走的就是生产安装路径本身，只是目标实例换成了沙盒。
-    let snapshot = StoreSnapshot::capture(data_dir);
+    // 守卫在**每一条**离开本函数的路径上把中央库还原回去（见 `StoreRestore`）。
+    // 下划线前缀：它不靠调用点生效，靠 `Drop`。
+    let _restore = StoreRestore {
+        snapshot: StoreSnapshot::capture(data_dir),
+        data_dir,
+    };
     let item = match plugins::center::install_for_instance(
         family,
         sandbox.instance_id(),
@@ -428,8 +455,7 @@ pub fn plugin_install(
         Err(error) => {
             // `install_for_instance` 在写完 store 行之后的任何一步失败都会留下
             // 一个已记账的插件。预检必须把它撤掉，否则「预检失败」反而让面板
-            // 多出一行用户没要求的东西。
-            snapshot.rollback(data_dir);
+            // 多出一行用户没要求的东西——中央库的还原由上面那个守卫在离开作用域时兜住。
             precheck_stage!(
                 on_progress,
                 &mut recorder,
@@ -472,8 +498,8 @@ pub fn plugin_install(
     report.duration_ms = started.elapsed().as_millis() as u64;
 
     if !candidate.ready {
-        // 基线正常、装了候选包就挂 —— 这才是可归因的失败。撤掉中央库。
-        snapshot.rollback(data_dir);
+        // 基线正常、装了候选包就挂 —— 这才是可归因的失败。中央库由 `restore`
+        // 守卫在返回时还原。
         report.verdict = Verdict::Fail.as_str().to_string();
         report.summary = format!(
             "预检未通过：装上 {} 之后内核起不来（{}）。已撤销本次安装，你的环境没有被改动",
@@ -896,6 +922,46 @@ mod tests {
             "用户预检前就装好的插件绝不能被一次失败的预检带走"
         );
         assert!(store.join("keeper/keep.txt").is_file());
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// 守卫真正的意义在这一条：调用点**不写任何回滚代码**也会还原。
+    /// 上面两条测的是 `rollback` 本身——它们全绿，并不能说明「每条出口都
+    /// 记得调它」，2026-10-07 那次漏掉正是这么发生的。
+    #[test]
+    fn store_restore_guard_rolls_back_just_by_leaving_scope() {
+        let home = std::env::temp_dir().join(format!("dsh-precheck-guard-{}", std::process::id()));
+        fs::create_dir_all(&home).expect("home");
+        let _home_guard = scoped_xlink_home(&home);
+        let data_dir = home.join("desktop");
+        let store = plugins::center::store_dir(&data_dir);
+        fs::create_dir_all(&store).unwrap();
+        let original = r#"{"schemaVersion":1,"items":[{"id":"keeper"}]}"#;
+        fs::write(plugins::center::store_file(&data_dir), original).unwrap();
+
+        // 模拟「装上候选包 → 探测通过 → 直接 return」的那条出口：
+        // 作用域里只做安装动作，一句 rollback 都不写。
+        {
+            let _restore = StoreRestore {
+                snapshot: StoreSnapshot::capture(&data_dir),
+                data_dir: &data_dir,
+            };
+            fs::create_dir_all(store.join("candidate")).unwrap();
+            fs::write(
+                plugins::center::store_file(&data_dir),
+                r#"{"schemaVersion":1,"items":[{"id":"keeper"},{"id":"candidate"}]}"#,
+            )
+            .unwrap();
+            // 这里就是那条曾经漏掉的出口
+        }
+
+        assert_eq!(
+            fs::read_to_string(plugins::center::store_file(&data_dir)).unwrap(),
+            original,
+            "预检**通过**之后中央库也必须回到原样：面板的「已安装」判据读的就是它"
+        );
+        assert!(!store.join("candidate").exists());
 
         let _ = fs::remove_dir_all(&home);
     }

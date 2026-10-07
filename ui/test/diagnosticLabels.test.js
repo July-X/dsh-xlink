@@ -196,6 +196,21 @@ test('§2.5.1 的三个入口位置都在', () => {
   assert.match(incident, /openStartupDiagnosis/, '事故面板必须能跳到那次启动的时间线');
 });
 
+test('「查看完整诊断」在预检弹窗里只有一处入口（2026-10-07 用户：按钮重复）', () => {
+  const precheck = readSrc('plugins/PrecheckDialog.vue');
+  // 数的是**元素文本**而不是全文出现次数，也不是 `openFullDiagnosis` 的引用
+  // ——两种都会把解释这个决定的注释一起算进去（那处注释里也写着同样的字）。
+  const labels = precheck.match(/>\s*查看完整诊断\s*</g) || [];
+  assert.equal(
+    labels.length,
+    1,
+    `「查看完整诊断」出现了 ${labels.length} 次：正文里那枚文字按钮与 footer 那枚等价，两个入口会让用户以为是两个不同的动作`
+  );
+  // 留下的那一处必须在 footer——动作级按钮统一放 footer，正文只留说明文字。
+  const footer = precheck.slice(precheck.indexOf('#footer'));
+  assert.match(footer, /查看完整诊断/, '保留下来的入口必须落在 footer 里');
+});
+
 test('§2.5.5 的更多菜单只收只读动作', () => {
   const menu = readSrc('diagnostics/diagnosis-more-menu.js');
   assert.match(menu, /查看完整日志/);
