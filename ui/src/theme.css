@@ -727,29 +727,10 @@ code {
   }
 }
 
-/* 第三方来源安全提示（PluginsPanel 顶部）。只渲染在插件页，不占全局侧栏。 */
-.panel-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: var(--radius-control);
-  background: rgba(224, 168, 60, 0.1);
-  border: 1px solid rgba(224, 168, 60, 0.28);
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.panel-notice .el-icon {
-  flex-shrink: 0;
-  margin-top: 2px;
-  color: var(--warning);
-}
-
-.panel-notice p {
-  margin: 0;
-}
+/* `.panel-notice`（第三方来源安全提示的整宽提示条）已于 2026-10-07 删除：
+   它只被 PluginsPanel 用过一次，而那条文案不含任何随状态变化的信息，却常驻
+   占掉页头下面一整行。现在是「插件」标题旁的警告图标 + hover tooltip
+   （见 PluginsPanel 的 `.head-tip-icon--warning`）。删除时确认过模板侧零引用。 */
 
 
 /* --- 主区域与卡片 ---
@@ -1683,6 +1664,31 @@ main {
 
 .head-tip-icon:hover {
   color: var(--accent);
+}
+
+/* 警告级触发点（插件页标题旁的第三方来源免责提示，2026-10-07）。它与上面那个
+   ⓘ 共用同一行、同一尺寸，但**颜色不同**——两条提示的严重程度不同，不该长得
+   一样：ⓘ 是「补充一句说明」，⚠ 是「有件事你该知道」。hover 时也**不**跟着变
+   强调蓝，改成加深自身色，否则「悬停就变成蓝色」会把它读成另一个可点的东西。
+   focus 态与 hover 同色：它是 `tabindex="0"` 的可聚焦元素，键盘用户 focus 到
+   它时应该看到和鼠标悬停一样的反馈。 */
+.head-tip-icon--warning {
+  color: var(--warning);
+}
+
+.head-tip-icon--warning:hover,
+.head-tip-icon--warning:focus-visible {
+  color: var(--el-color-warning-dark-2, var(--warning));
+}
+
+/* 页头标题行：标题与它旁边的提示图标同行。`align-items: center` 而不是靠
+   `vertical-align`——`h1` 是块级元素，`vertical-align` 对它内部的图标无效，
+   得先把行组出来才谈得上对齐；6px 间隙取的是正文 13px 图标与 18px 标题之间
+   「挨着但不粘连」的那个量，比图标自身的 1em 视觉留白更稳。 */
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .entity-list {
