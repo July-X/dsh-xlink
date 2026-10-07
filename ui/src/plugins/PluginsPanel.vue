@@ -327,19 +327,11 @@ function instanceChipType(row, instanceId) {
           <el-tooltip placement="top" effect="dark" :content="installTip">
             <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
           </el-tooltip>
-          <el-button
-            class="plugin-center-refresh"
-            size="small"
-            :icon="Refresh"
-            :loading="isLoading('catalogReload')"
-            :disabled="globalBusy"
-            @click="searchCatalog({ force: true, loud: true })"
-          >
-            刷新数据
-          </el-button>
         </div>
-        <!-- 预检开关与「刷新数据」同排：两者都是「装之前先决定策略」的动作，
-             放在同一行，用户第一次装插件时自然会先看到它。 -->
+        <!-- 预检开关独占卡头的第二行（在标题 + ⓘ 之下）。它带一整行灰字说明，
+             与标题挤在同一行会把卡头撑成三行。「刷新数据」原先也在这一行，
+             2026-10-07 已按用户要求搬去右栏「插件中心」——它刷的是那份远端目录，
+             不是本机插件库，两者本来就不是一件事。 -->
         <div class="precheck-toggle-row">
           <el-switch
             :model-value="precheckOn"
@@ -481,6 +473,22 @@ function instanceChipType(row, instanceId) {
               来自
               <a href="https://dshfind.com/zh" target="_blank" rel="noreferrer">dshfind.com</a>
             </span>
+            <!-- 「刷新数据」原先挂在整张卡的卡头靠右（2026-10-07 用户要求搬过来）。
+                 它刷的是 **dshfind.com 那份远端目录**，不是本机插件库——挂在整张卡的
+                 头上等于让一个作用在右栏的按钮出现在左栏。搬过来之后，下面那句
+                 「目录为空或加载失败，点「刷新数据」重试」才有个近处的按钮可指。
+                 按钮放在 h3 里不是新发明：内核版本页的「官方版本」标题行里本来就有
+                 两枚图标按钮（`.list-head-with-logo`）。 -->
+            <el-button
+              class="plugin-center-refresh"
+              size="small"
+              :icon="Refresh"
+              :loading="isLoading('catalogReload')"
+              :disabled="globalBusy"
+              @click="searchCatalog({ force: true, loud: true })"
+            >
+              刷新数据
+            </el-button>
           </h3>
           <!-- 搜索框独占一行，放在分类下拉之前：这一列是插件页的右半栏，
                三个控件挤一行时每个只剩 150px 出头，「全部（17.5k）」这类

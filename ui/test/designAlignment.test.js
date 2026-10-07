@@ -990,6 +990,53 @@ test('插件页页签与内容之间有真间距，不能归零', () => {
   assert.equal(Number(gap[1]), 10);
 });
 
+// --- 「刷新数据」跟着它作用的东西走（2026-10-07 用户要求）--------------------
+//
+// 它刷的是 **dshfind.com 那份远端目录**，原先挂在整张卡（「插件管理」）的卡头靠右，
+// 等于让一个作用在右栏的按钮出现在左栏。搬到右栏「插件中心」那一行之后，下面那句
+// 「目录为空或加载失败，点「刷新数据」重试」才有个近处的按钮可指。
+//
+// 判据扫的是模板块且注释已剥（`templateOf`）——插件面板的注释里正是在解释这次搬家
+// （写着「卡头」「插件中心」「刷新数据」），不剥就会被自己写的说明当成命中。
+
+test('「刷新数据」只有一枚，且必须落在右栏「插件中心」那一行', () => {
+  const tpl = templateOf(readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'));
+  assert.equal(
+    (tpl.match(/class="plugin-center-refresh"/g) || []).length,
+    1,
+    '刷新数据应当只有一枚：两枚意味着同一个动作在两处都能点，用户会不知道点哪',
+  );
+
+  // 卡头那一行里不许再出现它。
+  const titleRow = tpl.match(/<div class="plugin-center-title-row">([\s\S]*?)<\/div>/);
+  assert.ok(titleRow, '必须能找到 .plugin-center-title-row');
+  assert.doesNotMatch(
+    titleRow[1],
+    /plugin-center-refresh/,
+    '卡头是「插件管理」这一张卡的标题，不是目录的标题；刷目录的按钮不该出现在这里',
+  );
+
+  // 它必须在「插件中心」那个分组标题里（同一行靠右）。
+  const dividers = [...tpl.matchAll(/<h3 class="section-divider">[\s\S]*?<\/h3>/g)].map((m) => m[0]);
+  const catalog = dividers.find((d) => d.includes('插件中心'));
+  assert.ok(catalog, '必须能找到「插件中心」那个分组标题');
+  assert.match(catalog, /class="plugin-center-refresh"/, '刷新数据必须与「插件中心」同一行');
+});
+
+test('刷新数据在分组行里靠右（跟着 .section-divider 的 flex 排）', () => {
+  const css = stripComments(themeCss);
+  // `.section-divider` 本身已经是 flex 行，这里只负责把它推到行尾。
+  const m = css.match(/\.section-divider \.plugin-center-refresh\s*\{([^}]*)\}/);
+  assert.ok(m, '必须能找到 .section-divider .plugin-center-refresh 规则');
+  assert.match(m[1], /margin-left:\s*auto/);
+  // 旧位置的规则必须删干净：元素不在那儿了，留着就是一条没有作用方的声明。
+  assert.doesNotMatch(
+    css,
+    /\.plugin-center-title-row \.plugin-center-refresh/,
+    '按钮已经搬走，标题行里那条 margin-left:auto 没有作用方了',
+  );
+});
+
 // --- 顶部工作条整条删除（2026-10-07 用户要求）------------------------------
 //
 // 用户指着一张截图说「移除这个区域」——标题栏正下方那条 48px 的 `.workspace-bar`：
