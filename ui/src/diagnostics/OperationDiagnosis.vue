@@ -21,7 +21,6 @@ import {
 } from './diagnostic-labels.js';
 import { reloadOperationDiagnosis } from './diagnostic-actions.js';
 import { diagnosticStore } from './diagnostics.js';
-import { openEvidence } from './diagnostic-actions.js';
 
 const props = defineProps({
   /**
@@ -102,19 +101,7 @@ function reload() {
       <span>{{ stageTitle }}</span>
       <span class="diag-card__aside">完成 {{ progress.done }} / {{ progress.total }} 个阶段</span>
     </h3>
-    <RunTimeline>
-      <template #row-actions="{ event }">
-        <el-button
-          v-if="event && event.status === 'failure'"
-          text
-          size="small"
-          :icon="Refresh"
-          @click="openEvidence()"
-        >
-          查看日志
-        </el-button>
-      </template>
-    </RunTimeline>
+    <RunTimeline />
   </div>
 
   <!-- 判据是「有没有**任何一份**证据」，不是「有没有内核日志」（审查 R2-P1-03
@@ -135,6 +122,5 @@ function reload() {
     <el-button :icon="Refresh" :loading="isLoading('operationDiagnosisReload')" @click="reload">
       刷新
     </el-button>
-    <el-button v-if="hasRun" @click="openEvidence()">查看完整日志</el-button>
   </div>
 </template>

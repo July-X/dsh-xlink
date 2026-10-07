@@ -18,7 +18,6 @@ import {
 import { reloadStartupDiagnosis } from './diagnostic-actions.js';
 import { diagnosticStore } from './diagnostics.js';
 import {
-  openEvidence,
   openWorkbenchWindow,
   showIncidentFor,
   startStartupDiagnosis,
@@ -68,12 +67,6 @@ function reload() {
   // 优先按 id 拉，不按「最近一条」：用户可能正在看一条**历史**记录，
   // 此时点刷新若换成最近那条，看到的就是另一件事。
   return reloadStartupDiagnosis(run.value?.id);
-}
-
-function viewLogs() {
-  // 走诊断层的 `openEvidence`（设计 §8.2）：证据路径记在诊断状态里，
-  // 日志读取仍复用日志模块——诊断层自己读文件会让两处的截断与分类漂移。
-  openEvidence();
 }
 
 function openIncident() {
@@ -134,19 +127,7 @@ async function retry() {
       <span>启动阶段</span>
       <span class="diag-card__aside">完成 {{ progress.done }} / {{ progress.total }} 个阶段</span>
     </h3>
-    <RunTimeline>
-      <template #row-actions="{ event }">
-        <el-button
-          v-if="event && event.status === 'failure'"
-          text
-          size="small"
-          :icon="Refresh"
-          @click="viewLogs"
-        >
-          查看日志
-        </el-button>
-      </template>
-    </RunTimeline>
+    <RunTimeline />
   </div>
 
   <div v-if="evidence.kernelLog || evidence.sandboxLog" class="diag-card">
@@ -161,7 +142,6 @@ async function retry() {
     <el-button :icon="Refresh" :loading="isLoading('startupDiagnosisReload')" @click="reload">
       刷新
     </el-button>
-    <el-button v-if="hasRun" @click="viewLogs">查看完整日志</el-button>
     <!-- 事故面板负责处置嫌疑插件，启动诊断只给入口不重复那份动作。 -->
     <el-button v-if="incident" @click="openIncident">查看事故</el-button>
     <!-- 主动作只有一个（设计 §5.2）：成功去看工作台，失败再来一次。

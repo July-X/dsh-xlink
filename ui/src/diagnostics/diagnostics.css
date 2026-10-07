@@ -266,12 +266,9 @@
   overflow-wrap: anywhere;
 }
 
-.diag-timeline__actions {
-  margin-top: 6px;
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
+/* `.diag-timeline__actions`（时间线行内动作区）随 2026-10-07 的「行内查看
+   日志」一起删除：它只包住 `RunTimeline` 的 `row-actions` 插槽，那两个使用方
+   都不再传动作了，于是每个展开的行都在渲染一个空 div。 */
 
 /* --- 状态行（需要关注 / 系统健康 / 最近操作）-------------------------- */
 .diag-rows { margin: 0; }
