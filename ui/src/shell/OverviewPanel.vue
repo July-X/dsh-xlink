@@ -433,8 +433,21 @@ function goVersions() {
           </div>
 
           <div class="kernel-summary">
-            <!-- 版本号与状态行同属一个竖向块（设计稿 `.kernel-summary` 里那层 div）。
-                 横排时状态胶囊会随内核状态换行到不同位置，读法不稳定。 -->
+            <!-- 版本号、状态行与次级入口同属一个竖向块（设计稿 `.kernel-summary`
+                 里那层 div）。2026-10-08 用户要求「操作按钮迁移到版本号右侧，
+                 靠右显示」，此前那一排三枚次级入口（工作台窗口 / 刷新工作台 /
+                 官网网页版窗口）在三格指标**下方**独占一行，读数与动作被一段
+                 竖线分开，视线要往下再折一次。
+
+                 为什么这一块内部还是竖排、且状态行要单独占第二行：横排时状态
+                 胶囊会随内核状态换行到不同位置，读法不稳定（这条 2026-10-07
+                 就定过，本轮只是把第三个元素接进来，理由没变）。而实测宽度
+                 （用户 1040px 宽窗截图）显示三样东西**不能挤在一行**：版本号
+                 `0.2.1-alpha.1` 占 98px，三枚按钮含间隙占 354px，状态行
+                 （状态胶囊 + 工作台地址 + 查看状态）占 287px，三者合计 739px，
+                 远超卡内可用宽 482px——真挤在一行，状态行只剩约 110px，会折成
+                 三四行。所以落位是**版本号 + 按钮同一行（右对齐）、状态行
+                 独占第二行**，不是三者平铺。 -->
             <div class="kernel-summary-main">
               <!-- 纯文字，不再是「tag 图标 + 药丸」的徽标（2026-10-08 用户
                    截图要求：移除 tag icon、放大、靠最左）。设计稿的
@@ -450,6 +463,63 @@ function goVersions() {
               >
                 {{ (kernel && kernel.active) || '未选择' }}
               </div>
+              <!-- 次级入口：仅在对应服务开启后出现，作为窗口层的入口，视觉上压低
+                   权重（ghost 风格），与卡头的主按钮做明显区分。
+                   「工作台窗口 / 官网网页版窗口」只把窗口带到台前，「刷新工作台」
+                   是唯一的**动作**——它换掉整个工作台窗口（见 harness_cmd）。
+                   三者都不改变内核状态，所以按 AGENTS.md 的 IA 规则同属次级入口
+                   这一排，不许往主按钮旁边堆会启停内核的动作。
+
+                   2026-10-08 从三格指标下方搬到版本号这一行的右侧（靠右对齐）。
+                   「查看日志」不在这一排（早于本轮就已移除）：它与下面「系统健康 →
+                   日志系统」是同一件事的两个入口，而两者做的事还不一样——那个按钮
+                   直接开独立全屏窗口（跳过列表），那一行走日志弹层。同一屏上两个
+                   日志入口、点开结果还不一致，用户没法建立预期。
+                   **独立日志窗口的能力因此没有丢失，反而回到了它该在的地方**：现在
+                   「系统健康」那一格自己就开独立窗口，弹层里的「全屏」按钮是第二条
+                   通路（`logs.js::openLogWindow`，两个入口共用这一份实现）。
+                   设计说明 §4 要求的「保留刷新、折叠侧栏和独立日志窗口入口」三项都在
+                   弹层里。 -->
+              <Transition name="subrow">
+                <div v-if="running || officialChatOpen" class="btn-row btn-row-sub">
+                  <el-button
+                    v-if="running"
+                    class="btn-sub"
+                    size="small"
+                    :icon="TopRight"
+                    :loading="isLoading('openHarness')"
+                    :disabled="globalBusy"
+                    title="在独立窗口中打开工作台 webview"
+                    @click="openHarnessWindow"
+                  >
+                    工作台窗口
+                  </el-button>
+                  <el-button
+                    v-if="running"
+                    class="btn-sub"
+                    size="small"
+                    :icon="RefreshRight"
+                    :loading="isLoading('forceReloadHarness')"
+                    :disabled="globalBusy"
+                    title="黑屏 / 卡死时的手动出路：重建工作台窗口，渲染进程会换掉。窗口内的滚动位置、侧栏与终端回到初始状态，会话不受影响"
+                    @click="forceReloadHarnessWindow"
+                  >
+                    刷新工作台
+                  </el-button>
+                  <el-button
+                    v-if="officialChatOpen"
+                    class="btn-sub"
+                    size="small"
+                    :icon="TopRight"
+                    :loading="isLoading('openOfficialChatWindow')"
+                    :disabled="globalBusy"
+                    title="唤起 / 聚焦 DeepSeek 官网网页版窗口"
+                    @click="openOfficialChatWindow"
+                  >
+                    官网网页版窗口
+                  </el-button>
+                </div>
+              </Transition>
               <div class="kernel-status-row">
                 <span class="status-pill">
                   <span class="dot" :class="kernelStatus.cls"></span>
@@ -600,62 +670,6 @@ function goVersions() {
         </el-button>
       </div>
 
-      <!-- 次级入口：仅在对应服务开启后出现，作为窗口层的入口，视觉上压低权重
-           （缩进 + ghost 风格），与卡头的主按钮做明显区分。
-           「工作台窗口 / 官网网页版窗口」只把窗口带到台前，「刷新工作台」是唯一的
-           **动作**——它换掉整个工作台窗口（见 harness_cmd）。三者都不改变内核
-           状态，所以按 AGENTS.md 的 IA 规则同属次级入口这一排，不许往主按钮
-           旁边堆会启停内核的动作。
-
-           「查看日志」不在这一排（早于本轮就已移除）：它与下面「系统健康 →
-           日志系统」是同一件事的两个入口，而两者做的事还不一样——那个按钮直接
-           开独立全屏窗口（跳过列表），那一行走日志弹层。同一屏上两个日志入口、
-           点开结果还不一致，用户没法建立预期。
-           **独立日志窗口的能力因此没有丢失，反而回到了它该在的地方**：现在
-           「系统健康」那一格自己就开独立窗口，弹层里的「全屏」按钮是第二条
-           通路（`logs.js::openLogWindow`，两个入口共用这一份实现）。
-           设计说明 §4 要求的「保留刷新、折叠侧栏和独立日志窗口入口」三项都在
-           弹层里。 -->
-      <Transition name="subrow">
-        <div v-if="running || officialChatOpen" class="btn-row btn-row-sub">
-          <el-button
-            v-if="running"
-            class="btn-sub"
-            size="small"
-            :icon="TopRight"
-            :loading="isLoading('openHarness')"
-            :disabled="globalBusy"
-            title="在独立窗口中打开工作台 webview"
-            @click="openHarnessWindow"
-          >
-            工作台窗口
-          </el-button>
-          <el-button
-            v-if="running"
-            class="btn-sub"
-            size="small"
-            :icon="RefreshRight"
-            :loading="isLoading('forceReloadHarness')"
-            :disabled="globalBusy"
-            title="黑屏 / 卡死时的手动出路：重建工作台窗口，渲染进程会换掉。窗口内的滚动位置、侧栏与终端回到初始状态，会话不受影响"
-            @click="forceReloadHarnessWindow"
-          >
-            刷新工作台
-          </el-button>
-          <el-button
-            v-if="officialChatOpen"
-            class="btn-sub"
-            size="small"
-            :icon="TopRight"
-            :loading="isLoading('openOfficialChatWindow')"
-            :disabled="globalBusy"
-            title="唤起 / 聚焦 DeepSeek 官网网页版窗口"
-            @click="openOfficialChatWindow"
-          >
-            官网网页版窗口
-          </el-button>
-        </div>
-      </Transition>
       <p v-if="!store.starting && !running && !canStart" class="muted" style="margin: 0">
         尚未安装可用内核，请先到「内核版本」页安装。
       </p>
@@ -920,34 +934,61 @@ function goVersions() {
 /* 首次运行引导比下面任何一张卡都优先，占第一行整宽。 */
 .callout-firstrun { order: 0; grid-column: 1 / -1; }
 
-/* 大版本号 + 状态行。版本号是这一页字号最大的一处读数：它回答「我现在跑的是
+/* 大版本号 + 状态行 + 次级入口落位。版本号是这一页字号最大的一处读数：它回答「我现在跑的是
    哪个内核」，而这条信息此前只是标题行右侧一个小徽标。
-   字号 18px、`padding: 13px 0 12px` 取设计稿 `.kernel-summary` / `.kernel-version`：
+   `padding: 13px 0 12px` 取设计稿 `.kernel-summary` / `.kernel-version`。
    版本号与状态行在稿子里是**同一个竖向块**（版本号一行、状态行下一行），
    此前这里把它们横排并允许换行，于是状态胶囊有时贴到版本号右侧、有时掉到下一行，
-   每种内核状态下这一行的读法都不一样。 */
+   每种内核状态下这一行的读法都不一样。
+
+   2026-10-08：第三样东西（次级入口那一排三枚按钮）也接进这个块。落位是
+   **两行网格**而不是 flex 兄弟项 —— 理由是实测宽度，注释见模板里那段：
+   版本号 98px + 按钮 354px + 状态行 287px = 739px > 卡内可用宽 482px，
+   三者平铺必然把状态行挤到折行。所以：版本号与按钮同占第一行（按钮靠右），
+   状态行 `grid-column: 1 / -1` 独占第二行、拿回整幅宽度。
+
+   用网格而不是 `.kernel-summary` 的 flex + `margin-left: auto`：flex 里
+   状态行与按钮仍是同一层的兄弟项，`flex-wrap` 会在宽度不够时把状态行挤到
+   折行，而 `margin-left: auto` 那条靠右只能作用在「整块不换行」的前提上。 */
 .kernel-summary {
-  display: flex;
-  align-items: start;
-  gap: 18px;
   padding: 13px 0 12px;
+}
+.kernel-summary-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 16px;
+  min-width: 0;
 }
 /* 版本号是一段**纯文字**主读数，不再是徽标。设计稿 `.kernel-version` 给的是
    18px / 700 / `letter-spacing: -0.02em` / 主文字色，没有边框也没有底；本处放大到
    20px（用户 2026-10-08 明确要求「文字放大」，稿子的 18px 在这一格里并不突出）。
    `margin-left: 0` 是「靠最左边」的落点——它此前挂在 VersionBadge 的图形段右侧，
-   靠胶囊自己的 5px 内边距离左缘，去掉徽标后必须显式归零，否则会继承外层缩进。 */
+   靠胶囊自己的 5px 内边距离左缘，去掉徽标后必须显式归零，否则会继承外层缩进。
+   版本号不允许折行：它是一段无空格的版本串，wrap 会在点号处断开成
+   「0.2.1-」/「alpha.1」两行，比占宽更难读。 */
 .kernel-version {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  white-space: nowrap;
   margin-left: 0;
   color: var(--text);
   font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
-.kernel-summary-main {
-  min-width: 0;
+/* 次级入口：版本号右侧、靠右对齐。`justify-self: end` 是「靠右」的落点——
+   网格项默认 `stretch`，不钉住的话这一格会被拉满整列，按钮贴着版本号而不是右边。
+   三枚按钮合计约 354px，版本号约 98px，卡内可用宽 482px（实测），留约 28px 间隙。 */
+.kernel-summary-main .btn-row-sub {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
 }
 .kernel-status-row {
+  grid-column: 1 / -1;
+  grid-row: 2;
   display: flex;
   align-items: center;
   flex-wrap: wrap;

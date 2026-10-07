@@ -96,10 +96,69 @@ test('当前内核卡在第 1 列，用 order 而不是 grid-row 落位', () => 
 // 设计稿 `.kernel-summary` 把版本号与状态行放在**同一个竖向块**里
 // （版本号一行、`kernel-status-row` 下一行）。横排时状态胶囊会随内核状态
 // 换到不同位置，这一行的读法就不稳定了——所以判据直接查模板结构。
+//
+// 2026-10-08 次级入口那一排三枚按钮也接进这个块（用户：「操作按钮迁移到
+// 版本号右侧，靠右显示」）。落位因此变成**两行网格**：版本号 + 按钮同占
+// 第一行（按钮靠右），状态行 `grid-column: 1 / -1` 独占第二行。理由是实测
+// 宽度——版本号 98px + 按钮 354px + 状态行 287px = 739px，而卡内可用宽只有
+// 482px，三者平铺会把状态行挤到折成三四行。
+//
+// **下面那条判据因此改写过一次**：它原来断言 `kernel-version` 与
+// `kernel-status-row` 是「紧邻的两个兄弟」，按钮插进中间后那条正则必然失配。
+// 但那条正则真正要拦的是「两者并排」，不是「两者相邻」——把相邻当成意图，
+// 就会在往块里加第三个元素时逼人改判据而不是改布局。所以这里改成查**栅格
+// 落位**：状态行必须跨两列独占第二行，这才是「不并排」的结构事实。
 
-test('版本号与状态行同属一个竖向块（kernel-summary-main），不是两个平级 flex 子项', () => {
+test('版本号与状态行不并排：状态行跨两列独占第二行', () => {
   assert.match(overview, /<div class="kernel-summary">\s*<!--[\s\S]*?-->\s*<div class="kernel-summary-main">/);
-  assert.match(overview, /class="kernel-summary-main">\s*<!--[\s\S]*?-->\s*<div\s+class="kernel-version"[\s\S]*?<\/div>\s*<div class="kernel-status-row">/);
+  assert.match(overview, /class="kernel-summary-main">[\s\S]*?<div\s+class="kernel-version"/);
+  assert.match(overview, /class="kernel-summary-main">[\s\S]*?<div class="kernel-status-row">/);
+  // 「不并排」的结构事实：版本号在第一行第 1 列，状态行跨满两列落在第二行。
+  // 只查模板里的类名顺序是查不出并排的——CSS 才是落位的事实来源。
+  assert.equal(effectiveDeclaration(['kernel-summary-main'], RULES, 'display'), 'grid');
+  assert.equal(
+    effectiveDeclaration(['kernel-summary-main'], RULES, 'grid-template-columns'),
+    'minmax(0, 1fr) auto',
+    '第一列随版本号伸缩、第二列按按钮实宽，右列才是「靠右」的前提',
+  );
+  assert.equal(effectiveDeclaration(['kernel-status-row'], RULES, 'grid-column'), '1 / -1');
+  assert.equal(effectiveDeclaration(['kernel-status-row'], RULES, 'grid-row'), '2');
+  assert.equal(effectiveDeclaration(['kernel-version'], RULES, 'grid-row'), '1');
+});
+
+test('次级入口在版本号右侧靠右：网格第二列 + justify-self: end', () => {
+  const tpl = templateOf(overview);
+  // **必须在 `.kernel-summary-main` 里面**，不能停在三格指标下方。判位置按
+  // 模板里两个锚点的先后顺序判，不按「文件里出现过这句话」——后者在按钮被
+  // 搬回去时照样绿。这条断言的反向验第一版就漏在这里：只查了区间内有按钮，
+  // 没查**区间之后**没有按钮，于是「搬回去」这种改坏完全抓不到。
+  const mainAt = tpl.indexOf('class="kernel-summary-main"');
+  const metricsAt = tpl.indexOf('class="metrics"');
+  assert.ok(mainAt > 0 && metricsAt > mainAt, '应能找到 kernel-summary-main 与 metrics');
+  const block = tpl.slice(mainAt, metricsAt);
+  const after = tpl.slice(metricsAt);
+  assert.match(block, /class="btn-row btn-row-sub"/, '次级入口这一排应落在版本号块内');
+  assert.doesNotMatch(after, /class="btn-row btn-row-sub"/, '次级入口不许退回三格指标下方');
+  // 三枚一枚都不能少。这三条各自用**整枚按钮**（从开标签到收标签）计数，而不是
+  // `assert.match(块, 文案)`——后者中招过一次：`官网网页版窗口` 包含
+  // `工作台窗口` 这个子串，删掉任何一枚，剩下的仍能让三条断言都命中，判据照样绿。
+  // 计数取 `<el-button … >文案</el-button>` 的完整形状，删一枚就少一次。
+  for (const label of ['工作台窗口', '刷新工作台', '官网网页版窗口']) {
+    const re = new RegExp(`<el-button[\\s\\S]*?>\\s*${label}\\s*</el-button>`);
+    const n = (block.match(new RegExp(re.source, 'g')) || []).length;
+    assert.equal(n, 1, `「${label}」这一枚必须恰好存在一次（实测 ${n} 次）`);
+  }
+  // 靠右：网格项默认 `stretch`，不钉 `justify-self: end` 就会被拉满整列、
+  // 贴着版本号而不是右边。`justify-self` 不带伪类也不带后代条件，可以走
+  // effectiveDeclaration。
+  assert.equal(effectiveDeclaration(['kernel-summary-main', 'btn-row-sub'], RULES, 'grid-column'), '2');
+  assert.equal(effectiveDeclaration(['kernel-summary-main', 'btn-row-sub'], RULES, 'grid-row'), '1');
+  assert.equal(effectiveDeclaration(['kernel-summary-main', 'btn-row-sub'], RULES, 'justify-self'), 'end');
+  // 左侧那条「挂在上方读数下方」的竖线与缩进随这次搬家删除：它表达的是
+  // 「从属于下方那块读数」，而这一排现在与版本号同行。留着会成为一条没有
+  // 归属的孤线，还白占 16px 卡内宽度。
+  assert.equal(effectiveDeclaration(['btn-row-sub'], RULES, 'border-left'), null);
+  assert.equal(effectiveDeclaration(['btn-row-sub'], RULES, 'padding-left'), null);
 });
 
 test('版本号是纯文字：没有 tag 图标、没有徽标外壳，贴着左缘', () => {
@@ -172,10 +231,14 @@ test('「当前内核」的主操作与标题同一行，卡头只剩标题 + �
   assert.match(headBlock, /官网网页版/);
 });
 
-test('版本号 20px / 700（设计稿 18px，用户要求再放大一档）；摘要行 align-items: start 且内边距 13px 0 12px', () => {
+test('版本号 20px / 700（设计稿 18px，用户要求再放大一档）；摘要块内边距 13px 0 12px', () => {
   const style = scopedStyle(overview);
   assert.equal(effectiveDeclaration(['kernel-version'], RULES, 'font-size'), '20px');
-  assert.equal(effectiveDeclaration(['kernel-summary'], RULES, 'align-items'), 'start');
+  // `align-items: start` 原先挂在 `.kernel-summary`（那时它是 flex）。2026-10-08
+  // 次级入口搬进来后它变成两行网格，纵向对齐的责任落到 `.kernel-summary-main`
+  // 的 `align-items: center`——按钮与版本号同高时居中才好看，靠上会错半格。
+  // 这里跟着搬：钉在旧选择器上会得到 null，钉在新选择器上才是活的断言。
+  assert.equal(effectiveDeclaration(['kernel-summary-main'], RULES, 'align-items'), 'center');
   assert.equal(effectiveDeclaration(['kernel-summary'], RULES, 'padding'), '13px 0 12px');
   assert.ok(style.includes('kernel-summary'), 'scoped 块应包含 kernel-summary');
 });

@@ -943,22 +943,20 @@ main {
   margin-left: 4px;
 }
 
-/* 概览「当前内核」卡的次级按钮行：视觉上压低权重——左缩进 + 2px 细竖线挂在
-   第一行下方；按钮本身是 ghost 风格，hover 才出现主色高亮。 */
+/* 概览「当前内核」卡的次级按钮行：视觉上压低权重——按钮本身是 ghost 风格，
+   hover 才出现主色高亮。
+   2026-10-08 此前那条「左缩进 + 2px 细竖线挂在第一行下方」随这一排搬到版本号
+   右侧一并删除：它表达的是「从属于下方那块读数」，而这一排现在与版本号同行、
+   属于同一层的另一个元素，竖线会变成一条没有任何归属的孤线，还白占 16px 宽
+   （卡内可用宽实测 482px，三枚按钮 354px + 版本号 98px 已经用掉 452px）。
+   靠右落位改由 OverviewPanel 的 `.kernel-summary-main .btn-row-sub` 负责
+   （`justify-self: end`），这条只管权重与内部排布。 */
 .btn-row-sub {
-  margin-top: -2px;
-  padding: 4px 0 4px 14px;
-  border-left: 2px solid var(--border);
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
   display: flex;
   min-height: 32px;
-  transition: border-color 0.18s ease;
-}
-
-.btn-row-sub:hover {
-  border-left-color: var(--accent);
 }
 
 /* --- 新版页面原语 -------------------------------------------------------
