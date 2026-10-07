@@ -202,13 +202,32 @@ function requestStatus(force = false, source = 'unknown') {
 // --- 状态读取 ---------------------------------------------------------------
 
 // 同一时刻只保留一次全量刷新：动作完成后的刷新与页面进入时的刷新合并。
+//
+// **必须逐个数据源交回成败**（审查 R2-P1-04）：过去这里只有一句 catch +
+// toast，调用方拿到的永远是 `undefined`——于是 `loadKernelStatusDiagnosis`
+// 无条件把「最后读取时间」推到 `Date.now()`，把一次读取失败显示成
+// 「刚刚读取成功」，而内核状态页赖以提示「可能已过期」的那个标记也被清掉了。
+//
+// 插件 / 技能走 `createStatusSource`，它自己吞掉异常并返回布尔值，所以这里
+// 读返回值而不是 catch。`get_status` 会抛，得单独接。
 const runRefreshAll = singleFlight(async () => {
+  const outcome = { status: false, plugins: false, skills: false };
   try {
     await requestStatus(true, 'refresh');
-    await Promise.all([refreshPlugins(), refreshSkills()]);
+    outcome.status = true;
   } catch (e) {
-    toastActionError('读取状态失败', e, '请确认应用仍在运行；若持续失败，重启应用后重试');
+    toastActionError('读取内核状态失败', e, '请确认应用仍在运行；若持续失败，重启应用后重试');
   }
+  const settled = await Promise.all([refreshPlugins(), refreshSkills()]);
+  outcome.plugins = settled[0] === true;
+  outcome.skills = settled[1] === true;
+  if (!outcome.plugins) {
+    toastActionError('读取插件状态失败', '插件列表未更新', '面板保留上一份结果，可点刷新重试');
+  }
+  if (!outcome.skills) {
+    toastActionError('读取技能状态失败', '技能列表未更新', '面板保留上一份结果，可点刷新重试');
+  }
+  return outcome;
 });
 
 export async function refreshAll({ fresh = false } = {}) {
