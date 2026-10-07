@@ -898,6 +898,23 @@ function groupTip(group) {
 .kernel-card .list-group .installed-list {
   flex: 1 1 auto;
   min-height: 0;
+  position: relative;
+}
+
+/* 两栏之间那道竖线**不与右栏贯通**（2026-10-07 用户要求）：高度只跟着左栏
+   「已安装」那几行走，右栏是带内部滚动的长列表——它自己的 `.release-list-box`
+   本来就有边框和底色，边界不缺。线若一路通到卡片底边，这一屏会被读成两个
+   并排窗格，而不是一张卡里的两组清单。
+   做法是让左栏在**非空时**按内容高度收（`align-self: start`），线挂在
+   `.installed-list` 的右缘外侧、落进 8px 栅格缝里。
+   **不能用 `border-left`**：边框属于元素自身，元素被拉多高线就有多高——那正是
+   要避开的那条通栏线。
+   **空态是唯一的例外**：`.installed-list` 必须继续伸展，否则下面那条
+   `justify-content: center` 没有可分配空间、变成空操作，`el-empty` 会被顶回
+   标题下方、下面留半栏空白（就是它当初要修的那个）。所以那一栏的线仍与整栏
+   齐平。 */
+.kernel-card .updates-lists > .list-group:first-child:not(:has(> .installed-list > .el-empty)) {
+  align-self: start;
 }
 
 .kernel-card .release-list-box {
