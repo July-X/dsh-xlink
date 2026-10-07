@@ -372,9 +372,31 @@ test('设计说明 §独立窗口 列出的十一个窗口 / 弹窗都在，且�
 
 test('日志弹层保留刷新、折叠侧栏与独立窗口入口（设计说明 §4 的硬要求）', () => {
   const modal = readFileSync('ui/src/logs/LogModal.vue', 'utf8');
-  // 独立窗口入口
-  assert.match(modal, /@click="openLogWindow"/, '弹层要有独立日志窗口入口');
-  assert.match(modal, /invoke\('open_log_window'/, '独立窗口应走后端命令');
+  // 独立窗口入口。
+  // 必须是**调用**（`openLogWindow(...)`）而不是裸引用 `openLogWindow`：函数
+  // 搬去共享层之后带了 `name` 形参，裸引用会把 MouseEvent 当文件名发出去，
+  // 而 `[object PointerEvent]` 不含路径分隔符、能过 validate_log_name，于是
+  // 窗口标题会真的变成「日志 · [object PointerEvent]」。clickHandlerArity 独立
+  // 守这条，这里只是顺带要求写成调用，不单独重复一份断言。
+  assert.match(modal, /@click="openLogWindow\(/, '弹层要有独立日志窗口入口（必须是调用）');
+  // 命令调用搬到了共享层（logs.js），弹层只调用它。钉住「只有一份实现」：
+  // 两个入口各写一份 invoke，迟早一个改了另一个没改，于是又回到「同一屏两个
+  // 日志入口、点开结果不一致」——那正是 2026-10-07 已经被用户点掉一次的状态。
+  assert.match(
+    modal,
+    /import\s*\{[^}]*\bopenLogWindow\b[^}]*\}\s*from\s*'\.\/logs\.js'/,
+    '弹层必须从 logs.js 引入 openLogWindow，而不是自己实现一份'
+  );
+  assert.doesNotMatch(
+    modal,
+    /open_log_window/,
+    '开窗命令只在 logs.js 发一次；弹层里再写一份就是两个入口两种行为'
+  );
+  assert.match(
+    readFileSync('ui/src/logs/logs.js', 'utf8'),
+    /invoke\('open_log_window'/,
+    '独立窗口应走后端命令'
+  );
   // 刷新
   assert.match(modal, /@click="loadActiveLog"/, '弹层要有重新读取');
   // 折叠侧栏

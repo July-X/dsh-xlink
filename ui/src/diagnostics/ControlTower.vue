@@ -17,8 +17,7 @@ import { store } from '../store.js';
 import { isLoading } from '../shell/loading.js';
 import { entryTimeLabel, snapshotStore } from './snapshots.js';
 import { skillStore } from '../skills/skills.js';
-import { loadLogList, logModal } from '../logs/logs.js';
-import { showLogs } from '../logs/logs.js';
+import { loadLogList, logModal, openLogWindow } from '../logs/logs.js';
 import { incidentCauseLabel, incidentTitle } from '../incidents/incidents.js';
 import {
   clearDiagnosticRuns,
@@ -166,6 +165,12 @@ const latestSnapshotLabel = computed(() => {
  * 时扫过去只读到份数，看不出这里能点开。既然入口只剩这一处，这一格就必须自己
  * 说得出自己是入口。
  *
+ * **这一格点开的是独立窗口，不是页内弹层**（2026-10-07 用户要求）。主壳固定
+ * 1040×748 且不可缩放，在里面读日志永远只有这么大；独立窗口可缩放、能拖到大
+ * 屏、标题栏跟主题。事故 / 预检 / 诊断页那些带**具体某一份证据**的入口仍然
+ * 走弹层——那不是「去看看有什么日志」，是「去看这一份」，弹层里能对照着切签。
+ * 两种容器各有各的用途，所以这次统一的是**入口唯一**，不是**容器唯一**。
+ *
  * `unavailable` 这个字段因此没有了：它的唯一用途就是在模板里挑「点击重试」还是
  * `›`，而这件事现在由 `hint` 一次做完。
  *
@@ -186,7 +191,7 @@ const health = computed(() => [
   cell('skills', '技能注册', skillText.value.text, skillText.value.tone, 'skills'),
   // 读失败时把原因挂在 title 上：只显示「读取失败」的话，用户点了重试还是
   // 失败，却不知道是磁盘满了还是文件被轮转掉了。
-  cell('logs', '日志系统', logText.value.text, logText.value.tone, 'logs', logModal.listState === 'failed' ? logModal.listError : ''),
+  cell('logs', '日志系统', logText.value.text, logText.value.tone, logRowAction.value, logModal.listState === 'failed' ? logModal.listError : ''),
   cell('snapshot', '最近快照', latestSnapshotLabel.value || '暂无'),
 ]);
 
@@ -230,6 +235,21 @@ const logText = computed(() => {
 function retryLogList() {
   return loadLogList();
 }
+
+/**
+ * 日志那一格**有没有可点的动作**，与它显示什么读数分开。
+ *
+ * 两种情况可点：读失败了（点了是重试），或者确实读到了至少一份（点了开独立
+ * 日志窗口）。另外两种不可点——还没问过、正在问、以及确认过一份都没有。
+ * 最后一种尤其要挡住：一份日志都没有时开出来的是一个空窗口（左侧空列表 +
+ * 「请从左侧选择日志文件」），点了只会让人以为窗口坏了。「暂无」这一格
+ * 本来就在说「这里没有东西可看」，让它不可点比让它开空窗诚实。
+ */
+const logRowAction = computed(() => {
+  if (logModal.listState === 'failed') return 'logs';
+  if (logModal.listState === 'ready' && logModal.files.length) return 'logs';
+  return null;
+});
 
 onMounted(() => {
   // 一次静默清单读取。这是控制塔**唯一**的额外请求，而且换来的是「系统健康」
@@ -278,9 +298,12 @@ function onHealth(row) {
   else if (row.action === 'skills') emit('go-panel', 'skills');
   else if (row.action === 'logs') {
     // 清单读取失败时这一行是「点击重试」，那就**只重试清单**：用户要的是把
-    // 这一行修好，不是被拉进一个弹层。成功之后它变回普通行，再点才打开弹层。
+    // 这一行修好，不是被拉进一个窗口。成功之后它变回普通行，再点才开窗。
     if (logModal.listState === 'failed') return retryLogList();
-    showLogs();
+    // 不传文件名：这一格手里只有份数，没有「当前签」。空名让窗口自己挑
+    // （先 kernel 分组，再任意第一份），比在这里替它猜一份更可靠——
+    // 概览页显示的是全部日志的集合，未必就是用户此刻想读的那一类。
+    return openLogWindow();
   }
 }
 

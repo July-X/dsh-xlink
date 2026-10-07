@@ -39,6 +39,12 @@
   --accent: #2766d9;
   --accent-strong: #1e58c1;
   --accent-soft: rgba(39, 102, 217, 0.1);
+  /* accent 的两档半透明：选中态的填色与描边、分隔条拖拽时的底色。
+     同样不许写死——它们记的是「accent 叠在**当前主题底色**上」的效果，
+     浅色主题的 accent 是深蓝（#2766d9）、深色是浅蓝（#5b9cf8），
+     一律套用为深色主题调的 rgba(79,140,255,…) 在浅色下就是一层洗不掉的蓝雾。 */
+  --accent-fill: rgba(39, 102, 217, 0.16);
+  --accent-line: rgba(39, 102, 217, 0.5);
   --success: #1f8a52;
   --warning: #97651a;
   --danger: #c74340;
@@ -90,6 +96,9 @@ html.dark {
   --accent: #5b9cf8;
   --accent-strong: #8cbaff;
   --accent-soft: rgba(91, 156, 248, 0.14);
+  /* 与 :root 同一组语义（选中填色 / 描边），只是按深色 accent 重新取值。 */
+  --accent-fill: rgba(91, 156, 248, 0.16);
+  --accent-line: rgba(91, 156, 248, 0.55);
   --success: #46c07d;
   --warning: #e0a83c;
   --danger: #f0665e;
@@ -2690,11 +2699,11 @@ body.pulse-active > [data-titlebar-pulse='2'] {
 }
 
 .pane-splitter:hover {
-  background: rgba(79, 140, 255, 0.08);
+  background: var(--accent-soft);
 }
 
 .pane-splitter.dragging {
-  background: rgba(79, 140, 255, 0.16);
+  background: var(--accent-fill);
 }
 
 .pane-splitter-grip {
@@ -2846,7 +2855,10 @@ body.pane-dragging .log-tabs {
 .log-group-title {
   font-size: 10px;
   font-weight: 700;
-  color: rgba(154, 164, 191, 0.95);
+  /* 分组标题是侧栏里最弱的一层：比未激活的文件签（`--text-secondary`）
+     再暗一档。原先写死 `rgba(154,164,191,.95)`——那组值是按深色底调的，
+     浅色主题下既不够暗也没有对比度可言；这里就是它当年该用的 token。 */
+  color: var(--text-muted);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   padding: 0 12px 6px;
@@ -2869,7 +2881,7 @@ body.pane-dragging .log-tabs {
 /* 当前激活文件所在的那一组，色条加深发光 */
 .log-group:has(.log-tab[aria-selected='true']) .log-group-title::before {
   opacity: 1;
-  box-shadow: 0 0 6px rgba(79, 140, 255, 0.6);
+  box-shadow: 0 0 6px var(--accent-line);
 }
 
 .log-tab-name {
@@ -2902,7 +2914,7 @@ body.pane-dragging .log-tabs {
 
 .rail-toggle:hover {
   color: var(--text);
-  border-color: rgba(79, 140, 255, 0.5);
+  border-color: var(--accent-line);
 }
 
 .rail-toggle:active {
@@ -2948,9 +2960,12 @@ body.pane-dragging .log-tabs {
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
-/* 未激活态：暗一档，hover / 选中才亮 —— 避免几十个文件名挤在一起太刺眼 */
+/* 未激活态：暗一档，hover / 选中才亮 —— 避免几十个文件名挤在一起太刺眼。
+   仍比分组标题（`--text-muted`）亮一档，那条「明显区别于分组标题」的意图靠的
+   就是这一档差。原先写死 `rgba(232,236,247,.72)`（近白）——纯深色主题的值，
+   浅色主题下是一排看不见的字。 */
 .log-tab:not([aria-selected='true']):not(:hover) {
-  color: rgba(232, 236, 247, 0.72);
+  color: var(--text-secondary);
 }
 
 .log-tab:hover {
@@ -2959,8 +2974,8 @@ body.pane-dragging .log-tabs {
 }
 
 .log-tab[aria-selected='true'] {
-  background: rgba(79, 140, 255, 0.16);
-  border-color: rgba(79, 140, 255, 0.55);
+  background: var(--accent-fill);
+  border-color: var(--accent-line);
   color: var(--text);
 }
 
