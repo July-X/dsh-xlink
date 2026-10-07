@@ -2160,6 +2160,46 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// --- 24. 数据目录恒在 `~/.dsh-xlink`，不再有平台分支 ------------------------
+//
+// `kernel::lifecycle::data_dir` 曾有一条回落到 Tauri `app.path().app_data_dir()`
+// 的兜底，理由是「xlink_home 不可写时宁愿在某个地方启动」。2026-10-08 用户拍板
+// 撤掉：那条分支让**同一个产品在两个平台上数据落在完全不同的地方**——macOS 是
+// `~/Library/Application Support/<id>`、Windows 是 `%APPDATA%\<id>`，既不在
+// `~` 下面也不随 `DSH_XLINK_HOME` 走。于是「数据目录在 `~/.dsh-xlink`」这个承诺
+// 在 Windows 上根本不成立，而 UI 显示的那条路径与用户实际被写到哪儿会分家。
+//
+// 为什么用机械判据钉：这种兜底写起来只有一行、读起来像一条负责的降级，删掉它
+// 的理由（跨平台一致性）又完全不在编译器眼里。加回来不会有任何测试变红，只有
+// 用户在 Windows 上找不到自己的数据。
+//
+// 判据扫**生产代码**（剥掉 `#[cfg(test)]` 整块与行注释）：测试里提到这个名字是
+// 正常的——本条的存在本身就要在注释里解释它为什么被删掉。
+
+{
+  const dataDirRoot = join(root, 'src-tauri', 'src');
+  const rustFiles = walk(dataDirRoot, ['.rs']);
+  const offenders = [];
+  for (const full of rustFiles) {
+    const file = full.slice(dataDirRoot.length + 1);
+    const body = productionRust(readFileSync(full, 'utf8'));
+    if (/app_data_dir|app\.path\(\)\s*\.\s*app_data/.test(body)) {
+      offenders.push(file);
+    }
+  }
+  for (const file of offenders) {
+    fail(
+      'data-dir-platform-branch',
+      `${file} 又出现了 app_data_dir()：数据目录必须恒在 ~/.dsh-xlink` +
+        '（macOS 的 ~/Library/Application Support 与 Windows 的 %APPDATA% 都不在 ~ 下，' +
+        '会让同一产品在两个平台上落在不同地方，UI 显示的路径也与实际写入处分家）'
+    );
+  }
+  if (!offenders.length) {
+    note('数据目录解析无平台分支：两平台都恒在 ~/.dsh-xlink（无 app_data_dir 兜底）');
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);

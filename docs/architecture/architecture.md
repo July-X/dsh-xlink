@@ -115,7 +115,12 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 1. `DSH_DESKTOP_DATA_DIR` 环境变量——完全覆盖目录路径（用于在外部盘上测试等场景）
 2. `<DSH_XLINK_HOME 或 ~/.dsh-xlink>/<family>/<SHELL_SUBDIR>/`——family 来自实例注册表默认实例（`instance::default_family()`，回退 `dsh`）；`SHELL_SUBDIR` 在 release 是 `desktop`、debug 是 `desktop-dev`
-3. `app_data_dir()`（OS app-data 目录）作为 xlink home 不可写时的 fallback
+
+**只有这两级，没有第三级**（2026-10-08 撤掉 `app_data_dir()` 兜底）。那条兜底原本的理由是「xlink home 不可写时宁愿在某个地方启动也不启动失败」，但它的代价是让同一个产品在两个平台上数据落在完全不同的地方：macOS 是 `~/Library/Application Support/<id>`、Windows 是 `%APPDATA%\<id>`，既不在 `~` 下面也不随 `DSH_XLINK_HOME` 走——「数据目录恒在 `~/.dsh-xlink`」这个承诺在 Windows 上并不成立，UI 显示的那条路径也会与实际写入处分家。
+
+现在的行为：族目录建不出来时明确打印失败原因，**仍按 `<xlink_home>` 下的族目录继续**。此后每一次写入都会各自失败并报错，且错误信息指着同一条路径——比静默换到一个用户没预期的目录、事后在别处排查要好定位。`check-invariants.mjs` 的 `data-dir-platform-branch` 扫生产 Rust 钉住这条。
+
+因此 `data_dir` 不再需要 `AppHandle`，签名是 `data_dir(family)`；`lib.rs` 的 `setup()` 是唯一生产调用方。
 
 ### 为什么 dev 和 release 用不同目录
 

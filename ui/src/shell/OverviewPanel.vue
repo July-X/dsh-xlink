@@ -36,11 +36,10 @@ import {
   TrendCharts,
   Tickets,
 } from '@element-plus/icons-vue';
-// 版本 tag 图标改用 Lucide：EP 的 PriceTag 是实心票券造型，在 11px 下糊成一团
-// 黑点，认不出是「标签」；Lucide 的 Tag 是 2px 描边的小挂牌，缩到这个尺寸仍读得
-// 出轮廓。Lucide 授权 ISC，`@lucide/vue` 按图标名 tree-shake，只打进用到的那几枚。
-// 图标与徽标外壳都搬进了共享的 VersionBadge 组件——侧栏那一处用的是同一个，
-// 本文件不再单独引 Lucide。
+// 版本号这里原本还挂着一枚 Lucide Tag 图标（EP 的 PriceTag 在 11px 下糊成一团
+// 黑点，认不出是「标签」）。2026-10-08 起概览这一处改为纯文字：设计稿的
+// `.kernel-version` 没有前置图形，图形段加左右内边距还会把首字推离左缘。
+// 本文件已不再引 Lucide，图标全部来自 `@element-plus/icons-vue`。
 import {
   store,
   showIncident,
@@ -86,7 +85,6 @@ import {
 } from '../subscription/subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents/incidents.js';
 import { tildePath } from './labels.js';
-import VersionBadge from './VersionBadge.vue';
 import { confirmDialog } from './notify.js';
 
 // 进度窗口是全局的（任何长任务都会让它可见），按钮的加载态必须绑定自己的
@@ -248,8 +246,18 @@ const nodeShortText = computed(() => {
   if (!n) return '—';
   return n.ok ? n.version || '已就绪' : '未检测到';
 });
+// 数据目录那一格显示的是**应用数据根目录** `~/.dsh-xlink`（2026-10-08 用户
+// 定的），不是当前实例目录 `~/.dsh-xlink/<family>/desktop/`。
+//
+// 理由是那一格只有约 141px 宽，而实例目录经 `display_short` 的 38 字截断后
+// 变成 `~/.dsh-xlink/dsh/…` —— 尾巴上挂一个省略号，看起来像一条坏掉的路径，
+// 而不是像一条路径。「这个应用的数据放在哪」的答案就是根目录那一层，而实例
+// 层是更细的事实，挂在 title 上，一个字都没丢。
+//
+// `tildePath` 在这里几乎总是原样返回：Rust 已经把 home 折成了 `~`。留着它
+// 是为了 `DSH_XLINK_HOME` 被指到 home 之下时仍能折叠。
 const dataDirText = computed(() => {
-  const dir = kernel.value && kernel.value.data_dir;
+  const dir = kernel.value && kernel.value.xlink_home;
   return dir ? tildePath(dir) : '—';
 });
 
@@ -428,13 +436,20 @@ function goVersions() {
             <!-- 版本号与状态行同属一个竖向块（设计稿 `.kernel-summary` 里那层 div）。
                  横排时状态胶囊会随内核状态换行到不同位置，读法不稳定。 -->
             <div class="kernel-summary-main">
-              <VersionBadge
+              <!-- 纯文字，不再是「tag 图标 + 药丸」的徽标（2026-10-08 用户
+                   截图要求：移除 tag icon、放大、靠最左）。设计稿的
+                   `.kernel-version` 就是一段纯文字——18px / 700 / 主文字色，
+                   没有边框、没有底、没有前置图形。此前的 VersionBadge 把
+                   它关进一个 22px 的胶囊里：图形段与左右各 5/8px 内边距把
+                   首字推离左缘，13px 的灰字（`--text-secondary`）也让这条
+                   「我现在跑的是哪个内核」读起来像一行脚注。这里放大到
+                   20px 并用主文字色，它才是这一卡真正的主读数。 -->
+              <div
                 class="kernel-version"
-                icon="black"
                 :title="'活动内核版本：' + ((kernel && kernel.active) || '未选择')"
               >
                 {{ (kernel && kernel.active) || '未选择' }}
-              </VersionBadge>
+              </div>
               <div class="kernel-status-row">
                 <span class="status-pill">
                   <span class="dot" :class="kernelStatus.cls"></span>
@@ -464,7 +479,6 @@ function goVersions() {
                     v-if="shownNode && !shownNode.ok"
                     size="small"
                     text
-                    type="primary"
                     :loading="isLoading('installNode')"
                     :disabled="globalBusy"
                     title="自动下载并安装官方 Node.js 到数据目录（需联网）"
@@ -493,7 +507,6 @@ function goVersions() {
                 <el-button
                   size="small"
                   text
-                  type="primary"
                   :icon="TrendCharts"
                   :loading="isLoading('openUsageWindow')"
                   title="在独立窗口中查看模型用量（热力图 / 趋势 / 按模型统计，最近 90 天）"
@@ -512,13 +525,18 @@ function goVersions() {
                   text
                   :icon="FolderOpened"
                   :loading="isLoading('openDataDir')"
-                  title="在系统文件管理器中打开数据目录"
+                  title="在系统文件管理器中打开应用数据根目录 ~/.dsh-xlink"
                   @click="openDataDir"
                 >
                   打开
                 </el-button>
               </div>
-              <div class="metric-value metric-value--path" :title="kernel && kernel.data_dir">
+              <!-- title 挂实例目录：格子里显示根，悬浮给的是「当前这一份
+                   实例实际在哪儿」。两者都要有——只给一个，用户就只能二选一。 -->
+              <div
+                class="metric-value metric-value--path"
+                :title="'应用数据根目录：' + dataDirText + '\n当前实例目录：' + (kernel && kernel.data_dir)"
+              >
                 {{ dataDirText }}
               </div>
             </div>
@@ -895,9 +913,17 @@ function goVersions() {
   gap: 18px;
   padding: 13px 0 12px;
 }
-.kernel-summary .kernel-version {
+/* 版本号是一段**纯文字**主读数，不再是徽标。设计稿 `.kernel-version` 给的是
+   18px / 700 / `letter-spacing: -0.02em` / 主文字色，没有边框也没有底；本处放大到
+   20px（用户 2026-10-08 明确要求「文字放大」，稿子的 18px 在这一格里并不突出）。
+   `margin-left: 0` 是「靠最左边」的落点——它此前挂在 VersionBadge 的图形段右侧，
+   靠胶囊自己的 5px 内边距离左缘，去掉徽标后必须显式归零，否则会继承外层缩进。 */
+.kernel-version {
   margin-left: 0;
-  font-size: 18px;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 .kernel-summary-main {
   min-width: 0;
@@ -971,17 +997,28 @@ function goVersions() {
   font-family: ui-monospace, monospace;
   font-weight: 400;
 }
-/* 指标格里的动作按钮收一收内边距。设计稿的 `.text-action` 本来就是无底色、
-   近零内边距的一行小字；Element Plus 的 small 按钮左右各 11px，一格只有约
-   141px 可用，「今日用量 + 📊模型用量」正好差一点放不下而折行，格子就比稿子
-   高了一截。收到 4px 后三格都能标签与动作同行。
-   **不要改成图标按钮**：去掉文字后「模型用量 / 重新检测 / 打开」三个入口靠
-   图形猜含义，比折行更糟。 */
+/* 指标格里的动作按钮：设计稿的 `.button.text-action` 是无底色、近零内边距、
+   `color: var(--accent)` / 11px / 600 的一行小字。
+   **颜色此前不一致**：「模型用量」带 `type="primary"` 走 accent 蓝，而
+   「重新检测」与「打开」没带，于是三枚按钮里一枚蓝两枚黑——同一排三个同级
+   入口、两套颜色。这里统一由 CSS 给，不再依赖模板上谁记得加 `type`。 */
 .metrics :deep(.el-button) {
   height: auto;
   padding-left: 4px;
   padding-right: 4px;
+  color: var(--accent);
   font-size: 11px;
+  font-weight: 600;
+}
+.metrics :deep(.el-button:hover),
+.metrics :deep(.el-button:focus-visible) {
+  color: var(--accent-strong);
+}
+/* 图标槽：设计稿 `.button-icon` 是 16×16 的方格（`.button-icon.ui-icon` 里
+   `flex: 0 0 16px`），而 EP 的 `.el-icon` 默认 `font-size: inherit`——按钮
+   11px 把图标一起缩到 11px，三个入口的图形小到认不出是检测 / 图表 / 文件夹。 */
+.metrics :deep(.el-button .el-icon) {
+  font-size: 16px;
 }
 /* 分区刷新按钮：复用年龄胶囊外观，但可点击；禁用（查询中）降透明度。 */
 .age-pill-btn {

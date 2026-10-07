@@ -174,7 +174,7 @@ pub fn run() {
             // `<xlink_home>/<family>/desktop[-dev]/`，并把 v0.2.x 的平铺
             // 目录（`<xlink_home>/desktop[-dev]/`）一次性搬迁进去。
             let family = crate::shell::instance::default_family();
-            let data_dir = kernel::lifecycle::data_dir(app.handle(), &family);
+            let data_dir = kernel::lifecycle::data_dir(&family);
             // 把解析出的 data dir 打到 stderr，让同时运行 `tauri dev` 与
             // 已安装 release 壳的开发者能一眼看出到底是哪一个
             // （release → `~/.dsh-xlink/<family>/desktop/`，debug →

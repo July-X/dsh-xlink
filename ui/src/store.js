@@ -517,8 +517,11 @@ export function openOfficialChatWindow() {
 }
 
 export function openDataDir() {
+  // 打开的是应用数据根目录 `~/.dsh-xlink`（与概览「数据目录」那一格显示的
+  // 同一个），不是当前实例目录——所以失败提示也得指着同一个地方，否则用户
+  // 会去设置页找一条并不在那里的路径。
   return withLoading('openDataDir', () =>
-    invoke('open_data_dir').catch((e) => toastActionError('打开数据目录失败', e, '请按设置页显示的数据目录路径手动打开'))
+    invoke('open_data_dir').catch((e) => toastActionError('打开数据目录失败', e, '请手动打开 ~/.dsh-xlink（Windows 上是 %USERPROFILE%\\.dsh-xlink）'))
   );
 }
 

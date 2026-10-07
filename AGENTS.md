@@ -46,7 +46,7 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 
 ## 数据目录
 
-`kernel::data_dir` 按**内核族命名空间**解析：`<xlink_home>/<family>/desktop/`（release）或 `<xlink_home>/<family>/desktop-dev/`（debug），family 取实例注册表默认实例的内核族（`instance::default_family()`）；v0.2.x 的平铺目录 `<xlink_home>/desktop[-dev]/` 会在启动时自动整体搬入族目录，搬迁失败继续用旧目录。`lib.rs` 的 `setup()` 必须通过它取目录，不要绕回 `app_data_dir()`。debug 端口 3091，release 端口 3090（`kernel::DEFAULT_PORT`）；用户保存过的 port 优先于 `Settings::default()`。优先级与目录隔离原因见 [docs/architecture/architecture.md](docs/architecture/architecture.md)。
+`kernel::data_dir` 按**内核族命名空间**解析：`<xlink_home>/<family>/desktop/`（release）或 `<xlink_home>/<family>/desktop-dev/`（debug），family 取实例注册表默认实例的内核族（`instance::default_family()`）；v0.2.x 的平铺目录 `<xlink_home>/desktop[-dev]/` 会在启动时自动整体搬入族目录，搬迁失败继续用旧目录。`lib.rs` 的 `setup()` 必须通过它取目录。**解析链只有两级，没有 app-data 兜底**（2026-10-08 用户拍板撤掉）：此前 `data_dir` 在族目录建不出来时会回落到 Tauri 的 `app.path().app_data_dir()`，而那在 macOS 是 `~/Library/Application Support/<id>`、Windows 是 `%APPDATA%\<id>`——既不在 `~` 下面，也不随 `DSH_XLINK_HOME` 走，于是「数据目录恒在 `~/.dsh-xlink`」这条承诺在 Windows 上根本不成立，UI 显示的路径与实际写入处也会分家。现在建不出来就明确打印失败原因、**仍按 `<xlink_home>` 下的族目录继续**（此后每次写入各自报错，错误指着同一条路径，比静默换到用户没预期的目录好定位）。`check-invariants` 第 24 项 `data-dir-platform-branch` 扫生产 Rust 钉住这条——它不会自己回来的理由是「跨平台一致性」，编译器看不见。debug 端口 3091，release 端口 3090（`kernel::DEFAULT_PORT`）；用户保存过的 port 优先于 `Settings::default()`。优先级与目录隔离原因见 [docs/architecture/architecture.md](docs/architecture/architecture.md)。
 
 **两个壳之间只共享只读数据，可变状态一律分家**（2026-09-29 逐条整理）：
 

@@ -99,7 +99,37 @@ test('当前内核卡在第 1 列，用 order 而不是 grid-row 落位', () => 
 
 test('版本号与状态行同属一个竖向块（kernel-summary-main），不是两个平级 flex 子项', () => {
   assert.match(overview, /<div class="kernel-summary">\s*<!--[\s\S]*?-->\s*<div class="kernel-summary-main">/);
-  assert.match(overview, /class="kernel-summary-main">\s*<VersionBadge[\s\S]*?<\/VersionBadge>\s*<div class="kernel-status-row">/);
+  assert.match(overview, /class="kernel-summary-main">\s*<!--[\s\S]*?-->\s*<div\s+class="kernel-version"[\s\S]*?<\/div>\s*<div class="kernel-status-row">/);
+});
+
+test('版本号是纯文字：没有 tag 图标、没有徽标外壳，贴着左缘', () => {
+  // 2026-10-08 用户截图要求「移除 tag icon，版本号文字放大，靠最左边」。
+  // 三件事各自会被别的原因悄悄改回去，所以分开钉：
+  //   · 去掉徽标 → OverviewPanel 不该再引 VersionBadge（那段注释里原样写着
+  //     它的名字，扫全文会把自己当成命中，所以扫剥掉注释后的脚本块）；
+  //   · 靠最左 → `margin-left: 0` 必须显式钉住：徽标没了之后，胶囊曾经
+  //     用来把首字推离左缘的那 5px 内边距也一起没了，但外层缩进不会自动归零；
+  //   · 放大 / 主文字色 → 下面那条按值钉。
+  assert.doesNotMatch(
+    overview
+      // 三种注释都要剥：HTML 注释（模板里解释「为什么去掉徽标」那段原样写着
+      // VersionBadge）、CSS 块注释（`.kernel-version` 规则上方那段同样提到了
+      // 它）、JS 行注释。少剥一种，判据就会把自己写的说明当成命中——本仓
+      // 同一个坑踩过多次，每次都是扫全文。
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/^\s*\/\/.*$/gm, ''),
+    /VersionBadge/,
+    '概览的版本号不该再走徽标组件；设计稿的 .kernel-version 就是一段纯文字',
+  );
+  assert.doesNotMatch(templateOf(overview), /<VersionBadge|version-badge/);
+  assert.equal(
+    effectiveDeclaration(['kernel-version'], RULES, 'margin-left'),
+    '0',
+    '版本号必须贴左缘——去徽标后没有任何东西再负责这段缩进',
+  );
+  assert.equal(effectiveDeclaration(['kernel-version'], RULES, 'color'), 'var(--text)');
+  assert.equal(effectiveDeclaration(['kernel-version'], RULES, 'font-weight'), '700');
 });
 
 test('概览「当前内核」卡不再显示实例 caption，也不从 KernelStatus 读不存在的字段', () => {
@@ -142,9 +172,9 @@ test('「当前内核」的主操作与标题同一行，卡头只剩标题 + �
   assert.match(headBlock, /官网网页版/);
 });
 
-test('版本号取设计稿的 18px；摘要行 align-items: start 且内边距 13px 0 12px', () => {
+test('版本号 20px / 700（设计稿 18px，用户要求再放大一档）；摘要行 align-items: start 且内边距 13px 0 12px', () => {
   const style = scopedStyle(overview);
-  assert.equal(effectiveDeclaration(['kernel-version'], RULES, 'font-size'), '18px');
+  assert.equal(effectiveDeclaration(['kernel-version'], RULES, 'font-size'), '20px');
   assert.equal(effectiveDeclaration(['kernel-summary'], RULES, 'align-items'), 'start');
   assert.equal(effectiveDeclaration(['kernel-summary'], RULES, 'padding'), '13px 0 12px');
   assert.ok(style.includes('kernel-summary'), 'scoped 块应包含 kernel-summary');
@@ -164,6 +194,59 @@ test('三格指标：1fr 三列、上边线 + 后两格左边线；格内按钮�
   assert.match(
     scopedStyle(overview),
     /\.metrics :deep\(\.el-button\)\s*\{[^}]*padding-left:\s*4px;[^}]*padding-right:\s*4px;/s
+  );
+});
+
+test('三格的动作按钮：统一 accent 色 + 600 字重 + 16px 图标槽（设计稿 .text-action）', () => {
+  // 2026-10-08 用户截图指出三格按钮「颜色字体大小」没对齐稿子。真因有二：
+  //   · **配色两套**：只有「模型用量」带 `type="primary"` 走 accent 蓝，
+  //     「重新检测」与「打开」没带，于是同一排三个同级入口里一枚蓝两枚黑；
+  //   · **图标太小**：EP 的 `.el-icon` 是 `font-size: inherit`，按钮 11px
+  //     把图标一起缩到 11px，认不出是检测 / 图表 / 文件夹。
+  // 稿子的 `.button.text-action` 给的是 `color: var(--accent)` / 11px / 600，
+  // `.button-icon` 是 16×16 的槽。
+  const style = scopedStyle(overview);
+  const btnRule = style.match(/\.metrics :deep\(\.el-button\)\s*\{([^}]*)\}/s);
+  assert.ok(btnRule, '找不到 .metrics :deep(.el-button) 规则');
+  assert.match(btnRule[1], /color:\s*var\(--accent\)/, '三个按钮必须同一个 accent 色');
+  assert.match(btnRule[1], /font-weight:\s*600/, '设计稿 .text-action 是 600 字重');
+  assert.match(btnRule[1], /font-size:\s*11px/);
+  assert.match(
+    style,
+    /\.metrics :deep\(\.el-button \.el-icon\)\s*\{\s*font-size:\s*16px;/,
+    '图标槽必须是 16px（设计稿 .button-icon.ui-icon 的 flex: 0 0 16px）',
+  );
+  // 配色统一之后，模板上就不该再有人手动挂 `type="primary"` —— 漏一个就又
+  // 变回一枚蓝两枚黑，而它不会报任何错。切片从 `<div class="metrics">` 到紧跟其后
+  // 的 `<el-alert`（那一段就是三格本身），不按 `</div>` 数层数。
+  const tpl = templateOf(overview);
+  const from = tpl.indexOf('<div class="metrics">');
+  assert.ok(from > 0, '概览模板里要有三格指标');
+  const metricsBlock = tpl.slice(from, tpl.indexOf('<el-alert', from));
+  assert.doesNotMatch(metricsBlock, /type="primary"/, '配色归 CSS 管，模板上不该再挂 type="primary"');
+});
+
+test('指标标题与值取设计稿的 11px muted / 12px 600 text', () => {
+  assert.equal(effectiveDeclaration(['metric-label'], RULES, 'font-size'), '11px');
+  assert.equal(effectiveDeclaration(['metric-label'], RULES, 'color'), 'var(--text-muted)');
+  assert.equal(effectiveDeclaration(['metric-value'], RULES, 'font-size'), '12px');
+  assert.equal(effectiveDeclaration(['metric-value'], RULES, 'font-weight'), '600');
+  assert.equal(effectiveDeclaration(['metric-value'], RULES, 'color'), 'var(--text)');
+});
+
+test('「数据目录」那一格指向应用根 ~/.dsh-xlink，实例目录退到 title', () => {
+  // 2026-10-08 用户定的：那一格显示与「打开」都指向 `~/.dsh-xlink` 根目录。
+  // 实例目录 `~/.dsh-xlink/<family>/desktop/` 在 141px 的格子里被 `display_short`
+  // 截成 `~/.dsh-xlink/dsh/…`，尾巴上的省略号看着像一条坏掉的路径。
+  assert.match(
+    overview,
+    /kernel\.value\.xlink_home/,
+    '这一格读 KernelStatus.xlink_home，不再读 data_dir',
+  );
+  assert.match(
+    templateOf(overview),
+    /class="metric-value metric-value--path"[\s\S]*?当前实例目录/,
+    '实例目录仍要出现在 title 里——一个信息都不许丢',
   );
 });
 
