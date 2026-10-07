@@ -106,6 +106,12 @@ onMounted(() => {
         <p class="page-desc">工作台端口、后台常驻与开机自启，以及模型任务的完成通知。</p>
       </div>
     </div>
+    <!-- 宽版（1040）下单列会让每一张卡右边空掉半屏，所以按设计稿分两列：
+         左列是「这台壳本身怎么跑」（工作台端口、后台常驻、自启），
+         右列是「对内对外的表现」（任务通知、迁移入口、安全网）。两列各自
+         内部竖着叠，用的是全局的 .page-layout / .page-layout__col 原语。 -->
+    <div class="page-layout">
+      <div class="page-layout__col">
     <div class="card">
       <h2 class="card-title-with-tip">
         工作台
@@ -186,7 +192,9 @@ onMounted(() => {
         show-icon
       />
     </div>
+      </div>
 
+      <div class="page-layout__col">
     <div class="card">
       <h2 class="card-title-with-tip">
         任务通知
@@ -337,6 +345,8 @@ onMounted(() => {
     <SnapshotCard />
 
     <BisectPanel />
+      </div>
+    </div>
   </section>
 </template>
 
