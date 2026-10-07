@@ -437,7 +437,8 @@ test('概览控制塔不重复正下方「当前内核」卡已经说过的话',
   const tower = readSrc('diagnostics/ControlTower.vue');
   const health = tower.slice(tower.indexOf('const health = computed'), tower.indexOf('const wiringText'));
   // 三行读数在「当前内核」卡里逐字重复一次（版本徽标 / 运行状态胶囊 /
-  // Node.js 行），侧栏品牌区还有第三份。它们在 480px 窄窗里占掉 111px，
+  // Node.js 行），侧栏品牌区还有第三份。它们在 480px 窄窗里占掉 111px
+  // （该数是旧窗口下的实测），
   // 换来的信息量是零。异常另有出口：Node 不达标进「需要关注」，内核没装
   // 进首屏 callout，运行状态在「当前内核」卡与侧栏。
   for (const key of ['kernel', 'runtime', 'node']) {

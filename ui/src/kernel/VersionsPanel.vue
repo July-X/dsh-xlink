@@ -943,13 +943,4 @@ function groupTip(group) {
   max-height: none;
   overflow-y: auto;
 }
-
-/* 窄布局（应用固定 480px，主题的 760px 断点内）两列变一列：已安装组收成
-   自然高（auto），npm 组拿走剩余高度（下限 120px，即旧的 max-height 档）。
-   宽布局不设行模板——两列同排、行为与改前一致，滚动仍归外层 main。 */
-@media (max-width: 760px) {
-  .kernel-card .updates-lists {
-    grid-template-rows: auto minmax(120px, 1fr);
-  }
-}
 </style>

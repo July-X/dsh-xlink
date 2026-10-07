@@ -120,7 +120,8 @@ const attentionAll = computed(() => {
 });
 
 /** 首屏条数。设计 §7.2 给的是「最多三条」——再多就把系统健康与最近操作
- *  推到 480×800 的首屏以下，而那两块是用户进这一页最常看的内容。 */
+ *  推到首屏以下，而那两块是用户进这一页最常看的内容。窗口 1040×748 里
+ * 右上那一列放三张卡仍然不用滚，这个数因此不随窗口宽度变。 */
 const ATTENTION_FIRST_SCREEN = 3;
 const attentionExpanded = ref(false);
 const attention = computed(() =>
