@@ -46,6 +46,37 @@ pub const LOG_VIEWER_SIZE: WindowSize = WindowSize {
     height: 720.0,
 };
 
+/// 窗口标题里那个应用名。
+///
+/// 主窗口的标题栏是 `ui/src/shell/WindowTitleBar.vue` **自绘**的（无边框，
+/// `tauri.conf.json` 的 `decorations: false`），文案硬编码在那边；这里写的是
+/// 同一份。两侧分处 Rust / Vue，任何一边单独改都会让主窗口与副窗的标题对不上，
+/// 而那种不一致只在真机窗口标题栏上看得到——单测与 UI 测试都够不着，所以由
+/// `scripts/check-invariants.mjs` 机械比对三处（这里、那个 .vue、tauri.conf.json）。
+pub const APP_TITLE: &str = "Dsh-Xlink";
+
+/// 副窗标题：`窗口名 — 应用名`（macOS 访达 / 邮件的惯例）。
+///
+/// 不直接写死一个标题串的原因：标题里那个应用名要跟着 [`APP_TITLE`] 走，而
+/// `APP_TITLE` 已经在三处出现（见上）。在这里拼一次，下一个人改名字只改一个常量。
+pub fn window_title(name: &str) -> String {
+    format!("{name} — {APP_TITLE}")
+}
+
+/// 窗口/WebView 在首帧文档绘制之前使用的底色。
+///
+/// WebView 的默认底色是纯白：远程页面（工作台、官方网页版）在网络请求与首屏
+/// 渲染完成前会有几百毫秒空白期，在深色壳里读作一记刺眼的白闪。窗口层
+/// （NSWindow / HWND 背景）与 WebView 层设成同一种底色后，这段空白期呈现的是
+/// 与目标页面同色系的暗底，加载完成时只是内容淡入，而不是从白到黑的跳变。
+///
+/// **曾经跟随系统主题**（读主壳窗口的 theme，浅色系统下用接近页面的浅灰）。
+/// 2026-10-07 起不再是条件值：所有窗口都被钉死 `Theme::Dark`（见
+/// [`APP_TITLE`] 那段同批改动），主窗口的标题栏更是恒定深色，跟系统主题无关。
+/// 留着浅色分支只会让下一个人以为「深色窗口 + 浅色底色」是受支持的组合——那是
+/// 修复前的样子，正是用户截图里「深色内容 + 浅色标题栏」的成因。
+pub const CHROME_BACKDROP: tauri::webview::Color = tauri::webview::Color(0x16, 0x17, 0x1a, 0xff);
+
 /// 一扇窗口在屏幕上**实际可见**的边界（绝对物理坐标）：含标题栏与可见
 /// 边框，不含阴影与不可见缩放边框。吸附对齐的唯一权威口径。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -579,5 +610,21 @@ mod tests {
             }
         );
         assert_eq!(SUBSCRIPTION_VIEWER_LABEL, "subscription-viewer");
+    }
+
+    /// 副窗标题的**形状**，不是某一句话。`check-invariants` 第 18 项管的是
+    /// 「三处名字一致 + 每扇窗都钉死主题」（跨文件），这里管「窗口名与应用名
+    /// 之间那个分隔符长什么样」——它是纯本地断言，单测最省事。
+    ///
+    /// 分隔符钉成破折号两侧各一个空格而不是 `-`：标题栏里已经出现了一次
+    /// 分隔（`日志 · kernel`），再用半角连字符会连着出现两个同样形状的短横，
+    /// 而 macOS 的标题栏字号下两者几乎分辨不出。
+    #[test]
+    fn window_title_joins_name_and_app_with_a_spaced_em_dash() {
+        assert_eq!(window_title("套餐用量"), "套餐用量 — Dsh-Xlink");
+        // 名字里自带分隔符时也不会拼出两个同款短横。
+        assert_eq!(window_title("日志 · kernel"), "日志 · kernel — Dsh-Xlink");
+        // 应用名跟着常量走，改名时这条断言会跟着指出所有窗口标题。
+        assert!(window_title("x").ends_with(APP_TITLE));
     }
 }

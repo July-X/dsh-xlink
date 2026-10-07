@@ -14,7 +14,8 @@
     "windows": [
       {
         "label": "main",
-        "title": "DeepSeek Harness 桌面端",
+        "title": "Dsh-Xlink",
+        "theme": "Dark",
         "width": 480,
         "height": 800,
         "minWidth": 480,
