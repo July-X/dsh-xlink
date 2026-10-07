@@ -76,7 +76,7 @@ P4 起插件的一切都以**实例** `(family, instance_id)` 为隔离单位。
    - 若插件清单声明 `dsh.bundle`，把包名追加进 `dsh.profile.bundles`（去重、保留模板层）。
    - 内核工作台「插件」页的官方插件开关（如实验特性）只向 `dsh.profile.bundles` 追加一行包名、不写 `dependencies`——这些包随内核自带，启用无需 pnpm 接线。每次启动的接线调和解析 bundle 行时按「是否伴随托管依赖」判断归属：没有托管依赖背书的行（官方插件开关、用户/CLI 手工添加）原样保留，只有外壳自己写过的行才在卸载/隔离后随托管依赖一起清退；因此官方插件的启用状态在重启内核后保持不变。
    - 在 profile 目录运行 `pnpm install`（profile 自带 pnpm-workspace.yaml，hoisted/peers 语义与 `dsh plugin` 一致），使 `node_modules/<包名>` 指向物化目录。内核启动时 Loader 按 bundle 名从 profile 解析并应用其 patch 层，与 `dsh plugin add` 行为一致。
-5. **卸载**：反向执行——移除依赖与 bundle 层、profile pnpm install 清理、删除所有内核的物化产物与中央库目录、更新 store.json；如果上一次卸载只完成了部分步骤而隔离记录仍在，启动容错面板中的「移除插件」可重复执行并继续清理残留隔离记录与接线。
+5. **卸载**：反向执行——移除依赖与 bundle 层、profile pnpm install 清理、删除所有内核的物化产物与中央库目录、更新 store.json；如果上一次卸载只完成了部分步骤而隔离记录仍在，启动容错面板中的「移除并清理」可重复执行并继续清理残留隔离记录与接线。诊断页对「已装上但诊断未通过」的报告也提供同一个动作，用户确认后会删除插件本地文件，诊断日志仍保留。
 
 ### 物化双模式（复制 or 链接）
 
@@ -137,7 +137,7 @@ P4 起插件的一切都以**实例** `(family, instance_id)` 为隔离单位。
 - 回退市场条目 `package` 字段存在 → 按 npm 包安装；否则按 `repo` 的 git URL 安装（GitHub 地址优先使用 Release tarball，使用条目里的 `spec`/tag 锁定版本；没有可用 Release 时回退 git clone，无 tag 则跟随默认分支）；
 - 每个条目展示类型/star/下载量/验证标记，「详情」跳转 dshfind 中文详情页（回退条目跳转 GitHub）。官方 [dsh-plugin topic 页](https://github.com/topics/dsh-plugin) 作为浏览入口链接常驻卡片。
 
-手动安装输入接受 npm 包名（含 `@scope` 与 `@version`）或 git URL（支持 `#tag`）。
+手动安装输入接受 npm 包名（含 `@scope` 与 `@version`）或 git URL（支持 `#tag`）。回车会跟随面板上的预检开关：开启时先进入沙盒预检，关闭时直接安装。预检失败且报告显示当前实例已经装上插件时，诊断页会显示「移除并清理」；普通预检失败会回滚本次下载，不会把未安装的候选包交给卸载动作。
 
 ## 安全边界
 

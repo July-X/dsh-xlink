@@ -18,7 +18,7 @@ import {
   startWorkbench,
   store,
 } from '../store.js';
-import { applyPluginChange, precheckPlugin } from '../plugins/plugins.js';
+import { applyPluginChange, precheckPlugin, uninstallPlugin } from '../plugins/plugins.js';
 import { showLogs } from '../logs/logs.js';
 import { loadSnapshots, previewRestore } from './snapshots.js';
 import {
@@ -236,4 +236,17 @@ export function reloadPluginDiagnosis(runId, manual = true) {
  */
 export function applyPrecheckChange(report) {
   return applyPluginChange(report);
+}
+
+/**
+ * 清理一份诊断报告里已经落到当前实例的插件。
+ *
+ * 只把后端报告里的 `pluginId` 交给现有完整卸载链路，不从显示名或来源重新
+ * 推导路径。这样会同时清理中央库目录、当前实例物化文件、profile 接线和
+ * 隔离记录；诊断日志则保留，方便用户回看失败原因。
+ */
+export function removeDiagnosedPlugin(pluginId) {
+  const id = String(pluginId || '').trim();
+  if (!id) return Promise.resolve(false);
+  return withLoading('diagnosticPluginCleanup', () => uninstallPlugin(id, { cleanup: true }));
 }

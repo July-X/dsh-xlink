@@ -420,7 +420,7 @@ function instanceChipType(row, instanceId) {
               placeholder="npm i @scope/pkg · 也支持 owner/repo、dsh add"
               spellcheck="false"
               clearable
-              @keyup.enter="installPlugin('')"
+              @keyup.enter="precheckOn ? precheckPlugin('') : installPlugin('')"
             >
               <template #suffix>
                 <span
