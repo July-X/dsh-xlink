@@ -359,7 +359,30 @@ const FILE_BUDGETS = {
   // bridge、把 `theme.value` 推给 `window.setTheme()`。不加这两行的后果是浅色
   // 主题的副窗顶着深色原生标题栏（用户截图）。仍然没有第二处判据：`html.dark`
   // 是唯一的 CSS 暗色判据，`setTheme` 一律经 `applyTheme()`。
-  'ui/src/shell/theme.js': 32,
+  //
+  // 32 → 46（2026-10-08）：切主题时已开着的副窗要跟着换（用户报「切换主题时，
+  // 弹出的 window 也要跟着改变」）。根因是链路缺失——`storage` 事件不跨 webview，
+  // 四扇副窗各自的 `html.dark` 是加载时定下的。本文件多出的 14 行是三样东西：
+  // `isKnownTheme` / `setThemeValue` 两个导出（校验与赋值，**与传输层共用**，
+  // 各写一份必然漂）、`setTheme` 里的 `broadcastTheme(next)` 一行、以及
+  // `followThemeBroadcast` 的订阅回调。跨窗传输本身（事件名 + 收发两半）**没有**
+  // 放这里，而是拆到 `themeSync.js`——那是纯传输层，且刻意不反向 import 本文件
+  // （否则成环，`theme` 是 const 会 TDZ）。判据钉住这一条。
+  'ui/src/shell/theme.js': 46,
+  // 跨窗口主题传播的**传输层**（2026-10-08 新增）：事件名 + `broadcastTheme`（主壳
+  // 侧发）+ `subscribeThemeChanges`（副窗侧订阅）各一个函数，14 行。
+  //
+  // 为什么独立成文件而不是并进 theme.js：那边是**主题真值**（读存储、落
+  // `html.dark`、推原生 chrome），这里是**跨窗传输**，换任何一套主题方案都要传输
+  // 层而未必改真值层，两者会各自演进。先并进 theme.js 时门禁直接报本文件 50 > 32，
+  // 顺势拆开——门禁在这件事上给出的是正确信号，不是障碍。
+  //
+  // **刻意不许 import theme.js**：`theme.js` 要调本文件的 `broadcastTheme`，
+  // 反向再 import 就是环。ESM 靠函数声明提升能扛住，但真值 `theme` 是 const
+  // （TDZ），谁先谁后哪天换个顺序，症状是「一进副窗就白屏」——从结构上断掉。
+  // 同理不许在这里自带主题白名单，那份知识属于真值层。由
+  // `windowChrome.test.js` 的「传输层不许碰主题真值」钉住。
+  'ui/src/shell/themeSync.js': 14,
   // 2026-09-30 按功能分目录，三个大文件各上调到实测值：
   //   commands.rs        2110 → 2171
   //   plugins/center.rs  2980 → 2983
@@ -1853,7 +1876,14 @@ const FILE_BUDGETS = {
 // 左缩进 / 2px 竖线 / hover 变色三条随搬家删除（它表达「从属于上方读数」，
 // 而这一排现在与版本号同行，竖线成了没有归属的孤线），只剩权重相关的
 // 那几行。theme.css 2629 行，仍远低于 3001 的反棘轮上限。
-const TOTAL_BUDGET = 42096;
+// 42096 → 42131（2026-10-08）：切主题时已开着的副窗跟着换（用户报「切换主题时，
+// 弹出的 window 也要跟着改变」）。净增 35 行。这条链路在本轮之前**完全不存在**
+// ——`theme.js` 的注释写着 localStorage「下一次绘制就跟着变」，那句话只在窗口
+// 还没开时成立，而 `storage` 事件不跨 webview，四扇副窗各自的 `html.dark` 是
+// 加载时定下的。增的是 theme.js +14（两个共用导出 + 一行广播 + 订阅回调）、
+// 新增 themeSync.js +14（传输层，见该文件的预算条目）、bridge.js +4（emit 封装）、
+// 判据若干。这些模块面积都远低于 RATCHET_THRESHOLD 600，不受反棘轮约束。
+const TOTAL_BUDGET = 42131;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
