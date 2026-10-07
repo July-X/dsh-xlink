@@ -2145,7 +2145,10 @@ main {
 
 /* --- 插件中心 --- */
 
-/* 标题行：标题 + 来源在左，「刷新数据」靠右。 */
+/* 卡头：标题 + ⓘ 一行，预检开关与它那行灰字说明在下一行。
+   「刷新数据」原先也在标题行靠右，2026-10-07 用户要求搬去右栏「插件中心」那行——
+   它刷的是 dshfind.com 的远端目录，挂在整张卡的头上等于让一个作用在右栏的按钮
+   出现在左栏。所以下面**不再有** `.plugin-center-refresh` 的靠右规则。 */
 .plugin-center-head {
   flex-direction: column;
   align-items: stretch;
@@ -2158,11 +2161,13 @@ main {
   gap: 10px;
 }
 
-.plugin-center-title-row .plugin-center-refresh {
+/* 「刷新数据」在「插件中心」标题行靠右。`.section-divider` 本身已经是
+   `display: flex`（见上），所以这里只需要把它推到行尾。 */
+.section-divider .plugin-center-refresh {
   margin-left: auto;
 }
 
-/* 预检开关行：开关 + 一行灰字说明，紧贴「刷新数据」下方。 */
+/* 预检开关行：开关 + 一行灰字说明。 */
 .precheck-toggle-row {
   display: flex;
   align-items: center;
