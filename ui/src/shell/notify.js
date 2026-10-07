@@ -36,8 +36,24 @@ const PROGRESS_OVERLAY_Z_INDEX = (() => {
 // 按钮——用户看到的是"点了没反应"（P2-11）。
 const NOTIFY_Z_INDEX = PROGRESS_OVERLAY_Z_INDEX + 1000;
 
+/// 所有 toast 共享的选项。**三处调用点（普通 / 勾选 / 未来的新形态）必须从这里
+/// 取，不许各写一份**——`showClose` 漏一处就是那个形态没有关闭按钮，而症状是
+/// "点了没反应"，不带任何报错（这正是 2026-10-07 那次的原因）。
+const toastOptions = (ms) => ({ duration: ms, showClose: true, zIndex: NOTIFY_Z_INDEX });
+
+/// `showClose: true` 不是锦上添花，是**唯一**的关闭入口（2026-10-07）。
+///
+/// 之前这一项没传，Element Plus 的 `showClose` 默认就是 `false`（见
+/// `element-plus/es/components/message/src/message.mjs` 的 `messageDefaults`），
+/// 于是页内**根本没有渲染过关闭按钮**。用户能点到的只有左边那个类型图标，
+/// 而 error 类型的图标是 `CircleCloseFilled`——一个实心红圆加一个白色叉，
+/// 长得和关闭按钮一模一样。用户点它没有任何反应（它确实不是按钮），toast 只能
+/// 等 `duration` 自己消失：这就是"点了关闭没生效"的全部来源。
+///
+/// 类型图标保持 `CircleCloseFilled` 不改：它承担的是"这条是错误"的语义，抹掉会
+/// 削弱提示本身。真正的关闭按钮在消息最右侧，位置与左边图标隔着一整段正文。
 export function toast(message, ms = 3200, type = 'info') {
-  ElMessage({ message, duration: ms, type, grouping: true, zIndex: NOTIFY_Z_INDEX });
+  ElMessage({ message, type, grouping: true, ...toastOptions(ms) });
 }
 
 export function toastSuccess(message, ms = 3200) {
@@ -72,8 +88,7 @@ export function toastWithCheckbox(message, checkboxLabel, onCheck, ms = 8000) {
         { default: () => checkboxLabel },
       ),
     ]),
-    duration: ms,
-    zIndex: NOTIFY_Z_INDEX,
+    ...toastOptions(ms),
   });
 }
 
