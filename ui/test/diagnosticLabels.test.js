@@ -437,10 +437,18 @@ test('P2-01 通道信封里的 runId 优先于调用方传的那个', async () =
   assert.equal(diag.diagnosticStore.liveEvents[0].__runId, 'run-old');
   diag.ingestChannelMessage(envelope('run-old', 10), 'run-current');
   assert.equal(diag.diagnosticStore.liveEvents.length, 2, '同一条记录按 seq 接着追加');
-  // 换了一条记录就重开时间线，不接在旧记录后面。
+  // 换了一条**没见过**的记录 = 新的一次运行，时间线重开。
+  //
+  // 这条断言此前是 `length === 3`，而它上面那行注释写着「重开时间线，不接在
+  // 旧记录后面」——注释和断言自相矛盾，断言赢了，把旧行为钉住了：两个运行的
+  // 阶段交替出现在同一条时间线上，而它们的 seq 各自计数、会撞号。审查 R2-P2-01
+  // 指的就是它，现在实时流只装当前那一次运行（详见 liveRunPartition.test.js）。
   diag.ingestChannelMessage(envelope('run-new', 1), 'run-current');
-  assert.equal(diag.diagnosticStore.liveEvents.length, 3);
-  assert.equal(diag.diagnosticStore.liveEvents[2].__runId, 'run-new');
+  assert.equal(diag.diagnosticStore.liveEvents.length, 1, '新运行要重开时间线，而不是接在旧的后面');
+  assert.equal(diag.diagnosticStore.liveEvents[0].__runId, 'run-new');
+  // 而 run-old 再来的迟到消息要进不来——它已经被判成「上一次运行」了。
+  diag.ingestChannelMessage(envelope('run-old', 11), 'run-current');
+  assert.equal(diag.diagnosticStore.liveEvents.length, 1, '迟到的旧事件不进当前时间线');
   diag.clearLiveEvents();
 });
 

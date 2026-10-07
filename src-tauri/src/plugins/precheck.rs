@@ -306,12 +306,10 @@ pub fn plugin_install(
     ) {
         Ok(sandbox) => sandbox,
         Err(reason) => {
-            // 沙盒自己都建不起来：无从判断候选包好坏。按 fail-open 处理，仍
-            // 然走正常安装（取源与完整性校验照样生效），但报告必须说清这次
-            // 安装**没有经过启动验证**。
-            // **不再直接安装**（两阶段契约，2026-10-06 用户拍板）：沙盒都建
-            // 不起来时没有任何证据支持安装，替他装上就是把「没验过」说成
-            // 「验过没问题」。这里如实返回 inconclusive，应用按钮据此禁用。
+            // 沙盒自己都建不起来：无从判断候选包好坏。
+            // **不安装**（两阶段契约，2026-10-06 用户拍板）：沙盒都建不起来时
+            // 没有任何证据支持安装，替他装上就是把「没验过」说成「验过没问题」。
+            // 这里如实返回 inconclusive，应用按钮据此禁用。
             let mut report = sandbox::PrecheckReport::new("", spec_str, Verdict::Inconclusive);
             fill_source_info(&mut report, spec_str, mode, family, target_instance);
             report.summary = format!("预检环境不可用，没有安装任何东西：{reason}");
@@ -663,9 +661,9 @@ mod tests {
 
     /// 来源信息必须在**每一条**返回路径上填满。
     ///
-    /// 漏填的那条在 UI 上表现为「来源未知」——而漏掉的恰恰可能是
-    /// fail-open 那条：用户是在「预检没做」的情况下把一个包装进实例的，
-    /// 那时他最需要知道装的是哪个地址的什么版本。
+    /// 漏填的那条在 UI 上表现为「来源未知」——而漏掉的恰恰可能是**没跑成**
+    /// 的那几条（沙盒建不起来、基线没起来）：用户是在「预检没做」的情况下看着
+    /// 一个 inconclusive 的，那时他最需要知道原本要装的是哪个地址的什么版本。
     #[test]
     fn source_info_is_filled_for_every_npm_spec() {
         let home = std::env::temp_dir().join(format!(

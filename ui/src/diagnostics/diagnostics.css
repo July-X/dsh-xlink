@@ -298,6 +298,14 @@
 
 .diag-row:hover:not(.diag-row--static) { background: rgba(255, 255, 255, 0.04); }
 
+/* 「还有 N 项 / 收起」是**展开控制**而不是一条待处理的问题，所以不带
+ * hover 底色、不带箭头语义色——它和上面那些「处理」行长得越像，用户越容易
+ * 把它当成第五条问题。`--static` 已经有「不可点」的样式，这里复用它那套
+ * 克制：只给一个可点的样子，不给「有事发生」的暗示。 */
+.diag-row--more { color: var(--muted); }
+.diag-row--more:hover { background: transparent; }
+.diag-row--more .diag-row__label { font-weight: 400; }
+
 /* 标签行一律压成一行。诊断正文可能很长（预检失败时后端会把整段原因带回来），
    在 480px 窄窗里换行成两三行，卡片高度就由日志长度决定了——用户看一眼
    概览要滚三次。完整内容在点开后的诊断页里，那才是它该待的地方。

@@ -32,8 +32,16 @@ export const diagnosticStore = reactive({
   currentRun: null,
   /** 最近运行记录摘要（概览「最近一次操作」与历史入口）。 */
   recentRuns: [],
-  /** 实时事件流（后端 `running` 期间追加）。 */
+  /** 实时事件流（后端 `running` 期间追加）。**只装当前那一次运行的事件。** */
   liveEvents: [],
+  /**
+   * 当前实时流属于哪一次运行。空串 = 还没收到过带 runId 的事件。
+   *
+   * 有了它才能认出「迟到的上一次事件」：信封里的 runId 与当前不同，既可能是
+   * 新的运行开始了，也可能是上一次的消息才到——这两件事过去都往同一条
+   * 数组里追加，于是时间线上会出现另一个运行的阶段。
+   */
+  liveRunId: '',
   loading: false,
   error: '',
   /** 最近一次点开的证据路径（设计 §8.2 的 `openEvidence` 记在这里）。 */
@@ -97,23 +105,85 @@ export function diagnosticText(msg) {
  * **`信封里的 runId` 优先于调用方传的那个**：信封是后端与这条事件一起生成的，
  * 而调用方手里的是「当前正在跑的那次」的 id——两者不一致恰恰就是「迟到的
  * 上一次消息」这种情况，用调用方的值会把它算到当前这次头上。
+ *
+ * ## 分区：只让「正在看的那一次运行」的事件进时间线（审查 R2-P2-01）
+ *
+ * 过去判据是「`__runId` 与上一条不同或 seq 更新」——**不同也照收**，于是
+ * 迟到的上一次事件会跟当前的事件排在同一条时间线上，两个运行的阶段交替
+ * 出现，而它们的 seq 是各自计数的，会撞号。现在先定「这条实时流属于哪一次
+ * 运行」，再按它过滤：
+ *
+ * 1. **用户点开了某一条具体记录**（`active.runId` 有值）——那就是这一次。
+ *    这条判据不能少：打开历史记录会把实时流清空，此时若没有它，任何一条迟到
+ *    消息都会被当成「新的当前流」，把用户正在看的那条记录从磁盘版本顶掉。
+ * 2. 否则是「当前实时流所属的那次」（`liveRunId`）。
+ * 3. 两者都为空时，第一条事件认领这条流。
+ *
+ * 拿到目标之后再分三种情况：
+ *
+ * - 信封 runId 与目标相同 → 当前运行的事件，正常追加；
+ * - 与目标不同、**见过** → 迟到的上一次事件，丢弃（它属于另一条记录；用户
+ *   想看那条会自己点开，那时是从磁盘加载的，不靠这条实时流）；
+ * - 与目标不同、**没见过** → 新的运行开始了，重开时间线。
+ *
+ * 判据只能是「见过没有」而不是「不同就新」：只有记住见过哪些 runId，才能
+ * 区分「新运行的第一条」与「旧运行的迟到消息」——这两件事在信封里长得一样。
+ *
+ * 没有 runId 的事件（部分预检阶段消息）继续按原样追加：它们本来就无法归属，
+ * 强行分区只会把它们全丢掉。
  */
 export function ingestChannelMessage(msg, runId) {
   const parsed = parseChannelMessage(msg);
   if (!parsed.event) return false;
   const event = { ...parsed.event };
   event.__runId = parsed.runId || runId || '';
-  // 同一条 runId 的事件按 seq 追加；换了一条记录就重开时间线。
+  // 用户正在看的那条记录优先于实时流自己的记忆。
+  const target = diagnosticStore.active?.runId || diagnosticStore.liveRunId;
+  if (diagnosticStore.liveRunId) rememberLiveRun(diagnosticStore.liveRunId);
+  if (event.__runId && target && event.__runId !== target) {
+    if (diagnosticStore.active?.runId || hasSeenLiveRun(event.__runId)) {
+      // 迟到事件：仍返回 true，调用方照样该刷新列表——但它不进时间线。
+      return true;
+    }
+    // 没见过的 runId = 新的一次运行，旧的实时流已经没有意义了。
+    diagnosticStore.liveEvents = [];
+    diagnosticStore.liveRunId = event.__runId;
+  } else if (!diagnosticStore.liveRunId) {
+    diagnosticStore.liveRunId = event.__runId;
+  }
   const last = diagnosticStore.liveEvents[diagnosticStore.liveEvents.length - 1];
-  if (!last || last.__runId !== event.__runId || Number(event.seq) > Number(last.seq)) {
+  if (!last || Number(event.seq) > Number(last.seq)) {
     diagnosticStore.liveEvents.push(event);
   }
   return true;
 }
 
-/** 清掉实时事件流（打开一次新的运行、或诊断层关闭时）。 */
+/**
+ * 见过的那几次运行的 id。有上限：界面上同时只可能有一条实时流在跑，
+ * 留着是为了认出「迟到的上一条」，记满 8 条足够，再多认不出什么了。
+ */
+const SEEN_LIVE_RUNS_MAX = 8;
+const seenLiveRuns = new Set();
+function rememberLiveRun(id) {
+  seenLiveRuns.add(id);
+  while (seenLiveRuns.size > SEEN_LIVE_RUNS_MAX) {
+    seenLiveRuns.delete(seenLiveRuns.values().next().value);
+  }
+}
+function hasSeenLiveRun(id) {
+  return seenLiveRuns.has(id);
+}
+
+/**
+ * 清掉实时事件流（打开一次新的运行、或诊断层关闭时）。
+ *
+ * **不清 `seenLiveRuns`**：它的用途是认出迟到的旧事件，而「打开一条历史
+ * 记录」恰恰是最可能马上收到旧事件的时候。这里保持有界（`SEEN_LIVE_RUNS_MAX`）
+ * 兜住它的增长。
+ */
 export function clearLiveEvents() {
   diagnosticStore.liveEvents = [];
+  diagnosticStore.liveRunId = '';
 }
 
 /**

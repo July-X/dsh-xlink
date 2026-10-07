@@ -14,8 +14,8 @@
 import { computed, onMounted } from 'vue';
 import { isLoading } from '../shell/loading.js';
 import { openEvidence, restorePreChange } from './diagnostic-actions.js';
-import { applyPluginChange } from '../plugins/plugins.js';
-import { diagnosticStore, loadPluginRun } from './diagnostics.js';
+import { applyPrecheckChange, reloadPluginDiagnosis } from './diagnostic-actions.js';
+import { diagnosticStore } from './diagnostics.js';
 import {
   causeLabel, durationLabel, evidenceLabel, runAgeLabel, staleRunHint, statusMeta,
 } from './diagnostic-labels.js';
@@ -170,17 +170,17 @@ const applyDisabledReason = computed(() => {
   return '这条记录里没有预检报告，无法判断能不能应用。';
 });
 function apply() {
-  return applyPluginChange(report.value);
+  return applyPrecheckChange(report.value);
 }
 
 function reload() {
-  return loadPluginRun(report.value?.runId, true);
+  return reloadPluginDiagnosis(report.value?.runId);
 }
 
 // 打开时拉一次。报告本身就是这次预检的结果，阶段时间线要另取那条
 // 运行记录——两者可能来自不同进程（壳重启过），所以不能只信前者。
 onMounted(() => {
-  loadPluginRun(report.value?.runId);
+  reloadPluginDiagnosis(report.value?.runId, false);
 });
 </script>
 

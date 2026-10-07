@@ -19,7 +19,8 @@ import {
   evidenceLabel,
   headlineFor, nextStepFor, runAgeLabel, stageProgress, staleRunHint, statusMeta,
 } from './diagnostic-labels.js';
-import { diagnosticStore, loadOperationDiagnosis } from './diagnostics.js';
+import { reloadOperationDiagnosis } from './diagnostic-actions.js';
+import { diagnosticStore } from './diagnostics.js';
 import { openEvidence } from './diagnostic-actions.js';
 
 const props = defineProps({
@@ -66,7 +67,7 @@ const hasRun = computed(() => !!run.value);
 function reload() {
   // 按 id 拉而不是「最近一条」：用户可能正在看一条历史记录，点刷新却换成
   // 最近那条，看到的就是另一件事了。
-  return loadOperationDiagnosis(run.value?.id || diagnosticStore.active?.runId, kind.value, true);
+  return reloadOperationDiagnosis(run.value?.id, kind.value);
 }
 </script>
 

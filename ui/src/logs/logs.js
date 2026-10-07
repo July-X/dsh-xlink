@@ -26,6 +26,18 @@ export const logModal = reactive({
   askedEvidence: '',
   /** 点名的证据没找到时的原路径，用于说清「是哪一份不见了」。 */
   missingEvidence: '',
+  /**
+   * 日志**清单**的读取状态：`unloaded` / `loading` / `ready` / `failed`。
+   *
+   * 它存在是因为 `files` 空着手法上分不清两种完全不同的情况（审查 R2-P2-03）：
+   * 「确实没有日志」和「压根还没读过」。概览控制塔拿 `files.length` 直接显示
+   * 「暂无」，而那份列表过去只有 `showLogs()` 之后才被填——于是用户第一次
+   * 打开概览看到的是「暂无」，哪怕机器上有二十份日志、只是他还没打开过弹层。
+   * 把这三种状态分开，「暂无」才是一个可以说出口的结论。
+   */
+  listState: 'unloaded',
+  /** `listState === 'failed'` 时的原因，用于显示重试入口。 */
+  listError: '',
 });
 
 /// 日志文件按用途分类；侧栏按此顺序自上而下渲染。`id` 是文件名 `name` 段
@@ -156,9 +168,12 @@ export function switchLogTab(name) {
 // 重新列文件，让新安装日志与轮转后的 kernel.log 出现；当前签还在就留在
 // 原签，否则退回第一个签（或空态）。
 export function refreshLogTabs() {
+  logModal.listState = 'loading';
   return invoke('list_log_files')
     .then((files) => {
       logModal.files = files || [];
+      logModal.listState = 'ready';
+      logModal.listError = '';
       const names = logModal.files.map((f) => f.name);
       const keep = logModal.activeName && names.includes(logModal.activeName) ? logModal.activeName : null;
       if (keep) {
@@ -183,9 +198,49 @@ export function refreshLogTabs() {
       logModal.content = '（暂无日志文件）';
       return null;
     })
-    .catch((e) =>
-      toastActionError('读取日志列表失败', e, '请点击「刷新」重试，或打开数据目录查看 logs/', 4000)
-    );
+    .catch((e) => {
+      logModal.listState = 'failed';
+      logModal.listError = String(e);
+      return toastActionError('读取日志列表失败', e, '请点击「刷新」重试，或打开数据目录查看 logs/', 4000);
+    });
+}
+
+/**
+ * 只读清单，**不打开弹层、不定位任何一份文件**（审查 R2-P2-03）。
+ *
+ * 概览控制塔的「系统健康」要显示日志份数，但它是随手看的页面，不该为了一个
+ * 读数去把整个弹层拉起来——而 `showLogs()` 会顺带定位到第一个签并把内容读进
+ * 内存，代价与这一行读数完全不成比例。静默版只发一次 `list_log_files`。
+ *
+ * 失败不弹 toast：这一行会自己显示失败与重试，概览又是最不该在用户没动作时
+ * 弹提示的地方（动作发起的失败才出声，见 `refreshLogTabs`）。
+ *
+ * 在途去重：**已有请求在飞就加入它，而不是再发一次**。控制塔挂载与弹层刷新
+ * 可能同时要这份清单，而在飞的那次刚发出去、拿到的就是最新数据——重复发一次
+ * 只是多一次 IPC。用户点「重试」同样走这里：上一次失败时在途标记已经被
+ * 清掉，所以它会真的重发。
+ */
+let logListInFlight = null;
+export function loadLogList() {
+  if (logListInFlight) return logListInFlight;
+  logModal.listState = 'loading';
+  const task = invoke('list_log_files')
+    .then((files) => {
+      logModal.files = files || [];
+      logModal.listState = 'ready';
+      logModal.listError = '';
+      return logModal.files;
+    })
+    .catch((e) => {
+      logModal.listState = 'failed';
+      logModal.listError = String(e);
+      return null;
+    })
+    .finally(() => {
+      if (logListInFlight === task) logListInFlight = null;
+    });
+  logListInFlight = task;
+  return task;
 }
 
 /**

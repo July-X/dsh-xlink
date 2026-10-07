@@ -10,12 +10,12 @@
 // - **系统健康**：只给读数，不给按钮。它回答「能不能跑」，处置在各自面板。
 // - **最近操作**：回答「上次发生了什么」。失败 / 告警才可点进诊断；
 //   成功记录不给按钮——它没什么可诊断的。
-import { computed } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { store } from '../store.js';
 import { isLoading } from '../shell/loading.js';
 import { entryTimeLabel, snapshotStore } from './snapshots.js';
 import { skillStore } from '../skills/skills.js';
-import { logModal } from '../logs/logs.js';
+import { loadLogList, logModal } from '../logs/logs.js';
 import { showLogs } from '../logs/logs.js';
 import { incidentCauseLabel, incidentTitle } from '../incidents/incidents.js';
 import {
@@ -41,21 +41,61 @@ const quarantined = computed(() => store.view?.quarantined || []);
  *
  * 判据全部来自 store 已有状态，**不做任何探测**——概览是用户随手看的
  * 页面，一进来就发起三次网络往返会让它在慢机器上明显卡顿。
+ *
+ * ## 优先级是显式的，不是 push 的顺序（审查 R2-P2-04）
+ *
+ * 首屏只渲染 `ATTENTION_FIRST_SCREEN` 条，其余收在「查看全部」后面。给定
+ * 上限之后，**顺序就成了这件事本身**：过去按代码里的 push 顺序排，于是
+ * 「未找到 Node.js」排在最后——一旦事故、设置告警、另一壳工作台三件事同时
+ * 出现，最该处理的那条恰好被挤掉，剩下三条都是次要的。
+ *
+ * rank 越小越先显示：
+ *   1 事故      工作台压根没起来，什么都做不了
+ *   2 Node      缺运行时，同样起步不了
+ *   3 预检      插件装上了但「没验过」，是**用户可能还没意识到**的一类
+ *   4 设置      回退到默认值了，不影响启动
+ *   5 另一壳    只是提醒：动内核会互相影响
  */
-const attention = computed(() => {
+const attentionAll = computed(() => {
   const list = [];
   if (incident.value) {
     list.push({
       key: 'incident',
+      rank: 1,
       label: incidentTitle(incident.value),
       detail: incidentCauseLabel(incident.value),
       tone: 'bad',
       action: 'incident',
     });
   }
+  if (!nodeOk.value) {
+    list.push({
+      key: 'node',
+      rank: 2,
+      label: '未找到满足要求的 Node.js',
+      detail: node.value.reason || '启动工作台前需要先准备 Node.js 环境。',
+      tone: 'bad',
+      action: 'node',
+    });
+  }
+  // 上次预检没完成 / 没通过：这是**用户可能还没意识到**的一类问题——
+  // 插件已经装上了，但「没验过」这件事不会自己跳出来提醒。
+  const lastPrecheck = diagnosticStore.recentRuns.find((r) => r.kind === 'plugin-precheck');
+  if (lastPrecheck && ['failure', 'inconclusive', 'warning'].includes(lastPrecheck.status)) {
+    list.push({
+      key: 'precheck',
+      rank: 3,
+      label: `插件预检${statusMeta(lastPrecheck.status).label}`,
+      detail: lastPrecheck.summary || '点开看它验到了哪一步',
+      tone: lastPrecheck.status === 'warning' ? 'warn' : 'bad',
+      action: 'precheck',
+      run: lastPrecheck,
+    });
+  }
   if (store.settingsWarning) {
     list.push({
       key: 'settings',
+      rank: 4,
       label: '设置无法读取，已回退到默认值',
       detail: store.settingsWarning,
       tone: 'warn',
@@ -65,36 +105,27 @@ const attention = computed(() => {
   if (kernel.value.other_shell_workbench) {
     list.push({
       key: 'other-shell',
+      rank: 5,
       label: '另一个桌面端的工作台正在运行',
       detail: '装 / 删内核与切换端口会影响它。',
       tone: 'warn',
       action: 'other-shell',
     });
   }
-  // 上次预检没完成 / 没通过：这是**用户可能还没意识到**的一类问题——
-  // 插件已经装上了，但「没验过」这件事不会自己跳出来提醒。
-  const lastPrecheck = diagnosticStore.recentRuns.find((r) => r.kind === 'plugin-precheck');
-  if (lastPrecheck && ['failure', 'inconclusive', 'warning'].includes(lastPrecheck.status)) {
-    list.push({
-      key: 'precheck',
-      label: `插件预检${statusMeta(lastPrecheck.status).label}`,
-      detail: lastPrecheck.summary || '点开看它验到了哪一步',
-      tone: lastPrecheck.status === 'warning' ? 'warn' : 'bad',
-      action: 'precheck',
-      run: lastPrecheck,
-    });
-  }
-  if (!nodeOk.value) {
-    list.push({
-      key: 'node',
-      label: '未找到满足要求的 Node.js',
-      detail: node.value.reason || '启动工作台前需要先准备 Node.js 环境。',
-      tone: 'bad',
-      action: 'node',
-    });
-  }
-  return list;
+  // rank 相同不可能（同 key 只会进一次），但 tie-break 写清楚：顺序不依赖
+  // 「sort 稳定」这个实现细节。
+  return list.sort((a, b) => a.rank - b.rank || a.key.localeCompare(b.key));
 });
+
+/** 首屏条数。设计 §7.2 给的是「最多三条」——再多就把系统健康与最近操作
+ *  推到 480×800 的首屏以下，而那两块是用户进这一页最常看的内容。 */
+const ATTENTION_FIRST_SCREEN = 3;
+const attentionExpanded = ref(false);
+const attention = computed(() =>
+  attentionExpanded.value ? attentionAll.value : attentionAll.value.slice(0, ATTENTION_FIRST_SCREEN)
+);
+const attentionHidden = computed(() => Math.max(0, attentionAll.value.length - ATTENTION_FIRST_SCREEN));
+
 
 /**
  * 最近快照的时间。
@@ -124,14 +155,23 @@ const latestSnapshotLabel = computed(() => {
  * 用户点进来看到一片正常会以为系统没事，而真相是这一项压根没读成功。读不到
  * 就明说读不到。
  */
-function cell(key, label, value, tone = '', action = null) {
-  return { key, label, value, tone, action, unavailable: value === '读取失败' };
+function cell(key, label, value, tone = '', action = null, detail = '') {
+  return { key, label, value, tone, action, detail, unavailable: value === '读取失败' };
 }
 
 const health = computed(() => [
   cell('wiring', '插件接线', wiringText.value.text, wiringText.value.tone, 'plugins'),
   cell('skills', '技能注册', skillText.value.text, skillText.value.tone, 'skills'),
-  cell('logs', '日志系统', logText.value.text, logText.value.tone, 'logs'),
+  cell(
+    'logs',
+    '日志系统',
+    logText.value.text,
+    logText.value.tone,
+    'logs',
+    // 读失败时把原因挂在 title 上：只显示「读取失败」的话，用户点了重试还是
+    // 失败，却不知道是磁盘满了还是文件被轮转掉了。
+    logModal.listState === 'failed' ? logModal.listError : ''
+  ),
   cell('snapshot', '最近快照', latestSnapshotLabel.value || '暂无'),
 ]);
 
@@ -152,10 +192,31 @@ const skillText = computed(() => {
 
 // 日志：只报**份数**。「正常（N 个文件）」里的「正常」在有文件时是废话，
 // 而没有文件那一档说「暂无」就够了。
+//
+// 但「没有文件」必须先确认过（审查 R2-P2-03）：`logModal.files` 初始为空，
+// 而它过去只有 `showLogs()` 之后才被填——于是用户第一次打开概览看到的是
+// 「暂无」，哪怕机器上有二十份日志、只是他还没打开过弹层。「暂无」是一个
+// **结论**，不能由「没问过」冒充。
 const logText = computed(() => {
+  if (logModal.listState === 'unloaded') return { text: '尚未读取', tone: '' };
+  if (logModal.listState === 'loading') return { text: '读取中…', tone: '' };
+  if (logModal.listState === 'failed') return { text: '读取失败', tone: 'bad' };
   if (!logModal.files.length) return { text: '暂无', tone: '' };
   return { text: `${logModal.files.length} 份`, tone: 'ok' };
 });
+
+/** 清单没读到时点这一行就是重试——静默加载失败后，页面不该停在「读取失败」
+ *  这三个字上不给一条出路。 */
+function retryLogList() {
+  return loadLogList();
+}
+
+onMounted(() => {
+  // 一次静默清单读取。这是控制塔**唯一**的额外请求，而且换来的是「系统健康」
+  // 那一行能说真话；概览其余判据仍然只读 store 已有状态，不做探测。
+  if (logModal.listState === 'unloaded') loadLogList();
+});
+
 
 
 /** 最近操作：最近一条运行记录；失败 / 告警时可点进诊断。 */
@@ -195,7 +256,12 @@ function onAttention(item) {
 function onHealth(row) {
   if (row.action === 'plugins') emit('go-panel', 'plugins');
   else if (row.action === 'skills') emit('go-panel', 'skills');
-  else if (row.action === 'logs') showLogs();
+  else if (row.action === 'logs') {
+    // 清单读取失败时这一行是「点击重试」，那就**只重试清单**：用户要的是把
+    // 这一行修好，不是被拉进一个弹层。成功之后它变回普通行，再点才打开弹层。
+    if (logModal.listState === 'failed') return retryLogList();
+    showLogs();
+  }
 }
 
 // 按记录类型分派，不再一律当启动诊断打开（审查 P1-05）。
@@ -206,10 +272,10 @@ function openDiagnosis() {
 </script>
 
 <template>
-  <div v-if="attention.length" class="diag-card diag-card--tower">
+  <div v-if="attentionAll.length" class="diag-card diag-card--tower">
     <h3 class="diag-card__title">
       <span>需要关注</span>
-      <span class="diag-card__aside">{{ attention.length }} 项</span>
+      <span class="diag-card__aside">{{ attentionAll.length }} 项</span>
     </h3>
     <div class="diag-rows">
       <button
@@ -226,6 +292,21 @@ function openDiagnosis() {
         <span class="diag-row__value" :class="`diag-row__value--${item.tone}`">处理</span>
         <span class="diag-row__arrow" aria-hidden="true">›</span>
       </button>
+      <!-- 首屏上限之外的项不静默丢弃，也不塞进首屏。收起时说清还剩几项，
+           免得用户以为「只有 3 个问题」而漏掉真正要看的那一条。 -->
+      <button
+        v-if="attentionHidden > 0 || attentionExpanded"
+        type="button"
+        class="diag-row diag-row--more"
+        @click="attentionExpanded = !attentionExpanded"
+      >
+        <span class="diag-row__label">
+          {{ attentionExpanded ? '收起' : `还有 ${attentionHidden} 项` }}
+        </span>
+        <span class="diag-row__arrow" aria-hidden="true">
+          {{ attentionExpanded ? '⌃' : '⌄' }}
+        </span>
+      </button>
     </div>
   </div>
 
@@ -238,6 +319,7 @@ function openDiagnosis() {
         type="button"
         class="diag-row"
         :class="{ 'diag-row--static': !row.action }"
+        :title="row.detail || ''"
         @click="row.action && onHealth(row)"
       >
         <span class="diag-row__label">{{ row.label }}</span>
