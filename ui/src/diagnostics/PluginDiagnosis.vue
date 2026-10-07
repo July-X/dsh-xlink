@@ -15,11 +15,12 @@ import { computed, onMounted } from 'vue';
 import { isLoading } from '../shell/loading.js';
 import { openEvidence, restorePreChange } from './diagnostic-actions.js';
 import { applyPrecheckChange, reloadPluginDiagnosis } from './diagnostic-actions.js';
-import { diagnosticStore } from './diagnostics.js';
+import { closeDiagnosis, diagnosticStore } from './diagnostics.js';
 import {
   causeLabel, durationLabel, evidenceLabel, runAgeLabel, staleRunHint, statusMeta,
 } from './diagnostic-labels.js';
 import { INTEGRITY_META, SOURCE_LABELS } from './precheck-labels.js';
+import PluginCleanupButton from './PluginCleanupButton.vue';
 import RunTimeline from './RunTimeline.vue';
 
 const spec = computed(() => diagnosticStore.active?.spec || {});
@@ -310,6 +311,12 @@ onMounted(() => {
     <el-button v-if="report?.installed" @click="openRestore">
       {{ canRestoreDirectly ? '恢复变更前状态' : '查看快照列表' }}
     </el-button>
+    <!-- 旧报告可能记录着「已装上但启动诊断未通过」；此时清理比再次应用更安全。 -->
+    <PluginCleanupButton
+      v-if="report?.pluginId && report?.installed === true && report?.verdict !== 'pass'"
+      :plugin-id="report.pluginId"
+      @cleaned="closeDiagnosis"
+    />
     <!-- 同 `PrecheckDialog.vue` 那一处：空 content 的 el-tooltip 仍会弹出一个
          空 popper（按钮上方一个没字的气泡），要「什么都不说」得用
          `:disabled`，不能靠传空串。两边改一处就要改另一处。 -->

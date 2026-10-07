@@ -426,9 +426,15 @@ export function syncPlugins() {
   );
 }
 
-export function uninstallPlugin(id) {
+export function uninstallPlugin(id, options = {}) {
+  const cleanup = options.cleanup === true;
   return withProgress(
-    { cmd: 'plugin_uninstall', start: '正在卸载插件 …', done: '插件已卸载', fail: '卸载失败' },
+    {
+      cmd: 'plugin_uninstall',
+      start: cleanup ? '正在移除并清理插件 …' : '正在卸载插件 …',
+      done: cleanup ? '插件及其本地文件已清理' : '插件已卸载',
+      fail: cleanup ? '清理插件失败' : '卸载失败',
+    },
     (channel) => ({ id, onEvent: channel })
   );
 }

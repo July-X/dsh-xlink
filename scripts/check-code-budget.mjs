@@ -541,7 +541,9 @@ const FILE_BUDGETS = {
   // 某处」那一半，剩下的一半由各组件自行 import，于是 loading key、错误处理、
   // 「这条记录属于哪次运行」分散在五处。**概览页（ControlTower）是刻意的例外**，
   // 理由写在本文件注释里并有测试钉住。
-  'ui/src/diagnostics/diagnostic-actions.js': 88,
+  // 88 → 100：失败预检 / 启动诊断的「移除并清理」动作继续走诊断动作代理，
+  // 复用完整 plugin_uninstall 链路，并统一 loading 与成功 / 失败反馈。
+  'ui/src/diagnostics/diagnostic-actions.js': 100,
   // 阶段 / 状态 / 归因的中文名与语义色。**未知取值必须显式显示**——丢掉
   // 会让时间线出现一个洞，而那正是新版才有、最值得看的部分。文案集中
   // 在这里，改文案不该牵动落盘格式。
@@ -650,7 +652,13 @@ const FILE_BUDGETS = {
   // `ui/test/tooltipEmptyContent.test.js`：空 content 仍会弹空壳气泡）。属性多了
   // 一行就得拆成多行写，加上把**为什么不能用空串**写进注释——这条注释就是
   // 防下一个人再抄回 `canApply ? '' : reason` 的，压缩它等于把 bug 的成因删掉。
-  'ui/src/diagnostics/PluginDiagnosis.vue': 262,
+  // 262 → 275：旧的 fail-open 诊断报告增加「移除并清理」入口，并与预检弹窗
+  // 共用清理按钮组件；页面只保留报告判据和成功后的返回动作。
+  'ui/src/diagnostics/PluginDiagnosis.vue': 275,
+  // 诊断域的危险动作组件。预检弹窗与插件诊断页都需要同一份确认文案、
+  // Lucide 图标与 loading key；独立成组件可避免两处复制后出现一处能清理、
+  // 另一处只显示按钮的漂移。
+  'ui/src/diagnostics/PluginCleanupButton.vue': 40,
   // 预检的来源类型与完整性摘要映射。**纯函数、无依赖**——数据加载刻意不
   // 在这里：把它塞进「映射表」会让这份表变成半个 store，下次有人加字段就会
   // 发现「反正这里已经能 invoke 了」。
@@ -1754,7 +1762,9 @@ const FILE_BUDGETS = {
 // 不变量判据。这 29 行买的不是功能，是「同一个阶段永远不会同时显示进行中
 // 与已完成」——2026-10-07 用户截图里那四个转圈的圈。反棘轮大文件一个数字
 // 没动（theme.css / process.rs / commands.rs）。
-const TOTAL_BUDGET = 41860;
+// 41860 → 41930：手动安装与诊断失败的收尾能力新增清理动作代理、共享确认
+// 组件和对应的入口判据；后端复用既有完整卸载链路，不新增第二套清理实现。
+const TOTAL_BUDGET = 41930;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

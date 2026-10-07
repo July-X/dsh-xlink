@@ -173,10 +173,10 @@ async function resolveSuspect(id, action) {
               重新启用
             </el-button>
             <el-popconfirm
-              title="确认移除该插件？"
-              confirm-button-text="移除"
+              title="确认移除并清理该插件？"
+              confirm-button-text="移除并清理"
               cancel-button-text="取消"
-              width="200"
+              width="260"
               @confirm="resolveSuspect(suspect.id, 'remove')"
             >
               <template #reference>
@@ -188,11 +188,11 @@ async function resolveSuspect(id, action) {
                   :loading="isLoading('incidentResolve:' + suspect.id)"
                   :disabled="globalBusy"
                 >
-                  移除插件
+                  移除并清理
                 </el-button>
               </template>
             </el-popconfirm>
-            <span class="muted" style="font-size: 12px">不做操作即保持禁用</span>
+            <span class="muted" style="font-size: 12px">会删除本地插件文件和接线；诊断日志会保留</span>
           </div>
         </div>
 

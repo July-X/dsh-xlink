@@ -11,6 +11,7 @@ import { isLoading } from '../shell/loading.js';
 import { applyPrecheckChange } from '../diagnostics/diagnostic-actions.js';
 import { openLogsForReport } from '../logs/logs.js';
 import { openPluginDiagnosis } from '../diagnostics/diagnostics.js';
+import PluginCleanupButton from '../diagnostics/PluginCleanupButton.vue';
 
 const report = computed(() => store.precheckReport || {});
 
@@ -130,9 +131,16 @@ function close() {
            动作（一个看时间线、一个只是「跳过去」），而它们其实完全等价。 -->
       <el-button v-if="report.runId" @click="openFullDiagnosis">查看完整诊断</el-button>
       <el-button v-if="evidencePath" @click="openLog">打开日志</el-button>
+      <!-- 普通预检失败的 installed=false 已经回滚下载；只有旧的 fail-open 报告才可清理。 -->
+      <PluginCleanupButton
+        v-if="report.pluginId && report.installed === true && report.verdict !== 'pass'"
+        :plugin-id="report.pluginId"
+        @cleaned="close"
+      />
       <el-button @click="close">知道了</el-button>
-      <!-- 「应用变更」是**这次预检之后唯一会改动真实实例的动作**，所以它
-           是主按钮。禁用的那两种情况必须说清为什么而不是灰着就完事——
+      <!-- 「应用变更」是这次预检报告里的安装动作，只有通过且尚未安装时可用。
+           「移除并清理」是失败旧报告的危险动作，单独放在确认框里。
+           其余禁用情况必须说清为什么而不是灰着就完事——
            一个不说理由的灰按钮会让人以为界面坏了。
            `:disabled="canApply"` 而不是把 content 传成空串：空 content 的
            el-tooltip **照样弹出一个空的 popper**，用户看到的是按钮上方一个
