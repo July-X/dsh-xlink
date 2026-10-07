@@ -952,6 +952,58 @@ main {
   grid-column: 1 / -1;
 }
 
+/* 行式条目列表（设计稿 `.page-list`）：一行 = 左边标题（可带次行说明）+ 右边
+   动作区。内核版本 / 插件 / 技能 / 设置几个页面共用它，各页只写自己那一行，
+   行内组件用 Vue Fragment 直接吐两三个兄弟节点落进这个栅格。 */
+.page-list {
+  display: grid;
+  gap: 6px;
+}
+
+.page-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/* 收尾那条不带分隔线。收在**列表的直接子级**上而不是 `.page-list-row:last-child`：
+   Fragment 组件（环境回退点 / 深入排查）展开后会把告警和列表也放进同一个栅格，
+   按行判「最后一个」会把展开内容当成收尾行，把上面的分隔线一起抹掉。 */
+.page-list > *:last-child {
+  border-bottom: 0;
+}
+
+.page-list-main {
+  min-width: 0;
+}
+
+.page-list-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+/* 设计稿这一行是 `white-space: nowrap` + 省略号（1459-1470）。这里放开换行：
+   设置页「环境回退与诊断」的次行是 `headline(view)` 那类整句状态说明，
+   截成一行反而读不出「还没成功启动过」还是「文档损坏」。 */
+.page-list-meta {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.page-list-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
 /* 页头：标题 + 说明在左，动作在右。 */
 .page-head {
   display: flex;
@@ -1249,11 +1301,7 @@ main {
      从 -3px 改成 0，让蓝框贴在卡片内侧。 */
   outline-offset: 0;
 }
-.migration-status {
-  margin-left: auto;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
+
 .migration-toggle-icon {
   font-size: 14px;
   color: var(--text-secondary);

@@ -1,20 +1,20 @@
 <script setup>
-// 设置：Web UI 端口、任务完成通知、数据迁移的轻量入口、环境回退点、深入排查。
+// 设置：Web UI 端口、任务完成通知，以及一张「环境回退与诊断」。
 // 套餐用量查询不设卡：概览页的「套餐用量」卡已提供数据展示 / 刷新 / 测试入口，
 // 凭据本身在工作台模型设置里维护。内置补丁（内核补丁 / 小插件）入口已隐藏——最新
 // 内核已包含相关修复，不再需要从设置页应用；后端 `patch_status` / `patch_apply` /
 // `patch_revert` 与 `ui/src/patches.js` 仍保留，便于旧内核撤销。
 //
-// 卡片顺序：设置 → 任务通知 → 数据迁移 → 环境回退点 → 深入排查。
-// 后三张是**故障时才用得上的兜底**，不是日常要看的东西：概览页是开机第一屏，
+// 卡片顺序：设置 → 任务通知 → 环境回退与诊断。
+// 后一张是**故障时才用得上的兜底**，不是日常要看的东西：概览页是开机第一屏，
 // 在那儿常年摆着两个「一切正常」的空态卡既占地方又稀释真正要看的内容（当前内核、
-// 用量、额度）。挪到设置页后概览保持干净，而出事时它们与「数据迁移」这条同属
-// "环境出问题时才动"的入口，并排摆在一起上下文也对得上。
-// 「数据迁移」本身的主入口是**侧栏菜单**（设计稿 2550 行，常驻），这里只留一行。
+// 用量、额度）。挪到设置页后概览保持干净，而「数据迁移 / 环境回退点 / 深入排查 /
+// 启动诊断」四条同属"环境出问题时才动"，收在一张卡里上下文也对得上。
 import { computed, onMounted, ref, watch } from 'vue';
-import { Bell, Check, Headset, QuestionFilled } from '@element-plus/icons-vue';
+import { Bell, Check, Headset, QuestionFilled, Tickets } from '@element-plus/icons-vue';
 import { store, saveSettings } from '../store.js';
 import { migrationStore, loadMigrationHistory } from '../migration/migration.js';
+import { openStartupDiagnosis } from '../diagnostics/diagnostics.js';
 import SnapshotCard from '../diagnostics/SnapshotCard.vue';
 import BisectPanel from '../diagnostics/BisectPanel.vue';
 import {
@@ -97,6 +97,20 @@ const migratedBefore = computed(() => migrationStore.history.length > 0);
 onMounted(() => {
   loadMigrationHistory();
 });
+
+/**
+ * 「环境回退与诊断」那一行去看最近一次启动过程。
+ *
+ * 与概览页同一套写法：id 交给 `openStartupDiagnosis` 去问后端「最近一条」，
+ * 这里不塞任何具体 id——塞进去会让用户点进来看到上一次启动的记录，而按钮上
+ * 写的是「查看」。
+ *
+ * 不挂 `isLoading`：`reloadStartupDiagnosis(runId, false)` 那次拉取是
+ * **非手动**的，不经过 `withLoading`，挂上去就是一个永远不转的 loading。
+ */
+function openStartupRun() {
+  openStartupDiagnosis(store.lastIncident?.runId || '', 'settings');
+}
 </script>
 
 <template>
@@ -109,8 +123,11 @@ onMounted(() => {
     </div>
     <!-- 宽版（1040）下单列会让每一张卡右边空掉半屏，所以按设计稿分两列：
          左列是「这台壳本身怎么跑」（工作台端口、后台常驻、自启），
-         右列是「对内对外的表现」（任务通知、迁移入口、安全网）。两列各自
-         内部竖着叠，用的是全局的 .page-layout / .page-layout__col 原语。 -->
+         右列是「对内对外的表现」（任务通知、环境回退与诊断）。
+         **两列各两张卡**：原先右栏四张（任务通知 / 数据迁移 / 环境回退点 /
+         深入排查）把右栏拉到两屏高、左栏空一大截，后三张同属「出事才动」，
+         合成一张之后两栏才配平。用的是全局的 .page-layout / .page-layout__col
+         原语。 -->
     <div class="page-layout">
       <div class="page-layout__col">
     <div class="card">
@@ -313,39 +330,65 @@ onMounted(() => {
       </p>
     </div>
 
-    <!-- 「数据迁移」在设置页是**一行**，不是一张独立大卡（设计稿 2844 行：它属于
-         「环境回退与诊断」那一组里的一个 `page-list-row`）。
-         改这一处的原因是侧栏有了常驻菜单（设计稿 2550 行）之后，同一个
-         `store.activePanel = 'migration'` 在这一屏里出现了两次、点开还是同一个
-         面板；而这张大卡默认折叠、展开后也只有一句话加一个按钮，占的篇幅与它
-         给的信息量不成比例。
-
-         **入口不能因此消失**：设计说明 §侧栏写的是「迁移完成后，设置页仍保留
-         进入迁移功能的入口」，设置页这一行就是那个入口——主入口是侧栏菜单，
-         这里留着的是「环境出问题时才动」那一组里的顺手一跳。
-         卡片顺序：设置 → 任务通知 → 数据迁移 → 环境回退点 → 深入排查。
-         整个功能在 v0.6.0 之后移除，届时这一行与侧栏菜单一并删（见
-         ui/AGENTS.md 的「待移除」一节）。 -->
+    <!-- 「数据迁移 / 环境回退点 / 深入排查」三张并排的大卡收成一张
+         （设计稿 draft 2844：「环境回退与诊断」，caption「出问题时使用」）。
+         原先右栏四张、左栏两张，右栏被拉到两屏高而左栏空一大截——四者同属
+         「环境出问题时才动」这一组，分成四张卡只是把同一个上下文摊成四段。
+         四行各自是一个 `page-list-row`：左标题 + 状态说明，右动作。
+         **入口一个没少**：恢复 / 开始排查 / 停止都留在自己那一行的动作区，
+         「查看」展开的是明细；启动诊断与数据迁移本来就是跳转。
+         卡片顺序：设置 → 任务通知 → 环境回退与诊断。 -->
     <div class="card">
       <div class="card-head">
-        <h2>数据迁移</h2>
-        <span class="migration-status">{{ migratedBefore ? '已迁移' : '尚未迁移' }}</span>
-        <el-button
-          size="small"
-          :type="migratedBefore ? 'default' : 'primary'"
-          @click="store.activePanel = 'migration'"
-        >
-          {{ migratedBefore ? '查看数据迁移' : '去迁移' }}
-        </el-button>
+        <h2>环境回退与诊断</h2>
+        <span class="head-meta"><span class="muted">出问题时使用</span></span>
+      </div>
+      <div class="page-list">
+        <!-- 前两行自带 Fragment：行是常驻的，明细与告警是它们的兄弟节点。 -->
+        <SnapshotCard />
+        <BisectPanel />
+
+        <div class="page-list-row">
+          <div class="page-list-main">
+            <h3 class="page-list-title">启动诊断</h3>
+            <p class="page-list-meta">这次启动停在哪一步，以及接下来能做什么。</p>
+          </div>
+          <div class="page-list-actions">
+            <el-button
+              round
+              size="small"
+              :icon="Tickets"
+              title="查看最近一次启动过程"
+              @click="openStartupRun"
+            >
+              查看
+            </el-button>
+          </div>
+        </div>
+
+        <!-- 「数据迁移」在设置页是**一行**，不是一张独立大卡。它的主入口是
+             **侧栏菜单**（设计稿 2550 行，常驻），这里留的是设计说明 §侧栏
+             要求的「迁移完成后设置页仍保留进入入口」。
+             整个功能在 v0.6.0 之后移除，届时这一行与侧栏菜单一并删
+             （见 ui/AGENTS.md 的「待移除」一节）。 -->
+        <div class="page-list-row">
+          <div class="page-list-main">
+            <h3 class="page-list-title">数据迁移</h3>
+            <p class="page-list-meta">{{ migratedBefore ? '已迁移' : '尚未迁移' }}</p>
+          </div>
+          <div class="page-list-actions">
+            <el-button
+              round
+              size="small"
+              :type="migratedBefore ? 'default' : 'primary'"
+              @click="store.activePanel = 'migration'"
+            >
+              {{ migratedBefore ? '查看数据迁移' : '去迁移' }}
+            </el-button>
+          </div>
+        </div>
       </div>
     </div>
-
-    <!-- 环境回退点（安全网 P0/P1）。「数据迁移」是"环境出问题时才动"的入口，
-         回退点是同一条链的下半段：先回到曾经良好的状态，回退解决不了才轮到
-         下面的「深入排查」。两张卡挨着摆，顺序即救生顺序。 -->
-    <SnapshotCard />
-
-    <BisectPanel />
       </div>
     </div>
   </section>

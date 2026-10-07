@@ -777,3 +777,113 @@ test('卡头 ⓘ 是纯图标：可见文字与 tooltip 内容说的是同一件
   assert.doesNotMatch(pluginsTpl, /plugin-center-source/);
   assert.doesNotMatch(stripComments(themeCss), /\.plugin-center-source/, '`.plugin-center-source` 已随模板删除');
 });
+
+// --- 设置页：右栏收成两张卡 -------------------------------------------------
+//
+// 用户 2026-10-07 指出「左栏两张、右栏四张，左栏空一大截」，拍板按设计稿
+// draft 2844 合并成「环境回退与诊断」一张。原右栏四张（任务通知 / 数据迁移 /
+// 环境回退点 / 深入排查）同属「环境出问题时才动」，拆成四张只是把一个上下文
+// 摊成四段。下面几条钉的就是「两栏各两张 + 那一张里四行」这个形状。
+const settingsPanel = readFileSync('ui/src/shell/SettingsPanel.vue', 'utf8');
+const settingsTpl = templateOf(settingsPanel);
+const snapshotCard = readFileSync('ui/src/diagnostics/SnapshotCard.vue', 'utf8');
+const bisectPanel = readFileSync('ui/src/diagnostics/BisectPanel.vue', 'utf8');
+
+test('设置页两栏各两张卡，右栏第二张是「环境回退与诊断」', () => {
+  // 只数模板块里 `.card` 的直接出现次数：卡片真身是 `<div class="card">`，
+  // 组件自带的外框也已在本轮删掉（下面那条判据钉着）。
+  assert.equal((settingsTpl.match(/<div class="card">/g) || []).length, 4);
+  assert.match(settingsTpl, /<h2>环境回退与诊断<\/h2>/);
+  // caption 走既有的 head-meta + muted，不为这一处新增 .card-caption。
+  assert.match(settingsTpl, /出问题时使用/);
+});
+
+test('「环境回退与诊断」是一张卡里的四个行式条目', () => {
+  // `.page-list` 是全仓共用的行式列表原语（theme.css），四个条目都落在它里面。
+  const listStart = settingsTpl.indexOf('<div class="page-list">');
+  assert.ok(listStart > 0, '设置页该有一个 .page-list 列表');
+  // 两个组件必须在列表**内部**：它们是 Fragment，行与明细直接落进这个栅格。
+  assert.match(settingsTpl.slice(listStart), /<SnapshotCard \/>\s*<BisectPanel \/>/);
+  for (const [label, tpl, title] of [
+    ['环境回退点', templateOf(snapshotCard), '环境回退点'],
+    ['深入排查', templateOf(bisectPanel), '深入排查'],
+    ['设置页', settingsTpl.slice(listStart), '启动诊断'],
+    ['设置页', settingsTpl.slice(listStart), '数据迁移'],
+  ]) {
+    // 标题换行排版，所以标题文字前面允许多余空白。
+    assert.match(tpl, new RegExp(`class="page-list-title">\\s*${title}`), `${label}：${title} 应是 page-list 的一行`);
+  }
+  // 数据迁移与启动诊断都是真跳转，不是有内容的展开层。`openStartupDiagnosis`
+  // 在 `<script>` 里（模板只调本文件定义的 openStartupRun），所以这一处读全文。
+  assert.match(settingsTpl, /@click="openStartupRun"/);
+  assert.match(settingsPanel, /openStartupDiagnosis\(/);
+  assert.match(settingsTpl, /store\.activePanel = 'migration'/);
+});
+
+test('环境回退点与深入排查渲染成行，不再自带 .card 外框', () => {
+  // 组件根节点是 Fragment：行是常驻的，明细与告警是它的兄弟节点，直接落进
+  // 同一个 `.page-list` 栅格。曾经它们各自是 `<div class="card …">`，
+  // 套进共享卡里就会出现卡中卡。
+  // 正则收在 `card` 后面不加任何字符：`card-info-tooltip` / `card-head` 是
+  // 别的 class，不能一起禁掉（第一版写得太宽，把这两个也判成卡外框了）。
+  for (const [label, src, family] of [
+    ['环境回退点', snapshotCard, 'snapshot'],
+    ['深入排查', bisectPanel, 'bisect'],
+  ]) {
+    const tpl = templateOf(src);
+    assert.doesNotMatch(tpl, /<div class="card(?![\w-])/, `${label} 不应再渲染自己的 .card 外框`);
+    assert.match(tpl, /^<template>\s*<div class="page-list-row">/, `${label} 的第一个根节点应是那一行`);
+    assert.doesNotMatch(stripComments(themeCss), new RegExp(`\\.${family}-card`));
+  }
+});
+
+test('收起的只有明细：状态说明与告警常驻在闸门之外', () => {
+  // 「收起」省的是那一屏十几行列表，不是状态本身。headline 挪到
+  // `.page-list-meta`（次行常驻），drifted 与 conclusion 两条告警不进闸门——
+  // 排查跑几分钟时用户唯一能看懂的进度，恰恰不能被藏起来。
+  const snapTpl = templateOf(snapshotCard);
+  assert.match(snapTpl, /<p class="page-list-meta">\{\{ view \? headline\(view\) : '正在读取…' \}\}<\/p>/);
+  assert.doesNotMatch(snapTpl, /v-if="open && drifted"/);
+  const bisectTpl = templateOf(bisectPanel);
+  assert.match(bisectTpl, /<p class="page-list-meta">\{\{ view \? bisectHeadline\(view\) : '正在读取…' \}\}<\/p>/);
+  assert.doesNotMatch(bisectTpl, /v-if="open && view && view\.conclusion"[\s\S]{0,80}show-icon/);
+});
+
+test('恢复 / 刷新 / 开始排查 / 停止四个动作都在行上，不进展开层', () => {
+  // 用户 2026-10-07 的硬要求是「对齐过程中原本的功能不能丢失」。这条钉的是
+  // 最容易被折叠掉的那一档：安全网的动作全部留在常驻行上，「查看」只开明细。
+  const snapRow = templateOf(snapshotCard).slice(0, templateOf(snapshotCard).indexOf('</div>\n\n  <el-alert'));
+  for (const action of ['restoreLastGood', 'loadSnapshots(true)']) {
+    assert.match(snapRow, new RegExp(action.replace(/[()']/g, '\\$&')), `环境回退点行上缺 ${action}`);
+  }
+  const bisectRow = templateOf(bisectPanel).slice(0, templateOf(bisectPanel).indexOf('</div>\n\n  <el-alert'));
+  for (const action of ['abortBisect', 'onStart']) {
+    assert.match(bisectRow, new RegExp(action), `深入排查行上缺 ${action}`);
+  }
+});
+
+test('行式列表的次行说明不截断成一行（有意偏离设计稿的 nowrap）', () => {
+  // draft 1459-1470 的 `.page-list-meta` 是 nowrap + 省略号。这里放开换行：
+  // 这一处的次行是 `headline(view)` 那类整句状态说明，截成一行就分不出
+  // 「还没成功启动过」和「文档损坏」。层叠后仍然是换行的。
+  assert.equal(effectiveDeclaration(['page-list-meta'], RULES, 'white-space'), null);
+  assert.equal(effectiveDeclaration(['page-list-row'], RULES, 'border-bottom'), '1px solid var(--border-soft)');
+  // 收尾那条的判定收在列表的直接子级上：Fragment 展开后明细也是直接子级，
+  // 按行判 `:last-child` 会把展开内容当收尾行，连带抹掉上面的分隔线。
+  assert.match(themeCss, /\.page-list > \*:last-child \{/);
+  assert.doesNotMatch(themeCss, /\.page-list-row:last-child \{/);
+});
+
+test('内核版本页维持一张卡竖排：有意保留的偏差，不是漏改', () => {
+  // draft 709-728 的 `.versions-layout` 是两列栅格，用户 2026-10-07 拍板
+  // **不改**。理由记在 ui/AGENTS.md：这一屏已经调稳，三处行为依赖当前竖排
+  // ——发布列表的 z-index 层叠、淡出带移除后的裁切行为、以及为 120px 限高
+  // 量过的磁盘区 6+9px 间距。改两列要连这三条一起重调，而收益只是左右各短一点。
+  //
+  // 钉住的是「整页只有一张卡、没有两列栅格」这个**形状**，不是某个类名：
+  // 设计稿那份 `.versions-layout` 从未进过 theme.css，拿它当判据等于
+  // 断言一个本仓库不存在的符号（第一版就是这么写的，红的是判据不是代码）。
+  assert.equal((versionsTpl.match(/<div class="card\s/g) || []).length, 1);
+  assert.doesNotMatch(versionsTpl, /page-layout|grid-template-columns/);
+  assert.doesNotMatch(stripComments(themeCss), /\.versions-layout/);
+});
