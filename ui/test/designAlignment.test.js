@@ -552,11 +552,15 @@ test('v0.6.0 移除数据迁移的计划已登记在两份 AGENTS.md（删干净
 // 「需要关注」不再独占首行整宽。首行让给「当前内核 / 系统健康」——那两张
 // 才是进概览最常看的。
 
-test('控制塔三张塔卡用 order 落位；健康卡在右半栏，关注与最近操作末行并排', () => {
+// **末行左右对调过一次**（2026-10-08）：「最近操作」挪到左半栏、「需要关注」到
+// 右半栏。起因是「没有待处理项」这个最常见的状态下「需要关注」整张卡不渲染，
+// 于是它原本所在的左半栏整块空着——换过来之后异常状态下留白在右，正常状态下
+// 是「最近操作（左） | 需要关注（右）」。下面钉的是**对调之后**的落位。
+test('控制塔三张塔卡用 order 落位；健康卡在右半栏，最近操作在左、需要关注在右', () => {
   for (const [cls, order, col] of [
     ['diag-card--health', '2', '2'],
-    ['diag-card--attention', '4', '1'],
-    ['diag-card--activity', '5', '2'],
+    ['diag-card--activity', '4', '1'],
+    ['diag-card--attention', '5', '2'],
   ]) {
     assert.equal(effectiveDeclaration([cls], RULES, 'order'), order, `${cls} 的 order`);
     assert.equal(effectiveDeclaration([cls], RULES, 'grid-column'), col, `${cls} 的 grid-column`);
@@ -566,6 +570,49 @@ test('控制塔三张塔卡用 order 落位；健康卡在右半栏，关注与�
     assert.equal(effectiveDeclaration([cls], RULES, 'grid-row'), null, `${cls} 不该用 grid-row 落位`);
   }
   assert.ok(diagnosticsCss.includes('.diag-rows--grid'), '健康行列表应在 grid 里');
+});
+
+test('概览主栅格：末行吃满剩余纵向空间', () => {
+  // 2026-10-08 用户要求「两个功能块都增加高度，用满纵向高度」。此前是
+  // `align-content: start` 且不写行高，末行两张卡有多高就多高，内容少的时候
+  // 下半屏空一大片。
+  assert.equal(
+    effectiveDeclaration(['overview-grid'], RULES, 'grid-template-rows'),
+    'auto auto minmax(min-content, 1fr)',
+    '末行必须是 min-content 起底、1fr 吃剩余——写成 minmax(0, 1fr) 会在空间不够时'
+      + '把卡压扁、内容溢出自己的格子，看着像布局坏了'
+  );
+  assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'flex'), '1');
+  // 百分比高度要解得开，祖先 `.panel` 必须是确定高度那一层。
+  assert.equal(effectiveDeclaration(['panel'], RULES, 'min-height'), '100%');
+});
+
+test('行尾动作是带边框、带 icon 的 badge，不是纯文字箭头', () => {
+  // 2026-10-08 用户要求「操作按钮高亮、加 icon、badge 边框」。此前那格是一段
+  // 纯文字（› / 查看），在一列不能点的读数里完全看不出能不能点。
+  const css = readFileSync('ui/src/diagnostics/diagnostics.css', 'utf8');
+  const cta = css.match(/\.diag-row__cta \{([^}]*)\}/);
+  assert.ok(cta, '必须能找到 .diag-row__cta 规则');
+  assert.match(cta[1], /border:\s*1px solid var\(--accent-line\)/, 'badge 必须有边框');
+  assert.match(cta[1], /background:\s*var\(--accent-fill\)/, 'badge 必须有填色（高亮）');
+  assert.match(cta[1], /border-radius:\s*999px/, 'badge 形态是胶囊');
+  // 展开箭头**不该**复用这个类：它标的是「还有没有」，不是动作。
+  assert.match(css, /\.diag-row__caret \{/, '展开箭头要有独立的类名');
+  assert.doesNotMatch(
+    css,
+    /\.diag-row__arrow/,
+    '动作与展开指示不能共用一个类名：改其中一种会顺手改到另一种'
+  );
+  // 三处行尾动作都要渲染成 badge，且都带 icon。
+  const tower = readFileSync('ui/src/diagnostics/ControlTower.vue', 'utf8');
+  // 三张塔卡的行尾动作各一枚：需要关注「处理」、系统健康的提示、最近操作「查看」。
+  const badges = (tower.match(/class="diag-row__cta"/g) || []).length;
+  assert.equal(badges, 3);
+  // **三枚都必须带 icon**：只断言「有一枚带」的话，删掉另外两枚照样绿——
+  // 而删掉图标正是最容易发生的那种改动（换个 icon 名、或复制粘贴时漏掉）。
+  const icons = (tower.match(/<el-icon aria-hidden="true"><ArrowRight \/><\/el-icon>/g) || []).length;
+  assert.equal(icons, badges, '每一枚 badge 都要带 icon，不能只给一枚');
+  assert.match(tower, /import \{ ArrowRight \} from '@element-plus\/icons-vue'/);
 });
 
 test('概览主栅格的内核卡与用量卡让出首行给它们自己', () => {

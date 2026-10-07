@@ -831,8 +831,13 @@ function goVersions() {
   padding: 6px 8px;
   gap: 4px;
 }
+/* 概览这一个面板的 `.panel` 要占满 `main` 的内容高度，末行才有「剩余空间」
+   可吃。`main` 是 `flex: 1` 的 flex item、高度确定，所以这里的 `100%` 解得开；
+   换成 `height: auto` 的普通块就解不开——百分比高度落在高度为 auto 的祖先上会
+   当成 auto，整条规则静默失效。 */
 .panel {
   gap: 6px;
+  min-height: 100%;
 }
 /* 信息行文本行高居中：胶囊 / 按钮与文本垂直对齐（grid 行默认顶对齐）。 */
 .kv dt,
@@ -888,8 +893,22 @@ function goVersions() {
 .overview-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+  /* 前两行按内容高，**末行吃掉剩余纵向空间**（2026-10-08 用户要求「两个功能块
+     都增加高度，用满纵向高度」）。
+     原来是 `align-content: start` + 不写行高：末行两张卡有多高就多高，于是
+     内容少的时候下半屏空一大片。
+     用 `minmax(min-content, 1fr)` 而不是 `minmax(0, 1fr)`：后者会在空间不够时
+     把末行压扁，卡片内容溢出自己的格子（看着像布局坏了）；`min-content` 让
+     末行至少装得下自己的内容，装不下就交给 `main` 的 `overflow-y: auto` 去滚，
+     这是本仓的既定纪律——内容纵向滚动，横向溢出才是 bug。 */
+  grid-template-rows: auto auto minmax(min-content, 1fr);
   gap: 12px;
   align-content: start;
+  /* `min-height: 100%` 的百分比要解到 `.panel` 上，所以那一层也必须是确定高度
+     （见下面 `.panel` 那条）。栅格是 `.panel` 的 flex 子项，`flex: 1` 让它去
+     领剩余空间，而不是靠 `min-height` 把 `.panel` 顶高。 */
+  flex: 1;
+  min-height: 0;
 }
 /* 行序。栅格按 `order` 而非 DOM 顺序排布——`<ControlTower />` 是 fragment，
    它的三张卡在 DOM 里连在一起，与视觉顺序不同。写成 `order` 而不是

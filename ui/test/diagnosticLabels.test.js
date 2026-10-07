@@ -461,8 +461,22 @@ test('概览控制塔不重复正下方「当前内核」卡已经说过的话',
     /\.diag-rows--grid \{[^}]*grid-template-columns:\s*repeat\(2/,
     '系统健康不能回到两列：默认态（侧栏展开）下概览右半栏只有约 386px，两列会把标签截断'
   );
-  // 详情一律单行省略：诊断正文可能很长，卡片高度不该由日志长度决定。
-  assert.match(css, /\.diag-row__label \{[^}]*text-overflow: ellipsis/);
+  // **详情改为换行显示**（2026-10-08 用户要求「内部内容注意换行显示信息」）。
+  // 这一条钉的是 2026-10-07 的相反决定，原理由是「诊断正文可能很长，卡片高度
+  // 不该由日志长度决定」——**那个前提这次已经不成立了**：末行两张卡现在吃满剩余
+  // 纵向高度（`overview-grid` 的 `grid-template-rows: … minmax(min-content, 1fr)`），
+  // 换行换来的高度不再把内容推出首屏，原来那个代价正好被高度改动抵消。
+  // 所以这里钉的是**不再压成一行**：`nowrap` / `text-overflow: ellipsis` 两条都
+  // 不该回来，而 `overflow-wrap: anywhere` 必须在——否则一整段没有空格的错误文本
+  // 会把整列撑出去，换行反而变成横向溢出。
+  // **必须锚到行首**（`m` + `^`）：`.diag-row--more .diag-row__label` 那条也
+  // 含有 `.diag-row__label {`，不锚行首会先命中它，量到的是「展开行不加重」
+  // 那条规则——断言会因此对着错误的对象通过。
+  const labelRule = css.match(/^\.diag-row__label \{([^}]*)\}/m);
+  assert.ok(labelRule, '必须能找到 .diag-row__label 规则');
+  assert.doesNotMatch(labelRule[1], /white-space:\s*nowrap/, '标签不该再压成一行');
+  assert.doesNotMatch(labelRule[1], /text-overflow:\s*ellipsis/, '标签不该再省略号截断');
+  assert.match(labelRule[1], /overflow-wrap:\s*anywhere/, '长串必须能断行，否则换行变成横向溢出');
 });
 
 // 控制塔的三张卡压紧到 ~252px（用户 2026-10-06：概览页纵向空间被这三块占掉太多）。

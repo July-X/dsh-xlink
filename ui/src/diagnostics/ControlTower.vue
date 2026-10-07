@@ -13,6 +13,7 @@
 // - **最近操作**：回答「上次发生了什么」。失败 / 告警才可点进诊断；
 //   成功记录不给按钮——它没什么可诊断的。
 import { computed, onMounted, ref } from 'vue';
+import { ArrowRight } from '@element-plus/icons-vue';
 import { store } from '../store.js';
 import { isLoading } from '../shell/loading.js';
 import { entryTimeLabel, snapshotStore } from './snapshots.js';
@@ -333,8 +334,15 @@ function openDiagnosis() {
           {{ item.label }}
           <span v-if="item.detail" class="diag-row__value">· {{ item.detail }}</span>
         </span>
-        <span class="diag-row__value" :class="`diag-row__value--${item.tone}`">处理</span>
-        <span class="diag-row__arrow" aria-hidden="true">›</span>
+        <!-- 行尾动作合成**一枚** badge。此前是「处理」+「›」两个元素各占一格，
+             一个说词一个指方向，在一列读数里反而互相稀释；合成一枚之后，
+             有边框、有 icon、有语气色，「这里可以点」不用再靠箭头去暗示。 -->
+        <span
+          class="diag-row__cta"
+          :class="item.tone && item.tone !== 'ok' ? `diag-row__cta--${item.tone}` : ''"
+        >
+          <el-icon aria-hidden="true"><ArrowRight /></el-icon>处理
+        </span>
       </button>
       <!-- 首屏上限之外的项不静默丢弃，也不塞进首屏。收起时说清还剩几项，
            免得用户以为「只有 3 个问题」而漏掉真正要看的那一条。 -->
@@ -347,7 +355,10 @@ function openDiagnosis() {
         <span class="diag-row__label">
           {{ attentionExpanded ? '收起' : `还有 ${attentionHidden} 项` }}
         </span>
-        <span class="diag-row__arrow" aria-hidden="true">
+        <!-- 展开箭头不是动作按钮：**不给 badge**。它标的是「这一段还有没有」，
+             与旁边那枚「处理」是完全不同的事；套上同一个边框样式会让它看起来
+             像第五条待处理项——`.diag-row--more` 那套克制就是这个道理。 -->
+        <span class="diag-row__caret" aria-hidden="true">
           {{ attentionExpanded ? '⌃' : '⌄' }}
         </span>
       </button>
@@ -374,8 +385,11 @@ function openDiagnosis() {
         <span class="diag-row__value" :class="row.tone ? `diag-row__value--${row.tone}` : ''">
           {{ row.value }}
         </span>
-        <!-- 右侧提示由 cell() 一次算好（读不到说「点击重试」，日志格说「查看」）。 -->
-        <span v-if="row.hint" class="diag-row__arrow" aria-hidden="true">{{ row.hint }}</span>
+        <!-- 右侧提示由 cell() 一次算好（读不到说「点击重试」，日志格说「查看」，
+             其余给 `›`）。措辞不归这里管，这里只把它渲染成一枚 badge。 -->
+        <span v-if="row.hint" class="diag-row__cta" :class="row.tone === 'bad' ? 'diag-row__cta--bad' : ''">
+          <el-icon aria-hidden="true"><ArrowRight /></el-icon>{{ row.hint }}
+        </span>
       </button>
     </div>
   </div>
@@ -410,7 +424,9 @@ function openDiagnosis() {
           {{ runKindLabel }} · {{ runMeta.label }}
           <span v-if="runDetail" class="diag-row__value">· {{ runDetail }}</span>
         </span>
-        <span v-if="runActionable" class="diag-row__arrow" aria-hidden="true">›</span>
+        <span v-if="runActionable" class="diag-row__cta">
+          <el-icon aria-hidden="true"><ArrowRight /></el-icon>查看
+        </span>
       </button>
     </div>
   </div>
