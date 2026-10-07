@@ -309,6 +309,36 @@ mod tests {
             "settings.json 不得出现任何订阅凭据字段：{text}"
         );
     }
+
+    /// `Settings` 对外的键名是 **snake_case**。这条钉的是反方向：哪天有人给这个
+    /// struct 补上 `#[serde(rename_all = "camelCase")]`，前端立刻全线读成
+    /// undefined，而它同时还要按原样读写磁盘上的 settings.json——存量文件会静默
+    /// 丢掉所有多词字段（`#[serde(default)]` 让它们「读得出默认值」，症状是用户
+    /// 改过的端口号、预检开关无声回默认）。
+    ///
+    /// 2026-10-07 用户实测的「预检」开关点了没反应是这一类的镜像：前端按
+    /// camelCase 读 `settings.pluginPrecheck`，拿到 undefined，而判据里
+    /// 「undefined 按 true 解释」把它变成恒真。前端那一侧由 `check-invariants`
+    /// 第 19 项钉，这里钉 Rust 侧不会先变。
+    #[test]
+    fn settings_serializes_snake_case_keys() {
+        let json = serde_json::to_string(&Settings::default()).expect("Settings 一定能序列化");
+        assert!(
+            json.contains("\"plugin_precheck\""),
+            "Settings 必须以 plugin_precheck 对外（前端照这个名字读）：{json}"
+        );
+        for wrong in [
+            "\"pluginPrecheck\"",
+            "\"notifyEnabled\"",
+            "\"currentInstanceId\"",
+            "\"autostartKernel\"",
+        ] {
+            assert!(
+                !json.contains(wrong),
+                "Settings 不该出现 camelCase 键 {wrong}——加了 rename_all？存量 settings.json 会静默读不出多词字段：{json}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

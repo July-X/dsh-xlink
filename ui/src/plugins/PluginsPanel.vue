@@ -55,8 +55,14 @@ const view = computed(() => pluginStore.view);
 
 // 安装预检开关。默认开启（后端 `plugin_precheck` 为 null 时按 true 解释），
 // 关掉后「安装」不再起临时内核——用户明确表示信任这个来源时才需要。
+//
+// 键名是 **snake_case**：Rust 的 `Settings` 只挂了 `#[serde(default)]`、没有
+// `rename_all = "camelCase"`，而它同时还要按原样读写磁盘上的 settings.json，
+// 改名会连持久化格式一起改。读成 `pluginPrecheck` 时拿到的是 undefined，
+// 判据里的「undefined 按 true 解释」正好把它变成**恒真**——开关点了没反应，
+// 而且目录里每条插件的「预检并安装」也跟着一直走预检那一条路。
 const precheckOn = computed(() => {
-  const value = store.view && store.view.settings && store.view.settings.pluginPrecheck;
+  const value = store.view && store.view.settings && store.view.settings.plugin_precheck;
   return value === undefined || value === null ? true : !!value;
 });
 
