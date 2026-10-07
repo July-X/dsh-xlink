@@ -160,6 +160,7 @@ ui/src/
 - **功能块之间的默认间距是 12px，由容器统一提供，块自己不再带外边距。** 2026-10-06 用户拍板时是 6px；2026-10-07 uiv2 改版按设计稿（`docs/ui/dsh-xlink-ui-redesign-draft.html`，`gap: 12px`）改成 12px。**除非用户明确要求特调，否则所有新 UI 按它写**。值就是 `.panel` 的 `gap: 12px`，栅格容器 `.page-layout` 与列容器 `.page-layout__col` 同样是 12px，三处一致。
   - **缝由容器给，不由块给**：`.panel` 里的块一律 `margin-bottom: 0`，新块也不要自带 `margin-bottom` / `margin-top`。已经这么写了就不要再逐个调块的内边距去凑。
   - **下限 6px，不要更小**：卡片自带底色 + 1px 描边，描边贴着描边会读成一整块分不开的面，而不是两张卡（这条下限原本记在 `theme.css` 的 `.panel` 注释里，2026-10-06 升格为全前端约定，uiv2 改版随默认值一起提到 6px）。
+  - **页签行距不许归零**（2026-10-07 用户截图：「页签像是压在内容框上」）。插件页 `.installed-tabs .el-tabs__header` 原本是 `margin-bottom: 0`，浏览器实测那条缝只剩 **4px**。清零清掉的是**行距**，而页签那颗药丸**自带底色**（`.el-tabs__item.is-active { background: var(--accent-soft) }`）——4px 的缝看着不像间距，像「被切了一截」。现在 **10px**：取与 `.card-head { padding-bottom: 9px }` 同一档，而不是 Element Plus 默认的 15px，免得在这一屏里引入第三种节奏。**与上面「归零要显式写 0」不矛盾**：那条讲的是有 `gap` 的容器里块与块之间不许再叠 margin；这条讲的是页签栏与它的内容区之间那段没有 `gap` 兜着的行距。判据在 `ui/test/designAlignment.test.js`。
   - **只有没有 gap 的容器例外**：诊断页那 5 个独立窗口装在 `.diagnosis` 里（`position: fixed` 的另一套容器，不吃 `.panel` 的 gap），它们的间距仍由 `.diag-card` 自己那 10px 提供。「块不带 margin」不是全局规则，是「**有 gap 的容器里，块不带 margin**」。
   - 由此引出一条反模式：**flex 容器的外边距不折叠，会直接叠在 gap 上。** `.panel` 的 `gap` 撞上块自己的 `margin-bottom` 就是两份，同一列里两种缝——实测（dev server + `getBoundingClientRect`）改版前的概览页正是 12/12/12/6，肉眼一眼看出不齐。改动只是把那几条 `margin-bottom` 归零，实测变得处处一致。
   - **还有一条容易漏的**：Vue 的**多根组件**（fragment）会把每个根节点提升成父容器的直接子节点，于是它们**也吃父容器的 `gap`**。`ControlTower` 就是三个根节点，于是三张卡都被算进 `.panel` 的 flex 布局——想「这三张卡不受 gap 影响」是做不到的，只能让它们归零后与 gap 等价。

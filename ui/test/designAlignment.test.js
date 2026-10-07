@@ -966,6 +966,30 @@ test('两栏之间的竖线用伪元素画，不许退回 border-left', () => {
   assert.match(after, /background:\s*var\(--border-soft\)/);
 });
 
+// --- 插件页页签行距（2026-10-07 用户截图：「页签像是压在内容框上」）-----------
+//
+// `margin-bottom: 0` 看着是「少一段空白」，实际把页签那颗**有底色的药丸**直接压在
+// 内容框边上：浏览器实测改前只剩 4px、改后 10px。清零的是行距，药丸还在，所以那
+// 4px 读起来不像间距，像「被切了一截」。
+
+test('插件页页签与内容之间有真间距，不能归零', () => {
+  // 主语是 `.el-tabs__header`（Element Plus 的类）。全仓只有这一条规则，但仍然
+  // 读剥注释后的规则文本而不是走 effectiveDeclaration——见文件头那批「主语被复用
+  // 就别信它」的坑，这条判据不能自己踩。
+  const css = stripComments(themeCss);
+  const m = css.match(/\.installed-tabs \.el-tabs__header\s*\{([^}]*)\}/);
+  assert.ok(m, '必须能找到 .installed-tabs .el-tabs__header 规则');
+  const gap = m[1].match(/margin-bottom:\s*(\d+)px/);
+  assert.ok(gap, '必须用 margin-bottom 表达这段行距');
+  assert.ok(
+    Number(gap[1]) >= 8,
+    `页签与内容之间只有 ${gap[1]}px：药丸自带底色，8px 以下读起来像「没有间距」`,
+  );
+  // 取 10 而不是 Element Plus 默认的 15，是为了与 `.card-head { padding-bottom: 9px }`
+  // 同一档，不在这一屏里引入第三种节奏。
+  assert.equal(Number(gap[1]), 10);
+});
+
 // --- 顶部工作条整条删除（2026-10-07 用户要求）------------------------------
 //
 // 用户指着一张截图说「移除这个区域」——标题栏正下方那条 48px 的 `.workspace-bar`：
