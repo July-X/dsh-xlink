@@ -31,6 +31,24 @@ function scopedStyle(src) {
   return src.slice(start);
 }
 
+/**
+ * `.vue` 的模板块，HTML 注释已剥。
+ *
+ * 为什么判据要专门挑模板块：本仓每个模板都带着大段解释「为什么这么写」的中文
+ * 注释，而注释里经常**原样引用被判据的词**（「活动视图已同步」那条为什么不画、
+ * 「插件中心那个 ⓘ」现在在哪）。按整份文件 indexOf / doesNotMatch，判据会把自己
+ * 写的解释当成命中。同一个坑这轮已经踩了三次，三次都是扫全文。
+ */
+function templateOf(src) {
+  const start = src.indexOf('<template>');
+  assert.ok(start >= 0, '找不到 <template>');
+  // 收尾边界取 `<style` 而不是 `<style scoped>`：PluginsPanel 没有自己的
+  // scoped 块（样式都在 theme.css），写死 scoped 会在这类文件上直接 assert 挂掉。
+  const styleAt = src.indexOf('<style', start);
+  const end = styleAt > start ? styleAt : src.length;
+  return src.slice(start, end).replace(/<!--[\s\S]*?-->/g, '');
+}
+
 // --- 概览主栅格落位 -------------------------------------------------------
 //
 // 设计稿 `.grid` 是 1.25fr / 0.75fr 两列，「需要关注」整宽、当前内核与系统
@@ -606,14 +624,6 @@ test('页头标题与说明同属一个子项——否则说明会被 space-betw
 
 const skills = readFileSync('ui/src/skills/SkillsPanel.vue', 'utf8');
 
-/** `.vue` 的模板块，HTML 注释已剥。 */
-function templateOf(src) {
-  const start = src.indexOf('<template>');
-  const end = src.indexOf('<style scoped>');
-  assert.ok(start >= 0 && end > start, '找不到 <template> / <style scoped> 边界');
-  return src.slice(start, end).replace(/<!--[\s\S]*?-->/g, '');
-}
-
 const skillsTpl = templateOf(skills);
 
 test('技能页是「已安装 / 社区资源」两张卡，不是一张卡里的分隔线', () => {
@@ -667,4 +677,47 @@ test('社区资源卡的样式留在 scoped，且复用全局 `.install-row` 而
   }
   assert.match(skills, /<div class="install-row">/);
   assert.doesNotMatch(style, /\.community-install-control/);
+});
+
+// --- 同一页里不再有两个名字指同一份东西 ----------------------------------
+//
+// 2026-10-07 逐页比对设计稿时发现的两处。两处都不是排版问题，是**命名**问题：
+// 同一个词在一屏里出现两次，或者两个不同的词指同一件事，用户要靠猜。
+
+const versionsTpl = templateOf(versionsPanel);
+
+test('内核版本页卡头叫「已安装 / N 个版本」，不复述页面标题也不与组标题重复', () => {
+  // 设计稿 draft 2669-2673：卡头 = 已安装 / caption 2 个版本。原先卡头写的是
+  // 「内核版本」——页面标题已经叫内核版本了，卡头再说一遍等于把整页的名字
+  // 复述一次；而这一段真正在讲的是「本机装了哪几个」。
+  assert.match(versionsTpl, /<h2>已安装<\/h2>/);
+  assert.match(versionsTpl, /个版本<\/span>/);
+  // 组内那个 `<h3>已安装</h3>` 一并去掉，否则同一个词连着出现在两行。
+  // 判据只数这两个标题标签，不数全文：「已安装」在发布列表里还作为**行内标记**
+  // 出现一次（标出这个远端版本本机已经有了），那是另一个含义，不能一起禁掉。
+  assert.equal((versionsTpl.match(/<h2>已安装<\/h2>/g) || []).length, 1);
+  assert.equal((versionsTpl.match(/<h3>已安装<\/h3>/g) || []).length, 0);
+});
+
+const pluginsPanel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
+const pluginsTpl = templateOf(pluginsPanel);
+
+test('插件页：外层卡叫「插件管理」，右栏那份远端目录才叫「插件中心」', () => {
+  // draft 2746 外层卡 = 插件管理；draft 2775 右栏 = 插件中心（来自 dshfind.com）。
+  // 原先外层卡叫「插件中心」、右栏叫「插件仓库」——同一份 dshfind.com 目录，
+  // 同一页里两个名字。
+  assert.match(pluginsTpl, /<span class="plugin-center-title">插件管理<\/span>/);
+  assert.match(pluginsTpl, /<h3 class="section-divider">\s*插件中心/);
+  assert.doesNotMatch(pluginsTpl, /插件仓库(?![一-龥])/);
+  // dshfind.com 的链接跟着右栏走（它是那份目录的来源，不是整页的来源）。
+  assert.match(pluginsTpl, /dshfind\.com\/zh/);
+});
+
+test('卡头 ⓘ 是纯图标：可见文字与 tooltip 内容说的是同一件事', () => {
+  // 原先 ⓘ 旁边写着「数据来源于 dshfind.com」，而它的 tooltip 里讲的是插件存放
+  // 路径与生效规则——鼠标停在字上弹出的是另一段话。改成纯图标后不再错配，
+  // 也与技能页 / 概览页的 ⓘ 一致（见「提示收成图标」）。
+  assert.match(pluginsTpl, /<el-tooltip[^>]*:content="installTip"[^>]*>\s*<el-icon class="head-tip-icon">/);
+  assert.doesNotMatch(pluginsTpl, /plugin-center-source/);
+  assert.doesNotMatch(stripComments(themeCss), /\.plugin-center-source/, '`.plugin-center-source` 已随模板删除');
 });

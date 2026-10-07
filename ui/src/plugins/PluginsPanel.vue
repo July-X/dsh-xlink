@@ -288,14 +288,12 @@ function instanceChipType(row, instanceId) {
   <section class="panel">
     <!-- 第三方来源的免责提示：原先是页头下面一条整宽的 notice 条。2026-10-07
          用户要求收成标题旁的警告图标 —— 那条文案只有一句、不含任何随状态变化
-         的信息，却常驻占掉一整行，把真正的页头内容（插件中心那排控件）往下挤；
+         的信息，却常驻占掉一整行，把真正的页头内容（插件管理那排控件）往下挤；
          而它的**语境**就是「插件」这个标题本身，图标挂在标题旁边反而更贴。
          触发方式用 hover 而不是常驻：免责提示要能被主动读到，但不要求它在用户
          没问的时候一直占屏。`role="note"` 换成 `tabindex="0"`——原先 div 是
          纯展示，读屏能过；现在是可聚焦的触发元素，键盘要够得着，
-         否则 hover-only 的信息对键盘用户就是不存在。
-         与下面「数据来源于 dshfind.com」的 ⓘ 用同一个 `head-tip-icon` 类，两者在
-         同一行、同一尺寸，不会读成两种不同级别的提示。 -->
+         否则 hover-only 的信息对键盘用户就是不存在。 -->
     <div class="page-head">
       <!-- 标题行外面还要再包一层 `<div>`：`.page-head` 是 `space-between` 的
            flex 行，标题与说明必须同属一个子项，否则说明会被当成右侧的「动作」
@@ -318,13 +316,16 @@ function instanceChipType(row, instanceId) {
     <div class="card entity-card">
       <div class="card-head plugin-center-head">
         <div class="plugin-center-title-row">
-          <span class="plugin-center-title">插件中心</span>
+          <!-- 设计稿（2746 行）这张卡叫「插件管理」，不是「插件中心」：它是整页的
+               容器——页签、左栏的本机插件库、右栏的远端目录都在里面。而「插件中心」
+               是**右栏**那份 dshfind.com 目录的名字。原先两处一个叫「插件中心」
+               一个叫「插件仓库」，指的却是同一份远端目录，同一页里两个名字。 -->
+          <span class="plugin-center-title">插件管理</span>
+          <!-- ⓘ 只剩图标：原先可见文字写「数据来源于 dshfind.com」而 tooltip 里讲的是
+               插件存放路径与生效规则，**说的不是同一件事**——鼠标停在字上弹出的是
+               另一段话。与技能页同一个处理（见 ui/AGENTS.md「提示收成图标」）。 -->
           <el-tooltip placement="top" effect="dark" :content="installTip">
-            <span class="plugin-center-source">
-              <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
-              数据来源于
-              <a href="https://dshfind.com/zh" target="_blank" rel="noreferrer">dshfind.com</a>
-            </span>
+            <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
           </el-tooltip>
           <el-button
             class="plugin-center-refresh"
@@ -473,10 +474,13 @@ function instanceChipType(row, instanceId) {
           <!-- 本机那一份到这里为止：上面是已装清单与手动安装（本地仓库），
                下面开始是 dshfind.com 上的远端目录。宽版下两者已经各占一列，
                这道分组标题退化成列内的分隔线——窄窗（单列）时它仍然是把
-               「手动安装」与「插件仓库」两套输入区分开的主要线索。 -->
+               「手动安装」与远端目录两套输入区分开的主要线索。 -->
           <h3 class="section-divider">
-            插件仓库
-            <span class="muted">来自 dshfind.com</span>
+            插件中心
+            <span class="muted">
+              来自
+              <a href="https://dshfind.com/zh" target="_blank" rel="noreferrer">dshfind.com</a>
+            </span>
           </h3>
           <!-- 搜索框独占一行，放在分类下拉之前：这一列是插件页的右半栏，
                三个控件挤一行时每个只剩 150px 出头，「全部（17.5k）」这类
@@ -494,7 +498,7 @@ function instanceChipType(row, instanceId) {
                 <el-icon><Search /></el-icon>
               </template>
               <template #suffix>
-                <span class="muted" title="按 Enter 在插件仓库里搜索">↵</span>
+                <span class="muted" title="按 Enter 在插件中心里搜索">↵</span>
               </template>
             </el-input>
           </div>
@@ -535,7 +539,7 @@ function instanceChipType(row, instanceId) {
             v-if="!pluginStore.catalogLoaded && items.length === 0"
             v-loading="catalogLoading"
             style="min-height: 120px"
-            element-loading-text="正在搜索插件仓库…"
+            element-loading-text="正在搜索插件中心…"
           ></div>
           <p v-else-if="items.length === 0" class="muted" style="margin: 0">
             {{ emptyHint }}

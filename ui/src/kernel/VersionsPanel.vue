@@ -250,9 +250,12 @@ function groupTip(group) {
     </div>
     <div class="card kernel-card">
       <div class="card-head">
-        <h2>内核版本</h2>
+        <!-- 设计稿这张卡的标题是「已安装」+「N 个版本」（draft 2669-2673 行），
+             不是「内核版本」——页面标题已经叫内核版本了，卡头再复述一遍等于把
+             整页的名字说两遍，而这一段真正在讲的是「本机装了哪几个」。 -->
+        <h2>已安装</h2>
         <span class="head-meta">
-          <span class="muted">已安装 {{ kernel ? kernel.installed.length : '—' }} 个</span>
+          <span class="muted">{{ kernel ? kernel.installed.length : '—' }} 个版本</span>
         </span>
       </div>
 
@@ -273,8 +276,11 @@ function groupTip(group) {
       <el-alert v-if="releases.warning" :title="releases.warning" type="warning" :closable="false" show-icon />
 
       <div class="updates-lists">
+        <!-- 原来这里还有一个 `<h3>已安装</h3>`，卡头改成「已安装」之后同一个词
+             连着出现两次。设计稿第一组没有自己的组标题（卡头就是它的标题），
+             只有下面「官方版本」那组另起一个——留着不对称正是要的效果：
+             两组的权重本来就不同。 -->
         <div class="list-group">
-          <h3>已安装</h3>
           <div class="installed-list">
             <el-empty v-if="!kernel || kernel.installed.length === 0" description="尚未安装任何内核。" :image-size="64" />
             <div v-for="v in kernel ? kernel.installed : []" :key="v.version" class="installed-row">
