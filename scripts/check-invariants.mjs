@@ -1990,6 +1990,67 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// --- 19. `view.settings` 读的是 `Settings` 的 snake_case 字段名 -------------
+//
+// 第 9 项管的是反方向：套了 `rename_all = "camelCase"` 的结构体，前端读到
+// snake_case 就是错的。这一项管它的镜像。`Settings` 只挂了 `#[serde(default)]`、
+// **没有** rename_all，而它还要按原样读写磁盘上的 settings.json，所以对外就是
+// snake_case。
+//
+// 2026-10-07 用户实测：插件页的「预检」开关点了没反应——toast 说「已关闭安装预检」，
+// 开关却还是「预检」态。前端读的是 `store.view.settings.pluginPrecheck`，实际键是
+// `plugin_precheck`，于是取到 undefined；而判据里写着「undefined 按 true 解释」，
+// 把它变成**恒真**。编译、单测、代码预算三道门禁全绿——前端测试喂的是手写夹具，
+// 真实响应从没穿过它。
+//
+// 为什么只盯 `settings.`：前端会整体读入并按字段名逐个访问的载荷里，只有它有一条
+// 固定路径（`store.view.settings`）。按结构体泛化会误报——同一个 camelCase 名字在
+// 别的载荷里可能真的是对的（第 9 项的注释就记过一次这样的误判）。
+
+{
+  const body = read('src-tauri/src/shell/settings.rs').match(/pub struct Settings \{([\s\S]*?)\n\}/);
+  if (!body) {
+    fail('settings-fields', 'settings.rs 里找不到 `pub struct Settings`，本项判据失效');
+  } else {
+    const fields = new Set([...body[1].matchAll(/pub\s+([a-z][a-z0-9_]*)\s*:/g)].map((m) => m[1]));
+    if (fields.size === 0) {
+      fail('settings-fields', 'Settings 结构体里一个字段都没解析到，判据本身该更新');
+    } else {
+      const bad = [];
+      const uiDir = join(root, 'ui', 'src');
+      const scan = (dir) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const full = join(dir, entry.name);
+          if (entry.isDirectory()) {
+            scan(full);
+            continue;
+          }
+          if (!/\.(js|vue)$/.test(entry.name)) continue;
+          const rel = relative(uiDir, full);
+          const text = readFileSync(full, 'utf8');
+          // 前置只挡「紧贴前一个词」（`kernel_settings` / `${...}settings`），
+          // **不能**挡 `.`：真实路径长这样 `store.view.settings.port`，前面那个
+          // 链式访问的点是合法的一部分。第一版写成 `(?<![\w.])`，结果本项对
+          // PluginsPanel 那条真错读完全无声——反向验才看见。
+          for (const access of text.matchAll(/(?<![\w$])settings\.([A-Za-z_]\w*)/g)) {
+            const name = access[1];
+            // `settings.json` 是磁盘文件名，不是字段访问。
+            if (name === 'json' || fields.has(name)) continue;
+            const line = text.slice(0, access.index).split('\n').length;
+            bad.push(`${rel}:${line} 读 settings.${name}，但 Settings 没有这个字段（无 rename_all，键是 snake_case）`);
+          }
+        }
+      };
+      scan(uiDir);
+      if (bad.length > 0) {
+        fail('settings-fields', `${bad.join('；')}——取到 undefined，读写双向都不成立`);
+      } else {
+        note(`view.settings 的 ${fields.size} 个字段与前端读取一一对应`);
+      }
+    }
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);
