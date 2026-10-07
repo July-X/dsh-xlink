@@ -104,9 +104,13 @@ pub struct PrecheckReport {
     pub plugin_id: String,
     /// 候选包的显示名。
     pub plugin_name: String,
-    /// 预检通过后是否已把包安装到目标实例。只有 `pass` 会真正安装；
-    /// `inconclusive` 也会安装（预检不许因为自身故障拦住用户），但这个
-    /// 字段让 UI 能如实说明安装是在**没有预检背书**的情况下发生的。
+    /// 用户点「应用变更」之后，包是否已装到目标实例。
+    ///
+    /// **只有 `pass` 才可能为真**：两阶段契约（2026-10-06 用户拍板）下，
+    /// `inconclusive` 表示「没有拿到『装上去能起来』的证据」，此时 UI 禁用应用
+    /// 按钮，后端也不接受 apply。改这段注释时注意它此前描述的是更早的 fail-open
+    /// 契约（`inconclusive` 也会装），而那份契约已经废止——注释留着会让下一个人
+    /// 按一个不存在的规则去改 UI 的按钮禁用逻辑。
     pub installed: bool,
     /// 一句话结论，直接给用户看。
     pub summary: String,

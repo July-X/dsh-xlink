@@ -15,11 +15,13 @@ import { isLoading } from '../shell/loading.js';
 import {
   closeDiagnosis,
   diagnosticStore,
-  loadOperationDiagnosis,
-  loadPluginRun,
-  loadStartupDiagnosis,
 } from './diagnostics.js';
-import { loadKernelStatusDiagnosis } from './diagnostic-actions.js';
+import {
+  loadKernelStatusDiagnosis,
+  reloadOperationDiagnosis,
+  reloadPluginDiagnosis,
+  reloadStartupDiagnosis,
+} from './diagnostic-actions.js';
 import { moreItems, onMore } from './diagnosis-more-menu.js';
 import { kindLabel } from './diagnostic-labels.js';
 import StartupDiagnosis from './StartupDiagnosis.vue';
@@ -46,8 +48,8 @@ watch(
   () => diagnosticStore.active?.kind,
   (next) => {
     if (!NEEDS_FETCH.includes(next) || diagnosticStore.currentRun) return;
-    if (next === 'startup') loadStartupDiagnosis(diagnosticStore.active.runId);
-    else loadOperationDiagnosis(diagnosticStore.active.runId, next);
+    if (next === 'startup') reloadStartupDiagnosis(diagnosticStore.active.runId, false);
+    else reloadOperationDiagnosis(diagnosticStore.active.runId, next, false);
   },
   { immediate: true }
 );
@@ -110,10 +112,10 @@ function back() {
 function onRefresh() {
   const kind = diagnosticStore.active?.kind;
   // 按 id 拉：换「最近一条」会让用户在刷新里看到另一件事。
-  if (kind === 'startup') loadStartupDiagnosis(diagnosticStore.active.runId, true);
+  if (kind === 'startup') reloadStartupDiagnosis(diagnosticStore.active.runId);
   else if (kind === 'kernel') loadKernelStatusDiagnosis(true);
-  else if (kind === 'plugin') loadPluginRun(diagnosticStore.active.runId, true);
-  else if (reload.value) loadOperationDiagnosis(diagnosticStore.active.runId, kind, true);
+  else if (kind === 'plugin') reloadPluginDiagnosis(diagnosticStore.active.runId);
+  else if (reload.value) reloadOperationDiagnosis(diagnosticStore.active.runId, kind);
 }
 
 </script>

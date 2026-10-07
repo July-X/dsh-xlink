@@ -8,7 +8,7 @@ import { computed, ref } from 'vue';
 import { Check, View } from '@element-plus/icons-vue';
 import { store } from '../store.js';
 import { isLoading } from '../shell/loading.js';
-import { applyPluginChange } from './plugins.js';
+import { applyPrecheckChange } from '../diagnostics/diagnostic-actions.js';
 import { openLogsForReport } from '../logs/logs.js';
 import { openPluginDiagnosis } from '../diagnostics/diagnostics.js';
 
@@ -65,7 +65,7 @@ const applyDisabledReason = computed(() => {
 });
 
 function apply() {
-  return applyPluginChange(report.value);
+  return applyPrecheckChange(report.value);
 }
 
 function close() {

@@ -18,13 +18,15 @@ import {
   startWorkbench,
   store,
 } from '../store.js';
-import { precheckPlugin } from '../plugins/plugins.js';
+import { applyPluginChange, precheckPlugin } from '../plugins/plugins.js';
 import { showLogs } from '../logs/logs.js';
 import { loadSnapshots, previewRestore } from './snapshots.js';
 import {
   clearLiveEvents,
   closeDiagnosis,
   diagnosticStore,
+  loadOperationDiagnosis,
+  loadPluginRun,
   loadRecentRuns,
   loadStartupDiagnosis,
 } from './diagnostics.js';
@@ -183,4 +185,55 @@ export function restorePreChange(snapshotId) {
 export function primaryEvidenceFor(run) {
   const evidence = (run && run.evidence) || {};
   return String(evidence.sandboxLog || evidence.kernelLog || '');
+}
+
+// —— 诊断页的加载与「应用变更」（审查 R2-P2-02）———————————————
+//
+// 上一批（`showIncidentFor` / `openWorkbenchWindow`）补的是「打开某处」这类
+// 动作。这一批补的是**加载**与**写入**：它们此前由各诊断组件直接 import，
+// 于是 loading key、错误处理、以及「这条记录属于哪次运行」这件事分散在五个
+// 组件里——改一个 loading key 要改五处，而漏掉的那一处只会表现成「有时转圈
+// 有时不转」。
+//
+// ## 边界：概览页可以直接用业务模块的纯动作
+//
+// `ControlTower`（概览页）仍然直接 import `showLogs` / `loadLogList`，这是
+// **有意保留**的：概览不是诊断层，不建立运行记录上下文，也不需要与诊断页
+// 共用 loading key。它要的是「点这一行去看日志」这一个动作。为此把它收进
+// 代理只会让概览页依赖一个它不需要的层。
+//
+// 反过来，**四个诊断页**（`StartupDiagnosis` / `OperationDiagnosis` /
+// `PluginDiagnosis` / `DiagnosisShell`）一律走这里。
+
+// 三条加载的形状都是「按 id 拉 + 可选手动」，所以一个 `manual` 开关就够：
+// `manual = true` 挂 loading 并强制重新读取（用户点了刷新），`false` 静默
+// （切 kind 时自动拉一次）。分成六个函数只会让调用方挑错。
+//
+// **一律按 id 拉**，不取「最近一条」：刷新里换一条记录，用户会以为刷新失败。
+
+/** 重新拉取启动诊断。`manual` 为真时挂 loading 并强制重新读取。 */
+export function reloadStartupDiagnosis(runId, manual = true) {
+  return loadStartupDiagnosis(runId || getLastRunId(), manual);
+}
+
+/** 重新拉取恢复 / 排查诊断。 */
+export function reloadOperationDiagnosis(runId, kind, manual = true) {
+  return loadOperationDiagnosis(runId || diagnosticStore.active?.runId, kind, manual);
+}
+
+/** 重新拉取插件预检诊断。 */
+export function reloadPluginDiagnosis(runId, manual = true) {
+  return loadPluginRun(runId, manual);
+}
+
+/**
+ * 应用预检通过的插件（两阶段契约的第二阶段）。
+ *
+ * 预检弹窗与插件诊断页是**同一个动作**的两个入口（评审 R2-P2-02 指出它们各自
+ * 处理了一遍）。收在这里之后，两处的 loading key、失败处理、以及「应用后把
+ * 报告换成已安装那份」是同一份实现——过去改一处忘一处，漂掉的恰恰是
+ * `preChangeSnapshotId` 那个字段，而它决定「恢复变更前状态」按钮是否可用。
+ */
+export function applyPrecheckChange(report) {
+  return applyPluginChange(report);
 }

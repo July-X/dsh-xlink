@@ -15,7 +15,8 @@ import {
   isRetryable,
   nextStepFor, RUN_HEADLINE, runAgeLabel, stageProgress, staleRunHint, statusMeta,
 } from './diagnostic-labels.js';
-import { diagnosticStore, getLastRunId, loadStartupDiagnosis } from './diagnostics.js';
+import { reloadStartupDiagnosis } from './diagnostic-actions.js';
+import { diagnosticStore } from './diagnostics.js';
 import {
   openEvidence,
   openWorkbenchWindow,
@@ -66,7 +67,7 @@ const progress = computed(() => stageProgress('startup', run.value?.events));
 function reload() {
   // 优先按 id 拉，不按「最近一条」：用户可能正在看一条**历史**记录，
   // 此时点刷新若换成最近那条，看到的就是另一件事。
-  return loadStartupDiagnosis(run.value?.id || getLastRunId(), true);
+  return reloadStartupDiagnosis(run.value?.id);
 }
 
 function viewLogs() {
