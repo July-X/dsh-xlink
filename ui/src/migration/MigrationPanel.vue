@@ -129,8 +129,28 @@ async function onRecoverMisplaced() {
   }
 }
 
+// 「重新扫描」是一次真实的 IO，**每条路径都要有可见的落点**。
+//
+// 这一条此前是纯 `await`：扫描完把 store 换掉，页面上多半什么也没变（用户最
+// 常见的处境恰恰是「什么都没扫到」），于是按钮只闪一下 spinner 就恢复原状——
+// 「点击无反应」（2026-10-08 用户实测）。转圈只在请求期间存在，请求一结束就
+// 什么都不剩；一次成功的扫描没有留下任何可核对的东西，就不算发生过。
+// 失败由 loadMigrationPreview 自己 toast，所以这里只管成功这一支。
 async function refreshPreview() {
-  await withLoading('migrationPreview', () => loadMigrationPreview());
+  const preview = await withLoading('migrationPreview', () => loadMigrationPreview());
+  const migratable = ((preview && preview.items) || []).filter(
+    (it) => it.file_count > 0 || it.total_bytes > 0
+  );
+  if (!migratable.length) {
+    toast('已重新扫描：未检测到可迁移的旧数据，无需迁移', 4500);
+    return;
+  }
+  const files = migratable.reduce((sum, it) => sum + (it.file_count || 0), 0);
+  const bytes = migratable.reduce((sum, it) => sum + (it.total_bytes || 0), 0);
+  toast(
+    `已重新扫描：${migratable.length} 项、共 ${files} 个文件（${formatBytes(bytes)}）可迁移`,
+    5000
+  );
 }
 
 // 「完成」收尾并回到概览主界面：迁移结果留在历史列表里可随时回查 / 回滚；
@@ -182,15 +202,29 @@ function prev() {
 // 再触发弹窗。MigrationPrompt 的 promptStore.open = true 之后弹窗就
 // 走 ask / running / done 三阶段，跟首次启动的提示同一条路径。
 async function onReopenPrompt() {
-  await clearMigrationSkip();
-  if (!migrationStore.preview) {
-    await loadMigrationPreview();
-  }
-  if (!migrationStore.hasMigratable) {
-    // 没有可迁移内容时给个轻提示，不开弹窗
-    return;
-  }
-  reopenMigrationPrompt();
+  // clearMigrationSkip 与下面的扫描都可能失败；两者各自内部已经 toast 过一次，
+  // 这里只是把 loading 收干净——不让失败退化成又一次静默的空点。
+  await withLoading('migrationRePrompt', async () => {
+    await clearMigrationSkip();
+    if (!migrationStore.preview) {
+      await loadMigrationPreview();
+    }
+    if (!migrationStore.hasMigratable) {
+      // **这里曾经只有一句注释 + 一个裸 return**：注释写着「没有可迁移内容时给
+      // 个轻提示，不开弹窗」，而那个轻提示从未被写出来。于是没有可迁移内容时
+      // 点这枚按钮是**纯静默空操作**——不弹窗、不报错、页面上没有任何痕迹
+      // （2026-10-08 用户实测报「按钮点击无反应」）。
+      // 不开弹窗仍然是对的（弹一个「没有东西可迁移」的窗只是把同一句话说两遍），
+      // 但**必须说出原因**：否则「没反应」和「点了但没用」根本分不开。
+      toast(
+        '当前没有可迁移的旧数据，所以不会弹出迁移询问。' +
+          '如果确认已放入旧版数据，先点「重新扫描」再回来试',
+        7000
+      );
+      return;
+    }
+    reopenMigrationPrompt();
+  });
 }
 
 function toggleSource(src) {
@@ -312,7 +346,9 @@ function toggleSource(src) {
         <el-button @click="refreshPreview" :icon="Refresh" :loading="isLoading('migrationPreview')">
           重新扫描
         </el-button>
-        <el-button @click="onReopenPrompt">
+        <!-- 触发 IO（migration_skip_clear + 必要时 migration_preview）却没挂
+             loading，是本仓「触发 IO 的按钮必须挂 loading」那条纪律的漏网。 -->
+        <el-button :loading="isLoading('migrationRePrompt')" @click="onReopenPrompt">
           再次询问迁移
         </el-button>
         <el-button
