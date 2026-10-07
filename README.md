@@ -46,7 +46,7 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
 ```
 
 - **内置工作台**：外壳在本地起 `dsh web`，用专用窗口加载其 Web UI。打开工作台前会为发布包缺失的 source map 生成最小 sidecar，debug DevTools 不再出 404。
-- **官方对话快捷入口**：概览页的「打开官方对话」拉起独立的 `official-chat` 窗口，固定加载 [chat.deepseek.com](https://chat.deepseek.com)。默认只初始化 DeepSeek 页签，千问与 MiniMax 在首次选择时才创建，并保留本窗口状态——首开的 CPU、内存与网络开销因此小得多。窗口只注入静态的 chrome-row 品牌条带与拉绳挂件，不跑常驻动画，避免 WKWebView 空闲时持续渲染。窗口不覆盖 user-agent：WebView2 本身就是真实的桌面版 Edge，原生 UA、`Sec-CH-UA` 与 `navigator.userAgentData` 一致；改写成 Chrome 反而造出「HTTP 层报 Edge、JS 层报 Chrome」的自相矛盾，那正是环境检测的特征。专属目录同时充当持久化配置档案，DeepSeek 登录态跨重启保留。窗口已开时按钮变为「关闭官方对话」，复用现有窗口并 `set_focus`。设计细节与 `OFFICIAL_CHAT_BROWSER_ARGS` 见 [docs/architecture/architecture.md](docs/architecture/architecture.md)。
+- **官方对话快捷入口**：概览页的「打开官方对话」拉起独立的 `official-chat` 窗口，固定加载 [chat.deepseek.com](https://chat.deepseek.com)。默认只初始化 DeepSeek 页签，MiniMax 在首次选择时才创建，并保留本窗口状态——首开的 CPU、内存与网络开销因此小得多。窗口只注入静态的 chrome-row 品牌条带与拉绳挂件，不跑常驻动画，避免 WKWebView 空闲时持续渲染。窗口不覆盖 user-agent：WebView2 本身就是真实的桌面版 Edge，原生 UA、`Sec-CH-UA` 与 `navigator.userAgentData` 一致；改写成 Chrome 反而造出「HTTP 层报 Edge、JS 层报 Chrome」的自相矛盾，那正是环境检测的特征。专属目录同时充当持久化配置档案，DeepSeek 登录态跨重启保留。窗口已开时按钮变为「关闭官方对话」，复用现有窗口并 `set_focus`。设计细节与 `OFFICIAL_CHAT_BROWSER_ARGS` 见 [docs/architecture/architecture.md](docs/architecture/architecture.md)。
 - **macOS / Windows 自定义标题栏**：管理面板在这两个平台用前端自绘标题栏。主色带从左到右以 5% 到 70% 的不透明度叠加深 Gitea 绿，保留毛笔笔触纹理；dev 构建切换为低亮度鲸眼红色系；Linux 保留系统标题栏。窗口按钮按平台惯例绘制——macOS 是左上角红黄绿交通灯，Windows 是右侧的最小化 / 关闭按钮（46×32 命中区、10 px 细线字形，hover 覆浅色底，关闭 hover 变系统红）。无边框由 `tauri.conf.json` 的 `decorations: false` 在建窗时给定。
 - **后台常驻（两平台统一）**：关闭窗口只是把它收进后台——内核、工作台、官方对话与更新检查继续运行；真正退出只在常驻入口图标的右键菜单「退出 Dsh-Xlink」，退出前若内核在跑会先问一句。Windows 的入口是通知区域托盘（收起时用 `ITaskbarList::DeleteTab` 从任务栏移除按钮，任务栏与 Alt+Tab 都不再留一个点了没反应的窗口），macOS 的入口是菜单栏状态项（收起时把面板移出 Dock，菜单栏图标自动跟随系统明暗反色）。两端行为完全一致，实现只有一份——此前只有 Windows 是常驻，macOS 上关窗即退出，同一份产品在两个平台上得学两遍。图标左键单击叫回窗口，右键出菜单。从后台重新打开时，每次启动**只在第一次**提示「刚才只是把窗口收进了后台」（4 秒）——窗口隐藏时收不到页内提示，靠它避免看起来像崩溃；此后收起与恢复一律静默。
 - **开机自启动**：「设置 → 后台常驻」里可开。开启后下次开机系统会把 dsh-xlink 拉进后台**但不显示面板**（开机弹窗口挡在用户面前是自动启动最招人烦的地方），菜单栏 / 托盘图标是全部可见痕迹。机制是系统登录项：macOS 写 `~/Library/LaunchAgents/*.plist`，Windows 写 `HKCU\...\CurrentVersion\Run`，都只动当前用户、不需要管理员权限。另有独立的「开机启动工作台」开关（默认关）——开机就占端口、起 node 进程、订阅事件流，多数用户不需要。两个开关刻意分开，因为代价不同、接受度也不同。搬过目录或换了构建后，条目仍指向旧位置会被识别出来并提示重勾。
@@ -59,7 +59,7 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
 ## 功能
 
 - **一键启动 / 停止工作台**。概览页主按钮切换内核状态；同排的「打开工作台窗口」「打开官方对话」「查看日志」是次级入口，不改内核状态。
-- **打开官方对话**：拉起独立窗口，按 `OFFICIAL_CHAT_TABS` 顺序排布 DeepSeek / 千问 / MiniMax 三个页签，与工作台窗口互不干扰。使用原生 Edge UA 与可持久化登录的专属 user-data 目录。窗口已开时按钮变为「关闭官方对话」并销毁当前窗口。
+- **打开官方对话**：拉起独立窗口，按 `OFFICIAL_CHAT_TABS` 顺序排布 DeepSeek / MiniMax 两个页签，与工作台窗口互不干扰。使用原生 Edge UA 与可持久化登录的专属 user-data 目录。窗口已开时按钮变为「关闭官方对话」并销毁当前窗口。
 - **多内核并存**：内核 tab 中 DSH（active）、mcode（mock）等内核族并列。每个内核族可同时跑多个实例；概览页底部「实例切换器」tab 直接在主页面切换实例。侧栏菜单、插件页、技能页、设置页都跟随当前实例。已迁移用户在概览页不再显示「数据迁移」入口，向导在「设置」页常驻，可点进查看最近一次迁移。
 - **更新菜单**：列出 npm registry [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 的所有发布版本（含预发布标记），可安装、切换活动版本、删除本地版本。
 - **内核安装通过 pnpm**：`node-linker=hoisted` 保持扁平 `node_modules`，内容寻址存储让重复安装更快。安装过程逐行流式显示在进度面板，完整日志落盘 `~/.dsh-xlink/shell/release/logs/<kind>-install-<版本>-<日期>.log`（dev 壳为 `~/.dsh-xlink/shell/dev/logs/dev-install-<版本>-<日期>.log`，`<日期>` 为本地日期）。下载先写临时文件、成功后才发布；npm 包由外壳做路径受限、禁止链接和有展开大小上限的 Rust 解包，无需额外安装系统 `tar`。
@@ -219,7 +219,7 @@ npm run build:win         # x86_64-pc-windows-msvc
 4. （可选）**插件** → 在「已安装 → 插件仓库」里搜索（关键词回车提交）、按分类浏览、按 Star / 更新时间排序后一键安装，或在上一段「手动安装」里填写 npm 包名（如 `@ace-zone/dsh-market`）/ GitHub 仓库 URL 安装。安装前自动校验插件是否符合 dsh 规范（package.json / `dsh.bundle.patch` / 入口文件），安装完成后重启工作台（关闭后重新启动）生效。点击「同步」会对所有已安装内核重新物化中央插件库，并清除外壳标记的已删除插件残留。进入「内核版本」页后，每个已安装版本旁的信息图标可悬停查看该版本实际物化的插件、版本和链接 / 拷贝模式。
 5. （可选）**设置 → 内核补丁（内置）**：查看随当前 dsh-xlink 版本捆绑的内核补丁与小插件（来自本应用发布方，与社区插件不同），自主选择「应用到当前内核」或「撤销补丁」。应用前自动备份被覆盖的原文件、随时可撤销，状态与备份记录在 `~/.dsh-xlink/dsh/desktop/patches/`（dev 壳为 `~/.dsh-xlink/dsh/desktop-dev/patches/`）。工作台运行期间不能操作，请先关闭工作台；切换内核版本后需对新的活动版本重新应用。补丁与适用内核版本详见 [docs/features/extensions/patch-management.md](docs/features/extensions/patch-management.md)。
 6. 在「概览」页点击「启动工作台」：自动拉起内核、等待就绪后校验当前内核的工作台地址，再打开工作台窗口进入 Harness 界面；启动失败会自动弹出事故面板和内核日志。「关闭工作台」会同时关闭工作台窗口并停止内核。工作台窗口的系统关闭按钮（macOS 交通灯红灯 / Windows ×）始终可用，只收起窗口，内核与任务继续在后台运行；内核运行中收起窗口后，随时可用「打开工作台窗口」重新打开。工作台窗口会自动进行健康自检——发现白屏、运行时错误或未处理的 Promise 异常时，事故面板会展示异常类型 / 消息 / 堆栈与页面地址，并标注归类（「疑似插件问题」「疑似内核问题」「前端 bundle 异常」「运行环境问题」「暂未能归因」）。插件问题可重新启用或移除；内核问题可先停止工作台，再打开日志并切换 / 重装版本；「运行环境问题」（端口被占用、数据目录不可写、磁盘已满等）指向设置页与日志，面板按钮会直接去设置页。工作台窗口侧栏头部右侧（品牌 logo 旁）悬浮着一个灯泡拉绳小挂件：点击（拉动）它，灯泡点亮的同时桌面端管理面板会归位到点击位置附近并提到当前桌面上方，方便随手操作；若灯泡闪红，说明与桌面壳的通信失败，可查看工作台 DevTools 控制台。
-7. 「打开官方对话」：在「概览」页点击此按钮即可拉起独立的官方对话窗口（顶部条带 chrome-row 官方品牌蓝 `#4D6BFE`、拉绳挂件挂页签栏右侧 12 px；区别于工作台窗口的 Gitea 绿色 212 px 偏移），按 `OFFICIAL_CHAT_TABS` 顺序排布 DeepSeek / 千问 / MiniMax 三个页签。窗口已开时按钮变为「关闭官方对话」并销毁当前窗口。
+7. 「打开官方对话」：在「概览」页点击此按钮即可拉起独立的官方对话窗口（顶部条带 chrome-row 官方品牌蓝 `#4D6BFE`、拉绳挂件挂页签栏右侧 12 px；区别于工作台窗口的 Gitea 绿色 212 px 偏移），按 `OFFICIAL_CHAT_TABS` 顺序排布 DeepSeek / MiniMax 两个页签。窗口已开时按钮变为「关闭官方对话」并销毁当前窗口。
 8. （可选）**设置 → 数据迁移**：从旧版 dsh home 布局搬到新多实例布局——嵌入式 4 步向导。凭据与会话首版不纳入迁移，冲突策略默认 `SkipIfNewer`，旧源永不被删除。已迁移用户在「概览」页不再显示入口，仍可在「设置」页回查。
 9. 首次使用时在 Harness 的设置页配置 DeepSeek（`DEEPSEEK_API_KEY` 等）即可开始对话。
 

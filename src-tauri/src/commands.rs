@@ -1662,7 +1662,7 @@ fn ensure_official_chat_tab(
 /// `<data_dir>/webview-official-chat`（Windows 上的 user-data 文件
 /// 夹）/ [`harness::official_chat::OFFICIAL_CHAT_DATA_STORE_IDENTIFIER`]（macOS），所以
 /// cookies、localStorage、IndexedDB 都能跨 Shell 重启保留。存储由浏览
-/// 器按 origin 隔离，因此即便共享同一个存储，DeepSeek 与千问页签也
+/// 器按 origin 隔离，因此即便共享同一个存储，DeepSeek 与 MiniMax 页签也
 /// 不会相互冲突。WebView2 还要求同一个 user-data 目录下的所有环境配
 /// 置完全一致；每个内容 webview 都传入相同的
 /// [`harness::official_chat::OFFICIAL_CHAT_BROWSER_ARGS`]，所以「共享文件夹」这条约束是成立
@@ -1715,7 +1715,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                     // 的 content view 延伸到标题栏之下
                     // （tauri-runtime-wry/src/lib.rs:1200-1205）。页签
                     // 栏子 WebView 位于逻辑 (0, 0)，因此被约 28pt 高
-                    // 的标题栏遮挡——三个页签（`DeepSeek` / `千问` /
+                    // 的标题栏遮挡——两个页签（`DeepSeek` /
                     // `MiniMax`）只剩几像素高，正好是用户反馈的现象。
                     // `Transparent` 保留标题栏的可见，但禁用了
                     // `fullsize_content_view`，于是 content view 从

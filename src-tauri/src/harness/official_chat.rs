@@ -46,19 +46,15 @@ pub(crate) const OFFICIAL_CHAT_DATA_STORE_IDENTIFIER: [u8; 16] = *b"dsh-chat-rel
 /// 常量与专用 user-data 目录配对使用的原因。
 pub const OFFICIAL_CHAT_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,AutomationControlled,TranslateUI,InterestFeedContentSuggestions --disable-blink-features=AutomationControlled";
 
-/// 第二个官方对话页签：通义千问（qianwen）。
-pub const OFFICIAL_CHAT_QIANWEN_URL: &str = "https://www.qianwen.com";
-
-/// 第三个官方对话页签：MiniMax agent。
+/// 第二个官方对话页签：MiniMax agent。
 pub const OFFICIAL_CHAT_MINIMAX_URL: &str = "https://agent.minimaxi.com";
 
-/// 官方对话窗口页签栏中按展示顺序排列的固定页签。第一个条目是打开时
+/// 官网网页版窗口页签栏中按展示顺序排列的固定页签。第一个条目是打开时
 /// 默认激活的页签。增加一行即可增加一个页签——strip webview 在运行
 /// 时通过 `commands::official_chat_tabs` 发现这份列表，而内容 webview
 /// 是在被选中时才惰性创建的，所以初次打开时不会加载任何其它站点。
 pub const OFFICIAL_CHAT_TABS: &[(&str, &str)] = &[
     ("DeepSeek", OFFICIAL_CHAT_URL),
-    ("千问", OFFICIAL_CHAT_QIANWEN_URL),
     ("MiniMax", OFFICIAL_CHAT_MINIMAX_URL),
 ];
 
@@ -234,7 +230,12 @@ mod tests {
             .map(|_| (layout.width, layout.content_y, layout.content_height))
             .collect();
 
-        assert_eq!(regions.len(), 3);
+        // 不钉具体页签数：增删页签是常规操作，钉死数字只会让每次调整都要来改
+        // 测试，而它真正要防的是**空列表上空过**——`windows(2)` 在空表上恒真。
+        assert!(
+            !OFFICIAL_CHAT_TABS.is_empty(),
+            "页签表不能为空，否则下面那条「所有页签内容区相同」会在空列表上白过"
+        );
         assert!(regions.windows(2).all(|pair| pair[0] == pair[1]));
     }
 

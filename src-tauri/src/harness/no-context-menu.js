@@ -1,7 +1,7 @@
 /**
- * 初始化脚本：注入到 `harness` 工作台 webview 与 `official-chat-tab-{i}` 三个
- * 官方对话内容 webview。**壳自己的**窗口（主面板 / 日志 / 用量 / 套餐 /
- * 官方对话页签栏）由 `ui/src/noContextMenu.js` 负责——两边是同一件事的两处
+ * 初始化脚本：注入到 `harness` 工作台 webview 与 `official-chat-tab-{i}` 每个
+ * 官网网页版内容 webview。**壳自己的**窗口（主面板 / 日志 / 用量 / 套餐 /
+ * 官网网页版页签栏）由 `ui/src/noContextMenu.js` 负责——两边是同一件事的两处
  * 落点，`scripts/check-invariants.mjs` 第 16 项把「三族窗口都禁了」钉成机械
  * 检查。
  *
