@@ -77,6 +77,45 @@ pub fn window_title(name: &str) -> String {
 /// 修复前的样子，正是用户截图里「深色内容 + 浅色标题栏」的成因。
 pub const CHROME_BACKDROP: tauri::webview::Color = tauri::webview::Color(0x16, 0x17, 0x1a, 0xff);
 
+/// 三扇壳自有副窗共用的窗口装饰：无边框 + 透明 + 无系统阴影。
+///
+/// **三处 builder 各写一份必然漂**，所以收在这里（2026-10-08 用户要求副窗交通灯
+/// 与主壳统一、窗口圆角一致时新增）。主壳走 `tauri.conf.json` 的声明式配置，
+/// 那一侧同样不写在这里——它不是 builder 建的。
+///
+/// 为什么是「自绘标题栏 + 无边框」而不是「原生标题栏 + 系统圆角」：副窗原本走
+/// 原生装饰，于是交通灯与圆角都由系统画——尺寸、间距、hover 全部不可控，与主壳
+/// 那套按 macOS 实测对齐的自绘灯对不上（实测直径 12 / 间距 23 / 左缘 7）。
+/// 两套不同源的 chrome 并排摆着，视觉上就是「一个是本应用的窗、一个是系统窗」。
+///
+/// 为什么 `shadow: false` 不能省：macOS 会给每个窗口矩形画一层系统投影。窗口不
+/// 透明时那层投影藏在边框下看不见；窗口透明 + 圆角后，投影会画在**圆角之外的
+/// 透明区域**，读作一圈贴着窗口外框的黑色矩形光晕。去掉之后阴影由前端 CSS 补
+/// （见 `ui/src/theme.css` 的 `--window-radius` 一节），形状跟着 CSS 圆角走。
+///
+/// **这三项必须建窗时给，不能建完再 `set_decorations` / `set_shadow`**：
+/// tao 的 `set_decorations(false)` 会把 `NSWindowStyleMask` 重算成
+/// `Borderless | Resizable`，**丢掉 `Miniaturizable`**，于是 `miniaturize:` 静默
+/// 失败、`minimize()` 还返回 `Ok(())`，黄灯变成点了没反应的死按钮（根因与
+/// `crate::check_main_window_minimizable` 那条回归哨兵同源）。`transparent` 则
+/// 走的是另一条路径——只 `setOpaque(false)` + `setBackgroundColor(clearColor)`，
+/// 不碰样式位（tao 0.35 `platform_impl/macos/window.rs`），所以它是安全的。
+/// 泛型保持与 `WebviewWindowBuilder` 一致（`<R: Runtime, M: Manager<R>>`）：
+/// 这里原样透传调用方的运行时就��，不把它钉死成 `Wry`——三扇副窗都由同一个
+/// `tauri::AppHandle` 建窗，但写死会让「换个 runtime 试一下」变成改签名。
+pub fn decorate_transparent<R: tauri::Runtime, M: tauri::Manager<R>>(
+    builder: tauri::WebviewWindowBuilder<'_, R, M>,
+) -> tauri::WebviewWindowBuilder<'_, R, M> {
+    builder
+        .decorations(false)
+        .shadow(false)
+        .transparent(true)
+        // 透明窗的 WebView 层必须自己清成全透明，否则文档绘制前会闪一帧白
+        // （`CHROME_BACKDROP` 那段注释描述的同一段空白期，只是这里不能填暗色：
+        // 填了就又把圆角填死了）。
+        .background_color(tauri::webview::Color(0, 0, 0, 0))
+}
+
 /// 一扇窗口在屏幕上**实际可见**的边界（绝对物理坐标）：含标题栏与可见
 /// 边框，不含阴影与不可见缩放边框。吸附对齐的唯一权威口径。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

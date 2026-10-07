@@ -67,6 +67,11 @@
   --whale-eye-bright: #d9484c;
   --radius-card: 8px;
   --radius-control: 6px;
+  /* 窗口外轮廓圆角（2026-10-08）。此前圆角由 macOS 系统画，主壳与副窗不一致；
+     现在窗口透明，圆角由 `#app` 画，所以这个值就是唯一的圆角口径。取 12px 是
+     与 `--radius-card`（8px）拉开一档——同值会让「窗口」与「窗口里的卡片」读成
+     同一层。投影不在这里：它两套主题共用一条（见 `#app::after`）。 */
+  --window-radius: 12px;
   --titlebar-height: 38px;
   --sidebar-width: 224px;
   --sidebar-width-collapsed: 64px;
@@ -185,7 +190,9 @@ body {
 }
 
 body {
-  background-color: var(--window);
+  /* 窗口底色从 body 挪到 `#app`（见 `--window-radius` 一节）：窗口现在是透明的，
+     body 这一层若还铺实色，圆角之外的四角会是一块实色方块，圆角等于白做。 */
+  background-color: transparent;
   overflow: hidden;
 }
 
@@ -195,6 +202,45 @@ body {
      压在面板内容之上、body 底色之下，context 缺了这条线会漏到窗口外。 */
   position: relative;
   z-index: 1;
+  /* 窗口底色从 body 搬到这里（见下方注释）：窗口现在是透明的，body 那一层若还
+     铺实色，圆角之外的四角会是一块实色方块，圆角等于白做。 */
+  background-color: var(--window);
+  border-radius: var(--window-radius);
+  overflow: hidden;
+}
+
+/* --- 窗口圆角与投影 ---------------------------------------------------
+   2026-10-08 用户要求「window 的边角的圆角保持一致」。此前主壳没有圆角、副窗有：
+   **圆角由 macOS 窗口系统画，不由 CSS 画**，主壳不透明（`tauri.conf.json` 的
+   `backgroundColor`）所以系统不给，副窗走原生装饰所以系统给——实测主壳 ≈2px、
+   副窗 ≈10px 逻辑像素。
+
+   统一的做法是把**圆角搬到 CSS**：建窗开 `transparent: true`，窗口本身变成一块
+   透明画布，圆角由页面最外层画。三件事缺一不可：
+
+     1. `html` / `body` 透明（body 上面的 `background-color: transparent`）——
+        否则圆角外的四角被不透明底色填死。`html` 本来就默认透明，不写。
+     2. `#app` 铺原来的窗口底色 + 圆角 + 裁切。**底色跟着圆角一起搬**，
+        不能留在 body 上——留在 body 上圆角照样看不见。
+     3. `shadow: false`（tauri.conf.json / 各副窗 builder）。macOS 会给每个
+        窗口矩形画系统投影：不透明时它藏在边框下看不见，透明 + 圆角后它会画在
+        **圆角之外的透明区域**，读作一圈贴着外框的黑色矩形光晕。去掉之后投影
+        由这里用 `box-shadow` 补回来，形状跟着 CSS 圆角走而不是系统矩形走。
+
+   圆角值取 12px：与 `--radius-card`（8px）拉开一档，让「窗口」与「窗口里的
+   卡片」不读成同一层；投影用两段（近段定边缘、远段定悬浮高度），接近 macOS
+   原生投影的观感。阴影画在 `#app` 的 `::after` 上而不是 `#app` 本身：圆角裁切
+   （`overflow: hidden`）会把阴影一起裁掉。 */
+#app::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  border-radius: var(--window-radius);
+  /* 不吃事件：浮层与卡片仍在 `#app` 内部，这一层只是投影。 */
+  pointer-events: none;
+  box-shadow:
+    0 2px 8px rgb(0 0 0 / 0.28),
+    0 12px 32px rgb(0 0 0 / 0.32);
 }
 
 /* --- 壳：窗口容器与自绘标题栏 ---

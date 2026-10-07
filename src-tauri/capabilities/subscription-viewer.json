@@ -1,11 +1,15 @@
 {
   "identifier": "subscription-viewer",
-  "description": "The standalone cloud subscription usage window (opened by the overview card's「套餐用量」button via open_subscription_window) loads the local SPA at index.html?subscription=1. It only queries the subscription/balance view (get_subscription_usage) and jumps to the model-usage window (open_usage_window) — no write, settings or lifecycle commands.",
-  "windows": ["subscription-viewer"],
+  "description": "The standalone cloud subscription usage window ... 它现在是自绘标题栏（2026-10-08），关闭键由前端承担，因此需要 start-dragging（拖窗）与 minimize。",
+  "windows": [
+    "subscription-viewer"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-close",
     "core:window:allow-set-theme",
-    "allow-subscription-viewer"
+    "allow-subscription-viewer",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize"
   ]
 }

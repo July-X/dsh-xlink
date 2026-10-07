@@ -740,7 +740,7 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
             if let Some(existing) = handle.get_webview_window("usage-viewer") {
                 let _ = existing.destroy();
             }
-            use crate::shell::window::{window_title, CHROME_BACKDROP};
+            use crate::shell::window::window_title;
             // 吸附定位取主窗的物理坐标 + 缩放比换算成逻辑坐标交给 builder；
             // 主窗不在（理论上不会）或取不到显示器信息时保持默认居中。
             let dock = handle.get_webview_window("main").and_then(|main| {
@@ -761,14 +761,11 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
             )
             .min_inner_size(720.0, 520.0)
             .resizable(true)
-            .background_color(CHROME_BACKDROP)
-            // 兜底深色，**不是最终值**：这扇窗的内容是本应用的 SPA，主题真值在
-            // localStorage，Rust 读不到。页面挂载前 `theme.applyTheme()` 会调
-            // `window.setTheme()` 按实际主题纠正本窗的原生标题栏
-            // （见 `ui/src/shell/bridge.js` 的 `setWindowTheme`）。
-            // 因此浅色主题的用户看到的仍是浅色标题栏，而不是深色内容配深色标题栏
-            // 那道割裂——2026-10-07 用户截图报的就是它。
             .theme(Some(tauri::Theme::Dark));
+            // 无边框 + 透明 + 无系统阴影（交通灯由前端自绘，与主壳同一份视觉）。
+            // 三项必须在**建窗期**给：事后 `set_decorations(false)` 会抹掉
+            // `Miniaturizable`，黄灯随即变成死按钮。依据见该函数的文档注释。
+            builder = crate::shell::window::decorate_transparent(builder);
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);
             }

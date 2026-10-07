@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
 
 // 窗口「外壳」的两条纪律：原生装饰（标题栏）跟主题走，自绘交通灯跟 macOS 原生尺寸走。
@@ -15,6 +15,24 @@ const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
 // （与 designAlignment.test.js 的 templateOf() 同一个坑，已踩四次。）
 const stripCss = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 const stripJs = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+// Rust 生产代码：剥掉 `#[cfg(test)] mod tests { … }` 整块（测试里为了构造各种
+// 场景会写上装饰相关的字样）与两种注释。判据扫生产代码时少剥一种，就会把
+// 测试夹具当成生产用法——本仓在 Rust 侧踩过同样的坑（用现成的 productionRust()）。
+const stripRs = (s) =>
+  s
+    .replace(/#\[cfg\(test\)\][\s\S]*?\n}\s*$/m, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+
+/** `src-tauri/src` 下所有 `.rs`（递归），绝对路径。 */
+function rustFiles(dir = new URL('../../src-tauri/src/', import.meta.url), out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = new URL(entry.name + (entry.isDirectory() ? '/' : ''), dir);
+    if (entry.isDirectory()) rustFiles(p, out);
+    else if (entry.name.endsWith('.rs')) out.push(p);
+  }
+  return out;
+}
 
 function cssRule(css, selector) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -36,6 +54,174 @@ function fnBody(source, name) {
   assert.ok(m, `必须能找到 ${name} 的定义`);
   return stripJs(m[1]);
 }
+
+// ---- 窗口外壳：圆角与副窗自绘标题栏（2026-10-08） ------------------------
+//
+// 用户指出「window 的边角的圆角保持一致」与「红绿灯大小 / hover 要匹配系统」。
+// 查证结果是两件都**不由 CSS 画**：圆角与原生交通灯都由 macOS 窗口系统按窗口
+// 类型决定。统一它们只能把窗口改成透明、自绘。
+//
+// 「入口的 import 必须真的解析得到」这条不是凑数：拆分 themeSync 时 `main.js`
+// 的 import 指向了错误模块，`npm run build:ui` 才报出来——UI 测试全绿、Rust 侧
+// 零警告。**一个连构建都过不去的改动，居然没被任何一条既有判据拦下**，于是
+// 补上这条最基本的接线判据。
+test('入口 main.js 的每个具名 import 都真的被导出（构建能过不是判据能过）', () => {
+  const main = read('../src/main.js');
+  const importRe = /import\s*\{([^}]+)\}\s*from\s*'([^']+)'/g;
+  let checked = 0;
+  for (const m of main.matchAll(importRe)) {
+    const names = m[1].split(',').map((s) => s.trim()).filter(Boolean);
+    const spec = m[2];
+    if (!spec.startsWith('.')) continue; // 包导入不归本判据管
+    const target = new URL(spec, new URL('../src/main.js', import.meta.url));
+    let source;
+    try {
+      source = readFileSync(target, 'utf8');
+    } catch {
+      // 目录导入（`./foo` → `foo/index.js`）在本仓没有，出现即视为漏判。
+      assert.fail(`main.js 导入了 ${spec}，但它解析不到文件`);
+    }
+    for (const name of names) {
+      const re = new RegExp(`export\\s+(const|function|let|class)\\s+${name}\\b|export\\s*\\{[^}]*\\b${name}\\b`);
+      assert.match(
+        source,
+        re,
+        `main.js 从 ${spec} 导入了 ${name}，但那个模块没有导出它——这类错只有构建才会报`,
+      );
+      checked += 1;
+    }
+  }
+  // 自检：`main.js` 的 import 绝大多数是 Element Plus 的默认导入，真正的**本地
+  // 具名导入**只有几个（reportRenderError / ElMessage 之类）。阈值定 4 而不是
+  // 「> 10」：后者是照着记忆写的，实际只有 6 个，于是这条判据在正确代码上一直红——
+  // 而一条永远红的判据等于没有判据。
+  assert.ok(checked >= 4, `只检查了 ${checked} 个具名导入，判据多半没抓到东西`);
+});
+
+test('窗口装饰只在建窗期给：不许运行时 set_decorations（黄灯会变死按钮）', () => {
+  // 根因（见 lib.rs 的 check_main_window_minimizable 文档注释）：tao 的
+  // set_decorations(false) 会把 NSWindowStyleMask 重算成 Borderless | Resizable，
+  // **丢掉 Miniaturizable**，于是 miniaturize: 静默失败、minimize() 还返回 Ok()。
+  // 与之相对，transparent 走的是另一条路径（只 setOpaque(false) +
+  // setBackgroundColor(clearColor)），不碰样式位——这一点 2026-10-08 已核对
+  // tao 0.35 的 platform_impl/macos/window.rs 确认，不是推断。
+  //
+  // 扫**整个生产 Rust**（逐文件递归读，不 spawn rg）：子进程 rg 在某些环境下
+  // 不在 PATH，而这条判据红不红取决于它能不能跑起来——那种红是没有信息量的。
+  //
+  // **只拦 set_decorations**，不连带 set_always_on_top / set_shadow：
+  // 前者是 z-order（`resident.rs` 的「先置顶再解除」让窗口真浮到最前，完全
+  // 无害，与样式位无关），后者虽也属窗口属性但目前无调用。把无害的调用圈进来
+  // 只会逼人加豁免名单，判据也就跟着松了——**判据要拦的是那个具体危害，
+  // 不是所有长得像的东西**。
+  const hits = [];
+  for (const file of rustFiles()) {
+    const body = stripRs(readFileSync(file, 'utf8'));
+    for (const line of body.split('\n')) {
+      if (/set_decorations/.test(line)) {
+        hits.push(`${file.pathname.split('/src-tauri/src/').pop()}: ${line.trim()}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    hits,
+    [],
+    '不许在运行期改窗口装饰：它会抹掉 Miniaturizable 样式位，黄灯随即变成点了没反应的死按钮。要改就在建窗期给（decorations / transparent / shadow）。',
+  );
+});
+
+test('四扇壳自有窗口都建窗期透明 + 无阴影 + 无边框', () => {
+  const conf = JSON.parse(read('../../src-tauri/tauri.conf.json'));
+  const main = conf.app.windows.find((w) => w.label === 'main');
+  // 三项缺一不可：`transparent` 让窗口变成透明画布（圆角才有意义），
+  // `shadow: false` 去掉系统投影——它在透明 + 圆角后会画在圆角之外、读作一圈
+  // 黑色矩形光晕（投影改由 CSS 补），`decorations: false` 让标题栏自绘。
+  assert.equal(main.transparent, true, '主壳必须透明，否则系统不给圆角');
+  assert.equal(main.shadow, false, '必须关系统阴影，否则圆角外有一圈黑边');
+  assert.equal(main.decorations, false, '必须无边框，标题栏才是自绘的');
+  assert.equal(
+    main.backgroundColor,
+    '#00000000',
+    '窗口底色必须全透明——填了暗色就把圆角填死了',
+  );
+
+  // 三扇副窗在 Rust builder 里给同一套。**判据查共享函数，不查三处字面量**：
+  // 三份各写一遍必然漂（本次实现就先各写了一遍、被代码预算门禁顶回来才改成共享）。
+  // 共享函数本身查一次就够——三处 caller 只要都调它，就不可能漂。
+  const win = stripRs(read('../../src-tauri/src/shell/window.rs'));
+  const decorate = win.match(/pub fn decorate_transparent[\s\S]*?\n}/);
+  assert.ok(decorate, '找不到 decorate_transparent：三扇副窗的装饰片段必须收在一处');
+  assert.match(decorate[0], /\.decorations\(false\)/, '副窗必须无边框（自绘标题栏）');
+  assert.match(decorate[0], /\.shadow\(false\)/, '副窗必须关系统阴影，否则圆角外有黑边');
+  assert.match(decorate[0], /\.transparent\(true\)/, '副窗必须透明，否则圆角不一致');
+
+  // 三扇窗都得真的调它（漏一处 = 那扇窗没装饰 = 交通灯消失且不报错）。
+  for (const [p, label] of [
+    ['../../src-tauri/src/usage/local.rs', '模型用量'],
+    ['../../src-tauri/src/usage/subscription.rs', '套餐用量'],
+    ['../../src-tauri/src/commands.rs', '日志'],
+  ]) {
+    assert.match(
+      stripRs(read(p)),
+      /decorate_transparent\(/,
+      `${label}窗口必须走共享的装饰片段`,
+    );
+  }
+});
+
+test('底色跟着圆角一起搬到 #app，body 必须透明', () => {
+  const css = stripCss(read('../src/theme.css'));
+  // 圆角画在 #app 上，而**底色必须跟着它一起搬**：留在 body 上的话，圆角之外的
+  // 四角仍是一块实色方块，圆角等于白做。
+  assert.match(css, /body\s*\{[^}]*background-color:\s*transparent/, 'body 必须透明');
+  const app = cssRule(css, '#app');
+  assert.match(app, /border-radius:\s*var\(--window-radius\)/, '#app 负责圆角');
+  assert.match(app, /overflow:\s*hidden/, '内容必须按圆角裁切');
+  assert.match(app, /background-color:\s*var\(--window\)/, '窗口底色在 #app 上');
+  // 投影画在 ::after 上而不是 #app 本身：overflow: hidden 会把它一起裁掉。
+  assert.match(cssRule(css, '#app::after'), /box-shadow/, '投影要画在伪元素上');
+});
+
+test('三扇壳自有副窗共用一个自绘外壳，官网页签栏不用（它承载别人的页面）', () => {
+  const main = read('../src/main.js');
+  // 两头都要钉：**只钉「排除谁」不够**——把某扇副窗从条件里漏掉（交通灯消失）
+  // 时，那条判据照样绿。反向验逼出过这一版：它只查 `!isChatStrip`，于是
+  // 「日志窗恢复成原生标题栏」完全抓不到。
+  const cond = main.match(/if \(\s*usesCustomTitlebar([^)]*)\)/);
+  assert.ok(cond, '找不到自绘标题栏的条件');
+  const exclusions = [...cond[1].matchAll(/!\s*(is[A-Z]\w+)/g)].map((m) => m[1]);
+  // 只许排除官网页签栏；日志 / 用量 / 套餐三扇自��副窗都要走自绘。
+  assert.deepEqual(
+    exclusions.filter((name) => name !== 'isChatStrip'),
+    [],
+    '只许排除官网页签栏——它承载 chat.deepseek.com 等别人的页面，装饰不能动',
+  );
+  assert.ok(exclusions.includes('isChatStrip'), '官网页签栏必须被排除');
+
+  // 三扇窗各自都要真的用上共享外壳。
+  for (const p of [
+    '../src/logs/LogViewerWindow.vue',
+    '../src/usage/UsageWindow.vue',
+    '../src/subscription/SubscriptionWindow.vue',
+  ]) {
+    const src = read(p);
+    assert.match(src, /import ViewerShell from/, `${p} 应当 import 共享外壳`);
+    assert.match(src, /<ViewerShell\s+shell-class=/, `${p} 应当用共享外壳包住内容`);
+  }
+  const shell = read('../src/shell/ViewerShell.vue');
+  assert.match(shell, /import WindowTitleBar/, '外壳里必须有自绘标题栏');
+  assert.match(shell, /<WindowTitleBar\s*\/>|<WindowTitleBar\s*\/>/, '外壳里必须真的渲染它');
+  assert.match(shell, /var\(--window-radius\)/, '外壳的圆角要与 #app 同一个 token');
+  // 自绘标题栏需要拖拽与最小化权限：三扇窗的能力文件里都要有。
+  for (const cap of ['log-viewer', 'usage-viewer', 'subscription-viewer']) {
+    const perms = JSON.parse(read(`../../src-tauri/capabilities/${cap}.json`)).permissions;
+    assert.ok(
+      perms.includes('core:window:allow-start-dragging'),
+      `${cap} 缺 start-dragging：没有它标题栏拖不动窗口（且不会报错）`,
+    );
+    assert.ok(perms.includes('core:window:allow-minimize'), `${cap} 缺 minimize 权限`);
+  }
+});
 
 // ---- 副窗原生 chrome 跟随应用主题 ------------------------------------------
 

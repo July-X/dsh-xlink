@@ -2,9 +2,16 @@
 // 独立日志阅读窗口：主面板「全屏」按钮经 open_log_window 命令弹出，
 // URL 查询串 ?log=<name> 指定初始文件。窗口带分类左栏（共享 LogSidebar
 // 渲染），侧栏与正文之间是 6px 可拖拽分隔条；侧栏宽度持久化到
-// localStorage，再次打开时复原。页头只剩文件名 + 刷新，关闭由 OS 窗口
-// chrome 承担（macOS 红绿灯 / Windows × / Alt+F4）——避免和系统 chrome
-// 重复且挤掉本就给日志内容让出的横向空间。滚动条默认透明，滚动期间才显。
+// localStorage，再次打开时复原。页头只剩文件名 + 刷新。
+//
+// **窗口 chrome 自绘**（2026-10-08 改）：关闭 / 最小化 / 拖窗由共享的
+// `ViewerShell` → `WindowTitleBar` 承担，与主壳同一份视觉。此前这一排由 OS
+// 系统 chrome 承担，理由是「避免和系统 chrome 重复」——但副窗与主壳并排摆着，
+// 两套不同源的交通灯（系统画的 vs 按 macOS 实测对齐的自绘）读起来像两个应用，
+// 用户报「红绿灯大小、hover 要匹配系统效果」。页头本身不重复交通灯，标题栏在
+// 页头**之上**另起一行。
+// 滚动条默认透明，滚动期间才显。
+import ViewerShell from '../shell/ViewerShell.vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue';
 import { Refresh } from '@element-plus/icons-vue';
 import { invoke } from '../shell/bridge.js';
@@ -174,7 +181,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="logwin">
+  <ViewerShell shell-class="logwin">
     <header class="logwin-head">
       <img src="/whale-icon.png" alt="" width="22" height="22" />
       <span class="logwin-title" :title="activeName || ''">{{ activeName || '日志' }}</span>
@@ -198,7 +205,7 @@ onBeforeUnmount(() => {
       >
         刷新
       </el-button>
-      <!-- 关闭键由 OS 窗口 chrome 承担（macOS 红绿灯 / Windows × / Alt+F4） -->
+      <!-- 关闭 / 最小化在页头上方的自绘标题栏里（`ViewerShell`），此处不重复。 -->
     </header>
     <div class="logwin-main">
       <LogSidebar
@@ -227,5 +234,5 @@ onBeforeUnmount(() => {
         </div>
       </main>
     </div>
-  </div>
+  </ViewerShell>
 </template>
