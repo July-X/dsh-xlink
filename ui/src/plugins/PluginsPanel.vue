@@ -193,7 +193,7 @@ function detailUrl(item) {
 }
 
 // 描述的截断分两层：这里按 90 字硬切一次（控制 DOM 里的文本长度），CSS 再按
-// 行数 clamp 一次（控制视觉行高）。原先只靠这里的字���切，结果每张卡固定占
+// 行数 clamp 一次（控制视觉行高）。原先只靠这里的字数切，结果每张卡固定占
 // 三行、描述长短不影响行数，一屏只看得到三四条。
 function descText(item) {
   const d = item.description || '';
