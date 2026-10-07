@@ -227,7 +227,7 @@ function toggleSource(src) {
         <p class="empty-state">未检测到旧版数据，无需迁移。</p>
       </template>
       <template v-else>
-        <table class="preview-table">
+        <table class="preview-table preview-table--sources">
           <thead>
             <tr><th>来源</th><th>旧路径</th><th>新目标</th><th>文件数</th><th>大小</th></tr>
           </thead>
@@ -401,7 +401,7 @@ function toggleSource(src) {
             已迁移 {{ runResultItems.length }} 个来源。
           </span>
         </div>
-        <table v-if="runResultItems.length > 0" class="preview-table">
+        <table v-if="runResultItems.length > 0" class="preview-table preview-table--result">
           <thead>
             <tr><th>来源</th><th>已迁移</th><th>跳过</th><th>备份</th></tr>
           </thead>
@@ -429,9 +429,9 @@ function toggleSource(src) {
 
 <style scoped>
 /* 紧凑布局：向导是一次性流程，页内留白按工具页收紧，减少纵向滚动。
-   ElSteps / el-empty / el-result / el-table 都自带较多垂直留白，
-   在 480×1600 的窄窗口里加起来会触发滚动条；这里能省的省掉，
-   不能省的（必须保留可读性的标题、按钮行）就只压 padding。 */
+   ElSteps / el-empty / el-result / el-table 都自带较多垂直留白，四个步骤
+   叠起来的总高会顶出 748px 的固定窗口；这里能省的省掉，不能省的（必须保留
+   可读性的标题、按钮行）就只压 padding。 */
 .panel { padding: 12px 16px; }
 .migration header h2 { margin: 0; font-size: 18px; }
 .subtitle { color: var(--text-muted); margin: 2px 0 0; font-size: 12.5px; }
@@ -442,9 +442,36 @@ function toggleSource(src) {
 .preview-table th, .preview-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
 .preview-table td { vertical-align: top; }
 .preview-table .path { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--text-muted); }
+
+/* 固定列宽：默认的自动布局在 760px 内容区里会把「文件数」拆成「文件 / 数」、
+   把「896.7 KiB」拆成两行——数字列本来就短，不该参与抢宽。改成 table-layout
+   固定后，来源与数字列按内容宽度占死，剩下的全给路径列；路径本身仍可折行
+   （完整路径要看得见，截断反而读错），只是不再被数字列挤到换行。 */
+.preview-table--sources,
+.preview-table--result { table-layout: fixed; }
+/* 来源列放最前：两张表的第 1 列都是来源名，都按内容宽度占死。
+   92px 是量出来的——最长的来源名「旧插件中央库」6 个汉字 12px 约 72px，
+   加左右各 8px padding 正好 88px，留 4px 余量。 */
+.preview-table--sources th:nth-child(1), .preview-table--sources td:nth-child(1),
+.preview-table--result th:nth-child(1), .preview-table--result td:nth-child(1) { width: 92px; }
+/* 发现表：文件数 / 大小。两个数字列都不折行（否则表头自己会竖排成「文件 / 数」，
+   值也会被拆成「896.7 / KiB」）。宽度按内容量出来：表头「文件数」3 个汉字 12px
+   约 36px；「896.7 KiB」这类最长的值约 60px。table-layout 固定下给窄了不是自动
+   变窄，而是文字直接溢出表格右边界——所以这里宁可多给一点。 */
+.preview-table--sources th:nth-child(4), .preview-table--sources td:nth-child(4) { width: 52px; white-space: nowrap; }
+.preview-table--sources th:nth-child(5), .preview-table--sources td:nth-child(5) { width: 80px; white-space: nowrap; }
+/* 结果表：已迁移 / 跳过；第 4 列是备份路径，留 1fr 给它折行。 */
+.preview-table--result th:nth-child(2), .preview-table--result td:nth-child(2),
+.preview-table--result th:nth-child(3), .preview-table--result td:nth-child(3) { width: 56px; white-space: nowrap; }
+/* 来源名最长 6 个汉字（"旧插件中央库"），不折行。 */
+.preview-table--sources td:nth-child(1),
+.preview-table--result td:nth-child(1) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hint { color: var(--text-muted); font-size: 12px; margin: 6px 0 0; }
+/* 空态框限宽居中：文案只有一行，铺满 740px 内容区会像个没装东西的大面板，
+   而这恰恰是「没装东西」最该避免的观感。 */
 .empty-state {
-  margin: 16px 0;
+  max-width: 420px;
+  margin: 16px auto;
   padding: 18px 16px;
   border: 1px dashed var(--border);
   border-radius: 8px;
@@ -480,11 +507,13 @@ function toggleSource(src) {
 }
 .misplaced h3 { margin: 0 0 6px; font-size: 13px; }
 .misplaced-list { list-style: none; margin: 0 0 8px; padding: 0; }
+/* 名称与元信息紧挨着排，不推到两端。原先用 space-between，在 760px 内容区里
+   「sessions」和它的说明会隔着半屏，读起来像两行不相干的内容。 */
 .misplaced-item {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
   align-items: baseline;
-  gap: 12px;
+  gap: 4px 12px;
   padding: 2px 0;
   font-size: 12px;
 }
