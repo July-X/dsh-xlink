@@ -1625,6 +1625,18 @@ main {
   border-color: var(--border);
 }
 
+/* 官方发布列表的空态文案居中。`.release-list-box` 是 flex:1，列表区会撑满
+   「npm 发布」整栏；宽版（1040）下这一栏有 400px 以上，文案贴在框顶时
+   下面就是一大片没有内容的空白，读起来像坏掉了。
+   `:only-child` 是关键——它保证这条只在一行发布都没有时生效，有数据时
+   版本行仍从顶部堆。 */
+.release-list > .muted:only-child {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  text-align: center;
+}
+
 /* 版本文本：仅 .release-ver（VersionsPanel 内核版本行）保持等宽字体加粗，
    不加 chip 背景也不加 icon，作为「正常文本」显示。 */
 .release-ver {
