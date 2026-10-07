@@ -149,14 +149,44 @@ export function subjectTokens(selector) {
 }
 
 /**
+ * 选择器各分段**主语尾部**的伪类名（`pseudo-class` 与 `pseudo-element` 都收，
+ * 不含 `::` 前缀）。
+ *
+ * 只认主语尾部：`.a:hover` 与 `.a .b:hover` 都算（主语分别是这两个），
+ * 而 `.a:hover .b` 不算——那是祖先的状态，跟「`.b` 处于 hover 时是什么值」
+ * 不是一回事。
+ */
+function subjectPseudos(selector) {
+  const out = new Set();
+  for (const part of selector.split(',')) {
+    const subject = part.trim().split(/\s+/).pop() || '';
+    const m = /:{1,2}([a-z-]+)(?:\([^)]*\))?$/i.exec(subject);
+    if (m) out.add(m[1]);
+  }
+  return out;
+}
+
+/**
  * `tokens`（元素身上实际有的类与标签）上，`prop` 最终生效的值（没有则 null）。
  * 适用判据是「主语的 token 全部都在元素身上」——子串匹配不算数。
+ *
+ * `opts.pseudo` 把候选规则限定到主语带这个伪类的那些，用来问「hover 时是什么
+ * 色」「focus-visible 时是什么色」。它不是可选的装饰：**不给**时反而要**排除**
+ * 带伪类的规则——`.a:hover { color: X }` 的主语 token 与基线 `.a` 完全相同，
+ * 混进来就等于把「悬停时的值」当成「静止时的值」回答出去。这条是实打实踩过的：
+ * 问 `.head-tip-icon--warning` 的基线颜色时返回了 hover 的加深色。
  */
-export function effectiveDeclaration(tokens, rules, prop) {
+export function effectiveDeclaration(tokens, rules, prop, opts = {}) {
   const have = tokens instanceof Set ? tokens : new Set(tokens);
   const re = new RegExp(`(?<![-\\w])${prop}:\\s*([^;}]+)`);
   let best = null;
   for (const rule of rules) {
+    const pseudos = subjectPseudos(rule.selector);
+    if (opts.pseudo) {
+      if (!pseudos.has(opts.pseudo.replace(/^:+/, ''))) continue;
+    } else if (pseudos.size > 0) {
+      continue;
+    }
     const value = (rule.body.match(re) || [])[1];
     if (value === undefined) continue;
     const need = subjectTokens(rule.selector);

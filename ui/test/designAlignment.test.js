@@ -422,3 +422,149 @@ test('生产 CSS / Vue 里不再有硬编码的黑叠色容器底（阴影与 su
     assert.equal(hit, null, `${rel} 仍有硬编码黑叠色背景：${hit && hit[0]}`);
   }
 });
+
+// --- 插件页标题旁的第三方来源提示 -----------------------------------------
+//
+// 2026-10-07 用户要求：原先页头下面那条整宽 notice 收成标题旁的 ⚠ 图标。
+// 三条判据分别钉「形态」「同一份文案」「键盘够得着」，缺一条这条提示就会
+// 悄悄退化成只有鼠标用户看得见的东西。
+
+test('插件页不再有整宽 notice 条，免责提示收成标题旁的警告图标', () => {
+  const panel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
+  assert.doesNotMatch(panel, /panel-notice/, '整宽提示条已删除');
+  // 规则本身也不能留在 theme.css 里当死 CSS——上一轮删模板引用时漏了样式
+  // 的反向案例，这一条一起钉住。
+  assert.doesNotMatch(stripComments(themeCss), /\.panel-notice/);
+
+  // 图标挂在「插件」标题旁：`.page-title-row` 是页头标题与图标的同行容器。
+  assert.match(panel, /class="page-title-row"/);
+  assert.match(panel, /class="head-tip-icon head-tip-icon--warning"/);
+  const rowAt = panel.indexOf('class="page-title-row"');
+  const titleAt = panel.indexOf('class="page-title"');
+  const iconAt = panel.indexOf('head-tip-icon--warning');
+  assert.ok(titleAt > rowAt && iconAt > titleAt, '⚠ 必须与标题同在 `.page-title-row` 内');
+});
+
+test('警告图标的 tooltip 与可访问名取同一份文案常量', () => {
+  const panel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
+  // 两处各写一遍字符串，改了一处就会出现「图标说有提示、读屏说没提示」。
+  assert.match(panel, /const THIRD_PARTY_NOTICE = '第三方插件由社区提供/);
+  assert.match(panel, /:content="THIRD_PARTY_NOTICE"/);
+  assert.match(panel, /:aria-label="THIRD_PARTY_NOTICE"/);
+  // 文案仍在源码里（不因收成图标而消失）：它现在住在 tooltip 里。
+  assert.equal(
+    (panel.match(/第三方插件由社区提供，本工具不对其安全性负责，请自行甄别。/g) || []).length,
+    1,
+    '免责文案在 PluginsPanel 里只应出现一次（常量声明处）',
+  );
+});
+
+test('警告图标可聚焦，且 focus 态与 hover 同色（hover-only 的信息对键盘用户等于不存在）', () => {
+  const panel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
+  assert.match(panel, /head-tip-icon--warning[\s\S]{0,200}?tabindex="0"/);
+
+  assert.equal(effectiveDeclaration(['head-tip-icon--warning'], RULES, 'color'), 'var(--warning)');
+  // 与 ⓘ 分色：两条提示严重程度不同。hover 也不改成强调蓝，否则会被读成可点。
+  assert.equal(
+    effectiveDeclaration(['head-tip-icon--warning'], RULES, 'color', { pseudo: ':hover' }),
+    'var(--el-color-warning-dark-2, var(--warning))',
+  );
+  assert.equal(
+    effectiveDeclaration(['head-tip-icon--warning'], RULES, 'color', { pseudo: ':focus-visible' }),
+    'var(--el-color-warning-dark-2, var(--warning))',
+  );
+});
+
+test('页头标题行是 flex 且居中对齐（⚠ 与标题不各走各的）', () => {
+  assert.equal(effectiveDeclaration(['page-title-row'], RULES, 'display'), 'flex');
+  assert.equal(effectiveDeclaration(['page-title-row'], RULES, 'align-items'), 'center');
+});
+
+/** HTML 空元素：标签语法上不带结束标签，不能压进标签栈（压了栈永远弹不回来）。 */
+const VOID_TAGS = new Set(['img', 'br', 'hr', 'input', 'meta', 'link', 'source']);
+
+/**
+ * 按标签配对取出 `.page-head` 那个元素**及其内部**，而不是往后一直切到文件尾。
+ *
+ * 必须按配对切：此前用 `src.slice(src.indexOf('page-head'))` 把整个余下文件
+ * 都算进来了，标签栈里混进后面几十个兄弟元素，深度读数毫无意义。
+ *
+ * 也必须先剥注释：Vue 模板里到处是解释结构的中文注释，而这些注释**会写出字面量
+ * 标签名**（「外面还要再包一层 `<div>`」）。剥晚了配对就会数出一个不存在的
+ * `<div>`，块永远配不平。
+ */
+function pageHeadBlock(src) {
+  const text = src.replace(/<!--[\s\S]*?-->/g, '');
+  const open = /<(div|header)[^>]*class="[^"]*\bpage-head\b[^"]*"[^>]*>/.exec(text);
+  assert.ok(open, '找不到 .page-head 元素');
+  const tag = open[1];
+  const re = new RegExp(`<\\/?${tag}\\b[^>]*>`, 'g');
+  re.lastIndex = open.index;
+  let depth = 0;
+  let m;
+  while ((m = re.exec(text))) {
+    if (m[0].startsWith('</')) {
+      depth -= 1;
+      if (depth === 0) return text.slice(open.index, re.lastIndex);
+    } else if (!m[0].endsWith('/>')) {
+      depth += 1;
+    }
+  }
+  assert.fail(`.page-head 的 <${tag}> 没有配对的结束标签`);
+}
+
+/**
+ * `.page-head` 块里，`class` 里带 `name` 的元素所处的标签栈深度。
+ *
+ * 深度就是「它外面套着几层还没闭合的标签」。返回 null = 块里没有这个元素。
+ * 这里的问法是**结构**问题而不是样式问题，所以不走 CSS 层叠工具。
+ */
+function elementDepth(block, name) {
+  const re = /<(\/?)([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g;
+  const stack = [];
+  let m;
+  while ((m = re.exec(block))) {
+    const [, close, tag, attrs = '', selfClose] = m;
+    if (!close) {
+      const cls = (attrs.match(/class="([^"]*)"/) || [])[1] || '';
+      if (cls.split(/\s+/).includes(name)) return stack.length;
+      if (!selfClose && !VOID_TAGS.has(tag.toLowerCase())) stack.push(tag);
+    } else {
+      stack.pop();
+    }
+  }
+  return null;
+}
+
+test('页头标题与说明同属一个子项——否则说明会被 space-between 顶到右缘', () => {
+  // 这条是本轮真实踩到的回归：给插件页加标题行时把 `.page-desc` 提到了
+  // `.page-head` 的直接子级，`.page-head` 是 `space-between` 的 flex 行，说明立刻
+  // 被当成了右侧的「动作」飘到页面右缘。六个页面共用「标题 + 说明包在一个 div 里」
+  // 这个结构，别只在一个页面上靠肉眼记。
+  //
+  // 判据比的是**嵌套深度**而不是 `</div>` 的个数：两种错结构的 `</div>` 计数一样，
+  // 数个数那一版判据在真实回归面前是绿的（踩过）。
+  assert.equal(effectiveDeclaration(['page-head'], RULES, 'justify-content'), 'space-between');
+  for (const rel of [
+    'ui/src/shell/OverviewPanel.vue',
+    'ui/src/shell/SettingsPanel.vue',
+    'ui/src/kernel/VersionsPanel.vue',
+    'ui/src/plugins/PluginsPanel.vue',
+    'ui/src/skills/SkillsPanel.vue',
+    'ui/src/migration/MigrationPanel.vue',
+  ]) {
+    const head = pageHeadBlock(readFileSync(rel, 'utf8'));
+    const descDepth = elementDepth(head, 'page-desc');
+    const titleDepth = elementDepth(head, 'page-title');
+    const rowDepth = elementDepth(head, 'page-title-row');
+    assert.ok(descDepth !== null && titleDepth !== null, `${rel} 的 page-head 缺少标题或说明`);
+    if (rowDepth === null) {
+      assert.equal(descDepth, titleDepth, `${rel} 的 page-desc 跑到了 page-head 直接子级`);
+      continue;
+    }
+    // 有标题行时：标题裹在标题行里（深一层），说明与标题行**同深**——
+    // 同深才说明二者在同一个包裹 div 内，而不是各自成了 `.page-head` 的子项。
+    assert.equal(titleDepth, rowDepth + 1, `${rel} 的 page-title 应在 .page-title-row 内`);
+    assert.equal(descDepth, rowDepth, `${rel} 的 page-desc 应与 .page-title-row 同属一个包裹元素`);
+  }
+});

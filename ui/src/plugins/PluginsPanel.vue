@@ -93,6 +93,11 @@ const installTip = computed(() => {
   );
 });
 
+// 第三方来源免责提示的文案。提到常量而不是写在模板里：它是「标题旁那个
+// ⚠ 是什么」的答案，tooltip 的 `content` 与图标的可访问名（`aria-label`）要用
+// 同一份字符串——两处各写一遍，改了其中一处就会出现「图标说有提示，读屏说没提示」。
+const THIRD_PARTY_NOTICE = '第三方插件由社区提供，本工具不对其安全性负责，请自行甄别。';
+
 // 预检开关的说明。必须写清「预检到底验了什么、没验什么」——用户把它当成
 // 安全保证是最危险的误解：它只覆盖内核启动阶段，页面加载后的运行时异常
 // 仍由工作台窗口的健康自检负责。
@@ -281,17 +286,34 @@ function instanceChipType(row, instanceId) {
 
 <template>
   <section class="panel">
+    <!-- 第三方来源的免责提示：原先是页头下面一条整宽的 notice 条。2026-10-07
+         用户要求收成标题旁的警告图标 —— 那条文案只有一句、不含任何随状态变化
+         的信息，却常驻占掉一整行，把真正的页头内容（插件中心那排控件）往下挤；
+         而它的**语境**就是「插件」这个标题本身，图标挂在标题旁边反而更贴。
+         触发方式用 hover 而不是常驻：免责提示要能被主动读到，但不要求它在用户
+         没问的时候一直占屏。`role="note"` 换成 `tabindex="0"`——原先 div 是
+         纯展示，读屏能过；现在是可聚焦的触发元素，键盘要够得着，
+         否则 hover-only 的信息对键盘用户就是不存在。
+         与下面「数据来源于 dshfind.com」的 ⓘ 用同一个 `head-tip-icon` 类，两者在
+         同一行、同一尺寸，不会读成两种不同级别的提示。 -->
     <div class="page-head">
+      <!-- 标题行外面还要再包一层 `<div>`：`.page-head` 是 `space-between` 的
+           flex 行，标题与说明必须同属一个子项，否则说明会被当成右侧的「动作」
+           顶到页面右缘去。六个页面共用这个结构，别只改这一个。 -->
       <div>
-        <h1 class="page-title">插件</h1>
+        <div class="page-title-row">
+          <h1 class="page-title">插件</h1>
+          <el-tooltip placement="top" effect="dark" :content="THIRD_PARTY_NOTICE">
+            <el-icon
+              class="head-tip-icon head-tip-icon--warning"
+              tabindex="0"
+              role="note"
+              :aria-label="THIRD_PARTY_NOTICE"
+            ><Warning /></el-icon>
+          </el-tooltip>
+        </div>
         <p class="page-desc">查看当前实例生效的插件，并从插件中心安装或升级。</p>
       </div>
-    </div>
-    <!-- 第三方来源的免责提示放在这里：它是插件页的语境，原先常驻在侧栏底部，
-         在概览 / 内核版本等页面也会一直占着位置。 -->
-    <div class="panel-notice" role="note">
-      <el-icon><Warning /></el-icon>
-      <p>第三方插件由社区提供，本工具不对其安全性负责，请自行甄别。</p>
     </div>
     <div class="card entity-card">
       <div class="card-head plugin-center-head">
