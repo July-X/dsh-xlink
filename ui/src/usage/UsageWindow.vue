@@ -454,7 +454,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  background: var(--window);
 }
 .usagewin-head {
   display: flex;
@@ -469,7 +469,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   font-size: 15px;
 }
 .usagewin-info {
-  color: var(--muted);
+  color: var(--text-secondary);
   cursor: help;
 }
 .usagewin-spacer {
@@ -488,7 +488,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 .usage-range-btn {
   border: none;
   background: transparent;
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 12px;
   line-height: 1;
   padding: 5px 9px;
@@ -512,8 +512,8 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   max-width: 280px;
   max-height: 138px;
   overflow-y: auto;
-  background: var(--tooltip-bg);
-  border: 1px solid var(--tooltip-border);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: var(--el-box-shadow-light);
   padding: 8px 10px;
@@ -525,7 +525,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  color: var(--muted);
+  color: var(--text-secondary);
   margin-bottom: 6px;
 }
 .usage-tip-total {
@@ -558,7 +558,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   margin-left: 8px;
 }
 .usage-tip-pct {
-  color: var(--muted);
+  color: var(--text-secondary);
   min-width: 44px;
   text-align: right;
 }
@@ -616,7 +616,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   min-width: 0;
 }
 .usage-summary-label {
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
@@ -652,7 +652,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   font-size: 14px;
 }
 .usage-section-hint {
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 .usage-legend {
@@ -660,7 +660,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 .usage-heat-cell {
@@ -704,8 +704,8 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   position: absolute;
   z-index: 20;
   min-width: 172px;
-  background: var(--tooltip-bg);
-  border: 1px solid var(--tooltip-border);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: var(--el-box-shadow-light);
   padding: 8px 10px;
@@ -724,7 +724,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   justify-content: space-between;
   gap: 12px;
   padding: 1px 0;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 .usage-heat-tip-value {
   color: var(--text);
@@ -743,7 +743,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   position: absolute;
   right: 0;
   transform: translateY(50%);
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 11px;
   line-height: 0;
 }
@@ -776,7 +776,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   overflow: hidden;
 }
 .usage-trend-bar:hover {
-  outline: 1px solid var(--tooltip-border);
+  outline: 1px solid var(--border);
 }
 .usage-trend-seg {
   /* 外层 bar 保留完整点位槽位，实际堆叠柱体限制宽度并保持居中，
@@ -798,7 +798,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   bottom: 2px;
   transform: translateX(-50%) rotate(-45deg);
   transform-origin: 50% 100%;
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 11px;
   white-space: nowrap;
 }
@@ -832,7 +832,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   text-anchor: middle;
 }
 .usage-donut-label {
-  fill: var(--muted);
+  fill: var(--text-secondary);
   font-size: 10px;
   text-anchor: middle;
 }
@@ -880,7 +880,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   text-overflow: ellipsis;
 }
 .usage-model-provider {
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 12px;
   max-width: 30%;
   white-space: nowrap;
@@ -893,7 +893,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   text-align: right;
 }
 .usage-model-percent {
-  color: var(--muted);
+  color: var(--text-secondary);
   min-width: 52px;
   text-align: right;
 }
@@ -904,7 +904,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   padding: 7px 14px;
   border-top: 1px solid var(--border);
   background: rgba(0, 0, 0, 0.18);
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 </style>

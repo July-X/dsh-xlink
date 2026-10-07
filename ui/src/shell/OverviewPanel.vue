@@ -290,36 +290,48 @@ function goVersions() {
 
 <template>
   <section class="panel">
-    <ControlTower
-      @open-incident="openIncidentDetails"
-      @go-panel="(name) => (store.activePanel = name)"
-    />
+    <!-- 页头：标题 + 一句话说明这一页回答什么问题。宽版下主区已经有足够
+         横向空间，不必再靠卡片堆叠来暗示层次。 -->
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">概览</h1>
+        <p class="page-desc">当前内核、插件与技能接线状态，以及这个实例最近的使用与用量。</p>
+      </div>
+    </div>
 
-    <!-- 首次运行引导：未安装任何内核时给出两条路径——去版本页挑选，
-         或直接安装当前最新稳定版。 -->
-    <Transition name="panel">
-      <div v-if="noKernel && !store.starting && !running" class="callout callout-firstrun" role="alert">
-        <div class="callout-icon" aria-hidden="true">
-          <el-icon><Warning /></el-icon>
-        </div>
-        <div class="callout-body">
-          <h3>欢迎使用 DeepSeek Harness 桌面端</h3>
-          <p>当前尚未安装任何 dsh 内核版本。请先选择一个版本安装，再启动工作台。</p>
-          <div class="btn-row">
-            <el-button type="primary" :icon="Box" :disabled="globalBusy" @click="goVersions">
-              选择并安装内核
-            </el-button>
-            <el-button :icon="Download" :loading="isLoading('firstRunLatest')" :disabled="globalBusy" @click="installLatestRelease">
-              安装最新版本
-            </el-button>
+    <div class="page-layout">
+      <!-- 首次运行引导：未安装任何内核时给出两条路径——去版本页挑选，
+           或直接安装当前最新稳定版。横跨整行，因为它比下面任何一张卡都优先。 -->
+      <Transition name="panel">
+        <div
+          v-if="noKernel && !store.starting && !running"
+          class="callout callout-firstrun page-layout__full"
+          role="alert"
+        >
+          <div class="callout-icon" aria-hidden="true">
+            <el-icon><Warning /></el-icon>
+          </div>
+          <div class="callout-body">
+            <h3>欢迎使用 DeepSeek Harness 桌面端</h3>
+            <p>当前尚未安装任何 dsh 内核版本。请先选择一个版本安装，再启动工作台。</p>
+            <div class="btn-row">
+              <el-button type="primary" :icon="Box" :disabled="globalBusy" @click="goVersions">
+                选择并安装内核
+              </el-button>
+              <el-button :icon="Download" :loading="isLoading('firstRunLatest')" :disabled="globalBusy" @click="installLatestRelease">
+                安装最新版本
+              </el-button>
+            </div>
           </div>
         </div>
-      </div>
-    </Transition>
+      </Transition>
 
-    <div class="card">
-      <h2 class="kernel-title">
-        当前内核
+      <!-- 左列：当前内核。宽版下它是这一页最需要横向空间的一张卡——
+           地址、路径与用量条并排放得下，不必再一条一条竖着列。 -->
+      <div class="page-layout__col">
+        <div class="card">
+          <h2 class="kernel-title">
+            当前内核
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">
@@ -544,16 +556,23 @@ function goVersions() {
       <p v-if="!store.starting && !running && !canStart" class="muted" style="margin: 0">
         尚未安装可用内核，请先到「内核版本」页安装。
       </p>
-    </div>
+        </div>
+      </div>
 
-    <!-- 安全网（环境回退点 / 深入排查）已挪到设置页，紧跟「数据迁移」下方。
-         它们是故障时才用得上的兜底，常年摆在开机第一屏只会稀释真正要看的
-         内容。 -->
+      <!-- 右列：控制塔（需要关注 / 系统健康 / 最近操作）与套餐用量。
+           它们都是「看一眼就走」的信息，不需要横向空间，竖着叠更省眼力。
+           安全网（环境回退点 / 深入排查）仍按原决策留在设置页，常年摆在开机
+           第一屏只会稀释真正要看的内容。 -->
+      <div class="page-layout__col">
+        <ControlTower
+          @open-incident="openIncidentDetails"
+          @go-panel="(name) => (store.activePanel = name)"
+        />
 
-    <!-- 套餐用量：独立只读卡，内容直接展示（无折叠）。MiniMax 双窗口进度 +
+        <!-- 套餐用量：独立只读卡，内容直接展示（无折叠）。MiniMax 双窗口进度 +
          DeepSeek 余额行；完整可操作错误文案只在顶部横幅出现，provider 分区
          仅用短状态词标注。凭据复用工作台模型设置，这张卡不带任何写操作。 -->
-    <div class="card">
+        <div class="card">
       <div class="card-head">
         <h2>
           套餐用量
@@ -690,8 +709,9 @@ function goVersions() {
         <p v-else-if="!planRows.length" class="muted" style="margin: 0">尚未查询，点击右上角「刷新」获取。</p>
       </div>
     </div>
-
-</section>
+      </div>
+    </div>
+  </section>
 </template>
 
 <style scoped>
@@ -814,7 +834,7 @@ function goVersions() {
   line-height: 1.5;
 }
 .plan-tier-head .plan-tier-name {
-  color: var(--muted);
+  color: var(--text-secondary);
   font-weight: 600;
 }
 .plan-tier-head .plan-tier-reset {
@@ -840,7 +860,7 @@ function goVersions() {
   border: 1px solid var(--el-border-color-extra-light);
   border-radius: 999px;
   font-size: 11px;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 .age-pill .el-icon {
   font-size: 11px;
@@ -859,7 +879,7 @@ function goVersions() {
 .plan-tier-name {
   flex: none;
   width: 68px;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 .plan-bar {
   position: relative;
@@ -923,12 +943,12 @@ function goVersions() {
   font-weight: 600;
 }
 .plan-balance-detail {
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 .plan-state {
   margin: 0;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 .plan-state-bad {
   color: var(--el-color-danger);

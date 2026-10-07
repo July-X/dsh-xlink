@@ -226,7 +226,7 @@ function openRun() {
   padding: 7px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--bg-soft);
+  background: var(--surface-subtle);
 }
 
 .restore-item-detail {

@@ -229,6 +229,6 @@ function close() {
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 </style>

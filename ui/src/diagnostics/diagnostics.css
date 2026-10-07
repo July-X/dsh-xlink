@@ -44,7 +44,7 @@
   z-index: var(--z-diagnosis);
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  background: var(--window);
   overflow: hidden;
 }
 
@@ -83,7 +83,7 @@
   border-radius: 9px;
   border: 1px solid transparent;
   background: transparent;
-  color: var(--muted);
+  color: var(--text-secondary);
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease;
 }
@@ -109,7 +109,7 @@
 .diag-card {
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: var(--card);
+  background: var(--surface);
   padding: 12px;
   margin-bottom: 10px;
 }
@@ -128,13 +128,13 @@
 .diag-card__aside {
   font-size: 11px;
   font-weight: 400;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 
 /* 标题行上的小动作按钮（清除诊断记录）。用 ghost 形态：它是对**整段
  * 历史**的低频操作，不该和卡片标题争夺注意力。边框 / 背景 / 字体全部
  * 显式写——全局没有裸 button 的默认样式，不写就是一个系统灰方块。 */
-.diag-card__action { margin-left: 8px; padding: 1px 8px; font-size: 11px; line-height: 1.4; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; transition: color 120ms ease, background 120ms ease; }
+.diag-card__action { margin-left: 8px; padding: 1px 8px; font-size: 11px; line-height: 1.4; color: var(--text-secondary); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; transition: color 120ms ease, background 120ms ease; }
 .diag-card__action:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.12); }
 /* 清除进行中：按钮已经 disable，再加一层弱化，用户才知道不是没点上。 */
 .diag-card__action:disabled { opacity: 0.5; cursor: default; }
@@ -155,21 +155,21 @@
   height: 9px;
   border-radius: 50%;
   flex: none;
-  background: var(--muted);
+  background: var(--text-secondary);
 }
 
-.diag-status__dot--ok { background: var(--good); }
-.diag-status__dot--warn { background: var(--warn); }
-.diag-status__dot--bad { background: var(--bad); }
+.diag-status__dot--ok { background: var(--success); }
+.diag-status__dot--warn { background: var(--warning); }
+.diag-status__dot--bad { background: var(--danger); }
 .diag-status__dot--active { background: var(--accent); }
-.diag-status__dot--unknown { background: var(--muted); }
-.diag-status__dot--muted { background: var(--muted); }
+.diag-status__dot--unknown { background: var(--text-secondary); }
+.diag-status__dot--muted { background: var(--text-secondary); }
 
 .diag-meta {
   margin: 8px 0 0;
   font-size: 12px;
   line-height: 1.7;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 
 .diag-summary-text {
@@ -220,15 +220,15 @@
   line-height: 1;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.04);
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 
 /* 类名跟 `statusMeta` 的 tone 走（tone = 'ok'），取值跟 theme.css 的
  * --good 走。两者不同名是刻意的：tone 是「这一行的语义」，而色板是
  * 全局 token——将来把成功色从绿改成别的，只动 theme.css 一处。 */
-.diag-timeline__mark--ok { color: var(--good); border-color: rgba(52, 211, 153, 0.4); }
-.diag-timeline__mark--warn { color: var(--warn); border-color: rgba(251, 191, 36, 0.4); }
-.diag-timeline__mark--bad { color: var(--bad); border-color: rgba(248, 113, 113, 0.4); }
+.diag-timeline__mark--ok { color: var(--success); border-color: rgba(52, 211, 153, 0.4); }
+.diag-timeline__mark--warn { color: var(--warning); border-color: rgba(251, 191, 36, 0.4); }
+.diag-timeline__mark--bad { color: var(--danger); border-color: rgba(248, 113, 113, 0.4); }
 .diag-timeline__mark--active { color: var(--accent); border-color: rgba(79, 140, 255, 0.5); }
 
 .diag-timeline__main { flex: 1; min-width: 0; }
@@ -244,7 +244,7 @@
 
 .diag-timeline__cost {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--text-secondary);
   flex: none;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -261,7 +261,7 @@
   margin: 3px 0 0;
   font-size: 12px;
   line-height: 1.65;
-  color: var(--muted);
+  color: var(--text-secondary);
   /* 长文案必须能换行，不能被裁成一行（设计稿 §13.3）。 */
   overflow-wrap: anywhere;
 }
@@ -299,7 +299,7 @@
  * hover 底色、不带箭头语义色——它和上面那些「处理」行长得越像，用户越容易
  * 把它当成第五条问题。`--static` 已经有「不可点」的样式，这里复用它那套
  * 克制：只给一个可点的样子，不给「有事发生」的暗示。 */
-.diag-row--more { color: var(--muted); }
+.diag-row--more { color: var(--text-secondary); }
 .diag-row--more:hover { background: transparent; }
 .diag-row--more .diag-row__label { font-weight: 400; }
 
@@ -312,12 +312,12 @@
   flex: 1; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.diag-row__value { flex: none; color: var(--muted); font-size: 12px; }
-.diag-row__arrow { flex: none; color: var(--muted); font-size: 12px; }
+.diag-row__value { flex: none; color: var(--text-secondary); font-size: 12px; }
+.diag-row__arrow { flex: none; color: var(--text-secondary); font-size: 12px; }
 
-.diag-row__value--ok { color: var(--good); }
-.diag-row__value--warn { color: var(--warn); }
-.diag-row__value--bad { color: var(--bad); }
+.diag-row__value--ok { color: var(--success); }
+.diag-row__value--warn { color: var(--warning); }
+.diag-row__value--bad { color: var(--danger); }
 
 /* 系统健康的两列排布。四项读数挤成一列时占掉 311px（480px 宽实测），是整
    屏的近四成，而它们回答的还是「子系统各处于什么状态」——两列放得下。
@@ -416,7 +416,7 @@
  */
 .diag-card.diag-card--tower { padding: 4px 6px; margin-bottom: 0; }
 
-.diag-card--tower .diag-card__title { padding-bottom: 6px; margin-bottom: 6px; border-bottom: 1px solid var(--border); line-height: 1.35; }
+.diag-card--tower .diag-card__title { padding-bottom: 9px; margin-bottom: 6px; border-bottom: 1px solid var(--border); line-height: 1.35; }
 
 .diag-card--tower .diag-row { padding-block: 4px; line-height: 1.35; }
 
@@ -460,7 +460,7 @@
   text-align: center;
   font-size: 13px;
   line-height: 1.8;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 
 .diag-error {
@@ -520,7 +520,7 @@
 
 .diagnosis-more-popper .diagnosis-menu__icon {
   flex: none;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 
 /* hover 时图标跟着文字一起提亮，而不是留一个灰点——图标与文字是同一件事的

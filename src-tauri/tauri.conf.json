@@ -16,14 +16,14 @@
         "label": "main",
         "title": "Dsh-Xlink",
         "theme": "Dark",
-        "width": 480,
-        "height": 800,
-        "minWidth": 480,
-        "minHeight": 600,
+        "width": 1040,
+        "height": 748,
+        "minWidth": 1040,
+        "minHeight": 748,
         "center": true,
         "resizable": false,
         "decorations": false,
-        "backgroundColor": "#0b1020"
+        "backgroundColor": "#29272C"
       }
     ],
     "security": {

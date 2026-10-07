@@ -204,9 +204,11 @@ function toggleSource(src) {
 
 <template>
   <section class="panel migration">
-    <header>
-      <h2>数据迁移</h2>
-      <p class="subtitle">把旧版 dsh-xlink 的插件 / 技能导入多实例布局。旧源不会被删除，可随时回滚。</p>
+    <header class="page-head">
+      <div>
+        <h1 class="page-title">数据迁移</h1>
+        <p class="page-desc">把旧版 dsh-xlink 的插件 / 技能导入多实例布局。旧源不会被删除，可随时回滚。</p>
+      </div>
     </header>
 
     <el-steps :active="migrationStore.activeStep" finish-status="success" simple>
@@ -474,7 +476,7 @@ function toggleSource(src) {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
   border-radius: 6px;
-  background: var(--surface-soft);
+  background: var(--surface-subtle);
 }
 .misplaced h3 { margin: 0 0 6px; font-size: 13px; }
 .misplaced-list { list-style: none; margin: 0 0 8px; padding: 0; }
@@ -521,7 +523,7 @@ function toggleSource(src) {
   display: flex;
   justify-content: flex-end;
 }
-.credentials-note { margin-top: 12px; padding: 8px 12px; background: var(--surface-soft); border-radius: 6px; color: var(--text-muted); font-size: 12px; }
+.credentials-note { margin-top: 12px; padding: 8px 12px; background: var(--surface-subtle); border-radius: 6px; color: var(--text-muted); font-size: 12px; }
 /* 来源勾选纵向排布（原先靠 el-checkbox-group 的布局习惯，去掉 group 后自己排） */
 .source-options { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 /* ElSteps 的 ::v-deep 收紧：simple 模式默认步骤块高度约 40px+，这里压到 ~28px */

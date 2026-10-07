@@ -34,8 +34,10 @@ function panelCardTitles() {
   // 概览页的两张卡用裸 h2（一个带 kernel-title、一个带 card-title-with-tip）。
   // `.card > h2` 这条规则的主语里**一个类都没有**、只有标签 `h2`，所以元素侧
   // 必须把 `h2` 也算成一个 token，否则整条规则会被当成「不适用」而跳过。
+  // 缩进用 `\s+` 而不是 `\s{6}`：uiv2 改版把概览页的卡移进了栅格列容器，
+  // 缩进随之变化。钉的是「这是个裸 h2 卡标题」，不是「它缩进几格」。
   for (const rel of ['shell/OverviewPanel.vue', 'shell/SettingsPanel.vue']) {
-    for (const [, cls] of read(rel).matchAll(/^\s{6}<h2 class="([^"]*)"/gm)) {
+    for (const [, cls] of read(rel).matchAll(/^\s+<h2 class="([^"]*)"/gm)) {
       found.push({
         set: new Set(['card', 'h2', ...classesOf(` class="${cls}"`)]),
         where: `${rel} 的 <h2 class="${cls}">`,
@@ -80,7 +82,7 @@ test('控制塔三张卡的标题有线，且与面板里的卡用同一个色�
   );
 });
 
-test('标题的 padding-bottom 是 6px（线与标题文字之间的留白，与面板里的卡一致）', () => {
+test('标题的 padding-bottom 是 9px（线与标题文字之间的留白，与面板里的卡一致）', () => {
   const rs = rules();
   const tower = effectiveDeclaration(
     new Set(['diag-card', 'diag-card--tower', 'diag-card__title', 'h3']),
@@ -88,7 +90,10 @@ test('标题的 padding-bottom 是 6px（线与标题文字之间的留白，与
     'padding-bottom'
   );
   const cardHead = effectiveDeclaration(new Set(['card-head', 'div']), rs, 'padding-bottom');
-  assert.equal(tower, '6px', `控制塔标题的 padding-bottom 应为 6px，实际 ${tower ?? '(无)'}`);
+  // 6px → 9px：卡片内边距从 12px 收到 12px 的同时把标题字号从 15px 降到 14px，
+  // 行盒跟着变矮，留白不跟着收会让分割线贴着文字。9px 是与新设计稿
+  // `.page-card__head` 的头部高度对齐后的值，两处仍然必须相等。
+  assert.equal(tower, '9px', `控制塔标题的 padding-bottom 应为 9px，实际 ${tower ?? '(无)'}`);
   assert.equal(tower, cardHead, '两处标题的 padding-bottom 必须一致');
 });
 
@@ -213,7 +218,7 @@ test('控制塔的卡 padding 与行 padding 收到紧凑档（2026-10-07 用户
   assert.match(row[1], /line-height:\s*1\.35/, '控制塔行高保持 1.35，不再往下收');
 });
 
-test('标题「线到内容」的留白是 6px，而「标题到线」仍守住全局的 6px（2026-10-07 用户）', () => {
+test('标题「线到内容」的留白是 6px，而「标题到线」守住全前端统一的 9px（2026-10-07 用户 / uiv2 改版）', () => {
   const css = read('diagnostics/diagnostics.css');
   const title = css.match(/\.diag-card--tower \.diag-card__title \{([^}]*)\}/);
   assert.ok(title, '必须能找到 .diag-card--tower .diag-card__title');
@@ -226,13 +231,14 @@ test('标题「线到内容」的留白是 6px，而「标题到线」仍守住�
     /margin-bottom:\s*6px/,
     `标题线到内容的留白应为 6px，实际 ${title[1].trim()}`
   );
-  // 「标题到线」不在这一轮动的范围内：它是 ui/AGENTS.md §卡片里**全前端统一**
-  // 的一条（概览页与四个面板的卡共用），单给控制塔改成 4px 会让上下相邻的卡
-  // 在同一屏里给出两种分割线间距。收紧该动的是这段，不是那段。
+  // 「标题到线」是 ui/AGENTS.md §卡片里**全前端统一**的一条（概览页与四个面板
+  // 的卡共用），单给控制塔另定一个数会让上下相邻的卡在同一屏里给出两种分割线
+  // 间距。uiv2 改版把它从 6px 提到 9px：卡内边距与标题字号都变了，6px 会让线
+  // 贴住标题文字。
   assert.match(
     title[1],
-    /padding-bottom:\s*6px/,
-    '标题文字到分割线的 6px 是全前端统一规范，不许只给控制塔改'
+    /padding-bottom:\s*9px/,
+    '标题文字到分割线的 9px 是全前端统一规范，不许只给控制塔改'
   );
 });
 

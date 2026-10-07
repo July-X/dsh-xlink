@@ -54,7 +54,7 @@ defineProps({
    两段 padding 不对称：图标只有 13px 见方，文字段要留出读字的呼吸。 */
 .version-badge-icon {
   padding: 0 5px;
-  color: var(--bg);
+  color: var(--window);
   background: var(--accent);
 }
 /* 黑色变体（概览「当前内核」卡）：图标段**无底色**，tag 图形本体用黑色——
@@ -65,7 +65,7 @@ defineProps({
 }
 .version-badge-text {
   padding: 0 8px;
-  color: var(--muted);
-  background: var(--card);
+  color: var(--text-secondary);
+  background: var(--surface);
 }
 </style>

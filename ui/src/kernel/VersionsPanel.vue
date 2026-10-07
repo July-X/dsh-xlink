@@ -246,6 +246,15 @@ function groupTip(group) {
 
 <template>
   <section class="panel kernel-panel">
+    <!-- 页头说明这一页管什么：装哪一版内核、占多少盘、以及有哪些可更新。
+         标题不再塞进卡片——宽版下页头与卡片是两层独立的东西，混在一起会让
+         「内核版本」看起来像下面那张卡的标题而不是这一页的名字。 -->
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">内核版本</h1>
+        <p class="page-desc">安装、切换与卸载 dsh 内核，并查看它们在磁盘上的占用。</p>
+      </div>
+    </div>
     <div class="card kernel-card">
       <div class="card-head">
         <h2>内核版本</h2>
@@ -541,7 +550,7 @@ function groupTip(group) {
 .release-list-box {
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--bg-soft);
+  background: var(--surface-subtle);
   /* 边缘淡出带的定位基准：带子 absolute 盖在滚动区的上下边界上（见下方
      `.release-fade`）。 */
   position: relative;
@@ -711,7 +720,7 @@ function groupTip(group) {
 /* 四格内容长短不一时，让条目区从底部往上排，短的那一格也不会把瓦片
    撑得比邻居高——底边对齐比「顶部对齐 + 各自高度」更接近对称。 */
 .usage-tile {
-  background: var(--bg-soft);
+  background: var(--surface-subtle);
   border: 1px solid var(--border);
   border-radius: 10px;
   /* 6/9/6：比上一版再收 1px。瓦片只有标题、条形、条目三块，padding
@@ -806,7 +815,7 @@ function groupTip(group) {
 
 .usage-tile-percent {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--text-secondary);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -866,7 +875,7 @@ function groupTip(group) {
 }
 
 .usage-entry-name {
-  color: var(--muted);
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -881,7 +890,7 @@ function groupTip(group) {
 
 .usage-refreshing {
   animation: usage-spin 1.1s linear infinite;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 
 @keyframes usage-spin {

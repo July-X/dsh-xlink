@@ -108,6 +108,12 @@ const storeTip = computed(() => {
 
 <template>
   <section class="panel">
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">技能</h1>
+        <p class="page-desc">管理已安装的技能包与包内技能，并从社区资源安装新的技能。</p>
+      </div>
+    </div>
     <div class="card entity-card">
       <div class="card-head">
         <h2 class="card-head-with-tip">

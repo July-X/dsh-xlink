@@ -281,6 +281,12 @@ function instanceChipType(row, instanceId) {
 
 <template>
   <section class="panel">
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">插件</h1>
+        <p class="page-desc">查看当前实例生效的插件，并从插件中心安装或升级。</p>
+      </div>
+    </div>
     <!-- 第三方来源的免责提示放在这里：它是插件页的语境，原先常驻在侧栏底部，
          在概览 / 内核版本等页面也会一直占着位置。 -->
     <div class="panel-notice" role="note">
