@@ -149,9 +149,9 @@ async function retry() {
     </RunTimeline>
   </div>
 
-  <div v-if="evidence.kernelLog" class="diag-card">
+  <div v-if="evidence.kernelLog || evidence.sandboxLog" class="diag-card">
     <h3 class="diag-card__title"><span>证据</span></h3>
-    <p class="diag-meta">内核日志：{{ evidenceLabel(evidence.kernelLog) }}</p>
+    <p v-if="evidence.kernelLog" class="diag-meta">内核日志：{{ evidenceLabel(evidence.kernelLog) }}</p>
     <p v-if="evidence.sandboxLog" class="diag-meta">
       沙盒日志：{{ evidenceLabel(evidence.sandboxLog) }}
     </p>
