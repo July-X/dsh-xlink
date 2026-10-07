@@ -682,7 +682,14 @@ const FILE_BUDGETS = {
   // event，于是运行记录没有 sandbox_log、诊断页没有证据卡可显示——最能说明
   // 「问题与候选插件无关」的那次失败反而点不开日志。抽助手不是为了少写几行，
   // 是让「漏挂证据」变成写不出来的错误：两条分支只能通过这个出口返回。
-  'src-tauri/src/plugins/precheck.rs': 486,
+  // 486 → 496：新增 `StoreRestore` 守卫（2026-10-07 用户实测「预检通过后插件
+  // 却被装上了」）。预检把候选包装进**真实中央库**（只有目标实例换成沙盒），
+  // 失败的两条出口都调了 `rollback`，唯独「装上并通过」那条没调，于是中央库
+  // 留在记账状态，而面板的「已安装」判据读的就是它。改成 `Drop` 守卫：还原
+  // 从「每条 return 前记得补一行」变成结构事实，新加出口不必记得。这 10 行买
+  // 的是「两阶段契约不会再漏一次」——比它在文件里占的位置值钱得多。
+  // 本文件 486 < RATCHET_THRESHOLD 600，不受反棘轮约束。
+  'src-tauri/src/plugins/precheck.rs': 496,
   // 插件预检的 Tauri 命令壳：取证（plugin_precheck_install）+ 应用
   // （plugin_precheck_apply）+ 它们共用的 `run_precheck_command`（node / pnpm
   // 准备、长任务通道、生命周期锁）。从 commands.rs 搬出——那份在反棘轮上，
