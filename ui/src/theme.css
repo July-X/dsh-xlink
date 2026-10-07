@@ -1041,45 +1041,6 @@ main {
   font-size: 12px;
 }
 
-/* 健康行：状态点 + 名称 + 值。 */
-.health-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 0;
-  font-size: 13px;
-}
-
-.health-row + .health-row {
-  border-top: 1px solid var(--border-soft);
-}
-
-.health-dot {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
-  border-radius: 50%;
-  background: var(--text-muted);
-}
-
-.health-dot.is-ok {
-  background: var(--success);
-}
-
-.health-dot.is-warn {
-  background: var(--warning);
-}
-
-.health-dot.is-bad {
-  background: var(--danger);
-}
-
-.health-row__value {
-  margin-left: auto;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
 /* 按钮：主 / 次 / ghost / 危险四档，全部 6px 圆角、30px 高，
    与侧栏导航项和列表行共用同一套圆角与留白。 */
 .btn {
