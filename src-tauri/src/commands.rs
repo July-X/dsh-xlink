@@ -1465,6 +1465,8 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
             )
             .resizable(true)
             .background_color(CHROME_BACKDROP)
+            // 与 `usage::local` 同理：建窗瞬间的兜底，实际主题由页面挂载前的
+            // `window.setTheme()` 纠正（见 `bridge.setWindowTheme` 的注释）。
             .theme(Some(tauri::Theme::Dark));
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);

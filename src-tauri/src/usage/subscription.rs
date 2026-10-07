@@ -1116,6 +1116,8 @@ pub async fn open_subscription_window(app: tauri::AppHandle) -> Result<(), Strin
             .min_inner_size(720.0, 520.0)
             .resizable(true)
             .background_color(window::CHROME_BACKDROP)
+            // 与 `usage::local` 同理：建窗瞬间的兜底，实际主题由页面挂载前的
+            // `window.setTheme()` 纠正（见 `bridge.setWindowTheme` 的注释）。
             .theme(Some(tauri::Theme::Dark));
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);

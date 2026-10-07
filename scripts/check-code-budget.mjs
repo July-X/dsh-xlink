@@ -346,14 +346,20 @@ const FILE_BUDGETS = {
   // rustfmt 按自己的规则展开成多行 → 316；这里登记的是门禁真正会量到的数）。
   'src-tauri/src/diskusage.rs': 316,
   'ui/src/shell/autostart.js': 90,
-  // 2026-10-07 uiv2 改版新增：明暗双主题的唯一实现（shell/theme.js，30 行）。
+  // 2026-10-07 uiv2 改版新增：明暗双主题的唯一实现（shell/theme.js）。
   // 独立成文件而不是塞进 store.js / SideBar.vue，理由是它**跨窗口**：主面板、
   // 日志阅读窗、用量窗、套餐窗都共用同一个入口 `applyTheme()`（main.js 在
   // createApp 之前调它，早一步晚一步就是首帧闪一帧错误主题）。放进 SideBar.vue
   // 会被 scoped 样式与组件生命周期绑住，独立窗口拿不到；放进 store.js 则会让
   // 一个纯前端偏好挂上「全局状态」的名。30 行是它的全部内容：读一次
   // localStorage、切 `html.dark`、写回。没有第二处判据。
-  'ui/src/shell/theme.js': 30,
+  //
+  // 30 → 32（2026-10-07）：原生窗口 chrome 也要跟同一个真值走。主题的真值在
+  // localStorage，Rust 建窗时读不到，所以 `applyTheme()` 多两行——import 一次
+  // bridge、把 `theme.value` 推给 `window.setTheme()`。不加这两行的后果是浅色
+  // 主题的副窗顶着深色原生标题栏（用户截图）。仍然没有第二处判据：`html.dark`
+  // 是唯一的 CSS 暗色判据，`setTheme` 一律经 `applyTheme()`。
+  'ui/src/shell/theme.js': 32,
   // 2026-09-30 按功能分目录，三个大文件各上调到实测值：
   //   commands.rs        2110 → 2171
   //   plugins/center.rs  2980 → 2983

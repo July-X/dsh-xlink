@@ -9,6 +9,7 @@
 // 里 `:root` 放浅色 token、`html.dark` 放暗色 token，两套 Element Plus 覆写也各自
 // 待在自己的选择器下，没有第二处判据。
 import { ref } from 'vue';
+import { setWindowTheme } from './bridge.js';
 
 // 键名带作用域前缀：同一台机器上本地窗口（工作台、日志、用量）都读它，所以
 // 主面板切换主题时，已经开着的独立窗口下一次绘制就跟着变。
@@ -36,8 +37,13 @@ export const theme = ref(readStoredTheme());
 ///
 /// 必须早于第一个组件挂载，否则首帧会先画一帧错误主题再跳色。main.js 在
 /// createApp 之前就调它。
+///
+/// 原生装饰（标题栏）跟着同一个真值走，见 `bridge.setWindowTheme`。这里
+/// **不吞异常**：调用点是挂载前，还没有 toast 能报；失败的后果只是标题栏停
+/// 在旧主题（内容与标题栏短暂不同步），不值得为它把整个应用启动打断。
 export function applyTheme() {
   document.documentElement.classList.toggle('dark', theme.value === 'dark');
+  void setWindowTheme(theme.value).catch(() => {});
   document.documentElement.dataset.theme = theme.value;
 }
 
