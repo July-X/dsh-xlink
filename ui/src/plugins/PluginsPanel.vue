@@ -372,7 +372,15 @@ function instanceChipType(row, instanceId) {
                一行、列上每个实例一枚 chip（不复用 entity-row 是因为这里
                没有「更新 / 模式切换 / 卸载」等 per-kernel 动作——写动作
                留在「当前内核」tab）；手动安装与插件中心也归这页：安装
-               针对的是插件库，不属于某个内核。 -->
+               针对的是插件库，不属于某个内核。
+
+               宽版（1040）下这一页按设计稿分两列：左列是**本机**那一份
+               （已装清单 + 手动安装），右列是 **dshfind.com 上的远端目录**。
+               两列的搜索对象根本不是一回事（本机 vs 远端），并排摆比让用户
+               在一屏里上下找要直接得多；窄窗退化成单列时仍靠下面那道分组
+               标题切开。 -->
+          <div class="page-layout">
+            <div class="page-layout__col">
           <div class="entity-list all-instances-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
             <el-empty
               v-if="!view || !view.rows || view.rows.length === 0"
@@ -437,11 +445,13 @@ function instanceChipType(row, instanceId) {
               </template>
             </el-input>
           </div>
+            </div>
 
+            <div class="page-layout__col">
           <!-- 本机那一份到这里为止：上面是已装清单与手动安装（本地仓库），
-               下面开始是 dshfind.com 上的远端目录。用一道分组标题切开，
-               否则「手动安装」输入框与「插件仓库」搜索框会被当成同一个
-               输入区，而两者的搜索对象根本不是一回事（本机 vs 远端）。 -->
+               下面开始是 dshfind.com 上的远端目录。宽版下两者已经各占一列，
+               这道分组标题退化成列内的分隔线——窄窗（单列）时它仍然是把
+               「手动安装」与「插件仓库」两套输入区分开的主要线索。 -->
           <h3 class="section-divider">
             插件仓库
             <span class="muted">来自 dshfind.com</span>
@@ -585,6 +595,8 @@ function instanceChipType(row, instanceId) {
             <el-button text :icon="ArrowDown" @click="showMore">
               显示更多（还有 {{ pluginStore.catalogTotal - pluginStore.shown }} 个）
             </el-button>
+          </div>
+            </div>
           </div>
         </el-tab-pane>
 
