@@ -24,6 +24,56 @@ export function cssFiles(dir = SRC, out = []) {
   return out;
 }
 
+/** `ui/src` 下所有 `.vue` 的 `<style>` 块内容，递归。返回 `{ file, css }`。 */
+export function vueStyleBlocks(dir = SRC, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = resolve(dir, entry.name);
+    if (entry.isDirectory()) vueStyleBlocks(p, out);
+    else if (extname(entry.name) === '.vue') {
+      const src = readFileSync(p, 'utf8');
+      // 正则只留一个捕获组（`<style>` 的属性不分组），`[, css]` 才取到块内容；
+      // 写成 `[, , css]` 会拿到 undefined，报错点在 ruleBlocks 里的 `css.length`
+      // ——离真正的原因十万八千里。
+      for (const [, css] of src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) out.push({ file: p, css });
+    }
+  }
+  return out;
+}
+
+/**
+ * 全仓规则表：`.css` 文件 **加上** `.vue` 的 `<style>` 块。
+ *
+ * 为什么必须带后者：面板级样式大多写在组件的 scoped 块里而不是 theme.css。
+ * 只扫 `.css` 时 `.kernel-summary`、`.plan-grid`、`.brand__toggle` 这些规则
+ * 一条都查不到，「查层叠后的生效值」于是退化成「查全局基线」——判据看着在算
+ * 层叠，实际永远只看得到 theme.css 那一半。
+ *
+ * scoped 的属性后缀（`.foo[data-v-abc]`）按原样参与匹配：`subjectTokens` 会把
+ * `[data-v-abc]` 收成一个 token，而调用方传的类集合里没有它，
+ * `[...need].every(...)` 会跳过该规则——**这正是 scoped 的语义**（那条规则只
+ * 作用于本组件），工具不该替它放宽，所以这里不做任何特殊处理。
+ */
+export function allRulesIncludingVue() {
+  const rules = [];
+  for (const file of cssFiles()) {
+    for (const rule of ruleBlocks(readFileSync(file, 'utf8'))) rules.push({ ...rule, file });
+  }
+  for (const { file, css } of vueStyleBlocks()) {
+    for (const rule of ruleBlocks(css)) rules.push({ ...rule, file });
+  }
+  return rules;
+}
+
+/**
+ * 剥掉 CSS 注释。**必须先剥**：`ruleBlocks` 按 `{` 找规则起点，而本仓大量规则
+ * 都带一段解释「为什么这么写」的长注释。注释里只要出现一个 `{`（贴了段旧 CSS
+ * 片段就会）或换行，prelude 就会从注释开头一路吃到花括号，选择器与主体全部
+ * 错位——表现是「明明写了 `.plan-grid` 却查不到它的 grid-template-columns」。
+ */
+export function stripComments(css) {
+  return css.replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
 /**
  * 把一段 CSS 拆成 `{selector, body}` 列表。**必须按花括号配对**，不能用
  * `/([^{}]+)\{([^}]*)\}/g`：那种写法遇到 `@media { .a { … } }` 会把内层规则
@@ -32,19 +82,20 @@ export function cssFiles(dir = SRC, out = []) {
  */
 export function ruleBlocks(css) {
   const out = [];
+  const text = stripComments(css);
   let i = 0;
-  while (i < css.length) {
-    const open = css.indexOf('{', i);
+  while (i < text.length) {
+    const open = text.indexOf('{', i);
     if (open < 0) break;
-    const prelude = css.slice(i, open).trim();
+    const prelude = text.slice(i, open).trim();
     let depth = 1;
     let j = open + 1;
-    while (j < css.length && depth > 0) {
-      if (css[j] === '{') depth++;
-      else if (css[j] === '}') depth--;
+    while (j < text.length && depth > 0) {
+      if (text[j] === '{') depth++;
+      else if (text[j] === '}') depth--;
       j++;
     }
-    const inner = css.slice(open + 1, j - 1);
+    const inner = text.slice(open + 1, j - 1);
     // 条件 at-rule（@media / @supports / @container / @layer）里仍是规则；
     // @keyframes / @font-face 的内层是声明块，不是选择器，不能当规则收。
     if (prelude.startsWith('@')) {

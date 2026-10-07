@@ -697,7 +697,15 @@ const FILE_BUDGETS = {
   // （它的唯一用途就是挑「点击重试」还是 `›`）与模板里的两层 v-if——本轮这个文件
   // 总体是减的。写成一个 116 字符的嵌套三元能省下这 1 行，不值得：本文件通篇是
   // 给未来的人读的。
-  'ui/src/diagnostics/ControlTower.vue': 262,
+  // 262 → 268：系统健康卡加卡头汇总句（设计稿 `card-caption health-ok`
+  // 「全部正常」）。这是**新能力**而不是既有代码的重排：`cell()` 多带一个
+  // `bad` 字段（卡头那句要数异常格，而它与下方四行必须同源，否则汇总句会
+  // 和实际行对不上），另有一个 computed 从同一份 rows 算出文案。
+  // 登记而不是继续挤：`health` 里那一格日志的多参数调用已经从 10 行收到
+  // 1 行（顺手做的，行长 130 可接受），再往下只能靠拆「健康」这一块——
+  // 而它与 attention / activity 两张卡共用同一个组件和同一份诊断 store，
+  // 拆组件要连模板的 fragment 结构一起改，代价远超这 6 行。
+  'ui/src/diagnostics/ControlTower.vue': 268,
   // 安装预检的两段式事务：中央库字节级快照与回滚、基线差分判定、
   // 提交（物化 + 接线）与报告装配。放在独立文件而不是塞进已 2964 行的
   // plugins.rs，是为了两件事：插件模块读不懂、预检想复用到技能上也
@@ -989,6 +997,14 @@ const FILE_BUDGETS = {
   // 执行「读取成功了」。插件 / 技能走 createStatusSource（自己吞异常并返回
   // 布尔值），所以读返回值而不是 catch；get_status 会抛，单独接。
   'ui/src/store.js': 462,
+  // 内核官方发布列表：拉取、`checkedAt` 时机与三条失败/静默口径。
+  // **为什么独立成模块**：发布列表是一个自成一体的关注点——只服务内核版本页
+  // 与首次运行引导，与 store.js 里的启动编排 / 工作台启停 / 外壳更新各不相干。
+  // 它当初长在 store.js 里，2026-10-07 为对齐设计稿的「最近检查 2 分钟前」加
+  // 一个时间戳字段时，store.js 被反棘轮顶出预算（只许下调）；那说明该拆，
+  // 不该调数字。拆出来后 `checkUpdates` 的两条路径（手动 / 启动自检）与
+  // `installLatestRelease` 共用同一个 `fetchReleaseList`，不会再各漏一次写入。
+  'ui/src/kernel/releases.js': 80,
   // 多内核改造 P0：新路径模块（paths.rs）。包含 ShellMode、xlink_home、shell
   // /kernels/skills/state/cache 解析、legacy resolver、id 校验与基础数据
   // 模型——是后续 P2–P8 的依赖根，必须单独占预算，避免被 plugins/skills

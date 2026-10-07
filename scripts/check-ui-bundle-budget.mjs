@@ -16,7 +16,17 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const JS_BUDGET = 700_000;
-const CSS_BUDGET = 230_000;
+// 230000 → 236000：2026-10-07「对齐设计稿 + 弹窗副窗主题适配」一轮。
+// 这 6 KB 是**真实需求的重量**，不是膨胀：
+//   · 概览页落位重排（当前内核 / 系统健康 / 套餐用量 / 需要关注+最近操作四块）
+//   · 套餐用量卡改成设计稿的固定三列 + 额度行一行栅格（名称|条|百分比）
+//   · 系统健康卡头汇总句、侧栏品牌区与底部拨杆、内核版本页「官方版本」卡头
+//   · 四个叠色 token（--overlay-faint/soft/strong + --surface-sunken）两套主题
+//     各一份，替换掉全仓 45 处写死的 rgba(255,255,255,…) / rgba(0,0,0,…)：
+//     **这批改动反而把压缩后的产物体积减了一截**（字面量长、变量名也长，
+//     但重复的字面量不再各自占一个压缩表项）。
+// 上一轮的基线是 227583（HEAD），本轮 231406。同期 gzip 后只多 0.5 KB。
+const CSS_BUDGET = 236_000;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const assets = join(root, 'ui', 'dist', 'assets');

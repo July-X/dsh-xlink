@@ -168,28 +168,32 @@ const latestSnapshotLabel = computed(() => {
  *
  * `unavailable` 这个字段因此没有了：它的唯一用途就是在模板里挑「点击重试」还是
  * `›`，而这件事现在由 `hint` 一次做完。
+ *
+ * `bad` 是给卡头那句汇总用的：四格全绿给「全部正常」，否则报异常格数。
+ * **只数 `bad` / `warn`**——「尚未读取」「暂无」是中性态，它们说的是「没有可
+ * 报的东西」，算进异常会让一张健康的卡写出「1 项异常」。放在这里而不是另立
+ * 一个 computed，是因为它与 rows 出自同一次遍历：分开算就得再遍历一次，
+ * 而两份数据一旦不同源，汇总句就会和下面的行对不上。
  */
 function cell(key, label, value, tone = '', action = null, detail = '') {
   const unavailable = value === '读取失败';
   const hint = unavailable ? '点击重试' : !action ? '' : key === 'logs' ? '查看' : '›';
-  return { key, label, value, tone, action, detail, hint };
+  return { key, label, value, tone, action, detail, hint, bad: tone === 'bad' || tone === 'warn' };
 }
 
 const health = computed(() => [
   cell('wiring', '插件接线', wiringText.value.text, wiringText.value.tone, 'plugins'),
   cell('skills', '技能注册', skillText.value.text, skillText.value.tone, 'skills'),
-  cell(
-    'logs',
-    '日志系统',
-    logText.value.text,
-    logText.value.tone,
-    'logs',
-    // 读失败时把原因挂在 title 上：只显示「读取失败」的话，用户点了重试还是
-    // 失败，却不知道是磁盘满了还是文件被轮转掉了。
-    logModal.listState === 'failed' ? logModal.listError : ''
-  ),
+  // 读失败时把原因挂在 title 上：只显示「读取失败」的话，用户点了重试还是
+  // 失败，却不知道是磁盘满了还是文件被轮转掉了。
+  cell('logs', '日志系统', logText.value.text, logText.value.tone, 'logs', logModal.listState === 'failed' ? logModal.listError : ''),
   cell('snapshot', '最近快照', latestSnapshotLabel.value || '暂无'),
 ]);
+
+const healthCaption = computed(() => {
+  const bad = health.value.filter((row) => row.bad).length;
+  return bad ? { text: `${bad} 项异常`, tone: 'bad' } : { text: '全部正常', tone: 'ok' };
+});
 
 // 插件接线：隔离数是唯一有意义的读数——「被看护停用过」直接决定插件
 // 还能不能正常工作，而 store 里没有总启数（接线明细要另发命令）。
@@ -289,7 +293,7 @@ function openDiagnosis() {
 </script>
 
 <template>
-  <div v-if="attentionAll.length" class="diag-card diag-card--tower">
+  <div v-if="attentionAll.length" class="diag-card diag-card--tower diag-card--attention">
     <h3 class="diag-card__title">
       <span>需要关注</span>
       <span class="diag-card__aside">{{ attentionAll.length }} 项</span>
@@ -327,8 +331,12 @@ function openDiagnosis() {
     </div>
   </div>
 
-  <div class="diag-card diag-card--tower">
-    <h3 class="diag-card__title"><span>系统健康</span></h3>
+  <div class="diag-card diag-card--tower diag-card--health">
+    <h3 class="diag-card__title">
+      <span>系统健康</span>
+      <!-- 设计稿 `card-caption health-ok`：一句话结论，别让用户逐行读四遍。 -->
+      <span class="diag-card__aside" :class="{ 'diag-card__aside--bad': healthCaption.tone === 'bad' }">{{ healthCaption.text }}</span>
+    </h3>
     <div class="diag-rows diag-rows--grid">
       <button
         v-for="row in health"
@@ -349,7 +357,7 @@ function openDiagnosis() {
     </div>
   </div>
 
-  <div class="diag-card diag-card--tower">
+  <div class="diag-card diag-card--tower diag-card--activity">
     <!-- 空态：说明收进标题行右侧，`--bare` 去掉标题下的线与留白（依据见 diagnostics.css）。 -->
     <h3 class="diag-card__title" :class="{ 'diag-card__title--bare': !latestRun }">
       <span>最近操作</span>

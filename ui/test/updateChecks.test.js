@@ -182,7 +182,7 @@ test('手动更新检查不置全局 busy、不挡互斥任务', async () => {
 });
 
 test('内核「检查更新」同样只挂按钮 loading，不进互斥租约', async () => {
-  const { store, checkUpdates } = await import('../src/store.js');
+  const { releases, checkUpdates } = await import('../src/kernel/releases.js');
   const { globalBusy, isExclusiveBusy, isLoading } = await import('../src/shell/loading.js');
 
   const gate = deferred();
@@ -196,18 +196,18 @@ test('内核「检查更新」同样只挂按钮 loading，不进互斥租约', 
   gate.resolve({ releases: [{ version: '9.9.9', prerelease: false }], warning: '' });
   await pending;
   assert.equal(isLoading('checkUpdates'), false);
-  assert.equal(store.releases.length, 1);
+  assert.equal(releases.list.length, 1);
 });
 
 test('内核发布列表的启动自检静默：挂 loading、失败清空列表、失败弹提示', async () => {
-  const { store, checkUpdates } = await import('../src/store.js');
+  const { releases, checkUpdates } = await import('../src/kernel/releases.js');
   const { isLoading } = await import('../src/shell/loading.js');
 
   // 先摆一份「已经拿到的」列表在 store 里：静默路径失败时它必须原样留下。
   fetchReleasesResult = { releases: [{ version: '0.1.7-rc.2', prerelease: false }], warning: '' };
   fetchReleasesFail = false;
   await checkUpdates(false);
-  assert.equal(store.releases.length, 1);
+  assert.equal(releases.list.length, 1);
 
   const gate = deferred();
   fetchReleasesGate = gate;
@@ -222,7 +222,7 @@ test('内核发布列表的启动自检静默：挂 loading、失败清空列表
   fetchReleasesFail = true;
   await checkUpdates(false);
   assert.equal(bodyAppends, before, '静默路径失败不许弹提示');
-  assert.equal(store.releases.length, 1, '静默路径失败不许清空已有列表');
+  assert.equal(releases.list.length, 1, '静默路径失败不许清空已有列表');
   fetchReleasesFail = false;
 });
 

@@ -20,8 +20,6 @@ import {
   Right,
   Fold,
   Expand,
-  Moon,
-  Sunny,
 } from '@element-plus/icons-vue';
 import { store, checkShellUpdate } from '../store.js';
 import { globalBusy, isLoading } from './loading.js';
@@ -116,17 +114,35 @@ watch(collapsed, (value) => {
   }
 });
 
-const themeLabel = computed(() => (theme.value === 'dark' ? '深色' : '浅色'));
+// 2026-10-07：底部主题开关不再显示「深色主题 / 浅色主题」文字（那是切换
+// **另一侧**的名字，写在开关上读起来像「点它会变成深色」），改为拨杆 +
+// aria-pressed + 悬停提示。原先的 themeLabel computed 随之删除。
 </script>
 
 <template>
   <aside class="sidebar" :class="{ 'is-collapsed': collapsed }">
     <div class="brand">
-      <img src="/whale-icon.png" alt="" width="28" height="28" />
+      <img src="/whale-icon.png" alt="" width="34" height="34" />
       <div class="brand__text">
-        <div class="brand__name">Dsh-Xlink</div>
-        <div class="brand__desc">DeepSeek 内核桌面管理端</div>
+        <!-- 2026-10-07 按设计稿改文案：主名「DeepSeek Harness」+ 副名「桌面管理台」。
+             原先写的是「Dsh-Xlink / DeepSeek 内核桌面管理端」——那是仓库名与
+             一句功能描述，副名 11px 下一行塞了 12 个字，在 224px 侧栏里挤到
+             换行。主名说产品，副名说这是什么形态的端，两行都短。 -->
+        <div class="brand__name">DeepSeek Harness</div>
+        <div class="brand__desc">桌面管理台</div>
       </div>
+      <!-- 收起开关按设计稿放在品牌行右侧（原先是导航下方孤零零一个按钮，
+           视觉上不属于任何一组）。收起后品牌文字隐藏，只留这个开关。 -->
+      <button
+        type="button"
+        class="brand__toggle"
+        :title="collapsed ? '展开侧栏' : '收起侧栏'"
+        :aria-label="collapsed ? '展开侧栏' : '收起侧栏'"
+        :aria-expanded="!collapsed"
+        @click="toggleCollapsed"
+      >
+        <el-icon><component :is="collapsed ? Expand : Fold" /></el-icon>
+      </button>
     </div>
 
     <nav class="sidebar__nav" aria-label="主菜单">
@@ -153,60 +169,136 @@ const themeLabel = computed(() => (theme.value === 'dark' ? '深色' : '浅色')
       </div>
     </nav>
 
-    <div class="rail-toggle">
-      <button
-        type="button"
-        class="btn btn--ghost btn--icon"
-        :title="collapsed ? '展开侧栏' : '收起侧栏'"
-        @click="toggleCollapsed"
-      >
-        <el-icon><component :is="collapsed ? Expand : Fold" /></el-icon>
-      </button>
-    </div>
-
     <div class="sidebar__footer">
-      <!-- 桌面端自更新检查入口：业务逻辑不变，仍走 checkShellUpdate(true)，
-           发现新版本时在概览页横幅里安装。 -->
+      <!-- 设计稿的底部是一行：「桌面端」标签 + 版本徽标 + 刷新 + 主题开关。
+           原先是两个整宽按钮（检查更新 / 深色主题）竖着堆，版本号跟在
+           「检查更新」右侧——在 224px 侧栏里要占两行，且主题开关被写成
+           「深色主题」这种和它自身无关的词（它切到的是另一侧）。
+           现在三个控件各司其职，标签也只说它是什么。 -->
+      <span class="nav-item__label sidebar__footer-label">桌面端</span>
+      <span v-if="shellVersionText" class="version-badge">{{ shellVersionText }}</span>
       <button
         type="button"
-        class="theme-switch"
-        title="检查桌面端更新"
+        class="sidebar__icon-btn"
+        title="检查桌面端是否有新版本"
+        aria-label="检查桌面端是否有新版本"
         :disabled="globalBusy"
         @click="checkShellUpdate(true)"
       >
         <el-icon><Refresh /></el-icon>
-        <span class="nav-item__label">检查更新</span>
-        <span v-if="shellVersionText" class="brand-version">{{ shellVersionText }}</span>
       </button>
+      <!-- 设计稿 `.theme-switch` 是一个 34px 宽的拨杆：本体无图标，只有一颗
+           14px 圆点，深色态整条染成强调色、圆点滑到右端。原先这里放的是
+           「月亮/太阳」图标方钮——和设计稿差两处（形状与语义），而且图标
+           按钮看着像「点一下进设置」，拨杆才读得出「这是个开关」。
+           深色态用 [aria-pressed="true"] 表达，不跟设计稿的 data-theme 属性走：
+           我们的主题判据统一是 html.dark（与 Element Plus 自带变量一致）。 -->
       <button
         type="button"
-        class="theme-switch"
+        class="sidebar__theme-btn"
         :title="'切换到' + (theme === 'dark' ? '浅色' : '深色') + '主题'"
+        :aria-label="'切换到' + (theme === 'dark' ? '浅色' : '深色') + '主题'"
+        :aria-pressed="theme === 'dark'"
         @click="toggleTheme"
-      >
-        <el-icon><component :is="theme === 'dark' ? Moon : Sunny" /></el-icon>
-        <span class="nav-item__label">{{ themeLabel }}主题</span>
-      </button>
+      ></button>
     </div>
   </aside>
 </template>
 
 <style scoped>
-/* 版本号跟在「检查更新」右侧：它是这条按钮的附属信息，不另起一行，
-   否则底部工具区在 224px 侧栏里要占三行。 */
-.brand-version {
-  margin-left: auto;
+/* 品牌行的收起开关。放在品牌行右端是设计稿的画法：它收起的是**整条侧栏**，
+   归到品牌区比孤零零挂在导航下面更说得通。
+   **绝对定位**而不是 `margin-left: auto` 的流内布局：流内时主名只剩约 130px，
+   「DeepSeek Harness」在 15px 粗体下要 131px，于是被截成「DeepSeek Harn...」。
+   设计稿自己的 `.brand` 就带 `position: relative`——开关浮在右端，主名拿到
+   整行剩余宽度。收起态反过来：那时文字已隐藏、空间充裕，开关回到流内居中，
+   否则会压在 logo 上。 */
+.brand__toggle {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
   color: var(--text-muted);
-  font-size: 11px;
+  cursor: pointer;
 }
-/* 两个底部按钮共用 .theme-switch 的排版（见 theme.css），但「检查更新」在
-   拉取期间要给出禁用反馈——用 :disabled 而不是换成 loading 图标，避免它在
-   侧栏里跳动。 */
-.theme-switch:disabled {
+.brand__toggle:hover {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+.sidebar.is-collapsed .brand__toggle {
+  position: static;
+  transform: none;
+  margin: 0 auto;
+}
+
+/* 底部一行：标签 + 版本徽标 + 两个方形控件。标签与徽标可压缩，方形控件
+   固定 26×22 且不参与收缩（flex: 0 0 auto）——它们是动作，版本号才是
+   附属信息，先压版本号而不是把按钮压成看不清。 */
+.sidebar__footer-label {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.sidebar__icon-btn {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+.sidebar__icon-btn:hover:not(:disabled) {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+.sidebar__icon-btn:disabled {
   opacity: 0.5;
   cursor: default;
 }
-.sidebar.is-collapsed .brand-version {
-  display: none;
+/* 主题开关是拨杆不是按钮：34px 宽的槽 + 14px 圆点，与旁边那个 26px 方形
+   刷新按钮一眼分得开。设计稿的深色态把整条染成强调色、圆点滑到右端；
+   这里用 aria-pressed 表达同一状态（见模板注释）。 */
+.sidebar__theme-btn {
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--border);
+  cursor: pointer;
+}
+.sidebar__theme-btn:hover {
+  background: var(--surface-raised);
+}
+.sidebar__theme-btn::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--surface-raised);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 160ms ease;
+}
+.sidebar__theme-btn[aria-pressed='true'] {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+}
+.sidebar__theme-btn[aria-pressed='true']::before {
+  transform: translateX(12px);
 }
 </style>

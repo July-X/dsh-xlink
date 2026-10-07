@@ -223,7 +223,7 @@ function close() {
   padding: 12px;
   border-radius: 10px;
   border: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--overlay-faint);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11.5px;
   line-height: 1.6;

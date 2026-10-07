@@ -478,7 +478,7 @@ function toggleSource(src) {
   text-align: center;
   color: var(--text-muted);
   font-size: 12.5px;
-  background: rgba(255, 255, 255, 0.015);
+  background: var(--overlay-faint);
 }
 .result-summary {
   display: flex;
@@ -489,7 +489,7 @@ function toggleSource(src) {
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--overlay-faint);
 }
 .result-summary .hint { margin: 0; }
 .history { margin-top: 16px; }

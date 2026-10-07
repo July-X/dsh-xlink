@@ -473,9 +473,11 @@ test('控制塔的紧凑化只落在 --tower 上，且行覆盖必须用 padding
   const css = readSrc('diagnostics/diagnostics.css');
 
   // ① 三张卡都要挂上，否则漏挂的那张按基线渲染，三块高度参差不齐。
-  //    正则必须锚到类名结束：`diag-card__title` / `__aside` 前缀相同，用宽匹配
-  //    会把它们一起数进来（第一版就数出 8 个）。
-  const cards = tower.match(/class="diag-card( diag-card--tower)?"/g) || [];
+  //    正则锚到**整个 class 属性值**：`diag-card__title` / `__aside` 与
+  //    `diag-card` 同前缀，按 `class="diag-card( diag-card--tower)?"` 数会把
+  //    它们一起数进来（第一版就数出 8 个），而现在每张卡挂两个修饰类
+  //    （`--tower` 收紧 + 概览栅格落位），那个形状也数不到了（第二版数出 0）。
+  const cards = tower.match(/class="diag-card (diag-card--\S+ )*diag-card--tower (diag-card--\S+)*"/g) || [];
   assert.equal(cards.length, 3, '控制塔仍是三张卡');
   for (const card of cards) {
     assert.match(card, /diag-card--tower/, `${card} 必须带 diag-card--tower`);

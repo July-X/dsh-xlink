@@ -1,6 +1,10 @@
-// 内核 / 发布 / 外壳自更新的共享状态与动作。
-// 面板组件从这里读 view / releases，动作函数保留原零构建版的行为契约：
-// 启动编排、启停确认、外壳更新横幅、首次运行引导、2.5s 轮询。
+// 内核 / 外壳自更新的共享状态与动作。面板组件从这里读 view，动作函数保留原
+// 零构建版的行为契约：启动编排、启停确认、外壳更新横幅、首次运行引导、2.5s 轮询。
+//
+// **发布列表不在这里**：它连同「最近一次成功检查」的时机住在 `kernel/releases.js`
+// （2026-10-07 拆出，见那里的理由）。下面两行 re-export 是为了让既有调用方
+// （`App.vue` 的启动自检、若干测试）不必同时改 import——**新代码直接从
+// `kernel/releases.js` 导入**，别再加第三处入口。
 import { reactive, computed } from 'vue';
 import { invoke, makeChannel } from './shell/bridge.js';
 import {
@@ -15,12 +19,13 @@ import { singleFlight } from './shell/async.js';
 import { refreshPlugins } from './plugins/plugins.js';
 import { refreshSkills } from './skills/skills.js';
 import { showLogs } from './logs/logs.js';
+import { releases, checkUpdates, fetchReleaseList } from './kernel/releases.js';
+
+export { checkUpdates };
 
 export const store = reactive({
   // get_status 的完整返回：{ kernel, node, settings, shell_version, dev_build, shell_mode, quarantined, last_incident, official_chat_open }
   view: null,
-  releases: [],
-  releaseWarning: '',
   // 设置文件损坏时的提示（端口已回退到默认值）。
   settingsWarning: '',
   // 启动编排窗口：点击「启动工作台」到端口就绪之间为 true，
@@ -301,39 +306,6 @@ async function maybePromptNodeInstall() {
 
 // --- 内核版本 ---------------------------------------------------------------
 
-// 内核发布列表。手动点击与启动自检走同一条路，只有「要不要出声」不同。
-//
-// 手动（默认）：只挂「检查更新」按钮的 loading，不持互斥租约、不置
-// globalBusy——探测期间其他面板的按钮照常可用；切换 / 安装 / 启停的互斥
-// 由它们自己的租约与 workbenchActiveNow 守卫负责。失败清空列表并弹提示：
-// 用户刚点的，他需要知道这次没拿到。
-//
-// 启动自检（`manual = false`）：静默，且失败**不清空** `store.releases`。
-// 启动时网络抖一下就把上一份好数据抹掉，页面会从「有列表」跳回「点击获取」，
-// 比没检查更像故障；不弹提示是因为用户此刻多半没在看内核版本页。
-//
-// `upgrade` 只在静默路径上报：手动点的人正盯着列表，「安装」按钮就在那一行，
-// 再弹一次是重复；启动自检时人不在这一页，不说就没人知道。
-export function checkUpdates(manual = true) {
-  const run = async () => {
-    try {
-      const list = await invoke('fetch_releases');
-      store.releases = list.releases || [];
-      store.releaseWarning = list.warning || '';
-      if (store.releases.length === 0) {
-        if (manual) toast('没有获取到官方发布，请稍后再试', 4000, 'warning');
-      } else if (!manual && list.upgrade) {
-        toast('内核有新版本 ' + list.upgrade + '，可到「内核版本」页安装', 6000);
-      }
-    } catch (e) {
-      if (!manual) return;
-      store.releases = [];
-      toastActionError('获取发布失败', e, '请检查网络或代理设置后重试；也可到 GitHub Releases 手动下载', 6000);
-    }
-  };
-  return manual ? withLoading('checkUpdates', run) : run();
-}
-
 export function installVersion(version, options = {}) {
   return withProgress(
     {
@@ -382,19 +354,20 @@ export function removeVersion(version) {
 
 // 「安装最新版本」（首次运行引导）：拉发布列表，优先第一个稳定版，
 // 全是预发布时退回最新可用版本。
+//
+// 发布列表本身住在 `kernel/releases.js`（见那里的三条口径说明），这里只做
+// 「挑一个版本 + 装它」——安装是内核生命周期的一部分，仍归本模块。
 export function installLatestRelease() {
   return withExclusiveLoading('firstRunLatest', async () => {
     let version;
     try {
-      const list = await invoke('fetch_releases');
-      store.releases = list.releases || [];
-      store.releaseWarning = list.warning || '';
-      if (!store.releases.length) {
+      await fetchReleaseList();
+      if (!releases.list.length) {
         toast('没有获取到官方发布，请稍后再试', 4000, 'warning');
         return undefined;
       }
-      const stable = store.releases.find((r) => !r.prerelease);
-      version = (stable || store.releases[0]).version;
+      const stable = releases.list.find((r) => !r.prerelease);
+      version = (stable || releases.list[0]).version;
     } catch (e) {
       toastActionError('获取发布失败', e, '请检查网络或代理设置后重试；也可到 GitHub Releases 手动下载', 6000);
       return undefined;

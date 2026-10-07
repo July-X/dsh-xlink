@@ -1,5 +1,5 @@
 <script setup>
-// 内核版本：左列已安装（切换 / 删除），右列 npm 发布（仅安装）。
+// 内核版本：左列已安装（切换 / 删除），右列官方版本（仅安装）。
 // 「切换」必须基于本地已安装版本，避免误把尚未安装的远端版本当成可立刻启用的内核。
 // 「检查更新」从 npm registry 拉取版本列表。
 //
@@ -10,14 +10,17 @@ import { Refresh, Download, Promotion, Delete, InfoFilled, TopRight, Loading } f
 import {
   store,
   refreshAll,
-  checkUpdates,
   installVersion,
   activateVersion,
   removeVersion,
   workbenchActiveNow,
 } from '../store.js';
+// 发布列表状态与拉取动作住在 releases.js（2026-10-07 从 store.js 拆出）。
+// 这里直接从它的归属模块导入，不要再从 store.js 的 re-export 绕一圈。
+import { releases, checkUpdates } from './releases.js';
 import { invoke, listen } from '../shell/bridge.js';
 import { openExternalLink } from '../shell/notify.js';
+import { relativeTimeLabel } from '../shell/labels.js';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 
 const KERNEL_RELEASES_URL = 'https://github.com/deepseek-ai/deepseek-harness/releases';
@@ -47,27 +50,17 @@ const installedVersions = computed(() => {
   return set;
 });
 
-// 发布列表的上下淡出带**只在真正溢出时渲染**（2026-10-05 用户要求加大范围
-// 与力度）。ResizeObserver 兜住窗口 / flex 引起的容器尺寸变化，watch 兜住
-// 发布列表内容变化；覆盖带 absolute 定位、不参与布局，两个来源交替不会
-// 振荡。
-const releaseListEl = ref(null);
-const releasesScrollable = ref(false);
-function measureReleaseOverflow() {
-  const el = releaseListEl.value;
-  releasesScrollable.value = !!el && el.scrollHeight > el.clientHeight + 1;
-}
-let releaseResizeObserver = null;
-onMounted(() => {
-  measureReleaseOverflow();
-  releaseResizeObserver = new ResizeObserver(measureReleaseOverflow);
-  if (releaseListEl.value) releaseResizeObserver.observe(releaseListEl.value);
+/**
+ * 「最近检查 X 前」：设计稿要求它与标题、两个图标操作同行（§2）。
+ *
+ * 没成功检查过一次时**整句不渲染**——写「尚未检查」是给用户一条他不需要的
+ * 提醒（他刚进这一页，本来就还没检查），而下面那句空态已经说了同一件事。
+ * 列表是上一次的结果时，这句话才是用户判断「该不该再点一次刷新」的唯一依据。
+ */
+const checkedLabel = computed(() => {
+  const age = relativeTimeLabel(releases.checkedAt);
+  return age ? `最近检查 ${age}` : '';
 });
-onBeforeUnmount(() => releaseResizeObserver?.disconnect());
-watch(
-  () => store.releases,
-  () => measureReleaseOverflow(),
-);
 
 // 扫描时刻 → 「今天 14:20」/「10 月 1 日 14:20」。
 //
@@ -277,7 +270,7 @@ function groupTip(group) {
         show-icon
       />
 
-      <el-alert v-if="store.releaseWarning" :title="store.releaseWarning" type="warning" :closable="false" show-icon />
+      <el-alert v-if="releases.warning" :title="releases.warning" type="warning" :closable="false" show-icon />
 
       <div class="updates-lists">
         <div class="list-group">
@@ -348,43 +341,57 @@ function groupTip(group) {
         </div>
 
         <div class="list-group">
+          <!-- 设计稿 `.official-version-head`：标题 + 最近检查时间 + 两个图标操作
+               同行，且标题不换行（换行会遮住 tooltip，见设计说明 §2）。标题叫
+               「官方版本」而不是「npm 发布」——用户要回答的是「有哪些新版本可装」，
+               npm 只是当前的取源渠道，把它写进标题会让这个标题在换回 GitHub
+               Releases 后立刻变成错的。npm 标志保留：它标的是「这一列从哪儿取」。 -->
           <h3 class="list-head-with-logo">
             <img class="brand-logo" src="/npm-logo.svg" alt="npm" />
-            <span>npm 发布</span>
+            <span class="official-version-title">官方版本</span>
+            <span v-if="checkedLabel" class="card-caption">{{ checkedLabel }}</span>
             <span class="release-list-actions">
               <!-- `checkUpdates()` 带括号：`checkUpdates(manual = true)` 被裸引用时
                    收到的是 MouseEvent，恰好与默认值同义所以今天看不出坏——但它是靠
-                   巧合对的，改默认值就会静默变坏。 -->
-              <el-button class="release-check-button" text :icon="Refresh" :loading="isLoading('checkUpdates')" :disabled="globalBusy" @click="checkUpdates()">
-                检查更新
-              </el-button>
+                   巧合对的，改默认值就会静默变坏。
+                   两个动作收成 icon-only：标题行左侧还有标题与时间戳，
+                   「检查更新 / 打开发布页」六个字会把这一行撑到换行。 -->
+              <el-button
+                class="release-check-button"
+                text
+                :icon="Refresh"
+                :loading="isLoading('checkUpdates')"
+                :disabled="globalBusy"
+                title="重新查询官方发布列表"
+                aria-label="检查官方版本"
+                @click="checkUpdates()"
+              />
               <el-button
                 text
                 :icon="TopRight"
                 :loading="isLoading('openKernelReleases')"
                 :disabled="globalBusy"
+                title="打开发布页"
+                aria-label="打开发布页"
                 @click="openKernelReleases"
-              >
-                打开发布页
-              </el-button>
+              />
             </span>
           </h3>
-          <!-- 边框与底色画在**外层** `.release-list-box`，滚动区在里层。原因是
-               mask 只该作用在「内容」上：边框若与滚动容器是同一个元素，它会被
-               mask 一起淡掉，那恰好推翻「把滚动区域的边框显示出来」这条要求。
-               底色用 --bg-soft（实色 #121831），比卡片自身的 rgba(255,255,255,.05)
-               深一档，与上方「已安装」那片裸行区分开——那片是直接铺在卡片上的
-               行，这片是一个可滚动的子区域，长得不一样才读得出「这块能滚」。 -->
+          <!-- 边框与底色画在**外层** `.release-list-box`，滚动区在里层：滚动容器
+               一旦同时承担描边，滚动时描边会跟着内容动（Chromium 上的可见问题）。
+               底色用 --surface-subtle，比卡片自身深一档，与上方「已安装」那片裸行
+               区分开——那片是直接铺在卡片上的行，这片是一个可滚动的子区域，
+               长得不一样才读得出「这块能滚」。
+               2026-10-07 移除了滚动区上下那两条半透明淡出带（原 `.release-fade`
+               族 + `.release-list--bleed` 外溢视口 + 配套的 ResizeObserver）：
+               用户指出它们让这一栏看起来像蒙了一层雾。行滚出边框即被裁掉，
+               是滚动容器最基本的行为，不需要额外提示。 -->
           <div class="release-list-box">
-            <div
-              ref="releaseListEl"
-              class="release-list"
-              :class="{ 'release-list--bleed': releasesScrollable }"
-            >
-              <p v-if="store.releases.length === 0" class="muted" style="margin: 0">
-                点击「检查更新」获取官方发布列表。
+            <div class="release-list">
+              <p v-if="releases.list.length === 0" class="muted" style="margin: 0">
+                点击标题右侧的刷新图标获取官方发布列表。
               </p>
-              <div v-for="r in store.releases" :key="r.version" class="release-row">
+              <div v-for="r in releases.list" :key="r.version" class="release-row">
                 <span class="release-ver">{{ r.version }}</span>
                 <span class="release-actions">
                   <el-tag v-if="installedVersions.has(r.version)" size="small" effect="plain">已安装</el-tag>
@@ -403,13 +410,6 @@ function groupTip(group) {
                 </span>
               </div>
             </div>
-            <!-- 边缘淡出带（2026-10-05 用户两轮收敛后的最终形态）：滚动区域内
-                 的内容**完全正常显示**，半透明只发生在上下两条**静止的覆盖带**
-                 上——行滚到底下时被渐变底色逐渐盖住，而不是内容自身被 mask
-                 淡化。只在真正溢出时渲染（短列表不挂带子）；pointer-events
-                 必须关掉，否则带子会挡住底下行的点击与滚轮。 -->
-            <div v-if="releasesScrollable" class="release-fade release-fade--top" aria-hidden="true"></div>
-            <div v-if="releasesScrollable" class="release-fade release-fade--bottom" aria-hidden="true"></div>
           </div>
         </div>
       </div>
@@ -531,7 +531,7 @@ function groupTip(group) {
 </template>
 
 <style scoped>
-/* npm 发布列表可能几十上百条（每个 rc / alpha 都是一条）。不加约束时整张
+/* 官方版本列表可能几十上百条（每个 rc / alpha 都是一条）。不加约束时整张
    卡片会长到把页面撑出**外层**滚动条——而面板外层本来就有自己的滚动，
    于是变成两层滚动条，鼠标滚轮归属变得难猜。限高 + 内部滚动后，
    外层滚动条的位置与行为不变，只把长列表收进自己的容器里。
@@ -544,20 +544,12 @@ function groupTip(group) {
    787px）里，120px 限高时内容底在 y≈797、**溢出约 10px**——所以「加高」与
    「不滚动」在 120px 处差一点，需要由下面的 `.disk-usage` 间距压缩补上。 */
 
-/* 外层：边框 + 底色。它是**不参与滚动、也不参与 mask** 的一层——用户要看到
-   完整的框，而 mask 只该让「内容」在边缘淡出。圆角 10px 与 `.installed-row`、
-   `.usage-tile` 同一档。 */
+/* 外层：边框 + 底色，不参与滚动。圆角 10px 与 `.installed-row`、`.usage-tile`
+   同一档。 */
 .release-list-box {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface-subtle);
-  /* 边缘淡出带的定位基准：带子 absolute 盖在滚动区的上下边界上（见下方
-     `.release-fade`）。 */
-  position: relative;
-  /* 外溢/淡出的统一深度（2026-10-05：20 → 15 → 12px，20/15 都会压到上下
-     文本）。外溢视口 padding/margin 与带子高度/偏移全部引用这一个变量，
-     调深度只改这一行。 */
-  --release-bleed: 12px;
 }
 
 .release-list {
@@ -570,61 +562,27 @@ function groupTip(group) {
   padding-right: 4px;
 }
 
-/* 边缘淡出带（2026-10-05 第四轮收敛的最终形态）：带子在盒子的**外侧**，
-   方向朝滚动区域外扩——行滚出盒子边框后并不消失，而是进入外溢区，被
-   弧形带逐渐盖住直至隐去。滚动区域内自始至终完全正常。
-
-   外溢区的来历：`.release-list--bleed` 用「等量负 margin + padding」把
-   滚动窗口上下各外推（布局尺寸不变——负 margin 恰好抵消 padding），行
-   因此能滚出边框仍可见；外侧带子接手遮盖。带子只在真正溢出时渲染
-   （模板侧 v-if），pointer-events: none 防止挡住底下内容的点击。
-
-   弧形（用户手绘示意）：覆盖力沿水平方向向两侧衰减（mask 90deg 渐变），
-   中间外扩最深、两端收敛——而不是上下两条等宽直线。
-
-   **带子本身必须半透明、渐变单调向外加重**（2026-10-05 用户两轮纠正）：
-   背景是网格纹理 + 半透明玻璃卡片，不透明实色盖上去就是一块纹理消失的
-   异质矩形——所以峰值只到 0.9，纹理隐约透出，与玻璃 UI 匹配；方向为
-   盒边处全透明（内容正常）、**越往外遮得越重，外缘最重**（曾在外缘回落
-   到 0.15，视觉上成了「往外越来越淡」，方向反了，用户指出）。遮盖色的
-   色相取带子落点处的背景合成色：上带落在卡片内（白 5% 叠 --bg ≈
-   #171c2b），下带落在面板底（--bg = #0b1020）；主题是固定深色（无浅色
-   变体），字面量与注释配对，主题改动时这里要跟着改。 */
-.release-fade {
-  position: absolute;
-  left: 1px;
-  right: 1px;
-  height: var(--release-bleed, 12px);
-  pointer-events: none;
-  z-index: 1;
-  -webkit-mask: linear-gradient(90deg, transparent 0, #000 14%, #000 86%, transparent 100%);
-  mask: linear-gradient(90deg, transparent 0, #000 14%, #000 86%, transparent 100%);
-}
-
-.release-fade--top {
-  top: calc(-1 * var(--release-bleed, 12px));
-  background: linear-gradient(to top, transparent 0, rgba(23, 28, 43, 0.9) 100%);
-}
-
-.release-fade--bottom {
-  bottom: calc(-1 * var(--release-bleed, 12px));
-  background: linear-gradient(to bottom, transparent 0, rgba(11, 16, 32, 0.9) 100%);
-}
-
-/* 外溢视口：只在真正溢出时展开（不溢出时盒子尺寸与改前一致）。 */
-.release-list--bleed {
-  padding-top: var(--release-bleed, 15px);
-  padding-bottom: var(--release-bleed, 15px);
-  margin-top: calc(-1 * var(--release-bleed, 15px));
-  margin-bottom: calc(-1 * var(--release-bleed, 15px));
-}
-
-/* 「npm 发布」标题行抬到外溢视口与上侧淡出带（z:1）之上：行滚出上边框的
-   残影会进入标题行的地界，标题与「检查更新 / 打开发布页」按钮必须可见
-   可点（z 抬高 = 命中测试也归它，按钮不会被外溢区挡住）。 */
+/* 「官方版本」标题行抬到发布列表（z:1）之上：列表行滚出上边框后的残影会
+   进入标题行的地界，标题、时间戳与两个图标按钮必须可见可点
+   （z 抬高 = 命中测试也归它，按钮不会被列表挡住）。
+   `flex-wrap: nowrap` + 标题 `white-space: nowrap` 是设计说明 §2 的硬要求
+   （标题换行会遮住 tooltip）；时间戳与按钮组允许压缩，但标题不压缩——
+   「官方版本」四个字被压成「官方版」比换行更难读。 */
 .list-head-with-logo {
   position: relative;
   z-index: 2;
+  flex-wrap: nowrap;
+}
+.official-version-title {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.list-head-with-logo .card-caption {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 已安装的版本通常只有一两条（用户很少囤），不设限高——加了反而让
@@ -644,15 +602,15 @@ function groupTip(group) {
   margin-top: 6px;
   padding-top: 9px;
   border-top: 1px solid var(--border);
-  /* 抬到发布列表的外溢视口与淡出带（z:1）之上：列表行滚出下边框后的残影
-     从这块的边缘底下穿过，而「磁盘占用」标题与「刷新」按钮必须可见可点。 */
+  /* 抬到发布列表（z:1）之上：列表行滚出下边框后的残影从这块的边缘底下穿过，
+     而「磁盘占用」标题与「刷新」按钮必须可见可点。 */
   position: relative;
   z-index: 2;
 }
 
 /* `.card-head` 是 theme.css 的全局类（6px 下边距 + 1px 边框），这里在
    scoped 里覆盖成 2px：本组件有两处（内核版本 / 磁盘占用），各省 4px。
-   2px 而不是 0，是为了给「npm 发布列表新加的那圈边框」腾出它需要的 2px——
+   2px 而不是 0，是为了给「发布列表新加的那圈边框」腾出它需要的 2px——
    那圈边框让整页又高 2px，这一处不收就又要冒出页面滚动条。
    scoped 选择器多带一个属性选择器，权重高于全局那条，只有本组件受影响。 */
 .card-head {
@@ -792,7 +750,7 @@ function groupTip(group) {
         就还是「标题 + 标题」，而这一行恰恰不该被读成一句标题。
      胶囊的写法沿用本仓已有的 chip 词汇（.status-pill / .brand-update）。 */
   color: var(--usage-color, var(--accent));
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--overlay-soft);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 0 6px;
@@ -835,7 +793,7 @@ function groupTip(group) {
   border-radius: 2px;
   /* 白色低透明度而不是 `--bg-soft`：瓦片底色**就是** `--bg-soft`，用
      同一个值画轨道等于什么都没画，占据的百分比条看不出「还剩多少」。 */
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-soft);
   overflow: hidden;
 }
 
@@ -899,7 +857,7 @@ function groupTip(group) {
   }
 }
 
-/* 「npm 发布」吃掉页面剩余高度（2026-10-05 用户要求）：面板钉满 main 的
+/* 「官方版本」吃掉页面剩余高度（2026-10-05 用户要求）：面板钉满 main 的
    可视高度，卡片列弹性伸展，纵向滚动只发生在发布列表内部——日常状态下
    外层 main 不再出现纵向滚动条。选择器都挂 .kernel-card / .list-group 前缀
    压过 theme.css 窄窗媒体查询里的 `max-height: none; overflow-y: visible`
@@ -929,6 +887,12 @@ function groupTip(group) {
 .kernel-card .list-group {
   min-height: 0;
 }
+/* 「已安装」那一片要自己吃掉剩余高度，否则下面的 `justify-content: center`
+   没有可分配的空间（内容高度 == 容器高度，居中等于没居中）。 */
+.kernel-card .list-group .installed-list {
+  flex: 1 1 auto;
+  min-height: 0;
+}
 
 .kernel-card .release-list-box {
   flex: 1 1 auto;
@@ -942,5 +906,26 @@ function groupTip(group) {
   min-height: 0;
   max-height: none;
   overflow-y: auto;
+}
+/* 空态那一格不参与「吃掉剩余高度」。`flex: 1 1 auto` 是 2026-10-05 为
+   「列表很长时滚动只发生在它内部」加的，可它对空列表一样生效——于是用户
+   第一次进这一页（还没点过刷新）看到的是一个 400 多 px 高的空盒子，
+   而它里面只有一句「点击刷新图标获取」。列表为空时把外框与内层都收成
+   内容高：这一栏该有多高取决于它有多少内容，而不是取决于隔壁那列多高。 */
+.kernel-card .release-list-box:has(> .release-list > .muted:only-child) {
+  flex: 0 0 auto;
+}
+.kernel-card .release-list-box:has(> .release-list > .muted:only-child) .release-list {
+  flex: 0 0 auto;
+}
+
+/* 「已安装」空态垂直居中。这一栏是 flex 伸展的（与官方版本列齐平到同一
+   底边），而 el-empty 只有自己的那点内容高度，于是它顶在标题下方、
+   下面留下半栏空白——看着像渲染坏了。居中后它说的是「这一栏确实是空的」，
+   而不是「这里本来有东西但没画出来」。
+   `> .el-empty` 而不是 `.el-empty`：el-empty 自带内部 div，直接选它会把
+   圆角框也一起居中、里面的描述文字反而跑位。 */
+.kernel-card .installed-list:has(> .el-empty) {
+  justify-content: center;
 }
 </style>

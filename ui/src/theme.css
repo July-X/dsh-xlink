@@ -17,6 +17,20 @@
   --surface: #ffffff;
   --surface-raised: #ffffff;
   --surface-subtle: #f0f2f5;
+  /* 「提亮」与「压暗」两个叠色。UI 里反复出现的 hover 底、进度条轨道、
+     滚动条拇指都是同一个视觉意图——**把当前底色往目标方向推一点**——
+     在暗色主题里那是叠白，在浅色主题里是叠黑。同一个意图必须走同一个变量：
+     写死 `rgba(255,255,255,…)` 的那一批在浅色下会全部失真（白底上的白
+     hover 看不见、白底上的白轨道消失），2026-10-07 用户要求核对弹窗与副窗
+     主题适配时集中清了一遍。
+     三档强度对应 4% / 6% / 35%（hover / 细轨道 / 滚动条拇指）。 */
+  --overlay-faint: rgba(32, 37, 43, 0.04);
+  --overlay-soft: rgba(32, 37, 43, 0.07);
+  --overlay-strong: rgba(32, 37, 43, 0.35);
+  /* 代码块 / 日志内容 / 证据区这类「装原始文本」的容器：比卡片底更深一档，
+     与卡片是两层而不是一层的底。暗色下用叠黑，浅色下也用叠黑——它的意图是
+     「凹下去」而不是「压暗一个亮元素」，两套主题同向，所以不必分档。 */
+  --surface-sunken: rgba(32, 37, 43, 0.06);
   --border: #d8dde5;
   --border-soft: #e6e9ee;
   --text: #20252b;
@@ -63,6 +77,12 @@ html.dark {
   --surface: #2c2b30;
   --surface-raised: #35343a;
   --surface-subtle: #25242a;
+  /* 暗色下同一意图反过来：叠白即提亮。取值与浅色档一一对应（4% / 7% / 35%），
+     两套主题的 hover 底看起来一样「轻」。 */
+  --overlay-faint: rgba(255, 255, 255, 0.04);
+  --overlay-soft: rgba(255, 255, 255, 0.07);
+  --overlay-strong: rgba(255, 255, 255, 0.35);
+  --surface-sunken: rgba(0, 0, 0, 0.28);
   --border: #3e3d44;
   --border-soft: #35343a;
   --text: #f1f4f8;
@@ -512,29 +532,42 @@ code {
 }
 
 .brand {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 4px;
+  padding: 4px 2px 0;
 }
 
 .brand img {
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
   display: block;
   border-radius: 7px;
 }
 
+.brand__text {
+  min-width: 0;
+}
+
+/* 主名回到设计稿的 15px。收起开关改成绝对定位后（见 SideBar.vue 的
+   `.brand__toggle`）它不再占布局宽度，主名拿到整行约 150px，15px 下放得下。
+   省略规则留着兜底：换更长的产品名时它比折行好——折行会把副名顶到第三行，
+   品牌区比导航第一项还高。 */
 .brand__name {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   line-height: 1.2;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .brand__desc {
   margin-top: 2px;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-muted);
   line-height: 1.2;
 }
@@ -615,46 +648,42 @@ code {
   font-size: 0;
 }
 
-/* 收起开关：贴在导航下方，`.sidebar__footer` 用 margin-top:auto 把它顶到底部。 */
-.rail-toggle {
-  display: flex;
-  padding-top: 10px;
-}
-
+/* 侧栏底部一行：标签 + 版本徽标 + 刷新 + 主题拨杆（设计稿画法）。
+   2026-10-07 从竖排两个整宽按钮改成一行四件——原先那两行把 224px 侧栏的
+   底部占满，且主题开关写成「深色主题」，读起来像点它会变成深色。
+   顺带删掉了原先这里的 `.rail-toggle` 容器（收起开关已移进品牌行）与
+   整组 `.theme-switch`（侧栏不再有那两个按钮）。
+   注意 `.rail-toggle` 本身**没有**全删：日志侧栏的折叠按钮还在用它。 */
 .sidebar__footer {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: auto;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
-
-.theme-switch {
-  display: flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 8px;
-  border: none;
-  border-radius: var(--radius-control);
-  background: transparent;
+  gap: 7px;
+  margin-top: auto;
+  padding: 12px 2px 0;
+  border-top: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.sidebar__footer-label {
   color: var(--text-secondary);
-  font-size: 12px;
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.14s ease, color 0.14s ease;
+  white-space: nowrap;
 }
-
-.theme-switch:hover {
-  background: var(--surface-subtle);
-  color: var(--text);
+/* 版本徽标：可压缩的那一件。侧栏 224px 放不下「桌面端 + 0.3.9-rc.3 + 两个
+   26px 控件」时，先让它省略号，而不是把按钮压小。 */
+.sidebar__footer .version-badge {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-
-.sidebar.is-collapsed .theme-switch {
+/* 收起后只留两个方钮：标签与版本号都隐掉（`.nav-item__label` 已由
+   `.sidebar.is-collapsed` 统一隐藏，版本号在这里补一条）。 */
+.sidebar.is-collapsed .sidebar__footer {
+  padding: 12px 0 0;
   justify-content: center;
-  padding: 6px 0;
+}
+.sidebar.is-collapsed .version-badge {
+  display: none;
 }
 
 /* 状态胶囊：运行中时呼吸点带脉动光圈。 */
@@ -1015,32 +1044,6 @@ main {
   font-size: 12px;
 }
 
-/* 指标块：概览页与磁盘用量共用。 */
-.metrics {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
-}
-
-.metric {
-  padding: 10px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-}
-
-.metric__value {
-  font-size: 20px;
-  font-weight: 700;
-  line-height: 1.25;
-}
-
-.metric__label {
-  margin-top: 3px;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
 /* 按钮：主 / 次 / ghost / 危险四档，全部 6px 圆角、30px 高，
    与侧栏导航项和列表行共用同一套圆角与留白。 */
 .btn {
@@ -1128,7 +1131,7 @@ main {
 
 
 .btn-sub {
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--overlay-faint);
   border: 1px solid var(--border);
   color: var(--text-secondary);
   font-weight: 500;
@@ -1241,7 +1244,7 @@ main {
   color: inherit;
 }
 .card-head-toggle:hover {
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--overlay-faint);
 }
 .card-head-toggle:focus-visible {
   outline: 2px solid var(--accent);
@@ -1582,7 +1585,7 @@ main {
 
 .installed-row:hover,
 .release-row:hover {
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--overlay-soft);
   border-color: var(--border);
 }
 
@@ -1620,10 +1623,10 @@ main {
   font-weight: 600;
   font-size: 11.5px;
   color: var(--text);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.03) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(180deg, var(--overlay-soft) 0%, var(--overlay-faint) 100%);
+  border: 1px solid var(--overlay-soft);
   border-radius: 4px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 1px 0 var(--overlay-soft);
   vertical-align: 1px;
   margin-left: 0;
 }
@@ -1696,7 +1699,20 @@ main {
 }
 
 .entity-list.is-empty .el-empty {
-  padding: 22px 0;
+  padding: 22px 14px;
+}
+
+/* Element Plus 的 `.el-empty__description p` 不换行，而 `.entity-list` 有
+   `overflow: hidden`：两列布局下左栏约 360px，一句 26 字的空态说明比这宽，
+   于是后半句被裁掉、看着像「插件」两个字后面渲染坏了。
+   `max-width` 用 `100%` 而不是具体数值：这一栏在单列 / 双列 / 侧栏收起三种
+   布局下宽度都不同，写死 em 会让宽版那一档仍有一行超出、窄版那一档又超窄。 */
+.entity-list.is-empty .el-empty__description p {
+  max-width: 100%;
+  margin: 0 auto;
+  white-space: normal;
+  overflow-wrap: break-word;
+  line-height: 1.6;
 }
 
 .entity-row {
@@ -1712,7 +1728,7 @@ main {
 }
 
 .entity-row:hover {
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--overlay-soft);
 }
 
 .skill-entity-row {
@@ -1876,7 +1892,7 @@ main {
   padding: 0;
   font-size: 13px;
   color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--overlay-soft);
   border: 1px solid var(--border);
   transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
 }
@@ -1928,7 +1944,7 @@ main {
   font-size: 11.5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--overlay-soft);
   border: 1px solid var(--border);
   transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
 }
@@ -1969,8 +1985,8 @@ main {
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--overlay-soft);
+  border: 1px solid var(--overlay-soft);
   border-radius: 4px;
   text-transform: lowercase;
 }
@@ -1986,8 +2002,8 @@ main {
   font-size: 11.5px;
   font-weight: 500;
   color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--overlay-soft);
+  border: 1px solid var(--overlay-soft);
   border-radius: 4px;
 }
 
@@ -2221,7 +2237,7 @@ main {
   padding: 12px 12px;
   border-radius: 10px;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--overlay-faint);
   transition: border-color 0.16s ease, background 0.16s ease;
 }
 
@@ -2378,7 +2394,7 @@ main {
   overflow-y: auto;
   border-radius: 10px;
   border: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--surface-sunken);
   padding: 10px 12px;
 }
 
@@ -2563,7 +2579,7 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   margin: 0;
   border: none;
   border-radius: 0;
-  background: rgba(0, 0, 0, 0.24);
+  background: var(--surface-sunken);
   padding: 3px;
 }
 
@@ -2603,7 +2619,7 @@ body.pulse-active > [data-titlebar-pulse='2'] {
   left: 50%;
   width: 1px;
   margin-left: -0.5px;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--overlay-soft);
   transition: background 0.15s ease, width 0.15s ease;
 }
 
@@ -2700,15 +2716,15 @@ body.pane-dragging .log-tabs {
 }
 
 .log-tabs.is-scrolling {
-  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  scrollbar-color: var(--overlay-strong) transparent;
 }
 
 .log-tabs.is-scrolling::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.22);
+  background: var(--overlay-strong);
 }
 
 .log-tabs.is-scrolling::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.32);
+  background: var(--overlay-strong);
 }
 
 .log-tabs.collapsed {
@@ -2739,7 +2755,7 @@ body.pane-dragging .log-tabs {
 .log-group + .log-group {
   margin-top: 6px;
   padding-top: 12px;
-  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+  border-top: 1px dashed var(--overlay-soft);
 }
 
 .log-group-title {
@@ -2853,7 +2869,7 @@ body.pane-dragging .log-tabs {
 }
 
 .log-tab:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--overlay-soft);
   color: var(--text);
 }
 
@@ -2875,7 +2891,7 @@ body.pane-dragging .log-tabs {
   overflow-y: auto;
   border-radius: 10px;
   border: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--surface-sunken);
   /* 8/14：与独立窗口的 .logwin-content 保持同一节奏；之前 12/14 给小日志
      文件留太多呼吸感，缩窗后空隙更显眼。 */
   padding: 8px 14px;
@@ -2901,15 +2917,15 @@ body.pane-dragging .log-tabs {
 }
 
 .log-content.is-scrolling {
-  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  scrollbar-color: var(--overlay-strong) transparent;
 }
 
 .log-content.is-scrolling::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.22);
+  background: var(--overlay-strong);
 }
 
 .log-content.is-scrolling::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.32);
+  background: var(--overlay-strong);
 }
 
 /* --- 事故面板 --- */
@@ -2937,7 +2953,7 @@ body.pane-dragging .log-tabs {
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--surface-sunken);
 }
 
 .suspect-item {
@@ -2966,7 +2982,7 @@ body.pane-dragging .log-tabs {
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--surface-sunken);
   padding: 8px 10px;
   margin-top: 6px;
 }
@@ -3197,13 +3213,13 @@ body.pane-dragging .log-tabs {
 .debug-hooks li {
   padding: 6px 8px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--overlay-faint);
   border: 1px solid var(--border);
 }
 .debug-hooks code {
   font-size: 10.5px;
   padding: 1px 4px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--overlay-soft);
   border-radius: 4px;
   color: var(--text);
   margin-right: 6px;

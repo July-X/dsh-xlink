@@ -407,7 +407,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
               <div class="usage-donut-wrap">
                 <svg class="usage-donut" viewBox="0 0 120 120" role="img" aria-label="模型用量占比">
                   <g transform="rotate(-90 60 60)">
-                    <circle cx="60" cy="60" r="48" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="14" />
+                    <circle cx="60" cy="60" r="48" fill="none" stroke="var(--overlay-soft)" stroke-width="14" />
                     <circle
                       v-for="slice in slices"
                       :key="slice.key"
@@ -673,7 +673,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   background: transparent;
 }
 .heat-0 {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--overlay-faint);
 }
 .heat-1 {
   background: rgba(79, 140, 255, 0.28);
@@ -847,13 +847,13 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   overflow-y: auto;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+  scrollbar-color: var(--overlay-strong) transparent;
 }
 .usage-model-list::-webkit-scrollbar {
   width: 8px;
 }
 .usage-model-list::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.35);
+  background: var(--overlay-strong);
   border-radius: 4px;
   border: 2px solid transparent;
   background-clip: padding-box;
@@ -903,7 +903,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   flex: none;
   padding: 7px 14px;
   border-top: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.18);
+  background: var(--overlay-faint);
   color: var(--text-secondary);
   font-size: 12px;
 }
