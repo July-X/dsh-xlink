@@ -1,11 +1,15 @@
 {
   "identifier": "usage-viewer",
-  "description": "The standalone model-usage window (opened by the overview card's「模型用量」button via open_usage_window) loads the local SPA at index.html?usage=1. It only fetches the aggregated usage view and closes itself — no write or lifecycle commands.",
-  "windows": ["usage-viewer"],
+  "description": "The standalone model-usage window ... 它现在是自绘标题栏（2026-10-08），关闭键由前端承担，因此需要 start-dragging（拖窗）与 minimize。",
+  "windows": [
+    "usage-viewer"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-close",
     "core:window:allow-set-theme",
-    "allow-usage-viewer"
+    "allow-usage-viewer",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize"
   ]
 }

@@ -36,8 +36,7 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn';
 import { homeDir } from './shell/bridge.js';
 import { setDisplayHomeDir } from './shell/labels.js';
 import { disableContextMenu } from './shell/noContextMenu.js';
-import { applyTheme } from './shell/theme.js';
-import { followThemeBroadcast } from './shell/themeSync.js';
+import { applyTheme, followThemeBroadcast } from './shell/theme.js';
 import 'element-plus/es/components/alert/style/css.mjs';
 import 'element-plus/es/components/button/style/css.mjs';
 import 'element-plus/es/components/checkbox/style/css.mjs';
@@ -92,9 +91,16 @@ const isSubscriptionViewer = params.has('subscription');
 const isMacOS = /Macintosh|Mac OS X/.test(navigator.userAgent);
 const isWindows = /Windows NT/.test(navigator.userAgent);
 const usesCustomTitlebar = isMacOS || isWindows;
-
-// 管理面板主窗口在 macOS / Windows 使用自绘标题栏；其它本地窗口继续使用各自的布局。
-if (usesCustomTitlebar && !isLogViewer && !isChatStrip && !isUsageViewer && !isSubscriptionViewer) {
+// 三扇壳自有副窗（日志 / 模型用量 / 套餐用量）同样走自绘标题栏：
+// 2026-10-08 起它们在 Rust 建窗时关掉了原生装饰（`decorations(false)`），
+// 交通灯由前端画，与主壳同一份视觉——此前副窗用系统画的灯，尺寸、间距、hover
+// 全部不可控，与主壳那套按 macOS 实测对齐的自绘灯并排摆着像两个应用。
+//
+// 官网页签栏（`?chatstrip=1`）**排除**：它承载 `chat.deepseek.com` 等别人的
+// 页面，那扇窗的装饰不能动（改了会破坏页面布局与登录态）。工作台与官网页签窗
+// 在 Rust 侧同样保留原生装饰。
+const isShellOwnedViewer = isLogViewer || isUsageViewer || isSubscriptionViewer;
+if (usesCustomTitlebar && !isChatStrip) {
   document.body.classList.add('custom-titlebar-shell');
 }
 

@@ -1465,7 +1465,7 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
                 let _ = existing.destroy();
             }
             let encoded: String = url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
-            use crate::shell::window::{window_title, CHROME_BACKDROP};
+            use crate::shell::window::window_title;
             // 标题里那个应用名跟着 `window_title` 走；窗口名用「·」而不是「-」
             // 分隔日志名，免得拼出「日志 - kernel — Dsh-Xlink」两个同款分隔符。
             // 空名（由查看器自己挑一份）不加那个「·」，否则会留下一个悬空分隔符。
@@ -1493,10 +1493,10 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
                 crate::shell::window::LOG_VIEWER_SIZE.height,
             )
             .resizable(true)
-            .background_color(CHROME_BACKDROP)
-            // 与 `usage::local` 同理：建窗瞬间的兜底，实际主题由页面挂载前的
-            // `window.setTheme()` 纠正（见 `bridge.setWindowTheme` 的注释）。
             .theme(Some(tauri::Theme::Dark));
+            // 与另外两扇壳自有副窗同一套装饰（无边框 + 透明 + 无系统阴影，
+            // 交通灯由前端自绘），理由见 `decorate_transparent`。
+            builder = crate::shell::window::decorate_transparent(builder);
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);
             }

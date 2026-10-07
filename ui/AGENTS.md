@@ -82,9 +82,14 @@
     - **「偏大」的不是直径，是挤**——两边直径本来就都是 12px。间距少 3px 让三点连成一坨，加上每点一圈 1px 深色描边衬得更粗。
     - **描边从 `border` 换成 `box-shadow: inset`**：全局 `* { box-sizing: border-box }` 下 `border: 1px` 会从这 12px 里各吃掉一侧，着色区只剩 10px，比原生的 12px 色块小一圈。inset 把同样的深色环画在色块**之内**。
     - **判据钉关系而不是字面量**（`width + gap === 23`）：只动其中一个也必须转光。另有两条断言「不许退回 `border: 1px` / `border-color`」与「三盏灯都得有 inset 环和填充色」。
-  - **窗口圆角与副窗交通灯都不是 CSS 画的，别去 CSS 里找**（2026-10-08 用户两张截图分别指出「副窗交通灯大小 / hover 要匹配系统」「window 边角圆角保持一致」）。实测与代码查证：
-    - **圆角由 macOS 窗口系统按窗口类型决定**。主壳 `decorations: false` + `backgroundColor: #29272C`（**不透明**）→ 系统不给它圆角，量到约 2px；副窗走原生装饰 → 系统给圆角，量到约 20 物理像素（≈10 逻辑像素，Screenshot 是 2x）。**给 `html` / `body` 写 `border-radius` 改不了窗口外轮廓**，不透明背景会把它填掉。要统一只有一个办法：建窗开 `transparent: true`，而 `lib.rs` 记着运行时碰窗口装饰会抹掉 `Miniaturizable` 样式位、**黄灯变死按钮**（`miniaturize:` 静默失败、`minimize()` 返回 `Ok()` 却什么都不做），为此留了 `check_main_window_minimizable` 回归哨兵。副窗可缩放、由我们建窗，风险低；主壳风险高。
-    - **副窗那三个灯是系统原生 chrome 画的，前端改不了它的大小、间距与 hover**——`WindowTitleBar.vue` 只挂在 `App.vue`，四个副窗都没有自绘标题栏。主壳的 `.mac-titlebar__light` 是自绘的，已经按原生实测值（直径 12 / 间距 23 / 左缘 7）对齐过。要让副窗也用同一份视觉，只能给副窗接自绘标题栏，那是较大改动。
+  - **窗口圆角与副窗交通灯都不是 CSS 画的，别去 CSS 里找**（2026-10-08 用户两张截图分别指出「副窗交通灯大小 / hover 要匹配系统」「window 边角圆角保持一致」）。查证结论与最终做法：
+    - **圆角由 macOS 窗口系统按窗口类型决定**，`html` / `body` 上的 `border-radius` 改不了窗口外轮廓。实测此前主壳 ≈2px（不透明窗口系统不给圆角）、副窗 ≈10px 逻辑像素（走原生装饰，系统给）。
+    - **已统一为「自绘」**（用户拍板「统一自绘、一起调」）：四扇壳自有窗口（主壳 + 日志 / 模型用量 / 套餐用量）建窗期一律 `decorations(false) + transparent(true) + shadow(false)`，圆角由 CSS 画。`transparent` 走的是「`setOpaque(false)` + `setBackgroundColor(clearColor)`」，**不碰 `NSWindowStyleMask`**；只有 `set_decorations` 才会重算样式位、抹掉 `Miniaturizable`（tao 0.35 `platform_impl/macos/window.rs` 实测，不是推断）。
+    - **`shadow: false` 不能省**：macOS 给每个窗口矩形画系统投影，窗口不透明时它藏在边框下看不见，透明 + 圆角后会画在**圆角之外的透明区域**，读作一圈黑色矩形光晕。投影改由 `#app::after` 的 `box-shadow` 补，形状跟 CSS 圆角走。
+    - **底色必须跟着圆角一起从 `body` 搬到 `#app`**：留在 body 上，圆角外的四角仍是一块实色方块，圆角等于白做。这一条少做时**没有任何报错**——窗口只是「看着没圆角」，build 全绿。
+    - 三扇副窗共用 `shell/ViewerShell.vue`（自绘标题栏 + 圆角 + 裁切 + 投影），不在三处各写一遍；它们的能力文件补了 `allow-start-dragging` / `allow-minimize`。
+    - **官网页签栏与工作台窗口不改装饰**：前者承载 `chat.deepseek.com` 等别人的页面，后者是内核 webui。判据钉住「只许排除官网页签栏」。
+    - 判据：`ui/test/windowChrome.test.js` 的「窗口圆角与副窗标题栏」一组（含一条「入口 `main.js` 的具名 import 必须真的被导出」——拆分模块时写错 import 只有构建会报，UI 测试全绿）。
     - 灯组左缘 7px 来自实测、带 ±1px 不确定度，**故意不钉字面量**——钉一个自己都没把握的数，只会让后来的人以为它是精确的。
   - 判据在 `ui/test/windowChrome.test.js`（8 条）。它和其余样式判据一样**先剥注释再断言**：本节写下的 `border: 1px` 与 `12px` 正是描述根因的原话，不剥就会被自己当成命中。
 - **动作按钮要跟着它作用的那个对象走**（2026-10-07 用户要求）。插件页的「刷新数据」刷的是 **dshfind.com 那份远端目录**，原先挂在整张卡（「插件管理」）的卡头靠右，等于让一个作用在右栏的按钮出现在左栏；现在落在右栏 `<h3 class="section-divider">插件中心</h3>` 那一行靠右。搬过去之后，下面那句「目录为空或加载失败，点「刷新数据」重试」才有个近处的按钮可指。

@@ -6,6 +6,7 @@
 // 全部 CSS / 内联 SVG，不引图表库。支持时间范围切换（15 ~ 90 天，展示
 // 层切片，不触发重扫）；趋势柱状图 hover 出模型明细浮层。窗口打开即强制
 // 重扫（usage.js 的 refreshUsage）；ℹ️ tooltip 是 90 天保留策略的告知位。
+import ViewerShell from '../shell/ViewerShell.vue';
 import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue';
 import { Refresh, InfoFilled } from '@element-plus/icons-vue';
 import { ioActive, isLoading, withLoading } from '../shell/loading.js';
@@ -238,7 +239,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 </script>
 
 <template>
-  <div class="usagewin">
+  <ViewerShell shell-class="usagewin">
     <header class="usagewin-head">
       <img src="/whale-icon.png" alt="" width="22" height="22" />
       <span class="usagewin-title">模型用量</span>
@@ -446,7 +447,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
       </template>
       <template v-else>正在扫描会话记录…</template>
     </footer>
-  </div>
+  </ViewerShell>
 </template>
 
 <style scoped>

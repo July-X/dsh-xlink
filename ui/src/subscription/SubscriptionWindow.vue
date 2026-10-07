@@ -8,6 +8,7 @@
 // 错误以横幅内联呈现。底部一行入口跳「模型用量」窗口（本地 token 统计）。
 // 能力边界（设计稿）：两家云端 API 都不提供绝对剩余 token 数——MiniMax 只给
 // 剩余百分比，DeepSeek 只有货币余额，不虚构任何 token 数字。
+import ViewerShell from '../shell/ViewerShell.vue';
 import { computed, onMounted, watchEffect } from 'vue';
 import { Refresh, InfoFilled, TopRight, Setting, Timer } from '@element-plus/icons-vue';
 import { ioActive, isLoading } from '../shell/loading.js';
@@ -79,7 +80,7 @@ const lastFetched = computed(() => {
 </script>
 
 <template>
-  <div class="subwin">
+  <ViewerShell shell-class="subwin">
     <header class="subwin-head">
       <img src="/whale-icon.png" alt="" width="22" height="22" />
       <span class="subwin-title">套餐用量</span>
@@ -192,7 +193,7 @@ const lastFetched = computed(() => {
         </el-button>
       </span>
     </footer>
-  </div>
+  </ViewerShell>
 </template>
 
 <style scoped>
