@@ -61,7 +61,7 @@ let releaseResizeObserver = null;
 onMounted(() => {
   measureReleaseOverflow();
   releaseResizeObserver = new ResizeObserver(measureReleaseOverflow);
-  releaseResizeObserver.observe(releaseListEl.value);
+  if (releaseListEl.value) releaseResizeObserver.observe(releaseListEl.value);
 });
 onBeforeUnmount(() => releaseResizeObserver?.disconnect());
 watch(

@@ -33,7 +33,7 @@ export function makeChannel(onMessage) {
 }
 
 export function listen(event, handler) {
-  if (!tauriEvent) return;
+  if (!tauriEvent) return Promise.resolve();
   return tauriEvent.listen(event, handler);
 }
 
