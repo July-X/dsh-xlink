@@ -75,6 +75,113 @@ test('找出第一个失败阶段；没有失败时返回 null', () => {
   assert.equal(labels.firstFailedEvent(null), null);
 });
 
+// 用户 2026-10-07 截图里那次预检的完整事件流（含修复后补的沙盒终态）。
+// `durationMs` 一律照抄截图：进行中那几条挂的是**上一阶段的尾巴**，不是本
+// 阶段耗时，正因为如此才不能留着那几行。
+const PRECHECK_EVENTS = [
+  { seq: 1, stage: 'sandbox-create', status: 'running', durationMs: 3 },
+  { seq: 2, stage: 'sandbox-create', status: 'success', durationMs: 1180 },
+  { seq: 3, stage: 'baseline', status: 'running', durationMs: 332 },
+  { seq: 4, stage: 'baseline', status: 'success', durationMs: 4200 },
+  { seq: 5, stage: 'install-candidate', status: 'running', durationMs: 64 },
+  { seq: 6, stage: 'install-candidate', status: 'success', durationMs: 5600 },
+  { seq: 7, stage: 'probe-candidate', status: 'running', durationMs: 39 },
+  { seq: 8, stage: 'probe-candidate', status: 'success', durationMs: 3500 },
+  { seq: 9, stage: 'report', status: 'success', durationMs: 37 },
+];
+
+test('已结束的运行不留「进行中」：时间线行数对齐阶段数', () => {
+  const rows = labels.collapseSupersededRunning(PRECHECK_EVENTS);
+  assert.equal(rows.length, 5, '9 条事件只对应 5 个阶段，多出来的就是那些转圈的');
+  assert.ok(
+    rows.every((row) => row.status !== 'running'),
+    '摘要写着「已完成」、时间线里转着圈，两边自相矛盾'
+  );
+  assert.deepEqual(
+    rows.map((row) => row.stage),
+    labels.STAGE_SEQUENCES['plugin-precheck'],
+    '行数对了还不够，阶段本身也要与「完成 N / M」的分母逐条对得上'
+  );
+  // 折掉的行本就不该带走耗时：留下的终态那条量的是本阶段真实耗时。
+  assert.equal(
+    labels.durationLabel(rows[1].durationMs),
+    '4.2 秒',
+    '基线真实耗时 4.2 秒，折叠后仍在'
+  );
+});
+
+test('还在跑的阶段保留「进行中」——折叠只吃被终态取代的那些', () => {
+  const running = [...PRECHECK_EVENTS, { seq: 10, stage: 'report', status: 'running' }];
+  const rows = labels.collapseSupersededRunning(running);
+  assert.equal(rows.length, 6);
+  assert.equal(rows.at(-1).status, 'running', '报告阶段正在进行，不能被折叠掉');
+});
+
+test('悬空的进行中保留：进程被杀时记录就停在这儿', () => {
+  // 后端 `finish` 现在会兜底补齐，新记录不该再出现这种形状；但旧记录已落盘，
+  // 前端这一层不能假设「进行中必有终态」——否则历史记录会凭空少一行。
+  const rows = labels.collapseSupersededRunning([
+    { seq: 1, stage: 'spawn-kernel', status: 'success' },
+    { seq: 2, stage: 'wait-ready', status: 'running' },
+  ]);
+  assert.equal(rows.length, 2);
+  assert.equal(rows.at(-1).status, 'running');
+});
+
+test('看护重试按轮次分别结算，不跨轮折叠', () => {
+  const rows = labels.collapseSupersededRunning([
+    { seq: 1, stage: 'retry', status: 'running', attempt: 1 },
+    { seq: 2, stage: 'retry', status: 'failure', attempt: 1 },
+    { seq: 3, stage: 'retry', status: 'running', attempt: 2 },
+    { seq: 4, stage: 'retry', status: 'success', attempt: 2 },
+  ]);
+  assert.deepEqual(
+    rows.map((row) => row.seq),
+    [2, 4],
+    '两轮各自留下一条终态'
+  );
+  // 第 2 轮只有开始没有结论时，那一行必须留着——「第一次尝试失败了、第二次
+  // 还在跑」是用户判断重试有没有效果的全部依据。
+  const stuck = labels.collapseSupersededRunning([
+    { seq: 1, stage: 'retry', status: 'running', attempt: 1 },
+    { seq: 2, stage: 'retry', status: 'failure', attempt: 1 },
+    { seq: 3, stage: 'retry', status: 'running', attempt: 2 },
+  ]);
+  assert.deepEqual(
+    stuck.map((row) => row.seq),
+    [2, 3]
+  );
+});
+
+test('折叠不改原数组，输出仍按 seq 排序', () => {
+  const input = [...PRECHECK_EVENTS].reverse();
+  const copy = input.map((e) => e.seq);
+  const rows = labels.collapseSupersededRunning(input);
+  assert.deepEqual(
+    input.map((e) => e.seq),
+    copy,
+    '原数组被就地排序会让调用方的缓存与顺序假设一起失效'
+  );
+  assert.deepEqual(
+    rows.map((row) => row.seq),
+    [...rows.map((row) => row.seq)].sort((a, b) => a - b)
+  );
+  assert.deepEqual(labels.collapseSupersededRunning(null), []);
+});
+
+test('时间线组件必须渲染折叠后的事件流', () => {
+  // 四个诊断窗口共用 RunTimeline。折叠是这个组件的契约而不是它的实现细节：
+  // 有人改成直接用 visibleEvents()，「进行中」就会重新变成永久状态，而这里
+  // 恰好是唯一能挡住它的守卫。
+  const src = readSrc('diagnostics/RunTimeline.vue');
+  assert.match(src, /collapseSupersededRunning\(visibleEvents\(\)\)/);
+  assert.doesNotMatch(
+    src,
+    /computed\(\(\) => visibleEvents\(\)\)/,
+    '不得绕过折叠直接渲染原始事件流'
+  );
+});
+
 test('耗时格式化：毫秒与秒分档', () => {
   assert.equal(labels.durationLabel(340), '340 毫秒');
   assert.equal(labels.durationLabel(12400), '12.4 秒');

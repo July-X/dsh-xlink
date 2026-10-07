@@ -490,7 +490,12 @@ const FILE_BUDGETS = {
   // `run-` 前缀，剥掉前缀再比索引会把每一条都当成孤儿；(2) 更要命的一条——
   // 拿 `load_index` 的容错空索引去比对，索引一损坏就会把用户全部诊断历史
   // 当孤儿抹干净。改成 `load_checked`，损坏时一个都不删。
-  'src-tauri/src/diagnostics/run.rs': 585,
+  // 585 → 590：`settle_dangling_stage`——`finish` 收尾时把悬空的 `running`
+  // 阶段补成终态。买的是「漏一条出口就多一个永远转圈的阶段」这件事**从
+  // 「每条出口记得记得调」变成结构事实**，与 `precheck.rs` 的 `StoreRestore`
+  // 同一款取舍。三个 Rust 单测覆盖（含落盘回读）。
+  // 本文件 585 < RATCHET_THRESHOLD 600，不受反棘轮约束。
+  'src-tauri/src/diagnostics/run.rs': 590,
   // 运行记录的只读命令壳。刻意**没有** prune 命令：裁剪是写入侧
   // `Recorder::finish` 的职责，给前端一条命令就等于开一个能被随手调用的
   // 删除路径。三条命令的 `spawn_blocking` 走 `commands::blocking` 助手，
@@ -552,7 +557,12 @@ const FILE_BUDGETS = {
   // 事件就会显示成「完成 3 / 6」而实际只走了两步。
   // 194 → 206：`runAgeLabel` / `staleRunHint`——「这条记录有多旧」与「它已经
   // 过期到只代表当时」。三个诊断视图共用一份，抄一份就会漂。
-  'ui/src/diagnostics/diagnostic-labels.js': 206,
+  // 206 → 215：`collapseSupersededRunning`——折叠被终态取代的「进行中」。
+  // 放这里而不是 `RunTimeline.vue` 是因为它是纯函数、可单测，且**五个诊断
+  // 视图的阶段集合也只有这一个出处**；塞进组件就得对着源码字符串断言。
+  // 保留它那行 `durationMs` 等于展示一个错义的秒数（它量的是上一阶段的
+  // 尾巴），折叠同时把行数对齐 `STAGE_SEQUENCES` 的阶段数。
+  'ui/src/diagnostics/diagnostic-labels.js': 215,
   // 诊断层的独立样式。刻意不进 theme.css：后者是反棘轮文件（只许越来越
   // 小），而诊断层是自成一块的样式，抄进共享文件会让"哪段样式属于哪层"
   // 变得看不出来。
@@ -689,7 +699,11 @@ const FILE_BUDGETS = {
   // 从「每条 return 前记得补一行」变成结构事实，新加出口不必记得。这 10 行买
   // 的是「两阶段契约不会再漏一次」——比它在文件里占的位置值钱得多。
   // 本文件 486 < RATCHET_THRESHOLD 600，不受反棘轮约束。
-  'src-tauri/src/plugins/precheck.rs': 496,
+  // 496 → 503：`SANDBOX_CREATE` 的**成功**终态。该阶段原先只在失败路径补
+  // 终态，于是「1. 创建沙盒环境」在通过路径上永远转圈，而摘要已经写了
+  // 「已完成」。`check-invariants` 第 21 项钉住「发了『正在…』的阶段必须有
+  // SUCCESS 出口」——它把 FAILURE 也算数的话，正好对着自己要去防的洞说通过。
+  'src-tauri/src/plugins/precheck.rs': 503,
   // 插件预检的 Tauri 命令壳：取证（plugin_precheck_install）+ 应用
   // （plugin_precheck_apply）+ 它们共用的 `run_precheck_command`（node / pnpm
   // 准备、长任务通道、生命周期锁）。从 commands.rs 搬出——那份在反棘轮上，
@@ -1735,7 +1749,12 @@ const FILE_BUDGETS = {
 // R2-P1-01 的四种来源形状 + 凭据剥离要逐字往返，其中 npm 作用域包的 `@` 不是
 // userinfo——写错一次就把一次正确的安装变成装上另一个包。
 // 反棘轮大文件一个数字没动。
-const TOTAL_BUDGET = 41831;
+// 41831 → 41860：+29 行 = 上面的 `settle_dangling_stage`(5) +
+// `collapseSupersededRunning`(9) + `SANDBOX_CREATE` 成功终态(7) + 测试与
+// 不变量判据。这 29 行买的不是功能，是「同一个阶段永远不会同时显示进行中
+// 与已完成」——2026-10-07 用户截图里那四个转圈的圈。反棘轮大文件一个数字
+// 没动（theme.css / process.rs / commands.rs）。
+const TOTAL_BUDGET = 41860;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
