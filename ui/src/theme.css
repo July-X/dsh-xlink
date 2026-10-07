@@ -1467,27 +1467,9 @@ main {
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
-/* 「查看日志」按钮：无底色 text 按钮，文字用冰青 #67e8f9（cyan-300）——
-   与 --accent-2 #22d3ee 同色系但提亮，让按钮在深色卡上读得清且「不是白字」。
-   hover 进一步提到 #a5f3fc。覆盖 icon / hover / focus / active 态。
-   选择器用 .el-button（不带 --primary 后缀），因为现在这些按钮是
-   type="text"，没有 .el-button--primary 类。 */
-.btn-view.el-button,
-.btn-view.el-button .el-icon {
-  color: #67e8f9;
-}
-
-.btn-view.el-button:hover,
-.btn-view.el-button:focus-visible,
-.btn-view.el-button:hover .el-icon,
-.btn-view.el-button:focus-visible .el-icon {
-  color: #a5f3fc;
-}
-
-.btn-view.el-button:active,
-.btn-view.el-button:active .el-icon {
-  color: #67e8f9;
-}
+/* `.btn-view`（原「查看日志」按钮的冰青 #67e8f9 一族）随 2026-10-07 的日志
+   入口合并删掉：那一排不再有这个按钮，类名全仓只剩这里引用自己。日志入口
+   现在由「系统健康 → 日志系统」那一行承担，走 `.diag-row` 既有样式。 */
 
 /* 「打开/关闭官方对话」按钮：同无底色 text 按钮，文字用薄荷绿 #6ee7b7
    （emerald-300）——与 --good #34d399 同色系但提亮。hover 进一步提到 #a7f3d0。

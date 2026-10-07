@@ -1,7 +1,8 @@
 <script setup>
 // 概览：当前内核状态、工作台启停单按钮状态机、首次运行引导、
 // 外壳更新横幅与安装入口（手动检查在侧栏品牌区）以及启动容错横幅。
-// 内核生命周期是实现细节，只暴露「打开/关闭工作台 / 打开/关闭官方对话 / 查看日志」；
+// 内核生命周期是实现细节，只暴露「打开/关闭工作台 / 打开/关闭官方对话」；
+// 日志入口不在这里，在「系统健康 → 日志系统」那一行（ControlTower）。
 // 「打开工作台窗口 / 打开官方对话窗口」在对应服务开启后作为次级入口从第二行动态浮现。
 // 「当前内核」的 Node.js 行另带「重新检测」（探测本机环境，不改设置）；Node
 // 环境结论悬浮在卡标题旁的 ℹ️ 上（原「桌面端设置」卡已并入这个 tooltip）。
@@ -18,7 +19,6 @@ import {
   InfoFilled,
   Timer,
   TopRight,
-  Document,
   ChatDotRound,
   CircleClose,
   VideoPlay,
@@ -59,7 +59,6 @@ import {
 } from '../store.js';
 import { progress } from './progress.js';
 import { globalBusy, isLoading, withLoading } from './loading.js';
-import { openLogsWindow } from '../logs/logs.js';
 import {
   loadUsageSummary,
   setUsageAutoRefresh,
@@ -449,12 +448,19 @@ function goVersions() {
         </div>
       </div>
 
-      <!-- 第一行：主操作三件套（工作台 / 官方对话 / 查看日志）+ 可选外壳更新。
+      <!-- 第一行：主操作两件套（工作台 / 官网网页版）+ 可选外壳更新。
            按钮只写名词不写「打开/关闭」：动作方向由 icon 表达——
            - 工作台：▶ 启动（VideoPlay）/ ⏸ 停止（VideoPause）
-           - 官方对话：💬 打开（ChatDotRound）/ ⏹ 关闭（CircleClose）
-           文字色仍随状态切换（关闭态淡红 btn-danger），查看日志淡青（只读）。
-           全部用 type="text"（无底色无描边），仅靠文字色 + icon 区分。 -->
+           - 官网网页版：💬 打开（ChatDotRound）/ ⏹ 关闭（CircleClose）
+           文字色仍随状态切换（关闭态淡红 btn-danger）。
+           全部用 type="text"（无底色无描边），仅靠文字色 + icon 区分。
+
+           「查看日志」原先在这一排（2026-10-07 迁走）：它与「系统健康 → 日志系统」
+           是同一件事的两个入口，而两者做的事还不一样——按钮直接开独立全屏窗口
+           （跳过列表），那一行走日志弹层。同一屏上两个日志入口、点开结果还
+           不一致，用户没法建立预期。原先那条捷径已随之删除。现在全应用的日志
+           入口统一走弹层（事故 / 预检 / 诊断页本来也都是同一个），要更大屏就在
+           弹层里点「全屏」。这一排因此只剩会改变内核状态与外窗口的动作。 -->
       <div class="btn-row">
         <el-button
           :class="{ 'btn-danger': running }"
@@ -477,14 +483,6 @@ function goVersions() {
           官网网页版
         </el-button>
         <el-button
-          class="btn-view"
-          :icon="Document"
-          :loading="isLoading('openLogsWindow')"
-          @click="openLogsWindow"
-        >
-          查看日志
-        </el-button>
-        <el-button
           v-if="store.shellUpdateVersion"
           type="warning"
           :icon="Refresh"
@@ -498,10 +496,11 @@ function goVersions() {
 
       <!-- 第二行：仅在对应服务开启后出现，作为窗口层的次级入口；
            视觉上压低权重（缩进 + ghost 风格），与第一行的主按钮做明显区分。
-           「工作台窗口 / 官方对话窗口」只把窗口带到台前，「刷新工作台」是唯一的
+           「工作台窗口 / 官网网页版窗口」只把窗口带到台前，「刷新工作台」是唯一的
            **动作**——它换掉整个工作台窗口（见 harness_cmd）。三者都不改变内核
-           状态，所以按 AGENTS.md 的 IA 规则与「查看日志」同属次级入口这一排，
-           不许往主按钮旁边堆会启停内核的动作。 -->
+           状态，所以按 AGENTS.md 的 IA 规则同属次级入口这一排，不许往主按钮
+           旁边堆会启停内核的动作。「查看日志」已迁到「系统健康 → 日志系统」
+           （2026-10-07），不再在这一排。 -->
       <Transition name="subrow">
         <div v-if="running || officialChatOpen" class="btn-row btn-row-sub">
           <el-button
