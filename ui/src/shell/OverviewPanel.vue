@@ -471,10 +471,10 @@ function goVersions() {
           :icon="officialChatOpen ? CircleClose : ChatDotRound"
           :disabled="store.starting || globalBusy"
           :loading="isLoading('officialChat')"
-          :title="officialChatOpen ? '关闭 DeepSeek 官方对话' : '打开 DeepSeek 官方对话'"
+          :title="officialChatOpen ? '关闭 DeepSeek 官方网页版' : '打开 DeepSeek 官方网页版'"
           @click="toggleOfficialChat"
         >
-          官方对话
+          官方网页版
         </el-button>
         <el-button
           class="btn-view"
@@ -535,10 +535,10 @@ function goVersions() {
             :icon="TopRight"
             :loading="isLoading('openOfficialChatWindow')"
             :disabled="globalBusy"
-            title="唤起 / 聚焦 DeepSeek 官方对话窗口"
+            title="唤起 / 聚焦 DeepSeek 官方网页版窗口"
             @click="openOfficialChatWindow"
           >
-            官方对话窗口
+            官方网页版窗口
           </el-button>
         </div>
       </Transition>

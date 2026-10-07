@@ -146,30 +146,51 @@ test('控制塔的线只挂在 --tower 上，不从基线漏过去', () => {
   assert.ok(overview.includes('ControlTower'), 'ControlTower 仍只出现在概览页');
 });
 
-test('空态的纵向留白只对控制塔收，5 个诊断窗口的基线保持 24px', () => {
+test('空态不再单开正文行；基线 .diag-empty 的 24px 留给 5 个诊断窗口', () => {
   const css = read('diagnostics/diagnostics.css');
-  // `.diag-empty` 只有两处用法：概览页 ControlTower 的「最近操作」，以及 5 个
-  // 独立诊断窗口的 RunTimeline。用户 2026-10-06 明确要求后者不动，而基线
+  // 改完这一轮之后 `.diag-empty` 只剩一处用法：5 个独立诊断窗口的
+  // `RunTimeline.vue`。用户 2026-10-06 明确要求那 5 页不动，而基线
   // `padding: 24px 8px` 正是它靠的——把 24 写小会让那 5 页的空时间线忽然
-  // 贴到卡片边。覆盖必须限定在 `.diag-card--tower` 上。
+  // 贴到卡片边。
   const base = css.match(/^\.diag-empty \{([^}]*)\}/m);
   assert.ok(base, '必须能找到 .diag-empty 基线');
   assert.match(base[1], /padding:\s*24px 8px/, '基线的 24px 上下留白属于 5 个诊断窗口，不许被收');
 
-  const override = css.match(/\.diag-card--tower \.diag-empty \{([^}]*)\}/);
-  assert.ok(override, '必须能找到 .diag-card--tower .diag-empty 覆盖规则');
-  // 精确值而不是范围：写死 6px 是实测出来的配比（6 + 19.5 + 6 = 31.5，
-  // 对上数据行的 25.55 仍高出一截）。写成「小于某个数」会让「顺手收到 4px」
-  // 也过掉，而 4px 加上卡内边距后空态几乎贴到卡片边，会被读成一条空记录。
-  assert.match(
-    override[1],
-    /padding-block:\s*6px/,
-    `控制塔空态的纵向留白应为 6px，实际 ${override[1].trim()}`
+  // 概览页不再用这个类：空态说明已经收进标题行右侧。多一句「概览页的覆盖规则
+  // 还在」就会有人把 6px 当成有意义的调参旋钮接着往下压，而它已经不匹配任何
+  // 元素了——一条不匹配任何元素的规则比没有规则更难查。
+  const tower = read('diagnostics/ControlTower.vue');
+  assert.doesNotMatch(tower, /diag-empty/, 'ControlTower 不该再有独立的 .diag-empty 正文行');
+  assert.doesNotMatch(
+    css,
+    /\.diag-card--tower \.diag-empty/,
+    '概览页已不用 .diag-empty，--tower 的覆盖规则是死代码'
   );
-  // 行高也是收益来源：一行字用 1.8 的行距只影响自己的盒高（23.4 → 19.5）。
-  assert.match(override[1], /line-height:\s*1\.5/, '空态行高应为 1.5（单行文案下 1.8 只撑盒高）');
-  // 横向那 8px 是居中文案左右的呼吸，用 padding 简写会一起清掉。
-  assert.doesNotMatch(override[1], /(^|[^-])padding:/, '用 padding-block，不要 padding 简写（会清掉横向 8px）');
+
+  // 真正省下来的是标题区那三项，不是空态正文自己的 padding：4 + 17.55 + 4 = 25.55，
+  // 正好等于有记录时单行的行高。三项都要清——只清 padding-bottom 的话，分割线
+  // 下方那 6px 外边距照样把卡撑高，看起来却像是「线还在、内容没了」。
+  const bare = css.match(/\.diag-card\.diag-card--tower \.diag-card__title--bare \{([^}]*)\}/);
+  assert.ok(bare, '必须能找到空态专用的 --bare 标题规则');
+  for (const prop of ['padding-bottom: 0', 'margin-bottom: 0', 'border-bottom: 0']) {
+    assert.match(
+      bare[1].replace(/\s+/g, ' '),
+      new RegExp(prop.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      `--bare 必须清掉 ${prop}，实际 ${bare[1].trim()}`
+    );
+  }
+  // 特异度必须高于 `.diag-card--tower .diag-card__title`（0,2,0），否则同特异度
+  // 只能靠「写在后面」取胜，而文件里后来插一条规则就会静默失效。
+  assert.match(
+    css,
+    /\.diag-card\.diag-card--tower \.diag-card__title--bare/,
+    '选择器要多带一段 .diag-card，靠特异度压过 --tower 的标题规则，不靠源序'
+  );
+
+  // 修饰类挂在标题上而不是卡片上：叫 `diag-card--tower-empty` 会含 `--tower`
+  // 子串，把上面那条「三张卡都挂了 --tower」的计数变成 4。
+  assert.match(tower, /diag-card__title--bare/, '空态修饰类应挂在标题上');
+  assert.doesNotMatch(tower, /diag-card--tower-empty/, '别给卡片起带 --tower 子串的修饰类名');
 });
 
 test('控制塔的卡 padding 与行 padding 收到紧凑档（2026-10-07 用户）', () => {
