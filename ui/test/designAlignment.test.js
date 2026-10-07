@@ -912,6 +912,60 @@ test('内核版本页维持一张卡竖排：有意保留的偏差，不是漏�
   assert.doesNotMatch(stripComments(themeCss), /\.versions-layout/);
 });
 
+// --- 内核版本页两栏之间那道竖线（2026-10-07 用户要求「不贯通」）--------------
+//
+// 用户指着一张截图说「左右功能块中间增加纵向分割线，**不贯通**」。右栏是带内部
+// 滚动的长列表，它自己的 `.release-list-box` 本来就有边框和底色，边界不缺；线若
+// 一路通到卡片底边，这一屏会被读成两个并排窗格，而不是一张卡里的两组清单。
+//
+// 两条判据分别钉住「为什么不是通栏线」的两个环节，缺一环它就退回去：
+// 左栏不按内容收 → 线被拉高；线改用 border 画 → 线跟着元素高度走。
+function ruleText(css, selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = css.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));
+  assert.ok(m, `必须能找到 ${selector}`);
+  return m[1];
+}
+/** 扫出「选择器命中 `pattern` 且规则体里含 `decl`」的全部规则，返回 [选择器, 规则体]。 */
+function rulesWith(css, selectorPattern, decl) {
+  return [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+    .filter(([, sel, body]) => selectorPattern.test(sel) && body.includes(decl))
+    .map(([, sel, body]) => [sel.trim(), body]);
+}
+const versionsScoped = stripComments(scopedStyle(versionsPanel));
+
+test('两栏之间的竖线不贯通：左栏按内容高度收，线只跟着已安装那几行', () => {
+  // 主语是 `.list-group:first-child:not(...)`，全仓唯一，直接读规则文本，
+  // 不走 effectiveDeclaration（见文件头那批「主语被复用就别信它」的坑）。
+  // 判据不拿「我传进去的选择器」当证据——那只是调用点的字面量，改判据它照样绿；
+  // 要从**文件里**把真正设了 align-self 的那条规则捞出来，再看它的选择器。
+  const hits = rulesWith(versionsScoped, /\.updates-lists\s*>\s*\.list-group/, 'align-self: start');
+  assert.equal(hits.length, 1, `应当恰好有一条让左栏按内容高度收的规则，实际 ${hits.length} 条`);
+  const [selector, body] = hits[0];
+  assert.match(body, /align-self:\s*start/);
+  assert.match(selector, /:first-child/, '收高度的必须是左栏（第一栏），右栏要继续与卡片齐平');
+  // 空态必须排除在外：`.installed-list` 一旦不伸展，下面那条
+  // `justify-content: center` 就没有可分配空间，el-empty 会被顶回标题下方。
+  assert.match(selector, /:not\([^)]*\.el-empty/, '空态那一栏要保持伸展，否则空列表的居中会失效');
+});
+
+test('两栏之间的竖线用伪元素画，不许退回 border-left', () => {
+  const after = ruleText(versionsScoped, '.kernel-card .list-group .installed-list::after');
+  assert.match(after, /position:\s*absolute/, '线必须绝对定位，才能落进 8px 栅格缝里而不占布局宽度');
+  assert.match(after, /top:\s*0/, '线要从左栏顶端起');
+  assert.match(after, /bottom:\s*0/, '线要收到左栏底端——这才是不贯通的关键');
+  // border 属于元素自身，元素被拉多高线就有多高，正是要避开的那条通栏线。
+  assert.doesNotMatch(
+    versionsScoped,
+    /installed-list[^}]*border-(left|right)/,
+    'border 跟着元素自身高度走，画出来就是通栏线',
+  );
+  // 线挂在右缘之外（left: 100%），margin 把它推进 8px 缝里。
+  assert.match(after, /left:\s*100%/);
+  assert.match(after, /width:\s*1px/);
+  assert.match(after, /background:\s*var\(--border-soft\)/);
+});
+
 // --- 顶部工作条整条删除（2026-10-07 用户要求）------------------------------
 //
 // 用户指着一张截图说「移除这个区域」——标题栏正下方那条 48px 的 `.workspace-bar`：
