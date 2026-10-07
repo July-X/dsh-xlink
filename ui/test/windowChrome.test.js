@@ -210,7 +210,7 @@ test('三扇壳自有副窗共用一个自绘外壳，官网页签栏不用（�
   }
   const shell = read('../src/shell/ViewerShell.vue');
   assert.match(shell, /import WindowTitleBar/, '外壳里必须有自绘标题栏');
-  assert.match(shell, /<WindowTitleBar\s*\/>|<WindowTitleBar\s*\/>/, '外壳里必须真的渲染它');
+  assert.match(shell, /<WindowTitleBar\s+:title="title"/, '外壳必须把功能标题传进标题栏');
   assert.match(shell, /var\(--window-radius\)/, '外壳的圆角要与 #app 同一个 token');
   // 自绘标题栏需要拖拽与最小化权限：三扇窗的能力文件里都要有。
   for (const cap of ['log-viewer', 'usage-viewer', 'subscription-viewer']) {
@@ -222,6 +222,84 @@ test('三扇壳自有副窗共用一个自绘外壳，官网页签栏不用（�
     assert.ok(perms.includes('core:window:allow-minimize'), `${cap} 缺 minimize 权限`);
   }
 });
+
+test('副窗标题栏显示功能标题，不是应用名（三扇各一个）', () => {
+  // 2026-10-08 用户实机跑完报「副窗的功能标题需要保留」。副窗的 head 行
+  // （品牌图标 + 功能名 + 刷新等动作）是**内容区**的页头，在标题栏**下面**；
+  // 标题栏若只写「Dsh-Xlink」，两行连着读就是「窗口叫什么 + 这窗装什么」，
+  // 而标题栏该回答的「我现在开着哪个功能」没有答案。
+  const shell = read('../src/shell/ViewerShell.vue');
+  assert.match(shell, /title:\s*\{\s*type:\s*String,\s*required:\s*true\s*\}/, '外壳要求传标题');
+
+  // 三扇窗各自传什么，一一对上。日志窗要跟着当前文件走（与它 head 那行同名），
+  // 所以它是绑定不是字面量——但绑定里必须有兜底，否则没选中文件时标题是空的。
+  const expected = [
+    ['../src/logs/LogViewerWindow.vue', /:title="activeName \|\| '日志'"/],
+    ['../src/usage/UsageWindow.vue', /title="模型用量"/],
+    ['../src/subscription/SubscriptionWindow.vue', /title="套餐用量"/],
+  ];
+  for (const [p, re] of expected) {
+    assert.match(read(p), re, `${p} 应当把自己的功能标题传给外壳`);
+  }
+
+  // 标题栏组件：不给 title 时回落到应用名（主壳不传）。
+  const bar = read('../src/shell/WindowTitleBar.vue');
+  assert.match(bar, /const caption = props\.title \|\| 'Dsh-Xlink'/, '主壳仍显示应用名');
+  assert.match(bar, /\{\{ caption }\}/, '标题栏渲染的是那个值，不能写死字符串');
+  assert.doesNotMatch(
+    stripHtmlComments(bar),
+    /<span>Dsh-Xlink<\/span>/,
+    '标题不能写死在模板里——那样副窗传什么都不会生效，且不报错',
+  );
+});
+
+test('交通灯 hover 是「整组浮现」，底色不变；且不漏进 Windows', () => {
+  const css = stripCss(read('../src/theme.css'));
+  // **组 hover**：macOS 上符号是悬停整组时一起浮现的。此前写的是单颗
+  // `.light:hover`，指针压在红上就只亮红——另外两颗会读成「不可点」。
+  assert.match(
+    css,
+    /\.mac-titlebar__controls:hover\s+\.mac-titlebar__light::before\s*\{[^}]*opacity:\s*1/,
+    '符号必须是整组 hover 时浮现',
+  );
+  assert.doesNotMatch(
+    css,
+    /\.mac-titlebar__light:hover\s*\{/,
+    '不许退回单颗 hover',
+  );
+  // 底色在 hover 时不变：此前是 `filter: brightness(1.08)`，那是「灯变亮」，
+  // 原生不做这件事——灯一变亮，整排读成「有一枚被选中了」。
+  assert.doesNotMatch(css, /brightness\(/, '灯的底色不许在 hover 时变化');
+  // 三枚符号各自的颜色：原生红 #460804 / 黄 #90591d / 绿 #2a6218。统一成一个
+  // 深灰会在黄绿上偏紫——那三处偏紫正是「不像 macOS」最显眼的地方。
+  for (const [cls, color] of [
+    ['close', '#460804'],
+    ['minimize', '#90591d'],
+    ['zoom', '#2a6218'],
+  ]) {
+    const rule = cssRule(css, `.mac-titlebar__light--${cls}::before`);
+    assert.match(rule, new RegExp(`color:\\s*${color}`), `${cls} 的符号颜色应是 ${color}`);
+  }
+  // 不漏进 Windows：那组按钮带 `v-if="isMacTitlebar"`，Windows 上根本不渲染。
+  // 这里钉住模板里那个判定——模板一改（比如去掉 v-if），交通灯就会出现在
+  // Windows 的右侧标题栏上，而那不是 Windows 的语言。
+  const bar = stripHtmlComments(read('../src/shell/WindowTitleBar.vue'));
+  assert.match(
+    bar,
+    /<div v-if="isMacTitlebar" class="mac-titlebar__controls"/,
+    '交通灯那组只许在 macOS 渲染',
+  );
+  assert.match(
+    bar,
+    /<div v-if="isWindowsTitlebar" class="win-caption"/,
+    'Windows 用自己的右侧标题栏按钮，不许与交通灯混用',
+  );
+});
+
+/** 剥掉 HTML 注释（模板里解释「为什么这样写」那段常原样引用被判据的字面量）。 */
+function stripHtmlComments(s) {
+  return s.replace(/<!--[\s\S]*?-->/g, '');
+}
 
 // ---- 副窗原生 chrome 跟随应用主题 ------------------------------------------
 

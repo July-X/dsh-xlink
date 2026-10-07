@@ -8,6 +8,13 @@
 //     关闭 hover 变系统红。交通灯在 Windows 上既不是用户肌肉记忆里的
 //     位置，14px 的圆形命中区也远小于 Windows 的标题栏按钮。
 //
+// `title` 是标题栏正中显示的字：主壳不传（取默认的应用名），三扇副窗传各自的
+// 功能标题（「日志 / 模型用量 / 套餐用量」，与它们各自 head 里那一行同名）。
+// 为什么副窗不显示应用名：副窗有 head 行，但那一行是**内容区**的页头（左侧带
+// 品牌图标、右侧带刷新等动作），不是窗口标题——它在自绘标题栏**下面**。副窗
+// 若在标题栏里也只写「Dsh-Xlink」，这两行连着读就成了「窗口叫什么 + 这窗装什么」
+// 两句话，标题栏该回答的问题（我现在开着哪个功能）反而没有答案。
+//
 // Windows 上这两个按钮都只把窗口收进通知区域（托盘常驻，程序继续在后台
 // 运行）：关闭走窗口 close 请求、由 Rust 侧统一改写为「收起 + 移除任务栏
 // 按钮」，最小化走 minimize_shell。真正退出只在托盘菜单的「退出」。
@@ -19,6 +26,13 @@
 // 唯一的回��入口。最小化仍沿用系统语义（进 Dock），那盏黄灯不参与常驻。
 import { hasWindowControls, invoke, windowAction } from './bridge.js';
 import { toastError } from './notify.js';
+
+const props = defineProps({
+  /** 标题栏正中显示的字。不传则用应用名 `Dsh-Xlink`。 */
+  title: { type: String, default: '' },
+});
+
+const caption = props.title || 'Dsh-Xlink';
 
 const isMacTitlebar = /Macintosh|Mac OS X/.test(navigator.userAgent);
 const isWindowsTitlebar = /Windows NT/.test(navigator.userAgent);
@@ -97,7 +111,7 @@ function minimizeWindow() {
 
     <div class="mac-titlebar__caption" data-tauri-drag-region>
       <span class="mac-titlebar__caption-mark" aria-hidden="true"></span>
-      <span>Dsh-Xlink</span>
+      <span>{{ caption }}</span>
     </div>
 
     <!-- Windows：右侧标准标题栏按钮（最小化 / 关闭）。窗口不可缩放
