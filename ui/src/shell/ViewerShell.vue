@@ -22,12 +22,14 @@ import WindowTitleBar from './WindowTitleBar.vue';
 defineProps({
   /** 根容器的额外类名：各副窗自己的布局类挂在这里（`logwin` / `usagewin` …）。 */
   shellClass: { type: String, required: true },
+  /** 窗口标题栏正中显示的字（「日志」/「模型用量」/「套餐用量」）。 */
+  title: { type: String, required: true },
 });
 </script>
 
 <template>
   <div class="viewer-shell" :class="shellClass">
-    <WindowTitleBar />
+    <WindowTitleBar :title="title" />
     <slot />
   </div>
 </template>

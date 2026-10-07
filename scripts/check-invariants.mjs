@@ -1928,15 +1928,37 @@ if (ungatedOsImports.length > 0) {
           `窗口标题对不上：tauri.conf.json 是「${expected}」，shell/window.rs 的 APP_TITLE 是「${rustTitle[1]}」`,
         );
       }
-      const vueTitle = read('ui/src/shell/WindowTitleBar.vue').match(
-        /<span>([^<]+)<\/span>/,
+      // ③ 自绘标题。**这一条 2026-10-08 从「按字面量比对」改成「查回落值」**。
+      //
+      // 原实现用 `/<span>([^<]+)<\/span>/` 抓模板里的标题节点，逐字对比
+      // `tauri.conf.json` 的 title。三扇副窗接上自绘标题栏后标题变成
+      // `{{ caption }}`（各带功能名），那条正则抓到的就是插值本身——判据红了，
+      // 但**它红得对**：模板里那行确实不再是可逐字比对的东西了。
+      //
+      // 这正是「判据名与判据说的不是一回事」那一类：它叫「窗口标题对不上」，
+      // 真正要守的是**主壳那一扇**的标题仍是同一个名字。副窗显示功能标题
+      // （用户 2026-10-08 要求）是**另一件事**，不该由这条判据管。
+      //
+      // 所以改成查真正的意图：`props.title || '应用名'` 里那个回落值必须等于
+      // APP_TITLE —— 主壳不传 title，显示的就是它；副窗传了功能标题，不受它约束。
+      const vueSrc = read('ui/src/shell/WindowTitleBar.vue');
+      const fallback = vueSrc.match(
+        /const caption = props\.title\s*\|\|\s*'([^']+)'/,
       );
-      if (!vueTitle) {
-        fail('window-chrome', 'WindowTitleBar.vue 里找不到标题文案节点');
-      } else if (vueTitle[1].trim() !== expected) {
+      if (!fallback) {
         fail(
           'window-chrome',
-          `窗口标题对不上：tauri.conf.json 是「${expected}」，WindowTitleBar.vue 自绘的是「${vueTitle[1].trim()}」`,
+          'WindowTitleBar.vue 里找不到 `props.title || \'…\'` 这个回落值——主壳的标题从哪来已经无从判断',
+        );
+      } else if (fallback[1] !== expected) {
+        fail(
+          'window-chrome',
+          `窗口标题对不上：tauri.conf.json 是「${expected}」，WindowTitleBar.vue 的回落标题是「${fallback[1]}」`,
+        );
+      } else if (!/<span>\{\{ caption }}<\/span>/.test(vueSrc)) {
+        fail(
+          'window-chrome',
+          'WindowTitleBar.vue 渲染的不是 caption——写了回落值却没渲染它，等于主壳标题仍会走模板里的字面量',
         );
       }
     }

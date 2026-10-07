@@ -368,12 +368,15 @@ body.pulse-active .mac-titlebar::after {
   border: none;
   border-radius: 50%;
   cursor: pointer;
-  transition: filter 0.12s ease, opacity 0.12s ease;
+  transition: opacity 0.12s ease;
 }
 
+/* 符号（× / − / +）的默认态是「藏着」，hover 时整组一起浮现。
+   颜色按 macOS 原生各灯不同——不是统一的深灰：原生分别是红 #460804、
+   黄 #90591d、绿 #2a6218（同一支灯用同一个深色会在黄/绿上偏紫）。
+   颜色不写 `currentColor`：`background` 是硬编码的系统灯色，不是 `color`。 */
 .mac-titlebar__light::before {
   display: block;
-  color: rgba(45, 35, 28, 0.72);
   font-size: 10px;
   font-weight: 700;
   line-height: 1;
@@ -381,10 +384,18 @@ body.pulse-active .mac-titlebar::after {
   transition: opacity 0.12s ease;
 }
 
-.mac-titlebar__light:hover {
-  filter: brightness(1.08);
+/* **组 hover**，不是单颗 hover（2026-10-08 用户报「hover 后的效果要和 macOS
+   一致」）。macOS 上符号是悬停**整组**时一起浮现的：指针进入灯组的任一空隙
+   就全亮，而不是只亮指针压着的那一颗——后者会让人以为另外两颗不可点。
+   命中区用 controls 的 padding 撑开：灯与灯之间 11px 的空隙、灯组左右各 7px，
+   指针落在空隙里同样算「在组内」，这与原生的手感一致。 */
+.mac-titlebar__controls:hover .mac-titlebar__light::before {
+  opacity: 1;
 }
 
+/* 底色在 hover 时**不变**。此前这里写的是 `filter: brightness(1.08)`，那是
+   「灯变亮一点」——macOS 原生不做这件事：它只让符号浮现，灯本身的颜色在任何
+   状态下都保持同一个值。底色一变，整排灯会读成「有一枚被选中了」。 */
 .mac-titlebar__light:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -397,6 +408,7 @@ body.pulse-active .mac-titlebar::after {
 
 .mac-titlebar__light--close::before {
   content: 'x';
+  color: #460804;
   font-size: 9px;
 }
 
@@ -407,6 +419,7 @@ body.pulse-active .mac-titlebar::after {
 
 .mac-titlebar__light--minimize::before {
   content: '-';
+  color: #90591d;
   font-size: 10px;
 }
 
@@ -417,21 +430,21 @@ body.pulse-active .mac-titlebar::after {
 
 .mac-titlebar__light--zoom::before {
   content: '+';
+  color: #2a6218;
   font-size: 9px;
 }
 
-.mac-titlebar__light:hover::before {
-  opacity: 1;
-}
-
+/* 绿灯禁用（窗口不可缩放）：它与「可用」的绿灯读起来必须一眼可分，否则用户会
+   反复点一个永远不响应的地方。符号**照常浮现**——原生里禁用的那枚也是灰的但
+   仍有符号；我们用降饱和 + 降透明表达，符号的颜色跟着整枚一起淡下去即可。 */
 .mac-titlebar__light--zoom:disabled {
-  filter: saturate(0.68);
   cursor: default;
-  opacity: 0.68;
+  opacity: 0.55;
+  filter: saturate(0.68);
 }
 
-.mac-titlebar__light--zoom:disabled:hover {
-  filter: saturate(0.68);
+.mac-titlebar__light--zoom:disabled::before {
+  color: #2a6218;
 }
 
 

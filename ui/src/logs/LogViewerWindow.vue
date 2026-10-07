@@ -181,7 +181,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <ViewerShell shell-class="logwin">
+  <ViewerShell shell-class="logwin" :title="activeName || '日志'">
     <header class="logwin-head">
       <img src="/whale-icon.png" alt="" width="22" height="22" />
       <span class="logwin-title" :title="activeName || ''">{{ activeName || '日志' }}</span>

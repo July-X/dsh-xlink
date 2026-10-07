@@ -239,7 +239,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 </script>
 
 <template>
-  <ViewerShell shell-class="usagewin">
+  <ViewerShell shell-class="usagewin" title="模型用量">
     <header class="usagewin-head">
       <img src="/whale-icon.png" alt="" width="22" height="22" />
       <span class="usagewin-title">模型用量</span>
