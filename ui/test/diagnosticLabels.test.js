@@ -447,10 +447,20 @@ test('概览控制塔不重复正下方「当前内核」卡已经说过的话',
       `系统健康不该再列 ${key}：它与正下方的「当前内核」卡重复`
     );
   }
-  // 剩下四项必须两列排布，否则一行四项还是会把概览顶下去。
+  // 四项必须同属一张卡，否则概览会被四张卡顶下去。
   assert.match(tower, /class="diag-rows diag-rows--grid"/);
   const css = readSrc('diagnostics/diagnostics.css');
-  assert.match(css, /\.diag-rows--grid \{[^}]*grid-template-columns: repeat\(2/);
+  // 2026-10-07：这里原先钉的是 `grid-template-columns: repeat(2, ...)`，理由写的是
+  // 「一行四项还是会把概览顶下去」——**那条理由没量过宽度**。实测 1040 宽版、
+  // 侧栏展开（默认态）时控制塔落在概览右半栏，该栏约 386px，两列各剩约 158px，
+  // 装不下「技能注册 + 读取失败 + 点击重试」所需的 164px，标签被截成「技能...」。
+  // 改成单列（与设计稿 `.health-list` 一致），四项全名可读，卡片从 2 行变 4 行
+  // 仍在 748px 内。
+  assert.doesNotMatch(
+    css,
+    /\.diag-rows--grid \{[^}]*grid-template-columns:\s*repeat\(2/,
+    '系统健康不能回到两列：默认态（侧栏展开）下概览右半栏只有约 386px，两列会把标签截断'
+  );
   // 详情一律单行省略：诊断正文可能很长，卡片高度不该由日志长度决定。
   assert.match(css, /\.diag-row__label \{[^}]*text-overflow: ellipsis/);
 });
@@ -498,25 +508,32 @@ test('控制塔的紧凑化只落在 --tower 上，且行覆盖必须用 padding
     '必须显式写 margin-bottom: 0，删掉声明会让基线的 10px 回来'
   );
 
-  // ③ **这一条是静默失效的守卫**：列分隔靠
-  //    `.diag-rows--grid .diag-row:nth-child(2n) { padding-left: 14px }`，
-  //    与 `.diag-card--tower .diag-row` 同为 (0,2,0)。把 `padding-block` 写成
-  //    简写 `padding` 就会把 14px 一起清成 0，两列读数贴在一起——不报错、
-  //    typecheck 与 build 全绿，只有看图才发现。
+  // ③ **这一条现在是前瞻守卫**：原先列分隔靠
+  //    `.diag-rows--grid .diag-row:nth-child(even) { padding-left: 14px }`，
+  //    2026-10-07 改单列后那条规则已删，`padding` 简写今天不会改变任何东西
+  //    （基线 `.diag-row` 的左右 padding 本来就是 0）。但这条覆盖一旦写成
+  //    `padding: 4px`，将来给基线加左右内边距时它会被一起清成 0，且不报错、
+  //    typecheck 与 build 全绿，只有看图才发现。覆盖只动纵向，就别动横向。
   const rowOverride = css.match(/\.diag-card--tower \.diag-row \{([^}]*)\}/);
   assert.ok(rowOverride, '必须能找到 .diag-card--tower .diag-row 覆盖规则');
   assert.match(
     rowOverride[1],
     /padding-block:\s*\d+px/,
-    '行覆盖必须用 padding-block（简写 padding 会清掉列分隔的 padding-left）'
+    '行覆盖必须用 padding-block（简写 padding 会清掉基线将来的左右内边距）'
   );
   assert.doesNotMatch(
     rowOverride[1],
     /(^|[^-])padding:\s*\d/,
     '行覆盖里不许出现 padding 简写'
   );
-  // 列分隔本身也得还在。
-  assert.match(css, /\.diag-rows--grid \.diag-row:nth-child\(even\)[^}]*padding-left:\s*14px/);
+  // 列分隔已随单列布局删除，守卫它已无意义；改钉「不会悄悄长回两列」。
+  // 判据先剥掉注释再找规则：CSS 注释里复述选择器原文（说明「这条删了」）很自然，
+  // 但那样这条断言会一直红，而且红的原因与它要检查的东西无关。
+  assert.doesNotMatch(
+    css.replace(/\/\*[\s\S]*?\*\//g, ''),
+    /\.diag-rows--grid \.diag-row:nth-child\(/,
+    '单列布局下不该再有按奇偶项画列分隔线的规则'
+  );
 
   // 基线本身不许被顺手改小：.diag-card / .diag-row 还被 5 个诊断页共用，
   // 那些是独立窗口、内容量大、用户会逐条读。
