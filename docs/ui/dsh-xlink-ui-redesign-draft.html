@@ -1,0 +1,3079 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark" data-platform="mac">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>dsh-xlink UI redesign draft</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --canvas: #29272C;
+        --window: #181b20;
+        --chrome: #20242a;
+        --surface: #20242a;
+        --surface-raised: #282d34;
+        --surface-subtle: #1b1e23;
+        --border: #3b424b;
+        --border-soft: #2d333b;
+        --text: #f1f4f8;
+        --text-secondary: #b2bac5;
+        --text-muted: #7f8995;
+        --accent: #6ea1ff;
+        --accent-strong: #2f6fed;
+        --accent-soft: rgba(110, 161, 255, 0.14);
+        --success: #49b675;
+        --warning: #d6a94d;
+        --danger: #ee756e;
+        --shadow: 0 24px 72px rgba(0, 0, 0, 0.34);
+        --radius-window: 12px;
+        --radius-card: 8px;
+        --radius-control: 6px;
+        --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      html[data-theme="light"] {
+        color-scheme: light;
+        --canvas: #e9edf2;
+        --window: #f6f7f9;
+        --chrome: #f0f2f5;
+        --surface: #ffffff;
+        --surface-raised: #ffffff;
+        --surface-subtle: #f0f2f5;
+        --border: #d6dbe2;
+        --border-soft: #e3e6eb;
+        --text: #20252b;
+        --text-secondary: #59636f;
+        --text-muted: #7b848f;
+        --accent: #2766d9;
+        --accent-strong: #1e58c1;
+        --accent-soft: rgba(39, 102, 217, 0.1);
+        --success: #228a50;
+        --warning: #9a6c18;
+        --danger: #cc4e49;
+        --shadow: 0 24px 72px rgba(38, 48, 62, 0.18);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 1040px;
+        min-height: 100vh;
+        overflow-y: hidden;
+        background: var(--canvas);
+        color: var(--text);
+        font-family: var(--font);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      .board {
+        width: min(1240px, calc(100vw - 48px));
+        margin: 28px auto 36px;
+      }
+
+      .board-head {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 20px;
+        margin-bottom: 16px;
+      }
+
+      .board-head-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .board-head h1 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: -0.02em;
+      }
+
+      .board-head p {
+        margin: 5px 0 0;
+        color: var(--text-muted);
+        font-size: 12px;
+      }
+
+      .board-controls,
+      .board-view-controls {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface-subtle);
+      }
+
+      .board-controls button,
+      .board-view-controls button {
+        min-width: 64px;
+        padding: 6px 10px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .board-controls button:hover,
+      .board-controls button.is-active,
+      .board-view-controls button:hover,
+      .board-view-controls button.is-active {
+        background: var(--surface-raised);
+        color: var(--text);
+      }
+
+      .board-view-controls button {
+        min-width: 86px;
+      }
+
+      .board-panel {
+        display: none;
+      }
+
+      .board-panel.is-active {
+        display: block;
+      }
+
+      .design-window {
+        width: 1040px;
+        height: 748px;
+        margin: 0 auto;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-window);
+        background: var(--window);
+        box-shadow: var(--shadow);
+      }
+
+      .titlebar {
+        position: relative;
+        display: flex;
+        align-items: center;
+        height: 38px;
+        border-bottom: 1px solid var(--border-soft);
+        background: var(--chrome);
+        color: var(--text-secondary);
+        user-select: none;
+      }
+
+      .titlebar-title {
+        position: absolute;
+        left: 50%;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        transform: translateX(-50%);
+        color: var(--text-secondary);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+
+      .titlebar-title img {
+        width: 14px;
+        height: 14px;
+        object-fit: contain;
+      }
+
+      .traffic-lights {
+        display: flex;
+        gap: 8px;
+        padding-left: 14px;
+      }
+
+      .traffic-lights span {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.25);
+      }
+
+      .traffic-lights .close {
+        background: #ff5f57;
+      }
+
+      .traffic-lights .minimize {
+        background: #febc2e;
+      }
+
+      .traffic-lights .zoom {
+        background: #28c840;
+      }
+
+      .win-title {
+        display: none;
+        align-items: center;
+        gap: 8px;
+        padding-left: 14px;
+        color: var(--text-secondary);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .win-title img {
+        width: 15px;
+        height: 15px;
+        object-fit: contain;
+      }
+
+      .win-actions {
+        position: absolute;
+        top: 0;
+        right: 0;
+        display: none;
+        height: 100%;
+      }
+
+      .win-actions button {
+        width: 46px;
+        height: 100%;
+        border: 0;
+        background: transparent;
+        color: var(--text-secondary);
+        cursor: pointer;
+      }
+
+      .win-actions button:hover {
+        background: var(--accent-soft);
+        color: var(--text);
+      }
+
+      .win-actions .close:hover {
+        background: #c74842;
+        color: #fff;
+      }
+
+      .win-glyph {
+        display: inline-block;
+        width: 11px;
+        height: 11px;
+        vertical-align: middle;
+      }
+
+      .win-glyph.minimize {
+        border-top: 1px solid currentColor;
+      }
+
+      .win-glyph.maximize {
+        border: 1px solid currentColor;
+      }
+
+      .win-glyph.close::before,
+      .win-glyph.close::after {
+        display: block;
+        width: 12px;
+        height: 1px;
+        margin-top: 5px;
+        background: currentColor;
+        content: "";
+        transform: rotate(45deg);
+      }
+
+      .win-glyph.close::after {
+        margin-top: -1px;
+        transform: rotate(-45deg);
+      }
+
+      [data-platform="win"] .traffic-lights,
+      [data-platform="win"] .titlebar-title {
+        display: none;
+      }
+
+      [data-platform="win"] .win-title,
+      [data-platform="win"] .win-actions {
+        display: flex;
+      }
+
+      .workspace-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 48px;
+        padding: 0 18px;
+        border-bottom: 1px solid var(--border-soft);
+        background: var(--surface-subtle);
+      }
+
+      .kernel-tabs-preview {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+
+      .kernel-tab-preview {
+        min-height: 28px;
+        padding: 0 10px;
+        border: 1px solid transparent;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--text-secondary);
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .kernel-tab-preview.is-active {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .kernel-tabs-preview-caption {
+        margin-left: 4px;
+        color: var(--text-muted);
+        font-size: 11px;
+      }
+
+      .workspace-select,
+      .workspace-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .workspace-select button,
+      .workspace-actions button {
+        border: 0;
+        background: transparent;
+        color: var(--text-secondary);
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .workspace-select button:hover,
+      .workspace-actions button:hover {
+        color: var(--accent);
+      }
+
+      .workspace-name {
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .workspace-meta {
+        color: var(--text-muted);
+        font-size: 12px;
+      }
+
+      .state {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--success);
+        font-size: 12px;
+      }
+
+      .state::before {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+        content: "";
+      }
+
+      .app-body {
+        display: grid;
+        grid-template-columns: 224px minmax(0, 1fr);
+        height: 662px;
+        min-height: 0;
+        transition: grid-template-columns 180ms ease;
+      }
+
+      .design-window.is-collapsed .app-body {
+        grid-template-columns: 64px minmax(0, 1fr);
+      }
+
+      .sidebar {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        padding: 18px 12px;
+        border-right: 1px solid var(--border-soft);
+        background: var(--surface-subtle);
+      }
+
+      .brand {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 8px 20px;
+      }
+
+      .brand img {
+        width: 34px;
+        height: 34px;
+        object-fit: contain;
+      }
+
+      .brand-name {
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+
+      .brand-subtitle {
+        margin-top: 2px;
+        color: var(--text-muted);
+        font-size: 11px;
+      }
+
+      .brand-copy {
+        min-width: 0;
+      }
+
+      .sidebar-toggle {
+        display: grid;
+        width: 26px;
+        height: 26px;
+        flex: 0 0 26px;
+        margin-left: auto;
+        place-items: center;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+      }
+
+      .sidebar-toggle:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      .sidebar-toggle::before,
+      .sidebar-toggle::after {
+        display: block;
+        width: 11px;
+        height: 1px;
+        background: currentColor;
+        content: "";
+      }
+
+      .sidebar-toggle::after {
+        margin-top: 4px;
+      }
+
+      .design-window.is-collapsed .brand {
+        flex-direction: column;
+        gap: 8px;
+        justify-content: center;
+        padding-right: 0;
+        padding-left: 0;
+        padding-bottom: 14px;
+      }
+
+      .design-window.is-collapsed .brand-copy,
+      .design-window.is-collapsed .nav-label,
+      .design-window.is-collapsed .sidebar-footer-label,
+      .design-window.is-collapsed .version-badge,
+      .design-window.is-collapsed .sidebar-update {
+        display: none;
+      }
+
+      .design-window.is-collapsed .brand img {
+        width: 30px;
+        height: 30px;
+      }
+
+      .design-window.is-collapsed .sidebar-toggle {
+        margin: 0;
+      }
+
+      .nav-label {
+        padding: 0 10px 7px;
+        color: var(--text-muted);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+      }
+
+      .nav-group + .nav-group {
+        margin-top: 18px;
+      }
+
+      .nav-item {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        width: 100%;
+        min-height: 34px;
+        margin: 2px 0;
+        padding: 0 10px;
+        border: 1px solid transparent;
+        border-radius: var(--radius-control);
+        background: transparent;
+        color: var(--text-secondary);
+        cursor: pointer;
+        font-size: 13px;
+        text-align: left;
+      }
+
+      .design-window.is-collapsed .nav-item {
+        justify-content: center;
+        padding-right: 0;
+        padding-left: 0;
+      }
+
+      .design-window.is-collapsed .nav-item span:not(.nav-icon):not(.nav-badge) {
+        display: none;
+      }
+
+      .design-window.is-collapsed .nav-item .nav-badge {
+        position: absolute;
+        top: 0;
+        right: 5px;
+        min-width: 14px;
+        padding: 0 3px;
+        font-size: 9px;
+      }
+
+      .nav-item:hover {
+        background: var(--surface-raised);
+        color: var(--text);
+      }
+
+      .nav-item.is-active {
+        border-color: rgba(110, 161, 255, 0.24);
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .nav-icon {
+        display: grid;
+        width: 20px;
+        height: 20px;
+        place-items: center;
+        color: currentColor;
+        font-size: 17px;
+      }
+
+      .nav-icon-svg {
+        display: block;
+        flex: 0 0 20px;
+      }
+
+      .nav-badge {
+        min-width: 18px;
+        margin-left: auto;
+        padding: 1px 5px;
+        border-radius: 10px;
+        background: var(--danger);
+        color: #fff;
+        font-size: 10px;
+        text-align: center;
+      }
+
+      .sidebar-footer {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: auto;
+        padding: 12px 10px 0;
+        border-top: 1px solid var(--border-soft);
+        color: var(--text-muted);
+        font-size: 11px;
+      }
+
+      .sidebar-footer-label {
+        color: var(--text-secondary);
+        white-space: nowrap;
+      }
+
+      .sidebar-update,
+      .theme-switch {
+        position: relative;
+        display: grid;
+        flex: 0 0 auto;
+        place-items: center;
+        width: 26px;
+        height: 22px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .sidebar-update {
+        margin-left: 0;
+      }
+
+      .sidebar-update:hover,
+      .theme-switch:hover {
+        border-color: var(--border);
+        background: var(--surface-raised);
+        color: var(--text);
+      }
+
+      .theme-switch {
+        width: 34px;
+        border-radius: 11px;
+        background: var(--border);
+      }
+
+      .theme-switch::before {
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--surface);
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+        content: "";
+        transition: transform 160ms ease;
+      }
+
+      html[data-theme="dark"] .theme-switch {
+        border-color: var(--accent-strong);
+        background: var(--accent-strong);
+      }
+
+      html[data-theme="dark"] .theme-switch::before {
+        transform: translateX(12px);
+      }
+
+      .design-window.is-collapsed .sidebar-footer {
+        justify-content: center;
+        padding-right: 0;
+        padding-left: 0;
+      }
+
+      .version-badge {
+        margin-left: auto;
+        padding: 2px 6px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        color: var(--text-secondary);
+        font-size: 10px;
+      }
+
+      .main {
+        min-width: 0;
+        overflow: hidden;
+        padding: 18px 24px 18px;
+        background: var(--window);
+      }
+
+      .page-view {
+        display: none;
+        height: 100%;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .page-view.is-active {
+        display: block;
+      }
+
+      .page-view .page-head {
+        margin-bottom: 14px;
+      }
+
+      .page-view .page-head p {
+        max-width: 520px;
+      }
+
+      .page-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+        gap: 12px;
+        height: calc(100% - 52px);
+        min-height: 0;
+      }
+
+      .page-stack {
+        display: grid;
+        grid-template-rows: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        min-height: 0;
+      }
+
+      .versions-layout {
+        grid-template-rows: repeat(2, minmax(0, 1fr));
+      }
+
+      .versions-layout > .page-stack {
+        display: contents;
+      }
+
+      .versions-layout > .page-card {
+        grid-column: 1;
+        grid-row: 1;
+      }
+
+      .versions-layout > .page-stack > .page-card:first-child {
+        grid-column: 2;
+        grid-row: 1 / span 2;
+      }
+
+      .versions-layout > .page-stack > .page-card:last-child {
+        grid-column: 1;
+        grid-row: 2;
+      }
+
+      .skills-stack {
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+
+      .plugin-tools-stack {
+        grid-template-rows: minmax(0, 1fr);
+      }
+
+      .plugin-layout {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .plugin-page-card {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .plugin-tab-bar {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 10px 0 8px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .plugin-tab {
+        min-height: 28px;
+        padding: 0 9px;
+        border: 1px solid transparent;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--text-secondary);
+        cursor: pointer;
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .plugin-tab span {
+        margin-left: 4px;
+        color: var(--text-muted);
+        font-size: 10px;
+        font-weight: 500;
+      }
+
+      .plugin-tab.is-active {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .plugin-tab-panel {
+        display: none;
+        min-height: 0;
+        flex: 1 1 auto;
+      }
+
+      .plugin-tab-panel.is-active {
+        display: block;
+      }
+
+      .plugin-page-body {
+        display: grid;
+        grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+        gap: 14px;
+        min-height: 0;
+        padding-top: 10px;
+      }
+
+      .plugin-installed-column,
+      .plugin-center-column {
+        min-width: 0;
+      }
+
+      .plugin-installed-list {
+        display: grid;
+        gap: 0;
+        margin-top: 5px;
+        border-top: 1px solid var(--border-soft);
+      }
+
+      .plugin-installed-row {
+        min-width: 0;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .plugin-installed-row .page-list-title {
+        display: flex;
+        align-items: baseline;
+        gap: 5px;
+      }
+
+      .plugin-instance-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-top: 6px;
+      }
+
+      .plugin-instance-chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 22px;
+        padding: 0 7px;
+        border: 1px solid rgba(73, 168, 112, 0.28);
+        border-radius: 5px;
+        background: rgba(73, 182, 117, 0.08);
+        color: var(--text-secondary);
+        font-size: 10px;
+      }
+
+      .plugin-instance-chip.is-warn {
+        border-color: rgba(214, 169, 77, 0.35);
+        background: rgba(214, 169, 77, 0.12);
+        color: var(--warning);
+      }
+
+      .plugin-instance-chip.is-muted {
+        border-color: var(--border-soft);
+        background: var(--surface-subtle);
+        color: var(--text-muted);
+      }
+
+      .plugin-current-note {
+        display: grid;
+        gap: 3px;
+        margin-top: 10px;
+        padding: 8px 9px;
+        border: 1px solid var(--border-soft);
+        border-radius: 5px;
+        background: var(--surface-subtle);
+      }
+
+      .plugin-current-note strong {
+        color: var(--text);
+        font-size: 10px;
+      }
+
+      .plugin-current-note span {
+        color: var(--text-muted);
+        font-size: 10px;
+        line-height: 1.45;
+      }
+
+      .plugin-manual-install {
+        margin-top: 10px;
+        padding-top: 2px;
+      }
+
+      .plugin-manual-control {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 6px;
+        margin-top: 6px;
+      }
+
+      .plugin-source-input {
+        display: flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 0 8px;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        background: var(--surface-subtle);
+        color: var(--text-muted);
+        font-size: 10px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .plugin-center-column {
+        padding-left: 14px;
+        border-left: 1px solid var(--border-soft);
+      }
+
+      .plugin-center-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-height: 28px;
+        padding-bottom: 7px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .plugin-current-body {
+        min-height: 0;
+        padding-top: 12px;
+      }
+
+      .plugin-current-head,
+      .plugin-mode-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .plugin-current-head {
+        padding-bottom: 10px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .plugin-current-list {
+        display: grid;
+        gap: 0;
+      }
+
+      .plugin-current-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        min-height: 50px;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .plugin-mode-row {
+        margin-top: 12px;
+        padding: 10px;
+        border: 1px solid var(--border-soft);
+        border-radius: 5px;
+        background: var(--surface-subtle);
+      }
+
+      .plugin-mode-row strong,
+      .plugin-mode-row small {
+        display: block;
+      }
+
+      .plugin-mode-row strong {
+        color: var(--text);
+        font-size: 11px;
+      }
+
+      .plugin-mode-row small {
+        margin-top: 3px;
+        color: var(--text-muted);
+        font-size: 10px;
+        line-height: 1.45;
+      }
+
+      .page-card {
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .page-card .card-head {
+        padding-bottom: 9px;
+      }
+
+      .official-version-head .card-title {
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+
+      .official-version-head .card-head-actions {
+        min-width: 0;
+        flex-shrink: 0;
+      }
+
+      .official-version-head .button.icon-only {
+        width: 28px;
+        padding: 0;
+        gap: 0;
+      }
+
+      .skills-stack > .page-card:first-child .page-card-body {
+        padding-top: 4px;
+      }
+
+      .skills-stack > .page-card:first-child .page-list-row {
+        min-height: 34px;
+        padding: 6px 0;
+      }
+
+      .page-card-body {
+        min-height: 0;
+        padding-top: 10px;
+      }
+
+      .page-list {
+        display: grid;
+        gap: 6px;
+      }
+
+      .current-kernel-status {
+        margin-top: 10px;
+        padding-top: 4px;
+        border-top: 1px solid var(--border-soft);
+      }
+
+      .page-list-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        min-height: 42px;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .page-list-row:last-child {
+        border-bottom: 0;
+      }
+
+      .kernel-plugin-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        padding-top: 7px;
+      }
+
+      .kernel-plugin-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        min-height: 24px;
+        padding: 0 7px;
+        border: 1px solid rgba(73, 168, 112, 0.28);
+        border-radius: 5px;
+        background: rgba(73, 182, 117, 0.08);
+        color: var(--text-secondary);
+        font-size: 10px;
+      }
+
+      .kernel-plugin-chip::before {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--success);
+        content: "";
+      }
+
+      .kernel-plugin-chip.is-muted {
+        border-color: var(--border-soft);
+        background: var(--surface-subtle);
+      }
+
+      .kernel-plugin-chip.is-muted::before {
+        background: var(--text-muted);
+      }
+
+      .community-resource-list {
+        display: grid;
+        gap: 0;
+        padding-top: 4px;
+      }
+
+      .community-resource-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        min-height: 48px;
+        padding: 7px 0;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .community-resource-row:last-child {
+        border-bottom: 0;
+      }
+
+      .community-resource-title {
+        color: var(--text);
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .community-resource-meta {
+        margin-top: 3px;
+        overflow: hidden;
+        color: var(--text-muted);
+        font-size: 9px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .community-resource-row .button.compact {
+        min-height: 25px;
+        padding: 0 7px;
+        font-size: 10px;
+      }
+
+      .community-resource-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding-top: 8px;
+        color: var(--text-muted);
+        font-size: 10px;
+      }
+
+      .community-browse-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 0 10px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .skill-remediation-note {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 8px;
+        margin-top: 9px;
+        padding-top: 8px;
+        border-top: 1px solid var(--border-soft);
+        color: var(--text-muted);
+        font-size: 10px;
+        line-height: 1.45;
+      }
+
+      .skill-remediation-note span:first-child {
+        color: var(--warning);
+        font-weight: 650;
+      }
+
+      .community-install {
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid var(--border-soft);
+      }
+
+      .community-install-control {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 6px;
+        margin-top: 6px;
+      }
+
+      .community-install-input {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        min-height: 28px;
+        padding: 0 8px;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        background: var(--surface-subtle);
+        color: var(--text-muted);
+        font-size: 10px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .community-install .page-list-meta {
+        margin-top: 5px;
+        font-size: 10px;
+      }
+
+      .plugin-center-source {
+        color: var(--text-muted);
+        font-size: 10px;
+        font-weight: 500;
+      }
+
+      .plugin-center-source a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+
+      .plugin-center-source a:hover {
+        text-decoration: underline;
+      }
+
+      .plugin-precheck-row,
+      .plugin-install-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        min-height: 32px;
+        padding: 7px 0;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .plugin-precheck-control {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--text-secondary);
+        font-size: 10px;
+        white-space: nowrap;
+      }
+
+      .plugin-install-row .page-list-meta {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .plugin-section-label {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 9px;
+        color: var(--text);
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .plugin-section-label span {
+        color: var(--text-muted);
+        font-size: 10px;
+        font-weight: 500;
+      }
+
+      .plugin-search-box {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 29px;
+        margin-top: 6px;
+        padding: 0 8px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        background: var(--surface-subtle);
+        color: var(--text-muted);
+        font-size: 10px;
+      }
+
+      .plugin-search-box .search-key {
+        margin-left: auto;
+        color: var(--text-muted);
+        font-size: 10px;
+      }
+
+      .plugin-filter-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+        gap: 6px;
+        margin-top: 6px;
+      }
+
+      .plugin-filter {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-width: 0;
+        min-height: 27px;
+        padding: 0 7px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        background: var(--surface);
+        color: var(--text-secondary);
+        font-size: 10px;
+      }
+
+      .plugin-filter span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .plugin-catalog {
+        margin-top: 6px;
+        border-top: 1px solid var(--border-soft);
+      }
+
+      .plugin-catalog-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        min-height: 45px;
+        padding: 6px 0;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .plugin-catalog-title {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        min-width: 0;
+        color: var(--text);
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .plugin-catalog-title span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .plugin-catalog-version {
+        flex: 0 0 auto;
+        color: var(--text-muted);
+        font-size: 9px;
+        font-weight: 500;
+      }
+
+      .plugin-catalog-meta {
+        margin-top: 3px;
+        overflow: hidden;
+        color: var(--text-muted);
+        font-size: 9px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .plugin-catalog-row .button.compact {
+        min-height: 25px;
+        padding: 0 7px;
+        font-size: 10px;
+      }
+
+      .plugin-catalog-more {
+        padding-top: 7px;
+        color: var(--accent);
+        font-size: 10px;
+        text-align: center;
+      }
+
+      .disk-usage-card .card-head-actions {
+        min-width: 0;
+      }
+
+      .card-info-chip {
+        display: inline-grid;
+        width: 14px;
+        height: 14px;
+        place-items: center;
+        border: 1px solid var(--border);
+        border-radius: 50%;
+        color: var(--text-muted);
+        cursor: help;
+        font-size: 9px;
+        font-weight: 700;
+      }
+
+      .disk-usage-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+        padding-top: 8px;
+      }
+
+      .disk-usage-tile {
+        min-width: 0;
+        padding: 7px 8px;
+        border: 1px solid var(--border-soft);
+        border-radius: 5px;
+        background: var(--surface-subtle);
+      }
+
+      .disk-usage-tile-head,
+      .disk-usage-share,
+      .disk-usage-entry,
+      .disk-usage-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+      }
+
+      .disk-usage-tile-head {
+        color: var(--text);
+        font-size: 10px;
+        font-weight: 650;
+      }
+
+      .disk-usage-tile-head strong {
+        color: var(--text);
+        font-size: 10px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .disk-usage-share {
+        margin-top: 5px;
+      }
+
+      .disk-usage-bar {
+        flex: 1 1 auto;
+        height: 4px;
+        overflow: hidden;
+        border-radius: 4px;
+        background: var(--border);
+      }
+
+      .disk-usage-bar span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--accent);
+      }
+
+      .disk-usage-percent {
+        flex: 0 0 auto;
+        color: var(--text-muted);
+        font-size: 9px;
+      }
+
+      .disk-usage-entry {
+        margin-top: 4px;
+        color: var(--text-muted);
+        font-size: 9px;
+      }
+
+      .disk-usage-entry span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .disk-usage-entry span:last-child {
+        flex: 0 0 auto;
+      }
+
+      .disk-usage-footer {
+        margin-top: 8px;
+        color: var(--text-muted);
+        font-size: 9px;
+      }
+
+      .page-list-main {
+        min-width: 0;
+      }
+
+      .page-list-title {
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .page-list-meta {
+        margin-top: 3px;
+        overflow: hidden;
+        color: var(--text-muted);
+        font-size: 11px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .page-list-actions {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+
+      .page-toolbar,
+      .settings-row,
+      .migration-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .page-note {
+        margin-top: 10px;
+        color: var(--text-muted);
+        font-size: 11px;
+        line-height: 1.5;
+      }
+
+      .setting-list {
+        display: grid;
+        gap: 2px;
+      }
+
+      .settings-row {
+        min-height: 38px;
+        padding: 6px 0;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .settings-row:last-child {
+        border-bottom: 0;
+      }
+
+      .settings-layout {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      }
+
+      .settings-stack {
+        grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+      }
+
+      .settings-stack .page-card {
+        padding: 14px;
+      }
+
+      .settings-stack .settings-row {
+        min-height: 34px;
+        padding: 5px 0;
+      }
+
+      .settings-stack .page-list-row {
+        min-height: 35px;
+        padding: 6px 0;
+      }
+
+      .settings-label {
+        color: var(--text-secondary);
+        font-size: 12px;
+      }
+
+      .settings-value {
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .toggle {
+        position: relative;
+        width: 30px;
+        height: 18px;
+        border-radius: 10px;
+        background: var(--border);
+      }
+
+      .toggle::after {
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--surface);
+        content: "";
+      }
+
+      .toggle.is-on {
+        background: var(--accent-strong);
+      }
+
+      .toggle.is-on::after {
+        left: 15px;
+      }
+
+      .migration-hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 24px;
+        min-height: 170px;
+        padding: 22px 0;
+      }
+
+      .migration-hero h3 {
+        margin: 0;
+        font-size: 18px;
+      }
+
+      .migration-hero p {
+        max-width: 520px;
+        margin: 8px 0 0;
+        color: var(--text-secondary);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .migration-status {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 0 9px;
+        border: 1px solid rgba(214, 169, 77, 0.35);
+        border-radius: 5px;
+        background: rgba(214, 169, 77, 0.12);
+        color: var(--warning);
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .migration-card {
+        padding-bottom: 14px;
+      }
+
+      .migration-stepper {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px;
+        padding: 12px 0 4px;
+      }
+
+      .migration-step {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        color: var(--text-muted);
+        font-size: 10px;
+      }
+
+      .migration-step b {
+        display: inline-grid;
+        width: 20px;
+        height: 20px;
+        place-items: center;
+        border: 1px solid var(--border);
+        border-radius: 50%;
+        color: var(--text-muted);
+        font-size: 10px;
+      }
+
+      .migration-step.is-active {
+        color: var(--accent);
+        font-weight: 650;
+      }
+
+      .migration-step.is-active b {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .migration-card .migration-hero {
+        min-height: 108px;
+        padding: 12px 0;
+      }
+
+      .migration-card .migration-hero h3 {
+        font-size: 16px;
+      }
+
+      .migration-card .migration-hero p {
+        margin-top: 6px;
+        line-height: 1.45;
+      }
+
+      .migration-preview-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .migration-mini-card {
+        display: grid;
+        align-content: start;
+        gap: 4px;
+        min-width: 0;
+        min-height: 76px;
+        padding: 9px;
+        border: 1px solid var(--border-soft);
+        border-radius: 5px;
+        background: var(--surface-subtle);
+      }
+
+      .migration-mini-card strong {
+        color: var(--text);
+        font-size: 11px;
+      }
+
+      .migration-mini-card .button {
+        justify-self: start;
+        margin-top: 2px;
+      }
+
+      .migration-note {
+        margin-top: 9px;
+        color: var(--text-muted);
+        font-size: 10px;
+        line-height: 1.45;
+      }
+
+      .page-head {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 20px;
+        margin-bottom: 20px;
+      }
+
+      .page-head h2 {
+        margin: 0;
+        font-size: 22px;
+        letter-spacing: -0.025em;
+      }
+
+      .page-head p {
+        margin: 5px 0 0;
+        color: var(--text-secondary);
+        font-size: 12px;
+      }
+
+      .page-head-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .button {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        min-height: 32px;
+        padding: 0 12px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-control);
+        background: var(--surface);
+        color: var(--text-secondary);
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      button[data-tooltip] {
+        position: relative;
+      }
+
+      [data-tooltip]::after {
+        position: absolute;
+        z-index: 20;
+        left: 50%;
+        bottom: calc(100% + 7px);
+        width: max-content;
+        max-width: 240px;
+        padding: 5px 7px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        background: var(--surface-raised);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+        color: var(--text);
+        content: attr(data-tooltip);
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 1.35;
+        opacity: 0;
+        pointer-events: none;
+        transform: translate(-50%, 3px);
+        transition: opacity 120ms ease, transform 120ms ease;
+        white-space: normal;
+      }
+
+      [data-tooltip]:hover::after,
+      [data-tooltip]:focus-visible::after {
+        opacity: 1;
+        transform: translate(-50%, 0);
+      }
+
+      .page-head-actions [data-tooltip]::after,
+      .page-card .card-head-actions [data-tooltip]::after {
+        top: calc(100% + 7px);
+        bottom: auto;
+        transform: translate(-50%, -3px);
+      }
+
+      .page-head-actions [data-tooltip]:hover::after,
+      .page-head-actions [data-tooltip]:focus-visible::after,
+      .page-card .card-head-actions [data-tooltip]:hover::after,
+      .page-card .card-head-actions [data-tooltip]:focus-visible::after {
+        transform: translate(-50%, 0);
+      }
+
+      .button-icon {
+        display: inline-grid;
+        width: 16px;
+        height: 16px;
+        place-items: center;
+        color: currentColor;
+        font-size: 13px;
+        font-weight: 700;
+        line-height: 1;
+      }
+
+      .button-icon.ui-icon {
+        position: relative;
+        display: inline-block;
+        flex: 0 0 16px;
+      }
+
+      .ui-icon-monitor::before {
+        position: absolute;
+        top: 1px;
+        left: 1px;
+        width: 13px;
+        height: 9px;
+        border: 1.3px solid currentColor;
+        border-radius: 2px;
+        content: "";
+      }
+
+      .ui-icon-monitor::after {
+        position: absolute;
+        bottom: 1px;
+        left: 4px;
+        width: 8px;
+        height: 1px;
+        background: currentColor;
+        box-shadow: 2px -2px 0 -0.3px currentColor;
+        content: "";
+      }
+
+      .ui-icon-chart::before {
+        position: absolute;
+        bottom: 2px;
+        left: 2px;
+        width: 2px;
+        height: 5px;
+        background: currentColor;
+        box-shadow: 4px -2px 0 currentColor, 8px -5px 0 currentColor;
+        content: "";
+      }
+
+      .ui-icon-chart::after {
+        position: absolute;
+        bottom: 1px;
+        left: 1px;
+        width: 13px;
+        height: 1px;
+        background: currentColor;
+        content: "";
+      }
+
+      .ui-icon-folder::before {
+        position: absolute;
+        top: 4px;
+        left: 1px;
+        width: 14px;
+        height: 9px;
+        border: 1.3px solid currentColor;
+        border-radius: 2px;
+        content: "";
+      }
+
+      .ui-icon-folder::after {
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 6px;
+        height: 3px;
+        border: 1.3px solid currentColor;
+        border-bottom: 0;
+        border-radius: 2px 2px 0 0;
+        content: "";
+      }
+
+      .ui-icon-chat::before {
+        position: absolute;
+        top: 1px;
+        left: 1px;
+        width: 13px;
+        height: 9px;
+        border: 1.3px solid currentColor;
+        border-radius: 3px;
+        content: "";
+      }
+
+      .ui-icon-chat::after {
+        position: absolute;
+        bottom: 1px;
+        left: 3px;
+        width: 4px;
+        height: 4px;
+        border-bottom: 1.3px solid currentColor;
+        border-left: 1.3px solid currentColor;
+        transform: skewY(-28deg);
+        content: "";
+      }
+
+      .ui-icon-store::before {
+        position: absolute;
+        top: 5px;
+        left: 1px;
+        width: 14px;
+        height: 8px;
+        border: 1.3px solid currentColor;
+        border-radius: 1px;
+        content: "";
+      }
+
+      .ui-icon-store::after {
+        position: absolute;
+        top: 2px;
+        left: 1px;
+        width: 14px;
+        height: 4px;
+        border: 1.3px solid currentColor;
+        border-radius: 2px 2px 1px 1px;
+        box-shadow: 3px 0 0 -1px var(--surface), 6px 0 0 -1px var(--surface), 9px 0 0 -1px var(--surface);
+        content: "";
+      }
+
+      .button:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      .button.primary {
+        border-color: var(--accent-strong);
+        background: var(--accent-strong);
+        color: #fff;
+      }
+
+      .button.primary:hover {
+        background: var(--accent);
+      }
+
+      .button.danger {
+        border-color: rgba(238, 117, 110, 0.45);
+        color: var(--danger);
+      }
+
+      .button:active {
+        transform: scale(0.98);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+        gap: 12px;
+      }
+
+      .card {
+        min-width: 0;
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        background: var(--surface);
+      }
+
+      .card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .card-head-left {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        gap: 8px;
+      }
+
+      .card-title {
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .card-caption {
+        color: var(--text-muted);
+        font-size: 11px;
+      }
+
+      .kernel-card {
+        min-height: 0;
+      }
+
+      .kernel-summary {
+        display: flex;
+        align-items: start;
+        gap: 18px;
+        padding: 13px 0 12px;
+      }
+
+      .kernel-version {
+        color: var(--text);
+        font-size: 18px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      .kernel-status {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--success);
+        font-size: 12px;
+      }
+
+      .kernel-status::before {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+        content: "";
+      }
+
+      .kernel-detail {
+        color: var(--text-secondary);
+        font-size: 12px;
+      }
+
+      .kernel-status-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 8px;
+        flex-wrap: wrap;
+      }
+
+      .kernel-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex-wrap: nowrap;
+      }
+
+      .kernel-header-actions .button {
+        min-height: 26px;
+        padding-right: 8px;
+        padding-left: 8px;
+        font-size: 10px;
+        white-space: nowrap;
+      }
+
+      .card-head-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .button.compact {
+        min-height: 28px;
+        padding: 0 9px;
+        font-size: 11px;
+        font-weight: 600;
+      }
+
+      .button.text-action {
+        min-height: auto;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--accent);
+        font-size: 11px;
+        font-weight: 600;
+      }
+
+      .button.text-action:hover {
+        background: transparent;
+        color: var(--accent-strong);
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        padding-top: 10px;
+        border-top: 1px solid var(--border-soft);
+      }
+
+      .metric {
+        min-width: 0;
+      }
+
+      .metric + .metric {
+        padding-left: 12px;
+        border-left: 1px solid var(--border-soft);
+      }
+
+      .metric-label {
+        color: var(--text-muted);
+        font-size: 11px;
+      }
+
+      .metric-label-with-action {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .metric-action-button {
+        flex: 0 0 auto;
+      }
+
+      .metric-value {
+        overflow: hidden;
+        margin-top: 3px;
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 600;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .health-card {
+        min-height: 0;
+      }
+
+      .health-list {
+        margin: 2px 0 0;
+      }
+
+      .health-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 14px;
+        align-items: center;
+        padding: 11px 0;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .health-row:last-child {
+        border-bottom: 0;
+      }
+
+      .health-name {
+        color: var(--text-secondary);
+        font-size: 12px;
+      }
+
+      .health-value {
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .health-ok {
+        color: var(--success);
+      }
+
+      .health-link {
+        min-height: auto;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--accent);
+        cursor: pointer;
+        font-size: 11px;
+        font-weight: 600;
+      }
+
+      .health-link:hover {
+        color: var(--accent-strong);
+      }
+
+      .usage-card {
+        grid-column: 1 / -1;
+      }
+
+      .usage-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        padding-top: 10px;
+      }
+
+      .usage-item {
+        padding: 10px;
+        border: 1px solid var(--border-soft);
+        border-radius: 6px;
+        background: var(--surface-subtle);
+      }
+
+      .usage-item-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        color: var(--text-secondary);
+        font-size: 11px;
+      }
+
+      .usage-item-head span:first-child {
+        color: var(--text);
+        font-weight: 650;
+      }
+
+      .usage-age {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 10px;
+        white-space: nowrap;
+      }
+
+      .usage-age:hover {
+        color: var(--accent);
+      }
+
+      .usage-age .button-icon {
+        width: 11px;
+        height: 11px;
+        font-size: 10px;
+      }
+
+      .usage-balance-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .usage-balance-row span,
+      .usage-tier-name,
+      .usage-metric-label {
+        color: var(--text-muted);
+        font-size: 10px;
+      }
+
+      .usage-balance-row strong {
+        color: var(--text);
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .usage-balance-detail {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 7px;
+        color: var(--text-secondary);
+        font-size: 10px;
+      }
+
+      .usage-tier-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .usage-tier-row {
+        display: grid;
+        grid-template-columns: 22px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .usage-tier-row .usage-bar {
+        width: 100%;
+        margin-top: 0;
+      }
+
+      .usage-tier-value {
+        min-width: 34px;
+        color: var(--text);
+        font-size: 10px;
+        font-weight: 650;
+        text-align: right;
+      }
+
+      .usage-bar {
+        height: 6px;
+        margin-top: 10px;
+        overflow: hidden;
+        border-radius: 4px;
+        background: var(--border);
+      }
+
+      .usage-bar span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--success);
+      }
+
+      .activity-card {
+        margin-top: 12px;
+      }
+
+      .activity-card .activity-list {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .activity-list {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0 12px;
+        padding-top: 2px;
+      }
+
+      .activity-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 28px;
+        border-bottom: 1px solid var(--border-soft);
+        color: var(--text-secondary);
+        font-size: 11px;
+      }
+
+      .activity-row strong {
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      .draft-note {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-top: 16px;
+      }
+
+      .note {
+        padding: 12px 14px;
+        border-left: 3px solid var(--accent);
+        background: var(--surface-subtle);
+        color: var(--text-secondary);
+        font-size: 11px;
+        line-height: 1.6;
+      }
+
+      .note strong {
+        display: block;
+        margin-bottom: 3px;
+        color: var(--text);
+        font-size: 12px;
+      }
+
+      .coverage {
+        margin-top: 18px;
+      }
+
+      .coverage-head {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 10px;
+      }
+
+      .coverage-head h2 {
+        margin: 0;
+        font-size: 16px;
+        letter-spacing: -0.02em;
+      }
+
+      .coverage-head p {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: 11px;
+      }
+
+      .coverage-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .coverage-card {
+        padding: 14px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        background: var(--surface);
+      }
+
+      .coverage-card h3 {
+        margin: 0 0 8px;
+        font-size: 13px;
+      }
+
+      .coverage-card p {
+        margin: 0 0 10px;
+        color: var(--text-muted);
+        font-size: 11px;
+        line-height: 1.5;
+      }
+
+      .coverage-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .coverage-list li {
+        padding: 4px 7px;
+        border: 1px solid var(--border-soft);
+        border-radius: 4px;
+        background: var(--surface-subtle);
+        color: var(--text-secondary);
+        font-size: 11px;
+        line-height: 1.2;
+      }
+
+      .coverage-list li.is-key {
+        border-color: rgba(110, 161, 255, 0.34);
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .coverage-foot {
+        margin-top: 10px;
+        color: var(--text-muted);
+        font-size: 11px;
+        line-height: 1.5;
+      }
+
+      .coverage-plan {
+        display: grid;
+        grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+        align-items: center;
+        gap: 14px;
+        margin-top: 12px;
+        padding: 12px 14px;
+        border: 1px dashed rgba(214, 169, 77, 0.48);
+        border-radius: var(--radius-card);
+        background: rgba(214, 169, 77, 0.06);
+      }
+
+      .coverage-plan strong,
+      .coverage-plan span {
+        display: block;
+      }
+
+      .coverage-plan strong {
+        color: var(--warning);
+        font-size: 12px;
+      }
+
+      .coverage-plan span {
+        margin-top: 4px;
+        color: var(--text-muted);
+        font-size: 10px;
+        line-height: 1.45;
+      }
+
+      .coverage-plan .coverage-list {
+        justify-content: flex-start;
+      }
+
+      @media (max-width: 1120px) {
+        body {
+          min-width: 0;
+        }
+
+        .board {
+          width: calc(100vw - 32px);
+        }
+
+        .coverage-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="board">
+      <div class="board-head">
+        <div>
+          <h1>dsh-xlink UI redesign draft</h1>
+          <p>功能对照稿 v2。保留现有入口，切换主题、操作系统和收起菜单查看布局。</p>
+        </div>
+        <div class="board-head-controls">
+          <div class="board-controls" aria-label="设计稿主题和平台控制">
+            <button type="button" data-theme="light">浅色</button>
+            <button type="button" data-theme="dark" class="is-active">深色</button>
+            <button type="button" data-platform="mac" class="is-active">macOS</button>
+            <button type="button" data-platform="win">Windows</button>
+          </div>
+          <div class="board-view-controls" aria-label="设计稿视图控制">
+            <button type="button" data-board-view="preview" class="is-active">界面预览</button>
+            <button type="button" data-board-view="coverage">功能清单</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="board-panel is-active" data-board-panel="preview">
+      <section class="design-window" aria-label="dsh-xlink redesigned overview preview">
+        <header class="titlebar">
+          <div class="traffic-lights" aria-hidden="true">
+            <span class="close"></span>
+            <span class="minimize"></span>
+            <span class="zoom"></span>
+          </div>
+          <div class="titlebar-title">
+            <img src="../../ui/public/whale-icon.png" alt="" />
+            <span>Dsh-Xlink</span>
+          </div>
+          <div class="win-title">
+            <img src="../../ui/public/whale-icon.png" alt="" />
+            <span>Dsh-Xlink</span>
+          </div>
+          <div class="win-actions" aria-label="窗口控制">
+            <button type="button" aria-label="最小化" title="最小化"><span class="win-glyph minimize"></span></button>
+            <button type="button" class="close" aria-label="关闭" title="关闭并收进后台"><span class="win-glyph close"></span></button>
+          </div>
+        </header>
+
+        <div class="workspace-bar">
+          <nav class="kernel-tabs-preview" aria-label="内核切换">
+            <button type="button" class="kernel-tab-preview is-active" aria-current="page">DSH</button>
+            <span class="kernel-tabs-preview-caption">当前内核 · 0.2.1-alpha.1</span>
+          </nav>
+          <div class="workspace-actions">
+            <span class="state">工作台运行中</span>
+          </div>
+        </div>
+
+        <div class="app-body">
+          <aside class="sidebar">
+          <div class="brand">
+              <img src="../../ui/public/whale-icon.png" alt="" />
+              <div class="brand-copy">
+                <div class="brand-name">DeepSeek Harness</div>
+                <div class="brand-subtitle">桌面管理台</div>
+              </div>
+              <button type="button" class="sidebar-toggle" data-collapse title="收起左侧菜单" aria-label="收起菜单" aria-expanded="true"></button>
+            </div>
+
+            <div class="nav-group">
+              <div class="nav-label">工作台</div>
+              <button type="button" class="nav-item is-active" data-page="overview" title="概览" aria-current="page"><span class="nav-icon">⌂</span><span>概览</span></button>
+              <button type="button" class="nav-item" data-page="versions" title="内核版本"><span class="nav-icon">▣</span><span>内核版本</span></button>
+            </div>
+            <div class="nav-group">
+              <div class="nav-label">资源</div>
+              <button type="button" class="nav-item" data-page="plugins" title="插件"><svg class="nav-icon nav-icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h3.1a1.9 1.9 0 1 0 3.8 0H13v3.1a1.9 1.9 0 1 0 0 3.8v4.1H9.9a1.9 1.9 0 1 0-3.8 0H3V9.4a1.9 1.9 0 1 0 0-3.8V2.5Z" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round" /></svg><span>插件</span><span class="nav-badge">2</span></button>
+              <button type="button" class="nav-item" data-page="skills" title="技能"><span class="nav-icon">✦</span><span>技能</span></button>
+            </div>
+            <div class="nav-group">
+              <div class="nav-label">系统</div>
+              <button type="button" class="nav-item" data-page="settings" title="设置"><span class="nav-icon">☷</span><span>设置</span></button>
+              <button type="button" class="nav-item" data-page="migration" title="数据迁移"><span class="nav-icon">↗</span><span>数据迁移</span></button>
+            </div>
+
+            <div class="sidebar-footer">
+              <span class="sidebar-footer-label">桌面端</span>
+              <span class="version-badge">0.3.9-rc.3</span>
+              <button type="button" class="sidebar-update" data-tooltip="检查 dsh-xlink 桌面端是否有新版本" aria-label="检查 dsh-xlink 桌面端更新"><span class="button-icon">↻</span></button>
+              <button type="button" class="theme-switch" data-theme-switch data-tooltip="切换浅色或深色主题" aria-label="切换浅色或深色主题" aria-pressed="true"></button>
+            </div>
+          </aside>
+
+          <main class="main">
+            <section class="page-view is-active" data-page-view="overview">
+            <div class="page-head">
+              <div>
+                <h2>概览</h2>
+                <p>查看当前内核、工作台和本地运行环境。</p>
+              </div>
+            </div>
+
+            <div class="grid">
+              <section class="card kernel-card">
+                <div class="card-head">
+                  <div class="card-head-left">
+                    <span class="card-title">当前内核</span>
+                    <div class="kernel-header-actions">
+                      <button type="button" class="button compact primary" data-tooltip="停止或启动当前内核的工作台"><span class="button-icon">◼</span>工作台</button>
+                      <button type="button" class="button compact" data-tooltip="打开或关闭 DeepSeek 官网网页版"><span class="button-icon ui-icon ui-icon-chat" aria-hidden="true"></span>官网网页版</button>
+                    </div>
+                  </div>
+                  <span class="card-caption">DSH / default</span>
+                </div>
+                <div class="kernel-summary">
+                  <div>
+                    <div class="kernel-version">0.2.1-alpha.1</div>
+                    <div class="kernel-status-row"><span class="kernel-status">运行中</span><span class="kernel-detail">工作台地址 127.0.0.1:3090</span></div>
+                  </div>
+                </div>
+                <div class="metrics">
+                  <div class="metric">
+                    <div class="metric-label metric-label-with-action"><span>Node.js</span><button type="button" class="button text-action metric-action-button" data-tooltip="重新探测本机 Node.js，不修改设置"><span class="button-icon ui-icon ui-icon-monitor" aria-hidden="true"></span>重新检测</button></div>
+                    <div class="metric-value">v25.9.0</div>
+                  </div>
+                  <div class="metric">
+                    <div class="metric-label metric-label-with-action"><span>今日用量</span><button type="button" class="button text-action metric-action-button" data-tooltip="在独立窗口查看最近 90 天模型用量"><span class="button-icon ui-icon ui-icon-chart" aria-hidden="true"></span>模型用量</button></div>
+                    <div class="metric-value">0 tokens</div>
+                  </div>
+                  <div class="metric">
+                    <div class="metric-label metric-label-with-action"><span>数据目录</span><button type="button" class="button text-action metric-action-button" data-tooltip="在文件管理器中打开当前实例数据目录"><span class="button-icon ui-icon ui-icon-folder" aria-hidden="true"></span>打开</button></div>
+                    <div class="metric-value">~/.dsh-xlink/dsh/desktop</div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="card health-card">
+                <div class="card-head">
+                  <span class="card-title">系统健康</span>
+                  <span class="card-caption health-ok">全部正常</span>
+                </div>
+                <div class="health-list">
+                  <div class="health-row"><span class="health-name">插件接线</span><span class="health-value health-ok">无隔离</span></div>
+                  <div class="health-row"><span class="health-name">技能注册</span><span class="health-value health-ok">正常</span></div>
+                  <div class="health-row"><span class="health-name">日志系统</span><button type="button" class="health-link" data-tooltip="打开日志查看器">暂无</button></div>
+                  <div class="health-row"><span class="health-name">最近快照</span><span class="health-value">暂无</span></div>
+                </div>
+              </section>
+
+              <section class="card usage-card">
+                <div class="card-head">
+                  <span class="card-title">套餐用量</span>
+                  <div class="card-head-actions">
+                    <button type="button" class="button compact" data-tooltip="打开套餐用量详情窗口"><span class="button-icon">▥</span>查看详情</button>
+                    <button type="button" class="button compact" data-tooltip="重新查询已配置服务商的套餐余额"><span class="button-icon">↻</span>刷新</button>
+                  </div>
+                </div>
+                <div class="usage-grid">
+                  <div class="usage-item usage-balance-item">
+                    <div class="usage-item-head"><span>DeepSeek</span><button type="button" class="usage-age" data-tooltip="查询于刚刚，点击只刷新 DeepSeek"><span class="button-icon">↻</span>刚刚</button></div>
+                    <div class="usage-balance-row"><span>余额</span><strong>¥16.62</strong></div>
+                    <div class="usage-balance-detail"><span>赠金 ¥8.00</span><span>充值 ¥8.62</span></div>
+                  </div>
+                  <div class="usage-item">
+                    <div class="usage-item-head"><span>MiniMax-CN</span><button type="button" class="usage-age" data-tooltip="查询于 2 分钟前，点击只刷新 MiniMax-CN"><span class="button-icon">↻</span>2 分钟前</button></div>
+                    <div class="usage-tier-list">
+                      <div class="usage-tier-row"><span class="usage-tier-name">5h</span><div class="usage-bar"><span style="width: 99%"></span></div><strong class="usage-tier-value">99%</strong></div>
+                      <div class="usage-tier-row"><span class="usage-tier-name">7d</span><div class="usage-bar"><span style="width: 82%"></span></div><strong class="usage-tier-value">82%</strong></div>
+                    </div>
+                  </div>
+                  <div class="usage-item">
+                    <div class="usage-item-head"><span>GLM-CN</span><button type="button" class="usage-age" data-tooltip="查询于 2 分钟前，点击只刷新 GLM-CN"><span class="button-icon">↻</span>2 分钟前</button></div>
+                    <div class="usage-tier-list">
+                      <div class="usage-tier-row"><span class="usage-tier-name">5h</span><div class="usage-bar"><span style="width: 100%"></span></div><strong class="usage-tier-value">100%</strong></div>
+                      <div class="usage-tier-row"><span class="usage-tier-name">7d</span><div class="usage-bar"><span style="width: 94%"></span></div><strong class="usage-tier-value">94%</strong></div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            <section class="card activity-card">
+              <div class="card-head">
+                <span class="card-title">最近操作</span>
+                <span class="card-caption">启动 · 预检 · 恢复 · 排查</span>
+              </div>
+              <div class="activity-list">
+                <div class="activity-row"><span>暂无运行记录</span><strong>—</strong></div>
+                <div class="activity-row"><span>失败或需要关注的操作会保留入口</span><strong>查看诊断</strong></div>
+              </div>
+            </section>
+            </section>
+
+            <section class="page-view" data-page-view="versions">
+              <div class="page-head">
+                <div>
+                  <h2>内核版本</h2>
+                  <p>安装、切换和清理本机内核版本。</p>
+                </div>
+              </div>
+              <div class="page-layout versions-layout">
+                <section class="card page-card">
+                  <div class="card-head">
+                    <span class="card-title">已安装</span>
+                    <span class="card-caption">2 个版本</span>
+                  </div>
+                  <div class="page-card-body page-list">
+                    <div class="page-list-row">
+                      <div class="page-list-main"><div class="page-list-title">0.2.1-alpha.1 <span class="health-ok">当前</span></div><div class="page-list-meta">DSH · 运行工作台中</div></div>
+                      <div class="page-list-actions"><button type="button" class="button compact primary" data-tooltip="当前正在使用的版本">当前</button></div>
+                    </div>
+                    <div class="page-list-row">
+                      <div class="page-list-main"><div class="page-list-title">0.2.0-rc.2</div><div class="page-list-meta">DSH · 约 438 MB</div></div>
+                      <div class="page-list-actions"><button type="button" class="button compact" data-tooltip="将工作台切换到这个版本"><span class="button-icon">⇄</span>切换</button><button type="button" class="button compact danger" data-tooltip="删除本机版本，工作台运行时不可用"><span class="button-icon">×</span>删除</button></div>
+                    </div>
+                  </div>
+                  <div class="page-note">内核正在运行时，安装、切换和删除按钮会自动禁用。</div>
+                </section>
+                <div class="page-stack">
+                  <section class="card page-card official-version-card">
+                    <div class="card-head official-version-head">
+                      <span class="card-title">官方版本</span>
+                      <div class="card-head-actions">
+                        <span class="card-caption">最近检查 2 分钟前</span>
+                        <button type="button" class="button compact icon-only" aria-label="检查官方版本" data-tooltip="检查官方版本"><span class="button-icon">↻</span></button>
+                        <button type="button" class="button compact icon-only" aria-label="打开发布页" data-tooltip="打开官方内核发布页"><span class="button-icon">↗</span></button>
+                      </div>
+                    </div>
+                    <div class="page-card-body page-list">
+                      <div class="page-list-row"><div class="page-list-main"><div class="page-list-title">0.2.1-alpha.1</div><div class="page-list-meta">已安装 · latest</div></div><div class="page-list-actions"><span class="health-value health-ok">已安装</span></div></div>
+                      <div class="page-list-row"><div class="page-list-main"><div class="page-list-title">0.2.2-alpha.1</div><div class="page-list-meta">npm registry · 新版本</div></div><div class="page-list-actions"><button type="button" class="button compact primary" data-tooltip="下载并安装这个内核版本"><span class="button-icon">↓</span>安装</button></div></div>
+                    </div>
+                  </section>
+                  <section class="card page-card">
+                    <div class="card-head">
+                      <div class="card-head-left"><span class="card-title">磁盘用量</span><span class="card-info-chip" data-tooltip="只读统计，不跟随软链；读不到的目录会单独提示" aria-label="磁盘用量说明">i</span></div>
+                      <div class="card-head-actions"><span class="card-caption">合计 1.08 GB</span><button type="button" class="button compact" data-tooltip="立即重新统计，平时每 24 小时后台自动刷新"><span class="button-icon">↻</span>刷新</button></div>
+                    </div>
+                    <div class="page-card-body">
+                      <div class="disk-usage-grid">
+                        <div class="disk-usage-tile">
+                          <div class="disk-usage-tile-head"><span>内核版本</span><strong>628 MB</strong></div>
+                          <div class="disk-usage-share"><span class="disk-usage-bar"><span style="width: 57%"></span></span><span class="disk-usage-percent">57%</span></div>
+                          <div class="disk-usage-entry"><span>0.2.1-alpha.1</span><span>438 MB</span></div>
+                          <div class="disk-usage-entry"><span>0.2.0-rc.2</span><span>190 MB</span></div>
+                        </div>
+                        <div class="disk-usage-tile">
+                          <div class="disk-usage-tile-head"><span>实例数据</span><strong>352 MB</strong></div>
+                          <div class="disk-usage-share"><span class="disk-usage-bar"><span style="width: 32%"></span></span><span class="disk-usage-percent">32%</span></div>
+                          <div class="disk-usage-entry"><span>正式版 · 会话与附件</span><span>352 MB</span></div>
+                        </div>
+                        <div class="disk-usage-tile">
+                          <div class="disk-usage-tile-head"><span>插件 / 技能 / 备份</span><strong>118 MB</strong></div>
+                          <div class="disk-usage-share"><span class="disk-usage-bar"><span style="width: 10%"></span></span><span class="disk-usage-percent">10%</span></div>
+                          <div class="disk-usage-entry"><span>插件中央库</span><span>48 MB</span></div>
+                          <div class="disk-usage-entry"><span>技能中央库 · 备份</span><span>70 MB</span></div>
+                        </div>
+                        <div class="disk-usage-tile">
+                          <div class="disk-usage-tile-head"><span>壳日志</span><strong>12 MB</strong></div>
+                          <div class="disk-usage-share"><span class="disk-usage-bar"><span style="width: 1%"></span></span><span class="disk-usage-percent">1%</span></div>
+                          <div class="disk-usage-entry"><span>正式版</span><span>9 MB</span></div>
+                          <div class="disk-usage-entry"><span>开发版</span><span>3 MB</span></div>
+                        </div>
+                      </div>
+                      <div class="disk-usage-footer"><span>今天 09:42 统计 · 每 24 小时后台刷新</span><span>只读 · 软链不重复计数</span></div>
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </section>
+
+            <section class="page-view" data-page-view="plugins">
+              <div class="page-head">
+                <div><h2>插件</h2><p>从本机插件库安装，并按内核实例管理接线状态。</p></div>
+              </div>
+              <div class="page-layout plugin-layout">
+                <section class="card page-card plugin-page-card">
+                  <div class="card-head">
+                    <div class="card-head-left"><span class="card-title">插件管理</span><span class="card-caption">第三方来源 · 操作前可预检</span></div>
+                    <div class="card-head-actions"><button type="button" class="button compact" data-tooltip="检查已安装插件是否有可用更新"><span class="button-icon">↻</span>检查更新</button><button type="button" class="button compact primary" data-tooltip="把已安装插件同步到当前内核"><span class="button-icon">⇄</span>同步内核</button></div>
+                  </div>
+                  <div class="plugin-tab-bar" role="tablist" aria-label="插件视图">
+                    <button type="button" class="plugin-tab is-active" role="tab" aria-selected="true">已安装 <span>所有实例</span></button>
+                    <button type="button" class="plugin-tab" role="tab" aria-selected="false">当前内核 <span>DSH · 0.2.1-alpha.1</span></button>
+                  </div>
+                  <div class="plugin-tab-panel is-active" data-plugin-panel="all">
+                  <div class="plugin-page-body">
+                    <div class="plugin-installed-column">
+                      <div class="plugin-section-label"><span>插件库</span><span>按实例显示接线状态</span></div>
+                      <div class="plugin-installed-list">
+                        <div class="plugin-installed-row">
+                          <div class="page-list-main"><div class="page-list-title">dsh-search <span class="plugin-catalog-version">v1.4.0 · npm</span></div><div class="plugin-instance-chips"><span class="plugin-instance-chip">DSH · default · 已接线</span></div></div>
+                        </div>
+                        <div class="plugin-installed-row">
+                          <div class="page-list-main"><div class="page-list-title">dsh-files <span class="plugin-catalog-version">v0.8.2 · npm</span></div><div class="plugin-instance-chips"><span class="plugin-instance-chip is-warn">DSH · default · 未同步</span></div></div>
+                        </div>
+                        <div class="plugin-installed-row">
+                          <div class="page-list-main"><div class="page-list-title">dsh-browser <span class="plugin-catalog-version">v0.5.1 · git</span></div><div class="plugin-instance-chips"><span class="plugin-instance-chip is-muted">DSH · default · 已隔离</span></div></div>
+                        </div>
+                      </div>
+                      <div class="plugin-current-note"><strong>当前内核视图</strong><span>切换页签后管理同步、模式、恢复、更新、仓库和卸载。</span></div>
+                      <div class="plugin-manual-install">
+                        <div class="plugin-section-label"><span>手动安装</span><span>npm / git / dsh add</span></div>
+                        <div class="plugin-manual-control"><span class="plugin-source-input">输入 npm 或 git 来源</span><button type="button" class="button compact primary" data-tooltip="先在一次性沙盒实例中验证，再安装插件"><span class="button-icon">↓</span>预检并安装</button></div>
+                      </div>
+                    </div>
+                    <div class="plugin-center-column">
+                      <div class="plugin-center-head"><div class="card-head-left"><span class="button-icon ui-icon ui-icon-store" aria-hidden="true"></span><span class="card-title">插件中心</span><span class="plugin-center-source">来自 <a href="https://dshfind.com/zh" target="_blank" rel="noreferrer">dshfind.com</a></span></div><button type="button" class="button compact" data-tooltip="重新查询远端插件目录"><span class="button-icon">↻</span>刷新</button></div>
+                      <div class="plugin-precheck-row"><span class="page-list-meta">安装预检</span><span class="plugin-precheck-control"><span>沙盒验证后安装</span><span class="toggle is-on" title="已启用" aria-label="安装预检已启用"></span></span></div>
+                      <div class="plugin-section-label"><span>插件仓库</span><span>查询、筛选、排序</span></div>
+                      <div class="plugin-search-box"><span aria-hidden="true">⌕</span><span>搜索插件名 / 描述 / 标签</span><span class="search-key">回车搜索</span></div>
+                      <div class="plugin-filter-row"><div class="plugin-filter"><span>全部分类</span><span>⌄</span></div><div class="plugin-filter"><span>最近更新</span><span>⌄</span></div></div>
+                      <div class="plugin-catalog">
+                        <div class="plugin-catalog-row"><div><div class="plugin-catalog-title"><span>dsh-search</span><span class="plugin-catalog-version">v1.4.0</span></div><div class="plugin-catalog-meta">工具集成 · 来源信息 · 最近更新</div></div><button type="button" class="button compact" data-tooltip="查看详情并预检安装">预检</button></div>
+                        <div class="plugin-catalog-row"><div><div class="plugin-catalog-title"><span>dsh-files</span><span class="plugin-catalog-version">v0.8.2</span></div><div class="plugin-catalog-meta">客户端 · 来源信息 · 最近更新</div></div><button type="button" class="button compact" data-tooltip="查看详情并预检安装">预检</button></div>
+                      </div>
+                      <div class="plugin-catalog-more">显示更多结果</div>
+                    </div>
+                  </div>
+                  </div>
+                  <div class="plugin-tab-panel" data-plugin-panel="current">
+                    <div class="plugin-current-body">
+                      <div class="plugin-current-head"><div><div class="card-title">当前内核 · DSH / 0.2.1-alpha.1</div><div class="page-list-meta">当前实例 default · 接线状态 3 / 3</div></div><span class="health-value health-ok">正常</span></div>
+                      <div class="plugin-current-list">
+                        <div class="plugin-current-row"><div class="page-list-main"><div class="page-list-title">dsh-search</div><div class="page-list-meta">v1.4.0 · 已同步 · 已接线</div></div><div class="page-list-actions"><button type="button" class="button compact" data-tooltip="打开插件仓库或来源信息">仓库</button><button type="button" class="button compact" data-tooltip="更新当前插件"><span class="button-icon">↑</span>更新</button><button type="button" class="button compact danger" data-tooltip="从插件库卸载当前插件"><span class="button-icon">×</span>卸载</button></div></div>
+                        <div class="plugin-current-row"><div class="page-list-main"><div class="page-list-title">dsh-files</div><div class="page-list-meta">v0.8.2 · 待同步 · 未接线</div></div><div class="page-list-actions"><button type="button" class="button compact primary" data-tooltip="把插件同步到当前内核"><span class="button-icon">⇄</span>同步</button></div></div>
+                        <div class="plugin-current-row"><div class="page-list-main"><div class="page-list-title">dsh-browser</div><div class="page-list-meta">v0.5.1 · 已隔离 · 可恢复</div></div><div class="page-list-actions"><button type="button" class="button compact" data-tooltip="恢复隔离插件并重新验证"><span class="button-icon">↺</span>恢复</button></div></div>
+                      </div>
+                      <div class="plugin-mode-row"><span><strong>当前内核操作</strong><small>同步内核、检查更新、模式切换和隔离恢复都只作用于当前实例。</small></span><button type="button" class="button compact" data-tooltip="在链接和复制模式之间切换">模式 / 来源</button></div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </section>
+
+            <section class="page-view" data-page-view="skills">
+              <div class="page-head">
+                <div><h2>技能</h2><p>管理技能包，以及包内每个技能的启用状态。</p></div>
+                <div class="page-head-actions"><button type="button" class="button" data-tooltip="检查已安装技能包是否有更新">↻ 检查更新</button></div>
+              </div>
+              <div class="page-layout">
+                <section class="card page-card">
+                  <div class="card-head"><span class="card-title">已安装</span><span class="card-caption">4 个技能注册正常</span></div>
+                  <div class="page-card-body page-list">
+                    <div class="page-list-row"><div class="page-list-main"><div class="page-list-title">browser-tools</div><div class="page-list-meta">npm · v1.2.0 · 2 个技能</div></div><div class="page-list-actions"><button type="button" class="button compact" data-tooltip="更新技能包"><span class="button-icon">↑</span>更新</button><button type="button" class="button compact danger" data-tooltip="卸载整个技能包"><span class="button-icon">×</span>卸载</button></div></div>
+                    <div class="page-list-row"><div class="page-list-main"><div class="page-list-title">research-kit</div><div class="page-list-meta">local · v0.4.1 · 可重新同步</div></div><div class="page-list-actions"><button type="button" class="button compact" data-tooltip="重新同步本地技能目录"><span class="button-icon">↻</span>同步</button></div></div>
+                    <div class="page-list-row"><div class="page-list-main"><div class="page-list-title">网页检索</div><div class="page-list-meta">browser-tools 内的技能</div></div><div class="toggle is-on" title="已启用" aria-label="已启用"></div></div>
+                  </div>
+                </section>
+                <div class="page-stack skills-stack">
+                  <section class="card page-card"><div class="card-head"><span class="card-title">技能状态</span><span class="card-caption health-ok">全部正常</span></div><div class="page-card-body page-list"><div class="page-list-row"><span class="page-list-title">启用状态</span><span class="health-value health-ok">4 / 4</span></div><div class="page-list-row"><span class="page-list-title">活动视图</span><span class="health-value">已同步</span></div></div></section>
+                  <section class="card page-card">
+                    <div class="card-head"><span class="card-title">社区资源</span><span class="card-caption">GitHub dsh-skill topic</span></div>
+                    <div class="page-card-body">
+                      <div class="community-browse-row"><div><div class="community-resource-title">技能社区</div><div class="community-resource-meta">当前通过 GitHub topic 浏览，面板内没有技能目录查询、筛选和排序列表。</div></div><button type="button" class="button compact" data-tooltip="打开 GitHub dsh-skill topic">↗ 浏览 topic</button></div>
+                      <div class="community-install">
+                        <div class="page-list-title">手动安装</div>
+                        <div class="community-install-control"><div class="community-install-input">https://github.com/owner/skill-repo</div><button type="button" class="button compact primary" data-tooltip="从 GitHub 地址安装技能包"><span class="button-icon">↓</span>安装</button></div>
+                        <div class="page-list-meta">支持 GitHub 地址或 owner/repo 简写，安装完成后在上方管理。</div>
+                      </div>
+                      <div class="skill-remediation-note"><span>异常时</span><span>遮蔽或冲突条目可移走到带时间戳的备份名，不删除源文件。</span></div>
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </section>
+
+            <section class="page-view" data-page-view="settings">
+              <div class="page-head"><div><h2>设置</h2><p>配置工作台端口、登录启动、通知和数据恢复。</p></div></div>
+              <div class="page-layout settings-layout">
+                <div class="page-stack settings-stack">
+                  <section class="card page-card"><div class="card-head"><span class="card-title">工作台</span><div class="card-head-actions"><span class="card-caption">当前实例 default</span><button type="button" class="button compact primary" data-tooltip="保存当前工作台配置"><span class="button-icon">✓</span>保存配置</button></div></div><div class="page-card-body setting-list"><div class="settings-row"><span class="settings-label">Web UI 端口</span><span class="settings-value">3090</span></div><div class="settings-row"><span class="settings-label">数据目录</span><span class="settings-value">已按当前实例解析</span></div></div></section>
+                  <section class="card page-card"><div class="card-head"><span class="card-title">后台常驻</span><span class="card-caption">窗口关闭后仍在后台</span></div><div class="page-card-body setting-list"><div class="settings-row"><span class="settings-label">关闭窗口后留在后台</span><span class="settings-value">固定</span></div><div class="settings-row"><span class="settings-label">登录时启动管理台</span><span class="toggle is-on" title="已开启" aria-label="已开启"></span></div><div class="settings-row"><span class="settings-label">登录后自动启动工作台</span><span class="toggle" title="未开启" aria-label="未开启"></span></div></div></section>
+                </div>
+                <div class="page-stack settings-stack">
+                  <section class="card page-card"><div class="card-head"><span class="card-title">任务通知</span><span class="card-caption">未读 0</span></div><div class="page-card-body setting-list"><div class="settings-row"><span class="settings-label">任务完成后通知我</span><span class="toggle is-on" title="已开启" aria-label="已开启"></span></div><div class="settings-row"><span class="settings-label">工作台不在前台才通知</span><span class="toggle" title="未开启" aria-label="未开启"></span></div><div class="settings-row"><span class="settings-label">通知声音</span><div class="page-list-actions"><span class="toggle is-on" title="已开启" aria-label="已开启"></span><button type="button" class="button compact" data-tooltip="试听通知声音">试听</button></div></div><div class="settings-row"><span class="settings-label">通知记录</span><button type="button" class="button compact" data-tooltip="查看或标记通知记录">查看</button></div></div></section>
+                  <section class="card page-card"><div class="card-head"><span class="card-title">环境回退与诊断</span><span class="card-caption">出问题时使用</span></div><div class="page-card-body page-list"><div class="page-list-row"><span class="page-list-title">环境回退点</span><button type="button" class="button compact" data-tooltip="查看启动验证过的环境快照"><span class="button-icon">◈</span>查看</button></div><div class="page-list-row"><span class="page-list-title">深入排查</span><button type="button" class="button compact" data-tooltip="开始或继续二分排查"><span class="button-icon">⌕</span>打开</button></div><div class="page-list-row"><span class="page-list-title">启动诊断</span><button type="button" class="button compact" data-tooltip="查看最近一次启动过程"><span class="button-icon">▤</span>查看</button></div><div class="page-list-row"><span class="page-list-title">数据迁移</span><button type="button" class="button compact" data-tooltip="进入四步迁移向导">打开</button></div></div></section>
+                </div>
+              </div>
+            </section>
+
+            <section class="page-view" data-page-view="migration">
+              <div class="page-head"><div><h2>数据迁移</h2><p>检查旧版数据，选择要导入当前实例的内容。</p></div><div class="page-head-actions"><button type="button" class="button" data-tooltip="扫描旧版插件、技能和实例目录">⌕ 重新扫描</button></div></div>
+              <section class="card page-card migration-card"><div class="card-head"><div class="card-head-left"><span class="card-title">迁移向导</span><span class="card-caption">发现 · 选择 · 运行 · 完成</span></div><span class="migration-status">发现历史数据</span></div><div class="migration-stepper" aria-label="迁移步骤"><span class="migration-step is-active"><b>1</b>发现</span><span class="migration-step"><b>2</b>选择</span><span class="migration-step"><b>3</b>运行</span><span class="migration-step"><b>4</b>完成</span></div><div class="migration-hero"><div><h3>旧版数据可迁移</h3><p>先预览来源、路径、文件数量和大小，再选择复制范围。源目录保留，冲突策略和备份位置在运行前确认。</p></div><div class="migration-actions"><button type="button" class="button" data-tooltip="查看迁移历史和回滚记录">历史记录</button><button type="button" class="button primary" data-tooltip="确认扫描结果并进入选择步骤">下一步</button></div></div><div class="migration-preview-grid"><div class="migration-mini-card"><div class="page-list-title">旧版实例数据</div><div class="page-list-meta">历史会话 / 工作区 · 只读预览</div><strong>待选择</strong></div><div class="migration-mini-card"><div class="page-list-title">插件与技能库</div><div class="page-list-meta">中央库来源 · 可选择复制</div><strong>待确认</strong></div><div class="migration-mini-card"><div class="page-list-title">找回历史会话</div><div class="page-list-meta">从其他实例复制缺失 sessions / attachments</div><button type="button" class="button compact" data-tooltip="扫描其他实例中的历史数据">扫描</button></div></div><div class="migration-note">默认跳过较新的目标文件；凭据和会话附件不会进入迁移。历史记录支持回滚，找回操作只复制，不删除来源，也不覆盖目标已有条目。</div></section>
+            </section>
+          </main>
+        </div>
+      </section>
+
+      <div class="draft-note">
+        <div class="note"><strong>窗口方向</strong>接受宽版窗口，但尺寸固定，不允许用户缩放。macOS 使用左侧交通灯，Windows 使用右侧标准按钮。关闭仍是收进后台，真正退出保留在菜单栏或通知区域菜单。</div>
+        <div class="note"><strong>视觉方向</strong>以不透明表面、细边框和单一蓝色主色建立层级。明暗两套主题只改变色彩 token，不改变操作位置和信息结构。</div>
+      </div>
+      </div>
+
+      <section class="coverage board-panel" data-board-panel="coverage" aria-label="功能覆盖清单">
+        <div class="coverage-head">
+          <div>
+            <h2>功能覆盖清单</h2>
+            <p>这部分是开发对照，不是装饰性占位。</p>
+          </div>
+          <p>原则：入口不减少，动作语义不改变，状态不允许时按现有规则禁用或隐藏。</p>
+        </div>
+        <div class="coverage-grid">
+          <article class="coverage-card">
+            <h3>壳与内核切换</h3>
+            <p>顶部只表达真实的内核族页签；实例选择和窗口行为按当前壳的运行规则处理。</p>
+            <ul class="coverage-list">
+              <li class="is-key">内核族页签</li>
+              <li>当前实例上下文</li>
+              <li>首次运行 · 选择并安装内核</li>
+              <li>关闭窗口 · 收进后台</li>
+              <li>托盘 / 菜单栏真正退出</li>
+              <li>桌面端更新 · 侧栏底部</li>
+              <li>数据迁移入口按状态显示</li>
+            </ul>
+          </article>
+
+          <article class="coverage-card">
+            <h3>概览页</h3>
+            <p>高频操作集中在当前内核卡片，状态塔负责异常、健康、最近操作和恢复入口。</p>
+            <ul class="coverage-list">
+              <li class="is-key">工作台启动 / 停止</li>
+              <li class="is-key">官网网页版</li>
+              <li>工作台窗口 / 刷新</li>
+              <li>官网网页版窗口</li>
+              <li>Node.js · 自动安装 / 重新检测</li>
+              <li>数据目录 · 打开</li>
+              <li class="is-key">模型用量独立窗口</li>
+              <li>套餐用量 · 4 个服务商</li>
+              <li>系统日志 / 启动诊断</li>
+              <li>需要关注 / 系统健康 / 最近操作</li>
+            </ul>
+          </article>
+
+          <article class="coverage-card">
+            <h3>内核版本</h3>
+            <p>安装和版本生命周期独立成页；工作台运行或另一壳占用时按现有规则禁用变更。</p>
+            <ul class="coverage-list">
+              <li>官方版本 · npm registry</li>
+              <li>检查更新 / 发布页</li>
+              <li>安装 / 切换 / 删除</li>
+              <li>运行状态与共享存储提示</li>
+              <li class="is-key">磁盘用量只读统计</li>
+              <li>分类明细 / 统计时间</li>
+              <li>刷新 / 强制重扫</li>
+            </ul>
+          </article>
+
+          <article class="coverage-card">
+            <h3>插件</h3>
+            <p>保留双视图：已安装页按实例显示接线状态，当前内核页承接具体变更动作。</p>
+            <ul class="coverage-list">
+              <li class="is-key">已安装 / 当前内核</li>
+              <li>所有实例接线状态</li>
+              <li>手动 npm / git 安装</li>
+              <li>插件中心 · 查询 / 分类 / 排序</li>
+              <li>详情 / 显示更多</li>
+              <li>预检开关 / 预检并安装</li>
+              <li>同步内核 / 检查更新</li>
+              <li>模式切换 / 复制来源</li>
+              <li>隔离恢复 / 更新 / 仓库 / 卸载</li>
+            </ul>
+          </article>
+
+          <article class="coverage-card">
+            <h3>技能</h3>
+            <p>技能当前以手动来源和本地包管理为主，不把未实现的社区目录画成已有功能。</p>
+            <ul class="coverage-list">
+              <li class="is-key">包来源 / copy 或 link</li>
+              <li>包内技能逐项启停</li>
+              <li>缺失条目提示</li>
+              <li>更新 / 本地重新同步</li>
+              <li>仓库链接 / 卸载</li>
+              <li>遮蔽条目移走</li>
+              <li>冲突条目移走</li>
+              <li>GitHub / owner/repo / #tag 安装</li>
+              <li>GitHub dsh-skill topic 浏览</li>
+            </ul>
+          </article>
+
+          <article class="coverage-card">
+            <h3>设置、恢复与迁移</h3>
+            <p>低频和高风险动作集中到设置、迁移向导及诊断界面，长任务保留进度与原始日志。</p>
+            <ul class="coverage-list">
+              <li>端口 / 保存配置</li>
+              <li>常驻 / 系统登录自启</li>
+              <li>任务通知 / 声音 / 未读</li>
+              <li>环境回退点 / 恢复</li>
+              <li>二分排查 / 启动诊断</li>
+              <li class="is-key">迁移四步向导</li>
+              <li>历史记录 / 回滚</li>
+              <li>找回历史会话 · 复制不覆盖</li>
+              <li>进度 / 预检 / 事件 / 日志窗口</li>
+            </ul>
+          </article>
+        </div>
+        <div class="coverage-plan">
+          <div><strong>候选计划（不纳入当前界面）</strong><span>以下是现有文档标记为规划中或暂未实现的方向，不作为本次设计稿功能。</span></div>
+          <ul class="coverage-list">
+            <li>技能社区目录：缓存、查询、筛选、排序和详情</li>
+            <li>按实例覆盖技能启用状态</li>
+            <li>通知点击后定位到具体会话</li>
+          </ul>
+        </div>
+        <div class="coverage-foot">插件、技能和数据迁移的角标、空态、异常态属于正式设计范围；套餐服务商未配置时继续隐藏，不用示例卡片冒充真实数据。</div>
+      </section>
+
+    </div>
+
+    <script>
+      const root = document.documentElement;
+      function setTheme(theme) {
+        root.dataset.theme = theme;
+        document.querySelectorAll('[data-theme]').forEach((item) => {
+          item.classList.toggle('is-active', item.dataset.theme === theme);
+        });
+        document.querySelectorAll('[data-theme-switch]').forEach((item) => {
+          item.setAttribute('aria-pressed', String(theme === 'dark'));
+        });
+      }
+
+      document.querySelectorAll('[data-theme]').forEach((button) => {
+        button.addEventListener('click', () => setTheme(button.dataset.theme));
+      });
+
+      document.querySelectorAll('[data-theme-switch]').forEach((button) => {
+        button.addEventListener('click', () => setTheme(root.dataset.theme === 'dark' ? 'light' : 'dark'));
+      });
+
+      document.querySelectorAll('[data-platform]').forEach((button) => {
+        button.addEventListener('click', () => {
+          root.dataset.platform = button.dataset.platform;
+          document.querySelectorAll('[data-platform]').forEach((item) => {
+            item.classList.toggle('is-active', item.dataset.platform === root.dataset.platform);
+          });
+        });
+      });
+
+      const requestedTheme = new URLSearchParams(window.location.search).get('theme');
+      if (requestedTheme === 'light' || requestedTheme === 'dark') setTheme(requestedTheme);
+
+      const previewWindow = document.querySelector('.design-window');
+      const collapseButton = document.querySelector('[data-collapse]');
+      collapseButton.addEventListener('click', () => {
+        const collapsed = previewWindow.classList.toggle('is-collapsed');
+        collapseButton.setAttribute('aria-expanded', String(!collapsed));
+        collapseButton.setAttribute('aria-label', collapsed ? '展开菜单' : '收起菜单');
+        collapseButton.setAttribute('title', collapsed ? '展开左侧菜单' : '收起左侧菜单');
+      });
+
+      const requestedSidebar = new URLSearchParams(window.location.search).get('sidebar');
+      if (requestedSidebar === 'collapsed') collapseButton.click();
+
+      const navItems = [...document.querySelectorAll('[data-page]')];
+      const pageViews = [...document.querySelectorAll('[data-page-view]')];
+
+      function showPage(page) {
+        navItems.forEach((item) => {
+          const active = item.dataset.page === page;
+          item.classList.toggle('is-active', active);
+          if (active) item.setAttribute('aria-current', 'page');
+          else item.removeAttribute('aria-current');
+        });
+        pageViews.forEach((view) => {
+          view.classList.toggle('is-active', view.dataset.pageView === page);
+        });
+      }
+
+      navItems.forEach((item) => {
+        item.addEventListener('click', () => showPage(item.dataset.page));
+      });
+
+      document.querySelectorAll('[data-page-jump]').forEach((button) => {
+        button.addEventListener('click', () => showPage(button.dataset.pageJump));
+      });
+
+      const requestedPage = new URLSearchParams(window.location.search).get('page');
+      if (requestedPage && pageViews.some((view) => view.dataset.pageView === requestedPage)) {
+        showPage(requestedPage);
+      }
+
+      const pluginTabs = [...document.querySelectorAll('.plugin-tab')];
+      const pluginPanels = [...document.querySelectorAll('[data-plugin-panel]')];
+      pluginTabs.forEach((tab, index) => {
+        tab.addEventListener('click', () => {
+          const panel = index === 0 ? 'all' : 'current';
+          pluginTabs.forEach((item, itemIndex) => {
+            const active = itemIndex === index;
+            item.classList.toggle('is-active', active);
+            item.setAttribute('aria-selected', String(active));
+          });
+          pluginPanels.forEach((item) => item.classList.toggle('is-active', item.dataset.pluginPanel === panel));
+        });
+      });
+      if (new URLSearchParams(window.location.search).get('plugin') === 'current') pluginTabs[1]?.click();
+
+      document.querySelectorAll('[data-board-view]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const view = button.dataset.boardView;
+          document.querySelectorAll('[data-board-view]').forEach((item) => {
+            item.classList.toggle('is-active', item.dataset.boardView === view);
+          });
+          document.querySelectorAll('[data-board-panel]').forEach((panel) => {
+            panel.classList.toggle('is-active', panel.dataset.boardPanel === view);
+          });
+        });
+      });
+      if (new URLSearchParams(window.location.search).get('view') === 'coverage') document.querySelector('[data-board-view="coverage"]')?.click();
+    </script>
+  </body>
+</html>
