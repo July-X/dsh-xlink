@@ -122,12 +122,20 @@ function openStartupRun() {
       </div>
     </div>
     <!-- 宽版（1040）下单列会让每一张卡右边空掉半屏，所以按设计稿分两列：
-         左列是「这台壳本身怎么跑」（工作台端口、后台常驻、自启），
-         右列是「对内对外的表现」（任务通知、环境回退与诊断）。
-         **两列各两张卡**：原先右栏四张（任务通知 / 数据迁移 / 环境回退点 /
-         深入排查）把右栏拉到两屏高、左栏空一大截，后三张同属「出事才动」，
-         合成一张之后两栏才配平。用的是全局的 .page-layout / .page-layout__col
-         原语。 -->
+         左列是「这台壳本身怎么跑」（工作台端口、后台常驻、自启、环境回退与诊断），
+         右列是「对内对外的表现」（任务通知）。
+         用的是全局的 .page-layout / .page-layout__col 原语。
+
+         「环境回退与诊断」原先在**右**栏，2026-10-08 用户指定移到左栏、接在
+         「后台常驻」下方。这次移动的账要记清楚：那张卡里四行全是
+         **出问题时才动**的动作，而右栏那张「任务通知」在连不上内核事件流时会
+         展开一大段环境说明 + 告警（notificationStore.environmentNote），
+         两张叠在一起时右栏被拉到近两屏高、左栏却空一大截——用户是来排查问题的，
+         视线先撞上的却是通知告警，而不是他正要找的排查入口。
+         顺带一提，这张卡先前已被收成一张（原为右栏四张：任务通知 / 数据迁移 /
+         环境回退点 / 深入排查），那一次为的是配平两栏；这次把**位置**也定下来：
+         左栏三张（工作台 / 后台常驻 / 环境回退与诊断）、右栏一张（任务通知）。
+         **入口一个没少**：恢复 / 开始排查 / 停止仍留在自己那一行的动作区。 -->
     <div class="page-layout">
       <div class="page-layout__col">
     <div class="card">
@@ -212,6 +220,66 @@ function openStartupRun() {
         :closable="false"
         show-icon
       />
+    </div>
+
+    <!-- 「数据迁移 / 环境回退点 / 深入排查」三张并排的大卡收成一张
+         （设计稿 draft 2844：「环境回退与诊断」，caption「出问题时使用」）。
+         原先右栏四张、左栏两张，右栏被拉到两屏高而左栏空一大截——四者同属
+         「环境出问题时才动」这一组，分成四张卡只是把同一个上下文摊成四段。
+         四行各自是一个 `page-list-row`：左标题 + 状态说明，右动作。
+         **入口一个没少**：恢复 / 开始排查 / 停止都留在自己那一行的动作区，
+         「查看」展开的是明细；启动诊断与数据迁移本来就是跳转。
+         卡片顺序：设置 → 任务通知 → 环境回退与诊断。 -->
+    <div class="card">
+      <div class="card-head">
+        <h2>环境回退与诊断</h2>
+        <span class="head-meta"><span class="muted">出问题时使用</span></span>
+      </div>
+      <div class="page-list">
+        <!-- 前两行自带 Fragment：行是常驻的，明细与告警是它们的兄弟节点。 -->
+        <SnapshotCard />
+        <BisectPanel />
+
+        <div class="page-list-row">
+          <div class="page-list-main">
+            <h3 class="page-list-title">启动诊断</h3>
+            <p class="page-list-meta">这次启动停在哪一步，以及接下来能做什么。</p>
+          </div>
+          <div class="page-list-actions">
+            <el-button
+              round
+              size="small"
+              :icon="Tickets"
+              title="查看最近一次启动过程"
+              @click="openStartupRun"
+            >
+              查看
+            </el-button>
+          </div>
+        </div>
+
+        <!-- 「数据迁移」在设置页是**一行**，不是一张独立大卡。它的主入口是
+             **侧栏菜单**（设计稿 2550 行，常驻），这里留的是设计说明 §侧栏
+             要求的「迁移完成后设置页仍保留进入入口」。
+             整个功能在 v0.6.0 之后移除，届时这一行与侧栏菜单一并删
+             （见 ui/AGENTS.md 的「待移除」一节）。 -->
+        <div class="page-list-row">
+          <div class="page-list-main">
+            <h3 class="page-list-title">数据迁移</h3>
+            <p class="page-list-meta">{{ migratedBefore ? '已迁移' : '尚未迁移' }}</p>
+          </div>
+          <div class="page-list-actions">
+            <el-button
+              round
+              size="small"
+              :type="migratedBefore ? 'default' : 'primary'"
+              @click="store.activePanel = 'migration'"
+            >
+              {{ migratedBefore ? '查看数据迁移' : '去迁移' }}
+            </el-button>
+          </div>
+        </div>
+      </div>
     </div>
       </div>
 
@@ -330,65 +398,6 @@ function openStartupRun() {
       </p>
     </div>
 
-    <!-- 「数据迁移 / 环境回退点 / 深入排查」三张并排的大卡收成一张
-         （设计稿 draft 2844：「环境回退与诊断」，caption「出问题时使用」）。
-         原先右栏四张、左栏两张，右栏被拉到两屏高而左栏空一大截——四者同属
-         「环境出问题时才动」这一组，分成四张卡只是把同一个上下文摊成四段。
-         四行各自是一个 `page-list-row`：左标题 + 状态说明，右动作。
-         **入口一个没少**：恢复 / 开始排查 / 停止都留在自己那一行的动作区，
-         「查看」展开的是明细；启动诊断与数据迁移本来就是跳转。
-         卡片顺序：设置 → 任务通知 → 环境回退与诊断。 -->
-    <div class="card">
-      <div class="card-head">
-        <h2>环境回退与诊断</h2>
-        <span class="head-meta"><span class="muted">出问题时使用</span></span>
-      </div>
-      <div class="page-list">
-        <!-- 前两行自带 Fragment：行是常驻的，明细与告警是它们的兄弟节点。 -->
-        <SnapshotCard />
-        <BisectPanel />
-
-        <div class="page-list-row">
-          <div class="page-list-main">
-            <h3 class="page-list-title">启动诊断</h3>
-            <p class="page-list-meta">这次启动停在哪一步，以及接下来能做什么。</p>
-          </div>
-          <div class="page-list-actions">
-            <el-button
-              round
-              size="small"
-              :icon="Tickets"
-              title="查看最近一次启动过程"
-              @click="openStartupRun"
-            >
-              查看
-            </el-button>
-          </div>
-        </div>
-
-        <!-- 「数据迁移」在设置页是**一行**，不是一张独立大卡。它的主入口是
-             **侧栏菜单**（设计稿 2550 行，常驻），这里留的是设计说明 §侧栏
-             要求的「迁移完成后设置页仍保留进入入口」。
-             整个功能在 v0.6.0 之后移除，届时这一行与侧栏菜单一并删
-             （见 ui/AGENTS.md 的「待移除」一节）。 -->
-        <div class="page-list-row">
-          <div class="page-list-main">
-            <h3 class="page-list-title">数据迁移</h3>
-            <p class="page-list-meta">{{ migratedBefore ? '已迁移' : '尚未迁移' }}</p>
-          </div>
-          <div class="page-list-actions">
-            <el-button
-              round
-              size="small"
-              :type="migratedBefore ? 'default' : 'primary'"
-              @click="store.activePanel = 'migration'"
-            >
-              {{ migratedBefore ? '查看数据迁移' : '去迁移' }}
-            </el-button>
-          </div>
-        </div>
-      </div>
-    </div>
       </div>
     </div>
   </section>
