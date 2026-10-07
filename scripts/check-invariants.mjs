@@ -608,7 +608,7 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
 // --- 9. CSS 自定义属性：var() 引用必须有定义 ---------------------------------
 //
 // 事故来源：code-review-2026-09-27 的 H4。`--text-muted` / `--surface-soft`
-// 被 KernelTabs 与 MigrationPanel 引用了 8 处，却从未在 :root 定义。CSS 自定义
+// 被当时的顶部工作条与 MigrationPanel 引用了 8 处，却从未在 :root 定义。CSS 自定义
 // 属性没有回退值时整条声明在 computed-value time 非法 → 被丢弃 → 继承父级，
 // 于是「压低非激活 tab 权重」「弱化提示文字」的设计全部静默失效，而**不产生
 // 任何构建错误或构建警告**，102 个 test:ui 与原有 10 项不变量都发现不了。
