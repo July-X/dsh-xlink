@@ -138,6 +138,22 @@ pub struct PrecheckReport {
     /// 钉住的版本或 tag；空表示跟随最新。
     #[serde(default)]
     pub pin: String,
+    /// **供第二阶段使用的安装来源契约**：预检实际用的那个 spec，剥掉 URL
+    /// 里的 userinfo（`https://user:token@…` → `https://…`）后的原样文本。
+    ///
+    /// 存在的理由是 `plugin_id` **不是** spec。两者语义不同：npm 的
+    /// `@scope/pkg` 在中央库里的 id 可能是 `@scope__pkg`，`owner/repo#v1`
+    /// 还带着来源类型与版本 pin，而 id 冲突时 `center` 还会给实际 id 追加
+    /// 短哈希后缀。让 UI 拿 `plugin_id` 回传给 `plugin_precheck_apply` 去
+    /// 重新解析，会解析成不存在的 npm 包、丢掉 Git 来源或丢掉 tag——用户
+    /// 明明看到「预检通过」，点应用却可能装上别的东西。
+    ///
+    /// 这里给的是**原样 spec**而不是从 `PluginSpec` 重建的规范形式：重建
+    /// 要在 `owner/repo` 简写与完整 URL 之间做取舍，做错一次就把一次能装
+    /// 成的安装变成装不上。预检用这个字符串装的，应用再用同一个字符串装，
+    /// 装的一定是同一个东西。
+    #[serde(default)]
+    pub apply_spec: String,
     /// 下载物是否通过完整性校验，以及用的哪种摘要。
     ///
     /// 取值见 [`integrity`]：`sha512` / `sha256` / `sha1` / `none`。
@@ -217,6 +233,7 @@ impl PrecheckReport {
             source_kind: String::new(),
             source_label: String::new(),
             pin: String::new(),
+            apply_spec: String::new(),
             integrity: integrity::NONE.to_string(),
             materialize: String::new(),
             affects_default_instance: false,

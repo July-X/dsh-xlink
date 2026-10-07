@@ -116,9 +116,15 @@ function reload() {
     </RunTimeline>
   </div>
 
-  <div v-if="evidence.kernelLog" class="diag-card">
+  <!-- 判据是「有没有**任何一份**证据」，不是「有没有内核日志」（审查 R2-P1-03
+       与 R2-P2-06）。插件预检失败 / 基线失败的运行只带 `sandboxLog`，而这恰恰是
+       最需要说清「问题出在哪一步」的一类；用 kernelLog 当门槛等于把它们的
+       证据卡整块藏起来，页面只剩一句没法点的「请查看下方日志」。 -->
+  <div v-if="evidence.kernelLog || evidence.sandboxLog" class="diag-card">
     <h3 class="diag-card__title"><span>证据</span></h3>
-    <p class="diag-meta">内核日志：{{ evidenceLabel(evidence.kernelLog) }}</p>
+    <p v-if="evidence.kernelLog" class="diag-meta">
+      内核日志：{{ evidenceLabel(evidence.kernelLog) }}
+    </p>
     <p v-if="evidence.sandboxLog" class="diag-meta">
       沙盒日志：{{ evidenceLabel(evidence.sandboxLog) }}
     </p>

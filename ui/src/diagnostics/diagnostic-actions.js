@@ -117,12 +117,21 @@ export function openEvidence(path) {
  */
 export function loadKernelStatusDiagnosis(manual = false) {
   const task = () =>
-    refreshAll({ fresh: true }).then((result) => {
+    refreshAll({ fresh: true }).then((outcome) => {
       // 记读到的时刻，而不是记「点了刷新」的时刻：读取失败时那一栏必须
       // 继续显示上一次成功读到的时刻，否则「可能过期」这句话没有锚点。
-      diagnosticStore.kernelReadAt = Date.now();
-      diagnosticStore.error = '';
-      return result;
+      //
+      // 所以只有 `status` 成功才推进时间戳并清错（审查 R2-P1-04）：`refreshAll`
+      // 过去把失败吞成 `undefined`，这里无条件执行，于是把一次读取失败显示
+      // 成「刚刚读取成功」，同时把内核状态页用来提示过期的 `error` 也清掉了。
+      // 失败时保留旧时刻与旧错误，页面才会如实显示「可能已过期」。
+      if (outcome?.status) {
+        diagnosticStore.kernelReadAt = Date.now();
+        diagnosticStore.error = '';
+      } else {
+        diagnosticStore.error = '读取内核状态失败，下面可能是上一次读到的内容';
+      }
+      return outcome;
     });
   return manual ? withLoading('kernelStatusReload', task) : task();
 }

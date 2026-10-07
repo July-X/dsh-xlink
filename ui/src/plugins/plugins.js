@@ -290,36 +290,77 @@ export function precheckPlugin(specFromCatalog) {
 /**
  * 把预检通过的插件应用到当前实例（两阶段契约的第二阶段）。
  *
- * 只有**预检 verdict 为 `pass`** 时才可能有意义——那由调用方（预检对话框与
- * 诊断页）决定是否显示这个按钮，后端不替 UI 做判断。
+ * 收**整份预检报告**而不是一个 spec 字符串：第二阶段要用的来源必须来自报告
+ * 的 `applySpec`（后端给的、剥过凭据的原始 spec），不能由 UI 拿 `pluginId`
+ * 猜（审查 R2-P1-01）。`pluginId` 是中央库 id，与 spec 语义不同——
+ * `@scope/pkg` 的 id 可能是 `@scope__pkg`，`owner/repo#v1` 还带 pin，
+ * 拿它去重新解析会装上别的东西。
+ *
+ * 成功后用**回传的**报告替换 `store.precheckReport`，并核对它的来源与预检
+ * 报告逐字对应。对不上就是「装的不是验过的那个」，必须让用户看见而不是
+ * 一句「已安装」盖过去。
  *
  * 成功文案必须带上「不再重新验证」这一层：后端不会重跑沙盒，而用户在报告
  * 确认之后可能过了几分钟。这两件事都在界面上说出来，比让用户自己推断
  * 「刚才验的应该还算数」要诚实。
  */
-export function applyPluginChange(specFromCatalog, verifiedAtMs) {
-  const raw = (specFromCatalog || '').trim() || pluginStore.spec.trim();
+export function applyPluginChange(precheckReport) {
+  const report = precheckReport || null;
+  const raw = String(report?.applySpec || '').trim() || pluginStore.spec.trim();
   if (!raw) {
     toast('没有可应用的插件来源，请先做一次安装预检', 4000, 'warning');
     return Promise.resolve(false);
   }
+  // `withProgress` 只 resolve 布尔值，真正的报告从 `onResult` 拿（审查
+  // R2-P1-02）。过去把 `true` 当报告存进了 store，诊断页读
+  // `report.verdict` / `installed` / `preChangeSnapshotId` 全是 undefined。
+  let applied = null;
   return withProgress(
     {
       cmd: 'plugin_precheck_apply',
       start: '正在把 ' + raw + ' 装到当前实例 …',
       done: '已安装 ' + raw + ' 到当前实例',
+      onResult: (result) => {
+        applied = result;
+      },
     },
-    (channel) => ({ spec: raw, mode: 'link', verifiedAtMs: verifiedAtMs || 0, onEvent: channel })
-  ).then((report) => {
-    if (report) {
-      // 报告换成「已安装」这份：诊断页上「恢复变更前状态」要拿这里的
-      // preChangeSnapshotId，没有它那个按钮只能把用户丢到快照列表。
-      store.precheckReport = report;
-      store.precheckVisible = true;
-      toastSuccess(report.summary || ('已安装 ' + raw));
+    (channel) => ({
+      spec: raw,
+      mode: 'link',
+      verifiedAtMs: report?.verifiedAtMs || 0,
+      onEvent: channel,
+    })
+  ).then((ok) => {
+    if (!ok || !applied) return false;
+    const drift = sourceDrift(report, applied);
+    // 报告换成「已安装」这份：诊断页上「恢复变更前状态」要拿这里的
+    // preChangeSnapshotId，没有它那个按钮只能把用户丢到快照列表。
+    store.precheckReport = applied;
+    store.precheckVisible = true;
+    if (drift) {
+      // 装**已经发生**了，不能说成「没装上」；要说清装上的是不是验过的那个。
+      toast(
+        '已安装，但装的来源与预检报告对不上：' + drift + '。请到插件中心核对实际装了什么。',
+        9000,
+        'warning'
+      );
     }
-    return refreshAll();
+    return true;
   });
+}
+
+/** 应用后回传的来源与预检报告不一致时，说清是哪一项对不上。 */
+function sourceDrift(precheckReport, applied) {
+  if (!precheckReport) return '';
+  const fields = [
+    ['来源类型', precheckReport.sourceKind, applied.sourceKind],
+    ['来源', precheckReport.sourceLabel, applied.sourceLabel],
+    ['版本', precheckReport.pin, applied.pin],
+  ];
+  const diffs = fields
+    .filter(([, before, after]) => String(before || '') !== String(after || ''))
+    .map(([label, before, after]) => label + ' ' + (before || '（无）') + ' → ' + (after || '（无）'));
+  return diffs.join('；');
 }
 
 function showPrecheckReport(report) {

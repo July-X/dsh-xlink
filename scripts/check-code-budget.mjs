@@ -525,7 +525,10 @@ const FILE_BUDGETS = {
   // 自觉——下一个人一定会直接 import，所以先补齐再说。另有 P1-05 验收里的
   // 「操作完成后刷新最近操作」：预检与启动跑完各刷一次，否则概览那张卡停在
   // 上一次的结果上，而那正是「用户可能还没意识到插件已装上」的那类误导。
-  'ui/src/diagnostics/diagnostic-actions.js': 67,
+  // 67 → 71：`loadKernelStatusDiagnosis` 只在 `refreshAll` 报告内核状态读取
+  // 成功时才推进 `kernelReadAt` 并清错（R2-P1-04）。多出来的 4 行是「失败要
+  // 留下可显示的提示」——不给它一句人话，过期提示就只剩一个时间戳在说话。
+  'ui/src/diagnostics/diagnostic-actions.js': 71,
   // 阶段 / 状态 / 归因的中文名与语义色。**未知取值必须显式显示**——丢掉
   // 会让时间线出现一个洞，而那正是新版才有、最值得看的部分。文案集中
   // 在这里，改文案不该牵动落盘格式。
@@ -598,7 +601,11 @@ const FILE_BUDGETS = {
   // 不确定的页面上误点恢复，代价是真实的配置。
   // 90 → 99：通用模式（没有候选插件上下文时看的就是一条运行记录本身），
   // 阶段计数改用阶段序列。
-  'ui/src/diagnostics/OperationDiagnosis.vue': 99,
+  // 99 → 105：证据卡的判据从「有没有 kernelLog」改成「有没有**任何**证据」
+  // （审查 R2-P1-03 / R2-P2-06）。插件预检失败与基线失败的运行只带 sandboxLog，
+  // 而那恰恰是最需要说清「问题出在哪一步」的一类；用 kernelLog 当门槛等于把
+  // 它们的证据卡整块藏起来，页面只剩一句没法点的「请查看下方日志」。
+  'ui/src/diagnostics/OperationDiagnosis.vue': 105,
   // 启动与预检共用的阶段时间线。三条硬规则：按 seq 排（不按字符串）、
   // 默认只展开第一个失败阶段、状态不只靠颜色表达。
   'ui/src/diagnostics/RunTimeline.vue': 90,
@@ -650,7 +657,15 @@ const FILE_BUDGETS = {
   // 调用，沙盒目录随 Drop 删掉，于是「最需要线索的那次」恰好没有线索——2026-10-06
   // 排查预检基线失败时，报告里的 evidence 是空的、磁盘上也什么都不剩。
   // 一次取证调用换一条可查路径，不拆模块。
-  'src-tauri/src/plugins/precheck.rs': 465,
+  // 465 → 469：`fill_source_info` 多填一个 `apply_spec`（第二阶段用的来源契约）
+  // + `strip_url_credentials`（摘 URL 里的 userinfo，14 行）。凭据必须摘而 spec 必须
+  // 能原样装回去，两条需求只能靠这个函数同时满足。
+  // 469 → 486：抽出 `finish_with_evidence`（R2-P1-03）+ 基线失败分支改走它。
+  // 两条失败分支过去各写一遍收尾，而基线那条**漏挂了证据**：路径只进 shell
+  // event，于是运行记录没有 sandbox_log、诊断页没有证据卡可显示——最能说明
+  // 「问题与候选插件无关」的那次失败反而点不开日志。抽助手不是为了少写几行，
+  // 是让「漏挂证据」变成写不出来的错误：两条分支只能通过这个出口返回。
+  'src-tauri/src/plugins/precheck.rs': 486,
   // 插件预检的 Tauri 命令壳：取证（plugin_precheck_install）+ 应用
   // （plugin_precheck_apply）+ 它们共用的 `run_precheck_command`（node / pnpm
   // 准备、长任务通道、生命周期锁）。从 commands.rs 搬出——那份在反棘轮上，
@@ -907,7 +922,11 @@ const FILE_BUDGETS = {
   // 既有的 `openHarnessWindow` 同属工作台窗口那一组，放这里而不是新开一个
   // `overview.js`：概览页其余 20 来个动作也都在这个文件里，为一个按钮单开
   // 一个共享层才是真分裂。本条预算基线远低于 RATCHET_THRESHOLD，上调是允许的。
-  'ui/src/store.js': 455,
+  // 455 → 462：`runRefreshAll` 逐个数据源交回成败（审查 R2-P1-04）。过去只有
+  // 一句 catch + toast，调用方拿到的永远是 undefined，于是调用方只能无条件
+  // 执行「读取成功了」。插件 / 技能走 createStatusSource（自己吞异常并返回
+  // 布尔值），所以读返回值而不是 catch；get_status 会抛，单独接。
+  'ui/src/store.js': 462,
   // 多内核改造 P0：新路径模块（paths.rs）。包含 ShellMode、xlink_home、shell
   // /kernels/skills/state/cache 解析、legacy resolver、id 校验与基础数据
   // 模型——是后续 P2–P8 的依赖根，必须单独占预算，避免被 plugins/skills
@@ -1675,7 +1694,24 @@ const FILE_BUDGETS = {
 // FILE_BUDGETS 里那个条目的注释），前端 VersionsPanel.vue 只 +7 行（拆开返回的
 // 两段 + 按钮传 force）。反棘轮大文件一个数字没动：theme.css 仍 3001/3001、
 // process.rs 仍 1157/1157、center.rs 2816/2871。
-const TOTAL_BUDGET = 41624;
+// 41624 → 41670：按 runtime-diagnostics-review-2026-10-06.md 第二轮复审修 R2-P1-01
+// 与 R2-P1-02（两阶段预检的应用契约）。净增 46 行：
+//   · plugins/precheck.rs +4：报告多带一个 `apply_spec`，以及摘 URL 凭据的 14 行。
+//     UI 过去拿 `pluginId`（`@scope__pkg` 那种中央库 id）回传给
+//     `plugin_precheck_apply` 重新解析，会解析成不存在的包 / 丢掉 Git 来源 / 丢掉
+//     tag——用户看到「预检通过」，点应用却装上别的东西。
+//   · plugins/plugins.js +45：applyPluginChange 改收整份报告、走 `applySpec`、用
+//     `onResult` 取回传的完整报告（过去把 `withProgress` 的 `true` 当报告存进
+//     store，诊断页读 verdict / installed / preChangeSnapshotId 全是 undefined），
+//     并新增 `sourceDrift` 核对「装的」与「验的」是不是同一个对象。顺带删掉一次
+//     重复的 refreshAll（`withProgress` 内部已经 await 过）与一次重复的成功 toast。
+//   · 两处调用点各净 0 行（`report.value.pluginId || '', report.value.verifiedAtMs`
+//     → `report.value`）。
+// 新增 2 个测试文件（ui/test/applyPluginChange.test.js 5 条、precheck.rs 内 2 条）：
+// R2-P1-01 的四种来源形状 + 凭据剥离要逐字往返，其中 npm 作用域包的 `@` 不是
+// userinfo——写错一次就把一次正确的安装变成装上另一个包。
+// 反棘轮大文件一个数字没动。
+const TOTAL_BUDGET = 41708;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

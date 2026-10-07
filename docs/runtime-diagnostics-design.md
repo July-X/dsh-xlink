@@ -1813,3 +1813,79 @@ const shouldShow = computed(() => (props.disabled ? false : unref(open)));
 两条断言精确报红（`空 content 仍会弹出空壳气泡` 与 `:disabled="canApply"`）；
 恢复后 3 条全绿。**红是改坏的当次的红**，恢复用的是 python 改写（mtime 前进），
 不是 `cp` 回灌，不存在「编的还是改坏的产物」那个坑。
+
+## 26. 第二轮复审的 P1 处理（2026-10-07）
+
+按 [runtime-diagnostics-review-2026-10-06.md](runtime-diagnostics-review-2026-10-06.md) §7.3
+的四条 P1 处理完。复审基线是 `9c3f98b`，处理时 HEAD 已是 `5ef214a`，逐条核对过
+现状，四条都仍然成立。
+
+### 26.1 R2-P1-01：`pluginId` 不是 spec
+
+两条路的语义不同：中央库 id 是**文件系统安全的 id**（`@scope/pkg` → `@scope__pkg`，
+冲突时还追加短哈希后缀），spec 是**安装来源**（npm 包名 / `owner/repo` / git URL
+加可选 tag）。UI 过去把前者当后者回传给 `plugin_precheck_apply`，后端重新解析，
+于是可能解析成不存在的 npm 包、丢掉 Git 来源或丢掉 tag——用户看到「预检通过」，
+点应用却装上别的东西。
+
+**修法**：`PrecheckReport` 多带一个 `apply_spec`，值是预检**实际用的那个 spec**
+剥掉 URL userinfo 后的原样文本，`fill_source_info` 一处填（和其余来源字段同一个
+出口，漏不掉）。UI 的 `applyPluginChange` 改收整份报告、走 `applySpec`。
+
+给的是**原样 spec**而不是从 `PluginSpec` 重建的规范形式：重建要在
+`owner/repo` 简写与完整 URL 之间做取舍，做错一次就把一次能装成的安装变成装不上。
+
+`strip_url_credentials` 只在有 `://` 的部分动手——npm 作用域包的 `@` 不是
+userinfo，少了这个判据会把 `@scope/pkg` 砍成 `pkg`，装上另一个包，而报告里一切
+看着正常。这条有单测钉住。
+
+### 26.2 R2-P1-02：`withProgress` 的 `true` 被当报告
+
+`withProgress` 只 resolve 布尔值，实际报告走 `labels.onResult`。`applyPluginChange`
+没给 `onResult`，却在 `.then((report) => …)` 里把返回值当 `PrecheckReport` 存进
+`store.precheckReport`——**存进去的是 `true`**。诊断页读 `verdict` / `installed` /
+`preChangeSnapshotId` 全是 undefined，于是「恢复变更前状态」悄悄退化成
+「查看快照列表」。不报错、只是不对。
+
+顺带删掉两处重复：`withProgress` 内部已经 `await refreshAll()`，函数尾部又调了
+一次；成功 toast 同样发了两遍（`labels.done` 一遍、函数里一遍）。
+
+新增的 `sourceDrift` 拿应用后回传的报告与预检报告逐字比对来源三字段，对不上就
+明确说「装的不是验过的那个」。**装已经发生**，所以文案不能说成「没装上」，只把
+成功提示换成警告。
+
+### 26.3 R2-P1-03：基线失败的证据没挂上去
+
+基线失败（不装任何插件内核就起不来）是**最能说明「问题与候选插件无关」**的那次
+失败，而它的证据路径只写进了 shell event：`report.evidence_path` 空、
+`recorder.finish(…, None)` 所以运行记录没有 `sandbox_log`、诊断页的证据卡判不到
+它。用户看到「请查看下方日志」，而下方没有任何日志入口。候选插件失败那条一直
+是对的——两条路径行为不一致。
+
+**修法**不是加一句赋值，是把「挂证据 + 收尾」抽成 `finish_with_evidence`，
+两条失败分支只能通过这个出口返回。于是「漏挂证据」变成一个写不出来的错误，
+而不是一条要靠人记得的纪律。`OperationDiagnosis.vue` 的证据卡判据同步从
+「有没有 `kernelLog`」改成「有没有任何一份证据」（R2-P2-06 是同一件事的前端侧）。
+
+### 26.4 R2-P1-04：读取失败被显示成「刚刚读取成功」
+
+`runRefreshAll` 只有一句 catch + toast，调用方拿到的永远是 `undefined`，于是
+`loadKernelStatusDiagnosis` 无条件执行 `kernelReadAt = Date.now()` 并清空
+`diagnosticStore.error`。后果是双重的：把失败显示成成功，而内核状态页用来提示
+「可能已过期」的标记与它唯一的锚点**同时消失**。
+
+**修法**：`runRefreshAll` 逐个数据源交回 `{ status, plugins, skills }`。插件 /
+技能走 `createStatusSource`（自己吞异常并返回布尔值），所以读返回值而不是
+catch；`get_status` 会抛，单独接。调用方只在 `status` 为真时推进时间戳并清错。
+
+顺带得到一件本来就该有的事：插件或技能单独失败时不再被算成「内核状态读取失败」，
+而是各自有各自的提示——设计 §7.2 要的「每个健康项显示自己的不可用状态」。
+
+反向验做过：把 `diagnosticStore.kernelReadAt = Date.now()` 改回无条件赋值，
+`get_status 失败时「最后读取时间」不前进` 那条精确报红；恢复后 3 条全绿。
+
+### 26.5 尚未处理
+
+§7.4 的六条 P2 与 §7.5 的七项人工验收都还没做。其中 R2-P2-02（动作代理边界）会
+牵动多个诊断组件、R2-P2-05（内核状态页与控制塔的职责划分）需要先在设计文档里
+定边界——这两条不是纯代码改动。

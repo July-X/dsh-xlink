@@ -65,7 +65,7 @@ const applyDisabledReason = computed(() => {
 });
 
 function apply() {
-  return applyPluginChange(report.value.pluginId || '', report.value.verifiedAtMs || 0);
+  return applyPluginChange(report.value);
 }
 
 function close() {

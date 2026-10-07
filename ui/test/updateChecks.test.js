@@ -119,14 +119,19 @@ test('failed plugin update checks do not consume the success TTL', async () => {
 
   // 第一次探测整体失败：不推进成功 TTL，所以第二次仍然真的跑。
   assert.equal(await checkPluginUpdates({ busy: true }), null);
-  assert.equal(await checkPluginUpdates({ busy: true }), undefined);
+  // 这里断言的是 TTL / 退避 / busy 那几件事，**不是**返回值的形状。
+  // 成功路径把 `after()`（即 refreshAll）的返回值透出去，而 refreshAll
+  // 自 R2-P1-04 起交回逐个数据源的成败（过去它把失败吞成 undefined，
+  // 调用方因此无法区分「读到」与「没读到」）。所以这里跟着断言内核状态
+  // 这一路确实读到了。
+  assert.equal((await checkPluginUpdates({ busy: true })).status, true);
   assert.equal(pluginChecks, 2);
   // 第二次成功推进了 TTL，自动路径被拦下。
   assert.equal(await checkPluginUpdates({ busy: false }), null);
   assert.equal(pluginChecks, 2);
   // 手动点击不受 TTL 限制（与技能侧同策略：用户点了就必须真的探测，
   // 否则 15 分钟内点「检查更新」是完全没有反馈的死按钮）。
-  assert.equal(await checkPluginUpdates({ busy: true }), undefined);
+  assert.equal((await checkPluginUpdates({ busy: true })).status, true);
   assert.equal(pluginChecks, 3);
 });
 
@@ -171,7 +176,8 @@ test('手动更新检查不置全局 busy、不挡互斥任务', async () => {
   assert.equal(await withExclusive(async () => 'ran'), 'ran');
 
   gate.resolve([]);
-  assert.equal(await pending, undefined, '成功路径 after() 的返回值照旧');
+  // 同上：after() 透出的是 refreshAll 的成败，不是 undefined。
+  assert.equal((await pending).status, true, '成功路径把 refreshAll 的成败透出去');
   assert.equal(isLoading('checkPluginUpdates'), false);
 });
 

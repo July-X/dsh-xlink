@@ -170,11 +170,66 @@ fn fill_source_info(
         };
         report.pin = spec.pin.clone().unwrap_or_default();
     }
+    // 第二阶段要用的来源契约，**与上面三个展示字段分开**：`source_label` 是
+    // 给用户看的短名，装不回去；`apply_spec` 是给机器用的、能原样装回去的
+    // spec。两者混用就是 R2-P1-01 那个 bug 的根（拿 `plugin_id` 当 spec）。
+    report.apply_spec = strip_url_credentials(spec_str);
     report.materialize = mode.to_string();
     report.target_instance = target_instance.to_string();
     let (default_family, default_instance) = instance::resolve_default();
     report.affects_default_instance =
         family == default_family && target_instance == default_instance;
+}
+
+/// 从可能带凭据的安装来源里摘掉 URL 的 userinfo：
+/// `https://user:token@github.com/o/r.git` → `https://github.com/o/r.git`。
+///
+/// 报告要进运行记录，而运行记录有条「不含凭据」的纪律；而 `apply_spec` 又
+/// 必须能原样装回去——私有的 Git 源正是靠 URL 里的 token 认证的。于是只能
+/// 摘掉凭据、保留其余部分，并把「这份来源现在没带认证」这件事交给上层照实
+/// 说（装不上会拿到 401，而不是拿到一个假的「认证失败」结论）。
+///
+/// **只在有 `://` 的部分动手**：npm 的作用域包 `@scope/pkg` 里的 `@` 不是
+/// userinfo，少了这个判据会把包名砍成 `pkg`，装上另一个东西。
+fn strip_url_credentials(spec: &str) -> String {
+    let Some(scheme_end) = spec.find("://") else {
+        return spec.to_string();
+    };
+    let (scheme, rest) = spec.split_at(scheme_end + "://".len());
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(authority_end);
+    if !authority.contains('@') {
+        return spec.to_string();
+    }
+    // 多个 `@` 时取最后一个：密码本身允许含 `@`，真正的分隔符是它前面那个。
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    format!("{scheme}{host}{path}")
+}
+
+/// 预检失败的收尾：把保留下来的证据路径同时挂进**报告**与**运行记录**，
+/// 然后收尾并把运行 id 与验证时刻写回报告。
+///
+/// 这三件事过去散在两个失败分支里各写一遍，而基线那条**漏了前两件**（审查
+/// R2-P1-03）：路径只进了 shell event，于是 `OperationDiagnosis.vue` 的证据卡
+/// 判不到它、最需要线索的那次失败反而在页面上点不开日志。抽成一个助手不是为了
+/// 少写几行，是为了让「漏挂证据」变成一个**写不出来**的错误——两条分支现在
+/// 只能通过这个出口返回。
+fn finish_with_evidence(
+    recorder: &mut crate::diagnostics::run::Recorder,
+    report: &mut sandbox::PrecheckReport,
+    status: &str,
+    cause: &str,
+    summary: &str,
+) {
+    use crate::diagnostics::run;
+    let evidence = run::RunEvidence {
+        kernel_log: None,
+        incident_id: None,
+        sandbox_log: report.evidence_path.clone().into(),
+    };
+    let _ = recorder.finish(status, cause, summary, Some(&evidence));
+    report.run_id = recorder.id().to_string();
+    report.verified_at_ms = crate::shell::process::epoch_millis();
 }
 
 /// 插件安装预检：在一个一次性沙盒实例里**真的装一次、真的起一次**内核，
@@ -310,6 +365,11 @@ pub fn plugin_install(
         // 静默退出），沙盒目录又被删干净，磁盘上什么都不剩。fail 路径留了
         // 取证、基线路径没留，等于「最需要线索的那次没线索」。
         if let Some(path) = sandbox::preserve_evidence(data_dir, &sandbox, "baseline") {
+            // 路径要**三处**都拿到（审查 R2-P1-03）：报告给对话框的「查看日志」，
+            // 运行记录给诊断页的证据卡，shell event 给托盘旁的排查线索。
+            // 过去只给了第三处，于是最需要线索的那次失败反而在页面上点不开
+            // 日志——用户看到「请查看下方日志」，而下方没有任何日志入口。
+            report.evidence_path = path.to_string_lossy().into_owned();
             crate::shell::shell_events::record(
                 "precheck",
                 &format!("环境基线未能启动，内核日志已存至 {}", path.display()),
@@ -326,14 +386,13 @@ pub fn plugin_install(
         );
         // **候选插件不背这口锅**：基线就没起来时，任何归因到插件的结论都
         // 没有事实基础。判 inconclusive 而不是 fail 是这一层存在的意义。
-        let _ = recorder.finish(
+        finish_with_evidence(
+            &mut recorder,
+            &mut report,
             run::status::INCONCLUSIVE,
             run::cause::ENVIRONMENT,
             &format!("环境基线没能起来，无法判断候选插件：{}", baseline.detail),
-            None,
         );
-        report.run_id = recorder.id().to_string();
-        report.verified_at_ms = crate::shell::process::epoch_millis();
         // 同样**不装**（两阶段契约）：基线都没起来时这个候选包根本没被测过，
         // 装上去等于把「没验过」说成「验过没问题」。
         fill_source_info(&mut report, spec_str, mode, family, target_instance);
@@ -457,7 +516,6 @@ pub fn plugin_install(
         report.verified_at_ms = crate::shell::process::epoch_millis();
         return Ok(report);
     }
-
     precheck_stage!(
         on_progress,
         &mut recorder,
@@ -645,6 +703,135 @@ mod tests {
             "default",
         );
         assert_eq!(bad.source_label, "", "解析失败时来源必须留空而不是编一个");
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// `apply_spec` 必须是**能原样装回去的 spec**，且不含凭据。
+    ///
+    /// 这条钉的是 R2-P1-01：UI 过去拿 `plugin_id`（`@scope__pkg` 那种中央库
+    /// id）回传给 `plugin_precheck_apply` 去重新解析，会解析成别的东西。
+    /// 四类来源都要能逐字往返——少一类就是一条「预检通过、应用装错」的路径。
+    #[test]
+    fn apply_spec_round_trips_every_source_shape_without_credentials() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-apply-spec-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _guard = scoped_xlink_home(&home);
+        fs::create_dir_all(&home).expect("home");
+
+        // 不带凭据的四种来源：原样往返，一个字符都不许动。
+        for spec in [
+            "@scope/pkg@1.2.3",
+            "elysia395/dsh-wallpaper-engine",
+            "owner/repo#v1.0.0",
+            "https://github.com/owner/repo.git",
+        ] {
+            let mut report = sandbox::PrecheckReport::new("id", "n", sandbox::Verdict::Pass);
+            fill_source_info(&mut report, spec, "link", "dsh", "default");
+            assert_eq!(report.apply_spec, spec, "{spec} 必须原样往返");
+        }
+
+        // 带凭据的 git URL：只摘 userinfo，其余（scheme、host、path、tag）保留。
+        // 摘干净是硬要求——报告会进运行记录，而运行记录有条「不含凭据」的纪律。
+        let mut secret = sandbox::PrecheckReport::new("id", "n", sandbox::Verdict::Pass);
+        fill_source_info(
+            &mut secret,
+            "https://user:ghp_TOKEN@github.com/owner/private.git#main",
+            "link",
+            "dsh",
+            "default",
+        );
+        assert_eq!(
+            secret.apply_spec, "https://github.com/owner/private.git#main",
+            "凭据必须摘掉，host / path / tag 一个都不能少"
+        );
+        assert!(
+            !secret.apply_spec.contains("ghp_TOKEN"),
+            "token 不许留在任何字段里"
+        );
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// npm 作用域包名里的 `@` 不是 userinfo。
+    ///
+    /// 这条是 `strip_url_credentials` 最容易写错的地方：少了「先看有没有
+    //://」这个判据，`@scope/pkg` 会被砍成 `pkg`——于是一次正确的安装变成
+    /// 装上另一个包，而报告里一切看着正常。
+    #[test]
+    fn scoped_npm_names_are_not_mistaken_for_url_credentials() {
+        assert_eq!(strip_url_credentials("@scope/pkg"), "@scope/pkg");
+        assert_eq!(
+            strip_url_credentials("@scope/pkg@1.2.3"),
+            "@scope/pkg@1.2.3"
+        );
+        assert_eq!(strip_url_credentials("pkg"), "pkg");
+        // 密码本身含 `@` 时，真正的分隔符是最后一个。
+        assert_eq!(
+            strip_url_credentials("https://u:p@ss@github.com/o/r.git"),
+            "https://github.com/o/r.git"
+        );
+        // 没有 path 的 authority-only 形式也不能被切坏。
+        assert_eq!(
+            strip_url_credentials("https://host:8443"),
+            "https://host:8443"
+        );
+    }
+
+    /// 收尾必须把证据**同时**挂进报告与运行记录（审查 R2-P1-03）。
+    ///
+    /// 基线失败那条过去只把路径写进 shell event，于是
+    /// `OperationDiagnosis.vue` 的证据卡判不到它——最需要线索的那次失败
+    /// 反而在页面上点不开日志。这条直接跑助手本身，所以两条失败分支共用它
+    /// 之后，「漏挂证据」写不出来。
+    #[test]
+    fn failure_finish_puts_the_sandbox_log_in_both_the_report_and_the_run() {
+        use crate::diagnostics::run;
+        let home = std::env::temp_dir().join(format!(
+            "dsh-finish-evidence-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _guard = scoped_xlink_home(&home);
+        fs::create_dir_all(&home).expect("home");
+
+        let mut recorder = run::Recorder::begin(
+            "dsh",
+            "default",
+            run::kind::PLUGIN_PRECHECK,
+            "0.2.0-rc.2",
+            "web",
+            Default::default(),
+        );
+        let mut report = sandbox::PrecheckReport::new("id", "n", sandbox::Verdict::Inconclusive);
+        report.evidence_path = "/logs/precheck-baseline.log".to_string();
+        let run_id = recorder.id().to_string();
+        finish_with_evidence(
+            &mut recorder,
+            &mut report,
+            run::status::INCONCLUSIVE,
+            run::cause::ENVIRONMENT,
+            "环境基线没能起来",
+        );
+
+        assert_eq!(
+            report.run_id, run_id,
+            "报告要带上运行 id，诊断页靠它拉时间线"
+        );
+        assert!(
+            report.verified_at_ms > 0,
+            "验证时刻不能是 0：界面要显示「这是多久前的结论」"
+        );
+
+        let detail = run::get("dsh", "default", &run_id).expect("运行记录要落盘");
+        assert_eq!(
+            detail.evidence.sandbox_log.as_deref(),
+            Some("/logs/precheck-baseline.log"),
+            "运行记录要带 sandbox_log，否则诊断页没有证据卡可显示"
+        );
 
         let _ = fs::remove_dir_all(&home);
     }

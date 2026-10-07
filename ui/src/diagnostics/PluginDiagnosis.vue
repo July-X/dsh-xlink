@@ -170,7 +170,7 @@ const applyDisabledReason = computed(() => {
   return '这条记录里没有预检报告，无法判断能不能应用。';
 });
 function apply() {
-  return applyPluginChange(report.value?.pluginId || '', report.value?.verifiedAtMs || 0);
+  return applyPluginChange(report.value);
 }
 
 function reload() {
