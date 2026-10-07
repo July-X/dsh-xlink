@@ -433,10 +433,10 @@ function toggleSource(src) {
    叠起来的总高会顶出 748px 的固定窗口；这里能省的省掉，不能省的（必须保留
    可读性的标题、按钮行）就只压 padding。 */
 .panel { padding: 12px 16px; }
-.migration header h2 { margin: 0; font-size: 18px; }
+.migration header h2 { margin: 0; font-size: 21px; }
 .subtitle { color: var(--text-muted); margin: 2px 0 0; font-size: 12.5px; }
 .step-body { margin-top: 10px; }
-.step-body h3 { margin: 10px 0 6px; font-size: 13px; }
+.step-body h3 { margin: 10px 0 6px; font-size: 15px; }
 .step-actions { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
 .preview-table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 12px; }
 .preview-table th, .preview-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
@@ -493,7 +493,7 @@ function toggleSource(src) {
 }
 .result-summary .hint { margin: 0; }
 .history { margin-top: 16px; }
-.history h3 { margin: 0 0 6px; font-size: 13px; }
+.history h3 { margin: 0 0 6px; font-size: 15px; }
 /* 「找回历史会话」卡片：与迁移主体是两条独立路径（一个搬旧布局目录，一个把
    误入他处的会话复制回来），所以用一块独立底色而不是塞进 preview-table——
    混在一张表里会让人以为点「下一步」也会把它一起搬。 */
@@ -505,7 +505,7 @@ function toggleSource(src) {
   border-radius: 6px;
   background: var(--surface-subtle);
 }
-.misplaced h3 { margin: 0 0 6px; font-size: 13px; }
+.misplaced h3 { margin: 0 0 6px; font-size: 15px; }
 .misplaced-list { list-style: none; margin: 0 0 8px; padding: 0; }
 /* 名称与元信息紧挨着排，不推到两端。原先用 space-between，在 760px 内容区里
    「sessions」和它的说明会隔着半屏，读起来像两行不相干的内容。 */

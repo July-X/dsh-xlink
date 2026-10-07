@@ -85,7 +85,6 @@ import {
   queriedAgeCompact,
 } from '../subscription/subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents/incidents.js';
-import { instanceStore, familyLabel, loadInstances } from '../kernel/instance.js';
 import { tildePath } from './labels.js';
 import VersionBadge from './VersionBadge.vue';
 import { confirmDialog } from './notify.js';
@@ -125,9 +124,6 @@ onMounted(() => {
   // 未配置时不发请求：Rust 侧对未配置 provider 也只做凭据解析，不产生网络调用，
   // 但首次进入概览总得拉一次才知道配置状态——由 loadSubscriptionSummary 自行决定。
   loadSubscriptionSummary();
-  // 卡片 caption 要显示实例 id（设计稿的「DSH / default」）。单飞 + 失败静默：
-  // 拉不到就只显示族名，标题行不该因为一条装饰性读数而空着或报错。
-  loadInstances().catch(() => {});
 });
 // 工作台里改完凭据回到概览：数据拉取动作自带 TTL，这里不额外触发。
 // planRows 额外滤掉「用户选择隐藏」的分区（key 配了但一直查不到数据）。
@@ -223,24 +219,19 @@ const officialChatOpen = computed(() => !!(store.view && store.view.official_cha
 const canStart = computed(() => !!(kernel.value && kernel.value.active && kernel.value.active_installed));
 const noKernel = computed(() => !!(kernel.value && (!kernel.value.installed || kernel.value.installed.length === 0)));
 
-// 卡片标题右侧的 caption（设计稿的「DSH / default」）：内核族 / 实例 id。
-// 回答的是「这张卡在说哪个内核」——顶部工作条已经给了实例标签，这里补的是
-// 内核族那半边，两处互补不重复。
+// 原先这里有 `kernelCaption`（卡头右侧的「DSH / default-dev」），2026-10-07
+// 用户要求删除——它回答的是「这张卡在说哪个内核」，而卡里已经有一个 18px+ 的
+// 活动内核版本号和它旁边的状态胶囊，族名与实例 id 在这里是把实现细节摆到了
+// 第一屏。多实例是开发与过渡期的事实，绝大多数用户这台机器上只有一个实例。
 //
-// 两项都**只能**从 `instanceStore.list` 取，不能从 `store.view.kernel` 取：
-// `KernelStatus` 结构体里既没有 `family` 也没有实例 id 字段（它的字段是
-// installed / active / active_installed …），从 kernel 上读那个字段取到的
-// 是 undefined，而 `undefined || …` 会静默落到下一个兜底分支——
-// 门禁 `check:invariants` 的 [ipc-fields] 项当场把这条抓了出来。
+// **这不是「顺手清死代码」**：它连着一条曾被门禁抓出来的教训，写在这里免得下次
+// 又照着 `store.view.kernel` 写一遍——`KernelStatus` 结构体里既没有 `family`
+// 也没有实例 id 字段（它的字段是 installed / active / active_installed …），
+// 从 kernel 上读那个字段取到的是 undefined，而 `undefined || …` 会静默落到
+// 下一个兜底分支。门禁 `check:invariants` 的 [ipc-fields] 项抓的就是这个。
 //
-// 实例 id 与族名取自**同一条记录**：只拿 defaultInstanceId 再另找族，两次
-// 查找可能落在不同实例上（切过默认实例的瞬间），拼出「DSH / default-dev」
-// 这种族与 id 不匹配的 caption。
-const kernelCaption = computed(() => {
-  const current = instanceStore.list.find((it) => it.record.id === instanceStore.defaultInstanceId);
-  if (!current) return familyLabel('dsh');
-  return `${familyLabel(current.record.kernel_family)} / ${current.record.id}`;
-});
+// 要看实例上下文，插件页的「所有实例」逐条列着 `族名 · 实例 id`，那是它该在
+// 的地方——按用户真正会去那儿找的地方摆，不是在概览卡头上常驻一行。
 
 const nodeText = computed(() => {
   const n = shownNode.value;
@@ -391,45 +382,46 @@ function goVersions() {
            竖列时每条读数独占一行，五行就把卡拉到和右栏一样高。 -->
         <div class="card kernel-card">
           <div class="card-head">
-            <div class="card-head-left">
-              <h2 class="kernel-title">
-                当前内核
-                <el-tooltip placement="bottom-start" :show-after="80">
-                  <template #content>
-                    <div class="card-info-tooltip">
-                      <div>Node.js 环境</div>
-                      <div>{{ nodeRequirementText }}</div>
-                    </div>
-                  </template>
-                  <el-icon class="card-info-icon"><InfoFilled /></el-icon>
-                </el-tooltip>
-              </h2>
-              <div class="kernel-header-actions">
-                <el-button
-                  :class="{ 'btn-danger': running }"
-                  size="small"
-                  :icon="running ? VideoPause : VideoPlay"
-                  :loading="store.starting"
-                  :disabled="toggleDisabled"
-                  :title="running ? '停止工作台' : '启动工作台'"
-                  @click="onToggle"
-                >
-                  工作台
-                </el-button>
-                <el-button
-                  :class="{ 'btn-chat': !officialChatOpen, 'btn-danger': officialChatOpen }"
-                  size="small"
-                  :icon="officialChatOpen ? CircleClose : ChatDotRound"
-                  :disabled="store.starting || globalBusy"
-                  :loading="isLoading('officialChat')"
-                  :title="officialChatOpen ? '关闭 DeepSeek 官网网页版' : '打开 DeepSeek 官网网页版'"
-                  @click="toggleOfficialChat"
-                >
-                  官网网页版
-                </el-button>
-              </div>
+            <h2 class="kernel-title">
+              当前内核
+              <el-tooltip placement="bottom-start" :show-after="80">
+                <template #content>
+                  <div class="card-info-tooltip">
+                    <div>Node.js 环境</div>
+                    <div>{{ nodeRequirementText }}</div>
+                  </div>
+                </template>
+                <el-icon class="card-info-icon"><InfoFilled /></el-icon>
+              </el-tooltip>
+            </h2>
+            <!-- 主操作在卡头右侧，与标题同一行（2026-10-07 用户要求：原先两个
+                 按钮窝在标题下面那一行左侧，视线要往下再折一次才找到）。原先
+                 占着这个位置的实例 caption「DSH / default-dev」已按同一要求
+                 删除——多实例是实现细节，绝大多数用户只有一个实例。 -->
+            <div class="kernel-header-actions">
+              <el-button
+                :class="{ 'btn-danger': running }"
+                size="small"
+                :icon="running ? VideoPause : VideoPlay"
+                :loading="store.starting"
+                :disabled="toggleDisabled"
+                :title="running ? '停止工作台' : '启动工作台'"
+                @click="onToggle"
+              >
+                工作台
+              </el-button>
+              <el-button
+                :class="{ 'btn-chat': !officialChatOpen, 'btn-danger': officialChatOpen }"
+                size="small"
+                :icon="officialChatOpen ? CircleClose : ChatDotRound"
+                :disabled="store.starting || globalBusy"
+                :loading="isLoading('officialChat')"
+                :title="officialChatOpen ? '关闭 DeepSeek 官网网页版' : '打开 DeepSeek 官网网页版'"
+                @click="toggleOfficialChat"
+              >
+                官网网页版
+              </el-button>
             </div>
-            <span class="card-caption">{{ kernelCaption }}</span>
           </div>
 
           <div class="kernel-summary">

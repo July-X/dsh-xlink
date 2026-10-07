@@ -63,7 +63,7 @@
   flex: 1;
   min-width: 0;
   margin: 0;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
   color: var(--text);
   white-space: nowrap;
@@ -120,7 +120,7 @@
   justify-content: space-between;
   gap: 8px;
   margin: 0 0 8px;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--text);
 }

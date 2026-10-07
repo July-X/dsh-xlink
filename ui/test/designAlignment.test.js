@@ -18,6 +18,7 @@ import {
   cssFiles,
   effectiveDeclaration,
   stripComments,
+  subjectTokens,
 } from './lib/css-cascade.mjs';
 
 /** `ui/src` 下所有 `.vue` 与 `.js`，递归。**必须带 `.js`**：独立窗口的挂载
@@ -101,21 +102,44 @@ test('版本号与状态行同属一个竖向块（kernel-summary-main），不�
   assert.match(overview, /class="kernel-summary-main">\s*<VersionBadge[\s\S]*?<\/VersionBadge>\s*<div class="kernel-status-row">/);
 });
 
-test('卡头 caption 的族名与实例 id 取自同一条实例记录，不读 KernelStatus 的不存在字段', () => {
-  // `KernelStatus` 没有族名字段，也没有实例 id 字段。从 kernel 上读它们取到的
-  // 是 undefined，而 `undefined || …` 会静默落到兜底分支——门禁 [ipc-fields]
-  // 当场抓的就是这条（2026-10-07）。判据匹配的是「从 kernel 上取」这个形状，
-  // 不是某几个具体字段名：后者连注释里提一嘴都会误判成真实读取。
+test('概览「当前内核」卡不再显示实例 caption，也不从 KernelStatus 读不存在的字段', () => {
+  // 2026-10-07 用户要求删掉卡头右侧那行「DSH / default-dev」：卡里已经有一个
+  // 大号活动内核版本号和它旁边的状态胶囊，族名与实例 id 在这里是把实现细节
+  // 摆到第一屏。判据钉的是「概览页不再引实例注册表」。
+  assert.doesNotMatch(overview, /instanceStore/, '概览页不该再引实例注册表');
+  assert.doesNotMatch(overview, /familyLabel/);
+  assert.doesNotMatch(overview, /loadInstances/);
+  // 光断「不引注册表」不够：把一句写死的 `card-caption` 塞回卡头并不会重新
+  // import 任何东西，那条判据照样绿。名字本身也要断。
+  // **必须扫模板块**：`OverviewPanel.vue` 里那段解释「为什么删」的注释里原样
+  // 写着 `kernelCaption`，扫全文会把自己写的说明当成命中——本仓同一个坑踩过
+  // 三次，都是扫全文。
+  assert.doesNotMatch(templateOf(overview), /kernelCaption/);
+  // 「不读 KernelStatus 的不存在字段」这条教训保留：`KernelStatus` 没有族名字段
+  // 也没有实例 id 字段，从 kernel 上读它们取到的是 undefined，而
+  // `undefined || …` 会静默落到兜底分支——门禁 [ipc-fields] 当场抓的就是这条。
+  // 匹配的是「从 kernel 上取」这个形状，不是具体字段名：后者连注释里提一嘴都
+  // 会误判成真实读取。
   assert.doesNotMatch(overview, /kernel(\.value)?\.[a-z_]*family/i);
-  // 族与 id 必须来自同一次查找：分两次查可能落在不同实例上。
-  assert.match(
-    overview,
-    /const current = instanceStore\.list\.find\(\(it\) => it\.record\.id === instanceStore\.defaultInstanceId\);/
-  );
-  assert.match(
-    overview,
-    /return `\$\{familyLabel\(current\.record\.kernel_family\)\} \/ \$\{current\.record\.id\}`;/
-  );
+});
+
+test('「当前内核」的主操作与标题同一行，卡头只剩标题 + 动作两栏', () => {
+  // 切片起点要带 `<div `：只切到 `class="card-head"` 会把开标签本身切掉，
+  // 后面那句「紧跟 `<h2`」的断言就永远匹配不上（第一版就是这么写的，红的是
+  // 判据不是代码）。
+  const headStart = overview.indexOf('<div class="card-head">');
+  assert.ok(headStart > 0, '概览页第一张卡应是「当前内核」');
+  const head = overview.slice(headStart);
+  const headBlock = head.slice(0, head.indexOf('<div class="kernel-summary">'));
+  // 两个按钮都在 `.kernel-header-actions` 里，而它必须与 `<h2 class="kernel-title">`
+  // 同属一个 `.card-head`——原先它们窝在 `.card-head-left` 里，落在标题下面
+  // 那一行的左侧，视线要往下再折一次才找得到。
+  assert.match(headBlock, /<div class="card-head">\s*<h2 class="kernel-title">/);
+  assert.match(headBlock, /<div class="kernel-header-actions">/);
+  assert.doesNotMatch(headBlock, /card-head-left/, '卡头不该再有「标题 + 按钮」那个左栏包裹层');
+  // 两个按钮都要在，别在挪位置时掉一个。
+  assert.match(headBlock, /工作台/);
+  assert.match(headBlock, /官网网页版/);
 });
 
 test('版本号取设计稿的 18px；摘要行 align-items: start 且内边距 13px 0 12px', () => {
@@ -904,7 +928,7 @@ test('顶部工作条已整条删除：组件、挂载点、行高 token 都不�
   assert.doesNotMatch(stripComments(themeCss), /\.kernel-tab/);
 });
 
-test('删掉的是「界面上的切实例」，实例上下文与运行状态一个不少', () => {
+test('删掉的是「界面上的切实例」，运行状态与实例清单一个不少', () => {
   // 那条页签**从第一天起就是空操作**：它按 kernel_family 去重，而后端只定义了
   // `dsh` 一个族（`mcode` 在 paths.rs 里写着「将来的」）。一个族只画一个页签，
   // 它必然就是当前那个，点下去在 `defaultInstanceId === id` 那一步就 return
@@ -922,14 +946,13 @@ test('删掉的是「界面上的切实例」，实例上下文与运行状态�
     (file) => file.endsWith('.vue') && readFileSync(file, 'utf8').includes('setDefaultInstance')
   );
   assert.deepEqual(callers, [], '还有模板在调 setDefaultInstance，工作条没删干净');
-  // —— 「用户在服务的是哪个实例」这件事一个都不能少：
-  // 概览页「当前内核」卡头照旧渲染 `族名 / 实例 id`，插件页照旧列出所有实例。
-  assert.match(overview, /instanceStore\.defaultInstanceId/);
-  assert.match(overview, /familyLabel\(current\.record\.kernel_family\)/);
-  assert.match(readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'), /instanceStore\.list/);
-  // 运行状态胶囊（.status-pill 是 theme.css 的共用词汇）仍在概览页读同一个字段。
+  // —— 运行状态与实例清单仍在：概览页状态胶囊读同一个 `store.view.kernel`，
+  // 插件页照旧按实例列出接线状态（`族名 · 实例 id`）。
   assert.match(overview, /class="status-pill"/);
   assert.match(stripComments(themeCss), /^\.status-pill \{/m);
+  const pluginsPanel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
+  assert.match(pluginsPanel, /instanceStore\.list/);
+  assert.match(pluginsPanel, /familyLabel\(inst\.record\.kernel_family\)/);
 });
 
 // --- 侧栏字号与图标放大（2026-10-07 用户要求，覆盖设计稿）--------------------
@@ -985,4 +1008,57 @@ test('角标圆点从 18px 变 20px，跟上放大的菜单字', () => {
   const collapsed = css.match(/\.sidebar\.is-collapsed \.nav-item__badge \{([^}]*)\}/);
   assert.ok(collapsed, '找不到收起态的角标规则');
   assert.match(collapsed[1], /min-width: 8px/);
+});
+
+// --- 功能块标题整体放大（2026-10-07 用户要求，覆盖设计稿）--------------------
+//
+// 用户说「所有功能块的 title 字体大小都需要放大」。设计稿 draft 1975 行给的
+// `.card-title` 是 13px，实现此前是 14px——在 1040 宽的窗口里，一个块的边界
+// 正是靠标题建立的，字太小等于没有块。
+//
+// 这几条钉的是**每一层标题各自的生效值**：页面标题、块标题（h2）、块内小标题
+// （h3）、行式条目标题、诊断层的两种标题，以及标题旁的 ⓘ。ⓘ 必须一起长——
+// 留在 14px 会读成「一个更小的另一个元素」，而不是「这个标题的补充说明」。
+test('功能块标题整体放大：块标题 17px / 块内小标题 15px / 页标题 21px', () => {
+  // `.card h2` / `.card h3` **不能走 effectiveDeclaration**：它们的主语是**裸
+  // 标签** `h2` / `h3`，全仓有十来条同主语的规则（`.migration header h2` 特异度
+  // 102 直接盖过 `.card h2` 的 101，`.callout-body h3` / `.step-body h3` 等同
+  // 特异度但源码在后，靠 `>=` 决胜又轮番抢走）。问出来的会是别的规则的值——
+  // 与 `el-icon` 那次同一个坑的另一个变体。这两条读规则文本。
+  const css = stripComments(themeCss);
+  assert.match(css.match(/\.card h2 \{([^}]*)\}/)[1], /font-size: 17px/);
+  assert.match(css.match(/\.card h3 \{([^}]*)\}/)[1], /font-size: 15px/);
+  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), '21px');
+  // 「环境回退与诊断」那张卡的四个行式条目走 `.page-list-title`，也得跟上。
+  assert.equal(effectiveDeclaration(['page-list-title'], RULES, 'font-size'), '15px');
+  // 插件页右栏那份远端目录本来就写着 17px，与块标题齐平——两条一起认，
+  // 免得只放大其中一条把它们拉成两档。
+  assert.equal(effectiveDeclaration(['plugin-center-title'], RULES, 'font-size'), '17px');
+  assert.equal(effectiveDeclaration(['card-info-icon'], RULES, 'font-size'), '16px');
+});
+
+test('诊断层的两种块标题也跟着放大', () => {
+  // 系统健康 / 最近操作 / 事故 / 预检这几张卡住在 `diagnostics.css` 的
+  // `.diag-card` 家族里，不在 `.card h2 / h3` 的管辖范围内——只改 theme.css
+  // 会让概览页放大了、诊断层没放大，同屏两档。
+  assert.equal(effectiveDeclaration(['diag-card__title'], RULES, 'font-size'), '15px');
+  assert.equal(effectiveDeclaration(['diagnosis__title'], RULES, 'font-size'), '17px');
+});
+
+test('全仓没有低于 15px 的块标题（h2 / h3）', () => {
+  // 单点断言只能守住改过的那几条。这条扫全表：`.card h2` 这种「一个裸标签被
+  // 全仓复用」的形状，逐个断言必然漏——2026-10-07 那批 `.callout-body h3` /
+  // `.step-body h3` / `.disk-usage h2` 全是这么漏掉的，它们的字号直接决定
+  // 那一屏的层级，所以用「全表没有更小的」这条一网打尽。
+  const tooSmall = [];
+  for (const rule of RULES) {
+    const subject = rule.selector;
+    const tags = subjectTokens(subject);
+    if (!tags.has('h2') && !tags.has('h3')) continue;
+    const value = (rule.body.match(/font-size:\s*([^;}]+)/) || [])[1];
+    if (value === undefined) continue;
+    const px = parseFloat(value);
+    if (Number.isFinite(px) && px < 15) tooSmall.push(`${subject} → ${value.trim()}`);
+  }
+  assert.deepEqual(tooSmall, [], `还有块标题小于 15px：\n${tooSmall.join('\n')}`);
 });
