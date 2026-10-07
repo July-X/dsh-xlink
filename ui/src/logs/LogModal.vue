@@ -1,7 +1,7 @@
 <script setup>
 // 日志面板：顶部贴合的弹层，左侧竖排日志文件签（含大小），右侧按需读取内容。
-// 文件签栏按可用宽度自动收缩成细轨（主窗口固定 480px，恒收缩），给日志正文
-// 让出阅读宽度；用户可用栏顶按钮手动展开/收起（手动选择覆盖自动判定），
+// 文件签栏按可用宽度自动收缩成细轨，给日志正文让出阅读宽度；用户可用栏顶
+// 按钮手动展开/收起（手动选择覆盖自动判定），
 // 展开后点击右侧日志内容区会自动收起侧栏。
 // 「全屏」打开一个独立的可缩放 OS 窗口展示同样的分类列表（见 LogViewerWindow.vue）。
 // 分类侧栏的渲染由 LogSidebar 共享组件承担；侧栏与正文之间是 6px 可拖拽分隔条。
@@ -22,7 +22,8 @@ import {
 import LogSidebar from './LogSidebar.vue';
 import PaneSplitter from '../shell/PaneSplitter.vue';
 
-// 「全屏」：主壳窗口固定 480×800，日志阅读交给独立的可缩放 OS 窗口。
+// 「全屏」：主壳窗口固定 1040×748 且不可缩放，日志阅读交给独立的可缩放
+// OS 窗口——主壳里那份读长日志永远只有这么大。
 function openLogWindow() {
   if (!logModal.activeName) return;
   return withLoading('openLogWindow', () =>

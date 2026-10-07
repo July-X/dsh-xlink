@@ -5,8 +5,8 @@ import test from 'node:test';
 // Windows 标题栏的标题必须在**整条标题栏**上居中。
 //
 // 旧写法是 `.mac-titlebar--win .mac-titlebar__caption { right: 104px }`：它把标题容器
-// 从右边压掉 104px，容器的 flex 居中于是把文字整体推到 52px 偏左（窗口固定 480px 宽，
-// 肉眼可见），而紧挨着的注释还写着「Windows 上标题也真正居中」——数值与注释互相矛盾，
+// 从右边压掉 104px，容器的 flex 居中于是把文字整体推到 52px 偏左（当时窗口固定
+// 480px 宽，肉眼可见），而紧挨着的注释还写着「Windows 上标题也真正居中」——数值与注释互相矛盾，
 // 且没有任何门禁能发现（`check:invariants` 只管无边框来源与最小化语义）。
 test('Windows 标题栏的标题对整条标题栏居中，不靠单边 inset 让位', () => {
   const css = readFileSync('ui/src/theme.css', 'utf8');

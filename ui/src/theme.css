@@ -1366,8 +1366,9 @@ main {
   color: var(--text);
 }
 
-/* tooltip 内容宽度：设置 / 任务通知卡片的说明都不长，但窗口只有 480px，
-   显式限制 max-width 强制文本在窄列里换行，避免单行过长被右侧裁掉。 */
+/* tooltip 内容宽度：设置 / 任务通知卡片的说明都不长。uiv2 把窗口从 480px
+   放到 1040px 之后，不限宽反而会让整段说明拉成一整行、视线要横跨半个
+   屏幕才读得完。280px 是「读起来不用回头」的上限，与窗口宽度无关。 */
 .card-info-tooltip {
   max-width: 280px;
   line-height: 1.55;
@@ -1390,7 +1391,8 @@ main {
 }
 
 /* 最近完成记录列表：会话名 + 完成时刻一行，问 / 答各一行（单行省略，
-   全文在 title 悬浮里）。480px 窄列里每条压成三行。 */
+   全文在 title 悬浮里）。每条固定三行——行数由结构决定，不随列宽变化，
+   这样「有记录」与「没记录」两种情况下右列的高度都可预期。 */
 .notify-items {
   list-style: none;
   margin: 0;
@@ -1983,23 +1985,6 @@ main {
 /* 窄窗口（≤760px，应用默认窗口宽）：行内左右留白收紧，元数据不再占定宽列
    （宽度紧张时优先把空间让给版本号与按钮组）；列表不内嵌滚动，滚动仍只交给
    外层 main。 */
-@media (max-width: 760px) {
-  .entity-row {
-    padding: 8px;
-  }
-  .entity-meta .meta-version {
-    min-width: 0;
-  }
-  .skill-entity-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px 10px;
-    padding: 10px 9px;
-  }
-  .skill-package-meta {
-    margin-top: 6px;
-  }
-}
-
 /* 来源 chip：与 PluginsPanel 共用同一套视觉规则。 */
 
 .origin-chip {
@@ -2233,8 +2218,9 @@ main {
 /* 分类筛选下拉与排序下拉 6:4 分宽度：分类用占主位的 el-select
    （flex:6），排序收右侧（flex:4）。两者都不写死 width，让
    el-select__wrapper 自适应伸缩。下拉选项直接拼好分类名 + 计数
-   （"皮肤主题（650）"），一眼看到完整列表；之前 chip 横滚 + 渐隐
-   遮罩的形式在 480px 窄窗里只露三四个、还遮住数字。 */
+   （"皮肤主题（650）"），一眼看到完整列表；之前 chip 横滚 + 渐隐遮罩的
+   形式只能露三四个、还遮住数字（这一列在宽版下是插件页的右半栏，宽度
+   仍然只有全窗的一半，横滚的可用宽度与旧版相当）。 */
 .catalog-category {
   flex: 6 1 0;
   min-width: 0;
@@ -2252,8 +2238,8 @@ main {
 }
 
 /* 行式条目：原先是三段式卡片（标题行自由换行 + 描述 + 独立 tag 行），一张
-   约 90px，480px 窄窗一屏只看三四个。压成定高三行后约 70px——之前 62px 偏
-   挤，标题/描述/底栏三行间几乎没有呼吸感。行式条目不做上浮，密集列表里
+   约 90px，一屏只看三四个。压成定高三行后约 70px——之前 62px 偏挤，
+   标题/描述/底栏三行间几乎没有呼吸感。行式条目不做上浮，密集列表里
    整列 hover 时跳动比省下的高度更抢眼。 */
 .catalog-row {
   display: flex;
@@ -3058,137 +3044,6 @@ body.pane-dragging .log-tabs {
 .el-input__wrapper.is-focus,
 .el-select__wrapper.is-focused {
   box-shadow: 0 0 0 1px var(--accent) inset, 0 0 12px rgba(79, 140, 255, 0.18);
-}
-
-/* 窄窗口（≤760px；应用窗口固定 480px，恒命中）：侧栏折叠为顶部横向
-   chrome 栏——品牌区在上，菜单沉底，安全提示做横向条幅；主面板独立滚动。 */
-@media (max-width: 760px) {
-  body {
-    overflow: hidden;
-  }
-  .layout {
-    flex-direction: column;
-    height: auto;
-    min-height: 0;
-  }
-  .sidebar {
-    flex: 0 0 auto;
-    width: auto;
-    flex-direction: column;
-    align-items: stretch;
-    /* 品牌区与菜单之间 10 → 2：这一段看着宽，主要不是这个 gap，而是 64px 的
-       logo 行比两行文字（约 34px）高出的那截居中留白——文字上下各空 15px，
-       下面那 15px 直接并进「品牌↔菜单」的观感缝隙里（实测 34px）。所以真正
-       要收的是本条 gap：它 10px 里没有一像素是内容需要的（2026-10-03 用户
-       「菜单上下区域的 gap 缩小」）。降到 2px 仍留一点，不让 logo 与图标贴死。 */
-    gap: 2px;
-    /* 窄布局是顶部 chrome 栏，它的下内边距与 main 的上内边距是**同一个**
-       视觉缝隙的两半。侧栏是菜单的容器，它下面不需要"留白"，留白是内容区
-       自己的事——所以下内边距只留 4px，与 main 上内边距各让一半
-       （12 → 4 / 16 → 6，2026-10-03 两轮累计）。上内边距 12 → 8 是同一口径：
-       顶栏贴着窗口上缘，本来也不需要 12px 的呼吸。左右不动。 */
-    padding: 8px 14px 4px;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-  .brand {
-    flex: 0 0 auto;
-  }
-  /* 状态胶囊别到品牌行右缘。 */
-  .status-pill {
-    margin-left: auto;
-    font-size: 12px;
-    padding: 5px 10px;
-  }
-  /* 菜单在窄布局里是横向一排：项间距收到 2px（原 4px），六个项里只要多出
-     「数据迁移」就会顶到换行——flex-wrap 会把它甩到第二行，整条 chrome 变两
-     排。项自身的左右 padding 见下面 .menu-item。 */
-  .menu {
-    flex-direction: row;
-    flex-wrap: wrap;
-    flex: 0 0 auto;
-    margin-top: auto;
-    gap: 2px;
-  }
-  /* 横排项的左右 padding 10px → 7px：窄布局下激活态没有底色（见下条
-     .menu-item.active），pill 不显示，10px 就只是两段空白；连同 icon↔文字
-     的 7px，整项占宽省下 6px。上下 6px 不动，触摸/点击高度保持原样。 */
-  .menu-item {
-    width: auto;
-    padding: 6px 7px;
-    font-size: 13px;
-  }
-  /* 窄布局菜单激活态：只用文字高亮（品牌蓝 + 加粗），不要底线与背景。 */
-  .menu-item.active {
-    background: transparent;
-    color: var(--accent);
-    font-weight: 600;
-  }
-  .menu-item.active::before {
-    display: none;
-  }
-  .menu-badge {
-    margin-left: 2px;
-  }
-  /* 窄窗口下面板提示会换行，图标跟着首行顶部对齐。 */
-  .panel-notice {
-    padding: 8px 10px;
-    font-size: 11.5px;
-  }
-  main {
-    overflow-y: auto;
-    /* 上 16 → 6：与上面 .sidebar 的下内边距 4px 配对，合计只剩 11px
-       （.menu-item 自己的 6px 下内边距 + 4 + 1 边框 + 6）。上下两轮累计把
-       「菜单文字到卡片顶」从 35px 压到 17px——菜单与内容是两块有各自描边的
-       独立面，它们之间不需要一屏到底的留白。左右与下不动：内容区左右的留白
-       是和面板卡片内边距叠出来的一层，下内边距关系到「内容到窗口底」，
-       收紧它会让长列表末尾贴边。 */
-    padding: 6px 16px 16px;
-  }
-  /* kv：窄值列压缩标签列宽，保住 URL / 路径可读性。 */
-  .kv {
-    grid-template-columns: minmax(86px, 110px) 1fr;
-    gap: 6px 12px;
-  }
-  .updates-lists {
-    grid-template-columns: 1fr;
-  }
-  /* 窄窗下让已安装/版本列表按内容撑开高度，滚动只交给外层 main：
-     不再给内层加 42vh 顶盖，否则插件多了会先出现「内嵌滚动条」，
-     与设计目标「只外层一条纵向滚动条」冲突。 */
-  .list-group .release-list,
-  .list-group .installed-list,
-  .installed-list {
-    max-height: none;
-    overflow-y: visible;
-  }
-  /* 卡片头在 480px 下让右侧 meta 掉到第二行并右对齐。 */
-  .card-head {
-    flex-wrap: wrap;
-  }
-  .head-meta {
-    flex: 1 1 auto;
-    justify-content: flex-end;
-  }
-  /* 安装行：输入框独占首行，下拉与按钮分第二行。 */
-  .install-row {
-    flex-wrap: wrap;
-  }
-  .install-row .el-input {
-    flex: 1 1 100%;
-  }
-  .install-row .el-select {
-    min-width: 96px;
-    flex: 1 1 auto;
-  }
-  /* 概览按钮行左右内边距 12px → 6px：这些按钮大多是 type="text"，没有底色
-     也没有描边，左右 padding 是纯空白（Element 对 text 按钮本来给的是 0，是
-     这条规则又补回来的），12px 会把一排按钮撑到换行。上下 8px 不动，按钮
-     高度照旧；「更新并重启」那种带底色的按钮留 6px 也不至于挤。 */
-  .card .btn-row .el-button {
-    padding: 8px 6px;
-    font-size: 13px;
-  }
 }
 
 /* --- dev 调试按钮（DebugPanel.vue） ------------------------------------------
