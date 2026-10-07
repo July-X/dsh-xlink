@@ -7,7 +7,9 @@
 //
 // 三块各自的取舍：
 // - **需要关注**：只在真有东西要说时出现。空列表不占位置。
-// - **系统健康**：只给读数，不给按钮。它回答「能不能跑」，处置在各自面板。
+// - **系统健康**：以读数为主，处置在各自面板。唯一的例外是「日志系统」——
+//   全应用的日志入口就落在这一行（2026-10-07 从概览主操作排迁来），所以它
+//   的右侧提示写「查看」而不是 `›`，自己说得出自己是入口。
 // - **最近操作**：回答「上次发生了什么」。失败 / 告警才可点进诊断；
 //   成功记录不给按钮——它没什么可诊断的。
 import { computed, onMounted, ref } from 'vue';
@@ -151,12 +153,25 @@ const latestSnapshotLabel = computed(() => {
  * 异常不该靠这些行来报——Node 不达标进「需要关注」（带跳转），内核没装进首屏
  * callout，运行状态在「当前内核」卡。
  *
- * **`unavailable` 仍是一等状态**：某个数据源读失败时**不能**显示成「正常」——
- * 用户点进来看到一片正常会以为系统没事，而真相是这一项压根没读成功。读不到
- * 就明说读不到。
+ * **读不到仍是一等状态**：某个数据源读失败时**不能**显示成「正常」——用户点
+ * 进来看到一片正常会以为系统没事，而真相是这一项压根没读成功。读不到就明说
+ * 读不到（`value` 直接写「读取失败」，右侧提示给「点击重试」）。
+ *
+ * **右侧提示（`hint`）在这里一次算好**，模板不再分支。三个取值：
+ *   读不到 → 「点击重试」；可点的普通格 → `›`；不可点 → 空（不渲染）。
+ *
+ * **日志那一格例外，给「查看」**：它是全应用唯一的日志入口（2026-10-07 从概览
+ * 主操作排迁来），而读数样式（「47 份 ›」）会把唯一的入口藏起来——用户想看日志
+ * 时扫过去只读到份数，看不出这里能点开。既然入口只剩这一处，这一格就必须自己
+ * 说得出自己是入口。
+ *
+ * `unavailable` 这个字段因此没有了：它的唯一用途就是在模板里挑「点击重试」还是
+ * `›`，而这件事现在由 `hint` 一次做完。
  */
 function cell(key, label, value, tone = '', action = null, detail = '') {
-  return { key, label, value, tone, action, detail, unavailable: value === '读取失败' };
+  const unavailable = value === '读取失败';
+  const hint = unavailable ? '点击重试' : !action ? '' : key === 'logs' ? '查看' : '›';
+  return { key, label, value, tone, action, detail, hint };
 }
 
 const health = computed(() => [
@@ -265,6 +280,7 @@ function onHealth(row) {
 }
 
 // 按记录类型分派，不再一律当启动诊断打开（审查 P1-05）。
+
 function openDiagnosis() {
   openRunDiagnosis(latestRun.value, 'overview');
   loadRecentRuns(null);
@@ -326,9 +342,8 @@ function openDiagnosis() {
         <span class="diag-row__value" :class="row.tone ? `diag-row__value--${row.tone}` : ''">
           {{ row.value }}
         </span>
-        <!-- 读不到时明确标出来。静默显示上次的值会让用户以为现在还是好的。 -->
-        <span v-if="row.unavailable" class="diag-row__arrow" aria-hidden="true">点击重试</span>
-        <span v-else-if="row.action" class="diag-row__arrow" aria-hidden="true">›</span>
+        <!-- 右侧提示由 cell() 一次算好（读不到说「点击重试」，日志格说「查看」）。 -->
+        <span v-if="row.hint" class="diag-row__arrow" aria-hidden="true">{{ row.hint }}</span>
       </button>
     </div>
   </div>

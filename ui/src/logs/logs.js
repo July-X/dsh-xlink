@@ -332,52 +332,6 @@ export function bindScrollAutoHide(el) {
   };
 }
 
-/// 直接拉起独立分类日志窗口（跳过「先弹小窗再点全屏」的中间步骤）：
-/// 概览页的「查看日志」、事故面板的「打开日志」都走这里。`open_log_window`
-/// 必须给一个有效文件名，所以先列文件再挑一个——优先 kernel 分类的最新
-/// 一条（用户排障的第一诉求），没有 kernel 日志就退回任意第一个；连
-/// 一个日志文件都没有时给一句中文提示而不是静默开窗空跑。
-///
-/// 失败用 `toastActionError` 给下一步（重试 / 改用弹窗 / 看 logs/），
-/// 不吞——与其它 IO 入口一致（P2-36）。
-export function openLogsWindow() {
-  return withLoading('openLogsWindow', () =>
-    invoke('list_log_files')
-      .then((files) => {
-        const entries = files || [];
-        if (!entries.length) {
-          toastActionError(
-            '暂无日志文件',
-            '当前 logs/ 目录下没有任何 .log 文件',
-            '可先启动内核或安装插件产生日志后再查看',
-            4000,
-          );
-          return null;
-        }
-        const kernelGroup = groupLogFiles(entries).find((g) => g.id === 'kernel');
-        const target = (kernelGroup && kernelGroup.files[0]) || entries[0];
-        return invoke('open_log_window', { name: target.name }).catch((e) => {
-          // 后端已经给出「下一步」文案，优先原样展示
-          toastActionError(
-            '打开日志窗口失败',
-            e,
-            '可改用主面板的「查看日志」弹窗，或重试',
-            4000,
-          );
-          return null;
-        });
-      })
-      .catch((e) =>
-        toastActionError(
-          '读取日志列表失败',
-          e,
-          '可点击「查看日志」打开主面板弹窗，或到数据目录查看 logs/',
-          4000,
-        )
-      )
-  );
-}
-
 /**
  * 按一份预检报告打开它的证据日志。
  *
