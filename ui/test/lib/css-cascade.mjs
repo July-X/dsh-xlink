@@ -44,7 +44,7 @@ export function vueStyleBlocks(dir = SRC, out = []) {
  * 全仓规则表：`.css` 文件 **加上** `.vue` 的 `<style>` 块。
  *
  * 为什么必须带后者：面板级样式大多写在组件的 scoped 块里而不是 theme.css。
- * 只扫 `.css` 时 `.kernel-summary`、`.plan-grid`、`.brand__toggle` 这些规则
+ * 只扫 `.css` 时 `.kernel-summary`、`.plan-grid`、`.sidebar__theme-btn` 这些规则
  * 一条都查不到，「查层叠后的生效值」于是退化成「查全局基线」——判据看着在算
  * 层叠，实际永远只看得到 theme.css 那一半。
  *

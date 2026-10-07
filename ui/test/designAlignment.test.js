@@ -14,7 +14,7 @@ import test from 'node:test';
 import { allRulesIncludingVue, effectiveDeclaration, stripComments } from './lib/css-cascade.mjs';
 
 // 必须带 `.vue` 的 scoped 块：面板级样式大半写在组件里，只扫 `.css` 时
-// `.kernel-summary` / `.brand__toggle` 这些规则一条都查不到，判据会退化成
+// `.kernel-summary` / `.sidebar__theme-btn` 这些规则一条都查不到，判据会退化成
 // 「只查全局基线」——那不是层叠，只是 theme.css。
 const RULES = allRulesIncludingVue();
 const overview = readFileSync('ui/src/shell/OverviewPanel.vue', 'utf8');
@@ -163,20 +163,49 @@ test('主题开关是 34px 拨杆、无图标；深色态由 aria-pressed 表达
   assert.match(style, /\.sidebar__theme-btn\[aria-pressed='true'\]::before\s*\{[^}]*transform:\s*translateX\(12px\)/);
 });
 
-test('底部一行固定两个方形控件：刷新 26×22，标签与版本徽标可压缩', () => {
+test('底部一行固定三个方形控件：收起 / 刷新 26×22，标签与版本徽标可压缩', () => {
   assert.equal(effectiveDeclaration(['sidebar__icon-btn'], RULES, 'width'), '26px');
   assert.equal(effectiveDeclaration(['sidebar__icon-btn'], RULES, 'height'), '22px');
   assert.equal(effectiveDeclaration(['sidebar__footer-label'], RULES, 'white-space'), 'nowrap');
+  // 三个控件：收起开关（2026-10-07 从品牌行挪来）+ 刷新 + 主题拨杆。
+  assert.equal((sidebar.match(/class="sidebar__icon-btn"/g) || []).length, 2, '收起与刷新共用 26×22 方钮');
+  assert.equal((sidebar.match(/class="sidebar__theme-btn"/g) || []).length, 1);
 });
 
-test('品牌主名 + 副名，收起开关绝对定位到右端（流内放不下「DeepSeek Harness」）', () => {
-  // 收起态那条 `.sidebar.is-collapsed .brand__toggle` 是**后代选择器**，
-  // 工具按主语匹配时它会命中一次不带 is-collapsed 的查询；这一组判据直接看
-  // 选择器文本，钉的是「用哪个定位」与「条件怎么写」两件事实。
-  const sidebarStyle = scopedStyle(sidebar);
-  assert.match(themeCss, /\.brand\s*\{[^}]*position:\s*relative/);
-  assert.match(sidebarStyle, /\.brand__toggle\s*\{[^}]*position:\s*absolute/);
-  assert.match(sidebarStyle, /\.sidebar\.is-collapsed \.brand__toggle\s*\{[^}]*position:\s*static/);
+test('收起开关在底部一行，排在刷新之前；品牌行不再有按钮', () => {
+  // 2026-10-07 用户要求：收起开关从品牌行右端移到底部（覆盖设计稿——稿子的
+  // `.sidebar-footer` 只有标签/版本/刷新/主题四个元素，`.sidebar-toggle` 画在
+  // `.brand` 右端）。判据钉的是**位置与顺序**这两件事实。
+  const collapseAt = sidebar.indexOf(':aria-expanded="!collapsed"');
+  const refreshAt = sidebar.indexOf('检查桌面端是否有新版本');
+  const footerAt = sidebar.indexOf('class="sidebar__footer"');
+  assert.ok(collapseAt > 0, '应有收起开关');
+  assert.ok(collapseAt > footerAt, '收起开关必须落在 .sidebar__footer 之后');
+  assert.ok(collapseAt < refreshAt, '收起开关排在刷新之前（控件组的第一个）');
+  // 品牌行只剩 logo 与文字：`.brand__toggle` 连同它的绝对定位规则一起没了。
+  // 判据不许被注释里的解释文字命中（那里正是在说明「为什么删」），所以模板段
+  // 看有没有按钮、样式段先剥注释再看还有没有那条规则。
+  const brandBlock = sidebar.slice(
+    sidebar.indexOf('class="brand"'),
+    sidebar.indexOf('class="sidebar__nav"'),
+  );
+  assert.doesNotMatch(brandBlock, /<button/, '品牌行不该再有按钮');
+  assert.doesNotMatch(stripComments(scopedStyle(sidebar)), /brand__toggle/, '`.brand__toggle` 的规则已删');
+  assert.doesNotMatch(themeCss, /\.brand\s*\{[^}]*position:\s*relative/, '只为绝对定位开关存在的定位要跟着删');
+});
+
+test('收起态底部竖排三个控件（64px 侧栏横排必然溢出到主区）', () => {
+  // 后代 + 类组合选择器，层叠工具按主语匹配时只看到 `.sidebar__footer`，
+  // 问不出 `is-collapsed` 那一半，所以这条直接看选择器文本。
+  assert.match(
+    themeCss,
+    /\.sidebar\.is-collapsed \.sidebar__footer\s*\{[^}]*flex-direction:\s*column/,
+  );
+  assert.match(themeCss, /\.sidebar\.is-collapsed \.version-badge\s*\{\s*display:\s*none/);
+});
+
+test('品牌主名 + 副名独占品牌行（收起开关搬走后不再需要给谁让位）', () => {
+  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-size'), '15px');
   assert.equal(effectiveDeclaration(['brand__name'], RULES, 'text-overflow'), 'ellipsis');
 });
 

@@ -532,7 +532,6 @@ code {
 }
 
 .brand {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -551,9 +550,10 @@ code {
   min-width: 0;
 }
 
-/* 主名回到设计稿的 15px。收起开关改成绝对定位后（见 SideBar.vue 的
-   `.brand__toggle`）它不再占布局宽度，主名拿到整行约 150px，15px 下放得下。
-   省略规则留着兜底：换更长的产品名时它比折行好——折行会把副名顶到第三行，
+/* 主名回到设计稿的 15px。品牌行原先还要给浮在右端的收起开关让位（`.brand`
+   的 `position: relative` + 开关的 `position: absolute`），2026-10-07 开关挪到
+   底部那一行后这里独占整行宽度，「DeepSeek Harness」宽裕得下。
+   省略规则仍留着兜底：换更长的产品名时它比折行好——折行会把副名顶到第三行，
    品牌区比导航第一项还高。 */
 .brand__name {
   font-size: 15px;
@@ -648,12 +648,14 @@ code {
   font-size: 0;
 }
 
-/* 侧栏底部一行：标签 + 版本徽标 + 刷新 + 主题拨杆（设计稿画法）。
-   2026-10-07 从竖排两个整宽按钮改成一行四件——原先那两行把 224px 侧栏的
+/* 侧栏底部一行：标签 + 版本徽标 + 收起 + 刷新 + 主题拨杆。
+   2026-10-07 从竖排两个整宽按钮改成一行——原先那两行把 224px 侧栏的
    底部占满，且主题开关写成「深色主题」，读起来像点它会变成深色。
-   顺带删掉了原先这里的 `.rail-toggle` 容器（收起开关已移进品牌行）与
-   整组 `.theme-switch`（侧栏不再有那两个按钮）。
-   注意 `.rail-toggle` 本身**没有**全删：日志侧栏的折叠按钮还在用它。 */
+   顺带删掉了原先这里的 `.rail-toggle` 容器（收起开关先是移进品牌行，
+   同日又按用户要求挪到了这里）与整组 `.theme-switch`（侧栏不再有那两个按钮）。
+   注意 `.rail-toggle` 本身**没有**全删：日志侧栏的折叠按钮还在用它。
+   控件从两个变成三个是用户的要求（设计稿的底部只有两个），代价见
+   SideBar.vue 里收起开关那段注释。 */
 .sidebar__footer {
   display: flex;
   align-items: center;
@@ -668,17 +670,23 @@ code {
   color: var(--text-secondary);
   white-space: nowrap;
 }
-/* 版本徽标：可压缩的那一件。侧栏 224px 放不下「桌面端 + 0.3.9-rc.3 + 两个
-   26px 控件」时，先让它省略号，而不是把按钮压小。 */
+/* 版本徽标：可压缩的那一件。侧栏 224px 放不下「桌面端 + 版本号 + 三个
+   控件」时，先让它省略号，而不是把按钮压小。 */
 .sidebar__footer .version-badge {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 收起后只留两个方钮：标签与版本号都隐掉（`.nav-item__label` 已由
-   `.sidebar.is-collapsed` 统一隐藏，版本号在这里补一条）。 */
+/* 收起后只留三个方钮：标签与版本号都隐掉（`.nav-item__label` 已由
+   `.sidebar.is-collapsed` 统一隐藏，版本号在这里补一条）。
+   **必须竖排**：收起态内容盒只有 64 − 16 = 48px，而三个控件横排要
+   26 + 7 + 26 + 7 + 34 = 100px，横排必然溢出到主区上。不靠 `flex-wrap`——
+   那会让「能不能换行」取决于实际渲染宽度，换个缩放比例就变成两行换三行，
+   竖排是确定的三行。 */
 .sidebar.is-collapsed .sidebar__footer {
+  flex-direction: column;
+  gap: 6px;
   padding: 12px 0 0;
   justify-content: center;
 }

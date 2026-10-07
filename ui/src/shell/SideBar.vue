@@ -130,22 +130,12 @@ watch(collapsed, (value) => {
         <!-- 2026-10-07 按设计稿改文案：主名「DeepSeek Harness」+ 副名「桌面管理台」。
              原先写的是「Dsh-Xlink / DeepSeek 内核桌面管理端」——那是仓库名与
              一句功能描述，副名 11px 下一行塞了 12 个字，在 224px 侧栏里挤到
-             换行。主名说产品，副名说这是什么形态的端，两行都短。 -->
+             换行。主名说产品，副名说这是什么形态的端，两行都短。
+             收起开关原先浮在这一行右端（`.brand__toggle`），2026-10-07 挪到了
+             底部那一行，这里不再有按钮，主名独占整行宽度。 -->
         <div class="brand__name">DeepSeek Harness</div>
         <div class="brand__desc">桌面管理台</div>
       </div>
-      <!-- 收起开关按设计稿放在品牌行右侧（原先是导航下方孤零零一个按钮，
-           视觉上不属于任何一组）。收起后品牌文字隐藏，只留这个开关。 -->
-      <button
-        type="button"
-        class="brand__toggle"
-        :title="collapsed ? '展开侧栏' : '收起侧栏'"
-        :aria-label="collapsed ? '展开侧栏' : '收起侧栏'"
-        :aria-expanded="!collapsed"
-        @click="toggleCollapsed"
-      >
-        <el-icon><component :is="collapsed ? Expand : Fold" /></el-icon>
-      </button>
     </div>
 
     <nav class="sidebar__nav" aria-label="主菜单">
@@ -180,6 +170,26 @@ watch(collapsed, (value) => {
            现在三个控件各司其职，标签也只说它是什么。 -->
       <span class="nav-item__label sidebar__footer-label">桌面端</span>
       <span v-if="shellVersionText" class="version-badge">{{ shellVersionText }}</span>
+      <!-- 收起开关。2026-10-07 用户要求从品牌行右端移到这里。
+           **这是覆盖设计稿，不是稿子就这么画的**：稿子的 `.sidebar-footer` 只有
+           「标签 + 版本 + 刷新 + 主题」四个元素，收起开关画在 `.brand` 右端
+           （`docs/ui/dsh-xlink-ui-redesign-draft.html` 439-468 行）。用户的取舍是
+           品牌行只留品牌——收起开关紧挨着它收起的侧栏右侧，和「底部一排控件」
+           读起来是一件事。代价记在这：底部现在是三个控件，224px 侧栏里版本号
+           省略得更多，收起态（64px）放不下必须竖排（见 theme.css 的
+           `.sidebar.is-collapsed .sidebar__footer`）。
+           形状复用 `.sidebar__icon-btn`（26×22 方钮），不另造一套——它是**控件**，
+           不是品牌区那种无边框轻按钮。 -->
+      <button
+        type="button"
+        class="sidebar__icon-btn"
+        :title="collapsed ? '展开侧栏' : '收起侧栏'"
+        :aria-label="collapsed ? '展开侧栏' : '收起侧栏'"
+        :aria-expanded="!collapsed"
+        @click="toggleCollapsed"
+      >
+        <el-icon><component :is="collapsed ? Expand : Fold" /></el-icon>
+      </button>
       <button
         type="button"
         class="sidebar__icon-btn"
@@ -209,41 +219,12 @@ watch(collapsed, (value) => {
 </template>
 
 <style scoped>
-/* 品牌行的收起开关。放在品牌行右端是设计稿的画法：它收起的是**整条侧栏**，
-   归到品牌区比孤零零挂在导航下面更说得通。
-   **绝对定位**而不是 `margin-left: auto` 的流内布局：流内时主名只剩约 130px，
-   「DeepSeek Harness」在 15px 粗体下要 131px，于是被截成「DeepSeek Harn...」。
-   设计稿自己的 `.brand` 就带 `position: relative`——开关浮在右端，主名拿到
-   整行剩余宽度。收起态反过来：那时文字已隐藏、空间充裕，开关回到流内居中，
-   否则会压在 logo 上。 */
-.brand__toggle {
-  position: absolute;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.brand__toggle:hover {
-  background: var(--surface-raised);
-  color: var(--text);
-}
-.sidebar.is-collapsed .brand__toggle {
-  position: static;
-  transform: none;
-  margin: 0 auto;
-}
-
-/* 底部一行：标签 + 版本徽标 + 两个方形控件。标签与徽标可压缩，方形控件
-   固定 26×22 且不参与收缩（flex: 0 0 auto）——它们是动作，版本号才是
-   附属信息，先压版本号而不是把按钮压成看不清。 */
+/* 底部一行：标签 + 版本徽标 + 三个控件（收起 / 刷新 / 主题）。标签与徽标可
+   压缩，方形控件固定 26×22 且不参与收缩（flex: 0 0 auto）——它们是动作，
+   版本号才是附属信息，先压版本号而不是把按钮压成看不清。
+   `.brand__toggle`（原品牌行右端那个无边框轻按钮）已于 2026-10-07 删除：
+   收起开关改挂在底部一行后，它既没有调用方，也不再需要 `position: absolute`
+   把主名让出来——品牌行现在只有 logo 与文字。 */
 .sidebar__footer-label {
   color: var(--text-secondary);
   white-space: nowrap;
