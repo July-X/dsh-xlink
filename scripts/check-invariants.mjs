@@ -1940,20 +1940,26 @@ if (ungatedOsImports.length > 0) {
         );
       }
     }
-    // ② 主窗口必须钉深色：它自绘标题栏，副窗要跟它一致就只能以它为准，
-    //    而系统主题不是那个准。
+    // ② 主窗口必须钉深色：**它是建窗瞬间的兜底值**，不是最终外观。
+    //    自绘标题栏的底色走 `--chrome` token，跟着应用主题走；页面挂载前
+    //    `applyTheme()` 会调 `window.setTheme()` 把原生 appearance 纠正过来。
+    //    之所以仍要在这里钉：主窗没有「页面上线后纠正」的那一瞬间之前的一切，
+    //    而跟随系统会让冷启动首帧在两套主题之间跳。
     if (main.theme !== 'Dark') {
       fail(
         'window-chrome',
-        `主窗口 theme 是「${main.theme ?? '（未设，跟随系统）'}」，自绘标题栏恒为深色，副窗钉 Dark 之后两者会反过来割裂`,
+        `主窗口 theme 是「${main.theme ?? '（未设，跟随系统）'}」：建窗到页面挂载之间没人纠正原生 appearance，冷启动会在两套主题之间跳`,
       );
     }
   }
 
-  // ③ 每扇副窗都要自己钉标题与主题。两件事分别计数而不是逐扇配对：
-  //    配对要看「`.title(` 往后 30 行里有没有 `.theme(`」，那是个靠行距的启发式，
-  //    往 builder 中间插几行参数就会静默失配。改成全局对账——建几扇窗就得钉
-  //    几次主题，少一扇既不编译失败也没有告警，只在系统切浅色时那一个窗口变白。
+  // ③ 每扇副窗都要自己钉标题与主题。**钉 Dark 不等于最终是深色**：主题真值在
+  //    localStorage，Rust 读不到，所以建窗时统一从 Dark 起步，页面挂载前
+  //    `applyTheme()` 再按实际主题纠正本窗（见 ui/src/shell/bridge.js 的
+  //    setWindowTheme）。少钉的那一扇没人纠正，浅色内容就顶着深色原生标题栏
+  //    （2026-10-07 用户截图）。两件事分别计数而不是逐扇配对：配对要看
+  //    「`.title(` 往后 30 行里有没有 `.theme(`」，那是个靠行距的启发式，往
+  //    builder 中间插几行参数就会静默失配。改成全局对账。
   const popupFiles = [];
   let titles = 0;
   let hardcoded = 0;
@@ -1981,12 +1987,14 @@ if (ungatedOsImports.length > 0) {
     if (themes !== titles) {
       fail(
         'window-chrome',
-        `建了 ${titles} 扇带标题的窗，只钉了 ${themes} 次 Theme::Dark——少钉的那扇在系统浅色下标题栏会变白（2026-10-07 用户截图）`,
+        `建了 ${titles} 扇带标题的窗，只钉了 ${themes} 次 Theme::Dark——少钉的那扇没人按应用主题纠正，浅色内容会顶着系统默认的原生标题栏（2026-10-07 用户截图）`,
       );
     }
   }
   if (hardcoded === 0 && themes === titles) {
-    note(`窗口标题统一走 window_title()，${titles} 扇副窗都钉死深色标题栏`);
+    note(
+      `窗口标题统一走 window_title()，${titles} 扇副窗都声明了建窗兜底主题（页面上线后由 applyTheme → window.setTheme 纠正）`,
+    );
   }
 }
 

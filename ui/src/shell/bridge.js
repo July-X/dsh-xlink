@@ -63,6 +63,23 @@ export function windowAction(method) {
   return Promise.resolve(win[method]());
 }
 
+/// 把应用当前主题同步给**本窗口的原生装饰**（macOS 标题栏 / Windows 标题栏）。
+///
+/// 为什么必须由前端推：原生 chrome 是系统按窗口的 `NSWindow.appearance` 画的，
+/// 与 web 内容的 token 是两套独立机制。Rust 建窗时对所有副窗钉死
+/// `Theme::Dark`（深色是本应用的默认值），于是浅色主题的用户打开「模型用量」
+/// 会得到**浅色内容 + 深色原生标题栏**的割裂窗口（2026-10-07 用户截图）。
+/// 主题的真值在 localStorage，只有读得到它的前端知道该用哪个。
+///
+/// **只改本窗口**：窗口的内容主题与原生 chrome 必须在任何时刻一致，而已开着的
+/// 副窗不会因为主面板切了主题就重绘（它的 `html.dark` 是加载时定下的）。若在这里
+/// 批量改所有窗口，就会反向造出「深色内容 + 浅色标题栏」，把同一个割裂换个方向。
+export function setWindowTheme(theme) {
+  const win = currentWindow();
+  if (!win || typeof win.setTheme !== 'function') return Promise.resolve();
+  return Promise.resolve(win.setTheme(theme));
+}
+
 /// 用系统浏览器打开外部链接（opener 插件按 OS 分发）。
 ///
 /// 与 `windowAction` 同理，失败**不吞**：旧实现是 `.catch(() => {})`，于是没有默认

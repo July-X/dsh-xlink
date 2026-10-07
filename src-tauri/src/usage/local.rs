@@ -762,6 +762,12 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
             .min_inner_size(720.0, 520.0)
             .resizable(true)
             .background_color(CHROME_BACKDROP)
+            // 兜底深色，**不是最终值**：这扇窗的内容是本应用的 SPA，主题真值在
+            // localStorage，Rust 读不到。页面挂载前 `theme.applyTheme()` 会调
+            // `window.setTheme()` 按实际主题纠正本窗的原生标题栏
+            // （见 `ui/src/shell/bridge.js` 的 `setWindowTheme`）。
+            // 因此浅色主题的用户看到的仍是浅色标题栏，而不是深色内容配深色标题栏
+            // 那道割裂——2026-10-07 用户截图报的就是它。
             .theme(Some(tauri::Theme::Dark));
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);

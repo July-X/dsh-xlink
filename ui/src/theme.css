@@ -216,11 +216,19 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+/* 交通灯的尺寸照抄 macOS 原生，而不是「看着差不多」：
+   2026-10-07 用户以独立窗口（原生装饰）为参照报「主界面红绿灯大小不符合实际」，
+   同一张截图按 1:1 像素量得——
+     · 原生：直径 12px、中心间距 23px、灯组左缘距窗口左缘 7px
+     · 本地：外框 12px（但 `border: 1px` + 全局 border-box 吃掉两侧，
+              着色只剩 10px）、间距 20px、左缘距 12px
+   直径本来就对不上「偏大」——偏大的是**挤**：间距少 3px 让三点连成一坨，
+   加上 1px 深色描边把每点衬得更粗。下面的取值逐项对齐原生。 */
 .mac-titlebar__controls {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
+  gap: 11px;
+  padding: 0 7px;
 }
 
 /* 业务活动脉冲：App.vue 在按钮触发的 IO（withLoading / withProgress）或工作台
@@ -286,7 +294,10 @@ body.pulse-active .mac-titlebar::after {
   padding: 0;
   place-items: center;
   appearance: none;
-  border: 1px solid transparent;
+  /* 描边用 inset 阴影而不是 `border`：全局 `* { box-sizing: border-box }`
+     会让 1px 边框从这 12px 里各吃掉一侧，着色区缩到 10px，比原生的 12px 色块
+     明显小一圈。inset 阴影把同样的深色描边画在色块**之内**，直径回到 12px。 */
+  border: none;
   border-radius: 50%;
   cursor: pointer;
   transition: filter 0.12s ease, opacity 0.12s ease;
@@ -313,7 +324,7 @@ body.pulse-active .mac-titlebar::after {
 
 .mac-titlebar__light--close {
   background: #ff5f57;
-  border-color: #d94a43;
+  box-shadow: inset 0 0 0 1px #d94a43;
 }
 
 .mac-titlebar__light--close::before {
@@ -323,7 +334,7 @@ body.pulse-active .mac-titlebar::after {
 
 .mac-titlebar__light--minimize {
   background: #febc2e;
-  border-color: #d89c1d;
+  box-shadow: inset 0 0 0 1px #d89c1d;
 }
 
 .mac-titlebar__light--minimize::before {
@@ -333,7 +344,7 @@ body.pulse-active .mac-titlebar::after {
 
 .mac-titlebar__light--zoom {
   background: #28c840;
-  border-color: #1c9e31;
+  box-shadow: inset 0 0 0 1px #1c9e31;
 }
 
 .mac-titlebar__light--zoom::before {

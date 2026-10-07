@@ -1,11 +1,12 @@
 {
   "identifier": "default",
-  "description": "Permissions for the main management window",
+  "description": "Permissions for the main management window. allow-set-theme: the main window draws its own title bar, but its NSWindow appearance still decides the macOS window shadow and the webview's prefers-color-scheme; pinning it to Dark while the content is light is the same split this permission lets the page avoid.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-close",
     "core:window:allow-minimize",
+    "core:window:allow-set-theme",
     "core:window:allow-start-dragging",
     "opener:default",
     "allow-local-commands"
