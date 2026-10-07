@@ -304,7 +304,12 @@ mod tests {
         assert!(consume_restore_hint());
         assert!(!consume_restore_hint());
         // 进程已经讲过：再收起也不再发。
-        RESTORE_HINT_SHOWN.store(false, Ordering::Relaxed);
+        // 必须是 **true**——「讲过」是 `RESTORE_HINT_SHOWN` 为真，写成 `false`
+        // 摆的是「本进程还没讲过」，于是 `swap(true)` 返回 false 而落到
+        // `HIDDEN_BY_USER` 上，这条断言会变成在检查相反的语义。这里原来正是
+        // `false`，测试一直红着——`npm run check` 的 `check:rust` 只跑 fmt /
+        // clippy / check --release，**不含 cargo test**，所以没人看见。
+        RESTORE_HINT_SHOWN.store(true, Ordering::Relaxed);
         mark_hidden_by_user();
         assert!(!consume_restore_hint());
         // 收尾清旗，不给其它测试留状态。
