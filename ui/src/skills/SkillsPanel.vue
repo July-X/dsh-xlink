@@ -104,6 +104,10 @@ const storeTip = computed(() => {
 
 // 模式（链接 / 复制）与来源（npm / git / local）都是只读状态，与名称同行展示；
 // 动作区只保留真正可点的按钮，卸载与其它动作靠一条竖分隔线隔开。
+
+// GitHub dsh-skill topic。提到常量是因为社区资源卡里有两处用到它（浏览按钮的
+// 跳转目标、卡头 caption 之外的说明），原先分散写成字面量，改域名要改两处。
+const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
 </script>
 
 <template>
@@ -273,37 +277,88 @@ const storeTip = computed(() => {
           </div>
         </div>
       </div>
+    </div>
 
-      <h3 class="section-divider">
-        手动安装
-        <el-tooltip placement="top" effect="dark">
-          <template #content>
-            支持以下 git 来源：<br />
-            · 仓库地址：https://github.com/owner/repo.git<br />
-            · GitHub 简写：owner/repo<br />
-            · 追加 #tag 可锁定版本
-          </template>
-          <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
-        </el-tooltip>
-      </h3>
-      <div class="install-row">
-        <el-input
-          v-model="skillStore.spec"
-          placeholder="输入后按回车键开始安装"
-          spellcheck="false"
-          clearable
-          @keyup.enter="installSkill"
-        >
-          <template #suffix>
-            <span class="muted" title="按 Enter 开始安装">↵</span>
-          </template>
-        </el-input>
+    <!-- 社区资源卡。2026-10-07 按设计稿从「已安装」卡里拆出来：原先手动安装是
+         已安装卡底部的一条虚线分隔加输入框，读起来像「装完了顺手在这里补一个」，
+         而它其实是另一件事——包的来源在社区，与本地已装状态无关。
+         **不画「技能状态」卡**：设计稿那张写着「启用状态 4 / 4」「活动视图 已同步」，
+         后者后端没有返回对应状态，硬写就是编数据（设计说明「不能从设计稿推断出的
+         内容」）。 -->
+    <div class="card community-card">
+      <div class="card-head">
+        <span class="card-title">社区资源</span>
+        <span class="card-caption">GitHub dsh-skill topic</span>
       </div>
-      <p class="install-hint">
-        也可以在
-        <a href="https://github.com/topics/dsh-skill" target="_blank" rel="noreferrer">GitHub dsh-skill topic</a>
-        浏览社区资源，把 git 仓库地址粘贴到上方手动安装。
-      </p>
+      <!-- 一句「社区在哪、这里没有什么」+ 一个打开 topic 的按钮。面板里**没有**
+           技能目录查询 / 筛选 / 排序列表——那是设计说明里的「候选计划」，把这条
+           边界写在页面上，好过让用户以为搜索框失灵。 -->
+      <div class="community-browse-row">
+        <div class="community-resource-main">
+          <div class="community-title">技能社区</div>
+          <div class="community-meta community-resource-meta">
+            当前通过 GitHub topic 浏览，面板内没有技能目录查询、筛选和排序列表。
+          </div>
+        </div>
+        <el-button
+          size="small"
+          :disabled="globalBusy"
+          aria-label="打开 GitHub dsh-skill topic"
+          @click="openExternalLink(SKILL_TOPIC_URL, '技能社区')"
+        >
+          浏览 topic
+        </el-button>
+      </div>
+      <div class="community-install">
+        <div class="community-title">
+          手动安装
+          <el-tooltip placement="top" effect="dark">
+            <template #content>
+              支持以下 git 来源：<br />
+              · 仓库地址：https://github.com/owner/repo.git<br />
+              · GitHub 简写：owner/repo<br />
+              · 追加 #tag 可锁定版本
+            </template>
+            <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
+          </el-tooltip>
+        </div>
+        <!-- 复用全局 `.install-row`（`display:flex; gap:8px`，`.el-input` 自动
+             `flex:1`），不另写一份 grid：它就是「输入 + 按钮」两列，插件页的
+             手动安装也在用同一条。 -->
+        <div class="install-row">
+          <el-input
+            v-model="skillStore.spec"
+            placeholder="https://github.com/owner/skill-repo"
+            spellcheck="false"
+            clearable
+            @keyup.enter="installSkill"
+          >
+            <template #suffix>
+              <span class="muted" title="按 Enter 开始安装">↵</span>
+            </template>
+          </el-input>
+          <!-- 设计稿这一格是「输入 + 按钮」两列。原先只有输入框、靠回车提交，
+               看着像搜索框而不是安装入口——动作藏在一次按键里，用户不容易
+               知道「填完要按回车」。按钮与回车走同一个 installSkill。
+               **不挂 `:loading`**：`installSkill` 走的是 `withProgress`（长任务），
+               不经过 `withLoading`，`isLoading('…')` 对它永远是 false——挂上去
+               就是一个永远不转的假 loading。在途状态由进度浮层负责表达。 -->
+          <el-button
+            type="primary"
+            :disabled="globalBusy || !skillStore.spec.trim()"
+            @click="installSkill"
+          >
+            安装
+          </el-button>
+        </div>
+        <p class="community-meta">
+          支持 GitHub 地址或 owner/repo 简写，追加 #tag 可锁定版本；安装完成后在上方管理。
+        </p>
+      </div>
+      <div class="skill-remediation-note">
+        <span>异常时</span>
+        <span>遮蔽或冲突条目可移走到带时间戳的备份名，不删除源文件。</span>
+      </div>
     </div>
   </section>
 </template>
@@ -318,5 +373,73 @@ const storeTip = computed(() => {
   gap: 10px;
   margin-top: 8px;
   font-size: 12px;
+}
+
+/* --- 社区资源卡（设计稿 2818-2820 行）------------------------------------
+   稿子把这套画在全局 CSS 里，本页是唯一调用方，就留在 scoped——theme.css
+   走的是反棘轮，只许下调。字号按本仓的正文基线（11–12px）而不是稿子按缩放
+   画板算出来的 9–10px：稿子那些像素是设计稿整体缩到 1040 宽的结果，直接照抄
+   会在真机上小到读不动。 */
+
+/* 「社区在哪 + 这里没有什么」一行，按钮靠右。说明文字可省略：它是补充信息，
+   完整句子不该撑破卡片。 */
+.community-browse-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.community-resource-main {
+  min-width: 0;
+}
+
+/* 卡内小节标题与它下面的说明：技能社区 / 手动安装两组各差一点点（说明一个省略、
+   一个换行），但基线是同一条——分开写两遍，两处字号早晚会漂成不一样。
+   标题用 flex：只有「手动安装」带 ⓘ，但让不带图标的也走 flex 不花钱。 */
+.community-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+.community-meta {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.community-resource-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 手动安装：输入行复用全局 `.install-row`（`.el-input` 自动 flex:1）。 */
+.community-install {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* 异常处理说明。刻意用 warning 色标「异常时」：它说明的是出错后会发生什么，
+   不是一条待办。左边一列固定宽度，右边吃剩余空间。 */
+.skill-remediation-note {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.skill-remediation-note span:first-child {
+  color: var(--warning);
+  font-weight: 650;
 }
 </style>

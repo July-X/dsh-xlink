@@ -2068,15 +2068,9 @@ main {
   flex: 1;
 }
 
-/* 社区资源提示：比正文弱一档，左侧一道细线挂在安装行下面。 */
-.install-hint {
-  margin: 0;
-  padding-left: 10px;
-  border-left: 2px solid var(--border);
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.5;
-}
+/* `.install-hint`（安装行下面的社区资源提示，12px + 左侧细线）已于 2026-10-07
+   删除：技能页按设计稿把「社区资源」拆成独立卡后，它唯一的使用方没有了，那句提示
+   变成卡内 `.community-install-meta`。删前确认过 ui/src 下零引用。 */
 
 /* --- 插件中心 --- */
 
