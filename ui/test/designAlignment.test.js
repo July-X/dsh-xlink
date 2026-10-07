@@ -931,3 +931,58 @@ test('删掉的是「界面上的切实例」，实例上下文与运行状态�
   assert.match(overview, /class="status-pill"/);
   assert.match(stripComments(themeCss), /^\.status-pill \{/m);
 });
+
+// --- 侧栏字号与图标放大（2026-10-07 用户要求，覆盖设计稿）--------------------
+//
+// 用户指着一张侧栏截图说「放大字体、icon」。设计稿 draft 509-524 行给的是
+// `font-size: 13px` / `gap: 11px`，实现此前照抄；现在整体抬一档。
+//
+// 这几条钉的是**层叠后的生效值**，不是原始子串：`.nav-item` 是全局类，
+// `.sidebar.is-collapsed .nav-item` 会在收起态再叠一条 padding，两个状态下
+// 的行高必须分别核对。
+test('侧栏菜单：文字 15px、图标显式 17px，分组标题 12px', () => {
+  assert.equal(effectiveDeclaration(['nav-item'], RULES, 'font-size'), '15px');
+  assert.equal(effectiveDeclaration(['nav-item'], RULES, 'gap'), '11px');
+  assert.equal(effectiveDeclaration(['sidebar__section-label'], RULES, 'font-size'), '12px');
+
+  // 图标这条**不能走 effectiveDeclaration**。它只认主语 token，祖先条件一概
+  // 忽略，于是 `.btn-row .el-button .el-icon { font-size: 17px }`（特异度 300）
+  // 会被算成「`.el-icon` 的生效值」并赢过 `.nav-item > .el-icon`（200）——
+  // 判据于是**因为错误的原因而绿**：图标那条规则改成什么，它都答 17px。
+  // 这条是反向验逼出来的，所以直接读规则文本。
+  const css = stripComments(themeCss);
+  const icon = css.match(/\.nav-item > \.el-icon \{([^}]*)\}/);
+  assert.ok(icon, '找不到 `.nav-item > .el-icon` 规则：图标会退回继承字号，等于没被单独放大');
+  assert.match(icon[1], /font-size: 17px/);
+  assert.doesNotMatch(icon[1], /inherit/, '必须是显式像素值，写 inherit 等于没放大');
+});
+
+test('侧栏放大后，收起态与底部工具区都跟着调', () => {
+  // 收起态内容盒只有 64 − 16 = 48px，行高必须另算。
+  assert.equal(
+    effectiveDeclaration(['sidebar', 'is-collapsed', 'nav-item'], RULES, 'padding'),
+    '8px 0'
+  );
+  // 底部工具区跟着抬一档：15px 的菜单压着 11px 的版本号会显得头重脚轻。
+  assert.equal(effectiveDeclaration(['sidebar__footer'], RULES, 'font-size'), '12px');
+  // 侧栏 224px 仍放得下最长的一项（「数据迁移」四字）。
+  assert.equal(effectiveDeclaration(['sidebar'], RULES, 'width'), 'var(--sidebar-width)');
+});
+
+test('角标圆点从 18px 变 20px，跟上放大的菜单字', () => {
+  // **不能按主语查角标**：`.sidebar.is-collapsed .nav-item__badge` 的主语也是
+  // `.nav-item__badge`，`effectiveDeclaration(['nav-item__badge'], …)` 返回的
+  // 是**收起态**那个 8px / font-size:0 的小红点（祖先条件不参与主语判定，
+  // 这是 `effectiveDeclaration` 的已知边界，见本文件顶部注释）。所以这条读
+  // 剥掉注释后的规则文本，并把两条规则分开认——它们靠祖先条件区分，混在一起
+  // 比就会让收起态的红点盖掉展开态的尺寸。
+  const css = stripComments(themeCss);
+  const expanded = css.match(/\.nav-item__badge \{([^}]*)\}/);
+  assert.ok(expanded, '找不到 .nav-item__badge 规则');
+  assert.match(expanded[1], /min-width: 20px/);
+  assert.match(expanded[1], /height: 20px/);
+  assert.match(expanded[1], /font-size: 12px/);
+  const collapsed = css.match(/\.sidebar\.is-collapsed \.nav-item__badge \{([^}]*)\}/);
+  assert.ok(collapsed, '找不到收起态的角标规则');
+  assert.match(collapsed[1], /min-width: 8px/);
+});

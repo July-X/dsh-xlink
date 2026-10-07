@@ -527,7 +527,7 @@ code {
 
 .sidebar.is-collapsed .nav-item {
   justify-content: center;
-  padding: 7px 0;
+  padding: 8px 0;
 }
 
 .brand {
@@ -581,12 +581,12 @@ code {
 .sidebar__section {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 
 .sidebar__section-label {
-  padding: 0 8px 4px;
-  font-size: 11px;
+  padding: 0 8px 6px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -594,18 +594,26 @@ code {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 11px;
   width: 100%;
-  padding: 7px 8px;
+  padding: 8px 10px;
   border: none;
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 15px;
   font-family: inherit;
   text-align: left;
   cursor: pointer;
   transition: background 0.14s ease, color 0.14s ease;
+}
+
+/* 侧栏图标比文字再大一档（17 vs 15）。Element Plus 的 `.el-icon` 是
+   `font-size: inherit` + 1em，所以只改 `.nav-item` 的字号图标会跟着等比长，
+   那等于图标没有单独被「放大」过——用户要的是图标本身更大。显式写出来，
+   收起态（只剩 icon 列）读到的是同一条规则，两边不会走散。 */
+.nav-item > .el-icon {
+  font-size: 17px;
 }
 
 .nav-item:hover {
@@ -623,15 +631,15 @@ code {
    在悬停 title 里（SideBar）。超过 99 由调用方显示 99+。 */
 .nav-item__badge {
   margin-left: auto;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
   border-radius: 999px;
   background: var(--danger);
   color: #fff;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  line-height: 18px;
+  line-height: 20px;
   text-align: center;
   white-space: nowrap;
 }
@@ -663,7 +671,7 @@ code {
   padding: 12px 2px 0;
   border-top: 1px solid var(--border-soft);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .sidebar__footer-label {
   color: var(--text-secondary);
