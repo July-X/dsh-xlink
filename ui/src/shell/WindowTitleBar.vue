@@ -132,15 +132,7 @@ function minimizeWindow() {
          定位的，需要这一层补上「非按钮区域都可拖拽」。 -->
     <span v-if="isWindowsTitlebar" class="mac-titlebar__drag" data-tauri-drag-region aria-hidden="true"></span>
 
-    <span class="mac-titlebar__brush mac-titlebar__brush--light" aria-hidden="true"></span>
-    <span class="mac-titlebar__brush mac-titlebar__brush--ink" aria-hidden="true"></span>
-    <span class="mac-titlebar__brush mac-titlebar__brush--dry" aria-hidden="true"></span>
-    <span class="mac-titlebar__brush mac-titlebar__brush--tip" aria-hidden="true"></span>
-    <span class="mac-titlebar__brush mac-titlebar__brush--ridge" aria-hidden="true"></span>
-    <span class="mac-titlebar__brush mac-titlebar__brush--broken" aria-hidden="true"></span>
-    <span class="mac-titlebar__brush mac-titlebar__brush--bristle" aria-hidden="true"></span>
-    <span class="mac-titlebar__brush mac-titlebar__brush--drip" aria-hidden="true"></span>
-    <span class="mac-titlebar__brush mac-titlebar__brush--smear" aria-hidden="true"></span>
-    <span class="mac-titlebar__brush mac-titlebar__brush--streak" aria-hidden="true"></span>
+    <!-- 笔刷层（旧版那十个 mac-titlebar__brush--* 装饰节点）已随素面标题栏一起
+         删除：它们服务的视觉语言不存在了，留着只是十行无样式的空 span。 -->
   </header>
 </template>
