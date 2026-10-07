@@ -39,7 +39,7 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use tauri::webview::{Color, NewWindowResponse, PageLoadEvent};
+use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use url::Url;
 
@@ -402,7 +402,7 @@ pub fn recreate(app: &AppHandle, reason: &str) -> Result<(), String> {
     eprintln!("dsh-xlink: {message}");
     crate::shell::shell_events::record(HARNESS_WINDOW_LOG, &message);
     let parsed = Url::parse(&url).map_err(|e| format!("工作台地址无法解析，未能重建窗口：{e}"))?;
-    open(app, parsed, chrome_backdrop(app))
+    open(app, parsed)
 }
 
 /// 清空看门狗的额度，让下一次 [`recreate`] 真的动手。
@@ -424,13 +424,13 @@ pub fn reset_budget(state: &AppState) {
 ///
 /// **必须开一条 OS 线程**：在 Tauri 命令线程里同步构造 webview 在 Windows 上会
 /// 死锁（与 `open_log_window` 同一理由），所以这里 spawn 之后立刻取回结果。
-pub fn open(app: &AppHandle, url: Url, backdrop: Color) -> Result<(), String> {
+pub fn open(app: &AppHandle, url: Url) -> Result<(), String> {
     let handle = app.clone();
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("dsh-open-harness".into())
         .spawn(move || {
-            let result = build(&handle, &url, backdrop);
+            let result = build(&handle, &url);
             if let Err(ref e) = result {
                 eprintln!("dsh-xlink: failed to open harness window: {e}");
             }
@@ -460,12 +460,17 @@ pub fn open(app: &AppHandle, url: Url, backdrop: Color) -> Result<(), String> {
 ///   `kernel::prepare_workbench_source_maps` 在服务端文件层补齐，不依赖覆盖不了的
 ///   DevTools 内部网络请求。
 /// - `on_page_load`：把加载事件喂给 [`observe`]。
-fn build(app: &AppHandle, url: &Url, backdrop: Color) -> Result<(), String> {
+fn build(app: &AppHandle, url: &Url) -> Result<(), String> {
+    use crate::shell::window::{window_title, CHROME_BACKDROP};
     let link_opener = app.clone();
     WebviewWindowBuilder::new(app, "harness", WebviewUrl::External(url.clone()))
-        .title("DeepSeek Harness 工作台")
+        .title(window_title("工作台"))
         .inner_size(1280.0, 840.0)
-        .background_color(backdrop)
+        .background_color(CHROME_BACKDROP)
+        // 钉死深色：主窗口的标题栏是自绘的、恒为深色，副窗走原生装饰。不钉
+        // 的话系统切浅色时这扇窗的标题栏变白，而内容仍是深色——2026-10-07
+        // 用户截图里就是这个割裂。
+        .theme(Some(tauri::Theme::Dark))
         .on_new_window(move |link, _features| {
             if matches!(link.scheme(), "http" | "https") {
                 use tauri_plugin_opener::OpenerExt;
@@ -518,26 +523,6 @@ const HARNESS_WINDOW_LOG: &str = "harness-window";
 
 fn reload_window(window: &WebviewWindow) -> Result<(), String> {
     window.reload().map_err(|e| e.to_string())
-}
-
-/// 暗底过渡色：加载完成前窗口是空的，此刻显示与目标页面同色系的暗底，加载完成
-/// 时只是内容淡入，而不是从白到黑的跳变。颜色跟随系统主题（读主壳窗口的
-/// theme）：浅色系统下用接近页面的浅灰而不是强行涂黑，避免把白闪换成同样刺眼的
-/// 黑闪。
-///
-/// 从 [`crate::commands::chrome_backdrop`] 搬来：重建工作台窗口也要用它，而它在
-/// commands.rs 里的注释本来就是"三处建窗路径必须共用同一份色值"。
-fn chrome_backdrop(app: &AppHandle) -> Color {
-    let dark = app
-        .get_webview_window("main")
-        .and_then(|w| w.theme().ok())
-        .map_or(true, |theme| theme == tauri::Theme::Dark);
-    if dark {
-        // 工作台与官方对话的深色底都在 #141414~#1B1B1F 附近。
-        Color(0x16, 0x17, 0x1a, 0xff)
-    } else {
-        Color(0xf7, 0xf7, 0xf8, 0xff)
-    }
 }
 
 #[cfg(test)]

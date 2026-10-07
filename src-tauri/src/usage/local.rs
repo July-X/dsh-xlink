@@ -740,7 +740,7 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
             if let Some(existing) = handle.get_webview_window("usage-viewer") {
                 let _ = existing.destroy();
             }
-            let backdrop = crate::commands::chrome_backdrop(&handle);
+            use crate::shell::window::{window_title, CHROME_BACKDROP};
             // 吸附定位取主窗的物理坐标 + 缩放比换算成逻辑坐标交给 builder；
             // 主窗不在（理论上不会）或取不到显示器信息时保持默认居中。
             let dock = handle.get_webview_window("main").and_then(|main| {
@@ -754,14 +754,15 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
                 "usage-viewer",
                 tauri::WebviewUrl::App("index.html?usage=1".into()),
             )
-            .title("模型用量")
+            .title(window_title("模型用量"))
             .inner_size(
                 crate::shell::window::USAGE_VIEWER_SIZE.width,
                 crate::shell::window::USAGE_VIEWER_SIZE.height,
             )
             .min_inner_size(720.0, 520.0)
             .resizable(true)
-            .background_color(backdrop);
+            .background_color(CHROME_BACKDROP)
+            .theme(Some(tauri::Theme::Dark));
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);
             }

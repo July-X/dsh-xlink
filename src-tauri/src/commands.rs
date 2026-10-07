@@ -29,7 +29,7 @@ use std::sync::{mpsc, Mutex, OnceLock};
 
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::webview::{Color, NewWindowResponse};
+use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, State, Webview};
 use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowBuilder};
 use url::Url;
@@ -1241,31 +1241,6 @@ fn workbench_url_responds(url: &str, timeout: std::time::Duration) -> bool {
     (200..300).contains(&status) || (300..400).contains(&status)
 }
 
-/// 窗口/WebView 在首帧文档绘制之前使用的底色。
-///
-/// WebView 的默认底色是纯白：远程页面（工作台、官方对话）在网络请求
-/// 与首屏渲染完成前会有几百毫秒的空白期，在深色的壳里读作一记刺眼的
-/// 白闪。窗口层（NSWindow / HWND 背景）与 WebView 层都设成同一种底色
-/// 之后，这段空白期呈现的是与目标页面同色系的暗底，加载完成时只是内容
-/// 淡入，而不是从白到黑的跳变。
-///
-/// 颜色跟随系统主题（读主壳窗口的 theme）：浅色系统下用接近页面的浅灰
-/// 而不是强行涂黑，避免把白闪换成同样刺眼的黑闪。
-/// `pub(crate)`：模型用量窗口（usage.rs::open_usage_window）与日志查看器
-/// 同一条建窗路径，暗底过渡色必须一致，不能各调一份色值。
-pub(crate) fn chrome_backdrop(app: &AppHandle) -> Color {
-    let dark = app
-        .get_webview_window("main")
-        .and_then(|w| w.theme().ok())
-        .map_or(true, |theme| theme == tauri::Theme::Dark);
-    if dark {
-        // 工作台与官方对话的深色底都在 #141414~#1B1B1F 附近。
-        Color(0x16, 0x17, 0x1a, 0xff)
-    } else {
-        Color(0xf7, 0xf7, 0xf8, 0xff)
-    }
-}
-
 /// 端口上有一个**已确证不是内核**的监听者时，返回拒绝打开工作台的理由。
 ///
 /// 只在 [`kernel::ListenerIdentity::NotKernel`] 时拒绝：端口被无关程序占用时
@@ -1356,18 +1331,19 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         let url = Url::parse(&resolved).map_err(|e| e.to_string())?;
         *crate::lock(&state.harness_url) = Some(resolved);
 
-        let backdrop = chrome_backdrop(&app);
         let handle = app.clone();
         let link_opener = handle.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("dsh-open-harness".into())
             .spawn(move || {
+                use crate::shell::window::{window_title, CHROME_BACKDROP};
                 let result =
                     WebviewWindowBuilder::new(&handle, "harness", WebviewUrl::External(url))
-                        .title("DeepSeek Harness 工作台")
+                        .title(window_title("工作台"))
                         .inner_size(1280.0, 840.0)
-                        .background_color(backdrop)
+                        .background_color(CHROME_BACKDROP)
+                        .theme(Some(tauri::Theme::Dark))
                         // 内核 Web 前端把会话内容里的网页地址渲染成
                         // `<a target="_blank" rel="noopener noreferrer">`，
                         // 交给「浏览器打开新标签页」的默认行为。但 Tauri
@@ -1466,7 +1442,7 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
                 let _ = existing.destroy();
             }
             let encoded: String = url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
-            let backdrop = chrome_backdrop(&handle);
+            use crate::shell::window::{window_title, CHROME_BACKDROP};
             // 吸附定位与用量窗口共用一套算法：贴主窗右侧、顶边对齐，
             // 右侧放不下翻左侧；物理坐标换算成逻辑坐标交给 builder。
             let dock = handle.get_webview_window("main").and_then(|main| {
@@ -1480,13 +1456,16 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
                 "log-viewer",
                 WebviewUrl::App(format!("index.html?log={encoded}").into()),
             )
-            .title(format!("日志 - {name}"))
+            // 标题里那个应用名跟着 `window_title` 走；窗口名用「·」而不是「-」
+            // 分隔日志名，免得拼出「日志 - kernel — Dsh-Xlink」两个同款分隔符。
+            .title(window_title(&format!("日志 · {name}")))
             .inner_size(
                 crate::shell::window::LOG_VIEWER_SIZE.width,
                 crate::shell::window::LOG_VIEWER_SIZE.height,
             )
             .resizable(true)
-            .background_color(backdrop);
+            .background_color(CHROME_BACKDROP)
+            .theme(Some(tauri::Theme::Dark));
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);
             }
@@ -1598,15 +1577,15 @@ fn add_official_chat_tab(
     index: usize,
     layout: OfficialChatLayout,
     profile_dir: &Path,
-    backdrop: Color,
 ) -> Result<(), String> {
+    use crate::shell::window::CHROME_BACKDROP;
     let (_, url_text) = OFFICIAL_CHAT_TABS
         .get(index)
         .ok_or_else(|| format!("官方对话页签不存在：{index}"))?;
     let label = format!("official-chat-tab-{index}");
     let url = Url::parse(url_text).map_err(|e| format!("非法页签地址：{e}"))?;
     let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
-        .background_color(backdrop)
+        .background_color(CHROME_BACKDROP)
         .data_directory(profile_dir.to_path_buf())
         .additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)
         .initialization_script(include_str!("harness/titlebar-pulse.js"))
@@ -1634,7 +1613,6 @@ fn ensure_official_chat_tab(
     profile_dir: &Path,
     layout: OfficialChatLayout,
 ) -> Result<(), String> {
-    let backdrop = chrome_backdrop(app);
     let window = app
         .get_window(OFFICIAL_CHAT_WINDOW_LABEL)
         .ok_or("官方对话窗口未打开".to_string())?;
@@ -1652,7 +1630,7 @@ fn ensure_official_chat_tab(
             let result = (|| {
                 fs::create_dir_all(&profile_dir)
                     .map_err(|e| format!("无法创建官方对话数据目录：{e}"))?;
-                add_official_chat_tab(&window, index, layout, &profile_dir, backdrop)
+                add_official_chat_tab(&window, index, layout, &profile_dir)
             })();
             let _ = tx.send(result);
         })
@@ -1698,7 +1676,6 @@ fn ensure_official_chat_tab(
 /// 新聚焦。
 #[tauri::command]
 pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
-    let backdrop = chrome_backdrop(&app);
     let handle = app.clone();
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
@@ -1721,12 +1698,14 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                 };
                 fs::create_dir_all(&profile_dir)
                     .map_err(|e| format!("无法创建官方对话数据目录：{e}"))?;
+                use crate::shell::window::{window_title, CHROME_BACKDROP};
                 let window = {
                     let builder = WindowBuilder::new(&handle, OFFICIAL_CHAT_WINDOW_LABEL)
-                        .title("DeepSeek 官方对话")
+                        .title(window_title("官方网页版"))
                         .inner_size(OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT)
                         .resizable(true)
-                        .background_color(backdrop)
+                        .background_color(CHROME_BACKDROP)
+                        .theme(Some(tauri::Theme::Dark))
                         // 让 AppKit 在挂载子 WebView 之前先把父内容视图的 frame 确定下来；
                         // post-show 那一轮再根据注册结果重新设置每个子视
                         // 图的 frame。
@@ -1780,7 +1759,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                 // switch_official_chat_tab 按需挂载；一旦挂载，它们保
                 // 持同一份持久 profile，并在该窗口的生命周期内一直挂
                 // 着。
-                add_official_chat_tab(&window, 0, layout, &profile_dir, backdrop)?;
+                add_official_chat_tab(&window, 0, layout, &profile_dir)?;
 
                 // 页签栏：本地 SPA 路由渲染页签栏并保留 `window.__TAURI__`，使其能
                 // 调用页签命令。拉绳小台灯也由这个 38px 高的 WebView 渲
@@ -1790,7 +1769,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                     OFFICIAL_CHAT_STRIP_LABEL,
                     WebviewUrl::App("index.html?chatstrip=1".into()),
                 )
-                .background_color(backdrop)
+                .background_color(CHROME_BACKDROP)
                 .initialization_script(include_str!("harness/pullstring-launcher.js"));
                 window
                     .add_child(

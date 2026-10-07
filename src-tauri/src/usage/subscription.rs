@@ -1100,7 +1100,6 @@ pub async fn open_subscription_window(app: tauri::AppHandle) -> Result<(), Strin
             if let Some(existing) = handle.get_webview_window(label) {
                 let _ = existing.destroy();
             }
-            let backdrop = crate::commands::chrome_backdrop(&handle);
             let dock = handle
                 .get_webview_window("main")
                 .and_then(|main| window::dock_position_logical(&main, window::USAGE_VIEWER_SIZE));
@@ -1109,14 +1108,15 @@ pub async fn open_subscription_window(app: tauri::AppHandle) -> Result<(), Strin
                 label,
                 tauri::WebviewUrl::App("index.html?subscription=1".into()),
             )
-            .title("套餐用量")
+            .title(window::window_title("套餐用量"))
             .inner_size(
                 window::USAGE_VIEWER_SIZE.width,
                 window::USAGE_VIEWER_SIZE.height,
             )
             .min_inner_size(720.0, 520.0)
             .resizable(true)
-            .background_color(backdrop);
+            .background_color(window::CHROME_BACKDROP)
+            .theme(Some(tauri::Theme::Dark));
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);
             }

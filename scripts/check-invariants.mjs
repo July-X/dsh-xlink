@@ -1897,6 +1897,99 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// --- 18. 窗口标题与标题栏主题：一份名字 + 全员钉深色 ----------------------
+//
+// 2026-10-07 用户截图：主窗口标题栏深色，副窗（套餐用量）标题栏**浅色**——
+// 系统切浅色时原生标题栏跟着变白，而壳内内容恒为深色。两处成因各自独立：
+//   · 全仓 `prefers-color-scheme` 零命中，`set_theme` 从来没被调用过，
+//     所以每一扇走原生装饰的窗口都在跟随系统；
+//   · 窗口标题是六处各自写死的字面量，主窗口那份还硬编码在 Vue 组件里。
+// 两条都只有真机窗口标题栏看得出来，单测与 UI 测试都够不着，所以放这里。
+
+{
+  const conf = JSON.parse(read('src-tauri/tauri.conf.json'));
+  const main = (conf.app?.windows ?? []).find((w) => w.label === 'main');
+  if (!main) {
+    fail('window-chrome', 'tauri.conf.json 里找不到 label 为 main 的窗口');
+  } else {
+    const expected = main.title;
+    if (!expected) {
+      fail('window-chrome', '主窗口没有 title，副窗的「窗口名 — 应用名」就没有可对齐的那个名字');
+    } else {
+      // ① tauri.conf.json ↔ Rust 常量 ↔ Vue 自绘标题，三处必须同一份。
+      const rustTitle = read('src-tauri/src/shell/window.rs').match(
+        /pub const APP_TITLE: &str = "([^"]+)"/,
+      );
+      if (!rustTitle) {
+        fail('window-chrome', 'shell/window.rs 里找不到 APP_TITLE——窗口标题的唯一出口没了');
+      } else if (rustTitle[1] !== expected) {
+        fail(
+          'window-chrome',
+          `窗口标题对不上：tauri.conf.json 是「${expected}」，shell/window.rs 的 APP_TITLE 是「${rustTitle[1]}」`,
+        );
+      }
+      const vueTitle = read('ui/src/shell/WindowTitleBar.vue').match(
+        /<span>([^<]+)<\/span>/,
+      );
+      if (!vueTitle) {
+        fail('window-chrome', 'WindowTitleBar.vue 里找不到标题文案节点');
+      } else if (vueTitle[1].trim() !== expected) {
+        fail(
+          'window-chrome',
+          `窗口标题对不上：tauri.conf.json 是「${expected}」，WindowTitleBar.vue 自绘的是「${vueTitle[1].trim()}」`,
+        );
+      }
+    }
+    // ② 主窗口必须钉深色：它自绘标题栏，副窗要跟它一致就只能以它为准，
+    //    而系统主题不是那个准。
+    if (main.theme !== 'Dark') {
+      fail(
+        'window-chrome',
+        `主窗口 theme 是「${main.theme ?? '（未设，跟随系统）'}」，自绘标题栏恒为深色，副窗钉 Dark 之后两者会反过来割裂`,
+      );
+    }
+  }
+
+  // ③ 每扇副窗都要自己钉标题与主题。两件事分别计数而不是逐扇配对：
+  //    配对要看「`.title(` 往后 30 行里有没有 `.theme(`」，那是个靠行距的启发式，
+  //    往 builder 中间插几行参数就会静默失配。改成全局对账——建几扇窗就得钉
+  //    几次主题，少一扇既不编译失败也没有告警，只在系统切浅色时那一个窗口变白。
+  const popupFiles = [];
+  let titles = 0;
+  let hardcoded = 0;
+  let themes = 0;
+  for (const rel of RUST_SOURCES) {
+    const lines = read(rel).split('\n');
+    for (let i = 0; i < lines.length; i += 1) {
+      // 只认 `builder.title(`，不认 `notify::task` 里的 `set_title(`。
+      if (!/\.title\(/.test(lines[i])) continue;
+      titles += 1;
+      popupFiles.push(`${rel}:${i + 1}`);
+      if (!/window_title\(/.test(lines[i])) hardcoded += 1;
+    }
+    themes += (lines.join('\n').match(/\.theme\(Some\(tauri::Theme::Dark\)\)/g) ?? []).length;
+  }
+  if (titles === 0) {
+    fail('window-chrome', '一个 `.title(` 都没扫到——建窗路径被整体挪走了？检查项本身该跟着更新');
+  } else {
+    if (hardcoded > 0) {
+      fail(
+        'window-chrome',
+        `有 ${hardcoded} 处窗口标题是写死的字面量，没走 window_title()（共 ${titles} 处标题）`,
+      );
+    }
+    if (themes !== titles) {
+      fail(
+        'window-chrome',
+        `建了 ${titles} 扇带标题的窗，只钉了 ${themes} 次 Theme::Dark——少钉的那扇在系统浅色下标题栏会变白（2026-10-07 用户截图）`,
+      );
+    }
+  }
+  if (hardcoded === 0 && themes === titles) {
+    note(`窗口标题统一走 window_title()，${titles} 扇副窗都钉死深色标题栏`);
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);
