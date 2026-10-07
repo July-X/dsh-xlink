@@ -33,7 +33,6 @@ use crate::shell::process::{
 };
 
 use serde::Serialize;
-use tauri::Manager;
 
 use crate::shell::error::AppError;
 // KERNEL_FAMILY_DSH 仅在 test 块使用；non-test 代码走
@@ -132,6 +131,14 @@ pub struct KernelStatus {
     /// 缩短为 `~`。UI 把该值显示在「打开」按钮旁边，按钮点击后也打开
     /// 同一路径——这样标签和操作指向的是同一个目录。
     pub data_dir: String,
+    /// **应用数据根目录**（`paths::xlink_home()`，即 `~/.dsh-xlink`）的展示形式。
+    ///
+    /// 与 `data_dir` 分开：后者是族 + 壳模式再往下两层的**当前实例**目录
+    /// （`~/.dsh-xlink/dsh/desktop`），概览那一格只有约 141px 宽，`data_dir`
+    /// 在那里被 `display_short` 截成 `~/.dsh-xlink/dsh/…`，看起来像坏掉的
+    /// 路径。用户要看到并打开的是「这个应用的数据放在哪」的答案，那一层就是
+    /// 根目录；实例目录仍作为 title 挂在旁边，一个字都没丢（2026-10-08）。
+    pub xlink_home: String,
     /// 设置文件损坏 / 读不出来时的说明。非空时 UI 必须显示它：此时端口已经
     /// 无声回退到默认值，不提示的话用户只会看到"工作台跑到别的端口去了"。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,24 +156,42 @@ pub struct KernelStatus {
 /// 2. `<xlink_home>/<family>/desktop[-dev]/`——按内核族命名的默认根目录。
 ///    dsh 与将来的 mcode 各有一份（`dsh/desktop`、`mcode/desktop`），互不
 ///    可见。所有 Shell 状态（内核安装、活动指针、quarantine）都落在族目录内。
-/// 3. 当 xlink_home 不可写时，回退到 Tauri 的操作系统 app-data 目录；
-///    宁愿在某个地方启动也不愿在启动阶段直接失败。
 ///
-/// 解析的同时把 v0.2.x 的平铺布局（`<xlink_home>/desktop[-dev]/`）一次性
-/// 搬迁进族目录，见 [`resolve_family_runtime_dir`]。
-pub fn data_dir(app: &tauri::AppHandle, family: &str) -> PathBuf {
+/// **只有这两级，没有第三级**（2026-10-08 用户拍板）。此前这里有一条回落到
+/// Tauri `app_data_dir()` 的兜底，声称「xlink_home 不可写时宁愿在某个地方
+/// 启动」。那条兜底要撤掉，理由不是「兜底不好」，而是它让**同一个产品在不同
+/// 平台上数据落在完全不同的地方**：macOS 是 `~/Library/Application Support/<id>`、
+/// Windows 是 `%APPDATA%\<id>`，两者都既不在 `~` 下面、也不随 `DSH_XLINK_HOME`
+/// 走。用户要的是「数据目录恒在 `~/.dsh-xlink`」，Windows 同样如此——一条平台
+/// 分支会让这个承诺在 Windows 上不成立。
+///
+/// 放弃启动期兜底不等于放弃启动：建不出目录时仍然返回 `<xlink_home>` 下的族
+/// 目录，并**明确打印失败原因**。此后的每一次写入都会各自失败并报出来，错误信息
+/// 指着同一条路径；比静默换到一个用户没预期的目录、事后在别处排查要好定位。
+pub fn data_dir(family: &str) -> PathBuf {
     if let Some(override_dir) = std::env::var_os("DSH_DESKTOP_DATA_DIR").map(PathBuf::from) {
         let _ = fs::create_dir_all(&override_dir);
         return override_dir;
     }
     match resolve_family_runtime_dir(family) {
         Some(dir) => dir,
-        None => app.path().app_data_dir().unwrap_or_else(|_| {
-            crate::shell::paths::family_runtime_dir(
+        None => {
+            let dir = crate::shell::paths::family_runtime_dir(
                 family,
                 crate::shell::paths::ShellMode::current(),
-            )
-        }),
+            );
+            eprintln!(
+                "dsh-xlink: 无法创建数据目录 {}：{}；\
+                 仍按该路径继续（不再回落到系统 app-data 目录，否则数据会落在 \
+                 与 ~/.dsh-xlink 无关的地方），后续写入会各自报错",
+                dir.display(),
+                fs::create_dir_all(&dir)
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_default()
+            );
+            dir
+        }
     }
 }
 
@@ -220,6 +245,27 @@ pub(crate) fn dirs_home() -> PathBuf {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// 应用数据根目录（`~/.dsh-xlink`）的展示形式。
+///
+/// **不走 `display_short` 的中间省略**：那一档是为「实例目录太长」设计的，
+/// 而根目录本来就是 `~/.dsh-xlink` —— 完整展示也才 13 个字符，省略它反而
+/// 让用户看到一个截断的、看不出所以然的字符串。这里复用同一套 home 折叠与
+/// 正斜杠规范化（Windows 上 `C:\Users\me\.dsh-xlink` → `~/.dsh-xlink`），
+/// 但不截断。
+fn display_xlink_home() -> String {
+    let path = crate::shell::paths::xlink_home();
+    let home = dirs_home();
+    match path.strip_prefix(&home) {
+        Ok(rel) if !rel.as_os_str().is_empty() => format!(
+            "~/{}/",
+            rel.to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/")
+                .trim_matches('/')
+        ),
+        _ => path.display().to_string(),
+    }
 }
 
 /// 把 `path` 渲染为展示形式：把 home 前缀缩短为 `~`。当路径不在用户
@@ -630,6 +676,7 @@ pub(crate) fn status_with_perf(
         running,
         port: settings.port,
         data_dir: display_short(data_dir),
+        xlink_home: display_xlink_home(),
         settings_warning,
         other_shell_workbench,
     };
@@ -2945,6 +2992,7 @@ mod tests {
             running: false,
             port: 3091,
             data_dir: "~/.dsh-xlink/dsh/desktop-dev".into(),
+            xlink_home: "~/.dsh-xlink/".into(),
             settings_warning: None,
             other_shell_workbench: Some(OtherShellWorkbench {
                 shell: "release".into(),
@@ -3048,6 +3096,75 @@ mod tests {
         // 后缀）。输出仍应为单个 `~`，而不是 `~/`。
         let home = dirs_home();
         assert_eq!(display_short(&home), "~");
+    }
+
+    /// 应用数据根目录的展示形式：`~/.dsh-xlink/`——**完整展示，不做中间省略**。
+    /// 省略号是给实例目录（`~/.dsh-xlink/<family>/desktop/`，38 字预算）用的，
+    /// 根目录本来就只有十来个字符，省略它反而让用户看到一个截断的字符串。
+    #[test]
+    fn display_xlink_home_is_the_full_root_without_ellipsis() {
+        // 走「env 缺失」的默认值而不是把 DSH_XLINK_HOME 指到真实 ~/.dsh-xlink：
+        // 本函数只读不写，但让夹具指向用户真实数据目录这件事本身就是该避免的。
+        let _guard = crate::tests::scoped_xlink_home_unset();
+        assert_eq!(display_xlink_home(), "~/.dsh-xlink/");
+    }
+
+    #[test]
+    fn display_xlink_home_falls_back_to_full_path_outside_home() {
+        // DSH_XLINK_HOME 指向 home 之外时原样展示，让布局非标准的用户能核对
+        // 自己的数据实际写到哪。与 display_short 同一条纪律。
+        //
+        // 样本必须是**真的**在 home 之外：`dirs_home().join("..")` 这种写法
+        // 词法上仍是 home 的前缀，`strip_prefix` 会成功，于是测到的还是 `~/..`
+        // 那一支（第一版就是这么写的，红的是样本而不是代码）。
+        let outside = std::env::temp_dir().join(format!(
+            "dsh-xlink-outside-home-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        assert!(
+            !outside.starts_with(dirs_home()),
+            "样本必须在 home 之外，否则这��测试测的是 ~/.. 那一支"
+        );
+        let _guard = crate::tests::scoped_xlink_home(&outside);
+        assert_eq!(display_xlink_home(), outside.display().to_string());
+    }
+
+    /// `data_dir` 恒在 `xlink_home` 之下 —— **没有平台分支**。
+    ///
+    /// 2026-10-08 撤掉了 `app.path().app_data_dir()` 兜底：它让 macOS 落到
+    /// `~/Library/Application Support/<id>`、Windows 落到 `%APPDATA%\<id>`，
+    /// 「数据目录在 ~/.dsh-xlink」这条承诺在两个平台上并不同时成立。
+    /// 这条测试只钉「返回值在 xlink_home 下」；`check-invariants.mjs` 的
+    /// `data-dir-platform-branch` 另外钉住「生产代码里不再出现 app_data_dir」。
+    #[test]
+    fn data_dir_is_always_under_xlink_home() {
+        let root = std::env::temp_dir().join(format!(
+            "dsh-xlink-datadir-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _guard = crate::tests::scoped_xlink_home(&root);
+        let family = "dsh";
+        let dir = data_dir(family);
+        assert!(
+            dir.starts_with(&root),
+            "data_dir {} 必须落在 xlink_home {} 之下",
+            dir.display(),
+            root.display()
+        );
+        assert!(
+            dir.ends_with("desktop") || dir.ends_with("desktop-dev"),
+            "data_dir 应是族目录下的 desktop[-dev]，实际是 {}",
+            dir.display()
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// 当内核目录缺少 `fs-ext/build/Release/fs_ext.node`（pnpm 跳过构建

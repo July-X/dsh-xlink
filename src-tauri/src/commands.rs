@@ -417,20 +417,33 @@ pub async fn read_log_file(state: State<'_, AppState>, name: String) -> Result<S
     blocking(move || Ok::<_, std::convert::Infallible>(read_tail(&path, 16 * 1024))).await
 }
 
-/// 在操作系统文件管理器中显示 Shell 的数据目录。
+/// 在操作系统文件管理器中显示 Shell 的**应用数据根目录**。
 ///
-/// 路径来源于 `AppState.data_dir`，由 `lib::setup` 通过 `kernel::data_dir`
-/// 解析并在首次启动时创建，因此该目录在运行时始终存在。改成走服务
-/// 端（而不是让 UI 直接调 `opener.open_path`）可以绕开 opener 插件的
+/// 打开的是 `paths::xlink_home()`（`~/.dsh-xlink`），不是
+/// `AppState.data_dir` 那个当前实例目录（`~/.dsh-xlink/<family>/desktop/`）。
+/// 2026-10-08 用户定的：那一格显示什么、这一颗按钮就打开什么，而那一格现在
+/// 显示的是根——概览页要回答的是「这个应用的数据放在哪」，实例层是更细的
+/// 事实，挂在 title 里就够。标签与动作指向不同目录正是上一版要避免的事。
+///
+/// 路径解析方式与 `lib::setup` 一致（同一个 `xlink_home()`），因此两平台都在
+/// `~` 下面：macOS 的 `~/Library/Application Support` 与 Windows 的 `%APPDATA%`
+/// 都已不在解析链上（见 `kernel::lifecycle::data_dir` 的注释）。
+///
+/// 改成走服务端（而不是让 UI 直接调 `opener.open_path`）可以绕开 opener 插件的
 /// IPC scope 检查——`opener:default` 只授予 `open_url` /
 /// `reveal_item_in_dir` / 默认 URL，并不包括 `open_path`。作为插件底
 /// 层的 `open` crate 按平台分发：macOS 上 `open` 启动 Finder 并选中
 /// 父目录中的目标项；Windows 上 `cmd /C start ""` 直接打开该目录对应
 /// 的资源管理器。
 #[tauri::command]
-pub async fn open_data_dir(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn open_data_dir(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    let path = state.data_dir.clone();
+    let path = crate::shell::paths::xlink_home();
+    // 根目录可能尚未创建（首装、home 权限异常等）。`open_path` 对不存在的
+    // 路径只报一个含糊的错误，这里先建一次，让失败原因指向真实的 I/O 问题。
+    if let Err(error) = std::fs::create_dir_all(&path) {
+        return Err(format!("无法访问数据目录 {}：{error}", path.display()));
+    }
     blocking(move || {
         app.opener()
             .open_path(path.to_string_lossy().into_owned(), None::<&str>)
