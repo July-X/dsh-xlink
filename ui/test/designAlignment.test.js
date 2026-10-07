@@ -887,3 +887,47 @@ test('内核版本页维持一张卡竖排：有意保留的偏差，不是漏�
   assert.doesNotMatch(versionsTpl, /page-layout|grid-template-columns/);
   assert.doesNotMatch(stripComments(themeCss), /\.versions-layout/);
 });
+
+// --- 顶部工作条整条删除（2026-10-07 用户要求）------------------------------
+//
+// 用户指着一张截图说「移除这个区域」——标题栏正下方那条 48px 的 `.workspace-bar`：
+// 左边内核族页签，右边「当前实例 + 运行状态」。设计稿 2516 行是有这条的，所以
+// 这是**覆盖设计稿**的决定。下面两条钉的是「删干净」与「别删过头」。
+const appVue = readFileSync('ui/src/App.vue', 'utf8');
+const instanceJs = readFileSync('ui/src/kernel/instance.js', 'utf8');
+
+test('顶部工作条已整条删除：组件、挂载点、行高 token 都不在', () => {
+  assert.ok(!existsSync(resolve('ui/src/kernel/KernelTabs.vue')), 'KernelTabs.vue 应已删除');
+  assert.doesNotMatch(appVue, /KernelTabs/);
+  assert.doesNotMatch(stripComments(themeCss), /--workspace-bar-height/, '只为那条 bar 定义的行高 token 应一并删掉');
+  // 样式也不该有残留：页签那套是 KernelTabs 的 scoped，文件没了就该一起没。
+  assert.doesNotMatch(stripComments(themeCss), /\.kernel-tab/);
+});
+
+test('删掉的是「界面上的切实例」，实例上下文与运行状态一个不少', () => {
+  // 那条页签**从第一天起就是空操作**：它按 kernel_family 去重，而后端只定义了
+  // `dsh` 一个族（`mcode` 在 paths.rs 里写着「将来的」）。一个族只画一个页签，
+  // 它必然就是当前那个，点下去在 `defaultInstanceId === id` 那一步就 return
+  // false 了。所以删掉它没有拿走任何**能用的**功能。
+  //
+  // 但 `setDefaultInstance` **不许跟着删**。先前的版本把它当死代码删了，
+  // `ui/test/kernelSwitch.test.js` 当场变红——它不是「永远走不到的代码」，而是
+  // 没有调用方的 API，那条测试钉着三条语义（读去重、陈旧列表不得冲掉切换结果、
+  // 失败必释放 busy）。删函数就要连语义一起删，那是拿测试换行数。这条判据就是
+  // 防止下一次「顺手清死代码」再犯一遍。
+  assert.match(instanceJs, /export async function setDefaultInstance/);
+  assert.match(instanceJs, /selectionRevision/, '陈旧列表冲不掉切换结果这条语义要留着');
+  // 但界面上确实没有入口了：没有任何模板再 import 它。
+  const callers = srcScriptFiles().filter(
+    (file) => file.endsWith('.vue') && readFileSync(file, 'utf8').includes('setDefaultInstance')
+  );
+  assert.deepEqual(callers, [], '还有模板在调 setDefaultInstance，工作条没删干净');
+  // —— 「用户在服务的是哪个实例」这件事一个都不能少：
+  // 概览页「当前内核」卡头照旧渲染 `族名 / 实例 id`，插件页照旧列出所有实例。
+  assert.match(overview, /instanceStore\.defaultInstanceId/);
+  assert.match(overview, /familyLabel\(current\.record\.kernel_family\)/);
+  assert.match(readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'), /instanceStore\.list/);
+  // 运行状态胶囊（.status-pill 是 theme.css 的共用词汇）仍在概览页读同一个字段。
+  assert.match(overview, /class="status-pill"/);
+  assert.match(stripComments(themeCss), /^\.status-pill \{/m);
+});

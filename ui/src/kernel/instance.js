@@ -1,10 +1,22 @@
 // 多实例管理（dev plan §P2 + P8）：后端命令 list_instances /
 // set_default_instance 已可用（commit 3eced70 / 后续实例模块）。
 //
-// 顶部内核标签（KernelTabs）共享状态；默认项是注册表偏好，不代表旧单实例
-// 命令已改址。
-//
 // 单 store，组件实例之间共享。
+//
+// **界面侧已经没有切实例的入口**（2026-10-07）：顶部工作条那条内核族页签按用户
+// 要求整条删除，`KernelTabs.vue` 连同它的 `pickInstance` 一起没了。
+//
+// **`setDefaultInstance` 本身留着**，因为 `ui/test/kernelSwitch.test.js` 钉着
+// 它的三条语义：读实例去重、**陈旧列表不能把一次切换的结果冲掉**
+// （`selectionRevision` 就是为此存在的）、以及写入失败必须释放 busy。先前一版
+// 把它当死代码删了，那条测试当场变红——它不是「永远走不到的代码」，而是**没有
+// 调用方的 API**。这两者的区别就是它该不该留着：删函数就要连这套语义一起删，
+// 那是拿测试换行数。真接入第二个内核族时切换器重新做一遍，直接调它即可。
+//
+// 被删掉的那条页签**从第一天起就是空操作**，这是删 UI 不算丢功能的依据：页签按
+// `kernel_family` 去重，而后端只定义了 `dsh` 一个族（`mcode` 在 paths.rs 的注释
+// 与测试里都写着「将来的」）。一个族只会画出一个页签，而它必然就是当前那个，
+// 于是 `pickInstance` 每次都在 `defaultInstanceId === id` 那一步 return false。
 
 import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';

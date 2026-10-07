@@ -21,7 +21,6 @@ import { loadUsageSummary } from './usage/usage.js';
 import { applyNotificationStatus } from './incidents/notifications.js';
 import { diagnosticStore } from './diagnostics/diagnostics.js';
 import { maybeOpenMigrationPrompt } from './migration/migration.js';
-import KernelTabs from './kernel/KernelTabs.vue';
 import SideBar from './shell/SideBar.vue';
 import OverviewPanel from './shell/OverviewPanel.vue';
 import VersionsPanel from './kernel/VersionsPanel.vue';
@@ -209,8 +208,8 @@ onMounted(() => {
   // 失败（preview / skip 读取异常）静默忽略——主流程不受影响。
   maybeOpenMigrationPrompt().catch(() => {});
 
-  // 实例注册表：插件页「所有实例」tab、顶部内核 tab 都消费这份列表，
-  // 在根组件保证它启动即加载（顶部内核 tab 组件本身也在这个层级渲染）。
+  // 实例注册表：插件页「所有实例」tab 与概览页的当前实例上下文都消费这份
+  // 列表，在根组件保证它启动即加载。
   loadInstances().catch(() => {});
 
   // 内核发布列表：启动静默拉一次，用户进内核版本页时列表已经就位，不必先点
@@ -310,8 +309,6 @@ onUnmounted(() => {
       </div>
     </div>
     <WindowTitleBar />
-    <!-- 内核 tab 在侧栏 / 内容区之上：先选内核，下方品牌、菜单与面板都归属它。 -->
-    <KernelTabs />
     <div class="layout">
       <SideBar />
       <main>
