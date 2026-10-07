@@ -48,7 +48,7 @@
 现有的回滚能力都是**单点**的：
 
 - 补丁有备份可还原（`patches.rs` 的 `backups/`，SHA-256 兜底）；
-- 迁移向导有 rollback（旧源永不删除，`docs/migration-wizard-ui-proposal.md`）；
+- 迁移向导有 rollback（旧源永不删除，`docs/features/migration/migration-wizard-ui-proposal.md`）；
 - 插件有 `quarantine.json` 记录谁被停用过。
 
 但没有任何一处记录"整套配置曾经是好的"。

@@ -21,7 +21,7 @@
 //!    旧壳必须显示「未知阶段」而不是丢掉这一行——丢掉会让时间线出现一个洞，
 //!    而用户看到的正是那个洞最费解。
 //!
-//! 设计见 `docs/runtime-diagnostics-design.md` §4。
+//! 设计见 `docs/features/diagnostics/runtime-diagnostics-design.md` §4。
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -330,7 +330,7 @@ pub fn latest(family: &str, instance: &str, kind: &str) -> Option<RunSummary> {
 /// **home 取 [`crate::shell::paths::dirs_home`] 而不是裸读 `$HOME`**：Windows
 /// 上 `HOME` 常常根本不设（只有 `USERPROFILE`），裸读会让
 /// `C:\Users\用户名\…` 原样留在记录里，而内核日志路径恰恰来自那里。2026-10-06
-/// 审查（docs/runtime-diagnostics-review-2026-10-06.md P1-07）抓到的就是这一条。
+/// 审查（docs/features/diagnostics/runtime-diagnostics-review-2026-10-06.md P1-07）抓到的就是这一条。
 /// 路径层那份解析已经处理了 Unix / Windows 两边，这里不重写。
 pub fn sanitize(text: &str) -> String {
     sanitize_with_roots(text, &home_roots())

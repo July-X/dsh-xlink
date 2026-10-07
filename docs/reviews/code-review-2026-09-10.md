@@ -47,7 +47,7 @@
 | P2-26 | `node_cache` 用裸 `lock()` | ✅ 已修 | 改用 `crate::lock`，锁被毒化时也清缓存 |
 | P2-29 | `stop_kernel` 提前返回跳过 `clear_pid` | ✅ 已修 | pid 记录无条件清理，停止失败仍如实上报 |
 | 【已修】P2-45 | CI 缺少测试入口 | ✅ 已修 | 已接入 `check:invariants` / `test:scripts`（`scripts/*.test.mjs` 全量，10 条）/ `smoke-pullstring`；`verify-*.mjs` 的版本门仍待处理（见 P2-47） | ✅ 已修：补上 `test:file-perf` 入口；`test:scripts` 把 `scripts/*.test.mjs` 全量接入 CI（早前已完成）。三个 verify 脚本需要真实内核才能跑，因此不进 CI，而是通过 P2-47 的版本门做到"在有内核的开发机上不会假失败"
-| P2-49 / P2-50 | 技能文档与实现不一致 | ✅ 已修 | 随 P0-3 更新 `docs/skill-management.md` |
+| P2-49 / P2-50 | 技能文档与实现不一致 | ✅ 已修 | 随 P0-3 更新 `docs/features/extensions/skill-management.md` |
 | P2-53 | `install.mjs` 丢弃子进程输出 | ✅ 已修 | `stdio: 'inherit'` + 失败原因不再退化成「退出码 ?」；新增 3 条反证过的测试与 `test:scripts` CI 入口 |
 | P2-54 ~ P2-61 | 注释与文档一致性（8 条） | ✅ 已修 | 逐条对齐实现：strip 高度、junction、copy 重同步语义、hash 锚定、校验时机、两处启动期文案 |
 | P2-1 / P2-5 / P2-8 | 僵尸句柄、netstat 子串匹配、tail 竞速 | ✅ 已修 | 见明细；共 9 条新测试，全部经反证 |
@@ -203,12 +203,12 @@
 
 ### 【已修】✅ P0-3 copy 物化模式下技能卸载静默失效（Windows 默认用户必中）
 
-**修复方式**（`src-tauri/src/skills.rs`、`docs/skill-management.md`）：
+**修复方式**（`src-tauri/src/skills.rs`、`docs/features/extensions/skill-management.md`）：
 
 1. **所有权判定改为两条证据**：新增 `entry_is_owned(target, source, entry)` —— 条目归本商店所有的条件是"链接解析到中央库源"**或**"内容与 store.json 记录的指纹一致"。`unmaterialize_entry`（卸载/停用）、`ensure_entry`（安装/启用的占用检查）与 `reconcile_home` 的健康判定全部改用它。
 2. **落地时记录指纹**：`SkillEntry` 新增 `materialized_sha256`，`ensure_entry` 在链接或复制完成后计算并返回它（`Materialized { mode, fingerprint }`），由各调用方写回 store：安装、更新刷新、启用三条路径都刷新，更新路径在刷新前保留旧指纹（否则旧副本会在刷新判定时被误认为外来条目）。
 3. **链接比较改用 canonicalize**：`link_resolves_to` 先 `canonicalize` 两侧再比较，避免 Windows junction 的 `\\?\` 前缀与 macOS `/var → /private/var` 这类路径形态导致漏判（漏判的后果同样是"卸载了但技能还在"）；目标断链时退回 `read_link` 字面量比较。
-4. **Windows 目录改用 junction**：`make_entry_link` 在 Windows 上对目录调用 `cmd /C mklink /J`（普通用户即可创建，无需 `SeCreateSymbolicLinkPrivilege`），扁平 `.md` 文件仍用文件符号链接（无 junction 等价物，失败时降级 copy —— 而 copy 现在可以被正常卸载）。这条同时让实现与 `docs/skill-management.md` 长期声称的行为一致（P2-49）。
+4. **Windows 目录改用 junction**：`make_entry_link` 在 Windows 上对目录调用 `cmd /C mklink /J`（普通用户即可创建，无需 `SeCreateSymbolicLinkPrivilege`），扁平 `.md` 文件仍用文件符号链接（无 junction 等价物，失败时降级 copy —— 而 copy 现在可以被正常卸载）。这条同时让实现与 `docs/features/extensions/skill-management.md` 长期声称的行为一致（P2-49）。
 5. **`ensure_entry` 不再谎报模式**：短路返回时按磁盘上的真实形态回报 `link` / `copy`，而不是照抄期望模式（此前 link 降级成 copy 后，UI 会一直显示"已链接"）。
 6. **孤儿清扫覆盖 copy 遗留**：`reconcile_home` 的清扫新增"内容指纹命中 store 中仍记录的指纹"这一条件，用 `remove_target`（而非只删链接的 `remove_link`）回收；指纹不在记录里的条目一律不动——可能是用户自己放的。
 7. **历史数据迁移**：`reconcile_home` 对"`enabled` 且存在但缺少指纹"的条目补记一次指纹，使修复前就已 copy 落地的技能从此可以被正常停用/卸载。
@@ -234,7 +234,7 @@
 
 **影响**：技能永久残留在 `<DSH_HOME>/skills/<name>`，运行中的内核继续发现并注入模型上下文（用户以为已卸载）；壳已无记录、`reconcile` 也永远清不掉；重装同包会撞「技能名冲突」（`skills.rs:1119-1135`）且 UI 无补救入口。同一判定还导致 copy 模式下 `set_enabled` 无效、每次启动都判「不健康」并全量重拷贝。
 
-**文档缺陷**：`docs/skill-management.md:78` 写的是「建 symlink（**Windows junction**）」—— 文档描述的正是本该规避此问题的那种实现。
+**文档缺陷**：`docs/features/extensions/skill-management.md:78` 写的是「建 symlink（**Windows junction**）」—— 文档描述的正是本该规避此问题的那种实现。
 
 </details>
 
@@ -258,7 +258,7 @@
 **【已修】✅ P1-1 内核子进程的 PATH 缺少已解析的 node 目录**
 `kernel.rs:1051` 用 `process::command_with_path(node)` 启动内核，而 `process.rs:131-135` 只 stamp `env::merged_path()`（`env.rs:50-67` 证实它不含托管 node 目录）；对照安装路径 `kernel.rs:597-598`、`kernel.rs:941-942` 都显式前置了 `node_dir`，`process.rs:933` 的 `spawn` 也支持 `extra_path_dirs`。
 **触发**：node 来自托管安装（`<data_dir>/tools/node/<ver>/bin`）或 nvm 绝对路径。
-**影响**：内核一切 `#!/usr/bin/env node` 子进程（插件 CLI、`npm`/`npx`、工作台终端任务）报 `env: node: No such file or directory`；若 PATH 上另有别的 Node 线，还会撞 `NODE_MODULE_VERSION` 不一致。这与 `docs/embedded-node-runtime.md:17-18` 承诺的"shebang 开箱即用"矛盾。
+**影响**：内核一切 `#!/usr/bin/env node` 子进程（插件 CLI、`npm`/`npx`、工作台终端任务）报 `env: node: No such file or directory`；若 PATH 上另有别的 Node 线，还会撞 `NODE_MODULE_VERSION` 不一致。这与 `docs/architecture/embedded-node-runtime.md:17-18` 承诺的"shebang 开箱即用"矛盾。
 **修复**：给 `command_with_path` 增加 `extra_path_dirs` 变体，在 `kernel::start` 传入 `node.parent()`。
 
 **【已修】P1-2 远端版本号未做任何校验就拼进文件系统路径与 stub `package.json`**
@@ -342,12 +342,12 @@
 
 1. **P1-12 copy 模式物化短路**（`plugins.rs`）：`KernelMeta` 新增 `fallback`（区分"link 降级为 copy"与"用户主动选 copy"）；短路判定改为按**记录的实际形态**校验健康度——copy 落地的是真实目录，旧代码"目标必须是符号链接"对它恒为假，于是每次启动内核都 `remove_materialized` + 整树 `copy_tree`（含 node_modules 的插件可达两万文件）。已降级的副本不再每次重试建链；用户主动切换模式时 `set_mode_unlocked` 删除各内核下的 `.meta` 强制重新物化。回归测试 `copy_materialization_short_circuits_on_resync` 用不在中央库里的标记文件检测"是否被重拷"——这个测试在修复完成前失败过一次，暴露出我只覆盖了降级分支、漏了"用户选 copy"分支。
 2. **P1-19 检查更新的错误与 TTL**：抽出 `should_advance_update_check`（全部来源失败时不推进 `last_checked_at`，否则 15 分钟 TTL 会把一次失败伪装成"刚查过"，自动检查静默停摆）；UI 侧把逐包的 `error` 汇总成 toast，并只在成功时推进前端的 TTL。
-3. **P1-29 端口文档**：`README.md` 4 处 + `docs/troubleshooting.md` 1 处的 3080 改为「release 3090 / dev 3091」，并在端口冲突条目里补上「工作台运行期间不能改端口，需先关闭工作台」。
+3. **P1-29 端口文档**：`README.md` 4 处 + `docs/operations/troubleshooting.md` 1 处的 3080 改为「release 3090 / dev 3091」，并在端口冲突条目里补上「工作台运行期间不能改端口，需先关闭工作台」。
 
 
 **【已修】P1-12 copy 模式的 materialize 短路判定永远失败 → 每次启动都整树重删重拷**
 `plugins.rs:1716-1734`：`fresh` 用 `meta.mode`（实际）比 `item.mode`（期望），link→copy 降级后恒 false；即使两者都是 `copy`，`target_ok` 也只接受"目标本身是 symlink"，真实目录恒 false。
-**影响**：每次 `start_kernel`/`activate_version`/`sync_all` 都 `remove_materialized` + 全量 `copy_tree`（含 `node_modules` 的插件注释自述可达 2 万文件）；中途失败留下半棵树。`docs/plugin-management.md:131` 声称 copy 模式按"大小+修改时间"跳过未变化文件，代码里没有该逻辑。
+**影响**：每次 `start_kernel`/`activate_version`/`sync_all` 都 `remove_materialized` + 全量 `copy_tree`（含 `node_modules` 的插件注释自述可达 2 万文件）；中途失败留下半棵树。`docs/features/extensions/plugin-management.md:131` 声称 copy 模式按"大小+修改时间"跳过未变化文件，代码里没有该逻辑。
 **修复**：copy 模式下 `fresh && target.exists()` 直接短路，仅在期望/记录为 link 时做 double-symlink 校正。
 
 **【已修】P1-13 / P1-14 —— P1 全部完成**
@@ -359,12 +359,12 @@
 
 **【已修】P1-13 copy 模式更新后不重跑 profile `pnpm install`，内核继续解析旧内容**
 `plugins.rs:2217-2233`、`2941-2976`：profile spec 文本不变 → `changed=false`，且 `node_modules` 存在 → `if changed || node_modules_missing` 为假 → 不跑 `run_profile_install`。
-**影响**：pnpm `file:` 依赖在 install 时已硬链接进 `profiles/<p>/node_modules/`，内核按 profile 解析 bundle，因此重启后仍是旧代码，而 UI 显示「已更新」。`docs/plugin-management.md:107` 明确要求 copy 模式更新后重跑 profile install。
+**影响**：pnpm `file:` 依赖在 install 时已硬链接进 `profiles/<p>/node_modules/`，内核按 profile 解析 bundle，因此重启后仍是旧代码，而 UI 显示「已更新」。`docs/features/extensions/plugin-management.md:107` 明确要求 copy 模式更新后重跑 profile install。
 **修复**：让物化返回"确实重新物化"标志，并入强制安装条件。
 
 **【已修】P1-14 `refresh_store_peers` 跳过已存在链接并在写回后早退 → 切内核后仍解析旧内核的 cordis/dsh-\***
 `plugins.rs:3275-3320`：每个 peer 因 `dest.exists()`（仍指向内核 A）被 continue，随后 meta 被改写成 `{kernel: B, peers: []}` → 以后每次启动都命中早退、永不重链。
-**影响**：插件继续 import 内核 A 的 `cordis`/`@deepseek-ai/*`，形成两份实例（重复注入 / 服务找不到），A 卸载后变悬空链接 —— 正是 `docs/plugin-management.md:54` 承诺要避免的。
+**影响**：插件继续 import 内核 A 的 `cordis`/`@deepseek-ai/*`，形成两份实例（重复注入 / 服务找不到），A 卸载后变悬空链接 —— 正是 `docs/features/extensions/plugin-management.md:54` 承诺要避免的。
 **修复**：把"已存在"改成"已存在且解析正确"（比较 `read_link(dest)` 与期望内核路径），只在真正解析成功时写 `kernel: active`。
 
 **【已修】P1-15 / P1-23 状态文件损坏被静默当成空清单（plugins / skills / patches 三处同一根因）**
@@ -457,13 +457,13 @@
 
 ### 构建、发布与文档
 
-**【已修】P1-26 / P1-27 / P1-28 发布链路三处加固**（`.github/workflows/desktop-release.yml`、`docs/release.md`、`AGENTS.md`）
+**【已修】P1-26 / P1-27 / P1-28 发布链路三处加固**（`.github/workflows/desktop-release.yml`、`docs/operations/release.md`、`AGENTS.md`）
 
 1. **P1-26 串行化发布**：`concurrency.group` 由 `desktop-release-${{ github.ref }}` 改为固定的 `desktop-release`。以 ref 分组时 tag push（`refs/tags/…`）与手动 dispatch（`refs/heads/main`）落在两个不同的组，同一版本可以并发跑两条完整流水线，后启动的那条会在 `Create or reuse release` 步骤撞车失败——rc.7 与 rc.13 都真实发生过，每次都白烧一次 20~30 分钟的双平台构建。
 2. **P1-27 版本单调性守卫**：`preflight` 在解析版本之后拉取线上 `releases/latest/download/latest.json`，用内联 node 实现 semver 比较并断言待发布版本**严格大于**它。GitHub 的 `releases/latest` 取「最近创建的非 draft 非 prerelease release」而非 semver 最大值，给旧线发 hotfix 会让端点后退，而 Tauri 只在 `release.version > current_version` 时提示更新——高版本用户从此静默收不到更新且无任何步骤能发现。线上没有可读的 `latest.json`（首次发布）时自动跳过。比较逻辑已用 6 组版本对本地验证：`rc.19>rc.18`、`0.1.2>0.1.2-rc.18`、`1.0.0>0.9.9` 放行；`rc.18<rc.19`、`0.1.1<0.1.2`、`rc.9<rc.10` 拦下。
 3. **P1-27 端到端校验**：`publish` 末尾新增 `Verify published release` —— 先用 `gh api …/releases/{id}/assets` 读回**真实**资产集合并断言恰好 6 个（此前只数本地目录、且只按文件名删同名资产，复用人工建过的 draft 时可能带出多余资产，即 P2-46 的检测部分），再拉取更新端点断言它报告的版本就是本次发布的版本、且每个平台资产都能以 HTTP 200 下载。
 4. **P1-28 供应链**：15 处 `uses:` 全部固定到 40 位 commit SHA（后缀注释为对应版本，如 `actions/checkout@d23441a… # v6.1.0`，由 Dependabot 升级）。build job 会把 `TAURI_SIGNING_PRIVATE_KEY` 放进构建步骤的 environment，一个被投毒或被重指 tag 的第三方 action 足以读走私钥，从而为任意载荷签名。
-5. 文档同步：`docs/release.md` 新增「并发与版本单调性」一节，`AGENTS.md` 的发布触发段补充固定并发组、单调性断言与 SHA pin。
+5. 文档同步：`docs/operations/release.md` 新增「并发与版本单调性」一节，`AGENTS.md` 的发布触发段补充固定并发组、单调性断言与 SHA pin。
 
 **验证**：workflow YAML 解析通过；15 处 `uses:` 全部为 40 位 SHA；preflight 与 publish 的新步骤 shell 脚本经 `bash -n` 检查、node 内联表达式经构造 manifest 烟测（含空 `platforms` 分支）；比较逻辑 6 组用例全部符合预期。注意 publish job 跑在 macOS runner（bash 3.2），新步骤刻意避开 `mapfile` 等 bash 4+ 特性。
 
@@ -484,7 +484,7 @@
 **修复**：所有 `uses:` 固定到 40 位 commit SHA（附 `# vX.Y.Z` 注释，Dependabot 可自动升级）；私钥只在最小步骤内出现。
 
 **【已修】✅ P1-29 README / troubleshooting 的默认端口 3080 与代码 3090/3091 矛盾（排障指引错误）**
-`README.md:31`（`--port 3080`）、`README.md:52`、`README.md:162`、`README.md:177`、`docs/troubleshooting.md:15` 都写 3080；代码是 `kernel.rs:60` 的 `DEFAULT_PORT = if debug { 3091 } else { 3090 }`（`docs/architecture.md:74-79` 与 `capabilities/harness-remote.json` 也是 3090/3091）。3080 是 **dsh 内核自身**的默认端口，shell 一直覆盖它。
+`README.md:31`（`--port 3080`）、`README.md:52`、`README.md:162`、`README.md:177`、`docs/operations/troubleshooting.md:15` 都写 3080；代码是 `kernel.rs:60` 的 `DEFAULT_PORT = if debug { 3091 } else { 3090 }`（`docs/architecture/architecture.md:74-79` 与 `capabilities/harness-remote.json` 也是 3090/3091）。3080 是 **dsh 内核自身**的默认端口，shell 一直覆盖它。
 **影响**：用户按 README:177「3080 被占用就改端口」去排查，实际冲突在 3090，问题依旧；支持方按 troubleshooting:15 `curl 127.0.0.1:3080` 得到连不上，会误判成 WKWebView 环回问题。
 **修复**：五处统一改为「release 3090 / dev 3091（可在设置页修改）」。
 
@@ -512,7 +512,7 @@
 | --- | --- | --- | --- |
 | 【已修】P2-9 | `patches.rs:648-703`、`:850-861` | 目标已是补丁后内容时仍把它当"原文件"备份，撤销后文件内容不变却报告「已撤销」→ 壳声称已撤销、内核仍在跑补丁代码且无记录 | 无对应应用记录时不要备份，直接报错并给出下一步 | ✅ 已修：目标已是补丁后内容时不再伪造备份（`commit_file` 直接返回 `had_original=true` + 无备份的记录），应用阶段就把"没有可恢复的原文件"写进注意事项；`revert_one` 的"无备份"分支改为先看 `had_original` —— 只有"应用前不存在"的纯新增文件才删除。**改写**了原本钉住旧行为的测试 `copy_over_existing_identical_records_no_recoverable_original`（旧断言要求存在假备份）。残留：rc.18 之前产生的假备份记录无法追溯识别（备份里就是补丁内容），会在下一批加"载荷哈希 == 记录原文件哈希"的识别告警
 | 【已修】P2-10 | `patches.rs:951-965` | `prune_empty_dirs` 注释写"只删到内核根为止"，实现既无 `kernel_root` 参数也无终止条件，会一路向上删空目录（含 `<data_dir>`） | 传入 `kernel_root` 并在该处停止；补单测 | ✅ 已修：`prune_empty_dirs` 接收 `kernel_root` 并在该处停止（同时拒绝根以外的路径），`handle_missing_backup` 透传根参数；新增 2 条测试（根内空目录被清、根本身与其父保留；根以外一个都不动）
-| 【已修】P2-11 | `patches.rs:620-637`、`:308-354` | 补丁源路径 `from` **完全没有**越界校验（`join("../../../../etc/passwd")` 可用，绝对路径会丢弃 `patch_dir`），与 `docs/patch-management.md:20` 的前提不符 | 对 `from` 复用 `check_target_path` | ✅ 已修：`validate_def` 对 `from` 复用 `check_target_path`，拒绝 `../` 越界与绝对路径；新增 2 条测试（`../../../../etc/passwd` 与 `/etc/passwd` 均被拒绝、正常相对路径仍可加载）
+| 【已修】P2-11 | `patches.rs:620-637`、`:308-354` | 补丁源路径 `from` **完全没有**越界校验（`join("../../../../etc/passwd")` 可用，绝对路径会丢弃 `patch_dir`），与 `docs/features/extensions/patch-management.md:20` 的前提不符 | 对 `from` 复用 `check_target_path` | ✅ 已修：`validate_def` 对 `from` 复用 `check_target_path`，拒绝 `../` 越界与绝对路径；新增 2 条测试（`../../../../etc/passwd` 与 `/etc/passwd` 均被拒绝、正常相对路径仍可加载）
 | 【已修】P2-12 | `patches.rs:260-303` | 清单校验失败（缺 manifest / JSON 坏 / schemaVersion 不符）只 `eprintln` + `continue` → 该补丁在设置页直接消失，用户无法区分"本版本没带"与"清单坏了" | 经 `patch_status` 的 warning 暴露给 UI | ✅ 已修：`load_patches_with_warnings` 收集被跳过的清单/定义原因（缺 manifest、JSON 坏、schemaVersion 不符、定义非法），`patch_status` 把它们并入 `PatchStatus.warning`，设置页已有的告警条直接展示；`load_patches` 收为测试专用包装。坏掉的补丁不再无声消失
 | 【已修】P2-13 | `patches.rs:732-746` | `file.search.as_deref().unwrap_or("")`：`search` 为 null 时 `replace("", repl)` 会在每个字符间插入替换串，必然损坏目标 JS | `search` 缺失时直接返回错误 |
 | 【已修】P2-14 | `patches.rs:997-1004` | `status` 只遍历当前清单定义 → 定义已被移除的历史补丁记录在 UI 中完全不可见（`revert` 其实支持） | status 额外渲染"定义已移除、仍可撤销"行 | ✅ 已修：`status` 追加 `orphan_record_rows` —— 定义已不在清单里但记录仍在当前激活内核上的补丁会显示为「已应用（定义已移除）」且可直接撤销；新增 1 条测试（清单置空后仍可见并可撤销）
@@ -555,7 +555,7 @@
 | 【已修】P2-41 | `PluginsPanel.vue:157-163` | 插件来源 chip 直接渲染英文 `npm`/`git`/`local`（技能页有中文映射） | 把 `originLabel` 提到共享位置 | ✅ 已修：新增 `ui/src/labels.js` 承载 `originLabel`（未知来源原样返回），技能页改为再导出、插件页改用中文标签，两个页面不再一个中文一个英文
 | 【已修】P2-42 | `OverviewPanel.vue:165` | `installNode` 按钮用 `:loading="progress.visible"`（全局进度窗可见性）而非约定的 `isLoading(key)` | 走 `withLoading` | ✅ 已修：概览页「自动安装」按钮改绑 `isLoading('installNode')` 并经 `withLoading` 包裹，不再跟随全局进度窗可见性（任何长任务都会让它转圈）
 | 【已修】P2-43 | `OverviewPanel.vue:205-230` | 概览页主操作是「工作台 / 官方对话 / 查看日志」三按钮同排，与 AGENTS.md 的"只暴露单按钮状态机、其余为次级入口"漂移 | 收敛 UI 或更新 AGENTS.md | ✅ 已修（文档口径）：AGENTS.md 的概览页约定改为与实现一致——「启动/关闭工作台」是唯一主按钮，「打开工作台窗口 / 打开官方对话 / 查看日志」是并列次级入口
-| 【已修】P2-44 | `ui/src/skills.js` 全文 | `skill_set_enabled` 无任何 UI 调用点，而 `docs/skill-management.md:84-86` 描述了完整启停功能（README:56 承认 v1 面板只有安装行） | 统一文档口径，或接线 | ✅ 已修（文档口径）：`docs/skill-management.md` 的「启用 / 禁用」补上面板现状说明——后端命令 `skill_set_enabled` 与对账语义已完整，v1 面板尚未接线启停按钮（与 README 一致），不再让读者以为面板已有启停
+| 【已修】P2-44 | `ui/src/skills.js` 全文 | `skill_set_enabled` 无任何 UI 调用点，而 `docs/features/extensions/skill-management.md:84-86` 描述了完整启停功能（README:56 承认 v1 面板只有安装行） | 统一文档口径，或接线 | ✅ 已修（文档口径）：`docs/features/extensions/skill-management.md` 的「启用 / 禁用」补上面板现状说明——后端命令 `skill_set_enabled` 与对账语义已完整，v1 面板尚未接线启停按钮（与 README 一致），不再让读者以为面板已有启停
 
 ### 构建与 CI
 
@@ -563,10 +563,10 @@
 | --- | --- | --- | --- |
 | 【已修】P2-45 | `package.json:24-29` vs workflow:107-117 | `test:titlebar-pulse`、`test:session-perf`、`test:escalation-same-mode` 三个测试入口**不在 CI 中运行**；`smoke-pullstring.mjs` 与 `verify-dsh-file-perf.mjs` 连 npm script 都没有。其中 `titlebar-pulse`（hermetic，实测 7/7 通过、<0.4s，守护 README 承诺的"空闲不保持 WebKit 帧循环"不变量）与 `smoke-pullstring`（实测 exit 0）完全可离线跑却没有 job 跑它们 → 注入到远程页面的脚本与三个自研内核补丁缺乏自动化门禁 | quality job 增加 `test:titlebar-pulse` 与 `node scripts/smoke-pullstring.mjs`；补 `test:file-perf` 入口 |
 | 【已修】P2-46 | workflow:308-321,341-365 | 复用 draft 时只按**文件名**删资产，且「必须 6 个」只数本地 `artifacts/` 目录，从不读回 Release 的实际资产列表 → 若同一版本先有一次运行上传过命名不同的资产（例如人工放进 draft 的 `dsh-xlink-0.1.2-rc.18.dmg`），正式 Release 会带 7 个资产，而 AGENTS.md 要求恰好 6 个 | 上传后 `gh api releases/$ID/assets` 读回名字集合，断言恰好 6 个（多余的直接 DELETE）再 `draft=false` | ✅ 已收口：`Verify published release` 在断言前先读回真实资产集合，把**计划外资产按 id 删除**（白名单 = 本次 `artifacts/` 实际文件名 + `latest.json`），删除后再断言恰好 6 个并逐个比对名字。id 与名字分两次 `gh` 查询、按下标对应（合成一行再切分在 bash 3.2 下会踩制表符的坑，本地干跑当场撞上）；同时修掉 `set -u` 下展开空数组会报 `unbound variable` 的陷阱。本地用假 `gh` + bash 3.2 干跑三种场景：有多余资产（删掉后通过）、缺资产（exit 1 且诊断列出实际集合）、资产为空（exit 1 且不崩）
-| 【已修】P2-47 | `scripts/verify-dsh-session-perf.mjs:113-132`、`scripts/verify-dsh-file-perf.mjs:242-249` | 两个内核补丁验证脚本只比较 SHA / 版本范围，没有"当前内核不是锚定版本就跳过行为测试"的分支（对照 `verify-dsh-escalation-same-mode.mjs:96-110` 有这个分支）。实测在活动内核 0.1.5-rc.1 上直接崩栈（`SyntaxError: … does not provide an export named 'DEFAULT_PREPARED_SESSION_CACHE_SIZE'` / 内核自身 lib 的 `TypeError`），而 `docs/patch-management.md:226-229,259-261` 正把它们写成验证手段 → 维护者看到的是"补丁坏了"而不是"当前内核不适用" | 行为检查前加版本门（不适用则打印并 exit 0，除非显式传内核根目录或 `--require-applied`）；行为检查包进 try/catch 并汇总退出码 | ✅ 已修：两个 verify 脚本都加了"当前内核不是锚定版本就跳过"的版本门，并把行为检查包进 try/catch 汇总退出码（实测：活动内核 0.1.5-rc.1 上默认模式从**崩栈 exit 1** 变为跳过并 exit 0；显式传内核根目录或 `--require-applied` 仍严格失败，但只打印一行诊断而不是栈）。修的过程中先写错成 `failures.push`（该变量是计数器），已改为 `failures += 1`
+| 【已修】P2-47 | `scripts/verify-dsh-session-perf.mjs:113-132`、`scripts/verify-dsh-file-perf.mjs:242-249` | 两个内核补丁验证脚本只比较 SHA / 版本范围，没有"当前内核不是锚定版本就跳过行为测试"的分支（对照 `verify-dsh-escalation-same-mode.mjs:96-110` 有这个分支）。实测在活动内核 0.1.5-rc.1 上直接崩栈（`SyntaxError: … does not provide an export named 'DEFAULT_PREPARED_SESSION_CACHE_SIZE'` / 内核自身 lib 的 `TypeError`），而 `docs/features/extensions/patch-management.md:226-229,259-261` 正把它们写成验证手段 → 维护者看到的是"补丁坏了"而不是"当前内核不适用" | 行为检查前加版本门（不适用则打印并 exit 0，除非显式传内核根目录或 `--require-applied`）；行为检查包进 try/catch 并汇总退出码 | ✅ 已修：两个 verify 脚本都加了"当前内核不是锚定版本就跳过"的版本门，并把行为检查包进 try/catch 汇总退出码（实测：活动内核 0.1.5-rc.1 上默认模式从**崩栈 exit 1** 变为跳过并 exit 0；显式传内核根目录或 `--require-applied` 仍严格失败，但只打印一行诊断而不是栈）。修的过程中先写错成 `failures.push`（该变量是计数器），已改为 `failures += 1`
 | 【已修】P2-48 | `README.md:3` | 徽章用 `badge.svg?event=release`，而 workflow 只监听 push(tags) 与 `workflow_dispatch` → 该 URL 实测返回 `no status`，去掉参数后返回真实状态（当前为 `failing`），一个本该暴露发布流水线红灯的信号长期失效 | 删掉 `?event=release`（或改为 `?event=push`） | ✅ 已修：README 徽章去掉 `?event=release`（该参数实测返回 no status），改为默认即反映最近一次运行
 | 【已修】P2-49 | `tauri.conf.json:26-29` | `csp: null` + `withGlobalTauri: true` 让面板 webview 失去第二道防线。今日 `ui/src` 与 `index.html` 中无任何 XSS sink（纵深防御问题，非已发生的漏洞），但一旦出现 sink（社区目录、插件/技能元数据、内核日志、registry 响应都是外部字符串），无 CSP 意味着 payload 直接执行，而面板命令集包含 `plugin_install`（接受 git URL，安装流程会跑插件自己的 `prepare`）、`install_kernel`、`patch_apply` → 以用户身份任意代码执行 | 配置真实 CSP；`withGlobalTauri` 仅注入脚本需要，可收窄到必要窗口 |
-| 【已修】P2-50 | `docs/release.md:13` | 称手动 dispatch 会自动补 tag，与 AGENTS.md「不要用手动 dispatch 创建缺失的 tag」相冲突 | 统一文档口径 |
+| 【已修】P2-50 | `docs/operations/release.md:13` | 称手动 dispatch 会自动补 tag，与 AGENTS.md「不要用手动 dispatch 创建缺失的 tag」相冲突 | 统一文档口径 |
 | 【已修】P2-51 | workflow:187-191 | 流水线对「CI 私钥与 `tauri.conf.json:63` 公钥是否成对」没有任何校验 —— 密钥轮换时若忘记同步公钥，会发布出所有客户端都验签失败的更新（且直到用户更新时才暴露） | 发布前用私钥签名一个测试载荷并用配置公钥验签 | ✅ 已修：新增 `scripts/check-signing-keys.mjs` —— 用 CI 私钥通过 `tauri signer sign` 签一份测试载荷，再用 `tauri.conf.json` 的 `plugins.updater.pubkey` 做 Ed25519 验签（node:crypto，不依赖 minisign），并比对 key id；公钥字段是"整个 minisign 公钥文件再 base64"，脚本会先剥外层。发布 workflow 的 build job 在**打包之前**执行该校验（无密钥时跳过）。新增 5 条测试覆盖真实公钥形态、轮换后不匹配、伪造 key id、篡改载荷与畸形输入，三项反证命中
 | 【已修】P2-52 | `.github/workflows/`（仅 1 个文件） | 没有 push/PR 触发的 workflow：日常提交只有在打 tag 时才第一次跑 lint/测试 | 增加 push/PR 的轻量 workflow（fmt + clippy + cargo test + test:ui） | ✅ 已修：新增 `.github/workflows/desktop-ci.yml`（push main / PR / 手动触发，并发组取消旧运行，`permissions: contents: read`，所有 `uses:` 固定 commit SHA），步骤与发布 workflow 的 quality job 对齐：不变量 / test:ui / test:scripts / smoke-pullstring / UI 构建与包体预算 / fmt / cargo test / clippy。日常提交不再等到打 tag 才第一次跑门禁
 | 【已修】P2-53 | `scripts/install.mjs:21-26,49-52` | `run()` 用 `execFileSync` 且**没有** `stdio: 'inherit'`（第 49 行注释声称已设置，与实际不符）→ `pnpm install` 的进度输出全部被捕获丢弃，用户执行 `npm run deps` 后长时间无任何输出；且 `execFileSync` 默认 `maxBuffer` 为 1 MiB，依赖较多时输出超限会以 `ENOBUFS` 失败并给出难以理解的错误 | ✅ 已修：`run()` 透传 `opts`，安装调用传 `{ stdio: 'inherit' }`（实时输出 + 消除 `maxBuffer`）；catch 里把只打印 `err.status ?? '?'`（ENOENT/ENOBUFS 时退化成没有诊断价值的「退出码 ?」）改为打印 `err.message` 并补下一步。新增 `scripts/install-stdio.test.mjs`（1.8 MB 输出完整透传 / ENOENT 带出原因 / 非零退出码原样透出），三条均经反证；新增 `test:scripts` 入口把 `scripts/*.test.mjs` 全量（10 条）接入 CI |
@@ -576,11 +576,11 @@
 | # | 位置 | 问题 |
 | --- | --- | --- |
 | 【已修】P2-54 | `chat-fingerprint.js:31` | 注释称"strip 从 38px 增高到 66px"，实际 `OFFICIAL_CHAT_STRIP_HEIGHT = 38.0`（66px 是工作台 variant）。改为「strip 保持天然的 38px 标签栏高度、嵌入 24x38 紧凑台灯；24x66 拉绳灯只用于 dsh 工作台」，与 `pullstring-launcher.js:8,62-63,121-122` 的两个 variant 对齐 |
-| 【已修】P2-55 | `docs/skill-management.md:78` | 称 Windows 用 junction，实现是 `symlink_dir`（需特权）—— 正是 P0-3 的触发条件。随 P0-3 一并落地：`skills.rs` 改走 `mklink /J`（`skills.rs:1142-1151`），文档描述与实现现已一致 |
-| 【已修】P2-56 | `docs/plugin-management.md:131` | 称 copy 模式按"大小+修改时间"跳过未变化文件，代码无此逻辑（见 P1-12）。改为如实描述：不做逐文件比对，仅在「记录版本 + 模式 + 目标形态（真实目录而非符号链接）」三者都未变时整包短路（`plugins.rs:1789-1814`），任一项变化即整树重删重拷 |
-| 【已修】P2-57 | `docs/plugin-management.md:107` | 要求 copy 更新后重跑 profile install，实现未做（见 P1-13）。P1-13 落地后（`plugins.rs:3146`）文档描述成立，文案无需改动 |
-| 【已修】P2-58 | `docs/patch-management.md:255-256` | 记录的 `dsh-session-perf` 哈希与 manifest 的 `expectSha256` 及载荷实际哈希都不一致 → 按文档复验必然对不上。改为与 manifest / `verify-dsh-session-perf.mjs` 一致：锚定 `0.1.2-alpha.3`，原始 `d5ae2c7d…9a00`，v1.2.0 补丁后 `29d2501e…6299`，并注明 v1.0.1 / v1.1.0 旧载荷仍被 verify 脚本识别 |
-| 【已修】P2-59 | `docs/patch-management.md:93` | 称校验"应用时执行，而非加载时"，实际 `load_patches → validate_def`（`patches.rs:304`）在加载期执行并静默跳过。改为分两层描述：加载期静态定义校验 + 应用期运行期裁决（目标哈希 / `search` 命中 / 备份占用） |
+| 【已修】P2-55 | `docs/features/extensions/skill-management.md:78` | 称 Windows 用 junction，实现是 `symlink_dir`（需特权）—— 正是 P0-3 的触发条件。随 P0-3 一并落地：`skills.rs` 改走 `mklink /J`（`skills.rs:1142-1151`），文档描述与实现现已一致 |
+| 【已修】P2-56 | `docs/features/extensions/plugin-management.md:131` | 称 copy 模式按"大小+修改时间"跳过未变化文件，代码无此逻辑（见 P1-12）。改为如实描述：不做逐文件比对，仅在「记录版本 + 模式 + 目标形态（真实目录而非符号链接）」三者都未变时整包短路（`plugins.rs:1789-1814`），任一项变化即整树重删重拷 |
+| 【已修】P2-57 | `docs/features/extensions/plugin-management.md:107` | 要求 copy 更新后重跑 profile install，实现未做（见 P1-13）。P1-13 落地后（`plugins.rs:3146`）文档描述成立，文案无需改动 |
+| 【已修】P2-58 | `docs/features/extensions/patch-management.md:255-256` | 记录的 `dsh-session-perf` 哈希与 manifest 的 `expectSha256` 及载荷实际哈希都不一致 → 按文档复验必然对不上。改为与 manifest / `verify-dsh-session-perf.mjs` 一致：锚定 `0.1.2-alpha.3`，原始 `d5ae2c7d…9a00`，v1.2.0 补丁后 `29d2501e…6299`，并注明 v1.0.1 / v1.1.0 旧载荷仍被 verify 脚本识别 |
+| 【已修】P2-59 | `docs/features/extensions/patch-management.md:93` | 称校验"应用时执行，而非加载时"，实际 `load_patches → validate_def`（`patches.rs:304`）在加载期执行并静默跳过。改为分两层描述：加载期静态定义校验 + 应用期运行期裁决（目标哈希 / `search` 命中 / 备份占用） |
 | 【已修】P2-60 | `lib.rs:49` | `cfg(any(macos, windows))` 分支里的错误文案写死「无法启用 macOS 自定义标题栏」，Windows 上同样打印。改为平台中立表述，并补上后果与下一步（退回系统原生标题栏、功能不受影响、重启或 `npm run dev` 取完整输出） |
 | 【已修】P2-61 | `lib.rs:154` | `.expect("failed to build the dsh-xlink app")` 是英文且无下一步指引（启动期崩溃，用户可见）。改为 `unwrap_or_else` + 中文诊断（说明 `generate_context!` 已在编译期烘焙资源清单、指向 `npm run build:ui` 与 `npm run dev`）后 `exit(1)` |
 
@@ -630,7 +630,7 @@
 - **管道与缓冲**：四条子进程路径都是 stdout/stderr 各一线程并发 drain，无"同一线程顺序读两个管道"的死锁；`read_capped_line` 会整行消费超长行只保留 64 KiB + 截断标记；`read_bounded_bytes` 超限即终止进程树。
 - **GUI 子进程静默**：所有 spawn 路径都经 `CREATE_NO_WINDOW`，未发现裸 `Command::spawn`。
 - **锁**：`lifecycle → store` 锁序全局一致，无 ABBA；`lock_store()` 与 `skills::lock_store()` 的重入路径经专项逐点核对确认不存在（`install_unlocked` 的候选递归走的是 `*_unlocked` 变体）。
-- **`data_dir` 一致性**：只有 `lib.rs:53` 调用 `kernel::data_dir(app)` 并存入 `AppState`，其余模块都用 `state.data_dir`；`desktop/` vs `desktop-dev/`、3090 vs 3091 与 `docs/architecture.md` 一致。
+- **`data_dir` 一致性**：只有 `lib.rs:53` 调用 `kernel::data_dir(app)` 并存入 `AppState`，其余模块都用 `state.data_dir`；`desktop/` vs `desktop-dev/`、3090 vs 3091 与 `docs/architecture/architecture.md` 一致。
 - **CI 发布门禁**（`quality` job 内；`preflight` 只做 `Validate source and version`）：`cargo fmt --check`、`cargo test`、`cargo clippy --all-targets -- -D warnings`、`test:ui`、`test:scripts`（`scripts/*.test.mjs` 全量）、`check:invariants`、`smoke-pullstring` 全部执行，并校验两个 manifest 的版本一致与资产数量 5+`latest.json`。
 - **发布链路本身是可靠的**（实测线上）：`releases/latest` = `desktop-v0.1.2-rc.18`，`draft=false/prerelease=false`，恰好 6 个资产；线上 `latest.json` 与 `generate-updater-manifest.mjs` 的输出逐字段一致，URL 全部指向真实存在的资产；manifest 的 4 个平台键与 tauri-plugin-updater 的查找顺序匹配；不存在"缺资产也发布"的路径（`if-no-files-found: error` + 资产计数 + 脚本的 `exactlyOne` 都在创建正式 Release 之前失败）；无 `set -x`、无 secrets 落日志。
 - **发布脚本输入校验充分**：缺目录/缺文件/重复资产/资产名不含版本/空签名都会报错退出；`parseArgs` 拒绝未知参数；生成的 manifest URL 只来自被校验过的同一批文件。

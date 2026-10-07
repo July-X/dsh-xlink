@@ -2,8 +2,8 @@
 //!
 //! 这一模块是整个多内核改造的「路径契约」：所有 dsh-xlink 写入的数据目录
 //! 都从这里的函数取，禁止在调用方直接拼接根目录字符串。新旧布局的关系
-//! 见 [`docs/dsh-xlink-multi-kernel-design.md`](../../docs/dsh-xlink-multi-kernel-design.md)，
-//! 阶段任务见 [`docs/dsh-xlink-multi-kernel-development-plan.md`](../../docs/dsh-xlink-multi-kernel-development-plan.md) §P0。
+//! 见 [`docs/architecture/multi-kernel/dsh-xlink-multi-kernel-design.md`](../../docs/architecture/multi-kernel/dsh-xlink-multi-kernel-design.md)，
+//! 阶段任务见 [`docs/architecture/multi-kernel/dsh-xlink-multi-kernel-development-plan.md`](../../docs/architecture/multi-kernel/dsh-xlink-multi-kernel-development-plan.md) §P0。
 //!
 //! ## 当前实现范围（P0+P1）
 //!
@@ -224,7 +224,7 @@ pub fn package_activity_file() -> PathBuf {
 /// 为什么必须按模式分开：中央库里的插件源码会被 `link` 物化进具体实例的
 /// `profiles/web/node_modules`。共用一份时，dev 更新某个插件的源码会直接落到
 /// release 正在跑的内核上——工作台立刻白屏（实测 `scope '…' rendered without
-/// an installed adapter`，见 `docs/troubleshooting.md`）。内核安装树早就按模式
+/// an installed adapter`，见 `docs/operations/troubleshooting.md`）。内核安装树早就按模式
 /// 分家了（`desktop[-dev]/`），中央库是漏掉的那一半。
 ///
 /// 存量数据的搬运见 [`crate::plugins::center::store_dir`]：已发布版本用的是

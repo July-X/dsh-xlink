@@ -1,15 +1,15 @@
 # 多内核改造阶段性状态（2026-09-19）
 
 > 本轮 commit 链（HEAD `83186d2`）的阶段性快照——给 review 节点做参考材料。
-> 完整计划与设计文档见 [docs/dsh-xlink-multi-kernel-design.md](dsh-xlink-multi-kernel-design.md)
-> 与 [docs/dsh-xlink-multi-kernel-development-plan.md](dsh-xlink-multi-kernel-development-plan.md)。
-> 配套架构补全见 [docs/architecture.md §「多内核改造后的实际数据布局」](architecture.md)。
+> 完整计划与设计文档见 [docs/architecture/multi-kernel/dsh-xlink-multi-kernel-design.md](dsh-xlink-multi-kernel-design.md)
+> 与 [docs/architecture/multi-kernel/dsh-xlink-multi-kernel-development-plan.md](dsh-xlink-multi-kernel-development-plan.md)。
+> 配套架构补全见 [docs/architecture/architecture.md §「多内核改造后的实际数据布局」](../architecture.md)。
 
 ## Review 跳读指引
 
 按 review 优先级看：
 
-1. **先看设计层**：[dsh-xlink-multi-kernel-design.md](dsh-xlink-multi-kernel-design.md) + [dsh-xlink-multi-kernel-development-plan.md](dsh-xlink-multi-kernel-development-plan.md) + [architecture.md §「多内核改造后的实际数据布局」](architecture.md)
+1. **先看设计层**：[dsh-xlink-multi-kernel-design.md](dsh-xlink-multi-kernel-design.md) + [dsh-xlink-multi-kernel-development-plan.md](dsh-xlink-multi-kernel-development-plan.md) + [architecture.md §「多内核改造后的实际数据布局」](../architecture.md)
 2. **再看落地核心**：commit `c0cfabc` P3 trait + `dcbae61` P4 物化路径 + `b09a525` P5 中央库 / 活动视图 + `89d76df`/`9615901` P6 迁移向导 + `1308cb6` P7 mcode mock + `eba8c96` + `158ced3` + `9b2fce8` 日志 4 字段
 3. **最后看状态**：本文件「整体进度」+「dev plan §4 release threshold 验证」+「Review 建议」三段即可
 
@@ -155,7 +155,7 @@ P8 阶段统一清理——届时可以一次性 remove `cfg_attr` 注释。
 
 `3ad6c8e..83186d2` 共 60 个 commit（含 28 笔文档 / gate / budget / refactor / proposal 同步）。建议按以下顺序 review：
 
-1. **设计层**（先看 docs）：本文件 + 设计稿 §P4–§P7 节 + [architecture.md §「多内核改造后的实际数据布局」](architecture.md) + [p8-ui-release-proposal.md](p8-ui-release-proposal.md)
+1. **设计层**（先看 docs）：本文件 + 设计稿 §P4–§P7 节 + [architecture.md §「多内核改造后的实际数据布局」](../architecture.md) + [p8-ui-release-proposal.md](p8-ui-release-proposal.md)
 2. **关键 commit**（设计落地点）：
    - `c0cfabc` P3 DshAdapter 与 KernelAdapter trait
    - `dcbae61` P4 物化路径切到实例 extensions/plugins/<id>/

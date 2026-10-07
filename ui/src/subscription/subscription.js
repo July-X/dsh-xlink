@@ -124,7 +124,7 @@ export function currencySymbol(currency) {
  * 用等式口径把三者讲清。
  *
  * 金额是接口给的数字字符串，只做「加货币符号 + 裁空白」的透传，**不转浮点
- * 参与任何计算**（与 docs/subscription-usage-design.md 的解析规则一致）；
+ * 参与任何计算**（与 docs/features/subscription/subscription-usage-design.md 的解析规则一致）；
  * 缺失的分量（接口没给 / 不是字符串）不补零、不猜，明细行直接留空。
  */
 export function balanceRow(balance) {

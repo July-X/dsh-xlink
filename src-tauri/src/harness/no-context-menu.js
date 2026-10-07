@@ -27,7 +27,7 @@
  *
  * 引擎层的菜单（Wry 的 `with_default_context_menus` /
  * WebView2 的 `AreDefaultContextMenusEnabled`）在 Tauri 2.11 上没有对外接口，
- * 所以这一层只能靠 DOM 事件取消——见 docs/architecture.md 的对应条目。
+ * 所以这一层只能靠 DOM 事件取消——见 docs/architecture/architecture.md 的对应条目。
  */
 (function () {
   if (window.top !== window.self) {

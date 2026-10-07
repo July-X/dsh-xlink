@@ -403,7 +403,7 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
 
 // --- 7. workflow 供应链：SHA 固定 + Dependabot ---------------------------------
 //
-// AGENTS.md 与 docs/release.md 都承诺「workflow 中所有 `uses:` 固定到 40 位 commit
+// AGENTS.md 与 docs/operations/release.md 都承诺「workflow 中所有 `uses:` 固定到 40 位 commit
 // SHA，升级走 Dependabot」。这两件事必须同时成立：SHA 固定把 action 冻在一个已知提交
 // 上，而没有 Dependabot 就没有任何东西会推进它——安全修复永远进不来，策略只剩文字。
 // 这类缺口不会让任何测试变红（仓库曾经就是这样：三份文档都写着「由 Dependabot 升级」，
@@ -1581,7 +1581,7 @@ function productionRust(text) {
       'ui-assets-local',
       `面板里有 ${problems.length} 处资源没有真正落在本地：${problems.join('、')}——` +
         `WebView 出不出网不由我们决定，离线 / 墙内时它就是一个空图，页面上没有任何报错。` +
-        `请把资源放进 ui/public/ 并保留来源与许可声明（docs/icon-design.md` +
+        `请把资源放进 ui/public/ 并保留来源与许可声明（docs/ui/icon-design.md` +
         `「面板里的第三方标志」）。用户点击打开的外链（<a href>）不在此列。`,
     );
   } else {

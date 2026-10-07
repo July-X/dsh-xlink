@@ -1,5 +1,5 @@
 //! 云端套餐 / Token Plan 用量：查询并展示 MiniMax Token Plan 的双窗口额度
-//! 进度与 DeepSeek 按量余额（设计见 `docs/subscription-usage-design.md`）。
+//! 进度与 DeepSeek 按量余额（设计见 `docs/features/subscription/subscription-usage-design.md`）。
 //!
 //! 与 [`crate::usage::local`]（本地 token 统计）的关系：usage.rs 回答「过去消耗了
 //! 多少」，本模块回答「云端账户还剩多少、何时重置」。两层数据互相独立。

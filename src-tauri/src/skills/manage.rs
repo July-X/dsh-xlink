@@ -9,7 +9,7 @@
 //! 安装单位是包（npm tarball、git 仓库、本地文件夹）；落地与启用/停用的
 //! 粒度是单个技能。
 //!
-//! 设计说明：桌面交付物的 docs/skill-management.md。
+//! 设计说明：桌面交付物的 docs/features/extensions/skill-management.md。
 
 use crate::pkg;
 use crate::pkg::fetch::git_latest_tag;
@@ -945,7 +945,7 @@ fn make_entry_link(source: &Path, target: &Path, is_file: bool) -> io::Result<()
     // 于是 link 必然回退成 copy（磁盘上留下真实副本、中央库更新后内核读到的
     // 还是旧内容）。junction 由文件系统本身支持，普通用户即可创建，
     // 内核的文件监视也会像跟随符号链接一样跟随它——这也正是
-    // docs/skill-management.md 一直描述的行为。`mklink` 是 cmd 内建命令，
+    // docs/features/extensions/skill-management.md 一直描述的行为。`mklink` 是 cmd 内建命令，
     // 只能经 `cmd /C` 调用。
     let mut cmd = crate::shell::process::command_with_path("cmd");
     cmd.arg("/C")

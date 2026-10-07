@@ -7,7 +7,7 @@
 //! 读 snapshot 的人关心"这份回退点可不可信"，读 restore 的人关心"点确认
 //! 之后到底会发生什么"。
 //!
-//! 四条硬规则的完整说明见 `docs/safety-net-design.md` §5.2。
+//! 四条硬规则的完整说明见 `docs/features/diagnostics/safety-net-design.md` §5.2。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

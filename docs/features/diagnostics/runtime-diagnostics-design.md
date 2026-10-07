@@ -45,11 +45,11 @@
 
 | 界面 | 参考图 |
 | --- | --- |
-| 概览 | [overview.png](images/ui-baseline/overview.png) |
-| 内核版本 | [versions.png](images/ui-baseline/versions.png) |
-| 插件 | [plugins.png](images/ui-baseline/plugins.png) |
-| 技能 | [skills.png](images/ui-baseline/skills.png) |
-| 设置 | [settings.png](images/ui-baseline/settings.png) |
+| 概览 | [overview.png](../../images/ui-baseline/overview.png) |
+| 内核版本 | [versions.png](../../images/ui-baseline/versions.png) |
+| 插件 | [plugins.png](../../images/ui-baseline/plugins.png) |
+| 技能 | [skills.png](../../images/ui-baseline/skills.png) |
+| 设置 | [settings.png](../../images/ui-baseline/settings.png) |
 
 截图不是待复制的静态稿，而是现有产品的视觉和交互约束。新增页面应继续使用它的标题栏、品牌区、导航、卡片和状态语义。
 
@@ -59,11 +59,11 @@
 
 宽图用于理解三个诊断页面之间的信息层级和组件复用关系，不代表 dsh-xlink 要改成宽屏三栏窗口：
 
-![诊断功能宽屏信息结构图](images/ui-concepts/diagnostics-wide-structure.png)
+![诊断功能宽屏信息结构图](../../images/ui-concepts/diagnostics-wide-structure.png)
 
 窄图是实现时的主要参考。它按当前 480×800 窗口的比例绘制，标题已经统一为“启动诊断”“插件安全诊断”和“内核状态诊断”：
 
-![诊断功能窄窗口设计图](images/ui-concepts/diagnostics-portrait-final.png)
+![诊断功能窄窗口设计图](../../images/ui-concepts/diagnostics-portrait-final.png)
 
 读图时重点看四件事：
 
@@ -2100,14 +2100,27 @@ Node.js」排在最后——事故、设置告警、另一壳工作台三件事�
 已被本轮作废，其余两项没重测——表头因此改成「第二轮的实测」而不是「当前值」，
 免得下一个人照着一组内部就不自洽的数继续推。
 
-### 29-2 「官方对话」改名「官方网页版」
+### 29-2 「官方对话」改名「官网网页版」
 
-用户拍板。这个名字要解决的是**与本地工作台混淆**：管理台自己叫
-「DeepSeek Harness 桌面管理台」，页面上「工作台」是本地内核，「官方对话」是
+用户拍板，两次：先定「官方网页版」，当天再改成「官网网页版」（`官方` → `官网`）。
+最终名字是**官网网页版**。
+
+这个名字要解决的是**与本地工作台混淆**：管理台自己叫
+「DeepSeek Harness 桌面管理台」，页面上「工作台」是本地内核，原来的「官方对话」是
 deepseek.com 的网页版，两者并列时后者容易被读成本地的一个会话入口。
-「官方网页版」把这层区别写进名字里。
+「官网网页版」把这层区别写进名字里——顺带也点明它去的是**官网**而不是本机。
 
-改的是**全部用户可见文案**（`OverviewPanel.vue` 的按钮、次级入口与两个
-tooltip，`store.js` 的三条 toast），不只改按钮那一个——改一半会让同一次操作里
-按钮写着「官方网页版」、报错却写着「官方对话窗口」。代码注释与 Tauri 命令名
-（`open_official_chat`）不动：它们描述的是机制，不是名字。
+改的是**全部用户可见文案**，不只按钮那一个：概览页的按钮、次级入口与两个
+tooltip；`store.js` 的三条 toast；`App.vue` 三条退出确认弹窗的正文；窗口标题
+（`window_title("官网网页版")`）；以及 `commands.rs` 里 **17 条**会冒到 toast 上的
+Rust 报错文案（「官网网页版窗口未打开」「无法创建官网网页版页签栏：…」……）。
+改一半会让同一次操作里按钮写着「官网网页版」、报错却写着「官方对话窗口」。
+
+**代码注释、模块文档与 Tauri 命令名（`open_official_chat`、`official_chat.rs`）
+不动**：它们描述的是机制，不是名字。改名时按「只替换双引号 / 单引号字符串字面量」
+圈定范围，注释自然落在外面——比逐条人肉挑更可靠，也不会漏掉 `format!` 里的那种。
+
+> 这次替换本身留了个教训：第一版正则把 HTML 属性的双引号整段当成一个字符串，
+> 于是 `:title="… ? '关闭 X' : '打开 X'"` 里的**第二个**字符串被吞掉；复查命令
+> 又只 grep 了带引号的行，于是漏掉的模板纯文本与 `store.js` 的单引号 toast
+> 一起滑过去了。最后一次复查改用**全文本**搜旧词（不是搜引号）才收干净。

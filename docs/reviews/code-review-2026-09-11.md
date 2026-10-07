@@ -3,7 +3,7 @@
 审查对象：`dsh-xlink@0.1.2-rc.20`（`main`，HEAD `70f173c`；范围 `233c66d..70f173c`，2026-09-10 ~ 09-11 的 36 个提交，73 文件，+9272 / −1191）。
 审查日期：2026-09-11。
 
-上一轮（`docs/code-review-2026-09-10.md`，rc.18 → rc.19 的 22 个提交 / 121 条）修掉的是"点"。本轮是那次修复**之后**的独立复核，重点是：① 同类残留；② 修复自身新写的代码；③ 台账里标 ✅ 但实际未生效的条目。
+上一轮（`docs/reviews/code-review-2026-09-10.md`，rc.18 → rc.19 的 22 个提交 / 121 条）修掉的是"点"。本轮是那次修复**之后**的独立复核，重点是：① 同类残留；② 修复自身新写的代码；③ 台账里标 ✅ 但实际未生效的条目。
 
 ## 审查方法与已执行的验证
 
@@ -164,7 +164,7 @@
 ### P1-3 Windows「已收起到通知区域」提示用户看不到
 
 - 位置：`src-tauri/src/tray.rs:104-110`（先 `hide_to_tray` 再 `notify_hidden_once`）、`commands.rs:1186-1187` → `ui/src/App.vue:176`（页内 `ElMessage`）。
-- 后果：提示画在刚被隐藏的 webview 里；仓库无 notification 插件，没有任何系统级通道。而 `README.md` 与 `docs/architecture.md` 都承诺了这次提示。
+- 后果：提示画在刚被隐藏的 webview 里；仓库无 notification 插件，没有任何系统级通道。而 `README.md` 与 `docs/architecture/architecture.md` 都承诺了这次提示。
 - 修法：改为窗口重新可见时补发一次性提示（Rust 在 `show_main_shell` 后 emit，前端在可见时 toast），或引入系统通知；同时校正文档口径。
 
 ### P1-4 托盘「退出」在什么都没运行时仍说"工作台仍在运行"

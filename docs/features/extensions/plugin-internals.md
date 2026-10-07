@@ -1,8 +1,8 @@
 # dsh-xlink 插件机制实现
 
-`plugins.rs` 内部的 pnpm 调用、`.npmrc` 规则、lockfile 处理与 symlink 修复。设计层（用户可见的目录布局、双模式、接线、目录浏览）见 [plugin-management.md](plugin-management.md)；约定性约束（必须照做）见 [AGENTS.md](../AGENTS.md)。
+`plugins.rs` 内部的 pnpm 调用、`.npmrc` 规则、lockfile 处理与 symlink 修复。设计层（用户可见的目录布局、双模式、接线、目录浏览）见 [plugin-management.md](plugin-management.md)；约定性约束（必须照做）见 [AGENTS.md](../../../AGENTS.md)。
 
-> **状态（2026-09-30 更新）**：本文档描述的是实现细节路径。插件中央库先随多内核改造从 `~/.dsh/plugins/` 迁到 Xlink home，2026-09-29 又由 `store_relocate` 从 `dsh-plugins/` 整体搬进 `plugins/dsh[-dev]/`——**两处都搬过**，别把中间那一步当成现状。fetch / .npmrc / store.json 三处路径引用均以 `paths::plugins_store_root()` 为准；物化路径与实例维度的接线说明留在 [plugin-management.md](plugin-management.md) 与 [architecture.md §「多内核改造后的实际数据布局」](architecture.md)。
+> **状态（2026-09-30 更新）**：本文档描述的是实现细节路径。插件中央库先随多内核改造从 `~/.dsh/plugins/` 迁到 Xlink home，2026-09-29 又由 `store_relocate` 从 `dsh-plugins/` 整体搬进 `plugins/dsh[-dev]/`——**两处都搬过**，别把中间那一步当成现状。fetch / .npmrc / store.json 三处路径引用均以 `paths::plugins_store_root()` 为准；物化路径与实例维度的接线说明留在 [plugin-management.md](plugin-management.md) 与 [architecture.md §「多内核改造后的实际数据布局」](../../architecture/architecture.md)。
 
 ## 完整流程（`install(spec)`）
 

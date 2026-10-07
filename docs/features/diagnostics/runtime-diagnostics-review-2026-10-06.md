@@ -3,7 +3,7 @@
 日期：2026-10-06  
 审查对象：当前 main 分支上的运行诊断实现，主要覆盖 fc7393a 至 374a330  
 对照文档：[运行诊断与内核控制塔设计](runtime-diagnostics-design.md)  
-参考图：[诊断页竖版方案](images/ui-concepts/diagnostics-portrait-final.png)、[诊断页宽版结构](images/ui-concepts/diagnostics-wide-structure.png)
+参考图：[诊断页竖版方案](../../images/ui-concepts/diagnostics-portrait-final.png)、[诊断页宽版结构](../../images/ui-concepts/diagnostics-wide-structure.png)
 
 ## 1. 结论
 
@@ -383,3 +383,153 @@ PluginDiagnosis.vue:216-259 先展示静态的五段“实验流程”，随后�
 5. 重新运行 npm run check，再按第 5 节做安装后人工验收。
 
 在这些意见关闭前，建议把当前实现描述为“诊断功能主体已接入，仍有交互闭环和跨平台验收项”，不要标记为设计要求全部完成。
+
+## 7. 第二轮复审（2026-10-07）
+
+### 7.1 复审范围与结论
+
+本轮以 HEAD `9c3f98b` 为代码基线，重新对照 [runtime-diagnostics-design.md](runtime-diagnostics-design.md) 的 §2.5、§4、§6、§7、§8、§9 和 §13。工作区中还有其他 agent 的未提交改动，本轮没有把它们纳入判断，也没有修改产品代码。
+
+已执行 `npm run check`，结果通过：Rust 门禁、UI 测试、脚本测试、smoke 测试、release 编译、格式检查、clippy 和 UI 产物预算均通过。这个结果只能说明当前自动化覆盖范围内没有回归，不能替代安装后的 Tauri 窗口验收。
+
+上一轮的主要结构问题已经得到处理，但“两阶段预检 → 用户确认 → 应用 → 可恢复”的闭环还存在实际缺陷。当前不宜标记为“完全符合设计要求”。
+
+### 7.2 上一轮意见的当前状态
+
+| 编号 | 当前状态 | 复审结论 |
+| --- | --- | --- |
+| P1-01 | 已关闭 | 诊断层 z-index 已高于进度浮层，页面层级符合设计。 |
+| P1-02 | 基本关闭 | 证据路径已经传入日志面板，并能明确提示日志已被轮转清理；基线失败路径仍缺少可打开的证据路径，见 R2-P1-03。 |
+| P1-03 | 架构已关闭，应用契约未闭环 | 预检命令与应用命令已拆开，预检成功不会自动写入真实实例；应用阶段仍有来源参数和返回值处理问题，见 R2-P1-01、R2-P1-02。 |
+| P1-04 | 已关闭 | 有 `preChangeSnapshotId` 时会进入恢复预览；旧记录没有快照时会明确降级为查看快照列表。 |
+| P1-05 | 已关闭 | 控制塔会按 startup、plugin-precheck、restore、bisect 分派运行记录，不再统一打开启动诊断。 |
+| P1-06 | 部分关闭 | 内核状态页已有刷新动作和读取时间，但刷新失败时仍可能被标记为成功，见 R2-P1-04。 |
+| P1-07 | 代码层已关闭，人工验收未完成 | 脱敏根目录已经覆盖 `DSH_XLINK_HOME` 和系统 home；Windows 打包环境下的真实路径仍未走一遍。 |
+| P1-08 | 已关闭 | 更多菜单已经补齐 Element Plus 的浮层样式和图标状态。 |
+| P2-01 | 部分关闭 | runId 已解析并写入事件，但实时事件仍可能混入不同运行，见 R2-P2-01。 |
+| P2-02 | 部分关闭 | 动作代理已覆盖事故、工作台、证据、恢复和内核刷新；仍有组件直接调用业务动作，见 R2-P2-02。 |
+| P2-03 ～ P2-06 | 已关闭 | 阶段计数、时区、孤儿运行记录清理和重复时间线问题已有对应实现。 |
+
+### 7.3 必须修改的 P1 项
+
+#### R2-P1-01 “应用变更”不能用 `pluginId` 重建安装来源
+
+**证据：**
+
+- `PluginDiagnosis.vue:172-174` 和 `PrecheckDialog.vue:67-69` 把报告里的 `pluginId` 传给 `applyPluginChange`。
+- `ui/src/plugins/plugins.js:300-312` 把传入值当作原始安装 spec（来源字符串）发送给 `plugin_precheck_apply`。
+- `src-tauri/src/plugins/sandbox.rs:103-104` 明确说明 `plugin_id` 是中央库 id，不是原始安装来源。
+- `src-tauri/src/plugins/center.rs:907-940` 的解析逻辑支持 npm scope、GitHub 简写、完整 Git URL 和 tag；`center.rs:3234-3237` 还会在冲突时为实际安装 id 添加短哈希后缀。
+
+这两个字段的语义不同。例如 `@scope/pkg` 的中央库 id 可能是 `@scope__pkg`，`owner/repo#v1.0.0` 还包含来源类型和版本 pin。应用阶段只拿 id 重新解析时，可能变成不存在的 npm 包、丢失 Git 来源，或者丢失 tag；发生 id 冲突时也无法还原真正安装的对象。用户看到的是“预检通过”，但点击应用后可能失败或安装了不同的目标。
+
+**修改意见：**
+
+1. 预检报告必须保存供第二阶段使用的、经过凭据清理的原始来源契约，或由后端根据运行记录 id 直接解析出唯一的安装目标；不能让 UI 从显示 id 猜 spec。
+2. `plugin_precheck_apply` 应只接受后端认可的目标标识和验证时间，并再次确认它与预检报告对应的来源、版本和模式一致。
+3. 至少补充 npm scope、GitHub shorthand、完整 Git URL、带 tag 的 Git 来源、id 冲突和旧报告兼容测试。
+
+验收标准：预检页面展示的来源与应用阶段实际执行的来源逐字对应；应用后报告仍能指出同一个插件、同一个版本和同一个 `preChangeSnapshotId`。
+
+#### R2-P1-02 `withProgress` 的布尔返回值被当成预检报告
+
+`ui/src/shell/progress.js:119-135` 会消费命令结果，但最终只返回 `true` 或 `false`。安装预检通过 `labels.onResult` 处理报告；`applyPluginChange` 在 `plugins.js:306-322` 没有提供 `onResult`，却在 `.then((report) => ...)` 中把返回值当作 `PrecheckReport`，并写入 `store.precheckReport`。
+
+因此应用成功后，`store.precheckReport` 可能变成布尔值 `true`。随后诊断页读取 `report.verdict`、`report.installed`、`report.preChangeSnapshotId` 时拿不到报告字段，恢复入口和状态文案会失真。这也会掩盖 R2-P1-01 的来源问题，因为 UI 已经丢掉了后端返回的真实报告。
+
+**修改意见：**
+
+- 明确 `withProgress` 的返回值契约：要么保留返回布尔值，并强制通过 `onResult` 消费实际报告；要么让它返回命令结果，同时另行暴露成功状态。
+- `applyPluginChange` 必须在成功后保存后端返回的完整报告，再刷新其他状态。
+- 增加断言：应用成功后 `report.installed === true`、`report.pluginId` 和 `report.preChangeSnapshotId` 仍存在，刷新不会覆盖这份报告。
+
+#### R2-P1-03 基线失败的证据只写入磁盘，没有挂到报告和运行记录
+
+`src-tauri/src/plugins/precheck.rs:296-317` 在环境基线启动失败时调用 `preserve_evidence`，但只把路径写入 shell event，没有赋给 `report.evidence_path`。随后 `precheck.rs:329-334` 以 `None` 结束 recorder，所以运行记录也没有 `sandboxLog`。
+
+候选插件导致内核失败的分支在 `precheck.rs:425-454` 已经正确填写 `report.evidence_path` 并把它写入 `RunEvidence.sandbox_log`。这造成两种失败路径行为不一致：最能说明“问题与候选插件无关”的基线失败，反而无法从诊断页直接打开日志；用户只能看到“请查看下方日志”，但页面没有对应的日志入口。
+
+**修改意见：**
+
+- 将基线保留下来的路径写入 `report.evidence_path`。
+- 用同一路径填充运行记录的 `RunEvidence.sandbox_log`。
+- `OperationDiagnosis.vue:119-125` 不应只在 `kernelLog` 存在时显示证据卡；只有 `sandboxLog` 的运行也应展示证据和“查看日志”动作。
+- 补充基线静默退出、基线有日志、候选插件失败三种测试，确认日志文件会在沙盒销毁后仍可定位。
+
+#### R2-P1-04 刷新失败后仍会更新“最后读取时间”
+
+`ui/src/store.js:205-218` 的 `runRefreshAll` 捕获了 `requestStatus`、插件状态和技能状态的错误，只弹 toast，不向调用方返回失败状态。`diagnostic-actions.js:118-127` 随后无条件执行 `kernelReadAt = Date.now()` 并清空错误。
+
+这会把“本次读取失败”显示成“刚刚读取成功”。`KernelStatusDiagnosis.vue` 依赖 `diagnosticStore.error` 显示过期或失败提示，当前路径也会把这个提示清掉。设计 §7.2 和 §9.4 要求保留上一次成功值，同时标明数据已过期、失败并提供重试入口。
+
+**修改意见：**
+
+- 区分全量刷新成功、部分成功和失败；至少让 `get_status` 失败能被内核状态诊断识别。
+- 只有必需的状态快照成功后才能更新 `kernelReadAt`；失败时保留旧值并设置 stale/error 状态。
+- 插件、技能或日志列表单独失败时，不要把其他数据源伪装成全量成功；每个健康项显示自己的不可用状态。
+- 增加拒绝 `get_status`、插件状态失败、技能状态失败的 UI/store 测试。
+
+### 7.4 P2 项与设计对齐意见
+
+#### R2-P2-01 runId 虽已解析，实时时间线仍会串流
+
+`diagnostics.js:101-111` 会把信封里的 runId 写入事件，但当 runId 变化时只是继续向 `liveEvents` 追加。`visibleEvents()` 在 `diagnostics.js:125-127` 会返回整组实时事件；打开历史记录时虽然会清空一次事件，之后迟到的旧事件仍可能进入当前时间线。
+
+**修改意见：**维护当前实时流的 runId，只接受属于该运行的事件；或者按 runId 分区保存并只渲染当前选中的分区。测试应覆盖“旧运行迟到事件 → 新运行事件 → 打开历史记录”的顺序，不能只断言事件对象上存在 `__runId`。
+
+#### R2-P2-02 动作代理边界还没有收完整，且预检注释已过时
+
+`diagnostic-actions.js:7-11` 写明诊断组件只应调用动作代理，但当前仍有以下直接调用：
+
+- `PluginDiagnosis.vue:17` 直接导入 `applyPluginChange`；
+- `ControlTower.vue:19` 直接导入 `showLogs`；
+- `StartupDiagnosis.vue`、`OperationDiagnosis.vue` 和 `DiagnosisShell.vue` 直接调用诊断加载函数；
+- `PrecheckDialog.vue` 与插件诊断页各自处理应用动作。
+
+这会让 loading key、错误处理和历史运行上下文继续分散。建议把诊断页使用的动作全部收进代理，并保留业务模块的纯动作供概览页使用；同时更新 `sandbox.rs:107-109` 等仍描述“inconclusive 也会安装”的注释。当前实现已经是“预检不改真实实例，应用由用户确认”，代码注释不能继续描述旧的 fail-open 契约。
+
+#### R2-P2-03 控制塔的日志健康项不是独立的数据源
+
+`ControlTower.vue:153-157` 直接读取 `logModal.files`。该数组初始为空，只有调用 `showLogs()` 后才会由 `refreshLogTabs()` 填充；应用启动时的 `refreshAll()` 不会加载日志列表。因此概览首次打开时可能显示“暂无”，但真实情况可能是“尚未读取”“读取失败”或“确实没有日志”。
+
+**修改意见：**为日志健康项增加 unloaded/loading/ready/failed 状态，在控制塔生命周期中主动读取列表；读取失败显示重试和原因，空列表才显示“暂无”。完整日志弹层仍可复用同一份状态。
+
+#### R2-P2-04 需要关注列表没有落实最多三项
+
+设计 §7.2 规定首屏最多展示三条关注事项，更多内容通过“查看全部”进入详情。当前 `ControlTower.vue:45-97` 会追加 incident、设置、另一壳工作台、预检和 Node 等所有事项，模板 `:216` 直接全部渲染，也没有数量上限或“查看全部”。当多个问题同时出现时，健康状态和最近操作会被推到 480×800 的首屏以下。
+
+**修改意见：**定义稳定的优先级，首屏只渲染前三项；其余进入展开区或详情页，并保留“查看全部”入口。补充四项以上同时存在的静态/UI 测试。
+
+#### R2-P2-05 明确 `KernelStatusDiagnosis` 与控制塔的职责边界
+
+设计 §7.2 的状态视图包含当前内核、实例和端口、关注事项、系统健康以及最近操作。当前控制塔承担了大部分内容，`KernelStatusDiagnosis.vue` 只展示运行状态、版本、端口、安装数量和数据目录；底部重复按钮栏已经移除。这可以是合理的“详情页”拆分，但设计文档尚未明确这一点，容易导致后续 agent 误以为诊断页缺少功能。
+
+**修改意见：**二选一并写回设计文档：
+
+1. 把控制塔的状态区组合进内核诊断页，并保留工作台主操作；或
+2. 明确 `KernelStatusDiagnosis` 只是当前内核详情页，完整控制塔只由 Overview 提供，并在页面标题、返回路径和验收用例中固定这一边界。
+
+#### R2-P2-06 只有沙盒日志的运行记录没有证据卡
+
+`OperationDiagnosis.vue:119` 用 `v-if="evidence.kernelLog"` 包住整张证据卡。插件预检失败或基线失败可能只有 `sandboxLog`，这时页面不显示证据摘要，用户只能依赖底部的通用“查看完整日志”按钮。该问题在 R2-P1-03 修复后仍需要单独验收，避免后端已经提供路径、前端却把它隐藏。
+
+### 7.5 本轮尚未完成的人工验收
+
+自动门禁通过，但以下项目必须在安装后的 Tauri 窗口中使用固定 480×800 视口验证：
+
+1. 启动失败时，进度浮层、诊断层和日志弹层的真实层级，以及失败后的主操作是否仍在首屏。
+2. 使用 npm scope、GitHub shorthand、带 tag 的 Git 来源分别做预检；确认预检期间真实实例不变，点击应用后来源、报告和恢复快照仍对应同一对象。
+3. 让沙盒基线静默退出，确认诊断页能打开保留下来的 sandbox log。
+4. 模拟 `get_status` 或插件/技能状态读取失败，确认旧值保留、时间戳不前移、页面标记 stale 并能重试。
+5. 同时制造四条以上关注事项，确认首屏只显示三条且存在“查看全部”。
+6. 在尚未打开日志弹层的情况下查看控制塔日志健康项，区分未读取、失败和空目录。
+7. 运行中的旧任务产生迟到事件时，确认新任务的时间线不会混入旧 runId。
+
+### 7.6 建议处理顺序
+
+1. 先修 R2-P1-01、R2-P1-02、R2-P1-03 和 R2-P1-04，补齐应用、报告、证据和失败状态的闭环。
+2. 再修 R2-P2-01、R2-P2-03 和 R2-P2-04，避免多任务事件和多告警把控制塔的首屏语义打乱。
+3. 收拢 R2-P2-02 的动作代理边界，清理与两阶段契约冲突的注释。
+4. 明确 R2-P2-05 的页面职责后，再按 480×800 清单做人工验收。
+
+当前实现可以描述为“诊断主体、运行记录和两阶段预检框架已经接入；应用来源、报告返回、基线取证和失败状态语义仍需修正”。完成上述 P1 项并通过人工验收前，不建议在发布说明中宣称已完全符合设计稿。

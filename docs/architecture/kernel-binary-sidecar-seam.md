@@ -8,10 +8,10 @@
 > 日期：2026-09-21（v1）→ 2026-09-21（v2，扩充 MiniMax web-ui 承接路径）
 >
 > 关联文档：
-> - 主设计：[dsh-xlink-multi-kernel-design.md](dsh-xlink-multi-kernel-design.md)
-> - 开发计划：[dsh-xlink-multi-kernel-development-plan.md](dsh-xlink-multi-kernel-development-plan.md)
-> - 现状快照：[multi-kernel-migration-status-2026-09-19.md](multi-kernel-migration-status-2026-09-19.md)
-> - 现行实现：[src-tauri/src/kernel_adapter.rs](../src-tauri/src/kernel_adapter.rs)
+> - 主设计：[dsh-xlink-multi-kernel-design.md](multi-kernel/dsh-xlink-multi-kernel-design.md)
+> - 开发计划：[dsh-xlink-multi-kernel-development-plan.md](multi-kernel/dsh-xlink-multi-kernel-development-plan.md)
+> - 现状快照：[multi-kernel-migration-status-2026-09-19.md](multi-kernel/multi-kernel-migration-status-2026-09-19.md)
+> - 现行实现：[src-tauri/src/kernel_adapter.rs](../../src-tauri/src/kernel_adapter.rs)
 > - 现行实现：[src-tauri/src/kernel.rs](../src-tauri/src/kernel.rs)
 
 ## 0. TL;DR
@@ -35,10 +35,10 @@
 
 | 能力 | 状态 | 落点 |
 |---|---|---|
-| `KernelAdapter` trait（10+ 方法） | ✅ | [src-tauri/src/kernel_adapter.rs:166](../src-tauri/src/kernel_adapter.rs) |
-| `DshAdapter` 完整实现 | ✅ | [src-tauri/src/kernel_adapter.rs:225](../src-tauri/src/kernel_adapter.rs) |
-| `McodeAdapter` 已注册到 `adapters()` | ✅ | [src-tauri/src/kernel_adapter.rs:154](../src-tauri/src/kernel_adapter.rs) |
-| `McodeAdapter` stub 实现 | ✅ | [src-tauri/src/kernel_adapter.rs:432](../src-tauri/src/kernel_adapter.rs) |
+| `KernelAdapter` trait（10+ 方法） | ✅ | [src-tauri/src/kernel_adapter.rs:166](../../src-tauri/src/kernel_adapter.rs) |
+| `DshAdapter` 完整实现 | ✅ | [src-tauri/src/kernel_adapter.rs:225](../../src-tauri/src/kernel_adapter.rs) |
+| `McodeAdapter` 已注册到 `adapters()` | ✅ | [src-tauri/src/kernel_adapter.rs:154](../../src-tauri/src/kernel_adapter.rs) |
+| `McodeAdapter` stub 实现 | ✅ | [src-tauri/src/kernel_adapter.rs:432](../../src-tauri/src/kernel_adapter.rs) |
 | 实例注册表与端口分配 | ✅ | P2 阶段 |
 | P8 #1 顶部实例 dropdown | ✅ | P8 阶段 |
 | P8 #2 插件面板按实例视图 | ✅ | P8 阶段 |
@@ -46,7 +46,7 @@
 
 ### 1.2 缺口（McodeAdapter stub 内的所有 TODO）
 
-[src-tauri/src/kernel_adapter.rs:430–494](../src-tauri/src/kernel_adapter.rs) 的 `McodeAdapter` 方法目前全部返回 `AdapterError::VersionNotInstalled`：
+[src-tauri/src/kernel_adapter.rs:430–494](../../src-tauri/src/kernel_adapter.rs) 的 `McodeAdapter` 方法目前全部返回 `AdapterError::VersionNotInstalled`：
 
 - `resolve_install_dir("0.1.0")` → `None`
 - `prepare_instance(record)` → `Err(VersionNotInstalled)`
@@ -374,7 +374,7 @@ async fn check_instance_health(record: &InstanceRecord) -> HealthStatus {
 }
 ```
 
-`AdapterError::PortBusy { port, owner_pid }` 已经在 [src-tauri/src/kernel_adapter.rs:112](../src-tauri/src/kernel_adapter.rs)——新增 `PortHeldByForeignProcess` 处理端口被无关进程占用的情况：
+`AdapterError::PortBusy { port, owner_pid }` 已经在 [src-tauri/src/kernel_adapter.rs:112](../../src-tauri/src/kernel_adapter.rs)——新增 `PortHeldByForeignProcess` 处理端口被无关进程占用的情况：
 
 ```rust
 pub enum AdapterError {
@@ -749,14 +749,14 @@ T5（McodeAdapter 长期演进）
 ```text
 AGENTS.md                                  ← 顶层规约（信任边界 / 内核边界）
    │
-   ├── docs/architecture.md                ← 顶层架构图（已含多内核数据布局）
+   ├── docs/architecture/architecture.md                ← 顶层架构图（已含多内核数据布局）
    │
-   ├── docs/dsh-xlink-multi-kernel-design.md        ← 主设计（P0–P8 + 数据目录 + 适配器抽象）
+   ├── docs/architecture/multi-kernel/dsh-xlink-multi-kernel-design.md        ← 主设计（P0–P8 + 数据目录 + 适配器抽象）
    │      │
-   │      ├── docs/dsh-xlink-multi-kernel-development-plan.md   ← 实施计划
-   │      ├── docs/multi-kernel-migration-status-2026-09-19.md  ← 状态快照
+   │      ├── docs/architecture/multi-kernel/dsh-xlink-multi-kernel-development-plan.md   ← 实施计划
+   │      ├── docs/architecture/multi-kernel/multi-kernel-migration-status-2026-09-19.md  ← 状态快照
    │      │
-   │      └── docs/kernel-binary-sidecar-seam.md    ← **本文档**（补 mcode 侧的具体形态）
+   │      └── docs/architecture/kernel-binary-sidecar-seam.md    ← **本文档**（补 mcode 侧的具体形态）
    │             │
    │             ├── src-tauri/src/kernel_adapter.rs ← KernelAdapter trait
    │             ├── src-tauri/src/kernel.rs         ← DSH 适配器落地

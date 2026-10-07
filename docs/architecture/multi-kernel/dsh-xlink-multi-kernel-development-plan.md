@@ -5,7 +5,7 @@
 > **状态：计划稿，P0–P8 已完成（2026-09-27 核对）**。本文是**实施计划的历史记录**，
 > 各阶段勾选项反映当时的进度，不是当前状态；多实例的落地现状见
 > [multi-kernel-migration-status-2026-09-19.md](multi-kernel-migration-status-2026-09-19.md)，
-> 数据布局见 [architecture.md](architecture.md)。
+> 数据布局见 [architecture.md](../architecture.md)。
 >
 > **尚未实现的部分**：第二内核适配器（`McodeAdapter` 目前是 `kernel-binary-sidecar-seam.md`
 > 里的 seam 占位，见 `kernel_adapter.rs`），因此 UI 上的内核 tab 切换目前只对 DSH 生效。
@@ -295,7 +295,7 @@ P4 和 P5 在 P3 完成后可以并行开发，但两者都依赖统一的路径
 - UI：实例列表、实例创建、启动/停止、工作台入口、端口、日志、插件实例范围和技能全局范围。
 - `ui/src/bridge.js`：所有实例命令携带 instance id，长任务继续使用 `withProgress` 和 loading 状态。
 - `ui/src/store.js`、`plugins.js`、`skills.js`：状态按实例或全局源库拆分，不再用一个 active kernel 状态承载所有数据。
-- `README.md`、`docs/architecture.md`、插件/技能管理文档和故障排查文档同步当前已实现行为。
+- `README.md`、`docs/architecture/architecture.md`、插件/技能管理文档和故障排查文档同步当前已实现行为。
 - 增加 fresh install、升级、迁移、双实例、release/dev 并行和失败恢复的集成测试。
 
 **依赖**：P7；P4、P5、P6 的接口和状态格式稳定。
