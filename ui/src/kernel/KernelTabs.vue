@@ -1,7 +1,8 @@
 <script setup>
-// 顶部内核 tab（全局 chrome）：一排内核页签挂在标题栏正下方、侧栏与内容区
-// 之上——侧栏品牌、菜单和下方所有面板都归属当前选中 tab 指向的内核；接入
-// mcode 等新内核族时这里多一个 tab，布局不用再动。
+// 顶部工作条（全局 chrome）：48px 一行，标题栏正下方、侧栏与内容区之上——
+// 侧栏品牌、菜单和下方所有面板都归属当前选中 tab 指向的内核；接入 mcode 等
+// 新内核族时这里多一个 tab，布局不用再动。右半边常驻「当前实例 + 运行状态」，
+// 用户在任何页面都看得到，不必先回概览。
 //
 // tab 只显示内核族名（DSH / mcode）：注册表实例 id（如 default）是实现细节，
 // 多内核并存且都能同时启动时，id 不构成用户需要关心的差异，故不再展示。
@@ -57,45 +58,106 @@ async function pickInstance(id) {
 const retryInstances = () => withLoading('loadInstances', () => loadInstances().catch((e) => {
   toastActionError('读取实例列表失败', e);
 }));
+
+// 当前实例的人读名字（实例 id 是实现细节，标签才给人看）。页签显示的是内核
+// 族名，而同族多实例时真正区分「在服务的是哪一个」的是实例标签——它放在工作条
+// 右侧常驻，页签只管族。
+const activeInstanceLabel = computed(() => {
+  const current = instanceStore.list.find(
+    (it) => it.record.id === instanceStore.defaultInstanceId
+  );
+  return current ? current.record.label || current.record.id : '';
+});
+
+// 运行状态胶囊：运行中 / 已停止 / 未安装 / 加载中。判据与概览页「当前内核」卡
+// 同源（store.view.kernel），两处读同一个字段，不各算一份。
+const kernelStatus = computed(() => {
+  const k = store.view && store.view.kernel;
+  if (!k) return { text: '加载中…', cls: '' };
+  if (k.running) return { text: '运行中', cls: 'ok' };
+  if (k.active && k.active_installed) return { text: '已停止', cls: 'bad' };
+  return { text: '未安装', cls: '' };
+});
 </script>
 
 <template>
-  <nav class="kernel-tabs" aria-label="内核切换">
-    <template v-if="instanceTabs.length > 0">
-      <button
-        v-for="tab in instanceTabs"
-        :key="tab.id"
-        type="button"
-        class="kernel-tab"
-        :class="{ 'is-active': tab.id === instanceStore.defaultInstanceId }"
-        :disabled="instanceStore.switching || globalBusy || store.starting"
-        :aria-busy="isLoading('switchInstance')"
-        :aria-current="tab.id === instanceStore.defaultInstanceId ? 'true' : undefined"
-        :title="tab.title"
-        @click="pickInstance(tab.id)"
-      >
-        {{ tab.family }}
-      </button>
-    </template>
-    <span v-else-if="instanceStore.loaded !== false" class="kernel-tabs__note">加载中…</span>
-    <span v-else-if="instanceStore.error" class="kernel-tabs__note">内核列表读取失败</span>
-    <span v-else class="kernel-tabs__note">未设置默认内核</span>
-    <el-button v-if="instanceStore.error" text size="small" :icon="Refresh" :loading="isLoading('loadInstances')" :disabled="globalBusy" @click="retryInstances">重试</el-button>
-  </nav>
+  <div class="workspace-bar">
+    <nav class="kernel-tabs" aria-label="内核切换">
+      <template v-if="instanceTabs.length > 0">
+        <button
+          v-for="tab in instanceTabs"
+          :key="tab.id"
+          type="button"
+          class="kernel-tab"
+          :class="{ 'is-active': tab.id === instanceStore.defaultInstanceId }"
+          :disabled="instanceStore.switching || globalBusy || store.starting"
+          :aria-busy="isLoading('switchInstance')"
+          :aria-current="tab.id === instanceStore.defaultInstanceId ? 'true' : undefined"
+          :title="tab.title"
+          @click="pickInstance(tab.id)"
+        >
+          {{ tab.family }}
+        </button>
+      </template>
+      <span v-else-if="instanceStore.loaded !== false" class="kernel-tabs__note">加载中…</span>
+      <span v-else-if="instanceStore.error" class="kernel-tabs__note">内核列表读取失败</span>
+      <span v-else class="kernel-tabs__note">未设置默认内核</span>
+      <el-button v-if="instanceStore.error" text size="small" :icon="Refresh" :loading="isLoading('loadInstances')" :disabled="globalBusy" @click="retryInstances">重试</el-button>
+    </nav>
+    <!-- 右半边：当前实例上下文 + 运行状态。两者都是「一句话交代此刻状态」，
+         放在这里意味着用户在任何页面都看得到，不必先回概览。 -->
+    <div class="workspace-bar__context">
+      <span v-if="activeInstanceLabel" class="workspace-bar__instance" :title="activeInstanceLabel">
+        {{ activeInstanceLabel }}
+      </span>
+      <span class="status-pill">
+        <span class="dot" :class="kernelStatus.cls"></span>
+        <span>{{ kernelStatus.text }}</span>
+      </span>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-/* 下划线式页签（与 el-tabs 的视觉语言一致）：tab 行本身不自画底色和分隔线——
-   dev 红 / release 绿版本带从 body 一路铺上来，这行必须彻底透明才不会把渐变
-   切成两段；激活项用品牌色下划线标出下方整个界面归属的内核。 */
-.kernel-tabs {
-  flex-shrink: 0;
+/* 工作条：48px 一行，左边内核族页签，右边当前实例 + 运行状态。
+   旧版这行是「贴在标题栏下的透明页签」，靠 dev/release 背景渐变显形——那层
+   渐变已随新设计删除，页签若还透明就会和侧栏底色糊在一起，所以这里给它自己的
+   chrome 底与下边框。 */
+.workspace-bar {
+  flex: 0 0 var(--workspace-bar-height);
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 0 14px;
-  /* 内核多到放不下时允许横向滚动，但滚动条一律隐藏（负 margin 页签在滚动
-     容器里还会产生 1px 幽灵竖向滚动条），避免顶栏右侧出现滚动槽。 */
+  justify-content: space-between;
+  gap: 16px;
+  height: var(--workspace-bar-height);
+  padding: 0 16px;
+  background: var(--window);
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-bar__context {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.workspace-bar__instance {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* 内核多到放不下时允许横向滚动，但滚动条一律隐藏（负 margin 页签在滚动
+   容器里还会产生 1px 幽灵竖向滚动条），避免工作条右侧出现滚动槽。 */
+.kernel-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -106,22 +168,24 @@ const retryInstances = () => withLoading('loadInstances', () => loadInstances().
   appearance: none;
   flex-shrink: 0;
   white-space: nowrap;
-  background: none;
+  padding: 5px 12px;
   border: none;
-  border-bottom: 2px solid transparent;
-  padding: 8px 14px;
-  color: var(--text-muted);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
   font-size: 13px;
-  font-weight: 600;
   cursor: pointer;
-  transition: color 0.1s ease, border-color 0.1s ease;
+  transition: background 0.14s ease, color 0.14s ease;
 }
 .kernel-tab:hover:not(.is-active) {
+  background: var(--surface-subtle);
   color: var(--text);
 }
 .kernel-tab.is-active {
+  background: var(--surface-subtle);
   color: var(--text);
-  border-bottom-color: var(--el-color-primary);
+  font-weight: 600;
 }
 .kernel-tab:disabled {
   cursor: default;
@@ -130,6 +194,5 @@ const retryInstances = () => withLoading('loadInstances', () => loadInstances().
 .kernel-tabs__note {
   color: var(--text-muted);
   font-size: 12px;
-  padding: 8px 0;
 }
 </style>

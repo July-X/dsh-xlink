@@ -90,11 +90,19 @@ function panelChildren() {
   return found;
 }
 
-test('.panel 的 gap 是 6px（功能块默认间距的落点）', () => {
+// 6px → 12px：uiv2 改版按设计稿的卡片间距统一到 12px。与 `.page-layout`
+// （栅格）与 `.page-layout__col`（列容器）三处一致，改一处要另两处跟上。
+test('.panel 的 gap 是 12px（功能块默认间距的落点）', () => {
   const theme = readFileSync(resolve(SRC, 'theme.css'), 'utf8');
   const panel = theme.match(/^\.panel \{([^}]*)\}/m);
   assert.ok(panel, '必须能找到 .panel');
-  assert.match(panel[1], /gap:\s*6px/, '.panel 的 gap 必须是 6px');
+  assert.match(panel[1], /gap:\s*12px/, '.panel 的 gap 必须是 12px');
+
+  for (const selector of ['.page-layout', '.page-layout__col']) {
+    const rule = theme.match(new RegExp(`^${selector.replace('.', '\\.')} \\{([^}]*)\\}`, 'm'));
+    assert.ok(rule, `必须能找到 ${selector}`);
+    assert.match(rule[1], /gap:\s*12px/, `${selector} 的 gap 必须与 .panel 一致（12px）`);
+  }
 });
 
 test('.panel 的任何一个直接子元素都不自带 margin-bottom（按层叠后的生效值判）', () => {
@@ -138,7 +146,7 @@ test('诊断页（无 gap 的容器）仍由卡片自带 margin，不受本约�
 
 test('约定本身写在 ui/AGENTS.md 里，不只是代码里', () => {
   const doc = readFileSync(resolve('ui/AGENTS.md'), 'utf8');
-  assert.match(doc, /功能块之间的默认间距是 6px/, 'ui/AGENTS.md §间距 必须写明默认 6px');
+  assert.match(doc, /功能块之间的默认间距是 12px/, 'ui/AGENTS.md §间距 必须写明默认 12px');
   assert.match(doc, /由容器统一提供/, '必须写明间距由容器提供、块不带外边距');
   assert.match(doc, /除非用户明确要求特调/, '必须写明这是默认值、可被用户特调覆盖');
 });

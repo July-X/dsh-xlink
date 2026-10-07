@@ -1,4 +1,4 @@
-// 管理面板入口：Vue 3 + Element Plus（暗色主题，简体中文）。
+// 管理面板入口：Vue 3 + Element Plus（明暗双主题，简体中文）。
 // 与外壳的通信全部走 Tauri 命令（window.__TAURI__.core，见 bridge.js）。
 // URL 带 ?log=<name> 时是 open_log_window 弹出的独立日志阅读窗口，
 // 挂载 LogViewerWindow 而非管理壳（不跑轮询 / 预载等面板编排）。
@@ -36,6 +36,7 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn';
 import { homeDir } from './shell/bridge.js';
 import { setDisplayHomeDir } from './shell/labels.js';
 import { disableContextMenu } from './shell/noContextMenu.js';
+import { applyTheme } from './shell/theme.js';
 import 'element-plus/es/components/alert/style/css.mjs';
 import 'element-plus/es/components/button/style/css.mjs';
 import 'element-plus/es/components/checkbox/style/css.mjs';
@@ -101,6 +102,9 @@ if (usesCustomTitlebar && !isLogViewer && !isChatStrip && !isUsageViewer && !isS
 // 挂载：晚一步就会有一段窗口期里菜单还在。工作台与三个官方对话内容 webview
 // 加载的是别人的页面，由 `src-tauri/src/no-context-menu.js` 注入。
 disableContextMenu();
+
+// 主题必须同样早于任何组件挂载：晚一步首帧会先画一帧错误主题再跳色。
+applyTheme();
 
 const root = isLogViewer
   ? LogViewerWindow

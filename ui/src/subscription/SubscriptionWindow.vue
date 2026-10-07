@@ -204,7 +204,7 @@ const lastFetched = computed(() => {
   border: 1px solid var(--el-border-color-extra-light);
   border-radius: 999px;
   font-size: 11px;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 .age-pill .el-icon {
   font-size: 11px;
@@ -214,7 +214,7 @@ const lastFetched = computed(() => {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  background: var(--window);
 }
 .subwin-head {
   display: flex;
@@ -229,14 +229,14 @@ const lastFetched = computed(() => {
   font-size: 15px;
 }
 .subwin-info {
-  color: var(--muted);
+  color: var(--text-secondary);
   cursor: help;
 }
 .subwin-spacer {
   flex: 1;
 }
 .subwin-instance {
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 12px;
   margin-left: 8px;
   white-space: nowrap;
@@ -280,7 +280,7 @@ const lastFetched = computed(() => {
   font-size: 14px;
 }
 .sub-section-hint {
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 .sub-tier {
@@ -292,7 +292,7 @@ const lastFetched = computed(() => {
 .sub-tier-name {
   flex: none;
   width: 90px;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 .sub-bar {
   flex: 1;
@@ -344,7 +344,7 @@ const lastFetched = computed(() => {
 }
 /* 余额：总额与赠金 / 充值明细同行并排，告警仍靠右。 */
 .sub-balance-detail {
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 .sub-balance-unavailable {
@@ -359,7 +359,7 @@ const lastFetched = computed(() => {
 .sub-state {
   margin: 0;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 .sub-state-bad {
   color: var(--el-color-danger);
@@ -373,7 +373,7 @@ const lastFetched = computed(() => {
   padding: 7px 14px;
   border-top: 1px solid var(--border);
   background: rgba(0, 0, 0, 0.18);
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 .sub-reset-icon {

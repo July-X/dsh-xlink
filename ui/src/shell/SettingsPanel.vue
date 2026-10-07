@@ -100,9 +100,15 @@ onMounted(() => {
 
 <template>
   <section class="panel">
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">设置</h1>
+        <p class="page-desc">工作台端口、后台常驻与开机自启，以及模型任务的完成通知。</p>
+      </div>
+    </div>
     <div class="card">
       <h2 class="card-title-with-tip">
-        设置
+        工作台
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">

@@ -171,7 +171,7 @@ onMounted(() => {
   padding: 9px 11px;
   border: 1px solid var(--border);
   border-radius: 9px;
-  background: var(--bg-soft);
+  background: var(--surface-subtle);
 }
 
 .snapshot-item-main {

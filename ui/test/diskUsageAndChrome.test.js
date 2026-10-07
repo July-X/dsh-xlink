@@ -5,48 +5,45 @@ import test from 'node:test';
 import { readShellSource } from '../../scripts/lib/shell-source.mjs';
 
 // 两条会静默失效的约定，都得钉住：
-//  ① 顶部版本带（dev 鲸眼红 / release Gitea 绿）铺满**整窗**而不是半屏/四分之三屏；
+//  ① 构建标识（dev 鲸眼红 / release Gitea 绿）由一枚 CSS 变量驱动，两种构建
+//     共用同一条绘制规则，不会各画各的而漂掉；
 //  ② 「磁盘用量」四个占用类型的配色按 **group.id** 取，不是按 label，也不是按顺序。
 
 const theme = readFileSync('ui/src/theme.css', 'utf8');
 const versionsPanel = readFileSync('ui/src/kernel/VersionsPanel.vue', 'utf8');
 const diskusage = readShellSource('diskusage.rs');
 
-// --- ① 顶部渐变带 ---
+// --- ① 构建标识细线 ---
 
-// 只匹配这两条 body 版本带的 background-image。写成通用渐变断言会把
-// .mac-titlebar / .app-bg 那一堆同形规则一并卷进来，红了也不知道是哪条。
-function versionBandGradient(selector) {
-  const rule = theme.match(new RegExp(`body\\.${selector}\\s*\\{[^}]*background-image:\\s*([^;]+);`, 's'));
-  assert.ok(rule, `必须能找到 body.${selector} 的 background-image`);
-  return rule[1];
-}
+// uiv2 改版把原来「从窗顶铺满全高的品牌色渐变带」收成窗顶 2px 一条线：
+// 新设计的层级建立在「不透明表面 + 细边框 + 单一蓝色主色」上，整窗渐变会与
+// 卡片描边互相拍频。但「一眼分清 dev / release」这件事必须留下——它是并排装两个
+// 壳时唯一能区分的办法。做法是两种构建**共用同一条 `.app-shell::before` 规则**，
+// 只换一个颜色变量，而不是各写一条背景渐变。
 
-test('顶部版本带铺满整窗：起点 α 与降幅不变，只把归零位置从半屏拉到窗底', () => {
-  for (const [selector, rgb] of [
-    ['dev-build', '255, 45, 48'],
-    ['rel-build', '96, 153, 38'],
-  ]) {
-    const gradient = versionBandGradient(selector);
+test('构建标识由 --build-color 驱动：两种构建共用同一条绘制规则', () => {
+  const line = theme.match(/\.app-shell::before \{([^}]*)\}/);
+  assert.ok(line, '必须能找到 .app-shell::before（构建标识细线）');
+  assert.match(line[1], /background:\s*var\(--build-color\)/, '细线必须用 --build-color 取色');
+  assert.match(line[1], /height:\s*2px/, '细线高度必须是 2px');
 
-    // 起点与终点都**不许动**：用户 2026-10-06 要求的是「渐变色、变化幅度都不变」，
-    // 只把覆盖范围从 50%/75% 拉到全高。改 α 就是另一件事了。
-    assert.match(
-      gradient,
-      new RegExp(`rgba\\(${rgb}, 0\\.25\\) 0%`),
-      `${selector}：顶端 α 必须仍是 0.25（渐变色与变化幅度不变）`,
-    );
-    assert.match(
-      gradient,
-      new RegExp(`rgba\\(${rgb}, 0\\) 100%`),
-      `${selector}：必须在 100%（窗底）归 0，而不是半屏`,
-    );
-    assert.doesNotMatch(
-      gradient,
-      /rgba\([^)]*,\s*0\)\s+(?:[1-9]\d?|0)%/,
-      `${selector}：终点百分比必须正好是 100%`,
-    );
-  }
+  // 画法只有这一处：一旦有人再加一条 body.* 的背景渐变，两个构建会各画各的。
+  assert.doesNotMatch(
+    theme,
+    /body\.(?:dev-build|rel-build)\s*\{[^}]*background-image/s,
+    '版本带已收成细线，body.dev-build / body.rel-build 不该再有背景渐变',
+  );
+});
+
+test('dev 是鲸眼红、release 是 Gitea 绿（两个色值都不许改）', () => {
+  // release 是 :root 上的默认值，dev 单独覆盖。
+  const root = theme.match(/^:root \{([\s\S]*?)\n\}/m);
+  assert.ok(root, '必须能找到 :root');
+  assert.match(root[1], /--build-color:\s*#609926/, 'release 默认必须是 Gitea 绿 #609926');
+
+  const dev = theme.match(/body\.dev-build \{([^}]*)\}/);
+  assert.ok(dev, '必须能找到 body.dev-build');
+  assert.match(dev[1], /--build-color:\s*#ff5a5e/, 'dev 必须是鲸眼红 #ff5a5e');
 });
 
 // --- ② 四个占用类型的配色 / 说明 ---

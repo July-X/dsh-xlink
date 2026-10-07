@@ -219,7 +219,7 @@ async function resolveSuspect(id, action) {
    后者是只许下调的反棘轮大文件，事故面板的排版不值得从它那里借预算。 */
 .evidence-toolbar { display: flex; justify-content: flex-end; margin-top: 4px; }
 .evidence-row { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; }
-.evidence-label { flex: 0 0 104px; color: var(--muted); font-size: 12.5px; line-height: 20px; text-align: right; }
+.evidence-label { flex: 0 0 104px; color: var(--text-secondary); font-size: 12.5px; line-height: 20px; text-align: right; }
 .evidence-members { display: flex; flex-wrap: wrap; gap: 4px; max-height: 220px; overflow-y: auto; }
 .evidence-text { flex: 1; min-width: 0; margin-top: 0 !important; }
 </style>

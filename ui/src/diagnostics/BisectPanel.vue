@@ -197,19 +197,19 @@ onMounted(() => {
   padding: 7px 10px;
   border-radius: 8px;
   border-left: 3px solid var(--border);
-  background: var(--bg-soft);
+  background: var(--surface-subtle);
 }
 
 .bisect-step-list .step-fail {
-  border-left-color: var(--bad);
+  border-left-color: var(--danger);
 }
 
 .bisect-step-list .step-pass {
-  border-left-color: var(--good);
+  border-left-color: var(--success);
 }
 
 .bisect-step-list .step-unknown {
-  border-left-color: var(--warn);
+  border-left-color: var(--warning);
 }
 
 .bisect-step-title {
@@ -225,6 +225,6 @@ onMounted(() => {
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 </style>
