@@ -1424,11 +1424,21 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
 ///
 /// 页面是同一个 SPA：`ui/src/main.js` 在 `?log=<name>` 出现时挂载
 /// 的是独立查看器，而不是管理面板；查看器自己调用 `read_log_file`
-/// （capability `log-viewer.json` 仅授予该命令）。名称在这里也会经
-/// 过 `read_log_file` 的校验，所以错误的名字在窗口出现前就被拒掉。
+/// （capability `log-viewer.json` 仅授予该命令）。非空名称在这里就会
+/// 过一遍 `validate_log_name`，所以错误的名字在窗口出现前就被拒掉。
+///
+/// **`name` 允许为空串**：概览「系统健康 → 日志系统」那一格手里只有
+/// 份数、没有「当前签」，它要开窗就得能说「哪一份都行」。空名开出来的
+/// 是 `index.html?log=`，查看器据此进入自己的兜底选择（先 `kernel` 分组
+/// 的第一份，再任意第一份，见 `LogViewerWindow.listFiles`）。
+/// **这个放宽只作用于开窗，不作用于读文件**：`read_log_file` 仍然拒绝空名，
+/// 兜底选出来的名字在窗口内仍然逐个过校验——空名从头到尾不会变成一个
+/// 越界读取的口子。
 #[tauri::command]
 pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String> {
-    validate_log_name(&name)?;
+    if !name.is_empty() {
+        validate_log_name(&name)?;
+    }
     // 建窗必须在**非主线程**上进行（Windows 上在主线程同步建 webview 会死锁，
     // 与 `open_harness` 同样的理由），因此把结果经 mpsc 回传：旧实现是同步
     // 命令 + 后台线程，失败只 `eprintln`，UI 永远返回成功——用户点了「全屏」
@@ -1443,6 +1453,14 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
             }
             let encoded: String = url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
             use crate::shell::window::{window_title, CHROME_BACKDROP};
+            // 标题里那个应用名跟着 `window_title` 走；窗口名用「·」而不是「-」
+            // 分隔日志名，免得拼出「日志 - kernel — Dsh-Xlink」两个同款分隔符。
+            // 空名（由查看器自己挑一份）不加那个「·」，否则会留下一个悬空分隔符。
+            let title = if name.is_empty() {
+                "日志".to_string()
+            } else {
+                format!("日志 · {name}")
+            };
             // 吸附定位与用量窗口共用一套算法：贴主窗右侧、顶边对齐，
             // 右侧放不下翻左侧；物理坐标换算成逻辑坐标交给 builder。
             let dock = handle.get_webview_window("main").and_then(|main| {
@@ -1456,9 +1474,7 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
                 "log-viewer",
                 WebviewUrl::App(format!("index.html?log={encoded}").into()),
             )
-            // 标题里那个应用名跟着 `window_title` 走；窗口名用「·」而不是「-」
-            // 分隔日志名，免得拼出「日志 - kernel — Dsh-Xlink」两个同款分隔符。
-            .title(window_title(&format!("日志 · {name}")))
+            .title(window_title(&title))
             .inner_size(
                 crate::shell::window::LOG_VIEWER_SIZE.width,
                 crate::shell::window::LOG_VIEWER_SIZE.height,

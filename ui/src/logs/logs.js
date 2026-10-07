@@ -3,7 +3,7 @@
 // 「刷新」重读当前签。
 import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
-import { toastActionError } from '../shell/notify.js';
+import { toastActionError, toastError } from '../shell/notify.js';
 import { withLoading } from '../shell/loading.js';
 import { stripAnsi } from '../shell/progress.js';
 
@@ -275,6 +275,27 @@ export function hideLogs() {
   logModal.visible = false;
   logModal.askedEvidence = '';
   logModal.missingEvidence = '';
+}
+
+/**
+ * 打开独立日志阅读窗口（后端 `open_log_window`）。
+ *
+ * **放在共享层而不是某个组件里**：概览「系统健康 → 日志系统」的「查看」与
+ * 日志弹层的「全屏」是同一件事的两个入口，必须走同一段实现。两个入口各写
+ * 一份的后果不是重复劳动，是迟早一个改了另一个没改，于是又回到「同一屏两个
+ * 日志入口、点开结果不一致」那个已经被用户点掉一次的状态。
+ *
+ * `name` 可以为空：概览那一格手里只有份数，没有「当前签」。空名开出来的是
+ * `index.html?log=`，查看器据此走自己的兜底（先 `kernel` 分组，再任意第一份）。
+ * 非空名后端照旧校验，不放宽。
+ */
+export function openLogWindow(name) {
+  return withLoading('openLogWindow', () =>
+    invoke('open_log_window', { name: String(name || '') }).catch((e) => {
+      // 后端已经给出「下一步」文案，优先原样展示。
+      toastError((e && e.message) || '打开日志窗口失败：' + e);
+    })
+  );
 }
 
 /// 侧栏宽度持久化（localStorage）——主面板弹窗与独立全屏窗口共用，逻辑一致

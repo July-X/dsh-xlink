@@ -7,32 +7,19 @@
 // 分类侧栏的渲染由 LogSidebar 共享组件承担；侧栏与正文之间是 6px 可拖拽分隔条。
 import { computed, nextTick, onBeforeUnmount, onUnmounted, ref, watch } from 'vue';
 import { Refresh, Close, FullScreen } from '@element-plus/icons-vue';
-import { invoke } from '../shell/bridge.js';
-import { toastError } from '../shell/notify.js';
-import { withLoading, isLoading } from '../shell/loading.js';
+import { isLoading } from '../shell/loading.js';
 import {
   bindScrollAutoHide,
   groupLogFiles,
   loadActiveLog,
   loadSidebarWidth,
   logModal,
+  openLogWindow,
   saveSidebarWidth,
   switchLogTab,
 } from './logs.js';
 import LogSidebar from './LogSidebar.vue';
 import PaneSplitter from '../shell/PaneSplitter.vue';
-
-// 「全屏」：主壳窗口固定 1040×748 且不可缩放，日志阅读交给独立的可缩放
-// OS 窗口——主壳里那份读长日志永远只有这么大。
-function openLogWindow() {
-  if (!logModal.activeName) return;
-  return withLoading('openLogWindow', () =>
-    invoke('open_log_window', { name: logModal.activeName }).catch((e) => {
-      // 后端已经给出「下一步」文案，优先原样展示。
-      toastError((e && e.message) || '打开日志窗口失败：' + e);
-    })
-  );
-}
 
 const mainBox = ref(null);
 const tabsBox = ref(null);
@@ -157,13 +144,19 @@ onBeforeUnmount(() => {
       <div style="display: flex; align-items: center; gap: 8px">
         <span style="font-weight: 700; font-size: 15px">日志</span>
         <span style="flex: 1"></span>
+        <!-- 「全屏」显式传当前签，不能裸写 `openLogWindow`：`openLogWindow(name)`
+             搬去共享层之后有了形参，裸引用会把 MouseEvent 当文件名送进后端
+             （`String(event)` = `[object PointerEvent]`，而它不含路径分隔符，
+             能过 `validate_log_name`，于是窗口标题会真的变成
+             「日志 · [object PointerEvent]」）。clickHandlerArity 守这条。
+             注释放标签外：属性之间插 HTML 注释会让 SFC 解析失败。 -->
         <el-button
           text
           :icon="FullScreen"
           :disabled="!logModal.activeName"
           :loading="isLoading('openLogWindow')"
           title="在新窗口中全屏查看当前日志"
-          @click="openLogWindow"
+          @click="openLogWindow(logModal.activeName)"
         >
           全屏
         </el-button>
