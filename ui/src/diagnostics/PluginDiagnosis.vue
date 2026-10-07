@@ -13,7 +13,7 @@
 // ③ **首屏不显示凭据、会话正文与环境变量。** 折叠区里也只给路径与摘要。
 import { computed, onMounted } from 'vue';
 import { isLoading } from '../shell/loading.js';
-import { openEvidence, restorePreChange } from './diagnostic-actions.js';
+import { restorePreChange } from './diagnostic-actions.js';
 import { applyPrecheckChange, reloadPluginDiagnosis } from './diagnostic-actions.js';
 import { closeDiagnosis, diagnosticStore } from './diagnostics.js';
 import {
@@ -134,13 +134,6 @@ const risks = computed(() => {
   }
   return list;
 });
-
-function viewLogs() {
-  // 沙盒日志是这次预检的**主证据**，路径一起传过去：诊断层记下它，
-  // 日志读取仍走日志模块（设计 §8.2 最后一条动作）。
-  openEvidence(report.value?.evidencePath);
-}
-
 /**
  * 「恢复快照」——直接打开**这次预检之前**那份快照的差异预览。
  *
@@ -303,7 +296,6 @@ onMounted(() => {
   </details>
 
   <div class="diag-actions">
-    <el-button @click="viewLogs">查看日志</el-button>
     <el-button :loading="diagnosticStore.loading" @click="reload">刷新</el-button>
     <!-- 只给已安装的插件：没装上的插件没有「退回到变更前」这回事。
          没有 pre-change 快照 id 时改名成「查看快照列表」——按钮名必须等于

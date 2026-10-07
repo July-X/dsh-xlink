@@ -70,16 +70,26 @@ export function runPluginPrecheck(specFromCatalog) {
  * 份文件——用户看到的是一份**与这次诊断无关**的日志，而报告正文正指着它说
  * 「看这里」。沉默地打开另一份日志比打不开更伤信任。
  *
- * 没传路径时用诊断状态里已记的那一份（[`diagnosticStore.evidencePath`]，
+ * 没传路径时按「谁离这次诊断最近」回落：`active.spec.report.evidencePath`
+ * 优先，其次才是诊断状态里已记的那一份（[`diagnosticStore.evidencePath`]，
  * 由记录加载时从 `RunEvidence` 取），这样头部的「更多 → 查看完整日志」不必
  * 知道每个视图各自有几份证据。
+ *
+ * **报告证据排在前面不是随手排的**：`evidencePath` 是一个**跨页共用的槽位**，
+ * `openPluginDiagnosis` 切页时并不清它。于是当一次预检没落下运行记录
+ * （`loadPluginRun` 对空 runId 直接返回 null，`rememberEvidence` 根本没跑），
+ * 槽位里还留着**上一个**页面的路径——按它开日志，用户会拿到一份与本次预检
+ * 毫无关系的文件，而报告正文正指着真正的沙盒日志说「看这里」。页面上带着
+ * spec 打开时它没有这个歧义，所以先问它。
  *
  * **复用日志模块，不在诊断模块自己读文件**（设计 §8.2 最后一条动作）：两处
  * 各读一次就会有两套分类、大小上限和截断行为，而用户正在两份报告里比对
  * 同一段日志。
  */
 export function openEvidence(path) {
-  const target = String(path || diagnosticStore.evidencePath || '');
+  const target = String(
+    path || diagnosticStore.active?.spec?.report?.evidencePath || diagnosticStore.evidencePath || ''
+  );
   if (target) {
     diagnosticStore.evidencePath = target;
   }
@@ -112,10 +122,23 @@ export function openEvidence(path) {
  * 连带删掉的还有页面里只为该按钮服务的 `viewLogs()` 与 `Refresh` / `isLoading`
  * / `loadKernelStatusDiagnosis` / `openEvidence` 四个 import。
  *
- * `.diag-actions` 这个类**仍然保留**，另有三个诊断页在用（StartupDiagnosis 的
- * 「刷新 / 查看完整日志 / 查看事故」、OperationDiagnosis 的「刷新 / 查看完整
- * 日志」、PluginDiagnosis 的「查看日志 / 刷新 / 恢复」）——它们的动作还没进
- * 顶部菜单，收掉它们的按钮栏会直接删掉用户唯一的入口。
+ * **另外三个诊断页的「查看日志」入口也已于 2026-10-07 删除**（用户：
+ * 「移除重复的查看日志按钮」「查看完整日志使用统一的方式查看」）。做法与上面
+ * 内核状态页一致，把唯一入口留给头部「更多 → 查看完整日志」：
+ *   · `PluginDiagnosis` 底部栏的「查看日志」与 `StartupDiagnosis` /
+ *     `OperationDiagnosis` 底部栏的「查看完整日志」——与菜单第一项**逐字同名
+ *     且同一动作**（前者 `openEvidence(report.evidencePath)`，后者
+ *     `openEvidence()`，而菜单走 `openEvidence(diagnosticStore.evidencePath)`）。
+ *   · `StartupDiagnosis` / `OperationDiagnosis` 时间线失败行里的行内「查看日志」
+ *     （`RunTimeline` 的 `row-actions` 插槽）——它是**第三份**，调的是无参
+ *     `openEvidence()`，与菜单落到同一个文件。挂在红色那一行旁边并不会让用户
+ *     打开不同的证据，只是让同一个动作在一屏里出现三次。
+ * 精确性靠本文件上方 `openEvidence` 的回落链保住：插件页原先显式传的
+ * `report.evidencePath`，现在是回落链里的第一优先项，所以删掉那个按钮不会
+ * 让插件页打开别的文件。
+ *
+ * `.diag-actions` 这个类**仍然保留**：删掉的只是日志按钮，刷新 / 查看事故 /
+ * 恢复 / 清理 / 应用变更都还在用这一栏。
  */
 export function loadKernelStatusDiagnosis(manual = false) {
   const task = () =>

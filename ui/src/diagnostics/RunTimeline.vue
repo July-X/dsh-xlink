@@ -106,9 +106,8 @@ function statusOf(event) {
           </span>
         </div>
         <p v-if="event.message" class="diag-timeline__message">{{ event.message }}</p>
-        <div v-if="expandable && isExpanded(event.seq)" class="diag-timeline__actions">
-          <slot name="row-actions" :event="event" />
-        </div>
+        <!-- `row-actions` 插槽连同两个使用方已删（2026-10-07）：那个「查看日志」
+             与「更多 → 查看完整日志」开的是同一份文件。详见 diagnostic-actions.js。 -->
       </div>
     </li>
     <li v-if="!events.length" class="diag-empty">还没有阶段记录</li>
