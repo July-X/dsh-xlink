@@ -17,7 +17,7 @@ import {
   MagicStick,
   SetUp,
   Refresh,
-  Right,
+  TopRight,
   Fold,
   Expand,
 } from '@element-plus/icons-vue';
@@ -25,7 +25,6 @@ import { store, checkShellUpdate } from '../store.js';
 import { globalBusy, isLoading } from './loading.js';
 import { pluginStore } from '../plugins/plugins.js';
 import { skillStore } from '../skills/skills.js';
-import { migrationStore } from '../migration/migration.js';
 import { theme, toggleTheme } from './theme.js';
 import VersionBadge from './VersionBadge.vue';
 
@@ -56,17 +55,21 @@ const MENU_GROUPS = [
     label: '系统',
     items: [
       { id: 'settings', label: '设置', icon: SetUp },
-      // 「数据迁移」只在「从未迁移过 + 扫描到遗留数据」时显示：迁移设计是
-      // 旧源永不删除，旧数据永远扫得到，只看 hasMigratable 会让迁移过的用户
-      // 每次重启都看到入口。判断「迁移过」看历史记录（migration_list）非空。
-      // 迁移过的用户要走重跑 / 回滚 / 历史，用设置页的「数据迁移」入口。
-      {
-        id: 'migration',
-        label: '数据迁移',
-        icon: Right,
-        show: () =>
-          migrationStore.hasMigratable === true && migrationStore.history.length === 0,
-      },
+      // 「数据迁移」是**常驻**菜单项，紧跟在「设置」下面（设计稿 2550 行的
+      // 系统组就是这两项，无条件判断）。
+      //
+      // 它此前是条件渲染的——只在「从未迁移过 + 扫到遗留数据」时出现。维护者
+      // 2026-10-07 改为常驻：这一条覆盖了设计说明 §侧栏「数据迁移入口受旧数据
+      // 发现状态控制…不应把条件入口强行固定成常驻功能」那句话，理由是这个功能
+      // **在 v0.6.0 之后整体移除**（见 ui/AGENTS.md 的「待移除」一节）——过渡期
+      // 内它是一个要能被随时打开的正式功能，不该在大部分用户那台机器上凭空
+      // 消失；而入口必须先存在，才谈得上"到时候删干净"。
+      // 设置页仍保留一个轻量入口（设计说明同段那句话的后半句「迁移完成后，设置页
+      // 仍保留进入迁移功能的入口」），那边是「环境出问题时才动」那一组里的一行。
+      // 图标取 `TopRight`（右上箭头）而不是 `Right`（单向右）：设计稿 2550 行
+      // 用的就是 `↗`。迁移是「把东西从旧处搬到新处」，右上是双向的视觉暗示；
+      // 纯向右读起来像「进入下一层」，而它其实是搬走。
+      { id: 'migration', label: '数据迁移', icon: TopRight },
     ],
   },
 ];
