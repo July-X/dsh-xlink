@@ -1581,7 +1581,7 @@ fn add_official_chat_tab(
     use crate::shell::window::CHROME_BACKDROP;
     let (_, url_text) = OFFICIAL_CHAT_TABS
         .get(index)
-        .ok_or_else(|| format!("官方对话页签不存在：{index}"))?;
+        .ok_or_else(|| format!("官网网页版页签不存在：{index}"))?;
     let label = format!("official-chat-tab-{index}");
     let url = Url::parse(url_text).map_err(|e| format!("非法页签地址：{e}"))?;
     let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
@@ -1601,7 +1601,7 @@ fn add_official_chat_tab(
             LogicalPosition::new(0.0, layout.content_y),
             LogicalSize::new(layout.width, layout.content_height),
         )
-        .map_err(|e| format!("无法创建官方对话页签：{e}"))?;
+        .map_err(|e| format!("无法创建官网网页版页签：{e}"))?;
     Ok(())
 }
 
@@ -1615,7 +1615,7 @@ fn ensure_official_chat_tab(
 ) -> Result<(), String> {
     let window = app
         .get_window(OFFICIAL_CHAT_WINDOW_LABEL)
-        .ok_or("官方对话窗口未打开".to_string())?;
+        .ok_or("官网网页版窗口未打开".to_string())?;
     if app
         .get_webview(&format!("official-chat-tab-{index}"))
         .is_some()
@@ -1629,14 +1629,14 @@ fn ensure_official_chat_tab(
         .spawn(move || {
             let result = (|| {
                 fs::create_dir_all(&profile_dir)
-                    .map_err(|e| format!("无法创建官方对话数据目录：{e}"))?;
+                    .map_err(|e| format!("无法创建官网网页版数据目录：{e}"))?;
                 add_official_chat_tab(&window, index, layout, &profile_dir)
             })();
             let _ = tx.send(result);
         })
         .map_err(|e| e.to_string())?;
     rx.recv()
-        .map_err(|_| "官方对话页签创建线程已结束，未返回结果".to_string())?
+        .map_err(|_| "官网网页版页签创建线程已结束，未返回结果".to_string())?
 }
 
 /// 在带页签的窗口中打开 DeepSeek 官方对话。
@@ -1684,7 +1684,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
             let result: Result<(), String> = (|| {
                 let _mutation_guard = official_chat_mutation_lock()
                     .lock()
-                    .map_err(|_| "官方对话窗口状态锁已损坏".to_string())?;
+                    .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
                 if let Some(existing) = handle.get_window(OFFICIAL_CHAT_WINDOW_LABEL) {
                     let _ = existing.set_focus();
                     return Ok(());
@@ -1697,11 +1697,11 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                     state.data_dir.join("webview-official-chat")
                 };
                 fs::create_dir_all(&profile_dir)
-                    .map_err(|e| format!("无法创建官方对话数据目录：{e}"))?;
+                    .map_err(|e| format!("无法创建官网网页版数据目录：{e}"))?;
                 use crate::shell::window::{window_title, CHROME_BACKDROP};
                 let window = {
                     let builder = WindowBuilder::new(&handle, OFFICIAL_CHAT_WINDOW_LABEL)
-                        .title(window_title("官方网页版"))
+                        .title(window_title("官网网页版"))
                         .inner_size(OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT)
                         .resizable(true)
                         .background_color(CHROME_BACKDROP)
@@ -1729,7 +1729,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                     let builder = builder.title_bar_style(tauri::TitleBarStyle::Transparent);
                     builder
                         .build()
-                        .map_err(|e| format!("无法创建官方对话窗口：{e}"))?
+                        .map_err(|e| format!("无法创建官网网页版窗口：{e}"))?
                 };
                 let scale = window.scale_factor().unwrap_or(1.0);
                 // AppKit 在完成刚创建 content view 的布局之前，可能短暂回报一个
@@ -1777,7 +1777,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                         LogicalPosition::new(0.0, 0.0),
                         LogicalSize::new(layout.width, layout.strip_height),
                     )
-                    .map_err(|e| format!("无法创建官方对话页签栏：{e}"))?;
+                    .map_err(|e| format!("无法创建官网网页版页签栏：{e}"))?;
 
                 // 把一条幂等的 show 调用放到排队到主线程的任务里，再在所有子视图
                 // 注册完成后做一次 relayout。第二个排队的任务在 show 消
@@ -1817,7 +1817,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
     match built {
         Some(Ok(())) => Ok(()),
         Some(Err(e)) => Err(e),
-        None => Err("官方对话窗口创建线程已结束，未返回结果".to_string()),
+        None => Err("官网网页版窗口创建线程已结束，未返回结果".to_string()),
     }
 }
 
@@ -1904,14 +1904,14 @@ pub async fn switch_official_chat_tab(app: AppHandle, index: usize) -> Result<()
 
 fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<(), String> {
     if index >= OFFICIAL_CHAT_TABS.len() {
-        return Err(format!("官方对话页签不存在：{index}"));
+        return Err(format!("官网网页版页签不存在：{index}"));
     }
     let _mutation_guard = official_chat_mutation_lock()
         .lock()
-        .map_err(|_| "官方对话窗口状态锁已损坏".to_string())?;
+        .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
     let window = app
         .get_window(OFFICIAL_CHAT_WINDOW_LABEL)
-        .ok_or("官方对话窗口未打开".to_string())?;
+        .ok_or("官网网页版窗口未打开".to_string())?;
     let target_label = format!("official-chat-tab-{index}");
     if app.get_webview(&target_label).is_none() {
         let profile_dir = {
@@ -1950,9 +1950,9 @@ pub async fn close_official_chat(app: AppHandle) -> Result<(), String> {
 fn close_official_chat_blocking(app: AppHandle) -> Result<(), String> {
     let _mutation_guard = official_chat_mutation_lock()
         .lock()
-        .map_err(|_| "官方对话窗口状态锁已损坏".to_string())?;
+        .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
     app.get_window(OFFICIAL_CHAT_WINDOW_LABEL)
-        .ok_or("官方对话窗口未打开".to_string())?
+        .ok_or("官网网页版窗口未打开".to_string())?
         .destroy()
         .map_err(|e| e.to_string())
 }
@@ -1978,7 +1978,7 @@ pub async fn confirm_close_shell(app: AppHandle) -> Result<(), String> {
 fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
     let _mutation_guard = official_chat_mutation_lock()
         .lock()
-        .map_err(|_| "官方对话窗口状态锁已损坏".to_string())?;
+        .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
     let main = app
         .get_webview_window("main")
         .ok_or("主壳窗口不存在（label: main）")?;

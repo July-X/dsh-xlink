@@ -530,7 +530,7 @@ export function toggleOfficialChat() {
     invoke(command)
       .then(() => refreshAll())
       .catch((e) =>
-        toastActionError(open ? '关闭官方网页版窗口失败' : '无法打开官方网页版窗口', e, '请确认内核正在运行后重试', 5000)
+        toastActionError(open ? '关闭官网网页版窗口失败' : '无法打开官网网页版窗口', e, '请确认内核正在运行后重试', 5000)
       )
   );
 }
@@ -539,7 +539,7 @@ export function toggleOfficialChat() {
 // Rust 侧 open_official_chat 在窗口已存在时只会 set_focus，所以重复点击安全。
 export function openOfficialChatWindow() {
   return withLoading('openOfficialChatWindow', () =>
-    invoke('open_official_chat').catch((e) => toastActionError('打开官方网页版窗口失败', e, '请确认内核正在运行后重试', 5000))
+    invoke('open_official_chat').catch((e) => toastActionError('打开官网网页版窗口失败', e, '请确认内核正在运行后重试', 5000))
   );
 }
 
