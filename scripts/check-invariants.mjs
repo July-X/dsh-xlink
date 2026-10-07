@@ -2051,6 +2051,68 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// --- 20. 官网网页版的 hostname 名单与页签表一一对应 ----------------------
+//
+// `titlebar-pulse.js` 靠 `OFFICIAL_HOSTNAMES` 决定顶条走**官网蓝**还是工作台绿。
+// 它和 Rust 的 `OFFICIAL_CHAT_TABS` 是同一件事的两份名单，而：
+//   · 两边分处 Rust / JS，不共享任何符号；
+//   · `titlebar-pulse.test.mjs` 只跑 `127.0.0.1`（非官网那条路），官网分支
+//     在测试里根本没被执行到；
+//   · 少一个 host 的症状不是报错，是**新页签顶条悄悄变成工作台的绿**。
+//
+// 2026-10-07 用户要求移除千问页签时，这三份名单（Rust 页签表、前端兜底页签表、
+// 这份 host 名单）都必须同步——少改任何一份都留不一致。
+
+{
+  const tabsSrc = read('src-tauri/src/harness/official_chat.rs');
+  const tabBlock = tabsSrc.match(/OFFICIAL_CHAT_TABS: &\[\(&str, &str\)\] = &\[([\s\S]*?)\];/);
+  if (!tabBlock) {
+    fail('official-chat-tabs', 'official_chat.rs 里找不到 OFFICIAL_CHAT_TABS，判据失效');
+  } else {
+    const tabBody = tabBlock[1];
+    // 名单里写的是常量名（OFFICIAL_CHAT_URL / OFFICIAL_CHAT_MINIMAX_URL），
+    // 真正的地址定义在文件上方，按 `pub const X: &str = "url"` 展开。
+    const urls = new Map(
+      [...tabsSrc.matchAll(/pub (?:crate )?const (\w+): &str = "(https?:\/\/[^"]+)"/g)].map((m) => [
+        m[1],
+        new URL(m[2]).hostname,
+      ])
+    );
+    const tabHosts = [...tabBody.matchAll(/OFFICIAL_CHAT_(\w+)/g)].map((m) => {
+      const host = urls.get(`OFFICIAL_CHAT_${m[1]}`);
+      if (!host) fail('official-chat-tabs', `OFFICIAL_CHAT_TABS 里的 ${m[1]} 在本文件找不到对应的地址常量`);
+      return host;
+    });
+    const js = read('src-tauri/src/harness/titlebar-pulse.js');
+    const list = js.match(/OFFICIAL_HOSTNAMES = \[([^\]]*)\]/);
+    const scriptHosts = list
+      ? [...list[1].matchAll(/"([^"]+)"/g)].map((m) => m[1])
+      : fail('official-chat-tabs', 'titlebar-pulse.js 里找不到 OFFICIAL_HOSTNAMES');
+    if (scriptHosts) {
+      for (const host of tabHosts) {
+        if (host && !scriptHosts.includes(host)) {
+          fail('official-chat-tabs', `页签 ${host} 不在 titlebar-pulse.js 的 OFFICIAL_HOSTNAMES 里——它的顶条会走工作台绿而不是官网蓝`);
+        }
+      }
+      for (const host of scriptHosts) {
+        if (!tabHosts.includes(host)) {
+          fail('official-chat-tabs', `titlebar-pulse.js 的 OFFICIAL_HOSTNAMES 里有 ${host}，但页签表里已经没有它了——名单是死的`);
+        }
+      }
+      // 前端那条紧急渲染路径（IPC 不可用时的兜底）也得跟着页签表走。
+      const fallback = read('ui/src/official-chat/officialChatTabs.js');
+      const titles = [...tabBody.matchAll(/\("([^"]+)",\s*OFFICIAL_CHAT_/g)].map((m) => m[1]);
+      const missing = titles.filter((t) => !fallback.includes(`title: '${t}'`));
+      if (missing.length > 0) {
+        fail('official-chat-tabs', `前端兜底页签表缺 ${missing.join(' / ')}——IPC 不可用时页签栏会与后端不一致`);
+      }
+      if (!missing.length && tabHosts.length > 0) {
+        note(`${titles.length} 个官网页签在 Rust / 品牌条带名单 / 前端兜底表三处一致`);
+      }
+    }
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);

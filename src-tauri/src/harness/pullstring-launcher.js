@@ -17,7 +17,7 @@
  *
  * 为什么由外壳注入而非随内核一起发布：内核是已发布的 npm 制品
  * （`@deepseek-ai/dsh@<ver>`），而回到外壳管理面板的快捷方式是外壳的 chrome，
- * 而不是页面内容。official-chat 的内容 webview（DeepSeek / 千问 / MiniMax）
+ * 而不是页面内容。official-chat 的内容 webview（DeepSeek / MiniMax）
  * 属于第三方源，我们无法向其中注入脚本；灯本身属于窗口级 chrome，
  * 位于外壳拥有的 strip webview 上。
  *

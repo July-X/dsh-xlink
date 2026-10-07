@@ -1,8 +1,7 @@
 // 让这条紧急渲染路径与 commands.rs 中的 OFFICIAL_CHAT_TABS 保持一致。
 export const DEFAULT_OFFICIAL_CHAT_TABS = Object.freeze([
   Object.freeze({ index: 0, title: 'DeepSeek' }),
-  Object.freeze({ index: 1, title: '千问' }),
-  Object.freeze({ index: 2, title: 'MiniMax' }),
+  Object.freeze({ index: 1, title: 'MiniMax' }),
 ]);
 
 /**
