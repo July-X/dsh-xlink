@@ -597,3 +597,74 @@ test('页头标题与说明同属一个子项——否则说明会被 space-betw
     assert.equal(descDepth, rowDepth, `${rel} 的 page-desc 应与 .page-title-row 同属一个包裹元素`);
   }
 });
+
+// --- 技能页的卡片划分 -----------------------------------------------------
+//
+// 2026-10-07 对齐设计稿：原先「手动安装」是「已安装」卡底部的一条虚线分隔，
+// 读起来像「装完了顺手在这里补一个」，而它其实是另一件事——包的来源在社区。
+// 设计稿（2817-2820 行）是两张卡：已安装 / 社区资源。
+
+const skills = readFileSync('ui/src/skills/SkillsPanel.vue', 'utf8');
+
+/** `.vue` 的模板块，HTML 注释已剥。 */
+function templateOf(src) {
+  const start = src.indexOf('<template>');
+  const end = src.indexOf('<style scoped>');
+  assert.ok(start >= 0 && end > start, '找不到 <template> / <style scoped> 边界');
+  return src.slice(start, end).replace(/<!--[\s\S]*?-->/g, '');
+}
+
+const skillsTpl = templateOf(skills);
+
+test('技能页是「已安装 / 社区资源」两张卡，不是一张卡里的分隔线', () => {
+  const cards = skillsTpl.match(/class="card [^"]*"/g) || [];
+  assert.deepEqual(cards, ['class="card entity-card"', 'class="card community-card"']);
+  assert.match(skillsTpl, /<span class="card-title">社区资源<\/span>/);
+  // 「手动安装」不再挂在已安装卡里：它是社区资源卡的第二段。
+  assert.ok(
+    skillsTpl.indexOf('社区资源') < skillsTpl.indexOf('手动安装'),
+    '「手动安装」应在「社区资源」卡里',
+  );
+  assert.ok(
+    skillsTpl.indexOf('class="entity-list"') < skillsTpl.indexOf('class="card community-card"'),
+    '已安装列表应在社区资源卡之前',
+  );
+  // 原先那条分隔线随拆卡一起没了。
+  assert.doesNotMatch(skillsTpl, /section-divider/);
+  assert.doesNotMatch(stripComments(themeCss), /\.install-hint/, '`.install-hint` 已随拆卡删除');
+});
+
+test('社区资源卡不画设计稿那张「技能状态」卡（后端没返回那些数字，硬写就是编数据）', () => {
+  // 设计稿第一张卡写着「启用状态 4 / 4」「活动视图 已同步」。前者可由列表推算，
+  // 后者没有任何后端字段支撑——设计说明「不能从设计稿推断出的内容」里点名了
+  // 「未在后端返回的余额、百分比、更新时间、星标数量或插件数量」。宁可不画。
+  // 判据只看模板：源文件注释里正是在解释**为什么**不画它。
+  assert.doesNotMatch(skillsTpl, /活动视图/);
+  assert.doesNotMatch(skillsTpl, /技能状态/);
+  // 说明句照实写：面板里**没有**目录查询 / 筛选 / 排序。
+  assert.match(skillsTpl, /面板内没有技能目录查询、筛选和排序列表/);
+});
+
+test('手动安装有显式按钮，按钮与回车同一个 installSkill，且不挂假 loading', () => {
+  const installBlock = skillsTpl.slice(
+    skillsTpl.indexOf('class="install-row"'),
+    skillsTpl.indexOf('skill-remediation-note'),
+  );
+  assert.match(installBlock, /@click="installSkill"/);
+  assert.match(installBlock, /@keyup\.enter="installSkill"/);
+  // `installSkill` 走 `withProgress`（长任务），不经过 `withLoading`：
+  // `isLoading('…')` 对它永远 false，挂上去就是一个永远不转的 loading。
+  assert.doesNotMatch(installBlock, /:loading="isLoading/);
+  assert.match(installBlock, /:disabled="globalBusy \|\| !skillStore\.spec\.trim\(\)"/);
+});
+
+test('社区资源卡的样式留在 scoped，且复用全局 `.install-row` 而不是另写一份', () => {
+  const style = scopedStyle(skills);
+  // theme.css 走反棘轮（只许下调），单页专用的样式不进它。
+  assert.doesNotMatch(stripComments(themeCss), /\.community-/);
+  for (const cls of ['community-browse-row', 'community-title', 'community-meta', 'skill-remediation-note']) {
+    assert.match(style, new RegExp(`\\.${cls}\\s*\\{`), `.${cls} 应在 scoped 块里`);
+  }
+  assert.match(skills, /<div class="install-row">/);
+  assert.doesNotMatch(style, /\.community-install-control/);
+});
