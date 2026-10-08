@@ -1327,8 +1327,22 @@ main {
   border: 1px solid var(--border);
   color: var(--text-secondary);
   font-weight: 500;
+  /* 三枚同时出现时这一排要放得下（2026-10-08 用户报「都显示后会有点挤」）。
+     收三处，缺一处都还挤：
+       · 内边距 11 → 9（EP `size="small"` 的 `padding: 5px 11px`）
+       · 字号 12 → 11.5px（这一档本来就是「压低权重的次级动作」）
+       · **图标 17 → 13px**：全局 `.btn-row .el-button .el-icon` 那条 17px 是给
+         卡头动作按钮定的，落在 11.5px 的字上就过大，单这一项就吃掉每枚 4px。
+         选择器要比那条多一层（`.btn-row .btn-sub` vs `.btn-row .el-button`），
+         否则 (0,3,0) 会赢 (0,2,0)。 */
+  padding: 0 9px;
+  font-size: 11.5px;
   transition: background-color 0.18s ease, border-color 0.18s ease,
     color 0.18s ease, transform 0.12s ease;
+}
+
+.btn-row .btn-sub .el-icon {
+  font-size: 13px;
 }
 
 .btn-sub:hover,

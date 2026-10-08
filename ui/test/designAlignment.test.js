@@ -466,7 +466,7 @@ test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () 
   // 不按文案去找按钮是因为「工作台」既在按钮正文里、也在 `:title` 与另外两枚
   // 按钮的正文里（「工作台窗口」），`includes` 一数就是四枚——判据会变成掷骰子。
   const expected = {
-    'shell/OverviewPanel.vue': 4, // 工作台 / 官网网页版 / 刷新 / 查看详情
+    'shell/OverviewPanel.vue': 5, // 工作台 / 官网网页版 / 刷新 / 查看详情 / 更新并重启
     'skills/SkillsPanel.vue': 2, // 浏览 topic / 安装
     'plugins/PluginsPanel.vue': 1, // 刷新数据
   };
@@ -1664,6 +1664,65 @@ test('生产 CSS / Vue 里不再引用已改名的旧 token', () => {
 //
 // 这类值的特征是**只在一套主题下成立**：它们在暗色下看着是对的，所以任何只测
 // 暗色的检查都抓不到。判据因此钉的是「读 token」而不是「等于某个色值」。
+//
+// 上一条（官网页签窗）与下面这条（更新行 / 次级按钮）是同一轮的两个截图问题，
+// 放在一起是因为它们都出自「概览页 + 官网页签窗」这一轮实机走查。
+
+test('官网页签窗不跟随应用主题（它下面压的是第三方深色页面）', () => {
+  const main = readFileSync('ui/src/main.js', 'utf8');
+  // 启动前把真值按成 dark，且**不订阅广播**——只按初值不够：主壳切主题时广播
+  // 仍会把它拽走，白页签栏照样回来。
+  assert.match(main, /if \(isChatStrip\) setThemeValue\('dark'\);/);
+  assert.match(main, /if \(!isChatStrip\) followThemeBroadcast\(\);/);
+  assert.doesNotMatch(
+    main,
+    /^\s*followThemeBroadcast\(\);/m,
+    '无条件订阅会把官网页签栏重新拽回应用主题'
+  );
+  // 页签栏继续用 Element Plus token（跟着 `html.dark` 即恒为暗色），不要在这里
+  // 写死颜色——写死后主题广播再也影响不到它，两条路会分叉。
+  assert.doesNotMatch(
+    readFileSync('ui/src/official-chat/OfficialChatTabs.vue', 'utf8'),
+    /#[0-9a-f]{3,8}\b/i,
+  );
+});
+
+test('更新提示与它的动作同行，三枚次级按钮收小到放得下', () => {
+  const ov = readFileSync('ui/src/shell/OverviewPanel.vue', 'utf8');
+  // ① alert 与按钮此前是两个兄弟节点（alert 占满一行、按钮掉到下一行）。判据查的是
+  // **同属一个 `.update-banner`**——光看模板里有两个元素，查不出它们是不是同行。
+  const banner = /<div v-if="store\.shellUpdateVersion" class="update-banner">([\s\S]*?)<\/div>/.exec(
+    stripComments(ov),
+  );
+  assert.ok(banner, '应有 .update-banner 包裹更新提示与按钮');
+  assert.match(banner[1], /<el-alert/);
+  assert.match(banner[1], /更新并重启/);
+  const scoped = stripComments(scopedStyle(ov));
+  assert.match(scoped, /\.update-banner \{[^}]*display: flex;/);
+  assert.match(scoped, /\.update-banner :deep\(\.el-alert\) \{[^}]*flex: 1;/);
+  // 且**不再**有一处独立的 `.btn-row` 只装这一个按钮——那正是掉到下一行的原因。
+  assert.doesNotMatch(
+    stripComments(ov),
+    /<div v-if="store\.shellUpdateVersion" class="btn-row">/,
+    '更新按钮不该再单独占一行',
+  );
+
+  // ② 三枚次级按钮（工作台窗口 / 刷新工作台 / 官网网页版窗口）全出现时挤在一起。
+  // 三处都收：内边距、字号、以及**图标**——全局 `.btn-row .el-button .el-icon`
+  // 那条 17px 是给卡头动作按钮定的，落在 11.5px 的字上就过大。
+  const css = stripComments(themeCss);
+  const sub = /\.btn-sub \{([^}]*)\}/.exec(css);
+  assert.ok(sub, '应能找到 .btn-sub');
+  assert.match(sub[1], /padding:\s*0 9px;/);
+  assert.match(sub[1], /font-size:\s*11\.5px;/);
+  assert.match(css, /\.btn-row \.btn-sub \.el-icon \{[^}]*font-size:\s*13px/);
+  // 图标那条必须比 `.btn-row .el-button .el-icon` **更晚**——两者同为 (0,3,0)，
+  // 靠源码顺序决胜，选择器少一层就等于没写（0,2,0 会输给 0,3,0）。
+  assert.ok(
+    css.indexOf('.btn-row .btn-sub .el-icon') > css.indexOf('.btn-row .el-button .el-icon'),
+    '13px 的图标规则必须排在 17px 那条之后',
+  );
+});
 
 /** 会以语义色显示文字、且浮在卡片上的按钮 / 徽章。取值是「静止态的那条规则」，
  *  hover / 焦点档由下面一条单独钉——只钉静止态的话，把 hover 换回淡粉照样绿。 */

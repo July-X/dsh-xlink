@@ -36,7 +36,7 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn';
 import { homeDir } from './shell/bridge.js';
 import { setDisplayHomeDir } from './shell/labels.js';
 import { disableContextMenu } from './shell/noContextMenu.js';
-import { applyTheme, followThemeBroadcast } from './shell/theme.js';
+import { applyTheme, followThemeBroadcast, setThemeValue } from './shell/theme.js';
 import 'element-plus/es/components/alert/style/css.mjs';
 import 'element-plus/es/components/button/style/css.mjs';
 import 'element-plus/es/components/checkbox/style/css.mjs';
@@ -111,12 +111,19 @@ if (usesCustomTitlebar && !isChatStrip) {
 disableContextMenu();
 
 // 主题必须同样早于任何组件挂载：晚一步首帧会先画一帧错误主题再跳色。
+//
+// **官网页签栏例外：这扇窗整体钉死深色，不跟随应用主题**（2026-10-08）。
+// 它下面压着的是 `chat.deepseek.com` / MiniMax 这些**第三方深色页面**，而这扇窗
+// 按设计不给 `set-theme` 授权、原生装饰一直是深色。页签栏若跟着应用主题走，用户
+// 一切浅色主题就得到「一条白页签栏压在黑内容上」——截图报的就是这个。方向反过来
+// 同样割裂（黑页签栏压浅色内容），而内容不是我们的，改不了。工作台窗是同一条纪律。
+if (isChatStrip) setThemeValue('dark');
 applyTheme();
-// 订阅主壳的主题广播：已开着的日志 / 用量 / 套餐 / 官网页签栏窗口不会因为
-// 别处改了 localStorage 就重绘（`storage` 事件不跨 webview），靠这条广播
-// 跟着换。四个副窗与主壳共用这个入口，所以只调一次、覆盖所有窗口类型。
-// 主壳自己发这条事件（`setTheme`），订阅不构成回环。
-followThemeBroadcast();
+// 订阅主壳的主题广播：已开着的日志 / 用量 / 套餐窗口不会因为别处改了
+// localStorage 就重绘（`storage` 事件不跨 webview），靠这条广播跟着换。三个副窗与
+// 主壳共用这个入口，所以只调一次、覆盖所有窗口类型。主壳自己发这条事件
+// （`setTheme`），订阅不构成回环。**官网页签栏不订阅**——它钉死深色。
+if (!isChatStrip) followThemeBroadcast();
 
 const root = isLogViewer
   ? LogViewerWindow
