@@ -79,6 +79,7 @@ mkdirSync(workspace, { recursive: true });
 // ── 桩桥接：握手 + 固定目录，校验 Bearer ──
 const BRIDGE_TOKEN = `smoke-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const bridgeHits = [];
+const stubRequests = [];
 const bridgeServer = createServer((req, res) => {
   bridgeHits.push(req.url);
   if (req.headers.authorization !== `Bearer ${BRIDGE_TOKEN}`) {
@@ -90,11 +91,31 @@ const bridgeServer = createServer((req, res) => {
       .end(JSON.stringify({ protocol: 1, pluginVersion: "stub", service: "xlink-openai-oauth" }));
     return;
   }
+  if (req.url === "/v1/responses" && req.method === "POST") {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+    });
+    req.on("end", () => {
+      stubRequests.push({ url: req.url, method: req.method, body: raw });
+      const events = [
+        '{"type":"response.output_text.delta","delta":"pong"}',
+        '{"type":"response.output_text.delta","delta":"-from-stub"}',
+        '{"type":"response.completed","response":{"id":"resp-1","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5},"output":[]}}',
+      ];
+      res.writeHead(200, { "content-type": "application/x-ndjson" });
+      for (const event of events) res.write(event + "\n");
+      res.write('{"type":"bridge.terminal","status":"completed","replay":{"response":{"id":"resp-1","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5},"output":[]}},"detail":null}\n');
+      res.end();
+    });
+    return;
+  }
   if (req.url === "/v1/models") {
+    stubRequests.push({ url: req.url, method: req.method, body: "" });
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
       revision: "smoke-rev-1",
       models: [
-        { id: "gpt-stub-mini", name: "GPT Stub Mini", contextWindow: 16384,
+        { id: "gpt-stub-x", name: "GPT Stub X", contextWindow: 16384,
           efforts: [{ id: "low", name: "Low" }, { id: "high", name: "High" }] },
         { id: "gpt-stub-max", name: "GPT Stub Max" },
       ],
@@ -128,6 +149,7 @@ const child = spawn(process.execPath, [bin, "web", "--no-open", "--port", String
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
+child.on("error", (error) => { kernelErr += `spawn error: ${error}`; });
 let kernelOut = "";
 let kernelErr = "";
 child.stdout.on("data", (chunk) => { kernelOut += chunk; });
@@ -183,6 +205,82 @@ if (token !== undefined) {
   } catch { /* 内核可能在退出中 */ }
 }
 check("boot 模块图包含 client 条目", bootOk);
+
+// ── Phase C：headless 一次性会话（真实内核 agent loop → 适配器 → 桥接 →
+// 桩上游）。这是 P4 的离线最强验收：整条生成链路在真实内核里跑通。 ──
+const headlessProfileDir = join(home, "profiles", "headless");
+mkdirSync(join(headlessProfileDir, "workspace"), { recursive: true });
+writeFileSync(
+  join(headlessProfileDir, "package.json"),
+  `${JSON.stringify({
+    name: "dsh-profile-headless",
+    private: true,
+    dependencies: {},
+    dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless"] } },
+  }, null, 2)}\n`,
+);
+writeFileSync(
+  join(headlessProfileDir, "pnpm-workspace.yaml"),
+  "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\nminimumReleaseAge: 0\n",
+);
+writeFileSync(
+  join(headlessProfileDir, "cordis.patch.yml"),
+  [
+    // 会话默认模型指向桩提供方（base 行按 id 覆写 config）。
+    "- id: agent-default-model",
+    "  config:",
+    "    provider: xlink-openai-chatgpt",
+    "    model: gpt-stub-x",
+    // 本插件的接线行（与 web profile 同形状）。
+    "- insert:",
+    "    - id: xlink-openai-oauth",
+    `      name: '${entryRel.replace("profiles/web/", "profiles/headless/").split("/").join("/")}'`,
+    "",
+  ].join("\n"),
+);
+const headless = spawn(
+  process.execPath,
+  [bin, "--profile", "headless", "Say pong"],
+  {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      DSH_HOME: home,
+      DSH_PROFILE: "headless",
+      DSH_XLINK_OPENAI_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`,
+      DSH_XLINK_OPENAI_BRIDGE_TOKEN: BRIDGE_TOKEN,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  },
+);
+headless.on("error", (error) => { headlessErr += `spawn error: ${error}`; });
+let headlessOut = "";
+headless.stdout.on("data", (c) => { headlessOut += c; });
+let headlessErr = "";
+headless.stderr.on("data", (c) => { headlessErr += c; });
+const headlessCode = await new Promise((done) => {
+  const timer = setTimeout(() => { headless.kill("SIGKILL"); done("timeout"); }, 45000);
+  headless.on("exit", (code) => { clearTimeout(timer); done(code); });
+});
+check(
+  "headless 会话产出桩上游文本",
+  headlessCode === 0 && headlessOut.includes("pong-from-stub"),
+  `exit=${headlessCode} stdout=${JSON.stringify(headlessOut.slice(0, 200))} stderr=${JSON.stringify(headlessErr.slice(0, 300))}`,
+);
+const responsesHit = stubRequests.find((r) => r.url === "/v1/responses");
+check(
+  "推理信封合规（白名单内字段；store/stream 由桥接固定参数写入）",
+  responsesHit !== undefined &&
+    responsesHit.body.includes("gpt-stub-x") &&
+    responsesHit.body.includes("catalogRevision") &&
+    responsesHit.body.includes("instructions") &&
+    responsesHit.body.includes("input") &&
+    !responsesHit.body.includes('"store"') &&
+    !responsesHit.body.includes('"stream"') &&
+    !responsesHit.body.includes("temperature") &&
+    !responsesHit.body.includes("max_output_tokens"),
+  JSON.stringify(responsesHit ?? {}).slice(0, 260),
+);
 
 await cleanup();
 if (failures.length > 0) {
