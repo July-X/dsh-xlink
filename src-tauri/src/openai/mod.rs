@@ -10,4 +10,7 @@
 //! 侧的握手 / 目录链路可以先对真实服务验证。
 pub(crate) mod auth;
 pub(crate) mod bridge;
+pub(crate) mod callback;
+pub(crate) mod http;
 pub(crate) mod jwk;
+pub(crate) mod vault;

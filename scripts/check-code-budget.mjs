@@ -258,6 +258,17 @@ const FILE_BUDGETS = {
   // JWK 解析 + RS256 验签：ring 的 RsaPublicKeyComponents 直接吃 n/e，
   // 第一版手拼 SPKI DER 已删（不必要）。固定测试密钥自签自验钉住。
   'src-tauri/src/openai/jwk.rs': 53,
+  // 2026-10-09：加密凭据库（P2）。AES-256-GCM（ring）+ 原子替换 + 0600 +
+  // 系统凭据库存密钥（mac security CLI / win PasswordVault 走 PowerShell，
+  // 不碰 Win32 FFI）。可测逻辑（加解密/文件/分键/生成）注入闭包，密钥库
+  // 薄壳不进测试（同 autostart 纪律：真实 Keychain 人工验证）。
+  'src-tauri/src/openai/vault.rs': 201,
+  // bridge 与回调监听共用的极简 HTTP 读写。从 bridge.rs 提出（读取循环
+  // 是实测踩过 TCP 分段竞态的那段，两处各写一份迟早漂移）。
+  'src-tauri/src/openai/http.rs': 68,
+  // 2026-10-09：OAuth 回调监听（一次性 loopback：随机端口 + state 校验 +
+  // 分状态回执页）。bridge.rs 换用共享 http.rs 后净减（读取循环去重）。
+  'src-tauri/src/openai/callback.rs': 90,
   'src-tauri/src/openai/mod.rs': 12,
   // 2980 → 2932：删掉 P4 留下的旧签名壳共 11 项（`sync_kernels` /
   // `materialize_one` / `remove_materialized` / `sweep_kernel_orphans` /
@@ -2043,7 +2054,7 @@ const FILE_BUDGETS = {
 // process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
-const TOTAL_BUDGET = 43636;
+const TOTAL_BUDGET = 44058;
 // 42424 → 42807 → 42981（2026-10-08）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
