@@ -480,7 +480,7 @@ fn skill_wiring_block(active: &Path) -> String {
 }
 
 /// 顶层是不是一个 patch 列表。只有列表（空、或以 `-` 起头的条目）才允许追加。
-fn looks_like_patch_list(text: &str) -> bool {
+pub(crate) fn looks_like_patch_list(text: &str) -> bool {
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {

@@ -1959,7 +1959,7 @@ fn sweep_instance_orphans(family: &str, instance_id: &str, store: &Store) {
 }
 
 #[cfg(unix)]
-fn make_dir_link(source: &Path, target: &Path) -> io::Result<()> {
+pub(crate) fn make_dir_link(source: &Path, target: &Path) -> io::Result<()> {
     std::os::unix::fs::symlink(source, target)
 }
 
@@ -1974,7 +1974,7 @@ fn make_dir_link(source: &Path, target: &Path) -> io::Result<()> {
 /// 会打 warning 后跳过，而不是中断整次复制：Windows 上一个悬空链接（比如
 /// 内核目标移走后的同伴链接）会让 `fs::copy` 报 os error 2，尽管它周围
 /// 一切正常。
-fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
+pub(crate) fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
     // 源根的规范化路径：符号链接只有在解析后仍落在这个根**之内**时才被跟随。
     // 越界链接（插件树里 `payload -> /Users/<user>` 这类）会把宿主的整棵树拷进
     // 内核插件目录——磁盘被填满，私有文件也进入内核进程与插件代码可读的范围。

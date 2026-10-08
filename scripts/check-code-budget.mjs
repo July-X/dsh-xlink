@@ -204,6 +204,26 @@ const FILE_BUDGETS = {
   // `catalog_cmd.rs` 反而多一层壳（与 bisect_cmd.rs / harness_cmd.rs 的
   // 分法不同，那两组是「有实质逻辑的命令」）。
   'src-tauri/src/plugins/catalog.rs': 150,
+  // 2026-10-08：内嵌 openai-oauth 插件的交付层（P1）。设计/验收见
+  // docs/features/extensions/openai-oauth-{design,development-plan}.md，
+  // 接线配方的三版本实测见 openai-oauth-p0-findings.md §5/§6。
+  // 四个文件按「一个关注点一个文件」拆：
+  // · mod.rs：标识常量 + 启停编排（ensure_wired / ensure_unwired / probe_status）。
+  //   不是纯路由 mod.rs——编排逻辑（先摘旧行再落新行的事务顺序）就在这里，
+  //   所以照实登记，不蹭 mod.rs 的名字豁免。
+  // · materialize.rs：指纹、运行时文件集物化、peer 链接。与 center.rs 的社区
+  //   物化不是同一件事：那边从中央库到 extensions/plugins/<id>，这边从应用
+  //   资源到指纹专属目录，复用 center 的 copy_tree / make_dir_link（提为
+  //   pub(crate)，零行增长）而不是复制实现。
+  // · wiring.rs：cordis.patch.yml 自有行的精确增删。纪律继承 kernel_adapter
+  //   的技能接线（fail-loud 输入、顶层非列表不碰），但多一个 remove_row
+  //   （设计 §3.1 关闭开关需要移除接线）；纯文本操作 + 5 条单测。
+  // · cmd.rs：builtin_openai_status 只读命令壳，照 precheck_cmd.rs 先例独立
+  //   （commands.rs 在反棘轮上）。启用/停用写命令随 P1 后续提交进这里。
+  'src-tauri/src/plugins/builtin/mod.rs': 190,
+  'src-tauri/src/plugins/builtin/materialize.rs': 220,
+  'src-tauri/src/plugins/builtin/wiring.rs': 110,
+  'src-tauri/src/plugins/builtin/cmd.rs': 85,
   // 2980 → 2932：删掉 P4 留下的旧签名壳共 11 项（`sync_kernels` /
   // `materialize_one` / `remove_materialized` / `sweep_kernel_orphans` /
   // `sweep_all_kernel_orphans` / `read_meta` / `write_meta` /
@@ -269,7 +289,8 @@ const FILE_BUDGETS = {
   'src-tauri/src/kernel/mod.rs': 10,
   // 10 → 11：2026-10-05 追加 catalog（插件目录检索层）。仍是一层路由，
   // 没有实现——同 shell/mod.rs 那条 15 → 19 的先例。
-  'src-tauri/src/plugins/mod.rs': 11,
+  // 11 → 12：内嵌插件 builtin 子模块（openai-oauth 交付层）。
+  'src-tauri/src/plugins/mod.rs': 12,
   'src-tauri/src/skills/mod.rs': 10,
   // 11 → 12：snapshot_cmd 进来（快照三命令从 commands.rs 搬出，见那条）。
   'src-tauri/src/diagnostics/mod.rs': 12,
@@ -1983,7 +2004,12 @@ const FILE_BUDGETS = {
 // process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
-const TOTAL_BUDGET = 42424;
+const TOTAL_BUDGET = 42807;
+// 42424 → 42807（2026-10-08）：内嵌 openai-oauth 插件交付层首块落地——
+// builtin/ 四文件（mod/materialize/wiring/cmd，+415 行代码行）+ plugins/mod.rs
+// 与 lib.rs 的两处登记行。总量是软上限：这是一条全新能力的首块，不是往
+// 既有文件里塞的膨胀；后续 P1 收尾（启停写命令 + 资源管线）若继续增长，
+// 优先在 builtin/ 内部平衡而不是再抬总量。
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
