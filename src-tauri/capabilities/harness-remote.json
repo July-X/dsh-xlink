@@ -11,6 +11,7 @@
     "allow-harness-reload-backoff",
     "allow-stash-harness-draft",
     "allow-take-harness-draft",
-    "allow-clear-harness-draft"
+    "allow-clear-harness-draft",
+    "allow-openai-account"
   ]
 }
