@@ -16,7 +16,6 @@
 //! 端口随机性 + 令牌共同挡住，P2 后续补 Host/Origin 显式校验。
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,70 +56,38 @@ fn new_token() -> String {
 }
 
 fn serve(stream: &mut TcpStream, token: &str) {
-    // TCP 无消息边界：单次 read 可能只拿到「GET 」前几个字节（实测踩过），
-    // 循环读到请求头结束（CRLF CRLF）。桥接端点全是 GET、无请求体。
-    let mut buf = [0u8; 4096];
-    let mut read = 0usize;
-    while read < buf.len() {
-        let Ok(n) = stream.read(&mut buf[read..]) else {
-            return;
-        };
-        if n == 0 {
-            break;
-        }
-        read += n;
-        if buf[..read].windows(4).any(|w| w == b"\r\n\r\n") {
-            break;
-        }
-    }
-    if read == 0 {
-        return;
-    }
-    let mut headers = [httparse::EMPTY_HEADER; 32];
-    let mut request = httparse::Request::new(&mut headers);
-    let parsed = request.parse(&buf[..read]);
-    let Ok(httparse::Status::Complete(_)) = parsed else {
-        let _ = write_response(stream, 400, "{\"error\":\"bad-request\"}");
+    let Ok(request) = crate::openai::http::read_request(stream) else {
         return;
     };
-    let path = request.path.unwrap_or("");
     let authorized = request
         .headers
-        .iter()
-        .find(|header| header.name.eq_ignore_ascii_case("authorization"))
-        .is_some_and(|header| {
-            let value = String::from_utf8_lossy(header.value);
-            value.trim() == format!("Bearer {token}")
-        });
+        .get("authorization")
+        .is_some_and(|value| value == &format!("Bearer {token}"));
     if !authorized {
-        let _ = write_response(stream, 401, "{\"error\":\"unauthorized\"}");
+        let _ = crate::openai::http::write_response(
+            stream,
+            401,
+            "application/json",
+            "{\"error\":\"unauthorized\"}",
+        );
         return;
     }
-    let body = match path {
+    let body = match request.path.as_str() {
         "/v1/handshake" => {
             format!("{{\"protocol\":{PROTOCOL_VERSION},\"service\":\"xlink-openai-oauth\"}}")
         }
         "/v1/models" => "{\"revision\":\"stub-0\",\"models\":[]}".to_string(),
         _ => {
-            let _ = write_response(stream, 404, "{\"error\":\"not-found\"}");
+            let _ = crate::openai::http::write_response(
+                stream,
+                404,
+                "application/json",
+                "{\"error\":\"not-found\"}",
+            );
             return;
         }
     };
-    let _ = write_response(stream, 200, &body);
-}
-
-fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> std::io::Result<()> {
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        _ => "Not Found",
-    };
-    write!(
-        stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
+    let _ = crate::openai::http::write_response(stream, 200, "application/json", &body);
 }
 
 /// 起一个新桥接（绑定 `127.0.0.1:0`）。失败信息带监听地址语义，可直接给日志。
@@ -209,6 +176,7 @@ pub(crate) fn launch_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
 
     fn get(addr: &std::net::SocketAddr, path: &str, token: Option<&str>) -> (u16, String) {
         let mut stream = TcpStream::connect(addr).unwrap();
