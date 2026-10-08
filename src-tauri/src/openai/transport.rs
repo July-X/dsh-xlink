@@ -119,6 +119,49 @@ pub(crate) fn get_json_with_auth(url: &str, bearer: &str) -> Result<String, Fail
     })
 }
 
+/// 带鉴权的流式 POST（推理）：返回**未消费的响应体行读取器**——调用方
+/// 逐行读到终止事件；路由纪律与其它入口一致，状态错误不换路。
+pub(crate) fn post_stream(
+    url: &str,
+    bearer: &str,
+    body: &str,
+) -> Result<Box<dyn std::io::BufRead + Send>, Failure> {
+    let mut tried: Vec<String> = Vec::new();
+    let mut last: Option<Failure> = None;
+    for route in net_proxy::routes() {
+        let agent = match agent_for(&route) {
+            Ok(agent) => agent,
+            Err(error) => return Err(Failure::Transport(error)),
+        };
+        let request = agent
+            .post(url)
+            .header("authorization", &format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .send(body);
+        match request {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                if (200..300).contains(&status) {
+                    let (_, body) = response.into_parts();
+                    return Ok(Box::new(std::io::BufReader::new(body.into_reader())));
+                }
+                // 状态错误要读出 body 再分类（不带 body 的分类是瞎猜）。
+                let mut response = response;
+                let text = response.body_mut().read_to_string().unwrap_or_default();
+                return Err(Failure::Status(status, text.chars().take(300).collect()));
+            }
+            Err(error) => match map_ureq_error(error) {
+                failure @ Failure::Status(..) => return Err(failure),
+                failure => {
+                    tried.push(route.describe());
+                    last = Some(failure);
+                }
+            },
+        }
+    }
+    Err(last.unwrap_or_else(|| Failure::Transport("没有可用的网络路由".into())))
+}
+
 /// POST 一份 JSON 文本（公开客户端：PKCE，无 basic 凭据）。`&str` 直接
 /// 作为 body 发送（AsSendBody 原生支持），不经 `send_json` 二次编码。
 pub(crate) fn post_json(url: &str, body: &str) -> Result<String, Failure> {

@@ -15,6 +15,7 @@ pub(crate) mod catalog;
 pub(crate) mod cmd;
 pub(crate) mod flow;
 pub(crate) mod http;
+pub(crate) mod inference;
 pub(crate) mod jwk;
 pub(crate) mod refresh;
 pub(crate) mod transport;

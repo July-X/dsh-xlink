@@ -69,6 +69,18 @@ pub(crate) fn read_request(stream: &mut TcpStream) -> Result<RequestHead, String
     })
 }
 
+/// 写流式响应头（无 Content-Length，靠连接关闭定界），随后由调用方逐行
+/// 写并 flush。推理流的下发形状是 NDJSON（每行一个 JSON 事件）。
+pub(crate) fn write_stream_start(
+    stream: &mut TcpStream,
+    content_type: &str,
+) -> std::io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n"
+    )
+}
+
 /// 写一个 `Connection: close` 的响应并返回。状态码只列本组用到的。
 pub(crate) fn write_response(
     stream: &mut TcpStream,
