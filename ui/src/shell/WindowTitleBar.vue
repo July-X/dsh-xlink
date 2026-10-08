@@ -28,11 +28,20 @@ import { hasWindowControls, invoke, windowAction } from './bridge.js';
 import { toastError } from './notify.js';
 
 const props = defineProps({
-  /** 标题栏正中显示的字。不传则用应用名 `Dsh-Xlink`。 */
+  /** 标题栏正中显示的功能名。不传则只显示应用名（主壳）。 */
   title: { type: String, default: '' },
 });
 
-const caption = props.title || 'Dsh-Xlink';
+// 2026-10-08 用户定格式：副窗显示「功能名@应用名」（如 `模型用量@Dsh-Xlink`），
+// 主壳只显示应用名。`@` 而不是 Rust 侧 `window_title()` 用的 ` — `：那条拼的是
+// **窗口标题**（任务栏、Dock、窗口管理器里显示的那一行，与系统标题栏同一份），
+// 这里拼的是**窗口内**自绘标题栏的那一行字。两者都读作「这是什么窗」，但面向的
+// 场合不同——窗口内标题栏更窄，` — ` 与交通灯挤在一起会读成两个短语。
+//
+// 应用名在这里写死字面量，与 `tauri.conf.json` 的 `title` / Rust 的 `APP_TITLE`
+// 是同一份名字（那个「三处必须一致」的不变量在 `check-invariants` 第 18 项，
+// 它查的就是本行的回落值）。
+const caption = props.title ? `${props.title}@Dsh-Xlink` : 'Dsh-Xlink';
 
 const isMacTitlebar = /Macintosh|Mac OS X/.test(navigator.userAgent);
 const isWindowsTitlebar = /Windows NT/.test(navigator.userAgent);

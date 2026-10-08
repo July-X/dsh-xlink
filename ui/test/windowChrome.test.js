@@ -223,7 +223,7 @@ test('三扇壳自有副窗共用一个自绘外壳，官网页签栏不用（�
   }
 });
 
-test('副窗标题栏显示功能标题，不是应用名（三扇各一个）', () => {
+test('副窗标题栏显示「功能名@应用名」，主壳只显示应用名（三扇各一个功能名）', () => {
   // 2026-10-08 用户实机跑完报「副窗的功能标题需要保留」。副窗的 head 行
   // （品牌图标 + 功能名 + 刷新等动作）是**内容区**的页头，在标题栏**下面**；
   // 标题栏若只写「Dsh-Xlink」，两行连着读就是「窗口叫什么 + 这窗装什么」，
@@ -232,7 +232,9 @@ test('副窗标题栏显示功能标题，不是应用名（三扇各一个）',
   assert.match(shell, /title:\s*\{\s*type:\s*String,\s*required:\s*true\s*\}/, '外壳要求传标题');
 
   // 三扇窗各自传什么，一一对上。日志窗要跟着当前文件走（与它 head 那行同名），
-  // 所以它是绑定不是字面量——但绑定里必须有兜底，否则没选中文件时标题是空的。
+  // 所以它是绑定不是字面量——但绑定里**必须有兜底**，否则没选中文件时标题会退成
+  // 空串，最终显示成 `@Dsh-Xlink`（功能名那半截没了）。这条在本仓被反向验逼出过一次：
+  // 判据只查「传了 title 时格式对不对」，漏掉「传的值本身可能为空」。
   const expected = [
     ['../src/logs/LogViewerWindow.vue', /:title="activeName \|\| '日志'"/],
     ['../src/usage/UsageWindow.vue', /title="模型用量"/],
@@ -242,9 +244,20 @@ test('副窗标题栏显示功能标题，不是应用名（三扇各一个）',
     assert.match(read(p), re, `${p} 应当把自己的功能标题传给外壳`);
   }
 
-  // 标题栏组件：不给 title 时回落到应用名（主壳不传）。
+  // 标题栏组件：**真的求值**那一行 caption，而不是比字符串。只比字符串的话，
+  // 改个分隔符、或者副窗那一支拼错了，判据照样绿——「不传 title 时显示应用名」
+  // 只钉住了两支中的一支。
   const bar = read('../src/shell/WindowTitleBar.vue');
-  assert.match(bar, /const caption = props\.title \|\| 'Dsh-Xlink'/, '主壳仍显示应用名');
+  const expr = bar.match(/const caption = ([\s\S]*?);\n/);
+  assert.ok(expr, '找不到 `const caption = …`');
+  const captionOf = new Function('props', `return ${expr[1]};`);
+  assert.equal(
+    captionOf({ title: '' }),
+    'Dsh-Xlink',
+    '主壳不传 title，显示的就是应用名',
+  );
+  // 格式由用户 2026-10-08 定：`功能名@应用名`。
+  assert.equal(captionOf({ title: '日志' }), '日志@Dsh-Xlink', '副窗应是「功能名@应用名」');
   assert.match(bar, /\{\{ caption }\}/, '标题栏渲染的是那个值，不能写死字符串');
   assert.doesNotMatch(
     stripHtmlComments(bar),
