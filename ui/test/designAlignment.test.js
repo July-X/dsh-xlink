@@ -243,31 +243,51 @@ test('版本号 20px / 700（设计稿 18px，用户要求再放大一档）；�
   assert.ok(style.includes('kernel-summary'), 'scoped 块应包含 kernel-summary');
 });
 
-test('三格指标：1fr 三列；三条分割线都是 2px 纯黑；格内按钮只收左右内边距', () => {
+test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」的 2px #212121', () => {
   assert.equal(effectiveDeclaration(['metrics'], RULES, 'grid-template-columns'), 'repeat(3, minmax(0, 1fr))');
-  // 2026-10-08 用户定案：「改成黑色、调细一点」——**概览这一屏所有槽**统一成
-  // 2px 纯黑实线。此前是 clip-path 刻蚀槽（两边细中间粗 + 一深一浅两条），
-  // 实机否掉了：白底上那条「反光」不可能比白更亮，立体感无从谈起。
-  // 三处都要钉：卡头底线 ×2（上/下两张卡）、指标上边线、指标竖线 ×2。
-  assert.equal(effectiveDeclaration(['metrics'], RULES, 'border-top'), '2px solid var(--divider-strong)');
-  assert.equal(effectiveDeclaration(['metric', 'metric'], RULES, 'border-left'), '2px solid var(--divider-strong)');
   const style = scopedStyle(overview);
-  assert.match(
-    style,
-    /\.kernel-card \.card-head,\s*\.usage-card \.card-head\s*\{\s*border-bottom:\s*2px solid var\(--divider-strong\);/,
-    '两张卡的卡头底线都要是 2px 纯黑',
+  // 用户先定了「2px 纯黑」，随后指出**两端收细必须保留**——收细是几何、颜色是
+  // token，两件事互不相干，中途把它们一起退回成一根直的线是错的组合。原生 border
+  // 全部退场：border 没法 clip，直线与收细只能二选一。
+  assert.equal(effectiveDeclaration(['metrics'], RULES, 'border-top'), '0');
+  assert.equal(effectiveDeclaration(['metric', 'metric'], RULES, 'border-left'), null);
+  assert.match(style, /\.kernel-card \.card-head,\s*\.usage-card \.card-head\s*\{[^}]*position:\s*relative;[^}]*border-bottom:\s*0;/s);
+  // 三处收细线各自钉住：**高度 2px + 颜色读 token + clip-path 的六边形**。
+  // 只钉 clip-path 的话把 height 改成 0、线就没了，判据照样绿——所以三条都要。
+  const H_TAPER = 'polygon\\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\\)';
+  for (const sel of [
+    /(\.kernel-card \.card-head::before,\s*\.usage-card \.card-head::before)/,
+    /(\.metrics::before)/,
+  ]) {
+    const selText = sel.source.replace(/[()]/g, '');
+    const rule = new RegExp(`${selText}\\s*\\{([^}]*)\\}`, 's').exec(style);
+    assert.ok(rule, `找不到 ${selText} 规则`);
+    assert.match(rule[1], /height:\s*2px;/, `${selText} 必须 2px 粗`);
+    assert.match(rule[1], /background:\s*var\(--divider-strong\)/, `${selText} 必须读 --divider-strong`);
+    assert.match(rule[1], new RegExp(`clip-path:\\s*${H_TAPER}`), `${selText} 必须两端收细`);
+  }
+  // 竖线横过来，六边形转 90°，且**收细比横线短**——那一格只有几十像素高，按横线
+  // 那 20% 去收两端就各削掉十几像素，出来是一片叶子而不是一道线。
+  const v = /\.metric \+ \.metric::before\s*\{([^}]*)\}/s.exec(style);
+  assert.ok(v, '找不到 .metric + .metric::before 规则');
+  assert.match(v[1], /width:\s*2px;/);
+  assert.match(v[1], /background:\s*var\(--divider-strong\)/);
+  assert.match(v[1], /clip-path:\s*polygon\(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%\)/);
+  // **不许退回渐变遮罩**：mask / linear-gradient 改的是透明度不是粗细，两端是「淡到
+  // 看不见」而不是「细」，在 2px 这个尺度上几乎分不出来——用户要的是收细本身。
+  // **先剥注释**：上面那段解释「为什么不能用 mask-image」的中文注释里正写着
+  // `mask-image` 这个词，不剥就会红在自己写的解释上（判据扫模板不扫全文那条规矩）。
+  assert.doesNotMatch(
+    stripComments(style),
+    /mask-image|mask:\s|linear-gradient\([^)]*transparent/,
+    '收细只能用 clip-path，渐变遮罩只是透明度不是粗细',
   );
-  // **钉住「刻蚀槽不许复活」**：那套东西是伪元素 + clip-path，只要有人在 scoped 里
-  // 留下 `.metrics::before` 之类的规则，两条 border 之上就会多叠出一层槽，而 border
-  // 的三条断言照样绿——它们看不见伪元素。
-  assert.doesNotMatch(style, /\.metrics::(before|after)/, '刻蚀槽的伪元素不该复活');
-  assert.doesNotMatch(style, /clip-path:\s*polygon\(/, '概览页不该再有 clip-path 刻蚀槽');
   // `--divider-strong` 用户指定明暗两套都用 `#212121`——**这个值不随主题变**，
   // 按本仓惯例只在 `:root` 定义一次。判据钉的是这个形状：
-  //   · `:root` 里必须有；
+  //   · `:root` 里必须有且值是 #212121；
   //   · `html.dark` 里**不许再声明一份**。两套各写一份时，改了一处忘了另一处就会
   //     跳档——而两处的字面值完全一样，靠肉眼和 build 都看不出来。
-  // （上一版这里断言的是「两套的值必须不同」，那是用户当时要求暗色取白时的形状；
+  // （更早一版这里断言的是「两套的值必须不同」，那是用户当时要求暗色取白时的形状；
   //   需求变了断言就得跟着变，否则它会在正确实现上转红、在错误实现上放行。）
   const rootBlock = new RegExp(':root\\s*\\{([\\s\\S]*?)\\n\\}', 'm').exec(themeCss);
   assert.ok(rootBlock, 'theme.css 里要有 :root 段');
