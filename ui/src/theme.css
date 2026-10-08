@@ -965,16 +965,28 @@ main {
   color: var(--text);
 }
 
-/* 卡片头与下方内容的分隔：底线 + 留白，让「标题 + 操作区」读起来是一个
-   独立的头部区块。裸 h2 的卡片（概览 / 设置）与 card-head 结构同待遇。 */
+/* 卡片头与下方内容的分隔：**刻蚀线**（设计标准，2026-10-08 用户定案并要求
+   推广到全部页面）——「2px / 两端收细 / --divider-strong」的一根线，让
+   「标题 + 操作区」读起来是一个独立的头部区块。裸 h2 的卡片（概览 / 设置）、
+   折叠卡头（.card-head-toggle）、深入排查弹窗头（.debug-panel header）
+   与 card-head 结构同待遇，共用下面那条分组伪元素。
+   **几何与颜色分家**：收细是几何，只能用 clip-path——渐变（含 mask-image）
+   改的是透明度，两端是「淡到看不见」而不是「细」；颜色是 token，明暗两套
+   同值 #212121（暗色下偏淡是用户明知的取舍）。原生 border 全部退场——
+   border 没法 clip，直线与收细只能二选一。
+   **适用的只是「有线的块头」**：填色工具条（.logwin 头 / .subwin-head /
+   .usagewin-head）、窗口 chrome（.titlebar）、表格行、以及 .section-divider
+   那条虚线是别的角色，不跟这条标准；本来就没有线的标题（5 个诊断窗口）
+   也不为此加线。 */
 .card-head {
+  position: relative;
+  border-bottom: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
   flex-wrap: wrap;
   padding-bottom: 9px;
-  border-bottom: 1px solid var(--border);
 }
 
 /* 动作按钮：卡头右侧 / 说明行尾 / 分组标题行 / 输入框右侧，同一份规格
@@ -1007,8 +1019,27 @@ main {
 }
 
 .card > h2 {
+  position: relative;
+  border-bottom: 0;
   padding-bottom: 9px;
-  border-bottom: 1px solid var(--border);
+}
+
+/* 刻蚀线本体：四类块头共用一条分组规则，收细六边形只写这一处。
+   （概览控制塔的 .diag-card__title 在 diagnostics.css 自成一块，那边有一份
+   带自有注释的拷贝，两边判据都钉住同一串 polygon。） */
+.card-head::before,
+.card > h2::before,
+.card-head-toggle::before,
+.debug-panel header::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--divider-strong);
+  pointer-events: none;
+  clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%);
 }
 
 .head-meta {
@@ -1439,12 +1470,12 @@ main {
 
 /* 设置页「数据迁移」折叠卡片：默认收起，点卡片头整条展开，避免「去迁移」CTA
    抢戏（启动期一次性弹窗才是首次迁移的主入口）。button 默认样式重置后与
-   .card-head 同款布局，再用 .card-collapsed 把展开前的下边线隐掉，避免
-   收起后留下一条把头部和空白卡身分开的多余线。 */
+   .card-head 同款布局（线走上面那条分组伪元素），再用 .card-collapsed 把
+   展开前的线隐掉——**收起态要清的是伪元素**，清 border 管不了它。 */
 .card-head-toggle {
+  position: relative;
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--border);
   padding: 0 0 10px;
   width: 100%;
   cursor: pointer;
@@ -1461,8 +1492,11 @@ main {
   border-radius: 6px;
 }
 .card.card-collapsed > .card-head-toggle {
-  border-bottom-color: transparent;
   padding-bottom: 0;
+}
+/* 收起态隐线：线在伪元素上，必须清 content 而不是 border。 */
+.card.card-collapsed > .card-head-toggle::before {
+  content: none;
 }
 .card.card-collapsed > .card-head-toggle:focus-visible {
   /* 收起态去掉下边线后，focus-visible 的 outline 不能越过卡片底边——offset
@@ -2449,158 +2483,11 @@ main {
   display: none;
 }
 
-/* 收紧两个 tab 之间的间隔，给右侧动作按钮留出同行空间。 */
-
-/* 插件中心工具条：搜索框占主位，排序收在同一行右侧。 */
-/* 排序下拉紧贴 chip 行右端：宽度收窄以让位给左侧横滚的分类 chip。
-   排序不是「装插件」的入口，是「逛目录」的辅助，所以放 chip 同一行
-   语义自洽。 */
-.catalog-sort {
-  /* 6:4 分宽度由 flex 系数承担：分类 flex:6 / 排序 flex:4。
-     不写死 width，让两个 el-select 自适应伸缩；之前固定 96px 在
-     窄窗里会顶到分类下拉的尾部空间。 */
-  flex: 4 1 0;
-  min-width: 0;
-}
-
-.catalog-subbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  /* 「手动安装」输入框 与 分类筛选下拉 拉开间距：两个区域是不同心智，
-     紧挨着会被当成同一个筛选项。section-divider + 14px 已把标题与输入
-     框分开，这里再加 12px 把输入框与下拉分开，三块视觉节奏：
-     紧（标题↔输入框 14） → 松（输入框↔下拉 12） → 中（下拉↔条目 6）。 */
-  margin-top: 12px;
-}
-
-/* 分类筛选下拉与排序下拉 6:4 分宽度：分类用占主位的 el-select
-   （flex:6），排序收右侧（flex:4）。两者都不写死 width，让
-   el-select__wrapper 自适应伸缩。下拉选项直接拼好分类名 + 计数
-   （"皮肤主题（650）"），一眼看到完整列表；之前 chip 横滚 + 渐隐遮罩的
-   形式只能露三四个、还遮住数字（这一列在宽版下是插件页的右半栏，宽度
-   仍然只有全窗的一半，横滚的可用宽度与旧版相当）。 */
-.catalog-category {
-  flex: 6 1 0;
-  min-width: 0;
-}
-
-.catalog-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  /* 分类下拉 ↔ 第一条插件条目之间 6px：与上方 chip 行/分类下拉 留一线
-     间距，让「筛选区」与「结果区」在视觉上断开。catalog-list 的 gap 只
-     在 children 之间生效，不会拉开与上一个 sibling 的距离，所以这里
-     必须用 margin-top。 */
-  margin-top: 6px;
-}
-
-/* 行式条目：原先是三段式卡片（标题行自由换行 + 描述 + 独立 tag 行），一张
-   约 90px，一屏只看三四个。压成定高三行后约 70px——之前 62px 偏挤，
-   标题/描述/底栏三行间几乎没有呼吸感。行式条目不做上浮，密集列表里
-   整列 hover 时跳动比省下的高度更抢眼。 */
-.catalog-row {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 12px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: var(--overlay-faint);
-  transition: border-color 0.16s ease, background 0.16s ease;
-}
-
-.catalog-row:hover {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-}
-
-.catalog-row-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-/* 名称是标题行里唯一会长到溢出的元素，flex-shrink 只给它：版本号、分类标签
-   与「已验证」徽标内容都短，压它们只会把标签挤成省略号。 */
-.catalog-name {
-  font-weight: 700;
-  font-size: 13px;
-  flex: 0 1 auto;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 「已验证」徽标：mint 绿 #7fd6a4 是为深色底调的淡彩（浅底上约 1.9:1），
-   与 2026-10-08 清掉的那批 emerald 同族，走 success token。 */
-.catalog-verified {
-  flex: none;
-  font-size: 10.5px;
-  color: var(--success);
-  border: 1px solid var(--success);
-  border-radius: 999px;
-  padding: 0 6px;
-}
-
-.catalog-desc {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.45;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-  line-clamp: 1;
-  overflow: hidden;
-}
-
-.catalog-row-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 1px;
-}
-
-.catalog-stats {
-  color: var(--text-secondary);
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.catalog-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: none;
-}
-
-/* 目录卡片入场：交错淡入上浮（--i 由模板按序号写入，封顶 12 档）。 */
-.catalog-enter-active {
-  transition: opacity 0.25s ease, transform 0.25s ease;
-  transition-delay: calc(min(var(--i, 0), 12) * 22ms);
-}
-.catalog-enter-from {
-  opacity: 0;
-  transform: translateY(10px);
-}
-.catalog-leave-active {
-  transition: opacity 0.12s ease;
-}
-.catalog-leave-to {
-  opacity: 0;
-}
-
-.catalog-more {
-  display: flex;
-  justify-content: center;
-  margin-top: 4px;
-}
+/* 目录列表与行式条目的样式（.catalog-*）已于 2026-10-08 整段搬进
+   PluginsPanel.vue 的 scoped 块——theme.css 是反棘轮文件（只许下调），
+   而插件中心这一列的密度与内部滚动是单页关注点，按 ui/AGENTS.md
+   「单页专用样式留在 scoped」的约定出走。改目录条目 / 工具条的样式
+   去那个文件，不要搬回这里。 */
 
 /* --- 进度浮层 --- */
 
@@ -3396,12 +3283,13 @@ body.pane-dragging .log-tabs {
 }
 
 .debug-panel header {
+  position: relative;
+  border-bottom: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   padding-bottom: 8px;
-  border-bottom: 1px solid var(--border);
 }
 .debug-panel h3 {
   margin: 0;

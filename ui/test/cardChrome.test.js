@@ -47,59 +47,88 @@ function panelCardTitles() {
   return found;
 }
 
-test('概览页与四个面板里每张卡的标题都真的画出了分割线（查层叠后的生效值）', () => {
+test('概览页与四个面板里每张卡的标题都真的画出了刻蚀线（查层叠后的生效值）', () => {
   const rs = rules();
   const titles = panelCardTitles();
   assert.ok(titles.length >= 8, `应识别出至少 8 处卡标题，实际 ${titles.length}`);
 
+  // 线走 theme.css 的全局刻蚀线标准：原生 border 退场，线在分组伪元素上。
+  // effectiveDeclaration 看不见伪元素，这里分两步——先钉每个标题的
+  // `border-bottom` 必须不再是 1px 实线，再在下面那条里钉伪元素本体的形状。
   const missing = [];
   for (const { set, where } of titles) {
     const value = effectiveDeclaration(set, rs, 'border-bottom');
-    if (!value || !/^1px/.test(value)) missing.push(`  [${[...set].join(' ')}] → border-bottom: ${value ?? '(无)'}  (${where})`);
+    if (value && /^1px solid/.test(value)) missing.push(`  [${[...set].join(' ')}] → border-bottom: ${value}  (${where})`);
   }
-  assert.equal(missing.length, 0, `这些卡标题没有生效的 1px 下边线：\n${missing.join('\n')}`);
+  assert.equal(missing.length, 0, `这些卡标题还在用原生 1px 边线（应已换成刻蚀线）：\n${missing.join('\n')}`);
+
+  // 刻蚀线本体：theme.css 里那条四类块头共用的分组伪元素。
+  // **高度 / 颜色 / 六边形三者都钉**——只钉 clip-path 的话把 height 改成 0、
+  // 线就没了，判据照样绿。
+  const themeCss = read('theme.css');
+  const group = /\.card-head::before,\s*\.card > h2::before,\s*\.card-head-toggle::before,\s*\.debug-panel header::before\s*\{([^}]*)\}/s.exec(themeCss);
+  assert.ok(group, 'theme.css 里要有四类块头共用的刻蚀线分组规则');
+  assert.match(group[1], /height:\s*2px;/, '刻蚀线必须 2px 粗');
+  assert.match(group[1], /background:\s*var\(--divider-strong\)/, '刻蚀线必须读 --divider-strong');
+  assert.match(
+    group[1],
+    /clip-path:\s*polygon\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\)/,
+    '刻蚀线必须两端收细（六边形 20%/80%）',
+  );
+  // 概览两张大卡不再有 scoped 覆写——标准归全局后，多写一份就是第二个真相源。
+  const ov = read('shell/OverviewPanel.vue');
+  assert.doesNotMatch(ov, /\.kernel-card \.card-head/, '卡头线已归全局标准，OverviewPanel 不该再有 scoped 覆写');
+  // **收起态必须清伪元素**：「数据迁移」折叠卡收起时不该有那条线——线在
+  // `::before` 上，只清 `border-bottom-color` 管不了它（那是 border 时代的写法）。
+  assert.match(
+    themeCss,
+    /\.card\.card-collapsed > \.card-head-toggle::before\s*\{\s*content:\s*none;/,
+    '折叠卡收起时必须清掉刻蚀线伪元素',
+  );
 });
 
-test('控制塔标题的线走刻蚀线，与概览另两张卡同源；面板里的卡仍是 1px', () => {
+test('控制塔标题的线与全局刻蚀线标准同源（同 token、同六边形）', () => {
   const rs = rules();
   const tower = new Set(['diag-card', 'diag-card--tower', 'diag-card__title', 'h3']);
   const cardHead = new Set(['card-head', 'div']);
 
-  // **这条断言的形状 2026-10-08 变了**：原先是「控制塔与面板卡片的标题线必须
-  // 写成同一个值（1px solid var(--border)）」。用户随后把概览这一屏的线定案成
-  // 2px 两端收细、颜色读 `--divider-strong`，**「统一」的口径随之从
-  // 「全前端一个值」收成「概览这一屏一个值」**——这是用户明知的范围取舍
-  // （先只调概览），不是漂移。面板里的卡仍走 `.card-head` 的 1px。
-  //
+  // **这条断言的形状 2026-10-08 变了两次**：最初是「控制塔与面板卡片同一个
+  // 1px 值」；概览单独改刻蚀线后一度收成「概览一屏一个值」；最终用户把刻蚀线
+  // 定为设计标准并推广到全部页面——**「统一」回到「全前端一个值」**，而且
+  // 统一的不只是色值，还有几何（2px / 两端收细）。
   // 原生 `border-bottom` 必须退场为 0：线换成了 `clip-path` 的伪元素，
   // border 没法 clip，两者是二选一。
-  assert.equal(
-    effectiveDeclaration(tower, rs, 'border-bottom'),
-    '0',
-    '控制塔标题的原生 border 必须退场 0——线已经交给伪元素的 clip-path'
-  );
-  assert.equal(
-    effectiveDeclaration(cardHead, rs, 'border-bottom'),
-    '1px solid var(--border)',
-    '面板里其余卡的标题线不受概览这次调整影响'
-  );
+  for (const [set, where] of [[tower, '控制塔标题'], [cardHead, '面板卡头']]) {
+    assert.equal(
+      effectiveDeclaration(set, rs, 'border-bottom'),
+      '0',
+      `${where}的原生 border 必须退场 0——线已经交给伪元素的 clip-path`
+    );
+  }
 
-  // 真正要守的是「概览这一屏的线同源」：控制塔三张与 kernel-card / usage-card
-  // 读的是同一个 `--divider-strong`，收细比例也一致。
-  const diagCss = read('diagnostics/diagnostics.css');
-  const before = /\.diag-card--tower \.diag-card__title:not\(\.diag-card__title--bare\)::before\s*\{([^}]*)\}/.exec(diagCss);
-  assert.ok(before, 'diagnostics.css 里要有带 :not(--bare) 的卡头 ::before');
-  assert.match(before[1], /background:\s*var\(--divider-strong\)/, '控制塔的线必须与概览另两张卡读同一个 token');
-  assert.match(before[1], /height:\s*2px;/);
+  // 「同源」钉到底：控制塔（diagnostics.css）、面板卡头（theme.css 分组规则）、
+  // 概览指标线（OverviewPanel scoped）三处的六边形必须逐字相同——同一个六边形
+  // 写了三份（CSS 按组件分家，scoped 够不到彼此），只改一处就会出现同屏两种
+  // 收细比例。
+  const polyOf = (text, re, label) => {
+    const m = re.exec(text);
+    assert.ok(m, `找不到 ${label}`);
+    return /clip-path:\s*(polygon\([^)]*\))/.exec(m[1])[1];
+  };
+  const diagPoly = polyOf(
+    read('diagnostics/diagnostics.css'),
+    /\.diag-card--tower \.diag-card__title:not\(\.diag-card__title--bare\)::before\s*\{([^}]*)\}/s,
+    'diagnostics.css 的控制塔刻蚀线',
+  );
+  const themePoly = polyOf(
+    read('theme.css'),
+    /\.card-head::before,\s*\.card > h2::before,\s*\.card-head-toggle::before,\s*\.debug-panel header::before\s*\{([^}]*)\}/s,
+    'theme.css 的全局刻蚀线',
+  );
   const ov = read('shell/OverviewPanel.vue');
-  const ovLine = /\.kernel-card \.card-head::before,\s*\.usage-card \.card-head::before\s*\{([^}]*)\}/s.exec(ov);
-  assert.ok(ovLine, 'OverviewPanel 里要有两张卡的卡头 ::before');
-  assert.match(ovLine[1], /background:\s*var\(--divider-strong\)/);
-  // 六边形比例必须逐字相同——同一个六边形在两个文件里各写了一份
-  // （OverviewPanel 的 scoped 块够不到 ControlTower 的元素），只改一处就会
-  // 在同一屏里出现两种收细比例。
-  const poly = /clip-path:\s*(polygon\([^)]*\))/.exec(before[1])[1];
-  assert.ok(ovLine[1].includes(poly), `两处的收细六边形必须一致，期望 ${poly}`);
+  const ovPoly = polyOf(ov, /\.metrics::before\s*\{([^}]*)\}/s, 'OverviewPanel 的指标上边线');
+  assert.equal(diagPoly, themePoly, '控制塔与面板卡头的收细六边形必须一致');
+  assert.equal(ovPoly, themePoly, '概览指标线与卡头线的收细六边形必须一致（竖线是转 90° 的另一条，单独钉）');
 });
 
 test('标题的 padding-bottom 是 9px（线与标题文字之间的留白，与面板里的卡一致）', () => {
