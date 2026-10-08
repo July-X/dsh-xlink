@@ -1026,36 +1026,75 @@ function goVersions() {
   height: auto;
 }
 
-/* 这一屏的分割线：2px 纯黑实线（2026-10-08 用户定案）。
+/* 这一屏的分割线：**两边细中间粗的一根实线**，2px / `#212121`（2026-10-08 定案）。
    1px 的线在 1040 宽的窗口里读不出「标题区 / 内容区」「指标 / 指标」这两组分组，
-   加粗到 2px 才立得住；颜色再压到纯黑，浅色底下是全屏最强的结构线。
+   2px 才立得住；而**两端收细是用户明确要求保留的效果**——一根从头到尾一样粗的线
+   在这一屏里像拿尺子画的，收细之后两端自然化开，才不像一根棍子。
 
-   **中途试过「两边细中间粗的刻蚀槽」（clip-path 六边形 + 一深一浅两条线），
-   实机跑完被否掉了**：刻蚀在暗色下确实好看，浅色下却总差一口气——白底上那条
-   「反光」本来就不可能比白更亮，只能拿一档灰顶，凑不出立体感；把两档拉得越开，
-   看着越像两根并排的线而不是一道槽。**立体感靠明暗对比撑着，而这张卡的底色
-   已经接近纯白，没有可对比的余地。** 于是退回最简单的做法：纯黑、2px、一根线。
-   下面是那次尝试留下的结论，避免再走一遍：
-     · 「粗细可变」只能用 clip-path，渐变改的是透明度不是粗细——这条仍然成立。
-     · 竖槽收细必须比横线短，否则短边上出来是一片叶子而不是一道槽。
-   这两条留在 AGENTS.md 的「试过但没采用」里，不留在代码里当没人看的死注释。 */
+   **收细只能用 clip-path，不能用渐变。** 渐变（含 `mask-image`）改的只是**透明度**
+   ——两端是「淡到看不见」而不是「细」，1–3px 这个尺度下两者几乎分不出来；
+   `polygon()` 切出来的六边形是**真的**从 0 高收到满高。原生 border 全部退场
+   （`border-*: 0`），border 没法 clip。
+
+   **只有一根线，不做「一深一浅两条」的刻蚀槽**（那一版实机跑完被否掉了）：白底上
+   那条「反光」本来就不可能比白更亮，只能拿一档灰顶，凑不出立体感，两档拉得越开
+   越像两根并排的线。**颜色由 `--divider-strong` 决定，与收细互不相干**——收细是
+   几何、颜色是 token，两件事分开做，之后各自还能单独换。 */
 .kernel-card .card-head,
 .usage-card .card-head {
-  border-bottom: 2px solid var(--divider-strong);
+  position: relative;
+  border-bottom: 0;
+}
+.kernel-card .card-head::before,
+.usage-card .card-head::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--divider-strong);
+  pointer-events: none;
+  clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%);
 }
 /* 三格指标：Node.js / 今日用量 / 数据目录。设计稿给的是 1fr 1fr 1fr，
    格间用左边框分隔而不是留白——留白在暗色底上读不出「这里换一个维度了」。 */
 .metrics {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
-  padding-top: 10px;
-  border-top: 2px solid var(--divider-strong);
+  padding-top: 14px;
+  border-top: 0;
 }
-.metric { min-width: 0; }
+.metrics::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: var(--divider-strong);
+  pointer-events: none;
+  clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%);
+}
+.metric { position: relative; min-width: 0; }
 .metric + .metric {
-  padding-left: 12px;
-  border-left: 2px solid var(--divider-strong);
+  padding-left: 15px;
+}
+/* 竖线横过来：六边形跟着转 90°（左右收到 0、上下张开）。
+   **收细比横线短**：这一格只有几十像素高，按横线那 20% 去收，两端各削掉十几
+   像素，出来是一片叶子而不是一道线——那正是中途返工过一次的地方。 */
+.metric + .metric::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 7px;
+  width: 2px;
+  background: var(--divider-strong);
+  pointer-events: none;
+  clip-path: polygon(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%);
 }
 .metric-label {
   display: flex;
