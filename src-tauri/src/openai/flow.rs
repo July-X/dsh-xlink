@@ -283,6 +283,19 @@ pub(crate) fn account_view(
         }))
 }
 
+/// 壳内生产路径（`shell/<mode>/openai-oauth/` + 官方 issuer）：命令层与
+/// 桥接共用一份，别各写一遍。
+pub(crate) fn shell_flow_paths() -> FlowPaths {
+    let mode = crate::shell::settings::current_mode();
+    let mode_dir = crate::shell::paths::shell_dir(mode).join("openai-oauth");
+    FlowPaths {
+        vault_file: mode_dir.join("accounts.bin"),
+        mode_dir,
+        xlink_home: crate::shell::paths::xlink_home(),
+        issuer_base: crate::openai::auth::SIWC_ISSUER.to_string(),
+    }
+}
+
 /// 生产传输：HTTP 走 [`transport`]；「打开浏览器」由命令层用 opener 插件
 /// 实现（编排层不依赖 Tauri 类型），这里给出基于 `open`/`start` 命令的
 /// 兜底——命令层注入的 opener 优先。
