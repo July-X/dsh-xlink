@@ -11,6 +11,8 @@
 // 用量、额度）。环境回退点、深入排查与启动诊断集中在这张卡里，数据迁移从侧栏进入。
 import { computed, onMounted, ref, watch } from 'vue';
 import { Bell, Check, Headset, QuestionFilled, Tickets } from '@element-plus/icons-vue';
+import { theme, themeOptions, setTheme } from './theme.js';
+import { Sun as SunIcon, Moon as MoonIcon, Monitor as MonitorIcon } from '@lucide/vue';
 import { store, saveSettings } from '../store.js';
 import { openStartupDiagnosis } from '../diagnostics/diagnostics.js';
 import SnapshotCard from '../diagnostics/SnapshotCard.vue';
@@ -33,6 +35,7 @@ import {
   setAutostartKernel,
 } from './autostart.js';
 
+const themeIcons = { light: SunIcon, dark: MoonIcon, system: MonitorIcon };
 const port = ref(undefined);
 // 固定值（默认 web）：保存时仍要原样回传，否则 Rust 侧的合并会把 profile 覆盖。
 const profile = ref('');
@@ -107,12 +110,12 @@ function openStartupRun() {
     <div class="page-head">
       <div>
         <h1 class="page-title">设置</h1>
-        <p class="page-desc">工作台端口、后台常驻与开机自启，以及模型任务的完成通知。</p>
+        <p class="page-desc">外观、工作台端口、后台常驻与开机自启，以及模型任务的完成通知。</p>
       </div>
     </div>
     <!-- 宽版（1040）下单列会让每一张卡右边空掉半屏，所以按设计稿分两列：
          左列是「这台壳本身怎么跑」（工作台端口、后台常驻、自启、环境回退与诊断），
-         右列是「对内对外的表现」（任务通知）。
+         右列是「对内对外的表现」（外观、任务通知）。
          用的是全局的 .page-layout / .page-layout__col 原语。
 
          「环境回退与诊断」原先在**右**栏，2026-10-08 用户指定移到左栏、接在
@@ -123,7 +126,7 @@ function openStartupRun() {
          视线先撞上的却是通知告警，而不是他正要找的排查入口。
          顺带一提，这张卡先前已被收成一张（原为右栏四张：任务通知 / 数据迁移 /
          环境回退点 / 深入排查），那一次为的是配平两栏；这次把**位置**也定下来：
-         左栏三张（工作台 / 后台常驻 / 环境回退与诊断）、右栏一张（任务通知）。
+         左栏三张（工作台 / 后台常驻 / 环境回退与诊断）、右栏两张（外观、任务通知）。
          **入口一个没少**：恢复 / 开始排查 / 停止仍留在自己那一行的动作区。 -->
     <div class="page-layout">
       <div class="page-layout__col">
@@ -253,6 +256,15 @@ function openStartupRun() {
 
       <div class="page-layout__col">
     <div class="card">
+      <h2>外观</h2>
+      <div class="appearance-options" role="group" aria-label="外观模式">
+        <button v-for="option in themeOptions" :key="option.value" type="button" :aria-pressed="theme === option.value" @click="setTheme(option.value)">
+          <component :is="themeIcons[option.value]" :size="22" />
+          <span>{{ option.label }}</span>
+        </button>
+      </div>
+    </div>
+    <div class="card">
       <h2 class="card-title-with-tip">
         任务通知
         <el-tooltip placement="bottom-start" :show-after="80">
@@ -372,6 +384,11 @@ function openStartupRun() {
 </template>
 
 <style scoped>
+.appearance-options { display: flex; gap: 8px; }
+.appearance-options button { flex: 1; display: grid; justify-items: center; gap: 8px; padding: 14px 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); cursor: pointer; }
+.appearance-options button[aria-pressed='true'] { border-color: var(--accent); background: var(--accent-soft); }
+.appearance-options button:hover { background: var(--surface-raised); }
+
 /* Fragment 子组件的行也属于这张列表；收尾行不画分隔线。 */
 .diagnostics-list > :deep(.page-list-row) {
   position: relative;

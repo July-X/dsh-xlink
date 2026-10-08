@@ -10,7 +10,7 @@ const code = source
 test('主题只用 html.dark 作为暗色判据', () => {
   assert.match(
     code,
-    /document\.documentElement\.classList\.toggle\('dark',\s*theme\.value === 'dark'\)/,
+    /document\.documentElement\.classList\.toggle\('dark',\s*resolvedTheme\.value === 'dark'\)/,
     '主题切换必须落到 html.dark'
   );
   assert.doesNotMatch(
@@ -18,4 +18,61 @@ test('主题只用 html.dark 作为暗色判据', () => {
     /document\.documentElement\.dataset|data-theme/,
     '不能再写入第二套 data-theme 判据'
   );
+});
+
+// 隔离窗口与存储，验证系统变化、固定模式、持久化与跨窗事件。
+import { runInNewContext } from 'node:vm';
+function loadTheme(stored = 'dark', dark = false) {
+  let listener, subscriber;
+  const colors = [], native = [], broadcasts = [], writes = [];
+  const context = {
+    ref: (value) => ({ value }),
+    computed: (get) => ({ get value() { return get(); } }),
+    window: {
+      localStorage: { getItem: () => stored, setItem: (...args) => writes.push(args) },
+      matchMedia: () => ({ matches: dark, addEventListener: (_, cb) => { listener = cb; } }),
+    },
+    document: { documentElement: { classList: { toggle: (_, value) => colors.push(value) } } },
+    setWindowTheme: (value) => { native.push(value); return Promise.resolve(); },
+    broadcastTheme: (value) => broadcasts.push(value),
+    subscribeThemeChanges: (cb) => { subscriber = cb; },
+  };
+  runInNewContext(source.replace(/^import .*$/gm, '').replace(/export /g, '') + '\nthis.api = { theme, resolvedTheme, applyTheme, setTheme, followThemeBroadcast };', context);
+  return { ...context.api, colors, native, broadcasts, writes, change: (matches) => listener({ matches }), receive: (value) => subscriber(value) };
+}
+
+test('跟随系统读取启动配色，变化时页面与原生装饰同步，保留 system 偏好', () => {
+  const app = loadTheme('system', true);
+  app.applyTheme();
+  assert.equal(app.colors.at(-1), true);
+  app.change(false);
+  assert.equal(app.colors.at(-1), false);
+  assert.equal(app.native.at(-1), 'light');
+  assert.equal(app.theme.value, 'system');
+  assert.equal(app.writes.length, 0);
+});
+
+test('固定模式忽略系统切换，改为跟随系统立即采用最新系统配色并广播模式', () => {
+  const app = loadTheme('dark');
+  app.applyTheme();
+  app.change(true);
+  app.change(false);
+  assert.equal(app.colors.length, 1);
+  app.setTheme('system');
+  assert.equal(app.native.at(-1), 'light');
+  assert.equal(app.writes.at(-1)[1], 'system');
+  assert.equal(app.broadcasts.at(-1), 'system');
+  app.setTheme('invalid');
+  assert.equal(app.theme.value, 'system');
+});
+
+test('副窗接收 system 后自行跟随配色，不再次广播；旧 light 偏好保留', () => {
+  const app = loadTheme('light', true);
+  assert.equal(app.theme.value, 'light');
+  app.followThemeBroadcast();
+  app.receive('system');
+  assert.equal(app.native.at(-1), 'dark');
+  app.change(false);
+  assert.equal(app.native.at(-1), 'light');
+  assert.equal(app.broadcasts.length, 0);
 });

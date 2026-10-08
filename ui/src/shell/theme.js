@@ -8,7 +8,7 @@
 // 落地只剩一个动作：`documentElement.classList.toggle('dark', isDark)`。主题.css
 // 里 `:root` 放浅色 token、`html.dark` 放暗色 token，两套 Element Plus 覆写也各自
 // 待在自己的选择器下，没有第二处判据。
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { setWindowTheme } from './bridge.js';
 import { broadcastTheme, subscribeThemeChanges } from './themeSync.js';
 
@@ -16,7 +16,7 @@ import { broadcastTheme, subscribeThemeChanges } from './themeSync.js';
 // 它只决定**各窗口启动时**的主题；运行中主壳切换主题靠 `themeSync` 的广播，
 // localStorage 的 `storage` 事件不跨 webview 生效。
 const STORAGE_KEY = 'dsh-xlink:ui-theme';
-const THEMES = Object.freeze(['dark', 'light']);
+const THEMES = Object.freeze(['dark', 'light', 'system']);
 
 // 默认暗色：原壳一直是暗色，且设计稿的预览默认也是暗色。突然给老用户一个浅色
 // 窗口不算「按设计走」，算换了个产品。
@@ -34,6 +34,19 @@ function readStoredTheme() {
 }
 
 export const theme = ref(readStoredTheme());
+export const themeOptions = Object.freeze([
+  { value: 'light', label: '浅色' },
+  { value: 'dark', label: '深色' },
+  { value: 'system', label: '跟随系统' },
+]);
+const systemQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
+const systemDark = ref(!!systemQuery?.matches);
+export const resolvedTheme = computed(() => theme.value === 'system' ? (systemDark.value ? 'dark' : 'light') : theme.value);
+// 每扇窗口各监听系统配色，生命周期与窗口相同；固定模式不随系统变化。
+systemQuery?.addEventListener('change', ({ matches }) => {
+  systemDark.value = matches;
+  if (theme.value === 'system') applyTheme();
+});
 
 /// 这个值是不是一套已知主题。**两份消费方共用**：本地 `setTheme` 校验用户输入，
 /// `themeSync` 的广播回调校验事件负载（事件可被同页脚本构造，非法值会让整窗
@@ -57,8 +70,8 @@ export function setThemeValue(next) {
 /// **不吞异常**：调用点是挂载前，还没有 toast 能报；失败的后果只是标题栏停
 /// 在旧主题（内容与标题栏短暂不同步），不值得为它把整个应用启动打断。
 export function applyTheme() {
-  document.documentElement.classList.toggle('dark', theme.value === 'dark');
-  void setWindowTheme(theme.value).catch(() => {});
+  document.documentElement.classList.toggle('dark', resolvedTheme.value === 'dark');
+  void setWindowTheme(resolvedTheme.value).catch(() => {});
 }
 
 export function setTheme(next) {
@@ -73,11 +86,6 @@ export function setTheme(next) {
   // 顺序是「先把自己这扇窗改对，再通知别人」：反过来主窗会慢一帧。
   broadcastTheme(next);
   return theme.value;
-}
-
-/// 侧栏底部开关用：暗 → 亮，亮 → 暗。
-export function toggleTheme() {
-  return setTheme(theme.value === 'dark' ? 'light' : 'dark');
 }
 
 /// 副窗侧：订阅主壳的主题广播，收到就跑一次 `applyTheme`。

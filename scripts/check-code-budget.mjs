@@ -368,7 +368,8 @@ const FILE_BUDGETS = {
   // `followThemeBroadcast` 的订阅回调。跨窗传输本身（事件名 + 收发两半）**没有**
   // 放这里，而是拆到 `themeSync.js`——那是纯传输层，且刻意不反向 import 本文件
   // （否则成环，`theme` 是 const 会 TDZ）。判据钉住这一条。
-  'ui/src/shell/theme.js': 46,
+  // 三态外观：系统配色监听与实际颜色解析由所有窗口共用。
+  'ui/src/shell/theme.js': 58,
   // 跨窗口主题传播的**传输层**（2026-10-08 新增）：事件名 + `broadcastTheme`（主壳
   // 侧发）+ `subscribeThemeChanges`（副窗侧订阅）各一个函数，14 行。
   //

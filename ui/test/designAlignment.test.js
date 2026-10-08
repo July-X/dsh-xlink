@@ -428,26 +428,12 @@ test('余额区总额是 14px 粗体主读数，赠金 / 充值降到第二行 1
 // 设计稿底部是一行：标签 + 版本徽标 + 26px 方钮 + 34px 拨杆。主题开关是
 // **拨杆**（本体无图标，只有一颗 14px 圆点），不是「月亮 / 太阳」图标按钮。
 
-test('主题开关是 34px 拨杆、无图标；深色态由 aria-pressed 表达而不是图标', () => {
-  // 拨杆与图标按钮的区别有两处（宽 34 而非 26、体内无图标），其中「体内无
-  // 元素」是结构性的、不能用层叠工具查（元素有没有子节点不是 CSS 声明），
-  // 所以这两条判据直接看 scoped 块。
-  const style = scopedStyle(sidebar);
-  const rule = (cls) => {
-    const m = style.match(new RegExp(`\\.${cls}\\s*\\{([^}]*)\\}`));
-    assert.ok(m, `侧栏 scoped 块里应有一条 .${cls} 规则`);
-    return m[1];
-  };
-  const toggle = rule('sidebar__theme-btn');
-  assert.match(toggle, /width:\s*34px/);
-  assert.match(toggle, /border-radius:\s*11px/);
-  // 图标按钮与拨杆的形状与语义都不同：前者像「进设置」，后者读得出「这是个开关」。
-  assert.doesNotMatch(style, /\.sidebar__theme-btn\s+\.el-icon/);
-  assert.doesNotMatch(sidebar, /sidebar__theme-btn[\s\S]{0,200}<el-icon>/);
-  assert.match(sidebar, /:aria-pressed="theme === 'dark'"/);
-  // 深色态把整条染成强调色、圆点滑到右端（状态属性选择器，工具同样分不清）。
-  assert.match(style, /\.sidebar__theme-btn\[aria-pressed='true'\]\s*\{[^}]*background:\s*var\(--accent-strong\)/);
-  assert.match(style, /\.sidebar__theme-btn\[aria-pressed='true'\]::before\s*\{[^}]*transform:\s*translateX\(12px\)/);
+test('侧栏主题入口支持三种模式的快捷菜单', () => {
+  assert.match(sidebar, /<el-dropdown[^>]*trigger="click"[^>]*@command="setTheme"/);
+  assert.match(sidebar, /:is="themeIcons\[theme\]"/);
+  assert.match(sidebar, /v-for="option in themeOptions"/);
+  assert.match(sidebar, /:command="option.value"/);
+  assert.doesNotMatch(sidebar, /@click="toggleTheme"/);
 });
 
 test('底部一行固定三个方形控件：收起 / 刷新 26×22，标签与版本徽标可压缩', () => {
@@ -456,7 +442,7 @@ test('底部一行固定三个方形控件：收起 / 刷新 26×22，标签与�
   assert.equal(effectiveDeclaration(['sidebar__footer-label'], RULES, 'white-space'), 'nowrap');
   // 三个控件：收起开关（2026-10-07 从品牌行挪来）+ 刷新 + 主题拨杆。
   assert.equal((sidebar.match(/class="sidebar__icon-btn"/g) || []).length, 2, '收起与刷新共用 26×22 方钮');
-  assert.equal((sidebar.match(/class="sidebar__theme-btn"/g) || []).length, 1);
+  assert.equal((sidebar.match(/class="sidebar__theme-btn sidebar__icon-btn"/g) || []).length, 1);
 });
 
 test('收起开关在底部一行，排在刷新之前；品牌行不再有按钮', () => {
@@ -1305,16 +1291,17 @@ function settingsCardTitles() {
   }));
 }
 
-test('设置页共四张卡，归属与顺序钉死：左三右一', () => {
+test('设置页共五张卡，归属与顺序钉死：左三右二', () => {
   // 只数模板块里 `.card` 的直接出现次数：卡片真身是 `<div class="card">`，
   // 组件自带的外框也已删掉（下面那条判据钉着）。
-  assert.equal((settingsTpl.match(/<div class="card">/g) || []).length, 4);
+  assert.equal((settingsTpl.match(/<div class="card">/g) || []).length, 5);
   // 整体比对：栏位 + 标题 + 先后顺序一次说清。少比一项，下一次把卡搬回右栏
   // 就又是绿的。
   assert.deepEqual(settingsCardTitles(), [
     { title: '工作台', col: 'left' },
     { title: '后台常驻', col: 'left' },
     { title: '环境回退与诊断', col: 'left' },
+    { title: '外观', col: 'right' },
     { title: '任务通知', col: 'right' },
   ]);
 });
@@ -1328,8 +1315,8 @@ test('「环境回退与诊断」的 caption 走 head-meta + muted', () => {
   // 把排查入口压在它下面时，用户要先撞上告警才找得到自己要找的东西。
   assert.equal(
     (right.match(/<div class="card">/g) || []).length,
-    1,
-    '右栏应只剩「任务通知」一张',
+    2,
+    '右栏为外观和任务通知两张卡',
   );
 });
 
