@@ -1,6 +1,6 @@
 # 内嵌 OpenAI OAuth 插件 P0 发布包调查
 
-日期：2026-10-08。状态：P0 完成——静态接口调查（§2–§4）与离线接线原型（§5，窗口内三版本实测通过）。输入：[设计文档](openai-oauth-design.md)、[开发计划](openai-oauth-development-plan.md) §9 P0。
+日期：2026-10-08。状态：P0 完成——静态接口调查（§2–§4）、离线接线原型（§5，三版本实测）、设置目录声明与客户端发现链（§6，alpha.1 实测）。输入：[设计文档](openai-oauth-design.md)、[开发计划](openai-oauth-development-plan.md) §9 P0。
 
 ## 1. 调查对象与方法
 
@@ -37,8 +37,8 @@ rc.1 与 rc.2 之间六个包共约 199 行差异，未触及上表接口；alph
 | 缺口 | 实现路径 | 归属 | 状态 |
 | --- | --- | --- | --- |
 | `insert:` 行 + 宿主依赖解析未实测 | 临时实例 insert 指向插件目录，验证 `@deepseek-ai/*` 解析到内核树 | 曾为 P1 第一优先 | ✅ 已实测通过，见 §5 |
-| `LlmConfigurableProvider` 声明入口未定位 | 读 `dsh-settings`/`dsh-client-ui-settings` + `--dump-config` 实测 | P1 | 待做 |
-| `dsh.client` 的 inject 目标运行时发现链未端到端验证 | P1 原型：最小 client 插件注册 `provider-card` 插槽 | P1 | 待做 |
+| `LlmConfigurableProvider` 声明入口未定位 | `ctx.llm.registerConfigurableProviders(entries)`，`settingsNs` 取 loader 行 id（`ctx.fiber.entry?.options.id`） | 曾为 P1 | ✅ 已实测，见 §6 |
+| `dsh.client` 的 inject 目标运行时发现链未端到端验证 | file URL 插件声明 `dsh.client` + `exports["./client"]` → boot 图 → webserver → 浏览器模块系统 | 曾为 P1 | ✅ 服务与执行层已实测（§6）；真实浏览器渲染归 P5 |
 | Cordis `~4.0.4` 与 `~4.0.5-alpha.1` 的宿主 API 差异面 | 按指纹物化目录天然隔离；原型各跑一次 | 低 | ✅ 三版本原型各跑一次均通过（§5） |
 
 结论：窗口内未发现缺失必要能力的版本，所有缺口有明确实现路径；离线接线原型已在三个版本上实测通过（§5）。P0 的两项交付（逐版本接口表、离线接线原型）完成。
@@ -70,6 +70,30 @@ rc.1 与 rc.2 之间六个包共约 199 行差异，未触及上表接口；alph
 | `0.2.0-rc.2` | ~4.0.4 | ✅ | ✅ | ✅ | 无 |
 | `0.2.0-rc.1` | ~4.0.4 | ✅ | ✅ | ✅ | 无 |
 
-本节是**适配器注册与加载链路**的证明，不覆盖设置页提供方目录声明（`LlmConfigurableProvider` 入口）与客户端卡片发现链，两者仍在 P1 验证。
+本节是**适配器注册与加载链路**的证明，不覆盖设置页提供方目录声明（`LlmConfigurableProvider` 入口）与客户端卡片发现链——两者见 §6。
+
+## 6. 设置目录声明与客户端发现链实测（2026-10-08，0.2.1-alpha.1）
+
+§5 的原型扩展成完整链路后实测，P1 前置疑虑全部落定。
+
+**提供方目录声明**（工作台「设置 → 模型」的提供方行从哪来）：
+
+- 入口是 `ctx.llm.registerConfigurableProviders(entries)`（与 `registerAdapter` 同在 `LlmRuntime`，返回可调用 disposer + `replace`）；客户端经 `@Remote listConfigurableProviders()` 读取。仓内样板：`dsh-llm-deepseek-api-key`。
+- `settingsNs` 取 **loader 行 id**：`ctx.fiber.entry?.options.id ?? "<包名兜底>"`。实测我们的行 id `xlink-openai-oauth-prot` 原样进入 `settingsNs`——接线行的 id 就是设置命名空间，host 与 client 两侧靠它对上。
+- `settingsPath: []` 指向该命名空间配置节的路径；`declared`/`error` 由目录汇合逻辑填。
+
+**客户端发现链**（file URL 插入的插件如何把账户卡送进 webui）：
+
+| 环节 | 证据 |
+| --- | --- |
+| 发现 | 插件 `package.json` 声明 `dsh.client{platform:"web", inject:[…]}` + `exports["./client"]`；`locatePkgJson` 对 `file:` 行名 `nearestPackage` 上溯找到我们的 package.json（路径行与裸包名同样支持） |
+| boot 图 | 首页 HTML 的模块图含 `{"id":"<包名>","url":"plugins/??<包名>/client.js&rev=…","inject":[我们声明的列表]}`；组合束清单也把 `<包名>/client.js` 排进内核客户端模块序列 |
+| 服务 | webserver 在组合端点逐字节返回我们的 client.js（无单文件端点，按图内 URL 取） |
+| 执行 | 浏览器束格式为 `window.__ModuleLoader__.load({id, factory:(require)=>{… return {apply, inject}}})`；在模拟模块系统里执行，`apply` 经 `ctx.slots.inject("settings.models.provider-card", () => ctx.slots.register({name, key}, Card))` 注册进 keyed 插槽，组件以 owner props（`provider/configured/keyConfigured`）渲染 |
+| 依赖 | factory 内 `require("react")` 等由模块图解析；`dsh.client.inject` 列出额外需要的客户端包（我们声明 `dsh-client-ui-cordis`、`dsh-client-ui-slots`，实测进入 boot 图） |
+
+真实浏览器内的卡片渲染与主题适配归 P5 逐版本界面验收；本节证明到「浏览器拿到字节并具备执行所需的全部接线」。
+
+结论：设计文档 §3.2「工作台内可配置」的技术路径（提供方行 + 账户卡插槽，不经 DOM 模拟）在三版本接口一致（§2）+ alpha.1 实测（§5/§6）后成立。
 
 调查证据：本机安装树 `~/.dsh-xlink/dsh/desktop/kernels/0.2.1-alpha.1/node_modules/@deepseek-ai/`（只读）与官方 tarball / 镜像安装树（均解包于本地临时目录）。
