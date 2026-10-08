@@ -23,7 +23,7 @@
 - `notifications/`：任务完成通知。
 - `subscription/`：云端套餐、余额和 Token Plan 用量。
 
-内嵌 OpenAI OAuth（开放授权）插件的[设计文档](features/extensions/openai-oauth-design.md)与[开发计划](features/extensions/openai-oauth-development-plan.md)存放在 `extensions/`。两份均为待实现方案，兼容范围是最近 3 个官方发布的 dsh 内核版本。
+内嵌 OpenAI OAuth（开放授权）插件的[设计文档](features/extensions/openai-oauth-design.md)、[开发计划](features/extensions/openai-oauth-development-plan.md)与 [P0 发布包调查](features/extensions/openai-oauth-p0-findings.md)存放在 `extensions/`。前两份为待实现方案，兼容范围是最近 3 个官方发布的 dsh 内核版本；调查报告记录窗口内各版本的接口证据。
 
 ### `ui/`
 
