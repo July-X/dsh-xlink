@@ -1928,7 +1928,7 @@ if (ungatedOsImports.length > 0) {
           `窗口标题对不上：tauri.conf.json 是「${expected}」，shell/window.rs 的 APP_TITLE 是「${rustTitle[1]}」`,
         );
       }
-      // ③ 自绘标题。**这一条 2026-10-08 从「按字面量比对」改成「查回落值」**。
+      // ③ 自绘标题。**这一条 2026-10-08 从「按字面量比对」改成「求值」**。
       //
       // 原实现用 `/<span>([^<]+)<\/span>/` 抓模板里的标题节点，逐字对比
       // `tauri.conf.json` 的 title。三扇副窗接上自绘标题栏后标题变成
@@ -1939,27 +1939,88 @@ if (ungatedOsImports.length > 0) {
       // 真正要守的是**主壳那一扇**的标题仍是同一个名字。副窗显示功能标题
       // （用户 2026-10-08 要求）是**另一件事**，不该由这条判据管。
       //
-      // 所以改成查真正的意图：`props.title || '应用名'` 里那个回落值必须等于
-      // APP_TITLE —— 主壳不传 title，显示的就是它；副窗传了功能标题，不受它约束。
+      // 中间那版改成了「查 `props.title || '应用名'` 里的回落值」——那仍然只
+      // 钉住了**没传 title** 时的一半：分隔符从 `@` 换成别的、或者副窗那一支
+      // 拼错了，这版判据全绿。所以现在**真的把那段表达式求值**：主壳（不传
+      // title）必须等于 APP_TITLE，副窗（传功能名）必须是 `功能名@APP_TITLE`。
+      // 改分隔符、改成只显示功能名、改成回落应用名——三样都会转红。
       const vueSrc = read('ui/src/shell/WindowTitleBar.vue');
-      const fallback = vueSrc.match(
-        /const caption = props\.title\s*\|\|\s*'([^']+)'/,
-      );
-      if (!fallback) {
-        fail(
-          'window-chrome',
-          'WindowTitleBar.vue 里找不到 `props.title || \'…\'` 这个回落值——主壳的标题从哪来已经无从判断',
-        );
-      } else if (fallback[1] !== expected) {
-        fail(
-          'window-chrome',
-          `窗口标题对不上：tauri.conf.json 是「${expected}」，WindowTitleBar.vue 的回落标题是「${fallback[1]}」`,
-        );
-      } else if (!/<span>\{\{ caption }}<\/span>/.test(vueSrc)) {
-        fail(
-          'window-chrome',
-          'WindowTitleBar.vue 渲染的不是 caption——写了回落值却没渲染它，等于主壳标题仍会走模板里的字面量',
-        );
+      const expr = vueSrc.match(/const caption = ([\s\S]*?);\n/);
+      if (!expr) {
+        fail('window-chrome', 'WindowTitleBar.vue 里找不到 `const caption = …`——主壳的标题从哪来已经无从判断');
+      } else {
+        let captionOf;
+        try {
+          // props 只用到 title；用 `new Function` 求值而不是解析 AST，是为了
+          // 顺带覆盖模板字符串、嵌套表达式这些写法（副窗那支就是模板字符串）。
+          captionOf = new Function('props', `return ${expr[1]};`);
+        } catch {
+          captionOf = null;
+        }
+        if (!captionOf) {
+          fail('window-chrome', `WindowTitleBar.vue 的 caption 表达式求值失败：${expr[1].slice(0, 80)}`);
+        } else {
+          const mainCaption = captionOf({ title: '' });
+          if (mainCaption !== expected) {
+            fail(
+              'window-chrome',
+              `窗口标题对不上：tauri.conf.json 是「${expected}」，WindowTitleBar.vue 不传 title 时显示的是「${mainCaption}」`,
+            );
+          }
+          // 副窗那一支也要钉：格式是 `功能名@应用名`（用户 2026-10-08 定），
+          // 且应用名部分仍要与 APP_TITLE 一致。
+          const viewerCaption = captionOf({ title: '日志' });
+          if (viewerCaption !== `日志@${expected}`) {
+            fail(
+              'window-chrome',
+              `副窗标题格式不对：应是「功能名@${expected}」，实得「${viewerCaption}」`,
+            );
+          }
+          if (!/<span>\{\{ caption }}<\/span>/.test(vueSrc)) {
+            fail(
+              'window-chrome',
+              'WindowTitleBar.vue 渲染的不是 caption——算了 caption 却没渲染它，等于标题仍走模板里的字面量',
+            );
+          }
+          // ④ 三扇副窗都得传**非空**标题。这一条是反向验逼出来的：把日志窗的
+          //    `:title="activeName || '日志'"` 改成 `:title="activeName"`，
+          //    UI 测试会红（它逐扇查了绑定），但本不变量此前全绿——而现象是
+          //    「还没选中任何日志文件时，副窗标题退成 `@Dsh-Xlink`」，功能名那
+          //    半截没了。两道门各管一层，这里补的是「传的值可能为空」那一层。
+          for (const [rel, label] of [
+            ['ui/src/logs/LogViewerWindow.vue', '日志'],
+            ['ui/src/usage/UsageWindow.vue', '模型用量'],
+            ['ui/src/subscription/SubscriptionWindow.vue', '套餐用量'],
+          ]) {
+            // 这一段踩了两次正则的坑，两次都是「判据全绿但它其实什么都没查」：
+            //   1. `\btitle="` —— `:title` 里 `:` 与 `t` 都是词字符，`\b` 不成立，
+            //      正则于是跳到**后面那个** `title=`（`shell-class` 之后），
+            //      把 `:title="activeName"` 读成 `title="activeName"`。
+            //   2. 改成 `\s:?title="` 后 `:` 又被 `\s` 吃掉，`startsWith(':')`
+            //      恒为 false，整个兜底检查成死代码。
+            // 现在分开做：先抓**整个开标签**，再用 `\s:title="`（冒号不吞）
+            // 单独判断是不是绑定，最后才取属性值。
+            const src = read(rel);
+            const tag = src.match(/<ViewerShell\b[^>]*>/);
+            const bound = tag && tag[0].match(/\s:title="([^"]*)"/);
+            if (!tag) {
+              fail('window-chrome', `${rel} 里找不到 <ViewerShell> 开标签`);
+            } else if (!bound) {
+              const literal = tag[0].match(/\stitle="([^"]*)"/);
+              if (!literal) {
+                fail('window-chrome', `${rel} 没给 ViewerShell 传标题`);
+              } else if (!literal[1].trim()) {
+                // 字面量只要不为空即可，只有绑定才需要兜底。
+                fail('window-chrome', `${rel} 给 ViewerShell 传了空标题`);
+              }
+            } else if (!/\|\|\s*'[^']+'/.test(bound[1])) {
+              fail(
+                'window-chrome',
+                `${rel} 的标题是绑定但没有兜底：${bound[1]} 为空时副窗会显示成「@应用名」，功能名那半截没了`,
+              );
+            }
+          }
+        }
       }
     }
     // ② 主窗口必须钉深色：**它是建窗瞬间的兜底值**，不是最终外观。
