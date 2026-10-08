@@ -6,7 +6,7 @@
 //   · 已安装：本机插件库清单（每个插件 + 每个实例一枚 chip，按 instance_id
 //     在 PluginRow.instances map 里查状态）+ 全部获取入口（手动安装 +
 //     插件中心）——安装动作针对的是插件库，不属于某个内核。
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import {
   Refresh,
   Switch,
@@ -46,6 +46,7 @@ import {
   checkPluginUpdates,
 } from './plugins.js';
 import { originLabel, tildePath } from '../shell/labels.js';
+import { builtinStore, loadBuiltinStatus, toggleBuiltin } from './builtin.js';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 import { openExternalLink } from '../shell/notify.js';
 import { store } from '../store.js';
@@ -76,6 +77,33 @@ async function togglePrecheck(value) {
     precheckBusy.value = false;
   }
 }
+
+// 内嵌 OpenAI 对话插件（openai-oauth）：随应用交付，不进社区中央库。
+// 状态常驻这一行、开关是唯一动作；「内核运行中不能改」由后端按实例级
+// 判据拒绝，UI 不预判（预判一份就是第二份判据，会和后端漂移）。
+const builtinView = computed(() => builtinStore.view);
+
+const builtinStateText = computed(() => {
+  const v = builtinView.value;
+  if (!v) return '';
+  if (v.stateError) return '状态文件异常，悬停查看';
+  if (v.note) return v.note;
+  if (v.loadState === 'prepared') return '已接线，下次启动工作台生效';
+  if (v.loadState === 'incompatible') return '内核已切换，重新拨一次开关修复';
+  return '未启用';
+});
+
+const builtinStateTip = computed(() => {
+  const v = builtinView.value;
+  return (
+    (v && (v.stateError || v.note)) ||
+    '随应用交付的 OpenAI 套餐接入；启用不需要联网安装，关闭不删除账号'
+  );
+});
+
+onMounted(() => {
+  loadBuiltinStatus();
+});
 
 // 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进卡片头左
 // 侧的小图标气泡里——与技能页保持一致；下方 tab 文字「已安装」与「当前内核」
@@ -652,6 +680,25 @@ function instanceChipType(row, instanceId) {
               </span>
             </el-tooltip>
           </template>
+          <!-- 内嵌插件区（设计 §3.1）：独立于下方社区插件列表——它没有
+               安装 / 卸载 / 更新语义，只有启用意图一个开关。接线行 id
+               同时是内核模型设置页账户卡的 settingsNs，两侧靠它对上。 -->
+          <div v-if="builtinView" class="builtin-strip">
+            <span class="builtin-name">OpenAI 对话</span>
+            <span class="muted">内嵌</span>
+            <el-tooltip placement="top" effect="dark" :content="builtinStateTip">
+              <span class="builtin-state">{{ builtinStateText }}</span>
+            </el-tooltip>
+            <el-switch
+              class="builtin-switch"
+              size="small"
+              :model-value="builtinView.requestedEnabled"
+              :loading="isLoading('builtinOpenaiToggle')"
+              :disabled="!builtinView.pluginSourceAvailable || !!builtinView.stateError"
+              aria-label="启用或停用 OpenAI 对话"
+              @change="toggleBuiltin"
+            />
+          </div>
           <div class="entity-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
         <!-- 首次状态未返回时显示骨架：view===null 是「加载中」而不是
              「尚未安装」，画成空态会让用户以为插件全丢了。 -->
@@ -784,6 +831,31 @@ function instanceChipType(row, instanceId) {
 </template>
 
 <style scoped>
+/* 内嵌插件行：与下方社区插件的 entity-row 同一条基线，但自带留白与
+   下缘 2px 刻蚀线（复用 --divider-strong 语义色，几何从简——一行内容
+   不值得引六边形）。颜色一律走 token（明暗两主题各取其值）。 */
+.builtin-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 2px 10px;
+}
+
+.builtin-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.builtin-state {
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.builtin-switch {
+  margin-left: auto;
+}
+
 /* 插件页专属样式。此前 PluginsPanel 没有自己的 scoped 块，插件中心目录
    （.catalog-*）的样式寄在 theme.css 的「插件中心」一节；2026-10-08 用户
    三连要求（版本号挪到条目下方 / 插件中心再紧凑 / 目录列表内部滚动）要动
