@@ -224,6 +224,7 @@ function statsText(item) {
 // 走 row.instances map，把每个实例的 chip 摆出来，方便对比哪个实例装了
 // 哪个没装。
 const installedTab = ref('all');
+const sourceTab = ref('catalog');
 // 「当前内核」是个相对概念，用户未必知道它指什么：标签里带上当前内核身份
 // 与其活动版本号（与概览页「活动版本」同源）。注册表实例 id（如 default）
 // 是实现细节，与顶栏内核 tab 同口径不对外展示。两个 tab 的 tooltip 各讲
@@ -445,25 +446,8 @@ function instanceChipType(row, instanceId) {
             </div>
 
             <div class="page-layout__col plugin-center-col">
-          <h3 class="section-divider">手动安装</h3>
-          <div class="install-row">
-            <el-input
-              v-model="pluginStore.spec"
-              placeholder="npm i @scope/pkg · 也支持 owner/repo、dsh add"
-              spellcheck="false"
-              clearable
-              @keyup.enter="precheckOn ? precheckPlugin('') : installPlugin('')"
-            >
-              <template #suffix>
-                <span
-                  class="muted"
-                  :title="precheckOn ? '按 Enter 先做预检，确认后才会装上' : '按 Enter 开始安装'"
-                  >↵</span
-                >
-              </template>
-            </el-input>
-          </div>
-          <!-- 右栏依次提供手动来源安装与插件中心目录，两段各有刻蚀线标题。 -->
+          <el-tabs v-model="sourceTab" class="installed-tabs source-tabs">
+            <el-tab-pane label="插件中心" name="catalog">
           <h3 class="section-divider">
             插件中心
             <span class="muted section-divider__note">
@@ -549,7 +533,8 @@ function instanceChipType(row, instanceId) {
           <p v-else-if="items.length === 0" class="muted" style="margin: 0">
             {{ emptyHint }}
           </p>
-          <TransitionGroup v-else v-loading="catalogLoading" name="catalog" tag="div" class="catalog-list">
+          <div v-else v-loading="catalogLoading" class="catalog-list">
+          <TransitionGroup name="catalog" tag="div" class="catalog-items">
             <!-- 行式条目：三段定高——「标题 / 描述 / 底部」。版本徽标 2026-10-08
                  按用户要求从标题行挪到**底部那行**（`.catalog-meta` 组，与热度
                  数据同排）：长版本串（open-design-v0.19.2 这类）挤在名称旁边
@@ -627,10 +612,33 @@ function instanceChipType(row, instanceId) {
           <!-- 「还有 N 个」按**后端报的总命中数**算，不是本页长度减已显示：
                列表现在是后端分页送回来的，本页长度永远等于 shown。 -->
           <div v-if="pluginStore.catalogLoaded && hasMore" class="catalog-more">
-            <el-button text :icon="ArrowDown" @click="showMore">
+            <el-button text :icon="ArrowDown" :loading="catalogLoading" :disabled="globalBusy" @click="showMore">
               显示更多（还有 {{ pluginStore.catalogTotal - pluginStore.shown }} 个）
             </el-button>
           </div>
+          </div>
+            </el-tab-pane>
+            <el-tab-pane label="手动安装" name="manual">
+          <h3 class="section-divider">手动安装</h3>
+          <div class="install-row">
+            <el-input
+              v-model="pluginStore.spec"
+              placeholder="npm i @scope/pkg · 也支持 owner/repo、dsh add"
+              spellcheck="false"
+              clearable
+              @keyup.enter="precheckOn ? precheckPlugin('') : installPlugin('')"
+            >
+              <template #suffix>
+                <span
+                  class="muted"
+                  :title="precheckOn ? '按 Enter 先做预检，确认后才会装上' : '按 Enter 开始安装'"
+                  >↵</span
+                >
+              </template>
+            </el-input>
+          </div>
+            </el-tab-pane>
+          </el-tabs>
             </div>
           </div>
         </el-tab-pane>
@@ -855,7 +863,7 @@ function instanceChipType(row, instanceId) {
 
 /* --- 插件中心右栏：紧凑档（2026-10-08 用户要求）-------------------------- */
 
-/* 手动安装从右栏顶部开始，与左栏已安装清单对齐；两段标题共用刻蚀线。 */
+/* 两种获取入口各占一个页签，标题沿用刻蚀线。 */
 .plugin-center-col .section-divider {
   position: relative;
   margin-top: 0;
@@ -922,13 +930,15 @@ function instanceChipType(row, instanceId) {
 
 /* --- 目录列表：内部滚动的本体 -------------------------------------------- */
 
-.catalog-list {
+.catalog-items {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.catalog-list {
   margin-top: 8px;
-  /* 自然高、可收缩：列表短的时候「显示更多」紧跟最后一条；列表长的时候
-     收缩到栏内剩余高度，滚动只发生在它自己身上。 */
+  /* 结果与「显示更多」共用滚动容器，按钮跟在最后一条结果后面。 */
   flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
