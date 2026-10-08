@@ -149,3 +149,6 @@ strip = true
 # Thin LTO and more units retain optimized binaries while shortening cold builds.
 lto = "thin"
 codegen-units = 16
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
