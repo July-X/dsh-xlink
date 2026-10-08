@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) mod cmd;
 pub(crate) mod materialize;
+pub(crate) mod state;
 pub(crate) mod wiring;
 
 /// 接线行 id = settingsNs = client 卡片 key（P0 调查 §6 实测）。
@@ -38,10 +39,19 @@ pub(crate) struct Wired {
 }
 
 /// 只读状态（命令层载荷的原型）。
+///
+/// `load_state` 是开发计划 §4.1 六态的 **P1 子集**：`disabled`（无接线行）、
+/// `prepared`（已接线且当前指纹已物化）、`incompatible`（已接线但当前内核
+/// 指纹没有物化产物——重跑启用即修复）。`active` 需要运行期 Host 握手、
+/// `quarantined`/`failed` 需要事务与隔离记录，均属 P2+。
 pub(crate) struct Status {
     pub(crate) wired: bool,
+    pub(crate) requested_enabled: bool,
+    pub(crate) load_state: &'static str,
     pub(crate) kernel_fingerprint: Option<String>,
     pub(crate) materialized: Vec<materialize::MaterializedEntry>,
+    /// 状态文件损坏时的说明（损坏不等于关闭，如实上报）。
+    pub(crate) state_error: Option<String>,
 }
 
 fn patch_path(dsh_home: &Path, profile: &str) -> PathBuf {
@@ -129,16 +139,45 @@ pub(crate) fn ensure_unwired(dsh_home: &Path, profile: &str) -> Result<bool, Str
     Ok(true)
 }
 
-/// 只读状态探针（命令层用；不做任何写入）。
-pub(crate) fn probe_status(dsh_home: &Path, profile: &str, kernel_root: Option<&Path>) -> Status {
+/// 只读状态探针（命令层用；不做任何写入）。`mode` 用于读分键的启用意图。
+pub(crate) fn probe_status(
+    dsh_home: &Path,
+    profile: &str,
+    kernel_root: Option<&Path>,
+    mode: &str,
+) -> Status {
     let materialized = materialize::find_materialized(&dsh_home.join(INSTANCE_BASE_SEGMENT));
+    let kernel_fingerprint =
+        kernel_root.and_then(|root| materialize::kernel_fingerprint(root).ok());
     let wired = read_patch(dsh_home, profile)
         .map(|text| text.contains(wiring::ROW_ID))
         .unwrap_or(false);
+    let load_state = if !wired {
+        "disabled"
+    } else if kernel_fingerprint
+        .as_ref()
+        .is_some_and(|fp| !materialized.iter().any(|entry| &entry.fingerprint == fp))
+    {
+        "incompatible"
+    } else {
+        "prepared"
+    };
+    let (requested_enabled, state_error) = match state::load(dsh_home) {
+        Ok(entries) => (
+            entries
+                .get(&state::state_key(mode, profile))
+                .is_some_and(|entry| entry.requested_enabled),
+            None,
+        ),
+        Err(error) => (false, Some(error)),
+    };
     Status {
         wired,
-        kernel_fingerprint: kernel_root.and_then(|root| materialize::kernel_fingerprint(root).ok()),
+        requested_enabled,
+        load_state,
+        kernel_fingerprint,
         materialized,
+        state_error,
     }
 }
 
@@ -219,14 +258,32 @@ mod tests {
         assert!(!again.row_added);
         assert_eq!(patch, fs::read_to_string(patch_path(&home, "web")).unwrap());
 
-        // 探针：已接线 + 已物化 + 指纹。
-        let status = probe_status(&home, "web", Some(&kernel));
+        // 探针：已接线 + 已物化 + 指纹 + 加载子集状态（意图未写 → false/disabled 语义由 wiring 决定）。
+        let status = probe_status(&home, "web", Some(&kernel), "release");
         assert!(status.wired);
+        assert!(!status.requested_enabled);
+        assert_eq!(status.load_state, "prepared");
         assert_eq!(status.materialized.len(), 1);
         assert_eq!(
             status.kernel_fingerprint.as_deref(),
             Some("dsh-0.2.1-alpha.1-cordis-4.0.5-alpha.1")
         );
+
+        // 意图落盘后：requestedEnabled = true。
+        let mut entries = std::collections::HashMap::new();
+        entries.insert(
+            state::state_key("release", "web"),
+            state::StateEntry {
+                requested_enabled: true,
+                updated_at_ms: 1,
+                plugin_version: Some(wired.plugin_version.clone()),
+                fingerprint: Some(wired.fingerprint.clone()),
+            },
+        );
+        state::save(&home, &entries).unwrap();
+        assert!(probe_status(&home, "web", Some(&kernel), "release").requested_enabled);
+        // 分键：dev 壳读不到 release 的意图。
+        assert!(!probe_status(&home, "web", Some(&kernel), "dev").requested_enabled);
 
         // 停用：行消失，资源保留。
         assert!(ensure_unwired(&home, "web").unwrap());
@@ -234,7 +291,32 @@ mod tests {
         assert!(!after.contains("xlink-openai-oauth"));
         assert!(wired.dir.join("host/index.js").is_file());
         assert!(!ensure_unwired(&home, "web").unwrap());
-        assert!(!probe_status(&home, "web", None).wired);
+        let stopped = probe_status(&home, "web", None, "release");
+        assert!(!stopped.wired);
+        assert_eq!(stopped.load_state, "disabled");
+    }
+
+    #[test]
+    fn probe_reports_incompatible_when_fingerprint_drifts() {
+        let scratch = Scratch::new("drift");
+        let source = scratch.source();
+        let kernel = scratch.kernel();
+        let home = scratch.home();
+        ensure_wired(&source, &home, "web", &kernel).unwrap();
+
+        // 内核树换成新指纹（模拟版本切换），物化产物还停在旧指纹上。
+        let manifest_dir = kernel.join("node_modules/@deepseek-ai/cordis");
+        fs::write(manifest_dir.join("package.json"), "{\"version\":\"4.1.0\"}").unwrap();
+        let status = probe_status(&home, "web", Some(&kernel), "release");
+        assert!(status.wired);
+        assert_eq!(status.load_state, "incompatible");
+
+        // 重跑启用即修复：按新指纹重新物化并改写接线行。
+        ensure_wired(&source, &home, "web", &kernel).unwrap();
+        assert_eq!(
+            probe_status(&home, "web", Some(&kernel), "release").load_state,
+            "prepared"
+        );
     }
 
     #[test]

@@ -87,6 +87,7 @@
           "plugin_precheck_apply",
           "plugin_set_precheck",
           "builtin_openai_status",
+          "builtin_openai_set_enabled",
           "snapshot_list",
           "bisect_view",
           "bisect_start",
