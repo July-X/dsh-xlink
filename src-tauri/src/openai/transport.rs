@@ -47,7 +47,11 @@ impl Failure {
 }
 
 fn agent_for(route: &Route) -> Result<ureq::Agent, String> {
-    let builder = ureq::Agent::config_builder().timeout_global(Some(GLOBAL_TIMEOUT));
+    let builder = ureq::Agent::config_builder()
+        // 状态码错误由 send() 手动分类（ureq 的 StatusCode 错误不带响应体，
+        // 而 OAuth 的 invalid_grant 分类必须看 body——实测踩过）。
+        .http_status_as_error(false)
+        .timeout_global(Some(GLOBAL_TIMEOUT));
     let config = match route {
         Route::Direct => builder.proxy(None),
         Route::Proxy { url, .. } => {
@@ -60,10 +64,8 @@ fn agent_for(route: &Route) -> Result<ureq::Agent, String> {
 }
 
 fn map_ureq_error(error: ureq::Error) -> Failure {
-    match &error {
-        ureq::Error::StatusCode(status) => Failure::Status(*status, String::new()),
-        _ => Failure::Transport(format!("{error}")),
-    }
+    // 4xx/5xx 不会再走这里（http_status_as_error=false），保守映射为传输错。
+    Failure::Transport(format!("{error}"))
 }
 
 /// 沿路由表跑一次请求。状态码错误直接返回（不换路）。
@@ -80,11 +82,15 @@ where
         };
         match send_once(&agent, url) {
             Ok(mut response) => {
+                let status = response.status().as_u16();
                 let text = response
                     .body_mut()
                     .read_to_string()
                     .map_err(|error| Failure::Transport(format!("读取响应体失败：{error}")))?;
-                return Ok(text);
+                if (200..300).contains(&status) {
+                    return Ok(text);
+                }
+                return Err(Failure::Status(status, text.chars().take(300).collect()));
             }
             Err(error) => match map_ureq_error(error) {
                 failure @ Failure::Status(..) => return Err(failure),

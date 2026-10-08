@@ -14,6 +14,10 @@ pub(crate) struct RequestHead {
     /// 路径含查询串（如 `/callback?code=..&state=..`）。
     pub(crate) path: String,
     pub(crate) headers: HashMap<String, String>,
+    /// 头结束符之后已经读进缓冲的字节（请求体前缀）。TCP 无消息边界，
+    /// 一次 read 会把头和体一起带来；不带它，读体的一方会去 socket 上
+    /// 等「已经消费掉的字节」——双方互等死锁（mock 模拟器实测踩过）。
+    pub(crate) body_prefix: Vec<u8>,
 }
 
 /// 读一个请求头（不支持请求体；本组端点全是 GET）。连接关闭或超长返回 Err。
@@ -34,6 +38,11 @@ pub(crate) fn read_request(stream: &mut TcpStream) -> Result<RequestHead, String
     }
     if read == 0 {
         return Err("连接在发送请求前关闭".into());
+    }
+    // 找头结束符位置，保留其后的字节作为体前缀。
+    let mut body_prefix: Vec<u8> = Vec::new();
+    if let Some(position) = buf[..read].windows(4).position(|w| w == b"\r\n\r\n") {
+        body_prefix = buf[position + 4..read].to_vec();
     }
     let mut headers = [httparse::EMPTY_HEADER; 48];
     let mut parsed = httparse::Request::new(&mut headers);
@@ -56,6 +65,7 @@ pub(crate) fn read_request(stream: &mut TcpStream) -> Result<RequestHead, String
         method: parsed.method.unwrap_or_default().to_string(),
         path: parsed.path.unwrap_or_default().to_string(),
         headers: header_map,
+        body_prefix,
     })
 }
 

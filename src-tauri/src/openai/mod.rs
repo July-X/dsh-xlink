@@ -15,6 +15,7 @@ pub(crate) mod cmd;
 pub(crate) mod flow;
 pub(crate) mod http;
 pub(crate) mod jwk;
+pub(crate) mod refresh;
 pub(crate) mod transport;
 pub(crate) mod vault;
 

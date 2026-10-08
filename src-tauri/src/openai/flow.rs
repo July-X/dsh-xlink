@@ -218,6 +218,7 @@ fn exchange_and_store(
             access_token: tokens.access_token,
             refresh_token: tokens.refresh_token,
             access_expires_at: deps.now_unix() + tokens.expires_in,
+            reauth_required: false,
         },
     );
     accounts.active = Some(claims.subject.clone());
@@ -333,124 +334,221 @@ impl FlowTransport for ProductionTransport {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::openai::http::{read_request, write_response};
     use crate::openai::testkeys::{KEY1_N, KEY1_PKCS1};
     use std::io::Write;
     use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
 
     /// **模拟授权服务器**（开发计划 §10：CI 用模拟服务，真实账号令牌
-    /// 永不进 CI）。覆盖发现 / 动态注册 / JWKS / token 四个端点，ID token
-    /// 用固定测试密钥（KEY1）签发；「浏览器」是测试注入的假浏览器——解析
-    /// 授权 URL、记下 nonce，然后直接对回调监听发重定向。
-    struct MockIssuer {
+    /// 永不进 CI）。端点：发现 / 动态注册 / JWKS / token（授权码换发与
+    /// **刷新**两种 grant）。ID token 用固定测试密钥（KEY1）签发；刷新校验
+    /// 当前 refresh token 并旋转；`revoke()` 置位后刷新一律 `invalid_grant`。
+    pub(crate) struct MockIssuer {
         port: u16,
         session: Arc<Mutex<Option<(String, String)>>>, // (nonce, state)
-        keyring: Option<TestKeyring>,
+        keyring: TestKeyring,
+        /// 当前有效 refresh token（授权码换发写入、刷新校验并旋转）。
+        current_refresh: Arc<Mutex<String>>,
+        /// 置位后刷新一律 invalid_grant（模拟服务端撤销授权）。
+        revoke_refresh: Arc<AtomicBool>,
     }
 
     impl MockIssuer {
-        fn spawn() -> Self {
+        pub(crate) fn spawn() -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
             let session: Arc<Mutex<Option<(String, String)>>> = Arc::new(Mutex::new(None));
             let thread_session = Arc::clone(&session);
-            let keyring: Arc<Mutex<Vec<(String, String, String)>>> =
-                Arc::new(Mutex::new(Vec::new()));
-            let issuer_keyring = Arc::clone(&keyring);
+            let keyring: TestKeyring = Arc::new(Mutex::new(Vec::new()));
+            let current_refresh: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+            let thread_refresh = Arc::clone(&current_refresh);
+            let revoke_refresh: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+            let thread_revoke = Arc::clone(&revoke_refresh);
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     let Ok(mut stream) = stream else { break };
                     let Ok(request) = read_request(&mut stream) else {
                         continue;
                     };
+                    let body = read_body(&mut stream, &request);
                     let base = format!("http://127.0.0.1:{port}");
-                    let (status, body): (u16, String) = if request.path.starts_with("/.well-known/")
-                    {
-                        (
-                            200,
-                            serde_json::json!({
-                                "issuer": base,
-                                "authorization_endpoint": format!("{base}/authorize"),
-                                "token_endpoint": format!("{base}/token"),
-                                "registration_endpoint": format!("{base}/register"),
-                                "jwks_uri": format!("{base}/jwks"),
-                            })
-                            .to_string(),
-                        )
-                    } else if request.path == "/register" && request.method == "POST" {
-                        (200, r#"{"client_id":"mock-client-1"}"#.into())
-                    } else if request.path == "/jwks" {
-                        (
-                            200,
-                            serde_json::json!({
-                                "keys": [{ "kty": "RSA", "kid": "k1", "n": KEY1_N, "e": "AQAB" }]
-                            })
-                            .to_string(),
-                        )
-                    } else if request.path == "/token" && request.method == "POST" {
-                        let Some((nonce, _state)) = thread_session.lock().unwrap().clone() else {
-                            continue; // 没有浏览器会话：不符合流程顺序，跳过
-                        };
-                        let now = 1_700_000_000u64;
-                        let claims = serde_json::json!({
-                            "iss": base, "aud": "mock-client-1", "sub": "mock-sub-1",
-                            "email": "dev@example.com", "nonce": nonce,
-                            "exp": now + 3600, "iat": now,
-                        });
-                        let id_token = sign_with_key1(&claims.to_string());
-                        (
-                            200,
-                            serde_json::json!({
-                                "access_token": "at-mock", "refresh_token": "rt-mock",
-                                "id_token": id_token, "expires_in": 3600,
-                            })
-                            .to_string(),
-                        )
-                    } else {
-                        (404, "{}".into())
-                    };
-                    let _ = write_response(&mut stream, status, "application/json", &body);
+                    let response = mock_route(
+                        &request,
+                        &body,
+                        &base,
+                        &thread_session,
+                        &thread_refresh,
+                        &thread_revoke,
+                    );
+                    let (status, content) = response;
+                    let _ = write_response(&mut stream, status, "application/json", &content);
                 }
             });
             Self {
                 port,
                 session,
-                keyring: Some(issuer_keyring),
+                keyring,
+                current_refresh,
+                revoke_refresh,
             }
         }
 
-        fn transport(&self) -> MockTransport {
+        pub(crate) fn transport(&self) -> MockTransport {
             MockTransport {
                 port: self.port,
                 session: Arc::clone(&self.session),
-                keyring: self
-                    .keyring
-                    .clone()
-                    .unwrap_or_else(|| Arc::new(Mutex::new(Vec::new()))),
+                keyring: Arc::clone(&self.keyring),
+                current_refresh: Arc::clone(&self.current_refresh),
+                revoke_refresh: Arc::clone(&self.revoke_refresh),
                 deny_in_browser: false,
             }
         }
+
+        /// 模拟服务端撤销（此后刷新一律 invalid_grant）。
+        pub(crate) fn revoke(&self) {
+            self.revoke_refresh.store(true, Ordering::SeqCst);
+        }
+
+        pub(crate) fn port(&self) -> u16 {
+            self.port
+        }
     }
+
+    /// 路由分发（从线程体里提出纯函数，方便阅读与将来扩展端点）。
+    fn mock_route(
+        request: &crate::openai::http::RequestHead,
+        body: &str,
+        base: &str,
+        session: &Arc<Mutex<Option<(String, String)>>>,
+        current_refresh: &Arc<Mutex<String>>,
+        revoke: &AtomicBool,
+    ) -> (u16, String) {
+        eprintln!(
+            "[mock] {} body={}",
+            request.path,
+            &body[..body.len().min(50)]
+        );
+        if request.path.starts_with("/.well-known/") {
+            return (
+                200,
+                serde_json::json!({
+                    "issuer": base,
+                    "authorization_endpoint": format!("{base}/authorize"),
+                    "token_endpoint": format!("{base}/token"),
+                    "registration_endpoint": format!("{base}/register"),
+                    "jwks_uri": format!("{base}/jwks"),
+                })
+                .to_string(),
+            );
+        }
+        if request.path == "/register" && request.method == "POST" {
+            return (200, r#"{"client_id":"mock-client-1"}"#.into());
+        }
+        if request.path == "/jwks" {
+            return (
+                200,
+                serde_json::json!({
+                    "keys": [{ "kty": "RSA", "kid": "k1", "n": KEY1_N, "e": "AQAB" }]
+                })
+                .to_string(),
+            );
+        }
+        if request.path == "/token" && request.method == "POST" {
+            let now = 1_700_000_000u64;
+            if body.contains("grant_type=refresh_token") {
+                let presented = body
+                    .split("refresh_token=")
+                    .nth(1)
+                    .map(|v| v.split('&').next().unwrap_or_default())
+                    .unwrap_or_default();
+                let expected = current_refresh.lock().unwrap().clone();
+                if revoke.load(Ordering::SeqCst) || presented != expected {
+                    return (400, r#"{"error":"invalid_grant"}"#.into());
+                }
+                let claims = serde_json::json!({
+                    "iss": base, "aud": "mock-client-1", "sub": "mock-sub-1",
+                    "email": "dev@example.com", "nonce": "refresh-nonce",
+                    "exp": now + 3600, "iat": now,
+                });
+                *current_refresh.lock().unwrap() = "rt-mock-2".to_string();
+                return (
+                    200,
+                    serde_json::json!({
+                        "access_token": "at-mock-2", "refresh_token": "rt-mock-2",
+                        "id_token": sign_with_key1(&claims.to_string()), "expires_in": 3600,
+                    })
+                    .to_string(),
+                );
+            }
+            let Some((nonce, _state)) = session.lock().unwrap().clone() else {
+                return (400, r#"{"error":"no_session"}"#.into());
+            };
+            let claims = serde_json::json!({
+                "iss": base, "aud": "mock-client-1", "sub": "mock-sub-1",
+                "email": "dev@example.com", "nonce": nonce,
+                "exp": now + 3600, "iat": now,
+            });
+            *current_refresh.lock().unwrap() = "rt-mock".to_string();
+            return (
+                200,
+                serde_json::json!({
+                    "access_token": "at-mock", "refresh_token": "rt-mock",
+                    "id_token": sign_with_key1(&claims.to_string()), "expires_in": 3600,
+                })
+                .to_string(),
+            );
+        }
+        (404, "{}".into())
+    }
+
+    /// 读请求体：先消费 `read_request` 带回的体前缀（可能已含全部），缺的
+    /// 才从 socket 继续读。
+    fn read_body(stream: &mut TcpStream, request: &crate::openai::http::RequestHead) -> String {
+        let length: usize = request
+            .headers
+            .get("content-length")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let mut body = request.body_prefix.clone();
+        while body.len() < length {
+            let mut chunk = [0u8; 512];
+            let Ok(n) = std::io::Read::read(stream, &mut chunk) else {
+                break;
+            };
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..n]);
+        }
+        body.truncate(length);
+        String::from_utf8_lossy(&body).into_owned()
+    }
+
+    /// 测试内存钥匙库的形状。
+    pub(crate) type TestKeyring = Arc<Mutex<Vec<(String, String, String)>>>;
 
     /// 假浏览器：解析授权 URL → 记 nonce/state → 直接对 redirect_uri
     /// 发一次回调（模拟用户在授权页点完「继续」）。`deny_in_browser`
     /// 模拟用户在授权页点了拒绝。
-    struct MockTransport {
+    pub(crate) struct MockTransport {
         port: u16,
         session: Arc<Mutex<Option<(String, String)>>>,
         keyring: TestKeyring,
+        current_refresh: Arc<Mutex<String>>,
+        revoke_refresh: Arc<AtomicBool>,
         deny_in_browser: bool,
     }
 
     impl FlowTransport for MockTransport {
         fn get_json(&self, url: &str) -> Result<String, Failure> {
-            plain_http(url, "GET", "").map_err(Failure::Transport)
+            plain_http(url, "GET", "")
         }
         fn post_json(&self, url: &str, body: &str) -> Result<String, Failure> {
-            plain_http(url, "POST-JSON", body).map_err(Failure::Transport)
+            plain_http(url, "POST-JSON", body)
         }
         fn post_form(&self, url: &str, pairs: &[(&str, &str)]) -> Result<String, Failure> {
             let body = pairs
@@ -458,7 +556,7 @@ mod tests {
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join("&");
-            plain_http(url, "POST", &body).map_err(Failure::Transport)
+            plain_http(url, "POST", &body)
         }
         fn open_browser(&self, url: &str) -> Result<(), String> {
             let mut nonce = String::new();
@@ -510,16 +608,15 @@ mod tests {
         }
     }
 
-    /// 测试内存钥匙库的形状。
-    type TestKeyring = Arc<Mutex<Vec<(String, String, String)>>>;
-
     impl MockTransport {
         /// 测试辅助：用内存钥匙库里的密钥读 vault。
-        fn read_vault(&self, path: &Path) -> Result<Accounts, String> {
-            let account =
-                vault::keyring_account("release", &std::path::PathBuf::from("/test-home"));
-            let _ = account;
-            // 直接从 keyring 取第一条 dsh-xlink 服务的密钥（本测试只有一个）。
+        pub(crate) fn read_vault(&self, path: &Path) -> Result<Accounts, String> {
+            let key = self.vault_key()?;
+            vault::load_accounts(path, &key)
+        }
+
+        /// 内存钥匙库里的文件密钥（本测试只有一个）。
+        pub(crate) fn vault_key(&self) -> Result<[u8; 32], String> {
             let secret = self
                 .keyring
                 .lock()
@@ -533,16 +630,18 @@ mod tests {
                 key[i] =
                     u8::from_str_radix(std::str::from_utf8(chunk).unwrap_or("00"), 16).unwrap_or(0);
             }
-            vault::load_accounts(path, &key)
+            Ok(key)
         }
     }
 
     /// 极简 HTTP 客户端（测试内连 mock；不复用 transport 的路由逻辑）。
-    fn plain_http(url: &str, method: &str, body: &str) -> Result<String, String> {
-        let after = url.strip_prefix("http://127.0.0.1:").ok_or("非回环地址")?;
+    fn plain_http(url: &str, method: &str, body: &str) -> Result<String, Failure> {
+        let after = url
+            .strip_prefix("http://127.0.0.1:")
+            .ok_or_else(|| Failure::Transport("非回环地址".into()))?;
         let (port, path) = after.split_once('/').unwrap();
-        let mut stream =
-            TcpStream::connect(("127.0.0.1", port.parse().unwrap())).map_err(|e| e.to_string())?;
+        let mut stream = TcpStream::connect(("127.0.0.1", port.parse().unwrap()))
+            .map_err(|e| Failure::Transport(e.to_string()))?;
         let content_type = if method == "POST-JSON" {
             "application/json"
         } else {
@@ -555,16 +654,29 @@ mod tests {
         };
         stream
             .write_all(format!("{verb} /{path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| Failure::Transport(e.to_string()))?;
         let mut text = String::new();
         use std::io::Read;
         stream
             .read_to_string(&mut text)
-            .map_err(|e| e.to_string())?;
-        text.split("\r\n\r\n")
+            .map_err(|e| Failure::Transport(e.to_string()))?;
+        let status: u16 = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let body = text
+            .split("\r\n\r\n")
             .nth(1)
             .map(String::from)
-            .ok_or_else(|| "空响应".into())
+            .ok_or_else(|| Failure::Transport("空响应".into()))?;
+        // 与 transport.rs 同语义：非 2xx 返回 Status 失败（带响应体——
+        // OAuth 的 invalid_grant 分类必须看 body）。
+        if (200..300).contains(&status) {
+            Ok(body)
+        } else {
+            Err(Failure::Status(status, body))
+        }
     }
 
     fn sign_with_key1(payload_json: &str) -> String {
@@ -591,7 +703,7 @@ mod tests {
         format!("{signing_input}.{}", b64.encode(&signature))
     }
 
-    fn flow_paths(tag: &str, port: u16) -> FlowPaths {
+    pub(crate) fn flow_test_paths(tag: &str, port: u16) -> FlowPaths {
         let dir = std::env::temp_dir().join(format!("oop-flow-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         FlowPaths {
@@ -604,11 +716,32 @@ mod tests {
 
     /// 端到端（模拟授权服务器）：发现 → 动态注册（持久化复用）→ 授权 URL
     /// → 假浏览器回调 → 换令牌 → 验 ID token → 入库；账号视图与 vault 一致。
+    /// 读 vault（refresh 测试复用）。
+    pub(crate) fn read_vault_with(
+        transport: &MockTransport,
+        path: &Path,
+    ) -> Result<Accounts, String> {
+        transport.read_vault(path)
+    }
+
+    /// 把某账号的访问过期时间改成指定值（强制/避免走刷新）。
+    pub(crate) fn set_access_expiry(
+        transport: &MockTransport,
+        path: &Path,
+        sub: &str,
+        expires_at: u64,
+    ) {
+        let key = transport.vault_key().unwrap();
+        let mut accounts = vault::load_accounts(path, &key).unwrap();
+        accounts.entries.get_mut(sub).unwrap().access_expires_at = expires_at;
+        vault::save_accounts(path, &key, &accounts).unwrap();
+    }
+
     #[test]
     fn authorize_end_to_end_against_mock_issuer() {
         let issuer = MockIssuer::spawn();
         let transport = issuer.transport();
-        let paths = flow_paths("e2e", issuer.port);
+        let paths = flow_test_paths("e2e", issuer.port);
         let cancel = AtomicBool::new(false);
 
         let view = run_authorize(&paths, &transport, "release", &cancel).unwrap();
@@ -652,7 +785,7 @@ mod tests {
         let issuer = MockIssuer::spawn();
         let mut transport = issuer.transport();
         transport.deny_in_browser = true;
-        let paths = flow_paths("deny", issuer.port);
+        let paths = flow_test_paths("deny", issuer.port);
         let cancel = AtomicBool::new(false);
         let error = run_authorize(&paths, &transport, "release", &cancel).unwrap_err();
         assert!(error.contains("access_denied"), "{error}");
