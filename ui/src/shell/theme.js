@@ -71,7 +71,13 @@ export function setThemeValue(next) {
 /// 在旧主题（内容与标题栏短暂不同步），不值得为它把整个应用启动打断。
 export function applyTheme() {
   document.documentElement.classList.toggle('dark', resolvedTheme.value === 'dark');
-  void setWindowTheme(resolvedTheme.value).catch(() => {});
+  // system 要清除原生外观覆盖，否则媒体查询读到的是应用强制的颜色。
+  void setWindowTheme(theme.value === 'system' ? null : resolvedTheme.value).then(() => {
+    if (theme.value !== 'system') return;
+    // 原生调用异步完成后重新取值；切换期间用户已选固定模式则不回写。
+    systemDark.value = !!systemQuery?.matches;
+    document.documentElement.classList.toggle('dark', resolvedTheme.value === 'dark');
+  }).catch(() => {});
 }
 
 export function setTheme(next) {
