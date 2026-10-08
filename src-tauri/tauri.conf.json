@@ -45,7 +45,8 @@
     "shortDescription": "DeepSeek Harness desktop shell",
     "longDescription": "Desktop shell that runs the DeepSeek Harness web UI with kernel version management and updates.",
     "resources": {
-      "resources/patches": "patches"
+      "resources/patches": "patches",
+      "resources/builtin-plugins": "builtin-plugins"
     },
     "icon": [
       "icons/32x32.png",

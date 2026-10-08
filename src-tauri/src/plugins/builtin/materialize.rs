@@ -99,6 +99,70 @@ pub(crate) fn relative_entry(from_dir: &Path, target: &Path) -> String {
     parts.join("/")
 }
 
+/// 资源清单的文件名（由 `scripts/prepare-builtin-plugins.mjs` 生成）。
+pub(crate) const MANIFEST_FILE: &str = "manifest.json";
+
+/// 校验资源清单（fail-closed，dev plan §6.2）：清单存在时逐文件核对
+/// sha256 与字节数，任何缺失或不一致都报错——启用事务宁可不发生。
+/// 仓库源码目录（dev 回退路径）没有清单，跳过校验：它就是源码本身、
+/// 不是分发产物；分发产物一律经 prep 管线生成并必带清单（`check:builtin`
+/// 钉住「产物必有清单且与源码一致」）。
+pub(crate) fn verify_manifest(plugin_source: &Path) -> Result<(), String> {
+    let manifest_path = plugin_source.join(MANIFEST_FILE);
+    let Ok(text) = fs::read_to_string(&manifest_path) else {
+        return Ok(());
+    };
+    let manifest: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+        format!(
+            "资源清单不是有效 JSON（{}）：{error}",
+            manifest_path.display()
+        )
+    })?;
+    let files = manifest
+        .get("files")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| format!("资源清单缺 files 数组（{}）", manifest_path.display()))?;
+    if files.is_empty() {
+        return Err(format!(
+            "资源清单没有文件条目（{}）",
+            manifest_path.display()
+        ));
+    }
+    for entry in files {
+        let path = entry
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("资源清单条目缺 path（{}）", manifest_path.display()))?;
+        let file = plugin_source.join(path);
+        let bytes = fs::read(&file).map_err(|error| {
+            format!(
+                "资源文件缺失或不可读（{}）：{error}；请重新安装 dsh-xlink 或重跑构建",
+                file.display()
+            )
+        })?;
+        let expected = entry.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
+        use sha2::{Digest, Sha256};
+        let actual = Sha256::digest(&bytes);
+        let actual_hex: String = actual.iter().map(|b| format!("{b:02x}")).collect();
+        if actual_hex != expected {
+            return Err(format!(
+                "资源 {} 与清单摘要不一致（{}，清单记 {expected}）；请重新安装 dsh-xlink",
+                path,
+                &actual_hex[..12.min(actual_hex.len())]
+            ));
+        }
+        if let Some(listed) = entry.get("bytes").and_then(|v| v.as_u64()) {
+            if listed != bytes.len() as u64 {
+                return Err(format!(
+                    "资源 {path} 大小与清单不一致（{}，清单记 {listed}）",
+                    bytes.len()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 物化到 `target`（含 peer 链接与完成标记）。同名 staging 残留先清。
 ///
 /// 已存在内容一致的目标目录时是幂等 no-op（标记匹配即返回）；不一致
@@ -111,6 +175,7 @@ pub(crate) fn materialize(
     version: &str,
     fingerprint: &str,
 ) -> Result<(), String> {
+    verify_manifest(plugin_source)?;
     let marker = serde_json::json!({ "pluginVersion": version, "fingerprint": fingerprint });
     if let Ok(existing) = fs::read_to_string(target.join(MARKER_FILE)) {
         let parsed: serde_json::Value = serde_json::from_str(&existing).unwrap_or_default();
@@ -336,6 +401,46 @@ mod tests {
         )
         .unwrap();
         assert!(target.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 清单校验：坏摘要 / 缺文件都要拦下；没有清单（dev 源码）放行。
+    #[test]
+    fn manifest_verification_is_fail_closed() {
+        let root = temp_dir("manifest");
+        let source = root.join("source/host");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("index.js"), "export {}").unwrap();
+        let digest = {
+            use sha2::{Digest, Sha256};
+            let bytes = fs::read(source.join("index.js")).unwrap();
+            Sha256::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        let manifest = serde_json::json!({
+            "files": [
+                { "path": "host/index.js", "sha256": digest, "bytes": 9 }
+            ]
+        });
+        // 无清单 → 放行（dev 源码路径）。
+        assert!(verify_manifest(&root.join("source")).is_ok());
+        // 清单与文件一致 → 放行。
+        fs::write(
+            root.join("source").join(MANIFEST_FILE),
+            format!("{manifest}\n"),
+        )
+        .unwrap();
+        assert!(verify_manifest(&root.join("source")).is_ok());
+        // 文件被改 → 拦下（fail-closed）。
+        fs::write(source.join("index.js"), "export { tampered }").unwrap();
+        let error = verify_manifest(&root.join("source")).unwrap_err();
+        assert!(error.contains("摘要不一致"), "{error}");
+        // 清单列了不存在的文件 → 拦下。
+        fs::remove_file(source.join("index.js")).unwrap();
+        let error = verify_manifest(&root.join("source")).unwrap_err();
+        assert!(error.contains("缺失或不可读"), "{error}");
         let _ = fs::remove_dir_all(&root);
     }
 }
