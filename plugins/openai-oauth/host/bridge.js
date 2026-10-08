@@ -72,3 +72,50 @@ export async function fetchCatalog(bridge, signal) {
   const response = await bridgeFetch(bridge, "/v1/models", { signal });
   return response.json();
 }
+
+/// 推理流（POST /v1/responses）：带鉴权与信封，返回**按行异步迭代器**
+/// （桥接下发 NDJSON；连接关闭即迭代结束；终止包络由 pumpStream 解释）。
+/// 非 2xx → BridgeUnavailableError（带响应体摘录，含 401 需重登 / 409
+/// 目录过期 / 400 请求被拒的语义）。
+export async function* streamInferenceLines(bridge, envelope, signal) {
+  let response;
+  try {
+    response = await fetch(`${bridge.url}/v1/responses`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${bridge.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(envelope),
+      signal,
+    });
+  } catch (error) {
+    throw new BridgeUnavailableError(`桥接推理请求失败：${String(error?.cause ?? error)}`);
+  }
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new BridgeUnavailableError(
+      `桥接返回 ${response.status}${body ? `：${body.slice(0, 200)}` : ""}`,
+    );
+  }
+  if (!response.body) {
+    throw new BridgeUnavailableError("桥接推理响应没有流式 body");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    pending += decoder.decode(value, { stream: true });
+    let newline = pending.indexOf("\n");
+    while (newline >= 0) {
+      const line = pending.slice(0, newline);
+      pending = pending.slice(newline + 1);
+      if (line.trim()) yield line;
+      newline = pending.indexOf("\n");
+    }
+  }
+  pending += decoder.decode();
+  if (pending.trim()) yield pending;
+}

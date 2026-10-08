@@ -19,6 +19,7 @@ export class BridgeAdapter extends LlmAdapter {
     this.pluginVersion = pluginVersion;
     this.catalogRevision = undefined;
     this.modelsById = new Map();
+    this.catalogView = undefined;
   }
 
   providerInfo(id) {
@@ -33,6 +34,8 @@ export class BridgeAdapter extends LlmAdapter {
     }
     this.catalogRevision = String(catalog.revision ?? "");
     this.modelsById = new Map(catalog.models.map((model) => [String(model.id), model]));
+    // 目录视图（buildEnvelope 用）：revision 由桥接拼好（目录|能力表双版本）。
+    this.catalogView = { revisionCombined: this.catalogRevision, entries: catalog.models };
   }
 
   async listModels(provider, signal) {
@@ -72,10 +75,14 @@ export class BridgeAdapter extends LlmAdapter {
   }
 
   async *stream(options) {
-    throw new LlmError(
-      "套餐推理桥接尚未实现（P2/P4 交付）；本骨架不产生模拟回答",
-      "BRIDGE_STREAM_UNIMPLEMENTED",
+    // 目录视图缺失（未经 listModels）时先刷新一次——发送前校验双 revision
+    // 的前提是 Host 手里有当前目录。
+    if (this.catalogView === undefined) await this.#refreshCatalog(options.signal);
+    const envelope = buildEnvelope(
+      { ...options, catalog: this.catalogView },
     );
+    const lines = streamInferenceLines(this.bridge, envelope, options.signal);
+    yield* pumpStream(lines);
   }
 }
 
