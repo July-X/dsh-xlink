@@ -124,7 +124,10 @@ watch(collapsed, (value) => {
 <template>
   <aside class="sidebar" :class="{ 'is-collapsed': collapsed }">
     <div class="brand">
-      <img src="/whale-icon.png" alt="" width="34" height="34" />
+      <!-- 尺寸 34 → 42px（2026-10-08 用户要求放大鲸鱼 icon）。这两个属性与
+           theme.css 的 `.brand img` 必须相等：它们是给读屏与布局的第一手尺寸，
+           CSS 只覆盖绘制，属性留在旧值就是一句谎。判据钉住「两处相等」。 -->
+      <img src="/whale-icon.png" alt="" width="42" height="42" />
       <div class="brand__text">
         <!-- 2026-10-07 按设计稿改文案：主名「DeepSeek Harness」+ 副名「桌面管理台」。
              原先写的是「Dsh-Xlink / DeepSeek 内核桌面管理端」——那是仓库名与

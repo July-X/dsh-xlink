@@ -633,17 +633,32 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
   // `.vue` 只认 `:root` 内的定义：组件的 `<style scoped>` 里定义的变量是**局部
   // 的**，别的文件用不到，收进来会让判据失明。
   const defined = new Set();
+  // **先剥注释再扫**（2026-10-08）。这条判据原先按**原文**匹配，于是两个方向
+  // 都错：
+  //   · 假阳性——theme.css 里一句解释「Element Plus 的 `.el-icon` 颜色是
+  //     `var(--color)`」的注释被判成一次无回退引用，`.el-icon` 的 `--color`
+  //     由**组件库**定义、不在本仓任何 `:root` 里，于是门禁红了，而真实缺陷
+  //     （真声明里少一个定义）一个都没有。
+  //   · 假阴性——`defined` 那一侧扫的是全文，一条**注释里**写的 `--x:` 会被
+  //     当成「已定义」，于是真声明里那个真的没有定义的 `--x` 被放过。
+  // 两边都是同一个根因：**注释不是声明**。剥掉它只可能更准，不可能放过真缺失
+  // ——这与本仓「判据扫模板不扫全文」的纪律是同一条。
+  const stripForScan = (text) =>
+    text
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      // 行注释只在行首或空白之后才剥：`http://` 这种 URL 里也有 `//`。
+      .replace(/(^|[\s;{(])[^\n]*?(\/\/[^\n]*)$/gm, '$1');
   const collect = (text, onlyRoot) => {
     const source = onlyRoot
-      ? [...text.matchAll(/:root\s*\{([^}]*)\}/g)].map((m) => m[1]).join('\n')
-      : text;
+      ? [...stripForScan(text).matchAll(/:root\s*\{([^}]*)\}/g)].map((m) => m[1]).join('\n')
+      : stripForScan(text);
     for (const m of source.matchAll(/(^|[;{\s])(--[a-z0-9-]+)\s*:/g)) defined.add(m[2]);
   };
   for (const file of walk(srcDir, ['.css'])) collect(readFileSync(file, 'utf8'), false);
   for (const file of walk(srcDir, ['.vue'])) collect(readFileSync(file, 'utf8'), true);
   const missing = new Map();
   for (const file of walk(srcDir, ['.css', '.vue', '.js'])) {
-    const text = readFileSync(file, 'utf8');
+    const text = stripForScan(readFileSync(file, 'utf8'));
     for (const match of text.matchAll(/var\(\s*(--[a-z0-9-]+)\s*([,)])/g)) {
       // 名字后面跟逗号 = 带了回退值（`var(--x, #999)`），有定义与否都不会
       // 静默失效；跟右括号 = 没给回退，才需要真有定义。

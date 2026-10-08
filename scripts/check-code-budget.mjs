@@ -1942,7 +1942,14 @@ const FILE_BUDGETS = {
 //     「没有颜色」，行数持平。反棘轮的三个文件预算一个数字没动（theme.css 2643 →
 //     2644，离 3001 的上限还远），判据在 `ui/test/designAlignment.test.js`
 //     「弹窗与浮层主题适配」一组（`ui/test/**` 不计入本预算）。
-const TOTAL_BUDGET = 42192;
+// 42192 → 42202（2026-10-08）：品牌区鲸鱼图标 34 → 42px，概览卡头主操作放大一档。
+// 净增 10 行，全部落在 OverviewPanel 的 scoped 块（`.kernel-header-actions` 下的
+// el-button 盒高 / 横向内边距 / 字号，图标槽的 15px 与 6px 间距）——两枚按钮要
+// 放大就得同时动这三样，缺一项就是「只变高不变宽」或「图标被等比缩着走」。
+// theme.css 侧只改数值（`.brand` gap 10 → 12、`.brand img` 34 → 42 / 圆角 7 → 9），
+// 行数持平；SideBar 的 `<img width height>` 与之相等，判据钉住两处不漂。
+// 反棘轮三个文件预算一个数字没动。
+const TOTAL_BUDGET = 42202;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

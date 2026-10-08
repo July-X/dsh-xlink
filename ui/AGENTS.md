@@ -67,6 +67,8 @@
   - **同目录的引用不算入口**：组件自家的 store 模块（`usage/usage.js` 里写着 `UsageWindow`）只是它自己的状态容器。第一版判据没排除它，结果把 `main.js` 的挂载点整段摘掉它照样绿。
 - **侧栏整体放大一档**（2026-10-07 用户要求「放大字体、icon」，**覆盖设计稿**）。设计稿 draft 509-524 行给的是 `font-size: 13px` / `gap: 11px`，实现此前照抄；现在是 `.nav-item` **15px**、`.sidebar__section-label` **12px**、`.nav-item__badge` **12px / 20px 圆点**、`.sidebar__footer` **12px**，间距同步抬（行 `padding 8px 10px`、`gap 11px`、分组 `gap 4px`、收起态 `padding 8px 0`）。224px 侧栏仍放得下最长的一项（「数据迁移」四字），748px 高的窗口里侧栏总高约 450px，余量充足。
   - **图标必须显式写死**（`.nav-item > .el-icon { font-size: 17px }`），不能只抬 `.nav-item` 的字号：Element Plus 的 `.el-icon` 是 `font-size: inherit` + 1em，只抬父级字号等于图标跟着等比长——那不算「图标被放大」。17 vs 15 是刻意的：图标读起来要比文字再大一点点才不显矮。收起态（只剩 icon 列）读到的是同一条规则。
+  - **品牌行的鲸鱼图标 34 → 42px**（2026-10-08 用户截图指过来：「黑鲸icon放大」，**覆盖设计稿**）。34px 与 15px 主名 + 11px 副名那一摞文字等高，读起来是「配图」而不是品牌主体；42px 高过文字块一截，它才在这一行里当得起标识。圆角按同比例 7 → 9，`.brand` 的 `gap` 同步 10 → 12。收起态 64px 侧栏去掉 8px 横向内边距后内容盒 48px，42px 仍放得下。
+  - **`<img>` 的 `width` / `height` 属性必须与 CSS 相等**（`SideBar.vue` 的 42 与 theme.css 的 42）：CSS 只覆盖绘制，那两个属性是给读屏与布局的第一手尺寸，两处各写一遍迟早漂——漂了之后无障碍文本念出的尺寸与眼睛看到的不一样，而没有任何检查会响。同理 `flex: 0 0 42px` 少一条，图标会在 flex 行里被文字挤扁，变形而不报错。
 - **窗口 chrome 有两套：主窗自绘、副窗走原生，两套都得跟应用主题对齐**（2026-10-07 用户一张截图同时报出两处）
   - **副窗的原生标题栏跟主题走，不再钉死深色**。根因是两套机制各走各的：原生 chrome 由系统按窗口的 `NSWindow.appearance` 画，主题真值在 localStorage，Rust 建窗时读不到——于是 6 扇副窗一律 `.theme(Some(tauri::Theme::Dark))`，浅色用户打开「模型用量」就得到**浅色内容配深色标题栏**（标题文字几乎看不见）。修法是 `applyTheme()` 顺手把同一个 `theme.value` 推给 `bridge.setWindowTheme()`，纠正**本窗口**的原生 appearance；4 个壳自有的 capability 加 `core:window:allow-set-theme`。
     - **`theme.js` 仍是 `html.dark` 的唯一判据**，`setTheme` 只经 `applyTheme` 落一次。`window.setTheme()` 收的必须是 `theme.value` 本身——写死字面量会让「切了主题只换页面、不换标题栏」，判据点名盯的就是这一条。

@@ -899,6 +899,28 @@ function goVersions() {
   align-items: center;
   gap: 6px;
 }
+/* 卡头主操作放大一档（2026-10-08 用户截图框出来的「右侧的操作按钮放大」）。
+   Element Plus 的 `size="small"` 是 24px / 12px / `padding: 5px 11px`——它与
+   17px 的块标题、20px 的版本号并排时读起来像脚注，而这两枚恰恰是这一屏唯一的
+   主操作。抬到 30px / 13.5px / `padding: 0 15px`（横向内边距一起按比例走，
+   不然按钮只变高不变宽，两枚挤在一起像被人按扁了）。
+   宽度余量：卡内可用约 450px，标题「当前内核 ⓘ」约 94px，这两枚从 ~209px 涨到
+   ~260px 仍留出近 100px 空档，不碰标题。 */
+.kernel-header-actions :deep(.el-button) {
+  height: 30px;
+  padding: 0 15px;
+  font-size: 13.5px;
+}
+/* 图标槽必须显式写死：`.el-icon` 是 `font-size: inherit`，只抬按钮字号等于把
+   图标等比缩着走；图标要比文字再大一点点才不显矮（与侧栏 `.nav-item > .el-icon`
+   同一道理）。EP 的 small 尺寸把图标与文字的间距收到 4px，这里一并放开，
+   不然 15px 图标会贴着 13.5px 的字。 */
+.kernel-header-actions :deep(.el-button .el-icon + span) {
+  margin-left: 6px;
+}
+.kernel-header-actions :deep(.el-button .el-icon) {
+  font-size: 15px;
+}
 
 /* 概览主栅格。比例取设计稿 `.grid` 的 1.25fr / 0.75fr：左边的当前内核要放
    大版本号 + 状态行 + 三格指标，右边的系统健康只有「名称 / 读数」两段，

@@ -416,6 +416,50 @@ test('品牌主名 + 副名独占品牌行（收起开关搬走后不再需要�
   assert.equal(effectiveDeclaration(['brand__name'], RULES, 'text-overflow'), 'ellipsis');
 });
 
+test('鲸鱼图标放大到 42px，且 `<img>` 的尺寸属性与 CSS 相等', () => {
+  // 2026-10-08 用户截图指过来：「黑鲸icon放大」。34px 与 15px 主名 + 11px 副名
+  // 那一摞文字等高，读起来是「配图」而不是品牌主体。
+  assert.equal(effectiveDeclaration(['brand', 'img'], RULES, 'width'), '42px');
+  assert.equal(effectiveDeclaration(['brand', 'img'], RULES, 'height'), '42px');
+  // `flex: 0 0 <同值>` 少一条，图标就在 flex 行里被文字挤扁——图会变形而不报错。
+  assert.match(stripComments(themeCss), /\.brand img\s*\{[^}]*flex:\s*0 0 42px/);
+
+  // **属性与 CSS 必须相等**：CSS 只覆盖绘制，`width` / `height` 属性是给读屏与
+  // 布局的第一手尺寸，两处各写一遍的话迟早漂——漂了之后无障碍文本念出的尺寸
+  // 与眼睛看到的不一样，而没有任何检查会响。
+  const attr = /<img src="\/whale-icon\.png" alt="" width="(\d+)" height="(\d+)"/.exec(sidebar);
+  assert.ok(attr, 'SideBar 的鲸鱼图标应带 width / height 属性');
+  assert.equal(attr[1], '42', '`<img width>` 与 theme.css 的 `.brand img` 不一致');
+  assert.equal(attr[2], '42', '`<img height>` 与 theme.css 的 `.brand img` 不一致');
+  // 收起态 64px 侧栏减去 8px 横向内边距后内容盒 48px，图标放得下吗？
+  assert.ok(42 <= 64 - 16, '图标在收起态的侧栏内容盒里放不下（图标会比侧栏还宽）');
+});
+
+test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () => {
+  // Element Plus 的 `size="small"` 是 24px / 12px —— 与 17px 的块标题、20px 的
+  // 版本号并排时读起来像脚注，而这两枚恰恰是那一屏唯一的**主操作**。
+  const css = stripComments(overview);
+  const size = /\.kernel-header-actions :deep\(\.el-button\)\s*\{([^}]*)\}/.exec(css);
+  assert.ok(size, '概览卡头应有专门的主操作尺寸规则');
+  assert.match(size[1], /height:\s*30px/);
+  assert.match(size[1], /font-size:\s*13\.5px/);
+  // 只抬盒高不抬横向内边距，两枚会挤在一起看着像被人按扁了——横向要一起走。
+  assert.match(size[1], /padding:\s*0 15px/);
+
+  // `.el-icon` 是 `font-size: inherit`：不显式写死，图标就跟着按钮字号等比走，
+  // 15px 的图标槽这条约束等于没写。与侧栏 `.nav-item > .el-icon` 同一个道理。
+  assert.match(css, /\.kernel-header-actions :deep\(\.el-button \.el-icon\)\s*\{\s*font-size:\s*15px/);
+
+  // 两枚都在这个容器里（模板上只换 CSS，不该有人把按钮挪出去就忘了这条规则）。
+  const actions = /<div class="kernel-header-actions">([\s\S]*?)<\/div>/.exec(overview);
+  assert.ok(actions, '卡头应有 .kernel-header-actions 容器');
+  const buttons = actions[1].match(/<el-button[\s\S]*?>/g) || [];
+  assert.equal(buttons.length, 2, `主操作应是两枚，实际 ${buttons.length} 枚`);
+  for (const b of buttons) {
+    assert.match(b, /size="small"/, '两枚都还挂着 size="small"（由上面的规则覆写）');
+  }
+});
+
 // --- 系统健康 -------------------------------------------------------------
 //
 // 设计稿 `card-caption health-ok">全部正常`。汇总句只数异常格（bad / warn）：
