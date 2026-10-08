@@ -279,6 +279,11 @@ const FILE_BUDGETS = {
   // FlowTransport trait 注入传输/时钟/浏览器/密钥库（真实 Keychain 绝不进
   // 测试）；内含模拟授权服务器（开发计划 §10 的 CI 件）与端到端测试。
   'src-tauri/src/openai/flow.rs': 320,
+  // 2026-10-09：授权命令面（P2）。四条命令围绕 §4.1 授权状态机；授权流
+  // 跑后台线程、结束广播 openai-account-changed（UI 不轮询）；薄壳——
+  // 能落进 flow.rs 的逻辑都不在这里长。按文件名豁免了新文件登记，照实
+  // 补上（同 builtin/mod.rs 的先例）。
+  'src-tauri/src/openai/cmd.rs': 152,
   'src-tauri/src/openai/mod.rs': 12,
   // 2980 → 2932：删掉 P4 留下的旧签名壳共 11 项（`sync_kernels` /
   // `materialize_one` / `remove_materialized` / `sweep_kernel_orphans` /
@@ -2064,7 +2069,7 @@ const FILE_BUDGETS = {
 // process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
-const TOTAL_BUDGET = 44380;
+const TOTAL_BUDGET = 44520;
 // 42424 → 42807 → 42981（2026-10-08）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
