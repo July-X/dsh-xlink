@@ -22,6 +22,7 @@ use crate::openai::vault::{self, AccountTokens, Accounts};
 /// 登录超时：授权页没人动是常态，给足时间（设计 §3.2 打开系统浏览器）。
 const AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(180);
 
+#[derive(Clone)]
 pub(crate) struct FlowPaths {
     /// `shell/<mode>/openai-oauth/`（host-id、registration 都在这里）。
     pub(crate) mode_dir: PathBuf,
@@ -45,6 +46,12 @@ pub(crate) trait FlowTransport {
     /// **真实 Keychain 绝不进测试**（vault.rs 同一条纪律）。
     fn keyring_get(&self, service: &str, account: &str) -> Result<String, String>;
     fn keyring_put(&self, service: &str, account: &str, secret: &str) -> Result<(), String>;
+    /// 带 Bearer 鉴权的 GET（模型目录等账号端点）。默认实现忽略鉴权
+    /// （形状 mock 用）；生产与回环 mock 各自实现。
+    fn get_json_with_auth(&self, url: &str, bearer: &str) -> Result<String, Failure> {
+        let _ = bearer;
+        self.get_json(url)
+    }
 }
 
 /// 账号脱敏视图（索引与 UI 用；完整令牌只在 vault 里）。
@@ -331,6 +338,9 @@ impl FlowTransport for ProductionTransport {
     fn keyring_put(&self, service: &str, account: &str, secret: &str) -> Result<(), String> {
         vault::keyring_put(service, account, secret)
     }
+    fn get_json_with_auth(&self, url: &str, bearer: &str) -> Result<String, Failure> {
+        transport::get_json_with_auth(url, bearer)
+    }
 }
 
 #[cfg(test)]
@@ -545,10 +555,10 @@ pub(crate) mod tests {
 
     impl FlowTransport for MockTransport {
         fn get_json(&self, url: &str) -> Result<String, Failure> {
-            plain_http(url, "GET", "")
+            plain_http(url, "GET", "", None)
         }
         fn post_json(&self, url: &str, body: &str) -> Result<String, Failure> {
-            plain_http(url, "POST-JSON", body)
+            plain_http(url, "POST-JSON", body, None)
         }
         fn post_form(&self, url: &str, pairs: &[(&str, &str)]) -> Result<String, Failure> {
             let body = pairs
@@ -556,7 +566,7 @@ pub(crate) mod tests {
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join("&");
-            plain_http(url, "POST", &body)
+            plain_http(url, "POST", &body, None)
         }
         fn open_browser(&self, url: &str) -> Result<(), String> {
             let mut nonce = String::new();
@@ -606,6 +616,10 @@ pub(crate) mod tests {
             ));
             Ok(())
         }
+
+        fn get_json_with_auth(&self, url: &str, bearer: &str) -> Result<String, Failure> {
+            plain_http(url, "GET", "", Some(bearer))
+        }
     }
 
     impl MockTransport {
@@ -635,7 +649,12 @@ pub(crate) mod tests {
     }
 
     /// 极简 HTTP 客户端（测试内连 mock；不复用 transport 的路由逻辑）。
-    fn plain_http(url: &str, method: &str, body: &str) -> Result<String, Failure> {
+    fn plain_http(
+        url: &str,
+        method: &str,
+        body: &str,
+        bearer: Option<&str>,
+    ) -> Result<String, Failure> {
         let after = url
             .strip_prefix("http://127.0.0.1:")
             .ok_or_else(|| Failure::Transport("非回环地址".into()))?;
@@ -647,13 +666,16 @@ pub(crate) mod tests {
         } else {
             "application/x-www-form-urlencoded"
         };
+        let auth = bearer
+            .map(|token| format!("Authorization: Bearer {token}\r\n"))
+            .unwrap_or_default();
         let verb = if method == "POST-JSON" {
             "POST"
         } else {
             method
         };
         stream
-            .write_all(format!("{verb} /{path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
+            .write_all(format!("{verb} /{path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
             .map_err(|e| Failure::Transport(e.to_string()))?;
         let mut text = String::new();
         use std::io::Read;

@@ -278,7 +278,9 @@ const FILE_BUDGETS = {
   // 状态码错误不换路。不共享 releases 的 agent：那边无代理路由语义。
   // 88 → 91：http_status_as_error(false) 手动判状态——ureq 的 StatusCode
   // 错误不带响应体，而 OAuth invalid_grant 分类必须看 body（实测）。
-  'src-tauri/src/openai/transport.rs': 91,
+  // 91 → 99：补 get_json_with_auth（模型目录等账号端点带 Bearer，路由
+  // 纪律与 get_json 一致）。
+  'src-tauri/src/openai/transport.rs': 99,
   // 2026-10-09：授权编排（发现→注册→回调→换令牌→验 ID token→入库）。
   // FlowTransport trait 注入传输/时钟/浏览器/密钥库（真实 Keychain 绝不进
   // 测试）；内含模拟授权服务器（开发计划 §10 的 CI 件）与端到端测试。
@@ -292,6 +294,11 @@ const FILE_BUDGETS = {
   // 二次刷新被判重放）、旋转 refresh token、invalid_grant → reauth_required
   // 落库短路。3 测试：旋转落库 / 撤销标记与短路+重登清除 / 未过期不触网。
   'src-tauri/src/openai/refresh.rs': 160,
+  // 2026-10-09：模型目录（P3）。账号目录拉取（防御式解析 data/models 两
+  // 键）× 能力表（v0 空=全 unknown，P6 逐模型验收后填表）× 按账号缓存
+  // （失败保留最后一次成功）。端点路径与响应形状是未验证常量（联调只
+  // 改配置层）。3 测试：合并+缓存往返 / 401→重登 / 形状双键兼容。
+  'src-tauri/src/openai/catalog.rs': 200,
   'src-tauri/src/openai/mod.rs': 12,
   // 2980 → 2932：删掉 P4 留下的旧签名壳共 11 项（`sync_kernels` /
   // `materialize_one` / `remove_materialized` / `sweep_kernel_orphans` /
@@ -2077,7 +2084,7 @@ const FILE_BUDGETS = {
 // process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
-const TOTAL_BUDGET = 44802;
+const TOTAL_BUDGET = 44940;
 // 42424 → 42807 → 42981（2026-10-08）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
