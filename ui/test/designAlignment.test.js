@@ -243,23 +243,39 @@ test('版本号 20px / 700（设计稿 18px，用户要求再放大一档）；�
   assert.ok(style.includes('kernel-summary'), 'scoped 块应包含 kernel-summary');
 });
 
-test('三格指标：1fr 三列、2px 上边线 + 后两格 2px 左边线；格内按钮只收左右内边距', () => {
+test('三格指标：1fr 三列；分割线是「两边细中间粗」的刻蚀槽；格内按钮只收左右内边距', () => {
   assert.equal(effectiveDeclaration(['metrics'], RULES, 'grid-template-columns'), 'repeat(3, minmax(0, 1fr))');
-  // 2026-10-08 用户要求这一屏的分割线加粗（1px → 2px）：1px 的线在 1040 宽的窗口里
-  // 几乎读不出「标题区 / 内容区」「指标 / 指标」这两组分组。
-  assert.equal(effectiveDeclaration(['metrics'], RULES, 'border-top'), '2px solid var(--border-soft)');
-  // 竖线跟着一起加粗——只加横线的话三格指标内部还是糊成一片。
-  assert.equal(effectiveDeclaration(['metric', 'metric'], RULES, 'border-left'), '2px solid var(--border-soft)');
-  // 卡头底线是全局原语（theme.css 的 `.card-head`，六个面板共用），这一屏靠 scoped
-  // 覆写加粗。钉的是**覆写存在且只写 width**——连颜色一起改会把已经对好的明暗关系
-  // 一起改掉；而只钉 2px 不钉选择器的话，写成别的卡片名照样绿。
   const style = scopedStyle(overview);
-  assert.match(
-    style,
-    /\.kernel-card \.card-head,\s*\.usage-card \.card-head\s*\{\s*border-bottom-width:\s*2px;/,
-    '概览两张卡的卡头底线要加粗到 2px',
-  );
-  assert.doesNotMatch(style, /\.card-head\s*\{[^}]*border-bottom:\s*2px/s, '别把颜色一起写进覆写');
+  // 2026-10-08 用户要求「两边细中间粗、带刻蚀痕迹」。刻蚀槽是**伪元素 + clip-path**，
+  // 原生 border 全部退场——所以这三条断言钉的是「border 不在了、槽在」：
+  // 只钉 clip-path 的话，把 border 加回去叠在槽下面照样绿，出来是两根线。
+  assert.equal(effectiveDeclaration(['metrics'], RULES, 'border-top'), '0');
+  assert.equal(effectiveDeclaration(['metric', 'metric'], RULES, 'border-left'), null);
+  // 收细靠 clip-path 的六边形，不是渐变：渐变改的只是**透明度**，两端是「淡到看不见」
+  // 而不是「细」。钉住形状本身，顺带钉住两个方向的百分比（竖槽收得比横线短）。
+  assert.match(style, /\.metrics::before\s*\{\s*height:\s*3px;[^}]*clip-path:\s*polygon\(0 50%, 10% 0, 90% 0, 100% 50%, 90% 100%, 10% 100%\)/s);
+  assert.match(style, /\.metric \+ \.metric::before\s*\{[^}]*clip-path:\s*polygon\(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%\)/s);
+  // 刻蚀是**一深一浅两条**：上面那条走 --etch-shadow，下面那条走 --etch-light。
+  // 只剩一条就退化成普通分割线，而那条槽的两端仍然是尖的——看着像划痕而不是槽。
+  // **两条的高度都要钉**：反向验里把反光那条的 `height: 1px` 改成 0，槽立刻塌成
+  // 一根线，而只查 background 的判据照样绿。
+  assert.match(style, /\.metrics::after\s*\{\s*height:\s*1px;[^}]*background:\s*var\(--etch-light\)/s);
+  assert.match(style, /\.metrics::before\s*\{\s*height:\s*3px;[^}]*background:\s*var\(--etch-shadow\)/s);
+  // 卡头底线是全局原语（theme.css 的 `.card-head`，六个面板共用），这一屏靠 scoped
+  // 覆写换成刻蚀槽。
+  assert.match(style, /\.kernel-card \.card-head,\s*\.usage-card \.card-head\s*\{[^}]*position:\s*relative;[^}]*border-bottom:\s*0;/s);
+  // **选择器 + 形状一起钉，且不许跨规则找**：这里第一版写的是
+  // `\.kernel-card \.card-head::before,\s*[\s\S]*?\{[^}]*clip-path:`——`[\s\S]*?` 会一路
+  // 跨过规则边界，于是把卡头那条的 clip-path 换成 mask-image 之后，它仍然能在**后面
+  // 另一条规则**里找到 clip-path 而放行。`[^}]*` 才是不跨界的那个。
+  assert.match(style, /\.kernel-card \.card-head::before,\s*\.usage-card \.card-head::before\s*\{\s*height:\s*3px;[^}]*clip-path:\s*polygon\(0 50%, 10% 0, 90% 0, 100% 50%, 90% 100%, 10% 100%\)/s);
+  // 刻蚀色是颜色 token，两套主题**各给一份**（不是只给 :root）。
+  for (const sel of [':root', 'html\\.dark']) {
+    const block = new RegExp(`${sel}\\s*\\{([\\s\\S]*?)\\n\\}`, 'm').exec(themeCss);
+    assert.ok(block, `theme.css 里要有 ${sel} 段`);
+    assert.match(block[1], /--etch-shadow:/, `${sel} 缺 --etch-shadow`);
+    assert.match(block[1], /--etch-light:/, `${sel} 缺 --etch-light`);
+  }
   // theme.css 的全局 `.metric` 曾给它描边 + 底色，把三格变成三个独立卡片。
   // 它已经删除，这条断言守的是「别把它当成可用原语再加回来」。
   assert.equal(effectiveDeclaration(['metric'], RULES, 'border'), null);
@@ -864,7 +880,10 @@ test('生产 CSS / Vue 里不再有硬编码的白叠色（注释不算）', () 
       .map((line) => line.replace(/\/\/.*$/, ''))
       // 叠色 token 的**定义行**本身就该是字面量——它就是这套值的真相源。
       // 判据要拦的是「在规则里又写了一遍」，不是「这里有定义」。
-      .filter((line) => !/^\s*--(?:overlay-(?:faint|soft|strong)|surface-sunken):/.test(line))
+      // `--etch-*`（刻蚀分割线的两档）同样是真值源：刻蚀槽的一深一浅两档在浅色
+      // 底下**都是叠黑**、在暗色底下一黑一白，凑不出「一档叠色 token 管两套主题」
+      // 的形状——`--overlay-*` 每套主题只推向一个方向，而槽的两条壁必须反向。
+      .filter((line) => !/^\s*--(?:overlay-(?:faint|soft|strong)|surface-sunken|etch-(?:shadow|light)):/.test(line))
       .join('\n');
     const hit = hardcoded.exec(text);
     assert.equal(hit, null, `${rel} 仍有硬编码白叠色：${hit && hit[0]}`);
