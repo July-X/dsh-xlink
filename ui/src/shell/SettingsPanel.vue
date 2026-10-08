@@ -8,12 +8,10 @@
 // 卡片顺序：设置 → 任务通知 → 环境回退与诊断。
 // 后一张是**故障时才用得上的兜底**，不是日常要看的东西：概览页是开机第一屏，
 // 在那儿常年摆着两个「一切正常」的空态卡既占地方又稀释真正要看的内容（当前内核、
-// 用量、额度）。挪到设置页后概览保持干净，而「数据迁移 / 环境回退点 / 深入排查 /
-// 启动诊断」四条同属"环境出问题时才动"，收在一张卡里上下文也对得上。
+// 用量、额度）。环境回退点、深入排查与启动诊断集中在这张卡里，数据迁移从侧栏进入。
 import { computed, onMounted, ref, watch } from 'vue';
 import { Bell, Check, Headset, QuestionFilled, Tickets } from '@element-plus/icons-vue';
 import { store, saveSettings } from '../store.js';
-import { migrationStore, loadMigrationHistory } from '../migration/migration.js';
 import { openStartupDiagnosis } from '../diagnostics/diagnostics.js';
 import SnapshotCard from '../diagnostics/SnapshotCard.vue';
 import BisectPanel from '../diagnostics/BisectPanel.vue';
@@ -89,15 +87,6 @@ async function onTestNotification() {
   }
 }
 
-// 迁移过 = 历史非空，未迁移 = 历史为空。
-const migratedBefore = computed(() => migrationStore.history.length > 0);
-// 迁移历史：设置页这一行要显示「已迁移 / 尚未迁移」，扫历史是唯一的判据
-// （migration_list 非空即迁移过）——没有别的信号可靠，hasMigratable 只说
-// 「扫得到」，迁移过的用户同样扫得到。
-onMounted(() => {
-  loadMigrationHistory();
-});
-
 /**
  * 「环境回退与诊断」那一行去看最近一次启动过程。
  *
@@ -127,7 +116,7 @@ function openStartupRun() {
          用的是全局的 .page-layout / .page-layout__col 原语。
 
          「环境回退与诊断」原先在**右**栏，2026-10-08 用户指定移到左栏、接在
-         「后台常驻」下方。这次移动的账要记清楚：那张卡里四行全是
+         「后台常驻」下方。这次移动的账要记清楚：那张卡里三行全是
          **出问题时才动**的动作，而右栏那张「任务通知」在连不上内核事件流时会
          展开一大段环境说明 + 告警（notificationStore.environmentNote），
          两张叠在一起时右栏被拉到近两屏高、左栏却空一大截——用户是来排查问题的，
@@ -226,9 +215,9 @@ function openStartupRun() {
          （设计稿 draft 2844：「环境回退与诊断」，caption「出问题时使用」）。
          原先右栏四张、左栏两张，右栏被拉到两屏高而左栏空一大截——四者同属
          「环境出问题时才动」这一组，分成四张卡只是把同一个上下文摊成四段。
-         四行各自是一个 `page-list-row`：左标题 + 状态说明，右动作。
+         三行各自是一个 `page-list-row`：左标题 + 状态说明，右动作。
          **入口一个没少**：恢复 / 开始排查 / 停止都留在自己那一行的动作区，
-         「查看」展开的是明细；启动诊断与数据迁移本来就是跳转。
+         「查看」展开的是明细；启动诊断直接打开诊断窗口。
          卡片顺序：设置 → 任务通知 → 环境回退与诊断。 -->
     <div class="card">
       <div class="card-head">
@@ -258,27 +247,6 @@ function openStartupRun() {
           </div>
         </div>
 
-        <!-- 「数据迁移」在设置页是**一行**，不是一张独立大卡。它的主入口是
-             **侧栏菜单**（设计稿 2550 行，常驻），这里留的是设计说明 §侧栏
-             要求的「迁移完成后设置页仍保留进入入口」。
-             整个功能在 v0.6.0 之后移除，届时这一行与侧栏菜单一并删
-             （见 ui/AGENTS.md 的「待移除」一节）。 -->
-        <div class="page-list-row">
-          <div class="page-list-main">
-            <h3 class="page-list-title">数据迁移</h3>
-            <p class="page-list-meta">{{ migratedBefore ? '已迁移' : '尚未迁移' }}</p>
-          </div>
-          <div class="page-list-actions">
-            <el-button
-              round
-              size="small"
-              :type="migratedBefore ? 'default' : 'primary'"
-              @click="store.activePanel = 'migration'"
-            >
-              {{ migratedBefore ? '查看数据迁移' : '去迁移' }}
-            </el-button>
-          </div>
-        </div>
       </div>
     </div>
       </div>
