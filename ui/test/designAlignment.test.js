@@ -1186,6 +1186,31 @@ test('内核版本页卡头叫「已安装 / N 个版本」，不复述页面标
 const pluginsPanel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
 const pluginsTpl = templateOf(pluginsPanel);
 
+test('插件手动安装位于右栏顶部，左栏只保留已安装清单', () => {
+  const left = pluginsTpl.indexOf('<div class="page-layout__col">');
+  const right = pluginsTpl.indexOf('<div class="page-layout__col plugin-center-col">');
+  assert.ok(left >= 0 && right > left);
+  assert.doesNotMatch(pluginsTpl.slice(left, right), /pluginStore\.spec|<h3[^>]*>手动安装/);
+  assert.match(pluginsTpl.slice(right), /^<div[^>]*>\s*<h3 class="section-divider">手动安装<\/h3>/);
+  assert.ok(pluginsTpl.indexOf('v-model="pluginStore.spec"', right) < pluginsTpl.indexOf('来自', right));
+  assert.doesNotMatch(pluginsTpl, /用下方「手动安装」/);
+});
+
+test('插件右栏标题与两栏分界采用刻蚀线', () => {
+  const css = stripComments(scopedStyle(pluginsPanel));
+  const head = ruleText(css, '.plugin-center-col .section-divider');
+  assert.match(head, /margin-top:\s*0/);
+  assert.match(head, /padding-top:\s*0/);
+  assert.match(head, /border-top:\s*0/);
+  const horizontal = ruleText(css, '.plugin-center-col .section-divider::before');
+  const vertical = ruleText(css, '.plugin-center-col::before');
+  assert.match(horizontal, /height:\s*2px/);
+  assert.match(vertical, /width:\s*2px/);
+  for (const line of [horizontal, vertical]) assert.match(line, /background:\s*var\(--divider-strong\)/);
+  assert.match(horizontal, /clip-path:\s*polygon\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\)/);
+  assert.match(vertical, /clip-path:\s*polygon\(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%\)/);
+});
+
 test('插件页：外层卡叫「插件管理」，右栏那份远端目录才叫「插件中心」', () => {
   // draft 2746 外层卡 = 插件管理；draft 2775 右栏 = 插件中心（来自 dshfind.com）。
   // 原先外层卡叫「插件中心」、右栏叫「插件仓库」——同一份 dshfind.com 目录，

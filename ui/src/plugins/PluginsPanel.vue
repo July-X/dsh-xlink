@@ -390,7 +390,7 @@ function instanceChipType(row, instanceId) {
                针对的是插件库，不属于某个内核。
 
                宽版（1040）下这一页按设计稿分两列：左列是**本机**那一份
-               （已装清单 + 手动安装），右列是 **dshfind.com 上的远端目录**。
+               （已装清单），右列是手动安装与 **dshfind.com 上的远端目录**。
                两列的搜索对象根本不是一回事（本机 vs 远端），并排摆比让用户
                在一屏里上下找要直接得多；窄窗退化成单列时仍靠下面那道分组
                标题切开。 -->
@@ -399,7 +399,7 @@ function instanceChipType(row, instanceId) {
           <div class="entity-list all-instances-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
             <el-empty
               v-if="!view || !view.rows || view.rows.length === 0"
-              description="本机插件库为空；用下方「手动安装」或插件中心获取插件。"
+              description="本机插件库为空；用右侧「手动安装」或插件中心获取插件。"
               :image-size="48"
             />
             <div
@@ -442,6 +442,9 @@ function instanceChipType(row, instanceId) {
             </div>
           </div>
 
+            </div>
+
+            <div class="page-layout__col plugin-center-col">
           <h3 class="section-divider">手动安装</h3>
           <div class="install-row">
             <el-input
@@ -460,15 +463,7 @@ function instanceChipType(row, instanceId) {
               </template>
             </el-input>
           </div>
-            </div>
-
-            <div class="page-layout__col plugin-center-col">
-          <!-- 本机那一份到这里为止：上面是已装清单与手动安装（本地仓库），
-               下面开始是 dshfind.com 上的远端目录。宽版下两者已经各占一列，
-               这道分组标题退化成列内的分隔线——窄窗（单列）时它仍然是把
-               「手动安装」与远端目录两套输入区分开的主要线索。
-               `plugin-center-col` 是右栏专属样式的挂点（列首标题去虚线、
-               控件压紧、目录列表内部滚动），scoped 块按它限定作用域。 -->
+          <!-- 右栏依次提供手动来源安装与插件中心目录，两段各有刻蚀线标题。 -->
           <h3 class="section-divider">
             插件中心
             <span class="muted section-divider__note">
@@ -860,13 +855,41 @@ function instanceChipType(row, instanceId) {
 
 /* --- 插件中心右栏：紧凑档（2026-10-08 用户要求）-------------------------- */
 
-/* 列首的「插件中心」标题：全局 .section-divider 的 margin-top 与上虚线是给
-   「隔开上一段内容」用的；它是这一列的第一个元素，上面没有要隔开的东西，
-   留白与虚线只是把标题往下推。左栏「手动安装」的分隔线不受影响。 */
+/* 手动安装从右栏顶部开始，与左栏已安装清单对齐；两段标题共用刻蚀线。 */
 .plugin-center-col .section-divider {
+  position: relative;
   margin-top: 0;
   padding-top: 0;
+  padding-bottom: 9px;
   border-top: 0;
+}
+
+.plugin-center-col .section-divider::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--divider-strong);
+  pointer-events: none;
+  clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%);
+}
+
+/* 两栏分界落在 12px 栅格缝中，两端收细，与概览指标的竖线一致。 */
+.plugin-center-col {
+  position: relative;
+}
+.plugin-center-col::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -7px;
+  width: 2px;
+  background: var(--divider-strong);
+  pointer-events: none;
+  clip-path: polygon(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%);
 }
 
 /* 标题 → 搜索框 → 筛选行 → 列表 的纵向间距统一收到 8px（原 14 / 12 / 6）：
