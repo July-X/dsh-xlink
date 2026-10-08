@@ -11,7 +11,7 @@
 - **窗口固定 1040×748，不可缩放**（`tauri.conf.json`）。侧栏 224px，收起态 64px；主区宽决定了绝大多数页面是双栏栅格而不是单列。改窗口尺寸要连带改各面板的 `min-width`。
 - **层级只有三步**：canvas（整窗底）→ surface（卡片）→ chrome（标题栏 / 侧栏）。**不再有半透明玻璃与背景网格**（旧版的 `.app-bg` 光晕 + 13.5px 网格已整体删除），卡片是不透明实色 + 1px 描边 + 8px 圆角。
 - **明暗双主题，判据只有一个：`html.dark`**。`shell/theme.js` 读一次 localStorage 并落成这个 class，Element Plus 自带的暗色变量（`theme-chalk/dark/css-vars.css`，选择器同样是 `html.dark`）因此一并生效——**不要另造 `html[data-theme]`**，那会让组件库留在浅色变量上，出现「壳变了、弹窗还是白的」。theme.css 里 `:root` 放浅色 token、`html.dark` 放暗色 token，两套 Element Plus 覆写各自待在自己的选择器下，没有第二处判据。
-- **token 一律用语义名**：`--surface` / `--surface-raised` / `--surface-subtle` / `--border` / `--border-soft` / `--text` / `--text-secondary` / `--text-muted` / `--accent` / `--accent-strong` / `--accent-soft` / `--success` / `--warning` / `--danger`。旧名（`--card` / `--bg` / `--muted` / `--good` / `--bad` / `--warn`）已在本次改版里全局改名完毕，**不要再写回来**。
+- **token 一律用语义名**：`--surface` / `--surface-raised` / `--surface-subtle` / `--border` / `--border-soft` / `--text` / `--text-secondary` / `--text-muted` / `--accent` / `--accent-strong` / `--accent-soft` / `--success` / `--success-strong` / `--warning` / `--danger` / `--danger-strong`（另有四个 fill 档：`--accent-fill` / `--success-fill` / `--warning-fill` / `--danger-fill`）。旧名（`--card` / `--bg` / `--muted` / `--good` / `--bad` / `--warn`）已在本次改版里全局改名完毕，**不要再写回来**。
 - **页面原语**在 theme.css 的「新版页面原语」一节：`.page-head`（页头：标题 + 说明在左、动作在右）、`.page-title-row`（标题与它旁边的提示图标同行）、`.head-tip-icon` 及 `--warning` 修饰（标题旁的补充 / 警告气泡触发点）、`.page-layout`（双栏栅格，`__col` 是一列，`__full` 横跨整行）、`.page-card` / `.page-card__head` / `.page-card__body`、`.page-list` / `.page-row`、`.btn` 及 `--primary` / `--secondary` / `--ghost` / `--danger` / `--icon`、`.nav-item`、`.plugin-tab`。**先找现成原语，再写 scoped 样式**；每个面板自造一套的结果是六个面板六种圆角。
   - **登记进这份清单的类名，必须真有模板在用。** ce9dd08 曾把 `.health-row` / `.health-dot` / `.health-row__value` 写进 theme.css 并列进本清单，但控制塔的「系统健康」实际走的是 `diagnostics.css` 的 `.diag-row` 家族——三组规则 38 行全是死代码，2026-10-07 删除。**本清单是「已有原语」的索引，不是「打算加的原语」的许愿单**：加一条之前先 grep 一遍模板，确认真有引用再登记。原语名要和设计稿对得上（设计稿那套叫 `.health-name` / `.health-value`，和当时写进去的 `.health-row__value` 也不是一回事）。
   - **`.metrics` / `.metric` 已从全局原语清单里移除**，它们归 `OverviewPanel.vue` 的 scoped 块。原先 theme.css 那条全局 `.metric`（描边 + `--surface` 底 + `10px 12px` 内边距）与 scoped 的「上边线 + 后两格左边线」叠加，把设计稿的一条分隔线变成了三个独立卡片——**全局基线与组件覆盖各写各的，冲突只有走层叠才看得见**。
@@ -137,6 +137,14 @@
   - **`--el-dialog-bg-color` 必须声明在 `.el-dialog` 自身，不能放 `:root`**：库在 `.el-dialog` 规则里就写了同名自定义属性，写在元素身上的同名声明**赢过从 `html` 继承下来的值**，放到 `:root` 等于没写——症状是「规则明明在，弹窗底色没变」。这也是那条规则写成 `.el-overlay-dialog .el-dialog` 而不是 `.el-dialog` 的原因（顺带与既有的圆角 / 描边并成一条）。
   - **`var(--已改名的旧 token, 兜底值)` 是这一类里最阴的形态**：token 改名后兜底值是近白，浅色主题下整条声明**看着还在**（CSS 不报错），元素只是退回那个近白——`--text-muted` 那种次要文字在浅底上直接消失。2026-10-08 清掉的 9 处：`theme.css` 三处（`.tab-label-sub` / `.instance-state-empty` / 一条早已被删的规则）、`MigrationPrompt.vue` 五处、另有 `--surface-soft` 与 `--warn` 各一处。
   - 判据见 `ui/test/designAlignment.test.js` 的「弹窗与浮层的主题适配」一组（3 条），已做过反向验：写回 `#0d1428`、删掉 `:root` 的 `--el-mask-color`、塞回一处 `var(--muted, …)`，三条各自转红。其中传类集合给 `effectiveDeclaration` 时**要去掉选择器里的点**（`subjectTokens('.progress-body')` 而不是 `['.progress-body']`）——后者让工具一条规则都匹配不上、安静地答 `null`，判据于是因为错误的原因而绿。
+
+- **彩色按钮 / 徽章的文字色必须走语义 token，不许写死「为深色底调的淡彩」**（2026-10-08 用户拿浅色主题下的概览页截图报「亮色模式下，这个『官网网页版』，文字颜色不清晰」）。这是上一条的同类缺陷低一层：那条是**底色**，这条是**文字色**。
+  - 那一族值来自 Tailwind 的 `emerald-300` / `red-400` / `emerald-400`（`#6ee7b7` / `#f87171` / `#34d399`）。它们在**深色**底上舒服，在**浅色**底上等于没有颜色：白卡上 `#6ee7b7` 只有 **1.52:1**、hover 的 `#a7f3d0` 1.28:1、`#f87171` 2.77:1、`#34d399` 1.70:1，而正文门槛是 4.5:1。
+  - **这类值最难被现有门禁抓到，因为它们在暗色下看着是对的**——任何只跑暗色截图的检查都会放过它。判据因此钉的是「读 token」而不是「等于某个色值」：语义色天然两套主题都对，而淡彩不会。
+  - 现在：`.btn-chat` → `--success` / hover `--success-strong`，`.btn-danger` → `--danger` / hover `--danger-strong`，插件页「链接」模式徽章 → `--success` + `--success-fill`。`--success-strong` / `--danger-strong` 的口径与既有的 `--accent-strong` 一致（浅色下更深、暗色下更亮）。
+  - **`--success-fill` 是补齐而不是新增词汇**：`--accent-fill` / `--warning-fill` / `--danger-fill` 早就有三个，success 缺席才导致那枚徽章只能写死 `rgba(52,211,153,.12)`。**刻意不补 `--success-line`**——没有第二处用得上它，登记一个没有作用方的 token 与本仓惯例相反。
+  - **`.el-icon` 不再单列选择器**：Element Plus 的 `.el-icon` 是 `--color: inherit` + `color: var(--color)`，图标本来就跟着按钮走。原先每条按钮规则都把 `.el-icon` 重抄一遍（`.btn-chat` / `.btn-danger` 各四处），纯冗余，而且**抄漏一处就只染到一半**——图标与文字不同色时看起来像渲染错位。判据显式禁掉这个形状。
+  - 判据见 `ui/test/designAlignment.test.js` 的「彩色按钮」一组（3 条），已做过反向验：把 `.btn-chat` 换回 `#6ee7b7`、删掉暗色主题的 `--success-strong`、把 hover 换回 `#fca5a5` 并加回 `.el-icon` 选择器，三条各自转红。
 
 ## 目录约定
 
