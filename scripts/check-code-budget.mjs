@@ -1163,16 +1163,11 @@ const FILE_BUDGETS = {
   // 就只能对着源码字符串断言。本次 10 行落在总量既有余量内，TOTAL_BUDGET
   // 不动。
   'ui/src/shell/noContextMenu.js': 20,
-  // ⑤ ui/src/shell/VersionBadge.vue——分段式版本号徽标：左「纯色底 + tag
-  // 图标」（icon prop 两档：accent 蓝底 / black 黑底）、右「暗底 + muted 文字」。
-  // **同一个组件被侧栏品牌区与概览「当前内核」卡两处使用**，两处都在说
-  // 「这是一个版本号」，各写一份必然漂。独立成组件而不是把样式塞进
-  // theme.css：那份是反棘轮文件、只许越来越小，而这条规则只服务这一个组件；
-  // 也不塞进 SideBar / OverviewPanel 任一侧的 scoped 样式——那样另一侧就得
-  // 复制一份。38 → 53（2026-10-05）：新增 icon prop 变体（prop 校验 + 变体
-  // 类绑定 + 黑图形样式块）与字重钉住（概览 .card h2 的 700 粗体此前渗进
-  // 徽标，两侧同字号不同字重）；「当前内核」卡最终形态为无底色 + 黑色图形。
-  'ui/src/shell/VersionBadge.vue': 54,
+  // ⑤（已移除）ui/src/shell/VersionBadge.vue——2026-10-08 删除：两个消费方
+  // 先后退场（概览「当前内核」卡按用户要求把版本号改成纯文字，判据钉住不再
+  // 引用；侧栏底部用的是裸 `<span class="version-badge">`，样式只有 theme.css
+  // 里收起态省略那两条），组件成了零导入的孤儿。「同一语义一份实现」的纪律
+  // 随组件一起带走：将来再要版本徽标，先建组件再复用。
 };
 /** 全部受检文件的合计预算（Tauri 生产代码 + 前端 js/vue/css）。 */
 // 20400 → 20500：技能面板接线「启用 / 停用单个技能」（skill_set_enabled 此前只有

@@ -1228,9 +1228,11 @@ function goVersions() {
   height: 100%;
   border-radius: 4px;
 }
-/* 进度条三档配色（剩余口径）：≥70 绿 / 40–69.99 橙 / <39.99 红。 */
+/* 进度条三档配色（剩余口径）：≥70 绿 / 40–69.99 橙 / <39.99 红。
+   三档同一来源：写死的 #15803d 只在浅色下对，暗色主题下换成
+   `--el-color-success`（与另两档的 --el-color-* 同一模式）。 */
 .plan-bar-fill.level-ok {
-  background: #15803d;
+  background: var(--el-color-success);
 }
 .plan-bar-fill.level-warning {
   background: var(--el-color-warning);

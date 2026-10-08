@@ -1286,7 +1286,7 @@ main {
 }
 
 .btn--danger:hover {
-  background: rgba(240, 102, 94, 0.12);
+  background: var(--danger-fill);
 }
 
 .btn--icon {
@@ -1629,13 +1629,17 @@ main {
   gap: 12px;
   padding: 14px 16px;
   border-radius: var(--radius-card);
-  border: 1px solid rgba(251, 191, 36, 0.3);
-  background: rgba(251, 191, 36, 0.08);
+  /* 警示条底 / 线走 warning 的 fill / line 档 token。原先写死的 amber rgba
+     是按暗色底调的，浅色下与浅色 warning 不同色相，等于一层黄雾。 */
+  border: 1px solid var(--warning-line);
+  background: var(--warning-fill);
 }
 
+/* 首次运行引导：accent 淡底一档即可。旧版那道蓝→青渐变是玻璃时代的遗留，
+   青色不在 token 色板里，而且 rgba(79,140,255,…) 同样是深色主题的 accent。 */
 .callout-firstrun {
-  border-color: rgba(79, 140, 255, 0.4);
-  background: linear-gradient(135deg, rgba(79, 140, 255, 0.14), rgba(34, 211, 238, 0.06));
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
   animation: callout-in 0.35s ease;
 }
 
@@ -2103,15 +2107,16 @@ main {
 
 .entity-actions .el-button.entity-action:hover {
   color: var(--text);
-  border-color: rgba(79, 140, 255, 0.5);
-  background: rgba(79, 140, 255, 0.12);
+  border-color: var(--accent-line);
+  background: var(--accent-fill);
 }
 
 .entity-actions .el-button.entity-action.is-disabled {
   opacity: 0.45;
 }
 
-/* 「有更新」是列表里唯一的实心动作，用品牌色点出来。 */
+/* 「有更新」是列表里唯一的实心动作，用品牌色点出来。hover 走 `--accent-strong`
+   （与 `.btn--primary:hover` 同一口径：浅色更深、暗色更亮）。 */
 .entity-actions .el-button.entity-action-update {
   color: #fff;
   background: var(--accent);
@@ -2120,14 +2125,14 @@ main {
 
 .entity-actions .el-button.entity-action-update:hover {
   color: #fff;
-  background: #6ba0ff;
-  border-color: #6ba0ff;
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
 }
 
 .entity-actions .el-button.entity-action-danger:hover {
   color: var(--danger);
-  border-color: rgba(248, 113, 113, 0.55);
-  background: rgba(248, 113, 113, 0.12);
+  border-color: var(--danger-line);
+  background: var(--danger-fill);
 }
 
 /* 危险动作前的竖分隔线：卸载不跟「仓库 / 更新」挤成一组。 */
@@ -2220,10 +2225,12 @@ main {
   flex-shrink: 0;
 }
 
+/* 「链接」档与插件页 `.entity-mode.is-link` 同一套 success 口径：原先写死的
+   EP 浅色绿 #67c23a 在浅底上 2.2:1，暗色底上又偏灰。 */
 .mode-chip-link {
-  color: #67c23a;
-  background: rgba(103, 194, 58, 0.12);
-  border-color: rgba(103, 194, 58, 0.25);
+  color: var(--success);
+  background: var(--success-fill);
+  border-color: var(--success);
 }
 
 /* meta 内的其他细节文本：升级箭头用淡一些，pinned 走 warning 调，技能数保持
@@ -2477,8 +2484,8 @@ main {
 }
 
 .catalog-row:hover {
-  border-color: rgba(79, 140, 255, 0.45);
-  background: rgba(79, 140, 255, 0.05);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
 }
 
 .catalog-row-title {
@@ -2499,11 +2506,13 @@ main {
   text-overflow: ellipsis;
 }
 
+/* 「已验证」徽标：mint 绿 #7fd6a4 是为深色底调的淡彩（浅底上约 1.9:1），
+   与 2026-10-08 清掉的那批 emerald 同族，走 success token。 */
 .catalog-verified {
   flex: none;
   font-size: 10.5px;
-  color: #7fd6a4;
-  border: 1px solid rgba(127, 214, 164, 0.4);
+  color: var(--success);
+  border: 1px solid var(--success);
   border-radius: 999px;
   padding: 0 6px;
 }
@@ -2711,9 +2720,11 @@ main {
 /* 标题栏鲸眼脉冲：业务活动指示器。默认隐藏（opacity 0、无动画），
    仅当按钮触发的 IO / 启动编排进行中（body.pulse-active，由 App.vue
    按 loading.js 的 ioActive + store.starting 驱动）时两道扫光开跑，
-   全部结束后动画摘除、脉冲淡出消失。两道扫光错开半周期保持连续。 */
-body::after {
-  content: '';
+   全部结束后动画摘除、脉冲淡出消失。两道扫光错开半周期保持连续：
+   第一道是 body::after，第二道是 ui/index.html 里的真实节点——几何与
+   配色完全相同，共用这一份，差异只有下面各自的动画延迟。 */
+body::after,
+body > [data-titlebar-pulse='2'] {
   position: fixed;
   top: 0;
   left: 0;
@@ -2735,27 +2746,8 @@ body::after {
   box-shadow: 0 0 8px rgba(255, 45, 48, 0.45);
 }
 
-/* 第二道扫光：与 body::after 错开半周期，节点在 ui/index.html。 */
-body > [data-titlebar-pulse='2'] {
-  position: fixed;
-  top: 0;
-  left: 0;
-  height: 3px;
-  width: 38%;
-  z-index: var(--z-titlebar-pulse);
-  pointer-events: none;
-  opacity: 0;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(255, 90, 94, 0.55) 30%,
-    var(--whale-eye-bright) 50%,
-    rgba(255, 90, 94, 0.55) 70%,
-    transparent 100%
-  );
-  filter: blur(0.4px);
-  border-radius: 999px;
-  box-shadow: 0 0 8px rgba(255, 45, 48, 0.45);
+body::after {
+  content: '';
 }
 
 body.pulse-active::after {
@@ -3281,7 +3273,7 @@ body.pane-dragging .log-tabs {
 
 .el-input__wrapper.is-focus,
 .el-select__wrapper.is-focused {
-  box-shadow: 0 0 0 1px var(--accent) inset, 0 0 12px rgba(79, 140, 255, 0.18);
+  box-shadow: 0 0 0 1px var(--accent) inset, 0 0 12px var(--accent-fill);
 }
 
 /* --- dev 调试按钮（DebugPanel.vue） ------------------------------------------
@@ -3410,7 +3402,7 @@ body.pane-dragging .log-tabs {
 }
 .debug-close:hover {
   color: var(--text);
-  border-color: rgba(79, 140, 255, 0.5);
+  border-color: var(--accent-line);
 }
 
 /* 预览开关一行：左文案右开关，开关不换行。 */
