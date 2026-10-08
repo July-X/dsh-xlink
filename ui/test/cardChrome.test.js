@@ -60,26 +60,46 @@ test('概览页与四个面板里每张卡的标题都真的画出了分割线�
   assert.equal(missing.length, 0, `这些卡标题没有生效的 1px 下边线：\n${missing.join('\n')}`);
 });
 
-test('控制塔三张卡的标题有线，且与面板里的卡用同一个色值', () => {
+test('控制塔标题的线走刻蚀线，与概览另两张卡同源；面板里的卡仍是 1px', () => {
   const rs = rules();
   const tower = new Set(['diag-card', 'diag-card--tower', 'diag-card__title', 'h3']);
-  // 对照取 `.card-head`（div，类就是 card-head）而不是 `.card`——后者用的是
-  // `border` 简写，压根没有 `border-bottom` 这条声明，拿它当对照会得到 null。
   const cardHead = new Set(['card-head', 'div']);
 
-  const towerBorder = effectiveDeclaration(tower, rs, 'border-bottom');
-  const cardBorder = effectiveDeclaration(cardHead, rs, 'border-bottom');
-
-  assert.match(
-    towerBorder || '',
-    /^1px solid var\(--border\)$/,
-    `控制塔标题线应为 1px solid var(--border)，实际 ${towerBorder ?? '(无)'}`
+  // **这条断言的形状 2026-10-08 变了**：原先是「控制塔与面板卡片的标题线必须
+  // 写成同一个值（1px solid var(--border)）」。用户随后把概览这一屏的线定案成
+  // 2px 两端收细、颜色读 `--divider-strong`，**「统一」的口径随之从
+  // 「全前端一个值」收成「概览这一屏一个值」**——这是用户明知的范围取舍
+  // （先只调概览），不是漂移。面板里的卡仍走 `.card-head` 的 1px。
+  //
+  // 原生 `border-bottom` 必须退场为 0：线换成了 `clip-path` 的伪元素，
+  // border 没法 clip，两者是二选一。
+  assert.equal(
+    effectiveDeclaration(tower, rs, 'border-bottom'),
+    '0',
+    '控制塔标题的原生 border 必须退场 0——线已经交给伪元素的 clip-path'
   );
   assert.equal(
-    towerBorder,
-    cardBorder,
-    '控制塔与面板里卡片的标题线必须写成同一个值——色值一多，「统一」就无从谈起'
+    effectiveDeclaration(cardHead, rs, 'border-bottom'),
+    '1px solid var(--border)',
+    '面板里其余卡的标题线不受概览这次调整影响'
   );
+
+  // 真正要守的是「概览这一屏的线同源」：控制塔三张与 kernel-card / usage-card
+  // 读的是同一个 `--divider-strong`，收细比例也一致。
+  const diagCss = read('diagnostics/diagnostics.css');
+  const before = /\.diag-card--tower \.diag-card__title:not\(\.diag-card__title--bare\)::before\s*\{([^}]*)\}/.exec(diagCss);
+  assert.ok(before, 'diagnostics.css 里要有带 :not(--bare) 的卡头 ::before');
+  assert.match(before[1], /background:\s*var\(--divider-strong\)/, '控制塔的线必须与概览另两张卡读同一个 token');
+  assert.match(before[1], /height:\s*2px;/);
+  const ov = read('shell/OverviewPanel.vue');
+  const ovLine = /\.kernel-card \.card-head::before,\s*\.usage-card \.card-head::before\s*\{([^}]*)\}/s.exec(ov);
+  assert.ok(ovLine, 'OverviewPanel 里要有两张卡的卡头 ::before');
+  assert.match(ovLine[1], /background:\s*var\(--divider-strong\)/);
+  // 六边形比例必须逐字相同——同一个六边形在两个文件里各写了一份
+  // （OverviewPanel 的 scoped 块够不到 ControlTower 的元素），只改一处就会
+  // 在同一屏里出现两种收细比例。
+  const poly = /clip-path:\s*(polygon\([^)]*\))/.exec(before[1])[1];
+  assert.ok(ovLine[1].includes(poly), `两处的收细六边形必须一致，期望 ${poly}`);
 });
 
 test('标题的 padding-bottom 是 9px（线与标题文字之间的留白，与面板里的卡一致）', () => {
