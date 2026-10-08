@@ -3034,6 +3034,13 @@ mod tests {
                 .expect("clock")
                 .as_nanos()
         ));
+        // **必须持住这个 guard 到用例结束**（2026-10-08）：下面那句
+        // `save_for_shell(current_mode(), …)` 走的是 **shell 自己的** settings 路径，
+        // 它按 `xlink_home()` 解析，**不看本用例的 `root`**。不持 guard 的话这条
+        // 用例会写进用户真实的 `~/.dsh-xlink`，而别的用例正持着同一把 env 锁时
+        // 就抢同一个文件 —— 表现为这条间歇性红在 `.expect("save shell settings")`
+        // 上，此前一直当成 flaky。`save(&root, …)` 那句是安全的，漏的是 shell 那句。
+        let _guard = crate::tests::scoped_xlink_home(&root);
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind port");
         let port = listener.local_addr().expect("listener addr").port();
         shell::settings::save(

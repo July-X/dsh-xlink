@@ -77,8 +77,15 @@ const RECONNECT_MIN: Duration = Duration::from_secs(1);
 const RECONNECT_MAX: Duration = Duration::from_secs(20);
 /// 完成记录的保留条数（面板展示最近若干条）。
 const INBOX_LIMIT: usize = 8;
-/// 角标与通知里显示的最大数字；超出后显示 `999+`。
-const BADGE_MAX: u32 = 999;
+/// 角标与通知里显示的最大数字；超出后显示 `99+`。
+///
+/// **99 而不是 999**（2026-10-08）：`render_badge` 的字宽是死算的——四字
+/// （`999+`）时 `text_w = 4*(3*2+2) - 2 = 30`，加两侧 `pad_x` 得
+/// `badge_w = 38`，而画布只有 `BADGE_SIZE = 32`：左边 7 列落到画布外被裁掉，
+/// **用户未读 ≥100 时角标首位数字是缺的**。三字（`99+`）时 `badge_w = 30`，放得下。
+/// `multi_digit_badges_fit_the_canvas` 里那条「角标不许贴到左边缘」的断言就是
+/// 守着这件事的。
+const BADGE_MAX: u32 = 99;
 /// 订阅就绪前，若内核入口地址还没写进日志，等待重试的总时长上限。
 const CONNECT_ATTEMPTS: u32 = 3;
 /// `session/list` 响应体上限：正常约 2 MB（全部会话的投影），这里放宽一档
@@ -1598,8 +1605,10 @@ mod tests {
     fn badge_text_clears_at_zero_and_caps() {
         assert_eq!(badge_text(0), None);
         assert_eq!(badge_text(3).as_deref(), Some("3"));
-        assert_eq!(badge_text(999).as_deref(), Some("999"));
-        assert_eq!(badge_text(1500).as_deref(), Some("999+"));
+        assert_eq!(badge_text(99).as_deref(), Some("99"));
+        // 上限是 `99+` 不是 `999+`：四个字装不进 32px 画布（见 BADGE_MAX）。
+        assert_eq!(badge_text(100).as_deref(), Some("99+"));
+        assert_eq!(badge_text(1500).as_deref(), Some("99+"));
     }
 
     #[test]
@@ -2141,7 +2150,7 @@ mod windows_badge_tests {
         assert_eq!(badge_text(0), None);
     }
 
-    /// 多位数必须排进画布内：`99` 与 `999+` 都不该被裁掉笔画。
+    /// 多位数必须排进画布内：`99` 与 `99+` 都不该被裁掉笔画。
     #[test]
     fn multi_digit_badges_fit_the_canvas() {
         for count in [9u32, 10, 99, 100, 1000] {
@@ -2154,18 +2163,23 @@ mod windows_badge_tests {
                 .map(|(i, _)| i as u32)
                 .collect();
             assert!(!opaque.is_empty(), "{count} 应画出角标");
-            // 所有不透明像素都落在画布内（下标由 chunks_exact 保证）。角标贴着
-            // 右上角，**但上、右各留 1px**：最右的不透明列是 `w-2`、`w-1` 整列透明
-            // （闭区间 + 像素中心采样的必然结果，见 `inside_round_rect` 的注释）。
-            let (w, h) = (size, size);
+            let w = size;
             let max_x = opaque.iter().map(|i| i % w).max().unwrap();
+            let min_x = opaque.iter().map(|i| i % w).min().unwrap();
             let min_y = opaque.iter().map(|i| i / w).min().unwrap();
+            // 角标贴着右上角，**但上、右各留 1px**：最右的不透明列是 `w-2`、
+            // `w-1` 整列透明（闭区间 + 像素中心采样的必然结果，见
+            // `inside_round_rect` 的注释）。
             assert_eq!(max_x, w - 2, "{count} 的角标应贴到倒数第二列");
             assert_eq!(alpha_of_last_column(&rgba, w), 0, "最右一列必须留空");
             assert!(min_y <= 1, "{count} 的角标应贴住上边缘（最多留 1px）");
+            // **左边也必须留 1px —— 这条才是「没被画布裁掉」的判据**：角标是按
+            // `x0 = x1 - badge_w` 往左摆的，字数一多 `badge_w` 超过画布，左端
+            // 就落到画布外，首位数字被切掉而右侧看着完好。面积不是判据（一枚
+            // 30×18 的合法角标本来就超过半个画布的面积）。
             assert!(
-                opaque.len() < (w * h) as usize / 2,
-                "{count} 的角标不应铺满整个图标"
+                min_x >= 1,
+                "{count} 的角标贴到左边缘了，说明 badge_w 超出画布"
             );
         }
     }
