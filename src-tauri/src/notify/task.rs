@@ -1437,7 +1437,13 @@ fn render_badge(unread: u32) -> (Vec<u8>, u32) {
     let pad_y = 2 * scale;
     let badge_w = text_w + 2 * pad_x;
     let badge_h = text_h + 2 * pad_y;
-    // 右上角对齐，留 1px 边距；徽标本身按需决定是圆（单字）还是胶囊（多字）。
+    // 右上角对齐，**上边留 1px（`y0`）、右边也留 1px**。右边这一格是
+    // `inside_round_rect` 的边界语义决定的，不是随手写的：那边把 `x1` 当闭区间
+    // 判 `fx > x1`，而采样点在像素中心 `px + (s+0.5)/4`，所以第 31 列采不到
+    // 任何样本，最右的不透明像素落在 30。
+    // 形状是**全圆端的胶囊**：radius 起于半高，又被 `inside_round_rect` 里
+    // `min((x1-x0)/2, (y1-y0)/2)` 夹一次；单字角标宽高比接近 1，夹完恰好等于
+    // 宽的一半，于是**单字也是胶囊而不是正圆**（见该函数的注释与两条用例）。
     let x1 = BADGE_SIZE as i32 - 1;
     let x0 = x1 - badge_w;
     let y0 = 1;
@@ -1528,7 +1534,16 @@ fn inside_text(
     bits & (1 << (2 - column)) != 0
 }
 
-/// 圆角矩形命中测试（`radius` 为圆角半径，半高即胶囊形）。
+/// 圆角矩形命中测试（`radius` 为圆角半径）。
+///
+/// **边界是闭区间，而采样点在像素中心**：`fx > x1` 即算外面，而一列的第 0 个
+/// 样本落在 `px + 0.125`。要覆盖第 `px` 列就需要 `px + 0.125 <= x1`。角标给
+/// `x1 = 31`（画布最后一列）时，**第 31 列采不到任何样本**，最右只到 30——即
+/// `render_badge` 注释里说的「右边也留 1px」。
+///
+/// `radius` 还会被 `min((x1-x0)/2, (y1-y0)/2)` 夹一次；单字角标宽高比接近 1，
+/// 夹完恰好等于宽的一半，于是**单字画出来也是胶囊，不是正圆**。两条用例照这个
+/// 形状写，别拿「圆」去要求它。
 #[cfg(target_os = "windows")]
 fn inside_round_rect(fx: f32, fy: f32, x0: f32, y0: f32, x1: f32, y1: f32, radius: f32) -> bool {
     if fx < x0 || fx > x1 || fy < y0 || fy > y1 {
@@ -2088,6 +2103,14 @@ mod tests {
 mod windows_badge_tests {
     use super::*;
 
+    /// 最右一列的 alpha 峰值。留空 = 全 0；不空说明右边那一格被吃掉了。
+    fn alpha_of_last_column(rgba: &[u8], size: u32) -> u8 {
+        (0..size)
+            .map(|y| rgba[((y * size + size - 1) * 4 + 3) as usize])
+            .max()
+            .unwrap_or(0)
+    }
+
     #[test]
     fn badge_bitmap_is_transparent_outside_and_opaque_inside() {
         let (rgba, size) = render_badge(3);
@@ -2096,8 +2119,19 @@ mod windows_badge_tests {
         let alpha_at = |x: u32, y: u32| rgba[((y * size + x) * 4 + 3) as usize];
         // 画布左下角必须完全透明，否则任务栏上会出现一个白/红方块。
         assert_eq!(alpha_at(0, size - 1), 0);
-        // 右上角是角标本体。
-        assert!(alpha_at(size - 3, 3) > 200);
+        // **最右一列整列透明**：`inside_round_rect` 的边界是闭区间而采样点在像素
+        // 中心，第 31 列采不到任何样本 —— 这就是「右边也留 1px」（`render_badge`
+        // 与 `inside_round_rect` 两处注释都写了）。
+        assert_eq!(alpha_at(size - 1, size / 2), 0, "右边留 1px 边距");
+        // 角标本体：从这里往左一列就是它的右缘，腰身必须完全不透明。
+        // **不要再拿「右上角」当采样点**：单字角标是全圆端的胶囊，右上角落在圆角
+        // 外侧，采样必然落空（那是这条断言此前在所有平台上恒红的原因）。
+        assert!(
+            alpha_at(size - 2, size / 2) > 200,
+            "角标应贴到第 {} 列",
+            size - 2
+        );
+        assert!(alpha_at(size / 2, size / 2) > 200, "角标腰身必须不透明");
         // 角标中心应为白色（数字笔画）或红色（底色），但必须不透明。
         assert!(alpha_at(size - 8, 8) > 200);
     }
@@ -2120,13 +2154,15 @@ mod windows_badge_tests {
                 .map(|(i, _)| i as u32)
                 .collect();
             assert!(!opaque.is_empty(), "{count} 应画出角标");
-            // 所有不透明像素都落在画布内（下标由 chunks_exact 保证），且角标
-            // 必须贴着右上角：最右一列与最上一行都要有内容。
+            // 所有不透明像素都落在画布内（下标由 chunks_exact 保证）。角标贴着
+            // 右上角，**但上、右各留 1px**：最右的不透明列是 `w-2`、`w-1` 整列透明
+            // （闭区间 + 像素中心采样的必然结果，见 `inside_round_rect` 的注释）。
             let (w, h) = (size, size);
             let max_x = opaque.iter().map(|i| i % w).max().unwrap();
             let min_y = opaque.iter().map(|i| i / w).min().unwrap();
-            assert_eq!(max_x, w - 1, "{count} 的角标应贴住右边缘");
-            assert!(min_y <= 1, "{count} 的角标应贴住上边缘");
+            assert_eq!(max_x, w - 2, "{count} 的角标应贴到倒数第二列");
+            assert_eq!(alpha_of_last_column(&rgba, w), 0, "最右一列必须留空");
+            assert!(min_y <= 1, "{count} 的角标应贴住上边缘（最多留 1px）");
             assert!(
                 opaque.len() < (w * h) as usize / 2,
                 "{count} 的角标不应铺满整个图标"
