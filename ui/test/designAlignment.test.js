@@ -1161,6 +1161,13 @@ test('社区资源卡的样式留在 scoped，且复用全局 `.install-row` 而
   }
   assert.match(skills, /<div class="install-row">/);
   assert.doesNotMatch(style, /\.community-install-control/);
+  const css = stripComments(style);
+  assert.match(ruleText(css, '.community-browse-row'), /border-bottom:\s*0/);
+  assert.match(ruleText(css, '.community-install'), /border-top:\s*0/);
+  const divider = ruleText(css, '.community-install::before');
+  assert.match(divider, /height:\s*2px/);
+  assert.match(divider, /background:\s*var\(--divider-strong\)/);
+  assert.match(divider, /clip-path:\s*polygon\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\)/);
 });
 
 // --- 同一页里不再有两个名字指同一份东西 ----------------------------------
