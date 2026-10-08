@@ -11,6 +11,7 @@
 pub(crate) mod auth;
 pub(crate) mod bridge;
 pub(crate) mod callback;
+pub(crate) mod cmd;
 pub(crate) mod flow;
 pub(crate) mod http;
 pub(crate) mod jwk;
