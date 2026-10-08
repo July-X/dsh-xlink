@@ -772,13 +772,10 @@ test('侧栏「数据迁移」是系统组里的常驻菜单项，紧跟在「�
   assert.doesNotMatch(sys, /show:\s*\(\)/);
 });
 
-test('设置页不再有独立「数据迁移」大卡，只留一行入口（设计稿 2844 行）', () => {
+test('设置页移除数据迁移入口，也不再加载迁移历史', () => {
   const panel = readFileSync('ui/src/shell/SettingsPanel.vue', 'utf8');
-  // 入口仍在 —— 设计说明 §侧栏：「迁移完成后，设置页仍保留进入迁移功能的入口」。
-  assert.match(panel, /@click="store\.activePanel = 'migration'"/);
-  // 但它不再是那张默认折叠、带展开态的大卡。
-  assert.doesNotMatch(panel, /migrationExpanded/);
-  assert.doesNotMatch(panel, /card-head-toggle/);
+  assert.doesNotMatch(templateOf(panel), /数据迁移|activePanel = 'migration'/);
+  assert.doesNotMatch(panel, /migrationStore|loadMigrationHistory|migratedBefore/);
 });
 
 test('v0.6.0 移除数据迁移的计划已登记在两份 AGENTS.md（删干净要动四处）', () => {
@@ -1307,8 +1304,8 @@ test('「环境回退与诊断」的 caption 走 head-meta + muted', () => {
   );
 });
 
-test('「环境回退与诊断」是一张卡里的四个行式条目', () => {
-  // `.page-list` 是全仓共用的行式列表原语（theme.css），四个条目都落在它里面。
+test('「环境回退与诊断」是一张卡里的三个行式条目', () => {
+  // `.page-list` 是全仓共用的行式列表原语（theme.css），三个条目都落在它里面。
   const listStart = settingsTpl.indexOf('<div class="page-list">');
   assert.ok(listStart > 0, '设置页该有一个 .page-list 列表');
   // 两个组件必须在列表**内部**：它们是 Fragment，行与明细直接落进这个栅格。
@@ -1317,16 +1314,14 @@ test('「环境回退与诊断」是一张卡里的四个行式条目', () => {
     ['环境回退点', templateOf(snapshotCard), '环境回退点'],
     ['深入排查', templateOf(bisectPanel), '深入排查'],
     ['设置页', settingsTpl.slice(listStart), '启动诊断'],
-    ['设置页', settingsTpl.slice(listStart), '数据迁移'],
   ]) {
     // 标题换行排版，所以标题文字前面允许多余空白。
     assert.match(tpl, new RegExp(`class="page-list-title">\\s*${title}`), `${label}：${title} 应是 page-list 的一行`);
   }
-  // 数据迁移与启动诊断都是真跳转，不是有内容的展开层。`openStartupDiagnosis`
+  // 启动诊断是真跳转，不是有内容的展开层。`openStartupDiagnosis`
   // 在 `<script>` 里（模板只调本文件定义的 openStartupRun），所以这一处读全文。
   assert.match(settingsTpl, /@click="openStartupRun"/);
   assert.match(settingsPanel, /openStartupDiagnosis\(/);
-  assert.match(settingsTpl, /store\.activePanel = 'migration'/);
 });
 
 test('环境回退点与深入排查渲染成行，不再自带 .card 外框', () => {
