@@ -137,12 +137,18 @@ export function buildEnvelope(options, catalog) {
 
   // 强度：仅当调用方显式选择时发送原始字符串；「模型默认」= 省略字段
   // （设计 §6.2；bridge 侧按目录档位再校验一道）。
+  // 强度：仅当调用方显式选择时发送；线格式在 payload.reasoning.effort，
+  // 信封层的 reasoningEffort 供桥接做目录档位校验（双处同值，桥接只认
+  // 信封层做门，线格式由这里写入）。
   const envelope = {
     model: options.model,
     catalogRevision: catalog.revisionCombined,
     payload,
   };
-  if (options.reasoningEffort !== undefined) envelope.reasoningEffort = options.reasoningEffort;
+  if (options.reasoningEffort !== undefined) {
+    envelope.reasoningEffort = options.reasoningEffort;
+    payload.reasoning = { effort: options.reasoningEffort };
+  }
   return envelope;
 }
 

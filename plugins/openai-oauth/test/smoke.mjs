@@ -231,6 +231,7 @@ writeFileSync(
     "  config:",
     "    provider: xlink-openai-chatgpt",
     "    model: gpt-stub-x",
+    "    reasoningEffort: low",
     // 本插件的接线行（与 web profile 同形状）。
     "- insert:",
     "    - id: xlink-openai-oauth",
@@ -268,6 +269,11 @@ check(
   `exit=${headlessCode} stdout=${JSON.stringify(headlessOut.slice(0, 200))} stderr=${JSON.stringify(headlessErr.slice(0, 300))}`,
 );
 const responsesHit = stubRequests.find((r) => r.url === "/v1/responses");
+check(
+  "强度端到端（agentDefaultModel.reasoningEffort → payload.reasoning.effort）",
+  responsesHit !== undefined && responsesHit.body.includes('"reasoning":{"effort":"low"}'),
+  JSON.stringify(responsesHit ?? {}).slice(0, 260),
+);
 check(
   "推理信封合规（白名单内字段；store/stream 由桥接固定参数写入）",
   responsesHit !== undefined &&
