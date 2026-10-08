@@ -238,12 +238,12 @@ defineExpose({ maybeOpenMigrationPrompt, reopenMigrationPrompt });
 }
 .prompt-source-meta {
   font-variant-numeric: tabular-nums;
-  color: var(--muted, rgba(247, 255, 238, 0.6));
+  color: var(--text-muted);
 }
 .prompt-summary {
   margin: 0;
   font-size: 12px;
-  color: var(--muted, rgba(247, 255, 238, 0.62));
+  color: var(--text-muted);
 }
 
 .prompt-current-step {
@@ -268,28 +268,28 @@ defineExpose({ maybeOpenMigrationPrompt, reopenMigrationPrompt });
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: var(--muted, rgba(247, 255, 238, 0.55));
+  color: var(--text-muted);
 }
 .prompt-step-item.is-current {
   color: var(--text, rgba(247, 255, 238, 0.92));
   font-weight: 600;
 }
 .prompt-step-item.is-done {
-  color: var(--muted, rgba(247, 255, 238, 0.72));
+  color: var(--text-secondary);
 }
 .prompt-step-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: rgba(238, 255, 216, 0.32);
+  background: var(--overlay-strong);
   flex: 0 0 8px;
 }
 .prompt-step-item.is-done .prompt-step-dot {
-  background: rgba(140, 220, 120, 0.85);
+  background: var(--success);
 }
 .prompt-step-item.is-current .prompt-step-dot {
-  background: rgba(239, 255, 218, 0.96);
-  box-shadow: 0 0 6px rgba(239, 255, 218, 0.6);
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent-line);
 }
 
 .prompt-done-intro {
@@ -322,7 +322,7 @@ defineExpose({ maybeOpenMigrationPrompt, reopenMigrationPrompt });
   color: var(--text, rgba(247, 255, 238, 0.92));
 }
 .prompt-done-status {
-  color: var(--muted, rgba(247, 255, 238, 0.7));
+  color: var(--text-muted);
 }
 
 .prompt-footer-ask,

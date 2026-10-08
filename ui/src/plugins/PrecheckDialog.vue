@@ -168,8 +168,8 @@ function close() {
 .precheck-notinstalled {
   margin: 8px 0 0;
   padding: 8px 10px;
-  border-left: 3px solid var(--accent, #409eff);
-  background: var(--surface-soft, rgba(64, 158, 255, 0.08));
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
   font-size: 13px;
   line-height: 1.5;
 }

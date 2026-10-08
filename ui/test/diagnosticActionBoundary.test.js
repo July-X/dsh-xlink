@@ -13,9 +13,14 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-const UI_SRC = new URL('../src/', import.meta.url).pathname;
+// `fileURLToPath` 而不是 `.pathname`：后者在 Windows 上给出 `/C:/workdir/…`，
+// `readdirSync` 把它当成本盘根下的相对段，路径变成 `C:\C:\workdir\…`，整条
+// 判据 ENOENT 挂在读目录那一步——**一条断言都没跑**。`tooltipEmptyContent` 里
+// 同一种写法有同样的问题，一起改了。
+const UI_SRC = fileURLToPath(new URL('../src/', import.meta.url));
 const DIAG_DIR = join(UI_SRC, 'diagnostics');
 
 function read(file) {
