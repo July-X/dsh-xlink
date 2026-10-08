@@ -320,7 +320,7 @@ test('applyTheme 把同一个主题真值同时推给 html.dark 与窗口原生�
   const body = fnBody(read('../src/shell/theme.js'), 'applyTheme');
   assert.match(
     body,
-    /setWindowTheme\(\s*resolvedTheme\.value\s*\)/,
+    /setWindowTheme\(theme\.value === 'system' \? null : resolvedTheme\.value\)/,
     '原生标题栏必须用 theme.value，不能写死字面量——写死的话 setTheme("light") 只换页面不换标题栏',
   );
 });

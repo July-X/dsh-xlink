@@ -329,4 +329,4 @@ ui/src/
 - **面板里的第三方标志（npm 等）**：必须是 `ui/public/` 下的本地矢量、不许写远端 URL，并保留来源与许可声明——`tauri.conf.json` 的 `csp` 是 `null`，远端 `<img>` 出不出网完全取决于用户那台机器，取不到时页面上只剩一块白砖且没有任何报错（版本面板过去就挂着 `avatars.githubusercontent.com` 的 npm 头像）。由 `check-invariants` 第 15 项钉住。图标库里的图形组件不算「第三方标志」——它随包进产物，不发网络请求。
 - 应用自身图标只从 `assets/*.svg` 母版生成，规则见 [docs/ui/icon-design.md](../docs/ui/icon-design.md)。
 
-外观在设置页右栏提供三项选择，和侧栏快捷菜单共用 `theme.js`。`theme` 保存 light / dark / system 模式，`resolvedTheme` 解析实际明暗颜色；只有实际颜色写入 `html.dark` 与原生装饰。每扇窗口监听系统配色，固定模式不响应系统变化，跨窗广播传递模式。旧偏好保留，默认仍为深色。
+外观在设置页右栏提供三项选择，和侧栏快捷菜单共用 `theme.js`。`theme` 保存 light / dark / system 模式，`resolvedTheme` 解析实际明暗颜色；实际颜色写入 `html.dark`；固定模式写入原生装饰，system 向原生接口传 null 解除覆盖，完成后重新读取媒体查询。每扇窗口监听系统配色，固定模式不响应系统变化，跨窗广播传递模式。旧偏好保留，默认仍为深色。
