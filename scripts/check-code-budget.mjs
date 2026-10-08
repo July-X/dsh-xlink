@@ -263,10 +263,12 @@ const FILE_BUDGETS = {
   // 系统凭据库存密钥（mac security CLI / win PasswordVault 走 PowerShell，
   // 不碰 Win32 FFI）。可测逻辑（加解密/文件/分键/生成）注入闭包，密钥库
   // 薄壳不进测试（同 autostart 纪律：真实 Keychain 人工验证）。
-  'src-tauri/src/openai/vault.rs': 201,
+  'src-tauri/src/openai/vault.rs': 203,
   // bridge 与回调监听共用的极简 HTTP 读写。从 bridge.rs 提出（读取循环
   // 是实测踩过 TCP 分段竞态的那段，两处各写一份迟早漂移）。
-  'src-tauri/src/openai/http.rs': 68,
+  // 68 → 74：RequestHead 携带 body_prefix（头体一次读入时体字节在缓冲里，
+  // 丢掉它读体的一方会去 socket 等已消费的字节——双方互等死锁，mock 实测）。
+  'src-tauri/src/openai/http.rs': 74,
   // 2026-10-09：OAuth 回调监听（一次性 loopback：随机端口 + state 校验 +
   // 分状态回执页）。bridge.rs 换用共享 http.rs 后净减（读取循环去重）。
   'src-tauri/src/openai/callback.rs': 90,
@@ -274,7 +276,9 @@ const FILE_BUDGETS = {
   // 树内），按 net_proxy::routes() 试路：代理失败才换直连、直连显式
   // proxy(None)（ureq 默认捡环境变量，不显式关掉会把直连拉回代理）、
   // 状态码错误不换路。不共享 releases 的 agent：那边无代理路由语义。
-  'src-tauri/src/openai/transport.rs': 88,
+  // 88 → 91：http_status_as_error(false) 手动判状态——ureq 的 StatusCode
+  // 错误不带响应体，而 OAuth invalid_grant 分类必须看 body（实测）。
+  'src-tauri/src/openai/transport.rs': 91,
   // 2026-10-09：授权编排（发现→注册→回调→换令牌→验 ID token→入库）。
   // FlowTransport trait 注入传输/时钟/浏览器/密钥库（真实 Keychain 绝不进
   // 测试）；内含模拟授权服务器（开发计划 §10 的 CI 件）与端到端测试。
@@ -284,6 +288,10 @@ const FILE_BUDGETS = {
   // 能落进 flow.rs 的逻辑都不在这里长。按文件名豁免了新文件登记，照实
   // 补上（同 builtin/mod.rs 的先例）。
   'src-tauri/src/openai/cmd.rs': 152,
+  // 2026-10-09：访问令牌刷新（P2 收尾）。串行互斥（防旧 refresh token
+  // 二次刷新被判重放）、旋转 refresh token、invalid_grant → reauth_required
+  // 落库短路。3 测试：旋转落库 / 撤销标记与短路+重登清除 / 未过期不触网。
+  'src-tauri/src/openai/refresh.rs': 160,
   'src-tauri/src/openai/mod.rs': 12,
   // 2980 → 2932：删掉 P4 留下的旧签名壳共 11 项（`sync_kernels` /
   // `materialize_one` / `remove_materialized` / `sweep_kernel_orphans` /
@@ -2069,7 +2077,7 @@ const FILE_BUDGETS = {
 // process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
-const TOTAL_BUDGET = 44520;
+const TOTAL_BUDGET = 44802;
 // 42424 → 42807 → 42981（2026-10-08）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

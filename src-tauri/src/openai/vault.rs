@@ -34,6 +34,10 @@ pub(crate) struct AccountTokens {
     pub(crate) refresh_token: String,
     /// 访问令牌过期时刻（Unix 秒）；0 表示未知。
     pub(crate) access_expires_at: u64,
+    /// 刷新被判失效（invalid_grant）后置位；重新登录清除。老 vault 文件
+    /// 没有这个字段，反序列化按 false 兜底。
+    #[serde(default)]
+    pub(crate) reauth_required: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -308,6 +312,7 @@ mod tests {
                 access_token: "at1".into(),
                 refresh_token: "rt1".into(),
                 access_expires_at: 123,
+                reauth_required: false,
             },
         );
         accounts.entries.insert(
@@ -319,6 +324,7 @@ mod tests {
                 access_token: "at2".into(),
                 refresh_token: "rt2".into(),
                 access_expires_at: 0,
+                reauth_required: false,
             },
         );
         accounts.active = Some("u2".into());
