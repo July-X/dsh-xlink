@@ -6,7 +6,7 @@ const panel = readFileSync(new URL('../src/kernel/VersionsPanel.vue', import.met
 const bridge = readFileSync(new URL('../src/shell/bridge.js', import.meta.url), 'utf8');
 
 function subscriptionBlock() {
-  const start = panel.indexOf('let diskUnlisten = null;');
+  const start = panel.indexOf('let diskUnlisten = null');
   const end = panel.indexOf('// 字节 → 人类可读。', start);
   assert.ok(start >= 0 && end > start, '找不到磁盘用量事件订阅代码');
   return panel.slice(start, end);
@@ -26,6 +26,24 @@ test('bridge 在没有 Tauri 时仍为 listen 返回可链式处理的 Promise',
     '纯浏览器模式不能让 listen 返回 undefined'
   );
   assert.match(subscriptionBlock(), /listen\('disk-usage-refreshed'/);
+});
+
+test('版本页卸载时不会遗留异步完成的磁盘用量监听器', () => {
+  const subscription = subscriptionBlock();
+
+  // listen() 返回 Promise。切页足够快时，组件可能已经卸载，退订函数才到达；
+  // 这种顺序必须显式处理，否则每次进出版本页都会多留一个事件监听器。
+  assert.match(subscription, /diskListenerDisposed = false;/);
+  assert.match(
+    subscription,
+    /if \(diskListenerDisposed\)\s+Promise\.resolve\(unlisten\?\.\(\)\)/,
+    '异步拿到退订函数后必须补退订'
+  );
+  assert.match(
+    subscription,
+    /diskListenerDisposed = true;[\s\S]*Promise\.resolve\(diskUnlisten\(\)\)/,
+    '组件卸载时必须标记已销毁并退订已完成的监听'
+  );
 });
 
 test('发布列表不再有溢出测量：淡出带与其 ResizeObserver 已整套移除', () => {
