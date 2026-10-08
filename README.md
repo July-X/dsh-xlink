@@ -61,7 +61,7 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
 - **一键启动 / 停止工作台**。概览页主按钮切换内核状态；同排的「打开工作台窗口」「打开官方对话」「刷新工作台」是次级入口，都不改内核状态。查看日志统一从概览页「系统健康 → 日志系统」进入（日志弹层内可再点「全屏」开独立窗口）。
 - **打开官方对话**：拉起独立窗口，按 `OFFICIAL_CHAT_TABS` 顺序排布 DeepSeek / MiniMax 两个页签，与工作台窗口互不干扰。使用原生 Edge UA 与可持久化登录的专属 user-data 目录。窗口已开时按钮变为「关闭官方对话」并销毁当前窗口。
 - **多内核并存**：内核 tab 中 DSH（active）、mcode（mock）等内核族并列。每个内核族可同时跑多个实例；概览页底部「实例切换器」tab 直接在主页面切换实例。侧栏菜单、插件页、技能页、设置页都跟随当前实例。已迁移用户在概览页不再显示「数据迁移」入口，向导在「设置」页常驻，可点进查看最近一次迁移。
-- **更新菜单**：列出 npm registry [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 的所有发布版本（含预发布标记），可安装、切换活动版本、删除本地版本。
+- **更新菜单**：列出 npm registry [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 的所有发布版本（含预发布标记），可安装、切换活动版本、删除本地版本。已安装与官方版本两栏之间用上下两端收细的竖向刻蚀线分隔。
 - **内核安装通过 pnpm**：`node-linker=hoisted` 保持扁平 `node_modules`，内容寻址存储让重复安装更快。安装过程逐行流式显示在进度面板，完整日志落盘 `~/.dsh-xlink/shell/release/logs/<kind>-install-<版本>-<日期>.log`（dev 壳为 `~/.dsh-xlink/shell/dev/logs/dev-install-<版本>-<日期>.log`，`<日期>` 为本地日期）。下载先写临时文件、成功后才发布；npm 包由外壳做路径受限、禁止链接和有展开大小上限的 Rust 解包，无需额外安装系统 `tar`。
 - **Node.js 自动检测与手动指定**：要求 `^22.19 || >=24`，与 dsh 的 engines 一致。自动发现 nvm（macOS/Linux `~/.nvm/versions/node/<v>/bin/node` 跟随 `alias/default` 链，Windows `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`）。检测为空时弹窗询问是否「帮我安装」，确认后自动下载官方 Node.js（v24 LTS，SHA-256 校验）到数据目录 `tools/node/`；概览页 Node 行随时可再次触发。已安装的托管运行时优先于环境检测，显式配置的 node 路径仍最高优先。
 - **pnpm 路径可配置**（默认取 node 同目录或 PATH）。
