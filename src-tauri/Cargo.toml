@@ -124,6 +124,13 @@ windows-sys = { version = "0.61", features = [
   "Win32_UI_HiDpi",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
+  # 状态轮询的两个原生快路径（kernel/win_probe.rs，2026-10-08 perf 优化）：
+  # NtQueryInformationProcess（读 PEB 拿进程命令行）在 Wdk 命名空间，
+  # PROCESS_BASIC_INFORMATION 另需 System_Kernel；GetExtendedTcpTable 与
+  # MIB_TCPROW_OWNER_PID 在 NetworkManagement::IpHelper。
+  "Wdk_System_Threading",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_System_Kernel",
 ] }
 # `notify_gate.rs` 问 Windows "本应用的通知权限现在是什么状态"
 # （`ToastNotifier::Setting()`）。这个 API 只存在于 WinRT，windows-sys 没有，只能用

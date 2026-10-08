@@ -875,6 +875,19 @@ const FILE_BUDGETS = {
   // 2026-09-29：这三个函数连同「上游漏发精确钉版时降级重试」一起搬进
   // kernel_deps.rs，kernel.rs 同步从 744 回到 721 行；预算数字不动。
   'src-tauri/src/kernel/lifecycle.rs': 1380,
+  // 2026-10-08 新增（约 210 行代码，其余是平台分工说明与测试）。它回答
+  // 状态轮询每 2.5s 都要问的两个问题——「这个 pid 的命令行是什么」「这个
+  // 端口谁在监听」——的 Windows 原生快路径：NtQueryInformationProcess +
+  // ReadProcessMemory 读 PEB 的 CommandLine（替代派生 powershell.exe
+  // Get-CimInstance，perf 实测单次 ~350ms、缓存隔次失效，内核运行期间每分钟
+  // 派生 ~13 个 PowerShell 进程），GetExtendedTcpTable 查监听表（替代
+  // netstat -ano 派生与 connect_timeout——后者在防火墙对无监听回环端口
+  // 静默丢包的机器上每次等满 400ms）。独立成文件而不是塞进 lifecycle.rs：
+  // ① lifecycle 是 1380 行的反棘轮文件；② 这是一块自成一体的平台 FFI，
+  // 与 macOS 的 process_command_procargs 对称，两个端到端单测（读自身
+  // PEB、自建 socket 查表认主）只在 Windows 编译，混进 lifecycle 会让它的
+  // 测试模块再多一层 cfg 嵌套。
+  'src-tauri/src/kernel/win_probe.rs': 220,
   // 2026-09-29 新增（265 行代码，其余是解释这次事故的文档）。它回答
   // 「内核安装时，每个官方子包究竟装哪个版本」这一个关注点：写 stub /
   // pnpm-workspace.yaml 的 overrides、装完扫锁步错位、以及 pnpm 报
@@ -1953,7 +1966,12 @@ const FILE_BUDGETS = {
 // 另修 ui/test/logWindowTheme.test.js 的一个错判据：它要求「引用的 token 两套
 // 主题都定义过」，把**本来就不随主题变**的排版档位也判成违规。真正的失效条件是
 // 「:root 里没有」（只在 html.dark 里定义，浅色下整条声明被丢弃）。
-const TOTAL_BUDGET = 42204;
+// 42204 → 42424（2026-10-08）：状态轮询 Windows 原生化（win_probe.rs 新文件 ~210 行
+// 代码 + lifecycle.rs 净减 ~30：netstat 解析及其测试删除、port_open /
+// process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
+// kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
+// connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
+const TOTAL_BUDGET = 42424;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行
