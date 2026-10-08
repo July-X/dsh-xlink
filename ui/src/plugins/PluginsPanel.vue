@@ -418,7 +418,7 @@ function instanceChipType(row, instanceId) {
                   <span class="origin-chip-label">{{ originLabel(row.origin) }}</span>
                 </span>
               </div>
-              <div class="entity-foot entity-foot--instance-grid">
+              <div class="entity-foot--instance-grid">
                 <div class="instance-chip-row">
                   <el-tag
                     v-for="inst in sortedInstances"
@@ -658,10 +658,13 @@ function instanceChipType(row, instanceId) {
           </div>
         </template>
         <el-empty v-else-if="!view.rows || view.rows.length === 0" description="当前内核尚未接入任何插件；先到「已安装」页签安装。" :image-size="48" />
+        <!-- 单行布局（2026-10-08 用户要求「移动到右侧 + 单行显示每一个插件」）：
+             entity-foot 解散，版本元数据 / 状态 / 警示点 / 动作成为行的直接子级，
+             整行只有一条基线；布局覆盖见下方 scoped 块的 .entity-row--single。 -->
         <div
           v-for="row in view ? view.rows : []"
           :key="row.id"
-          class="entity-row"
+          class="entity-row entity-row--single"
           :class="{ 'is-warn': !!row.quarantined }"
         >
           <div class="entity-head">
@@ -680,93 +683,93 @@ function instanceChipType(row, instanceId) {
               <span class="entity-desc">{{ row.description }}</span>
             </el-tooltip>
           </div>
-          <div class="entity-foot">
-            <div class="entity-meta">
-              <span class="meta-version">{{ row.installed_version }}</span>
-              <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>
-              <span v-if="row.pinned" class="meta-pinned">已锁定版本</span>
-            </div>
-            <span class="entity-states">
-              <el-tag v-if="!view || !view.active_kernel" type="warning" size="small" effect="plain">无活动内核</el-tag>
-              <el-tag v-else-if="row.synced && row.wired" type="success" size="small" effect="plain">已同步</el-tag>
-            </span>
-            <!-- 待同步 / 待接线只在动作区点一个警示点，原因走 tooltip：原先把状态
-                 铺成整枚文字标签，一行挤三四枚，把行高和右半区一起顶满。 -->
-            <span v-if="syncWarning(row)" class="state-dot">
-              <el-tooltip placement="top" effect="dark" :content="syncWarning(row)">
-                <el-icon><WarningFilled /></el-icon>
-              </el-tooltip>
-            </span>
-            <div class="entity-actions">
-              <!-- 物化模式：徽章文案即当前模式，点击切到另一种。切换走
-                   plugin_set_mode 长任务，状态以 row.desired_mode 为准，
-                   命令完成刷新后才翻转（未落地时回落到中央库记录的模式）。 -->
-              <el-tooltip placement="top" effect="dark" :content="modeTip(row)">
-                <el-button
-                  class="entity-mode"
-                  :class="{ 'is-link': currentMode(row) === 'link' }"
-                  size="small"
-                  :loading="isLoading('pluginMode:' + row.id)"
-                  :disabled="globalBusy"
-                  @click="togglePluginMode(row)"
-                >
-                  {{ currentMode(row) === 'link' ? '链接' : '复制' }}
-                </el-button>
-              </el-tooltip>
-              <el-tooltip v-if="row.quarantined" content="恢复启用" placement="top" effect="dark">
-                <el-button
-                  class="entity-action"
-                  size="small"
-                  circle
-                  :icon="RefreshLeft"
-                  :aria-label="'恢复启用 ' + row.name"
-                  :disabled="globalBusy"
-                  @click="resolvePluginQuarantine(row.id, 'enable')"
-                />
-              </el-tooltip>
-              <el-tooltip v-if="row.latest_version && !row.pinned" :content="'更新到 ' + row.latest_version" placement="top" effect="dark">
-                <el-button
-                  class="entity-action entity-action-update"
-                  size="small"
-                  type="primary"
-                  circle
-                  :icon="Download"
-                  :aria-label="'更新插件 ' + row.name + ' 到 ' + row.latest_version"
-                  :disabled="globalBusy"
-                  @click="updatePlugin(row.id)"
-                />
-              </el-tooltip>
-              <el-tooltip v-if="row.repo_url" content="打开仓库" placement="top" effect="dark">
-                <el-button
-                  class="entity-action"
-                  size="small"
-                  circle
-                  :icon="TopRight"
-                  :aria-label="'在浏览器打开 ' + row.name + ' 的仓库'"
-                  :disabled="globalBusy"
-                  @click="openExternalLink(row.repo_url, '仓库地址')"
-                />
-              </el-tooltip>
-              <span class="entity-action-sep" aria-hidden="true"></span>
-              <el-popconfirm
-                title="确认卸载该插件？"
-                confirm-button-text="卸载"
-                cancel-button-text="取消"
-                width="200"
-                @confirm="uninstallPlugin(row.id)"
+          <!-- 版本元数据按用户要求移到右侧：紧跟状态 tag 与动作按钮，不再单独
+               占第二行左侧。整行因此只剩一条基线（.entity-row--single）。 -->
+          <div class="entity-meta">
+            <span class="meta-version">{{ row.installed_version }}</span>
+            <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>
+            <span v-if="row.pinned" class="meta-pinned">已锁定版本</span>
+          </div>
+          <span class="entity-states">
+            <el-tag v-if="!view || !view.active_kernel" type="warning" size="small" effect="plain">无活动内核</el-tag>
+            <el-tag v-else-if="row.synced && row.wired" type="success" size="small" effect="plain">已同步</el-tag>
+          </span>
+          <!-- 待同步 / 待接线只在动作区点一个警示点，原因走 tooltip：原先把状态
+               铺成整枚文字标签，一行挤三四枚，把行高和右半区一起顶满。 -->
+          <span v-if="syncWarning(row)" class="state-dot">
+            <el-tooltip placement="top" effect="dark" :content="syncWarning(row)">
+              <el-icon><WarningFilled /></el-icon>
+            </el-tooltip>
+          </span>
+          <div class="entity-actions">
+            <!-- 物化模式：徽章文案即当前模式，点击切到另一种。切换走
+                 plugin_set_mode 长任务，状态以 row.desired_mode 为准，
+                 命令完成刷新后才翻转（未落地时回落到中央库记录的模式）。 -->
+            <el-tooltip placement="top" effect="dark" :content="modeTip(row)">
+              <el-button
+                class="entity-mode"
+                :class="{ 'is-link': currentMode(row) === 'link' }"
+                size="small"
+                :loading="isLoading('pluginMode:' + row.id)"
+                :disabled="globalBusy"
+                @click="togglePluginMode(row)"
               >
-                <template #reference>
-                  <el-button
-                    class="entity-action entity-action-danger"
-                    size="small"
-                    circle
-                    :icon="Delete"
-                    :aria-label="'卸载插件 ' + row.name"
-                    :disabled="globalBusy"
-                  />
-                </template>
-              </el-popconfirm>
-            </div>
+                {{ currentMode(row) === 'link' ? '链接' : '复制' }}
+              </el-button>
+            </el-tooltip>
+            <el-tooltip v-if="row.quarantined" content="恢复启用" placement="top" effect="dark">
+              <el-button
+                class="entity-action"
+                size="small"
+                circle
+                :icon="RefreshLeft"
+                :aria-label="'恢复启用 ' + row.name"
+                :disabled="globalBusy"
+                @click="resolvePluginQuarantine(row.id, 'enable')"
+              />
+            </el-tooltip>
+            <el-tooltip v-if="row.latest_version && !row.pinned" :content="'更新到 ' + row.latest_version" placement="top" effect="dark">
+              <el-button
+                class="entity-action entity-action-update"
+                size="small"
+                type="primary"
+                circle
+                :icon="Download"
+                :aria-label="'更新插件 ' + row.name + ' 到 ' + row.latest_version"
+                :disabled="globalBusy"
+                @click="updatePlugin(row.id)"
+              />
+            </el-tooltip>
+            <el-tooltip v-if="row.repo_url" content="打开仓库" placement="top" effect="dark">
+              <el-button
+                class="entity-action"
+                size="small"
+                circle
+                :icon="TopRight"
+                :aria-label="'在浏览器打开 ' + row.name + ' 的仓库'"
+                :disabled="globalBusy"
+                @click="openExternalLink(row.repo_url, '仓库地址')"
+              />
+            </el-tooltip>
+            <span class="entity-action-sep" aria-hidden="true"></span>
+            <el-popconfirm
+              title="确认卸载该插件？"
+              confirm-button-text="卸载"
+              cancel-button-text="取消"
+              width="200"
+              @confirm="uninstallPlugin(row.id)"
+            >
+              <template #reference>
+                <el-button
+                  class="entity-action entity-action-danger"
+                  size="small"
+                  circle
+                  :icon="Delete"
+                  :aria-label="'卸载插件 ' + row.name"
+                  :disabled="globalBusy"
+                />
+              </template>
+            </el-popconfirm>
           </div>
         </div>
       </div>
@@ -1031,5 +1034,21 @@ function instanceChipType(row, instanceId) {
   display: flex;
   justify-content: center;
   margin-top: 4px;
+}
+
+/* --- 「当前内核」页签：插件行单行布局（2026-10-08 用户要求）--------------
+   版本元数据移到右侧（紧跟状态 tag 与动作按钮），entity-foot 解散后整行只有
+   一条基线：名称 + 来源 chip + 描述占左侧吃掉剩余宽度（描述过长照旧省略号
+   收尾、悬停看全文），右侧依次是版本、状态、警示点、动作。只覆盖挂了
+   .entity-row--single 的行——「已安装」页签仍是名称行 + 实例 chip 行，
+   技能页的 .skill-entity-row 是自己的网格，都不受影响。 */
+.entity-row--single {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.entity-row--single .entity-head {
+  flex: 1 1 auto;
 }
 </style>
