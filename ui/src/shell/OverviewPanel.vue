@@ -614,13 +614,22 @@ function goVersions() {
             </div>
           </div>
 
-      <el-alert
-        v-if="store.shellUpdateVersion"
-        :title="store.shellUpdateText"
-        type="warning"
-        :closable="false"
-        show-icon
-      />
+      <!-- 更新提示与它的动作**同行**（2026-10-08 用户要求「按钮和更新信息一行显示」）。
+           此前 `el-alert` 与装按钮的 `.btn-row` 是两个兄弟节点：alert 占满一整行，
+           按钮掉到下一行，卡片因此凭空高一块，而两块之间没有任何语义关联。 -->
+      <div v-if="store.shellUpdateVersion" class="update-banner">
+        <el-alert :title="store.shellUpdateText" type="warning" :closable="false" show-icon />
+        <el-button
+          class="btn-action"
+          type="warning"
+          :icon="Refresh"
+          :loading="isLoading('installShellUpdate')"
+          :disabled="globalBusy"
+          @click="installShellUpdate"
+        >
+          更新并重启
+        </el-button>
+      </div>
 
       <div v-if="guardVisible" class="callout" role="alert">
         <div class="callout-icon" aria-hidden="true">
@@ -660,18 +669,6 @@ function goVersions() {
            不一致，用户没法建立预期。原先那条捷径已随之删除。现在全应用的日志
            入口统一走弹层（事故 / 预检 / 诊断页本来也都是同一个），要更大屏就在
            弹层里点「全屏」。 -->
-      <div v-if="store.shellUpdateVersion" class="btn-row">
-        <el-button
-          type="warning"
-          :icon="Refresh"
-          :loading="isLoading('installShellUpdate')"
-          :disabled="globalBusy"
-          @click="installShellUpdate"
-        >
-          更新并重启
-        </el-button>
-      </div>
-
       <p v-if="!store.starting && !running && !canStart" class="muted" style="margin: 0">
         尚未安装可用内核，请先到「内核版本」页安装。
       </p>
@@ -907,6 +904,18 @@ function goVersions() {
   gap: 6px;
 }
 
+/* 更新提示与它的动作同行（2026-10-08 用户要求「按钮和更新信息一行显示」）。 */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+/* alert 吃掉余下宽度、按钮不换行：提示文字变长时先压缩提示而不是把按钮挤下去。 */
+.update-banner :deep(.el-alert) {
+  flex: 1;
+  min-width: 0;
+}
+
 /* 概览主栅格。比例取设计稿 `.grid` 的 1.25fr / 0.75fr：左边的当前内核要放
    大版本号 + 状态行 + 三格指标，右边的系统健康只有「名称 / 读数」两段，
    1:1 会把左边挤到换行。右列的 280px 下限保证「技能注册 + 读取失败 +
@@ -950,7 +959,7 @@ function goVersions() {
 
    2026-10-08：第三样东西（次级入口那一排三枚按钮）也接进这个块。落位是
    **两行网格**而不是 flex 兄弟项 —— 理由是实测宽度，注释见模板里那段：
-   版本号 98px + 按钮 354px + 状态行 287px = 739px > 卡内可用宽 482px，
+   版本号 84px + 按钮 347px + 状态行 287px = 718px > 卡内可用宽 482px，
    三者平铺必然把状态行挤到折行。所以：版本号与按钮同占第一行（按钮靠右），
    状态行 `grid-column: 1 / -1` 独占第二行、拿回整幅宽度。
 
@@ -987,7 +996,11 @@ function goVersions() {
 }
 /* 次级入口：版本号右侧、靠右对齐。`justify-self: end` 是「靠右」的落点——
    网格项默认 `stretch`，不钉住的话这一格会被拉满整列，按钮贴着版本号而不是右边。
-   三枚按钮合计约 354px，版本号约 98px，卡内可用宽 482px（实测），留约 28px 间隙。 */
+   三枚按钮合计约 347px（收小前 379px），版本号「0.4.1-rc.1」约 84px，间隙 16px，
+   卡内可用宽 482px（实测）→ 余量约 36px。收小前只剩约 3px：三枚按钮几乎贴着版本号，
+   版本串再长一点（`0.4.10-beta.2` 一类）就直接压上或折行，用户报的「都显示后会有点挤」
+   就是这 3px。**版本号那格是 `minmax(0,1fr)`，它会把余量吃掉**——所以量余量必须量版本号
+   的**文字**宽度（Range），拿格子宽度算出来的 need 恒等于可用宽，余量永远显示 0。 */
 .kernel-summary-main .btn-row-sub {
   grid-column: 2;
   grid-row: 1;
