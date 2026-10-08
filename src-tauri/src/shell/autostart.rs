@@ -294,8 +294,12 @@ mod platform {
             return None;
         }
         let mut buf = vec![0u16; len.div_ceil(2) as usize + 1];
-        let mut len = len;
-        // SAFETY: `buf` 至少 `len` 字节，`len` 是 in/out。
+        // 第二次调用把 `len` 当 in/out 用：进去是刚才问到的字节数，回来是实际
+        // 写入长度。原先写 `let mut len = len;`（同名重新绑定）触发 clippy 的
+        // `redundant_locals`——发布 CI 跑 `clippy --all-targets -- -D warnings`，
+        // 警告即失败。换个名字说清它是「另一次调用的 in/out」。
+        let mut got = len;
+        // SAFETY: `buf` 至少 `len` 字节，`got` 是 in/out。
         let status = unsafe {
             RegQueryValueExW(
                 key,
@@ -303,7 +307,7 @@ mod platform {
                 std::ptr::null(),
                 &mut kind,
                 buf.as_mut_ptr() as *mut u8,
-                &mut len,
+                &mut got,
             )
         };
         unsafe { RegCloseKey(key) };

@@ -1748,9 +1748,19 @@ mod tests {
         // 本线程可能已跑过别的用例，先清零再开始计量。
         let _ = take_capture_sleep();
         let started = Instant::now();
+        // 命令按平台取：写死 `/bin/echo` 的话 Windows 上 `run_capture` 必然起不来，
+        // 「echo 必须能跑起来」这句 expect 直接炸——它此前被 env.rs 的重复
+        // `mod tests` 编译错误整个挡住，从没在 Windows 上真跑过。
+        let echo: &[&str] = if cfg!(windows) {
+            &["cmd", "/C", "echo"]
+        } else {
+            &["/bin/echo"]
+        };
         for index in 0..40 {
-            let (ok, output) =
-                run_capture("/bin/echo", &[&index.to_string()]).expect("echo 必须能跑起来");
+            let arg = index.to_string();
+            let mut args: Vec<&str> = echo[1..].to_vec();
+            args.push(&arg);
+            let (ok, output) = run_capture(echo[0], &args).expect("echo 必须能跑起来");
             assert!(ok);
             assert_eq!(output.trim(), index.to_string());
         }

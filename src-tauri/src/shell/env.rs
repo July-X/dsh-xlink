@@ -135,8 +135,12 @@ fn merge_paths(system: &str, user: &str) -> String {
     out.join(";")
 }
 
+// 名字带 `windows_`：文件末尾还有一个跨平台的 `mod tests`（`parse_scutil_proxy`
+// 那一族），同名会撞成 `error[E0428]: the name tests is defined multiple times`。
+// **只在 `cargo test` / `cargo clippy --all-targets` 下编译**，所以平时
+// `cargo build` 都发现不了——发布 CI 的 quality job 跑 `cargo test` 才会现形。
 #[cfg(all(test, windows))]
-mod tests {
+mod windows_tests {
     use super::*;
 
     #[test]
