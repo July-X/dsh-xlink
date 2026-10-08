@@ -1415,8 +1415,11 @@ test('两栏之间的竖线用伪元素画，不许退回 border-left', () => {
   );
   // 线挂在右缘之外（left: 100%），margin 把它推进 8px 缝里。
   assert.match(after, /left:\s*100%/);
-  assert.match(after, /width:\s*1px/);
-  assert.match(after, /background:\s*var\(--border-soft\)/);
+  assert.match(after, /width:\s*2px/);
+  assert.match(after, /background:\s*var\(--divider-strong\)/);
+  const verticalEtch = /clip-path:\s*(polygon\(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%\))/;
+  assert.match(after, verticalEtch, '竖线两端必须沿用概览指标的收细几何');
+  assert.match(scopedStyle(overview), verticalEtch, '概览与版本页使用同一套竖向刻蚀线');
 });
 
 // --- 插件页页签行距（2026-10-07 用户截图：「页签像是压在内容框上」）-----------

@@ -114,6 +114,8 @@ Node.js 缺失、插件预检失败、工作台故障、设置回退等属于“
 
 官方版本卡片的标题、最近检查时间和两个图标操作应在同一行，避免标题换行遮住 tooltip（工具提示）。
 
+已安装与官方版本两栏之间使用 2px 竖向刻蚀线，颜色为 `--divider-strong`，上下两端收细。非空时线高跟随已安装列表，空态保留原有居中布局。
+
 ### 3. 插件
 
 主要源码：`ui/src/plugins/PluginsPanel.vue`、`ui/src/plugins/plugins.js`。

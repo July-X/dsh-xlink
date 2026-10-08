@@ -928,12 +928,13 @@ function groupTip(group) {
   top: 0;
   bottom: 0;
   left: 100%;
-  width: 1px;
+  width: 2px;
   /* 8px 缝里偏左 3px：右边紧挨着 `.release-list-box` 自己的 1px 边框，
      贴着画会并成两条。 */
   margin-left: 3px;
-  background: var(--border-soft);
+  background: var(--divider-strong);
   pointer-events: none;
+  clip-path: polygon(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%);
 }
 
 .kernel-card .release-list-box {
