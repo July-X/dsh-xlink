@@ -499,7 +499,20 @@
  */
 .diag-card.diag-card--tower { padding: 4px 6px; margin-bottom: 0; }
 
-.diag-card--tower .diag-card__title { padding-bottom: 9px; margin-bottom: 6px; border-bottom: 1px solid var(--border); line-height: 1.35; }
+/* 概览这一屏的卡头：块标题与「当前内核 / 套餐用量」齐平，线换成刻蚀线
+   （2px / 两端收细 / 颜色读 --divider-strong，明暗两套同一个 #212121）。
+   收细只能用 clip-path，原生 border 没法 clip 所以退场。两条各写成一行：
+   代码行数统计只剥行注释与块注释，独立的右花括号按代码行计，常规分行写
+   要多收十几行（scripts/check-code-budget.mjs 里这处的登记有历史）。
+   **注释里不许出现字面的块注释收尾符**——CSS 注释不嵌套，写出来会把本条
+   提前截断，紧随其后的规则就与余下的垃圾文本并成一条非法选择器，被浏览器
+   整条丢弃（第一版就这样丢过下面第一条规则：产物里有、浏览器里没有，
+   text 级判据全绿）。padding-bottom 保持 9px：那是「全前端统一」的
+   「标题到线」留白（cardChrome.test.js 钉着，且要求与 .card-head 相等），
+   不许为了总高对齐单给控制塔改一个数。:not(--bare) 让线只画给有内容的
+   标题——拆成「画线 + 空态清线」两条要多收 3 行。 */
+.diag-card--tower .diag-card__title { position: relative; font-size: var(--fs-block-title); padding-bottom: 9px; margin-bottom: 6px; border-bottom: 0; line-height: 1.35; }
+.diag-card--tower .diag-card__title:not(.diag-card__title--bare)::before { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--divider-strong); pointer-events: none; clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%); }
 
 .diag-card--tower .diag-row { padding-block: 4px; line-height: 1.35; }
 
@@ -527,6 +540,10 @@
  * 时间线位置比概览页宽得多。改完这一轮之后，概览页已经不再使用这个类。
  */
 .diag-card.diag-card--tower .diag-card__title--bare { padding-bottom: 0; margin-bottom: 0; border-bottom: 0; }
+/* **`--bare` 必须连线一起清掉**：分割线从 border 换成了 `::before` 之后，
+   只清 `border-bottom: 0` 那条**照样会画出一条线**——空态的「最近操作」凭空
+   多出 2px 加上下的内边距，正好是上面这段注释花几轮消掉的那份空白。
+   做法是上面那条伪元素选择器带 `:not(--bare)`，正着说「线只画给有内容的标题」。 */
 
 /* 底部操作栏。**不固定在视口底部**——它跟着内容流走，窗口 748px 高，
  * 固定会压掉最后一张卡；内容不足时它自然就在末尾。 */

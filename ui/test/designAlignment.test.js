@@ -282,6 +282,29 @@ test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」�
     /mask-image|mask:\s|linear-gradient\([^)]*transparent/,
     '收细只能用 clip-path，渐变遮罩只是透明度不是粗细',
   );
+  // 概览另外两张卡（系统健康 / 最近操作 / 需要关注）的卡头线在 **diagnostics.css**
+  // 里，不在 OverviewPanel 的 scoped 块——`.diag-card__title` 是共享类，收细只加在
+  // `--tower` 上，那 5 个独立诊断窗口不受影响。同一个六边形因此在两个文件里各写
+  // 一次，两边都要钉住，否则只改一处就会出现同屏两种收细比例。
+  const diag = readFileSync('ui/src/diagnostics/diagnostics.css', 'utf8');
+  const tHead = /\.diag-card--tower \.diag-card__title\s*\{([^}]*)\}/s.exec(diag);
+  assert.ok(tHead, 'diagnostics.css 里要有 .diag-card--tower .diag-card__title 规则');
+  // 块标题与概览其余卡头齐平：读 token，不是写死 17px——token 改了要一起跟着改。
+  assert.match(tHead[1], /font-size:\s*var\(--fs-block-title\)/, '系统健康 / 最近操作的块标题要与概览其余齐平');
+  assert.match(tHead[1], /border-bottom:\s*0;/, '卡头线换成了伪元素，border 必须退场');
+  const tLine = /\.diag-card--tower \.diag-card__title:not\(\.diag-card__title--bare\)::before\s*\{([^}]*)\}/s.exec(diag);
+  assert.ok(tLine, 'diagnostics.css 里要有带 :not(--bare) 的卡头 ::before');
+  assert.match(tLine[1], /height:\s*2px;/);
+  assert.match(tLine[1], /background:\s*var\(--divider-strong\)/);
+  assert.match(tLine[1], new RegExp(`clip-path:\\s*${H_TAPER}`), '控制塔的卡头线收细比例要与概览其余三条一致');
+  // **线必须只画给有内容的标题**：`:not(--bare)` 是这里的关键——分割线从 border
+  // 换成伪元素之后，只清 `border-bottom: 0` 那条**照样会画出一条线**，而
+  // 「最近操作」空态那段注释花了好几轮力气就是为了消掉这份空白。
+  assert.doesNotMatch(
+    diag,
+    /\.diag-card--tower \.diag-card__title::before/,
+    '伪元素选择器必须带 :not(--bare)，否则空态会多出一条线',
+  );
   // `--divider-strong` 用户指定明暗两套都用 `#212121`——**这个值不随主题变**，
   // 按本仓惯例只在 `:root` 定义一次。判据钉的是这个形状：
   //   · `:root` 里必须有且值是 #212121；
@@ -1603,12 +1626,57 @@ test('功能块标题整体放大：块标题 17px / 块内小标题 15px / 页�
   assert.equal(effectiveDeclaration(['card-info-icon'], RULES, 'font-size'), 'var(--fs-tip-icon)');
 });
 
+test('CSS 注释里不许出现字面的块注释记号（注释不嵌套，会提前截断吃掉下一条规则）', () => {
+  // 第一版把「`//` 与块注释」这句写进 diagnostics.css 的注释时带了字面的
+  // 「斜杠星号」记号——CSS 注释不嵌套，那个收尾符把注释提前截断，余下文本
+  // 与紧随其后的规则选择器并成一条非法选择器，**被浏览器整条丢弃**：
+  // 规则文本还在产物里（构建器比浏览器宽容），text 级判据全绿，
+  // 是 headless 实测 computed style 才现形的（position 没生效、线画到了别处）。
+  // 判据因此按浏览器的语义扫：每个注释的内容里不许再出现块注释的开头记号。
+  const files = [...readdirSync(SRC, { recursive: true, withFileTypes: true })]
+    .filter((e) => e.isFile() && (e.name.endsWith('.css') || e.name.endsWith('.vue')))
+    .map((e) => [`${(e.parentPath ?? e.path)}/${e.name}`.replace(/\\/g, '/'), readFileSync(resolve(SRC, e.parentPath ?? e.path, e.name), 'utf8')]);
+  const bad = [];
+  for (const [name, text] of files) {
+    const scopes = name.endsWith('.css')
+      ? [text]
+      : [...text.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]);
+    for (const scope of scopes) {
+      for (const m of scope.matchAll(/\/\*[\s\S]*?\*\//g)) {
+        if (m[0].slice(2, -2).includes('/*')) bad.push(`  ${name}：「${m[0].replace(/\s+/g, ' ').slice(0, 46)}…」`);
+      }
+    }
+  }
+  assert.deepEqual(bad, [], [
+    '这些 CSS 注释的内容里写着字面的块注释记号——注释不嵌套，第一个收尾符会',
+    '提前截断注释，余下文本会并进下一条规则的选择器，整条规则被浏览器丢弃',
+    '（产物里有、浏览器里没有，text 级判据全绿）。要指称注释语法请用文字描述。',
+    '',
+    ...bad,
+  ].join('\n'));
+});
+
 test('诊断层的两种块标题也跟着放大', () => {
   // 系统健康 / 最近操作 / 事故 / 预检这几张卡住在 `diagnostics.css` 的
   // `.diag-card` 家族里，不在 `.card h2 / h3` 的管辖范围内——只改 theme.css
   // 会让概览页放大了、诊断层没放大，同屏两档。
-  assert.equal(effectiveDeclaration(['diag-card__title'], RULES, 'font-size'), '15px');
+  //
+  // **基线仍是 15px，控制塔那三张才是 17px**：`.diag-card__title` 在 5 个独立
+  // 诊断窗口里也在用，那几页不在用户点名的范围内。
+  // **注意 `effectiveDeclaration` 看不见祖先条件**（本仓反复栽在这上面）：
+  // `.diag-card--tower .diag-card__title` 的主语同样是 `.diag-card__title` 且
+  // 特异度更高，所以这一条**问到的已经是 --tower 那条**、基线那条问不到。
+  // 15px 那条因此改由下面这行从规则原文直接断言，两边都守住。
   assert.equal(effectiveDeclaration(['diagnosis__title'], RULES, 'font-size'), '17px');
+  const diagCss = readFileSync('ui/src/diagnostics/diagnostics.css', 'utf8');
+  const base = /\.diag-card__title\s*\{([^}]*)\}/.exec(diagCss);
+  assert.ok(base, 'diagnostics.css 里要有 .diag-card__title 基线规则');
+  assert.match(base[1], /font-size:\s*15px;/, '基线块标题仍是 15px，5 个独立诊断窗口不跟着概览放大');
+  assert.match(
+    diagCss,
+    /\.diag-card--tower \.diag-card__title\s*\{[^}]*font-size:\s*var\(--fs-block-title\);/s,
+    '概览这一屏的块标题要与「当前内核 / 套餐用量」齐平',
+  );
 });
 
 test('全仓没有低于 15px 的块标题（h2 / h3）', () => {
