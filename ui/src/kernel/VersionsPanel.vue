@@ -634,7 +634,7 @@ function groupTip(group) {
   align-items: center;
   gap: 4px;
   margin: 0;
-  font-size: 17px;
+  font-size: var(--fs-block-title);
 }
 
 .usage-total {

@@ -227,7 +227,7 @@ const lastFetched = computed(() => {
 }
 .subwin-title {
   font-weight: 700;
-  font-size: 15px;
+  font-size: var(--fs-subtitle);
 }
 .subwin-info {
   color: var(--text-secondary);
@@ -238,7 +238,7 @@ const lastFetched = computed(() => {
 }
 .subwin-instance {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--fs-desc);
   margin-left: 8px;
   white-space: nowrap;
 }
@@ -278,7 +278,7 @@ const lastFetched = computed(() => {
 }
 .sub-section-head h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-subtitle);
 }
 .sub-section-hint {
   color: var(--text-secondary);
