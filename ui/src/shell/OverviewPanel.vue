@@ -1026,39 +1026,14 @@ function goVersions() {
   height: auto;
 }
 
-/* 这一屏的分割线：**两边细中间粗的一根实线**，2px / `#212121`（2026-10-08 定案）。
-   1px 的线在 1040 宽的窗口里读不出「标题区 / 内容区」「指标 / 指标」这两组分组，
-   2px 才立得住；而**两端收细是用户明确要求保留的效果**——一根从头到尾一样粗的线
-   在这一屏里像拿尺子画的，收细之后两端自然化开，才不像一根棍子。
-
-   **收细只能用 clip-path，不能用渐变。** 渐变（含 `mask-image`）改的只是**透明度**
-   ——两端是「淡到看不见」而不是「细」，1–3px 这个尺度下两者几乎分不出来；
-   `polygon()` 切出来的六边形是**真的**从 0 高收到满高。原生 border 全部退场
-   （`border-*: 0`），border 没法 clip。
-
-   **只有一根线，不做「一深一浅两条」的刻蚀槽**（那一版实机跑完被否掉了）：白底上
-   那条「反光」本来就不可能比白更亮，只能拿一档灰顶，凑不出立体感，两档拉得越开
-   越像两根并排的线。**颜色由 `--divider-strong` 决定，与收细互不相干**——收细是
-   几何、颜色是 token，两件事分开做，之后各自还能单独换。 */
-.kernel-card .card-head,
-.usage-card .card-head {
-  position: relative;
-  border-bottom: 0;
-}
-.kernel-card .card-head::before,
-.usage-card .card-head::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 2px;
-  background: var(--divider-strong);
-  pointer-events: none;
-  clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%);
-}
-/* 三格指标：Node.js / 今日用量 / 数据目录。设计稿给的是 1fr 1fr 1fr，
-   格间用左边框分隔而不是留白——留白在暗色底上读不出「这里换一个维度了」。 */
+/* 这一屏的分割线走 theme.css 的全局刻蚀线标准（.card-head 的底线已在全局
+   换成「2px / 两端收细 / --divider-strong」，这张卡不再需要 scoped 覆写）。
+   这里只剩概览私有的两处：三格指标的上边线，以及格与格之间的竖线。
+   竖线横过来，六边形跟着转 90°（左右收到 0、上下张开），且**收细比横线短**
+   （22% vs 20%）：这一格只有几十像素高，按横线那 20% 去收，两端各削掉十几
+   像素，出来是一片叶子而不是一道线——那正是中途返工过一次的地方。
+   完整的 rationale（为什么不能用渐变、为什么否掉「一深一浅两条」的刻蚀槽）
+   见 theme.css 刻蚀线那段与 ui/AGENTS.md 的设计标准，不在这里重复。 */
 .metrics {
   position: relative;
   display: grid;

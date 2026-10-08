@@ -249,16 +249,15 @@ test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」�
   // 用户先定了「2px 纯黑」，随后指出**两端收细必须保留**——收细是几何、颜色是
   // token，两件事互不相干，中途把它们一起退回成一根直的线是错的组合。原生 border
   // 全部退场：border 没法 clip，直线与收细只能二选一。
+  // 卡头底线已收进 theme.css 的全局刻蚀线标准（.card-head 分组伪元素），
+  // 这张卡不再有 scoped 覆写；这里钉的是概览私有的两条：指标上边线 + 竖线。
   assert.equal(effectiveDeclaration(['metrics'], RULES, 'border-top'), '0');
   assert.equal(effectiveDeclaration(['metric', 'metric'], RULES, 'border-left'), null);
-  assert.match(style, /\.kernel-card \.card-head,\s*\.usage-card \.card-head\s*\{[^}]*position:\s*relative;[^}]*border-bottom:\s*0;/s);
+  assert.doesNotMatch(style, /\.kernel-card \.card-head/, '卡头线已归全局标准，scoped 里不该再写一份');
   // 三处收细线各自钉住：**高度 2px + 颜色读 token + clip-path 的六边形**。
   // 只钉 clip-path 的话把 height 改成 0、线就没了，判据照样绿——所以三条都要。
   const H_TAPER = 'polygon\\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\\)';
-  for (const sel of [
-    /(\.kernel-card \.card-head::before,\s*\.usage-card \.card-head::before)/,
-    /(\.metrics::before)/,
-  ]) {
+  for (const sel of [/(\.metrics::before)/]) {
     const selText = sel.source.replace(/[()]/g, '');
     const rule = new RegExp(`${selText}\\s*\\{([^}]*)\\}`, 's').exec(style);
     assert.ok(rule, `找不到 ${selText} 规则`);
