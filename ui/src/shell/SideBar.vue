@@ -30,6 +30,9 @@ import { Sun as SunIcon, Moon as MoonIcon, Monitor as MonitorIcon } from '@lucid
 const themeIcons = { light: SunIcon, dark: MoonIcon, system: MonitorIcon };
 const themeLabel = computed(() => themeOptions.find((option) => option.value === theme.value)?.label);
 
+const nextTheme = computed(() => themeOptions[(themeOptions.findIndex((option) => option.value === theme.value) + 1) % themeOptions.length]);
+const themeTip = computed(() => '当前：' + themeLabel.value + '；点击切换到' + nextTheme.value.label);
+
 const MENU_GROUPS = [
   {
     label: '工作台',
@@ -202,18 +205,9 @@ watch(collapsed, (value) => {
       >
         <el-icon><Refresh /></el-icon>
       </button>
-      <el-dropdown trigger="click" placement="top-end" @command="setTheme">
-        <button type="button" class="sidebar__theme-btn sidebar__icon-btn" :title="'外观：' + themeLabel" :aria-label="'外观：' + themeLabel">
-          <component :is="themeIcons[theme]" :size="16" />
-        </button>
-        <template #dropdown>
-          <el-dropdown-menu>
-            <el-dropdown-item v-for="option in themeOptions" :key="option.value" :command="option.value" :disabled="theme === option.value">
-              {{ option.label }}{{ theme === option.value ? ' ✓' : '' }}
-            </el-dropdown-item>
-          </el-dropdown-menu>
-        </template>
-      </el-dropdown>
+      <button type="button" class="sidebar__theme-btn sidebar__icon-btn" :title="themeTip" :aria-label="themeTip" @click="setTheme(nextTheme.value)">
+        <component :is="themeIcons[theme]" :size="16" />
+      </button>
     </div>
   </aside>
 </template>

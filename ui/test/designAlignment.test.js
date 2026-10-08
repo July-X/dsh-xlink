@@ -428,12 +428,12 @@ test('余额区总额是 14px 粗体主读数，赠金 / 充值降到第二行 1
 // 设计稿底部是一行：标签 + 版本徽标 + 26px 方钮 + 34px 拨杆。主题开关是
 // **拨杆**（本体无图标，只有一颗 14px 圆点），不是「月亮 / 太阳」图标按钮。
 
-test('侧栏主题入口支持三种模式的快捷菜单', () => {
-  assert.match(sidebar, /<el-dropdown[^>]*trigger="click"[^>]*@command="setTheme"/);
+test('侧栏主题单按钮循环切换三种模式，保留当前图标与切换提示', () => {
+  assert.match(sidebar, /@click="setTheme\(nextTheme.value\)"/);
   assert.match(sidebar, /:is="themeIcons\[theme\]"/);
-  assert.match(sidebar, /v-for="option in themeOptions"/);
-  assert.match(sidebar, /:command="option.value"/);
-  assert.doesNotMatch(sidebar, /@click="toggleTheme"/);
+  assert.match(sidebar, /:title="themeTip" :aria-label="themeTip"/);
+  assert.doesNotMatch(templateOf(sidebar), /<el-dropdown/);
+  assert.match(sidebar, /\+ 1\) % themeOptions.length/);
 });
 
 test('底部一行固定三个方形控件：收起 / 刷新 26×22，标签与版本徽标可压缩', () => {
