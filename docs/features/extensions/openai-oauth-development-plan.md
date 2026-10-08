@@ -28,7 +28,7 @@
 
 活数据：随 P0 调查与每次发布验收重新计算并回写本表；[设计文档](openai-oauth-design.md)只保留计算规则。快照是待验证对象，不构成兼容声明。P0 静态接口调查的逐版本证据见 [P0 发布包调查](openai-oauth-p0-findings.md)。
 
-更新于 2026-10-08，查询[官方版本记录](https://registry.npmjs.org/@deepseek-ai%2Fdsh)，静态接口调查已完成、接线原型待做：
+更新于 2026-10-08，查询[官方版本记录](https://registry.npmjs.org/@deepseek-ai%2Fdsh)，P0 已完成（接口表 + 三版本离线接线原型）：
 
 | 内核版本 | 官方发布时间（UTC） | 验证状态 |
 | --- | --- | --- |

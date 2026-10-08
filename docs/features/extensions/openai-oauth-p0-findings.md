@@ -1,6 +1,6 @@
 # 内嵌 OpenAI OAuth 插件 P0 发布包调查
 
-日期：2026-10-08。状态：静态接口调查完成，离线接线原型未做（见 §4）。输入：[设计文档](openai-oauth-design.md)、[开发计划](openai-oauth-development-plan.md) §9 P0。
+日期：2026-10-08。状态：P0 完成——静态接口调查（§2–§4）与离线接线原型（§5，窗口内三版本实测通过）。输入：[设计文档](openai-oauth-design.md)、[开发计划](openai-oauth-development-plan.md) §9 P0。
 
 ## 1. 调查对象与方法
 
@@ -34,13 +34,42 @@ rc.1 与 rc.2 之间六个包共约 199 行差异，未触及上表接口；alph
 
 ## 4. 缺口与实现路径（对照 P0 退出准则）
 
-| 缺口 | 实现路径 | 归属 |
+| 缺口 | 实现路径 | 归属 | 状态 |
+| --- | --- | --- | --- |
+| `insert:` 行 + 宿主依赖解析未实测 | 临时实例 insert 指向插件目录，验证 `@deepseek-ai/*` 解析到内核树 | 曾为 P1 第一优先 | ✅ 已实测通过，见 §5 |
+| `LlmConfigurableProvider` 声明入口未定位 | 读 `dsh-settings`/`dsh-client-ui-settings` + `--dump-config` 实测 | P1 | 待做 |
+| `dsh.client` 的 inject 目标运行时发现链未端到端验证 | P1 原型：最小 client 插件注册 `provider-card` 插槽 | P1 | 待做 |
+| Cordis `~4.0.4` 与 `~4.0.5-alpha.1` 的宿主 API 差异面 | 按指纹物化目录天然隔离；原型各跑一次 | 低 | ✅ 三版本原型各跑一次均通过（§5） |
+
+结论：窗口内未发现缺失必要能力的版本，所有缺口有明确实现路径；离线接线原型已在三个版本上实测通过（§5）。P0 的两项交付（逐版本接口表、离线接线原型）完成。
+
+## 5. 离线接线原型实测（2026-10-08，窗口内三版本全过）
+
+在本地临时目录（不触碰用户数据目录与内核安装树）为每个版本搭独立 DSH home，全程无 pnpm、无 npm 运行时下载：profile 三件套（`package.json` 带 `dsh.profile.bundles`、`pnpm-workspace.yaml`、`cordis.patch.yml`）+ 指纹目录插件 + peer 符号链接，以 `node <bin.js> web --no-open --port <p>` 与 `DSH_HOME`/`DSH_PROFILE` 启动。
+
+**接线配方**（三版本一致）：
+
+1. `cordis.patch.yml` 加一条 `insert` 行，`name` 为相对 patch 文件的路径，**必须直指入口文件**（如 `../../extensions/builtin/openai-oauth-prot/0.0.0/fp-<ver>/compat-a/index.js`）；内核启动时经 `anchorInsertedPluginNames` 转为 file URL 导入。
+2. 插件包形状：`package.json`（`type: "module"`）+ `index.js` 导出 `apply(ctx, config)` 与 `inject: ["llm"]`——Cordis fiber 正常建立。
+3. 宿主依赖解析：插件目录内 `node_modules/@deepseek-ai/dsh-llm` 符号链接指向**该版本内核树**的同一包；Node 按 realpath 解析其传递依赖，实测 `import { LlmAdapter, LlmError }` 成功。
+4. 适配器 `extends LlmAdapter`（运行时类自包根导出），实现 `providerInfo`/`listModels`/`resolveModel`/`stream`，`ctx.llm.registerAdapter([provider], adapter)` 注册成功；注册句柄**本身是 disposer**（调用即注销），`.replace(next)` 原子换路由。
+5. 验证信号：stderr 仅剩注册日志一行、无内核告警；marker 文件记录 `replace` 可用、`LlmError` 导入成功、继承关系成立。
+
+**实测中踩到并排除的两个坑**：
+
+| 现象 | 根因 | 结论 |
 | --- | --- | --- |
-| `insert:` 行 + 宿主依赖解析未实测 | P1 原型：临时实例 insert 指向插件目录，验证 `@deepseek-ai/*` 解析到内核树 | P1 第一优先 |
-| `LlmConfigurableProvider` 声明入口未定位 | 读 `dsh-settings`/`dsh-client-ui-settings` + `--dump-config` 实测 | P1 |
-| `dsh.client` 的 inject 目标运行时发现链未端到端验证 | P1 原型：最小 client 插件注册 `provider-card` 插槽 | P1 |
-| Cordis `~4.0.4` 与 `~4.0.5-alpha.1` 的宿主 API 差异面 | 按指纹物化目录天然隔离；原型各跑一次 | 低 |
+| `failed to import`（行已解析为 file URL） | `name` 指向**目录**：ESM 无目录导入（`ERR_UNSUPPORTED_DIR_IMPORT`），裸 node 导入同路径却成功是因为 `package.json` 参与——loader 的 file URL 不走包解析 | 接线行的 `name` 必须直指入口 JS 文件；P1 的接线写入器按此生成 |
+| `TypeError: adapter.providerRetryPolicy is not a function`（栈在 `registerAdapter` 内部） | 裸对象适配器缺少抽象类提供的默认方法，运行时无条件调用全部方法 | 适配器必须继承运行时 `LlmAdapter`（或自带全部方法）；类型只约束形状，运行时是类 |
 
-结论：窗口内未发现缺失必要能力的版本，所有缺口有明确实现路径——满足开发计划 §9 P0 退出准则的「所有缺口有明确实现路径」；「离线接线原型」移交 P1 作为第一项交付，P0 在原型完成前不宣告结束。
+三个版本的结果（端口 3119 / 3120 / 3121，marker 内容一致）：
 
-调查证据：本机安装树 `~/.dsh-xlink/dsh/desktop/kernels/0.2.1-alpha.1/node_modules/@deepseek-ai/`（只读）与 registry.npmjs.org 官方 tarball（解包于本地临时目录）。
+| 内核版本 | Cordis | 插件加载 | peer 解析 | 适配器注册 | 内核告警 |
+| --- | --- | --- | --- | --- | --- |
+| `0.2.1-alpha.1` | ~4.0.5-alpha.1 | ✅ | ✅ | ✅ | 无 |
+| `0.2.0-rc.2` | ~4.0.4 | ✅ | ✅ | ✅ | 无 |
+| `0.2.0-rc.1` | ~4.0.4 | ✅ | ✅ | ✅ | 无 |
+
+本节是**适配器注册与加载链路**的证明，不覆盖设置页提供方目录声明（`LlmConfigurableProvider` 入口）与客户端卡片发现链，两者仍在 P1 验证。
+
+调查证据：本机安装树 `~/.dsh-xlink/dsh/desktop/kernels/0.2.1-alpha.1/node_modules/@deepseek-ai/`（只读）与官方 tarball / 镜像安装树（均解包于本地临时目录）。
