@@ -25,7 +25,10 @@ import { store, checkShellUpdate } from '../store.js';
 import { globalBusy } from './loading.js';
 import { pluginStore } from '../plugins/plugins.js';
 import { skillStore } from '../skills/skills.js';
-import { theme, toggleTheme } from './theme.js';
+import { theme, themeOptions, setTheme } from './theme.js';
+import { Sun as SunIcon, Moon as MoonIcon, Monitor as MonitorIcon } from '@lucide/vue';
+const themeIcons = { light: SunIcon, dark: MoonIcon, system: MonitorIcon };
+const themeLabel = computed(() => themeOptions.find((option) => option.value === theme.value)?.label);
 
 const MENU_GROUPS = [
   {
@@ -116,9 +119,6 @@ watch(collapsed, (value) => {
   }
 });
 
-// 2026-10-07：底部主题开关不再显示「深色主题 / 浅色主题」文字（那是切换
-// **另一侧**的名字，写在开关上读起来像「点它会变成深色」），改为拨杆 +
-// aria-pressed + 悬停提示。原先的 themeLabel computed 随之删除。
 </script>
 
 <template>
@@ -202,20 +202,18 @@ watch(collapsed, (value) => {
       >
         <el-icon><Refresh /></el-icon>
       </button>
-      <!-- 设计稿 `.theme-switch` 是一个 34px 宽的拨杆：本体无图标，只有一颗
-           14px 圆点，深色态整条染成强调色、圆点滑到右端。原先这里放的是
-           「月亮/太阳」图标方钮——和设计稿差两处（形状与语义），而且图标
-           按钮看着像「点一下进设置」，拨杆才读得出「这是个开关」。
-           深色态用 [aria-pressed="true"] 表达，不跟设计稿的 data-theme 属性走：
-           我们的主题判据统一是 html.dark（与 Element Plus 自带变量一致）。 -->
-      <button
-        type="button"
-        class="sidebar__theme-btn"
-        :title="'切换到' + (theme === 'dark' ? '浅色' : '深色') + '主题'"
-        :aria-label="'切换到' + (theme === 'dark' ? '浅色' : '深色') + '主题'"
-        :aria-pressed="theme === 'dark'"
-        @click="toggleTheme"
-      ></button>
+      <el-dropdown trigger="click" placement="top-end" @command="setTheme">
+        <button type="button" class="sidebar__theme-btn sidebar__icon-btn" :title="'外观：' + themeLabel" :aria-label="'外观：' + themeLabel">
+          <component :is="themeIcons[theme]" :size="16" />
+        </button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item v-for="option in themeOptions" :key="option.value" :command="option.value" :disabled="theme === option.value">
+              {{ option.label }}{{ theme === option.value ? ' ✓' : '' }}
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
     </div>
   </aside>
 </template>
@@ -252,39 +250,6 @@ watch(collapsed, (value) => {
   opacity: 0.5;
   cursor: default;
 }
-/* 主题开关是拨杆不是按钮：34px 宽的槽 + 14px 圆点，与旁边那个 26px 方形
-   刷新按钮一眼分得开。设计稿的深色态把整条染成强调色、圆点滑到右端；
-   这里用 aria-pressed 表达同一状态（见模板注释）。 */
-.sidebar__theme-btn {
-  position: relative;
-  flex: 0 0 auto;
-  width: 34px;
-  height: 22px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  background: var(--border);
-  cursor: pointer;
-}
-.sidebar__theme-btn:hover {
-  background: var(--surface-raised);
-}
-.sidebar__theme-btn::before {
-  content: '';
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--surface-raised);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-  transition: transform 160ms ease;
-}
-.sidebar__theme-btn[aria-pressed='true'] {
-  border-color: var(--accent-strong);
-  background: var(--accent-strong);
-}
-.sidebar__theme-btn[aria-pressed='true']::before {
-  transform: translateX(12px);
-}
+/* 三态主题入口复用底部方钮，图标表达选择的模式。 */
+.sidebar__theme-btn { color: var(--accent); }
 </style>

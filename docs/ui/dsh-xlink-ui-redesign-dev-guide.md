@@ -285,3 +285,7 @@ Node.js 缺失、插件预检失败、工作台故障、设置回退等属于“
 | 快照和二分排查 | `ui/src/diagnostics/SnapshotCard.vue`、`ui/src/diagnostics/BisectPanel.vue` |
 | 数据迁移 | `ui/src/migration/MigrationPanel.vue`、`ui/src/migration/MigrationPrompt.vue` |
 | 前后端调用入口 | `ui/src/shell/bridge.js` |
+
+### 外观设置
+
+设置页右栏提供浅色、深色、跟随系统三个带图标的选项，点击立即生效并记住选择。侧栏底部用太阳、月亮、显示器表示当前模式，点击打开三项快捷菜单。跟随系统响应系统配色变化；固定浅色或深色不受影响。页面、弹层及已打开的壳副窗口统一使用解析后的配色，旧用户默认与已有选择保持不变。
