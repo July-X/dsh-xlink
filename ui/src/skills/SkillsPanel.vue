@@ -287,7 +287,12 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
          内容」）。 -->
     <div class="card community-card">
       <div class="card-head">
-        <span class="card-title">社区资源</span>
+        <!-- 用 `<h2>` 而不是 `<span class="card-title">`：后者全仓没有对应规则，
+             字号直接继承 body 的 14px，于是「社区资源」比同一张卡里的「技能社区」
+             还小、比上面那张卡的标题小 3px——同一页里三档标题（2026-10-08 用户报
+             「技能页没调整完」）。其余面板的卡头标题也都是 `<h2>`，这里跟着走，
+             `.card h2` 那一份（17px / 700）自动生效。 -->
+        <h2>社区资源</h2>
         <span class="card-caption">GitHub dsh-skill topic</span>
       </div>
       <!-- 一句「社区在哪、这里没有什么」+ 一个打开 topic 的按钮。面板里**没有**
@@ -301,6 +306,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
           </div>
         </div>
         <el-button
+          class="btn-action"
           size="small"
           :disabled="globalBusy"
           aria-label="打开 GitHub dsh-skill topic"
@@ -344,6 +350,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
                不经过 `withLoading`，`isLoading('…')` 对它永远是 false——挂上去
                就是一个永远不转的假 loading。在途状态由进度浮层负责表达。 -->
           <el-button
+            class="btn-action"
             type="primary"
             :disabled="globalBusy || !skillStore.spec.trim()"
             @click="installSkill"
@@ -397,13 +404,16 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
 
 /* 卡内小节标题与它下面的说明：技能社区 / 手动安装两组各差一点点（说明一个省略、
    一个换行），但基线是同一条——分开写两遍，两处字号早晚会漂成不一样。
-   标题用 flex：只有「手动安装」带 ⓘ，但让不带图标的也走 flex 不花钱。 */
+   标题用 flex：只有「手动安装」带 ⓘ，但让不带图标的也走 flex 不花钱。
+   字号 12 → 15px（`--fs-subtitle`，2026-10-08 用户报「技能页没调整完」）：
+   这一档与 `.card h3` 同档，12px 时它与上面那张卡的标题差了 5px，同一屏里
+   「技能社区」读起来像正文而不是小节标题。 */
 .community-title {
   display: flex;
   align-items: center;
   gap: 6px;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-subtitle);
   font-weight: 650;
 }
 .community-meta {
