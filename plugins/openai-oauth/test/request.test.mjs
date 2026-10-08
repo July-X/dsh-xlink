@@ -38,6 +38,26 @@ test('envelope: 不支持参数显式拒绝', () => {
   }
 });
 
+test('envelope: 显式强度进线格式与信封双处', () => {
+  const envelope = buildEnvelope(
+    {
+      model: 'gpt-x',
+      reasoningEffort: 'high',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    },
+    CATALOG,
+  );
+  assert.equal(envelope.reasoningEffort, 'high');
+  assert.deepEqual(envelope.payload.reasoning, { effort: 'high' });
+  // 未选择时两处都不出现。
+  const plain = buildEnvelope(
+    { model: 'gpt-x', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] },
+    CATALOG,
+  );
+  assert(!('reasoningEffort' in plain));
+  assert(!('reasoning' in plain.payload));
+});
+
 test('envelope: 未知模型拒绝', () => {
   assert.throws(
     () => buildEnvelope({ model: 'gpt-none', messages: [] }, CATALOG),
