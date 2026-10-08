@@ -109,6 +109,16 @@ pub(crate) fn get_json(url: &str) -> Result<String, Failure> {
     send(url, |agent, url| agent.get(url).call())
 }
 
+/// 带 Bearer 鉴权的 GET（模型目录等账号端点）；路由纪律与 get_json 一致。
+pub(crate) fn get_json_with_auth(url: &str, bearer: &str) -> Result<String, Failure> {
+    send(url, |agent, url| {
+        agent
+            .get(url)
+            .header("authorization", &format!("Bearer {bearer}"))
+            .call()
+    })
+}
+
 /// POST 一份 JSON 文本（公开客户端：PKCE，无 basic 凭据）。`&str` 直接
 /// 作为 body 发送（AsSendBody 原生支持），不经 `send_json` 二次编码。
 pub(crate) fn post_json(url: &str, body: &str) -> Result<String, Failure> {
