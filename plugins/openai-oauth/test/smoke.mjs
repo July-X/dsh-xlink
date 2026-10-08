@@ -98,14 +98,27 @@ const bridgeServer = createServer((req, res) => {
     });
     req.on("end", () => {
       stubRequests.push({ url: req.url, method: req.method, body: raw });
-      const events = [
-        '{"type":"response.output_text.delta","delta":"pong"}',
-        '{"type":"response.output_text.delta","delta":"-from-stub"}',
-        '{"type":"response.completed","response":{"id":"resp-1","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5},"output":[]}}',
-      ];
+      // 状态机：第 1 次请求发 function_call（探针工具，内核 agent loop 会
+      // 执行并回传结果），第 2 次起回最终文本——验证 P4 的工具往返闭环。
+      const roundtrip = stubRequests.filter((r) => r.url === "/v1/responses").length;
+      const events =
+        roundtrip <= 1
+          ? [
+              '{"type":"response.output_item.added","item":{"type":"function_call","id":"call-probe-1","name":"xlink_probe","arguments":""}}',
+              '{"type":"response.function_call_arguments.delta","item_id":"call-probe-1","name":"xlink_probe","delta":"{}"}',
+              '{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"function_call","id":"call-probe-1","name":"xlink_probe","arguments":"{}"}]}}',
+            ]
+          : [
+              '{"type":"response.output_text.delta","delta":"pong-from-stub"}',
+              '{"type":"response.completed","response":{"id":"resp-2","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5},"output":[]}}',
+            ];
+      const terminal =
+        roundtrip <= 1
+          ? '{"type":"bridge.terminal","status":"completed","replay":{"response":{"id":"resp-1","output":[{"type":"function_call","id":"call-probe-1","name":"xlink_probe","arguments":"{}"}]}},"detail":null}'
+          : '{"type":"bridge.terminal","status":"completed","replay":{"response":{"id":"resp-2","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5},"output":[]}},"detail":null}';
       res.writeHead(200, { "content-type": "application/x-ndjson" });
       for (const event of events) res.write(event + "\n");
-      res.write('{"type":"bridge.terminal","status":"completed","replay":{"response":{"id":"resp-1","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5},"output":[]}},"detail":null}\n');
+      res.write(terminal + "\n");
       res.end();
     });
     return;
@@ -264,11 +277,21 @@ const headlessCode = await new Promise((done) => {
   headless.on("exit", (code) => { clearTimeout(timer); done(code); });
 });
 check(
-  "headless 会话产出桩上游文本",
+  "headless 会话产出桩上游文本（经工具往返后的最终回答）",
   headlessCode === 0 && headlessOut.includes("pong-from-stub"),
   `exit=${headlessCode} stdout=${JSON.stringify(headlessOut.slice(0, 200))} stderr=${JSON.stringify(headlessErr.slice(0, 300))}`,
 );
 const responsesHit = stubRequests.find((r) => r.url === "/v1/responses");
+const responsesAll = stubRequests.filter((r) => r.url === "/v1/responses");
+const roundtripHit = responsesAll[1];
+check(
+  "工具往返闭环（第 2 次请求携带 function_call_output 与原 call_id）",
+  responsesAll.length >= 2 &&
+    roundtripHit !== undefined &&
+    roundtripHit.body.includes("function_call_output") &&
+    roundtripHit.body.includes("call-probe-1"),
+  `hits=${responsesAll.length}`,
+);
 check(
   "强度端到端（agentDefaultModel.reasoningEffort → payload.reasoning.effort）",
   responsesHit !== undefined && responsesHit.body.includes('"reasoning":{"effort":"low"}'),
