@@ -228,6 +228,11 @@ const FILE_BUDGETS = {
   // 意图落盘），与 status 共用 resolve_target / status_payload。仍是
   // 「一个关注点一个文件」：命令壳不往 mod.rs 塞。
   'src-tauri/src/plugins/builtin/cmd.rs': 171,
+  // 2026-10-08：内嵌插件的前端状态与动作（plugins 页「当前内核」tab 的
+  // 内嵌插件区）。不进 plugins.js：那边是社区插件的清单与安装事务
+  // （456 行），本插件只有「读状态 + 拨开关」两条命令，混进去会让
+  // 「内嵌 ≠ 社区」这条边界在状态层就糊掉（设计 §3.1 的第一条边界）。
+  'ui/src/plugins/builtin.js': 36,
   // 启用意图 state.json 的读写（按壳模式 / profile 分键；损坏文件报错
   // 而不是重置）。与 pkg/state.rs 的 JSON 状态读写不是同一职责：那边是
   // 社区插件/技能共用的取源层约定，这边是本插件私有的意图落盘。
@@ -2012,7 +2017,7 @@ const FILE_BUDGETS = {
 // process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
-const TOTAL_BUDGET = 42981;
+const TOTAL_BUDGET = 43075;
 // 42424 → 42807 → 42981（2026-10-08）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
