@@ -13,6 +13,9 @@
 > 与阶段性状态快照
 > [multi-kernel-migration-status-2026-09-19.md](../../architecture/multi-kernel/multi-kernel-migration-status-2026-09-19.md)。
 > P6 step 5 / P8 落地后本文会按新的实际行为重新校对；当前以代码为准。
+> 另：随应用交付的内嵌插件不进社区中央库，其[设计](openai-oauth-design.md)与
+> [开发计划](openai-oauth-development-plan.md)另立两文；两者的接线调和对象
+> 正是本文与 [plugin-internals.md](plugin-internals.md) 描述的社区接线链。
 
 ## 目标
 
