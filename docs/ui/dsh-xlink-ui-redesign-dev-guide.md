@@ -188,6 +188,8 @@ Node.js 缺失、插件预检失败、工作台故障、设置回退等属于“
 
 保存配置是当前工作台 / 当前实例的设置动作，应靠近工作台标题和当前实例上下文。不要把它放到页面最右上角，造成它像全局主题设置。
 
+环境回退与诊断的行间分隔使用 2px 蚀刻线，颜色为 `--divider-strong`，两端收细；最后一行下方不画线。
+
 ### 6. 数据迁移
 
 主要源码：`ui/src/migration/MigrationPanel.vue`、`ui/src/migration/MigrationPrompt.vue`。
