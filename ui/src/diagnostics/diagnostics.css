@@ -230,13 +230,16 @@
   color: var(--text-secondary);
 }
 
-/* 类名跟 `statusMeta` 的 tone 走（tone = 'ok'），取值跟 theme.css 的
- * --good 走。两者不同名是刻意的：tone 是「这一行的语义」，而色板是
- * 全局 token——将来把成功色从绿改成别的，只动 theme.css 一处。 */
-.diag-timeline__mark--ok { color: var(--success); border-color: rgba(52, 211, 153, 0.4); }
-.diag-timeline__mark--warn { color: var(--warning); border-color: rgba(251, 191, 36, 0.4); }
-.diag-timeline__mark--bad { color: var(--danger); border-color: rgba(248, 113, 113, 0.4); }
-.diag-timeline__mark--active { color: var(--accent); border-color: rgba(79, 140, 255, 0.5); }
+/* 类名跟 `statusMeta` 的 tone 走（tone = 'ok'），色值跟 theme.css 的语义
+ * token 走（warning / danger / accent 的描边各有 -line 档；success 刻意
+ * 没有 line 档，直接用本色，与 `.entity-mode.is-link` 的描边同一口径）。
+ * 两者不同名是刻意的：tone 是「这一行的语义」，而色板是全局 token——
+ * 将来把成功色从绿改成别的，只动 theme.css 一处。原先写死的
+ * emerald/amber/red/blue 各 0.4 档是按深色底调的，浅色下全失真。 */
+.diag-timeline__mark--ok { color: var(--success); border-color: var(--success); }
+.diag-timeline__mark--warn { color: var(--warning); border-color: var(--warning-line); }
+.diag-timeline__mark--bad { color: var(--danger); border-color: var(--danger-line); }
+.diag-timeline__mark--active { color: var(--accent); border-color: var(--accent-line); }
 
 .diag-timeline__main { flex: 1; min-width: 0; }
 
@@ -260,7 +263,7 @@
  * 会把第 1 次的失败盖掉。 */
 .diag-timeline__attempt {
   font-size: 11px;
-  color: var(--accent-2, var(--accent));
+  color: var(--accent);
   margin-left: 6px;
 }
 
@@ -547,8 +550,8 @@
   margin: 0 0 10px;
   padding: 9px 10px;
   border-radius: 10px;
-  border: 1px solid rgba(248, 113, 113, 0.4);
-  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid var(--danger-line);
+  background: var(--danger-fill);
   font-size: 12px;
   line-height: 1.7;
   color: var(--text);
