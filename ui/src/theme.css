@@ -648,16 +648,22 @@ code {
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   padding: 4px 2px 0;
 }
 
+/* 鲸鱼图标 34 → 42px（2026-10-08 用户截图指过来：「黑鲸icon放大」）。34px 与
+   15px 主名 + 11px 副名那一摞文字等高，读起来是「配图」而不是品牌主体；42px
+   高过文字块一截，它才在这一行里当得起标识。圆角按同比例 7 → 9。
+   收起态 64px 侧栏去掉 8px 横向内边距后内容盒 48px，42px 仍放得下。
+   **`width` / `height` 属性在 SideBar.vue 的 `<img>` 上也要跟着改**——那两个
+   属性是给读屏与布局的第一手尺寸，留在 34 就是一句谎，判据钉的是两处相等。 */
 .brand img {
-  width: 34px;
-  height: 34px;
-  flex: 0 0 34px;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
   display: block;
-  border-radius: 7px;
+  border-radius: 9px;
 }
 
 .brand__text {
