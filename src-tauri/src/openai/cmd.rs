@@ -17,9 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use crate::openai::auth;
 use crate::openai::flow::{self, FlowPaths, ProductionTransport};
-use crate::shell::paths;
 use crate::shell::settings;
 
 /// 授权流程结束时的广播事件名（UI 侧订阅刷新账户卡）。
@@ -64,14 +62,7 @@ pub(crate) fn mask_email(email: &str) -> String {
 }
 
 fn flow_paths() -> FlowPaths {
-    let mode = settings::current_mode();
-    let mode_dir = paths::shell_dir(mode).join("openai-oauth");
-    FlowPaths {
-        vault_file: mode_dir.join("accounts.bin"),
-        mode_dir,
-        xlink_home: paths::xlink_home(),
-        issuer_base: auth::SIWC_ISSUER.to_string(),
-    }
+    flow::shell_flow_paths()
 }
 
 fn status_payload(app: &AppHandle) -> AccountStatus {
@@ -215,6 +206,6 @@ mod tests {
         let text = paths.vault_file.to_string_lossy();
         assert!(text.contains("openai-oauth"), "{text}");
         assert!(text.contains("accounts.bin"), "{text}");
-        assert_eq!(paths.issuer_base, auth::SIWC_ISSUER);
+        assert_eq!(paths.issuer_base, crate::openai::auth::SIWC_ISSUER);
     }
 }

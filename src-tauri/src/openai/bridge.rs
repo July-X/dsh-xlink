@@ -55,7 +55,7 @@ fn new_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn serve(stream: &mut TcpStream, token: &str) {
+fn serve(stream: &mut TcpStream, token: &str, models: &ModelsSource) {
     let Ok(request) = crate::openai::http::read_request(stream) else {
         return;
     };
@@ -76,7 +76,18 @@ fn serve(stream: &mut TcpStream, token: &str) {
         "/v1/handshake" => {
             format!("{{\"protocol\":{PROTOCOL_VERSION},\"service\":\"xlink-openai-oauth\"}}")
         }
-        "/v1/models" => "{\"revision\":\"stub-0\",\"models\":[]}".to_string(),
+        "/v1/models" => match models() {
+            Ok(payload) => payload,
+            Err((status, reason)) => {
+                let _ = crate::openai::http::write_response(
+                    stream,
+                    status,
+                    "application/json",
+                    &format!("{{\"error\":\"{reason}\"}}"),
+                );
+                return;
+            }
+        },
         _ => {
             let _ = crate::openai::http::write_response(
                 stream,
@@ -90,8 +101,12 @@ fn serve(stream: &mut TcpStream, token: &str) {
     let _ = crate::openai::http::write_response(stream, 200, "application/json", &body);
 }
 
+/// `/v1/models` 的数据源：返回 Host 契约载荷，或（HTTP 状态码, 原因）。
+/// 生产实现连真实目录（`catalog::serve_payload`）；测试注入桩。
+pub(crate) type ModelsSource = Arc<dyn Fn() -> Result<String, (u16, String)> + Send + Sync>;
+
 /// 起一个新桥接（绑定 `127.0.0.1:0`）。失败信息带监听地址语义，可直接给日志。
-fn spawn_bridge(key: &str) -> Result<Arc<Bridge>, String> {
+fn spawn_bridge(key: &str, models: ModelsSource) -> Result<Arc<Bridge>, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("桥接服务监听 127.0.0.1 失败：{error}"))?;
     let addr = listener
@@ -101,6 +116,7 @@ fn spawn_bridge(key: &str) -> Result<Arc<Bridge>, String> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let thread_flag = Arc::clone(&shutdown);
     let thread_token = token.clone();
+    let thread_models = Arc::clone(&models);
     std::thread::Builder::new()
         .name(format!("oop-bridge-{key}"))
         .spawn(move || {
@@ -112,7 +128,7 @@ fn spawn_bridge(key: &str) -> Result<Arc<Bridge>, String> {
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                     .ok();
-                serve(&mut stream, &thread_token);
+                serve(&mut stream, &thread_token, &thread_models);
             }
         })
         .map_err(|error| format!("启动桥接线程失败：{error}"))?;
@@ -128,13 +144,24 @@ fn ensure_bridge(family: &str, instance_id: &str) -> Result<(String, String), St
     let key = format!("{family}/{instance_id}");
     let mut registry = bridges().lock().unwrap_or_else(|p| p.into_inner());
     // Drop 旧的（触发停机唤醒）再插入新的：同一实例重启内核 = 旧令牌作废。
-    if let Some(old) = registry.insert(key.clone(), spawn_bridge(&key)?) {
+    if let Some(old) = registry.insert(key.clone(), spawn_bridge(&key, production_models_source())?)
+    {
         drop(old);
     }
     let current = registry
         .get(&key)
         .ok_or_else(|| "桥接注册表刚被写入却读不到（不应发生）".to_string())?;
     Ok((format!("http://{}/", current.addr), current.token.clone()))
+}
+
+/// 生产目录源：壳内路径 + 生产传输；错误分类给 Host（401=重登 / 503=不可用）。
+fn production_models_source() -> ModelsSource {
+    Arc::new(|| {
+        let paths = crate::openai::flow::shell_flow_paths();
+        let transport = crate::openai::flow::ProductionTransport { open_browser: None };
+        let mode = crate::shell::settings::current_mode().as_str().to_string();
+        crate::openai::catalog::serve_payload(&paths, &transport, &mode)
+    })
 }
 
 /// 内核启动时注入的桥接环境变量（开发计划 §5：只经子进程环境传入）。
@@ -196,7 +223,11 @@ mod tests {
     }
 
     fn test_bridge(tag: &str) -> (std::net::SocketAddr, String, Arc<Bridge>) {
-        let bridge = spawn_bridge(&format!("test-{tag}")).unwrap();
+        let bridge = spawn_bridge(
+            &format!("test-{tag}"),
+            Arc::new(|| Ok("{\"revision\":\"stub-0\",\"models\":[]}".to_string())),
+        )
+        .unwrap();
         let addr = bridge.addr;
         let token = bridge.token.clone();
         // 返回句柄让调用方保活：Bridge 的 Drop 即停机（注册表换代语义），

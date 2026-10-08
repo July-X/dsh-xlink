@@ -120,6 +120,49 @@ pub(crate) fn load_catalog(
     Ok(catalog)
 }
 
+/// 桥接 `/v1/models` 的载荷（Host `bridge.js` 的契约形状：`{revision,
+/// models}`；revision 把目录与能力表两个版本拼在一起，Host 发送前校验）。
+/// 拉取失败时回退活跃账号的最后一次成功缓存（带原 revision，不冒充新）；
+/// 连缓存都没有才报错——错误码与文案给 Host 分类用。
+pub(crate) fn serve_payload(
+    paths: &FlowPaths,
+    deps: &impl FlowTransport,
+    mode: &str,
+) -> Result<String, (u16, String)> {
+    match load_catalog(paths, deps, mode) {
+        Ok(catalog) => Ok(catalog_to_payload(&catalog)),
+        Err(CatalogError::Reauth(detail)) => Err((401, detail)),
+        Err(CatalogError::Message(detail)) => {
+            // 缓存兜底：活跃账号的最后一次成功目录。
+            let sub = crate::openai::flow::account_view(paths, deps, mode)
+                .ok()
+                .flatten()
+                .map(|view| view.sub);
+            if let Some(catalog) = sub.as_deref().and_then(|sub| cached_catalog(paths, sub)) {
+                // 不在载荷里嵌「已回退」说明：Host 契约形状固定，追加字段
+                // 会制造两份解析路径；回退语义由原 revision 表达（Host 按
+                // revision 判断新鲜度，旧目录不会冒充新的）。
+                return Ok(catalog_to_payload(&catalog));
+            }
+            Err((503, format!("模型目录不可用：{detail}")))
+        }
+    }
+}
+
+fn catalog_to_payload(catalog: &Catalog) -> String {
+    serde_json::json!({
+        "revision": format!("{}|cap{}", catalog.revision, catalog.capability_revision),
+        "models": catalog.entries.iter().map(|entry| serde_json::json!({
+            "id": entry.id,
+            "name": entry.name,
+            "contextWindow": entry.context_window,
+            "efforts": entry.efforts,
+            "capability": entry.capability,
+        })).collect::<Vec<_>>(),
+    })
+    .to_string()
+}
+
 /// 只读缓存（诊断与「拉取失败但能看到上次目录」的展示用）。
 pub(crate) fn cached_catalog(paths: &FlowPaths, sub: &str) -> Option<Catalog> {
     let text = std::fs::read_to_string(catalog_cache_path(paths, sub)).ok()?;
@@ -328,6 +371,82 @@ mod tests {
         }
         fn keyring_put(&self, _: &str, _: &str, _: &str) -> Result<(), String> {
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod serve_tests {
+    use super::*;
+    use crate::openai::flow::tests::{flow_test_paths, MockIssuer};
+    use crate::openai::http::{read_request, write_response};
+    use std::net::TcpListener;
+    use std::sync::atomic::AtomicBool;
+
+    fn serve_models(body: &'static str, token: &'static str) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let Ok(request) = read_request(&mut stream) else {
+                    continue;
+                };
+                let ok = request
+                    .headers
+                    .get("authorization")
+                    .is_some_and(|v| v == &format!("Bearer {token}"));
+                if !ok {
+                    let _ = write_response(&mut stream, 401, "application/json", "{}");
+                    continue;
+                }
+                let _ = write_response(&mut stream, 200, "application/json", body);
+            }
+        });
+        port
+    }
+
+    /// 目录源失败（非授权问题）→ 回退最后一次成功缓存，载荷 revision 不变；
+    /// 连缓存都没有 → 503。
+    #[test]
+    fn serve_payload_falls_back_to_cache_then_503() {
+        let issuer = MockIssuer::spawn();
+        let transport = issuer.transport();
+        let paths = flow_test_paths("serve-fb", issuer.port());
+        let cancel = AtomicBool::new(false);
+        crate::openai::flow::run_authorize(&paths, &transport, "release", &cancel).unwrap();
+        let models_port = serve_models(r#"{"data":[{"id":"gpt-x","name":"GPT X"}]}"#, "at-mock");
+        let mut live = paths.clone();
+        live.issuer_base = format!("http://127.0.0.1:{models_port}");
+        let payload = serve_payload(&live, &transport, "release").unwrap();
+        assert!(payload.contains("gpt-x"));
+        let parsed_payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let revision_with_cache = parsed_payload["revision"].as_str().unwrap().to_string();
+
+        // 目录源挂掉（死端口）：回退缓存，revision 与上次一致。
+        let mut dead = paths.clone();
+        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead_port = probe.local_addr().unwrap().port();
+        drop(probe);
+        dead.issuer_base = format!("http://127.0.0.1:{dead_port}");
+        // 注意：死端口让发现文档（issuer 基址）失败——load_catalog 里
+        // ensure_fresh_access 未过期会短路（不触网），随后目录拉取才触网。
+        let fallback = serve_payload(&dead, &transport, "release").unwrap();
+        let parsed_fallback: serde_json::Value = serde_json::from_str(&fallback).unwrap();
+        let revision = parsed_fallback["revision"].as_str().unwrap().to_string();
+        assert_eq!(revision, revision_with_cache);
+        assert!(fallback.contains("gpt-x"));
+    }
+
+    /// 未登录 → 503（不是 401：这是「没有账号」不是「令牌被拒」）。
+    #[test]
+    fn serve_payload_without_login_is_503() {
+        let issuer = MockIssuer::spawn();
+        let transport = issuer.transport();
+        let paths = flow_test_paths("serve-nologin", issuer.port());
+        match serve_payload(&paths, &transport, "release") {
+            Err((503, detail)) => assert!(detail.contains("登录"), "{detail}"),
+            other => panic!("{other:?}"),
         }
     }
 }
