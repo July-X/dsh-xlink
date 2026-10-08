@@ -147,6 +147,14 @@
   - **`--success-fill` 是补齐而不是新增词汇**：`--accent-fill` / `--warning-fill` / `--danger-fill` 早就有三个，success 缺席才导致那枚徽章只能写死 `rgba(52,211,153,.12)`。**刻意不补 `--success-line`**——没有第二处用得上它，登记一个没有作用方的 token 与本仓惯例相反。
   - **`.el-icon` 不再单列选择器**：Element Plus 的 `.el-icon` 是 `--color: inherit` + `color: var(--color)`，图标本来就跟着按钮走。原先每条按钮规则都把 `.el-icon` 重抄一遍（`.btn-chat` / `.btn-danger` 各四处），纯冗余，而且**抄漏一处就只染到一半**——图标与文字不同色时看起来像渲染错位。判据显式禁掉这个形状。
   - 判据见 `ui/test/designAlignment.test.js` 的「彩色按钮」一组（3 条），已做过反向验：把 `.btn-chat` 换回 `#6ee7b7`、删掉暗色主题的 `--success-strong`、把 hover 换回 `#fca5a5` 并加回 `.el-icon` 选择器，三条各自转红。
+- **药丸页签的内边距两侧都要在，选择器必须带 `.el-tabs__nav` + `:nth-child(n)`**（2026-10-08 用户报「『已安装』按钮文字未居中」）。根因是**特异度**，不是写错值：
+  - Element Plus 有两条 **(0,4,0)** 的规则会单侧清零页签内边距：`.el-tabs--top > .el-tabs__header .el-tabs__item:nth-child(2) { padding-left: 0 }` 与 `… :last-child { padding-right: 0 }`。库的前提是「页签之间的缝由前一个的 padding-right 承担」——**这只在页签没有底色时成立**。
+  - 本页的页签是药丸（`.is-active` 带 `--accent-soft` 底）。单侧清零在无底色时看不出来，在药丸上就是「字整块贴着一边」。按截图量：药丸 54px = 文字 42px + **单侧** 12px。
+  - 本仓那条 `.installed-tabs .el-tabs__item` 只有 **(0,2,0)**，静默地输给库——**不报任何错，build 全绿**。改成 `.installed-tabs .el-tabs__nav .el-tabs__item:nth-child(n)`（**0,4,0**，同特异度时 theme.css 在组件库之后加载所以赢）。`:nth-child(n)` 匹配每一个页签，不是只补第 2 个。
+  - 判据钉的是**选择器形状**（那三个片段必须都在）而不是当前几行值——把选择器写回去单测照样全绿。同一条判据还钉住「组件库里那两条规则确实存在」，否则升级 EP 之后它会变成一句空话。
+- **分组标题右侧的辅助信息比标题小一档，别让它继承标题的字号**（2026-10-08 用户报「『插件中心』右侧的辅助信息文字大小缩小」）。`「来自 dshfind.com」` 那枚原先只挂 `.muted`，而 `.muted` **只管颜色**，字号直接继承 h3 的 15px——补充与标题一样大，标题就不再是这一行的主体。现走 `.section-divider__note`（12px）。
+  - **字号不许加进 `.muted`**：那个类全仓 **23 处在用**，其中不少是跟着自己标题走的 `<span>`，一刀切下去会顺带改掉六个面板。判据同时钉住「`.muted` 不带 font-size」与「模板上这枚确实挂了新类」。
+- **同一状态的两个写法要挑「条件写进选择器」的那个**（2026-10-08）：`.btn-chat` / `.btn-danger` 原先各有一条 `:active { color: 静止色 }`，唯一作用是凭源码顺序赢过同特异度的 `:hover`。每多一个「按下时打回去」的状态就要再抄一条。改成 `:not(:active):hover` / `:not(:active):focus-visible` 之后一条就够，按下时读到的仍是静止色——行为完全一致，少 6 行声明。判据显式禁掉 `:active` 那两条。
 
 ## 目录约定
 
