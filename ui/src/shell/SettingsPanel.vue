@@ -224,7 +224,7 @@ function openStartupRun() {
         <h2>环境回退与诊断</h2>
         <span class="head-meta"><span class="muted">出问题时使用</span></span>
       </div>
-      <div class="page-list">
+      <div class="page-list diagnostics-list">
         <!-- 前两行自带 Fragment：行是常驻的，明细与告警是它们的兄弟节点。 -->
         <SnapshotCard />
         <BisectPanel />
@@ -372,4 +372,20 @@ function openStartupRun() {
 </template>
 
 <style scoped>
+/* Fragment 子组件的行也属于这张列表；收尾行不画分隔线。 */
+.diagnostics-list > :deep(.page-list-row) {
+  position: relative;
+  border-bottom: 0;
+}
+.diagnostics-list > :deep(.page-list-row:not(:last-child))::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--divider-strong);
+  pointer-events: none;
+  clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%);
+}
 </style>

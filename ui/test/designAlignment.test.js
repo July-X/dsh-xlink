@@ -1306,7 +1306,7 @@ test('「环境回退与诊断」的 caption 走 head-meta + muted', () => {
 
 test('「环境回退与诊断」是一张卡里的三个行式条目', () => {
   // `.page-list` 是全仓共用的行式列表原语（theme.css），三个条目都落在它里面。
-  const listStart = settingsTpl.indexOf('<div class="page-list">');
+  const listStart = settingsTpl.indexOf('<div class="page-list diagnostics-list">');
   assert.ok(listStart > 0, '设置页该有一个 .page-list 列表');
   // 两个组件必须在列表**内部**：它们是 Fragment，行与明细直接落进这个栅格。
   assert.match(settingsTpl.slice(listStart), /<SnapshotCard \/>\s*<BisectPanel \/>/);
@@ -1371,7 +1371,13 @@ test('行式列表的次行说明不截断成一行（有意偏离设计稿的 n
   // 这一处的次行是 `headline(view)` 那类整句状态说明，截成一行就分不出
   // 「还没成功启动过」和「文档损坏」。层叠后仍然是换行的。
   assert.equal(effectiveDeclaration(['page-list-meta'], RULES, 'white-space'), null);
-  assert.equal(effectiveDeclaration(['page-list-row'], RULES, 'border-bottom'), '1px solid var(--border-soft)');
+  assert.match(ruleText(stripComments(themeCss), '.page-list-row'), /border-bottom:\s*1px solid var\(--border-soft\)/);
+  const scoped = stripComments(scopedStyle(settingsPanel));
+  assert.match(ruleText(scoped, '.diagnostics-list > :deep(.page-list-row)'), /border-bottom:\s*0/);
+  const divider = ruleText(scoped, '.diagnostics-list > :deep(.page-list-row:not(:last-child))::after');
+  assert.match(divider, /height:\s*2px/);
+  assert.match(divider, /background:\s*var\(--divider-strong\)/);
+  assert.match(divider, /clip-path:\s*polygon\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\)/);
   // 收尾那条的判定收在列表的直接子级上：Fragment 展开后明细也是直接子级，
   // 按行判 `:last-child` 会把展开内容当收尾行，连带抹掉上面的分隔线。
   assert.match(themeCss, /\.page-list > \*:last-child \{/);
