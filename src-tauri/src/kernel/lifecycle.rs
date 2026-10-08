@@ -23,10 +23,8 @@ use crate::shell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
-use std::net::TcpStream;
 use std::path::{Component, Path, PathBuf};
 use std::process::Child;
-use std::time::Duration;
 
 use crate::shell::process::{
     atomic_write, build_log_kind, run_with_progress, run_with_progress_at, LogSpec,
@@ -1610,10 +1608,25 @@ pub(crate) fn run_pnpm_at(
 }
 
 /// 检查 `127.0.0.1:port` 上是否已有进程在监听。
+///
+/// Windows 走 TCP 监听表（`win_probe::tcp_listener_pid`，微秒级、不发包）：
+/// 2026-10-08 的 perf 采样发现 `TcpStream::connect_timeout` 在部分机器上不是
+/// 「立即拒绝」而是**等满超时**——防火墙对无监听者的回环端口静默丢包而不是
+/// 回 RST，于是「确认没在跑」这一步每 2.5s 白烧 400ms（实测 dev 壳 3 小时
+/// 564 次轮询次次卡在 403–415ms）。macOS / Linux 的回环会立即 RST，connect
+/// 判据依旧准确，维持原样。
 pub fn port_open(port: u16) -> bool {
-    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-    let addr: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port));
-    TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_ok()
+    #[cfg(windows)]
+    {
+        crate::kernel::win_probe::tcp_listener_pid(port).is_some()
+    }
+    #[cfg(not(windows))]
+    {
+        use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
+        use std::time::Duration;
+        let addr: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port));
+        TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_ok()
+    }
 }
 
 // 旧的单 data dir 启动路径（`start` / `start_maybe`，不注入 `DSH_HOME`）已
@@ -2050,50 +2063,14 @@ pub(crate) fn port_listen_pid_ss(port: u16) -> Option<u32> {
         .next()
 }
 
-/// 从 `netstat -ano` 的输出里取出正在监听 `port` 的 TCP pid。
-///
-/// 必须按列解析，不能对整行做 `:PORT` 子串匹配 —— 子串会命中三类别的东西：
-/// 另一个端口的监听者（`:3090` 命中 `:30900`）、外部地址列里的端口、以及
-/// IPv6 地址中的数字尾巴。选中错的 pid 之后 `pid_is_kernel` 恒为 false，
-/// 于是 `workbench_pid` 宣称「没有内核在跑」，而内核其实正服务着端口。
-///
-/// 规则：协议为 `TCP`、恰好 5 列（`TCP 本地地址 外部地址 状态 PID`）、本地
-/// 地址以 `:PORT` 结尾、状态为 `LISTENING`、末列可解析为 pid。
-#[cfg(any(windows, test))]
-fn parse_netstat_listener_pid(output: &str, port: u16) -> Option<u32> {
-    let suffix = format!(":{port}");
-    for line in output.lines() {
-        let columns: Vec<&str> = line.split_whitespace().collect();
-        // UDP 行只有 4 列（没有状态列），表头行的末列不是数字；两者都在
-        // 下面的条件里被自然排除。
-        if columns.len() != 5 {
-            continue;
-        }
-        if !columns[0].eq_ignore_ascii_case("TCP") || columns[3] != "LISTENING" {
-            continue;
-        }
-        // 只比较本地地址列的**结尾**：`127.0.0.1:3090`、`[::1]:3090` 都算，
-        // `0.0.0.0:30900` 不算。
-        if !columns[1].ends_with(&suffix) {
-            continue;
-        }
-        if let Ok(pid) = columns[4].parse() {
-            return Some(pid);
-        }
-    }
-    None
-}
-
+// 从 `netstat -ano` 按列解析监听者 pid 的实现已随 2026-10-08 的 Windows
+// 原生化删除：派生 netstat（50–200ms）被 GetExtendedTcpTable 的表查询
+// （微秒级）取代。与旧解析唯一的刻意差异：不再把 `[::1]` 的 IPv6 监听
+// 算作 v4 回环端口的占用者——旧 `port_open` 的 connect 判据本来也判不出
+// 它，改表查询后两个判据从此一致（详见 `win_probe` 模块说明）。
 #[cfg(windows)]
 pub(crate) fn port_listen_pid(port: u16) -> Option<u32> {
-    // `netstat -ano` 每个 TCP/UDP 端点输出一行；解析交给
-    // `parse_netstat_listener_pid`（按列匹配，见那里的说明）。
-    let (success, stdout, _) =
-        crate::shell::process::run_capture_output("netstat", &["-ano"]).ok()?;
-    if !success {
-        return None;
-    }
-    parse_netstat_listener_pid(&stdout, port)
+    crate::kernel::win_probe::tcp_listener_pid(port)
 }
 
 /// 上次壳启动的内核的 PID 文件：`<data_dir>/kernel.pid`。
@@ -2191,9 +2168,12 @@ mod command_cache {
 ///   才对上账；换 sysctl 后该段回到微秒级。
 /// - **Linux**：`ps` 派生（本仓库不发布 Linux，仅开发自用；fork 在 Linux 上
 ///   没有这笔逐区域复制的账）。
-/// - **Windows**：`Get-CimInstance` 派生 + 几秒缓存（P2-9），与 macOS 的
-///   sysctl 是同一类"别在轮询路径上派生子进程"的对策，只是平台没有
-///   等价的单系统调用读法。
+/// - **Windows**：原生读 PEB 的 CommandLine（`win_probe`，2026-10-08），
+///   失败才回退 `Get-CimInstance` 派生 + 几秒缓存（P2-9）——与 macOS 的
+///   sysctl 是同一类"别在轮询路径上派生子进程"的对策。perf 采样实测
+///   PowerShell 单次 ~350ms、缓存 TTL 3s 对 2.5s 轮询只能隔次命中，内核
+///   运行期间每分钟约派生 13 个 PowerShell 进程，正是状态轮询 p50 404ms
+///   的全部来源（详见 `win_probe` 模块说明）。
 fn process_command(pid: u32) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
@@ -2209,7 +2189,12 @@ fn process_command(pid: u32) -> Option<String> {
     }
     #[cfg(windows)]
     {
-        // 轮询路径上复用几秒内的结果，别每 2.5 秒都派生一次 PowerShell（P2-9）。
+        // 原生快路径：读 PEB 的 CommandLine（微秒级，`win_probe`）。失败才
+        // 回退 PowerShell——回退含 3s 单槽缓存（P2-9）：原生路径失败通常
+        // 意味着同一个原因会一直成立，缓存让回退也别每 2.5s 派生一次。
+        if let Some(command) = crate::kernel::win_probe::process_command_line(pid) {
+            return Some(command);
+        }
         if let Some(cached) = command_cache::get(pid) {
             return cached;
         }
@@ -2769,20 +2754,6 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// `netstat -ano` 的真实形状（保留中文 Windows 的本地化表头，因为表头
-    /// 行也在被解析的输入里）。
-    const NETSTAT_SAMPLE: &str = "\
-活动连接
-
-  协议  本地地址          外部地址        状态           PID
-  TCP    127.0.0.1:30900        0.0.0.0:0              LISTENING       9001
-  TCP    127.0.0.1:3090         0.0.0.0:0              LISTENING       4242
-  TCP    127.0.0.1:3090         127.0.0.1:51000        ESTABLISHED     4242
-  TCP    127.0.0.1:51000        127.0.0.1:3090         ESTABLISHED     7777
-  TCP    [::1]:3090             [::]:0                 LISTENING       4242
-  UDP    127.0.0.1:3090         *:*                                    5555
-";
-
     #[test]
     fn kernel_command_identity_accepts_real_forms_and_rejects_near_misses() {
         // `port_listener_identity` 只有在这条判据成立时才敢说"监听者是内核"。
@@ -2799,49 +2770,6 @@ mod tests {
         ));
         assert!(!command_is_kernel("/usr/bin/python3 -m http.server 3090"));
         assert!(!command_is_kernel(""));
-    }
-
-    #[test]
-    fn netstat_parser_does_not_confuse_a_longer_port() {
-        // P2-5：`:3090` 的子串匹配会先命中 `:30900` 那一行并返回 pid 9001，
-        // 于是 pid_is_kernel 失败、workbench_pid 报「没有内核在跑」。
-        assert_eq!(parse_netstat_listener_pid(NETSTAT_SAMPLE, 3090), Some(4242));
-        assert_eq!(
-            parse_netstat_listener_pid(NETSTAT_SAMPLE, 30900),
-            Some(9001)
-        );
-    }
-
-    #[test]
-    fn netstat_parser_ignores_non_listening_and_foreign_address_matches() {
-        // 外部地址列里出现该端口、或状态不是 LISTENING 的行都不算证据：
-        // 只有 `LISTENING` 的那一行才提供 pid。
-        let only_established = "\
-  协议  本地地址          外部地址        状态           PID
-  TCP    127.0.0.1:51000        127.0.0.1:3090         ESTABLISHED     7777
-";
-        assert_eq!(parse_netstat_listener_pid(only_established, 3090), None);
-
-        // UDP 行（4 列、无状态）不是 TCP 监听者，不能拿来当内核。
-        let only_udp = "\
-  协议  本地地址          外部地址        状态           PID
-  UDP    127.0.0.1:3090         *:*                                    5555
-";
-        assert_eq!(parse_netstat_listener_pid(only_udp, 3090), None);
-    }
-
-    #[test]
-    fn netstat_parser_accepts_ipv6_loopback_and_empty_output() {
-        let ipv6 = "\
-  TCP    [::1]:3091             [::]:0                 LISTENING       321
-";
-        assert_eq!(parse_netstat_listener_pid(ipv6, 3091), Some(321));
-        // 端口空闲 / netstat 只给出表头时必须是 None，而不是误报某个 pid。
-        assert_eq!(parse_netstat_listener_pid("", 3090), None);
-        assert_eq!(
-            parse_netstat_listener_pid("  协议  本地地址  外部地址  状态  PID\n", 3090),
-            None
-        );
     }
 
     #[test]
