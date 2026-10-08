@@ -5,7 +5,7 @@
 //
 // 面板挂载时主动调一次 refreshAll()，让「已安装」列表在用户进到这一页时就是最新的，
 // 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive } from 'vue';
 import { Refresh, Download, Promotion, Delete, InfoFilled, TopRight, Loading } from '@element-plus/icons-vue';
 import {
   store,
@@ -156,6 +156,7 @@ async function loadDiskUsage(force = false) {
 // `registerAppListener` 会攒到应用销毁才统一退订；面板可以被反复挂载
 // （切页签），组件级订阅随卸载释放才不漏。
 let diskUnlisten = null;
+let diskListenerDisposed = false;
 listen('disk-usage-refreshed', (e) => {
   diskUsage.refreshing = false;
   const report = e && e.payload;
@@ -163,13 +164,18 @@ listen('disk-usage-refreshed', (e) => {
   applyDiskReport(report);
 })
   .then((unlisten) => {
-    if (typeof unlisten === 'function') diskUnlisten = unlisten;
+    // 页面切换得足够快时，onBeforeUnmount 可能先于 listen() 的 Promise 完成。
+    // 这时不能把刚拿到的退订函数丢掉，否则每次进出版本页都会多留一个监听器。
+    if (diskListenerDisposed) Promise.resolve(unlisten?.()).catch(() => {});
+    else diskUnlisten = unlisten;
   })
   // 订阅失败不该让整张卡不可用：数字已经在界面上了，只是不会自动刷新。
   .catch(() => {});
 
 onBeforeUnmount(() => {
-  if (diskUnlisten) diskUnlisten();
+  diskListenerDisposed = true;
+  if (diskUnlisten) Promise.resolve(diskUnlisten()).catch(() => {});
+  diskUnlisten = null;
 });
 
 // 字节 → 人类可读。**不在 Rust 侧格式化**：单位与小数位是显示决策，而这张
@@ -915,6 +921,19 @@ function groupTip(group) {
    齐平。 */
 .kernel-card .updates-lists > .list-group:first-child:not(:has(> .installed-list > .el-empty)) {
   align-self: start;
+}
+.kernel-card .list-group .installed-list::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 1px;
+  /* 8px 缝里偏左 3px：右边紧挨着 `.release-list-box` 自己的 1px 边框，
+     贴着画会并成两条。 */
+  margin-left: 3px;
+  background: var(--border-soft);
+  pointer-events: none;
 }
 
 .kernel-card .release-list-box {
