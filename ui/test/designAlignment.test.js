@@ -253,7 +253,7 @@ test('三格指标：1fr 三列；分割线是「两边细中间粗」的刻蚀�
   assert.equal(effectiveDeclaration(['metric', 'metric'], RULES, 'border-left'), null);
   // 收细靠 clip-path 的六边形，不是渐变：渐变改的只是**透明度**，两端是「淡到看不见」
   // 而不是「细」。钉住形状本身，顺带钉住两个方向的百分比（竖槽收得比横线短）。
-  assert.match(style, /\.metrics::before\s*\{\s*height:\s*3px;[^}]*clip-path:\s*polygon\(0 50%, 10% 0, 90% 0, 100% 50%, 90% 100%, 10% 100%\)/s);
+  assert.match(style, /\.metrics::before\s*\{\s*height:\s*3px;[^}]*clip-path:\s*polygon\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\)/s);
   assert.match(style, /\.metric \+ \.metric::before\s*\{[^}]*clip-path:\s*polygon\(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%\)/s);
   // 刻蚀是**一深一浅两条**：上面那条走 --etch-shadow，下面那条走 --etch-light。
   // 只剩一条就退化成普通分割线，而那条槽的两端仍然是尖的——看着像划痕而不是槽。
@@ -268,7 +268,7 @@ test('三格指标：1fr 三列；分割线是「两边细中间粗」的刻蚀�
   // `\.kernel-card \.card-head::before,\s*[\s\S]*?\{[^}]*clip-path:`——`[\s\S]*?` 会一路
   // 跨过规则边界，于是把卡头那条的 clip-path 换成 mask-image 之后，它仍然能在**后面
   // 另一条规则**里找到 clip-path 而放行。`[^}]*` 才是不跨界的那个。
-  assert.match(style, /\.kernel-card \.card-head::before,\s*\.usage-card \.card-head::before\s*\{\s*height:\s*3px;[^}]*clip-path:\s*polygon\(0 50%, 10% 0, 90% 0, 100% 50%, 90% 100%, 10% 100%\)/s);
+  assert.match(style, /\.kernel-card \.card-head::before,\s*\.usage-card \.card-head::before\s*\{\s*height:\s*3px;[^}]*clip-path:\s*polygon\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\)/s);
   // 刻蚀色是颜色 token，两套主题**各给一份**（不是只给 :root）。
   for (const sel of [':root', 'html\\.dark']) {
     const block = new RegExp(`${sel}\\s*\\{([\\s\\S]*?)\\n\\}`, 'm').exec(themeCss);
