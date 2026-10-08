@@ -1451,3 +1451,84 @@ test('全仓没有低于 15px 的块标题（h2 / h3）', () => {
   }
   assert.deepEqual(tooSmall, [], `还有块标题小于 15px：\n${tooSmall.join('\n')}`);
 });
+
+// --- 弹窗与浮层的主题适配（2026-10-08）---------------------------------------
+//
+// 用户拿一张浅色主题下的进度浮层截图说「这类弹窗还是没有适配主题，注意统一
+// 调整」。根因不是样式没写，是**四处浮层底色写死了深色主题的值**：
+// `.progress-body` / `.el-dialog` 都是 `#0d1428`（暗色主题的 `--surface`），
+// 于是浅色用户看到一块黑板子配深灰字，而同一屏上 `.el-overlay` 的遮罩又
+// 是 Element Plus 浅色默认的 `rgba(255,255,255,.9)`——一层九成白。
+// 同一个遮罩在两套主题里明暗相反，这正是「没适配」最显眼的一半。
+//
+// 下面这组判据钉的是**不变量**而不是当前那几行：只要再出现一处写死的浮层底色
+// 或新造一个遮罩值，它就转红。
+
+/** 四块浮层：壳自己画的三块 + Element Plus 的 dialog。`background` 这一列是它们
+ *  唯一的底色来源——有一处改回字面量（`#0d1428` / `#fff` /
+ *  `var(--el-bg-color, …)`）就等于退回 2026-10-08 之前那个状态。
+ *  `.el-message` / `.el-message-box` 的底色由库的 `--el-bg-color-overlay` 提供，
+ *  那个变量两套主题都已经覆写过，不需要在这里再钉一遍。 */
+const OVERLAY_SURFACES = [
+  ['.progress-body', 'shell/ProgressOverlay.vue'],
+  ['.debug-panel', 'shell/DebugPanel.vue'],
+  ['.render-error-fallback', 'App.vue'],
+  ['.el-overlay-dialog .el-dialog', null],
+];
+
+test('四块浮层的底色都走 --surface-raised，没有一处写死深色', () => {
+  for (const [selector, where] of OVERLAY_SURFACES) {
+    // 传类集合而不是选择器串：`have.has('progress-body')` 与 `have.has('.progress-body')`
+    // 不是一回事，后者会让工具一条规则都匹配不上、安静地答 null。
+    const value = effectiveDeclaration(subjectTokens(selector), RULES, 'background');
+    // `.el-dialog` 的底色走的是自定义属性而不是 `background`，工具取不到，
+    // 单独放行（下面一条判据专门盯它）。
+    if (selector.startsWith('.el-')) {
+      assert.ok(value === null || value === 'var(--surface-raised)', `${selector} 的底色是 ${value}`);
+      continue;
+    }
+    assert.equal(value, 'var(--surface-raised)', `${selector}（${where}）的底色不是 --surface-raised`);
+  }
+  // `.el-dialog` 的底色是 `--el-dialog-bg-color`，**必须声明在元素自身**：
+  // 库在 `.el-dialog` 规则里就写了同名自定义属性，写到 `:root` 上会被它赢掉，
+  // 症状是「规则看着在，弹窗底色不变」。这条钉住选择器本身。
+  const css = stripComments(themeCss);
+  assert.match(css, /\.el-overlay-dialog \.el-dialog\s*\{[^}]*--el-dialog-bg-color: var\(--surface-raised\)/);
+  // 写死的那一档也要一并钉住，免得换个色值再回来。
+  assert.doesNotMatch(css, /#0d1428/, '生产样式里不该再出现写死的深色浮层底色');
+});
+
+test('遮罩只有一个来源，且浅色主题下不是 Element Plus 那层九成白', () => {
+  // `.el-overlay`（`el-dialog` / `el-message-box` 那一层）与壳自己的
+  // `.progress-overlay` 必须读同一个变量，否则两套主题下两个遮罩各调各的。
+  assert.equal(
+    effectiveDeclaration(subjectTokens('.progress-overlay'), RULES, 'background'),
+    'var(--el-mask-color)'
+  );
+
+  // Element Plus 在**浅色**下的默认是 `rgba(255,255,255,.9)`，暗色下是 `#000c`：
+  // 同一个遮罩在两套主题里明暗相反。`:root` 必须把它拉成深色半透明。
+  const darkStart = themeCss.indexOf('\nhtml.dark {');
+  const light = themeCss.slice(0, darkStart);
+  const dark = themeCss.slice(darkStart);
+  const mask = /--el-mask-color:\s*([^;]+);/.exec(light);
+  assert.ok(mask, ':root 缺 --el-mask-color（浅色下会落回库的 rgba(255,255,255,.9)）');
+  assert.match(mask[1], /^rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,/, `浅色遮罩要是不透明就没有层次：${mask[1]}`);
+  assert.match(dark, /--el-mask-color:\s*[^;]+;/, 'html.dark 缺 --el-mask-color');
+});
+
+test('生产 CSS / Vue 里不再引用已改名的旧 token', () => {
+  // `var(--muted, 兜底值)` 是这一类里最阴的一种：token 已改名，兜底值是近白，
+  // 浅色主题下**整条声明看着还在**（CSS 不会报错），元素只是退回浏览器默认色
+  // 或读那个近白——`--text-muted` 那种「次要文字」在浅底上直接消失。
+  // 2026-10-08 修掉的 9 处：theme.css 三处、MigrationPrompt 五处、
+  // PrecheckDialog 与 SnapshotRestoreDialog 各一处。
+  const renamed = /var\(\s*--(?:muted|text-dim|text-dim2|warn|good|bad|surface-soft|card|bg)\b/;
+  const files = [themeCss, ...srcScriptFiles().map((p) => readFileSync(p, 'utf8'))];
+  const hits = [];
+  for (const text of files) {
+    const hit = renamed.exec(stripComments(text));
+    if (hit) hits.push(`${hit[0]}`);
+  }
+  assert.deepEqual(hits, [], `还有已改名的 token：${[...new Set(hits)].join('、')}`);
+});

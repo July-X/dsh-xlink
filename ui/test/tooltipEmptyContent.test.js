@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 // 「没什么要说」不能靠给 el-tooltip 传空 content 表达。
@@ -17,7 +18,11 @@ import test from 'node:test';
 // 立刻发现（这个 bug 就在 PrecheckDialog 与 PluginDiagnosis 两处各存在过
 // 一次，是同一份代码）。
 
-const UI_SRC = new URL('../src/', import.meta.url).pathname;
+// `fileURLToPath` 而不是 `.pathname`：后者在 Windows 上给出 `/C:/workdir/…`，
+// `readdirSync` 把它当成本盘根下的相对段，路径变成 `C:\C:\workdir\…` ——
+// 整条判据 ENOENT 挂在读目录那一步，**一条断言都没跑**（`diagnosticActionBoundary`
+// 里同一种写法有同样的问题，一起改了）。
+const UI_SRC = fileURLToPath(new URL('../src/', import.meta.url));
 
 /** 递归列出 ui/src 下的所有 .vue。 */
 function vueFiles(dir = UI_SRC) {

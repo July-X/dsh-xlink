@@ -201,7 +201,7 @@ function openRun() {
 .restore-blocked-note {
   margin: 0 0 12px;
   font-size: 13px;
-  color: var(--warn, var(--text-muted));
+  color: var(--text-muted);
 }
 
 .restore-section-title {

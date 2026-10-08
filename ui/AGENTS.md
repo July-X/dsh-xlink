@@ -131,6 +131,12 @@
 - **accent 的半透明档也是 token（`--accent-fill` / `--accent-line`），同样不许写死 `rgba(79,140,255,…)`**。这是上面那条的同类问题、换个主语：那组值是**深色主题**的 accent（`#5b9cf8`）调出来的，浅色主题的 accent 是深蓝 `#2766d9`，同一个 alpha 叠上去是一层洗不掉的蓝雾。**两套主题必须各给一份 alpha，不能只换纯色不换 alpha**。
   - 日志阅读器（`.log*` / `.logwin*` / `.rail-toggle` / `.pane-splitter`）原来散着 7 处写死的颜色，其中 `.log-tab` 未激活态写的是 `rgba(232,236,247,.72)`——**近白**。浅色主题下它就是浅底上的浅字，整列文件名几乎看不见，而这不会让任何 build 或单测变红。
   - 判据见 `ui/test/logWindowTheme.test.js`：三条一起钉——不许写死、引用的 token 两套主题都定义过、分组标题与文件签保持一档差。第二条容易被忽略：引用一个**只在 `html.dark` 里定义**的 token，在浅色下不报错也不变红，只是那条声明整条失效、元素退回浏览器默认色。
+- **浮层的底色与遮罩各只有一个来源，不许写死**（2026-10-08 用户拿浅色主题下的进度浮层截图报「这类弹窗还是没有适配主题，注意统一调整」）。根因有两层，缺一层都看不见：
+  - **四处浮层底色写死了暗色主题的值**。`.progress-body` / `.el-dialog` 都是 `#0d1428`（那是暗色主题的 `--surface`），`.debug-panel` 同色，`.render-error-fallback` 写 `var(--el-bg-color, #fff)`。浅色用户看到的是一块黑板子配深灰字，而**它不会让任何 build 或单测变红**——`#0d1428` 是合法 CSS 值。四处现在统一读 `--surface-raised`（浅色 `#fff` / 暗色 `#35343a`，与 Element Plus 自己的 `--el-bg-color-overlay` 同值）。
+  - **同一个遮罩在两套主题里明暗相反**。Element Plus 在**浅色**下的默认遮罩是 `rgba(255,255,255,.9)`——一层九成白，弹窗一开背后的页面基本看不见；暗色下却是 `#000c`。壳自己的 `.progress-overlay` 又单独写死 `rgba(4,8,20,.55)`，于是「进度浮层的遮罩」与「`el-dialog` 的遮罩」是两个手调的值。`:root` 现在把 `--el-mask-color` 拉成深色半透明，`.progress-overlay` 直接读它，`.el-overlay` 读的一直是它。
+  - **`--el-dialog-bg-color` 必须声明在 `.el-dialog` 自身，不能放 `:root`**：库在 `.el-dialog` 规则里就写了同名自定义属性，写在元素身上的同名声明**赢过从 `html` 继承下来的值**，放到 `:root` 等于没写——症状是「规则明明在，弹窗底色没变」。这也是那条规则写成 `.el-overlay-dialog .el-dialog` 而不是 `.el-dialog` 的原因（顺带与既有的圆角 / 描边并成一条）。
+  - **`var(--已改名的旧 token, 兜底值)` 是这一类里最阴的形态**：token 改名后兜底值是近白，浅色主题下整条声明**看着还在**（CSS 不报错），元素只是退回那个近白——`--text-muted` 那种次要文字在浅底上直接消失。2026-10-08 清掉的 9 处：`theme.css` 三处（`.tab-label-sub` / `.instance-state-empty` / 一条早已被删的规则）、`MigrationPrompt.vue` 五处、另有 `--surface-soft` 与 `--warn` 各一处。
+  - 判据见 `ui/test/designAlignment.test.js` 的「弹窗与浮层的主题适配」一组（3 条），已做过反向验：写回 `#0d1428`、删掉 `:root` 的 `--el-mask-color`、塞回一处 `var(--muted, …)`，三条各自转红。其中传类集合给 `effectiveDeclaration` 时**要去掉选择器里的点**（`subjectTokens('.progress-body')` 而不是 `['.progress-body']`）——后者让工具一条规则都匹配不上、安静地答 `null`，判据于是因为错误的原因而绿。
 
 ## 目录约定
 

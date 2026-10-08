@@ -86,6 +86,12 @@
   --el-color-error: #c74340;
   --el-border-radius-base: 6px;
   --el-border-radius-small: 4px;
+  /* 遮罩底色，两套主题**同向**（都是深色半透明）。库在浅色下的默认值是
+     `rgba(255, 255, 255, 0.9)`——一层九成白，弹窗一开背后的页面基本看不见，
+     而同一层遮罩在暗色下却是黑的（库给 `#000c`）：同一个遮罩在两套主题里
+     明暗相反，这正是「弹窗没适配主题」最显眼的一半。壳自己所有遮罩
+     （`.progress-overlay`）读同一个变量，不另立一份。 */
+  --el-mask-color: rgba(28, 32, 40, 0.52);
 }
 
 html.dark {
@@ -154,6 +160,7 @@ html.dark {
   --el-fill-color-light: #302f35;
   --el-fill-color-lighter: #2c2b30;
   --el-fill-color-blank: transparent;
+  /* 遮罩底色的暗色一份，与 `:root` 那一档同向（都是压暗，不是一亮一暗）。 */
   --el-mask-color: rgba(10, 10, 12, 0.6);
   --el-box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   --el-box-shadow-light: 0 6px 18px rgba(0, 0, 0, 0.4);
@@ -2293,13 +2300,16 @@ main {
    删除：它的可见文字与 tooltip 内容说的不是同一件事（tooltip 讲的是插件存放路径与
    生效规则），用户停在字上看到的是另一段话。改成纯 ⓘ 图标后，这条规则的载体没有了。
    顺带一提，这条规则里的 `--muted` / `--text-dim` / `#999` 全是**旧 token 名**，
-   本轮 token 已全局改过名（见 ui/AGENTS.md），它只是因为没人引用才没暴露。 */
+   本轮 token 已全局改过名（见 ui/AGENTS.md），它只是因为没人引用才没暴露。
+   同名残留的另外两处（`.tab-label-sub`、`.instance-state-empty`）当时是真在用的，
+   `var(--muted, …)` 的兜底值又是近白，浅色主题下读作「没有颜色」，2026-10-08
+   一起换成了 `--text-muted`。 */
 
 /* tab 标签里跟随的内核身份与版本号：小字号弱化，防止标签过长。 */
 .tab-label-sub {
   font-size: 10px;
   font-weight: 400;
-  color: var(--muted, var(--text-dim, #999));
+  color: var(--text-muted);
 }
 
 /* 页签：药丸式（与侧栏导航项、按钮同一套圆角与留白），选中项用主色淡底而不是
@@ -2507,7 +2517,11 @@ main {
   z-index: var(--z-progress);
   display: grid;
   place-items: center;
-  background: rgba(4, 8, 20, 0.55);
+  /* 遮罩读 `--el-mask-color`——`el-dialog` / `el-message-box` 的 `.el-overlay`
+     读的是同一个变量，两套主题都由 `:root` 与 `html.dark` 各给一份。原先
+     这里写死 `rgba(4, 8, 20, 0.55)`，于是同一个遮罩在浅色与暗色下是两套
+     手调的深蓝，且与 `el-dialog` 的遮罩不是同一个值。 */
+  background: var(--el-mask-color);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
   animation: overlay-in 0.18s ease;
@@ -2529,7 +2543,10 @@ main {
   flex-direction: column;
   gap: 14px;
   padding: 20px 22px;
-  background: #0d1428;
+  /* 浮层底色与 `el-dialog` / 调试面板同走 `--surface-raised`。原先写死
+     `#0d1428`（深色主题的底），浅色用户看到的是一块黑板子配深灰字——
+     2026-10-08 用户报「这类弹窗还是没有适配主题」指的就是这里。 */
+  background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   box-shadow: var(--el-box-shadow);
@@ -3173,24 +3190,25 @@ body.pane-dragging .log-tabs {
   overflow-y: auto;
 }
 
-/* --- ElMessage / ElMessageBox 微调 --- */
+/* --- 浮层底色与圆角：ElDialog / ElMessage / ElMessageBox --- */
 
-.el-message {
-  border-radius: 10px;
-}
-
+/* 所有浮层的底色一份：`--surface-raised`（浅色 `#fff` / 暗色 `#35343a`，
+   与 Element Plus 自己的 `--el-bg-color-overlay` 同值）。它必须写在
+   **`.el-dialog` 自身**而不是 `:root` 上——库在 `.el-dialog` 规则里就声明了
+   `--el-dialog-bg-color`，同名自定义属性写在元素自己身上会赢过从 `html`
+   继承下来的值，放到 `:root` 等于没写。 */
 .el-overlay-dialog .el-dialog {
+  --el-dialog-bg-color: var(--surface-raised);
   border-radius: var(--radius-card);
   border: 1px solid var(--border);
 }
 
-.el-dialog {
-  --el-dialog-bg-color: #0d1428;
+.el-message,
+.el-message-box {
+  border-radius: var(--radius-card);
 }
-
 .el-message-box {
   --el-messagebox-title-color: var(--text);
-  border-radius: var(--radius-card);
 }
 
 /* 输入聚焦微光。 */
@@ -3276,9 +3294,9 @@ body.pane-dragging .log-tabs {
   max-height: 70vh;
   overflow-y: auto;
   padding: 14px 16px 16px;
-  background: #0d1428;
+  background: var(--surface-raised);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-card);
   box-shadow: var(--el-box-shadow);
   display: flex;
   flex-direction: column;
@@ -3419,9 +3437,10 @@ body.pane-dragging .log-tabs {
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  border-radius: 10px;
-  background: var(--el-bg-color, #fff);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  box-shadow: var(--el-box-shadow);
 }
 
 .render-error-actions {
@@ -3447,11 +3466,13 @@ body.pane-dragging .log-tabs {
   padding: 10px 12px;
 }
 
+/* 底色跟页签一样走 token：原先那条虚线是写死的 `rgba(238,255,216,.12)`，
+   浅色主题下等于浅底上的浅线，整条分隔看不见。 */
 .entity-foot--instance-grid {
   display: block;
   margin-top: 6px;
   padding-top: 6px;
-  border-top: 1px dashed rgba(238, 255, 216, 0.12);
+  border-top: 1px dashed var(--border);
 }
 
 .instance-chip-row {
@@ -3482,5 +3503,5 @@ body.pane-dragging .log-tabs {
 
 .instance-state-empty {
   font-size: 11px;
-  color: var(--muted, rgba(247, 255, 238, 0.6));
+  color: var(--text-muted);
 }
