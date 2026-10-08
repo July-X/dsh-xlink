@@ -1067,13 +1067,13 @@ function goVersions() {
 .usage-card .card-head::before {
   height: 3px;
   background: var(--etch-shadow);
-  clip-path: polygon(0 50%, 10% 0, 90% 0, 100% 50%, 90% 100%, 10% 100%);
+  clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%);
 }
 .kernel-card .card-head::after,
 .usage-card .card-head::after {
   height: 1px;
   background: var(--etch-light);
-  clip-path: polygon(0 50%, 12% 0, 88% 0, 100% 50%, 88% 100%, 12% 100%);
+  clip-path: polygon(0 50%, 24% 0, 76% 0, 100% 50%, 76% 100%, 24% 100%);
 }
 
 /* 三格指标：Node.js / 今日用量 / 数据目录。设计稿给的是 1fr 1fr 1fr，
@@ -1098,12 +1098,12 @@ function goVersions() {
 .metrics::before {
   height: 3px;
   background: var(--etch-shadow);
-  clip-path: polygon(0 50%, 10% 0, 90% 0, 100% 50%, 90% 100%, 10% 100%);
+  clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%);
 }
 .metrics::after {
   height: 1px;
   background: var(--etch-light);
-  clip-path: polygon(0 50%, 12% 0, 88% 0, 100% 50%, 88% 100%, 12% 100%);
+  clip-path: polygon(0 50%, 24% 0, 76% 0, 100% 50%, 76% 100%, 24% 100%);
 }
 .metric { position: relative; min-width: 0; }
 .metric + .metric {
