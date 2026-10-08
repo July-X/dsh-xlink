@@ -435,8 +435,9 @@ pub fn run() {
             commands::plugin_status,
             commands::plugin_install,
             plugins::precheck_cmd::plugin_precheck_install,
-            // 内嵌 openai-oauth 插件（只读状态；启用/停用开关随 P1 后续提交）。
+            // 内嵌 openai-oauth 插件（只读状态 + 启停开关）。
             plugins::builtin::cmd::builtin_openai_status,
+            plugins::builtin::cmd::builtin_openai_set_enabled,
             commands::plugin_set_precheck,
             plugins::precheck_cmd::plugin_precheck_apply,
             diagnostics::snapshot_cmd::snapshot_list,
