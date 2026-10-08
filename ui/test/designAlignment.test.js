@@ -12,6 +12,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const { parse } = require(require.resolve('@vue/compiler-sfc', { paths: [require.resolve('vue')] }));
 import {
   SRC,
   allRulesIncludingVue,
@@ -1190,14 +1193,40 @@ test('内核版本页卡头叫「已安装 / N 个版本」，不复述页面标
 const pluginsPanel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
 const pluginsTpl = templateOf(pluginsPanel);
 
-test('插件手动安装位于右栏顶部，左栏只保留已安装清单', () => {
+test('插件右栏通过两个页签分别显示插件中心和手动安装', () => {
   const left = pluginsTpl.indexOf('<div class="page-layout__col">');
   const right = pluginsTpl.indexOf('<div class="page-layout__col plugin-center-col">');
   assert.ok(left >= 0 && right > left);
   assert.doesNotMatch(pluginsTpl.slice(left, right), /pluginStore\.spec|<h3[^>]*>手动安装/);
-  assert.match(pluginsTpl.slice(right), /^<div[^>]*>\s*<h3 class="section-divider">手动安装<\/h3>/);
-  assert.ok(pluginsTpl.indexOf('v-model="pluginStore.spec"', right) < pluginsTpl.indexOf('来自', right));
-  assert.doesNotMatch(pluginsTpl, /用下方「手动安装」/);
+  assert.match(pluginsPanel, /const sourceTab = ref\('catalog'\)/);
+  assert.match(pluginsTpl.slice(right), /<el-tabs v-model="sourceTab" class="installed-tabs source-tabs">/);
+  const catalog = pluginsTpl.slice(right).match(/<el-tab-pane label="插件中心" name="catalog">([\s\S]*?)<\/el-tab-pane>/);
+  const manual = pluginsTpl.slice(right).match(/<el-tab-pane label="手动安装" name="manual">([\s\S]*?)<\/el-tab-pane>/);
+  assert.ok(catalog && manual);
+  assert.match(catalog[1], /v-model="searchText"/);
+  assert.doesNotMatch(catalog[1], /pluginStore\.spec/);
+  assert.match(manual[1], /v-model="pluginStore.spec"/);
+  assert.doesNotMatch(manual[1], /searchText|catalog-list/);
+});
+
+test('显示更多位于结果滚动容器末尾，随列表滚动且等待搜索完成', () => {
+  const { descriptor } = parse(pluginsPanel);
+  const root = descriptor.template.ast;
+  function find(node, predicate) {
+    if (predicate(node)) return node;
+    for (const child of node.children || []) {
+      const found = find(child, predicate);
+      if (found) return found;
+    }
+  }
+  const hasClass = (node, value) => (node.props || []).some((p) => p.name === 'class' && p.value?.content === value);
+  const scroll = find(root, (node) => hasClass(node, 'catalog-list'));
+  assert.ok(scroll);
+  const children = scroll.children.filter((node) => node.type === 1);
+  assert.equal(children[0].tag, 'TransitionGroup');
+  assert.ok(hasClass(children.at(-1), 'catalog-more'), '按钮必须在滚动容器内，位于全部结果之后');
+  assert.match(pluginsTpl, /:loading="catalogLoading" :disabled="globalBusy" @click="showMore"/);
+  assert.match(ruleText(stripComments(scopedStyle(pluginsPanel)), '.catalog-list'), /overflow-y:\s*auto/);
 });
 
 test('插件右栏标题与两栏分界采用刻蚀线', () => {
