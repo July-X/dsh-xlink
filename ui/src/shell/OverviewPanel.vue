@@ -1026,36 +1026,111 @@ function goVersions() {
   height: auto;
 }
 
-/* 这一屏的分割线加粗到 2px（2026-10-08 用户要求，**先只看概览这一屏的效果**）。
-   1px 的线在 1040 宽的窗口里几乎读不出来，「标题区 / 内容区」「指标 / 指标」这两
-   组分组靠留白撑着，扫一眼过去是一整块。三条线分属两处声明来源：
+/* 这一屏的分割线：两边细中间粗、带刻蚀痕迹（2026-10-08 用户要求）。
+   1px 的实线在 1040 宽的窗口里几乎读不出「标题区 / 内容区」「指标 / 指标」这两组
+   分组；2px 只是变粗，仍然是一根死板的棍子。这里改成**刻蚀槽**——中间厚、两头收细，
+   由一深一浅两条线叠出立体的槽。
 
-     · `.card-head` 的底线在 **theme.css**（六个面板共用一份）。这里**只加一条 scoped
-       覆写**，不动全局——用户说的是「先调整概览」，全局一改六个面板一起变，就没法
-       单独判断这一屏的效果。真要全局，把下面这两行搬进 theme.css 的 `.card-head`
-       并删掉这条覆写即可。scoped 版是 (0,2,0)，压得住全局那条 (0,1,0)。
-     · `.metrics` 的顶线与 `.metric + .metric` 的竖线本来就是本页私有的，直接改。
+   **「粗细可变」用 clip-path，不用渐变。** 渐变（含 mask）改的只是**透明度**，
+   两端是「淡到看不见」而不是「细」，1-3px 这个尺度下两者几乎分不出来，但
+   `clip-path: polygon()` 切出来的六边形是**真的**从 0 高收到满高。
 
-   只写 `border-*-width` 而不是整条 `border`：颜色那几档（`--border` / `--border-soft`）
-   与 1px 时的观感一起调过，分开写才不会把已经对好的明暗关系一起改掉。 */
+   刻蚀的两条线：上面那条走 `--etch-shadow`（槽的上沿落在阴影里），下面那条走
+   `--etch-light`（槽的下沿接到反光）。反光那条窄一点（12% / 88% vs 10% / 90%），
+   于是槽口在中间张开、到两头自然收拢。
+
+   **三条线分属两处声明来源**：
+     · `.card-head` 的底线在 **theme.css**（六个面板共用一份）。这里只加 scoped 覆写，
+       不动全局——用户说的是「先调整概览」，全局一改六个面板一起变，就没法单独判断
+       这一屏的效果。scoped 版是 (0,2,0)，压得住全局那条 (0,1,0)。
+     · `.metrics` 与 `.metric` 本来就是本页私有的，直接改。
+   真要全局生效，把 `.etch-rule` 那几段搬进 theme.css 即可。 */
 .kernel-card .card-head,
 .usage-card .card-head {
-  border-bottom-width: 2px;
+  position: relative;
+  border-bottom: 0;
+  /* 原先是「9px 内边距 + 1px 边框」= 10px；槽高 3px，多留 3px 才等高。 */
+  padding-bottom: 12px;
+}
+.kernel-card .card-head::before,
+.kernel-card .card-head::after,
+.usage-card .card-head::before,
+.usage-card .card-head::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+.kernel-card .card-head::before,
+.usage-card .card-head::before {
+  height: 3px;
+  background: var(--etch-shadow);
+  clip-path: polygon(0 50%, 10% 0, 90% 0, 100% 50%, 90% 100%, 10% 100%);
+}
+.kernel-card .card-head::after,
+.usage-card .card-head::after {
+  height: 1px;
+  background: var(--etch-light);
+  clip-path: polygon(0 50%, 12% 0, 88% 0, 100% 50%, 88% 100%, 12% 100%);
 }
 
 /* 三格指标：Node.js / 今日用量 / 数据目录。设计稿给的是 1fr 1fr 1fr，
    格间用左边框分隔而不是留白——留白在暗色底上读不出「这里换一个维度了」。 */
 .metrics {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
-  padding-top: 10px;
-  border-top: 2px solid var(--border-soft);
+  padding-top: 14px;
+  border-top: 0;
 }
-.metric { min-width: 0; }
+.metrics::before,
+.metrics::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  pointer-events: none;
+}
+.metrics::before {
+  height: 3px;
+  background: var(--etch-shadow);
+  clip-path: polygon(0 50%, 10% 0, 90% 0, 100% 50%, 90% 100%, 10% 100%);
+}
+.metrics::after {
+  height: 1px;
+  background: var(--etch-light);
+  clip-path: polygon(0 50%, 12% 0, 88% 0, 100% 50%, 88% 100%, 12% 100%);
+}
+.metric { position: relative; min-width: 0; }
 .metric + .metric {
-  padding-left: 12px;
-  border-left: 2px solid var(--border-soft);
+  padding-left: 15px;
+}
+/* 竖槽：同一套刻蚀，横过来。clip-path 的六边形也跟着转 90°（左右收到 0、上下张开）。
+   **收得比横线短得多（22% / 26%，不是横线的 10% / 12%）**：这一格只有几十像素高，
+   按横线的比例去收，两端就各削掉十几像素，出来是一片叶子而不是一道槽。 */
+.metric + .metric::before,
+.metric + .metric::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+.metric + .metric::before {
+  left: 6px;
+  width: 3px;
+  background: var(--etch-shadow);
+  clip-path: polygon(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%);
+}
+.metric + .metric::after {
+  left: 10px;
+  width: 1px;
+  background: var(--etch-light);
+  clip-path: polygon(50% 0, 100% 26%, 100% 74%, 50% 100%, 0 74%, 0 26%);
 }
 .metric-label {
   display: flex;
