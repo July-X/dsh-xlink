@@ -2225,6 +2225,10 @@ fn is_managed_spec(spec: &str) -> bool {
     else {
         return false;
     };
+    // 只按 `split('/')` 是**对的**：写进 profile 的 spec 一律经 `spec_path_string`
+    // 归一成正斜杠（Windows 上 `Path::display()` 给的是反斜杠，npm/pnpm 的 spec
+    // 两种都要认 `/`），所以真机上读到的永远是 `/` 分隔的路径。
+    // 这里不要「顺手」把 `\` 也当分隔符：Unix 上 `\` 是合法文件名字符。
     let segs: Vec<&str> = path.split('/').rev().collect();
     if segs.len() < 3 {
         return false;
@@ -6651,12 +6655,18 @@ mod id_collision_tests {
         // wiring 要求 spec 以 "link:" / "file:" 开头并指向 P4 起的
         // extensions/plugins/<id> 布局（见 is_managed_spec）。写绝对路径，
         // 测试环境 DSH_XLINK_HOME 已经被 TestHome 注入到临时目录。
+        // **路径必须走 `spec_path_string` 归一成正斜杠**——生产写 profile 时也是
+        // 这么写的（Windows 上 `Path::display()` 给的是反斜杠）。这里图省事直接
+        // `format!("link:{}", link_target.display())` 的话，Windows 上会造出一条
+        // 生产永远不会写出的 spec，`is_managed_spec` 正确地不认它，于是这条用例
+        // 恒红而生产没事——它此前被 env.rs 的重复 `mod tests` 编译错误整个挡住，
+        // 从没在 Windows 上跑过。
         let link_target = paths::instance_extension_plugin_dir(
             KERNEL_FAMILY_DSH,
             DEFAULT_INSTANCE_ID,
             "shared-plugin",
         );
-        let spec = format!("link:{}", link_target.display());
+        let spec = format!("link:{}", spec_path_string(&link_target));
         fs::write(
             &default_profile,
             format!(r#"{{"dependencies":{{"shared-plugin":"{}"}}}}"#, spec),
