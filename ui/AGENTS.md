@@ -12,7 +12,8 @@
 - **层级只有三步**：canvas（整窗底）→ surface（卡片）→ chrome（标题栏 / 侧栏）。**不再有半透明玻璃与背景网格**（旧版的 `.app-bg` 光晕 + 13.5px 网格已整体删除），卡片是不透明实色 + 1px 描边 + 8px 圆角。
 - **明暗双主题，判据只有一个：`html.dark`**。`shell/theme.js` 读一次 localStorage 并落成这个 class，Element Plus 自带的暗色变量（`theme-chalk/dark/css-vars.css`，选择器同样是 `html.dark`）因此一并生效——**不要另造 `html[data-theme]`**，那会让组件库留在浅色变量上，出现「壳变了、弹窗还是白的」。theme.css 里 `:root` 放浅色 token、`html.dark` 放暗色 token，两套 Element Plus 覆写各自待在自己的选择器下，没有第二处判据。
 - **token 一律用语义名**：`--surface` / `--surface-raised` / `--surface-subtle` / `--border` / `--border-soft` / `--text` / `--text-secondary` / `--text-muted` / `--accent` / `--accent-strong` / `--accent-soft` / `--success` / `--success-strong` / `--warning` / `--danger` / `--danger-strong`（另有四个 fill 档：`--accent-fill` / `--success-fill` / `--warning-fill` / `--danger-fill`）。旧名（`--card` / `--bg` / `--muted` / `--good` / `--bad` / `--warn`）已在本次改版里全局改名完毕，**不要再写回来**。
-- **页面原语**在 theme.css 的「新版页面原语」一节：`.page-head`（页头：标题 + 说明在左、动作在右）、`.page-title-row`（标题与它旁边的提示图标同行）、`.head-tip-icon` 及 `--warning` 修饰（标题旁的补充 / 警告气泡触发点）、`.page-layout`（双栏栅格，`__col` 是一列，`__full` 横跨整行）、`.page-card` / `.page-card__head` / `.page-card__body`、`.page-list` / `.page-row`、`.btn` 及 `--primary` / `--secondary` / `--ghost` / `--danger` / `--icon`、`.nav-item`、`.plugin-tab`。**先找现成原语，再写 scoped 样式**；每个面板自造一套的结果是六个面板六种圆角。
+- **页面原语**在 theme.css 的「新版页面原语」一节：`.page-head`（页头：标题 + 说明在左、动作在右）、`.page-title-row`（标题与它旁边的提示图标同行）、`.head-tip-icon` 及 `--warning` 修饰（标题旁的补充 / 警告气泡触发点）、`.page-layout`（双栏栅格，`__col` 是一列，`__full` 横跨整行）、`.page-list` / `.page-row`、`.btn` 及 `--primary` / `--secondary` / `--ghost` / `--danger` / `--icon`、`.nav-item`、`.plugin-tab`。**先找现成原语，再写 scoped 样式**；每个面板自造一套的结果是六个面板六种圆角。
+  - **`.page-card` / `.page-card__head` / `.page-card__body` 已删除**（2026-10-08）。它们来自设计稿，但 `ui/src` 的模板与脚本里**零引用**——实现走 `.card` / `.card-head` / `.page-list`（稿子里那几处写成 `class="card page-card"`，真正起作用的是 `.card`）。20 行死 CSS，而本清单此前还把它们登记成已有原语，正是本节下一条要避免的形状。**设计稿里有 ≠ 实现里该有**。
   - **登记进这份清单的类名，必须真有模板在用。** ce9dd08 曾把 `.health-row` / `.health-dot` / `.health-row__value` 写进 theme.css 并列进本清单，但控制塔的「系统健康」实际走的是 `diagnostics.css` 的 `.diag-row` 家族——三组规则 38 行全是死代码，2026-10-07 删除。**本清单是「已有原语」的索引，不是「打算加的原语」的许愿单**：加一条之前先 grep 一遍模板，确认真有引用再登记。原语名要和设计稿对得上（设计稿那套叫 `.health-name` / `.health-value`，和当时写进去的 `.health-row__value` 也不是一回事）。
   - **`.metrics` / `.metric` 已从全局原语清单里移除**，它们归 `OverviewPanel.vue` 的 scoped 块。原先 theme.css 那条全局 `.metric`（描边 + `--surface` 底 + `10px 12px` 内边距）与 scoped 的「上边线 + 后两格左边线」叠加，把设计稿的一条分隔线变成了三个独立卡片——**全局基线与组件覆盖各写各的，冲突只有走层叠才看得见**。
 - **构建标识（dev 鲸眼红 / release Gitea 绿）收成窗顶 2px 细线**，由 `--build-color` 驱动，两种构建共用同一条 `.app-shell::before` 规则只换颜色变量。旧版那条「铺满全高的品牌色渐变带」已删除——它与卡片描边互相拍频。`ui/test/diskUsageAndChrome.test.js` 钉住了「只有这一处画法」。
@@ -158,16 +159,17 @@
 
   | 档位 | token | 改之前的分歧 |
   | --- | --- | --- |
-  | 功能块标题 | `--fs-block-title` 17px | 已是 17px，但 `.plugin-center-title` / `.disk-usage h2` 各写一遍 |
-  | 分区 / 卡内小标题 | `--fs-subtitle` 15px | `.logwin-title` 14px、`.usagewin-title` / `.subwin-title` 15px、`.restore-section-title` 13px |
+  | 功能块标题 | `--fs-block-title` 17px | `.card-title`（技能页「社区资源」）**全仓没有对应规则**，字号直接继承 body 的 14px |
+  | 分区 / 卡内小标题 | `--fs-subtitle` 15px | `.logwin-title` 14px、`.community-title`（技能社区 / 手动安装）**12px**、`.restore-section-title` 13px |
   | 页头副标题 | `--fs-desc` 13px | 已是 13px |
   | 标题旁的 ⓘ | `--fs-tip-icon` 16px | **`.card-info-icon` 16px（5 个面板）vs `.head-tip-icon` 13px（插件 / 技能）** |
-  | 卡头动作按钮 | `--action-h` 30px / `--fs-action` 13.5px | **概览的「工作台」30px，同屏的「刷新 / 查看详情」与别处的「刷新数据 / 检查更新」全是 EP `size="small"` 的 24px** |
+  | 动作按钮 | `--action-h` 30px / `--fs-action` 13.5px | **一页之内三种**：概览「工作台」30px、同页「刷新 / 查看详情」24px、技能页「浏览 topic」24px 与「安装」32px |
 
+  - **技能页是第一处漏网的**（用户拿它的截图说「这里没有调整完」）：上一轮只收了 `.card-head`，而「浏览 topic」在 `.community-browse-row`、「安装」在 `.install-row`、「刷新数据」在 `.section-divider`——三个容器都在 `.card-head` 之外，于是它们各留各的尺寸。共用规则因此扩到四个容器：`.card-head` / `.install-row >` / `.community-browse-row >` / `.section-divider`。**`.entity-action` 那种列表行里的圆形图标按钮不在其中**：那是「紧凑动作」，另一个角色。
+  - **输入框要跟着一起压**：`.install-row` 上加 `--el-component-size: 30px`——EP 的 `.el-input` 高度就是这个变量，只压按钮的话按钮比输入框矮 2px，一高一矮看着像没对齐。**不需要**去覆写 `.el-input__wrapper` 的内部结构。
+  - **卡头标题一律用 `<h2>`，别用 `<span class="card-title">`**：`.card-title` 在本仓**没有对应规则**（设计稿里有，实现里从来没接），写上去就只是继承 body 的 14px——技能页「社区资源」比同一张卡里的「技能社区」还小。改成 `<h2>` 后 `.card h2` 那一份自动生效，与其余面板一致。
   - **这些 token 只在 `:root` 定义一次，不进 `html.dark`**——字号与控件盒高在明暗下必须一样，否则同一个标题切一次主题就跳一档；两套各写一份则日后改一处忘了另一处就会跳。颜色 token 才是「两套各给一份」。这条区别顺带修掉了 `logWindowTheme.test.js` 一个**错判据**（见该测试一节的说明）。
-  - **卡头按钮的规格按角色写进 theme.css 的 `.card-head .el-button`，不写在概览的 scoped 块里**：写在概览里就只有概览是这一档，而这正是「六个面板各挑一个」的由来。概览那份**同样内容**的私有规则（11 行）随之删除。
-  - **`.page-card__head` 没有并进去**：它在模板里**零引用**（只有 theme.css 留着一条 13px 的规则），按本文件惯例不替没用的东西开路。
-  - 判据在 `ui/test/designAlignment.test.js`（「概览卡头的主操作…」那条改成钉共用规则 + 「不许有面板在 scoped 块里另写卡头按钮盒高」；标题那条改成读 token 并**顺带断言 token 的字面值**）。已用 headless Edge 加载真实构建产物逐面板复测：概览 / 技能 / 插件三类卡头的 `h2` 全 17px、`ⓘ` 全 16px、卡头按钮全 30px / 13.5px。
+  - 判据在 `ui/test/designAlignment.test.js`（「概览卡头的主操作…」那条钉共用规则 + **四个容器都要在** + 「不许有面板在 scoped 块里另写卡头按钮盒高」；标题那条读 token 并**顺带断言 token 的字面值**——只断言「规则里写了 `var(--fs-block-title)`」的话，把 token 值改成 12px 照样绿）。已用 headless Edge 加载真实构建产物逐面板复测。
 - **同一状态的两个写法要挑「条件写进选择器」的那个**（2026-10-08）：`.btn-chat` / `.btn-danger` 原先各有一条 `:active { color: 静止色 }`，唯一作用是凭源码顺序赢过同特异度的 `:hover`。每多一个「按下时打回去」的状态就要再抄一条。改成 `:not(:active):hover` / `:not(:active):focus-visible` 之后一条就够，按下时读到的仍是静止色——行为完全一致，少 6 行声明。判据显式禁掉 `:active` 那两条。
 
 ## 目录约定

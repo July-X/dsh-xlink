@@ -963,13 +963,16 @@ main {
   border-bottom: 1px solid var(--border);
 }
 
-/* 卡头右侧动作按钮：六个面板共用一份规格（2026-10-08 用户要求其余面板向概览页
-   看齐）。**放在这里而不是各面板的 scoped 块**，是因为它按角色而不是按页面划分：
-   写在概览里就只有概览是这一档，别的面板各挑各的。改之前同一屏里就有两种大小
-   ——概览自己的「刷新 / 查看详情」（EP `size="small"`，24px）比同屏的「工作台」
-   （30px）矮一截，插件页的「刷新数据」又是另一个数。
+/* 动作按钮：卡头右侧 / 说明行尾 / 分组标题行 / 输入框右侧，同一份规格
+   （2026-10-08 用户要求六个面板向概览页看齐，第二轮补上技能页漏网的容器）。
+   **按角色挂类、不按容器写选择器**，理由是这一条已经栽过一次：先只写了
+   `.card-head .el-button`，而「浏览 topic」在 `.community-browse-row`、「安装」在
+   `.install-row`、「刷新数据」在 `.section-divider` —— 三个都在 `.card-head` 之外，
+   于是技能页**一页之内**仍有三种尺寸（「检查更新」30px、「浏览 topic」24px、
+   「安装」32px），用户拿截图说「这里没有调整完」。改成 `.btn-action` 后，新增动作
+   按钮挂上这个类就自动同档，不依赖它落在哪个容器里。
    横向内边距一起按比例走：只抬盒高不抬内边距，两枚挤在一起像被人按扁了。 */
-.card-head .el-button {
+.btn-action {
   height: var(--action-h);
   padding: 0 15px;
   font-size: var(--fs-action);
@@ -978,8 +981,10 @@ main {
 /* 图标槽必须显式写死：`.el-icon` 是 `font-size: inherit`，不写死等于图标跟着
    按钮字号等比缩着走；图标要比文字再大一点点才不显矮（与侧栏 `.nav-item >
    .el-icon` 同一道理）。EP 的 `size="small"` 还把图标与文字的间距收到 4px，
-   这里放开到 6px，否则 15px 图标会贴着 13.5px 的字。 */
-.card-head .el-button .el-icon {
+   这里放开到 6px，否则 15px 图标会贴着 13.5px 的字。
+   `.entity-action` 那种行内圆形图标按钮**不在这条规则里**：它是「列表行里的紧凑
+   动作」，另一个角色，由自己的 26px 规则管。 */
+.btn-action .el-icon {
   font-size: 15px;
 }
 
@@ -1192,33 +1197,13 @@ main {
   line-height: 1.6;
 }
 
-/* 卡片头：浅底 + 下边框，与正文之间靠这条线分层。 */
-.page-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  overflow: hidden;
-}
-
-.page-card__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 38px;
-  padding: 0 12px;
-  background: var(--surface-subtle);
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.page-card__body {
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
+/* `.page-card` / `.page-card__head` / `.page-card__body`（2026-10-08 删除）。
+   它们来自设计稿，全仓 `ui/src` 的模板与脚本里**零引用**——实现走的是
+   `.card` / `.card-head` / `.page-list` 这一套（`.page-card` 在稿子里总是写成
+   `class="card page-card"`，真正起作用的是 `.card`）。20 行死 CSS 留在那里，
+   而 ui/AGENTS.md 的「页面原语」清单还把它们登记成已有原语——那正是本文件
+   写明要避免的形状（`.health-row` 三组 38 行那次）。**设计稿里有 ≠ 实现里该有**，
+   `cardChrome.test.js` 里提到 `.page-card__head` 的那句话也只是引稿子的数值。 */
 
 /* 列表行：单行主信息 + 右侧操作。 */
 .page-list {
@@ -2265,6 +2250,11 @@ main {
 .install-row {
   display: flex;
   gap: 8px;
+  /* 输入框与同行那枚动作按钮压到同一档（`.install-row > .el-button` 读
+     `--action-h`）。**必须一起压**：只压按钮的话按钮比输入框矮 2px，一高一矮
+     看着像没对齐。EP 的 `.el-input` 高度就是 `--el-component-size`，所以改这一个
+     变量就够，不需要去覆写 `.el-input__wrapper` 内部结构。 */
+  --el-component-size: 30px;
   /* 「手动安装」标题 与 输入框 之间留出间隔：标题与输入框贴脸会让用户
      误以为输入框属于上一个区块（el-empty 空状态）。section-divider 自身
      只调标题区上方间距（padding-top:12 + border-top），下沿与下一个兄弟

@@ -408,6 +408,7 @@ function goVersions() {
                  删除——多实例是实现细节，绝大多数用户只有一个实例。 -->
             <div class="kernel-header-actions">
               <el-button
+                class="btn-action"
                 :class="{ 'btn-danger': running }"
                 size="small"
                 :icon="running ? VideoPause : VideoPlay"
@@ -419,6 +420,7 @@ function goVersions() {
                 工作台
               </el-button>
               <el-button
+                class="btn-action"
                 :class="{ 'btn-chat': !officialChatOpen, 'btn-danger': officialChatOpen }"
                 size="small"
                 :icon="officialChatOpen ? CircleClose : ChatDotRound"
@@ -718,6 +720,7 @@ function goVersions() {
         </h2>
         <span v-if="anyKeyConfigured" class="plan-head-actions">
           <el-button
+            class="btn-action"
             round
             size="small"
             :icon="Refresh"
@@ -728,6 +731,7 @@ function goVersions() {
             刷新
           </el-button>
           <el-button
+            class="btn-action"
             round
             size="small"
             :icon="TopRight"

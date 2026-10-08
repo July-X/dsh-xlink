@@ -445,38 +445,86 @@ function tokenValue(name) {
 test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () => {
   // Element Plus 的 `size="small"` 是 24px / 12px —— 与 17px 的块标题、20px 的
   // 版本号并排时读起来像脚注，而这两枚恰恰是那一屏唯一的**主操作**。
-  // 2026-10-08 起这份规格**不再写在概览的 scoped 块里**，而是按角色收进
-  // theme.css 的 `.card-head .el-button`：六个面板共用一份，写在概览里就只有概览
-  // 是这一档（而改之前概览自己的「刷新 / 查看详情」就比同屏的「工作台」矮一截）。
+  // 2026-10-08 起这份规格按**角色**收进 theme.css 的 `.btn-action`，写在任何
+  // 一个面板的 scoped 块里都只有那一页是这一档。
   const css = stripComments(themeCss);
-  const size = /\.card-head \.el-button\s*\{([^}]*)\}/.exec(css);
-  assert.ok(size, '应有共用的卡头动作按钮规格');
+  const size = /\.btn-action\s*\{([^}]*)\}/.exec(css);
+  assert.ok(size, '应有共用的动作按钮规格 .btn-action');
   assert.match(size[1], /height:\s*var\(--action-h\)/);
   assert.match(size[1], /font-size:\s*var\(--fs-action\)/);
   // 只抬盒高不抬横向内边距，两枚挤在一起像被人按扁了——横向要一起走。
   assert.match(size[1], /padding:\s*0 15px/);
   assert.equal(tokenValue('--action-h'), '30px');
   assert.equal(tokenValue('--fs-action'), '13.5px');
+  // 图标槽同理。`.entity-action` 那种列表行里的圆形图标按钮**刻意不挂这个类**：
+  // 那是「紧凑动作」，另一个角色，由自己的 26px 规则管。
+  assert.match(css, /\.btn-action \.el-icon\s*\{\s*font-size:\s*15px/);
 
-  // `.el-icon` 是 `font-size: inherit`：不显式写死，图标就跟着按钮字号等比走。
-  // 与侧栏 `.nav-item > .el-icon` 同一个道理，图标要比文字再大一点点才不显矮。
-  assert.match(css, /\.card-head \.el-button \.el-icon\s*\{\s*font-size:\s*15px/);
-
-  // **不许有面板自己再写一份**——那正是「六个面板各挑一个」的由来。
-  const panels = [...readdirSync(SRC, { recursive: true, withFileTypes: true })
-    .filter((e) => e.isFile() && e.name.endsWith('.vue'))
-    .map((e) => readFileSync(resolve(SRC, e.parentPath ?? e.path, e.name), 'utf8'))];
-  const local = panels.filter((t) => /\.card-head[^{]*\.el-button[^{]*\{[^}]*height/.test(t));
-  assert.deepEqual(local, [], '不该有面板在 scoped 块里另写卡头按钮盒高');
-
-  // 两枚都在这个容器里（模板上只换 CSS，不该有人把按钮挪出去就忘了这条规则）。
-  const actions = /<div class="kernel-header-actions">([\s\S]*?)<\/div>/.exec(overview);
-  assert.ok(actions, '卡头应有 .kernel-header-actions 容器');
-  const buttons = actions[1].match(/<el-button[\s\S]*?>/g) || [];
-  assert.equal(buttons.length, 2, `主操作应是两枚，实际 ${buttons.length} 枚`);
-  for (const b of buttons) {
-    assert.match(b, /size="small"/, '两枚都还挂着 size="small"（由上面的共用规则覆写盒高与字号）');
+  // **七枚动作按钮都要挂上这个类**，一处漏挂就退回 EP 自己的尺寸。
+  // 判据分两层：① 每个面板挂了几处（数「类」而不是数 `class="…"` 那个整串）；
+  // ② 三枚**文案不歧义**的逐个点名。
+  // 不按文案去找按钮是因为「工作台」既在按钮正文里、也在 `:title` 与另外两枚
+  // 按钮的正文里（「工作台窗口」），`includes` 一数就是四枚——判据会变成掷骰子。
+  const expected = {
+    'shell/OverviewPanel.vue': 4, // 工作台 / 官网网页版 / 刷新 / 查看详情
+    'skills/SkillsPanel.vue': 2, // 浏览 topic / 安装
+    'plugins/PluginsPanel.vue': 1, // 刷新数据
+  };
+  for (const [rel, n] of Object.entries(expected)) {
+    const tpl = templateOf(readFileSync(resolve(SRC, rel), 'utf8'));
+    assert.equal(
+      (tpl.match(/\bbtn-action\b/g) || []).length,
+      n,
+      `${rel} 应当恰好有 ${n} 处 btn-action（多出来的是漏收的新按钮，少了的是被摘掉的）`,
+    );
   }
+  // 点名三枚：按**它们独有的 `@click` 绑定**找开标签，而不是按可见文案。
+  // 文案会重名（「工作台」还在 `:title` 与另外两枚按钮的正文里），而 `@click`
+  // 的值在这个面板里只出现一次，落到哪一枚没有歧义。
+  for (const [rel, click] of [
+    ['plugins/PluginsPanel.vue', '@click="searchCatalog({ force: true, loud: true })"'],
+    ['skills/SkillsPanel.vue', "aria-label=\"打开 GitHub dsh-skill topic\""],
+    ['skills/SkillsPanel.vue', '@click="installSkill"'],
+  ]) {
+    const tpl = templateOf(readFileSync(resolve(SRC, rel), 'utf8'));
+    const at = tpl.indexOf(click);
+    assert.ok(at > 0, `${rel} 里找不到 ${click}`);
+    const open = tpl.lastIndexOf('<el-button', at);
+    const tag = tpl.slice(open, tpl.indexOf('>', open) + 1);
+    assert.match(tag, /\bbtn-action\b/, `${rel} 里 ${click} 那枚按钮没挂 btn-action`);
+  }
+  // 「工作台」那两枚带 `:class` 绑定，静态 class 与它并存是 Vue 的正常用法——
+  // 顺带钉住，免得有人以为两者互斥而删掉静态那个。
+  assert.match(overview, /class="btn-action"\s*\n\s*:class="\{/);
+
+  // **不许有面板自己再写一份盒高**——那正是「各挑一个」的复发口。
+  const scopedBlocks = [...readdirSync(SRC, { recursive: true, withFileTypes: true })]
+    .filter((e) => e.isFile() && e.name.endsWith('.vue'))
+    .map((e) => [e.name, readFileSync(resolve(SRC, e.parentPath ?? e.path, e.name), 'utf8')]);
+  const withLocalHeight = scopedBlocks
+    .filter(([, t]) => t.includes('.btn-action') && /btn-action[^}]*height/.test(t))
+    .map(([n]) => n);
+  assert.deepEqual(withLocalHeight, [], '不该有面板在 scoped 块里另写 btn-action 的盒高');
+});
+
+test('技能页的两种标题都在档位上，且输入行与同行按钮等高', () => {
+  // 「社区资源」原先是 `<span class="card-title">`，而 `.card-title` 在本仓**没有
+  // 对应规则**（设计稿里有、实现里从来没接），字号直接继承 body 的 14px——同一张
+  // 卡里比「技能社区」还小。改成 `<h2>` 后 `.card h2` 那一份自动生效。
+  const tpl = templateOf(skills);
+  assert.match(tpl, /<h2>社区资源<\/h2>/, '「社区资源」应是 <h2>，让 `.card h2` 生效');
+  assert.doesNotMatch(tpl, /class="card-title"/, '`.card-title` 没有对应规则，别再用它当卡头标题');
+  // 卡内小节标题（技能社区 / 手动安装）与 `.card h3` 同档。
+  assert.equal(
+    effectiveDeclaration(['community-title'], RULES, 'font-size'),
+    'var(--fs-subtitle)',
+  );
+  // 输入框必须跟着按钮一起压：只压按钮的话按钮比输入框矮 2px，一高一矮看着像没对齐。
+  assert.match(
+    stripComments(themeCss),
+    /\.install-row \{[^}]*--el-component-size:\s*30px/,
+    '.install-row 应把输入框压到与动作按钮同一档',
+  );
 });
 
 // --- 系统健康 -------------------------------------------------------------
@@ -987,7 +1035,7 @@ const skillsTpl = templateOf(skills);
 test('技能页是「已安装 / 社区资源」两张卡，不是一张卡里的分隔线', () => {
   const cards = skillsTpl.match(/class="card [^"]*"/g) || [];
   assert.deepEqual(cards, ['class="card entity-card"', 'class="card community-card"']);
-  assert.match(skillsTpl, /<span class="card-title">社区资源<\/span>/);
+  assert.match(skillsTpl, /<h2>社区资源<\/h2>/);
   // 「手动安装」不再挂在已安装卡里：它是社区资源卡的第二段。
   assert.ok(
     skillsTpl.indexOf('社区资源') < skillsTpl.indexOf('手动安装'),
@@ -1328,8 +1376,11 @@ test('插件页页签与内容之间有真间距，不能归零', () => {
 
 test('「刷新数据」只有一枚，且必须落在右栏「插件中心」那一行', () => {
   const tpl = templateOf(readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'));
+  // 数的是**类名**而不是整条 class 属性：按钮后来又挂上了 `btn-action`，
+  // `class="plugin-center-refresh"` 这个整串会跟着不匹配——那不是「多了一枚」，
+  // 是判据绑死在了属性写法上（与本文件「数整枚按钮而不是 match 一个词」同一条纪律）。
   assert.equal(
-    (tpl.match(/class="plugin-center-refresh"/g) || []).length,
+    (tpl.match(/\bplugin-center-refresh\b/g) || []).length,
     1,
     '刷新数据应当只有一枚：两枚意味着同一个动作在两处都能点，用户会不知道点哪',
   );
@@ -1347,7 +1398,7 @@ test('「刷新数据」只有一枚，且必须落在右栏「插件中心」�
   const dividers = [...tpl.matchAll(/<h3 class="section-divider">[\s\S]*?<\/h3>/g)].map((m) => m[0]);
   const catalog = dividers.find((d) => d.includes('插件中心'));
   assert.ok(catalog, '必须能找到「插件中心」那个分组标题');
-  assert.match(catalog, /class="plugin-center-refresh"/, '刷新数据必须与「插件中心」同一行');
+  assert.match(catalog, /\bplugin-center-refresh\b/, '刷新数据必须与「插件中心」同一行');
 });
 
 test('刷新数据在分组行里靠右（跟着 .section-divider 的 flex 排）', () => {

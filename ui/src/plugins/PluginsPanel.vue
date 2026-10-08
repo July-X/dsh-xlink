@@ -480,7 +480,7 @@ function instanceChipType(row, instanceId) {
                  按钮放在 h3 里不是新发明：内核版本页的「官方版本」标题行里本来就有
                  两枚图标按钮（`.list-head-with-logo`）。 -->
             <el-button
-              class="plugin-center-refresh"
+              class="plugin-center-refresh btn-action"
               size="small"
               :icon="Refresh"
               :loading="isLoading('catalogReload')"
