@@ -220,7 +220,10 @@ const FILE_BUDGETS = {
   //   （设计 §3.1 关闭开关需要移除接线）；纯文本操作 + 5 条单测。
   // · cmd.rs：builtin_openai_status 只读命令壳，照 precheck_cmd.rs 先例独立
   //   （commands.rs 在反棘轮上）。启用/停用写命令随 P1 后续提交进这里。
-  'src-tauri/src/plugins/builtin/mod.rs': 190,
+  // 190 → 199：补桥接 env 常量（BRIDGE_URL_ENV / BRIDGE_TOKEN_ENV，
+  // 与 host/constants.js 同名对齐；openai::bridge 与 kernel_adapter 的注入
+  // 都从这里取，单一出处）。
+  'src-tauri/src/plugins/builtin/mod.rs': 199,
   // 220 → 277：资源管线的清单校验（verify_manifest，fail-closed：坏摘要/
   // 缺文件/空清单都拦下启用事务；dev 源码无清单放行——它就是源码本身）。
   // 与 scripts/prepare-builtin-plugins.mjs 生成的 manifest.json 对应。
@@ -240,6 +243,14 @@ const FILE_BUDGETS = {
   // 而不是重置）。与 pkg/state.rs 的 JSON 状态读写不是同一职责：那边是
   // 社区插件/技能共用的取源层约定，这边是本插件私有的意图落盘。
   'src-tauri/src/plugins/builtin/state.rs': 90,
+  // 2026-10-08：技能接线从 kernel_adapter.rs 原样拆出（那边反棘轮只许
+  // 下调，腾出 P2 桥接注入的预算）。行为与测试一并搬迁，零语义变化。
+  'src-tauri/src/kernel/skill_wiring.rs': 45,
+  // 2026-10-08：本地桥接服务（P2 首块）。std::net + httparse 手写三端点
+  // ——客户端只有内核 Host 插件一个，引 async 框架不成比例；两个依赖
+  // 都已在树里。协议契约与 plugins/openai-oauth/host/bridge.js 一一对应。
+  'src-tauri/src/openai/bridge.rs': 163,
+  'src-tauri/src/openai/mod.rs': 12,
   // 2980 → 2932：删掉 P4 留下的旧签名壳共 11 项（`sync_kernels` /
   // `materialize_one` / `remove_materialized` / `sweep_kernel_orphans` /
   // `sweep_all_kernel_orphans` / `read_meta` / `write_meta` /
@@ -1148,7 +1159,11 @@ const FILE_BUDGETS = {
   // P3：KernelAdapter trait + AdapterCapabilities + DshAdapter 首实现
   // （DSH_HOME / DSH_PROFILE 注入、profile/package.json 与 cordis.patch.yml
   // 模板、resolve_install_dir 双查找）。约 430 行（含 9 个测试）。
-  'src-tauri/src/kernel/kernel_adapter.rs': 620,
+  // 620 → 497：2026-10-08 把技能接线整块（4 个函数 + 4 个测试）拆到
+  // skill_wiring.rs——kernel_adapter 在反棘轮上只许下调，P2 的桥接 env
+  // 注入需要腾预算，而技能接线本就是自成一体的关注点（行为与测试原样
+  // 搬迁，零语义变化）。注入了 launch_env 调用后仍净 -123。
+  'src-tauri/src/kernel/kernel_adapter.rs': 497,
   // profile 清单（profiles/<profile>/package.json）的初值、修复与模板 bundle
   // 表。独立成文件是因为它有**两个**写入方——kernel_adapter 建实例时落初值、
   // plugins/center 接线时改写——而清单的形状同时是内核的启动契约，不只服务
@@ -2020,7 +2035,7 @@ const FILE_BUDGETS = {
 // process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
-const TOTAL_BUDGET = 43132;
+const TOTAL_BUDGET = 43312;
 // 42424 → 42807 → 42981（2026-10-08）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

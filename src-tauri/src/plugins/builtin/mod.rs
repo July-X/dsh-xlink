@@ -27,6 +27,10 @@ pub(crate) mod wiring;
 pub(crate) const ENTRY_ID: &str = wiring::ROW_ID;
 /// 实例内物化根：`<DSH_HOME>/extensions/builtin/openai-oauth/`（开发计划 §3）。
 pub(crate) const INSTANCE_BASE_SEGMENT: &str = "extensions/builtin/openai-oauth";
+/// 桥接 env 名（开发计划 §5：地址与令牌只经子进程环境传入；与
+/// plugins/openai-oauth/host/constants.js 的同名常量一一对应）。
+pub(crate) const BRIDGE_URL_ENV: &str = "DSH_XLINK_OPENAI_BRIDGE_URL";
+pub(crate) const BRIDGE_TOKEN_ENV: &str = "DSH_XLINK_OPENAI_BRIDGE_TOKEN";
 
 /// 启用事务的结果。
 pub(crate) struct Wired {

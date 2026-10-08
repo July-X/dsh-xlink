@@ -943,8 +943,10 @@ name = "dsh-xlink"
 version = "0.4.3"
 dependencies = [
  "flate2",
+ "httparse",
  "libc",
  "notify-rust",
+ "rand",
  "ruzstd",
  "serde",
  "serde_json",

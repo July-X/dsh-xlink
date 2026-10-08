@@ -45,6 +45,8 @@ notify-rust = "4"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake", "url"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+httparse = "1"
+rand = "0.10"
 # 解析 DSH 内核的凭据与 profile 配置（`<DSH_HOME>/.credentials.yaml` 的 refs、
 # `profiles/<name>/cordis.patch.yml` 的 provider `apiKeyEnv`）——subscription.rs
 # 复用当前内核模型凭据查询用量时只读这两类 YAML。serde_yaml 0.9 纯 Rust 实现，

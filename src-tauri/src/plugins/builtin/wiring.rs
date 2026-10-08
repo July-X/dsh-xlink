@@ -15,7 +15,7 @@
 //!       name: "<相对路径，JSON 转义>"   ← name 必须直指 host/index.js
 //! ```
 
-use crate::kernel::kernel_adapter::looks_like_patch_list;
+use crate::kernel::skill_wiring::looks_like_patch_list;
 
 pub(crate) const ROW_ID: &str = "xlink-openai-oauth";
 

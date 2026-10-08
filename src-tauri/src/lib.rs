@@ -37,6 +37,7 @@ mod kernel;
 mod migration;
 mod node;
 mod notify;
+mod openai;
 mod pkg;
 mod plugins;
 mod shell;
