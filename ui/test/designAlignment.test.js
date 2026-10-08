@@ -1634,14 +1634,17 @@ test('语义色的「更强调一档」两套主题都定义了', () => {
   const css = stripComments(themeCss);
   assert.match(
     css,
-    /\.btn-chat\.el-button:hover,\s*\.btn-chat\.el-button:focus-visible\s*\{\s*color: var\(--success-strong\)/,
-    '.btn-chat 的 hover / 焦点态必须落到 --success-strong'
+    /\.btn-chat\.el-button:not\(:active\):hover,\s*\.btn-chat\.el-button:not\(:active\):focus-visible\s*\{\s*color: var\(--success-strong\)/,
+    '.btn-chat 的 hover / 焦点态必须落到 --success-strong，且按下时不生效'
   );
   assert.match(
     css,
-    /\.btn-danger\.el-button:hover,\s*\.btn-danger\.el-button:focus-visible\s*\{\s*color: var\(--danger-strong\)/,
-    '.btn-danger 的 hover / 焦点态必须落到 --danger-strong'
+    /\.btn-danger\.el-button:not\(:active\):hover,\s*\.btn-danger\.el-button:not\(:active\):focus-visible\s*\{\s*color: var\(--danger-strong\)/,
+    '.btn-danger 的 hover / 焦点态必须落到 --danger-strong，且按下时不生效'
   );
+  // 条件写进 hover 选择器（`:not(:active)`），而不是另起一条 `:active` 把颜色
+  // 打回去——后者每多一个状态就要再抄一条，且全靠源码顺序决胜。
+  assert.doesNotMatch(css, /\.btn-(?:chat|danger)\.el-button:active/);
 });
 
 test('彩色按钮不再单列 .el-icon 选择器（Element Plus 的图标本来就继承）', () => {
@@ -1650,4 +1653,55 @@ test('彩色按钮不再单列 .el-icon 选择器（Element Plus 的图标本来
   // 纯冗余，而且**抄漏一处就只染到一半**：图标与文字不同色时看起来像渲染错位。
   const css = stripComments(themeCss);
   assert.doesNotMatch(css, /\.btn-(?:chat|danger)\.el-button[^\n]*\.el-icon/);
+});
+
+// --- 药丸页签的内边距两侧都要在（2026-10-08）---------------------------------
+//
+// 用户报「『已安装』按钮文字未居中」。按截图量：药丸 54px = 文字 42px + **单侧**
+// 12px，另一侧 0。根因是 Element Plus 有两条 (0,4,0) 的规则把页签内边距单侧清零
+// （`:nth-child(2) { padding-left: 0 }` / `:last-child { padding-right: 0 }`）——
+// 它的前提是页签没有底色，而本页的页签是药丸。单侧清零在无底色时看不出来（缝由
+// 前一个的 padding-right 承担），在药丸上就是「字整块贴着一边」。
+//
+// 判据钉的是**特异度**，不是当前那几行值：把选择器写回 `.installed-tabs
+// .el-tabs__item`（0,2,0）会静默地输给库，单测照样全绿。
+
+test('药丸页签的规则特异度不低于 Element Plus 那两条单侧清零', () => {
+  const rule = /\.installed-tabs [^{]*\.el-tabs__item[^{]*\{([^}]*)\}/.exec(stripComments(themeCss));
+  assert.ok(rule, '应能找到药丸页签的尺寸规则');
+  const selector = rule[0].slice(0, rule[0].indexOf('{')).trim();
+  // (0,4,0)：三个类 + 一个伪类。少任何一个就退回 (0,3,0) / (0,2,0)，输给库。
+  assert.match(
+    selector,
+    /\.installed-tabs \.el-tabs__nav \.el-tabs__item:nth-child\(n\)/,
+    `药丸页签的选择器必须带 .el-tabs__nav + :nth-child(n)（当前：${selector}）`
+  );
+  assert.match(rule[1], /padding:\s*0 12px/, '药丸页签必须两侧等宽内边距');
+
+  // 库里那两条确实存在（钉住前提，防止升级 EP 后判据变成一句空话）。
+  const ep = readFileSync(
+    'node_modules/element-plus/theme-chalk/el-tabs.css',
+    'utf8',
+  );
+  assert.match(ep, /\.el-tabs--top>\.el-tabs__header \.el-tabs__item:nth-child\(2\)[^{]*\{padding-left:0\}/);
+  assert.match(ep, /\.el-tabs--top>\.el-tabs__header \.el-tabs__item:last-child[^{]*\{padding-right:0\}/);
+});
+
+test('「插件中心」右侧的辅助信息比标题小一档', () => {
+  // 标题是 h3（15px），辅助信息此前只挂 `.muted`（只管颜色），字号直接继承 15px，
+  // 于是补充与标题一样大、标题不再是这一行的主体。
+  assert.equal(
+    effectiveDeclaration(['section-divider__note'], RULES, 'font-size'),
+    '12px',
+    '「来自 dshfind.com」应当是 12px（标题 15px）'
+  );
+  // 字号不许加进 `.muted`：那个类全仓 23 处在用，一刀切会顺带改掉六个面板。
+  const muted = stripComments(themeCss).match(/\.muted \{([^}]*)\}/);
+  assert.ok(muted, '`.muted` 规则应在');
+  assert.doesNotMatch(muted[1], /font-size/, '`.muted` 只管颜色，不该带字号');
+  // 模板上这枚辅助信息确实挂了这个类。
+  assert.match(
+    stripComments(templateOf(pluginsPanel)),
+    /class="muted section-divider__note"/,
+  );
 });

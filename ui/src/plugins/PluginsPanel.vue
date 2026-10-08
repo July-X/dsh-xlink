@@ -469,7 +469,7 @@ function instanceChipType(row, instanceId) {
                「手动安装」与远端目录两套输入区分开的主要线索。 -->
           <h3 class="section-divider">
             插件中心
-            <span class="muted">
+            <span class="muted section-divider__note">
               来自
               <a href="https://dshfind.com/zh" target="_blank" rel="noreferrer">dshfind.com</a>
             </span>
