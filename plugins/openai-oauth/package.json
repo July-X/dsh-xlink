@@ -1,0 +1,22 @@
+{
+  "name": "xlink-openai-oauth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "dsh-xlink 内嵌 OpenAI OAuth（ChatGPT 套餐）插件：Host 适配器 + Client 设置卡",
+  "main": "host/index.js",
+  "exports": {
+    ".": "./host/index.js",
+    "./client": "./client/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-cordis",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  }
+}
