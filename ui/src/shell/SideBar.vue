@@ -22,11 +22,10 @@ import {
   Expand,
 } from '@element-plus/icons-vue';
 import { store, checkShellUpdate } from '../store.js';
-import { globalBusy, isLoading } from './loading.js';
+import { globalBusy } from './loading.js';
 import { pluginStore } from '../plugins/plugins.js';
 import { skillStore } from '../skills/skills.js';
 import { theme, toggleTheme } from './theme.js';
-import VersionBadge from './VersionBadge.vue';
 
 const MENU_GROUPS = [
   {
@@ -82,7 +81,7 @@ const shellVersionText = computed(() => {
   return store.view.shell_version + (store.devUi ? '（dev）' : '');
 });
 
-// 过滤掉 `show()` 返回 false 的菜单项——数据迁移默认隐藏，扫描到遗留数据才显示。
+// 过滤掉 `show()` 返回 false 的菜单项，并隐藏没有可见项的分组。
 const visibleGroups = computed(() =>
   MENU_GROUPS.map((group) => ({
     ...group,
