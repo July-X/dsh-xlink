@@ -1941,7 +1941,7 @@ pub fn stop(child: &mut Child) -> Result<(), AppError> {
                 exited = true;
                 break;
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
         if !exited {
             unsafe {
@@ -2519,7 +2519,7 @@ pub fn kill_pid(pid: u32, port: Option<u16>) {
             libc::kill(-pgid, libc::SIGTERM);
         }
         for _ in 0..10 {
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_millis(100));
             let alive = unsafe { libc::kill(-pgid, 0) } == 0;
             if !alive {
                 return;
