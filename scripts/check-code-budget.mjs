@@ -305,7 +305,9 @@ const FILE_BUDGETS = {
   // 键）× 能力表（v0 空=全 unknown，P6 逐模型验收后填表）× 按账号缓存
   // （失败保留最后一次成功）。端点路径与响应形状是未验证常量（联调只
   // 改配置层）。3 测试：合并+缓存往返 / 401→重登 / 形状双键兼容。
-  'src-tauri/src/openai/catalog.rs': 200,
+  // 200 → 214：目录缓存新鲜窗口（CATALOG_FRESH_SECS=60，设计 §6.1 离线
+  // 缓存语义：窗口内重复 listModels 不触网）。
+  'src-tauri/src/openai/catalog.rs': 214,
   // 2026-10-09：P4 骨架——推理校验与流转发。载荷白名单（不在表即拒绝，
   // 静默丢弃等于让调用方以为限制生效）/store-stream 固定参数由服务端写/
   // revision 与强度门/终止三分类（completed 含回放材料、failed、EOF 无
@@ -2097,7 +2099,7 @@ const FILE_BUDGETS = {
 // process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
-const TOTAL_BUDGET = 45264;
+const TOTAL_BUDGET = 45276;
 // 42424 → 42807 → 42981（2026-10-08）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
