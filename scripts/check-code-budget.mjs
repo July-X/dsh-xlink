@@ -221,7 +221,10 @@ const FILE_BUDGETS = {
   // · cmd.rs：builtin_openai_status 只读命令壳，照 precheck_cmd.rs 先例独立
   //   （commands.rs 在反棘轮上）。启用/停用写命令随 P1 后续提交进这里。
   'src-tauri/src/plugins/builtin/mod.rs': 190,
-  'src-tauri/src/plugins/builtin/materialize.rs': 220,
+  // 220 → 277：资源管线的清单校验（verify_manifest，fail-closed：坏摘要/
+  // 缺文件/空清单都拦下启用事务；dev 源码无清单放行——它就是源码本身）。
+  // 与 scripts/prepare-builtin-plugins.mjs 生成的 manifest.json 对应。
+  'src-tauri/src/plugins/builtin/materialize.rs': 277,
   'src-tauri/src/plugins/builtin/wiring.rs': 110,
   // 85 → 171：P1 收尾——set_enabled 写命令进本文件（守卫链：dsh 族 /
   // 实例存在 / 未被另一壳占用 / 内核已停止 → 变更前快照 → 启停事务 →
@@ -2017,7 +2020,7 @@ const FILE_BUDGETS = {
 // process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
-const TOTAL_BUDGET = 43075;
+const TOTAL_BUDGET = 43132;
 // 42424 → 42807 → 42981（2026-10-08）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
