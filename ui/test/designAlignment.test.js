@@ -243,9 +243,23 @@ test('版本号 20px / 700（设计稿 18px，用户要求再放大一档）；�
   assert.ok(style.includes('kernel-summary'), 'scoped 块应包含 kernel-summary');
 });
 
-test('三格指标：1fr 三列、上边线 + 后两格左边线；格内按钮只收左右内边距', () => {
+test('三格指标：1fr 三列、2px 上边线 + 后两格 2px 左边线；格内按钮只收左右内边距', () => {
   assert.equal(effectiveDeclaration(['metrics'], RULES, 'grid-template-columns'), 'repeat(3, minmax(0, 1fr))');
-  assert.equal(effectiveDeclaration(['metrics'], RULES, 'border-top'), '1px solid var(--border-soft)');
+  // 2026-10-08 用户要求这一屏的分割线加粗（1px → 2px）：1px 的线在 1040 宽的窗口里
+  // 几乎读不出「标题区 / 内容区」「指标 / 指标」这两组分组。
+  assert.equal(effectiveDeclaration(['metrics'], RULES, 'border-top'), '2px solid var(--border-soft)');
+  // 竖线跟着一起加粗——只加横线的话三格指标内部还是糊成一片。
+  assert.equal(effectiveDeclaration(['metric', 'metric'], RULES, 'border-left'), '2px solid var(--border-soft)');
+  // 卡头底线是全局原语（theme.css 的 `.card-head`，六个面板共用），这一屏靠 scoped
+  // 覆写加粗。钉的是**覆写存在且只写 width**——连颜色一起改会把已经对好的明暗关系
+  // 一起改掉；而只钉 2px 不钉选择器的话，写成别的卡片名照样绿。
+  const style = scopedStyle(overview);
+  assert.match(
+    style,
+    /\.kernel-card \.card-head,\s*\.usage-card \.card-head\s*\{\s*border-bottom-width:\s*2px;/,
+    '概览两张卡的卡头底线要加粗到 2px',
+  );
+  assert.doesNotMatch(style, /\.card-head\s*\{[^}]*border-bottom:\s*2px/s, '别把颜色一起写进覆写');
   // theme.css 的全局 `.metric` 曾给它描边 + 底色，把三格变成三个独立卡片。
   // 它已经删除，这条断言守的是「别把它当成可用原语再加回来」。
   assert.equal(effectiveDeclaration(['metric'], RULES, 'border'), null);
