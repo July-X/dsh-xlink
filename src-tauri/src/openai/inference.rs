@@ -284,6 +284,7 @@ mod tests {
         crate::openai::catalog::Catalog {
             revision: "rev-1".into(),
             capability_revision: CAPABILITY_REVISION,
+            fetched_at: 0,
             entries: vec![
                 CatalogEntry {
                     id: "gpt-x".into(),

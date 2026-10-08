@@ -28,6 +28,11 @@ const MODELS_PATH: &str = "/v1/models";
 /// 能力表版本（表内容变更时递增；v0 = 空表）。
 pub(crate) const CAPABILITY_REVISION: u32 = 0;
 
+/// 目录缓存新鲜窗口（秒）：窗口内的重复请求（工作台每次打开设置都会
+/// listModels）直接用缓存，不反复打账号目录端点。过期后照常拉取，
+/// 拉取失败仍回退缓存（原 revision，不冒充新）。
+const CATALOG_FRESH_SECS: u64 = 60;
+
 /// 随应用交付的精确能力表（P6 逐模型验收后填充；键为精确模型 id）。
 const CAPABILITY_TABLE: &[(&str, Capability)] = &[];
 
@@ -60,6 +65,9 @@ pub(crate) struct Catalog {
     pub(crate) revision: String,
     pub(crate) capability_revision: u32,
     pub(crate) entries: Vec<CatalogEntry>,
+    /// 拉取时刻（Unix 秒）；新鲜窗口内的后续请求直接用缓存。
+    #[serde(default)]
+    pub(crate) fetched_at: u64,
 }
 
 /// 目录错误：`Reauth` 要求重新登录；`Message` 稍后重试（用缓存兜底）。
@@ -99,6 +107,17 @@ pub(crate) fn load_catalog(
         })?
         .ok_or_else(|| CatalogError::Message("尚未登录；请先在工作台登录".into()))?;
 
+    let now = deps.now_unix();
+    // 新鲜窗口：工作台每次打开设置都会 listModels，窗口内的重复请求
+    // 直接用缓存（设计 §6.1 离线缓存语义；窗口外照常拉取）。
+    if let Some(cached) = cached_catalog(paths, &tokens.sub) {
+        if cached.capability_revision == CAPABILITY_REVISION
+            && now.saturating_sub(cached.fetched_at) < CATALOG_FRESH_SECS
+        {
+            return Ok(cached);
+        }
+    }
+
     let url = format!("{}{MODELS_PATH}", paths.issuer_base);
     let fetched = fetch_with_token(deps, &url, &tokens.access_token)?;
     let revision = fetched.revision;
@@ -107,6 +126,7 @@ pub(crate) fn load_catalog(
         revision,
         capability_revision: CAPABILITY_REVISION,
         entries,
+        fetched_at: now,
     };
     let cache = catalog_cache_path(paths, &tokens.sub);
     // 缓存写失败不失败目录（缓存只是兜底），但要留痕。
@@ -258,6 +278,7 @@ mod tests {
     use crate::openai::flow::tests::{flow_test_paths, MockIssuer};
     use crate::openai::http::{read_request, write_response};
     use std::net::TcpListener;
+
     use std::sync::atomic::AtomicBool;
 
     /// 带鉴权的目录 mock：`/v1/models` 校验 Bearer 后回固定清单。
@@ -448,5 +469,67 @@ mod serve_tests {
             Err((503, detail)) => assert!(detail.contains("登录"), "{detail}"),
             other => panic!("{other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod fresh_window_tests {
+    use super::*;
+    use crate::openai::flow::tests::{flow_test_paths, MockIssuer};
+    use crate::openai::http::{read_request, write_response};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// 带命中计数的目录 mock：断言「窗口内不触网」的观察点。
+    fn serve_counting(body: &'static str, token: &'static str, hits: Arc<AtomicUsize>) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let Ok(request) = read_request(&mut stream) else {
+                    continue;
+                };
+                if request.headers.get("authorization").map(|v| v.as_str())
+                    != Some(format!("Bearer {token}").as_str())
+                {
+                    let _ = write_response(&mut stream, 401, "application/json", "{}");
+                    continue;
+                }
+                hits.fetch_add(1, Ordering::SeqCst);
+                let _ = write_response(&mut stream, 200, "application/json", body);
+            }
+        });
+        port
+    }
+
+    /// 时钟推进需要 deps 可变——用 Cell 包 now_unix 的返回值。
+    #[test]
+    fn fresh_window_serves_cache_without_refetch() {
+        let issuer = MockIssuer::spawn();
+        let transport = issuer.transport();
+        let paths = flow_test_paths("fresh", issuer.port());
+        let cancel = AtomicBool::new(false);
+        crate::openai::flow::run_authorize(&paths, &transport, "release", &cancel).unwrap();
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_for_server = Arc::clone(&hits);
+        let models_port = serve_counting(
+            r#"{"data":[{"id":"gpt-x","name":"GPT X"}]}"#,
+            "at-mock",
+            hits_for_server,
+        );
+        let mut catalog_paths = paths.clone();
+        catalog_paths.issuer_base = format!("http://127.0.0.1:{models_port}");
+
+        // 第一次：拉取并落缓存（命中 1）。
+        let first = load_catalog(&catalog_paths, &transport, "release").unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(first.entries.len(), 1);
+        // 第二次（窗口内）：不触网，直接命中缓存。
+        let second = load_catalog(&catalog_paths, &transport, "release").unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "窗口内不应再次触网");
+        assert_eq!(second, first);
     }
 }
