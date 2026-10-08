@@ -1949,7 +1949,16 @@ const FILE_BUDGETS = {
 // theme.css 侧只改数值（`.brand` gap 10 → 12、`.brand img` 34 → 42 / 圆角 7 → 9），
 // 行数持平；SideBar 的 `<img width height>` 与之相等，判据钉住两处不漂。
 // 反棘轮三个文件预算一个数字没动。
-const TOTAL_BUDGET = 42202;
+// 42202 → 42204（2026-10-08）：六个面板的排版 / 控件档位收成 token（用户要求其余界面
+// 向概览页看齐）。净增 2 行，来自 theme.css：`:root` 里新增的六个档位 token
+//（--fs-block-title / --fs-subtitle / --fs-desc / --fs-tip-icon / --fs-action /
+// --action-h）与按角色划分的那条共用卡头按钮规则（`.card-head .el-button` 及其
+// 图标槽）。换来的净减：概览 scoped 块里那份**同样内容**的私有规则（11 行）删除——
+// 它原先只管概览，而改之前概览自己同屏就有两种大小的卡头按钮。
+// 另修 ui/test/logWindowTheme.test.js 的一个错判据：它要求「引用的 token 两套
+// 主题都定义过」，把**本来就不随主题变**的排版档位也判成违规。真正的失效条件是
+// 「:root 里没有」（只在 html.dark 里定义，浅色下整条声明被丢弃）。
+const TOTAL_BUDGET = 42204;
 // 35230 → 35250（2026-09-30 晚）：DeepSeek 余额按三个字段分别展示（用户实测
 // 「只看到 ¥16.64，看不出是赠金还是充值」）。净增 17 行，落在三个已有文件里：
 //   · ui/src/subscription.js +8：`balanceText` 换成 `balanceRow`，产出主行

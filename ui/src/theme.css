@@ -78,6 +78,19 @@
      本身已经不做扫光了，但「点了个按钮正在处理」这件事仍要有视觉回执，
      这个颜色因此留在 token 层而不是跟着旧标题栏一起删。 */
   --whale-eye-bright: #d9484c;
+  /* 排版与控件的档位（2026-10-08 用户要求六个面板向概览页看齐）。**这些不是颜色
+     那种「两套主题各给一份」的东西**——字号与控件盒高在明暗下必须一样，否则同一
+     个标题切一次主题就跳一档，所以只在这里定义一次。取值即概览页现状，六个面板
+     共用一份，避免同一个角色在七个地方各写一个数：
+       · 卡头动作按钮一族：EP 的 `size="small"` 在库里是 24px / 12px，与概览主
+         操作的 30px / 13.5px 不同档。改之前每个面板各挑一个，同一屏里会出现两种
+         大小的卡头按钮（概览自己的「刷新 / 查看详情」就比「工作台」矮一截）。 */
+  --fs-block-title: 17px;
+  --fs-subtitle: 15px;
+  --fs-desc: 13px;
+  --fs-tip-icon: 16px;
+  --fs-action: 13.5px;
+  --action-h: 30px;
   --radius-card: 8px;
   --radius-control: 6px;
   /* 窗口外轮廓圆角（2026-10-08）。此前圆角由 macOS 系统画，主壳与副窗不一致；
@@ -927,13 +940,13 @@ main {
    13px / 次要说明 11-12px 拉开两档，层级才立得住。 */
 .card h2 {
   margin: 0;
-  font-size: 17px;
+  font-size: var(--fs-block-title);
   font-weight: 700;
 }
 
 .card h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-subtitle);
   font-weight: 600;
   color: var(--text);
 }
@@ -948,6 +961,30 @@ main {
   flex-wrap: wrap;
   padding-bottom: 9px;
   border-bottom: 1px solid var(--border);
+}
+
+/* 卡头右侧动作按钮：六个面板共用一份规格（2026-10-08 用户要求其余面板向概览页
+   看齐）。**放在这里而不是各面板的 scoped 块**，是因为它按角色而不是按页面划分：
+   写在概览里就只有概览是这一档，别的面板各挑各的。改之前同一屏里就有两种大小
+   ——概览自己的「刷新 / 查看详情」（EP `size="small"`，24px）比同屏的「工作台」
+   （30px）矮一截，插件页的「刷新数据」又是另一个数。
+   横向内边距一起按比例走：只抬盒高不抬内边距，两枚挤在一起像被人按扁了。 */
+.card-head .el-button {
+  height: var(--action-h);
+  padding: 0 15px;
+  font-size: var(--fs-action);
+}
+
+/* 图标槽必须显式写死：`.el-icon` 是 `font-size: inherit`，不写死等于图标跟着
+   按钮字号等比缩着走；图标要比文字再大一点点才不显矮（与侧栏 `.nav-item >
+   .el-icon` 同一道理）。EP 的 `size="small"` 还把图标与文字的间距收到 4px，
+   这里放开到 6px，否则 15px 图标会贴着 13.5px 的字。 */
+.card-head .el-button .el-icon {
+  font-size: 15px;
+}
+
+.card-head .el-button .el-icon + span {
+  margin-left: 6px;
 }
 
 .card > h2 {
@@ -1113,7 +1150,7 @@ main {
 .page-list-title {
   margin: 0;
   color: var(--text);
-  font-size: 15px;
+  font-size: var(--fs-subtitle);
   font-weight: 650;
 }
 
@@ -1151,7 +1188,7 @@ main {
 .page-desc {
   margin: 5px 0 0;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--fs-desc);
   line-height: 1.6;
 }
 
@@ -1478,7 +1515,7 @@ main {
 /* ⓘ 跟着块标题一起长：标题 14→17px 时图标留在 14px，读起来像一个更小的
    另一个元素，而不是「这个标题的补充说明」。 */
 .card-info-icon {
-  font-size: 16px;
+  font-size: var(--fs-tip-icon);
   color: var(--text-secondary);
   cursor: help;
   transition: color 0.15s ease;
@@ -1648,7 +1685,7 @@ main {
 
 .callout-body h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-subtitle);
 }
 
 .callout-body p {
@@ -1833,7 +1870,7 @@ main {
 /* 标题旁的说明气泡触发点：从正文里收进来的存储路径与生效规则。 */
 .head-tip-icon {
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--fs-tip-icon);
   cursor: help;
   transition: color 0.16s ease;
 }
@@ -2316,7 +2353,7 @@ main {
 }
 
 .plugin-center-title {
-  font-size: 17px;
+  font-size: var(--fs-block-title);
   font-weight: 600;
 }
 
@@ -2776,7 +2813,7 @@ body.pulse-active > [data-titlebar-pulse='2'] {
 
 .logwin-title {
   font-weight: 700;
-  font-size: 14px;
+  font-size: var(--fs-subtitle);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: nowrap;
   overflow: hidden;
@@ -3358,7 +3395,7 @@ body.pane-dragging .log-tabs {
 }
 .debug-panel h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-subtitle);
   font-weight: 700;
 }
 .debug-hint {

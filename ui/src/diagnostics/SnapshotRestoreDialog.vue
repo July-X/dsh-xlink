@@ -206,7 +206,7 @@ function openRun() {
 
 .restore-section-title {
   margin: 14px 0 7px;
-  font-size: 13px;
+  font-size: var(--fs-subtitle);
   color: var(--text-muted);
 }
 

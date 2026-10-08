@@ -435,20 +435,39 @@ test('鲸鱼图标放大到 42px，且 `<img>` 的尺寸属性与 CSS 相等', (
   assert.ok(42 <= 64 - 16, '图标在收起态的侧栏内容盒里放不下（图标会比侧栏还宽）');
 });
 
+/** `:root` 里某个档位 token 的字面值（排版 / 控件档位只定义一次，两套主题共用）。 */
+function tokenValue(name) {
+  const m = new RegExp(`(?:^|[;{\\s])${name}:\\s*([^;]+);`).exec(stripComments(themeCss));
+  assert.ok(m, `theme.css 的 :root 里缺 ${name}`);
+  return m[1].trim();
+}
+
 test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () => {
   // Element Plus 的 `size="small"` 是 24px / 12px —— 与 17px 的块标题、20px 的
   // 版本号并排时读起来像脚注，而这两枚恰恰是那一屏唯一的**主操作**。
-  const css = stripComments(overview);
-  const size = /\.kernel-header-actions :deep\(\.el-button\)\s*\{([^}]*)\}/.exec(css);
-  assert.ok(size, '概览卡头应有专门的主操作尺寸规则');
-  assert.match(size[1], /height:\s*30px/);
-  assert.match(size[1], /font-size:\s*13\.5px/);
-  // 只抬盒高不抬横向内边距，两枚会挤在一起看着像被人按扁了——横向要一起走。
+  // 2026-10-08 起这份规格**不再写在概览的 scoped 块里**，而是按角色收进
+  // theme.css 的 `.card-head .el-button`：六个面板共用一份，写在概览里就只有概览
+  // 是这一档（而改之前概览自己的「刷新 / 查看详情」就比同屏的「工作台」矮一截）。
+  const css = stripComments(themeCss);
+  const size = /\.card-head \.el-button\s*\{([^}]*)\}/.exec(css);
+  assert.ok(size, '应有共用的卡头动作按钮规格');
+  assert.match(size[1], /height:\s*var\(--action-h\)/);
+  assert.match(size[1], /font-size:\s*var\(--fs-action\)/);
+  // 只抬盒高不抬横向内边距，两枚挤在一起像被人按扁了——横向要一起走。
   assert.match(size[1], /padding:\s*0 15px/);
+  assert.equal(tokenValue('--action-h'), '30px');
+  assert.equal(tokenValue('--fs-action'), '13.5px');
 
-  // `.el-icon` 是 `font-size: inherit`：不显式写死，图标就跟着按钮字号等比走，
-  // 15px 的图标槽这条约束等于没写。与侧栏 `.nav-item > .el-icon` 同一个道理。
-  assert.match(css, /\.kernel-header-actions :deep\(\.el-button \.el-icon\)\s*\{\s*font-size:\s*15px/);
+  // `.el-icon` 是 `font-size: inherit`：不显式写死，图标就跟着按钮字号等比走。
+  // 与侧栏 `.nav-item > .el-icon` 同一个道理，图标要比文字再大一点点才不显矮。
+  assert.match(css, /\.card-head \.el-button \.el-icon\s*\{\s*font-size:\s*15px/);
+
+  // **不许有面板自己再写一份**——那正是「六个面板各挑一个」的由来。
+  const panels = [...readdirSync(SRC, { recursive: true, withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith('.vue'))
+    .map((e) => readFileSync(resolve(SRC, e.parentPath ?? e.path, e.name), 'utf8'))];
+  const local = panels.filter((t) => /\.card-head[^{]*\.el-button[^{]*\{[^}]*height/.test(t));
+  assert.deepEqual(local, [], '不该有面板在 scoped 块里另写卡头按钮盒高');
 
   // 两枚都在这个容器里（模板上只换 CSS，不该有人把按钮挪出去就忘了这条规则）。
   const actions = /<div class="kernel-header-actions">([\s\S]*?)<\/div>/.exec(overview);
@@ -456,7 +475,7 @@ test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () 
   const buttons = actions[1].match(/<el-button[\s\S]*?>/g) || [];
   assert.equal(buttons.length, 2, `主操作应是两枚，实际 ${buttons.length} 枚`);
   for (const b of buttons) {
-    assert.match(b, /size="small"/, '两枚都还挂着 size="small"（由上面的规则覆写）');
+    assert.match(b, /size="small"/, '两枚都还挂着 size="small"（由上面的共用规则覆写盒高与字号）');
   }
 });
 
@@ -1459,15 +1478,22 @@ test('功能块标题整体放大：块标题 17px / 块内小标题 15px / 页�
   // 特异度但源码在后，靠 `>=` 决胜又轮番抢走）。问出来的会是别的规则的值——
   // 与 `el-icon` 那次同一个坑的另一个变体。这两条读规则文本。
   const css = stripComments(themeCss);
-  assert.match(css.match(/\.card h2 \{([^}]*)\}/)[1], /font-size: 17px/);
-  assert.match(css.match(/\.card h3 \{([^}]*)\}/)[1], /font-size: 15px/);
+  // 2026-10-08 起这两条读的是档位 token 而不是字面量：六个面板共用一份，
+  // 「块标题该多大」这件事只在一个地方说了算。
+  assert.match(css.match(/\.card h2 \{([^}]*)\}/)[1], /font-size: var\(--fs-block-title\)/);
+  assert.match(css.match(/\.card h3 \{([^}]*)\}/)[1], /font-size: var\(--fs-subtitle\)/);
+  assert.equal(tokenValue('--fs-block-title'), '17px');
+  assert.equal(tokenValue('--fs-subtitle'), '15px');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), '21px');
   // 「环境回退与诊断」那张卡的四个行式条目走 `.page-list-title`，也得跟上。
-  assert.equal(effectiveDeclaration(['page-list-title'], RULES, 'font-size'), '15px');
+  assert.equal(
+    effectiveDeclaration(['page-list-title'], RULES, 'font-size'),
+    'var(--fs-subtitle)',
+  );
   // 插件页右栏那份远端目录本来就写着 17px，与块标题齐平——两条一起认，
   // 免得只放大其中一条把它们拉成两档。
-  assert.equal(effectiveDeclaration(['plugin-center-title'], RULES, 'font-size'), '17px');
-  assert.equal(effectiveDeclaration(['card-info-icon'], RULES, 'font-size'), '16px');
+  assert.equal(effectiveDeclaration(['plugin-center-title'], RULES, 'font-size'), 'var(--fs-block-title)');
+  assert.equal(effectiveDeclaration(['card-info-icon'], RULES, 'font-size'), 'var(--fs-tip-icon)');
 });
 
 test('诊断层的两种块标题也跟着放大', () => {

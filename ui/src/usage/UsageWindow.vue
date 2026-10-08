@@ -467,7 +467,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 }
 .usagewin-title {
   font-weight: 700;
-  font-size: 15px;
+  font-size: var(--fs-subtitle);
 }
 .usagewin-info {
   color: var(--text-secondary);
@@ -650,7 +650,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 }
 .usage-section-head h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-subtitle);
 }
 .usage-section-hint {
   color: var(--text-secondary);
