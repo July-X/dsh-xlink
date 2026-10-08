@@ -1863,10 +1863,10 @@ main {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 7px 2px 6px;
+  padding: 3px 9px 3px 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-weight: 600;
-  font-size: 11.5px;
+  font-size: 12.5px;
   color: var(--text);
   background: linear-gradient(180deg, var(--overlay-soft) 0%, var(--overlay-faint) 100%);
   border: 1px solid var(--overlay-soft);
@@ -1883,8 +1883,8 @@ main {
 .catalog-version::before {
   content: '';
   display: inline-block;
-  width: 11px;
-  height: 11px;
+  width: 12px;
+  height: 12px;
   background-color: currentColor;
   -webkit-mask-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M2.12264 12.816C2.41018 13.8186 3.18295 14.5914 4.72848 16.1369L6.55812 17.9665C9.24711 20.6555 10.5916 22 12.2623 22C13.933 22 15.2775 20.6555 17.9665 17.9665C20.6555 15.2775 22 13.933 22 12.2623 22 10.5916 20.6555 9.24711 17.9665 6.55812L16.1369 4.72848C14.5914 3.18295 13.8186 2.41018 12.816 2.12264 11.8134 1.83509 10.7485 2.08083 8.61875 2.57231L7.39057 2.85574C5.5988 3.26922 4.70292 3.47597 4.08944 4.08944 3.47597 4.70292 3.26922 5.59881 2.85574 7.39057L2.57231 8.61875C2.08083 10.7485 1.83509 11.8134 2.12264 12.816ZM10.1234 7.27098C10.911 8.05856 10.911 9.33549 10.1234 10.1231 9.33581 10.9107 8.05888 10.9107 7.27129 10.1231 6.48371 9.33549 6.48371 8.05856 7.27129 7.27098 8.05888 6.48339 9.33581 6.48339 10.1234 7.27098ZM19.0511 12.0511L12.0721 19.0303C11.7792 19.3232 11.3043 19.3232 11.0114 19.0303 10.7185 18.7375 10.7185 18.2626 11.0114 17.9697L17.9904 10.9904C18.2833 10.6975 18.7582 10.6975 19.0511 10.9904 19.344 11.2833 19.344 11.7582 19.0511 12.0511Z' fill='%23000'/%3E%3C/svg%3E");
   mask-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M2.12264 12.816C2.41018 13.8186 3.18295 14.5914 4.72848 16.1369L6.55812 17.9665C9.24711 20.6555 10.5916 22 12.2623 22 13.933 22 15.2775 20.6555 17.9665 17.9665 20.6555 15.2775 22 13.933 22 12.2623 22 10.5916 20.6555 9.24711 17.9665 6.55812L16.1369 4.72848C14.5914 3.18295 13.8186 2.41018 12.816 2.12264 11.8134 1.83509 10.7485 2.08083 8.61875 2.57231L7.39057 2.85574C5.5988 3.26922 4.70292 3.47597 4.08944 4.08944 3.47597 4.70292 3.26922 5.59881 2.85574 7.39057L2.57231 8.61875C2.08083 10.7485 1.83509 11.8134 2.12264 12.816ZM10.1234 7.27098C10.911 8.05856 10.911 9.33549 10.1234 10.1231 9.33581 10.9107 8.05888 10.9107 7.27129 10.1231 6.48371 9.33549 6.48371 8.05856 7.27129 7.27098 8.05888 6.48339 9.33581 6.48339 10.1234 7.27098ZM19.0511 12.0511L12.0721 19.0303C11.7792 19.3232 11.3043 19.3232 11.0114 19.0303 10.7185 18.7375 10.7185 18.2626 11.0114 17.9697L17.9904 10.9904C18.2833 10.6975 18.7582 10.6975 19.0511 10.9904 19.344 11.2833 19.344 11.7582 19.0511 12.0511Z' fill='%23000'/%3E%3C/svg%3E");
@@ -1907,11 +1907,11 @@ main {
 /* 插件行的元数据 / 名称排版已统一到上面的 .entity-* 规则，这里不再单独定义。 */
 
 /* --- 列表行（已安装技能包 / 已安装插件共用） -----------------------------
-   每一条占两行：第一行「名称 + 来源 / 模式 chip + 一句话描述」，描述吃掉剩余
-   宽度（过长省略号收尾，完整内容走 tooltip）；第二行左侧放版本元数据、右侧
-   放状态 chip 与动作按钮。两行都不是「整体右对齐」——中间留白落在两个功能块
-   之间，比全部挤在右半边更读得出层次；版本号贴左边缘落在名称正下方，动作
-   按钮固定在最右缘，多行之间自然对齐。
+   名称 + 来源 chip 打头，一句话描述吃掉中间剩余宽度（过长省略号收尾，完整
+   内容走 tooltip），动作按钮固定在最右缘。插件「当前内核」页签的行是单行
+   （2026-10-08 用户要求）：版本元数据挪到右侧、与状态 chip / 动作同排——
+   那条布局覆盖在 PluginsPanel 的 scoped 块（.entity-row--single）；技能页
+   的行是自己的两列网格（.skill-entity-row）。
    列表外围一整块描边容器，行与行之间只留细分隔线，不再一行一张卡片。 */
 
 .entity-card {
@@ -1989,7 +1989,7 @@ main {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   transition: background 0.16s ease;
 }
 
@@ -2056,7 +2056,7 @@ main {
 .entity-name {
   flex-shrink: 0;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 15px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -2072,40 +2072,33 @@ main {
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
 }
 
 .entity-warn {
   flex-shrink: 0;
   color: var(--warning);
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 
-/* 第二行：元数据贴左、状态与动作贴右。 */
-.entity-foot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
+/* 版本元数据已并入单行右侧（.entity-row--single），这里只管字号与收缩。 */
 .entity-meta {
   display: flex;
   align-items: center;
   gap: 6px;
   margin: 0;
   min-width: 0;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .entity-meta > * {
   flex-shrink: 0;
 }
 
-/* 版本号贴左边缘（多行对齐），技能数占定宽列贴右，「已锁定版本」这类可选
-   标记只填中间空档、不推挤两侧。 */
+/* 版本 chip 统一一个下限宽度：长短版本号画出来一样宽，一行行扫过去不至于
+   参差；「已锁定版本」这类可选标记跟在后面、不推挤两侧。 */
 .entity-meta .meta-version {
   min-width: 66px;
 }
@@ -2120,9 +2113,9 @@ main {
 }
 
 .entity-states .el-tag {
-  height: 20px;
-  padding: 0 6px;
-  font-size: 11.5px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12.5px;
 }
 
 /* 同步异常只在动作区点一个警示点，完整原因走 tooltip：整行高度不被文字
@@ -2131,9 +2124,9 @@ main {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
-  font-size: 15px;
+  width: 18px;
+  height: 18px;
+  font-size: 17px;
   color: var(--warning);
   cursor: help;
 }
@@ -2153,14 +2146,14 @@ main {
   margin-left: auto;
 }
 
-/* 图标按钮：项目内的通用 el-button 为常规尺寸（32px 高）而列表行压缩到
-   26px，不压扁会把每行顶高、按钮也压过名称。默认弱化成静默图标，hover 才
-   浮出色，危险动作（卸载）单独走红色。 */
+/* 图标按钮：与卡头动作按钮同一档盒高（--action-h，30px，2026-10-08 用户要求
+   「按钮放大」），此前列表行压缩到 26px。默认弱化成静默图标，hover 才浮出色，
+   危险动作（卸载）单独走红色。 */
 .entity-actions .el-button.entity-action {
-  width: 26px;
-  height: 26px;
+  width: var(--action-h);
+  height: var(--action-h);
   padding: 0;
-  font-size: 13px;
+  font-size: 15px;
   color: var(--text-secondary);
   background: var(--overlay-soft);
   border: 1px solid var(--border);
@@ -2200,19 +2193,20 @@ main {
 /* 危险动作前的竖分隔线：卸载不跟「仓库 / 更新」挤成一组。 */
 .entity-action-sep {
   width: 1px;
-  height: 14px;
+  height: 18px;
   background: var(--border);
   flex-shrink: 0;
 }
 
 /* 模式徽章按钮（插件：链接 / 复制）。原先用 el-switch + inline-prompt：双字
    文案把控件顶到 58px 宽，同一个词还要在只读标签和开关 prompt 里各出现一次，
-   和同排的 26px 图标按钮也对不齐。改成与图标按钮同规格的徽章按钮，文案即
-   当前模式，点击切到另一种，hover 用品牌色提示这是可点的。 */
+   和同排的图标按钮也对不齐。改成与图标按钮同规格（--action-h）的徽章按钮，
+   字号读 --fs-action 与卡头动作按钮同档；文案即当前模式，点击切到另一种，
+   hover 用品牌色提示这是可点的。 */
 .entity-actions .el-button.entity-mode {
-  height: 26px;
-  padding: 0 8px;
-  font-size: 11.5px;
+  height: var(--action-h);
+  padding: 0 12px;
+  font-size: var(--fs-action);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--text-secondary);
   background: var(--overlay-soft);
@@ -2255,8 +2249,8 @@ main {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 7px;
-  font-size: 11px;
+  padding: 3px 9px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text-secondary);
@@ -2301,12 +2295,12 @@ main {
 .meta-upgrade {
   color: var(--warning);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .meta-pinned {
   color: var(--warning);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 /* 行内标签动画：新增 / 变化时轻弹一下。 */
@@ -3435,10 +3429,11 @@ body.pane-dragging .log-tabs {
   padding: 10px 12px;
 }
 
-/* 底色跟页签一样走 token：原先那条虚线是写死的 `rgba(238,255,216,.12)`，
-   浅色主题下等于浅底上的浅线，整条分隔看不见。 */
+/* 「已安装」页签的实例 chip 行：基线 .entity-foot 已随单行改版删除
+   （entity-foot 解散，见 PluginsPanel 的 .entity-row--single），这里只剩
+   「名称行与 chip 行之间的虚线分隔」。虚线颜色走 token——写死过的
+   `rgba(238,255,216,.12)` 在浅色主题下等于浅底上的浅线，整条看不见。 */
 .entity-foot--instance-grid {
-  display: block;
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px dashed var(--border);
