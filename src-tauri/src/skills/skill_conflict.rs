@@ -346,7 +346,15 @@ mod tests {
         let found = conflicts(&tree, "xlink-stale");
         assert_eq!(found.len(), 1, "占位的旧副本必须被命中：{found:?}");
         assert_eq!(found[0].skill, "xlink-stale");
-        assert_eq!(found[0].path, "<tmp>/active/xlink-stale.md");
+        // 期望值照着 `conflicts` 里的做法现拼：拼出真实路径再把根目录替成
+        // `<tmp>`。**不是写死 `<tmp>/active/…`**——剩下的部分是平台自己的分隔符，
+        // 写死 `/` 的话 Windows 上拼出来是反斜杠，这条断言恒红（它此前被 env.rs
+        // 的重复 `mod tests` 编译错误整个挡住，从没在 Windows 上真跑过）。
+        let expected = active
+            .join("xlink-stale.md")
+            .to_string_lossy()
+            .replace(&tree.path().display().to_string(), "<tmp>");
+        assert_eq!(found[0].path, expected);
         assert!(
             found[0].detail.contains("v3.0.0") && found[0].detail.contains("v3.1.0"),
             "文案要带上两边的版本：{}",
