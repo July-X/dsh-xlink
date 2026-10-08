@@ -250,6 +250,14 @@ const FILE_BUDGETS = {
   // ——客户端只有内核 Host 插件一个，引 async 框架不成比例；两个依赖
   // 都已在树里。协议契约与 plugins/openai-oauth/host/bridge.js 一一对应。
   'src-tauri/src/openai/bridge.rs': 163,
+  // 2026-10-09：OAuth/OIDC 授权核心（P2）。协议形状按 OIDC 标准 + 设计
+  // §8：PKCE(S256)/state/nonce/宿主标识/发现文档解析(fail-closed)/动态
+  // 注册/回调分类/ID token 五重校验。issuer 常量标注未验证（设计 §10
+  // 未验证项，联调只改配置层）。传输层（routes() 出网）随真实联调进。
+  'src-tauri/src/openai/auth.rs': 269,
+  // JWK 解析 + RS256 验签：ring 的 RsaPublicKeyComponents 直接吃 n/e，
+  // 第一版手拼 SPKI DER 已删（不必要）。固定测试密钥自签自验钉住。
+  'src-tauri/src/openai/jwk.rs': 53,
   'src-tauri/src/openai/mod.rs': 12,
   // 2980 → 2932：删掉 P4 留下的旧签名壳共 11 项（`sync_kernels` /
   // `materialize_one` / `remove_materialized` / `sweep_kernel_orphans` /
@@ -2035,7 +2043,7 @@ const FILE_BUDGETS = {
 // process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
-const TOTAL_BUDGET = 43312;
+const TOTAL_BUDGET = 43636;
 // 42424 → 42807 → 42981（2026-10-08）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
