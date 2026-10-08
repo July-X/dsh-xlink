@@ -48,11 +48,24 @@
   --success: #1f8a52;
   --warning: #97651a;
   --danger: #c74340;
+  /* 同色系「更强调」的一档，给按钮的 hover / 焦点态用（口径与 `--accent-strong`
+     一致：浅色下加深、暗色下提亮）。它记的是**同一个语义色的下一档**而不是另一个
+     颜色，所以必须两套主题各给一份。2026-10-08 用户报「亮色模式下『官网网页版』
+     文字颜色不清晰」时补的——原先那两个按钮直接写死了为深色底调的淡彩
+     `#6ee7b7` / `#f87171`（白底上只有 1.52:1 / 2.77:1，远低于正文 4.5:1）。 */
+  --success-strong: #166b41;
+  --danger-strong: #9b322f;
   /* 警告 / 危险的 fill 与 line 两档（给 badge 形态的按钮用）。
      与 `--accent-fill` / `--accent-line` 同一组语义、同样的 alpha，
      **两套主题各给一份**：填色与描边记的是「这个语义色叠在当前主题底色上」
      的效果，浅色主题的 accent 与告警色都更深深浅浅不同，沿用深色那套值就会
      在浅底上糊成一片脏色。 */
+  /* 警告 / 危险的 fill 与 line 两档（给 badge 形态的按钮用）。`--success-fill`
+     是 2026-10-08 补上的一档，让这一族四个语义色都有 fill（原先只有三个，插件页
+     「链接」模式徽章只能写死 `rgba(52,211,153,.12)`——emerald-400 调出来的，
+     浅色底上是一层洗不掉的绿雾）。刻意不补 `--success-line`：现在没有第二处
+     用得上它，登记一个没有作用方的 token 与本仓的惯例相反。 */
+  --success-fill: rgba(31, 138, 82, 0.16);
   --warning-fill: rgba(151, 101, 26, 0.16);
   --warning-line: rgba(151, 101, 26, 0.5);
   --danger-fill: rgba(199, 67, 64, 0.16);
@@ -122,6 +135,9 @@ html.dark {
   --success: #46c07d;
   --warning: #e0a83c;
   --danger: #f0665e;
+  --success-strong: #7ad9a5;
+  --danger-strong: #ff9b95;
+  --success-fill: rgba(70, 192, 125, 0.16);
   --warning-fill: rgba(224, 168, 60, 0.16);
   --warning-line: rgba(224, 168, 60, 0.5);
   --danger-fill: rgba(240, 102, 94, 0.16);
@@ -1289,8 +1305,8 @@ main {
 
 .btn-sub:hover,
 .btn-sub:focus-visible {
-  background: rgba(79, 140, 255, 0.12);
-  border-color: rgba(79, 140, 255, 0.55);
+  background: var(--accent-fill);
+  border-color: var(--accent-line);
   color: var(--accent);
   outline: none;
 }
@@ -1320,46 +1336,40 @@ main {
    入口合并删掉：那一排不再有这个按钮，类名全仓只剩这里引用自己。日志入口
    现在由「系统健康 → 日志系统」那一行承担，走 `.diag-row` 既有样式。 */
 
-/* 「打开/关闭官方对话」按钮：同无底色 text 按钮，文字用薄荷绿 #6ee7b7
-   （emerald-300）——与 --good #34d399 同色系但提亮。hover 进一步提到 #a7f3d0。
-   覆盖 icon / hover / focus / active 态。 */
-.btn-chat.el-button,
-.btn-chat.el-button .el-icon {
-  color: #6ee7b7;
+/* 「打开/关闭官方对话」按钮：与「工作台」同规格的无底色 text 按钮，文字走
+   `--success`，hover / 焦点进一步到 `--success-strong`。2026-10-08 用户报「亮色
+   模式下这个『官网网页版』文字颜色不清晰」：此前写死薄荷绿 `#6ee7b7`
+   （emerald-300，白底上 1.52:1）与 hover `#a7f3d0`（1.28:1）——**那一族是为深色底
+   调的淡彩**，放到浅色卡上等于没有颜色。
+   不再单列 `.el-icon` 选择器：Element Plus 的 `.el-icon` 是 `--color: inherit`
+   + `color: var(--color)`，图标本来就跟着按钮走，那几行是纯冗余。 */
+.btn-chat.el-button {
+  color: var(--success);
 }
 
 .btn-chat.el-button:hover,
-.btn-chat.el-button:focus-visible,
-.btn-chat.el-button:hover .el-icon,
-.btn-chat.el-button:focus-visible .el-icon {
-  color: #a7f3d0;
+.btn-chat.el-button:focus-visible {
+  color: var(--success-strong);
 }
 
-.btn-chat.el-button:active,
-.btn-chat.el-button:active .el-icon {
-  color: #6ee7b7;
+.btn-chat.el-button:active {
+  color: var(--success);
 }
 
-/* 「关闭」态：珊瑚红 #f87171（--bad token / Tailwind red-400），
-   与薄荷绿 #6ee7b7、冰青 #67e8f9 同属 Tailwind 300-400 中亮度档，三色在
-   卡底上同强度同饱和度，看起来是「同一色板里的三个状态」而非「危险 vs 信息」
-   那种割裂的视觉权重。hover 进一步提到 #fca5a5。
-   源序放在 .btn-chat 之后，让「关闭官方对话」时 .btn-danger 覆盖 .btn-chat 的绿色。 */
-.btn-danger.el-button,
-.btn-danger.el-button .el-icon {
-  color: #f87171;
+/* 「关闭」态：`--danger` / `--danger-strong`，与上面同一套口径。
+   源序放在 .btn-chat 之后，让「关闭官方对话」时 .btn-danger 覆盖 .btn-chat 的
+   绿色——**同特异度靠源码顺序决胜**，这条注释就是那条覆盖关系的说明书。 */
+.btn-danger.el-button {
+  color: var(--danger);
 }
 
 .btn-danger.el-button:hover,
-.btn-danger.el-button:focus-visible,
-.btn-danger.el-button:hover .el-icon,
-.btn-danger.el-button:focus-visible .el-icon {
-  color: #fca5a5;
+.btn-danger.el-button:focus-visible {
+  color: var(--danger-strong);
 }
 
-.btn-danger.el-button:active,
-.btn-danger.el-button:active .el-icon {
-  color: #f87171;
+.btn-danger.el-button:active {
+  color: var(--danger);
 }
 
 /* 设置页「设置」卡的端口输入框：它与「保存设置」同排（改端口是这张卡唯一可改的
@@ -2122,20 +2132,24 @@ main {
 
 .entity-actions .el-button.entity-mode:hover {
   color: var(--text);
-  border-color: rgba(79, 140, 255, 0.5);
-  background: rgba(79, 140, 255, 0.12);
+  border-color: var(--accent-line);
+  background: var(--accent-fill);
 }
 
+/* 「链接」模式徽章：同一枚徽章的语义色档（绿 = 不落地，只引用），所以文字与
+   描边走 `--success` / `--success-strong`，底色走 `--success-fill`。原先写死
+   emerald-400 的 `#34d399` + `rgba(52,211,153,…)`——那一族是为深色底调的亮彩，
+   浅色主题下文字只有 1.7:1，等于没有颜色。 */
 .entity-actions .el-button.entity-mode.is-link {
-  color: #34d399;
-  border-color: rgba(52, 211, 153, 0.32);
-  background: rgba(52, 211, 153, 0.12);
+  color: var(--success);
+  border-color: var(--success);
+  background: var(--success-fill);
 }
 
 .entity-actions .el-button.entity-mode.is-link:hover {
-  color: #6ee7b7;
-  border-color: rgba(52, 211, 153, 0.55);
-  background: rgba(52, 211, 153, 0.18);
+  color: var(--success-strong);
+  border-color: var(--success-strong);
+  background: var(--success-fill);
 }
 
 .entity-actions .el-button.entity-mode.is-disabled {

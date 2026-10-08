@@ -1532,3 +1532,78 @@ test('生产 CSS / Vue 里不再引用已改名的旧 token', () => {
   }
   assert.deepEqual(hits, [], `还有已改名的 token：${[...new Set(hits)].join('、')}`);
 });
+
+// --- 彩色按钮的文字必须两套主题都读得清（2026-10-08）------------------------
+//
+// 用户拿浅色主题下的概览页截图说「亮色模式下，这个『官网网页版』，文字颜色不清晰」。
+// 根因与上一组同类但低一层：**文字色**写死了「为深色底调的淡彩」——薄荷绿
+// `#6ee7b7` 在白卡上只有 1.52:1、hover 的 `#a7f3d0` 只有 1.28:1（正文门槛 4.5:1），
+// 关闭态的 `#f87171` 也只有 2.77:1。Tailwind 的 emerald-300 / red-400 那一档
+// 在深色底上舒服，在浅色底上等于「没有颜色」。
+//
+// 这类值的特征是**只在一套主题下成立**：它们在暗色下看着是对的，所以任何只测
+// 暗色的检查都抓不到。判据因此钉的是「读 token」而不是「等于某个色值」。
+
+/** 会以语义色显示文字、且浮在卡片上的按钮 / 徽章。取值是「静止态的那条规则」，
+ *  hover / 焦点档由下面一条单独钉——只钉静止态的话，把 hover 换回淡粉照样绿。 */
+const COLORED_CONTROLS = [
+  ['btn-chat', 'el-button', '--success'],
+  ['btn-danger', 'el-button', '--danger'],
+  ['entity-mode', 'el-button', null], // is-link 修饰，见下一条
+];
+
+test('彩色按钮的文字走语义 token，不再是只在一套主题下成立的淡彩', () => {
+  const css = stripComments(themeCss);
+  for (const [cls, tag, token] of COLORED_CONTROLS) {
+    if (!token) continue;
+    const value = effectiveDeclaration(subjectTokens(`.${cls}.${tag}`), RULES, 'color');
+    assert.equal(value, `var(${token})`, `.${cls} 的文字色是 ${value}，应当是 var(${token})`);
+  }
+  // 插件页「链接」模式徽章是同一处缺陷的另一个落点（emerald-400，白底 1.7:1）。
+  const link = effectiveDeclaration(
+    ['el-button', 'entity-mode', 'is-link'],
+    RULES,
+    'color',
+    { pseudo: null }
+  );
+  assert.equal(link, 'var(--success)', `「链接」徽章的文字色是 ${link}`);
+
+  // 这一族色值（emerald / red 的 300-400 档）在浅色主题下全部不达标，
+  // 钉住它们不再出现——注释里仍允许写，那是当年为什么选它们的解释。
+  for (const pastel of ['#6ee7b7', '#a7f3d0', '#f87171', '#fca5a5', '#34d399']) {
+    assert.doesNotMatch(css, new RegExp(pastel, 'i'), `${pastel} 是深色底专用色，浅色主题下不达标`);
+  }
+});
+
+test('语义色的「更强调一档」两套主题都定义了', () => {
+  // `--success-strong` / `--danger-strong` 是按钮 hover 与焦点态的落点：浅色下
+  // 更深、暗色下更亮。**只在一套里定义的话**，另一套下那条声明整条失效，hover
+  // 静默退回静止色——不报错、也看不出来，直到用户把鼠标放上去才发现「hover 没反应」。
+  const darkStart = themeCss.indexOf('\nhtml.dark {');
+  const light = themeCss.slice(0, darkStart);
+  const dark = themeCss.slice(darkStart);
+  for (const token of ['--success-strong', '--danger-strong', '--success-fill']) {
+    assert.match(light, new RegExp(`${token}:\\s*[^;]+;`), `${token} 缺浅色定义`);
+    assert.match(dark, new RegExp(`${token}:\\s*[^;]+;`), `${token} 缺暗色定义`);
+  }
+  // hover 档确实读的是 strong 档而不是又一遍静止色。
+  const css = stripComments(themeCss);
+  assert.match(
+    css,
+    /\.btn-chat\.el-button:hover,\s*\.btn-chat\.el-button:focus-visible\s*\{\s*color: var\(--success-strong\)/,
+    '.btn-chat 的 hover / 焦点态必须落到 --success-strong'
+  );
+  assert.match(
+    css,
+    /\.btn-danger\.el-button:hover,\s*\.btn-danger\.el-button:focus-visible\s*\{\s*color: var\(--danger-strong\)/,
+    '.btn-danger 的 hover / 焦点态必须落到 --danger-strong'
+  );
+});
+
+test('彩色按钮不再单列 .el-icon 选择器（Element Plus 的图标本来就继承）', () => {
+  // `.el-icon` 是 `--color: inherit` + `color: var(--color)`，图标跟着按钮走。
+  // 历史上每条按钮规则都把 `.el-icon` 重抄一遍（`.btn-chat` / `.btn-danger` 各四处），
+  // 纯冗余，而且**抄漏一处就只染到一半**：图标与文字不同色时看起来像渲染错位。
+  const css = stripComments(themeCss);
+  assert.doesNotMatch(css, /\.btn-(?:chat|danger)\.el-button[^\n]*\.el-icon/);
+});
