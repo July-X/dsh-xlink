@@ -167,17 +167,17 @@ function textOf(content) {
  */
 export async function* pumpStream(lines) {
   let nextIndex = 0;
-  // 已开始的块：blockType → index（懒分配 block-start，成对收尾）。
+  // 已开始的块：blockType → { index, text, tool }。text/reasoning 累积
+  // 文本（block-end 的块内容以此为准——装配器可能不信任增量求和）；
+  // tool-call 累积参数与身份。懒分配 block-start，成对收尾。
   const openBlocks = new Map();
   const toolNameByCallId = new Map();
 
-  // 块懒开始：返回 index 与是否需要发 block-start（generator 里辅助函数
-  // 不能 yield，所以由调用方 yield）。
   const nextBlock = (blockType) => {
     const existing = openBlocks.get(blockType);
-    if (existing !== undefined) return { index: existing, started: false };
+    if (existing !== undefined) return { index: existing.index, started: false };
     const index = nextIndex++;
-    openBlocks.set(blockType, index);
+    openBlocks.set(blockType, { index, text: "", tool: null });
     return { index, started: true };
   };
 
@@ -198,13 +198,29 @@ export async function* pumpStream(lines) {
         throw error;
       }
       // completed：收尾所有开块 → usage → finish（带回放）。
-      for (const blockType of [...openBlocks.keys()]) {
-        yield { type: 'block-end', index: openBlocks.get(blockType), block: { type: blockType, text: '' } };
+      for (const [blockType, state] of [...openBlocks.entries()]) {
+        if (blockType === 'tool-call') {
+          yield {
+            type: 'block-end',
+            index: state.index,
+            block: { type: 'tool-call', id: state.tool?.id ?? '', name: state.tool?.name ?? '', arguments: state.text },
+          };
+        } else {
+          yield { type: 'block-end', index: state.index, block: { type: blockType, text: state.text } };
+        }
       }
       openBlocks.clear();
       const usage = event.replay?.response?.usage;
-      for (const blockType of [...openBlocks.keys()]) {
-        yield { type: 'block-end', index: openBlocks.get(blockType), block: { type: blockType, text: '' } };
+      for (const [blockType, state] of [...openBlocks.entries()]) {
+        if (blockType === 'tool-call') {
+          yield {
+            type: 'block-end',
+            index: state.index,
+            block: { type: 'tool-call', id: state.tool?.id ?? '', name: state.tool?.name ?? '', arguments: state.text },
+          };
+        } else {
+          yield { type: 'block-end', index: state.index, block: { type: blockType, text: state.text } };
+        }
       }
       openBlocks.clear();
       if (usage && typeof usage.input_tokens === 'number') {
@@ -227,22 +243,33 @@ export async function* pumpStream(lines) {
     if (type.endsWith('output_text.delta')) {
       const { index, started } = nextBlock('text');
       if (started) yield { type: 'block-start', index, blockType: 'text' };
+      openBlocks.get('text').text += event.delta ?? '';
       yield { type: 'text-delta', index, text: event.delta ?? '' };
       continue;
     }
     if (type.endsWith('reasoning_text.delta') || type.endsWith('reasoning_summary_text.delta')) {
       const { index, started } = nextBlock('reasoning');
       if (started) yield { type: 'block-start', index, blockType: 'reasoning' };
+      openBlocks.get('reasoning').text += event.delta ?? '';
       yield { type: 'reasoning-delta', index, text: event.delta ?? '' };
       continue;
     }
     if (type.endsWith('function_call_arguments.delta')) {
       const { index, started } = nextBlock('tool-call');
       if (started) yield { type: 'block-start', index, blockType: 'tool-call' };
-      const name = event.name !== undefined ? fromProviderToolName(event.name, toolNameByCallId) : undefined;
-      if (event.item_id !== undefined && name !== undefined) {
-        toolNameByCallId.set(event.item_id, name);
+      const state = openBlocks.get('tool-call');
+      const name =
+        event.name !== undefined
+          ? fromProviderToolName(event.name, toolNameByCallId)
+          : undefined;
+      if (event.item_id !== undefined) {
+        state.tool = {
+          id: event.item_id,
+          ...(name !== undefined ? { name } : {}),
+        };
+        if (name !== undefined) toolNameByCallId.set(event.item_id, name);
       }
+      state.text += event.delta ?? '';
       yield {
         type: 'tool-call-delta',
         index,

@@ -10,7 +10,8 @@
  */
 import { LlmAdapter, LlmError } from "@deepseek-ai/dsh-llm";
 import { PROVIDER_DISPLAY_NAME, PROVIDER_ID } from "./constants.js";
-import { BridgeUnavailableError, fetchCatalog, handshake } from "./bridge.js";
+import { BridgeUnavailableError, fetchCatalog, handshake, streamInferenceLines } from "./bridge.js";
+import { buildEnvelope, pumpStream } from "./request.js";
 
 export class BridgeAdapter extends LlmAdapter {
   constructor(bridge, pluginVersion) {
@@ -78,9 +79,7 @@ export class BridgeAdapter extends LlmAdapter {
     // 目录视图缺失（未经 listModels）时先刷新一次——发送前校验双 revision
     // 的前提是 Host 手里有当前目录。
     if (this.catalogView === undefined) await this.#refreshCatalog(options.signal);
-    const envelope = buildEnvelope(
-      { ...options, catalog: this.catalogView },
-    );
+    const envelope = buildEnvelope(options, this.catalogView);
     const lines = streamInferenceLines(this.bridge, envelope, options.signal);
     yield* pumpStream(lines);
   }
