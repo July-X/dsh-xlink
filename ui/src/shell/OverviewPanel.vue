@@ -1026,6 +1026,23 @@ function goVersions() {
   height: auto;
 }
 
+/* 这一屏的分割线加粗到 2px（2026-10-08 用户要求，**先只看概览这一屏的效果**）。
+   1px 的线在 1040 宽的窗口里几乎读不出来，「标题区 / 内容区」「指标 / 指标」这两
+   组分组靠留白撑着，扫一眼过去是一整块。三条线分属两处声明来源：
+
+     · `.card-head` 的底线在 **theme.css**（六个面板共用一份）。这里**只加一条 scoped
+       覆写**，不动全局——用户说的是「先调整概览」，全局一改六个面板一起变，就没法
+       单独判断这一屏的效果。真要全局，把下面这两行搬进 theme.css 的 `.card-head`
+       并删掉这条覆写即可。scoped 版是 (0,2,0)，压得住全局那条 (0,1,0)。
+     · `.metrics` 的顶线与 `.metric + .metric` 的竖线本来就是本页私有的，直接改。
+
+   只写 `border-*-width` 而不是整条 `border`：颜色那几档（`--border` / `--border-soft`）
+   与 1px 时的观感一起调过，分开写才不会把已经对好的明暗关系一起改掉。 */
+.kernel-card .card-head,
+.usage-card .card-head {
+  border-bottom-width: 2px;
+}
+
 /* 三格指标：Node.js / 今日用量 / 数据目录。设计稿给的是 1fr 1fr 1fr，
    格间用左边框分隔而不是留白——留白在暗色底上读不出「这里换一个维度了」。 */
 .metrics {
@@ -1033,12 +1050,12 @@ function goVersions() {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   padding-top: 10px;
-  border-top: 1px solid var(--border-soft);
+  border-top: 2px solid var(--border-soft);
 }
 .metric { min-width: 0; }
 .metric + .metric {
   padding-left: 12px;
-  border-left: 1px solid var(--border-soft);
+  border-left: 2px solid var(--border-soft);
 }
 .metric-label {
   display: flex;
