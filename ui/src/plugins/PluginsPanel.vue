@@ -462,11 +462,13 @@ function instanceChipType(row, instanceId) {
           </div>
             </div>
 
-            <div class="page-layout__col">
+            <div class="page-layout__col plugin-center-col">
           <!-- 本机那一份到这里为止：上面是已装清单与手动安装（本地仓库），
                下面开始是 dshfind.com 上的远端目录。宽版下两者已经各占一列，
                这道分组标题退化成列内的分隔线——窄窗（单列）时它仍然是把
-               「手动安装」与远端目录两套输入区分开的主要线索。 -->
+               「手动安装」与远端目录两套输入区分开的主要线索。
+               `plugin-center-col` 是右栏专属样式的挂点（列首标题去虚线、
+               控件压紧、目录列表内部滚动），scoped 块按它限定作用域。 -->
           <h3 class="section-divider">
             插件中心
             <span class="muted section-divider__note">
@@ -553,9 +555,11 @@ function instanceChipType(row, instanceId) {
             {{ emptyHint }}
           </p>
           <TransitionGroup v-else v-loading="catalogLoading" name="catalog" tag="div" class="catalog-list">
-            <!-- 行式条目：原先是三段式卡片（标题行自由换行 + 描述 + tag 行），
-                 一张约 90px，一屏只看三四个。改成「标题 / 描述 / 底部」定高
-                 三行后约 62px，枚举效率显著提升。 -->
+            <!-- 行式条目：三段定高——「标题 / 描述 / 底部」。版本徽标 2026-10-08
+                 按用户要求从标题行挪到**底部那行**（`.catalog-meta` 组，与热度
+                 数据同排）：长版本串（open-design-v0.19.2 这类）挤在名称旁边
+                 会把名称压成省略号，挪下去之后标题行只剩「名称 + 分类 +
+                 已验证」，而版本信息仍然在名称正下方可见。 -->
             <div
               v-for="(item, index) in items"
               :key="item.spec || item.name"
@@ -564,7 +568,6 @@ function instanceChipType(row, instanceId) {
             >
               <div class="catalog-row-title">
                 <span class="catalog-name">{{ item.name }}</span>
-                <span v-if="item.version" class="catalog-version">{{ item.version }}</span>
                 <el-tooltip
                   v-if="item.category"
                   placement="top"
@@ -580,7 +583,10 @@ function instanceChipType(row, instanceId) {
               </div>
               <p v-if="item.description" class="catalog-desc">{{ descText(item) }}</p>
               <div class="catalog-row-foot">
-                <span class="catalog-stats">{{ statsText(item) }}</span>
+                <div class="catalog-meta">
+                  <span v-if="item.version" class="catalog-version">{{ item.version }}</span>
+                  <span class="catalog-stats">{{ statsText(item) }}</span>
+                </div>
                 <span class="catalog-actions">
                   <el-tooltip placement="top" effect="dark" content="在浏览器打开插件详情页">
                     <el-button
@@ -770,3 +776,260 @@ function instanceChipType(row, instanceId) {
     </div>
   </section>
 </template>
+
+<style scoped>
+/* 插件页专属样式。此前 PluginsPanel 没有自己的 scoped 块，插件中心目录
+   （.catalog-*）的样式寄在 theme.css 的「插件中心」一节；2026-10-08 用户
+   三连要求（版本号挪到条目下方 / 插件中心再紧凑 / 目录列表内部滚动）要动
+   这批样式的每一个数，而 theme.css 是反棘轮文件（只许下调），于是整段搬进
+   这里，theme.css 只留一条指路注释。
+   选择器经 scoped 编译后自带 data-v 属性（(0,2,0) 起步），压得过 theme.css
+   的全局基线 (0,1,0)；Element Plus 的内部结构（.el-tabs__content /
+   .el-tab-pane）拿不到 data-v，走 :deep()。 */
+
+/* --- 高度链：纵向滚动只发生在列表内部（2026-10-08 用户要求）--------------
+   「已安装」页签右栏那份 dshfind.com 目录动辄几千条，此前整列摊开，把
+   外层 main 撑出大滚动条。做法与内核版本页（.kernel-panel 一族）同一条：
+   面板钉满 main 可视高度 → 卡片吃掉剩余高度 → 页签区伸展 → 双列栅格拉成
+   等高两栏 → 列表 overflow-y: auto。min-height: 0 必须一路铺到滚动容器：
+   flex 子项默认拒绝收缩到内容高以下，缺任何一环整条链就断，页面照样被
+   撑出外层滚动条。
+   兜底与内核版本页同一条：窗口矮到静态内容本身都放不下时，列表收缩到
+   内容高、main 的滚动条照常出现——可达性优先于「无外层滚动条」。 */
+.panel {
+  height: 100%;
+  min-height: 0;
+}
+
+.entity-card {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.installed-tabs-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.installed-tabs {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* EP 的 .el-tabs 默认是块级盒（header + content 竖排），改成 flex 列只是
+     给 content 一个能伸能量的身份；页签行内部照旧是普通流。 */
+  display: flex;
+  flex-direction: column;
+}
+
+.installed-tabs :deep(.el-tabs__content) {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.installed-tabs :deep(.el-tab-pane) {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 单行栅格撑满整个 pane：两栏等高，右栏的目录列表才有一块**确定**的高度
+   可以内部滚。全局基线 .page-layout 是 align-items: start（列按内容高收），
+   这里必须改回 stretch，否则栅格行高塌到内容高、列表永远滚不起来。 */
+.page-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+}
+
+/* 两份插件清单（左栏「已安装」与「当前内核」页签）放不下时各自内部滚动，
+   不把外层撑出去。刻意不给 flex-grow：列表短的时候保持内容高，不会画出
+   一个空荡荡的大边框。 */
+.entity-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* --- 插件中心右栏：紧凑档（2026-10-08 用户要求）-------------------------- */
+
+/* 列首的「插件中心」标题：全局 .section-divider 的 margin-top 与上虚线是给
+   「隔开上一段内容」用的；它是这一列的第一个元素，上面没有要隔开的东西，
+   留白与虚线只是把标题往下推。左栏「手动安装」的分隔线不受影响。 */
+.plugin-center-col .section-divider {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* 标题 → 搜索框 → 筛选行 → 列表 的纵向间距统一收到 8px（原 14 / 12 / 6）：
+   这一列每省一像素都直接变成列表的可视行数。 */
+.plugin-center-col .install-row {
+  margin-top: 8px;
+}
+
+.catalog-subbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* 分类 / 排序下拉与搜索框同一档高（30px）：EP 默认 32px，同一列里两种
+     盒高差 2px，肉眼读成「没对齐」。 */
+  --el-component-size: 30px;
+  margin-top: 8px;
+}
+
+/* 分类 / 排序 6:4 分宽：分类带计数（「全部（7.6k）」）更占字，排序只有两三个
+   固定选项。都不写死 width，让 el-select 自适应伸缩。 */
+.catalog-category {
+  flex: 6 1 0;
+  min-width: 0;
+}
+
+.catalog-sort {
+  flex: 4 1 0;
+  min-width: 0;
+}
+
+/* --- 目录列表：内部滚动的本体 -------------------------------------------- */
+
+.catalog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  /* 自然高、可收缩：列表短的时候「显示更多」紧跟最后一条；列表长的时候
+     收缩到栏内剩余高度，滚动只发生在它自己身上。 */
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* 触控板甩到列表尽头时不要连带触发外层滚动——否则在列表底部再滚一下，
+     页面会跟着跳，用户以为列表没到底。 */
+  overscroll-behavior: contain;
+}
+
+/* 行式条目：紧凑档——内边距 12 → 8/10，行内间距 5 → 4，条目间距 10 → 6。
+   行式条目不做上浮：密集列表里整列 hover 时跳动比省下的高度更抢眼
+   （原决定保留）。 */
+.catalog-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--overlay-faint);
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+
+.catalog-row:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.catalog-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 名称是标题行里唯一会长到溢出的元素，flex-shrink 只给它：分类标签与
+   「已验证」徽标内容都短，压它们只会把标签挤成省略号。版本徽标已挪去
+   底部（见 .catalog-meta），标题行不再有长版本串挤占名称的宽度。 */
+.catalog-name {
+  font-weight: 700;
+  font-size: 13px;
+  flex: 0 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 「已验证」徽标：走 success token——mint 淡彩在浅底上不达对比度的老问题
+   已随 2026-10-08 那批清理换成语义色。 */
+.catalog-verified {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--success);
+  border: 1px solid var(--success);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.catalog-desc {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow: hidden;
+}
+
+.catalog-row-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 底部左组：版本徽标 + 热度数据（2026-10-08 用户要求「版本号移动到下方
+   显示」）。min-width: 0 是省略号的承重墙——没有它，nowrap 文本撑住
+   min-content，长版本串会把右侧的动作按钮挤出去。版本徽标的外观走
+   theme.css 的 .meta-version / .catalog-version 共享规则，这里只管排布。 */
+.catalog-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.catalog-meta .catalog-version {
+  flex: none;
+}
+
+.catalog-stats {
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.catalog-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+/* 目录条目入场：交错淡入上浮（--i 由模板按序号写入，封顶 12 档）。 */
+.catalog-enter-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  transition-delay: calc(min(var(--i, 0), 12) * 22ms);
+}
+.catalog-enter-from {
+  opacity: 0;
+  transform: translateY(10px);
+}
+.catalog-leave-active {
+  transition: opacity 0.12s ease;
+}
+.catalog-leave-to {
+  opacity: 0;
+}
+
+.catalog-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+</style>
