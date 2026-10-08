@@ -13,4 +13,5 @@ pub(crate) mod bridge;
 pub(crate) mod callback;
 pub(crate) mod http;
 pub(crate) mod jwk;
+pub(crate) mod transport;
 pub(crate) mod vault;
