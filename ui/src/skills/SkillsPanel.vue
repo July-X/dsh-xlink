@@ -396,7 +396,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
   align-items: center;
   gap: 10px;
   padding: 8px 0 10px;
-  border-bottom: 1px solid var(--border-soft);
+  border-bottom: 0;
 }
 .community-resource-main {
   min-width: 0;
@@ -430,9 +430,23 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
 
 /* 手动安装：输入行复用全局 `.install-row`（`.el-input` 自动 flex:1）。 */
 .community-install {
+  position: relative;
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid var(--border-soft);
+  border-top: 0;
+}
+
+/* 社区与手动安装之间只画一道刻蚀线，两端收细与卡头一致。 */
+.community-install::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--divider-strong);
+  pointer-events: none;
+  clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%);
 }
 
 /* 异常处理说明。刻意用 warning 色标「异常时」：它说明的是出错后会发生什么，
