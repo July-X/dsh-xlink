@@ -28,3 +28,4 @@ coverage/
 .tauri
 .codegraph/
 .mimosa/
+.dsh-preview/
