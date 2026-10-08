@@ -316,6 +316,36 @@ fn kid_of(jws: &str) -> Result<Option<String>, String> {
     Ok(header.get("kid").and_then(|v| v.as_str()).map(String::from))
 }
 
+/// token 端点响应的必需字段（缺任一即错误——半份令牌不如报错）。
+pub(crate) struct TokenSet {
+    pub(crate) access_token: String,
+    pub(crate) refresh_token: String,
+    pub(crate) id_token: String,
+    /// `expires_in`（秒）；0 视为未知，刷新按保守策略处理。
+    pub(crate) expires_in: u64,
+}
+
+pub(crate) fn parse_token_response(json: &str) -> Result<TokenSet, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|error| format!("token 响应不是有效 JSON：{error}"))?;
+    let string_field = |name: &str| -> Result<String, String> {
+        value
+            .get(name)
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .ok_or_else(|| format!("token 响应缺 {name}"))
+    };
+    Ok(TokenSet {
+        access_token: string_field("access_token")?,
+        refresh_token: string_field("refresh_token")?,
+        id_token: string_field("id_token")?,
+        expires_in: value
+            .get("expires_in")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+    })
+}
+
 pub(crate) struct IdClaims {
     pub(crate) subject: String,
     pub(crate) email: Option<String>,
@@ -512,7 +542,24 @@ mod tests {
         assert!(verify_id_token(&token, &jwks, "https://i", "client-1", "n1", now).is_ok());
     }
 
-    /// 与 jwk.rs 同源的固定测试密钥（仅测试用）。
-    const KEY1_PKCS1: &str = "MIIEowIBAAKCAQEA1y6x1vPCLBzqw41U9X+ytxLRHNzKYI20B22QYwV/KhPpKDy1bo+mMXEKjEHKb5Fu6AyEkQPFXf8v4bM6GL5V4Dlit+coKqIPhs7r7NNg0VYthmT7LOV9r/t/ogKNB6otyH0+pXtDhi4cWK6ZJK0VPLPt/EL/L40kO9Un9LHM/A9xO42StP0hnQKrMK7h6klygpAxyoD0dxm8pPlvDHcZMhqkOR81vdsNX66y/RtXDHbQQMXZJ+Lu2z8ymCfvtL+2a3PiStLWjfDarZqtlJEs2tSYJr7IU0fKRJGSAE96tZu1aWrYn164VYpb/mklGc4+NyHfU91hskHQO2UFOavooQIDAQABAoIBAC9VRilSVVP+yGVboWSfQmCi8vy2VI4InaFEqI4fl2laF9+R+xbm4lfd1cQkdLM1+n9wwXhkq/WRPKcZFZ57v8gi12Q8pMk7/M5aleryVEm3+yuk6ttlX9BmMh0hEoStGoUPh8g+5QuO+Q1I2scGi7VenurukdOT6HSA3tkkg0Kue6dQugZGgKazTxIwWPsTzEBVmfQXtoA2qeUzeH6wAWKcsaB4Z3fUmadgJwR/1CvMb+qEuUPnO/BT3hZOv6e1Thc1BYraIWhygL02JmQOiQKYRCnTP1JK2rtH6BAMvgG4AraHj6YAX7L5gB5QzeAZzSzInmracq7oYgGRAj+fFkECgYEA7KbvO5duRqlYmTAClYh/UfZ1N98E3d1X+K/E9HK0X45jHZyWXD9omvajDaAaDZjH0sic145NRUmnJ1t9nZE7l3+7IfaxA4upXQg5B8yuxdsWNbWPgy/Zt2dN9f9fwyKLHEdJVCDxk2VnR2uefYWE0VXiTfCB4cOp3xU87vhU3YMCgYEA6MZnw4c+m6QJuB7NDxdnsD44oIgCk8K4xygcXm79idwCLSlIx5bzsvqhIE72DUtTk6ZkCa+83/y2wgkClDnfypizaRp1tWnqs6KzsmKlpp+vfWWwGiL3E5uVYQw3Wh+aCayaclpXcwOUG9JrigOHaevxO82/jopiObWWi5bWzAsCgYEAuZUH0tGkFyHCaw8tV5qdTedacSAhruNfk5Qzfgddz/nXXGdpupm3LJ7xq0O8aqE/QtsztA7SJd3miYTD84brFpmCZNYSZtdlT6GdJ7Kp9FslBaWGD7i8oYkPqDRGIr66HMkChkj3aUGCRo3s0j6cs5UITVqoYCWS13DOQhDYbIUCgYBzUCaDNHKNg9vUvF11RnD1XD2NOROdw27qKjKzjWRIcRca7ELDrUIYvhQn/zXhLBnBIUKZkdeNVpHq2a/PYkQ9BxyJyrPZJRlB2C4RBtFtE9pJ0qBEsmGX8xEzPGwHV3Rlqn3wfFSqA3HRvpHLkyf4Dww4RhrJMECsugpUKGtMNQKBgF26tonZb4V44b3jDvvd37qp6nzOqCbgLRn5F//a5X4Isl4JHIYVWR5XQtNVlZjx+Y8XWCq/bfxji3ClcxSSpVAgxh2KuBeADhN9w90pn2z4NfLB1tM3YLn0k+tVFhBTbDQXCkG/eXAhPw9cADzzbp6OByPKRJsF3KIL11yqPXWK";
-    const KEY1_N: &str = "1y6x1vPCLBzqw41U9X-ytxLRHNzKYI20B22QYwV_KhPpKDy1bo-mMXEKjEHKb5Fu6AyEkQPFXf8v4bM6GL5V4Dlit-coKqIPhs7r7NNg0VYthmT7LOV9r_t_ogKNB6otyH0-pXtDhi4cWK6ZJK0VPLPt_EL_L40kO9Un9LHM_A9xO42StP0hnQKrMK7h6klygpAxyoD0dxm8pPlvDHcZMhqkOR81vdsNX66y_RtXDHbQQMXZJ-Lu2z8ymCfvtL-2a3PiStLWjfDarZqtlJEs2tSYJr7IU0fKRJGSAE96tZu1aWrYn164VYpb_mklGc4-NyHfU91hskHQO2UFOavooQ";
+    #[test]
+    fn token_response_requires_every_field() {
+        let full = parse_token_response(
+            r#"{"access_token":"at","refresh_token":"rt","id_token":"it","expires_in":3600}"#,
+        )
+        .unwrap();
+        assert_eq!(full.access_token, "at");
+        assert_eq!(full.expires_in, 3600);
+        for missing in ["access_token", "refresh_token", "id_token"] {
+            let json = r#"{"access_token":"at","refresh_token":"rt","id_token":"it"}"#;
+            let mut value: serde_json::Value = serde_json::from_str(json).unwrap();
+            value.as_object_mut().unwrap().remove(missing);
+            assert!(
+                parse_token_response(&value.to_string()).is_err(),
+                "{missing} 缺失应报错"
+            );
+        }
+    }
+
+    use crate::openai::testkeys::{KEY1_N, KEY1_PKCS1};
 }
