@@ -262,18 +262,25 @@ test('三格指标：1fr 三列；三条分割线都是 2px 纯黑；格内按�
   // 的三条断言照样绿——它们看不见伪元素。
   assert.doesNotMatch(style, /\.metrics::(before|after)/, '刻蚀槽的伪元素不该复活');
   assert.doesNotMatch(style, /clip-path:\s*polygon\(/, '概览页不该再有 clip-path 刻蚀槽');
-  // `--divider-strong` 是颜色 token，两套主题**各给一份**；且两套的值必须**不同**——
-  // 只在 :root 定义的话，暗色主题下那条线会退回未定义、整条声明被浏览器丢弃，
-  // 「纯黑」在暗底上等于看不见，而这两条断言都不会响。
-  const vals = {};
-  for (const sel of [':root', 'html\\.dark']) {
-    const block = new RegExp(`${sel}\\s*\\{([\\s\\S]*?)\\n\\}`, 'm').exec(themeCss);
-    assert.ok(block, `theme.css 里要有 ${sel} 段`);
-    const m = /--divider-strong:\s*([^;]+);/.exec(block[1]);
-    assert.ok(m, `${sel} 缺 --divider-strong`);
-    vals[sel] = m[1].trim();
-  }
-  assert.notEqual(vals[':root'], vals['html\\.dark'], '暗色下这条线不能仍是纯黑——压在深色卡面上等于没有');
+  // `--divider-strong` 用户指定明暗两套都用 `#212121`——**这个值不随主题变**，
+  // 按本仓惯例只在 `:root` 定义一次。判据钉的是这个形状：
+  //   · `:root` 里必须有；
+  //   · `html.dark` 里**不许再声明一份**。两套各写一份时，改了一处忘了另一处就会
+  //     跳档——而两处的字面值完全一样，靠肉眼和 build 都看不出来。
+  // （上一版这里断言的是「两套的值必须不同」，那是用户当时要求暗色取白时的形状；
+  //   需求变了断言就得跟着变，否则它会在正确实现上转红、在错误实现上放行。）
+  const rootBlock = new RegExp(':root\\s*\\{([\\s\\S]*?)\\n\\}', 'm').exec(themeCss);
+  assert.ok(rootBlock, 'theme.css 里要有 :root 段');
+  const m = /--divider-strong:\s*([^;]+);/.exec(rootBlock[1]);
+  assert.ok(m, ':root 缺 --divider-strong');
+  assert.equal(m[1].trim(), '#212121');
+  const darkBlock = new RegExp('html\\.dark\\s*\\{([\\s\\S]*?)\\n\\}', 'm').exec(themeCss);
+  assert.ok(darkBlock, 'theme.css 里要有 html.dark 段');
+  assert.doesNotMatch(
+    darkBlock[1],
+    /--divider-strong:/,
+    '这个值不随主题变，html.dark 里不该再声明一份',
+  );
   // theme.css 的全局 `.metric` 曾给它描边 + 底色，把三格变成三个独立卡片。
   // 它已经删除，这条断言守的是「别把它当成可用原语再加回来」。
   assert.equal(effectiveDeclaration(['metric'], RULES, 'border'), null);
