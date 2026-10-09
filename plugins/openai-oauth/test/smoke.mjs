@@ -109,6 +109,7 @@ const bridgeServer = createServer((req, res) => {
               '{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"function_call","id":"call-probe-1","name":"xlink_probe","arguments":"{}"}]}}',
             ]
           : [
+              '{"type":"response.reasoning_summary_text.delta","delta":"思考：用户要一个 pong"}',
               '{"type":"response.output_text.delta","delta":"pong-from-stub"}',
               '{"type":"response.completed","response":{"id":"resp-2","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5},"output":[]}}',
             ];
@@ -276,6 +277,11 @@ const headlessCode = await new Promise((done) => {
   const timer = setTimeout(() => { headless.kill("SIGKILL"); done("timeout"); }, 45000);
   headless.on("exit", (code) => { clearTimeout(timer); done(code); });
 });
+check(
+  "reasoning 增量进内核会话（stderr 的 reasoning 块）",
+  headlessErr.includes("reasoning:") && headlessErr.includes("思考：用户要一个 pong"),
+  headlessErr.slice(0, 120),
+);
 check(
   "headless 会话产出桩上游文本（经工具往返后的最终回答）",
   headlessCode === 0 && headlessOut.includes("pong-from-stub"),
