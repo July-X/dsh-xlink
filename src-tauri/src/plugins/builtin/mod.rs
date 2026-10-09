@@ -232,7 +232,9 @@ mod tests {
                 )
                 .unwrap();
             }
-            fs::create_dir_all(dir.join("node_modules/@deepseek-ai/dsh-llm")).unwrap();
+            for pkg in materialize::PEER_PACKAGES {
+                fs::create_dir_all(dir.join("node_modules/@deepseek-ai").join(pkg)).unwrap();
+            }
             dir
         }
     }

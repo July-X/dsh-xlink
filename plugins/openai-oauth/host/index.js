@@ -15,6 +15,10 @@ import { PACKAGE_ID, PROVIDER_DISPLAY_NAME, PROVIDER_ID, TEST_MARKER_ENV } from 
 import { bridgeFromEnv } from "./bridge.js";
 import { BridgeAdapter, connectBridge } from "./adapter.js";
 
+// Config 必须从入口导出：设置服务按 profile entry 的 Config schema 派生
+// 命名空间视图，没有它 provider 行进不了设置页（见 config.js 头注）。
+import { Config } from "./config.js";
+
 const inject = ["llm"];
 const name = PACKAGE_ID;
 
@@ -82,4 +86,4 @@ async function apply(ctx, config = {}) {
   }
 }
 
-export { apply, inject, name, PROVIDER_ID };
+export { apply, inject, name, Config, PROVIDER_ID };
