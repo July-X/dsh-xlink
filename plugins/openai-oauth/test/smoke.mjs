@@ -101,6 +101,19 @@ const bridgeServer = createServer((req, res) => {
       // 状态机：第 1 次请求发 function_call（探针工具，内核 agent loop 会
       // 执行并回传结果），第 2 次起回最终文本——验证 P4 的工具往返闭环。
       const roundtrip = stubRequests.filter((r) => r.url === "/v1/responses").length;
+      // 模型名含 "error" → 服务端失败终止（§8.3 错误分类路径）。
+      const wantError = raw.includes('"gpt-stub-error"');
+      if (wantError) {
+        const failEvents = [
+          '{"type":"response.failed","response":{"error":{"code":"insufficient_quota","message":"You have exceeded your quota"}}}',
+        ];
+        const failTerminal = '{"type":"bridge.terminal","status":"failed","replay":null,"detail":"You have exceeded your quota"}';
+        res.writeHead(200, { "content-type": "application/x-ndjson" });
+        for (const event of failEvents) res.write(event + "\n");
+        res.write(failTerminal + "\n");
+        res.end();
+        return;
+      }
       const events =
         roundtrip <= 1
           ? [
