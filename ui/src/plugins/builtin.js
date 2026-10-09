@@ -1,4 +1,4 @@
-// 内嵌 openai-oauth 插件（「OpenAI 对话」）的共享状态与动作。
+// 内嵌 openai-oauth 插件的共享状态与动作。
 //
 // 它与社区插件不是一类东西（设计 §3.1）：随应用交付、不进中央库、没有
 // 安装 / 卸载 / 更新语义，只有「启用意图」一个开关。所以不进 plugins.js
@@ -11,6 +11,19 @@ import { invoke } from '../shell/bridge.js';
 import { toastSuccess, toastActionError } from '../shell/notify.js';
 import { withLoading } from '../shell/loading.js';
 import { singleFlight } from '../shell/async.js';
+
+/**
+ * 这个插件在界面上叫什么。
+ *
+ * **只是显示名**：包 id / 接线行 id 恒为 `openai-oauth`（物化目录
+ * `extensions/builtin/openai-oauth/…`、内核模型设置页账户卡的 settingsNs 都靠
+ * 它对上），改显示名不碰它们，反过来也别拿显示名去当标识符。
+ *
+ * 收成常量的理由是它本来被抄在四处（插件行的名称与 aria-label、两条 toast），
+ * 而 2026-10-09 已经是第二次改名（「OpenAI 对话」→「OpenAI-OAuth-Plugin」）——
+ * 每改一次要同时想起四个地方，就是迟早会漏一个的形状。
+ */
+export const BUILTIN_NAME = 'OpenAI-OAuth-Plugin';
 
 export const builtinStore = reactive({
   // null = 尚未取回；读失败时保留上一次成功值（状态是常驻行，失败弹窗
@@ -36,7 +49,11 @@ export async function setBuiltinEnabled(enabled) {
     invoke('builtin_openai_set_enabled', { enabled }),
   );
   builtinStore.view = next;
-  toastSuccess(enabled ? '已启用 OpenAI 对话，下次启动工作台生效' : '已停用 OpenAI 对话，下次启动工作台生效');
+  toastSuccess(
+    enabled
+      ? `已启用 ${BUILTIN_NAME}，下次启动工作台生效`
+      : `已停用 ${BUILTIN_NAME}，下次启动工作台生效`,
+  );
 }
 
 /** 供面板调用的包装：失败时原样呈现后端原因（含「停止工作台后可修改」）。 */
@@ -44,7 +61,7 @@ export async function toggleBuiltin(enabled) {
   try {
     await setBuiltinEnabled(enabled);
   } catch (error) {
-    toastActionError('切换 OpenAI 对话失败', error, '按提示处理后重试；若持续失败请查看日志');
+    toastActionError(`切换 ${BUILTIN_NAME} 失败`, error, '按提示处理后重试；若持续失败请查看日志');
     // 拒绝后回读一次，避免开关停在乐观值上。
     await loadBuiltinStatus();
   }

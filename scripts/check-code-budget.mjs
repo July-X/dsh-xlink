@@ -256,7 +256,11 @@ const FILE_BUDGETS = {
   // 内嵌插件区）。不进 plugins.js：那边是社区插件的清单与安装事务
   // （456 行），本插件只有「读状态 + 拨开关」两条命令，混进去会让
   // 「内嵌 ≠ 社区」这条边界在状态层就糊掉（设计 §3.1 的第一条边界）。
-  'ui/src/plugins/builtin.js': 36,
+  // 36 → 41（2026-10-09）：显示名收成 `BUILTIN_NAME` 一个常量（+5）——它此前被抄
+  // 在插件行的名称、开关的 aria-label 与两条 toast 四处，而当天已经是第二次改名
+  // （「OpenAI 对话」→「OpenAI-OAuth-Plugin」）。四份字面量就是迟早漏一个的形状，
+  // 而漏掉的那一处不会报任何错：用户先看到新名字、随后 toast 里又冒出旧名字。
+  'ui/src/plugins/builtin.js': 41,
   // 启用意图 state.json 的读写（按壳模式 / profile 分键；损坏文件报错
   // 而不是重置）。与 pkg/state.rs 的 JSON 状态读写不是同一职责：那边是
   // 社区插件/技能共用的取源层约定，这边是本插件私有的意图落盘。
@@ -2184,7 +2188,10 @@ const FILE_BUDGETS = {
 // 只多一个类名，判据（designAlignment.test.js 那条 + 摘类 / 改 .btn-row 两次
 // 反向验）不计预算。
 // +80：内嵌插件同版本内容校验与启动前自动刷新，覆盖实际加载链路。
-const TOTAL_BUDGET = 45748;
+// 45748 → 45753（2026-10-09）：内嵌插件显示名改名并收成单一常量（+5，全在
+// plugins/builtin.js，详见该文件的 FILE_BUDGETS 登记）。改名本身零成本，这 5 行
+// 买的是「下次改名只改一处」。
+const TOTAL_BUDGET = 45753;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
