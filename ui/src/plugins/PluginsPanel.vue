@@ -16,6 +16,7 @@ import {
   RefreshLeft,
   ArrowDown,
   Box,
+  Cpu,
   Link,
   InfoFilled,
   WarningFilled,
@@ -99,6 +100,18 @@ const builtinStateTip = computed(() => {
     (v && (v.stateError || v.note)) ||
     '随应用交付的 OpenAI 套餐接入；启用不需要联网安装，关闭不删除账号'
   );
+});
+
+/**
+ * 「当前内核」页签那张列表空不空。
+ *
+ * 内嵌插件行现在也是**这个容器里的第一行**，所以判据不能只看社区插件：只有
+ * 「社区插件为空 **且** 没有内嵌插件」才算空。否则会出现一个容器里明明列着
+ * 一行、却在下面写着「当前内核尚未接入任何插件」的自相矛盾画面。
+ */
+const currentKernelListEmpty = computed(() => {
+  const rows = view.value && view.value.rows;
+  return (!rows || rows.length === 0) && !builtinView.value;
 });
 
 onMounted(() => {
@@ -680,17 +693,28 @@ function instanceChipType(row, instanceId) {
               </span>
             </el-tooltip>
           </template>
-          <!-- 内嵌插件区（设计 §3.1）：独立于下方社区插件列表——它没有
-               安装 / 卸载 / 更新语义，只有启用意图一个开关。接线行 id
-               同时是内核模型设置页账户卡的 settingsNs，两侧靠它对上。 -->
-          <div v-if="builtinView" class="builtin-strip">
-            <span class="builtin-name">OpenAI 对话</span>
-            <span class="muted">内嵌</span>
+          <div class="entity-list" :class="{ 'is-empty': currentKernelListEmpty }">
+        <!-- 内嵌 OpenAI 对话插件：与社区插件**同一张列表里的第一行**（2026-10-09
+             用户截图「让 UI 符合插件安装后的风格」）。此前它是列表外面一条自带
+             下缘刻蚀线的裸行，没有卡片的边框与圆角，看上去像另一个东西；并进来
+             之后它与下面那些行共用同一套外壳：边框、圆角、行分隔线、名称字号与
+             等宽字体、来源 chip、左右节奏。
+             差别只剩**右侧动作**：它没有安装 / 更新 / 卸载，只有启停开关——它随
+             应用交付、不进社区中央库。接线行 id 同时是内核模型设置页账户卡的
+             settingsNs，两侧靠它对上。 -->
+        <div v-if="builtinView" class="entity-row entity-row--single builtin-row">
+          <div class="entity-head">
+            <span class="entity-name">OpenAI 对话</span>
+            <span class="origin-chip">
+              <el-icon class="origin-chip-icon"><Cpu /></el-icon>
+              <span class="origin-chip-label">内嵌</span>
+            </span>
             <el-tooltip placement="top" effect="dark" :content="builtinStateTip">
-              <span class="builtin-state">{{ builtinStateText }}</span>
+              <span class="entity-desc">{{ builtinStateText }}</span>
             </el-tooltip>
+          </div>
+          <div class="entity-actions">
             <el-switch
-              class="builtin-switch"
               size="small"
               :model-value="builtinView.requestedEnabled"
               :loading="isLoading('builtinOpenaiToggle')"
@@ -699,7 +723,7 @@ function instanceChipType(row, instanceId) {
               @change="toggleBuiltin"
             />
           </div>
-          <div class="entity-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
+        </div>
         <!-- 首次状态未返回时显示骨架：view===null 是「加载中」而不是
              「尚未安装」，画成空态会让用户以为插件全丢了。 -->
         <template v-if="!view">
@@ -707,7 +731,7 @@ function instanceChipType(row, instanceId) {
             <el-skeleton :rows="1" animated style="width: 55%" />
           </div>
         </template>
-        <el-empty v-else-if="!view.rows || view.rows.length === 0" description="当前内核尚未接入任何插件；先到「已安装」页签安装。" :image-size="48" />
+        <el-empty v-else-if="currentKernelListEmpty" description="当前内核尚未接入任何插件；先到「已安装」页签安装。" :image-size="48" />
         <!-- 单行布局（2026-10-08 用户要求「移动到右侧 + 单行显示每一个插件」）：
              entity-foot 解散，版本元数据 / 状态 / 警示点 / 动作成为行的直接子级，
              整行只有一条基线；布局覆盖见下方 scoped 块的 .entity-row--single。 -->
@@ -831,30 +855,11 @@ function instanceChipType(row, instanceId) {
 </template>
 
 <style scoped>
-/* 内嵌插件行：与下方社区插件的 entity-row 同一条基线，但自带留白与
-   下缘 2px 刻蚀线（复用 --divider-strong 语义色，几何从简——一行内容
-   不值得引六边形）。颜色一律走 token（明暗两主题各取其值）。 */
-.builtin-strip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 2px 10px;
-}
-
-.builtin-name {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.builtin-state {
-  font-size: 12px;
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-}
-
-.builtin-switch {
-  margin-left: auto;
-}
+/* 内嵌插件行现在就是一条普通的 .entity-row（见模板里的 builtin-row），视觉
+   全由 theme.css 的 entity-* 提供——这里曾经有一整套 .builtin-strip /
+   .builtin-name / .builtin-state（自带 padding + 下缘刻蚀线 + 自己的字号），
+   那是「它不属于这个列表」的实现。并进列表后那套规则就成了**没有任何作用方的
+   声明**：留着只会让下一个人以为内嵌行另有样式。 */
 
 /* 插件页专属样式。此前 PluginsPanel 没有自己的 scoped 块，插件中心目录
    （.catalog-*）的样式寄在 theme.css 的「插件中心」一节；2026-10-08 用户
