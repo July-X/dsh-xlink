@@ -260,8 +260,21 @@ fn ensure_peer_link(at_deepseek_dir: &Path, kernel_root: &Path) -> Result<(), St
     }
     let link = at_deepseek_dir.join("dsh-llm");
     match fs::symlink_metadata(&link) {
-        Ok(_) => {
-            let _ = fs::remove_file(&link);
+        Ok(metadata) => {
+            // 旧链接存在 → 摘掉再重建（悬空或指向别处时靠这里纠正）。
+            // 目录符号链接必须用 remove_dir：remove_file 对它报拒绝访问，
+            // 以前这里吞掉删除错误，Windows 上旧链接删不掉，下面的
+            // symlink_dir 就撞「os error 183 当文件已存在」——禁用再启用
+            // 永远失败（2026-10-09 用户实测；与本机 materialize / wire_unwire
+            // 两条单测同因）。删除失败必须如实上报，不许静默。
+            let removed = if metadata.file_type().is_symlink() {
+                fs::remove_dir(&link).or_else(|_| fs::remove_file(&link))
+            } else if metadata.is_dir() {
+                fs::remove_dir_all(&link)
+            } else {
+                fs::remove_file(&link)
+            };
+            removed.map_err(|e| format!("移除旧 peer 链接失败（{}）：{e}", link.display()))?;
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => {
