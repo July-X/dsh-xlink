@@ -39,11 +39,22 @@ fn refresh_lock() -> &'static Mutex<()> {
 
 /// 取「已确保新鲜」的活跃账号令牌：未过期（30 秒余量）原样返回；过期
 /// 先按串行刷新并整份写回 vault。未登录返回 `Ok(None)`。
+///
+/// **全程持 [`refresh_lock`]**：官方令牌是旋转式的（每次刷新作废旧
+/// refresh token），「读 vault → 查过期 → 刷新 → 写回」必须作为原子周期。
+/// 锁此前只罩住刷新 POST 本身——线程 A 刷完尚未写回时，线程 B 已捧着旧
+/// refresh token 上路，换回 invalid_grant 后账户被钉上「需重新登录」，
+/// 而新令牌其实已经安全落库（2026-10-09 实测：模型选择器自动刷新与
+/// 「刷新模型列表」并发即触发）。锁内**重读 vault**：另一线程可能刚
+/// 旋转完令牌，直接复用即可。
 pub(crate) fn ensure_fresh_access(
     paths: &FlowPaths,
     deps: &impl FlowTransport,
     mode: &str,
 ) -> Result<Option<AccountTokens>, RefreshError> {
+    let _serial = refresh_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let key = vault::load_file_key_with(
         mode,
         &paths.xlink_home,
@@ -92,15 +103,13 @@ pub(crate) fn ensure_fresh_access(
 }
 
 /// 一次刷新。`Ok(None)` 表示服务端判 `invalid_grant`/`invalid_client`。
+/// **调用方必须已持 [`refresh_lock`]**（串行化的是完整读改写周期，见
+/// [`ensure_fresh_access`]）。
 fn refresh_once(
     paths: &FlowPaths,
     deps: &impl FlowTransport,
     entry: &AccountTokens,
 ) -> Result<Option<AccountTokens>, RefreshError> {
-    let _guard = refresh_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-
     let discovery = deps
         .get_json(&discovery_url(&paths.issuer_base))
         .map_err(|failure| RefreshError::Message(failure.message(&[])))?;
