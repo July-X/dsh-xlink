@@ -21,6 +21,8 @@ const UNSUPPORTED_GENERATION_FIELDS = [
   ['stop', '停止序列'],
 ];
 
+const TOOL_NAMESPACE = 'dsh';
+
 /** 工具名 → 路线合法名（`[A-Za-z0-9_-]`）；映射表在适配器会话内持有，可逆。 */
 export function toProviderToolName(name, mapping) {
   const safe = name.replace(/[^A-Za-z0-9_-]/g, '_');
@@ -101,7 +103,8 @@ export function buildEnvelope(options, catalog, imageParts = new Map()) {
           input.push({
             type: 'function_call',
             call_id: block.id,
-            name: fromProviderToolName(block.name, toolMapping),
+            namespace: TOOL_NAMESPACE,
+            name: toProviderToolName(block.name, toolMapping),
             arguments: block.arguments,
           });
         }
@@ -118,13 +121,18 @@ export function buildEnvelope(options, catalog, imageParts = new Map()) {
   payload.input = input;
 
   if (options.tools !== undefined && options.tools.length > 0) {
-    payload.tools = options.tools.map((tool) => ({
-      type: 'function',
-      namespace: 'dsh',
-      name: toProviderToolName(tool.name, toolMapping),
-      description: tool.description,
-      parameters: tool.parameters,
-    }));
+    // namespace 是工具容器的 type，不能作为 function 定义上的字段。
+    payload.tools = [{
+      type: 'namespace',
+      name: TOOL_NAMESPACE,
+      description: 'Tools executed locally by dsh.',
+      tools: options.tools.map((tool) => ({
+        type: 'function',
+        name: toProviderToolName(tool.name, toolMapping),
+        description: tool.description,
+        parameters: tool.parameters,
+      })),
+    }];
   }
 
   // 强度：仅当调用方显式选择时发送原始字符串；「模型默认」= 省略字段
@@ -174,13 +182,12 @@ function inputParts(content, imageParts) {
  * @yields dsh StreamChunk（含末枚 finish）
  * @throws 终止 failed / EOF 无终止包络时抛错（调用方按失败结算）
  */
-export async function* pumpStream(lines) {
+export async function* pumpStream(lines, toolMapping = new Map()) {
   let nextIndex = 0;
   // 已开始的块：blockType → { index, text, tool }。text/reasoning 累积
   // 文本（block-end 的块内容以此为准——装配器可能不信任增量求和）；
   // tool-call 累积参数与身份。懒分配 block-start，成对收尾。
   const openBlocks = new Map();
-  const toolNameByCallId = new Map();
 
   const nextBlock = (blockType) => {
     const existing = openBlocks.get(blockType);
@@ -270,14 +277,11 @@ export async function* pumpStream(lines) {
       if (started) yield { type: 'block-start', index, blockType: 'tool-call' };
       const state = openBlocks.get('tool-call');
       const providerName = event.item.name;
-      const name = providerName !== undefined ? fromProviderToolName(providerName, toolNameByCallId) : undefined;
+      const name = providerName !== undefined ? fromProviderToolName(providerName, toolMapping) : undefined;
       state.tool = {
-        id: event.item.id ?? state.tool?.id ?? '',
+        id: event.item.call_id ?? event.item.id ?? state.tool?.id ?? '',
         ...(name !== undefined ? { name } : {}),
       };
-      if (providerName !== undefined && event.item.id !== undefined) {
-        toolNameByCallId.set(event.item.id, name ?? providerName);
-      }
       if (event.item.arguments) state.text += event.item.arguments;
       continue;
     }
@@ -287,7 +291,7 @@ export async function* pumpStream(lines) {
       const state = openBlocks.get('tool-call');
       const name =
         event.name !== undefined
-          ? fromProviderToolName(event.name, toolNameByCallId)
+          ? fromProviderToolName(event.name, toolMapping)
           : state.tool?.name;
       if (event.item_id !== undefined && state.tool?.id === undefined) {
         state.tool = { id: event.item_id, ...(name !== undefined ? { name } : {}) };
@@ -296,7 +300,7 @@ export async function* pumpStream(lines) {
       yield {
         type: 'tool-call-delta',
         index,
-        id: event.item_id ?? event.call_id ?? '',
+        id: state.tool?.id ?? event.call_id ?? event.item_id ?? '',
         ...(name !== undefined ? { name } : {}),
         argumentsDelta: event.delta ?? '',
       };

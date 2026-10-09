@@ -41,6 +41,8 @@ test/smoke.mjs     端到端冒烟：物化+接线+启动内核+桩桥接+断言
 
 ## 验证
 
+v0.1.12 修正套餐路线的函数工具分组：`tools` 中使用 `type: "namespace"` 容器，函数定义放入其 `tools` 数组，不在函数定义上附加 `namespace`。工具调用历史与结果按 `call_id` 配对，名称转换和回映射保持一致。
+
 ```sh
 node test/smoke.mjs --kernel <内核安装根> [--port 3130] [--keep]
 ```

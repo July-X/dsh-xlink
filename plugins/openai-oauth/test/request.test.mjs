@@ -88,13 +88,54 @@ test('envelope: system 文本进 instructions；工具结果与调用成对', ()
   assert.equal(envelope.payload.instructions, '你是助手');
   assert.equal(envelope.payload.tools.length, 1);
   // 工具名转换可逆：`weather.city` → `weather_city`（模型回的名字要能映射回来）。
-  assert.equal(envelope.payload.tools[0].name, 'weather_city');
+  assert.deepEqual(envelope.payload.tools, [{
+    type: 'namespace', name: 'dsh', description: 'Tools executed locally by dsh.',
+    tools: [{ type: 'function', name: 'weather_city', description: '查城市天气', parameters: { type: 'object' } }],
+  }]);
+  assert(!('namespace' in envelope.payload.tools[0].tools[0]), 'function 定义不允许 namespace 字段');
   assert.equal(toProviderToolName('weather.city', new Map()), 'weather_city');
   const input = envelope.payload.input;
   assert.equal(input[2].type, 'function_call');
   assert.equal(input[2].call_id, 'call-1');
+  assert.equal(input[2].namespace, 'dsh');
+  assert.equal(input[2].name, 'weather_city');
   assert.equal(input[3].type, 'function_call_output');
   assert.equal(input[3].call_id, 'call-1');
+});
+
+test('envelope: 多个工具在同一 namespace 下，无工具时省略 tools', () => {
+  const tools = ['shell.exec', 'files.read'].map((name) => ({ name, description: name, parameters: { type: 'object' } }));
+  const payload = buildEnvelope({ model: 'gpt-x', messages: [], tools }, CATALOG).payload;
+  assert.deepEqual(payload.tools[0].tools.map((tool) => tool.name), ['shell_exec', 'files_read']);
+  assert.equal(payload.tools[0].type, 'namespace');
+  assert.equal(payload.tools.length, 1);
+  for (const empty of [undefined, []]) {
+    assert(!('tools' in buildEnvelope({ model: 'gpt-x', messages: [], tools: empty }, CATALOG).payload));
+  }
+});
+
+test('pump: namespace 工具回映射本地名字，结果使用 call_id 而非 item id', async () => {
+  const mapping = new Map();
+  toProviderToolName('weather.city', mapping);
+  const chunks = [];
+  for await (const chunk of pumpStream([
+    JSON.stringify({ type: 'response.output_item.added', item: {
+      type: 'function_call', namespace: 'dsh', id: 'fc_item', call_id: 'call_123', name: 'weather_city', arguments: '',
+    } }),
+    JSON.stringify({ type: 'response.function_call_arguments.delta', item_id: 'fc_item', delta: '{"city":"上海"}' }),
+    JSON.stringify({ type: 'bridge.terminal', status: 'completed' }),
+  ], mapping)) chunks.push(chunk);
+  const delta = chunks.find((chunk) => chunk.type === 'tool-call-delta');
+  assert.equal(delta.id, 'call_123');
+  assert.equal(delta.name, 'weather.city');
+  const block = chunks.find((chunk) => chunk.type === 'block-end').block;
+  const next = buildEnvelope({ model: 'gpt-x', tools: [{ name: block.name }], messages: [
+    { role: 'assistant', content: [block] },
+    { role: 'tool', toolCallId: block.id, content: [{ type: 'text', text: '晴' }] },
+  ] }, CATALOG).payload;
+  assert.equal(next.input[0].namespace, 'dsh');
+  assert.equal(next.input[0].name, next.tools[0].tools[0].name);
+  assert.equal(next.input[1].call_id, 'call_123');
 });
 
 test('envelope: 未准备的图片不能静默丢弃', () => {
