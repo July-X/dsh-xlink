@@ -1,15 +1,18 @@
 //! OAuth/OIDC 授权核心（设计 §8；开发计划 §5「账户状态 / 授权动作」）。
 //!
-//! **协议形状按 OIDC 标准实现**：发现文档（`<issuer>/.well-known/
-//! openid-configuration`）、RFC 7591 动态注册、RFC 7636 PKCE（S256）、
+//! **协议形状按 OpenAI SIWC 官方规范实现**（developers.openai.com/siwc/
+//! token-sharing-open-source/sign-in，2026-10-09 实机联调后对齐）：OpenAI
+//! 不提供 RFC 7591 动态注册端点（线上发现文档没有 `registration_endpoint`），
+//! 「注册」发生在**浏览器授权**里——首次用公开引导 client
+//! [`DYNAMIC_CLIENT_ID`] + `agent_name_hint` + `ext_agent_host_id` 发起
+//! 授权，签发的正式 client_id（`oaiapp_…`）从**回调 query** 里取回并
+//! 持久保存；再次登录复用签发的 client_id，回调再带 client_id 必须与
+//! 已保存的一致。其余沿用 OIDC 标准：发现文档、RFC 7636 PKCE（S256）、
 //! `state`/`nonce` 一次性高熵值、RS256 ID token 验签（[`crate::openai::
-//! jwk`]）。模块内每个与线上一致性相关的判断都被模拟授权服务器测试
-//! 钉住；**官方 SIWC 服务的真实端点行为属设计 §10 的未验证项**——issuer
-//! 常量与任何专有差异在联调（真实账号）时只改本文件的配置层。
+//! jwk`]）。
 //!
-//! 传输（发现/注册/换令牌的 HTTP）不在本文件：出网必须走
-//! `net_proxy::routes()`（src-tauri/AGENTS.md），届时以参数注入；纯逻辑
-//! 先行落定与离线验证。
+//! 传输（发现/换令牌的 HTTP）不在本文件：出网必须走
+//! `net_proxy::routes()`（src-tauri/AGENTS.md），以参数注入。
 
 use std::path::{Path, PathBuf};
 
@@ -18,9 +21,21 @@ use sha2::Digest;
 
 use crate::openai::jwk::{find_rsa_jwk, verify_rs256, RsaJwk};
 
-/// **未验证常量**：SIWC 的 issuer 基址（设计 §10「官方动态注册到真实
-/// 套餐推理」未验证项；真实联调时更正，不改协议层）。
+/// SIWC 的 issuer 基址（2026-10-09 与线上发现文档的 `issuer` 逐字节核对）。
 pub(crate) const SIWC_ISSUER: &str = "https://auth.openai.com";
+
+/// 首次注册用的公开引导 client（官方规范；授权完成后作废，换签发 id）。
+pub(crate) const DYNAMIC_CLIENT_ID: &str = "dynamic_agent_client";
+
+/// 宿主应用名（`agent_name_hint`）：授权页展示给用户的应用身份。
+pub(crate) const APP_NAME_HINT: &str = "dsh-xlink";
+
+/// 套餐推理资源（授权与换令牌必须带同一个 `resource`）。
+pub(crate) const OPENAI_RESOURCE: &str = "https://api.openai.com/v1";
+
+/// 授权 scope（官方规范的 token-sharing 集合）。
+pub(crate) const AUTH_SCOPE: &str =
+    "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 
 /// 发现文档：`<issuer>/.well-known/openid-configuration`。
 pub(crate) fn discovery_url(issuer: &str) -> String {
@@ -28,6 +43,7 @@ pub(crate) fn discovery_url(issuer: &str) -> String {
 }
 
 /// 解析发现文档；缺任一必需端点即错误（fail-closed，不猜 URL）。
+/// 注意 SIWC 没有 `registration_endpoint`——注册不走发现文档。
 pub(crate) fn parse_metadata(json: &str) -> Result<Metadata, String> {
     let value: serde_json::Value =
         serde_json::from_str(json).map_err(|error| format!("发现文档不是有效 JSON：{error}"))?;
@@ -42,7 +58,6 @@ pub(crate) fn parse_metadata(json: &str) -> Result<Metadata, String> {
         issuer: string_of("issuer")?,
         authorization_endpoint: string_of("authorization_endpoint")?,
         token_endpoint: string_of("token_endpoint")?,
-        registration_endpoint: string_of("registration_endpoint")?,
         jwks_uri: string_of("jwks_uri")?,
     })
 }
@@ -52,7 +67,6 @@ pub(crate) struct Metadata {
     pub(crate) issuer: String,
     pub(crate) authorization_endpoint: String,
     pub(crate) token_endpoint: String,
-    pub(crate) registration_endpoint: String,
     pub(crate) jwks_uri: String,
 }
 
@@ -122,31 +136,52 @@ pub(crate) fn host_id_path(dir: &Path) -> PathBuf {
     dir.join("host-id")
 }
 
-/// 动态注册请求体（RFC 7591 + SIWC 的宿主标识）。
-pub(crate) fn registration_request(host_id: &str, redirect_uris: &[String]) -> String {
-    serde_json::json!({
-        "client_name": format!("dsh-xlink/{host_id}"),
-        "redirect_uris": redirect_uris,
-        "token_endpoint_auth_method": "none",
-        "grant_types": ["authorization_code"],
-        "response_types": ["code"],
-    })
-    .to_string()
+/// 已签发 client_id 的持久化（`registration.json`，格式与历史兼容）。
+pub(crate) fn save_registration(dir: &Path, client_id: &str) -> Result<(), String> {
+    let path = registration_path(dir);
+    std::fs::create_dir_all(dir)
+        .map_err(|error| format!("创建 OpenAI 服务目录失败（{}）：{error}", dir.display()))?;
+    crate::shell::process::atomic_write(
+        &path,
+        format!("{{\"clientId\":{client_id:?}}}\n").as_bytes(),
+    )
+    .map_err(|error| format!("写注册记录失败（{}）：{error}", path.display()))
 }
 
-/// 注册响应里必须能取到 `client_id`（再次登录复用对应注册）。
-pub(crate) fn parse_registration(json: &str) -> Result<String, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(json).map_err(|error| format!("注册响应不是有效 JSON：{error}"))?;
+/// 取已签发的 client_id：没有注册记录返回 `Ok(None)`；文件损坏报错
+/// （fail-closed——猜一个 id 等于把令牌发进别人的应用）。
+pub(crate) fn load_registration(dir: &Path) -> Result<Option<String>, String> {
+    let path = registration_path(dir);
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("读注册记录失败（{}）：{error}", path.display())),
+    };
+    let value: serde_json::Value = serde_json::from_str(&existing).map_err(|error| {
+        format!(
+            "注册记录损坏（{}）：{error}；请手工删除该文件后重试（会触发重新注册）",
+            path.display()
+        )
+    })?;
     value
-        .get("client_id")
+        .get("clientId")
         .and_then(|v| v.as_str())
-        .map(String::from)
-        .ok_or_else(|| "注册响应缺 client_id".into())
+        .map(|id| Ok(Some(id.to_string())))
+        .unwrap_or_else(|| {
+            Err(format!(
+                "注册记录损坏（{}）：缺 clientId；请手工删除该文件后重试",
+                path.display()
+            ))
+        })
 }
 
-/// 授权 URL（浏览器打开的那一条）：response_type=code + PKCE + state +
-/// nonce + scope（套餐授权范围；scope 字符串与 SIWC 文档一致属未验证项）。
+pub(crate) fn registration_path(dir: &Path) -> PathBuf {
+    dir.join("registration.json")
+}
+
+/// 授权 URL（浏览器打开的那一条）。`first_registration` 是首次注册时的
+/// `(宿主标识, 应用名)`：带上 `agent_name_hint` / `ext_agent_host_id` 并
+/// 使用公开引导 client；再次登录传 `None`，用已签发的 client_id。
 pub(crate) fn authorize_url(
     endpoint: &str,
     client_id: &str,
@@ -154,13 +189,23 @@ pub(crate) fn authorize_url(
     state: &str,
     nonce: &str,
     challenge: &str,
+    first_registration: Option<(&str, &str)>,
 ) -> String {
-    format!(
-        "{endpoint}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={state}&nonce={nonce}&code_challenge={challenge}&code_challenge_method=S256",
+    let mut url = format!(
+        "{endpoint}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={state}&nonce={nonce}&code_challenge={challenge}&code_challenge_method=S256&resource={}",
         urlencode(client_id),
         urlencode(redirect_uri),
-        urlencode("openid offline_access model.request"),
-    )
+        urlencode(AUTH_SCOPE),
+        urlencode(OPENAI_RESOURCE),
+    );
+    if let Some((host_id, app_name)) = first_registration {
+        url.push_str(&format!(
+            "&agent_name_hint={}&ext_agent_host_id={}",
+            urlencode(app_name),
+            urlencode(host_id),
+        ));
+    }
+    url
 }
 
 fn urlencode(text: &str) -> String {
@@ -177,22 +222,31 @@ fn urlencode(text: &str) -> String {
 }
 
 /// 回调校验：`state` 必须逐字节匹配；`error` 参数原样上报（浏览器侧
-/// 拒绝/取消不覆盖现有账户——由调用方决定，这里只给分类结果）。
+/// 拒绝/取消不覆盖现有账户——由调用方决定，这里只给分类结果）。首次
+/// 注册时授权服务器会在回调里带**签发的 client_id**（官方规范），原样
+/// 交给调用方持久化。
 #[derive(Debug)]
 pub(crate) enum Callback {
-    Code { code: String },
-    Error { error: String },
+    Code {
+        code: String,
+        client_id: Option<String>,
+    },
+    Error {
+        error: String,
+    },
     StateMismatch,
 }
 
 pub(crate) fn parse_callback(query: &str, expected_state: &str) -> Callback {
     let mut code: Option<String> = None;
+    let mut client_id: Option<String> = None;
     let mut error: Option<String> = None;
     let mut state: Option<String> = None;
     for pair in query.split('&') {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         match key {
             "code" => code = Some(urldecode(value)),
+            "client_id" => client_id = Some(urldecode(value)),
             "error" => error = Some(urldecode(value)),
             "state" => state = Some(urldecode(value)),
             _ => {}
@@ -205,7 +259,7 @@ pub(crate) fn parse_callback(query: &str, expected_state: &str) -> Callback {
         return Callback::Error { error };
     }
     match code {
-        Some(code) if !code.is_empty() => Callback::Code { code },
+        Some(code) if !code.is_empty() => Callback::Code { code, client_id },
         _ => Callback::Error {
             error: "missing_code".into(),
         },
@@ -378,8 +432,9 @@ mod tests {
 
     #[test]
     fn metadata_parse_is_fail_closed() {
+        // 与线上 auth.openai.com 同形状：没有 registration_endpoint。
         let ok = parse_metadata(
-            r#"{"issuer":"https://i","authorization_endpoint":"https://i/a","token_endpoint":"https://i/t","registration_endpoint":"https://i/r","jwks_uri":"https://i/j"}"#,
+            r#"{"issuer":"https://i","authorization_endpoint":"https://i/a","token_endpoint":"https://i/t","jwks_uri":"https://i/j"}"#,
         )
         .unwrap();
         assert_eq!(ok.issuer, "https://i");
@@ -391,10 +446,9 @@ mod tests {
             "issuer",
             "authorization_endpoint",
             "token_endpoint",
-            "registration_endpoint",
             "jwks_uri",
         ] {
-            let full = r#"{"issuer":"i","authorization_endpoint":"a","token_endpoint":"t","registration_endpoint":"r","jwks_uri":"j"}"#;
+            let full = r#"{"issuer":"i","authorization_endpoint":"a","token_endpoint":"t","jwks_uri":"j"}"#;
             let value: serde_json::Value = serde_json::from_str(full).unwrap();
             let mut broken = value.clone();
             broken.as_object_mut().unwrap().remove(missing);
@@ -421,36 +475,69 @@ mod tests {
 
     #[test]
     fn registration_and_authorize_url_shapes() {
-        let client = parse_registration(r#"{"client_id":"abc"}"#).unwrap();
-        assert_eq!(client, "abc");
-        assert!(parse_registration("{}").is_err());
+        // 注册记录的存取：首次落盘、复用、损坏报错。
+        let dir = std::env::temp_dir().join(format!("oop-reg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(load_registration(&dir).unwrap().is_none());
+        save_registration(&dir, "oaiapp_abc").unwrap();
+        assert_eq!(
+            load_registration(&dir).unwrap().as_deref(),
+            Some("oaiapp_abc")
+        );
+        std::fs::write(registration_path(&dir), "{\"nope\":1}\n").unwrap();
+        assert!(load_registration(&dir).is_err(), "缺 clientId 必须报损坏");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // 再次登录的授权 URL：签发 client_id + scope/resource，不带宿主提示。
         let url = authorize_url(
             "https://i/authorize",
-            "abc",
+            "oaiapp_abc",
             "http://127.0.0.1:54123/callback",
             "st",
             "no",
             "ch",
+            None,
         );
         assert!(url.starts_with("https://i/authorize?"));
         assert!(url.contains("response_type=code"));
-        assert!(url.contains("client_id=abc"));
+        assert!(url.contains("client_id=oaiapp_abc"));
         assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A54123%2Fcallback"));
         assert!(url.contains("state=st&nonce=no"));
         assert!(url.contains("code_challenge=ch&code_challenge_method=S256"));
-        let request: serde_json::Value = serde_json::from_str(&registration_request(
-            "host-1",
-            &["http://127.0.0.1:1/cb".into()],
-        ))
-        .unwrap();
-        assert_eq!(request["client_name"], "dsh-xlink/host-1");
-        assert_eq!(request["token_endpoint_auth_method"], "none");
+        assert!(url.contains(&format!("scope={}", urlencode(AUTH_SCOPE))));
+        assert!(url.contains(&format!("resource={}", urlencode(OPENAI_RESOURCE))));
+        assert!(!url.contains("agent_name_hint"), "再次登录不带宿主提示");
+
+        // 首次注册的授权 URL：引导 client + 宿主提示。
+        let first = authorize_url(
+            "https://i/authorize",
+            DYNAMIC_CLIENT_ID,
+            "http://127.0.0.1:54123/callback",
+            "st",
+            "no",
+            "ch",
+            Some(("host-1", APP_NAME_HINT)),
+        );
+        assert!(first.contains(&format!("client_id={}", urlencode(DYNAMIC_CLIENT_ID))));
+        assert!(first.contains(&format!("agent_name_hint={}", urlencode(APP_NAME_HINT))));
+        assert!(first.contains("ext_agent_host_id=host-1"));
     }
 
     #[test]
     fn callback_classifies_state_error_and_code() {
         match parse_callback("code=xyz&state=st", "st") {
-            Callback::Code { code } => assert_eq!(code, "xyz"),
+            Callback::Code { code, client_id } => {
+                assert_eq!(code, "xyz");
+                assert!(client_id.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
+        // 首次注册的回调带签发 client_id。
+        match parse_callback("code=xyz&client_id=oaiapp_a&state=st", "st") {
+            Callback::Code { code, client_id } => {
+                assert_eq!(code, "xyz");
+                assert_eq!(client_id.as_deref(), Some("oaiapp_a"));
+            }
             other => panic!("{other:?}"),
         }
         match parse_callback("error=access_denied&state=st", "st") {

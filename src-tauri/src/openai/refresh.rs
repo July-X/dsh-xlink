@@ -114,6 +114,8 @@ fn refresh_once(
             ("grant_type", "refresh_token"),
             ("refresh_token", entry.refresh_token.as_str()),
             ("client_id", entry.client_id.as_str()),
+            // 官方规范：刷新与授权必须带同一个 resource。
+            ("resource", crate::openai::auth::OPENAI_RESOURCE),
         ],
     ) {
         Ok(text) => text,
@@ -160,15 +162,15 @@ mod tests {
         let fresh = ensure_fresh_access(&paths, &transport, "release")
             .unwrap()
             .unwrap();
-        assert_eq!(fresh.access_token, "at-mock-2");
-        assert_eq!(fresh.refresh_token, "rt-mock-2");
+        assert_eq!(fresh.access_token, "at-2");
+        assert_eq!(fresh.refresh_token, "rt-2");
         // 落库的也是新值；再取一次直接命中「未过期」路径（值不变）。
         let stored = read_vault_with(&transport, &paths.vault_file).unwrap();
-        assert_eq!(stored.entries["mock-sub-1"].access_token, "at-mock-2");
+        assert_eq!(stored.entries["mock-sub-1"].access_token, "at-2");
         let again = ensure_fresh_access(&paths, &transport, "release")
             .unwrap()
             .unwrap();
-        assert_eq!(again.access_token, "at-mock-2");
+        assert_eq!(again.access_token, "at-2");
     }
 
     /// 服务端撤销（invalid_grant）→ ReauthRequired + 标记落库 →
@@ -214,6 +216,6 @@ mod tests {
         let fresh = ensure_fresh_access(&paths, &transport, "release")
             .unwrap()
             .unwrap();
-        assert_eq!(fresh.access_token, "at-mock");
+        assert_eq!(fresh.access_token, "at-1");
     }
 }

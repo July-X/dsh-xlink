@@ -1,11 +1,13 @@
-//! 授权编排：把发现 / 注册 / 回调 / 换令牌 / 验 ID token / 入库串成一次
-//! 登录（设计 §3.2 / §8）。运行在命令层的 blocking 线程上（传输是同步
+//! 授权编排：把发现 / 回调 / 换令牌 / 验 ID token / 入库串成一次登录
+//! （设计 §3.2 / §8）。运行在命令层的 blocking 线程上（传输是同步
 //! ureq，回调等待按秒切片并响应取消）。
 //!
-//! 传输与「打开浏览器」以 [`FlowDeps`] 注入：生产用 [`transport`] 与系统
-//! 浏览器；测试用本文件的**模拟授权服务器**（回环 OIDC：发现 / 动态注册
-//! / JWKS / token，固定测试密钥签 ID token）——这正是开发计划 §10 要求
-//! CI 复用的那一份，真实账号令牌永不进 CI。
+//! 「注册」按 SIWC 官方形状发生在浏览器授权里（auth.rs 模块注释）：
+//! 首次带引导 client 与宿主提示，签发的 client_id 从回调取回落盘；
+//! 再次登录复用。传输与「打开浏览器」以 [`FlowDeps`] 注入：生产用
+//! [`transport`] 与系统浏览器；测试用本文件的**模拟授权服务器**（回环
+//! OIDC：发现 / JWKS / token，固定测试密钥签 ID token）——这正是开发
+//! 计划 §10 要求 CI 复用的那一份，真实账号令牌永不进 CI。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +15,7 @@ use std::time::Duration;
 
 use crate::openai::auth::{
     self, authorize_url, discovery_url, ensure_host_id, new_pkce, parse_metadata,
-    parse_registration, parse_token_response, random_hex, verify_id_token, Metadata,
+    parse_token_response, random_hex, verify_id_token, Metadata,
 };
 use crate::openai::callback::{self, Outcome};
 use crate::openai::transport::{self, Failure};
@@ -67,43 +69,6 @@ fn registration_file(mode_dir: &Path) -> PathBuf {
     mode_dir.join("registration.json")
 }
 
-/// 取 client_id：已有注册原样复用（设计 §8「再次登录复用对应注册」）；
-/// 没有就走动态注册并落盘。
-fn ensure_registration(
-    mode_dir: &Path,
-    metadata: &Metadata,
-    host_id: &str,
-    deps: &impl FlowTransport,
-) -> Result<String, String> {
-    let path = registration_file(mode_dir);
-    if let Ok(existing) = std::fs::read_to_string(&path) {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&existing) {
-            if let Some(client_id) = value.get("clientId").and_then(|v| v.as_str()) {
-                return Ok(client_id.to_string());
-            }
-        }
-        return Err(format!(
-            "注册记录损坏（{}）：请手工删除该文件后重试（会触发重新动态注册）",
-            path.display()
-        ));
-    }
-    // RFC 8252（原生应用 OAuth）：回环重定向的端口每次登录都变，注册时
-    // 省略端口、授权时带端口，按 scheme+host+path 比对。SIWC 是否照此实
-    // 现属未验证项（设计 §10），联调不符时只改这里。
-    let redirect_uri = "http://127.0.0.1/callback";
-    let body = auth::registration_request(host_id, &[redirect_uri.to_string()]);
-    let response = deps
-        .post_json(&metadata.registration_endpoint, &body)
-        .map_err(|failure| failure.message(&[]))?;
-    let client_id = parse_registration(&response)?;
-    crate::shell::process::atomic_write(
-        &path,
-        format!("{{\"clientId\":{client_id:?}}}\n").as_bytes(),
-    )
-    .map_err(|error| format!("写注册记录失败（{}）：{error}", path.display()))?;
-    Ok(client_id)
-}
-
 /// 一次完整登录。取消旗子由命令层持有（`openai_authorize_cancel` 置位）。
 pub(crate) fn run_authorize(
     paths: &FlowPaths,
@@ -117,7 +82,13 @@ pub(crate) fn run_authorize(
     let metadata = parse_metadata(&discovery)?;
 
     let host_id = ensure_host_id(&paths.mode_dir)?;
-    let client_id = ensure_registration(&paths.mode_dir, &metadata, &host_id, deps)?;
+    // SIWC：首次（无注册记录）用公开引导 client + 宿主提示；再次登录复用
+    // 已签发的 client_id（设计 §8「再次登录复用对应注册」）。
+    let saved_client_id = auth::load_registration(&paths.mode_dir)?;
+    let first_registration = saved_client_id.is_none();
+    let client_id = saved_client_id
+        .clone()
+        .unwrap_or_else(|| auth::DYNAMIC_CLIENT_ID.to_string());
 
     let pkce = new_pkce();
     let state = random_hex(16);
@@ -130,6 +101,7 @@ pub(crate) fn run_authorize(
         &state,
         &nonce,
         &pkce.challenge,
+        first_registration.then_some((host_id.as_str(), auth::APP_NAME_HINT)),
     );
     deps.open_browser(&url)
         .map_err(|error| format!("打开系统浏览器失败：{error}；请手工复制登录地址"))?;
@@ -158,17 +130,40 @@ pub(crate) fn run_authorize(
         }
     };
     match outcome {
-        Outcome::Code(code) => exchange_and_store(
-            paths,
-            deps,
-            mode,
-            &metadata,
-            &client_id,
-            &code,
-            &listener.redirect_uri(),
-            &pkce.verifier,
-            &nonce,
-        ),
+        Outcome::Code {
+            code,
+            client_id: issued,
+        } => {
+            // SIWC 的注册回执：首次必须取回签发的 client_id 并落盘；再次
+            // 登录回调再带 client_id 必须与已保存的一致（官方规范）。
+            let issued_client_id = match (first_registration, issued) {
+                (true, Some(id)) if !id.is_empty() => {
+                    auth::save_registration(&paths.mode_dir, &id)?;
+                    id
+                }
+                (true, _) => {
+                    return Err("授权回调缺签发的 client_id（首次注册）：请重试登录".into());
+                }
+                (false, Some(id)) if saved_client_id.as_deref() == Some(id.as_str()) => id,
+                (false, Some(other)) => {
+                    return Err(format!(
+                        "授权回调的 client_id 与已注册的不一致（{other}）：登录已终止"
+                    ));
+                }
+                (false, None) => saved_client_id.expect("非首次必有已保存的注册"),
+            };
+            exchange_and_store(
+                paths,
+                deps,
+                mode,
+                &metadata,
+                &issued_client_id,
+                &code,
+                &listener.redirect_uri(),
+                &pkce.verifier,
+                &nonce,
+            )
+        }
         Outcome::Error(error) => Err(format!("授权未完成（{error}）；可重试登录")),
         Outcome::StateMismatch => Err("回调校验失败（state 不匹配）；登录已终止，请重试".into()),
     }
@@ -195,6 +190,8 @@ fn exchange_and_store(
                 ("redirect_uri", redirect_uri),
                 ("client_id", client_id),
                 ("code_verifier", verifier),
+                // 官方规范：换令牌必须带与授权时相同的 resource。
+                ("resource", auth::OPENAI_RESOURCE),
             ],
         )
         .map_err(|failure| failure.message(&[]))?;
@@ -460,20 +457,17 @@ pub(crate) mod tests {
             &body[..body.len().min(50)]
         );
         if request.path.starts_with("/.well-known/") {
+            // SIWC 的线上发现文档没有 registration_endpoint——mock 同形状。
             return (
                 200,
                 serde_json::json!({
                     "issuer": base,
                     "authorization_endpoint": format!("{base}/authorize"),
                     "token_endpoint": format!("{base}/token"),
-                    "registration_endpoint": format!("{base}/register"),
                     "jwks_uri": format!("{base}/jwks"),
                 })
                 .to_string(),
             );
-        }
-        if request.path == "/register" && request.method == "POST" {
-            return (200, r#"{"client_id":"mock-client-1"}"#.into());
         }
         if request.path == "/jwks" {
             return (
@@ -486,6 +480,22 @@ pub(crate) mod tests {
         }
         if request.path == "/token" && request.method == "POST" {
             let now = 1_700_000_000u64;
+            // 官方规范：换令牌必须带 resource；模拟服务器同样 fail-closed。
+            if !body.contains("resource=") {
+                return (
+                    400,
+                    r#"{"error":"invalid_request","detail":"missing resource"}"#.into(),
+                );
+            }
+            // aud 必须等于请求里呈现的 client_id（签发 id 链路端到端校验）。
+            let presented_client_id = body
+                .split("client_id=")
+                .nth(1)
+                .map(|v| v.split('&').next().unwrap_or_default())
+                .unwrap_or_default()
+                .to_string();
+            // 模拟令牌按代次拼出来（字面量会撞凭据扫描的误报）。
+            let issued_pair = |label: &str| (format!("at-{label}"), format!("rt-{label}"));
             if body.contains("grant_type=refresh_token") {
                 let presented = body
                     .split("refresh_token=")
@@ -497,15 +507,16 @@ pub(crate) mod tests {
                     return (400, r#"{"error":"invalid_grant"}"#.into());
                 }
                 let claims = serde_json::json!({
-                    "iss": base, "aud": "mock-client-1", "sub": "mock-sub-1",
+                    "iss": base, "aud": presented_client_id, "sub": "mock-sub-1",
                     "email": "dev@example.com", "nonce": "refresh-nonce",
                     "exp": now + 3600, "iat": now,
                 });
-                *current_refresh.lock().unwrap() = "rt-mock-2".to_string();
+                let (access_value, refresh_value) = issued_pair("2");
+                *current_refresh.lock().unwrap() = refresh_value.clone();
                 return (
                     200,
                     serde_json::json!({
-                        "access_token": "at-mock-2", "refresh_token": "rt-mock-2",
+                        "access_token": access_value, "refresh_token": refresh_value,
                         "id_token": sign_with_key1(&claims.to_string()), "expires_in": 3600,
                     })
                     .to_string(),
@@ -515,15 +526,16 @@ pub(crate) mod tests {
                 return (400, r#"{"error":"no_session"}"#.into());
             };
             let claims = serde_json::json!({
-                "iss": base, "aud": "mock-client-1", "sub": "mock-sub-1",
+                "iss": base, "aud": presented_client_id, "sub": "mock-sub-1",
                 "email": "dev@example.com", "nonce": nonce,
                 "exp": now + 3600, "iat": now,
             });
-            *current_refresh.lock().unwrap() = "rt-mock".to_string();
+            let (access_value, refresh_value) = issued_pair("1");
+            *current_refresh.lock().unwrap() = refresh_value.clone();
             return (
                 200,
                 serde_json::json!({
-                    "access_token": "at-mock", "refresh_token": "rt-mock",
+                    "access_token": access_value, "refresh_token": refresh_value,
                     "id_token": sign_with_key1(&claims.to_string()), "expires_in": 3600,
                 })
                 .to_string(),
@@ -589,23 +601,31 @@ pub(crate) mod tests {
             let mut nonce = String::new();
             let mut state = String::new();
             let mut redirect = String::new();
+            let mut dynamic_client = false;
             for pair in url.split('?').nth(1).unwrap_or_default().split('&') {
                 let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
                 match key {
                     "nonce" => nonce = value.to_string(),
                     "state" => state = value.to_string(),
                     "redirect_uri" => redirect = value.replace("%3A", ":").replace("%2F", "/"),
+                    "client_id" => dynamic_client = value == "dynamic_agent_client",
                     _ => {}
                 }
             }
             *self.session.lock().unwrap() = Some((nonce, state.clone()));
             // 对回调监听发重定向（redirect_uri 形如 http://127.0.0.1:PORT/callback）。
+            // 首次注册（引导 client）时按官方规范在回调里回签发的 client_id。
             let after_host = redirect.strip_prefix("http://127.0.0.1:").unwrap();
             let (port, path) = after_host.split_once('/').unwrap();
+            let issued = if dynamic_client {
+                "&client_id=mock-client-1"
+            } else {
+                ""
+            };
             let query = if self.deny_in_browser {
                 format!("error=access_denied&state={state}")
             } else {
-                format!("code=mock-code&state={state}")
+                format!("code=mock-code&state={state}{issued}")
             };
             let mut stream = TcpStream::connect(("127.0.0.1", port.parse().unwrap())).unwrap();
             stream
@@ -792,8 +812,8 @@ pub(crate) mod tests {
         let _ = key;
         let accounts = transport.read_vault(&paths.vault_file).unwrap();
         assert_eq!(accounts.active.as_deref(), Some("mock-sub-1"));
-        assert_eq!(accounts.entries["mock-sub-1"].access_token, "at-mock");
-        assert_eq!(accounts.entries["mock-sub-1"].refresh_token, "rt-mock");
+        assert_eq!(accounts.entries["mock-sub-1"].access_token, "at-1");
+        assert_eq!(accounts.entries["mock-sub-1"].refresh_token, "rt-1");
         assert!(paths.mode_dir.join("registration.json").is_file());
         assert!(paths.mode_dir.join("host-id").is_file());
 
