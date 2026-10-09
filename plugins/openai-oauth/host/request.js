@@ -120,6 +120,7 @@ export function buildEnvelope(options, catalog, imageParts = new Map()) {
   if (options.tools !== undefined && options.tools.length > 0) {
     payload.tools = options.tools.map((tool) => ({
       type: 'function',
+      namespace: 'dsh',
       name: toProviderToolName(tool.name, toolMapping),
       description: tool.description,
       parameters: tool.parameters,

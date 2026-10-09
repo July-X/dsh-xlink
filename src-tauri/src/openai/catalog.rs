@@ -43,10 +43,8 @@ const CAPABILITY_TABLE: &[(&str, Capability)] = &[];
 /// main）——与 Codex Desktop 的模型列表同源；账号目录接口（api.openai.
 /// com/v1/models）只回 slug、不带这些元数据。
 ///
-/// **只展示表内模型、按表序排列**：未收录的 slug（gpt-reserve /
-/// gpt-5.5 / codex-auto-review 等内部或遗留模型，Codex Desktop 也不
-/// 展示）不进列表；新增模型随表更新。表内顺序即 Codex Desktop 的展示
-/// 顺序。显示名按 Codex Desktop 的形态（空格分隔，非捆绑表里的连字符）。
+/// 已验证模型的本地能力元数据。它不决定账号目录的可见集合；未收录模型
+/// 仍保留为 unknown，并使用服务端返回的 display_name 与顺序。
 struct ModelPresentation {
     slug: &'static str,
     display_name: &'static str,
@@ -330,8 +328,12 @@ fn fetch_with_token(
                 .or_else(|| item.get("slug"))?
                 .as_str()?
                 .to_string();
+            if item.get("visibility").and_then(|v| v.as_str()) != Some("list") {
+                return None;
+            }
             let name = item
-                .get("name")
+                .get("display_name")
+                .or_else(|| item.get("name"))
                 .and_then(|v| v.as_str())
                 .unwrap_or(&id)
                 .to_string();
@@ -346,8 +348,7 @@ fn fetch_with_token(
     Ok(Fetched { revision, models })
 }
 
-/// 合并展示元数据。返回 `None` = 未收录的 slug（不进列表，对齐 Codex
-/// Desktop 的可见集合）。P6 精确能力表优先（verified 覆盖展示表）。
+/// 合并本地已验证能力。服务端模型目录决定可见集合、顺序和显示名。
 fn merge_capability(model: FetchedModel) -> Option<CatalogEntry> {
     if let Some((_, capability)) = CAPABILITY_TABLE.iter().find(|(id, _)| *id == model.id) {
         return Some(CatalogEntry {
@@ -362,13 +363,13 @@ fn merge_capability(model: FetchedModel) -> Option<CatalogEntry> {
             capability: "verified".into(),
         });
     }
-    let presentation = MODEL_PRESENTATION.iter().find(|p| p.slug == model.id)?;
+    let presentation = MODEL_PRESENTATION.iter().find(|p| p.slug == model.id);
     Some(CatalogEntry {
         id: model.id,
-        name: presentation.display_name.to_string(),
-        context_window: Some(presentation.context_window),
-        efforts: Some(presentation.efforts.iter().map(|s| s.to_string()).collect()),
-        capability: "codex-catalog".into(),
+        name: model.name,
+        context_window: presentation.map(|p| p.context_window),
+        efforts: presentation.map(|p| p.efforts.iter().map(|s| s.to_string()).collect()),
+        capability: presentation.map_or_else(|| "unknown".into(), |_| "codex-catalog".into()),
     })
 }
 
@@ -422,7 +423,7 @@ mod tests {
         // 已被 authorize 用掉——直接换一个 FlowPaths 指向 models mock，
         // vault 复用同一个（同 mode_dir）。
         let models_port = serve_models_once(
-            r#"{"data":[{"id":"gpt-6.1-sol"},{"id":"gpt-reserve"},{"id":"gpt-6.1-sol-x"}]}"#,
+            r#"{"data":[{"slug":"gpt-6.1-sol","visibility":"list","display_name":"Server Sol"},{"slug":"gpt-reserve","visibility":"list","display_name":"Reserve"},{"slug":"gpt-6.1-sol-x","visibility":"list","display_name":"Future"}]}"#,
             "at-1",
         );
         let mut catalog_paths = paths.clone();
@@ -431,10 +432,10 @@ mod tests {
         assert_eq!(catalog.capability_revision, CAPABILITY_REVISION);
         // 只保留展示表内的 slug（gpt-reserve / 未收录尾缀被过滤），
         // 名称、容量与推理档位来自 Codex 官方目录元数据。
-        assert_eq!(catalog.entries.len(), 1);
+        assert_eq!(catalog.entries.len(), 3);
         let entry = &catalog.entries[0];
         assert_eq!(entry.id, "gpt-6.1-sol");
-        assert_eq!(entry.name, "GPT-6.1 Sol");
+        assert_eq!(entry.name, "Server Sol");
         assert_eq!(entry.capability, "codex-catalog");
         assert_eq!(entry.context_window, Some(272_000));
         assert_eq!(
@@ -494,7 +495,7 @@ mod tests {
 
     #[test]
     fn fetched_shape_accepts_data_and_models_keys() {
-        let deps = ShapeDeps(r#"{"models":[{"slug":"gpt-z"}]}"#);
+        let deps = ShapeDeps(r#"{"models":[{"slug":"gpt-z","visibility":"list"}]}"#);
         let fetched = fetch_with_token(&deps, "http://x/v1/models", "token").unwrap();
         assert_eq!(fetched.models.len(), 1);
         assert_eq!(fetched.models[0].id, "gpt-z");
@@ -571,7 +572,10 @@ mod serve_tests {
         let paths = flow_test_paths("serve-fb", issuer.port());
         let cancel = AtomicBool::new(false);
         crate::openai::flow::run_authorize(&paths, &transport, "release", &cancel).unwrap();
-        let models_port = serve_models(r#"{"data":[{"id":"gpt-6.1-sol"}]}"#, "at-1");
+        let models_port = serve_models(
+            r#"{"data":[{"id":"gpt-6.1-sol","visibility":"list","display_name":"GPT-6.1 Sol"}]}"#,
+            "at-1",
+        );
         let mut live = paths.clone();
         live.models_base = format!("http://127.0.0.1:{models_port}");
         let payload = serve_payload(&live, &transport, "release").unwrap();
@@ -659,7 +663,7 @@ mod fresh_window_tests {
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_server = Arc::clone(&hits);
         let models_port = serve_counting(
-            r#"{"data":[{"id":"gpt-6.1-sol"}]}"#,
+            r#"{"data":[{"id":"gpt-6.1-sol","visibility":"list","display_name":"GPT-6.1 Sol"}]}"#,
             "at-1",
             hits_for_server,
         );

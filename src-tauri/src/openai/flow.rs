@@ -89,6 +89,17 @@ pub(crate) fn run_authorize(
     // 已签发的 client_id（设计 §8「再次登录复用对应注册」）。
     let saved_client_id = auth::load_registration(&paths.mode_dir)?;
     let first_registration = saved_client_id.is_none();
+    let expected_sub = if first_registration {
+        None
+    } else {
+        let key = vault::load_file_key_with(
+            mode,
+            &paths.xlink_home,
+            |service, account| deps.keyring_get(service, account),
+            |service, account, secret| deps.keyring_put(service, account, secret),
+        )?;
+        vault::load_accounts(&paths.vault_file, &key)?.active
+    };
     let client_id = saved_client_id
         .clone()
         .unwrap_or_else(|| auth::DYNAMIC_CLIENT_ID.to_string());
@@ -104,7 +115,8 @@ pub(crate) fn run_authorize(
         &state,
         &nonce,
         &pkce.challenge,
-        first_registration.then_some((host_id.as_str(), auth::APP_NAME_HINT)),
+        host_id.as_str(),
+        first_registration,
     );
     deps.open_browser(&url)
         .map_err(|error| format!("打开系统浏览器失败：{error}；请手工复制登录地址"))?;
@@ -165,6 +177,7 @@ pub(crate) fn run_authorize(
                 &listener.redirect_uri(),
                 &pkce.verifier,
                 &nonce,
+                expected_sub.as_deref(),
             )
         }
         Outcome::Error(error) => Err(format!("授权未完成（{error}）；可重试登录")),
@@ -183,6 +196,7 @@ fn exchange_and_store(
     redirect_uri: &str,
     verifier: &str,
     nonce: &str,
+    expected_sub: Option<&str>,
 ) -> Result<AccountView, String> {
     let token_json = deps
         .post_form(
@@ -199,6 +213,13 @@ fn exchange_and_store(
         )
         .map_err(|failure| failure.message(&[]))?;
     let tokens = parse_token_response(&token_json)?;
+    if !tokens
+        .scopes
+        .iter()
+        .any(|scope| scope == "chatgpt.tokens.use.direct")
+    {
+        return Err("授权响应未授予 chatgpt.tokens.use.direct；无法使用 ChatGPT 套餐模型，请重新授权并勾选该权限".into());
+    }
     let jwks = deps
         .get_json(&metadata.jwks_uri)
         .map_err(|failure| failure.message(&[]))?;
@@ -210,6 +231,11 @@ fn exchange_and_store(
         nonce,
         deps.now_unix(),
     )?;
+    if let Some(expected) = expected_sub {
+        if expected != claims.subject {
+            return Err("重新授权返回了不同的 ChatGPT 账号；为保护原账号凭据，登录已终止，请先切换到目标账号后重试".into());
+        }
+    }
 
     let key = vault::load_file_key_with(
         mode,
@@ -226,6 +252,8 @@ fn exchange_and_store(
             client_id: client_id.to_string(),
             access_token: tokens.access_token,
             refresh_token: tokens.refresh_token,
+            id_token: tokens.id_token,
+            scopes: tokens.scopes,
             access_expires_at: deps.now_unix() + tokens.expires_in,
             reauth_required: false,
         },
@@ -254,12 +282,48 @@ pub(crate) fn run_logout(
         |service, account, secret| deps.keyring_put(service, account, secret),
     )?;
     let mut accounts = vault::load_accounts(&paths.vault_file, &key)?;
-    if accounts.active.is_none() {
+    let Some(sub) = accounts.active.clone() else {
         return Ok(false);
+    };
+    let Some(entry) = accounts.entries.get(&sub).cloned() else {
+        accounts.active = None;
+        vault::save_accounts(&paths.vault_file, &key, &accounts)?;
+        return Ok(true);
+    };
+    let mut revoke_warning = None;
+    if !entry.refresh_token.is_empty() {
+        let discovery = deps
+            .get_json(&discovery_url(&paths.issuer_base))
+            .map_err(|failure| failure.message(&[]))?;
+        let metadata = parse_metadata(&discovery)?;
+        if let Some(endpoint) = metadata.revocation_endpoint {
+            if let Err(failure) = deps.post_form(
+                &endpoint,
+                &[
+                    ("token", entry.refresh_token.as_str()),
+                    ("token_type_hint", "refresh_token"),
+                    ("client_id", entry.client_id.as_str()),
+                ],
+            ) {
+                revoke_warning = Some(failure.message(&[]));
+            }
+        }
+    }
+    // 保留账户与 client_id 映射，只清除本地会话令牌；不会因退出一个账号
+    // 把其它账号的凭据一起删除。
+    if let Some(saved) = accounts.entries.get_mut(&sub) {
+        saved.access_token.clear();
+        saved.refresh_token.clear();
+        saved.id_token.clear();
+        saved.reauth_required = true;
     }
     accounts.active = None;
-    accounts.entries.clear();
     vault::save_accounts(&paths.vault_file, &key, &accounts)?;
+    if let Some(warning) = revoke_warning {
+        return Err(format!(
+            "本地已退出，但远端吊销未确认：{warning}；可在 ChatGPT 设置中断开应用"
+        ));
+    }
     Ok(true)
 }
 
@@ -521,7 +585,7 @@ pub(crate) mod tests {
                     200,
                     serde_json::json!({
                         "access_token": access_value, "refresh_token": refresh_value,
-                        "id_token": sign_with_key1(&claims.to_string()), "expires_in": 3600,
+                        "id_token": sign_with_key1(&claims.to_string()), "expires_in": 3600, "scope": "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct",
                     })
                     .to_string(),
                 );
@@ -540,7 +604,7 @@ pub(crate) mod tests {
                 200,
                 serde_json::json!({
                     "access_token": access_value, "refresh_token": refresh_value,
-                    "id_token": sign_with_key1(&claims.to_string()), "expires_in": 3600,
+                        "id_token": sign_with_key1(&claims.to_string()), "expires_in": 3600, "scope": "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct",
                 })
                 .to_string(),
             );
@@ -835,7 +899,12 @@ pub(crate) mod tests {
         assert!(run_logout(&paths, &transport, "release").unwrap());
         let cleared = transport.read_vault(&paths.vault_file).unwrap();
         assert!(cleared.active.is_none());
-        assert!(cleared.entries.is_empty());
+        assert_eq!(
+            cleared.entries.len(),
+            1,
+            "退出只清会话令牌并保留账号/client 映射"
+        );
+        assert!(cleared.entries["mock-sub-1"].access_token.is_empty());
         assert!(
             !run_logout(&paths, &transport, "release").unwrap(),
             "重复退出是 no-op"
