@@ -99,13 +99,38 @@ pub(crate) fn active_credentials() -> Result<Option<OpenAiUsage>, String> {
     else {
         return Ok(None);
     };
-    match tokens.chatgpt_account_id {
-        Some(account_id) if !account_id.trim().is_empty() => Ok(Some(OpenAiUsage {
+    let account_id = tokens
+        .chatgpt_account_id
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .or_else(|| account_id_from_id_token(&tokens.id_token));
+    match account_id {
+        Some(account_id) => Ok(Some(OpenAiUsage {
             access_token: tokens.access_token,
             account_id,
         })),
-        _ => Ok(None),
+        None => Ok(None),
     }
+}
+
+/// 从 vault 里留存的那份 ID token 取账号 id。
+///
+/// **为什么要这条回填**：账号 id 是在「把字段落进 vault」这个版本之后登录的
+/// 用户才有的，而 vault 早就在存 `id_token`（登录时验过签名、加密落盘）。
+/// 没有这条回填，那批用户每次升级都得退出重登一次才看得到套餐——为了一个
+/// 声明把会话作废，是白要的代价。
+///
+/// 这里**不再验签名**：那份 ID token 正是登录时做过完整验证（签名 / iss /
+/// aud / exp / nonce）之后才存进来的，且整个 vault 是加密的；读出来的又只是
+/// 「发给哪个账号」这一个查询上下文，不是身份判定。
+fn account_id_from_id_token(id_token: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = id_token.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    crate::openai::auth::namespaced_string(&claims, crate::openai::auth::CHATGPT_ACCOUNT_ID_CLAIM)
 }
 
 /// 查一次额度窗口，返回 provider 数据。凭据只在 HTTPS 请求头这一处出现。
@@ -414,6 +439,34 @@ mod tests {
         assert!(parse(r#"{"nope":1}"#).is_err());
         assert!(parse("not json").is_err());
         assert!(parse(r#"{"rate_limit":{}}"#).expect("空窗口").is_empty());
+    }
+
+    fn id_token_with(claim: &str, value: &str) -> String {
+        use base64::Engine;
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(format!(r#"{{"{claim}":"{value}"}}"#).as_bytes());
+        format!("h.{payload}.s")
+    }
+
+    #[test]
+    fn account_id_is_recovered_from_the_stored_id_token() {
+        let token = id_token_with(
+            crate::openai::auth::CHATGPT_ACCOUNT_ID_CLAIM,
+            "7c26dd40-bf4b-42f7-8b81-cd546ca363e8",
+        );
+        assert_eq!(
+            account_id_from_id_token(&token).as_deref(),
+            Some("7c26dd40-bf4b-42f7-8b81-cd546ca363e8")
+        );
+    }
+
+    #[test]
+    fn a_token_without_the_claim_yields_nothing() {
+        assert_eq!(account_id_from_id_token(&id_token_with("sub", "u-1")), None);
+        assert_eq!(account_id_from_id_token(""), None);
+        assert_eq!(account_id_from_id_token("not-a-jwt"), None);
+        // 三段齐全但载荷不是 JSON：读不出就当作没有，不报错。
+        assert_eq!(account_id_from_id_token("a.!!!.c"), None);
     }
 
     #[test]

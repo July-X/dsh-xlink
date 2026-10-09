@@ -431,7 +431,7 @@ pub(crate) fn verify_id_token(
 /// 读取一个命名空间声明（非空才算数）。**可选**：缺声明不报错——它是
 /// 套餐用量查询的附加条件，不参与身份判定（签名 / iss / aud / exp / nonce
 /// 才是 fail-closed 的部分）。
-fn namespaced_string(value: &serde_json::Value, claim: &str) -> Option<String> {
+pub(crate) fn namespaced_string(value: &serde_json::Value, claim: &str) -> Option<String> {
     value
         .get(claim)
         .and_then(|v| v.as_str())
