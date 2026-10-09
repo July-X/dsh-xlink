@@ -22,6 +22,8 @@ const STRINGS = {
     signIn: "登录 ChatGPT",
     cancel: "取消登录",
     signOut: "退出登录",
+    refreshModels: "刷新模型列表",
+    refreshFailed: "刷新模型目录失败",
     phaseAuthorizing: "登录进行中：系统浏览器即将打开授权页…",
     phaseAuthorized: "已登录",
     phaseSignedOut: "未登录",
@@ -33,6 +35,8 @@ const STRINGS = {
     signIn: "Sign in with ChatGPT",
     cancel: "Cancel sign-in",
     signOut: "Sign out",
+    refreshModels: "Refresh model list",
+    refreshFailed: "Failed to refresh model catalog",
     phaseAuthorizing: "Sign-in in progress: the system browser will open…",
     phaseAuthorized: "Signed in",
     phaseSignedOut: "Not signed in",
@@ -149,16 +153,28 @@ window.__ModuleLoader__.load({
                 L.signIn,
               ),
           phase === "authorized"
-            ? e(
-                "button",
-                {
-                  key: "logout",
-                  onClick: () => run("openai_logout"),
-                  disabled: busy,
-                  style: cardButtonStyle(),
-                },
-                L.signOut,
-              )
+            ? [
+                e(
+                  "button",
+                  {
+                    key: "refresh",
+                    onClick: () => run("openai_catalog_refresh"),
+                    disabled: busy,
+                    style: cardButtonStyle(),
+                  },
+                  L.refreshModels,
+                ),
+                e(
+                  "button",
+                  {
+                    key: "logout",
+                    onClick: () => run("openai_logout"),
+                    disabled: busy,
+                    style: cardButtonStyle(),
+                  },
+                  L.signOut,
+                ),
+              ]
             : null,
         ]),
       );

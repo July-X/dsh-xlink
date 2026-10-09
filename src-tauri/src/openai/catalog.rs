@@ -98,6 +98,16 @@ pub(crate) fn load_catalog(
     deps: &impl FlowTransport,
     mode: &str,
 ) -> Result<Catalog, CatalogError> {
+    load_catalog_with(paths, deps, mode, false)
+}
+
+/// `force = true` 跳过新鲜窗口（工作台「刷新模型列表」动作）。
+pub(crate) fn load_catalog_with(
+    paths: &FlowPaths,
+    deps: &impl FlowTransport,
+    mode: &str,
+    force: bool,
+) -> Result<Catalog, CatalogError> {
     let tokens = ensure_fresh_access(paths, deps, mode)
         .map_err(|error| match error {
             RefreshError::ReauthRequired(detail) => {
@@ -110,11 +120,13 @@ pub(crate) fn load_catalog(
     let now = deps.now_unix();
     // 新鲜窗口：工作台每次打开设置都会 listModels，窗口内的重复请求
     // 直接用缓存（设计 §6.1 离线缓存语义；窗口外照常拉取）。
-    if let Some(cached) = cached_catalog(paths, &tokens.sub) {
-        if cached.capability_revision == CAPABILITY_REVISION
-            && now.saturating_sub(cached.fetched_at) < CATALOG_FRESH_SECS
-        {
-            return Ok(cached);
+    if !force {
+        if let Some(cached) = cached_catalog(paths, &tokens.sub) {
+            if cached.capability_revision == CAPABILITY_REVISION
+                && now.saturating_sub(cached.fetched_at) < CATALOG_FRESH_SECS
+            {
+                return Ok(cached);
+            }
         }
     }
 

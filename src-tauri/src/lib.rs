@@ -444,6 +444,7 @@ pub fn run() {
             openai::cmd::openai_authorize_start,
             openai::cmd::openai_authorize_cancel,
             openai::cmd::openai_logout,
+            openai::cmd::openai_catalog_refresh,
             commands::plugin_set_precheck,
             plugins::precheck_cmd::plugin_precheck_apply,
             diagnostics::snapshot_cmd::snapshot_list,

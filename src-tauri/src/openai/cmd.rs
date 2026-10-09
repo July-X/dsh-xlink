@@ -167,6 +167,28 @@ pub async fn openai_authorize_cancel(app: AppHandle) -> Result<AccountStatus, St
     Ok(status_payload(&app))
 }
 
+/// 刷新模型目录（跳过新鲜窗口强制拉取；工作台账户卡的「刷新模型列表」）。
+/// 刷新失败不改变缓存（下次仍可用旧目录），错误如实返回。
+#[tauri::command]
+pub async fn openai_catalog_refresh(app: AppHandle) -> Result<AccountStatus, String> {
+    crate::commands::blocking(move || {
+        let mode = settings::current_mode().as_str().to_string();
+        let transport = production_transport(&app);
+        let paths = flow::shell_flow_paths();
+        match crate::openai::catalog::load_catalog_with(&paths, &transport, &mode, true) {
+            Ok(_) => {
+                emit_account_changed(&app);
+                Ok(status_payload(&app))
+            }
+            Err(error) => Err(format!(
+                "刷新模型目录失败：{}；已保留最后一次成功目录，可稍后重试",
+                error.message()
+            )),
+        }
+    })
+    .await
+}
+
 /// 退出登录（清活跃账号与令牌；远端吊销未确认时文案如实说明）。
 #[tauri::command]
 pub async fn openai_logout(app: AppHandle) -> Result<AccountStatus, String> {
