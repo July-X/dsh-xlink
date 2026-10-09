@@ -233,7 +233,7 @@ vault，即「内嵌 openai-oauth 插件」那次登录的结果）。`configure
 `…/auth.chatgpt_plan_type` 是套餐档位）。壳在登录时（`flow::exchange_and_store`，
 ID token 已验签）把这条声明落进 vault，查询时直接取用，**不必**再解 ID token。
 老 vault 文件没有这个字段（`#[serde(default)]` 兜底），此时该分区按未配置隐藏，
-重新登录一次即可补上。
+会从 vault 里留存的那份 ID token 回填，不必退出重登（那份 ID token 正是登录时验过签名之后才加密落盘的，读出来的只是查询上下文，不参与身份判定）。
 
 **令牌只发往一个地方**：请求头里的原始 access token 只出现在这一次 HTTPS 请求上，
 不进 UI、日志、缓存与事件；错误文案只说「OpenAI 登录已失效（HTTP 401）」，不带
