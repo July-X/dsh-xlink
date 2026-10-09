@@ -253,8 +253,17 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
-    /// 本机回环的极简服务：回固定体，让请求走真实的 ureq/网络栈。
-    fn serve_once(body: &'static str) -> u16 {
+    /// 本机回环的极简服务：回固定响应，让请求走真实的 ureq/网络栈。
+    /// `head` 是状态行与响应头（不含 Content-Length / Connection）。
+    ///
+    /// **必须先把请求读掉再回响应**（`stream.read` 那行）：不等客户端的
+    /// 请求字节离开接收缓冲区就 close，macOS 发的是 RST 而不是 FIN，客户端
+    /// 能否读到响应纯看时序——于是同一条断言时而绿时而红，红时拿到的是
+    /// Transport 而不是被测的 Status。2026-10-09 发 v0.4.4 时踩到：
+    /// `transport_vs_status_classification` 在 CI 上绿、在发布流水线上红，
+    /// 报 `Transport("io: Invalid argument (os error 22)")`，而同一批 820
+    /// 个用例全绿。写这个服务时漏掉读请求，红的表象与真正原因隔着两层。
+    fn serve_once(head: &'static str, body: &'static str) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -262,10 +271,11 @@ mod tests {
                 let mut buf = [0u8; 2048];
                 let _ = stream.read(&mut buf);
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "{head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
             }
         });
         port
@@ -273,10 +283,16 @@ mod tests {
 
     #[test]
     fn get_and_form_roundtrip_over_real_stack() {
-        let port = serve_once(r#"{"issuer":"https://i"}"#);
+        let port = serve_once(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json",
+            r#"{"issuer":"https://i"}"#,
+        );
         let got = get_json(&format!("http://127.0.0.1:{port}/.well-known/x")).unwrap();
         assert!(got.contains("https://i"));
-        let port = serve_once(r#"{"token_type":"Bearer"}"#);
+        let port = serve_once(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json",
+            r#"{"token_type":"Bearer"}"#,
+        );
         let posted = post_form(
             &format!("http://127.0.0.1:{port}/token"),
             &[("grant_type", "authorization_code")],
@@ -295,16 +311,10 @@ mod tests {
             get_json(&format!("http://127.0.0.1:{port}/x")),
             Err(Failure::Transport(_))
         ));
-        // 404：状态错误，message 不说「网络不可达」。
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let _ = stream.write_all(
-                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                );
-            }
-        });
+        // 404：状态错误，message 不说「网络不可达」。服务走 serve_once——本地
+        // 内联一个「写完就关」的版本会让这条断言间歇性拿到 Transport（见该
+        // helper 的注释），于是判据测的是时序而不是被测的状态分类。
+        let port = serve_once("HTTP/1.1 404 Not Found", "");
         match get_json(&format!("http://127.0.0.1:{port}/x")) {
             Err(failure @ Failure::Status(404, _)) => {
                 assert!(!failure.message(&[]).contains("网络不可达"));
