@@ -30,7 +30,13 @@ pub(crate) struct PerfSample {
     name: &'static str,
     source: &'static str,
     started: Option<Instant>,
-    fields: Vec<(&'static str, u128)>,
+    fields: Vec<(&'static str, FieldValue)>,
+}
+
+/// 一个采样字段。耗时字段输出带 `_us` 后缀，计数字段按原样输出。
+enum FieldValue {
+    Micros(u128),
+    Count(u64),
 }
 
 static PERF_ENABLED: OnceLock<bool> = OnceLock::new();
@@ -69,7 +75,16 @@ impl PerfSample {
 
     pub(crate) fn end(&mut self, field: &'static str, started: Option<Instant>) {
         if let Some(started) = started {
-            self.fields.push((field, started.elapsed().as_micros()));
+            self.fields
+                .push((field, FieldValue::Micros(started.elapsed().as_micros())));
+        }
+    }
+
+    /// 记一个计数字段（如「本次扫描了几个文件」）。计时不适合表达的量用这个：
+    /// 输出为 `<field>=<value>`，不带 `_us` 后缀。
+    pub(crate) fn count(&mut self, field: &'static str, value: u64) {
+        if self.enabled {
+            self.fields.push((field, FieldValue::Count(value)));
         }
     }
 
@@ -90,8 +105,11 @@ impl PerfSample {
             self.source,
             started.elapsed().as_micros()
         );
-        for (field, elapsed) in self.fields {
-            line.push_str(&format!(" {field}_us={elapsed}"));
+        for (field, value) in self.fields {
+            match value {
+                FieldValue::Micros(elapsed) => line.push_str(&format!(" {field}_us={elapsed}")),
+                FieldValue::Count(count) => line.push_str(&format!(" {field}={count}")),
+            }
         }
         shell_events::record("perf-status", &line);
     }
