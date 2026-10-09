@@ -127,3 +127,108 @@ test('「更多」菜单项都带图标，且复制类用的是本仓统一的 C
   // el-icon 同样走 size，别用 CSS 的 font-size。
   assert.match(shell, /<el-icon[^>]*:size="14"/);
 });
+
+// --- 内嵌加载遮罩（`v-loading`）的底色：不能与全屏遮罩共用变量 ----------------
+//
+// EP 的 `.el-loading-mask`（内嵌，指令盖在一个区域上）与 dialog 的 `.el-overlay`
+// （全屏）都读 `--el-mask-color`。本仓把那个变量调成「两套主题同向压暗」
+// （theme.css 的 Element Plus 浅色覆写块），对全屏遮罩是对的，对内嵌遮罩是错
+// 的：插件中心搜索目录时，浅色主题下整块加载区被盖成深灰，和白卡片打架
+// （2026-10-09 用户报）。
+//
+// 为什么要钉测试而不靠自觉：改回去的动机太顺理成章——「同一语义一份实现」这条
+// 仓库纪律会**推着人**把两条规则合并回同一个变量，而合并之后没有任何一个自动化
+// 环节会报错（CSS 合法、构建绿、单测全绿），只有看界面才发现。
+
+/** 解析 `rgba(...)` 字面量；不是字面量（含 `var()` 自引用）就返回 null，不返回 NaN。 */
+function parseRgba(raw) {
+  const m = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)/.exec(raw ?? '');
+  return m
+    ? { rgb: [Number(m[1]), Number(m[2]), Number(m[3])], alpha: m[4] === undefined ? 1 : Number(m[4]) }
+    : null;
+}
+
+const luminance = ({ rgb }) => 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+
+test('内嵌加载遮罩盖的是所在表面而不是压暗（两套主题各一份底色）', () => {
+  const css = readFileSync('ui/src/theme.css', 'utf8');
+
+  // ① 规则：`.el-loading-mask` 读自己的变量，且不得再碰 `--el-mask-color`。
+  const maskBodies = Array.from(css.matchAll(/\.el-loading-mask\s*\{([^}]*)\}/g), (m) => m[1]);
+  assert.ok(
+    maskBodies.length >= 1,
+    'theme.css 里找不到 .el-loading-mask 规则：遮罩退回 EP 默认的 var(--el-mask-color)，浅色主题下整块变深灰'
+  );
+  for (const body of maskBodies) {
+    assert.match(
+      body,
+      /background(?:-color)?:\s*var\(--surface-loading\)/,
+      `.el-loading-mask 必须声明 background-color: var(--surface-loading)，实际读到：${body.trim()}`
+    );
+    assert.doesNotMatch(
+      body,
+      /--el-mask-color/,
+      '.el-loading-mask 又绑回 --el-mask-color 了：那是全屏遮罩的压暗档，内嵌遮罩用它会在浅色主题下把整块加载区画成深灰'
+    );
+  }
+
+  // ② token 两套主题各一份。浅色与暗色的卡面不同（#ffffff / #2c2b30），只写
+  // 一份必然有一边失真。位置用 `^html.dark {` 定位而不是 indexOf('html.dark')：
+  // 注释里出现过这个词（`:root` 那段就在解释它），indexOf 会命中注释里的。
+  const darkAt = css.search(/^html\.dark\s*\{/m);
+  assert.ok(darkAt > 0, '必须能找到 theme.css 的 html.dark 块');
+  const defs = Array.from(css.matchAll(/--surface-loading:\s*([^;]+);/g), (m) => ({
+    at: m.index,
+    raw: m[1],
+  }));
+  assert.equal(
+    defs.length,
+    2,
+    `--surface-loading 应在 :root 与 html.dark 各定义一次，实际读到 ${defs.length} 处`
+  );
+
+  // ③ 值的方向：浅色必须亮、暗色必须暗，且两边 alpha 都够高（太低会让底下的旧
+  // 内容透出来，看着像没遮住）。按亮度判、不按字符串判，改成别的浅色也拦得住。
+  const light = parseRgba(defs.find((d) => d.at < darkAt).raw);
+  const dark = parseRgba(defs.find((d) => d.at > darkAt).raw);
+  assert.ok(light, `浅色 --surface-loading 不是 rgba 字面量（读到：${defs[0].raw}）`);
+  assert.ok(dark, `暗色 --surface-loading 不是 rgba 字面量（读到：${defs[1].raw}）`);
+  assert.ok(
+    luminance(light) > 200,
+    `浅色加载遮罩亮度 ${luminance(light).toFixed(0)} 偏暗：浅色主题下会盖成灰块`
+  );
+  assert.ok(
+    luminance(dark) < 90,
+    `暗色加载遮罩亮度 ${luminance(dark).toFixed(0)} 偏亮：暗色主题下会闪出一块浅色`
+  );
+  for (const [label, v] of [
+    ['浅色', light],
+    ['暗色', dark],
+  ]) {
+    assert.ok(v.alpha >= 0.85, `${label} --surface-loading 的 alpha 是 ${v.alpha}：太透，底下内容会透出来像没遮住`);
+  }
+});
+
+test('全屏遮罩仍是压暗档（修内嵌遮罩不许顺手把它改亮）', () => {
+  // 与上一条互为反向判据。`.el-overlay` / `.progress-overlay` 压暗是对的；有人
+  // 为「统一两种遮罩」把 `--el-mask-color` 调亮，弹窗就会失去与背景的分离，
+  // 而那正是它在 `:root` 里被写成两套主题同向深色的理由。
+  const css = readFileSync('ui/src/theme.css', 'utf8');
+  const defs = Array.from(css.matchAll(/--el-mask-color:\s*([^;]+);/g), (m) => m[1]);
+  assert.equal(
+    defs.length,
+    2,
+    `--el-mask-color 应在 :root 与 html.dark 各一份，实际读到 ${defs.length} 处`
+  );
+  for (const [i, label] of [
+    [0, '浅色'],
+    [1, '暗色'],
+  ]) {
+    const v = parseRgba(defs[i]);
+    assert.ok(v, `${label} --el-mask-color 不是 rgba 字面量（读到：${defs[i]}）`);
+    assert.ok(
+      v.alpha >= 0.4 && v.alpha <= 0.75,
+      `${label} --el-mask-color 的 alpha 是 ${v.alpha}：低于 0.4 弹窗与背景分不开，高于 0.75 背后的页面基本看不见`
+    );
+  }
+});

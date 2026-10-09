@@ -914,7 +914,19 @@ test('生产 CSS / Vue 里不再有硬编码的白叠色（注释不算）', () 
       // 叠色 token 的**定义行**本身就该是字面量——它就是这套值的真相源。
       // 判据要拦的是「在规则里又写了一遍」，不是「这里有定义」。
       // （刻蚀那版的 `--etch-*` 已随那套样式一起删掉，名单里不留死条目。）
-      .filter((line) => !/^\s*--(?:overlay-(?:faint|soft|strong)|surface-sunken):/.test(line))
+      //
+      // `--surface-loading`（2026-10-09 加）在名单里，但**它与上面三个不同类**，
+      // 不要拿「和 --overlay-* 一样」理解：那几个是暗色档的「叠白」，写死浅色
+      // 主题里就失真（白底白 hover）；`--surface-loading` 是**内嵌加载遮罩盖住的
+      // 表面本身**，浅色档就是白、暗色档是 #2c2b30，两套各给一份、所有用法一律
+      // 读 token，所以它压根不存在「写死一色、两边失真」这个风险。它落在豁免
+      // 里只是因为浅色那行字面上是 `rgba(255,255,255,…)`——判据扫的是字面量，
+      // 拦不住的是语义。这一档「必须是两套字面量、不能是 var() 自引用」的判据
+      // 由 `epStyles.test.js` 那两条反向测试负责。
+      .filter(
+        (line) =>
+          !/^\s*--(?:overlay-(?:faint|soft|strong)|surface-sunken|surface-loading):/.test(line)
+      )
       .join('\n');
     const hit = hardcoded.exec(text);
     assert.equal(hit, null, `${rel} 仍有硬编码白叠色：${hit && hit[0]}`);
