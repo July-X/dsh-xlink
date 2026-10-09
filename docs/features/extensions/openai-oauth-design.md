@@ -140,6 +140,8 @@ Rust 本地服务仅面向本次 dsh 子进程，以随机访问令牌绑定实�
 
 系统指令转换为该路线接受的指令或 developer 消息。工具定义按官方支持格式组织，名称转换可逆，工具调用标识与结果严格配对；执行和审批继续走 dsh。不向套餐路线发送不支持的托管工具或 `tool_search`，也不能把工具结果拼成普通用户文本蒙混通过。
 
+本地函数统一放入 `{type: "namespace", name: "dsh", description, tools: [...]}` 容器；内部的 `function` 定义不带 `namespace` 字段。历史中的 `function_call` 使用 `namespace: "dsh"` 与转换后的函数名；返回工具调用时保留服务端的 `call_id`，而不是流事件的 `item_id`，再把函数名映射回 dsh 工具名。该结构修复 v0.1.11 的 `Unknown parameter: tools[0].namespace`，从插件 v0.1.12 生效。[官方工具分组示例](https://developers.openai.com/api/docs/guides/tools)
+
 公开的思考摘要可进入 dsh 思考块；未返回摘要时只显示等待状态，不能把加密思考内容展示或解密。`encrypted_content` 等提供方回放材料通过 dsh 的适配器私有元数据持久化，保证工具往返、重启及长会话不会只剩可见文字。跨账户、路线或不兼容模型时不复用这些材料。[无服务端存储的思考回放](https://developers.openai.com/api/docs/guides/reasoning)
 
 已启用插件在内核启动前按本壳资源重新物化并更新自有接线行，成功后同步启用记录中的插件版本与内核指纹。物化标记包含运行时文件摘要（路径与字节），同版本文件修改、新增、删除及旧标记升级都会重建；仅在内核尚未运行时执行，停用意图不触发刷新，资源不可用时明确拒绝启动，避免继续加载旧代码。

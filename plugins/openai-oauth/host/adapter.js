@@ -10,7 +10,7 @@
 import { LlmAdapter, LlmError, requestImageHandleText, offloadedImageText, resolveImageAttachmentAccess, requiredImageOffload } from "@deepseek-ai/dsh-llm";
 import { PROVIDER_DISPLAY_NAME, PROVIDER_ID } from "./constants.js";
 import { BridgeUnavailableError, fetchCatalog, handshake, streamInferenceLines } from "./bridge.js";
-import { buildEnvelope, pumpStream } from "./request.js";
+import { buildEnvelope, pumpStream, toProviderToolName } from "./request.js";
 import { prepareImageParts } from "./images.js";
 
 export class BridgeAdapter extends LlmAdapter {
@@ -95,8 +95,10 @@ export class BridgeAdapter extends LlmAdapter {
       throw error;
     });
     const envelope = buildEnvelope(options, this.catalogView, imageParts);
+    const toolMapping = new Map();
+    for (const tool of options.tools ?? []) toProviderToolName(tool.name, toolMapping);
     const lines = streamInferenceLines(this.bridge, envelope, options.signal);
-    yield* pumpStream(lines);
+    yield* pumpStream(lines, toolMapping);
   }
 }
 

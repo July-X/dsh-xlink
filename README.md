@@ -1,5 +1,7 @@
 # DeepSeek Harness 桌面端（dsh-xlink）
 
+内嵌 OpenAI OAuth 插件 v0.1.12 修复工具请求中的 `Unknown parameter: tools[0].namespace`：本地函数按官方命名空间容器分组，并保持工具调用与结果的标识一致。升级后重新启动工作台即可加载新插件；服务端提示套餐额度用尽时仍需等待额度重置。
+
 [![Latest release](https://img.shields.io/github/v/release/July-X/dsh-xlink)](https://github.com/July-X/dsh-xlink/releases/latest)
 
 [Tauri v2](https://tauri.app/zh-cn/) 写的多内核桌面外壳，把不同内核的 Web UI 装到桌面上——目前支持 DeepSeek Harness，后续会加 mcode 等。每个内核按实例运行、互不干扰。外壳只管准备路径与环境变量、装扩展、看护生命周期，内核怎么跑由内核自己决定。跟着官方 [`deepseek-ai/deepseek-harness`](https://github.com/deepseek-ai/deepseek-harness) 的 `dsh-v*` tag 一键安装、切换、删除。
