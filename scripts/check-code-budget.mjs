@@ -276,7 +276,10 @@ const FILE_BUDGETS = {
   // registration_endpoint（线上没有该端点），client_id 改为回调签发 +
   // 持久化（save/load_registration），authorize_url 增加
   // resource/agent_name_hint/ext_agent_host_id。
-  'src-tauri/src/openai/auth.rs': 333,
+  // 333 → 373：宿主标识改 urn:uuid v4（裸 hex 被授权端点以
+  // invalid_request_error 拒绝，2026-10-09 实测），含遗留 64-hex 的
+  // 确定性迁移与格式测试。
+  'src-tauri/src/openai/auth.rs': 373,
   // JWK 解析 + RS256 验签：ring 的 RsaPublicKeyComponents 直接吃 n/e，
   // 第一版手拼 SPKI DER 已删（不必要）。固定测试密钥自签自验钉住。
   'src-tauri/src/openai/jwk.rs': 53,
@@ -2142,7 +2145,7 @@ const FILE_BUDGETS = {
 // peer 进物化目录，否则设置页不出 provider 行卡。
 // 45421 → 45428（2026-10-09 五轮）：授权结局落 shell_events（+7）+ 卡片
 // 渲染 lastError（client.js 不计预算）——修「登录失败静默回未登录」。
-const TOTAL_BUDGET = 45466;
+const TOTAL_BUDGET = 45506;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

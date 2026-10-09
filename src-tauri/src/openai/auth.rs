@@ -111,25 +111,79 @@ pub(crate) fn random_hex(bytes: usize) -> String {
 }
 
 /// 宿主标识（设计 §8「生成后持久保存，不能因每次启动或登录而变化」）。
-/// 存在 `shell/<mode>/openai-oauth/host-id`（由调用方解析目录），一行 32 字节 hex。
+/// 存在 `shell/<mode>/openai-oauth/host-id`（由调用方解析目录）。
+///
+/// **格式是 `urn:uuid:<v4>`**（官方规范的宿主标识示例；2026-10-09 实测
+/// 64 位裸 hex 被授权端点以 `invalid_request_error, param:
+/// ext_agent_host_id` 拒绝）。历史遗留的 64 位 hex 按**确定性映射**转成
+/// URN UUID（取前 32 位 hex 摆成 8-4-4-4-12 并钉上 v4 版本位与变体位）——
+/// 同一台宿主迁移前后仍是同一个身份，不要求用户手工删除重生成。
 pub(crate) fn ensure_host_id(dir: &Path) -> Result<String, String> {
     let path = host_id_path(dir);
     if let Ok(existing) = std::fs::read_to_string(&path) {
         let trimmed = existing.trim();
-        if trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if trimmed.starts_with(URN_UUID_PREFIX) {
             return Ok(trimmed.to_string());
         }
+        if trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+            let migrated = format!("{URN_UUID_PREFIX}{}", legacy_hex_to_uuid(trimmed));
+            crate::shell::process::atomic_write(&path, format!("{migrated}\n").as_bytes())
+                .map_err(|error| format!("迁移宿主标识失败（{}）：{error}", path.display()))?;
+            return Ok(migrated);
+        }
         return Err(format!(
-            "宿主标识文件损坏（{}）：内容不是 64 位 hex；请手工删除该文件后重试（会触发重新动态注册）",
+            "宿主标识文件损坏（{}）：内容不是合法的宿主标识；请手工删除该文件后重试（会生成新的宿主标识）",
             path.display()
         ));
     }
-    let id = random_hex(32);
+    let id = new_urn_uuid();
     std::fs::create_dir_all(dir)
         .map_err(|error| format!("创建 OpenAI 服务目录失败（{}）：{error}", dir.display()))?;
     crate::shell::process::atomic_write(&path, format!("{id}\n").as_bytes())
         .map_err(|error| format!("写宿主标识失败（{}）：{error}", path.display()))?;
     Ok(id)
+}
+
+const URN_UUID_PREFIX: &str = "urn:uuid:";
+
+/// 生成 `urn:uuid:<v4>`（16 随机字节，钉版本位 4 与 RFC 变体位）。
+fn new_urn_uuid() -> String {
+    let mut bytes = [0u8; 16];
+    rand::rng().fill_bytes(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!("{URN_UUID_PREFIX}{}", uuid_from_bytes(&bytes))
+}
+
+/// 16 字节 → 8-4-4-4-12 小写 hex。
+fn uuid_from_bytes(bytes: &[u8; 16]) -> String {
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
+/// 64 位 hex（历史宿主标识）→ UUID 形态的确定性映射：取前 32 位 hex 摆成
+/// 8-4-4-4-12，并把第 13 位钉成 '4'（v4）、第 17 位钉进 8..=b（变体位）。
+fn legacy_hex_to_uuid(hex: &str) -> String {
+    let compact: String = hex.chars().take(32).collect();
+    let mut chars: Vec<char> = compact.chars().collect();
+    chars[12] = '4';
+    chars[16] = ['8', '9', 'a', 'b'][(chars[16].to_digit(16).unwrap_or(0) % 4) as usize];
+    let s: String = chars.into_iter().collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &s[0..8],
+        &s[8..12],
+        &s[12..16],
+        &s[16..20],
+        &s[20..32]
+    )
 }
 
 pub(crate) fn host_id_path(dir: &Path) -> PathBuf {
@@ -465,8 +519,25 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("oop-hostid-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let first = ensure_host_id(&dir).unwrap();
-        assert_eq!(first.len(), 64);
+        // 格式：urn:uuid:<v4>（官方规范；裸 hex 会被授权端点拒绝）。
+        assert!(first.starts_with("urn:uuid:"), "{first}");
+        let body = first.trim_start_matches("urn:uuid:");
+        assert_eq!(body.len(), 36);
+        assert_eq!(body.chars().nth(14), Some('4'), "v4 版本位");
         assert_eq!(ensure_host_id(&dir).unwrap(), first, "已存在时必须原样复用");
+
+        // 历史遗留的 64 位 hex 确定性迁移：同一输入永远得到同一身份。
+        let legacy = format!("{}\n", "a".repeat(64));
+        std::fs::write(host_id_path(&dir), legacy).unwrap();
+        let migrated = ensure_host_id(&dir).unwrap();
+        assert!(migrated.starts_with("urn:uuid:"), "{migrated}");
+        assert_eq!(ensure_host_id(&dir).unwrap(), migrated, "迁移结果必须稳定");
+        assert_eq!(
+            ensure_host_id(&dir).unwrap(),
+            migrated,
+            "迁移是确定性的（同输入同输出）"
+        );
+
         std::fs::write(host_id_path(&dir), "not-hex!\n").unwrap();
         let error = ensure_host_id(&dir).unwrap_err();
         assert!(error.contains("损坏"), "{error}");
