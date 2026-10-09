@@ -17,6 +17,14 @@
   --surface: #ffffff;
   --surface-raised: #ffffff;
   --surface-subtle: #f0f2f5;
+  /* 内嵌加载遮罩（`v-loading` 盖在某个区域上，不是全屏）的底色：它要**盖住
+     所在表面**，不是压暗它。EP 把 `.el-loading-mask` 与 dialog 的 `.el-overlay`
+     绑在同一个 `--el-mask-color` 上，而那个变量本仓调成了「两套主题同向压暗」
+     （见下方 Element Plus 浅色覆写块）——于是浅色主题下每一处正在加载的区域
+     都被盖成一块深灰，和白卡片打架（2026-10-09 用户报插件中心搜索时目录整块
+     变灰）。全屏遮罩压暗是对的、内嵌遮罩压暗是错的，两者语义不同，所以各走
+     各的变量：这一档记的是「当前卡面」，不是「一层灰」。 */
+  --surface-loading: rgba(255, 255, 255, 0.9);
   /* 「提亮」与「压暗」两个叠色。UI 里反复出现的 hover 底、进度条轨道、
      滚动条拇指都是同一个视觉意图——**把当前底色往目标方向推一点**——
      在暗色主题里那是叠白，在浅色主题里是叠黑。同一个意图必须走同一个变量：
@@ -137,6 +145,9 @@ html.dark {
   --surface: #2c2b30;
   --surface-raised: #35343a;
   --surface-subtle: #25242a;
+  /* 与 `:root` 那一档同义（盖住所在表面），不是同值：暗色卡面是 #2c2b30。
+     同样留一成透，刷新中的旧内容仍隐约可见，而不是整块闪成纯色。 */
+  --surface-loading: rgba(44, 43, 48, 0.9);
   /* 暗色下同一意图反过来：叠白即提亮。取值与浅色档一一对应（4% / 7% / 35%），
      两套主题的 hover 底看起来一样「轻」。 */
   --overlay-faint: rgba(255, 255, 255, 0.04);
@@ -3158,7 +3169,7 @@ body.pane-dragging .log-tabs {
   overflow-y: auto;
 }
 
-/* --- 浮层底色与圆角：ElDialog / ElMessage / ElMessageBox --- */
+/* --- 浮层底色与圆角：ElDialog / ElMessage / ElMessageBox / ElLoading --- */
 
 /* 所有浮层的底色一份：`--surface-raised`（浅色 `#fff` / 暗色 `#35343a`，
    与 Element Plus 自己的 `--el-bg-color-overlay` 同值）。它必须写在
@@ -3170,6 +3181,17 @@ body.pane-dragging .log-tabs {
   border-radius: var(--radius-card);
   border: 1px solid var(--border);
 }
+
+/* 内嵌加载遮罩单列一份底色。EP 在 `.el-loading-mask` 上写的是
+   `background-color: var(--el-mask-color)`，与 dialog 的 `.el-overlay` 同一个
+   变量——但这里盖的是「一块区域」（插件中心目录、用量窗口主体、副窗主体），
+   那里盖的是「整个窗口」：压暗对后者是对的，对前者会在浅色主题下把一整块
+   加载区画成深灰。理由与取值见 `:root` 里 `--surface-loading` 的注释。
+
+   **这条必须是全局规则，不能挪进组件的 scoped 块**：`v-loading` 的 mask 是
+   指令运行期插入的新 DOM 节点，身上没有组件的 `data-v-*`，scoped 选择器
+   （含 `:deep()` 之外的形式）匹配不到它。 */
+.el-loading-mask { background-color: var(--surface-loading); }
 
 .el-message,
 .el-message-box {
