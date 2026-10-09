@@ -104,6 +104,7 @@
           "openai_authorize_start",
           "openai_authorize_cancel",
           "openai_logout",
+          "openai_catalog_refresh",
           "snapshot_list",
           "bisect_view",
           "bisect_start",

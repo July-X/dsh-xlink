@@ -296,7 +296,9 @@ const FILE_BUDGETS = {
   // 跑后台线程、结束广播 openai-account-changed（UI 不轮询）；薄壳——
   // 能落进 flow.rs 的逻辑都不在这里长。按文件名豁免了新文件登记，照实
   // 补上（同 builtin/mod.rs 的先例）。
-  'src-tauri/src/openai/cmd.rs': 152,
+  // 152 → 164：补 openai_catalog_refresh（工作台卡「刷新模型列表」，跳过
+  // 新鲜窗口强制拉取；失败保留缓存不广播）。
+  'src-tauri/src/openai/cmd.rs': 164,
   // 2026-10-09：访问令牌刷新（P2 收尾）。串行互斥（防旧 refresh token
   // 二次刷新被判重放）、旋转 refresh token、invalid_grant → reauth_required
   // 落库短路。3 测试：旋转落库 / 撤销标记与短路+重登清除 / 未过期不触网。
@@ -2099,7 +2101,7 @@ const FILE_BUDGETS = {
 // process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
-const TOTAL_BUDGET = 45281;
+const TOTAL_BUDGET = 45311;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
