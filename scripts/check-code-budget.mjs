@@ -309,7 +309,10 @@ const FILE_BUDGETS = {
   // 纪律与 get_json 一致）。
   // 99 → 139：补 post_stream（推理流式 POST：带鉴权、路由纪律、状态错误
   // 读体分类、成功返回未消费行读取器）。
-  'src-tauri/src/openai/transport.rs': 139,
+  // 139 → 173：send/post_stream 抽出 `_over` 路由表变体（路由表作参数，
+  // 测试可注入）+ 网关拦截页（403 HTML）换路重试——直连 403、代理 200
+  // 实测存在（2026-10-09），状态码依赖出口而非请求。
+  'src-tauri/src/openai/transport.rs': 173,
   // 2026-10-09：授权编排（发现→注册→回调→换令牌→验 ID token→入库）。
   // FlowTransport trait 注入传输/时钟/浏览器/密钥库（真实 Keychain 绝不进
   // 测试）；内含模拟授权服务器（开发计划 §10 的 CI 件）与端到端测试。
@@ -1205,7 +1208,10 @@ const FILE_BUDGETS = {
   // 放进去会顶高一个只许下调的邻近文件。平台相关的读法各自带 cfg，纯解析
   // 函数（注册表 `ProxyServer` 两种写法、`scutil` 字典转储、地址归一化）
   // 可以在任何平台直接测。
-  'src-tauri/src/pkg/net_proxy.rs': 180,
+  // 180 → 207：记忆代理（remember_proxy + remembered_proxy + 路由表
+  // 插入）——系统代理探测间歇失灵时用上次成功的代理兜底
+  // （2026-10-09 实测注册表开关抖动）。
+  'src-tauri/src/pkg/net_proxy.rs': 207,
   // get_status 的可关闭性能采样与状态快照编排独立成模块：v0.5.0 之前默认开启，
   // 之后默认关闭；开启时只负责结构化记录，不把观测逻辑继续塞进命令层。
   'src-tauri/src/diagnostics/perf.rs': 160,
@@ -2171,7 +2177,7 @@ const FILE_BUDGETS = {
 // 进度浮层与事故面板两处挂上。theme.css 自身预算未动（2531 / 3001）。模板侧
 // 只多一个类名，判据（designAlignment.test.js 那条 + 摘类 / 改 .btn-row 两次
 // 反向验）不计预算。
-const TOTAL_BUDGET = 45577;
+const TOTAL_BUDGET = 45649;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

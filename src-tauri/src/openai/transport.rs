@@ -68,15 +68,28 @@ fn map_ureq_error(error: ureq::Error) -> Failure {
     Failure::Transport(format!("{error}"))
 }
 
-/// 沿路由表跑一次请求。状态码错误直接返回（不换路）。
-fn send<F>(url: &str, send_once: F) -> Result<String, Failure>
+/// 响应体像不像网关拦截页（Cloudflare「Just a moment…」一类挑战页）：
+/// OpenAI 的 API 错误一律是 JSON，HTML 只会来自网络出口的网关。
+fn looks_like_gateway_challenge(status: u16, body: &str) -> bool {
+    status == 403
+        && body
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("<!doctype html")
+}
+
+/// 沿给定路由表跑一次请求。2xx 返回响应体；状态错误原则上直接返回
+/// （不换路）——**唯一例外**：403 + HTML 挑战页 = 网关按**出口**拦人，
+/// 请求本身没错，换一条路就能过（实测：直连 403、代理 200，2026-10-09），
+/// 这类失败换路继续，全部路由试完仍被拦才如实上报。
+fn send_over<F>(routes: &[net_proxy::Route], url: &str, send_once: F) -> Result<String, Failure>
 where
     F: Fn(&ureq::Agent, &str) -> Result<ureq::http::Response<ureq::Body>, ureq::Error>,
 {
     let mut tried: Vec<String> = Vec::new();
     let mut last: Option<Failure> = None;
-    for route in net_proxy::routes() {
-        let agent = match agent_for(&route) {
+    for route in routes {
+        let agent = match agent_for(route) {
             Ok(agent) => agent,
             Err(error) => return Err(Failure::Transport(error)),
         };
@@ -88,7 +101,15 @@ where
                     .read_to_string()
                     .map_err(|error| Failure::Transport(format!("读取响应体失败：{error}")))?;
                 if (200..300).contains(&status) {
+                    if let net_proxy::Route::Proxy { url: proxy, .. } = route {
+                        net_proxy::remember_proxy(proxy);
+                    }
                     return Ok(text);
+                }
+                if looks_like_gateway_challenge(status, &text) {
+                    tried.push(route.describe());
+                    last = Some(Failure::Status(status, text.chars().take(120).collect()));
+                    continue;
                 }
                 return Err(Failure::Status(status, text.chars().take(300).collect()));
             }
@@ -106,12 +127,14 @@ where
 
 /// GET 一份 JSON 文本。
 pub(crate) fn get_json(url: &str) -> Result<String, Failure> {
-    send(url, |agent, url| agent.get(url).call())
+    send_over(&net_proxy::routes(), url, |agent, url| {
+        agent.get(url).call()
+    })
 }
 
 /// 带 Bearer 鉴权的 GET（模型目录等账号端点）；路由纪律与 get_json 一致。
 pub(crate) fn get_json_with_auth(url: &str, bearer: &str) -> Result<String, Failure> {
-    send(url, |agent, url| {
+    send_over(&net_proxy::routes(), url, |agent, url| {
         agent
             .get(url)
             .header("authorization", &format!("Bearer {bearer}"))
@@ -120,16 +143,26 @@ pub(crate) fn get_json_with_auth(url: &str, bearer: &str) -> Result<String, Fail
 }
 
 /// 带鉴权的流式 POST（推理）：返回**未消费的响应体行读取器**——调用方
-/// 逐行读到终止事件；路由纪律与其它入口一致，状态错误不换路。
+/// 逐行读到终止事件；网关拦截页（403 + HTML）按路由依赖失败换路重试，
+/// 其余状态错误不换路。
 pub(crate) fn post_stream(
+    url: &str,
+    bearer: &str,
+    body: &str,
+) -> Result<Box<dyn std::io::BufRead + Send>, Failure> {
+    post_stream_over(&net_proxy::routes(), url, bearer, body)
+}
+
+fn post_stream_over(
+    routes: &[net_proxy::Route],
     url: &str,
     bearer: &str,
     body: &str,
 ) -> Result<Box<dyn std::io::BufRead + Send>, Failure> {
     let mut tried: Vec<String> = Vec::new();
     let mut last: Option<Failure> = None;
-    for route in net_proxy::routes() {
-        let agent = match agent_for(&route) {
+    for route in routes {
+        let agent = match agent_for(route) {
             Ok(agent) => agent,
             Err(error) => return Err(Failure::Transport(error)),
         };
@@ -142,12 +175,20 @@ pub(crate) fn post_stream(
             Ok(response) => {
                 let status = response.status().as_u16();
                 if (200..300).contains(&status) {
+                    if let net_proxy::Route::Proxy { url: proxy, .. } = route {
+                        net_proxy::remember_proxy(proxy);
+                    }
                     let (_, body) = response.into_parts();
                     return Ok(Box::new(std::io::BufReader::new(body.into_reader())));
                 }
                 // 状态错误要读出 body 再分类（不带 body 的分类是瞎猜）。
                 let mut response = response;
                 let text = response.body_mut().read_to_string().unwrap_or_default();
+                if looks_like_gateway_challenge(status, &text) {
+                    tried.push(route.describe());
+                    last = Some(Failure::Status(status, text.chars().take(120).collect()));
+                    continue;
+                }
                 return Err(Failure::Status(status, text.chars().take(300).collect()));
             }
             Err(error) => match map_ureq_error(error) {
@@ -165,7 +206,7 @@ pub(crate) fn post_stream(
 /// POST 一份 JSON 文本（公开客户端：PKCE，无 basic 凭据）。`&str` 直接
 /// 作为 body 发送（AsSendBody 原生支持），不经 `send_json` 二次编码。
 pub(crate) fn post_json(url: &str, body: &str) -> Result<String, Failure> {
-    send(url, |agent, url| {
+    send_over(&net_proxy::routes(), url, |agent, url| {
         agent
             .post(url)
             .header("content-type", "application/json")
@@ -175,7 +216,9 @@ pub(crate) fn post_json(url: &str, body: &str) -> Result<String, Failure> {
 
 /// 表单 POST（token 端点：`application/x-www-form-urlencoded`）。
 pub(crate) fn post_form(url: &str, pairs: &[(&str, &str)]) -> Result<String, Failure> {
-    send(url, |agent, url| agent.post(url).send_form(pairs.to_vec()))
+    send_over(&net_proxy::routes(), url, |agent, url| {
+        agent.post(url).send_form(pairs.to_vec())
+    })
 }
 
 #[cfg(test)]
