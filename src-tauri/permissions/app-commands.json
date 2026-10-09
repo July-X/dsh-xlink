@@ -159,7 +159,8 @@
           "get_model_usage",
           "open_usage_window",
           "get_subscription_usage",
-          "open_subscription_window"
+          "open_subscription_window",
+          "set_window_appearance"
         ]
       }
     },
@@ -189,6 +190,13 @@
       "description": "Read-only log access for the standalone log viewer window (label \"log-viewer\", opened by open_log_window). The window lists files via list_log_files (categorized sidebar) and renders one file's tail via read_log_file; nothing else. The panel keeps the full command set via allow-local-commands.",
       "commands": {
         "allow": ["list_log_files", "read_log_file"]
+      }
+    },
+    {
+      "identifier": "allow-window-appearance",
+      "description": "Set only the caller window appearance.",
+      "commands": {
+        "allow": ["set_window_appearance"]
       }
     }
   ]

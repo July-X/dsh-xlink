@@ -85,13 +85,14 @@ export function windowAction(method) {
 /// 会得到**浅色内容 + 深色原生标题栏**的割裂窗口（2026-10-07 用户截图）。
 /// 主题的真值在 localStorage，只有读得到它的前端知道该用哪个。
 ///
+/// macOS 的 Tauri setTheme 是应用级覆盖，必须通过 Rust 的 NSWindow 适配器。
 /// **只改本窗口**：窗口的内容主题与原生 chrome 必须在任何时刻一致，而已开着的
 /// 副窗不会因为主面板切了主题就重绘（它的 `html.dark` 是加载时定下的）。若在这里
 /// 批量改所有窗口，就会反向造出「深色内容 + 浅色标题栏」，把同一个割裂换个方向。
 export function setWindowTheme(theme) {
   const win = currentWindow();
-  if (!win || typeof win.setTheme !== 'function') return Promise.resolve();
-  return Promise.resolve(win.setTheme(theme));
+  if (!win) return Promise.resolve();
+  return invoke('set_window_appearance', { theme });
 }
 
 /// 用系统浏览器打开外部链接（opener 插件按 OS 分发）。

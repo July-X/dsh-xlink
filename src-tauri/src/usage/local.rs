@@ -761,7 +761,7 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
             )
             .min_inner_size(720.0, 520.0)
             .resizable(true)
-            .theme(Some(tauri::Theme::Dark));
+            .theme(crate::shell::appearance::initial_theme());
             // 无边框 + 透明 + 无系统阴影（交通灯由前端自绘，与主壳同一份视觉）。
             // 三项必须在**建窗期**给：事后 `set_decorations(false)` 会抹掉
             // `Miniaturizable`，黄灯随即变成死按钮。依据见该函数的文档注释。

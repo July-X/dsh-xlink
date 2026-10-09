@@ -1356,7 +1356,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                         .title(window_title("工作台"))
                         .inner_size(1280.0, 840.0)
                         .background_color(CHROME_BACKDROP)
-                        .theme(Some(tauri::Theme::Dark))
+                        .theme(crate::shell::appearance::initial_theme())
                         // 内核 Web 前端把会话内容里的网页地址渲染成
                         // `<a target="_blank" rel="noopener noreferrer">`，
                         // 交给「浏览器打开新标签页」的默认行为。但 Tauri
@@ -1493,7 +1493,7 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
                 crate::shell::window::LOG_VIEWER_SIZE.height,
             )
             .resizable(true)
-            .theme(Some(tauri::Theme::Dark));
+            .theme(crate::shell::appearance::initial_theme());
             // 与另外两扇壳自有副窗同一套装饰（无边框 + 透明 + 无系统阴影，
             // 交通灯由前端自绘），理由见 `decorate_transparent`。
             builder = crate::shell::window::decorate_transparent(builder);
@@ -1736,7 +1736,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                         .inner_size(OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT)
                         .resizable(true)
                         .background_color(CHROME_BACKDROP)
-                        .theme(Some(tauri::Theme::Dark))
+                        .theme(crate::shell::appearance::initial_theme())
                         // 让 AppKit 在挂载子 WebView 之前先把父内容视图的 frame 确定下来；
                         // post-show 那一轮再根据注册结果重新设置每个子视
                         // 图的 frame。

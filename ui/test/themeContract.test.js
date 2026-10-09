@@ -101,3 +101,37 @@ test('解除原生覆盖的异步响应不能覆盖随后选择的固定深色',
   assert.equal(app.colors.at(-1), true);
   assert.equal(app.native.at(-1), 'dark');
 });
+
+// 建窗主题在 macOS 是进程级覆盖，会使所有媒体查询失去系统变化。
+test('macOS 建窗与运行时主题必须经过窗口作用域适配器', () => {
+  const bridge = readFileSync(new URL('../src/shell/bridge.js', import.meta.url), 'utf8');
+  assert.match(bridge, /invoke\('set_window_appearance'/);
+  const config = JSON.parse(readFileSync(new URL('../../src-tauri/tauri.conf.json', import.meta.url)));
+  assert.equal(config.app.windows[0].theme, undefined);
+  for (const path of ['commands.rs', 'harness/harness_window.rs', 'usage/local.rs', 'usage/subscription.rs']) {
+    const rust = readFileSync(new URL('../../src-tauri/src/' + path, import.meta.url), 'utf8');
+    assert.doesNotMatch(rust, /\.theme\(Some\(tauri::Theme::Dark\)\)/);
+  }
+});
+
+test('外观命令只授权壳页面，禁止应用级 setTheme 入口', () => {
+  for (const name of ['default', 'log-viewer', 'usage-viewer', 'subscription-viewer']) {
+    const cap = JSON.parse(readFileSync(new URL('../../src-tauri/capabilities/' + name + '.json', import.meta.url)));
+    assert(!cap.permissions.includes('core:window:allow-set-theme'));
+  }
+  const rust = readFileSync(new URL('../../src-tauri/src/shell/appearance.rs', import.meta.url), 'utf8');
+  assert.match(rust, /setAppearance: nil/);
+  assert.match(rust, /msg_send!\[native, setAppearance: appearance\]/);
+});
+
+test('前端主题桥接通过当前窗口命令设置固定和跟随模式，不调用应用级 API', async () => {
+  const calls = [];
+  const context = { window: { __TAURI__: {
+    core: { invoke: (name, args) => { calls.push({ name, theme: args.theme }); return Promise.resolve(); } },
+    window: { getCurrentWindow: () => ({ setTheme: () => { throw new Error('不得调用应用级主题 API'); } }) },
+  } } };
+  const bridge = readFileSync(new URL('../src/shell/bridge.js', import.meta.url), 'utf8');
+  runInNewContext(bridge.replace(/export /g, '') + '\nthis.apply = setWindowTheme;', context);
+  for (const theme of ['dark', 'light', null]) await context.apply(theme);
+  assert.deepEqual(calls, ['dark', 'light', null].map(theme => ({ name: 'set_window_appearance', theme })));
+});

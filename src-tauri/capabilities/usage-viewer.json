@@ -7,9 +7,9 @@
   "permissions": [
     "core:default",
     "core:window:allow-close",
-    "core:window:allow-set-theme",
     "allow-usage-viewer",
     "core:window:allow-start-dragging",
-    "core:window:allow-minimize"
+    "core:window:allow-minimize",
+    "allow-window-appearance"
   ]
 }

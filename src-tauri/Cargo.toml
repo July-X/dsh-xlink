@@ -102,6 +102,10 @@ libc = "0.2"
 # `SystemUsesLightTheme`（tray.rs 的 `small_icon_size` / `taskbar_is_light`）。
 # System_Diagnostics_Debug 只服务「试听提示音」的 `MessageBeep`（notify.rs）：
 # 它播放用户声音方案里的通知类音效，不引入任何新依赖。
+[target.'cfg(target_os = "macos")'.dependencies]
+# objc2 已在 Tauri 依赖树中；窗口外观直接使用 AppKit，避免应用级覆盖。
+objc2 = "0.6"
+
 [target.'cfg(windows)'.dependencies]
 # System_Storage_FileSystem / System_IO 两个特性只服务「点通知横幅回到工作台」
 # 的进程间交接（activate.rs）：未打包应用的通知被点中时 Windows 启动的是本
