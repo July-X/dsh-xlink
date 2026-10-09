@@ -524,7 +524,11 @@ const FILE_BUDGETS = {
   // 字段抄了一遍，现在直接持有 `DiskUsageReply`。
   // 312 是 `cargo fmt` **之后**的实测值（手写时把两个构造写成单行共 312，
   // rustfmt 按自己的规则展开成多行 → 316；这里登记的是门禁真正会量到的数）。
-  'src-tauri/src/diskusage.rs': 316,
+  // 316 → 336（2026-10-09）：后台重扫补观测（perf 补全一轮）——耗时落一行
+  // shell_events，两处 `eprintln!`（广播失败 / 线程未启动）改落盘：GUI 应用
+  // 在 Windows 上 eprintln 没有去处，而这两条恰是「用户看得见后果的后台动作」。
+  // 基线 316 远低于 RATCHET_THRESHOLD 600，上调在规则内。
+  'src-tauri/src/diskusage.rs': 336,
   'ui/src/shell/autostart.js': 90,
   // 2026-10-07 uiv2 改版新增：明暗双主题的唯一实现（shell/theme.js）。
   // 独立成文件而不是塞进 store.js / SideBar.vue，理由是它**跨窗口**：主面板、

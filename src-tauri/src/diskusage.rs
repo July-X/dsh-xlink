@@ -513,20 +513,44 @@ pub async fn disk_usage(
 ///
 /// 返回值不是装饰：它是 `disk-usage-refreshed` 事件会不会来的唯一可信预告。
 /// 报 true 而线程没起，前端那个转圈就再也没人关。
+///
+/// 观测（2026-10-09 perf 补全）：扫描在后台线程跑、结果只经事件回填，此前
+/// 耗时与失败只有 `eprintln!`——GUI 应用在 Windows 上它没有任何去处。成败
+/// 各落一行 shell_events，让「数字多久刷新 / 为什么一直不变」可查。
 fn spawn_refresh(app: tauri::AppHandle, data_dir: PathBuf, home: PathBuf) -> bool {
     let spawned = std::thread::Builder::new()
         .name("dsh-disk-usage".to_string())
         .spawn(move || {
+            let started = std::time::Instant::now();
             let report = measure(&data_dir, &home);
             write_cache(&data_dir, &report);
+            crate::shell::shell_events::record(
+                "disk-usage",
+                &format!(
+                    "磁盘占用后台扫描完成，耗时 {}ms",
+                    started.elapsed().as_millis()
+                ),
+            );
             if let Err(error) = app.emit("disk-usage-refreshed", &report) {
-                eprintln!("dsh-xlink: 广播磁盘占用刷新失败：{error}");
+                crate::shell::shell_events::record(
+                    "disk-usage",
+                    &format!(
+                        "广播磁盘占用刷新失败：{error}；面板数字本次不会更新，\
+                         重新打开「内核版本」页可重试"
+                    ),
+                );
             }
         });
     match spawned {
         Ok(_) => true,
         Err(error) => {
-            eprintln!("dsh-xlink: 磁盘占用后台扫描未启动：{error}");
+            crate::shell::shell_events::record(
+                "disk-usage",
+                &format!(
+                    "磁盘占用后台扫描线程未启动：{error}；面板将持续显示旧数据，\
+                     重启应用可重试"
+                ),
+            );
             false
         }
     }

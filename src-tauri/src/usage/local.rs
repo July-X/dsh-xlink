@@ -180,21 +180,31 @@ static SCAN_LOCK: Mutex<()> = Mutex::new(());
 ///
 /// `force = true`（详情弹窗打开 / 刷新）无视新鲜度窗口立即重扫；概览卡片用
 /// `false`，命中窗口就只是把账求和，几乎零成本。
+///
+/// 这条被前端按 60s TTL 静默刷新，首扫要解全部 session 文件（数百 MB 级），
+/// 此后增量只有零星文件有新帧——分段耗时走 PerfSample 记进 perf-status 日志
+/// （`perf=usage_scan`）：周期性路径不往 shell 事件里刷人话行，采样关闭时零开销。
 pub fn usage_view(force: bool) -> Result<UsageView, AppError> {
+    let mut perf = crate::diagnostics::perf::PerfSample::new("usage_scan", None);
     let _guard = SCAN_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let path = state_path();
-    let mut doc: UsageStateDoc = shell::state::load_checked(&path, usage_ctx())?;
+    let mut doc: UsageStateDoc =
+        perf.measure("load", || shell::state::load_checked(&path, usage_ctx()))?;
     doc.schema = STATE_SCHEMA;
     doc.retention_days = RETENTION_DAYS;
     let now_ms = process::epoch_millis();
     if force || now_ms.saturating_sub(doc.last_scanned_at_ms) >= FRESH_SCAN_INTERVAL_MS {
-        scan(&mut doc, now_ms);
+        let planned = perf.measure("scan", || scan(&mut doc, now_ms));
+        // planned = 规划段判定「有新帧要解」的文件数：0 说明这轮只是空转对账。
+        perf.count("items", planned as u64);
         doc.last_scanned_at_ms = process::epoch_millis();
-        shell::state::save(&path, &doc, usage_ctx())?;
+        perf.measure("save", || shell::state::save(&path, &doc, usage_ctx()))?;
     }
-    Ok(derive_view(&doc, now_ms))
+    let view = perf.measure("derive", || derive_view(&doc, now_ms));
+    perf.finish();
+    Ok(view)
 }
 
 /// 扫描 sessions 目录，把每个新追加的帧计入对应文件的账。
@@ -203,13 +213,14 @@ pub fn usage_view(force: bool) -> Result<UsageView, AppError> {
 /// 花时间的解码**并行**打散到多个线程（首次全量要解几百 MB，并行把它从
 /// 十几秒压到一两秒；常规增量只有零星几个文件有新帧），最后串行把结果
 /// **合账**。账目文档只被串行段碰，工作线程只拿自己的任务副本。
-fn scan(doc: &mut UsageStateDoc, now_ms: u64) {
+/// 返回规划出的待解文件数（供 perf 采样记 `items`）。
+fn scan(doc: &mut UsageStateDoc, now_ms: u64) -> usize {
     let root = sessions_root();
-    scan_in(doc, &root, now_ms);
+    scan_in(doc, &root, now_ms)
 }
 
-/// [`scan`] 的可测形态：sessions 根目录由调用方给出。
-fn scan_in(doc: &mut UsageStateDoc, root: &Path, now_ms: u64) {
+/// [`scan`] 的可测形态：sessions 根目录由调用方给出。返回规划出的待解文件数。
+fn scan_in(doc: &mut UsageStateDoc, root: &Path, now_ms: u64) -> usize {
     let cutoff = cutoff_date_string(now_ms);
     let mut seen = BTreeSet::new();
     let mut items: Vec<ScanItem> = Vec::new();
@@ -235,12 +246,14 @@ fn scan_in(doc: &mut UsageStateDoc, root: &Path, now_ms: u64) {
             }
         }
     }
+    let planned = items.len();
     for outcome in scan_parallel(items) {
         merge_outcome(doc, outcome);
     }
     // 会话目录被删 / 整个实例清空 → 账目随之消失，汇总自动回落。
     doc.files.retain(|key, _| seen.contains(key));
     prune_window(doc, &cutoff);
+    planned
 }
 
 /// 一个待解码的文件：从 `start_offset`（`reset` 时为 0）续扫。
