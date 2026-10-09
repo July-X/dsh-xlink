@@ -115,10 +115,23 @@ fn resolve_target() -> Result<
     let Some(record) = instance::load_record_from_disk(&family, &id) else {
         return Err(format!("实例 {family}/{id} 不存在；请先创建实例"));
     };
-    let kernel_root = record.kernel_version.as_deref().and_then(|version| {
-        kernel_adapter::lookup(&family).and_then(|adapter| adapter.resolve_install_dir(version))
-    });
+    // 内核版本以 `active.txt` 为准（与 `resolve_instance_record`、插件栈的
+    // `read_active` 调用方同一权威源）：「内核版本」页安装 / 切换只写
+    // active.txt，实例记录要等下次启动工作台才被同步——只认记录会让
+    // 「刚装好内核、还没启动过工作台」的实例在这里误报「尚未指定内核版本」。
+    // active.txt 缺席时退回记录里上次同步的值。
+    let kernel_root = resolve_kernel_root(&family, record.kernel_version.as_deref());
     Ok((record, kernel_root))
+}
+
+/// 内核根目录解析：`active.txt` 为准，实例记录里的版本只作回退。
+/// 独立成函数是为了让测试不必经过 `default_instance_key` 与注册表。
+fn resolve_kernel_root(family: &str, record_version: Option<&str>) -> Option<std::path::PathBuf> {
+    let version = lifecycle::read_active(&lifecycle::data_dir(family))
+        .or_else(|| record_version.map(String::from));
+    version.and_then(|version| {
+        kernel_adapter::lookup(family).and_then(|adapter| adapter.resolve_install_dir(&version))
+    })
 }
 
 fn probe_for(app: &AppHandle) -> Result<BuiltinOpenaiStatus, String> {
@@ -127,7 +140,7 @@ fn probe_for(app: &AppHandle) -> Result<BuiltinOpenaiStatus, String> {
     let mode = settings::current_mode().as_str();
     let status = builtin::probe_status(&dsh_home, &record.profile, kernel_root.as_deref(), mode);
     let note = if kernel_root.is_none() {
-        String::from("实例尚未指定内核版本；请在「更新」页安装并选择内核")
+        String::from("实例尚未指定内核版本；请在「内核版本」页安装并选择内核")
     } else {
         String::new()
     };
@@ -185,7 +198,7 @@ pub async fn builtin_openai_set_enabled(
                 )
             })?;
             let kernel_root = kernel_root.ok_or_else(|| {
-                String::from("实例尚未指定内核版本；请在「更新」页安装并选择内核后再启用")
+                String::from("实例尚未指定内核版本；请在「内核版本」页安装并选择内核后再启用")
             })?;
             let wired = builtin::ensure_wired(&source, &dsh_home, &record.profile, &kernel_root)?;
             let mut entries = builtin::state::load(&dsh_home)?;
@@ -212,4 +225,102 @@ pub async fn builtin_openai_set_enabled(
         probe_for(&app)
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(unused_variables)]
+
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// 持住 `DSH_XLINK_HOME` 的临时 home；drop 时清掉自己那块目录。
+    /// （AGENTS.md：按 `paths::*` 解析路径的测试必须持住 guard。）
+    struct TempHome {
+        root: PathBuf,
+        _guard: crate::tests::EnvGuard,
+    }
+
+    impl TempHome {
+        fn new(tag: &str) -> Self {
+            let nano = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let root = std::env::temp_dir().join(format!(
+                "dsh-builtin-cmd-test-{tag}-{}-{nano}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&root).expect("create test home");
+            let guard = crate::tests::scoped_xlink_home(&root);
+            TempHome {
+                root,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// 在新布局种一棵可被 `resolve_install_dir` 认可的内核树
+    /// （判据是 bin.js 存在，不需要真内核内容）。
+    fn seed_installed_kernel(family: &str, version: &str) {
+        let bin = crate::shell::paths::kernel_version_dir(family, version)
+            .join(kernel_adapter::DshAdapter::KERNEL_BIN_REL);
+        fs::create_dir_all(bin.parent().unwrap()).expect("seed kernel tree");
+        fs::write(&bin, b"// test stub").expect("write bin stub");
+    }
+
+    /// 2026-10-09 用户实测：内核版本页装完内核（`active.txt` 已写），
+    /// 但实例记录还没被启动工作台同步过（`kernel_version` 仍是 None），
+    /// 此时启用内嵌 OpenAI 插件被误拒「实例尚未指定内核版本」。
+    /// 内核版本的权威源是 `active.txt`（与 `resolve_instance_record` 一致），
+    /// 记录只作回退。
+    #[test]
+    fn kernel_root_follows_active_txt_when_record_is_silent() {
+        let home = TempHome::new("active-wins");
+        let family = crate::shell::instance::KERNEL_FAMILY_DSH;
+        let version = "0.2.1-alpha.1";
+        seed_installed_kernel(family, version);
+        lifecycle::write_active(&lifecycle::data_dir(family), Some(version))
+            .expect("write active.txt");
+
+        let root =
+            resolve_kernel_root(family, None).expect("active.txt 指向已装版本时必须解析出内核根");
+        assert_eq!(
+            root,
+            crate::shell::paths::kernel_version_dir(family, version)
+        );
+    }
+
+    /// `active.txt` 缺席（该壳从未装过内核）时退回实例记录里上次同步的
+    /// 版本，而不是一刀切报「尚未指定内核版本」。
+    #[test]
+    fn kernel_root_falls_back_to_record_version() {
+        let home = TempHome::new("record-fallback");
+        let family = crate::shell::instance::KERNEL_FAMILY_DSH;
+        let version = "0.1.5-rc.1";
+        seed_installed_kernel(family, version);
+
+        let root =
+            resolve_kernel_root(family, Some(version)).expect("记录里的版本已安装时必须回退成功");
+        assert_eq!(
+            root,
+            crate::shell::paths::kernel_version_dir(family, version)
+        );
+    }
+
+    /// 两处都没有内核版本时如实返回 `None`——状态命令靠它出
+    /// 「实例尚未指定内核版本」的提示，不能猜路径。
+    #[test]
+    fn kernel_root_is_none_without_active_or_record() {
+        let home = TempHome::new("none");
+        let family = crate::shell::instance::KERNEL_FAMILY_DSH;
+        assert!(resolve_kernel_root(family, None).is_none());
+    }
 }

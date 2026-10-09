@@ -30,7 +30,7 @@ fn dep_version(kernel_root: &Path, pkg: &str) -> Result<String, String> {
         .join("package.json");
     let text = fs::read_to_string(&manifest).map_err(|error| {
         format!(
-            "读取内核包清单失败（{}）：{error}；内核安装树可能不完整，请在「更新」页重装当前内核版本",
+            "读取内核包清单失败（{}）：{error}；内核安装树可能不完整，请在「内核版本」页重装当前内核版本",
             manifest.display()
         )
     })?;
@@ -254,7 +254,7 @@ fn ensure_peer_link(at_deepseek_dir: &Path, kernel_root: &Path) -> Result<(), St
         .join("dsh-llm");
     if !source.is_dir() {
         return Err(format!(
-            "内核树里找不到 {}；请先在「更新」页安装内核",
+            "内核树里找不到 {}；请先在「内核版本」页安装内核",
             source.display()
         ));
     }

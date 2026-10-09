@@ -233,7 +233,10 @@ const FILE_BUDGETS = {
   // 实例存在 / 未被另一壳占用 / 内核已停止 → 变更前快照 → 启停事务 →
   // 意图落盘），与 status 共用 resolve_target / status_payload。仍是
   // 「一个关注点一个文件」：命令壳不往 mod.rs 塞。
-  'src-tauri/src/plugins/builtin/cmd.rs': 171,
+  // 171 → 176：内核根解析改以 active.txt 为准（记录回退）——修「刚装好
+  // 内核、还没启动过工作台，启用内嵌插件被误拒」（2026-10-09 用户实测）。
+  // 抽出 resolve_kernel_root 供测试直打，净 +5。
+  'src-tauri/src/plugins/builtin/cmd.rs': 176,
   // 2026-10-08：内嵌插件的前端状态与动作（plugins 页「当前内核」tab 的
   // 内嵌插件区）。不进 plugins.js：那边是社区插件的清单与安装事务
   // （456 行），本插件只有「读状态 + 拨开关」两条命令，混进去会让
@@ -2109,7 +2112,9 @@ const FILE_BUDGETS = {
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
 // +80：窗口级原生外观适配与建窗接线，修复跟随系统被应用级主题锁住。
-const TOTAL_BUDGET = 45392;
+// 45392 → 45397（2026-10-09）：内嵌插件开关误拒修复——cmd.rs 的内核根解析
+// 改以 active.txt 为准（+5，见 FILE_BUDGETS 该条），文案「更新页」→「内核版本页」。
+const TOTAL_BUDGET = 45397;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
