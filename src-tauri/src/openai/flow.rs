@@ -59,6 +59,8 @@ pub(crate) trait FlowTransport {
 pub(crate) struct AccountView {
     pub(crate) sub: String,
     pub(crate) email: Option<String>,
+    /// 刷新被判失效（§4.1 第四态 reauth-required）。
+    pub(crate) reauth_required: bool,
 }
 
 fn registration_file(mode_dir: &Path) -> PathBuf {
@@ -233,6 +235,7 @@ fn exchange_and_store(
     Ok(AccountView {
         sub: claims.subject,
         email: claims.email,
+        reauth_required: false,
     })
 }
 
@@ -280,6 +283,7 @@ pub(crate) fn account_view(
         .map(|entry| AccountView {
             sub: entry.sub.clone(),
             email: entry.email.clone(),
+            reauth_required: entry.reauth_required,
         }))
 }
 
@@ -827,5 +831,60 @@ pub(crate) mod tests {
         // 拒绝发生在换令牌之前：连文件密钥都还没生成，vault 文件不存在。
         assert!(!paths.vault_file.exists(), "拒绝路径不应产生任何凭据落盘");
         let _ = std::fs::remove_dir_all(paths.mode_dir.parent().unwrap()); // 只清自己的临时目录
+    }
+}
+
+#[cfg(test)]
+mod reauth_tests {
+    use super::*;
+    use crate::openai::flow::tests::{flow_test_paths, MockIssuer};
+    use crate::openai::refresh::ensure_fresh_access;
+    use std::sync::atomic::AtomicBool;
+
+    /// §4.1 第四态：刷新被判失效 → 标记落库 → 账户视图与状态命令可见 →
+    /// 重新登录清除。
+    #[test]
+    fn refresh_failure_surfaces_reauth_required() {
+        let issuer = MockIssuer::spawn();
+        let transport = issuer.transport();
+        let paths = flow_test_paths("reauth", issuer.port());
+        let cancel = AtomicBool::new(false);
+
+        crate::openai::flow::run_authorize(&paths, &transport, "release", &cancel).unwrap();
+        issuer.revoke();
+        // 过期：把访问过期时间拨到过去，强制走刷新。
+        let key = vault::load_file_key_with(
+            "release",
+            &paths.xlink_home,
+            |service, account| transport.keyring_get(service, account),
+            |service, account, secret| transport.keyring_put(service, account, secret),
+        )
+        .unwrap();
+        let mut accounts = vault::load_accounts(&paths.vault_file, &key).unwrap();
+        accounts
+            .entries
+            .get_mut("mock-sub-1")
+            .unwrap()
+            .access_expires_at = 1;
+        vault::save_accounts(&paths.vault_file, &key, &accounts).unwrap();
+
+        // 刷新失败：ReauthRequired；账户视图带标记。
+        let error = ensure_fresh_access(&paths, &transport, "release").unwrap_err();
+        assert!(matches!(
+            error,
+            crate::openai::refresh::RefreshError::ReauthRequired(_)
+        ));
+        let view = account_view(&paths, &transport, "release")
+            .unwrap()
+            .unwrap();
+        assert!(view.reauth_required);
+
+        // 重新登录清除标记，回到 authorized。
+        let view = run_authorize(&paths, &transport, "release", &cancel).unwrap();
+        assert!(!view.reauth_required);
+        let view = account_view(&paths, &transport, "release")
+            .unwrap()
+            .unwrap();
+        assert!(!view.reauth_required);
     }
 }

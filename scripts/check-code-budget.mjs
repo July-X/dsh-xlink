@@ -2099,8 +2099,8 @@ const FILE_BUDGETS = {
 // process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
-const TOTAL_BUDGET = 45276;
-// 42424 → 42807 → 42981（2026-10-08）：内嵌 openai-oauth 插件交付层首块落地——
+const TOTAL_BUDGET = 45281;
+// 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
 // 与 lib.rs 的两处登记行。总量是软上限：这是一条全新能力的首块，不是往
