@@ -342,10 +342,19 @@ const FILE_BUDGETS = {
   // 222 → 224：目录端点挂资源主机（models_base 新字段，FlowPaths +2）——
   // access token 签给 api.openai.com/v1，issuer 主机上没有 /models
   // （2026-10-09 实测 401）。
+  // 214 → 222：未登录从 503 改为**空目录载荷（200）**——前置常态不该在
+  // 模型选择器显示「加载失败」（2026-10-09 用户反馈）；NotSignedIn 独立
+  // 错误类别。
+  // 222 → 224：目录端点挂资源主机（models_base 新字段，FlowPaths +2）——
+  // access token 签给 api.openai.com/v1，issuer 主机上没有 /models
+  // （2026-10-09 实测 401）。
   // 224 → 277：MODEL_PRESENTATION 展示表（+53）——名称/容量/推理档位
   // 取自 Codex CLI 官方捆绑目录（与 Codex Desktop 同源），只展示表内
   // 模型并对齐其列表顺序；账号目录接口只回 slug。
-  'src-tauri/src/openai/catalog.rs': 277,
+  // 277 → 280：桥接载荷的 efforts 改为档位对象（{id, name}）——Host
+  // 适配器契约如此（内核校验 id/name 非空且不重复），裸字符串会全变成
+  // "undefined"（2026-10-09 实测）。
+  'src-tauri/src/openai/catalog.rs': 280,
   // 2026-10-09：P4 骨架——推理校验与流转发。载荷白名单（不在表即拒绝，
   // 静默丢弃等于让调用方以为限制生效）/store-stream 固定参数由服务端写/
   // revision 与强度门/终止三分类（completed 含回放材料、failed、EOF 无
@@ -2162,7 +2171,7 @@ const FILE_BUDGETS = {
 // 进度浮层与事故面板两处挂上。theme.css 自身预算未动（2531 / 3001）。模板侧
 // 只多一个类名，判据（designAlignment.test.js 那条 + 摘类 / 改 .btn-row 两次
 // 反向验）不计预算。
-const TOTAL_BUDGET = 45574;
+const TOTAL_BUDGET = 45577;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
