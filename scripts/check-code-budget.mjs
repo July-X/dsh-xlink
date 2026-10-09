@@ -234,7 +234,11 @@ const FILE_BUDGETS = {
   // 设置命名空间视图由 host 的 Config schema 派生，schema 构造器必须
   // peer 进物化目录，否则 provider 行不出卡、账户卡无处渲染
   // （2026-10-09 用户实测）。
-  'src-tauri/src/plugins/builtin/materialize.rs': 295,
+  // 295 → 328：运行时内容摘要纳入标记，修复同版本源码被旧实例副本挡住。
+  'src-tauri/src/plugins/builtin/materialize.rs': 328,
+  // 启动前按已保存启用意图刷新资源与接线；独立于手动启停命令，避免更新后
+  // 继续加载旧路径。只在内核尚未启动时调用，停用状态不触碰资源。
+  'src-tauri/src/plugins/builtin/runtime.rs': 45,
   'src-tauri/src/plugins/builtin/wiring.rs': 110,
   // 85 → 171：P1 收尾——set_enabled 写命令进本文件（守卫链：dsh 族 /
   // 实例存在 / 未被另一壳占用 / 内核已停止 → 变更前快照 → 启停事务 →
@@ -2179,7 +2183,8 @@ const FILE_BUDGETS = {
 // 进度浮层与事故面板两处挂上。theme.css 自身预算未动（2531 / 3001）。模板侧
 // 只多一个类名，判据（designAlignment.test.js 那条 + 摘类 / 改 .btn-row 两次
 // 反向验）不计预算。
-const TOTAL_BUDGET = 45668;
+// +80：内嵌插件同版本内容校验与启动前自动刷新，覆盖实际加载链路。
+const TOTAL_BUDGET = 45748;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

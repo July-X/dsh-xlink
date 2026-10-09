@@ -140,6 +140,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            plugins::builtin::runtime::configure(app.handle());
             // 激活通道监听：接收「点通知横幅回到工作台」的交接请求。排在
             // setup 最前面，让它与 `claim_or_handoff` 之间只隔一个建窗过程。
             notify::activate::serve(app.handle());

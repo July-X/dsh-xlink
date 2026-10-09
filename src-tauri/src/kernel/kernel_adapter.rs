@@ -415,6 +415,8 @@ impl KernelAdapter for DshAdapter {
         }
         // 内嵌 openai-oauth 插件的本地桥接（P2）：接线行在实例 patch 里时
         // 注入地址与令牌；桥接起不来不阻断内核启动（见 bridge::launch_env）。
+        crate::plugins::builtin::runtime::refresh_enabled(&dsh_home, &record.profile, install_root)
+            .map_err(AdapterError::Io)?;
         for (key, value) in crate::openai::bridge::launch_env(
             &dsh_home,
             &record.profile,
