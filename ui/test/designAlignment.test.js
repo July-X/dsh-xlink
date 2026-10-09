@@ -270,7 +270,7 @@ test('版本号 20px / 700（设计稿 18px，用户要求再放大一档）；�
   assert.ok(style.includes('kernel-summary'), 'scoped 块应包含 kernel-summary');
 });
 
-test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」的 2px #212121', () => {
+test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」的 2px 刻蚀线', () => {
   assert.equal(effectiveDeclaration(['metrics'], RULES, 'grid-template-columns'), 'repeat(3, minmax(0, 1fr))');
   const style = scopedStyle(overview);
   // 用户先定了「2px 纯黑」，随后指出**两端收细必须保留**——收细是几何、颜色是
@@ -331,24 +331,44 @@ test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」�
     /\.diag-card--tower \.diag-card__title::before/,
     '伪元素选择器必须带 :not(--bare)，否则空态会多出一条线',
   );
-  // `--divider-strong` 用户指定明暗两套都用 `#212121`——**这个值不随主题变**，
-  // 按本仓惯例只在 `:root` 定义一次。判据钉的是这个形状：
-  //   · `:root` 里必须有且值是 #212121；
-  //   · `html.dark` 里**不许再声明一份**。两套各写一份时，改了一处忘了另一处就会
-  //     跳档——而两处的字面值完全一样，靠肉眼和 build 都看不出来。
-  // （更早一版这里断言的是「两套的值必须不同」，那是用户当时要求暗色取白时的形状；
-  //   需求变了断言就得跟着变，否则它会在正确实现上转红、在错误实现上放行。）
+  // `--divider-strong` **明暗各一档**（2026-10-09 用户改判，此前明暗都写 #212121）。
+  // 这条断言的形状跟着决定改过三轮，值一下就记在这里，因为**每次改判的原因都不同**：
+  //   · 一轮钉「两套的值必须不同」（用户要求暗色取白时）；
+  //   · 二轮钉「html.dark 里不许再声明」（用户改回明暗同值 #212121 时）；
+  //   · 三轮（现在）钉「两套都声明，且各自都要**看得见**」。
+  // 第三轮不是把二轮反过来就完了：光断言「两套不一样」太弱——换成另一个同样不一样的
+  // 深灰照样绿，而 #212121 在暗色下正是这个下场（压在卡面上 1.19:1，等于没有）。
+  // 同样的道理反过来也成立：`--shadow` / `--shadow-pop` 两个 token 当初都声明了、
+  // 一个字面值都没写错，却因为 0 个消费方而整套界面读不出边缘。所以判据是**算出来的
+  // 对比度**，不是字面值相等与否。
   const rootBlock = new RegExp(':root\\s*\\{([\\s\\S]*?)\\n\\}', 'm').exec(themeCss);
   assert.ok(rootBlock, 'theme.css 里要有 :root 段');
-  const m = /--divider-strong:\s*([^;]+);/.exec(rootBlock[1]);
-  assert.ok(m, ':root 缺 --divider-strong');
-  assert.equal(m[1].trim(), '#212121');
   const darkBlock = new RegExp('html\\.dark\\s*\\{([\\s\\S]*?)\\n\\}', 'm').exec(themeCss);
   assert.ok(darkBlock, 'theme.css 里要有 html.dark 段');
-  assert.doesNotMatch(
-    darkBlock[1],
-    /--divider-strong:/,
-    '这个值不随主题变，html.dark 里不该再声明一份',
+  const hexIn = (block, name, where) => {
+    const m = new RegExp(`${name}:\\s*(#[0-9a-f]{3,8});`, 'i').exec(block);
+    assert.ok(m, `${where} 缺 ${name}`);
+    return m[1].toLowerCase();
+  };
+  const lightDivider = hexIn(rootBlock[1], '--divider-strong', ':root');
+  const darkDivider = hexIn(darkBlock[1], '--divider-strong', 'html.dark');
+  const lightCard = hexIn(rootBlock[1], '--surface', ':root');
+  const darkCard = hexIn(darkBlock[1], '--surface', 'html.dark');
+  const darkBorder = hexIn(darkBlock[1], '--border', 'html.dark');
+  assert.equal(lightDivider, '#212121', '浅色那一档仍是用户定的 #212121');
+  assert.notEqual(darkDivider, lightDivider, '暗色必须另给一档，否则那条线在暗色下看不见');
+  assert.ok(
+    contrastRatio(darkDivider, darkCard) >= 1.5,
+    `暗色分割线压在卡面上只有 ${contrastRatio(darkDivider, darkCard).toFixed(2)}:1，读不出来（门槛 1.5）`,
+  );
+  // 角色不许糊：结构线必须比卡片描边更重。暗色下「更重」是更亮而不是更深。
+  assert.ok(
+    contrastRatio(darkDivider, darkCard) > contrastRatio(darkBorder, darkCard),
+    `暗色分割线（${darkDivider}）要比描边（${darkBorder}）更重，否则两者角色分不开`,
+  );
+  assert.ok(
+    contrastRatio(lightDivider, lightCard) >= 1.5,
+    `浅色分割线压在卡面上只有 ${contrastRatio(lightDivider, lightCard).toFixed(2)}:1`,
   );
   // theme.css 的全局 `.metric` 曾给它描边 + 底色，把三格变成三个独立卡片。
   // 它已经删除，这条断言守的是「别把它当成可用原语再加回来」。
@@ -391,6 +411,61 @@ test('三格的动作按钮：统一 accent 色 + 600 字重 + 16px 图标槽（
   assert.ok(from > 0, '概览模板里要有三格指标');
   const metricsBlock = tpl.slice(from, tpl.indexOf('<el-alert', from));
   assert.doesNotMatch(metricsBlock, /type="primary"/, '配色归 CSS 管，模板上不该再挂 type="primary"');
+});
+
+test('高度分三档且每一档都有消费方：卡片 / 浮层 / 窗口', () => {
+  // 这条守的是一个**静默失效**：2026-10-09 之前 `--shadow` 与 `--shadow-pop` 都
+  // 声明了，字面值也没写错，却全仓 0 个 `var()` 引用——于是整个面板只有窗口轮廓与
+  // 调试浮球带 box-shadow，61 个 `.card` 全是纯平，用户报「看不出边缘感」。
+  // build 绿、测试绿、token 查得到，三样都成立而功能不存在。**光有声明不构成证据。**
+  const css = stripComments(themeCss);
+
+  // ① 声明了却没有消费方的 token：查 `var(--名字)` 在全树有没有第二处出现。
+  //    theme.css 之外也可能有组件在用，所以扫整个 src 而不是只扫 theme.css。
+  //    **`--el-` 开头的不查**：那批是给 Element Plus 消费的覆写值，引用它们的
+  //    `var()` 在库自己的 CSS 里（本仓自然一个都没有），把它们算成孤儿会得到三十几条
+  //    与本条判据无关的红。
+  const wholeUi = [themeCss, ...readdirSync(SRC, { recursive: true })
+    .filter((f) => /\.vue$|\.js$|\.css$/.test(f))
+    .map((f) => readFileSync(resolve(SRC, f), 'utf8'))].join('\n');
+  const declared = [...css.matchAll(/(?:^|[;{\s])(--[a-z0-9-]+):/g)].map((m) => m[1]);
+  const orphans = [...new Set(declared)]
+    .filter((name) => !name.startsWith('--el-'))
+    .filter((name) => !wholeUi.includes(`var(${name})`));
+  assert.deepEqual(orphans, [], `这些 token 声明了却没有任何 var() 引用：${orphans.join(', ')}`);
+
+  // ② 三档各自接到该接的层上。卡片读 --shadow-card；弹窗与消息框走库变量而不是
+  //    直接写 box-shadow——同名自定义属性写在元素自己身上才赢得过从 html 继承的值
+  //    （`.el-dialog` 规则里就声明着 `--el-dialog-box-shadow`，写到 :root 等于没写）。
+  assert.match(css, /\.card\s*\{[^}]*box-shadow:\s*var\(--shadow-card\)/, '.card 必须有高度');
+  assert.match(
+    css,
+    /\.el-overlay-dialog \.el-dialog\s*\{[^}]*--el-dialog-box-shadow:\s*var\(--shadow\)/s,
+    '弹窗要走 --shadow（近段环 + 两段落影），不是库默认的单层柔光',
+  );
+  assert.match(
+    css,
+    /\.el-message-box\s*\{[^}]*--el-messagebox-box-shadow:\s*var\(--shadow\)/s,
+    '确认框与弹窗同一档高度',
+  );
+
+  // ③ 暗色的近段必须是**浅色环**。纯黑落影压在深色底上等于没有——这正是改造前
+  //    暗色弹窗读成「一团发光的雾」的原因，所以这一条只钉暗色那一份。
+  const darkBlock = /html\.dark\s*\{([\s\S]*?)\n\}/m.exec(themeCss);
+  assert.ok(darkBlock, 'theme.css 里要有 html.dark 段');
+  const darkShadow = /--shadow:\s*([^;]+);/.exec(darkBlock[1]);
+  assert.ok(darkShadow, 'html.dark 缺 --shadow');
+  assert.match(
+    darkShadow[1],
+    /0\s+0\s+0\s+1px\s+rgb\(255\s+255\s+255/,
+    '暗色浮层的近段必须是浅色环，否则边缘读不出来',
+  );
+  // 暗色卡片靠顶边 1px inset 高光立边缘：暗色下没有天然落影可看。
+  assert.match(
+    darkBlock[1],
+    /--shadow-card:[^;]*inset\s+0\s+1px\s+0\s+rgb\(255/,
+    '暗色卡片必须有一道顶边高光',
+  );
 });
 
 test('指标标题与值取设计稿的 11px muted / 12px 600 text', () => {
@@ -530,6 +605,29 @@ function tokenValue(name) {
   const m = new RegExp(`(?:^|[;{\\s])${name}:\\s*([^;]+);`).exec(stripComments(themeCss));
   assert.ok(m, `theme.css 的 :root 里缺 ${name}`);
   return m[1].trim();
+}
+
+/**
+ * 两个 #rrggbb 的 WCAG 对比度。只吃字面十六进制——判据要算的是**画出来的那两个像素**
+ * 的比值，所以调用方必须先把 token 解析成值；传进来一个 `var(--x)` 会算成 NaN 而
+ * 不是报错，那种情况下断言会以「值不对」的措辞报出 NaN，排查方向会被带偏。
+ */
+function contrastRatio(a, b) {
+  const channel = (c) => {
+    const v = c / 255;
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = (hex) => {
+    assert.match(hex, /^#[0-9a-f]{6}$/i, `contrastRatio 只接受 6 位十六进制，收到 ${hex}`);
+    const n = parseInt(hex.slice(1), 16);
+    return (
+      0.2126 * channel((n >> 16) & 255) +
+      0.7152 * channel((n >> 8) & 255) +
+      0.0722 * channel(n & 255)
+    );
+  };
+  const [x, y] = [luminance(a), luminance(b)];
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
 }
 
 test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () => {
