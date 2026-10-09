@@ -123,15 +123,23 @@ const bridgeServer = createServer((req, res) => {
               '{"type":"response.function_call_arguments.delta","item_id":"call-probe-1","name":"xlink_probe","delta":"{}"}',
               '{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"function_call","id":"call-probe-1","name":"xlink_probe","arguments":"{}"}]}}',
             ]
-          : [
+          : roundtrip === 2
+            ? [
+                '{"type":"response.output_item.added","item":{"type":"function_call","id":"call-probe-2","name":"xlink_verify","arguments":""}}',
+                '{"type":"response.function_call_arguments.delta","item_id":"call-probe-2","name":"xlink_verify","delta":"{}"}',
+                '{"type":"response.completed","response":{"id":"resp-2","output":[{"type":"function_call","id":"call-probe-2","name":"xlink_verify","arguments":"{}"}]}}',
+              ]
+            : [
               '{"type":"response.reasoning_summary_text.delta","delta":"思考：用户要一个 pong"}',
               '{"type":"response.output_text.delta","delta":"pong-from-stub"}',
-              '{"type":"response.completed","response":{"id":"resp-2","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5},"output":[]}}',
+              '{"type":"response.completed","response":{"id":"resp-3","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5},"output":[]}}',
             ];
       const terminal =
         roundtrip <= 1
           ? '{"type":"bridge.terminal","status":"completed","replay":{"response":{"id":"resp-1","output":[{"type":"function_call","id":"call-probe-1","name":"xlink_probe","arguments":"{}"}]}},"detail":null}'
-          : '{"type":"bridge.terminal","status":"completed","replay":{"response":{"id":"resp-2","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5},"output":[]}},"detail":null}';
+          : roundtrip === 2
+            ? '{"type":"bridge.terminal","status":"completed","replay":{"response":{"id":"resp-2","output":[{"type":"function_call","id":"call-probe-2","name":"xlink_verify","arguments":"{}"}]}},"detail":null}'
+            : '{"type":"bridge.terminal","status":"completed","replay":{"response":{"id":"resp-3","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5},"output":[]}},"detail":null}';
       res.writeHead(200, { "content-type": "application/x-ndjson" });
       for (const event of events) res.write(event + "\n");
       res.write(terminal + "\n");
@@ -306,11 +314,13 @@ const responsesHit = stubRequests.find((r) => r.url === "/v1/responses");
 const responsesAll = stubRequests.filter((r) => r.url === "/v1/responses");
 const roundtripHit = responsesAll[1];
 check(
-  "工具往返闭环（第 2 次请求携带 function_call_output 与原 call_id）",
-  responsesAll.length >= 2 &&
-    roundtripHit !== undefined &&
-    roundtripHit.body.includes("function_call_output") &&
-    roundtripHit.body.includes("call-probe-1"),
+  "工具往返闭环（多轮：每轮携带前序 function_call_output）",
+  responsesAll.length >= 3 &&
+    responsesAll[1].body.includes("function_call_output") &&
+    responsesAll[1].body.includes("call-probe-1") &&
+    responsesAll[2].body.includes("function_call_output") &&
+    responsesAll[2].body.includes("call-probe-2") &&
+    responsesAll[2].body.includes("call-probe-1"),
   `hits=${responsesAll.length}`,
 );
 check(
