@@ -1531,6 +1531,50 @@ test('插件页页签与内容之间有真间距，不能归零', () => {
   assert.equal(Number(gap[1]), 10);
 });
 
+// --- 内嵌插件行并进社区插件列表（2026-10-09 用户截图）------------------------
+//
+// 内嵌的 openai-oauth 此前是 `.entity-list` **外面**一条自带下缘刻蚀线的裸行
+// （`.builtin-strip` 另有一份 padding 与字号）：没有卡片的边框与圆角，扫一眼就是
+// 「另一个东西」。并进列表当第一行之后，它与下面那些行共用同一套外壳，差别只剩
+// 右侧动作（没有安装 / 更新 / 卸载，只有启停开关）。
+test('内嵌插件行是「当前内核」列表的第一行，不再是列表外的裸行', () => {
+  const src = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
+  const tpl = templateOf(src);
+  // 顺序即位置：列表容器开标签 → 内嵌行 → 社区插件的 v-for。三者必须排成这个
+  // 次序，判据才认它是**列表里的第一行**；只看「内嵌行存在」的话，把它搬回列表
+  // 外面一样会绿。
+  const paneAt = tpl.indexOf('<el-tab-pane name="current">');
+  assert.ok(paneAt > 0, '应能找到「当前内核」页签');
+  const listAt = tpl.indexOf('class="entity-list"', paneAt);
+  const rowAt = tpl.indexOf('class="entity-row entity-row--single builtin-row"', paneAt);
+  const rowsAt = tpl.indexOf('v-for="row in view ? view.rows : []"', listAt);
+  assert.ok(listAt > 0, '「当前内核」页签里应有 .entity-list');
+  assert.ok(
+    rowAt > listAt && rowAt < rowsAt,
+    '内嵌插件行必须落在 .entity-list 里、且排在社区插件行之前',
+  );
+  // 这枚 class 挂在的必须正是 `builtinView` 那个元素——否则可能落到骨架行或别的
+  // 行上，位置对了内容却不是内嵌插件。
+  const rowStart = tpl.lastIndexOf('<div', rowAt);
+  assert.match(
+    tpl.slice(rowStart, rowAt),
+    /v-if="builtinView"/,
+    '挂 builtin-row 的那个元素应当由 builtinView 控制',
+  );
+  // 外壳与内部结构都走社区插件那一套，视觉才对得上。
+  const row = tpl.slice(rowAt, tpl.indexOf('</div>', tpl.indexOf('entity-actions', rowAt)));
+  assert.match(row, /class="entity-name"/, '名称要走 .entity-name（同一字号与等宽字体）');
+  assert.match(row, /class="origin-chip"/, '来源标签要走 .origin-chip，与 npm / GitHub 同一枚');
+  // 那套「不属于这个列表」的样式已经没有作用方，必须跟着删干净——留着会让下
+  // 一个人以为内嵌行另有样式。
+  assert.doesNotMatch(stripComments(src), /\.builtin-strip\s*\{/, '.builtin-strip 应当随这次搬家删除');
+  assert.doesNotMatch(tpl, /builtin-strip/, '模板里不该再有 builtin-strip');
+  // 空态判据必须同时看内嵌行：只看社区插件的话，列表里明明列着一行、下面却写着
+  // 「尚未接入任何插件」，两处判据也会分叉（is-empty 与 el-empty 各写一遍）。
+  assert.match(tpl, /'is-empty': currentKernelListEmpty/, '空态判据要走 currentKernelListEmpty');
+  assert.match(tpl, /v-else-if="currentKernelListEmpty"/, '空态提示与边框必须共用同一份判据');
+});
+
 // --- 「刷新数据」跟着它作用的东西走（2026-10-07 用户要求）--------------------
 //
 // 它刷的是 **dshfind.com 那份远端目录**，原先挂在整张卡（「插件管理」）的卡头靠右，
