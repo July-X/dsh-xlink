@@ -131,6 +131,14 @@ pub fn show_main_shell(app: &AppHandle) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
         return;
     };
+    // Windows 上必须与 `hide_to_shell` 的 `set_skip_taskbar(true)` 成对：
+    // `true` 走的是 `ITaskbarList::DeleteTab`，按钮被**直接删掉**，`show()`
+    // 不会让它自己回来（窗口回来了，任务栏与 Alt+Tab 里却查无此窗）。
+    // 这一步过去住在 `tray::show_main_shell` 里，而**没有任何调用方走它**，
+    // 于是「恢复时补回」一直是句空话：登录自启把面板收进后台后，用户点任务栏
+    // 启动项唤回它，看到的窗口在任务栏上没有按钮（2026-10-09）。
+    #[cfg(target_os = "windows")]
+    let _ = window.set_skip_taskbar(false);
     #[cfg(target_os = "macos")]
     {
         // 隐藏时被降到 Accessory 等级了，不加回来窗口显示出来也不在 Dock 上、

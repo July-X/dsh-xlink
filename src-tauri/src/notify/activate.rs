@@ -32,7 +32,9 @@ use tauri::{AppHandle, Emitter, Manager};
 const ACT_WORKBENCH: &str = "workbench";
 
 /// 回到工作台失败时广播给管理面板的事件。横幅点击是**无声**的——窗口没动时
-/// 用户不会得到任何解释，只会以为"点了没反应"，所以失败必须自己出声。
+/// 用户不会得到任何解释，只会以为"点了没反应"，所以真故障必须自己出声。
+/// 「真故障」怎么判见 [`announce_failure`]：内核压根没跑时此刻只是没有工作台，
+/// 不发这个事件。
 pub const FAILED_EVENT: &str = "workbench-activate-failed";
 
 /// 启动守卫的结论。
@@ -72,8 +74,32 @@ pub fn serve(app: &AppHandle) {
     let _ = app;
 }
 
+/// 「工作台打不开」要不要向管理面板出声。
+///
+/// 这条通道被两种入口共用，而 Windows **分不出它们**：点通知横幅、点任务栏 /
+/// 开始菜单里的启动项，系统都是按同一个快捷方式再拉起一个本 exe（见模块
+/// 文档），两边的命令行一模一样，壳无从判断用户刚点的是哪一个。
+///
+/// 第二种在登录自启之后是用户的日常动作——壳已经在后台跑着、内核通常还没起。
+/// 此时「打不开工作台」是一句事实陈述而不是故障，弹一条 8 秒红字纯属噪音
+/// （2026-10-09 用户反馈：开机自启后点任务栏启动项，窗口出来了还挂着
+/// 「回到工作台失败」）。面板此刻已经被叫回前台，概览页上「已停止」与
+/// 「启动工作台」按钮就在那里，不解释也不会把他困住。
+///
+/// 反过来，内核确实在跑却打不开工作台（端口被无关程序占着、改过端口、建窗
+/// 失败）是真故障：他点的横幅 / 图标什么都没发生，必须出声。判据取
+/// [`crate::kernel_running`]，不去匹配 `open_harness` 的报错文案——后者是
+/// 给人看的中文句子，改一次措辞这条判据就静默失效。
+fn announce_failure(kernel_running: bool) -> bool {
+    kernel_running
+}
+
 /// 把**工作台**带到台前。这是「回到工作台」的唯一实现，三条入口（Windows
 /// 通知横幅的进程交接、macOS 的应用重新打开、将来可能的深链）都走它。
+///
+/// Windows 的那一条同时覆盖「点任务栏 / 开始菜单里的启动项」——系统拉起第
+/// 二个进程时无法区分这两者（见 [`announce_failure`]），但两者要的结果本来
+/// 也只差在工作台能否打开：打不开时落回管理面板，这正是点启动项的人想要的。
 ///
 /// 复用 [`crate::commands::open_harness`] 而不是自己写一套窗口操作：它已经
 /// 覆盖了"已开则 show + 取消最小化 + 聚焦"与"没开则按当前 launch token 建
@@ -87,14 +113,16 @@ pub fn focus_workbench(app: &AppHandle) {
             let outcome =
                 tauri::async_runtime::block_on(crate::commands::open_harness(app.clone()));
             if let Err(reason) = outcome {
-                // 工作台打不开时**不能什么都不做**：横幅点击是静默的，用户
-                // 看到的只是"点了没反应"。把管理面板叫回前台并说明原因，
-                // 他至少知道该去哪里。
+                // 面板一定要叫回前台：交接是静默的，窗口没动只会让用户以为
+                // "点了没反应"；跨进程交接还抢不到前台，见 force_foreground。
                 crate::show_main_shell(&app);
                 if let Some(main) = app.get_webview_window("main") {
                     force_foreground(&main);
                 }
-                let _ = app.emit(FAILED_EVENT, reason);
+                // 出不出声另算：此刻压根没有工作台（内核没跑）不是故障。
+                if announce_failure(crate::kernel_running(&app)) {
+                    let _ = app.emit(FAILED_EVENT, reason);
+                }
                 return;
             }
             // 跨进程交接夺不走前台（见 [`force_foreground`]）：抢到工作台
@@ -433,5 +461,22 @@ mod tests {
         if !cfg!(debug_assertions) {
             assert!(guard_enabled());
         }
+    }
+
+    /// 交接失败出声的判据：内核没在跑 → 静默，内核在跑 → 出声。
+    ///
+    /// 反向验：把这个判据写成常量 `true`（旧行为）时点任务栏启动项会重新出现
+    /// 「回到工作台失败」；写成 `false` 则端口冲突这类真故障重新变成静默——
+    /// 两者都是用户看得见的症状，所以这条单点判据值得钉住。
+    #[test]
+    fn only_a_real_fault_announces() {
+        assert!(
+            !announce_failure(false),
+            "内核没跑时只是没有工作台，不是故障"
+        );
+        assert!(
+            announce_failure(true),
+            "内核在跑却打不开工作台是故障，必须出声"
+        );
     }
 }

@@ -260,9 +260,12 @@ onMounted(() => {
   // 任务完成通知的状态由 Rust 侧持有（角标也在那边），它每次变化都会广播
   // 一份快照；面板据此自动刷新未读数，不需要用户点「刷新」。
   registerAppListener('notification-status', (e) => applyNotificationStatus(e && e.payload));
-  // 「点通知横幅回到工作台」失败（例如这期间内核已经停了）。横幅点击是静默的，
-  // 窗口没动时用户只会以为"点了没反应"——Rust 已把管理面板叫回前台，这里
-  // 负责把他为什么还在面板上、该做什么讲清楚。
+  // 「点通知横幅回到工作台」失败——**只在内核本来该能打开工作台时才会来**
+  // （端口被无关程序占着、改过端口、建窗失败…）。交接是静默的，窗口没动时用户
+  // 只会以为"点了没反应"，所以 Rust 已把管理面板叫回前台，这里负责把他为什
+  // 么还在面板上、该做什么讲清楚。内核压根没跑时**不发这个事件**：那种情况下
+  // 点任务栏启动项是日常动作，此刻只是没有工作台，概览页上就有「启动工作台」
+  // 按钮（判据见 notify/activate.rs 的 announce_failure）。
   registerAppListener('workbench-activate-failed', (e) => {
     const reason = String((e && e.payload) || '未知原因');
     toastError(

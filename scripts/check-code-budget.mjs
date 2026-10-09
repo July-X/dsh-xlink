@@ -421,7 +421,12 @@ const FILE_BUDGETS = {
   // （RESTORE_HINT_SHOWN + HIDDEN_BY_USER，见 consume_restore_hint）——登录
   // 自启藏壳后的第一次唤回不再弹「刚刚把窗口收进了后台」（用户反馈经常
   // 触发），外加完整语义表测试。
-  'src-tauri/src/shell/resident.rs': 123,
+  // 123 → 125（2026-10-09）：Windows 上「补回任务栏按钮」的 `set_skip_taskbar(false)`
+  // 进 `show_main_shell`，与 `hide_to_shell` 的删除动作成对——那份补回实现原先单独
+  // 放在 `tray::show_main_shell`，而没有任何调用方走它（`lib::show_main_shell` 直接
+  // 调本模块），于是登录自启藏起面板后用户点启动项唤回的窗口在任务栏上没有按钮。
+  // 净 +2 行；`tray.rs` 同时删掉 7 行，全仓总量不增（TOTAL_BUDGET 不动）。
+  'src-tauri/src/shell/resident.rs': 125,
   'src-tauri/src/shell/menu_bar.rs': 105,
   'src-tauri/src/shell/autostart.rs': 360,
   // 2026-10-02 磁盘占用报表（只读，无删除入口）。独立成模块的理由：

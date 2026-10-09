@@ -6,10 +6,12 @@
 //!
 //! **关闭语义与 macOS 已统一**（2026-10-02），实现在
 //! [`crate::shell::resident`]：本模块只负责 Windows 特有的那几件事——
-//! 按 DPI 与任务栏主题选帧、`ITaskbarList` 删任务栏按钮、监听注册表主题变化。
+//! 按 DPI 与任务栏主题选帧、监听注册表主题变化。
 //! 「收起 / 恢复 / 退出」这三个动作刻意不在这里另写一份，两端各有一份就会
-//! 漂移（2026-10-02 之前 macOS 走的就是另一套语义）。macOS 对端见
-//! [`crate::shell::menu_bar`]。
+//! 漂移（2026-10-02 之前 macOS 走的就是另一套语义）。任务栏按钮的删 / 补也是
+//! 这一对动作的一半，因此同样住在 `resident` 里并按 `cfg(windows)` 分段——
+//! 它一度单独放在本模块的 `show_main_shell` 中，而没有任何调用方走它
+//! （2026-10-09）。macOS 对端见 [`crate::shell::menu_bar`]。
 //!
 //! 整个模块按 `cfg(windows)` 编译。
 
@@ -223,32 +225,16 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 
 /// 把主窗口收进通知区域：隐藏窗口，并从任务栏移除它的按钮。
 ///
-/// `set_skip_taskbar(true)` 走的是 `ITaskbarList::DeleteTab`，会把任务栏按钮
-/// 直接删掉——只 `hide()` 不够：窗口虽然不可见，任务栏按钮与 Alt+Tab 条目
-/// 仍在，点它会得到一个空窗口。恢复时（[`super::resident::show_main_shell`]）
-/// 必须加回来，否则窗口回来也不在任务栏上。
+/// 动作本体在 [`super::resident::hide_to_shell`]：`set_skip_taskbar(true)` 走的是
+/// `ITaskbarList::DeleteTab`，会把任务栏按钮直接删掉——只 `hide()` 不够：窗口虽然
+/// 不可见，任务栏按钮与 Alt+Tab 条目仍在，点它会得到一个空窗口。恢复时的
+/// `set_skip_taskbar(false)` 与它在同一个函数里成对（见
+/// [`super::resident::show_main_shell`]）：这一对曾经分开放在两个模块里，而补回的
+/// 那一份没有任何调用方，"恢复时补回"成了空话（2026-10-09）。
 pub fn hide_to_tray(app: &AppHandle) {
     super::resident::hide_to_shell(app);
     // 最小化是**用户主动**的收起：置位后，本进程第一次恢复时会补发「收进
     // 后台」提示（登录自启的隐藏不走这里，开机后第一次唤回是静默的——
     // 见 `resident::consume_restore_hint`）。
     super::resident::mark_hidden_by_user();
-}
-
-/// 把主窗口从隐藏 / 最小化状态恢复到前台。
-///
-/// 与工作台拉绳（`commands::focus_main_shell`）共用同一套动作，而动作本身在
-/// [`super::resident::show_main_shell`]。本函数只做 Windows 独有的一件事：
-/// 补回任务栏按钮（`DeleteTab` 之后窗口即便可见也不会回到任务栏，顺序反了
-/// 会让用户看到一个「没有任务栏按钮」的窗口）。
-///
-/// **这里不能反过来调 `crate::show_main_shell`**：那个函数在 Windows 上就是
-/// 本模块的「按平台选实现」分发点，两边互调是无限递归（首版即如此，点托盘
-/// 图标直接 `thread 'main' has overflowed its stack`）。
-pub fn show_main_shell(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
-        return;
-    };
-    let _ = window.set_skip_taskbar(false);
-    super::resident::show_main_shell(app);
 }
