@@ -16,7 +16,11 @@ use crate::openai::http;
 
 #[derive(Debug)]
 pub(crate) enum Outcome {
-    Code(String),
+    Code {
+        code: String,
+        /// 首次注册时授权服务器在回调里签发的正式 client_id。
+        client_id: Option<String>,
+    },
     Error(String),
     StateMismatch,
 }
@@ -83,12 +87,12 @@ pub(crate) fn spawn(state: &str) -> Result<CallbackListener, String> {
                     continue;
                 };
                 let outcome = match parse_callback(query, &thread_state) {
-                    Callback::Code { code } => Outcome::Code(code),
+                    Callback::Code { code, client_id } => Outcome::Code { code, client_id },
                     Callback::Error { error } => Outcome::Error(error),
                     Callback::StateMismatch => Outcome::StateMismatch,
                 };
                 let body = match &outcome {
-                    Outcome::Code(_) => "<!doctype html><meta charset=\"utf-8\"><body style=\"font-family:system-ui;background:#f7f8fa;color:#1f2328;display:grid;place-items:center;height:100vh;margin:0\"><p>登录完成，可以关闭此页返回 dsh-xlink。</p>".to_string(),
+                    Outcome::Code { .. } => "<!doctype html><meta charset=\"utf-8\"><body style=\"font-family:system-ui;background:#f7f8fa;color:#1f2328;display:grid;place-items:center;height:100vh;margin:0\"><p>登录完成，可以关闭此页返回 dsh-xlink。</p>".to_string(),
                     Outcome::Error(_) => "<!doctype html><meta charset=\"utf-8\"><body style=\"font-family:system-ui;background:#f7f8fa;color:#1f2328;display:grid;place-items:center;height:100vh;margin:0\"><p>授权未完成（被拒绝或出错），请回到 dsh-xlink 重试。</p>".to_string(),
                     Outcome::StateMismatch => "<!doctype html><meta charset=\"utf-8\"><body style=\"font-family:system-ui;background:#f7f8fa;color:#1f2328;display:grid;place-items:center;height:100vh;margin:0\"><p>回调校验失败（state 不匹配），流程已终止；请回到 dsh-xlink 重新登录。</p>".to_string(),
                 };
@@ -131,7 +135,7 @@ mod tests {
         assert_eq!(status, 200);
         assert!(response.contains("登录完成"));
         match listener.wait(Duration::from_secs(5)).unwrap() {
-            Outcome::Code(code) => assert_eq!(code, "abc"),
+            Outcome::Code { code, .. } => assert_eq!(code, "abc"),
             other => panic!("{other:?}"),
         }
     }
@@ -165,7 +169,7 @@ mod tests {
         // 404 不消费监听：正确的回调仍能完成。
         get(listener.port, "/callback?code=xyz&state=st4");
         match listener.wait(Duration::from_secs(5)).unwrap() {
-            Outcome::Code(code) => assert_eq!(code, "xyz"),
+            Outcome::Code { code, .. } => assert_eq!(code, "xyz"),
             other => panic!("{other:?}"),
         }
     }

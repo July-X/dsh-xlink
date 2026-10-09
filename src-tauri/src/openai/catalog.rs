@@ -335,7 +335,7 @@ mod tests {
         // vault 复用同一个（同 mode_dir）。
         let models_port = serve_models_once(
             r#"{"data":[{"id":"gpt-x","name":"GPT X"},{"id":"gpt-y"}]}"#,
-            "at-mock",
+            "at-1",
         );
         let mut catalog_paths = paths.clone();
         catalog_paths.issuer_base = format!("http://127.0.0.1:{models_port}");
@@ -448,7 +448,7 @@ mod serve_tests {
         let paths = flow_test_paths("serve-fb", issuer.port());
         let cancel = AtomicBool::new(false);
         crate::openai::flow::run_authorize(&paths, &transport, "release", &cancel).unwrap();
-        let models_port = serve_models(r#"{"data":[{"id":"gpt-x","name":"GPT X"}]}"#, "at-mock");
+        let models_port = serve_models(r#"{"data":[{"id":"gpt-x","name":"GPT X"}]}"#, "at-1");
         let mut live = paths.clone();
         live.issuer_base = format!("http://127.0.0.1:{models_port}");
         let payload = serve_payload(&live, &transport, "release").unwrap();
@@ -529,7 +529,7 @@ mod fresh_window_tests {
         let hits_for_server = Arc::clone(&hits);
         let models_port = serve_counting(
             r#"{"data":[{"id":"gpt-x","name":"GPT X"}]}"#,
-            "at-mock",
+            "at-1",
             hits_for_server,
         );
         let mut catalog_paths = paths.clone();
