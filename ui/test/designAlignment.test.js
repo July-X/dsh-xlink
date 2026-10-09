@@ -164,6 +164,30 @@ test('次级入口在版本号右侧靠右：网格第二列 + justify-self: end
   assert.equal(effectiveDeclaration(['btn-row-sub'], RULES, 'padding-left'), null);
 });
 
+test('弹窗底部的操作排统一靠右，面板内的 .btn-row 不跟着变', () => {
+  // 2026-10-09 用户要求「这类弹窗的操作按钮统一到右侧」，指的是自绘弹窗 / 浮层
+  // **底部**那一排：进度浮层的「关闭」、事故面板的「去处理」。Element 的
+  // `#footer` 本来就右对齐（迁移向导 / 预检 / 快照恢复都走它），缺的是自绘那两处。
+  assert.equal(effectiveDeclaration(['dialog-actions'], RULES, 'justify-content'), 'flex-end');
+  // 逐个点名，且数的是「类」而不是可见文案：「关闭」在进度浮层、日志弹窗等多处
+  // 重名，按文案一 `includes` 就是好几枚，判据会变成掷骰子。
+  for (const rel of ['shell/ProgressOverlay.vue', 'incidents/IncidentModal.vue']) {
+    const tpl = templateOf(readFileSync(resolve(SRC, rel), 'utf8'));
+    assert.equal(
+      (tpl.match(/\bbtn-row dialog-actions\b/g) || []).length,
+      1,
+      `${rel} 的底部操作排应当恰好挂一处 dialog-actions`,
+    );
+  }
+  // 弹窗**内部**按对象分组的那排不参与统一：事故面板每个嫌疑插件块里的
+  // 「隔离 / 移除」作用于具体那一条，跟着对象走才对，右对齐会把它推到卡片另一侧。
+  const incident = templateOf(readFileSync(resolve(SRC, 'incidents/IncidentModal.vue'), 'utf8'));
+  assert.match(incident, /class="btn-row suspect-actions"/, '嫌疑块里的动作排不该被改成靠右');
+  // `.btn-row` 本身必须保持中性（不写 justify-content）：概览的欢迎 callout、
+  // 设置页的通知行与旁边的说明文字同属一段内容，给它右对齐就把文字顶走了。
+  assert.equal(effectiveDeclaration(['btn-row'], RULES, 'justify-content'), null);
+});
+
 test('版本号是纯文字：没有 tag 图标、没有徽标外壳，贴着左缘', () => {
   // 2026-10-08 用户截图要求「移除 tag icon，版本号文字放大，靠最左边」。
   // 三件事各自会被别的原因悄悄改回去，所以分开钉：
