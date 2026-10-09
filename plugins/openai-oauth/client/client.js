@@ -238,8 +238,16 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
-      const documentRef = ctx.document ?? globalThis.window?.document;
-      if (documentRef?.head) ensureCardStyle(documentRef);
+      // 样式注入只走浏览器 document——**不碰 ctx**：dsh 的插件 ctx 是服务
+      // 代理，访问未注册的服务名会直接抛错，activation 即失败
+      // （2026-10-09 实测：「1 entry did not activate」）。
+      try {
+        const documentRef = globalThis.window?.document;
+        if (documentRef?.head) ensureCardStyle(documentRef);
+      } catch (error) {
+        // 样式注入失败不阻断激活：卡片退化为无 hover 的内联观感。
+        (globalThis.console?.error ?? (() => {}))(`[xlink-openai-oauth] 样式注入失败：${error}`);
+      }
       ctx.slots.inject("settings.models.footer", () =>
         ctx.slots.register(
           {
