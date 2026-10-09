@@ -500,7 +500,7 @@
 .diag-card.diag-card--tower { padding: 4px 6px; margin-bottom: 0; }
 
 /* 概览这一屏的卡头：块标题与「当前内核 / 套餐用量」齐平，线换成刻蚀线
-   （2px / 两端收细 / 颜色读 --divider-strong，明暗两套同一个 #212121）。
+   （2px / 两端收细 / 颜色读 --divider-strong，明暗各一档）。
    收细只能用 clip-path，原生 border 没法 clip 所以退场。两条各写成一行：
    代码行数统计只剥行注释与块注释，独立的右花括号按代码行计，常规分行写
    要多收十几行（scripts/check-code-budget.mjs 里这处的登记有历史）。

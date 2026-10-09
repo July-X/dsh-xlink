@@ -10,10 +10,13 @@
 
 :root {
   color-scheme: light;
-  /* 窗口外沿与内容底：主区比窗口壳浅一档，层级靠这一步就成立。 */
-  --canvas: #e9edf2;
-  --window: #f6f7f9;
-  --chrome: #eff1f5;
+  /* 窗口外沿与内容底：主区比窗口壳浅一档，层级靠这一步就成立。
+     三档各自下压半档（2026-10-09 边缘感改造）：把内容面压深，白卡片才浮得起来。
+     **这三档改完仍然只在 1.05–1.21:1**，刻意留着——再拉开底色就发脏，而卡片边缘
+     真正靠的是下面的描边与 `--shadow-card`，不是靠色阶差。 */
+  --canvas: #e6eaf0;
+  --window: #f3f5f8;
+  --chrome: #eceff4;
   --surface: #ffffff;
   --surface-raised: #ffffff;
   --surface-subtle: #f0f2f5;
@@ -40,16 +43,19 @@
      「凹下去」而不是「压暗一个亮元素」，两套主题同向，所以不必分档。 */
   --surface-sunken: rgba(32, 37, 43, 0.06);
   /* 结构性分割线：概览这一屏的卡头底线 / 指标分隔（2026-10-08 用户定案「改成黑色、
-     调细一点」，随后指定明暗两套都用 `#212121`）。与 `--border` 的区别不是深浅，
-     而是**角色**：`--border` 是卡片描边，`--divider-strong` 是把一片内容切成上下
-     两组的那条线，它要比描边重才对。
+     调细一点」）。与 `--border` 的区别不是深浅，而是**角色**：`--border` 是卡片
+     描边，`--divider-strong` 是把一片内容切成上下两组的那条线，它要比描边重才对。
 
-     **这个值两套主题一样，所以只在 `:root` 定义一次、不进 `html.dark`** ——
-     与 `--fs-*` / `--action-h` 同一类「本来就不随主题变」的量。两套各写一份的话，
-     日后改了一处忘了另一处就会跳档，而两处的值看上去又完全一样，很难被看出来。 */
+     **两套主题不再同值**（2026-10-09 用户拍板，此前是明暗都用 `#212121`）：这批线
+     在暗色下压在 #2c2b30 卡面上只有 1.19:1，实际根本看不见，而「看不见的分割
+     线」正是本轮边缘感改造要清掉的一类问题。暗色那一档见 `html.dark`。 */
   --divider-strong: #212121;
-  --border: #d8dde5;
-  --border-soft: #e6e9ee;
+  /* 卡片描边。1.36:1 → 1.65:1（对自身卡面，2026-10-09 边缘感改造）。一根 1px 线要
+     独自承担整个边缘识别，低于 ~1.5 在视网膜屏上基本读不出来。本轮同时给 `.card`
+     接上 `--shadow-card`（见下），线与投影各担一半——**光调色到 1.65 就停手**：
+     再深一档描边就开始显脏，而相邻表面的色阶差本身是有上限的，抬不高。 */
+  --border: #c3cad6;
+  --border-soft: #dde2ea;
   --text: #20252b;
   --text-secondary: #59636f;
   --text-muted: #7b848f;
@@ -87,8 +93,17 @@
   --warning-line: rgba(151, 101, 26, 0.5);
   --danger-fill: rgba(199, 67, 64, 0.16);
   --danger-line: rgba(199, 67, 64, 0.5);
-  --shadow: 0 24px 72px rgba(38, 48, 62, 0.18);
-  --shadow-pop: 0 12px 32px rgba(38, 48, 62, 0.16);
+  /* 浮层高度（弹窗 / 消息框 / 三处自绘浮板）与卡片高度。**此前 `--shadow` 与
+     `--shadow-pop` 两个 token 全仓 0 个消费方**——整个面板除了窗口轮廓与调试浮球
+     没有一处 box-shadow，61 个 `.card` 全是纯平，「看不出边缘感」的根因就在这里。
+     2026-10-09 起让它们真正上岗，并删掉 `--shadow-pop`：它与 `--shadow` 记的是
+     同一件事（浮层高度），两个名字并存就是一处将来会漂的空档。
+
+     两段式与 `#app::after` 同一套口径：**近段定边缘、远段定悬浮高度**。近段那一圈
+     浅色是压深、暗色是提亮——暗色下纯黑落影压在深色底上等于没有，暗色那一份必须
+     是浅色环，否则弹窗仍是一团柔光而不是一块板。 */
+  --shadow: 0 0 0 1px rgb(20 28 40 / 0.06), 0 8px 20px rgb(20 28 40 / 0.1), 0 24px 72px rgb(20 28 40 / 0.18);
+  --shadow-card: 0 1px 2px rgb(20 28 40 / 0.06), 0 3px 8px rgb(20 28 40 / 0.05);
   /* 构建标识色：dev 鲸眼红 / release Gitea 绿，只在窗顶 2px 细线上出现。 */
   --build-color: #609926;
   /* 业务活动脉冲扫光的峰值色（body::after 与日志窗的第二道扫光共用）。标题栏
@@ -139,28 +154,33 @@
 
 html.dark {
   color-scheme: dark;
-  --canvas: #29272c;
-  --window: #1f1e22;
-  --chrome: #26252a;
-  --surface: #2c2b30;
-  --surface-raised: #35343a;
-  --surface-subtle: #25242a;
-  /* 与 `:root` 那一档同义（盖住所在表面），不是同值：暗色卡面是 #2c2b30。
+  /* 暗色的阶梯方向与浅色相反（底越高越亮），但**相邻档的间距是同一套**：
+     2026-10-09 边缘感改造把三档各推开半档，卡片面 #2c2b30 → #2e2d33、底面
+     #29272c → #232228，卡片对内容区底从 1.05:1 升到 1.16:1。仍是刻意留着
+     低色阶差——暗色下靠 `#4b4a53` 描边（1.56:1）与 `--shadow-card` 的顶边高光
+     立边缘，不是靠底色差。 */
+  --canvas: #232228;
+  --window: #1b1a1f;
+  --chrome: #28272d;
+  --surface: #2e2d33;
+  --surface-raised: #38373f;
+  --surface-subtle: #26252b;
+  /* 与 `:root` 那一档同义（盖住所在表面），不是同值：暗色卡面是 #2e2d33。
      同样留一成透，刷新中的旧内容仍隐约可见，而不是整块闪成纯色。 */
-  --surface-loading: rgba(44, 43, 48, 0.9);
+  --surface-loading: rgba(46, 45, 51, 0.9);
   /* 暗色下同一意图反过来：叠白即提亮。取值与浅色档一一对应（4% / 7% / 35%），
      两套主题的 hover 底看起来一样「轻」。 */
   --overlay-faint: rgba(255, 255, 255, 0.04);
   --overlay-soft: rgba(255, 255, 255, 0.07);
   --overlay-strong: rgba(255, 255, 255, 0.35);
   --surface-sunken: rgba(0, 0, 0, 0.28);
-  /* 这里**故意不再声明** `--divider-strong`：用户指定明暗两套都用 `#212121`，
-     该值不随主题变，按本仓惯例只在 `:root` 定义一次（见那里的注释）。
-     代价要记清楚：`#212121` 压在暗色卡面 `#2c2b30` 上对比只有约 1.19:1，
-     那条线在暗色主题下几乎看不见——这是用户明知的取舍，不是疏漏。
-     要它在暗色下也看得见，把 `:root` 那个值挪一份到 `html.dark` 并改成浅色即可。 */
-  --border: #3e3d44;
-  --border-soft: #35343a;
+  /* 结构分割线的暗色档（2026-10-09 用户拍板改判，理由见 `:root` 那一档）。
+     **取值 2.01:1，比本主题的描边 #4b4a53（1.56:1）更重**——这条线记的是
+     「把一片内容切成上下两组」，必须压过卡片描边，否则角色就糊了。暗色下
+     「更重」是更亮而不是更深。 */
+  --divider-strong: #5b5a64;
+  --border: #4b4a53;
+  --border-soft: #3a3941;
   --text: #f1f4f8;
   --text-secondary: #b2bac5;
   --text-muted: #7f8995;
@@ -180,8 +200,13 @@ html.dark {
   --warning-line: rgba(224, 168, 60, 0.5);
   --danger-fill: rgba(240, 102, 94, 0.16);
   --danger-line: rgba(240, 102, 94, 0.5);
-  --shadow: 0 24px 72px rgba(0, 0, 0, 0.45);
-  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5);
+  /* 暗色档：近段是**浅色环**而不是更深的黑——纯黑落影压在深色底上等于没有
+     （理由与两段式口径见 `:root`）。落影只负责「浮起来」的这段距离感。 */
+  --shadow: 0 0 0 1px rgb(255 255 255 / 0.07), 0 8px 20px rgb(0 0 0 / 0.4), 0 24px 72px rgb(0 0 0 / 0.45);
+  /* 暗色的卡片高度靠**顶边 1px inset 高光**立边缘。落影在深色底上几乎读不出，
+     这一圈被照亮的顶边才是这个主题里「这块板有厚度」的来源，浅色那份不需要它
+     （浅色有天然落影可看）。 */
+  --shadow-card: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 1px 2px rgb(0 0 0 / 0.28), 0 4px 12px rgb(0 0 0 / 0.2);
   --whale-eye-bright: #ff5a5e;
 
   /* Element Plus 暗色覆写：把组件库融进壳底色。 */
@@ -954,12 +979,18 @@ main {
   transform: translateY(-4px);
 }
 
-/* 卡片：8px 圆角 + 1px 描边 + 不透明表面。没有 backdrop-filter——背后已经没有
-   需要磨砂的东西了，留着只多一层合成开销。 */
+/* 卡片：8px 圆角 + 1px 描边 + 轻微高度 + 不透明表面。没有 backdrop-filter——背后
+   已经没有需要磨砂的东西了，留着只多一层合成开销。
+
+   **`box-shadow` 是本卡边缘的另一半承担者**（2026-10-09 边缘感改造，此前这里
+   完全没有投影）。这不是装饰：相邻表面之间的色阶差在这个调色板里有上限，白卡压
+   #e6eaf0 最多到 1.21:1、暗卡压 #232228 最多 1.16:1，光靠底色差无论怎么调都立不
+   出高度。描边负责「这是条边」，投影负责「这块在别的东西上面」。 */
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
   padding: 12px;
   display: flex;
   flex-direction: column;
@@ -988,9 +1019,9 @@ main {
    折叠卡头（.card-head-toggle）、深入排查弹窗头（.debug-panel header）
    与 card-head 结构同待遇，共用下面那条分组伪元素。
    **几何与颜色分家**：收细是几何，只能用 clip-path——渐变（含 mask-image）
-   改的是透明度，两端是「淡到看不见」而不是「细」；颜色是 token，明暗两套
-   同值 #212121（暗色下偏淡是用户明知的取舍）。原生 border 全部退场——
-   border 没法 clip，直线与收细只能二选一。
+   改的是透明度，两端是「淡到看不见」而不是「细」；颜色是 token，明暗各一档
+   （暗色那一档 2026-10-09 才补上，此前两套同值 #212121 时它在暗色下 1.19:1
+   等于没有）。原生 border 全部退场——border 没法 clip，直线与收细只能二选一。
    **适用的只是「有线的块头」**：填色工具条（.logwin 头 / .subwin-head /
    .usagewin-head）、窗口 chrome（.titlebar）、表格行、以及 .section-divider
    那条虚线是别的角色，不跟这条标准；本来就没有线的标题（5 个诊断窗口）
@@ -2555,7 +2586,7 @@ main {
   background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  box-shadow: var(--el-box-shadow);
+  box-shadow: var(--shadow);
   animation: progress-pop 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2);
 }
 
@@ -3181,13 +3212,19 @@ body.pane-dragging .log-tabs {
 
 /* --- 浮层底色与圆角：ElDialog / ElMessage / ElMessageBox / ElLoading --- */
 
-/* 所有浮层的底色一份：`--surface-raised`（浅色 `#fff` / 暗色 `#35343a`，
+/* 所有浮层的底色一份：`--surface-raised`（浅色 `#fff` / 暗色 `#38373f`，
    与 Element Plus 自己的 `--el-bg-color-overlay` 同值）。它必须写在
    **`.el-dialog` 自身**而不是 `:root` 上——库在 `.el-dialog` 规则里就声明了
    `--el-dialog-bg-color`，同名自定义属性写在元素自己身上会赢过从 `html`
-   继承下来的值，放到 `:root` 等于没写。 */
+   继承下来的值，放到 `:root` 等于没写。`--el-dialog-box-shadow` 同理。
+
+   **投影这一项是 2026-10-09 新接的**：库默认给的是单层 `--el-box-shadow`，暗色
+   下被本仓覆写成 `0 12px 32px rgba(0,0,0,.5)`——一层糊在深色底上的柔光，读起来
+   是「一团发光的雾」而不是「一块板」。改指 `--shadow`（近段环 + 两段落影）之后，
+   暗色弹窗的近段是浅色环，那才是边缘真正被看见的地方。 */
 .el-overlay-dialog .el-dialog {
   --el-dialog-bg-color: var(--surface-raised);
+  --el-dialog-box-shadow: var(--shadow);
   border-radius: var(--radius-card);
   border: 1px solid var(--border);
 }
@@ -3209,6 +3246,8 @@ body.pane-dragging .log-tabs {
 }
 .el-message-box {
   --el-messagebox-title-color: var(--text);
+  /* 确认框与 `.el-dialog` 同一档高度，同一个库变量的同一套接法（见上）。 */
+  --el-messagebox-box-shadow: var(--shadow);
 }
 
 /* 输入聚焦微光。 */
@@ -3297,7 +3336,7 @@ body.pane-dragging .log-tabs {
   background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  box-shadow: var(--el-box-shadow);
+  box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -3441,7 +3480,7 @@ body.pane-dragging .log-tabs {
   border-radius: var(--radius-card);
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  box-shadow: var(--el-box-shadow);
+  box-shadow: var(--shadow);
 }
 
 .render-error-actions {
