@@ -143,6 +143,16 @@ pub async fn openai_authorize_start(app: AppHandle) -> Result<AccountStatus, Str
             let transport = production_transport(&handle);
             let mode = settings::current_mode().as_str().to_string();
             let result = flow::run_authorize(&paths, &transport, &mode, &cancel_for_thread);
+            // 结局必须落日志：失败原因此前只在内存（lastError），卡片不渲染
+            // 它时用户完全看不见，也没法事后排查（2026-10-09 实测：发现文档
+            // 403 后静默回到未登录）。
+            match &result {
+                Ok(_) => crate::shell::shell_events::record("openai-authorize", "登录流程完成"),
+                Err(error) => crate::shell::shell_events::record(
+                    "openai-authorize",
+                    &format!("登录流程失败：{error}"),
+                ),
+            }
             *last_error()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = result.err();
