@@ -204,6 +204,13 @@ jobs:
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
 
+      - name: Prepare builtin plugin resources
+        # src-tauri/resources/builtin-plugins/ 是构建期产物（.gitignore 挡住），
+        # 而 tauri.conf.json 的 bundle.resources 按目录映射引用它。少这一步，
+        # cargo test 与两个平台的 tauri build 会同时死于
+        # `resource path 'resources/builtin-plugins' doesn't exist`。
+        run: pnpm run prep:builtin
+
       - name: Check cross-file invariants
         run: pnpm run check:invariants
 
@@ -280,6 +287,13 @@ jobs:
 
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Prepare builtin plugin resources
+        # src-tauri/resources/builtin-plugins/ 是构建期产物（.gitignore 挡住），
+        # 而 tauri.conf.json 的 bundle.resources 按目录映射引用它。少这一步，
+        # cargo test 与两个平台的 tauri build 会同时死于
+        # `resource path 'resources/builtin-plugins' doesn't exist`。
+        run: pnpm run prep:builtin
 
       - name: Verify signing key pair
         # Windows runner 默认 shell 是 PowerShell，而这一步用的是 bash 语法；

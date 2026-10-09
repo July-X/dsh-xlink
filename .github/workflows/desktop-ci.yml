@@ -45,6 +45,16 @@ jobs:
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
 
+      - name: Prepare builtin plugin resources
+        # src-tauri/resources/builtin-plugins/ 是构建期产物（.gitignore 挡住），
+        # 但 tauri.conf.json 的 bundle.resources 按目录映射引用它 —— 少这一步，
+        # 下一个 cargo 命令就在 build script 里死于
+        # `resource path 'resources/builtin-plugins' doesn't exist`，
+        # 表现为 cargo test / clippy / tauri build 三处同时红，且报错与真正
+        # 原因隔着两层。2026-10-09 发 v0.4.4 时就是这样：quality gates 的
+        # cargo test 与两个平台的构建同时挂在这一行上。
+        run: pnpm run prep:builtin
+
       - name: Check cross-file invariants
         # 命令注册/白名单/capability/内置补丁清单/三处版本号一致性。
         run: pnpm run check:invariants
@@ -110,6 +120,14 @@ jobs:
         run: |
           mkdir -p ui/dist
           printf '<!doctype html><html><body></body></html>\n' > ui/dist/index.html
+
+      - name: Prepare builtin plugin resources
+        # 本 job 刻意不装 pnpm（只用 node 内置模块够跑），所以直调脚本本体。
+        # build script 校验的是 tauri.conf.json 里登记的全部 bundle.resources，
+        # 不只是 frontendDist——少这一步 cargo check 会与 quality job 同样死于
+        # `resource path 'resources/builtin-plugins' doesn't exist`。
+        shell: bash
+        run: node scripts/prepare-builtin-plugins.mjs
 
       - name: Check Windows-only code paths
         run: cargo check --manifest-path src-tauri/Cargo.toml --locked --all-targets

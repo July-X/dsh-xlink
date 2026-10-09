@@ -38,3 +38,64 @@ test('package.json 的每条 tauri build 入口都先跑 prep:builtin', () => {
     );
   }
 });
+
+// --- workflow -----------------------------------------------------------------
+//
+// 上面两条只钉了本地入口。2026-10-09 发 v0.4.4 时 CI 与发布流水线同时红：
+// 两个 workflow 在 `pnpm install` 之后直接开编，从没跑过 prep:builtin，
+// 于是 quality job 的 cargo test 与两个平台的 tauri build 全都死在
+// `resource path 'resources/builtin-plugins' doesn't exist`。上面那两条判据
+// 全绿——它们看的是 dev.mjs 与 package.json，看不见 workflow。
+//
+// 判据取「会跑 build script 的 cargo 子命令」而不是「文件里提没提 prep」：
+// cargo fmt 不编译，cargo build/check/test/clippy 都编译。case-insensitive 是
+// 为了连 `Cargo` 与 `CARGO` 一起算——Windows runner 上拼错大小写同样会编译。
+
+const WORKFLOWS = ['../.github/workflows/desktop-ci.yml', '../.github/workflows/desktop-release.yml'];
+
+/** 把 workflow 切成 job 块（只取 `jobs:` 之后、两空格缩进的 job id）。 */
+function jobBlocks(source) {
+  const lines = source.split('\n');
+  const jobsStart = lines.findIndex((line) => /^jobs:\s*$/.test(line));
+  assert.notEqual(jobsStart, -1, 'workflow 里找不到 jobs: 段（结构变了？请同步本测试）');
+  const blocks = [];
+  let current = null;
+  for (const line of lines.slice(jobsStart + 1)) {
+    const header = line.match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
+    if (header) {
+      current = { name: header[1], lines: [] };
+      blocks.push(current);
+      continue;
+    }
+    if (current) current.lines.push(line);
+  }
+  return blocks;
+}
+
+test('每个会编译 Rust 的 workflow job 都先生成内嵌插件资源', () => {
+  for (const workflow of WORKFLOWS) {
+    const source = read(workflow);
+    const jobs = jobBlocks(source);
+    assert.ok(jobs.length > 0, `${workflow}: 没解析出任何 job——判据自己失效时必须红`);
+
+    const compiling = jobs.filter((job) =>
+      /\bcargo\s+(build|check|test|clippy|run)\b/i.test(job.lines.join('\n')),
+    );
+    // 同样是为了「判据在空转」时能响：解析不出编译型 job 就说明匹配式坏了，
+    // 而不是「所有 job 都不编译所以通过」。
+    assert.ok(
+      compiling.length > 0,
+      `${workflow}: 没解析出任何编译型 job——cargo 子命令匹配式可能已经与 workflow 脱节`,
+    );
+
+    for (const job of compiling) {
+      assert.match(
+        job.lines.join('\n'),
+        /prep:builtin|prepare-builtin-plugins\.mjs/,
+        `${workflow} 的 job「${job.name}」会编译但没生成内嵌插件资源——` +
+          'tauri 的 build script 会校验 bundle.resources，新 checkout 上必然死于 ' +
+          "`resource path 'resources/builtin-plugins' doesn't exist`",
+      );
+    }
+  }
+});
