@@ -729,7 +729,7 @@ fn http_get_json_ext(
 /// 设计要求：查询事件与错误可落日志供「查看日志」反馈，但**绝不写入原始
 /// 凭据或凭据文件内容**——调用方只允许传 provider、结果分类、HTTP 状态、
 /// 脱敏提示与截断后的响应摘要。写日志失败静默（诊断不能掩盖查询结果）。
-fn log_subscription_line(line: String) {
+pub(crate) fn log_subscription_line(line: String) {
     let spec = process::LogSpec::new(process::build_log_kind(), "subscription");
     let mut log = match process::RotatingLog::new(&process::shell_logs_dir(), spec) {
         Ok(log) => log,

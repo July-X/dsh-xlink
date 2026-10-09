@@ -294,7 +294,10 @@ const FILE_BUDGETS = {
   // 两条 ChatGPT 命名空间声明（`…/auth.chatgpt_account_id` 与
   // `…/auth.chatgpt_plan_type`）——在既有的 ID token 校验里多解两个**可选**
   // 声明（一处取值闭包 + `IdClaims` 两个字段），不构成新的关注点，仍留在此。
-  'src-tauri/src/openai/auth.rs': 410,
+  // 410 → 420：账号 id 的声明在真机上有**两种形状**（摊平
+  // `…/auth.chatgpt_account_id`，或整个命名空间是一个对象），认错一种就
+  // 静默读不到，因此取值的两种形状与「非空字符串」辅助函数都收在这里。
+  'src-tauri/src/openai/auth.rs': 420,
   // JWK 解析 + RS256 验签：ring 的 RsaPublicKeyComponents 直接吃 n/e，
   // 第一版手拼 SPKI DER 已删（不必要）。固定测试密钥自签自验钉住。
   'src-tauri/src/openai/jwk.rs': 53,
@@ -1367,7 +1370,11 @@ const FILE_BUDGETS = {
   //    解释；③ 它自带一组只针对自己的解析单测（按窗口时长而非槽位分类）。
   // 200 → 260：给解析与代理路由留的余量（凭据读取 + 按路由试路 + 逐字段
   // 防御式解析 + 单测）。仍在 800 硬顶之内。
-  'src-tauri/src/usage/subscription_openai.rs': 260,
+  // 260 → 285：分区「登录了就可见、拿不到账号信息就如实报错」的逻辑，
+  // 以及三类失败原因（读不出账号信息 / 账号 id 缺失 / 结构不认识）各自落到
+  // 日志还是错误横幅的判断。原先把读不出凭据一并归成「未配置」，故障因此
+  // 静默消失——这一段就是补那件事。
+  'src-tauri/src/usage/subscription_openai.rs': 285,
   // DSH 模型凭据只读解析（credentials.rs）：profile cordis.patch.yml 的
   // provider apiKeyEnv 绑定、.credentials.yaml refs、.env 回退层与默认引用
   // 派生。凭据语义与内核对齐只有一处实现，独立成模块供 subscription.rs 复用。

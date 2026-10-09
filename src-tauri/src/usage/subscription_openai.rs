@@ -8,7 +8,7 @@
 //!   外壳仍然不收集、不存储任何新凭据——用的是用户自己已经完成的那次授权。
 //! - **必须带账号上下文**：端点要求 `ChatGPT-Account-Id` 请求头，值来自
 //!   登录时从 ID token 取下的 `…/auth.chatgpt_account_id` 声明
-//!   （`openai::auth::CHATGPT_ACCOUNT_ID_CLAIM`）。它**不在 access token
+//!   （`openai::auth::CHATGPT_AUTH_CLAIM`，摊平与嵌套两种形状都认）。它**不在 access token
 //!   上**——访问令牌受众是 `api.openai.com/v1`，不含账号上下文。
 //! - **必须走代理路由**：这是本仓第一个境外 provider。国内网络上
 //!   `chatgpt.com` 的直连解析可能不可用（2026-10-09 实测本机即如此，
@@ -56,6 +56,9 @@ pub(crate) enum FetchProblem {
     /// 结构不认识：调用方把响应摘要写日志，便于定位改版。携带响应体是
     /// 为了让那条日志真的能定位改版（空摘要等于没记）。
     Unrecognized(String),
+    /// 登录了但拿不到 ChatGPT 账号 id：额度端点要它当 `ChatGPT-Account-Id`
+    /// 头，缺了就没有可发的请求。这**不是**凭据失效，也不是网络问题。
+    NoAccountContext,
 }
 
 /// 本 provider 要用的凭据。**只在内存里活到请求结束**，不进缓存 / 日志 /
@@ -63,7 +66,9 @@ pub(crate) enum FetchProblem {
 #[derive(Clone)]
 pub(crate) struct OpenAiUsage {
     pub(crate) access_token: String,
-    pub(crate) account_id: String,
+    /// 缺失时（`None`）不是「未登录」，而是「登录了但服务端没给账号信息」——
+    /// 两种情况要分开说，否则用户只会看到一句没头没尾的失败。
+    pub(crate) account_id: Option<String>,
 }
 
 /// 解析当前活跃账号的凭据，供 `subscription.rs` 判「是否已配置」。
@@ -71,14 +76,26 @@ pub(crate) struct OpenAiUsage {
 /// `None` = 尚未登录 / 拿不到账号 id，调用方据此 `configured = false` 让
 /// 前端隐藏分区，而不是拿空值去打接口。
 pub(crate) fn resolved_credential() -> Option<credentials::ResolvedCredential> {
-    let usage = active_credentials().ok().flatten()?;
-    Some(credentials::ResolvedCredential {
-        reference: "openai-oauth".to_string(),
-        // 指纹绑定到访问令牌：换账号即换令牌，缓存随之作废——与其它
-        // provider 同一套绑定语义，不必为账号 id 另设一套。
-        value: Some(usage.access_token),
-        source: credentials::CredentialSource::OpenAiVault,
-    })
+    // **登录了就该看得见这一栏**，哪怕暂时查不到数字。此前把「读不出账号 id」
+    // 也归成「未配置」，结果是分区凭空消失、连一句原因都没有——用户看到的是
+    // 「这功能没有」，而不是「这一栏在、但服务端没给账号信息」。这里只要
+    // vault 里有活跃账号就算已配置，拿不到账号 id 的后果由查询侧如实报错。
+    match active_credentials() {
+        Ok(Some(usage)) => Some(credentials::ResolvedCredential {
+            reference: "openai-oauth".to_string(),
+            // 指纹绑定到访问令牌：换账号即换令牌，缓存随之作废——与其它
+            // provider 同一套绑定语义，不必为账号 id 另设一套。
+            value: Some(usage.access_token),
+            source: credentials::CredentialSource::OpenAiVault,
+        }),
+        Ok(None) => None,
+        Err(message) => {
+            subscription::log_subscription_line(format!(
+                "subscription OpenAI 读取凭据失败：{message}"
+            ));
+            None
+        }
+    }
 }
 
 /// 取当前活跃账号的凭据。**vault 文件不存在就直接返回**：没有它就没有账号
@@ -90,6 +107,9 @@ pub(crate) fn resolved_credential() -> Option<credentials::ResolvedCredential> {
 pub(crate) fn active_credentials() -> Result<Option<OpenAiUsage>, String> {
     let paths = crate::openai::flow::shell_flow_paths();
     if !paths.vault_file.is_file() {
+        subscription::log_subscription_line(
+            "subscription OpenAI 未启用：凭据文件不存在（未在本壳登录过）".into(),
+        );
         return Ok(None);
     }
     let transport = crate::openai::flow::ProductionTransport { open_browser: None };
@@ -104,13 +124,15 @@ pub(crate) fn active_credentials() -> Result<Option<OpenAiUsage>, String> {
         .clone()
         .filter(|id| !id.trim().is_empty())
         .or_else(|| account_id_from_id_token(&tokens.id_token));
-    match account_id {
-        Some(account_id) => Ok(Some(OpenAiUsage {
-            access_token: tokens.access_token,
-            account_id,
-        })),
-        None => Ok(None),
+    if account_id.is_none() {
+        subscription::log_subscription_line(
+            "subscription OpenAI 已登录但拿不到账号 id（ID token 的命名空间声明里没有它）".into(),
+        );
     }
+    Ok(Some(OpenAiUsage {
+        access_token: tokens.access_token,
+        account_id,
+    }))
 }
 
 /// 从 vault 里留存的那份 ID token 取账号 id。
@@ -125,12 +147,44 @@ pub(crate) fn active_credentials() -> Result<Option<OpenAiUsage>, String> {
 /// 「发给哪个账号」这一个查询上下文，不是身份判定。
 fn account_id_from_id_token(id_token: &str) -> Option<String> {
     use base64::Engine;
-    let payload = id_token.split('.').nth(1)?;
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .ok()?;
-    let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
-    crate::openai::auth::namespaced_string(&claims, crate::openai::auth::CHATGPT_ACCOUNT_ID_CLAIM)
+    let id_token = id_token.trim();
+    if id_token.is_empty() {
+        return diagnose("vault 里的 id_token 是空字符串");
+    }
+    let segments: Vec<&str> = id_token.split('.').collect();
+    let Some(payload) = segments.get(1) else {
+        return diagnose(&format!("id_token 不是三段 JWT（段数 {}）", segments.len()));
+    };
+    let Ok(decoded) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
+        return diagnose("id_token 载荷不是合法 base64url");
+    };
+    let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&decoded) else {
+        return diagnose("id_token 载荷不是 JSON");
+    };
+    let found = crate::openai::auth::chatgpt_account_id(&claims);
+    if found.is_none() {
+        // **只打 key 名、不打值**：值里含邮箱与账号 id，日志不该带它们。
+        // key 名足够定位「这条 ID token 根本没带这个声明」。
+        let keys: Vec<&str> = claims
+            .as_object()
+            .map(|object| object.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        let nested: Vec<&str> = claims
+            .get(crate::openai::auth::CHATGPT_AUTH_CLAIM)
+            .and_then(serde_json::Value::as_object)
+            .map(|object| object.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        return diagnose(&format!(
+            "id_token 载荷里没有该声明，顶层 key = {keys:?}，命名空间内 key = {nested:?}"
+        ));
+    }
+    found
+}
+
+/// 解析失败时落一行诊断再返回 `None`（调用方据此按「未配置」处理）。
+fn diagnose(reason: &str) -> Option<String> {
+    subscription::log_subscription_line(format!("subscription OpenAI 账号 id 回填失败：{reason}"));
+    None
 }
 
 /// 查一次额度窗口，返回 provider 数据。凭据只在 HTTPS 请求头这一处出现。
@@ -146,6 +200,10 @@ pub(crate) fn fetch_active(now_ms: u64) -> subscription::FetchOutcome {
         Ok(tiers) => FetchOutcome::Success(ProviderData::Plan { tiers }),
         Err(FetchProblem::Transient(message)) => FetchOutcome::Transient(message),
         Err(FetchProblem::Rejected(message)) => FetchOutcome::Deterministic(message, true),
+        Err(FetchProblem::NoAccountContext) => FetchOutcome::Deterministic(
+            "已登录 OpenAI，但服务端没有在令牌里给出 ChatGPT 账号信息，拿不到额度查询所需的账号上下文。\n             可在 ChatGPT 设置 → 用量查看（打开官网用量页），或在 Codex CLI 登录后由它查询。".into(),
+            false,
+        ),
         Err(FetchProblem::Unrecognized(body)) => {
             subscription::log_unrecognized_structure(subscription::PROVIDER_OPENAI, &body);
             FetchOutcome::Deterministic(subscription::UNRECOGNIZED_STRUCTURE.to_string(), false)
@@ -158,13 +216,17 @@ pub(crate) fn fetch_tiers(
     credential: &OpenAiUsage,
     now_ms: u64,
 ) -> Result<Vec<CacheTier>, FetchProblem> {
+    let Some(account_id) = credential.account_id.as_deref() else {
+        return Err(FetchProblem::NoAccountContext);
+    };
+    let access_token = credential.access_token.as_str();
     // 先代理、失败再直连（net_proxy 恒以直连收尾）。**只有传输层失败才换
     // 路由**：401 与「结构不认识」换一条路只会同样地失败；若让它们继续往下
     // 走，分类会随路由顺序漂移——凭据失效被后续路由的传输错误盖住，报成
     // 「网络不可达」，这一轮也不会置 expired。
     let mut last_transport_error: Option<FetchProblem> = None;
     for route in crate::pkg::net_proxy::routes() {
-        match call_route(&route, credential) {
+        match call_route(&route, access_token, account_id) {
             Ok(text) => {
                 return match parse_tiers(&text, now_ms) {
                     Ok(tiers) if !tiers.is_empty() => Ok(tiers),
@@ -184,7 +246,8 @@ pub(crate) fn fetch_tiers(
 /// 走一条路由发一次请求。
 fn call_route(
     route: &crate::pkg::net_proxy::Route,
-    credential: &OpenAiUsage,
+    access_token: &str,
+    account_id: &str,
 ) -> Result<String, FetchProblem> {
     let Some(agent) = agent_for(route) else {
         return Err(FetchProblem::Transient(format!(
@@ -196,11 +259,8 @@ fn call_route(
     // vault 的只读解密）。任何错误信息、日志、缓存都不得携带它们。
     let request = agent
         .get(USAGE_ENDPOINT)
-        .header(
-            "Authorization",
-            &format!("Bearer {}", credential.access_token),
-        )
-        .header("ChatGPT-Account-Id", &credential.account_id)
+        .header("Authorization", &format!("Bearer {access_token}"))
+        .header("ChatGPT-Account-Id", account_id)
         .header("Accept", "application/json")
         .header("User-Agent", USER_AGENT);
     match request.call() {
@@ -450,8 +510,12 @@ mod tests {
 
     #[test]
     fn account_id_is_recovered_from_the_stored_id_token() {
+        // 摊平形状（Codex CLI 那份）：https://api.openai.com/auth.chatgpt_account_id
         let token = id_token_with(
-            crate::openai::auth::CHATGPT_ACCOUNT_ID_CLAIM,
+            &format!(
+                "{}.chatgpt_account_id",
+                crate::openai::auth::CHATGPT_AUTH_CLAIM
+            ),
             "7c26dd40-bf4b-42f7-8b81-cd546ca363e8",
         );
         assert_eq!(
@@ -463,6 +527,20 @@ mod tests {
     #[test]
     fn a_token_without_the_claim_yields_nothing() {
         assert_eq!(account_id_from_id_token(&id_token_with("sub", "u-1")), None);
+        // **嵌套形状（DSH 自己签发流程拿到的就是这一种）**：整个命名空间是一个对象，
+        // 账号 id 在对象内部。2026-10-09 丢分区的原因就是只认摊平那一种。
+        let nested = {
+            use base64::Engine;
+            let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+                r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acc-nested","chatgpt_plan_type":"plus"}}"#
+                    .as_bytes(),
+            );
+            format!("h.{payload}.s")
+        };
+        assert_eq!(
+            account_id_from_id_token(&nested).as_deref(),
+            Some("acc-nested")
+        );
         assert_eq!(account_id_from_id_token(""), None);
         assert_eq!(account_id_from_id_token("not-a-jwt"), None);
         // 三段齐全但载荷不是 JSON：读不出就当作没有，不报错。
