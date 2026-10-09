@@ -147,6 +147,9 @@ fn refresh_once(
         id_token: entry.id_token.clone(),
         scopes: entry.scopes.clone(),
         access_expires_at: deps.now_unix() + tokens.expires_in,
+        // 账号 id 是账号属性、刷新不改变它；老 vault 可能没有这个字段，
+        // 刷新时原样带上，别在令牌轮换里抹掉。
+        chatgpt_account_id: entry.chatgpt_account_id.clone(),
         reauth_required: false,
     }))
 }

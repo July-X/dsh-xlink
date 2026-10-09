@@ -97,8 +97,9 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
   - 机制与验证见 [docs/features/extensions/skill-management.md §「技能接线」](docs/features/extensions/skill-management.md#技能接线壳怎么让内核看见活动视图)；多实例共享活动视图的设计理由见 [docs/architecture/architecture.md](docs/architecture/architecture.md)。
 - **数据迁移向导**：侧栏「系统」组提供常驻入口，设置页不再重复展示。嵌入式 4 步向导——发现 → 选择 → 运行 → 完成 / 回滚。迁移运行期间走 `ProgressOverlay`，与安装内核 / 装插件共享同一进度 UI。凭据与会话首版不纳入迁移（旧版默认保守），冲突策略默认 `SkipIfNewer`（保留用户后来修改），旧源永不被删除（rollback 路径依赖）。启动弹窗只在从未处理过迁移时出现：成功迁移（后端自动记录静音标记）、点过「否」或已有迁移历史（含旧版本迁完、部分失败与回滚过的用户）重启后都不再被询问，需要时从侧栏「数据迁移」进入。完成后回主界面，顶部 banner 报告最近一次迁移的状态。完整设计见 [docs/features/migration/migration-wizard-ui-proposal.md](docs/features/migration/migration-wizard-ui-proposal.md)。
 - **模型用量统计**：概览页「当前内核」卡显示今日 token 用量，点同排的「模型用量」弹出**独立可缩放窗口**（与日志查看器「全屏」同一条建窗路径；默认吸附主窗右侧、高度与本体一致，主窗拖动时 60fps 合帧跟随）。窗口提供 6 档范围：今日 / 7 / 15 / 30 / 60 / 90 天。顶部摘要卡含「今日用量 / 日均用量 / 请求次数 / 活跃天数 / 最常用模型」瓦片，另有 GitHub 式**活跃热力图**、按模型堆叠的**按天 Token 趋势**柱状图（token 数精确到小数点后两位），以及**模型用量**环形图（中心显示当前范围合计 token）和列表（每模型的 token 数与占比，列表自适应高度，滚动期间才显形滚动条）。统计口径是最近 90 天，超过的记录自动丢弃，窗口标题旁的 ℹ️ tooltip 与卡片悬浮提示都会说明这一点。数据来自本机内核的会话文件（`sessions/` 下的多帧 zstd JSONL，逐条读取模型回复自带的 token 计量，只认真实模型调用），按「天 × 模型」预聚合进一份增量账目（`<实例目录>/usage/state.json`，百 KB 量级），不保存任何会话原文。扫描按文件增量进行（只解新追加的帧、旧文件整跳过），首次全量秒级、之后毫秒级。窗口是只读的，每次打开都会强制重扫一次；账目按实例隔离，与壳的 release / dev 模式无关。视觉布局见仓库顶部截图，机制与存储设计见 [docs/architecture/architecture.md](docs/architecture/architecture.md)。
-- **套餐 / Token Plan 用量（云端）**：概览页「当前内核」卡下方的独立卡片展示云端账户的剩余额度，共 4 个分区（`subscription.rs` 的 `PROVIDER_ORDER` 固定展示顺序：DeepSeek → MiniMax-CN → MiniMax-EN → 智谱 GLM）。
-  - DeepSeek 是**货币余额**（多币种逐行，总额 / 赠金（未过期）/ 充值三项分别列出，余额不足以发起调用时单独标红）。MiniMax-CN 与 MiniMax-EN 的 5 小时 / 周窗口、智谱 GLM 编程套餐的 5 小时 / 周窗口是**剩余百分比**（进度条按剩余量三档配色，附重置倒计时；智谱接口给的是已用百分比，展示口径统一换算为剩余）。各云端 API 都不**提供绝对剩余 token 数**，这里只有百分比与金额，不做任何估算。
+- **套餐 / Token Plan 用量（云端）**：概览页「当前内核」卡下方的独立卡片展示云端账户的剩余额度，共 5 个分区（`subscription.rs` 的 `PROVIDER_ORDER` 固定展示顺序：DeepSeek → MiniMax-CN → MiniMax-EN → 智谱 GLM → OpenAI）。
+  - DeepSeek 是**货币余额**（多币种逐行，总额 / 赠金（未过期）/ 充值三项分别列出，余额不足以发起调用时单独标红）。MiniMax-CN 与 MiniMax-EN 的 5 小时 / 周窗口、智谱 GLM 编程套餐的 5 小时 / 周窗口、OpenAI ChatGPT 套餐的 5 小时 / 7 天窗口是**剩余百分比**（进度条按剩余量三档配色，附重置倒计时；智谱与 OpenAI 接口给的是已用百分比，展示口径统一换算为剩余）。各云端 API 都不**提供绝对剩余 token 数**，这里只有百分比与金额，不做任何估算。
+  - **OpenAI 分区用的是「内嵌 openai-oauth 插件」那次登录的凭据**，不配任何新 Key：未登录（或登录的版本早于「账号 id 随 vault 落库」这一版）时该分区自动隐藏，重新登录一次即可显示。查询打的是 `chatgpt.com` 的第一方额度接口（未经公开文档承诺，字段可能漂移），访问令牌**只**出现在这一次请求的 `Authorization` 头里，账号 id 作 `ChatGPT-Account-Id` 头，二者都不进 UI / 日志 / 缓存。这个域名在国内网络上常常连不通，因此查询与其他出网路径一样走 `net_proxy::routes()`（先系统代理、传输失败再直连）。窗口按 `limit_window_seconds` 识别（18000 = 5h、604800 = 7d）而**不是**按 `primary` / `secondary` 槽位——真机上见过「7 天窗口跑在 primary 槽、secondary 为 null」；某个窗口缺席时该分区**仍画这一行、但标「暂无数据」**（两个窗口都缺席时显示「暂无额度数据」），绝不按 100% 补一行——把「没数据」画成「额度充足」是这里最不能犯的错；只少画一行同样不行，那会被读成「这个套餐只有周窗口」而不是「服务端这次没给 5h」。
   - 未在内核配置对应厂商凭据的分区自动隐藏。卡片直接展示进度条、重置倒计时与查询时间，点「查看详情」弹出独立窗口（与模型用量窗口同一条建窗与吸附跟随路径，窗口内可刷新、可跳「模型用量」窗口、可前往模型设置）。
   - 凭据复用当前内核模型设置：外壳不收集、不保存任何 Key，查询用当前实例 / profile 已配置的模型凭据（工作台的模型设置是唯一凭据编辑入口），设置页只提供各 provider 的「测试连接」与「前往模型设置」入口。
   - 数据约 5 分钟更新一次，「刷新」立即重查。查询失败时保留上次成功数据并显示错误横幅；凭据失效（HTTP 401/403）后停止自动重试、点刷新才重试。配置了凭据但一直查不到数据的分区会询问是否隐藏（选择被记住、不再展示与报错），之后某次查询成功（含每次启动时的首次强制查询）会自动恢复显示。缓存与展示都按实例隔离，切换实例不会看到别的实例的余额。
@@ -164,7 +165,8 @@ GitHub 仓库：[July-X/dsh-xlink](https://github.com/July-X/dsh-xlink)
         ├── skills.rs         # 技能中央库、物化、启停与更新
         ├── skill_shadow.rs   # 被高优先级根盖住的技能条目：改名让路（只改名不删）
         ├── patches.rs        # 内置补丁：清单、备份、应用/撤销、状态
-        ├── subscription.rs   # 云端套餐用量（MiniMax / DeepSeek / 智谱，含 MiniMax 国际站）
+        ├── subscription.rs   # 云端套餐用量（DeepSeek / MiniMax / 智谱，含 MiniMax 国际站）
+        ├── subscription_openai.rs # OpenAI（ChatGPT）套餐用量：OAuth vault 凭据 + 代理路由
         ├── usage.rs          # 本地模型用量账目（增量扫描 + 聚合）
         ├── releases.rs       # 官方发布列表（npm registry → GitHub 回退）
         ├── updater.rs        # 桌面端自身更新与安装残留清理

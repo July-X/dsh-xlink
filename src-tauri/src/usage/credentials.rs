@@ -55,6 +55,9 @@ pub enum CredentialSource {
     CredentialsYaml,
     /// `<DSH_HOME>/.env` 回退层。
     EnvFile,
+    /// 壳自己的 OpenAI OAuth 加密库（`crate::openai` 的 vault）——不是内核
+    /// 模型凭据链的一层，故单列，避免把它记成上面三者之一。
+    OpenAiVault,
 }
 
 impl CredentialSource {
@@ -63,6 +66,7 @@ impl CredentialSource {
             CredentialSource::Env => "env",
             CredentialSource::CredentialsYaml => "credentials.yaml",
             CredentialSource::EnvFile => ".env",
+            CredentialSource::OpenAiVault => "openai-oauth",
         }
     }
 }

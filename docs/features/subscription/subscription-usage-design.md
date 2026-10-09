@@ -1,9 +1,12 @@
 # dsh-xlink 套餐 / Token Plan 用量展示设计
 
 > 本文档描述桌面外壳的「云端套餐用量」功能：查询并展示 MiniMax Token Plan 的双窗口额度
-> 进度、DeepSeek 按量余额与智谱 GLM 编程套餐的双窗口额度。当前代码实际接入 **4 个 provider**
+> 进度、DeepSeek 按量余额、智谱 GLM 编程套餐的双窗口额度，以及 OpenAI（ChatGPT 套餐）
+> 的 5 小时 / 7 天窗口。当前代码实际接入 **5 个 provider**
 > （`subscription.rs` 的 `PROVIDER_ORDER`：`deepseek` / `minimax_cn` / `minimax_en` /
-> `zai_coding_cn`），下面各章按「套餐类（plan）/ 余额类（balance）」两种形态统一描述。
+> `zai_coding_cn` / `openai_codex`），下面各章按「套餐类（plan）/ 余额类（balance）」
+> 两种形态统一描述。OpenAI 一节（接口规格）单列了它与另外四家的三处差别：凭据来自壳
+> 自己的 OAuth vault 而非内核凭据链、必须带账号上下文请求头、必须走代理路由。
 > 参考实现是
 > [cc-switch](https://github.com/farion1231/cc-switch)（Rust + Tauri，MIT）的
 > `services/coding_plan.rs` 与 `services/balance.rs`，接口字段以其源码为核对基准。
@@ -56,6 +59,13 @@ HTTP 栈适配（ureq + spawn_blocking，非 reqwest）、原始凭据不跨壳�
 | --- | --- | --- |
 | MiniMax Token Plan | 5 小时窗口与周窗口的**剩余百分比**、窗口重置时间 | 绝对剩余 token 数（官方额度口径甚至是「3-4 个 Agent」级别的模糊描述）；套餐档位名（Plus / Max / Ultra，API 不回传） |
 | DeepSeek | 账户**货币余额**（总额 / 赠送 / 充值，CNY 与 USD）、余额是否可用 | 一切「额度」「限额」概念——DeepSeek 是纯按量计费，只有余额 |
+| 智谱 GLM | 5 小时 / 周窗口的**剩余百分比**与重置时间 | 绝对剩余 token 数；套餐档位名 |
+| OpenAI ChatGPT | 5 小时 / 7 天窗口的**剩余百分比**与重置时间 | 绝对剩余 token 数；套餐档位名（响应里带 `plan_type`，本版本不展示，见下）；`additional_rate_limits`（`gpt-reserve` 等额外额度桶，本版本不展示） |
+
+注意 OpenAI 的窗口**可能缺席**：接口按账号返回，一次响应里可能只有 7 天窗口而没有
+5 小时窗口（也可能反过来）。缺席的窗口不画进度条——分区里少那一行（两个窗口都缺席
+时显示「暂无额度数据」），**任何情况下都不按 100% 补一行**：把「没数据」画成「额度
+充足」是本功能最不能犯的错。
 
 设置页与窗口文案按此口径措辞：MiniMax 展示「剩余 X%」，DeepSeek 展示金额；
 不做任何绝对 token 数的估算或虚构档位标签。本地「已用 token」统计由现有
@@ -68,8 +78,9 @@ usage.rs 窗口承担，本功能的窗口里放一行入口指过去即可。
 | 订阅 Key | MiniMax Token Plan 接口要求的凭据类型；本功能不单独保存或输入它，是否与当前 dsh provider 的模型 Key 相同必须由步骤 0 真机验证。 |
 | 模型凭据 | 当前 DSH profile 的 provider 通过 `apiKeyEnv` 引用的实际 API Key；查询优先复用这一凭据。 |
 | credential reference | `.credentials.yaml` / 环境层中使用的引用名，例如 `MINIMAX_CN_API_KEY`；只传递引用名，不传递值。 |
-| 额度窗口 | MiniMax Token Plan 的两层计量周期：5 小时固定窗口 + 周窗口；部分套餐无周限额 |
+| 额度窗口 | MiniMax Token Plan 的两层计量周期：5 小时固定窗口 + 周窗口；部分套餐无周限额。OpenAI 侧同为一层 5 小时（`limit_window_seconds = 18000`）+ 一层 7 天（`604800`） |
 | tier | 一次查询里的一个额度层（5h / 周），含利用率与重置时间 |
+| ChatGPT 账号 id | ID token 的 `https://api.openai.com/auth.chatgpt_account_id` 声明。查 chatgpt.com 用量端点时作 `ChatGPT-Account-Id` 请求头；**不在 access token 上**（访问令牌受众是 `api.openai.com/v1`），登录时随 vault 一起落库 |
 | keep-last-good | 查询失败时保留并继续展示上一次成功数据，错误单独呈现，不清空旧值 |
 
 ## 接口规格
@@ -201,6 +212,93 @@ refs → `.env`）可选配置：两项都配置时才随请求发送；`PLAN_TY
 - `data` 缺失 / 非对象：顶层 `msg` / `message` 有可读文案则透出（业务拒绝），
   否则按结构不认识处理；`limits` 缺失或空数组返回空 tier 列表。
 
+### OpenAI ChatGPT 套餐：`/backend-api/wham/usage`
+
+| 项 | 值 |
+| --- | --- |
+| 端点 | `GET https://chatgpt.com/backend-api/wham/usage` |
+| 认证 | `Authorization: Bearer <SIWC access token>` |
+| 必需请求头 | `ChatGPT-Account-Id: <chatgpt_account_id>`、`Accept: application/json` |
+| 出处 | **第一方但未文档化**：OpenAI 没有公开承诺这个端点，它是 ChatGPT 官方 Web 客户端自己用的内部接口（2026-10-09 真机 HTTP 200 核实）。字段随时可能漂移，因此按逐字段防御式解析对待 |
+
+**凭据来源与其余四个 provider 不同**：不来自内核模型凭据链（env / `.credentials.yaml`
+/ `.env`），而是壳自己的 Sign-in-with-ChatGPT OAuth 凭据（`crate::openai` 的加密
+vault，即「内嵌 openai-oauth 插件」那次登录的结果）。`configured` 的判据是
+**已登录且拿得到账号 id**，未登录即隐藏分区。外壳不因此新增任何凭据收集面——用的
+是用户已经完成的那次授权。
+
+**账号 id 不在 access token 上**：访问令牌的受众是 `https://api.openai.com/v1`
+（`auth.rs` 的 `OPENAI_RESOURCE`），不含账号上下文；账号 id 只随 **ID token** 下发，
+声明名是 `https://api.openai.com/auth.chatgpt_account_id`（配套的
+`…/auth.chatgpt_plan_type` 是套餐档位）。壳在登录时（`flow::exchange_and_store`，
+ID token 已验签）把这条声明落进 vault，查询时直接取用，**不必**再解 ID token。
+老 vault 文件没有这个字段（`#[serde(default)]` 兜底），此时该分区按未配置隐藏，
+重新登录一次即可补上。
+
+**令牌只发往一个地方**：请求头里的原始 access token 只出现在这一次 HTTPS 请求上，
+不进 UI、日志、缓存与事件；错误文案只说「OpenAI 登录已失效（HTTP 401）」，不带
+token 片段。
+
+**读凭据前先看 vault 文件在不在**：没有它就没有账号条目可读，也就没有理由去碰
+系统钥匙串——而钥匙串取不到值时，「取或生成」的语义会**当场生成一把新密钥并写进
+用户的真实钥匙串**。单测在临时 home 下跑到这条路径正是这个形状，所以顺序必须是
+「文件不存在 → 报未配置 → 结束」，不往下走。
+
+**出网必须走 `net_proxy::routes()`**：这是本仓第一个境外 provider。国内网络上
+`chatgpt.com` 的直连解析不可用（2026-10-09 实测本机即如此，DNS 解析被污染），
+而壳是 GUI 程序、继承不到用户为命令行设的 `HTTPS_PROXY`。因此查询沿用
+`pkg::net_proxy::routes()` 的「先代理、传输失败再直连、末位恒为直连」纪律，直连
+显式 `.proxy(None)`（否则「回退直连」又被环境变量拉回代理），**只有传输层失败才
+换路**——401 与结构不认识换一条路只会同样地失败。
+
+响应结构（关键字段，2026-10-09 真机）：
+
+```json
+{
+  "plan_type": "plus",
+  "rate_limit": {
+    "allowed": false, "limit_reached": true,
+    "primary_window":   { "used_percent": 100, "limit_window_seconds": 18000,
+                          "reset_after_seconds": 4264, "reset_at": 1791560754 },
+    "secondary_window": { "used_percent": 82,  "limit_window_seconds": 604800,
+                          "reset_after_seconds": 396145, "reset_at": 1791952635 }
+  },
+  "additional_rate_limits": [
+    { "limit_name": "gpt-reserve", "metered_feature": "base_model_inference",
+      "rate_limit": { "primary_window": { "used_percent": 27,
+                                          "limit_window_seconds": 604800,
+                                          "reset_at": 1792147135 },
+                      "secondary_window": null } }
+  ],
+  "credits": { "has_credits": false }, "spend_control": { "reached": false }
+}
+```
+
+解析规则（**窗口必须按时长分类，绝不按槽位**）：
+
+- 遍历 `rate_limit.primary_window` / `rate_limit.secondary_window` 两个槽位，按窗口
+  自带的 `limit_window_seconds` 认窗口：`18000` → 5 小时（tier 名 `5h`），
+  `604800` → 7 天（tier 名 `7d`）。**槽位不恒定**：真机观察到「7 天窗口跑在 primary
+  槽、`secondary_window` 为 `null`」的返回——按槽位认会把这一行标成 5h 并丢掉 7d。
+- 认不出的窗口（将来新增的时长）**不呈现，更不按槽位硬套**成 5h / 7d。
+- `used_percent` 是**已用**口径，统一换算成剩余百分比（`100 - used_percent`，
+  clamp 0–100）后复用其余 provider 的同一条 tier 展示路径（三档配色 + 倒计时）。
+- 重置时间优先取绝对时刻 `reset_at`，其次取相对秒数 `reset_after_seconds`
+  （按查询时刻换算）；两者都缺就留空——前端不画倒计时，而不是画 0。
+- **某个窗口缺席时仍画这一行、标「暂无数据」**（占位由 `planTierRows` 按
+  provider id 分流，只对 OpenAI 开；两个窗口都缺席时显示「暂无额度
+  数据」），**任何情况下都不把缺席窗口补成 100%**——那是最容易被读成「额度充足」
+  的假数据。
+- `additional_rate_limits[]`（`gpt-reserve` / `base_model_inference`，只有 7 天一档）
+  是**另一个额度桶**，本版本范围限定在 codex 主桶，不展示、不参与换算——记录在
+  此以免被当成漏解析。同理 `credits` / `spend_control` / 顶层的 `plan_type`（如
+  `plus`）本版本都不展示：`plan_type` 要透出就得给 `ProviderView` 加字段并一路
+  穿到缓存条目，而 `subscription.rs` 是反棘轮文件（预算 896 行、只许下调），为
+  一个词挤出那几行不划算——用户的账号页本来就写着自己是哪个套餐。
+- `rate_limit` 缺失 / 非对象按结构不认识处理：截断摘要写进 Shell 日志，分区给出
+  带下一步的错误文案。HTTP 401/403 → `credential_status: expired`（文案指向
+  「重新登录 OpenAI 账户」，与另外四家的「更新 API Key」不同源）。
+
 ## 凭据设计
 
 ### 复用当前内核模型凭据
@@ -226,6 +324,13 @@ DSH 的 `credentials.describe` 只返回 `configured`、来源和可写性，不
 通过工作台 Remote API “提取” Key。若采用直接读取凭据文件，必须在 Rust 侧实现严格的
 只读、路径约束、权限检查和格式解析，并覆盖环境层 / 文件层的优先级；若采用内核代理，
 则代理必须只返回查询结果，不能把 Key 回传给 Shell。
+
+**OpenAI 是唯一的例外，例外是刻意的**：它的额度查询用不到任何内核模型 Key，用的是壳
+自己那次 Sign-in-with-ChatGPT 授权的 access token（`crate::openai` 的加密 vault，
+文件密钥在系统凭据库）。因此该 provider 不走上面这条解析链，`subscription.rs` 也
+**不在自己这里解密**——读取入口是 `openai::refresh::ensure_fresh_access`（顺带保证
+令牌新鲜，过期时先走既有刷新链），由 `usage/subscription_openai.rs` 调它。其余四家
+的「复用当前内核模型凭据」前提一字未改。
 
 这条兼容性是本功能的硬前提：如果 MiniMax Token Plan 接口拒绝当前 dsh provider 的模型凭据，
 就不能通过 Shell 另加一个“订阅 Key”输入框绕过；应暂停 MiniMax 展示，并在 dsh 内核增加

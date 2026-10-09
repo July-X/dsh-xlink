@@ -7,3 +7,6 @@
 pub(crate) mod credentials;
 pub(crate) mod local;
 pub(crate) mod subscription;
+// OpenAI（ChatGPT 套餐）用量：凭据来自壳自己的 OAuth vault 而非内核模型
+// 凭据链，且需代理路由，独立成模块以免撑大 subscription.rs（反棘轮）。
+pub(crate) mod subscription_openai;
