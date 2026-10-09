@@ -30,8 +30,10 @@
 //! 轮询路径上用不起）。**只读不写**——打开文件读链接数不会改 ChangeTime，
 //! 这一点本身就是这次事故的机制，不能自己踩。
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// 采样上限（不含内核入口）。上限不是全量的替代，是把单次轮询的固定开销
 /// 封住；覆盖面见模块文档。
@@ -57,6 +59,49 @@ pub fn tree_shares_inodes(kernel_dir: &Path) -> bool {
     }
     // 一个文件都没打开成功：树在但读不了，按共享处理。
     opened == 0
+}
+
+/// 轮询路径的采样结果缓存：`<版本目录> → 是否共享`。
+///
+/// `shared_storage` 只在装 / 卸 / 重装时才会变（那三条路径是内核树唯一的
+/// 写入方，完成后各调一次 [`invalidate_cache`]），而 `status()` 每 2.5s 都要
+/// 它。2026-10-09 的 perf 采样实测这段占轮询耗时的 83–87%（每版本 2 次
+/// `read_dir` + 最多 33 次 `stat`），冷缓存时单次可达 180ms，安装日曾到秒级
+/// ——缓存把这份与结果无关的固定开销从轮询路径上摘掉。
+///
+/// 陈旧方向只有一边：壳外变化（用户自己跑 `pnpm store prune` 之类）只会把
+/// 实际已独立的树留在「共享」缓存里——横幅多挂一会儿（烦但安全），绝不会
+/// 反向漏报。与「读不出来按共享」的保守取向一致。
+fn cache() -> &'static Mutex<HashMap<PathBuf, bool>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 取缓存锁。只存 bool 的微小映射，持锁方没有需要抢救的不变量，毒锁直接
+/// 取回守卫继续用。
+fn lock_cache() -> std::sync::MutexGuard<'static, HashMap<PathBuf, bool>> {
+    cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// [`tree_shares_inodes`] 的缓存版：只给轮询路径（[`crate::kernel::lifecycle::list_installed`]）
+/// 用。装 / 卸 / 重装路径必须继续直呼 [`tree_shares_inodes`]——它们要的是
+/// 此刻的实况，且由 [`invalidate_cache`] 的调用点负责让缓存跟上。
+pub(crate) fn cached_tree_shares_inodes(kernel_dir: &Path) -> bool {
+    if let Some(shared) = lock_cache().get(kernel_dir) {
+        return *shared;
+    }
+    let shared = tree_shares_inodes(kernel_dir);
+    lock_cache().insert(kernel_dir.to_path_buf(), shared);
+    shared
+}
+
+/// 清空采样缓存。装 / 卸 / 重装在动作完成后各调一次：动作中途的轮询可能把
+/// 半成品状态采进缓存（删除到一半 ⇒ 探针读不到 ⇒ 按「共享」缓存），清掉后
+/// 下一拍重新采样落定终态。失败路径同样要清——失败可能留下残骸。
+pub(crate) fn invalidate_cache() {
+    lock_cache().clear();
 }
 
 /// 组装采样面：内核入口 + 官方客户端 bundle + 第三方包清单。
@@ -179,6 +224,32 @@ mod tests {
         let dir = temp_dir("empty");
         fs::create_dir_all(&dir).unwrap();
         assert!(tree_shares_inodes(&dir), "空 / 残缺树按共享处理");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 缓存版：判定落进缓存后，树在壳外变了也原样返回旧值（证明读的是缓存
+    /// 而不是每次重采样）；`invalidate_cache` 之后必须重采样到新实况。装 /
+    /// 卸 / 重装路径靠这最后一步拿到终态。
+    #[test]
+    fn cached_verdict_reuses_result_until_invalidated() {
+        let dir = temp_dir("cache");
+        plant_tree(&dir);
+        assert!(
+            !cached_tree_shares_inodes(&dir),
+            "copy 树首次采样应为独立并落缓存"
+        );
+        let bin = dir.join(crate::kernel::lifecycle::KERNEL_BIN_REL);
+        let alias = dir.join("node_modules").join("link-alias.js");
+        fs::hard_link(&bin, &alias).expect("hard link");
+        assert!(
+            !cached_tree_shares_inodes(&dir),
+            "缓存命中时不得重采样——否则轮询路径的优化没有发生"
+        );
+        invalidate_cache();
+        assert!(
+            cached_tree_shares_inodes(&dir),
+            "失效后必须重采样到新实况——漏了这条，装 / 卸后的版本页会拿着旧判定"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 }

@@ -238,7 +238,10 @@ const FILE_BUDGETS = {
   'src-tauri/src/plugins/builtin/materialize.rs': 328,
   // 启动前按已保存启用意图刷新资源与接线；独立于手动启停命令，避免更新后
   // 继续加载旧路径。只在内核尚未启动时调用，停用状态不触碰资源。
-  'src-tauri/src/plugins/builtin/runtime.rs': 45,
+  // 45 → 55：refresh_enabled 补耗时观测（2026-10-09 perf 分析：稳态每次启动
+  // 也做两遍全树摘要，此前只有真变更才落日志），成败各记一行进「查看日志」。
+  // 基线远低于 RATCHET_THRESHOLD，上调在规则内。
+  'src-tauri/src/plugins/builtin/runtime.rs': 55,
   'src-tauri/src/plugins/builtin/wiring.rs': 110,
   // 85 → 171：P1 收尾——set_enabled 写命令进本文件（守卫链：dsh 族 /
   // 实例存在 / 未被另一壳占用 / 内核已停止 → 变更前快照 → 启停事务 →
@@ -2191,7 +2194,11 @@ const FILE_BUDGETS = {
 // 45748 → 45753（2026-10-09）：内嵌插件显示名改名并收成单一常量（+5，全在
 // plugins/builtin.js，详见该文件的 FILE_BUDGETS 登记）。改名本身零成本，这 5 行
 // 买的是「下次改名只改一处」。
-const TOTAL_BUDGET = 45850;
+// 45850 → 45872（2026-10-09）：轮询性能优化一套——install_isolation 加
+// shared_storage 判定缓存（+72，含反向验单测；install/uninstall 各挂一次
+// invalidate）、settings 每轮 poll 的双读合并（净 −3）、内嵌插件启动前刷新
+// 补耗时观测（+10，见该文件 FILE_BUDGETS 登记）。合计 +22。
+const TOTAL_BUDGET = 45872;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
