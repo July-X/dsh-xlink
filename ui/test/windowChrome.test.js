@@ -494,3 +494,8 @@ test('三盏灯都带 inset 描边与填充色', () => {
     );
   }
 });
+// 固定定位的投影及 teleport 到 body 的遮罩会越过 #app 的 overflow 裁切。
+test('自绘窗口在 body 层按统一 R 角裁切，包括固定投影与弹出浮层', () => {
+  const css = stripCss(read('../src/theme.css'));
+  assert.match(cssRule(css, 'body.custom-titlebar-shell'), /clip-path:\s*inset\(0 round var\(--window-radius\)\)/);
+});

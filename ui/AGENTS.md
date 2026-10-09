@@ -336,3 +336,7 @@ ui/src/
 ## 系统外观继承（2026-10-09）
 
 macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用，不能用于窗口主题。建窗统一走 `shell::appearance::initial_theme()`，原生外观经 `set_window_appearance` 设置当前 `NSWindow`；应用始终继承系统。窗口页加载开始时设置默认深色，壳页面再按偏好纠正；工作台的固定深色不能影响管理窗口的媒体查询。Windows 继续使用 Tauri 的窗口主题实现。
+
+## 窗口 R 角裁切（2026-10-09）
+
+四扇自绘壳窗口必须在 `body.custom-titlebar-shell` 使用 `clip-path: inset(0 round var(--window-radius))`。`#app` 的圆角与 `overflow: hidden` 无法约束越过包含块的固定定位投影；只裁切 `#app` 也约束不到 teleport 到 body 的遮罩。窗口外四角必须保持全透明，明暗主题、窗口缩放及弹出浮层均沿用同一裁切。官网页签栏与工作台保留原生窗口轮廓。

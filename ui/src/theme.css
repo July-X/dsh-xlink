@@ -293,6 +293,12 @@ body {
     0 12px 32px rgb(0 0 0 / 0.32);
 }
 
+/* fixed 投影会越过 #app 的 overflow；body 级裁切同时约束 teleport 浮层。
+   仅用于四扇自绘壳窗口，不裁切官网页签栏或第三方工作台。 */
+body.custom-titlebar-shell {
+  clip-path: inset(0 round var(--window-radius));
+}
+
 /* --- 壳：窗口容器与自绘标题栏 ---
    新版标题栏是一块 38px 的素面 chrome：不透明底 + 1px 下边框，标题居中。
    旧版那套「鲸蓝光晕 + 13.5px 网格 + 笔刷标题栏」（.app-bg / .mac-titlebar__brush）
