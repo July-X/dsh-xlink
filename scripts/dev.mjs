@@ -24,13 +24,31 @@
 // JSON 字符串，经 shell（Windows 上是 cmd）转发时双引号会被吃掉，实测 tauri
 // 收到的是 `{build:{devUrl:http://…}}` 并报「key must be a string」。不走 shell
 // 才能把 JSON 原样送到 argv。
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DEFAULT_PORT = 5174;
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+
+// tauri.conf.json 把 resources/builtin-plugins 登记进了 bundle.resources
+//（openai-oauth P1 资源管线），tauri 的 build script 会先检查它存在与否；
+// 产物不进 git，`npm run build*` 都先跑 prep:builtin 再起 tauri，dev 这条
+// 链此前漏了同一前置——新 clone（或清掉产物）上 `pnpm run dev` 直接死在
+// 「resource path `resources\builtin-plugins` doesn't exist」。与 build 走
+// 同一条生成命令：产物就 9 个文件、全量重建幂等，顺带保证 dev 每次拿到
+// 的内嵌插件与 plugins/ 源码同样新鲜（build 的语义，dev 不该更旧）。
+const prepareBuiltin = join(repoRoot, 'scripts', 'prepare-builtin-plugins.mjs');
+const prep = spawnSync(process.execPath, [prepareBuiltin], { stdio: 'inherit', cwd: repoRoot });
+if (prep.error) {
+  console.error(`无法执行内嵌插件资源生成（${prepareBuiltin}）：${prep.error.message}`);
+  process.exit(1);
+}
+if (prep.status !== 0) {
+  console.error(`内嵌插件资源生成失败（exit ${prep.status ?? `signal ${prep.signal}`}）；tauri 的资源检查过不去，dev 中止`);
+  process.exit(prep.status ?? 1);
+}
 
 function resolvePort() {
   // 过滤掉透传给 runner 的参数（`-c` / `--no-watch` 之类以 - 开头的东西）。
