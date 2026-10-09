@@ -54,7 +54,7 @@ pub struct BuiltinOpenaiStatus {
 /// 插件资源目录：优先随应用打包的资源（`builtin-plugins/openai-oauth`，
 /// P1 资源管线落地后存在），dev 下回退仓库源码（`plugins/openai-oauth`）。
 /// 都没有时返回 `None`——状态如实报不可用，不猜路径。
-fn resolve_plugin_source(app: &AppHandle) -> Option<std::path::PathBuf> {
+pub(crate) fn resolve_plugin_source(app: &AppHandle) -> Option<std::path::PathBuf> {
     if let Ok(resource) = app.path().resource_dir() {
         let packaged = resource.join("builtin-plugins").join("openai-oauth");
         if packaged.join("package.json").is_file() {

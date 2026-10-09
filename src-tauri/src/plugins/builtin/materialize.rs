@@ -18,7 +18,7 @@ use crate::plugins::center::{copy_tree, make_dir_link};
 /// 运行时文件集：除此之外的包内容（test/、README）不进实例。
 pub(crate) const RUNTIME_ENTRIES: [&str; 4] = ["host", "client", "locales", "package.json"];
 
-/// 物化完成标记的文件名。内容是 JSON：`{pluginVersion, fingerprint}`。
+/// 物化完成标记的文件名。内容是 JSON：`{pluginVersion, fingerprint, sourceHash}`。
 pub(crate) const MARKER_FILE: &str = ".xlink-materialized.json";
 
 /// 读 `<kernel>/node_modules/@deepseek-ai/<pkg>/package.json` 的版本。
@@ -176,11 +176,19 @@ pub(crate) fn materialize(
     fingerprint: &str,
 ) -> Result<(), String> {
     verify_manifest(plugin_source)?;
-    let marker = serde_json::json!({ "pluginVersion": version, "fingerprint": fingerprint });
+    let source_hash = runtime_digest(plugin_source).map_err(|e| {
+        format!(
+            "读取插件运行时文件失败（{}）：{e}；请重新构建或安装应用",
+            plugin_source.display()
+        )
+    })?;
+    let marker = serde_json::json!({ "pluginVersion": version, "fingerprint": fingerprint, "sourceHash": source_hash });
     if let Ok(existing) = fs::read_to_string(target.join(MARKER_FILE)) {
         let parsed: serde_json::Value = serde_json::from_str(&existing).unwrap_or_default();
         if parsed.get("pluginVersion").and_then(|v| v.as_str()) == Some(version)
             && parsed.get("fingerprint").and_then(|v| v.as_str()) == Some(fingerprint)
+            && parsed.get("sourceHash").and_then(|v| v.as_str()) == Some(source_hash.as_str())
+            && runtime_digest(target).ok().as_deref() == Some(source_hash.as_str())
         {
             ensure_peer_link(
                 &target.join("node_modules").join("@deepseek-ai"),
@@ -244,6 +252,33 @@ pub(crate) fn materialize(
         )
     })?;
     Ok(())
+}
+
+/// 摘要覆盖路径与文件字节，目录排序保证稳定；只扫描运行时入口，不跟随 peer 链接。
+fn runtime_digest(root: &Path) -> io::Result<String> {
+    use sha2::{Digest, Sha256};
+    fn visit(root: &Path, path: &Path, hash: &mut Sha256) -> io::Result<()> {
+        let name = path.strip_prefix(root).unwrap().to_string_lossy();
+        hash.update((name.len() as u64).to_le_bytes());
+        hash.update(name.as_bytes());
+        if path.is_dir() {
+            let mut entries = fs::read_dir(path)?.collect::<io::Result<Vec<_>>>()?;
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                visit(root, &entry.path(), hash)?;
+            }
+        } else {
+            let bytes = fs::read(path)?;
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(bytes);
+        }
+        Ok(())
+    }
+    let mut hash = Sha256::new();
+    for entry in RUNTIME_ENTRIES {
+        visit(root, &root.join(entry), &mut hash)?;
+    }
+    Ok(format!("{:x}", hash.finalize()))
 }
 
 /// Host 运行时要 peer 到内核树的 `@deepseek-ai` 包：
@@ -427,6 +462,34 @@ mod tests {
         // 幂等：标记匹配时不清重建（靠 mtime 不稳，改验 staging 不残留）。
         materialize(&source, &target, &root.join("kernel"), "0.1.0", "fp-1").unwrap();
         assert!(!target.parent().unwrap().join(".staging-compat-a").exists());
+        // 同版本源码改变也必须更新；新增图片模块不能被旧标记挡住。
+        fs::write(source.join("host/keep.js"), "// updated").unwrap();
+        fs::write(source.join("host/images.js"), "export {}").unwrap();
+        materialize(&source, &target, &root.join("kernel"), "0.1.0", "fp-1").unwrap();
+        assert_eq!(
+            fs::read_to_string(target.join("host/keep.js")).unwrap(),
+            "// updated"
+        );
+        assert!(target.join("host/images.js").is_file());
+        // 源码删文件与目标损坏都应收敛到当前运行时文件集。
+        fs::remove_file(source.join("host/images.js")).unwrap();
+        fs::write(target.join("host/keep.js"), "// stale").unwrap();
+        materialize(&source, &target, &root.join("kernel"), "0.1.0", "fp-1").unwrap();
+        assert!(!target.join("host/images.js").exists());
+        assert_eq!(
+            fs::read_to_string(target.join("host/keep.js")).unwrap(),
+            "// updated"
+        );
+        // 旧标记缺摘要，升级时重建一次，之后仍保持幂等。
+        fs::write(
+            target.join(MARKER_FILE),
+            r#"{"pluginVersion":"0.1.0","fingerprint":"fp-1"}"#,
+        )
+        .unwrap();
+        materialize(&source, &target, &root.join("kernel"), "0.1.0", "fp-1").unwrap();
+        let marker: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(target.join(MARKER_FILE)).unwrap()).unwrap();
+        assert!(marker["sourceHash"].as_str().is_some());
         // 版本变化 → 新指纹目录，旧目录不动。
         materialize(
             &source,

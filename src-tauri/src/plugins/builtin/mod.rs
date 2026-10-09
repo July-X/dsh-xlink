@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) mod cmd;
 pub(crate) mod materialize;
+pub(crate) mod runtime;
 pub(crate) mod state;
 pub(crate) mod wiring;
 
