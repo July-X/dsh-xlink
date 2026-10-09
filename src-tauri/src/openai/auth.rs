@@ -39,10 +39,10 @@ pub(crate) const AUTH_SCOPE: &str =
 
 /// ID token 里承载 ChatGPT 账号信息的命名空间声明（RFC 形式）。
 ///
-/// 它**不在 access token 上**——访问令牌的受众是 [`OPENAI_RESOURCE`]，
-/// 不含账号上下文；账号 id 只随 ID token 下发。套餐用量端点要拿它当
-/// `ChatGPT-Account-Id` 请求头（2026-10-09 真机验证：`chatgptAuthTokens`
-/// 登录要的 `chatgptAccountId` + `chatgptPlanType` 就出自这里）。
+/// 套餐用量端点要拿它当 `ChatGPT-Account-Id` 请求头。部分授权流程的
+/// access token 也会带同名声明，但 SIWC 的 access token 可能只给 opaque
+/// 的认证元数据，所以壳以经过验签并留存的 ID token 为准，不能把 access
+/// token 的载荷当成稳定契约。
 pub(crate) const CHATGPT_AUTH_CLAIM: &str = "https://api.openai.com/auth";
 /// 账号 id 在命名空间声明里的键名。
 pub(crate) const CHATGPT_ACCOUNT_ID_KEY: &str = "chatgpt_account_id";
@@ -51,11 +51,10 @@ pub(crate) const CHATGPT_PLAN_TYPE_KEY: &str = "chatgpt_plan_type";
 
 /// 取账号 id（`chatgpt_account_id`）。
 ///
-/// **两种形状都认**，因为真机上两种都存在：DSH 自己签发流程拿到的 ID token
-/// 把它放在 `https://api.openai.com/auth` 这**一个对象里**（键 `…`），而
-/// Codex CLI 那份是**摊平**成 `https://api.openai.com/auth.chatgpt_account_id`
-/// 的。只认一种 → 换一种形状就静默读不到（2026-10-09 就是这么丢的：照摊平的
-/// 形状写，嵌套的那份永远读不出，表现为「分区不出现」）。
+/// **两种形状都认**：不同授权客户端/版本可能把它放在
+/// `https://api.openai.com/auth` 对象里，也可能摊平成
+/// `https://api.openai.com/auth.chatgpt_account_id`。只认一种会让同一账号
+/// 在换授权流程后静默读不到。
 pub(crate) fn chatgpt_account_id(claims: &serde_json::Value) -> Option<String> {
     namespace_string(claims, CHATGPT_ACCOUNT_ID_KEY)
 }
@@ -644,6 +643,7 @@ mod tests {
         assert!(url.contains("code_challenge=ch&code_challenge_method=S256"));
         assert!(url.contains(&format!("scope={}", urlencode(AUTH_SCOPE))));
         assert!(url.contains(&format!("resource={}", urlencode(OPENAI_RESOURCE))));
+        assert!(!url.contains("id_token_add_organizations"));
         assert!(url.contains("ext_agent_host_id=host-1"));
         assert!(!url.contains("agent_name_hint"), "再次登录不带宿主提示");
 

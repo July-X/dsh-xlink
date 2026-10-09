@@ -3,6 +3,34 @@
 // 失败不被渲染成「0 余额 / 0%」。
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import * as Vue from 'vue';
+
+const require = createRequire(import.meta.url);
+const { parse } = require(require.resolve('@vue/compiler-sfc', { paths: [require.resolve('vue')] }));
+const { compile } = require(require.resolve('@vue/compiler-dom', { paths: [require.resolve('vue')] }));
+const { renderToString } = require(require.resolve('@vue/server-renderer', { paths: [require.resolve('vue')] }));
+
+// 编译真实组件中的额度行，不复制模板：数据层单测无法发现 v-else 误落到无限额度。
+async function renderOverviewTiers(tiers) {
+  const { descriptor } = parse(readFileSync(new URL('../src/shell/OverviewPanel.vue', import.meta.url), 'utf8'));
+  const template = descriptor.template;
+  function findTier(node) {
+    if (node.props?.some((prop) => prop.name === 'class' && prop.value?.content === 'plan-tier-col')) return node;
+    for (const child of node.children || []) {
+      const found = findTier(child);
+      if (found) return found;
+    }
+  }
+  const node = findTier(template.ast);
+  assert.ok(node, '概览页额度行必须存在');
+  const { code } = compile(node.loc.source, {
+    mode: 'function', comments: false, prefixIdentifiers: true, isCustomElement: () => true,
+  });
+  const render = new Function('Vue', code)(Vue);
+  return renderToString(Vue.createSSRApp({ data: () => ({ row: { tiers } }), render }));
+}
 
 const core = {
   invoke() {
@@ -42,6 +70,20 @@ const {
   hideProvider,
 } = await import('../src/subscription/subscription.js');
 const { countdownLabel, countdownFullLabel, relativeTimeLabel, relativeAgeCompact } = await import('../src/shell/labels.js');
+
+test('概览真实模板：缺失窗口只显示暂无数据，不显示无限额度或进度条', async () => {
+  const html = await renderOverviewTiers(planTierRows({ id: 'openai_codex', tiers: [] }));
+  assert.ok(html.includes('暂无数据'));
+  assert.ok(!html.includes('无限周额度'));
+  assert.ok(!html.includes('plan-bar'));
+  assert.ok(!html.includes('100%'));
+});
+
+test('概览真实模板：明确 unlimited 的窗口仍显示无限额度', async () => {
+  const html = await renderOverviewTiers([{ name: '7d', unlimited: true, missing: false }]);
+  assert.ok(html.includes('无限周额度'));
+  assert.ok(!html.includes('暂无数据'));
+});
 
 test('percentLevel 按剩余百分比三档配色（≥70 绿 / 40–69.99 橙 / <39.99 红）', () => {
   assert.equal(percentLevel(100), 'ok');
