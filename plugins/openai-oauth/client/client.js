@@ -199,7 +199,7 @@ window.__ModuleLoader__.load({
             name: "settings.models.provider-card",
             key: "xlink-openai-oauth",
           },
-          ProviderCard,
+          AccountCard,
         ),
       );
     }
