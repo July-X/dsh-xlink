@@ -41,7 +41,7 @@ export function fromProviderToolName(name, mapping) {
  * @param client {{ hostId?: string }}
  * @returns {{ model, catalogRevision, reasoningEffort?, payload }}
  */
-export function buildEnvelope(options, catalog) {
+export function buildEnvelope(options, catalog, imageParts = new Map()) {
   const entry = catalog.entries.find((item) => item.id === options.model);
   if (entry === undefined) {
     const error = new Error(`模型 ${options.model} 不在当前账号目录；请刷新模型列表后重选`);
@@ -88,7 +88,8 @@ export function buildEnvelope(options, catalog) {
       input.push({
         type: 'function_call_output',
         call_id: message.toolCallId,
-        output: textOf(message.content),
+        output: (message.content ?? []).some((block) => block.type === 'image')
+          ? inputParts(message.content, imageParts) : textOf(message.content),
       });
       continue;
     }
@@ -108,18 +109,8 @@ export function buildEnvelope(options, catalog) {
       }
       continue;
     }
-    // user（含 RequestUserInput）：文本 + 文件占位已是文本（内核投影约定），
-    // 图片块按设计 §7 首版范围外 → 显式拒绝。
-    const parts = [];
-    for (const block of message.content ?? []) {
-      if (block.type === 'text') {
-        parts.push({ type: 'input_text', text: block.text });
-      } else if (block.type === 'image' || block.type === 'file') {
-        const error = new Error('套餐路线首版不支持图片 / 文件输入；请移除附件后重试');
-        error.code = 'FIELD_NOT_ALLOWED';
-        throw error;
-      }
-    }
+    // 文件已由内核投影为文字；图片由附件服务提供校验后的请求字节。
+    const parts = inputParts(message.content, imageParts);
     if (parts.length > 0) input.push({ type: 'message', role: 'user', content: parts });
   }
 
@@ -158,6 +149,17 @@ function textOf(content) {
     .filter((block) => block.type === 'text')
     .map((block) => block.text)
     .join('');
+}
+
+function inputParts(content, imageParts) {
+  return (content ?? []).flatMap((block) => {
+    if (block.type === 'text') return [{ type: 'input_text', text: block.text }];
+    if (block.type === 'image' && imageParts.has(block)) return imageParts.get(block);
+    if (block.type === 'image' || block.type === 'file') {
+      throw Object.assign(new Error('附件未完成请求转换；请重新添加附件后重试'), { code: 'FIELD_NOT_ALLOWED' });
+    }
+    return [];
+  });
 }
 
 /**

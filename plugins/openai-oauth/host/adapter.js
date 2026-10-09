@@ -5,22 +5,23 @@
  * `registerAdapter` 内部就会因缺少默认方法被拒），可选方法（重试策略、
  * 图像计价）沿用类默认。
  *
- * 流式推理是 P2/P4 交付：`stream` 目前抛出带稳定 code 的
- * `LlmError`，不制造「看起来能对话」的假绿。
+ * 流式推理与图片附件经本地桥接转发；图片字节由内核附件服务读取并校验。
  */
-import { LlmAdapter, LlmError } from "@deepseek-ai/dsh-llm";
+import { LlmAdapter, LlmError, requestImageHandleText, offloadedImageText, resolveImageAttachmentAccess, requiredImageOffload } from "@deepseek-ai/dsh-llm";
 import { PROVIDER_DISPLAY_NAME, PROVIDER_ID } from "./constants.js";
 import { BridgeUnavailableError, fetchCatalog, handshake, streamInferenceLines } from "./bridge.js";
 import { buildEnvelope, pumpStream } from "./request.js";
+import { prepareImageParts } from "./images.js";
 
 export class BridgeAdapter extends LlmAdapter {
-  constructor(bridge, pluginVersion) {
+  constructor(bridge, pluginVersion, context) {
     super();
     this.bridge = bridge;
     this.pluginVersion = pluginVersion;
     this.catalogRevision = undefined;
     this.modelsById = new Map();
     this.catalogView = undefined;
+    this.context = context;
   }
 
   providerInfo(id) {
@@ -45,6 +46,7 @@ export class BridgeAdapter extends LlmAdapter {
       provider,
       id: String(model.id),
       name: String(model.name ?? model.id),
+      inputModalities: ['text', 'image'],
       ...(model.description !== undefined ? { description: String(model.description) } : {}),
     }));
   }
@@ -59,6 +61,7 @@ export class BridgeAdapter extends LlmAdapter {
       provider,
       id: model,
       name: String(entry.name ?? model),
+      inputModalities: ['text', 'image'],
       ...(typeof entry.contextWindow === "number"
         ? { context: { contextWindow: entry.contextWindow } }
         : {}),
@@ -79,16 +82,28 @@ export class BridgeAdapter extends LlmAdapter {
     // 目录视图缺失（未经 listModels）时先刷新一次——发送前校验双 revision
     // 的前提是 Host 手里有当前目录。
     if (this.catalogView === undefined) await this.#refreshCatalog(options.signal);
-    const envelope = buildEnvelope(options, this.catalogView);
+    const attachments = this.context?.get('attachments');
+    const imageParts = await prepareImageParts(options.messages ?? [], {
+      attachments, handleText: requestImageHandleText, offloadedText: offloadedImageText,
+      resolveAccess: (ref) => resolveImageAttachmentAccess(attachments,
+        (path) => this.context?.get('fs')?.processPathFromHostPath(path), ref),
+      requiredOffload: requiredImageOffload,
+    }, options.signal).catch((error) => {
+      if (error.code === 'IMAGE_OFFLOAD_REQUIRED') {
+        throw new LlmError(error.message, error.code, { offloadImages: error.offloadImages });
+      }
+      throw error;
+    });
+    const envelope = buildEnvelope(options, this.catalogView, imageParts);
     const lines = streamInferenceLines(this.bridge, envelope, options.signal);
     yield* pumpStream(lines);
   }
 }
 
 /** 握手 + 适配器构造；桥接未配置时返回 undefined（由调用方决定注册策略）。 */
-export async function connectBridge(bridge, pluginVersion, signal) {
+export async function connectBridge(bridge, pluginVersion, signal, context) {
   await handshake(bridge, pluginVersion, signal);
-  return new BridgeAdapter(bridge, pluginVersion);
+  return new BridgeAdapter(bridge, pluginVersion, context);
 }
 
 export { BridgeUnavailableError, PROVIDER_ID };

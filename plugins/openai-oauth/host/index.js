@@ -38,14 +38,14 @@ async function apply(ctx, config = {}) {
   let bridgeError;
   if (bridge !== undefined) {
     try {
-      adapter = await connectBridge(bridge, pluginVersion);
+      adapter = await connectBridge(bridge, pluginVersion, undefined, ctx);
     } catch (error) {
       bridgeError = { code: error?.code ?? "BRIDGE_HANDSHAKE_FAILED", message: String(error?.message ?? error) };
     }
   }
   const registered = ctx.llm.registerAdapter(
     [PROVIDER_ID],
-    adapter ?? new BridgeAdapter(bridge, pluginVersion),
+    adapter ?? new BridgeAdapter(bridge, pluginVersion, ctx),
   );
   if (bridge === undefined) {
     ctx.logger?.warn?.(`${name}: 桥接服务未随本次启动提供（${PROVIDER_ID} 的目录与推理不可用）`);

@@ -142,7 +142,7 @@ Rust 本地服务仅面向本次 dsh 子进程，以随机访问令牌绑定实�
 
 公开的思考摘要可进入 dsh 思考块；未返回摘要时只显示等待状态，不能把加密思考内容展示或解密。`encrypted_content` 等提供方回放材料通过 dsh 的适配器私有元数据持久化，保证工具往返、重启及长会话不会只剩可见文字。跨账户、路线或不兼容模型时不复用这些材料。[无服务端存储的思考回放](https://developers.openai.com/api/docs/guides/reasoning)
 
-图片能力需同时通过模型与内核验证。文件附件遵循 dsh 既有文件句柄和工具读取约定，不自行上传到 Files API。音视频、图像生成及 OpenAI 托管工具不在本路线的首版范围内。[套餐路线限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+图片输入通过内核附件服务读取请求版本，转换为 Responses 的 `input_image`（带媒体类型的 base64 数据地址，`detail: auto`）。用户消息、工具返回和多轮历史中的图片均保留原顺序；同一次请求内相同附件只读取一次。每张请求图按 4 Mi 像素、1 MiB 编码字节目标生成，整次请求图片的 base64 字节预算为 16 MiB；超出时返回内核既有的 `IMAGE_OFFLOAD_REQUIRED`，由历史卸载策略处理，已卸载图片只发内核规定的占位文本。读取失败或取消不发送残缺请求。文件附件遵循 dsh 既有文件句柄和工具读取约定，不自行上传到 Files API。音视频、图像生成及 OpenAI 托管工具不在本路线的首版范围内。[图片输入协议](https://developers.openai.com/api/docs/guides/images-vision)，[套餐路线限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。真实模型识图效果仍需账号验收。
 
 流读到成功终止事件才结算成功。中断、失败、未完成必须分别保留；已经输出的文本不丢失，错误也不能被 EOF（流结束）改写为成功。用量采用服务端返回值，不推算套餐余额或伪造 API 美元费用。
 
