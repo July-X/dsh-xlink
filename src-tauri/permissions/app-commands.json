@@ -50,7 +50,8 @@
           "openai_account_status",
           "openai_authorize_start",
           "openai_authorize_cancel",
-          "openai_logout"
+          "openai_logout",
+          "openai_catalog_refresh"
         ]
       }
     },
