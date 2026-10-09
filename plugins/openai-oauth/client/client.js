@@ -13,6 +13,10 @@
  * 只会困惑（2026-10-09 用户反馈：移除编辑按钮，标题说明来源与移除入口）。
  * Host 侧因此也不再注册 configurable provider 目录行。
  *
+ * 样式用内核 webui 的 `--dsw-alias-*` 主题令牌（与 provider 行卡同源，
+ * 明暗主题自动跟随）；按钮配方照抄内核 secondaryButton。令牌在 apply()
+ * 时随一个 <style> 注入（内联样式做不了 :hover/:disabled）。
+ *
  * 账户动作走桌面壳的 Tauri 命令（`window.__TAURI__.core.invoke`，授权见
  * `capabilities/harness-remote.json` 的 allow-openai-account）：令牌与
  * 系统凭据库都在桌面壳侧，浏览器只看脱敏状态（设计 §3.2/§8）。
@@ -28,6 +32,7 @@ const STRINGS = {
     cancel: "取消登录",
     signOut: "退出登录",
     refreshModels: "刷新模型列表",
+    refreshing: "刷新中…",
     refreshFailed: "刷新模型目录失败",
     phaseAuthorizing: "登录进行中：系统浏览器即将打开授权页…",
     phaseAuthorized: "已登录",
@@ -43,6 +48,7 @@ const STRINGS = {
     cancel: "Cancel sign-in",
     signOut: "Sign out",
     refreshModels: "Refresh model list",
+    refreshing: "Refreshing…",
     refreshFailed: "Failed to refresh model catalog",
     phaseAuthorizing: "Sign-in in progress: the system browser will open…",
     phaseAuthorized: "Signed in",
@@ -53,9 +59,31 @@ const STRINGS = {
 };
 const L = STRINGS[(globalThis.navigator?.language ?? "zh").toLowerCase().startsWith("zh") ? "zh" : "en"];
 
+/** 主题样式：令牌与内核 webui 同源（--dsw-alias-*），明暗主题自动跟随。 */
+const CARD_STYLE_ID = "xlink-openai-oauth-style";
+const CARD_CSS = `
+.xlink-oauth-card{border:.5px solid var(--dsw-alias-settings-card-stroke);background:var(--dsw-alias-settings-card-fill);border-radius:var(--dsw-radius-lg);padding:12px 14px;display:grid;gap:8px}
+.xlink-oauth-title{font-weight:600;cursor:help}
+.xlink-oauth-status{font-size:12px;color:var(--dsw-alias-label-secondary)}
+.xlink-oauth-error{font-size:12px;color:var(--dsw-alias-state-error-primary);overflow-wrap:anywhere}
+.xlink-oauth-actions{display:flex;gap:8px;flex-wrap:wrap}
+.xlink-oauth-btn{box-sizing:border-box;border-radius:var(--dsw-radius-md);height:32px;font:inherit;cursor:pointer;border:.5px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-primary);background:0 0;padding:0 14px;font-size:13px;display:inline-flex;align-items:center;justify-content:center;gap:4px}
+.xlink-oauth-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+.xlink-oauth-btn:disabled{opacity:.45;cursor:default}
+`;
+
 function invokeOrNull() {
   const api = globalThis.window?.__TAURI__?.core;
   return api && typeof api.invoke === "function" ? api.invoke : null;
+}
+
+/** 主题样式只注入一次（幂等：重复 apply 不重复追加 <style>）。 */
+function ensureCardStyle(documentRef) {
+  if (documentRef.getElementById(CARD_STYLE_ID)) return;
+  const style = documentRef.createElement("style");
+  style.id = CARD_STYLE_ID;
+  style.textContent = CARD_CSS;
+  documentRef.head.appendChild(style);
 }
 
 window.__ModuleLoader__.load({
@@ -67,6 +95,7 @@ window.__ModuleLoader__.load({
     function AccountCard() {
       const [status, setStatus] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
+      const [lastCommand, setLastCommand] = React.useState("");
       const [error, setError] = React.useState("");
 
       const refresh = React.useCallback(async () => {
@@ -102,6 +131,7 @@ window.__ModuleLoader__.load({
 
       const run = async (command) => {
         setBusy(true);
+        setLastCommand(command);
         setError("");
         try {
           setStatus(await invokeOrNull()(command));
@@ -116,6 +146,7 @@ window.__ModuleLoader__.load({
 
       const phase = status?.phase ?? "signed-out";
       const authorizing = phase === "authorizing";
+      const authorized = phase === "authorized";
       // 后台授权流的失败原因（壳侧 lastError）：流程在后台线程跑，命令
       // 不抛错——不把 lastError 画出来，失败就只是「静默回到未登录」，
       // 用户永远不知道要开系统代理（2026-10-09 实测踩坑）。
@@ -129,125 +160,86 @@ window.__ModuleLoader__.load({
             ? `${L.phaseAuthorized}${status?.email ? ` · ${status.email}` : ""}`
             : L.phaseSignedOut);
 
+      // 按钮按相位出现（2026-10-09 用户反馈：已登录不应再显示登录按钮）：
+      // 未登录 → 登录；授权中 → 取消；已登录 → 刷新 + 退出；需重新登录
+      // → 登录 + 退出。「刷新模型列表」点击后挂加载态（文案切换 + 禁用）。
+      const refreshing = busy && lastCommand === "openai_catalog_refresh";
+      const actions = [];
+      if (authorizing) {
+        actions.push(
+          e(
+            "button",
+            { key: "cancel", onClick: () => run("openai_authorize_cancel"), disabled: busy, className: "xlink-oauth-btn" },
+            L.cancel,
+          ),
+        );
+      } else {
+        if (phase !== "authorized") {
+          actions.push(
+            e(
+              "button",
+              {
+                key: "login",
+                onClick: () => run("openai_authorize_start"),
+                disabled: busy || status?.pluginSourceAvailable === false || !!status?.stateError,
+                className: "xlink-oauth-btn",
+              },
+              L.signIn,
+            ),
+          );
+        }
+        if (authorized) {
+          actions.push(
+            e(
+              "button",
+              {
+                key: "refresh",
+                onClick: () => run("openai_catalog_refresh"),
+                disabled: busy,
+                className: "xlink-oauth-btn",
+              },
+              refreshing ? L.refreshing : L.refreshModels,
+            ),
+          );
+        }
+        if (authorized || phase === "reauth-required") {
+          actions.push(
+            e(
+              "button",
+              { key: "logout", onClick: () => run("openai_logout"), disabled: busy, className: "xlink-oauth-btn" },
+              L.signOut,
+            ),
+          );
+        }
+      }
+
       return e(
         "div",
-        { "data-xlink-openai-oauth": "card", style: { display: "grid", gap: 6 } },
-        e("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, [
-          e(
-            "span",
-            { key: "s", style: { fontSize: 12, color: "var(--text-muted, #8a8f98)" } },
-            `${L.statusPrefix}${statusText}`,
-          ),
-        ]),
-        error ? e("div", { key: "err", style: { fontSize: 12, color: "var(--danger, #d4484a)" } }, error) : null,
-        flowError
-          ? e(
-              "div",
-              {
-                key: "flow-err",
-                style: {
-                  fontSize: 12,
-                  color: "var(--danger, #d4484a)",
-                  overflowWrap: "anywhere",
-                },
-              },
-              flowError,
-            )
-          : null,
-        e("div", { key: "actions", style: { display: "flex", gap: 8 } }, [
-          authorizing
-            ? e(
-                "button",
-                {
-                  key: "cancel",
-                  onClick: () => run("openai_authorize_cancel"),
-                  disabled: busy,
-                  style: cardButtonStyle(),
-                },
-                L.cancel,
-              )
-            : e(
-                "button",
-                {
-                  key: "login",
-                  onClick: () => run("openai_authorize_start"),
-                  disabled: busy || status?.pluginSourceAvailable === false || !!status?.stateError,
-                  style: cardButtonStyle(),
-                },
-                L.signIn,
-              ),
-          phase === "authorized"
-            ? [
-                e(
-                  "button",
-                  {
-                    key: "refresh",
-                    onClick: () => run("openai_catalog_refresh"),
-                    disabled: busy,
-                    style: cardButtonStyle(),
-                  },
-                  L.refreshModels,
-                ),
-                e(
-                  "button",
-                  {
-                    key: "logout",
-                    onClick: () => run("openai_logout"),
-                    disabled: busy,
-                    style: cardButtonStyle(),
-                  },
-                  L.signOut,
-                ),
-              ]
-            : null,
-        ]),
+        { "data-xlink-openai-oauth": "card", style: { display: "grid", gap: 8 } },
+        e("div", { className: "xlink-oauth-status" }, `${L.statusPrefix}${statusText}`),
+        error ? e("div", { className: "xlink-oauth-error" }, error) : null,
+        flowError ? e("div", { className: "xlink-oauth-error" }, flowError) : null,
+        e("div", { className: "xlink-oauth-actions" }, actions),
       );
-    }
-
-    function cardButtonStyle() {
-      return {
-        padding: "4px 12px",
-        borderRadius: 6,
-        border: "1px solid var(--border, #d0d3d9)",
-        background: "var(--surface, #fff)",
-        color: "var(--text, #1f2328)",
-        cursor: "pointer",
-        fontSize: 12,
-      };
     }
 
     /** 页尾卡：标题（带来源 tooltip）+ 账户区。 */
     function FooterCard() {
       return e(
         "div",
-        {
-          "data-xlink-openai-oauth": "footer-card",
-          style: {
-            border: "1px solid var(--border, #d0d3d9)",
-            borderRadius: 8,
-            padding: "12px 14px",
-            display: "grid",
-            gap: 6,
-          },
-        },
+        { className: "xlink-oauth-card", "data-xlink-openai-oauth": "footer-card" },
         e(
           "div",
           { style: { display: "flex", alignItems: "center", gap: 8 } },
-          e(
-            "span",
-            {
-              key: "t",
-              style: { fontWeight: 600, cursor: "help" },
-              title: L.providedBy,
-            },
-            L.cardTitle,
-          ),
+          e("span", { className: "xlink-oauth-title", title: L.providedBy }, L.cardTitle),
         ),
         e(AccountCard),
       );
     }
 
     function apply(ctx) {
+      const documentRef = ctx.document ?? globalThis.window?.document;
+      if (documentRef?.head) ensureCardStyle(documentRef);
       ctx.slots.inject("settings.models.footer", () =>
         ctx.slots.register(
           {
