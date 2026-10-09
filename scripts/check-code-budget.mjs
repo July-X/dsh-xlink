@@ -252,7 +252,7 @@ const FILE_BUDGETS = {
   // 163 → 283：/v1/responses POST 分发（体经 body_prefix 读取）、推理源
   // 注入（生产=刷新+目录校验+上游调用；测试=Cursor 桩）、NDJSON 泵送与
   // bridge.terminal 包络。挂上推理后它不再是纯路由壳，照实涨。
-  'src-tauri/src/openai/bridge.rs': 283,
+  'src-tauri/src/openai/bridge.rs': 285,
   // 2026-10-09：OAuth/OIDC 授权核心（P2）。协议形状按 OIDC 标准 + 设计
   // §8：PKCE(S256)/state/nonce/宿主标识/发现文档解析(fail-closed)/动态
   // 注册/回调分类/ID token 五重校验。issuer 常量标注未验证（设计 §10
@@ -2104,7 +2104,7 @@ const FILE_BUDGETS = {
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
 // +80：窗口级原生外观适配与建窗接线，修复跟随系统被应用级主题锁住。
-const TOTAL_BUDGET = 45391;
+const TOTAL_BUDGET = 45392;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

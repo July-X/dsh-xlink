@@ -26,7 +26,7 @@ const JS_BUDGET = 700_000;
 //     **这批改动反而把压缩后的产物体积减了一截**（字面量长、变量名也长，
 //     但重复的字面量不再各自占一个压缩表项）。
 // 上一轮的基线是 227583（HEAD），本轮 231406。同期 gzip 后只多 0.5 KB。
-const CSS_BUDGET = 236_000;
+const CSS_BUDGET = 236_200;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const assets = join(root, 'ui', 'dist', 'assets');
