@@ -109,6 +109,10 @@ window.__ModuleLoader__.load({
 
       const phase = status?.phase ?? "signed-out";
       const authorizing = phase === "authorizing";
+      // 后台授权流的失败原因（壳侧 lastError）：流程在后台线程跑，命令
+      // 不抛错——不把 lastError 画出来，失败就只是「静默回到未登录」，
+      // 用户永远不知道要开系统代理（2026-10-09 实测踩坑）。
+      const flowError = authorizing ? null : (status?.lastError ?? "");
       const statusText =
         status?.stateError ??
         status?.note ??
@@ -130,6 +134,20 @@ window.__ModuleLoader__.load({
           ),
         ]),
         error ? e("div", { key: "err", style: { fontSize: 12, color: "var(--danger, #d4484a)" } }, error) : null,
+        flowError
+          ? e(
+              "div",
+              {
+                key: "flow-err",
+                style: {
+                  fontSize: 12,
+                  color: "var(--danger, #d4484a)",
+                  overflowWrap: "anywhere",
+                },
+              },
+              flowError,
+            )
+          : null,
         e("div", { key: "actions", style: { display: "flex", gap: 8 } }, [
           authorizing
             ? e(

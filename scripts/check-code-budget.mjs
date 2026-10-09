@@ -312,7 +312,9 @@ const FILE_BUDGETS = {
   // 补上（同 builtin/mod.rs 的先例）。
   // 152 → 164：补 openai_catalog_refresh（工作台卡「刷新模型列表」，跳过
   // 新鲜窗口强制拉取；失败保留缓存不广播）。
-  'src-tauri/src/openai/cmd.rs': 164,
+  // 164 → 171：授权结局落 shell_events（成功/失败各一条）——失败原因此前
+  // 只在内存，卡片不渲染时完全不可见（2026-10-09 实测 403 静默回退）。
+  'src-tauri/src/openai/cmd.rs': 171,
   // 2026-10-09：访问令牌刷新（P2 收尾）。串行互斥（防旧 refresh token
   // 二次刷新被判重放）、旋转 refresh token、invalid_grant → reauth_required
   // 落库短路。3 测试：旋转落库 / 撤销标记与短路+重登清除 / 未过期不触网。
@@ -2133,7 +2135,9 @@ const FILE_BUDGETS = {
 // 45410 → 45421（2026-10-09 四轮）：peer 链接泛化 PEER_PACKAGES 并拆
 // ensure_one_peer_link（+11）——host 补导出 Config 后 schemastery 也要
 // peer 进物化目录，否则设置页不出 provider 行卡。
-const TOTAL_BUDGET = 45421;
+// 45421 → 45428（2026-10-09 五轮）：授权结局落 shell_events（+7）+ 卡片
+// 渲染 lastError（client.js 不计预算）——修「登录失败静默回未登录」。
+const TOTAL_BUDGET = 45428;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
