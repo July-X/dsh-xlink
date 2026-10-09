@@ -114,6 +114,8 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 - 创建或更新 tag 后不要再手动 dispatch 同一版本。后启动的 Run 可能在 Release 已发布后按保护逻辑失败。
 - workflow 使用固定并发组（`group: desktop-release`）串行化全部发布；`preflight` 还会断言待发布版本严格大于线上 `latest.json` 的版本（`releases/latest` 取"最近创建"而非 semver 最大值，回退发布会让高版本用户静默收不到更新）。所有 `uses:` 固定到 commit SHA，升级走 Dependabot。
 - 手动 dispatch 只用于已有正确 tag、且没有相同版本 Run 正在执行的情况。不要用手动 dispatch 创建缺失的 tag，否则 workflow 创建 tag 后会再次触发 tag push Run。
+- **改 `tauri.conf.json` 的 `bundle.resources` 之前，先确认新增的目录在「全新 checkout」里存在**。`src-tauri/resources/builtin-plugins/` 是构建期产物（`.gitignore` 挡住，由 `npm run prep:builtin` 从 `plugins/openai-oauth/` 生成），而 build script 校验的是登记在 `bundle.resources` 里的**每一个**路径——于是缺一步，新 checkout 上第一个 cargo 命令就死在 `resource path 'resources/builtin-plugins' doesn't exist`，表现为 quality job 的 `cargo test` 与两个平台的 `tauri build` 报同一行、而 `Publish release` 被跳过，red 的表象与真正原因隔着两层。2026-10-09 发 v0.4.4 就是这样，且该 break 在 main 上已连红 4 个提交（内嵌插件那批引入，v0.4.3 时还是绿的）。本地 `npm run dev` / `build` / `check` 都各自带着这一步，所以本地永远看不出来。`scripts/dev-builtin.test.mjs` 钉住接线形状：**任何会跑 `cargo build/check/test/clippy` 的 workflow job 都必须先生成资源**，并带「判据空转时必须红」的兜底。新增一个同类生成目录时，把它的生成步骤挂进判据，不要只改 workflow。
+- **失败后要重发同一个版本，只能把 tag 移到新 commit**：`preflight` 断言 `refs/tags/desktop-v<version>` 必须与 `$GITHUB_SHA` 一致，所以手动 dispatch 绕不过去。正规做法是 `git push origin :refs/tags/desktop-v<version>` 后在新 commit 上重建并推送（tag push 会自动触发新 Run）。动之前先 `gh api repos/July-X/dsh-xlink/releases/tags/<tag>` 确认该版本**还没有 Release**——已发布过的 tag 删了会让 updater 指向不存在的版本。
 - `desktop-v<version>` tag 和手动 dispatch 只接受 `main` 分支上的 commit；不要从其他分支或未推送的本地 commit 发布。
 
 - **发布平台**：dsh-xlink 只发布 Intel macOS（`macos-15-intel`）和 Windows（`windows-latest`）版本；不得添加、构建或发布任何 Linux/Ubuntu 版本、runner、制品或文案。
