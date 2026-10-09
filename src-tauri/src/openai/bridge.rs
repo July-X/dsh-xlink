@@ -300,15 +300,16 @@ fn production_inference_source() -> InferenceSource {
                     _ => (400u16, error.message()),
                 }
             })?;
-        let url = format!(
-            "{}{}",
-            paths.issuer_base,
-            crate::openai::inference::RESPONSES_PATH
-        );
+        let url = inference_url(&paths);
         crate::openai::inference::open_upstream(&url, &tokens.access_token, &validated.payload)
             .map(|lines| lines.reader)
             .map_err(|failure| (502u16, failure.message(&[])))
     })
+}
+
+fn inference_url(paths: &crate::openai::flow::FlowPaths) -> String {
+    let base = &paths.models_base;
+    format!("{base}{}", crate::openai::inference::RESPONSES_PATH)
 }
 
 /// 内核启动时注入的桥接环境变量（开发计划 §5：只经子进程环境传入）。
@@ -351,6 +352,64 @@ pub(crate) fn launch_env(
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn inference_targets_resource_not_issuer() {
+        let home = std::env::temp_dir().join(format!("oop-inference-url-{}", std::process::id()));
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let paths = crate::openai::flow::shell_flow_paths();
+        assert_eq!(inference_url(&paths), "https://api.openai.com/v1/responses");
+        assert!(!inference_url(&paths).starts_with(&paths.issuer_base));
+    }
+
+    #[test]
+    fn inference_resource_receives_authenticated_stream_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let paths = crate::openai::flow::FlowPaths {
+            mode_dir: Default::default(),
+            vault_file: Default::default(),
+            xlink_home: Default::default(),
+            issuer_base: "http://127.0.0.1:1/authorization-only".into(),
+            models_base: format!("http://{addr}/v1"),
+        };
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let request = crate::openai::http::read_request(&mut stream).unwrap();
+            assert_eq!(request.path, "/v1/responses");
+            assert_eq!(request.method, "POST");
+            assert_eq!(
+                request.headers.get("authorization").map(String::as_str),
+                Some("Bearer test-access")
+            );
+            let length: usize = request.headers["content-length"].parse().unwrap();
+            let mut body = request.body_prefix;
+            let remaining = length - body.len();
+            body.resize(length, 0);
+            stream.read_exact(&mut body[length - remaining..]).unwrap();
+            let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(payload["store"], false);
+            assert_eq!(payload["stream"], true);
+            assert_eq!(payload["model"], "gpt-x");
+            let sse = "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n";
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}", sse.len()).unwrap();
+        });
+        let payload =
+            serde_json::json!({"model":"gpt-x", "input":[], "store":false, "stream":true});
+        let mut upstream = crate::openai::inference::open_upstream(
+            &inference_url(&paths),
+            "test-access",
+            &payload,
+        )
+        .unwrap();
+        let mut events = String::new();
+        upstream.reader.read_to_string(&mut events).unwrap();
+        assert!(events.contains("response.completed"));
+        server.join().unwrap();
+    }
 
     /// 推理源桩：返回一个预置 SSE 流的读取器（Cursor 即可，走真实泵送）。
     fn stub_inference(sse_body: &'static str) -> InferenceSource {

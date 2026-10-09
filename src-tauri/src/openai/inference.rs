@@ -141,8 +141,8 @@ pub(crate) fn validate_request(
     })
 }
 
-/// 推理上游的调用路径（未验证常量；挂在 issuer 基址下）。
-pub(crate) const RESPONSES_PATH: &str = "/v1/responses";
+/// SIWC 推理路径：挂在资源基址 api.openai.com/v1 下，与模型目录同源。
+pub(crate) const RESPONSES_PATH: &str = "/responses";
 
 /// 桥接终止包络（桥接流的最后一行；设计 §7 的「只有成功终止事件才结算
 /// 成功」由它承载：`completed` / `failed` / `incomplete`）。
