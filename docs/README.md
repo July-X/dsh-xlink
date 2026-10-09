@@ -23,7 +23,7 @@
 - `notifications/`：任务完成通知。
 - `subscription/`：云端套餐、余额和 Token Plan 用量。
 
-内嵌 OpenAI OAuth（开放授权）插件的[设计文档](features/extensions/openai-oauth-design.md)、[开发计划](features/extensions/openai-oauth-development-plan.md)、[P0 发布包调查](features/extensions/openai-oauth-p0-findings.md)与[实机验收清单](features/extensions/openai-oauth-acceptance-checklist.md)存放在 `extensions/`。P0–P4 已实现并通过离线验证（含三版本 headless 会话端到端），P5 桌面侧落地，剩余真实账号联调与发布验证；调查报告记录窗口内各版本的接口证据。
+内嵌 OpenAI OAuth（开放授权）插件的[设计文档](features/extensions/openai-oauth-design.md)、[开发计划](features/extensions/openai-oauth-development-plan.md)、[P0 发布包调查](features/extensions/openai-oauth-p0-findings.md)、[真实服务联调指南](features/extensions/openai-oauth-bringup.md)与[实机验收清单](features/extensions/openai-oauth-acceptance-checklist.md)存放在 `extensions/`。P0–P4 已实现并通过离线验证（含三版本 headless 会话端到端），P5 桌面侧落地，剩余真实账号联调与发布验证；调查报告记录窗口内各版本的接口证据。
 
 ### `ui/`
 

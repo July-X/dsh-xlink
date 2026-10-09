@@ -158,6 +158,26 @@ test('pump: failed 终止 → 抛错带服务端原因', async () => {
   );
 });
 
+test('pump: added 条目播种身份，delta 只带增量也能装配', async () => {
+  // 真实 API 形态：added 条目带 id/name，后续 delta 只带 item_id 与参数增量。
+  const lines = [
+    '{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_9","name":"weather_city","arguments":""}}',
+    '{"type": "response.function_call_arguments.delta", "item_id": "fc_9", "delta": "{\\"city\\":\\"上海\\"}"}',
+    '{"type":"response.completed","response":{"id":"r3"}}',
+    '{"type":"bridge.terminal","status":"completed","replay":{"response":{"id":"r3"}}}',
+  ];
+  const chunks = [];
+  for await (const chunk of pumpStream(lines)) chunks.push(chunk);
+  const deltas = chunks.filter((c) => c.type === 'tool-call-delta');
+  assert.equal(deltas.length >= 1, true);
+  assert.equal(deltas[0].id, 'fc_9');
+  assert.equal(deltas[0].name, 'weather_city');
+  const end = chunks.find((c) => c.type === 'block-end' && c.block.type === 'tool-call');
+  assert.equal(end.block.id, 'fc_9');
+  assert.equal(end.block.name, 'weather_city');
+  assert.equal(end.block.arguments, '{"city":"上海"}');
+});
+
 test('pump: 工具调用增量与名字回映射', async () => {
   const lines = [
     '{"type":"response.output_item.added","item":{"type":"function_call","item_id":"fc1","name":"weather_city"}}',
