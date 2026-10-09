@@ -333,7 +333,10 @@ const FILE_BUDGETS = {
   // 改配置层）。3 测试：合并+缓存往返 / 401→重登 / 形状双键兼容。
   // 200 → 214：目录缓存新鲜窗口（CATALOG_FRESH_SECS=60，设计 §6.1 离线
   // 缓存语义：窗口内重复 listModels 不触网）。
-  'src-tauri/src/openai/catalog.rs': 214,
+  // 214 → 222：未登录从 503 改为**空目录载荷（200）**——前置常态不该在
+  // 模型选择器显示「加载失败」（2026-10-09 用户反馈）；NotSignedIn 独立
+  // 错误类别。
+  'src-tauri/src/openai/catalog.rs': 222,
   // 2026-10-09：P4 骨架——推理校验与流转发。载荷白名单（不在表即拒绝，
   // 静默丢弃等于让调用方以为限制生效）/store-stream 固定参数由服务端写/
   // revision 与强度门/终止三分类（completed 含回放材料、failed、EOF 无
@@ -2145,7 +2148,7 @@ const FILE_BUDGETS = {
 // peer 进物化目录，否则设置页不出 provider 行卡。
 // 45421 → 45428（2026-10-09 五轮）：授权结局落 shell_events（+7）+ 卡片
 // 渲染 lastError（client.js 不计预算）——修「登录失败静默回未登录」。
-const TOTAL_BUDGET = 45506;
+const TOTAL_BUDGET = 45514;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

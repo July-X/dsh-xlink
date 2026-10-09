@@ -70,9 +70,11 @@ pub(crate) struct Catalog {
     pub(crate) fetched_at: u64,
 }
 
-/// 目录错误：`Reauth` 要求重新登录；`Message` 稍后重试（用缓存兜底）。
+/// 目录错误：`NotSignedIn` 是目录的**空态**（未登录是前置常态，工作台
+/// 不当警告展示）；`Reauth` 要求重新登录；`Message` 稍后重试（用缓存兜底）。
 #[derive(Debug)]
 pub(crate) enum CatalogError {
+    NotSignedIn,
     Reauth(String),
     Message(String),
 }
@@ -80,6 +82,7 @@ pub(crate) enum CatalogError {
 impl CatalogError {
     pub(crate) fn message(&self) -> String {
         match self {
+            CatalogError::NotSignedIn => "尚未登录；请先在工作台登录".into(),
             CatalogError::Reauth(detail) => detail.clone(),
             CatalogError::Message(detail) => detail.clone(),
         }
@@ -115,7 +118,7 @@ pub(crate) fn load_catalog_with(
             }
             RefreshError::Message(detail) => CatalogError::Message(detail),
         })?
-        .ok_or_else(|| CatalogError::Message("尚未登录；请先在工作台登录".into()))?;
+        .ok_or(CatalogError::NotSignedIn)?;
 
     let now = deps.now_unix();
     // 新鲜窗口：工作台每次打开设置都会 listModels，窗口内的重复请求
@@ -163,6 +166,15 @@ pub(crate) fn serve_payload(
 ) -> Result<String, (u16, String)> {
     match load_catalog(paths, deps, mode) {
         Ok(catalog) => Ok(catalog_to_payload(&catalog)),
+        // 未登录 → **空目录载荷（200）**：未登录是前置常态，工作台的模型
+        // 选择器不该为它显示「加载失败」（2026-10-09 用户反馈）；登录后
+        // 同一端点自然给出真实模型。
+        Err(CatalogError::NotSignedIn) => Ok(catalog_to_payload(&Catalog {
+            revision: String::from("-"),
+            capability_revision: CAPABILITY_REVISION,
+            entries: Vec::new(),
+            fetched_at: 0,
+        })),
         Err(CatalogError::Reauth(detail)) => Err((401, detail)),
         Err(CatalogError::Message(detail)) => {
             // 缓存兜底：活跃账号的最后一次成功目录。
@@ -471,16 +483,24 @@ mod serve_tests {
         assert!(fallback.contains("gpt-x"));
     }
 
-    /// 未登录 → 503（不是 401：这是「没有账号」不是「令牌被拒」）。
+    /// 未登录 → **空目录载荷（200）**：前置常态不是故障，工作台模型
+    /// 选择器不该为它显示「加载失败」（2026-10-09 用户反馈）。
     #[test]
-    fn serve_payload_without_login_is_503() {
+    fn serve_payload_without_login_is_empty_catalog() {
         let issuer = MockIssuer::spawn();
         let transport = issuer.transport();
         let paths = flow_test_paths("serve-nologin", issuer.port());
-        match serve_payload(&paths, &transport, "release") {
-            Err((503, detail)) => assert!(detail.contains("登录"), "{detail}"),
-            other => panic!("{other:?}"),
-        }
+        let payload = serve_payload(&paths, &transport, "release").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(
+            parsed["revision"].as_str().unwrap(),
+            format!("-|cap{CAPABILITY_REVISION}")
+        );
+        assert_eq!(
+            parsed["models"].as_array().unwrap().len(),
+            0,
+            "未登录的目录是空态，不是错误"
+        );
     }
 }
 
