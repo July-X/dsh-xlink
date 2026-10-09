@@ -236,7 +236,11 @@ const FILE_BUDGETS = {
   // 171 → 176：内核根解析改以 active.txt 为准（记录回退）——修「刚装好
   // 内核、还没启动过工作台，启用内嵌插件被误拒」（2026-10-09 用户实测）。
   // 抽出 resolve_kernel_root 供测试直打，净 +5。
-  'src-tauri/src/plugins/builtin/cmd.rs': 176,
+  // 176 → 182：补 legacy 兜底——生产安装落在族运行时树
+  // （`<data_dir>/kernels/<version>`），resolve_install_dir 只认新布局，
+  // 没有 start_instance 同款 unwrap_or_else 就永远解析不出内核根
+  // （2026-10-09 用户二轮实测），净 +6。
+  'src-tauri/src/plugins/builtin/cmd.rs': 182,
   // 2026-10-08：内嵌插件的前端状态与动作（plugins 页「当前内核」tab 的
   // 内嵌插件区）。不进 plugins.js：那边是社区插件的清单与安装事务
   // （456 行），本插件只有「读状态 + 拨开关」两条命令，混进去会让
@@ -2114,7 +2118,9 @@ const FILE_BUDGETS = {
 // +80：窗口级原生外观适配与建窗接线，修复跟随系统被应用级主题锁住。
 // 45392 → 45397（2026-10-09）：内嵌插件开关误拒修复——cmd.rs 的内核根解析
 // 改以 active.txt 为准（+5，见 FILE_BUDGETS 该条），文案「更新页」→「内核版本页」。
-const TOTAL_BUDGET = 45397;
+// 45397 → 45403（2026-10-09 二轮）：补族运行时树的 legacy 兜底（+6）——
+// 生产安装的内核不在新布局里，没有兜底就永远解析不出内核根。
+const TOTAL_BUDGET = 45403;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
