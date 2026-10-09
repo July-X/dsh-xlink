@@ -1964,7 +1964,7 @@ pub(crate) fn make_dir_link(source: &Path, target: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn make_dir_link(source: &Path, target: &Path) -> io::Result<()> {
+pub(crate) fn make_dir_link(source: &Path, target: &Path) -> io::Result<()> {
     std::os::windows::fs::symlink_dir(source, target)
 }
 

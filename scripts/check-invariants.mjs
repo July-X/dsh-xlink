@@ -1907,8 +1907,32 @@ if (ungatedOsImports.length > 0) {
     }
   }
 
-  if (rawHides.length === 0 && autostartIdx >= 0 && reopenIdx >= 0) {
-    note('常驻接线完整：自启收起走 hide_to_shell，Reopen 兜底 show_main_shell');
+  // ④ Windows 上任务栏按钮的删与补必须成对，且住在同一个函数里。
+  //
+  // 2026-10-09 用户实测：登录自启把面板收进后台后，点任务栏启动项唤回它，
+  // 窗口出来了——**任务栏上却没有它的按钮**。`hide_to_shell` 的
+  // `set_skip_taskbar(true)` 走 ITaskbarList::DeleteTab 把按钮直接删掉，
+  // `show()` 不会让它自己回来。补回的那份实现曾经单独放在
+  // `tray::show_main_shell` 里，而**没有任何调用方走它**（`lib::show_main_shell`
+  // 直接调 `resident::show_main_shell`），于是「恢复时补回」一直是句空话，
+  // 单测与编译都不响。钉成对：两个方向必须在同一个文件里成对出现。
+  const residentSource = productionRust(read('src-tauri/src/shell/resident.rs'));
+  const skipTaskbarTrue = /set_skip_taskbar\(true\)/.test(residentSource);
+  const skipTaskbarFalse = /set_skip_taskbar\(false\)/.test(residentSource);
+  if (!skipTaskbarTrue || !skipTaskbarFalse) {
+    fail(
+      'resident-wiring',
+      'shell/resident.rs 里 set_skip_taskbar 的删（true）与补（false）必须成对：' +
+        `收起时 true=${skipTaskbarTrue}、恢复时 false=${skipTaskbarFalse}——` +
+        'DeleteTab 之后按钮不会自己回来，缺哪一半都会留下「窗口回来了但任务栏上找不到它」。',
+    );
+  }
+
+  if (rawHides.length === 0 && autostartIdx >= 0 && reopenIdx >= 0 && skipTaskbarTrue && skipTaskbarFalse) {
+    note(
+      '常驻接线完整：自启收起走 hide_to_shell，Reopen 兜底 show_main_shell，' +
+        '任务栏按钮删补成对',
+    );
   }
 }
 
