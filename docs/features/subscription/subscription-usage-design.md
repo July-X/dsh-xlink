@@ -217,27 +217,22 @@ refs → `.env`）可选配置：两项都配置时才随请求发送；`PLAN_TY
 | 项 | 值 |
 | --- | --- |
 | 端点 | `GET https://chatgpt.com/backend-api/wham/usage` |
-| 认证 | `Authorization: Bearer <SIWC access token>` |
+| 认证 | 需要接口接受的 ChatGPT / Codex 凭据；SIWC 推理令牌不适用 |
 | 必需请求头 | `ChatGPT-Account-Id: <chatgpt_account_id>`、`Accept: application/json` |
 | 出处 | **第一方但未文档化**：OpenAI 没有公开承诺这个端点，它是 ChatGPT 官方 Web 客户端自己用的内部接口（2026-10-09 真机 HTTP 200 核实）。字段随时可能漂移，因此按逐字段防御式解析对待 |
 
-**凭据来源与其余四个 provider 不同**：不来自内核模型凭据链（env / `.credentials.yaml`
-/ `.env`），而是壳自己的 Sign-in-with-ChatGPT OAuth 凭据（`crate::openai` 的加密
-vault，即「内嵌 openai-oauth 插件」那次登录的结果）。`configured` 的判据是
-**已登录且拿得到账号 id**，未登录即隐藏分区。外壳不因此新增任何凭据收集面——用的
-是用户已经完成的那次授权。
+**2026-10-10 根因核实**：同一账号、同一代理、同一端点、正确账号请求头，
+壳的 SIWC 推理令牌返回 HTTP 401 / `no_matching_rule`，本机 Codex 令牌返回
+HTTP 200 并包含两个额度窗口。因此此前把问题归为「账号 id 缺失」不成立；
+补头与重新授权都不能解决令牌权限不兼容。[官方令牌说明](https://developers.openai.com/siwc/token-sharing-open-source/token-reference)
+规定 SIWC access token 的受众为 `https://api.openai.com/v1`，认证元数据是 opaque，
+不能猜测或解密其中的账号信息。Codex 返回的额度也不能冒充 SIWC 应用用量。
 
-**账号 id 不在 access token 上**：访问令牌的受众是 `https://api.openai.com/v1`
-（`auth.rs` 的 `OPENAI_RESOURCE`），不含账号上下文；账号 id 只随 **ID token** 下发，
-声明名是 `https://api.openai.com/auth.chatgpt_account_id`（配套的
-`…/auth.chatgpt_plan_type` 是套餐档位）。壳在登录时（`flow::exchange_and_store`，
-ID token 已验签）把这条声明落进 vault，查询时直接取用，**不必**再解 ID token。
-老 vault 文件没有这个字段（`#[serde(default)]` 兜底），此时该分区按未配置隐藏，
-会从 vault 里留存的那份 ID token 回填，不必退出重登（那份 ID token 正是登录时验过签名之后才加密落盘的，读出来的只是查询上下文，不参与身份判定）。
-
-**令牌只发往一个地方**：请求头里的原始 access token 只出现在这一次 HTTPS 请求上，
-不进 UI、日志、缓存与事件；错误文案只说「OpenAI 登录已失效（HTTP 401）」，不带
-token 片段。
+**当前行为**：从本壳加密 vault 读取模型登录状态，已登录即保留分区；查询前
+按精确 scope 识别 SIWC 令牌，返回「不支持此额度接口」而非「登录失效」，指向
+ChatGPT 设置 → 用量。不追加 Codex 专用授权参数，不自动读取其它应用凭据。
+原始令牌不进 UI、日志、缓存与事件。账号信息缺失只表示没有查询上下文，
+不证明模型登录失效；旧 ID token 的账号字段回填也不能改变权限边界。
 
 **读凭据前先看 vault 文件在不在**：没有它就没有账号条目可读，也就没有理由去碰
 系统钥匙串——而钥匙串取不到值时，「取或生成」的语义会**当场生成一把新密钥并写进

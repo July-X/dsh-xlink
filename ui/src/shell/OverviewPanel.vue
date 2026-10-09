@@ -813,7 +813,7 @@ function goVersions() {
                 >
                   <i :class="'plan-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
                 </div>
-                <span v-else class="plan-tier-unlimited">♾️ 无限周额度</span>
+                <span v-else-if="tier.unlimited" class="plan-tier-unlimited">♾️ 无限周额度</span>
                 <!-- 缺席窗口：写明「暂无数据」，不补进度条也不补 100%。 -->
                 <span v-if="tier.missing" class="muted plan-tier-value" :title="tier.tip">暂无数据</span>
                 <span v-else-if="!tier.unlimited" class="plan-tier-value">{{ tier.percent }}%</span>
