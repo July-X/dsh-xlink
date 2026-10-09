@@ -11,7 +11,7 @@
  * 不受影响。这对应设计文档「模型连接状态不能由『有一份令牌』推导」。
  */
 import { writeFileSync } from "node:fs";
-import { PACKAGE_ID, PROVIDER_DISPLAY_NAME, PROVIDER_ID, TEST_MARKER_ENV } from "./constants.js";
+import { PACKAGE_ID, PROVIDER_ID, TEST_MARKER_ENV } from "./constants.js";
 import { bridgeFromEnv } from "./bridge.js";
 import { BridgeAdapter, connectBridge } from "./adapter.js";
 
@@ -26,12 +26,12 @@ async function apply(ctx, config = {}) {
   const settingsNs = ctx.fiber.entry?.options.id ?? PACKAGE_ID;
   const pluginVersion = ctx.fiber.entry?.options.version ?? "0.1.0";
 
-  ctx.llm.registerConfigurableProviders([{
-    provider: PROVIDER_ID,
-    displayName: PROVIDER_DISPLAY_NAME,
-    settingsNs,
-    settingsPath: [],
-  }]);
+  // **不注册 configurable provider 目录行**：行卡是内核渲染的，自带一个
+  // 「编辑」按钮——而本插件没有任何可编辑配置（Config 是空 schema），
+  // 那个按钮只会打开一个空表单（2026-10-09 用户反馈：移除编辑按钮）。
+  // 账户卡因此挂在 `settings.models.footer` 插槽（client.js），标题与
+  // 「如何移除」说明完全由插件自绘。模型与推理走 `registerAdapter`，
+  // 与目录行无关，会话模型选择器不受影响。
 
   const bridge = bridgeFromEnv();
   let adapter;

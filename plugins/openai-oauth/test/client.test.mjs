@@ -69,10 +69,12 @@ test('client: factory + apply 求值不抛错，注册的插槽组件是已定�
   assert.equal(typeof exports.apply, 'function');
   exports.apply(ctx);
   assert.equal(injected.length, 1);
-  // 曾在这里抛 ReferenceError: ProviderCard is not defined。
+  // 卡片挂页尾 footer（list 插槽，注册 id = 插件 id）——provider 行卡是
+  // 内核渲染的，自带无意义的「编辑」按钮（2026-10-09 用户反馈移除）。
   injected[0]();
   assert.equal(registered.length, 1);
-  assert.equal(registered[0].descriptor.key, 'xlink-openai-oauth');
+  assert.equal(registered[0].descriptor.name, 'settings.models.footer');
+  assert.equal(registered[0].descriptor.id, 'xlink-openai-oauth');
   assert.equal(
     typeof registered[0].component,
     'function',

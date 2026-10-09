@@ -1,5 +1,6 @@
 /**
- * Client 入口：在「设置 → 模型」的提供方卡上挂本插件的账户卡区域。
+ * Client 入口：在「设置 → 模型」页尾（`settings.models.footer` 插槽）挂
+ * 本插件的账户卡。
  *
  * 束格式是内核客户端模块系统的既定方言（P0 调查 §6）：
  * `window.__ModuleLoader__.load({id, factory})` 以普通脚本供给，factory
@@ -7,8 +8,10 @@
  * **必须自包含**：不能出现顶层 ESM import；下方双语字典是
  * `locales/{zh,en}.js` 的内联孪生（构建步骤落地前手工保持同步）。
  *
- * 插槽按 `settingsNs` keyed 派发——key 必须与 Host 侧接线行 id
- * （`xlink-openai-oauth`）一致。
+ * 卡片挂 footer（list 插槽，注册 id = 插件 id）而不是 provider 行卡：
+ * 行卡是内核渲染的，自带「编辑」按钮——本插件没有可编辑配置，空表单
+ * 只会困惑（2026-10-09 用户反馈：移除编辑按钮，标题说明来源与移除入口）。
+ * Host 侧因此也不再注册 configurable provider 目录行。
  *
  * 账户动作走桌面壳的 Tauri 命令（`window.__TAURI__.core.invoke`，授权见
  * `capabilities/harness-remote.json` 的 allow-openai-account）：令牌与
@@ -19,6 +22,8 @@
 const STRINGS = {
   zh: {
     cardTitle: "OpenAI · ChatGPT 套餐",
+    providedBy:
+      "本插件由 dsh-xlink 桌面端提供；如需移除插件，请到主面板的「插件」页操作。",
     signIn: "登录 ChatGPT",
     cancel: "取消登录",
     signOut: "退出登录",
@@ -32,6 +37,8 @@ const STRINGS = {
   },
   en: {
     cardTitle: "OpenAI · ChatGPT plan",
+    providedBy:
+      "This plugin is provided by the dsh-xlink desktop app; to remove it, use the Plugins page in the management panel.",
     signIn: "Sign in with ChatGPT",
     cancel: "Cancel sign-in",
     signOut: "Sign out",
@@ -124,9 +131,8 @@ window.__ModuleLoader__.load({
 
       return e(
         "div",
-        { "data-xlink-openai-oauth": "card", style: { padding: "8px 0", display: "grid", gap: 6 } },
+        { "data-xlink-openai-oauth": "card", style: { display: "grid", gap: 6 } },
         e("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, [
-          e("span", { key: "t", style: { fontWeight: 600 } }, L.cardTitle),
           e(
             "span",
             { key: "s", style: { fontSize: 12, color: "var(--text-muted, #8a8f98)" } },
@@ -210,14 +216,45 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /** 页尾卡：标题（带来源 tooltip）+ 账户区。 */
+    function FooterCard() {
+      return e(
+        "div",
+        {
+          "data-xlink-openai-oauth": "footer-card",
+          style: {
+            border: "1px solid var(--border, #d0d3d9)",
+            borderRadius: 8,
+            padding: "12px 14px",
+            display: "grid",
+            gap: 6,
+          },
+        },
+        e(
+          "div",
+          { style: { display: "flex", alignItems: "center", gap: 8 } },
+          e(
+            "span",
+            {
+              key: "t",
+              style: { fontWeight: 600, cursor: "help" },
+              title: L.providedBy,
+            },
+            L.cardTitle,
+          ),
+        ),
+        e(AccountCard),
+      );
+    }
+
     function apply(ctx) {
-      ctx.slots.inject("settings.models.provider-card", () =>
+      ctx.slots.inject("settings.models.footer", () =>
         ctx.slots.register(
           {
-            name: "settings.models.provider-card",
-            key: "xlink-openai-oauth",
+            name: "settings.models.footer",
+            id: "xlink-openai-oauth",
           },
-          AccountCard,
+          FooterCard,
         ),
       );
     }
