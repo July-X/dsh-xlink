@@ -97,7 +97,7 @@ test('envelope: system 文本进 instructions；工具结果与调用成对', ()
   assert.equal(input[3].call_id, 'call-1');
 });
 
-test('envelope: user 图片/文件块显式拒绝（首版范围外）', () => {
+test('envelope: 未准备的图片不能静默丢弃', () => {
   assert.throws(
     () =>
       buildEnvelope(
@@ -107,7 +107,7 @@ test('envelope: user 图片/文件块显式拒绝（首版范围外）', () => {
         },
         CATALOG,
       ),
-    /不支持图片/,
+    /未完成请求转换/,
   );
 });
 
