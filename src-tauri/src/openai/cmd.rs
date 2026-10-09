@@ -81,6 +81,8 @@ fn status_payload(app: &AppHandle) -> AccountStatus {
     AccountStatus {
         phase: if authorizing {
             "authorizing".into()
+        } else if account.as_ref().is_some_and(|view| view.reauth_required) {
+            "reauth-required".into()
         } else if account.is_some() {
             "authorized".into()
         } else {
