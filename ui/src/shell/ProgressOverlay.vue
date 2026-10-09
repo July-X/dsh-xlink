@@ -39,7 +39,7 @@ watch(
         <pre>{{ progress.logText }}</pre>
       </div>
       <div class="progress-pulse" aria-hidden="true"></div>
-      <div class="btn-row">
+      <div class="btn-row dialog-actions">
         <el-button
           v-if="progress.failed && diagnosticStore.liveEvents.length"
           text

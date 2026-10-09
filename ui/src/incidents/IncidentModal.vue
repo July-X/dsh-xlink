@@ -207,7 +207,7 @@ async function resolveSuspect(id, action) {
       </div>
 
       <p v-if="incident.hint" class="muted" style="margin: 0">{{ incident.hint }}</p>
-      <div v-if="cause !== 'plugin' && !incident.recovered" class="btn-row">
+      <div v-if="cause !== 'plugin' && !incident.recovered" class="btn-row dialog-actions">
         <el-button type="warning" plain :icon="Connection" @click="goDestination">{{ destinationLabel }}</el-button>
       </div>
     </div>

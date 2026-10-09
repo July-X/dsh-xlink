@@ -1114,6 +1114,16 @@ main {
   flex-wrap: wrap;
 }
 
+/* 弹窗 / 浮层**底部**那一排操作按钮统一靠右（2026-10-09 用户要求「这类弹窗的
+   操作按钮统一到右侧」）。Element 的 el-dialog `#footer` 默认右对齐（迁移向导、
+   预检、快照恢复都走它），这条补的是**自绘**弹窗：进度浮层与事故面板。
+   刻意不改 `.btn-row` 本身——面板内的 .btn-row 与它旁边的说明文字同属一段内容
+   （概览的欢迎 callout、设置页的通知行），那些左对齐才对，右对齐会把文字顶走。
+   判据见 ui/test/designAlignment.test.js「弹窗底部的操作排统一靠右」。 */
+.dialog-actions {
+  justify-content: flex-end;
+}
+
 /* 面板内按钮的横向间距只由容器的 flex gap 负责。Element 给**每一个**
    .el-button 都加了 margin-left: 12px，与 .btn-row / .card-head 自己的
    gap 叠加后相邻按钮实际相距 20px 以上。选择器带 .panel 前缀而不是全局清零：

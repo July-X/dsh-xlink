@@ -2148,7 +2148,12 @@ const FILE_BUDGETS = {
 // peer 进物化目录，否则设置页不出 provider 行卡。
 // 45421 → 45428（2026-10-09 五轮）：授权结局落 shell_events（+7）+ 卡片
 // 渲染 lastError（client.js 不计预算）——修「登录失败静默回未登录」。
-const TOTAL_BUDGET = 45514;
+// 45514 → 45517（2026-10-09 六轮）：弹窗 / 浮层底部的操作按钮统一靠右（+3，
+// 全在 theme.css）——`.dialog-actions { justify-content: flex-end }` 一个共享类，
+// 进度浮层与事故面板两处挂上。theme.css 自身预算未动（2531 / 3001）。模板侧
+// 只多一个类名，判据（designAlignment.test.js 那条 + 摘类 / 改 .btn-row 两次
+// 反向验）不计预算。
+const TOTAL_BUDGET = 45517;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
