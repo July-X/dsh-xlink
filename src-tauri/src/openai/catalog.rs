@@ -267,7 +267,14 @@ fn catalog_to_payload(catalog: &Catalog) -> String {
             "id": entry.id,
             "name": entry.name,
             "contextWindow": entry.context_window,
-            "efforts": entry.efforts,
+            // Host 适配器的契约是**档位对象**（{id, name}，smoke 桩同形状）：
+            // 内核校验 effort.id/name 必须是非空字符串且不重复——裸字符串
+            // 会被 String(effort.id) 变成一串 "undefined"（2026-10-09 实测
+            // 「invalid or duplicate reasoning effort metadata」）。
+            "efforts": entry.efforts.iter().map(|effort| serde_json::json!({
+                "id": effort,
+                "name": effort,
+            })).collect::<Vec<_>>(),
             "capability": entry.capability,
         })).collect::<Vec<_>>(),
     })
