@@ -46,17 +46,66 @@ impl Route {
 
 /// 按「先代理、失败再直连」给出本次要试的顺序。
 ///
-/// 恒非空，末位恒为直连——回退的终点是「一定试过一次直连」。
+/// 恒非空，末位恒为直连——回退的终点是「一定试过一次直连」。代理探测
+/// 间歇失灵（注册表开关抖动，2026-10-09 实测）时，上次**成功过**的代理
+/// 地址作为兜底路由插在直连之前（[`remember_proxy`] 记忆）。
 pub fn routes() -> Vec<Route> {
-    routes_from(detect())
+    let remembered = remembered_proxy();
+    routes_from(detect(), remembered.as_ref())
 }
 
 /// 纯函数部分：把「探测结果」变成「要试的顺序」。与探测分开是为了能直接测
-/// 顺序本身，而不必在一台真的开着代理的机器上验证。
-fn routes_from(detected: Option<(Url, &'static str)>) -> Vec<Route> {
-    match detected {
+/// 顺序本身，而不必在一台真的开着代理的机器上验证。记忆代理只在它不等于
+/// 当前探测结果时插入（同一个地址插两遍是浪费一次必然同样结果的请求）。
+fn routes_from(detected: Option<(Url, &'static str)>, remembered: Option<&Url>) -> Vec<Route> {
+    let mut routes = match detected {
         Some((url, source)) => vec![Route::Proxy { url, source }, Route::Direct],
         None => vec![Route::Direct],
+    };
+    if let Some(url) = remembered {
+        let already = routes
+            .iter()
+            .any(|route| matches!(route, Route::Proxy { url: seen, .. } if seen == url));
+        if !already {
+            routes.insert(
+                routes.len().saturating_sub(1),
+                Route::Proxy {
+                    url: url.clone(),
+                    source: LAST_PROXY_SOURCE,
+                },
+            );
+        }
+    }
+    routes
+}
+
+/// 「上次成功过的代理」的展示名与落盘文件名（xlink home 下，一行 URL）。
+const LAST_PROXY_SOURCE: &str = "上次成功的代理（记忆）";
+
+fn remembered_proxy_path() -> std::path::PathBuf {
+    crate::shell::paths::xlink_home().join("last-proxy.txt")
+}
+
+/// 读记忆的代理地址；文件缺失/内容解析不出一律 `None`（与探测同纪律：
+/// 读不到只是"没有可用的兜底"，不是错误）。
+fn remembered_proxy() -> Option<Url> {
+    let text = std::fs::read_to_string(remembered_proxy_path()).ok()?;
+    normalize(text.trim())
+}
+
+/// 记住一个**成功过**的代理地址（供下次探测失灵时兜底）。写入尽力而为：
+/// 失败只留 stderr——记忆是弹性优化，不是关键路径。
+pub(crate) fn remember_proxy(url: &Url) {
+    let path = remembered_proxy_path();
+    let line = format!("{url}\n");
+    if std::fs::read_to_string(&path).is_ok_and(|existing| existing == line) {
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(error) = crate::shell::process::atomic_write(&path, line.as_bytes()) {
+        eprintln!("dsh-xlink: 记忆代理地址失败（{}）：{error}", path.display());
     }
 }
 
@@ -326,20 +375,44 @@ mod tests {
     }
 
     /// 只有直连时**不能**凭空造一条代理路由：那是把"用户没配代理"改成
-    /// "用户配了个不存在的代理"。
+    /// "用户配了个不存在的代理"。记忆代理作为探测失灵时的兜底插在直连
+    /// 之前；与探测结果相同则不重复插入。
     #[test]
     fn routes_end_with_direct_and_start_with_the_detected_proxy() {
-        let with_proxy = routes_from(Some((url_of("http://127.0.0.1:7890"), "测试来源")));
-        assert_eq!(with_proxy.len(), 2);
+        let remembered = url_of("http://127.0.0.1:7891");
+        let with_proxy = routes_from(
+            Some((url_of("http://127.0.0.1:7890"), "测试来源")),
+            Some(&remembered),
+        );
+        assert_eq!(with_proxy.len(), 3, "探测代理 + 记忆代理 + 直连");
         assert_eq!(
             with_proxy[0].describe(),
             // `Url` 会给空路径补一个尾斜杠，展示的就是这个形态。
             "代理 http://127.0.0.1:7890/（测试来源）"
         );
-        assert_eq!(with_proxy[1], Route::Direct);
+        assert!(matches!(
+            &with_proxy[1],
+            Route::Proxy { url, .. } if url == &url_of("http://127.0.0.1:7891")
+        ));
+        assert_eq!(with_proxy[2], Route::Direct);
 
-        let without_proxy = routes_from(None);
+        // 记忆代理与探测结果相同：不重复插入。
+        let same = routes_from(
+            Some((url_of("http://127.0.0.1:7890"), "测试来源")),
+            Some(&url_of("http://127.0.0.1:7890")),
+        );
+        assert_eq!(same.len(), 2);
+
+        let without_proxy = routes_from(None, None);
         assert_eq!(without_proxy, vec![Route::Direct]);
+
+        // 探测不到但记忆还在：兜底路由仍然可用（系统代理开关抖动的兜底）。
+        let remembered_only = routes_from(None, Some(&url_of("http://127.0.0.1:7891")));
+        assert_eq!(remembered_only.len(), 2);
+        assert!(matches!(
+            &remembered_only[0],
+            Route::Proxy { url, .. } if url == &url_of("http://127.0.0.1:7891")
+        ));
     }
 
     /// `ProxyServer` 的两种写法都要认：`host:port` 与分协议的
