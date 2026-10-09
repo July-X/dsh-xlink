@@ -120,10 +120,16 @@ fn perf_flag(value: Option<&str>, default: bool) -> bool {
 /// 在阻塞线程上收集管理面板的完整状态，并在需要时记录分段耗时。
 pub(crate) fn collect_status(app: &AppHandle, data_dir: &Path, source: Option<&str>) -> StatusView {
     let mut perf = PerfSample::new("get_status", source);
-    let settings = perf.measure("settings", || {
-        settings::load_for_shell(settings::current_mode())
+    // 一次读盘同时拿 settings 与 warning。此前 settings 在这里和
+    // `status_with_perf` 里各读一遍 settings.json（perf 采样里 settings_us 与
+    // kernel_settings_warning_us 之和约 5%）——settings.json 每轮 poll 读两次
+    // 纯属浪费，2026-10-09 起合并为这一读，`kernel_settings_warning` 分段随
+    // 之从日志里消失。
+    let (settings, settings_warning) = perf.measure("settings", || {
+        settings::load_checked_for_shell(settings::current_mode())
     });
-    let kernel_status = kernel::lifecycle::status_with_perf(data_dir, &settings, &mut perf);
+    let kernel_status =
+        kernel::lifecycle::status_with_perf(data_dir, &settings, settings_warning, &mut perf);
     perf.measure("reload_stalled", || {
         harness_window::reload_stalled(app, kernel_status.running)
     });

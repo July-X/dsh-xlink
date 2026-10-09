@@ -9,12 +9,25 @@ pub(crate) fn configure(app: &tauri::AppHandle) {
 }
 
 pub(crate) fn refresh_enabled(home: &Path, profile: &str, kernel: &Path) -> Result<(), String> {
-    refresh_from_source(
+    let started = std::time::Instant::now();
+    // 稳态每次启动也做两遍全树摘要 + 接线读取，此前只有真变更才落一行，这
+    // 笔每启动一次的固定耗时在日志里完全不可见。启动是用户触发的低频动作，
+    // 一行/次可忽略；插件包膨胀或物化变慢时有据可查。失败原样上抛不阻断记。
+    let outcome = refresh_from_source(
         SOURCE.get().and_then(Option::as_deref),
         home,
         profile,
         kernel,
-    )
+    );
+    let ms = started.elapsed().as_millis();
+    crate::shell::shell_events::record(
+        "builtin-openai-refresh",
+        &match &outcome {
+            Ok(()) => format!("启动前内嵌 OpenAI 插件检查完成，耗时 {ms}ms"),
+            Err(error) => format!("启动前内嵌 OpenAI 插件刷新失败（耗时 {ms}ms）：{error}"),
+        },
+    );
+    outcome
 }
 
 fn refresh_from_source(

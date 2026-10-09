@@ -563,8 +563,10 @@ fn list_installed_with_perf(
                 size_bytes: size,
                 // 采样读硬链接数（纯元数据，每版本约 30 次打开）：旧版硬链接
                 // 树 ⇒ true，copy 新树 ⇒ false。版本页据此标「共享存储」、
-                // 横幅据此决定还出不出现。
-                shared_storage: crate::kernel::install_isolation::tree_shares_inodes(&dir),
+                // 横幅据此决定还出不出现。判定只在装 / 卸 / 重装时才会变，
+                // 轮询路径走缓存版；2026-10-09 的 perf 采样显示直采占轮询
+                // 耗时 83–87%，装 / 卸路径的 `invalidate_cache` 负责让它跟上。
+                shared_storage: crate::kernel::install_isolation::cached_tree_shares_inodes(&dir),
             });
         }
     }
@@ -612,12 +614,17 @@ pub fn with_active(installed: &mut [InstalledVersion], active: Option<&str>) {
 /// 组装完整的状态快照。
 pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
     let mut perf = crate::diagnostics::perf::PerfSample::disabled();
-    status_with_perf(data_dir, settings, &mut perf)
+    // 调用方只给了 settings；warning 在这里补一次读。status() 走的是一次性
+    // 命令路径，不在 2.5s 轮询上，这份读无关性能。
+    let warning =
+        crate::shell::settings::load_checked_for_shell(crate::shell::settings::current_mode()).1;
+    status_with_perf(data_dir, settings, warning, &mut perf)
 }
 
 pub(crate) fn status_with_perf(
     data_dir: &Path,
     settings: &Settings,
+    settings_warning: Option<String>,
     perf: &mut crate::diagnostics::perf::PerfSample,
 ) -> KernelStatus {
     let total_started = perf.start();
@@ -640,10 +647,6 @@ pub(crate) fn status_with_perf(
     let running_started = perf.start();
     let running = workbench_running(data_dir, settings);
     perf.end("kernel_workbench_running", running_started);
-    let warning_started = perf.start();
-    let settings_warning =
-        crate::shell::settings::load_checked_for_shell(crate::shell::settings::current_mode()).1;
-    perf.end("kernel_settings_warning", warning_started);
     let other_shell_started = perf.start();
     // 跨壳探测**只有在本壳确实还有共享 inode 的版本时才可能改变结果**，而
     // `Option::filter` 的接收者是无条件求值的：此前即便 `cross_shell_risk` 为
@@ -790,6 +793,8 @@ pub fn uninstall(data_dir: &Path, version: &str) -> Result<(), AppError> {
     crate::kernel::package_activity::begin("删除内核版本");
     let removed = remove_kernel_dir(data_dir, version);
     crate::kernel::package_activity::end();
+    // 树没了（或删除失败留下残骸）：轮询缓存的共享判定作废，下一拍重采。
+    crate::kernel::install_isolation::invalidate_cache();
     removed
 }
 
@@ -913,6 +918,9 @@ pub fn install_version(
     crate::kernel::package_activity::begin("安装内核版本");
     let outcome = install_version_into(family, data_dir, node_exe, pnpm_exe, version, on_progress);
     crate::kernel::package_activity::end();
+    // 安装中途的轮询可能把半成品树的判定采进缓存；无论成败都要清——失败会
+    // 留残骸（existed_before 时保留），成功则是全新 inode 的树。
+    crate::kernel::install_isolation::invalidate_cache();
     if outcome.is_err() && !existed_before {
         let _ = fs::remove_dir_all(&dir);
     }
@@ -2728,7 +2736,7 @@ mod tests {
             port: 0,
             ..Settings::default()
         };
-        let status = status_with_perf(&root, &settings, &mut perf);
+        let status = status_with_perf(&root, &settings, None, &mut perf);
         perf.finish();
         assert!(
             status.other_shell_workbench.is_none(),
