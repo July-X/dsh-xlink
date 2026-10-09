@@ -947,6 +947,7 @@ dependencies = [
  "httparse",
  "libc",
  "notify-rust",
+ "objc2",
  "rand",
  "ring",
  "ruzstd",

@@ -395,7 +395,13 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                shell::appearance::initialize(webview.window());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            shell::appearance::set_window_appearance,
             commands::get_status,
             commands::detect_node,
             commands::install_node,

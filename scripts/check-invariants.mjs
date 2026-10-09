@@ -2038,16 +2038,12 @@ if (ungatedOsImports.length > 0) {
         }
       }
     }
-    // ② 主窗口必须钉深色：**它是建窗瞬间的兜底值**，不是最终外观。
-    //    自绘标题栏的底色走 `--chrome` token，跟着应用主题走；页面挂载前
-    //    `applyTheme()` 会调 `window.setTheme()` 把原生 appearance 纠正过来。
-    //    之所以仍要在这里钉：主窗没有「页面上线后纠正」的那一瞬间之前的一切，
-    //    而跟随系统会让冷启动首帧在两套主题之间跳。
-    if (main.theme !== 'Dark') {
-      fail(
-        'window-chrome',
-        `主窗口 theme 是「${main.theme ?? '（未设，跟随系统）'}」：建窗到页面挂载之间没人纠正原生 appearance，冷启动会在两套主题之间跳`,
-      );
+    // macOS 的声明式 Dark 会覆盖 NSApplication，禁用它；页加载时按窗口设置。
+    if (main.theme != null) {
+      fail('window-chrome', '主窗口不得声明应用级主题：macOS 会失去系统外观变化');
+    }
+    if (!libSource.includes('shell::appearance::initialize(webview.window())')) {
+      fail('window-chrome', '缺少窗口级外观初始化');
     }
   }
 
@@ -2071,7 +2067,7 @@ if (ungatedOsImports.length > 0) {
       popupFiles.push(`${rel}:${i + 1}`);
       if (!/window_title\(/.test(lines[i])) hardcoded += 1;
     }
-    themes += (lines.join('\n').match(/\.theme\(Some\(tauri::Theme::Dark\)\)/g) ?? []).length;
+    themes += (lines.join('\n').match(/\.theme\(crate::shell::appearance::initial_theme\(\)\)/g) ?? []).length;
   }
   if (titles === 0) {
     fail('window-chrome', '一个 `.title(` 都没扫到——建窗路径被整体挪走了？检查项本身该跟着更新');

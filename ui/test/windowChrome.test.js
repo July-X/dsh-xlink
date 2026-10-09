@@ -421,13 +421,13 @@ test('emit 封装存在且不吞调用方的判断（纯浏览器调试下 resol
   assert.match(body, /Promise\.resolve\(\)/, '桥接缺失时 resolve 空而不是抛');
 });
 
-test('壳自有副窗都拿到 set-theme 权限，内核页面与官网页签窗不拿', () => {
+test('壳自有副窗拿到窗口外观权限，内核页面与官网页签窗不拿', () => {
   // 壳自有：内容就是本应用的 SPA，主题由 localStorage 决定。
   for (const cap of ['default', 'log-viewer', 'usage-viewer', 'subscription-viewer']) {
     const perms = JSON.parse(read(`../../src-tauri/capabilities/${cap}.json`)).permissions;
     assert.ok(
-      perms.includes('core:window:allow-set-theme'),
-      `${cap}.json 缺 core:window:allow-set-theme：页面调 window.setTheme 会被 ACL 拒，副窗标题栏永远停在 Rust 钉死的深色`,
+      perms.includes(cap === 'default' ? 'allow-local-commands' : 'allow-window-appearance'),
+      `${cap}.json 缺窗口级外观授权`,
     );
   }
   // 内容是别人的页面（内核 webui / chat.deepseek.com 等），恒深色：
@@ -435,8 +435,8 @@ test('壳自有副窗都拿到 set-theme 权限，内核页面与官网页签窗
   for (const cap of ['harness-remote', 'official-chat-remote', 'official-chat-strip']) {
     const perms = JSON.parse(read(`../../src-tauri/capabilities/${cap}.json`)).permissions;
     assert.ok(
-      !perms.includes('core:window:allow-set-theme'),
-      `${cap}.json 不该有 core:window:allow-set-theme：这扇窗的内容不是本应用的页面`,
+      !perms.includes('allow-window-appearance') && !perms.includes('core:window:allow-set-theme'),
+      `${cap}.json 不该开放原生外观设置：这扇窗的内容不是本应用的页面`,
     );
   }
 });
@@ -444,7 +444,7 @@ test('壳自有副窗都拿到 set-theme 权限，内核页面与官网页签窗
 test('工作台窗口仍钉死深色（内容是内核 webui，不跟本应用主题）', () => {
   assert.match(
     read('../../src-tauri/src/harness/harness_window.rs'),
-    /\.theme\(Some\(tauri::Theme::Dark\)\)/,
+    /\.theme\(crate::shell::appearance::initial_theme\(\)\)/,
     '工作台装的是内核自己的 webui，改成跟随主题会让内核深色内容配浅色标题栏',
   );
 });

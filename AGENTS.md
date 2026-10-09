@@ -149,3 +149,6 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 
 修改用户可见行为、数据目录、发布流程或安全策略时，同步更新 `README.md` 和对应 `docs/` 文档。文件保持 UTF-8、恰好一个末尾换行；不要提交依赖目录和构建产物。
 
+## 窗口外观作用域（2026-10-09）
+
+跨前后端的主题规则：macOS 建窗使用 `shell::appearance::initial_theme()`，前端 `bridge.setWindowTheme` 调用 `set_window_appearance`，仅设置当前 `NSWindow`。不得用 Tauri 的应用级主题覆盖模拟单窗口外观，否则工作台的固定深色会阻断管理窗口跟随系统。前端细则见 `ui/AGENTS.md`，原生实现统一在 `shell/appearance.rs`。

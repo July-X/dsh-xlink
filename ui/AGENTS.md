@@ -332,3 +332,7 @@ ui/src/
 外观在设置页右栏提供三项选择，和侧栏循环按钮共用 `theme.js`。`theme` 保存 light / dark / system 模式，`resolvedTheme` 解析实际明暗颜色；实际颜色写入 `html.dark`；固定模式写入原生装饰，system 向原生接口传 null 解除覆盖，完成后重新读取媒体查询。每扇窗口监听系统配色，固定模式不响应系统变化，跨窗广播传递模式。旧偏好保留，默认仍为深色。
 
 侧栏主题按钮按 `themeOptions` 的浅色、深色、跟随系统顺序循环切换；图标表示当前模式，悬停与可访问提示同时说明当前模式和下一次点击的目标。设置页仍可直接选定模式。
+
+## 系统外观继承（2026-10-09）
+
+macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用，不能用于窗口主题。建窗统一走 `shell::appearance::initial_theme()`，原生外观经 `set_window_appearance` 设置当前 `NSWindow`；应用始终继承系统。窗口页加载开始时设置默认深色，壳页面再按偏好纠正；工作台的固定深色不能影响管理窗口的媒体查询。Windows 继续使用 Tauri 的窗口主题实现。

@@ -362,7 +362,7 @@ const FILE_BUDGETS = {
   // 19 → 20：localtime 进来了（见那条）。仍是一层路由，没有实现。
   // 20 → 21：stream（带超时的流式子进程捕获，git clone 用）进来了。仍是一层
   // 路由，没有实现。
-  'src-tauri/src/shell/mod.rs': 21,
+  'src-tauri/src/shell/mod.rs': 22,
   // 带超时的流式子进程输出捕获。**为什么不复用 `process::run_with_progress`**：
   // 那条是给「pnpm 装包 + 跑原生模块构建」设计的，它强制两件 git clone 都不想要的
   // 事——把输出轮转落进 `logs/`（而 clone 的输出紧接着就被 on_progress 收进诊断
@@ -484,6 +484,8 @@ const FILE_BUDGETS = {
   // （否则成环，`theme` 是 const 会 TDZ）。判据钉住这一条。
   // 三态外观：系统配色监听与实际颜色解析由所有窗口共用。
   'ui/src/shell/theme.js': 63,
+  // 独立承载窗口级 AppKit 外观，避免与几何定位模块混合。
+  'src-tauri/src/shell/appearance.rs': 90,
   // 跨窗口主题传播的**传输层**（2026-10-08 新增）：事件名 + `broadcastTheme`（主壳
   // 侧发）+ `subscribeThemeChanges`（副窗侧订阅）各一个函数，14 行。
   //
@@ -2101,7 +2103,8 @@ const FILE_BUDGETS = {
 // process_command / port_listen_pid 换原生调用）。这是 perf 采样的直接结论：
 // kernel_workbench_running 段 p50 404ms 的全部来源是 PowerShell / netstat 派生与
 // connect_timeout 等满，原生路径回到微秒级。lifecycle 预算 1380 未动（实际更小了）。
-const TOTAL_BUDGET = 45311;
+// +80：窗口级原生外观适配与建窗接线，修复跟随系统被应用级主题锁住。
+const TOTAL_BUDGET = 45391;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

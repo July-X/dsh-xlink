@@ -470,7 +470,7 @@ fn build(app: &AppHandle, url: &Url) -> Result<(), String> {
         // 钉死深色：主窗口的标题栏是自绘的、恒为深色，副窗走原生装饰。不钉
         // 的话系统切浅色时这扇窗的标题栏变白，而内容仍是深色——2026-10-07
         // 用户截图里就是这个割裂。
-        .theme(Some(tauri::Theme::Dark))
+        .theme(crate::shell::appearance::initial_theme())
         .on_new_window(move |link, _features| {
             if matches!(link.scheme(), "http" | "https") {
                 use tauri_plugin_opener::OpenerExt;
