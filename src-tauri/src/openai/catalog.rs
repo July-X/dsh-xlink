@@ -349,7 +349,7 @@ fn fetch_with_token(
 /// 合并展示元数据。返回 `None` = 未收录的 slug（不进列表，对齐 Codex
 /// Desktop 的可见集合）。P6 精确能力表优先（verified 覆盖展示表）。
 fn merge_capability(model: FetchedModel) -> Option<CatalogEntry> {
-    if let Some((id, capability)) = CAPABILITY_TABLE.iter().find(|(id, _)| *id == model.id) {
+    if let Some((_, capability)) = CAPABILITY_TABLE.iter().find(|(id, _)| *id == model.id) {
         return Some(CatalogEntry {
             id: model.id,
             name: model.name,

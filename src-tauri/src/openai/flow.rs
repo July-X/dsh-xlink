@@ -34,8 +34,8 @@ pub(crate) struct FlowPaths {
     pub(crate) xlink_home: PathBuf,
     /// issuer 基址：生产是 [`auth::SIWC_ISSUER`]，测试是模拟授权服务器。
     pub(crate) issuer_base: String,
-    /// 模型目录基址：生产是 [`auth::OPENAI_RESOURCE`]（api.openai.com——
-    /// access token 签给该 resource，目录也在资源主机上），测试是目录 mock。
+    /// 模型目录与推理资源基址：生产是 [`auth::OPENAI_RESOURCE`]，
+    /// access token 签给该 resource；测试可独立于授权服务器模拟资源主机。
     pub(crate) models_base: String,
 }
 

@@ -83,7 +83,7 @@ fn map_ureq_error(error: ureq::Error) -> Failure {
 /// 回环目标不走代理路由：代理不会替你访问本机（还常常显式拒绝），而
 /// 测试与本地诊断大量依赖回环。返回值：非回环 → 原路由表；回环 → 只剩
 /// 直连。
-fn routes_for_url<'a>(routes: &'a [net_proxy::Route], url: &str) -> Vec<net_proxy::Route> {
+fn routes_for_url(routes: &[net_proxy::Route], url: &str) -> Vec<net_proxy::Route> {
     let loopback = url.contains("://127.0.0.1:") || url.contains("://localhost:");
     if loopback {
         vec![net_proxy::Route::Direct]

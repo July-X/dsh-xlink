@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | issuer 基址 | `src-tauri/src/openai/auth.rs` 的 `SIWC_ISSUER` | 按公开资料猜测值，**未验证** | 对官方文档核对；发现不符只改此常量 |
 | 目录端点路径 | `src-tauri/src/openai/catalog.rs` 的 `MODELS_PATH` | `/v1/models`（惯例） | 与官方 models-and-inference 文档核对 |
-| 推理端点路径 | `src-tauri/src/openai/inference.rs` 的 `RESPONSES_PATH` | `/v1/responses`（惯例） | 同上 |
+| 推理端点路径 | `src-tauri/src/openai/inference.rs` 的 `RESPONSES_PATH` | `/responses`，拼接资源基址 `auth::OPENAI_RESOURCE`，最终为 `https://api.openai.com/v1/responses` | 已核对[官方模型与推理文档](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)；不得拼到授权 issuer 下 |
 | scope 串 | `src-tauri/src/openai/auth.rs` `authorize_url` 的 `scope` 参数 | `openid offline_access model.request`（未验证） | 与官方 sign-in 文档核对；增删 scope 只改此串 |
 | 目录响应形状 | `src-tauri/src/openai/catalog.rs` `fetch_with_token` | 防御式接受 `data`/`models` 双键、`id`/`slug` 双名 | 真实形状确认后收紧为单键，删防御分支 |
 | 上游事件形状 | `plugins/openai-oauth/host/request.js` `pumpStream` 的事件类型后缀 | 防御式后缀匹配（`completed`/`failed`/`output_text.delta`…） | 与真实事件流逐一对账，收紧匹配 |
