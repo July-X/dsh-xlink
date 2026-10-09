@@ -19,7 +19,7 @@ import {
   subscription,
   refreshSubscription,
   providerShortState,
-  tierRow,
+  planTierRows,
   balanceRow,
   queriedAtLabel,
   queriedAgeCompact,
@@ -46,7 +46,7 @@ const providers = computed(() =>
 const rows = computed(() =>
   providers.value.map((provider) => ({
     provider,
-    tiers: provider.kind === 'plan' ? provider.tiers.map((tier) => tierRow(tier)).filter(Boolean) : [],
+    tiers: provider.kind === 'plan' ? planTierRows(provider) : [],
     balances:
       provider.kind === 'balance'
         ? provider.balances.map((balance) => balanceRow(balance)).filter(Boolean)
@@ -132,7 +132,9 @@ const lastFetched = computed(() => {
           <template v-if="row.provider.kind === 'plan'">
             <div v-for="tier in row.tiers" :key="tier.name" class="sub-tier">
               <span class="sub-tier-name">{{ tier.name === '5h' ? '5 小时限额' : tier.name === '7d' ? '周限额' : tier.name }}</span>
-              <span v-if="tier.unlimited" class="sub-tier-unlimited">♾️ 无限周额度</span>
+              <!-- 缺席窗口：写明「暂无数据」，不补进度条也不补 100%。 -->
+              <span v-if="tier.missing" class="muted sub-tier-reset" :title="tier.tip">暂无数据</span>
+              <span v-else-if="tier.unlimited" class="sub-tier-unlimited">♾️ 无限周额度</span>
               <template v-else>
                 <div class="sub-bar" role="img" :aria-label="tier.tip" :title="tier.tip">
                   <i :class="'sub-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>

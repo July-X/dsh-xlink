@@ -32,6 +32,7 @@ const {
   providerShortState,
   collectErrors,
   tierRow,
+  planTierRows,
   queriedAtLabel,
   providerView,
   subscription,
@@ -238,4 +239,50 @@ test('providerView 从共享状态取视图，失败路径不清空 data（keep-
   assert.deepEqual(subscription.errors, ['查询套餐用量失败：网络断了。已保留上次结果，可点击刷新重试']);
   assert.equal(providerView('deepseek').balances[0].total, '1.00', '失败绝不能清空旧数据');
   window.__TAURI__.core.invoke = previousInvoke;
+});
+
+// OpenAI 的 5h 窗口可能整个不返回（跨应用共享额度）。缺席的窗口必须**占位**
+// 并写明「暂无数据」，既不能少一行让人误读成「这个套餐只有周窗口」，也不能
+// 补成 100%（那是把「没测到」说成「还很空」）。
+test('OpenAI 缺席的窗口占位为「暂无数据」，绝不补成 100%', () => {
+  const onlyWeekly = {
+    id: 'openai_codex',
+    kind: 'plan',
+    tiers: [{ name: '7d', remaining_percent: 40, resets_at_ms: null }],
+  };
+  const rows = planTierRows(onlyWeekly);
+  assert.deepEqual(
+    rows.map((row) => row.name),
+    ['7d', '5h'],
+    '两个窗口都应出现，缺席的那个排在后面'
+  );
+  const missing = rows.find((row) => row.name === '5h');
+  assert.equal(missing.missing, true);
+  assert.equal(missing.percent, null, '缺席窗口不得有百分比');
+  assert.equal(missing.countdown, null);
+});
+
+test('OpenAI 两个窗口都在时不补占位', () => {
+  const rows = planTierRows({
+    id: 'openai_codex',
+    kind: 'plan',
+    tiers: [
+      { name: '5h', remaining_percent: 75, resets_at_ms: null },
+      { name: '7d', remaining_percent: 40, resets_at_ms: null },
+    ],
+  });
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((row) => row.missing === undefined));
+});
+
+test('非 OpenAI 的 provider 不补占位（无周限额套餐的 7d 缺席不是「暂无数据」）', () => {
+  const rows = planTierRows({
+    id: 'minimax_cn',
+    kind: 'plan',
+    tiers: [{ name: '5h', remaining_percent: 50, resets_at_ms: null }],
+  });
+  assert.deepEqual(
+    rows.map((row) => row.name),
+    ['5h']
+  );
 });

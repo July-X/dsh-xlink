@@ -37,6 +37,16 @@ pub(crate) const OPENAI_RESOURCE: &str = "https://api.openai.com/v1";
 pub(crate) const AUTH_SCOPE: &str =
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 
+/// ID token 里承载 ChatGPT 账号 id 的声明（RFC 命名空间形式）。
+///
+/// 它**不在 access token 上**——访问令牌的受众是 [`OPENAI_RESOURCE`]，
+/// 不含账号上下文；账号 id 只随 ID token 下发。套餐用量端点要拿它当
+/// `ChatGPT-Account-Id` 请求头（2026-10-09 真机验证：`chatgptAuthTokens`
+/// 登录要的 `chatgptAccountId` + `chatgptPlanType` 就是这两条声明）。
+pub(crate) const CHATGPT_ACCOUNT_ID_CLAIM: &str = "https://api.openai.com/auth.chatgpt_account_id";
+/// ID token 里承载账号套餐档位的声明（如 `plus` / `pro`）。
+pub(crate) const CHATGPT_PLAN_TYPE_CLAIM: &str = "https://api.openai.com/auth.chatgpt_plan_type";
+
 /// 发现文档：`<issuer>/.well-known/openid-configuration`。
 pub(crate) fn discovery_url(issuer: &str) -> String {
     format!("{issuer}/.well-known/openid-configuration")
@@ -413,7 +423,21 @@ pub(crate) fn verify_id_token(
             .get("email")
             .and_then(|v| v.as_str())
             .map(String::from),
+        chatgpt_account_id: namespaced_string(&value, CHATGPT_ACCOUNT_ID_CLAIM),
+        chatgpt_plan_type: namespaced_string(&value, CHATGPT_PLAN_TYPE_CLAIM),
     })
+}
+
+/// 读取一个命名空间声明（非空才算数）。**可选**：缺声明不报错——它是
+/// 套餐用量查询的附加条件，不参与身份判定（签名 / iss / aud / exp / nonce
+/// 才是 fail-closed 的部分）。
+fn namespaced_string(value: &serde_json::Value, claim: &str) -> Option<String> {
+    value
+        .get(claim)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
 }
 
 fn kid_of(jws: &str) -> Result<Option<String>, String> {
@@ -469,6 +493,12 @@ pub(crate) fn parse_token_response(json: &str) -> Result<TokenSet, String> {
 pub(crate) struct IdClaims {
     pub(crate) subject: String,
     pub(crate) email: Option<String>,
+    /// ChatGPT 账号 id（ID token 的 `…/auth.chatgpt_account_id` 声明）。
+    /// 套餐用量查询端点要求它作为 `ChatGPT-Account-Id` 请求头；登录时一并
+    /// 落库，查询时不必再解 ID token。
+    pub(crate) chatgpt_account_id: Option<String>,
+    /// 账号套餐（`…/auth.chatgpt_plan_type`，如 `plus`）。纯展示用。
+    pub(crate) chatgpt_plan_type: Option<String>,
 }
 
 #[cfg(test)]

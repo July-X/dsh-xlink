@@ -206,6 +206,28 @@ export function tierRow(tier, now = Date.now()) {
   };
 }
 
+/**
+ * 一个套餐类 provider 的窗口展示行。
+ *
+ * **缺席的窗口要占位，不能只是少一行**：OpenAI 的 5 小时窗口可能整个不返回
+ * （跨应用共享额度，真机上见过这个返回形状），只画 7d 那一行的话，用户读到
+ * 的是「这个套餐只有周窗口」，而不是「服务端这次没给 5h」。`missing` 行写
+ * 明「暂无数据」，**绝不补成 100%**——那是把「没测到」说成「还很空」。
+ *
+ * 只对 OpenAI 补占位：MiniMax 无周限额的套餐「7d 缺席」是套餐本身如此，
+ * 给它补一句「暂无数据」同样是在编。
+ */
+export function planTierRows(provider, now = Date.now()) {
+  const rows = ((provider && provider.tiers) || []).map((tier) => tierRow(tier, now)).filter(Boolean);
+  if (provider && provider.id === 'openai_codex') {
+    for (const name of ['5h', '7d']) {
+      if (rows.some((row) => row.name === name)) continue;
+      rows.push({ name, missing: true, unlimited: false, percent: null, level: 'muted', countdown: null, countdownTitle: null, tip: '服务端未返回该窗口数据' });
+    }
+  }
+  return rows;
+}
+
 /** 从视图收集错误文案（provider 级），供横幅展示；无错误返回空数组。
  * 已被用户隐藏的 provider 不再提及——它们本来就因为「查不到数据」被隐藏，
  * 恢复显示由查询成功自动触发，横幅重复报错只会让隐藏失去意义。 */

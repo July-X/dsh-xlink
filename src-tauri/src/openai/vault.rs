@@ -40,6 +40,12 @@ pub(crate) struct AccountTokens {
     pub(crate) scopes: Vec<String>,
     /// 访问令牌过期时刻（Unix 秒）；0 表示未知。
     pub(crate) access_expires_at: u64,
+    /// ChatGPT 账号 id（ID token 命名空间声明，见 `auth::CHATGPT_ACCOUNT_ID_CLAIM`）。
+    /// 套餐用量查询端点要它当 `ChatGPT-Account-Id` 请求头。登录时从 ID token
+    /// 落库；老 vault 文件没有这个字段，按缺省处理（此时该分区查不了，退回
+    /// 「未配置」而不是拿空值去打接口）。
+    #[serde(default)]
+    pub(crate) chatgpt_account_id: Option<String>,
     /// 刷新被判失效（invalid_grant）后置位；重新登录清除。老 vault 文件
     /// 没有这个字段，反序列化按 false 兜底。
     #[serde(default)]
@@ -320,6 +326,7 @@ mod tests {
                 id_token: "id1".into(),
                 scopes: vec!["chatgpt.tokens.use.direct".into()],
                 access_expires_at: 123,
+                chatgpt_account_id: None,
                 reauth_required: false,
             },
         );
@@ -334,6 +341,7 @@ mod tests {
                 id_token: "id2".into(),
                 scopes: vec!["chatgpt.tokens.use.direct".into()],
                 access_expires_at: 0,
+                chatgpt_account_id: None,
                 reauth_required: false,
             },
         );

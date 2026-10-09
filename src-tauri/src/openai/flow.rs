@@ -255,6 +255,7 @@ fn exchange_and_store(
             id_token: tokens.id_token,
             scopes: tokens.scopes,
             access_expires_at: deps.now_unix() + tokens.expires_in,
+            chatgpt_account_id: claims.chatgpt_account_id.clone(),
             reauth_required: false,
         },
     );

@@ -290,7 +290,11 @@ const FILE_BUDGETS = {
   // 333 → 373：宿主标识改 urn:uuid v4（裸 hex 被授权端点以
   // invalid_request_error 拒绝，2026-10-09 实测），含遗留 64-hex 的
   // 确定性迁移与格式测试。
-  'src-tauri/src/openai/auth.rs': 390,
+  // 390 → 410：套餐用量（`usage/subscription_openai.rs`）要用 ID token 里的
+  // 两条 ChatGPT 命名空间声明（`…/auth.chatgpt_account_id` 与
+  // `…/auth.chatgpt_plan_type`）——在既有的 ID token 校验里多解两个**可选**
+  // 声明（一处取值闭包 + `IdClaims` 两个字段），不构成新的关注点，仍留在此。
+  'src-tauri/src/openai/auth.rs': 410,
   // JWK 解析 + RS256 验签：ring 的 RsaPublicKeyComponents 直接吃 n/e，
   // 第一版手拼 SPKI DER 已删（不必要）。固定测试密钥自签自验钉住。
   'src-tauri/src/openai/jwk.rs': 53,
@@ -1352,6 +1356,18 @@ const FILE_BUDGETS = {
   // 修法不是抬预算，是把各模块按 basename 引进文件内，让体内调用点回到
   // `process::epoch_millis()` 这种长度——可读性也一并回来了。
   'src-tauri/src/usage/subscription.rs': 896,
+  // OpenAI（ChatGPT 套餐）用量：provider id `openai_codex` 的全部实现。
+  // **为什么它必须独立成模块**（而不是继续往 subscription.rs 里塞）：
+  // ① subscription.rs 是反棘轮文件（预算 896，只许下调），这个 provider 的
+  //    接线本身就把它顶到 910；② 三条约定与另外四家都不同源——凭据来自壳自己
+  //    的 OAuth vault（读取入口 `openai::refresh::ensure_fresh_access`，
+  //    subscription.rs 一行解密代码都不碰）、端点是第一方但未文档化的
+  //    chatgpt.com 后端、首个必须走 `net_proxy::routes()` 的境外 provider。
+  //    这三件事与「缓存 / 指纹绑定 / keep-last-good」正交，放一起只会互相
+  //    解释；③ 它自带一组只针对自己的解析单测（按窗口时长而非槽位分类）。
+  // 200 → 260：给解析与代理路由留的余量（凭据读取 + 按路由试路 + 逐字段
+  // 防御式解析 + 单测）。仍在 800 硬顶之内。
+  'src-tauri/src/usage/subscription_openai.rs': 260,
   // DSH 模型凭据只读解析（credentials.rs）：profile cordis.patch.yml 的
   // provider apiKeyEnv 绑定、.credentials.yaml refs、.env 回退层与默认引用
   // 派生。凭据语义与内核对齐只有一处实现，独立成模块供 subscription.rs 复用。
@@ -1364,7 +1380,12 @@ const FILE_BUDGETS = {
   // 210 → 220：`balanceText` → `balanceRow`，按 DeepSeek 的 `total_balance` /
   // `granted_balance` / `topped_up_balance` 三个字段分别产出主行、明细行与
   // hover title（只透传金额，不转浮点）；设计稿本就要求逐条展示这三项。
-  'ui/src/subscription/subscription.js': 220,
+  // 220 → 230：`planTierRows` —— OpenAI 的 5 小时窗口可能整个不返回（跨应用
+  // 共享额度），缺席的窗口要**占位**写「暂无数据」而不是少一行（只画 7d 会
+  // 被读成「这套餐只有周窗口」），更不能补成 100%。两个调用点（概览卡与独立
+  // 窗口）因此共用这一份，而不是各写一遍判断。基线远低于 RATCHET_THRESHOLD，
+  // 上调在规则内。
+  'ui/src/subscription/subscription.js': 230,
   // 套餐用量独立窗口根组件（open_subscription_window 弹出，?subscription=1 挂载）：
   // 双 provider 分区 + 进度条 / 余额行 + 错误横幅与 scoped 样式（同 UsageWindow 模式）。
   // 340 → 360：查询时间换成刷新 icon 胶囊（紧凑年龄值）。
@@ -2202,7 +2223,18 @@ const FILE_BUDGETS = {
 // shared_storage 判定缓存（+72，含反向验单测；install/uninstall 各挂一次
 // invalidate）、settings 每轮 poll 的双读合并（净 −3）、内嵌插件启动前刷新
 // 补耗时观测（+10，见该文件 FILE_BUDGETS 登记）。合计 +22。
-const TOTAL_BUDGET = 45872;
+// 45872 → 46280（2026-10-09）：云端套餐用量新增第 5 个 provider「OpenAI
+// （ChatGPT）」。合计 +408，分布是：新模块 `usage/subscription_openai.rs`
+// ~200（凭据来源 + 按窗口时长分类的解析 + 代理路由，见该文件登记）、
+// `usage/subscription.rs` 的接线 +14（provider 常量 / 顺序 / 标签 / 凭据
+// 分发 / fetch 分支）、`openai/auth.rs` +10（两条 ChatGPT 命名空间声明）、
+// `openai/vault.rs` +6、`openai/flow.rs` +2、`usage/credentials.rs` +3
+// （凭据来源新增 OpenAiVault 变体）。**新能力开新文件**，`subscription.rs`
+// 的预算维持 896 不动（反棘轮）——为了让接线装得下，把该文件里两处早就该
+// 收成表的代码压了回去（凭据失效文案改成 match 表、错误收集的
+// `or_else` 闭包改成 `or`）。同一工作树里还有一处并行的 UI 主题改版与
+// diskusage 改动（~+90），一并计入，免得把总量卡在别人的在途改动上。
+const TOTAL_BUDGET = 46280;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

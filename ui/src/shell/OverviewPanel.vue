@@ -78,7 +78,7 @@ import {
   providerShortState,
   failurePromptPending,
   markFailurePrompted,
-  tierRow,
+  planTierRows,
   balanceRow,
   queriedAtLabel,
   queriedAgeCompact,
@@ -146,7 +146,7 @@ const planRows = computed(() =>
     .filter((provider) => provider.configured && !isProviderHidden(provider.id))
     .map((provider) => ({
       provider,
-      tiers: provider.kind === 'plan' ? provider.tiers.map((tier) => tierRow(tier)).filter(Boolean) : [],
+      tiers: provider.kind === 'plan' ? planTierRows(provider) : [],
       balances:
         provider.kind === 'balance'
           ? provider.balances.map((balance) => balanceCardRow(balance)).filter(Boolean)
@@ -805,7 +805,7 @@ function goVersions() {
               <div class="plan-tier-row">
                 <span class="plan-tier-name">{{ tier.name }}</span>
                 <div
-                  v-if="!tier.unlimited"
+                  v-if="!tier.unlimited && !tier.missing"
                   class="plan-bar"
                   role="img"
                   :aria-label="tier.tip"
@@ -814,7 +814,9 @@ function goVersions() {
                   <i :class="'plan-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
                 </div>
                 <span v-else class="plan-tier-unlimited">♾️ 无限周额度</span>
-                <span v-if="!tier.unlimited" class="plan-tier-value">{{ tier.percent }}%</span>
+                <!-- 缺席窗口：写明「暂无数据」，不补进度条也不补 100%。 -->
+                <span v-if="tier.missing" class="muted plan-tier-value" :title="tier.tip">暂无数据</span>
+                <span v-else-if="!tier.unlimited" class="plan-tier-value">{{ tier.percent }}%</span>
               </div>
               <p v-if="tier.countdown" class="plan-tier-reset" :title="tier.countdownTitle">
                 <el-icon class="plan-reset-icon"><Timer /></el-icon>{{ tier.countdown }}

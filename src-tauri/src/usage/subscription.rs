@@ -46,6 +46,7 @@ use crate::shell::process;
 use crate::shell::state::{self, StateCtx};
 use crate::shell::window;
 use crate::usage::credentials::{self as credentials, ResolvedCredential};
+use crate::usage::subscription_openai;
 
 /// 缓存文档的 schema 版本。v2 起绑定实例 / profile / 凭据指纹。
 pub const CACHE_SCHEMA: u32 = 2;
@@ -68,14 +69,18 @@ pub const PROVIDER_MINIMAX_CN: &str = "minimax_cn";
 pub const PROVIDER_MINIMAX_EN: &str = "minimax_en";
 pub const PROVIDER_DEEPSEEK: &str = "deepseek";
 pub const PROVIDER_ZAI_CODING_CN: &str = "zai_coding_cn";
+/// OpenAI（ChatGPT 套餐）5h / 7d 窗口。凭据与端点都与其余四个 provider
+/// 不同源，实现见 [`crate::usage::subscription_openai`]。
+pub const PROVIDER_OPENAI: &str = "openai_codex";
 
 /// 视图里的固定输出顺序：概览卡与独立窗口都按它排列。DeepSeek 是余额类
 /// 数据、更新最直观，放在最前（用户指定的展示顺序）。
-const PROVIDER_ORDER: [&str; 4] = [
+const PROVIDER_ORDER: [&str; 5] = [
     PROVIDER_DEEPSEEK,
     PROVIDER_MINIMAX_CN,
     PROVIDER_MINIMAX_EN,
     PROVIDER_ZAI_CODING_CN,
+    PROVIDER_OPENAI,
 ];
 
 /// 缓存条目的凭据状态：凭据可用（含「还没验证过」）。
@@ -107,6 +112,7 @@ fn provider_label(id: &str) -> &'static str {
         PROVIDER_MINIMAX_EN => "MiniMax-EN",
         PROVIDER_DEEPSEEK => "DeepSeek",
         PROVIDER_ZAI_CODING_CN => "GLM-CN",
+        PROVIDER_OPENAI => "OpenAI",
         _ => "未知供应商",
     }
 }
@@ -328,7 +334,7 @@ pub fn subscription_view(provider: Option<&str>, force: bool) -> Result<Subscrip
     if let Some(id) = provider {
         if !PROVIDER_ORDER.contains(&id) {
             return Err(format!(
-                "未知的用量供应商「{id}」。支持的取值：minimax_cn / minimax_en / deepseek / zai_coding_cn"
+                "未知的用量供应商「{id}」。支持的取值：minimax_cn / minimax_en / deepseek / zai_coding_cn / openai_codex"
             ));
         }
     }
@@ -361,7 +367,13 @@ pub fn subscription_view(provider: Option<&str>, force: bool) -> Result<Subscrip
     };
     let mut providers = Vec::with_capacity(ids.len());
     for id in ids {
-        let credential = credentials::resolve_provider(id, &bindings, &dsh_home);
+        // OpenAI 的凭据不来自内核模型凭据链（env / `.credentials.yaml` /
+        // `.env`），而是壳自己那份 OAuth vault，取值在模块内自闭。
+        let credential = if id == PROVIDER_OPENAI {
+            subscription_openai::resolved_credential()
+        } else {
+            credentials::resolve_provider(id, &bindings, &dsh_home)
+        };
         let configured = credential
             .as_ref()
             .map(|c| c.value.as_deref().is_some())
@@ -373,16 +385,15 @@ pub fn subscription_view(provider: Option<&str>, force: bool) -> Result<Subscrip
             force,
             now_ms,
             // 智谱查询除 Key 外还要组织 / 项目上下文（同样从凭据链解析），
-            // 因此把 dsh_home 传进 fetch；其它 provider 不用它。
-            |id, key| fetch_provider(id, key, &dsh_home),
+            // 因此把 dsh_home 传进 fetch；OpenAI 要的是账号上下文。
+            |id, key| fetch_provider(id, key, &dsh_home, now_ms),
         );
         // 本次调用真实发生的失败才记日志：TTL 命中时的陈旧错误不重复落盘。
-        let this_call_failure = fetch_error.clone().or_else(|| {
-            if dirty {
-                entry.as_ref().and_then(|e| e.error.clone())
-            } else {
-                None
-            }
+        // `or` 而非 `or_else`：右边只是一次 Option 克隆，求不求值无所谓。
+        let this_call_failure = fetch_error.clone().or(if dirty {
+            entry.as_ref().and_then(|e| e.error.clone())
+        } else {
+            None
         });
         if dirty {
             match entry {
@@ -574,7 +585,7 @@ fn build_provider_view(
 
 // --- 查询 ---------------------------------------------------------------------
 
-enum FetchOutcome {
+pub(crate) enum FetchOutcome {
     /// 查询成功：写入 / 覆盖缓存。
     Success(ProviderData),
     /// 确定性失败（凭据失效 / 业务错误码 / 结构不认识）：保留旧数据，记录
@@ -584,7 +595,7 @@ enum FetchOutcome {
     Transient(String),
 }
 
-enum ProviderData {
+pub(crate) enum ProviderData {
     Plan {
         tiers: Vec<CacheTier>,
     },
@@ -612,8 +623,11 @@ fn entry_from_data(id: &str, data: ProviderData) -> ProviderCacheEntry {
     entry
 }
 
-fn fetch_provider(id: &str, key: &str, dsh_home: &std::path::Path) -> FetchOutcome {
+fn fetch_provider(id: &str, key: &str, dsh_home: &std::path::Path, now_ms: u64) -> FetchOutcome {
     match id {
+        // OpenAI 的查询逻辑整个住在 subscription_openai（凭据来源、端点、
+        // 代理路由都不与另几个 provider 同源）。
+        PROVIDER_OPENAI => subscription_openai::fetch_active(now_ms),
         PROVIDER_DEEPSEEK => fetch_deepseek(id, key),
         PROVIDER_ZAI_CODING_CN => fetch_zhipu(id, key, dsh_home),
         _ => fetch_minimax(id, key),
@@ -638,26 +652,21 @@ fn http_agent() -> &'static ureq::Agent {
 /// HTTP 401/403 的凭据失效文案：按 provider 定制。MiniMax 的「订阅 Key /
 /// 按量 Key」辨析只对 MiniMax 有意义，不塞给 DeepSeek 用户（真机截图反馈
 /// 过这处文案错位）。
+/// HTTP 401/403 的凭据失效文案：`(称呼, 用户该做什么)` 两列。MiniMax 的
+/// 「订阅 Key / 按量 Key」辨析只对 MiniMax 有意义，不塞给 DeepSeek 用户
+/// （真机截图反馈过这处文案错位）。
 fn credential_rejected_message(provider: &str, status: u16) -> String {
-    if provider == PROVIDER_DEEPSEEK {
-        format!(
-            "DeepSeek 凭据无效或无权限（HTTP {status}）。请到工作台的模型设置更新 DeepSeek 的 API Key"
-        )
-    } else if provider == PROVIDER_ZAI_CODING_CN {
-        format!(
-            "智谱凭据无效或无权限（HTTP {status}）。请到工作台的模型设置更新 zai-coding-cn 的 API Key"
-        )
-    } else {
-        let label = if provider == PROVIDER_MINIMAX_EN {
-            "MiniMax-EN"
-        } else {
-            "MiniMax-CN"
-        };
-        format!(
-            "{label}凭据无效或无权限（HTTP {status}）。请到工作台的模型设置更新对应 provider 的 API Key（注意：查询套餐需用 Token Plan 页的订阅 Key，不是接口密钥页的按量 Key）"
-        )
-    }
+    let (label, next_step) = match provider {
+        PROVIDER_DEEPSEEK => ("DeepSeek", "请到工作台的模型设置更新 DeepSeek 的 API Key"),
+        PROVIDER_ZAI_CODING_CN => ("智谱", "请到工作台的模型设置更新 zai-coding-cn 的 API Key"),
+        PROVIDER_MINIMAX_EN => ("MiniMax-EN", MINIMAX_REAUTH_STEP),
+        _ => ("MiniMax-CN", MINIMAX_REAUTH_STEP),
+    };
+    format!("{label}凭据无效或无权限（HTTP {status}）。{next_step}")
 }
+
+/// MiniMax 两站共用的下一步文案（查套餐要用 Token Plan 页的订阅 Key）。
+const MINIMAX_REAUTH_STEP: &str = "请到工作台的模型设置更新对应 provider 的 API Key（注意：查询套餐需用 Token Plan 页的订阅 Key，不是接口密钥页的按量 Key）";
 
 fn http_get_json(provider: &str, url: &str, key: &str) -> Result<String, FetchOutcome> {
     http_get_json_ext(provider, url, key, true, &[])
@@ -730,7 +739,7 @@ fn log_subscription_line(line: String) {
 }
 
 /// 结构不认识的响应：把截断摘要写进日志（≤200 字符，去换行）供定位改版。
-fn log_unrecognized_structure(provider: &str, body: &str) {
+pub(crate) fn log_unrecognized_structure(provider: &str, body: &str) {
     let snippet: String = body
         .chars()
         .take(LOG_RESPONSE_SNIPPET_BYTES)
@@ -783,6 +792,15 @@ fn fetch_deepseek(provider: &str, key: &str) -> FetchOutcome {
 
 // --- 智谱（bigmodel.cn）编程套餐 ----------------------------------------------
 
+/// 凭据链里的一个可选引用，取 trim 后的非空值（缺失或空白一律「没配」——
+/// 三个上下文引用都要先 trim 再判空，抄三遍只会抄漏一处）。
+fn trimmed_ref(reference: &str, dsh_home: &std::path::Path) -> Option<String> {
+    credentials::resolve(reference, dsh_home)
+        .value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 /// 智谱额度查询的上下文。当前版本**仅支持个人套餐**（type=1，缺省）：
 /// 个人查询只需 Key，不需要组织 / 项目头——那两样是团队套餐的要件，
 /// 未配置就不随请求发送。`ZAI_CODING_CN_PLAN_TYPE` 若显式配成 2（团队）
@@ -799,18 +817,9 @@ struct ZhipuContext {
 impl ZhipuContext {
     /// 从凭据解析链解析上下文；组织 / 项目缺失不是错误。
     fn resolve(dsh_home: &std::path::Path) -> Result<Self, String> {
-        let organization = credentials::resolve(credentials::ZAI_ORGANIZATION_REF, dsh_home)
-            .value
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
-        let project = credentials::resolve(credentials::ZAI_PROJECT_REF, dsh_home)
-            .value
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
-        let configured_type = credentials::resolve(credentials::ZAI_PLAN_TYPE_REF, dsh_home)
-            .value
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
+        let organization = trimmed_ref(credentials::ZAI_ORGANIZATION_REF, dsh_home);
+        let project = trimmed_ref(credentials::ZAI_PROJECT_REF, dsh_home);
+        let configured_type = trimmed_ref(credentials::ZAI_PLAN_TYPE_REF, dsh_home);
         if configured_type.as_deref() == Some("2") {
             return Err("当前版本仅支持智谱个人套餐（type=1），团队套餐暂不支持；\
                  如需团队套餐支持请到项目仓库反馈"
@@ -909,7 +918,8 @@ fn parse_zhipu_tiers(body: &str) -> Result<Vec<CacheTier>, String> {
 // --- 解析（纯函数，单测覆盖） --------------------------------------------------
 
 /// 结构不认识的统一文案：用户能做的动作是反馈，不是重试。
-const UNRECOGNIZED_STRUCTURE: &str = "接口返回了无法识别的数据结构，可能已改版。请到项目仓库反馈";
+pub(crate) const UNRECOGNIZED_STRUCTURE: &str =
+    "接口返回了无法识别的数据结构，可能已改版。请到项目仓库反馈";
 
 /// 解析 MiniMax `/coding_plan/remains` 响应为 tier 列表。
 ///
