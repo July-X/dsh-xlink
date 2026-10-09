@@ -13,6 +13,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writ
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 const args = process.argv.slice(2);
@@ -27,7 +28,9 @@ if (!kernelRoot) {
   process.exit(2);
 }
 
-const here = new URL("..", import.meta.url).pathname; // plugins/openai-oauth/
+// fileURLToPath 而不是 URL.pathname：Windows 上 pathname 是 `/C:/...`，
+// 拼出来的路径带多余的盘符前缀，cpSync 直接 ENOENT。
+const here = fileURLToPath(new URL("..", import.meta.url)); // plugins/openai-oauth/
 const failures = [];
 const check = (label, ok, detail = "") => {
   console.log(`${ok ? "✅" : "❌"} ${label}${detail ? `（${detail}）` : ""}`);
@@ -58,10 +61,15 @@ cpSync(join(here, "locales"), join(pluginDir, "locales"), { recursive: true });
 cpSync(join(here, "package.json"), join(pluginDir, "package.json"));
 mkdirSync(join(pluginDir, "node_modules", "@deepseek-ai"), { recursive: true });
 mkdirSync(profileDir, { recursive: true });
-symlinkSync(
-  join(kernelRoot, "node_modules", "@deepseek-ai", "dsh-llm"),
-  join(pluginDir, "node_modules", "@deepseek-ai", "dsh-llm"),
-);
+// peer 链接与 Rust 物化器（materialize.rs 的 PEER_PACKAGES）同清单：
+// dsh-llm 是适配器基类，schemastery 是 Config schema 构造器（config.js
+// 顶层 import）——缺一样 host 就加载失败。
+for (const pkg of ["dsh-llm", "schemastery"]) {
+  symlinkSync(
+    join(kernelRoot, "node_modules", "@deepseek-ai", pkg),
+    join(pluginDir, "node_modules", "@deepseek-ai", pkg),
+  );
+}
 writeFileSync(join(profileDir, "package.json"), `${JSON.stringify({
   name: "dsh-profile-web",
   private: true,

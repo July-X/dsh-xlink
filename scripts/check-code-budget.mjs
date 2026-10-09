@@ -230,7 +230,11 @@ const FILE_BUDGETS = {
   // 277 → 284：ensure_peer_link 摘旧链接改对 API——目录符号链接必须
   // remove_dir（remove_file 报拒绝访问且错误曾被吞掉，重建撞 183，
   // 禁用再启用永远失败，2026-10-09 用户实测），删除失败如实上报。
-  'src-tauri/src/plugins/builtin/materialize.rs': 284,
+  // 284 → 295：peer 链接泛化成 PEER_PACKAGES（dsh-llm + schemastery）——
+  // 设置命名空间视图由 host 的 Config schema 派生，schema 构造器必须
+  // peer 进物化目录，否则 provider 行不出卡、账户卡无处渲染
+  // （2026-10-09 用户实测）。
+  'src-tauri/src/plugins/builtin/materialize.rs': 295,
   'src-tauri/src/plugins/builtin/wiring.rs': 110,
   // 85 → 171：P1 收尾——set_enabled 写命令进本文件（守卫链：dsh 族 /
   // 实例存在 / 未被另一壳占用 / 内核已停止 → 变更前快照 → 启停事务 →
@@ -2126,7 +2130,10 @@ const FILE_BUDGETS = {
 // 45403 → 45410（2026-10-09 三轮）：ensure_peer_link 摘旧链接改对 API 并
 // 上报删除失败（+7）——修「禁用再启用撞 os error 183」；client.js 求值崩
 // 溃的回归测试在插件侧（node --test），不计入本预算。
-const TOTAL_BUDGET = 45410;
+// 45410 → 45421（2026-10-09 四轮）：peer 链接泛化 PEER_PACKAGES 并拆
+// ensure_one_peer_link（+11）——host 补导出 Config 后 schemastery 也要
+// peer 进物化目录，否则设置页不出 provider 行卡。
+const TOTAL_BUDGET = 45421;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

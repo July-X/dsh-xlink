@@ -246,19 +246,40 @@ pub(crate) fn materialize(
     Ok(())
 }
 
-/// `node_modules/@deepseek-ai/dsh-llm` 指向内核树同一包；悬空或指向别处时重建。
+/// Host 运行时要 peer 到内核树的 `@deepseek-ai` 包：
+/// - `dsh-llm`：适配器基类（`BridgeAdapter extends LlmAdapter`）。
+/// - `schemastery`：Config schema 的构造器。设置命名空间视图由各 profile
+///   entry 的 Config schema 派生（`dsh-settings`：「Derive editable forms
+///   from plugin Config schemas」）——host 不导出 Config，设置页就没有
+///   我们的命名空间，provider 行永远 not-configured：不出卡、进不了
+///   添加列表，client 的账户卡无处渲染（2026-10-09 用户实测）。
+pub(crate) const PEER_PACKAGES: [&str; 2] = ["dsh-llm", "schemastery"];
+
+/// 逐个 peer 包建立 `node_modules/@deepseek-ai/<pkg>` 链接；悬空或指向
+/// 别处时重建。
 fn ensure_peer_link(at_deepseek_dir: &Path, kernel_root: &Path) -> Result<(), String> {
+    for package in PEER_PACKAGES {
+        ensure_one_peer_link(at_deepseek_dir, kernel_root, package)?;
+    }
+    Ok(())
+}
+
+fn ensure_one_peer_link(
+    at_deepseek_dir: &Path,
+    kernel_root: &Path,
+    package: &str,
+) -> Result<(), String> {
     let source = kernel_root
         .join("node_modules")
         .join("@deepseek-ai")
-        .join("dsh-llm");
+        .join(package);
     if !source.is_dir() {
         return Err(format!(
             "内核树里找不到 {}；请先在「内核版本」页安装内核",
             source.display()
         ));
     }
-    let link = at_deepseek_dir.join("dsh-llm");
+    let link = at_deepseek_dir.join(package);
     match fs::symlink_metadata(&link) {
         Ok(metadata) => {
             // 旧链接存在 → 摘掉再重建（悬空或指向别处时靠这里纠正）。
@@ -395,8 +416,10 @@ mod tests {
                 fs::write(source.join(entry).join("keep.js"), "// keep").unwrap();
             }
         }
-        let kernel = root.join("kernel/node_modules/@deepseek-ai/dsh-llm");
-        fs::create_dir_all(&kernel).unwrap();
+        let kernel = root.join("kernel/node_modules/@deepseek-ai");
+        for pkg in PEER_PACKAGES {
+            fs::create_dir_all(kernel.join(pkg)).unwrap();
+        }
         let target = root.join("instance/extensions/builtin/openai-oauth/0.1.0/fp-1/compat-a");
         materialize(&source, &target, &root.join("kernel"), "0.1.0", "fp-1").unwrap();
         assert!(target.join("host/index.js").is_file() || target.join("host/keep.js").is_file());
