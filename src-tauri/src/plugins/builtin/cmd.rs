@@ -127,10 +127,21 @@ fn resolve_target() -> Result<
 /// 内核根目录解析：`active.txt` 为准，实例记录里的版本只作回退。
 /// 独立成函数是为了让测试不必经过 `default_instance_key` 与注册表。
 fn resolve_kernel_root(family: &str, record_version: Option<&str>) -> Option<std::path::PathBuf> {
-    let version = lifecycle::read_active(&lifecycle::data_dir(family))
-        .or_else(|| record_version.map(String::from));
+    let data_dir = lifecycle::data_dir(family);
+    let version = lifecycle::read_active(&data_dir).or_else(|| record_version.map(String::from));
+    let adapter = kernel_adapter::lookup(family)?;
     version.and_then(|version| {
-        kernel_adapter::lookup(family).and_then(|adapter| adapter.resolve_install_dir(&version))
+        adapter.resolve_install_dir(&version).or_else(|| {
+            // legacy 兜底：`install_version` 把内核装进族运行时树
+            // （`<data_dir>/kernels/<version>`），`resolve_install_dir` 只认
+            // `<xlink_home>/kernels/<family>/versions/` 新布局、认不得时留给
+            // 调用方兜底——与 `start_instance` 的 unwrap_or_else 同一条纪律。
+            // 漏了它，装好的内核在这里会被误报「尚未指定内核版本」。
+            let dir = lifecycle::kernel_dir(&data_dir, &version);
+            (dir.join(kernel_adapter::DshAdapter::KERNEL_BIN_REL)
+                .is_file())
+            .then_some(dir)
+        })
     })
 }
 
@@ -267,10 +278,20 @@ mod tests {
         }
     }
 
-    /// 在新布局种一棵可被 `resolve_install_dir` 认可的内核树
-    /// （判据是 bin.js 存在，不需要真内核内容）。
-    fn seed_installed_kernel(family: &str, version: &str) {
+    /// 在新布局（`<xlink_home>/kernels/<family>/versions/<version>/`）种一棵
+    /// 可被 `resolve_install_dir` 认可的内核树（判据是 bin.js 存在，不需要
+    /// 真内核内容）。生产安装目前不走这里——`install_version` 落族运行时树。
+    fn seed_installed_kernel_new_layout(family: &str, version: &str) {
         let bin = crate::shell::paths::kernel_version_dir(family, version)
+            .join(kernel_adapter::DshAdapter::KERNEL_BIN_REL);
+        fs::create_dir_all(bin.parent().unwrap()).expect("seed kernel tree");
+        fs::write(&bin, b"// test stub").expect("write bin stub");
+    }
+
+    /// 在族运行时树（`<data_dir>/kernels/<version>/`）种一棵内核——这是
+    /// `install_version` 的真实落盘点。
+    fn seed_installed_kernel_family_tree(family: &str, version: &str) {
+        let bin = lifecycle::kernel_dir(&lifecycle::data_dir(family), version)
             .join(kernel_adapter::DshAdapter::KERNEL_BIN_REL);
         fs::create_dir_all(bin.parent().unwrap()).expect("seed kernel tree");
         fs::write(&bin, b"// test stub").expect("write bin stub");
@@ -286,7 +307,7 @@ mod tests {
         let home = TempHome::new("active-wins");
         let family = crate::shell::instance::KERNEL_FAMILY_DSH;
         let version = "0.2.1-alpha.1";
-        seed_installed_kernel(family, version);
+        seed_installed_kernel_new_layout(family, version);
         lifecycle::write_active(&lifecycle::data_dir(family), Some(version))
             .expect("write active.txt");
 
@@ -298,6 +319,27 @@ mod tests {
         );
     }
 
+    /// 用户实测的主场景：生产安装走 `install_version` → 族运行时树
+    /// （`<data_dir>/kernels/<version>`），`resolve_install_dir` 只认新布局、
+    /// 必须由这里兜底（与 `start_instance` 同一条纪律）。漏了兜底就是
+    /// 「内核装好了、开关仍报尚未指定内核版本」。
+    #[test]
+    fn kernel_root_falls_back_to_family_runtime_tree() {
+        let home = TempHome::new("legacy-tree");
+        let family = crate::shell::instance::KERNEL_FAMILY_DSH;
+        let version = "0.2.1-alpha.1";
+        seed_installed_kernel_family_tree(family, version);
+        lifecycle::write_active(&lifecycle::data_dir(family), Some(version))
+            .expect("write active.txt");
+
+        let root = resolve_kernel_root(family, None)
+            .expect("active.txt 指向族运行时树的已装版本时必须解析出内核根");
+        assert_eq!(
+            root,
+            lifecycle::kernel_dir(&lifecycle::data_dir(family), version)
+        );
+    }
+
     /// `active.txt` 缺席（该壳从未装过内核）时退回实例记录里上次同步的
     /// 版本，而不是一刀切报「尚未指定内核版本」。
     #[test]
@@ -305,13 +347,13 @@ mod tests {
         let home = TempHome::new("record-fallback");
         let family = crate::shell::instance::KERNEL_FAMILY_DSH;
         let version = "0.1.5-rc.1";
-        seed_installed_kernel(family, version);
+        seed_installed_kernel_family_tree(family, version);
 
         let root =
             resolve_kernel_root(family, Some(version)).expect("记录里的版本已安装时必须回退成功");
         assert_eq!(
             root,
-            crate::shell::paths::kernel_version_dir(family, version)
+            lifecycle::kernel_dir(&lifecycle::data_dir(family), version)
         );
     }
 
