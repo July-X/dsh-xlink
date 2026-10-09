@@ -47,7 +47,7 @@ import {
   checkPluginUpdates,
 } from './plugins.js';
 import { originLabel, tildePath } from '../shell/labels.js';
-import { builtinStore, loadBuiltinStatus, toggleBuiltin } from './builtin.js';
+import { builtinStore, loadBuiltinStatus, toggleBuiltin, BUILTIN_NAME } from './builtin.js';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 import { openExternalLink } from '../shell/notify.js';
 import { store } from '../store.js';
@@ -79,7 +79,8 @@ async function togglePrecheck(value) {
   }
 }
 
-// 内嵌 OpenAI 对话插件（openai-oauth）：随应用交付，不进社区中央库。
+// 内嵌 openai-oauth 插件：随应用交付，不进社区中央库。显示名走
+// `BUILTIN_NAME`（builtin.js），别在这儿再抄一份字面量。
 // 状态常驻这一行、开关是唯一动作；「内核运行中不能改」由后端按实例级
 // 判据拒绝，UI 不预判（预判一份就是第二份判据，会和后端漂移）。
 const builtinView = computed(() => builtinStore.view);
@@ -694,7 +695,7 @@ function instanceChipType(row, instanceId) {
             </el-tooltip>
           </template>
           <div class="entity-list" :class="{ 'is-empty': currentKernelListEmpty }">
-        <!-- 内嵌 OpenAI 对话插件：与社区插件**同一张列表里的第一行**（2026-10-09
+        <!-- 内嵌 openai-oauth 插件：与社区插件**同一张列表里的第一行**（2026-10-09
              用户截图「让 UI 符合插件安装后的风格」）。此前它是列表外面一条自带
              下缘刻蚀线的裸行，没有卡片的边框与圆角，看上去像另一个东西；并进来
              之后它与下面那些行共用同一套外壳：边框、圆角、行分隔线、名称字号与
@@ -704,7 +705,7 @@ function instanceChipType(row, instanceId) {
              settingsNs，两侧靠它对上。 -->
         <div v-if="builtinView" class="entity-row entity-row--single builtin-row">
           <div class="entity-head">
-            <span class="entity-name">OpenAI 对话</span>
+            <span class="entity-name">{{ BUILTIN_NAME }}</span>
             <span class="origin-chip">
               <el-icon class="origin-chip-icon"><Cpu /></el-icon>
               <span class="origin-chip-label">内嵌</span>
@@ -719,7 +720,7 @@ function instanceChipType(row, instanceId) {
               :model-value="builtinView.requestedEnabled"
               :loading="isLoading('builtinOpenaiToggle')"
               :disabled="!builtinView.pluginSourceAvailable || !!builtinView.stateError"
-              aria-label="启用或停用 OpenAI 对话"
+              :aria-label="'启用或停用 ' + BUILTIN_NAME"
               @change="toggleBuiltin"
             />
           </div>

@@ -1573,6 +1573,19 @@ test('内嵌插件行是「当前内核」列表的第一行，不再是列表�
   // 「尚未接入任何插件」，两处判据也会分叉（is-empty 与 el-empty 各写一遍）。
   assert.match(tpl, /'is-empty': currentKernelListEmpty/, '空态判据要走 currentKernelListEmpty');
   assert.match(tpl, /v-else-if="currentKernelListEmpty"/, '空态提示与边框必须共用同一份判据');
+  // 显示名只有一处定义：2026-10-09 已经是第二次改名（「OpenAI 对话」→
+  // 「OpenAI-OAuth-Plugin」），而它此前被抄在名称、aria-label 与两条 toast
+  // 四处。名字再抄一份就等于下次改名又要同时想起几个地方。
+  assert.match(row, /\{\{ BUILTIN_NAME \}\}/, '插件行的名称要用 BUILTIN_NAME，不要写字面量');
+  const builtinJs = readFileSync('ui/src/plugins/builtin.js', 'utf8');
+  const nameDecl = /export const BUILTIN_NAME = '([^']+)'/.exec(builtinJs);
+  assert.ok(nameDecl, 'builtin.js 必须导出 BUILTIN_NAME');
+  assert.equal(nameDecl[1], 'OpenAI-OAuth-Plugin', '内嵌插件的显示名');
+  assert.doesNotMatch(
+    stripComments(builtinJs) + tpl,
+    /OpenAI 对话/,
+    '旧显示名「OpenAI 对话」不该再出现在 builtin.js / 面板模板里',
+  );
 });
 
 // --- 「刷新数据」跟着它作用的东西走（2026-10-07 用户要求）--------------------
