@@ -34,6 +34,9 @@ pub(crate) struct FlowPaths {
     pub(crate) xlink_home: PathBuf,
     /// issuer 基址：生产是 [`auth::SIWC_ISSUER`]，测试是模拟授权服务器。
     pub(crate) issuer_base: String,
+    /// 模型目录基址：生产是 [`auth::OPENAI_RESOURCE`]（api.openai.com——
+    /// access token 签给该 resource，目录也在资源主机上），测试是目录 mock。
+    pub(crate) models_base: String,
 }
 
 /// 传输与环境的注入面。生产实现走 [`transport`] 与系统浏览器；测试实现
@@ -294,6 +297,7 @@ pub(crate) fn shell_flow_paths() -> FlowPaths {
         mode_dir,
         xlink_home: crate::shell::paths::xlink_home(),
         issuer_base: crate::openai::auth::SIWC_ISSUER.to_string(),
+        models_base: crate::openai::auth::OPENAI_RESOURCE.to_string(),
     }
 }
 
@@ -770,6 +774,7 @@ pub(crate) mod tests {
             vault_file: dir.join("mode").join("accounts.bin"),
             xlink_home: dir.join("xlink-home"),
             issuer_base: format!("http://127.0.0.1:{port}"),
+            models_base: format!("http://127.0.0.1:{port}"),
         }
     }
 

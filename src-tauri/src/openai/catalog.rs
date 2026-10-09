@@ -22,8 +22,10 @@ use crate::openai::flow::{FlowPaths, FlowTransport};
 use crate::openai::refresh::{ensure_fresh_access, RefreshError};
 use crate::openai::transport::Failure;
 
-/// 账号目录的拉取路径（未验证常量；挂在 issuer 基址下）。
-const MODELS_PATH: &str = "/v1/models";
+/// 账号目录的拉取路径：挂在**资源主机**（`auth::OPENAI_RESOURCE`，
+/// api.openai.com/v1）下——access token 签给该 resource，issuer 主机
+/// （auth.openai.com）上没有这个端点（2026-10-09 实测 401）。
+const MODELS_PATH: &str = "/models";
 
 /// 能力表版本（表内容变更时递增；v0 = 空表）。
 pub(crate) const CAPABILITY_REVISION: u32 = 0;
@@ -133,7 +135,7 @@ pub(crate) fn load_catalog_with(
         }
     }
 
-    let url = format!("{}{MODELS_PATH}", paths.issuer_base);
+    let url = format!("{}{MODELS_PATH}", paths.models_base);
     let fetched = fetch_with_token(deps, &url, &tokens.access_token)?;
     let revision = fetched.revision;
     let entries: Vec<CatalogEntry> = fetched.models.into_iter().map(merge_capability).collect();
@@ -350,7 +352,7 @@ mod tests {
             "at-1",
         );
         let mut catalog_paths = paths.clone();
-        catalog_paths.issuer_base = format!("http://127.0.0.1:{models_port}");
+        catalog_paths.models_base = format!("http://127.0.0.1:{models_port}");
         let catalog = load_catalog(&catalog_paths, &transport, "release").unwrap();
         assert_eq!(catalog.capability_revision, CAPABILITY_REVISION);
         assert_eq!(catalog.entries.len(), 2);
@@ -374,7 +376,7 @@ mod tests {
         // 错令牌的目录端点 → Reauth。
         let port = serve_models_once(r#"{"data":[]}"#, "wrong-token");
         let mut catalog_paths = paths.clone();
-        catalog_paths.issuer_base = format!("http://127.0.0.1:{port}");
+        catalog_paths.models_base = format!("http://127.0.0.1:{port}");
         match load_catalog(&catalog_paths, &transport, "release") {
             Err(CatalogError::Reauth(_)) => {}
             other => panic!("{other:?}"),
@@ -462,7 +464,7 @@ mod serve_tests {
         crate::openai::flow::run_authorize(&paths, &transport, "release", &cancel).unwrap();
         let models_port = serve_models(r#"{"data":[{"id":"gpt-x","name":"GPT X"}]}"#, "at-1");
         let mut live = paths.clone();
-        live.issuer_base = format!("http://127.0.0.1:{models_port}");
+        live.models_base = format!("http://127.0.0.1:{models_port}");
         let payload = serve_payload(&live, &transport, "release").unwrap();
         assert!(payload.contains("gpt-x"));
         let parsed_payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -473,7 +475,7 @@ mod serve_tests {
         let probe = TcpListener::bind("127.0.0.1:0").unwrap();
         let dead_port = probe.local_addr().unwrap().port();
         drop(probe);
-        dead.issuer_base = format!("http://127.0.0.1:{dead_port}");
+        dead.models_base = format!("http://127.0.0.1:{dead_port}");
         // 注意：死端口让发现文档（issuer 基址）失败——load_catalog 里
         // ensure_fresh_access 未过期会短路（不触网），随后目录拉取才触网。
         let fallback = serve_payload(&dead, &transport, "release").unwrap();
@@ -553,7 +555,7 @@ mod fresh_window_tests {
             hits_for_server,
         );
         let mut catalog_paths = paths.clone();
-        catalog_paths.issuer_base = format!("http://127.0.0.1:{models_port}");
+        catalog_paths.models_base = format!("http://127.0.0.1:{models_port}");
 
         // 第一次：拉取并落缓存（命中 1）。
         let first = load_catalog(&catalog_paths, &transport, "release").unwrap();
