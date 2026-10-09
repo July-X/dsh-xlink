@@ -1697,7 +1697,7 @@ pub fn start_instance(
     }
     if record.kernel_version.is_none() {
         return Err(AppError::Kernel(
-            "实例尚未指定内核版本，请先在「更新」页安装并切换到某一版本".into(),
+            "实例尚未指定内核版本，请先在「内核版本」页安装并切换到某一版本".into(),
         ));
     }
     // P3：调用 DshAdapter 而不是直接拼内核入口——adapter 设置 DSH_HOME
