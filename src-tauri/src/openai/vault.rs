@@ -32,6 +32,12 @@ pub(crate) struct AccountTokens {
     pub(crate) client_id: String,
     pub(crate) access_token: String,
     pub(crate) refresh_token: String,
+    /// 保留的 ID token，用于后续 reauthorization 的 id_token_hint。
+    #[serde(default)]
+    pub(crate) id_token: String,
+    /// 授权服务器实际授予的 scope；缺少套餐权限不得推理。
+    #[serde(default)]
+    pub(crate) scopes: Vec<String>,
     /// 访问令牌过期时刻（Unix 秒）；0 表示未知。
     pub(crate) access_expires_at: u64,
     /// 刷新被判失效（invalid_grant）后置位；重新登录清除。老 vault 文件
@@ -311,6 +317,8 @@ mod tests {
                 client_id: "c1".into(),
                 access_token: "at1".into(),
                 refresh_token: "rt1".into(),
+                id_token: "id1".into(),
+                scopes: vec!["chatgpt.tokens.use.direct".into()],
                 access_expires_at: 123,
                 reauth_required: false,
             },
@@ -323,6 +331,8 @@ mod tests {
                 client_id: "c2".into(),
                 access_token: "at2".into(),
                 refresh_token: "rt2".into(),
+                id_token: "id2".into(),
+                scopes: vec!["chatgpt.tokens.use.direct".into()],
                 access_expires_at: 0,
                 reauth_required: false,
             },

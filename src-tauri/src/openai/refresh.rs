@@ -144,6 +144,8 @@ fn refresh_once(
         client_id: entry.client_id.clone(),
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
+        id_token: entry.id_token.clone(),
+        scopes: entry.scopes.clone(),
         access_expires_at: deps.now_unix() + tokens.expires_in,
         reauth_required: false,
     }))

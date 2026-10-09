@@ -8,8 +8,8 @@
 //! **终止纪律**（设计 §7）：只有读到成功终止事件才结算成功；连接结束
 //! 而没有终止事件 = 失败（已有文本不丢，但不算成功）。
 //!
-//! 上游事件形状是未验证常量（设计 §10）：终止判定按事件类型名的
-//! `completed` / `failed` / `error` 后缀防御式识别，正式联调时收紧。
+//! 终止事件按 Responses API 的精确类型判定；普通 output item 的 completed
+//! 事件不能提前结算整条响应。
 
 use std::io::BufRead;
 
@@ -206,13 +206,13 @@ pub(crate) enum Terminal {
 
 pub(crate) fn classify_terminal(event: &serde_json::Value) -> Option<Terminal> {
     let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    if event_type.ends_with("completed") {
+    if event_type == "response.completed" {
         let replay = event
             .get("response")
             .map(|response| serde_json::json!({ "response": response.clone() }));
         return Some(Terminal::Completed { replay });
     }
-    if event_type.ends_with("failed") || event_type == "error" {
+    if event_type == "response.failed" || event_type == "error" {
         let detail = event
             .get("response")
             .and_then(|r| r.get("error"))
@@ -423,6 +423,11 @@ mod tests {
             ),
             Some(Terminal::Failed { .. })
         ));
+        assert!(classify_terminal(&serde_json::json!({
+            "type": "response.output_item.done",
+            "item": {"type": "function_call"}
+        }))
+        .is_none());
         assert!(
             classify_terminal(&serde_json::json!({"type": "response.output_text.delta"})).is_none()
         );

@@ -287,7 +287,7 @@ const FILE_BUDGETS = {
   // 333 → 373：宿主标识改 urn:uuid v4（裸 hex 被授权端点以
   // invalid_request_error 拒绝，2026-10-09 实测），含遗留 64-hex 的
   // 确定性迁移与格式测试。
-  'src-tauri/src/openai/auth.rs': 373,
+  'src-tauri/src/openai/auth.rs': 390,
   // JWK 解析 + RS256 验签：ring 的 RsaPublicKeyComponents 直接吃 n/e，
   // 第一版手拼 SPKI DER 已删（不必要）。固定测试密钥自签自验钉住。
   'src-tauri/src/openai/jwk.rs': 53,
@@ -295,7 +295,7 @@ const FILE_BUDGETS = {
   // 系统凭据库存密钥（mac security CLI / win PasswordVault 走 PowerShell，
   // 不碰 Win32 FFI）。可测逻辑（加解密/文件/分键/生成）注入闭包，密钥库
   // 薄壳不进测试（同 autostart 纪律：真实 Keychain 人工验证）。
-  'src-tauri/src/openai/vault.rs': 203,
+  'src-tauri/src/openai/vault.rs': 212,
   // bridge 与回调监听共用的极简 HTTP 读写。从 bridge.rs 提出（读取循环
   // 是实测踩过 TCP 分段竞态的那段，两处各写一份迟早漂移）。
   // 68 → 74：RequestHead 携带 body_prefix（头体一次读入时体字节在缓冲里，
@@ -326,7 +326,7 @@ const FILE_BUDGETS = {
   // 2026-10-09：授权编排（发现→注册→回调→换令牌→验 ID token→入库）。
   // FlowTransport trait 注入传输/时钟/浏览器/密钥库（真实 Keychain 绝不进
   // 测试）；内含模拟授权服务器（开发计划 §10 的 CI 件）与端到端测试。
-  'src-tauri/src/openai/flow.rs': 320,
+  'src-tauri/src/openai/flow.rs': 370,
   // 2026-10-09：授权命令面（P2）。四条命令围绕 §4.1 授权状态机；授权流
   // 跑后台线程、结束广播 openai-account-changed（UI 不轮询）；薄壳——
   // 能落进 flow.rs 的逻辑都不在这里长。按文件名豁免了新文件登记，照实
@@ -367,7 +367,7 @@ const FILE_BUDGETS = {
   // 277 → 280：桥接载荷的 efforts 改为档位对象（{id, name}）——Host
   // 适配器契约如此（内核校验 id/name 非空且不重复），裸字符串会全变成
   // "undefined"（2026-10-09 实测）。
-  'src-tauri/src/openai/catalog.rs': 280,
+  'src-tauri/src/openai/catalog.rs': 300,
   // 2026-10-09：P4 骨架——推理校验与流转发。载荷白名单（不在表即拒绝，
   // 静默丢弃等于让调用方以为限制生效）/store-stream 固定参数由服务端写/
   // revision 与强度门/终止三分类（completed 含回放材料、failed、EOF 无
@@ -2191,7 +2191,7 @@ const FILE_BUDGETS = {
 // 45748 → 45753（2026-10-09）：内嵌插件显示名改名并收成单一常量（+5，全在
 // plugins/builtin.js，详见该文件的 FILE_BUDGETS 登记）。改名本身零成本，这 5 行
 // 买的是「下次改名只改一处」。
-const TOTAL_BUDGET = 45753;
+const TOTAL_BUDGET = 45850;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

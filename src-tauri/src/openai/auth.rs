@@ -59,6 +59,10 @@ pub(crate) fn parse_metadata(json: &str) -> Result<Metadata, String> {
         authorization_endpoint: string_of("authorization_endpoint")?,
         token_endpoint: string_of("token_endpoint")?,
         jwks_uri: string_of("jwks_uri")?,
+        revocation_endpoint: value
+            .get("revocation_endpoint")
+            .and_then(|v| v.as_str())
+            .map(String::from),
     })
 }
 
@@ -68,6 +72,7 @@ pub(crate) struct Metadata {
     pub(crate) authorization_endpoint: String,
     pub(crate) token_endpoint: String,
     pub(crate) jwks_uri: String,
+    pub(crate) revocation_endpoint: Option<String>,
 }
 
 /// RFC 7636 PKCE：verifier 至少 43 字符（此处 64），challenge 为其 SHA-256
@@ -233,9 +238,9 @@ pub(crate) fn registration_path(dir: &Path) -> PathBuf {
     dir.join("registration.json")
 }
 
-/// 授权 URL（浏览器打开的那一条）。`first_registration` 是首次注册时的
-/// `(宿主标识, 应用名)`：带上 `agent_name_hint` / `ext_agent_host_id` 并
-/// 使用公开引导 client；再次登录传 `None`，用已签发的 client_id。
+/// 授权 URL（浏览器打开的那一条）。宿主标识在首次注册和后续登录都必须
+/// 发送；只有 `agent_name_hint` 仅属于首次动态注册。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn authorize_url(
     endpoint: &str,
     client_id: &str,
@@ -243,7 +248,8 @@ pub(crate) fn authorize_url(
     state: &str,
     nonce: &str,
     challenge: &str,
-    first_registration: Option<(&str, &str)>,
+    host_id: &str,
+    first_registration: bool,
 ) -> String {
     let mut url = format!(
         "{endpoint}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={state}&nonce={nonce}&code_challenge={challenge}&code_challenge_method=S256&resource={}",
@@ -252,12 +258,9 @@ pub(crate) fn authorize_url(
         urlencode(AUTH_SCOPE),
         urlencode(OPENAI_RESOURCE),
     );
-    if let Some((host_id, app_name)) = first_registration {
-        url.push_str(&format!(
-            "&agent_name_hint={}&ext_agent_host_id={}",
-            urlencode(app_name),
-            urlencode(host_id),
-        ));
+    url.push_str(&format!("&ext_agent_host_id={}", urlencode(host_id)));
+    if first_registration {
+        url.push_str(&format!("&agent_name_hint={}", urlencode(APP_NAME_HINT),));
     }
     url
 }
@@ -431,6 +434,7 @@ pub(crate) struct TokenSet {
     pub(crate) id_token: String,
     /// `expires_in`（秒）；0 视为未知，刷新按保守策略处理。
     pub(crate) expires_in: u64,
+    pub(crate) scopes: Vec<String>,
 }
 
 pub(crate) fn parse_token_response(json: &str) -> Result<TokenSet, String> {
@@ -451,6 +455,14 @@ pub(crate) fn parse_token_response(json: &str) -> Result<TokenSet, String> {
             .get("expires_in")
             .and_then(|v| v.as_u64())
             .unwrap_or(0),
+        scopes: value
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .split_whitespace()
+            .filter(|scope| !scope.is_empty())
+            .map(String::from)
+            .collect(),
     })
 }
 
@@ -559,7 +571,7 @@ mod tests {
         assert!(load_registration(&dir).is_err(), "缺 clientId 必须报损坏");
         let _ = std::fs::remove_dir_all(&dir);
 
-        // 再次登录的授权 URL：签发 client_id + scope/resource，不带宿主提示。
+        // 再次登录仍带稳定宿主标识，但不带首次注册提示。
         let url = authorize_url(
             "https://i/authorize",
             "oaiapp_abc",
@@ -567,7 +579,8 @@ mod tests {
             "st",
             "no",
             "ch",
-            None,
+            "host-1",
+            false,
         );
         assert!(url.starts_with("https://i/authorize?"));
         assert!(url.contains("response_type=code"));
@@ -577,6 +590,7 @@ mod tests {
         assert!(url.contains("code_challenge=ch&code_challenge_method=S256"));
         assert!(url.contains(&format!("scope={}", urlencode(AUTH_SCOPE))));
         assert!(url.contains(&format!("resource={}", urlencode(OPENAI_RESOURCE))));
+        assert!(url.contains("ext_agent_host_id=host-1"));
         assert!(!url.contains("agent_name_hint"), "再次登录不带宿主提示");
 
         // 首次注册的授权 URL：引导 client + 宿主提示。
@@ -587,7 +601,8 @@ mod tests {
             "st",
             "no",
             "ch",
-            Some(("host-1", APP_NAME_HINT)),
+            "host-1",
+            true,
         );
         assert!(first.contains(&format!("client_id={}", urlencode(DYNAMIC_CLIENT_ID))));
         assert!(first.contains(&format!("agent_name_hint={}", urlencode(APP_NAME_HINT))));
