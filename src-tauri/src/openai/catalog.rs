@@ -268,10 +268,11 @@ fn catalog_to_payload(catalog: &Catalog) -> String {
             "name": entry.name,
             "contextWindow": entry.context_window,
             // Host 适配器的契约是**档位对象**（{id, name}，smoke 桩同形状）：
-            // 内核校验 effort.id/name 必须是非空字符串且不重复——裸字符串
-            // 会被 String(effort.id) 变成一串 "undefined"（2026-10-09 实测
-            // 「invalid or duplicate reasoning effort metadata」）。
-            "efforts": entry.efforts.iter().map(|effort| serde_json::json!({
+            // 内核校验 effort.id/name 必须是非空字符串且不重复。注意
+            // `entry.efforts` 是 Option：`.iter().flatten()` 才是逐档位迭代——
+            // 漏了 flatten 会把整个 Vec 当一个元素产出（id 变成数组 →
+            // 内核侧 String 化成逗号拼接串，2026-10-09 实测）。
+            "efforts": entry.efforts.iter().flatten().map(|effort| serde_json::json!({
                 "id": effort,
                 "name": effort,
             })).collect::<Vec<_>>(),
@@ -453,6 +454,25 @@ mod tests {
         // 缓存落盘且可回读。
         let cached = cached_catalog(&catalog_paths, "mock-sub-1").unwrap();
         assert_eq!(cached, catalog);
+
+        // 桥接载荷的档位必须是**对象数组**（{id, name}，字符串值）——Host
+        // 适配器按 effort.id / effort.name 取值；曾因 Option::iter 漏
+        // flatten 把整个 Vec 塞进单元素，id 退化成数组 → 内核侧串接成一个
+        // 档位（2026-10-09 实测）。
+        let payload: serde_json::Value =
+            serde_json::from_str(&catalog_to_payload(&catalog)).unwrap();
+        let efforts = payload["models"][0]["efforts"].as_array().unwrap();
+        assert_eq!(efforts.len(), 6);
+        for (index, effort) in efforts.iter().enumerate() {
+            assert_eq!(
+                effort["id"].as_str().unwrap(),
+                ["low", "medium", "high", "xhigh", "max", "ultra"][index]
+            );
+            assert_eq!(
+                effort["name"].as_str().unwrap(),
+                effort["id"].as_str().unwrap()
+            );
+        }
     }
 
     #[test]
