@@ -34,14 +34,26 @@ impl Failure {
                 "网络不可达（{detail}）。已试：{}；请确认系统代理正在运行或网络可用后重试",
                 tried.join(" → ")
             ),
-            Failure::Status(status, body) => format!(
-                "服务端返回 {status}{}",
-                if body.is_empty() {
-                    String::new()
+            Failure::Status(status, body) => {
+                // 网关拦截页（403 + HTML，Cloudflare「Just a moment…」一类）
+                // 不再整页拍给用户——它描述的是**出口被拦**，不是账号或请求
+                // 问题，给可执行的指引（2026-10-09 用户反馈）。
+                if looks_like_gateway_challenge(*status, body) {
+                    format!(
+                        "服务端返回 {status}：该网络出口被网关拦截（HTML 挑战页，不是账号或请求问题）。已试：{}；请确认系统代理正在运行后重试",
+                        tried.join(" → ")
+                    )
                 } else {
-                    format!("：{body}")
+                    format!(
+                        "服务端返回 {status}{}",
+                        if body.is_empty() {
+                            String::new()
+                        } else {
+                            format!("：{body}")
+                        }
+                    )
                 }
-            ),
+            }
         }
     }
 }
@@ -68,6 +80,18 @@ fn map_ureq_error(error: ureq::Error) -> Failure {
     Failure::Transport(format!("{error}"))
 }
 
+/// 回环目标不走代理路由：代理不会替你访问本机（还常常显式拒绝），而
+/// 测试与本地诊断大量依赖回环。返回值：非回环 → 原路由表；回环 → 只剩
+/// 直连。
+fn routes_for_url<'a>(routes: &'a [net_proxy::Route], url: &str) -> Vec<net_proxy::Route> {
+    let loopback = url.contains("://127.0.0.1:") || url.contains("://localhost:");
+    if loopback {
+        vec![net_proxy::Route::Direct]
+    } else {
+        routes.to_vec()
+    }
+}
+
 /// 响应体像不像网关拦截页（Cloudflare「Just a moment…」一类挑战页）：
 /// OpenAI 的 API 错误一律是 JSON，HTML 只会来自网络出口的网关。
 fn looks_like_gateway_challenge(status: u16, body: &str) -> bool {
@@ -86,9 +110,10 @@ fn send_over<F>(routes: &[net_proxy::Route], url: &str, send_once: F) -> Result<
 where
     F: Fn(&ureq::Agent, &str) -> Result<ureq::http::Response<ureq::Body>, ureq::Error>,
 {
+    let routes = routes_for_url(routes, url);
     let mut tried: Vec<String> = Vec::new();
     let mut last: Option<Failure> = None;
-    for route in routes {
+    for route in &routes {
         let agent = match agent_for(route) {
             Ok(agent) => agent,
             Err(error) => return Err(Failure::Transport(error)),
@@ -159,9 +184,10 @@ fn post_stream_over(
     bearer: &str,
     body: &str,
 ) -> Result<Box<dyn std::io::BufRead + Send>, Failure> {
+    let routes = routes_for_url(routes, url);
     let mut tried: Vec<String> = Vec::new();
     let mut last: Option<Failure> = None;
-    for route in routes {
+    for route in &routes {
         let agent = match agent_for(route) {
             Ok(agent) => agent,
             Err(error) => return Err(Failure::Transport(error)),

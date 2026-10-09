@@ -1,6 +1,6 @@
 {
   "name": "xlink-openai-oauth",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "type": "module",
   "description": "dsh-xlink 内嵌 OpenAI OAuth（ChatGPT 套餐）插件：Host 适配器 + Client 设置卡",

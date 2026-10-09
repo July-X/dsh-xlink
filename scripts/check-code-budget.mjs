@@ -312,7 +312,9 @@ const FILE_BUDGETS = {
   // 139 → 173：send/post_stream 抽出 `_over` 路由表变体（路由表作参数，
   // 测试可注入）+ 网关拦截页（403 HTML）换路重试——直连 403、代理 200
   // 实测存在（2026-10-09），状态码依赖出口而非请求。
-  'src-tauri/src/openai/transport.rs': 173,
+  // 173 → 192：回环目标不走代理路由（routes_for_url）+ 403 拦截页的
+  // 可读报错（不再整页 HTML 拍给用户）。
+  'src-tauri/src/openai/transport.rs': 192,
   // 2026-10-09：授权编排（发现→注册→回调→换令牌→验 ID token→入库）。
   // FlowTransport trait 注入传输/时钟/浏览器/密钥库（真实 Keychain 绝不进
   // 测试）；内含模拟授权服务器（开发计划 §10 的 CI 件）与端到端测试。
@@ -2177,7 +2179,7 @@ const FILE_BUDGETS = {
 // 进度浮层与事故面板两处挂上。theme.css 自身预算未动（2531 / 3001）。模板侧
 // 只多一个类名，判据（designAlignment.test.js 那条 + 摘类 / 改 .btn-row 两次
 // 反向验）不计预算。
-const TOTAL_BUDGET = 45649;
+const TOTAL_BUDGET = 45668;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
