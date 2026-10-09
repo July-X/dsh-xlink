@@ -260,6 +260,24 @@ export async function* pumpStream(lines) {
       yield { type: 'reasoning-delta', index, text: event.delta ?? '' };
       continue;
     }
+    if (type === 'response.output_item.added' && event.item?.type === 'function_call') {
+      // 真实 API 的身份（call id 与名字）在 added 条目上：先播种工具块，
+      // 后续 delta 只带 item_id 与参数增量。
+      const { index, started } = nextBlock('tool-call');
+      if (started) yield { type: 'block-start', index, blockType: 'tool-call' };
+      const state = openBlocks.get('tool-call');
+      const providerName = event.item.name;
+      const name = providerName !== undefined ? fromProviderToolName(providerName, toolNameByCallId) : undefined;
+      state.tool = {
+        id: event.item.id ?? state.tool?.id ?? '',
+        ...(name !== undefined ? { name } : {}),
+      };
+      if (providerName !== undefined && event.item.id !== undefined) {
+        toolNameByCallId.set(event.item.id, name ?? providerName);
+      }
+      if (event.item.arguments) state.text += event.item.arguments;
+      continue;
+    }
     if (type.endsWith('function_call_arguments.delta')) {
       const { index, started } = nextBlock('tool-call');
       if (started) yield { type: 'block-start', index, blockType: 'tool-call' };
@@ -267,13 +285,9 @@ export async function* pumpStream(lines) {
       const name =
         event.name !== undefined
           ? fromProviderToolName(event.name, toolNameByCallId)
-          : undefined;
-      if (event.item_id !== undefined) {
-        state.tool = {
-          id: event.item_id,
-          ...(name !== undefined ? { name } : {}),
-        };
-        if (name !== undefined) toolNameByCallId.set(event.item_id, name);
+          : state.tool?.name;
+      if (event.item_id !== undefined && state.tool?.id === undefined) {
+        state.tool = { id: event.item_id, ...(name !== undefined ? { name } : {}) };
       }
       state.text += event.delta ?? '';
       yield {
