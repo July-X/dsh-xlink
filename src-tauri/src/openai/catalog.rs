@@ -38,6 +38,67 @@ const CATALOG_FRESH_SECS: u64 = 60;
 /// 随应用交付的精确能力表（P6 逐模型验收后填充；键为精确模型 id）。
 const CAPABILITY_TABLE: &[(&str, Capability)] = &[];
 
+/// 模型展示元数据：名称、上下文容量与推理档位。数据源 = Codex CLI 官方
+/// 捆绑目录（openai/codex `models-manager/models.json`，2026-10-09 取自
+/// main）——与 Codex Desktop 的模型列表同源；账号目录接口（api.openai.
+/// com/v1/models）只回 slug、不带这些元数据。
+///
+/// **只展示表内模型、按表序排列**：未收录的 slug（gpt-reserve /
+/// gpt-5.5 / codex-auto-review 等内部或遗留模型，Codex Desktop 也不
+/// 展示）不进列表；新增模型随表更新。表内顺序即 Codex Desktop 的展示
+/// 顺序。显示名按 Codex Desktop 的形态（空格分隔，非捆绑表里的连字符）。
+struct ModelPresentation {
+    slug: &'static str,
+    display_name: &'static str,
+    context_window: u64,
+    efforts: &'static [&'static str],
+}
+
+const MODEL_PRESENTATION: &[ModelPresentation] = &[
+    ModelPresentation {
+        slug: "gpt-6.1-sol",
+        display_name: "GPT-6.1 Sol",
+        context_window: 272_000,
+        efforts: &["low", "medium", "high", "xhigh", "max", "ultra"],
+    },
+    ModelPresentation {
+        slug: "gpt-6-astra",
+        display_name: "GPT-6 Astra",
+        context_window: 272_000,
+        efforts: &["low", "medium", "high", "xhigh", "max", "ultra"],
+    },
+    ModelPresentation {
+        slug: "gpt-6-sol",
+        display_name: "GPT-6 Sol",
+        context_window: 272_000,
+        efforts: &["low", "medium", "high", "xhigh", "max", "ultra"],
+    },
+    ModelPresentation {
+        slug: "gpt-6-luna",
+        display_name: "GPT-6 Luna",
+        context_window: 272_000,
+        efforts: &["low", "medium", "high", "xhigh", "max"],
+    },
+    ModelPresentation {
+        slug: "gpt-5.6-sol",
+        display_name: "GPT-5.6 Sol",
+        context_window: 272_000,
+        efforts: &["low", "medium", "high", "xhigh", "max", "ultra"],
+    },
+    ModelPresentation {
+        slug: "gpt-5.6-terra",
+        display_name: "GPT-5.6 Terra",
+        context_window: 272_000,
+        efforts: &["low", "medium", "high", "xhigh", "max", "ultra"],
+    },
+    ModelPresentation {
+        slug: "gpt-5.6-luna",
+        display_name: "GPT-5.6 Luna",
+        context_window: 272_000,
+        efforts: &["low", "medium", "high", "xhigh", "max"],
+    },
+];
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Capability {
     pub(crate) context_window: Option<u64>,
@@ -138,7 +199,11 @@ pub(crate) fn load_catalog_with(
     let url = format!("{}{MODELS_PATH}", paths.models_base);
     let fetched = fetch_with_token(deps, &url, &tokens.access_token)?;
     let revision = fetched.revision;
-    let entries: Vec<CatalogEntry> = fetched.models.into_iter().map(merge_capability).collect();
+    let entries: Vec<CatalogEntry> = fetched
+        .models
+        .into_iter()
+        .filter_map(merge_capability)
+        .collect();
     let catalog = Catalog {
         revision,
         capability_revision: CAPABILITY_REVISION,
@@ -273,9 +338,11 @@ fn fetch_with_token(
     Ok(Fetched { revision, models })
 }
 
-fn merge_capability(model: FetchedModel) -> CatalogEntry {
-    match CAPABILITY_TABLE.iter().find(|(id, _)| *id == model.id) {
-        Some((_, capability)) => CatalogEntry {
+/// 合并展示元数据。返回 `None` = 未收录的 slug（不进列表，对齐 Codex
+/// Desktop 的可见集合）。P6 精确能力表优先（verified 覆盖展示表）。
+fn merge_capability(model: FetchedModel) -> Option<CatalogEntry> {
+    if let Some((id, capability)) = CAPABILITY_TABLE.iter().find(|(id, _)| *id == model.id) {
+        return Some(CatalogEntry {
             id: model.id,
             name: model.name,
             context_window: capability.context_window,
@@ -285,17 +352,16 @@ fn merge_capability(model: FetchedModel) -> CatalogEntry {
                 Some(capability.efforts.iter().map(|s| s.to_string()).collect())
             },
             capability: "verified".into(),
-        },
-        None => CatalogEntry {
-            id: model.id,
-            name: model.name,
-            context_window: None,
-            efforts: None,
-            // 未知能力：不发 contextWindow（历史压缩阈值不失真）、不发
-            // efforts（不显示未经验证的档位）——设计 §6.1/§7 的纪律。
-            capability: "unknown".into(),
-        },
+        });
     }
+    let presentation = MODEL_PRESENTATION.iter().find(|p| p.slug == model.id)?;
+    Some(CatalogEntry {
+        id: model.id,
+        name: presentation.display_name.to_string(),
+        context_window: Some(presentation.context_window),
+        efforts: Some(presentation.efforts.iter().map(|s| s.to_string()).collect()),
+        capability: "codex-catalog".into(),
+    })
 }
 
 #[cfg(test)]
@@ -348,19 +414,35 @@ mod tests {
         // 已被 authorize 用掉——直接换一个 FlowPaths 指向 models mock，
         // vault 复用同一个（同 mode_dir）。
         let models_port = serve_models_once(
-            r#"{"data":[{"id":"gpt-x","name":"GPT X"},{"id":"gpt-y"}]}"#,
+            r#"{"data":[{"id":"gpt-6.1-sol"},{"id":"gpt-reserve"},{"id":"gpt-6.1-sol-x"}]}"#,
             "at-1",
         );
         let mut catalog_paths = paths.clone();
         catalog_paths.models_base = format!("http://127.0.0.1:{models_port}");
         let catalog = load_catalog(&catalog_paths, &transport, "release").unwrap();
         assert_eq!(catalog.capability_revision, CAPABILITY_REVISION);
-        assert_eq!(catalog.entries.len(), 2);
-        // 未验证能力：不发档位、不发容量、capability=unknown。
-        let entry = catalog.entries.iter().find(|e| e.id == "gpt-x").unwrap();
-        assert_eq!(entry.capability, "unknown");
-        assert_eq!(entry.context_window, None);
-        assert_eq!(entry.efforts, None);
+        // 只保留展示表内的 slug（gpt-reserve / 未收录尾缀被过滤），
+        // 名称、容量与推理档位来自 Codex 官方目录元数据。
+        assert_eq!(catalog.entries.len(), 1);
+        let entry = &catalog.entries[0];
+        assert_eq!(entry.id, "gpt-6.1-sol");
+        assert_eq!(entry.name, "GPT-6.1 Sol");
+        assert_eq!(entry.capability, "codex-catalog");
+        assert_eq!(entry.context_window, Some(272_000));
+        assert_eq!(
+            entry.efforts.as_deref(),
+            Some(
+                [
+                    "low".to_string(),
+                    "medium".to_string(),
+                    "high".to_string(),
+                    "xhigh".to_string(),
+                    "max".to_string(),
+                    "ultra".to_string(),
+                ]
+                .as_slice()
+            )
+        );
         // 缓存落盘且可回读。
         let cached = cached_catalog(&catalog_paths, "mock-sub-1").unwrap();
         assert_eq!(cached, catalog);
@@ -462,11 +544,11 @@ mod serve_tests {
         let paths = flow_test_paths("serve-fb", issuer.port());
         let cancel = AtomicBool::new(false);
         crate::openai::flow::run_authorize(&paths, &transport, "release", &cancel).unwrap();
-        let models_port = serve_models(r#"{"data":[{"id":"gpt-x","name":"GPT X"}]}"#, "at-1");
+        let models_port = serve_models(r#"{"data":[{"id":"gpt-6.1-sol"}]}"#, "at-1");
         let mut live = paths.clone();
         live.models_base = format!("http://127.0.0.1:{models_port}");
         let payload = serve_payload(&live, &transport, "release").unwrap();
-        assert!(payload.contains("gpt-x"));
+        assert!(payload.contains("GPT-6.1 Sol"));
         let parsed_payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
         let revision_with_cache = parsed_payload["revision"].as_str().unwrap().to_string();
 
@@ -482,7 +564,7 @@ mod serve_tests {
         let parsed_fallback: serde_json::Value = serde_json::from_str(&fallback).unwrap();
         let revision = parsed_fallback["revision"].as_str().unwrap().to_string();
         assert_eq!(revision, revision_with_cache);
-        assert!(fallback.contains("gpt-x"));
+        assert!(fallback.contains("GPT-6.1 Sol"));
     }
 
     /// 未登录 → **空目录载荷（200）**：前置常态不是故障，工作台模型
@@ -550,7 +632,7 @@ mod fresh_window_tests {
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_server = Arc::clone(&hits);
         let models_port = serve_counting(
-            r#"{"data":[{"id":"gpt-x","name":"GPT X"}]}"#,
+            r#"{"data":[{"id":"gpt-6.1-sol"}]}"#,
             "at-1",
             hits_for_server,
         );
