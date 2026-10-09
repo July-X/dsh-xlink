@@ -117,6 +117,8 @@ const bridgeServer = createServer((req, res) => {
       const events =
         roundtrip <= 1
           ? [
+              // 文本 + 工具调用混合（真实模型常见行为：先说明再调工具）
+              '{"type":"response.output_text.delta","delta":"让我查一下。"}',
               '{"type":"response.output_item.added","item":{"type":"function_call","id":"call-probe-1","name":"xlink_probe","arguments":""}}',
               '{"type":"response.function_call_arguments.delta","item_id":"call-probe-1","name":"xlink_probe","delta":"{}"}',
               '{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"function_call","id":"call-probe-1","name":"xlink_probe","arguments":"{}"}]}}',
