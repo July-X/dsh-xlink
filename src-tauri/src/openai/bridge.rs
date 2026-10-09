@@ -225,12 +225,18 @@ fn spawn_bridge(
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                     .ok();
-                serve(
-                    &mut stream,
-                    &thread_token,
-                    &thread_models,
-                    &thread_inference,
-                );
+                // **每连接一线程**：推理流可能持续数分钟，串行处理会让
+                // 流期间的 /v1/models 与 /v1/handshake 全部排队——生产
+                // 表现是「生成期间打开设置页挂死」。连接数上限 = 内核
+                // Host 插件 + 浏览器回调 + 同页探测，个位数。
+                let conn_token = thread_token.clone();
+                let conn_models = Arc::clone(&thread_models);
+                let conn_inference = Arc::clone(&thread_inference);
+                let _ = std::thread::Builder::new()
+                    .name("oop-bridge-conn".into())
+                    .spawn(move || {
+                        serve(&mut stream, &conn_token, &conn_models, &conn_inference);
+                    });
             }
         })
         .map_err(|error| format!("启动桥接线程失败：{error}"))?;
@@ -428,6 +434,45 @@ mod tests {
         assert_eq!(get(&addr, "/v1/handshake", Some("wrong")).0, 401);
         assert_eq!(get(&addr, "/v1/handshake", None).0, 401);
         assert_eq!(get(&addr, "/v1/nope", Some(&token)).0, 404);
+    }
+
+    /// **并发回归**（per-connection 线程的语义钉子）：连接 1 的请求读被
+    /// 挂起（发半截头，不补 CRLFCRLF）时，连接 2 的完整请求仍必须及时
+    /// 应答——串行 accept 会让占线连接阻塞后续全部请求，生产表现是
+    /// 「生成期间打开设置页挂死」。
+    #[test]
+    fn second_connection_served_while_first_is_pending() {
+        let (addr, token, _keep) = test_bridge("concurrent");
+        use std::io::Write;
+
+        // 连接 1：发半截请求头（无 CRLFCRLF），服务线程的 read_request
+        // 会阻塞等待补齐——占住它的处理线程。
+        let mut conn1 = TcpStream::connect(addr).unwrap();
+        conn1
+            .write_all(
+                format!("GET /v1/models HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+
+        // 连接 2：完整请求。per-connection 线程下它不该被连接 1 排队。
+        let mut conn2 = TcpStream::connect(addr).unwrap();
+        conn2
+            .write_all(
+                format!(
+                    "GET /v1/models HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        conn2
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut text = String::new();
+        conn2.read_to_string(&mut text).unwrap();
+        let status: u16 = text.split_whitespace().nth(1).unwrap().parse().unwrap();
+        assert_eq!(status, 200, "连接 1 半截挂起时连接 2 必须并发可达");
+        drop(conn1);
     }
 
     #[test]
