@@ -139,11 +139,13 @@ pub(crate) fn resolve_usage(consent: &Result<bool, String>) -> Result<Option<Ope
 /// 「套餐用量」OpenAI 分区的可见性门禁与离线处置（`subscription_view` 每个
 /// provider 各调一次；非 OpenAI、或门禁放行时返回 `None` 走常规查询链）。
 ///
-/// 判据（2026-10-10）：用户已开「本机 Codex 登录查询额度」，**或**内嵌
-/// openai-oauth 插件在本 mode / profile 启用。两个来源都关时，壳里的 OpenAI
-/// 登录没有消费方（它只服务于内嵌插件），这条查询注定失败（SIWC 令牌过不了
-/// 额度接口），分区留着只会挂一块「查询异常」——按未配置呈现，缓存里的旧
-/// 条目（含错误文案）一并丢弃，错误横幅不再提及。
+/// 判据（2026-10-10 用户拍板）：**内嵌 openai-oauth 插件已启用**。插件停用
+/// 时，壳里的 OpenAI 登录没有消费方（它只服务于内嵌插件），整块额度入口
+/// ——分区与「本机 Codex 登录查询额度」开关（前端按同一判据收起）——都不
+/// 出现，哪怕本机 Codex 许可是开着的：这条查询注定失败（SIWC 令牌过不了
+/// 额度接口），分区留着只会挂一块「查询异常」。按未配置呈现，缓存里的旧
+/// 条目（含错误文案）一并丢弃，错误横幅不再提及。Codex 许可只在插件启用
+/// 后决定查询来源（[`resolve_usage`]），不参与本门禁。
 pub(crate) fn gated_view(
     id: &str,
     scope: &InstanceScope,
@@ -152,11 +154,8 @@ pub(crate) fn gated_view(
     if id != PROVIDER_OPENAI {
         return None;
     }
-    // 许可与启用意图任一打开即放行；许可在此自读一次，保持单一出处。
     let dsh_home = crate::shell::paths::instance_dsh_home(&scope.family, &scope.id);
-    if super::subscription_codex::enabled().unwrap_or(false)
-        || crate::plugins::builtin::requested_enabled(&dsh_home, &scope.profile)
-    {
+    if crate::plugins::builtin::requested_enabled(&dsh_home, &scope.profile) {
         return None;
     }
     // 旧缓存条目一并移除：分区藏了，错误横幅不能再报它缓存里的失败。

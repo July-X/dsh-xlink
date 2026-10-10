@@ -24,9 +24,9 @@
 //!   profile 后旧条目一律作废，绝不把上一个账号的数据当当前账号展示。
 //! - **每个 provider 自带状态**：多 provider 查询允许部分成功，单个网络
 //!   失败不吞掉其它 provider 的新数据。
-//! - **OpenAI 分区有可见性门禁**：内嵌插件停用且未开「本机 Codex 登录
-//!   查询」时按未配置呈现（并丢弃旧缓存）——壳的 OpenAI 登录只服务于
-//!   内嵌插件，分区留着只会展示一条注定失败的查询。
+//! - **OpenAI 分区有可见性门禁**：内嵌插件停用时整块按未配置呈现（并丢弃
+//!   旧缓存），Codex 额度开关与分区一并隐藏——壳的 OpenAI 登录只服务于
+//!   内嵌插件，入口留着只会展示一条注定失败的查询。
 //! - 解析层逐字段防御式：字段缺失或类型不合就跳过该字段，不做整体失败
 //!   （两家端点都是第一方但未文档化 / 轻文档化接口，字段可能随时漂移）。
 
@@ -1834,6 +1834,28 @@ mod cache_tests {
             !doc.providers.contains_key(PROVIDER_OPENAI),
             "门禁关闭必须丢弃旧条目，否则横幅还在报隐藏分区的错"
         );
+
+        // 反例（2026-10-10 用户拍板）：Codex 许可是开的，但插件停用——门禁
+        // **仍然关闭**。许可只决定查询来源，不放行分区；整块额度入口属于
+        // 插件的功能面。
+        let shell_dir = paths::shell_dir(crate::shell::settings::current_mode());
+        std::fs::create_dir_all(&shell_dir).unwrap();
+        std::fs::write(
+            shell_dir.join("codex-usage-consent.json"),
+            r#"{"enabled":true}"#,
+        )
+        .unwrap();
+        state::save(&scope.cache_path(), &seeded(), cache_ctx()).unwrap();
+        let view = subscription_view(Some(PROVIDER_OPENAI), false).expect("许可开着也应离线成功");
+        let openai = view
+            .providers
+            .iter()
+            .find(|p| p.id == PROVIDER_OPENAI)
+            .unwrap();
+        assert!(!openai.configured, "插件停用时许可开着也不得显示分区");
+        let doc: SubscriptionCacheDoc =
+            state::load_checked(&scope.cache_path(), cache_ctx()).unwrap();
+        assert!(!doc.providers.contains_key(PROVIDER_OPENAI));
 
         // 启用意图落盘（按当前 mode / profile 分键）：门禁打开，旧缓存保留，
         // 由常规凭据解析决定配置状态（壳未登录 → 未配置，但不删数据）。
