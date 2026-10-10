@@ -2721,16 +2721,14 @@ main::before {
 
 /* --- 插件中心 --- */
 
-/* 卡头：标题 + ⓘ 一行，预检开关与它那行灰字说明在下一行。
-   「刷新数据」原先也在标题行靠右，2026-10-07 用户要求搬去右栏「插件中心」那行——
-   它刷的是 dshfind.com 的远端目录，挂在整张卡的头上等于让一个作用在右栏的按钮
-   出现在左栏。所以下面**不再有** `.plugin-center-refresh` 的靠右规则。 */
-.plugin-center-head {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 4px;
-}
-
+/* 卡头：标题 + ⓘ 在左，预检开关与它那行灰字说明整体靠右（2026-10-10 用户要求
+   「整体移动到右侧」；此前它独占卡头第二行）。`.card-head` 本身就是
+   space-between 的 flex 行，这里不再覆盖成 column。注意别把预检行挪去和
+   「同步内核 / 检查更新」同排——那是 tab 条的动作组，语境是下面的清单，
+   不是这张卡的开关。「刷新数据」原先也在标题行靠右，2026-10-07 用户要求
+   搬去右栏「插件中心」那行——它刷的是 dshfind.com 的远端目录，挂在整张卡的
+   头上等于让一个作用在右栏的按钮出现在左栏。所以下面**不再有**
+   `.plugin-center-refresh` 的靠右规则。 */
 .plugin-center-title-row {
   display: flex;
   align-items: center;
