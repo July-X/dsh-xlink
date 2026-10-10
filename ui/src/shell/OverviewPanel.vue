@@ -716,6 +716,7 @@ function goVersions() {
                 MiniMax（国内站 / 国际站）与智谱的 5 小时 / 周窗口余额、DeepSeek 按量余额（多币种）。
                 数据缓存 5 分钟，点「刷新」立即重新查询。凭据复用工作台模型设置；
                 未在内核配置对应厂商时，相应分区自动隐藏。
+                OpenAI 分区仅在启用 OpenAI-OAuth-Plugin 或开启「使用本机 Codex 登录查询额度」后显示。
               </div>
             </template>
             <el-icon class="card-info-icon"><InfoFilled /></el-icon>

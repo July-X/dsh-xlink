@@ -30,7 +30,8 @@ import { openUsageWindow } from '../usage/usage.js';
 const CAPABILITY_TIP =
   'MiniMax 展示 Token Plan 的 5 小时 / 周窗口剩余百分比（云端 API 不提供绝对剩余 token 数）；' +
   'DeepSeek 展示按量计费账户的货币余额；智谱 GLM 展示编程套餐的 5 小时 / 周窗口剩余百分比' +
-  '（组织 / 项目上下文未配置时按错误提示补配）。数据约 5 分钟更新一次，「刷新」立即重新查询。';
+  '（组织 / 项目上下文未配置时按错误提示补配）。OpenAI 分区仅在启用 OpenAI-OAuth-Plugin' +
+  ' 或开启「使用本机 Codex 登录查询额度」后显示。数据约 5 分钟更新一次，「刷新」立即重新查询。';
 
 // 与管理壳一致：本窗口内 IO 进行中点亮标题栏鲸眼脉冲。
 watchEffect(() => {
