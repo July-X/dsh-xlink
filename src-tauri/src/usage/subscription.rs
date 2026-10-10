@@ -317,13 +317,14 @@ pub struct InstanceView {
 /// `get_subscription_usage` 的返回：全部（或指定）provider 的独立结果。
 #[derive(Serialize, Debug)]
 pub struct SubscriptionView {
+    pub codex_usage_enabled: bool,
     pub instance: InstanceView,
     pub providers: Vec<ProviderView>,
 }
 
 /// 同一时刻只允许一次云端查询（同 provider 在途请求去重的最简形态：整个
 /// 查询段串行）。锁只在 `spawn_blocking` worker 内获取，与 `SCAN_LOCK` 同约定。
-static FETCH_LOCK: Mutex<()> = Mutex::new(());
+pub(super) static FETCH_LOCK: Mutex<()> = Mutex::new(());
 
 /// 查询全部（`provider = None`）或指定 provider 的用量视图。
 ///
@@ -341,6 +342,8 @@ pub fn subscription_view(provider: Option<&str>, force: bool) -> Result<Subscrip
     let _guard = FETCH_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let codex_consent = super::subscription_codex::enabled();
+    let codex_usage_enabled = codex_consent.as_ref().copied().unwrap_or(false);
     let scope = InstanceScope::resolve();
     let dsh_home = scope.dsh_home();
     let bindings = credentials::profile_bindings(&dsh_home.join("profiles").join(&scope.profile));
@@ -367,26 +370,24 @@ pub fn subscription_view(provider: Option<&str>, force: bool) -> Result<Subscrip
     };
     let mut providers = Vec::with_capacity(ids.len());
     for id in ids {
-        // OpenAI 的凭据不来自内核模型凭据链（env / `.credentials.yaml` /
-        // `.env`），而是壳自己那份 OAuth vault，取值在模块内自闭。
-        let credential = if id == PROVIDER_OPENAI {
-            subscription_openai::resolved_credential()
-        } else {
-            credentials::resolve_provider(id, &bindings, &dsh_home)
+        // 同一份解析快照既绑定缓存，也发请求，避免第二次读取造成换账号竞态。
+        let openai =
+            (id == PROVIDER_OPENAI).then(|| subscription_openai::resolve_usage(&codex_consent));
+        let credential = match openai.as_ref() {
+            Some(usage) => subscription_openai::resolved_credential(usage, codex_usage_enabled),
+            None => credentials::resolve_provider(id, &bindings, &dsh_home),
         };
-        let configured = credential
-            .as_ref()
-            .map(|c| c.value.as_deref().is_some())
-            .unwrap_or(false);
+        let configured = credential.as_ref().is_some_and(|c| c.value.is_some());
         let (entry, fetch_error, dirty) = refresh_provider_entry(
             id,
             credential.clone(),
             doc.providers.get(id).cloned(),
             force,
             now_ms,
-            // 智谱查询除 Key 外还要组织 / 项目上下文（同样从凭据链解析），
-            // 因此把 dsh_home 传进 fetch；OpenAI 要的是账号上下文。
-            |id, key| fetch_provider(id, key, &dsh_home, now_ms),
+            |id, key| match openai.as_ref() {
+                Some(usage) => subscription_openai::fetch_resolved(usage, now_ms),
+                None => fetch_provider(id, key, &dsh_home),
+            },
         );
         // 本次调用真实发生的失败才记日志：TTL 命中时的陈旧错误不重复落盘。
         // `or` 而非 `or_else`：右边只是一次 Option 克隆，求不求值无所谓。
@@ -405,22 +406,18 @@ pub fn subscription_view(provider: Option<&str>, force: bool) -> Result<Subscrip
                 }
             }
         }
-        providers.push(build_provider_view(
-            id,
-            configured,
-            doc.providers.get(id),
-            fetch_error,
-        ));
+        let mut view = build_provider_view(id, configured, doc.providers.get(id), fetch_error);
+        if id == PROVIDER_OPENAI && codex_usage_enabled {
+            view.label = "Codex 额度";
+        }
+        providers.push(view);
         doc_dirty |= dirty;
         // 失败落现有 Shell 日志（设计稿「错误文案口径」）：provider + 错误文案 +
         // 脱敏凭据提示（引用名 + 前 4 后 4），绝不包含凭据原文。
         if let Some(message) = this_call_failure {
             let credential_hint = credential
                 .as_ref()
-                .map(|c| {
-                    let redacted = c.value.as_deref().map(redact_key).unwrap_or_default();
-                    format!(" credential_ref={} credential={redacted}", c.reference)
-                })
+                .map(|c| c.log_hint())
                 .unwrap_or_default();
             log_subscription_line(format!(
                 "subscription 查询 provider={id} 失败：{message}{credential_hint}"
@@ -431,6 +428,7 @@ pub fn subscription_view(provider: Option<&str>, force: bool) -> Result<Subscrip
         state::save(&path, &doc, cache_ctx()).map_err(|e| e.to_string())?;
     }
     Ok(SubscriptionView {
+        codex_usage_enabled,
         instance: InstanceView {
             family: scope.family,
             id: scope.id,
@@ -623,11 +621,8 @@ fn entry_from_data(id: &str, data: ProviderData) -> ProviderCacheEntry {
     entry
 }
 
-fn fetch_provider(id: &str, key: &str, dsh_home: &std::path::Path, now_ms: u64) -> FetchOutcome {
+fn fetch_provider(id: &str, key: &str, dsh_home: &std::path::Path) -> FetchOutcome {
     match id {
-        // OpenAI 的查询逻辑整个住在 subscription_openai（凭据来源、端点、
-        // 代理路由都不与另几个 provider 同源）。
-        PROVIDER_OPENAI => subscription_openai::fetch_active(now_ms),
         PROVIDER_DEEPSEEK => fetch_deepseek(id, key),
         PROVIDER_ZAI_CODING_CN => fetch_zhipu(id, key, dsh_home),
         _ => fetch_minimax(id, key),

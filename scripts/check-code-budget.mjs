@@ -1374,12 +1374,19 @@ const FILE_BUDGETS = {
   // 以及三类失败原因（读不出账号信息 / 账号 id 缺失 / 结构不认识）各自落到
   // 日志还是错误横幅的判断。原先把读不出凭据一并归成「未配置」，故障因此
   // 静默消失——这一段就是补那件事。
-  'src-tauri/src/usage/subscription_openai.rs': 285,
+  // 285 → 310：只读账号解析与一致的凭据快照，避免绑定缓存后再次读令牌。
+  'src-tauri/src/usage/subscription_openai.rs': 310,
+  // Codex 文件来源、同账号校验与默认关闭的许可独立于 SIWC 模型授权，
+  // 不把跨应用凭据读取或刷新权限混进模型登录模块。
+  'src-tauri/src/usage/subscription_codex.rs': 210,
+  // 概览与详情共用一个许可控件，包含跨窗事件及异步监听卸载，避免开关漂移。
+  'ui/src/subscription/CodexUsageConsent.vue': 45,
   // DSH 模型凭据只读解析（credentials.rs）：profile cordis.patch.yml 的
   // provider apiKeyEnv 绑定、.credentials.yaml refs、.env 回退层与默认引用
   // 派生。凭据语义与内核对齐只有一处实现，独立成模块供 subscription.rs 复用。
   // 260 → 270：refs 标量统一字符串化（YAML 数字写法如 `KEY: 2` 也是合法值）。
-  'src-tauri/src/usage/credentials.rs': 270,
+  // 270 → 290：集中凭据日志提示；OAuth 来源只记引用名，不泄漏令牌片段。
+  'src-tauri/src/usage/credentials.rs': 290,
   // 云端套餐用量前端（subscription.js）：状态动作（keep-last-good 显式落地）
   // + 收起态摘要 / 余额行 / 进度条配色 / 重置倒计时等纯展示函数（node --test 直测）。
   // 180 → 210：失效 provider 的「提示 → 隐藏 → 查询成功自动恢复」状态机
@@ -1392,7 +1399,8 @@ const FILE_BUDGETS = {
   // 被读成「这套餐只有周窗口」），更不能补成 100%。两个调用点（概览卡与独立
   // 窗口）因此共用这一份，而不是各写一遍判断。基线远低于 RATCHET_THRESHOLD，
   // 上调在规则内。
-  'ui/src/subscription/subscription.js': 230,
+  // 230 → 280：显式许可保存、来源切换清掉旧数字、跨窗同步共用动作。
+  'ui/src/subscription/subscription.js': 280,
   // 套餐用量独立窗口根组件（open_subscription_window 弹出，?subscription=1 挂载）：
   // 双 provider 分区 + 进度条 / 余额行 + 错误横幅与 scoped 样式（同 UsageWindow 模式）。
   // 340 → 360：查询时间换成刷新 icon 胶囊（紧凑年龄值）。
@@ -2241,7 +2249,8 @@ const FILE_BUDGETS = {
 // 收成表的代码压了回去（凭据失效文案改成 match 表、错误收集的
 // `or_else` 闭包改成 `or`）。同一工作树里还有一处并行的 UI 主题改版与
 // diskusage 改动（~+90），一并计入，免得把总量卡在别人的在途改动上。
-const TOTAL_BUDGET = 46280;
+// 为本机 Codex 可选来源的只读校验、许可控件及缓存接线登记总量软预算。
+const TOTAL_BUDGET = 46550;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

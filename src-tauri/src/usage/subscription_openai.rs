@@ -2,19 +2,17 @@
 //! 2026-10-10 同账号对照：SIWC 令牌即使带正确账号头也返回 401
 //! no_matching_rule，Codex 令牌返回 200；不能用重新登录来解决权限不兼容。
 //!
-//! 与 MiniMax / 智谱那一档 provider 的差别有三点，都落在本文件里：
+//! 与其它 provider 不同，模型登录状态与额度查询来源需要分别处理：
 //!
-//! - **凭据不是内核模型凭据**，而是壳自己那份 Sign-in-with-ChatGPT OAuth
-//!   （`crate::openai` 的加密 vault）。因此 `configured` 的判据是
-//!   「已登录过账号」，不是 env / `.credentials.yaml`；账号上下文缺失时
-//!   仍显示分区并把原因交给查询结果。
-//!   外壳仍然不收集、不存储任何新凭据——用的是用户自己已经完成的那次授权。
+//! - 默认只读本壳 OAuth vault 的登录状态。用户明确许可后，改用
+//!   `subscription_codex` 的本机只读来源；账号不匹配或读取失败也保留分区，
+//!   并作废旧来源数字、显示原因。模型登录不因此刷新或修改。
 //! - **账号上下文不是充分条件**：端点要求 `ChatGPT-Account-Id` 请求头，值来自
 //!   登录时从 ID token 取下的 `…/auth.chatgpt_account_id` 声明
 //!   （`openai::auth::CHATGPT_AUTH_CLAIM`，摊平与嵌套两种形状都认）。部分
 //!   access token 也会带同名声明，但 SIWC access token 的认证元数据可能是
 //!   opaque，不能依赖它补出账号上下文。SIWC 推理令牌在发请求前明确拒绝，
-//!   不把不兼容错误标成模型登录过期，也不读取其它应用凭据。
+//!   不把不兼容错误标成模型登录过期；Codex 来源的账号头由它自己的令牌提供。
 //! - **必须走代理路由**：这是本仓第一个境外 provider。国内网络上
 //!   `chatgpt.com` 的直连解析可能不可用（2026-10-09 实测本机即如此，
 //!   DNS 解析被污染），而 shell 是 GUI 程序、继承不到命令行里为 shell 设的
@@ -39,7 +37,7 @@ use super::subscription::{self, CacheTier};
 /// 未经公开文档承诺，故按「逐字段防御式解析」对待（与另两个 provider 同）。
 const USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
 
-const UNSUPPORTED_SIWC: &str = "当前 OpenAI 登录用于模型调用，不支持 ChatGPT / Codex 额度查询接口；重新登录或补充账号 ID 无法解决。请在 ChatGPT 设置 → 用量查看官方数据。";
+const UNSUPPORTED_SIWC: &str = "当前 OpenAI 登录用于模型调用，不支持 ChatGPT / Codex 额度查询接口；重新登录或补充账号 ID 无法解决。可开启「使用本机 Codex 登录查询额度」，或在 ChatGPT 设置 → 用量查看官方数据。";
 
 /// 5 小时窗口的 `limit_window_seconds`。
 const WINDOW_5H_SECS: u64 = 18000;
@@ -60,9 +58,8 @@ pub(crate) enum FetchProblem {
     Transient(String),
     /// 凭据被拒（HTTP 401/403）：确定性失败，标记凭据失效。
     Rejected(String),
-    /// 结构不认识：调用方把响应摘要写日志，便于定位改版。携带响应体是
-    /// 为了让那条日志真的能定位改版（空摘要等于没记）。
-    Unrecognized(String),
+    /// 结构不认识。此响应含账号身份信息，不保留或记录原始响应。
+    Unrecognized,
     /// 登录了但拿不到 ChatGPT 账号 id：额度端点要它当 `ChatGPT-Account-Id`
     /// 头，缺了就没有可发的请求。这**不是**凭据失效，也不是网络问题。
     NoAccountContext,
@@ -84,26 +81,53 @@ pub(crate) struct OpenAiUsage {
 ///
 /// `None` = 尚未登录；已登录但拿不到账号 id 时仍返回凭据，让前端保留分区，
 /// 查询侧再给出明确原因，而不是拿空值去打接口。
-pub(crate) fn resolved_credential() -> Option<credentials::ResolvedCredential> {
+pub(crate) fn resolved_credential(
+    usage: &Result<Option<OpenAiUsage>, String>,
+    codex_enabled: bool,
+) -> Option<credentials::ResolvedCredential> {
     // **登录了就该看得见这一栏**，哪怕暂时查不到数字。此前把「读不出账号 id」
     // 也归成「未配置」，结果是分区凭空消失、连一句原因都没有——用户看到的是
     // 「这功能没有」，而不是「这一栏在、但服务端没给账号信息」。这里只要
     // vault 里有活跃账号就算已配置，拿不到账号 id 的后果由查询侧如实报错。
-    match active_credentials() {
+    let reference = if codex_enabled {
+        "codex-local"
+    } else {
+        "openai-oauth"
+    };
+    let source = if codex_enabled {
+        credentials::CredentialSource::CodexLocal
+    } else {
+        credentials::CredentialSource::OpenAiVault
+    };
+    match usage {
         Ok(Some(usage)) => Some(credentials::ResolvedCredential {
-            reference: "openai-oauth".to_string(),
+            reference: reference.into(),
             // 指纹绑定到访问令牌：换账号即换令牌，缓存随之作废——与其它
             // provider 同一套绑定语义，不必为账号 id 另设一套。
-            value: Some(usage.access_token),
-            source: credentials::CredentialSource::OpenAiVault,
+            // 来源、账号上下文与令牌一起参与绑定，切换来源或工作区即作废。
+            value: Some(format!(
+                "{reference}:{}:{}",
+                usage.account_id.as_deref().unwrap_or(""),
+                usage.access_token
+            )),
+            source,
         }),
         Ok(None) => None,
-        Err(message) => {
-            subscription::log_subscription_line(format!(
-                "subscription OpenAI 读取凭据失败：{message}"
-            ));
-            None
-        }
+        // 错误也有独立绑定，不能把上一个已匹配账号的额度保留给不匹配账号。
+        Err(message) => Some(credentials::ResolvedCredential {
+            reference: reference.into(),
+            value: Some(format!("{reference}:unavailable:{message}")),
+            source,
+        }),
+    }
+}
+
+pub(crate) fn resolve_usage(consent: &Result<bool, String>) -> Result<Option<OpenAiUsage>, String> {
+    let codex_enabled = *consent.as_ref().map_err(Clone::clone)?;
+    if codex_enabled {
+        super::subscription_codex::active_usage()
+    } else {
+        active_credentials()
     }
 }
 
@@ -115,42 +139,44 @@ pub(crate) fn resolved_credential() -> Option<credentials::ResolvedCredential> {
 /// 上下文放进令牌）仍保留为已登录状态；查询侧会给出明确原因，不拿空账号
 /// id 去打接口。SIWC 令牌即使有账号 id 也不能用于此内部额度接口。
 pub(crate) fn active_credentials() -> Result<Option<OpenAiUsage>, String> {
-    let paths = crate::openai::flow::shell_flow_paths();
-    if !paths.vault_file.is_file() {
-        subscription::log_subscription_line(
-            "subscription OpenAI 未启用：凭据文件不存在（未在本壳登录过）".into(),
-        );
-        return Ok(None);
-    }
-    let transport = crate::openai::flow::ProductionTransport { open_browser: None };
-    let mode = crate::shell::settings::current_mode().as_str().to_string();
-    let Some(tokens) = crate::openai::refresh::ensure_fresh_access(&paths, &transport, &mode)
-        .map_err(|error| error.message())?
-    else {
+    let Some(tokens) = active_account()? else {
         return Ok(None);
     };
-    let account_id = tokens
-        .chatgpt_account_id
-        .clone()
-        .filter(|id| !id.trim().is_empty())
-        .or_else(|| account_id_from_id_token(&tokens.id_token));
-    if account_id.is_none() {
-        subscription::log_subscription_line(
-            "subscription OpenAI 已登录但拿不到账号 id（ID token 的命名空间声明里没有它）".into(),
-        );
-    }
     Ok(Some(OpenAiUsage {
         access_token: tokens.access_token,
-        account_id,
+        account_id: tokens.chatgpt_account_id,
     }))
 }
 
-/// 从 vault 里留存的那份 ID token 取账号 id。
-///
-/// **为什么要这条回填**：账号 id 是在「把字段落进 vault」这个版本之后登录的
-/// 用户才有的，而 vault 早就在存 `id_token`（登录时验过签名、加密落盘）。
-/// 没有这条回填，那批用户每次升级都得退出重登一次才看得到套餐——为了一个
-/// 声明把会话作废，是白要的代价。
+/// 用量查询只读现有库与密钥；不触发模型令牌刷新，也不创建缺失密钥。
+pub(crate) fn active_account() -> Result<Option<crate::openai::vault::AccountTokens>, String> {
+    use crate::openai::vault;
+    let paths = crate::openai::flow::shell_flow_paths();
+    if !paths.vault_file.is_file() {
+        return Ok(None);
+    }
+    let mode = crate::shell::settings::current_mode().as_str().to_string();
+    let key =
+        vault::load_file_key_with(&mode, &paths.xlink_home, vault::keyring_get, |_, _, _| {
+            Err("额度查询不会创建凭据密钥；请先在本壳完成 OpenAI 登录".into())
+        })?;
+    let accounts = vault::load_accounts(&paths.vault_file, &key)?;
+    Ok(accounts
+        .active
+        .as_ref()
+        .and_then(|sub| accounts.entries.get(sub))
+        .cloned()
+        .map(|mut tokens| {
+            tokens.chatgpt_account_id = tokens
+                .chatgpt_account_id
+                .filter(|id| !id.trim().is_empty())
+                .or_else(|| account_id_from_id_token(&tokens.id_token));
+            tokens
+        }))
+}
+
+/// 从本壳登录时验签留存的 ID token 回填旧 vault 的账号信息，供跨来源一致性
+/// 校验；回填不改变 SIWC 的权限，也不赋予它访问内部额度接口的能力。
 ///
 /// 这里**不再验签名**：那份 ID token 正是登录时做过完整验证（签名 / iss /
 /// aud / exp / nonce）之后才存进来的，且整个 vault 是加密的；读出来的又只是
@@ -188,14 +214,17 @@ fn is_siwc_access_token(token: &str) -> bool {
 }
 
 /// 查一次额度窗口，返回 provider 数据。凭据只在 HTTPS 请求头这一处出现。
-pub(crate) fn fetch_active(now_ms: u64) -> subscription::FetchOutcome {
+pub(crate) fn fetch_resolved(
+    usage: &Result<Option<OpenAiUsage>, String>,
+    now_ms: u64,
+) -> subscription::FetchOutcome {
     use subscription::{FetchOutcome, ProviderData};
-    let usage = match active_credentials() {
+    let usage = match usage {
         Ok(Some(usage)) => usage,
         Ok(None) => return FetchOutcome::Deterministic("未在本壳登录 OpenAI 账户".into(), false),
-        Err(message) => return FetchOutcome::Deterministic(message, false),
+        Err(message) => return FetchOutcome::Deterministic(message.clone(), false),
     };
-    match fetch_tiers(&usage, now_ms) {
+    match fetch_tiers(usage, now_ms) {
         Ok(tiers) => FetchOutcome::Success(ProviderData::Plan { tiers }),
         Err(FetchProblem::Transient(message)) => FetchOutcome::Transient(message),
         Err(FetchProblem::Rejected(message)) => FetchOutcome::Deterministic(message, true),
@@ -204,8 +233,8 @@ pub(crate) fn fetch_active(now_ms: u64) -> subscription::FetchOutcome {
             "当前登录没有额度接口要求的账号上下文，不能据此查询额度。请在 ChatGPT 设置 → 用量查看官方数据。".into(),
             false,
         ),
-        Err(FetchProblem::Unrecognized(body)) => {
-            subscription::log_unrecognized_structure(subscription::PROVIDER_OPENAI, &body);
+        Err(FetchProblem::Unrecognized) => {
+            subscription::log_subscription_line("subscription Codex 额度响应缺少可识别的窗口结构；未记录原始响应以保护账号信息".into());
             FetchOutcome::Deterministic(subscription::UNRECOGNIZED_STRUCTURE.to_string(), false)
         }
     }
@@ -233,7 +262,7 @@ pub(crate) fn fetch_tiers(
             Ok(text) => {
                 return match parse_tiers(&text, now_ms) {
                     Ok(tiers) if !tiers.is_empty() => Ok(tiers),
-                    _ => Err(FetchProblem::Unrecognized(text)),
+                    _ => Err(FetchProblem::Unrecognized),
                 }
             }
             Err(problem @ FetchProblem::Transient(_)) => last_transport_error = Some(problem),
@@ -279,7 +308,7 @@ fn call_route(
             }),
         Err(ureq::Error::StatusCode(status)) if status == 401 || status == 403 => {
             Err(FetchProblem::Rejected(format!(
-                "OpenAI 登录已失效（HTTP {status}）。请在工作台重新登录 OpenAI 账户"
+                "Codex 额度查询凭据被拒绝（HTTP {status}）。请先在 Codex 中刷新登录后再查询；这不代表 DSH 模型登录失效"
             )))
         }
         Err(ureq::Error::StatusCode(status)) => Err(FetchProblem::Transient(format!(
@@ -509,6 +538,36 @@ mod tests {
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(format!(r#"{{"{claim}":"{value}"}}"#).as_bytes());
         format!("h.{payload}.s")
+    }
+
+    #[test]
+    fn cache_binding_changes_with_source_workspace_and_resolution_failure() {
+        let a = Ok(Some(OpenAiUsage {
+            access_token: "same-token".into(),
+            account_id: Some("a".into()),
+        }));
+        let b = Ok(Some(OpenAiUsage {
+            access_token: "same-token".into(),
+            account_id: Some("b".into()),
+        }));
+        let base = resolved_credential(&a, true).unwrap().value;
+        assert_ne!(base, resolved_credential(&a, false).unwrap().value);
+        assert_ne!(base, resolved_credential(&b, true).unwrap().value);
+        let failed = Err("账号不匹配".to_string());
+        assert_ne!(base, resolved_credential(&failed, true).unwrap().value);
+        assert!(matches!(
+            fetch_resolved(&failed, 0),
+            subscription::FetchOutcome::Deterministic(_, false)
+        ));
+        assert!(resolved_credential(&Ok(None), false).is_none());
+        let consent_error = Err("许可文件损坏".to_string());
+        assert!(
+            resolve_usage(&consent_error).is_err(),
+            "许可未知时不读取任何凭据"
+        );
+        let resolved = resolved_credential(&a, true).unwrap();
+        assert!(!resolved.log_hint().contains("same-token"));
+        assert!(!resolved.log_hint().contains(":a:"));
     }
 
     #[test]
