@@ -884,7 +884,7 @@ function goVersions() {
    换成 `height: auto` 的普通块就解不开——百分比高度落在高度为 auto 的祖先上会
    当成 auto，整条规则静默失效。 */
 .panel {
-  gap: 6px;
+  gap: 4px;
   min-height: 100%;
 }
 /* 信息行文本行高居中：胶囊 / 按钮与文本垂直对齐（grid 行默认顶对齐）。 */
@@ -965,7 +965,11 @@ function goVersions() {
      末行至少装得下自己的内容，装不下就交给 `main` 的 `overflow-y: auto` 去滚，
      这是本仓的既定纪律——内容纵向滚动，横向溢出才是 bug。 */
   grid-template-rows: auto auto minmax(min-content, 1fr);
-  gap: 12px;
+  /* 12 → 8（2026-10-10）：第四家 provider 进场后套餐用量卡折成两行，整页刚好
+     超出默认高度一截、纵向滚动条回来了。行间缝从设计稿的 12 收到 8（列间同
+     收，gap 一值），配合 main / plan-provider 的内边距收紧把「最近操作」拉回
+     首屏。designAlignment 对这条值的断言已同步。 */
+  gap: 8px;
   align-content: start;
   /* `min-height: 100%` 的百分比要解到 `.panel` 上，所以那一层也必须是确定高度
      （见下面 `.panel` 那条）。栅格是 `.panel` 的 flex 子项，`flex: 1` 让它去
@@ -1186,17 +1190,17 @@ function goVersions() {
 }
 /* 卡头下面整宽一行的许可说明。字号 11px（辅助说明档，规范 §2），与下面
    provider 卡片之间留 4px——它解释的是上面那个开关，不是下面这些读数，
-   不该与读数共享一段纵向间距。 */
+   不该与读数共享一段纵向间距。行高 1.6 → 1.4（2026-10-10 收间距）。 */
 .usage-consent-tip {
   margin: 0;
   font-size: 11px;
-  line-height: 1.6;
+  line-height: 1.4;
 }
-/* 套餐用量卡内容：横幅 + provider 分区的纵向间距。 */
+/* 套餐用量卡内容：横幅 + provider 分区的纵向间距。8 → 6（2026-10-10 收间距）。 */
 .plan-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 .plan-error {
   --el-alert-padding: 6px 10px;
@@ -1204,13 +1208,13 @@ function goVersions() {
 .plan-provider {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   /* 分块展示：描边 + 微底色 + 圆角，与独立窗口的 provider 分区同语言。
-     10px 圆角 / 6px 10px 内边距是原窗口里 provider 分区的写法；设计稿
-     `.usage-item` 走的是 6px 圆角 + 10px 四边内边距，这里对齐后者。 */
+     8px 圆角 / 8px 内边距：设计稿 `.usage-item` 原为 6px 圆角 + 10px 内边距，
+     2026-10-10 收间距时内边距 10 → 8（第四家 provider 折行后整页超高）。 */
   border: 1px solid var(--el-border-color-extra-light);
   border-radius: 6px;
-  padding: 10px;
+  padding: 8px;
   background: var(--el-fill-color-light);
 }
 /* 设计稿 `.usage-grid` 是固定三列，不是自适应。1040 宽版下内容列约 790px，
@@ -1220,7 +1224,7 @@ function goVersions() {
 .plan-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 .plan-grid .plan-provider {
   min-width: 0;
@@ -1229,7 +1233,7 @@ function goVersions() {
 .plan-tier-col {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 .plan-tier-row {
   display: grid;
@@ -1347,6 +1351,9 @@ html.dark .plan-provider-logo--openai_codex .plan-provider-mark {
   align-items: center;
   gap: 2px;
   margin: 0;
+  /* 行高钉 1.25：10px 的倒计时小字按继承行高渲染约 15px，四个倒计时行
+     （MiniMax / Codex 各两层）累计把分区顶高近 10px（2026-10-10 收间距）。 */
+  line-height: 1.25;
   color: var(--text-muted);
   font-size: 10px;
 }
