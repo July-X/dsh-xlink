@@ -1,5 +1,6 @@
 <script setup>
 import CodexUsageConsent from '../subscription/CodexUsageConsent.vue';
+import PartitionErrorTip from '../subscription/PartitionErrorTip.vue';
 // 概览：当前内核状态、工作台启停单按钮状态机、首次运行引导、
 // 外壳更新横幅与安装入口（手动检查在侧栏品牌区）以及启动容错横幅。
 // 内核生命周期是实现细节，只暴露「打开/关闭工作台 / 打开/关闭官方对话」；
@@ -856,13 +857,9 @@ function goVersions() {
                 <el-icon class="plan-reset-icon"><Timer /></el-icon>{{ tier.countdown }}
               </p>
             </div>
-            <p
-              v-if="row.shortState"
-              class="plan-state"
-              :class="{ 'plan-state-bad': row.provider.fetch_error || row.provider.credential_status === 'expired' || row.provider.error }"
-            >
-              {{ row.shortState }}
-            </p>
+            <!-- 错误归属分区的 provider（OpenAI）的短状态 + ⓘ 点击 tooltip；
+                 其余 provider 的完整文案仍走顶部横幅。 -->
+            <PartitionErrorTip :provider="row.provider" />
           </div>
         </div>
         <p v-if="allHidden" class="muted" style="margin: 0">
@@ -1416,12 +1413,6 @@ html.dark .plan-provider-logo--openai_codex .plan-provider-mark {
   color: var(--text-secondary);
   font-size: 10px;
 }
-.plan-state {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-.plan-state-bad {
-  color: var(--el-color-danger);
-}
+/* 分区短状态样式随「查询异常 ⓘ」收进 PartitionErrorTip.vue（2026-10-10），
+   这里不再保留 .plan-state 一族，避免两份漂移。 */
 </style>
