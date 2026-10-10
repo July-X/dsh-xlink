@@ -122,10 +122,11 @@ window.__ModuleLoader__.load({
         tick();
       }, [refresh]);
 
-      // 登录进行中每 2 秒刷新一次（flow 结束会落库，状态随即翻转）。
+      // 主面板也能登录/退出：所有相位都回读同一份壳侧状态，避免另一端
+      // 退出后这张卡永久停在已登录。授权中缩短间隔；卸载时清理。
       React.useEffect(() => {
-        if (status?.phase !== "authorizing") return undefined;
-        const timer = setInterval(refresh, 2000);
+        const authorizing = status?.phase === "authorizing";
+        const timer = setInterval(refresh, authorizing ? 2000 : 5000);
         return () => clearInterval(timer);
       }, [status?.phase, refresh]);
 
@@ -135,7 +136,6 @@ window.__ModuleLoader__.load({
         setError("");
         try {
           setStatus(await invokeOrNull()(command));
-          if (command === "openai_logout") setStatus((prev) => ({ ...prev, phase: "signed-out" }));
         } catch (invokeError) {
           setError(String(invokeError));
         } finally {
