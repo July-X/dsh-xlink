@@ -32,7 +32,7 @@
 ```
 assets/
 ├── whale-icon.svg          # ≥128px（完整红眼细节）
-├── whale-icon-small.svg    # ≤64px、favicon、ui/public/whale-icon.png 与 whale-mark.png
+├── whale-icon-small.svg    # ≤64px、favicon、ui/public/whale-icon.png
 ├── whale-head.svg          # Windows 通知区域（托盘）图标：整条鲸鱼 + 放大 2.4 倍的红眼，内容缩到 88%
 └── whale-icon-512.png      # 512px 位图（脚本从 whale-icon.svg 渲染）
 ```
@@ -58,12 +58,11 @@ assets/
 - `src-tauri/icons/tray-{dark,light}-{16,20,24,32,40,48}.png`（由 `whale-head.svg`：深色任务栏那套是透明底 + 按档栅格白描边，浅色那套是套板）
 - `src-tauri/icons/menubar-{22,44}.png`（macOS 菜单栏模板图，见下节）
 - `assets/whale-icon-512.png`
-- `ui/public/whale-icon.png`（小母版渲染 128px）
-- `ui/public/whale-mark.png`（同一张 128 渲染，黑色鲸身染成 `#4a91ff`，供暗色主题用）
+- `ui/public/whale-icon.png`（小母版渲染 128px，**明暗两套主题共用这一枚**）
 
-`ui/public/` 下的两枚鲸鱼不是两次独立设计，而是同一张 128 渲染的两种着色：浅色用纯黑剪影（`whale-icon.svg` 的 `fill="#000"`），暗色用品牌蓝剪影，否则黑鲸压在 `#0d1a2d` 的侧栏上只剩一个比背景略深的轮廓。**眼窝只暗色那枚是镂空的**：设计稿暗色那张的眼睛是一块暗色洞，把那 79 个非黑像素（R ≥ 30，红眼 56 + 高光 23）抠成透明；留成品牌蓝会让眼窝与鲸身同色、整只鲸读成一块实心剪影。亮色那枚保留红眼，设计稿亮色那张是有的。
+管理面板的品牌标在两套主题下都是同一枚「红眼黑鲸」，不按主题换图。设计稿暗色那张侧栏画的是品牌蓝剪影且眼窝镂空，2026-10-10 曾据此派生过一张 `ui/public/whale-mark.png` 供 `html.dark .brand img` 换图；用户 12:44 明确否掉——「这里的 logo 应该是我们设计的红眼黑鲸的品牌 logo」。**品牌标认的是我们自己的图形，不是稿子上的配色**，改配色等于把品牌换掉。深色侧栏底（`#142239`）与纯黑鲸身对比度低，那是这个选择的代价，不是另做一张图的理由；要改就改母版后重新渲染。
 
-暗色那枚**必须换图而不是用 CSS `mask` 上色**——`mask` 裁的是元素画出来的所有东西（连 `outline` 一起裁），不换掉 `<img>` 自己的像素，黑鲸仍旧画在最上面；要在 CSS 里用 mask 染色，就得另起一层伪元素并把原图 `visibility: hidden`，那比多一张同源位图贵得多。
+顺带记一条踩过的坑：曾试过给 `<img>` 加 `mask` 上色。`mask` 裁的是"元素画出来的所有东西"（连 `outline` 一起裁），**不换掉 `<img>` 自己的像素**——黑鲸仍旧画在最上面，看上去还是黑鲸，只在抗锯齿的半透明边缘透出一圈背景色的蓝边。
 
 不要再用 `tauri icon` 单母版再生成——它会把小尺寸帧覆盖回细节版。
 
