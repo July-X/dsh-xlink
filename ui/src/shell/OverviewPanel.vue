@@ -36,6 +36,7 @@ import {
   View,
   TrendCharts,
   Tickets,
+  Coin,
 } from '@element-plus/icons-vue';
 // 版本号这里原本还挂着一枚 Lucide Tag 图标（EP 的 PriceTag 在 11px 下糊成一团
 // 黑点，认不出是「标签」）。2026-10-08 起概览这一处改为纯文字：设计稿的
@@ -392,6 +393,7 @@ function goVersions() {
         <div class="card kernel-card">
           <div class="card-head">
             <h2 class="kernel-title">
+              <span class="card-title-icon" aria-hidden="true"><el-icon><Monitor /></el-icon></span>
               当前内核
               <el-tooltip placement="bottom-start" :show-after="80">
                 <template #content>
@@ -704,6 +706,7 @@ function goVersions() {
         <div class="card usage-card">
       <div class="card-head">
         <h2>
+          <span class="card-title-icon" aria-hidden="true"><el-icon><Coin /></el-icon></span>
           套餐用量
           <el-tooltip placement="bottom-start" :show-after="80">
             <template #content>
