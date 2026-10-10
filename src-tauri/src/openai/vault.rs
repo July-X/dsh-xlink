@@ -248,8 +248,13 @@ pub(crate) fn keyring_get(service: &str, account: &str) -> Result<String, String
     let script = format!(
         "[Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]::new().Retrieve('{service}','{account}').Password"
     );
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+    // 壳是 GUI 子系统应用：不挂 quiet，每个 powershell 都会闪一个终端窗
+    // ——账户卡状态轮询/目录/推理每次都碰凭据库，终端窗会「不停的出现」
+    // （2026-10-09 用户实测）。
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    crate::shell::process::quiet(&mut cmd);
+    let output = cmd
         .output()
         .map_err(|e| format!("启动 powershell 失败：{e}"))?;
     if !output.status.success() {
@@ -263,8 +268,10 @@ pub(crate) fn keyring_put(service: &str, account: &str, secret: &str) -> Result<
     let script = format!(
         "$v=[Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]::new();$c=New-Object Windows.Security.Credentials.PasswordCredential('{service}','{account}','{secret}');$v.Add($c)"
     );
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    crate::shell::process::quiet(&mut cmd);
+    let output = cmd
         .output()
         .map_err(|e| format!("启动 powershell 失败：{e}"))?;
     if !output.status.success() {

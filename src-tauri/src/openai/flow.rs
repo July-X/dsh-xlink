@@ -402,9 +402,11 @@ impl FlowTransport for ProductionTransport {
             let args: Vec<String> = vec![url.to_string()];
             #[cfg(target_os = "windows")]
             let args: Vec<String> = vec!["/C".into(), "start".into(), url.to_string()];
-            std::process::Command::new(program)
-                .args(&args)
-                .spawn()
+            // quiet：cmd 本体不闪终端窗；start 拉起的浏览器是 GUI 照常弹出。
+            let mut cmd = std::process::Command::new(program);
+            cmd.args(&args);
+            crate::shell::process::quiet(&mut cmd);
+            cmd.spawn()
                 .map(|_| ())
                 .map_err(|error| format!("打开系统浏览器失败（{program}）：{error}"))
         }
