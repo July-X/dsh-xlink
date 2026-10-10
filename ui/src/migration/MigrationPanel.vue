@@ -518,7 +518,10 @@ function toggleSource(src) {
 .panel { padding: 12px 16px; }
 .migration header h2 { margin: 0; font-size: 21px; }
 .subtitle { color: var(--text-muted); margin: 2px 0 0; font-size: 12.5px; }
-.step-body { margin-top: 10px; }
+/* 与步骤条之间的缝由 `.panel` 的 12px row-gap 统一给（全前端的标准间隔）——
+   这里必须显式写 0：flex 容器的子项外边距不折叠，再给 margin-top 会直接叠在
+   gap 上（此前 10px + 12px = 22px，就是 2026-10-10 用户圈出来的那道大缝）。 */
+.step-body { margin-top: 0; }
 .step-body h3 { margin: 10px 0 6px; font-size: var(--fs-subtitle); }
 .step-actions { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
 .preview-table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 12px; }
@@ -613,6 +616,10 @@ function toggleSource(src) {
   grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
   align-items: start;
   gap: 12px;
+  /* `.step-body` 是没有 gap 的块容器，上面那张「待迁移来源」表卡与这两张卡
+     之间原本一格缝都没有（下边框贴上边框）；补标准间隔 12px（2026-10-10
+     用户：「下方没有空行的增加一个标准间隔」）。 */
+  margin-top: 12px;
 }
 .migration-lower > * {
   min-width: 0;
