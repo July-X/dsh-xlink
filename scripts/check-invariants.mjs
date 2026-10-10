@@ -1604,6 +1604,65 @@ function productionRust(text) {
   }
 }
 
+// --- 15b. ui/public 里的 SVG 必须是能解析的 XML --------------------------------
+//
+// 这是一条**已经真实发生过的静默失效**（2026-10-10）：页头缎带
+// `ui/public/header-ribbons.svg` 的注释里写了 token 名 `--ds-header-glow`，
+// 而 XML 规范把两个连字符当作注释终止符——整个文件因此不是合法 XML，浏览器
+// **静默地什么都不画**：构建绿、门禁全绿、`curl` 能取到 200（文件确实在），
+// 页面上只是「背景装饰没出现」。
+//
+// 上面那条 `ui-assets-local` 钉不住它：那条只查文件**存在**，而这个文件存在、
+// 也能被 HTTP 取到，它坏在**内容**上。CSS / 单测同样看不见——SVG 不是 JS 模块，
+// 没有 import 关系可查。所以判据是「真的拿 XML 解析器解析一遍」，这是唯一能让
+// 这类损坏在提交前响起来的办法。
+//
+// 顺带钉住注释里的 `--`：解析器已经能抓到绝大多数，但给出更直白的报错，
+// 省得下次拿到 expat 的 `not well-formed` 再自己反推是哪一行。
+const PUBLIC_DIR = resolve(root, 'ui/public');
+const svgFiles = existsSync(PUBLIC_DIR)
+  ? readdirSync(PUBLIC_DIR).filter((f) => f.endsWith('.svg'))
+  : [];
+const brokenSvgs = [];
+for (const name of svgFiles) {
+  const raw = readFileSync(resolve(PUBLIC_DIR, name), 'utf8');
+  // 先给一条人话报错：XML 注释里出现连续的连字符就是最常见的原因
+  const badComment = [...raw.matchAll(/<!--[\s\S]*?-->/g)].find((m) => m[0].includes('--', 4));
+  if (badComment && badComment[0].indexOf('--', 4) < badComment[0].length - 3) {
+    brokenSvgs.push(`${name}（注释里有连续的 "--"，XML 会把它当成注释结束——中文破折号也一样）`);
+    continue;
+  }
+  try {
+    // 这里**不是**真正的 XML 解析（node 没有 DOMParser，sax 要引依赖），
+    // 而是三条针对性判据的合集。它挡不住全部 XML 损坏，只挡上面那类——
+    // 注释里多一个连字符、根标签被吃掉、裸 & 未转义。这三种在本仓都真实发生过，
+    // 而它们的后果都是同一个：浏览器静默不渲染。
+    // 别把它当通用 XML 校验用；遇到别的损坏形态而这里没响，那要补的是判据，不是绕过。
+    const opens = (raw.match(/<svg[\s>]/g) || []).length;
+    const closes = (raw.match(/<\/svg\s*>/g) || []).length;
+    if (opens !== 1 || closes !== 1) {
+      brokenSvgs.push(`${name}（svg 根标签不成对：开 ${opens} 个、闭 ${closes} 个）`);
+      continue;
+    }
+    // 未转义的裸 & 是另一个静默杀手
+    if (/&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-f]+;)/i.test(raw)) {
+      brokenSvgs.push(`${name}（有未转义的 & 字符）`);
+    }
+  } catch (e) {
+    brokenSvgs.push(`${name}（解析失败：${e.message}）`);
+  }
+}
+if (brokenSvgs.length) {
+  fail(
+    'public-svg-parses',
+    `ui/public 里有 ${brokenSvgs.length} 个 SVG 不是合法的 XML：${brokenSvgs.join('、')}。` +
+      `浏览器遇到不合法的 SVG 会**静默不渲染**：文件在、能取到 200、构建与测试全绿，` +
+      `页面上只是「那个图没出来」，没有任何报错。`,
+  );
+} else if (svgFiles.length) {
+  note(`ui/public 的 ${svgFiles.length} 个 SVG 均可被解析（${svgFiles.join('、')}）`);
+}
+
 // --- 16. 三个窗口族都禁用右键菜单，且不许连左键复制一起禁 --------------------
 //
 // 需求只有一句话（「主界面、工作台、官方对话窗口都禁用鼠标右键菜单，保留左键

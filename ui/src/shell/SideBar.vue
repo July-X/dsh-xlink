@@ -132,14 +132,15 @@ watch(collapsed, (value) => {
            CSS 只覆盖绘制，属性留在旧值就是一句谎。判据钉住「两处相等」。 -->
       <img src="/whale-icon.png" alt="" width="42" height="42" />
       <div class="brand__text">
-        <!-- 2026-10-07 按设计稿改文案：主名「DeepSeek Harness」+ 副名「桌面管理台」。
-             原先写的是「Dsh-Xlink / DeepSeek 内核桌面管理端」——那是仓库名与
-             一句功能描述，副名 11px 下一行塞了 12 个字，在 224px 侧栏里挤到
-             换行。主名说产品，副名说这是什么形态的端，两行都短。
+        <!-- 2026-10-07 按设计稿改文案：主名「DeepSeek Harness」+ 副名。
+             副名 2026-10-10 补一个「平」字，与设计稿逐字对齐（设计稿写的是
+             「桌面管理平台」，此前写的是「桌面管理台」）。这不是同义词随手换：
+             「平台」指这套管理端本身，「台」在中文里更接近「台面 / 站台」，
+             与产品要说的事对不上。原名太长导致的换行问题仍由下面的省略规则兜住。
              收起开关原先浮在这一行右端（`.brand__toggle`），2026-10-07 挪到了
              底部那一行，这里不再有按钮，主名独占整行宽度。 -->
         <div class="brand__name">DeepSeek Harness</div>
-        <div class="brand__desc">桌面管理台</div>
+        <div class="brand__desc">桌面管理平台</div>
       </div>
     </div>
 

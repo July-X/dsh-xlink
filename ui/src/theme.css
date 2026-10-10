@@ -71,6 +71,11 @@
   --accent: #2e76f6;
   --accent-strong: #1e63d6;
   --accent-soft: rgba(46, 118, 246, 0.1);
+  /* 激活项 icon 衬底。**不照搬设计稿的采样值**：稿里那档（浅 #ecf4ff / 暗 #112854）
+     与同屏的行底只差 1.04:1，方块等于不存在——用户报「icon 没对齐」多半就是看
+     到了这个。这里按「方块必须读得出来」取值（1.19:1 / 1.35:1），色相仍取自稿子，
+     只把明度拉开。icon 本身的蓝画在它上面仍然清晰，两者不冲突。 */
+  --accent-soft-strong: #cfe2fc;
   /* accent 的两档半透明：选中态的填色与描边、分隔条拖拽时的底色。
      同样不许写死——它们记的是「accent 叠在**当前主题底色**上」的效果，
      浅色主题的 accent 是深蓝（#2e76f6）、深色是浅蓝（#4a91ff），
@@ -117,10 +122,13 @@
      是浅色环，否则弹窗仍是一团柔光而不是一块板。 */
   --shadow: 0 0 0 1px rgb(24 53 95 / 0.06), 0 8px 20px rgb(24 53 95 / 0.1), 0 12px 32px rgb(24 53 95 / 0.14);
   --shadow-card: 0 4px 18px rgb(24 53 95 / 0.06), 0 1px 3px rgb(24 53 95 / 0.03);
-  /* 头部柔光（设计 token 规范的 `--ds-header-glow`，2026-10-10）。两张稿的主内容区
-     右上角都有一团极淡的蓝色光晕，规范明确它**只出现在页头**，其余卡片一律纯色
-     （规范 §7.4「避免过度渐变」）。两套主题给的是同一形状、不同强度与色相。 */
-  --header-glow: radial-gradient(ellipse at 85% 0%, rgb(70 132 255 / 0.12), transparent 48%);
+  /* 页头缎带（2026-10-10）。形状在 `ui/public/header-ribbons.svg`，两套主题共用
+     同一个文件——色相与形状共用，只有强弱分主题，不必维护两份路径。
+     亮色下整条缎带要**很淡**：SVG 里的 alpha 是按深色稿调的，直接搬到白底上会
+     明显过重（白底上超过 ~14% 的蓝就读成「一块脏色」），而稿子里亮色的丝带几乎
+     只是纸面上的一道浅影。所以这里靠 opacity 统一压，而不是在 SVG 里分叉颜色。 */
+  --header-ribbon: url("/header-ribbons.svg");
+  --header-ribbon-opacity: 0.22;
   /* 构建标识色：dev 鲸眼红 / release Gitea 绿，只在窗顶 2px 细线上出现。 */
   --build-color: #609926;
   /* 业务活动脉冲扫光的峰值色（body::after 与日志窗的第二道扫光共用）。标题栏
@@ -224,6 +232,9 @@ html.dark {
   --accent: #4a91ff;
   --accent-strong: #72acff;
   --accent-soft: rgba(74, 145, 255, 0.14);
+  /* 激活项 icon 衬底（暗色档）。理由同浅色那一档：稿里的采样值与行底只差 1.04:1，
+     读不出来；这里取更亮一档（1.35:1），色相不变。 */
+  --accent-soft-strong: #1a3a72;
   /* 与 :root 同一组语义（选中填色 / 描边），只是按深色 accent 重新取值。 */
   --accent-fill: rgba(74, 145, 255, 0.16);
   --accent-line: rgba(74, 145, 255, 0.55);
@@ -250,9 +261,10 @@ html.dark {
      卡面转深蓝后它会把卡顶描出一线假白边，与规范「暗色不靠发光表现结构」相悖，
      随规范一并撤掉。 */
   --shadow-card: 0 4px 16px rgb(0 0 0 / 0.16);
-  /* 头部柔光的暗色档：同一形状，按规范换成更深的蓝、稍大的范围（52% 而非 48%）。
-     暗色底上这层光晕比浅色更明显——它是深蓝大面上唯一的色彩来源。 */
-  --header-glow: radial-gradient(ellipse at 85% 0%, rgb(40 105 220 / 0.18), transparent 52%);
+  /* 页头缎带的暗色档：同一个 SVG，不压 opacity。深蓝大面上这层缎带是主内容区
+     唯一的色彩来源，稿子里它相当明显——压下去就又变成「一团看不见的雾」。 */
+  --header-ribbon: url("/header-ribbons.svg");
+  --header-ribbon-opacity: 1;
   --whale-eye-bright: #ff5a5e;
 
   /* Element Plus 暗色覆写：把组件库融进壳底色。
@@ -869,6 +881,24 @@ code {
   font-weight: 600;
 }
 
+/* 激活项的 icon 装在一个**圆角方块衬底**里（设计稿 2026-10-10）。此前 icon 是裸的，
+   直接坐在选中行的蓝底上：同一种蓝（icon 用 `--accent`、行底用 `--accent-soft`）
+   压在一起，图形和底色互相吃掉，激活项读起来是「一块蓝」而不是「一个被选中的图标」。
+   衬底给的是比行底**更实**的一档蓝，方块本身略大于 icon，于是 icon 从底上浮起来。
+   **只给激活项加**：未选中时每个 icon 都背一块方块，侧栏会变成一列小色块，噪音
+   比信息大（设计稿也是只有选中项有）。收起态同样成立——那里只剩 icon 列，
+   方块反而成了「哪一项被选中」的唯一指示物。 */
+.nav-item.is-active > .el-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin: -6px 0;
+  border-radius: 9px;
+  background: var(--accent-soft-strong);
+  font-size: 17px;
+}
+
 /* 待更新数字角标：App 图标徽标那种红色数字圆点，不放文字——具体含义
    在悬停 title 里（SideBar）。超过 99 由调用方显示 99+。 */
 .nav-item__badge {
@@ -1002,22 +1032,53 @@ main {
      直接隐藏，不让面板出现横向滚动条。 */
   overflow-x: hidden;
   padding: 18px 20px 22px;
-  /* 底色 + 页头柔光（`--header-glow`）。规范要求这层光晕**只在页头**、其余卡片
-     一律纯色，所以它跟着内容滚走（scroll 附着）而不是钉在视口上。
-     `background-size` 限死它的高度是必须的：`--header-glow` 是一条
-     `ellipse at 85% 0%` 的 radial-gradient，不限尺寸就会铺满整个 main 的高度，
-     那一「点」光会变成一整条从上到下的蓝雾。 */
-  background-color: var(--canvas);
-  background-image: var(--header-glow);
-  background-repeat: no-repeat;
-  background-position: center top;
-  background-size: 100% 340px;
+  /* main 自己只留纯底色。缎带由 `::before` 承担，不走 background-image——
+     **因为 `background-image` 不接受 opacity**，而两套主题要的是同一张图、
+     不同强弱（亮色压到 45%，暗色全强度）。放在伪元素上，opacity 就写在元素
+     自己身上，这道「按主题分强弱」才有着落。
+     形状、色相与路径全部来自 `--header-ribbon`（同一个 SVG，两套主题共用），
+     强弱来自 `--header-ribbon-opacity`。 */
+  background: var(--canvas);
+  /* 缎带层用绝对定位，所以 main 必须是它的定位父级。 */
+  position: relative;
+}
+
+/* 页头缎带（设计稿右上角那两条 S 形丝带，2026-10-10）。这不是一团径向光晕——
+   先前按 token 规范的 `--ds-header-glow` 做成 `radial-gradient(ellipse at 85% 0%)`，
+   渲染出来是一个没有边缘的椭圆色块，与稿子里「有明确上边缘曲线的丝带」是两回事。
+   形状由 `ui/public/header-ribbons.svg` 承担：CSS 画不出「一条上下两条边界、
+   边界自身是 S 形」的封闭色带，用多层渐变去凑只会得到渐隐的边而不是收口的边。
+
+   `pointer-events: none` —— 它盖在内容区最上面一层，不该挡住任何点击。
+   高度 220px（SVG 的 viewBox 高度）：稿子里它就是右上角约 200px 高的一角装饰，
+   再往下是纯色。`right top`：靠右的一角，居中会跑到「概览」标题正上方去。 */
+main::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 0;
+  width: min(760px, 100%);
+  height: 220px;
+  background: var(--header-ribbon) right top / auto 220px no-repeat;
+  opacity: var(--header-ribbon-opacity);
+  pointer-events: none;
 }
 
 .panel {
+  /* 缎带层（`main::before`）是 `z-index: 0` 的定位元素，而面板本身没有定位，
+     不给 z-index 就会让伪元素画到面板**上面**——内容被一层蓝纱盖住。
+     这不是「缎带该不该半透明」的取舍，是层叠顺序：装饰必须在内容之下。 */
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  /* `row-gap` 单独放大，给页头与第一张卡片之间留出缎带的展示位
+     （设计稿约 130px 裸露页头）。卡片之间仍是 12px——`column-gap` 管横向，
+     `row-gap` 只管纵向这一种缝，panelSpacing 那条判据守的正是「不出现第二种缝」，
+     而这一处是**唯一**被有意放大的缝，注释写明它的用途。 */
+  row-gap: 76px;
+  column-gap: 12px;
 }
 
 /* 面板切换动效：轻淡入 + 上浮。out-in 模式下旧面板完全离场后新面板才挂载，
@@ -1339,7 +1400,11 @@ main {
   gap: 5px;
 }
 
-/* 页头：标题 + 说明在左，动作在右。 */
+/* 页头：标题 + 说明在左，动作在右。
+   **下方留白由 `.panel` 的 `row-gap` 提供，不在这里写 margin-bottom**：
+   `.panel` 的直接子元素一律不许自带下外边距（panelSpacing 那条判据守着），
+   否则这个 margin 会叠在 gap 上，同一列出现两种缝。留白本身是缎带的展示位
+   （设计稿里标题区与第一张卡片之间约 130px 裸露页头），缎带就画在那儿。 */
 .page-head {
   display: flex;
   align-items: flex-start;
