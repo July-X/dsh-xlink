@@ -12,7 +12,17 @@
 规则：
 
 - 标志一律进 `ui/public/`，矢量优先（SVG），构建时由 Vite 原样拷进 `ui/dist/`，运行时从 `tauri://` / `http://127.0.0.1` 本地协议取。
-- **保留来源与许可声明**。当前只有 `ui/public/npm-logo.svg`（Devicon 的 `icons/npm/npm-original.svg`，MIT, © 2015 konpa；npm 标志本身是 npm, Inc. 的商标，这里只用它指代 npm 这个包来源）。第三方标志若换成许可更严格的来源（CC-BY-SA 之类），在同一条注释里写清署名要求。
+- **保留来源与许可声明**。第三方标志若换成许可更严格的来源（CC-BY-SA 之类），在同一条注释里写清署名要求。当前在册的是：
+
+  | 文件 | 图形 | 来源与许可 |
+  | --- | --- | --- |
+  | `npm-logo.svg` | npm 标志 | Devicon 的 `icons/npm/npm-original.svg`，MIT, © 2015 konpa；标志本身是 npm, Inc. 的商标，这里只用它指代 npm 这个包来源 |
+  | `deepseek-logo.svg` | DeepSeek 鲸鱼（`#4D6BFE`） | LobeHub Icons 的 `deepseek-color.svg`，MIT, © 2024 LobeHub；标志本身是 DeepSeek 的商标 |
+  | `minimax-logo.svg` | MiniMax 声波（渐变 `#E2167E`→`#FE603C`） | LobeHub Icons 的 `minimax-color.svg`，同上；国内站与国际站共用 |
+  | `openai-logo.svg` / `openai-logo-dark.svg` | OpenAI 结 | LobeHub Icons 的 `openai.svg`，同上。**路径未改，只把 `currentColor` 换成写死颜色**（浅色 `#0B1526` / 暗色 `#FFFFFF`）：经 `<img src>` 引用的外部 SVG 里的 `currentColor` 没有任何宿主元素可继承，会解析成黑色。暗色那份由 `OverviewPanel.vue` 的 `html.dark` 规则经 CSS `content` 换图 |
+  | `zhipu-logo.svg` | 智谱原子（`#3859FF`） | LobeHub Icons 的 `zhipu-color.svg`，同上；标志本身是北京智谱华章的商标 |
+
+  厂商标志按 `provider.id` 在 `ui/src/subscription/subscription.js` 的 `PROVIDER_LOGOS` 里登记；圆形底的底色色相在 `OverviewPanel.vue` 的 `.plan-provider-logo--<id>` 修饰类里。**新增 provider 要同时补这两处**，只补一处就是「有图没底色」或「有底色没图」。
 - 图形数据要与现用的那张**同一个标志**。Simple Icons 的 `npm` 图标虽然也是 CC0 且只有 317 字节，但它是另一个图形（方块里一个抽象的方框，不是 npm 的标志），换它等于顺手改了品牌；比对方法是把它与线上那张头像并排渲染，不是看文件名像不像。
 - 门禁：`check:invariants` 第 15 项同时查「不许出现远端地址」与「以 `/` 开头的 `src` 在 `ui/public` 里必须存在」。写错路径与指向远端是同一种故障（页面渲染成空图），所以两条都要拦。
 - 面板上其余图标仍走 `@element-plus/icons-vue`（那是本地 npm 依赖，不出网）；需要品牌标志时 Element Plus 里没有，才落到上面这条规则。
@@ -51,7 +61,9 @@ assets/
 - `ui/public/whale-icon.png`（小母版渲染 128px）
 - `ui/public/whale-mark.png`（同一张 128 渲染，黑色鲸身染成 `#4a91ff`，供暗色主题用）
 
-`ui/public/` 下的两枚鲸鱼不是两次独立设计，而是同一张 128 渲染的两种着色：浅色用纯黑剪影（`whale-icon.svg` 的 `fill="#000"`），暗色用品牌蓝剪影，否则黑鲸压在 `#0d1a2d` 的侧栏上只剩一个比背景略深的轮廓。暗色那枚**必须换图而不是用 CSS `mask` 上色**——`mask` 裁的是元素画出来的所有东西（连 `outline` 一起裁），不换掉 `<img>` 自己的像素，黑鲸仍旧画在最上面；要在 CSS 里用 mask 染色，就得另起一层伪元素并把原图 `visibility: hidden`，那比多一张同源位图贵得多。红眼与高光在两枚里都保留原色。
+`ui/public/` 下的两枚鲸鱼不是两次独立设计，而是同一张 128 渲染的两种着色：浅色用纯黑剪影（`whale-icon.svg` 的 `fill="#000"`），暗色用品牌蓝剪影，否则黑鲸压在 `#0d1a2d` 的侧栏上只剩一个比背景略深的轮廓。**眼窝只暗色那枚是镂空的**：设计稿暗色那张的眼睛是一块暗色洞，把那 79 个非黑像素（R ≥ 30，红眼 56 + 高光 23）抠成透明；留成品牌蓝会让眼窝与鲸身同色、整只鲸读成一块实心剪影。亮色那枚保留红眼，设计稿亮色那张是有的。
+
+暗色那枚**必须换图而不是用 CSS `mask` 上色**——`mask` 裁的是元素画出来的所有东西（连 `outline` 一起裁），不换掉 `<img>` 自己的像素，黑鲸仍旧画在最上面；要在 CSS 里用 mask 染色，就得另起一层伪元素并把原图 `visibility: hidden`，那比多一张同源位图贵得多。
 
 不要再用 `tauri icon` 单母版再生成——它会把小尺寸帧覆盖回细节版。
 

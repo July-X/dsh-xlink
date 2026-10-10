@@ -567,7 +567,7 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
 // --- 8.5 icon-only 按钮必须有无障碍名称 -------------------------------------
 //
 // 事故来源：code-review-2026-09-27 的 L3。`circle` + `:icon` 的按钮**对屏幕
-// ��读器是空的**——可访问名只能来自文本、`aria-label` 或 `aria-labelledby`，
+// 读屏器是空的**——可访问名只能来自文本、`aria-label` 或 `aria-labelledby`，
 // 而图标本身不是文本。外层 `el-tooltip` 只在鼠标悬停时才出现，键盘与读屏
 // 用户永远看不到它，于是这些按钮等于不存在。八个按钮全是插件/技能的更新、
 // 打开仓库、卸载这类**唯一的**操作入口。
@@ -875,7 +875,7 @@ function productionRust(text) {
 
   // ③ 共享的 default_instance_id **不得被读**来决定路径 / 族。
   //
-  // 这份指针曾��� `default_family()` 解析 `data_dir` 的输入，而 `data_dir` 装的是
+  // 这份指针曾是 `default_family()` 解析 `data_dir` 的输入，而 `data_dir` 装的是
   // 内核安装树（active.txt + kernels/<version>/ 几百 MB）。让「本壳的数据目录」
   // 取决于「另一个壳上次写了什么」是一次典型的跨壳竞态：谁先写谁赢，写错的
   // 一方还不自愈（认领条件是「无人认领」）。2026-09-29 起族解析只走壳自己的
@@ -1582,6 +1582,17 @@ function productionRust(text) {
       for (const match of line.matchAll(/(?:^|[\s:(])src\s*=\s*["'](\/[^"'#?]+)["']/g)) {
         // `/src/**` 是 Vite 自己解析的源码路径、`/assets/**` 是构建产物，都不是
         // public 里的静态资源，拿它们去 ui/public 查只会永远报红。
+        if (/^\/(?:src|assets|@)\b/.test(match[1])) continue;
+        if (!existsSync(join(publicDir, match[1]))) missing.push(`${where} → ${match[1]}`);
+      }
+      // 面板资源也可能以**裸字符串**的形式引用：`subscription.js` 的
+      // `PROVIDER_LOGOS` 就是一张 `provider.id → '/xxx-logo.svg'` 的表，模板再用
+      // `:src` 绑上去（`src=` 是动态表达式，上面那条正则一个字都匹配不上）。这类
+      // 写法出现在 2026-10-10 之前时没有先例，所以判据没覆盖它，于是「把路径拼错
+      // 一个字母」和「出网取图」一样全绿、同样只在用户机器上渲染成空图。放宽到
+      // 「引号里 + 以 `/` 开头 + 以图片扩展名结尾」，靠扩展名把路由路径与命令名
+      // 挡在外面。
+      for (const match of line.matchAll(/['"](\/[^'"]+\.(?:svg|png|jpe?g|webp|gif|ico))['"]/g)) {
         if (/^\/(?:src|assets|@)\b/.test(match[1])) continue;
         if (!existsSync(join(publicDir, match[1]))) missing.push(`${where} → ${match[1]}`);
       }

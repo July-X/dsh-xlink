@@ -403,3 +403,60 @@ test('非 OpenAI 的 provider 不补占位（无周限额套餐的 7d 缺席不�
     ['5h']
   );
 });
+
+// --- 厂商标志 ---------------------------------------------------------------
+
+test('每个登记了标志的 provider 都有真文件，圆形底色也真的定义了', async () => {
+  const { PROVIDER_LOGOS, providerLogo } = await import('../src/subscription/subscription.js');
+  const { existsSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
+  const overview = readFileSync(new URL('../src/shell/OverviewPanel.vue', import.meta.url), 'utf8');
+
+  const ids = Object.keys(PROVIDER_LOGOS);
+  assert.ok(ids.length >= 4, `至少要有四个厂商（DeepSeek / MiniMax / OpenAI / 智谱），实际 ${ids.length}`);
+
+  for (const id of ids) {
+    const path = PROVIDER_LOGOS[id];
+    assert.ok(path.startsWith('/'), `${id} 的标志必须是根相对路径，实际 ${path}`);
+    assert.ok(
+      existsSync(publicDir + path.slice(1)),
+      `${id} 的标志 ${path} 不在 ui/public 里——取不到时页面上是一块白砖，且没有任何报错`
+    );
+    // 路径查表与色相是两个清单，只补一处就是「有图没底色」或「有底色没图」。
+    // 同一个 id 可能出现在好几条规则里（openai_codex 既有暗色换图、又有色相），
+    // 同一家的两个 id 还可能共用一条逗号分隔的规则（minimax_cn / minimax_en），
+    // 所以判据是「**至少有一条** `.plan-provider-logo--<id>` 规则体里定义了
+    // `--logo-rgb`」，而不是「id 后面紧跟 `{`」。
+    const hasHue = [...overview.matchAll(new RegExp(`\\.plan-provider-logo--${id}\\b`, 'g'))].some((m) => {
+      const open = overview.indexOf('{', m.index);
+      if (open < 0) return false;
+      const close = overview.indexOf('}', open);
+      return overview.slice(open, close).includes('--logo-rgb:');
+    });
+    assert.ok(hasHue, `${id} 登记了标志却没有对应的圆形底色相（OverviewPanel.vue 缺 .plan-provider-logo--${id} 的 --logo-rgb）`);
+    assert.equal(providerLogo(id), path);
+  }
+  assert.equal(providerLogo('__没登记的__'), null, '未登记的 provider 必须返回 null 而不是抛错');
+});
+
+test('OpenAI 的标志在暗色主题有第二份，否则 currentColor 会渲染成黑色', async () => {
+  const { PROVIDER_LOGOS } = await import('../src/subscription/subscription.js');
+  const { existsSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
+  const overview = readFileSync(new URL('../src/shell/OverviewPanel.vue', import.meta.url), 'utf8');
+
+  // `fill="currentColor"` 经 <img src> 引用时没有宿主元素可继承，会解析成黑色。
+  // 只看 `<svg` 之后的本体：来源注释里本来就要写明「原文件用的是 currentColor」，
+  // 拿整份文件去搜会把自己的说明当成命中（判据纪律：注释里的话不算命中）。
+  const source = readFileSync(publicDir + PROVIDER_LOGOS.openai_codex.slice(1), 'utf8');
+  const svg = source.slice(source.indexOf('<svg'));
+  assert.ok(svg.length > 0, 'OpenAI 标志文件里应该有 <svg> 根元素');
+  assert.ok(!svg.includes('currentColor'), 'OpenAI 标志的图形本体不该还留着 currentColor');
+  assert.ok(
+    /html\.dark [^{]*\.plan-provider-logo--openai_codex[^{]*\{[^}]*content:\s*url\("\/openai-logo-dark\.svg"\)/.test(overview),
+    'OverviewPanel.vue 必须有 html.dark 下的换图规则'
+  );
+  assert.ok(existsSync(publicDir + 'openai-logo-dark.svg'), '暗色版本必须真的存在');
+});

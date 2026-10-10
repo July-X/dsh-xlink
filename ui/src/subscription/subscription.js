@@ -319,6 +319,38 @@ export async function syncCodexUsageConsent(enabled) {
 export const CODEX_USAGE_CONSENT_TIP =
   '默认关闭。开启后只读 Codex 登录文件并校验同一账号，展示 Codex 额度；不修改或刷新凭据，也不改变 DSH 模型登录。';
 
+// --- 服务商标志 ---------------------------------------------------------------
+
+/**
+ * provider id → 概览卡分区标题前的厂商标志（`ui/public/` 下的本地矢量）。
+ *
+ * **为什么必须是本地文件、不是远端 URL**：`tauri.conf.json` 的 `csp` 是 `null`，
+ * 远端 `<img>` 出不出网完全取决于用户那台机器，取不到时页面上只剩一块白砖
+ * 且没有任何报错（版本面板过去就挂着 `avatars.githubusercontent.com` 的 npm
+ * 头像）。素材取自 LobeHub Icons（MIT），来源与许可声明写在每个 SVG 的头部
+ * 注释里，改之前先读 `docs/ui/icon-design.md` 的「面板里的第三方标志」。
+ *
+ * **为什么只有 OpenAI 需要第二个文件**：另三家的品牌色在浅色与暗色两种 chip
+ * 底上都够清晰，而 OpenAI 的原文件用 `fill="currentColor"`——经 `<img src>`
+ * 引用时没有任何宿主元素可继承，会解析成黑色，在暗色主题的卡片上直接看不见。
+ * 纯白版本是 `openai-logo-dark.svg`，由 `OverviewPanel.vue` 的 `html.dark`
+ * 规则经 CSS `content` 换图，与侧栏鲸鱼标同一套手法。
+ *
+ * MiniMax 国内站与国际站共用一个标志，靠卡片标题区分。
+ */
+export const PROVIDER_LOGOS = {
+  deepseek: '/deepseek-logo.svg',
+  minimax_cn: '/minimax-logo.svg',
+  minimax_en: '/minimax-logo.svg',
+  openai_codex: '/openai-logo.svg',
+  zai_coding_cn: '/zhipu-logo.svg',
+};
+
+/** 该 provider 的厂商标志路径；未登记的返回 null（模板据此不画圆形底）。 */
+export function providerLogo(id) {
+  return PROVIDER_LOGOS[id] || null;
+}
+
 export function setCodexUsageEnabled(enabled) {
   return withLoading('codexUsageConsent', async () => {
     const saved = await invoke('set_codex_usage_enabled', { enabled });

@@ -85,6 +85,7 @@ import {
   queriedAtLabel,
   queriedAgeCompact,
   CODEX_USAGE_CONSENT_TIP,
+  providerLogo,
 } from '../subscription/subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents/incidents.js';
 import { tildePath } from './labels.js';
@@ -783,7 +784,21 @@ function goVersions() {
         <div class="plan-grid">
           <div v-for="row in planRows" :key="row.provider.id" class="plan-provider">
             <div class="plan-provider-head">
-              <span class="plan-provider-name">{{ row.provider.label }}</span>
+              <!-- 厂商标志是纯装饰，标题本身已经写明是谁，所以 alt 给空：让读屏
+                   的人只听到一次「MiniMax-CN」，而不是先听一遍 logo 的
+                   aria-label 再听一遍标题。圆形底的底色与每个 provider 的品牌
+                   色相位在下方 .plan-provider-logo 家族里。 -->
+              <span class="plan-provider-id">
+                <span
+                  v-if="providerLogo(row.provider.id)"
+                  class="plan-provider-logo"
+                  :class="'plan-provider-logo--' + row.provider.id"
+                  aria-hidden="true"
+                >
+                  <img class="plan-provider-mark" :src="providerLogo(row.provider.id)" alt="" />
+                </span>
+                <span class="plan-provider-name">{{ row.provider.label }}</span>
+              </span>
               <button
                 type="button"
                 class="age-pill age-pill-btn"
@@ -1241,11 +1256,67 @@ function goVersions() {
 }
 .plan-provider-head {
   display: flex;
-  align-items: baseline;
+  /* 圆形 logo 底与文字标题不是基线关系：按 baseline 对齐会把圆形块的底边压到
+     文字基线上，整块看上去往下坠了一截。圆形是居中对齐的，标题与刷新药丸各自
+     贴它两侧。 */
+  align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 4px 8px;
   line-height: 1.4;
+}
+/* 标题与 logo 要占住卡头的左半格，所以外面套一层：没有 logo 的 provider（新增的
+   厂商还没登记标志）也得让刷新药丸继续贴右边缘。 */
+.plan-provider-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+/* 设计稿每格标题前是一个品牌色圆形底：底色取各厂商自己的品牌色相，浅色下压到
+   12% 混进卡片底、暗色下提到 22% 混进深色卡片底（暗色主题要更实一点才看得出
+   「有一块底」）。色值以 `R, G, B` 三元组写在各家的修饰类里，是为了让同一套
+   alpha 能被明暗两条规则共用——直接写 rgba 就得整份复制一遍。 */
+.plan-provider-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(var(--logo-rgb, 46, 118, 246), 0.12);
+}
+html.dark .plan-provider-logo {
+  background: rgba(var(--logo-rgb, 74, 145, 255), 0.22);
+}
+/* 图形自己带类名、不写成 `.plan-provider-logo img`：主语只有 `img` 的规则会被
+   「主体 token 全在元素身上就算命中」那条判据算到任何一个 <img> 头上，2026-10-10
+   就因此把侧栏鲸鱼的 `.brand img { width: 42px }` 顶成了 16px。 */
+.plan-provider-mark {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+/* OpenAI 的原文件是 currentColor，经 <img> 引用时解析成黑色，暗色主题的深色
+   chip 底上直接看不见；换成同路径的纯白版本。换图放在这里而不是模板的
+   `:src` 上，是因为 src 换图要让整棵组件树跟着主题重渲染，而 content 只是
+   改一条 CSS 声明——侧栏鲸鱼标（theme.css 的 .brand img）也是这么做的。 */
+html.dark .plan-provider-logo--openai_codex .plan-provider-mark {
+  content: url("/openai-logo-dark.svg");
+}
+.plan-provider-logo--deepseek {
+  --logo-rgb: 77, 107, 254;
+}
+.plan-provider-logo--minimax_cn,
+.plan-provider-logo--minimax_en {
+  --logo-rgb: 226, 22, 126;
+}
+.plan-provider-logo--openai_codex {
+  --logo-rgb: 109, 92, 255;
+}
+.plan-provider-logo--zai_coding_cn {
+  --logo-rgb: 56, 89, 255;
 }
 .plan-provider-name {
   font-weight: 600;
