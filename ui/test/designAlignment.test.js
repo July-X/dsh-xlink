@@ -460,11 +460,34 @@ test('高度分三档且每一档都有消费方：卡片 / 浮层 / 窗口', ()
     /0\s+0\s+0\s+1px\s+rgb\(255\s+255\s+255/,
     '暗色浮层的近段必须是浅色环，否则边缘读不出来',
   );
-  // 暗色卡片靠顶边 1px inset 高光立边缘：暗色下没有天然落影可看。
+  // 暗色卡片同样不能是纯平的一块。**判据钉的是「边缘读得出来」这个结果，不是
+  // 「顶边有没有那道 inset 高光」这个形状**——形状换过两次，每次理由不同：
+  //   · 一轮（2026-10-09）：暗色下没有天然落影可看，于是给 `--shadow-card` 加了
+  //     一道 `inset 0 1px 0 rgb(255…)` 顶边高光；
+  //   · 二轮（现在，2026-10-10 深蓝改造）：换用设计 token 规范的
+  //     `--ds-shadow-card`（`0 4px 16px rgba(0,0,0,.16)`），inset 高光一并撤掉。
+  //     规范明确「暗色主要通过明度、边框和背景层次表现卡片结构」「不建议大量使用
+  //     霓虹外发光」——而那道白顶边在深蓝卡面上正是霓虹。
+  // 按记忆里那条「钉结果不钉形状」的纪律，这里改成两条可算的判据：卡片有一层
+  // 真实的落影（不是 none），且**描边对自身卡面读得出来**（边缘由描边承担）。
+  const darkCardShadow = /--shadow-card:\s*([^;]+);/.exec(darkBlock[1]);
+  assert.ok(darkCardShadow, 'html.dark 缺 --shadow-card');
   assert.match(
-    darkBlock[1],
-    /--shadow-card:[^;]*inset\s+0\s+1px\s+0\s+rgb\(255/,
-    '暗色卡片必须有一道顶边高光',
+    darkCardShadow[1],
+    /0\s+\d+px\s+(?:1[6-9]|[2-9]\d)px/, // 有落影：纵向偏移 + 一层带模糊半径的扩散
+    '暗色卡片必须有一层柔和落影，不能是纯平的一块',
+  );
+  const hexIn = (name, where) => {
+    const m = new RegExp(`${name}:\\s*(#[0-9a-f]{3,8});`, 'i').exec(darkBlock[1]);
+    assert.ok(m, `${where} 缺 ${name}`);
+    return m[1].toLowerCase();
+  };
+  const darkCard = hexIn('--surface', 'html.dark');
+  const darkBorder = hexIn('--border', 'html.dark');
+  assert.ok(
+    contrastRatio(darkBorder, darkCard) >= 1.3,
+    `暗色卡片描边压在卡面上只有 ${contrastRatio(darkBorder, darkCard).toFixed(2)}:1，` +
+      `边缘读不出来（门槛 1.3）——撤掉顶边高光后，描边就是唯一的边缘来源`,
   );
 });
 

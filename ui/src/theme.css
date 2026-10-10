@@ -10,16 +10,23 @@
 
 :root {
   color-scheme: light;
-  /* 窗口外沿与内容底：主区比窗口壳浅一档，层级靠这一步就成立。
-     三档各自下压半档（2026-10-09 边缘感改造）：把内容面压深，白卡片才浮得起来。
-     **这三档改完仍然只在 1.05–1.21:1**，刻意留着——再拉开底色就发脏，而卡片边缘
-     真正靠的是下面的描边与 `--shadow-card`，不是靠色阶差。 */
-  --canvas: #e6eaf0;
-  --window: #f3f5f8;
-  --chrome: #eceff4;
+  /* 浅色整套换成设计 token 规范的 **Arctic Blue**（2026-10-10）。此前的取值是
+     中性灰（#e6eaf0 / #f3f5f8 一族），蓝味全靠 `--accent` 单独补，于是「亮色模式」
+     读起来是灰的；规范明确要求主画布 / 侧栏 / 卡片三者**必须同属一条冷蓝阶梯**
+     且只保留三档（`--ds-bg-app` / `--ds-bg-sidebar` / `--ds-surface`）。
+     下面每个值都对应规范里的一个 token：
+       · `--canvas`  #f5f8fd = `--ds-bg-app`（主内容背景）
+       · `--chrome`  #f8fafe = `--ds-bg-sidebar`（左侧导航）
+       · `--surface` #ffffff = `--ds-bg-surface`（一级卡片）
+     `--window` 是标题栏，规范没有单独给值，取与画布同一档——两者本就该读成
+     「窗口的外框」而不是两块不同的面。阶梯方向仍是「底越高越亮」，
+     且**刻意留着低色阶差**：卡片边缘靠描边 + `--shadow-card` 立，不靠色阶差。 */
+  --canvas: #f5f8fd;
+  --window: #f5f8fd;
+  --chrome: #f8fafe;
   --surface: #ffffff;
   --surface-raised: #ffffff;
-  --surface-subtle: #f0f2f5;
+  --surface-subtle: #f2f6fc;
   /* 内嵌加载遮罩（`v-loading` 盖在某个区域上，不是全屏）的底色：它要**盖住
      所在表面**，不是压暗它。EP 把 `.el-loading-mask` 与 dialog 的 `.el-overlay`
      绑在同一个 `--el-mask-color` 上，而那个变量本仓调成了「两套主题同向压暗」
@@ -50,34 +57,40 @@
      在暗色下压在 #2c2b30 卡面上只有 1.19:1，实际根本看不见，而「看不见的分割
      线」正是本轮边缘感改造要清掉的一类问题。暗色那一档见 `html.dark`。 */
   --divider-strong: #212121;
-  /* 卡片描边。1.36:1 → 1.65:1（对自身卡面，2026-10-09 边缘感改造）。一根 1px 线要
-     独自承担整个边缘识别，低于 ~1.5 在视网膜屏上基本读不出来。本轮同时给 `.card`
-     接上 `--shadow-card`（见下），线与投影各担一半——**光调色到 1.65 就停手**：
-     再深一档描边就开始显脏，而相邻表面的色阶差本身是有上限的，抬不高。 */
-  --border: #c3cad6;
-  --border-soft: #dde2ea;
-  --text: #20252b;
-  --text-secondary: #59636f;
-  --text-muted: #7b848f;
-  --accent: #2766d9;
-  --accent-strong: #1e58c1;
-  --accent-soft: rgba(39, 102, 217, 0.1);
+  /* 卡片描边。2026-10-10 取设计 token 的 `--ds-border` #E3EAF4（对白卡面 1.21:1）。
+     一根 1px 线要独自承担整个边缘识别，而本主题的边缘识别是**线与投影各担一半**
+     （`.card` 同时接 `--shadow-card`，见下）——规范给的就是这条 1px 线，
+     加上规范给的柔和扩散阴影，正好是这个组合，不必再往深了调。
+     **注意这一档与 `--divider-strong` 不是同一个角色**：后者是刻蚀槽的线（见上），
+     前者是卡片描边，两者刻意不在一个量级上。 */
+  --border: #e3eaf4;
+  --border-soft: #eaf0f7;
+  --text: #142342;
+  --text-secondary: #51627e;
+  --text-muted: #8291a8;
+  --accent: #2e76f6;
+  --accent-strong: #1e63d6;
+  --accent-soft: rgba(46, 118, 246, 0.1);
   /* accent 的两档半透明：选中态的填色与描边、分隔条拖拽时的底色。
      同样不许写死——它们记的是「accent 叠在**当前主题底色**上」的效果，
-     浅色主题的 accent 是深蓝（#2766d9）、深色是浅蓝（#5b9cf8），
-     一律套用为深色主题调的 rgba(79,140,255,…) 在浅色下就是一层洗不掉的蓝雾。 */
-  --accent-fill: rgba(39, 102, 217, 0.16);
-  --accent-line: rgba(39, 102, 217, 0.5);
-  --success: #1f8a52;
-  --warning: #97651a;
-  --danger: #c74340;
+     浅色主题的 accent 是深蓝（#2e76f6）、深色是浅蓝（#4a91ff），
+     一律套用为深色主题调的 rgba(79,140,255,…) 在浅色下就是一层洗不掉的蓝雾。
+     2026-10-10 随 accent 换到规范的 #2e76f6 一并重算。 */
+  --accent-fill: rgba(46, 118, 246, 0.16);
+  --accent-line: rgba(46, 118, 246, 0.5);
+  /* 状态色取设计 token 规范（2026-10-10）。规范的强调是「降低状态色的视觉侵入」：
+     绿只表示正常 / 成功，红只用于错误与危险操作——所以这几档比改造前更饱和、
+     但用它们的**位置**变少了（见 ui/AGENTS.md 的状态色纪律）。 */
+  --success: #16b77a;
+  --warning: #e69a1f;
+  --danger: #e94d64;
   /* 同色系「更强调」的一档，给按钮的 hover / 焦点态用（口径与 `--accent-strong`
      一致：浅色下加深、暗色下提亮）。它记的是**同一个语义色的下一档**而不是另一个
      颜色，所以必须两套主题各给一份。2026-10-08 用户报「亮色模式下『官网网页版』
      文字颜色不清晰」时补的——原先那两个按钮直接写死了为深色底调的淡彩
      `#6ee7b7` / `#f87171`（白底上只有 1.52:1 / 2.77:1，远低于正文 4.5:1）。 */
-  --success-strong: #166b41;
-  --danger-strong: #9b322f;
+  --success-strong: #12875a;
+  --danger-strong: #c33c50;
   /* 警告 / 危险的 fill 与 line 两档（给 badge 形态的按钮用）。
      与 `--accent-fill` / `--accent-line` 同一组语义、同样的 alpha，
      **两套主题各给一份**：填色与描边记的是「这个语义色叠在当前主题底色上」
@@ -88,11 +101,11 @@
      「链接」模式徽章只能写死 `rgba(52,211,153,.12)`——emerald-400 调出来的，
      浅色底上是一层洗不掉的绿雾）。刻意不补 `--success-line`：现在没有第二处
      用得上它，登记一个没有作用方的 token 与本仓的惯例相反。 */
-  --success-fill: rgba(31, 138, 82, 0.16);
-  --warning-fill: rgba(151, 101, 26, 0.16);
-  --warning-line: rgba(151, 101, 26, 0.5);
-  --danger-fill: rgba(199, 67, 64, 0.16);
-  --danger-line: rgba(199, 67, 64, 0.5);
+  --success-fill: rgba(22, 183, 122, 0.16);
+  --warning-fill: rgba(230, 154, 31, 0.16);
+  --warning-line: rgba(230, 154, 31, 0.5);
+  --danger-fill: rgba(233, 77, 100, 0.16);
+  --danger-line: rgba(233, 77, 100, 0.5);
   /* 浮层高度（弹窗 / 消息框 / 三处自绘浮板）与卡片高度。**此前 `--shadow` 与
      `--shadow-pop` 两个 token 全仓 0 个消费方**——整个面板除了窗口轮廓与调试浮球
      没有一处 box-shadow，61 个 `.card` 全是纯平，「看不出边缘感」的根因就在这里。
@@ -102,8 +115,12 @@
      两段式与 `#app::after` 同一套口径：**近段定边缘、远段定悬浮高度**。近段那一圈
      浅色是压深、暗色是提亮——暗色下纯黑落影压在深色底上等于没有，暗色那一份必须
      是浅色环，否则弹窗仍是一团柔光而不是一块板。 */
-  --shadow: 0 0 0 1px rgb(20 28 40 / 0.06), 0 8px 20px rgb(20 28 40 / 0.1), 0 24px 72px rgb(20 28 40 / 0.18);
-  --shadow-card: 0 1px 2px rgb(20 28 40 / 0.06), 0 3px 8px rgb(20 28 40 / 0.05);
+  --shadow: 0 0 0 1px rgb(24 53 95 / 0.06), 0 8px 20px rgb(24 53 95 / 0.1), 0 12px 32px rgb(24 53 95 / 0.14);
+  --shadow-card: 0 4px 18px rgb(24 53 95 / 0.06), 0 1px 3px rgb(24 53 95 / 0.03);
+  /* 头部柔光（设计 token 规范的 `--ds-header-glow`，2026-10-10）。两张稿的主内容区
+     右上角都有一团极淡的蓝色光晕，规范明确它**只出现在页头**，其余卡片一律纯色
+     （规范 §7.4「避免过度渐变」）。两套主题给的是同一形状、不同强度与色相。 */
+  --header-glow: radial-gradient(ellipse at 85% 0%, rgb(70 132 255 / 0.12), transparent 48%);
   /* 构建标识色：dev 鲸眼红 / release Gitea 绿，只在窗顶 2px 细线上出现。 */
   --build-color: #609926;
   /* 业务活动脉冲扫光的峰值色（body::after 与日志窗的第二道扫光共用）。标题栏
@@ -123,12 +140,20 @@
   --fs-tip-icon: 16px;
   --fs-action: 13.5px;
   --action-h: 30px;
-  --radius-card: 8px;
+  /* 圆角（2026-10-10 对齐设计 token 规范 §3）。规范把圆角分成四档并明确
+     「一级信息卡片 12px、次级卡片 8–10px，避免卡片和按钮各自使用不同的圆角体系」——
+     此前这两档都是 8px，与卡片同值，于是「卡片」与「卡片里的按钮」读成同一层。
+     `--radius-card` 是卡片（`--ds-radius-lg`），`--radius-control` 是控件
+     （`--ds-radius-sm`）。窗口圆角见下方 `--window-radius`。 */
+  --radius-card: 12px;
   --radius-control: 6px;
   /* 窗口外轮廓圆角（2026-10-08）。此前圆角由 macOS 系统画，主壳与副窗不一致；
      现在窗口透明，圆角由 `#app` 画，所以这个值就是唯一的圆角口径。取 12px 是
-     与 `--radius-card`（8px）拉开一档——同值会让「窗口」与「窗口里的卡片」读成
-     同一层。投影不在这里：它两套主题共用一条（见 `#app::after`）。 */
+     与 `--radius-card` 拉开一档——同值会让「窗口」与「窗口里的卡片」读成
+     同一层。（2026-10-10 卡片圆角调到 12px 后两者同值，这是刻意的：规范把窗口
+     与一级卡片都归在 `--ds-radius-lg` 这一档，规范 §7.2 要的是「卡片与按钮
+     别各用一套」，窗口与卡片同值不在这条批评范围内——它们不在同一个视觉层。）
+     投影不在这里：它两套主题共用一条（见 `#app::after`）。 */
   --window-radius: 12px;
   --titlebar-height: 38px;
   --sidebar-width: 224px;
@@ -154,20 +179,28 @@
 
 html.dark {
   color-scheme: dark;
-  /* 暗色的阶梯方向与浅色相反（底越高越亮），但**相邻档的间距是同一套**：
-     2026-10-09 边缘感改造把三档各推开半档，卡片面 #2c2b30 → #2e2d33、底面
-     #29272c → #232228，卡片对内容区底从 1.05:1 升到 1.16:1。仍是刻意留着
-     低色阶差——暗色下靠 `#4b4a53` 描边（1.56:1）与 `--shadow-card` 的顶边高光
-     立边缘，不是靠底色差。 */
-  --canvas: #232228;
-  --window: #1b1a1f;
-  --chrome: #28272d;
-  --surface: #2e2d33;
-  --surface-raised: #38373f;
-  --surface-subtle: #26252b;
-  /* 与 `:root` 那一档同义（盖住所在表面），不是同值：暗色卡面是 #2e2d33。
-     同样留一成透，刷新中的旧内容仍隐约可见，而不是整块闪成纯色。 */
-  --surface-loading: rgba(46, 45, 51, 0.9);
+  /* 暗色整套换成设计 token 规范的 **Midnight Navy**（2026-10-10）。此前是中性灰紫
+     一族（#232228 / #2e2d33），蓝味全靠 `--accent` 单独撑——于是「深色模式」读起来
+     是灰的而不是蓝的，与设计稿成了两套配色而不是同一个设计的明暗两面。
+     下面每个值都对应规范里的一个 token：
+       · `--canvas`  #0b1526 = `--ds-bg-app`（主内容背景，全屏最深的一档）
+       · `--chrome`  #0d1a2d = `--ds-bg-sidebar`（左侧导航）
+       · `--surface` #142239 = `--ds-bg-surface`（一级卡片）
+     `--window` 是标题栏，规范没单独给值，取与画布同一档（同浅色主题的理由）。
+     阶梯方向与浅色相反（底越高越亮）。规范明确「暗色主要通过明度、边框和背景层次
+     表现卡片结构」——所以这里**不靠拉开色阶**：卡片对底只有 1.2:1，边缘靠
+     `--border`（#2a3b55，1.41:1）与 `--shadow-card` 的顶边高光立。 */
+  --canvas: #0b1526;
+  --window: #0b1526;
+  --chrome: #0d1a2d;
+  --surface: #142239;
+  --surface-raised: #1b2b43;
+  --surface-subtle: #1b2b43;
+  /* 与 `:root` 那一档同义（盖住所在表面），不是同值：暗色卡面是 #142239。
+     同样留一成透，刷新中的旧内容仍隐约可见，而不是整块闪成纯色。
+     **必须跟着卡面色一起改**：这一档记的是「当前卡面」而不是「一层灰」，
+     卡面转深蓝而遮罩还盖着旧的 #2e2d33，内嵌加载区就会是一块偏紫的脏斑。 */
+  --surface-loading: rgba(20, 34, 57, 0.9);
   /* 暗色下同一意图反过来：叠白即提亮。取值与浅色档一一对应（4% / 7% / 35%），
      两套主题的 hover 底看起来一样「轻」。 */
   --overlay-faint: rgba(255, 255, 255, 0.04);
@@ -175,69 +208,88 @@ html.dark {
   --overlay-strong: rgba(255, 255, 255, 0.35);
   --surface-sunken: rgba(0, 0, 0, 0.28);
   /* 结构分割线的暗色档（2026-10-09 用户拍板改判，理由见 `:root` 那一档）。
-     **取值 2.01:1，比本主题的描边 #4b4a53（1.56:1）更重**——这条线记的是
-     「把一片内容切成上下两组」，必须压过卡片描边，否则角色就糊了。暗色下
-     「更重」是更亮而不是更深。 */
-  --divider-strong: #5b5a64;
-  --border: #4b4a53;
-  --border-soft: #3a3941;
-  --text: #f1f4f8;
-  --text-secondary: #b2bac5;
-  --text-muted: #7f8995;
-  --accent: #5b9cf8;
-  --accent-strong: #8cbaff;
-  --accent-soft: rgba(91, 156, 248, 0.14);
+     **取值比本主题的描边更亮**——这条线记的是「把一片内容切成上下两组」，
+     必须压过卡片描边，否则角色就糊了。暗色下「更重」是更亮而不是更深。
+     2026-10-10 随卡面转深蓝一起调蓝。**设计 token 规范给的 `--ds-divider`
+     #25354D 在这张卡面上只有 1.29:1**，压在深蓝卡面里等于没有（判据门槛 1.5，
+     见 designAlignment.test.js），所以沿同一蓝调往上抬到 #31435f（1.59:1）——
+     色相不变，只把重量提上来。 */
+  --divider-strong: #31435f;
+  /* 卡片描边取规范的 `--ds-border` #2A3B55（对自身卡面 1.41:1）。 */
+  --border: #2a3b55;
+  --border-soft: #1e2b41;
+  --text: #edf4ff;
+  --text-secondary: #a3b4cf;
+  --text-muted: #8296b5;
+  --accent: #4a91ff;
+  --accent-strong: #72acff;
+  --accent-soft: rgba(74, 145, 255, 0.14);
   /* 与 :root 同一组语义（选中填色 / 描边），只是按深色 accent 重新取值。 */
-  --accent-fill: rgba(91, 156, 248, 0.16);
-  --accent-line: rgba(91, 156, 248, 0.55);
-  --success: #46c07d;
-  --warning: #e0a83c;
-  --danger: #f0665e;
-  --success-strong: #7ad9a5;
-  --danger-strong: #ff9b95;
-  --success-fill: rgba(70, 192, 125, 0.16);
-  --warning-fill: rgba(224, 168, 60, 0.16);
-  --warning-line: rgba(224, 168, 60, 0.5);
-  --danger-fill: rgba(240, 102, 94, 0.16);
-  --danger-line: rgba(240, 102, 94, 0.5);
+  --accent-fill: rgba(74, 145, 255, 0.16);
+  --accent-line: rgba(74, 145, 255, 0.55);
+  /* 状态色取设计 token 规范的暗色档（2026-10-10）。规范给的 `--*-bg`
+     （success-bg #103E35 那一族）是**状态块的底色**，本仓对应的是下面的
+     `*-fill`（badge 形态按钮的填色，叠在当前卡面上），两者不是同一层语义，
+     所以这里按同样的 alpha 口径落在规范的语义色上，而不是照抄 bg 值。 */
+  --success: #31d69a;
+  --warning: #f7b23c;
+  --danger: #ff6278;
+  --success-strong: #6fe3b4;
+  --danger-strong: #ff93a3;
+  --success-fill: rgba(49, 214, 154, 0.16);
+  --warning-fill: rgba(247, 178, 60, 0.16);
+  --warning-line: rgba(247, 178, 60, 0.5);
+  --danger-fill: rgba(255, 98, 120, 0.16);
+  --danger-line: rgba(255, 98, 120, 0.5);
   /* 暗色档：近段是**浅色环**而不是更深的黑——纯黑落影压在深色底上等于没有
-     （理由与两段式口径见 `:root`）。落影只负责「浮起来」的这段距离感。 */
-  --shadow: 0 0 0 1px rgb(255 255 255 / 0.07), 0 8px 20px rgb(0 0 0 / 0.4), 0 24px 72px rgb(0 0 0 / 0.45);
-  /* 暗色的卡片高度靠**顶边 1px inset 高光**立边缘。落影在深色底上几乎读不出，
-     这一圈被照亮的顶边才是这个主题里「这块板有厚度」的来源，浅色那份不需要它
-     （浅色有天然落影可看）。 */
-  --shadow-card: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 1px 2px rgb(0 0 0 / 0.28), 0 4px 12px rgb(0 0 0 / 0.2);
+     （理由与两段式口径见 `:root`）。落影只负责「浮起来」的这段距离感。
+     远段换成规范给的 `--ds-shadow-popover` 口径（rgba(0,0,0,.35)）。 */
+  --shadow: 0 0 0 1px rgb(255 255 255 / 0.07), 0 8px 20px rgb(0 0 0 / 0.35), 0 12px 32px rgb(0 0 0 / 0.35);
+  /* 暗色的卡片高度靠描边与这一层柔和落影立（2026-10-10 换成规范的
+     `--ds-shadow-card`）。原先那一圈 `inset` 顶边高光是配合旧的灰紫卡面调的，
+     卡面转深蓝后它会把卡顶描出一线假白边，与规范「暗色不靠发光表现结构」相悖，
+     随规范一并撤掉。 */
+  --shadow-card: 0 4px 16px rgb(0 0 0 / 0.16);
+  /* 头部柔光的暗色档：同一形状，按规范换成更深的蓝、稍大的范围（52% 而非 48%）。
+     暗色底上这层光晕比浅色更明显——它是深蓝大面上唯一的色彩来源。 */
+  --header-glow: radial-gradient(ellipse at 85% 0%, rgb(40 105 220 / 0.18), transparent 52%);
   --whale-eye-bright: #ff5a5e;
 
-  /* Element Plus 暗色覆写：把组件库融进壳底色。 */
+  /* Element Plus 暗色覆写：把组件库融进壳底色。
+     **这一组必须跟着上面的壳 token 一起改**（2026-10-10 深蓝改造）：EP 把
+     弹窗、输入框、下拉这些「浮在壳上面」的表面画在自己的 `--el-bg-*` 上，
+     它们与壳的 `--surface` 是同一层语义却各记各的值。此前壳转深蓝而这组仍留在
+     灰紫（#2c2b30 一族），于是弹窗一开就是一块偏紫的板浮在蓝底上——比不改更
+     难看。这里按新的阶梯重算：`--el-bg-color` 对齐卡面 `--surface`，
+     `page` 对齐底 `--chrome`，`overlay` 取卡面提亮一档（浮层要比卡片更靠前）。 */
   --el-color-white: #ffffff;
   --el-color-black: #000000;
-  --el-color-primary: #5b9cf8;
-  --el-color-primary-light-3: #85b4fa;
+  --el-color-primary: #4a91ff;
+  --el-color-primary-light-3: #72acff;
   --el-color-primary-light-5: #4a6d99;
   --el-color-primary-light-7: #3c5674;
-  --el-color-primary-light-8: #35485f;
-  --el-color-primary-light-9: #2f2b3a;
-  --el-color-primary-dark-2: #4792f0;
-  --el-color-success: #46c07d;
-  --el-color-warning: #e0a83c;
-  --el-color-danger: #f0665e;
-  --el-color-error: #f0665e;
-  --el-color-info: #b2bac5;
-  --el-bg-color: #2c2b30;
-  --el-bg-color-page: #1f1e22;
-  --el-bg-color-overlay: #35343a;
-  --el-text-color-primary: #f1f4f8;
-  --el-text-color-regular: #d5dae1;
-  --el-text-color-secondary: #b2bac5;
-  --el-text-color-placeholder: #7f8995;
-  --el-border-color: #4b4a52;
-  --el-border-color-light: #3e3d44;
-  --el-border-color-lighter: #38373e;
-  --el-border-color-extra-light: #35343a;
-  --el-fill-color: #35343a;
-  --el-fill-color-light: #302f35;
-  --el-fill-color-lighter: #2c2b30;
+  --el-color-primary-light-8: #33455e;
+  --el-color-primary-light-9: #1e2b45;
+  --el-color-primary-dark-2: #3a7fe6;
+  --el-color-success: #31d69a;
+  --el-color-warning: #f7b23c;
+  --el-color-danger: #ff6278;
+  --el-color-error: #ff6278;
+  --el-color-info: #a3b4cf;
+  --el-bg-color: #142239;
+  --el-bg-color-page: #0b1526;
+  --el-bg-color-overlay: #1b2b43;
+  --el-text-color-primary: #edf4ff;
+  --el-text-color-regular: #cdd9ec;
+  --el-text-color-secondary: #a3b4cf;
+  --el-text-color-placeholder: #8296b5;
+  --el-border-color: #2a3b55;
+  --el-border-color-light: #25354d;
+  --el-border-color-lighter: #21304a;
+  --el-border-color-extra-light: #1e2b41;
+  --el-fill-color: #1b2b43;
+  --el-fill-color-light: #17253a;
+  --el-fill-color-lighter: #142239;
   --el-fill-color-blank: transparent;
   /* 遮罩底色的暗色一份，与 `:root` 那一档同向（都是压暗，不是一亮一暗）。 */
   --el-mask-color: rgba(10, 10, 12, 0.6);
@@ -950,7 +1002,16 @@ main {
      直接隐藏，不让面板出现横向滚动条。 */
   overflow-x: hidden;
   padding: 18px 20px 22px;
-  background: var(--canvas);
+  /* 底色 + 页头柔光（`--header-glow`）。规范要求这层光晕**只在页头**、其余卡片
+     一律纯色，所以它跟着内容滚走（scroll 附着）而不是钉在视口上。
+     `background-size` 限死它的高度是必须的：`--header-glow` 是一条
+     `ellipse at 85% 0%` 的 radial-gradient，不限尺寸就会铺满整个 main 的高度，
+     那一「点」光会变成一整条从上到下的蓝雾。 */
+  background-color: var(--canvas);
+  background-image: var(--header-glow);
+  background-repeat: no-repeat;
+  background-position: center top;
+  background-size: 100% 340px;
 }
 
 .panel {
