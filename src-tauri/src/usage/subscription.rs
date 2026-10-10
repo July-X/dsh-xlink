@@ -24,6 +24,9 @@
 //!   profile 后旧条目一律作废，绝不把上一个账号的数据当当前账号展示。
 //! - **每个 provider 自带状态**：多 provider 查询允许部分成功，单个网络
 //!   失败不吞掉其它 provider 的新数据。
+//! - **OpenAI 分区有可见性门禁**：内嵌插件停用且未开「本机 Codex 登录
+//!   查询」时按未配置呈现（并丢弃旧缓存）——壳的 OpenAI 登录只服务于
+//!   内嵌插件，分区留着只会展示一条注定失败的查询。
 //! - 解析层逐字段防御式：字段缺失或类型不合就跳过该字段，不做整体失败
 //!   （两家端点都是第一方但未文档化 / 轻文档化接口，字段可能随时漂移）。
 
@@ -370,6 +373,13 @@ pub fn subscription_view(provider: Option<&str>, force: bool) -> Result<Subscrip
     };
     let mut providers = Vec::with_capacity(ids.len());
     for id in ids {
+        // OpenAI 分区的可见性门禁与离线处置收在 subscription_openai：门禁
+        // 关闭时按未配置呈现并丢弃旧缓存，前端据此隐藏分区、横幅不再提及。
+        if let Some((dirty, view)) = subscription_openai::gated_view(id, &scope, &mut doc) {
+            doc_dirty |= dirty;
+            providers.push(view);
+            continue;
+        }
         // 同一份解析快照既绑定缓存，也发请求，避免第二次读取造成换账号竞态。
         let openai =
             (id == PROVIDER_OPENAI).then(|| subscription_openai::resolve_usage(&codex_consent));
@@ -523,7 +533,7 @@ fn entry_belongs_to_credential(entry: &ProviderCacheEntry, key: &str) -> bool {
     entry.credential_fingerprint == credential_fingerprint(key)
 }
 
-fn build_provider_view(
+pub(crate) fn build_provider_view(
     id: &str,
     configured: bool,
     entry: Option<&ProviderCacheEntry>,
@@ -1775,6 +1785,80 @@ mod cache_tests {
         let doc: SubscriptionCacheDoc =
             state::load_checked(&scope.cache_path(), cache_ctx()).unwrap();
         assert!(!doc.providers.contains_key(PROVIDER_DEEPSEEK));
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// OpenAI 分区可见性门禁（2026-10-10）：内嵌插件停用且未开 Codex 许可时，
+    /// 分区按未配置呈现，缓存里的旧条目（含错误文案）一并丢弃——分区藏了、
+    /// 错误横幅不能再报「查询异常」。意图落盘（`requested_enabled`）后门禁
+    /// 打开，查询链恢复常规解析：壳未登录仍是未配置，但不再丢缓存。
+    #[test]
+    fn openai_partition_is_gated_by_builtin_plugin_enabled() {
+        let home = temp_home("openai-gate");
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let scope = InstanceScope::resolve();
+        let dsh_home = scope.dsh_home();
+        std::fs::create_dir_all(&dsh_home).unwrap();
+
+        let seeded = || SubscriptionCacheDoc {
+            schema: CACHE_SCHEMA,
+            instance: Some(CacheInstanceBinding {
+                family: scope.family.clone(),
+                id: scope.id.clone(),
+                profile: scope.profile.clone(),
+            }),
+            providers: BTreeMap::from([(
+                PROVIDER_OPENAI.to_string(),
+                ProviderCacheEntry {
+                    kind: "plan".to_string(),
+                    error: Some("旧的失败文案".into()),
+                    queried_at_ms: 1,
+                    ..ProviderCacheEntry::default()
+                },
+            )]),
+        };
+
+        // 门禁关闭（从未启用过插件，状态文件不存在）：离线即返回，分区无错。
+        state::save(&scope.cache_path(), &seeded(), cache_ctx()).unwrap();
+        let view = subscription_view(Some(PROVIDER_OPENAI), false).expect("门禁关闭查询应离线成功");
+        let openai = view
+            .providers
+            .iter()
+            .find(|p| p.id == PROVIDER_OPENAI)
+            .expect("视图仍列出该 provider，由 configured 控制前端显隐");
+        assert!(!openai.configured);
+        assert!(openai.error.is_none() && openai.fetch_error.is_none());
+        let doc: SubscriptionCacheDoc =
+            state::load_checked(&scope.cache_path(), cache_ctx()).unwrap();
+        assert!(
+            !doc.providers.contains_key(PROVIDER_OPENAI),
+            "门禁关闭必须丢弃旧条目，否则横幅还在报隐藏分区的错"
+        );
+
+        // 启用意图落盘（按当前 mode / profile 分键）：门禁打开，旧缓存保留，
+        // 由常规凭据解析决定配置状态（壳未登录 → 未配置，但不删数据）。
+        let mut entries = std::collections::HashMap::new();
+        entries.insert(
+            crate::plugins::builtin::state::state_key(
+                crate::shell::settings::current_mode().as_str(),
+                &scope.profile,
+            ),
+            crate::plugins::builtin::state::StateEntry {
+                requested_enabled: true,
+                updated_at_ms: 1,
+                plugin_version: None,
+                fingerprint: None,
+            },
+        );
+        crate::plugins::builtin::state::save(&dsh_home, &entries).unwrap();
+        state::save(&scope.cache_path(), &seeded(), cache_ctx()).unwrap();
+        subscription_view(Some(PROVIDER_OPENAI), false).expect("门禁打开查询应离线成功");
+        let doc: SubscriptionCacheDoc =
+            state::load_checked(&scope.cache_path(), cache_ctx()).unwrap();
+        assert!(
+            doc.providers.contains_key(PROVIDER_OPENAI),
+            "门禁打开时缓存交回常规解析路径，不得再被丢弃"
+        );
         std::fs::remove_dir_all(&home).ok();
     }
 

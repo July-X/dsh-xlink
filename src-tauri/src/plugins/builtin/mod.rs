@@ -144,6 +144,22 @@ pub(crate) fn ensure_unwired(dsh_home: &Path, profile: &str) -> Result<bool, Str
     Ok(true)
 }
 
+/// 当前壳 mode 与给定 profile 的启用意图（`usage::subscription` 的 OpenAI
+/// 分区门禁用）。状态文件读不出来（损坏）时**按开处理**：读不出意图不等于
+/// 用户关了它，隐藏一个原本看得见的分区，比多显示一块带错误说明的分区更糟；
+/// 损坏本身由插件面板的 `state_error` 提示，不在消费侧重复报。
+pub(crate) fn requested_enabled(dsh_home: &Path, profile: &str) -> bool {
+    match state::load(dsh_home) {
+        Ok(entries) => entries
+            .get(&state::state_key(
+                crate::shell::settings::current_mode().as_str(),
+                profile,
+            ))
+            .is_some_and(|entry| entry.requested_enabled),
+        Err(_) => true,
+    }
+}
+
 /// 只读状态探针（命令层用；不做任何写入）。`mode` 用于读分键的启用意图。
 pub(crate) fn probe_status(
     dsh_home: &Path,
@@ -301,6 +317,35 @@ mod tests {
         let stopped = probe_status(&home, "web", None, "release");
         assert!(!stopped.wired);
         assert_eq!(stopped.load_state, "disabled");
+    }
+
+    /// 门禁判据：没写过意图 → 关；写过（按当前壳 mode / profile 分键）→ 开；
+    /// 状态文件损坏 → fail-open（按开，见 `requested_enabled` 文档）。
+    #[test]
+    fn requested_enabled_is_keyed_and_fails_open() {
+        let scratch = Scratch::new("gate");
+        let home = scratch.home();
+        let mode = crate::shell::settings::current_mode().as_str().to_string();
+
+        assert!(!requested_enabled(&home, "web"));
+        let mut entries = std::collections::HashMap::new();
+        entries.insert(
+            state::state_key(&mode, "web"),
+            state::StateEntry {
+                requested_enabled: true,
+                updated_at_ms: 1,
+                plugin_version: None,
+                fingerprint: None,
+            },
+        );
+        state::save(&home, &entries).unwrap();
+        assert!(requested_enabled(&home, "web"));
+
+        fs::write(state::state_path(&home), "{ not json").unwrap();
+        assert!(
+            requested_enabled(&home, "web"),
+            "损坏必须按开处理，而不是把分区藏掉"
+        );
     }
 
     #[test]

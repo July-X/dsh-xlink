@@ -31,13 +31,18 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use super::credentials;
-use super::subscription::{self, CacheTier};
+use super::subscription::{
+    self, CacheTier, InstanceScope, ProviderView, SubscriptionCacheDoc, PROVIDER_OPENAI,
+};
 
 /// 第一方额度接口。端点与响应形状来自 ChatGPT 第一方 Web 客户端，
 /// 未经公开文档承诺，故按「逐字段防御式解析」对待（与另两个 provider 同）。
 const USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
 
-const UNSUPPORTED_SIWC: &str = "当前 OpenAI 登录用于模型调用，不支持 ChatGPT / Codex 额度查询接口；重新登录或补充账号 ID 无法解决。可开启「使用本机 Codex 登录查询额度」，或在 ChatGPT 设置 → 用量查看官方数据。";
+/// 先说根因再说结论（2026-10-10 用户反馈）：额度接口认的是**本机 Codex 的
+/// 登录记录**，本壳 OpenAI 登录的 SIWC 令牌权限不兼容，所以「重新登录 /
+/// 补账号 ID」这类常规修法全部无效——把这一点放在最前，避免用户先去折腾登录。
+const UNSUPPORTED_SIWC: &str = "查询 GPT 套餐余额需要本机 Codex 已有登录记录；当前 OpenAI 登录只用于模型调用，其令牌不支持 ChatGPT / Codex 额度查询接口，重新登录或补充账号 ID 无法解决。可开启「使用本机 Codex 登录查询额度」，或在 ChatGPT 设置 → 用量查看官方数据。";
 
 /// 5 小时窗口的 `limit_window_seconds`。
 const WINDOW_5H_SECS: u64 = 18000;
@@ -129,6 +134,35 @@ pub(crate) fn resolve_usage(consent: &Result<bool, String>) -> Result<Option<Ope
     } else {
         active_credentials()
     }
+}
+
+/// 「套餐用量」OpenAI 分区的可见性门禁与离线处置（`subscription_view` 每个
+/// provider 各调一次；非 OpenAI、或门禁放行时返回 `None` 走常规查询链）。
+///
+/// 判据（2026-10-10）：用户已开「本机 Codex 登录查询额度」，**或**内嵌
+/// openai-oauth 插件在本 mode / profile 启用。两个来源都关时，壳里的 OpenAI
+/// 登录没有消费方（它只服务于内嵌插件），这条查询注定失败（SIWC 令牌过不了
+/// 额度接口），分区留着只会挂一块「查询异常」——按未配置呈现，缓存里的旧
+/// 条目（含错误文案）一并丢弃，错误横幅不再提及。
+pub(crate) fn gated_view(
+    id: &str,
+    scope: &InstanceScope,
+    doc: &mut SubscriptionCacheDoc,
+) -> Option<(bool, ProviderView)> {
+    if id != PROVIDER_OPENAI {
+        return None;
+    }
+    // 许可与启用意图任一打开即放行；许可在此自读一次，保持单一出处。
+    let dsh_home = crate::shell::paths::instance_dsh_home(&scope.family, &scope.id);
+    if super::subscription_codex::enabled().unwrap_or(false)
+        || crate::plugins::builtin::requested_enabled(&dsh_home, &scope.profile)
+    {
+        return None;
+    }
+    // 旧缓存条目一并移除：分区藏了，错误横幅不能再报它缓存里的失败。
+    let removed = doc.providers.remove(PROVIDER_OPENAI).is_some();
+    let view = subscription::build_provider_view(id, false, None, None);
+    Some((removed, view))
 }
 
 /// 取当前活跃账号的凭据。**vault 文件不存在就直接返回**：没有它就没有账号
@@ -583,6 +617,13 @@ mod tests {
             ));
         }
         assert!(UNSUPPORTED_SIWC.contains("不支持"));
+        // 2026-10-10 用户反馈：先说根因（查询余额要本机 Codex 登录记录），
+        // 再说「重新登录无效」，别让用户先去折腾登录。
+        assert!(
+            UNSUPPORTED_SIWC.contains("本机 Codex")
+                && UNSUPPORTED_SIWC.find("本机 Codex").unwrap()
+                    < UNSUPPORTED_SIWC.find("重新登录").unwrap()
+        );
         assert!(!UNSUPPORTED_SIWC.contains("请重新登录"));
     }
 
