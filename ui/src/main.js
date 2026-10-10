@@ -77,6 +77,10 @@ import 'element-plus/theme-chalk/dark/css-vars.css';
 import './theme.css';
 // 诊断层样式独立于 theme.css：后者是反棘轮文件（只许越来越小）。
 import './diagnostics/diagnostics.css';
+// 插件层同理，且它收的是**全局**规则：tooltip 气泡 teleport 到 body，
+// 身上没有组件的 data-v-*，写在 scoped 块里匹配不到（症状是「规则写了、
+// 界面没变」）。详见该文件头的说明。
+import './plugins/plugins.css';
 import App from './App.vue';
 import LogViewerWindow from './logs/LogViewerWindow.vue';
 import OfficialChatTabs from './official-chat/OfficialChatTabs.vue';

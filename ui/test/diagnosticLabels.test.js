@@ -734,6 +734,40 @@ test('诊断层的「更多」弹层不会被挤成逐字竖排', () => {
   assert.match(shell, /placement="bottom-end"/);
 });
 
+// —— 插件中心那个预检说明气泡（2026-10-10）———————————————————————————
+//
+// 症状与上面诊断层那条同类但方向相反：这段说明有 100 多字，此前**没有任何宽度
+// 约束**，于是它按触发器可用宽度一路铺开，在 1040 宽的窗口里横跨大半屏，
+// 从插件中心一直盖到概览那边。它压过的不是边距，是别的卡片。
+//
+// 三样一起给（少一样都还在，且都不报错）：`max-width` 治铺开、
+// `white-space: normal` 让断行回到词级、显式 `min-width` 堵住 EP 默认的
+// `min-width: 10px` 塌缩。同上，`plugins.css` 必须是**全局**文件——
+// tooltip 气泡 teleport 到 body，scoped 的 `data-v-*` 匹配不到它。
+test('预检说明气泡限宽换行，不横跨窗口', () => {
+  const css = readSrc('plugins/plugins.css');
+  const rule = /\.precheck-tip-popper\s*\{([^}]*)\}/.exec(css);
+  assert.ok(rule, '必须有 .precheck-tip-popper 规则');
+  assert.match(rule[1], /max-width:\s*min\(420px, calc\(100vw - 32px\)\)/, '要限宽，且窄窗不溢出');
+  assert.match(rule[1], /min-width:\s*0/, '必须显式压掉 EP 的 min-width:10px，否则仍能塌成逐字竖排');
+  assert.match(rule[1], /white-space:\s*normal/, '必须允许多行，否则 EP 的 break-word 会逐字断行');
+
+  // 接线：类名要真的挂在那个 tooltip 上，且走的是 popper-class（不是 content）。
+  const panel = readSrc('plugins/PluginsPanel.vue');
+  assert.match(panel, /popper-class="precheck-tip-popper"/, 'tooltip 必须挂上这个 popper-class');
+  // 文案断句：宽度受限时的断点由文案决定，一整段没有停顿最难读。
+  const tip = /const precheckTip =([\s\S]*?);\n/.exec(panel);
+  assert.ok(tip, '找不到 precheckTip');
+  assert.ok(
+    (tip[1].match(/。'/g) || []).length >= 3,
+    '这段说明要断成多句（至少 3 个句号），否则折行会落在句中读不出停顿',
+  );
+
+  // 全局而非 scoped：这条 import 是它能生效的唯一原因。
+  const main = readSrc('main.js');
+  assert.match(main, /import '\.\/plugins\/plugins\.css'/, 'plugins.css 必须在 main.js 里 import');
+});
+
 test('诊断页必须说清这条记录是什么时候的', () => {
   // 时刻不是装饰：一条几小时前的失败记录和刚才那次跑的一模一样，没有时刻
   // 用户读到的就是「现在还是这样」。2026-10-06 用户拿着一张 18:09 的截图来报

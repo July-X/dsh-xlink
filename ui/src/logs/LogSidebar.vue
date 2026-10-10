@@ -26,6 +26,7 @@ const emit = defineEmits(['select', 'toggle-rail']);
       type="button"
       class="rail-toggle"
       :title="railCollapsed ? '展开日志列表' : '收起日志列表'"
+      :aria-label="railCollapsed ? '展开日志列表' : '收起日志列表'"
       @click="emit('toggle-rail')"
     >
       <el-icon><Expand v-if="railCollapsed" /><Fold v-else /></el-icon>
