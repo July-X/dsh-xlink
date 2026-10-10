@@ -994,7 +994,17 @@ test('行尾动作是带边框、带 icon 的 badge，不是纯文字箭头', ()
   // 而删掉图标正是最容易发生的那种改动（换个 icon 名、或复制粘贴时漏掉）。
   const icons = (tower.match(/<el-icon aria-hidden="true"><ArrowRight \/><\/el-icon>/g) || []).length;
   assert.equal(icons, badges, '每一枚 badge 都要带 icon，不能只给一枚');
-  assert.match(tower, /import \{ ArrowRight \} from '@element-plus\/icons-vue'/);
+  // import 那行现在是三个图标：`ArrowRight` 是行尾动作的箭头，另外两个是
+  // 卡片标题的蓝底方块（系统健康 / 最近操作，设计稿 2026-10-10）。判据只钉
+  // **`ArrowRight` 仍在这份 import 里**——写成整行相等的话，每加一个标题图标
+  // 都要动这条断言，而它守的是「箭头图标没有因为改名而消失」。
+  assert.match(tower, /import \{[^}]*\bArrowRight\b[^}]*\} from '@element-plus\/icons-vue'/);
+  // 塔卡的两枚标题方块必须真的渲染，且用的就是 import 进来的那两个名字——
+  // 只断言方块数量的话，把图标换成任意别的组件照样绿。
+  for (const name of ['FirstAidKit', 'Document']) {
+    assert.match(tower, new RegExp(`<span class="card-title-icon"[^>]*><el-icon><${name} \\/><\\/el-icon></span>`),
+      `塔卡标题方块缺少 ${name}`);
+  }
 });
 
 test('概览主栅格的内核卡与用量卡让出首行给它们自己', () => {
@@ -1866,7 +1876,7 @@ test('角标圆点从 18px 变 20px，跟上放大的菜单字', () => {
 // 这几条钉的是**每一层标题各自的生效值**：页面标题、块标题（h2）、块内小标题
 // （h3）、行式条目标题、诊断层的两种标题，以及标题旁的 ⓘ。ⓘ 必须一起长——
 // 留在 14px 会读成「一个更小的另一个元素」，而不是「这个标题的补充说明」。
-test('功能块标题整体放大：块标题 17px / 块内小标题 15px / 页标题 21px', () => {
+test('功能块标题按设计 token 规范：块标题 16px/600、块内小标题 15px、页标题 24px/700', () => {
   // `.card h2` / `.card h3` **不能走 effectiveDeclaration**：它们的主语是**裸
   // 标签** `h2` / `h3`，全仓有十来条同主语的规则（`.migration header h2` 特异度
   // 102 直接盖过 `.card h2` 的 101，`.callout-body h3` / `.step-body h3` 等同
@@ -1877,9 +1887,13 @@ test('功能块标题整体放大：块标题 17px / 块内小标题 15px / 页�
   // 「块标题该多大」这件事只在一个地方说了算。
   assert.match(css.match(/\.card h2 \{([^}]*)\}/)[1], /font-size: var\(--fs-block-title\)/);
   assert.match(css.match(/\.card h3 \{([^}]*)\}/)[1], /font-size: var\(--fs-subtitle\)/);
-  assert.equal(tokenValue('--fs-block-title'), '17px');
+  assert.equal(tokenValue('--fs-block-title'), '16px');
   assert.equal(tokenValue('--fs-subtitle'), '15px');
-  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), '21px');
+  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), '24px');
+  // 规范 §2 给卡片标题的字重是 600。16px 配 700 会比稿子重一档，判据钉的是
+  // **生效值**：这条必须读 `.card h2` 的规则文本（主语是裸标签，走
+  // effectiveDeclaration 会问到别的规则上，见本用例上方的说明）。
+  assert.match(css.match(/\.card h2 \{([^}]*)\}/)[1], /font-weight: 600/);
   // 「环境回退与诊断」那张卡的四个行式条目走 `.page-list-title`，也得跟上。
   assert.equal(
     effectiveDeclaration(['page-list-title'], RULES, 'font-size'),
