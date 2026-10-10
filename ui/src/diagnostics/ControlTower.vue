@@ -13,7 +13,7 @@
 // - **最近操作**：回答「上次发生了什么」。失败 / 告警才可点进诊断；
 //   成功记录不给按钮——它没什么可诊断的。
 import { computed, onMounted, ref } from 'vue';
-import { ArrowRight } from '@element-plus/icons-vue';
+import { ArrowRight, Document, FirstAidKit } from '@element-plus/icons-vue';
 import { store } from '../store.js';
 import { isLoading } from '../shell/loading.js';
 import { entryTimeLabel, snapshotStore } from './snapshots.js';
@@ -367,7 +367,10 @@ function openDiagnosis() {
 
   <div class="diag-card diag-card--tower diag-card--health">
     <h3 class="diag-card__title">
-      <span>系统健康</span>
+      <span class="card-title-lead">
+        <span class="card-title-icon" aria-hidden="true"><el-icon><FirstAidKit /></el-icon></span>
+        <span>系统健康</span>
+      </span>
       <!-- 设计稿 `card-caption health-ok`：一句话结论，别让用户逐行读四遍。 -->
       <span class="diag-card__aside" :class="{ 'diag-card__aside--bad': healthCaption.tone === 'bad' }">{{ healthCaption.text }}</span>
     </h3>
@@ -397,7 +400,10 @@ function openDiagnosis() {
   <div class="diag-card diag-card--tower diag-card--activity">
     <!-- 空态：说明收进标题行右侧，`--bare` 去掉标题下的线与留白（依据见 diagnostics.css）。 -->
     <h3 class="diag-card__title" :class="{ 'diag-card__title--bare': !latestRun }">
-      <span>最近操作</span>
+      <span class="card-title-lead">
+        <span class="card-title-icon" aria-hidden="true"><el-icon><Document /></el-icon></span>
+        <span>最近操作</span>
+      </span>
       <span v-if="latestRun" class="diag-card__aside">
         启动 / 预检 / 恢复 / 排查
         <!-- 清除入口挂在标题行而不是行内：它是**面向整段历史**的动作，

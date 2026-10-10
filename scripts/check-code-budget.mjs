@@ -981,7 +981,14 @@ const FILE_BUDGETS = {
   // 一个指方向，在一列读数里互相稀释。
   // 这 15 行没有别的落点——动作在三张卡各自的模板块里，抽成子组件要连
   // fragment 结构与 `v-for` 的 tone 传递一起改，代价远超这 15 行。
-  'ui/src/diagnostics/ControlTower.vue': 283,
+  // 283 → 289：两张塔卡（系统健康 / 最近操作）的标题前各加一枚蓝底方块图标，
+  // 配 `.card-title-lead` 包裹层。**这 6 行没有别的落点**：`.diag-card__title`
+  // 是 `justify-content: space-between`，直接加第三个子元素会把标题文字推到正
+  // 中间（实测如此），而改用 `margin-left: auto` 就得动 diagnostics.css——
+  // 那个文件在反棘轮上（只许下调），为这 4 行去动它不划算。图标槽位必须紧贴
+  // 标题，抽成子组件要连 fragment 结构与 slot 一起改，代价远超这 6 行。
+  // 283 < RATCHET_THRESHOLD 600，不受反棘轮约束。
+  'ui/src/diagnostics/ControlTower.vue': 289,
   // 安装预检的两段式事务：中央库字节级快照与回滚、基线差分判定、
   // 提交（物化 + 接线）与报告装配。放在独立文件而不是塞进已 2964 行的
   // plugins.rs，是为了两件事：插件模块读不懂、预检想复用到技能上也
@@ -2255,7 +2262,14 @@ const FILE_BUDGETS = {
 // diskusage 改动（~+90），一并计入，免得把总量卡在别人的在途改动上。
 // 为本机 Codex 可选来源的只读校验、许可控件及缓存接线登记总量软预算。
 // 主窗口账号入口和跨窗口状态同步新增约 100 行；既有大文件预算不变。
-const TOTAL_BUDGET = 46670;
+// 46670 → 46684（2026-10-10 设计稿对齐）：概览页四张卡的标题各加一枚蓝底方块
+// 图标（ControlTower.vue +6、OverviewPanel.vue +3、theme.css 的
+// `.card-title-lead` / `.card-title-icon` 与净删掉的侧栏 icon 衬底相抵后 +5）。
+// 这轮同时把 `.panel` 的 row-gap 从 76px 收到规范的 12px、并按规范把卡片内边距
+// 提到 16px——净增的是 4 个图标槽位这个必然成本，没有任何新逻辑。
+// TOTAL_BUDGET 是**软上限**（刻意不做只许下调：试过，实践中只会逼人绕开门禁
+// 而不是真写出更少的代码），既有大文件预算一个没动。
+const TOTAL_BUDGET = 46684;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

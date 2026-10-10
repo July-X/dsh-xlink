@@ -71,6 +71,13 @@
   --accent: #2e76f6;
   --accent-strong: #1e63d6;
   --accent-soft: rgba(46, 118, 246, 0.1);
+  /* 卡片标题图标方块的衬底（2026-10-10 对稿）。设计稿里四个卡片标题
+     （当前内核 / 系统健康 / 套餐用量 / 最近操作）左侧都有一枚蓝底圆角方块图标，
+     是这一屏最显眼的结构特征之一——卡片靠它建立边界，不只靠那条线。
+     取 `--ds-accent-soft` 家族里**更实**的一档：稿里那档采样值（浅 #ecf4ff /
+     暗 #112854）与所在行底只差 1.04:1，方块等于不存在，所以明度往外拉了一档，
+     色相仍取自规范。图标本身用 `--accent` 画在它上面。 */
+  --accent-soft-strong: #cfe2fc;
   /* accent 的两档半透明：选中态的填色与描边、分隔条拖拽时的底色。
      同样不许写死——它们记的是「accent 叠在**当前主题底色**上」的效果，
      浅色主题的 accent 是深蓝（#2e76f6）、深色是浅蓝（#4a91ff），
@@ -117,10 +124,13 @@
      是浅色环，否则弹窗仍是一团柔光而不是一块板。 */
   --shadow: 0 0 0 1px rgb(24 53 95 / 0.06), 0 8px 20px rgb(24 53 95 / 0.1), 0 12px 32px rgb(24 53 95 / 0.14);
   --shadow-card: 0 4px 18px rgb(24 53 95 / 0.06), 0 1px 3px rgb(24 53 95 / 0.03);
-  /* 头部柔光（设计 token 规范的 `--ds-header-glow`，2026-10-10）。两张稿的主内容区
-     右上角都有一团极淡的蓝色光晕，规范明确它**只出现在页头**，其余卡片一律纯色
-     （规范 §7.4「避免过度渐变」）。两套主题给的是同一形状、不同强度与色相。 */
-  --header-glow: radial-gradient(ellipse at 85% 0%, rgb(70 132 255 / 0.12), transparent 48%);
+  /* 页头缎带（2026-10-10）。形状在 `ui/public/header-ribbons.svg`，两套主题共用
+     同一个文件——色相与形状共用，只有强弱分主题，不必维护两份路径。
+     亮色下整条缎带要**很淡**：SVG 里的 alpha 是按深色稿调的，直接搬到白底上会
+     明显过重（白底上超过 ~14% 的蓝就读成「一块脏色」），而稿子里亮色的丝带几乎
+     只是纸面上的一道浅影。所以这里靠 opacity 统一压，而不是在 SVG 里分叉颜色。 */
+  --header-ribbon: url("/header-ribbons.svg");
+  --header-ribbon-opacity: 0.62;
   /* 构建标识色：dev 鲸眼红 / release Gitea 绿，只在窗顶 2px 细线上出现。 */
   --build-color: #609926;
   /* 业务活动脉冲扫光的峰值色（body::after 与日志窗的第二道扫光共用）。标题栏
@@ -133,8 +143,13 @@
      共用一份，避免同一个角色在七个地方各写一个数：
        · 卡头动作按钮一族：EP 的 `size="small"` 在库里是 24px / 12px，与概览主
          操作的 30px / 13.5px 不同档。改之前每个面板各挑一个，同一屏里会出现两种
-         大小的卡头按钮（概览自己的「刷新 / 查看详情」就比「工作台」矮一截）。 */
-  --fs-block-title: 17px;
+         大小的卡头按钮（概览自己的「刷新 / 查看详情」就比「工作台」矮一截）。
+     `--fs-block-title` 与 `.page-title` 两档 2026-10-10 按设计 token 规范 §2 改回
+     16px / 24px（规范：卡片标题 16/600、页面标题 24/700/32）。此前是 17px / 21px，
+     那是 10-08 的「六面板向概览看齐」决策稿里的值——它对齐的是**面板之间**，
+     与规范对齐的是**页面与稿子**，两件事。`.card h2` 的字重一并从 700 降到规范
+     的 600：16px 的标题用 700 会比稿子重一档，看着像加粗过度而不是「标题」。 */
+  --fs-block-title: 16px;
   --fs-subtitle: 15px;
   --fs-desc: 13px;
   --fs-tip-icon: 16px;
@@ -224,6 +239,9 @@ html.dark {
   --accent: #4a91ff;
   --accent-strong: #72acff;
   --accent-soft: rgba(74, 145, 255, 0.14);
+  /* 激活项 icon 衬底（暗色档）。理由同浅色那一档：稿里的采样值与行底只差 1.04:1，
+     读不出来；这里取更亮一档（1.35:1），色相不变。 */
+  --accent-soft-strong: #1a3a72;
   /* 与 :root 同一组语义（选中填色 / 描边），只是按深色 accent 重新取值。 */
   --accent-fill: rgba(74, 145, 255, 0.16);
   --accent-line: rgba(74, 145, 255, 0.55);
@@ -250,9 +268,10 @@ html.dark {
      卡面转深蓝后它会把卡顶描出一线假白边，与规范「暗色不靠发光表现结构」相悖，
      随规范一并撤掉。 */
   --shadow-card: 0 4px 16px rgb(0 0 0 / 0.16);
-  /* 头部柔光的暗色档：同一形状，按规范换成更深的蓝、稍大的范围（52% 而非 48%）。
-     暗色底上这层光晕比浅色更明显——它是深蓝大面上唯一的色彩来源。 */
-  --header-glow: radial-gradient(ellipse at 85% 0%, rgb(40 105 220 / 0.18), transparent 52%);
+  /* 页头缎带的暗色档：同一个 SVG，不压 opacity。深蓝大面上这层缎带是主内容区
+     唯一的色彩来源，稿子里它相当明显——压下去就又变成「一团看不见的雾」。 */
+  --header-ribbon: url("/header-ribbons.svg");
+  --header-ribbon-opacity: 1;
   --whale-eye-bright: #ff5a5e;
 
   /* Element Plus 暗色覆写：把组件库融进壳底色。
@@ -1002,22 +1021,57 @@ main {
      直接隐藏，不让面板出现横向滚动条。 */
   overflow-x: hidden;
   padding: 18px 20px 22px;
-  /* 底色 + 页头柔光（`--header-glow`）。规范要求这层光晕**只在页头**、其余卡片
-     一律纯色，所以它跟着内容滚走（scroll 附着）而不是钉在视口上。
-     `background-size` 限死它的高度是必须的：`--header-glow` 是一条
-     `ellipse at 85% 0%` 的 radial-gradient，不限尺寸就会铺满整个 main 的高度，
-     那一「点」光会变成一整条从上到下的蓝雾。 */
-  background-color: var(--canvas);
-  background-image: var(--header-glow);
-  background-repeat: no-repeat;
-  background-position: center top;
-  background-size: 100% 340px;
+  /* main 自己只留纯底色。缎带由 `::before` 承担，不走 background-image——
+     **因为 `background-image` 不接受 opacity**，而两套主题要的是同一张图、
+     不同强弱（亮色压到 45%，暗色全强度）。放在伪元素上，opacity 就写在元素
+     自己身上，这道「按主题分强弱」才有着落。
+     形状、色相与路径全部来自 `--header-ribbon`（同一个 SVG，两套主题共用），
+     强弱来自 `--header-ribbon-opacity`。 */
+  background: var(--canvas);
+  /* 缎带层用绝对定位，所以 main 必须是它的定位父级。 */
+  position: relative;
+}
+
+/* 页头缎带（设计稿右上角那两条 S 形丝带，2026-10-10）。这不是一团径向光晕——
+   先前按 token 规范的 `--ds-header-glow` 做成 `radial-gradient(ellipse at 85% 0%)`，
+   渲染出来是一个没有边缘的椭圆色块，与稿子里「有明确上边缘曲线的丝带」是两回事。
+   形状由 `ui/public/header-ribbons.svg` 承担：CSS 画不出「一条上下两条边界、
+   边界自身是 S 形」的封闭色带，用多层渐变去凑只会得到渐隐的边而不是收口的边。
+
+   `pointer-events: none` —— 它盖在内容区最上面一层，不该挡住任何点击。
+   520x170（此前 760x220）：稿子里它横跨右上角约三分之一宽、约 170px 高，整片落在
+   **页头区域之内**——卡片从它下边开始。再高就会被第一排卡片切掉一半，只剩右上
+   角一道窄边，那正是「背景没出来」的观感。`right top`：靠右的一角，居中会跑到
+   「概览」标题正上方去。背景按 `100% 100%` 铺满，SVG 侧有意拉伸（见该文件注释）。 */
+main::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 0;
+  width: min(520px, 100%);
+  height: 170px;
+  background: var(--header-ribbon) right top / 100% 100% no-repeat;
+  opacity: var(--header-ribbon-opacity);
+  pointer-events: none;
 }
 
 .panel {
+  /* 缎带层（`main::before`）是 `z-index: 0` 的定位元素，而面板本身没有定位，
+     不给 z-index 就会让伪元素画到面板**上面**——内容被一层蓝纱盖住。
+     这不是「缎带该不该半透明」的取舍，是层叠顺序：装饰必须在内容之下。 */
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  /* 卡片之间 12px（`--ds-card-gap`）。**此前是 76px**——那是为了给页头的缎带
+     留一块「裸露页头」而临时放大的，实测渲染后发现它把整屏撑散：设计稿里
+     页头底边到第一张卡片只有约 20px，缎带是**画在页头区域之内**的（右上角
+     一片，卡片从它下边开始），不需要靠撑开间距给它让位。
+     `row-gap` 与 `column-gap` 同值，panelSpacing 那条判据守的正是
+     「不出现第二种缝」。 */
+  row-gap: 12px;
+  column-gap: 12px;
 }
 
 /* 面板切换动效：轻淡入 + 上浮。out-in 模式下旧面板完全离场后新面板才挂载，
@@ -1052,19 +1106,26 @@ main {
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
-  padding: 12px;
+  /* padding 取 `--ds-card-padding` 的 16px（此前 12px）：稿子里标题离左边框有
+     明显的呼吸位，12px 时标题几乎贴着描边，卡片读起来「装得很满」。 */
+  padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-/* 功能块标题。2026-10-07 用户要求整体放大：14px 在 1040 宽的窗口里读起来
-   「像脚注」——一个块的边界正是靠标题建立的，字太小等于没有块。17px 与正文
-   13px / 次要说明 11-12px 拉开两档，层级才立得住。 */
+/* 功能块标题。字号走 `--fs-block-title`（16px），字重按设计 token 规范 §2 的
+   「卡片标题 16px / 600」——此前是 17px / 700，16px 配 700 会比稿子重一档，
+   读起来像「加粗过度」而不是「这是一个标题」。
+   标题行改成 flex：设计稿里标题左侧有一枚蓝底方块图标（`.card-title-icon`），
+   它与标题文字、ⓘ 提示三者同行，字号不同时基线才对得齐。 */
 .card h2 {
   margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: var(--fs-block-title);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .card h3 {
@@ -1339,7 +1400,11 @@ main {
   gap: 5px;
 }
 
-/* 页头：标题 + 说明在左，动作在右。 */
+/* 页头：标题 + 说明在左，动作在右。
+   **下方留白由 `.panel` 的 `row-gap` 提供，不在这里写 margin-bottom**：
+   `.panel` 的直接子元素一律不许自带下外边距（panelSpacing 那条判据守着），
+   否则这个 margin 会叠在 gap 上，同一列出现两种缝。留白本身是缎带的展示位
+   （设计稿里标题区与第一张卡片之间约 130px 裸露页头），缎带就画在那儿。 */
 .page-head {
   display: flex;
   align-items: flex-start;
@@ -1349,9 +1414,49 @@ main {
 
 .page-title {
   margin: 0;
-  font-size: 21px;
+  /* 设计 token 规范 §2：页面标题 24px / 700 / 行高 32px。此前 21px 是 10-08
+     「六面板向概览看齐」决策稿里的值，与规范的 24px 撞车，用户 2026-10-10
+     拍板以规范为准。行高跟着从 1.3（约 27px）提到规范给的 32px——24px 的字
+     在 27px 行盒里上下都挤，下一段副标题会被顶得贴住。 */
+  font-size: 24px;
   font-weight: 700;
-  line-height: 1.3;
+  line-height: 32px;
+}
+
+/* 卡片标题左侧的蓝底方块图标（设计稿 2026-10-10）。概览页四个卡片标题
+   （当前内核 / 系统健康 / 套餐用量 / 最近操作）都带它，是稿子里最显眼的
+   结构特征：卡片边界不只靠那条刻蚀线，方块把「这是一个独立的块」也说了。
+   **跨文件共享**：概览页在 `shell/OverviewPanel.vue`，系统健康与最近操作在
+   `diagnostics/ControlTower.vue`，所以样式放全局而不是各写一份。
+   尺寸 24px 与 16px 标题同高量级，图标 14px 居中——方块比图标大四边，
+   图形才浮得起来。 */
+/* 「图标 + 标题文字」必须包成一个整体。`.diag-card__title` 是
+   `justify-content: space-between`，直接往里加第三个子元素（方块、文字、aside）
+   会把三者均分——标题文字被推到正中间，方块孤零零留在左边。lead 这一层
+   让 flex 重新只有两个子元素，aside 照样靠右。 */
+.card-title-lead {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.card-title-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  /* `align-self: center` 是给 `.diag-card__title` 准备的——它是
+     `align-items: baseline`，24px 固定高的方块按基线对齐会整个沉到标题下方。
+     改父级会连带移动右侧的 aside（`.diag-card__title--bare` 那批 10-08 定案的
+     对齐关系），所以只让这一枚方块自己脱离基线。父级是 center 时这条与
+     继承等价，无副作用。 */
+  align-self: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-control);
+  background: var(--accent-soft-strong);
+  color: var(--accent);
+  font-size: 14px;
 }
 
 .page-desc {
