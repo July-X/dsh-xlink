@@ -88,6 +88,7 @@ import {
   providerLogo,
 } from '../subscription/subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents/incidents.js';
+import { builtinStore, loadBuiltinStatus } from '../plugins/builtin.js';
 import { tildePath } from './labels.js';
 import { confirmDialog } from './notify.js';
 
@@ -122,10 +123,15 @@ const usageDayTip = computed(() =>
 const anyKeyConfigured = computed(() =>
   ((subscription.data && subscription.data.providers) || []).some((provider) => provider.configured)
 );
+// Codex 额度入口（开关 + 它的整宽说明句）是 OpenAI 插件的功能面，与 Rust 侧
+// 分区门禁同源：插件停用时一并收起（2026-10-10）。开关组件自己按
+// builtinStore 收起，这里的说明句在卡头下面另起一行，得跟着同一个判据。
+const codexConsentVisible = computed(() => builtinStore.view?.requestedEnabled === true);
 onMounted(() => {
   // 未配置时不发请求：Rust 侧对未配置 provider 也只做凭据解析，不产生网络调用，
   // 但首次进入概览总得拉一次才知道配置状态——由 loadSubscriptionSummary 自行决定。
   loadSubscriptionSummary();
+  loadBuiltinStatus();
 });
 // 工作台里改完凭据回到概览：数据拉取动作自带 TTL，这里不额外触发。
 // planRows 额外滤掉「用户选择隐藏」的分区（key 配了但一直查不到数据）。
@@ -716,7 +722,7 @@ function goVersions() {
                 MiniMax（国内站 / 国际站）与智谱的 5 小时 / 周窗口余额、DeepSeek 按量余额（多币种）。
                 数据缓存 5 分钟，点「刷新」立即重新查询。凭据复用工作台模型设置；
                 未在内核配置对应厂商时，相应分区自动隐藏。
-                OpenAI 分区仅在启用 OpenAI-OAuth-Plugin 或开启「使用本机 Codex 登录查询额度」后显示。
+                OpenAI / Codex 额度分区与「使用本机 Codex 登录查询额度」开关，仅在启用 OpenAI-OAuth-Plugin 后显示。
               </div>
             </template>
             <el-icon class="card-info-icon"><InfoFilled /></el-icon>
@@ -764,7 +770,7 @@ function goVersions() {
           前往模型设置
         </el-button>
       </div>
-      <p class="muted usage-consent-tip">{{ CODEX_USAGE_CONSENT_TIP }}</p>
+      <p v-if="codexConsentVisible" class="muted usage-consent-tip">{{ CODEX_USAGE_CONSENT_TIP }}</p>
       <p v-if="!anyKeyConfigured" class="muted" style="margin: 0">
         当前实例未配置可查询的模型凭据；到工作台的模型设置配置后，这里展示套餐剩余额度与余额。
       </p>

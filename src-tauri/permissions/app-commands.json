@@ -168,9 +168,9 @@
     },
     {
       "identifier": "allow-subscription-viewer",
-      "description": "Cloud subscription usage with explicit local Codex consent for the standalone subscription window (label \"subscription-viewer\", opened by the overview card's「套餐用量」button via open_subscription_window). The window renders the cached/fetched MiniMax token-plan tiers and DeepSeek balances via get_subscription_usage, jumps to the local model-usage window via open_usage_window, and opens the workbench via open_harness so the user can edit the model credentials it reuses — the only write command is set_codex_usage_enabled, which stores a boolean consent for read-only local Codex usage queries; no credential writes or lifecycle commands.",
+      "description": "Cloud subscription usage with explicit local Codex consent for the standalone subscription window (label \"subscription-viewer\", opened by the overview card's「套餐用量」button via open_subscription_window). The window renders the cached/fetched MiniMax token-plan tiers and DeepSeek balances via get_subscription_usage, jumps to the local model-usage window via open_usage_window, and opens the workbench via open_harness so the user can edit the model credentials it reuses — the only write command is set_codex_usage_enabled, which stores a boolean consent for read-only local Codex usage queries; no credential writes or lifecycle commands. builtin_openai_status is read-only and only decides whether the Codex consent entry (switch + tip) renders at all: the entry belongs to the embedded OpenAI plugin's feature surface and is hidden while that plugin is disabled (2026-10-10).",
       "commands": {
-        "allow": ["get_subscription_usage", "set_codex_usage_enabled", "open_usage_window", "open_harness"]
+        "allow": ["get_subscription_usage", "set_codex_usage_enabled", "open_usage_window", "open_harness", "builtin_openai_status"]
       }
     },
     {
