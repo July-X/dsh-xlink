@@ -564,7 +564,7 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
   }
 }
 
-// --- 8.5 icon-only 按钮必须有无障碍名称 -------------------------------------
+// --- 8.5 icon-only 按钮必须有无障碍名称与 hover 说明 ------------------------
 //
 // 事故来源：code-review-2026-09-27 的 L3。`circle` + `:icon` 的按钮**对屏幕
 // 读屏器是空的**——可访问名只能来自文本、`aria-label` 或 `aria-labelledby`，
@@ -573,35 +573,72 @@ note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
 // 打开仓库、卸载这类**唯一的**操作入口。
 //
 // 这类缺陷没有任何构建期信号：Vue 不校验 aria 属性，test:ui 也钉不住「一个
-// 按钮该叫什么」。所以钉进门禁。判据取「`circle` 且有 `:icon`」这一形状——
-// 本仓库的 icon-only 按钮一律同时带这两个属性，带了 `circle` 就是视觉上只剩
-// 图标；带 `aria-label` 或可见文本（插槽文本）即通过。
+// 按钮该叫什么」。所以钉进门禁。
+//
+// **2026-10-10 两处扩面**，起因是用户指着内核版本页那两个按钮报「无文字的按钮
+// 背景范围需要缩小，增加 hover 后的功能说明文字」：
+//
+//   ① 判据原来只认 `circle` 这一形状，但**真正的问题按钮往往不带 `circle`**
+//      ——内核版本页那两枚是 `text` + 自闭合，此前整条判据对它们是瞎的。
+//      改为按「自闭合 el-button（插槽为空）且有 `:icon`」判定，这才是 icon-only
+//      的**定义**，而不是它的一种画法。
+//   ② 增加 `title` 要求。原判据只管读屏（`aria-label`），而 `title` 是**唯一
+//      对键盘用户也生效**的那份 hover 说明——`el-tooltip` 只认鼠标。
+//
+// 判据仍逐条报出文件名与行号，而不是给一句总数。
 {
   const missingAria = [];
+  const missingTitle = [];
   for (const file of walk(join(root, 'ui/src'), ['.vue'])) {
     const text = readFileSync(file, 'utf8');
-    // 按 `<el-button` 起、到配对的 `>` 止取属性块。自闭合的 `<el-button … />`
-    // 同样覆盖（`circle` 的用法全是自闭合）。
-    for (const match of text.matchAll(/<el-button\b([\s\S]*?)\/>/g)) {
+    // **必须只匹配真正自闭合的标签**：`<el-button … />`。这一条踩了两次坑，
+    // **必须只匹配真正自闭合的标签**：`<el-button … />`。
+    //
+    // 这一条踩了三次坑，三次都是判据自己写错：前两版给出成片假阳性，
+    // 第三版反过来漏报——**假门禁比没有门禁更坏**，它让人以为报出来的都是
+    // 真问题，从而忽略真正的问题，所以每一步都用反向验逼出真实行为。
+    //
+    // ① `/<el-button\b([\s\S]*?)\/>/g`：惰性匹配从一个按钮的开标签一路
+    //    往后找 `/>`，跨过它自己的文字与闭标签、吞到**下一个**自闭合标签去。
+    //    「选择并安装内核」这类有文字的按钮全被判成 icon-only，误报 20 处。
+    // ② `/<el-button\b((?:[^>]|>(?!\/))*)\/>/g`：加了「`>` 后不能紧跟 `/`」，
+    //    但闭标签 `</el-button>` 的 `/` 在 `>` **之前**，那个 `>` 照样放行，
+    //    于是继续往后吞，又误报 8 处。
+    // ③ `/<el-button\b((?:[^<]|<(?!\/))*)\/>/g`：试图用 `</` 断配对，
+    //    但 `(?!\/)` 拦不住**另一个开标签**的 `<`——`<el-button` 的 `<` 后面
+    //    跟的是 `e` 而非 `/`，于是第一个匹配把第二个按钮整段吞进捕获块，
+    //    判据于是对第二个按钮完全失明（反向验实测：只报 1 处，实际破坏 3 处）。
+    //
+    // 现在这版干脆**不允许捕获块里出现任何 `<`**：标签属性里本就不该有裸 `<`
+    // （`v-if="a<b"` 这种写法本仓 119 个按钮里确无），而闭合标签必定含 `<`，
+    // 于是「自闭合」与「有文字」被干净地分开——这正是判据要判的那件事。
+    for (const match of text.matchAll(/<el-button\b([^<]*)\/>/g)) {
       const attrs = match[1];
-      if (!/\bcircle\b/.test(attrs)) continue;
       if (!/:icon=|v-bind:icon=/.test(attrs)) continue;
-      if (/\baria-label(?:ledby)?=/.test(attrs)) continue;
       const line = text.slice(0, match.index).split('\n').length;
-      missingAria.push(`${relative(root, file).split(sep).join('/')}:${line}`);
+      const where = `${relative(root, file).split(sep).join('/')}:${line}`;
+      if (!/\baria-label(?:ledby)?=/.test(attrs)) missingAria.push(where);
+      if (!/(?:^|\s):?title=/.test(attrs)) missingTitle.push(where);
     }
   }
-  if (missingAria.length > 0) {
-    for (const where of missingAria) {
-      fail(
-        'a11y-icon-button',
-        `${where} 是只有图标的按钮，却没有 aria-label —— 屏幕阅读器读不出它是什么，` +
-          '鼠标用户看得见的 tooltip 对键盘与读屏用户不存在。补 :aria-label="\'动作 \' + 实体名"，' +
-          '照同一文件里 el-switch :aria-label 的写法。',
-      );
-    }
-  } else {
-    note('icon-only 按钮都带 aria-label');
+  for (const where of missingAria) {
+    fail(
+      'a11y-icon-button',
+      `${where} 是只有图标的按钮，却没有 aria-label —— 屏幕阅读器读不出它是什么，` +
+        '鼠标用户看得见的 tooltip 对键盘与读屏用户不存在。补 :aria-label="\'动作 \' + 实体名"，' +
+        '照同一文件里 el-switch :aria-label 的写法。',
+    );
+  }
+  for (const where of missingTitle) {
+    fail(
+      'a11y-icon-button',
+      `${where} 是只有图标的按钮，却没有 title —— 2026-10-10 用户定的规范：每个无文字` +
+        '按钮都要有 hover 后的功能说明文字。el-tooltip 只认鼠标，title 是键盘用户' +
+        '唯一能拿到的那一份。两个补齐即可（文案与 aria-label 保持一致）。',
+    );
+  }
+  if (missingAria.length === 0 && missingTitle.length === 0) {
+    note('icon-only 按钮都带 aria-label 与 title');
   }
 }
 
