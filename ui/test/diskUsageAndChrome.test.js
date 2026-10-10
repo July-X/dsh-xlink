@@ -124,7 +124,14 @@ test('瓦片标题挂的是「这一类是什么」的气泡，且 el-tooltip �
 });
 
 test('卡片标题写「磁盘用量」，旧的「磁盘占用」不再出现在界面上', () => {
-  assert.match(versionsPanel, /<h2>\s*磁盘用量\s*</, '标题必须是「磁盘用量」');
+  // 标题左侧那枚 accent 方块（`.card-title-icon`）2026-10-10 铺到了全部六个
+  // 面板，它必须被当成可选前缀吃掉而不是整条断言放宽——放宽之后就钉不住
+  // 「方块紧挨标题、标题后面没有别的东西」了。
+  assert.match(
+    versionsPanel,
+    /<h2[^>]*>\s*(?:<span class="card-title-icon"[^>]*>[\s\S]*?<\/span>\s*)*磁盘用量\s*</,
+    '标题必须是「磁盘用量」',
+  );
   // 模块名、字段名、注释里的「磁盘占用」是另一回事（模块仍叫 diskusage.rs），
   // 只有模板里给用户看的那一行受这条约束。
   const template = versionsPanel.slice(versionsPanel.indexOf('<template>'), versionsPanel.indexOf('</template>'));

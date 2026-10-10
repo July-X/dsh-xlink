@@ -1,0 +1,37 @@
+/* 插件中心（PluginsPanel.vue）的**全局**样式，只收组件里放不下的那些。
+ *
+ * 为什么单独成文件而不是并进 theme.css：theme.css 是反棘轮大文件
+ * （预算只许下调），而这一份只被插件中心一个面板消费。
+ *
+ * 为什么不能用 scoped：`.el-tooltip` / `.el-dropdown` 的气泡是 **teleport 到
+ * body** 的运行时新节点，身上没有组件的 `data-v-*`，scoped 选择器匹配不到它
+ * ——症状是「规则写了、构建过了、界面上一点没变」。诊断层早就踩过同一件事，
+ * `.diagnosis-more-popper` 因此写在全局的 `diagnostics.css` 里。
+ */
+
+/* --- 预检开关的说明气泡 ---------------------------------------------------
+ *
+ * 2026-10-10 用户报「tooltip 要缩减、换行显示，注意宽度控制」：这串说明有
+ * 100 多字，此前没有任何宽度约束，于是它按触发器可用宽度一路铺开，在 1040 宽的
+ * 窗口里横跨了大半屏，从插件中心一直盖到概览那边。它压过的不是边距，是**别的卡片**。
+ *
+ * 三样一起给，少一样都还在（同一个坑诊断层已记：`diagnostics.css` 的
+ * `.diagnosis-more-popper`）：
+ *
+ *   ① `max-width` —— 直接治「铺开」。取 420px：1040 宽窗口的约四成，一屏读得完，
+ *      也不再压到窗口另一侧的卡片上。`calc(100vw - 32px)` 兜窄窗，
+ *      不然在比它更窄的视口里它会自己溢出。
+ *   ② `white-space: normal` + `line-height` —— 明确允许多行并给行距。EP 的
+ *      `.el-popper` 默认 `overflow-wrap: break-word`，挤到最小宽度时中文会被
+ *      **一个字一行**地断掉；这里给它一个够宽的上限，让断行回到正常词级。
+ *   ③ `min-width` —— 只给上限的话它仍能塌到 EP 的 `min-width: 10px`。
+ *
+ * 换行位置由**文案**决定而不是由 CSS：这个气泡的内容是一整段纯文本，断在哪一
+ * 个字上取决于当时的可用宽度。因此 `precheckTip` 在 PluginsPanel.vue 里被断成
+ * 四句——即便折行落在句中，也比「一整段没有停顿」好读得多。 */
+.precheck-tip-popper {
+  min-width: 0;
+  max-width: min(420px, calc(100vw - 32px));
+  white-space: normal;
+  line-height: 1.6;
+}

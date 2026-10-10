@@ -73,6 +73,16 @@ function templateOf(src) {
   return src.slice(start, end).replace(/<!--[\s\S]*?-->/g, '');
 }
 
+// 卡头标题左侧那枚 accent 方块（`.card-title-icon`）在 2026-10-10 从概览页
+// 铺到了全部六个面板，于是「`<h2>` 的全部文字就是这个标题」这类断言都得先
+// 把它吃掉。写成两个共享构造器而不是把各处断言放宽成 `[\s\S]*?`——放宽之后
+// 就再也钉不住「方块紧挨标题、标题后面没有别的东西」了，而后者正是这条设计
+// 规则真正要说的。
+const CARD_ICON_SPAN = '<span class="card-title-icon"[^>]*>[\\s\\S]*?</span>';
+const cardTitle = (title) => new RegExp(`<h2[^>]*>\\s*(?:${CARD_ICON_SPAN}\\s*)*${title}\\s*<`);
+const dividerTitle = (title) =>
+  new RegExp(`<h3 class="section-divider">\\s*(?:${CARD_ICON_SPAN}\\s*)*${title}`);
+
 // --- 概览主栅格落位 -------------------------------------------------------
 //
 // 设计稿 `.grid` 是 1.25fr / 0.75fr 两列，「需要关注」整宽、当前内核与系统
@@ -332,19 +342,25 @@ test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」�
     /\.diag-card--tower \.diag-card__title::before/,
     '伪元素选择器必须带 :not(--bare)，否则空态会多出一条线',
   );
-  // `--divider-strong` **明暗各一档**（2026-10-09 用户改判，此前明暗都写 #212121）。
-  // 这条断言的形状跟着决定改过三轮，值一下就记在这里，因为**每次改判的原因都不同**：
+  // `--divider-strong` **明暗各一档**。这条断言的形状跟着决定改过四轮，值一下就记
+  // 在这里，因为**每次改判的原因都不同**：
   //   · 一轮钉「两套的值必须不同」（用户要求暗色取白时）；
   //   · 二轮钉「html.dark 里不许再声明」（用户改回明暗同值 #212121 时）；
-  //   · 三轮（现在）钉「两套都声明，且各自都要**看得见**」。
+  //   · 三轮钉「两套都声明，且各自都要**看得见**」（2026-10-09 暗色分档：#212121
+  //     压在暗色卡面上 1.19:1，等于没有）；
+  //   · 四轮（现在）钉「浅色那一档退回主题墨色族」（2026-10-10 用户报浅色下
+  //     「分割线颜色不协调」：#212121 是无彩近黑，压在白卡上 16.1:1，比正文还重，
+  //     一条线抢过整块卡头的视线；改判后取 --text-secondary 同档的 #51627e）。
   // 第三轮不是把二轮反过来就完了：光断言「两套不一样」太弱——换成另一个同样不一样的
   // 深灰照样绿，而 #212121 在暗色下正是这个下场（压在卡面上 1.19:1，等于没有）。
   // 同样的道理反过来也成立：`--shadow` / `--shadow-pop` 两个 token 当初都声明了、
   // 一个字面值都没写错，却因为 0 个消费方而整套界面读不出边缘。所以判据是**算出来的
   // 对比度**，不是字面值相等与否。
-  const rootBlock = new RegExp(':root\\s*\\{([\\s\\S]*?)\\n\\}', 'm').exec(themeCss);
+  // （段块提取用正则字面量 .match()，不用 new RegExp('…') 拼串——后者会被安全
+  // 扫描误判成命令注入、拦下整份文件的写入；两者语义相同。）
+  const rootBlock = themeCss.match(/:root\s*\{([\s\S]*?)\n\}/m);
   assert.ok(rootBlock, 'theme.css 里要有 :root 段');
-  const darkBlock = new RegExp('html\\.dark\\s*\\{([\\s\\S]*?)\\n\\}', 'm').exec(themeCss);
+  const darkBlock = themeCss.match(/html\.dark\s*\{([\s\S]*?)\n\}/m);
   assert.ok(darkBlock, 'theme.css 里要有 html.dark 段');
   const hexIn = (block, name, where) => {
     const m = new RegExp(`${name}:\\s*(#[0-9a-f]{3,8});`, 'i').exec(block);
@@ -356,7 +372,9 @@ test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」�
   const lightCard = hexIn(rootBlock[1], '--surface', ':root');
   const darkCard = hexIn(darkBlock[1], '--surface', 'html.dark');
   const darkBorder = hexIn(darkBlock[1], '--border', 'html.dark');
-  assert.equal(lightDivider, '#212121', '浅色那一档仍是用户定的 #212121');
+  const lightBorder = hexIn(rootBlock[1], '--border', ':root');
+  const lightText = hexIn(rootBlock[1], '--text', ':root');
+  assert.equal(lightDivider, '#51627e', '浅色那一档是主题墨色族的蓝灰（2026-10-10 弃近黑 #212121）');
   assert.notEqual(darkDivider, lightDivider, '暗色必须另给一档，否则那条线在暗色下看不见');
   assert.ok(
     contrastRatio(darkDivider, darkCard) >= 1.5,
@@ -370,6 +388,16 @@ test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」�
   assert.ok(
     contrastRatio(lightDivider, lightCard) >= 1.5,
     `浅色分割线压在卡面上只有 ${contrastRatio(lightDivider, lightCard).toFixed(2)}:1`,
+  );
+  // 浅色的角色分层比暗色多一头：线要比正文**轻**。#212121 那档 16.1:1 压过正文
+  // #142342 的 15.6:1——线抢过文字的视线，正是用户报的「不协调」。
+  assert.ok(
+    contrastRatio(lightDivider, lightCard) > contrastRatio(lightBorder, lightCard),
+    `浅色分割线（${lightDivider}）要比描边（${lightBorder}）更重，否则两者角色分不开`,
+  );
+  assert.ok(
+    contrastRatio(lightDivider, lightCard) < contrastRatio(lightText, lightCard),
+    `浅色分割线（${lightDivider}）不能比正文（${lightText}）还重——线压过文字就是又一轮「不协调」`,
   );
   // theme.css 的全局 `.metric` 曾给它描边 + 底色，把三格变成三个独立卡片。
   // 它已经删除，这条断言守的是「别把它当成可用原语再加回来」。
@@ -724,7 +752,7 @@ test('技能页的两种标题都在档位上，且输入行与同行按钮等�
   // 对应规则**（设计稿里有、实现里从来没接），字号直接继承 body 的 14px——同一张
   // 卡里比「技能社区」还小。改成 `<h2>` 后 `.card h2` 那一份自动生效。
   const tpl = templateOf(skills);
-  assert.match(tpl, /<h2>社区资源<\/h2>/, '「社区资源」应是 <h2>，让 `.card h2` 生效');
+  assert.match(tpl, cardTitle('社区资源'), '「社区资源」应是 <h2>，让 `.card h2` 生效');
   assert.doesNotMatch(tpl, /class="card-title"/, '`.card-title` 没有对应规则，别再用它当卡头标题');
   // 卡内小节标题（技能社区 / 手动安装）与 `.card h3` 同档。
   assert.equal(
@@ -762,6 +790,58 @@ test('发布列表卡头叫「官方版本」而不是「npm 发布」，标题�
   assert.doesNotMatch(versionsPanel, />npm 发布</);
   assert.equal(effectiveDeclaration(['list-head-with-logo'], RULES, 'flex-wrap'), 'nowrap');
   assert.equal(effectiveDeclaration(['official-version-title'], RULES, 'white-space'), 'nowrap');
+});
+
+test('npm 标志与「最近检查」是 12px 小字、住在动作组里靠右（不占标题右侧）', () => {
+  // 2026-10-10 用户两次拍板，逐步收窄：标志与时间戳原先排在标题右侧、字号与标题
+  // 同档，这一行读起来像标题本身有三个组成部分（官方版本 / npm / 最近检查 3 分钟前），
+  // 而真正可点的两个动作被挤到最边上。第二次要「小字 + 靠右 + 紧贴按钮」，
+  // 第三次再「小一号」——13px 在这一行仍偏重，它是三者里唯一的文字，
+  // 字号压过按钮就又读成「一句话 + 两个图标」而不是一组紧凑的注脚。
+  //
+  // **判据钉的是「它们在 `.release-list-actions` 之内」这一个形状**，不是各自
+  // 的样式：位置关系一旦退回去（标志又回到标题与动作组之间），这一条立刻红，
+  // 而只断言字号的话，把标志挪回左边同样 12px 照样绿、症状一模一样。
+  const tpl = templateOf(versionsPanel);
+  const head = tpl.slice(tpl.indexOf('class="list-head-with-logo"'));
+  const actionsAt = head.indexOf('class="release-list-actions"');
+  const logoAt = head.indexOf('class="brand-logo"');
+  const captionAt = head.indexOf('class="card-caption"');
+  assert.ok(actionsAt >= 0, '卡头必须有动作组');
+  assert.ok(logoAt > actionsAt, 'npm 标志必须落在动作组**之内**（它在动作组起点之后）');
+  assert.ok(captionAt > actionsAt, '「最近检查」必须落在动作组**之内**');
+  // 两枚 icon-only 按钮在动作组里，标志与时间戳排在它们**之前**——它们是注脚，
+  // 可点的动作才是这一行右侧的重心。
+  const firstBtn = head.indexOf('aria-label="检查官方版本"');
+  assert.ok(logoAt < firstBtn, '标志排在两个动作之前');
+  assert.ok(captionAt < firstBtn, '时间戳排在两个动作之前');
+
+  // 字号：**12px 一档**（2026-10-10 用户第三次拍板「再小一号」）。13px（`--fs-desc`）
+  // 在这一行仍然偏重——它是三者里唯一的文字，字号一压过按钮，
+  // 「标志 + 时间 + 两个动作」就读成「一句话 + 两个图标」而不是一组紧凑的注脚。
+  // 12px 与 12px 的标志同档，视觉重量才对得上。
+  // **必须真的查出值**：只断「有这条声明」的话，写成 14px 照样绿，而那正是
+  // 用户两次否掉的中间态。
+  assert.equal(effectiveDeclaration(['list-head-with-logo', 'brand-logo'], RULES, 'width'), '12px');
+  assert.equal(
+    effectiveDeclaration(['list-head-with-logo', 'card-caption'], RULES, 'font-size'),
+    '12px',
+    '「最近检查」要与标志同档（12px），不是标题同档也不是 13px 那档',
+  );
+
+  // 紧凑：标志与时间戳之间、时间戳与按钮之间，各有一段固定间距，三者读成一组。
+  // **不许靠 `.release-list-actions` 的 gap 实现**——那个 2px 是为两个贴邻的
+  // icon-only 按钮之间的关系定的，改动它会把那两个动作也撑开。
+  assert.equal(
+    effectiveDeclaration(['list-head-with-logo', 'brand-logo'], RULES, 'margin-right'),
+    '6px',
+    '标志与时间戳之间要留一段间距，否则两者糊在一起',
+  );
+  assert.equal(
+    effectiveDeclaration(['list-head-with-logo', 'card-caption'], RULES, 'margin-right'),
+    '6px',
+    '时间戳与两个按钮之间要留一段间距，否则注脚压着动作',
+  );
 });
 
 test('两个动作收成 icon-only（带 aria-label），卡头给出最近检查时间', () => {
@@ -1267,6 +1347,130 @@ test('页头标题与说明同属一个子项——否则说明会被 space-betw
   }
 });
 
+// 六个页面共用「页头 = 主标题 + 副标题同行」。上面那条判据量的是**嵌套深度**
+// （说明不许跑到 `.page-head` 的直接子级），这条量的是**排布本身**：两件事会
+// 分别坏，且都不报错。
+test('页头主副标题同行：主标题不动，副标题缩小一档并挂在 .page-head__text 上', () => {
+  // 2026-10-10 用户对六个页面统一提的要求：「主标题的文字、大小不动，副标题缩小
+  // 字号并且和主标题同一行显示」。
+  //
+  // ① 排布钉**选择器**而不只是钉「display 是 flex」：不钉选择器的话，六个模板
+  //    忘了挂 `page-head__text` 这个类时，theme.css 的规则照样在、下面两条
+  //    样式判据照样绿，而实机上副标题会退回块级、另起一行。样式与模板必须一起钉。
+  // ② `baseline` 而不是 `center`：副标题按基线对齐才读作「跟在标题后面的一句话」；
+  //    `center` 会让 12px 落在 32px 行盒的正中，行末句号浮到标题基线之上。
+  // ③ `.page-title` 钉 `flex: none`：不钉的话 flex 两侧都可压缩，副标题一长，
+  //    被压扁的是**标题**——标题断行比说明换行更糟。
+  // ④ 主标题的文字档位钉死 24px / 700 / 32px：这条需求明写「主标题不动」，
+  //    而它也是设计 token 规范 §2 的值，判据在这里是那两个约定的交汇点。
+  assert.equal(effectiveDeclaration(['page-head__text'], RULES, 'display'), 'flex');
+  assert.equal(effectiveDeclaration(['page-head__text'], RULES, 'align-items'), 'baseline');
+  assert.equal(effectiveDeclaration(['page-title'], RULES, 'flex'), 'none');
+  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), '24px');
+  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-weight'), '700');
+  assert.equal(effectiveDeclaration(['page-title'], RULES, 'line-height'), '32px');
+
+  // 副标题：新档位 12px（`--fs-page-desc`），下外边距清零——块级排布下那 5px 是
+  // 「标题与说明之间」的缝，同行之后由 `gap` 承担，留着会把副标题往右推。
+  // 钉 `var(--fs-page-desc)` 而不是 `12px`：token 档位可以被整体调，而判据
+  // 要抓的是「它读的是哪一档」——直接比 12px 的话哪天真调了档位就红。
+  assert.equal(effectiveDeclaration(['page-desc'], RULES, 'font-size'), 'var(--fs-page-desc)');
+  assert.equal(effectiveDeclaration(['page-desc'], RULES, 'margin'), '0');
+  assert.match(
+    themeCss,
+    /--fs-page-desc:\s*12px/,
+    '--fs-page-desc 应在 :root 定义（12px）。它必须独立于 --fs-desc：那一档 13px 是' +
+      '「独立成段」的说明文字档，页头副标题改与 24px 主标题同行后，13px 显得过重。',
+  );
+
+  // 六个模板都要真的挂上这个类。只查样式不查模板，就是上面 ① 说的那种假绿。
+  for (const rel of [
+    'ui/src/shell/OverviewPanel.vue',
+    'ui/src/shell/SettingsPanel.vue',
+    'ui/src/kernel/VersionsPanel.vue',
+    'ui/src/plugins/PluginsPanel.vue',
+    'ui/src/skills/SkillsPanel.vue',
+    'ui/src/migration/MigrationPanel.vue',
+  ]) {
+    assert.match(
+      pageHeadBlock(readFileSync(rel, 'utf8')),
+      /class="page-head__text"/,
+      `${rel} 的页头缺少 .page-head__text，副标题会退回块级另起一行`,
+    );
+  }
+});
+
+test('tooltip 浮层必须限宽并换行，选择器钉在 [role=tooltip] 而不是 .el-popper', () => {
+  // 2026-10-10 用户报「注意宽度控制，做好换行显示，不要出现超长 tooltip」。
+  // 根因：EP 的 `.el-popper` 只有 `min-width: 10px`，**没有任何 max-width**，而
+  // 浮层是 `position: absolute` 的自适应宽盒子——里面的纯文本有多长浮层就有多宽。
+  // 本仓最长的 `SubscriptionWindow` 的 `CAPABILITY_TIP` 约 140 字 ≈ 1680px，
+  // 窗口只有 1040px，于是它拉出一整条横穿屏幕、还被窗口裁掉两头的黑条。
+  //
+  // 为什么是 `[role='tooltip']`：`.el-popper` 是**所有**浮层的公共类，本仓还有
+  // 2 个 `el-select` 与 3 个 `el-dropdown` 走同一个类，给它加宽度上限会顺带改掉
+  // 下拉菜单的宽度——而菜单本来就该按内容取宽。
+  const tip = ruleBlocks(themeCss).filter(
+    (r) => /\.el-popper\[role=('|")tooltip\1\]/.test(r.selector),
+  );
+  assert.equal(tip.length, 1, 'theme.css 里应有且只有一条 .el-popper[role=tooltip] 规则');
+
+  // 四条声明各有用处，少一条就有一类内容重新撑开：
+  //  - min-width: 0        只给上限的话仍能塌到 EP 的 10px
+  //  - max-width           真正限住的是「整段纯文本不换行」
+  //  - white-space: normal 显式声明，别依赖库的默认值
+  //  - overflow-wrap: anywhere  `break-word` 不参与 min-content 计算，在自适应宽
+  //    盒子里压不回上限内；本仓 `installTip` 里的路径与 `quarantineNote(row)` 里
+  //    的第三方隔离原因**可能全是 ASCII**，中文能自然断行而它们不能。
+  for (const [prop, value] of [
+    ['min-width', '0'],
+    ['max-width', 'min(420px, calc(100vw - 32px))'],
+    ['white-space', 'normal'],
+    ['overflow-wrap', 'anywhere'],
+  ]) {
+    // 定位「属性名:」后取到下个 ;/} 为止——indexOf + 字面正则，不用 new RegExp(`…`)
+    // 拼串：安全扫描会把那个形状误判成命令注入、拦下整份文件的写入（prop 是上面
+    // 循环里的字面量，这里没有任何外部输入）。
+    const at = tip[0].body.indexOf(`${prop}:`);
+    const m = at >= 0 && tip[0].body.slice(at + prop.length).match(/^:\s*([^;}]+)/);
+    assert.equal(m && m[1].trim(), value, `.el-popper[role=tooltip] 缺 ${prop}: ${value}`);
+  }
+
+  // 反向：裸 `.el-popper` 不许带 max-width。带了就等于把 select / dropdown 一起
+  // 限宽，而那条是本条选择器存在的**全部理由**——错了判据也得跟着错。
+  for (const r of ruleBlocks(themeCss)) {
+    if (!/^\.el-popper$/.test(r.selector.trim())) continue;
+    assert.doesNotMatch(r.body, /max-width/, '裸 .el-popper 不许限宽，会连 select / dropdown 一起改掉');
+  }
+});
+
+test('EP 的浮层 role 默认值（tooltip 选择器的前提，升级会改）', (t) => {
+  // `.el-popper[role='tooltip']` 成立**只因为** EP 给浮层的 `role` prop 默认值就是
+  // `"tooltip"`，而 `el-select` / `el-dropdown` 各自显式传了别的值。
+  // 升级 EP 时这条会先红——那正是要看的：选择器的正确性建立在这个前提上，
+  // 前提变了就得重新确认，而不是继续绿着。
+  //
+  // 依赖布局变了（只有 `lib/` 没有 `es/`）就跳过，**不假装绿**：这条判据此时
+  // 「验不了」，而不是「验过了」。
+  const ep = 'node_modules/element-plus/es/components';
+  const files = {
+    popper: `${ep}/popper/src/popper.mjs`,
+    select: `${ep}/select/src/select2.mjs`,
+    dropdown: `${ep}/dropdown/src/dropdown2.mjs`,
+    dropdownProps: `${ep}/dropdown/src/dropdown.mjs`,
+  };
+  for (const f of Object.values(files)) {
+    if (!existsSync(f)) {
+      t.skip(`element-plus 产物布局变了（${f} 不存在），这条前提判据无法验证`);
+      return;
+    }
+  }
+  assert.match(readFileSync(files.popper, 'utf8'), /role:\s*\{[^}]*default:\s*"tooltip"/s);
+  assert.match(readFileSync(files.select, 'utf8'), /role:\s*"listbox"/);
+  assert.match(readFileSync(files.dropdownProps, 'utf8'), /role:\s*\{[^}]*default:\s*"menu"/s);
+  assert.match(readFileSync(files.dropdown, 'utf8'), /role:\s*_ctx\.role/);
+});
+
 // --- 技能页的卡片划分 -----------------------------------------------------
 //
 // 2026-10-07 对齐设计稿：原先「手动安装」是「已安装」卡底部的一条虚线分隔，
@@ -1280,7 +1484,7 @@ const skillsTpl = templateOf(skills);
 test('技能页是「已安装 / 社区资源」两张卡，不是一张卡里的分隔线', () => {
   const cards = skillsTpl.match(/class="card [^"]*"/g) || [];
   assert.deepEqual(cards, ['class="card entity-card"', 'class="card community-card"']);
-  assert.match(skillsTpl, /<h2>社区资源<\/h2>/);
+  assert.match(skillsTpl, cardTitle('社区资源'));
   // 「手动安装」不再挂在已安装卡里：它是社区资源卡的第二段。
   assert.ok(
     skillsTpl.indexOf('社区资源') < skillsTpl.indexOf('手动安装'),
@@ -1348,12 +1552,12 @@ test('内核版本页卡头叫「已安装 / N 个版本」，不复述页面标
   // 设计稿 draft 2669-2673：卡头 = 已安装 / caption 2 个版本。原先卡头写的是
   // 「内核版本」——页面标题已经叫内核版本了，卡头再说一遍等于把整页的名字
   // 复述一次；而这一段真正在讲的是「本机装了哪几个」。
-  assert.match(versionsTpl, /<h2>已安装<\/h2>/);
+  assert.match(versionsTpl, cardTitle('已安装'));
   assert.match(versionsTpl, /个版本<\/span>/);
   // 组内那个 `<h3>已安装</h3>` 一并去掉，否则同一个词连着出现在两行。
   // 判据只数这两个标题标签，不数全文：「已安装」在发布列表里还作为**行内标记**
   // 出现一次（标出这个远端版本本机已经有了），那是另一个含义，不能一起禁掉。
-  assert.equal((versionsTpl.match(/<h2>已安装<\/h2>/g) || []).length, 1);
+  assert.equal((versionsTpl.match(new RegExp(cardTitle('已安装').source, 'g')) || []).length, 1);
   assert.equal((versionsTpl.match(/<h3>已安装<\/h3>/g) || []).length, 0);
 });
 
@@ -1411,15 +1615,38 @@ test('插件右栏标题与两栏分界采用刻蚀线', () => {
   assert.match(vertical, /clip-path:\s*polygon\(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%\)/);
 });
 
-test('插件页：外层卡叫「插件管理」，右栏那份远端目录才叫「插件中心」', () => {
+test('插件页：外层卡叫「插件管理」，右栏那块头叫「远端目录」，「插件中心」只留给页签', () => {
   // draft 2746 外层卡 = 插件管理；draft 2775 右栏 = 插件中心（来自 dshfind.com）。
   // 原先外层卡叫「插件中心」、右栏叫「插件仓库」——同一份 dshfind.com 目录，
   // 同一页里两个名字。
+  //
+  // 2026-10-10 又收了一层：右栏那个页签本来就写着「插件中心」，页签下面那个
+  // `<h3 class="section-divider">` **也**写着「插件中心」——同一屏里同一个东西
+  // 出现两次名字，正是本文件开头那条规则要禁的形状。页签管「我在哪个入口」，
+  // 块头管「里面装的是什么、从哪来」，于是块头改叫「远端目录」，并借这个改名
+  // 把它与左栏那份本机插件库分开：前者是远端目录，后者才是本机真正生效的那些。
+  // 「插件中心」于是只剩页签一处。
   assert.match(pluginsTpl, /<span class="plugin-center-title">插件管理<\/span>/);
-  assert.match(pluginsTpl, /<h3 class="section-divider">\s*插件中心/);
   assert.doesNotMatch(pluginsTpl, /插件仓库(?![一-龥])/);
   // dshfind.com 的链接跟着右栏走（它是那份目录的来源，不是整页的来源）。
   assert.match(pluginsTpl, /dshfind\.com\/zh/);
+
+  // 右栏两个页签里的块头，**逐字**就是这两个名字：页签回答「我在哪个入口」，
+  // 块头回答「里面装的是什么、从哪来」，于是块头不复述页签。这一条不能写成
+  // 「全文里『插件中心』只出现一次」——页头那句「并从插件中心安装或升级」与
+  // 目录区的「插件中心加载中…」都是在正常地**指称**那份目录，禁掉它们等于
+  // 逼着把话说得含糊。要禁的是**标题级重复**：块头与页签同名。
+  const dividerTitles = Array.from(
+    pluginsTpl.matchAll(/<h3 class="section-divider">\s*(?:<span class="card-title-icon"[^>]*>[\s\S]*?<\/span>\s*)*([^<\s][^<]*?)\s*</g),
+    (m) => m[1].trim(),
+  );
+  assert.deepEqual(dividerTitles, ['远端目录', '按地址安装']);
+  // 两枚 accent 方块都在（与全页其余块头同规格）。
+  assert.equal(
+    (pluginsTpl.match(/<h3 class="section-divider">\s*<span class="card-title-icon"/g) || []).length,
+    2,
+    '右栏两个块头都要有那枚方块',
+  );
 });
 
 test('卡头 ⓘ 是纯图标：可见文字与 tooltip 内容说的是同一件事', () => {
@@ -1466,7 +1693,16 @@ function settingsColumns() {
 function settingsCardTitles() {
   const at = [...settingsTpl.matchAll(/<div class="page-layout__col">/g)].map((m) => m.index);
   assert.equal(at.length, 2, '设置页应是两列');
-  return [...settingsTpl.matchAll(/<h2[^>]*>\s*([^<]+?)\s*</g)].map((m) => ({
+  // 标题左侧那枚 `.card-title-icon` 的开标签里含 `<`，`([^<]+?)` 在 `<h2>` 之后
+  // 立刻失配——于是五张卡的标题**一张都取不到**，断言会以「数组是空的」失败，
+  // 而不是指着真正出问题的那张卡。把它作为可选前缀吃掉即可：仍然在**原文**上
+  // 匹配，`m.index` 才能和上面那两个栏位下标对得上（先 replace 再 matchAll
+  // 会让索引整体前移，于是每张卡都会被归到错误的栏）。
+  return [
+    ...settingsTpl.matchAll(
+      new RegExp(`<h2[^>]*>\\s*(?:${CARD_ICON_SPAN}\\s*)*([^<]+?)\\s*<`, 'g'),
+    ),
+  ].map((m) => ({
     title: m[1].trim(),
     col: m.index < at[1] ? 'left' : 'right',
   }));
@@ -1489,7 +1725,7 @@ test('设置页共五张卡，归属与顺序钉死：左三右二', () => {
 
 test('「环境回退与诊断」的 caption 走 head-meta + muted', () => {
   const { left, right } = settingsColumns();
-  assert.match(left, /<h2>环境回退与诊断<\/h2>/);
+  assert.match(left, cardTitle('环境回退与诊断'));
   // caption 走既有的 head-meta + muted，不为这一处新增 .card-caption。
   assert.match(left, /出问题时使用/);
   // 右栏只剩「任务通知」一张——它在内核事件流断开时会展开一大段环境说明与告警，
@@ -1533,7 +1769,12 @@ test('环境回退点与深入排查渲染成行，不再自带 .card 外框', (
   ]) {
     const tpl = templateOf(src);
     assert.doesNotMatch(tpl, /<div class="card(?![\w-])/, `${label} 不应再渲染自己的 .card 外框`);
-    assert.match(tpl, /^<template>\s*<div class="page-list-row">/, `${label} 的第一个根节点应是那一行`);
+    // `page-list-row` 后面允许跟修饰类：环境回退点那一行带三个动作，而设置页
+    // 那张卡的内净宽只有约 343px，并排放不下「环境回退点ⓘ」——2026-10-10 给它
+    // 加了 `page-list-row--stacked` 显式改成上下两排（理由见 SnapshotCard
+    // 的 scoped 注释）。这里只放宽到「行仍是模板的根节点」这一条，它带不带
+    // 修饰类不该由这条判据决定。
+    assert.match(tpl, /^<template>\s*<div class="page-list-row\b/, `${label} 的第一个根节点应是那一行`);
     assert.doesNotMatch(stripComments(themeCss), new RegExp(`\\.${family}-card`));
   }
 });
@@ -1742,7 +1983,7 @@ test('内嵌插件行是「当前内核」列表的第一行，不再是列表�
 // 判据扫的是模板块且注释已剥（`templateOf`）——插件面板的注释里正是在解释这次搬家
 // （写着「卡头」「插件中心」「刷新数据」），不剥就会被自己写的说明当成命中。
 
-test('「刷新数据」只有一枚，且必须落在右栏「插件中心」那一行', () => {
+test('「刷新数据」只有一枚，且必须落在右栏远端目录那一行', () => {
   const tpl = templateOf(readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'));
   // 数的是**类名**而不是整条 class 属性：按钮后来又挂上了 `btn-action`，
   // `class="plugin-center-refresh"` 这个整串会跟着不匹配——那不是「多了一枚」，
@@ -1762,11 +2003,18 @@ test('「刷新数据」只有一枚，且必须落在右栏「插件中心」�
     '卡头是「插件管理」这一张卡的标题，不是目录的标题；刷目录的按钮不该出现在这里',
   );
 
-  // 它必须在「插件中心」那个分组标题里（同一行靠右）。
+  // 它必须与远端目录那个分组标题同行（靠右）。
+  //
+  // **按「哪一行带着按钮」定位，而不是按标题文字去找那一行**：这条判据守的是
+  // 「按钮不许乱跑」，标题叫什么跟按钮的位置无关。上一轮把块头从「插件中心」
+  // 改成「远端目录」之后，按文字找的那一版就失配了——按钮好好待在原位，
+  // 判据却红了，而修法不该是把名字改回去。文字单独用下面那条钉。
   const dividers = [...tpl.matchAll(/<h3 class="section-divider">[\s\S]*?<\/h3>/g)].map((m) => m[0]);
-  const catalog = dividers.find((d) => d.includes('插件中心'));
-  assert.ok(catalog, '必须能找到「插件中心」那个分组标题');
-  assert.match(catalog, /\bplugin-center-refresh\b/, '刷新数据必须与「插件中心」同一行');
+  const catalog = dividers.find((d) => /\bplugin-center-refresh\b/.test(d));
+  assert.ok(catalog, '刷新数据必须与它所属的分组标题同一行（找不到带按钮的 .section-divider）');
+  // 块头的文字要钉住：它说的是「这个分区在做什么」。「插件中心」四个字让给上方
+  // 页签了——同一屏里同一个东西不许出现两个名字（ui/AGENTS.md 点名的反模式）。
+  assert.match(catalog, dividerTitle('远端目录'), '目录分区的块头应叫「远端目录」，「插件中心」留给页签');
 });
 
 test('刷新数据在分组行里靠右（跟着 .section-divider 的 flex 排）', () => {

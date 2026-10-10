@@ -49,14 +49,18 @@
      与卡片是两层而不是一层的底。暗色下用叠黑，浅色下也用叠黑——它的意图是
      「凹下去」而不是「压暗一个亮元素」，两套主题同向，所以不必分档。 */
   --surface-sunken: rgba(32, 37, 43, 0.06);
-  /* 结构性分割线：概览这一屏的卡头底线 / 指标分隔（2026-10-08 用户定案「改成黑色、
-     调细一点」）。与 `--border` 的区别不是深浅，而是**角色**：`--border` 是卡片
-     描边，`--divider-strong` 是把一片内容切成上下两组的那条线，它要比描边重才对。
+  /* 结构性分割线（刻蚀线）：卡头底线 / 指标分隔。与 `--border` 的区别不是深浅，
+     而是**角色**：`--border` 是卡片描边，`--divider-strong` 是把一片内容切成
+     上下两组的那条线，它要比描边重才对。
 
-     **两套主题不再同值**（2026-10-09 用户拍板，此前是明暗都用 `#212121`）：这批线
-     在暗色下压在 #2c2b30 卡面上只有 1.19:1，实际根本看不见，而「看不见的分割
-     线」正是本轮边缘感改造要清掉的一类问题。暗色那一档见 `html.dark`。 */
-  --divider-strong: #212121;
+     **明暗各一档，且都用主题墨色那一族，不用中性黑**。暗色分档在先（2026-10-09，
+     此前明暗都用 `#212121`：它压在 #2c2b30 卡面上只有 1.19:1，读不出「凹槽」）；
+     2026-10-10 用户拿浅色截图报「分割线颜色不协调」——近黑压在白卡上是 16.1:1，
+     比正文（#142342，15.6:1）还重，一条线抢过了整块卡头的视线。浅色改取
+     #51627e（与 `--text-secondary` 同一档蓝灰，白卡上 6.2:1）：仍然一眼可见、
+     仍比描边（#e3eaf4，1.21:1）重一截，但退回到「结构线」该在的层级。
+     暗色那一档（#31435f）见 `html.dark`。 */
+  --divider-strong: #51627e;
   /* 卡片描边。2026-10-10 取设计 token 的 `--ds-border` #E3EAF4（对白卡面 1.21:1）。
      一根 1px 线要独自承担整个边缘识别，而本主题的边缘识别是**线与投影各担一半**
      （`.card` 同时接 `--shadow-card`，见下）——规范给的就是这条 1px 线，
@@ -145,6 +149,12 @@
   --fs-block-title: 16px;
   --fs-subtitle: 15px;
   --fs-desc: 13px;
+  /* 页头副标题单独一档（2026-10-10 用户要求「所有页面主、副标题统一风格」：
+     主标题文字与大小不动，副标题缩小字号并与主标题**同一行**）。
+     不复用 `--fs-desc`：那一档 13px 是**独立成段**的说明文字档，页头副标题改成
+     与 24px 主标题同行之后，13px 在 32px 行高里显得过重，且与主标题的间距只剩
+     「字高差」那一层，读起来仍像两个块而不是一行。12px 是「跟在标题后面」那一档。 */
+  --fs-page-desc: 12px;
   --fs-tip-icon: 16px;
   --fs-action: 13.5px;
   --action-h: 30px;
@@ -163,6 +173,13 @@
      别各用一套」，窗口与卡片同值不在这条批评范围内——它们不在同一个视觉层。）
      投影不在这里：它两套主题共用一条（见 `#app::after`）。 */
   --window-radius: 12px;
+  /* 窗口外缘那一圈线（2026-10-10）。它记的是「**这扇窗在这里**」，与 `--border`
+     （卡片描边）不是同一个角色：后者分的是窗**内**的层级，这一条分的是窗与窗外
+     （桌面 / 旁边那扇窗）。两窗相邻时中间没有任何像素过渡，全靠这一条把两块同色的
+     `--window` 分开——取值因此要比卡片描边更重一档，判据钉在 ≥1.7:1（见
+     windowChrome.test.js），比 `--divider-strong` 的 1.5 更严，因为那条线压的是
+     卡面（本来就有底色差帮它），这一条压的是窗口底色（与另一扇窗同色）。 */
+  --window-edge: #aebfd9;
   --titlebar-height: 38px;
   --sidebar-width: 224px;
   --sidebar-width-collapsed: 64px;
@@ -263,6 +280,11 @@ html.dark {
   --header-ribbon: url("/header-ribbons.svg");
   --header-ribbon-opacity: 1;
   --whale-eye-bright: #ff5a5e;
+  /* 窗口外缘线的暗色档：与浅色那一档**同一条蓝调、方向反过来**——暗色下「更重」
+     是更亮而不是更深（同一口径见上面的 `--divider-strong`）。#33496b 压在窗口底色
+     #0b1526 上是 2.01:1，比同族的 `--border`（#2a3b55，1.61:1）重一档，理由与
+     浅色档相同：两窗相邻时全靠它分开。 */
+  --window-edge: #33496b;
 
   /* Element Plus 暗色覆写：把组件库融进壳底色。
      **这一组必须跟着上面的壳 token 一起改**（2026-10-10 深蓝改造）：EP 把
@@ -375,19 +397,32 @@ body {
         由这里用 `box-shadow` 补回来，形状跟着 CSS 圆角走而不是系统矩形走。
 
    圆角值取 12px：与 `--radius-card`（8px）拉开一档，让「窗口」与「窗口里的
-   卡片」不读成同一层；投影用两段（近段定边缘、远段定悬浮高度），接近 macOS
-   原生投影的观感。阴影画在 `#app` 的 `::after` 上而不是 `#app` 本身：圆角裁切
-   （`overflow: hidden`）会把阴影一起裁掉。 */
-#app::after {
+   卡片」不读成同一层；边线用 `--window-edge`（理由见该 token）。
+
+   **边线必须画成 inset，且这是 2026-10-10 才修回来的一处真缺陷。** 此前这里写的是
+   两段**向外扩散**的投影（`0 2px 8px` / `0 12px 32px`）。建窗开了 `transparent`
+   （`tauri.conf.json` 的 `backgroundColor: '#00000000'`），网页内容被系统裁在窗口
+   矩形内——**窗口矩形之外的像素一帧都不合成**，于是那两段投影在真机上等于没画。
+   症状正是用户报的「左右两个 Window 的边线不清晰」：两扇窗各自铺着同一个
+   `--window` 底色，相邻处中间没有任何过渡，读成了一整块。**它不报错**：dev server、
+   typecheck、build、14 项 invariants 全绿，只有把两窗并排放到桌面上才看得见。
+
+   改成 `inset 0 0 0 1px` 后边线落在**窗口内侧**，落在系统裁切范围之内，四扇窗
+   （主壳 + 三扇副窗）都经过这一个 `::after`，所以一处改动全覆盖。原来的外投影
+   没有一并保留：它在透明窗口里恒等于零，留着只会让下一个人以为「窗口已经有边缘
+   了」而不再查这件事。
+
+   选择器带 `body.custom-titlebar-shell`，与下面那条 `clip-path` 同一口径——**只给
+   四扇自绘壳窗口画**。官网页签栏在 Rust 侧保留了原生装饰，系统自己会画窗框，再叠
+   一条就成了双线。 */
+body.custom-titlebar-shell #app::after {
   content: '';
   position: fixed;
   inset: 0;
   border-radius: var(--window-radius);
-  /* 不吃事件：浮层与卡片仍在 `#app` 内部，这一层只是投影。 */
+  /* 不吃事件：浮层与卡片仍在 `#app` 内部，这一层只是边线。 */
   pointer-events: none;
-  box-shadow:
-    0 2px 8px rgb(0 0 0 / 0.28),
-    0 12px 32px rgb(0 0 0 / 0.32);
+  box-shadow: inset 0 0 0 1px var(--window-edge);
 }
 
 /* fixed 投影会越过 #app 的 overflow；body 级裁切同时约束 teleport 浮层。
@@ -1145,7 +1180,8 @@ main::before {
    **几何与颜色分家**：收细是几何，只能用 clip-path——渐变（含 mask-image）
    改的是透明度，两端是「淡到看不见」而不是「细」；颜色是 token，明暗各一档
    （暗色那一档 2026-10-09 才补上，此前两套同值 #212121 时它在暗色下 1.19:1
-   等于没有）。原生 border 全部退场——border 没法 clip，直线与收细只能二选一。
+   等于没有；浅色那一档 2026-10-10 弃近黑改墨灰，见 token 定义处的注释）。
+   原生 border 全部退场——border 没法 clip，直线与收细只能二选一。
    **适用的只是「有线的块头」**：填色工具条（.logwin 头 / .subwin-head /
    .usagewin-head）、窗口 chrome（.titlebar）、表格行、以及 .section-divider
    那条虚线是别的角色，不跟这条标准；本来就没有线的标题（5 个诊断窗口）
@@ -1384,6 +1420,19 @@ main::before {
   color: var(--text);
   font-size: var(--fs-subtitle);
   font-weight: 650;
+  /* 标题 + ⓘ 同行，且 **ⓘ 永远不掉到第二行**（2026-10-10 六面板向概览看齐）。
+     这一行是 `minmax(0,1fr) auto` 栅格，右侧动作区按内容取宽：设置页「环境回退点」
+     那一行带三个按钮（回到良好状态 / 刷新 / 查看），动作区吃掉约 250px，左列只剩
+     110px 出头——inline 流里 ⓘ 是个独立可换行点，于是它掉到标题下面，而标题自己
+     占满整行，看起来像标题折行了。改成 flex 后两者是同一个行盒的兄弟，ⓘ 被
+     `flex: none` 钉住不再有掉行的余地。文字自己窄到放不下时仍然换行（标题说明要
+     能读到全），那是有意义的换行，不是这次的这种。 */
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.page-list-title .card-info-icon {
+  flex: none;
 }
 
 /* 设计稿这一行是 `white-space: nowrap` + 省略号（1459-1470）。这里放开换行：
@@ -1414,6 +1463,21 @@ main::before {
   gap: 16px;
 }
 
+/* 标题组：主标题 + 副标题**同行**（2026-10-10 用户定的统一风格）。
+   `.page-head` 是 `space-between` 的 flex 行，标题与说明必须包在这一个子元素里
+   （`ui/AGENTS.md` §页头那条判据量的就是这个嵌套深度），这里只给它定内部排布。
+   - `baseline` 而不是 `center`：副标题按基线对齐才读作「跟在标题后面的一句话」。
+     `center` 会把 12px 顶到 32px 行盒的正中，与 24px 标题的光学中心勉强重合，
+     但基线不重合——行末的句号会飘在标题基线之上，读起来像两行字碰巧挨着。
+   - `min-width: 0`：`.page-head` 的另一端是右侧动作区，两侧都要能压，
+     不给下限的话长副标题会把动作挤出可视区（数据迁移页那句最长，约 40 字）。 */
+.page-head__text {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
 .page-title {
   margin: 0;
   /* 设计 token 规范 §2：页面标题 24px / 700 / 行高 32px。此前 21px 是 10-08
@@ -1423,6 +1487,10 @@ main::before {
   font-size: 24px;
   font-weight: 700;
   line-height: 32px;
+  /* `flex: none` 是标题与副标题同行的前提：不钉住的话标题与副标题都是
+     `flex: 0 1 auto`，副标题一旦长到装不下，被压缩的是**标题**——而标题是
+     这一行的主体，让它断行比让说明换行更糟。 */
+  flex: none;
 }
 
 /* 卡片标题左侧的蓝底方块图标（设计稿 2026-10-10）。概览页四个卡片标题
@@ -1468,10 +1536,13 @@ main::before {
   font-size: 14px;
 }
 
+/* 页头副标题：与主标题同行（见 `.page-head__text`）。下外边距必须清零——
+   块级排布下这 5px 是「标题与说明之间」的缝，同行之后由 `gap: 12px` 承担，
+   留着会变成行盒之外的一条额外空白，视觉上把副标题往右推。 */
 .page-desc {
-  margin: 5px 0 0;
+  margin: 0;
   color: var(--text-secondary);
-  font-size: var(--fs-desc);
+  font-size: var(--fs-page-desc);
   line-height: 1.6;
 }
 
@@ -1571,6 +1642,49 @@ main::before {
   width: 30px;
   min-height: 30px;
   padding: 0;
+}
+
+/* --- 无文字按钮（icon-only）规范 ---------------------------------------
+   2026-10-10 用户定规范：icon-only 按钮的**背景范围要小**，并且必须有
+   hover 后的功能说明文字。第二条由 check-invariants 的 `icon-only` 项机械兜底，
+   这里只管第一条（尺寸）。
+
+   **为什么 EP 的默认值不能用**：`el-button` 的基础规则带 `padding: 8px 15px`
+   与 `height: 32px`，而 `is-text` 只把背景换成透明、**padding 原样保留**。
+   于是一个 14px 的图标被撑成约 44×32 的一块——用户截图里那个「背景好大」
+   就是它：视觉重量几乎和旁边一枚带文字的按钮相等，而它其实只有一个图标。
+
+   **作用域只治「没 class、吃 EP 默认值」的那一批**，不是无差别缩小所有 icon-only
+   按钮。`.entity-action`（插件 / 技能列表行的紧凑动作）另有 30px 规则，是
+   2026-10-08 用户要求「按钮放大」定下的**有意尺寸**，不归这条管——把它一起缩到
+   26px 会把那次拍板撤销掉。这条规范治的是**没人管过**的那批：加了这个类，
+   尺寸就跟着规范走，不加就退回 EP 那个 44×32。
+
+   26×26 不是随手取的：Windows 的 SMALL_CAPTION 命中区下限是 24px，
+   小于它会让这个按钮在密集图标排布里变得难点。
+
+   命中区靠 `::after` 补到 32×32 **居中**外扩：视觉背景小、真实命中区不缩水，
+   而相邻两个按钮的命中区会重叠 4px——重叠取交集，两侧各让 2px，
+   仍在 24px 下限之内。 */
+.el-button.icon-btn {
+  position: relative;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: var(--radius-control);
+}
+
+/* 视觉缩小了，命中区不能跟着缩。`position: relative` + 居中外扩的伪元素
+   不占布局、不吃点击（命中测试算在按钮上），只把可点范围补回 32×32。 */
+.el-button.icon-btn::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 32px;
+  height: 32px;
+  transform: translate(-50%, -50%);
 }
 
 .btn:disabled {
@@ -2034,6 +2148,44 @@ main::before {
 .el-popper.is-dark > .el-popper__arrow::before {
   background: var(--surface-raised);
   border-color: var(--border);
+}
+
+/* tooltip 浮层必须有宽度上限 + 换行（2026-10-10 用户报「注意宽度控制，做好
+   换行显示，不要出现超长 tooltip」）。
+   根因是 Element Plus 的 `.el-popper` 只给了 `min-width: 10px`，**没有任何
+   max-width**，而浮层是 `position: absolute` 的自适应宽盒子——里面的纯文本
+   有多长，浮层就有多宽。窗口只有 1040px，于是 `SubscriptionWindow` 的
+   `CAPABILITY_TIP`（约 140 字 ≈ 1680px）会拉出一整条横穿屏幕、且被窗口裁掉
+   两头的黑条。中文其实能自然断行，但 `installTip` 里的路径
+   （`~/.dsh-xlink/plugins/dsh/`）与 `quarantineNote(row)` 里的第三方隔离原因
+   是**可能全 ASCII 的**，EP 的 `overflow-wrap: break-word` 只在「这个词自己都
+   放不下」时才断，于是英文 / 路径把整行撑开。
+
+   **选择器为什么是 `[role='tooltip']` 而不是 `.el-popper`**（这一条踩过一次坑）：
+   `.el-popper` 是**所有**浮层的公共类，本仓还有 2 个 `el-select` 与 3 个
+   `el-dropdown` 走同一个类，给它加宽度上限会顺带改掉下拉菜单的宽度——而菜单
+   本来就该按内容取宽。`el-popper` 自己的 `role` prop **默认值就是 `"tooltip"`**
+   （`node_modules/element-plus/es/components/popper/src/popper.mjs`），而
+   `el-select` 显式传 `role: "listbox"`、`el-dropdown` 传 `role: "menu"`，两者
+   都被这一个属性选择器排除。`el-popconfirm` 内部就是 `ElTooltip` 且不覆盖 role，
+   于是同样命中——它那几句确认说明同样会溢出，一并治掉是对的。
+   这比给 36 个 `<el-tooltip>` 逐个挂 `popper-class` 更可靠：**模板里漏挂一个，
+   这里就漏修一个，而漏掉的那个恰好是最长的那一个**（新写的 tooltip 谁记得挂）。
+
+   - `min-width: 0`：只给上限的话它仍能塌到 EP 的 `min-width: 10px`。
+   - `420px` 而不是 `280px`：与 `.card-info-tooltip` 那条 280px 不同档是有意的
+     ——那一档是**卡片内说明**（短），这一档是**独立浮层**，文案长且不受卡片宽度
+     约束（本仓最长 140 字）。420px 与 `plugins.css` 的 `.precheck-tip-popper`
+     同值，两处因此不冲突（那条靠 `popper-class` 挂上，本条特异度更高但值相同）。
+   - `calc(100vw - 32px)`：浮层贴到窗口右缘时至少留 16px 边距。
+   - `overflow-wrap: anywhere` 而不是 `break-word`：前者参与 min-content 计算，
+     在自适应宽盒子里才真的能把长路径压回上限内。 */
+.el-popper[role='tooltip'] {
+  min-width: 0;
+  max-width: min(420px, calc(100vw - 32px));
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
 }
 
 .installed-list,
@@ -3683,12 +3835,17 @@ body.pane-dragging .log-tabs {
 
 /* 「已安装」页签的实例 chip 行：基线 .entity-foot 已随单行改版删除
    （entity-foot 解散，见 PluginsPanel 的 .entity-row--single），这里只剩
-   「名称行与 chip 行之间的虚线分隔」。虚线颜色走 token——写死过的
-   `rgba(238,255,216,.12)` 在浅色主题下等于浅底上的浅线，整条看不见。 */
+   「名称行与 chip 行之间的分隔」。颜色走 token——写死过的
+   `rgba(238,255,216,.12)` 在浅色主题下等于浅底上的浅线，整条看不见。
+
+   虚线 → 实线（2026-10-10，六面板向概览看齐）：概览页卡内所有分隔都是
+   `1px solid var(--border)`，虚线是 `.section-divider` 与日志分组那两处
+   的旧约定。同一张卡片里实线卡头下面跟一条虚线，读成两种层级——而这里
+   分隔的是「同一个插件的名字」与「它的状态」，本就是同一层。 */
 .entity-foot--instance-grid {
   margin-top: 6px;
   padding-top: 6px;
-  border-top: 1px dashed var(--border);
+  border-top: 1px solid var(--border);
 }
 
 .instance-chip-row {

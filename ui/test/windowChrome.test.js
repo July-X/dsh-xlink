@@ -55,6 +55,29 @@ function fnBody(source, name) {
   return stripJs(m[1]);
 }
 
+/**
+ * 两个 #rrggbb 的 WCAG 对比度。与 designAlignment.test.js 里那份同一实现——
+ * 两处都从 token 解析出**字面十六进制**再算：传进来一个 `var(--x)` 会算成 NaN
+ * 而不是报错，那样的失败会以「值不对」的措辞报出 NaN，排查方向会被带偏。
+ */
+function contrastRatio(a, b) {
+  const channel = (c) => {
+    const v = c / 255;
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = (hex) => {
+    assert.match(hex, /^#[0-9a-f]{6}$/i, `contrastRatio 只接受 6 位十六进制，收到 ${hex}`);
+    const n = parseInt(hex.slice(1), 16);
+    return (
+      0.2126 * channel((n >> 16) & 255) +
+      0.7152 * channel((n >> 8) & 255) +
+      0.0722 * channel(n & 255)
+    );
+  };
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 // ---- 窗口外壳：圆角与副窗自绘标题栏（2026-10-08） ------------------------
 //
 // 用户指出「window 的边角的圆角保持一致」与「红绿灯大小 / hover 要匹配系统」。
@@ -178,8 +201,76 @@ test('底色跟着圆角一起搬到 #app，body 必须透明', () => {
   assert.match(app, /border-radius:\s*var\(--window-radius\)/, '#app 负责圆角');
   assert.match(app, /overflow:\s*hidden/, '内容必须按圆角裁切');
   assert.match(app, /background-color:\s*var\(--window\)/, '窗口底色在 #app 上');
-  // 投影画在 ::after 上而不是 #app 本身：overflow: hidden 会把它一起裁掉。
-  assert.match(cssRule(css, '#app::after'), /box-shadow/, '投影要画在伪元素上');
+  // 边线画在伪元素上而不是 #app 本身：overflow: hidden 会把它一起裁掉。
+  assert.match(
+    cssRule(css, 'body.custom-titlebar-shell #app::after'),
+    /box-shadow/,
+    '窗口边线要画在伪元素上',
+  );
+});
+
+test('窗口边线必须画在内侧（外投影在透明窗口里一帧都不合成）', () => {
+  // 2026-10-10 用户报「左右两个 Window 的边线不清晰」。查出来的根因不是取值太弱，
+  // 是**画错了方向**：此前 `#app::after` 上写的是两段向外扩散的投影
+  // （`0 2px 8px` / `0 12px 32px`），而建窗开了 `transparent`
+  // （`tauri.conf.json` 的 `backgroundColor: '#00000000'`），网页内容被系统裁在窗口
+  // 矩形内——窗口矩形之外的像素一帧都不合成，那两段投影恒等于零。两扇窗各自铺同
+  // 一个 `--window` 底色，相邻处中间没有任何过渡，读成了一整块。
+  //
+  // **判据钉「方向」而不是「够不够强」**：边线改成弱一点的外投影照样能过一条比值
+  // 断言，而症状一模一样——所以这里断言的是 `inset`。
+  const css = stripCss(read('../src/theme.css'));
+  const edge = cssRule(css, 'body.custom-titlebar-shell #app::after');
+  assert.match(edge, /box-shadow:\s*inset/, '窗口边线必须是 inset：外侧像素在透明窗口里不存在');
+  // 只拦**inset 之后**那段真正向外扩散的投影。写成 `/box-shadow:[^;]*\b0\s+\d/`
+  // 会把 `inset 0 0 0 1px` 自己的三个 0 当成命中——判据把**正确**的边线判成违规，
+  // 而它自己绿着（这条断言是本轮反向验逼出来的：先写宽了，红的却是好代码）。
+  assert.doesNotMatch(
+    edge,
+    /box-shadow:[^;]*inset[^;]*\b[1-9]\d*\s+[1-9]/,
+    '不许在 inset 之后再挂一段向外扩散的投影——它在透明窗口里恒等于零，留着只会让人以为窗口已经有边缘了',
+  );
+
+  // 两套主题都必须给这一档，且两套**同值就红**：浅色 #aebfd9 / 暗色 #33496b，
+  // 两窗相邻时全靠它把两块同色 `--window` 分开，取值太弱就等于没画（2026-10-10
+  // 用户报的就是这个）。浅色下「更重」是更深、暗色下是更亮，所以两个值方向相反。
+  const rootBlock = css.match(/:root\s*\{([\s\S]*?)\n\}/);
+  const darkBlock = css.match(/html\.dark\s*\{([\s\S]*?)\n\}/);
+  assert.ok(rootBlock && darkBlock, 'theme.css 里要有 :root 与 html.dark 两段');
+  const hexIn = (block, name) => {
+    const m = new RegExp(`${name}\\s*:\\s*(#[0-9a-f]{6})`, 'i').exec(block);
+    assert.ok(m, `两套主题都要声明 ${name}`);
+    return m[1];
+  };
+  const light = hexIn(rootBlock[1], '--window-edge');
+  const dark = hexIn(darkBlock[1], '--window-edge');
+  assert.notEqual(
+    light,
+    dark,
+    '两套必须同值吗——不，正相反：暗色下「更重」是更亮，两套同值等于暗色那档没画',
+  );
+
+  // 门槛定 1.7 而不是卡片描边那档的 1.3：这条线压的是窗口底色，而窗口底色与旁边
+  // 那扇窗**完全同色**，没有任何底色差帮它；`--divider-strong` 的 1.5 能用是因为它
+  // 压的是卡面（卡面本身比窗口底亮一档）。
+  const lightWindow = hexIn(rootBlock[1], '--window');
+  const darkWindow = hexIn(darkBlock[1], '--window');
+  assert.ok(
+    contrastRatio(light, lightWindow) >= 1.7,
+    `浅色窗口边线压在窗口底色上只有 ${contrastRatio(light, lightWindow).toFixed(2)}:1，读不出来（门槛 1.7）`,
+  );
+  assert.ok(
+    contrastRatio(dark, darkWindow) >= 1.7,
+    `暗色窗口边线压在窗口底色上只有 ${contrastRatio(dark, darkWindow).toFixed(2)}:1，读不出来（门槛 1.7）`,
+  );
+
+  // 只给四扇自绘壳窗口画：官网页签栏在 Rust 侧保留原生装饰，系统自己会画窗框，
+  // 再叠一条就是双线。与下面那条 clip-path 判据是同一口径。
+  assert.match(
+    css,
+    /body\.custom-titlebar-shell #app::after/,
+    '边线选择器必须带 custom-titlebar-shell，否则官网页签栏会多出一圈边线',
+  );
 });
 
 test('三扇壳自有副窗共用一个自绘外壳，官网页签栏不用（它承载别人的页面）', () => {
@@ -190,7 +281,7 @@ test('三扇壳自有副窗共用一个自绘外壳，官网页签栏不用（�
   const cond = main.match(/if \(\s*usesCustomTitlebar([^)]*)\)/);
   assert.ok(cond, '找不到自绘标题栏的条件');
   const exclusions = [...cond[1].matchAll(/!\s*(is[A-Z]\w+)/g)].map((m) => m[1]);
-  // 只许排除官网页签栏；日志 / 用量 / 套餐三扇自��副窗都要走自绘。
+  // 只许排除官网页签栏；日志 / 用量 / 套餐三扇自绘副窗都要走自绘。
   assert.deepEqual(
     exclusions.filter((name) => name !== 'isChatStrip'),
     [],
