@@ -370,7 +370,7 @@ function instanceChipType(row, instanceId) {
       </div>
     </div>
     <div class="card entity-card">
-      <div class="card-head plugin-center-head">
+      <div class="card-head">
         <div class="plugin-center-title-row">
           <!-- 设计稿（2746 行）这张卡叫「插件管理」，不是「插件中心」：它是整页的
                容器——页签、左栏的本机插件库、右栏的远端目录都在里面。而「插件中心」
@@ -390,10 +390,12 @@ function instanceChipType(row, instanceId) {
             <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
           </el-tooltip>
         </div>
-        <!-- 预检开关独占卡头的第二行（在标题 + ⓘ 之下）。它带一整行灰字说明，
-             与标题挤在同一行会把卡头撑成三行。「刷新数据」原先也在这一行，
-             2026-10-07 已按用户要求搬去右栏「插件中心」——它刷的是那份远端目录，
-             不是本机插件库，两者本来就不是一件事。 -->
+        <!-- 预检开关与说明整体靠在卡头同一行的右端（2026-10-10 用户要求从
+             独占的第二行「整体移动到右侧」；`.card-head` 是 space-between，
+             标题行左、预检行右）。宽窗下放得下；极窄时靠 .card-head 的
+             flex-wrap 自然折回第二行，不需要另写断点。「刷新数据」原先也在
+             这一行，2026-10-07 已按用户要求搬去右栏「插件中心」——它刷的是
+             那份远端目录，不是本机插件库，两者本来就不是一件事。 -->
         <div class="precheck-toggle-row">
           <el-switch
             :model-value="precheckOn"
