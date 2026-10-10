@@ -721,7 +721,12 @@ const FILE_BUDGETS = {
   'ui/src/diagnostics/BisectPanel.vue': 187,
   // P0 的概览页卡片。刻意**只读**：提前放"一键回退"会让用户在没看清
   // 差异的情况下丢配置。
-  'ui/src/diagnostics/SnapshotCard.vue': 170,
+  // 170 → 174：设置页里这张卡是「环境回退与诊断」的那一行。实测净宽只有 343px，
+  // 三个动作按钮吃掉 260px，主区剩 73px，「环境回退点ⓘ」在「环境回退│点」间断行。
+  // 修法是显式两行式修饰类 `.page-list-row--stacked`（栅格改单列 + 动作区右对齐），
+  // 而不是「放不下就换行」的通用规则：`minmax(0,1fr)` 的下限写死 0，主区可以压到零宽
+  // 而永不触发换行——那条规则数学成立却实机难复现，这一行本来就是三按钮。
+  'ui/src/diagnostics/SnapshotCard.vue': 174,
   // 安装预检的沙盒生命周期共享层：一次性实例 id / 端口分配 / 目录骨架、
   // 适配器启动与就绪看护、环回 HTTP 存活确认、日志标记扫描、残留回收、
   // 证据另存，以及 Verdict / PrecheckReport 两个对外类型。
@@ -1379,6 +1384,17 @@ const FILE_BUDGETS = {
   // 700 → 780：范围切换 + 时间范围档位（~+50）与热力图/趋势两个共享 hover
   // 明细浮层（~+60）——都是展示层增量，拆文件只会让浮层与图形结构分家。
   'ui/src/usage/UsageWindow.vue': 830,
+  // 插件层的**全局**样式（2026-10-10 新增）：预检开关那个说明气泡的限宽。
+  //
+  // 为什么独立成文件、而不是并进 theme.css 或 PluginsPanel 的 scoped 块：
+  //   · theme.css 是反棘轮大文件（预算只许下调），这一份只被一个面板消费；
+  //   · **scoped 块根本收不了它**——`.el-tooltip` 的气泡是 teleport 到 body 的
+  //     运行时新节点，身上没有组件的 `data-v-*`，scoped 选择器匹配不到。症状是
+  //     「规则写了、构建过了、界面上一点没变」，不报错。诊断层早踩过同一件事，
+  //     `.diagnosis-more-popper` 因此也在全局（diagnostics.css）里。
+  //
+  // 与 diagnostics.css 同构：按面板分层各收一份「组件里放不下的全局规则」。
+  'ui/src/plugins/plugins.css': 20,
   // 云端套餐用量（subscription.rs）：MiniMax Token Plan / DeepSeek 余额查询、
   // 5 分钟缓存文档（state.rs 容错读 + 原子写）、Key 指纹绑定（换 Key / 清 Key
   // 作废旧条目）、redact_key 脱敏、三态 Key patch、expired 跳过自动刷新、
@@ -2310,7 +2326,18 @@ const FILE_BUDGETS = {
 //     的写法，原判据只认 `src=` / `url()`，拼错一个字母照样全绿。
 // 素材侧（ui/public 下 5 个 SVG、header-ribbons.svg）不计入代码行。
 // （那轮的 whale-mark.png 已在用户 12:44 否掉品牌蓝侧栏标后连同换图规则一起删除。）
-const TOTAL_BUDGET = 46966;
+// 46966 → 47200（2026-10-10 六面板向概览看齐 + 页头/tooltip 两条新要求）：合计 +234 行。
+// **这一段跨了两批在同一工作树上并行的改动**（theme.css / designAlignment.test.js /
+// 本文件里两边的 hunk 是交织的，拆不出干净的提交），所以这里只能按**最终增量**登记，
+// 不能声称逐条归属某一方。内容全部是展示层与判据，没有一行业务逻辑：
+//   · 六个面板向概览看齐：卡头方块 13 处、同屏重名清理（插件页「插件中心 →
+//     远端目录 / 手动安装 → 按地址安装」）、迁移页四块成卡并并排（内容高约 150px ×4，
+//     748px 窗口放不下、底部「下一步」被推出可视区）、设置页诊断行断行。
+//   · 页头主副标题同行：`.page-head__text` 原语 + `--fs-page-desc` 档位（theme.css +12）。
+//   · tooltip 限宽：`.el-popper[role=tooltip]` 一条规则（theme.css +10）+ 三条判据。
+//     **一行模板都不用改**——见 ui/AGENTS.md 那条「为什么是 [role=tooltip]」。
+// 软上限这一档本来就不做「只许下调」，这里按实际增量抬到 47200。
+const TOTAL_BUDGET = 47200;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

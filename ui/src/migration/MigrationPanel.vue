@@ -11,7 +11,7 @@
 //
 // 保守默认：ConflictPolicy::SkipIfNewer + 凭据与会话不纳入 + 旧源永不删除
 import { computed, onMounted, ref, watch } from 'vue';
-import { ArrowDown, Check, Refresh, RefreshLeft } from '@element-plus/icons-vue';
+import { ArrowDown, Check, Clock, Download, Folder, Refresh, RefreshLeft } from '@element-plus/icons-vue';
 import {
   migrationStore,
   misplacedStore,
@@ -239,18 +239,25 @@ function toggleSource(src) {
 <template>
   <section class="panel migration">
     <header class="page-head">
-      <div>
+      <div class="page-head__text">
         <h1 class="page-title">数据迁移</h1>
         <p class="page-desc">把旧版 dsh-xlink 的插件 / 技能导入多实例布局。旧源不会被删除，可随时回滚。</p>
       </div>
     </header>
 
-    <el-steps :active="migrationStore.activeStep" finish-status="success" simple>
-      <el-step title="发现" description="扫描旧版数据" />
-      <el-step title="选择" description="选源 + 冲突策略" />
-      <el-step title="运行" description="复制 + 备份" />
-      <el-step title="完成" description="结果 + 回滚入口" />
-    </el-steps>
+    <!-- 步骤条装进 `.card`（2026-10-10 六面板向概览看齐）：此前它与下面的表格、
+         历史列表、按钮行一起直接铺在页面上，是这一屏唯一没有「面」的区块——
+         页面层级只有 canvas → surface → chrome 三层，内容却和 chrome 贴在一起，
+         读成「这些字是窗框上的一部分」。包一张卡之后，它与下面各块同属 surface，
+         「这是一次要走完的流程」与「这是流程里的某一步」才分得开。 -->
+    <div class="card steps-card">
+      <el-steps :active="migrationStore.activeStep" finish-status="success" simple>
+        <el-step title="发现" description="扫描旧版数据" />
+        <el-step title="选择" description="选源 + 冲突策略" />
+        <el-step title="运行" description="复制 + 备份" />
+        <el-step title="完成" description="结果 + 回滚入口" />
+      </el-steps>
+    </div>
 
     <!-- Step 0：发现 -->
     <div v-show="migrationStore.activeStep === 0" class="step-body">
@@ -261,29 +268,53 @@ function toggleSource(src) {
         <p class="empty-state">未检测到旧版数据，无需迁移。</p>
       </template>
       <template v-else>
-        <table class="preview-table preview-table--sources">
-          <thead>
-            <tr><th>来源</th><th>旧路径</th><th>新目标</th><th>文件数</th><th>大小</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="item in previewItems" :key="item.source">
-              <td>{{ sourceDisplayName(item.source) }}</td>
-              <td class="path">{{ tildePath(item.legacy_path) }}</td>
-              <td class="path">{{ tildePath(item.target_path) }}</td>
-              <td>{{ item.file_count }}</td>
-              <td>{{ formatBytes(item.total_bytes) }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="hint">旧源不会被删除，可随时回滚。</p>
+        <!-- 「旧源不会被删除，可随时回滚。」原先紧跟在这张表下面，与页头
+             `.page-desc` 的后半句**逐字相同**——同一屏里同一句话说两遍。
+             页头那句已经说过，这里不再重复；要说的话只说这张表特有的部分
+             （每个来源各自的目标路径），那才是表头本身给出的信息。 -->
+        <div class="card">
+          <div class="card-head">
+            <h2>
+              <span class="card-title-icon" aria-hidden="true"><el-icon><Download /></el-icon></span>
+              待迁移来源
+            </h2>
+            <span class="head-meta">
+              <span class="muted">{{ previewItems.length }} 个来源</span>
+            </span>
+          </div>
+          <table class="preview-table preview-table--sources">
+            <thead>
+              <tr><th>来源</th><th>旧路径</th><th>新目标</th><th>文件数</th><th>大小</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in previewItems" :key="item.source">
+                <td>{{ sourceDisplayName(item.source) }}</td>
+                <td class="path">{{ tildePath(item.legacy_path) }}</td>
+                <td class="path">{{ tildePath(item.target_path) }}</td>
+                <td>{{ item.file_count }}</td>
+                <td>{{ formatBytes(item.total_bytes) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </template>
-      <div v-if="historyList.length > 0" class="history">
-        <h3>历史迁移</h3>
+      <!-- 「历史迁移」与「找回历史会话」并排（2026-10-10）：两块各自成卡之后，
+           内容比原来高约 150px，748px 的窗口放不下，底部那排「重新扫描 /
+           再次询问迁移 / 下一步」被推出可视区。它们本来就是两条**互不相干**
+           的路径——一个搬旧布局目录、一个把误入他处的会话复制回来，谁也不
+           依赖谁——横着并排放既说得通，又正好把一屏的高度换回来。 -->
+      <div class="migration-lower">
+      <div v-if="historyList.length > 0" class="card">
+        <div class="card-head">
+          <h2>
+            <span class="card-title-icon" aria-hidden="true"><el-icon><Clock /></el-icon></span>
+            历史迁移
+          </h2>
+        </div>
+        <div class="history">
         <div class="history-list">
           <div v-for="row in historyList" :key="row.migration_id" class="history-row">
             <span class="history-cell history-id" :title="row.migration_id">{{ row.migration_id }}</span>
-            <span class="history-cell">{{ formatHistoryTime(row.created_at) }}</span>
-            <span class="history-cell">{{ Array.isArray(row.sources) ? `${row.sources.length} 个来源` : '—' }}</span>
             <span class="history-cell history-actions">
               <el-button
                 size="small"
@@ -294,14 +325,29 @@ function toggleSource(src) {
                 回滚
               </el-button>
             </span>
+            <span class="history-cell history-when">
+              {{ formatHistoryTime(row.created_at) }} ·
+              {{ Array.isArray(row.sources) ? `${row.sources.length} 个来源` : '—' }}
+            </span>
           </div>
         </div>
         <p v-if="historyHiddenCount > 0" class="hint">
           仅显示最近一次迁移；更早的 {{ historyHiddenCount }} 次备份仍保留在 backups/ 目录，未删除。
         </p>
+        </div>
       </div>
-      <div v-if="misplacedVisible" class="misplaced">
-        <h3>找回历史会话</h3>
+      <!-- 「找回历史会话」原来是一块 `.misplaced`：自有边框 + 底色，外加一条
+           3px 的 accent 左边框。左边框这条 2026-10-10 删掉——竖线在本项目里
+           是刻蚀线专用（`--divider-strong` + clip-path 两端收细），一条 3px 的
+           直通 accent 色竖条既不是刻蚀线、又长得像「这条有警告」，而它讲的
+           其实是**可恢复**的事。改用标准 `.card`，方块图标与全页其余卡头一致。 -->
+      <div v-if="misplacedVisible" class="card">
+        <div class="card-head">
+          <h2>
+            <span class="card-title-icon" aria-hidden="true"><el-icon><Folder /></el-icon></span>
+            找回历史会话
+          </h2>
+        </div>
         <p class="hint">
           检测到其它实例的 home 里有本实例没有的会话数据（通常是旧版本把
           <code>~/.dsh</code> 并进了错误的实例）。复制过来<strong>并登记进本实例的会话清单</strong>后，
@@ -341,6 +387,7 @@ function toggleSource(src) {
             复制到本实例
           </el-button>
         </footer>
+      </div>
       </div>
       <footer class="step-actions">
         <el-button @click="refreshPreview" :icon="Refresh" :loading="isLoading('migrationPreview')">
@@ -528,20 +575,13 @@ function toggleSource(src) {
   background: var(--overlay-faint);
 }
 .result-summary .hint { margin: 0; }
-.history { margin-top: 16px; }
-.history h3 { margin: 0 0 6px; font-size: var(--fs-subtitle); }
-/* 「找回历史会话」卡片：与迁移主体是两条独立路径（一个搬旧布局目录，一个把
-   误入他处的会话复制回来），所以用一块独立底色而不是塞进 preview-table——
+.history { margin-top: 0; }
+/* 「找回历史会话」2026-10-10 从 `.misplaced`（自有边框 + 3px accent 左边框）改成
+   标准 `.card`：左边框这条既不是刻蚀线（没有 `--divider-strong` 与 clip-path 的
+   两端收细），颜色又与「警告」抢——而它讲的其实是**可恢复**的事，用户扫到一条
+   蓝色竖条只会以为这里出了问题。它与迁移主体仍是两条独立路径（一个搬旧布局
+   目录，一个把误入他处的会话复制回来），所以仍单独成卡、不塞进下面那张表——
    混在一张表里会让人以为点「下一步」也会把它一起搬。 */
-.misplaced {
-  margin-top: 16px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: 6px;
-  background: var(--surface-subtle);
-}
-.misplaced h3 { margin: 0 0 6px; font-size: var(--fs-subtitle); }
 .misplaced-list { list-style: none; margin: 0 0 8px; padding: 0; }
 /* 名称与元信息紧挨着排，不推到两端。原先用 space-between，在 760px 内容区里
    「sessions」和它的说明会隔着半屏，读起来像两行不相干的内容。 */
@@ -562,12 +602,33 @@ function toggleSource(src) {
   border-radius: 6px;
   overflow: hidden;
 }
+/* 并排那两块的容器。**刻意不用全局的 `.page-layout`**：那个是等宽 1fr 1fr。
+   这里按**内容多少**分，而不是按重要性分——左边的历史迁移只有一行
+   id + 回滚，450px 就够（挪进半栏之前时间戳被截成「2026-09-…」，改两行式
+   之后不再截断）；右边的找回会话要塞一段整句说明 + 两条各带四个数的条目，
+   挤在 460px 里那句话要折四行、每条条目也要折两行，整张卡比左边高出 250px，
+   又把底部「下一步」推出窗口。5:7 之后两边底边差不多齐，一屏放得下。 */
+.migration-lower {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  align-items: start;
+  gap: 12px;
+}
+.migration-lower > * {
+  min-width: 0;
+}
+
+/* 历史行改成两行式（2026-10-10）：原来是 `1.4fr 1fr 0.8fr auto` 四列一行，
+   那是给满宽表格区设计的。挪进半栏之后时间戳那一格只剩 80px，
+   「2026-09-30 09:28」被截成「2026-09-…」——丢掉的恰好是判断
+   「这是哪一次回滚」最需要的信息。现在 id 与回滚同行、时间与来源另起一行，
+   窄栏宽栏都不截断。 */
 .history-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 0.8fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 4px 10px;
+  gap: 4px 10px;
+  padding: 6px 10px;
   font-size: 12px;
 }
 .history-row + .history-row {
@@ -588,6 +649,10 @@ function toggleSource(src) {
   display: flex;
   justify-content: flex-end;
 }
+/* 时间 + 来源合并到第二行后不再截断——这一格整行都是它的宽度。 */
+.history-when {
+  grid-column: 1 / -1;
+}
 .credentials-note { margin-top: 12px; padding: 8px 12px; background: var(--surface-subtle); border-radius: 6px; color: var(--text-muted); font-size: 12px; }
 /* 来源勾选纵向排布（原先靠 el-checkbox-group 的布局习惯，去掉 group 后自己排） */
 .source-options { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
@@ -596,4 +661,14 @@ function toggleSource(src) {
 .migration :deep(.el-step__title) { font-size: 13px; }
 .migration :deep(.el-step__description) { font-size: 11.5px; }
 .migration :deep(.el-step.is-simple .el-step__arrow) { margin: 0 8px; }
+/* 步骤条自带一张卡之后，EP simple 模式自己那层 `--el-fill-color-light`
+   底就成了「卡里的另一张卡」，比页面层级多出一级。压成与卡片同底，
+   只留它自己的横向分隔与箭头。上下内边距也收掉——`.card` 已经给了 16px。 */
+.steps-card {
+  padding: 10px 16px;
+}
+.steps-card :deep(.el-steps--simple) {
+  background: transparent;
+  padding: 0;
+}
 </style>

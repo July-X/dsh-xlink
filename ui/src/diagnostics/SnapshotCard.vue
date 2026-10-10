@@ -60,7 +60,7 @@ onMounted(() => {
 <template>
   <!-- 标题 + 那段 ⓘ 说明与行布局是同一份 DOM，不按形态分叉：拆成两份之后
        迟早会有一边少改一句，而那句正是「恢复会不会删插件」的答案。 -->
-  <div class="page-list-row">
+  <div class="page-list-row page-list-row--stacked">
     <div class="page-list-main">
       <h3 class="page-list-title">
         环境回退点
@@ -157,6 +157,27 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* 这一行**故意**上下排，不跟同卡里另外两行（深入排查 / 启动诊断）并排。
+   2026-10-10 实测：设置页左栏那张卡的内净宽只有约 343px，而这一行的三个
+   动作（回到良好状态 / 刷新 / 查看）合计约 260px——并排布局下主区只剩
+   73px，「环境回退点」五个字放不下，在「环境回退│点」之间断开，ⓘ 被挤到
+   下一行，说明文字也被截成「已记下 10 个回退│点。」。改上下排之后标题、
+   ⓘ、说明各占整行完整宽度，三个动作落到第二行右对齐。
+
+   为什么不给 `.page-list-row` 写一条「放不下就换行」的通用规则：它现在是
+   `grid-template-columns: minmax(0, 1fr) auto`，`minmax` 的下限写死 0，
+   主区可以被压到零宽而**不触发换行**（flex 的 wrap 判定用的是 flex-basis
+   与 min-width 的夹值，这里两者都是 0）。要让「放不下」真的可判定，就得把
+   下限提到标题的自然宽度——那样两行并排的另外两行也要跟着算一遍宽度，
+   换来的是一条只在数学上成立、实机上难复现的规则。这一行本来就是三按钮，
+   显式写成两行更诚实。 */
+.page-list-row--stacked {
+  grid-template-columns: minmax(0, 1fr);
+}
+.page-list-row--stacked .page-list-actions {
+  justify-content: flex-end;
+}
+
 .snapshot-list {
   list-style: none;
   margin: 0;

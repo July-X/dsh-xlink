@@ -22,6 +22,7 @@ import {
   WarningFilled,
   Warning,
   Search,
+  Grid,
 } from '@element-plus/icons-vue';
 import {
   pluginStore,
@@ -144,9 +145,17 @@ const THIRD_PARTY_NOTICE = '第三方插件由社区提供，本工具不对其�
 // 预检开关的说明。必须写清「预检到底验了什么、没验什么」——用户把它当成
 // 安全保证是最危险的误解：它只覆盖内核启动阶段，页面加载后的运行时异常
 // 仍由工作台窗口的健康自检负责。
+//
+// **分成四句而不是一整段**（2026-10-10 用户报「tooltip 要缩减、换行显示、
+// 注意宽度控制」）：一整段 100 多字会被 EP 按容器宽度硬折，行尾随时断在
+// 「进程存活、端口」这种词的中间，读起来像一句被拦腰截断的话。按语义断成
+// 四句之后，即便宽度受限，断点也只会落在句号上——**换行这件事交给宽度控制，
+// 但断在哪由文案决定**。段内不再用 `\n`：EP 的 `content` 是纯文本，
+// 换行符不会生效（要真换行得走默认插槽塞元素，那是另一套结构）。
 const precheckTip =
   '开启后，点「安装」会先在一个一次性沙盒实例里真的装一次、真的启动一次内核，' +
-  '确认没问题才装到当前实例；装坏了会原样撤销，你的环境不受影响。代价是多花十几秒。' +
+  '确认没问题才装到当前实例。装坏了会原样撤销，你的环境不受影响。' +
+  '代价是多花十几秒。' +
   '注意：预检只覆盖内核启动阶段（进程存活、端口监听、HTTP 应答、启动日志），' +
   '工作台页面加载后的运行时异常不在其中。';
 
@@ -339,10 +348,13 @@ function instanceChipType(row, instanceId) {
          纯展示，读屏能过；现在是可聚焦的触发元素，键盘要够得着，
          否则 hover-only 的信息对键盘用户就是不存在。 -->
     <div class="page-head">
-      <!-- 标题行外面还要再包一层 `<div>`：`.page-head` 是 `space-between` 的
+      <!-- 标题行外面还要再包一层 `div.page-head__text`：`.page-head` 是 `space-between` 的
            flex 行，标题与说明必须同属一个子项，否则说明会被当成右侧的「动作」
-           顶到页面右缘去。六个页面共用这个结构，别只改这一个。 -->
-      <div>
+           顶到页面右缘去。六个页面共用这个结构，别只改这一个。那一层同时承载
+           主副标题同行的排布，所以插件页这里是「标题行 → 副标题」两级 flex，
+           与其余五页的「主标题 → 副标题」不同，但都收敛到同一条 `.page-head__text`
+           规则上。 -->
+      <div class="page-head__text">
         <div class="page-title-row">
           <h1 class="page-title">插件</h1>
           <el-tooltip placement="top" effect="dark" :content="THIRD_PARTY_NOTICE">
@@ -363,7 +375,13 @@ function instanceChipType(row, instanceId) {
           <!-- 设计稿（2746 行）这张卡叫「插件管理」，不是「插件中心」：它是整页的
                容器——页签、左栏的本机插件库、右栏的远端目录都在里面。而「插件中心」
                是**右栏**那份 dshfind.com 目录的名字。原先两处一个叫「插件中心」
-               一个叫「插件仓库」，指的却是同一份远端目录，同一页里两个名字。 -->
+               一个叫「插件仓库」，指的却是同一份远端目录，同一页里两个名字。
+
+               方块作为 `.plugin-center-title-row` 的**第一个子元素**而不是塞进
+               `.plugin-center-title` 里：这一行本来就是 flex（gap 10px），
+               方块插进去就等于复刻了 `.card-title-lead`，而标题 span 保持
+               「纯文字 + 字号字重」的单一职责，theme.css 一行都不用动。 -->
+          <span class="card-title-icon" aria-hidden="true"><el-icon><Grid /></el-icon></span>
           <span class="plugin-center-title">插件管理</span>
           <!-- ⓘ 只剩图标：原先可见文字写「数据来源于 dshfind.com」而 tooltip 里讲的是
                插件存放路径与生效规则，**说的不是同一件事**——鼠标停在字上弹出的是
@@ -386,7 +404,12 @@ function instanceChipType(row, instanceId) {
             inactive-text="直装"
             @update:model-value="togglePrecheck"
           />
-          <el-tooltip placement="top" effect="dark" :content="precheckTip">
+          <el-tooltip
+            placement="top"
+            effect="dark"
+            :content="precheckTip"
+            popper-class="precheck-tip-popper"
+          >
             <span class="precheck-toggle-label">
               <el-icon><InfoFilled /></el-icon>
               安装前先在沙盒实例里试装并启动一次
@@ -492,7 +515,13 @@ function instanceChipType(row, instanceId) {
           <el-tabs v-model="sourceTab" class="installed-tabs source-tabs">
             <el-tab-pane label="插件中心" name="catalog">
           <h3 class="section-divider">
-            插件中心
+            <!-- 「插件中心」四个字 2026-10-10 删掉：上方页签就写着「插件中心」，
+                 同一屏里同一个东西出现两个名字（ui/AGENTS.md 点名的反模式）。
+                 页签回答「我在哪个入口」，这一行回答「里面装的是什么、从哪来」，
+                 两句互补而不是各说一遍。改叫「远端目录」后还能顺带分清它与
+                 左栏那份本机插件库——后者才是本机真正生效的那些。 -->
+            <span class="card-title-icon" aria-hidden="true"><el-icon><Link /></el-icon></span>
+            远端目录
             <span class="muted section-divider__note">
               来自
               <a href="https://dshfind.com/zh" target="_blank" rel="noreferrer">dshfind.com</a>
@@ -612,11 +641,17 @@ function instanceChipType(row, instanceId) {
                 </div>
                 <span class="catalog-actions">
                   <el-tooltip placement="top" effect="dark" content="在浏览器打开插件详情页">
+                    <!-- `title` 与 `aria-label` 是 icon-only 规范的硬要求（2026-10-10
+                         用户定）：`el-tooltip` 只在**鼠标悬停**时出现，键盘与读屏用户
+                         拿不到名字——这一枚此前两者全缺。 -->
                     <el-button
                       v-if="detailUrl(item)"
+                      class="icon-btn"
                       size="small"
                       text
                       :icon="TopRight"
+                      title="在浏览器打开插件详情页"
+                      aria-label="在浏览器打开插件详情页"
                       @click="openExternalLink(detailUrl(item), '插件详情页')"
                     />
                   </el-tooltip>
@@ -662,7 +697,13 @@ function instanceChipType(row, instanceId) {
           </div>
             </el-tab-pane>
             <el-tab-pane label="手动安装" name="manual">
-          <h3 class="section-divider">手动安装</h3>
+          <!-- 与上面那一行同层级（都是 el-tab-pane 的块头），所以方块也给上——
+               一个给一个不给，同一列里两种写法才是真的不一致。名字同样避开
+               页签上的「手动安装」，说的是这个分区在做什么。 -->
+          <h3 class="section-divider">
+            <span class="card-title-icon" aria-hidden="true"><el-icon><Download /></el-icon></span>
+            按地址安装
+          </h3>
           <div class="install-row">
             <el-input
               v-model="pluginStore.spec"
@@ -801,6 +842,7 @@ function instanceChipType(row, instanceId) {
                 circle
                 :icon="RefreshLeft"
                 :aria-label="'恢复启用 ' + row.name"
+                :title="'恢复启用 ' + row.name"
                 :disabled="globalBusy"
                 @click="resolvePluginQuarantine(row.id, 'enable')"
               />
@@ -813,6 +855,7 @@ function instanceChipType(row, instanceId) {
                 circle
                 :icon="Download"
                 :aria-label="'更新插件 ' + row.name + ' 到 ' + row.latest_version"
+                :title="'更新插件 ' + row.name + ' 到 ' + row.latest_version"
                 :disabled="globalBusy"
                 @click="updatePlugin(row.id)"
               />
@@ -824,6 +867,7 @@ function instanceChipType(row, instanceId) {
                 circle
                 :icon="TopRight"
                 :aria-label="'在浏览器打开 ' + row.name + ' 的仓库'"
+                :title="'在浏览器打开 ' + row.name + ' 的仓库'"
                 :disabled="globalBusy"
                 @click="openExternalLink(row.repo_url, '仓库地址')"
               />
@@ -843,6 +887,7 @@ function instanceChipType(row, instanceId) {
                   circle
                   :icon="Delete"
                   :aria-label="'卸载插件 ' + row.name"
+                  :title="'卸载插件 ' + row.name"
                   :disabled="globalBusy"
                 />
               </template>

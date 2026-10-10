@@ -6,7 +6,7 @@
 // 面板挂载时主动调一次 refreshAll()，让「已安装」列表在用户进到这一页时就是最新的，
 // 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
 import { computed, onBeforeUnmount, onMounted, reactive } from 'vue';
-import { Refresh, Download, Promotion, Delete, InfoFilled, TopRight, Loading } from '@element-plus/icons-vue';
+import { Refresh, Download, Promotion, Delete, InfoFilled, TopRight, Loading, Box, PieChart } from '@element-plus/icons-vue';
 import {
   store,
   refreshAll,
@@ -209,6 +209,14 @@ function formatBytes(bytes) {
 // 两张图并排时「蓝=哪一类」不会各说各话），但**不复用那个导出**：那是模型色，
 // 语义是「哪个 LLM」；这里是占用类型，两边各自增删条目时互不牵动。
 // 未知 id 回落 --accent：新加一类忘了配色时仍然看得见，而不是渲染成空白。
+//
+// **这四个色是分类色，不是状态色**：它们会被渲染成胶囊里的文字色、标题前的
+// 6px 圆点和占比条，读起来像「这一类正常 / 这一类有问题」。而本项目的绿专表
+// 正常（概览页「全部正常」绿点、插件接线「无隔离」绿字）、红专表错误，
+// 一个分类拿到其中之一就会凭空多出一个判断。`stores` 2026-10-10 从
+// `#34d399` 绿换成 `#a78bfa` 紫就是这个原因；`logs` 的琥珀色保留，它是四类
+// 里最接近 `--warning` 的一档，但从未被当成告警用（瓦片上没有任何告警语义），
+// 换成第四个冷色相会让蓝 / 青 / 紫三者互相难辨，收益不抵成本。
 const USAGE_TYPES = {
   kernels: {
     color: '#4f8cff',
@@ -219,7 +227,7 @@ const USAGE_TYPES = {
     tip: '实例的数据目录，装的是你的会话与附件。这是你的数据，删了就没了，壳不提供删除。',
   },
   stores: {
-    color: '#34d399',
+    color: '#a78bfa',
     tip: '插件、技能与备份的中央库。删掉会在下次需要时重新下载。',
   },
   logs: {
@@ -249,7 +257,7 @@ function groupTip(group) {
          标题不再塞进卡片——宽版下页头与卡片是两层独立的东西，混在一起会让
          「内核版本」看起来像下面那张卡的标题而不是这一页的名字。 -->
     <div class="page-head">
-      <div>
+      <div class="page-head__text">
         <h1 class="page-title">内核版本</h1>
         <p class="page-desc">安装、切换与卸载 dsh 内核，并查看它们在磁盘上的占用。</p>
       </div>
@@ -258,8 +266,13 @@ function groupTip(group) {
       <div class="card-head">
         <!-- 设计稿这张卡的标题是「已安装」+「N 个版本」（draft 2669-2673 行），
              不是「内核版本」——页面标题已经叫内核版本了，卡头再复述一遍等于把
-             整页的名字说两遍，而这一段真正在讲的是「本机装了哪几个」。 -->
-        <h2>已安装</h2>
+             整页的名字说两遍，而这一段真正在讲的是「本机装了哪几个」。
+             左侧方块与概览页四张卡同规格（2026-10-10 六面板向概览看齐）：卡片边界
+             不只靠那条刻蚀线，方块把「这是一个独立的块」也说了。 -->
+        <h2>
+          <span class="card-title-icon" aria-hidden="true"><el-icon><Box /></el-icon></span>
+          已安装
+        </h2>
         <span class="head-meta">
           <span class="muted">{{ kernel ? kernel.installed.length : '—' }} 个版本</span>
         </span>
@@ -357,19 +370,42 @@ function groupTip(group) {
                同行，且标题不换行（换行会遮住 tooltip，见设计说明 §2）。标题叫
                「官方版本」而不是「npm 发布」——用户要回答的是「有哪些新版本可装」，
                npm 只是当前的取源渠道，把它写进标题会让这个标题在换回 GitHub
-               Releases 后立刻变成错的。npm 标志保留：它标的是「这一列从哪儿取」。 -->
+               Releases 后立刻变成错的。npm 标志保留但**降级为来源标注**：
+               2026-10-10 用户拍板。原来它是一枚红色方块，占着「标题图标」那个
+               槽位，而红色在本项目里只表错误 / 危险——一块红方块顶在标题左边，
+               扫一眼会被读成「这里出事了」，而这一列其实什么错都没有。改法是
+               标题位给标准 accent 方块（与其余各卡同一规格），npm 标志缩小后
+               跟着「最近检查」待在右侧，仍然明说「这一列从哪儿取」，许可声明
+               与本地矢量两条要求都不受影响。 -->
+          <!-- npm 标志**不跟着 checkedLabel 一起隐藏**：时间是「查过才有」的注脚，
+               取源渠道不是——用户还没点过刷新时，这一列仍然来自 npm，那枚标志
+               就必须一直在。
+               2026-10-10 用户第二次拍板：标志与时间戳**双双降为小字、移到右侧**，
+               紧贴刷新 / 打开发布页两个按钮。此前它们排在标题右侧、字号与标题同档，
+               于是这一行左重右轻——「官方版本」四字之后跟着一枚正常字号的标志和一句
+               「最近检查 3 分钟前」，视线在进按钮区之前先被这条注脚截住，而这两个
+               才是这一行真正可点的动作。标志 14px、时间戳走 `--fs-desc`（13px）
+               muted 色，两者与按钮同一档大小，才读成「一行里的一组小字」而不是
+               「标题 + 半个标题」。左侧从此只剩标题与它的图标位。 -->
           <h3 class="list-head-with-logo">
-            <img class="brand-logo" src="/npm-logo.svg" alt="npm" />
+            <span class="card-title-icon" aria-hidden="true"><el-icon><Download /></el-icon></span>
             <span class="official-version-title">官方版本</span>
-            <span v-if="checkedLabel" class="card-caption">{{ checkedLabel }}</span>
             <span class="release-list-actions">
+              <img class="brand-logo" src="/npm-logo.svg" alt="npm" />
+              <span v-if="checkedLabel" class="card-caption">{{ checkedLabel }}</span>
               <!-- `checkUpdates()` 带括号：`checkUpdates(manual = true)` 被裸引用时
                    收到的是 MouseEvent，恰好与默认值同义所以今天看不出坏——但它是靠
                    巧合对的，改默认值就会静默变坏。
                    两个动作收成 icon-only：标题行左侧还有标题与时间戳，
-                   「检查更新 / 打开发布页」六个字会把这一行撑到换行。 -->
+                   「检查更新 / 打开发布页」六个字会把这一行撑到换行。
+                   **`icon-btn` 是全局的 icon-only 尺寸规范**（theme.css）：EP 的
+                   `is-text` 只把背景变透明、padding 原样保留，于是一个 14px 的图标
+                   被撑成约 44×32 的一块，视觉重量和旁边带文字的按钮相等——这正是
+                   2026-10-10 用户报「背景范围需要缩小」的那一处。
+                   两枚都带 `title` + `aria-label`：规范要求每个无文字按钮都有
+                   hover 说明文字，而 `title` 是唯一对键盘用户也生效的那一份。 -->
               <el-button
-                class="release-check-button"
+                class="icon-btn"
                 text
                 :icon="Refresh"
                 :loading="isLoading('checkUpdates')"
@@ -379,6 +415,7 @@ function groupTip(group) {
                 @click="checkUpdates()"
               />
               <el-button
+                class="icon-btn"
                 text
                 :icon="TopRight"
                 :loading="isLoading('openKernelReleases')"
@@ -418,7 +455,6 @@ function groupTip(group) {
                   >
                     安装
                   </el-button>
-                  <el-tag v-if="r.prerelease" type="info" size="small" effect="plain">预发布</el-tag>
                 </span>
               </div>
             </div>
@@ -434,6 +470,7 @@ function groupTip(group) {
       <div class="disk-usage">
         <div class="card-head">
           <h2>
+            <span class="card-title-icon" aria-hidden="true"><el-icon><PieChart /></el-icon></span>
             磁盘用量
             <el-tooltip placement="bottom-start" :show-after="80">
               <template #content>
@@ -485,7 +522,7 @@ function groupTip(group) {
             <div class="usage-tile-head">
               <!-- 标题挂 tooltip 而不是原生 title：四类占用的**可回收性完全不同**
                    （内核能删、实例数据是用户会话、插件技能可重下、日志随时可清），
-                   而瓦片标题只有 11px、宽 186px，装不下这句话。原生 title 要悬停
+                   而瓦片标题只有 11px、宽约 390px，装不下这句话。原生 title 要悬停
                    1s 才出、样式也跟界面不一致，这里改用 EP tooltip。
                    内容优先级：**这句「这是什么、能不能删」> 缩写全名**——前者是
                    用户点进来真正要答的问题。detail（后端给的缩写全名）只在与
@@ -589,12 +626,39 @@ function groupTip(group) {
   flex: 0 0 auto;
   white-space: nowrap;
 }
+/* 标志与时间戳现在住在 `.release-list-actions` 里（2026-10-10 用户第二次拍板：
+   双双降为小字、靠右、紧贴两个按钮）。这三条各自单开一条规则而不是并进上面那个
+   选择器组：动作组那一排里还有两个 el-button，标志/时间戳的排版意图与按钮无关，
+   写在一起日后改按钮间距会顺手把它们一起动。 */
 .list-head-with-logo .card-caption {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* **12px**：比 `--fs-desc`（13px）再小一档（2026-10-10 用户第三次拍板「再小一号」）。
+     13px 在这一行仍然偏重——它是三者里唯一的文字，字号一压过按钮，
+     「标志 + 时间 + 两个动作」就读成「一句话 + 两个图标」而不是一组紧凑的注脚。
+     12px 与 12px 的标志同档，视觉重量终于对上了。**没有登记成 token**：
+     这一处是窗口标题行里的注脚，13px 那档在本行偏重、11px 又小到读不动，
+     单开一档没有第二个消费方。 */
+  font-size: 12px;
+  color: var(--text-muted);
+  /* 与标志之间、以及与两个按钮之间，各留 6px：三者读成一组紧凑的注脚，而不是
+     三个各自分开的元素。标志那侧用 `.brand-logo` 的 `margin-right`，
+     **不去动 `.release-list-actions` 的 `gap: 2px`**——那个 2px 是为**两个贴邻的
+     icon-only 按钮**之间的关系定的（2px 让它们读成「一组按钮」），改成 6px 会把
+     那两个动作也一并撑开，正是「布局应该紧凑」的反面。 */
+  margin-right: 6px;
+}
+/* 标志 12px，与上面的时间戳同档。**不许依赖 flex 行里的默认尺寸**——标志在 flex 行中
+   默认可压缩，而这一行的压缩预算给的是带 ellipsis 的时间戳；不钉 `flex: none` 的话
+   窗口一窄，先被压扁的是 logo，一个变形的 npm 标志比少看几个字糟糕得多。 */
+.list-head-with-logo .brand-logo {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
 }
 
 /* 已安装的版本通常只有一两条（用户很少囤），不设限高——加了反而让
@@ -676,7 +740,14 @@ function groupTip(group) {
    auto-fit 让它自己数能塞下几列，窗口再窄就回落一列。 */
 .usage-groups {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(186px, 1fr));
+  /* 186 → 320（2026-10-10，用户拍板）：原来 4 个分组自动排成 3 列，第一行三张、
+     第二行只剩「壳日志」一张，右侧空掉整一格——这是全页唯一一处没铺满的网格，
+     四个瓦片里三个挤在第一行、一个孤零零掉下去，重量明显失衡。
+     窗口宽 1040 是固定的，卡片内净宽约 784px，320 的下限算下来正好落两列：
+     每张瓦片从约 240px 宽到约 390px，条目名与字节数各自一行不必挤，行数仍是
+     两行（总高度不变），而四张瓦片两两成对。auto-fit 保留作为兜底：真掉到
+     646px 以下就回落一列，不会把内容挤破。 */
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   /* 8 → 6：两行瓦片之间的横缝。瓦片自己有边框和底色，6px 足够分得开，
      而 2px 刚好是这一轮从页面里挤出来的高度的一部分。 */
   gap: 6px;
@@ -707,11 +778,13 @@ function groupTip(group) {
 }
 
 /* 标题与主数字**同一行**：标题在左吃掉剩余空间，数字靠右且永不收缩。
-   中间试过上下两行（186px 并排放不下长标题），但那让每张瓦片多占一行
-   高度——而两列并排省纵向正是这里的目的。同行的前提是**数字不许被挤**：
+   中间试过上下两行（窄瓦片并排放不下长标题），但那让每张瓦片多占一行
+   高度——而并排省纵向正是这里的目的。同行的前提是**数字不许被挤**：
    `flex-shrink: 0` + 标题 `ellipsis`，长标题（`实例数据（会话与附件）`）
    截断成「实例数据（会话…」而 `350.1 MB` 完整可读。取舍明确：宁可少看
-   几个字（点瓦片有 title），不可看不清主数字。 */
+   几个字（点瓦片有 title），不可看不清主数字。2026-10-10 瓦片宽度从约 240px
+   放宽到约 390px 后，这条兜底实际上不再触发，但删掉 ellipsis 会让将来某个
+   更长的分组名把数字挤没——那正是它当初被加进来的原因。 */
 .usage-tile-head {
   display: flex;
   align-items: baseline;

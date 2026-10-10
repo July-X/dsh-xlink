@@ -10,7 +10,7 @@
 // 在那儿常年摆着两个「一切正常」的空态卡既占地方又稀释真正要看的内容（当前内核、
 // 用量、额度）。环境回退点、深入排查与启动诊断集中在这张卡里，数据迁移从侧栏进入。
 import { computed, onMounted, ref, watch } from 'vue';
-import { Bell, Check, Headset, QuestionFilled, Tickets } from '@element-plus/icons-vue';
+import { Bell, Brush, Check, Clock, Headset, Monitor, QuestionFilled, Tickets, Tools } from '@element-plus/icons-vue';
 import { theme, themeOptions, setTheme } from './theme.js';
 import { Sun as SunIcon, Moon as MoonIcon, Monitor as MonitorIcon } from '@lucide/vue';
 import { store, saveSettings } from '../store.js';
@@ -108,7 +108,7 @@ function openStartupRun() {
 <template>
   <section class="panel">
     <div class="page-head">
-      <div>
+      <div class="page-head__text">
         <h1 class="page-title">设置</h1>
         <p class="page-desc">外观、工作台端口、后台常驻与开机自启，以及模型任务的完成通知。</p>
       </div>
@@ -132,6 +132,7 @@ function openStartupRun() {
       <div class="page-layout__col">
     <div class="card">
       <h2 class="card-title-with-tip">
+        <span class="card-title-icon" aria-hidden="true"><el-icon><Monitor /></el-icon></span>
         工作台
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
@@ -172,6 +173,7 @@ function openStartupRun() {
 
     <div class="card">
       <h2 class="card-title-with-tip">
+        <span class="card-title-icon" aria-hidden="true"><el-icon><Clock /></el-icon></span>
         后台常驻
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
@@ -224,7 +226,10 @@ function openStartupRun() {
          卡片顺序：设置 → 任务通知 → 环境回退与诊断。 -->
     <div class="card">
       <div class="card-head">
-        <h2>环境回退与诊断</h2>
+        <h2>
+          <span class="card-title-icon" aria-hidden="true"><el-icon><Tools /></el-icon></span>
+          环境回退与诊断
+        </h2>
         <span class="head-meta"><span class="muted">出问题时使用</span></span>
       </div>
       <div class="page-list diagnostics-list">
@@ -256,7 +261,10 @@ function openStartupRun() {
 
       <div class="page-layout__col">
     <div class="card">
-      <h2>外观</h2>
+      <h2>
+        <span class="card-title-icon" aria-hidden="true"><el-icon><Brush /></el-icon></span>
+        外观
+      </h2>
       <div class="appearance-options" role="group" aria-label="外观模式">
         <button v-for="option in themeOptions" :key="option.value" type="button" :aria-pressed="theme === option.value" @click="setTheme(option.value)">
           <component :is="themeIcons[option.value]" :size="22" />
@@ -266,6 +274,7 @@ function openStartupRun() {
     </div>
     <div class="card">
       <h2 class="card-title-with-tip">
+        <span class="card-title-icon" aria-hidden="true"><el-icon><Bell /></el-icon></span>
         任务通知
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>

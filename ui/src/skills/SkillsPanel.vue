@@ -6,7 +6,7 @@
 // 排版目标：包信息与动作分区；版本 tag 与包名同行，包级说明收敛为单行并通过
 // Tooltip 承载全文；逐技能开关放在包头，包体保持简洁。
 import { computed } from 'vue';
-import { Refresh, InfoFilled, Download, TopRight, Delete, Link, DocumentCopy } from '@element-plus/icons-vue';
+import { Refresh, InfoFilled, Download, TopRight, Delete, Link, DocumentCopy, Box } from '@element-plus/icons-vue';
 import {
   skillStore,
   originLabel,
@@ -113,7 +113,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
 <template>
   <section class="panel">
     <div class="page-head">
-      <div>
+      <div class="page-head__text">
         <h1 class="page-title">技能</h1>
         <p class="page-desc">管理已安装的技能包与包内技能，并从社区资源安装新的技能。</p>
       </div>
@@ -121,6 +121,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
     <div class="card entity-card">
       <div class="card-head">
         <h2 class="card-head-with-tip">
+          <span class="card-title-icon" aria-hidden="true"><el-icon><Box /></el-icon></span>
           <span>已安装</span>
           <el-tooltip placement="top" effect="dark" :content="storeTip">
             <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
@@ -229,6 +230,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
                 circle
                 :icon="Download"
                 :aria-label="'更新技能 ' + row.name + ' 到 ' + row.latest_version"
+                :title="'更新技能 ' + row.name + ' 到 ' + row.latest_version"
                 :disabled="globalBusy"
                 @click="updateSkill(row.id)"
               />
@@ -240,6 +242,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
                 circle
                 :icon="Refresh"
                 :aria-label="'重新同步 ' + row.name"
+                :title="'重新同步 ' + row.name"
                 :disabled="globalBusy"
                 @click="updateSkill(row.id)"
               />
@@ -251,6 +254,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
                 circle
                 :icon="TopRight"
                 :aria-label="'在浏览器打开 ' + row.name + ' 的仓库'"
+                :title="'在浏览器打开 ' + row.name + ' 的仓库'"
                 :disabled="globalBusy"
                 @click="openExternalLink(row.repo_url, '仓库地址')"
               />
@@ -270,6 +274,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
                   circle
                   :icon="Delete"
                   :aria-label="'卸载技能包 ' + row.name"
+                  :title="'卸载技能包 ' + row.name"
                   :disabled="globalBusy"
                 />
               </template>
@@ -292,7 +297,10 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
              还小、比上面那张卡的标题小 3px——同一页里三档标题（2026-10-08 用户报
              「技能页没调整完」）。其余面板的卡头标题也都是 `<h2>`，这里跟着走，
              `.card h2` 那一份（17px / 700）自动生效。 -->
-        <h2>社区资源</h2>
+        <h2>
+          <span class="card-title-icon" aria-hidden="true"><el-icon><Link /></el-icon></span>
+          社区资源
+        </h2>
         <span class="card-caption">GitHub dsh-skill topic</span>
       </div>
       <!-- 一句「社区在哪、这里没有什么」+ 一个打开 topic 的按钮。面板里**没有**
