@@ -39,10 +39,10 @@ use super::subscription::{
 /// 未经公开文档承诺，故按「逐字段防御式解析」对待（与另两个 provider 同）。
 const USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
 
-/// 先说根因再说结论（2026-10-10 用户反馈）：额度接口认的是**本机 Codex 的
-/// 登录记录**，本壳 OpenAI 登录的 SIWC 令牌权限不兼容，所以「重新登录 /
-/// 补账号 ID」这类常规修法全部无效——把这一点放在最前，避免用户先去折腾登录。
-const UNSUPPORTED_SIWC: &str = "查询 GPT 套餐余额需要本机 Codex 已有登录记录；当前 OpenAI 登录只用于模型调用，其令牌不支持 ChatGPT / Codex 额度查询接口，重新登录或补充账号 ID 无法解决。可开启「使用本机 Codex 登录查询额度」，或在 ChatGPT 设置 → 用量查看官方数据。";
+/// 先说根因（2026-10-10 用户两轮反馈后定稿）：额度查询认的是 **Codex 的认证
+/// 凭据**，且这是官方 API 的限制——OAuth 登录（模型调用）拿不到这种凭据，
+/// 本机 Codex 没有登录就用不了。不要让用户先去折腾登录 / 账号 ID。
+const UNSUPPORTED_SIWC: &str = "查询 GPT 套餐余额需要 Codex 的认证凭据，这是官方 API 的限制：OpenAI OAuth 登录只用于模型调用，其令牌不能查询额度——本机 Codex 没有登录就用不了。可开启「使用本机 Codex 登录查询额度」，或在 ChatGPT 设置 → 用量查看官方数据。";
 
 /// 5 小时窗口的 `limit_window_seconds`。
 const WINDOW_5H_SECS: u64 = 18000;
@@ -615,14 +615,13 @@ mod tests {
                 Err(FetchProblem::UnsupportedCredential)
             ));
         }
-        assert!(UNSUPPORTED_SIWC.contains("不支持"));
-        // 2026-10-10 用户反馈：先说根因（查询余额要本机 Codex 登录记录），
-        // 再说「重新登录无效」，别让用户先去折腾登录。
-        assert!(
-            UNSUPPORTED_SIWC.contains("本机 Codex")
-                && UNSUPPORTED_SIWC.find("本机 Codex").unwrap()
-                    < UNSUPPORTED_SIWC.find("重新登录").unwrap()
-        );
+        // 2026-10-10 用户两轮反馈定稿的判据：三句核心都在——要 Codex 认证
+        // 凭据、官方 API 限制、本机 Codex 没登录就用不了；且不再出现「重新
+        // 登录」这种把用户往登录上引的表述。
+        assert!(UNSUPPORTED_SIWC.contains("Codex 的认证凭据"));
+        assert!(UNSUPPORTED_SIWC.contains("官方 API"));
+        assert!(UNSUPPORTED_SIWC.contains("本机 Codex 没有登录就用不了"));
+        assert!(!UNSUPPORTED_SIWC.contains("重新登录"));
         assert!(!UNSUPPORTED_SIWC.contains("请重新登录"));
     }
 
