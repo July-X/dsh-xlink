@@ -89,9 +89,9 @@ const dividerTitle = (title) =>
 // 同行、套餐用量跨两列、最近操作整行。这四条落位用 `order` + `grid-column`
 // 表达（`grid-row` 会在「需要关注」缺席时整体前移，`order` 对此免疫）。
 
-test('概览主栅格取设计稿的 1.25fr / 0.75fr，列间 12px', () => {
+test('概览主栅格取设计稿的 1.25fr / 0.75fr，行列缝 8px（2026-10-10 从 12 收紧去纵向滚动）', () => {
   assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'grid-template-columns'), 'minmax(0, 1.25fr) minmax(280px, 0.75fr)');
-  assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'gap'), '12px');
+  assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'gap'), '8px');
 });
 
 test('套餐用量跨栅整宽；首次运行引导占首行整宽', () => {
@@ -549,10 +549,10 @@ test('「数据目录」那一格指向应用根 ~/.dsh-xlink，实例目录退�
 // 设计稿 `.usage-grid` 是**固定三列**（不是自适应）。1040 宽版内容列约
 // 790px，`auto-fill minmax(170px,1fr)` 会排成四列，一家的余额与额度条被摊薄。
 
-test('套餐用量卡固定三列，服务商分块按设计稿的 6px 圆角 + 10px 内边距', () => {
+test('套餐用量卡固定三列，服务商分块 6px 圆角；内边距 10 → 8（2026-10-10 收间距去滚动）', () => {
   assert.equal(effectiveDeclaration(['plan-grid'], RULES, 'grid-template-columns'), 'repeat(3, minmax(0, 1fr))');
   assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'border-radius'), '6px');
-  assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'padding'), '10px');
+  assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'padding'), '8px');
 });
 
 test('额度行是设计稿的一行栅格「名称 22px | 进度条 1fr | 百分比 auto」，不是两行', () => {
