@@ -309,7 +309,7 @@ const FILE_BUDGETS = {
   // 系统凭据库存密钥（mac security CLI / win PasswordVault 走 PowerShell，
   // 不碰 Win32 FFI）。可测逻辑（加解密/文件/分键/生成）注入闭包，密钥库
   // 薄壳不进测试（同 autostart 纪律：真实 Keychain 人工验证）。
-  'src-tauri/src/openai/vault.rs': 212,
+  'src-tauri/src/openai/vault.rs': 213,
   // bridge 与回调监听共用的极简 HTTP 读写。从 bridge.rs 提出（读取循环
   // 是实测踩过 TCP 分段竞态的那段，两处各写一份迟早漂移）。
   // 68 → 74：RequestHead 携带 body_prefix（头体一次读入时体字节在缓冲里，
