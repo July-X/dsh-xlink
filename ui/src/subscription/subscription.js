@@ -307,6 +307,18 @@ export async function syncCodexUsageConsent(enabled) {
   return refreshSubscriptionProvider('openai_codex');
 }
 
+/**
+ * Codex 额度开关的那句许可说明。
+ *
+ * **导出成常量而不是各写一份**：概览「套餐用量」把开关放进卡头（设计稿的
+ * 位置），说明句因此要由卡片自己渲染在卡头下方一行——而独立套餐用量窗口
+ * 仍然由 `CodexUsageConsent` 自己渲染这句。两处各写一遍的话，改了其中一处
+ * 就会出现「窗口里说只读、概览里说不写凭据」这种互相打架的许可文案，
+ * 而许可文案不同步是**信任问题**，不是排版问题。
+ */
+export const CODEX_USAGE_CONSENT_TIP =
+  '默认关闭。开启后只读 Codex 登录文件并校验同一账号，展示 Codex 额度；不修改或刷新凭据，也不改变 DSH 模型登录。';
+
 export function setCodexUsageEnabled(enabled) {
   return withLoading('codexUsageConsent', async () => {
     const saved = await invoke('set_codex_usage_enabled', { enabled });

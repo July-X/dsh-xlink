@@ -71,13 +71,6 @@
   --accent: #2e76f6;
   --accent-strong: #1e63d6;
   --accent-soft: rgba(46, 118, 246, 0.1);
-  /* 卡片标题图标方块的衬底（2026-10-10 对稿）。设计稿里四个卡片标题
-     （当前内核 / 系统健康 / 套餐用量 / 最近操作）左侧都有一枚蓝底圆角方块图标，
-     是这一屏最显眼的结构特征之一——卡片靠它建立边界，不只靠那条线。
-     取 `--ds-accent-soft` 家族里**更实**的一档：稿里那档采样值（浅 #ecf4ff /
-     暗 #112854）与所在行底只差 1.04:1，方块等于不存在，所以明度往外拉了一档，
-     色相仍取自规范。图标本身用 `--accent` 画在它上面。 */
-  --accent-soft-strong: #cfe2fc;
   /* accent 的两档半透明：选中态的填色与描边、分隔条拖拽时的底色。
      同样不许写死——它们记的是「accent 叠在**当前主题底色**上」的效果，
      浅色主题的 accent 是深蓝（#2e76f6）、深色是浅蓝（#4a91ff），
@@ -239,9 +232,6 @@ html.dark {
   --accent: #4a91ff;
   --accent-strong: #72acff;
   --accent-soft: rgba(74, 145, 255, 0.14);
-  /* 激活项 icon 衬底（暗色档）。理由同浅色那一档：稿里的采样值与行底只差 1.04:1，
-     读不出来；这里取更亮一档（1.35:1），色相不变。 */
-  --accent-soft-strong: #1a3a72;
   /* 与 :root 同一组语义（选中填色 / 描边），只是按深色 accent 重新取值。 */
   --accent-fill: rgba(74, 145, 255, 0.16);
   --accent-line: rgba(74, 145, 255, 0.55);
@@ -804,6 +794,19 @@ code {
   flex: 0 0 42px;
   display: block;
   border-radius: 9px;
+}
+
+/* 暗色主题下鲸鱼是品牌蓝剪影（设计稿），而 PNG 里的鲸身是纯黑（`fill="#000"`）：
+   压在 #0d1a2d 的侧栏上只剩一个比背景略深的轮廓，品牌标识等于消失。做法是换图，
+   不是遮罩——**`mask` 裁的是"元素画出来的所有东西"，不换掉 `<img>` 自己的像素**：
+   给 `<img>` 加 mask 只会把黑鲸连同 outline 一起裁进鲸鱼轮廓，黑色像素仍旧画在最
+   上面，看起来还是黑鲸（实测只在抗锯齿的半透明边缘透出一圈背景色的蓝边）。
+   唯一能让 mask 参与染色的办法是把图片内容藏起来、另起一层画遮罩，那要一个伪元素
+   加 `visibility: hidden`，比换一张图贵得多。`content` 换图对替换元素是各家都认的老
+   写法，形状仍然同源于 SMALL 主图（见 scripts/build-icons.sh 的 whale-mark 段）。
+   红眼点保留原样：它只有 56 个像素，藏在鲸身里反而是这只鲸的辨识点。 */
+html.dark .brand img {
+  content: url("/whale-mark.png");
 }
 
 .brand__text {
@@ -1454,8 +1457,15 @@ main::before {
   width: 24px;
   height: 24px;
   border-radius: var(--radius-control);
-  background: var(--accent-soft-strong);
-  color: var(--accent);
+  /* 设计稿是**accent 实心方块 + 白色图形**（`.card-title-icon` 的蓝底白 icon）。
+     此前这里是「浅一档的蓝底 + accent 图形」，两套主题下都读成「一块比卡片略
+     深的底」而不是品牌标识：暗色那档 #1a3a72 与卡面 #142239 只差 1.35:1，方块
+     几乎看不见，图形又是浅蓝压在深蓝上，整枚图标塌进背景。稿子里它靠的是
+     色相对比（蓝底 ↔ 白字），不是明度对比，所以底必须是纯 accent。
+     图形恒为白：accent 在暗色下是浅蓝 #4a91ff，白图形压在上面的对比仍然够，
+     而换成深色图形会在浅色主题的黑底上直接消失。 */
+  background: var(--accent);
+  color: #fff;
   font-size: 14px;
 }
 

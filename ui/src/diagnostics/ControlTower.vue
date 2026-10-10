@@ -13,7 +13,19 @@
 // - **最近操作**：回答「上次发生了什么」。失败 / 告警才可点进诊断；
 //   成功记录不给按钮——它没什么可诊断的。
 import { computed, onMounted, ref } from 'vue';
-import { ArrowRight, Document, FirstAidKit } from '@element-plus/icons-vue';
+import {
+  ArrowRight,
+  Clock,
+  CircleCheckFilled,
+  CircleCloseFilled,
+  Connection,
+  Delete,
+  Document,
+  FirstAidKit,
+  Grid,
+  Loading,
+  WarningFilled,
+} from '@element-plus/icons-vue';
 import { store } from '../store.js';
 import { isLoading } from '../shell/loading.js';
 import { entryTimeLabel, snapshotStore } from './snapshots.js';
@@ -181,19 +193,22 @@ const latestSnapshotLabel = computed(() => {
  * 一个 computed，是因为它与 rows 出自同一次遍历：分开算就得再遍历一次，
  * 而两份数据一旦不同源，汇总句就会和下面的行对不上。
  */
-function cell(key, label, value, tone = '', action = null, detail = '') {
+function cell(key, label, value, tone = '', action = null, detail = '', icon = null) {
   const unavailable = value === '读取失败';
   const hint = unavailable ? '点击重试' : !action ? '' : key === 'logs' ? '查看' : '›';
-  return { key, label, value, tone, action, detail, hint, bad: tone === 'bad' || tone === 'warn' };
+  return { key, label, value, tone, action, detail, hint, icon, bad: tone === 'bad' || tone === 'warn' };
 }
 
 const health = computed(() => [
-  cell('wiring', '插件接线', wiringText.value.text, wiringText.value.tone, 'plugins'),
-  cell('skills', '技能注册', skillText.value.text, skillText.value.tone, 'skills'),
+  // 每行左端那枚图标（设计稿 `.health-row` 的图标槽）：它回答的是「这一行在管
+  // 什么」，与右侧那列读数是两种信息。原先只有文字，四行读数靠右对齐排成一块，
+  // 用户得逐字读才知道哪一格是哪一格。
+  cell('wiring', '插件接线', wiringText.value.text, wiringText.value.tone, 'plugins', '', Connection),
+  cell('skills', '技能注册', skillText.value.text, skillText.value.tone, 'skills', '', Grid),
   // 读失败时把原因挂在 title 上：只显示「读取失败」的话，用户点了重试还是
   // 失败，却不知道是磁盘满了还是文件被轮转掉了。
-  cell('logs', '日志系统', logText.value.text, logText.value.tone, logRowAction.value, logModal.listState === 'failed' ? logModal.listError : ''),
-  cell('snapshot', '最近快照', latestSnapshotLabel.value || '暂无'),
+  cell('logs', '日志系统', logText.value.text, logText.value.tone, logRowAction.value, logModal.listState === 'failed' ? logModal.listError : '', Document),
+  cell('snapshot', '最近快照', latestSnapshotLabel.value || '暂无', '', null, '', Clock),
 ]);
 
 const healthCaption = computed(() => {
@@ -284,6 +299,50 @@ const runActionable = computed(() =>
   ['failure', 'warning', 'inconclusive'].includes(String(latestRun.value?.status || ''))
 );
 
+/**
+ * 标题行那四个词（设计稿的 `.tabs`）。
+ *
+ * **它们不是可点的页签**，所以不能做成真页签：这一段只渲染**最近一条**记录，
+ * 做成能点的会让人以为点「预检」能切出预检历史，而点下去什么也不会发生。
+ * 现在它是四个类型的**目录**，其中当前记录所属的那一个高亮 + 划一条底线——
+ * 它回答的是「刚才那件事属于哪一类」，这正是四个词并排摆在这里的理由。
+ * 短名与 `KIND_LABELS` 的全称（「启动诊断」…）分开：卡头那行只有几百像素宽。
+ */
+const RUN_KIND_TABS = [
+  { kind: 'startup', label: '启动' },
+  { kind: 'plugin-precheck', label: '预检' },
+  { kind: 'restore', label: '恢复' },
+  { kind: 'bisect', label: '排查' },
+];
+const runTab = computed(() => RUN_KIND_TABS.find((tab) => tab.kind === latestRun.value?.kind) || null);
+
+// 记录时间：优先结束时刻（那才是「结果出现在什么时候」），进行中的记录只有开始
+// 时刻。设计稿给的是 `YYYY-MM-DD HH:mm:ss` 的绝对时刻而不是「3 分钟前」——
+// 这一段回答的是「上次发生了什么」，相对时间会把同一天的两条记录压成同一个值。
+const runTimeLabel = computed(() => {
+  const ms = Number(latestRun.value?.finishedAtMs || latestRun.value?.startedAtMs || 0);
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const at = new Date(ms);
+  if (Number.isNaN(at.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return (
+    `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ` +
+    `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
+  );
+});
+
+/** 行首那枚状态图标：与 `statusMeta` 的 tone 同一份语义色，颜色不是唯一载体
+ *  （行文字里仍写着「已完成 / 失败」，色弱用户与截图都读得到）。 */
+const RUN_STATUS_ICONS = {
+  ok: CircleCheckFilled,
+  bad: CircleCloseFilled,
+  warn: WarningFilled,
+  unknown: Document,
+  active: Loading,
+  muted: Document,
+};
+const runStatusIcon = computed(() => RUN_STATUS_ICONS[runMeta.value.tone] || Document);
+
 function onAttention(item) {
   if (item.action === 'incident') emit('open-incident');
   // 预检项带的是**那一条运行记录**，不是空 spec：此前传 `{}` 过去，插件页
@@ -371,8 +430,13 @@ function openDiagnosis() {
         <span class="card-title-icon" aria-hidden="true"><el-icon><FirstAidKit /></el-icon></span>
         <span>系统健康</span>
       </span>
-      <!-- 设计稿 `card-caption health-ok`：一句话结论，别让用户逐行读四遍。 -->
-      <span class="diag-card__aside" :class="{ 'diag-card__aside--bad': healthCaption.tone === 'bad' }">{{ healthCaption.text }}</span>
+      <!-- 设计稿 `card-caption health-ok`：一句话结论，别让用户逐行读四遍。
+           前面那枚绿点不是装饰——「全部正常」与「1 项异常」都靠它先给一个色，
+           扫标题行时不用读到字才知道这一屏有没有事。 -->
+      <span
+        class="diag-card__aside"
+        :class="healthCaption.tone === 'bad' ? 'diag-card__aside--bad' : 'diag-card__aside--ok'"
+      >{{ healthCaption.text }}</span>
     </h3>
     <div class="diag-rows diag-rows--grid">
       <button
@@ -384,14 +448,26 @@ function openDiagnosis() {
         :title="row.detail || ''"
         @click="row.action && onHealth(row)"
       >
+        <span v-if="row.icon" class="diag-row__icon" aria-hidden="true">
+          <el-icon><component :is="row.icon" /></el-icon>
+        </span>
         <span class="diag-row__label">{{ row.label }}</span>
         <span class="diag-row__value" :class="row.tone ? `diag-row__value--${row.tone}` : ''">
           {{ row.value }}
         </span>
         <!-- 右侧提示由 cell() 一次算好（读不到说「点击重试」，日志格说「查看」，
-             其余给 `›`）。措辞不归这里管，这里只把它渲染成一枚 badge。 -->
-        <span v-if="row.hint" class="diag-row__cta" :class="row.tone === 'bad' ? 'diag-row__cta--bad' : ''">
-          <el-icon aria-hidden="true"><ArrowRight /></el-icon>{{ row.hint }}
+             其余给 `›`）。措辞不归这里管，这里只把它渲染成一枚 badge。
+             `›` 那一档是**纯图标圆形按钮**：它带一个字就成了一枚「说明点什么」的
+             药丸，而这一行左端已经有名称、右端已经有读数，中间的箭头只标方向。 -->
+        <span
+          v-if="row.hint"
+          class="diag-row__cta"
+          :class="[
+            row.tone === 'bad' ? 'diag-row__cta--bad' : '',
+            row.hint === '›' ? 'diag-row__cta--round' : '',
+          ]"
+        >
+          <el-icon aria-hidden="true"><ArrowRight /></el-icon>{{ row.hint === '›' ? '' : row.hint }}
         </span>
       </button>
     </div>
@@ -404,8 +480,15 @@ function openDiagnosis() {
         <span class="card-title-icon" aria-hidden="true"><el-icon><Document /></el-icon></span>
         <span>最近操作</span>
       </span>
-      <span v-if="latestRun" class="diag-card__aside">
-        启动 / 预检 / 恢复 / 排查
+      <span v-if="latestRun" class="diag-card__aside diag-card__aside--tabs">
+        <span class="run-tabs" role="list">
+          <span
+            v-for="tab in RUN_KIND_TABS"
+            :key="tab.kind"
+            class="run-tab"
+            :class="{ 'run-tab--active': runTab && tab.kind === runTab.kind }"
+          >{{ tab.label }}</span>
+        </span>
         <!-- 清除入口挂在标题行而不是行内：它是**面向整段历史**的动作，
              不是对某一条记录的操作。放在记录旁边会让人以为点一下只删那一条。 -->
         <button
@@ -414,7 +497,7 @@ function openDiagnosis() {
           :disabled="isLoading('diagnosticRunsClear')"
           @click="clearDiagnosticRuns"
         >
-          {{ isLoading('diagnosticRunsClear') ? '清除中…' : '清除记录' }}
+          <el-icon aria-hidden="true"><Delete /></el-icon>{{ isLoading('diagnosticRunsClear') ? '清除中…' : '清除记录' }}
         </button>
       </span>
       <span v-else class="diag-card__aside">还没有运行记录 · 启动工作台后显示上次结果</span>
@@ -426,10 +509,18 @@ function openDiagnosis() {
         :class="{ 'diag-row--static': !runActionable }"
         @click="runActionable && openDiagnosis()"
       >
+        <span
+          class="diag-row__icon diag-row__icon--run"
+          :class="`diag-row__icon--${runMeta.tone}`"
+          aria-hidden="true"
+        >
+          <el-icon><component :is="runStatusIcon" /></el-icon>
+        </span>
         <span class="diag-row__label">
           {{ runKindLabel }} · {{ runMeta.label }}
           <span v-if="runDetail" class="diag-row__value">· {{ runDetail }}</span>
         </span>
+        <span v-if="runTimeLabel" class="diag-row__time">{{ runTimeLabel }}</span>
         <span v-if="runActionable" class="diag-row__cta">
           <el-icon aria-hidden="true"><ArrowRight /></el-icon>查看
         </span>
