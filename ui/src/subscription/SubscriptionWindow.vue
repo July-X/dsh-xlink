@@ -26,6 +26,7 @@ import {
   queriedAgeCompact,
 } from './subscription.js';
 import { openUsageWindow } from '../usage/usage.js';
+import PartitionErrorTip from './PartitionErrorTip.vue';
 
 const CAPABILITY_TIP =
   'MiniMax 展示 Token Plan 的 5 小时 / 周窗口剩余百分比（云端 API 不提供绝对剩余 token 数）；' +
@@ -164,17 +165,9 @@ const lastFetched = computed(() => {
             <p v-if="!row.balances.length && !row.shortState" class="muted sub-empty">未查询到余额数据。</p>
           </template>
 
-          <!-- 短状态词：完整可操作文案在上面错误横幅，这里不重复铺长文。 -->
-          <p
-            v-if="row.shortState"
-            class="sub-state"
-            :class="{
-              'sub-state-bad':
-                row.provider.fetch_error || row.provider.credential_status === 'expired' || row.provider.error,
-            }"
-          >
-            {{ row.shortState }}
-          </p>
+          <!-- 短状态词：完整可操作文案在上面错误横幅，这里不重复铺长文。
+               OpenAI 例外（见 PartitionErrorTip）：长解释收进 ⓘ 点击弹出。 -->
+          <PartitionErrorTip :provider="row.provider" />
         </section>
       </template>
     </main>
@@ -362,14 +355,8 @@ const lastFetched = computed(() => {
   margin: 0;
   font-size: 12px;
 }
-.sub-state {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-.sub-state-bad {
-  color: var(--el-color-danger);
-}
+/* 分区短状态样式随「查询异常 ⓘ」收进 PartitionErrorTip.vue（2026-10-10），
+   这里不再保留 .sub-state 一族，避免两份漂移。 */
 .subwin-footer {
   flex: none;
   display: flex;

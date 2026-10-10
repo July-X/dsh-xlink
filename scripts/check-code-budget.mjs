@@ -1451,13 +1451,24 @@ const FILE_BUDGETS = {
   // 各一行路径，底下写清「为什么必须是本地文件」与「为什么只有 OpenAI 需要第二个
   // 文件」。是一张查表，不是逻辑，留在本模块是因为 provider id 的唯一清单就在这里
   // （`ui/AGENTS.md` 的实例/凭据纪律同源）；独立成文件反而多一处要同步的清单。
-  'ui/src/subscription/subscription.js': 288,
+  // 288 → 292：`errorLivesInPartitionTip`——openai 的完整错误退出横幅、改挂分区
+  // ⓘ 的判据单源（collectErrors 与 PartitionErrorTip 都读它），id 清单与
+  // PROVIDER_LOGOS 同理留在这里。
+  'ui/src/subscription/subscription.js': 292,
   // 套餐用量独立窗口根组件（open_subscription_window 弹出，?subscription=1 挂载）：
   // 双 provider 分区 + 进度条 / 余额行 + 错误横幅与 scoped 样式（同 UsageWindow 模式）。
   // 340 → 360：查询时间换成刷新 icon 胶囊（紧凑年龄值）。
   // 360 → 370：余额块多一行赠金 / 充值明细（含 flex-wrap 与明细行样式），
   // 与概览卡共用 subscription.js 的 balanceRow。
-  'ui/src/subscription/SubscriptionWindow.vue': 370,
+  // 370 → 353 实测下调：分区短状态（「查询异常 ⓘ」点击 tooltip）收进共用组件
+  // PartitionErrorTip.vue，模板 / helper / 样式三处重复随之消失。
+  'ui/src/subscription/SubscriptionWindow.vue': 353,
+  // 分区短状态 + 完整原因的点击 tooltip（新建，45 行）：OpenAI 的失败是长解释
+  // （官方 API 限制 + Codex 许可指引），2026-10-10 用户要求不再每次刷新顶一条
+  // 横幅，改挂「查询异常」后的 ⓘ、点击弹出。概览卡与独立套餐用量窗口两处
+  // 同一形态，独立成组件而不是各抄一份：模板 + 样式漂移过一次就会一边能点
+  // 一边不能点。
+  'ui/src/subscription/PartitionErrorTip.vue': 45,
   // 2026-09-30：壳自己窗口的右键菜单策略（新建，10 行）。主面板 / 日志 /
   // 用量 / 套餐 / 官方对话页签栏共用这个 SPA 入口，所以「禁右键、留左键复制」
   // 在前端只有这一处落点；工作台与三个官方对话内容 webview 走 Rust 侧的
@@ -2337,7 +2348,11 @@ const FILE_BUDGETS = {
 //   · tooltip 限宽：`.el-popper[role=tooltip]` 一条规则（theme.css +10）+ 三条判据。
 //     **一行模板都不用改**——见 ui/AGENTS.md 那条「为什么是 [role=tooltip]」。
 // 软上限这一档本来就不做「只许下调」，这里按实际增量抬到 47200。
-const TOTAL_BUDGET = 47200;
+// 47200 → 47243（2026-10-10）：OpenAI 额度错误退出横幅、收进分区 ⓘ——
+// 新共用组件 PartitionErrorTip.vue（45，概览卡与独立窗口两处同一形态，见其
+// 登记条目）+ subscription.js +4（errorLivesInPartitionTip 判据单源）；
+// SubscriptionWindow.vue 因去重实测下调 17（370 → 353），净增 43。
+const TOTAL_BUDGET = 47243;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

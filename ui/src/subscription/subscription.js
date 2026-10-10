@@ -230,13 +230,26 @@ export function planTierRows(provider, now = Date.now()) {
   return rows;
 }
 
+/**
+ * 该 provider 的完整错误文案**不进横幅**，改挂到分区短状态（「查询异常」）的
+ * 点击 tooltip 上（2026-10-10 用户要求）：OpenAI 的失败几乎全是「为什么查不到
+ * + 下一步怎么开」的长解释（官方 API 限制、Codex 许可指引），每次刷新都顶着
+ * 一整条横幅喧宾夺主。横幅留给其它 provider 需要立刻看见的失败。
+ */
+export function errorLivesInPartitionTip(id) {
+  return id === 'openai_codex';
+}
+
 /** 从视图收集错误文案（provider 级），供横幅展示；无错误返回空数组。
  * 已被用户隐藏的 provider 不再提及——它们本来就因为「查不到数据」被隐藏，
- * 恢复显示由查询成功自动触发，横幅重复报错只会让隐藏失去意义。 */
+ * 恢复显示由查询成功自动触发，横幅重复报错只会让隐藏失去意义。错误归属
+ * 分区 tooltip 的 provider（[`errorLivesInPartitionTip`]）同样不进横幅，
+ * 否则同一段文案两处各显示一遍。 */
 export function collectErrors(view) {
   const errors = [];
   for (const provider of (view && view.providers) || []) {
     if (isProviderHidden(provider.id)) continue;
+    if (errorLivesInPartitionTip(provider.id)) continue;
     const text = providerStateText(provider);
     if (text) errors.push(`${provider.label}：${text}`);
   }

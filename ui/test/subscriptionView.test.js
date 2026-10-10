@@ -59,6 +59,7 @@ const {
   providerStateText,
   providerShortState,
   collectErrors,
+  errorLivesInPartitionTip,
   tierRow,
   planTierRows,
   queriedAtLabel,
@@ -237,6 +238,22 @@ test('collectErrors 汇总 provider 级错误，成功时为空', () => {
     ],
   });
   assert.deepEqual(errors, ['A：网络不可达']);
+});
+
+test('openai 的完整错误不进横幅，改挂分区 tooltip（errorLivesInPartitionTip）', () => {
+  const siwc = '查询 GPT 套餐余额需要 Codex 的认证凭据……';
+  const view = {
+    providers: [
+      { id: 'openai_codex', label: 'OpenAI', configured: true, error: siwc },
+      { id: 'deepseek', label: 'DeepSeek', configured: true, fetch_error: '网络不可达' },
+    ],
+  };
+  assert.deepEqual(collectErrors(view), ['DeepSeek：网络不可达'], '横幅不再被 OpenAI 的长解释占满');
+  assert.equal(errorLivesInPartitionTip('openai_codex'), true);
+  assert.equal(errorLivesInPartitionTip('deepseek'), false);
+  // tooltip 内容取完整状态文案（providerStateText），短状态仍是「查询异常」。
+  assert.equal(providerStateText(view.providers[0]), siwc);
+  assert.equal(providerShortState(view.providers[0]), '查询异常');
 });
 
 test('providerStateText 覆盖三类失败态：本次失败 / 凭据失效 / 业务错误', () => {
