@@ -48,6 +48,7 @@ import {
 } from './plugins.js';
 import { originLabel, tildePath } from '../shell/labels.js';
 import { builtinStore, loadBuiltinStatus, toggleBuiltin, BUILTIN_NAME } from './builtin.js';
+import OpenaiAccountActions from './OpenaiAccountActions.vue';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 import { openExternalLink } from '../shell/notify.js';
 import { store } from '../store.js';
@@ -81,7 +82,7 @@ async function togglePrecheck(value) {
 
 // 内嵌 openai-oauth 插件：随应用交付，不进社区中央库。显示名走
 // `BUILTIN_NAME`（builtin.js），别在这儿再抄一份字面量。
-// 状态常驻这一行、开关是唯一动作；「内核运行中不能改」由后端按实例级
+// 状态常驻这一行；启停开关的「内核运行中不能改」由后端按实例级
 // 判据拒绝，UI 不预判（预判一份就是第二份判据，会和后端漂移）。
 const builtinView = computed(() => builtinStore.view);
 
@@ -700,7 +701,7 @@ function instanceChipType(row, instanceId) {
              下缘刻蚀线的裸行，没有卡片的边框与圆角，看上去像另一个东西；并进来
              之后它与下面那些行共用同一套外壳：边框、圆角、行分隔线、名称字号与
              等宽字体、来源 chip、左右节奏。
-             差别只剩**右侧动作**：它没有安装 / 更新 / 卸载，只有启停开关——它随
+             差别只剩**右侧动作**：它没有安装 / 更新 / 卸载，提供账号操作与启停开关——它随
              应用交付、不进社区中央库。接线行 id 同时是内核模型设置页账户卡的
              settingsNs，两侧靠它对上。 -->
         <div v-if="builtinView" class="entity-row entity-row--single builtin-row">
@@ -715,6 +716,7 @@ function instanceChipType(row, instanceId) {
             </el-tooltip>
           </div>
           <div class="entity-actions">
+            <OpenaiAccountActions :plugin-view="builtinView" />
             <el-switch
               size="small"
               :model-value="builtinView.requestedEnabled"

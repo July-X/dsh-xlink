@@ -89,3 +89,39 @@ test('client: 语言字典 zh/en 键集合一致（内联孪生不许漂移）',
   const en = Object.keys(strings.en).sort();
   assert.deepEqual(zh, en);
 });
+
+test('client: 已登录卡回读主窗口退出后的状态，并在卸载时停止轮询', async () => {
+  const { loaded, context } = loadClient();
+  const effects = [];
+  let stateIndex = 0;
+  let lastStatus;
+  let interval;
+  let cleared;
+  context.setInterval = (callback, ms) => { interval = { callback, ms }; return 123; };
+  context.clearInterval = (id) => { cleared = id; };
+  context.window.__TAURI__ = { core: { invoke: async (command) => {
+    assert.equal(command, 'openai_account_status');
+    return { phase: 'signed-out' };
+  } } };
+  const react = { ...stubReact,
+    useState(initial) {
+      return stateIndex++ === 0
+        ? [{ phase: 'authorized' }, (status) => { lastStatus = status; }]
+        : [initial, () => {}];
+    },
+    useEffect(effect) { effects.push(effect); },
+  };
+  let footer;
+  loaded.factory(() => react).apply({ slots: {
+    inject(_name, register) { register(); },
+    register(_descriptor, component) { footer = component; },
+  } });
+  const accountCard = footer().children[1].type;
+  accountCard();
+  const cleanup = effects[1]();
+  assert.equal(interval.ms, 5000);
+  await interval.callback();
+  assert.equal(lastStatus.phase, 'signed-out');
+  cleanup();
+  assert.equal(cleared, 123);
+});

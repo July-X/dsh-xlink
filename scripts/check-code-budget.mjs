@@ -264,6 +264,10 @@ const FILE_BUDGETS = {
   // （「OpenAI 对话」→「OpenAI-OAuth-Plugin」）。四份字面量就是迟早漏一个的形状，
   // 而漏掉的那一处不会报任何错：用户先看到新名字、随后 toast 里又冒出旧名字。
   'ui/src/plugins/builtin.js': 41,
+  // 主面板账号操作独立于插件启停意图；复用 Rust 账号命令并管理跨窗状态生命周期。
+  'ui/src/plugins/openaiAccount.js': 65,
+  // 内嵌插件行的账号状态和相位按钮，沿用 Element Plus 与现有主题 token。
+  'ui/src/plugins/OpenaiAccountActions.vue': 42,
   // 启用意图 state.json 的读写（按壳模式 / profile 分键；损坏文件报错
   // 而不是重置）。与 pkg/state.rs 的 JSON 状态读写不是同一职责：那边是
   // 社区插件/技能共用的取源层约定，这边是本插件私有的意图落盘。
@@ -2250,7 +2254,8 @@ const FILE_BUDGETS = {
 // `or_else` 闭包改成 `or`）。同一工作树里还有一处并行的 UI 主题改版与
 // diskusage 改动（~+90），一并计入，免得把总量卡在别人的在途改动上。
 // 为本机 Codex 可选来源的只读校验、许可控件及缓存接线登记总量软预算。
-const TOTAL_BUDGET = 46550;
+// 主窗口账号入口和跨窗口状态同步新增约 100 行；既有大文件预算不变。
+const TOTAL_BUDGET = 46670;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
