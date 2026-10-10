@@ -1,4 +1,5 @@
 <script setup>
+import CodexUsageConsent from './CodexUsageConsent.vue';
 // 独立套餐用量窗口：概览卡「套餐用量 → 查看详情」按钮经 open_subscription_window
 // 弹出（URL ?subscription=1 挂载本组件，capability `subscription-viewer.json`
 // 只授予 `get_subscription_usage` 与 `open_usage_window`）。
@@ -101,6 +102,7 @@ const lastFetched = computed(() => {
     </header>
 
     <main v-loading="subscription.loading && !subscription.data" class="subwin-main">
+      <CodexUsageConsent />
       <el-empty v-if="subscription.data && !hasConfigured" description="当前内核未配置可查询的模型凭据">
         <el-button type="primary" @click="openModelSettings">前往模型设置</el-button>
       </el-empty>
@@ -116,7 +118,7 @@ const lastFetched = computed(() => {
 
         <section v-for="row in rows" :key="row.provider.id" class="sub-section">
           <div class="sub-section-head">
-            <h3>{{ row.provider.label }}{{ row.provider.kind === 'plan' ? ' Token Plan' : ' 按量余额' }}</h3>
+            <h3>{{ row.provider.label }}{{ row.provider.id === 'openai_codex' ? '' : row.provider.kind === 'plan' ? ' Token Plan' : ' 按量余额' }}</h3>
             <span
               v-if="row.queriedCompact"
               class="age-pill"

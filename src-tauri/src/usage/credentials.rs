@@ -46,6 +46,24 @@ pub struct ResolvedCredential {
     pub source: CredentialSource,
 }
 
+impl ResolvedCredential {
+    pub fn log_hint(&self) -> String {
+        let reference = format!(" credential_ref={}", self.reference);
+        if matches!(
+            self.source,
+            CredentialSource::OpenAiVault | CredentialSource::CodexLocal
+        ) {
+            return reference; // OAuth 不记录任何令牌片段或账号上下文。
+        }
+        let redacted = self
+            .value
+            .as_deref()
+            .map(super::subscription::redact_key)
+            .unwrap_or_default();
+        format!("{reference} credential={redacted}")
+    }
+}
+
 /// 凭据值的来源，按 DSH 的优先级排序。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialSource {
@@ -58,6 +76,8 @@ pub enum CredentialSource {
     /// 壳自己的 OpenAI OAuth 加密库（`crate::openai` 的 vault）——不是内核
     /// 模型凭据链的一层，故单列，避免把它记成上面三者之一。
     OpenAiVault,
+    /// 用户显式启用的本机 Codex 登录文件，只用于额度查询。
+    CodexLocal,
 }
 
 impl CredentialSource {
@@ -67,6 +87,7 @@ impl CredentialSource {
             CredentialSource::CredentialsYaml => "credentials.yaml",
             CredentialSource::EnvFile => ".env",
             CredentialSource::OpenAiVault => "openai-oauth",
+            CredentialSource::CodexLocal => "codex-local",
         }
     }
 }

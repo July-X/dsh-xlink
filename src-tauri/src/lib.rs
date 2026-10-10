@@ -515,6 +515,7 @@ pub fn run() {
             usage::local::open_usage_window,
             // 云端套餐用量：查询、缓存与建窗都住在 subscription.rs。
             usage::subscription::get_subscription_usage,
+            usage::subscription_codex::set_codex_usage_enabled,
             usage::subscription::open_subscription_window,
         ])
         .build(tauri::generate_context!())

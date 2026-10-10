@@ -1,4 +1,5 @@
 <script setup>
+import CodexUsageConsent from '../subscription/CodexUsageConsent.vue';
 // 概览：当前内核状态、工作台启停单按钮状态机、首次运行引导、
 // 外壳更新横幅与安装入口（手动检查在侧栏品牌区）以及启动容错横幅。
 // 内核生命周期是实现细节，只暴露「打开/关闭工作台 / 打开/关闭官方对话」；
@@ -751,6 +752,7 @@ function goVersions() {
           前往模型设置
         </el-button>
       </div>
+      <CodexUsageConsent />
       <p v-if="!anyKeyConfigured" class="muted" style="margin: 0">
         当前实例未配置可查询的模型凭据；到工作台的模型设置配置后，这里展示套餐剩余额度与余额。
       </p>

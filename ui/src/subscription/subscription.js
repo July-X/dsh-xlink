@@ -5,7 +5,7 @@
 //
 // keep-last-good 在前端显式落地：失败时只写 error、绝不清空 data（Rust 侧
 // 缓存同样不写不删），用户看到的数字永远是「上一次成功查询」的结果。
-import { reactive } from 'vue';
+import { reactive, watch } from 'vue';
 import { invoke } from '../shell/bridge.js';
 import { formatActionError, toastActionError } from '../shell/notify.js';
 import { withLoading } from '../shell/loading.js';
@@ -18,6 +18,7 @@ const SUMMARY_TTL_MS = 60_000;
 // 的条目不做自动重试，不强制的话「下次启动发现 key 可用」永远发现不了——
 // 一次启动多打三个查询接口，换来隐藏项能自动恢复显示。
 let sessionFirstLoad = true;
+let codexConsentRevision = 0;
 
 // 本会话内已经弹过「是否隐藏」提示的 provider：不重复打扰；查询成功后
 // 清除，之后若再次失败可以再问一次。
@@ -45,6 +46,7 @@ export const PLAN_KIND = 'plan';
 export const BALANCE_KIND = 'balance';
 
 export const subscription = reactive({
+  codexUsageEnabled: false,
   // 独立窗口 / 手动全量刷新进行中。
   loading: false,
   // 单 provider 刷新进行中的 id 列表（概览卡每个分区标题旁的刷新 icon）。
@@ -241,7 +243,12 @@ export function collectErrors(view) {
   return errors;
 }
 
-function applyView(data) {
+function applyView(data, revision = codexConsentRevision) {
+  if (revision !== codexConsentRevision) return;
+  if (typeof data?.codex_usage_enabled === 'boolean') {
+    if (subscription.codexUsageEnabled !== data.codex_usage_enabled) codexConsentRevision++;
+    subscription.codexUsageEnabled = data.codex_usage_enabled;
+  }
   subscription.data = data;
   for (const provider of (data && data.providers) || []) {
     // providerStateText 非 null 即「本次失败 / 凭据失效 / 业务错误」；其余
@@ -259,12 +266,52 @@ function applyView(data) {
  * 把单 provider 的视图合并进现有数据（Rust 侧按 provider 查询只返回该
  * provider；其它分区保持 keep-last-good 原样不动）。没有旧数据时整体接管。
  */
-function mergeProviderView(data) {
+function mergeProviderView(data, revision) {
+  if (revision !== codexConsentRevision) return;
   const current = subscription.data;
-  if (!current) return applyView(data);
+  if (!current) return applyView(data, revision);
   const byId = new Map(current.providers.map((p) => [p.id, p]));
   for (const provider of data.providers) byId.set(provider.id, provider);
-  applyView({ ...current, providers: current.providers.map((p) => byId.get(p.id)) });
+  applyView({ ...current, codex_usage_enabled: data.codex_usage_enabled,
+    providers: current.providers.map((p) => byId.get(p.id)) }, revision);
+}
+
+/** 切换来源时先清掉这一个分区，绝不在等待新查询时展示旧账号数字。 */
+function invalidateCodexUsage(enabled) {
+  codexConsentRevision++;
+  subscription.codexUsageEnabled = enabled;
+  unhideProvider('openai_codex');
+  failurePromptAsked.delete('openai_codex');
+  if (subscription.data) {
+    subscription.data = {
+      ...subscription.data, codex_usage_enabled: enabled,
+      providers: subscription.data.providers.map((p) => p.id !== 'openai_codex' ? p : {
+        ...p, label: enabled ? 'Codex 额度' : 'OpenAI', tiers: [], balances: [],
+        queried_at_ms: null, error: null, fetch_error: null, credential_status: null,
+      }),
+    };
+    subscription.errors = collectErrors(subscription.data);
+  }
+  subscription.loadedAt = 0;
+}
+
+export async function syncCodexUsageConsent(enabled) {
+  if (typeof enabled !== 'boolean') return;
+  invalidateCodexUsage(enabled);
+  const revision = codexConsentRevision;
+  const busy = () => subscription.loading || isProviderRefreshing('openai_codex');
+  if (busy()) await new Promise((resolve) => {
+    const stop = watch(busy, (active) => { if (!active) { stop(); resolve(); } }, { flush: 'sync' });
+  });
+  if (revision !== codexConsentRevision) return subscription.data;
+  return refreshSubscriptionProvider('openai_codex');
+}
+
+export function setCodexUsageEnabled(enabled) {
+  return withLoading('codexUsageConsent', async () => {
+    const saved = await invoke('set_codex_usage_enabled', { enabled });
+    return syncCodexUsageConsent(saved);
+  }).catch((e) => toastActionError('设置 Codex 额度查询失败', e, '开关未更改，请重试'));
 }
 
 /** 某个 provider 的单分区刷新是否进行中。 */
@@ -282,11 +329,12 @@ export async function loadSubscriptionSummary() {
     return subscription.data;
   }
   const force = sessionFirstLoad;
+  const revision = codexConsentRevision;
   sessionFirstLoad = false;
   try {
-    applyView(await invoke('get_subscription_usage', { provider: null, force }));
+    applyView(await invoke('get_subscription_usage', { provider: null, force }), revision);
   } catch (e) {
-    subscription.errors = [formatActionError('查询套餐用量失败', e, '已保留上次结果，可点击刷新重试')];
+    if (revision === codexConsentRevision) subscription.errors = [formatActionError('查询套餐用量失败', e, '已保留上次结果，可点击刷新重试')];
   }
   return subscription.data;
 }
@@ -298,12 +346,13 @@ export async function loadSubscriptionSummary() {
 export async function refreshSubscription(provider) {
   if (provider) return refreshSubscriptionProvider(provider);
   subscription.loading = true;
+  const revision = codexConsentRevision;
   try {
     applyView(
-      await invoke('get_subscription_usage', { provider: null, force: true })
+      await invoke('get_subscription_usage', { provider: null, force: true }), revision
     );
   } catch (e) {
-    subscription.errors = [formatActionError('查询套餐用量失败', e, '已保留上次结果，可点击刷新重试')];
+    if (revision === codexConsentRevision) subscription.errors = [formatActionError('查询套餐用量失败', e, '已保留上次结果，可点击刷新重试')];
   } finally {
     subscription.loading = false;
   }
@@ -317,10 +366,11 @@ export async function refreshSubscription(provider) {
 export async function refreshSubscriptionProvider(id) {
   if (!id || isProviderRefreshing(id)) return subscription.data;
   subscription.refreshingIds.push(id);
+  const revision = codexConsentRevision;
   try {
-    mergeProviderView(await invoke('get_subscription_usage', { provider: id, force: true }));
+    mergeProviderView(await invoke('get_subscription_usage', { provider: id, force: true }), revision);
   } catch (e) {
-    subscription.errors = [formatActionError('查询套餐用量失败', e, '已保留上次结果，可点击刷新重试')];
+    if (revision === codexConsentRevision) subscription.errors = [formatActionError('查询套餐用量失败', e, '已保留上次结果，可点击刷新重试')];
   } finally {
     subscription.refreshingIds = subscription.refreshingIds.filter((item) => item !== id);
   }

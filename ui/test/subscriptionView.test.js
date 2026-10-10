@@ -85,6 +85,81 @@ test('概览真实模板：明确 unlimited 的窗口仍显示无限额度', asy
   assert.ok(!html.includes('暂无数据'));
 });
 
+test('显式开关只保存许可并强制查询额度；等待期间清掉旧账号数字，其他厂商不变', async () => {
+  const { setCodexUsageEnabled, refreshSubscriptionProvider } = await import('../src/subscription/subscription.js');
+  const previousInvoke = window.__TAURI__.core.invoke;
+  const previousData = subscription.data;
+  const previousEnabled = subscription.codexUsageEnabled;
+  const calls = [];
+  let finish;
+  let started;
+  const fetching = new Promise((resolve) => { started = resolve; });
+  const oldOpenai = { id: 'openai_codex', label: 'OpenAI', configured: true, kind: 'plan', tiers: [{ name: '5h', remaining_percent: 99 }], queried_at_ms: 1 };
+  const deepseek = { id: 'deepseek', label: 'DeepSeek', configured: true, kind: 'balance', balances: [{ total: '10' }] };
+  subscription.data = { codex_usage_enabled: false, providers: [oldOpenai, deepseek] };
+  window.__TAURI__.core.invoke = (command, args) => {
+    calls.push([command, args]);
+    if (command === 'set_codex_usage_enabled') return Promise.resolve(args.enabled);
+    if (command === 'get_subscription_usage') {
+      started();
+      return new Promise((resolve) => { finish = resolve; });
+    }
+    throw new Error('不应触碰模型登录或 Codex 凭据写入');
+  };
+  try {
+    const saving = setCodexUsageEnabled(true);
+    await fetching;
+    assert.equal(subscription.codexUsageEnabled, true);
+    assert.deepEqual(providerView('openai_codex').tiers, []);
+    assert.equal(providerView('openai_codex').queried_at_ms, null);
+    assert.equal(providerView('deepseek').balances[0].total, '10');
+    finish({ codex_usage_enabled: true, providers: [{ ...oldOpenai, label: 'Codex 额度', tiers: [{ name: '5h', remaining_percent: 93 }] }] });
+    await saving;
+    assert.equal(providerView('openai_codex').tiers[0].remaining_percent, 93);
+    assert.deepEqual(calls, [
+      ['set_codex_usage_enabled', { enabled: true }],
+      ['get_subscription_usage', { provider: 'openai_codex', force: true }],
+    ]);
+    // 即使跨窗事件没送达，单分区刷新也必须同步后端的许可状态。
+    window.__TAURI__.core.invoke = () => Promise.resolve({ codex_usage_enabled: false, providers: [oldOpenai] });
+    await refreshSubscriptionProvider('openai_codex');
+    assert.equal(subscription.codexUsageEnabled, false);
+  } finally {
+    window.__TAURI__.core.invoke = previousInvoke;
+    subscription.data = previousData;
+    subscription.codexUsageEnabled = previousEnabled;
+  }
+});
+
+test('跨窗切换发生在旧请求途中时，丢弃旧来源结果并在完成后重新查询', async () => {
+  const { refreshSubscription, syncCodexUsageConsent } = await import('../src/subscription/subscription.js');
+  const previousInvoke = window.__TAURI__.core.invoke;
+  const previousData = subscription.data;
+  const previousEnabled = subscription.codexUsageEnabled;
+  const pending = [];
+  const provider = { id: 'openai_codex', configured: true, kind: 'plan', tiers: [{ name: '5h', remaining_percent: 99 }] };
+  subscription.data = { codex_usage_enabled: false, providers: [provider] };
+  subscription.codexUsageEnabled = false;
+  window.__TAURI__.core.invoke = () => new Promise((resolve) => pending.push(resolve));
+  try {
+    const oldRequest = refreshSubscription();
+    const changed = syncCodexUsageConsent(true);
+    assert.deepEqual(providerView('openai_codex').tiers, []);
+    pending[0]({ codex_usage_enabled: false, providers: [provider] });
+    await oldRequest;
+    assert.equal(subscription.codexUsageEnabled, true, '旧请求不得把开关退回关闭');
+    assert.deepEqual(providerView('openai_codex').tiers, [], '旧来源的 99% 不得重新出现');
+    assert.equal(pending.length, 2, '必须重新查一次新来源');
+    pending[1]({ codex_usage_enabled: true, providers: [{ ...provider, tiers: [{ name: '5h', remaining_percent: 72 }] }] });
+    await changed;
+    assert.equal(providerView('openai_codex').tiers[0].remaining_percent, 72);
+  } finally {
+    window.__TAURI__.core.invoke = previousInvoke;
+    subscription.data = previousData;
+    subscription.codexUsageEnabled = previousEnabled;
+  }
+});
+
 test('percentLevel 按剩余百分比三档配色（≥70 绿 / 40–69.99 橙 / <39.99 红）', () => {
   assert.equal(percentLevel(100), 'ok');
   assert.equal(percentLevel(73.2), 'ok');
