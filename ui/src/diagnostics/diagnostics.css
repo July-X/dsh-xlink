@@ -138,10 +138,66 @@
   color: var(--el-color-danger);
 }
 
+/* 「全部正常」前的那枚绿点。**它是有信息的，不是装饰**：标题行右侧那句
+   「全部正常 / N 项异常」是两套完全不同的语气，字号 11px、颜色也只有一档，
+   而这是这一屏里唯一能让人不逐行读就知道「有没有事」的位置。异常档的红点
+   走 `--bad`，正常档的绿点走 `--success`，两边都还有字，色弱用户读得到。 */
+.diag-card__aside--ok,
+.diag-card__aside--bad {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.diag-card__aside--ok::before,
+.diag-card__aside--bad::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.diag-card__aside--ok::before { background: var(--success); }
+.diag-card__aside--bad::before { background: var(--danger); }
+
+/* 最近操作标题行的四类目录（设计稿 `.tabs`）。**不是可点的页签**，理由见
+   ControlTower 里那段注释——这一段只渲染最近一条记录，做成能点的会让人以为
+   能切出历史。当前记录所属的那一个靠一条 2px 底线说「就是它」，其余三个
+   压成弱化文字；没有记录时整组不渲染（`v-if="latestRun"`），不摆四个点不动的
+   词让人去猜。 */
+.diag-card__aside--tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.run-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.run-tab {
+  position: relative;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.run-tab--active {
+  color: var(--text);
+  font-weight: 600;
+}
+.run-tab--active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -6px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
 /* 标题行上的小动作按钮（清除诊断记录）。用 ghost 形态：它是对**整段
  * 历史**的低频操作，不该和卡片标题争夺注意力。边框 / 背景 / 字体全部
  * 显式写——全局没有裸 button 的默认样式，不写就是一个系统灰方块。 */
-.diag-card__action { margin-left: 8px; padding: 1px 8px; font-size: 11px; line-height: 1.4; color: var(--text-secondary); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; transition: color 120ms ease, background 120ms ease; }
+.diag-card__action { margin-left: 8px; padding: 1px 8px; font-size: 11px; line-height: 1.4; color: var(--text-secondary); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; transition: color 120ms ease, background 120ms ease; display: inline-flex; align-items: center; gap: 4px; }
 .diag-card__action:hover:not(:disabled) { color: var(--text); background: var(--overlay-soft); border-color: var(--overlay-strong); }
 /* 清除进行中：按钮已经 disable，再加一层弱化，用户才知道不是没点上。 */
 .diag-card__action:disabled { opacity: 0.5; cursor: default; }
@@ -334,6 +390,45 @@
 }
 .diag-row__value { flex: none; color: var(--text-secondary); font-size: 12px; }
 
+/* 行首图标槽（设计稿 `.health-row` 的图标）：一枚弱化的圆形底 + 线性图形。
+   它标的是「这一行在管什么子系统」，与右侧那列读数是两种信息——原先只有文字，
+   四行读数靠右对齐排成一块，用户得逐字读才知道哪一格是哪一格。
+   圆底用 `--overlay-faint` 而不是 accent 浅蓝：这一屏里 accent 已经被「可点」
+   占着（行尾那枚 badge），图标再染成品牌色就分不出「这是图标」与「这里能点」。 */
+.diag-row__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-top: -2px;
+  border-radius: 50%;
+  background: var(--overlay-faint);
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+/* 最近操作那一行的状态图标：**语义色实心**，与系统健康那四行的弱化圆底不同。
+   那一列是静态读数，这一列回答「上次那件事成没成」，是这一段唯一的结论，
+   值得一枚实心图标。tone 与 `statusMeta` 同一份映射。 */
+.diag-row__icon--run { background: transparent; margin-top: 0; font-size: 20px; }
+.diag-row__icon--ok { color: var(--success); }
+.diag-row__icon--bad { color: var(--danger); }
+.diag-row__icon--warn { color: var(--warning); }
+.diag-row__icon--active { color: var(--accent); }
+.diag-row__icon--unknown,
+.diag-row__icon--muted { color: var(--text-muted); }
+
+/* 记录时刻（设计稿行尾的 `2024-01-16 10:24:32`）。绝对时刻而不是「3 分钟前」：
+   这一段回答「上次发生了什么」，相对时间会把同一天的两条记录压成同一个值。
+   不参与布局收缩——`flex: none` + `tabular-nums` 让刷新时数字不横向跳。 */
+.diag-row__time {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* 行尾动作：badge 形态的一枚小按钮——**高亮、带 icon、有边框**
    （2026-10-08 用户要求「操作按钮高亮、加 icon、badge 边框」）。
    此前它是一段纯文字（`›` 或 `查看`），没有边框、没有图标，在一列读数里
@@ -371,6 +466,15 @@
 }
 .diag-row__cta--bad { border-color: var(--danger-line); background: var(--danger-fill); color: var(--danger); }
 .diag-row__cta--warn { border-color: var(--warning-line); background: var(--warning-fill); color: var(--warning); }
+/* `›` 那一档收成**纯图标圆形**（设计稿 `.health-row` 的圆形箭头钮）：带一个字
+   它就是一枚药丸，而这一行左端有名称、右端有读数，中间的箭头只标方向。 */
+.diag-row__cta--round {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 50%;
+}
 
 .diag-row__value--ok { color: var(--success); }
 .diag-row__value--warn { color: var(--warning); }
@@ -388,6 +492,31 @@
    445 就结束，加完仍有余量，所以这个代价换得值。 */
 .diag-rows--grid { display: grid; }
 
+/* 系统健康四行：行间一道细线 + 整列吃掉卡片剩余高度（设计稿 `.health-list`）。
+   这张卡在概览栅格里被拉伸到与左侧「当前内核」等高，而四行读数按内容高排完
+   只占上半截，下面空出一大片——空白比卡片本身更显眼。`grid-auto-rows: 1fr`
+   让四行均分整列高度，视觉上读成「一列完整的清单」而不是「几条读数 + 一块空白」。
+   行间那道线跟着行走（画在行自身上，不用 `border-top` 打在栅格容器上），
+   最后一行不画，免得与卡底留白叠成两条。 */
+.diag-card--health .diag-rows--grid { flex: 1; grid-auto-rows: 1fr; }
+.diag-card--health .diag-row + .diag-row { border-top: 1px solid var(--border-soft); }
+.diag-card--health .diag-row { align-items: center; }
+
+/* 最近操作那一条记录：设计稿是一枚**带框的行**，不是卡内的一行裸文字。
+   它与上面四行读数的区别是「这是一个事件」而不是「这是一个读数」——框与底把
+   两者分开，扫过去时眼睛先分出哪块是结论。底色用 `--surface-subtle` 而不是
+   accent 浅色：accent 在这一屏表示「可点」，而成功记录**不可点**
+   （`runActionable` 为假），染成品牌色会骗人。 */
+.diag-card--activity .diag-rows { display: flex; }
+.diag-card--activity .diag-row {
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+}
+.diag-card--activity .diag-row:hover:not(.diag-row--static) { background: var(--surface-subtle); border-color: var(--accent-line); }
+
 /* 概览页栅格里的落位。`ControlTower` 是 Vue 3 fragment，三张卡是它的三个
    并列根节点，放进概览的 `.overview-grid` 后直接成为栅格子项——不拆组件、
    不重复拉数据。但 DOM 顺序是「塔卡在前、内核卡在后」，与视觉顺序不一致，
@@ -398,7 +527,7 @@
  * 与「最近操作」左右并排。理由是它原来占掉首行整宽，把「当前内核 / 系统健康」
  * 挤到首屏之外——而那两张卡才是进这一页最常看的。异常清单挪到最下面仍然
  * 一眼可见（它有导航角标），却不再抢首屏。 */
-.diag-card--health { order: 2; grid-column: 2; }
+.diag-card--health { order: 2; grid-column: 2; display: flex; flex-direction: column; }
 /* 末行左右对调：2026-10-08 用户指定「最近操作」在左、「需要关注」在右。
  *
  * 为什么这次换过来：在「没有待处理项」这个最常见的状态下，「需要关注」整张卡
@@ -410,7 +539,14 @@
  * `order` 一并跟着换：`order` 决定 DOM 顺序与视觉顺序的对应，4 在 5 前仍成立，
  * 但顺序号保持递增，读代码的人才不会以为这里出过错。 */
 .diag-card--attention { order: 5; grid-column: 2; }
-.diag-card--activity { order: 4; grid-column: 1; }
+.diag-card--activity { order: 4; grid-column: 1; display: flex; flex-direction: column; }
+/* 没有待处理项时，「最近操作」横跨整行（设计稿的第三行就是一张整宽卡）。
+   上面对调的理由是「不要留一整块空白」——但那版只把空白从左边搬到了右边，
+   并没消掉它：需要关注不渲染时末行恒定只有一张卡，半栏永远是空的。设计稿
+   把这一行画成整宽，栅格让「有一个兄弟就并排、没有就整宽」，两种状态都不空。
+   判据用 `:has()` 读栅格里**有没有**那张卡，而不是在组件里加一个 class：
+   「这张卡缺席」是 DOM 事实，多一份 prop 就多一处可能与事实不同步。 */
+.overview-grid:not(:has(.diag-card--attention)) .diag-card--activity { grid-column: 1 / -1; }
 
 /* --- 控制塔专用（2026-10-06）---------------------------------------------
  *

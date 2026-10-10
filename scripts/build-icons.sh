@@ -11,6 +11,7 @@
 #   src-tauri/icons/tray-{dark,light}-{16,20,24,32,40,48}.png
 #   assets/whale-icon-512.png
 #   ui/public/whale-icon.png           （由 SMALL 主图以 128 渲染）
+#   ui/public/whale-mark.png           （同一张 128 渲染，黑色鲸身染成暗色主题的 accent）
 #
 # 眼睛射线一律使用 <polygon> 而非 <path>，因此宽泛的 CSS 路径规则无法
 # 将其漂白。需要 rsvg-convert、ImageMagick (magick) 以及 macOS iconutil。
@@ -134,6 +135,19 @@ cp "$TMP/master-256-plate.png" "$ICONS/128x128@2x.png"
 cp "$TMP/master-512-plate.png" "$ICONS/icon.png"
 cp "$TMP/master-512-plate.png" assets/whale-icon-512.png
 cp "$TMP/small-128.png" ui/public/whale-icon.png
+
+# ui/public/whale-mark.png：暗色主题下的品牌蓝鲸鱼。同一张 128 渲染，只把**黑色鲸身**
+# 染成 #4a91ff（= theme.css `html.dark` 里的 `--accent`，改 token 时这里要跟着改），
+# 红眼与高光那几十个彩色像素原样保留。阈值取 `-fuzz 11%`：实测全图 R ≥ 30 的像素只有
+# 79 个（红眼 56 + 高光 23），11% 的 fuzz 换算成通道值不到 30，碰不到它们。
+#
+# **不要**改回在 CSS 里给 whale-icon.png 加 mask 上色：mask 裁的是元素画出来的所有东西
+# （连 outline 一起裁），并不换掉 `<img>` 自己的像素——黑鲸仍旧画在最上面，看上去还是
+# 黑鲸，只在抗锯齿的半透明边缘透出一圈背景色的蓝边。理由写在 theme.css 的
+# `html.dark .brand img` 上。
+magick "$TMP/small-128.png" -fuzz 11% -fill '#4a91ff' -opaque black \
+  -type TrueColorAlpha -depth 8 -define png:color-type=6 \
+  ui/public/whale-mark.png
 
 # Windows 通知区域（托盘）图标：由 whale-head.svg 渲染的两套透明/套板 PNG。
 # 十二档都由 src-tauri/src/tray.rs 经 include_image! 在编译期解码成 RGBA，

@@ -20,6 +20,7 @@ import {
   allRulesIncludingVue,
   cssFiles,
   effectiveDeclaration,
+  ruleBlocks,
   stripComments,
   subjectTokens,
 } from './lib/css-cascade.mjs';
@@ -941,12 +942,25 @@ test('v0.6.0 移除数据迁移的计划已登记在两份 AGENTS.md（删干净
 test('控制塔三张塔卡用 order 落位；健康卡在右半栏，最近操作在左、需要关注在右', () => {
   for (const [cls, order, col] of [
     ['diag-card--health', '2', '2'],
-    ['diag-card--activity', '4', '1'],
     ['diag-card--attention', '5', '2'],
   ]) {
     assert.equal(effectiveDeclaration([cls], RULES, 'order'), order, `${cls} 的 order`);
     assert.equal(effectiveDeclaration([cls], RULES, 'grid-column'), col, `${cls} 的 grid-column`);
   }
+  // 「最近操作」的基线落位**按规则文本判**，不走 effectiveDeclaration：2026-10-10
+  // 起它多了一条 `.overview-grid:not(:has(.diag-card--attention)) …{1 / -1}`
+  // ——那条规则的「能不能命中」取决于 DOM（有没有那张卡），而层叠工具只认主语，
+  // 于是它会拿条件规则当基线回答（`'1 / -1' !== '1'`）。两条都得钉住。
+  const activityBlocks = ruleBlocks(stripComments(diagnosticsCss));
+  const activityBase = activityBlocks.find((r) => r.selector === '.diag-card--activity');
+  assert.ok(activityBase, '必须有 .diag-card--activity 这条基线规则');
+  assert.match(activityBase.body, /order:\s*4/, '最近操作的 order');
+  assert.match(activityBase.body, /grid-column:\s*1\s*;/, '最近操作默认占左半栏');
+  const activityFull = activityBlocks.find((r) =>
+    r.selector === '.overview-grid:not(:has(.diag-card--attention)) .diag-card--activity'
+  );
+  assert.ok(activityFull, '缺少「没有需要关注时最近操作横跨整行」那条规则');
+  assert.match(activityFull.body, /grid-column:\s*1\s*\/\s*-1/);
   // 「需要关注」缺席时行号会整体前移，所以三条都得是 order 而不是 grid-row。
   for (const cls of ['diag-card--health', 'diag-card--attention', 'diag-card--activity']) {
     assert.equal(effectiveDeclaration([cls], RULES, 'grid-row'), null, `${cls} 不该用 grid-row 落位`);

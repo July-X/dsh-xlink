@@ -84,6 +84,7 @@ import {
   balanceRow,
   queriedAtLabel,
   queriedAgeCompact,
+  CODEX_USAGE_CONSENT_TIP,
 } from '../subscription/subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents/incidents.js';
 import { tildePath } from './labels.js';
@@ -719,6 +720,12 @@ function goVersions() {
             <el-icon class="card-info-icon"><InfoFilled /></el-icon>
           </el-tooltip>
         </h2>
+        <!-- Codex 额度开关进卡头（设计稿 `.card-head` 的位置）：标题在左，开关与
+             「刷新 / 查看详情」同排。原先它独占卡头下面一整行，把「默认关闭…」那句
+             许可说明顶到卡片中间、说明与开关之间隔着一段空白——而开关只有一个
+             `active-text`，脱离说明之后它读起来像「一个和额度有关的开关」，
+             不知道开启意味着只读登录文件。许可句改由下面的整宽一行给出。 -->
+        <CodexUsageConsent inline />
         <span v-if="anyKeyConfigured" class="plan-head-actions">
           <el-button
             class="btn-action"
@@ -755,7 +762,7 @@ function goVersions() {
           前往模型设置
         </el-button>
       </div>
-      <CodexUsageConsent />
+      <p class="muted usage-consent-tip">{{ CODEX_USAGE_CONSENT_TIP }}</p>
       <p v-if="!anyKeyConfigured" class="muted" style="margin: 0">
         当前实例未配置可查询的模型凭据；到工作台的模型设置配置后，这里展示套餐剩余额度与余额。
       </p>
@@ -1157,6 +1164,14 @@ function goVersions() {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+/* 卡头下面整宽一行的许可说明。字号 11px（辅助说明档，规范 §2），与下面
+   provider 卡片之间留 4px——它解释的是上面那个开关，不是下面这些读数，
+   不该与读数共享一段纵向间距。 */
+.usage-consent-tip {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
 }
 /* 套餐用量卡内容：横幅 + provider 分区的纵向间距。 */
 .plan-body {

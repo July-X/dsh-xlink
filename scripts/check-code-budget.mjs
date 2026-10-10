@@ -873,7 +873,16 @@ const FILE_BUDGETS = {
   // 就是它与概览对齐的那部分；为一个 2 行的改动拆一个被六个诊断面板共用的样式文件，
   // 换来的风险远大于省下的行数。本文件基线 314 远低于 `RATCHET_THRESHOLD` 600，
   // 不受反棘轮「只许下调」约束，上调在规则内。
-  'ui/src/diagnostics/diagnostics.css': 314,
+  // 314 → 399（2026-10-10 设计稿对齐第二轮）：系统健康四行补行首圆形图标槽与行间
+  // 刻蚀分隔线、最近操作补 kind 页签（当前项 accent 下划线）、行首状态圆点、行尾时间戳
+  // 与整行描边框、chevron 改纯图标圆形按钮、「全部正常 / 有异常」前加状态点。**净增 85
+  // 行里没有一行是装饰**：图标槽 4 套（普通 / 运行态着色 / 两种尺寸）、分隔线、页签
+  // 三件套、描边框各自都是设计稿上看得见的一处，删掉任何一处都会退回改造前的形态。
+  // **不拆文件的理由同上**：这些类全部只被 ControlTower.vue 的三张塔卡引用，
+  // diagnostics.css 又是六个诊断面板的共用层，为概览一块样式另起一个被单文件消费的
+  // CSS 文件，换来的是「样式散在两个文件里」而不是更少的代码。399 离
+  // `RATCHET_THRESHOLD` 600 与 `HARD_FILE_CEILING` 800 都还有余量。
+  'ui/src/diagnostics/diagnostics.css': 399,
   // 诊断层外壳：覆盖当前面板而非另开窗口（启动失败时用户正要回到日志 /
   // 换端口 / 回退快照，跨窗口拖拽是白费力气）。头部固定
   // [返回] 标题 [主操作]，标题单行省略以守住 480 宽。
@@ -988,7 +997,18 @@ const FILE_BUDGETS = {
   // 那个文件在反棘轮上（只许下调），为这 4 行去动它不划算。图标槽位必须紧贴
   // 标题，抽成子组件要连 fragment 结构与 slot 一起改，代价远超这 6 行。
   // 283 < RATCHET_THRESHOLD 600，不受反棘轮约束。
-  'ui/src/diagnostics/ControlTower.vue': 289,
+  // 289 → 360（2026-10-10 设计稿对齐第二轮）：`cell()` 收一个 `icon` 形参让健康四行各
+  // 带一枚图标；最近操作新增 `RUN_KIND_TABS`（kind 目录，当前项高亮）、`runTimeLabel`
+  // （绝对时刻，取已有的 finishedAtMs / startedAtMs，**没有新增后端字段**）、
+  // `RUN_STATUS_ICONS` 与 `runStatusIcon`，模板补页签 / 清除图标 / 行首状态点 /
+  // 行尾时间戳。
+  // **为什么页签是静态目录而不是可点的**：四张卡只渲染**最近一条**记录，做成能点的
+  // 会让用户以为能翻历史——那是一次点击就落空的假 affordance，于是只高亮当前 kind。
+  // **不拆文件的理由**：这 71 行是上面那些视觉元素的模板与取值，没有一段能独立成
+  // 子组件（行结构是 fragment，抽出去要连 slot 与 `v-for` 的 tone 传递一起改，
+  // 代价超过这 71 行本身）；`runTimeLabel` / `runStatusIcon` 单独成文件则只是把
+  // 两段十行的纯函数搬出去。360 离 600 / 800 都还有余量。
+  'ui/src/diagnostics/ControlTower.vue': 360,
   // 安装预检的两段式事务：中央库字节级快照与回滚、基线差分判定、
   // 提交（物化 + 接线）与报告装配。放在独立文件而不是塞进已 2964 行的
   // plugins.rs，是为了两件事：插件模块读不懂、预检想复用到技能上也
@@ -2269,7 +2289,14 @@ const FILE_BUDGETS = {
 // 提到 16px——净增的是 4 个图标槽位这个必然成本，没有任何新逻辑。
 // TOTAL_BUDGET 是**软上限**（刻意不做只许下调：试过，实践中只会逼人绕开门禁
 // 而不是真写出更少的代码），既有大文件预算一个没动。
-const TOTAL_BUDGET = 46684;
+// 46684 → 46875（2026-10-10 设计稿对齐第二轮）：概览页三张塔卡按稿补齐视觉元素，
+// 合计 +191 行——diagnostics.css +85、ControlTower.vue +71、OverviewPanel.vue 与
+// CodexUsageConsent.vue +13（Codex 开关进卡头，许可说明整宽一行）、subscription.js
+// +12（许可文案抽成 `CODEX_USAGE_CONSENT_TIP` 单一真源）、theme.css +10（`.card-title-
+// icon` 改纯 accent 实心、暗色鲸鱼换品牌蓝剪影；删掉了随之失去消费者的
+// `--accent-soft-strong`）。**这轮没有新增任何业务能力**，每一处都是设计稿上已经
+// 存在、此前没有对应视觉的元素；两个文件预算的登记理由见各自条目。
+const TOTAL_BUDGET = 46875;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

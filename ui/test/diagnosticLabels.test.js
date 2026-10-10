@@ -570,8 +570,22 @@ test('P1-05 最近操作按 kind 分派，四种都不落到启动时间线', as
   const tower = readSrc('diagnostics/ControlTower.vue');
   assert.ok(!/openStartupDiagnosis\(/.test(tower), '控制塔必须按 kind 分派，不能一律当启动诊断');
   assert.match(tower, /openRunDiagnosis\(latestRun\.value, 'overview'\)/);
-  // 四种 kind 都要在标题里说出来。
-  assert.match(tower, /启动 \/ 预检 \/ 恢复 \/ 排查/);
+  // 四种 kind 都要在标题里说出来。2026-10-10 起这四个短名由 `RUN_KIND_TABS`
+  // 驱动（高亮当前记录所属的那一个），不再是写死的一行「启动 / 预检 / …」——
+  // 判据因此逐条比对 kind 与短名的**配对**，只查「出现过这四个字」的话，
+  // 把 `label` 全删掉也能靠注释里的那句话通过。
+  for (const [kind, label] of [
+    ['startup', '启动'],
+    ['plugin-precheck', '预检'],
+    ['restore', '恢复'],
+    ['bisect', '排查'],
+  ]) {
+    assert.match(
+      tower,
+      new RegExp(`kind: '${kind}', label: '${label}'`),
+      `标题行缺少「${label}」`
+    );
+  }
   // 预检项必须带上那一条运行记录，不能是空 spec。
   assert.match(tower, /run: lastPrecheck/);
 });
