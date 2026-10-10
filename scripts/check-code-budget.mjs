@@ -1431,7 +1431,11 @@ const FILE_BUDGETS = {
   // 窗口）因此共用这一份，而不是各写一遍判断。基线远低于 RATCHET_THRESHOLD，
   // 上调在规则内。
   // 230 → 280：显式许可保存、来源切换清掉旧数字、跨窗同步共用动作。
-  'ui/src/subscription/subscription.js': 280,
+  // 280 → 288：厂商标志登记表 `PROVIDER_LOGOS` + `providerLogo`。四个 provider id
+  // 各一行路径，底下写清「为什么必须是本地文件」与「为什么只有 OpenAI 需要第二个
+  // 文件」。是一张查表，不是逻辑，留在本模块是因为 provider id 的唯一清单就在这里
+  // （`ui/AGENTS.md` 的实例/凭据纪律同源）；独立成文件反而多一处要同步的清单。
+  'ui/src/subscription/subscription.js': 288,
   // 套餐用量独立窗口根组件（open_subscription_window 弹出，?subscription=1 挂载）：
   // 双 provider 分区 + 进度条 / 余额行 + 错误横幅与 scoped 样式（同 UsageWindow 模式）。
   // 340 → 360：查询时间换成刷新 icon 胶囊（紧凑年龄值）。
@@ -2296,7 +2300,16 @@ const FILE_BUDGETS = {
 // icon` 改纯 accent 实心、暗色鲸鱼换品牌蓝剪影；删掉了随之失去消费者的
 // `--accent-soft-strong`）。**这轮没有新增任何业务能力**，每一处都是设计稿上已经
 // 存在、此前没有对应视觉的元素；两个文件预算的登记理由见各自条目。
-const TOTAL_BUDGET = 46875;
+// 46875 → 46966（2026-10-10 设计稿对齐第三轮，用户 11:44 追加三条）：合计 +91 行，
+// 全部是装饰与判据，没有一行业务逻辑——
+//   · OverviewPanel.vue +78：`.plan-provider-id` 包装层 + `.plan-provider-logo` 家族
+//     （圆形底 26px + 各家色相修饰类 + OpenAI 暗色换图），以及模板里插标志那 12 行。
+//   · subscription.js +8：`PROVIDER_LOGOS` 四个 id 的路径表 + `providerLogo`。
+//   · check-invariants.mjs +5：把「引号里、以 / 开头、以图片扩展名结尾」也纳入
+//     ui/public 存在性检查——`PROVIDER_LOGOS` 是本仓第一种**裸字符串**引用本地资源
+//     的写法，原判据只认 `src=` / `url()`，拼错一个字母照样全绿。
+// 素材侧（ui/public 下 5 个 SVG、whale-mark.png、header-ribbons.svg）不计入代码行。
+const TOTAL_BUDGET = 46966;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

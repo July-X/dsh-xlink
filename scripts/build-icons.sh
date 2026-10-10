@@ -136,16 +136,25 @@ cp "$TMP/master-512-plate.png" "$ICONS/icon.png"
 cp "$TMP/master-512-plate.png" assets/whale-icon-512.png
 cp "$TMP/small-128.png" ui/public/whale-icon.png
 
-# ui/public/whale-mark.png：暗色主题下的品牌蓝鲸鱼。同一张 128 渲染，只把**黑色鲸身**
-# 染成 #4a91ff（= theme.css `html.dark` 里的 `--accent`，改 token 时这里要跟着改），
-# 红眼与高光那几十个彩色像素原样保留。阈值取 `-fuzz 11%`：实测全图 R ≥ 30 的像素只有
-# 79 个（红眼 56 + 高光 23），11% 的 fuzz 换算成通道值不到 30，碰不到它们。
+# ui/public/whale-mark.png：暗色主题下的品牌蓝鲸鱼。同一张 128 渲染，黑色鲸身染成
+# #4a91ff（= theme.css `html.dark` 里的 `--accent`，改 token 时这里要跟着改），
+# **眼窝那 79 个非黑像素（R ≥ 30）抠成透明**——设计稿暗色那张的眼睛是一块暗色洞，
+# 留成品牌蓝会让眼窝与鲸身同色、整只鲸读成一块实心剪影，丢掉「鲸」的字形。阈值取
+# `-fuzz 11%`：实测全图 R ≥ 30 的像素只有 79 个（红眼 56 + 高光 23），11% 的 fuzz
+# 换算成通道值不到 30，抠掉的正好是这 79 个；腹部那片本来就是 alpha=0，不用管。
+# 亮色那枚仍带红眼（设计稿亮色那张是有的），所以只染这一份。
 #
 # **不要**改回在 CSS 里给 whale-icon.png 加 mask 上色：mask 裁的是元素画出来的所有东西
 # （连 outline 一起裁），并不换掉 `<img>` 自己的像素——黑鲸仍旧画在最上面，看上去还是
 # 黑鲸，只在抗锯齿的半透明边缘透出一圈背景色的蓝边。理由写在 theme.css 的
 # `html.dark .brand img` 上。
 magick "$TMP/small-128.png" -fuzz 11% -fill '#4a91ff' -opaque black \
+  -type TrueColorAlpha "$TMP/mark-tinted.png"
+# 抠眼窝：先把「黑色鲸身」取成一张白/黑二值图当 alpha 蒙版，再用 CopyOpacity 盖回
+# 染色结果。蒙版那一段与本文件 tray_frame_dark 里用的是同一套写法。
+magick "$TMP/mark-tinted.png" \
+  \( "$TMP/small-128.png" -alpha extract -fuzz 11% -fill white -opaque black -fill black +opaque black \) \
+  -alpha off -compose CopyOpacity -composite \
   -type TrueColorAlpha -depth 8 -define png:color-type=6 \
   ui/public/whale-mark.png
 
