@@ -2308,7 +2308,8 @@ const FILE_BUDGETS = {
 //   · check-invariants.mjs +5：把「引号里、以 / 开头、以图片扩展名结尾」也纳入
 //     ui/public 存在性检查——`PROVIDER_LOGOS` 是本仓第一种**裸字符串**引用本地资源
 //     的写法，原判据只认 `src=` / `url()`，拼错一个字母照样全绿。
-// 素材侧（ui/public 下 5 个 SVG、whale-mark.png、header-ribbons.svg）不计入代码行。
+// 素材侧（ui/public 下 5 个 SVG、header-ribbons.svg）不计入代码行。
+// （那轮的 whale-mark.png 已在用户 12:44 否掉品牌蓝侧栏标后连同换图规则一起删除。）
 const TOTAL_BUDGET = 46966;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
