@@ -181,10 +181,7 @@ fn try_create(path: &Path) -> TryOutcome {
         ));
     };
     if std::fs::create_dir_all(parent).is_err() {
-        return TryOutcome::Broken(io::Error::new(
-            io::ErrorKind::Other,
-            "cannot create lock parent dir",
-        ));
+        return TryOutcome::Broken(io::Error::other("cannot create lock parent dir"));
     }
     match std::fs::OpenOptions::new()
         .write(true)

@@ -153,11 +153,11 @@ mod tests {
             .as_secs() as i64;
         let times = [
             libc::timespec {
-                tv_sec: secs as i64,
+                tv_sec: secs,
                 tv_nsec: 0,
             },
             libc::timespec {
-                tv_sec: secs as i64,
+                tv_sec: secs,
                 tv_nsec: 0,
             },
         ];
