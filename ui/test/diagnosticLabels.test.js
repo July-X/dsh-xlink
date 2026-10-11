@@ -740,22 +740,16 @@ test('诊断层的「更多」弹层不会被挤成逐字竖排', () => {
 // 约束**，于是它按触发器可用宽度一路铺开，在 1040 宽的窗口里横跨大半屏，
 // 从插件中心一直盖到概览那边。它压过的不是边距，是别的卡片。
 //
-// 三样一起给（少一样都还在，且都不报错）：`max-width` 治铺开、
-// `white-space: normal` 让断行回到词级、显式 `min-width` 堵住 EP 默认的
-// `min-width: 10px` 塌缩。同上，`plugins.css` 必须是**全局**文件——
-// tooltip 气泡 teleport 到 body，scoped 的 `data-v-*` 匹配不到它。
-test('预检说明气泡限宽换行，不横跨窗口', () => {
-  const css = readSrc('plugins/plugins.css');
-  const rule = /\.precheck-tip-popper\s*\{([^}]*)\}/.exec(css);
-  assert.ok(rule, '必须有 .precheck-tip-popper 规则');
-  assert.match(rule[1], /max-width:\s*min\(420px, calc\(100vw - 32px\)\)/, '要限宽，且窄窗不溢出');
-  assert.match(rule[1], /min-width:\s*0/, '必须显式压掉 EP 的 min-width:10px，否则仍能塌成逐字竖排');
-  assert.match(rule[1], /white-space:\s*normal/, '必须允许多行，否则 EP 的 break-word 会逐字断行');
-
-  // 接线：类名要真的挂在那个 tooltip 上，且走的是 popper-class（不是 content）。
+// **宽度与换行由 theme.css 的 `.el-popper[role='tooltip']` 一处兜住**，
+// 判据在 `designAlignment.test.js`（「tooltip 浮层必须限宽并换行」+「EP 的浮层
+// role 默认值」两条）。曾经这里还有一份 `plugins.css` 专收一条
+// `.precheck-tip-popper`，四条声明与全局的**逐条同值**（还少一条
+// `overflow-wrap`），特异度又更低（单类 0,1,0 vs 类+属性 0,2,0）——它从头到尾
+// 没赢过任何一次层叠，是一个看着在管事、实际不生效的规则。已连同模板上的
+// `popper-class` 一起删掉；这里只留那条 CSS 管不到的判据。
+test('预检说明文案断成多句，宽度受限时断点才读得下去', () => {
+  // 宽度受限时的断点由文案决定，一整段没有停顿最难读。
   const panel = readSrc('plugins/PluginsPanel.vue');
-  assert.match(panel, /popper-class="precheck-tip-popper"/, 'tooltip 必须挂上这个 popper-class');
-  // 文案断句：宽度受限时的断点由文案决定，一整段没有停顿最难读。
   const tip = /const precheckTip =([\s\S]*?);\n/.exec(panel);
   assert.ok(tip, '找不到 precheckTip');
   assert.ok(
@@ -763,9 +757,13 @@ test('预检说明气泡限宽换行，不横跨窗口', () => {
     '这段说明要断成多句（至少 3 个句号），否则折行会落在句中读不出停顿',
   );
 
-  // 全局而非 scoped：这条 import 是它能生效的唯一原因。
-  const main = readSrc('main.js');
-  assert.match(main, /import '\.\/plugins\/plugins\.css'/, 'plugins.css 必须在 main.js 里 import');
+  // 反向：别把那条死规则挂回来。模板上再挂 `popper-class`，就要同时回答
+  // 「它比全局的特异度更高吗」——答案是否，于是它只会让人以为限宽靠它。
+  assert.doesNotMatch(
+    panel,
+    /popper-class="precheck-tip-popper"/,
+    '限宽由全局 role=tooltip 规则兜住，逐个挂 popper-class 是 ui/AGENTS.md 记过的反面做法',
+  );
 });
 
 test('诊断页必须说清这条记录是什么时候的', () => {

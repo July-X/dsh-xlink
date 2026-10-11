@@ -406,12 +406,10 @@ function instanceChipType(row, instanceId) {
             inactive-text="直装"
             @update:model-value="togglePrecheck"
           />
-          <el-tooltip
-            placement="top"
-            effect="dark"
-            :content="precheckTip"
-            popper-class="precheck-tip-popper"
-          >
+          <!-- 限宽与换行由 theme.css 的 `.el-popper[role='tooltip']` 全局兜住：
+               这里曾挂过一个 precheck 专用的 popper 类名，那条规则与全局的逐条同值、
+               特异度还更低，是一个看着在管事、实际不生效的死规则，已连同样式一起删。 -->
+          <el-tooltip placement="top" effect="dark" :content="precheckTip">
             <span class="precheck-toggle-label">
               <el-icon><InfoFilled /></el-icon>
               安装前先在沙盒实例里试装并启动一次

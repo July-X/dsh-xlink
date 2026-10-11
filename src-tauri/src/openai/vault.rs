@@ -101,7 +101,7 @@ fn key_from(bytes: &[u8; 32]) -> LessSafeKey {
     LessSafeKey::new(unbound)
 }
 
-/// 全量原子写（0600）。写入失败不改动原文件。
+/// 全量原子写。写入失败不改动原文件。
 pub(crate) fn save_accounts(
     path: &Path,
     key_bytes: &[u8; 32],
@@ -113,10 +113,13 @@ pub(crate) fn save_accounts(
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("创建凭据目录失败（{}）：{e}", parent.display()))?;
     }
-    crate::shell::process::atomic_write(path, &sealed)
-        .map_err(|e| format!("写凭据文件失败（{}）：{e}", path.display()))?;
-    set_owner_only(path);
-    Ok(())
+    // 走私有入口：临时文件**一创建出来**就是 0600，正式路径上从未出现过
+    // 权限更宽的那一刻。此前的写法是 `atomic_write` + 事后 `set_owner_only`，
+    // 凭据从开始写起就以 0644 躺在同目录的临时文件里，rename 之后还要再宽上
+    // 一会儿；进程在中途被杀，那份 0644 就永久留下了。删除 `set_owner_only`
+    // 本身就是防回退——没有事后 chmod 的代码可搬回原处。
+    crate::shell::atomic_write::atomic_write_private(path, &sealed)
+        .map_err(|e| format!("写凭据文件失败（{}）：{e}", path.display()))
 }
 
 /// 读取；文件不存在视为「从未登录过」的空库，损坏如实报错（不按空文件
@@ -131,18 +134,6 @@ pub(crate) fn load_accounts(path: &Path, key_bytes: &[u8; 32]) -> Result<Account
     };
     let plain = open(&key_from(key_bytes), &sealed)?;
     serde_json::from_slice(&plain).map_err(|e| format!("凭据文件内容损坏：{e}"))
-}
-
-#[cfg(unix)]
-fn set_owner_only(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-}
-
-#[cfg(windows)]
-fn set_owner_only(_path: &Path) {
-    // 用户 profile 下的默认 ACL 即用户私有；设计 §8 的 Windows 权限校验
-    // 属实机验收项，不在写入路径提权。
 }
 
 // ── 系统凭据库（薄壳，不进测试） ─────────────────────────────────────────

@@ -140,29 +140,10 @@ struct CodexTokens {
     account_id: String,
 }
 
+/// 解出 JWS 载荷（不验签——登录时的验签已经做过，这里只读声明做误用防护）。
+/// 判据与 OpenAI 额度侧共用一份，见 [`crate::openai::jwk::unverified_claims`]。
 fn claims(token: &str) -> Option<serde_json::Value> {
-    use base64::Engine;
-    if !token
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
-    {
-        return None;
-    }
-    let mut parts = token.split('.');
-    if parts.next()?.is_empty() {
-        return None;
-    }
-    let payload = parts.next()?;
-    if parts.next()?.is_empty() {
-        return None;
-    }
-    if parts.next().is_some() {
-        return None;
-    }
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .ok()?;
-    serde_json::from_slice(&decoded).ok()
+    crate::openai::jwk::unverified_claims(token)
 }
 
 /// 本地可信文件中的声明只用于防止误用别的账号；最终授权仍由第一方接口校验。

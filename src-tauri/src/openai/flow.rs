@@ -333,39 +333,56 @@ pub(crate) fn run_logout(
 }
 
 /// 读当前账号（脱敏）。
+/// 只读 vault，取出**活跃账号那一条**（不解密成视图、不回填派生字段）。
 ///
-/// 这是**只读**命令（`openai_account_status` 的契约：不打快照、不写文件），
-/// 所以两处都不能有副作用：
-/// ① 凭据文件不存在就**直接返回，连钥匙串都不碰**——否则在从没登录过的机器上
-///    第一次查状态就会生成一把密钥并在钥匙串里留下条目，那条密钥对不上任何
-///    凭据文件，纯属垃圾且会挡住后续真正的写入路径；
-/// ② 万一走到需要密钥的那一步，put 也必须拒绝创建（同 `usage/subscription_openai`
-///    的约定）。同一个 `load_file_key_with` 的两个调用点曾经对「只读路径能不能
-///    写钥匙串」给出相反答案，这里是另一边。
-pub(crate) fn account_view(
+/// 判据只有一份，收在这里是因为两个只读调用点曾经各写一份、并且对同一个问题
+/// 给出了相反答案：`account_view` 与 `usage::subscription_openai::active_account`
+/// 都要「凭据文件不存在就返回 None」+「取密钥时 put 一律拒绝创建」，但两条错误
+/// 文案不同，于是「只读路径能不能写钥匙串」这条约定在两个文件里看起来像两种
+/// 规定。约定写在实现里，而不是散在每个调用点各自复述一遍。
+///
+/// 另两条读 vault 的路径**故意不并进来**，它们语义确实不同：
+/// - [`begin_login`] 首次之外要允许建密钥（它是写路径），也不短路；
+/// - 登出 / 令牌刷新是读-改-写，需要整个 `Accounts` 才能写回。
+pub(crate) fn read_active_entry(
     paths: &FlowPaths,
-    deps: &impl FlowTransport,
     mode: &str,
-) -> Result<Option<AccountView>, String> {
+    get: impl Fn(&str, &str) -> vault::GetResult,
+) -> Result<Option<AccountTokens>, String> {
     if !paths.vault_file.is_file() {
         return Ok(None);
     }
-    let key = vault::load_file_key_with(
-        mode,
-        &paths.xlink_home,
-        |service, account| deps.keyring_get(service, account),
-        |_, _, _| Err("读取账号状态不会创建凭据密钥".to_string()),
-    )?;
+    let key = vault::load_file_key_with(mode, &paths.xlink_home, get, |_, _, _| {
+        Err("读取账号状态不会创建凭据密钥".to_string())
+    })?;
     let accounts: Accounts = vault::load_accounts(&paths.vault_file, &key)?;
     Ok(accounts
         .active
         .as_ref()
         .and_then(|sub| accounts.entries.get(sub))
-        .map(|entry| AccountView {
-            sub: entry.sub.clone(),
-            email: entry.email.clone(),
-            reauth_required: entry.reauth_required,
-        }))
+        .cloned())
+}
+
+/// 当前登录状态。这是**只读**命令（`openai_account_status` 的契约：不打快照、不写文件），
+/// 所以两处都不能有副作用：
+/// ① 凭据文件不存在就**直接返回，连钥匙串都不碰**——否则在从没登录过的机器上
+///    第一次查状态就会生成一把密钥并在钥匙串里留下条目，那条密钥对不上任何
+///    凭据文件，纯属垃圾且会挡住后续真正的写入路径；
+/// ② 万一走到需要密钥的那一步，put 也必须拒绝创建（同 `usage/subscription_openai`
+///    的约定）。这两条都由 [`read_active_entry`] 一处实现。
+pub(crate) fn account_view(
+    paths: &FlowPaths,
+    deps: &impl FlowTransport,
+    mode: &str,
+) -> Result<Option<AccountView>, String> {
+    Ok(read_active_entry(paths, mode, |service, account| {
+        deps.keyring_get(service, account)
+    })?
+    .map(|entry| AccountView {
+        sub: entry.sub.clone(),
+        email: entry.email.clone(),
+        reauth_required: entry.reauth_required,
+    }))
 }
 
 /// 壳内生产路径（`shell/<mode>/openai-oauth/` + 官方 issuer）：命令层与
