@@ -34,13 +34,15 @@ npm run dev 5190                  # 同上但换端口；vite 的 server.port �
 npm run dev:ui                    # 只起管理面板 dev server（纯前端迭代，浏览器里无 Tauri 桥）
 npm run build                     # 本机构建（.dmg / NSIS；自动先 vite build → ui/dist）
 npm run build:ui                  # 只构建管理面板 → ui/dist
-npm run check                     # 提交前的全量门禁：invariants + 预算 + 两套测试 + fmt/clippy/release 编译 + UI 产物预算
+npm run check                     # 提交前的全量门禁：invariants + 预算 + 前端测试 + fmt/clippy/release 编译 + Rust 单测 + UI 产物预算
 cargo check                       # 在 src-tauri/ 内：快速编译检查
 cargo clippy --all-targets        # lint，零警告基线
 cargo fmt                         # rustfmt 格式化
 ```
 
-`npm run check` 是**提交前唯一该跑的那条**，别再手工拼下面这些：2026-10-01 那个 release-only 的编译错误（`#[cfg]` 归属被 `use` 打断，debug 全绿、release 报常量重定义）就是「只跑 `cargo check` + 只跑 `test:ui`」漏过去的，而那正是两个发布通道都编不出来的性质。`check:rust` 里的 `cargo check --release` 不能省——debug 与 release 的 cfg 覆盖面不同，只有 release 会现形。全量约 1 分钟（release 编译冷缓存时更久）。
+`npm run check` 是**提交前唯一该跑的那条**，别再手工拼下面这些：2026-10-01 那个 release-only 的编译错误（`#[cfg]` 归属被 `use` 打断，debug 全绿、release 报常量重定义）就是「只跑 `cargo check` + 只跑 `test:ui`」漏过去的，而那正是两个发布通道都编不出来的性质。`check:rust` 里的 `cargo check --release` 不能省——debug 与 release 的 cfg 覆盖面不同，只有 release 会现形。
+
+`check:rust` 同样**包含 `cargo test`**（2026-10-11 补入）：此前它只有 fmt + clippy + release 编译，不含 851 条 Rust 单测——总闸跑绿而 CI 才红，正是「门禁不许假绿」要挡的那件事。热缓存实测 44 秒 → 约 100 秒。
 
 **门禁判据不许在 workflow 里内联**。UI 产物预算此前是同一段 heredoc 在 `desktop-ci.yml` 与 `desktop-release.yml` 各写一份，已经漂移过一次，`check:code-budget` 还整条缺席在发布通道上。现在判据本体在 `scripts/check-ui-bundle-budget.mjs`，两个 workflow 都只调它，`npm run check` 也带上了——它此前只在 CI 跑，本地提交前管不到，预算超标要等 CI 才发现。**产物不存在时脚本必须 exit 1 并说清前置命令**，静默跳过等于给出一道「通过」的假门禁。
 
@@ -103,7 +105,7 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 
 **默认只提交，不推送**（2026-09-30 起）。改完代码跑完门禁就 `git commit`，`git push` / `git push origin <tag>` / 建远程 tag 一律**先问过用户**再做——推远端不可逆，而且这台机器上常有并行会话往同一个工作树提交，推之前必须先看 `git log --oneline origin/main..HEAD`，确认要推的提交里**有没有别人的**（并行会话的改动会跟着一起上去）。想看未推送的有什么就 `git status -sb` 报「领先 N 个提交」，不要自作主张推。
 
-**`git add` 只写本次实际改过的文件，禁止 `git add -A` / `git add .` / `git commit -a`**（2026-10-07 补）。这条不是洁癖：同一台机器上有并行会话在同一个工作树里干活，它整文件 add 时会把**我还没提交的在途改动一起卷走**。已连续发生两次——`7700839`（"git clone 卡十分钟"）带走了未暂存的 `diagnostics.css` 分割线改动，`d516606`（"修：空 content 的 tooltip"）又带走了同一文件里空态留白的那一行。被卷走的后果不是丢失内容（它确实进了仓库），而是**那一行 CSS 出现在一个与它毫无关系的提交标题下**，而解释它的注释与守卫测试还留在工作区外，`git log` 里从此对不上号。写完代码、跑完门禁就提交，把在途窗口缩到最短；提交前用 `git diff --cached --stat` 确认暂存区里只有自己的东西。
+**`git add` 只写本次实际改过的文件，禁止 `git add -A` / `git add .` / `git commit -a`**（2026-10-07 补）。这条不是洁癖：同一台机器上有并行会话在同一个工作树里干活，它整文件 add 时会把**我还没提交的在途改动一起卷走**（已连续发生两次）。被卷走的后果不是丢失内容（它确实进了仓库），而是**那一行改动出现在一个与它毫无关系的提交标题下**，解释它的注释与守卫测试还留在工作区外，`git log` 里从此对不上号。写完代码、跑完门禁就提交，把在途窗口缩到最短；提交前用 `git diff --cached --stat` 确认暂存区里只有自己的东西。
 
 ### 发布触发
 
