@@ -26,6 +26,39 @@ fn b64url_decode(text: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
+/// 解出一个 JWS 的载荷 JSON，**不验签**。
+///
+/// 调用方要的只是「这份 token 声称自己属于哪个账号」这一个查询上下文，不是
+/// 身份判定：验签发生在登录那一刻（[`verify_rs256`]），读出来的 vault 又是
+/// 加密的。所以这里只做「切三段 → base64url 解载荷 → 解析 JSON」。
+///
+/// 判据取三处调用点里最严的那条，且只保留**真正起作用**的两条：字符集必须
+/// 是 base64url（外加分隔符）、必须恰好三段。
+///
+/// 「三段」这一条是这里的实质安全语义：**没有签名段的字符串不该被当成一枚
+/// 签名过的 token**。此前三个调用点松紧不一，OpenAI 额度侧只做
+/// `split('.').nth(1)`，于是两段串同样能解出「账号 id」；判据分叉本身就是一处
+/// 缺陷，哪怕三处恰好喂的都是自家签发的合法 token。
+///
+/// 曾经还有三条「各段非空」判断，反向验证时发现它们**一条都不起作用**：空载荷
+/// 段解码出零字节，JSON 解析自然失败；空头/空签名段根本不影响解出什么。留着
+/// 只会让判据看起来更严，而下一次改动不知道它到底守着什么——已删。
+pub(crate) fn unverified_claims(jws: &str) -> Option<serde_json::Value> {
+    let jws = jws.trim();
+    if !jws
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return None;
+    }
+    let mut parts = jws.split('.');
+    let payload = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(header), Some(payload), Some(_signature), None) if !header.is_empty() => payload,
+        _ => return None,
+    };
+    serde_json::from_slice(&b64url_decode(payload)?).ok()
+}
+
 /// 从 JWKS JSON 里按 `kid` 取 RSA 公钥；无 `kid` 时取第一把 RSA。
 pub(crate) fn find_rsa_jwk(jwks_json: &str, kid: Option<&str>) -> Option<RsaJwk> {
     let value: serde_json::Value = serde_json::from_str(jwks_json).ok()?;
@@ -160,5 +193,47 @@ mod tests {
     fn b64url(bytes: &[u8]) -> String {
         use base64::Engine;
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    }
+
+    /// 收敛后的载荷解码：**恰好三段 + base64url 字符集**是唯一判据。
+    ///
+    /// 每条拒绝用例都挑**能真正隔离出那条规则**的形态。写这条测试时踩过一次
+    /// 坑：第一版把 `"a..c"` 当作「空载荷段被拒」的证据，反向验证时把空段判断
+    /// 删掉它照样绿——`""` 解出零字节、JSON 解析自然失败，与空段判断无关。
+    /// 空段类用例只断言「解不出载荷」，不声称它钉住了空段规则。
+    #[test]
+    fn unverified_claims_applies_one_strict_shape_to_every_caller() {
+        let payload = b64url(br#"{"scope":"chatgpt.tokens.use.direct"}"#);
+        let header = b64url(br#"{"alg":"RS256"}"#);
+        let good = format!("{header}.{payload}.sig");
+        let scope = |token: &str| {
+            unverified_claims(token)
+                .and_then(|claims| {
+                    claims
+                        .get("scope")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default()
+        };
+
+        // 合法三段：解出载荷（前后空白容忍，与登录时写库前的一致）。
+        assert_eq!(scope(&good), "chatgpt.tokens.use.direct");
+        assert_eq!(scope(&format!("  {good}  ")), "chatgpt.tokens.use.direct");
+
+        // 缺签名段 / 多一段 / 没有分隔符 / 字符集越界：四条各自隔离一条规则。
+        for (bad, why) in [
+            (format!("{header}.{payload}"), "没有签名段"),
+            (format!("{good}.{payload}"), "多出一段"),
+            ("not-a-jwt".to_string(), "没有分隔符"),
+            (format!("{header}.{payload}.签 名"), "签名段含非 ASCII"),
+        ] {
+            assert_eq!(scope(&bad), "", "{why}：{bad:?} 不该被当作合法 JWS");
+        }
+
+        // 解不出载荷（靠的是 JSON 解析失败，不是空段规则）。
+        for bad in ["", "a..c", ".b.c", "a.b."] {
+            assert_eq!(scope(bad), "", "{bad:?} 不该解出载荷");
+        }
     }
 }

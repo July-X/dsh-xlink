@@ -199,30 +199,24 @@ fn active_credentials() -> Result<Option<OpenAiUsage>, String> {
 }
 
 /// 用量查询只读现有库与密钥；不触发模型令牌刷新，也不创建缺失密钥。
+///
+/// 「不存在就返回、连钥匙串都不碰」「put 拒绝创建」这两条判据不在这里复述——
+/// 它们住在 [`crate::openai::flow::read_active_entry`]，与账号状态面板共用同一份。
 pub(crate) fn active_account() -> Result<Option<crate::openai::vault::AccountTokens>, String> {
     use crate::openai::vault;
     let paths = crate::openai::flow::shell_flow_paths();
-    if !paths.vault_file.is_file() {
-        return Ok(None);
-    }
     let mode = crate::shell::settings::current_mode().as_str().to_string();
-    let key =
-        vault::load_file_key_with(&mode, &paths.xlink_home, vault::keyring_get, |_, _, _| {
-            Err("额度查询不会创建凭据密钥；请先在本壳完成 OpenAI 登录".into())
-        })?;
-    let accounts = vault::load_accounts(&paths.vault_file, &key)?;
-    Ok(accounts
-        .active
-        .as_ref()
-        .and_then(|sub| accounts.entries.get(sub))
-        .cloned()
-        .map(|mut tokens| {
-            tokens.chatgpt_account_id = tokens
-                .chatgpt_account_id
-                .filter(|id| !id.trim().is_empty())
-                .or_else(|| account_id_from_id_token(&tokens.id_token));
-            tokens
-        }))
+    Ok(
+        crate::openai::flow::read_active_entry(&paths, &mode, vault::keyring_get)?.map(
+            |mut tokens| {
+                tokens.chatgpt_account_id = tokens
+                    .chatgpt_account_id
+                    .filter(|id| !id.trim().is_empty())
+                    .or_else(|| account_id_from_id_token(&tokens.id_token));
+                tokens
+            },
+        ),
+    )
 }
 
 /// 从本壳登录时验签留存的 ID token 回填旧 vault 的账号信息，供跨来源一致性
@@ -230,27 +224,16 @@ pub(crate) fn active_account() -> Result<Option<crate::openai::vault::AccountTok
 ///
 /// 这里**不再验签名**：那份 ID token 正是登录时做过完整验证（签名 / iss /
 /// aud / exp / nonce）之后才存进来的，且整个 vault 是加密的；读出来的又只是
-/// 「发给哪个账号」这一个查询上下文，不是身份判定。
+/// 「发给哪个账号」这一个查询上下文，不是身份判定。判据与 Codex 侧共用
+/// [`crate::openai::jwk::unverified_claims`]。
 fn account_id_from_id_token(id_token: &str) -> Option<String> {
-    use base64::Engine;
-    let payload = id_token.trim().split('.').nth(1)?;
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .ok()?;
-    let claims = serde_json::from_slice::<serde_json::Value>(&decoded).ok()?;
+    let claims = crate::openai::jwk::unverified_claims(id_token)?;
     crate::openai::auth::chatgpt_account_id(&claims)
 }
 
 /// 仅分类已读取的令牌，不作身份认证；opaque 认证元数据不解密、不猜测。
 fn is_siwc_access_token(token: &str) -> bool {
-    use base64::Engine;
-    let Some(payload) = token.split('.').nth(1) else {
-        return false;
-    };
-    let Ok(decoded) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
-        return false;
-    };
-    let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&decoded) else {
+    let Some(claims) = crate::openai::jwk::unverified_claims(token) else {
         return false;
     };
     claims
@@ -411,20 +394,12 @@ fn call_route(
     }
 }
 
-/// 按路由建 agent 并缓存。`Direct` 显式 `.proxy(None)`：ureq 的默认配置会
-/// 读环境变量里的代理，不显式关掉就等于「直连」其实又走了 `HTTPS_PROXY`
-/// （与 `pkg::updater` 同一条纪律）。
-///
-/// `http_status_as_error(false)`：非 2xx 必须走响应体才能分辨「凭据被拒」与
-/// 「出口被网关拦」（见 `call_route`）。ureq 默认会把状态码转成
-/// `Error::StatusCode` 且不带 body，于是 403 一律只能报成凭据问题。
+/// 按路由取 agent 并缓存。构建本身走 [`crate::openai::transport::agent_for`]
+/// （`Direct` 显式 `.proxy(None)`、`http_status_as_error(false)` 这两条纪律只在
+/// 那里存在一份），这里只多一层按路由键的缓存——额度查询每次刷新都建 agent
+/// 没有意义，而代理地址在一次进程生命周期里通常也不变。
 fn agent_for(route: &crate::pkg::net_proxy::Route) -> Option<ureq::Agent> {
     static AGENTS: OnceLock<std::sync::Mutex<Vec<(String, ureq::Agent)>>> = OnceLock::new();
-    let builder = || {
-        ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(HTTP_TIMEOUT))
-    };
     let cache = AGENTS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
     let mut cache = cache.lock().unwrap_or_else(|error| error.into_inner());
     // Direct 也进这张表：它与任何代理地址都不同键，而 `proxy(None)` 的结果
@@ -434,13 +409,9 @@ fn agent_for(route: &crate::pkg::net_proxy::Route) -> Option<ureq::Agent> {
     if let Some(index) = cache.iter().position(|(seen, _)| *seen == key) {
         return cache.get(index).map(|(_, agent)| agent.clone());
     }
-    let agent = match route {
-        crate::pkg::net_proxy::Route::Direct => builder().proxy(None).build().new_agent(),
-        crate::pkg::net_proxy::Route::Proxy { url, .. } => {
-            let proxy = ureq::Proxy::new(url.as_str()).ok()?;
-            builder().proxy(Some(proxy)).build().new_agent()
-        }
-    };
+    // 代理地址不合法在这里是「这一路走不了」而不是致命错：调用方会把这一路
+    // 当传输失败处理，继续试下一条（`call_route` 的既有语义）。
+    let agent = crate::openai::transport::agent_for(route, HTTP_TIMEOUT).ok()?;
     cache.push((key, agent.clone()));
     Some(agent)
 }

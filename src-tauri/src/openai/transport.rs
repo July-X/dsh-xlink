@@ -58,12 +58,23 @@ impl Failure {
     }
 }
 
-fn agent_for(route: &Route) -> Result<ureq::Agent, String> {
+/// 按路由建一个 ureq agent。
+///
+/// `timeout` 交给调用方给（OAuth 全流程 30s，额度查询 15s），其余纪律对所有
+/// 调用点一致，**不接受各自复制一份**——这两条曾经就各抄了一份：
+/// ① `http_status_as_error(false)`：非 2xx 必须读响应体才能分类
+///    （ureq 默认转成 `Error::StatusCode` 且不带 body）；
+/// ② `Route::Direct` 显式 `.proxy(None)`：默认配置会捡环境变量里的代理，
+///    不关掉就等于「直连」其实又走了 `HTTPS_PROXY`（模块头纪律 ②）。
+///
+/// `pub(crate)` 是因为额度查询（`usage::subscription_openai`）打的是同一批
+/// 网关、同一个 ureq 客户端形状，它那份只多一层按路由键的缓存。
+pub(crate) fn agent_for(route: &Route, timeout: Duration) -> Result<ureq::Agent, String> {
     let builder = ureq::Agent::config_builder()
         // 状态码错误由 send() 手动分类（ureq 的 StatusCode 错误不带响应体，
         // 而 OAuth 的 invalid_grant 分类必须看 body——实测踩过）。
         .http_status_as_error(false)
-        .timeout_global(Some(GLOBAL_TIMEOUT));
+        .timeout_global(Some(timeout));
     let config = match route {
         Route::Direct => builder.proxy(None),
         Route::Proxy { url, .. } => {
@@ -123,7 +134,7 @@ where
     let mut tried: Vec<String> = Vec::new();
     let mut last: Option<Failure> = None;
     for route in &routes {
-        let agent = match agent_for(route) {
+        let agent = match agent_for(route, GLOBAL_TIMEOUT) {
             Ok(agent) => agent,
             Err(error) => return Err(Failure::Transport(error)),
         };
@@ -197,7 +208,7 @@ fn post_stream_over(
     let mut tried: Vec<String> = Vec::new();
     let mut last: Option<Failure> = None;
     for route in &routes {
-        let agent = match agent_for(route) {
+        let agent = match agent_for(route, GLOBAL_TIMEOUT) {
             Ok(agent) => agent,
             Err(error) => return Err(Failure::Transport(error)),
         };

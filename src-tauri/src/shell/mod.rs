@@ -5,6 +5,7 @@
 //! 既无歧义，也保留了「这个符号来自哪个模块」的信息。
 
 pub(crate) mod appearance;
+pub(crate) mod atomic_write;
 pub(crate) mod autostart;
 pub(crate) mod child_priority;
 pub(crate) mod env;

@@ -2177,8 +2177,8 @@ main::before {
    - `min-width: 0`：只给上限的话它仍能塌到 EP 的 `min-width: 10px`。
    - `420px` 而不是 `280px`：与 `.card-info-tooltip` 那条 280px 不同档是有意的
      ——那一档是**卡片内说明**（短），这一档是**独立浮层**，文案长且不受卡片宽度
-     约束（本仓最长 140 字）。420px 与 `plugins.css` 的 `.precheck-tip-popper`
-     同值，两处因此不冲突（那条靠 `popper-class` 挂上，本条特异度更高但值相同）。
+     约束（本仓最长 140 字）。它原先还有一份同值的 `plugins.css` 副本，那条规则
+     特异度更低、从头到尾没赢过层叠，已删（2026-10-11）。
    - `calc(100vw - 32px)`：浮层贴到窗口右缘时至少留 16px 边距。
    - `overflow-wrap: anywhere` 而不是 `break-word`：前者参与 min-content 计算，
      在自适应宽盒子里才真的能把长路径压回上限内。 */

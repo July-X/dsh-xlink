@@ -309,7 +309,11 @@ const FILE_BUDGETS = {
   'src-tauri/src/openai/auth.rs': 420,
   // JWK 解析 + RS256 验签：ring 的 RsaPublicKeyComponents 直接吃 n/e，
   // 第一版手拼 SPKI DER 已删（不必要）。固定测试密钥自签自验钉住。
-  'src-tauri/src/openai/jwk.rs': 53,
+  // 53 → 68：`unverified_claims`（不验签的 JWS 载荷解码）。此前同一段逻辑
+  // 在 `usage/subscription_codex` 与 `usage/subscription_openai` 各抄一份且
+  // 松紧不一（OpenAI 侧只 `split('.').nth(1)`，没有签名段的串照样解出账号）；
+  // 收敛到这里后比任何一份抄件都短。68 远低于 600。
+  'src-tauri/src/openai/jwk.rs': 68,
   // 2026-10-09：加密凭据库（P2）。AES-256-GCM（ring）+ 原子替换 + 0600 +
   // 系统凭据库存密钥（mac security CLI / win PasswordVault 走 PowerShell，
   // 不碰 Win32 FFI）。可测逻辑（加解密/文件/分键/生成）注入闭包，密钥库
@@ -362,7 +366,10 @@ const FILE_BUDGETS = {
   // 2026-10-09：授权编排（发现→注册→回调→换令牌→验 ID token→入库）。
   // FlowTransport trait 注入传输/时钟/浏览器/密钥库（真实 Keychain 绝不进
   // 测试）；内含模拟授权服务器（开发计划 §10 的 CI 件）与端到端测试。
-  'src-tauri/src/openai/flow.rs': 370,
+  // 370 → 373：`read_active_entry`（只读 vault 取活跃条目）顶掉了
+  // `account_view` 与 `usage::subscription_openai::active_account` 两份抄件，
+  // 后者所在文件净减；此文件净 +3。
+  'src-tauri/src/openai/flow.rs': 373,
   // 2026-10-09：授权命令面（P2）。四条命令围绕 §4.1 授权状态机；授权流
   // 跑后台线程、结束广播 openai-account-changed（UI 不轮询）；薄壳——
   // 能落进 flow.rs 的逻辑都不在这里长。按文件名豁免了新文件登记，照实
@@ -456,7 +463,22 @@ const FILE_BUDGETS = {
   // 19 → 20：localtime 进来了（见那条）。仍是一层路由，没有实现。
   // 20 → 21：stream（带超时的流式子进程捕获，git clone 用）进来了。仍是一层
   // 路由，没有实现。
-  'src-tauri/src/shell/mod.rs': 22,
+  // 22 → 23：atomic_write（见那条）进来了。仍是一层路由，没有实现。
+  'src-tauri/src/shell/mod.rs': 23,
+  // 「写临时文件 → 原子替换」的落盘原语（2026-10-11 从 process.rs 拆出）。
+  // 独立成模块的三条理由：
+  //   ① **process.rs 是 1157/1157 的反棘轮文件**，预算只许下调。本轮要给它加的
+  //      是「临时文件一创建就是 0600」——凭据文件原先是 `atomic_write` + 事后
+  //      chmod，凭据从开始写起就以 0644 躺在同目录临时文件里，rename 之后还要再
+  //      宽上一会儿；进程中途被杀，那份 0644 就永久留下了。这条权限语义与
+  //      「进程 / 输出流」毫无关系，硬塞进去就是逼着人调预算数字。
+  //   ② 50 多个调用点只想要 `atomic_write` 一个符号。`process.rs` 保留一行
+  //      `pub(crate) use` 重导出，调用点路径一个都不用改——为一个 20 行的模块
+  //      改 25 个文件的 import，收益为负。
+  //   ③ 两种入口的差别**只有一条**（临时文件用什么权限创建），放在一处才看得见。
+  //      需要私有权限的调用方走 `atomic_write_private`（凭据），要跟随 umask 的
+  //      走 `atomic_write`（用户自己也偶尔手改的状态文件）。
+  'src-tauri/src/shell/atomic_write.rs': 93,
   // 带超时的流式子进程输出捕获。**为什么不复用 `process::run_with_progress`**：
   // 那条是给「pnpm 装包 + 跑原生模块构建」设计的，它强制两件 git clone 都不想要的
   // 事——把输出轮转落进 `logs/`（而 clone 的输出紧接着就被 on_progress 收进诊断
@@ -1417,17 +1439,13 @@ const FILE_BUDGETS = {
   // 700 → 780：范围切换 + 时间范围档位（~+50）与热力图/趋势两个共享 hover
   // 明细浮层（~+60）——都是展示层增量，拆文件只会让浮层与图形结构分家。
   'ui/src/usage/UsageWindow.vue': 830,
-  // 插件层的**全局**样式（2026-10-10 新增）：预检开关那个说明气泡的限宽。
-  //
-  // 为什么独立成文件、而不是并进 theme.css 或 PluginsPanel 的 scoped 块：
-  //   · theme.css 是反棘轮大文件（预算只许下调），这一份只被一个面板消费；
-  //   · **scoped 块根本收不了它**——`.el-tooltip` 的气泡是 teleport 到 body 的
-  //     运行时新节点，身上没有组件的 `data-v-*`，scoped 选择器匹配不到。症状是
-  //     「规则写了、构建过了、界面上一点没变」，不报错。诊断层早踩过同一件事，
-  //     `.diagnosis-more-popper` 因此也在全局（diagnostics.css）里。
-  //
-  // 与 diagnostics.css 同构：按面板分层各收一份「组件里放不下的全局规则」。
-  'ui/src/plugins/plugins.css': 20,
+  // 2026-10-11：这里原有 `ui/src/plugins/plugins.css`（20 行），整个文件只收
+  // 一条 `.precheck-tip-popper`。它的四条声明与 theme.css 的
+  // `.el-popper[role='tooltip']` **逐条同值**（还少一条 `overflow-wrap`），
+  // 特异度也更低（单类 0,1,0 vs 类+属性 0,2,0）——从加进去那天起就没赢过任何
+  // 一次层叠，是个看着在管事、实际什么也没做的规则。连同模板上的 popper-class
+  // 一起删掉：限宽与换行现在只有一处定义，判据在 designAlignment.test.js（含
+  // 「EP 的 role 默认值就是 tooltip」这条前提判据，升级 EP 时它先红）。
   // 云端套餐用量（subscription.rs）：MiniMax Token Plan / DeepSeek 余额查询、
   // 5 分钟缓存文档（state.rs 容错读 + 原子写）、Key 指纹绑定（换 Key / 清 Key
   // 作废旧条目）、redact_key 脱敏、三态 Key patch、expired 跳过自动刷新、
@@ -2426,7 +2444,10 @@ const FILE_BUDGETS = {
 // 登记进条目，openaiAccount 尚未），一并计入免得两个会话在同一行 TOTAL 上
 // 互相覆盖；它收口时按实际值再校。47607 → 47609（同日）：并行会话对
 // subscription_codex.rs 的在途 +2，同样先记进总数、由其提交时自行登记条目。
-const TOTAL_BUDGET = 47609;
+// 47609 → 47581：删掉 plugins.css（−20）、新登记 atomic_write.rs（+93）之外，
+// 本轮五项收敛本身净减——JWT 解码三处合一、agent 构建两份合一、只读 vault 路径
+// 合一、凭据文件不再事后 chmod。总量因此仍低于上一档。
+const TOTAL_BUDGET = 47581;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
