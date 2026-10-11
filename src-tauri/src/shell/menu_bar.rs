@@ -88,7 +88,7 @@ mod tests {
             );
             let mut colors = std::collections::HashSet::new();
             let mut opaque = 0usize;
-            for pixel in rgba.chunks_exact(4) {
+            for pixel in rgba.as_chunks::<4>().0 {
                 colors.insert((pixel[0], pixel[1], pixel[2]));
                 if pixel[3] > 0 {
                     opaque += 1;
