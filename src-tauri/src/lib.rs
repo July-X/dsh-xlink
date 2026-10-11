@@ -245,6 +245,26 @@ pub fn run() {
                     eprintln!("dsh-xlink: 回收了 {removed} 个残留的预检沙盒目录（{family}）");
                 }
             }
+            // 技能中央库的启动对账。此前 `skills::manage::reconcile` 定义在那里
+            // 却**没有任何生产调用方**（2026-10-11 全仓 grep 证实：`reconcile_home`
+            // 的五个调用点全在 `#[cfg(test)]` 内），于是两件事同时成立：
+            // ① `fetch_into_store` 那两步 rename 之间崩溃留下的 `.backup-*`
+            //    （此刻正式位置是空的）永远没人收拾；
+            // ② `manage.rs` 给用户的那句「下次启动时 reconcile 会接手」承诺的
+            //    那次启动永远不会到来。
+            //
+            // 同步跑而不是丢后台线程：它与上面的 `sandbox::sweep_stale` 同构
+            // （都是回收上次崩溃的残留），而窗口随后才建——放在建窗前，用户不会
+            // 看到技能列表先错后修。`reconcile` 自己吞错误、只落 `store.warning`
+            // 与 stderr，失败不阻断启动。
+            //
+            // 它的破坏性是受控的，别照着 `reconcile_home` 里那段 `remove_target`
+            // 就推断它会删技能：`load_store_checked` 读不出清单就整体退出
+            // （把损坏当成空清单，会让它把活动根里所有指向中央库的条目当孤儿删光，
+            // 运行中的内核随即丢掉全部技能），清单文件不存在时也不做清扫
+            // （P0-4），只在存在时删「指向中央库的链接」与「指纹仍在清单里的
+            // copy 孤儿」两类，用户自己放进去的内容永远不碰。
+            crate::skills::manage::reconcile();
             // 内核 home 一次性搬迁：多内核改造前内核一直以默认 `~/.dsh` 运行
             // （旧启动路径从不注入 `DSH_HOME`），会话 / 凭据 / profile 都在
             // 那里；改造后内核经 `DSH_HOME` 指向实例目录，不搬迁等于让用户

@@ -1148,6 +1148,16 @@ const FILE_BUDGETS = {
   // 整个技能栈。搬完之后 skills.rs 1486 → 1454（反棘轮方向），skill_conflict.rs
   // 188 → 155（一套 frontmatter 解析，不是两套）。
   'src-tauri/src/skills/skill_frontmatter.rs': 205,
+  // 「中央库正被**别的进程**写入」的判据（2026-10-11，新建）。技能中央库与活动
+  // 视图是两个壳共享的（有意选的，见 AGENTS.md），而 `manage::lock_store()` 只到
+  // 进程级 Mutex——dev 壳正在装技能时它的 `.tmp-<pid>-<nanos>` 还在，release 壳
+  // 此刻跑启动对账会把它当成上次崩溃的残留回收掉，并把「清单里还没记录、但活动根
+  // 里已有链接」的那份技能当孤儿删掉，正是另一个壳正在装的那一个。
+  // 独立成文件的理由：① manage.rs 反棘轮只剩 30 行余量，这条要连带 pid 判活、
+  // 跨平台分支与 6 个测试（合计约 130 行）放不进去；② 它是**只读判据**（扫目录名
+  // 里的 pid + 判活），与 skill_shadow / skill_frontmatter 同一形状：读判据的人
+  // 和动手的人分开。
+  'src-tauri/src/skills/store_busy.rs': 140,
   // 跨壳装包活动信标（2026-09-30，新建）。为什么它该独立成一个文件而不是塞进
   // harness_window.rs：**写**这一侧在 kernel.rs 的装 / 删两端，**读**那一侧在
   // harness_window.rs 的看门狗里，两边都不肯为了对方把自己长成一个什么都管的
@@ -2471,7 +2481,22 @@ const FILE_BUDGETS = {
 // 调用，注释不计）。通道让 agent 经一次 `browser.execute` 读到壳窗口的全部
 // console 与未捕获异常——补齐 5847f05 那轮「agent 调试能力」实测出的最后
 // 一块盲区。
-const TOTAL_BUDGET = 47673;
+// 47673 → 47745（2026-10-11，整仓审计后的第一批修复）：store_busy.rs（新文件，
+// 登记见上，跨进程写中央库的判据）+ manage.rs +10（reconcile 的跳过守卫）、
+// mod.rs +1。三项新增对应的是**两个真 bug 修复**与**三条机械判据**：
+// ① `reconcile()` 定义了却没有任何生产调用方，崩溃残留（.backup-*/.new-*/.tmp-*）
+//    无限堆积，而 manage.rs 给用户承诺的「下次启动时 reconcile 会接手」永不兑现；
+//    ② 托管 Node 装失败时错误文案指向 `<data_dir>/settings.json`——P1 之后
+//    生产写入早已改到 `shell/<mode>/settings.json`，用户照着改毫无效果。
+// ③ 为此新增 check:invariants 第 25/26 项（AGENTS.md 字节预算 + reconcile 接线）
+//    与 skills/store_busy.rs（另一个壳正在装技能时整轮跳过对账，否则刚接上的
+//    reconcile 会回收对方的暂存目录、并把对方正在装的技能当孤儿删掉）。
+//    门禁脚本本身不计入本预算，超出的是 skills/ 下那三个文件。
+// 另含并行会话对 harness_window.rs / menu_bar.rs / usage/local.rs 的在途改动
+// （`map_or` → `is_none_or`，行数不变）与 subscription_codex.rs 的 −4，
+// 按上面那条「一并计入免得两个会话互相覆盖」的惯例随本轮一起记账。
+// +8 是给 rustfmt 折行的抖动留的余量（47583/47584 那次就是它）。
+const TOTAL_BUDGET = 47745;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
