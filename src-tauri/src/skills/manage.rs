@@ -20,7 +20,6 @@ use crate::pkg::fetch::split_npm_spec;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +28,7 @@ use crate::pkg::releases::http_get_npm_latest;
 use crate::shell::error::AppError;
 use crate::shell::paths;
 use crate::shell::process::run_capture;
+use crate::skills::store_lock::StealPolicy;
 
 /// 外壳的清单文件，位于中央库目录内（`paths::skills_store_root()`）。
 /// 保留为常量便于所有 store I/O 引用同一个名字——P5 起中央库目录由
@@ -346,15 +346,21 @@ fn id_for_name(raw: &str) -> Result<String, AppError> {
 
 // --- 中央库持久化 -----------------------------------------------------------
 
-fn store_mutation_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
-/// 锁定技能商店的清单变更。网络更新检查只在最终提交阶段持有这把锁，
-/// 不让慢速来源请求阻塞用户的技能安装或启停操作。
-pub fn lock_store() -> std::sync::MutexGuard<'static, ()> {
-    crate::lock(store_mutation_lock())
+/// **写路径**取中央库的完整互斥（进程内 + 跨进程），拿不到就报错。
+///
+/// 这里**刻意没有**一把"只有进程内"的锁可拿。中央库与活动视图是两个壳共享的
+/// （有意选的，见 AGENTS.md），只有进程内锁时两个壳各读各改各写同一份
+/// `store.json`，后写的把先写的整条覆盖；而只有跨进程锁时同进程两个线程又各拿
+/// 一把互相看不见的文件锁。两者必须成对，所以由
+/// [`crate::skills::store_lock::lock_both`] 一手包办，拿不出"半把"。
+///
+/// 写路径一律 [`StealPolicy::Fail`]：抢锁等于两个进程并发改 `store.json`，而那正是
+/// 这把锁存在的理由。要用 `Steal` 的只有启动对账那种可推迟的只读路径，它自己调
+/// [`crate::skills::store_lock::lock_both`]。薄封装让「写路径必须 Fail」成为
+/// 默认：五个调用点写同一个 helper，比五处各写一遍策略更难写错。
+fn lock_store_write(home: &Path) -> Result<crate::skills::store_lock::StoreGuard, AppError> {
+    crate::skills::store_lock::lock_both(&store_dir(home), StealPolicy::Fail)
+        .map_err(AppError::Skill)
 }
 
 /// 技能清单的读写上下文。损坏必须中止：把损坏当成空清单会让启动对账
@@ -1281,8 +1287,10 @@ pub fn install(
     mode: &str,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<SkillStoreItem, AppError> {
-    let _store_guard = lock_store();
-    install_into(&resolve_home(), spec_str, mode, on_progress)
+    let home = resolve_home();
+    // 写路径：抢不到锁就报错，绝不抢——两个壳同时改 store.json 正是这把锁要防的。
+    let _store_guard = lock_store_write(&home)?;
+    install_into(&home, spec_str, mode, on_progress)
 }
 
 fn install_into(
@@ -1340,8 +1348,9 @@ fn install_into(
 /// 以启用状态链接进去，上游移除的技能解除链接，保留的技能在布局变动或
 /// 包以 copy 模式运行时刷新。通过进度回调报告差异。
 pub fn update(id: &str, on_progress: &mut dyn FnMut(&str)) -> Result<SkillStoreItem, AppError> {
-    let _store_guard = lock_store();
-    update_into(&resolve_home(), id, on_progress)
+    let home = resolve_home();
+    let _store_guard = lock_store_write(&home)?;
+    update_into(&home, id, on_progress)
 }
 
 fn update_into(
@@ -1443,8 +1452,9 @@ fn update_into(
 /// 在所有位置卸载一个包：解除其技能的链接，删除中央库目录树，
 /// 删除清单行。
 pub fn uninstall(id: &str, on_progress: &mut dyn FnMut(&str)) -> Result<(), AppError> {
-    let _store_guard = lock_store();
-    uninstall_into(&resolve_home(), id, on_progress)
+    let home = resolve_home();
+    let _store_guard = lock_store_write(&home)?;
+    uninstall_into(&home, id, on_progress)
 }
 
 fn uninstall_into(
@@ -1475,8 +1485,9 @@ pub fn set_enabled(
     enabled: bool,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(), AppError> {
-    let _store_guard = lock_store();
-    set_enabled_into(&resolve_home(), id, skill_name, enabled, on_progress)
+    let home = resolve_home();
+    let _store_guard = lock_store_write(&home)?;
+    set_enabled_into(&home, id, skill_name, enabled, on_progress)
 }
 
 fn set_enabled_into(
@@ -1642,7 +1653,11 @@ fn check_updates_for_home(home: &Path) -> Result<Vec<SkillUpdateInfo>, AppError>
     // 提交时重新读取当前清单，并按 installed_version 做乐观冲突校验，
     // 避免旧的检查结果覆盖刚完成的更新。
     let snapshot = {
-        let _store_guard = lock_store();
+        // 只读快照：拿不到跨进程锁就退回进程内锁读——这一段不改数据，被另一个
+        // 壳占着不该让「检查更新」整个失败。而**下面**的提交段是写路径，那里
+        // 抢不到锁必须报错，否则两个壳会并发改 store.json。
+        let _guard =
+            crate::skills::store_lock::lock_both(&store_dir(home), StealPolicy::Steal).ok();
         load_store(home)
             .items
             .into_iter()
@@ -1677,7 +1692,10 @@ fn check_updates_for_home(home: &Path) -> Result<Vec<SkillUpdateInfo>, AppError>
         });
     }
 
-    let _store_guard = lock_store();
+    // 提交段：写路径，`Fail`——抢锁等于与另一个壳并发改 store.json。
+    // 与上面快照之间隔着网络请求，所以下面仍要重读并做 installed_version 的
+    // 乐观校验：另一个壳若在这期间装/更新过同一包，那份结果不该被这里覆盖。
+    let _store_guard = lock_store_write(home)?;
     let mut store = load_store_checked(home)?;
     for (id, installed_version, latest) in probes {
         if let Some(current) = store.items.iter_mut().find(|item| item.id == id) {
@@ -1717,17 +1735,19 @@ fn should_advance_update_check(results: &[SkillUpdateInfo]) -> bool {
 ///
 /// 失败时写入 `store.warning` 供 UI 展示，而非阻塞启动。
 pub fn reconcile() {
-    let _store_guard = lock_store();
     let home = resolve_home();
-    // 中央库正被**别的进程**写入时整轮跳过。技能中央库与活动视图是两个壳共享的
-    // （有意选的，见 AGENTS.md），而上面这把锁只到进程级——所以「另一个壳正在
-    // 装技能」在本进程里完全看不出来。不跳过会踩两个坑：① `recover_staging`
-    // 把对方正在用的 `.tmp-*` 当上次崩溃的残留回收掉；② 孤儿清扫把「清单里还没
-    // 记录、但活动根里已有链接」的那份技能当孤儿删掉——那正是对方正在装的那一个。
-    //
-    // 选「跳过」而不是「加锁等它」：暂存目录的存活期覆盖整个下载解包，从几百毫秒
-    // 到几分钟都可能。对账没有时效要求，推迟一轮下次启动补上即可；而打断别人
-    // 的安装代价比多等一轮大得多。
+    // 选「跳过 / 抢」而不是「加锁等它」：暂存目录的存活期覆盖整个下载解包，
+    // 从几百毫秒到几分钟都可能。对账没有时效要求，推迟一轮下次启动补上即可；
+    // 而打断别人的安装代价比多等一轮大得多。`store_busy` 是抢锁前的快速否决
+    // ——不等满预算就直接退出——真正决定「能不能碰」的还是下面这把跨进程锁。
+    let _store_guard =
+        match crate::skills::store_lock::lock_both(&store_dir(&home), StealPolicy::Steal) {
+            Ok(guard) => guard,
+            Err(reason) => {
+                eprintln!("dsh-xlink: 技能中央库正被另一个进程写入，本轮跳过启动对账（{reason}）");
+                return;
+            }
+        };
     if crate::skills::store_busy::another_writer_active(&store_dir(&home)) {
         eprintln!(
             "dsh-xlink: 技能中央库正被另一个进程写入（可能是另一个壳在装技能），本轮跳过启动对账"
