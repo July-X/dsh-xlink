@@ -51,7 +51,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.2",
-    "@vitejs/plugin-vue": "^5.2.0",
+    "@vitejs/plugin-vue": "^6.0.9",
     "@wdio/cli": "^9.32.0",
     "@wdio/globals": "^9.31.3",
     "@wdio/local-runner": "^9.32.0",
