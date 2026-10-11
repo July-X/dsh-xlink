@@ -1718,7 +1718,23 @@ fn should_advance_update_check(results: &[SkillUpdateInfo]) -> bool {
 /// 失败时写入 `store.warning` 供 UI 展示，而非阻塞启动。
 pub fn reconcile() {
     let _store_guard = lock_store();
-    reconcile_home(&resolve_home());
+    let home = resolve_home();
+    // 中央库正被**别的进程**写入时整轮跳过。技能中央库与活动视图是两个壳共享的
+    // （有意选的，见 AGENTS.md），而上面这把锁只到进程级——所以「另一个壳正在
+    // 装技能」在本进程里完全看不出来。不跳过会踩两个坑：① `recover_staging`
+    // 把对方正在用的 `.tmp-*` 当上次崩溃的残留回收掉；② 孤儿清扫把「清单里还没
+    // 记录、但活动根里已有链接」的那份技能当孤儿删掉——那正是对方正在装的那一个。
+    //
+    // 选「跳过」而不是「加锁等它」：暂存目录的存活期覆盖整个下载解包，从几百毫秒
+    // 到几分钟都可能。对账没有时效要求，推迟一轮下次启动补上即可；而打断别人
+    // 的安装代价比多等一轮大得多。
+    if crate::skills::store_busy::another_writer_active(&store_dir(&home)) {
+        eprintln!(
+            "dsh-xlink: 技能中央库正被另一个进程写入（可能是另一个壳在装技能），本轮跳过启动对账"
+        );
+        return;
+    }
+    reconcile_home(&home);
 }
 
 /// `path` 是否是指向中央库的链接（符号链接 / Windows junction）。

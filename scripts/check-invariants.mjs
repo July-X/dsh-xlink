@@ -2425,6 +2425,110 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// --- 25. AGENTS.md 不超运行时指令预算 --------------------------------------
+//
+// 运行时（`local-runtime-v2`）只把项目指令的前 32768 字节装进上下文，超出的
+// 部分**被静默丢弃且不产生任何提示**。2026-10-11 实测：本文件 33683 字节，
+// 尾部两节（「## 文档」「## 窗口外观作用域」）从来没被读到过——「修改用户可见
+// 行为要同步更新 README 和 docs」这条纪律写了半年没人看到。
+//
+// 为什么用机械判据钉：体积超限不会让任何编译或测试变红，唯一的症状是「文档
+// 里明明写了却没人遵守」，而读到文档的人根本无从知道自己漏读了哪一段。
+//
+// 上限取 32000，比运行时的 32768 低 768：留出的余量让「下次正常加一条规则」
+// 不会立刻红，而余量用尽时门禁会明确告诉你该把故事搬去
+// `docs/reviews/agent-lessons.md` 而不是删纪律。
+
+{
+  const AGENTS_BYTE_BUDGET = 32000;
+  const agentsPath = join(root, 'AGENTS.md');
+  const bytes = readFileSync(agentsPath).length;
+  if (bytes > AGENTS_BYTE_BUDGET) {
+    fail(
+      'agents-md-byte-budget',
+      `AGENTS.md 已 ${bytes} 字节，超出 ${AGENTS_BYTE_BUDGET} 字节的预算：` +
+        `再写就会掉出运行时前 32768 字节的上下文，且不会有任何提示。` +
+        `把事故经过搬到 docs/reviews/agent-lessons.md，纪律本身留在这里` +
+        `（当前已超 ${bytes - AGENTS_BYTE_BUDGET} 字节）`
+    );
+  } else {
+    note(
+      `AGENTS.md ${bytes} 字节，在 ${AGENTS_BYTE_BUDGET} 字节预算内` +
+        `（距运行时 32768 上限还有 ${32768 - bytes} 字节）`
+    );
+  }
+}
+
+// --- 26. 启动对账不许变成死代码 --------------------------------------------
+//
+// `skills::manage::reconcile` 曾长期定义着却**没有任何生产调用方**：
+// `reconcile_home` 的五个调用点全在 `#[cfg(test)]` 内。后果是
+// `fetch_into_store` 那两步 rename 之间崩溃留下的 `.backup-*`（此刻正式位置
+// 是空的）永远没人收拾，而 `manage.rs` 给用户的原文「下次启动时 reconcile
+// 会接手」承诺的那次启动永远不会到来。
+//
+// 为什么用机械判据钉：调用方消失不会让任何编译或测试变红（`reconcile` 是
+// `pub fn`，且 crate 级 `#![allow(dead_code)]` 把编译器本该指出的声音一并静音），
+// 单测也照样全绿——它测的是 `reconcile_home` 本身，不是「壳启动时会不会跑它」。
+// 判据扫 `lib.rs` 的 `setup` 闭包文本，确保这条恢复路径接在启动流程里。
+//
+// **判据必须匹配未被注释的调用，不能匹配原始文本**：2026-10-11 反向验时把
+// 调用改成 `// MUTATED: ...` 之后判据依然绿——正则照样命中注释里那一份串。
+// 「形状断言会忠实地保护错误的形状」：钉"文本里出现过这个串"钉不住"它在跑"。
+// 所以这里先过 `productionRust`（它剥掉 `#[cfg(test)]` 整块与行注释）再匹配。
+
+{
+  const libPath = join(root, 'src-tauri', 'src', 'lib.rs');
+  const lib = readFileSync(libPath, 'utf8');
+  const setupStart = lib.indexOf('.setup(|app|');
+  const setupBody = setupStart >= 0 ? lib.slice(setupStart, setupStart + 40000) : '';
+  const setupProduction = productionRust(setupBody);
+  if (!/skills::manage::reconcile\(\)/.test(setupProduction)) {
+    fail(
+      'skills-reconcile-wired',
+      'src-tauri/src/lib.rs 的 setup() 里没有生效的 skills::manage::reconcile() 调用：' +
+        '技能中央库的启动对账又变成了死代码，崩溃残留（.backup-*/.new-*/.tmp-*）' +
+        '会无限堆积，而 manage.rs 给用户承诺的「下次启动时 reconcile 会接手」' +
+        '不会兑现。判据只扫 setup 闭包的生产代码——注释里写一遍不算。'
+    );
+  } else {
+    note('技能中央库启动对账接在 setup() 里（崩溃残留有人回收）');
+  }
+}
+
+// --- 27. reconcile 必须带跨进程守卫 ----------------------------------------
+//
+// 第 26 项把 reconcile 接进了 setup，但**接上它本身引入了一个新风险**：技能中央库
+// 与活动视图是两个壳共享的（有意选的，见 AGENTS.md），而 `lock_store()` 只到进程级
+// Mutex。dev 壳正在装技能时它的 `.tmp-<pid>-<nanos>` 还在，release 壳此刻跑对账会
+// ① `recover_staging` 把对方正在用的 `.tmp-*` 当上次崩溃的残留回收掉，
+// ② 孤儿清扫把「清单里还没记录、但活动根里已有链接」的那份技能当孤儿删掉——
+// 正是另一个壳正在装的那一个。
+//
+// 守卫是 `skills/store_busy.rs` 的 `another_writer_active`（判暂存目录名里折着的
+// pid 是否还活着，且目录近期被写过）。它被后人删掉时不会有任何单测变红——那些
+// 测的是那个函数本身，不是「reconcile 有没有用它」——所以接线在这里钉。
+// 与第 26 项同一条纪律：**匹配生产代码，注释里写一遍不算**（判据先过
+// `productionRust`；直接匹配原始文本的话，把调用改成注释会假绿）。
+
+{
+  const managePath = join(root, 'src-tauri', 'src', 'skills', 'manage.rs');
+  const manage = productionRust(readFileSync(managePath, 'utf8'));
+  const start = manage.indexOf('pub fn reconcile()');
+  const body = start >= 0 ? manage.slice(start, start + 2000) : '';
+  if (!/store_busy::another_writer_active/.test(body)) {
+    fail(
+      'skills-reconcile-cross-process-guard',
+      'skills::manage::reconcile() 里没有 store_busy::another_writer_active 调用：' +
+        '技能中央库是两个壳共享的而 lock_store() 只到进程级，dev 壳正在装技能时 ' +
+        'release 壳的对账会把它正在用的暂存目录当崩溃残留回收掉，并把「清单里还没' +
+        '记录、但活动根里已有链接」的那份技能当孤儿删掉——正是另一个壳正在装的那一个。'
+    );
+  } else {
+    note('启动对账带跨进程守卫（另一个壳正在装技能时整轮跳过）');
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);
