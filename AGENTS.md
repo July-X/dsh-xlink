@@ -12,8 +12,8 @@
   - stub 里那两处 `overrides`（依赖钉版）也在允许范围内——它决定的是**装哪个版本**，不是改内核代码。落点统一在 `kernel_deps.rs`，`kernel.rs` 不再自己写 stub。
   - **「可逆 + 有备份 + 有哈希校验」论证的不是同一个问题**：那套论证回答的是「破坏可不可逆」，而「该不该写」在本条已经答完了。经过见 [agent-lessons §1](docs/reviews/agent-lessons.md)。
   - 内核侧的缺陷（启动顺序竞态、监视根过宽、渲染器 fail-loud 检查）**由内核仓库负责**。壳要做的是三件事，都不碰内核：减少触发（工作台运行期间禁止装/删内核）、出了事能自愈（页面内一次性自愈）、出了事说得清（`cause` 归因与文案）。
-  - `src-tauri/resources/patches/` 这套内置补丁机制与本条冲突。目录里现存 `dsh-file-perf`（已标记 `supersededSinceKernelVersion`）。**新增补丁前先回头看这条规则**；机制是否整体废弃由维护者决定，不在代码里自作主张。
-  - **从仓库里删掉补丁目录，并不会让已安装的用户机器上消失**（更新只覆盖与新增，不清理上游删掉的东西）。在让应用按「本次构建带了哪些补丁 id」的名单裁剪资源目录之前，**删除补丁后必须在发布说明里写明它不会自动卸载**。经过见 [agent-lessons §2](docs/reviews/agent-lessons.md)。
+  - **补丁机制已于 2026-10-11 整体删除**。唯一内置的 `dsh-file-perf` 自 `0.1.2-alpha.2` 起被官方内核采纳，适用窗口只剩 npm 上的 `0.1.1-rc.1`/`rc.2`，而 UI 入口更早就没了。`plugins/patches.rs` 只留 `applied_patch_ids` 一条**只读缝**：打过分的老用户磁盘上那份 `state.json` 不会因为我们删代码而消失，环境指纹要把它算进去，否则那批用户升级后「回退点」的判定基准被静默改动。**新增补丁前先回头看这条规则。**
+  - **删掉补丁目录不会让用户机器上消失**（更新只覆盖与新增）。已打过补丁的用户此后**无法在 UI 上撤销**——**这条必须写进发布说明**。经过见 [agent-lessons §2](docs/reviews/agent-lessons.md)。
 - **信任边界**：`@deepseek-ai` 命名空间限制**只覆盖内核与 Node 运行时两条路径，不覆盖插件与技能**；GitHub 来源同样不限制仓库归属。版本列表优先 npm registry，GitHub Releases 仅作回退。
   - **已强制的两处**：内核包名在 `kernel.rs` 硬编码为 `DSH_NPM_PACKAGE`；托管 Node 在 `node_install.rs` 硬编码版本并校验 SHA-256。
   - **未强制的两处**：`plugins.rs` 与 `skills.rs` 的 `parse_spec` 对 npm 包名只做字符类校验（`alphanumeric` 与 `-._@/`），`lodash`、`@attacker/backdoor` 均可安装。改这两处时不要误以为 `pkg.rs` 已帮你拦下——`pkg.rs` 是插件与技能**共用**的取源层，两条路径都走它，但它不检查命名空间。

@@ -1177,7 +1177,13 @@ const FILE_BUDGETS = {
   // 同一刀法。内容与路径解析都不复杂（46 行代码 + 文档与 2 个测试），复杂的是
   // 「它为什么可以是唯一一处跨壳可变数据」那三条自律，写在 paths.rs 的路径函数上。
   'src-tauri/src/kernel/package_activity.rs': 80,
-  'src-tauri/src/plugins/patches.rs': 1250,
+  // 2026-10-11：补丁的「应用 / 撤销」机制整体删除后，1222 → 85。留下的只有
+  // `applied_patch_ids` 一条只读缝——`diagnostics/snapshot.rs` 要把已应用补丁集
+  // 并进环境指纹，而打过分的老用户磁盘上那份 `state.json` 并不会因为我们删代码
+  // 而消失。连它一起删的话，症状是那批用户升级后「回退点」的判定基准被静默改动，
+  // 而用户什么也没做。应用 / 撤销 / 状态查询 / 清单解析 / 备份与哈希校验全部删除，
+  // 它们一个都没有生产调用方（详见 patches.rs 的模块文档）。
+  'src-tauri/src/plugins/patches.rs': 100,
   // B 类日志 family/instance_id 接入：kernel_log_spec / install_log_spec /
   // current_kernel_log_path / install_version / install_version_into 加形参；
   // attach_log_drainers 改用 family + id。start() legacy 单实例路径硬编码

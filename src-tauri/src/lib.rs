@@ -511,9 +511,6 @@ pub fn run() {
             // plugins/catalog.rs 的模块文档。
             plugins::catalog::plugin_catalog_search,
             commands::plugin_resolve,
-            commands::patch_status,
-            commands::patch_apply,
-            commands::patch_revert,
             commands::skill_status,
             commands::skill_install,
             commands::skill_update,
