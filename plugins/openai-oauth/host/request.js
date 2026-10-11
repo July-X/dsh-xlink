@@ -227,18 +227,6 @@ export async function* pumpStream(lines, toolMapping = new Map()) {
       }
       openBlocks.clear();
       const usage = event.replay?.response?.usage;
-      for (const [blockType, state] of [...openBlocks.entries()]) {
-        if (blockType === 'tool-call') {
-          yield {
-            type: 'block-end',
-            index: state.index,
-            block: { type: 'tool-call', id: state.tool?.id ?? '', name: state.tool?.name ?? '', arguments: state.text },
-          };
-        } else {
-          yield { type: 'block-end', index: state.index, block: { type: blockType, text: state.text } };
-        }
-      }
-      openBlocks.clear();
       if (usage && typeof usage.input_tokens === 'number') {
         yield {
           type: 'usage',

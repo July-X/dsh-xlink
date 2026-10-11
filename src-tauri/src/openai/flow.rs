@@ -49,7 +49,11 @@ pub(crate) trait FlowTransport {
     fn now_unix(&self) -> u64;
     /// 系统凭据库（密钥存取）。生产连 vault 的平台实现；测试用内存表——
     /// **真实 Keychain 绝不进测试**（vault.rs 同一条纪律）。
-    fn keyring_get(&self, service: &str, account: &str) -> Result<String, String>;
+    ///
+    /// `Ok(None)` = 库里确实没有（首次），`Err` = 读取动作失败。两者不可
+    /// 混用，见 `vault::GetResult` 的约定：读失败若被当成「没有」，就会生成
+    /// 新密钥覆盖用户原有的那把，凭据文件从此解不开。
+    fn keyring_get(&self, service: &str, account: &str) -> vault::GetResult;
     fn keyring_put(&self, service: &str, account: &str, secret: &str) -> Result<(), String>;
     /// 带 Bearer 鉴权的 GET（模型目录等账号端点）。默认实现忽略鉴权
     /// （形状 mock 用）；生产与回环 mock 各自实现。
@@ -329,16 +333,28 @@ pub(crate) fn run_logout(
 }
 
 /// 读当前账号（脱敏）。
+///
+/// 这是**只读**命令（`openai_account_status` 的契约：不打快照、不写文件），
+/// 所以两处都不能有副作用：
+/// ① 凭据文件不存在就**直接返回，连钥匙串都不碰**——否则在从没登录过的机器上
+///    第一次查状态就会生成一把密钥并在钥匙串里留下条目，那条密钥对不上任何
+///    凭据文件，纯属垃圾且会挡住后续真正的写入路径；
+/// ② 万一走到需要密钥的那一步，put 也必须拒绝创建（同 `usage/subscription_openai`
+///    的约定）。同一个 `load_file_key_with` 的两个调用点曾经对「只读路径能不能
+///    写钥匙串」给出相反答案，这里是另一边。
 pub(crate) fn account_view(
     paths: &FlowPaths,
     deps: &impl FlowTransport,
     mode: &str,
 ) -> Result<Option<AccountView>, String> {
+    if !paths.vault_file.is_file() {
+        return Ok(None);
+    }
     let key = vault::load_file_key_with(
         mode,
         &paths.xlink_home,
         |service, account| deps.keyring_get(service, account),
-        |service, account, secret| deps.keyring_put(service, account, secret),
+        |_, _, _| Err("读取账号状态不会创建凭据密钥".to_string()),
     )?;
     let accounts: Accounts = vault::load_accounts(&paths.vault_file, &key)?;
     Ok(accounts
@@ -417,7 +433,7 @@ impl FlowTransport for ProductionTransport {
             .map(|d| d.as_secs())
             .unwrap_or(0)
     }
-    fn keyring_get(&self, service: &str, account: &str) -> Result<String, String> {
+    fn keyring_get(&self, service: &str, account: &str) -> vault::GetResult {
         vault::keyring_get(service, account)
     }
     fn keyring_put(&self, service: &str, account: &str, secret: &str) -> Result<(), String> {
@@ -707,14 +723,15 @@ pub(crate) mod tests {
         fn now_unix(&self) -> u64 {
             1_700_000_000 // 与 mock 签发的 iat 对齐
         }
-        fn keyring_get(&self, service: &str, account: &str) -> Result<String, String> {
-            self.keyring
+        fn keyring_get(&self, service: &str, account: &str) -> vault::GetResult {
+            // 内存表查不到 = 库里确实没有，不是读取失败。
+            Ok(self
+                .keyring
                 .lock()
                 .unwrap()
                 .iter()
                 .find(|(s, a, _)| s == service && a == account)
-                .map(|(_, _, secret)| secret.clone())
-                .ok_or_else(|| "missing".into())
+                .map(|(_, _, secret)| secret.clone()))
         }
         fn keyring_put(&self, service: &str, account: &str, secret: &str) -> Result<(), String> {
             self.keyring.lock().unwrap().push((

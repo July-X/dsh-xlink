@@ -58,6 +58,11 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_HTTP_BODY_BYTES: u64 = 1024 * 1024;
 
 /// 查询失败的三种分类，与 `subscription::FetchOutcome` 一一对应。
+///
+/// `Debug`：断言要能打印出实际落在哪个变体上，否则「分类错了」只能看到一句
+/// 「assertion failed」，而这正是本类型最需要讲清楚的事（凭据问题 vs 出口问题
+/// 会引向完全相反的用户动作）。
+#[derive(Debug)]
 pub(crate) enum FetchProblem {
     /// 瞬时失败（网络 / 超时 / 读体中断）：缓存不写不删，keep-last-good。
     Transient(String),
@@ -70,6 +75,10 @@ pub(crate) enum FetchProblem {
     NoAccountContext,
     /// 推理令牌不具备此内部额度接口的权限，不代表模型登录失效。
     UnsupportedCredential,
+    /// 403 + HTML 挑战页 = 网关按**出口**拦人，请求本身没错（实测：直连 403、
+    /// 代理 200，2026-10-09）。与凭据被拒不共处理：换一条路就能过，所以这一类
+    /// 参与换路重试，全部路由试完仍被拦才上报（见 `call_route`）。
+    GatewayBlocked(String),
 }
 
 /// 本 provider 要用的凭据。**只在内存里活到请求结束**，不进缓存 / 日志 /
@@ -107,22 +116,30 @@ pub(crate) fn resolved_credential(
     match usage {
         Ok(Some(usage)) => Some(credentials::ResolvedCredential {
             reference: reference.into(),
-            // 指纹绑定到访问令牌：换账号即换令牌，缓存随之作废——与其它
-            // provider 同一套绑定语义，不必为账号 id 另设一套。
-            // 来源、账号上下文与令牌一起参与绑定，切换来源或工作区即作废。
             value: Some(format!(
                 "{reference}:{}:{}",
                 usage.account_id.as_deref().unwrap_or(""),
                 usage.access_token
             )),
             source,
+            // 缓存绑**账号身份**而不是这枚 access_token：Codex 会按自己的节奏
+            // 轮换令牌（它的 auth.json 里就带着 refresh_token），绑整枚令牌等于
+            // 每换一次就作废缓存并越过 TTL 立刻重打接口——那次请求若恰好失败，
+            // 用户看到的就是额度栏自己清空一次再跳回来。换账号仍然作废（账号
+            // id 变了），切来源同样作废（`reference` 在前缀里）。
+            cache_binding: Some(format!(
+                "{reference}:{}",
+                usage.account_id.as_deref().unwrap_or("")
+            )),
         }),
         Ok(None) => None,
         // 错误也有独立绑定，不能把上一个已匹配账号的额度保留给不匹配账号。
+        // 同样只绑来源，不绑错误文案：文案里的路径与句读不该让缓存说作废就作废。
         Err(message) => Some(credentials::ResolvedCredential {
             reference: reference.into(),
             value: Some(format!("{reference}:unavailable:{message}")),
             source,
+            cache_binding: Some(format!("{reference}:unavailable")),
         }),
     }
 }
@@ -171,7 +188,7 @@ pub(crate) fn gated_view(
 /// 缺 `chatgpt_account_id`（登录早于落库该字段的版本，或授权服务没有把账号
 /// 上下文放进令牌）仍保留为已登录状态；查询侧会给出明确原因，不拿空账号
 /// id 去打接口。SIWC 令牌即使有账号 id 也不能用于此内部额度接口。
-pub(crate) fn active_credentials() -> Result<Option<OpenAiUsage>, String> {
+fn active_credentials() -> Result<Option<OpenAiUsage>, String> {
     let Some(tokens) = active_account()? else {
         return Ok(None);
     };
@@ -270,14 +287,35 @@ pub(crate) fn fetch_resolved(
             subscription::log_subscription_line("subscription Codex 额度响应缺少可识别的窗口结构；未记录原始响应以保护账号信息".into());
             FetchOutcome::Deterministic(subscription::UNRECOGNIZED_STRUCTURE.to_string(), false)
         }
+        // `fetch_tiers` 内部已把挑战页换路重试并归并成 Transient，走不到这里；
+        // 保留显式分支是为了让新增变体必须表态，而不是被 `_` 悄悄吞掉。
+        Err(FetchProblem::GatewayBlocked(who)) => FetchOutcome::Transient(format!(
+            "该网络出口被网关拦截（{who} 返回 HTML 挑战页，不是账号或请求问题）"
+        )),
+    }
+}
+
+/// 非 2xx 响应 → 失败分类（纯函数，可测）。
+///
+/// 抽出来不只是为了测：`403` 有两种含义完全不同的成因——凭据被拒（重试无用）
+/// 与出口被网关拦（换条路就能过），而它们**只能靠响应体区分**。混在一起时用户
+/// 会被引去刷新一个完全无辜的登录态，而真正该做的（启用代理）没人告诉他。
+fn classify_failure(status: u16, body: &str, route_label: &str) -> FetchProblem {
+    if crate::openai::transport::looks_like_gateway_challenge(status, body) {
+        return FetchProblem::GatewayBlocked(route_label.to_string());
+    }
+    match status {
+        401 | 403 => FetchProblem::Rejected(format!(
+            "Codex 额度查询凭据被拒绝（HTTP {status}）。请先在 Codex 中刷新登录后再查询；这不代表 DSH 模型登录失效"
+        )),
+        _ => FetchProblem::Transient(format!(
+            "OpenAI 用量接口返回 HTTP {status}。已保留上次结果，稍后可重试"
+        )),
     }
 }
 
 /// 查询额度窗口。
-pub(crate) fn fetch_tiers(
-    credential: &OpenAiUsage,
-    now_ms: u64,
-) -> Result<Vec<CacheTier>, FetchProblem> {
+fn fetch_tiers(credential: &OpenAiUsage, now_ms: u64) -> Result<Vec<CacheTier>, FetchProblem> {
     if is_siwc_access_token(&credential.access_token) {
         return Err(FetchProblem::UnsupportedCredential);
     }
@@ -285,11 +323,12 @@ pub(crate) fn fetch_tiers(
         return Err(FetchProblem::NoAccountContext);
     };
     let access_token = credential.access_token.as_str();
-    // 先代理、失败再直连（net_proxy 恒以直连收尾）。**只有传输层失败才换
-    // 路由**：401 与「结构不认识」换一条路只会同样地失败；若让它们继续往下
-    // 走，分类会随路由顺序漂移——凭据失效被后续路由的传输错误盖住，报成
-    // 「网络不可达」，这一轮也不会置 expired。
+    // 先代理、失败再直连（net_proxy 恒以直连收尾）。**只有传输层失败与「出口被
+    // 网关拦」才换路由**：401 与「结构不认识」换一条路只会同样地失败；若让它们
+    // 继续往下走，分类会随路由顺序漂移——凭据失效被后续路由的传输错误盖住，
+    // 报成「网络不可达」，这一轮也不会置 expired。
     let mut last_transport_error: Option<FetchProblem> = None;
+    let mut blocked_by: Vec<String> = Vec::new();
     for route in crate::pkg::net_proxy::routes() {
         match call_route(&route, access_token, account_id) {
             Ok(text) => {
@@ -299,8 +338,19 @@ pub(crate) fn fetch_tiers(
                 }
             }
             Err(problem @ FetchProblem::Transient(_)) => last_transport_error = Some(problem),
+            // 网关按出口拦人：换一条路就能过（实测直连 403、代理 200），所以
+            // 继续试下一条路由，而不是当场放弃。
+            Err(FetchProblem::GatewayBlocked(who)) => blocked_by.push(who),
             Err(problem) => return Err(problem),
         }
+    }
+    // 全部路由都被网关按出口拦：如实说这件事，别报成「网络不可达」——后者
+    // 会把用户引去检查代理设置，而真正要做的正是启用它。
+    if !blocked_by.is_empty() {
+        return Err(FetchProblem::Transient(format!(
+            "该网络出口被网关拦截（{} 返回 HTML 挑战页，不是账号或请求问题）。请确认系统代理正在运行后重试",
+            blocked_by.join(" → ")
+        )));
     }
     // 所有路由都传输失败：报最后一条，keep-last-good。
     Err(last_transport_error.unwrap_or(FetchProblem::Transient(
@@ -329,24 +379,22 @@ fn call_route(
         .header("Accept", "application/json")
         .header("User-Agent", USER_AGENT);
     match request.call() {
-        Ok(mut response) => response
-            .body_mut()
-            .with_config()
-            .limit(MAX_HTTP_BODY_BYTES)
-            .read_to_string()
-            .map_err(|error| {
-                FetchProblem::Transient(format!(
-                    "读取响应失败（{error}）。已保留上次结果，可点击刷新重试"
-                ))
-            }),
-        Err(ureq::Error::StatusCode(status)) if status == 401 || status == 403 => {
-            Err(FetchProblem::Rejected(format!(
-                "Codex 额度查询凭据被拒绝（HTTP {status}）。请先在 Codex 中刷新登录后再查询；这不代表 DSH 模型登录失效"
-            )))
+        // agent 带 `http_status_as_error(false)`（见 `agent_for`）：非 2xx 走
+        // 这里而不是 Err，因为**要靠响应体分辨「凭据被拒」与「出口被网关拦」**。
+        // ureq 默认把状态码转成 Error 且不带 body，那正是这条信息消失的原因。
+        Ok(mut response) => {
+            let status = response.status().as_u16();
+            let text = response
+                .body_mut()
+                .with_config()
+                .limit(MAX_HTTP_BODY_BYTES)
+                .read_to_string()
+                .unwrap_or_default();
+            if (200..300).contains(&status) {
+                return Ok(text);
+            }
+            Err(classify_failure(status, &text, &route.describe()))
         }
-        Err(ureq::Error::StatusCode(status)) => Err(FetchProblem::Transient(format!(
-            "OpenAI 用量接口返回 HTTP {status}。已保留上次结果，稍后可重试"
-        ))),
         Err(error) => Err(FetchProblem::Transient(format!(
             "查询失败（网络不可达或超时：{error}）。已保留上次结果，可点击刷新重试"
         ))),
@@ -356,9 +404,17 @@ fn call_route(
 /// 按路由建 agent 并缓存。`Direct` 显式 `.proxy(None)`：ureq 的默认配置会
 /// 读环境变量里的代理，不显式关掉就等于「直连」其实又走了 `HTTPS_PROXY`
 /// （与 `pkg::updater` 同一条纪律）。
+///
+/// `http_status_as_error(false)`：非 2xx 必须走响应体才能分辨「凭据被拒」与
+/// 「出口被网关拦」（见 `call_route`）。ureq 默认会把状态码转成
+/// `Error::StatusCode` 且不带 body，于是 403 一律只能报成凭据问题。
 fn agent_for(route: &crate::pkg::net_proxy::Route) -> Option<ureq::Agent> {
     static AGENTS: OnceLock<std::sync::Mutex<Vec<(String, ureq::Agent)>>> = OnceLock::new();
-    let builder = || ureq::Agent::config_builder().timeout_global(Some(HTTP_TIMEOUT));
+    let builder = || {
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(HTTP_TIMEOUT))
+    };
     let cache = AGENTS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
     let mut cache = cache.lock().unwrap_or_else(|error| error.into_inner());
     // Direct 也进这张表：它与任何代理地址都不同键，而 `proxy(None)` 的结果
@@ -383,7 +439,7 @@ fn agent_for(route: &crate::pkg::net_proxy::Route) -> Option<ureq::Agent> {
 /// 不做整体失败（端点是第一方但未文档化，字段可能随时漂移）。
 ///
 /// 返回空列表表示「结构不认识」，由调用方落日志。
-pub(crate) fn parse_tiers(body: &str, now_ms: u64) -> Result<Vec<CacheTier>, String> {
+fn parse_tiers(body: &str, now_ms: u64) -> Result<Vec<CacheTier>, String> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|error| format!("响应不是有效 JSON：{error}"))?;
     let Some(rate_limit) = value.get("rate_limit") else {
@@ -574,6 +630,49 @@ mod tests {
     }
 
     #[test]
+    fn rotating_the_token_keeps_the_cache_binding_but_changing_account_drops_it() {
+        // Codex 会按自己的节奏轮换 access_token（auth.json 里带着 refresh_token
+        // 就是为此）。把缓存绑在整枚令牌上，等于每换一次就作废缓存并越过 5 分钟
+        // TTL 立刻重打接口；那次请求若恰好瞬时失败，用户看到的就是额度栏自己
+        // 清空一次再跳回来，且没有任何提示。轮换的是令牌，不变的是账号。
+        let at = |token: &str, account: &str| {
+            Ok(Some(OpenAiUsage {
+                access_token: token.into(),
+                account_id: Some(account.into()),
+            }))
+        };
+        let binding = |usage: &Result<Option<OpenAiUsage>, String>, codex: bool| {
+            resolved_credential(usage, codex).unwrap().cache_binding
+        };
+
+        let first = binding(&at("token-1", "acct-a"), true);
+        let rotated = binding(&at("token-2", "acct-a"), true);
+        assert_eq!(
+            first, rotated,
+            "同一账号的令牌轮换不得作废缓存（否则 5 分钟 TTL 被架空）"
+        );
+        assert_ne!(
+            first,
+            binding(&at("token-1", "acct-b"), true),
+            "换账号必须作废缓存"
+        );
+        assert_ne!(
+            first,
+            binding(&at("token-1", "acct-a"), false),
+            "切来源（Codex → 本壳 OAuth）必须作废缓存"
+        );
+        // 真正发请求的凭据仍然带着令牌本身——绑定身份只用于缓存，不参与 HTTP。
+        assert_ne!(
+            resolved_credential(&at("token-1", "acct-a"), true)
+                .unwrap()
+                .value,
+            resolved_credential(&at("token-2", "acct-a"), true)
+                .unwrap()
+                .value
+        );
+    }
+
+    #[test]
     fn cache_binding_changes_with_source_workspace_and_resolution_failure() {
         let a = Ok(Some(OpenAiUsage {
             access_token: "same-token".into(),
@@ -623,6 +722,48 @@ mod tests {
         assert!(UNSUPPORTED_SIWC.contains("本机 Codex 没有登录就用不了"));
         assert!(!UNSUPPORTED_SIWC.contains("重新登录"));
         assert!(!UNSUPPORTED_SIWC.contains("请重新登录"));
+    }
+
+    /// 403 有两种成因完全不同的含义，只能靠响应体分开：**凭据被拒**（重试无用）
+    /// 与**出口被网关拦**（换条路就能过，实测直连 403、代理 200，2026-10-09）。
+    /// 额度端点此前把两者一律报成「凭据被拒，请刷新登录」，把用户引去刷新一个
+    /// 完全无辜的登录态。判据钉在这两种情形上——`call_route` 自身要发网络请求，
+    /// 没法进单测，所以分类逻辑必须是这个纯函数。
+    #[test]
+    fn gateway_challenge_is_not_reported_as_a_rejected_credential() {
+        let challenge = "<!DOCTYPE html><html><title>Just a moment...</title></html>";
+        match classify_failure(403, challenge, "直连") {
+            FetchProblem::GatewayBlocked(who) => assert_eq!(who, "直连"),
+            other => panic!("403 + HTML 挑战页必须归类为出口被拦，实际是 {other:?}"),
+        }
+        // 大小写与前导空白都要认（真网关不一定规范输出）。
+        assert!(matches!(
+            classify_failure(403, "\n  <!doctype HTML><html></html>", "代理"),
+            FetchProblem::GatewayBlocked(_)
+        ));
+        // 同为 403 但是 JSON → 那才是真的凭据被拒。
+        match classify_failure(403, r#"{"detail":"invalid_token"}"#, "直连") {
+            FetchProblem::Rejected(message) => {
+                assert!(message.contains("凭据被拒绝"), "{message}");
+                assert!(message.contains("不代表 DSH 模型登录失效"), "{message}");
+            }
+            other => panic!("403 + JSON 必须归类为凭据被拒，实际是 {other:?}"),
+        }
+        // 401 无论响应体是什么都是凭据被拒。
+        assert!(matches!(
+            classify_failure(401, "<!doctype html>", "直连"),
+            FetchProblem::Rejected(_)
+        ));
+        // 其它状态码是普通瞬时失败。
+        assert!(matches!(
+            classify_failure(500, "", "直连"),
+            FetchProblem::Transient(_)
+        ));
+        // 非挑战页的 403 文案不许出现「网关拦截」字样：那是给错方向的动作建议。
+        let FetchProblem::Transient(message) = classify_failure(503, "", "直连") else {
+            panic!("503 应为 Transient");
+        };
+        assert!(!message.contains("网关"), "{message}");
     }
 
     #[test]

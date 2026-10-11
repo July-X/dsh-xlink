@@ -309,7 +309,16 @@ const FILE_BUDGETS = {
   // 系统凭据库存密钥（mac security CLI / win PasswordVault 走 PowerShell，
   // 不碰 Win32 FFI）。可测逻辑（加解密/文件/分键/生成）注入闭包，密钥库
   // 薄壳不进测试（同 autostart 纪律：真实 Keychain 人工验证）。
-  'src-tauri/src/openai/vault.rs': 213,
+  // 213 → 241：**读失败不再被当成「库里没有」**（2026-10-11）。原先
+  // `if let Ok(existing) = get(..)` 把钥匙串锁着 / 用户拒绝授权 / `security`
+  // 调不动全都当成首次登录，于是生成一把新密钥并用 `-U` 覆盖写回——用户原有
+  // 的那把当场销毁，`accounts.bin` 从此解不开且没有自愈路径。`GetResult` 的
+  // `Ok(None)` 与 `Err` 因此必须分开，`load_file_key_with` 展开成三分支；
+  // mac 侧靠退出码 44（errSecItemNotFound）判「没有」，win 侧靠脚本自报异常
+  // 类型名（`security` / PowerShell 的退出码都不足以区分）。这 28 行买的正是
+  // 「不可逆的数据丢失不发生」，不能靠抽象压掉。241 远低于
+  // RATCHET_THRESHOLD 600，上调在规则内。241 是 `cargo fmt` 之后的实测值。
+  'src-tauri/src/openai/vault.rs': 241,
   // bridge 与回调监听共用的极简 HTTP 读写。从 bridge.rs 提出（读取循环
   // 是实测踩过 TCP 分段竞态的那段，两处各写一份迟早漂移）。
   // 68 → 74：RequestHead 携带 body_prefix（头体一次读入时体字节在缓冲里，
@@ -1422,7 +1431,15 @@ const FILE_BUDGETS = {
   // 日志还是错误横幅的判断。原先把读不出凭据一并归成「未配置」，故障因此
   // 静默消失——这一段就是补那件事。
   // 285 → 310：只读账号解析与一致的凭据快照，避免绑定缓存后再次读令牌。
-  'src-tauri/src/usage/subscription_openai.rs': 310,
+  // 310 → 334：额度查询认网关拦截（2026-10-11）。此前 403 一律报「凭据被拒，
+  // 请刷新登录」，而 `openai/transport.rs` 的注释记着同一批网关的实测结论
+  // （直连 403、代理 200，2026-10-09）——同一个 chatgpt.com、同一套判断，
+  // 额度侧漏了整条分支，把用户引去刷新一个完全无辜的登录态。补它需要三处：
+  // `FetchProblem::GatewayBlocked` 变体、`classify_failure` 纯函数（`call_route`
+  // 自己要发网络请求，进不了单测，分类必须可独立钉住）、以及 agent 上
+  // `http_status_as_error(false)`（默认的 true 会把 403 转成不带 body 的
+  // `Error`，响应体一丢就再也分不出这两种成因）。334 远低于 600，上调在规则内。
+  'src-tauri/src/usage/subscription_openai.rs': 334,
   // Codex 文件来源、同账号校验与默认关闭的许可独立于 SIWC 模型授权，
   // 不把跨应用凭据读取或刷新权限混进模型登录模块。
   'src-tauri/src/usage/subscription_codex.rs': 210,
@@ -2352,7 +2369,23 @@ const FILE_BUDGETS = {
 // 新共用组件 PartitionErrorTip.vue（45，概览卡与独立窗口两处同一形态，见其
 // 登记条目）+ subscription.js +4（errorLivesInPartitionTip 判据单源）；
 // SubscriptionWindow.vue 因去重实测下调 17（370 → 353），净增 43。
-const TOTAL_BUDGET = 47243;
+// 47243 → 47317（2026-10-11，评审修复一批）：+74，全部是本轮评审发现的
+// 缺陷修复，逐条都有测试钉住，且**没有一行是装饰**：
+//   · vault.rs +28：凭据库「读失败 ≠ 不存在」，否则钥匙串一次偶发失败就会
+//     生成新密钥覆盖用户原有的、把 `accounts.bin` 覆盖到解不开（见该文件登记）。
+//   · subscription_openai.rs +24：额度查询识别网关拦截页，与 transport.rs
+//     已有判断对齐（见该文件登记）。
+//   · local.rs +16：`LAST_SCAN_MS` 从进程级单值改成按 `(family, id)` 分键。
+//     单值会让切实例后 45s 内的新实例直接返回自己的**空账目**；顺带给测试
+//     各自独立实例 key，恢复了那条被进程级污染糊掉的断言的鉴别力。
+//   · credentials.rs +7：缓存绑定改用稳定身份 `cache_binding`。OAuth 类凭据
+//     的令牌会自己轮换，绑整枚令牌等于每次轮换都作废缓存并越过 5 分钟 TTL
+//     立刻重打接口，失败时用户看到额度栏自己清空再跳回来。
+//   · subscription_codex.rs +14：`auth_path` 拆出可测的纯函数（原实现直接读
+//     环境变量，因此零覆盖——而它是壳唯一决定「去读哪个文件拿别人产品凭据」
+//     的地方）。`subscription.rs` 的 `or_else` 复原净 −2，未计入本项。
+// 软上限这一档不做「只许下调」，47317 是 `cargo fmt` 之后的实测值。
+const TOTAL_BUDGET = 47317;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

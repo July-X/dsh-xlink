@@ -94,7 +94,12 @@ fn routes_for_url(routes: &[net_proxy::Route], url: &str) -> Vec<net_proxy::Rout
 
 /// 响应体像不像网关拦截页（Cloudflare「Just a moment…」一类挑战页）：
 /// OpenAI 的 API 错误一律是 JSON，HTML 只会来自网络出口的网关。
-fn looks_like_gateway_challenge(status: u16, body: &str) -> bool {
+///
+/// `pub(crate)` 是因为额度查询（`usage::subscription_openai`）打的是同一个
+/// `chatgpt.com`、经同一批网关，此前它缺这一分支：403 被一律报成「凭据被拒
+/// 请刷新登录」，而真正的原因是**出口被拦**——用户按提示去刷新一个完全
+/// 无辜的登录态。两边判错就会给出两套互相矛盾的诊断。
+pub(crate) fn looks_like_gateway_challenge(status: u16, body: &str) -> bool {
     status == 403
         && body
             .trim_start()

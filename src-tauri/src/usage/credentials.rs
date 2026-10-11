@@ -44,6 +44,16 @@ pub struct ResolvedCredential {
     pub value: Option<String>,
     /// 值来源（诊断展示用，不含值本身）。
     pub source: CredentialSource,
+    /// 缓存绑定的**稳定身份**，缺省表示「就绑 `value` 本身」。
+    ///
+    /// 缓存指纹回答的是「这份缓存属于当前这份凭据吗」。多数 provider 的凭据
+    /// 是不轮换的 Key，直接绑 `value` 即可；但 OAuth 类凭据会自己轮换——
+    /// Codex 的 `auth.json` 里就带着 `refresh_token`，access_token 按它的节奏
+    /// 换新。把指纹绑在整枚令牌上，等于每换一次就丢弃缓存并**立刻越过 TTL 重打
+    /// 接口**，而那次请求若恰好失败，用户就看到额度栏自己清空一次再跳回来
+    /// （2026-10-11 评审）。轮换的是令牌，不变的是账号，所以这类来源绑账号
+    /// 身份：换账号照样作废，轮换不误伤。
+    pub cache_binding: Option<String>,
 }
 
 impl ResolvedCredential {
@@ -204,6 +214,7 @@ pub fn resolve(reference: &str, dsh_home: &Path) -> ResolvedCredential {
         reference: reference.to_string(),
         value: None,
         source: CredentialSource::Env,
+        cache_binding: None,
     };
     if let Ok(value) = std::env::var(reference) {
         let value = value.trim().to_string();

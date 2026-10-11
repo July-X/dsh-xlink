@@ -46,9 +46,6 @@ pub(crate) const AUTH_SCOPE: &str =
 pub(crate) const CHATGPT_AUTH_CLAIM: &str = "https://api.openai.com/auth";
 /// 账号 id 在命名空间声明里的键名。
 pub(crate) const CHATGPT_ACCOUNT_ID_KEY: &str = "chatgpt_account_id";
-/// 套餐档位在命名空间声明里的键名（如 `plus` / `pro`）。
-pub(crate) const CHATGPT_PLAN_TYPE_KEY: &str = "chatgpt_plan_type";
-
 /// 取账号 id（`chatgpt_account_id`）。
 ///
 /// **两种形状都认**：不同授权客户端/版本可能把它放在
@@ -57,11 +54,6 @@ pub(crate) const CHATGPT_PLAN_TYPE_KEY: &str = "chatgpt_plan_type";
 /// 在换授权流程后静默读不到。
 pub(crate) fn chatgpt_account_id(claims: &serde_json::Value) -> Option<String> {
     namespace_string(claims, CHATGPT_ACCOUNT_ID_KEY)
-}
-
-/// 取套餐档位（如 `plus`）。同样两种形状都认。
-pub(crate) fn chatgpt_plan_type(claims: &serde_json::Value) -> Option<String> {
-    namespace_string(claims, CHATGPT_PLAN_TYPE_KEY)
 }
 
 /// 在命名空间声明里取一个非空字符串：**先找摊平键，再找嵌套对象**。
@@ -459,7 +451,6 @@ pub(crate) fn verify_id_token(
             .and_then(|v| v.as_str())
             .map(String::from),
         chatgpt_account_id: chatgpt_account_id(&value),
-        chatgpt_plan_type: chatgpt_plan_type(&value),
     })
 }
 
@@ -520,8 +511,6 @@ pub(crate) struct IdClaims {
     /// 套餐用量查询端点要求它作为 `ChatGPT-Account-Id` 请求头；登录时一并
     /// 落库，查询时不必再解 ID token。
     pub(crate) chatgpt_account_id: Option<String>,
-    /// 账号套餐（`…/auth.chatgpt_plan_type`，如 `plus`）。纯展示用。
-    pub(crate) chatgpt_plan_type: Option<String>,
 }
 
 #[cfg(test)]

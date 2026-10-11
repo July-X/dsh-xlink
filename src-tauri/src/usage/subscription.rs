@@ -400,12 +400,12 @@ pub fn subscription_view(provider: Option<&str>, force: bool) -> Result<Subscrip
             },
         );
         // 本次调用真实发生的失败才记日志：TTL 命中时的陈旧错误不重复落盘。
-        // `or` 而非 `or_else`：右边只是一次 Option 克隆，求不求值无所谓。
-        let this_call_failure = fetch_error.clone().or(if dirty {
-            entry.as_ref().and_then(|e| e.error.clone())
-        } else {
-            None
-        });
+        // 用 `or_else` 而非 `or`：后者只为了省一个闭包被从惰性改成立即求值，
+        // 语义一样却让读的人怀疑右边是不是有副作用被提前执行。
+        let cached_error = || entry.as_ref().and_then(|e| e.error.clone());
+        let this_call_failure = fetch_error
+            .clone()
+            .or_else(|| dirty.then(cached_error).flatten());
         if dirty {
             match entry {
                 Some(entry) => {
@@ -470,8 +470,12 @@ fn refresh_provider_entry(
         return (None, None, dirty);
     };
     let mut dirty = false;
+    // 指纹绑「稳定身份」：OAuth 类来源的令牌会自己轮换，绑整枚令牌等于每次
+    // 轮换都作废缓存并越过 TTL 重打接口（见 `ResolvedCredential::cache_binding`）。
+    // 没给绑定的 provider 仍绑凭据本身——它们的 Key 不轮换。
+    let binding = credential.cache_binding.as_deref().unwrap_or(&key);
     let cached = match cached {
-        Some(entry) if entry_belongs_to_credential(&entry, &key) => Some(entry),
+        Some(entry) if entry_belongs_to_credential(&entry, binding) => Some(entry),
         // 换凭据：旧账号缓存一律按不存在处理，随后立即用新凭据查询。
         Some(_) => {
             dirty = true;
@@ -495,7 +499,7 @@ fn refresh_provider_entry(
             FetchOutcome::Success(data) => {
                 let mut next = entry_from_data(id, data);
                 next.credential_ref = credential.reference.clone();
-                next.credential_fingerprint = credential_fingerprint(&key);
+                next.credential_fingerprint = credential_fingerprint(binding);
                 next.credential_status = CREDENTIAL_VALID.to_string();
                 next.queried_at_ms = now_ms;
                 next.error = None;
@@ -506,7 +510,7 @@ fn refresh_provider_entry(
                 // 确定性失败：旧 tiers/balances 原样保留，只更新状态与错误。
                 let mut next = cached.unwrap_or_default();
                 next.credential_ref = credential.reference.clone();
-                next.credential_fingerprint = credential_fingerprint(&key);
+                next.credential_fingerprint = credential_fingerprint(binding);
                 next.credential_status = if expired {
                     CREDENTIAL_EXPIRED.to_string()
                 } else {
@@ -1523,6 +1527,7 @@ mod refresh_tests {
             reference: "MINIMAX_CN_API_KEY".to_string(),
             value: value.map(str::to_string),
             source: CredentialSource::CredentialsYaml,
+            cache_binding: None,
         }
     }
 
