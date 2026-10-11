@@ -7,7 +7,9 @@ const bridge = readFileSync(new URL('../src/shell/bridge.js', import.meta.url), 
 
 function subscriptionBlock() {
   const start = panel.indexOf('let diskUnlisten = null');
-  const end = panel.indexOf('// 字节 → 人类可读。', start);
+  // 块的结束标记原是「字节 → 人类可读」那段注释；2026-10-11 formatBytes
+  // 搬进 shell/labels.js 时跟着走了，换仍紧邻订阅代码的下一个稳定锚点。
+  const end = panel.indexOf('// --- 四个占用类型的配色与说明 ---', start);
   assert.ok(start >= 0 && end > start, '找不到磁盘用量事件订阅代码');
   return panel.slice(start, end);
 }

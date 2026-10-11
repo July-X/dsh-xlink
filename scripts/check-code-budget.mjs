@@ -2424,8 +2424,9 @@ const FILE_BUDGETS = {
 // 47607 是当前工作树的实测值：其中还含并行会话对 openai 三文件的**在途**
 // 改动（vault +13 / subscription_openai +7 / openaiAccount +17，前两处已各自
 // 登记进条目，openaiAccount 尚未），一并计入免得两个会话在同一行 TOTAL 上
-// 互相覆盖；它收口时按实际值再校。
-const TOTAL_BUDGET = 47607;
+// 互相覆盖；它收口时按实际值再校。47607 → 47609（同日）：并行会话对
+// subscription_codex.rs 的在途 +2，同样先记进总数、由其提交时自行登记条目。
+const TOTAL_BUDGET = 47609;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

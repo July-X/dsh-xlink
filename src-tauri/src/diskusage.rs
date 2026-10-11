@@ -61,6 +61,22 @@ pub struct UsageEntry {
     pub share_percent: f64,
     /// 路径的可点击形式不存在——纯展示用，前端不拿它做任何 IO。
     pub path: String,
+    /// 是否目录。只有目录能继续下钻（`disk_usage_children`），文件是叶子。
+    ///
+    /// 报表（`measure`）产出的条目全部是目录；这个字段的第二个消费方是
+    /// 下钻命令，那里才开始出现文件。
+    ///
+    /// `default = true` 是给**旧缓存**的：缓存 JSON 里没有这个字段，而缓存
+    /// 里的条目本来就全是目录——按目录读回，已装旧缓存也能直接下钻，而不是
+    /// 逼用户先点一次「刷新」。
+    #[serde(default = "default_true")]
+    pub is_dir: bool,
+}
+
+/// serde 的默认值钩子。单独成函数而不是 `default = true` 表达式：
+/// serde 的 default 路径只接受函数。
+fn default_true() -> bool {
+    true
 }
 
 /// 一组占用条目（同一父目录下的并列项）。
@@ -236,6 +252,7 @@ fn build_group(id: &str, label: &str, detail: &str, raw: Vec<Row>) -> UsageGroup
                 bytes,
                 share_percent: 0.0,
                 path: path.display().to_string(),
+                is_dir: true,
             }
         })
         .collect();
@@ -411,6 +428,98 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
         unreadable,
         groups,
     }
+}
+
+/// 下钻的一步：**某个条目内部一层子项**的占用。
+///
+/// 报表只统计到「版本 / 实例」这一层；用户问「666.5 MB 里到底是什么」时，
+/// 由前端对某个条目按需发起这次统计。设计取报表的形状（同一份
+/// [`UsageEntry`]、同样的降序与占比），让展开后的列表与瓦片读起来是同一
+/// 张表，而不是另一套界面。
+///
+/// 文件也列出（`package.json` / `pnpm-lock.yaml` 常常就是答案本身），但
+/// 点不开——它们是叶子，没有「里面」。软链与特殊文件仍不计入，理由与
+/// [`dir_size`] 相同：报表数字要能和展开后的子项加总对得上。
+fn child_entries(dir: &Path) -> Vec<UsageEntry> {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<UsageEntry> = Vec::new();
+    for entry in read.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if !(kind.is_dir() || kind.is_file()) {
+            continue;
+        }
+        let is_dir = kind.is_dir();
+        let bytes = if is_dir {
+            dir_size(&entry.path()).unwrap_or(0)
+        } else {
+            entry.metadata().map(|meta| meta.len()).unwrap_or(0)
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        entries.push(UsageEntry {
+            id: name.clone(),
+            label: name,
+            detail: String::new(),
+            bytes,
+            share_percent: 0.0,
+            path: entry.path().display().to_string(),
+            is_dir,
+        });
+    }
+    // 与 `build_group` 同一条排序：大块在前，同字节数按 id 兜底保持稳定。
+    entries.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.id.cmp(&b.id)));
+    let total: u64 = entries.iter().map(|entry| entry.bytes).sum();
+    for entry in &mut entries {
+        entry.share_percent = percent(entry.bytes, total);
+    }
+    entries
+}
+
+/// 把前端传来的路径限制在 `xlink_home` 之内，返回解析后的真实路径。
+///
+/// `path` 由前端传来，它唯一合法的来源是报表里后端自己填的 `path` 字段，
+/// 但这里按**不可信输入**对待：先 `canonicalize`（顺带验证存在），再要求
+/// 落在 `xlink_home` 里。下钻只该能在壳自己的数据目录里走——这条命令没有
+/// 必要、也不应该变成一个通用的「随便哪个目录有多大」探测器。
+///
+/// 两边都 canonicalize 再比前缀：macOS 的 `/tmp` 一类路径带软链成分，
+/// 字面上比会误拒。
+fn scope_to_home(requested: &Path, home: &Path) -> Result<PathBuf, String> {
+    let resolved = requested.canonicalize().map_err(|error| {
+        format!(
+            "目录不存在或无法访问（{error}）：{}。请先刷新「磁盘用量」再展开。",
+            requested.display()
+        )
+    })?;
+    let root = home
+        .canonicalize()
+        .map_err(|error| format!("dsh-xlink 数据目录无法解析（{error}）。请重启应用后重试。"))?;
+    if !resolved.starts_with(&root) {
+        return Err(format!(
+            "路径 {} 不在 dsh-xlink 数据目录内，已拒绝读取。",
+            requested.display()
+        ));
+    }
+    Ok(resolved)
+}
+
+/// 下钻命令：列出某个条目**下一层**子项的占用（只读）。
+///
+/// 阻塞的子树统计走 `commands::blocking`（模块头那条约定）：`node_modules`
+/// 一层就是几万个文件，和全量报表同量级。每层按需统计、前端缓存，展开一节
+/// 扫一节——比一次把整棵树展平便宜得多，也快得多。
+#[tauri::command]
+pub async fn disk_usage_children(path: String) -> Result<Vec<UsageEntry>, String> {
+    let home = crate::shell::paths::xlink_home();
+    crate::commands::blocking(move || {
+        let dir = scope_to_home(Path::new(&path), &home)?;
+        // 显式标注 E：`blocking` 只约束 `E: ToString`，闭包体里推不出 String。
+        Ok::<Vec<UsageEntry>, String>(child_entries(&dir))
+    })
+    .await
 }
 
 /// 缓存文件：`<data_dir>/disk-usage-cache.json`。
@@ -1054,5 +1163,134 @@ mod tests {
             kernels.bytes, 1000,
             "软链版本不应把真实版本的 1000 字节再数一遍"
         );
+    }
+
+    /// 下钻列表：目录与文件都在、大块在前、只有目录标记 is_dir。
+    ///
+    /// 文件必须出现：`pnpm-lock.yaml` 常常就是「这层为什么这么大」的答案。
+    /// 但它是叶子——`is_dir` 为 false，前端不会给它展开箭头。
+    #[test]
+    fn children_list_dirs_and_files_sorted_desc() {
+        let temp = TempTree::new("children");
+        tree(
+            temp.path(),
+            &[
+                ("node_modules/pkg/a.bin", 900),
+                ("sessions/s1.json", 100),
+                ("package.json", 50),
+            ],
+        );
+
+        let children = child_entries(temp.path());
+
+        assert_eq!(children.len(), 3, "两个目录加一个文件都要在");
+        assert_eq!(children[0].id, "node_modules", "大块在前");
+        assert!(children[0].is_dir);
+        assert_eq!(children[0].bytes, 900);
+        assert_eq!(children[1].id, "sessions");
+        assert!(children[1].is_dir);
+        // 文件是叶子：字节照数，但不给展开。
+        assert_eq!(children[2].id, "package.json");
+        assert!(!children[2].is_dir);
+        assert_eq!(children[2].bytes, 50);
+
+        // 占比的分母是「本层子项之和」，与瓦片条目的口径一致。逐项四舍五入
+        // 到两位小数后允许 0.0x 的尾差（900:100:50 → 85.71 + 9.52 + 4.76）。
+        let sum: f64 = children.iter().map(|e| e.share_percent).sum();
+        assert!(
+            (sum - 100.0).abs() < 0.05,
+            "占比之和应约等于 100，实得 {sum}"
+        );
+        assert_eq!(children[0].share_percent, 85.71);
+    }
+
+    /// 下钻不计软链：与 `dir_size` 同一条规则，两边的数字才加得拢。
+    #[cfg(unix)]
+    #[test]
+    fn children_do_not_count_symlinks() {
+        use std::os::unix::fs::symlink;
+        let temp = TempTree::new("children-symlink");
+        let target = temp.path().join("elsewhere");
+        tree(&target, &[("big.bin", 1000)]);
+        tree(temp.path(), &[("local/f.bin", 10)]);
+        symlink(&target, temp.path().join("link")).unwrap();
+
+        let children = child_entries(temp.path());
+
+        assert_eq!(children.len(), 2, "软链不入列：{children:?}");
+        assert!(children.iter().all(|e| e.id != "link"));
+        // 降序仍然成立：elsewhere（1000B）在前，local（10B）在后。
+        assert_eq!(children[0].id, "elsewhere");
+        assert_eq!(children[1].id, "local");
+    }
+
+    /// 越界拒绝：路径不在 xlink_home 里时必须拒绝，而不是照扫。
+    ///
+    /// `path` 是前端传来的，这里把它当不可信输入对待——下钻只该能在壳自己
+    /// 的数据目录里走，否则这条命令就成了一个通用目录探测器。
+    #[test]
+    fn scope_rejects_paths_outside_home() {
+        let home = TempTree::new("scope-home");
+        let outside = TempTree::new("scope-outside");
+        // sub 必须真实存在：不存在会先撞上 canonicalize 的「不存在」分支，
+        // 到不了下面要验的那条「越界」判据。
+        fs::create_dir_all(outside.path().join("sub")).unwrap();
+        let error = scope_to_home(&outside.path().join("sub"), home.path())
+            .expect_err("home 之外的路径必须被拒绝");
+        assert!(error.contains("不在"), "要说清拒绝原因：{error}");
+    }
+
+    /// 不存在的路径同样拒绝（canonicalize 顺带验证存在）。
+    #[test]
+    fn scope_rejects_missing_directory() {
+        let home = TempTree::new("scope-missing");
+        let error = scope_to_home(&home.path().join("gone"), home.path())
+            .expect_err("不存在的目录必须被拒绝");
+        assert!(
+            error.contains("不存在或无法访问"),
+            "要说清拒绝原因：{error}"
+        );
+    }
+
+    /// home 之内（含多层嵌套）放行，且返回 canonicalize 后的真实路径。
+    #[test]
+    fn scope_accepts_paths_under_home() {
+        let home = TempTree::new("scope-ok");
+        let nested = home.path().join("kernels/dsh/instances/default");
+        fs::create_dir_all(&nested).unwrap();
+
+        let resolved = scope_to_home(&nested, home.path()).expect("home 之内应放行");
+        // 期望值同样过 canonicalize：macOS 的 /var → /private/var 这类前缀
+        // 软链会被解析，拿字面路径比会假红。
+        assert_eq!(resolved, nested.canonicalize().unwrap());
+    }
+
+    /// 旧缓存里没有 `isDir` 字段时，条目仍按目录读回。
+    ///
+    /// 缓存 JSON 是在加这个字段之前写的，serde 缺省必须给 `true`（缓存条目
+    /// 本来就全是目录）——给 false 的话，升级后第一次进页面拿到旧缓存，
+    /// 所有行都没有展开箭头，用户会以为下钻坏了。
+    #[test]
+    fn old_cache_entry_without_is_dir_deserializes_as_directory() {
+        let entry: UsageEntry = serde_json::from_str(
+            r#"{
+                "id": "default",
+                "label": "正式版",
+                "detail": "",
+                "bytes": 100,
+                "sharePercent": 50.0,
+                "path": "/tmp/somewhere"
+            }"#,
+        )
+        .expect("旧缓存条目应能读回");
+        assert!(entry.is_dir, "缺字段时必须按目录处理");
+    }
+
+    /// 读不到的目录（权限、竞态删除）给空列表，而不是让命令失败。
+    #[test]
+    fn children_of_unreadable_directory_is_empty() {
+        let temp = TempTree::new("children-unreadable");
+        let children = child_entries(&temp.path().join("nonexistent"));
+        assert!(children.is_empty(), "目录不存在时给空列表：{children:?}");
     }
 }

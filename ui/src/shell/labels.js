@@ -5,6 +5,27 @@
 
 import { ref } from 'vue';
 
+// 字节 → 人类可读。原是 VersionsPanel.vue 的私有函数；磁盘用量的下钻树
+// （DiskUsageTree.vue）展开后的每一行也要格式化字节，同一份格式化搬来共用
+// ——单位口径（1024 进制、按 1000 归一，与 Finder / `du -h` 对得上数）只有
+// 一处定义，两张表才不会各说各话。
+const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
+
+/** 字节 → 「495.3 MB」这类展示串；非有限数与非正数都落「0 B」。 */
+export function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  let index = 0;
+  let scaled = value;
+  while (scaled >= 1024 && index < BYTE_UNITS.length - 1) {
+    scaled /= 1024;
+    index += 1;
+  }
+  // 字节本身不显示小数（12 B 不会写成 "12.0 B"），其余保留一位。
+  const digits = index === 0 ? 0 : 1;
+  return `${scaled.toFixed(digits)} ${BYTE_UNITS[index]}`;
+}
+
 /** 插件/技能来源的中文标签。未知来源原样返回，便于定位新增来源。 */
 export function originLabel(origin) {
   if (origin === 'local') return '本地';

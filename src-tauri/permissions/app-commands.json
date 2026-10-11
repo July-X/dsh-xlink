@@ -91,6 +91,7 @@
           "focus_main_shell",
           "minimize_shell",
           "disk_usage",
+          "disk_usage_children",
           "autostart_status",
           "autostart_set",
           "autostart_set_kernel",
