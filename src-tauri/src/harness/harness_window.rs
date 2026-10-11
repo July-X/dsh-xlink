@@ -161,8 +161,9 @@ pub fn should_recreate(
 
 /// 冷却是否已过：没重建过（第一次）或距上次自动重建已过 [`REBUILD_COOLDOWN`]。
 pub fn cooldown_ready(last_rebuild: Option<Instant>) -> bool {
-    // `map_or` 而不是 `is_none_or`：MSRV 1.77（`is_none_or` 要 1.82）。
-    last_rebuild.map_or(true, |at| at.elapsed() >= REBUILD_COOLDOWN)
+    // MSRV 曾是 1.77 时这里刻意用 `map_or`（`is_none_or` 要 1.82）；
+    // tauri 2.12 把 rust-version 抬到 1.90 后约束解除，回归 clippy 的标准写法。
+    last_rebuild.is_none_or(|at| at.elapsed() >= REBUILD_COOLDOWN)
 }
 
 /// 页面报上来的故障，是不是「刷新已经救不回来」的那一种。

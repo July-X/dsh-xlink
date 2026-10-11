@@ -503,7 +503,7 @@ fn newest_variant(dir: &Path) -> Option<PathBuf> {
             }
             digits.parse::<u32>().unwrap_or(0)
         };
-        if best.as_ref().map_or(true, |(v, _)| version > *v) {
+        if best.as_ref().is_none_or(|(v, _)| version > *v) {
             best = Some((version, entry.path()));
         }
     }
