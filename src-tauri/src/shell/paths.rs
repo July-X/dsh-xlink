@@ -330,11 +330,6 @@ pub fn instance_runtime_dir(family: &str, id: &str) -> PathBuf {
     instance_dir(family, id).join("runtime")
 }
 
-/// 给定实例的 advisory file lock：`<...>/runtime/instance.lock`。
-pub fn instance_lock_file(family: &str, id: &str) -> PathBuf {
-    instance_runtime_dir(family, id).join("instance.lock")
-}
-
 /// 给定实例的 PID 文件：`<...>/runtime/pid`。
 pub fn instance_pid_file(family: &str, id: &str) -> PathBuf {
     instance_runtime_dir(family, id).join("pid")
