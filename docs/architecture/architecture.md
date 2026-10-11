@@ -286,6 +286,15 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 `DiskUsage.total` 字段叫 `total` 而不是 `total_bytes`：`check-invariants` 的 ipc-fields 那条按**字段名全局**匹配（扫到任何 camelCase 结构体字段就把其 snake 形式记为「前端读到就是错的」，不区分同名字段属于哪个结构体），而 `migration::wizard` 的 `MigrationItemPreview.total_bytes` 刻意**不**套 `rename_all`（迁移面板那条链路统一走 snake_case）。两者撞名会被误判成 9 处前端 bug。改名比削弱门禁便宜——那条判据本身是对的，前端读 snake_case 拿到 undefined 这类 bug 真的存在，它只是分不清归属。
 
+### 下钻（`disk_usage_children`，2026-10-11）
+
+报表只统计到「版本 / 实例」这一层；用户问「666.5 MB 里到底是什么」时，点瓦片里的条目行就地展开它**下一层**子项的占用，展开过的行可继续往下点。三条设计决定：
+
+- **同一份 `UsageEntry`，只多一个 `is_dir`**。子项列表由 `child_entries` 产出，排序、占比口径与 `build_group` 一致——展开后的列表与瓦片读起来是同一张表，不是另一套界面。只有目录能继续下钻，文件是叶子（`pnpm-lock.yaml` 常常就是「这层为什么这么大」的答案，但它没有「里面」）。**`is_dir` 带 `#[serde(default = "default_true")]`**：报表条目本来就全是目录，旧缓存缺字段时按目录读回，升级后不用先刷新一次才有展开箭头。方向与 `detail` 故意不给 default（见上）相反，因为缺 `is_dir` 的代价是整棵树点不开，缺 `detail` 只是悬停空一句。
+- **路径按不可信输入对待（`scope_to_home`）**。`path` 由前端传来，它唯一合法的来源是报表里后端自己填的 `path` 字段，但命令仍先 `canonicalize`（顺带验证存在），再要求落在 `xlink_home` 里，越界一律拒绝——下钻只该能在壳自己的数据目录里走，否则这条命令就成了一个通用的「随便哪个目录有多大」探测器。两边都 canonicalize 再比前缀：macOS 的 `/var → /private/var` 这类前缀软链，字面上比会误拒。
+- **按需统计、前端缓存、随报表失效**。每层展开才调一次命令（走 `commands::blocking`——`node_modules` 一层就是几万个文件，和全量报表同量级）；`ui/src/kernel/DiskUsageTree.vue`（递归组件，自引用渲染下层）按路径缓存结果，收起再展开不重扫。报表一换（`stamp` = `measuredAt` 变化）缓存作废重取、展开状态保留——旧数字配新报表会让「展开后的加总」与瓦片对不上。根层限高 220px 内部滚动：下钻可以很深，页面高度不该跟着树一起长（与发布列表同一条纪律）。字节格式化 `formatBytes` 从 VersionsPanel 搬进 `shell/labels.js` 与树共用——单位口径只有一处定义，两张表才不会各说各话。
+
+
 - dev 调试面板（仅 dev 构建，`ui/src/components/DebugPanel.vue`）：右下角 🪛 浮按钮打开，唯一动作是「模拟正式版外观」。打开后把 `rel-build` 类挂上 body（复用 release 的绿渐变背景），**并收起 dev 专属内容**——设置页的「模拟一次任务完成」、概览页版本号的「（dev）」后缀，以及面板里那份钩子速查。它们只读 `store.devUi`（= `dev_build && !releasePreview`，由 `store.applyBuildClass()` 唯一写入，首帧从 body 类兜底以免 HMR 后 dev 入口先隐藏再闪回）：新增 dev 专属内容时必须走同一字段，否则 release 预览只演出了半个正式版。**浮按钮不走这个字段**：它在两种模式下都留在右下角（预览中换成 Gitea 绿以示区分），否则切进 release 预览就没有回头的入口了——刻意不做键盘快捷键，切换靠这个按钮。预览标志只在内存里，重启应用即复位；预览只改界面，不改外壳行为（`dev_build` 仍是 true，Rust 侧一概不动）。**面板不会在切换预览时自动收起**：Element Plus 的 switch 在 `handleChange` 里先发 `change`、再用 `nextTick` 写模板 ref `input.value.checked`，同步卸载开关会让那个回调拿到 `null`，在控制台留下一条 `Unhandled Promise Rejection: Cannot set properties of null (setting 'checked')`（实测于 element-plus 2.14.5）。要收起面板请另找时机，不要挂在 `@change` 触发的 watch 上。
 
 - `harness`（工作台）：`open_harness` 在新 OS 线程里 `WebviewWindowBuilder::new(...).label("harness")`，先对日志中的 launch-token URL（旧版内核则对裸地址）做 loopback HTTP 探针，确认可用后加载；不设 `closable(false)`——macOS 交通灯红灯与 Windows × 关闭按钮保持可用，用户可随时自己收起工作台窗口，内核与任务继续在后台运行、随时可经「打开工作台窗口」重新打开，收起窗口不会丢内核会话；由 `stop_kernel` 用 `destroy()` 主动回收窗口并停止内核。`capabilities/harness-remote.json` 仅授权 `allow-focus-main-shell` 与 `allow-report-harness-fault`，URL 锁 `http://127.0.0.1:*`；后者还会在 Rust 命令层校验 webview label 必须是 `harness`。打开前由 `kernel::prepare_workbench_source_maps` 扫描当前内核的前端 `dist`，为 npm 包中保留 `sourceMappingURL` 但缺失的 `.map` 生成最小 sidecar；不改内核 JS，目录只读时也不阻断工作台启动。

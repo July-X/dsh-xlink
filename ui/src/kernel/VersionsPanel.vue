@@ -18,9 +18,12 @@ import {
 // 发布列表状态与拉取动作住在 releases.js（2026-10-07 从 store.js 拆出）。
 // 这里直接从它的归属模块导入，不要再从 store.js 的 re-export 绕一圈。
 import { releases, checkUpdates } from './releases.js';
+// 磁盘用量的下钻树：瓦片条目行可点，点开就地展开下一层子项的占用。
+import DiskUsageTree from './DiskUsageTree.vue';
 import { invoke, listen } from '../shell/bridge.js';
 import { openExternalLink } from '../shell/notify.js';
-import { relativeTimeLabel } from '../shell/labels.js';
+// formatBytes 搬去了 shell/labels.js 与下钻树共用（同一份单位口径）。
+import { formatBytes, relativeTimeLabel } from '../shell/labels.js';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 
 const KERNEL_RELEASES_URL = 'https://github.com/deepseek-ai/deepseek-harness/releases';
@@ -177,27 +180,6 @@ onBeforeUnmount(() => {
   if (diskUnlisten) Promise.resolve(diskUnlisten()).catch(() => {});
   diskUnlisten = null;
 });
-
-// 字节 → 人类可读。**不在 Rust 侧格式化**：单位与小数位是显示决策，而这张
-// 表还要按字节排序、按百分比画条——后端给原始字节，前端怎么排都不会让
-// 「排序用字符串比较」这种错重新长出来。
-//
-// 用 1024 进制并按 1000 归一（507MB 显示成 495 MB）——文件系统的真实语义，
-// 与 Finder / `du -h` 一致，用户拿另一个工具对得上数。
-const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
-function formatBytes(bytes) {
-  const value = Number(bytes);
-  if (!Number.isFinite(value) || value <= 0) return '0 B';
-  let index = 0;
-  let scaled = value;
-  while (scaled >= 1024 && index < UNITS.length - 1) {
-    scaled /= 1024;
-    index += 1;
-  }
-  // 字节本身不显示小数（12 B 不会写成 "12.0 B"），其余保留一位。
-  const digits = index === 0 ? 0 : 1;
-  return `${scaled.toFixed(digits)} ${UNITS[index]}`;
-}
 
 // --- 四个占用类型的配色与说明 ---
 //
@@ -546,17 +528,14 @@ function groupTip(group) {
               </span>
               <span class="usage-tile-percent">{{ group.sharePercent }}%</span>
             </div>
-            <ul v-if="group.entries.length" class="usage-entries">
-              <li v-for="entry in group.entries" :key="entry.id" class="usage-entry">
-                <!-- 悬停先给人话全名，再给路径：缩写（正式版）在同一张瓦片里
-                     可能重名，真正能区分它们的是内核族与目录。 -->
-                <span
-                  class="usage-entry-name"
-                  :title="entry.detail ? entry.detail + '\n' + entry.path : entry.path"
-                >{{ entry.label }}</span>
-                <span class="usage-entry-bytes">{{ formatBytes(entry.bytes) }}</span>
-              </li>
-            </ul>
+            <!-- 条目列表就是下钻树的根层：每行可点，点开就地展开该条目
+                 下一层子目录 / 文件的占用，再点收起（DiskUsageTree.vue）。
+                 依旧是只读——树里没有删除入口，与瓦片同一纪律。 -->
+            <DiskUsageTree
+              v-if="group.entries.length"
+              :entries="group.entries"
+              :stamp="diskUsage.measuredAt"
+            />
             <p v-else class="muted usage-empty">这一类当前没有内容。</p>
           </div>
 
@@ -895,41 +874,9 @@ function groupTip(group) {
   min-width: 2px;
 }
 
-.usage-entries {
-  list-style: none;
-  /* 6 → 4：占比条与条目之间已经有一道 border-top 在分界，4px 够读出
-     「下面换了一层」，不必给到 6。 */
-  margin: 4px 0 0;
-  padding: 0;
-  /* 顶部一道细线，把「分类自己的数」与「下面这些条目」分开。 */
-  border-top: 1px solid var(--border);
-  padding-top: 4px;
-}
-
-.usage-entry {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  /* 2 → 1：瓦片里每条只有名称与字节数两段，2px 的行距在两列并排时
-     显得比内容本身还松。 */
-  padding: 1px 0;
-  font-size: 11.5px;
-}
-
-.usage-entry-name {
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.usage-entry-bytes {
-  color: var(--text);
-  white-space: nowrap;
-  flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
-}
+/* 条目行的样式（名称 / 字节 / 箭头 / 缩进）随下钻树搬进了
+   DiskUsageTree.vue 的 scoped 块——那里是它们唯一的作用方，留在原地就是
+   一组没有消费者的死声明。这里只留瓦片自己的东西。 */
 
 .usage-refreshing {
   animation: usage-spin 1.1s linear infinite;

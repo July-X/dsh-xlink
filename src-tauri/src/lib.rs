@@ -435,6 +435,9 @@ pub fn run() {
             commands::minimize_shell,
             // 磁盘占用报表（只读，无删除入口——见 diskusage.rs 的模块文档）。
             diskusage::disk_usage,
+            // 磁盘用量下钻：某个条目下一层子项的占用（只读，路径限定在
+            // xlink_home 之内）。
+            diskusage::disk_usage_children,
             // 后台常驻与登录自启（2026-10-02）。三条命令都在 shell::autostart
             // 里，不进 commands.rs——那里只剩调度与端口 / 插件那几族。
             shell::autostart::autostart_status,
