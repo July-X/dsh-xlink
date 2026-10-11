@@ -1519,6 +1519,7 @@ mod tests {
 mod refresh_tests {
     use super::*;
     use crate::usage::credentials::CredentialSource;
+    use std::cell::Cell;
 
     const NOW_MS: u64 = 1_761_308_400_000;
 
@@ -1665,6 +1666,75 @@ mod refresh_tests {
         assert_eq!(
             entry.credential_fingerprint,
             credential_fingerprint("key-new")
+        );
+    }
+
+    /// **消费端**接线：令牌轮换后缓存必须被认下来。
+    ///
+    /// `subscription_openai` 那侧只钉住了 `cache_binding` 这个**字段**怎么算，
+    /// 可真正让 5 分钟 TTL 生效的是这里 `refresh_provider_entry` 读它的那一行。
+    /// 只钉生产者的话，把这行退回 `&key` 整条测试照样全绿，而 Codex 每轮换一次
+    /// 令牌就作废缓存并越过 TTL 重打接口——正是这次要修的那件事原样重开。
+    #[test]
+    fn rotating_the_token_keeps_the_cached_entry_on_the_consumer_side() {
+        let old_key = "codex-local:acct-a:token-1";
+        let new_key = "codex-local:acct-a:token-2";
+        let binding = credential_fingerprint("codex-local:acct-a");
+
+        let old = cached_entry(&binding, NOW_MS - 1_000);
+        let refreshed: Cell<bool> = Cell::new(false);
+        let (entry, fetch_error, _) = refresh_provider_entry(
+            PROVIDER_OPENAI,
+            Some(ResolvedCredential {
+                reference: "codex-local".to_string(),
+                value: Some(new_key.to_string()),
+                source: CredentialSource::CodexLocal,
+                cache_binding: Some("codex-local:acct-a".to_string()),
+            }),
+            Some(old),
+            false,
+            NOW_MS,
+            |_, _| {
+                refreshed.set(true);
+                FetchOutcome::Success(ProviderData::Plan { tiers: vec![] })
+            },
+        );
+        assert!(
+            !refreshed.get(),
+            "令牌轮换不该触发重新查询——缓存 TTL 才不会被架空"
+        );
+        assert!(fetch_error.is_none());
+        assert_eq!(
+            entry.expect("缓存应被认下").credential_fingerprint,
+            binding,
+            "认下后指纹必须仍是绑定身份的指纹，而不是新令牌算出来的"
+        );
+        let _ = old_key;
+
+        // 反面：换账号（绑定变了）必须作废并重查，否则会把上一个账号的额度
+        // 呈现给用户——那是比「多打一次接口」严重得多的错。
+        let refreshed_again: Cell<bool> = Cell::new(false);
+        let (entry, _, dirty) = refresh_provider_entry(
+            PROVIDER_OPENAI,
+            Some(ResolvedCredential {
+                reference: "codex-local".to_string(),
+                value: Some("codex-local:acct-b:token-1".to_string()),
+                source: CredentialSource::CodexLocal,
+                cache_binding: Some("codex-local:acct-b".to_string()),
+            }),
+            Some(cached_entry(&binding, NOW_MS - 1_000)),
+            false,
+            NOW_MS,
+            |_, _| {
+                refreshed_again.set(true);
+                FetchOutcome::Success(ProviderData::Plan { tiers: vec![] })
+            },
+        );
+        assert!(refreshed_again.get(), "换账号必须用新凭据重查");
+        assert!(dirty, "旧账号条目必须被标记作废");
+        assert_ne!(
+            entry.expect("新账号应写入条目").credential_fingerprint,
+            binding
         );
     }
 

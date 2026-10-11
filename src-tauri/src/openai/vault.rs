@@ -230,6 +230,9 @@ fn hex32(text: &str) -> Result<[u8; 32], ()> {
 /// 用户原有的那把。
 const KEYCHAIN_ITEM_NOT_FOUND: i32 = 44;
 
+/// Windows 脚本用来表示「枚举完了，确实没有这条」的标记。
+const KEYRING_NOT_FOUND_MARKER: &str = "__DSH_NOT_FOUND__";
+
 #[cfg(target_os = "macos")]
 pub(crate) fn keyring_get(service: &str, account: &str) -> Result<Option<String>, String> {
     let output = std::process::Command::new("security")
@@ -279,17 +282,34 @@ pub(crate) fn keyring_put(service: &str, account: &str, secret: &str) -> Result<
 // Windows：PowerShell 的 PasswordVault（WinRT 投影，不走 Win32 FFI）。
 // 实机验证属发布验收项（同 autostart 的写路径纪律），此处保持薄与可审。
 //
-// 「条目不存在」不能靠 PowerShell 的退出码判断（WinRT 异常一律走 stderr），
-// 所以脚本自己 catch 并把**异常类型全名**打出来，由 Rust 侧分类：
-//   `ElementNotFoundException` → 库里没有（首次）；
-//   其它任何类型 / 进程失败 → 读取失败，原样上抛。
-// 判据的方向是保守的：类型名认不出来就算失败，绝不落到「生成新密钥」那支。
+// 「条目不存在」**不靠异常类型判**。`Retrieve` 在无匹配时确实会抛异常
+//（微软文档：Retrieve / FindAllByResource 均有 "If a match does not exist,
+// an exception will throw"），但那是 WinRT 异常，经 PowerShell 投影后
+// `GetType().FullName` 未必还保留 `ElementNotFound` 这个名字——认不出来就
+// 当成「读取失败」的话，**Windows 上首次登录会直接失败**，那是比原缺陷更
+// 严重的回归。
+//
+// 所以改用 `RetrieveAll()` 枚举后自行过滤：它对空库返回空集合、**不抛
+// 异常**，判据完全确定。代价是枚举全部条目（几十毫秒），而这一次调用本来
+// 就要 spawn 一个 PowerShell（几百毫秒），开销可以忽略。密码只在匹配上那条
+// 时才 RetrievePassword，且不会出现在过滤过程的中间输出里。
+/// Windows 的查询脚本（纯字符串拼接）。**刻意不带 `#[cfg]`**：这段脚本只
+/// 在 Windows 上执行，而它一旦写错（花括号漏转义、续行符吃掉关键字符），
+/// 在别的平台上没有任何机制会发现——所以把它抽出来，让任意平台都能对最终
+/// 字面量做断言。
+fn windows_keyring_get_script(service: &str, account: &str) -> String {
+    format!(
+        "try{{\
+           $v=[Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]::new();\
+           $hit=@($v.RetrieveAll() | Where-Object {{ $_.Resource -eq '{service}' -and $_.UserName -eq '{account}' }});\
+           if($hit.Count -eq 0){{Write-Output '__DSH_NOT_FOUND__'}}else{{Write-Output $hit[0].RetrievePassword()}}\
+         }}catch{{Write-Output ('__DSH_ERR__:' + $_.Exception.Message)}}"
+    )
+}
+
 #[cfg(target_os = "windows")]
 pub(crate) fn keyring_get(service: &str, account: &str) -> Result<Option<String>, String> {
-    let script = format!(
-        "try{{$v=[Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]::new();$v.Retrieve('{service}','{account}').Password}}\
-         catch{{Write-Output ('__DSH_ERR__:' + $_.Exception.GetType().FullName)}}"
-    );
+    let script = windows_keyring_get_script(service, account);
     // 壳是 GUI 子系统应用：不挂 quiet，每个 powershell 都会闪一个终端窗
     // ——账户卡状态轮询/目录/推理每次都碰凭据库，终端窗会「不停的出现」
     // （2026-10-09 用户实测）。
@@ -300,18 +320,26 @@ pub(crate) fn keyring_get(service: &str, account: &str) -> Result<Option<String>
         .output()
         .map_err(|e| format!("启动 powershell 失败：{e}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if let Some(kind) = stdout.strip_prefix("__DSH_ERR__:") {
-        if kind.to_ascii_lowercase().contains("elementnotfound") {
-            return Ok(None);
-        }
+    // 顺序有讲究：先认脚本自己给出的标记，再看退出码。标记只在脚本**完整跑完**
+    // 时才出现，进程失败时 stdout 为空，会落到下面的退出码分支。
+    if stdout == KEYRING_NOT_FOUND_MARKER {
+        return Ok(None);
+    }
+    if let Some(reason) = stdout.strip_prefix("__DSH_ERR__:") {
         return Err(format!(
-            "Credential Manager 读取条目时抛出 {kind}（{account}）"
+            "Credential Manager 读取条目时出错（{account}）：{}",
+            reason.trim()
         ));
     }
     if !output.status.success() {
         return Err(format!(
             "Credential Manager 查询失败（{account}）：{}",
             String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    if stdout.is_empty() {
+        return Err(format!(
+            "Credential Manager 查询没有返回任何结果（{account}）"
         ));
     }
     Ok(Some(stdout))
@@ -562,5 +590,46 @@ mod tests {
         assert_eq!(recovered, key);
         assert_eq!(load_accounts(&path, &recovered).unwrap(), accounts);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Windows 查询脚本的**形状**。这段脚本只在 Windows 上跑，本机（mac）
+    /// 没有 PowerShell 可解析它，所以只能对最终字面量做静态断言——但这几条
+    /// 恰好覆盖「写错而且没人会发现」的几类：花括号漏转义、续行符吃掉关键
+    /// 片段、又退回了依赖异常类型名的老写法。
+    #[test]
+    fn windows_keyring_script_shape_is_assertable_off_platform() {
+        let script = windows_keyring_get_script("svc", "acct");
+
+        // ① 不依赖异常类型名判断「不存在」：WinRT 异常经 PowerShell 投影后
+        //    未必保留 ElementNotFound 这个名字，认不出来会让首次登录直接失败。
+        assert!(
+            !script.contains(".Retrieve("),
+            "不得用单条 Retrieve（它的「不存在」只能靠异常识别）：{script}"
+        );
+        assert!(script.contains("RetrieveAll()"), "应枚举后过滤：{script}");
+        assert!(
+            script.contains(KEYRING_NOT_FOUND_MARKER),
+            "空集合必须输出明确标记：{script}"
+        );
+        // ② try / catch 各一次，且 catch 仍兜底（vault 本身不可用也落到这里）。
+        assert_eq!(script.matches("try{").count(), 1, "{script}");
+        assert_eq!(script.matches("catch{").count(), 1, "{script}");
+        assert!(script.contains("__DSH_ERR__:"), "{script}");
+        // ③ 花括号配平：`format!` 里字面花括号要写成 `{{`/`}}`，漏一个就产出
+        //    语法错误的脚本——而它只在 Windows 上才会暴露。
+        assert_eq!(
+            script.matches('{').count(),
+            script.matches('}').count(),
+            "花括号不配平，PowerShell 会语法错误：{script}"
+        );
+        // ④ 续行符吃掉换行与缩进后必须是一行可执行。
+        assert!(!script.contains('\n'), "续行符应把脚本压成一行：{script}");
+        // ⑤ service / account 真插进去了，而不是 `{service}` 这种没展开的字面量。
+        assert!(script.contains("-eq 'svc'"), "{script}");
+        assert!(script.contains("-eq 'acct'"), "{script}");
+        assert!(
+            !script.contains("{service}") && !script.contains("{account}"),
+            "占位符没被展开：{script}"
+        );
     }
 }

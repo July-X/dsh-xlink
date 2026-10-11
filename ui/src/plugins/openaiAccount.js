@@ -1,5 +1,5 @@
 // 主面板和工作台共用 Rust 账号服务；这里不读取、保存或返回令牌。
-import { reactive } from 'vue';
+import { reactive, watch } from 'vue';
 import { invoke, listen } from '../shell/bridge.js';
 import { isLoading, withLoading } from '../shell/loading.js';
 
@@ -59,15 +59,32 @@ export function followAccount() {
   let disposed = false;
   let unlisten;
   let timer;
+  let stopWatch;
+  // 代次：相位变化会重排定时器，而正在 `await refresh()` 的那个回调仍会在
+  // 结束后再排一次。没有代次就会留下两个定时器，轮询频率翻倍——正是这一段
+  // 要省下来的开销。
+  let generation = 0;
   const refresh = () => { if (!disposed && !isLoading('openaiAccountAction')) return refreshAccount(); };
-  // 自调度而非固定 setInterval：readAccount 会更新 accountStore.status，
+  // 自调度而非固定 setInterval：refreshAccount 会更新 accountStore.status，
   // 所以下一轮间隔能按**刷新后的**相位决定。
   const schedule = () => {
     if (disposed) return;
     const authorizing = accountStore.status?.phase === 'authorizing';
-    timer = setTimeout(async () => { await refresh(); schedule(); },
-      authorizing ? AUTHORIZING_POLL_MS : IDLE_POLL_MS);
+    const mine = ++generation;
+    timer = setTimeout(async () => {
+      if (disposed || mine !== generation) return;
+      await refresh();
+      schedule();
+    }, authorizing ? AUTHORIZING_POLL_MS : IDLE_POLL_MS);
   };
+  // 相位变化时**立即重排**。只靠定时器触发时再读相位是不够的：用户点下登录
+  // 之后，当前那一次 60s 定时器不会提前到期，于是授权进度最多 60s 才刷新
+  // 一次——比改动前的固定 5s 还慢，降频就降过头了。
+  stopWatch = watch(() => accountStore.status?.phase, () => {
+    if (disposed) return;
+    clearTimeout(timer);
+    schedule();
+  });
   listen('openai-account-changed', refresh).then((off) => {
     if (disposed) off?.();
     else unlisten = off;
@@ -76,5 +93,13 @@ export function followAccount() {
   });
   refresh();
   schedule();
-  return () => { if (disposed) return; disposed = true; clearTimeout(timer); unlisten?.(); ++revision; };
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    ++generation;          // 作废任何正在 await 的回调，它醒来后不会再排下一轮
+    clearTimeout(timer);
+    stopWatch?.();
+    unlisten?.();
+    ++revision;
+  };
 }

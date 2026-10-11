@@ -58,9 +58,19 @@ pub async fn set_codex_usage_enabled(app: tauri::AppHandle, enabled: bool) -> Re
 
 /// 遵循 Codex 的 CODEX_HOME；未设置时使用用户 home/.codex，不搜索其它目录。
 fn auth_path() -> Result<PathBuf, String> {
+    auth_path_via(|name| std::env::var_os(name))
+}
+
+/// 读取哪两个变量、以及顺序，全在这里。分出来的理由是**接线本身**需要被测：
+/// `auth_path_from` 的五��断言都钉住了纯函数，可两个入参在调用点被写反时它照样
+/// 全绿——后果是用户设了 `CODEX_HOME` 也被忽略，壳默默去读 `~/.codex/auth.json`，
+/// 正是这一节注释声称防的「读到了错误的文件」。
+fn auth_path_via(
+    mut read: impl FnMut(&str) -> Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
     auth_path_from(
-        std::env::var_os("CODEX_HOME"),
-        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }),
+        read("CODEX_HOME"),
+        read(if cfg!(windows) { "USERPROFILE" } else { "HOME" }),
     )
 }
 
@@ -75,16 +85,22 @@ fn auth_path_from(
     codex_home: Option<std::ffi::OsString>,
     profile_home: Option<std::ffi::OsString>,
 ) -> Result<PathBuf, String> {
-    let root =
-        match codex_home.filter(|value| !value.is_empty()) {
-            Some(root) => PathBuf::from(root),
-            None => PathBuf::from(profile_home.ok_or_else(|| {
+    // 报错要指出**真正的元凶**：回退分支的根来自用户 home，一句
+    // 「CODEX_HOME 必须是绝对路径」会把人引去检查一个他压根没设的变量。
+    let (root, source) = match codex_home.filter(|value| !value.is_empty()) {
+        Some(root) => (PathBuf::from(root), "CODEX_HOME"),
+        None => (
+            PathBuf::from(profile_home.ok_or_else(|| {
                 "无法定位本机 Codex 登录目录；请设置绝对路径 CODEX_HOME".to_string()
             })?)
             .join(".codex"),
-        };
+            if cfg!(windows) { "USERPROFILE" } else { "HOME" },
+        ),
+    };
     if !root.is_absolute() {
-        return Err("CODEX_HOME 必须是绝对路径，请修正后刷新".into());
+        return Err(format!(
+            "{source} 必须是绝对路径（当前读到的 Codex 登录目录来自它），请修正后刷新"
+        ));
     }
     Ok(root.join("auth.json"))
 }
@@ -227,6 +243,36 @@ mod tests {
     use super::*;
     use crate::openai::vault::AccountTokens;
     use serde_json::json;
+
+    /// **接线顺序**：先读 `CODEX_HOME`，其次才是用户 home。纯函数那五���断言
+    /// 钉不住这一条——两个入参在调用点写反时它们照样全绿，而运行时后果是
+    /// 用户设了 `CODEX_HOME` 也被忽略、壳去读 `~/.codex/auth.json`。
+    #[test]
+    fn codex_home_is_read_before_the_user_profile() {
+        let mut asked: Vec<String> = Vec::new();
+        let path = auth_path_via(|name| {
+            asked.push(name.to_string());
+            Some(std::ffi::OsString::from(if name == "CODEX_HOME" {
+                "/custom/codex"
+            } else {
+                "/users/u"
+            }))
+        })
+        .unwrap();
+        assert_eq!(
+            path,
+            PathBuf::from("/custom/codex/auth.json"),
+            "CODEX_HOME 必须在两个变量里胜出"
+        );
+        assert_eq!(
+            asked,
+            vec![
+                "CODEX_HOME".to_string(),
+                if cfg!(windows) { "USERPROFILE" } else { "HOME" }.to_string()
+            ],
+            "读取顺序错位 = 用户设的 CODEX_HOME 被忽略"
+        );
+    }
 
     /// 读哪个文件的四条分支全覆盖：CODEX_HOME 优先 / 空串当未设 / 回退到
     /// 用户 home / 两者都没有。判据直接钉住最终路径，不只钉「有没有报错」。

@@ -63,7 +63,10 @@ test('主窗口按钮在内嵌插件行，和内核共用相位命令与状态�
   assert.match(component, /reauth-required/);
   assert.match(component, /isLoading\('openaiAccountAction'\)/);
   const client = readFileSync('plugins/openai-oauth/client/client.js', 'utf8');
-  assert.match(client, /setInterval\(refresh, authorizing \? 2000 : 5000\)/);
+  // 授权中 2s，其余 60s。60 不是随手取的：每次 refresh 都要经壳读一次系统
+  // 凭据库，而那要 spawn 一个 `security` / PowerShell 子进程，固定 5s 等于
+  // 页签常开一天一万七千多次进程创建。另一条 UI 侧 store 用的是同一个口径。
+  assert.match(client, /setInterval\(refresh, authorizing \? 2000 : 60000\)/);
 });
 
 test('真实账号组件模板按四种相位显示按钮，不显示重复登录入口', async () => {
@@ -116,5 +119,70 @@ test('工作台账号事件触发权威回读；卸载后晚到的监听和旧�
     assert.equal(accountStore.status.phase, 'signed-out');
   } finally {
     stop();
+  }
+});
+
+test('轮询间隔随相位走：稳态 60s，进入授权中立刻重排成 5s', async () => {
+  // 不靠真实计时器：把 setTimeout 换掉，直接读「下一次排了多少毫秒」。
+  const delays = [];
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  let cleared = 0;
+  globalThis.setTimeout = (fn, ms) => { delays.push(ms); return { __fake: delays.length }; };
+  globalThis.clearTimeout = () => { ++cleared; };
+  listen = () => Promise.resolve(() => {});
+  invoke = async () => ({ phase: 'authorized' });
+  accountStore.status = { phase: 'authorized' };
+
+  const stop = followAccount();
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(delays.at(-1), 60_000, '稳态走长档——每次轮询都要 spawn 一次凭据库子进程');
+
+    // 用户点下登录：相位变成 authorizing。
+    accountStore.status = { phase: 'authorizing' };
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(cleared > 0, '相位变化必须作废旧定时器，否则两个定时器并存 = 频率翻倍');
+    assert.equal(
+      delays.at(-1), 5000,
+      '进入授权中必须**立刻**重排成 5s：只靠定时器到期再读相位的话，'
+      + '授权进度会等到 60s 才更新一次，比降频前还慢',
+    );
+  } finally {
+    stop();
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  }
+});
+
+test('面板在授权进行中被打开时，首轮就用短间隔', async () => {
+  // 与上一条不同的场景：挂载时首读就返回 authorizing。此时 `accountStore.status`
+  // 还是 null（refresh 是异步的），同步调用的 schedule() 只能排到 60s；必须靠
+  // 首读落地后的相位变更把它拉回 5s，否则用户最长要等一分钟才看到授权进度。
+  const delays = [];
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms) => { delays.push(ms); return { __fake: delays.length }; };
+  globalThis.clearTimeout = () => {};
+  listen = () => Promise.resolve(() => {});
+  invoke = async () => ({ phase: 'authorizing' });
+  accountStore.status = null;
+
+  const stop = followAccount();
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(delays[0], 60_000, '前置：首读没落地前只能按未知相位排长档');
+    assert.equal(
+      delays.at(-1), 5000,
+      '首读落地为 authorizing 后必须重排成 5s，不能停在 60s',
+    );
+  } finally {
+    stop();
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
   }
 });
