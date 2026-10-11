@@ -126,7 +126,12 @@ window.__ModuleLoader__.load({
       // 退出后这张卡永久停在已登录。授权中缩短间隔；卸载时清理。
       React.useEffect(() => {
         const authorizing = status?.phase === "authorizing";
-        const timer = setInterval(refresh, authorizing ? 2000 : 5000);
+        // 授权中 2s，其余 60s（与 ui/src/plugins/openaiAccount.js 同口径）。
+        // 每次 refresh 都要经壳读一次系统凭据库，而那要 spawn 一个
+        // `security` / PowerShell 子进程；固定 5s 意味着这个页签常开一天就是
+        // 一万七千多次进程创建。「另一端退出后状态不同步」仍然有事件兜底，
+        // 而这里的轮询本就只作兜底（注释上一条 effect 已经这么定位了）。
+        const timer = setInterval(refresh, authorizing ? 2000 : 60000);
         return () => clearInterval(timer);
       }, [status?.phase, refresh]);
 

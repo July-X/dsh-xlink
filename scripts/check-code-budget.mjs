@@ -265,7 +265,12 @@ const FILE_BUDGETS = {
   // 而漏掉的那一处不会报任何错：用户先看到新名字、随后 toast 里又冒出旧名字。
   'ui/src/plugins/builtin.js': 41,
   // 主面板账号操作独立于插件启停意图；复用 Rust 账号命令并管理跨窗状态生命周期。
-  'ui/src/plugins/openaiAccount.js': 65,
+  // 65 → 82：轮询改成按相位自调度后，补上**相位变化立即重排**。只靠定时器
+  // 到期时再读相位是不够的：用户点下登录后当前那次 60s 定时器不会提前到期，
+  // 授权进度要等 60s 才刷新一次，比降频前的固定 5s 还慢——降频降过头了。
+  // 由此多出的 `generation`（作废正在 await 的回调，否则两个定时器并存 =
+  // 频率翻倍）与 watch 清理，都是这一条的必然成本。82 远低于 600。
+  'ui/src/plugins/openaiAccount.js': 82,
   // 内嵌插件行的账号状态和相位按钮，沿用 Element Plus 与现有主题 token。
   'ui/src/plugins/OpenaiAccountActions.vue': 42,
   // 启用意图 state.json 的读写（按壳模式 / profile 分键；损坏文件报错
@@ -318,7 +323,12 @@ const FILE_BUDGETS = {
   // 类型名（`security` / PowerShell 的退出码都不足以区分）。这 28 行买的正是
   // 「不可逆的数据丢失不发生」，不能靠抽象压掉。241 远低于
   // RATCHET_THRESHOLD 600，上调在规则内。241 是 `cargo fmt` 之后的实测值。
-  'src-tauri/src/openai/vault.rs': 241,
+  // 241 → 254：Windows 查询脚本改用 `RetrieveAll()` 枚举后过滤，不再靠
+  // 异常类型名判断「不存在」（WinRT 异常经 PowerShell 投影后未必保留
+  // ElementNotFound 这个名字，认不出来会让 Windows 上首次登录直接失败）；
+  // 脚本构造随之抽成无 cfg 的函数，使它的字面量能在任意平台被断言。254 是
+  // `cargo fmt` 之后的实测值。
+  'src-tauri/src/openai/vault.rs': 254,
   // bridge 与回调监听共用的极简 HTTP 读写。从 bridge.rs 提出（读取循环
   // 是实测踩过 TCP 分段竞态的那段，两处各写一份迟早漂移）。
   // 68 → 74：RequestHead 携带 body_prefix（头体一次读入时体字节在缓冲里，
@@ -345,7 +355,10 @@ const FILE_BUDGETS = {
   // 实测存在（2026-10-09），状态码依赖出口而非请求。
   // 173 → 192：回环目标不走代理路由（routes_for_url）+ 403 拦截页的
   // 可读报错（不再整页 HTML 拍给用户）。
-  'src-tauri/src/openai/transport.rs': 192,
+  // 192 → 193：挑战页判据补 BOM 前缀。U+FEFF 在 Unicode 里不是 White_Space，
+  // `trim_start` 不会剥它，而带 BOM 的响应体并不罕见——漏掉它不会误报，只是
+  // 让一次挑战页被归成「凭据被拒」，正是这条分支要避免的事。193 远低于 600。
+  'src-tauri/src/openai/transport.rs': 193,
   // 2026-10-09：授权编排（发现→注册→回调→换令牌→验 ID token→入库）。
   // FlowTransport trait 注入传输/时钟/浏览器/密钥库（真实 Keychain 绝不进
   // 测试）；内含模拟授权服务器（开发计划 §10 的 CI 件）与端到端测试。
@@ -548,7 +561,12 @@ const FILE_BUDGETS = {
   // shell_events，两处 `eprintln!`（广播失败 / 线程未启动）改落盘：GUI 应用
   // 在 Windows 上 eprintln 没有去处，而这两条恰是「用户看得见后果的后台动作」。
   // 基线 316 远低于 RATCHET_THRESHOLD 600，上调在规则内。
-  'src-tauri/src/diskusage.rs': 336,
+  // 336 → 405（2026-10-11）：磁盘用量下钻（用户报「点击小计想看目录明细」）
+  // ——child_entries（下一层子项统计）+ scope_to_home（前端传来的 path 按
+  // 不可信输入对待，canonicalize 后必须落在 xlink_home 里）+
+  // disk_usage_children 命令 + UsageEntry.is_dir（旧缓存缺字段按目录读回）。
+  // 405 是 `cargo fmt` 之后的实测值；基线远低于 600，上调在规则内。
+  'src-tauri/src/diskusage.rs': 405,
   'ui/src/shell/autostart.js': 90,
   // 2026-10-07 uiv2 改版新增：明暗双主题的唯一实现（shell/theme.js）。
   // 独立成文件而不是塞进 store.js / SideBar.vue，理由是它**跨窗口**：主面板、
@@ -1337,6 +1355,12 @@ const FILE_BUDGETS = {
   // 一个时间戳字段时，store.js 被反棘轮顶出预算（只许下调）；那说明该拆，
   // 不该调数字。拆出来后 `checkUpdates` 的两条路径（手动 / 启动自检）与
   // `installLatestRelease` 共用同一个 `fetchReleaseList`，不会再各漏一次写入。
+  // 磁盘用量的下钻树（2026-10-11 新文件）：瓦片条目行可点，点开就地展开
+  // 该条目下一层子项的占用。独立成组件而不是塞回 VersionsPanel.vue——
+  // 递归自引用的树无法与面板共存于同一个 SFC（面板不能拿自己当递归子件），
+  // 且展开缓存 / 失效时钟 / 错误重试是一块自洽的关注点。202 是剥离注释后的
+  // 实测值，远低于 HARD_FILE_CEILING 800。
+  'ui/src/kernel/DiskUsageTree.vue': 202,
   'ui/src/kernel/releases.js': 80,
   // 多内核改造 P0：新路径模块（paths.rs）。包含 ShellMode、xlink_home、shell
   // /kernels/skills/state/cache 解析、legacy resolver、id 校验与基础数据
@@ -1439,7 +1463,10 @@ const FILE_BUDGETS = {
   // 自己要发网络请求，进不了单测，分类必须可独立钉住）、以及 agent 上
   // `http_status_as_error(false)`（默认的 true 会把 403 转成不带 body 的
   // `Error`，响应体一丢就再也分不出这两种成因）。334 远低于 600，上调在规则内。
-  'src-tauri/src/usage/subscription_openai.rs': 334,
+  // 334 → 341：响应体读取失败原样分类，不再 `unwrap_or_default()` 吞掉——吞掉
+  // 之后拿到空串会被 `parse_tiers` 判成「结构不认识」，把传输层故障报成上游
+  // 改版。341 是 `cargo fmt` 之后的实测值。
+  'src-tauri/src/usage/subscription_openai.rs': 341,
   // Codex 文件来源、同账号校验与默认关闭的许可独立于 SIWC 模型授权，
   // 不把跨应用凭据读取或刷新权限混进模型登录模块。
   'src-tauri/src/usage/subscription_codex.rs': 210,
@@ -2385,7 +2412,20 @@ const FILE_BUDGETS = {
 //     环境变量，因此零覆盖——而它是壳唯一决定「去读哪个文件拿别人产品凭据」
 //     的地方）。`subscription.rs` 的 `or_else` 复原净 −2，未计入本项。
 // 软上限这一档不做「只许下调」，47317 是 `cargo fmt` 之后的实测值。
-const TOTAL_BUDGET = 47317;
+// 47317 → 47337（复核第二轮）：+20，来自上述两处——vault 的 Windows 脚本改造
+// 与其可测化（+13），以及额度响应体读取失败的分类（+7）。
+// **不含**本机另一处并行会话对 `src-tauri/src/diskusage.rs` 的在途改动（那份
+// 尚未提交，因此还没进门禁基线），它收尾时需自行登记自己那部分。
+// 47337 是 `cargo fmt` 之后、在把 diskusage.rs 临时换成 HEAD 版的条件下测得的。
+// 47337 → 47607（2026-10-11，磁盘用量下钻）：本功能净 +243，全部落在登记过
+// 的文件——diskusage.rs +69（见上）、新文件 DiskUsageTree.vue +202、
+// labels.js +14（formatBytes 从 VersionsPanel 搬出与下钻树共用）、lib.rs +1
+// （命令注册行）；VersionsPanel.vue −43（条目行模板与样式随下钻搬走，净回吐）。
+// 47607 是当前工作树的实测值：其中还含并行会话对 openai 三文件的**在途**
+// 改动（vault +13 / subscription_openai +7 / openaiAccount +17，前两处已各自
+// 登记进条目，openaiAccount 尚未），一并计入免得两个会话在同一行 TOTAL 上
+// 互相覆盖；它收口时按实际值再校。
+const TOTAL_BUDGET = 47607;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

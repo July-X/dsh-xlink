@@ -119,9 +119,41 @@ test('client: 已登录卡回读主窗口退出后的状态，并在卸载时停
   const accountCard = footer().children[1].type;
   accountCard();
   const cleanup = effects[1]();
-  assert.equal(interval.ms, 5000);
+  // 非授权相位是 60s 而非 5s：每次轮询都要经壳读一次系统凭据库，而那要 spawn
+  // 一个 `security` / PowerShell 子进程；页签常开一天固定 5s 意味着一万七
+  // 千多次进程创建（与 ui/src/plugins/openaiAccount.js 同一口径）。
+  assert.equal(interval.ms, 60000);
   await interval.callback();
   assert.equal(lastStatus.phase, 'signed-out');
   cleanup();
   assert.equal(cleared, 123);
+});
+
+test('client: 授权进行中仍用短间隔轮询', async () => {
+  const { loaded, context } = loadClient();
+  const effects = [];
+  let stateIndex = 0;
+  let interval;
+  context.setInterval = (callback, ms) => { interval = { callback, ms }; return 1; };
+  context.clearInterval = () => {};
+  context.window.__TAURI__ = { core: { invoke: async () => ({ phase: 'authorizing' }) } };
+  const react = { ...stubReact,
+    useState(initial) {
+      return stateIndex++ === 0
+        ? [{ phase: 'authorizing' }, () => {}]
+        : [initial, () => {}];
+    },
+    useEffect(effect) { effects.push(effect); },
+  };
+  let footer;
+  loaded.factory(() => react).apply({ slots: {
+    inject(_name, register) { register(); },
+    register(_descriptor, component) { footer = component; },
+  } });
+  const accountCard = footer().children[1].type;
+  accountCard();
+  effects[1]();
+  // 降频不能连授权中一起降掉：那一段本来就短，用户在浏览器里完成授权的
+  // 过程中需要看到进度推进。
+  assert.equal(interval.ms, 2000);
 });

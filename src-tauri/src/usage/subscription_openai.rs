@@ -384,12 +384,22 @@ fn call_route(
         // ureq 默认把状态码转成 Error 且不带 body，那正是这条信息消失的原因。
         Ok(mut response) => {
             let status = response.status().as_u16();
-            let text = response
+            // 读体失败**必须**原样分类，不能 `unwrap_or_default()` 吞掉：
+            // 吞掉之后拿到空串，会被 `parse_tiers` 判成「结构不认识」——把一个
+            // 传输层故障报成上游改版，用户会朝完全错误的方向排查。
+            let text = match response
                 .body_mut()
                 .with_config()
                 .limit(MAX_HTTP_BODY_BYTES)
                 .read_to_string()
-                .unwrap_or_default();
+            {
+                Ok(text) => text,
+                Err(error) => {
+                    return Err(FetchProblem::Transient(format!(
+                        "读取响应失败（{error}）。已保留上次结果，可点击刷新重试"
+                    )))
+                }
+            };
             if (200..300).contains(&status) {
                 return Ok(text);
             }

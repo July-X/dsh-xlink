@@ -100,11 +100,15 @@ fn routes_for_url(routes: &[net_proxy::Route], url: &str) -> Vec<net_proxy::Rout
 /// 请刷新登录」，而真正的原因是**出口被拦**——用户按提示去刷新一个完全
 /// 无辜的登录态。两边判错就会给出两套互相矛盾的诊断。
 pub(crate) fn looks_like_gateway_challenge(status: u16, body: &str) -> bool {
-    status == 403
-        && body
-            .trim_start()
-            .to_ascii_lowercase()
-            .starts_with("<!doctype html")
+    if status != 403 {
+        return false;
+    }
+    // BOM（U+FEFF）在 Unicode 里不是 White_Space，`trim_start` **不会**剥它，
+    // 而带 BOM 的响应体并不罕见。漏掉它不会造成误报，只会让一次挑战页被
+    // 归成「凭据被拒」——正是这条分支要避免的那件事。
+    body.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+        .to_ascii_lowercase()
+        .starts_with("<!doctype html")
 }
 
 /// 沿给定路由表跑一次请求。2xx 返回响应体；状态错误原则上直接返回
