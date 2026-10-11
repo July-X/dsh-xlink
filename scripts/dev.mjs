@@ -76,7 +76,10 @@ const override = JSON.stringify({
   },
 });
 
-const child = spawn(process.execPath, [tauriCli, 'dev', '-c', override], {
+// `--features wdio` 把内嵌 WebDriver 服务端编进 dev 壳。这是 release 与 dev
+// 唯一的构建差异，判据见 scripts/check-webdriver-gating.mjs：release 的
+// `default` 是空的，插件不参与编译。
+const child = spawn(process.execPath, [tauriCli, 'dev', '-c', override, '--features', 'wdio'], {
   stdio: 'inherit',
   cwd: repoRoot,
   env: { ...process.env, DSH_DEV_PORT: String(port) },

@@ -136,9 +136,22 @@ pub fn run() {
     shell::resident::mark_started_by_autostart(shell::resident::detect_autostart_arg(
         std::env::args(),
     ));
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    // 内嵌 WebDriver 服务端，只在 `wdio` feature 打开时注册。
+    //
+    // **门控必须写 feature，不能写 `debug_assertions`**：依赖是 optional 的，
+    // release 不带 feature 时这个 crate 根本未声明，用 `debug_assertions`
+    // 门控在 release 里等价于不门控之外的多余一层，且一旦谁把它改成
+    // `#[cfg(feature = "wdie")]` 这样的错名，插件会**静默不注册且不报任何错**
+    // ——门禁 scripts/check-webdriver-gating.mjs 盯的就是这两边名字一致。
+    //
+    // 依赖声明处的取舍（为什么不能用 target.'cfg(debug_assertions)'，cargo
+    // 对那种写法会直接警告它不生效）写在 Cargo.toml 的注释里。
+    #[cfg(feature = "wdio")]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+    let app = builder
         .setup(|app| {
             plugins::builtin::runtime::configure(app.handle());
             // 激活通道监听：接收「点通知横幅回到工作台」的交接请求。排在
