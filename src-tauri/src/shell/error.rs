@@ -13,8 +13,6 @@ pub enum AppError {
     Plugin(String),
     #[error("技能错误：{0}")]
     Skill(String),
-    #[error("补丁错误：{0}")]
-    Patch(String),
     #[error("模型用量统计错误：{0}")]
     Usage(String),
     #[error("订阅用量查询错误：{0}")]

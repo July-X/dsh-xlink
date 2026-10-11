@@ -15,10 +15,8 @@
  *   1. `generate_handler!` 注册的命令集合 == `allow-local-commands` 白名单集合；
  *   2. 每个 capability 引用的自定义权限标识都真实存在；
  *   3. UI 与注入脚本调用的每个命令都已注册、且已授权给对应窗口；
- *   4. 内置补丁清单结构有效（与 patches.rs 的 validate_def 对齐，并额外保证
- *      copy 模式的 `from` 文件确实存在于仓库里）；
- *   5. UI 模板里的绑定都能解析（委托 `scripts/check-ui-bindings.mjs`）；
- *   6. 管理窗口的无边框来自 `tauri.conf.json`（不是运行时 `set_decorations`），
+ *   4. UI 模板里的绑定都能解析（委托 `scripts/check-ui-bindings.mjs`）；
+ *   5. 管理窗口的无边框来自 `tauri.conf.json`（不是运行时 `set_decorations`），
  *      且 macOS 标题栏最小化走系统原生最小化——写反了黄灯会静默失效。
  *   7. workflow 的 `uses:` 全部固定到 commit SHA，且 `.github/dependabot.yml` 存在并
  *      覆盖 github-actions——钉住的 SHA 只能靠 Dependabot 推进，缺了它策略就是空话。
@@ -63,18 +61,6 @@ const notes = [];
 
 const fail = (section, message) => failures.push(`[${section}] ${message}`);
 
-/// 补丁清单里的路径必须是"补丁目录 / 内核目录内的普通相对路径"。
-///
-/// 与 Rust 的 `patches::check_target_path` 对齐：拒绝空路径、绝对路径、Windows
-/// 盘符（`C:…`）、UNC（`\\\\server\\share`）以及任何 `..` 段。判据比"存在性
-/// 检查"更早生效，坏清单在 CI 就报出来，而不是等到运行时才被 Rust 拒绝。
-const isSafeRelativePath = (raw) => {
-  const value = String(raw ?? '');
-  if (!value) return false;
-  if (isAbsolute(value) || /^[A-Za-z]:/.test(value) || value.startsWith('\\\\')) return false;
-  const segments = value.split(/[\\/]/);
-  return segments.length > 0 && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
-};
 const note = (message) => notes.push(message);
 const read = (rel) => readFileSync(join(root, rel), 'utf8');
 const readJson = (rel) => JSON.parse(read(rel));
@@ -218,88 +204,6 @@ for (const [command, where] of invoked) {
   }
 }
 note(`前端与注入脚本调用 ${invoked.size} 个命令，全部已注册且已授权`);
-
-// --- 4. 内置补丁清单 ---------------------------------------------------------
-
-const patchRoot = join(root, 'src-tauri/resources/patches');
-const seenPatchIds = new Set();
-const patchDirs = existsSync(patchRoot)
-  ? readdirSync(patchRoot, { withFileTypes: true }).filter((e) => e.isDirectory())
-  : [];
-if (patchDirs.length === 0) {
-  fail('patches', `没有找到任何内置补丁目录：${show(patchRoot)}`);
-}
-for (const dir of patchDirs) {
-  const patchDir = join(patchRoot, dir.name);
-  const manifestPath = join(patchDir, 'manifest.json');
-  const label = show(manifestPath);
-  if (!existsSync(manifestPath)) {
-    fail('patches', `${label} 缺失`);
-    continue;
-  }
-  let manifest;
-  try {
-    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  } catch (error) {
-    fail('patches', `${label} 不是合法 JSON：${error.message}`);
-    continue;
-  }
-  if (manifest.schemaVersion !== 1) {
-    fail('patches', `${label} 的 schemaVersion 不是 1：${manifest.schemaVersion}`);
-  }
-  if (!Array.isArray(manifest.patches) || manifest.patches.length === 0) {
-    fail('patches', `${label} 的 patches 为空`);
-    continue;
-  }
-  for (const def of manifest.patches) {
-    const id = def.id ?? '<无 id>';
-    if (!def.id) fail('patches', `${label} 有定义缺少 id`);
-    if (typeof def.id === 'string' && /[\\/]/.test(def.id)) {
-      fail('patches', `${label} 的 id 含路径分隔符：${def.id}`);
-    }
-    if (seenPatchIds.has(def.id)) fail('patches', `补丁 id 跨清单重复：${def.id}`);
-    seenPatchIds.add(def.id);
-    if (!Array.isArray(def.files) || def.files.length === 0) {
-      fail('patches', `${label} 的 ${id} 没有 files`);
-      continue;
-    }
-    for (const entry of def.files) {
-      const target = entry.to ?? '';
-      if (!isSafeRelativePath(target)) {
-        fail('patches', `${label} 的 ${id} 有非法目标路径：${JSON.stringify(target)}`);
-      }
-      if (entry.mode === 'copy') {
-        const from = entry.from;
-        if (!from) {
-          fail('patches', `${label} 的 ${id} copy 模式缺少 from（目标 ${target}）`);
-        } else if (!isSafeRelativePath(from)) {
-          // 与 to 同一判据（Rust 侧 `validate_def` 对 from 也调 check_target_path）：
-          // 缺了它，`from: "../../../../etc/passwd"` 或绝对路径能过 CI 门禁，
-          // 审计价值直接归零（P2-18）。
-          fail('patches', `${label} 的 ${id} 的 from 非法（${JSON.stringify(from)}）：只接受补丁目录内的相对路径`);
-        } else if (!existsSync(join(patchDir, from))) {
-          fail('patches', `${label} 的 ${id} 引用的载荷不存在：${from}`);
-        }
-        if (entry.expectSha256 !== undefined) {
-          const hex = String(entry.expectSha256).trim().toLowerCase();
-          if (!/^[0-9a-f]{64}$/.test(hex)) {
-            fail('patches', `${label} 的 ${id} 的 expectSha256 不是 64 位十六进制`);
-          }
-        }
-      } else if (entry.mode === 'replace') {
-        if (!entry.search) {
-          fail('patches', `${label} 的 ${id} replace 模式缺少 search（目标 ${target}）`);
-        }
-        if (entry.replacement === undefined) {
-          fail('patches', `${label} 的 ${id} replace 模式缺少 replacement（目标 ${target}）`);
-        }
-      } else {
-        fail('patches', `${label} 的 ${id} 使用了不支持的模式：${entry.mode}`);
-      }
-    }
-  }
-}
-note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
 
 // --- 版本一致性 ---------------------------------------------------------------
 //
@@ -987,8 +891,8 @@ function productionRust(text) {
     }
   }
   // ② 旧的跨壳硬拦入口不得复活（名字一旦回来，就有人会再挂一个 Err 上去）。
-  //    只查 kernel.rs：`patches::ensure_workbench_stopped` 是**另一个**同名函数
-  //    （补丁应用 / 撤销的停机守卫），与跨壳判据无关，别把它算进来。
+  //    只查 kernel.rs：补丁子系统已整体删除（2026-10-11），这里曾要排除
+  //    `patches::ensure_workbench_stopped`（补丁应用 / 撤销的停机守卫）。
   if (kernelSrc.includes('ensure_workbench_stopped(')) {
     guardMisses.push(`${kernelFile} 又出现了 ensure_workbench_stopped —— 跨壳判据已降级为提示，硬拦入口不该复活`);
   }

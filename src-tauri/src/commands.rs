@@ -40,8 +40,8 @@ use crate::plugins::quarantine;
 use crate::shell::error::AppError;
 use crate::shell::process::{build_log_kind, read_tail, LogSpec};
 use crate::{
-    diagnostics::guard, pkg::releases::ReleaseOverview, pkg::updater, plugins::patches,
-    shell::settings, skills::skill_shadow,
+    diagnostics::guard, pkg::releases::ReleaseOverview, pkg::updater, shell::settings,
+    skills::skill_shadow,
 };
 
 /// 以 Tauri managed state 形式注册的共享 Shell 状态。
@@ -2540,79 +2540,7 @@ pub async fn plugin_resolve(
     }
 }
 
-// --- 内置补丁 ----------------------------------------------------------------
-
-/// 读取随 dsh-xlink 发布包捆绑的内置补丁清单。资源目录缺失 / 清单损坏时
-/// 静默降级为空列表，设置页呈现「此版本未携带任何内置补丁」。
-fn load_bundled_patches(app: &AppHandle) -> (Vec<(patches::PatchDef, PathBuf)>, Vec<String>) {
-    match patches::resource_patches_dir(app) {
-        Some(dir) => match patches::load_patches_with_warnings(&dir) {
-            Ok(loaded) => loaded,
-            Err(reason) => {
-                eprintln!("dsh-xlink: 读取内置补丁失败：{reason}");
-                (Vec::new(), vec![format!("读取内置补丁失败：{reason}")])
-            }
-        },
-        None => (Vec::new(), Vec::new()),
-    }
-}
-
-/// 设置页「内核补丁」卡片的状态快照：每个补丁一行，状态按当前激活内核计算。
-#[tauri::command]
-pub async fn patch_status(app: AppHandle) -> Result<patches::PatchStatus, String> {
-    let data_dir = app.state::<AppState>().data_dir.clone();
-    blocking(move || -> Result<patches::PatchStatus, String> {
-        let (patches, load_warnings) = load_bundled_patches(&app);
-        let mut view = patches::status(&data_dir, &patches);
-        // 清单/定义被跳过的原因必须让用户看到：否则坏掉的补丁在设置页直接
-        // 消失，用户无法区分"这个版本没带"与"它坏了"（P2-12）。
-        if !load_warnings.is_empty() {
-            let merged = load_warnings.join("；");
-            view.warning = Some(match view.warning {
-                Some(existing) => format!("{existing}；{merged}"),
-                None => merged,
-            });
-        }
-        Ok(view)
-    })
-    .await
-}
-
-/// 应用一个内置补丁到当前激活内核。前置：工作台已停止、内核已激活、
-/// 补丁版本范围覆盖当前内核。返回应用过程中的跳过低提示。
-#[tauri::command]
-pub async fn patch_apply(app: AppHandle, id: String) -> Result<Vec<String>, String> {
-    let data_dir = app.state::<AppState>().data_dir.clone();
-    blocking(move || -> Result<Vec<String>, String> {
-        let state = app.state::<AppState>();
-        let _lifecycle_guard = crate::lock(&state.lifecycle);
-        let (patches, _warnings) = load_bundled_patches(&app);
-        patches::apply(&data_dir, &patches, &id).map_err(|e| e.to_string())
-    })
-    .await
-}
-
-/// 撤销一个内置补丁对当前激活内核的修改（从备份还原原文件）。
-/// 返回撤销过程中的警告（例如备份丢失时的兜底处理说明）。
-#[tauri::command]
-pub async fn patch_revert(
-    app: AppHandle,
-    id: String,
-    // `force`：用户在确认后选择"只清除记录、文件保持现状"。只对"没有可恢复的
-    // 原文件"的记录有意义（P0-7）——那种记录既撤不掉也重打不了，没有这条出路
-    // 就只能手改 state.json。前端只在读到「清除记录」提示时才带真值。
-    force: Option<bool>,
-) -> Result<Vec<String>, String> {
-    let data_dir = app.state::<AppState>().data_dir.clone();
-    blocking(move || -> Result<Vec<String>, String> {
-        let state = app.state::<AppState>();
-        let _lifecycle_guard = crate::lock(&state.lifecycle);
-        let (patches, _warnings) = load_bundled_patches(&app);
-        patches::revert(&data_dir, &patches, &id, force.unwrap_or(false)).map_err(|e| e.to_string())
-    })
-    .await
-}
-
+// --- 技能 --------------------------------------------------------------------
 // --- 技能 --------------------------------------------------------------------
 
 /// 技能商店以及按技能的 active-root 状态快照。
