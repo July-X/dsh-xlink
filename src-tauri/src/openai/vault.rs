@@ -163,23 +163,44 @@ pub(crate) fn keyring_account(mode: &str, xlink_home: &Path) -> String {
 }
 
 // 用泛型而不是 fn 指针：测试要注入捕获 RefCell 的闭包，fn 指针接不住。
-pub(crate) type GetResult = Result<String, String>;
+///
+/// **`Ok(None)` 与 `Err` 必须分开**，这是本模块最要紧的约定：
+/// - `Ok(None)` = 库里确实没有这条条目（首次登录），可以生成并存入；
+/// - `Err(..)` = **读取动作本身失败**（钥匙串锁着、用户点了拒绝、`security`
+///   / PowerShell 调不动、超时）。
+///
+/// 两者混为一谈会让「读不到」被当成「没有」，于是生成一把新密钥并用
+/// `-U`（覆盖语义）写回——用户原有的那把当场销毁，`accounts.bin` 从此再也
+/// 解不开，只能重走一遍 OAuth，而且**没有任何自愈路径**。读失败必须原样
+/// 上抛：宁可让这一轮登录失败，也不能动用户已有的凭据。
+pub(crate) type GetResult = Result<Option<String>, String>;
 
-/// 取文件密钥：库里有就复用；没有（首次）就生成并存入。
+/// 取文件密钥：库里有就复用；确实没有（首次）就生成并存入；**读失败上抛**。
 pub(crate) fn load_file_key_with(
     mode: &str,
     xlink_home: &Path,
-    get: impl Fn(&str, &str) -> Result<String, String>,
+    get: impl Fn(&str, &str) -> GetResult,
     put: impl Fn(&str, &str, &str) -> Result<(), String>,
 ) -> Result<[u8; 32], String> {
     let account = keyring_account(mode, xlink_home);
-    if let Ok(existing) = get(KEYRING_SERVICE, &account) {
-        if let Ok(bytes) = hex32(&existing) {
-            return Ok(bytes);
+    match get(KEYRING_SERVICE, &account) {
+        Ok(Some(existing)) => {
+            return hex32(&existing).map_err(|()| {
+                format!(
+                    "系统凭据库里存的文件密钥不是 64 位 hex（条目 {account}）；请手工删除该条目后重试登录"
+                )
+            });
         }
-        return Err(format!(
-            "系统凭据库里存的文件密钥不是 64 位 hex（条目 {account}）；请手工删除该条目后重试登录"
-        ));
+        // 库里确实没有 → 首次登录，往下生成。
+        Ok(None) => {}
+        // 读失败 ≠ 不存在：不生成、不覆盖，把底层原因如实带出去。
+        Err(error) => {
+            return Err(format!(
+                "读取系统凭据库失败（条目 {account}）：{error}。\
+                 本次登录已中止，未改动任何现有凭据；\
+                 请解锁系统钥匙串（或允许本应用访问）后重试"
+            ));
+        }
     }
     use rand::Rng;
     let mut key = [0u8; 32];
@@ -202,19 +223,33 @@ fn hex32(text: &str) -> Result<[u8; 32], ()> {
     Ok(out)
 }
 
+/// `security find-generic-password` 的 `errSecItemNotFound`（OSStatus 44）。
+/// **只有**这一个退出码算「库里没有这条」；钥匙串锁着
+/// （errSecInteractionNotAllowed）、用户拒绝授权（errSecAuthFailed）等一律
+/// 是读取失败，原样上抛——它们一旦被当成「没有」，就会生成新密钥覆盖掉
+/// 用户原有的那把。
+const KEYCHAIN_ITEM_NOT_FOUND: i32 = 44;
+
 #[cfg(target_os = "macos")]
-pub(crate) fn keyring_get(service: &str, account: &str) -> Result<String, String> {
+pub(crate) fn keyring_get(service: &str, account: &str) -> Result<Option<String>, String> {
     let output = std::process::Command::new("security")
         .args(["find-generic-password", "-a", account, "-s", service, "-w"])
         .output()
         .map_err(|e| format!("启动 security 失败：{e}"))?;
     if !output.status.success() {
+        if output.status.code() == Some(KEYCHAIN_ITEM_NOT_FOUND) {
+            return Ok(None);
+        }
+        // stderr 带出去：判断不了原因时，至少让用户和「查看日志」看得见
+        // 到底是钥匙串锁了还是被拒绝授权。
         return Err(format!(
             "Keychain 查询失败（{account}）：{}",
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -243,10 +278,17 @@ pub(crate) fn keyring_put(service: &str, account: &str, secret: &str) -> Result<
 
 // Windows：PowerShell 的 PasswordVault（WinRT 投影，不走 Win32 FFI）。
 // 实机验证属发布验收项（同 autostart 的写路径纪律），此处保持薄与可审。
+//
+// 「条目不存在」不能靠 PowerShell 的退出码判断（WinRT 异常一律走 stderr），
+// 所以脚本自己 catch 并把**异常类型全名**打出来，由 Rust 侧分类：
+//   `ElementNotFoundException` → 库里没有（首次）；
+//   其它任何类型 / 进程失败 → 读取失败，原样上抛。
+// 判据的方向是保守的：类型名认不出来就算失败，绝不落到「生成新密钥」那支。
 #[cfg(target_os = "windows")]
-pub(crate) fn keyring_get(service: &str, account: &str) -> Result<String, String> {
+pub(crate) fn keyring_get(service: &str, account: &str) -> Result<Option<String>, String> {
     let script = format!(
-        "[Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]::new().Retrieve('{service}','{account}').Password"
+        "try{{$v=[Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]::new();$v.Retrieve('{service}','{account}').Password}}\
+         catch{{Write-Output ('__DSH_ERR__:' + $_.Exception.GetType().FullName)}}"
     );
     // 壳是 GUI 子系统应用：不挂 quiet，每个 powershell 都会闪一个终端窗
     // ——账户卡状态轮询/目录/推理每次都碰凭据库，终端窗会「不停的出现」
@@ -257,10 +299,22 @@ pub(crate) fn keyring_get(service: &str, account: &str) -> Result<String, String
     let output = cmd
         .output()
         .map_err(|e| format!("启动 powershell 失败：{e}"))?;
-    if !output.status.success() {
-        return Err(format!("Credential Manager 查询失败（{account}）"));
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if let Some(kind) = stdout.strip_prefix("__DSH_ERR__:") {
+        if kind.to_ascii_lowercase().contains("elementnotfound") {
+            return Ok(None);
+        }
+        return Err(format!(
+            "Credential Manager 读取条目时抛出 {kind}（{account}）"
+        ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    if !output.status.success() {
+        return Err(format!(
+            "Credential Manager 查询失败（{account}）：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(Some(stdout))
 }
 
 #[cfg(target_os = "windows")]
@@ -373,12 +427,12 @@ mod tests {
     fn file_key_generation_and_reuse() {
         use std::cell::RefCell;
         let store: RefCell<HashMap<(String, String), String>> = RefCell::new(HashMap::new());
-        let get = |service: &str, account: &str| {
-            store
+        // 查不到 = 库里确实没有（首次），不是读取失败。
+        let get = |service: &str, account: &str| -> GetResult {
+            Ok(store
                 .borrow()
                 .get(&(service.to_string(), account.to_string()))
-                .cloned()
-                .ok_or_else(|| "missing".to_string())
+                .cloned())
         };
         let put = |service: &str, account: &str, secret: &str| {
             store.borrow_mut().insert(
@@ -402,5 +456,111 @@ mod tests {
             .insert((KEYRING_SERVICE.to_string(), account), "zz".into());
         let error = load_file_key_with("release", home, get, put).unwrap_err();
         assert!(error.contains("不是 64 位 hex"), "{error}");
+    }
+
+    /// **读失败不等于「库里没有」**——这条防的是把用户现有登录改到解不开。
+    ///
+    /// 旧实现是 `if let Ok(existing) = get(...)`：钥匙串锁着、用户拒绝授权、
+    /// `security` 调不动，全都是 `Err`，全都被当成「首次登录」，于是生成一把
+    /// 新密钥并用 `-U` 覆盖写回——用户原来那把当场销毁，`accounts.bin` 从此
+    /// 再也解不开，且没有自愈路径（2026-10-11 评审发现）。
+    #[test]
+    fn keyring_read_failure_never_regenerates_over_an_existing_key() {
+        use std::cell::{Cell, RefCell};
+        let home = std::path::Path::new("/home/u/.dsh-xlink");
+        let account = keyring_account("release", home);
+        let original = "ab".repeat(32);
+        assert_eq!(original.len(), 64);
+
+        // 条目确实存在（拿到的是用户原来那把密钥）。
+        let store: RefCell<HashMap<(String, String), String>> = RefCell::new(HashMap::new());
+        store.borrow_mut().insert(
+            (KEYRING_SERVICE.to_string(), account.clone()),
+            original.clone(),
+        );
+
+        // 读取动作失败：钥匙串锁着 / 用户点了拒绝 / 命令调不动……
+        let get =
+            |_: &str, _: &str| -> GetResult { Err("User interaction is not allowed.".to_string()) };
+        let writes = Cell::new(0u32);
+        let put = |_: &str, _: &str, _: &str| {
+            writes.set(writes.get() + 1);
+            Ok(())
+        };
+
+        let error = load_file_key_with("release", home, get, put)
+            .expect_err("读取失败必须报错，绝不能当成「库里没有」而重新生成");
+        assert!(error.contains("未改动任何现有凭据"), "{error}");
+        assert_eq!(
+            writes.get(),
+            0,
+            "读取失败时一次都不许写钥匙串——写了就等于销毁用户原有的密钥"
+        );
+        assert_eq!(
+            store
+                .borrow()
+                .get(&(KEYRING_SERVICE.to_string(), account))
+                .cloned()
+                .as_deref(),
+            Some(original.as_str()),
+            "用户原有的密钥必须原封不动"
+        );
+    }
+
+    /// 读失败之后凭据文件仍然解得开：拿回真密钥再读一次，账号还在。
+    /// 上面那条钉住「没写」，这条钉住「没坏」——两者缺一都不算钉住。
+    #[test]
+    fn accounts_survive_a_keyring_read_failure() {
+        use std::cell::Cell;
+        let path = temp_path("survive");
+        let key = [3u8; 32];
+        let mut accounts = Accounts {
+            active: Some("u1".into()),
+            ..Default::default()
+        };
+        accounts.entries.insert(
+            "u1".into(),
+            AccountTokens {
+                sub: "u1".into(),
+                email: Some("a@example.com".into()),
+                client_id: "c1".into(),
+                access_token: "at".into(),
+                refresh_token: "rt".into(),
+                id_token: "id".into(),
+                scopes: vec![],
+                access_expires_at: 0,
+                chatgpt_account_id: None,
+                reauth_required: false,
+            },
+        );
+        save_accounts(&path, &key, &accounts).unwrap();
+
+        let failing = |_: &str, _: &str| -> GetResult { Err("钥匙串锁着".into()) };
+        // put 一旦被调用就计数：读失败路径**必须一次都不碰钥匙串**。
+        // 早先这里注入的是一个「调用就返回 Err」的闭包，于是 `.is_err()` 在
+        // 坏行为下也成立 —— 测试自己把回归盖住了。
+        let writes = Cell::new(0u32);
+        let denied = |_: &str, _: &str, _: &str| -> Result<(), String> {
+            writes.set(writes.get() + 1);
+            Err("不该被调用".into())
+        };
+        assert!(
+            load_file_key_with("release", std::path::Path::new("/x"), failing, denied).is_err()
+        );
+        assert_eq!(writes.get(), 0, "读失败路径不许写钥匙串");
+
+        // 锁解除后再取密钥 → 账号完好。注入的必须正是当初加密用的那把
+        // （hex 形态与 `load_file_key_with` 的生成方式一致）。
+        let key_hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        let recovered = load_file_key_with(
+            "release",
+            std::path::Path::new("/x"),
+            |_, _| Ok(Some(key_hex.clone())),
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(recovered, key);
+        assert_eq!(load_accounts(&path, &recovered).unwrap(), accounts);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

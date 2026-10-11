@@ -58,13 +58,31 @@ pub async fn set_codex_usage_enabled(app: tauri::AppHandle, enabled: bool) -> Re
 
 /// 遵循 Codex 的 CODEX_HOME；未设置时使用用户 home/.codex，不搜索其它目录。
 fn auth_path() -> Result<PathBuf, String> {
-    let root = if let Some(root) = std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty()) {
-        PathBuf::from(root)
-    } else {
-        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-            .map(|home| PathBuf::from(home).join(".codex"))
-            .ok_or_else(|| "无法定位本机 Codex 登录目录；请设置绝对路径 CODEX_HOME".to_string())?
-    };
+    auth_path_from(
+        std::env::var_os("CODEX_HOME"),
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }),
+    )
+}
+
+/// [`auth_path`] 的可测形态：判断全在这里，环境变量由调用方读出传入。
+///
+/// 分出来不是为了「纯函数好看」，而是因为它是壳**唯一决定「去读哪个文件拿
+/// 别人产品的凭据」**的地方，而环境变量没法在测试里安全地改——`set_var` 要
+/// 抢全局 env 锁，并行用例会互相踩。留在 `auth_path()` 里就等于零覆盖：
+/// `cfg!(windows)` 分支写反、绝对路径检查被删、`CODEX_HOME` 优先级被改，
+/// 任何一条回归都不会让测试变红，用户看到的只是「读到了错误的文件」。
+fn auth_path_from(
+    codex_home: Option<std::ffi::OsString>,
+    profile_home: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    let root =
+        match codex_home.filter(|value| !value.is_empty()) {
+            Some(root) => PathBuf::from(root),
+            None => PathBuf::from(profile_home.ok_or_else(|| {
+                "无法定位本机 Codex 登录目录；请设置绝对路径 CODEX_HOME".to_string()
+            })?)
+            .join(".codex"),
+        };
     if !root.is_absolute() {
         return Err("CODEX_HOME 必须是绝对路径，请修正后刷新".into());
     }
@@ -209,6 +227,34 @@ mod tests {
     use super::*;
     use crate::openai::vault::AccountTokens;
     use serde_json::json;
+
+    /// 读哪个文件的四条分支全覆盖：CODEX_HOME 优先 / 空串当未设 / 回退到
+    /// 用户 home / 两者都没有。判据直接钉住最终路径，不只钉「有没有报错」。
+    #[test]
+    fn auth_path_resolution_is_covered_end_to_end() {
+        let os = |text: &str| Some(std::ffi::OsString::from(text));
+
+        // ① CODEX_HOME 优先于用户 home，且不再补 .codex 后缀。
+        assert_eq!(
+            auth_path_from(os("/custom/codex"), os("/users/u")).unwrap(),
+            PathBuf::from("/custom/codex/auth.json")
+        );
+        // ② CODEX_HOME 是空串 → 当作没设置，回退。
+        assert_eq!(
+            auth_path_from(os(""), os("/users/u")).unwrap(),
+            PathBuf::from("/users/u/.codex/auth.json")
+        );
+        // ③ 相对路径的 CODEX_HOME 必须拒绝：相对路径会跟着进程 cwd 走，
+        // 读到的可能是另一台机器上的另一个文件。
+        let error = auth_path_from(os("relative/codex"), os("/users/u")).unwrap_err();
+        assert!(error.contains("必须是绝对路径"), "{error}");
+        // ④ 两者都没有 → 如实报错，不猜任何目录。
+        let error = auth_path_from(None, None).unwrap_err();
+        assert!(error.contains("CODEX_HOME"), "{error}");
+        // ⑤ 回退路径本身是相对的那个（HOME 存了相对值）同样要拒绝。
+        let error = auth_path_from(None, os("relative/home")).unwrap_err();
+        assert!(error.contains("必须是绝对路径"), "{error}");
+    }
 
     fn token(claims: serde_json::Value) -> String {
         use base64::Engine;

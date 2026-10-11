@@ -167,10 +167,41 @@ fn usage_ctx() -> StateCtx {
 /// 派生视图。锁只在 `spawn_blocking` worker 内获取（与 lifecycle 锁同约定）。
 static SCAN_LOCK: Mutex<()> = Mutex::new(());
 
-/// 进程内最近一次成功扫描的时刻。空转对账不再落盘后，磁盘上的
+/// 进程内各实例最近一次成功扫描的时刻。空转对账不再落盘后，磁盘上的
 /// `last_scanned_at_ms` 只在账目真正变化时推进，新鲜度窗口因此需要一份
 /// 进程内真值——否则 45s 窗口内的重复调用会每次都真的扫一遍 sessions 目录。
-static LAST_SCAN_MS: Mutex<u64> = Mutex::new(0);
+///
+/// **必须按 `(family, id)` 分键**（2026-10-11 评审）：账目按实例分文件，而
+/// [`instance::resolve_default`] 会跟随用户在顶部页签切过的实例。进程级单值
+/// 会把上一个实例的扫描时刻当成当前实例的——切过去之后 45s 内的新实例
+/// `usage_view(false)` 直接返回它自己的**空账目**文件，用户看到用量面板空白。
+/// 旧测试没抓到它是因为它靠别的用例污染后的值才绿，从来没有真正验证过自己。
+///
+/// 用 `Vec` 而不是 `HashMap`：条目数就是用户切过的实例数（一两个），
+/// 线性扫比哈希表更省，而 `HashMap::new` 不是 const、静态里也放不下。
+static LAST_SCAN_MS: Mutex<Vec<(String, String, u64)>> = Mutex::new(Vec::new());
+
+/// 取某实例的进程内扫描时刻（没扫过为 0）。
+fn last_scan_ms_for(family: &str, id: &str) -> u64 {
+    LAST_SCAN_MS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .find(|(f, i, _)| f == family && i == id)
+        .map(|(_, _, at)| *at)
+        .unwrap_or(0)
+}
+
+/// 记下某实例本轮的扫描时刻。
+fn remember_scan_ms(family: &str, id: &str, at: u64) {
+    let mut scans = LAST_SCAN_MS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match scans.iter_mut().find(|(f, i, _)| f == family && i == id) {
+        Some(entry) => entry.2 = at,
+        None => scans.push((family.to_string(), id.to_string(), at)),
+    }
+}
 
 /// 面板入口：需要时增量扫描，再派生最近 90 天的汇总视图。
 ///
@@ -198,7 +229,15 @@ pub fn usage_view(force: bool) -> Result<UsageView, AppError> {
     let mut doc: UsageStateDoc =
         perf.measure("load", || shell::state::load_checked(&path, usage_ctx()))?;
     let now_ms = process::epoch_millis();
-    refresh_doc(&mut doc, &path, &root, force, now_ms, &mut perf)?;
+    refresh_doc(
+        &mut doc,
+        &path,
+        &root,
+        (family, id),
+        force,
+        now_ms,
+        &mut perf,
+    )?;
     let view = perf.measure("derive", || derive_view(&doc, now_ms));
     perf.finish();
     Ok(view)
@@ -217,6 +256,7 @@ fn refresh_doc(
     doc: &mut UsageStateDoc,
     state_path: &Path,
     sessions_root: &Path,
+    instance: (&str, &str),
     force: bool,
     now_ms: u64,
     perf: &mut crate::diagnostics::perf::PerfSample,
@@ -224,9 +264,9 @@ fn refresh_doc(
     let schema_stale = doc.schema != STATE_SCHEMA || doc.retention_days != RETENTION_DAYS;
     doc.schema = STATE_SCHEMA;
     doc.retention_days = RETENTION_DAYS;
-    let last_in_process = *LAST_SCAN_MS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // 进程内真值按实例取：拿别的实例的时刻当自己的，会让新实例在新鲜度
+    // 窗口内直接返回自己的空账目（见 [`LAST_SCAN_MS`]）。
+    let last_in_process = last_scan_ms_for(instance.0, instance.1);
     let last_known = doc.last_scanned_at_ms.max(last_in_process);
     if !force && now_ms.saturating_sub(last_known) < FRESH_SCAN_INTERVAL_MS {
         return Ok(());
@@ -241,9 +281,7 @@ fn refresh_doc(
     if changed {
         perf.measure("save", || shell::state::save(state_path, doc, usage_ctx()))?;
     }
-    *LAST_SCAN_MS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = doc.last_scanned_at_ms;
+    remember_scan_ms(instance.0, instance.1, doc.last_scanned_at_ms);
     Ok(())
 }
 
@@ -1215,6 +1253,7 @@ mod tests {
             &mut doc,
             &state,
             &root,
+            ("t", "noop-save"),
             true,
             process::epoch_millis(),
             &mut perf,
@@ -1231,6 +1270,7 @@ mod tests {
             &mut doc,
             &state,
             &root,
+            ("t", "noop-save"),
             true,
             process::epoch_millis() + 60_000,
             &mut perf,
@@ -1250,6 +1290,7 @@ mod tests {
             &mut doc,
             &state,
             &root,
+            ("t", "noop-save"),
             true,
             process::epoch_millis() + 120_000,
             &mut perf,
@@ -1274,6 +1315,7 @@ mod tests {
             &mut doc,
             &state,
             &root,
+            ("t", "schema"),
             true,
             process::epoch_millis(),
             &mut perf,
@@ -1295,16 +1337,79 @@ mod tests {
         let mut doc = UsageStateDoc::default();
         let mut perf = crate::diagnostics::perf::PerfSample::disabled();
         let t0 = process::epoch_millis();
-        refresh_doc(&mut doc, &state, &root, true, t0, &mut perf).unwrap();
+        refresh_doc(&mut doc, &state, &root, ("t", "gate"), true, t0, &mut perf).unwrap();
         // 盘上时间戳改回很久以前：若只看盘值，610s 早已过窗口、必然重扫；
         // 进程内真值（约 t0）必须把它挡住。挡住的证据是时间戳未被刷新
         // （重扫会把它设为当前时刻）。
         let stale = t0 - 10 * 60_000;
         doc.last_scanned_at_ms = stale;
-        refresh_doc(&mut doc, &state, &root, false, t0 + 10_000, &mut perf).unwrap();
+        refresh_doc(
+            &mut doc,
+            &state,
+            &root,
+            ("t", "gate"),
+            false,
+            t0 + 10_000,
+            &mut perf,
+        )
+        .unwrap();
         assert_eq!(
             doc.last_scanned_at_ms, stale,
             "窗口内不得重复扫描（进程内时间戳挡住，未走扫描分支）"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **上一个实例刚扫过，不等于当前实例新鲜**（2026-10-11 评审）。
+    ///
+    /// 账目按 `(family, id)` 分文件，而 `resolve_default()` 会跟随用户在顶部
+    /// 页签切过的实例。进程内若只存一个时刻，切过去之后的 45s 内新实例会拿
+    /// 别人的时刻判定「新鲜」而直接返回——它自己的账目文件此时是空的，用户
+    /// 看到的是用量面板空白，45s 后才自愈。
+    ///
+    /// 旧实现在这里必红：`last_known = doc.last_scanned_at_ms.max(LAST_SCAN_MS)`
+    /// 拿到的是实例 A 的 t0，`t0 + 10s` 落在 45s 窗口内 → 直接返回 →
+    /// `doc_b.last_scanned_at_ms` 恒为 0。
+    #[test]
+    fn a_fresh_scan_on_one_instance_does_not_satisfy_another() {
+        let dir = tempfile_fresh("usage-inst-");
+        let t0 = process::epoch_millis();
+        let mut perf = crate::diagnostics::perf::PerfSample::disabled();
+
+        // 实例 A：建账（force）。
+        let root_a = dir.join("a/sessions");
+        fs::create_dir_all(&root_a).unwrap();
+        let mut doc_a = UsageStateDoc::default();
+        refresh_doc(
+            &mut doc_a,
+            &dir.join("a/state.json"),
+            &root_a,
+            ("t", "inst-a"),
+            true,
+            t0,
+            &mut perf,
+        )
+        .unwrap();
+        assert!(doc_a.last_scanned_at_ms > 0);
+
+        // 实例 B：盘上账目是空的（从没扫过），非强制调用。
+        let root_b = dir.join("b/sessions");
+        fs::create_dir_all(&root_b).unwrap();
+        let mut doc_b = UsageStateDoc::default();
+        assert_eq!(doc_b.last_scanned_at_ms, 0, "前置：B 的账目确实是空的");
+        refresh_doc(
+            &mut doc_b,
+            &dir.join("b/state.json"),
+            &root_b,
+            ("t", "inst-b"),
+            false,
+            t0 + 10_000,
+            &mut perf,
+        )
+        .unwrap();
+        assert!(
+            doc_b.last_scanned_at_ms > 0,
+            "B 必须扫出自己的扫描时刻，不能被 A 的进程内时刻挡掉"
         );
         fs::remove_dir_all(&dir).ok();
     }

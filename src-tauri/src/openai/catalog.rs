@@ -523,8 +523,8 @@ mod tests {
         fn now_unix(&self) -> u64 {
             1_700_000_000
         }
-        fn keyring_get(&self, _: &str, _: &str) -> Result<String, String> {
-            Err(String::new())
+        fn keyring_get(&self, _: &str, _: &str) -> crate::openai::vault::GetResult {
+            Err("凭据库不可用".to_string())
         }
         fn keyring_put(&self, _: &str, _: &str, _: &str) -> Result<(), String> {
             Ok(())

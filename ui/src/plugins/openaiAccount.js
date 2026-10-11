@@ -44,13 +44,30 @@ export async function runAccountAction(command) {
   });
 }
 
+// 轮询间隔按账号相位定，而不是固定 5s。
+//
+// 只有授权进行中才需要盯：完成态有 `openai-account-changed` 事件兜底，稳态下
+// 每读一次账号状态都要起一次系统凭据库子进程（macOS `security` / Windows
+// PowerShell，见 `openai/vault.rs`）。固定 5s 意味着面板常开一天就是
+// 86400/5 = 17280 次进程创建——Windows 上每次 PowerShell 冷启动几百毫秒 CPU。
+const AUTHORIZING_POLL_MS = 5000;
+const IDLE_POLL_MS = 60_000;
+
 // 事件只用于唤醒读取，状态仍以 Rust 查询为准。轮询兜底覆盖工作台发起登录
 // 的 authorizing 阶段（后端目前只在流程完成时广播）及错过的事件。
 export function followAccount() {
   let disposed = false;
   let unlisten;
+  let timer;
   const refresh = () => { if (!disposed && !isLoading('openaiAccountAction')) return refreshAccount(); };
-  const timer = setInterval(refresh, 5000);
+  // 自调度而非固定 setInterval：readAccount 会更新 accountStore.status，
+  // 所以下一轮间隔能按**刷新后的**相位决定。
+  const schedule = () => {
+    if (disposed) return;
+    const authorizing = accountStore.status?.phase === 'authorizing';
+    timer = setTimeout(async () => { await refresh(); schedule(); },
+      authorizing ? AUTHORIZING_POLL_MS : IDLE_POLL_MS);
+  };
   listen('openai-account-changed', refresh).then((off) => {
     if (disposed) off?.();
     else unlisten = off;
@@ -58,5 +75,6 @@ export function followAccount() {
     if (!disposed) accountStore.error = `账号通知连接失败：${error}；已改为定期刷新`;
   });
   refresh();
-  return () => { if (disposed) return; disposed = true; clearInterval(timer); unlisten?.(); ++revision; };
+  schedule();
+  return () => { if (disposed) return; disposed = true; clearTimeout(timer); unlisten?.(); ++revision; };
 }
