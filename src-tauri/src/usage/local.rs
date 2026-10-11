@@ -80,7 +80,8 @@ pub struct ModelDay {
 
 /// 一个 session 文件的增量账：`offset` 之前的压缩字节都已计入 `days`。
 /// `offset` 永远停在完整帧的边界（或 0），半帧内容不会被记账。
-#[derive(Serialize, Deserialize, Clone, Default)]
+/// 派生 `PartialEq` 供扫描前后对账——「账目没变就不落盘」的判据靠它。
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct FileEntry {
     #[serde(default)]
     pub offset: u64,
@@ -162,19 +163,14 @@ fn usage_ctx() -> StateCtx {
     }
 }
 
-fn state_path() -> PathBuf {
-    let (family, id) = instance::resolve_default();
-    paths::instance_usage_state_file(family, id)
-}
-
-fn sessions_root() -> PathBuf {
-    let (family, id) = instance::resolve_default();
-    paths::instance_dsh_home(family, id).join("sessions")
-}
-
 /// 同一时刻只允许一次扫描：并发命令在锁上排队，后到的发现账目已新鲜就只
 /// 派生视图。锁只在 `spawn_blocking` worker 内获取（与 lifecycle 锁同约定）。
 static SCAN_LOCK: Mutex<()> = Mutex::new(());
+
+/// 进程内最近一次成功扫描的时刻。空转对账不再落盘后，磁盘上的
+/// `last_scanned_at_ms` 只在账目真正变化时推进，新鲜度窗口因此需要一份
+/// 进程内真值——否则 45s 窗口内的重复调用会每次都真的扫一遍 sessions 目录。
+static LAST_SCAN_MS: Mutex<u64> = Mutex::new(0);
 
 /// 面板入口：需要时增量扫描，再派生最近 90 天的汇总视图。
 ///
@@ -183,43 +179,82 @@ static SCAN_LOCK: Mutex<()> = Mutex::new(());
 ///
 /// 这条被前端按 60s TTL 静默刷新，首扫要解全部 session 文件（数百 MB 级），
 /// 此后增量只有零星文件有新帧——分段耗时走 PerfSample 记进 perf-status 日志
-/// （`perf=usage_scan`）：周期性路径不往 shell 事件里刷人话行，采样关闭时零开销。
+/// （`perf=usage_scan`，source 区分 poll / refresh）：周期性路径不往 shell
+/// 事件里刷人话行，采样关闭时零开销。`items=` 是本轮规划出的待解文件数，
+/// `saved=` 记本轮是否落了盘。
 pub fn usage_view(force: bool) -> Result<UsageView, AppError> {
-    let mut perf = crate::diagnostics::perf::PerfSample::new("usage_scan", None);
+    let mut perf = crate::diagnostics::perf::PerfSample::new(
+        "usage_scan",
+        Some(if force { "refresh" } else { "poll" }),
+    );
     let _guard = SCAN_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let path = state_path();
+    // 一次解析两条路径：state 与 sessions 根同源（instance::resolve_default
+    // 读注册表，此前一次调用解析两遍）。
+    let (family, id) = instance::resolve_default();
+    let path = paths::instance_usage_state_file(family, id);
+    let root = paths::instance_dsh_home(family, id).join("sessions");
     let mut doc: UsageStateDoc =
         perf.measure("load", || shell::state::load_checked(&path, usage_ctx()))?;
-    doc.schema = STATE_SCHEMA;
-    doc.retention_days = RETENTION_DAYS;
     let now_ms = process::epoch_millis();
-    if force || now_ms.saturating_sub(doc.last_scanned_at_ms) >= FRESH_SCAN_INTERVAL_MS {
-        let planned = perf.measure("scan", || scan(&mut doc, now_ms));
-        // planned = 规划段判定「有新帧要解」的文件数：0 说明这轮只是空转对账。
-        perf.count("items", planned as u64);
-        doc.last_scanned_at_ms = process::epoch_millis();
-        perf.measure("save", || shell::state::save(&path, &doc, usage_ctx()))?;
-    }
+    refresh_doc(&mut doc, &path, &root, force, now_ms, &mut perf)?;
     let view = perf.measure("derive", || derive_view(&doc, now_ms));
     perf.finish();
     Ok(view)
 }
 
-/// 扫描 sessions 目录，把每个新追加的帧计入对应文件的账。
+/// 新鲜度窗口之外的账目刷新：扫描 + 按需落盘。路径由调用方给出（可测），
+/// 锁由 [`usage_view`] 持有。
+///
+/// **空转对账不落盘**（2026-10-11 perf 数据驱动）：`items=0` 的扫描占 93%
+///（近 4 天 353 次扫描实测），而账目无变化时重写 132KB + fsync 的 save 段
+/// p50≈41ms——纯属浪费。判据是扫描前后 `doc.files` 逐值相等（clone 对账，
+/// 整段 <1ms）；schema / 保留期落后于当前常量时也强制落一次盘顺带归一。
+/// `last_scanned_at_ms` 无论落不落盘都在内存里推进——视图上报的是内存值，
+/// 新鲜度窗口另有 [`LAST_SCAN_MS`] 进程内真值，跳过落盘不会让扫描变得更频繁。
+fn refresh_doc(
+    doc: &mut UsageStateDoc,
+    state_path: &Path,
+    sessions_root: &Path,
+    force: bool,
+    now_ms: u64,
+    perf: &mut crate::diagnostics::perf::PerfSample,
+) -> Result<(), AppError> {
+    let schema_stale = doc.schema != STATE_SCHEMA || doc.retention_days != RETENTION_DAYS;
+    doc.schema = STATE_SCHEMA;
+    doc.retention_days = RETENTION_DAYS;
+    let last_in_process = *LAST_SCAN_MS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let last_known = doc.last_scanned_at_ms.max(last_in_process);
+    if !force && now_ms.saturating_sub(last_known) < FRESH_SCAN_INTERVAL_MS {
+        return Ok(());
+    }
+    let before = doc.files.clone();
+    let planned = perf.measure("scan", || scan_in(doc, sessions_root, now_ms));
+    // planned = 规划段判定「有新帧要解」的文件数：0 说明这轮只是空转对账。
+    perf.count("items", planned as u64);
+    doc.last_scanned_at_ms = process::epoch_millis();
+    let changed = schema_stale || before != doc.files;
+    perf.count("saved", u64::from(changed));
+    if changed {
+        perf.measure("save", || shell::state::save(state_path, doc, usage_ctx()))?;
+    }
+    *LAST_SCAN_MS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = doc.last_scanned_at_ms;
+    Ok(())
+}
+
+/// 扫描 sessions 目录，把每个新追加的帧计入对应文件的账。sessions 根目录
+/// 由调用方给出（[`usage_view`] 解析实例路径，测试注入临时目录）。
 ///
 /// 三段式：先串行**规划**（枚举 + 对账决定每个文件从哪里续扫），再把真正
 /// 花时间的解码**并行**打散到多个线程（首次全量要解几百 MB，并行把它从
 /// 十几秒压到一两秒；常规增量只有零星几个文件有新帧），最后串行把结果
 /// **合账**。账目文档只被串行段碰，工作线程只拿自己的任务副本。
 /// 返回规划出的待解文件数（供 perf 采样记 `items`）。
-fn scan(doc: &mut UsageStateDoc, now_ms: u64) -> usize {
-    let root = sessions_root();
-    scan_in(doc, &root, now_ms)
-}
-
-/// [`scan`] 的可测形态：sessions 根目录由调用方给出。返回规划出的待解文件数。
 fn scan_in(doc: &mut UsageStateDoc, root: &Path, now_ms: u64) -> usize {
     let cutoff = cutoff_date_string(now_ms);
     let mut seen = BTreeSet::new();
@@ -1159,6 +1194,119 @@ mod tests {
             1,
             "账目条目本身保留（它是增量 checkpoint），只剪日账"
         );
+    }
+
+    #[test]
+    fn no_op_refresh_skips_save_but_advances_in_memory_timestamp() {
+        let dir = tempfile_fresh("usage-noop-save-");
+        let root = dir.join("sessions");
+        let ws = root.join("workdir");
+        let file_dir = ws.join("session-x");
+        fs::create_dir_all(&file_dir).unwrap();
+        let file = file_dir.join("session.jsonl.zstd");
+        let first = raw_frame(b"{\"type\":\"assistant/message\"}\n", true);
+        fs::write(&file, &first).unwrap();
+        let state = dir.join("state.json");
+
+        // 首扫：建立账目，必须落盘。
+        let mut perf = crate::diagnostics::perf::PerfSample::disabled();
+        let mut doc = UsageStateDoc::default();
+        refresh_doc(
+            &mut doc,
+            &state,
+            &root,
+            true,
+            process::epoch_millis(),
+            &mut perf,
+        )
+        .unwrap();
+        assert!(state.exists(), "首扫建账必须落盘");
+        let first_ts = doc.last_scanned_at_ms;
+        assert!(first_ts > 0);
+
+        // 空转对账：删掉盘上账目再扫，若仍走 save 文件会被重建——这就是
+        // 「无变化不落盘」的判据（比 mtime 稳，不依赖文件系统时间精度）。
+        fs::remove_file(&state).unwrap();
+        refresh_doc(
+            &mut doc,
+            &state,
+            &root,
+            true,
+            process::epoch_millis() + 60_000,
+            &mut perf,
+        )
+        .unwrap();
+        assert!(!state.exists(), "账目未变时不得重写账目文件");
+        assert!(
+            doc.last_scanned_at_ms > first_ts,
+            "内存里的扫描时刻仍要推进（新鲜度窗口与视图上报都用它）"
+        );
+
+        // 有新帧：必须落盘（否则 offset checkpoint 丢失，下次重解全部新帧）。
+        let mut grown = first.clone();
+        grown.extend_from_slice(&raw_frame(b"{\"type\":\"assistant/message\"}\n", true));
+        fs::write(&file, &grown).unwrap();
+        refresh_doc(
+            &mut doc,
+            &state,
+            &root,
+            true,
+            process::epoch_millis() + 120_000,
+            &mut perf,
+        )
+        .unwrap();
+        assert!(state.exists(), "账目变化（offset 推进）必须落盘");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn schema_normalization_forces_one_save() {
+        let dir = tempfile_fresh("usage-schema-save-");
+        let root = dir.join("sessions");
+        fs::create_dir_all(&root).unwrap();
+        let state = dir.join("state.json");
+        // 盘上是一份 schema 缺失的老账（serde default 前的形态）。
+        fs::write(&state, "{}\n").unwrap();
+        let mut doc: UsageStateDoc = shell::state::load_checked(&state, usage_ctx()).unwrap();
+        assert_eq!(doc.schema, 0, "前置：盘上 schema 确实缺失");
+        let mut perf = crate::diagnostics::perf::PerfSample::disabled();
+        refresh_doc(
+            &mut doc,
+            &state,
+            &root,
+            true,
+            process::epoch_millis(),
+            &mut perf,
+        )
+        .unwrap();
+        let saved: UsageStateDoc = shell::state::load_checked(&state, usage_ctx()).unwrap();
+        assert_eq!(saved.schema, STATE_SCHEMA, "归一化必须随本轮落盘");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn freshness_gate_honors_in_process_timestamp() {
+        // 空转不落盘后，45s 窗口内的重复调用必须靠进程内时间戳挡住，
+        // 否则每轮 60s TTL 轮询都会重复扫 sessions 目录。
+        let dir = tempfile_fresh("usage-gate-");
+        let root = dir.join("sessions");
+        fs::create_dir_all(&root).unwrap();
+        let state = dir.join("state.json");
+        let mut doc = UsageStateDoc::default();
+        let mut perf = crate::diagnostics::perf::PerfSample::disabled();
+        let t0 = process::epoch_millis();
+        refresh_doc(&mut doc, &state, &root, true, t0, &mut perf).unwrap();
+        // 盘上时间戳改回很久以前：若只看盘值，610s 早已过窗口、必然重扫；
+        // 进程内真值（约 t0）必须把它挡住。挡住的证据是时间戳未被刷新
+        // （重扫会把它设为当前时刻）。
+        let stale = t0 - 10 * 60_000;
+        doc.last_scanned_at_ms = stale;
+        refresh_doc(&mut doc, &state, &root, false, t0 + 10_000, &mut perf).unwrap();
+        assert_eq!(
+            doc.last_scanned_at_ms, stale,
+            "窗口内不得重复扫描（进程内时间戳挡住，未走扫描分支）"
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     /// 手动真机验证（`cargo test --lib usage:: -- --ignored --nocapture`）：
