@@ -3,7 +3,11 @@ name = "dsh-xlink"
 version = "0.4.5"
 description = "DeepSeek Harness desktop shell: kernel version management and the bundled web UI"
 edition = "2021"
-rust-version = "1.77"
+# 1.77 → 1.90（2026-10-11）：tauri 2.12 起把 MSRV 提到 1.90 并切到 edition 2024
+# （2.11 只要 1.77）。本 crate 自己仍是 2021，但依赖链的实际门槛已经是 1.90，
+# 继续写 1.77 会让「按这条声明准备环境」的人直接编不过。
+# 本机 stable 是 1.99；CI 没有钉工具链（用 runner 自带的 stable），故暂不额外固定。
+rust-version = "1.90"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
