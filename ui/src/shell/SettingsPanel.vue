@@ -145,7 +145,7 @@ function openStartupRun() {
       </h2>
       <el-form class="settings-form" label-width="100px" label-position="left" @focusin="editing = true" @focusout="editing = false">
         <el-form-item label="Web UI 端口">
-          <div class="btn-row">
+          <div class="btn-row settings-port-row">
             <el-input-number
               v-model="port"
               class="settings-port"
