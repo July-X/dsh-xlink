@@ -96,6 +96,19 @@ src-tauri/src/
 - **ureq 的 agent 构建只有一份：`openai::transport::agent_for(route, timeout)`**（2026-10-11 收敛）。`Direct => .proxy(None)` 与 `http_status_as_error(false)` 这两条纪律此前在 `openai/transport.rs` 与 `usage/subscription_openai.rs` 各抄了一遍，抄件还各带一个 builder 闭包；现在额度侧只留「按路由键缓存」这一层，构建走同一个函数，**新增加网路径不要自己写 `ureq::Agent::config_builder()`**。例外是 `usage/subscription.rs::http_agent`（第三方套餐厂商 MiniMax / DeepSeek / 智谱的余额查询）——它不读路由表，只有一个全局 agent，因此**不满足**本节那条「Rust 侧出网必须走 `routes()`」，是已知的待办缺口（并入路由表会改动现有用户的网络路径，2026-10-11 未擅自改）。
 - **子进程走网络前，先把系统代理喂给它**。git 只认 `http.proxy`（gitconfig）与 `http_proxy`（环境变量），**完全看不见操作系统层面配的代理**；而 macOS 的 GUI 应用还不继承 shell rc 里的 `export http_proxy`（那是 launchd 的事）。结果是用户在「系统设置 → 网络 → 代理」里明明配了代理，`git clone` 照样绕开它直连——2026-10-06 实测 12 KB/s 爬 GitHub，10 分钟拉不完一个插件仓库，而用户从头到尾不知道自己配过。`shell::env::proxy_env_for_children()` 是唯一出处：**优先已有环境变量，其次系统设置；一个都没探测到就不注入，照直连**。加新的网络型 git 调用点时记得调 `env::apply_proxy_env`——`process::command_with_path` 明明是所有一次性工具命令的咽喉，但它是 1157/1157 的反棘轮文件，加不了一行，所以代理只能显式挂在调用点上，漏挂的那一处会静默直连。
 
+## 主壳 WebUI 的可调试性（2026-10-11）
+
+macOS 的 WKWebView 没有可供外部附着的调试端点（无 CDP、无 inspector 端口），`tauri-driver` 官方明确不支持 macOS。主壳因此一度只有 `setup()` 里那句 `open_devtools()`（HEAD 既有），而它仍需人在 Safari 里点一下。于是接了 `tauri-plugin-wdio-webdriver`：W3C WebDriver 服务跑在 app 进程内（回环，默认 4445），`npm run e2e` / `npm run dev` 后 agent 就能程序化驱动主壳。
+
+- **依赖必须是 `[dependencies]` 里的 optional + 默认关闭的 feature，release 不带它**。三条都是实测踩出来的，别凭直觉改：
+  - **不能用 `[target.'cfg(debug_assertions)'.dependencies]`**（上游 README 就是这么建议的）。cargo 会警告它 *not supported for selecting dependencies and will not work as expected*，然后**照常把插件编进 release**。Cargo.toml 长得完全正确、`#[cfg]` 在位、`cargo check --release` 绿、全部单测绿，而发布产物里带着一个本机 HTTP 自动化端口——发布前没有任何一步会发现。
+  - **不能声明在 `[target....]` 表里**。一旦落在 `[target.'cfg(windows)'.dependencies]`，非该平台的依赖图里就没有它，`[features]` 里那句 `dep:` 引用悬空而 **cargo 不报错**，一路到 `cargo check --features wdio` 才炸 `cannot find module or crate`。
+  - 门控必须写 `#[cfg(feature = "wdio")]`，不能写 `#[cfg(debug_assertions)]`：依赖是 optional 的，release 不带 feature 时 crate 未声明，写错了等于没写。
+- **release 排除靠 `scripts/check-webdriver-gating.mjs`，分两层且互为反向**。源码层查「optional + 声明在 `[dependencies]` + feature 不在 `default` + `lib.rs` 门控同名」，进 `npm run check`；产物层**直接读产物二进制**（在 Buffer 里找插件的标记串），放在 `desktop-release.yml` 的 `build` job——那里才刚跑完 release 编译。**别改回读 cargo 指纹**：指纹里的 `deps` 虽是真话，却分不清 `cargo check` 与 `cargo build`——check 只出 `.rmeta`、不重链二进制，于是一次违规的 `cargo build --release --features wdio` 之后，紧跟一次干净的 `cargo check --release` 就会产生更新的指纹把判据骗绿，而 `target/release/` 里躺着的仍是那份带端口的二进制（本项目实测踩过）。标记串能扛住 `[profile.release] strip = true`，因为它是**字面量**（插件的运行时日志串 `WDIO WebDriver plugin initialized on port` + `panic::Location` 展开的 crate 源文件路径），住在 `.rodata` 里，剥符号表剥不掉。
+- **只查 release 不够**：依赖被**整体**删掉时「release 里没有它」照样是绿的，而主壳已经调不动了。因此 debug 侧同时断言插件**确实在**。
+- **判据必须钉「算出来的结果」**。这份门禁的第一版逐行核对「每个 `tauri_plugin_wdio_webdriver` 引用是否被紧贴的 `#[cfg]` 覆盖」——形状全对，而上面三件事照样一件不落。形状断言会忠实地保护错误的形状；指纹读的是结果。
+- **上游警告原话**：`This plugin exposes automation capabilities via HTTP. Never include it in production builds.` 它能执行脚本、点击、读 cookie、截屏。`e2e/specs/shell.spec.mjs` 刻意不复用「面板渲染出来了」这种弱判据，而是直接在 webview 里调 `invoke('get_status')` 并要求拿到真实字段——桥要是没通，那一条才红。
+
 ## 窗口外观作用域（2026-10-09）
 
 跨前后端的主题规则：macOS 建窗使用 `shell::appearance::initial_theme()`，前端 `bridge.setWindowTheme` 调用 `set_window_appearance`，仅设置当前 `NSWindow`。不得用 Tauri 的应用级主题覆盖模拟单窗口外观，否则工作台的固定深色会阻断管理窗口跟随系统。前端细则见 `ui/AGENTS.md`，原生实现统一在 `shell/appearance.rs`。

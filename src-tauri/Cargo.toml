@@ -93,6 +93,35 @@ time = { version = "0.3", default-features = false, features = ["formatting", "l
 # 多帧流，usage.rs 据此做增量扫描：只解上次之后新追加的帧。
 ruzstd = "0.8.2"
 
+# 内嵌 W3C WebDriver 服务端（`@wdio/tauri-service` 的 `embedded` provider）——
+# agent 调试主壳 WebUI 的唯一入口：macOS 的 WKWebView 没有可供外部附着的调试
+# 端点（无 CDP、无 inspector 端口），而 `tauri-driver` 官方明确不支持 macOS。
+# 这个插件把 W3C WebDriver HTTP 服务直接跑在 app 进程内（默认 4445，仅回环）。
+#
+# ## 为什么是可选依赖 + feature，而不是 target.'cfg(debug_assertions)'
+#
+# 上游 crate 的 README 建议写在 `[target.'cfg(debug_assertions)'.dependencies]`。
+# **那样写是不生效的**，cargo 会直接警告：
+#
+#   warning: Cargo.toml: Found `debug_assertions` in
+#   `target.'cfg(...)'.dependencies`. This value is not supported for selecting
+#   dependencies and will not work as expected.
+#
+# 后果非常隐蔽：Cargo.toml 长得完全正确、`lib.rs` 的门控在位、
+# `cargo check --release` 绿、全部单测绿，而 release 产物里**照样带着那个
+# 本机 HTTP 自动化端口**。cargo 在解析依赖时不看 `debug_assertions`，它只看
+# 平台三元组与 `cfg(feature = ...)`。
+#
+# 所以这里用 cargo 真正支持的机制：optional 依赖 + 默认关闭的 feature。
+# 由此得到两条**编译器强制**的保证：
+#   · release 不开 feature → crate 未声明，引用处若没门控直接编不过；
+#   · feature 名打错 → 插件静默不注册，且不报任何错（由
+#     scripts/check-webdriver-gating.mjs 拦住，见其「静默失效」一节）。
+#
+# 上游同款警告一并记下：This plugin exposes automation capabilities via HTTP.
+# Never include it in production builds.
+tauri-plugin-wdio-webdriver = { version = "1", optional = true }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -150,6 +179,14 @@ windows-sys = { version = "0.61", features = [
 # Windows 后端）进了依赖图，这里只是把已在编译的那个 crate 直接用起来：不新增依赖
 # crate，也不新增编译单元，只打开 `UI_Notifications` 这一个 feature。
 windows = { version = "0.61", features = ["Foundation", "UI_Notifications"] }
+
+
+[features]
+# **空 default 是这条纪律的全部**：release 构建不带任何 feature，
+# 插件不参与编译。dev 侧靠 `--features wdio` 显式打开
+# （scripts/dev.mjs 与 e2e/wdio.conf.mjs 各写一次）。
+default = []
+wdio = ["dep:tauri-plugin-wdio-webdriver"]
 
 [profile.release]
 strip = true

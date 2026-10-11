@@ -2447,7 +2447,18 @@ const FILE_BUDGETS = {
 // 47609 → 47581：删掉 plugins.css（−20）、新登记 atomic_write.rs（+93）之外，
 // 本轮五项收敛本身净减——JWT 解码三处合一、agent 构建两份合一、只读 vault 路径
 // 合一、凭据文件不再事后 chmod。总量因此仍低于上一档。
-const TOTAL_BUDGET = 47581;
+// 47581 → 47584（2026-10-11，主壳 WebUI 可调试性）：净 +3，且**全部落在
+// lib.rs**——条件注册插件要两行（`#[cfg(feature = "wdio")]` 与
+// `builder.plugin(tauri_plugin_wdio_webdriver::init())`），这是 Rust 语法要求，
+// 压不成一行：属性只能紧贴在被控制的语句之前；再加上 `let builder =` 与
+// `let app = builder.setup(` 之间的换行，共 +3。
+// **47584 是 `cargo fmt` 之后的实测值**（格式化前量到的是 47583，rustfmt 把
+// `.setup(|app| {` 那一行重新折了一次）。两个数都记在这里，下一个看到差异的人
+// 不用再去猜是逻辑改动还是格式化。
+// 插件本体（WDIO 那 7 个 npm 包）与门禁脚本都在 `src-tauri/src` 与 `ui/src`
+// 之外，不计入本预算。
+// 反棘轮大文件一行未动（本轮没碰 plugins.rs / theme.css / commands.rs）。
+const TOTAL_BUDGET = 47584;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
