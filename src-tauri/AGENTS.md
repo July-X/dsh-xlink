@@ -108,6 +108,8 @@ macOS 的 WKWebView 没有可供外部附着的调试端点（无 CDP、无 insp
 - **只查 release 不够**：依赖被**整体**删掉时「release 里没有它」照样是绿的，而主壳已经调不动了。因此 debug 侧同时断言插件**确实在**。
 - **判据必须钉「算出来的结果」**。这份门禁的第一版逐行核对「每个 `tauri_plugin_wdio_webdriver` 引用是否被紧贴的 `#[cfg]` 覆盖」——形状全对，而上面三件事照样一件不落。形状断言会忠实地保护错误的形状；指纹读的是结果。
 - **上游警告原话**：`This plugin exposes automation capabilities via HTTP. Never include it in production builds.` 它能执行脚本、点击、读 cookie、截屏。`e2e/specs/shell.spec.mjs` 刻意不复用「面板渲染出来了」这种弱判据，而是直接在 webview 里调 `invoke('get_status')` 并要求拿到真实字段——桥要是没通，那一条才红。
+- **控制台日志通道在页面侧，不在 WebDriver 侧**（2026-10-11 补齐）。`browser.getLogs` 已随 W3C 规范移除，embedded WKWebView provider 上实测 `TypeError`——而壳的诊断信息大量**只进 console**（`errors.js` 的渲染错误留档、`main.js` 的 Vue warnHandler、bridge 失败路径），没有这条通道时 agent 对「面板在 console 里喊了什么」全盲。做法：`ui/src/shell/consoleLog.js` 把 console 包一层定长环形缓冲（500 条、重复折叠、单条截断），挂在 `window.__DSH_CONSOLE__`，agent 用一次 `browser.execute(() => window.__DSH_CONSOLE__.dump())` 整段取回。三条纪律：**只旁观不吞**（包装后原样透传，摘掉透传单测即红）、**记录绝不抛错**（Error 实参必须单独走 `name+message`——`JSON.stringify(new Error())` 是 `'{}'`，e2e 的未处理拒绝用例真抓到过 canary 文本被吞）、**入口最早安装**（main.js 第一个有副作用的 import，早于组件挂载）。边界：模块求值期与刷新前的报错进不来；持久化到 shell_events 是另一件事，刻意没做。
+
 
 ## 窗口外观作用域（2026-10-09）
 

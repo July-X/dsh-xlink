@@ -1383,6 +1383,14 @@ const FILE_BUDGETS = {
   // 且展开缓存 / 失效时钟 / 错误重试是一块自洽的关注点。202 是剥离注释后的
   // 实测值，远低于 HARD_FILE_CEILING 800。
   'ui/src/kernel/DiskUsageTree.vue': 202,
+  // 控制台日志通道（2026-10-11 新文件）：embedded WKWebView 上没有
+  // `browser.getLogs`（W3C 已移除，实测 TypeError），壳的诊断信息大量只进
+  // console（errors.js 留档、Vue warnHandler、bridge 失败路径），agent 调试
+  // 主壳时对此全盲。本模块把 console 包一层定长环形缓冲挂
+  // `window.__DSH_CONSOLE__`，`browser.execute` 一次取回。独立成模块的理由：
+  // 它是纯逻辑记录器 + 安装器，node 单测直接驱动（9 条），不掺任何面板关注
+  // 点。87 是剥离注释后的实测值，远低于 HARD_FILE_CEILING 800。
+  'ui/src/shell/consoleLog.js': 87,
   'ui/src/kernel/releases.js': 80,
   // 多内核改造 P0：新路径模块（paths.rs）。包含 ShellMode、xlink_home、shell
   // /kernels/skills/state/cache 解析、legacy resolver、id 校验与基础数据
@@ -2458,7 +2466,12 @@ const FILE_BUDGETS = {
 // 插件本体（WDIO 那 7 个 npm 包）与门禁脚本都在 `src-tauri/src` 与 `ui/src`
 // 之外，不计入本预算。
 // 反棘轮大文件一行未动（本轮没碰 plugins.rs / theme.css / commands.rs）。
-const TOTAL_BUDGET = 47584;
+// 47584 → 47673（2026-10-11，控制台日志通道）：consoleLog.js +87（新文件，
+// 登记见上）、main.js +2（最早处的 import 与 `installConsoleCapture()` 一行
+// 调用，注释不计）。通道让 agent 经一次 `browser.execute` 读到壳窗口的全部
+// console 与未捕获异常——补齐 5847f05 那轮「agent 调试能力」实测出的最后
+// 一块盲区。
+const TOTAL_BUDGET = 47673;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
