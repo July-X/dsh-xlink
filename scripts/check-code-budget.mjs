@@ -1158,6 +1158,18 @@ const FILE_BUDGETS = {
   // 里的 pid + 判活），与 skill_shadow / skill_frontmatter 同一形状：读判据的人
   // 和动手的人分开。
   'src-tauri/src/skills/store_busy.rs': 140,
+  // 技能中央库的**跨进程**互斥锁（2026-10-11，新建）。`manage::lock_store()` 那把
+  // `OnceLock<Mutex<()>>` 只到进程级——中央库与活动视图是两个壳共享的（有意选的，
+  // 见 AGENTS.md），两个壳各装各的技能时各自读到同一份旧 store.json、各自写回，
+  // 后写者把先写者整条覆盖：面板上那个技能查不到、卸载报「不在中央库中」，而目录
+  // 与链接都还在、工作台照常加载，用户无从自查。
+  // 独立成文件的理由：① manage.rs 反棘轮只剩 30 行余量；② 它是**只提供锁**的
+  // 机制层（获取/释放/僵尸锁判活/退避），与 store_busy 的「谁在写」判据、
+  // manage 的「写什么」是三件事，读机制的人不该翻进业务文件。
+  // 为什么不用 fs2/fs4/flock：libc 与 windows-sys 都已在依赖里，用它们不新增任何
+  // crate，而新增依赖要改 Cargo.lock——CI 全线带 --locked，同步不当会在两个平台
+  // 同时炸且报错离真正原因隔好几层。
+  'src-tauri/src/skills/store_lock.rs': 210,
   // 跨壳装包活动信标（2026-09-30，新建）。为什么它该独立成一个文件而不是塞进
   // harness_window.rs：**写**这一侧在 kernel.rs 的装 / 删两端，**读**那一侧在
   // harness_window.rs 的看门狗里，两边都不肯为了对方把自己长成一个什么都管的
@@ -2481,22 +2493,32 @@ const FILE_BUDGETS = {
 // 调用，注释不计）。通道让 agent 经一次 `browser.execute` 读到壳窗口的全部
 // console 与未捕获异常——补齐 5847f05 那轮「agent 调试能力」实测出的最后
 // 一块盲区。
-// 47673 → 47745（2026-10-11，整仓审计后的第一批修复）：store_busy.rs（新文件，
-// 登记见上，跨进程写中央库的判据）+ manage.rs +10（reconcile 的跳过守卫）、
-// mod.rs +1。三项新增对应的是**两个真 bug 修复**与**三条机械判据**：
+// 47673 → 47930（2026-10-11，整仓审计后的两批修复）：
+//
+// **第一批** store_busy.rs（新文件，登记见上）+ manage.rs +18 + mod.rs +1。
+// 对应两个真 bug 修复与三条机械判据：
 // ① `reconcile()` 定义了却没有任何生产调用方，崩溃残留（.backup-*/.new-*/.tmp-*）
 //    无限堆积，而 manage.rs 给用户承诺的「下次启动时 reconcile 会接手」永不兑现；
-//    ② 托管 Node 装失败时错误文案指向 `<data_dir>/settings.json`——P1 之后
-//    生产写入早已改到 `shell/<mode>/settings.json`，用户照着改毫无效果。
-// ③ 为此新增 check:invariants 第 25/26 项（AGENTS.md 字节预算 + reconcile 接线）
-//    与 skills/store_busy.rs（另一个壳正在装技能时整轮跳过对账，否则刚接上的
-//    reconcile 会回收对方的暂存目录、并把对方正在装的技能当孤儿删掉）。
-//    门禁脚本本身不计入本预算，超出的是 skills/ 下那三个文件。
-// 另含并行会话对 harness_window.rs / menu_bar.rs / usage/local.rs 的在途改动
-// （`map_or` → `is_none_or`，行数不变）与 subscription_codex.rs 的 −4，
-// 按上面那条「一并计入免得两个会话互相覆盖」的惯例随本轮一起记账。
-// +8 是给 rustfmt 折行的抖动留的余量（47583/47584 那次就是它）。
-const TOTAL_BUDGET = 47745;
+// ② 托管 Node 装失败时错误文案指向 `<data_dir>/settings.json`——P1 之后
+//    生产写入早已改到 `shell/<mode>/settings.json`，用户照着改毫无效果；
+// ③ check:invariants 第 25/26 项（AGENTS.md 字节预算 / reconcile 接线）与
+//    store_busy.rs（另一个壳正在装技能时整轮跳过对账，否则刚接上的 reconcile
+//    会回收对方的暂存目录、并把对方正在装的技能当孤儿删掉）。
+//    门禁脚本本身不计入本预算。
+//    manage.rs 那 18 行曾把文件顶到 1500（超 1490 的反棘轮）——按「被规则 ①
+//    拦下就把新逻辑拆出去而不是调数字」处理，第二批里随锁机制一起搬走了。
+//
+// **第二批** store_lock.rs（新文件，登记见上）：跨进程互斥，根治「两个壳各读各
+// 改各写同一份 store.json、后写者把先写者整条覆盖」——面板上那个技能查不到、
+// 卸载报「不在中央库中」，而它的目录与链接都还在、工作台也照常加载，用户无从
+// 自查。manage.rs 净 **−14**（锁机制搬出去 + 删掉因此成死代码的 `lock_store()`
+// 及其 Mutex），回到 1476 < 1490——反棘轮方向。总量净增全在新文件。
+//
+// TOTAL_BUDGET 是软上限（刻意不做只许下调，试过：实践中只会逼人绕过门禁）。
+// 这两次加的都不是业务代码而是「补一块此前整块缺失的能力」，与 47584 → 47673
+// （控制台日志通道）同类。+10 是给 rustfmt 折行抖动留的余量（47583/47584 那次
+// 就是它）。
+const TOTAL_BUDGET = 47930;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

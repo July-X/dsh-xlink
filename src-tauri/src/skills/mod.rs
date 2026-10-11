@@ -9,3 +9,4 @@ pub(crate) mod skill_conflict;
 pub(crate) mod skill_frontmatter;
 pub(crate) mod skill_shadow;
 pub(crate) mod store_busy;
+pub(crate) mod store_lock;
