@@ -61,6 +61,7 @@ const {
   collectErrors,
   errorLivesInPartitionTip,
   tierRow,
+  tierFullName,
   planTierRows,
   queriedAtLabel,
   providerView,
@@ -421,6 +422,28 @@ test('非 OpenAI 的 provider 不补占位（无周限额套餐的 7d 缺席不�
   );
 });
 
+// opencode Go 的三个窗口（滚动 5 小时 / 周 / 月）由 Rust 侧直接给出短名，
+// 前端只原样透出并把全名交给共享表。`1mo` 不在 `tierRow` 的旧映射里，漏了
+// 全名映射的后果只是独立窗口显示成「1mo」——不报任何错，所以钉住。
+test('opencode 的三窗口短名原样透出，独立窗口的全名来自共享表', () => {
+  assert.equal(tierRow({ name: '5h', remaining_percent: 99 }).name, '5h');
+  assert.equal(tierRow({ name: '1mo', remaining_percent: 42 }).percent, 42);
+  assert.equal(tierFullName('5h'), '5 小时限额');
+  assert.equal(tierFullName('7d'), '周限额');
+  assert.equal(tierFullName('1mo'), '月限额');
+  assert.equal(tierFullName('__未登记__'), '__未登记__', '未登记的短名原样透出，不编一个名字');
+  // 三窗口缺席时不补占位：opencode 的窗口是固定语义的三档，缺席就是服务端没给。
+  const rows = planTierRows({
+    id: 'opencode_go',
+    kind: 'plan',
+    tiers: [{ name: '5h', remaining_percent: 50, resets_at_ms: null }],
+  });
+  assert.deepEqual(
+    rows.map((row) => row.name),
+    ['5h']
+  );
+});
+
 // --- 厂商标志 ---------------------------------------------------------------
 
 test('每个登记了标志的 provider 都有真文件，圆形底色也真的定义了', async () => {
@@ -457,23 +480,27 @@ test('每个登记了标志的 provider 都有真文件，圆形底色也真的�
   assert.equal(providerLogo('__没登记的__'), null, '未登记的 provider 必须返回 null 而不是抛错');
 });
 
-test('OpenAI 的标志在暗色主题有第二份，否则 currentColor 会渲染成黑色', async () => {
+test('标志本体用 currentColor 的 provider 在暗色主题有第二份，否则会渲染成黑色', async () => {
   const { PROVIDER_LOGOS } = await import('../src/subscription/subscription.js');
   const { existsSync } = await import('node:fs');
   const { fileURLToPath } = await import('node:url');
   const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
   const overview = readFileSync(new URL('../src/shell/OverviewPanel.vue', import.meta.url), 'utf8');
 
-  // `fill="currentColor"` 经 <img src> 引用时没有宿主元素可继承，会解析成黑色。
-  // 只看 `<svg` 之后的本体：来源注释里本来就要写明「原文件用的是 currentColor」，
-  // 拿整份文件去搜会把自己的说明当成命中（判据纪律：注释里的话不算命中）。
-  const source = readFileSync(publicDir + PROVIDER_LOGOS.openai_codex.slice(1), 'utf8');
-  const svg = source.slice(source.indexOf('<svg'));
-  assert.ok(svg.length > 0, 'OpenAI 标志文件里应该有 <svg> 根元素');
-  assert.ok(!svg.includes('currentColor'), 'OpenAI 标志的图形本体不该还留着 currentColor');
-  assert.ok(
-    /html\.dark [^{]*\.plan-provider-logo--openai_codex[^{]*\{[^}]*content:\s*url\("\/openai-logo-dark\.svg"\)/.test(overview),
-    'OverviewPanel.vue 必须有 html.dark 下的换图规则'
-  );
-  assert.ok(existsSync(publicDir + 'openai-logo-dark.svg'), '暗色版本必须真的存在');
+  // 这两家的原文件都是 `fill="currentColor"`（品牌本身就是黑白），经 <img src>
+  // 引用时没有宿主元素可继承，会解析成黑色：暗色主题的深色 chip 底上直接看不见。
+  const needsDark = { openai_codex: 'openai-logo-dark.svg', opencode_go: 'opencode-logo-dark.svg' };
+  for (const [id, darkFile] of Object.entries(needsDark)) {
+    // 只看 `<svg` 之后的本体：来源注释里本来就要写明「原文件用的是 currentColor」，
+    // 拿整份文件去搜会把自己的说明当成命中（判据纪律：注释里的话不算命中）。
+    const source = readFileSync(publicDir + PROVIDER_LOGOS[id].slice(1), 'utf8');
+    const svg = source.slice(source.indexOf('<svg'));
+    assert.ok(svg.length > 0, `${id} 标志文件里应该有 <svg> 根元素`);
+    assert.ok(!svg.includes('currentColor'), `${id} 标志的图形本体不该还留着 currentColor`);
+    assert.ok(
+      new RegExp(`html\\.dark [^{]*\\.plan-provider-logo--${id}[^{]*\\{[^}]*content:\\s*url\\("/${darkFile}"\\)`).test(overview),
+      `OverviewPanel.vue 必须有 ${id} 在 html.dark 下的换图规则`
+    );
+    assert.ok(existsSync(publicDir + darkFile), `${id} 的暗色版本必须真的存在`);
+  }
 });

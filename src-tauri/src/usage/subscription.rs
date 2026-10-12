@@ -49,7 +49,7 @@ use crate::shell::process;
 use crate::shell::state::{self, StateCtx};
 use crate::shell::window;
 use crate::usage::credentials::{self as credentials, ResolvedCredential};
-use crate::usage::subscription_openai;
+use crate::usage::{subscription_openai, subscription_opencode};
 
 /// 缓存文档的 schema 版本。v2 起绑定实例 / profile / 凭据指纹。
 pub const CACHE_SCHEMA: u32 = 2;
@@ -75,15 +75,21 @@ pub const PROVIDER_ZAI_CODING_CN: &str = "zai_coding_cn";
 /// OpenAI（ChatGPT 套餐）5h / 7d 窗口。凭据与端点都与其余四个 provider
 /// 不同源，实现见 [`crate::usage::subscription_openai`]。
 pub const PROVIDER_OPENAI: &str = "openai_codex";
+/// opencode Go 套餐的滚动 5 小时 / 周 / 月三窗口。凭据走内核凭据链的
+/// `OPENCODE_GO_API_KEY`，端点与响应形状与其余五家都不同源，实现见
+/// [`crate::usage::subscription_opencode`]。
+pub const PROVIDER_OPENCODE: &str = "opencode_go";
 
 /// 视图里的固定输出顺序：概览卡与独立窗口都按它排列。DeepSeek 是余额类
-/// 数据、更新最直观，放在最前（用户指定的展示顺序）。
-const PROVIDER_ORDER: [&str; 5] = [
+/// 数据、更新最直观，放在最前（用户指定的展示顺序）；新接入的 provider
+/// **追加在末尾**，不重排既有分区——卡片位置在两次刷新之间跳行比排在后面更糟。
+const PROVIDER_ORDER: [&str; 6] = [
     PROVIDER_DEEPSEEK,
     PROVIDER_MINIMAX_CN,
     PROVIDER_MINIMAX_EN,
     PROVIDER_ZAI_CODING_CN,
     PROVIDER_OPENAI,
+    PROVIDER_OPENCODE,
 ];
 
 /// 缓存条目的凭据状态：凭据可用（含「还没验证过」）。
@@ -116,6 +122,7 @@ fn provider_label(id: &str) -> &'static str {
         PROVIDER_DEEPSEEK => "DeepSeek",
         PROVIDER_ZAI_CODING_CN => "GLM-CN",
         PROVIDER_OPENAI => "OpenAI",
+        PROVIDER_OPENCODE => "opencode Go",
         _ => "未知供应商",
     }
 }
@@ -338,7 +345,7 @@ pub fn subscription_view(provider: Option<&str>, force: bool) -> Result<Subscrip
     if let Some(id) = provider {
         if !PROVIDER_ORDER.contains(&id) {
             return Err(format!(
-                "未知的用量供应商「{id}」。支持的取值：minimax_cn / minimax_en / deepseek / zai_coding_cn / openai_codex"
+                "未知的用量供应商「{id}」。支持的取值：minimax_cn / minimax_en / deepseek / zai_coding_cn / openai_codex / opencode_go"
             ));
         }
     }
@@ -646,6 +653,7 @@ fn fetch_provider(id: &str, key: &str, dsh_home: &std::path::Path) -> FetchOutco
     match id {
         PROVIDER_DEEPSEEK => fetch_deepseek(id, key),
         PROVIDER_ZAI_CODING_CN => fetch_zhipu(id, key, dsh_home),
+        PROVIDER_OPENCODE => subscription_opencode::fetch(key),
         _ => fetch_minimax(id, key),
     }
 }
@@ -664,10 +672,12 @@ fn http_agent() -> &'static ureq::Agent {
 ///
 /// 这是原始凭据被允许出现的两处之一（HTTPS 请求头）；任何错误信息、日志、
 /// 缓存都不得携带它。非 2xx 由 ureq 的默认 `http_status_as_error` 转成
-/// [`ureq::Error::StatusCode`]，在此按状态码分类。
-/// HTTP 401/403 的凭据失效文案：按 provider 定制。MiniMax 的「订阅 Key /
-/// 按量 Key」辨析只对 MiniMax 有意义，不塞给 DeepSeek 用户（真机截图反馈
-/// 过这处文案错位）。
+/// [`ureq::Error::StatusCode`]，在此按状态码分类。401/403 的文案按 provider
+/// 定制，见 [`credential_rejected_message`]。
+pub(crate) fn http_get_json(provider: &str, url: &str, key: &str) -> Result<String, FetchOutcome> {
+    http_get_json_ext(provider, url, key, true, &[])
+}
+
 /// HTTP 401/403 的凭据失效文案：`(称呼, 用户该做什么)` 两列。MiniMax 的
 /// 「订阅 Key / 按量 Key」辨析只对 MiniMax 有意义，不塞给 DeepSeek 用户
 /// （真机截图反馈过这处文案错位）。
@@ -675,6 +685,10 @@ fn credential_rejected_message(provider: &str, status: u16) -> String {
     let (label, next_step) = match provider {
         PROVIDER_DEEPSEEK => ("DeepSeek", "请到工作台的模型设置更新 DeepSeek 的 API Key"),
         PROVIDER_ZAI_CODING_CN => ("智谱", "请到工作台的模型设置更新 zai-coding-cn 的 API Key"),
+        // opencode Go 的密钥就是工作台模型设置里 `opencode-go` provider 的
+        // `OPENCODE_GO_API_KEY`，下一步也因此指向模型设置而不是 opencode 自己
+        // 的登录文件（文案见下一条常量）。
+        PROVIDER_OPENCODE => ("opencode Go", OPENCODE_REAUTH_STEP),
         PROVIDER_MINIMAX_EN => ("MiniMax-EN", MINIMAX_REAUTH_STEP),
         _ => ("MiniMax-CN", MINIMAX_REAUTH_STEP),
     };
@@ -684,9 +698,11 @@ fn credential_rejected_message(provider: &str, status: u16) -> String {
 /// MiniMax 两站共用的下一步文案（查套餐要用 Token Plan 页的订阅 Key）。
 const MINIMAX_REAUTH_STEP: &str = "请到工作台的模型设置更新对应 provider 的 API Key（注意：查询套餐需用 Token Plan 页的订阅 Key，不是接口密钥页的按量 Key）";
 
-fn http_get_json(provider: &str, url: &str, key: &str) -> Result<String, FetchOutcome> {
-    http_get_json_ext(provider, url, key, true, &[])
-}
+/// opencode Go 的下一步文案（Go 套餐密钥在 opencode.ai 的 Zen 控制台生成）。
+///
+/// 写成常量而不是内联进 match 臂：CJK 在 rustfmt 里按两个显示宽度算，内联那行
+/// 会被折成四行，而 `subscription.rs` 是只许下调的反棘轮文件（预算 896 行）。
+const OPENCODE_REAUTH_STEP: &str = "请到工作台的模型设置更新 opencode-go 的 API Key";
 
 /// [`http_get_json`] 的扩展形态：智谱的额度接口用 raw API key（不带
 /// `Bearer`）且要求组织 / 项目上下文头，其余 provider 走默认 Bearer 形态。
@@ -1054,16 +1070,15 @@ fn opt_string(value: Option<&serde_json::Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn clamp_percent(percent: f64) -> f64 {
-    if percent.is_nan() {
-        0.0
-    } else {
-        percent.clamp(0.0, 100.0)
-    }
+/// 百分比裁剪到 0–100。NaN 交给 `max` 而不是 `clamp`：`f64::clamp` 对 NaN 原样
+/// 返回，`NaN.max(0.0)` 则按 Rust 的既定语义返回另一个操作数（0）——读不出来的
+/// 百分比按最坏情况显示，而不是把 NaN 一路带到 UI 变成 `NaN%`。
+pub(crate) fn clamp_percent(percent: f64) -> f64 {
+    percent.clamp(0.0, 100.0).max(0.0)
 }
 
 /// 时间戳容错解析：数字（毫秒为主，秒级自动放大）或 ISO 8601 字符串。
-fn parse_epoch_ms(value: &serde_json::Value) -> Option<u64> {
+pub(crate) fn parse_epoch_ms(value: &serde_json::Value) -> Option<u64> {
     match value {
         serde_json::Value::Number(number) => number
             .as_u64()
@@ -1516,6 +1531,31 @@ mod tests {
         );
         assert_eq!(parse_epoch_ms(&serde_json::json!(null)), None);
         assert_eq!(parse_epoch_ms(&serde_json::json!("not-a-time")), None);
+    }
+
+    /// 每个 provider 常量都必须真的在展示顺序里，并有展示名。
+    ///
+    /// 漏掉任一项时后端一切正常、编译也全绿，只是面板上永远少一个分区——或者
+    /// 分类成功却显示成「未知供应商」。新增 provider 时这条会先响。
+    #[test]
+    fn every_provider_constant_is_in_the_display_order() {
+        let all = [
+            PROVIDER_DEEPSEEK,
+            PROVIDER_MINIMAX_CN,
+            PROVIDER_MINIMAX_EN,
+            PROVIDER_ZAI_CODING_CN,
+            PROVIDER_OPENAI,
+            PROVIDER_OPENCODE,
+        ];
+        for id in all {
+            assert!(PROVIDER_ORDER.contains(&id), "{id} 不在 PROVIDER_ORDER 里");
+            assert_ne!(provider_label(id), "未知供应商", "{id} 缺展示名");
+        }
+        assert_eq!(
+            PROVIDER_ORDER.len(),
+            all.len(),
+            "PROVIDER_ORDER 里的条目数与 provider 常量对不上"
+        );
     }
 }
 

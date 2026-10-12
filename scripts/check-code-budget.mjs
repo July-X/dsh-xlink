@@ -1593,6 +1593,15 @@ const FILE_BUDGETS = {
   // 之后拿到空串会被 `parse_tiers` 判成「结构不认识」，把传输层故障报成上游
   // 改版。341 是 `cargo fmt` 之后的实测值。
   'src-tauri/src/usage/subscription_openai.rs': 341,
+  // opencode Go 套餐容量：provider id `opencode_go` 的全部实现（端点 + 三窗口
+  // 解析 + 真机样张单测）。**为什么它必须独立成模块**：① 与 OpenAI 同一半理由
+  // ——`subscription.rs` 是反棘轮文件（预算 896，只许下调），这个 provider 的
+  // 接线加实现塞进去会当场顶破预算；② 端点（`opencode.ai/zen/go/v1/usage`）与
+  // 响应形状（`usage.rolling/weekly/monthly`，`resetsAt` 是 ISO 字符串而非
+  // epoch 毫秒）与其余五家都不同源，共同点只剩「缓存 / 指纹 / keep-last-good」
+  // 这一层，而那一层本来就住在 `subscription.rs` 里。45 是 `cargo fmt` 之后的
+  // 实测值（注释与单测不计入生产行数）。
+  'src-tauri/src/usage/subscription_opencode.rs': 45,
   // Codex 文件来源、同账号校验与默认关闭的许可独立于 SIWC 模型授权，
   // 不把跨应用凭据读取或刷新权限混进模型登录模块。
   'src-tauri/src/usage/subscription_codex.rs': 210,
@@ -1603,7 +1612,10 @@ const FILE_BUDGETS = {
   // 派生。凭据语义与内核对齐只有一处实现，独立成模块供 subscription.rs 复用。
   // 260 → 270：refs 标量统一字符串化（YAML 数字写法如 `KEY: 2` 也是合法值）。
   // 270 → 290：集中凭据日志提示；OAuth 来源只记引用名，不泄漏令牌片段。
-  'src-tauri/src/usage/credentials.rs': 290,
+  // 290 → 294：opencode Go 的 route 归类（`opencode-go` → `opencode_go`）与
+  // 默认引用派生（`OPENCODE_GO_API_KEY`——用户 `.credentials.yaml` 里就是这
+  // 个名字，真机核实过）。本文件 294 < RATCHET_THRESHOLD 600，上调在规则内。
+  'src-tauri/src/usage/credentials.rs': 294,
   // 云端套餐用量前端（subscription.js）：状态动作（keep-last-good 显式落地）
   // + 收起态摘要 / 余额行 / 进度条配色 / 重置倒计时等纯展示函数（node --test 直测）。
   // 180 → 210：失效 provider 的「提示 → 隐藏 → 查询成功自动恢复」状态机
@@ -1624,7 +1636,11 @@ const FILE_BUDGETS = {
   // 288 → 292：`errorLivesInPartitionTip`——openai 的完整错误退出横幅、改挂分区
   // ⓘ 的判据单源（collectErrors 与 PartitionErrorTip 都读它），id 清单与
   // PROVIDER_LOGOS 同理留在这里。
-  'ui/src/subscription/subscription.js': 292,
+  // 292 → 297：opencode Go 的标志登记（`PROVIDER_LOGOS` 一行）与 `tierFullName`
+  // ——后者把独立窗口里内联的窗口全名三元表达式收成一张共享表，新增窗口时不会
+  // 再「一处改了、另一处静默显示 `1mo`」。本文件 297 < RATCHET_THRESHOLD 600，
+  // 上调在规则内。
+  'ui/src/subscription/subscription.js': 297,
   // 套餐用量独立窗口根组件（open_subscription_window 弹出，?subscription=1 挂载）：
   // 双 provider 分区 + 进度条 / 余额行 + 错误横幅与 scoped 样式（同 UsageWindow 模式）。
   // 340 → 360：查询时间换成刷新 icon 胶囊（紧凑年龄值）。
@@ -1632,7 +1648,10 @@ const FILE_BUDGETS = {
   // 与概览卡共用 subscription.js 的 balanceRow。
   // 370 → 353 实测下调：分区短状态（「查询异常 ⓘ」点击 tooltip）收进共用组件
   // PartitionErrorTip.vue，模板 / helper / 样式三处重复随之消失。
-  'ui/src/subscription/SubscriptionWindow.vue': 353,
+  // 353 → 356：import `tierFullName`（窗口不再自己内联窗口全名）+ 能力说明
+  // `CAPABILITY_TIP` 补上 opencode Go 的三窗口与密钥出处。本文件 356 <
+  // RATCHET_THRESHOLD 600，上调在规则内。
+  'ui/src/subscription/SubscriptionWindow.vue': 356,
   // 分区短状态 + 完整原因的点击 tooltip（新建，45 行）：OpenAI 的失败是长解释
   // （官方 API 限制 + Codex 许可指引），2026-10-10 用户要求不再每次刷新顶一条
   // 横幅，改挂「查询异常」后的 ⓘ、点击弹出。概览卡与独立套餐用量窗口两处

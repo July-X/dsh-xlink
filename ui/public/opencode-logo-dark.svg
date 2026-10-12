@@ -1,0 +1,6 @@
+<!-- opencode 标志的暗色版本：与 opencode-logo.svg 同一条路径，只把填充色换成
+     纯白。存在的理由是 currentColor 经 <img src> 引用时解析成黑色，而暗色主题
+     的 chip 底是深色，黑图形在上面看不见。被 OverviewPanel.vue 里 opencode_go
+     的圆形底规则经 CSS content 引用（注释里不抄那条选择器：BEM 修饰符的两个
+     连字符会让整个文件不是合法 XML，浏览器会静默不渲染这张图）。 -->
+<svg viewBox="0 0 24 24" width="24" height="24" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="opencode"><path fill="#FFFFFF" fill-rule="evenodd" d="M16 6H8v12h8V6zm4 16H4V2h16v20z"></path></svg>

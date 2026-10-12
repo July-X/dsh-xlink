@@ -1,0 +1,9 @@
+<!-- opencode 标志。图形取自 LobeHub Icons（MIT, (c) 2024 LobeHub）的
+     opencode.svg：路径未改，只把原文件的 1em 尺寸与 style 属性换成写死的
+     24x24，并把 currentColor 换成写死的浅色主题前景色。经 <img src> 引用的
+     外部 SVG 里 currentColor 没有任何宿主元素可继承，会解析成黑色（暗色主题的
+     深色 chip 底上等于看不见），所以另出一份纯白的 opencode-logo-dark.svg，
+     由 OverviewPanel.vue 的 html.dark 规则经 CSS content 换图。MIT 要求保留
+     版权声明，就写在这条注释里。改之前先读 docs/ui/icon-design.md 的
+     「面板里的第三方标志」。 -->
+<svg viewBox="0 0 24 24" width="24" height="24" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="opencode"><path fill="#0B1526" fill-rule="evenodd" d="M16 6H8v12h8V6zm4 16H4V2h16v20z"></path></svg>

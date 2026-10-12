@@ -1,5 +1,6 @@
-// 云端套餐用量：概览卡「套餐用量」行、设置页「测试连接」与独立「套餐用量」
-// 窗口共享的状态、动作与纯展示函数。查询、缓存与 keep-last-good 的决策都在
+// 云端套餐用量：概览卡的「套餐用量」卡与独立「套餐用量」窗口共享的状态、动作
+// 与纯展示函数（设置页不设套餐用量卡，逐 provider 的「只查这一个」是概览卡分区
+// 标题旁那枚年龄胶囊）。查询、缓存与 keep-last-good 的决策都在
 // Rust 侧（subscription.rs）完成——前端只拉取与呈现；进度条配色、倒计时、
 // 余额行与收起态摘要文案是纯函数，可被 node --test 直接覆盖。
 //
@@ -185,6 +186,18 @@ export function queriedAgeCompact(provider) {
   return relativeAgeCompact(provider.queried_at_ms);
 }
 
+/**
+ * tier 短名 → 独立窗口用的全名（概览卡用短名，两处共用这一张表）。
+ *
+ * 窗口里原先内联的是三元表达式，每加一个窗口就要在两处各改一次，而漏改的
+ * 那处不报任何错、只是把 `1mo` 这样的短名原样显示出来。
+ */
+const TIER_FULL_NAMES = { '5h': '5 小时限额', '7d': '周限额', '1mo': '月限额' };
+
+export function tierFullName(name) {
+  return TIER_FULL_NAMES[name] || name;
+}
+
 /** 进度条一条 tier 的展示数据：短名（5h / 7d）、剩余百分比、档位配色与重置倒计时。 */
 export function tierRow(tier, now = Date.now()) {
   if (!tier) return null;
@@ -356,6 +369,7 @@ export const PROVIDER_LOGOS = {
   minimax_cn: '/minimax-logo.svg',
   minimax_en: '/minimax-logo.svg',
   openai_codex: '/openai-logo.svg',
+  opencode_go: '/opencode-logo.svg',
   zai_coding_cn: '/zhipu-logo.svg',
 };
 
@@ -398,7 +412,7 @@ export async function loadSubscriptionSummary() {
 
 /**
  * 手动刷新（force 越过 5 分钟缓存）。provider 缺省时刷新全部；
- * 返回本次视图，供设置页「测试连接」读取每个 provider 的状态。
+ * 返回本次视图，供调用方（分区刷新 / 概览卡）读取每个 provider 的状态。
  */
 export async function refreshSubscription(provider) {
   if (provider) return refreshSubscriptionProvider(provider);
