@@ -64,6 +64,13 @@ jobs:
         # 要涨必须在同一个提交里改 scripts/check-code-budget.mjs 的数字。
         run: pnpm run check:code-budget
 
+      - name: Check embedded WebDriver gating
+        # 内嵌 WebDriver 插件（app 进程内的本机 HTTP 自动化端口）绝不能进
+        # release 产物。这一步只跑**源码层**判据（不需要编译，秒级）；
+        # 真正的产物层判据（读 cargo 指纹确认这次构建链接了谁）放在
+        # desktop-release.yml 的 build job 里——那里才刚跑完 release 编译。
+        run: pnpm run check:webdriver-gating
+
       - name: Run UI tests
         run: pnpm run test:ui
 

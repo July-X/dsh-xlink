@@ -1149,6 +1149,15 @@ fn fetch_into_store(
 /// 调和被中断更新遗留下来的暂存目录。每次启动都能安全调用；正常路径
 ///（没有遗留暂存）只跑一次 `read_dir` 扫描，不做 rename 或删除。
 ///
+/// 顺带执行 v0.2.x 平铺中央库的一次性搬迁（[`migrate_legacy_store`]，只复制、
+/// 目标已存在即跳过、原目录永不删）。
+///
+/// 2026-10-12：本函数此前**零生产调用方**（四个调用点全在 `#[cfg(test)]`），
+/// 而 `plugins/center.rs` 里多处注释写着「下次启动时 reconcile 会接手」——
+/// 与 `skills::manage::reconcile` 同一种静默失效，这次是同一个仓库第二次。
+/// 现已接进 `lib.rs` 的 `setup()`。孤儿目录清扫那一段拆成 [`sweep_orphans`]，
+/// 维护者决定暂缓接线（它删的是正式插件目录，从未在生产跑过）。
+///
 /// 按插件 id 划分的恢复规则如下：
 ///
 /// | `final_dir` | `.new-*` | `.backup-*` | `.tmp-*` | 处理动作 |
@@ -1209,17 +1218,42 @@ pub fn reconcile_store(data_dir: &Path) {
         by_id.entry(id).or_default().push((kind, entry.path()));
     }
 
-    // 本轮恢复流程处理过的 id：它们的目录是"已验证但还没记账"的救援对象，
-    // 不能被下面的孤儿清理顺手删掉（那会把恢复动作当场撤销）。
-    let recovered_ids: std::collections::HashSet<String> = by_id.keys().cloned().collect();
-
-    for (id, items) in by_id {
+    for (id, items) in &by_id {
         // 恢复表在 pkg.rs：两个中央库共用同一张，避免只改一半。
-        pkg::fetch::recover_staging_dir(&store.join(&id), items);
+        pkg::fetch::recover_staging_dir(&store.join(id), items.clone());
     }
 
-    // 最后处理"已发布但没记账"的孤儿目录。
-    //
+    // 「已发布但没记账」的孤儿目录清扫**刻意不在这里跑**——见 `sweep_orphans`
+    // 的说明。接线时在本行之后补 `sweep_orphans(data_dir, &by_id);`。
+}
+
+/// 清扫中央库里「有外壳标记、但 `store.json` 里没有记账」的孤儿目录。
+///
+/// **2026-10-12 暂不接线**（维护者决定）。与本文件里其它暂存目录回收的区别是
+/// 删除对象的身份：
+///
+/// - [`reconcile_store`] 回收的全是**带暂存前缀**的目录（`tmp-` / `new-` /
+///   `backup-` / 旧命名的 `.tmp-`），那是壳自己装/更新/卸载时造出来的中间产物，
+///   用户数据从不落在那里；`recover_staging_dir` 的回滚也只是把它们挪回正式位置。
+/// - 本函数删的是**不带暂存前缀的正式插件目录**。它的判据是「`store.json` 里
+///   没有这一条」，而清单与目录只要有一侧出问题就会误判。
+///
+/// 四重保险都在 [`sweep_unrecorded_store_dirs`] 里，但**这段代码从未在生产数据上
+/// 跑过一次**（`reconcile_store` 长期零生产调用方，2026-10-12 才第一次接进
+/// `setup()`），所以先只接无删除的那一半，真要启用时按仓库惯例配一条
+/// `check:invariants` 判据并反向验证。
+#[allow(
+    dead_code,
+    reason = "2026-10-12 维护者决定暂缓接线：它删正式插件目录，从未在生产跑过"
+)]
+fn sweep_orphans(
+    data_dir: &Path,
+    staged_by_id: &std::collections::HashMap<String, Vec<(pkg::fetch::StagingKind, PathBuf)>>,
+) {
+    // 本轮恢复流程处理过的 id：它们的目录是"已验证但还没记账"的救援对象，
+    // 不能被下面的孤儿清理顺手删掉（那会把恢复动作当场撤销）。
+    let recovered_ids: std::collections::HashSet<String> = staged_by_id.keys().cloned().collect();
+
     // 只有清单文件**确实存在且能解析**时才清扫。`load_store_checked` 把
     // `Missing` 归为"空清单"对全新安装是对的，但对清扫是灾难：清单文件不存在
     // 时"没有任何记录"会被解读成"中央库里每个带标记的目录都是孤儿"，用户已装的
@@ -2115,8 +2149,8 @@ fn copy_file(from: &Path, to: &Path) -> io::Result<()> {
         .map(|_| ())
 }
 
-/// 把插件物化到指定实例的 `extensions/plugins/<id>/`。实例范围命令
-///（`plugin_install_instance` / `plugin_sync_instance` 等）的入口之一。
+/// 把插件物化到指定实例的 `extensions/plugins/<id>/`。per-instance 安装与同步
+/// 的入口之一（2026-10-12 那层 `#[tauri::command]` 薄包装已删，底层留着）。
 pub fn sync_kernels_for_instance(
     family: &str,
     instance_id: &str,
@@ -2269,7 +2303,7 @@ pub fn ensure_wiring(
     )
 }
 
-/// 按中央库对**指定实例**的 profile 清单进行调和（实例范围命令入口）。
+/// 按中央库对**指定实例**的 profile 清单进行调和（per-instance 接线入口）。
 /// 隔离过滤仍在全局 quarantine 文档里读——它是中央库级别的状态，不会
 /// 按实例分裂。
 pub fn ensure_wiring_for_instance(
@@ -2329,7 +2363,7 @@ fn ensure_store_dependencies(
 ///
 /// 返回 `(wired_count, changed)`。
 ///
-/// P4 起物化与清扫的目标由 `family + instance_id` 决定（实例范围命令
+/// P4 起物化与清扫的目标由 `family + instance_id` 决定（per-instance
 /// 通过 [`ensure_wiring_for_instance`] 显式传入，默认实例命令通过
 /// [`default_instance_key`] fallback 进来）。`profile` 路径同样走实例
 /// `instance_profile_dir`，隔离仍读全局 quarantine 文档——它是中央库
@@ -3074,7 +3108,7 @@ fn wire_manifest(
 /// 的 `extensions/plugins/`、接入活动 profile。
 ///
 /// 中央库（store.json / `<home>/dsh-plugins/`）由所有实例共享；物化与
-/// profile 接线按实例隔离（实例范围命令走 [`install_for_instance`]）。
+/// profile 接线按实例隔离（per-instance 安装走 [`install_for_instance`]）。
 pub fn install(
     data_dir: &Path,
     settings: &settings::Settings,
@@ -5761,7 +5795,11 @@ mod tests {
         write_fake_plugin(&store.join("kept-plugin"), "1.0.0");
         assert!(!store_file(&data_dir).exists(), "前置条件：清单文件不存在");
 
-        reconcile_store(&data_dir);
+        // 直接调 `sweep_orphans` 而不是 `reconcile_store`：被测的是清扫这一步，
+        // 而它 2026-10-12 起不再由 `reconcile_store` 触发（见该函数说明）。
+        // 跟着 `reconcile_store` 走的话清扫根本没跑，断言会因为「什么都没做」
+        // 而通过——那正是本仓库反复吃过的一次假绿。
+        sweep_orphans(&data_dir, &Default::default());
         assert!(
             store.join("kept-plugin").is_dir(),
             "清单文件缺失不得触发孤儿目录清理"
@@ -5769,7 +5807,7 @@ mod tests {
 
         // 边界不变：清单文件存在且能解析时，未记账的目录仍会被清掉。
         save_store_unlocked(&data_dir, &Store::default()).unwrap();
-        reconcile_store(&data_dir);
+        sweep_orphans(&data_dir, &Default::default());
         assert!(
             !store.join("kept-plugin").exists(),
             "清单存在（空）时未记账的目录仍应被清理"
@@ -6849,6 +6887,10 @@ mod store_orphan_tests {
         fs::write(user_dir.join("readme.txt"), b"mine").unwrap();
 
         reconcile_store(&data_dir);
+        // 孤儿清扫 2026-10-12 起不再由 `reconcile_store` 触发（见 `sweep_orphans`
+        // 说明）。被测的就是清扫这一步，直接调它——跟着 `reconcile_store` 走的话
+        // 清扫根本没跑，断言会因为「什么都没做」而通过。
+        sweep_orphans(&data_dir, &Default::default());
 
         assert!(!orphan.exists(), "无记录的已发布目录必须被清理");
         assert!(
@@ -6869,6 +6911,15 @@ mod store_orphan_tests {
         fs::write(staging.join("package.json"), b"{}").unwrap();
 
         reconcile_store(&data_dir);
+        // 清扫需要清单**存在**才会动手（P0-3），否则走「保留现场」分支，这里就
+        // 测不到「不清扫」这件事了。
+        save_store_unlocked(&data_dir, &Store::default()).unwrap();
+        // 接线形态会是 `sweep_orphans(data_dir, &by_id)`，其中 by_id 是本轮
+        // recover_staging_dir 处理过的分组。本轮清扫刻意不接线，于是显式构造它，
+        // 交互语义仍然可测。
+        let staged: std::collections::HashMap<String, Vec<(pkg::fetch::StagingKind, PathBuf)>> =
+            std::collections::HashMap::from([("rescued-plugin".to_string(), Vec::new())]);
+        sweep_orphans(&data_dir, &staged);
 
         let promoted = store_plugin_dir(&data_dir, "rescued-plugin");
         assert!(
@@ -6902,12 +6953,17 @@ mod store_orphan_tests {
         .expect("save");
 
         reconcile_store(&data_dir);
+        assert!(kept.exists(), "对账不该动已记账的目录");
+
+        // 真正测「有记录就不清理」的是清扫本身，它 2026-10-12 起不再由
+        // `reconcile_store` 触发，所以这里显式调（见 `sweep_orphans` 说明）。
+        sweep_orphans(&data_dir, &Default::default());
         assert!(kept.exists(), "有记录的插件目录不能被清理");
 
         // store.json 损坏时必须一个都不删：否则会把整个插件库清空。
         let other = marked_dir(&data_dir, "another-orphan");
         fs::write(store_file(&data_dir), b"{ broken").unwrap();
-        reconcile_store(&data_dir);
+        sweep_orphans(&data_dir, &Default::default());
         assert!(
             other.exists() && kept.exists(),
             "store.json 读不出来时不允许清理任何目录"

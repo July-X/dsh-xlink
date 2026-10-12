@@ -114,6 +114,7 @@ pub fn verify_download_integrity(
 /// 返回 `sha512` / `sha256` / `sha1`；三者都没有时返回 `None`——那种情况
 /// [`verify_download_integrity`] 会 fail-closed 拒绝安装，UI 显示「未能校验」
 /// 是如实陈述，不是警告一个不会发生的未来。
+#[allow(dead_code, reason = "给 UI 报用了哪种摘要的查询口")]
 pub fn integrity_algorithm(integrity: Option<&str>, shasum: Option<&str>) -> Option<&'static str> {
     if let Some((algorithm, _)) = strongest_integrity(integrity) {
         return Some(algorithm);

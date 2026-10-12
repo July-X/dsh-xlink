@@ -90,6 +90,23 @@ pub fn command_with_path<S: AsRef<OsStr>>(program: S) -> Command {
     cmd
 }
 
+/// Windows：按 pid 连带整棵子进程树强制结束（`taskkill /T /F`）。
+///
+/// **只做发信号，不 `wait`**——调用方有的还要拿子进程句柄做复查（停内核之后
+/// 要 `process_state` 确认它真的死了），有的压根没有子进程句柄（停进程组）。
+/// 回收由调用方自己决定要不要 `child.wait()`。
+///
+/// 三处调用方（停内核 `kernel/lifecycle.rs`、停进程组同文件、捕获命令超时回收
+/// 本文件）原本是逐字复制的同一段，收在这里免得改一处漏两处。Unix 侧**没有**
+/// 对应实现：三处的信号序列各不相同（有的 SIGTERM 轮询后 SIGKILL、有的只发
+/// SIGKILL 到进程组），硬统一会把「谁负责轮询」这条语义抹掉。
+#[cfg(windows)]
+pub fn kill_process_tree_windows(pid: u32) {
+    let mut cmd = command_with_path("taskkill");
+    cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+    let _ = quiet(&mut cmd).status();
+}
+
 /// 与 [`command_with_path`] 相同，但把 `extra_path_dirs` 前置到子进程的 PATH。
 ///
 /// 用于**长驻**进程（内核）与任何可能派生出 `#!/usr/bin/env node` 子进程的
@@ -829,9 +846,7 @@ pub(crate) fn terminate_process_tree(child: &mut Child) {
     }
     #[cfg(windows)]
     {
-        let mut cmd = command_with_path("taskkill");
-        cmd.args(["/PID", &child.id().to_string(), "/T", "/F"]);
-        let _ = quiet(&mut cmd).status();
+        kill_process_tree_windows(child.id());
         let _ = child.wait();
     }
     #[cfg(not(any(unix, windows)))]

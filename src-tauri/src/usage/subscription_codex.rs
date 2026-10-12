@@ -182,7 +182,7 @@ fn parse_auth(text: &str, dsh: &AccountTokens, now_secs: u64) -> Result<OpenAiUs
     if access
         .get("exp")
         .and_then(serde_json::Value::as_u64)
-        .map_or(true, |exp| exp <= now_secs)
+        .is_none_or(|exp| exp <= now_secs)
     {
         return Err("Codex 访问令牌已过期或缺少有效期。请先在 Codex 中刷新登录，再回来刷新额度；壳不会替 Codex 刷新令牌".into());
     }
@@ -195,9 +195,7 @@ fn parse_auth(text: &str, dsh: &AccountTokens, now_secs: u64) -> Result<OpenAiUs
             .get("sub")
             .and_then(serde_json::Value::as_str)
             .filter(|s| !s.is_empty())
-            .map_or(true, |sub| {
-                Some(sub) != access.get("sub").and_then(serde_json::Value::as_str)
-            })
+            .is_none_or(|sub| Some(sub) != access.get("sub").and_then(serde_json::Value::as_str))
         || crate::openai::auth::chatgpt_account_id(&id).as_deref()
             != Some(tokens.account_id.as_str())
         || dsh

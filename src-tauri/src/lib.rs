@@ -8,10 +8,8 @@
 //! ## 死代码策略
 //!
 //! `tauri dev` 默认会打开所有编译期 warning。多内核改造（P0–P8 共 9 个
-//! stage）有意保留了一批「预留 API」——例如 [`commands::plugin_install_instance`]
-//! / [`commands::plugin_sync_instance`] 等实例范围命令、
-//! [`shell::instance::allocate_port`] / [`shell::instance::InstanceLock`] 等端口与锁原语、
-//! [`kernel::kernel_adapter::AdapterCapability`] / [`kernel::kernel_adapter::resolve_install_root`]
+//! stage）有意保留了一批「预留 API」——例如 [`kernel::kernel_adapter::AdapterCapability`]
+//! / [`kernel::kernel_adapter::resolve_install_root`]
 //! 等适配器 trait 骨架——它们是后续 PR 启用 per-instance 写动作、第二内核
 //! 接入的入口，删了就找不回来。下面这条 `allow(dead_code)` 让
 //! `cargo check` / `cargo test` 都静默这一类预留 API 的 dead_code 警告；
@@ -19,12 +17,21 @@
 //! 报警（未使用的导入 / 变量通常是上一笔 commit 的失误），不允许用
 //! allow 抹掉。
 //!
+//! **2026-10-12 删掉了原先列在这里的 `commands::plugin_install_instance`
+//! 等四条实例范围命令。** lib.rs 曾经说它们「删了就找不回来」——这句是错的：
+//! 被零调用遮住的只是那层 `#[tauri::command]` 薄包装，底层的
+//! [`plugins::center::install_for_instance`] 等全部有生产调用方
+//! （`install_for_instance` 走沙盒预检、`ensure_wiring_for_instance` 走诊断恢复），
+//! 而包装模式在同文件的 `run_plugin_mutation_command` 里现成。要做多实例 UI 时
+//! 重新加一层即可，**真正找不回来的是底层函数，而底层一行没动**。
+//!
+//! 这条 allow 本身也是过度设计审计的对象（未处理）：它正是 `InstanceLock` 那样
+//! 「声称是锁、其实是覆写文件」的东西能长期藏身的原因——编译器本该在它们最后
+//! 一次被摘掉调用方时就报出来。清理它之前，先把 allow 列表逐条核对：凡是零生产
+//! 调用方的，要么接上，要么删，别留在 allow 底下。
+//!
 //! 当某个预留 API 在后续 commit 真正被接入时，**移除对应 item 上方的
 //! allow 标注**（或整体移除本 allow 然后逐步加 item 级 allow）。
-#![allow(
-    dead_code,
-    reason = "多内核改造预留 API（实例范围命令 / 端口分配 / 适配器骨架）"
-)]
 
 // 按功能分模块（2026-09-30）。每个目录一个 mod.rs，子模块声明为 `pub(crate)`，
 // 于是外部写 `crate::<组>::<模块>::X`——分目录改的是文件的摆放，不是调用方
@@ -136,9 +143,22 @@ pub fn run() {
     shell::resident::mark_started_by_autostart(shell::resident::detect_autostart_arg(
         std::env::args(),
     ));
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    // 内嵌 WebDriver 服务端，只在 `wdio` feature 打开时注册。
+    //
+    // **门控必须写 feature，不能写 `debug_assertions`**：依赖是 optional 的，
+    // release 不带 feature 时这个 crate 根本未声明，用 `debug_assertions`
+    // 门控在 release 里等价于不门控之外的多余一层，且一旦谁把它改成
+    // `#[cfg(feature = "wdie")]` 这样的错名，插件会**静默不注册且不报任何错**
+    // ——门禁 scripts/check-webdriver-gating.mjs 盯的就是这两边名字一致。
+    //
+    // 依赖声明处的取舍（为什么不能用 target.'cfg(debug_assertions)'，cargo
+    // 对那种写法会直接警告它不生效）写在 Cargo.toml 的注释里。
+    #[cfg(feature = "wdio")]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+    let app = builder
         .setup(|app| {
             plugins::builtin::runtime::configure(app.handle());
             // 激活通道监听：接收「点通知横幅回到工作台」的交接请求。排在
@@ -232,6 +252,42 @@ pub fn run() {
                     eprintln!("dsh-xlink: 回收了 {removed} 个残留的预检沙盒目录（{family}）");
                 }
             }
+            // 技能中央库的启动对账。此前 `skills::manage::reconcile` 定义在那里
+            // 却**没有任何生产调用方**（2026-10-11 全仓 grep 证实：`reconcile_home`
+            // 的五个调用点全在 `#[cfg(test)]` 内），于是两件事同时成立：
+            // ① `fetch_into_store` 那两步 rename 之间崩溃留下的 `.backup-*`
+            //    （此刻正式位置是空的）永远没人收拾；
+            // ② `manage.rs` 给用户的那句「下次启动时 reconcile 会接手」承诺的
+            //    那次启动永远不会到来。
+            //
+            // 同步跑而不是丢后台线程：它与上面的 `sandbox::sweep_stale` 同构
+            // （都是回收上次崩溃的残留），而窗口随后才建——放在建窗前，用户不会
+            // 看到技能列表先错后修。`reconcile` 自己吞错误、只落 `store.warning`
+            // 与 stderr，失败不阻断启动。
+            //
+            // 它的破坏性是受控的，别照着 `reconcile_home` 里那段 `remove_target`
+            // 就推断它会删技能：`load_store_checked` 读不出清单就整体退出
+            // （把损坏当成空清单，会让它把活动根里所有指向中央库的条目当孤儿删光，
+            // 运行中的内核随即丢掉全部技能），清单文件不存在时也不做清扫
+            // （P0-4），只在存在时删「指向中央库的链接」与「指纹仍在清单里的
+            // copy 孤儿」两类，用户自己放进去的内容永远不碰。
+            crate::skills::manage::reconcile();
+            // 插件中央库的启动对账，与上面那句同构、同一批事故类型。此前
+            // `plugins::center::reconcile_store` 定义在那里却**零生产调用方**
+            //（2026-10-12 全仓 grep 证实：四个调用点全在 `#[cfg(test)]` 内），
+            // 于是：① 装/更新/卸载中途崩溃留下的 `tmp-*` / `new-*` /
+            // `backup-*` 暂存目录永久堆积；②「已发布但目录缺失」的中间态
+            // 永不修复；③ v0.2.x 的平铺中央库搬迁（`migrate_legacy_store`）
+            // 从未在任何用户机器上发生过。
+            //
+            // 与 skills 那句的差别只有一处：它只回收**带暂存前缀**的目录——
+            // 壳自己装/更新/卸载时造的中间产物，用户数据从不落在那里。唯一
+            // 会删正式插件目录的孤儿清扫（`sweep_orphans`）维护者决定暂缓
+            // 接线，那段见 `plugins/center.rs` 里的说明。
+            //
+            // 同步跑、建窗前，理由同上：它在 sandbox sweep 之后，窗口随后才
+            // 建，用户不会看到插件列表先错后修。失败只落 stderr，不阻断启动。
+            crate::plugins::center::reconcile_store(&data_dir);
             // 内核 home 一次性搬迁：多内核改造前内核一直以默认 `~/.dsh` 运行
             // （旧启动路径从不注入 `DSH_HOME`），会话 / 凭据 / profile 都在
             // 那里；改造后内核经 `DSH_HOME` 指向实例目录，不搬迁等于让用户
@@ -478,9 +534,6 @@ pub fn run() {
             // plugins/catalog.rs 的模块文档。
             plugins::catalog::plugin_catalog_search,
             commands::plugin_resolve,
-            commands::patch_status,
-            commands::patch_apply,
-            commands::patch_revert,
             commands::skill_status,
             commands::skill_install,
             commands::skill_update,

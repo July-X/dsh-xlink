@@ -198,15 +198,19 @@ pub struct PrecheckReport {
 /// 和 npm 官方同样的保证。
 pub mod integrity {
     /// sha512（npm 默认，SRI 最强）。
+    #[allow(dead_code, reason = "摘要算法的完整取值，与 SHA256 / SHA1 /…")]
     pub const SHA512: &str = "sha512";
     /// sha256。
+    #[allow(dead_code, reason = "同上：sha256 分支")]
     pub const SHA256: &str = "sha256";
     /// sha1（老 packument 的 `dist.shasum`），存在但抗碰撞已破。
+    #[allow(dead_code, reason = "同上：sha1 分支")]
     pub const SHA1: &str = "sha1";
     /// 没有可用摘要，**未校验**。
     pub const NONE: &str = "none";
 
     /// 摘要种类 → 用户能读懂的一句话。
+    #[allow(dead_code, reason = "摘要算法 → 文案的映射表")]
     pub fn label(kind: &str) -> &'static str {
         match kind {
             SHA512 => "已通过 sha512 校验",
@@ -303,6 +307,7 @@ pub struct Sandbox {
     child: Option<Child>,
 }
 
+#[allow(dead_code, reason = "dir() / port() 两个访问器")]
 impl Sandbox {
     /// 准备一个沙盒实例：分配 id 与端口、落目录骨架、按内核族惯例写好
     /// profile 模板。此处**不**启动内核。

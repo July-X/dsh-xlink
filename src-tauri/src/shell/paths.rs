@@ -48,6 +48,7 @@ pub const DSH_XLINK_HOME_ENV: &str = "DSH_XLINK_HOME";
 /// 用点号开头，让它在 `ls ~` 时一眼可辨）。
 pub const DEFAULT_HOME_DIR_NAME: &str = ".dsh-xlink";
 /// 旧版 dsh home 目录名；legacy resolver 用它拼接 `desktop[-dev]/` 等旧路径。
+#[allow(dead_code, reason = "旧版 dsh home 目录名")]
 pub const LEGACY_DSH_HOME_DIR_NAME: &str = ".dsh";
 /// 旧版 release Shell 子目录（位于 `<dsh_home>/desktop/`）。
 pub const LEGACY_SHELL_SUBDIR_RELEASE: &str = "desktop";
@@ -59,6 +60,7 @@ pub const DSH_HOME_DIR_NAME: &str = ".dsh";
 /// Xlink 顶层 schema 版本。每次破坏性变更（例如新增字段、改字段含义）必须
 /// 递增，写入 `xlink.json` 供迁移使用。`CURRENT_SCHEMA_VERSION` 是当前
 /// 实现能识别的最大版本号；读取时遇到更大版本要拒绝，避免误解析未知字段。
+#[allow(dead_code, reason = "xlink.json / ui-state.json …")]
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 /// dsh-xlink Shell 构建模式。`current()` 在编译期由 `cfg!(debug_assertions)`
@@ -174,6 +176,7 @@ pub fn shell_settings_file(mode: ShellMode) -> PathBuf {
 /// 与设置文件分离：UI 状态高频写入（窗口大小、面板展开、tab 选择等），
 /// 不应该走 settings.json 的事务化原子写入路径；后续 P2 会有自己的
 /// 写入策略。
+#[allow(dead_code, reason = "UI 状态文件路径（窗口大小 / tab 选择）")]
 pub fn shell_ui_state_file(mode: ShellMode) -> PathBuf {
     shell_dir(mode).join("ui-state.json")
 }
@@ -330,17 +333,13 @@ pub fn instance_runtime_dir(family: &str, id: &str) -> PathBuf {
     instance_dir(family, id).join("runtime")
 }
 
-/// 给定实例的 advisory file lock：`<...>/runtime/instance.lock`。
-pub fn instance_lock_file(family: &str, id: &str) -> PathBuf {
-    instance_runtime_dir(family, id).join("instance.lock")
-}
-
 /// 给定实例的 PID 文件：`<...>/runtime/pid`。
 pub fn instance_pid_file(family: &str, id: &str) -> PathBuf {
     instance_runtime_dir(family, id).join("pid")
 }
 
 /// 给定实例的端口文件：`<...>/runtime/port`。
+#[allow(dead_code, reason = "实例端口文件路径")]
 pub fn instance_port_file(family: &str, id: &str) -> PathBuf {
     instance_runtime_dir(family, id).join("port")
 }
@@ -405,6 +404,7 @@ pub fn instance_diagnostics_runs_dir(family: &str, id: &str) -> PathBuf {
 ///
 /// 记录每个插件的 link/copy 模式、内容指纹与是否被 `disabled`。
 /// P4 把 wiring 从全局 store 拆到这里——每个实例独立可恢复。
+#[allow(dead_code, reason = "实例级 wiring.json 路径")]
 pub fn instance_wiring_file(family: &str, id: &str) -> PathBuf {
     instance_extensions_dir(family, id).join("wiring.json")
 }
@@ -459,6 +459,7 @@ pub fn instances_registry_file_for(mode: ShellMode) -> PathBuf {
 }
 
 /// 可重建的下载 / registry 缓存目录：`<xlink_home>/cache/`。
+#[allow(dead_code, reason = "<xlink_home>/cache/ 的路径")]
 pub fn cache_root() -> PathBuf {
     xlink_home().join("cache")
 }
@@ -482,6 +483,7 @@ pub fn legacy_dsh_home() -> PathBuf {
 ///
 /// 只读兼容入口，无生产调用方；当前 [`crate::kernel::lifecycle::data_dir`] 走
 /// [`family_runtime_dir`]（`<xlink_home>/<family>/desktop[-dev]/`）。
+#[allow(dead_code, reason = "doc 自述「只读兼容入口，无生产调用方」——data…")]
 pub fn legacy_desktop_data_dir(mode: ShellMode) -> PathBuf {
     legacy_dsh_home().join(mode.runtime_subdir())
 }
@@ -620,6 +622,7 @@ pub fn validate_id_component(s: &str) -> Result<(), &'static str> {
 /// 重新 canonicalize，再比对前缀，防止 `..` / 符号链接等手段跳到
 /// 计划外的目录。该函数**不触碰文件系统**，只做词法检查；
 /// 需要面对符号链接时由调用方自行 `canonicalize` 后再校验。
+#[allow(dead_code, reason = "词法层面的路径逃逸检查")]
 pub fn path_under_base(base: &Path, candidate: &Path) -> Option<PathBuf> {
     let base_components: Vec<Component<'_>> = base.components().collect();
     let candidate_components: Vec<Component<'_>> = candidate.components().collect();
@@ -646,12 +649,17 @@ pub fn path_under_base(base: &Path, candidate: &Path) -> Option<PathBuf> {
 ///
 /// 当前阶段（P0）只在测试中用，尚未被任何生产路径读写。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(dead_code, reason = "xlink.json 的顶层 schema")]
 pub struct XlinkMetadata {
     pub schema_version: u32,
     /// 创建时间（epoch 毫秒），由 [`crate::shell::process::epoch_millis`] 写入。
     pub created_at_ms: u64,
 }
 
+#[allow(
+    dead_code,
+    reason = "构造函数与版本兼容判定，只服务于同样零构造的 Xlin…"
+)]
 impl XlinkMetadata {
     /// 用当前 schema 版本与给定时间戳构造元数据。
     pub fn new(created_at_ms: u64) -> Self {
@@ -672,6 +680,7 @@ impl XlinkMetadata {
 /// 字段命名遵循"键名 = 资源含义"，例如 `default_instance_id` 指注册表中
 /// 默认内核实例的 id（不是某个版本号）。P2 实例注册表落地后再扩展字段。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[allow(dead_code, reason = "ui-state.json 的顶层结构")]
 pub struct ShellState {
     pub schema_version: u32,
     /// 该 Shell 模式记住的默认实例 id。P2 起由实例注册表解析。
@@ -679,6 +688,10 @@ pub struct ShellState {
     pub default_instance_id: Option<String>,
 }
 
+#[allow(
+    dead_code,
+    reason = "构造函数与版本兼容判定，只服务于同样零构造的 Shel…"
+)]
 impl ShellState {
     pub fn new() -> Self {
         Self {

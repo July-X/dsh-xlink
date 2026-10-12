@@ -91,6 +91,7 @@ pub enum CredentialSource {
 }
 
 impl CredentialSource {
+    #[allow(dead_code, reason = "凭据来源枚举的字符串形式")]
     pub fn as_str(self) -> &'static str {
         match self {
             CredentialSource::Env => "env",
@@ -361,6 +362,7 @@ pub fn load_env_file(path: &Path) -> BTreeMap<String, String> {
 
 /// 当前默认实例的 DSH home（凭据根）。与 [`crate::usage::local`] 的实例口径一致：
 /// 家族 / 实例来自默认实例解析器。
+#[allow(dead_code, reason = "当前默认实例的 DSH home")]
 pub fn default_dsh_home() -> PathBuf {
     let (family, id) = crate::shell::instance::resolve_default();
     crate::shell::paths::instance_dsh_home(family, id)

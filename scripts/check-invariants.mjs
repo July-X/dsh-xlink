@@ -15,10 +15,8 @@
  *   1. `generate_handler!` 注册的命令集合 == `allow-local-commands` 白名单集合；
  *   2. 每个 capability 引用的自定义权限标识都真实存在；
  *   3. UI 与注入脚本调用的每个命令都已注册、且已授权给对应窗口；
- *   4. 内置补丁清单结构有效（与 patches.rs 的 validate_def 对齐，并额外保证
- *      copy 模式的 `from` 文件确实存在于仓库里）；
- *   5. UI 模板里的绑定都能解析（委托 `scripts/check-ui-bindings.mjs`）；
- *   6. 管理窗口的无边框来自 `tauri.conf.json`（不是运行时 `set_decorations`），
+ *   4. UI 模板里的绑定都能解析（委托 `scripts/check-ui-bindings.mjs`）；
+ *   5. 管理窗口的无边框来自 `tauri.conf.json`（不是运行时 `set_decorations`），
  *      且 macOS 标题栏最小化走系统原生最小化——写反了黄灯会静默失效。
  *   7. workflow 的 `uses:` 全部固定到 commit SHA，且 `.github/dependabot.yml` 存在并
  *      覆盖 github-actions——钉住的 SHA 只能靠 Dependabot 推进，缺了它策略就是空话。
@@ -63,18 +61,6 @@ const notes = [];
 
 const fail = (section, message) => failures.push(`[${section}] ${message}`);
 
-/// 补丁清单里的路径必须是"补丁目录 / 内核目录内的普通相对路径"。
-///
-/// 与 Rust 的 `patches::check_target_path` 对齐：拒绝空路径、绝对路径、Windows
-/// 盘符（`C:…`）、UNC（`\\\\server\\share`）以及任何 `..` 段。判据比"存在性
-/// 检查"更早生效，坏清单在 CI 就报出来，而不是等到运行时才被 Rust 拒绝。
-const isSafeRelativePath = (raw) => {
-  const value = String(raw ?? '');
-  if (!value) return false;
-  if (isAbsolute(value) || /^[A-Za-z]:/.test(value) || value.startsWith('\\\\')) return false;
-  const segments = value.split(/[\\/]/);
-  return segments.length > 0 && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
-};
 const note = (message) => notes.push(message);
 const read = (rel) => readFileSync(join(root, rel), 'utf8');
 const readJson = (rel) => JSON.parse(read(rel));
@@ -218,88 +204,6 @@ for (const [command, where] of invoked) {
   }
 }
 note(`前端与注入脚本调用 ${invoked.size} 个命令，全部已注册且已授权`);
-
-// --- 4. 内置补丁清单 ---------------------------------------------------------
-
-const patchRoot = join(root, 'src-tauri/resources/patches');
-const seenPatchIds = new Set();
-const patchDirs = existsSync(patchRoot)
-  ? readdirSync(patchRoot, { withFileTypes: true }).filter((e) => e.isDirectory())
-  : [];
-if (patchDirs.length === 0) {
-  fail('patches', `没有找到任何内置补丁目录：${show(patchRoot)}`);
-}
-for (const dir of patchDirs) {
-  const patchDir = join(patchRoot, dir.name);
-  const manifestPath = join(patchDir, 'manifest.json');
-  const label = show(manifestPath);
-  if (!existsSync(manifestPath)) {
-    fail('patches', `${label} 缺失`);
-    continue;
-  }
-  let manifest;
-  try {
-    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  } catch (error) {
-    fail('patches', `${label} 不是合法 JSON：${error.message}`);
-    continue;
-  }
-  if (manifest.schemaVersion !== 1) {
-    fail('patches', `${label} 的 schemaVersion 不是 1：${manifest.schemaVersion}`);
-  }
-  if (!Array.isArray(manifest.patches) || manifest.patches.length === 0) {
-    fail('patches', `${label} 的 patches 为空`);
-    continue;
-  }
-  for (const def of manifest.patches) {
-    const id = def.id ?? '<无 id>';
-    if (!def.id) fail('patches', `${label} 有定义缺少 id`);
-    if (typeof def.id === 'string' && /[\\/]/.test(def.id)) {
-      fail('patches', `${label} 的 id 含路径分隔符：${def.id}`);
-    }
-    if (seenPatchIds.has(def.id)) fail('patches', `补丁 id 跨清单重复：${def.id}`);
-    seenPatchIds.add(def.id);
-    if (!Array.isArray(def.files) || def.files.length === 0) {
-      fail('patches', `${label} 的 ${id} 没有 files`);
-      continue;
-    }
-    for (const entry of def.files) {
-      const target = entry.to ?? '';
-      if (!isSafeRelativePath(target)) {
-        fail('patches', `${label} 的 ${id} 有非法目标路径：${JSON.stringify(target)}`);
-      }
-      if (entry.mode === 'copy') {
-        const from = entry.from;
-        if (!from) {
-          fail('patches', `${label} 的 ${id} copy 模式缺少 from（目标 ${target}）`);
-        } else if (!isSafeRelativePath(from)) {
-          // 与 to 同一判据（Rust 侧 `validate_def` 对 from 也调 check_target_path）：
-          // 缺了它，`from: "../../../../etc/passwd"` 或绝对路径能过 CI 门禁，
-          // 审计价值直接归零（P2-18）。
-          fail('patches', `${label} 的 ${id} 的 from 非法（${JSON.stringify(from)}）：只接受补丁目录内的相对路径`);
-        } else if (!existsSync(join(patchDir, from))) {
-          fail('patches', `${label} 的 ${id} 引用的载荷不存在：${from}`);
-        }
-        if (entry.expectSha256 !== undefined) {
-          const hex = String(entry.expectSha256).trim().toLowerCase();
-          if (!/^[0-9a-f]{64}$/.test(hex)) {
-            fail('patches', `${label} 的 ${id} 的 expectSha256 不是 64 位十六进制`);
-          }
-        }
-      } else if (entry.mode === 'replace') {
-        if (!entry.search) {
-          fail('patches', `${label} 的 ${id} replace 模式缺少 search（目标 ${target}）`);
-        }
-        if (entry.replacement === undefined) {
-          fail('patches', `${label} 的 ${id} replace 模式缺少 replacement（目标 ${target}）`);
-        }
-      } else {
-        fail('patches', `${label} 的 ${id} 使用了不支持的模式：${entry.mode}`);
-      }
-    }
-  }
-}
-note(`内置补丁清单有效：${seenPatchIds.size} 个补丁定义`);
 
 // --- 版本一致性 ---------------------------------------------------------------
 //
@@ -987,8 +891,8 @@ function productionRust(text) {
     }
   }
   // ② 旧的跨壳硬拦入口不得复活（名字一旦回来，就有人会再挂一个 Err 上去）。
-  //    只查 kernel.rs：`patches::ensure_workbench_stopped` 是**另一个**同名函数
-  //    （补丁应用 / 撤销的停机守卫），与跨壳判据无关，别把它算进来。
+  //    只查 kernel.rs：补丁子系统已整体删除（2026-10-11），这里曾要排除
+  //    `patches::ensure_workbench_stopped`（补丁应用 / 撤销的停机守卫）。
   if (kernelSrc.includes('ensure_workbench_stopped(')) {
     guardMisses.push(`${kernelFile} 又出现了 ensure_workbench_stopped —— 跨壳判据已降级为提示，硬拦入口不该复活`);
   }
@@ -2422,6 +2326,146 @@ if (ungatedOsImports.length > 0) {
   }
   if (!offenders.length) {
     note('数据目录解析无平台分支：两平台都恒在 ~/.dsh-xlink（无 app_data_dir 兜底）');
+  }
+}
+
+// --- 25. AGENTS.md 不超运行时指令预算 --------------------------------------
+//
+// 运行时（`local-runtime-v2`）只把项目指令的前 32768 字节装进上下文，超出的
+// 部分**被静默丢弃且不产生任何提示**。2026-10-11 实测：本文件 33683 字节，
+// 尾部两节（「## 文档」「## 窗口外观作用域」）从来没被读到过——「修改用户可见
+// 行为要同步更新 README 和 docs」这条纪律写了半年没人看到。
+//
+// 为什么用机械判据钉：体积超限不会让任何编译或测试变红，唯一的症状是「文档
+// 里明明写了却没人遵守」，而读到文档的人根本无从知道自己漏读了哪一段。
+//
+// 上限取 32000，比运行时的 32768 低 768：留出的余量让「下次正常加一条规则」
+// 不会立刻红，而余量用尽时门禁会明确告诉你该把故事搬去
+// `docs/reviews/agent-lessons.md` 而不是删纪律。
+
+{
+  const AGENTS_BYTE_BUDGET = 32000;
+  const agentsPath = join(root, 'AGENTS.md');
+  const bytes = readFileSync(agentsPath).length;
+  if (bytes > AGENTS_BYTE_BUDGET) {
+    fail(
+      'agents-md-byte-budget',
+      `AGENTS.md 已 ${bytes} 字节，超出 ${AGENTS_BYTE_BUDGET} 字节的预算：` +
+        `再写就会掉出运行时前 32768 字节的上下文，且不会有任何提示。` +
+        `把事故经过搬到 docs/reviews/agent-lessons.md，纪律本身留在这里` +
+        `（当前已超 ${bytes - AGENTS_BYTE_BUDGET} 字节）`
+    );
+  } else {
+    note(
+      `AGENTS.md ${bytes} 字节，在 ${AGENTS_BYTE_BUDGET} 字节预算内` +
+        `（距运行时 32768 上限还有 ${32768 - bytes} 字节）`
+    );
+  }
+}
+
+// --- 26. 启动对账不许变成死代码 --------------------------------------------
+//
+// `skills::manage::reconcile` 曾长期定义着却**没有任何生产调用方**：
+// `reconcile_home` 的五个调用点全在 `#[cfg(test)]` 内。后果是
+// `fetch_into_store` 那两步 rename 之间崩溃留下的 `.backup-*`（此刻正式位置
+// 是空的）永远没人收拾，而 `manage.rs` 给用户的原文「下次启动时 reconcile
+// 会接手」承诺的那次启动永远不会到来。
+//
+// 为什么用机械判据钉：调用方消失不会让任何编译或测试变红（`reconcile` 是
+// `pub fn`，且 crate 级 `#![allow(dead_code)]` 把编译器本该指出的声音一并静音），
+// 单测也照样全绿——它测的是 `reconcile_home` 本身，不是「壳启动时会不会跑它」。
+// 判据扫 `lib.rs` 的 `setup` 闭包文本，确保这条恢复路径接在启动流程里。
+//
+// **判据必须匹配未被注释的调用，不能匹配原始文本**：2026-10-11 反向验时把
+// 调用改成 `// MUTATED: ...` 之后判据依然绿——正则照样命中注释里那一份串。
+// 「形状断言会忠实地保护错误的形状」：钉"文本里出现过这个串"钉不住"它在跑"。
+// 所以这里先过 `productionRust`（它剥掉 `#[cfg(test)]` 整块与行注释）再匹配。
+
+{
+  const libPath = join(root, 'src-tauri', 'src', 'lib.rs');
+  const lib = readFileSync(libPath, 'utf8');
+  const setupStart = lib.indexOf('.setup(|app|');
+  const setupBody = setupStart >= 0 ? lib.slice(setupStart, setupStart + 40000) : '';
+  const setupProduction = productionRust(setupBody);
+  if (!/skills::manage::reconcile\(\)/.test(setupProduction)) {
+    fail(
+      'skills-reconcile-wired',
+      'src-tauri/src/lib.rs 的 setup() 里没有生效的 skills::manage::reconcile() 调用：' +
+        '技能中央库的启动对账又变成了死代码，崩溃残留（.backup-*/.new-*/.tmp-*）' +
+        '会无限堆积，而 manage.rs 给用户承诺的「下次启动时 reconcile 会接手」' +
+        '不会兑现。判据只扫 setup 闭包的生产代码——注释里写一遍不算。'
+    );
+  } else {
+    note('技能中央库启动对账接在 setup() 里（崩溃残留有人回收）');
+  }
+}
+
+// --- 27. reconcile 必须带跨进程守卫 ----------------------------------------
+//
+// 第 26 项把 reconcile 接进了 setup，但**接上它本身引入了一个新风险**：技能中央库
+// 与活动视图是两个壳共享的（有意选的，见 AGENTS.md），而 `lock_store()` 只到进程级
+// Mutex。dev 壳正在装技能时它的 `.tmp-<pid>-<nanos>` 还在，release 壳此刻跑对账会
+// ① `recover_staging` 把对方正在用的 `.tmp-*` 当上次崩溃的残留回收掉，
+// ② 孤儿清扫把「清单里还没记录、但活动根里已有链接」的那份技能当孤儿删掉——
+// 正是另一个壳正在装的那一个。
+//
+// 守卫是 `skills/store_busy.rs` 的 `another_writer_active`（判暂存目录名里折着的
+// pid 是否还活着，且目录近期被写过）。它被后人删掉时不会有任何单测变红——那些
+// 测的是那个函数本身，不是「reconcile 有没有用它」——所以接线在这里钉。
+// 与第 26 项同一条纪律：**匹配生产代码，注释里写一遍不算**（判据先过
+// `productionRust`；直接匹配原始文本的话，把调用改成注释会假绿）。
+
+{
+  const managePath = join(root, 'src-tauri', 'src', 'skills', 'manage.rs');
+  const manage = productionRust(readFileSync(managePath, 'utf8'));
+  const start = manage.indexOf('pub fn reconcile()');
+  const body = start >= 0 ? manage.slice(start, start + 2000) : '';
+  if (!/store_busy::another_writer_active/.test(body)) {
+    fail(
+      'skills-reconcile-cross-process-guard',
+      'skills::manage::reconcile() 里没有 store_busy::another_writer_active 调用：' +
+        '技能中央库是两个壳共享的而 lock_store() 只到进程级，dev 壳正在装技能时 ' +
+        'release 壳的对账会把它正在用的暂存目录当崩溃残留回收掉，并把「清单里还没' +
+        '记录、但活动根里已有链接」的那份技能当孤儿删掉——正是另一个壳正在装的那一个。'
+    );
+  } else {
+    note('启动对账带跨进程守卫（另一个壳正在装技能时整轮跳过）');
+  }
+}
+
+// --- 28. 插件中央库的启动对账必须接在 setup() 里 ---------------------------
+//
+// 与第 26 项同一个仓库、同一种事故：**定义在那里、doc 里承诺「下次启动时
+// reconcile 会接手」，但零生产调用方**。2026-10-12 扫出来时，
+// `plugins::center::reconcile_store` 的四个调用点全在 `#[cfg(test)]` 内，于是
+// ① 装/更新/卸载中途崩溃留下的 `tmp-*` / `new-*` / `backup-*` 永久堆积；
+// ②「已发布但目录缺失」的中间态永不修复；③ v0.2.x 平铺中央库的搬迁从未发生。
+//
+// skills 那次修完，plugins 这条一直没人碰——所以单独钉，不指望「顺便发现」。
+// 判据只扫 setup 闭包的生产代码，注释里写一遍不算（与第 26 项同一条纪律：
+// 直接匹配原始文本的话，把调用改成注释会假绿）。
+
+{
+  const libPath = join(root, 'src-tauri', 'src', 'lib.rs');
+  const lib = readFileSync(libPath, 'utf8');
+  // 锚点必须在**原始文本**上找，剥注释只对切出来的闭包体做。顺序反过来
+  // （先 productionRust 全文再找锚点）会踩两个坑：① Tauri 的入口是
+  // `.setup(|app| { … })` **闭包**，`fn setup(` 这个串在 lib.rs 里根本不存在；
+  // ② 剥掉注释后行号与位置全变。第 26 项就是这个顺序，别再抄错。
+  const setupStart = lib.indexOf('.setup(|app|');
+  const setupBody = setupStart >= 0 ? lib.slice(setupStart, setupStart + 40000) : '';
+  const setupProduction = productionRust(setupBody);
+  if (!/plugins::center::reconcile_store\(/.test(setupProduction)) {
+    fail(
+      'plugins-reconcile-wired',
+      'src-tauri/src/lib.rs 的 setup() 里没有生效的 plugins::center::reconcile_store 调用：' +
+        '插件中央库的启动对账又变成了死代码，崩溃残留（tmp-*/new-*/backup-*）会无限堆积，' +
+        '「已发布但目录缺失」的中间态永不修复，v0.2.x 平铺中央库的搬迁也不会发生——' +
+        '而 center.rs 多处注释写着「下次启动时 reconcile 会接手」。' +
+        '判据只扫 setup 闭包的生产代码——注释里写一遍不算。'
+    );
+  } else {
+    note('插件中央库启动对账接在 setup() 里（崩溃残留有人回收）');
   }
 }
 

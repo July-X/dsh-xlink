@@ -2,8 +2,10 @@
 // 设置：Web UI 端口、任务完成通知，以及一张「环境回退与诊断」。
 // 套餐用量查询不设卡：概览页的「套餐用量」卡已提供数据展示 / 刷新 / 测试入口，
 // 凭据本身在工作台模型设置里维护。内置补丁（内核补丁 / 小插件）入口已隐藏——最新
-// 内核已包含相关修复，不再需要从设置页应用；后端 `patch_status` / `patch_apply` /
-// `patch_revert` 与 `ui/src/patches.js` 仍保留，便于旧内核撤销。
+// 补丁的「应用 / 撤销」机制已于 2026-10-11 整体删除：唯一内置的 dsh-file-perf
+// 自 0.1.2-alpha.2 起已被官方内核采纳（适用窗口只剩 0.1.1-rc.1/rc.2 两个版本），
+// 而这个页面的应用入口更早就没了。`plugins/patches.rs` 只留 `applied_patch_ids`
+// 一条只读缝——打过分的老用户磁盘上的 state.json 还在，环境指纹要把它算进去。
 //
 // 卡片顺序：设置 → 任务通知 → 环境回退与诊断。
 // 后一张是**故障时才用得上的兜底**，不是日常要看的东西：概览页是开机第一屏，
@@ -145,7 +147,7 @@ function openStartupRun() {
       </h2>
       <el-form class="settings-form" label-width="100px" label-position="left" @focusin="editing = true" @focusout="editing = false">
         <el-form-item label="Web UI 端口">
-          <div class="btn-row">
+          <div class="btn-row settings-port-row">
             <el-input-number
               v-model="port"
               class="settings-port"

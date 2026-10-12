@@ -28,6 +28,7 @@ pub mod restore_stage {
     pub const PREPARE: &str = "prepare";
     pub const APPLY: &str = "apply";
     pub const VERIFY: &str = "verify";
+    #[allow(dead_code, reason = "运行阶段取值的完整集合，与 PREPARE / APP…")]
     pub const BACKUP: &str = "backup";
 }
 

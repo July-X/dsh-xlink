@@ -74,6 +74,15 @@ pub struct Settings {
 
 /// 安装预检是否生效。**默认开启**：预检只多花十几秒，却能在装坏插件时保住
 /// 用户整个工作环境；关掉它必须是用户自己做的决定，而不是默认值。
+///
+/// **生产路径不调它**（2026-10-12 `--force-warn dead_code` 扫出）：真正决定走
+/// 不走预检的是前端——`PluginsPanel.vue` 读 `view.settings.plugin_precheck`
+/// 决定调 `plugin_precheck_install` 还是直接 `plugin_install`，后端这两个
+/// 命令各自是终态。这条只被 `plugins/precheck.rs` 的测试调用，用途是钉住
+/// 「`None` 按 true 解释」这条**默认值语义不漂**——它在前端也有一份
+/// （`PluginsPanel.vue` 的注释里写着同样的话），两边各写一遍是这个函数还留着的
+/// 唯一理由。真要在后端也用上这个判据，删掉本条标注即可。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn plugin_precheck_enabled(settings: &Settings) -> bool {
     settings.plugin_precheck.unwrap_or(true)
 }
