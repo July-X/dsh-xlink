@@ -107,9 +107,9 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
     BuiltinSpec {
         id: PONYTAIL,
         row_id: "xlink-ponytail",
-        // **只有适配层**（host + adapter）与许可。上游的技能正文（六个 SKILL.md）
-        // 与 hook 脚本**不随包走**（2026-10-12 改）：壳在启用时从上游拉最新并物化
-        // 进实例，host 从物化目录里读。
+        // 现在随包的是适配层（host + adapter + i18n）与许可。上游的技能正文
+        // （六个 SKILL.md）与 hook 脚本**不随包走**（2026-10-12 改）：壳在启用时
+        // 从上游拉最新并物化进实例，host 从物化目录里读。
         //
         // 为什么不再 vendor 进安装包（前一版真的 vendor 了，还为此写过一个逐字
         // 落盘 + 哈希锁定的脚本，那套东西本身是对的）：vendor 会**制造两份内容**
@@ -117,7 +117,13 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
         // 应用才能跟上，用户升级之前一直用旧内容；更要命的是「面板上写的版本」与
         // 「工作台里跑的内容」会分叉，而两边都不报错。现在随包的只有适配层，
         // 内容永远来自一次真实的上游同步。
-        entries: &["host", "adapter", "package.json", "LICENSE"],
+        //
+        // `i18n` 是**中文覆盖层**：上游只有英文版，而它依据哪一版上游由
+        // `i18n/zh-CN/manifest.json` 逐文件记着 sha256。壳把这层物化进去，
+        // host 启动时按指纹覆盖物化目录里那六个 SKILL.md（技能列表、技能正文、
+        // 会话注入的规则集读的是同一批文件）；上游一改，指纹对不上就回落英文。
+        // 不物化它 = 中文层永远到不了实例。
+        entries: &["host", "adapter", "i18n", "package.json", "LICENSE"],
         // host/index.js 实际 import 的两件事：`BUNDLED_SKILL_RANK`（bundled 技能
         // 的优先级 600）与 `dsh-hooks-claude-code` 的 `apply`（把上游 hook 脚本
         // 挂到内核的拦截面上）。不 import 就不该链——多链一个包等于多一条会断

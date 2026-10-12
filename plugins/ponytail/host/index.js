@@ -54,6 +54,7 @@ import { BUNDLED_SKILL_RANK } from "@deepseek-ai/dsh-skill";
 import * as claudeCodeHooks from "@deepseek-ai/dsh-hooks-claude-code";
 
 import { createProvider } from "./skills.js";
+import { applyLocale } from "./i18n.js";
 
 /** 与 `plugins/ponytail/package.json` 的 `name`、接线行 id 三者同值。 */
 const PACKAGE_ID = "xlink-ponytail";
@@ -110,9 +111,17 @@ function attachHooks(ctx) {
 /**
  * 注册技能 provider。
  *
+ * **先覆盖中文层再建 provider**：provider 的候选是在 `createProvider` 里从磁盘读
+ * frontmatter 解析出来的，晚一步覆盖就已经进了 description，而技能列表显示的正是它。
+ * 上游那条注入规则集的 hook 是会话开始时才跑的，它自己读盘，所以它读到的一定是
+ * 覆盖之后的那一份——两处因此拿到同一个文件，不需要再各自处理。
+ *
+ * 覆盖失败不影响技能可用：applyLocale 内部逐文件兜住，真失败也只是保持上游原文。
+ *
  * @param {object} ctx - 携带技能注册表（`ctx.skills`）的上下文。
  */
 function apply(ctx) {
+  const locale = applyLocale(ROOT, { logger: ctx.logger, dshHome: process.env.DSH_HOME });
   const provider = createProvider(ROOT, BUNDLED_SKILL_RANK);
   if (provider.candidates.length === 0) {
     ctx.logger?.warn?.(`${name}: 既没有上游内容也没有自带技能，ponytail 这次不注册任何技能`);
@@ -120,7 +129,8 @@ function apply(ctx) {
   }
   ctx.skills.registerProvider(() => provider);
   ctx.logger?.info?.(
-    `${name}: 已注册 ${provider.candidates.length} 个技能（${provider.candidates.map((c) => c.name).join(", ")}）`,
+    `${name}: 已注册 ${provider.candidates.length} 个技能（${provider.candidates.map((c) => c.name).join(", ")}）` +
+      (locale.applied.length > 0 ? `；${locale.reason}` : ""),
   );
   try {
     attachHooks(ctx);

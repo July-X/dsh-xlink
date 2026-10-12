@@ -457,7 +457,7 @@ mod tests {
     #[test]
     fn hook_state_dir_stays_inside_our_own_data_dir() {
         let home = temp_home("state-dir");
-        let dir = state_dir(&home, &super::super::builtins::find("ponytail").unwrap());
+        let dir = state_dir(&home, super::super::builtins::find("ponytail").unwrap());
         assert!(
             dir.starts_with(&home),
             "状态目录必须落在 DSH_HOME 下面，实际 {}",
