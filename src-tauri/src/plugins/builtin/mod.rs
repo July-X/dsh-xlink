@@ -21,6 +21,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) mod bridge;
+pub(crate) mod bridge_credential;
 pub(crate) mod builtins;
 pub(crate) mod cmd;
 pub(crate) mod materialize;

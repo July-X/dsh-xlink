@@ -20,10 +20,18 @@
 //!
 //! 只有一个端点：`POST /v1/builtin/sync`。加端点时想清楚「谁会调它」——
 //! 这个桥的调用方是模型能触达的代码，能力面越小越好。
+//!
+//! ## 凭据有第二条路
+//!
+//! 地址与令牌除环境变量外，壳还会在每个已物化插件的根目录写一份 0600 的
+//! `.xlink-bridge.json`：模型跑 `adapter/update.mjs` 的那条链**不继承内核的环境**，
+//! 只走 env 时它稳定报「找不到同步桥」而桥其实活着（2026-10-12 真机实测）。
+//! 见 [`super::bridge_credential`]。
 
 use std::collections::HashMap;
+use std::fs;
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -34,6 +42,9 @@ struct Bridge {
     addr: std::net::SocketAddr,
     token: String,
     shutdown: Arc<AtomicBool>,
+    /// 凭据文件路径。`Drop` 时删掉——留着会让下一代的脚本拿着死令牌去请求，
+    /// 报一个比真实原因更难查的 401。
+    credentials: Vec<PathBuf>,
 }
 
 impl Drop for Bridge {
@@ -41,6 +52,9 @@ impl Drop for Bridge {
         self.shutdown.store(true, Ordering::SeqCst);
         // 唤醒阻塞在 accept 上的线程：连一次自己。
         let _ = TcpStream::connect(self.addr);
+        for path in &self.credentials {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
@@ -68,10 +82,12 @@ pub(crate) fn launch(dsh_home: &Path, scope_key: &str) -> Option<(String, String
     let listener = TcpListener::bind("127.0.0.1:0").ok()?;
     let addr = listener.local_addr().ok()?;
     let token = new_token();
+    let url = format!("http://{addr}");
     let bridge = Arc::new(Bridge {
         addr,
         token: token.clone(),
         shutdown: Arc::new(AtomicBool::new(false)),
+        credentials: super::bridge_credential::write_all(dsh_home, &url, &token),
     });
     bridges()
         .lock()
@@ -91,7 +107,7 @@ pub(crate) fn launch(dsh_home: &Path, scope_key: &str) -> Option<(String, String
             std::thread::spawn(move || serve(&mut stream, &token, &dsh_home));
         }
     });
-    Some((format!("http://{addr}"), token))
+    Some((url, token))
 }
 
 fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path) {
@@ -196,6 +212,13 @@ fn query_value(path: &str, key: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("xlink-bridge-{}-{}", std::process::id(), tag));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn query_value_reads_the_plugin_name() {
         assert_eq!(
@@ -221,5 +244,25 @@ mod tests {
             query_value("/v1/builtin/sync?plugin=", "plugin").as_deref(),
             Some("")
         );
+    }
+
+    #[test]
+    fn dropping_the_bridge_removes_the_credential_file() {
+        use super::super::bridge_credential::CREDENTIAL_FILE;
+        let dir = temp_dir("drop");
+        let path = dir.join(CREDENTIAL_FILE);
+        fs::write(&path, "{}").expect("写凭据");
+        assert!(path.exists());
+        {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let bridge = Bridge {
+                addr: listener.local_addr().expect("addr"),
+                token: "t".to_string(),
+                shutdown: Arc::new(AtomicBool::new(false)),
+                credentials: vec![path.clone()],
+            };
+            drop(bridge);
+        }
+        assert!(!path.exists(), "凭据文件没有随桥一起删掉");
     }
 }

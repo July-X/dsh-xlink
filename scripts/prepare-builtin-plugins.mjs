@@ -46,11 +46,15 @@ const BUILTINS = [
   },
   {
     id: 'ponytail',
-    // **只有适配层**（host + adapter）与许可：上游的技能正文与 hook 脚本**不随包
+    // **只有适配层**（host + adapter + i18n）与许可：上游的技能正文与 hook 脚本**不随包
     // 走**（2026-10-12 改）。它们由壳在启用时从上游拉取并物化进实例——这样上游
     // 改一次不必重发一版 dsh-xlink，也不会出现「仓库里那份与用户手上的那份不是
     // 同一个版本」。
-    entries: ['host', 'adapter', 'package.json', 'LICENSE'],
+    //
+    // `i18n` 是中文覆盖层（上游只有英文版），它依据哪一版上游由
+    // `i18n/zh-CN/manifest.json` 逐文件记着 sha256；壳物化它，host 启动时按指纹
+    // 覆盖物化目录里那六个 SKILL.md，上游一改就对不上而回落英文。
+    entries: ['host', 'adapter', 'i18n', 'package.json', 'LICENSE'],
   },
 ];
 

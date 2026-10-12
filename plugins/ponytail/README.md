@@ -7,7 +7,7 @@
 
 | | 随应用分发 | 不分发 |
 | --- | --- | --- |
-| 内容 | `host/`（Host 适配器）、`adapter/`（更新脚本 + `ponytail-update` 技能）、`LICENSE` | 六个 `SKILL.md`、`hooks/`（规则注入与档位切换） |
+| 内容 | `host/`（Host 适配器）、`adapter/`（更新脚本 + `ponytail-update` 技能）、`i18n/`（中文层）、`LICENSE` | 六个 `SKILL.md`、`hooks/`（规则注入与档位切换） |
 
 上游内容由**桌面壳**在启用时从 npm 拉取（默认 registry 是 npmmirror），校验
 `dist.integrity` 后解包到实例的物化目录。Host 适配器从那里读。
@@ -18,6 +18,57 @@
 一直用旧内容；更要命的是「面板上写的版本」与「工作台里跑的内容」会分叉，而两边
 都不报错。顺带一个真实事故：第一版手写转录时丢了一个逗号，文件**大小完全相同**
 （2901 字节）而内容有 122 字节位移 —— 当时 README 写着「逐字 vendor」。
+
+## 中文层（`i18n/zh-CN/`）
+
+上游只有英文版。用户要中文，而规则与技能正文都是**指令文本、整体进模型上下文**
+的 —— 那是最该说人话的地方。所以适配层自带一份中文副本。
+
+### 覆盖的是哪一层，为什么
+
+工作台里 ponytail 的三处 prompt 全部来自物化目录里 `<root>/skills/<name>/SKILL.md`
+这**同一批文件**：
+
+| 出现在哪 | 谁在读 |
+| --- | --- |
+| 技能列表里的 description | `host/skills.js` 的 provider（解析 frontmatter） |
+| 技能正文 | provider 的 `get()` |
+| 会话开始注入的规则集 | 上游 `hooks/ponytail-instructions.js`，**直接读盘、绕过 provider** |
+
+所以 `host/i18n.js` 在内核启动、**建 provider 之前**把物化目录里那六个文件换成
+中文。第三处是每轮会话开头进上下文的那份；只在 provider 层拦截的话它仍是英文 ——
+而覆盖文件本身一次就覆盖了三处，**不用改上游任何一行 JS**。
+
+### 陈旧怎么判定
+
+`i18n/zh-CN/manifest.json` 逐文件记着 sha256：这份译文所依据的那一版上游长什么样。
+每次启动按指纹分四种情况：
+
+| 当前物化文件的指纹 | 处置 |
+| --- | --- |
+| 等于现译文的 | 什么都不做（幂等） |
+| 等于上次写下的译文（我们改了中文层） | 重写新译文 |
+| 等于 manifest 记的上游指纹 | **先备份上游原件**再覆盖 |
+| 三者都不是 | 上游已更新：**有原件就回落英文**，没有就一个字不动（当前那份就是新的上游原文） |
+
+**陈旧靠指纹，不靠版本号**：物化目录里没有上游版本号可读（`skills/plugin.json`
+是技能清单，根上的 `package.json` 是我们自己的），而指纹还多分辨出一件事 ——
+上游改了内容但没发版。
+
+### 改译文时必须守的两条
+
+1. **档位标签保持字面的 `**lite**` / `**full**` / `**ultra**`。** 上游的
+   `filterSkillBodyForMode` 按「表格首列的加粗标签」筛行，译成 `**全量**` 的话
+   full 档会把那一行**整行删掉** —— 文件读起来完全正常，只有注入给模型的规则集少了
+   一条。`test/i18n.test.mjs` 拿上游自己的规则逐档验这条。
+2. **正文用全角冒号「：」。** 同一个过滤器还有一条 `- <词>: "…"` 的示范行规则，
+   半角冒号加引号的普通条目会被误认成示范行，在其它档位被删。
+
+### 这不是「两份内容」
+
+上游正文仍然**只有一份**，随 npm 更新自动跟随。中文层是**我们自己的资产**，
+并且明确记着自己停在哪一版上游 —— 上游一改，指纹对不上就回落英文并把陈旧报进
+日志，而不是拿一份旧中文假装自己是最新的。
 
 ## 上游坐标与许可
 
@@ -37,12 +88,28 @@
 | 启用插件 | 同步一次；**失败会当场拦下启用**并说明原因（用户手上因此不会有一个「装上了但没有内容」的插件） |
 | 每次启动工作台 | 检查一次，按 24 小时节流；失败走 30 分钟短退避、不消耗每日额度 |
 | 面板「检查更新」 | 立即拉一次 |
-| 工作台里 `/ponytail-update` | 立即拉一次，并汇报结果（技能会跑 `adapter/update.mjs`，它请求桌面壳的���环桥） |
+| 工作台里 `/ponytail-update` | 立即拉一次，并汇报结果（技能会跑 `adapter/update.mjs`，它请求桌面壳的回环桥） |
 
 同步**只写数据目录**（`<DSH_HOME>/plugins/builtin/ponytail/upstream/<版本>/`），
 永远不改随包产物，也不碰实例的物化目录与接线行。失败时继续用手上那一版。
 
 换内容要**重启工作台**才生效（工作台已经加载过旧的），面板与技能文案都这么说。
+
+### 桥的凭据走两条路（env 那条实测不通）
+
+壳把地址与令牌注进**内核进程**的环境。但 `/ponytail-update` 是**模型**在工作台里
+用 shell 工具执行的，那条链**不继承内核的环境** —— 2026-10-12 用户实测这个脚本
+稳定报「找不到同步桥」，而同一时刻 `ps eww <内核 pid>` 里两个变量都在、桥也活着
+（直接打 `/v1/ping` 返 200，打 `/v1/builtin/sync` 返 `{"version":"5.1.0","error":""}`）。
+
+所以壳**另外**在每个已物化插件的根目录写一份 `.xlink-bridge.json`（0600，Unix 上
+只有本人可读；只有自带 `adapter/update.mjs` 的插件才写），脚本 **env 优先、文件兜底**，
+路径由脚本自己的位置推出（`adapter/../`），不依赖环境变量去猜 `DSH_HOME`。
+内核正常停止时文件随桥一起删掉；被强杀时残留的死令牌会得到一句专门的话而不是通用
+的 401。
+
+**这不放宽威胁模型**：令牌原本就在环境变量里，而 macOS 上同用户本来就能用 `ps eww`
+读到它。变的只是传递通道，不是能读到它的人。
 
 ## hook 怎么用
 
@@ -87,21 +154,28 @@ hook 配置，所以**上游脚本一个字都不用改**。
 - **statusline 徽标**（`ponytail-statusline.sh` / `.ps1`）：宿主没有可配置的
   状态栏，没有对应面。
 - `ponytail-gain` 的收益记分牌依赖上游的基准数据与宿主侧统计展示。
-- 规则正文与技能正文是**上游英文原文**（上游没有中文版）；面板说明是中文。
+- 注入文本的**第一行**仍是上游写死的英文档位声明（`PONYTAIL MODE ACTIVE — level: full`，
+  在 `hooks/ponytail-instructions.js` 里拼的）。正文已经是中文；那行要中文化就得
+  fork 上游那个脚本，不值当。
 
 ## 目录结构
 
 ```
 plugins/ponytail/
-  host/index.js                 Host 适配器：注册 provider + 挂 hook 桥
+  host/index.js                 Host 适配器：应用中文层 + 注册 provider + 挂 hook 桥
   host/skills.js                发现 / 解析 / provider 工厂（无外部依赖，可被测试 import）
-  adapter/update.mjs            /ponytail-update 的执行体（请求壳同步）
+  host/i18n.js                  中文覆盖 / 回落（纯文件操作，可被测试 import）
+  adapter/update.mjs            /ponytail-update 的执行体（请求壳同步；env 优先，凭据文件兜底）
   adapter/skills/ponytail-update/SKILL.md
+  i18n/zh-CN/manifest.json      逐文件的上游 sha256（陈旧判定的唯一依据）
+  i18n/zh-CN/skills/*/SKILL.md  六个技能的中文副本
   test/smoke.test.mjs           跑真实 provider，抄内核的 validateCandidate 校验
+  test/i18n.test.mjs            覆盖 / 回落 / 幂等 / 陈旧；拿上游自己的裁剪规则验译文
   package.json / LICENSE / README.md
 ```
 
-`host/skills.js` 与 `index.js` 分开是有原因的：前者**不依赖任何 `@deepseek-ai`
-包**（rank 由调用方传入），所以 `npm run check` 里的冒烟测试能 import 它并**真的
-把 provider 跑一遍**。第一版把两者写在一起，测试只好读源码文本，于是「`list()`
-少填了 source / rank / provider」一路绿灯直到真机启动才炸。
+`host/skills.js`、`host/i18n.js` 与 `index.js` 分开是有原因的：前两者**不依赖任何
+`@deepseek-ai` 包**（rank 由调用方传入），所以 `npm run check` 里的测试能 import
+它们并**真的把 provider 与覆盖逻辑跑一遍**。第一版把解析器写在 `index.js` 里，测试
+只好读源码文本，于是「`list()` 少填了 source / rank / provider」一路绿灯直到真机
+启动才炸。

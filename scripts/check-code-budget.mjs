@@ -274,6 +274,13 @@ const FILE_BUDGETS = {
   // openai/bridge.rs 同形状但**独立**：那个桥的端点与鉴权属于 OpenAI 插件的
   // 协议面，混进来会让「哪些端点归谁」变得要看另一个文件才知道。
   'src-tauri/src/plugins/builtin/bridge.rs': 150,
+  // 2026-10-12：桥的**凭据落盘**（把地址与令牌另写一份 0600 的 .xlink-bridge.json
+  // 到每个已物化插件根下）。从 bridge.rs 拆出来的理由：桥本身是「回环 HTTP 服务 +
+  // 鉴权 + 单端点」，凭据落盘是「往磁盘上放一个别的进程要读的文件」——两者的
+  // 失败模式、权限面与读者都不同。混在一起时「改端点会不会碰到令牌落盘」和
+  // 「改落盘路径会不会碰到鉴权」都得翻同一个文件才答得上来，而两个都不是
+  // 对方的前置条件。bridge.rs 的预算**一个数字没动**（150），拆出去而不是调数字。
+  'src-tauri/src/plugins/builtin/bridge_credential.rs': 70,   // cargo fmt 之后的实测值
   // 85 → 171：P1 收尾——set_enabled 写命令进本文件（守卫链：dsh 族 /
   // 实例存在 / 未被另一壳占用 / 内核已停止 → 变更前快照 → 启停事务 →
   // 意图落盘），与 status 共用 resolve_target / status_payload。仍是
