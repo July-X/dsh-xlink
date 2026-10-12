@@ -1965,11 +1965,7 @@ pub fn stop(child: &mut Child) -> Result<(), AppError> {
     }
     #[cfg(windows)]
     {
-        let pid = child.id().to_string();
-        let mut cmd = crate::shell::process::command_with_path("taskkill");
-        cmd.args(["/PID", &pid, "/T", "/F"]);
-        // quiet 只在 Windows 分支用到：不进顶层 import，避免其他平台报未使用。
-        let _ = crate::shell::process::quiet(&mut cmd).status();
+        crate::shell::process::kill_process_tree_windows(child.id());
         let _ = child.wait();
     }
     // 如实复查：旧实现无论结果都返回 `Ok`，于是 UI 一律提示「已关闭工作台」，
@@ -2542,10 +2538,7 @@ pub fn kill_pid(pid: u32, port: Option<u16>) {
     }
     #[cfg(windows)]
     {
-        let mut cmd = crate::shell::process::command_with_path("taskkill");
-        cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
-        // quiet 只在 Windows 分支用到：不进顶层 import，避免其他平台报未使用。
-        let _ = crate::shell::process::quiet(&mut cmd).status();
+        crate::shell::process::kill_process_tree_windows(pid);
     }
 }
 
