@@ -10,6 +10,24 @@ import { createProvider, parseSkill, PROVIDER_NAME, SKILL_NAME_RE } from '../hos
 const pluginRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const hostSource = readFileSync(join(pluginRoot, 'host', 'index.js'), 'utf8');
 
+/**
+ * 剥掉 JS 注释再扫形状。
+ *
+ * 本仓的老坑（AGENTS.md 里有专章）：本文件的模块注释里**原样引用了被判据的代码**
+ * （「第一版写的是 `ctx.plugin({ name, apply: … })`」那段）。不剥的话，
+ * 「不许出现 `ctx.plugin({`」这条会被自己写的说明当成命中——判据因为错误的原因
+ * 而红，而红的原因与被测行为无关。
+ */
+function stripJsComments(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .split('\n')
+    .map((line) => line.replace(/(^|\s)\/\/.*$/u, '$1'))
+    .join('\n');
+}
+
+const hostCode = stripJsComments(hostSource);
+
 /** 与内核 `dsh-skill` 的 `BUNDLED_SKILL_RANK` 同值。上游若改了这个数字、
  *  本仓还按旧数字注册时，下面那条断言就是那个看得见的信号。 */
 const BUNDLED_SKILL_RANK = 600;
@@ -147,32 +165,45 @@ test('上游还没同步时，插件仍注册我们自己的技能（不是空�
 });
 
 test('host 适配器只是装配：声明了注册技能所需的东西', () => {
-  assert.match(hostSource, /const inject = \["skills"\]/u, '必须声明 inject = ["skills"]');
-  assert.match(hostSource, /const PACKAGE_ID = "xlink-ponytail"/u);
-  assert.match(hostSource, /registerProvider\(/u, '必须调用 ctx.skills.registerProvider');
+  assert.match(hostCode, /const inject = \["skills"\]/u, '必须声明 inject = ["skills"]');
+  assert.match(hostCode, /const PACKAGE_ID = "xlink-ponytail"/u);
+  assert.match(hostCode, /registerProvider\(/u, '必须调用 ctx.skills.registerProvider');
   assert.match(
-    hostSource,
+    hostCode,
     /createProvider\(ROOT, BUNDLED_SKILL_RANK\)/u,
     'provider 必须用内核给的 rank、并以**插件根**构造（上游内容在 skills/，自带技能在 adapter/skills/）',
   );
   assert.match(
-    hostSource,
-    /from "@deepseek-ai\/dsh-hooks-claude-code"/u,
-    '必须 import 内核的 Claude Code hook 桥——上游的档位切换与会话级注入靠它',
+    hostCode,
+    /import \* as claudeCodeHooks from "@deepseek-ai\/dsh-hooks-claude-code"/u,
+    '必须以**整个模块命名空间** import 桥：它自己声明 inject（["shell","sessionProjections"]）',
   );
-  assert.match(hostSource, /ctx\.plugin\(/u, '桥要由这里显式挂上去（它不扫插件目录）');
+  assert.match(
+    hostCode,
+    /ctx\.plugin\(claudeCodeHooks,\s*\{/u,
+    'ctx.plugin 收的必须是导入的那个插件对象本身',
+  );
+  // 第一版写的是 `ctx.plugin({ name, apply: applyClaudeCodeHooks }, …)`：那个对象
+  // 字面量没有 inject，cordis 拒绝注入，真机每次开新对话都报
+  // `cannot get property "shell" without inject`。手工包一层 = 手工抄属性，
+  // 而漏抄的症状与「你少写了一个字段」毫无关系。
+  assert.doesNotMatch(
+    hostCode,
+    /ctx\.plugin\(\s*\{/u,
+    '不许手写插件对象字面量传给 ctx.plugin：它必然漏掉桥自己的 inject',
+  );
   // 600 这个数字**不许**在代码里再抄一份：抄一份的话，内核改优先级时本仓会
   // 安静地按旧值注册。所以判据钉的是「它从包 import 来」，而不是「它等于 600」。
   assert.match(
-    hostSource,
+    hostCode,
     /import \{ BUNDLED_SKILL_RANK \} from "@deepseek-ai\/dsh-skill";/u,
     'BUNDLED_SKILL_RANK 必须从内核包 import，不能抄成字面量',
   );
-  assert.doesNotMatch(hostSource, /BUNDLED_SKILL_RANK\s*=\s*\d/u);
+  assert.doesNotMatch(hostCode, /BUNDLED_SKILL_RANK\s*=\s*\d/u);
   // 候选字段不许在 index.js 里再拼一份：第一版就是这么把 list() 拼漏的
   // （只填了 name/description），而当时判据读源码看到 rank 在文件里就放行了。
   assert.doesNotMatch(
-    hostSource,
+    hostCode,
     /source:\s*['"]bundled['"]|rank:\s*BUNDLED_SKILL_RANK|invocation:\s*\{/u,
     '候选字段只在 skills.js 里构造一次：index.js 拼第二份就是第一版那个 bug 的形状',
   );

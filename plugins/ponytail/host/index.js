@@ -44,7 +44,14 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { BUNDLED_SKILL_RANK } from "@deepseek-ai/dsh-skill";
-import { apply as applyClaudeCodeHooks } from "@deepseek-ai/dsh-hooks-claude-code";
+// **整个命名空间挂上去，不取其中一项**：桥自己声明 `inject: ["shell",
+// "sessionProjections"]`，而第一版写的是
+// `ctx.plugin({ name, apply: applyClaudeCodeHooks }, …)` —— 那个对象字面量里
+// 没有 inject，cordis 于是拒绝注入，真机表现为每次开新对话都报
+// `cannot get property "shell" without inject`（2026-10-12 用户实测）。
+// 手工包一层 = 手工抄一份属性，而抄漏的那份不报「你少写了 inject」，它报的是
+// 一个看起来毫不相关的运行时错误。传命名空间，属性天然齐全。
+import * as claudeCodeHooks from "@deepseek-ai/dsh-hooks-claude-code";
 
 import { createProvider } from "./skills.js";
 
@@ -78,6 +85,11 @@ const HOOKS_CONFIG = join(ROOT, "hooks", "claude-codex-hooks.json");
  * **桥不扫插件目录**：`configPath` 必填，没有「自动发现 `<plugin>/hooks.json`」
  * 这回事（那一条在内核里还是 TODO）。所以必须由这里显式挂上去。
  *
+ * 挂的是**内核那个插件对象本身**（模块命名空间），不是手写的 `{ name, apply }`：
+ * 桥声明了 `inject: ["shell", "sessionProjections"]`，手抄一份十有八九漏掉
+ * `inject`，而漏掉的症状是 `cannot get property "shell" without inject` ——
+ * 一条与「你少写了一个字段」看不出关系的运行时错误（2026-10-12 真机踩过）。
+ *
  * `hooks/` 来自上游同步，**尚未同步时不存在**——那时不挂也不报错：技能仍可用，
  * 只是没有「会话启动即注入」与档位切换。
  *
@@ -88,7 +100,7 @@ function attachHooks(ctx) {
     ctx.logger?.info?.(`${name}: 还没有上游内容（尚未同步），本次不挂 hook`);
     return;
   }
-  ctx.plugin({ name: "ponytail-hooks", apply: applyClaudeCodeHooks }, {
+  ctx.plugin(claudeCodeHooks, {
     configPath: HOOKS_CONFIG,
     pluginRoot: ROOT,
   });
