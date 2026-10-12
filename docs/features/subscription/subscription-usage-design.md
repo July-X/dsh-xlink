@@ -348,16 +348,29 @@ HTTP 200 并包含两个额度窗口。因此此前把问题归为「账号 id �
   Cloudflare 后面**，按出口签名拦人时同样是 403（2026-10-12 实测 Python-urllib 的 UA 被
   拦，curl / node 的 UA 都过）；壳发的请求统一带 `dsh-xlink/<版本>` 的 UA。若某天出现
   「密钥明明有效却报凭据无效且 HTTP 403」，先怀疑出口签名，别让用户去重发密钥。
-- **route 归类是精确匹配 `opencode-go`，不是「包含 opencode」**（2026-10-12 评审定案）：
-  内核目录里 `opencode`（Zen，引用名 `OPENCODE_API_KEY`）与 `opencode-go`（Go）是并列两行，
-  `resolve_provider` 取的是**第一个**归类命中的绑定——模糊匹配会让 Zen 的 Key 被发去 Go 的
-  容量端点（401 → 还会被标成 `expired`，而 expired 条目不参与自动刷新，错误会一直黏着），
-  只有 Zen 的用户还会凭空多出一个查不到数据的分区。
-- **残留缺口（如实记）**：pi-ai 自己的 env 兜底把两条 route 都映到 `OPENCODE_API_KEY`，而
-  模型页的派生规则是 route 名大写（`OPENCODE_GO_API_KEY`）。因此「只在环境变量里 export
-  `OPENCODE_API_KEY`、profile 又没有显式 `apiKeyEnv`」的用户，本功能判成未配置（Go 分区
-  不出现）——宁可少一个分区，也不拿 Zen 的凭据去查 Go 的容量。走模型设置页配置的用户
-  （profile 里会写下派生出的 `apiKeyEnv`）不受影响。
+- **route 归类认 `opencode-go` 与 `opencode` 两个官方 route 名，不按前缀猜**
+  （2026-10-13 修订，此前只认 `opencode-go`）：内核目录里 `opencode-go`（Go）与
+  `opencode`（Zen）是并列两行，引用名分别是 `OPENCODE_GO_API_KEY` /
+  `OPENCODE_API_KEY`。**两行都认的判据是实测**：容量端点认的是 workspace 的那把
+  Key，与 route 名无关——只配了 Zen 行的账号，同一把 Key 打 `/zen/go/v1/usage`
+  得到 HTTP 200 与三窗口（2026-10-13 真机；opencode 自己的模型也是「一个
+  workspace 一把 Key，Go 是 workspace 的订阅」）。旧写法只认 `opencode-go`，于是
+  route 叫 `opencode` 的账号**整条分区不显示**（2026-10-13 用户报的就是这个）。
+  `opencode-ox` / `opencode-zen` 这类自建 route 仍然不认——按前缀猜等于替用户
+  猜账号。取凭据时用的是**那一行自己写的 `apiKeyEnv`**，所以两行同时存在时命中
+  哪一行都能查到同一个账号的容量。
+- **官方文档里没有「Go 套餐余额」接口**（2026-10-13 核对 opencode v2 文档）：
+  `/v2/docs/console/go` 只给「每模型月度美元上限 + 5h/周/月 = 20%/50%/100% 的
+  折算规则」，`/v2/docs/console/billing` 说余额看 Console 的 Credits 卡片，
+  而 `/v2/docs/console/api` 那套 Console API 是**服务账号**（`oc_sk_`）的
+  workspace 配置与预算，不是个人订阅的余额端点。所以本功能继续用这个第一方
+  用量端点（社区插件同源），**不引入新的凭据来源**。
+- **残留缺口（如实记）**：两行 route 都没配、只往环境里 export 了
+  `OPENCODE_API_KEY` 的用户，本功能按默认派生名 `OPENCODE_GO_API_KEY` 去找，
+  判成未配置（分区不出现）——宁可少一个分区，也不拿猜出来的名字去查别人的账号。
+  走模型设置页配置的用户（profile 里会写下 `apiKeyEnv`）不受影响。另一处未核实：
+  **没有 Go 订阅的 workspace** 打这个端点会拿到什么状态码（手上没有那种账号）；
+  无论哪种失败路径都不会补数据（见上一条 401/403 的处置）。
 
 ## 凭据设计
 
@@ -402,9 +415,10 @@ DSH 的 `credentials.describe` 只返回 `configured`、来源和可写性，不
 `~/.local/share/opencode/auth.json`（opencode CLI 自己的凭据库），读它技术上可行——社区
 的 opencode 插件就是这么做的——但那是**另一个应用的凭据库**：读它等于本功能多一条用户没
 同意过的凭据来源，而 Codex 额度那条已经为「跨应用凭据读取要显式许可」立过规矩。因此
-opencode Go 的密钥取内核模型设置里 `opencode-go` provider 的 `OPENCODE_GO_API_KEY`
-（`credentials.rs` 的默认派生规则），用户配一次两处都在用；`auth.json` 一个字都不读，
-面板与文档也不提它（避免用户以为「在 opencode 里登录就够了」）。
+opencode Go 的密钥取内核模型设置里 opencode 那两行 route 各自写的 `apiKeyEnv`
+（`opencode-go` → `OPENCODE_GO_API_KEY`，Zen 的 `opencode` → `OPENCODE_API_KEY`；后者
+2026-10-13 起也认，实测同一把 workspace Key 能查 Go 容量），用户配一次两处都在用；
+`auth.json` 一个字都不读，面板与文档也不提它（避免用户以为「在 opencode 里登录就够了」）。
 
 ### 设置页交互（`SettingsPanel.vue`）
 
