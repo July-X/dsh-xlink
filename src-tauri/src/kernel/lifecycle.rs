@@ -80,6 +80,7 @@ pub(crate) const KERNEL_BIN_REL: &str = "node_modules/@deepseek-ai/dsh/lib/bin.j
 /// `data_dir` 的那个孤儿。漏掉的方向是安全的——行为退回「端口已被占用，
 /// 另一次启动继续回收」，而多探测只会更卡。每次启动都会杀掉它看见的孤儿，
 /// 所以真堆到 8 个以上也会在两三次启动内收敛。
+#[allow(dead_code, reason = "唯一读点在 reap_orphans 的 #[cfg(unix)] 块内")]
 const MAX_ORPHAN_CANDIDATES: usize = 8;
 
 /// 磁盘上已安装的一个内核版本。
