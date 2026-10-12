@@ -1,10 +1,11 @@
-//! 内嵌 openai-oauth 插件的指纹计算与实例内物化。
+//! 内嵌插件的指纹计算与实例内物化。
 //!
-//! 物化配方来自 P0 调查 §5 的三版本实测：复制**运行时文件集**
-//! （`host/`、`client/`、`locales/`、`package.json`——`test/` 与
-//! README 不进实例）到「插件版本 + 内核依赖指纹」目录，并在目录内建
-//! peer 链接把 `@deepseek-ai/dsh-llm` 指向目标内核树的同一份实现。
-//! 对内核安装树**只读**：peer 链接指向它，绝不写入。
+//! 物化配方来自 P0 调查 §5 的三版本实测：复制**运行时文件集**到
+//! 「插件版本 + 内核依赖指纹」目录，并在目录内建 peer 链接把用到的
+//! `@deepseek-ai` 包指向目标内核树的同一份实现。**文件集与 peer 列表都是
+//! 参数**（2026-10-12 起随第二个内置插件进来）：它们按插件各写一份写死在
+//! 顶部时，加一个不发布 client 卡、不带本地化文案的插件就得先在这里编一个
+//! 假的 `client/` 目录出来。对内核安装树**只读**：peer 链接指向它，绝不写入。
 //!
 //! 写入走「staging 目录 + 原子改名」：同路径重物化（开发期同版本更新
 //! 源码）时才删除旧目录，且调用方契约要求实例已停止（设计 §3.1）。
@@ -13,10 +14,11 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use crate::plugins::builtin::builtins::BuiltinSpec;
 use crate::plugins::center::{copy_tree, make_dir_link};
 
-/// 运行时文件集：除此之外的包内容（test/、README）不进实例。
-pub(crate) const RUNTIME_ENTRIES: [&str; 4] = ["host", "client", "locales", "package.json"];
+/// 资源清单的文件名（由 `scripts/prepare-builtin-plugins.mjs` 生成）。
+pub(crate) const MANIFEST_FILE: &str = "manifest.json";
 
 /// 物化完成标记的文件名。内容是 JSON：`{pluginVersion, fingerprint, sourceHash}`。
 pub(crate) const MARKER_FILE: &str = ".xlink-materialized.json";
@@ -99,9 +101,6 @@ pub(crate) fn relative_entry(from_dir: &Path, target: &Path) -> String {
     parts.join("/")
 }
 
-/// 资源清单的文件名（由 `scripts/prepare-builtin-plugins.mjs` 生成）。
-pub(crate) const MANIFEST_FILE: &str = "manifest.json";
-
 /// 校验资源清单（fail-closed，dev plan §6.2）：清单存在时逐文件核对
 /// sha256 与字节数，任何缺失或不一致都报错——启用事务宁可不发生。
 /// 仓库源码目录（dev 回退路径）没有清单，跳过校验：它就是源码本身、
@@ -169,6 +168,7 @@ pub(crate) fn verify_manifest(plugin_source: &Path) -> Result<(), String> {
 /// （开发期源码更新）则 staging 构建后整体替换——调用方必须保证实例
 /// 已停止，`target` 是本插件自有目录。
 pub(crate) fn materialize(
+    spec: &BuiltinSpec,
     plugin_source: &Path,
     target: &Path,
     kernel_root: &Path,
@@ -176,7 +176,7 @@ pub(crate) fn materialize(
     fingerprint: &str,
 ) -> Result<(), String> {
     verify_manifest(plugin_source)?;
-    let source_hash = runtime_digest(plugin_source).map_err(|e| {
+    let source_hash = runtime_digest(spec, plugin_source).map_err(|e| {
         format!(
             "读取插件运行时文件失败（{}）：{e}；请重新构建或安装应用",
             plugin_source.display()
@@ -188,9 +188,10 @@ pub(crate) fn materialize(
         if parsed.get("pluginVersion").and_then(|v| v.as_str()) == Some(version)
             && parsed.get("fingerprint").and_then(|v| v.as_str()) == Some(fingerprint)
             && parsed.get("sourceHash").and_then(|v| v.as_str()) == Some(source_hash.as_str())
-            && runtime_digest(target).ok().as_deref() == Some(source_hash.as_str())
+            && runtime_digest(spec, target).ok().as_deref() == Some(source_hash.as_str())
         {
             ensure_peer_link(
+                spec,
                 &target.join("node_modules").join("@deepseek-ai"),
                 kernel_root,
             )?;
@@ -206,7 +207,7 @@ pub(crate) fn materialize(
         target.file_name().unwrap_or_default().to_string_lossy()
     ));
     let _ = fs::remove_dir_all(&staging);
-    for entry in RUNTIME_ENTRIES {
+    for entry in spec.entries {
         let source = plugin_source.join(entry);
         if !source.exists() {
             return Err(format!(
@@ -234,6 +235,7 @@ pub(crate) fn materialize(
         }
     }
     ensure_peer_link(
+        spec,
         &staging.join("node_modules").join("@deepseek-ai"),
         kernel_root,
     )?;
@@ -255,7 +257,7 @@ pub(crate) fn materialize(
 }
 
 /// 摘要覆盖路径与文件字节，目录排序保证稳定；只扫描运行时入口，不跟随 peer 链接。
-fn runtime_digest(root: &Path) -> io::Result<String> {
+fn runtime_digest(spec: &BuiltinSpec, root: &Path) -> io::Result<String> {
     use sha2::{Digest, Sha256};
     fn visit(root: &Path, path: &Path, hash: &mut Sha256) -> io::Result<()> {
         let name = path.strip_prefix(root).unwrap().to_string_lossy();
@@ -275,25 +277,33 @@ fn runtime_digest(root: &Path) -> io::Result<String> {
         Ok(())
     }
     let mut hash = Sha256::new();
-    for entry in RUNTIME_ENTRIES {
+    for entry in spec.entries {
         visit(root, &root.join(entry), &mut hash)?;
     }
     Ok(format!("{:x}", hash.finalize()))
 }
 
-/// Host 运行时要 peer 到内核树的 `@deepseek-ai` 包：
+/// Host 运行时要 peer 到内核树的 `@deepseek-ai` 包，**按插件各列各的**
+/// （清单在 `BuiltinSpec::peers`）。openai-oauth 要两个：
 /// - `dsh-llm`：适配器基类（`BridgeAdapter extends LlmAdapter`）。
 /// - `schemastery`：Config schema 的构造器。设置命名空间视图由各 profile
 ///   entry 的 Config schema 派生（`dsh-settings`：「Derive editable forms
 ///   from plugin Config schemas」）——host 不导出 Config，设置页就没有
 ///   我们的命名空间，provider 行永远 not-configured：不出卡、进不了
 ///   添加列表，client 的账户卡无处渲染（2026-10-09 用户实测）。
-pub(crate) const PEER_PACKAGES: [&str; 2] = ["dsh-llm", "schemastery"];
-
+///
+/// **不要图省事把包全列上**：多链一个包就多一条会断的链——旧内核装不上那个
+/// 包时 `ensure_one_peer_link` 直接失败，于是「加了个用不到它的 peer」会让
+/// 这个插件在新旧内核上彻底装不进去。ponytail 只 import
+/// `BUNDLED_SKILL_RANK`，所以只链 `dsh-skill` 一个。
 /// 逐个 peer 包建立 `node_modules/@deepseek-ai/<pkg>` 链接；悬空或指向
 /// 别处时重建。
-fn ensure_peer_link(at_deepseek_dir: &Path, kernel_root: &Path) -> Result<(), String> {
-    for package in PEER_PACKAGES {
+fn ensure_peer_link(
+    spec: &BuiltinSpec,
+    at_deepseek_dir: &Path,
+    kernel_root: &Path,
+) -> Result<(), String> {
+    for package in spec.peers {
         ensure_one_peer_link(at_deepseek_dir, kernel_root, package)?;
     }
     Ok(())
@@ -438,9 +448,10 @@ mod tests {
     #[test]
     fn materialize_is_idempotent_and_rebuilds_on_version_change() {
         let root = temp_dir("mat");
+        let spec = crate::plugins::builtin::builtins::find("openai-oauth").unwrap();
         let source = root.join("source");
-        for entry in RUNTIME_ENTRIES {
-            if entry == "package.json" {
+        for entry in spec.entries {
+            if *entry == "package.json" {
                 fs::write(
                     source.join("package.json"),
                     "{\"name\":\"xlink-openai-oauth\",\"version\":\"0.1.0\"}",
@@ -452,20 +463,44 @@ mod tests {
             }
         }
         let kernel = root.join("kernel/node_modules/@deepseek-ai");
-        for pkg in PEER_PACKAGES {
+        for pkg in spec.peers {
             fs::create_dir_all(kernel.join(pkg)).unwrap();
         }
         let target = root.join("instance/extensions/builtin/openai-oauth/0.1.0/fp-1/compat-a");
-        materialize(&source, &target, &root.join("kernel"), "0.1.0", "fp-1").unwrap();
+        materialize(
+            spec,
+            &source,
+            &target,
+            &root.join("kernel"),
+            "0.1.0",
+            "fp-1",
+        )
+        .unwrap();
         assert!(target.join("host/index.js").is_file() || target.join("host/keep.js").is_file());
         assert!(target.join(MARKER_FILE).is_file());
         // 幂等：标记匹配时不清重建（靠 mtime 不稳，改验 staging 不残留）。
-        materialize(&source, &target, &root.join("kernel"), "0.1.0", "fp-1").unwrap();
+        materialize(
+            spec,
+            &source,
+            &target,
+            &root.join("kernel"),
+            "0.1.0",
+            "fp-1",
+        )
+        .unwrap();
         assert!(!target.parent().unwrap().join(".staging-compat-a").exists());
         // 同版本源码改变也必须更新；新增图片模块不能被旧标记挡住。
         fs::write(source.join("host/keep.js"), "// updated").unwrap();
         fs::write(source.join("host/images.js"), "export {}").unwrap();
-        materialize(&source, &target, &root.join("kernel"), "0.1.0", "fp-1").unwrap();
+        materialize(
+            spec,
+            &source,
+            &target,
+            &root.join("kernel"),
+            "0.1.0",
+            "fp-1",
+        )
+        .unwrap();
         assert_eq!(
             fs::read_to_string(target.join("host/keep.js")).unwrap(),
             "// updated"
@@ -474,7 +509,15 @@ mod tests {
         // 源码删文件与目标损坏都应收敛到当前运行时文件集。
         fs::remove_file(source.join("host/images.js")).unwrap();
         fs::write(target.join("host/keep.js"), "// stale").unwrap();
-        materialize(&source, &target, &root.join("kernel"), "0.1.0", "fp-1").unwrap();
+        materialize(
+            spec,
+            &source,
+            &target,
+            &root.join("kernel"),
+            "0.1.0",
+            "fp-1",
+        )
+        .unwrap();
         assert!(!target.join("host/images.js").exists());
         assert_eq!(
             fs::read_to_string(target.join("host/keep.js")).unwrap(),
@@ -486,12 +529,21 @@ mod tests {
             r#"{"pluginVersion":"0.1.0","fingerprint":"fp-1"}"#,
         )
         .unwrap();
-        materialize(&source, &target, &root.join("kernel"), "0.1.0", "fp-1").unwrap();
+        materialize(
+            spec,
+            &source,
+            &target,
+            &root.join("kernel"),
+            "0.1.0",
+            "fp-1",
+        )
+        .unwrap();
         let marker: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(target.join(MARKER_FILE)).unwrap()).unwrap();
         assert!(marker["sourceHash"].as_str().is_some());
         // 版本变化 → 新指纹目录，旧目录不动。
         materialize(
+            spec,
             &source,
             &target.with_file_name("x"),
             &root.join("kernel"),
@@ -500,6 +552,66 @@ mod tests {
         )
         .unwrap();
         assert!(target.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 第二个内置插件的物化：**只复制它自己那份文件集**。
+    ///
+    /// 这条是「entries 从模块常量变成参数」的反向验。参数传错成 openai 的
+    /// 那份时，`for entry in spec.entries` 会去 `source/client` 找一个根本
+    /// 不存在的目录——而报错信息说的是「应用资源可能不完整，请重新安装」，
+    /// 把一个源码侧的错误报成安装包坏了。 ponytail 没有 client / locales，
+    /// 物化必须照样成功。
+    #[test]
+    fn a_builtin_without_client_dirs_materializes_its_own_entry_set() {
+        let root = temp_dir("ponytail");
+        let spec = crate::plugins::builtin::builtins::find("ponytail").unwrap();
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        for entry in spec.entries {
+            if *entry == "package.json" {
+                fs::write(
+                    source.join("package.json"),
+                    "{\"name\":\"xlink-ponytail\",\"version\":\"0.1.0\"}",
+                )
+                .unwrap();
+            } else if *entry == "LICENSE" || entry.contains('.') {
+                // 文件型条目（LICENSE / package.json）：按文件写，别造一个同名
+                // 目录——那样 `is_file()` 那条断言会红，而红的原因与被测行为无关。
+                fs::write(source.join(entry), "MIT").unwrap();
+            } else {
+                fs::create_dir_all(source.join(entry)).unwrap();
+                fs::write(source.join(entry).join("SKILL.md"), "# skill").unwrap();
+            }
+        }
+        let kernel = root.join("kernel/node_modules/@deepseek-ai");
+        for pkg in spec.peers {
+            fs::create_dir_all(kernel.join(pkg)).unwrap();
+        }
+        assert!(
+            !source.join("client").exists(),
+            "这个夹具要真的没有 client 目录，否则测不到东西"
+        );
+        let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
+        materialize(
+            spec,
+            &source,
+            &target,
+            &root.join("kernel"),
+            "0.1.0",
+            "fp-1",
+        )
+        .unwrap();
+        assert!(target.join("host/SKILL.md").is_file());
+        assert!(target.join("skills/SKILL.md").is_file());
+        assert!(target.join("LICENSE").is_file());
+        assert!(!target.join("client").exists());
+        // peer 链接只建它自己那几个。
+        let linked: Vec<String> = fs::read_dir(target.join("node_modules/@deepseek-ai"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(linked, vec![spec.peers[0].to_string()]);
         let _ = fs::remove_dir_all(&root);
     }
 

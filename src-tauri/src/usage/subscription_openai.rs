@@ -172,7 +172,13 @@ pub(crate) fn gated_view(
         return None;
     }
     let dsh_home = crate::shell::paths::instance_dsh_home(&scope.family, &scope.id);
-    if crate::plugins::builtin::requested_enabled(&dsh_home, &scope.profile) {
+    // 门禁认的是 **openai-oauth 那一个**内置插件的启用意图：按 id 从登记表
+    // 取 spec，不 new 一个残缺的（spec 里还有物化文件集与接线行 id，凭 id
+    // 造一个出来会让门禁与实际接线脱钩）。
+    let spec =
+        crate::plugins::builtin::builtins::find(crate::plugins::builtin::builtins::OPENAI_OAUTH)
+            .expect("openai-oauth 必须在内置插件登记表里");
+    if crate::plugins::builtin::requested_enabled(spec, &dsh_home, &scope.profile) {
         return None;
     }
     // 旧缓存条目一并移除：分区藏了，错误横幅不能再报它缓存里的失败。

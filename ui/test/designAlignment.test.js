@@ -1959,11 +1959,11 @@ test('插件页页签与内容之间有真间距，不能归零', () => {
 // （`.builtin-strip` 另有一份 padding 与字号）：没有卡片的边框与圆角，扫一眼就是
 // 「另一个东西」。并进列表当第一行之后，它与下面那些行共用同一套外壳，差别只剩
 // 右侧动作（没有安装 / 更新 / 卸载，只有启停开关）。
-test('内嵌插件行是「当前内核」列表的第一行，不再是列表外的裸行', () => {
+test('内置插件行是「当前内核」列表的第一行，不再是列表外的裸行', () => {
   const src = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
   const tpl = templateOf(src);
-  // 顺序即位置：列表容器开标签 → 内嵌行 → 社区插件的 v-for。三者必须排成这个
-  // 次序，判据才认它是**列表里的第一行**；只看「内嵌行存在」的话，把它搬回列表
+  // 顺序即位置：列表容器开标签 → 内置插件行 → 社区插件的 v-for。三者必须排成这个
+  // 次序，判据才认它是**列表里的第一行**；只看「内置行存在」的话，把它搬回列表
   // 外面一样会绿。
   const paneAt = tpl.indexOf('<el-tab-pane name="current">');
   assert.ok(paneAt > 0, '应能找到「当前内核」页签');
@@ -1973,40 +1973,57 @@ test('内嵌插件行是「当前内核」列表的第一行，不再是列表�
   assert.ok(listAt > 0, '「当前内核」页签里应有 .entity-list');
   assert.ok(
     rowAt > listAt && rowAt < rowsAt,
-    '内嵌插件行必须落在 .entity-list 里、且排在社区插件行之前',
+    '内置插件行必须落在 .entity-list 里、且排在社区插件行之前',
   );
-  // 这枚 class 挂在的必须正是 `builtinView` 那个元素——否则可能落到骨架行或别的
-  // 行上，位置对了内容却不是内嵌插件。
+  // 2026-10-12：内置插件不止一个了（OpenAI OAuth + Ponytail），所以这里是
+  // **v-for** 而不是单行 + `v-if`。**钉 v-for 是有意的**：改成写死一行（哪怕
+  // 带上 openaiBuiltin）时，第二内置插件在界面上会整条消失，而这条判据若还
+  // 允许单行就会跟着绿——症状是「后端说有、工作台里没有」。
   const rowStart = tpl.lastIndexOf('<div', rowAt);
   assert.match(
     tpl.slice(rowStart, rowAt),
-    /v-if="builtinView"/,
-    '挂 builtin-row 的那个元素应当由 builtinView 控制',
+    /v-for="builtin in builtinList"/,
+    '挂 builtin-row 的那个元素应当由 builtinList 逐个渲染（内置插件不止一个）',
   );
   // 外壳与内部结构都走社区插件那一套，视觉才对得上。
   const row = tpl.slice(rowAt, tpl.indexOf('</div>', tpl.indexOf('entity-actions', rowAt)));
   assert.match(row, /class="entity-name"/, '名称要走 .entity-name（同一字号与等宽字体）');
   assert.match(row, /class="origin-chip"/, '来源标签要走 .origin-chip，与 npm / GitHub 同一枚');
   // 那套「不属于这个列表」的样式已经没有作用方，必须跟着删干净——留着会让下
-  // 一个人以为内嵌行另有样式。
+  // 一个以为内置行另有样式。
   assert.doesNotMatch(stripComments(src), /\.builtin-strip\s*\{/, '.builtin-strip 应当随这次搬家删除');
   assert.doesNotMatch(tpl, /builtin-strip/, '模板里不该再有 builtin-strip');
-  // 空态判据必须同时看内嵌行：只看社区插件的话，列表里明明列着一行、下面却写着
+  // 空态判据必须同时看内置行：只看社区插件的话，列表里明明列着一行、下面却写着
   // 「尚未接入任何插件」，两处判据也会分叉（is-empty 与 el-empty 各写一遍）。
   assert.match(tpl, /'is-empty': currentKernelListEmpty/, '空态判据要走 currentKernelListEmpty');
   assert.match(tpl, /v-else-if="currentKernelListEmpty"/, '空态提示与边框必须共用同一份判据');
-  // 显示名只有一处定义：2026-10-09 已经是第二次改名（「OpenAI 对话」→
-  // 「OpenAI-OAuth-Plugin」），而它此前被抄在名称、aria-label 与两条 toast
-  // 四处。名字再抄一份就等于下次改名又要同时想起几个地方。
-  assert.match(row, /\{\{ BUILTIN_NAME \}\}/, '插件行的名称要用 BUILTIN_NAME，不要写字面量');
-  const builtinJs = readFileSync('ui/src/plugins/builtin.js', 'utf8');
-  const nameDecl = /export const BUILTIN_NAME = '([^']+)'/.exec(builtinJs);
-  assert.ok(nameDecl, 'builtin.js 必须导出 BUILTIN_NAME');
-  assert.equal(nameDecl[1], 'OpenAI-OAuth-Plugin', '内嵌插件的显示名');
+  // 显示名**只有后端一处**定义：2026-10-09 已经是第二次改名（「OpenAI 对话」→
+  // 「OpenAI-OAuth-Plugin」），而它此前被抄在名称、aria-label 与两条 toast 四处；
+  // 2026-10-12 改成由 `BuiltinSpec::display_name` 随状态一起下发，前端
+  // 一个字面量都不许留——抄的那份不参与任何 Rust 侧测试，改名时必漏。
+  assert.match(row, /\{\{ builtin\.displayName \}\}/, '插件行的名称要用后端下发的 displayName');
+  const builtinJs = stripComments(readFileSync('ui/src/plugins/builtin.js', 'utf8'));
+  assert.doesNotMatch(
+    builtinJs,
+    /OpenAI-OAuth-Plugin|BUILTIN_NAME/,
+    '内置插件的显示名归后端登记表（builtins.rs）；前端再抄一份就回到「改一次名要想四处」的形状',
+  );
+  assert.doesNotMatch(
+    stripComments(src),
+    /OpenAI-OAuth-Plugin/,
+    '面板模板里不该再出现内置插件的字面显示名',
+  );
   assert.doesNotMatch(
     stripComments(builtinJs) + tpl,
     /OpenAI 对话/,
     '旧显示名「OpenAI 对话」不该再出现在 builtin.js / 面板模板里',
+  );
+  // 能力判断（要不要在工作台里画账户卡）同样归后端：模板不认得哪个 id 是哪个，
+  // 认了就要在前端维护一张 id → 能力的表——那就是第二份事实源。
+  assert.match(
+    row,
+    /v-if="builtin\.hasAccountCard"/,
+    '账户卡由后端下发的 hasAccountCard 决定，不要在前端按 id 硬判',
   );
 });
 

@@ -89,7 +89,7 @@ import {
   providerLogo,
 } from '../subscription/subscription.js';
 import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents/incidents.js';
-import { builtinStore, loadBuiltinStatus } from '../plugins/builtin.js';
+import { openaiBuiltin, loadBuiltinStatus } from '../plugins/builtin.js';
 import { tildePath } from './labels.js';
 import { confirmDialog } from './notify.js';
 
@@ -126,8 +126,8 @@ const anyKeyConfigured = computed(() =>
 );
 // Codex 额度入口（开关 + 它的整宽说明句）是 OpenAI 插件的功能面，与 Rust 侧
 // 分区门禁同源：插件停用时一并收起（2026-10-10）。开关组件自己按
-// builtinStore 收起，这里的说明句在卡头下面另起一行，得跟着同一个判据。
-const codexConsentVisible = computed(() => builtinStore.view?.requestedEnabled === true);
+// openaiBuiltin 收起，这里的说明句在卡头下面另起一行，得跟着同一个判据。
+const codexConsentVisible = computed(() => openaiBuiltin?.requestedEnabled === true);
 onMounted(() => {
   // 未配置时不发请求：Rust 侧对未配置 provider 也只做凭据解析，不产生网络调用，
   // 但首次进入概览总得拉一次才知道配置状态——由 loadSubscriptionSummary 自行决定。

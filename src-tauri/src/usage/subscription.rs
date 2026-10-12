@@ -2057,7 +2057,15 @@ mod cache_tests {
                 fingerprint: None,
             },
         );
-        crate::plugins::builtin::state::save(&dsh_home, &entries).unwrap();
+        crate::plugins::builtin::state::save(
+            &dsh_home,
+            crate::plugins::builtin::builtins::find(
+                crate::plugins::builtin::builtins::OPENAI_OAUTH,
+            )
+            .expect("openai-oauth 必须在内置插件登记表里"),
+            &entries,
+        )
+        .unwrap();
         state::save(&scope.cache_path(), &seeded(), cache_ctx()).unwrap();
         subscription_view(Some(PROVIDER_OPENAI), false).expect("门禁打开查询应离线成功");
         let doc: SubscriptionCacheDoc =

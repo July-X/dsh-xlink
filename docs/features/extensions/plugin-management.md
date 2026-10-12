@@ -13,9 +13,12 @@
 > 与阶段性状态快照
 > [multi-kernel-migration-status-2026-09-19.md](../../architecture/multi-kernel/multi-kernel-migration-status-2026-09-19.md)。
 > P6 step 5 / P8 落地后本文会按新的实际行为重新校对；当前以代码为准。
-> 另：随应用交付的内嵌插件不进社区中央库，其[设计](openai-oauth-design.md)与
-> [开发计划](openai-oauth-development-plan.md)另立两文；两者的接线调和对象
-> 正是本文与 [plugin-internals.md](plugin-internals.md) 描述的社区接线链。
+> 另：随应用交付的内置插件不进社区中央库。**通道本身**（登记表 / 物化 /
+> 接线 / 状态 / 命令面，现在按 N 个插件设计）见
+> [builtin-plugins.md](builtin-plugins.md)；其中 OpenAI OAuth 那个插件的
+> 设计与[开发计划](openai-oauth-development-plan.md)另立两文。内置插件与社区
+> 插件的接线调和对象不同：前者走实例 `cordis.patch.yml` 的自有 insert 行，
+> 后者走本文与 [plugin-internals.md](plugin-internals.md) 描述的中央库物化链。
 
 ## 目标
 
