@@ -9,13 +9,12 @@
     ".": "./host/index.js",
     "./package.json": "./package.json"
   },
-  "dsh": {
-    "source": {
-      "upstream": "https://github.com/DietrichGebert/ponytail",
-      "upstreamVersion": "5.1.0",
-      "upstreamTree": "9b58c1ffb790c075ca32e70a89cf1d80588f4abf",
-      "license": "MIT",
-      "vendoredOn": "2026-10-12"
-    }
+  "xlinkUpstream": {
+    "_comment": "壳自己的元数据（vendored 出处）。刻意不进 `dsh` 命名空间：内核的 DshManifest 是封闭接口，只有 manifestVersion / bundle / profile / client 四个键（@deepseek-ai/dsh-package-manifest），往里塞自己的一摊等于在一个保留命名空间里写未知键——眼下只是没人校验，内核哪天加个严格校验就会拒掉这个插件。",
+    "upstream": "https://github.com/DietrichGebert/ponytail",
+    "upstreamVersion": "5.1.0",
+    "upstreamTree": "9b58c1ffb790c075ca32e70a89cf1d80588f4abf",
+    "license": "MIT",
+    "vendoredOn": "2026-10-12"
   }
 }
