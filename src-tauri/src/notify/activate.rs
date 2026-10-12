@@ -29,12 +29,17 @@
 use tauri::{AppHandle, Emitter, Manager};
 
 /// 交接载荷：让已在运行的实例把**工作台**带到台前。
+///
+/// 零调用的成因是**平台假阳性**：唯一使用点是本文件 `mod ipc`
+/// （`#[cfg(target_os = "windows")]`）里的 named-pipe 读端，macOS 不编译那段。
+#[allow(dead_code, reason = "Windows 专属：调用点在 cfg(windows) 分支")]
 const ACT_WORKBENCH: &str = "workbench";
 
 /// 回到工作台失败时广播给管理面板的事件。横幅点击是**无声**的——窗口没动时
 /// 用户不会得到任何解释，只会以为"点了没反应"，所以真故障必须自己出声。
 /// 「真故障」怎么判见 [`announce_failure`]：内核压根没跑时此刻只是没有工作台，
 /// 不发这个事件。
+#[allow(dead_code, reason = "传递性：调用者在 Windows 分支内")]
 pub const FAILED_EVENT: &str = "workbench-activate-failed";
 
 /// 启动守卫的结论。
@@ -90,6 +95,7 @@ pub fn serve(app: &AppHandle) {
 /// 失败）是真故障：他点的横幅 / 图标什么都没发生，必须出声。判据取
 /// [`crate::kernel_running`]，不去匹配 `open_harness` 的报错文案——后者是
 /// 给人看的中文句子，改一次措辞这条判据就静默失效。
+#[allow(dead_code, reason = "传递性：调用者在 Windows 分支内")]
 fn announce_failure(kernel_running: bool) -> bool {
     kernel_running
 }
@@ -105,6 +111,11 @@ fn announce_failure(kernel_running: bool) -> bool {
 /// 覆盖了"已开则 show + 取消最小化 + 聚焦"与"没开则按当前 launch token 建
 /// 窗"，还带着端口占用 / 端口上不是内核这类可操作的中文报错。焦点相关的
 /// 跨线程限制由它内部的建窗线程处理，这里只负责在后台线程上等它的结果。
+///
+/// 零调用是**平台假阳性**：唯一调用点是 Windows 专属的 `mod ipc`（本文件
+/// `#[cfg(target_os = "windows")]`）。它本身跨平台定义——macOS 的激活入口走
+/// `RunEvent::Reopen` 那条路，终点在 `lib.rs`，不经过本函数。
+#[allow(dead_code, reason = "Windows 专属：调用点在 cfg(windows) 分支")]
 pub fn focus_workbench(app: &AppHandle) {
     let app = app.clone();
     std::thread::Builder::new()
@@ -175,6 +186,7 @@ pub fn force_foreground(window: &tauri::WebviewWindow) {
 
 /// 其它平台：`set_focus` 已经能真正把窗口带到台前。
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code, reason = "传递性：调用者在 Windows 分支内")]
 pub fn force_foreground(_window: &tauri::WebviewWindow) {}
 
 /// 只把**已经开着**的工作台窗口抬到台前；没开过就返回 `false`（返回 `true`
@@ -219,6 +231,7 @@ fn guard_enabled() -> bool {
 
 /// 通道名按模式分开：dev 壳与安装版本来就允许同时跑（不同 data dir、不同
 /// 端口、不同实例），共用一个名字会让其中一个根本起不来。
+#[allow(dead_code, reason = "Windows 专属：调用点在 cfg(windows) 分支")]
 fn channel_name() -> String {
     format!(
         "dsh-xlink-shell-{}",

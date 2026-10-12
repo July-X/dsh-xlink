@@ -69,6 +69,7 @@ const WORKSPACE_YAML: &str =
 /// 判据只看「键在不在、类型对不对」，不看内容：一个 `bundles: []` 是用户自己
 /// 表达「这个 profile 我就要空的」，不该被改回去；而「键缺失」只可能是壳写坏
 /// 的或损坏的，两边都需要修。
+#[allow(dead_code, reason = "判断 profile manifest 是否需要修复")]
 pub fn needs_repair(root: &Value) -> bool {
     !root.get("dependencies").is_some_and(Value::is_object)
         || !root

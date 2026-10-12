@@ -251,6 +251,7 @@ fn post_stream_over(
 
 /// POST 一份 JSON 文本（公开客户端：PKCE，无 basic 凭据）。`&str` 直接
 /// 作为 body 发送（AsSendBody 原生支持），不经 `send_json` 二次编码。
+#[allow(dead_code, reason = "PKCE 无 basic 凭据的 POST")]
 pub(crate) fn post_json(url: &str, body: &str) -> Result<String, Failure> {
     send_over(&net_proxy::routes(), url, |agent, url| {
         agent

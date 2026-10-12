@@ -376,6 +376,7 @@ impl InstanceRegistry {
     }
 
     /// 取可变引用。
+    #[allow(dead_code, reason = "注册表取可变引用")]
     pub fn get_mut(&mut self, id: &str) -> Option<&mut InstanceRecord> {
         let idx = self.index_of(id)?;
         Self::validate_id(&self.instances[idx].id).ok()?;
@@ -760,6 +761,7 @@ impl std::fmt::Display for RegistryError {
 ///
 /// **不主动调用**——这是 `setup()` 在确认 Xlink home 已创建后，由调用方
 /// 显式触发的迁移钩子；测试环境里直接调 [`load_registry`] 即可。
+#[allow(dead_code, reason = "doc 自述「**不主动调用**——这是 setup(…")]
 pub fn load_or_migrate(legacy_active: Option<&str>, legacy_port: u16) -> InstanceRegistry {
     match load_registry() {
         Ok(registry) => registry,
@@ -777,6 +779,7 @@ pub fn load_or_migrate(legacy_active: Option<&str>, legacy_port: u16) -> Instanc
     })
 }
 
+#[allow(dead_code, reason = "为链式修改准备的 tap 辅助 trait")]
 trait Tap: Sized {
     fn tap<F: FnOnce(&mut Self)>(mut self, f: F) -> Self {
         f(&mut self);
@@ -1065,6 +1068,7 @@ pub fn other_shell_workbench_notice(mode: ShellMode, id: &str, record: &PidRecor
 }
 
 /// 单独写入端口文件（用于 runtime 期间的 hot patch）。
+#[allow(dead_code, reason = "单独写端口文件，doc 自述「用于 runtime 期…")]
 pub fn write_port(family: &str, id: &str, port: u16) -> Result<(), String> {
     let path = instance_port_file(family, id);
     if let Some(parent) = path.parent() {
@@ -1073,6 +1077,7 @@ pub fn write_port(family: &str, id: &str, port: u16) -> Result<(), String> {
     atomic_write(&path, format!("{port}\n").as_bytes()).map_err(|e| e.to_string())
 }
 
+#[allow(dead_code, reason = "与 write_port 成对，同样没有调用方——端口…")]
 pub fn read_port(family: &str, id: &str) -> Option<u16> {
     let path = instance_port_file(family, id);
     fs::read_to_string(&path)
@@ -1083,6 +1088,7 @@ pub fn read_port(family: &str, id: &str) -> Option<u16> {
 /// 全局 in-process 互斥锁，确保同一进程内 `InstanceRegistry` 的读-改-写
 /// 序列不被打断。**不跨进程**——多 Shell 并发由 `instances.json` 的文件
 /// 级 advisory 锁（未来 P6 加入）+ 数据库风格的乐观重试负责。
+#[allow(dead_code, reason = "doc 自述跨进程部分「未来 P6 加入」")]
 pub fn registry_mutex() -> &'static Mutex<()> {
     static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -1097,6 +1103,7 @@ pub fn lifecycle_mutex() -> &'static Mutex<()> {
 }
 
 /// 默认实例 ID 与当前 Shell 模式：用于 UI 拿到当前 Shell 的"默认实例"。
+#[allow(dead_code, reason = "「<mode>::<default>」形式的复合 key")]
 pub fn shell_default_instance_key(mode: ShellMode) -> String {
     format!("{}::{}", mode.as_str(), DEFAULT_INSTANCE_ID)
 }
@@ -1152,6 +1159,7 @@ pub fn delete_instance_dirs(record: &InstanceRecord) -> Result<(), String> {
 }
 
 /// 推断实例根路径（不读磁盘）：仅用于 UI 展示「数据目录在哪」。
+#[allow(dead_code, reason = "「推断实例根路径（不读磁盘）」")]
 pub fn instance_root_for_display(family: &str, id: &str) -> PathBuf {
     instance_dir(family, id)
 }

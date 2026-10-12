@@ -25,6 +25,7 @@ pub(crate) mod state;
 pub(crate) mod wiring;
 
 /// 接线行 id = settingsNs = client 卡片 key（P0 调查 §6 实测）。
+#[allow(dead_code, reason = "接线行 id 的别名，与 wiring::ROW_ID…")]
 pub(crate) const ENTRY_ID: &str = wiring::ROW_ID;
 /// 实例内物化根：`<DSH_HOME>/extensions/builtin/openai-oauth/`（开发计划 §3）。
 pub(crate) const INSTANCE_BASE_SEGMENT: &str = "extensions/builtin/openai-oauth";
@@ -34,6 +35,10 @@ pub(crate) const BRIDGE_URL_ENV: &str = "DSH_XLINK_OPENAI_BRIDGE_URL";
 pub(crate) const BRIDGE_TOKEN_ENV: &str = "DSH_XLINK_OPENAI_BRIDGE_TOKEN";
 
 /// 启用事务的结果。
+#[allow(
+    dead_code,
+    reason = "接线记录的物化目录与「本次是否追加了行」两项：物化路径…"
+)]
 pub(crate) struct Wired {
     pub(crate) fingerprint: String,
     pub(crate) plugin_version: String,

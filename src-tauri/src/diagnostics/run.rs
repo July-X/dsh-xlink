@@ -73,14 +73,8 @@ pub mod status {
 pub mod cause {
     /// 环境类（端口被占、目录不可写、ABI 不匹配）。
     pub const ENVIRONMENT: &str = "environment";
-    /// 内核自身。
-    pub const KERNEL: &str = "kernel";
     /// 插件。
     pub const PLUGIN: &str = "plugin";
-    /// 技能。
-    pub const SKILL: &str = "skill";
-    /// 工作台前端。
-    pub const FRONTEND: &str = "frontend";
     /// 无法归因。
     pub const UNKNOWN: &str = "unknown";
 }
@@ -314,6 +308,7 @@ pub fn get(family: &str, instance: &str, run_id: &str) -> Option<DiagnosticRun> 
 }
 
 /// 最近一条指定类型的记录。用于「查看上一次启动诊断」。
+#[allow(dead_code, reason = "「最近一条指定类型的记录」")]
 pub fn latest(family: &str, instance: &str, kind: &str) -> Option<RunSummary> {
     load_index(family, instance)
         .entries
@@ -510,6 +505,7 @@ pub struct Recorder {
     instance: String,
     run: DiagnosticRun,
     /// 本次运行的起点，用来算事件耗时。
+    #[allow(dead_code, reason = "本次运行的起点，用于给事件算耗时")]
     started: Instant,
     /// 上一条事件，用于给下一条算相对耗时。
     last_at: Instant,
@@ -527,6 +523,7 @@ pub struct Recorder {
     pinned: HashSet<String>,
 }
 
+#[allow(dead_code, reason = "四个未被调用的计时/取消方法（stage_starte…")]
 impl Recorder {
     /// 开一条新记录。**不落盘**——落盘发生在 [`Recorder::push`]，这样一条
     /// 从未产生任何事件的记录不会在磁盘上留下空壳。
