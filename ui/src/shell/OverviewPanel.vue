@@ -1313,6 +1313,10 @@ html.dark .plan-provider-logo {
 html.dark .plan-provider-logo--openai_codex .plan-provider-mark {
   content: url("/openai-logo-dark.svg");
 }
+/* opencode 的原文件同样是 currentColor（品牌本身也是黑白），暗色下换纯白那份。 */
+html.dark .plan-provider-logo--opencode_go .plan-provider-mark {
+  content: url("/opencode-logo-dark.svg");
+}
 .plan-provider-logo--deepseek {
   --logo-rgb: 77, 107, 254;
 }
@@ -1322,6 +1326,11 @@ html.dark .plan-provider-logo--openai_codex .plan-provider-mark {
 }
 .plan-provider-logo--openai_codex {
   --logo-rgb: 109, 92, 255;
+}
+/* opencode 没有第二套品牌色（标志本身是黑白），圆底取中性石板灰：明暗两套
+   都是「一层看不出色相的底」，让白色 / 近黑的图形自己立住。 */
+.plan-provider-logo--opencode_go {
+  --logo-rgb: 94, 100, 118;
 }
 .plan-provider-logo--zai_coding_cn {
   --logo-rgb: 56, 89, 255;

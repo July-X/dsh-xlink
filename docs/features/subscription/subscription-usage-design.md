@@ -1,12 +1,15 @@
 # dsh-xlink 套餐 / Token Plan 用量展示设计
 
 > 本文档描述桌面外壳的「云端套餐用量」功能：查询并展示 MiniMax Token Plan 的双窗口额度
-> 进度、DeepSeek 按量余额、智谱 GLM 编程套餐的双窗口额度，以及 OpenAI（ChatGPT 套餐）
-> 的 5 小时 / 7 天窗口。当前代码实际接入 **5 个 provider**
+> 进度、DeepSeek 按量余额、智谱 GLM 编程套餐的双窗口额度、OpenAI（ChatGPT 套餐）
+> 的 5 小时 / 7 天窗口，以及 opencode Go 套餐的滚动 5 小时 / 周 / 月三窗口。当前代码
+> 实际接入 **6 个 provider**
 > （`subscription.rs` 的 `PROVIDER_ORDER`：`deepseek` / `minimax_cn` / `minimax_en` /
-> `zai_coding_cn` / `openai_codex`），下面各章按「套餐类（plan）/ 余额类（balance）」
-> 两种形态统一描述。OpenAI 一节（接口规格）单列了它与另外四家的三处差别：凭据来自壳
+> `zai_coding_cn` / `openai_codex` / `opencode_go`），下面各章按「套餐类（plan）/ 余额类
+> （balance）」两种形态统一描述。OpenAI 一节（接口规格）单列了它与另外五家的三处差别：凭据来自壳
 > 自己的 OAuth vault 而非内核凭据链、必须带账号上下文请求头、必须走代理路由。
+> opencode Go 一节单列它与其余五家的一处差别：`resetsAt` 是 ISO 8601 字符串而不是
+> epoch 毫秒，窗口按字段名认（没有自描述的时长的字段）。
 > 参考实现是
 > [cc-switch](https://github.com/farion1231/cc-switch)（Rust + Tauri，MIT）的
 > `services/coding_plan.rs` 与 `services/balance.rs`，接口字段以其源码为核对基准。
@@ -53,7 +56,7 @@ HTTP 栈适配（ureq + spawn_blocking，非 reqwest）、原始凭据不跨壳�
 ## 能力边界（先说清楚拿不到什么）
 
 用户诉求是「套餐、token plan 的用量、剩余 token、限额情况」。其中**「剩余 token」
-这个绝对数字在两家云端 API 里都不存在**，v1 不提供：
+这个绝对数字在各家云端 API 里都不存在**，v1 不提供：
 
 | 供应商 | 云端接口实际能给的 | 拿不到的 |
 | --- | --- | --- |
@@ -61,6 +64,7 @@ HTTP 栈适配（ureq + spawn_blocking，非 reqwest）、原始凭据不跨壳�
 | DeepSeek | 账户**货币余额**（总额 / 赠送 / 充值，CNY 与 USD）、余额是否可用 | 一切「额度」「限额」概念——DeepSeek 是纯按量计费，只有余额 |
 | 智谱 GLM | 5 小时 / 周窗口的**剩余百分比**与重置时间 | 绝对剩余 token 数；套餐档位名 |
 | OpenAI ChatGPT | 5 小时 / 7 天窗口的**剩余百分比**与重置时间 | 绝对剩余 token 数；套餐档位名（响应里带 `plan_type`，本版本不展示，见下）；`additional_rate_limits`（`gpt-reserve` 等额外额度桶，本版本不展示） |
+| opencode Go | 滚动 5 小时 / 周 / 月三窗口的**剩余百分比**与重置时间（与 opencode 自己的用量界面同源） | 绝对剩余 token 数；套餐档位名；窗口的 `status` 字段（真机只见 `ok`，语义未经核实，本版本不透出，见下） |
 
 注意 OpenAI 的窗口**可能缺席**：接口按账号返回，一次响应里可能只有 7 天窗口而没有
 5 小时窗口（也可能反过来）。缺席的窗口不画进度条——分区里少那一行（两个窗口都缺席
@@ -305,7 +309,55 @@ HTTP 200 并包含两个额度窗口。因此此前把问题归为「账号 id �
   一个词挤出那几行不划算——用户的账号页本来就写着自己是哪个套餐。
 - `rate_limit` 缺失 / 非对象按结构不认识处理：截断摘要写进 Shell 日志，分区给出
   带下一步的错误文案。HTTP 401/403 → `credential_status: expired`（文案指向
-  「重新登录 OpenAI 账户」，与另外四家的「更新 API Key」不同源）。
+  「重新登录 OpenAI 账户」，与另外五家的「更新 API Key」不同源）。
+
+### opencode Go 套餐：`/zen/go/v1/usage`
+
+| 项 | 值 |
+| --- | --- |
+| 端点 | `GET https://opencode.ai/zen/go/v1/usage` |
+| 认证 | `Authorization: Bearer <内核模型设置里 opencode-go provider 的凭据>`（引用名 `OPENCODE_GO_API_KEY`，与 opencode 自己的 `auth.json` 无关，见「凭据设计」） |
+| 出处 | **第一方但未文档化**：opencode 自己的用量界面与社区插件（[opencode-plan-usage](https://github.com/uoiszero/opencode-plan-usage)）消费的同一个端点。2026-10-12 真机 HTTP 200 核实 |
+
+响应结构（2026-10-12 真机，原样；样张不含身份信息，密钥不进仓库）：
+
+```json
+{"usage":{"rolling":{"status":"ok","percent":1,"resetsAt":"2026-10-12T18:03:17.000Z"},
+          "weekly": {"status":"ok","percent":0,"resetsAt":"2026-10-19T00:00:00.000Z"},
+          "monthly":{"status":"ok","percent":0,"resetsAt":"2026-11-12T12:34:27.000Z"}}}
+```
+
+解析规则：
+
+- 窗口**按字段名认**：`rolling` = 滚动 5 小时、`weekly` = 周、`monthly` = 月。三个窗口没有
+  `limit_window_seconds` 那样的自描述字段，字段名本身就是语义，因此**不按时长猜、更不按
+  槽位猜**（与 OpenAI 那节同一条纪律：认窗口要靠窗口自己说的话）。
+- `percent` 是**已用**百分比，统一换算成剩余（`100 - percent`，clamp 0–100）后复用其余
+  provider 的同一条 tier 展示路径（三档配色 + 重置倒计时）。窗口短名直接给显示形态：
+  `5h` / `7d` / `1mo`——概览卡的名称列只有 22px。
+- `resetsAt` 是 **ISO 8601 字符串**而不是 epoch 毫秒，走共享的时间戳容错解析（RFC 3339；
+  数值形态同样兼容）。读不出来就留空——前端不画倒计时，而不是画 0。
+- 某个窗口字段缺失 / 类型不合只跳过该窗口；`usage` 缺失或不是对象 = 结构不认识（截断摘要
+  写进 Shell 日志 + 确定性提示）。三个窗口都读不出来时返回空 tier 列表 → 分区显示
+  「暂无额度数据」，**绝不补一行 100%**。
+- `status`（真机 `ok`，社区实现记过 `rate-limited`）本版本不透出：窗口的核心读数已经是
+  「已用百分比 + 重置时刻」，额度用尽时 percent 到 100（剩余 0 → 红条），再加一个语义未经
+  核实的徽章只会让人猜它是干什么的。等第二处证据再决定。
+- HTTP 401/403 → `credential_status: expired`，文案指向「到工作台的模型设置更新
+  opencode-go 的 API Key」（Go 套餐密钥在 opencode.ai 的 Zen 控制台生成）。**这个域名在
+  Cloudflare 后面**，按出口签名拦人时同样是 403（2026-10-12 实测 Python-urllib 的 UA 被
+  拦，curl / node 的 UA 都过）；壳发的请求统一带 `dsh-xlink/<版本>` 的 UA。若某天出现
+  「密钥明明有效却报凭据无效且 HTTP 403」，先怀疑出口签名，别让用户去重发密钥。
+- **route 归类是精确匹配 `opencode-go`，不是「包含 opencode」**（2026-10-12 评审定案）：
+  内核目录里 `opencode`（Zen，引用名 `OPENCODE_API_KEY`）与 `opencode-go`（Go）是并列两行，
+  `resolve_provider` 取的是**第一个**归类命中的绑定——模糊匹配会让 Zen 的 Key 被发去 Go 的
+  容量端点（401 → 还会被标成 `expired`，而 expired 条目不参与自动刷新，错误会一直黏着），
+  只有 Zen 的用户还会凭空多出一个查不到数据的分区。
+- **残留缺口（如实记）**：pi-ai 自己的 env 兜底把两条 route 都映到 `OPENCODE_API_KEY`，而
+  模型页的派生规则是 route 名大写（`OPENCODE_GO_API_KEY`）。因此「只在环境变量里 export
+  `OPENCODE_API_KEY`、profile 又没有显式 `apiKeyEnv`」的用户，本功能判成未配置（Go 分区
+  不出现）——宁可少一个分区，也不拿 Zen 的凭据去查 Go 的容量。走模型设置页配置的用户
+  （profile 里会写下派生出的 `apiKeyEnv`）不受影响。
 
 ## 凭据设计
 
@@ -337,13 +389,22 @@ DSH 的 `credentials.describe` 只返回 `configured`、来源和可写性，不
 自己那次 Sign-in-with-ChatGPT 授权的 access token（`crate::openai` 的加密 vault，
 文件密钥在系统凭据库）。因此该 provider 不走上面这条解析链，`subscription.rs` 也
 **不在自己这里解密**——读取入口是 `openai::refresh::ensure_fresh_access`（顺带保证
-令牌新鲜，过期时先走既有刷新链），由 `usage/subscription_openai.rs` 调它。其余四家
+令牌新鲜，过期时先走既有刷新链），由 `usage/subscription_openai.rs` 调它。其余五家
 的「复用当前内核模型凭据」前提一字未改。
 
 这条兼容性是本功能的硬前提：如果 MiniMax Token Plan 接口拒绝当前 dsh provider 的模型凭据，
 就不能通过 Shell 另加一个“订阅 Key”输入框绕过；应暂停 MiniMax 展示，并在 dsh 内核增加
 只返回额度结果的查询能力后再接入。错误提示必须明确说明“当前模型凭据不能用于该接口”，
 不能把一个按量 Key 当成 Token Plan Key 继续重试。
+
+**opencode Go 也只走这条内核凭据链，不读 opencode 自己的登录文件**（2026-10-12 用户要求
+接入 opencode 的容量展示时明确下来的）。用户机器上确实存在
+`~/.local/share/opencode/auth.json`（opencode CLI 自己的凭据库），读它技术上可行——社区
+的 opencode 插件就是这么做的——但那是**另一个应用的凭据库**：读它等于本功能多一条用户没
+同意过的凭据来源，而 Codex 额度那条已经为「跨应用凭据读取要显式许可」立过规矩。因此
+opencode Go 的密钥取内核模型设置里 `opencode-go` provider 的 `OPENCODE_GO_API_KEY`
+（`credentials.rs` 的默认派生规则），用户配一次两处都在用；`auth.json` 一个字都不读，
+面板与文档也不提它（避免用户以为「在 opencode 里登录就够了」）。
 
 ### 设置页交互（`SettingsPanel.vue`）
 
@@ -365,7 +426,7 @@ DSH 的 `credentials.describe` 只返回 `configured`、来源和可写性，不
 
 | 关注点 | usage.rs（本地统计） | subscription.rs（本功能） |
 | --- | --- | --- |
-| 数据源 | 实例 sessions 目录（zstd 增量扫描） | 两家云端 HTTPS 接口 |
+| 数据源 | 实例 sessions 目录（zstd 增量扫描） | 六家云端 HTTPS 接口（各第一方，未文档化 / 轻文档化） |
 | 持久化 | `<instance>/usage/state.json` | `<instance>/subscription-cache.json`（Key 跟随当前 DSH 实例 / profile，缓存必须按实例隔离） |
 | 状态文件 | `state.rs` 容错读 + 原子写，`STATE_SCHEMA = 1` | 同一套路，`CACHE_SCHEMA = 2`；缓存绑定实例、profile 与 credential fingerprint；「条目不存在」（未配置）与「条目存在但 `credential_status: expired`」（凭据失效）是两个互斥状态 |
 | 并发控制 | `SCAN_LOCK` | `FETCH_LOCK`：同 provider 在途请求去重（singleFlight 的 Rust 侧形态） |
@@ -508,7 +569,7 @@ tooltip，本卡成为「当前内核」下唯一的概览卡片）：
   仿照 `usage-viewer.json`，只授予 `get_subscription_usage`。
 - 尺寸直接复用 `window::USAGE_VIEWER_SIZE`（760×800，min 720×520），不新增常量；
   吸附 / 拖动跟随（`dock_position_logical` + `attach_dock_listener`）白拿。
-- 窗口内容：两个 provider 分区 + 「刷新」（force）。v1 不画历史曲线（要曲线得在
+- 窗口内容：各 provider 分区 + 「刷新」（force）。v1 不画历史曲线（要曲线得在
   缓存里保留快照序列，等用户反馈再决定），但窗口底部放一行链接说明「本地 token
   用量统计见模型用量窗口」，用 `open_usage_window` 互跳；「前往模型设置」跳回工作台的
   provider 设置页。
@@ -642,7 +703,9 @@ DeepSeek 侧用当前模型设置中的实际 provider 配置验证余额接口�
   本机文件凭据查询，不支持拦截请求、刷新凭据或其它存储后端。
 - Kimi / 火山方舟 / StepFun / SiliconFlow / OpenRouter / Novita 等其它 provider
   ——模块已按「每家一个 query + parse 纯函数」预留扩展位，逐家接入各约 100–200 行
-  （智谱 GLM 编程套餐已按此模式接入，见「接口规格」一节）。
+  （智谱 GLM 编程套餐与 opencode Go 已按此模式接入，见「接口规格」一节；
+  `usage/subscription_opencode.rs` 即该模式的最新一例：`subscription.rs` 只留下
+  provider 常量、展示顺序、标签与一条 dispatch，其余全在新文件里）。
 - 自定义 JS 查询脚本（cc-switch 的高级能力）——避免在桌面壳里引入 JS 沙箱。
 - 用量历史曲线、自动刷新间隔设置、绝对 token 数估算——见能力边界与缓存章节。
 - Key 加密存储——本功能不新增凭据存储；凭据安全策略由 dsh 内核的 credentials provider 负责，

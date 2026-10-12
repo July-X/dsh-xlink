@@ -20,6 +20,7 @@
   | `deepseek-logo.svg` | DeepSeek 鲸鱼（`#4D6BFE`） | LobeHub Icons 的 `deepseek-color.svg`，MIT, © 2024 LobeHub；标志本身是 DeepSeek 的商标 |
   | `minimax-logo.svg` | MiniMax 声波（渐变 `#E2167E`→`#FE603C`） | LobeHub Icons 的 `minimax-color.svg`，同上；国内站与国际站共用 |
   | `openai-logo.svg` / `openai-logo-dark.svg` | OpenAI 结 | LobeHub Icons 的 `openai.svg`，同上。**路径未改，只把 `currentColor` 换成写死颜色**（浅色 `#0B1526` / 暗色 `#FFFFFF`）：经 `<img src>` 引用的外部 SVG 里的 `currentColor` 没有任何宿主元素可继承，会解析成黑色。暗色那份由 `OverviewPanel.vue` 的 `html.dark` 规则经 CSS `content` 换图 |
+  | `opencode-logo.svg` / `opencode-logo-dark.svg` | opencode 方框标志 | LobeHub Icons 的 `opencode.svg`，同上（该套图标里这一枚只有单色版，没有 `-color` 变体）。与 OpenAI 同款处理：**路径未改，只把 `currentColor` 换成写死颜色**（浅色 `#0B1526` / 暗色 `#FFFFFF`），暗色那份同样由 `html.dark` 规则换图；圆形底色相取中性石板灰（标志本身是黑白，没有第二套品牌色）。标志本身是 opencode 的商标 |
   | `zhipu-logo.svg` | 智谱原子（`#3859FF`） | LobeHub Icons 的 `zhipu-color.svg`，同上；标志本身是北京智谱华章的商标 |
 
   厂商标志按 `provider.id` 在 `ui/src/subscription/subscription.js` 的 `PROVIDER_LOGOS` 里登记；圆形底的底色色相在 `OverviewPanel.vue` 的 `.plan-provider-logo--<id>` 修饰类里。**新增 provider 要同时补这两处**，只补一处就是「有图没底色」或「有底色没图」。

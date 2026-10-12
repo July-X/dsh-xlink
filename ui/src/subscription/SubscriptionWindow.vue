@@ -24,6 +24,7 @@ import {
   balanceRow,
   queriedAtLabel,
   queriedAgeCompact,
+  tierFullName,
 } from './subscription.js';
 import { openUsageWindow } from '../usage/usage.js';
 import PartitionErrorTip from './PartitionErrorTip.vue';
@@ -31,8 +32,10 @@ import PartitionErrorTip from './PartitionErrorTip.vue';
 const CAPABILITY_TIP =
   'MiniMax 展示 Token Plan 的 5 小时 / 周窗口剩余百分比（云端 API 不提供绝对剩余 token 数）；' +
   'DeepSeek 展示按量计费账户的货币余额；智谱 GLM 展示编程套餐的 5 小时 / 周窗口剩余百分比' +
-  '（组织 / 项目上下文未配置时按错误提示补配）。OpenAI / Codex 额度分区与「使用本机 Codex ' +
-  '登录查询额度」开关，仅在启用 OpenAI-OAuth-Plugin 后显示。数据约 5 分钟更新一次，「刷新」立即重新查询。';
+  '（组织 / 项目上下文未配置时按错误提示补配）；opencode Go 展示滚动 5 小时 / 周 / 月三个' +
+  '窗口的剩余百分比（同一把 Go 套餐密钥在 opencode.ai 生成）。OpenAI / Codex 额度分区与' +
+  '「使用本机 Codex 登录查询额度」开关，仅在启用 OpenAI-OAuth-Plugin 后显示。数据约 5 分钟' +
+  '更新一次，「刷新」立即重新查询。';
 
 // 与管理壳一致：本窗口内 IO 进行中点亮标题栏鲸眼脉冲。
 watchEffect(() => {
@@ -135,7 +138,7 @@ const lastFetched = computed(() => {
                以 ♾️ 文案呈现、不渲染进度条（避免「剩余 null%」与恒满格假数据）。 -->
           <template v-if="row.provider.kind === 'plan'">
             <div v-for="tier in row.tiers" :key="tier.name" class="sub-tier">
-              <span class="sub-tier-name">{{ tier.name === '5h' ? '5 小时限额' : tier.name === '7d' ? '周限额' : tier.name }}</span>
+              <span class="sub-tier-name">{{ tierFullName(tier.name) }}</span>
               <!-- 缺席窗口：写明「暂无数据」，不补进度条也不补 100%。 -->
               <span v-if="tier.missing" class="muted sub-tier-reset" :title="tier.tip">暂无数据</span>
               <span v-else-if="tier.unlimited" class="sub-tier-unlimited">♾️ 无限周额度</span>

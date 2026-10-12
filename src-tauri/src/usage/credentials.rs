@@ -27,6 +27,19 @@ pub const PROVIDER_MINIMAX_CN: &str = "minimax_cn";
 pub const PROVIDER_MINIMAX_EN: &str = "minimax_en";
 pub const PROVIDER_DEEPSEEK: &str = "deepseek";
 pub const PROVIDER_ZAI_CODING_CN: &str = "zai_coding_cn";
+/// opencode Go 套餐：内核 route 精确是 `opencode-go`——与 Zen 的 `opencode` 是
+/// **并列的两家**（同一份 pi-ai 目录里各占一行，各自一把 Key），别按前缀混认，
+/// 见 [`classify_route`]。
+/// 密钥由用户在 DSH 模型设置里配置，引用名按默认派生规则是
+/// `OPENCODE_GO_API_KEY`——**与 opencode 自己的 `auth.json` 无关**：那是另一个
+/// 应用的凭据库，本功能不读（见 `subscription_opencode.rs` 的模块头）。
+///
+/// 残留缺口（如实记）：内核目录里 pi-ai 自己的 env 兜底把 `opencode` 与
+/// `opencode-go` 都映到 `OPENCODE_API_KEY`，而模型页的派生规则是 route 名大写
+/// （`OPENCODE_GO_API_KEY`）。只往环境里 export `OPENCODE_API_KEY`、profile 里又
+/// 没有显式 `apiKeyEnv` 的用户会被本功能判成未配置（分区不出现），而不是拿 Zen
+/// 的 Key 去查 Go 的容量端点——宁可少一个分区，不可用错账号的凭据。
+pub const PROVIDER_OPENCODE: &str = "opencode_go";
 
 /// 智谱套餐查询的上下文引用名（组织 / 项目 / 套餐类型）。这三项不是秘密，
 /// 但与 Key 一样走「环境变量 → .credentials.yaml refs → .env」的解析链，
@@ -171,6 +184,14 @@ pub fn classify_route(route: &str, base_url: Option<&str>) -> Option<&'static st
             PROVIDER_MINIMAX_EN
         });
     }
+    // opencode Go：内核 route 名精确是 `opencode-go`。**必须精确匹配**：同一个
+    // 内核目录里还有 Zen 的 `opencode`（pi-ai 的 providers/all.js 两条并列，Zen
+    // 在前），模糊包含 "opencode" 会让前者替后者作数——Zen 的 Key 被发去 Go 的
+    // 容量端点（HTTP 401，还会被标成「凭据失效」，而 expired 条目不参与自动刷新，
+    // 那条错误会一直黏着）；只配了 Zen 的用户还会凭空多出一个永远查不到数据的分区。
+    if route_lower == "opencode-go" {
+        return Some(PROVIDER_OPENCODE);
+    }
     if let Some(url) = base_url {
         let url_lower = url.to_ascii_lowercase();
         if url_lower.contains("minimaxi.com") || url_lower.contains("minimax.cn") {
@@ -204,6 +225,7 @@ fn default_route(provider: &str) -> Option<&'static str> {
         PROVIDER_MINIMAX_EN => Some("minimax-en"),
         PROVIDER_DEEPSEEK => Some("deepseek"),
         PROVIDER_ZAI_CODING_CN => Some("zai-coding-cn"),
+        PROVIDER_OPENCODE => Some("opencode-go"),
         _ => None,
     }
 }
@@ -464,8 +486,19 @@ mod tests {
         );
         assert_eq!(
             classify_route("opencode-go", None),
+            Some(PROVIDER_OPENCODE),
+            "opencode Go 的 route 要认得出来（Go 套餐容量走内核凭据链的 OPENCODE_GO_API_KEY）"
+        );
+        assert_eq!(
+            classify_route("opencode", Some("https://opencode.ai/zen/v1")),
             None,
-            "不认识的 route 必须返回 None"
+            "Zen 的 route 是另一家（引用名 OPENCODE_API_KEY，baseURL 也没有 /go/）：\
+             认成 Go 就会把 Zen 的 Key 发去 Go 的容量端点，而 401 会被标成凭据失效"
+        );
+        assert_eq!(
+            classify_route("opencode-zen", None),
+            None,
+            "只认 `opencode-go` 这一个 route 名，不按前缀猜"
         );
     }
 
@@ -487,7 +520,47 @@ mod tests {
             default_reference(PROVIDER_ZAI_CODING_CN).as_deref(),
             Some("ZAI_CODING_CN_API_KEY")
         );
+        assert_eq!(
+            default_reference(PROVIDER_OPENCODE).as_deref(),
+            Some("OPENCODE_GO_API_KEY"),
+            "route opencode-go 大写化后就是用户凭据文件里那个引用名"
+        );
         assert_eq!(default_reference("unknown"), None);
+    }
+
+    /// opencode Go 走的是**默认派生**这条链：真机核对的 profile 里
+    /// `opencode-go` 本来就带 `apiKeyEnv: OPENCODE_GO_API_KEY`（内核模型页按
+    /// route 名派生的同一个名字），但用户也可能是手写 patch、只删了那一行——
+    /// 那时 provider id → route → 引用名必须自己接得上。三段各自有测试，这条钉
+    /// 的是它们接在一起仍然落在用户凭据文件里那个引用名上。
+    #[test]
+    fn opencode_go_resolves_through_the_kernel_derivation() {
+        let dir = tempfile_fresh("opencode-go-derivation");
+        std::fs::write(
+            dir.join(".credentials.yaml"),
+            "version: 1\nrefs:\n  OPENCODE_GO_API_KEY: go-plan-key\n",
+        )
+        .unwrap();
+        let resolved = resolve_provider(PROVIDER_OPENCODE, &[], &dir).expect("应解析出凭据");
+        assert_eq!(
+            resolved.reference, "OPENCODE_GO_API_KEY",
+            "引用名必须与内核 deriveKeyRef 的派生结果一致（route 名大写 + 非字母数字转下划线）"
+        );
+        // 刻意不断言 source：解析链是「环境变量优先」，CI / 开发机上恰好 export
+        // 过同名变量时命中的是那一层，断言 source 会变成一条看运气的测试。
+        assert!(resolved.value.is_some(), "引用名对上了就必须能取到值");
+        // 只配了 Zen 的用户不该被认成 Go：Zen 的引用名是另一把。
+        std::fs::write(
+            dir.join(".credentials.yaml"),
+            "version: 1\nrefs:\n  OPENCODE_API_KEY: zen-key\n",
+        )
+        .unwrap();
+        assert!(
+            resolve_provider(PROVIDER_OPENCODE, &[], &dir).is_none(),
+            "只有 OPENCODE_API_KEY（Zen）时不能算已配置——否则会凭空多出一个\
+             永远查不到数据的「opencode Go」分区"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
