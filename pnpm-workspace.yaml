@@ -2,8 +2,16 @@
 # 本文件让 pnpm 将仓库根目录作为独立项目；pnpm 10+ 默认拒绝依赖的
 # 安装脚本（strictDepBuilds），所以 esbuild（Vite 依赖的原生二进制）
 # 必须在本项目内单独放行。
+#
+# edgedriver / geckodriver 是 WebdriverIO 的浏览器驱动二进制，本仓的 e2e 走
+# 内嵌驱动（tauri-plugin-wdio-webdriver，见 e2e/wdio.conf.mjs），用不到它们，
+# 所以显式 false 而不是删掉条目——删掉只会被 pnpm 重新列为「待批准」并在下一次
+# 安装时报 `ERR_PNPM_IGNORED_BUILDS`，那条报错会连 `pnpm run` 一起打死
+# （pnpm 在跑脚本前会先对一次账）。
 allowBuilds:
+  edgedriver: false
   esbuild: true
+  geckodriver: false
 minimumReleaseAgeExclude:
   - '@tauri-apps/cli-darwin-arm64@2.12.2'
   - '@tauri-apps/cli-darwin-x64@2.12.2'

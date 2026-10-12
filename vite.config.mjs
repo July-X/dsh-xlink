@@ -19,9 +19,35 @@ export default defineConfig({
     rollupOptions: {
       output: {
         // 桌面应用本地加载，拆块只为让缓存与增量构建更友好。
-        manualChunks: {
-          vue: ['vue'],
-          'element-plus': ['element-plus', '@element-plus/icons-vue'],
+        //
+        // vite 8 的打包器换成了 rolldown，`manualChunks` 的**对象写法已被移除**
+        // （函数写法仍可用但已废弃），官方给的新选项是 `output.codeSplitting.groups`，
+        // 见 vite docs/guide/migration.md 的 "Removed object form … manualChunks"。
+        //
+        // `test` 用 `[\\/]` 而不是 `/node_modules/foo/`：rolldown 的类型定义明确
+        // 提醒 Windows 上别用后者（路径分隔符会漏匹配），本仓 dev 与 CI 都在
+        // Windows 上跑过。
+        //
+        // **vue 这一组目前不产出独立块**，这不是写错了：组的
+        // `includeDependenciesRecursively` 默认 true，即「连同依赖一起收」，而
+        // element-plus 的源码 import 了 vue，所以 vue 整个被并进 element-plus
+        // 块（element-plus 403 KB / index 252 KB）。两条路都实测过，都不成立：
+        // 给 vue 组 `priority: 2` 并排在前面，产物哈希一字不差；给 element-plus
+        // 组关掉 `includeDependenciesRecursively`，vue 块仍然不出现，反而让
+        // element-plus 的依赖散进 index（index 涨到 410 KB）。留着这一组是为了
+        // 上游哪天改了依赖收集语义时 vue 能自己落回独立块；**别把它当成「现在
+        // 有一个 vue 块」**。
+        codeSplitting: {
+          groups: [
+            {
+              name: 'element-plus',
+              test: /node_modules[\\/](?:element-plus|@element-plus)[\\/]/,
+            },
+            {
+              name: 'vue',
+              test: /node_modules[\\/]vue[\\/]/,
+            },
+          ],
         },
       },
     },
