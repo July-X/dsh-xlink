@@ -2433,6 +2433,42 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// --- 28. 插件中央库的启动对账必须接在 setup() 里 ---------------------------
+//
+// 与第 26 项同一个仓库、同一种事故：**定义在那里、doc 里承诺「下次启动时
+// reconcile 会接手」，但零生产调用方**。2026-10-12 扫出来时，
+// `plugins::center::reconcile_store` 的四个调用点全在 `#[cfg(test)]` 内，于是
+// ① 装/更新/卸载中途崩溃留下的 `tmp-*` / `new-*` / `backup-*` 永久堆积；
+// ②「已发布但目录缺失」的中间态永不修复；③ v0.2.x 平铺中央库的搬迁从未发生。
+//
+// skills 那次修完，plugins 这条一直没人碰——所以单独钉，不指望「顺便发现」。
+// 判据只扫 setup 闭包的生产代码，注释里写一遍不算（与第 26 项同一条纪律：
+// 直接匹配原始文本的话，把调用改成注释会假绿）。
+
+{
+  const libPath = join(root, 'src-tauri', 'src', 'lib.rs');
+  const lib = readFileSync(libPath, 'utf8');
+  // 锚点必须在**原始文本**上找，剥注释只对切出来的闭包体做。顺序反过来
+  // （先 productionRust 全文再找锚点）会踩两个坑：① Tauri 的入口是
+  // `.setup(|app| { … })` **闭包**，`fn setup(` 这个串在 lib.rs 里根本不存在；
+  // ② 剥掉注释后行号与位置全变。第 26 项就是这个顺序，别再抄错。
+  const setupStart = lib.indexOf('.setup(|app|');
+  const setupBody = setupStart >= 0 ? lib.slice(setupStart, setupStart + 40000) : '';
+  const setupProduction = productionRust(setupBody);
+  if (!/plugins::center::reconcile_store\(/.test(setupProduction)) {
+    fail(
+      'plugins-reconcile-wired',
+      'src-tauri/src/lib.rs 的 setup() 里没有生效的 plugins::center::reconcile_store 调用：' +
+        '插件中央库的启动对账又变成了死代码，崩溃残留（tmp-*/new-*/backup-*）会无限堆积，' +
+        '「已发布但目录缺失」的中间态永不修复，v0.2.x 平铺中央库的搬迁也不会发生——' +
+        '而 center.rs 多处注释写着「下次启动时 reconcile 会接手」。' +
+        '判据只扫 setup 闭包的生产代码——注释里写一遍不算。'
+    );
+  } else {
+    note('插件中央库启动对账接在 setup() 里（崩溃残留有人回收）');
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);
