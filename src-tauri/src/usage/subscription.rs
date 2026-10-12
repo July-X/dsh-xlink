@@ -461,11 +461,18 @@ fn refresh_provider_entry(
     now_ms: u64,
     fetch: impl FnOnce(&str, &str) -> FetchOutcome,
 ) -> (Option<ProviderCacheEntry>, Option<String>, bool) {
-    let Some(credential) = credential else {
-        return (None, None, false);
-    };
-    let Some(key) = credential.value.as_deref().map(str::to_string) else {
-        // 凭据未配置（引用解析不出值）：不产生 / 不保留缓存条目。
+    // 「拿不到凭据」有两条来路，语义相同，所以合并成一条：模型设置里把这个
+    // provider 整个删掉（绑定与 Key 一起没了，没有凭据可谈），与绑定还在但
+    // 引用解析不出值（`value` 为 `None`）——对缓存都是「这个 provider 现在
+    // 不该有数据」，都**不产生 / 不保留**缓存条目。
+    //
+    // 这两条曾经是分开的，而漏掉的那一条正是 2026-10-12 用户报的现象：删掉
+    // zai-coding-cn 模型后，概览页「GLM-CN：当前用户不存在 coding plan」的
+    // 横幅一直不消失。那条分支返回 `dirty = false`，于是缓存里的旧条目连同
+    // 那条确定性失败文案原样留着——分区本身因为未配置已经不画了，错误横幅
+    // 却还在对着一个用户已经不配置的模型反复报警。
+    let Some((credential, key)) = credential.and_then(|c| c.value.clone().map(|key| (c, key)))
+    else {
         let dirty = cached.is_some();
         return (None, None, dirty);
     };
@@ -1754,6 +1761,28 @@ mod refresh_tests {
         assert!(fetch_error.is_none());
     }
 
+    /// 凭据**整个解析不出来**（模型已从工作台删除，绑定与 Key 一起没了）：与
+    /// 上一条同一种语义，旧条目连同它带着的失败文案一并清掉。
+    ///
+    /// 这条与上面那条曾经是两个分支，而漏掉的就是它——返回 `dirty = false`
+    /// 时条目留在缓存里，`provider.error` 照旧透到视图，于是概览页一直挂着
+    /// 一条针对已删模型的告警。
+    #[test]
+    fn absent_credential_drops_the_cached_error_too() {
+        let mut old = cached_entry(&credential_fingerprint("key"), NOW_MS);
+        old.error = Some("当前用户不存在coding plan".to_string());
+        let (entry, fetch_error, dirty) = refresh_provider_entry(
+            PROVIDER_ZAI_CODING_CN,
+            None,
+            Some(old),
+            false,
+            NOW_MS,
+            no_fetch(),
+        );
+        assert!(dirty, "凭据没了必须标脏，否则条目连同告警文案留在盘上");
+        assert!(entry.is_none() && fetch_error.is_none());
+    }
+
     #[test]
     fn unconfigured_provider_without_cache_is_a_no_op() {
         let (entry, fetch_error, dirty) =
@@ -1825,6 +1854,13 @@ mod cache_tests {
 
     /// 未配置任何凭据：不发请求，且历史遗留条目必须被清掉（「未配置」与
     /// 「失效」是两个互斥状态，凭据没了不能还留着上一个账号的数据）。
+    ///
+    /// 缓存文档的 `instance` 必须**与当前实例绑定一致**：不一致时 `providers`
+    /// 会被整块清空（见 [`subscription_view`]），这条断言同样会绿——绿在另一条
+    /// 路径上，而不是在「凭据没了要清条目」这条它想钉的路径上。2026-10-12 的
+    /// 「移除模型后告警不消失」正是被这种假绿盖过去的：`instance: None` 让本
+    /// 来该失败的场景顺手通过，而真正出问题的那条分支（`credential == None`
+    /// 时不标脏）压根没被这处判据碰到。
     #[test]
     fn unconfigured_provider_drops_stale_entries_without_network() {
         let home = temp_home("unconfigured");
@@ -1834,7 +1870,11 @@ mod cache_tests {
 
         let mut doc = SubscriptionCacheDoc {
             schema: CACHE_SCHEMA,
-            instance: None,
+            instance: Some(CacheInstanceBinding {
+                family: scope.family.clone(),
+                id: scope.id.clone(),
+                profile: scope.profile.clone(),
+            }),
             providers: BTreeMap::new(),
         };
         doc.providers.insert(
@@ -1860,6 +1900,76 @@ mod cache_tests {
         let doc: SubscriptionCacheDoc =
             state::load_checked(&scope.cache_path(), cache_ctx()).unwrap();
         assert!(!doc.providers.contains_key(PROVIDER_DEEPSEEK));
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 在工作台删掉模型之后，它那条告警必须跟着消失（2026-10-12 用户反馈：
+    /// 概览页横幅一直挂着「GLM-CN：当前用户不存在 coding plan」）。
+    ///
+    /// 钉的是**用户看见的症状**，不是「缓存被清空」这个中间步骤：条目里带着
+    /// 确定性失败文案时，前端横幅会照抄 `provider.error` 拼出那行字，而分区本身
+    /// 因为未配置已经不画了——所以「告警还在」并不需要任何配置还在。条目的
+    /// `queried_at_ms` 刻意给成 TTL 内：用户删模型时缓存通常刚查过，场景就是
+    /// 「新鲜的条目 + 凭据没了」。实例绑定与当前一致，免得整块清空替这条判据
+    /// 兜底（见上一条测试的注释）。
+    #[test]
+    fn removing_the_model_clears_the_error_it_left_behind() {
+        let home = temp_home("removed-model");
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let scope = InstanceScope::resolve();
+        let dsh_home = scope.dsh_home();
+        std::fs::create_dir_all(&dsh_home).unwrap();
+        // 模型已删：凭据文件里只剩 DeepSeek 那把 Key，zai-coding-cn 不在其中。
+        std::fs::write(
+            dsh_home.join(".credentials.yaml"),
+            "version: 1\nrefs:\n  DEEPSEEK_API_KEY: sk-test-kept\n",
+        )
+        .unwrap();
+
+        let mut doc = SubscriptionCacheDoc {
+            schema: CACHE_SCHEMA,
+            instance: Some(CacheInstanceBinding {
+                family: scope.family.clone(),
+                id: scope.id.clone(),
+                profile: scope.profile.clone(),
+            }),
+            providers: BTreeMap::new(),
+        };
+        doc.providers.insert(
+            PROVIDER_ZAI_CODING_CN.to_string(),
+            ProviderCacheEntry {
+                kind: "plan".to_string(),
+                credential_ref: "ZAI_CODING_CN_API_KEY".to_string(),
+                credential_fingerprint: credential_fingerprint("sk-removed-zai"),
+                credential_status: CREDENTIAL_VALID.to_string(),
+                queried_at_ms: process::epoch_millis(),
+                error: Some("当前用户不存在coding plan".to_string()),
+                tiers: vec![CacheTier {
+                    name: "5h".to_string(),
+                    remaining_percent: 93.0,
+                    resets_at_ms: None,
+                    unlimited: false,
+                }],
+                ..ProviderCacheEntry::default()
+            },
+        );
+        state::save(&scope.cache_path(), &doc, cache_ctx()).unwrap();
+
+        let view = subscription_view(Some(PROVIDER_ZAI_CODING_CN), false)
+            .expect("凭据已移除，离线即可得出视图");
+        let provider = &view.providers[0];
+        assert!(!provider.configured, "模型已移除，不再是已配置态");
+        assert!(
+            provider.error.is_none(),
+            "删掉模型后旧文案不得继续当告警报出去"
+        );
+        assert!(provider.tiers.is_empty(), "旧额度数字同样不得继续展示");
+        let doc: SubscriptionCacheDoc =
+            state::load_checked(&scope.cache_path(), cache_ctx()).unwrap();
+        assert!(
+            !doc.providers.contains_key(PROVIDER_ZAI_CODING_CN),
+            "缓存里的条目必须被清掉，而不是留在盘上等下次再报一遍"
+        );
         std::fs::remove_dir_all(&home).ok();
     }
 
