@@ -22,6 +22,8 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+use super::store_owner::process_alive;
+
 /// 暂存目录名的三个前缀，与 `manage` 里的同名常量一致（`pkg::fetch::new_staging_dir`
 /// 拼出来的形状就是 `{prefix}{pid}-{nanos}`）。
 const STAGING_PREFIXES: [&str; 3] = [".tmp-", ".new-", ".backup-"];
@@ -56,7 +58,7 @@ pub(crate) fn another_writer_active(store: &Path) -> bool {
         if !process_alive(owner_pid) {
             return false;
         }
-        written_recently(&entry)
+        looks_in_use(true, entry_age(&entry))
     })
 }
 
@@ -71,50 +73,38 @@ fn staging_owner_pid(name: &str) -> Option<u32> {
     rest.split('-').next()?.parse().ok()
 }
 
-/// 该目录最近是否被改动过。
+/// 单个暂存目录「看起来正被使用」的判据（**纯函数**）。
 ///
-/// 读不出 mtime 时返回 false：同理，宁可漏判。Windows 上目录 mtime 的更新
-/// 时机与 Unix 不完全一致（受目录项缓存影响），偏保守正好落在这里。
-fn written_recently(entry: &std::fs::DirEntry) -> bool {
-    entry
-        .metadata()
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-        .is_some_and(|age| age < RECENT_WRITE)
+/// 拆出来不是为了好看，是为了让「久未改动」这条兜底在**两个平台**上都有覆盖：
+/// 原来的用例靠把目录 mtime 回拨一年来构造场景，而 std 在 Windows 上打不开
+/// 目录句柄（`File::open` 对目录直接失败），于是那条 `filetime_shift` 在
+/// Windows 上是个空实现——**注释写着「相关用例在 `#[cfg(unix)]` 上」，可用例
+/// 本身并没有 gate**，于是在 Windows 上它测的是「刚建的目录 + 活 pid」，判据
+/// 说它忙，而用例断言它不忙。pid 复用兜底恰恰是这条判据存在的理由，不能只
+/// 在一个平台上被验过。
+///
+/// `owner_alive` 与 `age` 分别是「创建者的 pid 还活着吗」和「这个目录多久没被
+/// 动过了（读不出为 None）」。
+fn looks_in_use(owner_alive: bool, age: Option<Duration>) -> bool {
+    owner_alive && age.is_some_and(|age| age < RECENT_WRITE)
 }
 
-/// `pid` 是否仍是一个活着的进程。
+/// 该目录距今多久没被改动过；读不出 mtime 时返回 `None`。
 ///
-/// Unix 用 `kill(pid, 0)`：它不投递信号，只问「这个 pid 在不在」，且**不会**回收
-/// 僵尸——`waitpid` 会把观测动作本身变成破坏，所以这里绝不能用它。返回 `EPERM`
-/// 表示进程在、只是没权限，同样算活着；只有 `ESRCH`（pid 从进程表消失）才算没了。
-#[cfg(unix)]
-fn process_alive(pid: u32) -> bool {
-    if unsafe { libc::kill(pid as i32, 0) } == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+/// Windows 上目录 mtime 的更新时机与 Unix 不完全一致（受目录项缓存影响），
+/// 读不出时按「没有证据有人在写」处理，正好落在这条保守方向上。
+fn entry_age(entry: &std::fs::DirEntry) -> Option<Duration> {
+    let modified = entry.metadata().ok()?.modified().ok()?;
+    SystemTime::now().duration_since(modified).ok()
 }
 
-/// Windows 上没有信号 0 的等价物，走 `OpenProcess` 探一个查询句柄：能打开就是
-/// 进程还在。查询句柄用完立刻关，不留句柄泄漏（`windows-sys` 的
-/// `Win32_System_Threading` 特性已经因 Job Object 与 `win_probe.rs` 在依赖里）。
-#[cfg(windows)]
-fn process_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if handle.is_null() {
-        return false;
-    }
-    unsafe { CloseHandle(handle) };
-    true
-}
+// 判活与「多久没动过」都在 [`store_owner::process_alive`] 与 [`looks_in_use`] 里，
+// 本文件只负责「扫目录、把暂存目录名折成 pid」这一层。
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::store_owner::{spawn_exiting, spawn_sleeper};
     use std::fs;
 
     /// 造一个中央库根，返回它的路径。
@@ -129,57 +119,21 @@ mod tests {
         dir
     }
 
-    /// 造一个暂存目录名，带可控的 pid 与年龄。
-    fn staging(store: &Path, prefix: &str, pid: u32, age: Duration) -> std::path::PathBuf {
+    /// 造一个暂存目录名，带可控的 pid。
+    fn staging(store: &Path, prefix: &str, pid: u32) -> std::path::PathBuf {
         let name = format!("{prefix}{pid}-1234567890");
         let dir = store.join(name);
         fs::create_dir_all(&dir).expect("create staging");
-        // mtime 回拨只求「看起来很久以前」；某些文件系统上精度受限，
-        // 因此断言只对「明显够老」的方向成立（见用例）。
-        let when = SystemTime::now() - age;
-        if age.as_secs() > 5 {
-            filetime_shift(&dir, when);
-        }
         dir
     }
-
-    /// 把目录 mtime 改到过去。macOS / Linux 可用 `utimensat`，Windows 上退化为
-    /// 不改（相关用例在 `#[cfg(unix)]` 上）。
-    #[cfg(unix)]
-    fn filetime_shift(dir: &Path, when: SystemTime) {
-        let secs = when
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("时间在 epoch 之后")
-            .as_secs() as i64;
-        let times = [
-            libc::timespec {
-                tv_sec: secs,
-                tv_nsec: 0,
-            },
-            libc::timespec {
-                tv_sec: secs,
-                tv_nsec: 0,
-            },
-        ];
-        let c = std::ffi::CString::new(dir.to_string_lossy().as_bytes()).expect("路径无 NUL");
-        unsafe {
-            libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), 0);
-        }
-    }
-
-    #[cfg(not(unix))]
-    fn filetime_shift(_dir: &Path, _when: SystemTime) {}
 
     #[test]
     fn a_live_foreign_owner_counts_as_busy() {
         let store = store("live");
         // 本进程一定活着，但它被显式排除，所以这里用一个"别的活进程"：
-        // 起一个 sleep 子进程当 owner，它的 pid 必然存活且不是我们。
-        let mut child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
-            .spawn()
-            .expect("spawn owner");
-        staging(&store, ".tmp-", child.id(), Duration::from_secs(0));
+        // 起一个子进程当 owner，它的 pid 必然存活且不是我们。
+        let mut child = spawn_sleeper();
+        staging(&store, ".tmp-", child.id());
         assert!(
             another_writer_active(&store),
             "另一个活进程正在使用的暂存目录必须被判为「中央库正忙」"
@@ -192,7 +146,7 @@ mod tests {
     #[test]
     fn our_own_staging_dir_is_not_busy() {
         let store = store("self");
-        staging(&store, ".tmp-", std::process::id(), Duration::from_secs(0));
+        staging(&store, ".tmp-", std::process::id());
         assert!(
             !another_writer_active(&store),
             "本进程的暂存目录不算「别人在写」——那会让安装自己跳过对账"
@@ -203,37 +157,43 @@ mod tests {
     #[test]
     fn a_dead_owner_is_reclaimable() {
         let store = store("dead");
-        // 起一个立刻退出的进程拿一个几乎肯定已回收的 pid。
-        let mut child = std::process::Command::new("sh")
-            .args(["-c", "exit 0"])
-            .spawn()
-            .expect("spawn");
-        let pid = child.id();
-        let _ = child.wait();
-        staging(&store, ".backup-", pid, Duration::from_secs(0));
+        // 起一个立刻退出的进程拿它的 pid（句柄仍开着，正是 Windows 上最容易
+        // 判错的那一种「已死」）。
+        let mut child = spawn_exiting();
+        staging(&store, ".backup-", child.id());
         assert!(
             !another_writer_active(&store),
             "创建者已退出的暂存目录必须被留给回收，否则崩溃残留永远清不掉"
         );
+        let _ = child.wait();
         let _ = fs::remove_dir_all(&store);
     }
 
+    /// pid 复用兜底：名字折着一个活着的 pid，但目录早就不再被写。
+    ///
+    /// 这一条只判**规则**（[`looks_in_use`]），不再去回拨目录 mtime 造假场景：
+    /// 改目录 mtime 在 Windows 上做不到（std 打不开目录句柄），原来的
+    /// `filetime_shift` 在那里是空实现，于是这个用例在 Windows 上实测测的是
+    /// 「刚建的目录 + 活 pid」，与断言相反。规则本身与平台无关，判它就够；
+    /// 真的从文件系统那头走一遍由上面三条（新建目录都是新鲜的 mtime）盖住。
     #[test]
-    fn a_live_owner_with_an_ancient_mtime_is_reclaimable() {
-        // pid 复用兜底：名字折着一个活着的 pid，但目录早就不再被写。
-        let store = store("recycled");
-        let mut child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
-            .spawn()
-            .expect("spawn owner");
-        staging(&store, ".new-", child.id(), Duration::from_secs(3600));
+    fn an_ancient_staging_dir_does_not_count_as_in_use() {
         assert!(
-            !another_writer_active(&store),
+            !looks_in_use(true, Some(Duration::from_secs(3600))),
             "久未改动的暂存目录即便 pid 活着也不算忙，否则 pid 复用会让回收永久停摆"
         );
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = fs::remove_dir_all(&store);
+        assert!(
+            looks_in_use(true, Some(Duration::from_secs(60))),
+            "刚被写过的暂存目录且主人活着 = 正在用，不能误判成残留"
+        );
+        assert!(
+            !looks_in_use(false, Some(Duration::from_secs(0))),
+            "主人已死时与 mtime 无关，一律不算在用"
+        );
+        assert!(
+            !looks_in_use(true, None),
+            "读不出 mtime 按「没有证据有人在写」处理，不能反过来当成占用"
+        );
     }
 
     #[test]
