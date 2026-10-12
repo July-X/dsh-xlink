@@ -1272,7 +1272,9 @@ const FILE_BUDGETS = {
 // 2026-10-12 280 → 281：六处 item 级标注，但 activate.rs 原本就有 5 处
   // #[cfg_attr(not(target_os="windows"), allow(dead_code))]——把 cfg_attr 换成
   // 裸 allow 让每处从 4 行折行缩成 1 行，六处净增 1 行（见下条）。
-  'src-tauri/src/notify/activate.rs': 281,
+  // 281 → 282：`raise_workbench_if_open` 漏标的那一处（唯一调用方在 lib.rs 的
+  // macOS Reopen 分支里，Windows 编译时看不到）。同样按单行裸 allow 写，净增 1。
+  'src-tauri/src/notify/activate.rs': 282,
   // 2026-09-30：工作台窗口的**手动**逃生口（`harness_force_reload`）。看门狗
   // 只在加载事件上判据，而 WebView2 渲染进程被打崩时页面早就 `Finished` 过，
   // 那条判据永远不会触发，`reload()` 又落在一块死掉的文档上（用户原话：

@@ -111,7 +111,11 @@ fn process_command_line_peb(pid: u32) -> Option<String> {
         // UNICODE_STRING { Length: u16, MaximumLength: u16, 对齐填充: u32, Buffer: *u16 }
         let unicode_string = read_bytes(handle, params_ptr + x64::PARAMS_COMMAND_LINE, 16)?;
         let length = u16::from_ne_bytes([unicode_string[0], unicode_string[1]]) as usize;
-        let buffer = usize::from_ne_bytes(unicode_string[8..16].try_into().ok()?);
+        let buffer = usize::from_ne_bytes(
+            unicode_string[x64::UNICODE_STRING_BUFFER..]
+                .try_into()
+                .ok()?,
+        );
         if length == 0 || length % 2 != 0 || length > x64::MAX_COMMAND_LINE_BYTES || buffer == 0 {
             return None;
         }

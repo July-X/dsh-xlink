@@ -219,6 +219,7 @@ fn hex32(text: &str) -> Result<[u8; 32], ()> {
 /// （errSecInteractionNotAllowed）、用户拒绝授权（errSecAuthFailed）等一律
 /// 是读取失败，原样上抛——它们一旦被当成「没有」，就会生成新密钥覆盖掉
 /// 用户原有的那把。
+#[allow(dead_code, reason = "macOS 专属：唯一读点是本文件的 keyring_get")]
 const KEYCHAIN_ITEM_NOT_FOUND: i32 = 44;
 
 /// Windows 脚本用来表示「枚举完了，确实没有这条」的标记。

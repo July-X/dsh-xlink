@@ -23,6 +23,7 @@
 //! 排查时别把它们当成一个功能的两半。
 
 /// macOS 上未打包构建的说明（`blocked()` 为 `true` 时展示）。
+#[allow(dead_code, reason = "macOS 专属提示串：生产使用点在 note()…")]
 pub const MACOS_UNPACKAGED: &str = "当前是未打包的开发构建：macOS 按应用 bundle 归属系统通知，\
      找不到 bundle 时通知不会以 dsh-xlink 的名义投递（角标仍然正常）。要验证通知气泡，\
      请用安装版，或先执行 `npm run build -- --debug` 再运行 \

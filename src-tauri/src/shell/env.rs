@@ -213,6 +213,7 @@ pub(crate) struct SystemProxy {
 ///
 /// PAC（`ProxyAutoConfigURLString`）刻意不解析：它是一段需要求值的 JS，
 /// git 的 `http_proxy` 表达不了。忽略了它，用户至少还是直连。
+#[allow(dead_code, reason = "生产读点是 macOS 专属的 read_system_proxy")]
 fn parse_scutil_proxy(text: &str) -> SystemProxy {
     fn field(text: &str, key: &str) -> Option<String> {
         let line = format!("{key} : ");

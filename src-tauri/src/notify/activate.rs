@@ -205,6 +205,7 @@ pub fn force_foreground(_window: &tauri::WebviewWindow) {}
 /// 打脸）。所以返回 `false` 时调用方必须自己调
 /// [`crate::shell::resident::show_main_shell`] 兜底，否则用户点的是一枚
 /// 点了没反应的图标。
+#[allow(dead_code, reason = "唯一调用方在 lib.rs 的 macOS Reopen 分支")]
 pub fn raise_workbench_if_open(app: &AppHandle) -> bool {
     let Some(window) = app.get_webview_window("harness") else {
         return false;
