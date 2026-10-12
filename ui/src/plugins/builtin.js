@@ -97,3 +97,46 @@ export async function toggleBuiltin(id, enabled) {
     await loadBuiltinStatus();
   }
 }
+
+/**
+ * 行内那一小段「上游 x.y.z」文字。
+ *
+ * 三个状态缺一不可：**没同步过**（插件刚装、还没联网拉过）与**检查失败**长得
+ * 完全不同——前者要提示「启用时会自动下载」，后者要提示「用的是上一次那版」。
+ * 两者都显示成「未启用」的话，用户会把网络问题当成插件没装好。
+ */
+export function builtinUpstreamText(view) {
+  const upstream = view && view.upstream;
+  if (!upstream) return '';
+  if (upstream.error) return `上游检查失败（继续用 ${upstream.version || '当前版本'}）`;
+  if (upstream.version) return `上游 ${upstream.version}`;
+  return '尚未同步（启用时自动下载）';
+}
+
+/**
+ * 立即检查并拉取上游最新版（面板按钮与工作台里的 `/ponytail-update` 同一条命令）。
+ *
+ * 结果**如实说**：后端把「同步失败」放在载荷里而不是当命令失败返回，因为用户手上
+ * 那一版继续可用——把它报成红字只会让人不敢点。
+ */
+export async function checkBuiltinUpstream(id) {
+  const view = builtinById(id);
+  const name = view ? view.displayName : id;
+  const next = await withLoading(`builtinUpstream:${id}`, () =>
+    invoke('builtin_check_upstream', { plugin: id }),
+  );
+  if (builtinStore.list) {
+    builtinStore.list = builtinStore.list.map((item) => (item.id === id ? next : item));
+  }
+  if (next.upstream && next.upstream.error) {
+    toastActionError(
+      `检查 ${name} 更新失败`,
+      new Error(next.upstream.error),
+      `继续使用现有的 ${next.upstream.version || '版本'}；联网后可以再试一次`,
+    );
+  } else {
+    toastSuccess(
+      `已同步到 ${name} ${next.upstream ? next.upstream.version : ''}，重启工作台后生效`,
+    );
+  }
+}

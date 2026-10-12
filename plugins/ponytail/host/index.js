@@ -1,17 +1,24 @@
 /**
- * Ponytail 内置插件的 Host 适配器：把随包交付的技能正文注册进内核技能表。
+ * Ponytail 内置插件的 Host 适配器：把上游的技能正文注册进内核技能表，并在有
+ * 上游 hook 脚本时把它们挂到内核的拦截面上。
  *
- * ## 为什么是「注册技能」而不是别的
+ * ## 这里发的是什么、不发什么
  *
- * Ponytail 没有运行时代码：它的全部内容就是六个 `SKILL.md`。所以这里能做的、
- * 也只该做一件事——把随包交付的技能正文交给内核的技能表（`ctx.skills`），
- * 让它们在工作台里按需被模型或用户调用。
+ * **不发**上游内容。技能正文（六个 `SKILL.md`）与 hook 脚本都由**桌面壳**在启用
+ * 时从上游拉取、物化进实例目录（`builtin::upstream`），本适配层只负责把它们
+ * 接进内核。这样上游改一次不必重发一版 dsh-xlink，仓库里也不会躺着第二份与
+ * 用户手上那份不同步的内容。
  *
- * 注册用 `registerProvider` 而不是 `register`：`register` 收的是**内存里的一段
- * 正文**，而我们的正文是磁盘上的文件（应用升级时壳会重写物化目录，provider
- * 每次读取都能拿到当前那份）。形状与内核自己的 `@deepseek-ai/dsh-skill-office`
- * 一致（`lib/index.js`：读 SKILL.md → 剥 frontmatter → 注册 bundled 技能），
- * 抄的是那一份的形状，不是自己另发明一套。
+ * 发的是：
+ * · 随包的一份**适配层**（本文件 + `adapter/`：更新脚本与 `ponytail-update` 技能）。
+ * · 从物化目录读到的上游内容（读到多少接多少——**读不到不是错误**：
+ *   插件刚装、还没同步过时就是空的，此时只注册我们自己的 `ponytail-update`）。
+ *
+ * ## 为什么是「注册 provider」而不是「注册」
+ *
+ * `ctx.skills.register` 收的是**内存里的一段正文**，而我们的正文是磁盘上的文件
+ * （壳启动内核前可能重写物化目录）。provider 每次读取都拿到当前那份，形状与内核
+ * 自己的 `@deepseek-ai/dsh-skill-office` 一致。
  *
  * 本文件刻意只留「装配」：候选的字段、解析规则、provider 的两个方法都在
  * `skills.js` 里——那是**没有外部依赖**的一半，所以 `npm run check` 里的
@@ -27,26 +34,66 @@
  *
  * ## 做不到的部分（面板说明里已如实写明）
  *
- * 上游的档位切换（`/ponytail lite|full|ultra`）与会话级常驻依赖 Claude Code /
- * Cursor 的生命周期钩子与宿主状态，dsh 侧没有对应面。这里给出的是规则集 +
- * 六个按需调用的技能，不含那套状态机。
+ * 上游另有两个形态（statusline 徽标、`ponytail-gain` 的基准对照依赖别家 agent 的
+ * 状态栏）在本宿主没有对应面；规则集与档位切换则**可用**，靠的就是下面的 hook 桥。
  *
  * @module xlink-ponytail
  */
 import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { BUNDLED_SKILL_RANK } from "@deepseek-ai/dsh-skill";
+import { apply as applyClaudeCodeHooks } from "@deepseek-ai/dsh-hooks-claude-code";
 
 import { createProvider } from "./skills.js";
 
 /** 与 `plugins/ponytail/package.json` 的 `name`、接线行 id 三者同值。 */
 const PACKAGE_ID = "xlink-ponytail";
 const name = PACKAGE_ID;
-/** 需要 `ctx.skills` 才能注册；不声明会在别的插件先跑时拿到 undefined。 */
+/** 需要 `ctx.skills` 才能注册；hook 桥自己按需注入 shell / sessionProjections。 */
 const inject = ["skills"];
-/** 技能目录（相对本文件）：包内 `skills/<name>/SKILL.md`。 */
-const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
+/** 插件根（物化目录），`${CLAUDE_PLUGIN_ROOT}` 替换成它。 */
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+/** 上游的 Claude Code 形态钩子配置（由壳在同步上游时物化进来）。 */
+const HOOKS_CONFIG = join(ROOT, "hooks", "claude-codex-hooks.json");
+
+/**
+ * 把 ponytail 的 hook 挂到内核的拦截面上。
+ *
+ * 上游那三个脚本是**为 Claude Code 写的**（`SessionStart` 注入规则集、
+ * `UserPromptSubmit` 切档位、`SubagentStart` 传给子 agent）。dsh 内核自带
+ * `dsh-hooks-claude-code` 这个桥，要做的就是「跑 unmodified 的 Claude Code
+ * hooks.json」，所以上游脚本一个字都不用改。核对过的三处（0.2.1-alpha.1 实读）：
+ *
+ * 1. **事件与 matcher**：`SessionStartSource = 'startup'|'resume'|'clear'|'compact'`，
+ *    与上游 matcher `startup|resume|clear|compact` 的四个词逐字相同；桥按
+ *    claude-code 方言把 `a|b|c` 当**字面** alternation 比对，因此能选中。
+ *    `UserPromptSubmit` 的 matcher 被桥丢弃（该事件按 prompt 触发，与工具名无关）。
+ * 2. **注入通道**：脚本吐 `hookSpecificOutput.additionalContext`，协议包解析该键，
+ *    桥把它 `agent.inject(...)` 塞进这一会话的上下文——规则因此**只注入一次**，
+ *    不是每轮重发（每轮重发在短 prompt 上可能比它省下的代码还贵，上游自己算过）。
+ * 3. **`${CLAUDE_PLUGIN_ROOT}`**：桥的 `pluginRoot` 配置替换成物化目录。
+ *
+ * **桥不扫插件目录**：`configPath` 必填，没有「自动发现 `<plugin>/hooks.json`」
+ * 这回事（那一条在内核里还是 TODO）。所以必须由这里显式挂上去。
+ *
+ * `hooks/` 来自上游同步，**尚未同步时不存在**——那时不挂也不报错：技能仍可用，
+ * 只是没有「会话启动即注入」与档位切换。
+ *
+ * @param {object} ctx - 插件上下文。
+ */
+function attachHooks(ctx) {
+  if (!existsSync(HOOKS_CONFIG)) {
+    ctx.logger?.info?.(`${name}: 还没有上游内容（尚未同步），本次不挂 hook`);
+    return;
+  }
+  ctx.plugin({ name: "ponytail-hooks", apply: applyClaudeCodeHooks }, {
+    configPath: HOOKS_CONFIG,
+    pluginRoot: ROOT,
+  });
+  ctx.logger?.info?.(`${name}: hook 已挂载（${HOOKS_CONFIG}）`);
+}
 
 /**
  * 注册技能 provider。
@@ -54,15 +101,20 @@ const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "skills")
  * @param {object} ctx - 携带技能注册表（`ctx.skills`）的上下文。
  */
 function apply(ctx) {
-  const provider = createProvider(SKILLS_DIR, BUNDLED_SKILL_RANK);
+  const provider = createProvider(ROOT, BUNDLED_SKILL_RANK);
   if (provider.candidates.length === 0) {
-    ctx.logger?.warn?.(`${name}: skills/ 下没有可用的 SKILL.md，ponytail 不注册任何技能`);
+    ctx.logger?.warn?.(`${name}: 既没有上游内容也没有自带技能，ponytail 这次不注册任何技能`);
     return;
   }
   ctx.skills.registerProvider(() => provider);
   ctx.logger?.info?.(
     `${name}: 已注册 ${provider.candidates.length} 个技能（${provider.candidates.map((c) => c.name).join(", ")}）`,
   );
+  try {
+    attachHooks(ctx);
+  } catch (error) {
+    ctx.logger?.warn?.(`${name}: hook 挂载失败，规则集与档位切换不可用（技能不受影响）：${String(error)}`);
+  }
 }
 
 export { apply, inject, name, PACKAGE_ID };

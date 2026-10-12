@@ -257,7 +257,18 @@ const FILE_BUDGETS = {
   // 这件事的**唯一事实源**，其余模块（prep 管线 / 物化 / 接线 / 状态 / 命令）
   // 全都从它读。放进 mod.rs 会让「谁是登记表」变成一个需要翻代码才知道的事，
   // 而加内置插件时漏改一处的症状一律是无声失败。
-  'src-tauri/src/plugins/builtin/builtins.rs': 50,
+  'src-tauri/src/plugins/builtin/builtins.rs': 59,
+  // 2026-10-12：内置插件的**上游同步**（让随应用分发的第三方内容跟得上上游，
+  // 而不必每次上游一改就重发一版壳）。独立成文件的理由：它是唯一接触网络、
+  // 唯一写插件数据目录的模块，其余 builtin/* 全是纯本地文件操作——把出网那段
+  // 混进 mod.rs，「改启停逻辑会不会碰到下载」就变成一个没法一眼回答的问题。
+  // 取源复用 pkg::fetch（npm 文档 → 下载 → SRI 校验 → 防穿越解包），本模块
+  // 只负责：节流窗口、按版本分目录、失败语义（旧版本继续可用）。
+  'src-tauri/src/plugins/builtin/upstream.rs': 208,   // cargo fmt 之后的实测值
+  // 2026-10-12：内置插件的回环桥（内核里的技能请求壳立刻同步上游）。与
+  // openai/bridge.rs 同形状但**独立**：那个桥的端点与鉴权属于 OpenAI 插件的
+  // 协议面，混进来会让「哪些端点归谁」变得要看另一个文件才知道。
+  'src-tauri/src/plugins/builtin/bridge.rs': 150,
   // 85 → 171：P1 收尾——set_enabled 写命令进本文件（守卫链：dsh 族 /
   // 实例存在 / 未被另一壳占用 / 内核已停止 → 变更前快照 → 启停事务 →
   // 意图落盘），与 status 共用 resolve_target / status_payload。仍是
@@ -276,7 +287,7 @@ const FILE_BUDGETS = {
   // 这件事本身。显示文案（displayName / summary / note）随载荷下发，前端不再
   // 抄一份。233 是 `cargo fmt` 之后的实测值。基线远低于 RATCHET_THRESHOLD，
   // 上调在规则内。
-  'src-tauri/src/plugins/builtin/cmd.rs': 233,
+  'src-tauri/src/plugins/builtin/cmd.rs': 312,   // cargo fmt 之后的实测值
   // 2026-10-08：内置插件的前端状态与动作（plugins 页「当前内核」tab 的
   // 内置插件区）。不进 plugins.js：那边是社区插件的清单与安装事务
   // （456 行），本插件只有「读状态 + 拨开关」两条命令，混进去会让
@@ -289,7 +300,7 @@ const FILE_BUDGETS = {
   // 文案函数（原先长在 PluginsPanel 里，现在三处都要用）。同时 `BUILTIN_NAME`
   // 被删掉——显示名改由后端随状态下发，那正是 2026-10-09 那条「四处字面量」
   // 的正解。基线远低于 RATCHET_THRESHOLD，上调在规则内。
-  'ui/src/plugins/builtin.js': 58,
+  'ui/src/plugins/builtin.js': 86,
   // 主面板账号操作独立于插件启停意图；复用 Rust 账号命令并管理跨窗状态生命周期。
   // 65 → 82：轮询改成按相位自调度后，补上**相位变化立即重排**。只靠定时器
   // 到期时再读相位是不够的：用户点下登录后当前那次 60s 定时器不会提前到期，

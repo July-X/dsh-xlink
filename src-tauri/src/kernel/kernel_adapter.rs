@@ -425,6 +425,35 @@ impl KernelAdapter for DshAdapter {
         // 注入地址与令牌；桥接起不来不阻断内核启动（见 bridge::launch_env）。
         crate::plugins::builtin::runtime::refresh_enabled(&dsh_home, &record.profile, install_root)
             .map_err(AdapterError::Io)?;
+        // 有上游的内置插件：启动工作台时顺手查一次更新（内部按 24 小时节流，
+        // **失败不阻断启动**——用户手上的那一版继续可用）。这是「跟上上游」的
+        // 主路径：启用时拉一次，此后每天一次，用户不用做任何事。
+        for spec in crate::plugins::builtin::builtins::BUILTINS {
+            if spec.upstream.is_none()
+                || !crate::plugins::builtin::requested_enabled(spec, &dsh_home, &record.profile)
+            {
+                continue;
+            }
+            let state = crate::plugins::builtin::upstream::sync(&dsh_home, spec, false);
+            if !state.error.is_empty() {
+                crate::shell::shell_events::record(
+                    "builtin-upstream-check",
+                    &format!(
+                        "{}：检查更新失败（继续用 {}）：{}",
+                        spec.display_name, state.version, state.error
+                    ),
+                );
+            }
+        }
+        // 内置插件的回环桥（`/ponytail-update` 用它请求立即同步）。**起不来不阻断
+        // 启动**：面板上的「检查更新」不依赖它，少一个能力不该让工作台起不来。
+        if let Some((url, token)) = crate::plugins::builtin::bridge::launch(
+            &dsh_home,
+            &format!("{}:{}", record.kernel_family, record.id),
+        ) {
+            cmd.env(crate::plugins::builtin::bridge::URL_ENV, url);
+            cmd.env(crate::plugins::builtin::bridge::TOKEN_ENV, token);
+        }
         for (key, value) in crate::openai::bridge::launch_env(
             &dsh_home,
             &record.profile,

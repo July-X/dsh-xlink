@@ -20,11 +20,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub(crate) mod bridge;
 pub(crate) mod builtins;
 pub(crate) mod cmd;
 pub(crate) mod materialize;
 pub(crate) mod runtime;
 pub(crate) mod state;
+pub(crate) mod upstream;
 pub(crate) mod wiring;
 
 use builtins::BuiltinSpec;

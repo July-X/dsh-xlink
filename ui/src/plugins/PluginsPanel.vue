@@ -52,6 +52,8 @@ import {
   builtinStore,
   builtinStateText,
   builtinStateTip,
+  builtinUpstreamText,
+  checkBuiltinUpstream,
   loadBuiltinStatus,
   toggleBuiltin,
 } from './builtin.js';
@@ -763,6 +765,23 @@ function instanceChipType(row, instanceId) {
           </div>
           <div class="entity-actions">
             <OpenaiAccountActions v-if="builtin.hasAccountCard" :plugin-view="builtin" />
+            <!-- 上游内容不随应用走的插件（ponytail）多两件东西：版本号与一个
+                 「检查更新」。**版本号常显**是因为「我用的到底是哪一版」是这类
+                 插件最常被问的问题，而它不在任何一个已有字段里。 -->
+            <el-tooltip v-if="builtin.upstream" placement="top" effect="dark"
+              :content="builtinUpstreamText(builtin)">
+              <span class="entity-desc entity-desc--upstream">{{ builtinUpstreamText(builtin) }}</span>
+            </el-tooltip>
+            <el-button
+              v-if="builtin.upstream"
+              size="small"
+              plain
+              :loading="isLoading('builtinUpstream:' + builtin.id)"
+              :aria-label="'检查 ' + builtin.displayName + ' 的上游更新'"
+              @click="checkBuiltinUpstream(builtin.id)"
+            >
+              检查更新
+            </el-button>
             <el-switch
               size="small"
               :model-value="builtin.requestedEnabled"

@@ -26,6 +26,20 @@
 //! - [`BuiltinSpec::has_account_card`]：工作台设置页里有没有该插件自绘的
 //!   账户卡。OpenAI 有（它要把 OAuth 走通），ponytail 没有（它不发请求）。
 
+/// 一个内置插件的上游取源信息。
+///
+/// **只有随应用分发第三方内容、且上游有 npm 发布的插件才需要**（ponytail 有；
+/// openai-oauth 没有——它是本仓自己写的插件，不存在「上游」这回事）。
+/// 字段是 `&'static`：取源坐标随应用版本一起钉住，不读配置（理由同 [`BuiltinSpec`]）。
+#[derive(Clone, Copy)]
+pub(crate) struct UpstreamSpec {
+    /// npm 包名。走 npm 而不是 GitHub tarball：默认 registry 是 npmmirror
+    /// （快且稳，本机实测 GitHub 偶发 8 秒级延迟），而
+    /// [`crate::pkg::fetch::fetch_npm_package`] 已经把 SRI 校验、解包防穿越、
+    /// 代理路由三件事做齐了。
+    pub(crate) npm_package: &'static str,
+}
+
 /// 一个内置插件的全部登记信息。字段全是 `&'static` 常量：登记表是编译期
 /// 数据，不读配置、不读环境——「这个版本的应用带哪几个内置插件」必须由
 /// 构建期决定，否则资源管线与清单校验（`check:builtin`）就无从校验。
@@ -48,6 +62,8 @@ pub(crate) struct BuiltinSpec {
     pub(crate) note: &'static str,
     /// 工作台设置页里是否有该插件自绘的账户卡。
     pub(crate) has_account_card: bool,
+    /// 上游取源（`None` = 本仓自有插件，无上游）。
+    pub(crate) upstream: Option<UpstreamSpec>,
 }
 
 impl BuiltinSpec {
@@ -86,25 +102,39 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
         note: "把 ChatGPT 套餐接进当前内核的模型列表。令牌只存在本机（系统凭据库），\
                不进工作台页面；关闭只摘接线，不删账号，随时可再启用。",
         has_account_card: true,
+        upstream: None,
     },
     BuiltinSpec {
         id: PONYTAIL,
         row_id: "xlink-ponytail",
-        // 只有 host + 技能正文：它没有工作台内的卡片，也没有本地化文案
-        // （技能正文是英文原文，见 `plugins/ponytail/README.md` 的归属说明）。
-        entries: &["host", "skills", "package.json", "LICENSE"],
-        // host/index.js 只 import 一件事：`BUNDLED_SKILL_RANK`（bundled 技能的
-        // 优先级 600）。不 import 就不该链——多链一个包等于多一条会断的链。
-        peers: &["dsh-skill"],
+        // **只有适配层**（host + adapter）与许可。上游的技能正文（六个 SKILL.md）
+        // 与 hook 脚本**不随包走**（2026-10-12 改）：壳在启用时从上游拉最新并物化
+        // 进实例，host 从物化目录里读。
+        //
+        // 为什么不再 vendor 进安装包（前一版真的 vendor 了，还为此写过一个逐字
+        // 落盘 + 哈希锁定的脚本，那套东西本身是对的）：vendor 会**制造两份内容**
+        // ——仓库里钉死的那一份，和用户手上的那一份。上游每改一次就要重发一版
+        // 应用才能跟上，用户升级之前一直用旧内容；更要命的是「面板上写的版本」与
+        // 「工作台里跑的内容」会分叉，而两边都不报错。现在随包的只有适配层，
+        // 内容永远来自一次真实的上游同步。
+        entries: &["host", "adapter", "package.json", "LICENSE"],
+        // host/index.js 实际 import 的两件事：`BUNDLED_SKILL_RANK`（bundled 技能
+        // 的优先级 600）与 `dsh-hooks-claude-code` 的 `apply`（把上游 hook 脚本
+        // 挂到内核的拦截面上）。不 import 就不该链——多链一个包等于多一条会断
+        // 的链（旧内核没有这个包时物化失败，插件根本装不进去）。
+        peers: &["dsh-skill", "dsh-hooks-claude-code"],
         entry: "host/index.js",
         display_name: "Ponytail",
-        summary: "把「懒惰的资深开发者」这套规则接进工作台：能少写的代码就少写",
-        note: "来自 DietrichGebert/ponytail（MIT）的六个技能：写代码时先找现成的、再考虑\
-               标准库，最后才自己写；另有评审、全仓体检、欠账清单三个命令型技能。\
-               技能是指令文本、会进入模型上下文，因此**默认关闭**，由你决定何时打开。\
-               不支持的部分：它的档位切换与会话级常驻依赖别家 agent 的生命周期钩子，\
-               这里只有规则与按需调用。",
+        summary: "把「懒惰的资深开发者」这套规则接进工作台：会话启动即生效，可按档位调松紧",
+        note: "来自 DietrichGebert/ponytail（MIT）的技能包：会话启动时把规则注入上下文，\
+               /ponytail lite|full|ultra 可当场调松紧。**首次启用需要联网**从上游拉取，\
+               之后每次启动工作台自动检查更新（一天一次），也可随时用 \
+               /ponytail-update 立刻拉最新。规则是指令文本、会进入模型上下文，\
+               因此**默认关闭**；同名时你自己装的技能优先。规则正文是上游英文原文。",
         has_account_card: false,
+        upstream: Some(UpstreamSpec {
+            npm_package: "@dietrichgebert/ponytail",
+        }),
     },
 ];
 

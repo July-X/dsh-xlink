@@ -108,20 +108,25 @@ export function readCandidates(skillsDir, rank) {
     if (!existsSync(path)) continue;
     const parsed = parseSkill(readFileSync(path, "utf8"));
     if (parsed === null) continue;
-    candidates.push({
-      name: parsed.name,
-      description: parsed.description,
-      // 模型能按需调用，用户也能显式调用（/ponytail-review 这类命令型技能）。
-      invocation: { modelInvocable: true, userInvocable: true },
-      provider: PROVIDER_NAME,
-      source: "bundled",
-      rank,
-      resourceBase: { kind: "directory", path: directory },
-      path,
-      locator: path,
-    });
+    candidates.push(candidate(parsed, directory, path, rank));
   }
   return candidates.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** 一个候选的全部字段。**只在这里构造一次**——见 [`readCandidates`] 的注释。 */
+function candidate({ name, description }, directory, path, rank) {
+  return {
+    name,
+    description,
+    // 模型能按需调用，用户也能显式调用（/ponytail-review 这类命令型技能）。
+    invocation: { modelInvocable: true, userInvocable: true },
+    provider: PROVIDER_NAME,
+    source: "bundled",
+    rank,
+    resourceBase: { kind: "directory", path: directory },
+    path,
+    locator: path,
+  };
 }
 
 /** 带中止信号的正文读取；读不出来返回 undefined 而不是抛错——技能表把
@@ -138,17 +143,30 @@ async function readBody(path, signal) {
 /**
  * 构造技能 provider。
  *
+ * 候选来自**两个**目录，并按这个顺序合并：
+ * 1. `<root>/skills` —— 上游内容（2026-10-12 起由壳从上游拉取后物化在实例里；
+ *    **不随应用分发**，所以这里可能还不存在）。
+ * 2. `<root>/adapter/skills` —— 我们自己的技能（目前只有 `ponytail-update`：
+ *    拉上游的那条命令）。它必须**独立于上游内容存在**：上游整个目录被换掉时，
+ *    「怎么更新」这个入口不该跟着消失。
+ *
+ * 同名时**上游优先**（先加进来的赢）：`ponytail-update` 这类名字上游哪天也用
+ * 了，用他们的比用我们的更合适——我们的那条要的是这个插件的桥。
+ *
  * 两个方法共享同一批候选：`list()` 原样返回，`get()` 在其上去掉内核自己消费的
  * `rank` / `locator` 再补上 `content`。**正文现读**而不是启动时读进内存——
- * 物化目录可能在壳启动前被重写（`builtin::runtime::refresh_enabled`），读一次
- * 会拿到上一版的正文。
+ * 物化目录可能在壳启动前被重写（`builtin::runtime::refresh_enabled` 与上游
+ * 同步都会动它），读一次会拿到上一版的正文。
  *
- * @param {string} skillsDir - 技能目录。
+ * @param {string} root - 插件根（物化目录）。
  * @param {number} rank - bundled 优先级（`BUNDLED_SKILL_RANK`）。
  * @returns {{name: string, candidates: Array<object>, list: Function, get: Function}}
  */
-export function createProvider(skillsDir, rank) {
-  const candidates = readCandidates(skillsDir, rank);
+export function createProvider(root, rank) {
+  const candidates = dedupe([
+    ...readCandidates(join(root, "skills"), rank),
+    ...readCandidates(join(root, "adapter", "skills"), rank),
+  ]);
   return {
     name: PROVIDER_NAME,
     candidates,
@@ -162,4 +180,10 @@ export function createProvider(skillsDir, rank) {
       return { ...summary, content: parsed.body };
     },
   };
+}
+
+/** 同名时**保留先到的**那份（上游在前）。 */
+function dedupe(candidates) {
+  const seen = new Set();
+  return candidates.filter((item) => (seen.has(item.name) ? false : seen.add(item.name)));
 }
