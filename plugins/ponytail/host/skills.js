@@ -1,16 +1,23 @@
 /**
- * 技能正文发现与 frontmatter 解析（纯文件操作，无第三方依赖）。
+ * 技能正文发现、frontmatter 解析与 provider 构造（纯文件操作，无第三方依赖）。
  *
  * 单独成文件有两个理由，都是为了让**真被测试执行的那份代码**就是运行时那份：
  * 1. `host/index.js` 的唯一外部 import 是 `@deepseek-ai/dsh-skill`（物化目录里
- *    由壳 peer 链接过来，仓库里并不存在）。解析器一旦也住在那个文件里，测试
- *    就得先 import 整个 index.js —— 而那在 `npm run check` 的环境里必然失败。
- *    住在这里，测试可以直接 import 它，且**测的就是运行时用的那份实现**，
- *    不是测试里抄一遍的规则。
- * 2. 「解析不出来就跳过」这条纪律需要能被反向验（喂一份坏 frontmatter 看它
- *    真的被跳过），而那要在不触碰文件系统的情况下先有 parse 这一层。
+ *    由壳 peer 链接过来，仓库里并不存在）。解析器与 provider 工厂一旦也住在
+ *    那个文件里，测试就得先 import 整个 index.js —— 而那在 `npm run check` 的
+ *    环境里必然失败。住在这里，测试可以直接 import 它，跑的是**同一个
+ *    provider**，不是测试里抄一遍的规则。
+ * 2. provider 的两个方法是**同一批候选的两个视图**。2026-10-12 第一版把它们
+ *    各写一遍（字段只填在 `get()` 里，`list()` 只回 name/description），真机
+ *    启动立刻炸 `skill provider "dsh-ponytail" returned skill "ponytail" with a
+ *    non-string source`——内核对 `list()` 的每个候选**逐字段**校验（name /
+ *    description / invocation / source / rank / provider），少一个就在第一轮
+ *    发现时抛 TypeError。而当时那条判据只读 index.js 的源码文本，看到
+ *    `rank: BUNDLED_SKILL_RANK` 就在源码里，全绿。**两份实现 = 这个 bug**。
+ *    现在候选只构造一次，两个方法都从它派生。
  *
- * 依赖形状：`parseSkill` 纯字符串 → 字符串/对象；`readCandidates` 才碰磁盘。
+ * 依赖形状：`parseSkill` 纯字符串 → 对象；`readCandidates` 碰磁盘；
+ * `createProvider` 不碰任何外部包（rank 由调用方传进来）。
  */
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -20,6 +27,9 @@ export const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 
 /** 技能目录 → SKILL.md 的固定形状（与内核 `dsh-skill-filesystem` 一致）。 */
 export const SKILL_FILE = "SKILL.md";
+
+/** 本 provider 在技能表里的名字。内核要求 `candidate.provider` 与它逐字相同。 */
+export const PROVIDER_NAME = "dsh-ponytail";
 
 /**
  * 剥 YAML frontmatter，**只取 `name` 与 `description` 两项**。
@@ -72,15 +82,23 @@ export function parseSkill(raw) {
 }
 
 /**
- * 扫描技能目录，返回可注册的候选。
+ * 扫描技能目录，返回**完整的候选**（不只是 name / description）。
  *
- * 符号链接的目录**跳过**：内核那边把符号链接排除在发现之外（避免同一份内容
- * 被两条路径各认一次），这里跟它对齐，避免装出来的技能在内核那边少一个或多一个。
+ * 每个字段都是内核对 `list()` 的候选**逐字段校验**过的（`dsh-skill/lib/index.js`
+ * 的 `validateCandidate`）：name 必须是 kebab-case、description 非空、
+ * invocation 两个布尔、source 是字符串、rank 是有限数、provider 与 provider 名
+ * 逐字相同、path 若在则必须是字符串。少填任何一项，工作台每次开新对话都会抛
+ * `skill provider "…" returned skill "…" with a non-string source` 那一串
+ * TypeError——所以候选在这里**构造一次**，`list()` 与 `get()` 都从它派生。
+ *
+ * 符号链接的目录**跳过**：内核那边把符号链接排除在发现之外（避免同一份内容被
+ * 两条路径各认一次），这里跟它对齐，避免装出来的技能在内核那边少一个或多一个。
  *
  * @param {string} skillsDir - 含 `<name>/SKILL.md` 的目录。
- * @returns {Array<{name: string, description: string, directory: string, path: string}>}
+ * @param {number} rank - 本 provider 的优先级（bundled = 600）。
+ * @returns {Array<object>} 内核可直接验收的候选。
  */
-export function readCandidates(skillsDir) {
+export function readCandidates(skillsDir, rank) {
   if (!existsSync(skillsDir) || !statSync(skillsDir).isDirectory()) return [];
   const candidates = [];
   for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
@@ -90,7 +108,58 @@ export function readCandidates(skillsDir) {
     if (!existsSync(path)) continue;
     const parsed = parseSkill(readFileSync(path, "utf8"));
     if (parsed === null) continue;
-    candidates.push({ directory, path, name: parsed.name, description: parsed.description });
+    candidates.push({
+      name: parsed.name,
+      description: parsed.description,
+      // 模型能按需调用，用户也能显式调用（/ponytail-review 这类命令型技能）。
+      invocation: { modelInvocable: true, userInvocable: true },
+      provider: PROVIDER_NAME,
+      source: "bundled",
+      rank,
+      resourceBase: { kind: "directory", path: directory },
+      path,
+      locator: path,
+    });
   }
   return candidates.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** 带中止信号的正文读取；读不出来返回 undefined 而不是抛错——技能表把
+ *  undefined 理解成「这个技能没了」，而抛错会让整个发现过程失败。 */
+async function readBody(path, signal) {
+  const { readFile } = await import("node:fs/promises");
+  try {
+    return await readFile(path, { encoding: "utf8", signal });
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 构造技能 provider。
+ *
+ * 两个方法共享同一批候选：`list()` 原样返回，`get()` 在其上去掉内核自己消费的
+ * `rank` / `locator` 再补上 `content`。**正文现读**而不是启动时读进内存——
+ * 物化目录可能在壳启动前被重写（`builtin::runtime::refresh_enabled`），读一次
+ * 会拿到上一版的正文。
+ *
+ * @param {string} skillsDir - 技能目录。
+ * @param {number} rank - bundled 优先级（`BUNDLED_SKILL_RANK`）。
+ * @returns {{name: string, candidates: Array<object>, list: Function, get: Function}}
+ */
+export function createProvider(skillsDir, rank) {
+  const candidates = readCandidates(skillsDir, rank);
+  return {
+    name: PROVIDER_NAME,
+    candidates,
+    list: () => Promise.resolve(candidates),
+    async get(candidate, options) {
+      const { rank: _rank, locator, ...summary } = candidate;
+      const raw = await readBody(locator ?? candidate.path, options?.signal);
+      if (raw === undefined) return undefined;
+      const parsed = parseSkill(raw);
+      if (parsed === null) return undefined;
+      return { ...summary, content: parsed.body };
+    },
+  };
 }
