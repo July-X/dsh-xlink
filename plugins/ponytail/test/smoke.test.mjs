@@ -175,13 +175,33 @@ test('host 适配器只是装配：声明了注册技能所需的东西', () => 
   );
   assert.match(
     hostCode,
-    /import \* as claudeCodeHooks from "@deepseek-ai\/dsh-hooks-claude-code"/u,
-    '必须以**整个模块命名空间** import 桥：它自己声明 inject（["shell","sessionProjections"]）',
+    /const HOOK_BRIDGE = "@deepseek-ai\/dsh-hooks-claude-code"/u,
+    '桥的包名要写成常量，动态 import 与日志用同一个',
   );
   assert.match(
     hostCode,
-    /ctx\.plugin\(claudeCodeHooks,\s*\{/u,
+    /bridgePromise \?\?= import\(HOOK_BRIDGE\)/u,
+    '必须以**整个模块命名空间** import 桥（取到的模块对象原样给 ctx.plugin）：' +
+      '它自己声明 inject（["shell","sessionProjections"]）',
+  );
+  // 静态 import 与「少一项能力就整个插件加载失败」是同一件事的两面：内核从
+  // 0.2.1-alpha.2 起不再带这个包（上游把它降级成 devDependency），静态 import
+  // 在那种内核上会让六个技能一起消失（2026-10-12 用户实测）。
+  assert.doesNotMatch(
+    hostCode,
+    /^import\s+[\s\S]*?from\s+"@deepseek-ai\/dsh-hooks-claude-code"/mu,
+    '桥不许顶层静态 import：内核不带它时整个插件（含技能）都会加载失败',
+  );
+  assert.match(
+    hostCode,
+    /ctx\.plugin\(bridge,\s*\{/u,
     'ctx.plugin 收的必须是导入的那个插件对象本身',
+  );
+  // 加载失败必须**降级**而不是抛出去：`catch` 里只记一行 warn。
+  assert.match(
+    hostCode,
+    /catch \(error\) \{[\s\S]*?本内核不带[\s\S]*?return;/u,
+    '桥加载失败要降级（记一行日志后 return），不许把缺失当异常抛给 cordis',
   );
   // 第一版写的是 `ctx.plugin({ name, apply: applyClaudeCodeHooks }, …)`：那个对象
   // 字面量没有 inject，cordis 拒绝注入，真机每次开新对话都报
@@ -211,12 +231,17 @@ test('host 适配器只是装配：声明了注册技能所需的东西', () => 
 
 test('host 适配器不引第三方依赖（物化目录只链了两个 peer 包）', () => {
   // 这条对着 `BuiltinSpec::peers` 写：物化目录的 node_modules 里只有壳链过来的
-  // `@deepseek-ai/dsh-skill` 与 `@deepseek-ai/dsh-hooks-claude-code`。任何别的
-  // import 都会在运行时解析失败，而失败发生在内核启动阶段——表现为整个工作台
-  // 起不来，而不是「插件没生效」。
-  const imports = [...hostSource.matchAll(/^import\s+[\s\S]*?from\s+"([^"]+)";/gmu)].map(
-    (m) => m[1],
-  );
+  // `@deepseek-ai/dsh-skill` 与 `@deepseek-ai/dsh-hooks-claude-code`（后者是
+  // **可选** peer：内核不带时跳过链接、插件降级）。任何别的 import 都会在运行时
+  // 解析失败，而失败发生在内核启动阶段——表现为整个工作台起不来，而不是
+  // 「插件没生效」。
+  //
+  // **动态 import 也要扫**：hook 桥走的就是 `import(HOOK_BRIDGE)`。只扫静态
+  // import 时，往后谁把某个第三方包改成动态加载，这条判据会安静地放行。
+  const imports = [
+    ...[...hostSource.matchAll(/^import\s+[\s\S]*?from\s+"([^"]+)";/gmu)].map((m) => m[1]),
+    ...[...hostSource.matchAll(/\bimport\(\s*"([^"]+)"\s*\)/gu)].map((m) => m[1]),
+  ];
   const foreign = imports.filter(
     (spec) => !spec.startsWith('node:') && !spec.startsWith('@deepseek-ai/') && !spec.startsWith('.'),
   );

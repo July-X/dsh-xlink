@@ -60,6 +60,7 @@ src-tauri/src/
 
 - **`plugins/builtin/builtins.rs` 的 `BUILTINS` 是唯一事实源**：随应用交付的内置插件各是什么、物化哪些文件、接哪一行、叫什么、面板上写什么，全部从 `BuiltinSpec` 读。此前整条通道按「有且只有 openai-oauth 一家」写死，那个字面量散在 8 处（资源管线 / 物化 / 接线行 id / 状态路径 / 两条命令 / 资源目录 / 前端 store），加第二个插件时每一处都要人记得同步。**新增内置插件只改这一处**，其余模块跟着读。
 - **`entries` 与 `peers` 按插件各列各的**（2026-10-12）：文件集随插件而变（ponytail 没有工作台卡片、也不带本地化文案），peer 只列 host 真正 `import` 的 `@deepseek-ai` 包。多列一个 peer 就是多一条会断的链——旧内核装不上那个包时物化直接失败，于是「加了个用不到它的 peer」会让插件在新旧内核上彻底装不进去。
+- **peer 分必需与可选（语义在 `plugins/builtin/peers.rs`），判据是「内核是不是必然带它」**（2026-10-12 用户实机报错后补）：必需（`PeerSpec::required`）缺失 → 物化失败，那是对的；可选（`PeerSpec::optional`）缺失 → **跳过链接、物化照常成功**，host 动态 `import` 后降级、面板挂一条 ⚠ 如实说清少了什么（`missing_note` → `missing_peers`）。上游会把包从 `dependencies` 降级成 `devDependencies`——`dsh-hooks-claude-code` 在 `0.2.1-alpha.1` 带、`0.2.1-alpha.2` 不带——所以「内核必然带」只能按**运行时依赖**判，不能按「host 需要它」判。写成必需时，代价是整个插件（含它自己的技能）装不进去，而报错还会把用户支去重装一个没坏的内核。**host 不许静态 import 可选 peer**：那样缺包等于整个插件加载失败，降级无从谈起（ponytail 的 `loadHookBridge()` 就是这条的形状）。
 - **两份清单必须逐项一致**：`BuiltinSpec::entries`（Rust，物化时复制）与 `scripts/prepare-builtin-plugins.mjs` 的 `BUILTINS[].entries`（JS，打包时复制）是同一份东西的两门语言，实现上跨不过去，所以由 `scripts/dev-builtin.test.mjs` 钉死。不一致时「少掉的那份」报的是「应用资源可能不完整，请重新安装」——把源码侧的错报成用户的安装包坏了。
 - **状态文件按插件分文件**（`extensions/builtin/<id>/state.json`），不是一份文件按 id 分键。分文件让两个插件的启停天然不互相覆盖，而 openai-oauth 既有用户的路径原地不动——分键的话整个搬家，升级后用户的启用意图**静默变成「未启用」**，界面上看不出任何异常。
 - **`row_id`（接线行 id）是参数不是常量**：`wiring.rs` 里的形状识别（哪几行算我们写的）与 id 无关，只有「找哪一行」有关。写死成模块常量时，摘行会顺着**别人的** id 去删——症状是「关掉 A 把 B 也关了」。

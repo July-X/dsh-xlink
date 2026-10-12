@@ -131,6 +131,20 @@ hook 配置，所以**上游脚本一个字都不用改**。
 挂它的只有一处：`host/index.js` 的 `apply()` 里 `ctx.plugin(...)`。桥**不扫插件目录**
 （`configPath` 必填），所以必须显式挂。
 
+### 桥不是每个内核版本都有（2026-10-12）
+
+**它随不随内核安装，由内核上游自己的打包决定**：`0.2.1-alpha.1` 里它是
+`@deepseek-ai/dsh` 的 `dependencies`（跟着内核一起装），`0.2.1-alpha.2` 里被降级成了
+`devDependencies`（内核树里没有）。所以本插件把它声明成**可选 peer**，并且**动态
+`import`**：
+
+- 桥在 → 规则集注入与档位切换照旧；
+- 桥不在 → 插件**照常启用**、六个技能照常注册，只是这两项能力缺席。壳在插件面板挂一条
+  ⚠ 如实说明（`PeerSpec::missing_note`），内核日志里也有一行 warn。
+
+静态 `import` 会把「少一项能力」变成「整个插件加载失败」——技能一起消失，而用户从
+界面上只看得出「开关拨不动」，所以那条路已经堵掉（`test/smoke.test.mjs` 钉住）。
+
 核对过的三处（`@deepseek-ai/*` 0.2.1-alpha.1 实读）：
 
 1. `SessionStartSource = 'startup'|'resume'|'clear'|'compact'`，与上游 matcher

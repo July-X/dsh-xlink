@@ -360,6 +360,7 @@ pub(crate) fn seed_fixture(dsh_home: &Path, spec: &BuiltinSpec) -> PathBuf {
 mod tests {
     use super::*;
     use crate::plugins::builtin::builtins::UpstreamSpec;
+    use crate::plugins::builtin::peers::PeerSpec;
 
     /// 本组用例只碰目录结构，不读用户家目录；每个用例一个独立临时根
     /// （**绝不**用会解析到真实 `~/.dsh-xlink` 的路径——见根 AGENTS.md
@@ -372,12 +373,16 @@ mod tests {
         dir
     }
 
+    /// 夹具的 peer 清单。**写成 const**：`peers` 字段要 `&'static [PeerSpec]`，
+    /// 而函数体里的 `&[PeerSpec::required("…")]` 是个临时值，借不到 `'static`。
+    const DEMO_PEERS: &[PeerSpec] = &[PeerSpec::required("dsh-skill")];
+
     fn spec_with_upstream() -> BuiltinSpec {
         BuiltinSpec {
             id: "demo",
             row_id: "xlink-demo",
             entries: &["host", "skills", "package.json"],
-            peers: &["dsh-skill"],
+            peers: DEMO_PEERS,
             entry: "host/index.js",
             display_name: "Demo",
             summary: "s",

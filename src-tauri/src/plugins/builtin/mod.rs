@@ -25,6 +25,7 @@ pub(crate) mod bridge_credential;
 pub(crate) mod builtins;
 pub(crate) mod cmd;
 pub(crate) mod materialize;
+pub(crate) mod peers;
 pub(crate) mod runtime;
 pub(crate) mod state;
 pub(crate) mod upstream;
@@ -70,6 +71,13 @@ pub(crate) struct Status {
     pub(crate) materialized: Vec<materialize::MaterializedEntry>,
     /// 状态文件损坏时的说明（损坏不等于关闭，如实上报）。
     pub(crate) state_error: Option<String>,
+    /// 当前内核树里缺哪些**可选** peer（空 = 没有能力降级）。
+    ///
+    /// 与 `load_state` **正交**：接线可以同时是 `prepared`（插件装得上、跑得起来）
+    /// 且少一项能力。挤进 `load_state` 就是让一个字段回答两个问题——面板会把
+    /// 「能用但少一项」画成「装不了」，而消费侧（`usage` 的启用门控）读到的
+    /// 也是同一份状态。
+    pub(crate) missing_optional_peers: Vec<peers::MissingPeer>,
 }
 
 fn patch_path(dsh_home: &Path, profile: &str) -> PathBuf {
@@ -229,6 +237,11 @@ pub(crate) fn probe_status(
         kernel_fingerprint,
         materialized,
         state_error,
+        // 只读探针：内核根解析不出来时（还没选内核版本）不报降级——那时
+        // 「缺什么包」这个问题本身还不成立，报出来只会是噪声。
+        missing_optional_peers: kernel_root
+            .map(|root| peers::missing_optional_peers(spec, root))
+            .unwrap_or_default(),
     }
 }
 
@@ -302,9 +315,12 @@ mod tests {
             }
             // 全部内置插件的 peer 都摆出来：夹具不该因为登记表多了一个插件
             // 就失败——那会让「加第二个内置插件」这件事先撞上一个无关的红。
+            // **必需与可选都摆**：这条夹具验的是启停事务，不是「内核缺可选 peer
+            // 时会怎样」（那条另有 `materialize` 的单测）。
             for builtin in builtins::BUILTINS {
-                for pkg in builtin.peers {
-                    fs::create_dir_all(dir.join("node_modules/@deepseek-ai").join(pkg)).unwrap();
+                for peer in builtin.peers {
+                    fs::create_dir_all(dir.join("node_modules/@deepseek-ai").join(peer.package))
+                        .unwrap();
                 }
             }
             dir
@@ -493,6 +509,38 @@ mod tests {
             probe_status(spec, &home, "web", Some(&kernel), "release").load_state,
             "prepared"
         );
+    }
+
+    /// 探针要把「本内核版本不带某可选 peer」如实带出来——那是面板上那句话的
+    /// 唯一来源，也是本次 bug（开关拨不动）修好之后**不能静默**的那一半。
+    #[test]
+    fn probe_reports_missing_optional_peers_without_touching_the_load_state() {
+        let scratch = Scratch::new("optional-peer");
+        let spec = builtins::find(builtins::PONYTAIL).unwrap();
+        let home = scratch.home();
+        // 内核树里只摆**必需** peer：hook 桥（可选）缺席，正是 0.2.1-alpha.2
+        // 从上游下来的样子。
+        let kernel = scratch.kernel();
+        for peer in spec.peers.iter().filter(|peer| !peer.required) {
+            let _ = fs::remove_dir_all(peer.path_in(&kernel));
+        }
+        let status = probe_status(spec, &home, "web", Some(&kernel), "release");
+        assert_eq!(
+            status
+                .missing_optional_peers
+                .iter()
+                .map(|peer| peer.package)
+                .collect::<Vec<_>>(),
+            vec!["dsh-hooks-claude-code"]
+        );
+        assert!(!status.missing_optional_peers[0].note.is_empty());
+        // 降级与「装没装上」是两回事：这里没有接线，状态仍是 disabled，
+        // 但不能因为缺个可选 peer 就被画成「装不了」。
+        assert_eq!(status.load_state, "disabled");
+        // 内核根都解析不出来时（还没选内核版本）不报降级。
+        assert!(probe_status(spec, &home, "web", None, "release")
+            .missing_optional_peers
+            .is_empty());
     }
 
     #[test]

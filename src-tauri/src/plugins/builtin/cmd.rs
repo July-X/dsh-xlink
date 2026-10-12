@@ -65,8 +65,22 @@ pub struct BuiltinPluginStatus {
     pub note_status: String,
     /// 状态文件损坏时的说明；有它时开关应禁用并提示检查。
     pub state_error: Option<String>,
+    /// 当前内核版本**不带**的可选 peer（空 = 没有能力降级）。
+    ///
+    /// 这不是错误：插件装得上、技能照常注册，只是少一项靠内核那个包实现的能力
+    /// （如 ponytail 的「会话启动即注入规则」）。文案由后端出
+    /// （`PeerSpec::missing_note`），面板只负责画——前端拼一份就会与登记表漂移。
+    pub missing_peers: Vec<MissingPeerView>,
     /// 上游内容的状态（`None` = 这个插件不走上游，内容随应用分发）。
     pub upstream: Option<UpstreamView>,
+}
+
+/// 一个缺失的可选 peer：包名 + 这句缺失意味着什么。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingPeerView {
+    pub package: String,
+    pub note: String,
 }
 
 /// 有上游的内置插件当前的上游状态（面板显示与「立即检查更新」共用）。
@@ -168,6 +182,14 @@ fn status_payload(
         plugin_source_available: resolve_plugin_source(app, spec).is_some(),
         note_status,
         state_error: status.state_error,
+        missing_peers: status
+            .missing_optional_peers
+            .into_iter()
+            .map(|peer| MissingPeerView {
+                package: peer.package.to_string(),
+                note: peer.note.to_string(),
+            })
+            .collect(),
         upstream: spec.upstream.map(|_| {
             UpstreamView::from_state(&crate::plugins::builtin::upstream::state(dsh_home, spec))
         }),
