@@ -1178,6 +1178,14 @@ const FILE_BUDGETS = {
   // crate，而新增依赖要改 Cargo.lock——CI 全线带 --locked，同步不当会在两个平台
   // 同时炸且报错离真正原因隔好几层。
   'src-tauri/src/skills/store_lock.rs': 210,
+  // pid 判活（2026-10-12，新建）。为什么它该独立成文件而不是塞进 store_lock.rs：
+  // 它此前**被抄了两份**——store_busy 与 store_lock 各写一份逐字相同的
+  // `process_alive`（Unix `kill(pid,0)` + Windows `OpenProcess`），而这两份已经
+  // 漂过一次：Windows 上只探句柄会把「已退出但句柄仍被持有」的进程判成活着，
+  // 于是崩溃残留的暂存目录永远不被回收、僵尸锁永远抢不掉。判活一旦只修好其中
+  // 一份，另一份就继续错，而 `cargo test` 在**任一**平台上都只看得到一半。
+  // 独立成文件之后它是唯一一份，两个调用方各自 import，改一处两边同时生效。
+  'src-tauri/src/skills/store_owner.rs': 30,
   // 跨壳装包活动信标（2026-09-30，新建）。为什么它该独立成一个文件而不是塞进
   // harness_window.rs：**写**这一侧在 kernel.rs 的装 / 删两端，**读**那一侧在
   // harness_window.rs 的看门狗里，两边都不肯为了对方把自己长成一个什么都管的

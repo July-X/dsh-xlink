@@ -37,6 +37,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use super::store_owner::process_alive;
+
 /// 锁文件名。放在中央库根（`skills/packages/`）下，与包目录同层。
 ///
 /// 选这里而不是 `<xlink_home>/`：锁必须和它保护的数据**同卷**才有意义，而
@@ -215,26 +217,6 @@ fn owner_is_dead(path: &Path) -> bool {
     !process_alive(pid)
 }
 
-#[cfg(unix)]
-fn process_alive(pid: u32) -> bool {
-    if unsafe { libc::kill(pid as i32, 0) } == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-#[cfg(windows)]
-fn process_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if handle.is_null() {
-        return false;
-    }
-    unsafe { CloseHandle(handle) };
-    true
-}
-
 fn secs(duration: Duration) -> String {
     let value = duration.as_secs_f32();
     if value.fract() == 0.0 {
@@ -356,16 +338,14 @@ mod tests {
     fn a_dead_owner_is_stolen() {
         // 崩溃留下的僵尸锁必须能被清掉，否则这把锁会永久堵死技能安装。
         let store = store("dead-owner");
-        let child = std::process::Command::new("sh")
-            .args(["-c", "exit 0"])
-            .spawn()
-            .expect("spawn");
-        let pid = child.id();
-        let mut child = child;
-        let _ = child.wait();
-        fs::write(store.join(LOCK_FILE), format!("{pid}")).expect("plant");
+        let mut child = crate::skills::store_owner::spawn_exiting();
+        fs::write(store.join(LOCK_FILE), format!("{}", child.id())).expect("plant");
         let _lock = acquire_within(&store, StealPolicy::Steal, Duration::from_millis(30))
             .expect("死掉的持有者必须被抢");
+        // 再 wait 一次是为了让 clippy 看得见「这个 Child 被收过了」；真正起作用的
+        // 是它在整个断言期间**持有句柄**这件事——Windows 上进程对象只要还有句柄
+        // 就仍能 OpenProcess 成功，判活必须再问退出码（见 store_owner）。
+        let _ = child.wait();
         let _ = fs::remove_dir_all(&store);
     }
 

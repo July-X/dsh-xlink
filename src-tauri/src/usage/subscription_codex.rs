@@ -223,24 +223,46 @@ mod tests {
     use crate::openai::vault::AccountTokens;
     use serde_json::json;
 
+    /// 造一个**在本平台上确实是绝对路径**的路径。
+    ///
+    /// 原来这几条用例把 `/custom/codex` 写死，于是它们只在 macOS / Linux 上成立：
+    /// `Path::is_absolute` 在 Windows 上要求盘符或 UNC 前缀，`/custom/codex` 判成
+    /// 相对路径，而 [`auth_path_from`] 做的第一件事就是拒绝对路径——于是「CODEX_HOME
+    /// 优先」「空串回退」这两条接线在 Windows 上直接红成 `Err(CODEX_HOME 必须是绝对
+    /// 路径)`，测到的已经不是接线路径而是平台差异。这几条要钉的是「读哪个变量、
+    /// 什么顺序、怎么拼 auth.json」，与路径长什么样无关，所以夹具按平台造。
+    fn absolute(name: &str) -> std::ffi::OsString {
+        if cfg!(windows) {
+            std::ffi::OsString::from(format!("C:\\{name}"))
+        } else {
+            std::ffi::OsString::from(format!("/{name}"))
+        }
+    }
+
+    fn with_auth_json(root: &std::ffi::OsString) -> PathBuf {
+        PathBuf::from(root).join("auth.json")
+    }
+
     /// **接线顺序**：先读 `CODEX_HOME`，其次才是用户 home。纯函数那五���断言
     /// 钉不住这一条——两个入参在调用点写反时它们照样全绿，而运行时后果是
     /// 用户设了 `CODEX_HOME` 也被忽略、壳去读 `~/.codex/auth.json`。
     #[test]
     fn codex_home_is_read_before_the_user_profile() {
+        let codex_home = absolute("custom/codex");
+        let users_home = absolute("users/u");
         let mut asked: Vec<String> = Vec::new();
         let path = auth_path_via(|name| {
             asked.push(name.to_string());
-            Some(std::ffi::OsString::from(if name == "CODEX_HOME" {
-                "/custom/codex"
+            Some(if name == "CODEX_HOME" {
+                codex_home.clone()
             } else {
-                "/users/u"
-            }))
+                users_home.clone()
+            })
         })
         .unwrap();
         assert_eq!(
             path,
-            PathBuf::from("/custom/codex/auth.json"),
+            with_auth_json(&codex_home),
             "CODEX_HOME 必须在两个变量里胜出"
         );
         assert_eq!(
@@ -258,20 +280,22 @@ mod tests {
     #[test]
     fn auth_path_resolution_is_covered_end_to_end() {
         let os = |text: &str| Some(std::ffi::OsString::from(text));
+        let codex_home = absolute("custom/codex");
+        let users_home = absolute("users/u");
 
         // ① CODEX_HOME 优先于用户 home，且不再补 .codex 后缀。
         assert_eq!(
-            auth_path_from(os("/custom/codex"), os("/users/u")).unwrap(),
-            PathBuf::from("/custom/codex/auth.json")
+            auth_path_from(Some(codex_home.clone()), Some(users_home.clone())).unwrap(),
+            with_auth_json(&codex_home)
         );
         // ② CODEX_HOME 是空串 → 当作没设置，回退。
         assert_eq!(
-            auth_path_from(os(""), os("/users/u")).unwrap(),
-            PathBuf::from("/users/u/.codex/auth.json")
+            auth_path_from(os(""), Some(users_home.clone())).unwrap(),
+            PathBuf::from(&users_home).join(".codex").join("auth.json")
         );
         // ③ 相对路径的 CODEX_HOME 必须拒绝：相对路径会跟着进程 cwd 走，
         // 读到的可能是另一台机器上的另一个文件。
-        let error = auth_path_from(os("relative/codex"), os("/users/u")).unwrap_err();
+        let error = auth_path_from(os("relative/codex"), Some(users_home.clone())).unwrap_err();
         assert!(error.contains("必须是绝对路径"), "{error}");
         // ④ 两者都没有 → 如实报错，不猜任何目录。
         let error = auth_path_from(None, None).unwrap_err();
