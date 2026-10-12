@@ -303,15 +303,94 @@ test('三扇壳自有副窗共用一个自绘外壳，官网页签栏不用（�
   assert.match(shell, /import WindowTitleBar/, '外壳里必须有自绘标题栏');
   assert.match(shell, /<WindowTitleBar\s+:title="title"/, '外壳必须把功能标题传进标题栏');
   assert.match(shell, /var\(--window-radius\)/, '外壳的圆角要与 #app 同一个 token');
-  // 自绘标题栏需要拖拽与最小化权限：三扇窗的能力文件里都要有。
+  // 自绘标题栏需要拖拽权限：三扇窗的能力文件里都要有。
   for (const cap of ['log-viewer', 'usage-viewer', 'subscription-viewer']) {
     const perms = JSON.parse(read(`../../src-tauri/capabilities/${cap}.json`)).permissions;
     assert.ok(
       perms.includes('core:window:allow-start-dragging'),
       `${cap} 缺 start-dragging：没有它标题栏拖不动窗口（且不会报错）`,
     );
-    assert.ok(perms.includes('core:window:allow-minimize'), `${cap} 缺 minimize 权限`);
+    // minimize 是**主壳独占**的动作（见下一条判据）：副窗留着这条权限没有
+    // 第二个作用方，只会在标题栏被人改回最小化按钮时，把一句
+    // `Command minimize_shell not allowed by ACL` 重新放回用户面前。
+    assert.ok(
+      !perms.includes('core:window:allow-minimize'),
+      `${cap} 不该有 minimize 权限：副窗不参与后台常驻，标题栏只留关闭按钮`,
+    );
   }
+});
+
+// 2026-10-12 用户实机报：副窗（模型用量）标题栏那枚最小化按钮点下去只得到一句
+// 「最小化到通知区域失败：Command minimize_shell not allowed by ACL」。根因是
+// **授权与界面各说各的**：`minimize_shell` 收的是主壳（`allow-local-commands`），
+// 三扇副窗的能力文件给不到，于是那枚按钮是一个必然失败的按钮，而它自己不提示
+// 自己坏了。修法不是把命令授给副窗——收进通知区域是主壳的常驻语义，副窗没有
+// 托盘入口跟着一起活——而是**副窗只画关闭**。
+test('副窗标题栏只留关闭按钮：最小化是主壳独占的动作', () => {
+  // 接线：三扇副窗共用一个外壳，所以判定只有这一处（谁也不能只给自己那扇漏掉）。
+  assert.match(
+    read('../src/shell/ViewerShell.vue'),
+    /<WindowTitleBar\s+:title="title"\s+close-only\s*\/>/,
+    '副窗外壳必须传 close-only，否则三扇窗都会留着那枚失败的最小化按钮',
+  );
+  // 主壳不传 → 三盏灯 / 两个 Windows 按钮都还在。别把主壳也一起收走。
+  assert.doesNotMatch(
+    read('../src/App.vue'),
+    /<WindowTitleBar[^>]*close-only/,
+    '主壳要保留最小化（它才是收进后台的那扇窗），不许传 close-only',
+  );
+
+  // 模板：两个平台的最小化控件都要被 close-only 门控。
+  const bar = stripHtmlComments(read('../src/shell/WindowTitleBar.vue'));
+  // 注意第三枚的 needle **带收尾引号**：`class="win-caption__btn"` 只匹配最小化
+  // 那枚（关闭那枚是 `class="win-caption__btn win-caption__btn--close"`），
+  // 否则会把「副窗仍留关闭键」当成「副窗仍画最小化」而两边一起绿。
+  const gate = (needle, what) => {
+    const at = bar.indexOf(needle);
+    assert.ok(at > 0, `模板里找不到${what}：它必须真的渲染在页面上，判据不能靠猜`);
+    // 往前找最近的 `v-if="!closeOnly"`（macOS 侧包在 <template> 上，Windows 侧
+    // 直接写在按钮上）。**只认 `!closeOnly` 这一条**：写成 `v-if="closeOnly"`
+    // 是把按钮留在副窗上，本条判据照样绿。
+    const open = bar.lastIndexOf('v-if="!closeOnly"', at);
+    assert.ok(open > 0, `${what}必须挂在 v-if="!closeOnly" 里（副窗不画它）`);
+    // 门控与按钮之间不能有闭合标签：作用域到那里就断了，按钮其实没被管住——
+    // 「上面出现过一次 v-if」这种查法会被这种形状骗绿。
+    assert.doesNotMatch(
+      bar.slice(open, at),
+      /<\/template>/,
+      `${what}与它的 v-if="!closeOnly" 之间不能有 </template>：门控的作用域到那里就结束了`,
+    );
+  };
+  gate('mac-titlebar__light--minimize', 'macOS 的黄灯');
+  gate('mac-titlebar__light--zoom', 'macOS 的绿点');
+  gate('class="win-caption__btn"', 'Windows 的最小化按钮');
+
+  // 关闭键**必须还在**：这条判据最容易被"改过了头"的实现骗绿——把整组按钮删掉
+  // 时上面三条一样成立，而副窗就再也关不掉了。
+  assert.match(bar, /mac-titlebar__light--close/, 'macOS 副窗仍要留关闭灯');
+  assert.match(bar, /win-caption__btn--close/, 'Windows 副窗仍要留关闭键');
+
+  // 脚本层的兜底：命令本身在 close-only 窗口上不许发出去。模板层是"不画"，
+  // 这里是"画了也发不出去"——两处分开才是结构上的不可能。
+  const minimize = fnBody(read('../src/shell/WindowTitleBar.vue'), 'minimizeWindow');
+  assert.match(
+    minimize,
+    /if\s*\(props\.closeOnly\)\s*return/,
+    'minimizeWindow() 必须在 close-only 窗口上直接返回——模板日后被人加回按钮时，' +
+      '不能退化成一句 ACL 报错',
+  );
+
+  // 系统层那一半：建窗期就不许最小化，否则绕开自绘 chrome 的入口还在
+  // （Windows 任务栏右键「最小化」、Win+D；macOS Dock 与窗口菜单）。
+  const decorate = stripRs(read('../../src-tauri/src/shell/window.rs')).match(
+    /pub fn decorate_transparent[\s\S]*?\n}/,
+  );
+  assert.ok(decorate, '找不到 decorate_transparent：三扇副窗的窗口属性必须收在一处');
+  assert.match(
+    decorate[0],
+    /\.minimizable\(false\)/,
+    '三扇副窗必须建窗期 minimizable(false)：关窗收进后台那套只属于主壳',
+  );
 });
 
 test('副窗标题栏显示「功能名@应用名」，主壳只显示应用名（三扇各一个功能名）', () => {

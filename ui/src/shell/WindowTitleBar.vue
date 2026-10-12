@@ -23,13 +23,34 @@
 // `shell::resident::intercept_close` 拦的是窗口 close 请求，与平台无关）。
 // 交通灯的「红」原本读作退出，2026-10-02 之后它读作「收起」——这是有意的
 // 取舍，代价是 macOS 用户第一次点红灯会看不到窗口消失的反馈，图标菜单是
-// 唯一的回��入口。最小化仍沿用系统语义（进 Dock），那盏黄灯不参与常驻。
+// 唯一的回归入口。最小化仍沿用系统语义（进 Dock），那盏黄灯不参与常驻。
+//
+// ## 「最小化」是**主壳独占**的动作，副窗只留关闭（2026-10-12）
+//
+// 上面那套「关窗 = 收进后台」讲的是主壳面板：托盘 / 菜单栏是它的常驻入口。
+// 副窗（日志 / 模型用量 / 套餐用量）是**只读数据面板**，关掉就是关掉——Rust 侧
+// `resident::intercept_close` 也只接管 label 为 `main` 的那扇窗。它们曾经照样
+// 画着一枚最小化按钮，而那枚按钮在 Windows 上点下去只会报 ACL 错：
+// `Command minimize_shell not allowed by ACL`（`minimize_shell` 收的是**主壳**，
+// 授权在 `allow-local-commands` 里，副窗的能力文件给不到），而按钮本身完全不
+// 提示它坏了——用户只看到一条红字，主窗还好好开着。
+//
+// 所以 `closeOnly` 不是样式开关，是**能力**开关：副窗传它，标题栏只画关闭，
+// `minimizeWindow()` 也自己先 return（模板被人加回一枚按钮时，命令仍然发不出去，
+// 不会退化成那条红字）。建窗期还有另一半：Rust 的 `decorate_transparent` 给三扇
+// 副窗 `minimizable(false)`，系统层的最小化（任务栏右键 / Win+D）也一并关掉。
 import { hasWindowControls, invoke, windowAction } from './bridge.js';
 import { toastError } from './notify.js';
 
 const props = defineProps({
   /** 标题栏正中显示的功能名。不传则只显示应用名（主壳）。 */
   title: { type: String, default: '' },
+  /**
+   * 只保留关闭按钮：副窗用，主壳不传。
+   *
+   * 副窗不做后台常驻（见文件头），留着最小化只会给用户一条 ACL 报错。
+   */
+  closeOnly: { type: Boolean, default: false },
 });
 
 // 2026-10-08 用户定格式：副窗显示「功能名@应用名」（如 `模型用量@Dsh-Xlink`），
@@ -62,14 +83,35 @@ function callWindow(method, label, hint) {
 // 页内提示没人看得见，它由 Rust 在**从后台恢复**时补发的
 // shell-restored-from-background 驱动（见 App.vue），而且只在本进程发生过
 // 用户收起之后的第一次恢复发一次——这里再讲一遍就成了重复打扰。
+//
+// **副窗那一半不是收起，是真的关掉**（`resident::intercept_close` 只接管
+// label 为 `main` 的 close 请求），所以提示词按 closeOnly 分两档：一句话
+// 复用不得——「程序继续运行」写在副窗上是在骗人，而「去托盘找它」更是指向
+// 一扇从没被收起过的窗。
 function closeWindow() {
+  if (props.closeOnly) {
+    const hint = isWindowsTitlebar ? '可改用系统快捷键（Alt+F4）' : '可改用系统快捷键（Cmd+W）';
+    callWindow('close', '关闭窗口', `${hint}，或从主界面重新打开`);
+    return;
+  }
   const hint = isWindowsTitlebar
     ? '可改用系统快捷键（Alt+F4），或用右下角托盘图标的右键菜单退出'
     : '可改用系统快捷键（Cmd+W），或点菜单栏鲸鱼图标的右键菜单退出';
   callWindow('close', '关闭窗口', hint);
 }
 
+// 关闭按钮的悬浮说明也按同一口径分档（见 closeWindow 那段）。
+const closeLabel = props.closeOnly
+  ? '关闭窗口'
+  : isWindowsTitlebar
+    ? '关闭窗口（收纳到通知区域）'
+    : '关闭窗口（收进后台，程序继续运行）';
+
 function minimizeWindow() {
+  // 副窗不参与后台常驻，最小化对它没有意义（且 Windows 上那条命令压根不归它
+  // 授权）。**这里是结构上的兜底**，不是模板层的重复判断：模板日后被人加回
+  // 一枚最小化按钮时，命令仍然发不出去，而不是又冒出那句 ACL 红字。
+  if (props.closeOnly) return;
   // Windows：最小化与关闭语义一致——都收进通知区域并从任务栏移除按钮，
   // 只有托盘图标能把窗口叫回来（macOS 保持系统原生最小化到 Dock：Dock 上
   // 仍有窗口条目，语义不与「退出」混淆）。
@@ -93,29 +135,33 @@ function minimizeWindow() {
     :class="{ 'mac-titlebar--win': isWindowsTitlebar }"
     data-tauri-drag-region
   >
-    <!-- macOS：左上角交通灯。 -->
+    <!-- macOS：左上角交通灯。副窗（closeOnly）只剩红灯——黄灯是最小化，
+         绿点本来就是一枚禁用按钮（窗口不可缩放），留着只会让人反复点一个
+         永远不响应的地方。 -->
     <div v-if="isMacTitlebar" class="mac-titlebar__controls" aria-label="窗口控制">
       <button
         type="button"
         class="mac-titlebar__light mac-titlebar__light--close"
-        aria-label="关闭窗口（收进后台）"
-        title="关闭窗口（收进后台，程序继续运行）"
+        :aria-label="closeLabel"
+        :title="closeLabel"
         @click.stop="closeWindow"
       ></button>
-      <button
-        type="button"
-        class="mac-titlebar__light mac-titlebar__light--minimize"
-        aria-label="最小化窗口"
-        title="最小化"
-        @click.stop="minimizeWindow"
-      ></button>
-      <button
-        type="button"
-        class="mac-titlebar__light mac-titlebar__light--zoom"
-        aria-label="窗口不可缩放"
-        title="窗口不可缩放"
-        disabled
-      ></button>
+      <template v-if="!closeOnly">
+        <button
+          type="button"
+          class="mac-titlebar__light mac-titlebar__light--minimize"
+          aria-label="最小化窗口"
+          title="最小化"
+          @click.stop="minimizeWindow"
+        ></button>
+        <button
+          type="button"
+          class="mac-titlebar__light mac-titlebar__light--zoom"
+          aria-label="窗口不可缩放"
+          title="窗口不可缩放"
+          disabled
+        ></button>
+      </template>
     </div>
 
     <div class="mac-titlebar__caption" data-tauri-drag-region>
@@ -123,11 +169,13 @@ function minimizeWindow() {
       <span>{{ caption }}</span>
     </div>
 
-    <!-- Windows：右侧标准标题栏按钮（最小化 / 关闭）。窗口不可缩放
-         （tauri.conf.json: resizable:false），所以不放最大化按钮——禁用
-         的最大化按钮只会让用户反复点击一个永远不响应的地方。 -->
+    <!-- Windows：右侧标准标题栏按钮。窗口不可缩放（tauri.conf.json:
+         resizable:false），所以不放最大化按钮——禁用的最大化按钮只会让用户
+         反复点击一个永远不响应的地方。副窗（closeOnly）连最小化也不留：
+         那条命令收的是主壳，副窗点了只会报 ACL 错（见文件头）。 -->
     <div v-if="isWindowsTitlebar" class="win-caption" aria-label="窗口控制">
       <button
+        v-if="!closeOnly"
         type="button"
         class="win-caption__btn"
         aria-label="最小化窗口"
@@ -141,8 +189,8 @@ function minimizeWindow() {
       <button
         type="button"
         class="win-caption__btn win-caption__btn--close"
-        aria-label="关闭窗口（收纳到通知区域）"
-        title="关闭（收纳到通知区域）"
+        :aria-label="closeLabel"
+        :title="closeLabel"
         @click.stop="closeWindow"
       >
         <svg class="win-caption__glyph" viewBox="0 0 10 10" aria-hidden="true">

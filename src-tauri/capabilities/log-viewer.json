@@ -1,6 +1,6 @@
 {
   "identifier": "log-viewer",
-  "description": "The standalone log viewer window ... 它现在是自绘标题栏（2026-10-08），关闭键由前端承担，因此需要 start-dragging（拖窗）与 minimize。",
+  "description": "The standalone log viewer window ... 它现在是自绘标题栏（2026-10-08），关闭键由前端承担，因此需要 start-dragging（拖窗）。**刻意不给 minimize**（2026-10-12）：副窗不参与后台常驻、标题栏只留关闭按钮（`WindowTitleBar` 的 `close-only`），而 `minimize_shell` 的授权在 `allow-local-commands` 里只归主壳——留着这条权限只会在模板被人改回时重新长出那句 `Command minimize_shell not allowed by ACL`。",
   "windows": [
     "log-viewer"
   ],
@@ -9,7 +9,6 @@
     "core:window:allow-close",
     "allow-log-viewer",
     "core:window:allow-start-dragging",
-    "core:window:allow-minimize",
     "allow-window-appearance"
   ]
 }

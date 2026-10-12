@@ -17,6 +17,13 @@
 //
 // 官网页签栏（`?chatstrip=1`）**不用**这个壳：它承载 `chat.deepseek.com` 等
 // 别人的页面，Rust 侧保留了原生装饰。
+//
+// `close-only` 是 2026-10-12 加的：副窗只画关闭按钮，不画最小化。三扇副窗都不
+// 参与后台常驻（`resident::intercept_close` 只接管 label 为 `main` 的 close
+// 请求），而 Windows 上那枚最小化按钮调的是 `minimize_shell`——授权在
+// `allow-local-commands` 里，副窗的能力文件给不到，点了只会得到一句
+// `Command minimize_shell not allowed by ACL`。**接线只在这里一处**：三扇窗共用
+// 这一个外壳，谁也不能只给自己那扇漏掉。
 import WindowTitleBar from './WindowTitleBar.vue';
 
 defineProps({
@@ -29,7 +36,7 @@ defineProps({
 
 <template>
   <div class="viewer-shell" :class="shellClass">
-    <WindowTitleBar :title="title" />
+    <WindowTitleBar :title="title" close-only />
     <slot />
   </div>
 </template>

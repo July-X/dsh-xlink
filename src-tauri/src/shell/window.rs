@@ -77,7 +77,7 @@ pub fn window_title(name: &str) -> String {
 /// 修复前的样子，正是用户截图里「深色内容 + 浅色标题栏」的成因。
 pub const CHROME_BACKDROP: tauri::webview::Color = tauri::webview::Color(0x16, 0x17, 0x1a, 0xff);
 
-/// 三扇壳自有副窗共用的窗口装饰：无边框 + 透明 + 无系统阴影。
+/// 三扇壳自有副窗共用的窗口装饰：无边框 + 透明 + 无系统阴影 + **不可最小化**。
 ///
 /// **三处 builder 各写一份必然漂**，所以收在这里（2026-10-08 用户要求副窗交通灯
 /// 与主壳统一、窗口圆角一致时新增）。主壳走 `tauri.conf.json` 的声明式配置，
@@ -93,15 +93,28 @@ pub const CHROME_BACKDROP: tauri::webview::Color = tauri::webview::Color(0x16, 0
 /// 透明区域**，读作一圈贴着窗口外框的黑色矩形光晕。去掉之后阴影由前端 CSS 补
 /// （见 `ui/src/theme.css` 的 `--window-radius` 一节），形状跟着 CSS 圆角走。
 ///
+/// **`minimizable(false)` 是 2026-10-12 加的**，「关窗收进后台」那套只属于主壳
+/// （`resident::intercept_close` 也只接管 label 为 `main` 的 close 请求）。副窗是
+/// 只读数据面板，最小化对它没有意义：Windows 上自绘标题栏那枚按钮调的是
+/// `minimize_shell`，而那条命令的授权在 `allow-local-commands` 里只归主壳，
+/// 副窗点了只会得到一句 `Command minimize_shell not allowed by ACL`。前端已经把
+/// 按钮删了（`WindowTitleBar` 的 `close-only`），这里补的是**系统层那一半**：
+/// 任务栏右键「最小化」、Win+D、Dock 上的黄灯那一类绕开自绘 chrome 的入口。
+/// 建窗期给才是对的——它与 `decorations(false)` 落在同一次 style mask 计算里
+/// （tao 0.35 `platform_impl/macos/window.rs`：`minimizable` 位在 `masks` 上被
+/// `&= !Miniaturizable` 摘掉，晚于 decorations 那段分支），事后 `set_minimizable`
+/// 则要赌事件循环里没有别的样式位重算。
+///
 /// **这三项必须建窗时给，不能建完再 `set_decorations` / `set_shadow`**：
 /// tao 的 `set_decorations(false)` 会把 `NSWindowStyleMask` 重算成
 /// `Borderless | Resizable`，**丢掉 `Miniaturizable`**，于是 `miniaturize:` 静默
 /// 失败、`minimize()` 还返回 `Ok(())`，黄灯变成点了没反应的死按钮（根因与
-/// `crate::check_main_window_minimizable` 那条回归哨兵同源）。`transparent` 则
-/// 走的是另一条路径——只 `setOpaque(false)` + `setBackgroundColor(clearColor)`，
-/// 不碰样式位（tao 0.35 `platform_impl/macos/window.rs`），所以它是安全的。
+/// [`crate::check_main_window_minimizable`] 那条回归哨兵同源——**主壳**那边要保
+/// 住黄灯，这三扇副窗则相反，本来就不该有）。`transparent` 走的是另一条路径——只
+/// `setOpaque(false)` + `setBackgroundColor(clearColor)`，不碰样式位（tao 0.35
+/// `platform_impl/macos/window.rs`），所以它是安全的。
 /// 泛型保持与 `WebviewWindowBuilder` 一致（`<R: Runtime, M: Manager<R>>`）：
-/// 这里原样透传调用方的运行时就��，不把它钉死成 `Wry`——三扇副窗都由同一个
+/// 这里原样透传调用方的运行时，不把它钉死成 `Wry`——三扇副窗都由同一个
 /// `tauri::AppHandle` 建窗，但写死会让「换个 runtime 试一下」变成改签名。
 pub fn decorate_transparent<R: tauri::Runtime, M: tauri::Manager<R>>(
     builder: tauri::WebviewWindowBuilder<'_, R, M>,
@@ -110,6 +123,7 @@ pub fn decorate_transparent<R: tauri::Runtime, M: tauri::Manager<R>>(
         .decorations(false)
         .shadow(false)
         .transparent(true)
+        .minimizable(false)
         // 透明窗的 WebView 层必须自己清成全透明，否则文档绘制前会闪一帧白
         // （`CHROME_BACKDROP` 那段注释描述的同一段空白期，只是这里不能填暗色：
         // 填了就又把圆角填死了）。

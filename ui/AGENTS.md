@@ -99,7 +99,13 @@
     - **已统一为「自绘」**（用户拍板「统一自绘、一起调」）：四扇壳自有窗口（主壳 + 日志 / 模型用量 / 套餐用量）建窗期一律 `decorations(false) + transparent(true) + shadow(false)`，圆角由 CSS 画。`transparent` 走的是「`setOpaque(false)` + `setBackgroundColor(clearColor)`」，**不碰 `NSWindowStyleMask`**；只有 `set_decorations` 才会重算样式位、抹掉 `Miniaturizable`（tao 0.35 `platform_impl/macos/window.rs` 实测，不是推断）。
     - **`shadow: false` 不能省**：macOS 给每个窗口矩形画系统投影，窗口不透明时它藏在边框下看不见，透明 + 圆角后会画在**圆角之外的透明区域**，读作一圈黑色矩形光晕。投影改由 `#app::after` 的 `box-shadow` 补，形状跟 CSS 圆角走。
     - **底色必须跟着圆角一起从 `body` 搬到 `#app`**：留在 body 上，圆角外的四角仍是一块实色方块，圆角等于白做。这一条少做时**没有任何报错**——窗口只是「看着没圆角」，build 全绿。
-    - 三扇副窗共用 `shell/ViewerShell.vue`（自绘标题栏 + 圆角 + 裁切 + 投影），不在三处各写一遍；它们的能力文件补了 `allow-start-dragging` / `allow-minimize`。
+    - 三扇副窗共用 `shell/ViewerShell.vue`（自绘标题栏 + 圆角 + 裁切 + 投影），不在三处各写一遍；它们的能力文件有 `allow-start-dragging`。
+    - **副窗只留关闭按钮，最小化是主壳独占的动作**（2026-10-12 用户实机报「弹出 window 只保留关闭按钮，不允许用户最小化」）。此前后台常驻那套（`resident::intercept_close` 收进后台 / 托盘）是**主壳**的语义，副窗关掉就是关掉；Windows 上那枚最小化按钮调 `minimize_shell`，授权在 `allow-local-commands` 里只归主壳，副窗点了只会得到一句 `Command minimize_shell not allowed by ACL`——一枚必然失败、且不提示自己坏了的按钮。
+      - `WindowTitleBar` 的 `close-only` prop 是**能力开关不是样式开关**：`ViewerShell` 传它 → macOS 只画红灯、Windows 只画 ✕；`minimizeWindow()` 里另有 `if (props.closeOnly) return`，模板日后被人加回按钮时命令仍发不出去。关闭键**必须还在**（判据两头都钉：删掉整组按钮同样能让「没有最小化」成立，而那扇窗就再也关不掉了）。
+      - 绿点（禁用、窗口不可缩放）一并去掉：留着就是一枚点了永远没反应的按钮，与 Windows 上「不放最大化按钮」是同一条理由。
+      - 关闭键的**悬浮说明按同一口径分档**：主壳写「收进后台 / 收纳到通知区域」，副窗只写「关闭窗口」——「程序继续运行」写在副窗上是在骗人，「去托盘找它」更是指向一扇从没被收起过的窗。
+      - 系统层那一半在 Rust（`shell::window::decorate_transparent` 的 `minimizable(false)`，建窗期给），前端只管自绘 chrome：任务栏右键「最小化」、Win+D 这些入口绕得开模板。三份副窗 capability 里的 `core:window:allow-minimize` 同时删掉——留着它等于给一个不该存在的按钮预留后路。
+      - 判据在 `ui/test/windowChrome.test.js`「副窗标题栏只留关闭按钮」：接线（`ViewerShell` 传了 / `App.vue` 没传）、两个平台的门控、`minimizeWindow()` 的提前返回、Rust 的 `minimizable(false)`、三份 capability **不许**有 minimize，四条变异都逐条反向验过。
     - **官网页签栏与工作台窗口不改装饰**：前者承载 `chat.deepseek.com` 等别人的页面，后者是内核 webui。判据钉住「只许排除官网页签栏」。
     - 判据：`ui/test/windowChrome.test.js` 的「窗口圆角与副窗标题栏」一组（含一条「入口 `main.js` 的具名 import 必须真的被导出」——拆分模块时写错 import 只有构建会报，UI 测试全绿）。
   - **副窗的标题栏显示功能标题，不显示应用名**（2026-10-08 用户实机跑完报「副窗的功能标题需要保留」）。副窗的 head 行（品牌图标 + 功能名 + 刷新等动作）是**内容区**的页头，在标题栏**下面**；标题栏若只写「Dsh-Xlink」，两行连着读就是「窗口叫什么 + 这窗装什么」两句话，而标题栏该回答的「我现在开着哪个功能」没有答案。`WindowTitleBar` 有 `title` prop，不传时回落到应用名（主壳不传）；三扇副窗经 `ViewerShell` 传各自的「日志 / 模型用量 / 套餐用量」，其中日志窗跟随当前文件名（`:title="activeName || '日志'"`，兜底不能省——没选中文件时标题会空白）。
