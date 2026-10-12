@@ -2149,8 +2149,8 @@ fn copy_file(from: &Path, to: &Path) -> io::Result<()> {
         .map(|_| ())
 }
 
-/// 把插件物化到指定实例的 `extensions/plugins/<id>/`。实例范围命令
-///（`plugin_install_instance` / `plugin_sync_instance` 等）的入口之一。
+/// 把插件物化到指定实例的 `extensions/plugins/<id>/`。per-instance 安装与同步
+/// 的入口之一（2026-10-12 那层 `#[tauri::command]` 薄包装已删，底层留着）。
 pub fn sync_kernels_for_instance(
     family: &str,
     instance_id: &str,
@@ -2303,7 +2303,7 @@ pub fn ensure_wiring(
     )
 }
 
-/// 按中央库对**指定实例**的 profile 清单进行调和（实例范围命令入口）。
+/// 按中央库对**指定实例**的 profile 清单进行调和（per-instance 接线入口）。
 /// 隔离过滤仍在全局 quarantine 文档里读——它是中央库级别的状态，不会
 /// 按实例分裂。
 pub fn ensure_wiring_for_instance(
@@ -2363,7 +2363,7 @@ fn ensure_store_dependencies(
 ///
 /// 返回 `(wired_count, changed)`。
 ///
-/// P4 起物化与清扫的目标由 `family + instance_id` 决定（实例范围命令
+/// P4 起物化与清扫的目标由 `family + instance_id` 决定（per-instance
 /// 通过 [`ensure_wiring_for_instance`] 显式传入，默认实例命令通过
 /// [`default_instance_key`] fallback 进来）。`profile` 路径同样走实例
 /// `instance_profile_dir`，隔离仍读全局 quarantine 文档——它是中央库
@@ -3108,7 +3108,7 @@ fn wire_manifest(
 /// 的 `extensions/plugins/`、接入活动 profile。
 ///
 /// 中央库（store.json / `<home>/dsh-plugins/`）由所有实例共享；物化与
-/// profile 接线按实例隔离（实例范围命令走 [`install_for_instance`]）。
+/// profile 接线按实例隔离（per-instance 安装走 [`install_for_instance`]）。
 pub fn install(
     data_dir: &Path,
     settings: &settings::Settings,
