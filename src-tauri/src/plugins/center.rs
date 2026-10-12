@@ -1464,76 +1464,15 @@ fn fetch_git_clone(
     };
 
     on_progress(&format!("正在克隆 {}", spec.source));
-    let mut cmd = crate::shell::process::command_with_path("git");
-    // git 只认 gitconfig 与 `http_proxy`，看不见操作系统的代理设置——用户在
-    // 系统里配了代理，clone 照样绕开它直连。系统里没配就不注入，照直连。
-    crate::shell::env::apply_proxy_env(&mut cmd);
-    cmd.arg("clone").arg("--depth").arg("1");
-    // `--progress` 是这份命令流式的前提：git 察觉输出不是 TTY 时会把进度条
-    // 从 `\r` 覆盖改写成逐行，于是每一行都能被立即读出并送进进度面板。少了
-    // 它，12KB/s 的直连就是一段十分钟不动的空白——用户分不清「在慢慢拉」
-    // 和「已经卡死」。
-    cmd.arg("--progress");
-    if let Some(tag) = &branch {
-        cmd.arg("--branch").arg(tag);
-    }
-    cmd.arg(&spec.source).arg(dest);
-    // 流式而不是一次性捕获：进度面板要能实时显示 git 到哪一步了，超时才
-    // 从「一句话等十分钟」变成「看得见百分比地等五分钟」。超时沿用技能侧的
-    // 同一常量，让两侧对「clone 该等多久」保持一个答案。
-    let cloned =
-        crate::shell::stream::capture(&mut cmd, crate::shell::process::GIT_CLONE_TIMEOUT, |line| {
-            on_progress(line)
-        })
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::TimedOut {
-                AppError::Io(format!(
-                "git clone 超时（{} 分钟）：仓库较大或网络较慢，请重试，或改用带 Release 的来源",
-                crate::shell::process::GIT_CLONE_TIMEOUT.as_secs() / 60
-            ))
-            } else {
-                AppError::Io(format!("无法运行 git：{e}"))
-            }
-        })?;
-    if !cloned.success {
-        let detail = cloned
-            .output
-            .lines()
-            .rev()
-            .find(|l| {
-                let t = l.trim_start();
-                t.starts_with("fatal:") || t.starts_with("error:")
-            })
-            .or_else(|| cloned.output.lines().rev().find(|l| !l.trim().is_empty()))
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let mut msg = String::from("git clone 失败");
-        if !detail.is_empty() {
-            msg.push_str(&format!("：{detail}"));
-        } else {
-            msg.push_str("，请检查地址与网络");
-        }
-        return Err(AppError::Plugin(msg));
-    }
+    // clone 的编排与技能侧共用 `pkg::fetch::shallow_clone`——两边此前逐字重复，
+    // 连超时文案都是同一个字符串。`git --version` 探测与「摘 git 自己说的那行」
+    // 的策略现在也在共享层里。
+    let tag = crate::pkg::fetch::shallow_clone(&spec.source, dest, branch.as_deref(), on_progress)
+        .map_err(AppError::Plugin)?;
+    // clone 本身只是取源：依赖装不上（pnpm install）仍然是安装失败，要在这里
+    // 单独判并给出可操作的原因，不能混进 clone 的成功/失败里。
     let dependencies_ready = build_git_plugin(dest, pnpm_exe, on_progress)?;
-    if let Some(tag) = branch {
-        return Ok((tag, dependencies_ready));
-    }
-    // 未锁定的仓库且没有任何 semver tag：克隆的是默认分支；记录下 HEAD
-    // 的 hash，让 source marker 仍能指向稳定的内容，用户也能看出当前
-    // 拥有的是哪个 commit。
-    let dest_str = dest.to_str().unwrap_or("");
-    let (ok, out) = run_capture("git", &["-C", dest_str, "rev-parse", "--short", "HEAD"])
-        .map_err(|e| AppError::Io(e.to_string()))?;
-    Ok((
-        if ok {
-            out.trim().to_string()
-        } else {
-            String::from("head")
-        },
-        dependencies_ready,
-    ))
+    Ok((tag, dependencies_ready))
 }
 
 /// 在 Git 来源获取完成后立刻构建一个 git 来源插件。
