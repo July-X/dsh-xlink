@@ -165,18 +165,34 @@ pub(crate) fn verify_manifest(plugin_source: &Path) -> Result<(), String> {
 /// 物化到 `target`（含 peer 链接与完成标记）。同名 staging 残留先清。
 ///
 /// 已存在内容一致的目标目录时是幂等 no-op（标记匹配即返回）；不一致
-/// （开发期源码更新）则 staging 构建后整体替换——调用方必须保证实例
-/// 已停止，`target` 是本插件自有目录。
+/// （开发期源码更新 / 上游换了版本）则 staging 构建后整体替换——调用方必须
+/// 保证实例已停止，`target` 是本插件自有目录。
+///
+/// `upstream_dir`：有上游的插件（ponytail）额外把那里的 `skills/` 与 `hooks/`
+/// 复制进来。**它必须进摘要**（见 [`runtime_digest`]），否则同步到新上游版本后
+/// 摘要不变 → 判定为「内容一致」→ 直接返回 → 用户手上的永远是旧版本——
+/// 而面板与日志都说更新成功了。这正是本次改动要消灭的那类静默分叉。
 pub(crate) fn materialize(
     spec: &BuiltinSpec,
     plugin_source: &Path,
+    upstream_dir: Option<&Path>,
     target: &Path,
     kernel_root: &Path,
     version: &str,
     fingerprint: &str,
 ) -> Result<(), String> {
+    let upstream_dir = match spec.upstream {
+        Some(_) => Some(upstream_dir.ok_or_else(|| {
+            format!(
+                "{} 的内容来自上游，但还没有同步过任何版本；\
+                 请先在插件面板启用它（启用时会自动下载），或点「检查更新」",
+                spec.display_name
+            )
+        })?),
+        None => None,
+    };
     verify_manifest(plugin_source)?;
-    let source_hash = runtime_digest(spec, plugin_source).map_err(|e| {
+    let source_hash = runtime_digest(spec, plugin_source, upstream_dir).map_err(|e| {
         format!(
             "读取插件运行时文件失败（{}）：{e}；请重新构建或安装应用",
             plugin_source.display()
@@ -188,7 +204,8 @@ pub(crate) fn materialize(
         if parsed.get("pluginVersion").and_then(|v| v.as_str()) == Some(version)
             && parsed.get("fingerprint").and_then(|v| v.as_str()) == Some(fingerprint)
             && parsed.get("sourceHash").and_then(|v| v.as_str()) == Some(source_hash.as_str())
-            && runtime_digest(spec, target).ok().as_deref() == Some(source_hash.as_str())
+            // 核验目标目录时两部分内容都在 `target` 里，所以同一个 `Some(target)`。
+            && runtime_digest(spec, target, Some(target)).ok().as_deref() == Some(source_hash.as_str())
         {
             ensure_peer_link(
                 spec,
@@ -234,6 +251,35 @@ pub(crate) fn materialize(
             })?;
         }
     }
+    if let Some(from) = upstream_dir {
+        for entry in crate::plugins::builtin::upstream::CONTENT_ENTRIES {
+            let source = from.join(entry);
+            if !source.exists() {
+                // 上游这一版没有这个目录是**正常**的（例如某版不带 hook 脚本），
+                // 不是「同步坏了」。如实跳过，别把它报成安装包不完整。
+                continue;
+            }
+            copy_tree(&source, &staging.join(entry)).map_err(|e| {
+                format!(
+                    "复制上游内容失败（{} → {}）：{e}；请在插件面板点「检查更新」重试",
+                    source.display(),
+                    staging.join(entry).display()
+                )
+            })?;
+        }
+        // 补 CommonJS 标记：上游脚本是 require() 的 CJS，而插件根是
+        // "type": "module"，Node 按**最近的** package.json 判模块类型。缺了它
+        // require 抛 ERR_REQUIRE_ESM，而 **hook 失败是非阻塞的**——症状是
+        // 「配好了但什么都没发生」，日志里只有一行 warn。
+        let hooks = staging.join("hooks");
+        if hooks.is_dir() {
+            fs::write(
+                hooks.join("package.json"),
+                "{\n  \"type\": \"commonjs\"\n}\n",
+            )
+            .map_err(|e| format!("写 hooks/package.json 失败：{e}"))?;
+        }
+    }
     ensure_peer_link(
         spec,
         &staging.join("node_modules").join("@deepseek-ai"),
@@ -257,7 +303,17 @@ pub(crate) fn materialize(
 }
 
 /// 摘要覆盖路径与文件字节，目录排序保证稳定；只扫描运行时入口，不跟随 peer 链接。
-fn runtime_digest(spec: &BuiltinSpec, root: &Path) -> io::Result<String> {
+/// 运行时内容摘要：随包的 `entries` + （有上游的）上游内容目录。
+///
+/// **上游那部分必须进来**，否则「同步到了新版本」不会让摘要变化 → 幂等判定
+/// 认为内容一致 → 直接返回 → 用户手上的永远是旧版本，而面板与日志都说更新成功。
+///
+/// `upstream_root` 为 `None` 而 spec 有上游时按「读不到」报错，不静默跳过。
+fn runtime_digest(
+    spec: &BuiltinSpec,
+    root: &Path,
+    upstream_root: Option<&Path>,
+) -> io::Result<String> {
     use sha2::{Digest, Sha256};
     fn visit(root: &Path, path: &Path, hash: &mut Sha256) -> io::Result<()> {
         let name = path.strip_prefix(root).unwrap().to_string_lossy();
@@ -279,6 +335,17 @@ fn runtime_digest(spec: &BuiltinSpec, root: &Path) -> io::Result<String> {
     let mut hash = Sha256::new();
     for entry in spec.entries {
         visit(root, &root.join(entry), &mut hash)?;
+    }
+    if spec.upstream.is_some() {
+        let upstream = upstream_root
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "上游内容目录未解析到"))?;
+        for entry in crate::plugins::builtin::upstream::CONTENT_ENTRIES {
+            let path = upstream.join(entry);
+            // 上游某一版不带这个目录是正常的（与物化那步一致：缺就跳过）。
+            if path.exists() {
+                visit(upstream, &path, &mut hash)?;
+            }
+        }
     }
     Ok(format!("{:x}", hash.finalize()))
 }
@@ -470,6 +537,7 @@ mod tests {
         materialize(
             spec,
             &source,
+            None,
             &target,
             &root.join("kernel"),
             "0.1.0",
@@ -482,6 +550,7 @@ mod tests {
         materialize(
             spec,
             &source,
+            None,
             &target,
             &root.join("kernel"),
             "0.1.0",
@@ -495,6 +564,7 @@ mod tests {
         materialize(
             spec,
             &source,
+            None,
             &target,
             &root.join("kernel"),
             "0.1.0",
@@ -512,6 +582,7 @@ mod tests {
         materialize(
             spec,
             &source,
+            None,
             &target,
             &root.join("kernel"),
             "0.1.0",
@@ -532,6 +603,7 @@ mod tests {
         materialize(
             spec,
             &source,
+            None,
             &target,
             &root.join("kernel"),
             "0.1.0",
@@ -545,6 +617,7 @@ mod tests {
         materialize(
             spec,
             &source,
+            None,
             &target.with_file_name("x"),
             &root.join("kernel"),
             "0.2.0",
@@ -595,9 +668,17 @@ mod tests {
             "这个夹具要真的没有 client 目录，否则测不到东西"
         );
         let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
+        // 上游内容从「已同步的那一版」取，而不是从随包资源取——这正是本次改动的
+        // 核心：`source/skills` 不存在，而物化结果里**有** skills。
+        let upstream = crate::plugins::builtin::upstream::seed_fixture(&root.join("home"), spec);
+        assert!(
+            !source.join("skills").exists(),
+            "这个夹具要真的没有随包的 skills/——有它就测不出「内容来自上游」"
+        );
         materialize(
             spec,
             &source,
+            Some(&upstream),
             &target,
             &root.join("kernel"),
             "0.1.0",
@@ -610,12 +691,23 @@ mod tests {
             "适配层（adapter/）必须物化：它是 /ponytail-update 与技能路由的落点"
         );
         assert!(
-            !target.join("skills").exists(),
-            "上游内容不再随包走，实例里不该有一份随包的 skills/——\
-             有它就意味着「仓库里那份」与「用户手上那份」又变成两套"
+            target.join("skills/ponytail/SKILL.md").is_file(),
+            "上游内容必须物化进实例——漏掉的话工作台里没有技能，而界面上毫无异常"
+        );
+        assert!(
+            target.join("hooks/claude-codex-hooks.json").is_file(),
+            "上游的 hook 脚本也要物化：档位切换与会话级注入靠它"
+        );
+        assert!(
+            target.join("hooks/package.json").is_file(),
+            "必须补 commonjs 标记：上游脚本是 require() 的 CJS，\
+             而插件根是 \"type\": \"module\"——缺了它 hook 静默失败"
+        );
+        assert!(
+            !target.join("client").exists(),
+            "别的插件才有的目录不该出现在这里"
         );
         assert!(target.join("LICENSE").is_file());
-        assert!(!target.join("client").exists());
         // peer 链接**恰好**是它自己那几个：多一个就是多一条会断的链（旧内核装不上
         // 那个包时物化直接失败），少一个则是运行期 resolve 失败。这里比对整个
         // 集合而不是「第一个」——ponytail 有两个 peer，写死 `peers[0]` 的断言在
@@ -628,6 +720,136 @@ mod tests {
         let mut expected: Vec<String> = spec.peers.iter().map(|p| p.to_string()).collect();
         expected.sort();
         assert_eq!(linked, expected);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// **上游换了版本必须真的重新物化。**
+    ///
+    /// 这是整个「跟上上游」改动里最容易被静默做坏的一处：幂等判定看的是
+    /// `sourceHash`，若摘要只覆盖随包资源，那么「同步到了新版本」不会改变摘要 →
+    /// 判定为内容一致 → 直接返回 → 用户手上的永远是旧版本，**而面板与日志都说
+    /// 更新成功了**。这条测试就是钉住「上游内容进摘要」这件事。
+    #[test]
+    fn a_new_upstream_version_replaces_the_materialized_content() {
+        let root = temp_dir("ponytail-bump");
+        let spec = crate::plugins::builtin::builtins::find("ponytail").unwrap();
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        for entry in spec.entries {
+            if *entry == "package.json" {
+                fs::write(source.join("package.json"), "{}").unwrap();
+            } else {
+                fs::create_dir_all(source.join(entry)).unwrap();
+                fs::write(source.join(entry).join("keep.js"), "// keep").unwrap();
+            }
+        }
+        let kernel = root.join("kernel");
+        let mut kernel_pkgs = kernel.join("node_modules/@deepseek-ai");
+        fs::create_dir_all(&mut kernel_pkgs).unwrap();
+        for pkg in spec.peers {
+            fs::create_dir_all(kernel.join("node_modules/@deepseek-ai").join(pkg)).unwrap();
+        }
+
+        let home = root.join("home");
+        let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
+        let first = crate::plugins::builtin::upstream::seed_fixture(&home, spec);
+        materialize(
+            spec,
+            &source,
+            Some(&first),
+            &target,
+            &kernel,
+            "0.1.0",
+            "fp-1",
+        )
+        .unwrap();
+        let before = fs::read_to_string(target.join("skills/ponytail/SKILL.md")).unwrap();
+        assert!(before.contains("fixture"));
+
+        // 同一版本再跑一次：必须是 no-op（幂等）。
+        materialize(
+            spec,
+            &source,
+            Some(&first),
+            &target,
+            &kernel,
+            "0.1.0",
+            "fp-1",
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(target.join("skills/ponytail/SKILL.md")).unwrap(),
+            before,
+            "同一版本重复物化应当是 no-op"
+        );
+
+        // 上游换到更新的版本 → 内容必须换掉。
+        let second = home.join("plugins/builtin/ponytail/upstream/9.9.10");
+        fs::create_dir_all(second.join("skills/ponytail")).unwrap();
+        fs::write(second.join("package.json"), "{}").unwrap();
+        fs::write(
+            second.join("skills/ponytail/SKILL.md"),
+            "---\nname: ponytail\ndescription: 新版\n---\nnewer\n",
+        )
+        .unwrap();
+        // 让 resolve_dir 选中新的那个（两个目录都在，版本号大的赢）。
+        materialize(
+            spec,
+            &source,
+            Some(
+                crate::plugins::builtin::upstream::resolve_dir(&home, spec)
+                    .unwrap()
+                    .as_path(),
+            ),
+            &target,
+            &kernel,
+            "0.1.0",
+            "fp-1",
+        )
+        .unwrap();
+        let after = fs::read_to_string(target.join("skills/ponytail/SKILL.md")).unwrap();
+        assert!(
+            after.contains("新版") && !after.contains("fixture"),
+            "同步到新上游版本后物化内容必须换掉；实际拿到：{after:?}——\
+             这就是「面板说更新成功、工作台里还是旧内容」那个静默分叉"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 有上游的插件在**没同步过**时必须明确拒绝，而不是物化出一个空壳。
+    ///
+    /// 空壳的症状：工作台里没有技能、界面上看不出任何异常、用户以为插件已启用。
+    /// 这是本次改动之前真实存在的形态，所以判据钉的就是「不许物化成功」。
+    #[test]
+    fn a_builtin_with_upstream_refuses_to_materialize_without_synced_content() {
+        let root = temp_dir("ponytail-nosync");
+        let spec = crate::plugins::builtin::builtins::find("ponytail").unwrap();
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        for entry in spec.entries {
+            if *entry == "package.json" {
+                fs::write(source.join("package.json"), "{}").unwrap();
+            } else {
+                fs::create_dir_all(source.join(entry)).unwrap();
+                fs::write(source.join(entry).join("keep.js"), "// keep").unwrap();
+            }
+        }
+        let kernel = root.join("kernel");
+        fs::create_dir_all(kernel.join("node_modules/@deepseek-ai")).unwrap();
+        for pkg in spec.peers {
+            fs::create_dir_all(kernel.join("node_modules/@deepseek-ai").join(pkg)).unwrap();
+        }
+        let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
+        let err = materialize(spec, &source, None, &target, &kernel, "0.1.0", "fp-1")
+            .expect_err("没有上游内容时必须拒绝物化");
+        assert!(
+            err.contains("上游") && err.contains("检查更新"),
+            "错误信息要指出下一步（启用或点检查更新），实际：{err}"
+        );
+        assert!(
+            !target.exists(),
+            "拒绝时不该留下半个目录——用户会把它当成已启用"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

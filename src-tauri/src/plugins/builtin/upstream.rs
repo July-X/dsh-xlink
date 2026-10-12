@@ -45,6 +45,12 @@ pub(crate) const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from
 const RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 /// 数据目录里保留几个历史版本（多留一个纯粹是为了「刚同步完就回滚」有路可走）。
 const KEEP_VERSIONS: usize = 2;
+/// 从上游那一份取进物化目录的子目录（`skills/` 与 `hooks/`）。
+///
+/// **这两项进运行时摘要**（见 `materialize::runtime_digest`）：不进的话，
+/// 「同步到了新版本」不会改变摘要 → 幂等判定认为内容一致 → 直接返回，
+/// 用户手上的永远是旧版本，而面板与日志都说更新成功了。
+pub(crate) const CONTENT_ENTRIES: &[&str] = &["skills", "hooks"];
 
 /// 同步状态（落盘在 `<dsh_home>/plugins/builtin/<id>/upstream.json`）。
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -183,12 +189,20 @@ fn version_key(version: &str) -> Vec<u64> {
     key
 }
 
-/// 给内核进程的 env 名：`<PREFIX>_<ID 大写>`。
-pub(crate) fn env_var(spec: &BuiltinSpec) -> String {
-    format!(
-        "DSH_XLINK_BUILTIN_{}",
-        spec.id.to_ascii_uppercase().replace('-', "_")
-    )
+/// 上游 hook 脚本的**可写状态目录**，交给内核进程的 `CLAUDE_CONFIG_DIR`。
+///
+/// ## 为什么必须显式指过去
+///
+/// ponytail 的脚本把档位状态写在 `getClaudeDir()`，而它的取值是
+/// `process.env.CLAUDE_CONFIG_DIR || <用户家目录>/.claude`。不设这个变量，
+/// 本插件就会去**另一个工具的配置目录里写文件**（`.ponytail-active`、
+/// `.ponytail-*`），用户既没要求也没看见；更要命的是那份状态会与同机 Claude Code
+/// 的那份**共用**——两边互相覆盖档位，而界面上完全看不出来。
+///
+/// 放在 `<data_dir>/plugins/builtin/<id>/state` 还有两个附带好处：跟同步状态
+/// 放在一起（`删除这个插件的残留` 只需要删一个目录），且随壳模式天然分家。
+pub(crate) fn state_dir(dsh_home: &Path, spec: &BuiltinSpec) -> PathBuf {
+    data_dir(dsh_home, spec).join("state")
 }
 
 /// 面板用的状态（只读，不触发检查）。
@@ -318,6 +332,31 @@ fn write_commonjs_marker(root: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
+/// 造一个「已同步」的假上游目录。
+///
+/// 三处夹具都要它（`ensure_wired` 的两处 + `materialize` 的一处）。它们之前之所以
+/// 过，是因为那时有上游的插件可以**空着物化**——而那正是本次修掉的洞：物化出一个
+/// 只有适配层的空壳，工作台里没有技能、界面上毫无异常。现在没有同步内容就会明确
+/// 报错，夹具必须把那一步补上。
+pub(crate) fn seed_fixture(dsh_home: &Path, spec: &BuiltinSpec) -> PathBuf {
+    let dir = version_dir(dsh_home, spec, "9.9.9");
+    fs::create_dir_all(dir.join("skills").join("ponytail")).unwrap();
+    fs::write(
+        dir.join("package.json"),
+        r#"{"name":"@example/demo","version":"9.9.9"}"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("skills").join("ponytail").join("SKILL.md"),
+        "---\nname: ponytail\ndescription: fixture\n---\nbody\n",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.join("hooks")).unwrap();
+    fs::write(dir.join("hooks").join("claude-codex-hooks.json"), "{}\n").unwrap();
+    dir
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::plugins::builtin::builtins::UpstreamSpec;
@@ -410,12 +449,21 @@ mod tests {
         assert!(failed_only.due(hour + 60, true));
     }
 
+    /// hook 脚本的可写状态目录必须在**插件自己的数据目录下面**。
+    ///
+    /// 钉的是「不是用户家目录」：那个值一旦退回 `~/.claude`，本插件就会去另一个
+    /// 工具的配置目录里写 `.ponytail-*`，并且与同机 Claude Code 的那份共用——
+    /// 症状是「档位莫名其妙变回去了」，而界面上完全看不出来。
     #[test]
-    fn env_var_is_scoped_per_plugin() {
-        assert_eq!(
-            env_var(&super::super::builtins::find("ponytail").unwrap()),
-            "DSH_XLINK_BUILTIN_PONYTAIL"
+    fn hook_state_dir_stays_inside_our_own_data_dir() {
+        let home = temp_home("state-dir");
+        let dir = state_dir(&home, &super::super::builtins::find("ponytail").unwrap());
+        assert!(
+            dir.starts_with(&home),
+            "状态目录必须落在 DSH_HOME 下面，实际 {}",
+            dir.display()
         );
+        assert!(dir.ends_with("ponytail/state"), "实际 {}", dir.display());
     }
 
     /// 没有 package.json 的目录不算一个版本——解包中断留下的半个目录必须被忽略，

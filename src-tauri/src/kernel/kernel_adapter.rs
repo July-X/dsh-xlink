@@ -445,6 +445,18 @@ impl KernelAdapter for DshAdapter {
                 );
             }
         }
+        // 上游 hook 脚本的可写状态目录（`CLAUDE_CONFIG_DIR`）。**必须显式指**：
+        // ponytail 的脚本默认写 `<家目录>/.claude`，那是另一个工具的配置目录，
+        // 与同机 Claude Code 的那份共用——两边互相覆盖档位而界面毫无异常。
+        if let Some(spec) = crate::plugins::builtin::builtins::BUILTINS
+            .iter()
+            .find(|spec| spec.upstream.is_some())
+        {
+            cmd.env(
+                "CLAUDE_CONFIG_DIR",
+                crate::plugins::builtin::upstream::state_dir(&dsh_home, spec),
+            );
+        }
         // 内置插件的回环桥（`/ponytail-update` 用它请求立即同步）。**起不来不阻断
         // 启动**：面板上的「检查更新」不依赖它，少一个能力不该让工作台起不来。
         if let Some((url, token)) = crate::plugins::builtin::bridge::launch(

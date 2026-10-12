@@ -212,6 +212,8 @@ mod tests {
         let kernel = root.join("kernel");
         write_source(&source, ponytail, "2.0.0");
         write_kernel(&kernel);
+        // 上游内容：有上游的插件没有它就不许物化（空壳在界面上看不出异常）。
+        super::super::upstream::seed_fixture(&home, ponytail);
 
         let key =
             super::super::state::state_key(crate::shell::settings::current_mode().as_str(), "web");
