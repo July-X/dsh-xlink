@@ -8,9 +8,8 @@
 //! ## 死代码策略
 //!
 //! `tauri dev` 默认会打开所有编译期 warning。多内核改造（P0–P8 共 9 个
-//! stage）有意保留了一批「预留 API」——例如 [`commands::plugin_install_instance`]
-//! / [`commands::plugin_sync_instance`] 等实例范围命令、
-//! [`kernel::kernel_adapter::AdapterCapability`] / [`kernel::kernel_adapter::resolve_install_root`]
+//! stage）有意保留了一批「预留 API」——例如 [`kernel::kernel_adapter::AdapterCapability`]
+//! / [`kernel::kernel_adapter::resolve_install_root`]
 //! 等适配器 trait 骨架——它们是后续 PR 启用 per-instance 写动作、第二内核
 //! 接入的入口，删了就找不回来。下面这条 `allow(dead_code)` 让
 //! `cargo check` / `cargo test` 都静默这一类预留 API 的 dead_code 警告；
@@ -18,15 +17,25 @@
 //! 报警（未使用的导入 / 变量通常是上一笔 commit 的失误），不允许用
 //! allow 抹掉。
 //!
-//! **这条 allow 本身也是过度设计审计的对象**（2026-10-12 未处理）：它正是
-//! `InstanceLock` / `allocate_port` 这类「零调用方且实现还是假的」符号能
-//! 长期藏身的原因——编译器本该在它们最后一次被摘掉调用方时就报出来。
-//! 清理它之前，先把 allow 列表逐条核对：凡是零生产调用方的，要么接上，
-//! 要么删，别留在 allow 底下。
+//! **2026-10-12 删掉了原先列在这里的 `commands::plugin_install_instance`
+//! 等四条实例范围命令。** lib.rs 曾经说它们「删了就找不回来」——这句是错的：
+//! 被零调用遮住的只是那层 `#[tauri::command]` 薄包装，底层的
+//! [`plugins::center::install_for_instance`] 等全部有生产调用方
+//! （`install_for_instance` 走沙盒预检、`ensure_wiring_for_instance` 走诊断恢复），
+//! 而包装模式在同文件的 `run_plugin_mutation_command` 里现成。要做多实例 UI 时
+//! 重新加一层即可，**真正找不回来的是底层函数，而底层一行没动**。
+//!
+//! 这条 allow 本身也是过度设计审计的对象（未处理）：它正是 `InstanceLock` 那样
+//! 「声称是锁、其实是覆写文件」的东西能长期藏身的原因——编译器本该在它们最后
+//! 一次被摘掉调用方时就报出来。清理它之前，先把 allow 列表逐条核对：凡是零生产
+//! 调用方的，要么接上，要么删，别留在 allow 底下。
 //!
 //! 当某个预留 API 在后续 commit 真正被接入时，**移除对应 item 上方的
 //! allow 标注**（或整体移除本 allow 然后逐步加 item 级 allow）。
-#![allow(dead_code, reason = "多内核改造预留 API（实例范围命令 / 适配器骨架）")]
+#![allow(
+    dead_code,
+    reason = "多内核改造预留 API（适配器骨架 / 第二内核接入前的接口）"
+)]
 
 // 按功能分模块（2026-09-30）。每个目录一个 mod.rs，子模块声明为 `pub(crate)`，
 // 于是外部写 `crate::<组>::<模块>::X`——分目录改的是文件的摆放，不是调用方
