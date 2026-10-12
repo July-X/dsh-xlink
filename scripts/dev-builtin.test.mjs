@@ -5,7 +5,7 @@
 // exist」。这里钉的不是行为（行为测试要真起 tauri），是接线形状——
 // prep 的接线必须存在，且必须在 spawn tauri 之前。
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
@@ -36,6 +36,87 @@ test('package.json 的每条 tauri build 入口都先跑 prep:builtin', () => {
       /prep:builtin/,
       `${script} 没有先跑 prep:builtin——与 dev 同一类回归：tauri 的资源检查会在新 clone 上拦死它`,
     );
+  }
+});
+
+// --- 资源管线 ↔ Rust 登记表：两份各管一门语言，必须一致 ------------------------
+//
+// 2026-10-12 加第二个内置插件（ponytail）时才暴露出来的一处**结构性**裂缝：
+// `BuiltinSpec::entries`（Rust，物化时复制哪些）与 prep 脚本的 `BUILTINS[].entries`
+// （JS，打包时复制哪些）是同一份清单的两份实现。它们不一致时的症状极难定位：
+// 多出来的那份「打包了但没物化」看着一切正常，少掉的那份「物化时找不到目录」
+// 报的是「应用资源可能不完整，请重新安装 dsh-xlink」——把源码侧的错报成用户
+// 的安装包坏了。
+//
+// 两边**不可能**合成一份（一个 Rust、一个 Node，跨不过去），所以这里钉死它们
+// 必须一致。解析刻意用最笨的正则：登记表是编译期常量，形状变了本条就该红，
+// 而不是悄悄放过一种新写法。
+
+/** 从 Rust 的 `BUILTINS` 常量里读出 `{ id, entries }`。 */
+function rustRegistry() {
+  const source = read('../src-tauri/src/plugins/builtin/builtins.rs');
+  const block = source.match(/pub\(crate\) const BUILTINS:[^=]*=\s*&\[([\s\S]*?)\n\];/);
+  assert.ok(block, 'builtins.rs 里找不到 BUILTINS 常量（结构变了？请同步本测试）');
+  const out = [];
+  // 每个条目从 `id:` 到下一个 `},` 之间的那几行。
+  for (const chunk of block[1].split(/\n\s{4}\},/)) {
+    const id = /\n\s{8}id:\s*([A-Z_]+),/.exec(chunk);
+    const entries = /\n\s{8}entries:\s*&\[([\s\S]*?)\],/.exec(chunk);
+    if (!id || !entries) continue;
+    out.push({
+      id: chunk.includes('OPENAI_OAUTH') && id[1] === 'OPENAI_OAUTH' ? 'openai-oauth'
+        : id[1] === 'PONYTAIL' ? 'ponytail' : id[1],
+      entries: [...entries[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]),
+    });
+  }
+  return out;
+}
+
+/** 从 prep 脚本的 `BUILTINS` 里读出 `{ id, entries }`。 */
+function jsRegistry() {
+  const source = read('./prepare-builtin-plugins.mjs');
+  const block = source.match(/const BUILTINS = \[([\s\S]*?)\n\];/);
+  assert.ok(block, 'prepare-builtin-plugins.mjs 里找不到 BUILTINS 登记表');
+  return [...block[1].matchAll(/id:\s*'([^']+)',[\s\S]*?entries:\s*\[([\s\S]*?)\]/g)].map((m) => ({
+    id: m[1],
+    entries: [...m[2].matchAll(/'([^']+)'/g)].map((x) => x[1]),
+  }));
+}
+
+test('两份内置插件登记表（Rust 物化 / JS 打包）逐项一致', () => {
+  const rust = rustRegistry();
+  const js = jsRegistry();
+  assert.ok(rust.length > 0, 'Rust 登记表解析出 0 项——判据自己坏了，必须红');
+  assert.ok(js.length > 0, 'JS 登记表解析出 0 项——判据自己坏了，必须红');
+  assert.deepEqual(
+    rust.map((entry) => entry.id).sort(),
+    js.map((entry) => entry.id).sort(),
+    '两侧登记的内置插件 id 集合不一致：多出来的那份「打包了但没物化」，少掉的「物化时报安装包不完整」',
+  );
+  for (const entry of rust) {
+    const other = js.find((x) => x.id === entry.id);
+    assert.deepEqual(
+      [...entry.entries].sort(),
+      [...other.entries].sort(),
+      `${entry.id}: Rust 的物化清单与 prep 的打包清单必须逐项一致`,
+    );
+  }
+});
+
+test('每个内置插件都有源码目录，且 package.json 的 name 与 id 对得上', () => {
+  for (const entry of jsRegistry()) {
+    const pkg = JSON.parse(read(`../plugins/${entry.id}/package.json`));
+    assert.equal(
+      pkg.name,
+      `xlink-${entry.id}`,
+      `${entry.id}: 包名必须是 xlink-<id>——接线行 id / settingsNs 靠它对上`,
+    );
+    for (const item of entry.entries) {
+      assert.ok(
+        existsSync(new URL(`../plugins/${entry.id}/${item}`, import.meta.url)),
+        `${entry.id}: 登记表列了 ${item}，但 plugins/${entry.id}/${item} 不存在——prep 会因此中止`,
+      );
+    }
   }
 });
 

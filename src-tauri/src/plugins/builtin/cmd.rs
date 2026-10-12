@@ -1,16 +1,19 @@
-//! 内嵌 openai-oauth 插件的 Tauri 命令层：只读状态 + 启停开关。
+//! 内置插件的 Tauri 命令层：只读状态 + 启停开关。
 //!
 //! 照 `precheck_cmd` 的先例独立成文件（`commands.rs` 在反棘轮上，只许
-//! 下调）。`builtin_openai_status` **只读**：不打变更前快照、不写任何
+//! 下调）。`builtin_status` **只读**：不打变更前快照、不写任何
 //! 文件——按诊断侧的约定，读类命令打「变更前」是假的。
 //!
-//! `builtin_openai_set_enabled` 是写动作，走开发计划 §4.1 的事务顺序：
+//! `builtin_set_enabled` 是写动作，走开发计划 §4.1 的事务顺序：
 //! 实例判据（dsh 族 / 存在 / 未被另一壳占用 / **内核已停止**——实例级
 //! 判据，不是「本壳工作台」）→ 变更前快照（打点失败不阻断）→ 启停事务
 //! → 意图落盘。停用只摘自有接线行，不删资源与账号（设计 §8）。
 //!
-//! 解析链全部走生产路径：`default_instance_key` → 实例记录 → 适配器的
-//! `dsh_home_for` / `resolve_install_dir`，不 hard-code 实例 id。
+//! **命令面按 N 个内置插件设计**（2026-10-12）：`builtin_status` 一次返回
+//! 全部，`builtin_set_enabled` 按 id 接一个。此前是 `builtin_openai_status`
+//! 返回单对象——第二个插件接进来就得再加一对 `builtin_<name>_status` /
+//! `_set_enabled`，命令数随插件数线性增长，而每一条的守卫与事务顺序都是
+//! 同一段代码的复制。
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
@@ -20,6 +23,7 @@ use crate::diagnostics::snapshot;
 use crate::kernel::kernel_adapter;
 use crate::kernel::lifecycle;
 use crate::plugins::builtin;
+use crate::plugins::builtin::builtins::{self, BuiltinSpec};
 use crate::plugins::center::default_instance_key;
 use crate::shell::instance;
 use crate::shell::settings;
@@ -32,9 +36,19 @@ pub struct MaterializedEntry {
     pub dir: String,
 }
 
+/// 一个内置插件的状态。**显示文案由后端出**（`display_name` / `summary` /
+/// `note` 来自登记表）：前端组件里抄一份的话，改名要同时想起两个地方，
+/// 而抄的那份不参与任何 Rust 侧测试。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BuiltinOpenaiStatus {
+pub struct BuiltinPluginStatus {
+    /// 插件 id（= 物化目录名 = 接线行 id 的后缀）。前端拿它发 `set_enabled`。
+    pub id: String,
+    pub display_name: String,
+    pub summary: String,
+    pub note: String,
+    /// 工作台设置页里是否有该插件自绘的账户卡（OpenAI 有，ponytail 没有）。
+    pub has_account_card: bool,
     /// 实例 patch 里是否有本插件的接线行（不等于「本次已加载」）。
     pub wired: bool,
     /// 用户保存的意图（state.json，按壳模式 / profile 分键）。
@@ -45,30 +59,53 @@ pub struct BuiltinOpenaiStatus {
     pub materialized: Vec<MaterializedEntry>,
     /// 应用侧插件资源是否可解析（release 资源目录 / dev 仓库源码）。
     pub plugin_source_available: bool,
-    /// 面向 UI 的一句话说明（如「实例尚未指定内核版本」）。
-    pub note: String,
+    /// 面向 UI 的一句话说明（如「实例尚未指定内核版本」）。**不叫 `note`**：
+    /// `note` 已经是插件自己的那段介绍，两者挤在一个字段上会让前端永远拿
+    /// 不准该显示哪一句——而那时症状是「行里显示了一整段介绍」。
+    pub note_status: String,
     /// 状态文件损坏时的说明；有它时开关应禁用并提示检查。
     pub state_error: Option<String>,
 }
 
-/// 插件资源目录：优先随应用打包的资源（`builtin-plugins/openai-oauth`，
-/// P1 资源管线落地后存在），dev 下回退仓库源码（`plugins/openai-oauth`）。
-/// 都没有时返回 `None`——状态如实报不可用，不猜路径。
-pub(crate) fn resolve_plugin_source(app: &AppHandle) -> Option<std::path::PathBuf> {
+/// 插件资源目录：优先随应用打包的资源（`builtin-plugins/<id>`，P1 资源
+/// 管线落地后存在），dev 下回退仓库源码（`plugins/<id>`）。都没有时返回
+/// `None`——状态如实报不可用，不猜路径。
+pub(crate) fn resolve_plugin_source(
+    app: &AppHandle,
+    spec: &BuiltinSpec,
+) -> Option<std::path::PathBuf> {
     if let Ok(resource) = app.path().resource_dir() {
-        let packaged = resource.join("builtin-plugins").join("openai-oauth");
+        let packaged = resource.join("builtin-plugins").join(spec.id);
         if packaged.join("package.json").is_file() {
             return Some(packaged);
         }
     }
-    if let Ok(from_env) = std::env::var("DSH_XLINK_OPENAI_PLUGIN_SRC") {
+    // dev 覆盖口：一个插件一个 env 名（按 id 生成）。openai-oauth 另留了那个
+    // 历史名字并只对它生效——沿用而不推广，避免有人拿它指别的插件，那样
+    // 「ponytail 的资源指向哪」在本机就成了一件不写在代码里的事。
+    let env_name = format!(
+        "DSH_XLINK_BUILTIN_SRC_{}",
+        spec.id.to_uppercase().replace('-', "_")
+    );
+    if let Ok(from_env) = std::env::var(&env_name) {
         let candidate = std::path::PathBuf::from(from_env);
         if candidate.join("package.json").is_file() {
             return Some(candidate);
         }
     }
+    if spec.id == builtins::OPENAI_OAUTH {
+        if let Ok(from_env) = std::env::var("DSH_XLINK_OPENAI_PLUGIN_SRC") {
+            let candidate = std::path::PathBuf::from(from_env);
+            if candidate.join("package.json").is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     // `tauri dev` 的 cwd 是 src-tauri/，仓库根的插件源码在 ../../plugins/。
-    for base in ["../../plugins/openai-oauth", "plugins/openai-oauth"] {
+    for base in [
+        format!("../../plugins/{}", spec.id),
+        format!("plugins/{}", spec.id),
+    ] {
         let candidate = std::path::PathBuf::from(base);
         if candidate.join("package.json").is_file() {
             return Some(candidate);
@@ -77,8 +114,18 @@ pub(crate) fn resolve_plugin_source(app: &AppHandle) -> Option<std::path::PathBu
     None
 }
 
-fn status_payload(app: &AppHandle, status: builtin::Status, note: String) -> BuiltinOpenaiStatus {
-    BuiltinOpenaiStatus {
+fn status_payload(
+    app: &AppHandle,
+    spec: &BuiltinSpec,
+    status: builtin::Status,
+    note_status: String,
+) -> BuiltinPluginStatus {
+    BuiltinPluginStatus {
+        id: spec.id.to_string(),
+        display_name: spec.display_name.to_string(),
+        summary: spec.summary.to_string(),
+        note: spec.note.to_string(),
+        has_account_card: spec.has_account_card,
         wired: status.wired,
         requested_enabled: status.requested_enabled,
         load_state: status.load_state.to_string(),
@@ -92,8 +139,8 @@ fn status_payload(app: &AppHandle, status: builtin::Status, note: String) -> Bui
                 dir: entry.dir.to_string_lossy().into_owned(),
             })
             .collect(),
-        plugin_source_available: resolve_plugin_source(app).is_some(),
-        note,
+        plugin_source_available: resolve_plugin_source(app, spec).is_some(),
+        note_status,
         state_error: status.state_error,
     }
 }
@@ -145,45 +192,64 @@ fn resolve_kernel_root(family: &str, record_version: Option<&str>) -> Option<std
     })
 }
 
-fn probe_for(app: &AppHandle) -> Result<BuiltinOpenaiStatus, String> {
+fn probe_for(app: &AppHandle, spec: &BuiltinSpec) -> Result<BuiltinPluginStatus, String> {
     let (record, kernel_root) = resolve_target()?;
     let dsh_home = kernel_adapter::DshAdapter::dsh_home_for(&record);
     let mode = settings::current_mode().as_str();
-    let status = builtin::probe_status(&dsh_home, &record.profile, kernel_root.as_deref(), mode);
-    let note = if kernel_root.is_none() {
+    let status = builtin::probe_status(
+        spec,
+        &dsh_home,
+        &record.profile,
+        kernel_root.as_deref(),
+        mode,
+    );
+    let note_status = if kernel_root.is_none() {
         String::from("实例尚未指定内核版本；请在「内核版本」页安装并选择内核")
     } else {
         String::new()
     };
-    Ok(status_payload(app, status, note))
+    Ok(status_payload(app, spec, status, note_status))
 }
 
-/// 内嵌 openai-oauth 插件当前状态（只读）。
+/// 全部内置插件的当前状态（只读）。一次返回全部——前端要画的是**一张**列表，
+/// 分两次取就要处理「一部分到了另一部分没到」的中间态。
 #[tauri::command]
-pub async fn builtin_openai_status(app: AppHandle) -> Result<BuiltinOpenaiStatus, String> {
-    blocking(move || probe_for(&app)).await
+pub async fn builtin_status(app: AppHandle) -> Result<Vec<BuiltinPluginStatus>, String> {
+    blocking(move || {
+        builtins::BUILTINS
+            .iter()
+            .map(|spec| probe_for(&app, spec))
+            .collect()
+    })
+    .await
 }
 
-/// 设置内嵌 openai-oauth 插件的启用意图（写动作）。
+/// 设置某个内置插件的启用意图（写动作）。
 ///
 /// 守卫顺序（开发计划 §4.1）：dsh 族 → 实例存在 → 未被另一壳占用 →
 /// **内核已停止**（实例级判据，用户自建实例可能正被另一个壳跑着）→
 /// 变更前快照（失败只落日志，不阻断）→ 启停事务 → 意图落盘。
 /// 事务失败时意图**不落盘**——开关状态与接线保持一致，失败原因原样返回。
+///
+/// `plugin` 认不出的 id **直接报错**，不回退到任何默认插件：回退会让一次
+/// 拨错的开关作用在别的插件上，而那种错没有任何症状。
 #[tauri::command]
-pub async fn builtin_openai_set_enabled(
+pub async fn builtin_set_enabled(
     app: AppHandle,
+    plugin: String,
     enabled: bool,
-) -> Result<BuiltinOpenaiStatus, String> {
+) -> Result<BuiltinPluginStatus, String> {
+    let spec = builtins::find(&plugin)
+        .ok_or_else(|| format!("本版本没有名为 {plugin} 的内置插件；请刷新面板后重试"))?;
     blocking(move || {
         let (record, kernel_root) = resolve_target()?;
         let (family, id) = (record.kernel_family.clone(), record.id.clone());
-        instance::ensure_instance_mutable(&family, &id, "修改内嵌 OpenAI 插件开关")?;
+        instance::ensure_instance_mutable(&family, &id, "修改内置插件开关")?;
         if let Some(running) = instance::instance_kernel_running(&family, &id) {
             return Err(instance::instance_kernel_running_message(
                 &running,
                 &id,
-                "修改内嵌 OpenAI 插件开关",
+                "修改内置插件开关",
             ));
         }
         let dsh_home = kernel_adapter::DshAdapter::dsh_home_for(&record);
@@ -203,16 +269,18 @@ pub async fn builtin_openai_set_enabled(
         }
 
         if enabled {
-            let source = resolve_plugin_source(&app).ok_or_else(|| {
-                String::from(
-                    "找不到内嵌插件资源（builtin-plugins/openai-oauth）；请重新安装 dsh-xlink",
+            let source = resolve_plugin_source(&app, spec).ok_or_else(|| {
+                format!(
+                    "找不到内嵌插件资源（builtin-plugins/{}）；请重新安装 dsh-xlink",
+                    spec.id
                 )
             })?;
             let kernel_root = kernel_root.ok_or_else(|| {
                 String::from("实例尚未指定内核版本；请在「内核版本」页安装并选择内核后再启用")
             })?;
-            let wired = builtin::ensure_wired(&source, &dsh_home, &record.profile, &kernel_root)?;
-            let mut entries = builtin::state::load(&dsh_home)?;
+            let wired =
+                builtin::ensure_wired(spec, &source, &dsh_home, &record.profile, &kernel_root)?;
+            let mut entries = builtin::state::load(&dsh_home, spec)?;
             entries.insert(
                 builtin::state::state_key(mode, &record.profile),
                 builtin::state::StateEntry {
@@ -222,18 +290,18 @@ pub async fn builtin_openai_set_enabled(
                     fingerprint: Some(wired.fingerprint),
                 },
             );
-            builtin::state::save(&dsh_home, &entries)?;
+            builtin::state::save(&dsh_home, spec, &entries)?;
         } else {
-            builtin::ensure_unwired(&dsh_home, &record.profile)?;
-            let mut entries = builtin::state::load(&dsh_home)?;
+            builtin::ensure_unwired(spec, &dsh_home, &record.profile)?;
+            let mut entries = builtin::state::load(&dsh_home, spec)?;
             if let Some(entry) = entries.get_mut(&builtin::state::state_key(mode, &record.profile))
             {
                 entry.requested_enabled = false;
                 entry.updated_at_ms = crate::shell::process::epoch_millis();
-                builtin::state::save(&dsh_home, &entries)?;
+                builtin::state::save(&dsh_home, spec, &entries)?;
             }
         }
-        probe_for(&app)
+        probe_for(&app, spec)
     })
     .await
 }

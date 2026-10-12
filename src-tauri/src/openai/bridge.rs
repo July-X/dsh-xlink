@@ -326,8 +326,13 @@ pub(crate) fn launch_env(
         .join("profiles")
         .join(profile)
         .join("cordis.patch.yml");
+    // 接线行 id 从内置插件登记表读（此前是 `wiring::ROW_ID` 那个模块常量）：
+    // 它就是 openai-oauth 的行 id，而「哪些插件是内置的」只有登记表知道。
+    let row_id = builtin::builtins::find(builtin::builtins::OPENAI_OAUTH)
+        .expect("openai-oauth 必须在内置插件登记表里")
+        .row_id;
     let wired = std::fs::read_to_string(&patch)
-        .map(|text| text.contains(builtin::wiring::ROW_ID))
+        .map(|text| text.contains(row_id))
         .unwrap_or(false);
     if !wired {
         return Vec::new();

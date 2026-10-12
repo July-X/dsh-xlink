@@ -1,16 +1,20 @@
-// 内嵌插件资源管线（P1）：从 plugins/openai-oauth/ 产出随应用打包的
-// 资源目录 src-tauri/resources/builtin-plugins/openai-oauth/。
+// 内置插件资源管线：从 plugins/<id>/ 产出随应用打包的资源目录
+// src-tauri/resources/builtin-plugins/<id>/。
 //
 // 产物目录不进 git（dev plan §11：内嵌产物生成目录不得作为普通源码提交），
-// 由构建生成并收进安装包（tauri.conf.json 的 resources 映射）。
+// 由构建生成并收进安装包（tauri.conf.json 的 `resources` 映射**整目录**，
+// 所以加第二个内置插件时不用改 tauri.conf.json —— 那条「新增目录要先确认
+// 它在全新 checkout 里存在」的纪律在这里仍然成立，但它的前置是 prep 生成）。
 //
 // 两个模式：
 //   node scripts/prepare-builtin-plugins.mjs           # 生成 / 重新生成
 //   node scripts/prepare-builtin-plugins.mjs --check    # 校验（npm run check 用）
 //
-// --check 失败即 exit 1：校验两条——① 资源目录里每个文件的 sha256 与
-// manifest 一致（完整性）；② manifest 记录的源摘要与当前 plugins/ 源码
-// 一致（新鲜度：源码改了没重新生成，装进实例的就是旧插件）。
+// --check 失败即 exit 1，逐插件校验三条——① 资源目录里每个文件的 sha256 与
+// manifest 一致（完整性）；② manifest 记录的源摘要与当前 plugins/ 源码一致
+// （新鲜度：源码改了没重新生成，装进实例的就是旧插件）；③ 资源目录下出现的
+// 每个子目录都在登记表里（孤儿：把一个内置插件从登记表删掉却没重新生成，
+// 打包进去的仍然是它，而界面上已经没有它的开关了）。
 // 产物不存在时同样 exit 1 并说清前置命令——静默跳过等于假门禁。
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -18,14 +22,35 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const sourceDir = join(root, 'plugins', 'openai-oauth');
-const outputRoot = join(root, 'src-tauri', 'resources', 'builtin-plugins', 'openai-oauth');
+const outputBase = join(root, 'src-tauri', 'resources', 'builtin-plugins');
 const checkMode = process.argv.includes('--check');
 
-// 运行时文件集：与 src-tauri/src/plugins/builtin/materialize.rs 的
-// RUNTIME_ENTRIES 一一对应（两份清单各管一门语言，改一边必须改另一边；
-// test/ 与 README 不进实例，也不进安装包）。
-const RUNTIME_ENTRIES = ['host', 'client', 'locales', 'package.json'];
+/**
+ * 内置插件登记表：每个内置插件一份。
+ *
+ * `entries` 是**运行时文件集**（进安装包、进实例的那部分），与
+ * `src-tauri/src/plugins/builtin/registry.rs` 的 `BuiltinSpec::entries` 一一
+ * 对应。两份各管一门语言，改一边必须改另一边——`--check` 的新鲜度比对
+ * （资源清单 vs 当前源码）只能证明「产物与本文件一致」，证明不了「本文件
+ * 与 Rust 那份一致」，所以那份一致性由 `scripts/dev-builtin.test.mjs` 钉。
+ *
+ * 为什么按插件各列各的：文件集随插件而变（ponytail 没有工作台卡片、也不带
+ * 本地化文案），写成一份共用清单就得为不存在的目录编造条目，而物化时找不到
+ * 目录会报「应用资源可能不完整，请重新安装」——把源码侧的错误报成安装包坏了。
+ */
+const BUILTINS = [
+  {
+    id: 'openai-oauth',
+    // host/ + 工作台账户卡 + 中英文案 + 清单。test/ 与 README 不进实例。
+    entries: ['host', 'client', 'locales', 'package.json'],
+  },
+  {
+    id: 'ponytail',
+    // 只有 Host 适配器、技能正文、清单与 MIT LICENSE。**没有 client/**：
+    // 它不在工作台里画任何卡片。
+    entries: ['host', 'skills', 'package.json', 'LICENSE'],
+  },
+];
 
 function fail(message) {
   console.error(`[builtin-plugins] ${message}`);
@@ -47,12 +72,17 @@ function walkFiles(dir, base = dir) {
   return out.sort();
 }
 
-function buildManifest() {
+function sourceDirOf(builtin) {
+  return join(root, 'plugins', builtin.id);
+}
+
+function buildManifest(builtin) {
+  const sourceDir = sourceDirOf(builtin);
   const pkg = JSON.parse(readFileSync(join(sourceDir, 'package.json'), 'utf8'));
   const files = [];
-  for (const entry of RUNTIME_ENTRIES) {
+  for (const entry of builtin.entries) {
     const from = join(sourceDir, entry);
-    if (!existsSync(from)) fail(`插件源码缺 ${entry}（${from}）；资源管线中止`);
+    if (!existsSync(from)) fail(`插件 ${builtin.id} 源码缺 ${entry}（${from}）；资源管线中止`);
     if (statSync(from).isDirectory()) {
       for (const rel of walkFiles(from)) {
         const path = `${entry}/${rel}`;
@@ -65,7 +95,8 @@ function buildManifest() {
   return { pluginVersion: pkg.version, files };
 }
 
-if (checkMode) {
+function checkBuiltin(builtin) {
+  const outputRoot = join(outputBase, builtin.id);
   const manifestPath = join(outputRoot, 'manifest.json');
   if (!existsSync(manifestPath)) {
     fail(`资源清单不存在（${manifestPath}）；先执行 npm run prep:builtin`);
@@ -76,7 +107,7 @@ if (checkMode) {
   }
   for (const file of manifest.files) {
     const target = join(outputRoot, file.path);
-    if (!existsSync(target)) fail(`资源缺文件 ${file.path}；重新执行 npm run prep:builtin`);
+    if (!existsSync(target)) fail(`资源 ${file.path} 缺失；重新执行 npm run prep:builtin`);
     const digest = sha256(target);
     if (digest !== file.sha256) {
       fail(`资源 ${file.path} 与清单摘要不一致（有 ${digest}，清单记 ${file.sha256}）；重新执行 npm run prep:builtin`);
@@ -84,27 +115,49 @@ if (checkMode) {
   }
   // 新鲜度：清单必须等于「现在从源码重算的那份」。源码改了没重新生成时，
   // 打包进安装包的是旧插件，而界面版本号还是新的——这种失配必须在这里红。
-  const expected = buildManifest();
+  const expected = buildManifest(builtin);
   if (JSON.stringify(expected) !== JSON.stringify(manifest)) {
-    fail('资源清单与当前源码不一致（源码已变更，未重新生成）；执行 npm run prep:builtin 后重试');
+    fail(`资源清单与当前源码不一致（${builtin.id} 的源码已变更，未重新生成）；执行 npm run prep:builtin 后重试`);
   }
-  console.log(`builtin-plugins 资源校验通过（${manifest.files.length} 个文件，v${manifest.pluginVersion}）`);
+  return manifest.files.length;
+}
+
+if (checkMode) {
+  if (!existsSync(outputBase)) {
+    fail(`资源目录不存在（${outputBase}）；先执行 npm run prep:builtin`);
+  }
+  // 登记表里的每一个都要有产物，**产物里的每一个都要在登记表里**：只查前半
+  // 的话，把一个内置插件删掉却忘了重新生成，打包进去的仍然是它。
+  const known = new Set(BUILTINS.map((b) => b.id));
+  for (const entry of readdirSync(outputBase, { withFileTypes: true })) {
+    if (entry.isDirectory() && !known.has(entry.name)) {
+      fail(`资源目录里有未登记的内置插件 ${entry.name}；执行 npm run prep:builtin 重新生成（或确认删除后重跑）`);
+    }
+  }
+  let total = 0;
+  for (const builtin of BUILTINS) total += checkBuiltin(builtin);
+  console.log(`builtin-plugins 资源校验通过（${BUILTINS.length} 个插件，${total} 个文件）`);
 } else {
   // 全量重建而不是增量拷贝：孤儿文件（源码里删掉的 host/xxx.js）留在资源
   // 目录里会被 manifest 的完整性校验放过——清单只校验「列出的都在」。
-  rmSync(outputRoot, { recursive: true, force: true });
-  for (const entry of RUNTIME_ENTRIES) {
-    const from = join(sourceDir, entry);
-    if (!existsSync(from)) fail(`插件源码缺 ${entry}（${from}）；资源管线中止`);
-    if (statSync(from).isDirectory()) {
-      mkdirSync(join(outputRoot, entry), { recursive: true });
-      cpSync(from, join(outputRoot, entry), { recursive: true });
-    } else {
-      mkdirSync(outputRoot, { recursive: true });
-      cpSync(from, join(outputRoot, entry));
+  rmSync(outputBase, { recursive: true, force: true });
+  for (const builtin of BUILTINS) {
+    const outputRoot = join(outputBase, builtin.id);
+    const sourceDir = sourceDirOf(builtin);
+    for (const entry of builtin.entries) {
+      const from = join(sourceDir, entry);
+      if (!existsSync(from)) fail(`插件 ${builtin.id} 源码缺 ${entry}（${from}）；资源管线中止`);
+      if (statSync(from).isDirectory()) {
+        mkdirSync(join(outputRoot, entry), { recursive: true });
+        cpSync(from, join(outputRoot, entry), { recursive: true });
+      } else {
+        mkdirSync(outputRoot, { recursive: true });
+        cpSync(from, join(outputRoot, entry));
+      }
     }
+    const manifest = buildManifest(builtin);
+    writeFileSync(join(outputRoot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+    console.log(`  ${builtin.id}: ${manifest.files.length} 个文件（v${manifest.pluginVersion}）`);
   }
-  const manifest = buildManifest();
-  writeFileSync(join(outputRoot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-  console.log(`builtin-plugins 资源已生成（${manifest.files.length} 个文件，v${manifest.pluginVersion}）`);
+  console.log(`builtin-plugins 资源已生成（${BUILTINS.length} 个插件）`);
 }

@@ -502,9 +502,9 @@ pub fn run() {
             commands::plugin_status,
             commands::plugin_install,
             plugins::precheck_cmd::plugin_precheck_install,
-            // 内嵌 openai-oauth 插件（只读状态 + 启停开关）。
-            plugins::builtin::cmd::builtin_openai_status,
-            plugins::builtin::cmd::builtin_openai_set_enabled,
+            // 内置插件（状态一次返回全部 + 按 id 启停）。
+            plugins::builtin::cmd::builtin_status,
+            plugins::builtin::cmd::builtin_set_enabled,
             // 内嵌 openai-oauth 的授权命令面（P2）。
             openai::cmd::openai_account_status,
             openai::cmd::openai_authorize_start,

@@ -48,7 +48,13 @@ import {
   checkPluginUpdates,
 } from './plugins.js';
 import { originLabel, tildePath } from '../shell/labels.js';
-import { builtinStore, loadBuiltinStatus, toggleBuiltin, BUILTIN_NAME } from './builtin.js';
+import {
+  builtinStore,
+  builtinStateText,
+  builtinStateTip,
+  loadBuiltinStatus,
+  toggleBuiltin,
+} from './builtin.js';
 import OpenaiAccountActions from './OpenaiAccountActions.vue';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 import { openExternalLink } from '../shell/notify.js';
@@ -81,40 +87,26 @@ async function togglePrecheck(value) {
   }
 }
 
-// 内嵌 openai-oauth 插件：随应用交付，不进社区中央库。显示名走
-// `BUILTIN_NAME`（builtin.js），别在这儿再抄一份字面量。
-// 状态常驻这一行；启停开关的「内核运行中不能改」由后端按实例级
-// 判据拒绝，UI 不预判（预判一份就是第二份判据，会和后端漂移）。
-const builtinView = computed(() => builtinStore.view);
-
-const builtinStateText = computed(() => {
-  const v = builtinView.value;
-  if (!v) return '';
-  if (v.stateError) return '状态文件异常，悬停查看';
-  if (v.note) return v.note;
-  if (v.loadState === 'prepared') return '已接线，下次启动工作台生效';
-  if (v.loadState === 'incompatible') return '内核已切换，重新拨一次开关修复';
-  return '未启用';
-});
-
-const builtinStateTip = computed(() => {
-  const v = builtinView.value;
-  return (
-    (v && (v.stateError || v.note)) ||
-    '随应用交付的 OpenAI 套餐接入；启用不需要联网安装，关闭不删除账号'
-  );
-});
+// 内置插件：随应用交付，不进社区中央库。状态常驻这些行；启停开关的
+// 「内核运行中不能改」由后端按实例级判据拒绝，UI 不预判（预判一份就是
+// 第二份判据，会和后端漂移）。
+//
+// **显示名与说明文案全部来自后端**（`displayName` / `summary` / `note`，
+// 见 `plugins/builtin/builtins.rs` 的登记表）：前端组件里抄一份的话，改名要
+// 同时想起两个地方，而抄的那份不参与任何 Rust 侧测试。`hasAccountCard` 同理——
+// 「要不要在工作台里画账户卡」是插件自己的能力，由后端说，模板只画拿到的。
+const builtinList = computed(() => builtinStore.list || []);
 
 /**
  * 「当前内核」页签那张列表空不空。
  *
- * 内嵌插件行现在也是**这个容器里的第一行**，所以判据不能只看社区插件：只有
- * 「社区插件为空 **且** 没有内嵌插件」才算空。否则会出现一个容器里明明列着
+ * 内置插件行现在也是**这个容器里的第一行**，所以判据不能只看社区插件：只有
+ * 「社区插件为空 **且** 没有内置插件」才算空。否则会出现一个容器里明明列着
  * 一行、却在下面写着「当前内核尚未接入任何插件」的自相矛盾画面。
  */
 const currentKernelListEmpty = computed(() => {
   const rows = view.value && view.value.rows;
-  return (!rows || rows.length === 0) && !builtinView.value;
+  return (!rows || rows.length === 0) && builtinList.value.length === 0;
 });
 
 onMounted(() => {
@@ -737,34 +729,47 @@ function instanceChipType(row, instanceId) {
             </el-tooltip>
           </template>
           <div class="entity-list" :class="{ 'is-empty': currentKernelListEmpty }">
-        <!-- 内嵌 openai-oauth 插件：与社区插件**同一张列表里的第一行**（2026-10-09
+        <!-- 内置插件：与社区插件**同一张列表里的第一行**（2026-10-09
              用户截图「让 UI 符合插件安装后的风格」）。此前它是列表外面一条自带
              下缘刻蚀线的裸行，没有卡片的边框与圆角，看上去像另一个东西；并进来
              之后它与下面那些行共用同一套外壳：边框、圆角、行分隔线、名称字号与
              等宽字体、来源 chip、左右节奏。
              差别只剩**右侧动作**：它没有安装 / 更新 / 卸载，提供账号操作与启停开关——它随
              应用交付、不进社区中央库。接线行 id 同时是内核模型设置页账户卡的
-             settingsNs，两侧靠它对上。 -->
-        <div v-if="builtinView" class="entity-row entity-row--single builtin-row">
+             settingsNs，两侧靠它对上。
+
+             2026-10-12 起这里是 **v-for**：内置插件不止一个了。`hasAccountCard`
+             决定要不要在工作台那一侧再画账户动作——那是插件自己的能力，模板不
+             认得哪个 id 是哪个。 -->
+        <div
+          v-for="builtin in builtinList"
+          :key="builtin.id"
+          class="entity-row entity-row--single builtin-row"
+        >
           <div class="entity-head">
-            <span class="entity-name">{{ BUILTIN_NAME }}</span>
+            <span class="entity-name">{{ builtin.displayName }}</span>
             <span class="origin-chip">
               <el-icon class="origin-chip-icon"><Cpu /></el-icon>
               <span class="origin-chip-label">内嵌</span>
             </span>
-            <el-tooltip placement="top" effect="dark" :content="builtinStateTip">
-              <span class="entity-desc">{{ builtinStateText }}</span>
+            <el-tooltip placement="top" effect="dark" :content="builtin.note">
+              <el-icon class="head-tip-icon" :aria-label="builtin.note" tabindex="0"
+                ><InfoFilled /></el-icon
+              >
+            </el-tooltip>
+            <el-tooltip placement="top" effect="dark" :content="builtinStateTip(builtin)">
+              <span class="entity-desc">{{ builtinStateText(builtin) }}</span>
             </el-tooltip>
           </div>
           <div class="entity-actions">
-            <OpenaiAccountActions :plugin-view="builtinView" />
+            <OpenaiAccountActions v-if="builtin.hasAccountCard" :plugin-view="builtin" />
             <el-switch
               size="small"
-              :model-value="builtinView.requestedEnabled"
-              :loading="isLoading('builtinOpenaiToggle')"
-              :disabled="!builtinView.pluginSourceAvailable || !!builtinView.stateError"
-              :aria-label="'启用或停用 ' + BUILTIN_NAME"
-              @change="toggleBuiltin"
+              :model-value="builtin.requestedEnabled"
+              :loading="isLoading('builtinToggle:' + builtin.id)"
+              :disabled="!builtin.pluginSourceAvailable || !!builtin.stateError"
+              :aria-label="'启用或停用 ' + builtin.displayName"
+              @change="(value) => toggleBuiltin(builtin.id, value)"
             />
           </div>
         </div>

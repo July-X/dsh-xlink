@@ -235,14 +235,29 @@ const FILE_BUDGETS = {
   // peer 进物化目录，否则 provider 行不出卡、账户卡无处渲染
   // （2026-10-09 用户实测）。
   // 295 → 328：运行时内容摘要纳入标记，修复同版本源码被旧实例副本挡住。
-  'src-tauri/src/plugins/builtin/materialize.rs': 328,
+  // 328 → 334（2026-10-12）：物化入口按 spec 走（`entries` / `peers` 从模块
+  // 常量变成参数）。生产代码只多了「多传一个 spec」与若干处解引用——真正涨的
+  // 是**能力**（一个不带 client/locales 的插件也能物化），而不是同一段逻辑
+  // 抄第二遍。基线远低于 RATCHET_THRESHOLD，上调在规则内。
+  'src-tauri/src/plugins/builtin/materialize.rs': 334,
   // 启动前按已保存启用意图刷新资源与接线；独立于手动启停命令，避免更新后
   // 继续加载旧路径。只在内核尚未启动时调用，停用状态不触碰资源。
   // 45 → 55：refresh_enabled 补耗时观测（2026-10-09 perf 分析：稳态每次启动
   // 也做两遍全树摘要，此前只有真变更才落日志），成败各记一行进「查看日志」。
-  // 基线远低于 RATCHET_THRESHOLD，上调在规则内。
-  'src-tauri/src/plugins/builtin/runtime.rs': 55,
-  'src-tauri/src/plugins/builtin/wiring.rs': 110,
+  // 55 → 76（2026-10-12）：**遍历全部内置插件**并逐个记事件（原来只有一个
+  // 内置插件时这里是单数路径）。+21 行是一次循环 + 一个按 id 命名的资源表，
+  // 换来「加第二个内置插件时这里不会安静地跳过它」——跳过的症状是升级后插件
+  // 不生效而没有任何日志。基线远低于 RATCHET_THRESHOLD，上调在规则内。
+  'src-tauri/src/plugins/builtin/runtime.rs': 78,
+  // 110 → 113（2026-10-12）：接线行 id 由模块常量改成参数（`row_id`）。
+  // 形状识别逻辑一个字没改；不加这个参数的话，摘行会顺着**别人的** id 去删。
+  'src-tauri/src/plugins/builtin/wiring.rs': 113,
+  // 2026-10-12：**内置插件登记表**（`BuiltinSpec` + `BUILTINS` + 按 id 取）。
+  // 它独立成文件而不是塞进 mod.rs：登记表是「这个版本的应用带哪几个内置插件」
+  // 这件事的**唯一事实源**，其余模块（prep 管线 / 物化 / 接线 / 状态 / 命令）
+  // 全都从它读。放进 mod.rs 会让「谁是登记表」变成一个需要翻代码才知道的事，
+  // 而加内置插件时漏改一处的症状一律是无声失败。
+  'src-tauri/src/plugins/builtin/builtins.rs': 50,
   // 85 → 171：P1 收尾——set_enabled 写命令进本文件（守卫链：dsh 族 /
   // 实例存在 / 未被另一壳占用 / 内核已停止 → 变更前快照 → 启停事务 →
   // 意图落盘），与 status 共用 resolve_target / status_payload。仍是
@@ -254,16 +269,27 @@ const FILE_BUDGETS = {
   // （`<data_dir>/kernels/<version>`），resolve_install_dir 只认新布局，
   // 没有 start_instance 同款 unwrap_or_else 就永远解析不出内核根
   // （2026-10-09 用户二轮实测），净 +6。
-  'src-tauri/src/plugins/builtin/cmd.rs': 182,
-  // 2026-10-08：内嵌插件的前端状态与动作（plugins 页「当前内核」tab 的
-  // 内嵌插件区）。不进 plugins.js：那边是社区插件的清单与安装事务
+  // 182 → 233（2026-10-12）：命令面按 **N 个内置插件**设计——`builtin_status`
+  // 一次返回全部、`builtin_set_enabled` 按 id 接一个，取代此前一对一的
+  // `builtin_openai_status` / `_set_enabled`。+45 行里没有一行是第二份守卫链：
+  // 守卫与事务顺序本来就是同一段代码，少掉的是「下加一个插件就要复制一对命令」
+  // 这件事本身。显示文案（displayName / summary / note）随载荷下发，前端不再
+  // 抄一份。233 是 `cargo fmt` 之后的实测值。基线远低于 RATCHET_THRESHOLD，
+  // 上调在规则内。
+  'src-tauri/src/plugins/builtin/cmd.rs': 233,
+  // 2026-10-08：内置插件的前端状态与动作（plugins 页「当前内核」tab 的
+  // 内置插件区）。不进 plugins.js：那边是社区插件的清单与安装事务
   // （456 行），本插件只有「读状态 + 拨开关」两条命令，混进去会让
-  // 「内嵌 ≠ 社区」这条边界在状态层就糊掉（设计 §3.1 的第一条边界）。
+  // 「内置 ≠ 社区」这条边界在状态层就糊掉（设计 §3.1 的第一条边界）。
   // 36 → 41（2026-10-09）：显示名收成 `BUILTIN_NAME` 一个常量（+5）——它此前被抄
   // 在插件行的名称、开关的 aria-label 与两条 toast 四处，而当天已经是第二次改名
   // （「OpenAI 对话」→「OpenAI-OAuth-Plugin」）。四份字面量就是迟早漏一个的形状，
   // 而漏掉的那一处不会报任何错：用户先看到新名字、随后 toast 里又冒出旧名字。
-  'ui/src/plugins/builtin.js': 41,
+  // 41 → 58（2026-10-12）：状态从单对象变成**列表** + 按 id 取 + 两个共享的
+  // 文案函数（原先长在 PluginsPanel 里，现在三处都要用）。同时 `BUILTIN_NAME`
+  // 被删掉——显示名改由后端随状态下发，那正是 2026-10-09 那条「四处字面量」
+  // 的正解。基线远低于 RATCHET_THRESHOLD，上调在规则内。
+  'ui/src/plugins/builtin.js': 58,
   // 主面板账号操作独立于插件启停意图；复用 Rust 账号命令并管理跨窗状态生命周期。
   // 65 → 82：轮询改成按相位自调度后，补上**相位变化立即重排**。只靠定时器
   // 到期时再读相位是不够的：用户点下登录后当前那次 60s 定时器不会提前到期，
@@ -286,7 +312,9 @@ const FILE_BUDGETS = {
   // 163 → 283：/v1/responses POST 分发（体经 body_prefix 读取）、推理源
   // 注入（生产=刷新+目录校验+上游调用；测试=Cursor 桩）、NDJSON 泵送与
   // bridge.terminal 包络。挂上推理后它不再是纯路由壳，照实涨。
-  'src-tauri/src/openai/bridge.rs': 285,
+  // 285 → 288（2026-10-12）：接线行 id 不再取模块常量 `wiring::ROW_ID`，改为按
+  // id 从内置插件登记表取——那个常量随「行 id 变参数」一起删了。净 +3。
+  'src-tauri/src/openai/bridge.rs': 288,
   // 2026-10-09：OAuth/OIDC 授权核心（P2）。协议形状按 OIDC 标准 + 设计
   // §8：PKCE(S256)/state/nonce/宿主标识/发现文档解析(fail-closed)/动态
   // 注册/回调分类/ID token 五重校验。issuer 常量标注未验证（设计 §10

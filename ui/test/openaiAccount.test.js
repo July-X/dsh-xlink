@@ -53,10 +53,16 @@ test('状态读取失败保留原状态并给出错误，不伪装成未登录',
   assert.match(accountStore.readError, /bridge denied/);
 });
 
-test('主窗口按钮在内嵌插件行，和内核共用相位命令与状态查询', () => {
+test('主窗口按钮在内置插件行，和内核共用相位命令与状态查询', () => {
   const panel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
   const component = readFileSync('ui/src/plugins/OpenaiAccountActions.vue', 'utf8');
-  assert.match(panel, /<OpenaiAccountActions[^>]*:plugin-view="builtinView"/);
+  // 2026-10-12：内置插件行改成 v-for（不止 openai-oauth 一个），传的是**循环
+  // 变量**。这里断言传的不是某个具体内置插件的视图——写成 `builtinView` 时
+  // 这条判据会红，而那时面板里那个变量已经不存在了，症状是账号按钮整条不见。
+  assert.match(panel, /<OpenaiAccountActions[^>]*:plugin-view="builtin"/);
+  // 而且它必须**只挂在有账户卡的那个插件上**（后端下发的 hasAccountCard）：
+  // 无条件渲染的话，ponytail 那一行会带出一组毫无意义的 ChatGPT 按钮。
+  assert.match(panel, /v-if="builtin\.hasAccountCard"/);
   for (const command of ['openai_authorize_start', 'openai_authorize_cancel', 'openai_logout', 'openai_catalog_refresh']) {
     assert.ok(component.includes(command));
   }
