@@ -75,9 +75,10 @@ pub const PROVIDER_ZAI_CODING_CN: &str = "zai_coding_cn";
 /// OpenAI（ChatGPT 套餐）5h / 7d 窗口。凭据与端点都与其余四个 provider
 /// 不同源，实现见 [`crate::usage::subscription_openai`]。
 pub const PROVIDER_OPENAI: &str = "openai_codex";
-/// opencode Go 套餐的滚动 5 小时 / 周 / 月三窗口。凭据走内核凭据链的
-/// `OPENCODE_GO_API_KEY`，端点与响应形状与其余五家都不同源，实现见
-/// [`crate::usage::subscription_opencode`]。
+/// opencode Go 套餐的滚动 5 小时 / 周 / 月三窗口。凭据走内核凭据链——
+/// `opencode-go` 行的 `OPENCODE_GO_API_KEY` 或 Zen 的 `opencode` 行的
+/// `OPENCODE_API_KEY`（同一个 workspace 一把 Key，实测两行都能查），端点与响应
+/// 形状与其余五家都不同源，实现见 [`crate::usage::subscription_opencode`]。
 pub const PROVIDER_OPENCODE: &str = "opencode_go";
 
 /// 视图里的固定输出顺序：概览卡与独立窗口都按它排列。DeepSeek 是余额类
@@ -698,11 +699,11 @@ fn credential_rejected_message(provider: &str, status: u16) -> String {
 /// MiniMax 两站共用的下一步文案（查套餐要用 Token Plan 页的订阅 Key）。
 const MINIMAX_REAUTH_STEP: &str = "请到工作台的模型设置更新对应 provider 的 API Key（注意：查询套餐需用 Token Plan 页的订阅 Key，不是接口密钥页的按量 Key）";
 
-/// opencode Go 的下一步文案（Go 套餐密钥在 opencode.ai 的 Zen 控制台生成）。
+/// opencode Go 的下一步文案（Go 套餐密钥在 opencode.ai 的 Console 里生成）。
 ///
 /// 写成常量而不是内联进 match 臂：CJK 在 rustfmt 里按两个显示宽度算，内联那行
 /// 会被折成四行，而 `subscription.rs` 是只许下调的反棘轮文件（预算 896 行）。
-const OPENCODE_REAUTH_STEP: &str = "请到工作台的模型设置更新 opencode-go 的 API Key";
+const OPENCODE_REAUTH_STEP: &str = "请到工作台的模型设置更新 opencode 的 API Key";
 
 /// [`http_get_json`] 的扩展形态：智谱的额度接口用 raw API key（不带
 /// `Bearer`）且要求组织 / 项目上下文头，其余 provider 走默认 Bearer 形态。

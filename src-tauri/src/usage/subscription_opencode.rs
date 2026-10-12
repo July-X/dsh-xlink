@@ -1,16 +1,24 @@
 //! opencode Go 套餐容量：滚动 5 小时 / 周 / 月三个窗口的剩余百分比与重置时刻。
 //!
-//! 端点 `GET https://opencode.ai/zen/go/v1/usage`（Bearer = Go 套餐密钥）。密钥
-//! 走本仓既有的内核凭据链——模型设置里 `opencode-go` provider 的
-//! `OPENCODE_GO_API_KEY`（[`crate::usage::credentials`] 的默认派生规则），
+//! 端点 `GET https://opencode.ai/zen/go/v1/usage`（Bearer = 这个 workspace 的
+//! Key）。密钥走本仓既有的内核凭据链——模型设置里 opencode 那两行 route
+//! （`opencode-go` / Zen 的 `opencode`）各自写的 `apiKeyEnv`，默认派生名是
+//! `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY`，见 [`crate::usage::credentials`]。
 //! **不读 opencode 自己的 `~/.local/share/opencode/auth.json`**：那是另一个应用
 //! 的凭据库，读它等于给本功能开一条用户没同意过的凭据来源（与 Codex 额度那条
 //! 「显式许可」的纪律同源，见 `subscription-usage-design.md` 的凭据设计一节）。
 //!
-//! 内核里 opencode 是**两家**：这里的 `opencode-go`（Go 套餐，引用名
-//! `OPENCODE_GO_API_KEY`）与 Zen 的 `opencode`（引用名 `OPENCODE_API_KEY`）。
-//! 容量端点只属于前者，`credentials::classify_route` 因此是精确匹配——别把它改
-//! 回「route 名含 opencode」，那会把 Zen 的 Key 发来打这个端点。
+//! 内核里 opencode 有**两行 route**：`opencode-go`（Go 套餐）与 Zen 的
+//! `opencode`。**两行都能查这个端点**（2026-10-13 实测：只配 Zen 行、用
+//! `OPENCODE_API_KEY` 打 `/zen/go/v1/usage` 得到 200 与三窗口——端点认的是
+//! workspace 的那把 Key，与 route 叫什么无关），所以 `classify_route` 两行都认，
+//! 凭据取那一行自己写的 `apiKeyEnv`。**但别改成「route 名含 opencode」**：
+//! `opencode-ox` / `opencode-zen` 这类自建 route 会跟着被认成同一家，等于替用户
+//! 猜账号。
+//!
+//! 没配 Go 订阅的 workspace 打这个端点会拿到什么状态码**未经核实**（手上没有那种
+//! 账号）；已知的三条失败路径（401/403 凭据被拒、结构不认识、网络）都不补数据，
+//! 面板给的是错误态与「是否隐藏该项」的确认，绝不会画成「额度充足」。
 //!
 //! ## 为什么独立成模块
 //!

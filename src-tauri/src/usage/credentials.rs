@@ -27,18 +27,17 @@ pub const PROVIDER_MINIMAX_CN: &str = "minimax_cn";
 pub const PROVIDER_MINIMAX_EN: &str = "minimax_en";
 pub const PROVIDER_DEEPSEEK: &str = "deepseek";
 pub const PROVIDER_ZAI_CODING_CN: &str = "zai_coding_cn";
-/// opencode Go 套餐：内核 route 精确是 `opencode-go`——与 Zen 的 `opencode` 是
-/// **并列的两家**（同一份 pi-ai 目录里各占一行，各自一把 Key），别按前缀混认，
-/// 见 [`classify_route`]。
-/// 密钥由用户在 DSH 模型设置里配置，引用名按默认派生规则是
-/// `OPENCODE_GO_API_KEY`——**与 opencode 自己的 `auth.json` 无关**：那是另一个
-/// 应用的凭据库，本功能不读（见 `subscription_opencode.rs` 的模块头）。
+/// opencode Go 套餐：内核 route 是 `opencode-go` **或** Zen 的 `opencode`
+/// （同一份 pi-ai 目录里并列两行）——两家都认，判据与实测见 [`classify_route`]。
+/// 密钥由用户在 DSH 模型设置里配置，引用名取该行自己的 `apiKeyEnv`（默认派生
+/// 规则下分别是 `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY`）——**与 opencode
+/// 自己的 `auth.json` 无关**：那是另一个应用的凭据库，本功能不读（见
+/// `subscription_opencode.rs` 的模块头）。
 ///
-/// 残留缺口（如实记）：内核目录里 pi-ai 自己的 env 兜底把 `opencode` 与
-/// `opencode-go` 都映到 `OPENCODE_API_KEY`，而模型页的派生规则是 route 名大写
-/// （`OPENCODE_GO_API_KEY`）。只往环境里 export `OPENCODE_API_KEY`、profile 里又
-/// 没有显式 `apiKeyEnv` 的用户会被本功能判成未配置（分区不出现），而不是拿 Zen
-/// 的 Key 去查 Go 的容量端点——宁可少一个分区，不可用错账号的凭据。
+/// 残留缺口（如实记）：**两行都没有**、只往环境里 export 了 `OPENCODE_API_KEY`
+/// 的用户，本功能按默认派生名 `OPENCODE_GO_API_KEY` 去找，判成未配置（分区不
+/// 出现）——宁可少一个分区，也不拿猜出来的名字去查别人的账号。走模型设置页
+/// 配置的用户（profile 里会写下 `apiKeyEnv`）不受影响。
 pub const PROVIDER_OPENCODE: &str = "opencode_go";
 
 /// 智谱套餐查询的上下文引用名（组织 / 项目 / 套餐类型）。这三项不是秘密，
@@ -184,12 +183,22 @@ pub fn classify_route(route: &str, base_url: Option<&str>) -> Option<&'static st
             PROVIDER_MINIMAX_EN
         });
     }
-    // opencode Go：内核 route 名精确是 `opencode-go`。**必须精确匹配**：同一个
-    // 内核目录里还有 Zen 的 `opencode`（pi-ai 的 providers/all.js 两条并列，Zen
-    // 在前），模糊包含 "opencode" 会让前者替后者作数——Zen 的 Key 被发去 Go 的
-    // 容量端点（HTTP 401，还会被标成「凭据失效」，而 expired 条目不参与自动刷新，
-    // 那条错误会一直黏着）；只配了 Zen 的用户还会凭空多出一个永远查不到数据的分区。
-    if route_lower == "opencode-go" {
+    // opencode：内核目录里是**并列两行**——Go 套餐的 `opencode-go` 与 Zen 的
+    // `opencode`（pi-ai 的 providers/all.js），引用名分别是
+    // `OPENCODE_GO_API_KEY` 与 `OPENCODE_API_KEY`。**两家都认**（2026-10-13 改）。
+    //
+    // 判据是**实测**：容量端点 `/zen/go/v1/usage` 认的是 workspace 的那把 Key，
+    // 与 route 叫什么无关——只配了 Zen 行（引用名 `OPENCODE_API_KEY`）的账号，
+    // 同一把 Key 打那个端点得到 HTTP 200 与三窗口数据（2026-10-13 真机）。这也
+    // 对得上 opencode 自己的模型：一个 workspace 一把 Key，Go 是 workspace 的
+    // 订阅，Zen 余额是同一个 workspace 的预付余额。
+    //
+    // 旧写法只认 `opencode-go`，于是 route 叫 `opencode` 的账号整条分区不显示
+    // （2026-10-13 用户报的「套餐用量里没有 opencode」就是这条）。
+    //
+    // **仍然不按前缀猜**：`opencode-ox` / `opencode-zen` 这类自建 route 不在内——
+    // 它们既不是 Go 也不是 Zen 的官方 route 名，认了等于替用户猜账号。
+    if route_lower == "opencode-go" || route_lower == "opencode" {
         return Some(PROVIDER_OPENCODE);
     }
     if let Some(url) = base_url {
@@ -491,14 +500,21 @@ mod tests {
         );
         assert_eq!(
             classify_route("opencode", Some("https://opencode.ai/zen/v1")),
+            Some(PROVIDER_OPENCODE),
+            "Zen 的 route 也要认（2026-10-13 实测：workspace 的那把 Key 打 \
+             /zen/go/v1/usage 得到 200 与三窗口——容量端点认 Key，不认 route 名）。\
+             不认它，只配了 Zen 行的账号整条分区不显示"
+        );
+        assert_eq!(
+            classify_route("opencode-ox", None),
             None,
-            "Zen 的 route 是另一家（引用名 OPENCODE_API_KEY，baseURL 也没有 /go/）：\
-             认成 Go 就会把 Zen 的 Key 发去 Go 的容量端点，而 401 会被标成凭据失效"
+            "自建 route 不认：`opencode-ox` 既不是 Go 也不是 Zen 的官方 route 名，\
+             按前缀猜等于替用户猜账号"
         );
         assert_eq!(
             classify_route("opencode-zen", None),
             None,
-            "只认 `opencode-go` 这一个 route 名，不按前缀猜"
+            "只认 `opencode-go` 与 `opencode` 这两个官方 route 名，不按前缀猜"
         );
     }
 
@@ -549,7 +565,8 @@ mod tests {
         // 刻意不断言 source：解析链是「环境变量优先」，CI / 开发机上恰好 export
         // 过同名变量时命中的是那一层，断言 source 会变成一条看运气的测试。
         assert!(resolved.value.is_some(), "引用名对上了就必须能取到值");
-        // 只配了 Zen 的用户不该被认成 Go：Zen 的引用名是另一把。
+        // 没有 provider 行时按默认派生名找：Zen 的引用名是另一把，找不到就是
+        // 未配置（不猜、不拿别的名字去查别人的账号）。
         std::fs::write(
             dir.join(".credentials.yaml"),
             "version: 1\nrefs:\n  OPENCODE_API_KEY: zen-key\n",
@@ -557,9 +574,99 @@ mod tests {
         .unwrap();
         assert!(
             resolve_provider(PROVIDER_OPENCODE, &[], &dir).is_none(),
-            "只有 OPENCODE_API_KEY（Zen）时不能算已配置——否则会凭空多出一个\
-             永远查不到数据的「opencode Go」分区"
+            "没有 provider 行时只按派生名 OPENCODE_GO_API_KEY 找；找不到就是未配置"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **只配了 Zen 行（route `opencode` + `OPENCODE_API_KEY`）的账号也要能查**
+    /// ——2026-10-13 用户报「套餐用量里没有 opencode」时的真实形状。
+    ///
+    /// 关键证据是实测：`OPENCODE_API_KEY` 打 `/zen/go/v1/usage` 得到 HTTP 200 与
+    /// 三窗口（同一个 workspace 一把 Key）。所以 `resolve_provider` 必须从
+    /// `opencode` 那条绑定里取到 `OPENCODE_API_KEY`，而不是回落到派生名。
+    #[test]
+    fn zen_route_binding_resolves_through_its_own_api_key_env() {
+        let dir = tempfile_fresh("opencode-zen-binding");
+        std::fs::write(
+            dir.join(".credentials.yaml"),
+            "version: 1\nrefs:\n  OPENCODE_API_KEY: workspace-key\n",
+        )
+        .unwrap();
+        let bindings = vec![ProviderBinding {
+            route: "opencode".into(),
+            reference: "OPENCODE_API_KEY".into(),
+            explicit: true,
+        }];
+        let resolved =
+            resolve_provider(PROVIDER_OPENCODE, &bindings, &dir).expect("Zen 行也要解析出凭据");
+        assert_eq!(
+            resolved.reference, "OPENCODE_API_KEY",
+            "取的是**那一行自己写的** apiKeyEnv，不是派生名"
+        );
+        assert!(resolved.value.is_some());
+        // 同一份绑定表里两行都在时（用户两条 route 都配过），命中哪一条都行——
+        // 两把 Key 属于同一个 workspace，端点认的是账号不是 route 名。
+        let both = vec![
+            ProviderBinding {
+                route: "opencode".into(),
+                reference: "OPENCODE_API_KEY".into(),
+                explicit: true,
+            },
+            ProviderBinding {
+                route: "opencode-go".into(),
+                reference: "OPENCODE_GO_API_KEY".into(),
+                explicit: true,
+            },
+        ];
+        let resolved =
+            resolve_provider(PROVIDER_OPENCODE, &both, &dir).expect("两行都配时也要解析");
+        assert_eq!(resolved.reference, "OPENCODE_API_KEY", "取第一处命中");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 端到端：**用户真实形状的 patch**（`opencode` 行 + `apiKeyEnv:
+    /// OPENCODE_API_KEY`）必须能解析出凭据——2026-10-13「套餐用量里没有
+    /// opencode」那条的回归判据。
+    ///
+    /// 与上面那条的区别：这条从 **YAML 文本**走完整条链
+    /// （`profile_bindings` → `patch_providers` → `resolve_provider`），手写
+    /// `ProviderBinding` 只能证明后半段。
+    #[test]
+    fn zen_shaped_patch_resolves_end_to_end() {
+        let dir = tempfile_fresh("opencode-zen-patch");
+        let profile = dir.join("profiles/web");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(
+            profile.join("cordis.patch.yml"),
+            "- id: llm-pi-ai\n  name: \"@deepseek-ai/dsh-llm-pi-ai\"\n  config:\n    \
+             providers:\n      opencode:\n        api: openai-completions\n        \
+             apiKeyEnv: OPENCODE_API_KEY\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".credentials.yaml"),
+            "version: 1\nrefs:\n  OPENCODE_API_KEY: workspace-key\n",
+        )
+        .unwrap();
+        let bindings = profile_bindings(&profile);
+        assert_eq!(
+            bindings
+                .iter()
+                .map(|b| b.route.as_str())
+                .collect::<Vec<_>>(),
+            vec!["opencode"],
+            "patch 里的 opencode 行要产出绑定"
+        );
+        let resolved = resolve_provider(PROVIDER_OPENCODE, &bindings, &dir)
+            .expect("Zen 形状的 patch 必须解析出凭据：分区就靠这一步出现");
+        assert_eq!(
+            resolved.reference, "OPENCODE_API_KEY",
+            "取那一行自己写的 apiKeyEnv，不是派生名 OPENCODE_GO_API_KEY"
+        );
+        // 值只断言「取到了」：解析链环境变量优先，本机恰好 export 过同名变量时
+        // 命中的是那一层，断言具体值会变成一条看运气的测试。
+        assert!(resolved.value.is_some());
         std::fs::remove_dir_all(&dir).ok();
     }
 
