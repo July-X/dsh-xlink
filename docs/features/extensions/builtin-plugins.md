@@ -20,7 +20,7 @@
 | `id` | 物化目录名 / 资源目录名 / 面板行 key | 改它等于换一根数据根 |
 | `row_id` | `cordis.patch.yml` 行 id = settingsNs = 包名 | 内核按它认插件 |
 | `entries` | 物化进实例的运行时文件集 | 按插件各列各的（见下） |
-| `peers` | 从内核树链进来的 `@deepseek-ai` 包 | 只列 host 真正 `import` 的 |
+| `peers` | 从内核树链进来的 `@deepseek-ai` 包（必需 / 可选见下） | 只列 host 真正 `import` 的 |
 | `entry` | 接线行 `name` 指向的入口 | 通常 `host/index.js` |
 | `display_name` / `summary` / `note` | 面板上的三段文案 | **由后端下发**，前端不抄 |
 | `has_account_card` | 工作台设置页里有没有自绘账户卡 | 能力开关，不是样式 |
@@ -45,6 +45,34 @@ Ponytail 两样都没有。写成一份共用清单就得为不存在的目录�
 
 peer 同理：多链一个包就是多一条会断的链——旧内核装不上那个包时物化直接失败，于是
 「加了个用不到它的 peer」会让这个插件在新旧内核上彻底装不进去。
+
+### peer 分必需与可选（2026-10-12 起）
+
+每个 peer 在登记表里都要回答一个问题：**内核树里没有它，这个插件还能不能装**。
+peer 的类型与缺失探针在 `src-tauri/src/plugins/builtin/peers.rs`，登记表（谁带哪几个 peer）
+在 `builtins.rs`——分开是为了让「加一个内置插件」与「改 peer 的全局语义」不撞在同一个文件里。
+
+| | 缺失时的行为 | 例子 |
+| --- | --- | --- |
+| 必需（`PeerSpec::required`） | 物化失败，启用被拦下 | `dsh-skill`、`dsh-llm`、`schemastery`——都是 `@deepseek-ai/dsh` 的**运行时依赖**，每个内核版本都带 |
+| 可选（`PeerSpec::optional`） | 跳过链接、物化成功，host 降级，面板如实标注 | `dsh-hooks-claude-code`——内核上游自己的打包决定，`0.2.1-alpha.1` 带、`0.2.1-alpha.2` 不带 |
+
+判据是「这个包是不是内核**必然**带」，不是「host 需不需要它」。上游会把包从
+`dependencies` 降级成 `devDependencies`（`dsh-hooks-claude-code` 就是这样），
+那一刻内核树里就没有它了。把可选包写成必需，代价是**整个插件（含它自己的技能）
+一起装不进去**，而旧报错还把用户支去「内核版本」页重装一个没坏的内核——2026-10-12
+用户在 `0.2.1-alpha.2` 上点 Ponytail 的开关，得到的就是这条。
+
+可选 peer 缺失是**能力降级**，所以每一处都要说出口，三处缺一不可：
+
+1. `PeerSpec::missing_note` —— 面板那条 ⚠ 的 tooltip（文案由后端出）。
+2. `BuiltinPluginStatus::missing_peers` —— 状态命令与 `builtin_set_enabled` 的返回值
+   都带它；启用成功但降级时，前端发的是 warning toast 而不是「已启用」。
+3. host 自己的降级日志 —— 工作台内核日志里那一行说清少的是哪项能力。
+
+**host 不许静态 `import` 可选 peer**：静态 import 在内核不带那个包时会让整个插件
+加载失败（技能一起消失），降级也就无从谈起。Ponytail 的
+`loadHookBridge()` 就是这条的形状。
 
 ## 启用 / 停用
 

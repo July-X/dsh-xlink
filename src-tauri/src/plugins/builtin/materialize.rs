@@ -361,36 +361,44 @@ fn runtime_digest(
 ///
 /// **不要图省事把包全列上**：多链一个包就多一条会断的链——旧内核装不上那个
 /// 包时 `ensure_one_peer_link` 直接失败，于是「加了个用不到它的 peer」会让
-/// 这个插件在新旧内核上彻底装不进去。ponytail 只 import
-/// `BUNDLED_SKILL_RANK`，所以只链 `dsh-skill` 一个。
-/// 逐个 peer 包建立 `node_modules/@deepseek-ai/<pkg>` 链接；悬空或指向
-/// 别处时重建。
+/// 这个插件在新旧内核上彻底装不进去。
+///
+/// **必需 / 可选各按各的处置**（[`PeerSpec::required`]）：必需 peer 缺失是
+/// 「这个内核装不上这个插件」，如实失败；**可选 peer 缺失只跳过链接**——
+/// 内核会把包从 `dependencies` 降级成 `devDependencies`（实测
+/// `dsh-hooks-claude-code` 在 `0.2.1-alpha.2` 就是这样），那时内核树里没有它
+/// 不是用户环境坏了，而是这个内核版本不带那项能力。硬拦的代价是**整个插件
+/// （含它自己的技能）一起装不进去**，而报错还把用户支去「内核版本」页重装一个
+/// 没坏的内核（2026-10-12 用户实测：Ponytail 在 alpha.2 上根本打不开开关）。
+/// 缺哪个由 `peers::missing_optional_peers` 报给面板，不在这里静默。
 fn ensure_peer_link(
     spec: &BuiltinSpec,
     at_deepseek_dir: &Path,
     kernel_root: &Path,
 ) -> Result<(), String> {
-    for package in spec.peers {
-        ensure_one_peer_link(at_deepseek_dir, kernel_root, package)?;
+    for peer in spec.peers {
+        let source = peer.path_in(kernel_root);
+        if !source.is_dir() {
+            if peer.required {
+                return Err(format!(
+                    "内核树里找不到 {}；当前内核版本不带 {} 这个包，插件装不上——\
+                     请在「内核版本」页换一个内核版本后重试",
+                    source.display(),
+                    peer.package
+                ));
+            }
+            continue;
+        }
+        ensure_one_peer_link(&source, at_deepseek_dir, peer.package)?;
     }
     Ok(())
 }
 
 fn ensure_one_peer_link(
+    source: &Path,
     at_deepseek_dir: &Path,
-    kernel_root: &Path,
     package: &str,
 ) -> Result<(), String> {
-    let source = kernel_root
-        .join("node_modules")
-        .join("@deepseek-ai")
-        .join(package);
-    if !source.is_dir() {
-        return Err(format!(
-            "内核树里找不到 {}；请先在「内核版本」页安装内核",
-            source.display()
-        ));
-    }
     let link = at_deepseek_dir.join(package);
     match fs::symlink_metadata(&link) {
         Ok(metadata) => {
@@ -416,7 +424,7 @@ fn ensure_one_peer_link(
     }
     fs::create_dir_all(at_deepseek_dir)
         .map_err(|e| format!("创建 peer 目录失败（{}）：{e}", at_deepseek_dir.display()))?;
-    make_dir_link(&source, &link).map_err(|e| {
+    make_dir_link(source, &link).map_err(|e| {
         format!(
             "建立 peer 链接失败（{} → {}）：{e}；Windows 上若失败请开启开发者模式后重试",
             source.display(),
@@ -530,8 +538,8 @@ mod tests {
             }
         }
         let kernel = root.join("kernel/node_modules/@deepseek-ai");
-        for pkg in spec.peers {
-            fs::create_dir_all(kernel.join(pkg)).unwrap();
+        for peer in spec.peers {
+            fs::create_dir_all(kernel.join(peer.package)).unwrap();
         }
         let target = root.join("instance/extensions/builtin/openai-oauth/0.1.0/fp-1/compat-a");
         materialize(
@@ -660,8 +668,8 @@ mod tests {
             }
         }
         let kernel = root.join("kernel/node_modules/@deepseek-ai");
-        for pkg in spec.peers {
-            fs::create_dir_all(kernel.join(pkg)).unwrap();
+        for peer in spec.peers {
+            fs::create_dir_all(kernel.join(peer.package)).unwrap();
         }
         assert!(
             !source.join("client").exists(),
@@ -717,7 +725,7 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         linked.sort();
-        let mut expected: Vec<String> = spec.peers.iter().map(|p| p.to_string()).collect();
+        let mut expected: Vec<String> = spec.peers.iter().map(|p| p.package.to_string()).collect();
         expected.sort();
         assert_eq!(linked, expected);
         let _ = fs::remove_dir_all(&root);
@@ -746,8 +754,9 @@ mod tests {
         let kernel = root.join("kernel");
         let mut kernel_pkgs = kernel.join("node_modules/@deepseek-ai");
         fs::create_dir_all(&mut kernel_pkgs).unwrap();
-        for pkg in spec.peers {
-            fs::create_dir_all(kernel.join("node_modules/@deepseek-ai").join(pkg)).unwrap();
+        for peer in spec.peers {
+            fs::create_dir_all(kernel.join("node_modules/@deepseek-ai").join(peer.package))
+                .unwrap();
         }
 
         let home = root.join("home");
@@ -836,8 +845,9 @@ mod tests {
         }
         let kernel = root.join("kernel");
         fs::create_dir_all(kernel.join("node_modules/@deepseek-ai")).unwrap();
-        for pkg in spec.peers {
-            fs::create_dir_all(kernel.join("node_modules/@deepseek-ai").join(pkg)).unwrap();
+        for peer in spec.peers {
+            fs::create_dir_all(kernel.join("node_modules/@deepseek-ai").join(peer.package))
+                .unwrap();
         }
         let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
         let err = materialize(spec, &source, None, &target, &kernel, "0.1.0", "fp-1")
@@ -890,6 +900,114 @@ mod tests {
         fs::remove_file(source.join("index.js")).unwrap();
         let error = verify_manifest(&root.join("source")).unwrap_err();
         assert!(error.contains("缺失或不可读"), "{error}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// ponytail 的物化夹具：源目录按 `entries` 生成，内核树里只摆 `kernel_peers`
+    /// 列出的包，上游内容用 `seed_fixture`。
+    fn ponytail_fixture(
+        tag: &str,
+        kernel_peers: &[&str],
+    ) -> (PathBuf, &'static BuiltinSpec, PathBuf, PathBuf) {
+        let root = temp_dir(tag);
+        let spec = crate::plugins::builtin::builtins::find("ponytail").unwrap();
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        for entry in spec.entries {
+            if *entry == "package.json" {
+                fs::write(
+                    source.join("package.json"),
+                    "{\"name\":\"xlink-ponytail\",\"version\":\"0.1.0\"}",
+                )
+                .unwrap();
+            } else if entry.contains('.') {
+                fs::write(source.join(entry), "MIT").unwrap();
+            } else {
+                fs::create_dir_all(source.join(entry)).unwrap();
+                fs::write(source.join(entry).join("keep.js"), "// keep").unwrap();
+            }
+        }
+        let kernel = root.join("kernel");
+        for package in kernel_peers {
+            fs::create_dir_all(kernel.join("node_modules/@deepseek-ai").join(package)).unwrap();
+        }
+        let upstream = crate::plugins::builtin::upstream::seed_fixture(&root.join("home"), spec);
+        (root, spec, source, upstream)
+    }
+
+    /// **内核不带可选 peer 时，物化必须照样成功**（2026-10-12 用户实测的那个 bug）。
+    ///
+    /// `@deepseek-ai/dsh-hooks-claude-code` 在 `0.2.1-alpha.2` 里被上游从运行时
+    /// 依赖降级成 `devDependencies`，内核树里没有它。此前它是必需 peer，于是
+    /// 「切换 PonyTail」整个失败——六个技能一起装不进去，而报错还把用户支去
+    /// 「内核版本」页重装一个没坏的内核。这条钉住：缺的是可选 peer 时链接跳过、
+    /// 物化成功，而**别的 peer 照链**（少链一个的后果是运行期 resolve 失败）。
+    #[test]
+    fn a_missing_optional_peer_is_skipped_instead_of_failing_the_materialize() {
+        let (root, spec, source, upstream) = ponytail_fixture("optional-peer", &["dsh-skill"]);
+        let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
+        materialize(
+            spec,
+            &source,
+            Some(&upstream),
+            &target,
+            &root.join("kernel"),
+            "0.1.0",
+            "fp-1",
+        )
+        .expect("内核不带可选 peer 时物化必须成功——否则整个插件都装不进去");
+        let linked: Vec<String> = fs::read_dir(target.join("node_modules/@deepseek-ai"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            linked,
+            vec!["dsh-skill".to_string()],
+            "缺的可选 peer 跳过、在的 peer 照链；多链一个也会在旧内核上炸"
+        );
+        // 幂等那一步（标记命中后只补 peer 链接）走的是同一个函数，缺可选 peer
+        // 时也不能在那里翻车。
+        materialize(
+            spec,
+            &source,
+            Some(&upstream),
+            &target,
+            &root.join("kernel"),
+            "0.1.0",
+            "fp-1",
+        )
+        .expect("重复物化（走标记命中那条早退路径）同样不许因为缺可选 peer 而失败");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 缺**必需** peer 仍然失败，但文案要指对路：内核是装着的，别让人去重装。
+    #[test]
+    fn a_missing_required_peer_still_fails_with_a_message_that_fits_the_cause() {
+        // 内核树里一个 peer 都不摆：`dsh-skill`（必需）缺失。
+        let (root, spec, source, upstream) = ponytail_fixture("required-peer", &[]);
+        let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
+        let error = materialize(
+            spec,
+            &source,
+            Some(&upstream),
+            &target,
+            &root.join("kernel"),
+            "0.1.0",
+            "fp-1",
+        )
+        .expect_err("必需 peer 缺失必须拦下：那种内核上技能根本注册不了");
+        assert!(
+            error.contains("dsh-skill") && error.contains("换一个内核版本"),
+            "文案要点名缺哪个包、并给出正确的下一步（换内核版本），实际：{error}"
+        );
+        assert!(
+            !error.contains("请先在「内核版本」页安装内核"),
+            "内核是装着的（只是不带这个包），旧文案会把用户支去重装一个没坏的内核：{error}"
+        );
+        assert!(
+            !target.exists(),
+            "拒绝时不该留下半个目录——用户会把它当成已启用"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

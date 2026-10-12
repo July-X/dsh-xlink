@@ -13,7 +13,7 @@
 // 第二份判据，会和后端漂移），只把拒绝原因原样 toast 出来。
 import { computed, reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
-import { toastSuccess, toastActionError } from '../shell/notify.js';
+import { toast, toastSuccess, toastActionError } from '../shell/notify.js';
 import { withLoading } from '../shell/loading.js';
 import { singleFlight } from '../shell/async.js';
 
@@ -74,7 +74,27 @@ export function builtinStateTip(view) {
   return view.stateError || view.noteStatus || view.summary || '';
 }
 
-/** 拨开关：成功后以服务端返回的那一项为准回填（requestedEnabled 与接线同步落盘）。 */
+/**
+ * 「本内核版本不带某个可选 peer」带来的能力降级说明；空串 = 没有降级。
+ *
+ * 这不是错误：插件装得上、能跑，只是少一项靠内核那个包实现的能力（ponytail
+ * 在 `0.2.1-alpha.2` 上就是「技能可用、规则不会自动注入」）。**文案由后端出**
+ * （`PeerSpec::missing_note`）：前端拼一句就与登记表漂移，而漂移的那句不参与
+ * 任何 Rust 侧测试。缺失**必需** peer 不走这里——那条路物化直接失败。
+ */
+export function builtinDegradedNote(view) {
+  const peers = view && view.missingPeers;
+  if (!peers || peers.length === 0) return '';
+  return peers.map((peer) => peer.note || `当前内核版本不带 ${peer.package}`).join(' ');
+}
+
+/**
+ * 拨开关：成功后以服务端返回的那一项为准回填（requestedEnabled 与接线同步落盘）。
+ *
+ * 启用了但**本内核少一项能力**时，成功提示要带出降级说明：只说「已启用」会让
+ * 用户以为规则会在会话启动时自动注入，而它其实不会（2026-10-12 的 bug 修完之后，
+ * 这是同一件事的另一半——不许静默）。
+ */
 export async function setBuiltinEnabled(id, enabled) {
   const next = await withLoading(`builtinToggle:${id}`, () =>
     invoke('builtin_set_enabled', { plugin: id, enabled }),
@@ -82,7 +102,12 @@ export async function setBuiltinEnabled(id, enabled) {
   if (builtinStore.list) {
     builtinStore.list = builtinStore.list.map((view) => (view.id === id ? next : view));
   }
-  toastSuccess(`${enabled ? '已启用' : '已停用'} ${next.displayName}，下次启动工作台生效`);
+  const degraded = enabled ? builtinDegradedNote(next) : '';
+  if (degraded) {
+    toast(`${next.displayName} 已启用，但本内核版本少一项能力：${degraded}`, 8000, 'warning');
+  } else {
+    toastSuccess(`${enabled ? '已启用' : '已停用'} ${next.displayName}，下次启动工作台生效`);
+  }
 }
 
 /** 供面板调用的包装：失败时原样呈现后端原因（含「停止工作台后可修改」）。 */

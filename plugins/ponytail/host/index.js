@@ -35,7 +35,15 @@
  * ## 做不到的部分（面板说明里已如实写明）
  *
  * 上游另有两个形态（statusline 徽标、`ponytail-gain` 的基准对照依赖别家 agent 的
- * 状态栏）在本宿主没有对应面；规则集与档位切换则**可用**，靠的就是下面的 hook 桥。
+ * 状态栏）在本宿主没有对应面；规则集与档位切换**可用**，靠的就是下面的 hook 桥。
+ *
+ * **但那份可用性取决于内核带不带桥**（2026-10-12）：桥所在的包
+ * `@deepseek-ai/dsh-hooks-claude-code` 在 `0.2.1-alpha.2` 里被上游从运行时依赖
+ * 降级成了 devDependency，内核树里不再有它。那种内核上本插件仍然装得上、技能
+ * 照常注册，只是这两项能力缺席——壳把「缺哪个包、少了什么」如实画在插件面板上
+ * （`BuiltinPluginStatus::missing_peers`），这里只负责降级与留一行日志。
+ * 三条纪律：**不许静态 import 桥**（缺了会让整个插件加载失败）、
+ * **不许把缺失当异常抛出**（少一项能力不等于插件坏了）、**不许静默**（日志说清）。
  *
  * @module xlink-ponytail
  */
@@ -44,14 +52,6 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { BUNDLED_SKILL_RANK } from "@deepseek-ai/dsh-skill";
-// **整个命名空间挂上去，不取其中一项**：桥自己声明 `inject: ["shell",
-// "sessionProjections"]`，而第一版写的是
-// `ctx.plugin({ name, apply: applyClaudeCodeHooks }, …)` —— 那个对象字面量里
-// 没有 inject，cordis 于是拒绝注入，真机表现为每次开新对话都报
-// `cannot get property "shell" without inject`（2026-10-12 用户实测）。
-// 手工包一层 = 手工抄一份属性，而抄漏的那份不报「你少写了 inject」，它报的是
-// 一个看起来毫不相关的运行时错误。传命名空间，属性天然齐全。
-import * as claudeCodeHooks from "@deepseek-ai/dsh-hooks-claude-code";
 
 import { createProvider } from "./skills.js";
 import { applyLocale } from "./i18n.js";
@@ -66,6 +66,27 @@ const inject = ["skills"];
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 /** 上游的 Claude Code 形态钩子配置（由壳在同步上游时物化进来）。 */
 const HOOKS_CONFIG = join(ROOT, "hooks", "claude-codex-hooks.json");
+/** hook 桥的包名（内核不保证每个版本都带它，见 `loadHookBridge`）。 */
+const HOOK_BRIDGE = "@deepseek-ai/dsh-hooks-claude-code";
+
+/**
+ * 按需加载 hook 桥，**不用顶层静态 import**。
+ *
+ * 内核不保证每个版本都带这个包：`0.2.1-alpha.1` 里它是 `@deepseek-ai/dsh` 的
+ * 运行时依赖，`0.2.1-alpha.2` 里被上游降级成了 devDependency，于是内核安装树里
+ * 根本没有它（2026-10-12 用户实测）。顶层静态 import 在那种内核上会让**整个
+ * 插件**加载失败——六个技能一起没了，而用户看到的是「插件开关拨不动」。
+ * 「少一项能力」不该等于「插件用不了」：import 失败只降级，物化那一侧由
+ * `PeerSpec::optional` 保证不会因此失败（`src-tauri/src/plugins/builtin/peers.rs`）。
+ *
+ * promise 缓存起来：cordis 重启插件时会再进一次 `apply`，没必要重复解析模块
+ * （失败也缓存——同一个进程里内核树不会变，重试只会得到同一个结论）。
+ */
+let bridgePromise;
+function loadHookBridge() {
+  bridgePromise ??= import(HOOK_BRIDGE);
+  return bridgePromise;
+}
 
 /**
  * 把 ponytail 的 hook 挂到内核的拦截面上。
@@ -92,17 +113,28 @@ const HOOKS_CONFIG = join(ROOT, "hooks", "claude-codex-hooks.json");
  * `inject`，而漏掉的症状是 `cannot get property "shell" without inject` ——
  * 一条与「你少写了一个字段」看不出关系的运行时错误（2026-10-12 真机踩过）。
  *
- * `hooks/` 来自上游同步，**尚未同步时不存在**——那时不挂也不报错：技能仍可用，
- * 只是没有「会话启动即注入」与档位切换。
+ * 两种「挂不上」都**不是错误**：`hooks/` 来自上游同步、尚未同步时不存在；
+ * 桥所在的包这个内核版本可能不带。两种情况下技能照常注册，只是没有「会话启动
+ * 即注入」与档位切换——后者由壳在插件面板上如实标出（`missing_peers`）。
  *
  * @param {object} ctx - 插件上下文。
  */
-function attachHooks(ctx) {
+async function attachHooks(ctx) {
   if (!existsSync(HOOKS_CONFIG)) {
     ctx.logger?.info?.(`${name}: 还没有上游内容（尚未同步），本次不挂 hook`);
     return;
   }
-  ctx.plugin(claudeCodeHooks, {
+  let bridge;
+  try {
+    bridge = await loadHookBridge();
+  } catch (error) {
+    ctx.logger?.warn?.(
+      `${name}: 本内核不带 ${HOOK_BRIDGE}，本次不挂 hook——技能照常可用，` +
+        `但规则不会在会话启动时自动注入、/ponytail 的档位切换不可用：${String(error?.message ?? error)}`,
+    );
+    return;
+  }
+  ctx.plugin(bridge, {
     configPath: HOOKS_CONFIG,
     pluginRoot: ROOT,
   });
@@ -124,7 +156,7 @@ function attachHooks(ctx) {
  *
  * @param {object} ctx - 携带技能注册表（`ctx.skills`）的上下文。
  */
-function apply(ctx) {
+async function apply(ctx) {
   // 桥凭据先落盘，且**不参与**后面的成败判定：写不下去只记一行，技能照常注册。
   const credential = writeBridgeCredential(ROOT, process.env);
   if (credential.written) ctx.logger?.info?.(`${name}: ${credential.reason}`);
@@ -144,7 +176,10 @@ function apply(ctx) {
       (locale.applied.length > 0 ? `；${locale.reason}` : ""),
   );
   try {
-    attachHooks(ctx);
+    // `await`：桥按需加载（见 `loadHookBridge`）。cordis 会等 apply 返回的
+    // promise 落地（`Fiber._reload` 里 `await this._execute(...)`），所以
+    // 「插件加载完成」仍然等于「hook 已经挂上或已经决定不挂」。
+    await attachHooks(ctx);
   } catch (error) {
     ctx.logger?.warn?.(`${name}: hook 挂载失败，规则集与档位切换不可用（技能不受影响）：${String(error)}`);
   }

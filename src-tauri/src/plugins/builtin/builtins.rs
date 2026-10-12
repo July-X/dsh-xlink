@@ -19,12 +19,16 @@
 //! - [`BuiltinSpec::peers`]：Host 运行时要从内核树链进来的 `@deepseek-ai` 包。
 //!   按插件实际 `import` 的东西列，不要图省事全列：多链一个包就多一条会断的
 //!   链（旧内核装不上这个包时，物化直接失败，插件根本装不进去）。
+//!   **每条还要说清是必需还是可选**（[`PeerSpec`]）：内核的包集合会变，
+//!   必需与可选混为一谈的代价见 [`PeerSpec`] 的文档。
 //! - [`BuiltinSpec::entry`]：接线行 `name` 指向的入口（相对物化目录）。
 //! - 显示三件（`display_name` / `summary` / `note`）：面板那一行要的文案。
 //!   后端出、前端画，避免同一句话在前端组件里再抄一份（抄的那份不参与
 //!   Rust 侧测试，也不会随文案改动而报错）。
 //! - [`BuiltinSpec::has_account_card`]：工作台设置页里有没有该插件自绘的
 //!   账户卡。OpenAI 有（它要把 OAuth 走通），ponytail 没有（它不发请求）。
+
+use super::peers::PeerSpec;
 
 /// 一个内置插件的上游取源信息。
 ///
@@ -50,8 +54,8 @@ pub(crate) struct BuiltinSpec {
     pub(crate) row_id: &'static str,
     /// 物化的运行时文件集（相对插件源目录）。
     pub(crate) entries: &'static [&'static str],
-    /// 从内核树 peer 进来的 `@deepseek-ai` 包。
-    pub(crate) peers: &'static [&'static str],
+    /// 从内核树 peer 进来的 `@deepseek-ai` 包（必需 / 可选见 [`PeerSpec`]）。
+    pub(crate) peers: &'static [PeerSpec],
     /// 接线行 `name` 指向的入口（相对物化目录）。
     pub(crate) entry: &'static str,
     /// 面板行的名称。
@@ -95,7 +99,12 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
         entries: &["host", "client", "locales", "package.json"],
         // host/index.js 实际 import 的两个包：`dsh-llm`（适配器基类）与
         // `schemastery`（Config schema 的构造器，设置页的命名空间视图由它派生）。
-        peers: &["dsh-llm", "schemastery"],
+        // 两个都是 `@deepseek-ai/dsh` 的**运行时依赖**，每个内核版本都带，
+        // 所以都是必需 peer——「OpenAI OAuth 在任何内核上都能启用」靠的就是它。
+        peers: &[
+            PeerSpec::required("dsh-llm"),
+            PeerSpec::required("schemastery"),
+        ],
         entry: "host/index.js",
         display_name: "OpenAI-OAuth-Plugin",
         summary: "随应用交付的 OpenAI 套餐接入；启用不需要联网安装，关闭不删除账号",
@@ -127,8 +136,26 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
         // host/index.js 实际 import 的两件事：`BUNDLED_SKILL_RANK`（bundled 技能
         // 的优先级 600）与 `dsh-hooks-claude-code` 的 `apply`（把上游 hook 脚本
         // 挂到内核的拦截面上）。不 import 就不该链——多链一个包等于多一条会断
-        // 的链（旧内核没有这个包时物化失败，插件根本装不进去）。
-        peers: &["dsh-skill", "dsh-hooks-claude-code"],
+        // 的链。
+        //
+        // 两者的**必需性不同**（2026-10-12 真机报「切换 PonyTail 失败」之后改）：
+        // `dsh-skill` 是 `@deepseek-ai/dsh` 的运行时依赖，任何内核版本都带，缺了
+        // 技能也没法注册，所以必需；hook 桥是**上游内核自己的打包决定**——
+        // `0.2.1-alpha.1` 里它是 `dsh` 的 `dependencies`，`0.2.1-alpha.2` 里被降级
+        // 成 `devDependencies`，于是内核树里不再有它。把它当必需 peer，等于
+        // 「技能能不能注册」由内核带不带一个可选的 hook 桥决定：在 alpha.2 上
+        // 整个插件（含六个技能）都启用不了，而报错还把用户支去重装内核。
+        // 现在它缺失 = 只少「会话启动即注入」与档位切换，由 host 动态 import 降级。
+        peers: &[
+            PeerSpec::required("dsh-skill"),
+            PeerSpec::optional(
+                "dsh-hooks-claude-code",
+                "当前内核版本不带 @deepseek-ai/dsh-hooks-claude-code（上游把它从运行时依赖\
+                 降级成了开发依赖）：技能照常可用，但「会话启动时自动注入规则」与 \
+                 /ponytail 的档位切换在这个内核上不可用。换一个仍带这个包的内核版本\
+                 （如 0.2.1-alpha.1）即可恢复，不必重装本应用。",
+            ),
+        ],
         entry: "host/index.js",
         display_name: "Ponytail",
         summary: "把「懒惰的资深开发者」这套规则接进工作台：会话启动即生效，可按档位调松紧",

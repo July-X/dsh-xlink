@@ -130,8 +130,8 @@ mod tests {
             fs::write(dir.join("package.json"), r#"{"version":"1.0.0"}"#).unwrap();
         }
         for builtin in builtins::BUILTINS {
-            for package in builtin.peers {
-                let dir = kernel.join("node_modules/@deepseek-ai").join(package);
+            for peer in builtin.peers {
+                let dir = kernel.join("node_modules/@deepseek-ai").join(peer.package);
                 fs::create_dir_all(&dir).unwrap();
                 if !dir.join("package.json").exists() {
                     fs::write(dir.join("package.json"), r#"{"version":"1.0.0"}"#).unwrap();

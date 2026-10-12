@@ -50,6 +50,7 @@ import {
 import { originLabel, tildePath } from '../shell/labels.js';
 import {
   builtinStore,
+  builtinDegradedNote,
   builtinStateText,
   builtinStateTip,
   builtinUpstreamText,
@@ -761,6 +762,24 @@ function instanceChipType(row, instanceId) {
             </el-tooltip>
             <el-tooltip placement="top" effect="dark" :content="builtinStateTip(builtin)">
               <span class="entity-desc">{{ builtinStateText(builtin) }}</span>
+            </el-tooltip>
+            <!-- 本内核版本不带某个**可选** peer（如 ponytail 的 hook 桥）时多一枚 ⚠：
+                 插件装得上、技能照常注册，只是少一项能力。做成图标 tooltip 而不是
+                 常驻整行文字——这一行的主状态仍是左边那句，降级是「有件事你该知道」。
+                 文案由后端下发（`missingPeers[].note`），前端不拼：拼一份就与登记表
+                 漂移，而漂移的那份不参与任何 Rust 侧测试。 -->
+            <el-tooltip
+              v-if="builtinDegradedNote(builtin)"
+              placement="top"
+              effect="dark"
+              :content="builtinDegradedNote(builtin)"
+            >
+              <el-icon
+                class="head-tip-icon head-tip-icon--warning"
+                :aria-label="builtinDegradedNote(builtin)"
+                tabindex="0"
+                ><WarningFilled
+              /></el-icon>
             </el-tooltip>
           </div>
           <div class="entity-actions">

@@ -118,3 +118,64 @@ test('概览与套餐窗口读 openaiBuiltin，不再读单对象 builtinStore.v
     );
   }
 });
+
+// 「本内核版本不带某个可选 peer」= 能力降级，不是错误（2026-10-12）：
+// `@deepseek-ai/dsh-hooks-claude-code` 在 0.2.1-alpha.2 里被上游降级成
+// devDependency，ponytail 仍要能启用，但「会话启动即注入规则」缺席。
+// 三条：缺了要说、说的时候用后端那句、没说的时候一个字的提示都不许冒出来。
+test('降级说明逐字取后端那句，且只在后端报了 missingPeers 时出现', async () => {
+  const { builtinDegradedNote } = await import('../src/plugins/builtin.js');
+  assert.equal(builtinDegradedNote(null), '', '状态没取回时不许凭空报降级');
+  assert.equal(
+    builtinDegradedNote({ id: 'openai-oauth', missingPeers: [] }),
+    '',
+    '字段为空 = 本内核没有降级，面板不该冒出一枚警告图标',
+  );
+  assert.equal(
+    builtinDegradedNote({ id: 'openai-oauth' }),
+    '',
+    '老载荷没有这个字段时按「没有降级」处理，不许抛',
+  );
+  const note =
+    '当前内核版本不带 @deepseek-ai/dsh-hooks-claude-code（上游把它从运行时依赖降级成了开发依赖）……';
+  assert.equal(
+    builtinDegradedNote({ missingPeers: [{ package: 'dsh-hooks-claude-code', note }] }),
+    note,
+    '文案必须原样用后端那句：前端拼一份就与登记表漂移，而漂移的那份不参与 Rust 侧测试',
+  );
+  assert.match(
+    builtinDegradedNote({ missingPeers: [{ package: 'dsh-hooks-claude-code' }] }),
+    /dsh-hooks-claude-code/,
+    '后端漏给说明时兜底也要提到包名，不能显示成空白 tooltip',
+  );
+});
+
+test('降级不许静默：面板画 ⚠，启用成功的提示里也要带出说明', () => {
+  const panel = read('../src/plugins/PluginsPanel.vue');
+  assert.match(
+    panel,
+    /v-if="builtinDegradedNote\(builtin\)"/,
+    '内置插件行要按后端下发的降级说明画提示',
+  );
+  assert.match(
+    panel,
+    /head-tip-icon--warning/,
+    '降级是「有件事你该知道」，用 ⚠ 那一档（ⓘ 是补充说明）',
+  );
+  assert.match(
+    panel,
+    /:aria-label="builtinDegradedNote\(builtin\)"[\s\S]{0,40}tabindex="0"/,
+    '图标 tooltip 的触发元素必须可聚焦 + 有可访问名，否则键盘与读屏用户看不到这条降级',
+  );
+  const store = read('../src/plugins/builtin.js');
+  assert.match(
+    store,
+    /const degraded = enabled \? builtinDegradedNote\(next\) : '';/,
+    '启用成功时要看服务端返回的那一项有没有降级',
+  );
+  assert.match(
+    store,
+    /toast\([\s\S]*?已启用，但本内核版本少一项能力[\s\S]*?'warning'\)/,
+    '有降级时不能只报「已启用」——用户会以为规则会在会话启动时自动注入',
+  );
+});
