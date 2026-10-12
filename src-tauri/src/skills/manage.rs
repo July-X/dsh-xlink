@@ -865,55 +865,13 @@ fn fetch_git(
     };
 
     on_progress(&format!("正在克隆 {}", spec.source));
-    let mut cmd = crate::shell::process::command_with_path("git");
-    crate::shell::env::apply_proxy_env(&mut cmd);
-    cmd.arg("clone").arg("--depth").arg("1").arg("--progress");
-    if let Some(tag) = &branch {
-        cmd.arg("--branch").arg(tag);
-    }
-    cmd.arg(&spec.source).arg(dest);
-    // clone 是网络操作：默认的 30 秒上限在慢网络或大仓库下必然超时，而很多技能
-    // 包只有 git 来源。与插件侧共用同一件流式捕获，用户能实时看到百分比，而
-    // 不是对着一个不动的进度条等满五分钟。
-    let cloned =
-        crate::shell::stream::capture(&mut cmd, crate::shell::process::GIT_CLONE_TIMEOUT, |line| {
-            on_progress(line)
-        })
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::TimedOut {
-                AppError::Io(format!(
-                "git clone 超时（{} 分钟）：仓库较大或网络较慢，请重试，或改用带 Release 的来源",
-                crate::shell::process::GIT_CLONE_TIMEOUT.as_secs() / 60
-            ))
-            } else {
-                AppError::Io(format!("无法运行 git：{e}"))
-            }
-        })?;
-    if !cloned.success {
-        let detail = cloned
-            .output
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("")
-            .trim();
-        return Err(AppError::Skill(if detail.is_empty() {
-            "git clone 失败，请检查地址与网络".to_string()
-        } else {
-            format!("git clone 失败：{detail}")
-        }));
-    }
-    if let Some(tag) = branch {
-        return Ok(tag);
-    }
-    let dest_str = dest.to_str().unwrap_or("");
-    let (ok, out) = run_capture("git", &["-C", dest_str, "rev-parse", "--short", "HEAD"])
-        .map_err(|e| AppError::Io(e.to_string()))?;
-    Ok(if ok {
-        out.trim().to_string()
-    } else {
-        String::from("head")
-    })
+    // clone 的编排（命令构造 / 流式捕获 / 超时文案 / 无 tag 时记 HEAD 短 hash）
+    // 与插件侧共用 `pkg::fetch::shallow_clone`——两边此前逐字重复，连超时文案都是
+    // 同一个字符串。副作用是技能侧也拿到了插件侧那套 git 探测与「摘 git 自己说的
+    // 那行失败原因」的策略（原来只取最后一行非空输出，git 的 `repository not
+    // found` 常被后续进度行挤掉）。
+    crate::pkg::fetch::shallow_clone(&spec.source, dest, branch.as_deref(), on_progress)
+        .map_err(AppError::Skill)
 }
 
 fn fetch_local(
