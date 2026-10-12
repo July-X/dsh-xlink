@@ -95,8 +95,52 @@ peer 同理：多链一个包就是多一条会断的链——旧内核装不上
    副作用」的内置插件不是一类——它第一条消息就改变行为。同名时用户自己装的技能优先
    （bundled rank 600 低于壳管理的活动视图 300 与内核默认根 400/500），所以「随应用
    交付」不等于「强制生效」。
-2. **说清做不到的部分。** Ponytail 上游的档位切换与会话级常驻依赖别家 agent 的生命
-   周期钩子，dsh 没有对应面。面板的 `note` 里必须写明，否则宣传口径大于实际能力。
+2. **说清做不到的部分。** 面板的 `note` 里必须写明，否则宣传口径大于实际能力。
+
+## 有上游的插件：内容不在安装包里（2026-12 起）
+
+`BuiltinSpec::upstream` 非空时，**随包只发适配层**，内容由壳在运行时拉取：
+
+- `plugins/<id>/` 里只有 `host/` + `adapter/` + `package.json` + `LICENSE`；
+  上游的技能正文与 hook 脚本**不在仓库里**。
+- 取源走 npm（`@dietrichgebert/ponytail`），复用 [`crate::pkg::fetch`]：npm 文档 →
+  下载 → `dist.integrity` 校验（fail-closed）→ 防路径穿越解包。默认 registry 是
+  npmmirror——本机实测 GitHub 偶发 8 秒级延迟。
+- 落点是 `<DSH_HOME>/plugins/builtin/<id>/upstream/<版本>/`，**按版本分目录**。
+  同步只写数据目录，不碰物化目录与接线行，所以「用了新版」不需要重新接线。
+
+### 为什么不能 vendor 进仓库
+
+vendor 会**制造两份内容**：仓库里钉死的那一份，和用户手上的那一份。上游每改一次
+就要重发一版壳才能跟上，用户升级之前一直用旧内容；更要命的是「面板上写的版本」与
+「工作台里跑的内容」会分叉，而两边都不报错。实测事故：手写转录时丢了一个逗号，
+文件**大小完全相同**（2901 字节）而内容有 122 字节位移。
+
+### 四个触发点
+
+| 触发 | 节流 | 失败时 |
+| --- | --- | --- |
+| 启用插件 | 无（首次必然拉） | **拦下启用**并说明原因——不能让用户拿到一个「装上了但没有内容」的插件 |
+| 启动工作台 | 24 小时 | 30 分钟短退避（不吃每日额度），继续用旧版本 |
+| 面板「检查更新」 | 无（`force`） | 失败落在状态里由面板显示；**不是命令失败** |
+| `/ponytail-update` | 无（`force`） | 技能如实转述失败，不说成「已是最新」 |
+
+「从没试过」必须立刻放行：写成 `now - 0 >= 24h` 的话，刚开机的新装用户永远等不到
+首次同步，而状态文件是空的、面板上什么异常都看不出来。
+
+### 内核里的技能怎么让壳去同步
+
+`/ponytail-update` 跑在**内核进程**里，同步必须在**壳这一侧**做（出网纪律、代理路由、
+SRI 校验只有壳有）。两者之间用一条只绑回环的桥（`builtin/bridge.rs`，形状与
+`openai/bridge.rs` 相同：Bearer 令牌，按「(族, 实例)」一代一换），端点只有一个：
+
+```text
+GET /v1/builtin/sync?plugin=ponytail
+```
+
+**用 GET + 查询串而不是 POST**：本仓的请求读取原语只保证读到请求头，body 可能在同一次
+`read` 里到达也可能没有（TCP 无消息边界）——拿半截缓冲当请求体，在客户端分两次发的写法
+下会读到空串，而症状是「插件名缺失」，查不出原因。
 
 ## 新增一个内置插件的清单
 
@@ -105,8 +149,11 @@ peer 同理：多链一个包就是多一条会断的链——旧内核装不上
 3. `plugins/<id>/package.json`（`name` 必须是 `xlink-<id>`；`private: true`；
    `main` 指向 host 入口）
 4. `plugins/<id>/host/index.js` 导出 `{ apply, inject, name }`
-5. 第三方内容补 `LICENSE` 与 `README.md`（出处、版本、上游 tree）
-6. 跑 `npm run prep:builtin && npm run check`
+5. 第三方内容写清出处与许可（README.md + LICENSE）
+6. 有上游的：`BuiltinSpec::upstream` 填 npm 包名，并确认 `peers` 里列了 host 真正
+   import 的每个 `@deepseek-ai` 包（多一个就是多一条会断的链）
+7. 跑 `npm run prep:builtin && npm run check`
 
-命令面已泛化（`builtin_status` / `builtin_set_enabled`），`permissions/app-commands.json`
-通常不用动。
+命令面已泛化（`builtin_status` / `builtin_set_enabled` / `builtin_check_upstream`），
+`permissions/app-commands.json` 通常不用动。面板那一侧**不需要改代码**：行是 `v-for`，
+文案、版本与能力都由后端下发。

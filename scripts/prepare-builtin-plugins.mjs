@@ -46,9 +46,11 @@ const BUILTINS = [
   },
   {
     id: 'ponytail',
-    // 只有 Host 适配器、技能正文、清单与 MIT LICENSE。**没有 client/**：
-    // 它不在工作台里画任何卡片。
-    entries: ['host', 'skills', 'package.json', 'LICENSE'],
+    // **只有适配层**（host + adapter）与许可：上游的技能正文与 hook 脚本**不随包
+    // 走**（2026-10-12 改）。它们由壳在启用时从上游拉取并物化进实例——这样上游
+    // 改一次不必重发一版 dsh-xlink，也不会出现「仓库里那份与用户手上的那份不是
+    // 同一个版本」。
+    entries: ['host', 'adapter', 'package.json', 'LICENSE'],
   },
 ];
 

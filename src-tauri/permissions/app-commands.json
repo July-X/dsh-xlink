@@ -102,6 +102,7 @@
           "plugin_set_precheck",
           "builtin_status",
           "builtin_set_enabled",
+          "builtin_check_upstream",
           "openai_account_status",
           "openai_authorize_start",
           "openai_authorize_cancel",

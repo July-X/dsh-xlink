@@ -65,6 +65,31 @@ pub struct BuiltinPluginStatus {
     pub note_status: String,
     /// 状态文件损坏时的说明；有它时开关应禁用并提示检查。
     pub state_error: Option<String>,
+    /// 上游内容的状态（`None` = 这个插件不走上游，内容随应用分发）。
+    pub upstream: Option<UpstreamView>,
+}
+
+/// 有上游的内置插件当前的上游状态（面板显示与「立即检查更新」共用）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamView {
+    /// 已落盘的版本（空 = 一次都没同步成功过，插件此时没有内容）。
+    pub version: String,
+    /// 上次检查的 unix 秒（0 = 从没检查过）。
+    pub checked_at: u64,
+    /// 上次失败原因；成功时为空串。
+    pub error: String,
+}
+
+/// 只有这两个字段需要面板知道：版本与「上次结果如何」。
+impl UpstreamView {
+    fn from_state(state: &crate::plugins::builtin::upstream::UpstreamState) -> Self {
+        Self {
+            version: state.version.clone(),
+            checked_at: state.checked_at,
+            error: state.error.clone(),
+        }
+    }
 }
 
 /// 插件资源目录：优先随应用打包的资源（`builtin-plugins/<id>`，P1 资源
@@ -119,6 +144,7 @@ fn status_payload(
     spec: &BuiltinSpec,
     status: builtin::Status,
     note_status: String,
+    dsh_home: &std::path::Path,
 ) -> BuiltinPluginStatus {
     BuiltinPluginStatus {
         id: spec.id.to_string(),
@@ -142,6 +168,9 @@ fn status_payload(
         plugin_source_available: resolve_plugin_source(app, spec).is_some(),
         note_status,
         state_error: status.state_error,
+        upstream: spec.upstream.map(|_| {
+            UpstreamView::from_state(&crate::plugins::builtin::upstream::state(dsh_home, spec))
+        }),
     }
 }
 
@@ -208,7 +237,7 @@ fn probe_for(app: &AppHandle, spec: &BuiltinSpec) -> Result<BuiltinPluginStatus,
     } else {
         String::new()
     };
-    Ok(status_payload(app, spec, status, note_status))
+    Ok(status_payload(app, spec, status, note_status, &dsh_home))
 }
 
 /// 全部内置插件的当前状态（只读）。一次返回全部——前端要画的是**一张**列表，
@@ -278,6 +307,35 @@ pub async fn builtin_set_enabled(
             let kernel_root = kernel_root.ok_or_else(|| {
                 String::from("实例尚未指定内核版本；请在「内核版本」页安装并选择内核后再启用")
             })?;
+            // **先同步、再物化**（2026-10-12）：有上游的内置插件，内容不随包走。
+            // 顺序反了的话，物化会拿到一份空的适配层，然后同步回来的内容没有
+            // 任何东西去读它——而工作台看上去一切正常，只是没有技能。
+            //
+            // 同步失败**在这里就要拦下**：用户刚点了启用，这时回一句「已启用」
+            // 却在下次启动后什么都没有，是最难解释的一种结果。错误原样透出
+            // （「下载失败：…」带着下一步），不包装成「启用失败」。
+            if spec.upstream.is_some() {
+                let state = builtin::upstream::sync(&dsh_home, spec, false);
+                if state.version.is_empty() {
+                    return Err(format!(
+                        "首次启用 {} 需要从上游下载内容，而这一步没成功：{}。\
+                         请检查网络后重试；下载好了再启用。",
+                        spec.display_name,
+                        if state.error.is_empty() {
+                            "原因未知"
+                        } else {
+                            &state.error
+                        }
+                    ));
+                }
+                crate::shell::shell_events::record(
+                    "builtin-ponytail-sync",
+                    &format!(
+                        "{}：启用前同步到 {}（{:?}）",
+                        spec.display_name, state.version, state.error
+                    ),
+                );
+            }
             let wired =
                 builtin::ensure_wired(spec, &source, &dsh_home, &record.profile, &kernel_root)?;
             let mut entries = builtin::state::load(&dsh_home, spec)?;
@@ -301,6 +359,57 @@ pub async fn builtin_set_enabled(
                 builtin::state::save(&dsh_home, spec, &entries)?;
             }
         }
+        probe_for(&app, spec)
+    })
+    .await
+}
+
+/// **立即**检查并拉取上游最新版（面板的「检查更新」按钮与工作台里的
+/// `/ponytail-update` 走的是同一条命令）。
+///
+/// 与「启动工作台时顺手查一次」的区别只有一处：`force`。那条路径按 24 小时
+/// 节流，免得每次开机都去问一次 registry；用户**明确要求**时不等窗口。
+///
+/// 几个刻意的选择：
+/// - **不要求内核已停止**。它只写数据目录（`<dsh_home>/plugins/builtin/<id>/upstream/`），
+///   与实例的物化目录、接线行都无关——真正换内容要等下次启动工作台，这一点
+///   在返回值与面板文案里都说清楚，不让用户以为点完立刻生效。
+/// - **失败返回 `Ok`**，错误落在状态里由面板显示。只同步失败不是命令失败：
+///   用户手上的那一版继续可用，把一次网络抖动报成红字只会让人不敢点。
+/// - 没有上游的插件回一个明确的错误（而不是静默成功），因为那是接线/注册表
+///   的问题，用户需要知道自己点错了对象。
+#[tauri::command]
+pub async fn builtin_check_upstream(
+    app: AppHandle,
+    plugin: String,
+) -> Result<BuiltinPluginStatus, String> {
+    let spec = builtins::find(&plugin)
+        .ok_or_else(|| format!("本版本没有名为 {plugin} 的内置插件；请刷新面板后重试"))?;
+    if spec.upstream.is_none() {
+        return Err(format!(
+            "{} 的内容随应用分发，没有可检查的上游",
+            spec.display_name
+        ));
+    }
+    blocking(move || {
+        let (record, _) = resolve_target()?;
+        let dsh_home = kernel_adapter::DshAdapter::dsh_home_for(&record);
+        let before = builtin::upstream::state(&dsh_home, spec);
+        let after = builtin::upstream::sync(&dsh_home, spec, true);
+        crate::shell::shell_events::record(
+            "builtin-upstream-manual",
+            &format!(
+                "{}：手动检查 {} → {}（{}）",
+                spec.display_name,
+                before.version,
+                after.version,
+                if after.error.is_empty() {
+                    "成功"
+                } else {
+                    &after.error
+                }
+            ),
+        );
         probe_for(&app, spec)
     })
     .await

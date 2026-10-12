@@ -65,7 +65,12 @@ src-tauri/src/
 - **`row_id`（接线行 id）是参数不是常量**：`wiring.rs` 里的形状识别（哪几行算我们写的）与 id 无关，只有「找哪一行」有关。写死成模块常量时，摘行会顺着**别人的** id 去删——症状是「关掉 A 把 B 也关了」。
 - **命令面是 `builtin_status`（一次返回全部）+ `builtin_set_enabled`（按 id）**，不是一个插件一对命令。认不出的 id 直接报错，**不回退到默认插件**：回退会让一次拨错的开关作用在别的插件上，且无任何症状。
 - **新增内置插件要同步的清单**：`builtins.rs` 的 `BUILTINS` → `prepare-builtin-plugins.mjs` 的 `BUILTINS` → `plugins/<id>/package.json`（`name` 必须是 `xlink-<id>`，它同时是接线行 id 与 settingsNs）→ `permissions/app-commands.json`（命令已泛化，通常不用动）。面板那一侧**不需要改代码**（行是 `v-for`，文案与能力由后端下发）。
-- **技能类内置插件默认关闭**：技能是指令文本、会整体进模型上下文，与 OAuth 那类「不登录就没副作用」的内置插件不是一类——它第一条消息就改变行为。同名时用户的技能优先（bundled rank 600 最低）。给第三方技能随应用分发时，`plugins/<id>/README.md` 必须写清出处、版本、上游 tree 与「哪些上游能力做不到」，面板的 `note` 里也要说——宣传口径大于实际能力是这类分发最伤的失信。
+- **技能类内置插件默认关闭**：技能是指令文本、会整体进模型上下文，与 OAuth 那类「不登录就没副作用」的内置插件不是一类——它第一条消息就改变行为。同名时用户的技能优先（bundled rank 600 最低）。面板 `note` 里必须说清**哪些上游能力做不到**，宣传口径大于实际能力是这类分发最伤的失信。
+- **有上游的插件（`BuiltinSpec::upstream` 非空）：内容不在安装包里**（2026-12）。随包只发适配层；上游的技能正文与 hook 脚本由壳在**启用时**从 npm 拉取、校验 `dist.integrity` 后解包进 `upstream/<版本>/`，按版本分目录。**不要 vendor 进仓库**：vendor 会制造两份内容（仓库里一份、用户手上一份），上游每改一次就要重发一版壳，而「面板写的版本」与「工作台跑的内容」会静默分叉。实测事故：手写转录丢一个逗号，文件大小完全相同而内容位移 122 字节。
+  - 四个触发点：**启用**（首次必然拉，失败**当场拦下**——不能让用户拿到「装上了但没有内容」的插件）、**启动工作台**（24h 节流，失败 30min 短退避且不吃每日额度）、**面板「检查更新」**（force）、**`/ponytail-update`**（force）。「从没试过」必须立刻放行：`now - 0 >= 24h` 那种写法会让刚开机的新装用户永远等不到首次同步，而状态文件是空的、面板上什么都看不出来。
+  - 内核里的技能要让壳去同步，靠 `builtin/bridge.rs`（只绑回环、Bearer 令牌、一代一换）。**端点用 GET + 查询串不用 POST**：本仓的请求读取原语只保证读到请求头，body 可能在同一次 `read` 里到达也可能没有，拿半截缓冲当请求体的症状是「插件名缺失」，查不出原因。
+  - 物化时必须补 `hooks/package.json`（`{"type":"commonjs"}`）：上游 hook 脚本是 CJS，插件根是 `"type": "module"`，Node 按**最近的** package.json 判类型，而 **hook 失败是非阻塞的**——症状是「配好了但什么都没发生」。
+- **Claude Code 形态的 hook 在本内核有现成的桥**：`@deepseek-ai/dsh-hooks-claude-code`，它跑 unmodified 的 Claude Code `hooks.json`。`SessionStartSource = 'startup'|'resume'|'clear'|'compact'` 与 Claude 的 matcher 四个词逐字相同，`hookSpecificOutput.additionalContext` 会被解析并 `agent.inject(...)`。桥**不扫插件目录**（`configPath` 必填），要挂得由 host 适配器 `ctx.plugin(...)`。**写「某能力依赖别家 agent 的私有生命周期钩子、本内核没有」之前先查这个包**——2026-10-12 就因为没查，白扔了 ponytail 的档位切换与会话级注入。
 
 ## 内核安装与跨壳
 

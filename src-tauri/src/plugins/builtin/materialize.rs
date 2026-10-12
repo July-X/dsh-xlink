@@ -560,8 +560,10 @@ mod tests {
     /// 这条是「entries 从模块常量变成参数」的反向验。参数传错成 openai 的
     /// 那份时，`for entry in spec.entries` 会去 `source/client` 找一个根本
     /// 不存在的目录——而报错信息说的是「应用资源可能不完整，请重新安装」，
-    /// 把一个源码侧的错误报成安装包坏了。 ponytail 没有 client / locales，
-    /// 物化必须照样成功。
+    /// 把一个源码侧的错误报成安装包坏了。
+    ///
+    /// 断言写的是**随包那份适配层**（`host` / `adapter`）而不是 `skills`：
+    /// 2026-10-12 起上游内容不再随包走，物化的是适配层，内容另有来源。
     #[test]
     fn a_builtin_without_client_dirs_materializes_its_own_entry_set() {
         let root = temp_dir("ponytail");
@@ -603,15 +605,29 @@ mod tests {
         )
         .unwrap();
         assert!(target.join("host/SKILL.md").is_file());
-        assert!(target.join("skills/SKILL.md").is_file());
+        assert!(
+            target.join("adapter/SKILL.md").is_file(),
+            "适配层（adapter/）必须物化：它是 /ponytail-update 与技能路由的落点"
+        );
+        assert!(
+            !target.join("skills").exists(),
+            "上游内容不再随包走，实例里不该有一份随包的 skills/——\
+             有它就意味着「仓库里那份」与「用户手上那份」又变成两套"
+        );
         assert!(target.join("LICENSE").is_file());
         assert!(!target.join("client").exists());
-        // peer 链接只建它自己那几个。
-        let linked: Vec<String> = fs::read_dir(target.join("node_modules/@deepseek-ai"))
+        // peer 链接**恰好**是它自己那几个：多一个就是多一条会断的链（旧内核装不上
+        // 那个包时物化直接失败），少一个则是运行期 resolve 失败。这里比对整个
+        // 集合而不是「第一个」——ponytail 有两个 peer，写死 `peers[0]` 的断言在
+        // 加第二个 peer 时会**因为少断言而绿**。
+        let mut linked: Vec<String> = fs::read_dir(target.join("node_modules/@deepseek-ai"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(linked, vec![spec.peers[0].to_string()]);
+        linked.sort();
+        let mut expected: Vec<String> = spec.peers.iter().map(|p| p.to_string()).collect();
+        expected.sort();
+        assert_eq!(linked, expected);
         let _ = fs::remove_dir_all(&root);
     }
 
