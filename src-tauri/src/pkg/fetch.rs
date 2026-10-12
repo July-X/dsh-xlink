@@ -241,6 +241,98 @@ pub fn git_latest_tag(source: &str) -> Result<Option<String>, String> {
     Ok(latest_tag(tags.iter().map(|s| s.as_str())))
 }
 
+/// git 是否可用。缺失时给出的提示要能区分「没装」与「装了但跑不起来」——
+/// Windows 上 GUI 子系统的 release 构建只看得到 system PATH，而 Git for
+/// Windows 注册在用户 PATH，于是裸 `Command::new("git")` 会 command not found，
+/// 用户看到的却是误导性的「未找到 git」，尽管他在任何 cmd.exe 里都能跑 git。
+pub fn ensure_git_available() -> Result<(), String> {
+    match crate::shell::process::run_capture("git", &["--version"]) {
+        Ok((true, _)) => Ok(()),
+        _ => Err("未找到 git（git 来源的插件或技能需要 git；请先安装 git）".to_string()),
+    }
+}
+
+/// 浅克隆 `source` 到 `dest`，返回实际 checkout 到的版本标识：`branch` 给了
+/// 就是它，没给则是 HEAD 的短 hash。
+///
+/// 技能与插件两条安装路径的 clone 编排此前**逐字重复**——连超时文案都是同一个
+/// 字符串，于是「clone 该等多久」「失败时把哪一行给用户看」各有两个答案，改一处
+/// 另一处悄悄保持旧行为。本模块的其它取源函数（`git_latest_tag` /
+/// `fetch_npm_package` …）早就是这个共享层，clone 编排是漏在外面的那一处。
+///
+/// 失败时优先摘 git 自己说的那行（`fatal:` / `error:`）——插件侧本来就这么做，
+/// 技能侧原来只取最后一行非空输出，于是 git 打印的真正原因（`repository not
+/// found`）常常被后续进度行挤掉。
+pub fn shallow_clone(
+    source: &str,
+    dest: &Path,
+    branch: Option<&str>,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<String, String> {
+    ensure_git_available()?;
+    let mut cmd = crate::shell::process::command_with_path("git");
+    // git 只认 gitconfig 与 `http_proxy`，看不见操作系统的代理设置——用户在
+    // 系统里配了代理，clone 照样绕开它直连。系统里没配就不注入，照直连。
+    crate::shell::env::apply_proxy_env(&mut cmd);
+    cmd.arg("clone").arg("--depth").arg("1");
+    // `--progress` 是流式捕获的前提：git 察觉输出不是 TTY 时会把进度条从 `\r`
+    // 覆盖改写成逐行，于是每一行都能被立即读出送进进度面板。少了它，12KB/s 的
+    // 直连就是一段十分钟不动的空白——用户分不清「在慢慢拉」和「已经卡死」。
+    cmd.arg("--progress");
+    if let Some(tag) = branch {
+        cmd.arg("--branch").arg(tag);
+    }
+    cmd.arg(source).arg(dest);
+    let cloned =
+        crate::shell::stream::capture(&mut cmd, crate::shell::process::GIT_CLONE_TIMEOUT, |line| {
+            on_progress(line)
+        })
+        .map_err(|e| {
+            if e.kind() == io::ErrorKind::TimedOut {
+                format!(
+                "git clone 超时（{} 分钟）：仓库较大或网络较慢，请重试，或改用带 Release 的来源",
+                crate::shell::process::GIT_CLONE_TIMEOUT.as_secs() / 60
+            )
+            } else {
+                format!("无法运行 git：{e}")
+            }
+        })?;
+    if !cloned.success {
+        let detail = cloned
+            .output
+            .lines()
+            .rev()
+            .find(|line| {
+                let t = line.trim_start();
+                t.starts_with("fatal:") || t.starts_with("error:")
+            })
+            .or_else(|| cloned.output.lines().rev().find(|l| !l.trim().is_empty()))
+            .unwrap_or("")
+            .trim();
+        return Err(if detail.is_empty() {
+            "git clone 失败，请检查地址与网络".to_string()
+        } else {
+            format!("git clone 失败：{detail}")
+        });
+    }
+    if let Some(tag) = branch {
+        return Ok(tag.to_string());
+    }
+    // 没有 semver tag 的仓库克隆的是默认分支：记下 HEAD 短 hash，让 source
+    // marker 仍指向稳定内容，用户也能看出当前拥有的是哪个 commit。
+    let dest_str = dest.to_str().unwrap_or("");
+    let (ok, out) = crate::shell::process::run_capture(
+        "git",
+        &["-C", dest_str, "rev-parse", "--short", "HEAD"],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(if ok {
+        out.trim().to_string()
+    } else {
+        String::from("head")
+    })
+}
+
 // --- spec 拆分 --------------------------------------------------------------
 
 /// 把 npm spec 拆分为 (name, 可选 pin)。scope 前缀之后的最后一个 `@`
