@@ -66,6 +66,7 @@ pub struct AutostartStatus {
 }
 
 /// 自启是否生效（条目在，且指向当前可执行文件）。
+#[allow(dead_code, reason = "「自启条目存在且指向当前可执行文件」")]
 pub fn enabled() -> bool {
     status()
         .map(|status| status.enabled && !status.stale)
@@ -135,6 +136,7 @@ fn current_exe() -> Result<PathBuf, String> {
 /// 命令串的拼装。抽成函数是为了平台层与测试共用一份——Windows 的
 /// 注册表值与 macOS 的 plist 数组是**同一串东西的两种存法**，拼装两处
 /// 写必然会漂（漂了就是「自启命令里没有 `--autostart`」，于是开机弹面板）。
+#[allow(dead_code, reason = "命令串拼装")]
 fn format_command(exe: &Path) -> String {
     format!("\"{}\" {}", exe.display(), AUTOSTART_FLAG)
 }

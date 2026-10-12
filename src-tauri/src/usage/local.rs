@@ -334,6 +334,8 @@ struct ScanItem {
     key: String,
     path: PathBuf,
     cutoff: String,
+    #[allow(dead_code, reason = "扫描结果里记录本文件的起始偏移，用于增量续扫")]
+    #[allow(dead_code, reason = "增量续扫的起点，当前走全量重算")]
     start_offset: u64,
     reset: bool,
 }
@@ -341,6 +343,8 @@ struct ScanItem {
 /// 一个文件的解码结果：`days` 只含本次解码的记录，合账时叠加进旧账。
 struct ScanOutcome {
     key: String,
+    /// 本文件的起始偏移，原为增量续扫保留；当前账目走全量重算，不再回读它。
+    #[allow(dead_code, reason = "增量续扫的起点，当前走全量重算")]
     start_offset: u64,
     reset: bool,
     offset: u64,
@@ -503,7 +507,7 @@ fn newest_variant(dir: &Path) -> Option<PathBuf> {
             }
             digits.parse::<u32>().unwrap_or(0)
         };
-        if best.as_ref().map_or(true, |(v, _)| version > *v) {
+        if best.as_ref().is_none_or(|(v, _)| version > *v) {
             best = Some((version, entry.path()));
         }
     }

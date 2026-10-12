@@ -397,6 +397,20 @@ jobs:
           echo "::endgroup::"
           exit 1
 
+      - name: Assert the embedded WebDriver plugin stayed out of the release build
+        # `tauri-plugin-wdio-webdriver` 在 app 进程内起一个 W3C WebDriver HTTP
+        # 服务（执行脚本、点击、读 cookie、截屏），只监听回环。落进发布产物等于
+        # 给每位用户装一个无鉴权的本机控制口。
+        #
+        # 这条判据单列在 `build` 而不是 `quality`，因为它读的是 cargo 指纹
+        # （`target/release/.fingerprint/` 里记录的**这次构建真的链接了谁**），
+        # 必须在真跑过 release 编译之后才读得到——`quality` job 不做 release
+        # 编译（它只有 fmt / test / clippy），在那里跑只会拿到空对象。
+        #
+        # 判据本体在 scripts/check-webdriver-gating.mjs，workflow 只调它
+        # （与 check-ui-bundle-budget 同款纪律：判据不许在 workflow 里内联）。
+        run: node scripts/check-webdriver-gating.mjs --profile release
+
       - name: Normalize macOS updater asset names
         if: matrix.name == 'macos-intel'
         env:

@@ -313,7 +313,10 @@ const FILE_BUDGETS = {
   // 在 `usage/subscription_codex` 与 `usage/subscription_openai` 各抄一份且
   // 松紧不一（OpenAI 侧只 `split('.').nth(1)`，没有签名段的串照样解出账号）；
   // 收敛到这里后比任何一份抄件都短。68 远低于 600。
-  'src-tauri/src/openai/jwk.rs': 68,
+// 2026-10-12 68 → 69：把 crate 级 allow(dead_code) 换成 item 级后，本文件多出
+  // 一处零调用字段（jwk.kid）的标注行。这是标注成本，不是新逻辑——
+  // 真正的新代码仍然应该拆出去。
+  'src-tauri/src/openai/jwk.rs': 69,
   // 2026-10-09：加密凭据库（P2）。AES-256-GCM（ring）+ 原子替换 + 0600 +
   // 系统凭据库存密钥（mac security CLI / win PasswordVault 走 PowerShell，
   // 不碰 Win32 FFI）。可测逻辑（加解密/文件/分键/生成）注入闭包，密钥库
@@ -362,14 +365,17 @@ const FILE_BUDGETS = {
   // 192 → 193：挑战页判据补 BOM 前缀。U+FEFF 在 Unicode 里不是 White_Space，
   // `trim_start` 不会剥它，而带 BOM 的响应体并不罕见——漏掉它不会误报，只是
   // 让一次挑战页被归成「凭据被拒」，正是这条分支要避免的事。193 远低于 600。
-  'src-tauri/src/openai/transport.rs': 193,
+// 2026-10-12 193 → 194：一处零调用函数的标注行（同上）。
+  'src-tauri/src/openai/transport.rs': 194,
   // 2026-10-09：授权编排（发现→注册→回调→换令牌→验 ID token→入库）。
   // FlowTransport trait 注入传输/时钟/浏览器/密钥库（真实 Keychain 绝不进
   // 测试）；内含模拟授权服务器（开发计划 §10 的 CI 件）与端到端测试。
   // 370 → 373：`read_active_entry`（只读 vault 取活跃条目）顶掉了
   // `account_view` 与 `usage::subscription_openai::active_account` 两份抄件，
   // 后者所在文件净减；此文件净 +3。
-  'src-tauri/src/openai/flow.rs': 373,
+// 2026-10-12 373 → 375：两处零调用项的标注行——MockTransport 的三个未读字段
+  // 归到 struct 一处标注，FlowTransport::post_json 一处（同上）。
+  'src-tauri/src/openai/flow.rs': 375,
   // 2026-10-09：授权命令面（P2）。四条命令围绕 §4.1 授权状态机；授权流
   // 跑后台线程、结束广播 openai-account-changed（UI 不轮询）；薄壳——
   // 能落进 flow.rs 的逻辑都不在这里长。按文件名豁免了新文件登记，照实
@@ -542,7 +548,8 @@ const FILE_BUDGETS = {
   // 放在 `tray::show_main_shell`，而没有任何调用方走它（`lib::show_main_shell` 直接
   // 调本模块），于是登录自启藏起面板后用户点启动项唤回的窗口在任务栏上没有按钮。
   // 净 +2 行；`tray.rs` 同时删掉 7 行，全仓总量不增（TOTAL_BUDGET 不动）。
-  'src-tauri/src/shell/resident.rs': 125,
+// 2026-10-12 125 → 126：一处零调用函数的标注行（同上）。
+  'src-tauri/src/shell/resident.rs': 126,
   'src-tauri/src/shell/menu_bar.rs': 105,
   'src-tauri/src/shell/autostart.rs': 360,
   // 2026-10-02 磁盘占用报表（只读，无删除入口）。独立成模块的理由：
@@ -740,7 +747,8 @@ const FILE_BUDGETS = {
   // 不算成功、跨命令接续后 seq 仍然连续、未知 stage 原样保留）——这几条正是
   // 「结论会骗人」的高发处。
   // 249 → 252 同理：cargo fmt 的换行，不是新增逻辑。
-  'src-tauri/src/diagnostics/operation_run.rs': 252,
+// 2026-10-12 252 → 253：一处零调用常量的标注行（同上）。
+  'src-tauri/src/diagnostics/operation_run.rs': 253,
   // 本地日历时间的换算与格式化（审查 P2-04）。**独立成模块而不是留在
   // process.rs**：那份是反棘轮文件只许变小，而加东西的唯一出路是拆；
   // 更重要的是它此前有三份实现（进程杂项、事件日志、运行记录 id），
@@ -1148,6 +1156,28 @@ const FILE_BUDGETS = {
   // 整个技能栈。搬完之后 skills.rs 1486 → 1454（反棘轮方向），skill_conflict.rs
   // 188 → 155（一套 frontmatter 解析，不是两套）。
   'src-tauri/src/skills/skill_frontmatter.rs': 205,
+  // 「中央库正被**别的进程**写入」的判据（2026-10-11，新建）。技能中央库与活动
+  // 视图是两个壳共享的（有意选的，见 AGENTS.md），而 `manage::lock_store()` 只到
+  // 进程级 Mutex——dev 壳正在装技能时它的 `.tmp-<pid>-<nanos>` 还在，release 壳
+  // 此刻跑启动对账会把它当成上次崩溃的残留回收掉，并把「清单里还没记录、但活动根
+  // 里已有链接」的那份技能当孤儿删掉，正是另一个壳正在装的那一个。
+  // 独立成文件的理由：① manage.rs 反棘轮只剩 30 行余量，这条要连带 pid 判活、
+  // 跨平台分支与 6 个测试（合计约 130 行）放不进去；② 它是**只读判据**（扫目录名
+  // 里的 pid + 判活），与 skill_shadow / skill_frontmatter 同一形状：读判据的人
+  // 和动手的人分开。
+  'src-tauri/src/skills/store_busy.rs': 140,
+  // 技能中央库的**跨进程**互斥锁（2026-10-11，新建）。`manage::lock_store()` 那把
+  // `OnceLock<Mutex<()>>` 只到进程级——中央库与活动视图是两个壳共享的（有意选的，
+  // 见 AGENTS.md），两个壳各装各的技能时各自读到同一份旧 store.json、各自写回，
+  // 后写者把先写者整条覆盖：面板上那个技能查不到、卸载报「不在中央库中」，而目录
+  // 与链接都还在、工作台照常加载，用户无从自查。
+  // 独立成文件的理由：① manage.rs 反棘轮只剩 30 行余量；② 它是**只提供锁**的
+  // 机制层（获取/释放/僵尸锁判活/退避），与 store_busy 的「谁在写」判据、
+  // manage 的「写什么」是三件事，读机制的人不该翻进业务文件。
+  // 为什么不用 fs2/fs4/flock：libc 与 windows-sys 都已在依赖里，用它们不新增任何
+  // crate，而新增依赖要改 Cargo.lock——CI 全线带 --locked，同步不当会在两个平台
+  // 同时炸且报错离真正原因隔好几层。
+  'src-tauri/src/skills/store_lock.rs': 210,
   // 跨壳装包活动信标（2026-09-30，新建）。为什么它该独立成一个文件而不是塞进
   // harness_window.rs：**写**这一侧在 kernel.rs 的装 / 删两端，**读**那一侧在
   // harness_window.rs 的看门狗里，两边都不肯为了对方把自己长成一个什么都管的
@@ -1155,7 +1185,13 @@ const FILE_BUDGETS = {
   // 同一刀法。内容与路径解析都不复杂（46 行代码 + 文档与 2 个测试），复杂的是
   // 「它为什么可以是唯一一处跨壳可变数据」那三条自律，写在 paths.rs 的路径函数上。
   'src-tauri/src/kernel/package_activity.rs': 80,
-  'src-tauri/src/plugins/patches.rs': 1250,
+  // 2026-10-11：补丁的「应用 / 撤销」机制整体删除后，1222 → 85。留下的只有
+  // `applied_patch_ids` 一条只读缝——`diagnostics/snapshot.rs` 要把已应用补丁集
+  // 并进环境指纹，而打过分的老用户磁盘上那份 `state.json` 并不会因为我们删代码
+  // 而消失。连它一起删的话，症状是那批用户升级后「回退点」的判定基准被静默改动，
+  // 而用户什么也没做。应用 / 撤销 / 状态查询 / 清单解析 / 备份与哈希校验全部删除，
+  // 它们一个都没有生产调用方（详见 patches.rs 的模块文档）。
+  'src-tauri/src/plugins/patches.rs': 100,
   // B 类日志 family/instance_id 接入：kernel_log_spec / install_log_spec /
   // current_kernel_log_path / install_version / install_version_into 加形参；
   // attach_log_drainers 改用 family + id。start() legacy 单实例路径硬编码
@@ -1233,7 +1269,10 @@ const FILE_BUDGETS = {
   // SetForegroundWindow）。这是实测逼出来的：只做管道交接时窗口会被拉回
   // 可见，却抢不到前台——Windows 的前台锁对非前台进程静默失败，用户看到的
   // 仍然是"点了没反应"。
-  'src-tauri/src/notify/activate.rs': 280,
+// 2026-10-12 280 → 281：六处 item 级标注，但 activate.rs 原本就有 5 处
+  // #[cfg_attr(not(target_os="windows"), allow(dead_code))]——把 cfg_attr 换成
+  // 裸 allow 让每处从 4 行折行缩成 1 行，六处净增 1 行（见下条）。
+  'src-tauri/src/notify/activate.rs': 281,
   // 2026-09-30：工作台窗口的**手动**逃生口（`harness_force_reload`）。看门狗
   // 只在加载事件上判据，而 WebView2 渲染进程被打崩时页面早就 `Finished` 过，
   // 那条判据永远不会触发，`reload()` 又落在一块死掉的文档上（用户原话：
@@ -1383,6 +1422,14 @@ const FILE_BUDGETS = {
   // 且展开缓存 / 失效时钟 / 错误重试是一块自洽的关注点。202 是剥离注释后的
   // 实测值，远低于 HARD_FILE_CEILING 800。
   'ui/src/kernel/DiskUsageTree.vue': 202,
+  // 控制台日志通道（2026-10-11 新文件）：embedded WKWebView 上没有
+  // `browser.getLogs`（W3C 已移除，实测 TypeError），壳的诊断信息大量只进
+  // console（errors.js 留档、Vue warnHandler、bridge 失败路径），agent 调试
+  // 主壳时对此全盲。本模块把 console 包一层定长环形缓冲挂
+  // `window.__DSH_CONSOLE__`，`browser.execute` 一次取回。独立成模块的理由：
+  // 它是纯逻辑记录器 + 安装器，node 单测直接驱动（9 条），不掺任何面板关注
+  // 点。87 是剥离注释后的实测值，远低于 HARD_FILE_CEILING 800。
+  'ui/src/shell/consoleLog.js': 87,
   'ui/src/kernel/releases.js': 80,
   // 多内核改造 P0：新路径模块（paths.rs）。包含 ShellMode、xlink_home、shell
   // /kernels/skills/state/cache 解析、legacy resolver、id 校验与基础数据
@@ -2447,7 +2494,48 @@ const FILE_BUDGETS = {
 // 47609 → 47581：删掉 plugins.css（−20）、新登记 atomic_write.rs（+93）之外，
 // 本轮五项收敛本身净减——JWT 解码三处合一、agent 构建两份合一、只读 vault 路径
 // 合一、凭据文件不再事后 chmod。总量因此仍低于上一档。
-const TOTAL_BUDGET = 47581;
+// 47581 → 47584（2026-10-11，主壳 WebUI 可调试性）：净 +3，且**全部落在
+// lib.rs**——条件注册插件要两行（`#[cfg(feature = "wdio")]` 与
+// `builder.plugin(tauri_plugin_wdio_webdriver::init())`），这是 Rust 语法要求，
+// 压不成一行：属性只能紧贴在被控制的语句之前；再加上 `let builder =` 与
+// `let app = builder.setup(` 之间的换行，共 +3。
+// **47584 是 `cargo fmt` 之后的实测值**（格式化前量到的是 47583，rustfmt 把
+// `.setup(|app| {` 那一行重新折了一次）。两个数都记在这里，下一个看到差异的人
+// 不用再去猜是逻辑改动还是格式化。
+// 插件本体（WDIO 那 7 个 npm 包）与门禁脚本都在 `src-tauri/src` 与 `ui/src`
+// 之外，不计入本预算。
+// 反棘轮大文件一行未动（本轮没碰 plugins.rs / theme.css / commands.rs）。
+// 47584 → 47673（2026-10-11，控制台日志通道）：consoleLog.js +87（新文件，
+// 登记见上）、main.js +2（最早处的 import 与 `installConsoleCapture()` 一行
+// 调用，注释不计）。通道让 agent 经一次 `browser.execute` 读到壳窗口的全部
+// console 与未捕获异常——补齐 5847f05 那轮「agent 调试能力」实测出的最后
+// 一块盲区。
+// 47673 → 47930（2026-10-11，整仓审计后的两批修复）：
+//
+// **第一批** store_busy.rs（新文件，登记见上）+ manage.rs +18 + mod.rs +1。
+// 对应两个真 bug 修复与三条机械判据：
+// ① `reconcile()` 定义了却没有任何生产调用方，崩溃残留（.backup-*/.new-*/.tmp-*）
+//    无限堆积，而 manage.rs 给用户承诺的「下次启动时 reconcile 会接手」永不兑现；
+// ② 托管 Node 装失败时错误文案指向 `<data_dir>/settings.json`——P1 之后
+//    生产写入早已改到 `shell/<mode>/settings.json`，用户照着改毫无效果；
+// ③ check:invariants 第 25/26 项（AGENTS.md 字节预算 / reconcile 接线）与
+//    store_busy.rs（另一个壳正在装技能时整轮跳过对账，否则刚接上的 reconcile
+//    会回收对方的暂存目录、并把对方正在装的技能当孤儿删掉）。
+//    门禁脚本本身不计入本预算。
+//    manage.rs 那 18 行曾把文件顶到 1500（超 1490 的反棘轮）——按「被规则 ①
+//    拦下就把新逻辑拆出去而不是调数字」处理，第二批里随锁机制一起搬走了。
+//
+// **第二批** store_lock.rs（新文件，登记见上）：跨进程互斥，根治「两个壳各读各
+// 改各写同一份 store.json、后写者把先写者整条覆盖」——面板上那个技能查不到、
+// 卸载报「不在中央库中」，而它的目录与链接都还在、工作台也照常加载，用户无从
+// 自查。manage.rs 净 **−14**（锁机制搬出去 + 删掉因此成死代码的 `lock_store()`
+// 及其 Mutex），回到 1476 < 1490——反棘轮方向。总量净增全在新文件。
+//
+// TOTAL_BUDGET 是软上限（刻意不做只许下调，试过：实践中只会逼人绕过门禁）。
+// 这两次加的都不是业务代码而是「补一块此前整块缺失的能力」，与 47584 → 47673
+// （控制台日志通道）同类。+10 是给 rustfmt 折行抖动留的余量（47583/47584 那次
+// 就是它）。
+const TOTAL_BUDGET = 47930;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

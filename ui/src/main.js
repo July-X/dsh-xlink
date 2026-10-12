@@ -4,6 +4,10 @@
 // 挂载 LogViewerWindow 而非管理壳（不跑轮询 / 预载等面板编排）。
 // URL 带 ?chatstrip=1 时挂载 OfficialChatTabs（官方对话窗口的页签栏，
 // 该 webview 同时承载拉绳挂件，不再有独立的 launcher 路由）。
+// 控制台环形缓冲（window.__DSH_CONSOLE__）必须是**第一个**有副作用的 import：
+// 越早装，早期报错（主题、bridge、参数解析）越进得了 agent 唯一的 console
+// 通道——内嵌 WebDriver 上没有 getLogs，见 shell/consoleLog.js 的模块注释。
+import { installConsoleCapture } from './shell/consoleLog.js';
 import { createApp } from 'vue';
 import { reportRenderError } from './shell/errors.js';
 import { ElAlert } from 'element-plus/es/components/alert/index.mjs';
@@ -107,6 +111,11 @@ const isShellOwnedViewer = isLogViewer || isUsageViewer || isSubscriptionViewer;
 if (usesCustomTitlebar && !isChatStrip) {
   document.body.classList.add('custom-titlebar-shell');
 }
+
+// 控制台通道在**任何组件挂载之前**装好：它要接住的第一批日志恰恰是最早的
+// 那批（主题类缺失、bridge 未注入、URL 参数解析）。壳自己的所有窗口共用
+// 这个入口，因此装一次全覆盖；官网页签栏也装——多一份诊断通道没有坏处。
+installConsoleCapture();
 
 // 右键菜单在壳自己的**所有**窗口里都关掉（主面板 / 日志 / 用量 / 套餐 / 官方
 // 对话页签栏——它们共用这个入口），因此只在这里调一次，且必须早于任何组件

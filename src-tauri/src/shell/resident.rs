@@ -92,6 +92,7 @@ pub const AUTOSTART_FLAG: &str = "--autostart";
 /// 「支持不支持」——而是让**共用代码**可以无条件调用 `hide_to_shell`，
 /// 而不是自己写一遍 `cfg`。Linux 仍然编不过托盘（`tray.rs` 是
 /// `cfg(windows)`），但项目本就不发布 Linux，这里不额外维护一条分支。
+#[allow(dead_code, reason = "doc 自述目的是「让**共用代码**可以无条件调用 …")]
 pub const fn supported() -> bool {
     cfg!(any(target_os = "windows", target_os = "macos"))
 }

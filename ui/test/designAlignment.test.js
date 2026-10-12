@@ -1723,6 +1723,42 @@ test('设置页共五张卡，归属与顺序钉死：左三右二', () => {
   ]);
 });
 
+// --- 设置页：端口行必须一行 -------------------------------------------------
+//
+// 2026-10-11 用户报「端口 + 保存配置折成两行」。根因不是窗口窄，是**默认宽度下
+// 余量本来就只有约 1px**：1040 − 侧栏 224 − main 左右 padding 40 = 776 → 两列
+// 栅格各 382 → 减 .card padding 32 = 350 → 减 label-width 100 = 250 可用；
+// 而这一行要 132(输入框) + 8(gap) + ≈109(按钮) = 249。
+//
+// 判据因此钉**机制的一对**，而不是「某个宽度数字」——宽度数字会随字号、图标、
+// Element 版本一起漂，守它等于守一个必然会作废的巧合。两半缺一，退法还不同：
+//   · 只有 nowrap → 不折行了，但改成横向溢出；main 是 overflow-x: hidden，
+//     按钮右半边直接被裁掉，比折行更难认；
+//   · 只有可收缩 → 仍然折行，因为 `.btn-row` 默认 flex-wrap: wrap，先换行。
+// 只有「不换行 + 输入框肯缩」同时成立，这一行才真的挤得下。
+test('「Web UI 端口 + 保存配置」同行：行不折行，且输入框是可收缩的', () => {
+  assert.equal(effectiveDeclaration(['settings-port-row'], RULES, 'flex-wrap'), 'nowrap');
+  assert.equal(
+    effectiveDeclaration(['settings-port'], RULES, 'flex'),
+    '0 1 132px',
+    '收缩因子必须是 1（0 只让输入框不许缩，缺它就等于没写这条）',
+  );
+  // min-width 是地板。flex 子项的收缩下限默认是 auto（= min-content），
+  // 缺它时收缩压根轮不到输入框，nowrap 就退化成横向裁切。96px 仍放得下
+  // 5 位端口号（上限 65535）与右侧步进器。
+  assert.equal(effectiveDeclaration(['settings-port'], RULES, 'min-width'), '96px');
+  // 模板上这一行必须同时挂两个类：nowrap 挂在没装按钮的别处，下面的
+  // CSS 断言照样全绿。
+  assert.match(settingsTpl, /class="btn-row settings-port-row"/);
+});
+
+test('全局 .btn-row 仍然允许折行（不许拿它当这次修复的杠杆）', () => {
+  // 同页「任务通知」卡的 .settings-form 里还有带说明文字的行（切走或窗口被遮挡
+  // 时才提醒），那些在窄窗口下**应该**折行。把 .btn-row 全局改成 nowrap 会把
+  // 说明文字挤没，而它离这条判据看着无关。
+  assert.equal(effectiveDeclaration(['btn-row'], RULES, 'flex-wrap'), 'wrap');
+});
+
 test('「环境回退与诊断」的 caption 走 head-meta + muted', () => {
   const { left, right } = settingsColumns();
   assert.match(left, cardTitle('环境回退与诊断'));

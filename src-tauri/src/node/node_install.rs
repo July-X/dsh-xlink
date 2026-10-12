@@ -505,12 +505,19 @@ pub(crate) fn verify_or_install(
             // 出路必须指向真实存在的入口：面板的「设置」页只有端口与 profile，
             // 没有 Node 路径输入项，`node_path` 目前只能在 settings.json 里改
             // （P2-7）。
+            //
+            // 2026-10-11 修正：原先这里调 `settings::settings_file(data_dir)`，
+            // 那是 v0.2.x 的平铺路径 `<data_dir>/settings.json`——P1 之后生产写入
+            // 早已改到 `paths::shell_settings_file(mode)`（见 settings.rs 模块
+            // 文档）。那个旧文件从此既没人写也没人读，用户照着这句提示去改它，
+            // 改完没有任何效果。判断「某个路径还在不在用」只能看解析链，
+            // 不能看函数名像不像。
             Err(format!(
                 "托管 Node.js v{MANAGED_NODE_VERSION} 无法运行，已回滚。实际输出：{detail}。\
                  请手动安装 Node.js v{MANAGED_NODE_VERSION} 及以上版本后重试；\
                  也可以在 {} 里把 node_path 指到已有的 node 可执行文件（面板暂未提供该输入项）。\
                  日志：{}",
-                settings::settings_file(data_dir).display(),
+                crate::shell::paths::shell_settings_file(settings::current_mode()).display(),
                 log_path.display()
             ))
         }

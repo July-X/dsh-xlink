@@ -47,6 +47,7 @@ const CAPABILITY_TABLE: &[(&str, Capability)] = &[];
 /// 仍保留为 unknown，并使用服务端返回的 display_name 与顺序。
 struct ModelPresentation {
     slug: &'static str,
+    #[allow(dead_code, reason = "模型展示信息里保留服务端返回的 display_nam…")]
     display_name: &'static str,
     context_window: u64,
     efforts: &'static [&'static str],

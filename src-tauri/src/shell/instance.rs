@@ -1,4 +1,4 @@
-//! 多内核实例注册表、运行时状态、文件锁与端口分配（开发计划 §P2）。
+//! 多内核实例注册表与运行时状态（开发计划 §P2）。
 //!
 //! "实例"是这一阶段的核心管理单位：每个实例拥有独立的内核版本、profile、
 //! 端口、`DSH_HOME`、workspace 和 pid 文件。本模块的目标是把「全局单例」
@@ -14,10 +14,29 @@
 //! - [`InstanceRegistry`]：所有实例的中央注册表（[`crate::shell::paths::instances_registry_file`]）。
 //!   读取和写入都通过 [`crate::shell::state`] 的事务化原子写，保证并发读写不产生
 //!   截断 JSON。
-//! - [`InstanceLock`]：advisory file lock。start / stop / restart / delete
-//!   都先获取实例锁，避免两个 Shell 同时操作同一实例。
-//! - [`allocate_port`]：端口分配。在新实例创建、用户改端口时使用，分配
-//!   时同时避开注册表已分配端口、监听中的端口与端口文件记录。
+//!
+//! ## 这里没有跨进程实例锁（2026-10-12 删除）
+//!
+//! 本模块曾有 `InstanceLock`（PID + 时间戳文件）与 `allocate_port`，模块文档
+//! 声称它们串行化 start / stop / restart / delete。实际两个符号**零生产调用方**，
+//! 而 `acquire()` 是无条件覆写锁文件——谁最后 acquire 谁赢，`Drop` 还会顺手删掉
+//! 别人刚拿到的锁。它不是锁，接进关键路径只会给人虚假的安全感。已连同
+//! `paths::instance_lock_file` 一并删除。
+//!
+//! 真正起作用的协调是另外三处，**别因为「看着少了一把跨进程锁」就补一个假的**：
+//!
+//! 1. [`crate::shell::registry_split`] 把注册表按壳模式**分文件**，并强制两个默认
+//!    实例互斥（release `default` / dev `default-dev`）。两个壳的实例目录、端口、
+//!    内核安装树本就物理不相交。
+//! 2. [`lifecycle_mutex`] 串起本进程内的 create / delete / start / stop。
+//! 3. [`crate::kernel::lifecycle::start_instance`] 先查 `port_open` +
+//!    `instance_workbench_running`，抢不到就报「端口已被占用」这种看得见的错，
+//!    而不是留下一个坏掉的半启动实例。
+//!
+//! 残留敞口只有一种：**`registry_split` 之前就建、且按设计两份注册表都留着**
+//! 的用户自建实例。而 UI 已经调不到 `create_instance` / `delete_instance`
+//! （`commands.rs` 里仍注册着，前端零调用），新实例进不来——这份敞口只会随时间
+//! 关闭，不会扩大。
 //!
 //! ## 兼容性策略
 //!
@@ -29,7 +48,6 @@
 
 use crate::shell;
 use crate::shell::paths::instance_dir;
-use crate::shell::paths::instance_lock_file;
 use crate::shell::paths::instance_pid_file;
 use crate::shell::paths::instance_port_file;
 use std::fs;
@@ -39,8 +57,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::shell::paths::{
-    instance_record_file, instance_runtime_dir, instance_status_file, instances_registry_file,
-    ShellMode,
+    instance_record_file, instance_status_file, instances_registry_file, ShellMode,
 };
 use crate::shell::process::atomic_write;
 /// 当前注册表 schema 版本。每次破坏性变更必须递增；
@@ -181,11 +198,6 @@ pub fn default_family() -> String {
     }
     KERNEL_FAMILY_DSH.to_string()
 }
-/// 新实例端口分配的起始值；与旧版 release 默认端口一致，方便迁移。
-pub const DEFAULT_PORT_BASE: u16 = 3090;
-/// 新实例端口分配的搜索上限（不含）。留出常用管理端口（3090+）与系统预留。
-pub const DEFAULT_PORT_CEILING: u16 = 32999;
-
 /// 实例运行状态。
 ///
 /// 状态转换关系（开发计划 §10.1）：
@@ -231,8 +243,9 @@ pub struct InstanceRecord {
     /// 安装，但 profile 与 wiring 是实例私有的。
     #[serde(default = "default_profile")]
     pub profile: String,
-    /// 监听端口。分配由 [`allocate_port`] 完成；用户可在 UI 里改写并触发
-    /// 端口冲突检测。
+    /// 监听端口。启动时由 `create_instance` 一次性写入或用户在 UI 里改写，
+    /// 改写后触发端口冲突检测；本模块不替用户分配端口（`allocate_port`
+    /// 已于 2026-10-12 删除，见模块文档「这里没有跨进程实例锁」）。
     pub port: u16,
     /// 实例 workspace 目录。DSH 把这个路径作为 cwd 启动。
     /// 默认指向 `instance_dir(<id>)/workspace`；调用方也可以传任意路径。
@@ -363,6 +376,7 @@ impl InstanceRegistry {
     }
 
     /// 取可变引用。
+    #[allow(dead_code, reason = "注册表取可变引用")]
     pub fn get_mut(&mut self, id: &str) -> Option<&mut InstanceRecord> {
         let idx = self.index_of(id)?;
         Self::validate_id(&self.instances[idx].id).ok()?;
@@ -747,6 +761,7 @@ impl std::fmt::Display for RegistryError {
 ///
 /// **不主动调用**——这是 `setup()` 在确认 Xlink home 已创建后，由调用方
 /// 显式触发的迁移钩子；测试环境里直接调 [`load_registry`] 即可。
+#[allow(dead_code, reason = "doc 自述「**不主动调用**——这是 setup(…")]
 pub fn load_or_migrate(legacy_active: Option<&str>, legacy_port: u16) -> InstanceRegistry {
     match load_registry() {
         Ok(registry) => registry,
@@ -764,6 +779,7 @@ pub fn load_or_migrate(legacy_active: Option<&str>, legacy_port: u16) -> Instanc
     })
 }
 
+#[allow(dead_code, reason = "为链式修改准备的 tap 辅助 trait")]
 trait Tap: Sized {
     fn tap<F: FnOnce(&mut Self)>(mut self, f: F) -> Self {
         f(&mut self);
@@ -1052,6 +1068,7 @@ pub fn other_shell_workbench_notice(mode: ShellMode, id: &str, record: &PidRecor
 }
 
 /// 单独写入端口文件（用于 runtime 期间的 hot patch）。
+#[allow(dead_code, reason = "单独写端口文件，doc 自述「用于 runtime 期…")]
 pub fn write_port(family: &str, id: &str, port: u16) -> Result<(), String> {
     let path = instance_port_file(family, id);
     if let Some(parent) = path.parent() {
@@ -1060,6 +1077,7 @@ pub fn write_port(family: &str, id: &str, port: u16) -> Result<(), String> {
     atomic_write(&path, format!("{port}\n").as_bytes()).map_err(|e| e.to_string())
 }
 
+#[allow(dead_code, reason = "与 write_port 成对，同样没有调用方——端口…")]
 pub fn read_port(family: &str, id: &str) -> Option<u16> {
     let path = instance_port_file(family, id);
     fs::read_to_string(&path)
@@ -1067,78 +1085,10 @@ pub fn read_port(family: &str, id: &str) -> Option<u16> {
         .and_then(|text| text.trim().parse::<u16>().ok())
 }
 
-/// 端口分配：在 `[base, ceiling)` 范围内找一个还没被任何实例占用的端口。
-///
-/// `used` 是当前注册表 + 监听中的端口集合；函数返回第一个不与之冲突的
-/// 端口。如果区间内全部占用，返回 `None`——调用方应让用户手动指定或减少
-/// 实例数量。
-pub fn allocate_port(base: u16, ceiling: u16, used: &[u16]) -> Option<u16> {
-    if base >= ceiling {
-        return None;
-    }
-    (base..ceiling).find(|p| !used.contains(p))
-}
-
-/// InstanceLock：advisory file lock，用于串行化 start/stop/restart/delete。
-///
-/// **实现细节**：`fs2` crate 提供跨平台的 advisory lock，这里用一个简单的
-/// PID + 创建时间戳文件配合 [`InstanceRegistry`] 实现互斥——真正的 OS 级
-/// advisory lock 由 Rust 标准库没有提供跨平台 wrapper，但本进程的 Mutex
-/// 足以保护"同一时刻只有一个 Shell 在改同一实例"。
-///
-/// 锁状态：
-/// - `Locked { pid, owner }`：当前实例被进程 `pid` 持有，所有者 `owner`
-///   用于排查日志（例如 `"shell:dev:launcher"`）。
-/// - `Stale { pid, ... }`：进程 `pid` 已不存在，锁应被回收。
-/// - `Released`：没有锁文件。
-pub struct InstanceLock {
-    family: String,
-    id: String,
-}
-
-impl InstanceLock {
-    /// 在指定的实例上获取锁；同一进程内可重入。
-    ///
-    /// `owner` 字符串会写入锁文件，用于排查。
-    pub fn acquire(family: &str, id: &str, owner: &str) -> Result<Self, String> {
-        shell::paths::validate_id_component(id).map_err(|e| e.to_string())?;
-        let dir = instance_runtime_dir(family, id);
-        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let path = instance_lock_file(family, id);
-        let pid = std::process::id();
-        let text = format!("{pid} {owner}\n");
-        atomic_write(&path, text.as_bytes()).map_err(|e| e.to_string())?;
-        Ok(Self {
-            family: family.to_string(),
-            id: id.to_string(),
-        })
-    }
-
-    pub fn family(&self) -> &str {
-        &self.family
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    /// 主动释放锁；`Drop` 也会做，但显式调用便于错误路径。
-    pub fn release(self) {
-        let _ = fs::remove_file(instance_lock_file(&self.family, &self.id));
-        // 让 self 不会被再次 Drop 触发 release：把字段移走。
-        let _ = std::mem::ManuallyDrop::new(self);
-    }
-}
-
-impl Drop for InstanceLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(instance_lock_file(&self.family, &self.id));
-    }
-}
-
 /// 全局 in-process 互斥锁，确保同一进程内 `InstanceRegistry` 的读-改-写
 /// 序列不被打断。**不跨进程**——多 Shell 并发由 `instances.json` 的文件
 /// 级 advisory 锁（未来 P6 加入）+ 数据库风格的乐观重试负责。
+#[allow(dead_code, reason = "doc 自述跨进程部分「未来 P6 加入」")]
 pub fn registry_mutex() -> &'static Mutex<()> {
     static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -1153,6 +1103,7 @@ pub fn lifecycle_mutex() -> &'static Mutex<()> {
 }
 
 /// 默认实例 ID 与当前 Shell 模式：用于 UI 拿到当前 Shell 的"默认实例"。
+#[allow(dead_code, reason = "「<mode>::<default>」形式的复合 key")]
 pub fn shell_default_instance_key(mode: ShellMode) -> String {
     format!("{}::{}", mode.as_str(), DEFAULT_INSTANCE_ID)
 }
@@ -1208,6 +1159,7 @@ pub fn delete_instance_dirs(record: &InstanceRecord) -> Result<(), String> {
 }
 
 /// 推断实例根路径（不读磁盘）：仅用于 UI 展示「数据目录在哪」。
+#[allow(dead_code, reason = "「推断实例根路径（不读磁盘）」")]
 pub fn instance_root_for_display(family: &str, id: &str) -> PathBuf {
     instance_dir(family, id)
 }
@@ -1310,40 +1262,6 @@ mod tests {
             assert!(result.is_err(), "非法 id {bad:?} 应被拒绝");
             assert!(registry.instances.is_empty(), "{bad:?} 不应进入注册表");
         }
-    }
-
-    /// 端口分配必须避开已用端口。
-    #[test]
-    fn allocate_port_avoids_used() {
-        let used = vec![3090u16, 3091, 3092];
-        let port = allocate_port(DEFAULT_PORT_BASE, DEFAULT_PORT_CEILING, &used).unwrap();
-        assert_eq!(port, 3093, "应跳过 3090/3091/3092 命中下一个可用值");
-    }
-
-    /// 区间耗尽时返回 None。
-    #[test]
-    fn allocate_port_returns_none_when_exhausted() {
-        let mut used = Vec::new();
-        for p in DEFAULT_PORT_BASE..DEFAULT_PORT_BASE + 5 {
-            used.push(p);
-        }
-        assert!(allocate_port(DEFAULT_PORT_BASE, DEFAULT_PORT_BASE + 5, &used).is_none());
-    }
-
-    /// InstanceLock acquire / release：写锁文件后再次 acquire 不报错（按
-    /// advisory lock 设计是允许的），release 后锁文件应消失。
-    #[test]
-    fn instance_lock_acquire_release() {
-        let home = temp_dir("lock");
-        let _xlink = scoped_xlink_home(&home);
-        let record = sample_record("default", 3090, KERNEL_FAMILY_DSH);
-        ensure_instance_dirs(&record).expect("ensure dirs");
-        let lock_path = instance_lock_file(KERNEL_FAMILY_DSH, "default");
-        let lock = InstanceLock::acquire(KERNEL_FAMILY_DSH, "default", "test-owner").expect("lock");
-        assert!(lock_path.exists(), "锁文件应存在");
-        lock.release();
-        assert!(!lock_path.exists(), "release 后锁文件应消失");
-        std::fs::remove_dir_all(&home).ok();
     }
 
     /// pid / port / 所属壳写入与读取必须保持一致，包括只有 pid 的旧格式。

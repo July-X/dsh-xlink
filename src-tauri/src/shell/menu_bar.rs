@@ -55,6 +55,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 /// 进程即将结束时留着它毫无意义，而它会一直可点到「一条没有反应的退出」——
 /// macOS 上这个图标属于状态项，进程一死系统就自动移除，这里只是让退出过程中
 /// 那几秒里点它有明确反馈（而不是把一个已关的窗口叫起来）。
+#[allow(dead_code, reason = "退出前隐藏托盘图标")]
 pub fn hide_menu_bar(app: &AppHandle) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_visible(false);
@@ -62,6 +63,7 @@ pub fn hide_menu_bar(app: &AppHandle) {
 }
 
 /// 菜单栏入口是否可用。没有它 macOS 上就没有后台恢复路径。
+#[allow(dead_code, reason = "「菜单栏入口是否可用」")]
 pub fn present(app: &AppHandle) -> bool {
     app.tray_by_id(TRAY_ID).is_some()
 }
@@ -88,7 +90,7 @@ mod tests {
             );
             let mut colors = std::collections::HashSet::new();
             let mut opaque = 0usize;
-            for pixel in rgba.chunks_exact(4) {
+            for pixel in rgba.as_chunks::<4>().0 {
                 colors.insert((pixel[0], pixel[1], pixel[2]));
                 if pixel[3] > 0 {
                     opaque += 1;
