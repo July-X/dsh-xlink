@@ -13,6 +13,12 @@
  * 一致（`lib/index.js`：读 SKILL.md → 剥 frontmatter → 注册 bundled 技能），
  * 抄的是那一份的形状，不是自己另发明一套。
  *
+ * 本文件刻意只留「装配」：候选的字段、解析规则、provider 的两个方法都在
+ * `skills.js` 里——那是**没有外部依赖**的一半，所以 `npm run check` 里的
+ * 冒烟测试能 import 它并真的把 provider 跑一遍。2026-10-12 第一版把这些都写在
+ * 这里，测试只好去读源码文本，于是「`list()` 少填了 source / rank / provider」
+ * 这类错一路绿灯直到真机启动才炸（详见 skills.js 的模块注释）。
+ *
  * ## rank 600（`BUNDLED_SKILL_RANK`）意味着什么
  *
  * 同名时 rank 小的赢：项目级 100/200、壳管理的活动视图 300、内核默认根 400/500、
@@ -27,13 +33,12 @@
  *
  * @module xlink-ponytail
  */
-import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { BUNDLED_SKILL_RANK } from "@deepseek-ai/dsh-skill";
 
-import { parseSkill, readCandidates } from "./skills.js";
+import { createProvider } from "./skills.js";
 
 /** 与 `plugins/ponytail/package.json` 的 `name`、接线行 id 三者同值。 */
 const PACKAGE_ID = "xlink-ponytail";
@@ -42,18 +47,6 @@ const name = PACKAGE_ID;
 const inject = ["skills"];
 /** 技能目录（相对本文件）：包内 `skills/<name>/SKILL.md`。 */
 const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
-/** 本 provider 在技能表里的名字。 */
-const PROVIDER_NAME = "dsh-ponytail";
-
-/** 带中止信号的正文读取；读不出来返回 undefined 而不是抛错——技能表把
- *  undefined 理解成「这个技能没了」，而抛错会让整个发现过程失败。 */
-async function readBody(path, signal) {
-  try {
-    return await readFile(path, { encoding: "utf8", signal });
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * 注册技能 provider。
@@ -61,36 +54,14 @@ async function readBody(path, signal) {
  * @param {object} ctx - 携带技能注册表（`ctx.skills`）的上下文。
  */
 function apply(ctx) {
-  const candidates = readCandidates(SKILLS_DIR);
-  if (candidates.length === 0) {
+  const provider = createProvider(SKILLS_DIR, BUNDLED_SKILL_RANK);
+  if (provider.candidates.length === 0) {
     ctx.logger?.warn?.(`${name}: skills/ 下没有可用的 SKILL.md，ponytail 不注册任何技能`);
     return;
   }
-  const provider = {
-    name: PROVIDER_NAME,
-    list: () => Promise.resolve(candidates),
-    async get(candidate, options) {
-      // 正文**现读**而不是启动时读进内存：物化目录可能在壳启动前被重写
-      // （`builtin::runtime::refresh_enabled`），读一次会拿到上一版的正文。
-      const raw = await readBody(candidate.path, options?.signal);
-      if (raw === undefined) return undefined;
-      const parsed = parseSkill(raw);
-      if (parsed === null) return undefined;
-      return {
-        name: candidate.name,
-        description: candidate.description,
-        content: parsed.body,
-        invocation: { modelInvocable: true, userInvocable: true },
-        provider: PROVIDER_NAME,
-        source: "bundled",
-        rank: BUNDLED_SKILL_RANK,
-        resourceBase: { kind: "directory", path: candidate.directory },
-      };
-    },
-  };
   ctx.skills.registerProvider(() => provider);
   ctx.logger?.info?.(
-    `${name}: 已注册 ${candidates.length} 个技能（${candidates.map((c) => c.name).join(", ")}）`,
+    `${name}: 已注册 ${provider.candidates.length} 个技能（${provider.candidates.map((c) => c.name).join(", ")}）`,
   );
 }
 
