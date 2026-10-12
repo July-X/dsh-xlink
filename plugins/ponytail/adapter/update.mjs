@@ -26,28 +26,42 @@ import { readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** 凭据文件名：与壳的 `bridge_credential.rs`、插件的 `host/bridge-credential.js` 同值。 */
+const CREDENTIAL_FILE = ".xlink-bridge.json";
+
 const url = process.env.DSH_XLINK_BUILTIN_BRIDGE_URL;
 const token = process.env.DSH_XLINK_BUILTIN_BRIDGE_TOKEN;
 const plugin = process.env.PONYTAIL_PLUGIN_ID ?? "ponytail";
 
 // env 不是可靠的那条路（2026-10-12 真机实测）：壳把凭据注进**内核进程**，而这个
-// 脚本是**模型**在工作台里用 shell 工具跑的，那条链不继承内核的环境 —— 当时它
-// 稳定报「找不到同步桥」，而同一时刻内核 pid 的环境里两个变量都在、桥也活着。
-// 壳因此在插件物化根下另写一份 `.xlink-bridge.json`（0600），这里是兜底。
+// 脚本是**模型**在工作台里用 shell 工具跑的，那条链看不到内核的 `DSH_*`（内核给
+// 子进程的环境会把这些名字剔掉）—— 当时它稳定报「找不到同步桥」，而同一时刻内核
+// pid 的环境里两个变量都在、桥也活着。
 //
-// **先 env 后文件**：env 命中时不读盘，读到了也不写回任何地方。
-// 文件路径由本文件自己的位置推出（`adapter/../`），不依赖任何环境变量去猜
-// DSH_HOME —— 而 env 正是这条路上不可靠的那一环，多穿一层就多一处会失效的假设。
+// 所以文件才是主路，而它有两处（**先物化根，后上一级**）：
+//   · `<插件根>/.xlink-bridge.json` —— 壳启动内核时写的，0806 权限 0600。权威。
+//   · `<插件根>/../.xlink-bridge.json` —— 插件自己写的（`host/bridge-credential.js`）。
+//     物化目录被重建时（每次启动内核、面板点「检查更新」都会重建）前者会被带走，
+//     这一份不会；跑着还没写凭据那一步的旧壳时，也只有这一份。
+//
+// **先 env 后文件**：env 命中时不读盘。路径全由本文件自己的位置推出
+// （`adapter/../` 与 `adapter/../../`），不依赖任何环境变量去猜 DSH_HOME ——
+// 而 env 正是这条路上不可靠的那一环，多穿一层就多一处会失效的假设。
+function credentialFiles(here) {
+  return [join(here, "..", CREDENTIAL_FILE), join(here, "..", "..", CREDENTIAL_FILE)];
+}
+
 function readCredentials() {
-  if (url && token) return { url, token, via: "env" };
-  try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const raw = JSON.parse(readFileSync(join(here, "..", ".xlink-bridge.json"), "utf8"));
-    if (typeof raw?.url === "string" && typeof raw?.token === "string" && raw.url && raw.token) {
-      return { url: raw.url, token: raw.token, via: "凭据文件" };
+  if (url && token) return { url, token, via: "env", path: null };
+  for (const path of credentialFiles(dirname(fileURLToPath(import.meta.url)))) {
+    try {
+      const raw = JSON.parse(readFileSync(path, "utf8"));
+      if (typeof raw?.url === "string" && typeof raw?.token === "string" && raw.url && raw.token) {
+        return { url: raw.url, token: raw.token, via: "凭据文件", path };
+      }
+    } catch {
+      /* 这一处没有就试下一处；都没有就走下面那句人话 */
     }
-  } catch {
-    /* 读不到就是读不到，走下面那句人话 */
   }
   return null;
 }
@@ -56,7 +70,7 @@ const credentials = readCredentials();
 
 if (credentials === null) {
   console.error(
-    "找不到桌面壳的同步桥（环境变量与物化目录下的 .xlink-bridge.json 都没有凭据）。"
+    "找不到桌面壳的同步桥（环境变量、物化根下与物化根上一级的 .xlink-bridge.json 都没有凭据）。"
       + "这通常意味着工作台是由壳以外的途径启动的；请在插件面板里点「检查更新」。",
   );
   process.exit(2);
@@ -74,12 +88,16 @@ try {
     // 401 特判：**上一次工作台被强杀**（没走 Drop）时凭据文件会留下，而桥已经
     // 随上一个内核一起没了。通用报错会把它说成「同步失败」，用户会去查网络。
     if (response.status === 401 && credentials.via === "凭据文件") {
-      try {
-        rmSync(join(dirname(fileURLToPath(import.meta.url)), "..", ".xlink-bridge.json"), {
-          force: true,
-        });
-      } catch {
-        /* 删不掉不影响结论 */
+      // 把**带着这枚令牌的每一份**都删掉：落点有两处，只删读到的那一份会让下一次
+      // 读到另一份同样失效的令牌，用户要多撞一次才看到这句人话。
+      for (const path of credentialFiles(dirname(fileURLToPath(import.meta.url)))) {
+        try {
+          if (JSON.parse(readFileSync(path, "utf8"))?.token === credentials.token) {
+            rmSync(path, { force: true });
+          }
+        } catch {
+          /* 没有 / 读不出来 / 删不掉，都不影响结论 */
+        }
       }
       console.error(
         "同步桥的凭据已失效（上次工作台没有正常退出，留下了上一代的令牌）。"

@@ -95,21 +95,31 @@
 
 换内容要**重启工作台**才生效（工作台已经加载过旧的），面板与技能文案都这么说。
 
-### 桥的凭据走两条路（env 那条实测不通）
+### 桥的凭据走三条路（env 那条实测不通）
 
 壳把地址与令牌注进**内核进程**的环境。但 `/ponytail-update` 是**模型**在工作台里
-用 shell 工具执行的，那条链**不继承内核的环境** —— 2026-10-12 用户实测这个脚本
-稳定报「找不到同步桥」，而同一时刻 `ps eww <内核 pid>` 里两个变量都在、桥也活着
-（直接打 `/v1/ping` 返 200，打 `/v1/builtin/sync` 返 `{"version":"5.1.0","error":""}`）。
+用 shell 工具执行的，那条链看不到内核的 `DSH_*`（内核给子进程的环境会把这些名字
+剔掉）—— 2026-10-12 用户实测这个脚本稳定报「找不到同步桥」，而同一时刻
+`ps eww <内核 pid>` 里两个变量都在、桥也活着。
 
-所以壳**另外**在每个已物化插件的根目录写一份 `.xlink-bridge.json`（0600，Unix 上
-只有本人可读；只有自带 `adapter/update.mjs` 的插件才写），脚本 **env 优先、文件兜底**，
-路径由脚本自己的位置推出（`adapter/../`），不依赖环境变量去猜 `DSH_HOME`。
-内核正常停止时文件随桥一起删掉；被强杀时残留的死令牌会得到一句专门的话而不是通用
-的 401。
+所以**落盘**才是主路。脚本 env 优先，盘上按这个顺序找两处：
 
-**这不放宽威胁模型**：令牌原本就在环境变量里，而 macOS 上同用户本来就能用 `ps eww`
-读到它。变的只是传递通道，不是能读到它的人。
+| 落点 | 谁写的 | 什么时候会没有 |
+| --- | --- | --- |
+| `<插件根>/.xlink-bridge.json` | 壳（`bridge_credential.rs`），启动内核时 | 跑着还没这一步的旧壳；或物化目录刚被重建 |
+| `<插件根>/../.xlink-bridge.json` | 插件自己（`host/bridge-credential.js`），加载时 | 内核不是由壳启动的（那时也没有桥可同步） |
+
+两份都是 0600（Unix 上只有本人可读）。插件自己写那一份，是因为物化根**会被重建**：
+我们改了 `skills/`，壳的物化摘要必然对不上，于是每次启动内核、面板每次「检查更新」
+都会 `remove_dir_all` 重建整棵插件目录 —— 壳写的那份当场消失，而插件**不会**跟着
+重新加载。写在**上一级**就躲开了那次重建。
+
+内核正常停止时，插件把自己写的那一代收走（令牌对不上就不动，那是更新的一代）；
+被强杀留下的死令牌会得到一句专门的话而不是通用的 401，并且**带着这枚令牌的每一份**
+都会被删掉。
+
+**这不放宽威胁模型**：令牌原本就在内核进程的环境变量里，而 macOS 上同用户本来就能用
+`ps eww` 读到它。变的只是传递通道，不是能读到它的人。
 
 ## hook 怎么用
 
@@ -162,20 +172,24 @@ hook 配置，所以**上游脚本一个字都不用改**。
 
 ```
 plugins/ponytail/
-  host/index.js                 Host 适配器：应用中文层 + 注册 provider + 挂 hook 桥
+  host/index.js                 Host 适配器：桥凭据落盘 + 应用中文层 + 注册 provider + 挂 hook 桥
   host/skills.js                发现 / 解析 / provider 工厂（无外部依赖，可被测试 import）
   host/i18n.js                  中文覆盖 / 回落（纯文件操作，可被测试 import）
-  adapter/update.mjs            /ponytail-update 的执行体（请求壳同步；env 优先，凭据文件兜底）
+  host/bridge-credential.js     把内核环境里的桥凭据落到物化根上一级（纯文件操作，可被测试 import）
+  adapter/update.mjs            /ponytail-update 的执行体（请求壳同步；env 优先，盘上两处兜底）
   adapter/skills/ponytail-update/SKILL.md
   i18n/zh-CN/manifest.json      逐文件的上游 sha256（陈旧判定的唯一依据）
   i18n/zh-CN/skills/*/SKILL.md  六个技能的中文副本
   test/smoke.test.mjs           跑真实 provider，抄内核的 validateCandidate 校验
   test/i18n.test.mjs            覆盖 / 回落 / 幂等 / 陈旧；拿上游自己的裁剪规则验译文
+  test/bridge-credential.test.mjs  凭据落在哪一级、0600、不重写、只收走自己那一代
+  test/update.test.mjs          脚本与插件之间的契约：起个假桥，真跑一遍那个脚本
   package.json / LICENSE / README.md
 ```
 
-`host/skills.js`、`host/i18n.js` 与 `index.js` 分开是有原因的：前两者**不依赖任何
-`@deepseek-ai` 包**（rank 由调用方传入），所以 `npm run check` 里的测试能 import
-它们并**真的把 provider 与覆盖逻辑跑一遍**。第一版把解析器写在 `index.js` 里，测试
+`host/skills.js`、`host/i18n.js`、`host/bridge-credential.js` 与 `index.js` 分开是有
+原因的：前三个**不依赖任何 `@deepseek-ai` 包**（rank 由调用方传入），所以
+`npm run check` 里的测试能 import 它们并**真的把 provider、覆盖逻辑与凭据落盘各跑
+一遍**。第一版把解析器写在 `index.js` 里，测试
 只好读源码文本，于是「`list()` 少填了 source / rank / provider」一路绿灯直到真机
 启动才炸。

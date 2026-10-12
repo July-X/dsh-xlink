@@ -55,6 +55,7 @@ import * as claudeCodeHooks from "@deepseek-ai/dsh-hooks-claude-code";
 
 import { createProvider } from "./skills.js";
 import { applyLocale } from "./i18n.js";
+import { removeBridgeCredential, writeBridgeCredential } from "./bridge-credential.js";
 
 /** 与 `plugins/ponytail/package.json` 的 `name`、接线行 id 三者同值。 */
 const PACKAGE_ID = "xlink-ponytail";
@@ -118,9 +119,19 @@ function attachHooks(ctx) {
  *
  * 覆盖失败不影响技能可用：applyLocale 内部逐文件兜住，真失败也只是保持上游原文。
  *
+ * 顺带把**桥凭据**落一份盘（`bridge-credential.js`）：`/ponytail-update` 是模型在
+ * 工作台里跑的，看不到内核的环境，盘上那份文件是它唯一的路。
+ *
  * @param {object} ctx - 携带技能注册表（`ctx.skills`）的上下文。
  */
 function apply(ctx) {
+  // 桥凭据先落盘，且**不参与**后面的成败判定：写不下去只记一行，技能照常注册。
+  const credential = writeBridgeCredential(ROOT, process.env);
+  if (credential.written) ctx.logger?.info?.(`${name}: ${credential.reason}`);
+  else if (credential.failed) ctx.logger?.warn?.(`${name}: ${credential.reason}`);
+  // 内核正常停止时收走这一代凭据；盘上那枚令牌不是我们的（换过壳、或内核刚重启）就不动。
+  ctx.effect?.(() => () => removeBridgeCredential(ROOT, process.env), `${name}: 收走桥凭据`);
+
   const locale = applyLocale(ROOT, { logger: ctx.logger, dshHome: process.env.DSH_HOME });
   const provider = createProvider(ROOT, BUNDLED_SKILL_RANK);
   if (provider.candidates.length === 0) {

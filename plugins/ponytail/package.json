@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "dsh-xlink 内置 Ponytail 插件：把随包交付的技能正文注册进内核技能表（无运行时代码、无网络、无凭据）",
+  "description": "dsh-xlink 内置 Ponytail 插件：注册上游技能正文与 hook 桥，并把内核环境里的同步桥凭据落一份 0600 的盘（供 /ponytail-update）",
   "main": "host/index.js",
   "exports": {
     ".": "./host/index.js",
