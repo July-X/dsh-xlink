@@ -293,7 +293,7 @@ fn windows_keyring_get_script(service: &str, account: &str) -> String {
         "try{{\
            $v=[Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]::new();\
            $hit=@($v.RetrieveAll() | Where-Object {{ $_.Resource -eq '{service}' -and $_.UserName -eq '{account}' }});\
-           if($hit.Count -eq 0){{Write-Output '__DSH_NOT_FOUND__'}}else{{Write-Output $hit[0].RetrievePassword()}}\
+           if($hit.Count -eq 0){{Write-Output '__DSH_NOT_FOUND__'}}else{{$hit[0].RetrievePassword();Write-Output $hit[0].Password}}\
          }}catch{{Write-Output ('__DSH_ERR__:' + $_.Exception.Message)}}"
     )
 }
@@ -606,6 +606,10 @@ mod tests {
         assert_eq!(script.matches("try{").count(), 1, "{script}");
         assert_eq!(script.matches("catch{").count(), 1, "{script}");
         assert!(script.contains("__DSH_ERR__:"), "{script}");
+        assert!(
+            script.contains("$hit[0].RetrievePassword();Write-Output $hit[0].Password"),
+            "RetrievePassword 返回 void；必须随后输出 Password 属性：{script}"
+        );
         // ③ 花括号配平：`format!` 里字面花括号要写成 `{{`/`}}`，漏一个就产出
         //    语法错误的脚本——而它只在 Windows 上才会暴露。
         assert_eq!(
@@ -622,5 +626,40 @@ mod tests {
             !script.contains("{service}") && !script.contains("{account}"),
             "占位符没被展开：{script}"
         );
+    }
+
+    /// 执行真实查询脚本，但用内存对象替代 PasswordVault，绝不访问系统凭据库。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_keyring_script_reads_loaded_password_and_classifies_failures() {
+        let query = windows_keyring_get_script("svc", "acct").replace(
+            "[Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]::new()",
+            "$fixture",
+        );
+        assert!(!query.contains("PasswordVault"), "必须先替换真实凭据库");
+        let fixture = "$credential=[pscustomobject]@{Resource='svc';UserName='acct';Password=''};\
+            $credential | Add-Member ScriptMethod RetrievePassword {$this.Password='fixture-key'};\
+            $fixture=[pscustomobject]@{Entry=$credential};\
+            $fixture | Add-Member ScriptMethod RetrieveAll {if($null -ne $this.Entry){$this.Entry}};";
+        for (setup, expected) in [
+            ("", "fixture-key"),
+            ("$fixture.Entry=$null;", KEYRING_NOT_FOUND_MARKER),
+            ("$fixture.Entry.UserName='different-account';", KEYRING_NOT_FOUND_MARKER),
+            ("$credential | Add-Member ScriptMethod RetrievePassword {throw 'fixture-denied'} -Force;", "__DSH_ERR__:fixture-denied"),
+        ] {
+            let mut cmd = std::process::Command::new("powershell");
+            cmd.args(["-NoProfile", "-NonInteractive", "-Command", &format!("{fixture}{setup}{query}")]);
+            crate::shell::process::quiet(&mut cmd);
+            let output = cmd.output().unwrap();
+            assert!(output.status.success(), "模拟查询脚本执行失败");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // ScriptMethod 的异常可能包一层 MethodInvocationException，保留原因即可。
+            if expected.starts_with("__DSH_ERR__:") {
+                assert!(stdout.trim().starts_with("__DSH_ERR__:"));
+                assert!(stdout.contains("fixture-denied"));
+            } else {
+                assert_eq!(stdout.trim(), expected);
+            }
+        }
     }
 }
