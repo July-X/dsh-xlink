@@ -144,8 +144,10 @@ fn strip_root(path: &Path, expected_root: &str) -> Result<PathBuf, String> {
     Ok(relative)
 }
 
-const MAX_ARCHIVE_ENTRIES: u64 = 100_000;
-const MAX_UNPACKED_BYTES: u64 = 512 * 1024 * 1024;
+/// 解包资源上限沿用 [`crate::pkg::archive`] 的同一组数值——本文件有两套解包
+/// 器（tar.gz 与 zip），此前各自抄了一份常量。阈值只有一份的理由写在那边：
+/// 数值漂移不会被任何测试发现，但会让两个平台分支给出不同的资源上限。
+use crate::pkg::archive::{MAX_ARCHIVE_ENTRIES, MAX_UNPACKED_BYTES};
 
 /// darwin：只保留 `bin/node`、`LICENSE` 与 `lib/node_modules/npm/`。
 #[cfg(not(windows))]

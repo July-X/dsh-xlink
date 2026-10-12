@@ -12,8 +12,16 @@ use tar::Archive;
 
 const ARCHIVE_ROOT: &str = "package";
 const EXTRACT_DIR: &str = ".dsh-extract";
-const MAX_ARCHIVE_ENTRIES: u64 = 100_000;
-const MAX_UNPACKED_BYTES: u64 = 512 * 1024 * 1024;
+/// 解包资源上限。**与 [`crate::node::node_install`] 共用同一组数值**——那里
+/// 有两份解包实现（tar.gz 走白名单抽取、zip 走全量），各自抄了一份这两个常量。
+///
+/// 只收敛常量、不合并实现：两种策略是有意不同的（这里拒绝符号链接并两段式发布，
+/// node 那边跳过链接、按 `bin/node` / `LICENSE` / `lib/node_modules/npm/` 白名单抽取
+/// 并保留可执行位，官方 dist 的 `bin/npm` 就是符号链接）。但**阈值必须只有一份**
+/// ——两边各写一个数值，改一边忘了另一边，zip 分支与 tar 分支就会给出不同的
+/// 资源上限，而这种漂移没有任何测试会响。
+pub(crate) const MAX_ARCHIVE_ENTRIES: u64 = 100_000;
+pub(crate) const MAX_UNPACKED_BYTES: u64 = 512 * 1024 * 1024;
 
 fn archive_relative_path(
     path: &Path,
