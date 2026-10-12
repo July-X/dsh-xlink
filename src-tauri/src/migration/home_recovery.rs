@@ -96,6 +96,7 @@ pub struct MisplacedScan {
     pub workspaces: Vec<MisplacedWorkspace>,
 }
 
+#[allow(dead_code, reason = "两个未被读走的方法：is_empty / total_…")]
 impl MisplacedScan {
     /// 没有任何可回收内容。
     pub fn is_empty(&self) -> bool {

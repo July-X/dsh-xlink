@@ -41,6 +41,7 @@ pub(crate) struct FlowPaths {
 
 /// 传输与环境的注入面。生产实现走 [`transport`] 与系统浏览器；测试实现
 /// 连本文件的模拟授权服务器（trait 而不是 fn 指针：要捕获回环端口）。
+#[allow(dead_code, reason = "授权流程的传输层抽象")]
 pub(crate) trait FlowTransport {
     fn get_json(&self, url: &str) -> Result<String, Failure>;
     fn post_json(&self, url: &str, body: &str) -> Result<String, Failure>;
@@ -72,6 +73,7 @@ pub(crate) struct AccountView {
     pub(crate) reauth_required: bool,
 }
 
+#[allow(dead_code, reason = "registration.json 的路径")]
 fn registration_file(mode_dir: &Path) -> PathBuf {
     mode_dir.join("registration.json")
 }
@@ -677,6 +679,7 @@ pub(crate) mod tests {
     /// 假浏览器：解析授权 URL → 记 nonce/state → 直接对 redirect_uri
     /// 发一次回调（模拟用户在授权页点完「继续」）。`deny_in_browser`
     /// 模拟用户在授权页点了拒绝。
+    #[allow(dead_code, reason = "仅供本文件 #[cfg(test)] 使用的模拟授权服…")]
     pub(crate) struct MockTransport {
         port: u16,
         session: Arc<Mutex<Option<(String, String)>>>,

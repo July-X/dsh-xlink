@@ -166,6 +166,7 @@ pub fn probe_once(
 ///
 /// 只有 `ProbeResult` 需要，二分会话的类型在 `bisect.rs` 里；把转换放在
 /// 调用方，避免两个模块互相依赖。
+#[allow(dead_code, reason = "Verdict → 文案的薄封装")]
 pub fn outcome_label(verdict: Verdict) -> &'static str {
     verdict.as_str()
 }

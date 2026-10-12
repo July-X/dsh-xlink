@@ -201,6 +201,7 @@ pub struct MigrationPreview {
 
 impl MigrationPreview {
     /// 至少有一条**实际可迁移**的来源（存在且非空）。
+    #[allow(dead_code, reason = "预览里是否至少有一条可迁移来源")]
     pub fn has_migratable(&self) -> bool {
         self.items
             .iter()
@@ -311,6 +312,7 @@ pub struct MigrationProgress {
 /// `migration_id` 决定 backup 目录名（`<xlink_home>/backups/<id>/`）；
 /// 同一 id 多次跑视为同一迁移的后续动作（旧 backup 不会被覆盖——后面
 /// 会带递增后缀）。
+#[allow(dead_code, reason = "不带进度回调的迁移入口")]
 pub fn run_migration(policy: ConflictPolicy) -> Result<MigrationReport, AppError> {
     run_migration_with_progress(policy, |_progress| {})
 }

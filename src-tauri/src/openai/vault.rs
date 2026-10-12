@@ -222,6 +222,7 @@ fn hex32(text: &str) -> Result<[u8; 32], ()> {
 const KEYCHAIN_ITEM_NOT_FOUND: i32 = 44;
 
 /// Windows 脚本用来表示「枚举完了，确实没有这条」的标记。
+#[allow(dead_code, reason = "Windows 专属：唯一的生产读点在 316 行的 …")]
 const KEYRING_NOT_FOUND_MARKER: &str = "__DSH_NOT_FOUND__";
 
 #[cfg(target_os = "macos")]
@@ -288,6 +289,7 @@ pub(crate) fn keyring_put(service: &str, account: &str, secret: &str) -> Result<
 /// 在 Windows 上执行，而它一旦写错（花括号漏转义、续行符吃掉关键字符），
 /// 在别的平台上没有任何机制会发现——所以把它抽出来，让任意平台都能对最终
 /// 字面量做断言。
+#[allow(dead_code, reason = "Windows 专属：生产只由 Windows 的 k…")]
 fn windows_keyring_get_script(service: &str, account: &str) -> String {
     format!(
         "try{{\

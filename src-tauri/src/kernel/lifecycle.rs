@@ -50,6 +50,7 @@ use crate::shell::paths;
 /// 旧 fixture 测试使用；`kernel::data_dir` 已经切到
 /// [`crate::shell::paths::family_runtime_dir`]（`xlink_home/<family>/desktop[-dev]/`），
 /// 不再依赖这条常量。
+#[allow(dead_code, reason = "doc 自述「旧 fixture 测试使用")]
 pub const DSH_HOME_DIR_NAME: &str = ".dsh";
 /// 内核 web 服务器的默认端口。debug 构建默认为 3091（比 release 的 3090 多一），
 /// 这样 `tauri dev` 与已安装的 release 壳可以在同一台机器上运行而不会在 loopback 上
@@ -612,6 +613,7 @@ pub fn with_active(installed: &mut [InstalledVersion], active: Option<&str>) {
 }
 
 /// 组装完整的状态快照。
+#[allow(dead_code, reason = "组装完整内核状态快照")]
 pub fn status(data_dir: &Path, settings: &Settings) -> KernelStatus {
     let mut perf = crate::diagnostics::perf::PerfSample::disabled();
     // 调用方只给了 settings；warning 在这里补一次读。status() 走的是一次性
@@ -1773,6 +1775,7 @@ pub fn instance_active_version(family: &str, id: &str) -> Option<String> {
 }
 
 /// 切换实例的内核版本。仅在实例未运行时允许切换。
+#[allow(dead_code, reason = "「切换实例的内核版本，仅在未运行时允许」")]
 pub fn set_instance_active_version(
     family: &str,
     id: &str,

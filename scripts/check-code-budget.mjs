@@ -313,7 +313,10 @@ const FILE_BUDGETS = {
   // 在 `usage/subscription_codex` 与 `usage/subscription_openai` 各抄一份且
   // 松紧不一（OpenAI 侧只 `split('.').nth(1)`，没有签名段的串照样解出账号）；
   // 收敛到这里后比任何一份抄件都短。68 远低于 600。
-  'src-tauri/src/openai/jwk.rs': 68,
+// 2026-10-12 68 → 69：把 crate 级 allow(dead_code) 换成 item 级后，本文件多出
+  // 一处零调用字段（jwk.kid）的标注行。这是标注成本，不是新逻辑——
+  // 真正的新代码仍然应该拆出去。
+  'src-tauri/src/openai/jwk.rs': 69,
   // 2026-10-09：加密凭据库（P2）。AES-256-GCM（ring）+ 原子替换 + 0600 +
   // 系统凭据库存密钥（mac security CLI / win PasswordVault 走 PowerShell，
   // 不碰 Win32 FFI）。可测逻辑（加解密/文件/分键/生成）注入闭包，密钥库
@@ -362,14 +365,17 @@ const FILE_BUDGETS = {
   // 192 → 193：挑战页判据补 BOM 前缀。U+FEFF 在 Unicode 里不是 White_Space，
   // `trim_start` 不会剥它，而带 BOM 的响应体并不罕见——漏掉它不会误报，只是
   // 让一次挑战页被归成「凭据被拒」，正是这条分支要避免的事。193 远低于 600。
-  'src-tauri/src/openai/transport.rs': 193,
+// 2026-10-12 193 → 194：一处零调用函数的标注行（同上）。
+  'src-tauri/src/openai/transport.rs': 194,
   // 2026-10-09：授权编排（发现→注册→回调→换令牌→验 ID token→入库）。
   // FlowTransport trait 注入传输/时钟/浏览器/密钥库（真实 Keychain 绝不进
   // 测试）；内含模拟授权服务器（开发计划 §10 的 CI 件）与端到端测试。
   // 370 → 373：`read_active_entry`（只读 vault 取活跃条目）顶掉了
   // `account_view` 与 `usage::subscription_openai::active_account` 两份抄件，
   // 后者所在文件净减；此文件净 +3。
-  'src-tauri/src/openai/flow.rs': 373,
+// 2026-10-12 373 → 375：两处零调用项的标注行——MockTransport 的三个未读字段
+  // 归到 struct 一处标注，FlowTransport::post_json 一处（同上）。
+  'src-tauri/src/openai/flow.rs': 375,
   // 2026-10-09：授权命令面（P2）。四条命令围绕 §4.1 授权状态机；授权流
   // 跑后台线程、结束广播 openai-account-changed（UI 不轮询）；薄壳——
   // 能落进 flow.rs 的逻辑都不在这里长。按文件名豁免了新文件登记，照实
@@ -542,7 +548,8 @@ const FILE_BUDGETS = {
   // 放在 `tray::show_main_shell`，而没有任何调用方走它（`lib::show_main_shell` 直接
   // 调本模块），于是登录自启藏起面板后用户点启动项唤回的窗口在任务栏上没有按钮。
   // 净 +2 行；`tray.rs` 同时删掉 7 行，全仓总量不增（TOTAL_BUDGET 不动）。
-  'src-tauri/src/shell/resident.rs': 125,
+// 2026-10-12 125 → 126：一处零调用函数的标注行（同上）。
+  'src-tauri/src/shell/resident.rs': 126,
   'src-tauri/src/shell/menu_bar.rs': 105,
   'src-tauri/src/shell/autostart.rs': 360,
   // 2026-10-02 磁盘占用报表（只读，无删除入口）。独立成模块的理由：
@@ -740,7 +747,8 @@ const FILE_BUDGETS = {
   // 不算成功、跨命令接续后 seq 仍然连续、未知 stage 原样保留）——这几条正是
   // 「结论会骗人」的高发处。
   // 249 → 252 同理：cargo fmt 的换行，不是新增逻辑。
-  'src-tauri/src/diagnostics/operation_run.rs': 252,
+// 2026-10-12 252 → 253：一处零调用常量的标注行（同上）。
+  'src-tauri/src/diagnostics/operation_run.rs': 253,
   // 本地日历时间的换算与格式化（审查 P2-04）。**独立成模块而不是留在
   // process.rs**：那份是反棘轮文件只许变小，而加东西的唯一出路是拆；
   // 更重要的是它此前有三份实现（进程杂项、事件日志、运行记录 id），
@@ -1261,7 +1269,10 @@ const FILE_BUDGETS = {
   // SetForegroundWindow）。这是实测逼出来的：只做管道交接时窗口会被拉回
   // 可见，却抢不到前台——Windows 的前台锁对非前台进程静默失败，用户看到的
   // 仍然是"点了没反应"。
-  'src-tauri/src/notify/activate.rs': 280,
+// 2026-10-12 280 → 281：六处 item 级标注，但 activate.rs 原本就有 5 处
+  // #[cfg_attr(not(target_os="windows"), allow(dead_code))]——把 cfg_attr 换成
+  // 裸 allow 让每处从 4 行折行缩成 1 行，六处净增 1 行（见下条）。
+  'src-tauri/src/notify/activate.rs': 281,
   // 2026-09-30：工作台窗口的**手动**逃生口（`harness_force_reload`）。看门狗
   // 只在加载事件上判据，而 WebView2 渲染进程被打崩时页面早就 `Finished` 过，
   // 那条判据永远不会触发，`reload()` 又落在一块死掉的文档上（用户原话：

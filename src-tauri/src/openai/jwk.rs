@@ -13,6 +13,7 @@ use ring::signature::{RsaPublicKeyComponents, RSA_PKCS1_2048_8192_SHA256};
 
 /// 一个 RSA JWK 的最小字段（JWKS 里 `kty=RSA` 的条目）。
 pub(crate) struct RsaJwk {
+    #[allow(dead_code, reason = "JWK 的 kid 与 openai/auth.rs …")]
     pub(crate) kid: Option<String>,
     pub(crate) n: Vec<u8>,
     pub(crate) e: Vec<u8>,

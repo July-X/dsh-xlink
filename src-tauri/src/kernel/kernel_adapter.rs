@@ -54,6 +54,7 @@ pub enum AdapterCapability {
 }
 
 impl AdapterCapability {
+    #[allow(dead_code, reason = "能力枚举的字符串形式")]
     pub const fn as_str(self) -> &'static str {
         match self {
             AdapterCapability::InstallVersion => "install-version",
@@ -85,6 +86,7 @@ impl AdapterCapabilities {
         (self.flags & (1 << (cap as u32))) != 0
     }
 
+    #[allow(dead_code, reason = "能力位掩码 → 能力列表")]
     pub fn list(self) -> Vec<AdapterCapability> {
         [
             AdapterCapability::InstallVersion,
@@ -104,6 +106,10 @@ pub type KernelFamily = str;
 /// 适配器错误族。每个变体附带可操作的修复建议——调用方负责把
 /// `AppError` 翻译成 UI 文案。
 #[derive(Debug, Clone)]
+#[allow(
+    dead_code,
+    reason = "四个未被构造的变体：预留的错误形态（端口被无关进程占用…"
+)]
 pub enum AdapterError {
     /// 实例记录指向的版本未在 versions 目录里，也不在 legacy data_dir。
     VersionNotInstalled { family: String, version: String },
@@ -172,6 +178,7 @@ pub trait KernelAdapter: Send + Sync {
     fn capabilities(&self) -> AdapterCapabilities;
 
     /// 描述适配器的人类可读名字（UI 上展示）。
+    #[allow(dead_code, reason = "trait 方法，doc 说「UI 上展示」")]
     fn display_name(&self) -> &'static str;
 
     /// 定位版本安装根目录：`kernels/<family>/versions/<version>/`。
@@ -183,6 +190,7 @@ pub trait KernelAdapter: Send + Sync {
 
     /// 验证 `version` 字符串是否符合规范。DSH 默认是 semver，可由适配器
     /// 自定义更严格的版本形态。
+    #[allow(dead_code, reason = "trait 方法，校验版本号是否适配本适配器")]
     fn validate_version(&self, version: &str) -> Result<(), String>;
 
     /// 准备实例目录：按内核族惯例创建 `home / profile / sessions / ...` 子目录，
@@ -541,6 +549,7 @@ impl KernelAdapter for McodeAdapter {
 ///
 /// 返回 `Ok(install_root)` 表示找到了 `node_modules/@deepseek-ai/dsh/lib/bin.js`；
 /// 返回 `Err(AdapterError::VersionNotInstalled)` 表示两处都没有。
+#[allow(dead_code, reason = "lib.rs 的死代码策略段点名的「第二内核接入入口」…")]
 pub fn resolve_install_root(
     record: &InstanceRecord,
     legacy_install_root: &Path,

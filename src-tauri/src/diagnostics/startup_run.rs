@@ -79,6 +79,7 @@ pub(crate) fn passed(
 }
 
 /// 记录一个进行中的阶段。
+#[allow(dead_code, reason = "「记录一个进行中的阶段」")]
 pub(crate) fn running(
     send: &mut dyn FnMut(&str),
     recorder: &mut run::Recorder,
