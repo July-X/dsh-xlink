@@ -108,6 +108,10 @@ pub(crate) fn ensure_wired(
     materialize::materialize(
         spec,
         plugin_source,
+        // 有上游的插件：内容从数据目录里已同步的那一版取。`None` 时
+        // `materialize` 会明确报「还没同步过」——而不是物化出一个只有适配层的
+        // 空壳，空壳的症状是工作台里没有技能而界面上看不出任何异常。
+        crate::plugins::builtin::upstream::resolve_dir(dsh_home, spec).as_deref(),
         &dir,
         kernel_root,
         &version,
@@ -276,6 +280,11 @@ mod tests {
             }
             fs::create_dir_all(dir.join("host")).unwrap();
             fs::write(dir.join("host/index.js"), "export {}").unwrap();
+            // 有上游的插件需要一份「已同步」的内容，否则物化会（正确地）拒绝：
+            // 那份拒绝是本次修掉的洞——空壳在界面上看不出任何异常。
+            if spec.upstream.is_some() {
+                crate::plugins::builtin::upstream::seed_fixture(&self.home(), spec);
+            }
             dir
         }
 
