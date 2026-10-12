@@ -39,6 +39,11 @@ rank 600 低于壳管理的活动视图（300）与内核默认根（400/500）�
 | 许可 | MIT（`LICENSE`，逐字照抄） |
 | 归入本仓 | 2026-10-12 |
 
+同一份出处也记在 `package.json` 的 `xlinkUpstream` ——**刻意不进 `dsh` 命名空间**：
+内核的 `DshManifest` 是封闭接口，只有 `manifestVersion` / `bundle` / `profile` /
+`client` 四个键（`@deepseek-ai/dsh-package-manifest`），往里塞自己的一摊等于在保留
+命名空间里写未知键，眼下没人校验，内核哪天加个严格校验就会拒掉这个插件。
+
 `skills/` 下的六个文件是**上游原文的逐字副本**，未做任何修改——包括 `ponytail-help`
 里那些讲 Claude Code / Codex 的段落（那是上游给别的宿主写的说明，对本插件不适用，
 但改动 vendored 内容会让「我们分发的是哪一版」这件事无从核对）。面向 dsh 的
