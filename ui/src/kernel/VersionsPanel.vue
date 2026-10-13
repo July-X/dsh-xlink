@@ -600,6 +600,11 @@ function groupTip(group) {
   position: relative;
   z-index: 2;
   flex-wrap: nowrap;
+  /* 全局那一档是 8px，本页跟着上面两处块标题一起抬到 12px：「官方版本」也是
+     「方块 + 标题」的同一形状（同一个 `.card-title-icon`），只抬两处会在同一屏
+     留下第三档间距。动作组靠 `margin-left: auto` 顶到右端，这个 gap 只落在
+     方块与标题之间——右侧那排「标志 / 时间 / 两个按钮」的紧凑间距不受影响。 */
+  gap: 12px;
 }
 .official-version-title {
   flex: 0 0 auto;
@@ -672,12 +677,23 @@ function groupTip(group) {
   padding-bottom: 2px;
 }
 
-.disk-usage h2 {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin: 0;
-  font-size: var(--fs-block-title);
+/* 块标题里那枚 accent 方块（`.card-title-icon`）与标题文字之间的间隔：
+   `.card h2` 的 8px 在这一屏偏挤，而原先那条 `.disk-usage h2` 的 scoped 覆盖把它
+   压到 **4px**——方块几乎顶在字上，「磁盘用量」整行读成「图标 + 一个词」而不是
+   「图标 + 标题」，同一屏的「已安装」又是另一档。2026-10-13 用户要求「增加 UI 和
+   文字标题的间隔」，本页两处块标题因此收成同一个数：**12px**。
+
+   一条规则而不是两条覆写：两处都在 `.card-head` 里，写两条就多一个能各自漂移的
+   真相源，而「同屏两个块标题两个间距」正是这条要治的病。ⓘ 与标题文字之间走同一个
+   gap（原先 4px，同样贴字）。
+
+   `.disk-usage h2` 那条随之删除：它的五条声明与 `.card h2` 逐条同值，唯一不同的
+   就是那个 4px——把它留在原地就成了一条什么都不做的重复规则。
+
+   **纯横向**：gap 不参与行高，本页「不许出页面级纵向滚动条」那条约束不受影响，
+   也不需要从发布列表（`flex: 1 1 auto`）那里借高度。 */
+.kernel-card .card-head h2 {
+  gap: 12px;
 }
 
 .usage-total {
