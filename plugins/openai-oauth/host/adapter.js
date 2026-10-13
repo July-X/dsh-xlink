@@ -21,6 +21,9 @@ export class BridgeAdapter extends LlmAdapter {
     this.catalogRevision = undefined;
     this.modelsById = new Map();
     this.catalogView = undefined;
+    // 常用模型（设置页勾选的那一份）：**只用来过滤 listModels**。
+    // undefined = 载荷没带（旧壳 / 冒烟桩）或集合为空 → 不过滤。
+    this.selectedIds = undefined;
     this.context = context;
   }
 
@@ -37,12 +40,28 @@ export class BridgeAdapter extends LlmAdapter {
     this.catalogRevision = String(catalog.revision ?? "");
     this.modelsById = new Map(catalog.models.map((model) => [String(model.id), model]));
     // 目录视图（buildEnvelope 用）：revision 由桥接拼好（目录|能力表双版本）。
+    // **完整目录**：发送前的 revision / 白名单校验按账号目录走，不受常用
+    // 模型勾选影响。
     this.catalogView = { revisionCombined: this.catalogRevision, entries: catalog.models };
+    this.selectedIds =
+      Array.isArray(catalog.selected) && catalog.selected.length > 0
+        ? new Set(catalog.selected.map(String))
+        : undefined;
   }
 
+  /**
+   * 会话选择器里列出的模型 = 账号目录 ∩ 常用模型。
+   *
+   * `resolveModel` 刻意**不过滤**（见下）：取消勾选某个模型之后，已经用着
+   * 它的会话仍要能解析出模型，否则报的是 `MODEL_NOT_IN_CATALOG`——那条
+   * 会话的报错出现在会话里，而原因在设置页的勾选框上，查起来对不上号。
+   */
   async listModels(provider, signal) {
     await this.#refreshCatalog(signal);
-    return [...this.modelsById.values()].map((model) => ({
+    const models = [...this.modelsById.values()].filter(
+      (model) => this.selectedIds === undefined || this.selectedIds.has(String(model.id)),
+    );
+    return models.map((model) => ({
       provider,
       id: String(model.id),
       name: String(model.name ?? model.id),

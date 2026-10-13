@@ -18,6 +18,7 @@ pub(crate) mod http;
 pub(crate) mod inference;
 pub(crate) mod jwk;
 pub(crate) mod refresh;
+pub(crate) mod selection;
 pub(crate) mod transport;
 pub(crate) mod vault;
 

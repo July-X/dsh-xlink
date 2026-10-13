@@ -338,10 +338,22 @@ pub(crate) fn launch_env(
         return Vec::new();
     }
     match ensure_bridge(family, instance_id) {
-        Ok((url, token)) => vec![
-            (builtin::BRIDGE_URL_ENV.to_string(), url),
-            (builtin::BRIDGE_TOKEN_ENV.to_string(), token),
-        ],
+        Ok((url, token)) => {
+            // 常用模型偏好文件的路径也一并递过去：Host 只用它做变更通知
+            // （文件一变就重新广播一次适配器注册，已打开的页面随即重拉目录）。
+            // 路径按**本壳 mode** 解析，与 vault / 目录缓存同一份口径。
+            let selection_file = crate::openai::flow::shell_flow_paths()
+                .mode_dir
+                .join(crate::openai::selection::FILE_NAME);
+            vec![
+                (builtin::BRIDGE_URL_ENV.to_string(), url),
+                (builtin::BRIDGE_TOKEN_ENV.to_string(), token),
+                (
+                    builtin::SELECTION_FILE_ENV.to_string(),
+                    selection_file.display().to_string(),
+                ),
+            ]
+        }
         Err(error) => {
             // 桥接起不来**不阻断内核启动**（工作台还有本地模型可用），
             // 但要留痕：shell_events 按日轮转落进「查看日志」面板。
@@ -554,7 +566,7 @@ mod tests {
         )
         .unwrap();
         let env = launch_env(&home, "web", "dsh", "x2");
-        assert_eq!(env.len(), 2);
+        assert_eq!(env.len(), 3);
         let url = env
             .iter()
             .find(|(k, _)| k.ends_with("URL"))
@@ -567,6 +579,19 @@ mod tests {
             .unwrap()
             .1
             .clone();
+        // 第三个 env 是常用模型偏好文件（Host 的变更通知通道）：路径要落在
+        // 本壳 mode 的 openai-oauth 目录里，文件名与 selection.rs 同源。
+        let selection = env
+            .iter()
+            .find(|(k, _)| k == crate::plugins::builtin::SELECTION_FILE_ENV)
+            .expect("常用模型偏好文件路径必须随桥接一起递给 Host")
+            .1
+            .clone();
+        assert!(
+            selection.ends_with(crate::openai::selection::FILE_NAME),
+            "{selection}"
+        );
+        assert!(selection.contains("openai-oauth"), "{selection}");
         let addr: std::net::SocketAddr = url
             .strip_prefix("http://")
             .unwrap()

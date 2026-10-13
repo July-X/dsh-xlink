@@ -375,7 +375,16 @@ const FILE_BUDGETS = {
   // bridge.terminal 包络。挂上推理后它不再是纯路由壳，照实涨。
   // 285 → 288（2026-10-12）：接线行 id 不再取模块常量 `wiring::ROW_ID`，改为按
   // id 从内置插件登记表取——那个常量随「行 id 变参数」一起删了。净 +3。
-  'src-tauri/src/openai/bridge.rs': 288,
+  'src-tauri/src/openai/bridge.rs': 297,
+  // 2026-10-13：**常用模型选择**（会话选择器只列用户勾选的模型）。
+  // 独立成模块的理由：① 它是**偏好**，与「账号能选什么」是两件事——目录
+  // 那一半在 catalog.rs（拉取 / 缓存 / 能力合并），偏好这一半不该长进去；
+  // ② 规则（默认集合、交集、拒绝空集、损坏容错）是纯函数，10 条以内的单测
+  // 不用起临时 home、不用碰网络；③ 读写它的是三条互不相干的路径（命令层
+  // 的 get/set、桥接载荷的 `selected`、Host 的变更通知），放一处才不会各自
+  // 长出一份「默认集合」的定义——那两个定义分叉的症状是界面勾着 A、会话里
+  // 却是 B，而没有任何报错。
+  'src-tauri/src/openai/selection.rs': 106,
   // 2026-10-09：OAuth/OIDC 授权核心（P2）。协议形状按 OIDC 标准 + 设计
   // §8：PKCE(S256)/state/nonce/宿主标识/发现文档解析(fail-closed)/动态
   // 注册/回调分类/ID token 五重校验。issuer 常量标注未验证（设计 §10
@@ -473,7 +482,11 @@ const FILE_BUDGETS = {
   // 新鲜窗口强制拉取；失败保留缓存不广播）。
   // 164 → 171：授权结局落 shell_events（成功/失败各一条）——失败原因此前
   // 只在内存，卡片不渲染时完全不可见（2026-10-09 实测 403 静默回退）。
-  'src-tauri/src/openai/cmd.rs': 171,
+  // 171 → 228（2026-10-13）：两条常用模型命令（get/set）与它们的视图构造。
+  // 逻辑本体在 selection.rs（规则）与 catalog.rs（目录）里，这里只有「解析
+  // 路径 → 组装生产传输 → 转成界面载荷」，加的是**命令面**而不是同一段
+  // 逻辑的第二份。基线远低于 RATCHET_THRESHOLD，上调在规则内。
+  'src-tauri/src/openai/cmd.rs': 228,
   // 2026-10-09：访问令牌刷新（P2 收尾）。串行互斥（防旧 refresh token
   // 二次刷新被判重放）、旋转 refresh token、invalid_grant → reauth_required
   // 落库短路。3 测试：旋转落库 / 撤销标记与短路+重登清除 / 未过期不触网。
@@ -505,14 +518,19 @@ const FILE_BUDGETS = {
   // 277 → 280：桥接载荷的 efforts 改为档位对象（{id, name}）——Host
   // 适配器契约如此（内核校验 id/name 非空且不重复），裸字符串会全变成
   // "undefined"（2026-10-09 实测）。
-  'src-tauri/src/openai/catalog.rs': 300,
+  // 300 → 306（2026-10-13）：载荷多一个 `selected`（常用模型生效集合），
+  // 拉取失败时的缓存兜底同时提成 `load_catalog_with_cache` 供命令层复用
+  // ——两份兜底各写一遍时，界面上的勾选与桥接载荷会不一致，而那种不一致
+  // 没有任何症状。
+  'src-tauri/src/openai/catalog.rs': 306,
   // 2026-10-09：P4 骨架——推理校验与流转发。载荷白名单（不在表即拒绝，
   // 静默丢弃等于让调用方以为限制生效）/store-stream 固定参数由服务端写/
   // revision 与强度门/终止三分类（completed 含回放材料、failed、EOF 无
   // 终止=incomplete 不算成功）。桥接 /v1/responses POST 分发 + NDJSON
   // 泵送 + bridge.terminal 包络。4 测试（白名单/三道门/SSE 解析/端到端泵）。
   'src-tauri/src/openai/inference.rs': 235,
-  'src-tauri/src/openai/mod.rs': 12,
+  // 12 → 13（2026-10-13）：常用模型选择模块的声明行。
+  'src-tauri/src/openai/mod.rs': 13,
   // 2980 → 2932：删掉 P4 留下的旧签名壳共 11 项（`sync_kernels` /
   // `materialize_one` / `remove_materialized` / `sweep_kernel_orphans` /
   // `sweep_all_kernel_orphans` / `read_meta` / `write_meta` /

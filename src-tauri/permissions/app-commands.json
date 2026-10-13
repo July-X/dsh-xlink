@@ -44,14 +44,16 @@
     },
     {
       "identifier": "allow-openai-account",
-      "description": "Allow the workbench page (kernel webui at http://127.0.0.1:<port>) to drive the embedded OpenAI account card: read masked account status, start or cancel the OAuth login, and sign out. The system browser is opened by the desktop shell (opener), never by the workbench page; tokens never reach the page — the browser-side card only ever sees masked status, while the vault and the system credential store stay in the desktop shell.",
+      "description": "Allow the workbench page (kernel webui at http://127.0.0.1:<port>) to drive the embedded OpenAI account card: read masked account status, start or cancel the OAuth login, sign out, and pick which of the account's models are listed in the session model selector. The system browser is opened by the desktop shell (opener), never by the workbench page; tokens never reach the page — the browser-side card only ever sees masked status, while the vault and the system credential store stay in the desktop shell.",
       "commands": {
         "allow": [
           "openai_account_status",
           "openai_authorize_start",
           "openai_authorize_cancel",
           "openai_logout",
-          "openai_catalog_refresh"
+          "openai_catalog_refresh",
+          "openai_models_selection_get",
+          "openai_models_selection_set"
         ]
       }
     },
@@ -108,6 +110,8 @@
           "openai_authorize_cancel",
           "openai_logout",
           "openai_catalog_refresh",
+          "openai_models_selection_get",
+          "openai_models_selection_set",
           "snapshot_list",
           "bisect_view",
           "bisect_start",

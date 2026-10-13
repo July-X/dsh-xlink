@@ -159,6 +159,10 @@ const bridgeServer = createServer((req, res) => {
     stubRequests.push({ url: req.url, method: req.method, body: "" });
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
       revision: "smoke-rev-1",
+      // 常用模型只勾了第一条：真实壳的载荷就是这个形状（壳按偏好算好再下发）。
+      // 两条断言由此覆盖契约的两半——会话选择器只拿到勾选的，而未勾选的那条
+      // 仍能被 resolveModel 解析（取消勾选不打断已有会话）。
+      selected: ["gpt-stub-x"],
       models: [
         { id: "gpt-stub-x", name: "GPT Stub X", contextWindow: 16384,
           efforts: [{ id: "low", name: "Low" }, { id: "high", name: "High" }] },
@@ -230,7 +234,12 @@ if (marker === undefined) {
 check("目录行注册（settingsNs 取接线行 id）", marker.settingsNs === "xlink-openai-oauth", marker.settingsNs);
 check("桥接握手成功", marker.bridgeHandshakeOk === true, marker.bridgeError?.message ?? "");
 check("桩桥接收到握手请求", bridgeHits.includes("/v1/handshake"), bridgeHits.join(","));
-check("目录经真实适配器拉取", marker.catalog?.count === 2, JSON.stringify(marker.catalog));
+check("目录经真实适配器拉取", marker.catalog?.count === 1, JSON.stringify(marker.catalog));
+check("常用模型过滤：会话选择器只拿到 selected 里的条目",
+  marker.catalog?.first === "gpt-stub-x" && marker.catalog?.count === 1);
+check("未勾选的模型仍可解析（取消勾选不打断已有会话）",
+  marker.catalog?.unlisted === "gpt-stub-max" && marker.catalog?.unlistedResolvable === true,
+  JSON.stringify(marker.catalog));
 check("能力解析（contextWindow/efforts）",
   marker.catalog?.resolvedContext === 16384 && JSON.stringify(marker.catalog?.resolvedEfforts) === '["low","high"]');
 check("注册句柄带 replace", marker.replaceIsFunction === true);
