@@ -317,6 +317,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 > [dsh-xlink-multi-kernel-design.md](multi-kernel/dsh-xlink-multi-kernel-design.md) 与
 > [dsh-xlink-multi-kernel-development-plan.md](multi-kernel/dsh-xlink-multi-kernel-development-plan.md)。
 > 阶段性 commit 快照见 [multi-kernel-migration-status-2026-09-19.md](multi-kernel/multi-kernel-migration-status-2026-09-19.md)。
+> 逐路径清单、实例目录逐项说明与「一次启动的生效链路」见 [kernel-data-layout.md](kernel-data-layout.md)。
 
 ### 路径解析分工（`src-tauri/src/shell/paths.rs`）
 
