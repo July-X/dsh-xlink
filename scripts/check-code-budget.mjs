@@ -1657,9 +1657,13 @@ const FILE_BUDGETS = {
   // PROVIDER_LOGOS 同理留在这里。
   // 292 → 297：opencode Go 的标志登记（`PROVIDER_LOGOS` 一行）与 `tierFullName`
   // ——后者把独立窗口里内联的窗口全名三元表达式收成一张共享表，新增窗口时不会
-  // 再「一处改了、另一处静默显示 `1mo`」。本文件 297 < RATCHET_THRESHOLD 600，
-  // 上调在规则内。
-  'ui/src/subscription/subscription.js': 297,
+  // 再「一处改了、另一处静默显示 `1mo`」。
+  // 297 → 304：`tierRow` 增 `usedPercent`（已用读数，供和厂商自己的界面直接比对；
+  // 主数字与进度条仍是剩余口径）与 opencode 的整数百分比 tooltip。起因是
+  // 2026-10-13 用户拿 opencode 界面截图报「weekly 的 1% 没显示出来」——端点只给
+  // 整数百分比、且可能比它家界面晚一拍，而卡上当时只有「剩余 100%」一个读数。
+  // 本文件 304 < RATCHET_THRESHOLD 600，上调在规则内。
+  'ui/src/subscription/subscription.js': 304,
   // 套餐用量独立窗口根组件（open_subscription_window 弹出，?subscription=1 挂载）：
   // 双 provider 分区 + 进度条 / 余额行 + 错误横幅与 scoped 样式（同 UsageWindow 模式）。
   // 340 → 360：查询时间换成刷新 icon 胶囊（紧凑年龄值）。

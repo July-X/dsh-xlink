@@ -87,6 +87,20 @@ test('概览真实模板：明确 unlimited 的窗口仍显示无限额度', asy
   assert.ok(!html.includes('暂无数据'));
 });
 
+// 卡上的主数字与进度条是**剩余**口径，而厂商自己的界面基本都写已用（opencode 上
+// 就是 `1% used`）。2026-10-13 用户拿自家界面截图报「weekly 的 1% 没显示出来」，
+// 根因就是屏幕上只有「剩余 100%」这一个读数。条下那行因此同时给出「已用 X%」，
+// 这条判据钉住它真的渲染出来（只测 tierRow 的数据层发现不了模板漏挂）。
+test('概览真实模板：额度行同时给出「已用 X%」，不只给剩余', async () => {
+  const rows = planTierRows({ id: 'minimax_cn', kind: 'plan', tiers: [{ name: '5h', remaining_percent: 73.2, resets_at_ms: null }] });
+  const html = await renderOverviewTiers(rows);
+  assert.ok(html.includes('已用 27%'), `模板要渲染已用读数，实际：${html}`);
+  assert.ok(html.includes('73%'), '剩余仍是行内主数字');
+  // 无限额度与缺席窗口没有百分比，不能渲染出「已用 null%」这类东西。
+  const empty = await renderOverviewTiers(planTierRows({ id: 'openai_codex', kind: 'plan', tiers: [] }));
+  assert.ok(!empty.includes('已用'));
+});
+
 test('显式开关只保存许可并强制查询额度；等待期间清掉旧账号数字，其他厂商不变', async () => {
   const { setCodexUsageEnabled, refreshSubscriptionProvider } = await import('../src/subscription/subscription.js');
   const previousInvoke = window.__TAURI__.core.invoke;
@@ -319,6 +333,7 @@ test('tierRow 对无限周额度输出 ♾️ 标记，不产进度数据', () =
   assert.equal(row.name, '7d');
   assert.equal(row.unlimited, true);
   assert.equal(row.percent, null);
+  assert.equal(row.usedPercent, null, '无限额度没有已用读数');
   assert.equal(row.tip, '无限周额度');
 });
 
@@ -330,6 +345,7 @@ test('tierRow 产出档位 / 倒计时 / 双向口径 tooltip', () => {
   assert.equal(row.level, 'ok');
   assert.equal(row.countdown, '3h47m');
   assert.equal(row.countdownTitle, '3 小时 47 分后重置');
+  assert.equal(row.usedPercent, 27, '已用读数与剩余互补，供和厂商自己的界面比对');
   assert.equal(row.tip, '已用 27% · 剩余 73%');
   const expired = tierRow({ name: 'weekly', remaining_percent: 5, resets_at_ms: now - 1000 }, now);
   assert.equal(expired.countdown, '已重置');
@@ -442,6 +458,19 @@ test('opencode 的三窗口短名原样透出，独立窗口的全名来自共�
     rows.map((row) => row.name),
     ['5h']
   );
+});
+
+// opencode 的公开容量端点只给**整数**百分比，而且可能比它自家界面晚一拍：
+// 2026-10-13 真机实测，同一分钟它家界面 weekly 已经是 `1% used`，端点给的却是
+// `0`；23 分钟后同一把 Key 再打，端点也变成 `1`（四种请求头形状返回逐字节相同，
+// 差别只在时间）。这个差值会原样出现在卡上，所以 tooltip 必须当场解释，
+// 免得下一个人去改解析。
+test('opencode 的整数百分比差值挂在 tooltip 上，别的厂商不带这句话', () => {
+  const rows = planTierRows({ id: 'opencode_go', kind: 'plan', tiers: [{ name: '7d', remaining_percent: 100, resets_at_ms: null }] });
+  assert.equal(rows[0].usedPercent, 0);
+  assert.match(rows[0].tip, /^已用 0% · 剩余 100%。接口只给整数百分比（不足 1% 记 0/);
+  const others = planTierRows({ id: 'minimax_cn', kind: 'plan', tiers: [{ name: '5h', remaining_percent: 100, resets_at_ms: null }] });
+  assert.equal(others[0].tip, '已用 0% · 剩余 100%', '只有 opencode 那条精度差要解释');
 });
 
 // --- 厂商标志 ---------------------------------------------------------------

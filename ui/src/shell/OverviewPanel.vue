@@ -853,8 +853,21 @@ function goVersions() {
                 <span v-if="tier.missing" class="muted plan-tier-value" :title="tier.tip">暂无数据</span>
                 <span v-else-if="!tier.unlimited" class="plan-tier-value">{{ tier.percent }}%</span>
               </div>
-              <p v-if="tier.countdown" class="plan-tier-reset" :title="tier.countdownTitle">
-                <el-icon class="plan-reset-icon"><Timer /></el-icon>{{ tier.countdown }}
+              <!-- 条下这行除了倒计时，还给出「已用 X%」：进度条与主数字是**剩余**
+                   口径，而厂商自己的界面基本都写已用（opencode 的界面上就是
+                   `1% used`）。只给剩余时，用户拿自家界面一比就会以为我们算错了
+                   ——2026-10-13 用户报的就是这个：他看的是界面的「已用 1%」，
+                   卡上写的是「100%」。（opencode 端点的整数截断见 subscription.js
+                   里那条 OPENCODE_INTEGER_PERCENT_TIP。） -->
+              <p
+                v-if="tier.countdown || tier.usedPercent != null"
+                class="plan-tier-reset"
+                :title="tier.countdownTitle"
+              >
+                <el-icon v-if="tier.countdown" class="plan-reset-icon"><Timer /></el-icon>
+                <span v-if="tier.countdown">{{ tier.countdown }}</span>
+                <span v-if="tier.countdown && tier.usedPercent != null">·</span>
+                <span v-if="tier.usedPercent != null">已用 {{ tier.usedPercent }}%</span>
               </p>
             </div>
             <!-- 错误归属分区的 provider（OpenAI）的短状态 + ⓘ 点击 tooltip；
