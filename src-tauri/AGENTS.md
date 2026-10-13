@@ -2,7 +2,7 @@
 
 根 [AGENTS.md](../AGENTS.md) 的后端分支。根文件里的「范围」「数据目录」「发布」各章对后端同样适用，这里只收改 `src-tauri/**` 之前要知道的约束。前端见 [ui/AGENTS.md](../ui/AGENTS.md)。
 
-提交前跑 `cargo clippy --all-targets`（零警告基线）与 `cargo fmt`。
+提交前跑 `cargo clippy --all-targets`（零警告基线）与 `cargo fmt`。**`npm run check` 的 `check:rust` 已经带上 `-- -D warnings`**，与发布 workflow 的 clippy 步骤同一口径：此前本机不带这个旗标，于是 2026-10-13 发 v0.4.10 时 `materialize` 的 `too_many_arguments`（8/7）在本机只是一行警告、总闸 exit 0，而 quality job 把它当**编译错误**，白烧一整轮双平台构建——同一条教训在 2026-10-11 已经用 `cargo test` 补过一次，别再把它摘掉。
 
 ## 目录约定
 
