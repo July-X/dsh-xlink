@@ -55,7 +55,7 @@ peer 的类型与缺失探针在 `src-tauri/src/plugins/builtin/peers.rs`，登�
 | | 缺失时的行为 | 例子 |
 | --- | --- | --- |
 | 必需（`PeerSpec::required`） | 物化失败，启用被拦下 | `dsh-skill`、`dsh-llm`、`schemastery`——都是 `@deepseek-ai/dsh` 的**运行时依赖**，每个内核版本都带 |
-| 可选（`PeerSpec::optional`） | 跳过链接、物化成功，host 降级，面板如实标注 | `dsh-hooks-claude-code`——内核上游自己的打包决定，`0.2.1-alpha.1` 带、`0.2.1-alpha.2` 不带 |
+| 可选（`PeerSpec::optional`） | **先从 npm 补一份**（见下节）；补不到才跳过链接、物化成功、host 降级、面板如实标注 | `dsh-hooks-claude-code`——内核上游自己的打包决定，`0.2.1-alpha.1` 带、`0.2.1-alpha.2` 不带 |
 
 判据是「这个包是不是内核**必然**带」，不是「host 需不需要它」。上游会把包从
 `dependencies` 降级成 `devDependencies`（`dsh-hooks-claude-code` 就是这样），
@@ -70,9 +70,38 @@ peer 的类型与缺失探针在 `src-tauri/src/plugins/builtin/peers.rs`，登�
    都带它；启用成功但降级时，前端发的是 warning toast 而不是「已启用」。
 3. host 自己的降级日志 —— 工作台内核日志里那一行说清少的是哪项能力。
 
+探针（`missing_optional_peers`）判的是「内核树里有**或**壳补过」：补过之后能力是
+有的，再挂 ⚠ 就是谎报，用户会去点「换内核版本」换一个根本不需要换的东西。
+
 **host 不许静态 `import` 可选 peer**：静态 import 在内核不带那个包时会让整个插件
 加载失败（技能一起消失），降级也就无从谈起。Ponytail 的
 `loadHookBridge()` 就是这条的形状。
+
+### 缺的可选 peer 由壳从 npm 补一份（2026-10-13 起）
+
+`src-tauri/src/plugins/builtin/peer_supply.rs`：内核树里没有的可选 peer，壳按**内核
+版本**（读内核树里 `dsh` 自己的 `package.json`）从 npm 取一份，落进
+`<DSH_HOME>/plugins/builtin/<id>/peers/<包>@<版本>/`，物化时**复制**进插件的
+`node_modules/@deepseek-ai/`。四条纪律：
+
+- **只补树里没有的**：树里有就链树里的原件（那才是内核自己的实现）。
+- **只取源，不碰内核树**：与上游内容（`upstream/`）同一条纪律，根 AGENTS 的
+  「绝不往已安装的内核目录里写任何东西」照旧成立。
+- **版本严格等于内核版本**：这些是内核 monorepo 的锁步子包，实物的
+  `peerDependencies` 逐包钉死同一个版本号；取 `latest` 会装进一份与树里其余包
+  不同代的实现。
+- **失败是软失败**：`ensure_soft` 的返回值刻意是「一句日志」而不是 `Result`——
+  `ensure_wired` 的 Err 会经 `kernel_adapter` 变成 `AdapterError::Io` **阻断工作台
+  启动**，而供货只是补一项能力，离线机器不该因此起不来。
+
+**为什么必须复制而不是链接**：Node 解析 import 用的是**真实路径**。链接过去的包
+真实位置在供货目录，那里的上一层没有 `node_modules`，它自己的
+`import '@deepseek-ai/dsh-hook-protocol'` 会当场失败，症状是「补了却还是不生效」。
+所以：**补的包与它自己缺的 peer 一起补**（闭包），复制进插件目录；树里有的 peer
+照旧链原件。
+
+失败后 30 分钟内不再试（`<peers>/.attempt-<包>@<版本>.json`）：工作台每次启动都会
+走 `ensure_wired`，没有节流的话离线用户每启动一次都要重付一遍网络超时。
 
 ## 启用 / 停用
 

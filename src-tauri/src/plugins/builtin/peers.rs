@@ -59,15 +59,46 @@ impl PeerSpec {
     }
 
     /// 这个 peer 在给定内核安装树里的落地位置。
-    ///
-    /// **只此一份**：物化建链接与状态探针判「在不在」问的是同一个路径，
-    /// 各拼一份的漂移症状是「探针说在、物化说不在」。
     pub(crate) fn path_in(&self, kernel_root: &Path) -> PathBuf {
-        kernel_root
-            .join("node_modules")
-            .join("@deepseek-ai")
-            .join(self.package)
+        package_path(kernel_root, self.package)
     }
+}
+
+/// 内核安装树里某个 `@deepseek-ai` 包的落点。
+///
+/// **只此一份**：物化建链接、依赖指纹读版本、可选 peer 探针、供货计划判
+/// 「在不在」问的都是同一个路径，各拼一份的漂移症状是「探针说在、物化说不在」。
+pub(crate) fn package_path(kernel_root: &Path, package: &str) -> PathBuf {
+    kernel_root
+        .join("node_modules")
+        .join("@deepseek-ai")
+        .join(package)
+}
+
+/// 读一个包目录里 `package.json` 的版本。用于判「这两份是不是同一版」
+/// （壳补的副本要不要换新）与指纹计算。
+pub(crate) fn manifest_version(package_dir: &Path) -> Result<String, String> {
+    let manifest = package_dir.join("package.json");
+    let text = std::fs::read_to_string(&manifest)
+        .map_err(|error| format!("读取包清单失败（{}）：{error}", manifest.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("包清单不是有效 JSON（{}）：{error}", manifest.display()))?;
+    value
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .ok_or_else(|| format!("包清单缺 version 字段（{}）", manifest.display()))
+}
+
+/// 读内核树里某个包的清单版本。
+///
+/// `dsh` 的版本就是内核版本（内核 monorepo 锁步发布），补齐缺失的 peer 时按它
+/// 取源：这些包的 `peerDependencies` 逐包钉死同一个版本号，跨版本拼装是没验证过
+/// 的组合。
+pub(crate) fn package_version(kernel_root: &Path, package: &str) -> Result<String, String> {
+    manifest_version(&package_path(kernel_root, package)).map_err(|error| {
+        format!("{error}；内核安装树可能不完整，请在「内核版本」页重装当前内核版本")
+    })
 }
 
 /// 内核树里缺的一个**可选** peer：包名 + 「少了它意味着什么」。
@@ -81,18 +112,25 @@ pub(crate) struct MissingPeer {
     pub(crate) note: &'static str,
 }
 
-/// 内核树里缺哪些**可选** peer（按登记表顺序）。
+/// 内核树里缺哪些**可选** peer（按登记表顺序），**供货目录里补过的算不缺**。
 ///
 /// 只读探针，给面板与状态命令用：缺失的**必需** peer 由物化直接报错（那条路
 /// 说的是「这个内核装不上这个插件」），而可选 peer 缺失只是「这个内核版本少
 /// 一项能力」——那件事必须**如实说给用户**，但不是拦下启用。
+///
+/// `dsh_home` 是给 [`super::peer_supply`] 判「壳自己补过一份没有」用的：补过就
+/// 不该再挂 ⚠——那条说明写的是「本内核版本少一项能力」，而补过之后能力是有的。
 pub(crate) fn missing_optional_peers(
     spec: &super::builtins::BuiltinSpec,
     kernel_root: &Path,
+    dsh_home: &Path,
 ) -> Vec<MissingPeer> {
     spec.peers
         .iter()
-        .filter(|peer| !peer.required && !peer.path_in(kernel_root).is_dir())
+        .filter(|peer| {
+            !peer.required
+                && super::peer_supply::resolve(dsh_home, spec, peer.package, kernel_root).is_none()
+        })
         .map(|peer| MissingPeer {
             package: peer.package,
             note: peer.missing_note,
@@ -188,7 +226,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let at_deepseek = root.join("node_modules").join("@deepseek-ai");
         std::fs::create_dir_all(at_deepseek.join("dsh-skill")).unwrap();
-        let missing = missing_optional_peers(ponytail, &root);
+        let missing = missing_optional_peers(ponytail, &root, &root);
         assert_eq!(
             missing.iter().map(|peer| peer.package).collect::<Vec<_>>(),
             vec!["dsh-hooks-claude-code"],
@@ -200,8 +238,61 @@ mod tests {
         );
         std::fs::create_dir_all(at_deepseek.join("dsh-hooks-claude-code")).unwrap();
         assert!(
-            missing_optional_peers(ponytail, &root).is_empty(),
+            missing_optional_peers(ponytail, &root, &root).is_empty(),
             "桥在内核树里时不该报降级"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 壳自己补过一份之后，探针同样不该再报降级。
+    ///
+    /// 那条说明写的是「本内核版本少一项能力」——补过之后能力是有的，再挂 ⚠ 就是
+    /// 谎报；而用户看到的后果是他去点「换内核版本」换一个根本不需要换的东西。
+    #[test]
+    fn a_peer_supplied_by_the_shell_is_not_reported_missing() {
+        let ponytail = builtins::find(PONYTAIL).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "builtin-peers-supplied-{}-{}",
+            std::process::id(),
+            crate::shell::process::epoch_millis()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("home");
+        let kernel = root.join("kernel");
+        let at_deepseek = kernel.join("node_modules/@deepseek-ai");
+        std::fs::create_dir_all(at_deepseek.join("dsh-skill")).unwrap();
+        std::fs::create_dir_all(at_deepseek.join("dsh")).unwrap();
+        std::fs::write(
+            at_deepseek.join("dsh/package.json"),
+            r#"{"version":"0.2.1-alpha.2"}"#,
+        )
+        .unwrap();
+        // 内核树里没有桥，但壳按内核版本补过一份。
+        let supplied =
+            home.join("plugins/builtin/ponytail/peers/dsh-hooks-claude-code@0.2.1-alpha.2");
+        std::fs::create_dir_all(&supplied).unwrap();
+        std::fs::write(
+            supplied.join("package.json"),
+            r#"{"version":"0.2.1-alpha.2"}"#,
+        )
+        .unwrap();
+        assert!(
+            missing_optional_peers(ponytail, &kernel, &home).is_empty(),
+            "补过的包算「有」，不该再报降级"
+        );
+        // 换一个内核版本（供货目录里那份是给旧版本补的）→ 重新如实报缺。
+        std::fs::write(
+            at_deepseek.join("dsh/package.json"),
+            r#"{"version":"0.2.2-alpha.1"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            missing_optional_peers(ponytail, &kernel, &home)
+                .iter()
+                .map(|peer| peer.package)
+                .collect::<Vec<_>>(),
+            vec!["dsh-hooks-claude-code"],
+            "补的那份是按内核版本分的，换内核版本后必须重补——这里要如实报缺"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
