@@ -20,8 +20,33 @@
 //!
 //! - **Windows**：点横幅 = 系统启动 exe = 走本文件的交接（本模块的全部价值）。
 //! - **macOS**：点横幅由系统**激活已运行的进程**（不拉起新进程），因此不走
-//!   交接；壳改为在应用被重新打开时把工作台带到台前（`lib.rs` 的
-//!   `RunEvent::Reopen` → [`focus_workbench`]）。
+//!   交接。壳在这里挂一个**激活**观察者（[`observe_activation`]），把工作台
+//!   带到台前。
+//!
+//! # macOS 上「点横幅」到底派发了什么（2026-10-13 本机实测）
+//!
+//! macOS 26.7.1，一个签过名的 `.app` 内投递 `NSUserNotification`，三次真实点
+//! 横幅 + 一次从通知中心点，全部记在同一个只写日志的探针里：
+//!
+//! ```text
+//! applicationDidBecomeActive              每次都来
+//! applicationShouldHandleReopen          一次都没有
+//! userNotificationCenter:didActivate:     一次都没有
+//! ```
+//!
+//! 结论有三条，第三条最贵：
+//!
+//! 1. `RunEvent::Reopen` 的**唯一**来源是 AppKit 的
+//!    `applicationShouldHandleReopen:hasVisibleWindows:`，而横幅点击**从不**
+//!    派发它——它只在应用被「重新打开」（点 Dock 图标、`open` Apple Event）
+//!    时才来。此前 `lib.rs` 把「点横幅回到工作台」挂在 `RunEvent::Reopen`
+//!    上，那条接线在真机上**一次都没有触发过**，点横幅表现为完全没反应。
+//! 2. 旧通知 API 的点击回调 `userNotificationCenter:didActivateNotification:`
+//!    在这个 macOS 版本上也不再派发（探针把 delegate 强引用持住了，不是引用
+//!    被回收导致的漏收）。因此「拿点击回调」这条路也走不通。
+//! 3. **唯一可靠的信号是激活**。tao 没实现 `applicationDidBecomeActive`，
+//!    Tauri 也没有对应的 `RunEvent`，所以 [`observe_activation`] 直接向
+//!    `NSNotificationCenter` 注册观察者。
 //!
 //! 两端最终都汇到同一个动作 [`focus_workbench`]，因此"回到工作台"的语义
 //! （工作台没开就开、开着就聚焦、失败就把管理面板叫回来说明原因）只有一份实现。
@@ -71,11 +96,14 @@ pub fn claim_or_handoff() -> Startup {
     }
 }
 
-/// 主实例：开一条后台线程等服务端管道，把收到的动作派发出去。
+/// 主实例：把「用户点了通知横幅」这条请求接进来。两端的机制不同（Windows 是
+/// 管道交接、macOS 是激活观察），落点都是同一个 [`focus_workbench`]。
 pub fn serve(app: &AppHandle) {
     #[cfg(target_os = "windows")]
     ipc::serve(app);
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    observe_activation(app);
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let _ = app;
 }
 
@@ -95,13 +123,13 @@ pub fn serve(app: &AppHandle) {
 /// 失败）是真故障：他点的横幅 / 图标什么都没发生，必须出声。判据取
 /// [`crate::kernel_running`]，不去匹配 `open_harness` 的报错文案——后者是
 /// 给人看的中文句子，改一次措辞这条判据就静默失效。
-#[allow(dead_code, reason = "传递性：调用者在 Windows 分支内")]
+/// 「工作台打不开」要不要出声的判据（两端共用，见上）。
 fn announce_failure(kernel_running: bool) -> bool {
     kernel_running
 }
 
-/// 把**工作台**带到台前。这是「回到工作台」的唯一实现，三条入口（Windows
-/// 通知横幅的进程交接、macOS 的应用重新打开、将来可能的深链）都走它。
+/// 把**工作台**带到台前。这是「回到工作台」的唯一实现，两条入口（Windows
+/// 通知横幅的进程交接、macOS 的激活观察）都走它。
 ///
 /// Windows 的那一条同时覆盖「点任务栏 / 开始菜单里的启动项」——系统拉起第
 /// 二个进程时无法区分这两者（见 [`announce_failure`]），但两者要的结果本来
@@ -111,11 +139,6 @@ fn announce_failure(kernel_running: bool) -> bool {
 /// 覆盖了"已开则 show + 取消最小化 + 聚焦"与"没开则按当前 launch token 建
 /// 窗"，还带着端口占用 / 端口上不是内核这类可操作的中文报错。焦点相关的
 /// 跨线程限制由它内部的建窗线程处理，这里只负责在后台线程上等它的结果。
-///
-/// 零调用是**平台假阳性**：唯一调用点是 Windows 专属的 `mod ipc`（本文件
-/// `#[cfg(target_os = "windows")]`）。它本身跨平台定义——macOS 的激活入口走
-/// `RunEvent::Reopen` 那条路，终点在 `lib.rs`，不经过本函数。
-#[allow(dead_code, reason = "Windows 专属：调用点在 cfg(windows) 分支")]
 pub fn focus_workbench(app: &AppHandle) {
     let app = app.clone();
     std::thread::Builder::new()
@@ -144,6 +167,83 @@ pub fn focus_workbench(app: &AppHandle) {
         })
         .map(|_| ())
         .unwrap_or_else(|e| eprintln!("dsh-xlink: 无法启动「回到工作台」线程：{e}"));
+}
+
+// ---------------------------------------------------------------------------
+// macOS：激活观察者（「点横幅」在这条路上唯一的信号）
+// ---------------------------------------------------------------------------
+
+/// 「刚弹出的横幅」算新鲜的时间窗（毫秒）。
+///
+/// 激活不是横幅独有的：Cmd-Tab、点 Dock 图标、点菜单栏图标都会激活应用，而
+/// [`raise_workbench_if_open`] 的文档明确记着「凭空开一个工作台窗口（或者在
+/// 没开过时弹一条『回到工作台失败』）都是打扰」。只看「有未读」会把这条约定
+/// 也一起推翻——用户点自己的面板时工作台也会窜到前面。
+///
+/// 而横幅是**由某次任务完成触发的**，所以第二道判据是「最近一次完成距今多久」。
+/// 5 分钟：macOS 横幅本身只停几秒，但通知中心里的条目一直留着，按它算是用户
+/// 明确表达过「我要回工作台」；再久就没有意义了，那时的未读已经被别的动作
+/// （面板里的「全部已读」）收过一次。
+const BANNER_FRESH_MS: u64 = 5 * 60 * 1000;
+
+/// 一次激活算不算「用户点了刚弹出的横幅」。
+///
+/// 拆成纯函数是为了能脱离 `AppHandle` 单测：它是这条修复里唯一有分支的判据，
+/// 而判据写错一次的症状是「点面板时莫名多出一个工作台窗口」——纯函数测试能
+/// 把这种形状错误挡住，编译测试不能。
+fn banner_activation(unread: u32, newest_finished_at_ms: Option<u64>, now_ms: u64) -> bool {
+    unread > 0
+        && newest_finished_at_ms.is_some_and(|at| now_ms >= at && now_ms - at <= BANNER_FRESH_MS)
+}
+
+/// macOS：一次激活。按「点横幅」处理的就走 [`focus_workbench`]，其余不动。
+///
+/// `status()` 要读设置文件，所以判据留在这里算、算完立刻交后台线程，不在
+/// 通知回调里做 IO。
+fn on_activated(app: &AppHandle) {
+    let status = crate::notify::task::status(app);
+    let banner = banner_activation(
+        status.unread,
+        status.items.first().map(|item| item.finished_at_ms),
+        crate::shell::process::epoch_millis(),
+    );
+    if banner {
+        focus_workbench(app);
+    }
+}
+
+/// 注册激活观察者。由 [`serve`] 在 `setup()` 里调用——**必须在 AppKit 主线程
+/// 上**。
+#[cfg(target_os = "macos")]
+fn observe_activation(app: &AppHandle) {
+    use std::ptr::NonNull;
+
+    use block2::{DynBlock, StackBlock};
+    use objc2_foundation::{NSNotification, NSNotificationCenter, NSString};
+
+    let handle = app.clone();
+    // SAFETY: 由 `setup()` 在主线程上调用。`addObserverForName:…usingBlock:` 在
+    // 注册时**拷贝**这个 block，所以它不必活到函数返回之后；回调本身只起一个
+    // 后台线程（[`focus_workbench`] 自带那个线程），不在主线程上碰任何窗口。
+    unsafe {
+        let center = NSNotificationCenter::defaultCenter();
+        let name = NSString::from_str("NSApplicationDidBecomeActiveNotification");
+        let block: &DynBlock<dyn Fn(NonNull<NSNotification>)> =
+            &StackBlock::new(move |_note| on_activated(&handle));
+        let token = center.addObserverForName_object_queue_usingBlock(
+            Some(name.as_ref()),
+            None,
+            None,
+            block,
+        );
+        // 令牌持有整条注册，一被释放系统就顺手注销观察者。这条注册是**常驻**
+        // 能力（壳活着，「点横幅回到工作台」就一直在），所以令牌必须活到进程
+        // 结束。`Retained<ProtocolObject<dyn NSObjectProtocol>>` 既不 `Send`
+        // 也不 `Sync`（objc2 的类型系统里 ObjC 协议不是线程安全的），因此它放
+        // 不进 `static`——而 `mem::forget` 在这里的语义恰好是「显式地不要注销」
+        //，不是漏掉的清理。
+        std::mem::forget(token);
+    }
 }
 
 /// 把窗口真正抢到台前。
@@ -492,5 +592,27 @@ mod tests {
             announce_failure(true),
             "内核在跑却打不开工作台是故障，必须出声"
         );
+    }
+
+    /// 激活判据的完整语义表（`banner_activation`）。
+    ///
+    /// 这个判据的错误方向是不对称的，两头各有一种用户可见症状，所以四面都钉：
+    /// 判据恒 `false` → 点横幅仍然完全没反应（本次要修的 bug）；恒 `true` →
+    /// 用户点自己的面板 / Cmd-Tab 时凭空多开一个工作台窗口。
+    #[test]
+    fn only_a_fresh_banner_claims_the_activation() {
+        const MIN: u64 = 60_000;
+        // 点刚弹出的横幅：未读 + 刚完成 → 接管。
+        assert!(banner_activation(1, Some(MIN), MIN + BANNER_FRESH_MS));
+        // 没有未读（用户已经看过、角标清了）→ 不接管，哪怕刚完成过。
+        assert!(!banner_activation(0, Some(MIN), MIN + 1));
+        // 没有完成记录（面板刚清空过）→ 不接管。
+        assert!(!banner_activation(3, None, MIN));
+        // 太久之前的完成：那是"普通的把应用叫回来"，归 `RunEvent::Reopen` 管。
+        assert!(!banner_activation(1, Some(MIN), MIN + BANNER_FRESH_MS + 1));
+        // 时钟回拨 / 完成时刻落在未来：不能当成"永远新鲜"——那会让每一次激活
+        // 都被横幅接管，正是判据写反时最贵的症状。
+        assert!(!banner_activation(1, Some(u64::MAX), 0));
+        assert!(!banner_activation(1, Some(MIN), MIN - 1));
     }
 }

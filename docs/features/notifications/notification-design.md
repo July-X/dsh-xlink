@@ -310,7 +310,7 @@ macOS 侧的同类判定（未打包构建拿不到应用 bundle）也一并搬�
 | 平台 | 系统在点击后做什么 | 壳怎么知道"用户点了" |
 | --- | --- | --- |
 | **Windows** | **启动本 exe**（开始菜单快捷方式带 `System.AppUserModel.ID`、没有 `System.AppUserModel.ToastActivatorCLSID` 时的默认激活行为）——不是"叫醒"已运行的窗口 | 具名互斥体判"是不是第一个"；不是第一个就把 `workbench` 写进命名管道再退出。**点任务栏 / 开始菜单里的启动项走同一条通道**，系统无法区分两者 |
-| **macOS** | 激活**已运行**的进程（不拉起第二个） | `RunEvent::Reopen`（`applicationShouldHandleReopen`）→ 只抬**已开着**的工作台窗口 |
+| **macOS** | 激活**已运行**的进程（不拉起第二个） | `NSApplicationDidBecomeActiveNotification`（tao 没实现 `applicationDidBecomeActive`，壳在 `activate::serve` 里自己向 `NSNotificationCenter` 注册观察者）→ 判为「点了刚弹出的横幅」就走 `focus_workbench` |
 
 Windows 这一跳不是可以绕开的细节：第二个进程如果照常走完 `setup()`，会执行
 `kernel::reap_orphans`——**把第一个进程正在服务的内核连同对话现场一起杀掉**。
@@ -356,17 +356,37 @@ launch token 建窗"，还带着端口占用 / 端口上不是内核这类可操
 **尚未实现**：点击后**定位到具体那个会话**。内核目前没有暴露"聚焦某个会话"
 的入口，见 §8 第 1 条。
 
-> **验证状态**（勿当成两端的同等保证）：Windows 整条链路已在本机实测——
-> 第二个进程 234 ms 退出且不建任何窗口、在跑实例的窗口从最小化恢复并真正
-> 抢到前台（`GetForegroundWindow` 落在它身上）。macOS 的 `Reopen` 这条只做了
-> 代码层面的接线，**没有在真机上点过横幅**：`NSUserNotification` 的点击
-> 走的是 `userNotificationCenter:didActivateNotification:`，AppKit 是否同时
-> 派发 `applicationShouldHandleReopen` 未经验证。**没有**用
-> `notify-rust` 的 `wait_for_action` 去拿点击回调是刻意的：那条路径靠
-> `mac-notification-sys` 在**主线程上重入 NSRunLoop** 等 delegate 回调，与
-> Tauri 自己的事件循环冲突的风险不可控，而本机无法验证——宁可只做到"系统把
-> 应用激活、已开的工作台随之抬到台前"，也不拿一条可能卡死事件循环的路径去
-> 换一个"更完整"的承诺。
+> **验证状态**（2026-10-13 更新；勿当成两端的同等保证）：
+>
+> **macOS 的「点横幅 → 回到工作台」此前从未在真机工作过，现已实测并修复。**
+> 在 macOS 26.7.1 上用一个只写日志的探针（签过名的 `.app`，投递
+> `NSUserNotification`）做了三次真实点横幅 + 一次从通知中心点，结果是：
+>
+> ```text
+> applicationDidBecomeActive              每次都来
+> applicationShouldHandleReopen          一次都没有
+> userNotificationCenter:didActivate:     一次都没有
+> ```
+>
+> 即：原实现挂的 `RunEvent::Reopen` 的唯一来源是
+> `applicationShouldHandleReopen:hasVisibleWindows:`，而横幅点击**从不**派发
+> 它；旧 API 的点击回调在这个版本上也不再派发（探针把 delegate 强引用持住了，
+> 不是引用被回收导致的漏收）。于是点横幅时唯一发生的是「应用被激活」，
+> 而激活**不会**替我们显示 `orderOut` 掉的窗口——用户看到的就是完全没反应。
+> 2026-10-13 改为观察激活（`activate::observe_activation`）。
+>
+> **Windows 仍然只有交接机制本身的实测，没有「点横幅真的拉起了 exe」这一环的
+> 实测**。交接是通的（第二个进程 234 ms 退出且不建任何窗口、在跑实例的窗口
+> 从最小化恢复并真正抢到前台，`GetForegroundWindow` 落在它身上）——但那是手动
+> 起第二个进程测出来的。toast 归属的 AUMID 上**没有注册 COM activator**
+> （`tauri-winrt-notification` 不提供这个能力），系统能否为它拉起 exe 取决于
+> 开始菜单快捷方式是否带 `System.AppUserModel.ID`，而这一条本仓从未设置也从未
+> 验证。**这是两端剩下唯一没有实测支撑的环节**；若用户在 Windows 上仍是
+> 完全没反应，第一个要查的就是它。
+>
+> **没有**用 `notify-rust` 的 `wait_for_action` 去拿点击回调仍然是刻意的：那条
+> 路径靠 `mac-notification-sys` 在**主线程上重入 NSRunLoop** 等 delegate 回调，
+> 与 Tauri 自己的事件循环冲突的风险不可控。
 
 #### 通知正文（用户最后一条提问 + 用时）
 
@@ -680,7 +700,9 @@ DSH_XLINK_SINGLE_INSTANCE=1 npm run dev
    的图标（收起走 `hide_to_shell`，激活等级已降为 Accessory），菜单栏图标
    是唯一常驻入口。
 
-> 这一条**尚未在真机点过横幅**，见 §4.5 末尾的验证状态说明。
+> 这一条在 2026-10-13 做过一次真实的横幅点击，结论见 §4.5 的「验证状态」。
+> 复验时留意：**工作台窗口必须已经开着**，否则第 2 步点横幅会走
+> `focus_workbench` 新建窗口，页面要加载几秒——那不是回归，只是第一次打开。
 
 ## 10. 已核验的事实（复核用）
 
