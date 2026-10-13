@@ -75,10 +75,11 @@ pub const PROVIDER_ZAI_CODING_CN: &str = "zai_coding_cn";
 /// OpenAI（ChatGPT 套餐）5h / 7d 窗口。凭据与端点都与其余四个 provider
 /// 不同源，实现见 [`crate::usage::subscription_openai`]。
 pub const PROVIDER_OPENAI: &str = "openai_codex";
-/// opencode Go 套餐的滚动 5 小时 / 周 / 月三窗口。凭据走内核凭据链——
-/// `opencode-go` 行的 `OPENCODE_GO_API_KEY` 或 Zen 的 `opencode` 行的
-/// `OPENCODE_API_KEY`（同一个 workspace 一把 Key，实测两行都能查），端点与响应
-/// 形状与其余五家都不同源，实现见 [`crate::usage::subscription_opencode`]。
+/// opencode（厂商）的 **Go 套餐**滚动 5 小时 / 周 / 月三窗口。凭据走内核凭据链：
+/// 厂商 opencode 在内核目录里有两行取源（`opencode` = Zen 目录、`opencode-go` =
+/// Go 目录），两行的 `apiKeyEnv` 都认（同一个 workspace 一把 Key，实测两行都能查
+/// 这个容量端点）。端点与响应形状与其余五家都不同源，实现见
+/// [`crate::usage::subscription_opencode`]。
 pub const PROVIDER_OPENCODE: &str = "opencode_go";
 
 /// 视图里的固定输出顺序：概览卡与独立窗口都按它排列。DeepSeek 是余额类
@@ -123,7 +124,7 @@ fn provider_label(id: &str) -> &'static str {
         PROVIDER_DEEPSEEK => "DeepSeek",
         PROVIDER_ZAI_CODING_CN => "GLM-CN",
         PROVIDER_OPENAI => "OpenAI",
-        PROVIDER_OPENCODE => "opencode Go",
+        PROVIDER_OPENCODE => "opencode",
         _ => "未知供应商",
     }
 }
@@ -686,10 +687,11 @@ fn credential_rejected_message(provider: &str, status: u16) -> String {
     let (label, next_step) = match provider {
         PROVIDER_DEEPSEEK => ("DeepSeek", "请到工作台的模型设置更新 DeepSeek 的 API Key"),
         PROVIDER_ZAI_CODING_CN => ("智谱", "请到工作台的模型设置更新 zai-coding-cn 的 API Key"),
-        // opencode Go 的密钥就是工作台模型设置里 `opencode-go` provider 的
-        // `OPENCODE_GO_API_KEY`，下一步也因此指向模型设置而不是 opencode 自己
-        // 的登录文件（文案见下一条常量）。
-        PROVIDER_OPENCODE => ("opencode Go", OPENCODE_REAUTH_STEP),
+        // opencode 的密钥就是工作台模型设置里那一行 provider 的 apiKeyEnv
+        // （`opencode` / `opencode-go` 都算，见 `credentials::classify_route`），
+        // 下一步也因此指向模型设置而不是 opencode 自己的登录文件（文案见下一条
+        // 常量）。
+        PROVIDER_OPENCODE => ("opencode", OPENCODE_REAUTH_STEP),
         PROVIDER_MINIMAX_EN => ("MiniMax-EN", MINIMAX_REAUTH_STEP),
         _ => ("MiniMax-CN", MINIMAX_REAUTH_STEP),
     };
@@ -699,7 +701,7 @@ fn credential_rejected_message(provider: &str, status: u16) -> String {
 /// MiniMax 两站共用的下一步文案（查套餐要用 Token Plan 页的订阅 Key）。
 const MINIMAX_REAUTH_STEP: &str = "请到工作台的模型设置更新对应 provider 的 API Key（注意：查询套餐需用 Token Plan 页的订阅 Key，不是接口密钥页的按量 Key）";
 
-/// opencode Go 的下一步文案（Go 套餐密钥在 opencode.ai 的 Console 里生成）。
+/// opencode 的下一步文案（Go 套餐的密钥在 opencode.ai 的 Console 里生成）。
 ///
 /// 写成常量而不是内联进 match 臂：CJK 在 rustfmt 里按两个显示宽度算，内联那行
 /// 会被折成四行，而 `subscription.rs` 是只许下调的反棘轮文件（预算 896 行）。

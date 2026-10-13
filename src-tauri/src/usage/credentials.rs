@@ -27,8 +27,9 @@ pub const PROVIDER_MINIMAX_CN: &str = "minimax_cn";
 pub const PROVIDER_MINIMAX_EN: &str = "minimax_en";
 pub const PROVIDER_DEEPSEEK: &str = "deepseek";
 pub const PROVIDER_ZAI_CODING_CN: &str = "zai_coding_cn";
-/// opencode Go 套餐：内核 route 是 `opencode-go` **或** Zen 的 `opencode`
-/// （同一份 pi-ai 目录里并列两行）——两家都认，判据与实测见 [`classify_route`]。
+/// **厂商 opencode**（opencode.ai）的 Go 套餐容量：内核目录里这家有**两行取源**
+/// （`opencode` = Zen 目录、`opencode-go` = Go 目录，同一个 workspace 一把 Key），
+/// 两行都认，判据与实测见 [`classify_route`]。
 /// 密钥由用户在 DSH 模型设置里配置，引用名取该行自己的 `apiKeyEnv`（默认派生
 /// 规则下分别是 `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY`）——**与 opencode
 /// 自己的 `auth.json` 无关**：那是另一个应用的凭据库，本功能不读（见
@@ -183,9 +184,10 @@ pub fn classify_route(route: &str, base_url: Option<&str>) -> Option<&'static st
             PROVIDER_MINIMAX_EN
         });
     }
-    // opencode：内核目录里是**并列两行**——Go 套餐的 `opencode-go` 与 Zen 的
-    // `opencode`（pi-ai 的 providers/all.js），引用名分别是
-    // `OPENCODE_GO_API_KEY` 与 `OPENCODE_API_KEY`。**两家都认**（2026-10-13 改）。
+    // 厂商 opencode：内核目录里是**两行取源**——`opencode`（Zen 目录，85 个模型）
+    // 与 `opencode-go`（Go 目录，30 个模型），引用名分别是 `OPENCODE_API_KEY` 与
+    // `OPENCODE_GO_API_KEY`。两行都认（2026-10-13 改）：它们不是两家厂商，只是同
+    // 一个 workspace 的两份模型清单。
     //
     // 判据是**实测**：容量端点 `/zen/go/v1/usage` 认的是 workspace 的那把 Key，
     // 与 route 叫什么无关——只配了 Zen 行（引用名 `OPENCODE_API_KEY`）的账号，
@@ -193,7 +195,7 @@ pub fn classify_route(route: &str, base_url: Option<&str>) -> Option<&'static st
     // 对得上 opencode 自己的模型：一个 workspace 一把 Key，Go 是 workspace 的
     // 订阅，Zen 余额是同一个 workspace 的预付余额。
     //
-    // 旧写法只认 `opencode-go`，于是 route 叫 `opencode` 的账号整条分区不显示
+    // 旧写法只认 `opencode-go`，于是配了 `opencode` 那一行的账号整条分区不显示
     // （2026-10-13 用户报的「套餐用量里没有 opencode」就是这条）。
     //
     // **仍然不按前缀猜**：`opencode-ox` / `opencode-zen` 这类自建 route 不在内——
@@ -496,7 +498,7 @@ mod tests {
         assert_eq!(
             classify_route("opencode-go", None),
             Some(PROVIDER_OPENCODE),
-            "opencode Go 的 route 要认得出来（Go 套餐容量走内核凭据链的 OPENCODE_GO_API_KEY）"
+            "厂商 opencode 的 `opencode-go` 那行要认得出来"
         );
         assert_eq!(
             classify_route("opencode", Some("https://opencode.ai/zen/v1")),
@@ -544,7 +546,7 @@ mod tests {
         assert_eq!(default_reference("unknown"), None);
     }
 
-    /// opencode Go 走的是**默认派生**这条链：真机核对的 profile 里
+    /// 厂商 opencode 走的是**默认派生**这条链：真机核对的 profile 里
     /// `opencode-go` 本来就带 `apiKeyEnv: OPENCODE_GO_API_KEY`（内核模型页按
     /// route 名派生的同一个名字），但用户也可能是手写 patch、只删了那一行——
     /// 那时 provider id → route → 引用名必须自己接得上。三段各自有测试，这条钉
