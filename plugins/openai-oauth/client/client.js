@@ -15,11 +15,13 @@
  *
  * 卡片下半部分是**常用模型勾选**（`openai_models_selection_get/_set`）：
  * 账号目录里的模型默认全都进会话的模型选择器，几十条里混着各种实验模型；
- * 这里让用户勾出常用的那几条，壳把集合落进 `shell/<mode>/openai-oauth/
- * model-selection.json`，桥接的 `/v1/models` 载荷带 `selected`，Host 适配器
- * 只过滤 `listModels`（`resolveModel` 仍走完整目录，见 host/adapter.js）。
- * 勾完不用刷新页面：Host 那边盯着这只文件，一变就重播一次适配器注册，
- * 内核随即让已打开的页面重拉模型目录（host/index.js 的 watchSelectionFile）。
+ * 这里让用户勾出常用的那几条。**勾选只改界面上的草稿，点「保存」才落盘**
+ * （2026-10-13 用户要求：不要每勾一下写一次）——壳把集合落进
+ * `shell/<mode>/openai-oauth/model-selection.json`，桥接的 `/v1/models`
+ * 载荷带 `selected`，Host 适配器只过滤 `listModels`（`resolveModel` 仍走
+ * 完整目录，见 host/adapter.js）。保存后不用刷新页面：Host 那边盯着这只
+ * 文件，一变就重播一次适配器注册，内核随即让已打开的页面重拉模型目录
+ * （host/index.js 的 watchSelectionFile）。
  *
  * 样式用内核 webui 的 `--dsw-alias-*` 主题令牌（与 provider 行卡同源，
  * 明暗主题自动跟随）；按钮配方照抄内核 secondaryButton。令牌在 apply()
@@ -49,10 +51,13 @@ const STRINGS = {
     bridgeMissing: "桌面壳连接不可用（未注入 Tauri 桥）",
     modelsTitle: "常用模型",
     modelsHint:
-      "勾选的模型会出现在会话的模型选择器里；取消勾选的模型不再列出，正在用它的会话需要另选一个。",
+      "勾选后点「保存」生效：勾上的模型会出现在会话的模型选择器里，没勾的不再列出，正在用它的会话需要另选一个。",
     modelsLoading: "读取模型中…",
     modelsFailed: "读取常用模型失败",
     modelSaveFailed: "保存常用模型失败",
+    modelsSave: "保存",
+    modelsSaving: "保存中…",
+    modelsDirty: "未保存的更改",
     restoreDefaults: "恢复默认",
     capabilityUnknown: "能力待验证",
   },
@@ -73,10 +78,13 @@ const STRINGS = {
     bridgeMissing: "Desktop shell bridge unavailable",
     modelsTitle: "Commonly used models",
     modelsHint:
-      "Checked models appear in the session model picker; unchecked models are no longer listed, and a session using one must pick another.",
+      "Check the models you use, then press Save. Checked models appear in the session model picker; unchecked models are no longer listed, and a session using one must pick another.",
     modelsLoading: "Loading models…",
     modelsFailed: "Failed to load the model list",
     modelSaveFailed: "Failed to save the model list",
+    modelsSave: "Save",
+    modelsSaving: "Saving…",
+    modelsDirty: "Unsaved changes",
     restoreDefaults: "Restore defaults",
     capabilityUnknown: "unverified",
   },
@@ -96,7 +104,10 @@ const CARD_CSS = `
 .xlink-oauth-btn:disabled{opacity:.45;cursor:default}
 .xlink-oauth-models{display:grid;gap:6px;border-top:.5px solid var(--dsw-alias-settings-card-stroke);padding-top:10px}
 .xlink-oauth-models-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.xlink-oauth-models-actions{display:flex;align-items:center;gap:10px}
 .xlink-oauth-models-title{font-weight:600;font-size:13px}
+.xlink-oauth-dirty{color:var(--dsw-alias-label-secondary);font-size:12px}
+.xlink-oauth-save{height:28px;padding:0 12px;font-size:12px}
 .xlink-oauth-link{border:0;background:0 0;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;padding:0}
 .xlink-oauth-link:hover:not(:disabled){color:var(--dsw-alias-label-primary)}
 .xlink-oauth-link:disabled{opacity:.45;cursor:default}
@@ -272,16 +283,28 @@ window.__ModuleLoader__.load({
      * 常用模型勾选区。
      *
      * 列表来自壳：`openai_models_selection_get` 给的是当前账号目录的**全部**
-     * 条目加勾选状态；每次勾选把**整份**选中集合交回 `..._set`（而不是增量），
-     * 壳按目录过滤后落盘。列表只有几十条、动作是用户点一下，整份提交换来的
-     * 是「界面状态与磁盘状态永远一致」——增量接口一旦漏掉一条，界面上看不出
-     * 任何异常，而会话里会多出或少掉一个模型。
+     * 条目加勾选状态。勾选框只改**界面上的草稿**，点「保存」才把整份选中集合
+     * 交回 `..._set`（而不是增量），壳按目录过滤后落盘。
+     *
+     * 为什么不是每勾一下写一次（2026-10-13 用户要求）：
+     * · 勾选框是"挑选"动作，挑选过程中每一下都落盘会在盘上留下一串中间状态，
+     *   用户改主意时那几次写都已经发生了（Host 还会为每次写重播一次适配器
+     *   注册，让所有打开的页面重拉模型目录）；
+     * · 传整份而不是增量：增量接口一旦漏掉一条，界面上看不出任何异常，而会话
+     *   里会多出或少掉一个模型。
+     *
+     * 草稿与已保存集合不一致时显示「未保存」，保存按钮才可点；`恢复默认` 也只
+     * 改草稿（同样要点保存），所以两条路径的语义是同一条。刷新（`nonce` 变化）
+     * 会用服务端状态重置草稿——那是用户主动的"重新读取"，勾选会跟着回到盘上
+     * 那份（未保存的改动被丢弃，界面上看得见）。
      *
      * 未登录时不画这一区：那种情况下按不出任何模型，而卡片上方已经在说
      * 「未登录」了，多一行空列表只是噪声。
      */
     function ModelSection({ phase, nonce }) {
       const [view, setView] = React.useState(null);
+      // 草稿：正在勾的集合（目录顺序）。null = 还没读到目录。
+      const [draft, setDraft] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       const [error, setError] = React.useState("");
 
@@ -299,6 +322,7 @@ window.__ModuleLoader__.load({
           .then((next) => {
             if (cancelled) return;
             setView(next);
+            setDraft(idsOf(next));
             setError("");
           })
           .catch((readError) => {
@@ -312,12 +336,17 @@ window.__ModuleLoader__.load({
       if (phase !== "authorized") return null;
 
       const models = view?.models ?? [];
-      const selectedCount = models.filter((model) => model.selected).length;
-      const write = async (ids) => {
+      const saved = idsOf(view);
+      const pending = draft ?? saved;
+      const dirty = !sameIds(pending, saved);
+      const save = async () => {
+        if (draft === null) return;
         setBusy(true);
         setError("");
         try {
-          setView(await invokeOrNull()("openai_models_selection_set", { ids }));
+          const next = await invokeOrNull()("openai_models_selection_set", { ids: pending });
+          setView(next);
+          setDraft(idsOf(next));
         } catch (writeError) {
           setError(`${L.modelSaveFailed}：${String(writeError)}`);
         } finally {
@@ -327,12 +356,17 @@ window.__ModuleLoader__.load({
       const toggle = (model, checked) => {
         if (busy || view === null) return;
         const ids = models
-          .filter((entry) => (entry.id === model.id ? checked : entry.selected))
+          .filter((entry) => (entry.id === model.id ? checked : pending.includes(entry.id)))
           .map((entry) => entry.id);
         // 空集会让这个提供方从会话选择器里整组消失：最后一枚在 UI 上是禁用的，
         // 这里再挡一次（钩子里的栈多半来自键盘 / 程序化触发）。
         if (ids.length === 0) return;
-        write(ids);
+        setDraft(ids);
+      };
+      // 「恢复默认」只改草稿：与勾选框同一条路径（不点保存就不落盘）。
+      const restoreDefaults = () => {
+        if (busy) return;
+        setDraft([...(view?.recommended ?? [])]);
       };
 
       return e(
@@ -342,19 +376,35 @@ window.__ModuleLoader__.load({
           "div",
           { className: "xlink-oauth-models-head" },
           e("span", { className: "xlink-oauth-models-title" }, L.modelsTitle),
-          (view?.recommended?.length ?? 0) > 0
-            ? e(
-                "button",
-                {
-                  key: "restore",
-                  type: "button",
-                  className: "xlink-oauth-link",
-                  onClick: () => write(view.recommended),
-                  disabled: busy,
-                },
-                L.restoreDefaults,
-              )
-            : null,
+          e(
+            "div",
+            { className: "xlink-oauth-models-actions" },
+            dirty ? e("span", { className: "xlink-oauth-dirty" }, L.modelsDirty) : null,
+            (view?.recommended?.length ?? 0) > 0
+              ? e(
+                  "button",
+                  {
+                    key: "restore",
+                    type: "button",
+                    className: "xlink-oauth-link",
+                    onClick: restoreDefaults,
+                    disabled: busy,
+                  },
+                  L.restoreDefaults,
+                )
+              : null,
+            e(
+              "button",
+              {
+                key: "save",
+                type: "button",
+                className: "xlink-oauth-btn xlink-oauth-save",
+                onClick: save,
+                disabled: busy || !dirty,
+              },
+              busy ? L.modelsSaving : L.modelsSave,
+            ),
+          ),
         ),
         e("div", { className: "xlink-oauth-status" }, L.modelsHint),
         error ? e("div", { className: "xlink-oauth-error" }, error) : null,
@@ -370,9 +420,10 @@ window.__ModuleLoader__.load({
                   { key: model.id, className: "xlink-oauth-item" },
                   e("input", {
                     type: "checkbox",
-                    checked: model.selected,
+                    // 勾的是**草稿**，不是服务端状态：点保存才落盘。
+                    checked: pending.includes(model.id),
                     // 至少留一条：取消勾选最后一条会让提供方整组从选择器里消失。
-                    disabled: busy || (model.selected && selectedCount <= 1),
+                    disabled: busy || (pending.includes(model.id) && pending.length <= 1),
                     onChange: (event) => toggle(model, event.target.checked),
                   }),
                   e("span", { className: "xlink-oauth-item-name" }, model.name),
@@ -385,6 +436,16 @@ window.__ModuleLoader__.load({
             )
           : null,
       );
+    }
+
+    /** 服务端视图里的选中 id（目录顺序；视图缺失时当空集）。 */
+    function idsOf(view) {
+      return (view?.models ?? []).filter((model) => model.selected).map((model) => model.id);
+    }
+
+    /** 两份 id 列表是否逐位相同（两边都按目录顺序生成，比集合弱、比排序便宜）。 */
+    function sameIds(left, right) {
+      return left.length === right.length && left.every((id, index) => id === right[index]);
     }
 
     /** 页尾卡：标题（带来源 tooltip）+ 账户区。 */
