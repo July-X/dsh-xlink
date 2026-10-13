@@ -221,47 +221,78 @@ pub(crate) fn load_catalog_with(
     Ok(catalog)
 }
 
+/// 取目录并在**拉取失败（非授权问题）**时回退活跃账号的最后一次成功缓存
+/// （带回退目录自己的 revision，不冒充新）。`serve_payload` 的兜底与常用模型
+/// 选择命令都读这一份——两份口径各写一遍时，界面上的勾选状态会与桥接载荷
+/// 不一致，而那种不一致没有任何症状。
+pub(crate) fn load_catalog_with_cache(
+    paths: &FlowPaths,
+    deps: &impl FlowTransport,
+    mode: &str,
+) -> Result<Catalog, CatalogError> {
+    match load_catalog(paths, deps, mode) {
+        Ok(catalog) => Ok(catalog),
+        Err(CatalogError::Message(detail)) => {
+            let sub = crate::openai::flow::account_view(paths, deps, mode)
+                .ok()
+                .flatten()
+                .map(|view| view.sub);
+            match sub.as_deref().and_then(|sub| cached_catalog(paths, sub)) {
+                Some(catalog) => Ok(catalog),
+                None => Err(CatalogError::Message(detail)),
+            }
+        }
+        Err(other) => Err(other),
+    }
+}
+
 /// 桥接 `/v1/models` 的载荷（Host `bridge.js` 的契约形状：`{revision,
-/// models}`；revision 把目录与能力表两个版本拼在一起，Host 发送前校验）。
-/// 拉取失败时回退活跃账号的最后一次成功缓存（带原 revision，不冒充新）；
-/// 连缓存都没有才报错——错误码与文案给 Host 分类用。
+/// selected, models}`；revision 把目录与能力表两个版本拼在一起，Host 发送前
+/// 校验）。拉取失败时回退缓存（见 [`load_catalog_with_cache`]）；连缓存都没有
+/// 才报错——错误码与文案给 Host 分类用。
+///
+/// `selected` 是**常用模型的生效集合**（用户在设置页勾选的那一份，见
+/// [`crate::openai::selection`]）。Host 只用它过滤 `listModels`：`resolveModel`
+/// 与推理仍走完整目录，取消勾选不会让正在用该模型的会话发不出消息。
 pub(crate) fn serve_payload(
     paths: &FlowPaths,
     deps: &impl FlowTransport,
     mode: &str,
 ) -> Result<String, (u16, String)> {
-    match load_catalog(paths, deps, mode) {
-        Ok(catalog) => Ok(catalog_to_payload(&catalog)),
+    match load_catalog_with_cache(paths, deps, mode) {
+        Ok(catalog) => Ok(catalog_to_payload(
+            &catalog,
+            &active_selection(paths, &catalog),
+        )),
         // 未登录 → **空目录载荷（200）**：未登录是前置常态，工作台的模型
         // 选择器不该为它显示「加载失败」（2026-10-09 用户反馈）；登录后
         // 同一端点自然给出真实模型。
-        Err(CatalogError::NotSignedIn) => Ok(catalog_to_payload(&Catalog {
-            revision: String::from("-"),
-            capability_revision: CAPABILITY_REVISION,
-            entries: Vec::new(),
-            fetched_at: 0,
-        })),
+        Err(CatalogError::NotSignedIn) => Ok(catalog_to_payload(
+            &Catalog {
+                revision: String::from("-"),
+                capability_revision: CAPABILITY_REVISION,
+                entries: Vec::new(),
+                fetched_at: 0,
+            },
+            &[],
+        )),
         Err(CatalogError::Reauth(detail)) => Err((401, detail)),
-        Err(CatalogError::Message(detail)) => {
-            // 缓存兜底：活跃账号的最后一次成功目录。
-            let sub = crate::openai::flow::account_view(paths, deps, mode)
-                .ok()
-                .flatten()
-                .map(|view| view.sub);
-            if let Some(catalog) = sub.as_deref().and_then(|sub| cached_catalog(paths, sub)) {
-                // 不在载荷里嵌「已回退」说明：Host 契约形状固定，追加字段
-                // 会制造两份解析路径；回退语义由原 revision 表达（Host 按
-                // revision 判断新鲜度，旧目录不会冒充新的）。
-                return Ok(catalog_to_payload(&catalog));
-            }
-            Err((503, format!("模型目录不可用：{detail}")))
-        }
+        // 不在载荷里嵌「已回退」说明：Host 契约形状固定，追加字段会制造两份
+        // 解析路径；回退语义由原 revision 表达（Host 按 revision 判断新鲜度，
+        // 旧目录不会冒充新的）。
+        Err(CatalogError::Message(detail)) => Err((503, format!("模型目录不可用：{detail}"))),
     }
 }
 
-fn catalog_to_payload(catalog: &Catalog) -> String {
+/// 生效的常用模型集合（偏好文件 ∩ 当前目录；规则见 `selection`）。
+fn active_selection(paths: &FlowPaths, catalog: &Catalog) -> Vec<String> {
+    crate::openai::selection::effective(catalog, crate::openai::selection::load(paths).as_deref())
+}
+
+fn catalog_to_payload(catalog: &Catalog, selected: &[String]) -> String {
     serde_json::json!({
         "revision": format!("{}|cap{}", catalog.revision, catalog.capability_revision),
+        "selected": selected,
         "models": catalog.entries.iter().map(|entry| serde_json::json!({
             "id": entry.id,
             "name": entry.name,
@@ -462,7 +493,7 @@ mod tests {
         // flatten 把整个 Vec 塞进单元素，id 退化成数组 → 内核侧串接成一个
         // 档位（2026-10-09 实测）。
         let payload: serde_json::Value =
-            serde_json::from_str(&catalog_to_payload(&catalog)).unwrap();
+            serde_json::from_str(&catalog_to_payload(&catalog, &[])).unwrap();
         let efforts = payload["models"][0]["efforts"].as_array().unwrap();
         assert_eq!(efforts.len(), 6);
         for (index, effort) in efforts.iter().enumerate() {
@@ -475,6 +506,44 @@ mod tests {
                 effort["id"].as_str().unwrap()
             );
         }
+    }
+
+    /// 载荷里的 `selected` 就是**生效的常用模型集合**：没设置过偏好时默认收窄到
+    /// 带能力元数据的条目（界面上的「推荐」），设置过则按偏好取交集。Host 只
+    /// 用这一项过滤 `listModels`，所以它错了只有一种症状——会话选择器里多出
+    /// （或少掉）几条模型。
+    #[test]
+    fn payload_carries_the_effective_model_selection() {
+        let issuer = MockIssuer::spawn();
+        let transport = issuer.transport();
+        let paths = flow_test_paths("catalog-selection", issuer.port());
+        let cancel = AtomicBool::new(false);
+        crate::openai::flow::run_authorize(&paths, &transport, "release", &cancel).unwrap();
+        let models_port = serve_models_once(
+            r#"{"data":[{"slug":"gpt-6.1-sol","visibility":"list"},{"slug":"gpt-reserve","visibility":"list"}]}"#,
+            "at-1",
+        );
+        let mut catalog_paths = paths.clone();
+        catalog_paths.models_base = format!("http://127.0.0.1:{models_port}");
+
+        // 未设置偏好 → 只剩展示表里那一条（gpt-reserve 能力未知）。
+        let payload: serde_json::Value =
+            serde_json::from_str(&serve_payload(&catalog_paths, &transport, "release").unwrap())
+                .unwrap();
+        assert_eq!(payload["selected"], serde_json::json!(["gpt-6.1-sol"]));
+        assert_eq!(payload["models"].as_array().unwrap().len(), 2);
+
+        // 设置偏好 → 按偏好取交集（能力未知的条目也可以被勾上）。
+        crate::openai::selection::save(
+            &catalog_paths,
+            &cached_catalog(&catalog_paths, "mock-sub-1").unwrap(),
+            &["gpt-reserve".to_string()],
+        )
+        .unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&serve_payload(&catalog_paths, &transport, "release").unwrap())
+                .unwrap();
+        assert_eq!(payload["selected"], serde_json::json!(["gpt-reserve"]));
     }
 
     #[test]

@@ -277,20 +277,38 @@ mod tests {
     /// 本机回环的极简服务：回固定响应，让请求走真实的 ureq/网络栈。
     /// `head` 是状态行与响应头（不含 Content-Length / Connection）。
     ///
-    /// **必须先把请求读掉再回响应**（`stream.read` 那行）：不等客户端的
+    /// **必须先把整份请求读掉再回响应**（`stream.read` 那行）：不等客户端的
     /// 请求字节离开接收缓冲区就 close，macOS 发的是 RST 而不是 FIN，客户端
     /// 能否读到响应纯看时序——于是同一条断言时而绿时而红，红时拿到的是
     /// Transport 而不是被测的 Status。2026-10-09 发 v0.4.4 时踩到：
     /// `transport_vs_status_classification` 在 CI 上绿、在发布流水线上红，
     /// 报 `Transport("io: Invalid argument (os error 22)")`，而同一批 820
     /// 个用例全绿。写这个服务时漏掉读请求，红的表象与真正原因隔着两层。
+    ///
+    /// 2026-10-13 又补一刀：**「读一次」不等于「读完整份请求」**。POST 的头与
+    /// 体可能落在两次 write 里，服务端读完头（第一次 read 就返回）就回响应并
+    /// close，接收缓冲区里还剩请求体，Windows 回 RST，客户端拿到的是
+    /// `Transport("io: 你的主机中的软件中止了一个已建立的连接。 (os error 10053)")`
+    /// ——红的正是 `get_and_form_roundtrip_over_real_stack` 里 post_form 那一行，
+    /// 而它与被测的协议语义毫无关系。本机实测整机有负载时约 3/8 次（我的新
+    /// 用例全跳过也照红，是既有 flake）。现在按 Content-Length 收到体满才回响应。
     fn serve_once(head: &'static str, body: &'static str) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 2048];
-                let _ = stream.read(&mut buf);
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .ok();
+                let mut request = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !request_complete(&request) {
+                    match stream.read(&mut buf) {
+                        // 对端关了 / 超时：手里有什么算什么，别把测试吊死。
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => request.extend_from_slice(&buf[..n]),
+                    }
+                }
                 let response = format!(
                     "{head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
@@ -300,6 +318,24 @@ mod tests {
             }
         });
         port
+    }
+
+    /// 请求是否已完整到达：头结束（CRLFCRLF）+ `Content-Length` 指明的体收满。
+    /// 没有 Content-Length（GET）时只看头是否结束。
+    fn request_complete(request: &[u8]) -> bool {
+        let text = String::from_utf8_lossy(request);
+        let Some(end) = text.find("\r\n\r\n") else {
+            return false;
+        };
+        let length = text[..end]
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())?
+            })
+            .unwrap_or(0);
+        text.len() - (end + 4) >= length
     }
 
     #[test]

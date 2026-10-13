@@ -1,11 +1,14 @@
 //! openai-oauth 的 Tauri 命令层（开发计划 §4.2）。
 //!
-//! 四条命令围绕**授权状态机**（§4.1 的授权四态子集）：
+//! 六条命令分两组：**授权状态机**（§4.1 的授权四态子集）——
 //! `openai_account_status`（只读）、`openai_authorize_start`（后台线程跑
 //! 完整授权流，立即返回；浏览器由 opener 插件打开）、
 //! `openai_authorize_cancel`（置取消旗，等待循环的 1 秒切片内生效）、
-//! `openai_logout`（清库）。授权流结束（成功/失败/取消）广播
-//! `openai-account-changed`，UI 靠它刷新账户卡——不做轮询。
+//! `openai_logout`（清库）；以及**常用模型选择**——
+//! `openai_models_selection_get` / `_set`（工作台卡片上的勾选列表，落
+//! `shell/<mode>/openai-oauth/model-selection.json`，见 `openai::selection`）。
+//! 授权流结束（成功/失败/取消）广播 `openai-account-changed`，UI 靠它刷新
+//! 账户卡——不做轮询。
 //!
 //! 与 flow.rs 的分工：那边是可注入的纯编排（模拟授权服务器可测），这边
 //! 只做「解析路径、组装生产环境、处理 AppHandle」；凡是能落在 flow 里的
@@ -17,7 +20,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use crate::openai::catalog::{self, Catalog, CatalogError};
 use crate::openai::flow::{self, FlowPaths, ProductionTransport};
+use crate::openai::selection;
 use crate::shell::settings;
 
 /// 授权流程结束时的广播事件名（UI 侧订阅刷新账户卡）。
@@ -195,6 +200,80 @@ pub async fn openai_catalog_refresh(app: AppHandle) -> Result<AccountStatus, Str
                 error.message()
             )),
         }
+    })
+    .await
+}
+
+/// 常用模型勾选卡片的状态：勾选项 + 空态 / 失败说明。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSelectionView {
+    /// 账号目录里的**全部**条目（不是生效集合）——用户要能勾上任意一条。
+    pub models: Vec<selection::Choice>,
+    /// 未显式设置时的默认集合（卡片上的「恢复默认」）。
+    pub recommended: Vec<String>,
+    /// 空态或读目录失败的原因；`models` 为空时由卡片显示。
+    pub note: Option<String>,
+}
+
+fn selection_view(paths: &FlowPaths, catalog: Catalog) -> ModelSelectionView {
+    ModelSelectionView {
+        models: selection::choices(paths, &catalog),
+        recommended: selection::recommended(&catalog),
+        note: None,
+    }
+}
+
+fn empty_selection_view(note: String) -> ModelSelectionView {
+    ModelSelectionView {
+        models: Vec::new(),
+        recommended: Vec::new(),
+        note: Some(note),
+    }
+}
+
+/// 读取常用模型勾选列表（只读；不写文件）。
+///
+/// 目录读不出来（未登录 / 网络失败且无缓存）**不报错**：卡片这一区照样要
+/// 渲染，`note` 里说清原因、`models` 为空——报错会让整个卡片变成一行红字，
+/// 而用户在这个位置想看到的是「有哪些模型可勾」。
+#[tauri::command]
+pub async fn openai_models_selection_get(app: AppHandle) -> Result<ModelSelectionView, String> {
+    crate::commands::blocking(move || {
+        let paths = flow_paths();
+        let transport = production_transport(&app);
+        let mode = settings::current_mode().as_str().to_string();
+        Ok::<_, String>(
+            match catalog::load_catalog_with_cache(&paths, &transport, &mode) {
+                Ok(catalog) => selection_view(&paths, catalog),
+                Err(CatalogError::NotSignedIn) => {
+                    empty_selection_view("登录后可勾选常用模型".into())
+                }
+                Err(error) => empty_selection_view(error.message()),
+            },
+        )
+    })
+    .await
+}
+
+/// 保存常用模型勾选（写动作；落 `shell/<mode>/openai-oauth/model-selection.json`）。
+///
+/// 写之前**必须**能读到当前目录：ids 要按目录过滤，而目录读不出来时保存
+/// 只会把用户刚勾的那几条静默丢掉——这种情况如实报错，让用户稍后重试。
+/// 保存成功后用**同一份**刚读到的目录构造视图，不再多读一次。
+#[tauri::command]
+pub async fn openai_models_selection_set(
+    app: AppHandle,
+    ids: Vec<String>,
+) -> Result<ModelSelectionView, String> {
+    crate::commands::blocking(move || {
+        let paths = flow_paths();
+        let transport = production_transport(&app);
+        let mode = settings::current_mode().as_str().to_string();
+        let catalog = catalog::load_catalog_with_cache(&paths, &transport, &mode)
+            .map_err(|error| format!("{}；请稍后重试", error.message()))?;
+        selection::save(&paths, &catalog, &ids)?;
+        Ok::<_, String>(selection_view(&paths, catalog))
     })
     .await
 }

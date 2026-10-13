@@ -9,13 +9,16 @@
 ## 布局
 
 ```text
-host/index.js      入口：registerConfigurableProviders + registerAdapter
-host/adapter.js    LlmAdapter 子类：目录/解析转发桥接，stream 抛 NOT_IMPLEMENTED
+host/index.js      入口：registerAdapter + 偏好文件变更通知
+host/adapter.js    LlmAdapter 子类：目录/解析转发桥接 + listModels 按常用模型过滤
 host/bridge.js     本地桥接客户端（握手 /v1/handshake、目录 /v1/models）
 host/constants.js  稳定标识与环境变量契约
 client/client.js   设置页提供方卡插槽（keyed by settingsNs，自包含束）
 locales/{zh,en}.js 文案源（client.js 内联孪生，构建步骤落地前手工同步）
 test/smoke.mjs     端到端冒烟：物化+接线+启动内核+桩桥接+断言
+test/fixtures.mjs  测试夹具：host/ 副本 + 桩 peer（dsh-llm / schemastery）
+test/adapter-catalog.test.mjs 目录 → 会话列表的映射（selected 过滤）
+test/selection-watch.test.mjs 偏好文件变更通知（含 env 接线）
 ```
 
 ## 标识契约
@@ -25,7 +28,17 @@ test/smoke.mjs     端到端冒烟：物化+接线+启动内核+桩桥接+断言
 | 包名 = loader 行 id = settingsNs | `xlink-openai-oauth` | 接线行 id 经 `ctx.fiber.entry?.options.id` 成为设置命名空间，client 卡片同 key |
 | 提供方路由 | `xlink-openai-chatgpt` | dsh 会话与配置 |
 | 桥接 env | `DSH_XLINK_OPENAI_BRIDGE_URL` / `…_TOKEN` | 仅经子进程环境传入（开发计划 §5） |
+| 偏好文件 env | `DSH_XLINK_OPENAI_SELECTION_FILE` | 常用模型偏好文件的路径；Host 只用它做变更通知 |
 | 冒烟标记 env | `DSH_XLINK_OPENAI_TEST_MARKER` | 设置后 Host 写状态文件；生产不设、不写 |
+
+## 常用模型（2026-10-13）
+
+账号目录的模型默认全都进会话选择器，几十条里混着实验模型。设置页的卡片下半部分让用户勾出常用的那几条：
+
+- 偏好落 `<xlink_home>/shell/<mode>/openai-oauth/model-selection.json`（壳侧写入，`atomic_write`）；
+- 桥接 `/v1/models` 的载荷带 `selected`（生效集合 = 偏好 ∩ 当前目录，默认集合见 `src-tauri/src/openai/selection.rs`）；
+- **只有 `listModels` 被过滤**：`resolveModel` / 推理走完整目录；
+- 勾完不必刷新页面：Host 观察偏好文件，stat 一变就 `replace` 一次适配器注册，内核随即广播 `llm/adapters-updated` 让已打开的页面重拉目录。通知失败只写日志，刷新页面照样生效。
 
 ## 接线形状（Rust 侧接线器按此生成）
 
@@ -41,16 +54,26 @@ test/smoke.mjs     端到端冒烟：物化+接线+启动内核+桩桥接+断言
 
 ## 验证
 
+v0.1.13 增加常用模型选择（`selected` 过滤 + 偏好文件变更通知），并补两条不依赖内核的测试。
+
 v0.1.12 修正套餐路线的函数工具分组：`tools` 中使用 `type: "namespace"` 容器，函数定义放入其 `tools` 数组，不在函数定义上附加 `namespace`。工具调用历史与结果按 `call_id` 配对，名称转换和回映射保持一致。
 
 ```sh
-node test/smoke.mjs --kernel <内核安装根> [--port 3130] [--keep]
+node --test test/*.test.mjs                                     # 单测（无需内核）
+node test/smoke.mjs --kernel <内核安装根> [--port 3130] [--keep]  # 端到端冒烟
 ```
 
+单测里 `adapter-catalog.test.mjs` / `selection-watch.test.mjs` 用
+`test/fixtures.mjs` 把 `host/` 复制进临时目录并摆两个桩 peer（`dsh-llm`、
+`schemastery`）：它们验的是「载荷 → 会话列表」的映射与偏好变更通知，与内核
+语义无关，所以不需要真的装内核。内核兼容性仍由 `adapter-images.test.mjs`
+（需 `DSH_OAUTH_TEST_KERNEL`）与冒烟覆盖。
+
 冒烟自建临时 DSH home（不触碰用户数据），起桩桥接，断言：目录行注册、
-settingsNs 取行 id、桥接握手、目录拉取、boot 图含 client 条目。退出码
-非 0 即失败。窗口内三版本（`0.2.1-alpha.1` / `0.2.0-rc.2` / `0.2.0-rc.1`）
-均已通过（2026-10-08）。
+settingsNs 取行 id、桥接握手、目录拉取、常用模型过滤（桩载荷带 `selected`，
+会话选择器只拿到勾选的条目）、未勾选模型仍可解析、boot 图含 client 条目。
+退出码非 0 即失败。窗口内三版本（`0.2.1-alpha.1` / `0.2.0-rc.2` / `0.2.0-rc.1`）
+均已通过（2026-10-08）；`0.2.1-alpha.2` 于 2026-10-13 复跑通过（含常用模型那两条）。
 
 ## 门禁与预算
 

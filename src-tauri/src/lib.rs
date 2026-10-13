@@ -512,6 +512,9 @@ pub fn run() {
             openai::cmd::openai_authorize_cancel,
             openai::cmd::openai_logout,
             openai::cmd::openai_catalog_refresh,
+            // 常用模型选择（工作台卡片上的勾选列表）。
+            openai::cmd::openai_models_selection_get,
+            openai::cmd::openai_models_selection_set,
             commands::plugin_set_precheck,
             plugins::precheck_cmd::plugin_precheck_apply,
             diagnostics::snapshot_cmd::snapshot_list,

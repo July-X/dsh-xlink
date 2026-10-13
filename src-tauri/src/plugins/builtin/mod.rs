@@ -46,6 +46,16 @@ use builtins::BuiltinSpec;
 pub(crate) const BRIDGE_URL_ENV: &str = "DSH_XLINK_OPENAI_BRIDGE_URL";
 pub(crate) const BRIDGE_TOKEN_ENV: &str = "DSH_XLINK_OPENAI_BRIDGE_TOKEN";
 
+/// 常用模型偏好文件的 env 名（与 `plugins/openai-oauth/host/constants.js`
+/// 的同名常量一一对应）。
+///
+/// Host 不读它的内容（勾选状态的唯一读法是 `/v1/models` 载荷里的
+/// `selected`），只用它做**变更通知**：文件一变就 `replace` 一次适配器注册，
+/// 内核据此广播 `llm/adapters-updated`，已打开的工作台页面随即重拉模型目录
+/// ——没有这条通道时，用户在设置页勾完、回到会话里看到的还是旧列表，「改了
+/// 没生效」与「改坏了」在界面上分不出来。
+pub(crate) const SELECTION_FILE_ENV: &str = "DSH_XLINK_OPENAI_SELECTION_FILE";
+
 /// 启用事务的结果。
 #[allow(
     dead_code,

@@ -13,6 +13,14 @@
  * 只会困惑（2026-10-09 用户反馈：移除编辑按钮，标题说明来源与移除入口）。
  * Host 侧因此也不再注册 configurable provider 目录行。
  *
+ * 卡片下半部分是**常用模型勾选**（`openai_models_selection_get/_set`）：
+ * 账号目录里的模型默认全都进会话的模型选择器，几十条里混着各种实验模型；
+ * 这里让用户勾出常用的那几条，壳把集合落进 `shell/<mode>/openai-oauth/
+ * model-selection.json`，桥接的 `/v1/models` 载荷带 `selected`，Host 适配器
+ * 只过滤 `listModels`（`resolveModel` 仍走完整目录，见 host/adapter.js）。
+ * 勾完不用刷新页面：Host 那边盯着这只文件，一变就重播一次适配器注册，
+ * 内核随即让已打开的页面重拉模型目录（host/index.js 的 watchSelectionFile）。
+ *
  * 样式用内核 webui 的 `--dsw-alias-*` 主题令牌（与 provider 行卡同源，
  * 明暗主题自动跟随）；按钮配方照抄内核 secondaryButton。令牌在 apply()
  * 时随一个 <style> 注入（内联样式做不了 :hover/:disabled）。
@@ -39,6 +47,14 @@ const STRINGS = {
     phaseSignedOut: "未登录",
     statusPrefix: "状态：",
     bridgeMissing: "桌面壳连接不可用（未注入 Tauri 桥）",
+    modelsTitle: "常用模型",
+    modelsHint:
+      "勾选的模型会出现在会话的模型选择器里；取消勾选的模型不再列出，正在用它的会话需要另选一个。",
+    modelsLoading: "读取模型中…",
+    modelsFailed: "读取常用模型失败",
+    modelSaveFailed: "保存常用模型失败",
+    restoreDefaults: "恢复默认",
+    capabilityUnknown: "能力待验证",
   },
   en: {
     cardTitle: "OpenAI · ChatGPT plan",
@@ -55,6 +71,14 @@ const STRINGS = {
     phaseSignedOut: "Not signed in",
     statusPrefix: "Status: ",
     bridgeMissing: "Desktop shell bridge unavailable",
+    modelsTitle: "Commonly used models",
+    modelsHint:
+      "Checked models appear in the session model picker; unchecked models are no longer listed, and a session using one must pick another.",
+    modelsLoading: "Loading models…",
+    modelsFailed: "Failed to load the model list",
+    modelSaveFailed: "Failed to save the model list",
+    restoreDefaults: "Restore defaults",
+    capabilityUnknown: "unverified",
   },
 };
 const L = STRINGS[(globalThis.navigator?.language ?? "zh").toLowerCase().startsWith("zh") ? "zh" : "en"];
@@ -70,6 +94,18 @@ const CARD_CSS = `
 .xlink-oauth-btn{box-sizing:border-box;border-radius:var(--dsw-radius-md);height:32px;font:inherit;cursor:pointer;border:.5px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-primary);background:0 0;padding:0 14px;font-size:13px;display:inline-flex;align-items:center;justify-content:center;gap:4px}
 .xlink-oauth-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
 .xlink-oauth-btn:disabled{opacity:.45;cursor:default}
+.xlink-oauth-models{display:grid;gap:6px;border-top:.5px solid var(--dsw-alias-settings-card-stroke);padding-top:10px}
+.xlink-oauth-models-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.xlink-oauth-models-title{font-weight:600;font-size:13px}
+.xlink-oauth-link{border:0;background:0 0;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;padding:0}
+.xlink-oauth-link:hover:not(:disabled){color:var(--dsw-alias-label-primary)}
+.xlink-oauth-link:disabled{opacity:.45;cursor:default}
+.xlink-oauth-list{display:grid;gap:2px;max-height:220px;overflow-y:auto;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);padding:6px 8px}
+.xlink-oauth-item{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:2px 0}
+.xlink-oauth-item input{flex:none;margin:0}
+.xlink-oauth-item-name{flex:none}
+.xlink-oauth-item-id{color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}
+.xlink-oauth-item-note{color:var(--dsw-alias-label-secondary);font-size:11px;flex:none}
 `;
 
 function invokeOrNull() {
@@ -97,6 +133,8 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false);
       const [lastCommand, setLastCommand] = React.useState("");
       const [error, setError] = React.useState("");
+      // 「刷新模型列表」成功后让常用模型区重读一次（目录可能多 / 少了几条）。
+      const [catalogNonce, setCatalogNonce] = React.useState(0);
 
       const refresh = React.useCallback(async () => {
         const invoke = invokeOrNull();
@@ -141,6 +179,7 @@ window.__ModuleLoader__.load({
         setError("");
         try {
           setStatus(await invokeOrNull()(command));
+          if (command === "openai_catalog_refresh") setCatalogNonce((value) => value + 1);
         } catch (invokeError) {
           setError(String(invokeError));
         } finally {
@@ -225,6 +264,126 @@ window.__ModuleLoader__.load({
         error ? e("div", { className: "xlink-oauth-error" }, error) : null,
         flowError ? e("div", { className: "xlink-oauth-error" }, flowError) : null,
         e("div", { className: "xlink-oauth-actions" }, actions),
+        e(ModelSection, { phase, nonce: catalogNonce }),
+      );
+    }
+
+    /**
+     * 常用模型勾选区。
+     *
+     * 列表来自壳：`openai_models_selection_get` 给的是当前账号目录的**全部**
+     * 条目加勾选状态；每次勾选把**整份**选中集合交回 `..._set`（而不是增量），
+     * 壳按目录过滤后落盘。列表只有几十条、动作是用户点一下，整份提交换来的
+     * 是「界面状态与磁盘状态永远一致」——增量接口一旦漏掉一条，界面上看不出
+     * 任何异常，而会话里会多出或少掉一个模型。
+     *
+     * 未登录时不画这一区：那种情况下按不出任何模型，而卡片上方已经在说
+     * 「未登录」了，多一行空列表只是噪声。
+     */
+    function ModelSection({ phase, nonce }) {
+      const [view, setView] = React.useState(null);
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState("");
+
+      React.useEffect(() => {
+        if (phase !== "authorized") return undefined;
+        const invoke = invokeOrNull();
+        if (invoke === null) {
+          setError(L.bridgeMissing);
+          return undefined;
+        }
+        // 卸载 / 换相位后到达的回程不许再写状态（否则已登录的旧列表会盖回
+        // 一屏刚退出登录的卡片）。
+        let cancelled = false;
+        invoke("openai_models_selection_get")
+          .then((next) => {
+            if (cancelled) return;
+            setView(next);
+            setError("");
+          })
+          .catch((readError) => {
+            if (!cancelled) setError(`${L.modelsFailed}：${String(readError)}`);
+          });
+        return () => {
+          cancelled = true;
+        };
+      }, [phase, nonce]);
+
+      if (phase !== "authorized") return null;
+
+      const models = view?.models ?? [];
+      const selectedCount = models.filter((model) => model.selected).length;
+      const write = async (ids) => {
+        setBusy(true);
+        setError("");
+        try {
+          setView(await invokeOrNull()("openai_models_selection_set", { ids }));
+        } catch (writeError) {
+          setError(`${L.modelSaveFailed}：${String(writeError)}`);
+        } finally {
+          setBusy(false);
+        }
+      };
+      const toggle = (model, checked) => {
+        if (busy || view === null) return;
+        const ids = models
+          .filter((entry) => (entry.id === model.id ? checked : entry.selected))
+          .map((entry) => entry.id);
+        // 空集会让这个提供方从会话选择器里整组消失：最后一枚在 UI 上是禁用的，
+        // 这里再挡一次（钩子里的栈多半来自键盘 / 程序化触发）。
+        if (ids.length === 0) return;
+        write(ids);
+      };
+
+      return e(
+        "div",
+        { className: "xlink-oauth-models", "data-xlink-openai-oauth": "models" },
+        e(
+          "div",
+          { className: "xlink-oauth-models-head" },
+          e("span", { className: "xlink-oauth-models-title" }, L.modelsTitle),
+          (view?.recommended?.length ?? 0) > 0
+            ? e(
+                "button",
+                {
+                  key: "restore",
+                  type: "button",
+                  className: "xlink-oauth-link",
+                  onClick: () => write(view.recommended),
+                  disabled: busy,
+                },
+                L.restoreDefaults,
+              )
+            : null,
+        ),
+        e("div", { className: "xlink-oauth-status" }, L.modelsHint),
+        error ? e("div", { className: "xlink-oauth-error" }, error) : null,
+        view === null && !error ? e("div", { className: "xlink-oauth-status" }, L.modelsLoading) : null,
+        view?.note ? e("div", { className: "xlink-oauth-status" }, view.note) : null,
+        models.length > 0
+          ? e(
+              "div",
+              { className: "xlink-oauth-list" },
+              models.map((model) =>
+                e(
+                  "label",
+                  { key: model.id, className: "xlink-oauth-item" },
+                  e("input", {
+                    type: "checkbox",
+                    checked: model.selected,
+                    // 至少留一条：取消勾选最后一条会让提供方整组从选择器里消失。
+                    disabled: busy || (model.selected && selectedCount <= 1),
+                    onChange: (event) => toggle(model, event.target.checked),
+                  }),
+                  e("span", { className: "xlink-oauth-item-name" }, model.name),
+                  e("span", { className: "xlink-oauth-item-id" }, model.id),
+                  model.capability === "unknown"
+                    ? e("span", { className: "xlink-oauth-item-note" }, L.capabilityUnknown)
+                    : null,
+                ),
+              ),
+            )
+          : null,
       );
     }
 

@@ -157,3 +157,83 @@ test('client: 授权进行中仍用短间隔轮询', async () => {
   // 过程中需要看到进度推进。
   assert.equal(interval.ms, 2000);
 });
+
+test('client: 常用模型区列出目录条目，勾选把整份集合交回壳', async () => {
+  const { loaded, context } = loadClient();
+  const view = {
+    models: [
+      { id: 'gpt-a', name: 'GPT A', capability: 'codex-catalog', selected: false },
+      { id: 'gpt-b', name: 'GPT B', capability: 'unknown', selected: true },
+    ],
+    recommended: ['gpt-a'],
+    note: null,
+  };
+  const invokes = [];
+  context.window.__TAURI__ = {
+    core: { invoke: async (command, args) => { invokes.push({ command, args }); return view; } },
+  };
+  // 一次 factory 调用里两个组件共用一份 React 桩，按调用顺序供状态：
+  // AccountCard 先取 5 个（status / busy / lastCommand / error / nonce），
+  // 随后 ModelSection 取 3 个（view / busy / error）。
+  const states = [{ phase: 'authorized' }, false, '', '', 0, view, false, ''];
+  let stateCalls = 0;
+  const react = {
+    ...stubReact,
+    useState(initial) {
+      const value = stateCalls < states.length ? states[stateCalls] : initial;
+      stateCalls += 1;
+      return [value, () => {}];
+    },
+    // 只有 AccountCard 的 effect 需要跑；ModelSection 的读列表交给直接调用。
+    useEffect() {},
+  };
+  let footer;
+  loaded.factory(() => react).apply({ slots: {
+    inject(_name, register) { register(); },
+    register(_descriptor, component) { footer = component; },
+  } });
+
+  const findSection = (node) => {
+    if (!node || typeof node !== 'object') return null;
+    if (typeof node.type === 'function' && node.props?.phase !== undefined) return node;
+    for (const child of node.children ?? []) {
+      const hit = findSection(child);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const accountTree = footer().children[1].type();
+  const section = findSection(accountTree);
+  assert.ok(section, '账户卡里必须有「常用模型」区');
+  const rendered = section.type(section.props);
+
+  const inputs = [];
+  const collect = (node) => {
+    // 列表是 `models.map(...)` 的数组：桩 createElement 会把它原样嵌进
+    // children（React 那边也一样），不展开就会数到 0 个勾选框。
+    if (Array.isArray(node)) {
+      for (const child of node) collect(child);
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'input') inputs.push(node);
+    for (const child of node.children ?? []) collect(child);
+  };
+  collect(rendered);
+  assert.equal(inputs.length, 2, '目录里的每条模型一个勾选框');
+  assert.deepEqual(inputs.map((input) => input.props.checked), [false, true]);
+  // 至少留一条：只剩一条已勾选时它是禁用的（取消它会让整个提供方从会话
+  // 选择器里消失）。
+  assert.equal(inputs[1].props.disabled, true);
+
+  // 勾上未勾选的那条 → 交回**整份**集合（不是增量）。参数在 vm 的 realm 里
+  // 造出来，逐个取成同 realm 的基本值再比（deepStrictEqual 会比原型）。
+  await inputs[0].props.onChange({ target: { checked: true } });
+  assert.equal(invokes.length, 1);
+  assert.equal(invokes[0].command, 'openai_models_selection_set');
+  assert.deepEqual([...invokes[0].args.ids], ['gpt-a', 'gpt-b']);
+  // 取消勾选**最后一条**已勾选 → 不发请求（空集合会让提供方从会话选择器里
+  // 整组消失；UI 上那一条是禁用的，这里是第二道闸）。
+  await inputs[1].props.onChange({ target: { checked: false } });
+  assert.equal(invokes.length, 1, '空集合必须被挡住，不能落到壳里');
+});
