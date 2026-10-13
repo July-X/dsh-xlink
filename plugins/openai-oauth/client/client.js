@@ -50,14 +50,17 @@ const STRINGS = {
     statusPrefix: "状态：",
     bridgeMissing: "桌面壳连接不可用（未注入 Tauri 桥）",
     modelsTitle: "常用模型",
-    modelsHint:
-      "勾选后点「保存」生效：勾上的模型会出现在会话的模型选择器里，没勾的不再列出，正在用它的会话需要另选一个。",
+    modelsHint: "未勾选的模型不再出现在会话的模型选择器里，正在用它的会话需要另选一个。",
+    modelsSummary: (names) => `已选 ${names.length} 项：${names.join("、")}`,
+    modelsExpand: "选择模型",
+    modelsCollapse: "收起",
     modelsLoading: "读取模型中…",
     modelsFailed: "读取常用模型失败",
     modelSaveFailed: "保存常用模型失败",
     modelsSave: "保存",
     modelsSaving: "保存中…",
     modelsDirty: "未保存的更改",
+    modelsDiscard: "放弃改动",
     restoreDefaults: "恢复默认",
     capabilityUnknown: "能力待验证",
   },
@@ -78,13 +81,17 @@ const STRINGS = {
     bridgeMissing: "Desktop shell bridge unavailable",
     modelsTitle: "Commonly used models",
     modelsHint:
-      "Check the models you use, then press Save. Checked models appear in the session model picker; unchecked models are no longer listed, and a session using one must pick another.",
+      "Unchecked models no longer appear in the session model picker; a session using one must pick another.",
+    modelsSummary: (names) => `${names.length} selected: ${names.join(", ")}`,
+    modelsExpand: "Choose models",
+    modelsCollapse: "Collapse",
     modelsLoading: "Loading models…",
     modelsFailed: "Failed to load the model list",
     modelSaveFailed: "Failed to save the model list",
     modelsSave: "Save",
     modelsSaving: "Saving…",
     modelsDirty: "Unsaved changes",
+    modelsDiscard: "Discard",
     restoreDefaults: "Restore defaults",
     capabilityUnknown: "unverified",
   },
@@ -104,15 +111,17 @@ const CARD_CSS = `
 .xlink-oauth-btn:disabled{opacity:.45;cursor:default}
 .xlink-oauth-models{display:grid;gap:6px;border-top:.5px solid var(--dsw-alias-settings-card-stroke);padding-top:10px}
 .xlink-oauth-models-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
-.xlink-oauth-models-actions{display:flex;align-items:center;gap:10px}
-.xlink-oauth-models-title{font-weight:600;font-size:13px}
-.xlink-oauth-dirty{color:var(--dsw-alias-label-secondary);font-size:12px}
+.xlink-oauth-models-titlebar{display:flex;align-items:baseline;gap:8px;min-width:0}
+.xlink-oauth-models-actions{display:flex;align-items:center;gap:10px;flex:none}
+.xlink-oauth-models-title{font-weight:600;font-size:13px;flex:none}
+.xlink-oauth-models-summary{font-size:12px;color:var(--dsw-alias-label-secondary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.xlink-oauth-dirty{color:var(--dsw-alias-label-secondary);font-size:12px;flex:none}
 .xlink-oauth-save{height:28px;padding:0 12px;font-size:12px}
 .xlink-oauth-link{border:0;background:0 0;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;padding:0}
 .xlink-oauth-link:hover:not(:disabled){color:var(--dsw-alias-label-primary)}
 .xlink-oauth-link:disabled{opacity:.45;cursor:default}
-.xlink-oauth-list{display:grid;gap:2px;max-height:220px;overflow-y:auto;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);padding:6px 8px}
-.xlink-oauth-item{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:2px 0}
+.xlink-oauth-list{display:grid;gap:1px;max-height:168px;overflow-y:auto;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);padding:6px 8px}
+.xlink-oauth-item{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:1px 0}
 .xlink-oauth-item input{flex:none;margin:0}
 .xlink-oauth-item-name{flex:none}
 .xlink-oauth-item-id{color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}
@@ -298,6 +307,16 @@ window.__ModuleLoader__.load({
      * 会用服务端状态重置草稿——那是用户主动的"重新读取"，勾选会跟着回到盘上
      * 那份（未保存的改动被丢弃，界面上看得见）。
      *
+     * 默认**收起成一行**（2026-10-13 用户反馈「占用过大」）：标题 + 已选摘要 +
+     * 「选择模型」按钮。账号目录有几十条，常驻一份两三百像素高的勾选列表会把
+     * 设置页压掉半屏，而这张卡片平时只需要回答"现在哪些模型会出现在会话里"。
+     * 点「选择模型」才展开列表；保存成功后自动收起（一次编辑结束就把地方还回去）。
+     * 收起时**不隐藏任何状态**：未保存的改动、读取失败、目录空态照常显示在那一行
+     * 下面，只有"可操作的列表"被折起来，且未保存时不允许收起（切换按钮在
+     * 「展开 + 有改动」时禁用）——收起来就看不见勾选，等于让用户以为改丢了；
+     * 想放弃没有保存的改动就用那一排里的「放弃改动」（没有它这条禁用规则就成
+     * 了一条没有出口的规则）。
+     *
      * 未登录时不画这一区：那种情况下按不出任何模型，而卡片上方已经在说
      * 「未登录」了，多一行空列表只是噪声。
      */
@@ -305,6 +324,8 @@ window.__ModuleLoader__.load({
       const [view, setView] = React.useState(null);
       // 草稿：正在勾的集合（目录顺序）。null = 还没读到目录。
       const [draft, setDraft] = React.useState(null);
+      // 展开态：默认收起（见上方注释）。
+      const [expanded, setExpanded] = React.useState(false);
       const [busy, setBusy] = React.useState(false);
       const [error, setError] = React.useState("");
 
@@ -339,6 +360,7 @@ window.__ModuleLoader__.load({
       const saved = idsOf(view);
       const pending = draft ?? saved;
       const dirty = !sameIds(pending, saved);
+      const pendingNames = models.filter((model) => pending.includes(model.id)).map((model) => model.name);
       const save = async () => {
         if (draft === null) return;
         setBusy(true);
@@ -347,6 +369,8 @@ window.__ModuleLoader__.load({
           const next = await invokeOrNull()("openai_models_selection_set", { ids: pending });
           setView(next);
           setDraft(idsOf(next));
+          // 保存成功就收起：这一次编辑结束了，把版面还回去（摘要行里能看到结果）。
+          setExpanded(false);
         } catch (writeError) {
           setError(`${L.modelSaveFailed}：${String(writeError)}`);
         } finally {
@@ -368,6 +392,21 @@ window.__ModuleLoader__.load({
         if (busy) return;
         setDraft([...(view?.recommended ?? [])]);
       };
+      // 撤销未保存的改动（回到盘上那份）。没有它，「未保存时不许收起」就成了
+      // 一条没有出口的规则：改错了只能一条条勾回去，或者把错的存下去。
+      const discard = () => {
+        if (busy) return;
+        setDraft(idsOf(view));
+      };
+
+      // 收起时仍然要说的那几件事（加载中 / 读失败 / 目录空态）。
+      const statusLine = error
+        ? e("div", { className: "xlink-oauth-error" }, error)
+        : view === null
+          ? e("div", { className: "xlink-oauth-status" }, L.modelsLoading)
+          : view.note
+            ? e("div", { className: "xlink-oauth-status" }, view.note)
+            : null;
 
       return e(
         "div",
@@ -375,18 +414,42 @@ window.__ModuleLoader__.load({
         e(
           "div",
           { className: "xlink-oauth-models-head" },
-          e("span", { className: "xlink-oauth-models-title" }, L.modelsTitle),
+          e(
+            "div",
+            { className: "xlink-oauth-models-titlebar" },
+            e("span", { className: "xlink-oauth-models-title" }, L.modelsTitle),
+            models.length > 0
+              ? e(
+                  "span",
+                  { className: "xlink-oauth-models-summary", title: L.modelsSummary(pendingNames) },
+                  L.modelsSummary(pendingNames),
+                )
+              : null,
+          ),
           e(
             "div",
             { className: "xlink-oauth-models-actions" },
             dirty ? e("span", { className: "xlink-oauth-dirty" }, L.modelsDirty) : null,
-            (view?.recommended?.length ?? 0) > 0
+            dirty && expanded
+              ? e(
+                  "button",
+                  {
+                    key: "discard",
+                    type: "button",
+                    className: "xlink-oauth-link xlink-oauth-discard",
+                    onClick: discard,
+                    disabled: busy,
+                  },
+                  L.modelsDiscard,
+                )
+              : null,
+            expanded && (view?.recommended?.length ?? 0) > 0
               ? e(
                   "button",
                   {
                     key: "restore",
                     type: "button",
-                    className: "xlink-oauth-link",
+                    className: "xlink-oauth-link xlink-oauth-restore",
                     onClick: restoreDefaults,
                     disabled: busy,
                   },
@@ -396,21 +459,35 @@ window.__ModuleLoader__.load({
             e(
               "button",
               {
-                key: "save",
+                key: "toggle",
                 type: "button",
-                className: "xlink-oauth-btn xlink-oauth-save",
-                onClick: save,
-                disabled: busy || !dirty,
+                className: "xlink-oauth-link xlink-oauth-toggle",
+                onClick: () => setExpanded((value) => !value),
+                // 未保存时不许收起：列表一折起来就看不出改了什么，而草稿还在。
+                disabled: busy || (expanded && dirty) || models.length === 0,
               },
-              busy ? L.modelsSaving : L.modelsSave,
+              expanded ? L.modelsCollapse : L.modelsExpand,
             ),
+            // 保存只在"能保存"或"正在编辑"时出现：收起且无改动时它永远灰着，
+            // 留在那一行里只是噪声。
+            dirty || expanded
+              ? e(
+                  "button",
+                  {
+                    key: "save",
+                    type: "button",
+                    className: "xlink-oauth-btn xlink-oauth-save",
+                    onClick: save,
+                    disabled: busy || !dirty,
+                  },
+                  busy ? L.modelsSaving : L.modelsSave,
+                )
+              : null,
           ),
         ),
-        e("div", { className: "xlink-oauth-status" }, L.modelsHint),
-        error ? e("div", { className: "xlink-oauth-error" }, error) : null,
-        view === null && !error ? e("div", { className: "xlink-oauth-status" }, L.modelsLoading) : null,
-        view?.note ? e("div", { className: "xlink-oauth-status" }, view.note) : null,
-        models.length > 0
+        statusLine,
+        expanded ? e("div", { className: "xlink-oauth-status" }, L.modelsHint) : null,
+        expanded && models.length > 0
           ? e(
               "div",
               { className: "xlink-oauth-list" },

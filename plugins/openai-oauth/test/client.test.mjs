@@ -215,7 +215,7 @@ function findNodes(root, predicate, found = []) {
   return found;
 }
 
-test('client: 常用模型勾选只改草稿，点「保存」才落盘', async () => {
+test('client: 常用模型默认收起成一行，勾选只改草稿、点保存才落盘', async () => {
   const { loaded, context } = loadClient();
   const strings = vm.runInContext('STRINGS', context).zh;
   const modelsFor = (selected) => [
@@ -237,10 +237,13 @@ test('client: 常用模型勾选只改草稿，点「保存」才落盘', async 
   };
 
   // 一个 factory、一份运行时、两组状态位：AccountCard 用 [0..4]（status / busy /
-  // lastCommand / error / nonce），ModelSection 用 [5..8]（view / draft / busy /
-  // error）。渲染时显式给 offset —— 两套 state 位混在一起会让 AccountCard 的
+  // lastCommand / error / nonce），ModelSection 用 [5..9]（view / draft / expanded /
+  // busy / error）。渲染时显式给 offset —— 两套 state 位混在一起会让 AccountCard 的
   // status 被当成模型列表（那次踩过的症状是"勾选框一个都不画"）。
-  const runtime = hookRuntime([{ phase: 'authorized' }, false, '', '', 0, null, null, false, '']);
+  const runtime = hookRuntime([
+    { phase: 'authorized' }, false, '', '', 0,
+    null, null, false, false, '',
+  ]);
   const SECTION_OFFSET = 5;
   let footer;
   loaded.factory(() => runtime).apply({ slots: {
@@ -259,18 +262,27 @@ test('client: 常用模型勾选只改草稿，点「保存」才落盘', async 
     findNodes(render(), (node) => node.type === 'button' && String(node.props?.className ?? '').includes(className))[0];
   const hasText = (text) => findNodes(render(), (node) => (node.children ?? []).includes(text)).length > 0;
 
-  // 首帧：读列表（读回来之前只有加载文案，没有勾选框）。effect 只在挂载时跑
-  // 一次——依赖 `[phase, nonce]` 不变时重跑会变成"每次渲染都重新读一遍列表"。
+  // 首帧：读列表（读回来之前只有加载文案）。
   render();
   runtime.runEffects();
   await flush();
   assert.equal(invokes.length, 1);
   assert.equal(invokes[0].command, 'openai_models_selection_get');
+
+  // 默认**收起**：一行摘要，不画勾选框（2026-10-13 用户反馈「占用过大」）。
+  assert.equal(boxes().length, 0, '收起时不该画几十行勾选框');
+  assert.equal(hasText(strings.modelsSummary(['GPT A'])), true, '摘要行要说清现在选了哪些');
+  assert.equal(buttonWith('xlink-oauth-save'), undefined, '收起且无改动时不摆一个永远灰着的保存按钮');
+  assert.equal(hasText(strings.modelsHint), false, '说明文字只在展开编辑时出现');
+
+  // 展开 → 勾选框出现（此时还没有改动，保存存在但不可点）。
+  buttonWith('xlink-oauth-toggle').props.onClick();
   let inputs = boxes();
   assert.equal(inputs.length, 3, '目录里的每条模型一个勾选框');
   assert.deepEqual(inputs.map((input) => input.props.checked), [true, false, false]);
+  assert.equal(hasText(strings.modelsHint), true, '展开时把后果说清楚');
   assert.equal(hasText(strings.modelsDirty), false, '与服务端一致时不该显示「未保存」');
-  assert.equal(buttonWith('xlink-oauth-save').props.disabled, true, '没有改动时保存不可点');
+  assert.equal(buttonWith('xlink-oauth-save').props.disabled, true);
 
   // 勾两下：只改草稿，一次请求都不发。**每次点击都重新取元素**——handler 闭包
   // 捕获的是它那一帧的草稿，拿旧帧的 handler 连点两次，第二次会从旧草稿重算
@@ -282,23 +294,32 @@ test('client: 常用模型勾选只改草稿，点「保存」才落盘', async 
   assert.deepEqual(inputs.map((input) => input.props.checked), [true, true, true]);
   assert.equal(hasText(strings.modelsDirty), true, '有未保存的改动要说出来');
   assert.equal(buttonWith('xlink-oauth-save').props.disabled, false);
+  // 未保存时不许收起（收起就看不见勾了什么），但「放弃改动」是出口。
+  assert.equal(buttonWith('xlink-oauth-toggle').props.disabled, true, '未保存时收起必须禁用');
+  buttonWith('xlink-oauth-discard').props.onClick();
+  assert.equal(hasText(strings.modelsDirty), false);
+  assert.deepEqual(boxes().map((input) => input.props.checked), [true, false, false]);
 
-  // 点保存：整份集合交回壳（不是增量）。
+  // 再勾、点保存：整份集合交回壳（不是增量），保存成功后自动收起。
+  boxes()[1].props.onChange({ target: { checked: true } });
   await buttonWith('xlink-oauth-save').props.onClick();
   assert.equal(invokes.length, 2);
   assert.equal(invokes[1].command, 'openai_models_selection_set');
-  assert.deepEqual([...invokes[1].args.ids], ['gpt-a', 'gpt-b', 'gpt-c'], '未勾选的模型不许出现在集合里');
-  assert.equal(hasText(strings.modelsDirty), false, '保存成功后草稿与服务端一致');
-  assert.equal(buttonWith('xlink-oauth-save').props.disabled, true);
+  assert.deepEqual([...invokes[1].args.ids], ['gpt-a', 'gpt-b'], '未勾选的模型不许出现在集合里');
+  assert.equal(boxes().length, 0, '保存成功后收起，把版面还回去');
+  assert.equal(buttonWith('xlink-oauth-save'), undefined, '收起且无改动 → 不摆灰按钮');
+  assert.equal(hasText(strings.modelsSummary(['GPT A', 'GPT B'])), true);
 
   // 「恢复默认」也只改草稿（同样要点保存），不直接写盘。
-  buttonWith('xlink-oauth-link').props.onClick();
+  buttonWith('xlink-oauth-toggle').props.onClick();
+  buttonWith('xlink-oauth-restore').props.onClick();
   assert.equal(invokes.length, 2, '恢复默认同样不许直接落盘');
   assert.deepEqual(boxes().map((input) => input.props.checked), [true, false, false]);
   await buttonWith('xlink-oauth-save').props.onClick();
   assert.deepEqual([...invokes[2].args.ids], ['gpt-a']);
 
   // 至少留一条：只剩一条勾选时取消它 → 不发请求（提供方会整组从选择器里消失）。
+  buttonWith('xlink-oauth-toggle').props.onClick();
   const single = boxes()[0];
   assert.equal(single.props.disabled, true, '最后一条已勾选项必须禁用');
   single.props.onChange({ target: { checked: false } });
