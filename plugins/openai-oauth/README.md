@@ -35,10 +35,11 @@ test/selection-watch.test.mjs 偏好文件变更通知（含 env 接线）
 
 账号目录的模型默认全都进会话选择器，几十条里混着实验模型。设置页的卡片下半部分让用户勾出常用的那几条：
 
+- **勾选只改界面上的草稿，点「保存」才写盘**（2026-10-13 用户要求：不要每勾一下写一次）；「恢复默认」同一条路径，未保存时显示「未保存的更改」且保存按钮才可点；
 - 偏好落 `<xlink_home>/shell/<mode>/openai-oauth/model-selection.json`（壳侧写入，`atomic_write`）；
 - 桥接 `/v1/models` 的载荷带 `selected`（生效集合 = 偏好 ∩ 当前目录，默认集合见 `src-tauri/src/openai/selection.rs`）；
 - **只有 `listModels` 被过滤**：`resolveModel` / 推理走完整目录；
-- 勾完不必刷新页面：Host 观察偏好文件，stat 一变就 `replace` 一次适配器注册，内核随即广播 `llm/adapters-updated` 让已打开的页面重拉目录。通知失败只写日志，刷新页面照样生效。
+- 保存后不必刷新页面：Host 观察偏好文件，stat 一变就 `replace` 一次适配器注册，内核随即广播 `llm/adapters-updated` 让已打开的页面重拉目录。通知失败只写日志，刷新页面照样生效。
 
 ## 接线形状（Rust 侧接线器按此生成）
 
@@ -53,6 +54,8 @@ test/selection-watch.test.mjs 偏好文件变更通知（含 env 接线）
 `node_modules/@deepseek-ai/dsh-llm` 符号链接指向目标内核树同一包。
 
 ## 验证
+
+v0.1.14 把常用模型改成「勾选只改草稿、点保存才落盘」（用户要求：不要每勾一次写一次）。
 
 v0.1.13 增加常用模型选择（`selected` 过滤 + 偏好文件变更通知），并补两条不依赖内核的测试。
 

@@ -158,82 +158,149 @@ test('client: 授权进行中仍用短间隔轮询', async () => {
   assert.equal(interval.ms, 2000);
 });
 
-test('client: 常用模型区列出目录条目，勾选把整份集合交回壳', async () => {
-  const { loaded, context } = loadClient();
-  const view = {
-    models: [
-      { id: 'gpt-a', name: 'GPT A', capability: 'codex-catalog', selected: false },
-      { id: 'gpt-b', name: 'GPT B', capability: 'unknown', selected: true },
-    ],
-    recommended: ['gpt-a'],
-    note: null,
+/**
+ * 极简 hooks 运行时：让组件能被反复调用，并看到自己 setState 之后的样子。
+ *
+ * 为什么需要它：本次要钉的语义是「勾选只改草稿、点保存才落盘」，而那条链路
+ * 必须经过 `setDraft` 才走得到——空 setter 的桩会让"勾完再保存"永远停在初始
+ * 状态，测试于是只能验到"点了勾选框发了请求"这个**相反**的行为。
+ */
+function hookRuntime(initial) {
+  const states = [...initial];
+  let cursor = 0;
+  const runtime = {
+    createElement: stubReact.createElement,
+    useCallback: (fn) => fn,
+    effects: [],
+    useEffect(effect) { runtime.effects.push(effect); },
+    useState(initialValue) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= states.length) states[index] = initialValue;
+      return [
+        states[index],
+        (value) => {
+          states[index] = typeof value === 'function' ? value(states[index]) : value;
+        },
+      ];
+    },
+    /** 从第 offset 个状态位开始渲染（多个组件共用一个 factory 时用得上）。 */
+    render(component, props = {}, offset = 0) {
+      cursor = offset;
+      runtime.effects = [];
+      return component(props);
+    },
+    /** 跑本次渲染登记的 effect（真实 React 在挂载后跑一次；依赖不变不重跑）。 */
+    runEffects() {
+      const list = runtime.effects;
+      runtime.effects = [];
+      for (const effect of list) effect();
+    },
   };
+  return runtime;
+}
+
+/** 让已 resolve 的 promise 继续跑（invoke 桩是 async，状态回写在下一次微任务）。 */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** 深度优先找元素（数组子节点展开——`models.map(...)` 会原样嵌进 children）。 */
+function findNodes(root, predicate, found = []) {
+  if (Array.isArray(root)) {
+    for (const child of root) findNodes(child, predicate, found);
+    return found;
+  }
+  if (!root || typeof root !== 'object') return found;
+  if (predicate(root)) found.push(root);
+  for (const child of root.children ?? []) findNodes(child, predicate, found);
+  return found;
+}
+
+test('client: 常用模型勾选只改草稿，点「保存」才落盘', async () => {
+  const { loaded, context } = loadClient();
+  const strings = vm.runInContext('STRINGS', context).zh;
+  const modelsFor = (selected) => [
+    { id: 'gpt-a', name: 'GPT A', capability: 'codex-catalog', selected: selected.includes('gpt-a') },
+    { id: 'gpt-b', name: 'GPT B', capability: 'unknown', selected: selected.includes('gpt-b') },
+    { id: 'gpt-c', name: 'GPT C', capability: 'codex-catalog', selected: selected.includes('gpt-c') },
+  ];
+  const viewFor = (selected) => ({ models: modelsFor(selected), recommended: ['gpt-a'], note: null });
+  let saved = ['gpt-a'];
   const invokes = [];
   context.window.__TAURI__ = {
-    core: { invoke: async (command, args) => { invokes.push({ command, args }); return view; } },
-  };
-  // 一次 factory 调用里两个组件共用一份 React 桩，按调用顺序供状态：
-  // AccountCard 先取 5 个（status / busy / lastCommand / error / nonce），
-  // 随后 ModelSection 取 3 个（view / busy / error）。
-  const states = [{ phase: 'authorized' }, false, '', '', 0, view, false, ''];
-  let stateCalls = 0;
-  const react = {
-    ...stubReact,
-    useState(initial) {
-      const value = stateCalls < states.length ? states[stateCalls] : initial;
-      stateCalls += 1;
-      return [value, () => {}];
+    core: {
+      invoke: async (command, args) => {
+        invokes.push({ command, args });
+        if (command === 'openai_models_selection_set') saved = [...args.ids];
+        return viewFor(saved);
+      },
     },
-    // 只有 AccountCard 的 effect 需要跑；ModelSection 的读列表交给直接调用。
-    useEffect() {},
   };
+
+  // 一个 factory、一份运行时、两组状态位：AccountCard 用 [0..4]（status / busy /
+  // lastCommand / error / nonce），ModelSection 用 [5..8]（view / draft / busy /
+  // error）。渲染时显式给 offset —— 两套 state 位混在一起会让 AccountCard 的
+  // status 被当成模型列表（那次踩过的症状是"勾选框一个都不画"）。
+  const runtime = hookRuntime([{ phase: 'authorized' }, false, '', '', 0, null, null, false, '']);
+  const SECTION_OFFSET = 5;
   let footer;
-  loaded.factory(() => react).apply({ slots: {
+  loaded.factory(() => runtime).apply({ slots: {
     inject(_name, register) { register(); },
     register(_descriptor, component) { footer = component; },
   } });
-
-  const findSection = (node) => {
-    if (!node || typeof node !== 'object') return null;
-    if (typeof node.type === 'function' && node.props?.phase !== undefined) return node;
-    for (const child of node.children ?? []) {
-      const hit = findSection(child);
-      if (hit) return hit;
-    }
-    return null;
-  };
-  const accountTree = footer().children[1].type();
-  const section = findSection(accountTree);
+  const section = findNodes(
+    runtime.render(footer().children[1].type, {}, 0),
+    (node) => typeof node.type === 'function' && node.props?.phase !== undefined,
+  )[0];
   assert.ok(section, '账户卡里必须有「常用模型」区');
-  const rendered = section.type(section.props);
+  const render = () => runtime.render(section.type, section.props, SECTION_OFFSET);
 
-  const inputs = [];
-  const collect = (node) => {
-    // 列表是 `models.map(...)` 的数组：桩 createElement 会把它原样嵌进
-    // children（React 那边也一样），不展开就会数到 0 个勾选框。
-    if (Array.isArray(node)) {
-      for (const child of node) collect(child);
-      return;
-    }
-    if (!node || typeof node !== 'object') return;
-    if (node.type === 'input') inputs.push(node);
-    for (const child of node.children ?? []) collect(child);
-  };
-  collect(rendered);
-  assert.equal(inputs.length, 2, '目录里的每条模型一个勾选框');
-  assert.deepEqual(inputs.map((input) => input.props.checked), [false, true]);
-  // 至少留一条：只剩一条已勾选时它是禁用的（取消它会让整个提供方从会话
-  // 选择器里消失）。
-  assert.equal(inputs[1].props.disabled, true);
+  const boxes = () => findNodes(render(), (node) => node.type === 'input');
+  const buttonWith = (className) =>
+    findNodes(render(), (node) => node.type === 'button' && String(node.props?.className ?? '').includes(className))[0];
+  const hasText = (text) => findNodes(render(), (node) => (node.children ?? []).includes(text)).length > 0;
 
-  // 勾上未勾选的那条 → 交回**整份**集合（不是增量）。参数在 vm 的 realm 里
-  // 造出来，逐个取成同 realm 的基本值再比（deepStrictEqual 会比原型）。
-  await inputs[0].props.onChange({ target: { checked: true } });
+  // 首帧：读列表（读回来之前只有加载文案，没有勾选框）。effect 只在挂载时跑
+  // 一次——依赖 `[phase, nonce]` 不变时重跑会变成"每次渲染都重新读一遍列表"。
+  render();
+  runtime.runEffects();
+  await flush();
   assert.equal(invokes.length, 1);
-  assert.equal(invokes[0].command, 'openai_models_selection_set');
-  assert.deepEqual([...invokes[0].args.ids], ['gpt-a', 'gpt-b']);
-  // 取消勾选**最后一条**已勾选 → 不发请求（空集合会让提供方从会话选择器里
-  // 整组消失；UI 上那一条是禁用的，这里是第二道闸）。
-  await inputs[1].props.onChange({ target: { checked: false } });
-  assert.equal(invokes.length, 1, '空集合必须被挡住，不能落到壳里');
+  assert.equal(invokes[0].command, 'openai_models_selection_get');
+  let inputs = boxes();
+  assert.equal(inputs.length, 3, '目录里的每条模型一个勾选框');
+  assert.deepEqual(inputs.map((input) => input.props.checked), [true, false, false]);
+  assert.equal(hasText(strings.modelsDirty), false, '与服务端一致时不该显示「未保存」');
+  assert.equal(buttonWith('xlink-oauth-save').props.disabled, true, '没有改动时保存不可点');
+
+  // 勾两下：只改草稿，一次请求都不发。**每次点击都重新取元素**——handler 闭包
+  // 捕获的是它那一帧的草稿，拿旧帧的 handler 连点两次，第二次会从旧草稿重算
+  // （那是测试桩的时序问题，真实 React 每帧重渲染会给新 handler）。
+  boxes()[1].props.onChange({ target: { checked: true } });
+  boxes()[2].props.onChange({ target: { checked: true } });
+  assert.equal(invokes.length, 1, '勾选不许直接落盘（2026-10-13 用户要求）');
+  inputs = boxes();
+  assert.deepEqual(inputs.map((input) => input.props.checked), [true, true, true]);
+  assert.equal(hasText(strings.modelsDirty), true, '有未保存的改动要说出来');
+  assert.equal(buttonWith('xlink-oauth-save').props.disabled, false);
+
+  // 点保存：整份集合交回壳（不是增量）。
+  await buttonWith('xlink-oauth-save').props.onClick();
+  assert.equal(invokes.length, 2);
+  assert.equal(invokes[1].command, 'openai_models_selection_set');
+  assert.deepEqual([...invokes[1].args.ids], ['gpt-a', 'gpt-b', 'gpt-c'], '未勾选的模型不许出现在集合里');
+  assert.equal(hasText(strings.modelsDirty), false, '保存成功后草稿与服务端一致');
+  assert.equal(buttonWith('xlink-oauth-save').props.disabled, true);
+
+  // 「恢复默认」也只改草稿（同样要点保存），不直接写盘。
+  buttonWith('xlink-oauth-link').props.onClick();
+  assert.equal(invokes.length, 2, '恢复默认同样不许直接落盘');
+  assert.deepEqual(boxes().map((input) => input.props.checked), [true, false, false]);
+  await buttonWith('xlink-oauth-save').props.onClick();
+  assert.deepEqual([...invokes[2].args.ids], ['gpt-a']);
+
+  // 至少留一条：只剩一条勾选时取消它 → 不发请求（提供方会整组从选择器里消失）。
+  const single = boxes()[0];
+  assert.equal(single.props.disabled, true, '最后一条已勾选项必须禁用');
+  single.props.onChange({ target: { checked: false } });
+  assert.equal(invokes.length, 3, '空集合必须被挡住，不能落到壳里');
 });
