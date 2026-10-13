@@ -2157,7 +2157,9 @@ mod windows_badge_tests {
             let (rgba, size) = render_badge(count);
             assert_eq!(rgba.len(), (size * size * 4) as usize);
             let opaque: Vec<u32> = rgba
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .enumerate()
                 .filter(|(_, px)| px[3] > 128)
                 .map(|(i, _)| i as u32)

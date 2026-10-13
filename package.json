@@ -24,7 +24,7 @@
     "build:ui": "vite build",
     "check:invariants": "node scripts/check-invariants.mjs",
     "check:code-budget": "node scripts/check-code-budget.mjs",
-    "check:rust": "cargo fmt --check --manifest-path src-tauri/Cargo.toml && cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml && cargo check --release --all-targets --manifest-path src-tauri/Cargo.toml && cargo test --manifest-path src-tauri/Cargo.toml --locked",
+    "check:rust": "cargo fmt --check --manifest-path src-tauri/Cargo.toml && cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings && cargo check --release --all-targets --manifest-path src-tauri/Cargo.toml && cargo test --manifest-path src-tauri/Cargo.toml --locked",
     "check:ui-bundle": "node scripts/check-ui-bundle-budget.mjs",
     "check:webdriver-gating": "node scripts/check-webdriver-gating.mjs",
     "e2e": "wdio run ./e2e/wdio.conf.mjs",

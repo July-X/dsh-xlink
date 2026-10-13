@@ -116,13 +116,19 @@ fn process_command_line_peb(pid: u32) -> Option<String> {
                 .try_into()
                 .ok()?,
         );
-        if length == 0 || length % 2 != 0 || length > x64::MAX_COMMAND_LINE_BYTES || buffer == 0 {
+        if length == 0
+            || !length.is_multiple_of(2)
+            || length > x64::MAX_COMMAND_LINE_BYTES
+            || buffer == 0
+        {
             return None;
         }
         let raw = read_bytes(handle, buffer, length)?;
         let units: Vec<u16> = raw
-            .chunks_exact(2)
-            .map(|chunk| u16::from_ne_bytes([chunk[0], chunk[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| u16::from_ne_bytes(*chunk))
             .collect();
         let command = String::from_utf16_lossy(&units);
         // 与 PowerShell 回退同一口径：trim 后仍要有内容，返回原文（未 trim）。
