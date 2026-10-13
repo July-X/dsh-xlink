@@ -17,6 +17,7 @@ import {
 import { loadCatalog, checkPluginUpdates } from './plugins/plugins.js';
 import { loadInstances } from './kernel/instance.js';
 import { checkSkillUpdates } from './skills/skills.js';
+import { refreshMemory } from './memory/memory.js';
 import { loadUsageSummary } from './usage/usage.js';
 import { applyNotificationStatus } from './incidents/notifications.js';
 import { diagnosticStore } from './diagnostics/diagnostics.js';
@@ -26,6 +27,7 @@ import OverviewPanel from './shell/OverviewPanel.vue';
 import VersionsPanel from './kernel/VersionsPanel.vue';
 import PluginsPanel from './plugins/PluginsPanel.vue';
 import SkillsPanel from './skills/SkillsPanel.vue';
+import MemoryPanel from './memory/MemoryPanel.vue';
 import SettingsPanel from './shell/SettingsPanel.vue';
 import MigrationPanel from './migration/MigrationPanel.vue';
 import MigrationPrompt from './migration/MigrationPrompt.vue';
@@ -43,6 +45,7 @@ const PANELS = {
   versions: VersionsPanel,
   plugins: PluginsPanel,
   skills: SkillsPanel,
+  memory: MemoryPanel,
   settings: SettingsPanel,
   migration: MigrationPanel,
 };
@@ -177,6 +180,10 @@ function refreshActivePanelData() {
     checkPluginUpdates({ busy: false, toastOnUpdates: true });
   } else if (store.activePanel === 'skills') {
     checkSkillUpdates({ busy: false, toastOnUpdates: true });
+  } else if (store.activePanel === 'memory') {
+    // 记忆是本地文件，没有网络往返；切回来时静默重读一次，让别的入口
+    // （工作台里的候选提交）改出来的结果出现在面板上。
+    refreshMemory({ silent: true });
   } else if (store.activePanel === 'overview') {
     // 概览卡片上的「今日用量」：窗口重新可见 / 切回概览时立即对一次账。
     // 概览页自己挂着 60s 定时刷新，但窗口从后台回来的那一刻正是用户要读数的
