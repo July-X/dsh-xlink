@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "date": "2026-10-13",
+  "revised": "2026-10-14",
   "scope": "offline thread memory; static artifacts and read-only local metadata; no cloud memory synchronization",
   "application": {
     "path": "/Applications/ChatGPT.app",
@@ -185,10 +186,23 @@
     "active_version": "0.2.1-alpha.2",
     "verification": "read-only source and type contracts; no runtime model request",
     "paths_relative_to": "node_modules/@deepseek-ai",
-    "admission_context_refresh": "dsh-agent-loop/lib/index.js:1053-1073",
-    "scoped_context_provider": "dsh-system-prompt/lib/types/index.d.ts:72-85,263-266",
-    "inbox_claim_before_pre_step": "dsh-agent-loop/lib/index.js:902-924",
-    "turn_end_does_not_flush": "dsh-session/lib/types/types.d.ts:265-275"
+    "admission_context_refresh": "dsh-system-prompt/lib/types/index.d.ts:292-301; dsh-agent-loop/lib/index.js:1053-1073",
+    "scoped_context_provider": "dsh-system-prompt/lib/types/index.d.ts:72-83,266",
+    "context_order_slots": "dsh-system-prompt/lib/index.js:44-49,267 (only WORKING_DIRECTORY/SANDBOX_POLICY/APPROVAL_POLICY/SUBAGENT_DELEGATION; getContextOrder exists, the MEMORY key does not)",
+    "lazy_registration_not_refreshed": "dsh-system-prompt/lib/index.js:322-338 (refresh re-resolves names present at assembly; only required:true is restored)",
+    "inbox_claim_before_pre_step": "dsh-agent-loop/lib/index.js:906,909-924",
+    "runtime_snapshot_dedup": "dsh-agent-loop/lib/index.js:298-350 (whole-text compare; different text appends a new user/message)",
+    "agent_created_throw_fails_creation": "dsh-agent/lib/types/runtime-types.d.ts:213-231",
+    "effective_working_directory": "dsh-working-directory/lib/types/index.d.ts:24-30,83; lib/index.js:122 (session.header.cwd stays the immutable original project)",
+    "turn_end_does_not_flush": "dsh-session/lib/types/types.d.ts:265-274; index.d.ts:483 (live sessions only; false means no persistence listener participated)",
+    "deprecated_event_readers": "dsh-session/lib/types/index.d.ts:207-214,224,231 (eventAt/snapshotEvents/ownEvents: new calls are prohibited)",
+    "persistence_read_handle": "dsh-session-persistence/lib/types/handle.d.ts:75",
+    "workspace_lookup": "dsh-workspace/lib/types/index.d.ts:264 (resolveByPath rejects on missing path, undefined when unregistered)",
+    "tool_registration": "dsh-tools/lib/types/index.d.ts:115-128,636",
+    "llm_purpose_enum": "dsh-llm/lib/types/types.d.ts:530 ('compaction' | 'session-title' only)",
+    "compaction_end_gap": "dsh-compaction-basic/lib/index.js:469-506 (end is closing-gated; start without end is possible)",
+    "shell_bridge": "src-tauri/src/plugins/builtin/bridge.rs (single endpoint POST /v1/builtin/sync; token bound to family:instance; listener survives a kernel stop until the next launch)",
+    "budget_headroom": "scripts/check-code-budget.mjs (new files must register in FILE_BUDGETS; measured 47944 against TOTAL_BUDGET 47955)"
   },
   "unknowns": [
     "native runtime call graph",

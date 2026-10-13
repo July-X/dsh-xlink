@@ -29,7 +29,7 @@ const checkMode = process.argv.includes('--check');
  * 内置插件登记表：每个内置插件一份。
  *
  * `entries` 是**运行时文件集**（进安装包、进实例的那部分），与
- * `src-tauri/src/plugins/builtin/registry.rs` 的 `BuiltinSpec::entries` 一一
+ * `src-tauri/src/plugins/builtin/builtins.rs` 的 `BuiltinSpec::entries` 一一
  * 对应。两份各管一门语言，改一边必须改另一边——`--check` 的新鲜度比对
  * （资源清单 vs 当前源码）只能证明「产物与本文件一致」，证明不了「本文件
  * 与 Rust 那份一致」，所以那份一致性由 `scripts/dev-builtin.test.mjs` 钉。
