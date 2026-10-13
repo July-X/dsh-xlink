@@ -198,28 +198,50 @@ export function tierFullName(name) {
   return TIER_FULL_NAMES[name] || name;
 }
 
-/** 进度条一条 tier 的展示数据：短名（5h / 7d）、剩余百分比、档位配色与重置倒计时。 */
+/**
+ * 进度条一条 tier 的展示数据：短名（5h / 7d）、剩余百分比、档位配色与重置倒计时。
+ *
+ * `percent` 是**剩余**（与进度条宽度、三档配色同口径，不能改），`usedPercent`
+ * 是**已用**——厂商自己的界面基本都按已用口径显示（opencode 的界面上就写着
+ * `1% used`），概览卡把两个读数都摆出来，用户才能一眼对上，而不是拿「剩余
+ * 100%」去比「已用 1%」。两者都按四舍五入后的剩余算，和恒为 100。
+ */
 export function tierRow(tier, now = Date.now()) {
   if (!tier) return null;
   const name = tier.name === '5h' ? '5h' : tier.name === 'weekly' ? '7d' : tier.name;
   // 无限额度（如 MiniMax 无周限额套餐）：不渲染进度条，以 ♾️ 文本提示。
   if (tier.unlimited) {
-    return { name, unlimited: true, percent: null, level: 'ok', countdown: null, countdownTitle: null, tip: '无限周额度' };
+    return { name, unlimited: true, percent: null, usedPercent: null, level: 'ok', countdown: null, countdownTitle: null, tip: '无限周额度' };
   }
   const remaining = Number(tier.remaining_percent);
+  const percent = Math.round(remaining);
+  const usedPercent = Math.max(0, 100 - percent);
   const resetsIn = tier.resets_at_ms ? tier.resets_at_ms - now : null;
   return {
     name,
     unlimited: false,
-    percent: Math.round(remaining),
+    percent,
+    usedPercent,
     level: percentLevel(remaining),
     // 紧凑倒计时（前置 icon 一起展示）；完整中文描述进 hover title。
     countdown: resetsIn == null ? null : countdownLabel(resetsIn),
     countdownTitle: resetsIn == null ? null : countdownFullLabel(resetsIn),
     // tooltip 双向注明口径（剩余百分比与已用口径相反）。
-    tip: `已用 ${Math.max(0, 100 - Math.round(remaining))}% · 剩余 ${Math.round(remaining)}%`,
+    tip: `已用 ${usedPercent}% · 剩余 ${percent}%`,
   };
 }
+
+/**
+ * opencode 的公开容量端点（`/zen/go/v1/usage`）只给**整数**百分比，而且可能比
+ * 它自家界面晚一拍：2026-10-13 实测，同一分钟 opencode 自己的用量界面显示
+ * weekly `1% used`，端点给的却是 `0`；23 分钟后同一把 Key 再打，端点也变成
+ * `1`（四种请求头形状返回逐字节相同，差别只在时间）。所以这一家的数字与它家
+ * 界面对不上一个点时，**先看这条，别去改解析**——那是端点的整数截断与更新时机
+ * （细节与样张见 docs/features/subscription/subscription-usage-design.md 的
+ * opencode 一节）。挂在 tooltip 上是为了让「卡上是 100%、界面写 1%」当场有解释。
+ */
+const OPENCODE_INTEGER_PERCENT_TIP =
+  '接口只给整数百分比（不足 1% 记 0，可能比 opencode 自己的界面晚一拍）';
 
 /**
  * 一个套餐类 provider 的窗口展示行。
@@ -234,10 +256,13 @@ export function tierRow(tier, now = Date.now()) {
  */
 export function planTierRows(provider, now = Date.now()) {
   const rows = ((provider && provider.tiers) || []).map((tier) => tierRow(tier, now)).filter(Boolean);
+  if (provider && provider.id === 'opencode_go') {
+    for (const row of rows) row.tip = `${row.tip}。${OPENCODE_INTEGER_PERCENT_TIP}`;
+  }
   if (provider && provider.id === 'openai_codex') {
     for (const name of ['5h', '7d']) {
       if (rows.some((row) => row.name === name)) continue;
-      rows.push({ name, missing: true, unlimited: false, percent: null, level: 'muted', countdown: null, countdownTitle: null, tip: '服务端未返回该窗口数据' });
+      rows.push({ name, missing: true, unlimited: false, percent: null, usedPercent: null, level: 'muted', countdown: null, countdownTitle: null, tip: '服务端未返回该窗口数据' });
     }
   }
   return rows;
