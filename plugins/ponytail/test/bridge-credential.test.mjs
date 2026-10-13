@@ -13,6 +13,15 @@ import {
 } from '../host/bridge-credential.js';
 
 /**
+ * 权限断言是 POSIX 语义，Windows 上永远不成立：`chmod` 只翻只读位，`statSync().mode`
+ * 恒为 0o666，目录的只读属性也不拦写入。2026-10-13 实测本机 `npm run check` 因此
+ * 恒红——一条再也无法变绿的门禁比少两条断言更坏（照 `scripts/install-stdio.test.mjs`
+ * 的既有写法跳过；macOS 的 quality job 照旧执行）。
+ */
+const posixOnly =
+  process.platform === 'win32' ? '仅 POSIX：Windows 的 chmod 不改 mode 位，也不拦目录写入' : false;
+
+/**
  * 造一棵「物化树」：`<tmp>/<fingerprint>/compat-a`。
  *
  * 凭据要落在 `<fingerprint>/` 那一级，所以夹具必须**真的分两级** ——
@@ -41,18 +50,24 @@ test('内核环境里没有桥凭据：不写文件、不报错', () => {
   f.cleanup();
 });
 
-test('有凭据：落在物化根的上一级，0600，内容就是那两个值', () => {
+test('有凭据：落在物化根的上一级，内容就是那两个值', () => {
   const f = fixture();
   const result = writeBridgeCredential(f.root, f.env);
   assert.equal(result.written, true);
   assert.equal(result.path, f.path);
   // 落在上一级：物化根被壳 remove_dir_all 重建时，这一份不会被带走。
   assert.equal(credentialPath(f.root), f.path);
-  assert.equal(statSync(f.path).mode & 0o777, 0o600, '凭据必须只有本人可读');
   const raw = JSON.parse(readFileSync(f.path, 'utf8'));
   assert.equal(raw.url, f.env[URL_ENV]);
   assert.equal(raw.token, f.env[TOKEN_ENV]);
   assert.equal(typeof raw.pid, 'number');
+  f.cleanup();
+});
+
+test('凭据文件是 0600', { skip: posixOnly }, () => {
+  const f = fixture();
+  writeBridgeCredential(f.root, f.env);
+  assert.equal(statSync(f.path).mode & 0o777, 0o600, '凭据必须只有本人可读');
   f.cleanup();
 });
 
@@ -77,7 +92,7 @@ test('盘上是上一代的令牌（壳重启过、桥换了一代）：覆盖',
   f.cleanup();
 });
 
-test('写不下去（上一级目录只读）：返回 failed 而不是抛', () => {
+test('写不下去（上一级目录只读）：返回 failed 而不是抛', { skip: posixOnly }, () => {
   const f = fixture();
   chmodSync(f.fingerprint, 0o500);
   try {
