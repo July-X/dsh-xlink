@@ -163,6 +163,9 @@ pub(crate) fn verify_manifest(plugin_source: &Path) -> Result<(), String> {
 /// 复制进来。**它必须进摘要**（见 [`runtime_digest`]），否则同步到新上游版本后
 /// 摘要不变 → 判定为「内容一致」→ 直接返回 → 用户手上的永远是旧版本——
 /// 而面板与日志都说更新成功了。这正是本次改动要消灭的那类静默分叉。
+// 参数多是因为这 8 项各自是独立输入（规格 / 源 / 上游 / 目标 / 内核树 / DSH home /
+// 版本 / 指纹），调用点本来就是逐项算出来的，拆成结构体只会多一层字段搬运。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn materialize(
     spec: &BuiltinSpec,
     plugin_source: &Path,

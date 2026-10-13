@@ -250,7 +250,12 @@ const FILE_BUDGETS = {
   // 384 → 416：peer 供货的落地那一半（按来源链接 / 复制、补来的包连它自己的
   // peer 一起摆）。复制而不是链接的理由在 peer_supply.rs 的注释里：Node 按真实
   // 路径解析 import。取源、版本、闭包与节流都不在这个文件里。
-  'src-tauri/src/plugins/builtin/materialize.rs': 416,
+  // 416 → 417（2026-10-13）：`materialize` 显式豁免 clippy 的参数阈值（8/7）。
+  // 发布通道的 clippy 带 `-D warnings`，那里它是**编译错误**——v0.4.10 的
+  // quality job 正是死在这一条上，而本机 `npm run check` 的 clippy 不带
+  // `-D warnings`，只当警告放了过去。本仓已有 16 处同样的豁免，理由是这 8 项
+  // 各自是独立输入，拆成结构体只是把字段搬个家。
+  'src-tauri/src/plugins/builtin/materialize.rs': 417,
   // 启动前按已保存启用意图刷新资源与接线；独立于手动启停命令，避免更新后
   // 继续加载旧路径。只在内核尚未启动时调用，停用状态不触碰资源。
   // 45 → 55：refresh_enabled 补耗时观测（2026-10-09 perf 分析：稳态每次启动
