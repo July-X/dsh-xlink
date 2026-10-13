@@ -11,6 +11,6 @@ pub(crate) mod subscription;
 // 凭据链，且需代理路由，独立成模块以免撑大 subscription.rs（反棘轮）。
 pub(crate) mod subscription_codex;
 pub(crate) mod subscription_openai;
-// opencode Go 套餐的三窗口容量：端点与响应形状自成一类，同一半理由独立成模块
+// opencode（厂商）Go 套餐的三窗口容量：端点与响应形状自成一类，同一半理由独立成模块
 // （订阅层仍是「每家一个 query + parse 纯函数」的扩展位）。
 pub(crate) mod subscription_opencode;

@@ -2,13 +2,13 @@
 
 > 本文档描述桌面外壳的「云端套餐用量」功能：查询并展示 MiniMax Token Plan 的双窗口额度
 > 进度、DeepSeek 按量余额、智谱 GLM 编程套餐的双窗口额度、OpenAI（ChatGPT 套餐）
-> 的 5 小时 / 7 天窗口，以及 opencode Go 套餐的滚动 5 小时 / 周 / 月三窗口。当前代码
+> 的 5 小时 / 7 天窗口，以及 opencode（厂商）Go 套餐的滚动 5 小时 / 周 / 月三窗口。当前代码
 > 实际接入 **6 个 provider**
 > （`subscription.rs` 的 `PROVIDER_ORDER`：`deepseek` / `minimax_cn` / `minimax_en` /
 > `zai_coding_cn` / `openai_codex` / `opencode_go`），下面各章按「套餐类（plan）/ 余额类
 > （balance）」两种形态统一描述。OpenAI 一节（接口规格）单列了它与另外五家的三处差别：凭据来自壳
 > 自己的 OAuth vault 而非内核凭据链、必须带账号上下文请求头、必须走代理路由。
-> opencode Go 一节单列它与其余五家的一处差别：`resetsAt` 是 ISO 8601 字符串而不是
+> opencode 一节单列它与其余五家的一处差别：`resetsAt` 是 ISO 8601 字符串而不是
 > epoch 毫秒，窗口按字段名认（没有自描述的时长的字段）。
 > 参考实现是
 > [cc-switch](https://github.com/farion1231/cc-switch)（Rust + Tauri，MIT）的
@@ -64,7 +64,7 @@ HTTP 栈适配（ureq + spawn_blocking，非 reqwest）、原始凭据不跨壳�
 | DeepSeek | 账户**货币余额**（总额 / 赠送 / 充值，CNY 与 USD）、余额是否可用 | 一切「额度」「限额」概念——DeepSeek 是纯按量计费，只有余额 |
 | 智谱 GLM | 5 小时 / 周窗口的**剩余百分比**与重置时间 | 绝对剩余 token 数；套餐档位名 |
 | OpenAI ChatGPT | 5 小时 / 7 天窗口的**剩余百分比**与重置时间 | 绝对剩余 token 数；套餐档位名（响应里带 `plan_type`，本版本不展示，见下）；`additional_rate_limits`（`gpt-reserve` 等额外额度桶，本版本不展示） |
-| opencode Go | 滚动 5 小时 / 周 / 月三窗口的**剩余百分比**与重置时间（与 opencode 自己的用量界面同源） | 绝对剩余 token 数；套餐档位名；窗口的 `status` 字段（真机只见 `ok`，语义未经核实，本版本不透出，见下） |
+| opencode（Go 套餐） | 滚动 5 小时 / 周 / 月三窗口的**剩余百分比**与重置时间（与 opencode 自己的用量界面同源） | 绝对剩余 token 数；套餐档位名；窗口的 `status` 字段（真机只见 `ok`，语义未经核实，本版本不透出，见下） |
 
 注意 OpenAI 的窗口**可能缺席**：接口按账号返回，一次响应里可能只有 7 天窗口而没有
 5 小时窗口（也可能反过来）。缺席的窗口不画进度条——分区里少那一行（两个窗口都缺席
@@ -311,7 +311,7 @@ HTTP 200 并包含两个额度窗口。因此此前把问题归为「账号 id �
   带下一步的错误文案。HTTP 401/403 → `credential_status: expired`（文案指向
   「重新登录 OpenAI 账户」，与另外五家的「更新 API Key」不同源）。
 
-### opencode Go 套餐：`/zen/go/v1/usage`
+### 厂商 opencode 的 Go 套餐：`/zen/go/v1/usage`
 
 | 项 | 值 |
 | --- | --- |
@@ -410,12 +410,12 @@ DSH 的 `credentials.describe` 只返回 `configured`、来源和可写性，不
 只返回额度结果的查询能力后再接入。错误提示必须明确说明“当前模型凭据不能用于该接口”，
 不能把一个按量 Key 当成 Token Plan Key 继续重试。
 
-**opencode Go 也只走这条内核凭据链，不读 opencode 自己的登录文件**（2026-10-12 用户要求
+**opencode 的 Go 套餐也只走这条内核凭据链，不读 opencode 自己的登录文件**（2026-10-12 用户要求
 接入 opencode 的容量展示时明确下来的）。用户机器上确实存在
 `~/.local/share/opencode/auth.json`（opencode CLI 自己的凭据库），读它技术上可行——社区
 的 opencode 插件就是这么做的——但那是**另一个应用的凭据库**：读它等于本功能多一条用户没
 同意过的凭据来源，而 Codex 额度那条已经为「跨应用凭据读取要显式许可」立过规矩。因此
-opencode Go 的密钥取内核模型设置里 opencode 那两行 route 各自写的 `apiKeyEnv`
+opencode 的密钥取内核模型设置里这家那两行取源各自写的 `apiKeyEnv`
 （`opencode-go` → `OPENCODE_GO_API_KEY`，Zen 的 `opencode` → `OPENCODE_API_KEY`；后者
 2026-10-13 起也认，实测同一把 workspace Key 能查 Go 容量），用户配一次两处都在用；
 `auth.json` 一个字都不读，面板与文档也不提它（避免用户以为「在 opencode 里登录就够了」）。
@@ -717,7 +717,7 @@ DeepSeek 侧用当前模型设置中的实际 provider 配置验证余额接口�
   本机文件凭据查询，不支持拦截请求、刷新凭据或其它存储后端。
 - Kimi / 火山方舟 / StepFun / SiliconFlow / OpenRouter / Novita 等其它 provider
   ——模块已按「每家一个 query + parse 纯函数」预留扩展位，逐家接入各约 100–200 行
-  （智谱 GLM 编程套餐与 opencode Go 已按此模式接入，见「接口规格」一节；
+  （智谱 GLM 编程套餐与 opencode 的 Go 套餐已按此模式接入，见「接口规格」一节；
   `usage/subscription_opencode.rs` 即该模式的最新一例：`subscription.rs` 只留下
   provider 常量、展示顺序、标签与一条 dispatch，其余全在新文件里）。
 - 自定义 JS 查询脚本（cc-switch 的高级能力）——避免在桌面壳里引入 JS 沙箱。
