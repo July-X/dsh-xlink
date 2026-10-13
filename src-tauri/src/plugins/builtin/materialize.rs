@@ -7,6 +7,11 @@
 //! 顶部时，加一个不发布 client 卡、不带本地化文案的插件就得先在这里编一个
 //! 假的 `client/` 目录出来。对内核安装树**只读**：peer 链接指向它，绝不写入。
 //!
+//! 内核树里没有的 peer 分两种情形（[`super::peers`] 的必需 / 可选语义）：必需
+//! 的缺失就是装不上；可选的由 [`super::peer_supply`] 在**物化之前**从 npm 补一份
+//! （版本跟内核一致），补到了就在这里**复制**进插件目录，补不到才跳过链接、由
+//! host 降级。
+//!
 //! 写入走「staging 目录 + 原子改名」：同路径重物化（开发期同版本更新
 //! 源码）时才删除旧目录，且调用方契约要求实例已停止（设计 §3.1）。
 
@@ -24,25 +29,11 @@ pub(crate) const MANIFEST_FILE: &str = "manifest.json";
 pub(crate) const MARKER_FILE: &str = ".xlink-materialized.json";
 
 /// 读 `<kernel>/node_modules/@deepseek-ai/<pkg>/package.json` 的版本。
+///
+/// 实现只有一份（[`super::peers::package_version`]）：指纹、peer 供货、物化三处
+/// 都要读它，各拼一份路径的漂移症状是「指纹算的是一个包、链接指到另一个」。
 fn dep_version(kernel_root: &Path, pkg: &str) -> Result<String, String> {
-    let manifest = kernel_root
-        .join("node_modules")
-        .join("@deepseek-ai")
-        .join(pkg)
-        .join("package.json");
-    let text = fs::read_to_string(&manifest).map_err(|error| {
-        format!(
-            "读取内核包清单失败（{}）：{error}；内核安装树可能不完整，请在「内核版本」页重装当前内核版本",
-            manifest.display()
-        )
-    })?;
-    let value: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|error| format!("内核包清单不是有效 JSON（{manifest:?}）：{error}"))?;
-    value
-        .get("version")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .ok_or_else(|| format!("内核包清单缺 version 字段（{manifest:?}）"))
+    super::peers::package_version(kernel_root, pkg)
 }
 
 /// 内核依赖指纹：`dsh-<版本>-cordis-<版本>`，非常规字符折叠为 `-`。
@@ -178,6 +169,7 @@ pub(crate) fn materialize(
     upstream_dir: Option<&Path>,
     target: &Path,
     kernel_root: &Path,
+    dsh_home: &Path,
     version: &str,
     fingerprint: &str,
 ) -> Result<(), String> {
@@ -211,6 +203,7 @@ pub(crate) fn materialize(
                 spec,
                 &target.join("node_modules").join("@deepseek-ai"),
                 kernel_root,
+                dsh_home,
             )?;
             return Ok(());
         }
@@ -284,6 +277,7 @@ pub(crate) fn materialize(
         spec,
         &staging.join("node_modules").join("@deepseek-ai"),
         kernel_root,
+        dsh_home,
     )?;
     fs::write(staging.join(MARKER_FILE), format!("{marker}\n")).map_err(|e| {
         format!(
@@ -375,23 +369,80 @@ fn ensure_peer_link(
     spec: &BuiltinSpec,
     at_deepseek_dir: &Path,
     kernel_root: &Path,
+    dsh_home: &Path,
 ) -> Result<(), String> {
+    let plan = super::peer_supply::plan(spec, dsh_home, kernel_root);
     for peer in spec.peers {
-        let source = peer.path_in(kernel_root);
-        if !source.is_dir() {
-            if peer.required {
+        let entry = plan.iter().find(|entry| entry.package == peer.package);
+        match entry {
+            Some(entry) => ensure_peer(&entry.source, at_deepseek_dir, peer.package)?,
+            None if peer.required => {
                 return Err(format!(
-                    "内核树里找不到 {}；当前内核版本不带 {} 这个包，插件装不上——\
+                    "内核树里找不到 {}；当前内核版本不带 {} 这个包，壳也没能补上——\
                      请在「内核版本」页换一个内核版本后重试",
-                    source.display(),
+                    peer.path_in(kernel_root).display(),
                     peer.package
                 ));
             }
+            None => continue,
+        }
+    }
+    // 补进来的包**自己**带的 peer / 依赖（`peer_supply::plan` 展开出来的那几条）：
+    // 少了它们，补下来的包加载时会解析失败，而症状是「补了却还是没生效」。
+    // 不在登记表里，因此缺了只跳过——能力降级那条路由 host 自己兜。
+    for entry in &plan {
+        if spec.peers.iter().any(|peer| peer.package == entry.package) {
             continue;
         }
-        ensure_one_peer_link(&source, at_deepseek_dir, peer.package)?;
+        ensure_peer(&entry.source, at_deepseek_dir, &entry.package)?;
     }
     Ok(())
+}
+
+/// 按来源摆一个包：内核树里的建链接，壳补的那份**复制**。
+///
+/// 复制而不是链接的理由见 [`super::peer_supply::PeerSource`]：Node 按真实路径
+/// 解析 import，链接过去的那份会在 `<DSH_HOME>/plugins/builtin/<id>/peers/` 下
+/// 找不到 `node_modules`。
+fn ensure_peer(
+    source: &super::peer_supply::PeerSource,
+    at_deepseek_dir: &Path,
+    package: &str,
+) -> Result<(), String> {
+    match source {
+        super::peer_supply::PeerSource::Kernel(dir) => {
+            ensure_one_peer_link(dir, at_deepseek_dir, package)
+        }
+        super::peer_supply::PeerSource::Supplied(dir) => {
+            ensure_supplied_copy(dir, at_deepseek_dir, package)
+        }
+    }
+}
+
+/// 把壳补的那份包复制进插件目录（版本一致时跳过，物化是幂等的）。
+fn ensure_supplied_copy(
+    source: &Path,
+    at_deepseek_dir: &Path,
+    package: &str,
+) -> Result<(), String> {
+    let target = at_deepseek_dir.join(package);
+    if target.is_dir()
+        && super::peers::manifest_version(&target).ok()
+            == super::peers::manifest_version(source).ok()
+    {
+        return Ok(());
+    }
+    if target.exists() {
+        fs::remove_dir_all(&target)
+            .map_err(|e| format!("移除旧的 peer 副本失败（{}）：{e}", target.display()))?;
+    }
+    copy_tree(source, &target).map_err(|e| {
+        format!(
+            "复制内核包副本失败（{} → {}）：{e}",
+            source.display(),
+            target.display()
+        )
+    })
 }
 
 fn ensure_one_peer_link(
@@ -548,6 +599,7 @@ mod tests {
             None,
             &target,
             &root.join("kernel"),
+            &root,
             "0.1.0",
             "fp-1",
         )
@@ -561,6 +613,7 @@ mod tests {
             None,
             &target,
             &root.join("kernel"),
+            &root,
             "0.1.0",
             "fp-1",
         )
@@ -575,6 +628,7 @@ mod tests {
             None,
             &target,
             &root.join("kernel"),
+            &root,
             "0.1.0",
             "fp-1",
         )
@@ -593,6 +647,7 @@ mod tests {
             None,
             &target,
             &root.join("kernel"),
+            &root,
             "0.1.0",
             "fp-1",
         )
@@ -614,6 +669,7 @@ mod tests {
             None,
             &target,
             &root.join("kernel"),
+            &root,
             "0.1.0",
             "fp-1",
         )
@@ -628,6 +684,7 @@ mod tests {
             None,
             &target.with_file_name("x"),
             &root.join("kernel"),
+            &root,
             "0.2.0",
             "fp-2",
         )
@@ -689,6 +746,7 @@ mod tests {
             Some(&upstream),
             &target,
             &root.join("kernel"),
+            &root,
             "0.1.0",
             "fp-1",
         )
@@ -768,6 +826,7 @@ mod tests {
             Some(&first),
             &target,
             &kernel,
+            &home,
             "0.1.0",
             "fp-1",
         )
@@ -782,6 +841,7 @@ mod tests {
             Some(&first),
             &target,
             &kernel,
+            &home,
             "0.1.0",
             "fp-1",
         )
@@ -812,6 +872,7 @@ mod tests {
             ),
             &target,
             &kernel,
+            &root,
             "0.1.0",
             "fp-1",
         )
@@ -850,8 +911,10 @@ mod tests {
                 .unwrap();
         }
         let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
-        let err = materialize(spec, &source, None, &target, &kernel, "0.1.0", "fp-1")
-            .expect_err("没有上游内容时必须拒绝物化");
+        let err = materialize(
+            spec, &source, None, &target, &kernel, &root, "0.1.0", "fp-1",
+        )
+        .expect_err("没有上游内容时必须拒绝物化");
         assert!(
             err.contains("上游") && err.contains("检查更新"),
             "错误信息要指出下一步（启用或点检查更新），实际：{err}"
@@ -952,6 +1015,7 @@ mod tests {
             Some(&upstream),
             &target,
             &root.join("kernel"),
+            &root,
             "0.1.0",
             "fp-1",
         )
@@ -973,10 +1037,84 @@ mod tests {
             Some(&upstream),
             &target,
             &root.join("kernel"),
+            &root,
             "0.1.0",
             "fp-1",
         )
         .expect("重复物化（走标记命中那条早退路径）同样不许因为缺可选 peer 而失败");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 壳补下来的可选 peer 要**复制**进物化目录（不是链接），而且它自己的 peer
+    /// 也要一起摆好——Node 按真实路径解析 import，链接过去的那份会在
+    /// `<DSH_HOME>/plugins/builtin/<id>/peers/` 下找不到 `node_modules`，症状是
+    /// 「补了却还是没生效」。
+    #[test]
+    fn a_supplied_optional_peer_is_copied_with_its_own_peers() {
+        let (root, spec, source, upstream) = ponytail_fixture("supplied-peer", &["dsh-skill"]);
+        let kernel = root.join("kernel");
+        // 内核版本读的是树里 `dsh` 自己的清单（补给供货目录的版本要与它一致）。
+        let dsh = kernel.join("node_modules/@deepseek-ai/dsh");
+        fs::create_dir_all(&dsh).unwrap();
+        fs::write(dsh.join("package.json"), r#"{"version":"0.2.1-alpha.2"}"#).unwrap();
+        // 内核树里**没有**桥，但壳已经补过一份（供货目录）；桥还要 protocol，
+        // protocol 在树里。
+        let supplied =
+            root.join("plugins/builtin/ponytail/peers/dsh-hooks-claude-code@0.2.1-alpha.2");
+        fs::create_dir_all(&supplied).unwrap();
+        fs::write(
+            supplied.join("package.json"),
+            r#"{"name":"dsh-hooks-claude-code","version":"0.2.1-alpha.2",
+                "peerDependencies":{"@deepseek-ai/dsh-hook-protocol":"0.2.1-alpha.2"}}"#,
+        )
+        .unwrap();
+        fs::write(supplied.join("index.js"), "export const bridge = true\n").unwrap();
+        let protocol = kernel.join("node_modules/@deepseek-ai/dsh-hook-protocol");
+        fs::create_dir_all(&protocol).unwrap();
+        fs::write(
+            protocol.join("package.json"),
+            r#"{"name":"dsh-hook-protocol","version":"0.2.1-alpha.2"}"#,
+        )
+        .unwrap();
+
+        let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
+        materialize(
+            spec,
+            &source,
+            Some(&upstream),
+            &target,
+            &kernel,
+            &root,
+            "0.1.0",
+            "fp-1",
+        )
+        .expect("补过一份之后物化必须成功");
+
+        let at_deepseek = target.join("node_modules/@deepseek-ai");
+        let copied = at_deepseek.join("dsh-hooks-claude-code");
+        assert!(
+            fs::symlink_metadata(&copied).unwrap().is_dir()
+                && !fs::symlink_metadata(&copied)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+            "补的那份必须是真目录：链接的真实路径在供货目录，那里没有 node_modules"
+        );
+        assert!(
+            copied.join("index.js").is_file(),
+            "复制要带上包的内容，不只是清单"
+        );
+        assert_eq!(
+            fs::read_to_string(copied.join("index.js")).unwrap(),
+            "export const bridge = true\n"
+        );
+        assert!(
+            fs::symlink_metadata(at_deepseek.join("dsh-hook-protocol"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "桥自己的 peer 要按普通 peer 链到内核树（树里有就不用再补一份）"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -992,6 +1130,7 @@ mod tests {
             Some(&upstream),
             &target,
             &root.join("kernel"),
+            &root,
             "0.1.0",
             "fp-1",
         )

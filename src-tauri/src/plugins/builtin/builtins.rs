@@ -145,15 +145,18 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
         // 成 `devDependencies`，于是内核树里不再有它。把它当必需 peer，等于
         // 「技能能不能注册」由内核带不带一个可选的 hook 桥决定：在 alpha.2 上
         // 整个插件（含六个技能）都启用不了，而报错还把用户支去重装内核。
-        // 现在它缺失 = 只少「会话启动即注入」与档位切换，由 host 动态 import 降级。
+        // 现在它缺失 = 只少「会话启动即注入」与档位切换；壳会先按**同版本**从
+        // npm 补一份（`peer_supply.rs`，启用与启动工作台各试一次，补到就照常有
+        // 那两项能力），补不到才走降级，这条文案就是说「补不到」时的那一句。
         peers: &[
             PeerSpec::required("dsh-skill"),
             PeerSpec::optional(
                 "dsh-hooks-claude-code",
                 "当前内核版本不带 @deepseek-ai/dsh-hooks-claude-code（上游把它从运行时依赖\
-                 降级成了开发依赖）：技能照常可用，但「会话启动时自动注入规则」与 \
-                 /ponytail 的档位切换在这个内核上不可用。换一个仍带这个包的内核版本\
-                 （如 0.2.1-alpha.1）即可恢复，不必重装本应用。",
+                 降级成了开发依赖），壳也没能从 npm 补上它（多半是这台机器现在连不上 \
+                 registry）：技能照常可用，但「会话启动时自动注入规则」与 /ponytail 的\
+                 档位切换暂时不可用。联网后重启工作台会自动重试；也可以换一个仍带这个包\
+                 的内核版本（如 0.2.1-alpha.1），不必重装本应用。",
             ),
         ],
         entry: "host/index.js",

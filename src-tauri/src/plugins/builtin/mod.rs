@@ -8,6 +8,8 @@
 //! - [`builtins`]：**内置插件登记表**（本版本带哪几个、各自物化什么）——新增
 //!   内置插件只改这一处
 //! - [`materialize`]：内核依赖指纹、运行时文件集物化、peer 链接
+//! - [`peers`] / [`peer_supply`]：peer 的必需 / 可选语义；可选 peer 在内核树里
+//!   缺失时从 npm 按内核版本补一份
 //! - [`wiring`]：实例 `cordis.patch.yml` 自有 insert 行的精确增删
 //! - [`cmd`]：`builtin_status` / `builtin_set_enabled` 命令层
 //! - 本模块：启停编排与只读状态探针
@@ -25,6 +27,7 @@ pub(crate) mod bridge_credential;
 pub(crate) mod builtins;
 pub(crate) mod cmd;
 pub(crate) mod materialize;
+pub(crate) mod peer_supply;
 pub(crate) mod peers;
 pub(crate) mod runtime;
 pub(crate) mod state;
@@ -114,6 +117,13 @@ pub(crate) fn ensure_wired(
         .join(&version)
         .join(&fingerprint)
         .join("compat-a");
+    // 内核树里没有的可选 peer，先从 npm 按**同版本**补一份（补到了物化会把它
+    // 复制进插件目录，补不到就走 host 的降级 + 面板 ⚠）。这里只落一行日志：
+    // 能力缺失可降级，而**这条 Err 会阻断工作台启动**（`kernel_adapter` 把它接到
+    // `AdapterError::Io`），所以 `ensure_soft` 的返回值刻意是话而不是 Result。
+    if let Some(report) = peer_supply::ensure_soft(dsh_home, spec, kernel_root) {
+        crate::shell::shell_events::record(&format!("builtin-{}-peer", spec.id), &report);
+    }
     materialize::materialize(
         spec,
         plugin_source,
@@ -123,6 +133,7 @@ pub(crate) fn ensure_wired(
         crate::plugins::builtin::upstream::resolve_dir(dsh_home, spec).as_deref(),
         &dir,
         kernel_root,
+        dsh_home,
         &version,
         &fingerprint,
     )?;
@@ -240,7 +251,7 @@ pub(crate) fn probe_status(
         // 只读探针：内核根解析不出来时（还没选内核版本）不报降级——那时
         // 「缺什么包」这个问题本身还不成立，报出来只会是噪声。
         missing_optional_peers: kernel_root
-            .map(|root| peers::missing_optional_peers(spec, root))
+            .map(|root| peers::missing_optional_peers(spec, root, dsh_home))
             .unwrap_or_default(),
     }
 }
