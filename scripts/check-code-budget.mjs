@@ -1389,7 +1389,15 @@ const FILE_BUDGETS = {
   // 裸 allow 让每处从 4 行折行缩成 1 行，六处净增 1 行（见下条）。
   // 281 → 282：`raise_workbench_if_open` 漏标的那一处（唯一调用方在 lib.rs 的
   // macOS Reopen 分支里，Windows 编译时看不到）。同样按单行裸 allow 写，净增 1。
-  'src-tauri/src/notify/activate.rs': 282,
+  // 282 → 319（2026-10-13）：macOS 的「点通知横幅回到工作台」此前**在真机上
+  // 从未触发过一次**——它挂在 `RunEvent::Reopen` 上，而横幅点击只让应用被激活，
+  // `applicationShouldHandleReopen` 一次都不派发（见 activate.rs 模块顶部的
+  // 实测记录）。本文件补的是那条路：激活观察者（objc2-foundation + block2 的
+  // block 观察者，都在依赖树里，不新增传递依赖）、一个纯函数判据
+  // `banner_activation` 及其单测，外加两处因此失效的 `#[allow(dead_code)]`
+  // 与注释订正。文件仍远低于 RATCHET_THRESHOLD（600）与硬顶（800），未触发
+  // 反棘轮，拆分方案（把 objc 细节挪进单独模块）留到它真的长到值得拆时。
+  'src-tauri/src/notify/activate.rs': 319,
   // 2026-09-30：工作台窗口的**手动**逃生口（`harness_force_reload`）。看门狗
   // 只在加载事件上判据，而 WebView2 渲染进程被打崩时页面早就 `Finished` 过，
   // 那条判据永远不会触发，`reload()` 又落在一块死掉的文档上（用户原话：
@@ -2675,7 +2683,12 @@ const FILE_BUDGETS = {
 // 这两次加的都不是业务代码而是「补一块此前整块缺失的能力」，与 47584 → 47673
 // （控制台日志通道）同类。+10 是给 rustfmt 折行抖动留的余量（47583/47584 那次
 // 就是它）。
-const TOTAL_BUDGET = 47930;
+// 47930 → 47955（2026-10-13）：macOS「点通知横幅回到工作台」此前从未真正接上
+// （见上面 activate.rs 那条），本版的 +37 行**全是修复**而非新能力：激活观察者
+// 的 objc 调用、一个纯函数判据 `banner_activation` 与它的单测。三个文件（activate.rs
+// / lib.rs / 门禁脚本）都还在各自预算内，离 800 行硬顶很远。+10 是给 rustfmt
+// 折行抖动留的余量。
+const TOTAL_BUDGET = 47955;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

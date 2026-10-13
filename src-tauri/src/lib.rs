@@ -667,12 +667,17 @@ pub fn run() {
                 shell::tray::refresh_icon(handle);
             }
         }
-        // macOS：应用被重新打开（点 Dock 图标、点通知横幅）。工作台开着就把它
-        // 抬到台前——通知横幅点一下就该看到任务结果，而不是停在管理面板上。
-        // 工作台没开时**必须自己把管理面板叫回来**：macOS 的激活只把进程带到
-        // 前台，不会替我们显示 `hide()` 掉的窗口；缺了这步兜底，Dock 上那枚
-        // 「在运行」的图标点了没反应（2026-10-05 重启实测）。接线由
-        // check:invariants 第 17 项钉住。
+        // macOS：应用被**重新打开**（点 Dock 图标、`open` Apple Event）。工作台
+        // 开着就把它抬到台前。工作台没开时**必须自己把管理面板叫回来**：macOS
+        // 的激活只把进程带到前台，不会替我们显示 `hide()` 掉的窗口；缺了这步
+        // 兜底，Dock 上那枚「在运行」的图标点了没反应（2026-10-05 重启实测）。
+        // 接线由 check:invariants 第 17 项钉住。
+        //
+        // **这条不是「点通知横幅」的路**（2026-10-13 本机实测，macOS 26.7.1）：
+        // 横幅点击只让应用被激活，`applicationShouldHandleReopen` 一次都没有
+        // 派发，所以这个回调对它根本不会来——此前注释里"点通知横幅"那半句是
+        // 一个从未验证过的假设。横幅那条在 `notify::activate::serve` 注册的
+        // 激活观察者里，两条路终点都是 `activate::focus_workbench`。别合并。
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen { .. } = &event {
             if !notify::activate::raise_workbench_if_open(handle) {
