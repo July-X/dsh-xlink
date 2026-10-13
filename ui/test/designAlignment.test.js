@@ -1988,7 +1988,14 @@ test('内置插件行是「当前内核」列表的第一行，不再是列表�
   // 外壳与内部结构都走社区插件那一套，视觉才对得上。
   const row = tpl.slice(rowAt, tpl.indexOf('</div>', tpl.indexOf('entity-actions', rowAt)));
   assert.match(row, /class="entity-name"/, '名称要走 .entity-name（同一字号与等宽字体）');
-  assert.match(row, /class="origin-chip"/, '来源标签要走 .origin-chip，与 npm / GitHub 同一枚');
+  // 正则带 `(?![\w-])` 而不是直接写 `class="origin-chip"`：chip 上现在还挂着
+  // 修饰类 `origin-chip-builtin`（紫色标记，见下一条判据），写死整串属性等于把
+  // 判据绑在**写法**上——加一个修饰类就红，而那正是要加的东西。
+  assert.match(
+    row,
+    /class="origin-chip(?![\w-])/,
+    '来源标签要走 .origin-chip，与 npm / GitHub 同一枚',
+  );
   // 那套「不属于这个列表」的样式已经没有作用方，必须跟着删干净——留着会让下
   // 一个以为内置行另有样式。
   assert.doesNotMatch(stripComments(src), /\.builtin-strip\s*\{/, '.builtin-strip 应当随这次搬家删除');
@@ -2025,6 +2032,76 @@ test('内置插件行是「当前内核」列表的第一行，不再是列表�
     /v-if="builtin\.hasAccountCard"/,
     '账户卡由后端下发的 hasAccountCard 决定，不要在前端按 id 硬判',
   );
+});
+
+// --- 内置插件的紫色标记（2026-10-13 用户要求）--------------------------------
+//
+// 原话：「icon 文字放大，调整为紫色显示，后续 dsh-xlink 内置插件都要用这个颜色
+// 标记」。三件事分三处落，判据也分三条钉——
+//   ① 模板：紫色挂在 `v-for="builtin in builtinList"` 那一枚 chip 上。**只有这样**
+//      「下一个内置插件自动带上」才成立：挂到某个具体 id 上时，登记表加一项就静默
+//      退回中性灰，而界面上看不出任何异常。
+//   ② 样式：`.origin-chip-builtin` 读 token 而不是写死淡彩（与 `.btn-chat` 同一纪律）。
+//   ③ token：`--builtin` / `--builtin-fill` 两套主题都定义——只在一套里定义的话，
+//      另一套下 `var(--builtin)` 整条失效，chip 退回中性灰且**不报任何错**。
+test('内置插件的来源 chip 放大一档走紫色，此后每个内置插件都带这一枚', () => {
+  const tpl = templateOf(readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'));
+  const paneAt = tpl.indexOf('<el-tab-pane name="current">');
+  const rowAt = tpl.indexOf('class="entity-row entity-row--single builtin-row"', paneAt);
+  assert.ok(rowAt > 0, '应能找到内置插件行');
+  const row = tpl.slice(rowAt, tpl.indexOf('entity-actions', rowAt));
+  assert.match(
+    row,
+    /\borigin-chip-builtin\b/,
+    '内置插件那枚来源 chip 必须挂 origin-chip-builtin（紫色标记）',
+  );
+  // 全模板只许出现一次：多出来的那个多半是给 npm / GitHub 挂错了——那两枚应当继续
+  // 走中性灰，颜色是区分「内嵌 / 社区」的那一维。
+  assert.equal(
+    (tpl.match(/\borigin-chip-builtin\b/g) || []).length,
+    1,
+    '只有内置插件这一枚 chip 挂紫色标记',
+  );
+
+  // 样式这一段走**层叠后的生效值**（`effectiveDeclaration`），与本文件其余判据同一口径：
+  // 裸正则去读某一条规则的原文，会被同一条规则里的 `border-color:` 骗过去——2026-10-13
+  // 反向验实测过（把文字色换成写死的 `#7c3aed` 时第一版判据照样绿）。
+  const chipSize = effectiveDeclaration(subjectTokens('.origin-chip-builtin'), RULES, 'font-size');
+  assert.ok(
+    chipSize && parseFloat(chipSize) > 12,
+    `内置 chip 的字号要放大一档（当前 ${chipSize}，基线 .origin-chip 是 12px）`,
+  );
+  assert.equal(
+    effectiveDeclaration(subjectTokens('.origin-chip-builtin'), RULES, 'color'),
+    'var(--builtin)',
+    '文字读 --builtin token，不许写死只在一套主题下成立的淡彩',
+  );
+  assert.equal(
+    effectiveDeclaration(subjectTokens('.origin-chip-builtin'), RULES, 'background'),
+    'var(--builtin-fill)',
+    '填色读 --builtin-fill',
+  );
+  // 图标那条必须显式写死：EP 的 `.el-icon` 是 `font-size: inherit`，只抬 chip 字号
+  // 的话图标会等比跟着长——那不算「图标被放大」。且要比文字再大一点点才不显矮。
+  const iconSize = effectiveDeclaration(
+    subjectTokens('.origin-chip-builtin .origin-chip-icon'),
+    RULES,
+    'font-size',
+  );
+  assert.ok(
+    iconSize && parseFloat(iconSize) > parseFloat(chipSize),
+    `图标要比文字再大一点点（侧栏 .nav-item 17 vs 15 是同一口径）：当前 ${iconSize} vs ${chipSize}`,
+  );
+
+  const darkStart = themeCss.indexOf('\nhtml.dark {');
+  for (const token of ['--builtin', '--builtin-fill']) {
+    assert.match(
+      themeCss.slice(0, darkStart),
+      new RegExp(`${token}:\\s*[^;]+;`),
+      `${token} 缺浅色定义`,
+    );
+    assert.match(themeCss.slice(darkStart), new RegExp(`${token}:\\s*[^;]+;`), `${token} 缺暗色定义`);
+  }
 });
 
 // --- 「刷新数据」跟着它作用的东西走（2026-10-07 用户要求）--------------------
