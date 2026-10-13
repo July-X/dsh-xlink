@@ -1,0 +1,201 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-13",
+  "scope": "offline thread memory; static artifacts and read-only local metadata; no cloud memory synchronization",
+  "application": {
+    "path": "/Applications/ChatGPT.app",
+    "bundle_identifier": "com.openai.codex",
+    "version": "26.1007.30912",
+    "build": "20156",
+    "asar_size": 567757575,
+    "asar_sha256": "c5b273322a833ce5165429d468021cc6289a11cc68d075b80ae773bd7fb6731f",
+    "bundled_cli_version": "0.162.0-alpha.17.2",
+    "bundled_cli_sha256": "13c90fa898602a5f165da3b61265142d3a2bfb77786def29a313d3a3756b88d0"
+  },
+  "rea": {
+    "version": "6.4.0",
+    "evidence_id": "ev_43ebd25a65da92dcb1d7e4c8cf88e8b3e863e7f7ad2761624c1378fc9a331a87",
+    "root_artifact_sha256": "9e6949be211724e95ef69610ac8ee9e0272388901e1d8eca901da6718734b3e2",
+    "scope_is_subset": true,
+    "parameters": {
+      "max_heap_mb": 768,
+      "analysis_timeout_ms": 60000
+    },
+    "statistics": {
+      "relevant_files": 5,
+      "nested_asar_containers": 0,
+      "text_bytes_read": 5439181,
+      "invalid_utf8_files": 0,
+      "parsed_javascript_files": 4,
+      "visited_ast_nodes": 1374055,
+      "findings": 413,
+      "modules": 0,
+      "parse_failures": 0
+    },
+    "limitations": [
+      ".vite/build/main-CqEoQDOU.js: Resource constraint during analyze_javascript_application: Owned JavaScript worker exhausted its heap while analyzing .vite/build/main-CqEoQDOU.js during semantic",
+      ".vite/build/src-BJv5Mk7n.js: Resource constraint during analyze_javascript_application: Owned JavaScript worker exhausted its heap while analyzing .vite/build/src-BJv5Mk7n.js during semantic",
+      "CommonJS and ESM binding relationships were recovered from inert syntax and resolved only within the inventoried artifact container.",
+      "Dynamic IPC channel expressions remain unresolved and are never paired by textual similarity.",
+      "Electron API identity follows proven lexical module aliases. Reassigned bindings, dynamic selections, and visibly overwritten namespace members are unresolved; missing findings do not establish absence. Arbitrary call side effects and runtime registration are not evaluated.",
+      "Electron relationships are derived from inert syntax; runtime registration, reachability, defaults, and enforcement remain unproven.",
+      "Graph coverage is incomplete; unavailable facts remain explicit and must not be read as absence.",
+      "JavaScript and HTML were parsed as inert text; bundle bootstrap code was never executed.",
+      "Sender, frame, URL, and origin checks are observations only; REA does not claim that they enforce a complete authorization policy.",
+      "Static imports, entrypoints, workers, endpoints, and storage relationships do not prove runtime execution.",
+      "Static paths and relationships may remain unresolved when expressions are dynamic or obfuscated.",
+      "Webpack/Rspack factories were recovered from AST literals; REA did not invoke push handlers or bundle bootstrap code."
+    ],
+    "full_record_saved_during_investigation": "/tmp/codex-memory-rea-focused.json",
+    "full_record_retention": "temporary; this manifest is not canonical REA Evidence"
+  },
+  "archive_initial_analysis": {
+    "status": "rejected",
+    "code": "artifact_integrity_mismatch",
+    "path": "node_modules/@worklouder/device-kit-oai/node_modules/@worklouder/wl-device-kit/dist/native/darwin/permissions.node",
+    "declared_sha256": "5f2f66c4fe19493bba7ca2e0c322ed256e39f66d4a58865875431c2ddd4d58a1",
+    "observed_sha256": "e8af573234373c2850d730c3ee6304229a12904672b91f3c0bdb827fcf45571d",
+    "cause": "unverified"
+  },
+  "verified_extracted_modules": [
+    {
+      "path": ".vite/build/main-CqEoQDOU.js",
+      "sha256": "09d19386e1f23cf4ccbc950fc40d85a1e8a064a08be588b2a4be6a89f6ada9e6",
+      "size": 3824411,
+      "declared_integrity_matched": true
+    },
+    {
+      "path": ".vite/build/preload.js",
+      "sha256": "a3e622f8d80a83e58fb3cfcc640fa7e14e6461cccdae9ef7d7b0c821dde256b7",
+      "size": 6909,
+      "declared_integrity_matched": true
+    },
+    {
+      "path": ".vite/build/src-BJv5Mk7n.js",
+      "sha256": "72e2b366d574206f76fc079c79b64c31ce378970a797475ded8709908d338f08",
+      "size": 1591361,
+      "declared_integrity_matched": true
+    },
+    {
+      "path": "package.json",
+      "sha256": "7688f53fdb60bb06d82a760f87b70968f03273d93d36fc33cf112e2b287e3146",
+      "size": 5758,
+      "declared_integrity_matched": true
+    },
+    {
+      "path": "webview/assets/chronicle-service-queries-e7021ee8bd68.js",
+      "sha256": "7d669ba594b6f92f52cf678dbbd59dc6bd136a3630d597ffd07e8bd326da3e40",
+      "size": 10742,
+      "declared_integrity_matched": true
+    }
+  ],
+  "locations": [
+    {
+      "path": ".vite/build/main-CqEoQDOU.js",
+      "utf8_byte_offset": 2675185,
+      "literal_anchor": "memory_summary.md",
+      "evidence_type": "verified_artifact_static_read"
+    },
+    {
+      "path": ".vite/build/main-CqEoQDOU.js",
+      "utf8_byte_offset": 736986,
+      "literal_anchor": "memory_read_prompt",
+      "evidence_type": "verified_artifact_static_read"
+    },
+    {
+      "path": ".vite/build/main-CqEoQDOU.js",
+      "utf8_byte_offset": 3311615,
+      "literal_anchor": "new mUe",
+      "evidence_type": "verified_artifact_static_read"
+    },
+    {
+      "path": ".vite/build/src-BJv5Mk7n.js",
+      "utf8_byte_offset": 893967,
+      "literal_anchor": "\"memories.generate_memories\":p.generateMemories",
+      "evidence_type": "verified_artifact_static_read"
+    },
+    {
+      "path": ".vite/build/src-BJv5Mk7n.js",
+      "utf8_byte_offset": 894111,
+      "literal_anchor": "\"memories.version\":e.inputs.memoryPipeline.version",
+      "evidence_type": "verified_artifact_static_read"
+    },
+    {
+      "path": "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+      "byte_offset": 220790785,
+      "literal_anchor": "Memory Writing Agent: Phase 1 (Single Rollout)",
+      "evidence_type": "binary_embedded_template_not_decompiled_flow"
+    },
+    {
+      "path": "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+      "byte_offset": 220828981,
+      "literal_anchor": "Memory Writing Agent: Phase 2 (Consolidation)",
+      "evidence_type": "binary_embedded_template_not_decompiled_flow"
+    },
+    {
+      "path": "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+      "byte_offset": 220739115,
+      "literal_anchor": "Quick memory pass",
+      "evidence_type": "binary_embedded_template_not_decompiled_flow"
+    }
+  ],
+  "binary_sql_observations": [
+    {
+      "byte_offset": 220756979,
+      "kind": "phase2 selection and lease/retry SQL",
+      "control_flow_verified": false
+    },
+    {
+      "byte_offset": 220067563,
+      "kind": "usage_count and last_usage update SQL",
+      "control_flow_verified": false
+    }
+  ],
+  "local_metadata_observations": {
+    "mode": "sqlite URI mode=ro; no user text exported",
+    "tables": [
+      "stage1_outputs",
+      "jobs",
+      "consolidation_progress"
+    ],
+    "thread_memory_mode_default": "enabled",
+    "database_names": [
+      "memories_1.sqlite",
+      "memories_v2_1.sqlite",
+      "state_5.sqlite"
+    ],
+    "markdown_layout": [
+      "memory_summary.md",
+      "MEMORY.md",
+      "raw_memories.md",
+      "rollout_summaries/*.md",
+      "skills/*/SKILL.md",
+      "extensions/ad_hoc/notes/*.md"
+    ],
+    "raw_rollouts_format": "JSONL",
+    "rollout_summaries_format": "Markdown",
+    "active_memory_database_version": "unknown",
+    "raw_rollout_verification": {
+      "file_extension": ".jsonl",
+      "first_record_type": "session_meta",
+      "inspection": "first metadata record only; no user record content exported"
+    }
+  },
+  "dsh_contract": {
+    "active_version": "0.2.1-alpha.2",
+    "verification": "read-only source and type contracts; no runtime model request",
+    "paths_relative_to": "node_modules/@deepseek-ai",
+    "admission_context_refresh": "dsh-agent-loop/lib/index.js:1053-1073",
+    "scoped_context_provider": "dsh-system-prompt/lib/types/index.d.ts:72-85,263-266",
+    "inbox_claim_before_pre_step": "dsh-agent-loop/lib/index.js:902-924",
+    "turn_end_does_not_flush": "dsh-session/lib/types/types.d.ts:265-275"
+  },
+  "unknowns": [
+    "native runtime call graph",
+    "memory numeric defaults",
+    "active v1/v2 migration or dual-write strategy",
+    "model network behavior",
+    "deletion propagation to derived artifacts",
+    "live end-to-end dsh integration"
+  ]
+}
