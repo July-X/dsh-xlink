@@ -751,7 +751,11 @@ function instanceChipType(row, instanceId) {
         >
           <div class="entity-head">
             <span class="entity-name">{{ builtin.displayName }}</span>
-            <span class="origin-chip">
+            <!-- 来源 chip 挂 `origin-chip-builtin`：紫色 + 放大一档的「内嵌」标记，
+                 后端登记表里每加一个内置插件都自动带上这一枚（用户 2026-10-13 定，
+                 此后内置插件统一用这个颜色标记）。样式在 theme.css，
+                 **不要在这里写内联色**——两套主题各一份值，抄一份就必然漏一套。 -->
+            <span class="origin-chip origin-chip-builtin">
               <el-icon class="origin-chip-icon"><Cpu /></el-icon>
               <span class="origin-chip-label">内嵌</span>
             </span>

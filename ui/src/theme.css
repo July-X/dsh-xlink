@@ -110,6 +110,13 @@
   --warning-line: rgba(230, 154, 31, 0.5);
   --danger-fill: rgba(233, 77, 100, 0.16);
   --danger-line: rgba(233, 77, 100, 0.5);
+  /* 内置插件的标记色（2026-10-13 用户定：此后所有随应用交付的内置插件都用这一档
+     紫，与 npm / GitHub 那两枚中性灰区分开）。与上面四个 fill 同一纪律——**两套
+     主题各给一份**：紫色只在深色底上调出来的值，搬到白底上是一层洗不掉的紫雾。
+     `#7c3aed` 对白卡 5.70:1、`#a78bfa` 对 #142239 5.86:1，都在正文 4.5:1 之上
+     （13px / 600 粗体按正文算，不是大字档）。 */
+  --builtin: #7c3aed;
+  --builtin-fill: rgba(124, 58, 237, 0.12);
   /* 浮层高度（弹窗 / 消息框 / 三处自绘浮板）与卡片高度。**此前 `--shadow` 与
      `--shadow-pop` 两个 token 全仓 0 个消费方**——整个面板除了窗口轮廓与调试浮球
      没有一处 box-shadow，61 个 `.card` 全是纯平，「看不出边缘感」的根因就在这里。
@@ -266,6 +273,11 @@ html.dark {
   --warning-line: rgba(247, 178, 60, 0.5);
   --danger-fill: rgba(255, 98, 120, 0.16);
   --danger-line: rgba(255, 98, 120, 0.5);
+  /* 内置插件标记色的暗色档：同一组语义，只按深色底重新取值（理由见 `:root`）。
+     两套主题都定义不是冗余——只在一套里定义的话，另一套下 `var(--builtin)`
+     整条失效，chip 静默退回中性灰，且不报任何错。 */
+  --builtin: #a78bfa;
+  --builtin-fill: rgba(167, 139, 250, 0.16);
   /* 暗色档：近段是**浅色环**而不是更深的黑——纯黑落影压在深色底上等于没有
      （理由与两段式口径见 `:root`）。落影只负责「浮起来」的这段距离感。
      远段换成规范给的 `--ds-shadow-popover` 口径（rgba(0,0,0,.35)）。 */
@@ -2661,6 +2673,30 @@ main::before {
   border: 1px solid var(--overlay-soft);
   border-radius: 4px;
   text-transform: lowercase;
+}
+
+/* 内置插件（随应用交付的那几个）的来源 chip：放大一档 + 紫色。2026-10-13 用户定，
+   并要求**此后每个内置插件都用这一枚标记**——模板侧它挂在 `v-for="builtin in
+   builtinList"` 的那枚 chip 上（PluginsPanel），后端登记表加一个内置插件，
+   界面上自动带上这一档紫，不依赖「记得再写一行样式」。
+   `.origin-chip-npm` / `-github` 继续走中性灰：三枚 chip 的形状与节奏一样，
+   颜色是区分「内嵌 / 社区」的那一维。
+   色值走 `--builtin` / `--builtin-fill`（两套主题各一份），与 `--success` 徽章
+   同一纪律：不许写死只在一套主题下成立的淡彩。 */
+.origin-chip-builtin {
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 13px;
+  color: var(--builtin);
+  background: var(--builtin-fill);
+  border-color: var(--builtin);
+}
+
+/* 图标要比文字再大一点点才不显矮（侧栏 `.nav-item > .el-icon` 17 vs 15 同一口径）。
+   **必须显式写死**：EP 的 `.el-icon` 是 `font-size: inherit`，只抬 chip 的字号，
+   图标会跟着等比长——那不算「图标被放大」。 */
+.origin-chip-builtin .origin-chip-icon {
+  font-size: 15px;
 }
 
 /* 落地模式 chip：链接用 success 调，复制走中性色，与 el-tag 视觉一致但
