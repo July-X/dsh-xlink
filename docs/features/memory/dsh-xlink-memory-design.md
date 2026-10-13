@@ -18,7 +18,7 @@
 | --- | --- |
 | 随壳交付内置 Host 插件 `xlink-memory` | 用 dsh 的正式扩展面，不侵入官方内核 |
 | Rust 是记忆数据的唯一写入方 | 管理面板、模型工具、后台任务共用一套隔离与删除规则；**内核没在跑时面板仍要能看、能停用**，这条决定了库不能只住在内核进程里 |
-| SQLite 为权威记录（**P0 放行项**，见 §4.1） | 事务、CAS 与进程间并发；本仓无任何 SQLite 依赖（含间接），且有“免 C 工具链”约束 |
+| 单文档 JSON 为权威记录（**已定案**，见 §4.1） | 单写者下的 CAS 与原子替换够用；本仓无任何 SQLite 依赖（含间接），且有“免 C 工具链”约束 |
 | 按当前项目检索，用户偏好需明确批准 | 不把 A 项目的业务信息自动带到 B 项目 |
 | 自动提取只形成候选 | 模型总结与第三方文字不能自行成为长期规则 |
 | 复用动态运行上下文 | 不改项目 `AGENTS.md`，不把记忆冒充最高优先级指令 |
@@ -90,7 +90,7 @@ flowchart LR
     A[dsh 智能体] --> P[xlink-memory Host 插件]
     P --> B[有实例绑定的本地桥]
     B --> R
-    R --> DB[SQLite 权威记录]
+    R --> DB[权威记录 memory.json]
     R --> P
     P --> C[动态上下文与记忆工具]
     C --> A
@@ -106,19 +106,27 @@ flowchart LR
 | 现有 `plugins/builtin/` | 资源校验、实例物化、启动接线、停用与兼容状态 |
 | 现有本地桥 | 复用监听生命周期、随机令牌与凭据文件下发；记忆路由另做命名空间授权 |
 | 现有 `shell/paths.rs` | 派生实例与 profile 路径（新增 `instance_memory_dir`），不另拼数据根 |
-| 现有 `shell/atomic_write.rs` | 小文件与导出文件的私有原子写入；数据库由 SQLite 自己事务提交 |
+| 现有 `shell/atomic_write.rs` | 小文件与导出文件的私有原子写入（0600）；权威记录也走它，不另外造一套落盘 |
 
 插件与壳都不得向已安装内核 `kernels/<版本>/node_modules/**` 写代码。资源随应用交付，物化到内置插件的既有物化根 `<DSH_HOME>/extensions/builtin/xlink-memory/<pluginVersion>/<kernelFingerprint>/compat-a/`（**不是**社区插件的 `paths::instance_extensions_dir()`）。新增内置插件要同步登记 `plugins/builtin/builtins.rs` 的 `BUILTINS`、`scripts/prepare-builtin-plugins.mjs` 的 entries（两份清单由 `dev-builtin.test.mjs` 钉死）、`plugins/memory/package.json` 的 `name = xlink-memory` 和 `package.json` 的 `test:plugin`。
 
-### 4.1 SQLite 依赖是 P0 放行项
+### 4.1 存储选型：单文档 JSON，不引入 SQLite（2026-10-14 定案）
 
-仓库没有任何 SQLite 依赖（`Cargo.toml` 无、`Cargo.lock` 也无间接命中），而两处既有注释写明“AGENTS.md 要求在 Intel macOS / Windows 的 CI runner 上免 C 工具链构建”（WebSocket 不开 TLS、zstd 只用纯 Rust 的 `ruzstd` 都是为此）。`rusqlite` 默认 `bundled` 要 C 工具链，系统 sqlite3 在 Windows 上还要随包带库。**P0 先验证一条路**：bundled 在两个 runner 上能过就采用；不能过就退回纯 Rust 存储（追加写 JSONL + 原子快照 + 文件锁），权威记录、CAS 与删除语义不变，只换实现。没有结论前不写数据库代码。
+设计稿原先把「引入 SQLite」列为 P0 放行项，落地时的结论是**不引入**，理由三条：
+
+1. **冲突是真实的**。本仓没有任何 SQLite 依赖（`Cargo.toml` 无、`Cargo.lock` 连间接命中都没有），而两处既有注释写明「AGENTS.md 要求在 Intel macOS / Windows 的 CI runner 上免 C 工具链构建」（WebSocket 不开 TLS、zstd 只用纯 Rust 的 `ruzstd` 都是为此）；`rusqlite` 的 `bundled` 要 C 工具链，系统 sqlite3 在 Windows 上还要随包带库。而「Windows 能不能编过」本机验证不了。
+2. **P1 不需要数据库**。真实需求只有三件：单写者、事务性替换、损坏不改语义。写入全部发生在壳进程内（面板走 Tauri；内核插件经回环桥回来仍落到这个进程），一把进程内 Mutex 串行「读-改-写」就够；`shell::state` 的 `read_state_file`（区分「不存在」与「损坏」）+ `shell::atomic_write_private`（0600 临时文件 + rename）已经给了另外两件。
+3. **代价可接受**。每命名空间一份 `memory.json`，规模上限每项目 1,000 条、单条正文 8 KiB，整份文档在几百 KB 量级；检索在本机做有界关键词匹配（§6.2），不需要索引。
+
+跨进程并发（P2 的任务租约）到时再评估：那时可以给文档加一个只追加的 `jobs` 段，或换实现——权威记录的语义（CAS、代次、删除指纹）不变，换的只是承载。
+
+**落地形状**：`memory/store.rs` 管落盘事务（读-改-写、损坏、schema 降级拒绝），`memory/query.rs` 管纯函数的检索与注入文本渲染，`memory/cmd.rs` 是面板命令层。三者与设计稿的对应关系见 §12。
 
 ## 5. 数据隔离与目录
 
 ```text
 <DSH_XLINK_HOME>/kernels/<family>/instances/<id>/memory/<profile>/
-├── memory.sqlite                  权威记录、候选与元数据
+├── memory.json                    权威记录、候选与元数据（0600，原子替换）
 └── exports/                       用户触发的 Markdown 导出（一次性，可删）
 ```
 
@@ -132,15 +140,15 @@ flowchart LR
 
 ### 6.1 最小数据模型
 
-每个命名空间一库，首版三张表：
+每个命名空间一份文档，三块：
 
-| 表 | 主要内容 |
+| 块 | 主要内容 |
 | --- | --- |
 | `memories` | id、项目或通用范围、正文、主题/关键词、来源、验证状态、revision、状态与使用时间 |
 | `candidates` | 待确认内容、事件范围、来源 revision/hash、提取器版本、审批结果 |
-| `meta` | schema 版本、数据代次（缓存失效用）、开关与同源抑制指纹 |
+| `meta` | schema 版本、数据代次（缓存失效用）、两个开关与同源抑制指纹 |
 
-任务队列与租约属 P2（§8），首版不建表。`meta` 的 schema 版本在“库比代码新”时只读并明确报错，绝不就地降级迁移。
+任务队列与租约属 P2（§8），首版不建。`meta.schema_version` 在“库比代码新”时只读并明确报错，绝不就地降级迁移；文档损坏时同样拒绝写入（展示路径可以空列表 + 明说，但读-改-写路径必须停下来）。
 
 来源分两种：面板新建保存 `user_manual`、操作时间与修改来源，不虚构会话 ID；会话候选与提取结果至少含 session ID、事件起止序号、源 revision/hash、提取时间。原始会话由内核维护，不把全量日志复制进记忆库。`user_explicit`/`observed`/`session_inferred` 区分信息来源，`verified`/`unverified`/`stale` 表示验证范围，不用未校准的置信分数替代它们。
 
@@ -174,7 +182,7 @@ flowchart LR
 
 删除后立即阻止再次检索；首版没有衍生视图要清理，但用户导出过的文件在磁盘上，界面要说明“已导出的文件不会被删除”。清空前列出记录与候选范围，需用户明确确认。
 
-原始会话、模型已收到的请求、内核历史里的运行上下文快照不会因删除记忆消失，界面必须说明并引导另行处理；要确保下一请求不含旧内容，请用新建的干净会话。不能把清空插件缓存当成旧消息已从模型输入移除，也不能擅自改写内核的用户消息。SQLite 会设合适的 `secure_delete` 与空闲 checkpoint，但 WAL、文件系统快照和磨损均衡使其无法承诺取证级擦除：首版承诺“不再检索、清理可管理的正文副本”。
+原始会话、模型已收到的请求、内核历史里的运行上下文快照不会因删除记忆消失，界面必须说明并引导另行处理；要确保下一请求不含旧内容，请用新建的干净会话。不能把清空插件缓存当成旧消息已从模型输入移除，也不能擅自改写内核的用户消息。删除是「移除记录 + 记指纹 + 原子替换整份文档」：不承诺取证级擦除（文件系统的快照、日志与磨损均衡都不受我们控制），首版承诺“不再检索、清理可管理的正文副本”。
 
 ## 8. 后续自动提取流程（P2）
 
@@ -208,7 +216,7 @@ flowchart LR
 
 | 阶段 | 交付内容 | 放行条件 |
 | --- | --- | --- |
-| P0 | 临时数据根内的存储选型与真实接缝验证 | **SQLite/工具链结论已定**；第一请求能收到动态上下文、`agent/created` 失败可降级、取消后无提交、压缩后可恢复；不碰用户目录 |
+| P0 | 临时数据根内的存储选型与真实接缝验证 | **存储选型已定**（单文档 JSON，不引入 SQLite，见 §4.1）；第一请求能收到动态上下文、`agent/created` 失败可降级、取消后无提交、压缩后可恢复；不碰用户目录 |
 | P1 | 人工保存、候选确认、关键词检索、上下文与工具、管理页、导出 | 跨会话合成验收通过；文案不称自动提取可用；注入次数与累计字节不超会话级预算 |
 | P2 | 本地模型自动提取、游标、租约、取消与资源预算 | 断网生成、崩溃恢复与删除防再生验收通过，无云端回退 |
 
@@ -221,11 +229,33 @@ flowchart LR
 - 重复步骤不追加相同快照；**20 回合会话注入 ≤3 次、累计 ≤36 KiB**；成功压缩后能重新取得记忆；失败压缩的判据含“只有 start、没有 end”。
 - `agent/created` 内解析失败或桥不可用时，会话仍能正常创建与对话；子智能体不超出父级读权限；无 agent 的工具调用被拒绝。
 - 删除后搜索、详情、摘要服务、导出入口与运行缓存都不返回该条；相同来源不能自动再生；保留会话历史这一边界显示正确；已导出文件不在清理承诺内。
-- 外部文档里的“忽略指令”、伪造“用户要求”、路径穿越与注入变量都拿不到更高权限；超大输入、中文匹配、损坏索引、磁盘满、SQLite busy 都返回明确状态，不丢权威记录、不影响普通对话。
+- 外部文档里的“忽略指令”、伪造“用户要求”、路径穿越与注入变量都拿不到更高权限；超大输入、中文匹配、损坏文档、磁盘满、并发写入都返回明确状态，不丢权威记录、不影响普通对话。
 - P2：断网仍能提取；本地模型不存在时不可用；停用与退出后无提取进程或迟到写入；两个写入进程、过期租约、迟到结果、旧 revision、重复 `turn/end` 不造成覆盖或重复候选；`flush` 返回 false 的用例按 live 历史处理。
 
 测试必须持有 `scoped_xlink_home` / TestHome 到用例结束并只清自己的目录；macOS Intel 与 Windows 分别验收，不增加 Linux 发布。
 
 ## 11. 当前验证边界
 
-这份提案已把 Codex 的静态机制与 dsh-xlink 的实际路径、物化约定和 dsh `0.2.1-alpha.2` 类型合同对齐，并按接入核查收紧了项目身份、注入预算与首版范围。数据库、插件、管理页与自动提取都还没实现，首请求、压缩、并发与断网行为也未经真实工作台验证——P0 的价值就是先验证这些接缝（含 SQLite 工具链结论），再承诺 P1/P2 的用户体验。
+这份提案已把 Codex 的静态机制与 dsh-xlink 的实际路径、物化约定和 dsh `0.2.1-alpha.2` 类型合同对齐，并按接入核查收紧了项目身份、注入预算与首版范围。**权威记录层已落地**（见 §12），缺的是管理页、内置插件与桥、以及首请求/压缩/切目录这些真实运行验收——P0 的价值就是先验证这些接缝，再承诺 P1/P2 的用户体验。
+
+## 12. 实施进度（2026-10-14）
+
+已落地：
+
+| 位置 | 内容 |
+| --- | --- |
+| `src-tauri/src/memory/store.rs` | 权威记录：命名空间解析（`default_instance_key` + `settings.profile`）、损坏即报错、schema 降级拒绝、CAS 更新、删除即记正文指纹、候选提交与批准 |
+| `src-tauri/src/memory/query.rs` | 有界检索与注入文本：确定性打分（固定项 > 关键词 > 项目匹配 > 验证范围）、条数与字节预算、按 UTF-8 边界截断、关掉开关时返回 `enabled: false` |
+| `src-tauri/src/memory/cmd.rs` | 十条面板命令（状态 / 列表 / 保存 / 读取 / 停用 / 删除 / 开关 / 批准候选 / 提交候选 / 预览注入）；**没有进 `commands.rs`**（反棘轮文件） |
+| `src-tauri/src/shell/paths.rs` | `instance_memory_dir` / `instance_memory_file`：`<instance_dir>/memory/<profile>/`，过 `validate_id_component` |
+| `src-tauri/src/shell/error.rs` | `AppError::Memory` |
+| `scripts/check-code-budget.mjs` | 新文件登记；`TOTAL_BUDGET` 47955 → 48950（记忆首块 919 行） |
+| 单测 | 17 条：缺工作区被拒、CAS 冲突、删除留指纹、损坏不重置、schema 更高拒绝写、项目隔离、按路径兜底、开关如实上报、条数与字节上限、多字节截断、候选必须用户批准 |
+
+IPC 与落盘都用 **snake_case**：`check-invariants` 的 `ipc-fields` 抓到过一版 camelCase 序列化——`total_bytes` 与既有前端读的同名字段相撞，会被判成「前端读到 undefined」。
+
+尚未落地（按顺序）：
+
+1. 管理页 `ui/src/memory/`（列表 / 详情编辑 / 待确认 / 开关 / 删除确认 / 导出），四处接线：`SideBar.vue` 菜单、`App.vue` 的 `PANELS`、`store.js` 的 `activePanel`、新目录。
+2. `xlink-memory` 内置插件（`plugins/memory/host/`）+ 回环桥路由：`retrieve` 已就绪，缺的是桥与注册面；接线后由 `agent/created` 注册上下文、`pre-step` 取检索。
+3. P1 验收：首请求注入、会话级注入预算、切目录失效、内核未运行时面板可用。

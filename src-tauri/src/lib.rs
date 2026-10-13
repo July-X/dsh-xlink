@@ -41,6 +41,7 @@ mod diagnostics;
 mod diskusage;
 mod harness;
 mod kernel;
+mod memory;
 mod migration;
 mod node;
 mod notify;
@@ -494,6 +495,18 @@ pub fn run() {
             // 磁盘用量下钻：某个条目下一层子项的占用（只读，路径限定在
             // xlink_home 之内）。
             diskusage::disk_usage_children,
+            // 本地记忆（面板侧）。运行侧注入由内置插件经回环桥走同一个
+            // store；这八条命令只服务管理面板。
+            memory::cmd::memory_status,
+            memory::cmd::memory_list,
+            memory::cmd::memory_save,
+            memory::cmd::memory_read,
+            memory::cmd::memory_set_state,
+            memory::cmd::memory_delete,
+            memory::cmd::memory_set_enabled,
+            memory::cmd::memory_decide_candidate,
+            memory::cmd::memory_submit_candidate,
+            memory::cmd::memory_preview_context,
             // 后台常驻与登录自启（2026-10-02）。三条命令都在 shell::autostart
             // 里，不进 commands.rs——那里只剩调度与端口 / 插件那几族。
             shell::autostart::autostart_status,

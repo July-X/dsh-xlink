@@ -703,6 +703,17 @@ const FILE_BUDGETS = {
   // disk_usage_children 命令 + UsageEntry.is_dir（旧缓存缺字段按目录读回）。
   // 405 是 `cargo fmt` 之后的实测值；基线远低于 600，上调在规则内。
   'src-tauri/src/diskusage.rs': 405,
+  // 2026-10-14 新增：本地记忆的权威记录（设计稿 docs/features/memory/
+  // dsh-xlink-memory-design.md 的 P1 首块）。
+  // **不引入 SQLite**：本仓没有任何 SQLite 依赖（Cargo.lock 里连间接命中都没有），
+  // 而 Cargo.toml 两处注释记着「CI 的 Intel macOS / Windows runner 上免 C 工具链
+  // 构建」；P1 的真实需求只有单写者 + 事务性替换 + 损坏不改语义，`read_state_file`
+  // + `atomic_write_private` 已经给了，加一个数据库换来的只是编译与打包风险。
+  // store.rs 管落盘事务（读-改-写、损坏、schema 降级拒绝），query.rs 管**纯函数**的
+  // 检索与注入文本渲染——拆开是因为合在一起 841 行，直接撞 800 行硬顶；拆完两边
+  // 都留有余量，检索预算（条数 / 单条字节 / 总字节）也因此能脱离文件系统单独测。
+  'src-tauri/src/memory/store.rs': 665,
+  'src-tauri/src/memory/query.rs': 195,
   'ui/src/shell/autostart.js': 90,
   // 2026-10-07 uiv2 改版新增：明暗双主题的唯一实现（shell/theme.js）。
   // 独立成文件而不是塞进 store.js / SideBar.vue，理由是它**跨窗口**：主面板、
@@ -2688,7 +2699,13 @@ const FILE_BUDGETS = {
 // 的 objc 调用、一个纯函数判据 `banner_activation` 与它的单测。三个文件（activate.rs
 // / lib.rs / 门禁脚本）都还在各自预算内，离 800 行硬顶很远。+10 是给 rustfmt
 // 折行抖动留的余量。
-const TOTAL_BUDGET = 47955;
+// 47955 → 48950（2026-10-14）：本地记忆 P1 首块（store.rs 650 + query.rs 188，
+// 加命令层、路径派生与登记行）。这是一条**全新能力**的首块，不是往既有文件里塞的
+// 膨胀：八个 Tauri 命令自成 `memory/cmd.rs`（`commands.rs` 是反棘轮文件，一行都
+// 进不去），路径派生挂进既有 `paths.rs`（+16），`lib.rs` 只多两行声明与九行登记。
+// 首版范围已按设计稿砍掉 Markdown 视图与任务租约表——省下的正是最重的那部分。
+// +76 是给 rustfmt 折行抖动留的余量。
+const TOTAL_BUDGET = 48950;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

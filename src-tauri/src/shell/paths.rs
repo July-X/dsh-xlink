@@ -418,6 +418,24 @@ pub fn instance_profile_dir(family: &str, id: &str, profile: &str) -> PathBuf {
     instance_dsh_home(family, id).join("profiles").join(profile)
 }
 
+/// 给定实例的记忆根目录：`<instance_dir>/memory/<profile>/`。
+///
+/// 与 `instance_usage_state_file` 同一条理由：记忆是**某一个实例**的事实，
+/// 跨实例共享会让 A 项目的偏好出现在 B 实例的会话里。再加一层 `<profile>`
+/// 对齐内核自己的 `profiles/<name>` 布局——桌面当前恒为 `web`，多 profile
+/// 不共享记忆是预期行为。**不加 mode 维**：实例本身已按壳模式分家
+/// （`default` / `default-dev`），在实例内再派生 mode 会是全仓唯一一处，
+/// 且两壳被指向同一实例时 mode 与实例归属还会互相矛盾。
+pub fn instance_memory_dir(family: &str, id: &str, profile: &str) -> PathBuf {
+    validate_id_component(profile).expect("profile must be valid for path use");
+    instance_dir(family, id).join("memory").join(profile)
+}
+
+/// 给定实例的记忆权威记录：`<instance_memory_dir>/memory.json`。
+pub fn instance_memory_file(family: &str, id: &str, profile: &str) -> PathBuf {
+    instance_memory_dir(family, id, profile).join("memory.json")
+}
+
 /// 给定实例的模型用量账目：`<instance_dir>/usage/state.json`（usage.rs）。
 ///
 /// 账目跟着实例走（数据源是该实例 DSH home 里的 sessions），与壳的
