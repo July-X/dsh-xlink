@@ -51,7 +51,13 @@ const STRINGS = {
     bridgeMissing: "桌面壳连接不可用（未注入 Tauri 桥）",
     modelsTitle: "常用模型",
     modelsHint: "未勾选的模型不再出现在会话的模型选择器里，正在用它的会话需要另选一个。",
-    modelsSummary: (names) => `已选 ${names.length} 项：${names.join("、")}`,
+    // 收起成一行时那行摘要**只说数量，不列模型名**（2026-10-13 用户要求
+    // 「不需要显示已经勾选的模型」）：目录里几十条模型时，「已选 4 项：A、B、C…」
+    // 既占宽度又挤掉那一排动作按钮，而收起状态下这一行本来只需要回答
+    // 「选了几个」。名字没丢——悬停的 title 里仍是完整清单（`modelsSummaryDetail`），
+    // 收起时想核对选了哪几条不用展开整个列表。
+    modelsSummary: (count) => `已选 ${count} 项`,
+    modelsSummaryDetail: (names) => `已选 ${names.length} 项：${names.join("、")}`,
     modelsExpand: "选择模型",
     modelsCollapse: "收起",
     modelsLoading: "读取模型中…",
@@ -82,7 +88,8 @@ const STRINGS = {
     modelsTitle: "Commonly used models",
     modelsHint:
       "Unchecked models no longer appear in the session model picker; a session using one must pick another.",
-    modelsSummary: (names) => `${names.length} selected: ${names.join(", ")}`,
+    modelsSummary: (count) => `${count} selected`,
+    modelsSummaryDetail: (names) => `${names.length} selected: ${names.join(", ")}`,
     modelsExpand: "Choose models",
     modelsCollapse: "Collapse",
     modelsLoading: "Loading models…",
@@ -421,8 +428,14 @@ window.__ModuleLoader__.load({
             models.length > 0
               ? e(
                   "span",
-                  { className: "xlink-oauth-models-summary", title: L.modelsSummary(pendingNames) },
-                  L.modelsSummary(pendingNames),
+                  {
+                    className: "xlink-oauth-models-summary",
+                    // 可见文本只有「已选 N 项」；完整清单留给 title（见上面
+                    // modelsSummary 的注释）。两者分开之后 title 才不是可见
+                    // 文本的逐字重复——那才是它当初存在的理由。
+                    title: L.modelsSummaryDetail(pendingNames),
+                  },
+                  L.modelsSummary(pendingNames.length),
                 )
               : null,
           ),

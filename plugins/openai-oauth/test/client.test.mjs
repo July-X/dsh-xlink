@@ -261,6 +261,13 @@ test('client: 常用模型默认收起成一行，勾选只改草稿、点保存
   const buttonWith = (className) =>
     findNodes(render(), (node) => node.type === 'button' && String(node.props?.className ?? '').includes(className))[0];
   const hasText = (text) => findNodes(render(), (node) => (node.children ?? []).includes(text)).length > 0;
+  // 摘要那一行：**读渲染出来的字**，而不是拿 STRINGS 表里的同一句去比它自己。
+  // 后者是假门禁——把 `modelsSummary` 改回带名字的写法，断言照样绿。
+  const summaryNode = () => findNodes(
+    render(),
+    (node) => String(node.props?.className ?? '').includes('xlink-oauth-models-summary'),
+  )[0];
+  const summaryText = () => (summaryNode().children ?? []).join('');
 
   // 首帧：读列表（读回来之前只有加载文案）。
   render();
@@ -271,7 +278,21 @@ test('client: 常用模型默认收起成一行，勾选只改草稿、点保存
 
   // 默认**收起**：一行摘要，不画勾选框（2026-10-13 用户反馈「占用过大」）。
   assert.equal(boxes().length, 0, '收起时不该画几十行勾选框');
-  assert.equal(hasText(strings.modelsSummary(['GPT A'])), true, '摘要行要说清现在选了哪些');
+  // 那一行**只说数量、不列模型名**（2026-10-13 用户要求「不需要显示已经勾选的
+  // 模型」）：目录几十条时，名字既占宽度又挤掉同一排的动作按钮。
+  //
+  // **这里钉中文字面量，不钉 `strings.modelsSummary`**：拿 STRINGS 表里那一句去
+  // 比渲染结果，等于拿被测对象和自己比——把 `modelsSummary` 改成带名字的写法
+  // （或干脆写死成「已选 1 项」）它照样绿。这条判据第一版就是这么写的，
+  // 两次反向验都被它放过。代价是改文案要连带改这里，那正是它该有的阻力。
+  assert.equal(summaryText(), '已选 1 项', '收起时那行只说「已选 N 项」');
+  assert.equal(summaryText().includes('GPT A'), false, '收起时那行不列模型名');
+  // 名字没丢：完整清单在 title 里，收起时不用展开也能核对选了哪几条。
+  assert.equal(
+    summaryNode().props.title,
+    strings.modelsSummaryDetail(['GPT A']),
+    '完整清单必须留在 title 里',
+  );
   assert.equal(buttonWith('xlink-oauth-save'), undefined, '收起且无改动时不摆一个永远灰着的保存按钮');
   assert.equal(hasText(strings.modelsHint), false, '说明文字只在展开编辑时出现');
 
@@ -308,7 +329,7 @@ test('client: 常用模型默认收起成一行，勾选只改草稿、点保存
   assert.deepEqual([...invokes[1].args.ids], ['gpt-a', 'gpt-b'], '未勾选的模型不许出现在集合里');
   assert.equal(boxes().length, 0, '保存成功后收起，把版面还回去');
   assert.equal(buttonWith('xlink-oauth-save'), undefined, '收起且无改动 → 不摆灰按钮');
-  assert.equal(hasText(strings.modelsSummary(['GPT A', 'GPT B'])), true);
+  assert.equal(summaryText(), '已选 2 项', '摘要行的数量跟着草稿走');
 
   // 「恢复默认」也只改草稿（同样要点保存），不直接写盘。
   buttonWith('xlink-oauth-toggle').props.onClick();
