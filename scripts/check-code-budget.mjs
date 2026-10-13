@@ -49,6 +49,23 @@ const HARD_FILE_CEILING = 800;
  */
 const RATCHET_THRESHOLD = 600;
 
+/// 反棘轮的**点名豁免**：量法修正导致既有文件的实测值第一次高于登记值时用。
+///
+/// 2026-10-14 修掉 `codeLineCount` 的一个假阴性——注释里出现 `/*`（`memory/*.rs`、
+/// `src/**/*.rs` 这类路径写法）会让计数器进入块注释状态，而那一行没有 `*/`，
+/// **整份文件剩下的部分被全部吞掉**。实测三份文件长期被少算：`lifecycle.rs`
+/// 少 167 行、`instance.rs` 少 191 行、`peer_supply.rs` 少 135 行（`ui/src/memory/
+/// memory.js` 更极端：212 行算成 0 行）。这不是「文件长大了」，是尺子坏了——
+/// 但反棘轮只看数字，所以这里按**路径点名**放行到修正值为止，且在输出里打一条
+/// note 供复核。不给「整类文件」开口子，也不接受第二次上调：豁免的上限就是
+/// 修正当时量到的数。
+const MEASUREMENT_CORRECTIONS = new Map([
+  [
+    'src-tauri/src/kernel/lifecycle.rs',
+    { to: 1550, reason: '计数器修正（2026-10-14）：注释里的 `/*` 曾吞掉后面 167 行' },
+  ],
+]);
+
 /**
  * 读出本文件**已提交版本**里的预算数字当基线。
  *
@@ -294,7 +311,12 @@ const FILE_BUDGETS = {
   // 任一邻居都会让那个文件同时承担「纯文件操作」与「会失败的出网」两种性格，
   // 而按根 AGENTS 的分工，出网归 `pkg/`、布局归 `materialize.rs`、语义归
   // `peers.rs`。85 行。
-  'src-tauri/src/plugins/builtin/peer_supply.rs': 85,
+  //
+  // 85 → 225（2026-10-14）：**量法修正，不是文件长大**。`codeLineCount` 此前把
+  // 注释里出现的 `/*` 当成块注释开头，而这一行里没有 `*/`——整份文件剩下的部分
+  // 被全部吞掉。本文件的注释里写了 `corepack/yarn` 之类的路径写法，实测 220 行
+  // 被少算成 85 行。修正后按实测登记，见下面 `MEASUREMENT_CORRECTIONS` 的说明。
+  'src-tauri/src/plugins/builtin/peer_supply.rs': 225,
   // 2026-10-12：内置插件的**上游同步**（让随应用分发的第三方内容跟得上上游，
   // 而不必每次上游一改就重发一版壳）。独立成文件的理由：它是唯一接触网络、
   // 唯一写插件数据目录的模块，其余 builtin/* 全是纯本地文件操作——把出网那段
@@ -714,6 +736,12 @@ const FILE_BUDGETS = {
   // 都留有余量，检索预算（条数 / 单条字节 / 总字节）也因此能脱离文件系统单独测。
   'src-tauri/src/memory/store.rs': 665,
   'src-tauri/src/memory/query.rs': 195,
+  // 2026-10-14：记忆的管理页（列表 / 编辑 / 待确认 / 检索预览 / 开关）。
+  // 面板与它的 store 分成两个文件是**仓库既有约定**（`ui/AGENTS.md`：一条功能的
+  // 状态、动作与面板放在同一个目录里），不是因为行数：动作要能被测试与别的面板
+  // 复用（App.vue 的 activePanel watcher 直接调 refreshMemory），模板只负责画。
+  'ui/src/memory/MemoryPanel.vue': 310,
+  'ui/src/memory/memory.js': 190,
   'ui/src/shell/autostart.js': 90,
   // 2026-10-07 uiv2 改版新增：明暗双主题的唯一实现（shell/theme.js）。
   // 独立成文件而不是塞进 store.js / SideBar.vue，理由是它**跨窗口**：主面板、
@@ -1326,7 +1354,12 @@ const FILE_BUDGETS = {
   // write_kernel_workspace_yaml / write_kernel_stub / 安装二遍钉版）。
   // 2026-09-29：这三个函数连同「上游漏发精确钉版时降级重试」一起搬进
   // kernel_deps.rs，kernel.rs 同步从 744 回到 721 行；预算数字不动。
-  'src-tauri/src/kernel/lifecycle.rs': 1380,
+  //
+  // 1380 → 1550（2026-10-14）：**量法修正，不是文件长大**——本文件里有一处
+  // 注释写着 `kernels/<版本>/node_modules/**` 之类的路径写法，旧计数器从这里
+  // 起把后面 167 行全当块注释吞了。这条上调走下面的
+  // `MEASUREMENT_CORRECTIONS`（反棘轮点名豁免），豁免只到修正值为止。
+  'src-tauri/src/kernel/lifecycle.rs': 1550,
   // 2026-10-08 新增（约 210 行代码，其余是平台分工说明与测试）。它回答
   // 状态轮询每 2.5s 都要问的两个问题——「这个 pid 的命令行是什么」「这个
   // 端口谁在监听」——的 Windows 原生快路径：NtQueryInformationProcess +
@@ -1577,7 +1610,10 @@ const FILE_BUDGETS = {
   // 路径解析注释）。
   // 2026-09-23：新增内核 home 一次性搬迁（~/.dsh → 实例 DSH_HOME）——递归
   // 并入 / 原子移动 / 跨卷回退 / 幂等标记，~+64 行，470 → 540。
-  'src-tauri/src/shell/instance.rs': 540,
+  // 540 → 740（2026-10-14）：**量法修正，不是文件长大**。本文件的注释里带
+  // `kernels/<family>/instances/<id>/` 一类路径写法，旧计数器把注释里的 `/*`
+  // 当成块注释开头、吞掉后面 191 行（实测 731 行被算成 540 行）。
+  'src-tauri/src/shell/instance.rs': 740,
   // P3：KernelAdapter trait + AdapterCapabilities + DshAdapter 首实现
   // （DSH_HOME / DSH_PROFILE 注入、profile/package.json 与 cordis.patch.yml
   // 模板、resolve_install_dir 双查找）。约 430 行（含 9 个测试）。
@@ -2699,13 +2735,21 @@ const FILE_BUDGETS = {
 // 的 objc 调用、一个纯函数判据 `banner_activation` 与它的单测。三个文件（activate.rs
 // / lib.rs / 门禁脚本）都还在各自预算内，离 800 行硬顶很远。+10 是给 rustfmt
 // 折行抖动留的余量。
-// 47955 → 48950（2026-10-14）：本地记忆 P1 首块（store.rs 650 + query.rs 188，
+// 47955 → 48950（2026-10-14 上午）：本地记忆 P1 首块（store.rs 650 + query.rs 188，
 // 加命令层、路径派生与登记行）。这是一条**全新能力**的首块，不是往既有文件里塞的
-// 膨胀：八个 Tauri 命令自成 `memory/cmd.rs`（`commands.rs` 是反棘轮文件，一行都
+// 膨胀：十个 Tauri 命令自成 `memory/cmd.rs`（`commands.rs` 是反棘轮文件，一行都
 // 进不去），路径派生挂进既有 `paths.rs`（+16），`lib.rs` 只多两行声明与九行登记。
 // 首版范围已按设计稿砍掉 Markdown 视图与任务租约表——省下的正是最重的那部分。
 // +76 是给 rustfmt 折行抖动留的余量。
-const TOTAL_BUDGET = 48950;
+//
+// 48950 → 50950（2026-10-14 下午）：两件事叠在一起，都不是"放开总量"。
+//   ① 记忆的管理页（`ui/src/memory/`）：MemoryPanel.vue 303 + memory.js 181。
+//   ② **量法修正**：`codeLineCount` 此前会把注释里的 `/*` 当块注释开头并吞掉整份
+//      文件剩下的部分，三份既有文件因此长期少算（lifecycle.rs +167、instance.rs
+//      +191、peer_supply.rs +135），合计约 1900 行是**一直存在、只是没被数到的**
+//      代码；本轮实测 50848 里有它们的份。修正后 `ui/src/memory/memory.js` 这类
+//      文件也不会再被算成 0 行。+102 是给折行抖动与下一步留的余量。
+const TOTAL_BUDGET = 50950;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
@@ -2809,6 +2853,12 @@ function significantLines(text) {
 }
 
 /// 只算「代码行」：空行与纯注释行不计入预算，否则文档写得越多，指标越像膨胀。
+///
+/// **`/*` 只有在行注释之前才算块注释开头**（2026-10-14 修）。旧写法先看 `/*`、
+/// 再看 `//`，于是注释里写一个 glob 或路径（`memory/*.rs`、`src/**/*.rs`）就会
+/// 进入「块注释」状态，而这一行里根本没有 `*/`——**整份文件剩下的部分被全部吞掉**。
+/// 实测代价：`ui/src/memory/memory.js` 212 行的文件被算成 **0 行**，既不进总量，
+/// 「新文件必须登记」也报 0 行。少算注释是可以接受的，把代码算没不行。
 function codeLineCount(text) {
   let inBlock = false;
   let count = 0;
@@ -2821,7 +2871,9 @@ function codeLineCount(text) {
       inBlock = false;
     }
     const start = line.indexOf('/*');
-    if (start !== -1 && line.indexOf('*/', start) === -1) {
+    const lineComment = line.indexOf('//');
+    const blockComesFirst = start !== -1 && (lineComment === -1 || start < lineComment);
+    if (blockComesFirst && line.indexOf('*/', start) === -1) {
       inBlock = true;
       line = line.slice(0, start);
     }
@@ -2911,6 +2963,13 @@ if (baseline) {
     // "下一个 plugins.rs" 还差着两个数量级。
     if (before < RATCHET_THRESHOLD) continue;
     if (budget > before) {
+      const correction = MEASUREMENT_CORRECTIONS.get(path);
+      if (correction && budget <= correction.to) {
+        notes.push(
+          `[反棘轮豁免] ${path}：${correction.reason}，预算 ${before} → ${budget}（上限 ${correction.to}）`
+        );
+        continue;
+      }
       failures.push(
         `[反棘轮] ${path} 的预算从 ${before} 上调到 ${budget}。既有文件的预算只许**下调**：` +
           `把它写大等于承认"我又把这个模块撑大了"，而模块体积正是这里要拦住的东西。` +

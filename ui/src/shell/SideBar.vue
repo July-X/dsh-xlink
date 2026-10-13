@@ -16,6 +16,7 @@ import {
   Connection,
   MagicStick,
   SetUp,
+  Collection,
   Refresh,
   TopRight,
   Fold,
@@ -54,6 +55,9 @@ const MENU_GROUPS = [
         icon: MagicStick,
         badge: () => (skillStore.view && skillStore.view.updates) || 0,
       },
+      // 「记忆」与插件 / 技能同属「往里装了什么」：它是本机的长期偏好与项目约定，
+      // 用户来这里保存、纠正、停用与删除；开关打开后工作台的相关会话会带上它。
+      { id: 'memory', label: '记忆', icon: Collection },
     ],
   },
   {

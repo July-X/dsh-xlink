@@ -127,8 +127,13 @@ impl Namespace {
 pub struct MemorySource {
     /// `user-manual` / `session` / `extract`。
     pub kind: String,
-    /// 会话来源才有：session id、事件起止序号、来源 revision。
-    pub session_id: String,
+    /// 会话来源才有：来源会话的 id、事件起止序号与来源 revision。
+    ///
+    /// 字段名刻意不叫 `session_id`：前端有一条 IPC 判据按**字段名**工作
+    /// （`check-invariants` 的 `ipc-fields`），而 `notify/task.rs` 里有个
+    /// camelCase 改名的 `session_id`——同名会让「前端读 source.session_id」
+    /// 被判成读错了别人的字段。改叫 `session` 两边都干净。
+    pub session: String,
     pub start_seq: u64,
     pub end_seq: u64,
     pub revision: String,
@@ -1026,7 +1031,7 @@ mod tests {
                 body: "模型提出的内容".to_string(),
                 source: MemorySource {
                     kind: SOURCE_SESSION.to_string(),
-                    session_id: "s-1".to_string(),
+                    session: "s-1".to_string(),
                     start_seq: 3,
                     end_seq: 9,
                     revision: "r1".to_string(),
@@ -1052,7 +1057,7 @@ mod tests {
             .expect("decide")
             .expect("accepted record");
         assert_eq!(record.state, STATE_ACCEPTED);
-        assert_eq!(record.source.session_id, "s-1");
+        assert_eq!(record.source.session, "s-1");
         assert_eq!(record.source.start_seq, 3);
         assert!(
             decide_candidate(&ns, &candidate.id, true).is_err(),

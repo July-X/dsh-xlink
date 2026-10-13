@@ -1,0 +1,212 @@
+// 本地记忆的共享状态与动作：列表 / 保存 / 停用 / 删除 / 批准候选 / 检索预览。
+//
+// 与 Rust 的 `memory/*.rs` 一一对应。**字段名沿用后端下发的 snake_case**：
+// 前端的 IPC 判据（check-invariants 的 ipc-fields）就是为「Rust 侧改了序列化名、
+// 前端还在读旧名」这类静默 undefined 设的——这里不留第二套命名。
+import { reactive } from 'vue';
+import { invoke } from '../shell/bridge.js';
+import { toast, toastError, confirmDialog } from '../shell/notify.js';
+import { withLoading } from '../shell/loading.js';
+
+/// 项目路径是用户输入的（后端目前没有目录选择器）。记在本机，免得每次重打。
+const PROJECT_KEY = 'dsh-xlink:memory-project';
+
+function readProjectPath() {
+  try {
+    return localStorage.getItem(PROJECT_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function emptyDraft() {
+  return {
+    id: '',
+    expectedRevision: 0,
+    scope: 'project',
+    title: '',
+    body: '',
+    keywordsText: '',
+    pinned: false,
+  };
+}
+
+export const memoryStore = reactive({
+  /// `memory_list` 的结果：`{ status, memories, candidates }`。
+  view: null,
+  /// 最近一次读到的状态摘要（`view.status` 的副本，便于面板单独刷新）。
+  status: null,
+  draft: emptyDraft(),
+  projectPath: readProjectPath(),
+  /// 检索预览：`{ enabled, text, total_bytes, hits }`。
+  preview: null,
+  /// 文档读不出来时的原文（后端给的 warning 已经带下一步，前端不再改写）。
+  failure: '',
+});
+
+export function rememberProjectPath(path) {
+  memoryStore.projectPath = path;
+  try {
+    localStorage.setItem(PROJECT_KEY, path);
+  } catch {
+    // 偏好写不进去不影响功能，最多下次要重填。
+  }
+}
+
+function applyView(view) {
+  memoryStore.view = view;
+  memoryStore.status = view.status;
+  memoryStore.failure = view.status.warning || '';
+}
+
+export function refreshMemory({ silent = false } = {}) {
+  return withLoading('memoryList', () =>
+    invoke('memory_list', { filter: { include_candidates: true, include_disabled: true } })
+      .then((view) => {
+        applyView(view);
+        return view;
+      })
+      .catch((error) => {
+        if (!silent) toastError('读取记忆失败：' + error, 6000);
+        throw error;
+      })
+  ).catch(() => undefined);
+}
+
+export function editMemory(record) {
+  memoryStore.draft = {
+    id: record.id,
+    expectedRevision: record.revision,
+    scope: record.scope,
+    title: record.title,
+    body: record.body,
+    keywordsText: (record.keywords || []).join('，'),
+    pinned: !!record.pinned,
+  };
+  if (record.scope === 'project' && record.workspace_path) rememberProjectPath(record.workspace_path);
+}
+
+export function resetDraft() {
+  memoryStore.draft = emptyDraft();
+}
+
+export function canSaveDraft() {
+  const draft = memoryStore.draft;
+  if (!draft.title.trim() && !draft.body.trim()) return false;
+  if (draft.scope === 'project' && !memoryStore.projectPath.trim()) return false;
+  return true;
+}
+
+function draftPayload() {
+  const draft = memoryStore.draft;
+  const keywords = draft.keywordsText
+    .split(/[,，\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return {
+    id: draft.id,
+    scope: draft.scope,
+    // 壳体目前拿不到内核的工作区 id（那是内核侧登记表），项目匹配先走路径；
+    // 注入链路接上后这里会补上真实的 workspace_id，路径继续作兜底。
+    workspace_id: '',
+    workspace_path: draft.scope === 'project' ? memoryStore.projectPath.trim() : '',
+    title: draft.title.trim(),
+    body: draft.body.trim(),
+    keywords,
+    pinned: !!draft.pinned,
+    verification: '',
+    expected_revision: draft.id ? draft.expectedRevision : null,
+    source: null,
+  };
+}
+
+export function saveMemory() {
+  if (!canSaveDraft()) {
+    toast('先写一句内容；项目记忆还需要填项目目录', 4000, 'warning');
+    return Promise.resolve(false);
+  }
+  const payload = draftPayload();
+  const editing = !!payload.id;
+  return withLoading('memorySave', () =>
+    invoke('memory_save', { input: payload })
+      .then(() => {
+        toast(editing ? '记忆已更新' : '记忆已保存', 3000, 'success');
+        resetDraft();
+        return refreshMemory({ silent: true });
+      })
+      .catch((error) => {
+        toastError('保存失败：' + error, 6000);
+      })
+  ).then(() => true);
+}
+
+export function setMemoryState(record, state) {
+  const verb = state === 'disabled' ? '停用' : '启用';
+  return withLoading('memoryState:' + record.id, () =>
+    invoke('memory_set_state', { id: record.id, state })
+      .then(() => {
+        toast(`已${verb}这条记忆`, 2500, 'success');
+        return refreshMemory({ silent: true });
+      })
+      .catch((error) => toastError(`${verb}失败：` + error, 6000))
+  );
+}
+
+export function removeMemory(record) {
+  const scope = record.scope === 'general' ? '通用偏好' : '项目记忆';
+  const detail =
+    `将删除「${record.title || '（无标题）'}」（${scope}）。删除后不再参与检索，并记下正文指纹防止自动重建；` +
+    '已导出的文件与已经发给模型的旧请求不会被撤回——那些要另行处理会话历史。';
+  return confirmDialog('删除这条记忆？', detail, '删除').then((ok) => {
+    if (!ok) return false;
+    return withLoading('memoryDelete:' + record.id, () =>
+      invoke('memory_delete', { id: record.id })
+        .then(() => {
+          toast('已删除', 2500, 'success');
+          if (memoryStore.draft.id === record.id) resetDraft();
+          return refreshMemory({ silent: true });
+        })
+        .catch((error) => toastError('删除失败：' + error, 6000))
+    );
+  });
+}
+
+export function setMemoryEnabled(enabled) {
+  return withLoading('memoryEnabled', () =>
+    invoke('memory_set_enabled', { useApproved: enabled })
+      .then((status) => {
+        if (memoryStore.view) memoryStore.view.status = status;
+        memoryStore.status = status;
+        toast(enabled ? '已打开：新会话会带上相关记忆' : '已关闭：不再注入记忆', 3000, 'success');
+      })
+      .catch((error) => toastError('切换开关失败：' + error, 6000))
+  );
+}
+
+export function decideCandidate(candidate, accept) {
+  return withLoading('memoryCandidate:' + candidate.id, () =>
+    invoke('memory_decide_candidate', { id: candidate.id, accept })
+      .then(() => {
+        toast(accept ? '已保存为记忆' : '已忽略这条候选', 2500, 'success');
+        return refreshMemory({ silent: true });
+      })
+      .catch((error) => toastError((accept ? '保存' : '忽略') + '失败：' + error, 6000))
+  );
+}
+
+/// 按当前编辑器里的标题 + 关键词试一次检索，把「会注入什么」摊开给用户看。
+export function previewContext() {
+  const draft = memoryStore.draft;
+  const query = [draft.title, draft.keywordsText].filter(Boolean).join(' ').trim();
+  return withLoading('memoryPreview', () =>
+    invoke('memory_preview_context', {
+      queryText: query,
+      workspaceId: '',
+      workspacePath: memoryStore.projectPath.trim(),
+    })
+      .then((preview) => {
+        memoryStore.preview = preview;
+      })
+      .catch((error) => toastError('预览失败：' + error, 6000))
+  );
+}

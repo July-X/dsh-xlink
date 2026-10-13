@@ -249,13 +249,15 @@ flowchart LR
 | `src-tauri/src/memory/cmd.rs` | 十条面板命令（状态 / 列表 / 保存 / 读取 / 停用 / 删除 / 开关 / 批准候选 / 提交候选 / 预览注入）；**没有进 `commands.rs`**（反棘轮文件） |
 | `src-tauri/src/shell/paths.rs` | `instance_memory_dir` / `instance_memory_file`：`<instance_dir>/memory/<profile>/`，过 `validate_id_component` |
 | `src-tauri/src/shell/error.rs` | `AppError::Memory` |
-| `scripts/check-code-budget.mjs` | 新文件登记；`TOTAL_BUDGET` 47955 → 48950（记忆首块 919 行） |
+| `scripts/check-code-budget.mjs` | 新文件登记；`TOTAL_BUDGET` 47955 → 48950（记忆首块 919 行）；**并修正了计数器的假阴性**（注释里的 `/*` 会让整份文件被当成块注释吞掉，三份既有文件因此长期少算约 490 行，`ui/src/memory/memory.js` 更被算成 0 行） |
+| `ui/src/memory/` | 管理页：列表 / 编辑 / 停用 / 删除确认 / 待确认候选 / 检索预览 / 总开关；`SideBar.vue`、`App.vue` 的 `PANELS` 与面板数据刷新三处接线 |
 | 单测 | 17 条：缺工作区被拒、CAS 冲突、删除留指纹、损坏不重置、schema 更高拒绝写、项目隔离、按路径兜底、开关如实上报、条数与字节上限、多字节截断、候选必须用户批准 |
 
 IPC 与落盘都用 **snake_case**：`check-invariants` 的 `ipc-fields` 抓到过一版 camelCase 序列化——`total_bytes` 与既有前端读的同名字段相撞，会被判成「前端读到 undefined」。
 
 尚未落地（按顺序）：
 
-1. 管理页 `ui/src/memory/`（列表 / 详情编辑 / 待确认 / 开关 / 删除确认 / 导出），四处接线：`SideBar.vue` 菜单、`App.vue` 的 `PANELS`、`store.js` 的 `activePanel`、新目录。
-2. `xlink-memory` 内置插件（`plugins/memory/host/`）+ 回环桥路由：`retrieve` 已就绪，缺的是桥与注册面；接线后由 `agent/created` 注册上下文、`pre-step` 取检索。
-3. P1 验收：首请求注入、会话级注入预算、切目录失效、内核未运行时面板可用。
+1. `xlink-memory` 内置插件（`plugins/memory/host/`）+ 回环桥路由：`query::retrieve` 已就绪，缺的是桥与注册面；接线后由 `agent/created` 注册上下文、`pre-step` 取检索——**这一步做完模型才真正用上记忆**。
+2. 面板与内核工作区的对齐：壳体目前拿不到内核的工作区 id，项目匹配先走路径（`workspace_path`）；注入链路接上后补上真实 `workspace_id`，并给「项目目录」加一个目录选择器（现在靠手填 + localStorage 记住）。
+3. 导出 Markdown（设计 §2 承诺过，命令还没写）。
+4. P1 验收：首请求注入、会话级注入预算、切目录失效、内核未运行时面板可用。
