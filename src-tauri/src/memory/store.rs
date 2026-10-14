@@ -1166,6 +1166,83 @@ mod tests {
         assert!(delete(&ns, &saved.id).is_err(), "重复删除要如实报错");
     }
 
+    /// 写不进去时**说得清、且不丢已有内容**（§10 的「磁盘满」那一格）。
+    ///
+    /// 只读目录是最接近磁盘满的模拟：`persist` 要在同一个目录里建临时文件，建不出来就是
+    /// 一次写入失败。要钉两头——错误里带得上路径（用户据此去查权限/空间），以及**旧文档
+    /// 一个字节没变**（原子替换的意义就在这里；「写失败把库写没了」是这类系统最坏的失败）。
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_directory_fails_loudly_and_keeps_the_old_document() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _home = TempHome::new("read-only");
+        let ns = namespace();
+        let kept = save(&ns, project_input("ws-a", "写得进去的时候", "正文")).expect("save");
+        let dir = ns.dir();
+        let before = fs::read_to_string(ns.file()).expect("read doc");
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("chmod");
+        let failed = save(&ns, project_input("ws-a", "写不进去的时候", "正文二")).unwrap_err();
+        let message = failed.to_string();
+        assert!(
+            message.contains(&ns.file().display().to_string()),
+            "错误里要有路径，用户才知道去哪查：{message}"
+        );
+
+        // 旧文档原样还在（原子替换 + 拒绝写入，不是「先清空再写」）。
+        let after = fs::read_to_string(ns.file()).expect("read doc again");
+        assert_eq!(after, before);
+        let view = list(&ns, &ListFilter::default());
+        assert_eq!(view.memories.len(), 1);
+        assert_eq!(view.memories[0].id, kept.id);
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("chmod back");
+    }
+
+    /// 并发写入不丢更新：进程内那把 Mutex 是「读-改-写」唯一的串行点（§4.1 的单写者）。
+    ///
+    /// 没有它时两个线程各自读到同一份文档、各自加一条、后写的覆盖先写的——症状是
+    /// 「我明明存了两条，只剩一条」，而且不报任何错。跨**进程**并发是另一件事，设计上
+    /// 留给 P2 的租约（清单 A16），这里只钉进程内。
+    #[test]
+    fn concurrent_writes_do_not_lose_each_others_update() {
+        let _home = TempHome::new("concurrent");
+        let ns = namespace();
+        let threads = 8;
+        std::thread::scope(|scope| {
+            for index in 0..threads {
+                let ns = ns.clone();
+                scope.spawn(move || {
+                    save(
+                        &ns,
+                        project_input(
+                            "ws-a",
+                            &format!("并发第 {index} 条"),
+                            &format!("正文 {index}"),
+                        ),
+                    )
+                    .expect("save");
+                });
+            }
+        });
+        let view = list(&ns, &ListFilter::default());
+        assert_eq!(view.memories.len(), threads, "每一次写入都要留下");
+        let mut titles: Vec<&str> = view
+            .memories
+            .iter()
+            .map(|record| record.title.as_str())
+            .collect();
+        titles.sort_unstable();
+        for index in 0..threads {
+            let expected = format!("并发第 {index} 条");
+            assert!(
+                titles.contains(&expected.as_str()),
+                "少了 {expected}：{titles:?}"
+            );
+        }
+    }
+
     /// 清空：一次事务删干净、逐条留下抑制指纹、代次只加一次，导出目录不碰。
     #[test]
     fn clear_removes_everything_and_still_suppresses_the_bodies() {

@@ -123,3 +123,18 @@
 **结论**：**判断「内核到底认不认某个注入方式」必须实测，不能读接口名推断**。已用
 `--dump-config` + `skills/list` RPC 端到端验证。接通靠的是 `ensure_skill_wiring` 往
 `cordis.patch.yml` 追加的 loader 行，不是那条 env。
+## 9. 扫源码的判据命中了文件头的注释，反向验才发现（2026-10-14）
+
+**现象**：给 `plugins/memory/host/index.js` 加了一条判据「注入块要显式 `interpolate: false`」。
+把真代码改成 `interpolate: true` 之后**判据照样绿**（19 条插件用例全过）。
+
+**根因**：判据先用 `replace(/^\s*\/\/.*$/gm, '')` 剥注释，**只剥行注释**；而该文件的
+`/** … */` 头注释里正好写着「`interpolate: false`——记忆正文原样带出去」。于是正则命中的
+是解释，不是代码。同一段判据里另外几条（`beginStep(` / `applyStep(` / `applyResult(` 不许出现）
+有同样的风险。
+
+**结论**：**扫源码的判据必须连块注释一起剥**，且每条判据都要真的反向验一次——不是「改坏了看它
+红不红」走个形式，而是**先确认它现在绿得有理由**。修法是
+`src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')`，改完再反向验一次：
+`interpolate: true` 立刻红。这与根 `AGENTS.md` 那条「锚点找在原文上，匹配再过 `productionRust()`」
+是同一件事的 JS 版本——那边是 Rust 判据，这边是插件装配层的判据，坑一样。
