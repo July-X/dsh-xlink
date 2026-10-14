@@ -60,6 +60,20 @@ test('「最近注入」那行话把三种状态分开（开关关着 / 没命�
   assert.equal(injectionText({ enabled: true }), '没有命中');
 });
 
+test('「清空」按钮接在确认框与那条命令上，确认文案说清清不掉的东西', async () => {
+  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  assert.match(tpl, />\s*清空\s*<\/el-button>/, '卡片头上要有清空入口');
+  assert.match(tpl, /@click="clearMemory"/, '按钮要真的调那个动作');
+
+  const src = read('../src/memory/memory.js');
+  assert.match(src, /invoke\('memory_clear'\)/, '走的是 memory_clear');
+  assert.match(src, /confirmDialog\('清空全部记忆？'/, '必须过一次确认框');
+  // 三件必须说清的事：清掉的范围、清不掉的东西、防再生（§7.3）。
+  assert.match(src, /将清空 \$\{memories\} 条记忆与 \$\{candidates\} 条待确认候选/);
+  assert.match(src, /已导出的文件与已经发给模型的旧请求不会被撤回/);
+  assert.match(src, /记下正文指纹防止模型把同一条重新提回来/);
+});
+
 test('面板真的画了「最近注入」并读后端那条命令', () => {
   const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
   assert.match(tpl, /<h2>最近注入<\/h2>/, '卡片标题');

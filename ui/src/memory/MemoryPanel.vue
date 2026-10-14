@@ -15,6 +15,7 @@ import {
   removeMemory,
   setMemoryState,
   setMemoryEnabled,
+  clearMemory,
   decideCandidate,
   previewContext,
   exportMemory,
@@ -130,6 +131,15 @@ onMounted(() => {
                 @click="exportMemory"
               >
                 导出 Markdown
+              </el-button>
+              <el-button
+                text
+                type="danger"
+                :loading="isLoading('memoryClear')"
+                :disabled="globalBusy || (!list.length && !candidates.length)"
+                @click="clearMemory"
+              >
+                清空
               </el-button>
               <el-button
                 text

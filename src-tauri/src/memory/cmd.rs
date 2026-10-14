@@ -47,6 +47,15 @@ pub async fn memory_delete(id: String) -> Result<(), String> {
     blocking(move || store::delete(&Namespace::current(), &id)).await
 }
 
+/// 清空这个实例的全部记忆与候选（导出目录不在此列，面板文案要说清）。
+///
+/// 返回清掉了多少条：面板的确认框与结果提示都读它——「已清空」不说数量，用户无法判断
+/// 是不是清错了范围。
+#[tauri::command]
+pub async fn memory_clear() -> Result<store::ClearOutcome, String> {
+    blocking(move || store::clear(&Namespace::current())).await
+}
+
 /// 开关：本次使用已批准的记忆。
 #[tauri::command]
 pub async fn memory_set_enabled(use_approved: bool) -> Result<store::MemoryStatus, String> {

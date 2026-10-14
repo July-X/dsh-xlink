@@ -219,6 +219,43 @@ export function saveMemory() {
   ).then(() => true);
 }
 
+/**
+ * 清空全部记忆与候选。
+ *
+ * 确认文案必须把三件事说清（§7.3）：**清掉的范围**（多少条记忆、多少条候选，含停用的）、
+ * **清不掉的东西**（已导出的文件、已经发给模型的旧请求）、**防再生**（正文指纹留下来，
+ * 模型提不回同一条）。只说「确定要清空吗」等于让用户在一个不完整的承诺上点确认。
+ */
+export function clearMemory() {
+  const view = memoryStore.view;
+  const memories = view ? view.memories.length : 0;
+  const candidates = view ? view.candidates.length : 0;
+  if (!memories && !candidates) {
+    toast('现在没有可清空的记忆', 3000, 'warning');
+    return Promise.resolve(false);
+  }
+  const detail =
+    `将清空 ${memories} 条记忆与 ${candidates} 条待确认候选（含已停用的）。` +
+    '删除后不再参与检索，正文会被移除，并记下正文指纹防止模型把同一条重新提回来；' +
+    '已导出的文件与已经发给模型的旧请求不会被撤回——那些要另行处理会话历史。';
+  return confirmDialog('清空全部记忆？', detail, '清空').then((ok) => {
+    if (!ok) return false;
+    return withLoading('memoryClear', () =>
+      invoke('memory_clear')
+        .then((outcome) => {
+          toast(
+            `已清空 ${outcome.memories} 条记忆与 ${outcome.candidates} 条候选`,
+            4000,
+            'success'
+          );
+          resetDraft();
+          return refreshMemory({ silent: true });
+        })
+        .catch((error) => toastError('清空失败：' + error, 6000))
+    );
+  });
+}
+
 export function setMemoryState(record, state) {
   const verb = state === 'disabled' ? '停用' : '启用';
   return withLoading('memoryState:' + record.id, () =>

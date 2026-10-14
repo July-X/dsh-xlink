@@ -320,6 +320,15 @@ pub struct MemoryStatus {
 }
 
 /// 列表视图。
+/// 一次清空的结果（面板据此说清「清掉了什么」，而不是只说「已清空」）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ClearOutcome {
+    pub memories: usize,
+    pub candidates: usize,
+    /// 这次新留下的抑制指纹条数（已有的不重复记）。
+    pub suppressed: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MemoryListView {
     pub status: MemoryStatus,
@@ -644,6 +653,36 @@ pub fn delete(ns: &Namespace, id: &str) -> Result<(), AppError> {
             }
         }
         Ok(())
+    })
+}
+
+/// 清空一个命名空间：移除全部记录与候选，并逐条留下正文指纹。
+///
+/// 与循环调 [`delete`] 的差别只有「一次事务」：中间不会留下删了一半的状态，代次也只加
+/// 一次（面板的缓存失效只看代次）。**指纹仍然逐条留下**——清空之后模型不该把刚被清掉的
+/// 东西原样提回来（§7.3 的防再生），这条不能因为「反正都清了」而省。
+///
+/// 不碰导出目录：导出的 Markdown 是用户自己拿走的文件，清空不承诺清理它（面板文案要
+/// 说清这一点，同 §7.3）。
+pub fn clear(ns: &Namespace) -> Result<ClearOutcome, AppError> {
+    mutate(ns, |doc| {
+        let mut outcome = ClearOutcome {
+            memories: doc.memories.len(),
+            candidates: doc.candidates.len(),
+            suppressed: 0,
+        };
+        for record in doc.memories.drain(..) {
+            let value = fingerprint(&record.body);
+            if !doc.meta.suppressed.contains(&value) {
+                doc.meta.suppressed.push(value);
+                outcome.suppressed += 1;
+            }
+        }
+        doc.candidates.clear();
+        while doc.meta.suppressed.len() > MAX_SUPPRESSED {
+            doc.meta.suppressed.remove(0);
+        }
+        Ok(outcome)
     })
 }
 
@@ -1113,6 +1152,56 @@ mod tests {
         assert_eq!(doc.meta.suppressed, vec![fingerprint("会被删掉")]);
         assert_eq!(doc.meta.generation, 2);
         assert!(delete(&ns, &saved.id).is_err(), "重复删除要如实报错");
+    }
+
+    /// 清空：一次事务删干净、逐条留下抑制指纹、代次只加一次，导出目录不碰。
+    #[test]
+    fn clear_removes_everything_and_still_suppresses_the_bodies() {
+        let _home = TempHome::new("clear");
+        let ns = namespace();
+        let kept = save(&ns, project_input("ws-a", "留下的", "正文一")).expect("save");
+        save(&ns, general_input("清掉的偏好", "正文二")).expect("save general");
+        submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_path: "/tmp/ws-a".to_string(),
+                title: "待确认的候选".to_string(),
+                body: "正文三".to_string(),
+                ..CandidateInput::default()
+            },
+        )
+        .expect("candidate");
+        let before = load(&ns).expect("load").meta.generation;
+
+        let outcome = clear(&ns).expect("clear");
+        assert_eq!(outcome.memories, 2);
+        assert_eq!(outcome.candidates, 1);
+        assert_eq!(outcome.suppressed, 2, "两条正文各留一枚指纹");
+
+        let after = load(&ns).expect("load");
+        assert!(after.memories.is_empty());
+        assert!(after.candidates.is_empty());
+        assert_eq!(after.meta.generation, before + 1, "一次事务只加一次代次");
+        assert_eq!(after.meta.suppressed.len(), 2);
+
+        // 清空之后模型不许把刚清掉的东西原样提回来（§7.3 的防再生）。
+        let refused = submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_path: "/tmp/ws-a".to_string(),
+                title: "再提一次".to_string(),
+                body: "正文二".to_string(),
+                ..CandidateInput::default()
+            },
+        )
+        .unwrap_err();
+        assert!(refused.to_string().contains("删除过"), "{refused}");
+
+        // 清空之后面板仍能用：库还是可读可写的（不是「损坏」）。
+        save(&ns, project_input("ws-a", "清空之后新建", "正文四")).expect("save after clear");
+        let _ = kept;
     }
 
     #[test]

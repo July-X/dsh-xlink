@@ -99,6 +99,7 @@
           "memory_save",
           "memory_set_state",
           "memory_delete",
+          "memory_clear",
           "memory_set_enabled",
           "memory_decide_candidate",
           "memory_recent_injections",
