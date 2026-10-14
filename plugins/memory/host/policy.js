@@ -18,6 +18,19 @@
 export const MAX_INJECTIONS_PER_SESSION = 3;
 
 /**
+ * 除回合预算之外，**因库变化**而允许的额外刷新次数（每会话）。
+ *
+ * 为什么需要这一档：回合预算挡的是「每回合的查询都不一样、正文必然不同」——没有它，
+ * 一段长会话会攒下几十份内核快照。但用户在会话中途批准一条候选、删掉一条、或把开关
+ * 关掉时，注入块**必须**跟着变，否则他会以为「批准了却没生效」。两件事的判据不同：
+ * 前者看回合，后者看**数据代次**（`RetrievedContext.generation`，每次成功写入 +1）。
+ *
+ * 取 2 是给「批准一条 + 删一条」留的位置。最坏情况下一个会话 3 + 2 = 5 份快照，而用户
+ * 的库编辑是低频事件；真要一路改下去，那也该新开一个会话。
+ */
+export const MAX_LIBRARY_REFRESHES_PER_SESSION = 2;
+
+/**
  * 送进桥的查询文本上限（字符）。
  *
  * 桥的请求头缓冲是固定 **8 KB**，而 `GET` 的查询串连同请求头都算在里面。中文经
@@ -107,6 +120,54 @@ export function shouldRefresh(state, turn, maxInjections = MAX_INJECTIONS_PER_SE
 }
 
 /**
+ * 回合预算用完之后，这一步要不要去探一次「库的代次变了吗」。
+ *
+ * **判据只能是代次，不能是「取回来的文本不一样」**：查询就是用户这一回合的消息，每回合
+ * 都不一样，文本变是常态——拿它当判据等于把回合预算整个绕过去，而那个预算存在的理由
+ * （每份不同的快照都会在内核里留一条 user 消息）恰恰就是这件事。
+ *
+ * @param {{turn: number, injections: number}} state
+ * @param {number} turn
+ * @param {number} [maxLibrary]
+ * @returns {boolean}
+ */
+export function shouldProbeLibrary(state, turn, maxLibrary = MAX_LIBRARY_REFRESHES_PER_SESSION) {
+  if (state.turn === turn) return false;
+  if (state.injections < MAX_INJECTIONS_PER_SESSION) return false;
+  return state.injections - MAX_INJECTIONS_PER_SESSION < maxLibrary;
+}
+
+/**
+ * 探到的代次与上次记下的不同 → 库被改过（批准 / 删除 / 停用 / 编辑 / 关开关）。
+ *
+ * 拿不到代次（响应缺字段）时一律回 false：**不知道就不动**，宁可这一回合不刷新，也不要
+ * 把「每回合都换的正文」当成库变化注入进去。
+ *
+ * @param {{revision: number|null}} state
+ * @param {unknown} generation
+ * @returns {boolean}
+ */
+export function libraryChanged(state, generation) {
+  return typeof generation === 'number' && state.revision !== generation;
+}
+
+/**
+ * 探过了但库没变（或探失败）：只记代次与回合，**正文与注入计数都不动**。
+ *
+ * @param {{turn: number, text: string, injections: number, workspace: string, revision: number|null}} state
+ * @param {number} turn
+ * @param {unknown} generation
+ * @returns {object}
+ */
+export function noteProbe(state, turn, generation) {
+  return {
+    ...state,
+    turn,
+    revision: typeof generation === 'number' ? generation : state.revision,
+  };
+}
+
+/**
  * 会话中途换了工作目录时的处理：**清空缓存**。
  *
  * 这是「A 项目保存的记忆不进入 B 项目」在运行侧的最后一道。少了它，上一个项目的
@@ -128,7 +189,14 @@ export function shouldRefresh(state, turn, maxInjections = MAX_INJECTIONS_PER_SE
  */
 export function retarget(state, workspace) {
   if (state.workspace === workspace) return state;
-  return { turn: -1, text: '', injections: state.injections, workspace };
+  return {
+    turn: -1,
+    text: '',
+    injections: state.injections,
+    workspace,
+    // 代次是**整份文档**的，与目录无关，换目录不必丢。
+    revision: state.revision,
+  };
 }
 
 /**
@@ -158,14 +226,44 @@ export function beginStep(state, workspace, turn, maxInjections = MAX_INJECTIONS
  * @param {string} text
  * @returns {{turn: number, text: string, injections: number, workspace: string}}
  */
-export function applyResult(state, turn, text) {
+export function applyResult(state, turn, text, generation) {
   const next = typeof text === 'string' ? text : '';
   return {
     turn,
     text: next,
     injections: state.injections + (next === state.text ? 0 : 1),
     workspace: state.workspace,
+    // 记下这次正文对应的数据代次：`shouldProbeLibrary` 那条路靠它判「库变了吗」。
+    revision: typeof generation === 'number' ? generation : state.revision,
   };
+}
+
+/**
+ * 这一步取回来的结果**怎么用**——整条链路里唯一会被静默做坏的决定，所以它是纯函数。
+ *
+ * 两种模式：`turn`（回合预算内）取到什么用什么；`probe`（预算用完之后）只在**数据代次
+ * 变了**时才换正文。写成散在装配层里的两处 if 时，「文本变了就换」这种写法会一路绿到
+ * 真机——它看着完全合理，实际把每会话三次的预算整个绕过去了（查询每回合都不同）。
+ *
+ * @param {object} state
+ * @param {number} turn
+ * @param {'turn'|'probe'} mode
+ * @param {{ok: boolean, enabled?: boolean, text?: unknown, generation?: unknown}} outcome
+ * @returns {{state: object, applied: boolean}}
+ */
+export function applyStep(state, turn, mode, outcome) {
+  if (!outcome?.ok) {
+    // 探测失败不动缓存（一次抖动不是「用户改了库」）；回合内那条路照旧清空。
+    return {
+      state: mode === 'probe' ? noteProbe(state, turn, state.revision) : applyFailure(state, turn),
+      applied: false,
+    };
+  }
+  if (mode === 'probe' && !libraryChanged(state, outcome.generation)) {
+    return { state: noteProbe(state, turn, outcome.generation), applied: false };
+  }
+  const text = outcome.enabled ? String(outcome.text ?? '') : '';
+  return { state: applyResult(state, turn, text, outcome.generation), applied: true };
 }
 
 /**
@@ -179,7 +277,13 @@ export function applyResult(state, turn, text) {
  * @returns {{turn: number, text: string, injections: number, workspace: string}}
  */
 export function applyFailure(state, turn) {
-  return { turn, text: '', injections: state.injections, workspace: state.workspace };
+  return {
+    turn,
+    text: '',
+    injections: state.injections,
+    workspace: state.workspace,
+    revision: state.revision,
+  };
 }
 
 /**

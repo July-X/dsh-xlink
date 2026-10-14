@@ -31,10 +31,10 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import { callMemory, readCredentials } from './bridge.js';
 import {
-  applyFailure,
-  applyResult,
+  applyStep,
   beginStep,
   resolveWorkspaceId,
+  shouldProbeLibrary,
   userText,
 } from './policy.js';
 
@@ -106,7 +106,7 @@ function apply(ctx) {
         ctx.logger?.warn?.(`${name}: 这个内核没有 agent 作用域的上下文注册面，本次不注入记忆`);
         return;
       }
-      let state = { turn: -1, text: '', injections: 0, workspace: '' };
+      let state = { turn: -1, text: '', injections: 0, workspace: '', revision: null };
 
       agent.ctx.systemPrompt.context({
         name: CONTEXT_NAME,
@@ -126,7 +126,13 @@ function apply(ctx) {
           // 正文一路留在这个会话里——那正是这条要挡的事，而它只在接线处看得见。
           const step = beginStep(state, workspace, turn);
           state = step.state;
-          if (!step.refresh) return decision;
+          // 两条路都取一次检索，区别只在**结果怎么用**：
+          // · 回合预算内（`step.refresh`）：按这一步的消息检索，取到什么就用什么；
+          // · 预算用完之后（`shouldProbeLibrary`）：只看**数据代次**——用户在会话里批准
+          //   一条候选、删掉一条、关掉开关，代次才动，注入块才跟着换。查询每回合都不同、
+          //   正文必然不同，拿「文本变了」当判据会把回合预算整个绕过去。
+          const probe = !step.refresh;
+          if (probe && !shouldProbeLibrary(state, turn)) return decision;
           const workspaceId = await resolveWorkspaceId(workspaceRegistry, workspace);
           const result = await callMemory({
             credentials,
@@ -139,9 +145,22 @@ function apply(ctx) {
               workspace,
             },
           });
-          state = result.ok
-            ? applyResult(state, turn, result.value?.enabled ? String(result.value.text ?? '') : '')
-            : applyFailure(state, turn);
+          // 「取回来的结果怎么用」整条判断在 `applyStep` 里（纯函数、有测试）：
+          // 回合内取到什么用什么；探测那条路只在数据代次变了时才换正文。
+          const applied = applyStep(
+            state,
+            turn,
+            probe ? 'probe' : 'turn',
+            result.ok
+              ? {
+                  ok: true,
+                  enabled: !!result.value?.enabled,
+                  text: result.value?.text,
+                  generation: result.value?.generation,
+                }
+              : { ok: false },
+          );
+          state = applied.state;
           if (!result.ok) {
             ctx.logger?.warn?.(`${name}: 本次检索失败，本回合不注入记忆：${result.reason}`);
           }
@@ -316,7 +335,11 @@ function registerTools(ctx, credentials) {
       description:
         'Propose one durable memory (a stable preference, a project convention, or a pitfall) for the user to review. ' +
         'The candidate is NOT saved until the user confirms it in the Memory panel, so never claim it is remembered. ' +
-        'Use it when the user asks to remember something, or when a decision is clearly worth carrying into future sessions.',
+        'Propose when the user asks to remember something, when they state a lasting preference or correction, ' +
+        'when a project convention or a pitfall you hit is clearly worth carrying into future sessions, ' +
+        'or when the user has just corrected you about how they want things done. ' +
+        'One convention per call — do not propose one-off task details, status updates, or anything already covered ' +
+        'by the repository itself.',
       parameters: {
         title: {
           type: 'string',
