@@ -2469,6 +2469,79 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// --- 29. 「点通知横幅回到工作台」的两条入口都必须接在 serve() 上 --------------
+//
+// 2026-10-13 macOS 26.7.1 实测：横幅点击只派发 `applicationDidBecomeActive`，
+// `applicationShouldHandleReopen` 一次都没有来——挂在 `RunEvent::Reopen` 上的那条
+// 接线在真机上从未触发过一次，点横幅表现为完全没反应（2026-10-13 修，改成
+// `activate::serve` 里注册激活观察者）。
+//
+// 单测钉不住这件事：`banner_activation` 是纯函数，被测得再准，把
+// `observe_activation(app)` 从 `serve()` 里摘掉之后**全部门禁照样绿**——判据在
+// 测试里被引用着，编译器与测试都不会说话。同一份代码里还有一条更便宜的失手
+// 方式：三个 macOS 专属符号漏挂 `#[cfg(target_os = "macos")]`，Windows 上全成死
+// 代码，而 clippy `-D warnings` 只在 macOS 上跑（两个 workflow 的 quality job
+// 都是 `macos-15-intel`），发布流水线看不见，只有本地 Windows 上的
+// `npm run check` 会红。所以这里把两半一起钉成接线形状。
+//
+// 判据扫的是生产代码（`productionRust` 剥掉测试块与注释）。单测自己的 cfg 由
+// Windows CI 那条 `cargo check --all-targets` 兜住：漏挂时测试目标编不过。
+
+{
+  const activateLines = productionRust(shellSource('activate.rs')).split('\n');
+
+  /** 形如「符号声明 / 调用点的前一行就是指定的 cfg 门控」时为 true。 */
+  const gatedBy = (pattern, gate) => {
+    const index = activateLines.findIndex((line) => pattern.test(line));
+    if (index < 0) return null;
+    return activateLines[index - 1].trim() === gate;
+  };
+
+  const serveIndex = activateLines.findIndex((line) => /pub fn serve\(/.test(line));
+  if (serveIndex < 0) {
+    fail(
+      'banner-activate-wiring',
+      'notify/activate.rs 里找不到 serve()——「点通知横幅回到工作台」的两条入口都没地方接了。',
+    );
+  } else {
+    const body = activateLines.slice(serveIndex, serveIndex + 12).join('\n');
+    const missing = [
+      ['ipc::serve(app);', 'Windows：系统点横幅拉起的第二个进程靠它把「回到工作台」递进管道'],
+      ['observe_activation(app);', 'macOS：横幅点击只派发激活观察者，这条是唯一的信号'],
+    ].filter(([token]) => !body.includes(token));
+    if (missing.length > 0) {
+      fail(
+        'banner-activate-wiring',
+        `notify/activate.rs:${serveIndex + 1} 的 serve() 里缺 ${missing.map(([token]) => token).join(' / ')}：` +
+          missing.map(([, why]) => why).join('；') +
+          '。serve() 是两条入口唯一的挂载点，摘掉任一条，点横幅就退回「完全没反应」，而单测与编译器都不会响。',
+      );
+    }
+  }
+
+  const ungated = [
+    [/ipc::serve\(app\);/, '#[cfg(target_os = "windows")]', 'Windows 的管道监听入口'],
+    [/observe_activation\(app\);/, '#[cfg(target_os = "macos")]', 'macOS 的激活观察者挂载'],
+    [/const BANNER_FRESH_MS/, '#[cfg(target_os = "macos")]', '横幅新鲜度常量'],
+    [/fn banner_activation\(/, '#[cfg(target_os = "macos")]', '激活判据函数'],
+    [/fn on_activated\(/, '#[cfg(target_os = "macos")]', '激活回调'],
+  ].filter(([pattern, gate]) => gatedBy(pattern, gate) !== true);
+  if (ungated.length > 0) {
+    fail(
+      'banner-activate-wiring',
+      `notify/activate.rs 里这些符号前面的门控不是它该有的那一条：` +
+        ungated.map(([, gate, what]) => `${what} 期望 ${gate}`).join('；') +
+        '。漏挂 macOS 门控时，Windows 上这几个符号全是死代码，而 clippy `-D warnings` ' +
+        '只在 macOS 上跑，本地 Windows 上的 `npm run check` 会红；漏挂 Windows 门控则把 ' +
+        'macOS 也编成一份没人调的死代码。',
+    );
+  }
+
+  if (serveIndex >= 0 && ungated.length === 0) {
+    note('点通知横幅回到工作台：Windows 管道交接与 macOS 激活观察都接在 serve() 上，门控成对');
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);
