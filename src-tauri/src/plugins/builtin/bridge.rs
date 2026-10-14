@@ -912,6 +912,108 @@ mod tests {
         false
     }
 
+    /// 往真桥上发一条 GET，把响应体取回来（`Connection: close`，读到 EOF）。
+    fn bridge_get(addr: &str, token: &str, path: &str) -> String {
+        use std::io::{Read, Write};
+        let mut stream = TcpStream::connect(addr).expect("连桥");
+        stream
+            .write_all(
+                format!(
+                    "GET /v1/memory/{path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .expect("写请求");
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).expect("读响应");
+        raw.split_once("\r\n\r\n")
+            .map(|(_, body)| body.to_string())
+            .unwrap_or(raw)
+    }
+
+    /// **任务表在真桥上往返一圈**：插件怎么发，壳这边就怎么收。
+    ///
+    /// 为什么值得一条测试：插件那一侧已经在真内核里验过（它发的就是这几个路由与参数），
+    /// 但**壳这一侧的真状态机**（`jobs.rs` 的租约、`routes.rs` 的四道闸）从没和插件对接过——
+    /// 探针里的桩桥是自己实现的最小状态机，形状对不对没有第二个人校验。这条测试把两侧钉在一起：
+    /// 同一个任务键从 HTTP 进去、领出令牌、带令牌提交、再收尾。
+    ///
+    /// 任务用**过去的时间**排（`now - 60s`），这样它立刻到期——静默期本身在 `jobs.rs` 里有单测，
+    /// 这里不替它睡觉。
+    #[test]
+    fn the_job_table_round_trips_over_the_real_bridge() {
+        let root = temp_dir("jobs-roundtrip");
+        // 测试不许碰用户的真实数据目录：这个 guard 把 `DSH_XLINK_HOME` 指到临时目录，
+        // 而记忆 store 的路径正是从这里解析的。
+        let _home = crate::tests::scoped_xlink_home(&root);
+        let ns = crate::memory::store::Namespace::for_bridge("dsh", "probe");
+        // `/submit` 在「记忆开关关着」时会拒——那是设计的一部分（§8-6 的四道闸之一），
+        // 所以这里先把它打开，验的是**开着**时的正常路径。
+        crate::memory::store::set_use_approved(&ns, true).expect("打开记忆开关");
+
+        let key = crate::memory::jobs::JobKey {
+            session: "s-roundtrip".to_string(),
+            cursor: 16,
+            extractor: "xlink-memory-extract/1".to_string(),
+        };
+        let past = crate::memory::jobs::now_ms().saturating_sub(60_000);
+        crate::memory::jobs::mutate(&ns, |doc, _| {
+            crate::memory::jobs::enqueue(doc, key.clone(), past)
+        })
+        .expect("排任务");
+
+        let (url, token) = launch(&root, "dsh:probe").expect("起桥");
+        let addr = url.trim_start_matches("http://").to_string();
+
+        // ① 领：回执的形状就是插件按着读的那一个（`{token, key:{…}}`）。
+        let claimed = bridge_get(&addr, &token, "jobs/claim");
+        assert!(claimed.contains("\"token\""), "要领到令牌：{claimed}");
+        assert!(
+            claimed.contains("\"s-roundtrip\""),
+            "回执里要有任务键：{claimed}"
+        );
+        assert!(
+            claimed.contains("\"cursor\":16"),
+            "游标就是冻结截止序号：{claimed}"
+        );
+        let lease = claimed
+            .split("\"token\":\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("取令牌")
+            .to_string();
+
+        // ② 提交（插件是**一条候选一次调用**）。
+        let submitted = bridge_get(
+            &addr,
+            &token,
+            &format!(
+                "jobs/submit?token={lease}&session=s-roundtrip&start_seq=0&end_seq=16&scope=project&workspace_id=&workspace=%2Ftmp%2Fws&title=%E6%8F%90%E4%BA%A4%E5%89%8D%E8%B7%91%E6%A3%80%E6%9F%A5&body=%E8%B7%91%20npm%20run%20check&keywords=%E6%8F%90%E4%BA%A4"
+            ),
+        );
+        assert!(
+            submitted.contains("\"submitted\":true"),
+            "拿着令牌该能提交：{submitted}"
+        );
+
+        // ③ 收尾。
+        let finished = bridge_get(&addr, &token, &format!("jobs/finish?token={lease}"));
+        assert!(finished.contains("\"finished\":true"), "收尾：{finished}");
+
+        // ④ 收尾之后令牌作废——这正是「不能覆写已提交结果」的一半。
+        let again = bridge_get(
+            &addr,
+            &token,
+            &format!(
+                "jobs/submit?token={lease}&session=s-roundtrip&start_seq=0&end_seq=16&title=x&body=y"
+            ),
+        );
+        assert!(
+            again.contains("\"submitted\":false"),
+            "任务收尾之后同一个令牌不该再能提交：{again}"
+        );
+    }
+
     #[test]
     fn dropping_the_bridge_removes_the_credential_file() {
         use super::super::bridge_credential::CREDENTIAL_FILE;
