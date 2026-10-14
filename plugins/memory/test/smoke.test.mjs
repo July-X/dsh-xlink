@@ -7,6 +7,7 @@ import {
   MAX_INJECTIONS_PER_SESSION,
   MAX_LIBRARY_REFRESHES_PER_SESSION,
   MAX_QUERY_CHARS,
+  MAX_TOTAL_BYTES_PER_SESSION,
   applyFailure,
   applyResult,
   applyStep,
@@ -309,6 +310,34 @@ test('预算用满之后换目录：缓存也要立刻清空（接线，不只�
   assert.equal(again.state, applied, '同一个目录不该重建状态');
   assert.equal(again.state.text, 'y', '同一个目录不该清掉缓存');
   assert.equal(again.refresh, false, '同一回合不重复检索');
+});
+
+test('累计字节到顶之后不再刷新——次数封顶挡不住「每次都写满」', () => {
+  // 单次 12 KiB × (3 + 2) 次最坏是 60 KiB，而设计稿写的是累计 ≤36 KiB。
+  // 一条刚好过半的单条正文：两次就到顶（中文一字 3 字节，按字节算而不是码元）。
+  const big = '关'.repeat(Math.ceil(MAX_TOTAL_BYTES_PER_SESSION / 2 / 3) + 1);
+  assert.ok(Buffer.byteLength(big, 'utf8') <= MAX_TOTAL_BYTES_PER_SESSION);
+  assert.ok(Buffer.byteLength(big, 'utf8') * 2 > MAX_TOTAL_BYTES_PER_SESSION, '两次就该到顶');
+
+  let state = { turn: -1, text: '', injections: 0, bytes: 0, workspace: '/w', revision: null };
+  state = applyResult(state, 1, big, 10);
+  assert.equal(state.bytes, Buffer.byteLength(big, 'utf8'), '累计按 UTF-8 字节算，不是 UTF-16 码元');
+  assert.equal(shouldRefresh(state, 2), true, '还没到顶');
+  state = applyResult(state, 2, big + '尾巴', 10);
+  assert.ok(state.bytes >= MAX_TOTAL_BYTES_PER_SESSION, '第二次到顶');
+  assert.equal(state.injections, 2, '次数还没用完');
+  assert.equal(shouldRefresh(state, 3), false, '字节到顶就不再刷新');
+  assert.equal(shouldProbeLibrary(state, 3), false, '探测那条路同样受字节闸约束');
+
+  // 内容没变的那一次不占额度（否则重复渲染会把额度吃光而什么都没注入）。
+  const same = applyResult(state, 3, state.text, 10);
+  assert.equal(same.bytes, state.bytes);
+  assert.equal(same.injections, state.injections);
+
+  // 换目录不重置累计字节（与会话级次数同一个理由）。
+  assert.equal(retarget(state, '/other').bytes, state.bytes);
+  // 失败清空正文也不退额度（额度按「内核里真的留下过几条快照」算）。
+  assert.equal(applyFailure(state, 4).bytes, state.bytes);
 });
 
 test('装配层真的接上了这些判据（helper 有测试、接线没有是本仓反复栽的形状）', () => {

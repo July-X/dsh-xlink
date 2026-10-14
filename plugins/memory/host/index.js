@@ -106,7 +106,7 @@ function apply(ctx) {
         ctx.logger?.warn?.(`${name}: 这个内核没有 agent 作用域的上下文注册面，本次不注入记忆`);
         return;
       }
-      let state = { turn: -1, text: '', injections: 0, workspace: '', revision: null };
+      let state = { turn: -1, text: '', injections: 0, bytes: 0, workspace: '', revision: null };
 
       agent.ctx.systemPrompt.context({
         name: CONTEXT_NAME,
