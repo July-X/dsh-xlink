@@ -774,10 +774,15 @@ pub fn submit_candidate(
 }
 
 /// 批准或拒绝一条候选。批准会转成一条权威记录（版本 1）。
+/// `scope_override` 是用户在批准时**当场选的范围**（§6.1「提升前须展示正文与来源、去掉路径与
+/// 客户名等私有信息，并由用户明确选择通用范围」）：`None` 就沿用候选自带的范围。传
+/// [`SCOPE_GENERAL`] 时**项目坐标会被清掉**——留着它们会让这条记录带着一个永远匹配不上的
+/// `workspace_id`，而 `scope` 又说它是通用的，两边对不上。
 pub fn decide_candidate(
     ns: &Namespace,
     id: &str,
     accept: bool,
+    scope_override: Option<&str>,
 ) -> Result<Option<MemoryRecord>, AppError> {
     mutate(ns, |doc| {
         let now = now_iso();
@@ -797,6 +802,22 @@ pub fn decide_candidate(
             )));
         }
         let candidate = doc.candidates[index].clone();
+        let chosen = scope_override.unwrap_or(candidate.scope.as_str());
+        let (scope, workspace_id, workspace_path) = if chosen == SCOPE_GENERAL {
+            (SCOPE_GENERAL.to_string(), String::new(), String::new())
+        } else {
+            (
+                SCOPE_PROJECT.to_string(),
+                candidate.workspace_id.clone(),
+                candidate.workspace_path.clone(),
+            )
+        };
+        if scope == SCOPE_PROJECT && workspace_id.is_empty() && workspace_path.is_empty() {
+            return Err(AppError::Memory(
+                "这条候选没有项目坐标，只能存成「通用偏好」（或让它在原项目里重新提一次）。"
+                    .to_string(),
+            ));
+        }
         if !accept {
             doc.candidates[index].state = CANDIDATE_REJECTED.to_string();
             doc.candidates[index].decided_at = now;
@@ -809,9 +830,9 @@ pub fn decide_candidate(
         }
         let record = MemoryRecord {
             id: new_id(),
-            scope: candidate.scope.clone(),
-            workspace_id: candidate.workspace_id.clone(),
-            workspace_path: candidate.workspace_path.clone(),
+            scope,
+            workspace_id,
+            workspace_path,
             title: candidate.title.clone(),
             body: candidate.body.clone(),
             keywords: candidate.keywords.clone(),
@@ -1364,17 +1385,52 @@ mod tests {
         assert!(view.memories.is_empty());
         assert_eq!(view.status.pending_candidates, 1);
 
-        let record = decide_candidate(&ns, &candidate.id, true)
+        let record = decide_candidate(&ns, &candidate.id, true, None)
             .expect("decide")
             .expect("accepted record");
         assert_eq!(record.state, STATE_ACCEPTED);
         assert_eq!(record.source.session, "s-1");
         assert_eq!(record.source.start_seq, 3);
         assert!(
-            decide_candidate(&ns, &candidate.id, true).is_err(),
+            decide_candidate(&ns, &candidate.id, true, None).is_err(),
             "不能重复批准"
         );
         assert_eq!(status(&ns).accepted, 1);
+    }
+
+    /// 批准时用户当场选范围（§6.1）：选「通用偏好」必须**清掉项目坐标**——留着它们会让这条
+    /// 记录带着一个永远匹配不上的 `workspace_id`，而 `scope` 又说它是通用的，两边对不上。
+    #[test]
+    fn accepting_with_a_scope_override_moves_the_record_to_general() {
+        let _home = TempHome::new("promote");
+        let ns = namespace();
+        let candidate = submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_id: "ws-a".to_string(),
+                workspace_path: "/tmp/ws-a".to_string(),
+                title: "通用一点的写法".to_string(),
+                body: "提交前跑检查".to_string(),
+                ..CandidateInput::default()
+            },
+        )
+        .expect("candidate");
+
+        let record = decide_candidate(&ns, &candidate.id, true, Some(SCOPE_GENERAL))
+            .expect("accept")
+            .expect("record");
+        assert_eq!(record.scope, SCOPE_GENERAL);
+        assert!(record.workspace_id.is_empty(), "通用偏好不该带项目 id");
+        assert!(record.workspace_path.is_empty(), "通用偏好不该带项目路径");
+        // 通用偏好对哪个项目都算（`scope_matches` 的第一条分支）。
+        let hits =
+            crate::memory::query::retrieve(&ns, "提交前跑检查", "", "/anywhere").expect("retrieve");
+        assert_eq!(hits.hits.len(), 0, "开关还没开");
+        set_use_approved(&ns, true).expect("enable");
+        let hits =
+            crate::memory::query::retrieve(&ns, "提交前跑检查", "", "/anywhere").expect("retrieve");
+        assert_eq!(hits.hits.len(), 1, "{:?}", hits.hits);
     }
 
     #[test]
@@ -1383,7 +1439,7 @@ mod tests {
         let ns = namespace();
         let candidate =
             submit_candidate(&ns, candidate_input("看起来不对的结论", "正文")).expect("submit");
-        assert!(decide_candidate(&ns, &candidate.id, false)
+        assert!(decide_candidate(&ns, &candidate.id, false, None)
             .expect("decide")
             .is_none());
         assert!(status(&ns).accepted == 0);

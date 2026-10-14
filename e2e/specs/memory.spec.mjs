@@ -53,7 +53,7 @@ describe('记忆面板', function () {
     // 内容渲染因此由下面那条命令断言 + Rust 侧的检索用例覆盖，不在这里假装验过。
   });
 
-  it('四条记忆命令在真壳里都能解析（桥真的通）', async () => {
+  it('记忆命令在真壳里都能解析（桥真的通，参数个数也对得上）', async () => {
     const status = await runAsync(`return await window.__TAURI__.core.invoke('memory_status');`);
     expect(status?.__error).toBeUndefined();
     expect(typeof status.file).toBe('string');
@@ -78,6 +78,14 @@ describe('记忆面板', function () {
     );
     expect(recent?.__error).toBeUndefined();
     expect(Array.isArray(recent)).toBe(true);
+
+    // 批准那条命令的**参数个数**也要在真壳里对一次：它加了 `scope`（§6.1 由用户当场选范围），
+    // 而参数名对不上时前端只会 `.catch` 吞掉。用一个不存在的 id 调用——要的是「找不到候选」
+    // 这类**业务**错误，不是「参数不对」或「命令未授权」，而且它不产生任何副作用。
+    const decided = await runAsync(
+      `return await window.__TAURI__.core.invoke('memory_decide_candidate', { id: 'no-such-candidate', accept: false, scope: null });`
+    );
+    expect(String(decided?.__error || '')).toContain('找不到候选');
   });
 
   it('打开记忆页没有往控制台扔错误', async () => {

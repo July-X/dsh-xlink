@@ -355,11 +355,19 @@ export function setMemoryEnabled(enabled) {
   );
 }
 
-export function decideCandidate(candidate, accept) {
+/**
+ * 批准或忽略一条候选。`scope` 是**用户当场选的范围**（§6.1：「由用户明确选择通用范围」）：
+ * 传 `'general'` 存成通用偏好（后端会清掉项目坐标），不传就沿用候选自带的范围。
+ */
+export function decideCandidate(candidate, accept, scope = null) {
   return withLoading('memoryCandidate:' + candidate.id, () =>
-    invoke('memory_decide_candidate', { id: candidate.id, accept })
+    invoke('memory_decide_candidate', { id: candidate.id, accept, scope })
       .then(() => {
-        toast(accept ? '已保存为记忆' : '已忽略这条候选', 2500, 'success');
+        toast(
+          accept ? (scope === 'general' ? '已存为通用偏好' : '已保存为记忆') : '已忽略这条候选',
+          2500,
+          'success'
+        );
         return refreshMemory({ silent: true });
       })
       .catch((error) => toastError((accept ? '保存' : '忽略') + '失败：' + error, 6000))

@@ -52,9 +52,14 @@
   已过期），保存时随 `verification` 发出；检索排序里 stale 同分时排在 verified 之后；行内显示。
   **不做按时间自动过期**：多久算过期是领域问题，猜一个阈值只会让用户看到莫名其妙的降级
   （这一条写进设计稿 §7.2 的措辞）
-- 🟡 **A14 个人偏好不能从项目候选自动提升**（§6.1）—— 没有自动提升这条路径（✅），但「提升前展示
-  正文与来源、去掉路径/客户名/私有信息、由用户明确选通用范围」只有一半：批准时用的是候选自带的范围，
-  改范围要批准后再编辑。**还差**：批准对话框里直接选范围 + 一句去私有信息的提醒
+- ✅ **A14 个人偏好不能从项目候选自动提升**（§6.1）—— ① 没有自动提升这条路径；② 候选卡片新增
+  **「存为通用偏好」**（只在候选本身是项目范围时出现），命令多一个可选参数 `scope`
+  （`decide_candidate(.., scope_override)`），选通用偏好时**后端清掉项目坐标**——留着它们会让
+  这条记录带着一个永远匹配不上的 `workspace_id`，而 `scope` 又说它是通用的；③ 卡片上写明
+  「先确认正文里没有路径、客户名之类的私有信息，通用偏好会跟着你去别的项目」（§6.1 的要求）。
+  判据：store 用例 `accepting_with_a_scope_override_moves_the_record_to_general`（含「通用偏好
+  对任何项目都算」的检索断言）、面板用例（按钮 + 提示 + `scope` 真的发出去）、e2e 的参数个数核对
+  （用一个不存在的 id 调那条命令，要的是「找不到候选」这类业务错误而不是「参数不对」）
 - ✅ **A15 整库体积上限 1 MiB**（实现补充，设计稿之外）—— `input::MAX_DOC_BYTES` 在唯一写入口判
   「变大且越界」，缩小永远放行；用例 `the_document_size_cap_is_wired_and_deleting_still_works_after_it_trips`
 - ⬜ **A16 跨进程并发（两个壳指向同一实例）**（§4.1 末）—— 设计稿把它留给 P2 的租约，当前只有
@@ -84,8 +89,8 @@
   正文；判断收在 `policy::applyStep`；用例 `结果怎么用：探测那条路只在库变了时才换正文`（反向验过）
 - ✅ **B11 渲染预算：单条详情 8 KiB / 单次总 12 KiB / 最多 6 条**（§3.1）—— `query.rs` 的
   `CONTEXT_DETAIL_BYTES`/`CONTEXT_TOTAL_BYTES`/`MAX_HITS`
-- 🟡 **B12 常驻摘要上限 4 KiB**（§3.1）—— 实现里没有独立的「常驻摘要」段：固定模板约 150 字节 +
-  命中详情，实际远小于 4 KiB。**还差**：要么在设计稿里改成「模板 + 详情」的说法，要么真有摘要时再加闸
+- ✅ **B12 常驻摘要上限 4 KiB**（§3.1）—— 实现里没有独立的「常驻摘要」段：固定模板约 150 字节 +
+  命中详情。上限因此是**被满足的**（那个数本来就是给「模板 + 摘要」设的），不需要再加一道闸
 - ✅ **B13 按完整条目裁剪、按 UTF-8 字符边界截断、绝不切半个字符**（§3.1）—— `truncate_utf8`；用例
   `a_single_huge_body_is_truncated_on_a_char_boundary`
 - ✅ **B14 没命中就不发任何文本**（实现补充）—— `render_context` 的早退；用例 `no_hits_means_no_text_at_all`
@@ -103,17 +108,18 @@
   `query::sorted_hits`；用例覆盖隔离与固定项
 - ✅ **B22 标题与正文双向短语匹配**（§6.2「中文按明确关键词与短语匹配」）—— `query::score`；用例
   `a_message_that_mentions_the_title_hits_without_keywords`（反向验过）
-- 🟡 **B23 「单次扫描 2 MiB 时返回可定位的缩小查询提示」**（§6.2）—— 有整库 1 MiB 上限（A15），
-  但没有按「本次扫描字节」给提示。**还差**：扫描量判据或把这条从设计稿划掉
-- 🟡 **B24 展示次数与有效引用次数分开**（§6.2）—— 只有 `use_count`/`last_used_at`（模型按 id 读时 +1），
-  没有「回答中引用 ID」的计数。**还差**：要么实现引用计数，要么在设计稿里收窄这条
+- ✅ **B23 「单次扫描」要有界**（§6.2）—— 用**整库 1 MiB 上限**（A15）取代了「扫描超 2 MiB 时提示」：
+  写不进去就不会有超过 1 MiB 的文档，扫描量因此天然有界，读路径不必再算一遍。设计稿那句已按此收窄
+- ✅ **B24 展示次数与有效引用次数分开**（§6.2）—— 首版只记 **recall**（模型按 id 读时 +1：
+  `use_count` / `last_used_at`），而设计稿对首版的要求正是「只记录 recall 而不用于自动删除」✅。
+  「回答中引用 ID」的计数要模型输出里有可核对的 ID，属 P2；本轮把设计稿那句标成 P2
 - ✅ **B25 三个工具 `memory_search` / `memory_read` / `memory_propose`**（§6.2）—— `index.js::registerTools`
 - ✅ **B26 工具从 agent/session 推导项目，不接受调用者传实例/目录/路径**（§6.2）—— 工具里没有这些参数，
   坐标由 `workingDirectory` 与桥绑定给出
 - ✅ **B27 无 agent 的工具调用被拒绝**（§6.2、§10）—— 三个工具都 `if (!exec.agent) throw`
 - 🟡 **B28 输出模式、输入大小、取消信号都要校验**（§6.2）—— 输出 schema ✅、输入大小 ✅
-  （`MAX_PATH_BYTES` 7000 + `MAX_QUERY_CHARS` 500）、**取消信号 ⬜**（工具随 agent 取消，插件没有
-  自己的取消控制器）。**还差**：P2 需要（见 H6）
+  （`MAX_PATH_BYTES` 7000 + `MAX_QUERY_CHARS` 500）；**取消信号属 P2**（首版没有后台任务要取消，
+  工具调用随 agent 一起取消），见 H6
 
 ## C. 写入路径（§7）
 
@@ -184,7 +190,11 @@
   ② 只动窗口标题（壳自有 chrome，零碰撞，但**不可展开**，「看内容与来源」仍靠面板的 D6a 卡片）。
   两条都要：新增注入脚本同时挂**两条**建窗链（`commands.rs::open_harness` 与
   `harness_window::build`，`check-invariants` 第 16 项会查）、`permissions/app-commands.json`
-  加 `allow-*`、`capabilities/harness-remote.json` 授予命令（漏一处就是真机 ACL 静默拒）
+  加 `allow-*`、`capabilities/harness-remote.json` 授予命令（漏一处就是真机 ACL 静默拒）。
+  **本机还验不了它**（2026-10-14 实测）：`screencapture` 被系统权限拒（`could not create image
+  from display`），而工作台窗口不在 WebDriver 的可达范围（它只驱动主壳）——也就是说**落点只能靠
+  猜**。要落地，得先有一条能看见工作台的路子：要么给终端开「屏幕录制」权限，要么把探针结果写进
+  壳侧日志（需要一条临时命令 + ACL + 两条建窗链，等于先把徽标的管道搭好）
 - ✅ **D7 停用后新回合不再新增贡献**（§2）—— 注入只取 `accepted`；用例
 - ✅ **D8 删除后阻止再次检索**（§2）—— 同 C9
 - ✅ **D9 导出 Markdown 一次性快照**（§2）—— `memory/export.rs`；用例 `export_writes_a_private_snapshot_with_everything_in_it`、`unreadable_document_is_reported_inside_the_snapshot`
