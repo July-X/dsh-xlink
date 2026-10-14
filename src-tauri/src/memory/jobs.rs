@@ -17,11 +17,6 @@
 //! 还会在夏令时/闰秒上绕一圈。这里所有判断都吃 `now_ms: u64`，纯函数、可测、不碰系统时钟——
 //! **测试因此能精确构造「过期了」「还差 1 毫秒」这两种边界**，而用真实时钟只能靠 sleep 撞运气。
 
-#![allow(
-    dead_code,
-    reason = "P2 的第一块：任务表与租约状态机先落地（含完整用例），生产调用方在 P2 接线那一步\n             才出现——插件经回环桥领取任务、跑本地模型、再提交结果。在那之前这个模块没有调用方，\n             但它是那一步的地基，而且**现在就能验**（纯函数 + 假时钟，不需要模型或内核）。"
-)]
-
 use serde::{Deserialize, Serialize};
 
 use crate::shell::error::AppError;
@@ -119,6 +114,60 @@ fn jobs_path(ns: &super::store::Namespace) -> std::path::PathBuf {
     ns.dir().join(JOBS_FILE)
 }
 
+/// 当前时刻（epoch 毫秒）。租约的 deadline 用毫秒算（见模块头：为什么不做 RFC3339 算术）。
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 进程内的那一把锁。
+///
+/// `claim` 是「读-改-写」：两个线程同时领，就会各自读到同一份表、各自写回，后写的把先写的
+/// 租约抹掉——症状是**两个任务同时在跑**（而设计要的是每命名空间一个），或者两个调用者
+/// 拿到同一个令牌。跨**进程**的并发不在这一把锁的范围里（A16 留给 P2 之后评估）。
+fn lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 一次事务：同一把锁里读表 → 改表 → 写回。**租约的每个操作都必须走它**。
+pub fn mutate<T>(
+    ns: &super::store::Namespace,
+    action: impl FnOnce(&mut JobsDoc, u64) -> T,
+) -> Result<T, AppError> {
+    let _guard = lock();
+    let mut doc = load(ns)?;
+    let now = now_ms();
+    let out = action(&mut doc, now);
+    persist(ns, &doc)?;
+    Ok(out)
+}
+
+/// 领取成功时的回执：令牌 + 这一轮要做什么。
+#[derive(Debug, Clone, Serialize)]
+pub struct Claimed {
+    pub token: String,
+    /// 键里的游标就是**冻结输入的截止序号**（§8-1）。
+    pub key: JobKey,
+    pub attempts: u32,
+    pub expires_at_ms: u64,
+}
+
+/// 领一个任务。令牌**由这一侧生成**：调用方（插件）只需要带着它回来，不必自己保证唯一。
+pub fn claim_any(doc: &mut JobsDoc, now_ms: u64) -> Option<Claimed> {
+    let token = super::store::new_id();
+    let lease = claim(doc, now_ms, &token)?;
+    let job = doc.jobs.iter().find(|job| job.state == JOB_RUNNING)?;
+    Some(Claimed {
+        token,
+        key: job.key.clone(),
+        attempts: job.attempts,
+        expires_at_ms: lease.expires_at_ms,
+    })
+}
+
 /// 读任务表。
 ///
 /// **读不出来不是「空表」**：退回空表会让下一次写入把用户的任务状态抹掉——崩在半路的任务
@@ -165,6 +214,20 @@ pub enum Enqueued {
     AlreadySettled,
     /// 队满，先把最老的待跑任务丢掉，再排这一个。
     Evicted,
+}
+
+impl Enqueued {
+    /// 给路由与插件用的稳定字符串（`Added` / `Merged` / `AlreadyRunning` / `AlreadySettled` /
+    /// `Evicted`）。用 snake_case 是为了让插件那侧不必认识 Rust 的枚举名。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Added => "added",
+            Self::Merged => "merged",
+            Self::AlreadyRunning => "already_running",
+            Self::AlreadySettled => "already_settled",
+            Self::Evicted => "evicted",
+        }
+    }
 }
 
 /// 排队一个任务。
@@ -370,6 +433,44 @@ mod tests {
 
     fn doc() -> JobsDoc {
         JobsDoc::new()
+    }
+
+    /// `claim_any` 要带回**令牌与键**：调用方靠键里的游标去冻结输入，靠令牌回来提交。
+    #[test]
+    fn claiming_hands_back_a_token_and_the_frozen_cursor() {
+        let mut doc = doc();
+        enqueue(&mut doc, key("s1", 77), 0);
+        let claimed = claim_any(&mut doc, 10).expect("claim");
+        assert_eq!(claimed.key.cursor, 77, "游标就是冻结输入的截止序号");
+        assert_eq!(claimed.attempts, 1);
+        assert_eq!(claimed.token.len(), 32, "16 字节的随机令牌");
+        assert!(finish(&mut doc, &claimed.token, 20), "拿回来的令牌能提交");
+    }
+
+    /// 事务：读-改-写一次完成，下一次读得到上一次的结果（崩溃恢复、跨调用都靠它）。
+    #[test]
+    fn a_transaction_reads_mutates_and_writes_back() {
+        use crate::memory::store::testkit::{namespace, TempHome};
+        let _home = TempHome::new("jobs-tx");
+        let ns = namespace();
+        let added = mutate(&ns, |doc, _| {
+            enqueue(
+                doc,
+                JobKey {
+                    session: "s1".to_string(),
+                    cursor: 5,
+                    extractor: "v1".to_string(),
+                },
+                0,
+            )
+        })
+        .expect("mutate");
+        assert_eq!(added, Enqueued::Added);
+        let back = load(&ns).expect("load");
+        assert_eq!(back.jobs.len(), 1, "事务要写回盘上");
+        assert!(mutate(&ns, claim_any).expect("claim").is_some());
+        let back = load(&ns).expect("load");
+        assert_eq!(back.jobs[0].state, JOB_RUNNING);
     }
 
     /// 落盘往返：崩溃恢复靠它（重启后 `running` 的任务还在，租约会过期、被别人接手）。

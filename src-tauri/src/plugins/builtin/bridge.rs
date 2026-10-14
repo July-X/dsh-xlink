@@ -126,6 +126,93 @@ fn memory_namespace(scope_key: &str) -> crate::memory::store::Namespace {
 /// 内核里一行都不进 stdout（同一个进程里 `dsh:` 自己的告警照常打印），所以「记忆到底
 /// 有没有被调用过」在插件那边答不了。壳这边写一行 `shell_events` 就同时出现在
 /// 「查看日志」面板里——**只记路由与计数，不记记忆正文**（正文是用户私有内容）。
+/// 自动提取（P2）的任务与租约路由。**全是 GET + 查询串**，与记忆那几条同一条纪律。
+///
+/// 谁能调：只有拿到 Bearer 的插件进程；最坏能造成什么：排一个后台提取任务、领一个租约、
+/// 或用错的令牌交结果（交不上）。**这些路由不写权威记录**——提取出来的东西走 `candidates`，
+/// 用户点了保存才成记忆。
+///
+/// 令牌由 `/claim` 生成并返回，`renew` / `finish` / `fail` 带着它回来：只有**当前**令牌能提交
+/// （§8-6 的迟到结果检查）。这里不记 `note_memory_call`：这些不是「记忆调用」，混进那个环里
+/// 会让面板的「最近注入」多出一堆与注入无关的行。
+fn memory_jobs_route(stream: &mut std::net::TcpStream, path: &str, scope_key: &str) {
+    use crate::memory::jobs;
+    let namespace = memory_namespace(scope_key);
+    // 先切掉查询串再匹配：`path` 带着 `?…`（与记忆那几条一样），拿它直接比会一条都匹配不上
+    // ——而那正好是最难看出来的一种错：所有带参数的调用都回 404，没参数的却能跑通。
+    let action = path
+        .trim_start_matches("/v1/memory/jobs")
+        .split('?')
+        .next()
+        .unwrap_or("");
+    let failed = |error: crate::shell::error::AppError| {
+        (
+            500,
+            serde_json::json!({ "error": error.to_string() }).to_string(),
+        )
+    };
+    let (status, body) = match action {
+        "/enqueue" => {
+            let key = jobs::JobKey {
+                session: query_decoded(path, "session"),
+                cursor: query_decoded(path, "cursor").parse().unwrap_or(0),
+                extractor: query_decoded(path, "extractor"),
+            };
+            match jobs::mutate(&namespace, |doc, now| jobs::enqueue(doc, key, now)) {
+                Ok(outcome) => (
+                    200,
+                    serde_json::json!({ "outcome": outcome.as_str() }).to_string(),
+                ),
+                Err(error) => failed(error),
+            }
+        }
+        // 没东西可领时**不是错误**：插件按固定节奏来问，答 `token: null` 让它安静退下。
+        "/claim" => match jobs::mutate(&namespace, jobs::claim_any) {
+            Ok(Some(claimed)) => (
+                200,
+                serde_json::to_string(&claimed).unwrap_or_else(|_| r#"{"token":null}"#.to_string()),
+            ),
+            Ok(None) => (200, r#"{"token":null}"#.to_string()),
+            Err(error) => failed(error),
+        },
+        "/renew" => {
+            let token = query_decoded(path, "token");
+            match jobs::mutate(&namespace, |doc, now| jobs::renew(doc, &token, now)) {
+                Ok(renewed) => (200, serde_json::json!({ "renewed": renewed }).to_string()),
+                Err(error) => failed(error),
+            }
+        }
+        "/finish" => {
+            let token = query_decoded(path, "token");
+            match jobs::mutate(&namespace, |doc, now| jobs::finish(doc, &token, now)) {
+                Ok(done) => (200, serde_json::json!({ "finished": done }).to_string()),
+                Err(error) => failed(error),
+            }
+        }
+        "/fail" => {
+            let token = query_decoded(path, "token");
+            let reason = query_decoded(path, "error");
+            match jobs::mutate(&namespace, |doc, now| jobs::fail(doc, &token, &reason, now)) {
+                // `retryable: null` = 令牌对不上（不是这个任务的主人），与「不能重试了」区分开。
+                Ok(outcome) => (200, serde_json::json!({ "retryable": outcome }).to_string()),
+                Err(error) => failed(error),
+            }
+        }
+        "/status" => match jobs::mutate(&namespace, |doc, _| jobs::summary(doc)) {
+            Ok(summary) => (
+                200,
+                serde_json::to_string(&summary).unwrap_or_else(|_| r#"{"pending":0}"#.to_string()),
+            ),
+            Err(error) => failed(error),
+        },
+        _ => (
+            404,
+            serde_json::json!({ "error": "未知的任务路由" }).to_string(),
+        ),
+    };
+    let _ = crate::openai::http::write_response(stream, status, "application/json", &body);
+}
+
 fn note_memory_call(route: &str, detail: &str) {
     crate::shell::shell_events::record("memory-bridge", &format!("{route} {detail}"));
 }
@@ -208,6 +295,9 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
                 "application/json",
                 r#"{"ok":true}"#,
             );
+        }
+        (method, path) if method == "GET" && path.starts_with("/v1/memory/jobs") => {
+            memory_jobs_route(stream, path, scope_key);
         }
         (method, path) if method == "GET" && path.starts_with("/v1/memory/read") => {
             let namespace = memory_namespace(scope_key);
@@ -460,6 +550,93 @@ mod tests {
             query_value("/v1/builtin/sync?a=1&plugin=ponytail&b=2", "plugin").as_deref(),
             Some("ponytail")
         );
+    }
+
+    /// 任务与租约的路由在**真桥**上跑一遍：排任务 → 领取（拿回令牌与冻结游标）→ 续期 → 提交，
+    /// 以及**拿起令牌交不上**（§8-6 的迟到结果检查）。
+    ///
+    /// 这里不碰模型与内核：状态机是纯的，路由只做「读表 → 改 → 写回」——正是这一层该验的东西。
+    /// 本地模型的调用在 P2 接线的下一步（H4 之后）。
+    #[test]
+    fn memory_job_routes_work_over_the_bridge() {
+        use crate::memory::store::Namespace;
+
+        let home = temp_dir("memory-jobs");
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let dsh_home = home.join("instance");
+        let (url, token) = launch(&dsh_home, "dsh:default-dev").expect("bridge");
+        let addr = url.trim_start_matches("http://").to_string();
+
+        // 授权先验：这一族路由和记忆那几条一样，**没有 Bearer 一律拒**。
+        let unauthorized = http_get(&addr, "/v1/memory/jobs/claim", None);
+        assert!(unauthorized.contains("401"), "{unauthorized}");
+
+        // 一开始没东西可领：**不是错误**，答 `token: null`（插件按节奏来问，不该收到 5xx）。
+        let empty = http_get(&addr, "/v1/memory/jobs/claim", Some(&token));
+        assert!(empty.contains(r#""token":null"#), "{empty}");
+
+        let queued = http_get(
+            &addr,
+            "/v1/memory/jobs/enqueue?session=s-1&cursor=9&extractor=v1",
+            Some(&token),
+        );
+        assert!(queued.contains(r#""outcome":"added""#), "{queued}");
+
+        // 同一个键再排一次：已经在跑？还没有——先领再排才是「在跑」。
+        let claimed = http_get(&addr, "/v1/memory/jobs/claim", Some(&token));
+        assert!(
+            claimed.contains(r#""cursor":9"#),
+            "领取要带回冻结游标：{claimed}"
+        );
+        assert!(claimed.contains(r#""attempts":1"#), "{claimed}");
+        let start = claimed.find(r#""token":""#).expect("token") + 9;
+        let lease = claimed[start..start + 32].to_string();
+        assert!(lease.chars().all(|c| c.is_ascii_hexdigit()), "{lease}");
+
+        // 领取之后同一个键不再排（运行中的任务保留自己的冻结输入），也领不到第二个
+        // （每命名空间同时只有一个在跑）。
+        let again = http_get(
+            &addr,
+            "/v1/memory/jobs/enqueue?session=s-1&cursor=9&extractor=v1",
+            Some(&token),
+        );
+        assert!(again.contains(r#""outcome":"already_running""#), "{again}");
+        let second = http_get(&addr, "/v1/memory/jobs/claim", Some(&token));
+        assert!(second.contains(r#""token":null"#), "{second}");
+
+        let renewed = http_get(
+            &addr,
+            &format!("/v1/memory/jobs/renew?token={lease}"),
+            Some(&token),
+        );
+        assert!(renewed.contains(r#""renewed":true"#), "{renewed}");
+
+        // 拿一个**错的**令牌提交：交不上（这正是「迟到的结果不许覆盖新的」那一条）。
+        let late = http_get(&addr, "/v1/memory/jobs/finish?token=deadbeef", Some(&token));
+        assert!(late.contains(r#""finished":false"#), "{late}");
+
+        let finished = http_get(
+            &addr,
+            &format!("/v1/memory/jobs/finish?token={lease}"),
+            Some(&token),
+        );
+        assert!(finished.contains(r#""finished":true"#), "{finished}");
+        // 交过之后同一个令牌不能再交（任务已经不在跑）。
+        let twice = http_get(
+            &addr,
+            &format!("/v1/memory/jobs/finish?token={lease}"),
+            Some(&token),
+        );
+        assert!(twice.contains(r#""finished":false"#), "{twice}");
+
+        // 状态与落盘：`done` 计一，且**重启之后还在**（路由每次都读盘、改完写回）。
+        let status = http_get(&addr, "/v1/memory/jobs/status", Some(&token));
+        assert!(status.contains(r#""done":1"#), "{status}");
+        let namespace = Namespace::for_bridge("dsh", "default-dev");
+        let on_disk = crate::memory::jobs::load(&namespace).expect("load");
+        assert_eq!(on_disk.jobs.len(), 1);
+        assert_eq!(on_disk.jobs[0].state, crate::memory::jobs::JOB_DONE);
+        assert_eq!(on_disk.jobs[0].key.cursor, 9);
     }
 
     /// 读不出来必须回 `None` 而不是猜一个：技能会把 `None` 报成「插件名缺失」，
