@@ -75,7 +75,7 @@ id 只给桥用。附带：`index.js` 里 `{ session: { id: key.session }, ...ke
    其余候选照常提交——不再整批打回。判据：一组复现评审那组数的参数（255 字标题 + 12 条关键词 +
    2000 字正文）必须被判超，且算出的字节数等于 `buildPath` 的长度；另钉住装配层真的在提交前算。
 
-7. **每次读整份会话日志，且 `evidence_seq` 判据覆盖整个会话** —— 🟡 **判据那一半已修**（2026-10-15）：`from: 0` + `humanSeqs`
+7. **每次读整份会话日志，且 `evidence_seq` 判据覆盖整个会话** —— ✅ 两半都修了（2026-10-15）：`from: 0` + `humanSeqs`
    取自全集，而不是喂给模型的那 64 KiB 切片 → 模型幻觉一个历史人类 seq 就能过；工具输出里的
    注入只要碰上任意历史人类 seq 就可升级成「用户偏好」。**修法**：把上一游标或切片首 seq 冻进
    任务键，作为 `from` 与 `humanSeqs` 的下界。
@@ -85,8 +85,15 @@ id 只给桥用。附带：`index.js` 里 `{ session: { id: key.session }, ...ke
    `parseExtractionOutput` 只认这一段里的人类消息。这条把「工具输出里的指令不能升级成用户偏好」
    重新变成可判据的（原先覆盖整个会话，历史里总能找到一个人类序号）。
    判据：一条「切片外的人类 seq 必须被拒」的用例，**反向验过**。
-   **还差**：读范围仍是 `from: 0`（每次读整份日志）——那要把上一游标冻进任务键，
-   属字段级 schema 变更，与 C4/C5/H7 一起攒在「schema 变更窗口」里。
+   **另一半（读范围）也落了**：`jobs::JobKey` 加了 `from_cursor`（`#[serde(default)]`，旧文件照常
+   读得进来），`enqueue` 在**新建**任务时把它算成「这段会话**最新一个已收尾任务**的游标」
+   （`done` 与 `failed` 都算——失败的也读过了；没有就从 0 开始，即新会话），插件据此
+   `from: key.from_cursor` 读会话日志（`handle.read(from, length)` 与 live 兜底都按它过滤）。
+   `/submit` 另加一道：`start_seq < from_cursor` 直接拒——引用指向**这次没读过的那一段**说明
+   有问题。判据 `a_new_job_starts_where_the_last_settled_one_ended`（排 → 领 → 收尾 → 再排，
+   起点接在上一次终点后面；**游标按会话各算各的**），**反向验过**（起点恒为 0 即红）；
+   插件侧钉住「要从 `from_cursor` 开始读、不许再写死 `from: 0`」。
+   **它不是记忆的 schema**（`jobs.json` 自己一份），所以没等那个窗口。
 8. **`EXTRACTOR_VERSION` 两份** —— ✅ 已修：`policy.js` 改为从 `extract.js` 再导出（只留一份）。
 9. **从不 renew，租约长度等于自己的时限** —— ✅ 已修（2026-10-15）：`LEASE_MS`（从壳发令牌起算）==
    `EXTRACT_TIMEOUT_MS`（从收到回执起算）→ 慢模型跑到 119 s 再提交时租约已过期，旧令牌的

@@ -46,6 +46,10 @@ pub struct JobKey {
     pub session: String,
     pub cursor: u64,
     pub extractor: String,
+    /// **上一游标**：这段会话上次提取到哪儿。插件从它开始读会话日志，而不是每次从 0 读整份
+    /// （独立评审第 7 条）。`#[serde(default)]` 是为了旧文件照常读得进来（0 = 从头读，即旧行为）。
+    #[serde(default)]
+    pub from_cursor: u64,
 }
 
 /// 一次租约：令牌 + 到期时刻。**只有当前令牌能提交**（§8-6）。
@@ -323,6 +327,21 @@ pub fn enqueue(doc: &mut JobsDoc, key: JobKey, now_ms: u64) -> Enqueued {
         doc.jobs.remove(pending[0]);
         evicted = true;
     }
+    // **新任务的起点 = 这段会话上一次提取的终点**（独立评审第 7 条）：插件从 `from_cursor`
+    // 开始读会话日志，而不是每次从 0 读整份（长会话下那是白白重读一遍）。取「最新的**已收尾**
+    // 任务」的游标——`done` 与 `failed` 都算（失败的也读过了，只是没提取出东西）；
+    // 没有已收尾的任务就从 0 开始（新会话、或任务表被清过）。
+    let from_cursor = doc
+        .jobs
+        .iter()
+        .filter(|job| {
+            job.key.session == key.session && (job.state == JOB_DONE || job.state == JOB_FAILED)
+        })
+        .map(|job| job.key.cursor)
+        .max()
+        .unwrap_or(0);
+    let mut key = key;
+    key.from_cursor = from_cursor;
     doc.jobs.push(Job::new(key, now_ms));
     if evicted {
         Enqueued::Evicted
@@ -507,11 +526,46 @@ mod tests {
             session: session.to_string(),
             cursor,
             extractor: "v1".to_string(),
+            // 起点由 `enqueue` 按「这段会话上一次提取到哪儿」算出来（见那条注释），
+            // 用例里给的 0 会在排任务时被覆盖。
+            from_cursor: 0,
         }
     }
 
     fn doc() -> JobsDoc {
         JobsDoc::new()
+    }
+
+    /// **新任务的起点 = 这段会话上一次提取的终点**（独立评审第 7 条）：插件从 `from_cursor`
+    /// 开始读会话日志，而不是每次从 0 读整份。判据走一遍真实的「排 → 领 → 收尾 → 再排」。
+    #[test]
+    fn a_new_job_starts_where_the_last_settled_one_ended() {
+        let mut doc = doc();
+        // 第一次：新会话，从 0 开始。
+        enqueue(&mut doc, key("s1", 10), 0);
+        assert_eq!(doc.jobs[0].key.from_cursor, 0, "新会话从 0 读");
+
+        let claimed = claim_any_due_for(&mut doc, DEBOUNCE_MS, Some("s1"), true).expect("领");
+        finish(&mut doc, &claimed.token, DEBOUNCE_MS);
+
+        // 第二次：起点是上一次的终点（10），不是 0。
+        enqueue(&mut doc, key("s1", 25), DEBOUNCE_MS + 1);
+        let next = doc
+            .jobs
+            .iter()
+            .rfind(|job| job.state == JOB_PENDING)
+            .expect("新任务");
+        assert_eq!(next.key.cursor, 25);
+        assert_eq!(next.key.from_cursor, 10, "起点接在上一次终点后面");
+
+        // **别的会话**不共享游标：B 的第一次仍从 0 开始。
+        enqueue(&mut doc, key("s2", 7), DEBOUNCE_MS + 2);
+        let b = doc
+            .jobs
+            .iter()
+            .find(|job| job.key.session == "s2")
+            .expect("B 的任务");
+        assert_eq!(b.key.from_cursor, 0, "游标按会话各算各的");
     }
 
     /// **入表后要过静默期才领得到**（独立评审第 11 条）：去抖原先只作用于 `enqueue` 的合并，
@@ -602,6 +656,7 @@ mod tests {
                     session: "s1".to_string(),
                     cursor: 5,
                     extractor: "v1".to_string(),
+                    from_cursor: 0,
                 },
                 0,
             )
@@ -654,6 +709,7 @@ mod tests {
                     session: "s1".to_string(),
                     cursor: 5,
                     extractor: "v1".to_string(),
+                    from_cursor: 0,
                 },
                 state: JOB_RUNNING.to_string(),
                 created_at_ms: 0,
