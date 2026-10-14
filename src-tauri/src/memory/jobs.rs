@@ -138,6 +138,8 @@ pub fn mutate<T>(
     action: impl FnOnce(&mut JobsDoc, u64) -> T,
 ) -> Result<T, AppError> {
     let _guard = lock();
+    // 跨进程那层：租约也存在盘上，所以它保护不了跨进程的「读-改-写」（见 `memory::lock`）。
+    let _cross = crate::memory::lock::WriteLock::new(&ns.dir())?;
     let mut doc = load(ns)?;
     let now = now_ms();
     let out = action(&mut doc, now);
@@ -200,12 +202,9 @@ pub fn load(ns: &super::store::Namespace) -> Result<JobsDoc, AppError> {
 /// 写任务表：0600 + 原子替换（与权威记录同一套纪律，说明见 `shell/atomic_write`）。
 pub fn persist(ns: &super::store::Namespace, doc: &JobsDoc) -> Result<(), AppError> {
     ensure_writable(doc)?;
+    // 目录由 `mutate` 拿的那把跨进程锁建好了（`WriteLock::new` 里 `create_dir_all`），
+    // 这里不再重复一次——`jobs.rs` 在 320/320 的反棘轮线上，省下的这五行正好抵掉锁的开销。
     let path = jobs_path(ns);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|error| {
-            AppError::Memory(format!("无法创建记忆目录 {}：{error}", dir.display()))
-        })?;
-    }
     let text = serde_json::to_string_pretty(doc)
         .map_err(|error| AppError::Memory(format!("序列化任务表失败：{error}")))?;
     crate::shell::atomic_write::atomic_write_private(&path, format!("{text}\n").as_bytes())
@@ -428,6 +427,26 @@ pub fn ensure_writable(doc: &JobsDoc) -> Result<(), AppError> {
         )));
     }
     Ok(())
+}
+
+/// **接线判据**：`jobs::mutate` 的临界区里那把跨进程锁真的拿着（摘掉接线即红）。
+///
+/// 任务表的写入同样要跨进程串行：租约存在盘上，它保护不了两个壳各自的「读-改-写」。
+#[test]
+fn jobs_mutate_holds_the_cross_process_lock() {
+    let home = crate::memory::store::testkit::TempHome::new("jobs-lock-wired");
+    let ns = crate::memory::store::testkit::namespace();
+    let mut held = None;
+    mutate(&ns, |_doc, _now| {
+        held = Some(crate::memory::lock::lock_is_held(&ns.dir()));
+    })
+    .expect("写一次");
+    assert_eq!(held, Some(true), "临界区里要拿着跨进程锁");
+    assert!(
+        !crate::memory::lock::lock_is_held(&ns.dir()),
+        "出了临界区要释放"
+    );
+    drop(home);
 }
 
 #[cfg(test)]
