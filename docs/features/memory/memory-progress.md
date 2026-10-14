@@ -345,12 +345,18 @@
   `policy::buildInput` 只取**对话**（用户与助手的文本块），**工具结果整条排除**——设计要求排除凭据，而工具输出
   是凭据最集中的地方，「模式匹配只能减少风险、不能保证发现所有秘密」，所以先做减法；每条按 4 KiB 削短、
   整体按 64 KiB **从最新往回**填，截断时在最前面留一行说明（**不静默截断**：模型要能分清「没看到」与「没发生」）。
-  **还差**：① **读取有限事件范围**（`sessions.flush(session)` → 返回 false 时改用 live 历史；用
+  留下的话**再过一遍凭据掩码**（`mask.js`：`sk-…` / `Bearer <令牌>` / `token=…` 三类形状，
+  削短在掩码**之后**——先截断会把一个凭据切成两半，两半都不再匹配形状）。**脱敏放哪一侧这个缺口已经定了**
+  （见下），**还差**：① **读取有限事件范围**（`sessions.flush(session)` → 返回 false 时改用 live 历史；用
   `sessionPersistence.open(id,'read')` 的 `SessionHandle.read(offset,length)`，**不许用**已废弃的
-  `eventAt`/`snapshotEvents`/`ownEvents`）；② **脱敏那一半有个设计缺口要定**：§8-3 要求复用
-  `diagnostics::run::sanitize`，而它在 **Rust 侧**，插件够不着——要么加一条桥路由，要么在插件里另写一份
-  （两份实现必然漂，所以倾向加路由）；③ 模型调用本身（`prepareCall`/`stream`、`purpose` 省略并审计、
+  `eventAt`/`snapshotEvents`/`ownEvents`）；② 模型调用本身（`prepareCall`/`stream`、`purpose` 省略并审计、
   不创建用户可见对话）
+- ✅ **脱敏放哪一侧（2026-10-15 定）**：设计 §8-3 写的「脱敏复用 `diagnostics::run::sanitize`」**两侧都走不通**
+  ——① 输入是 64 KiB 的会话片段，而桥是 **GET + 查询串**（请求头缓冲固定 8 KB），它根本过不去，只有插件手里
+  有这段文本；② 整个 `sanitize` 除了剥形状，还要把 home 折成 `~` 并把结果**截到 480 字符**（那是给日志行用的，
+  设计原文也写在「失败日志」那一句里）——套到模型输入上等于只给模型看 480 个字符。所以复用的是**形状那一半**：
+  Rust 侧拆出 `diagnostics/mask.rs`（`strip_token_shapes`），插件侧 `mask.js` 是同一套形状，两边的键名表与
+  认证方案名由冒烟测试**读 Rust 源码逐项对比**钉住（各写一份必然漂，而漂的那一侧不报错，只是少抹一个）
 - ⬜ **H6 有 schema 的候选输出 + 来源引用；空集合算成功；取消控制器**（§8-5、§8 末）
 - ⬜ **H7 提交前检查 lease token / 来源有效性 / 抑制指纹；旧版本候选标过期不覆写**（§8-6）
 - ⬜ **H8 断网生成、本地模型缺失时不可用、无云端回退**（§8 末、§10）
@@ -400,6 +406,7 @@
 | `src-tauri/src/memory/cmd.rs` | 面板命令层（13 条 Tauri 命令，`blocking`） | D1–D14、D6a、C13 |
 | `plugins/memory/host/index.js` | 装配层：`agent/created` 注册上下文、`pre-step`、三个工具 | B1–B10、B25–B27、I5 |
 | `plugins/memory/host/policy.js` | 纯策略：注入预算、代次探测、「结果怎么用」、压缩后重置、提取调度与有限输入 | B6–B10、H1、H3、H5 |
+| `plugins/memory/host/mask.js` | 凭据形状的掩码（与 Rust 侧 `diagnostics/mask.rs` 同一套形状，逐项钉住） | H5 |
 | `plugins/memory/host/bridge.js` | 桥客户端：凭据读取、路径拼装、超时与通道上限 | B28、E4 |
 | `plugins/memory/test/smoke.test.mjs` | 策略层与桥客户端用例（19 条，含 2 条接线判据） | 各条的判据 |
 | `ui/src/memory/memory.js` | 面板状态与动作（含 `injectionDisabled`、`injectionText`） | D1–D14、D6a、I7 |

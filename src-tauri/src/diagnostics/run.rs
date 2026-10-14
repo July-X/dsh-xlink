@@ -363,101 +363,13 @@ fn sanitize_with_roots(text: &str, roots: &[PathBuf]) -> String {
             out = out.replace(&root, "~");
         }
     }
-    out = strip_token_shapes(&out);
+    out = super::mask::strip_token_shapes(&out);
     if out.chars().count() > MAX_CHARS {
         let mut truncated: String = out.chars().take(MAX_CHARS).collect();
         truncated.push('…');
         return truncated;
     }
     out
-}
-
-/// 剥掉看起来像凭据的片段。
-///
-/// 只处理**形状明确**的几类（`sk-` 开头的 key、`Bearer ` 头、赋值形态的
-/// token/secret）。刻意不做通用正则去匹配任意长随机串——那会把正常的
-/// 版本号、指纹、端口号也吃掉，反而把证据毁掉。
-fn strip_token_shapes(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        // `sk-` 开头的 key：DeepSeek / OpenAI 风格的最小前缀。
-        if chars[i] == 's' && chars.get(i + 1) == Some(&'k') && chars.get(i + 2) == Some(&'-') {
-            let mut j = i + 3;
-            while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '-') {
-                j += 1;
-            }
-            if j - i > 8 {
-                out.push_str("sk-***");
-                i = j;
-                continue;
-            }
-        }
-        // `Bearer <token>`
-        if chars[i] == 'B' && text_at(&chars, i, "Bearer ") {
-            let mut j = i + 7;
-            while j < chars.len() && !chars[j].is_whitespace() {
-                j += 1;
-            }
-            if j > i + 7 {
-                out.push_str("Bearer ***");
-                i = j;
-                continue;
-            }
-        }
-        // `<key>=<value>` / `<key>: <value>`，键名命中 token/secret/key/password。
-        if chars[i].is_ascii_alphabetic() || chars[i] == '_' {
-            let mut j = i;
-            while j < chars.len()
-                && (chars[j].is_ascii_alphanumeric() || chars[j] == '_' || chars[j] == '-')
-            {
-                j += 1;
-            }
-            let key: String = chars[i..j].iter().collect();
-            let lowered = key.to_ascii_lowercase();
-            let sensitive = [
-                "token",
-                "secret",
-                "apikey",
-                "api_key",
-                "password",
-                "passwd",
-                "credential",
-                "authorization",
-            ]
-            .iter()
-            .any(|needle| lowered.contains(needle));
-            let mut k = j;
-            while k < chars.len() && (chars[k] == ' ' || chars[k] == '=' || chars[k] == ':') {
-                k += 1;
-            }
-            let has_sep = k > j;
-            if sensitive && has_sep {
-                let mut v = k;
-                while v < chars.len() && !chars[v].is_whitespace() && chars[v] != ',' {
-                    v += 1;
-                }
-                if v > k {
-                    out.push_str(&key);
-                    out.push('=');
-                    out.push_str("***");
-                    i = v;
-                    continue;
-                }
-            }
-        }
-        out.push(chars[i]);
-        i += 1;
-    }
-    out
-}
-
-fn text_at(chars: &[char], start: usize, needle: &str) -> bool {
-    needle
-        .chars()
-        .enumerate()
-        .all(|(offset, expected)| chars.get(start + offset) == Some(&expected))
 }
 
 /// 生成运行记录 id：`run-<日期>-<时间>-<随机后缀>`。

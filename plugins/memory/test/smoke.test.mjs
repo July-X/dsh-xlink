@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, readCredentials } from '../host/bridge.js';
+import { AUTH_SCHEMES, SENSITIVE_KEY_NEEDLES, maskSecrets } from '../host/mask.js';
 import {
   afterCompaction,
   buildInput,
@@ -307,6 +308,44 @@ test('回合正常结束且有新的人类消息才排任务', () => {
   assert.equal(shouldScheduleExtraction(state, human(60)).schedule, false);
 });
 
+test('凭据掩码：三类形状抹掉，认不出的原样留着', () => {
+  // 夹具与 Rust 侧 `a_bearer_token_is_stripped_with_its_scheme_word` 同一组。
+  assert.equal(maskSecrets('Authorization: Bearer abc.def.ghi'), 'Authorization=***');
+  assert.equal(maskSecrets('authorization = Basic dXNlcjpwYXNz'), 'authorization=***');
+  assert.equal(maskSecrets('Authorization: Bearer'), 'Authorization=***');
+  assert.equal(maskSecrets('password=hunter2'), 'password=***');
+  assert.equal(maskSecrets('key 是 sk-abcdef1234567890，token=ghp_secretvalue'), 'key 是 sk-***，token=***');
+
+  // 认不出的**不许动**：误抹的是用户写下的正文，而正文是这条链路唯一的价值。
+  assert.equal(maskSecrets('端口 3099，版本 v1.2.3，指纹 a3f9c2'), '端口 3099，版本 v1.2.3，指纹 a3f9c2');
+  assert.equal(maskSecrets('短缩写 sk-1 不算'), '短缩写 sk-1 不算');
+  assert.equal(maskSecrets('正文里提到 token 这个词但不带分隔符'), '正文里提到 token 这个词但不带分隔符');
+  assert.equal(maskSecrets('token: abc123'), 'token=***');
+  assert.equal(maskSecrets('token = abc123'), 'token=***', '空格可以在分隔符两侧');
+  assert.equal(maskSecrets(''), '');
+});
+
+test('掩码的形状表和 Rust 侧逐项一致（两边各写一份必然漂）', () => {
+  const rust = readFileSync(
+    new URL('../../../src-tauri/src/diagnostics/mask.rs', import.meta.url),
+    'utf8'
+  );
+  // 注释里也写着这些词，先剥注释再判（本仓在这上面栽过一次，见 agent-lessons §9）。
+  const code = rust.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const start = code.indexOf('let sensitive = [');
+  const keyBlock = code.slice(start, code.indexOf(']', start));
+  const needles = [...keyBlock.matchAll(/"([a-z_]+)"/g)].map((match) => match[1]).sort();
+  assert.deepEqual(
+    needles,
+    [...SENSITIVE_KEY_NEEDLES].sort(),
+    '键名表漂了的话，漂的那一侧只会**少抹掉一个**，不报错'
+  );
+
+  const schemeBlock = code.slice(code.indexOf('const SCHEMES'), code.indexOf('if !SCHEMES'));
+  const schemes = [...schemeBlock.matchAll(/"(\w+)"/g)].map((match) => match[1]).sort();
+  assert.deepEqual(schemes, [...AUTH_SCHEMES].sort(), '认证方案名也要一致');
+});
+
 test('输入只取对话、按字节削、截断要留标记', () => {
   const tool = {
     type: 'tool/result',
@@ -321,6 +360,18 @@ test('输入只取对话、按字节削、截断要留标记', () => {
 
   const built = buildInput([human(1), tool, assistant(3)]);
   assert.match(built.text, /\[1\] 用户：以后提交前都跑检查/);
+  // **对话里也要过一遍掩码**：用户与助手都会顺手贴 key，而工具那条只是最集中的地方。
+  const leaky = {
+    type: 'user/message',
+    seq: 9,
+    data: {
+      message: { content: [{ type: 'text', text: '用这个 key：sk-abcdef1234567890' }] },
+      source: { kind: 'user' },
+    },
+  };
+  const masked = buildInput([human(1), leaky]);
+  assert.ok(!masked.text.includes('sk-abcdef1234567890'), '对话里的 key 也要抹掉');
+  assert.ok(masked.text.includes('sk-***'));
   assert.match(built.text, /\[3\] 助手：好，我记下了/);
   assert.ok(!built.text.includes('AWS_SECRET'), '工具结果整条排除：那是凭据最集中的地方');
   assert.equal(built.truncated, false);
