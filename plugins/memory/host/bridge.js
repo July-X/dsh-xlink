@@ -64,6 +64,24 @@ export function readCredentials(env = process.env) {
  * @param {object} params - 查询参数。
  * @returns {string} 以 `/v1/memory/` 开头的路径。
  */
+/**
+ * 这条请求**编码后**有多长——与 [`buildPath`] 用同一个 `URLSearchParams` 算法，
+ * 所以它就是通道真正会看到的字节数。
+ *
+ * 为什么要有它（独立评审第 6 条）：正文的上限（8 KiB）是按**原文**定的，而通道上限（7000）
+ * 是按**编码后**算的，中文一字 3 字节、百分号编码再乘 3——逐项都合法的候选合起来可以远超通道。
+ * 评审实测：510 B 标题 + 12 条关键词 + 编码后 5994 B 正文 = **10181 B > 7000**。
+ * 光靠「给标题和关键词留 1000 字节」这种估法挡不住（那 1000 要同时装标题、关键词、工作区路径
+ * 与令牌），所以**提交前按整条路径真算一次**。
+ *
+ * @param {string} route - 路由（`jobs/submit` 等）。
+ * @param {object} params - 参数。
+ * @returns {number} 字节数。
+ */
+export function encodedPathBytes(route, params = {}) {
+  return Buffer.byteLength(buildPath(route, params), 'utf8');
+}
+
 export function buildPath(route, params = {}) {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {

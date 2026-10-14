@@ -30,7 +30,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm';
-import { callMemory, readCredentials } from './bridge.js';
+import { MAX_PATH_BYTES, callMemory, encodedPathBytes, readCredentials } from './bridge.js';
 import { EXTRACTION_SYSTEM_PROMPT, EXTRACTOR_VERSION as EXTRACT_VERSION, buildSlice, parseExtractionOutput } from './extract.js';
 import { readSessionRange } from './sessionlog.js';
 import { runExtraction } from './run.js';
@@ -266,22 +266,34 @@ function apply(ctx) {
             const workspaceId = await resolveWorkspaceId(services.workspaceRegistry, workspace);
             for (const candidate of candidates) {
               // **一条候选一次调用**：壳那边的 `/jobs/submit` 就是这么收的（正文经查询串过去）。
+              const params = {
+                token,
+                session: sessionId,
+                start_seq: 0,
+                end_seq: endSeq,
+                workspace_id: workspaceId,
+                // 依据是壳的规则：没登记工作区时 `project` 会被拒（见 `scopeForWorkspace`）。
+                scope: scopeForWorkspace(workspaceId),
+                workspace: String(workspace ?? ''),
+                title: candidate.title,
+                body: candidate.body,
+                keywords: candidate.keywords.join(','),
+              };
+              // **提交前按整条路径真算一次**（评审第 6 条）：正文的上限按原文定、通道的上限按编码后
+              // 定，中文一乘就是 9 倍——逐项都合法的候选合起来能远超通道，而那种失败是**整批**
+              // 被打回（`callMemory` 的预检在发出去之前就拦了，但那时已经来不及只丢这一条）。
+              // 这里按条判、按条丢，理由里带上真实数字，其余候选照常提交。
+              const pathBytes = encodedPathBytes('jobs/submit', params);
+              if (pathBytes > MAX_PATH_BYTES) {
+                refusals.push(
+                  `「${candidate.title}」编码后 ${pathBytes} 字节，超过通道上限 ${MAX_PATH_BYTES} 字节（中文经 URL 编码约 9 倍）`
+                );
+                continue;
+              }
               const answer = await callMemory({
                 credentials: creds,
                 route: 'jobs/submit',
-                params: {
-                  token,
-                  session: sessionId,
-                  start_seq: 0,
-                  end_seq: endSeq,
-                  workspace_id: workspaceId,
-                  // 依据是壳的规则：没登记工作区时 `project` 会被拒（见 `scopeForWorkspace`）。
-                  scope: scopeForWorkspace(workspaceId),
-                  workspace: String(workspace ?? ''),
-                  title: candidate.title,
-                  body: candidate.body,
-                  keywords: candidate.keywords.join(','),
-                },
+                params,
               });
               if (answer.ok && answer.value?.submitted === true) submitted += 1;
               else refusals.push(answer.value?.reason ?? answer.reason ?? '提交被拒');

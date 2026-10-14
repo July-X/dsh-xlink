@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, readCredentials } from '../host/bridge.js';
+import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, encodedPathBytes, readCredentials } from '../host/bridge.js';
 import { AUTH_SCHEMES, SENSITIVE_KEY_NEEDLES, maskSecrets } from '../host/mask.js';
 import {
   EXTRACTION_SYSTEM_PROMPT,
@@ -83,6 +83,30 @@ test('没有凭据时不发请求，直接给出可读原因', async () => {
   assert.equal(called, 0);
   assert.equal(result.ok, false);
   assert.match(result.reason, /记忆桥/);
+});
+
+test('提交前按**整条路径**算长度：逐项合法的候选合起来也会超通道（评审第 6 条）', () => {
+  // 评审实测过的那组数：510 B 标题 + 12 条关键词 + 编码后 5994 B 正文 = 10181 B > 7000。
+  // 逐项都在自己的限额里，合起来却超——所以判据必须是**整条路径**，靠「给标题留 1000 字节」挡不住。
+  const params = {
+    token: 'a'.repeat(32),
+    session: 'sdk-1750000000000',
+    start_seq: 0,
+    end_seq: 120,
+    workspace_id: 'w-1',
+    scope: 'project',
+    workspace: '/Users/someone/2026/github/dsh-xlink',
+    title: '提'.repeat(255), // 255 字 ≈ 765 B 原文、编码后约 2295 B
+    body: '跑'.repeat(2000),
+    keywords: Array.from({ length: 12 }, (_, index) => `关键词${index}`).join(','),
+  };
+  const bytes = encodedPathBytes('jobs/submit', params);
+  assert.ok(bytes > MAX_PATH_BYTES, `这组参数应当超通道，实际 ${bytes}`);
+  // 与 buildPath 用同一套编码，所以「算出来的」就是「发出去的」。
+  assert.equal(bytes, Buffer.byteLength(buildPath('jobs/submit', params), 'utf8'));
+  // 中文经 URL 编码约 9 倍：同一段正文，原文与编码后不是同一个数。
+  const plain = encodedPathBytes('jobs/submit', { body: '跑'.repeat(1000) });
+  assert.ok(plain > 1000 * 3, `编码后要明显大于原文字节数，实际 ${plain}`);
 });
 
 test('成功路径把 JSON 交给调用方', async () => {
@@ -1297,6 +1321,9 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
     /route: 'jobs\/claim',\s*params: \{ session: String\(sessionId \?\? ''\) \}/,
     '领取要带上自己的会话'
   );
+  // 提交前按整条路径真算一次（评审第 6 条）：逐项合法的候选合起来能超通道，靠估法挡不住。
+  assert.match(code, /encodedPathBytes\('jobs\/submit', params\)/, '提交前要按整条路径算长度');
+  assert.match(code, /refusals\.push\(/, '超了要按条拒、按条记，不能整批打回');
   assert.match(code, /route: 'jobs\/renew'/, '跑得久要续租（评审第 9 条：租约长度 == 自己的时限）');
   assert.match(code, /clearInterval\(renewTimer\)/, '收工要停掉续租计时器');
   assert.match(code, /renewed === false/, '续不到（被接管）要提前收工，别白烧一次模型调用');
