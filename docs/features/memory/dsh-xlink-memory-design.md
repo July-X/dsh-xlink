@@ -257,7 +257,7 @@ flowchart LR
 | `plugins/memory/` | 内置插件 `xlink-memory`：`agent/created` 里按 agent 作用域注册 `xlink.memory` 上下文贡献、`pre-step` 每回合取一次检索（会话级上限 3 次）、`memory_search` 与 `memory_propose` 两个工具；失败一律清空缓存、绝不抛 |
 | `builtins.rs` / `prepare-builtin-plugins.mjs` | 第三个内置插件的登记（`entries` 只有 host 与 package.json、`peers` 只有 `dsh-tools`），两份清单由 `dev-builtin.test.mjs` 钉死 |
 | 单测 | Rust 17 条记忆单测 + 桥 7 条（含端到端）；插件 9 条纯函数测试 |
-| 真实内核挂载验证 | 临时 `DSH_HOME` + 软链 profile 依赖启动 `dsh web`：`--dump-config` 的合成树里能看到 `xlink-memory` 行（绝对路径被规范成 `file://…`），插件 `apply()` 确实执行（标记文件），`inject` 的三个服务全部解析——**“插件级 logger 不可见”这条也是这次实测出来的** |
+| 真实内核挂载验证 | 临时 `DSH_HOME` + 软链 profile 依赖启动 `dsh web`：`--dump-config` 的合成树里能看到 `xlink-memory` 行（绝对路径被规范成 `file://…`），插件 `apply()` 确实执行（标记文件），`inject` 的三个服务全部解析——**“插件级 logger 不可见”这条也是这次实测出来的**。工作区对齐那一轮又验了一次：`ctx.inject(['workspaceRegistry'])` 的回调在 4 秒内拿到服务（标记里 `registryAtApply: ready`），插件照常加载 |
 | 工作区对齐（2026-10-14 晚） | `memory/workspaces.rs` **只读**内核的 `<DSH_HOME>/storages/workspace.json`；面板的「本项目」变成下拉（已知工作区 + 手填兜底），保存时带上真实的 `workspace_id`；插件经 `ctx.inject(['workspaceRegistry'])`（**按需注入，不进 `inject` 数组**）解析 id 随 `id` 参数送桥。`query::scope_matches` 因此是「先 id、再路径」：项目改名/换盘后仍能对上 |
 | 面板的注入插件告警 | 开关打开而 `xlink-memory` 未启用时，面板直说「保存的记忆不会进入任何会话」并给一个启用按钮——这是两个开关，少一个整条链路不生效 |
 
