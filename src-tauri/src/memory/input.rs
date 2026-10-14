@@ -90,6 +90,26 @@ pub(crate) fn clean(
         .map(|keyword| keyword.trim().to_string())
         .filter(|keyword| !keyword.is_empty())
         .collect();
+    // **关键词也要限额**（独立评审第 18 条）：插件那侧有 `MAX_KEYWORDS` / `MAX_KEYWORD_BYTES`
+    // （`extract.js`），壳这边原先一个字都不管——于是「纵深」只有一层，而且关键词还**不进**
+    // 整库体积闸（`doc_bytes` 只数标题与正文）。今天没有第二条能触达的路径，属纵深缺口，
+    // 但这条闸正是防「以后多了一条路径」的。数值与插件逐字对齐，改一边要两边一起改。
+    if keywords.len() > MAX_KEYWORDS {
+        return Err(AppError::Memory(format!(
+            "{subject}的关键词 {} 条，超过上限 {MAX_KEYWORDS} 条。关键词是检索用的索引，不是正文。",
+            keywords.len()
+        )));
+    }
+    if let Some(long) = keywords
+        .iter()
+        .find(|keyword| keyword.len() > MAX_KEYWORD_BYTES)
+    {
+        return Err(AppError::Memory(format!(
+            "关键词「{}」{} 字节，超过单条上限 {MAX_KEYWORD_BYTES} 字节。",
+            long,
+            long.len()
+        )));
+    }
     let (workspace_id, workspace_path) = if scope == SCOPE_GENERAL {
         (String::new(), String::new())
     } else {
@@ -153,16 +173,26 @@ impl<'a> From<&'a super::store::CandidateInput> for Raw<'a> {
 pub(crate) const MAX_DOC_BYTES: usize = 1024 * 1024;
 
 /// 一份文档里标题与正文的总字节数（候选也算：它们同样要被解析）。
+/// 关键词的条数与单条字节上限。**与插件的 `extract.js` 逐字对齐**（`MAX_KEYWORDS` /
+/// `MAX_KEYWORD_BYTES`）：两边不一致时，合法的一侧会被另一侧拒，而用户看到的是一句
+/// 「关键词超过上限」——他会以为是自己写多了。
+pub(crate) const MAX_KEYWORDS: usize = 12;
+pub(crate) const MAX_KEYWORD_BYTES: usize = 64;
+
 pub(crate) fn doc_bytes(doc: &super::store::MemoryDoc) -> usize {
-    let pair = |title: &str, body: &str| title.len() + body.len();
+    // **关键词也算进整库体积**（评审第 18 条）：它们会随记录一起落盘、一起被读出来，
+    // 只数标题与正文等于给「多写关键词」留了一条不计量地撑大文档的路。
+    let pair = |title: &str, body: &str, keywords: &[String]| {
+        title.len() + body.len() + keywords.iter().map(String::len).sum::<usize>()
+    };
     doc.memories
         .iter()
-        .map(|row| pair(&row.title, &row.body))
+        .map(|row| pair(&row.title, &row.body, &row.keywords))
         .sum::<usize>()
         + doc
             .candidates
             .iter()
-            .map(|row| pair(&row.title, &row.body))
+            .map(|row| pair(&row.title, &row.body, &row.keywords))
             .sum::<usize>()
 }
 
@@ -233,6 +263,63 @@ mod tests {
             ensure_doc_growth(MAX_DOC_BYTES + 1, MAX_DOC_BYTES + 1).is_ok(),
             "不变（例如改开关、记一次使用）也要放行"
         );
+    }
+
+    /// **关键词也要限额**（独立评审第 18 条）：插件那侧有上限，壳这边原先一个字都不管——
+    /// 纵深只有一层，而且关键词还不进整库体积闸。数值与插件对齐，判据也钉住这一点。
+    #[test]
+    fn too_many_or_too_long_keywords_are_refused() {
+        let _home = TempHome::new("input-keywords");
+        let many: Vec<String> = (0..MAX_KEYWORDS + 1)
+            .map(|index| format!("k{index}"))
+            .collect();
+        let too_many = clean(raw("正文", &many), VERIFICATION_VERIFIED, "记忆").unwrap_err();
+        assert!(
+            too_many.to_string().contains("超过上限 12 条"),
+            "{too_many}"
+        );
+
+        let long = vec!["甲".repeat(MAX_KEYWORD_BYTES)];
+        let too_long = clean(raw("正文", &long), VERIFICATION_VERIFIED, "记忆").unwrap_err();
+        assert!(too_long.to_string().contains("超过单条上限"), "{too_long}");
+
+        // 正好到顶的两侧都该放行（上限是「不超过」）。
+        let exact: Vec<String> = (0..MAX_KEYWORDS).map(|index| format!("k{index}")).collect();
+        clean(raw("正文", &exact), VERIFICATION_VERIFIED, "记忆").expect("正好 12 条该放行");
+    }
+
+    /// 关键词要算进**整库体积**：它们随记录一起落盘、一起被读出来，不计量就等于留了一条
+    /// 不计量地撑大文档的路。
+    #[test]
+    fn keywords_count_towards_the_document_size() {
+        let _home = TempHome::new("input-doc-bytes");
+        let none = clean(raw("正文", &[]), VERIFICATION_VERIFIED, "记忆").expect("clean");
+        let some = clean(
+            raw("正文", &["构建".to_string(), "检查".to_string()]),
+            VERIFICATION_VERIFIED,
+            "记忆",
+        )
+        .expect("clean");
+        let with = doc_bytes(&doc_with(&some));
+        let without = doc_bytes(&doc_with(&none));
+        assert_eq!(
+            with - without,
+            "构建".len() + "检查".len(),
+            "关键词的字节数要进整库体积"
+        );
+    }
+
+    /// 造一份只含这一条候选的文档（`doc_bytes` 的判据用）。
+    fn doc_with(clean: &Clean) -> super::super::store::MemoryDoc {
+        let mut doc = super::super::store::MemoryDoc::default();
+        doc.candidates.push(super::super::store::MemoryCandidate {
+            scope: clean.scope.clone(),
+            title: clean.title.clone(),
+            body: clean.body.clone(),
+            keywords: clean.keywords.clone(),
+            ..Default::default()
+        });
+        doc
     }
 
     #[test]
