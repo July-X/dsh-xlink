@@ -502,6 +502,7 @@ pub fn run() {
             memory::cmd::memory_save,
             memory::cmd::memory_set_state,
             memory::cmd::memory_delete,
+            memory::cmd::memory_clear,
             memory::cmd::memory_set_enabled,
             memory::cmd::memory_decide_candidate,
             memory::cmd::memory_recent_injections,
