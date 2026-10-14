@@ -432,6 +432,9 @@ fn mutate<T>(
     apply: impl FnOnce(&mut MemoryDoc) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
     let _guard = lock();
+    // 跨进程那层：两个壳指向同一个实例时，进程内这把 Mutex 拦不住对方（见 `memory::lock`）。
+    // 顺序是「先本进程、再跨进程」——同进程的竞争不该去碰文件锁。
+    let _cross = crate::memory::lock::WriteLock::new(&ns.dir())?;
     let mut doc = load(ns)?;
     check_writable(&doc, ns)?;
     // 整库体积的上限在这里判，不在各个写入函数里：这是唯一的写入口，而「变大且越过
@@ -951,6 +954,25 @@ pub(crate) mod testkit {
         let doc = load(&ns).expect("满了也要读得出来");
         assert_eq!(doc.memories.len(), written, "写失败的这次不该留下半份文档");
         println!("[disk-full] 已有的 {written} 条完好");
+    }
+
+    /// **接线判据**：`mutate` 的临界区里那把跨进程锁真的拿着（摘掉接线即红）。
+    #[test]
+    fn mutate_holds_the_cross_process_lock() {
+        let _home = TempHome::new("lock-wired");
+        let ns = namespace();
+        let mut held = None;
+        mutate(&ns, |_doc| {
+            held = Some(crate::memory::lock::lock_is_held(&ns.dir()));
+            Ok(())
+        })
+        .expect("写一次");
+        assert_eq!(held, Some(true), "临界区里要拿着跨进程锁");
+        // 出来之后要放掉：否则下一次写入会白等 500 毫秒再报错。
+        assert!(
+            !crate::memory::lock::lock_is_held(&ns.dir()),
+            "出了临界区要释放"
+        );
     }
 
     pub(crate) fn namespace() -> Namespace {
