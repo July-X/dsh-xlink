@@ -319,13 +319,17 @@ function apply(ctx) {
   // 提取要用的内核服务。**分开注入**：`workspaceRegistry` 那条路是注入用的，缺了只是没有记忆；
   // 这一组缺了只是没有自动提取——两件事的降级方向不同，别绑在一起。
   const extractionServices = {};
-  ctx.inject(['sessions', 'sessionPersistence', 'sessionQuery', 'llm', 'agentDefaultModel'], (scoped) => {
+  ctx.inject(['sessions', 'sessionPersistence', 'sessionQuery', 'llm', 'agentDefaultModel'], () => {
+    // **从这里取服务，但要用根 ctx 取**：`inject` 回调拿到的那个子上下文只在回调期间活着，
+    // 事后通过它读服务会抛「cannot get required service … in inactive context」
+    // （2026-10-15 两侧端到端跑的时候逮到的：durable 读失败要退到 live 兜底，而兜底正需要
+    // `sessions`，于是两个错叠在一起）。`ctx.get` 是**急取**，拿到的就是服务对象本身。
     Object.assign(extractionServices, {
-      sessions: scoped.sessions,
-      sessionPersistence: scoped.sessionPersistence,
-      sessionQuery: scoped.sessionQuery,
-      llm: scoped.llm,
-      agentDefaultModel: scoped.agentDefaultModel,
+      sessions: ctx.get('sessions'),
+      sessionPersistence: ctx.get('sessionPersistence'),
+      sessionQuery: ctx.get('sessionQuery'),
+      llm: ctx.get('llm'),
+      agentDefaultModel: ctx.get('agentDefaultModel'),
     });
   });
 

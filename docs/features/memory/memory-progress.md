@@ -419,8 +419,17 @@
     也验了「这次失败没把任务提交掉，正常长度仍能提交」）。插件因此按 `encodeURIComponent` 的长度
     提前拒（`MAX_ENCODED_BODY_BYTES = MAX_PATH_BYTES - 1000`，`encodeURIComponent` 把空格编成 `%20`
     而 `URLSearchParams` 编成 `+`，所以估算偏保守——宁少收一条，不发一条注定被丢的），判据 3 组、反向验过。
-  **还差 / 没验的**：① 真机本地模型（要用额度，且要定断网怎么验）；② 壳的真任务表与插件的
-  **同一次运行**（现在是两侧各自的测试钉住形状，不是一条端到端进程）。
+  **两侧在同一次运行里也验过了**（2026-10-15，手动夹具 `manual_bridge_for_the_node_probe`）：
+  真内核会话（sdk profile，只有模型是桩）→ 真插件 → **真桥 → 真路由 → 真任务表与真记忆库**。
+  夹具输出：任务表 `done:1`、**记忆库「待确认候选 1 条」**、候选标题与会话都对得上 ✓；
+  第二次任务退回时带的原因是真的业务规则——「这条内容已经在待确认里了（『提交前先跑检查』）。
+  请先在管理面板里处理掉它」（去重闸）。
+  **这一跑逮到一个真 bug**：`ctx.inject([...], (scoped) => …)` 里从**子上下文**读服务并存下来，
+  事后访问会抛「cannot get required service "sessions" in inactive context」——durable 读失败要退到
+  live 兜底，而兜底正需要 `sessions`，于是两个错叠在一起。改成在回调里用**根 ctx 急取**
+  （`ctx.get('sessions')`）。**兜底路径自己从没被真跑过**：它有 6 组假件用例，全绿，但真实接线
+  只有在两端一起跑的时候才露头——这条记进了 agent-lessons §15。
+  **还差 / 没验的**：只剩**真机本地模型**（要用额度，且要定断网怎么验）。
 
 - ✅ **脱敏放哪一侧（2026-10-15 定）**：设计 §8-3 写的「脱敏复用 `diagnostics::run::sanitize`」**两侧都走不通**
   ——① 输入是 64 KiB 的会话片段，而桥是 **GET + 查询串**（请求头缓冲固定 8 KB），它根本过不去，只有插件手里
@@ -530,6 +539,27 @@
 | 3 | **P2 自动提取：真机本地模型那一段**（数据链两侧都已验：插件侧在真内核里跑通整条链，壳侧由真桥往返测试钉住；差 H5 的模型调用、模型调用、H6 输出 schema、H8 取消、H9 的断网生成） | 地基与验收已成：状态机、桥路由、调度判据、有限输入与脱敏、四道提交闸、**整条数据链的端到端验收**与**崩溃恢复**。剩下的每一步都要**真模型**。**C4 的「多来源」与 C5/C6 的语义那一半也并到这里** |
 
 ## 怎么验（判据在哪跑）
+
+### 两侧一起跑：真桥 + 真任务表 + 真记忆库（2026-10-15 通了）
+
+只有模型是桩，其余全真。三步：
+
+```sh
+# ① 起夹具（它把地址与令牌写进 /tmp/p2probe/bridge-cred.json，然后等停止文件）
+cd src-tauri && cargo test --lib manual_bridge_for_the_node_probe -- --ignored --nocapture &
+# ② 拿着握手文件跑一次会话（驱动器尊重这两个环境变量——第一版它硬编码成桩桥，
+#    于是「指向真桥」的那次其实还在打已经被我关掉的桩桥，看起来像插件没打）
+URL=$(python3 -c "import json;print(json.load(open('/tmp/p2probe/bridge-cred.json'))['url'])")
+TOKEN=$(python3 -c "import json;print(json.load(open('/tmp/p2probe/bridge-cred.json'))['token'])")
+DSH_HOME=/tmp/p2probe PROBE_API_KEY=stub \
+  DSH_XLINK_BUILTIN_BRIDGE_URL="$URL" DSH_XLINK_BUILTIN_BRIDGE_TOKEN="$TOKEN" \
+  node /tmp/p2probe/drive-sdk.mjs 4 REAL
+# ③ 收工：夹具接着断言「任务进过表、候选落进库」，并打印每条任务的状态与失败原因
+touch /tmp/p2probe/bridge-stop
+```
+
+**失败原因在壳这边读得到**：插件走 `/jobs/fail` 时把 `stage` 与原因一起报上来，
+夹具直接把 `job.error` 打出来——不必去翻插件的日志（它在 sdk profile 下不进 stdout）。
 
 ### 真机探针：把一个内核会话拉起来（2026-10-15 实测的通路）
 
