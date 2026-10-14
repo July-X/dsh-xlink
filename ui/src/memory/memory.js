@@ -28,6 +28,9 @@ function emptyDraft() {
     body: '',
     keywordsText: '',
     pinned: false,
+    /// 验证范围。面板默认「已验证」——用户自己写下的是他自己确认过的；
+    /// 「已过期」是给「这条事实可能过时了」用的（检索里排后面，但不会消失）。
+    verification: 'verified',
   };
 }
 
@@ -193,6 +196,7 @@ export function editMemory(record) {
     body: record.body,
     keywordsText: (record.keywords || []).join('，'),
     pinned: !!record.pinned,
+    verification: record.verification || 'verified',
   };
   if (record.scope === 'project' && record.workspace_path) rememberProjectPath(record.workspace_path);
 }
@@ -225,7 +229,7 @@ function draftPayload() {
     body: draft.body.trim(),
     keywords,
     pinned: !!draft.pinned,
-    verification: '',
+    verification: draft.verification || 'verified',
     expected_revision: draft.id ? draft.expectedRevision : null,
     source: null,
   };

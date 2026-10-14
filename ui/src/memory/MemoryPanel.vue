@@ -304,6 +304,16 @@ onMounted(() => {
             />
             <el-input v-model="draft.keywordsText" placeholder="关键词，用逗号分隔（用于命中检索）" />
             <el-checkbox v-model="draft.pinned" :disabled="globalBusy">固定项（每次都带上）</el-checkbox>
+            <!--
+              验证范围**不是**置信分数（§6.1）：只三档。给「已过期」一个入口，是因为
+              一条过时的技术事实既不该继续当权威，也不该被悄悄删掉——标出来，让它排在
+              检索结果的后面，用户自己决定什么时候重验或删掉。
+            -->
+            <el-radio-group v-model="draft.verification" :disabled="globalBusy">
+              <el-radio value="verified">已验证</el-radio>
+              <el-radio value="unverified">未验证</el-radio>
+              <el-radio value="stale">已过期（事实可能过时）</el-radio>
+            </el-radio-group>
             <div class="memory-form__actions">
               <el-button
                 type="primary"

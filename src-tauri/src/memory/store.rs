@@ -582,6 +582,8 @@ pub fn save(ns: &Namespace, input: SaveInput) -> Result<MemoryRecord, AppError> 
                 ..MemoryRecord::default()
             };
             doc.memories.push(record.clone());
+            // 用户自己写下了同一条，待确认里的重复候选就没有意义了（§7.2 用户优先）。
+            crate::memory::duplicates::supersede_pending_duplicates(doc, &record.body, &now_iso());
             return Ok(record);
         }
 
@@ -710,11 +712,18 @@ pub fn submit_candidate(
         // 用户刚删掉的东西不许原样长回来（设计 §7.3）。**模型这一侧查**：
         // `memory_propose` 是首版唯一一个「内容由模型说了算」的写入方，删了再提回来
         // 就是它干的。面板那条 `save` 不查——用户自己重新写一条是恢复，不是再生。
-        if doc.meta.suppressed.contains(&fingerprint(&clean.body)) {
+        let value = fingerprint(&clean.body);
+        if doc.meta.suppressed.contains(&value) {
             return Err(AppError::Memory(
                 "这条内容刚被删除过，不再重新收它。若用户确实想恢复，请让他在管理面板里手动新建。"
                     .to_string(),
             ));
+        }
+        // **同一正文不重复收**（§7.2「相同规范化正文可合并来源」的首版做法）：正文指纹
+        // 一样就是同一件事，再收一条只会让待确认清单与检索结果里出现两份。判据在
+        // `duplicates`（那个模块管「同一件事别长成两条」）。
+        if let Some(reason) = crate::memory::duplicates::duplicate_reason(doc, &clean.body) {
+            return Err(AppError::Memory(reason));
         }
         // 待确认的候选到顶后**拒收新的**，而不是丢旧的（见 `MAX_PENDING_CANDIDATES`）。
         // 少了这一道，`memory_propose` 就是一条无上限的写入路径：模型在循环里调一千次，
@@ -818,6 +827,9 @@ pub fn decide_candidate(
         doc.memories.push(record.clone());
         doc.candidates[index].state = CANDIDATE_ACCEPTED.to_string();
         doc.candidates[index].decided_at = now;
+        // 批准之后，待确认里**同一正文**的那些重复候选一并收掉：用户刚刚说「这条要」，
+        // 再让他为同一个内容点一次保存是多余的（§7.2 用户优先）。
+        crate::memory::duplicates::supersede_pending_duplicates(doc, &record.body, &now_iso());
         Ok(Some(record))
     })
 }
@@ -1366,6 +1378,121 @@ mod tests {
     ///
     /// `memory_propose` 是模型能触达的写入路径，循环调一千次就长一千条，而每次
     /// 提交都要把整份文档重写一遍——这一道是那条路径唯一的长度闸。
+    /// 同一正文不重复收：**已有记录**与**已在待确认**两条路都要挡住（§7.2 的首版做法）。
+    /// 只挡精确重复——「意思相近但写法不同」需要模型比对，那是 P2（清单里的 C5）。
+    #[test]
+    fn the_same_body_is_not_collected_twice() {
+        let _home = TempHome::new("dedup");
+        let ns = namespace();
+        save(
+            &ns,
+            project_input("ws-a", "构建前先跑检查", "提交前跑 npm run check"),
+        )
+        .expect("save");
+
+        let dup_record = submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_path: "/tmp/ws-a".to_string(),
+                title: "换个标题也一样".to_string(),
+                body: "提交前跑 npm run check".to_string(),
+                ..CandidateInput::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            dup_record.to_string().contains("已经在记忆里"),
+            "{dup_record}"
+        );
+
+        submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_path: "/tmp/ws-a".to_string(),
+                title: "部署约定".to_string(),
+                body: "部署走 tag".to_string(),
+                ..CandidateInput::default()
+            },
+        )
+        .expect("first candidate");
+        let dup_pending = submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_path: "/tmp/ws-a".to_string(),
+                title: "又说了一遍".to_string(),
+                body: "部署走 tag".to_string(),
+                ..CandidateInput::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            dup_pending.to_string().contains("已经在待确认里"),
+            "{dup_pending}"
+        );
+
+        // 正文不同就不挡（首版没有语义判据，宁可多收一条让人自己看，也不要拿近似当重复）。
+        submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_path: "/tmp/ws-a".to_string(),
+                title: "更细的部署约定".to_string(),
+                body: "部署走 tag，之后补 changelog".to_string(),
+                ..CandidateInput::default()
+            },
+        )
+        .expect("different body");
+    }
+
+    /// 用户自己写下同一条之后，待确认里的重复候选被收掉（§7.2「用户纠正优先于旧候选」）。
+    #[test]
+    fn writing_the_same_body_yourself_retires_the_pending_duplicate() {
+        let _home = TempHome::new("supersede");
+        let ns = namespace();
+        let candidate = submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_path: "/tmp/ws-a".to_string(),
+                title: "会话提的".to_string(),
+                body: "提交前跑 npm run check".to_string(),
+                ..CandidateInput::default()
+            },
+        )
+        .expect("candidate");
+
+        save(
+            &ns,
+            project_input("ws-a", "我自己写的", "提交前跑 npm run check"),
+        )
+        .expect("save");
+
+        let view = list(
+            &ns,
+            &ListFilter {
+                include_candidates: true,
+                ..ListFilter::default()
+            },
+        );
+        assert!(
+            view.candidates.is_empty(),
+            "重复候选该被收掉：{:?}",
+            view.candidates
+        );
+        // **状态改成已拒绝，不是删掉**：文档里留痕，用户问「我提的那条呢」时有据可查。
+        let doc = load(&ns).expect("load");
+        let row = doc
+            .candidates
+            .iter()
+            .find(|row| row.id == candidate.id)
+            .expect("候选要留着");
+        assert_eq!(row.state, CANDIDATE_REJECTED);
+        assert!(!row.decided_at.is_empty());
+    }
+
     #[test]
     fn pending_candidates_are_capped_by_refusing_rather_than_dropping() {
         let _home = TempHome::new("cap");
