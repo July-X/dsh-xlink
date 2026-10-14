@@ -70,6 +70,9 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                     session: query_decoded(path, "session"),
                     cursor: query_decoded(path, "cursor").parse().unwrap_or(0),
                     extractor: query_decoded(path, "extractor"),
+                    // 起点由 `jobs::enqueue` 按「这段会话上一次提取到哪儿」算出来（评审第 7 条），
+                    // 路由这里给 0 就会被它覆盖。
+                    from_cursor: 0,
                 };
                 match jobs::mutate(&namespace, |doc, now| jobs::enqueue(doc, key, now)) {
                     Ok(outcome) => {
@@ -207,6 +210,11 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                 // 只有 `end_seq` 有校验时，一个比它更大的 `start_seq` 会被原样写进库里。
                 Some(_) if start_seq > end_seq => {
                     refuse("来源引用的起点比终点还靠后，这不是一段有效的范围")
+                }
+                // 起点还该在**这次真的读过的那一段**里（评审第 7 条）：插件从 `from_cursor`
+                // 开始读，指到它之前的序号说明它引用的是没给模型看过的内容。
+                Some(job) if start_seq < job.key.from_cursor => {
+                    refuse("来源引用指向这次没有读过的那一段（在起点之前）")
                 }
                 Some(job) => {
                     let input = crate::memory::store::CandidateInput {

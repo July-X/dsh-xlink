@@ -237,7 +237,10 @@ function apply(ctx) {
         // 第一版这里写的是 `{ session: { id: key.session }, ...key }`——展开顺序让内层立即被覆盖，
         // 是个死表达式（评审第 2 条的附带项）。
         key,
-        from: 0,
+        // **从上一游标开始读**（独立评审第 7 条）：壳在排任务时把「这段会话上次提取到哪儿」
+        // 冻进了任务键（`from_cursor`），这里照着读——原先每次都从 0 读整份日志，
+        // 长会话下是白白重读一遍。旧壳没有这个字段时它是 0，即旧行为。
+        from: Number(key.from_cursor ?? 0),
         to: endSeq,
         signal: controller.signal,
         deps: {

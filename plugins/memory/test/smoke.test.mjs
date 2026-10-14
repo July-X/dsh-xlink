@@ -1352,6 +1352,10 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   assert.match(code, /encodedPathBytes\('jobs\/submit', params\)/, '提交前要按整条路径算长度');
   assert.match(code, /refusals\.push\(/, '超了要按条拒、按条记，不能整批打回');
   // 来源引用要带上**那一条**（评审第 17 条）：写死 0 会让库里每条候选的范围都长成 0..cursor。
+  // 读会话日志要**从上一游标开始**（评审第 7 条）：壳把「这段会话上次提取到哪儿」冻在任务键里，
+  // 写死 0 就等于每次都重读整份日志。
+  assert.match(code, /from: Number\(key\.from_cursor \?\? 0\)/, '要从 from_cursor 开始读');
+  assert.ok(!/from: 0,/.test(code), '不许再写死 from: 0');
   assert.match(code, /start_seq: candidate\.evidence_seq/, 'start_seq 要给证据那一条，不能写死');
   assert.ok(!/start_seq: 0,/.test(code), '不许再把 start_seq 写死成 0');
   assert.match(code, /route: 'jobs\/renew'/, '跑得久要续租（评审第 9 条：租约长度 == 自己的时限）');

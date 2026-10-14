@@ -984,6 +984,8 @@ mod tests {
             session: "s-roundtrip".to_string(),
             cursor: 16,
             extractor: "xlink-memory-extract/1".to_string(),
+            // 手动夹具自己造键，起点给 0（与「新会话第一次提取」同形）。
+            from_cursor: 0,
         };
         let past = crate::memory::jobs::now_ms().saturating_sub(60_000);
         crate::memory::jobs::mutate(&ns, |doc, _| {
@@ -1057,6 +1059,8 @@ mod tests {
             session: "s-long".to_string(),
             cursor: 8,
             extractor: "xlink-memory-extract/1".to_string(),
+            // 手动夹具自己造键，起点给 0（与「新会话第一次提取」同形）。
+            from_cursor: 0,
         };
         let past = crate::memory::jobs::now_ms().saturating_sub(60_000);
         crate::memory::jobs::mutate(&ns, |doc, _| {
