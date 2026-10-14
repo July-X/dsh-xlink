@@ -79,6 +79,13 @@ jobs:
       - name: Run script test suites
         run: pnpm run test:scripts
 
+      # 内置插件的纯函数测试（含 xlink-memory 的注入预算状态机）。此前只挂在本地
+      # `npm run check` 上、两个 workflow 都没跑，于是记忆插件那一半在 CI 上完全
+      # 没有网：装配层与参数名契约改错了本地全绿、进 main，到真机才炸。它只用
+      # `node:test`，不装额外依赖。
+      - name: Run builtin plugin test suites
+        run: pnpm run test:plugin
+
       - name: Smoke-test the pull-string launcher
         run: node scripts/smoke-pullstring.mjs
 

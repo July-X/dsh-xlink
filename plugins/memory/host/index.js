@@ -35,6 +35,7 @@ import {
   applyFailure,
   applyResult,
   resolveWorkspaceId,
+  retarget,
   shouldRefresh,
   userText,
 } from './policy.js';
@@ -107,7 +108,7 @@ function apply(ctx) {
         ctx.logger?.warn?.(`${name}: 这个内核没有 agent 作用域的上下文注册面，本次不注入记忆`);
         return;
       }
-      let state = { turn: -1, text: '', injections: 0 };
+      let state = { turn: -1, text: '', injections: 0, workspace: '' };
 
       agent.ctx.systemPrompt.context({
         name: CONTEXT_NAME,
@@ -121,21 +122,27 @@ function apply(ctx) {
         const decision = await next();
         try {
           if (!credentials) return decision;
-          if (!shouldRefresh(state, turn, MAX_INJECTIONS_PER_SESSION)) return decision;
           const workspace = workingDirectory(ctx, subject ?? agent);
+          // **换目录就清空缓存并归零预算**（`retarget`）。会话中途换目录是内核支持
+          // 的，而注入预算是每会话封顶的：不归零的话，A 项目用满三次之后切到 B，
+          // A 的记忆正文会一路留在注入块里——那正是「A 的记忆不进入 B」要挡的。
+          const base = retarget(state, workspace);
+          if (!shouldRefresh(base, turn, MAX_INJECTIONS_PER_SESSION)) return decision;
           const workspaceId = await resolveWorkspaceId(workspaceRegistry, workspace);
           const result = await callMemory({
             credentials,
             route: 'context',
             params: {
+              // `userText` 已按 MAX_QUERY_CHARS 截尾：查询串超 8 KB 时桥会直接
+              // 掐断连接且不回一个字，那一整个回合就会静默地没有记忆。
               q: userText(messages),
-              id: workspaceId,
+              workspace_id: workspaceId,
               workspace,
             },
           });
           state = result.ok
-            ? applyResult(state, turn, result.value?.enabled ? String(result.value.text ?? '') : '')
-            : applyFailure(state, turn);
+            ? applyResult(base, turn, result.value?.enabled ? String(result.value.text ?? '') : '')
+            : applyFailure(base, turn);
           if (!result.ok) {
             ctx.logger?.warn?.(`${name}: 本次检索失败，本回合不注入记忆：${result.reason}`);
           }
@@ -217,7 +224,7 @@ function registerTools(ctx, credentials) {
           route: 'context',
           params: {
             q: String(args.query ?? ''),
-            id: await resolveWorkspaceId(workspaceRegistry, workspace),
+            workspace_id: await resolveWorkspaceId(workspaceRegistry, workspace),
             workspace,
           },
         });
@@ -282,9 +289,10 @@ function registerTools(ctx, credentials) {
           route: 'read',
           params: {
             id: String(args.id ?? ''),
-            // 桥按这两个坐标校验归属：**按 id 读也要过项目这道门**，否则在 B 项目里
-            // 拿着 A 项目的 id 就能读出来。
-            id_workspace: await resolveWorkspaceId(workspaceRegistry, workspace),
+            // 桥按这两个坐标校验归属与状态：**按 id 读也要过项目与「是否停用」两道
+            // 门**，否则在 B 项目里拿着 A 项目的 id 就能读出来，而用户在面板上按的
+            // 「停用」也会被绕过（注入表头里有 id，会话历史里一直留着）。
+            workspace_id: await resolveWorkspaceId(workspaceRegistry, workspace),
             workspace,
           },
         });

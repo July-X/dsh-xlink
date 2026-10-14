@@ -74,10 +74,19 @@ pub const SOURCE_EXTRACT: &str = "extract";
 pub const MAX_MEMORIES: usize = 1000;
 /// 单条正文上限（字节）。超出即拒绝——静默截断会让用户以为存下了全文。
 pub const MAX_BODY_BYTES: usize = 8 * 1024;
+/// 单条标题上限（字节）。**正文限了而标题不限**是一个洞：注入时表头里装着完整
+/// 标题，标题一长 [`crate::memory::query`] 的正文预算就饱和到 0、整条被跳过，
+/// 症状是「检索里排第一的那条就是不出现在注入里」。
+pub const MAX_TITLE_BYTES: usize = 512;
 /// 同源抑制指纹的保留条数。
 pub const MAX_SUPPRESSED: usize = 500;
 /// 候选的保留条数，超出丢最老的**已决**候选。
 pub const MAX_CANDIDATES: usize = 200;
+/// **待确认**候选的条数上限。到顶后拒收新的，而不是丢旧的——待确认的那些是用户
+/// 还没看见的东西，静默丢掉等于模型提过就当没提过。
+///
+/// 与 [`MAX_MEMORIES`] 同一个理由：宁可不收，也不让人以为收下了。
+pub const MAX_PENDING_CANDIDATES: usize = 200;
 
 /// 记忆的命名空间：内核族 + 实例 + profile。
 ///
@@ -422,11 +431,14 @@ fn mutate<T>(
     Ok(outcome)
 }
 
-/// 状态与计数。展示路径**容错读**：文档坏了面板也要能打开，但必须把原因说出来。
-pub fn status(ns: &Namespace) -> MemoryStatus {
+/// 由**已经读出来**的文档算状态摘要。
+///
+/// 单独拆出来是因为 [`list`] 自己已经读过一次了：原先 `list` 把 `status(ns)` 整个
+/// 塞进 `MemoryListView`，于是面板每刷新一次、回环桥每 `memory_read` 一次，整份
+/// JSON 都被多读一遍再解析一遍（满库 1000 条时是好几 MB 的重复解析）。
+fn status_from(ns: &Namespace, doc: &MemoryDoc, warning: Option<String>) -> MemoryStatus {
     let path = ns.file();
     let total_bytes = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-    let (doc, warning) = load_for_display(ns);
     MemoryStatus {
         namespace: ns.key(),
         dir: ns.dir().display().to_string(),
@@ -453,6 +465,31 @@ pub fn status(ns: &Namespace) -> MemoryStatus {
         total_bytes,
         warning,
     }
+}
+
+/// 状态与计数。展示路径**容错读**：文档坏了面板也要能打开，但必须把原因说出来。
+pub fn status(ns: &Namespace) -> MemoryStatus {
+    let (doc, warning) = load_for_display(ns);
+    status_from(ns, &doc, warning)
+}
+
+/// 按 id 取一条记录，**不记使用**。
+///
+/// `include_disabled` 交给调用方定，因为两条调用方的语义相反：回环桥的 `read`
+/// 路由传 `false`——用户在面板上点了「停用」，模型就不该再按 id 读到正文；
+/// 面板自己看一条已停用的记录是另一条命令（`read_and_note_use`），不受这里管。
+///
+/// 走 [`load`] 而不是容错读：文档读不出来时**如实报错**。退成空列表会让回环桥
+/// 回一句「这条记忆不属于当前项目」，把「记忆库坏了」说成「你要的那条不存在」。
+pub fn find_by_id(
+    ns: &Namespace,
+    id: &str,
+    include_disabled: bool,
+) -> Result<Option<MemoryRecord>, AppError> {
+    Ok(load(ns)?
+        .memories
+        .into_iter()
+        .find(|record| record.id == id && (include_disabled || record.state == STATE_ACCEPTED)))
 }
 
 /// 列表：固定项优先，其余按最近修改倒序。
@@ -484,64 +521,22 @@ pub fn list(ns: &Namespace, filter: &ListFilter) -> MemoryListView {
     } else {
         Vec::new()
     };
-    let mut view = MemoryListView {
-        status: status(ns),
+    MemoryListView {
+        status: status_from(ns, &doc, warning),
         memories,
         candidates,
-    };
-    view.status.warning = warning;
-    view
+    }
 }
 
 /// 新建或更新一条记忆。更新走 compare-and-swap：`expected_revision` 与库里不一致
 /// 就拒绝，旧窗口不会覆盖新修改。
 pub fn save(ns: &Namespace, input: SaveInput) -> Result<MemoryRecord, AppError> {
-    let title = input.title.trim().to_string();
-    let body = input.body.trim().to_string();
-    if title.is_empty() && body.is_empty() {
-        return Err(AppError::Memory(
-            "标题和正文都是空的，没有可保存的内容。至少写一句。".to_string(),
-        ));
-    }
-    if body.len() > MAX_BODY_BYTES {
-        return Err(AppError::Memory(format!(
-            "正文 {} 字节，超过单条上限 {MAX_BODY_BYTES} 字节。请拆成几条更短的记忆。",
-            body.len()
-        )));
-    }
-    let scope = if input.scope == SCOPE_GENERAL {
-        SCOPE_GENERAL
-    } else {
-        SCOPE_PROJECT
-    };
-    if scope == SCOPE_PROJECT
-        && input.workspace_id.trim().is_empty()
-        && input.workspace_path.trim().is_empty()
-    {
-        return Err(AppError::Memory(
-            "项目记忆需要绑定一个已登记的工作区；没有工作区时请改存「通用偏好」。".to_string(),
-        ));
-    }
-    let keywords: Vec<String> = input
-        .keywords
-        .iter()
-        .map(|keyword| keyword.trim().to_string())
-        .filter(|keyword| !keyword.is_empty())
-        .collect();
-    let verification = if input.verification.is_empty() {
-        VERIFICATION_VERIFIED.to_string()
-    } else {
-        input.verification.clone()
-    };
-    let (workspace_id, workspace_path) = if scope == SCOPE_GENERAL {
-        (String::new(), String::new())
-    } else {
-        (
-            input.workspace_id.trim().to_string(),
-            // 与 `save` 同一份规范化：候选的路径将来要当匹配键用。
-            crate::memory::workspaces::normalize_path(&input.workspace_path),
-        )
-    };
+    // 输入规范化走共享层：面板与候选两条写入路径必须对「什么算合法」给同一个答案。
+    let clean = crate::memory::input::clean(
+        crate::memory::input::Raw::from(&input),
+        VERIFICATION_VERIFIED,
+        "记忆",
+    )?;
 
     mutate(ns, move |doc| {
         let now = now_iso();
@@ -554,18 +549,18 @@ pub fn save(ns: &Namespace, input: SaveInput) -> Result<MemoryRecord, AppError> 
             }
             let record = MemoryRecord {
                 id: new_id(),
-                scope: scope.to_string(),
-                workspace_id,
-                workspace_path,
-                title,
-                body,
-                keywords,
+                scope: clean.scope,
+                workspace_id: clean.workspace_id,
+                workspace_path: clean.workspace_path,
+                title: clean.title,
+                body: clean.body,
+                keywords: clean.keywords,
                 pinned: input.pinned,
                 source: input
                     .source
                     .clone()
                     .unwrap_or_else(|| MemorySource::manual(&now)),
-                verification,
+                verification: clean.verification,
                 state: STATE_ACCEPTED.to_string(),
                 revision: 1,
                 created_at: now.clone(),
@@ -595,14 +590,14 @@ pub fn save(ns: &Namespace, input: SaveInput) -> Result<MemoryRecord, AppError> 
                 )));
             }
         }
-        record.scope = scope.to_string();
-        record.workspace_id = workspace_id;
-        record.workspace_path = workspace_path;
-        record.title = title;
-        record.body = body;
-        record.keywords = keywords;
+        record.scope = clean.scope;
+        record.workspace_id = clean.workspace_id;
+        record.workspace_path = clean.workspace_path;
+        record.title = clean.title;
+        record.body = clean.body;
+        record.keywords = clean.keywords;
         record.pinned = input.pinned;
-        record.verification = verification;
+        record.verification = clean.verification;
         record.updated_at = now;
         record.revision = record.revision.saturating_add(1);
         Ok(record.clone())
@@ -672,57 +667,47 @@ pub fn submit_candidate(
     ns: &Namespace,
     input: CandidateInput,
 ) -> Result<MemoryCandidate, AppError> {
-    let title = input.title.trim().to_string();
-    let body = input.body.trim().to_string();
-    if title.is_empty() && body.is_empty() {
-        return Err(AppError::Memory(
-            "候选内容为空，没有可提交的东西。".to_string(),
-        ));
-    }
-    if body.len() > MAX_BODY_BYTES {
-        return Err(AppError::Memory(format!(
-            "候选正文 {} 字节，超过单条上限 {MAX_BODY_BYTES} 字节。",
-            body.len()
-        )));
-    }
-    let scope = if input.scope == SCOPE_GENERAL {
-        SCOPE_GENERAL
-    } else {
-        SCOPE_PROJECT
-    };
-    let keywords: Vec<String> = input
-        .keywords
-        .iter()
-        .map(|keyword| keyword.trim().to_string())
-        .filter(|keyword| !keyword.is_empty())
-        .collect();
-    let verification = if input.verification.is_empty() {
-        VERIFICATION_UNVERIFIED.to_string()
-    } else {
-        input.verification.clone()
-    };
-    let (workspace_id, workspace_path) = if scope == SCOPE_GENERAL {
-        (String::new(), String::new())
-    } else {
-        (
-            input.workspace_id.trim().to_string(),
-            // 与 `save` 同一份规范化：候选的路径将来要当匹配键用。
-            crate::memory::workspaces::normalize_path(&input.workspace_path),
-        )
-    };
+    let clean = crate::memory::input::clean(
+        crate::memory::input::Raw::from(&input),
+        VERIFICATION_UNVERIFIED,
+        "候选",
+    )?;
     let source = input.source.clone();
     mutate(ns, move |doc| {
         let now = now_iso();
+        // 用户刚删掉的东西不许原样长回来（设计 §7.3）。**模型这一侧查**：
+        // `memory_propose` 是首版唯一一个「内容由模型说了算」的写入方，删了再提回来
+        // 就是它干的。面板那条 `save` 不查——用户自己重新写一条是恢复，不是再生。
+        if doc.meta.suppressed.contains(&fingerprint(&clean.body)) {
+            return Err(AppError::Memory(
+                "这条内容刚被删除过，不再重新收它。若用户确实想恢复，请让他在管理面板里手动新建。"
+                    .to_string(),
+            ));
+        }
+        // 待确认的候选到顶后**拒收新的**，而不是丢旧的（见 `MAX_PENDING_CANDIDATES`）。
+        // 少了这一道，`memory_propose` 就是一条无上限的写入路径：模型在循环里调一千次，
+        // 文档就长一千条，而每次调用都要把整份文档重写一遍。
+        let pending = doc
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.state == CANDIDATE_PENDING)
+            .count();
+        if pending >= MAX_PENDING_CANDIDATES {
+            return Err(AppError::Memory(format!(
+                "这个实例已有 {MAX_PENDING_CANDIDATES} 条待确认候选。再提交会让用户面对一个很长的清单——\
+                 请先在管理面板的「待确认」里处理掉一些。"
+            )));
+        }
         let candidate = MemoryCandidate {
             id: new_id(),
-            scope: scope.to_string(),
-            workspace_id,
-            workspace_path,
-            title,
-            body,
-            keywords,
+            scope: clean.scope,
+            workspace_id: clean.workspace_id,
+            workspace_path: clean.workspace_path,
+            title: clean.title,
+            body: clean.body,
+            keywords: clean.keywords,
             source,
-            verification,
+            verification: clean.verification,
             state: CANDIDATE_PENDING.to_string(),
             created_at: now,
             decided_at: String::new(),
@@ -876,6 +861,19 @@ pub(crate) mod testkit {
         }
     }
 
+    /// 项目候选。**必须带工作区坐标**：没有坐标的项目候选谁都检索不到
+    /// （`query::scope_matches` 两项都空一律不通过），收下来只是躺在「待确认」里。
+    pub(crate) fn candidate_input(title: &str, body: &str) -> CandidateInput {
+        CandidateInput {
+            scope: SCOPE_PROJECT.to_string(),
+            workspace_id: "ws-a".to_string(),
+            workspace_path: "/tmp/ws-a".to_string(),
+            title: title.to_string(),
+            body: body.to_string(),
+            ..CandidateInput::default()
+        }
+    }
+
     pub(crate) fn read_doc(ns: &Namespace) -> MemoryDoc {
         serde_json::from_str(&fs::read_to_string(ns.file()).expect("doc")).expect("json")
     }
@@ -883,7 +881,9 @@ pub(crate) mod testkit {
 
 #[cfg(test)]
 mod tests {
-    use super::testkit::{general_input, namespace, project_input, read_doc, TempHome};
+    use super::testkit::{
+        candidate_input, general_input, namespace, project_input, read_doc, TempHome,
+    };
     use super::*;
     use std::path::Path;
 
@@ -909,42 +909,60 @@ mod tests {
     fn a_hand_typed_path_is_normalized_at_the_write_entry() {
         let _home = TempHome::new("normalize");
         let ns = namespace();
-        // 真建一个目录，再用一条符号链接 + 结尾斜杠指向它：这正是手填最容易出的形状。
         let real = std::env::temp_dir().join(format!("dsh-memory-norm-{}", std::process::id()));
         let _ = fs::remove_dir_all(&real);
         fs::create_dir_all(&real).expect("mkdir");
         let link = real.with_extension("link");
         let _ = fs::remove_file(&link);
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&real, &link).expect("symlink");
 
-        let canonical = fs::canonicalize(&real)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let saved = save(
+        // 期望值走**同一个**规范化函数，而不是 `fs::canonicalize` 的原始结果：
+        // Windows 上后者带 `\\?\` 前缀而 `normalize_path` 会剥掉它，拿它当期望就
+        // 让这条用例只在 macOS 上成立（Windows CI 那个 job 只跑 `cargo check`、
+        // 从不执行测试，于是它一直绿着——直到有人真的在 Windows 上跑一遍）。
+        let canonical = crate::memory::workspaces::normalize_path(&real.display().to_string());
+
+        // 两个平台都能验的那一半：已存在的目录 + 结尾斜杠 + 首尾空白 → 归到 realpath。
+        let direct = save(
             &ns,
             SaveInput {
                 scope: SCOPE_PROJECT.to_string(),
-                workspace_path: format!("{}//", link.display()),
+                workspace_path: format!("  {}//  ", real.display()),
                 title: "构建命令".to_string(),
                 body: "用 npm run check".to_string(),
                 ..SaveInput::default()
             },
         )
         .expect("save");
-        assert_eq!(
-            saved.workspace_path, canonical,
-            "存下来的必须是 realpath：内核给的路径就是那个形式"
-        );
+        assert_eq!(direct.workspace_path, canonical, "存下来的必须是 realpath");
 
-        // 内核那侧按 realpath 查得到它。
-        set_use_approved(&ns, true).expect("enable");
-        let hits =
-            crate::memory::query::retrieve(&ns, "构建命令", "", &canonical).expect("retrieve");
-        assert_eq!(hits.hits.len(), 1, "规范化之后要能命中");
-
-        let _ = fs::remove_file(&link);
+        // 符号链接那一半只在 unix 上成立：Windows 上建符号链接要管理员权限或开发者
+        // 模式，而这条断言在那边的形状是「路径不存在时退回去尾分隔符」——那是
+        // `normalize_path` 另一条分支（`workspaces` 里另有用例钉它）。
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&real, &link).expect("symlink");
+            let via_link = save(
+                &ns,
+                SaveInput {
+                    scope: SCOPE_PROJECT.to_string(),
+                    workspace_path: format!("{}//", link.display()),
+                    title: "构建命令".to_string(),
+                    body: "用 npm run check".to_string(),
+                    ..SaveInput::default()
+                },
+            )
+            .expect("save");
+            assert_eq!(
+                via_link.workspace_path, canonical,
+                "符号链接也要归到 realpath"
+            );
+            // 内核那侧按 realpath 查得到它。
+            set_use_approved(&ns, true).expect("enable");
+            let hits =
+                crate::memory::query::retrieve(&ns, "构建命令", "", &canonical).expect("retrieve");
+            assert_eq!(hits.hits.len(), 1, "规范化之后要能命中");
+            let _ = fs::remove_file(&link);
+        }
         let _ = fs::remove_dir_all(&real);
     }
 
@@ -1131,19 +1149,214 @@ mod tests {
     fn rejecting_a_candidate_creates_nothing() {
         let _home = TempHome::new("reject");
         let ns = namespace();
-        let candidate = submit_candidate(
-            &ns,
-            CandidateInput {
-                title: "看起来不对的结论".to_string(),
-                body: "正文".to_string(),
-                ..CandidateInput::default()
-            },
-        )
-        .expect("submit");
+        let candidate =
+            submit_candidate(&ns, candidate_input("看起来不对的结论", "正文")).expect("submit");
         assert!(decide_candidate(&ns, &candidate.id, false)
             .expect("decide")
             .is_none());
         assert!(status(&ns).accepted == 0);
         assert_eq!(status(&ns).pending_candidates, 0);
+    }
+
+    #[test]
+    fn an_over_long_title_is_refused_like_an_over_long_body() {
+        let _home = TempHome::new("title-limit");
+        let ns = namespace();
+        // 正文限了而标题不限是一个洞：注入表头里装着完整标题，标题一长正文预算
+        // 饱和到 0、整条被跳过，症状是「排第一的那条就是不注入」。
+        let long = "标".repeat(MAX_TITLE_BYTES);
+        let error = save(
+            &ns,
+            SaveInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_id: "ws-a".to_string(),
+                title: long.clone(),
+                body: "正文".to_string(),
+                ..SaveInput::default()
+            },
+        )
+        .expect_err("must refuse");
+        assert!(error.to_string().contains("标题"), "{error}");
+
+        let candidate_error =
+            submit_candidate(&ns, candidate_input(&long, "正文")).expect_err("候选也必须拒");
+        assert!(
+            candidate_error.to_string().contains("标题"),
+            "{candidate_error}"
+        );
+        // 边界内照常放行。
+        assert!(save(
+            &ns,
+            project_input("ws-a", &"标".repeat(MAX_TITLE_BYTES / 3), "正文")
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn a_deleted_body_is_not_accepted_back_from_the_model() {
+        let _home = TempHome::new("suppress");
+        let ns = namespace();
+        let saved =
+            save(&ns, project_input("ws-a", "约定", "提交前跑 npm run check")).expect("save");
+        delete(&ns, &saved.id).expect("delete");
+
+        // 模型这一侧拒：设计 §7.3「相同来源不能自动再生」。
+        let refused = submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_id: "ws-a".to_string(),
+                title: "又来了".to_string(),
+                body: "提交前跑   npm run check".to_string(),
+                ..CandidateInput::default()
+            },
+        )
+        .expect_err("刚删掉的内容不许原样回来");
+        assert!(refused.to_string().contains("刚被删除"), "{refused}");
+        assert_eq!(status(&ns).pending_candidates, 0);
+
+        // 面板那一侧不查：用户自己重新写一条是**恢复**，不是再生。
+        assert!(save(&ns, project_input("ws-a", "约定", "提交前跑 npm run check")).is_ok());
+    }
+
+    /// 待确认候选到顶后**拒收新的**，而不是丢旧的。
+    ///
+    /// `memory_propose` 是模型能触达的写入路径，循环调一千次就长一千条，而每次
+    /// 提交都要把整份文档重写一遍——这一道是那条路径唯一的长度闸。
+    #[test]
+    fn pending_candidates_are_capped_by_refusing_rather_than_dropping() {
+        let _home = TempHome::new("cap");
+        let ns = namespace();
+        for index in 0..MAX_PENDING_CANDIDATES {
+            submit_candidate(
+                &ns,
+                candidate_input(&format!("候选 {index}"), &format!("正文 {index}")),
+            )
+            .expect("submit");
+        }
+        assert_eq!(status(&ns).pending_candidates, MAX_PENDING_CANDIDATES);
+
+        let refused =
+            submit_candidate(&ns, candidate_input("再加一条", "正文")).expect_err("到顶后拒收");
+        assert!(refused.to_string().contains("待确认"), "{refused}");
+        let view = list(
+            &ns,
+            &ListFilter {
+                include_candidates: true,
+                ..ListFilter::default()
+            },
+        );
+        assert_eq!(
+            view.candidates.len(),
+            MAX_PENDING_CANDIDATES,
+            "拒收不许顺手裁掉一条"
+        );
+    }
+
+    /// 已决候选的裁剪**只动已决的那些**，一条待确认都不能少。
+    ///
+    /// 钉的是那段下标算术：删掉一条之后剩下的下标要整体前移一位，漏了这一步会静默
+    /// 删掉一条**待确认**候选——那是用户还没看见的东西。全文件最容易写错的一段。
+    ///
+    /// 走正常提交路径永远到不了「一次要删两条」那个分支（每次提交都会把总数裁回
+    /// 上限），所以这里直接落一份**超上限**的文档——那正是降版本或换实现之后会有的形状。
+    #[test]
+    fn trimming_decided_candidates_never_drops_a_pending_one() {
+        let _home = TempHome::new("trim");
+        let ns = namespace();
+        fs::create_dir_all(ns.dir()).expect("dir");
+        let total = MAX_CANDIDATES + 2;
+        // 前 5 条是**已决**的：它们才是允许被裁掉的那些。留够 5 条是为了让一次提交
+        // 之后要连删三条——那条「剩下的下标要整体前移」的路径只有连删时才走得到。
+        let decided: usize = 5;
+        let candidates: Vec<MemoryCandidate> = (0..total)
+            .map(|index| MemoryCandidate {
+                id: format!("c{index}"),
+                title: format!("候选 {index}"),
+                body: format!("正文 {index}"),
+                state: if index < decided {
+                    CANDIDATE_REJECTED.to_string()
+                } else {
+                    CANDIDATE_PENDING.to_string()
+                },
+                ..MemoryCandidate::default()
+            })
+            .collect();
+        let mut doc = MemoryDoc::default();
+        doc.meta.schema_version = SCHEMA_VERSION;
+        doc.candidates = candidates;
+        fs::write(ns.file(), serde_json::to_string_pretty(&doc).expect("json"))
+            .expect("seed over-cap doc");
+
+        submit_candidate(&ns, candidate_input("新来的", "正文")).expect("submit");
+
+        let after = read_doc(&ns);
+        assert!(
+            after.candidates.len() <= MAX_CANDIDATES,
+            "总数要回到上限内：{}",
+            after.candidates.len()
+        );
+        // 连删三条、按升序删：c0/c1/c2 走，下标前移算对了的话它们正好是这三条。
+        for index in 0..(decided - 2) {
+            let id = format!("c{index}");
+            assert!(
+                !after.candidates.iter().any(|row| row.id == id),
+                "已决候选 {id} 应当被裁掉"
+            );
+        }
+        // 还剩下的已决候选一条不许少。
+        for index in (decided - 2)..decided {
+            let id = format!("c{index}");
+            assert!(
+                after.candidates.iter().any(|row| row.id == id),
+                "已决候选 {id} 不该在这轮被裁"
+            );
+        }
+        // 待确认的一条都不能少——下标没前移到位就会误删它们中的某一条。
+        for index in decided..total {
+            let id = format!("c{index}");
+            assert!(
+                after.candidates.iter().any(|row| row.id == id),
+                "待确认候选 {id} 被误删了"
+            );
+        }
+        assert!(after.candidates.iter().any(|row| row.title == "新来的"));
+    }
+
+    /// `find_by_id` 的启用状态过滤：面板要能看已停用的，模型不许。
+    #[test]
+    fn find_by_id_hides_disabled_records_unless_asked() {
+        let _home = TempHome::new("find");
+        let ns = namespace();
+        let saved = save(&ns, project_input("ws-a", "条目", "正文")).expect("save");
+        set_state(&ns, &saved.id, STATE_DISABLED).expect("disable");
+
+        assert!(
+            find_by_id(&ns, &saved.id, false)
+                .expect("readable")
+                .is_none(),
+            "模型这一侧看不见已停用的"
+        );
+        assert!(
+            find_by_id(&ns, &saved.id, true)
+                .expect("readable")
+                .is_some(),
+            "面板自己看得到"
+        );
+        assert!(find_by_id(&ns, "nope", true).expect("readable").is_none());
+    }
+
+    /// 文档读不出来时 `find_by_id` **如实报错**，而不是退成空列表。
+    ///
+    /// 退成空的话，回环桥会回一句「这条记忆不属于当前项目」，用户去查自己的项目 id，
+    /// 而真因是盘上那份文件坏了。
+    #[test]
+    fn find_by_id_reports_a_corrupt_document() {
+        let _home = TempHome::new("find-corrupt");
+        let ns = namespace();
+        fs::create_dir_all(ns.dir()).expect("dir");
+        fs::write(ns.file(), "{ 坏的").expect("write");
+        let error = find_by_id(&ns, "任何", true).expect_err("must refuse");
+        assert!(error.to_string().contains("记忆库读不出来"), "{error}");
     }
 }

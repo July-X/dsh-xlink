@@ -162,9 +162,10 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
             let namespace = memory_namespace(scope_key);
             let query = query_decoded(path, "q");
             let workspace = query_decoded(path, "workspace");
-            // `id` 是插件经工作区注册表解析出来的内核 id；解析不到就只带路径，
-            // 后端按路径兜底匹配（见 `query::scope_matches`）。
-            let workspace_id = query_decoded(path, "id");
+            // `workspace_id` 是插件经工作区注册表解析出来的内核 id；解析不到就只带路径，
+            // 后端按路径兜底匹配（见 `query::scope_matches`）。三条路由统一叫
+            // `workspace_id`——`read` 那条的 `id` 是**记忆 id**，两处同名必然记混。
+            let workspace_id = query_decoded(path, "workspace_id");
             match crate::memory::query::retrieve(&namespace, &query, &workspace_id, &workspace) {
                 Ok(context) => {
                     note_memory_call(
@@ -195,24 +196,41 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
                 );
                 return;
             }
-            // **按 id 读也要过项目这道门**：id 猜不到，但会话历史里留着旧 id，不校验
-            // 就能在 B 项目里把 A 项目的记忆读出来（设计承诺的是不进入）。通用偏好对
-            // 谁都算；项目记录必须与调用方给的坐标对得上。
+            // **按 id 读也要过两道门**：项目归属，与启用状态。
+            //
+            // · 项目：id 猜不到，但会话历史里留着旧 id，不校验就能在 B 项目里把 A
+            //   项目的记忆读出来（设计承诺的是不进入）。通用偏好对谁都算；项目记录
+            //   必须与调用方给的坐标对得上。
+            // · 状态：`find_by_id(.., false)` 把**已停用**的挡在外面。用户点了「停用」
+            //   就是不想再被模型用着，而注入块的表头里有 id（`[id] 标题`），会话历史里
+            //   因此一直留着它——只挡检索不挡按 id 读，停用这个按钮对模型就是无效的。
             //
             // 顺序是「先查、再判、最后计数」：反过来会让**被拒的读也记一次使用**，
             // 统计被越权尝试污染。
             let workspace = query_decoded(path, "workspace");
-            let workspace_id = query_decoded(path, "id_workspace");
-            let allowed = crate::memory::query::find(&namespace, &id).is_some_and(|record| {
+            let workspace_id = query_decoded(path, "workspace_id");
+            let found = match crate::memory::store::find_by_id(&namespace, &id, false) {
+                Ok(found) => found,
+                Err(error) => {
+                    // 文档读不出来时**如实说读不出来**，不退成「不属于当前项目」——
+                    // 后者会让用户去查自己有没有记错项目 id，而真因在盘上那份文件。
+                    note_memory_call("read", "denied=unreadable");
+                    let body = serde_json::json!({ "error": error.to_string() }).to_string();
+                    let _ =
+                        crate::openai::http::write_response(stream, 500, "application/json", &body);
+                    return;
+                }
+            };
+            let allowed = found.is_some_and(|record| {
                 crate::memory::query::scope_matches(&record, &workspace_id, &workspace)
             });
             if !allowed {
-                note_memory_call("read", "denied=out-of-scope");
+                note_memory_call("read", "denied=out-of-scope-or-disabled");
                 let _ = crate::openai::http::write_response(
                     stream,
                     404,
                     "application/json",
-                    r#"{"error":"这条记忆不属于当前项目"}"#,
+                    r#"{"error":"这条记忆不属于当前项目，或已被停用"}"#,
                 );
                 return;
             }
@@ -522,7 +540,7 @@ mod tests {
         );
 
         // 按内核工作区 id 匹配：项目改名 / 换盘之后路径对不上，仍要命中
-        // （插件经工作区注册表解析出 id 随 `id` 参数送过来）。
+        // （插件经工作区注册表解析出 id 随 `workspace_id` 参数送过来）。
         store::save(
             &namespace,
             SaveInput {
@@ -537,7 +555,7 @@ mod tests {
         .expect("seed renamed project");
         let by_id = http_get(
             &addr,
-            "/v1/memory/context?q=%E6%8F%90%E4%BA%A4&id=ws-renamed&workspace=%2Fnew%2Flocation",
+            "/v1/memory/context?q=%E6%8F%90%E4%BA%A4&workspace_id=ws-renamed&workspace=%2Fnew%2Flocation",
             Some(&token),
         );
         assert!(by_id.starts_with("HTTP/1.1 200"), "{by_id}");
@@ -627,8 +645,53 @@ mod tests {
         );
         assert!(!used.last_used_at.is_empty());
 
+        // **停用也要挡按 id 读**：注入块的表头是 `[id] 标题`，所以 id 一直留在会话
+        // 历史里——只挡检索不挡 `memory_read`，用户在面板上按的「停用」对模型就是无效的。
+        store::set_state(&namespace, &target.id, crate::memory::store::STATE_DISABLED)
+            .expect("disable");
+        let after_disable = http_get(
+            &addr,
+            &format!(
+                "/v1/memory/read?id={}&workspace=%2Ftmp%2Fdemo%20repo",
+                target.id
+            ),
+            Some(&token),
+        );
+        assert!(
+            after_disable.starts_with("HTTP/1.1 404"),
+            "停用之后按 id 读必须被拒：{after_disable}"
+        );
+        assert!(after_disable.contains("已被停用"), "{after_disable}");
+        // 检索侧同样看不到它了（这条是状态过滤，不是归属过滤）。
+        let context_after_disable = http_get(
+            &addr,
+            "/v1/memory/context?q=%E6%9E%84%E5%BB%BA%E5%89%8D&workspace=%2Ftmp%2Fdemo%20repo",
+            Some(&token),
+        );
+        assert!(
+            !context_after_disable.contains(target.id.as_str()),
+            "停用之后检索里不该再有它：{context_after_disable}"
+        );
+        // 被拒的读不计数：上一步那次成功读仍然是 1。
+        let counted = store::list(
+            &namespace,
+            &ListFilter {
+                include_disabled: true,
+                ..ListFilter::default()
+            },
+        )
+        .memories
+        .into_iter()
+        .find(|row| row.id == target.id)
+        .expect("still there");
+        assert_eq!(counted.use_count, 1, "被拒的那次不计数");
+
         let missing = http_get(&addr, "/v1/memory/read?id=nope", Some(&token));
         assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
+
+        // 空 id：400，而不是拿着空串去查一遍再回一句「不属于当前项目」。
+        let empty_id = http_get(&addr, "/v1/memory/read", Some(&token));
+        assert!(empty_id.starts_with("HTTP/1.1 400"), "{empty_id}");
 
         let _ = fs::remove_dir_all(&home);
     }

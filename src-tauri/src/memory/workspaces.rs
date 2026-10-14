@@ -222,6 +222,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&dir, &link).unwrap();
 
+        #[cfg(unix)]
         let canonical = std::fs::canonicalize(&dir).unwrap();
         #[cfg(unix)]
         assert_eq!(
@@ -229,9 +230,12 @@ mod tests {
             canonical.to_string_lossy(),
             "符号链接与结尾斜杠都要归到 realpath"
         );
+        // 去首尾空白这一条**不限平台**：期望值必须走同一个规范化函数——直接拿
+        // `fs::canonicalize` 的原始结果，在 Windows 上会带着 `\\?\` 前缀而对不上
+        // （`normalize_path` 会剥掉它）。写成无条件的，Windows 上才真的被验到。
         assert_eq!(
             normalize_path(&format!("  {}  ", dir.display())),
-            canonical.to_string_lossy()
+            normalize_path(&dir.display().to_string())
         );
         // 目录还不存在（用户先写记忆、后建项目）：只去空白与结尾分隔符，不拒绝。
         assert_eq!(
@@ -239,7 +243,13 @@ mod tests {
             "/tmp/not/created/yet"
         );
         assert_eq!(normalize_path("   "), "");
-        assert_eq!(normalize_path("/"), "/");
+        // 去掉结尾分隔符之后仍然是根目录，不能被削成空串。**不钉字面量**：
+        // unix 上是 `/`，Windows 上 `canonicalize("/")` 解析成当前盘符的根（`C:\`），
+        // 写死任何一边都会让另一边的 CI 红。
+        let root = normalize_path("/");
+        assert!(!root.is_empty(), "根目录不该被削成空串");
+        #[cfg(unix)]
+        assert_eq!(root, "/");
         let _ = std::fs::remove_file(&link);
         let _ = std::fs::remove_dir_all(&dir);
     }

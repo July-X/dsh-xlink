@@ -141,13 +141,15 @@ pub async fn memory_open_exports(app: tauri::AppHandle) -> Result<(), String> {
         &namespace.profile,
     )
     .join("exports");
-    if let Err(error) = std::fs::create_dir_all(&dir) {
-        return Err(format!(
-            "无法访问导出目录 {}：{error}。请检查该目录的写入权限。",
-            dir.display()
-        ));
-    }
+    // 建目录也放进 `blocking`：这条路径在机械盘上时 `mkdir` 不是免费的，
+    // 而 Tauri 命令的 async 上下文里阻塞是错的（根 AGENTS.md 的约定）。
     blocking(move || {
+        std::fs::create_dir_all(&dir).map_err(|error| {
+            format!(
+                "无法访问导出目录 {}：{error}。请检查该目录的写入权限。",
+                dir.display()
+            )
+        })?;
         app.opener()
             .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
             .map_err(|error| format!("无法打开导出目录：{error}"))
