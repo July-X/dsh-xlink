@@ -158,7 +158,12 @@ export function saveMemory() {
   const editing = !!payload.id;
   return withLoading('memorySave', () =>
     invoke('memory_save', { input: payload })
-      .then(() => {
+      .then((record) => {
+        // 后端把项目路径规范化成内核那种 realpath（符号链接、结尾斜杠），
+        // 回填一次，免得面板显示的还是手填的那串、下次保存又原样送回去。
+        if (record && record.scope === 'project' && record.workspace_path) {
+          rememberProjectPath(record.workspace_path);
+        }
         toast(editing ? '记忆已更新' : '记忆已保存', 3000, 'success');
         resetDraft();
         return refreshMemory({ silent: true });
