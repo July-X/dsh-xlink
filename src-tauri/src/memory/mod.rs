@@ -12,6 +12,7 @@ pub(crate) mod duplicates;
 pub(crate) mod export;
 pub(crate) mod input;
 pub(crate) mod jobs;
+pub(crate) mod jobs_routes;
 pub(crate) mod lock;
 pub(crate) mod query;
 pub(crate) mod recent;
