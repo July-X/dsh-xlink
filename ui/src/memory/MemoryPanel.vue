@@ -183,7 +183,9 @@ onMounted(() => {
             <h2>待确认（{{ candidates.length }}）</h2>
           </div>
           <p class="memory-hint">
-            这些是模型或会话提出的候选：正文与来源都摆在这里，**只有你点保存才会成为记忆**。
+            这些是模型或会话提出的候选：正文与来源都摆在这里，只有你点保存才会成为记忆。
+            要存成「所有项目都算」的通用偏好时用右边那个按钮——先确认正文里没有路径、客户名
+            之类的私有信息，通用偏好会跟着你去别的项目。
           </p>
           <div class="page-list">
             <div v-for="item in candidates" :key="item.id" class="page-row memory-row">
@@ -206,6 +208,16 @@ onMounted(() => {
                   @click="decideCandidate(item, true)"
                 >
                   保存
+                </el-button>
+                <el-button
+                  v-if="item.scope !== 'general'"
+                  size="small"
+                  text
+                  :loading="isLoading('memoryCandidate:' + item.id)"
+                  :disabled="globalBusy"
+                  @click="decideCandidate(item, true, 'general')"
+                >
+                  存为通用偏好
                 </el-button>
                 <el-button
                   size="small"

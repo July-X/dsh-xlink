@@ -131,6 +131,26 @@ test('面板有范围筛选，行里显示来源与验证状态', () => {
   }
 });
 
+test('批准候选时能当场选范围（§6.1：由用户明确选择通用范围）', async () => {
+  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  assert.match(
+    tpl,
+    /@click="decideCandidate\(item, true, 'general'\)"/,
+    '候选卡片要有「存为通用偏好」'
+  );
+  assert.match(tpl, /v-if="item\.scope !== 'general'"/, '已经是通用偏好的候选不必再给这个按钮');
+  // 私有信息那句话必须在：通用偏好会跟着用户去别的项目（§6.1 要求提升前去掉路径与客户名）。
+  assert.match(tpl, /先确认正文里没有路径、客户名/);
+
+  const src = read('../src/memory/memory.js');
+  assert.match(
+    src,
+    /invoke\('memory_decide_candidate', \{ id: candidate\.id, accept, scope \}\)/,
+    'scope 要真的发给后端'
+  );
+  assert.match(src, /已存为通用偏好/, '结果提示要分得清存成了哪一种');
+});
+
 test('「清空」按钮接在确认框与那条命令上，确认文案说清清不掉的东西', async () => {
   const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
   assert.match(tpl, />\s*清空\s*<\/el-button>/, '卡片头上要有清空入口');

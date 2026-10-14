@@ -72,8 +72,10 @@ pub async fn memory_set_enabled(use_approved: bool) -> Result<store::MemoryStatu
 pub async fn memory_decide_candidate(
     id: String,
     accept: bool,
+    scope: Option<String>,
 ) -> Result<Option<store::MemoryRecord>, String> {
-    blocking(move || store::decide_candidate(&Namespace::current(), &id, accept)).await
+    blocking(move || store::decide_candidate(&Namespace::current(), &id, accept, scope.as_deref()))
+        .await
 }
 
 /// 最近几次「模型实际看到了哪些记忆」（新的在前；壳重启后为空）。
