@@ -22,6 +22,7 @@
  * @module xlink-memory/extract
  */
 
+import { MAX_PATH_BYTES } from './bridge.js';
 import { maskSecrets } from './mask.js';
 
 /** 与壳对齐的限额（`src-tauri/src/memory/input.rs`）。 */
@@ -29,6 +30,20 @@ export const MAX_TITLE_BYTES = 512;
 export const MAX_BODY_BYTES = 8 * 1024;
 /** 一次最多收几条候选：再多用户也看不过来，而边界要有一个。 */
 export const MAX_CANDIDATES = 10;
+/**
+ * 正文**编码后**的上限——与壳的 8 KiB 原文上限是两回事。
+ *
+ * 请求行 + 头部必须塞进桥那头固定的 8 KiB 缓冲（`openai/http.rs` 的 `[0u8; 8192]`），
+ * 而插件自己的通道预算是 `MAX_PATH_BYTES`（7000，留了余量）。中文经百分号编码膨胀到约 3 倍，
+ * 所以一个 8 KiB 的候选正文编码后有 24 KiB ✗——**实测那会让桥直接重置连接、一个字都不回**
+ * （2026-10-15，`an_over_long_submit_path_is_dropped_without_a_body`）。
+ *
+ * 于是这里按**编码后**的长度提前拒，并且给标题、关键词、令牌、字段名留出余量。
+ * `encodeURIComponent` 把空格编成 `%20`（3 字节）而 `URLSearchParams` 编成 `+`（1 字节），
+ * 所以这个估算偏保守——**宁可少收一条，也不要发一条注定被丢掉的**。
+ */
+export const MAX_ENCODED_BODY_BYTES = MAX_PATH_BYTES - 1000;
+
 /** 关键词条数与单条长度。 */
 export const MAX_KEYWORDS = 12;
 export const MAX_KEYWORD_BYTES = 64;
@@ -118,9 +133,13 @@ function extractJson(raw) {
  * @param {object} context - 判据要用到的东西。
  * @param {object[]} context.events - 冻结范围内的原始事件（用来验 `evidence_seq`）。
  * @param {number} [context.maxCandidates] - 本次最多收几条。
+ * @param {number} [context.maxEncodedBodyBytes] - 正文**编码后**的上限（见 `MAX_ENCODED_BODY_BYTES`）。
  * @returns {{ok: boolean, candidates: object[], rejected: object[], reason?: string}}
  */
-export function parseExtractionOutput(raw, { events = [], maxCandidates = MAX_CANDIDATES } = {}) {
+export function parseExtractionOutput(
+  raw,
+  { events = [], maxCandidates = MAX_CANDIDATES, maxEncodedBodyBytes = MAX_ENCODED_BODY_BYTES } = {}
+) {
   const parsed = extractJson(raw);
   if (parsed === null) {
     return { ok: false, candidates: [], rejected: [], reason: '模型没有返回可解析的 JSON' };
@@ -168,6 +187,15 @@ export function parseExtractionOutput(raw, { events = [], maxCandidates = MAX_CA
     }
     if (byteLength(body) > MAX_BODY_BYTES) {
       rejected.push({ where, reason: `正文超过 ${MAX_BODY_BYTES} 字节` });
+      continue;
+    }
+    // 编码后的长度才是「发得出去吗」的判据：中文一个字 3 字节，编码后 9 个字符。
+    const encoded = encodeURIComponent(body).length;
+    if (encoded > maxEncodedBodyBytes) {
+      rejected.push({
+        where,
+        reason: `正文编码后 ${encoded} 字节，超过通道上限 ${maxEncodedBodyBytes} 字节（中文经 URL 编码约膨胀 3 倍）`,
+      });
       continue;
     }
     // **先按长度筛，再截条数**：反过来的话，一个超长的关键词会白占一个名额，
