@@ -5,7 +5,7 @@
 `bridge.js` / `policy.js` / `mask.js`）与壳侧（`src-tauri/src/memory/` 的 `jobs.rs` / `routes.rs` /
 `lock.rs` / `store.rs::submit_candidate`，以及 `plugins/builtin/bridge.rs` 的两条手动夹具）。
 
-**为什么值得单独留一份**：到 2026-10-15 为止**已修 12 条**（含两条「高」）、**2 条修了一半**；**其余 4 条是待办**（全在「低」档），
+**为什么值得单独留一份**：到 2026-10-15 为止**已修 13 条**（含两条「高」）、**2 条修了一半**；**其余 3 条是待办**（全在「低」档），
 散在对话里会丢。清单（[memory-progress.md](../features/memory/memory-progress.md)）指向本文件。
 
 **评审快照**（行号对应这些版本；评审期间工作区被另一会话改过一次）：
@@ -140,9 +140,19 @@ id 只给桥用。附带：`index.js` 里 `{ session: { id: key.session }, ...ke
 
 ## 低
 
-14. **`policy.js` 的 `buildInput` 是没人调用的重复实现** —— ⬜：生产走 `extract.js::buildSlice`，
+14. **`policy.js` 的 `buildInput` 是没人调用的重复实现** —— ✅ 已修（2026-10-15）：生产走 `extract.js::buildSlice`，
     `buildInput` 只有冒烟测试在调。两份形状不同（事件形状、截断标记、按字节 vs 按字符），
     而设计 §8-3 的「不静默截断」只实现在**死的那份**里；活的那份连 `dropped` 都不告诉模型。
+
+   **修法（已落）**：把「不静默截断」**搬进活着的那份**（`extract.js::buildSlice` 现在在被丢弃整条
+   对话时，会在切片最前面放一行「这段范围按字节上限截断了，前面还有 N 条对话没包含进来」），
+   然后**删掉死的那一整簇**（`buildInput` / `cutBytes` / `eventText` / `MAX_INPUT_BYTES` /
+   `MAX_EVENT_BYTES` / `TRUNCATION_MARKER` / `EVENT_TRUNCATION_MARKER`）——`policy.js` 从 568 行
+   降到 492 行。原来那几组判据**改测活着的那条路**（只取对话、掩码在削短之前、截断留标记），
+   反向验过（去掉标记即红）。
+   附带修掉一个**共享夹具的形状错误**：测试里的 `human()` 用 `data.message.content` 造
+   `user/message`，而内核里那一路的正文在 `data.content`（`data.message.content` 是**消息列表**
+   那一路的形状）——正是第 1 条的形状，只不过这次出现在夹具里。
 15. **`MAX_EVENT_BYTES` 名义字节、实际当字符数用** —— ✅ 已修（真的按字节削 + 判据）。
 16. **指纹去重跨项目全局，且业务拒绝被当成提取失败** —— ⬜：A 项目已有逐字相同的一条时，
     B 项目模型提同一句 → 被拒 → 插件按 `ok:false` 处理 → 重试 3 次 → FAILED。
