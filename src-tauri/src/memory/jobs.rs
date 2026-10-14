@@ -500,6 +500,53 @@ mod tests {
         );
     }
 
+    /// **崩溃恢复**（§10 的验收项之一，不需要模型）：壳崩在任务跑到一半，盘上留着一个 `running`
+    /// 且租约已过期的任务；重启之后（新的一次事务）它必须**能被接管**，而**旧令牌交不上东西**。
+    ///
+    /// 这条与上面那些纯函数用例的区别在于它走**文件**：崩溃留下的东西只有盘上那一份，
+    /// 用内存里的文档测不出「重启之后还认得它」。
+    #[test]
+    fn a_crashed_running_job_is_taken_over_after_a_restart() {
+        use crate::memory::store::testkit::{namespace, TempHome};
+        let _home = TempHome::new("jobs-recovery");
+        let ns = namespace();
+
+        // 手工造一份「崩在半路」的盘上状态：running + 租约早就过期。
+        let crashed = JobsDoc {
+            schema_version: JOBS_SCHEMA_VERSION,
+            jobs: vec![Job {
+                key: JobKey {
+                    session: "s1".to_string(),
+                    cursor: 5,
+                    extractor: "v1".to_string(),
+                },
+                state: JOB_RUNNING.to_string(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                attempts: 1,
+                lease: Some(Lease {
+                    token: "old-token".to_string(),
+                    expires_at_ms: now_ms().saturating_sub(1),
+                }),
+                error: String::new(),
+            }],
+        };
+        persist(&ns, &crashed).expect("persist");
+
+        // 重启之后第一次领取：**直接接手**，不必等满 120 秒（租约已经过期了）。
+        let claimed = mutate(&ns, claim_any)
+            .expect("mutate")
+            .expect("崩溃残留的任务要能被接管");
+        assert_eq!(claimed.key.cursor, 5, "冻结的游标不变");
+        assert_eq!(claimed.attempts, 2, "接手算第二次尝试");
+
+        // 旧令牌作废：重启之后那个进程手里的令牌再也交不上东西（§8-6 的迟到结果检查）。
+        let doc = load(&ns).expect("load");
+        assert!(running_job(&doc, "old-token").is_none(), "旧令牌不算数了");
+        let mut doc = load(&ns).expect("load");
+        assert!(!finish(&mut doc, "old-token", now_ms()), "旧令牌交不上");
+    }
+
     /// 落盘往返：崩溃恢复靠它（重启后 `running` 的任务还在，租约会过期、被别人接手）。
     #[test]
     fn a_jobs_document_round_trips_through_disk() {

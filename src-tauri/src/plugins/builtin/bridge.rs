@@ -495,6 +495,84 @@ mod tests {
         assert_eq!(view.candidates.len(), 1, "被拒的那些一条都没落地");
     }
 
+    /// **P2 整条数据链的验收**（§8、§10 的「自动提取」那一半，不需要模型）：
+    /// 排任务 → 领租约 → 提交候选 → 用户批准 → 它**真的能被检索到并注入**。
+    ///
+    /// 单独一条端到端用例的理由：每一段都有自己的用例，但**接起来**才验证得了那些没人单独
+    /// 承诺的东西——来源引用会不会让候选列表读不出来、批准之后正文还是不是原来那句、
+    /// 检索的命中判据认不认它。这些正是「环节都对、合起来不通」的典型位置。
+    #[test]
+    fn the_extraction_chain_lands_a_retrievable_memory() {
+        use crate::memory::store::{self, ListFilter, Namespace};
+
+        let home = temp_dir("memory-chain");
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let dsh_home = home.join("instance");
+        let (url, token) = launch(&dsh_home, "dsh:default-dev").expect("bridge");
+        let addr = url.trim_start_matches("http://").to_string();
+        let namespace = Namespace::for_bridge("dsh", "default-dev");
+
+        // 用户同意用记忆 → 排任务 → 领租约。
+        store::set_use_approved(&namespace, true).expect("enable");
+        let queued = http_get(
+            &addr,
+            "/v1/memory/jobs/enqueue?session=s-1&cursor=12&extractor=v1",
+            Some(&token),
+        );
+        assert!(queued.contains(r#""outcome":"added""#), "{queued}");
+        let claimed = http_get(&addr, "/v1/memory/jobs/claim", Some(&token));
+        let start = claimed.find(r#""token":""#).expect("token") + 9;
+        let lease = claimed[start..start + 32].to_string();
+
+        // 提取（这里由用例代替模型）提交一条候选。正文里带中文与空格，顺带验证整条链的编解码。
+        let body = "%E6%8F%90%E4%BA%A4%E5%89%8D%E5%85%88%E8%B7%91%20npm%20run%20check";
+        let submitted = http_get(
+            &addr,
+            &format!(
+                "/v1/memory/jobs/submit?token={lease}&session=s-1&start_seq=1&end_seq=12&\
+                 scope=general&title=%E6%8F%90%E4%BA%A4%E5%89%8D%E5%85%88%E8%B7%91%E6%A3%80%E6%9F%A5&body={body}"
+            ),
+            Some(&token),
+        );
+        assert!(submitted.contains(r#""submitted":true"#), "{submitted}");
+
+        // 候选是**待确认**，不是记忆。
+        let view = store::list(
+            &namespace,
+            &ListFilter {
+                include_candidates: true,
+                ..ListFilter::default()
+            },
+        );
+        assert_eq!(view.memories.len(), 0, "候选自己成不了记忆");
+        assert_eq!(view.candidates.len(), 1);
+        let candidate = view.candidates[0].clone();
+        assert_eq!(candidate.body, "提交前先跑 npm run check", "正文原样落地");
+
+        // 用户批准 → 权威记录。
+        let record = store::decide_candidate(&namespace, &candidate.id, true, None)
+            .expect("accept")
+            .expect("record");
+        assert_eq!(record.body, "提交前先跑 npm run check");
+        assert_eq!(record.scope, "general");
+        assert_eq!(record.source.kind, "extract", "来源跟着候选过来");
+
+        // 检索命中：这条记忆真的会进模型上下文（§10 要的就是这条链通）。
+        let context = crate::memory::query::retrieve(
+            &namespace,
+            "提交前先跑 npm run check",
+            "",
+            "/any/project",
+        )
+        .expect("retrieve");
+        assert_eq!(context.hits.len(), 1, "{:?}", context.hits);
+        assert!(
+            context.text.contains("提交前先跑 npm run check"),
+            "{}",
+            context.text
+        );
+    }
+
     /// 读不出来必须回 `None` 而不是猜一个：技能会把 `None` 报成「插件名缺失」，
     /// 而猜一个默认插件的后果是**替另一个插件拉了更新**。
     #[test]
