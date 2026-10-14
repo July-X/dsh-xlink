@@ -269,7 +269,16 @@ function apply(ctx) {
             if (refusals.length > 0 && submitted === 0) {
               return { ok: false, reason: refusals[0] };
             }
-            return { ok: true, submitted };
+            // **部分被拒也要报出来**（独立评审第 5 条）：原先只有「一条都没成」才 ok:false，
+            // `refusals` 直接丢——10 条里落 3 条、7 条被「已经在待确认里了」拒时，日志会写
+            // 「提交 3 条，被判据拒 0 条」（那个数是解析阶段的），7 条不知去向，而任务照常 finish、
+            // 这段内容再也不会被重看。
+            return {
+              ok: true,
+              submitted,
+              refused: refusals.length,
+              ...(refusals.length > 0 ? { refusedReason: refusals[0] } : {}),
+            };
           },
         },
       });
@@ -279,7 +288,12 @@ function apply(ctx) {
 
     if (result.ok) {
       await callMemory({ credentials: creds, route: 'jobs/finish', params: { token } });
-      ctx.logger?.info?.(`xlink-memory: 提取完成（提交 ${result.submitted} 条，被判据拒 ${result.rejected.length} 条）`);
+      // 三个数分开报：**解析阶段**被拒（模型的输出不合 schema）、**提交阶段**被拒（壳的业务闸）、
+      // 以及真的落库的条数。合起来报的话，「提交 3 条，被判据拒 0 条」会把 7 条的去向藏起来。
+      ctx.logger?.info?.(
+        `xlink-memory: 提取完成（落库 ${result.submitted} 条；解析阶段拒 ${result.rejected.length} 条；` +
+          `提交阶段拒 ${result.refused ?? 0} 条${result.refusedReason ? `：${result.refusedReason}` : ''}）`
+      );
     } else {
       // **stage 与原因一起报**：壳那边把这条写进 `jobs.json` 的 error，而插件的 logger 在这个
       // 内核里不进 stdout——排障的人只能看这一条，缺了 stage 就只剩半句话（§8 的「出事了查什么」）。

@@ -5,7 +5,7 @@
 `bridge.js` / `policy.js` / `mask.js`）与壳侧（`src-tauri/src/memory/` 的 `jobs.rs` / `routes.rs` /
 `lock.rs` / `store.rs::submit_candidate`，以及 `plugins/builtin/bridge.rs` 的两条手动夹具）。
 
-**为什么值得单独留一份**：这一轮修掉的只是其中最便宜的五条；**其余 13 条是待办**，
+**为什么值得单独留一份**：到 2026-10-15 为止**已修 9 条**（含两条「高」）；**其余 9 条是待办**，
 散在对话里会丢。清单（[memory-progress.md](../features/memory/memory-progress.md)）指向本文件。
 
 **评审快照**（行号对应这些版本；评审期间工作区被另一会话改过一次）：
@@ -58,9 +58,13 @@ id 只给桥用。附带：`index.js` 里 `{ session: { id: key.session }, ...ke
 
 4. **失败归因两侧各丢一半** —— ✅ 已修：`/jobs/fail` 现在报 `stage：reason`；
    `run.js` 的兜底 catch 也不再一律记成 `model`（用「当前步」变量）。
-5. **部分提交失败被静默吞** —— ⬜：只有「一条都没成」才 `ok:false`，`refusals` 直接丢；
+5. **部分提交失败被静默吞** —— ✅ 已修（2026-10-15）：只有「一条都没成」才 `ok:false`，`refusals` 直接丢；
    成功日志里的「被判据拒 M 条」用的是解析阶段那份，不含提交阶段。**修法**：refusals 的计数与
    首因进日志与结果。
+
+   **修法（已落）**：`submit` 回 `{ submitted, refused, refusedReason }`，编排层带进结果，
+   日志改成三个数分开报（**落库 N 条 / 解析阶段拒 M 条 / 提交阶段拒 K 条：首因**）。
+   判据：一条「10 条里落 3 条、7 条被业务闸拒」形状的编排用例，断言 `refused` 与首因都回来了。
 6. **逐字段限额与通道限额不合成** —— ⬜：`MAX_ENCODED_BODY_BYTES` 只给标题/关键词/路径留了
    1000 字节，而中文标题（≤512 B ≈ 1530 编码）+ 12 条关键词（≈2300）就能吃光。评审实测：
    逐项合法的候选合计 **10181 B > 7000** → 被桥拒 → 整批提交不上 → 重试 3 次 → FAILED，
@@ -77,11 +81,18 @@ id 只给桥用。附带：`index.js` 里 `{ session: { id: key.session }, ...ke
 10. **`/submit` 的令牌判定与写入不在同一个临界区** —— ⬜：`jobs::load`（不拿锁）→ 判 → 再
     `store::submit_candidate`（另一次 `store::mutate`）→ 读完、写之前租约到期并被接管时，
     迟到结果照样落库。**修法**：把判定搬进同一次 mutate。
-11. **去抖只作用于「合并」，不作用于「领取」** —— ⬜：`claim` 无时间判据，任务入表即可领 →
+11. **去抖只作用于「合并」，不作用于「领取」** —— ✅ 已修（2026-10-15）：`claim` 无时间判据，任务入表即可领 →
     「先排、再领」在稳定态等于**每回合立刻一次提取**（一次全量日志读 + 一次模型调用）；
     代码注释里的「静默期/相邻回合合并」不成立。**修法**：`claim` 加
     `now - updated_at_ms < DEBOUNCE_MS` 跳过。（评审自注：机制从代码确证，但「4 回合 4 次」
     也可解释为各自回合领走，要实测就 30 秒内连发两回合看 claim 次数。）
+
+   **修法（已落）**：新增 `claim_any_due_for(doc, now, session, due_only)`，**路由走它**
+   （`due_only = true`）——入表后先过 `DEBOUNCE_MS` 静默期才领得到。**不改 `claim_for` 的语义**：
+   它是租约状态机的原语（十来个用例按绝对时间喂它），去抖是调度策略，混在一起会逼那些用例
+   为了凑静默期而改时间。判据 `a_fresh_job_is_not_claimable_until_the_debounce_has_passed`
+   （静默期内领不到、差 1 毫秒也不行、到 `DEBOUNCE_MS` 领得到、`due_only=false` 保留旧语义），
+   **反向验过**（去掉到期判据即红）。
 12. **任务表没有任何可见面** —— ⬜：`/jobs/status` 与 `jobs::summary` 只有测试在调，
     UI/命令层无入口；`routes::jobs` 刻意不写 `shell_events`，插件 logger 又不进 stdout，
     stage 以前也不上报 → 用户问「这个会话为什么一条记忆都没提取出来」时，唯一可查处是手动打开

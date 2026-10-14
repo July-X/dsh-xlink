@@ -95,7 +95,8 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
             } else {
                 Some(wanted.as_str())
             };
-            jobs::claim_any_for(doc, now, wanted)
+            // **到期才领**：去抖是调度策略，放在这一层（见 `jobs::claim_due_for` 的文档）。
+            jobs::claim_any_due_for(doc, now, wanted, true)
         }) {
             Ok(Some(claimed)) => (
                 200,

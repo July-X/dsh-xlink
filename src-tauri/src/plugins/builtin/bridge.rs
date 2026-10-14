@@ -333,6 +333,7 @@ mod tests {
             Some(&token),
         );
         assert!(queued.contains(r#""outcome":"added""#), "{queued}");
+        age_jobs();
 
         // 同一个键再排一次：已经在跑？还没有——先领再排才是「在跑」。
         let claimed = http_get(&addr, "/v1/memory/jobs/claim", Some(&token));
@@ -411,6 +412,7 @@ mod tests {
             Some(&token),
         );
         assert!(queued.contains(r#""outcome":"added""#), "{queued}");
+        age_jobs();
         let claimed = http_get(&addr, "/v1/memory/jobs/claim", Some(&token));
         let start = claimed.find(r#""token":""#).expect("token") + 9;
         let lease = claimed[start..start + 32].to_string();
@@ -520,6 +522,7 @@ mod tests {
             Some(&token),
         );
         assert!(queued.contains(r#""outcome":"added""#), "{queued}");
+        age_jobs();
         let claimed = http_get(&addr, "/v1/memory/jobs/claim", Some(&token));
         let start = claimed.find(r#""token":""#).expect("token") + 9;
         let lease = claimed[start..start + 32].to_string();
@@ -910,6 +913,20 @@ mod tests {
             }
         }
         false
+    }
+
+    /// 把任务表里所有待跑任务**做旧**，让它们立刻过了静默期。
+    ///
+    /// 领取那条路（`/jobs/claim`）现在要求 `now - updated_at_ms >= DEBOUNCE_MS`（评审第 11 条：
+    /// 去抖原先只作用于合并，于是「先排、再领」等于每回合立刻一次提取）。走路由的用例不该为了
+    /// 这一点等 30 秒，所以显式做旧——**这比给生产代码开一个「跳过静默期」的后门干净**。
+    fn age_jobs() {
+        let ns = crate::memory::store::Namespace::for_bridge("dsh", "default-dev");
+        let _ = crate::memory::jobs::mutate(&ns, |doc, now| {
+            for job in doc.jobs.iter_mut() {
+                job.updated_at_ms = now.saturating_sub(crate::memory::jobs::DEBOUNCE_MS + 1);
+            }
+        });
     }
 
     /// 往真桥上发一条 GET，把响应体取回来（`Connection: close`，读到 EOF）。

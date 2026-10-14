@@ -41,6 +41,8 @@ export async function runExtraction({ deps, key, from, to, signal }) {
     candidates: fields.candidates ?? [],
     rejected: fields.rejected ?? [],
     submitted: fields.submitted ?? 0,
+    refused: fields.refused ?? 0,
+    ...(fields.refusedReason === undefined ? {} : { refusedReason: fields.refusedReason }),
     ...(fields.reason === undefined ? {} : { reason: fields.reason }),
   });
 
@@ -103,6 +105,10 @@ export async function runExtraction({ deps, key, from, to, signal }) {
       candidates: parsed.candidates,
       rejected: parsed.rejected,
       submitted: Number(submitted.submitted ?? parsed.candidates.length),
+      // **提交阶段被拒的条数要跟着回去**（独立评审第 5 条）：否则「落库 3 条」看起来就是全部，
+      // 而另外 7 条的去向只存在于提交那一步的局部变量里。
+      refused: Number(submitted.refused ?? 0),
+      ...(submitted.refusedReason ? { refusedReason: submitted.refusedReason } : {}),
     });
   } catch (error) {
     // 纪律 1：不抛。哪一步炸的都算「跑不成」，但**要说清是哪一步**——第一版一律记成 'model'，

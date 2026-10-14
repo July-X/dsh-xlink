@@ -617,6 +617,26 @@ test('提取编排：模型失败 / 输出不合 schema / 提交失败各自回 
   assert.match(caught.reason, /适配器炸了/);
 });
 
+test('提取编排：**部分被拒**的条数要跟着结果回去，不能只报落库那几条', async () => {
+  // 独立评审第 5 条：原先只有「一条都没成」才 ok:false，`refusals` 直接丢——10 条里落 3 条、
+  // 7 条被业务闸拒时，调用方看到的只有「落库 3 条」，另外 7 条的去向只活在提交那一步的局部变量里。
+  const { deps } = extractionDeps({
+    callModel: async () => ({
+      ok: true,
+      text: JSON.stringify([
+        { title: 'a', body: 'b', evidence_seq: 3 },
+        { title: 'c', body: 'd', evidence_seq: 3 },
+      ]),
+    }),
+    submit: async () => ({ ok: true, submitted: 1, refused: 1, refusedReason: '已经在待确认里了' }),
+  });
+  const result = await runExtraction({ deps, key: extractionKey, from: 3 });
+  assert.equal(result.ok, true);
+  assert.equal(result.submitted, 1, '落库 1 条');
+  assert.equal(result.refused, 1, '被业务闸拒的也要报');
+  assert.match(result.refusedReason, /已经在待确认里了/);
+});
+
 test('提取编排：被取消时不调模型、不提交', async () => {
   const controller = new AbortController();
   controller.abort();

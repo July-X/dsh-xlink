@@ -803,7 +803,7 @@ const FILE_BUDGETS = {
   // `session`，于是多了 `claim_for` / `claim_any_for` 两个入口与它们的文档。这条修的是
   // 「A 的对话内容带 B 的项目坐标落库」，值得为它多留 25 行；拆出去要动整个租约状态机，
   // 比例不对。**320 < RATCHET_THRESHOLD（600）**，所以这里可以上调（规则只对大文件说「只许下调」）。
-  'src-tauri/src/memory/jobs.rs': 345,
+  'src-tauri/src/memory/jobs.rs': 350,
   // 新文件（2026-10-15 凌晨）：`memory/routes.rs` 287 行——记忆与任务的路由族。
   // **为什么该独立**：`plugins/builtin/bridge.rs` 连着两轮被这一族路由顶过预算线，
   // 上一轮上调到 420 时注释里就留了条件「下次再长就该拆」——这一轮长到 487，于是按规则拆。
