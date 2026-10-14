@@ -1083,6 +1083,88 @@ mod tests {
         );
     }
 
+    /// **手动夹具：把真桥交给探针**，让内核里那个 Node 插件真的打进来。
+    ///
+    /// 上面那条测试验的是「路由收得下插件的参数」，这一条验的是「两侧在同一次运行里接得上」：
+    /// 真桥 + 真任务表 + 真记忆库，对面是真的内核会话（只有模型是桩）。
+    ///
+    /// 跑法（`docs/features/memory/memory-progress.md` 的「怎么验」那一节记了完整命令）：
+    /// 1. 起这个测试（`--ignored --nocapture`），它把地址与令牌写进 `/tmp/p2probe/bridge-cred.json`；
+    /// 2. 用探针跑一次会话，把 `DSH_XLINK_BUILTIN_BRIDGE_URL/TOKEN` 指过来；
+    /// 3. `touch /tmp/p2probe/bridge-stop`，测试接着断言「任务进过表、候选落进库」。
+    #[test]
+    #[ignore = "手动夹具：要和 Node 探针一起跑，见清单的「怎么验」那一节"]
+    fn manual_bridge_for_the_node_probe() {
+        use std::path::PathBuf;
+        let root = temp_dir("manual-probe");
+        let _home = crate::tests::scoped_xlink_home(&root);
+        let ns = crate::memory::store::Namespace::for_bridge("dsh", "probe");
+        crate::memory::store::set_use_approved(&ns, true).expect("打开记忆开关");
+
+        let handshake = PathBuf::from("/tmp/p2probe/bridge-cred.json");
+        let stop = PathBuf::from("/tmp/p2probe/bridge-stop");
+        let _ = fs::remove_file(&stop);
+        let _ = fs::create_dir_all("/tmp/p2probe");
+
+        let (url, token) = launch(&root, "dsh:probe").expect("起桥");
+        fs::write(
+            &handshake,
+            format!("{{\"url\":\"{url}\",\"token\":\"{token}\"}}"),
+        )
+        .expect("写握手文件");
+        println!("[probe] 桥已就绪：{url} → 握手文件 {handshake:?}；等 {stop:?} 出现");
+
+        // 最多等 10 分钟：手动夹具，宁可慢也不要假的「通过」。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        while !stop.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "等了 10 分钟也没看到停止文件 {stop:?}——探针那一步没跑起来？"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+
+        // 断言的是**壳这一侧真的收到了什么**：任务进过表、候选落进库。
+        let doc = crate::memory::jobs::load(&ns).expect("读任务表");
+        let summary = crate::memory::jobs::summary(&doc);
+        println!("[probe] 任务表：{summary:?}");
+        // **失败原因就在表里**：插件走 `/jobs/fail` 时把 `stage` 与原因一起报上来，
+        // 所以「提取链卡在哪一步」在这边读得到，不必去翻插件的日志。
+        for job in &doc.jobs {
+            println!(
+                "[probe] 任务 {}@{} → {}{}",
+                job.key.session,
+                job.key.cursor,
+                job.state,
+                if job.error.is_empty() {
+                    String::new()
+                } else {
+                    format!("：{}", job.error)
+                }
+            );
+        }
+        assert!(
+            summary.pending + summary.done > 0 || summary.running > 0,
+            "任务表里一条都没有——插件的 enqueue 没打进来：{summary:?}"
+        );
+        let memory = crate::memory::store::load(&ns).expect("读记忆库");
+        println!(
+            "[probe] 记忆库：已有记忆 {} 条，待确认候选 {} 条",
+            memory.memories.len(),
+            memory.candidates.len()
+        );
+        assert!(
+            !memory.candidates.is_empty(),
+            "候选一条都没落下来——提取链没走通（看插件日志里的 stage 与原因）"
+        );
+        for candidate in &memory.candidates {
+            println!(
+                "[probe] 候选：{} ← {}",
+                candidate.title, candidate.source.session
+            );
+        }
+    }
+
     #[test]
     fn dropping_the_bridge_removes_the_credential_file() {
         use super::super::bridge_credential::CREDENTIAL_FILE;
