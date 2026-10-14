@@ -36,14 +36,22 @@ import {
   jobsSummaryText,
   jobLine,
   switchEffectText,
+  byteLength,
+  MAX_BODY_BYTES,
 } from './memory.js';
 
 const list = computed(() => visibleMemories(memoryStore.view, memoryStore.listScope));
+/// **未筛选**的库：导出、清空、空态判据都用它——那些动作作用在整份文档上，
+/// 与「当前视图看哪一档」无关。原先这三处读的是筛选后的 `list`，于是库里只有通用偏好时
+/// 点「本项目」，卡片会说「还没有记忆」而导出与清空同时变灰点不动（评审第 2 条）。
+const allMemories = computed(() => (memoryStore.view && memoryStore.view.memories) || []);
 const candidates = computed(() => (memoryStore.view && memoryStore.view.candidates) || []);
 const status = computed(() => memoryStore.status);
 const recentInjections = computed(() => memoryStore.recentInjections || []);
 /// 提取任务卡片：摘要那句 + 最近几条（后端已经截到 5 条，前端不再截）。
 const jobsText = computed(() => jobsSummaryText(memoryStore.jobs));
+/// 正文字节数：与后端 `MAX_BODY_BYTES` 同一个数，**按字节**算（中文一个字 3 字节）。
+const bodyBytes = computed(() => byteLength(draft.value.body));
 const recentJobs = computed(() => (memoryStore.jobs && memoryStore.jobs.jobs) || []);
 const enabled = computed(() => !!(status.value && status.value.use_approved));
 const draft = computed(() => memoryStore.draft);
@@ -139,7 +147,7 @@ onMounted(() => {
                 text
                 :icon="Download"
                 :loading="isLoading('memoryExport')"
-                :disabled="globalBusy || !list.length"
+                :disabled="globalBusy || !allMemories.length"
                 @click="exportMemory"
               >
                 导出 Markdown
@@ -148,7 +156,7 @@ onMounted(() => {
                 text
                 type="danger"
                 :loading="isLoading('memoryClear')"
-                :disabled="globalBusy || (!list.length && !candidates.length)"
+                :disabled="globalBusy || (!allMemories.length && !candidates.length)"
                 @click="clearMemory"
               >
                 清空
@@ -171,8 +179,13 @@ onMounted(() => {
             条候选）
             <el-button text type="primary" @click="openExports">打开导出目录</el-button>
           </p>
-          <p v-if="!list.length" class="memory-hint">
+          <p v-if="!allMemories.length" class="memory-hint">
             还没有记忆。在右边写一条，或者在工作台里让模型提出候选，再到「待确认」里点保存。
+          </p>
+          <!-- 库里有、只是当前筛选没有——这是**两回事**（记忆内核那次评审第 2 条）：
+               说成「还没有记忆」是假话，而右栏状态行还写着 accepted: N。 -->
+          <p v-else-if="!list.length" class="memory-hint">
+            当前筛选下没有记忆（库里有 {{ allMemories.length }} 条，切到「全部」能看到）。
           </p>
           <div v-else class="page-list">
             <MemoryRow
@@ -273,13 +286,20 @@ onMounted(() => {
               </el-option>
             </el-select>
             <el-input v-model="draft.title" maxlength="80" placeholder="一句话标题，例如「提交前先跑 npm run check」" />
+            <!--
+              正文**不设 maxlength**：它数的是 UTF-16 码元，而后端闸的是 8192 **字节**——
+              中文 4000 字约 12000 字节，用户按面板允许的长度写完会拿到「超过单条上限」，
+              而面板一句提示都没有（记忆内核那次评审第 4 条）。改成按字节算的计数器 + 保存时拦住。
+            -->
             <el-input
               v-model="draft.body"
               type="textarea"
               :rows="6"
-              maxlength="4000"
               placeholder="写清约定本身与适用条件；可能过期的事实请标出来"
             />
+            <p class="memory-row__meta" :class="{ 'memory-over-limit': bodyBytes > MAX_BODY_BYTES }">
+              正文 {{ bodyBytes }} / {{ MAX_BODY_BYTES }} 字节（中文一个字 3 字节；超了就保存不了）
+            </p>
             <el-input v-model="draft.keywordsText" placeholder="关键词，用逗号分隔（用于命中检索）" />
             <el-checkbox v-model="draft.pinned" :disabled="globalBusy">固定项（每次都带上）</el-checkbox>
             <!--

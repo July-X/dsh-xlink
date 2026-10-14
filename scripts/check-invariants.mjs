@@ -2636,6 +2636,7 @@ if (ungatedOsImports.length > 0) {
       'conflicts_with',
       'jobs.json', // 运行期数据文件（与 memory.json 同目录），不在仓库里
       'memory.json', // 同上：权威记录本体
+      'state.json', // 内置插件的运行期状态文件（`extensions/builtin/<id>/state.json`），不在仓库里
     ]);
 
     const sourceRoots = [

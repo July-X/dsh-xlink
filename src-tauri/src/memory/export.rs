@@ -232,11 +232,12 @@ fn scope_text(scope: &str, workspace_path: &str) -> String {
     }
 }
 
+/// 记忆的状态文字。**只服务 `MemoryRecord`**（`STATE_ACCEPTED` / `STATE_DISABLED`），
+/// 所以没有 `CANDIDATE_REJECTED` 那一支——候选的状态在导出里另有写法（记忆内核那次评审第 10 条）。
 fn state_text(state: &str) -> &str {
     match state {
         store::STATE_ACCEPTED => "accepted（参与检索）",
         store::STATE_DISABLED => "disabled（不参与检索）",
-        store::CANDIDATE_REJECTED => "rejected",
         other => other,
     }
 }

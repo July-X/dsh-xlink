@@ -37,13 +37,26 @@ test('状态还没读回来时不算「没启用」——那句提示会误报',
   // null = `builtin_status` 还没回来（或这次读失败）：不知道就不说。
   assert.equal(injectionDisabled(null), false, '不知道就不能说它没启用');
   assert.equal(injectionDisabled(undefined), false);
-  // 读回来了：按启用意图与状态文件是否损坏判。
-  assert.equal(injectionDisabled({ requestedEnabled: true }), false);
-  assert.equal(injectionDisabled({ requestedEnabled: false }), true);
+  // 字段没下发（旧壳）：也不说——「不知道」不能当成「没接线」。
+  assert.equal(injectionDisabled({ requestedEnabled: false }), false, '没有 wired 就别下结论');
+  // 读回来了：按**接线事实**判（记忆内核那次评审第 3 条）——内核读的是接线行，
+  // `requestedEnabled` 只是壳里那份 state.json，只看它两个方向都会错。
+  assert.equal(injectionDisabled({ wired: true, loadState: 'prepared' }), false, '接线了且就绪');
+  assert.equal(injectionDisabled({ wired: false, loadState: 'none' }), true, '没接线才说没启用');
   assert.equal(
-    injectionDisabled({ requestedEnabled: true, stateError: '状态文件异常' }),
+    injectionDisabled({ wired: true, loadState: 'incompatible' }),
     true,
-    '状态文件坏了时开关拨不动，这条提示是对的'
+    '接线行还在但内核已切换：内核照样加载着它，而面板要说清「重新拨一次开关修复」'
+  );
+  assert.equal(
+    injectionDisabled({ wired: false, requestedEnabled: true, loadState: 'none' }),
+    true,
+    '启用的两步之间失败：接线行没写成，内核确实没加载它'
+  );
+  assert.equal(
+    injectionDisabled({ wired: false, stateError: '状态文件异常' }),
+    false,
+    '状态文件坏了：不知道就不说'
   );
 });
 
@@ -225,4 +238,34 @@ test('开关的生效语义是**条件式**的，不许说「已生效」（E6�
   assert.ok(!/已生效|立即生效|即时生效/.test(text), '不许给一句听起来干脆但可能不真的话');
   const template = templateOf(read('../src/memory/MemoryPanel.vue'));
   assert.match(template, /switchEffectText\(\)/, '这句话要接在开关旁边');
+});
+
+test('正文按**字节**判，与后端同一个数（评审第 4 条）', async () => {
+  const { MAX_BODY_BYTES, byteLength, canSaveDraft, memoryStore } = await import('../src/memory/memory.js');
+  assert.equal(MAX_BODY_BYTES, 8192, '与后端 store::MAX_BODY_BYTES 逐字对齐');
+  assert.equal(byteLength('abc'), 3);
+  assert.equal(byteLength('中'), 3, '中文一个字 3 字节');
+  // 4000 个中文字 ≈ 12000 字节 > 8192：**面板自己就该拦住**，不能等后端拒。
+  memoryStore.draft.title = '标题';
+  memoryStore.draft.body = '中'.repeat(4000);
+  memoryStore.draft.scope = 'general';
+  assert.equal(canSaveDraft(), false, '超字节上限时不许保存');
+  memoryStore.draft.body = '中'.repeat(2000); // 6000 字节，放行
+  assert.equal(canSaveDraft(), true);
+  // 模板里不该再有按字符数的 maxlength（它会骗人）。
+  const template = templateOf(read('../src/memory/MemoryPanel.vue'));
+  assert.ok(!/maxlength="4000"/.test(template), '正文那栏不许再按字符数限长');
+  assert.match(template, /bodyBytes/, '要有按字节的计数器');
+});
+
+test('导出、清空、空态都按**未筛选**的库判（评审第 2 条）', () => {
+  const template = templateOf(read('../src/memory/MemoryPanel.vue'));
+  // 三处动作/空态都不许读筛选后的 `list`——它会让「库里只有通用偏好 + 视图选本项目」
+  // 显示成「还没有记忆」，还把导出与清空变灰。
+  assert.match(template, /allMemories\.length/, '要有未筛选的那份');
+  assert.ok(!/disabled="globalBusy \|\| !list\.length"/.test(template), '导出不该读 list');
+  assert.ok(!/!list\.length && !candidates\.length/.test(template), '清空不该读 list');
+  // 两种空态要分开说。
+  assert.match(template, /还没有记忆/);
+  assert.match(template, /当前筛选下没有记忆/, '「筛掉了」与「库是空的」是两回事');
 });

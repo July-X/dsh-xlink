@@ -66,8 +66,8 @@ pub const VERIFICATION_STALE: &str = "stale";
 pub const SOURCE_MANUAL: &str = "user-manual";
 /// 会话来源：桥接层（`memory_propose` 工具）用它标注候选从哪个会话来。
 pub const SOURCE_SESSION: &str = "session";
-/// 自动提取来源（P2）。首版没有任何写入方，留着是为了让 P2 不引入新的字面量。
-#[allow(dead_code, reason = "P2 自动提取的来源标记，首版不写")]
+/// 自动提取来源（P2）。**已经有写入方**（`jobs_routes` 的 `/submit`），
+/// 所以那句 `#[allow(dead_code, …首版不写)]` 已经过期——留着它会掩盖真正的死代码。
 pub const SOURCE_EXTRACT: &str = "extract";
 
 /// 每命名空间的记录上限。到顶后新建被拒绝（宁可不收，也不静默丢最老的）。
@@ -79,7 +79,11 @@ pub const MAX_BODY_BYTES: usize = 8 * 1024;
 /// 症状是「检索里排第一的那条就是不出现在注入里」。
 pub const MAX_TITLE_BYTES: usize = 512;
 /// 同源抑制指纹的保留条数。
-pub const MAX_SUPPRESSED: usize = 500;
+/// 删除留下的正文指纹上限。**与 [`MAX_MEMORIES`] 同量级**（记忆内核那次评审第 5 条）：
+/// 原先是 500，比记录上限少一半——清空一个有 600+ 条小记录的库时，**最早的 100 枚指纹当场
+/// 被挤掉**，而删除与清空的确认文案都承诺「记下正文指纹防止模型把同一条重新提回来」。
+/// 1000 枚指纹约 64 KB，离 1 MiB 的文档上限还远，没有理由省这一半。
+pub const MAX_SUPPRESSED: usize = 1000;
 /// 候选的保留条数，超出丢最老的**已决**候选。
 pub const MAX_CANDIDATES: usize = 200;
 /// **待确认**候选的条数上限。到顶后拒收新的，而不是丢旧的——待确认的那些是用户
@@ -586,7 +590,7 @@ pub fn save(ns: &Namespace, input: SaveInput) -> Result<MemoryRecord, AppError> 
             };
             doc.memories.push(record.clone());
             // 用户自己写下了同一条，待确认里的重复候选就没有意义了（§7.2 用户优先）。
-            crate::memory::duplicates::supersede_pending_duplicates(doc, &record.body, &now_iso());
+            crate::memory::duplicates::supersede_pending_duplicates(doc, &record, &now_iso());
             return Ok(record);
         }
 
@@ -852,7 +856,7 @@ pub fn decide_candidate(
         doc.candidates[index].decided_at = now;
         // 批准之后，待确认里**同一正文**的那些重复候选一并收掉：用户刚刚说「这条要」，
         // 再让他为同一个内容点一次保存是多余的（§7.2 用户优先）。
-        crate::memory::duplicates::supersede_pending_duplicates(doc, &record.body, &now_iso());
+        crate::memory::duplicates::supersede_pending_duplicates(doc, &record, &now_iso());
         Ok(Some(record))
     })
 }
@@ -1650,6 +1654,57 @@ mod tests {
             },
         )
         .expect("different body");
+    }
+
+    /// **收掉重复候选也要带范围**（记忆内核那次评审第 1 条）：`duplicate_reason`（写入闸）按范围判了，
+    /// 而 `supersede_pending_duplicates` 是同一件事的另一半，原先仍按**全库**指纹扫——A、B 两个仓库
+    /// 各自提了同一条约定时，用户在 A 点保存会让 **B 的那条从待确认里静默消失**，而面板与导出都只列
+    /// pending，任何界面上都看不到它。
+    #[test]
+    fn saving_in_one_project_does_not_supersede_another_projects_candidate() {
+        let _home = TempHome::new("supersede-scope");
+        let ns = namespace();
+        // 两个项目各提一条同正文的候选（注意：写入闸现在按范围判，所以两条都收得下）。
+        for workspace in ["ws-a", "ws-b"] {
+            submit_candidate(
+                &ns,
+                CandidateInput {
+                    scope: SCOPE_PROJECT.to_string(),
+                    workspace_id: workspace.to_string(),
+                    workspace_path: format!("/tmp/{workspace}"),
+                    title: format!("{workspace} 的约定"),
+                    body: "提交前跑 npm run check".to_string(),
+                    ..CandidateInput::default()
+                },
+            )
+            .expect("两个项目各收一条");
+        }
+
+        // 在 A 里保存同正文的一条：只该收掉 A 的那条候选。
+        save(
+            &ns,
+            project_input("ws-a", "A 写下的", "提交前跑 npm run check"),
+        )
+        .expect("save");
+
+        let view = list(
+            &ns,
+            &ListFilter {
+                include_candidates: true,
+                ..ListFilter::default()
+            },
+        );
+        let pending: Vec<&str> = view
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.state == CANDIDATE_PENDING)
+            .map(|candidate| candidate.workspace_id.as_str())
+            .collect();
+        assert_eq!(
+            pending,
+            vec!["ws-b"],
+            "B 的待确认不该被 A 的保存收掉：{pending:?}"
+        );
     }
 
     /// **重复判据带范围**（独立评审第 16 条）：指纹原先在全库比，于是 A 项目里已有的那句
