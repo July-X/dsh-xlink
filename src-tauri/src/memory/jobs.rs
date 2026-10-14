@@ -169,8 +169,38 @@ pub struct Claimed {
 }
 
 /// 领一个任务。令牌**由这一侧生成**：调用方（插件）只需要带着它回来，不必自己保证唯一。
-/// 领一个任务并回执（`session` 语义见 [`claim_for`]）。
-pub fn claim_any_for(doc: &mut JobsDoc, now_ms: u64, session: Option<&str>) -> Option<Claimed> {
+/// 领一个任务并回执；`due_only` 为真时**只领过了静默期的**（路由走这条）。
+///
+/// 为什么需要它（独立评审第 11 条）：去抖原先只作用于 `enqueue` 的**合并**，`claim` 没有任何
+/// 时间判据——于是「先排、再领」在稳定态等于**每回合立刻一次提取**（一次全量日志读 + 一次模型
+/// 调用），而注释里写的「静默期/相邻回合合并」并不成立。加上这一道之后，相邻的回合才真的会
+/// 合并成一次提取：第一次 claim 发生在最后一个回合结束 **30 秒之后**。
+///
+/// 为什么是单独一个入口而不是改 `claim_for` 的语义：`claim_for` 是租约状态机的原语（十来个用例
+/// 按绝对时间喂它），去抖是**调度策略**，混在一起会让那些用例为了凑静默期而改时间。
+pub fn claim_any_due_for(
+    doc: &mut JobsDoc,
+    now_ms: u64,
+    session: Option<&str>,
+    due_only: bool,
+) -> Option<Claimed> {
+    if due_only && !has_due_job(doc, now_ms, session) {
+        return None;
+    }
+    claim_any_inner(doc, now_ms, session)
+}
+
+/// 有没有**过了静默期**的待跑任务（`session` 为 `None` 时看全表）。
+fn has_due_job(doc: &JobsDoc, now_ms: u64, session: Option<&str>) -> bool {
+    doc.jobs.iter().any(|job| {
+        job.state == JOB_PENDING
+            && now_ms.saturating_sub(job.updated_at_ms) >= DEBOUNCE_MS
+            && session.is_none_or(|wanted| job.key.session == wanted)
+    })
+}
+
+/// 领一个任务并回执（内部实现，`session` 语义见 [`claim_for`]）。
+fn claim_any_inner(doc: &mut JobsDoc, now_ms: u64, session: Option<&str>) -> Option<Claimed> {
     let token = super::store::new_id();
     let lease = claim_for(doc, now_ms, &token, session)?;
     let job = doc.jobs.iter().find(|job| {
@@ -484,12 +514,44 @@ mod tests {
         JobsDoc::new()
     }
 
+    /// **入表后要过静默期才领得到**（独立评审第 11 条）：去抖原先只作用于 `enqueue` 的合并，
+    /// `claim` 没有时间判据——于是「先排、再领」在稳定态等于**每回合立刻一次提取**，
+    /// 相邻回合根本不会合并。
+    #[test]
+    fn a_fresh_job_is_not_claimable_until_the_debounce_has_passed() {
+        let mut doc = doc();
+        enqueue(&mut doc, key("s1", 10), 0);
+
+        // 静默期内：到期才领的那条路领不到，任务仍是 pending。
+        assert!(
+            claim_any_due_for(&mut doc, 0, None, true).is_none(),
+            "刚入表不该立刻被领走"
+        );
+        assert!(
+            claim_any_due_for(&mut doc, DEBOUNCE_MS - 1, None, true).is_none(),
+            "差 1 毫秒也不行"
+        );
+        assert_eq!(doc.jobs[0].state, JOB_PENDING);
+
+        // 过了静默期：领得到，而且就是那一条。
+        let claimed = claim_any_due_for(&mut doc, DEBOUNCE_MS, None, true).expect("到期该能领");
+        assert_eq!(claimed.key.cursor, 10);
+        finish(&mut doc, &claimed.token, DEBOUNCE_MS);
+
+        // `due_only=false` 保留旧语义（租约状态机的用例按绝对时间喂它）。
+        enqueue(&mut doc, key("s2", 20), DEBOUNCE_MS + 1);
+        assert!(
+            claim_any_due_for(&mut doc, DEBOUNCE_MS + 1, None, false).is_some(),
+            "不带到期判据时仍可立刻领"
+        );
+    }
+
     /// `claim_any` 要带回**令牌与键**：调用方靠键里的游标去冻结输入，靠令牌回来提交。
     #[test]
     fn claiming_hands_back_a_token_and_the_frozen_cursor() {
         let mut doc = doc();
         enqueue(&mut doc, key("s1", 77), 0);
-        let claimed = claim_any_for(&mut doc, 10, None).expect("claim");
+        let claimed = claim_any_due_for(&mut doc, 10, None, false).expect("claim");
         assert_eq!(claimed.key.cursor, 77, "游标就是冻结输入的截止序号");
         assert_eq!(claimed.attempts, 1);
         assert_eq!(claimed.token.len(), 32, "16 字节的随机令牌");
@@ -504,7 +566,7 @@ mod tests {
         enqueue(&mut doc, key("a", 10), 0); // A 先排，所以「全表最早」是它
         enqueue(&mut doc, key("b", 20), 0);
 
-        let claimed = claim_any_for(&mut doc, 10, Some("b")).expect("B 该领到自己那条");
+        let claimed = claim_any_due_for(&mut doc, 10, Some("b"), false).expect("B 该领到自己那条");
         assert_eq!(claimed.key.session, "b", "领到的必须是自己的");
         assert_eq!(claimed.key.cursor, 20);
 
@@ -516,14 +578,14 @@ mod tests {
 
         finish(&mut doc, &claimed.token, 20);
         // 放掉之后 A 自己来领，拿到的才是 A 的。
-        let next = claim_any_for(&mut doc, 30, Some("a")).expect("A 领自己那条");
+        let next = claim_any_due_for(&mut doc, 30, Some("a"), false).expect("A 领自己那条");
         assert_eq!(next.key.session, "a");
         assert_eq!(next.key.cursor, 10);
 
         // 不带会话时仍是「全表最早」（旧行为保留给测试与旧调用点）。
         finish(&mut doc, &next.token, 40);
         enqueue(&mut doc, key("c", 30), 0);
-        let any = claim_any_for(&mut doc, 50, None).expect("不带会话仍能领");
+        let any = claim_any_due_for(&mut doc, 50, None, false).expect("不带会话仍能领");
         assert_eq!(any.key.session, "c");
     }
 
@@ -548,9 +610,11 @@ mod tests {
         assert_eq!(added, Enqueued::Added);
         let back = load(&ns).expect("load");
         assert_eq!(back.jobs.len(), 1, "事务要写回盘上");
-        assert!(mutate(&ns, |doc, now| claim_any_for(doc, now, None))
-            .expect("claim")
-            .is_some());
+        assert!(
+            mutate(&ns, |doc, now| claim_any_due_for(doc, now, None, false))
+                .expect("claim")
+                .is_some()
+        );
         let back = load(&ns).expect("load");
         assert_eq!(back.jobs[0].state, JOB_RUNNING);
     }
@@ -562,7 +626,7 @@ mod tests {
         enqueue(&mut doc, key("s1", 10), 0);
         assert!(running_job(&doc, "nope").is_none(), "没领过就没有");
         assert!(running_job(&doc, "").is_none(), "空令牌不算");
-        let claimed = claim_any_for(&mut doc, 10, None).expect("claim");
+        let claimed = claim_any_due_for(&mut doc, 10, None, false).expect("claim");
         assert!(running_job(&doc, &claimed.token).is_some());
         assert!(finish(&mut doc, &claimed.token, 20));
         assert!(
@@ -605,7 +669,7 @@ mod tests {
         persist(&ns, &crashed).expect("persist");
 
         // 重启之后第一次领取：**直接接手**，不必等满 120 秒（租约已经过期了）。
-        let claimed = mutate(&ns, |doc, now| claim_any_for(doc, now, None))
+        let claimed = mutate(&ns, |doc, now| claim_any_due_for(doc, now, None, false))
             .expect("mutate")
             .expect("崩溃残留的任务要能被接管");
         assert_eq!(claimed.key.cursor, 5, "冻结的游标不变");
