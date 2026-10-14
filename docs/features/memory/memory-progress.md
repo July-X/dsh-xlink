@@ -392,10 +392,15 @@
   整体按 64 KiB **从最新往回**填，截断时在最前面留一行说明（**不静默截断**：模型要能分清「没看到」与「没发生」）。
   留下的话**再过一遍凭据掩码**（`mask.js`：`sk-…` / `Bearer <令牌>` / `token=…` 三类形状，
   削短在掩码**之后**——先截断会把一个凭据切成两半，两半都不再匹配形状）。**脱敏放哪一侧这个缺口已经定了**
-  （见下），**还差**：① **读取有限事件范围**（`sessions.flush(session)` → 返回 false 时改用 live 历史；用
-  `sessionPersistence.open(id,'read')` 的 `SessionHandle.read(offset,length)`，**不许用**已废弃的
-  `eventAt`/`snapshotEvents`/`ownEvents`）；② 模型调用本身（`prepareCall`/`stream`、`purpose` 省略并审计、
-  不创建用户可见对话）
+  （见下）。**读取那一步已落地一半**（`sessionlog.js`）：先 `sessions.flush(session)` 要一次落盘屏障
+  （返回 `false` = 没有持久化监听器参与 → **如实回不可用**，绝不拿盘上那份旧的当最新），再
+  `sessionPersistence.open(id,'read')` + `handle.read(from, length)`，最后关句柄（关不上不盖住读到的结果）；
+  **不许用**已废弃的 `eventAt`/`snapshotEvents`/`ownEvents`（有一条判据扫这三个名字，剥注释后判）。
+  **真机验证过一半**（长驻 sdk 会话）：第 1 回合的 `turn/end` 上读到 **17 条真实事件（seq 0..16）** ✓；
+  **第 2 回合起失败**：`flush on a closed handle`——对照实验（去掉 `close()`）排除了「我关多了」，
+  是**内核/SDK 在回合之间把写句柄关了**。这正是设计里「返回 false 就改用 live 会话的可见历史」要兜的
+  情况，**而那条兜底还没实现**（`session.surface` 只给序号不给事件，得先找到 live 历史的读法）。
+  **还差**：① 上面那条兜底；② 模型调用本身（`prepareCall`/`stream`、`purpose` 省略并审计、不创建用户可见对话）
 - ✅ **脱敏放哪一侧（2026-10-15 定）**：设计 §8-3 写的「脱敏复用 `diagnostics::run::sanitize`」**两侧都走不通**
   ——① 输入是 64 KiB 的会话片段，而桥是 **GET + 查询串**（请求头缓冲固定 8 KB），它根本过不去，只有插件手里
   有这段文本；② 整个 `sanitize` 除了剥形状，还要把 home 折成 `~` 并把结果**截到 480 字符**（那是给日志行用的，
@@ -477,6 +482,7 @@
 | `plugins/memory/host/index.js` | 装配层：`agent/created` 注册上下文、`pre-step`、三个工具 | B1–B10、B25–B27、I5 |
 | `plugins/memory/host/policy.js` | 纯策略：注入预算、代次探测、「结果怎么用」、压缩后重置、提取调度与有限输入 | B6–B10、H1、H3、H5 |
 | `plugins/memory/host/mask.js` | 凭据形状的掩码（与 Rust 侧 `diagnostics/mask.rs` 同一套形状，逐项钉住） | H5 |
+| `plugins/memory/host/sessionlog.js` | 读一段**冻结的会话事件范围**（P2 的输入来源：屏障 → 读句柄 → 关） | H5 |
 | `plugins/memory/host/bridge.js` | 桥客户端：凭据读取、路径拼装、超时与通道上限 | B28、E4 |
 | `plugins/memory/test/smoke.test.mjs` | 策略层与桥客户端用例（19 条，含 2 条接线判据） | 各条的判据 |
 | `ui/src/memory/memory.js` | 面板状态与动作（含 `injectionDisabled`、`injectionText`） | D1–D14、D6a、I7 |
@@ -489,7 +495,7 @@
 | --- | --- | --- |
 | 1 | **D6b 工作台徽标**（§2）—— 先解决「看得见工作台」（屏幕录制权限，或一条壳侧日志通道），否则落点只能靠猜；方案与代价见 D6b 条目 | 设计稿对用户的核心承诺里最后一条没兑现的；D6a 已经把「实况」放进了面板 |
 | 2 | **F6 在 Windows 上跑一次 `npm run check`** | 那条 `\?\` 路径归一的用例就是为它写的，至今没在 Windows 上执行过 |
-| 3 | **P2 自动提取：模型调用那一段**（H5 的会话日志读取、模型调用、H6 输出 schema、H8 取消、H9 的断网生成） | 地基与验收已成：状态机、桥路由、调度判据、有限输入与脱敏、四道提交闸、**整条数据链的端到端验收**与**崩溃恢复**。剩下的每一步都要**真模型**。**C4 的「多来源」与 C5/C6 的语义那一半也并到这里** |
+| 3 | **P2 自动提取：模型调用那一段**（含「回合之间句柄被关」的兜底）（H5 的会话日志读取、模型调用、H6 输出 schema、H8 取消、H9 的断网生成） | 地基与验收已成：状态机、桥路由、调度判据、有限输入与脱敏、四道提交闸、**整条数据链的端到端验收**与**崩溃恢复**。剩下的每一步都要**真模型**。**C4 的「多来源」与 C5/C6 的语义那一半也并到这里** |
 
 ## 怎么验（判据在哪跑）
 
