@@ -53,19 +53,19 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
         )
     };
     let (status, body) = match action {
-        "/enqueue" => {
-            // §8-1 的第三条判据「**获许可的**会话」在这里判，不在插件里：开关现在是什么状态
-            // 只有一份来源（权威记录），插件手里那份是上一次检索时的快照。答 `disabled` 而不是
-            // 报错——这不是故障，是用户没开这个功能。
-            let allowed = crate::memory::store::load(&namespace)
-                .map(|doc| doc.meta.use_approved)
-                .unwrap_or(false);
-            if !allowed {
-                (
-                    200,
-                    serde_json::json!({ "outcome": "disabled" }).to_string(),
-                )
-            } else {
+        // §8-1 的第三条判据「**获许可的**会话」在这里判，不在插件里：开关现在是什么状态
+        // 只有一份来源（权威记录），插件手里那份是上一次检索时的快照。答 `disabled` 而不是
+        // 报错——这不是故障，是用户没开这个功能。
+        //
+        // **读不出来 ≠ 开关关着**（记忆内核那次评审第 8 条）：库损坏时原先回 `disabled`，
+        // 插件与日志都不留真因，用户只在记忆页看到那条 warning。所以先分开答复。
+        "/enqueue" => match crate::memory::store::load(&namespace) {
+            Err(error) => failed(error),
+            Ok(doc) if !doc.meta.use_approved => (
+                200,
+                serde_json::json!({ "outcome": "disabled" }).to_string(),
+            ),
+            Ok(_) => {
                 let key = jobs::JobKey {
                     session: query_decoded(path, "session"),
                     cursor: query_decoded(path, "cursor").parse().unwrap_or(0),
@@ -82,7 +82,7 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                     Err(error) => failed(error),
                 }
             }
-        }
+        },
         // 没东西可领时**不是错误**：插件按固定节奏来问，答 `token: null` 让它安静退下。
         // `session` 可选：带上就**只领这个会话的任务**（插件总是带）。不带=领全表最早的，
         // 保留给测试与旧调用点。领自己那条是「A 的内容不许带 B 的项目坐标」的前提（评审第 3 条）。
@@ -224,7 +224,7 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                         // 来源引用由**这一侧**按任务的冻结范围写：插件只能声明引用了哪些序号，
                         // 而范围本身来自任务键（这是「不能覆写更新结果」的一半）。
                         source: crate::memory::store::MemorySource {
-                            kind: "extract".to_string(),
+                            kind: crate::memory::store::SOURCE_EXTRACT.to_string(),
                             session: job.key.session.clone(),
                             start_seq,
                             end_seq,

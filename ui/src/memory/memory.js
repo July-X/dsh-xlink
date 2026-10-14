@@ -59,8 +59,6 @@ export const memoryStore = reactive({
   /// 最近几次「模型实际看到了哪些记忆」（`memory_recent_injections`，新的在前）。
   /// 与 `preview` 的区别：那是**模拟**（拿你填的查询算一遍），这是**实况**。
   recentInjections: [],
-  /// 文档读不出来时的原文（后端给的 warning 已经带下一步，前端不再改写）。
-  failure: '',
 });
 
 /** 某个路径对应的内核工作区 id；不是已知工作区就回空串（后端按路径兜底）。 */
@@ -81,7 +79,17 @@ export function workspaceIdFor(path) {
  */
 export function injectionDisabled(view) {
   if (!view) return false;
-  return !(view.requestedEnabled && !view.stateError);
+  // **判接线事实，不判启用意图**（记忆内核那次评审第 3 条）：内核读的是 `cordis.patch.yml`
+  // 的接线行（`wired`），而 `requestedEnabled` 只是壳里那份 `state.json`。只看后者两个方向都会错：
+  // · 切内核版本后接线行还在、state.json 变了 → 面板报「没启用」，而内核照旧加载着插件；
+  // · 启用是「先写接线行、后写 state.json」，两步之间失败 → 同样是 `wired=true,
+  //   requestedEnabled=false`，面板给一个其实不需要点的启用按钮。
+  // 所以两个都要：**接线了、且状态是 prepared**，才敢说「没启用」。
+  if (view.stateError) return false; // 状态文件异常：不知道就不说
+  // `wired` 缺失（旧壳/字段没下发）时**也不说**——「不知道」不能当成「没接线」，
+  // 那正是这条判据第一版的老毛病（挂一句假警报，让用户去修一个没坏的东西）。
+  if (typeof view.wired !== 'boolean') return false;
+  return !(view.wired && view.loadState === 'prepared');
 }
 
 /**
@@ -187,7 +195,6 @@ export function rememberProjectPath(path) {
 function applyView(view) {
   memoryStore.view = view;
   memoryStore.status = view.status;
-  memoryStore.failure = view.status.warning || '';
 }
 
 /// 开关改动的**生效语义**（设计 §9 / 清单 E6：**不许说「已生效」**）。
@@ -272,10 +279,24 @@ export function resetDraft() {
   memoryStore.draft = emptyDraft();
 }
 
+/// 正文字节上限。**与后端的 `store::MAX_BODY_BYTES` 逐字对齐**——改一边要两边一起改。
+///
+/// 面板原先写 `maxlength="4000"`，那数的是 UTF-16 码元，而后端闸的是字节：中文 4000 字
+/// 约 12000 字节，用户按面板允许的长度写完，保存时才拿到「超过单条上限 8192 字节」
+/// （记忆内核那次评审第 4 条）。现在面板按**字节**算并提前拦住。
+export const MAX_BODY_BYTES = 8192;
+
+/// 一段文本的 UTF-8 字节数（中文一个字 3 字节）。
+export function byteLength(text) {
+  return new TextEncoder().encode(text || '').length;
+}
+
 export function canSaveDraft() {
   const draft = memoryStore.draft;
   if (!draft.title.trim() && !draft.body.trim()) return false;
   if (draft.scope === 'project' && !memoryStore.projectPath.trim()) return false;
+  // 超了就保存不了——**提前拦住**，而不是让用户写完再被后端拒。
+  if (byteLength(draft.body) > MAX_BODY_BYTES) return false;
   return true;
 }
 

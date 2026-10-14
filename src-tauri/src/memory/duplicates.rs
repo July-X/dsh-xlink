@@ -33,6 +33,34 @@ pub(crate) fn duplicate_reason_for(
     )
 }
 
+/// 这条记录**在候选的范围里看得见吗**——「算不算重复」（[`duplicate_reason`]）与
+/// 「要不要把待确认里的收掉」（[`supersede_pending_duplicates`]）**共用这一份规则**。
+///
+/// 独立评审第 1 条（记忆内核那次）正是这条规则只写了一半的后果：写入闸按范围判了，
+/// 而收掉重复候选那一半仍按**全库**指纹扫——A、B 两个仓库各自提了同一条约定时，
+/// 用户在 A 点保存会让 **B 的那条从待确认里静默消失**（面板与导出都只列 pending，
+/// 任何界面上都看不到它）。**规则一旦有两份实现就会分叉**，这是本仓的老账。
+fn in_scope(
+    record_scope: &str,
+    record_workspace_id: &str,
+    record_workspace_path: &str,
+    scope: &str,
+    workspace_id: &str,
+    workspace_path: &str,
+) -> bool {
+    if scope == super::store::SCOPE_GENERAL {
+        // 通用候选只认通用记录：项目记录在别的项目里看不见，为它拒收一条通用偏好是错的。
+        return record_scope == super::store::SCOPE_GENERAL;
+    }
+    super::query::scope_matches_fields(
+        record_scope,
+        record_workspace_id,
+        record_workspace_path,
+        workspace_id,
+        workspace_path,
+    )
+}
+
 pub(crate) fn duplicate_reason(
     doc: &super::store::MemoryDoc,
     scope: &str,
@@ -41,18 +69,12 @@ pub(crate) fn duplicate_reason(
     body: &str,
 ) -> Option<String> {
     let value = super::store::fingerprint(body);
-    let general_candidate = scope == super::store::SCOPE_GENERAL;
-    // 这条记录**在候选的范围里看得见吗**——看不见就不算重复。
-    let in_scope = |record_scope: &str, id: &str, path: &str| -> bool {
-        if general_candidate {
-            // 通用候选只认通用记录：项目记录在别的项目里看不见，为它拒收一条通用偏好是错的。
-            return record_scope == super::store::SCOPE_GENERAL;
-        }
-        super::query::scope_matches_fields(record_scope, id, path, workspace_id, workspace_path)
+    let visible = |record_scope: &str, id: &str, path: &str| -> bool {
+        in_scope(record_scope, id, path, scope, workspace_id, workspace_path)
     };
     if let Some(record) = doc.memories.iter().find(|record| {
         super::store::fingerprint(&record.body) == value
-            && in_scope(&record.scope, &record.workspace_id, &record.workspace_path)
+            && visible(&record.scope, &record.workspace_id, &record.workspace_path)
     }) {
         return Some(format!(
             "这条内容已经在记忆里了（「{}」，状态 {}）。重复收它只会让同一件事出现两份。",
@@ -64,7 +86,7 @@ pub(crate) fn duplicate_reason(
         .find(|candidate| {
             candidate.state == super::store::CANDIDATE_PENDING
                 && super::store::fingerprint(&candidate.body) == value
-                && in_scope(
+                && visible(
                     &candidate.scope,
                     &candidate.workspace_id,
                     &candidate.workspace_path,
@@ -87,14 +109,25 @@ pub(crate) fn duplicate_reason(
 /// **状态改成已拒绝，不是删掉**：文档里留痕，用户问「我提的那条呢」时有据可查。
 pub(crate) fn supersede_pending_duplicates(
     doc: &mut super::store::MemoryDoc,
-    body: &str,
+    saved: &super::store::MemoryRecord,
     now: &str,
 ) -> usize {
-    let value = super::store::fingerprint(body);
+    let value = super::store::fingerprint(&saved.body);
     let mut superseded = 0;
     for candidate in doc.candidates.iter_mut() {
         if candidate.state == super::store::CANDIDATE_PENDING
             && super::store::fingerprint(&candidate.body) == value
+            // **同一份范围规则**（评审第 1 条）：A 项目保存一条，不该把 B 项目里
+            // 同正文的待确认静默收掉——那条在 B 里是独立的一件事，而面板只列 pending，
+            // 收掉之后用户在任何界面上都看不到它了。
+            && in_scope(
+                &candidate.scope,
+                &candidate.workspace_id,
+                &candidate.workspace_path,
+                &saved.scope,
+                &saved.workspace_id,
+                &saved.workspace_path,
+            )
         {
             candidate.state = super::store::CANDIDATE_REJECTED.to_string();
             candidate.decided_at = now.to_string();
