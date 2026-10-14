@@ -1341,12 +1341,23 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
     '不许再把服务快照进一个常量对象'
   );
   assert.match(code, /route: 'jobs\/claim'/, '要真的去领任务');
+  // **「整段不抛」必须真的兜住**（2026-10-15 探针逮到的 fatal）：`runDueExtraction` 里一个
+  // TDZ 异常让内核报 `fatal load failure`，整个插件当场失效——而所有单测都是绿的，
+  // 因为装配层没有内核。判据钉住「调用处有 .catch」，不许只靠函数内部的自觉。
+  assert.match(
+    code,
+    /runDueExtraction\([\s\S]*?\)\s*\.catch\(/,
+    '调用处要兜住异常（`runDueExtraction(...).catch(...)`）'
+  );
+  assert.match(code, /不影响对话/, '兜住之后要留一句日志');
+  // 当前会话 id 与任务键里的会话 id 不是一个东西：前者只用于「领自己那条」。
+  assert.match(code, /currentSessionId/, '当前会话 id 要作为参数传进来，别用任务键里那个');
   // **领自己会话那条**（评审第 3 条）：不带 session 时壳从全表挑最早那条，而提交用的坐标
   // 取自发起领取的会话 → A 的内容会带 B 的项目坐标落库。
   assert.match(
     code,
-    /route: 'jobs\/claim',\s*params: \{ session: String\(sessionId \?\? ''\) \}/,
-    '领取要带上自己的会话'
+    /route: 'jobs\/claim',\s*params: \{ session: String\(currentSessionId \?\? ''\) \}/,
+    '领取要带上自己的会话（用**当前会话**的 id，不是任务键里那个）'
   );
   // 提交前按整条路径真算一次（评审第 6 条）：逐项合法的候选合起来能超通道，靠估法挡不住。
   assert.match(code, /encodedPathBytes\('jobs\/submit', params\)/, '提交前要按整条路径算长度');

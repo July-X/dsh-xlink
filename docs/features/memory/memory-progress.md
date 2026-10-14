@@ -1,6 +1,6 @@
 # 本地记忆系统：开发清单与进度
 
-**当前状态（2026-10-15，复核过一遍）：✅ 131 / 🟡 8 / ⬜ 3 / 🚫 1。**
+**当前状态（2026-10-15，复核过一遍）：✅ 132 / 🟡 7 / ⬜ 3 / 🚫 1。**
 **两份独立评审共 28 条已全部修完。** **第一次评审 18 条已全部修完**（含最后那半「读范围」——见下面「独立评审」一节）；**第二次评审（记忆内核 + 面板）10 条已全部修完**（见下面那一节）（见下面「独立评审」一节——那不是推迟，是缺陷）。开着的 12 条分三类——
 **要环境或你拍板**（真机本地模型、「真的没有网」、Windows、屏幕录制权限）、**已明确推迟**
 （语义冲突/纠正的语义那一半、候选标过期、合并来源的 schema 变更——**这三条攒在同一个
@@ -381,15 +381,20 @@ A16/A17/B17 都做完了。
     生效完整（`injections` 1→0、`textLen` 40→0）。上一轮看不出来是因为 **A/B 的两边其实是同一版**
     ——修复已经提交过了，而我以为它还在工作区（`HEAD` 会随我自己的提交前移）。教训见
     [agent-lessons §14](../reviews/agent-lessons.md)。
-- 🟡 **G13 失败压缩**（§8、§10）—— **设计稿的假设是错的，已按实测改口**：内核在压缩**失败**时
+- ✅ **G13 失败压缩**（§8、§10）—— **2026-10-15 端到端验完**（对照实验，见下面「怎么验」）：
+  **压缩失败时内核照样发 `compaction/end`、且带 `error`**
+  （实测原文 `compaction/end error=500: {"message":"stub refuses to summarize (G13)"}`），
+  而插件**只对成功的压缩重置**——两轮同样 6 回合：**摘要成功那轮注入 6 次，摘要失败那轮注入 3 次**
+  （正好卡在 `MAX_INJECTIONS_PER_SESSION = 3`，即预算**没有**被重置）。
+  **设计稿的假设是错的，已按实测改口**：内核在压缩**失败**时
   照样发 `compaction/end`，只是带 `error` 字段——实测那一条是
   `{"type":"compaction/end","seq":24,…,"data":{"compactionId":"…","turn":2,"error":"500: …"}}`，
   与 `compaction/start` **成对出现**（各 5 次）。插件因此改成**只对成功的压缩重置**
   （`policy::isCompactionDone`：`compaction/end` 且**没有** `error`）——失败的压缩没有丢掉任何快照，
   重置只会白取一次检索、甚至把同一段内容再塞一遍。判据：`isCompactionDone` 的四组用例 +
   装配层判据（不许再按裸类型判）。**卡点已不是「要长驻进程」**——`sdk` profile 那条探针路
-  已经通了（G12 就是用它验的，2026-10-15）。**还差**：在探针里真的制造一次**失败**的压缩
-  （让桩模型对压缩那次请求回 5xx），看插件是不是**不重置**——这条本机可做，记在待办总表里
+  已经通了（G12 就是用它验的，2026-10-15）。**2026-10-15 用对照实验验完**（见下面「怎么验」）：
+  失败那轮的注入次数正好卡在 3，成功那轮 6——**插件确实只对成功的压缩重置**
 - ✅ **G14 `agent/created` 解析失败或桥不可用时会话仍能正常创建与对话** —— try/catch + 真机
 - ✅ **G15 子智能体不超出父级读权限**（§5、§10）—— **策略（三道夹紧，都在代码里）**：
   · **① 没有 agent 就拒**：三个工具（`memory_search`/`memory_read`/`memory_propose`）第一句都是
@@ -761,6 +766,43 @@ touch /tmp/p2probe/bridge-stop
 
 **失败原因在壳这边读得到**：插件走 `/jobs/fail` 时把 `stage` 与原因一起报上来，
 夹具直接把 `job.error` 打出来——不必去翻插件的日志（它在 sdk profile 下不进 stdout）。
+
+### 失败压缩的对照实验（2026-10-15 跑过，G13）
+
+**要验的**：内核在压缩**失败**时也发 `compaction/end`（带 `error`），而插件**只对成功的压缩重置**
+注入预算。**判据是注入次数**（插件每真的用一次检索就回一条 `/note`，所以桥上的 `note` 条数就是
+真实注入次数）。
+
+**做法**（同一个驱动跑两轮，只有「摘要那次调用失不失败」不同；桩模型里那个 `STUB_FAIL_SUMMARY`
+钩子早就写好了，注释里写着 G13）：
+
+```sh
+cd /tmp/p2probe   # 探针目录（桩模型 / 桩桥 / overlay / drive-sdk 都在那）
+for mode in ok fail; do
+  pkill -f stub-bridge.mjs; pkill -f stub-model.mjs; sleep 1; rm -f model.log bridge.log
+  if [ "$mode" = fail ]; then STUB_FAIL_SUMMARY=1 node stub-model.mjs & else node stub-model.mjs & fi
+  node stub-bridge.mjs &
+  sleep 2
+  DSH_HOME=/tmp/p2probe PROBE_API_KEY=stub node drive-sdk.mjs 6 G13-$mode
+  cp bridge.log bridge-G13-$mode.log
+done
+```
+
+**2026-10-15 的实测**：
+
+| | ok（摘要成功） | fail（摘要被打回 5 次） |
+| --- | --- | --- |
+| `compaction/start` / `end` | 10 / 10 | 5 / 5（每条 end 都带 `error=500: …`） |
+| 桥上的 `/note`（= 真实注入次数） | **6** | **3** |
+
+失败那侧的 3 正好是 `MAX_INJECTIONS_PER_SESSION`——**预算没有被重置** ✓。
+
+**顺带逮到一个致命 bug**（值得单独记）：第一轮跑出来内核报
+`dsh: fatal load failure: ReferenceError: Cannot access 'sessionId' before initialization`
+——插件在 `runDueExtraction` 里把「当前会话 id」与「任务键里的会话 id」写成了一个名字，
+而前者用在了 `const` 声明之前（TDZ）。**55 条插件测试 + 993 条 Rust 测试全绿**，因为装配层没有
+内核、跑不到那条线；而它一旦发生就是**整个插件失效**。两处都修了：把当前会话 id 作为参数传进来，
+并在调用处 `.catch` 兜住（设计早就写着「整段不抛」，而代码只包住了后半段）。
 
 ### 真机验收：要你做的三步（2026-10-15 写）
 

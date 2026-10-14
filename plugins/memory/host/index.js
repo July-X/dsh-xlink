@@ -118,7 +118,20 @@ function apply(ctx) {
     // 记人类消息那条路仍然看**每个**事件——它要的正是事件流本身。
     const attempt = () => {
       if (event?.type !== 'turn/end') return;
-      void runDueExtraction(credentials, liveExtractionServices(), box.state.workspace);
+      // **整段不抛**：提取跑在用户的会话里，它坏了不该影响对话，**更不该把插件本身弄崩**
+      // ——2026-10-15 实测过一次：`runDueExtraction` 里一个 TDZ 异常让内核报
+      // `fatal load failure`，整个插件当场失效，而 55 条插件测试与 993 条 Rust 测试全绿
+      // （装配层没有内核，跑不到这条线）。所以这里**必须**兜住，不能只靠「函数内部不抛」的自觉。
+      void runDueExtraction(
+        credentials,
+        liveExtractionServices(),
+        box.state.workspace,
+        session?.id
+      ).catch((error) => {
+        ctx.logger?.warn?.(
+          `xlink-memory: 领取/提取这条线抛了异常（不影响对话）：${String(error?.message ?? error)}`
+        );
+      });
     };
     if (!decision.schedule) {
       attempt();
@@ -190,7 +203,7 @@ function apply(ctx) {
    * 所以这里领到的通常是**前面某个回合**留下的那条——把相邻的几个回合合并成一次提取。
    * 领不到就什么也不做，这不算失败。整段不抛：提取跑在用户的会话里，它坏了不该影响对话。
    */
-  async function runDueExtraction(creds, services, workspace) {
+  async function runDueExtraction(creds, services, workspace, currentSessionId) {
     // 桥的返回是 `{ok, value}`（见 bridge.js），而 `/claim` 的形状是
     // `{token, key:{session,cursor,extractor}, attempts, expires_at_ms}`（见 jobs.rs 的 `Claimed`）。
     // **带上会话**：不带的话壳会从全表挑最早那条，而提交用的坐标取自**发起领取的会话**——
@@ -198,7 +211,10 @@ function apply(ctx) {
     const claimed = await callMemory({
       credentials: creds,
       route: 'jobs/claim',
-      params: { session: String(sessionId ?? '') },
+      // **这是「当前会话」的 id**（用来只领自己那条），与下面从任务键里读出来的 `sessionId`
+      // 不是同一个东西——第一版把两者写成一个名字，于是这里用在了 `const sessionId` 之前，
+      // 真内核里抛 TDZ 异常、整个插件 `fatal load failure`（2026-10-15 探针逮到）。
+      params: { session: String(currentSessionId ?? '') },
     });
     const token = claimed.ok ? claimed.value?.token : null;
     if (typeof token !== 'string' || token.length === 0) return;
