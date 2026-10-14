@@ -73,7 +73,13 @@ export async function runExtraction({ deps, key, from, to, signal }) {
 
     step = 'parse';
     // ④ 校验。解析失败是失败，**空数组是成功**（设计 §8-5）。
-    const parsed = deps.parse(call.text, { events: read.events });
+    // **把「模型看到的那一段」也交给校验**：`evidence_seq` 只许指向切片里的行（`slice.seqs`）。
+    // 只给整份日志的话，判据会覆盖整个会话——历史里总能找到一个人类序号，
+    // 「工具输出里的指令不能升级成用户偏好」就白写了（独立评审第 7 条）。
+    const parsed = deps.parse(call.text, {
+      events: read.events,
+      allowedSeqs: new Set(slice.seqs),
+    });
     if (parsed?.ok !== true) {
       return done({ ok: false, stage: 'parse', reason: parsed?.reason ?? '输出不合 schema' });
     }

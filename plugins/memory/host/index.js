@@ -137,6 +137,14 @@ function apply(ctx) {
   const EXTRACT_MAX_TOKENS = 2048;
   /** 一次提取的总时限（H8 的最小一半）：超时就取消，任务按失败退回去重试。 */
   const EXTRACT_TIMEOUT_MS = 120_000;
+  /**
+   * 续租间隔。**壳那边的租约是 120 秒**（`jobs::LEASE_MS`），而这里按 45 秒续一次：
+   * 独立评审第 9 条指出，原先两边都是 120 秒——而一个从「收到回执」起算、一个从「壳发令牌」起算，
+   * 于是慢模型跑到 119 秒再提交时租约已经过期：另一个会话一 claim 就把它接管，
+   * 旧令牌的 `/jobs/submit` 与 `/jobs/fail` **全部无效**，结果与失败原因一起消失。
+   * 45 秒 = 两次续租都还有余量（网络抖一次也来得及）。
+   */
+  const RENEW_EVERY_MS = 45_000;
 
   /**
    * 调一次提取模型——**一次性调用，不进用户会话**。
@@ -209,6 +217,18 @@ function apply(ctx) {
     const key = { session: liveSession, cursor: endSeq, extractor };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), EXTRACT_TIMEOUT_MS);
+    // **续租**：不续的话，跑得久一点就会被别的会话接管，而这一轮的结果与失败原因都会作废
+    // （评审第 9 条）。续不到就**提前收工**——继续跑只是白烧一次模型调用。
+    const renewTimer = setInterval(() => {
+      void callMemory({ credentials: creds, route: 'jobs/renew', params: { token } }).then(
+        (answer) => {
+          if (answer.ok && answer.value?.renewed === false) {
+            ctx.logger?.warn?.('xlink-memory: 租约已被接管，这次提取提前收工');
+            controller.abort();
+          }
+        }
+      );
+    }, RENEW_EVERY_MS);
     let result;
     try {
       const selection = services.agentDefaultModel?.currentSelection?.();
@@ -284,6 +304,7 @@ function apply(ctx) {
       });
     } finally {
       clearTimeout(timer);
+      clearInterval(renewTimer);
     }
 
     if (result.ok) {
