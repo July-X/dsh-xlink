@@ -153,17 +153,30 @@ fn memory_jobs_route(stream: &mut std::net::TcpStream, path: &str, scope_key: &s
     };
     let (status, body) = match action {
         "/enqueue" => {
-            let key = jobs::JobKey {
-                session: query_decoded(path, "session"),
-                cursor: query_decoded(path, "cursor").parse().unwrap_or(0),
-                extractor: query_decoded(path, "extractor"),
-            };
-            match jobs::mutate(&namespace, |doc, now| jobs::enqueue(doc, key, now)) {
-                Ok(outcome) => (
+            // §8-1 的第三条判据「**获许可的**会话」在这里判，不在插件里：开关现在是什么状态
+            // 只有一份来源（权威记录），插件手里那份是上一次检索时的快照。答 `disabled` 而不是
+            // 报错——这不是故障，是用户没开这个功能。
+            let allowed = crate::memory::store::load(&namespace)
+                .map(|doc| doc.meta.use_approved)
+                .unwrap_or(false);
+            if !allowed {
+                (
                     200,
-                    serde_json::json!({ "outcome": outcome.as_str() }).to_string(),
-                ),
-                Err(error) => failed(error),
+                    serde_json::json!({ "outcome": "disabled" }).to_string(),
+                )
+            } else {
+                let key = jobs::JobKey {
+                    session: query_decoded(path, "session"),
+                    cursor: query_decoded(path, "cursor").parse().unwrap_or(0),
+                    extractor: query_decoded(path, "extractor"),
+                };
+                match jobs::mutate(&namespace, |doc, now| jobs::enqueue(doc, key, now)) {
+                    Ok(outcome) => (
+                        200,
+                        serde_json::json!({ "outcome": outcome.as_str() }).to_string(),
+                    ),
+                    Err(error) => failed(error),
+                }
             }
         }
         // 没东西可领时**不是错误**：插件按固定节奏来问，答 `token: null` 让它安静退下。
@@ -575,6 +588,17 @@ mod tests {
         let empty = http_get(&addr, "/v1/memory/jobs/claim", Some(&token));
         assert!(empty.contains(r#""token":null"#), "{empty}");
 
+        // 开关关着（默认）→ 「获许可的会话」不成立，答 `disabled` 而不是排任务。
+        let blocked = http_get(
+            &addr,
+            "/v1/memory/jobs/enqueue?session=s-1&cursor=9&extractor=v1",
+            Some(&token),
+        );
+        assert!(blocked.contains(r#""outcome":"disabled""#), "{blocked}");
+
+        // 打开开关（用户同意用记忆）之后才排得进去。
+        let namespace = Namespace::for_bridge("dsh", "default-dev");
+        crate::memory::store::set_use_approved(&namespace, true).expect("enable");
         let queued = http_get(
             &addr,
             "/v1/memory/jobs/enqueue?session=s-1&cursor=9&extractor=v1",
@@ -632,7 +656,6 @@ mod tests {
         // 状态与落盘：`done` 计一，且**重启之后还在**（路由每次都读盘、改完写回）。
         let status = http_get(&addr, "/v1/memory/jobs/status", Some(&token));
         assert!(status.contains(r#""done":1"#), "{status}");
-        let namespace = Namespace::for_bridge("dsh", "default-dev");
         let on_disk = crate::memory::jobs::load(&namespace).expect("load");
         assert_eq!(on_disk.jobs.len(), 1);
         assert_eq!(on_disk.jobs[0].state, crate::memory::jobs::JOB_DONE);

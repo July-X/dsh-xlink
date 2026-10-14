@@ -5,6 +5,12 @@ import test from 'node:test';
 import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, readCredentials } from '../host/bridge.js';
 import {
   afterCompaction,
+  buildInput,
+  emptyExtractState,
+  EVENT_TRUNCATION_MARKER,
+  noteSessionEvent,
+  shouldScheduleExtraction,
+  TRUNCATION_MARKER,
   MAX_INJECTIONS_PER_SESSION,
   MAX_LIBRARY_REFRESHES_PER_SESSION,
   MAX_QUERY_CHARS,
@@ -248,6 +254,97 @@ test('每会话最多注入三次，同回合不重复检索', () => {
  * 代价要钉住：预算用完之后再换目录，这段会话**一段记忆都不注入**。宁可少注入，也
  * 不要把 A 的记忆送进 B；新开会话即恢复。
  */
+/** 一条真的人类消息。 */
+const human = (seq) => ({
+  type: 'user/message',
+  seq,
+  data: { message: { content: [{ type: 'text', text: '以后提交前都跑检查' }] }, source: { kind: 'user' } },
+});
+/** 一条合成注入（别的插件 `agent.inject()` 进来的上下文）。 */
+const injected = (seq) => ({
+  type: 'user/message',
+  seq,
+  data: {
+    message: { content: [{ type: 'text', text: '工作目录 changed' }] },
+    source: { kind: 'working-directory' },
+  },
+});
+const turnEnd = (seq, kind = 'completed') => ({ type: 'turn/end', seq, data: { turn: 1, reason: { kind } } });
+
+test('只有真的人类消息才算「有用户内容」', () => {
+  let state = emptyExtractState();
+  state = noteSessionEvent(state, injected(1));
+  assert.equal(state.humanSeq, 0, '合成注入不算用户内容：它带的是自己的 source kind');
+  state = noteSessionEvent(state, { type: 'tool/result', seq: 2, data: {} });
+  assert.equal(state.humanSeq, 0, '工具结果也不算');
+  state = noteSessionEvent(state, human(3));
+  assert.equal(state.humanSeq, 3);
+  // 不改入参（调用方可能正拿着上一份做对比）。
+  const before = emptyExtractState();
+  noteSessionEvent(before, human(9));
+  assert.equal(before.humanSeq, 0);
+});
+
+test('回合正常结束且有新的人类消息才排任务', () => {
+  const state = { ...emptyExtractState(), humanSeq: 7 };
+
+  assert.deepEqual(shouldScheduleExtraction(state, turnEnd(20)), { schedule: true, cursor: 20 });
+  // 取消/出错/超长/被中断的回合都不排……
+  for (const kind of ['aborted', 'error', 'max-tokens', 'interrupted', 'blocked', 'forked']) {
+    assert.equal(shouldScheduleExtraction(state, turnEnd(21, kind)).schedule, false, kind);
+  }
+  // ……而且**不会因此漏内容**：那一段的人类消息还在，后面任何一次正常结束的回合
+  // 游标都比它靠后，冻结的范围里自然包含它。
+  assert.deepEqual(shouldScheduleExtraction(state, turnEnd(30)), { schedule: true, cursor: 30 });
+  // 已经排过同样的内容就不再排。
+  assert.equal(shouldScheduleExtraction({ ...state, lastCursor: 7 }, turnEnd(40)).schedule, false);
+  // 注入回合（没有人类消息）不排。
+  assert.equal(shouldScheduleExtraction(emptyExtractState(), turnEnd(50)).schedule, false);
+  // 拿不到截止序号就没有「冻结输入」可言：宁可不排。
+  assert.equal(shouldScheduleExtraction(state, turnEnd(0)).schedule, false);
+  assert.equal(shouldScheduleExtraction(state, { type: 'turn/end', data: { reason: { kind: 'completed' } } }).schedule, false);
+  // 不是回合结束的事件一律不看。
+  assert.equal(shouldScheduleExtraction(state, human(60)).schedule, false);
+});
+
+test('输入只取对话、按字节削、截断要留标记', () => {
+  const tool = {
+    type: 'tool/result',
+    seq: 2,
+    data: { message: { content: [{ type: 'text', text: 'AWS_SECRET=abcdefghijklmnop' }] } },
+  };
+  const assistant = (seq) => ({
+    type: 'assistant/message',
+    seq,
+    data: { message: { content: [{ type: 'text', text: '好，我记下了' }] } },
+  });
+
+  const built = buildInput([human(1), tool, assistant(3)]);
+  assert.match(built.text, /\[1\] 用户：以后提交前都跑检查/);
+  assert.match(built.text, /\[3\] 助手：好，我记下了/);
+  assert.ok(!built.text.includes('AWS_SECRET'), '工具结果整条排除：那是凭据最集中的地方');
+  assert.equal(built.truncated, false);
+
+  // 单条超限 → 削短并留标记（不是静默丢）。
+  const long = {
+    type: 'user/message',
+    seq: 4,
+    data: { message: { content: [{ type: 'text', text: '甲'.repeat(4000) }] }, source: { kind: 'user' } },
+  };
+  const cut = buildInput([long]);
+  assert.ok(cut.text.includes(EVENT_TRUNCATION_MARKER));
+  assert.ok(Buffer.byteLength(cut.text, 'utf8') < 4200, '按字节削，不是按字符');
+
+  // 整体超限 → 从**最新**往回填，丢掉的那些要在最前面留一行说明。
+  const many = Array.from({ length: 40 }, (_, index) => human(index + 1));
+  const tight = buildInput(many, { budgetBytes: 200 });
+  assert.equal(tight.truncated, true);
+  assert.ok(tight.text.startsWith(TRUNCATION_MARKER), '截断标记要在最前面');
+  assert.match(tight.text, /\[40\] 用户：/, '最近的留下');
+  assert.ok(!tight.text.includes('[1] 用户：'), '最老的被丢掉');
+  assert.ok(tight.bytes <= 200 + Buffer.byteLength(TRUNCATION_MARKER, 'utf8') + 4, `${tight.bytes}`);
+});
+
 test('压缩之后预算清零——否则长会话压缩后再也拿不到记忆', () => {
   const spent = {
     turn: 9,
@@ -390,8 +487,17 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
     !code.includes("agent.ctx.on('session/event'"),
     '挂到 agent scope 上收不到（事件不向下流）'
   );
-  assert.match(code, /event\?\.type !== 'compaction\/end'/, '只认「压缩完成」那一条');
+  assert.match(code, /event\?\.type === 'compaction\/end'/, '只认「压缩完成」那一条');
   assert.match(code, /box\.state = afterCompaction\(box\.state\)/, '压缩后要真的把预算清零');
+  // P2 的排任务那条路也要真的接上：判据在 policy 里，接线没有就是「有测试没人用」。
+  assert.match(code, /box\.extract = noteSessionEvent\(box\.extract, event\)/, '要记人类消息的序号');
+  assert.match(code, /shouldScheduleExtraction\(box\.extract, event\)/, '要用调度判据');
+  assert.match(code, /route: 'jobs\/enqueue'/, '要真的去排任务');
+  assert.match(
+    code,
+    /if \(!decision\.schedule \|\| !credentials\) return;/,
+    '没调度决定或没有桥凭据就安静退下'
+  );
   assert.ok(
     !code.includes('applyResult('),
     '装配层不该自己调 applyResult——「结果怎么用」全在 applyStep 里'
