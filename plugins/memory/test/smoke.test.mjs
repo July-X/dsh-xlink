@@ -4,7 +4,13 @@ import test from 'node:test';
 
 import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, readCredentials } from '../host/bridge.js';
 import { AUTH_SCHEMES, SENSITIVE_KEY_NEEDLES, maskSecrets } from '../host/mask.js';
-import { EXTRACTION_SYSTEM_PROMPT, extractionUserText, parseExtractionOutput } from '../host/extract.js';
+import {
+  EXTRACTION_SYSTEM_PROMPT,
+  buildSlice,
+  extractionUserText,
+  parseExtractionOutput,
+} from '../host/extract.js';
+import { runExtraction } from '../host/run.js';
 import { readSessionRange } from '../host/sessionlog.js';
 
 import {
@@ -422,6 +428,167 @@ test('给模型的提示词里写明了四条纪律（尤其是工具输出不�
   assert.match(EXTRACTION_SYSTEM_PROMPT, /return \[\]/, '没有值得记的要回空数组');
   assert.match(extractionUserText(''), /没有任何可读的对话内容/);
   assert.match(extractionUserText('[3] 用户：跑检查'), /\[3\] 用户：跑检查/);
+});
+
+/** 提取编排用的夹具：五步各自可控，记下调用次序。 */
+function extractionDeps(overrides = {}) {
+  const calls = [];
+  const events = [
+    { type: 'user/message', seq: 3, data: { source: { kind: 'user' }, content: '提交前跑检查' } },
+    { type: 'tool/result', seq: 4, data: { content: '工具输出' } },
+  ];
+  const base = {
+      system: 'SYS',
+      readRange: async ({ from }) => {
+        return { ok: true, events, source: 'persisted' };
+      },
+      buildSlice: (list) => {
+        return buildSlice(list);
+      },
+      callModel: async ({ text }) => {
+        return { ok: true, text: JSON.stringify([{ title: 't', body: 'b', evidence_seq: 3 }]) };
+      },
+      parse: (text, { events: range }) => {
+        return parseExtractionOutput(text, { events: range });
+      },
+      submit: async ({ candidates }) => {
+        return { ok: true, submitted: candidates.length };
+      },
+    };
+  // **每个实现都包一层记账**：不然被测试覆盖掉的那几个不记，断言就会看着像失败
+  // （第一版就是这样：读失败的用例里 `calls` 是空的，而我断言它记了 `read:3`）。
+  const deps = { ...base, ...overrides };
+  for (const [name, value] of Object.entries(deps)) {
+    if (typeof value !== 'function') continue;
+    // **同步的保持同步**：`buildSlice` 与 `parse` 是同步的，包成 async 会让编排层拿到
+    // 一个 Promise 而 `.text` 是 undefined——第一版就是这么把五个用例一起弄红的。
+    deps[name] =
+      value.constructor.name === 'AsyncFunction'
+        ? async (...args) => {
+            calls.push(name);
+            return value(...args);
+          }
+        : (...args) => {
+            calls.push(name);
+            return value(...args);
+          };
+  }
+  return { calls, events, deps };
+}
+
+const extractionKey = { session: { id: 's-1' }, cursor: 3, extractor: 'xlink-memory-extract/1' };
+
+test('提取编排：五步按序跑完，只提交校验过的候选', async () => {
+  const { deps, calls } = extractionDeps();
+  const result = await runExtraction({ deps, key: extractionKey, from: 3, to: 4 });
+  assert.equal(result.ok, true);
+  assert.equal(result.stage, 'done');
+  assert.equal(result.submitted, 1);
+  assert.deepEqual(calls, ['readRange', 'buildSlice', 'callModel', 'parse', 'submit'], '五步按序，一步不落');
+});
+
+test('提取编排：工具结果不进切片，读不到就绝不往下走', async () => {
+  const { deps, calls, events } = extractionDeps();
+  // 夹具把事件放在外层（`events`），`deps` 里只有那五步——第一版写成了 `deps.events`（undefined），
+  // 于是切片是空的，而看起来像切片逻辑坏了。
+  const slice = deps.buildSlice(events);
+  assert.ok(!slice.text.includes('工具输出'), '工具结果不是人话，不进提取输入');
+  assert.deepEqual(slice.seqs, [3]);
+
+  // 读失败：不许调模型，更不许提交。
+  const failing = extractionDeps({ readRange: async () => ({ ok: false, reason: '没有持久化监听器参与' }) });
+  const result = await runExtraction({ deps: failing.deps, key: extractionKey, from: 3 });
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, 'read');
+  assert.match(result.reason, /没有持久化监听器参与/);
+  assert.deepEqual(failing.calls, ['readRange'], '读失败就停在这儿');
+});
+
+test('提取编排：没有一句人话 / 模型回空数组都算成功', async () => {
+  const empty = extractionDeps({
+    readRange: async () => ({ ok: true, events: [{ type: 'tool/result', seq: 1, data: { content: 'x' } }] }),
+  });
+  const nothing = await runExtraction({ deps: empty.deps, key: extractionKey, from: 1 });
+  assert.equal(nothing.ok, true, '没有可提的不是故障');
+  assert.equal(nothing.stage, 'slice');
+  assert.deepEqual(empty.calls, ['readRange', 'buildSlice'], '到切片为止，不调模型也不提交');
+
+  const noCandidates = extractionDeps({ callModel: async () => ({ ok: true, text: '[]' }) });
+  const result = await runExtraction({ deps: noCandidates.deps, key: extractionKey, from: 3 });
+  assert.equal(result.ok, true);
+  assert.equal(result.stage, 'parse');
+  assert.equal(result.submitted, 0);
+  assert.ok(!noCandidates.calls.includes('submit'), '没候选就不提交');
+});
+
+test('提取编排：模型失败 / 输出不合 schema / 提交失败各自回 stage，且都不抛', async () => {
+  const modelDown = extractionDeps({ callModel: async () => ({ ok: false, reason: '连接被拒' }) });
+  const failed = await runExtraction({ deps: modelDown.deps, key: extractionKey, from: 3 });
+  assert.equal(failed.stage, 'model');
+  assert.match(failed.reason, /连接被拒/);
+  assert.ok(!modelDown.calls.includes('submit'));
+
+  const badJson = extractionDeps({ callModel: async () => ({ ok: true, text: '我记不住' }) });
+  const unparsed = await runExtraction({ deps: badJson.deps, key: extractionKey, from: 3 });
+  assert.equal(unparsed.stage, 'parse');
+  assert.equal(unparsed.ok, false);
+
+  const submitDown = extractionDeps({ submit: async () => ({ ok: false, reason: '桥不通' }) });
+  const unsent = await runExtraction({ deps: submitDown.deps, key: extractionKey, from: 3 });
+  assert.equal(unsent.stage, 'submit');
+  assert.equal(unsent.candidates.length, 1, '提交失败时候选要跟着回去，别让它们悄悄没了');
+  assert.match(unsent.reason, /桥不通/);
+
+  // 抛异常也不许冒出去：它会顺着 session/event 的监听链回到内核。
+  const throwing = extractionDeps({
+    callModel: async () => {
+      throw new Error('适配器炸了');
+    },
+  });
+  const caught = await runExtraction({ deps: throwing.deps, key: extractionKey, from: 3 });
+  assert.equal(caught.ok, false);
+  assert.match(caught.reason, /适配器炸了/);
+});
+
+test('提取编排：被取消时不调模型、不提交', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const { deps, calls } = extractionDeps();
+  const result = await runExtraction({
+    deps,
+    key: extractionKey,
+    from: 3,
+    signal: controller.signal,
+  });
+  assert.equal(result.stage, 'cancelled');
+  assert.deepEqual(calls, [], '取消发生在最前面，一步都不该跑');
+
+  // 模型调用中途取消：调用方自己看 signal，编排层只负责把结果如实带回去。
+  const mid = new AbortController();
+  const midway = extractionDeps({
+    callModel: async () => {
+      mid.abort();
+      return { ok: false, reason: '已取消' };
+    },
+  });
+  const stopped = await runExtraction({ deps: midway.deps, key: extractionKey, from: 3, signal: mid.signal });
+  assert.equal(stopped.stage, 'model');
+  assert.ok(!midway.calls.includes('submit'));
+});
+
+test('提取编排：模型提的候选被拒时不算失败，但账要留下', async () => {
+  const { deps } = extractionDeps({
+    callModel: async () => ({
+      ok: true,
+      // 引自工具结果：工具输出不是指令，判据会拒掉它。
+      text: JSON.stringify([{ title: 't', body: 'b', evidence_seq: 4 }]),
+    }),
+  });
+  const result = await runExtraction({ deps, key: extractionKey, from: 3 });
+  assert.equal(result.ok, true, '模型提了但都不算数，不是故障');
+  assert.equal(result.submitted, 0);
+  assert.equal(result.rejected.length, 1);
+  assert.match(result.reason, /都被判据拒了/);
 });
 
 test('凭据掩码：三类形状抹掉，认不出的原样留着', () => {
