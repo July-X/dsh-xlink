@@ -538,7 +538,8 @@ pub fn save(ns: &Namespace, input: SaveInput) -> Result<MemoryRecord, AppError> 
     } else {
         (
             input.workspace_id.trim().to_string(),
-            input.workspace_path.trim().to_string(),
+            // 与 `save` 同一份规范化：候选的路径将来要当匹配键用。
+            crate::memory::workspaces::normalize_path(&input.workspace_path),
         )
     };
 
@@ -705,7 +706,8 @@ pub fn submit_candidate(
     } else {
         (
             input.workspace_id.trim().to_string(),
-            input.workspace_path.trim().to_string(),
+            // 与 `save` 同一份规范化：候选的路径将来要当匹配键用。
+            crate::memory::workspaces::normalize_path(&input.workspace_path),
         )
     };
     let source = input.source.clone();
@@ -896,6 +898,54 @@ mod tests {
         );
         assert_eq!(ns.key(), "dsh/default-dev/web");
         assert!(!Path::new(&ns.dir()).exists(), "读路径不该创建目录");
+    }
+
+    /// 手填的项目路径在**写入口**就被规范化成内核那种 realpath。
+    ///
+    /// 钉的是调用点而不是那个纯函数（`workspaces` 里另有它自己的用例）：规范化写好
+    /// 了却没人调，是这个仓库反复栽过的一类形状——helper 有测试、接线没有，于是
+    /// 「带符号链接的路径永远匹配不上」照样上线。
+    #[test]
+    fn a_hand_typed_path_is_normalized_at_the_write_entry() {
+        let _home = TempHome::new("normalize");
+        let ns = namespace();
+        // 真建一个目录，再用一条符号链接 + 结尾斜杠指向它：这正是手填最容易出的形状。
+        let real = std::env::temp_dir().join(format!("dsh-memory-norm-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&real);
+        fs::create_dir_all(&real).expect("mkdir");
+        let link = real.with_extension("link");
+        let _ = fs::remove_file(&link);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let canonical = fs::canonicalize(&real)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let saved = save(
+            &ns,
+            SaveInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_path: format!("{}//", link.display()),
+                title: "构建命令".to_string(),
+                body: "用 npm run check".to_string(),
+                ..SaveInput::default()
+            },
+        )
+        .expect("save");
+        assert_eq!(
+            saved.workspace_path, canonical,
+            "存下来的必须是 realpath：内核给的路径就是那个形式"
+        );
+
+        // 内核那侧按 realpath 查得到它。
+        set_use_approved(&ns, true).expect("enable");
+        let hits =
+            crate::memory::query::retrieve(&ns, "构建命令", "", &canonical).expect("retrieve");
+        assert_eq!(hits.hits.len(), 1, "规范化之后要能命中");
+
+        let _ = fs::remove_file(&link);
+        let _ = fs::remove_dir_all(&real);
     }
 
     #[test]

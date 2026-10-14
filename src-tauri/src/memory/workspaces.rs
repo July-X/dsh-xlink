@@ -95,6 +95,54 @@ pub fn list(dsh_home: &Path) -> Vec<WorkspaceView> {
     out
 }
 
+/// 把用户输入的路径规范化成与内核一致的形式。
+///
+/// 内核给的工作区路径是 `realpath` 过的（2026-10-14 实测：桩桥收到的是
+/// `/private/tmp/...` 而不是 `/tmp/...`），而面板允许手填。不规范化时，一个带符号
+/// 链接或结尾斜杠的路径**永远匹配不上**——症状是「记忆明明存了，检索却命中不了」，
+/// 而链路上每一处都不报错。下拉里选的路径天然一致，所以这条只服务手填。
+///
+/// 解析不出来（目录还没建、路径写错）就退回「去空白 + 去结尾分隔符」，**不因此
+/// 拒绝保存**：用户可能先写记忆、再建项目目录。
+pub fn normalize_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Ok(canonical) = std::fs::canonicalize(trimmed) {
+        let text = canonical.to_string_lossy().into_owned();
+        // `cfg!` 而不是 `#[cfg]`：分支在编译期定，但两边都能通过类型检查，
+        // 也免得这段代码在非 Windows 上被判成死代码。
+        return if cfg!(windows) {
+            strip_verbatim_prefix(&text)
+        } else {
+            text
+        };
+    }
+    let stripped = trimmed.trim_end_matches(['/', '\\']);
+    if stripped.is_empty() {
+        trimmed.to_string()
+    } else {
+        stripped.to_string()
+    }
+}
+
+/// 剥掉 Windows `canonicalize` 加的 `\\?\` 扩展前缀。
+///
+/// 内核（Node 的 `fs.realpath`）给的是普通写法 `C:\Users\...`，而 Rust 的
+/// `canonicalize` 返回 `\\?\C:\Users\...`——不剥掉就永远匹配不上。**写成纯函数、
+/// 不挂 `#[cfg(windows)]`**：本机是 macOS，门禁编译不到 Windows 分支
+/// （`src-tauri/AGENTS.md` 记着这类代码只能靠 CI 兜底），而纯函数在任何平台上都能测。
+fn strip_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) => rest.to_string(),
+        None => path.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +204,59 @@ mod tests {
         );
         assert!(list(&renamed).is_empty());
         let _ = std::fs::remove_dir_all(&renamed);
+    }
+
+    /// 手填路径要变成与内核一致的形式：符号链接解析掉、结尾斜杠去掉。
+    /// 不规范化时它**永远匹配不上**内核给的 realpath，而链路上不报任何错。
+    #[test]
+    fn normalize_path_resolves_symlinks_and_trailing_separators() {
+        let dir = std::env::temp_dir().join(format!(
+            "xlink-memory-norm-{}-{}",
+            std::process::id(),
+            "real"
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let link = dir.with_extension("link");
+        let _ = std::fs::remove_file(&link);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+
+        let canonical = std::fs::canonicalize(&dir).unwrap();
+        #[cfg(unix)]
+        assert_eq!(
+            normalize_path(&format!("{}//", link.display())),
+            canonical.to_string_lossy(),
+            "符号链接与结尾斜杠都要归到 realpath"
+        );
+        assert_eq!(
+            normalize_path(&format!("  {}  ", dir.display())),
+            canonical.to_string_lossy()
+        );
+        // 目录还不存在（用户先写记忆、后建项目）：只去空白与结尾分隔符，不拒绝。
+        assert_eq!(
+            normalize_path("/tmp/not/created/yet/"),
+            "/tmp/not/created/yet"
+        );
+        assert_eq!(normalize_path("   "), "");
+        assert_eq!(normalize_path("/"), "/");
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Windows 的 `canonicalize` 会加 `\\?\` 前缀，而内核给的是普通写法。
+    /// 纯函数因此在任何平台上都能测（本机编译不到 Windows 分支）。
+    #[test]
+    fn verbatim_prefix_is_stripped_for_windows_paths() {
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\C:\Users\me\code"),
+            r"C:\Users\me\code"
+        );
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\UNC\server\share\repo"),
+            r"\\server\share\repo"
+        );
+        assert_eq!(strip_verbatim_prefix(r"C:\Users\me"), r"C:\Users\me");
+        assert_eq!(strip_verbatim_prefix("/tmp/x"), "/tmp/x");
     }
 }

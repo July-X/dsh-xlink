@@ -749,7 +749,11 @@ const FILE_BUDGETS = {
   // 独立成文件的理由：它读的是**别人的私有格式**，纪律与记忆自己的存储完全不同
   // （只读、读不出来回空列表、不猜字段），混进 store.rs 会让「哪些写、哪些只读」
   // 在一个文件里分不清——而 store.rs 自己已经贴到 665 行。
-  'src-tauri/src/memory/workspaces.rs': 80,
+  //
+  // 80 → 100（同日）：手填路径的规范化（`normalize_path` + Windows 扩展前缀剥离）。
+  // 它属于这里：这份文件的主题就是「路径 ↔ 工作区身份」。纯函数、全平台可测，
+  // 因为 `#[cfg(windows)]` 分支在本机根本编译不到。
+  'src-tauri/src/memory/workspaces.rs': 100,
   // 2026-10-14：Markdown 快照导出（设计 §2 承诺的那一条）。独立成文件的理由：
   // 它只做「把一份列表视图渲染成文本」，与 store 的读写纪律（CAS / 指纹 / 原子
   // 替换）无关；塞进 store.rs 会让那份文件多出一个与它无关的关注点，而 store.rs
@@ -763,7 +767,7 @@ const FILE_BUDGETS = {
   // 「注入插件未启用」那条告警——两个开关里少一个就整条链路不生效，必须说出来。
   // 375 → 395（同日）：导出按钮与「最近导出」那一行（含打开导出目录）。
   'ui/src/memory/MemoryPanel.vue': 395,
-  'ui/src/memory/memory.js': 210,
+  'ui/src/memory/memory.js': 220,
   'ui/src/shell/autostart.js': 90,
   // 2026-10-07 uiv2 改版新增：明暗双主题的唯一实现（shell/theme.js）。
   // 独立成文件而不是塞进 store.js / SideBar.vue，理由是它**跨窗口**：主面板、
