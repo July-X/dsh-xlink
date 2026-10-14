@@ -259,6 +259,8 @@ export function applyResult(state, turn, text, generation) {
   };
 }
 
+import { maskSecrets } from './mask.js';
+
 /** 提取器版本。**换版本就是换任务键**（旧结果不许覆盖新结果，§8-6）。 */
 export const EXTRACTOR_VERSION = 'xlink-memory-extract/1';
 
@@ -364,10 +366,12 @@ function cutBytes(text, limit) {
 /**
  * 把一段会话事件压成给提取模型的输入。
  *
- * 三条规则：
+ * 四条规则：
  * · **只取对话**（用户与助手的文本块）。工具结果整条排除——设计 §8-3 要求排除凭据，
  *   而工具输出是凭据最集中的地方；「模式匹配只能减少风险、不能保证发现所有秘密」，
  *   所以先做减法而不是做过滤；
+ * · 留下的对话**再过一遍形状掩码**（`maskSecrets`）：对话里照样会有人贴 key。掩码在
+ *   削短**之前**做——先截断会把一个凭据切成两半，两半都不再匹配形状；
  * · 每条按 [`MAX_EVENT_BYTES`] 削短，整体按 [`MAX_INPUT_BYTES`] 从**最新往回**填
  *   （最近的内容最可能是「用户刚定下的约定」）；
  * · 被截断时在最前面放一行 [`TRUNCATION_MARKER`]：**不静默截断**——模型据此知道
@@ -383,7 +387,8 @@ export function buildInput(events, { budgetBytes = MAX_INPUT_BYTES } = {}) {
     const text = eventText(event);
     if (!text) continue;
     const seq = Number(event.seq ?? 0);
-    lines.push(`[${seq}] ${event.type === 'user/message' ? '用户' : '助手'}：${cutBytes(text, MAX_EVENT_BYTES)}`);
+    const safe = maskSecrets(text);
+    lines.push(`[${seq}] ${event.type === 'user/message' ? '用户' : '助手'}：${cutBytes(safe, MAX_EVENT_BYTES)}`);
   }
   const kept = [];
   let used = 0;

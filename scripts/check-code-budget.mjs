@@ -661,7 +661,9 @@ const FILE_BUDGETS = {
   'src-tauri/src/plugins/mod.rs': 12,
   'src-tauri/src/skills/mod.rs': 10,
   // 11 → 12：snapshot_cmd 进来（快照三命令从 commands.rs 搬出，见那条）。
-  'src-tauri/src/diagnostics/mod.rs': 12,
+  // 12 → 14（2026-10-15）：多了一行 `pub(crate) mod mask;`。这个文件就是模块清单，
+  // 每加一个模块它必然长一行——预算跟着走是它的正常形态。
+  'src-tauri/src/diagnostics/mod.rs': 14,
   'src-tauri/src/harness/mod.rs': 10,
   'src-tauri/src/usage/mod.rs': 10,
   'src-tauri/src/notify/mod.rs': 10,
@@ -1048,7 +1050,15 @@ const FILE_BUDGETS = {
   // 「每条出口记得记得调」变成结构事实**，与 `precheck.rs` 的 `StoreRestore`
   // 同一款取舍。三个 Rust 单测覆盖（含落盘回读）。
   // 本文件 585 < RATCHET_THRESHOLD 600，不受反棘轮约束。
+  // 590 → **不动**：2026-10-15 的掩码修复本来会把它顶到 614，于是按规则**拆出去**而不是
+  // 调数字——`strip_token_shapes` 与它的两条自救规则搬进了 `diagnostics/mask.rs`。
   'src-tauri/src/diagnostics/run.rs': 590,
+  // 新文件（2026-10-15）：`diagnostics/mask.rs` 102 行——凭据形状的掩码。
+  // **为什么该独立**：① 它是一条**可复用判据**（日志、模型输入、插件侧都在用同一套形状），
+  // 与「怎么落盘、怎么生成运行记录 id」不是一件事；② `run.rs` 已经在预算线上，修复一进来
+  // 就撞线；③ 独立之后插件侧的「两边形状逐项一致」那条判据可以只读这一个文件。
+  // 上限 130 给「多认一类形状」留一点位置。
+  'src-tauri/src/diagnostics/mask.rs': 130,
   // 运行记录的只读命令壳。刻意**没有** prune 命令：裁剪是写入侧
   // `Recorder::finish` 的职责，给前端一条命令就等于开一个能被随手调用的
   // 删除路径。三条命令的 `spawn_blocking` 走 `commands::blocking` 助手，
@@ -2922,7 +2932,11 @@ const FILE_BUDGETS = {
 // 换来的是 `memory/jobs.rs` 不再需要 `allow(dead_code)`（本仓对那种 allow 有明确态度：
 // 它静音了编译器本该指出的声音）。**没有沿用「先放着、等下一位接线再抬」**：一个没有调用方的
 // 状态机模块在 `-D warnings` 下必须靠 allow 活着，那比多 35 行更贵。
-const TOTAL_BUDGET = 52600;
+// 52600 → 52700（2026-10-15 凌晨）：凭据掩码那条修复（Rust + 插件两侧、含 `mask.rs` 拆分
+// 与形状一致的判据）。净 +28 生产行里最值钱的是那处**泄露**：`Authorization: Bearer <令牌>`
+// 原来只抹掉 `Bearer` 这个词，令牌原样留在后面，而输出看起来已经脱敏——比不抹更坏。
+// 数字与代码同一个提交里改。
+const TOTAL_BUDGET = 52700;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
