@@ -53,7 +53,7 @@ describe('记忆面板', function () {
     // 内容渲染因此由下面那条命令断言 + Rust 侧的检索用例覆盖，不在这里假装验过。
   });
 
-  it('三条记忆命令在真壳里都能解析（桥真的通）', async () => {
+  it('四条记忆命令在真壳里都能解析（桥真的通）', async () => {
     const status = await runAsync(`return await window.__TAURI__.core.invoke('memory_status');`);
     expect(status?.__error).toBeUndefined();
     expect(typeof status.file).toBe('string');
@@ -69,6 +69,15 @@ describe('记忆面板', function () {
     const workspaces = await runAsync(`return await window.__TAURI__.core.invoke('memory_workspaces');`);
     expect(workspaces?.__error).toBeUndefined();
     expect(Array.isArray(workspaces)).toBe(true);
+
+    // 「最近注入」那条命令也要真的通：它读的是**壳进程内**的环形记录（不是盘上那份），
+    // 而面板的卡片就挂在它上面——ACL 漏一条时前端只会 `.catch` 静默吞掉，面板上
+    // 那片区域永远是空的，且没有任何报错。
+    const recent = await runAsync(
+      `return await window.__TAURI__.core.invoke('memory_recent_injections');`
+    );
+    expect(recent?.__error).toBeUndefined();
+    expect(Array.isArray(recent)).toBe(true);
   });
 
   it('打开记忆页没有往控制台扔错误', async () => {

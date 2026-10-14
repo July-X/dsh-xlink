@@ -67,6 +67,17 @@ pub async fn memory_decide_candidate(
     blocking(move || store::decide_candidate(&Namespace::current(), &id, accept)).await
 }
 
+/// 最近几次「模型实际看到了哪些记忆」（新的在前；壳重启后为空）。
+///
+/// 与 [`memory_preview_context`] 的区别要说清：那是**模拟**（拿你填的查询算一遍），
+/// 这一条是**实况**（插件报告它真的把哪几条放进了上下文）。用户要判断「记忆到底有没有
+/// 生效」看的是这一条。
+#[tauri::command]
+pub async fn memory_recent_injections() -> Result<Vec<crate::memory::recent::InjectionNote>, String>
+{
+    blocking(|| Ok::<_, std::convert::Infallible>(crate::memory::recent::recent_injections())).await
+}
+
 /// 预览「现在按这个查询会注入哪几条记忆」。
 ///
 /// 面板用它把检索结果摊开给用户看（工作台那句「本次使用了 N 条记忆」背后是

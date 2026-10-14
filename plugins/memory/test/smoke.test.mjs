@@ -356,6 +356,8 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
     !code.includes('applyResult('),
     '装配层不该自己调 applyResult——「结果怎么用」全在 applyStep 里'
   );
+  assert.match(code, /if \(applied\.applied\)/, '只在**真的用了**这次结果时才回报注入');
+  assert.match(code, /route: 'note'/, '注入之后要回报给壳（面板的「最近注入」卡片靠它）');
 });
 
 test('预算之外只按数据代次刷新，额度用完就不再探', () => {
