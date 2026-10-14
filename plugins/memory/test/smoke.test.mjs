@@ -356,6 +356,15 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
     !code.includes('applyResult('),
     '装配层不该自己调 applyResult——「结果怎么用」全在 applyStep 里'
   );
+  // `next()` 的拒绝必须在 try **之外**：被 catch 吞掉就等于「别的插件拒绝或取消了这一步，
+  // 我们照样改了缓存」——而缓存一变，注入块就跟着变（内核会为它多留一条 user 消息）。
+  // 这条判据盯的是**顺序**（`await next()` 在 `try` 之前），不是文案。
+  assert.match(
+    code,
+    /const decision = await next\(\);\s*\n\s*try \{/,
+    'next() 要在 try 之外 await：拒绝要往外抛，不能被 catch 吞掉'
+  );
+  assert.match(code, /return decision;/, 'pre-step 要原样返回别的插件的决定');
   assert.match(code, /if \(applied\.applied\)/, '只在**真的用了**这次结果时才回报注入');
   assert.match(code, /route: 'note'/, '注入之后要回报给壳（面板的「最近注入」卡片靠它）');
 });
