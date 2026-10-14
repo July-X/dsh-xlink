@@ -38,11 +38,36 @@ export const memoryStore = reactive({
   status: null,
   draft: emptyDraft(),
   projectPath: readProjectPath(),
+  /// 内核已知的工作区（`memory_workspaces` 的结果，只读内核的注册表）。
+  /// 下拉里选一个就同时拿到真实的 `workspace_id` 与路径——只按路径字符串
+  /// 匹配的话，项目改名或换盘一次就静默失配。
+  workspaces: [],
   /// 检索预览：`{ enabled, text, total_bytes, hits }`。
   preview: null,
   /// 文档读不出来时的原文（后端给的 warning 已经带下一步，前端不再改写）。
   failure: '',
 });
+
+/** 某个路径对应的内核工作区 id；不是已知工作区就回空串（后端按路径兜底）。 */
+export function workspaceIdFor(path) {
+  const match = memoryStore.workspaces.find((item) => item.path === path);
+  return match ? match.id : '';
+}
+
+/**
+ * 读内核的工作区列表。
+ *
+ * **失败保留上一次成功值、不弹窗**：这个列表是给下拉用的辅助信息，读不出来
+ * 面板仍然能手填路径（后端那一侧也刻意回空列表而不是报错）。为它弹一个红字，
+ * 用户会去修一个没坏的东西。
+ */
+export function loadWorkspaces() {
+  return invoke('memory_workspaces')
+    .then((list) => {
+      memoryStore.workspaces = Array.isArray(list) ? list : [];
+    })
+    .catch(() => undefined);
+}
 
 export function rememberProjectPath(path) {
   memoryStore.projectPath = path;
@@ -60,6 +85,8 @@ function applyView(view) {
 }
 
 export function refreshMemory({ silent = false } = {}) {
+  // 工作区列表跟着一起取：它只影响下拉与 id 解析，失败不打扰用户。
+  void loadWorkspaces();
   return withLoading('memoryList', () =>
     invoke('memory_list', { filter: { include_candidates: true, include_disabled: true } })
       .then((view) => {
@@ -106,9 +133,9 @@ function draftPayload() {
   return {
     id: draft.id,
     scope: draft.scope,
-    // 壳体目前拿不到内核的工作区 id（那是内核侧登记表），项目匹配先走路径；
-    // 注入链路接上后这里会补上真实的 workspace_id，路径继续作兜底。
-    workspace_id: '',
+    // 下拉里选过的工作区就带上真实 id（内核侧按 id 精确匹配），手填的路径留空、
+    // 由后端的路径兜底匹配。
+    workspace_id: draft.scope === 'project' ? workspaceIdFor(memoryStore.projectPath.trim()) : '',
     workspace_path: draft.scope === 'project' ? memoryStore.projectPath.trim() : '',
     title: draft.title.trim(),
     body: draft.body.trim(),
@@ -201,7 +228,7 @@ export function previewContext() {
   return withLoading('memoryPreview', () =>
     invoke('memory_preview_context', {
       queryText: query,
-      workspaceId: '',
+      workspaceId: workspaceIdFor(memoryStore.projectPath.trim()),
       workspacePath: memoryStore.projectPath.trim(),
     })
       .then((preview) => {

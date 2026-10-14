@@ -11,6 +11,8 @@
 use crate::commands::blocking;
 use crate::memory::query;
 use crate::memory::store::{self, CandidateInput, ListFilter, Namespace, SaveInput};
+use crate::memory::workspaces;
+use crate::shell::paths;
 
 /// 面板要的状态摘要（内核没跑也能读）。
 #[tauri::command]
@@ -96,6 +98,23 @@ pub async fn memory_preview_context(
             &workspace_id,
             &workspace_path,
         )
+    })
+    .await
+}
+
+/// 内核已知的工作区（只读 `<DSH_HOME>/storages/workspace.json`）。
+///
+/// 面板把「本项目」从手填路径变成一个下拉选择，并顺手拿到真实的 `workspace_id`：
+/// 只靠路径字符串相等匹配，项目改名或换盘一次就静默失配。**读不出来回空列表**，
+/// 面板退回手填——内核的存储格式不是我们的接口（见 `memory::workspaces`）。
+#[tauri::command]
+pub async fn memory_workspaces() -> Result<Vec<workspaces::WorkspaceView>, String> {
+    blocking(|| {
+        let namespace = Namespace::current();
+        Ok::<_, std::convert::Infallible>(workspaces::list(&paths::instance_dsh_home(
+            &namespace.family,
+            &namespace.instance_id,
+        )))
     })
     .await
 }

@@ -745,12 +745,19 @@ const FILE_BUDGETS = {
   // 都留有余量，检索预算（条数 / 单条字节 / 总字节）也因此能脱离文件系统单独测。
   'src-tauri/src/memory/store.rs': 665,
   'src-tauri/src/memory/query.rs': 195,
+  // 2026-10-14：内核工作区注册表的**只读**视图（`<DSH_HOME>/storages/workspace.json`）。
+  // 独立成文件的理由：它读的是**别人的私有格式**，纪律与记忆自己的存储完全不同
+  // （只读、读不出来回空列表、不猜字段），混进 store.rs 会让「哪些写、哪些只读」
+  // 在一个文件里分不清——而 store.rs 自己已经贴到 665 行。
+  'src-tauri/src/memory/workspaces.rs': 80,
   // 2026-10-14：记忆的管理页（列表 / 编辑 / 待确认 / 检索预览 / 开关）。
   // 面板与它的 store 分成两个文件是**仓库既有约定**（`ui/AGENTS.md`：一条功能的
   // 状态、动作与面板放在同一个目录里），不是因为行数：动作要能被测试与别的面板
   // 复用（App.vue 的 activePanel watcher 直接调 refreshMemory），模板只负责画。
-  'ui/src/memory/MemoryPanel.vue': 310,
-  'ui/src/memory/memory.js': 190,
+  // 310 → 375 / 190 → 210（同日）：项目下拉（内核工作区列表 + 手填兜底）与
+  // 「注入插件未启用」那条告警——两个开关里少一个就整条链路不生效，必须说出来。
+  'ui/src/memory/MemoryPanel.vue': 375,
+  'ui/src/memory/memory.js': 210,
   'ui/src/shell/autostart.js': 90,
   // 2026-10-07 uiv2 改版新增：明暗双主题的唯一实现（shell/theme.js）。
   // 独立成文件而不是塞进 store.js / SideBar.vue，理由是它**跨窗口**：主面板、
@@ -2764,7 +2771,13 @@ const FILE_BUDGETS = {
 // 内置插件的登记条目（builtins.rs 73 → 95，**零余量那次**：加一个 BuiltinSpec 正好
 // 撑破）。两份都在各自 600 行软阈值之下，上调在规则内；总量 +150 里只有 48 行是
 // 这一轮的净增，其余是折行抖动。
-const TOTAL_BUDGET = 51100;
+//
+// 51100 → 51250（2026-10-14 晚些）：工作区对齐——内核注册表只读视图
+// （`memory/workspaces.rs` 67 行）+ 面板的项目下拉与「注入插件未启用」告警
+// （MemoryPanel 310 → 361、memory.js 190 → 195）。前者把「本项目」从手填路径
+// 变成下拉，并让记录带上内核认的 `workspace_id`（路径改名/换盘后仍能对上）；
+// 后者修的是「开了开关却什么都没发生」那条静默失败。
+const TOTAL_BUDGET = 51250;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
