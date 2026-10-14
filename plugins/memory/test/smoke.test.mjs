@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, readCredentials } from '../host/bridge.js';
 import {
+  afterCompaction,
   MAX_INJECTIONS_PER_SESSION,
   MAX_LIBRARY_REFRESHES_PER_SESSION,
   MAX_QUERY_CHARS,
@@ -247,6 +248,31 @@ test('每会话最多注入三次，同回合不重复检索', () => {
  * 代价要钉住：预算用完之后再换目录，这段会话**一段记忆都不注入**。宁可少注入，也
  * 不要把 A 的记忆送进 B；新开会话即恢复。
  */
+test('压缩之后预算清零——否则长会话压缩后再也拿不到记忆', () => {
+  const spent = {
+    turn: 9,
+    text: '旧正文',
+    injections: MAX_INJECTIONS_PER_SESSION,
+    bytes: 30000,
+    workspace: '/repo-a',
+    revision: 12,
+  };
+  assert.equal(shouldRefresh(spent, 10), false, '压缩之前：预算已满，不再刷新');
+
+  const fresh = afterCompaction(spent);
+  assert.equal(fresh.text, '', '旧正文丢掉（内核那些快照已经被压缩掉了）');
+  assert.equal(fresh.injections, 0);
+  assert.equal(fresh.bytes, 0);
+  assert.equal(fresh.workspace, '/repo-a', '压缩不换目录：留着，免得被当成换目录多清一次');
+  assert.equal(fresh.revision, 12, '文档代次与会话无关');
+  assert.equal(shouldRefresh(fresh, 10), true, '压缩之后要能重新检索');
+
+  // 与「换目录」那条区分开：换目录清正文但**不**归零预算，压缩是归零（内核那边快照真没了）。
+  const moved = retarget(spent, '/repo-b');
+  assert.equal(moved.injections, MAX_INJECTIONS_PER_SESSION);
+  assert.equal(shouldRefresh(moved, 10), false);
+});
+
 test('切换工作目录清空缓存，但不重置会话级的注入预算', () => {
   let state = { turn: -1, text: '', injections: 0, workspace: '/repo-a' };
   // 三段**不同**的文本：内容相同不算一次注入（下面那条用例钉着），所以要用不同的。
@@ -353,9 +379,19 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   }
   assert.match(
     code,
-    /applyStep\(\s*state,\s*turn,\s*probe \? 'probe' : 'turn'/,
+    /applyStep\(\s*box\.state,\s*turn,\s*probe \? 'probe' : 'turn'/,
     '两条路要真的分开：预算内取到什么用什么，探测那条路只认代次'
   );
+  // 压缩事件必须订阅在**插件根 ctx** 上：`session/event` 在会话 scope 上派发，而 `dsh-scope`
+  // 的约定是「事件沿 scope 向上流、绝不向下」——挂在 `agent.ctx` 上一条都收不到，且没有任何
+  // 症状（压缩之后只是再也不注入记忆）。这条判据盯的就是那个挂点。
+  assert.match(code, /ctx\.on\('session\/event'/, '压缩事件要订阅在插件根 ctx 上');
+  assert.ok(
+    !code.includes("agent.ctx.on('session/event'"),
+    '挂到 agent scope 上收不到（事件不向下流）'
+  );
+  assert.match(code, /event\?\.type !== 'compaction\/end'/, '只认「压缩完成」那一条');
+  assert.match(code, /box\.state = afterCompaction\(box\.state\)/, '压缩后要真的把预算清零');
   assert.ok(
     !code.includes('applyResult('),
     '装配层不该自己调 applyResult——「结果怎么用」全在 applyStep 里'
