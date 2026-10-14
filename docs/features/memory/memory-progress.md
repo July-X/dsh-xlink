@@ -285,23 +285,15 @@
 - ✅ **G9 重复步骤不追加相同快照** —— `applyResult` 文本相同不计数；用例
 - ✅ **G10 20 回合会话注入 ≤3 次（库变化 +2）、累计 ≤36 KiB** —— B8/B9 的用例
 - ✅ **G11 换目录不重置这个计数** —— `retarget` 用例
-- 🟡 **G12 成功压缩后能重新取得记忆**（§10）—— **代码与判据已落地**：订阅 `session/event` 的
-  `compaction/end`，把该会话的注入预算清零（`policy::afterCompaction`：`text`/`injections`/`bytes`
-  归零，保留 `workspace` 与 `revision`——压缩不换目录、代次与会话无关）。**订阅挂点是有讲究的**：
-  `session/event` 在**会话 scope** 上派发（`dsh-session` 的 `commit()` 用会话自己的 `emitCtx`），而
-  `dsh-scope` 的 `scopeTarget` 注释写死了「事件沿 scope 向上流、绝不向下」（`a listener owned by an
-  enclosing scope receives every descendant scope's events`）——所以必须挂在**插件根 ctx** 上，挂在
-  `agent.ctx` 上一条都收不到且没有任何症状。判据：`afterCompaction` 的用例（含「换目录不归零预算、
-  压缩才归零」的对照）、装配层的挂点判据（挂错 scope 即红，反向验过）。**还差**：真机压缩后再问一次。**2026-10-15 试了三次都没造出压缩事件**，每次撞到一个真机关：
-  ① 阈值是 `min(thresholdRatio × 窗口, 窗口 − 预留输出 − headroomTokens)`，而 **`headroomTokens`
-  默认 65536**——两万 token 的窗口下它数学上不可能触发（`thresholdRatio: 0.01` 白设）；② 归零
-  headroom、桩模型回长答案之后仍不触发，于是怀疑压力取自桩上报的 `usage`（当时只报 10 个
-  prompt token）；③ 把 `usage.prompt_tokens` 报到 19000 仍不触发——还有第四个未知条件（下次从
-  `CompactionEngine` 的压力计算入口读起）。**注意**：同一会话 6 回合里 `/v1/memory/context` 出现过
-  6 次，看起来超过「3 次注入 + 2 次库刷新」的上限，但会话日志里**没有任何 `compaction/*` 事件**，
-  所以那第 6 次不能用压缩重置解释（也可能是探测/刷新那条路的计数比我以为的多一次）。
-  **没有压缩事件就不算验过**，这一条保持 🟡
-  ——本机没有可用的压缩事件（要真会话），与 F6 同属「要环境」的一类
+- ✅ **G12 成功压缩后能重新取得记忆**（§10）—— **真机验收已过（2026-10-15）**。代码那一半见
+  下面「压缩之后预算清零」那条；真机那一半的证据是同一条会话里的两个计数：**10 次
+  `compaction/start` + 10 次 `compaction/end`**（与 6 个回合交错），而桩桥收到 **6 次
+  `/v1/memory/context`**——按 `MAX_INJECTIONS_PER_SESSION = 3` + `MAX_LIBRARY_REFRESHES_PER_SESSION = 2`
+  （`shouldProbeLibrary` 的判据是 `injections - 3 < 2`），**没有重置时一个会话最多 5 次**，
+  6 次只能来自「压缩之后预算被清零」；同一会话里 6 次 `jobs/enqueue` 也在，说明重置
+  **不影响** P2 的排任务。**怎么造出压缩**（三个构造期陷阱，都写在「怎么验」那一节）：
+  `headroomTokens` 必须 > 0（否则 `maxTokens` 取到 0 直接抛断言，插件**静默不激活**）、
+  `retainTokens` 必须小于阈值、阈值是 `min(thresholdRatio × 窗口, 窗口 − 预留输出 − headroomTokens)`
 - ⬜ **G13 失败压缩的判据含「只有 start、没有 end」**（§8、§10）—— 未实现（属 P2 的提取触发）
 - ✅ **G14 `agent/created` 解析失败或桥不可用时会话仍能正常创建与对话** —— try/catch + 真机
 - ⬜ **G15 子智能体不超出父级读权限**（§5、§10）—— 未实现显式夹紧，也没有用例。**还差**：定策略 + 用例
@@ -513,6 +505,14 @@ DSH_HOME=/tmp/p2probe DEEPSEEK_BASE_URL=http://127.0.0.1:8791 DEEPSEEK_API_KEY=s
 加一个 provider（`api: openai-completions`、`baseURL: http://127.0.0.1:8791/v1`、`apiKeyEnv: PROBE_API_KEY`），
 再把 `agent-default-model` 指过去。桩要**同时支持 SSE 与非流式**（适配器是流式的）。
 
+**要造一次压缩**（G12 用得上）还得再加三条：给 `compaction-basic` 打配置补丁
+（`thresholdRatio: 0.001`、`headroomTokens: 0`、**`maxTokens: 512`**、`retainTokens: 10`，
+窗口两万），桩模型回一条长答案。三条构造期陷阱：① `headroomTokens: 0` 会让 `maxTokens`
+默认取到 **0**，而构造期断言要求它为正——**整个插件因此不激活**（只有一行
+`did not activate` 的警告，很容易漏）；② `retainTokens` 必须**小于**阈值；③ 阈值是
+`min(thresholdRatio × 窗口, 窗口 − 预留输出 − headroomTokens)`，而 `headroomTokens` **默认 65536**，
+两万 token 的窗口下它数学上不可能触发。
+
 **四个坑（每个都花了时间）**：
 1. **`insert` 的 id 撞车会静默顶掉原来那份**。往 headless 栈里插 `llm-deepseek` 之后得到
    `NO_ADAPTER: no adapter registered for provider "deepseek"`——同 id 的第二次 insert 把模板里
@@ -522,7 +522,10 @@ DSH_HOME=/tmp/p2probe DEEPSEEK_BASE_URL=http://127.0.0.1:8791 DEEPSEEK_API_KEY=s
 3. **`@deepseek-ai/dsh-llm-deepseek` 是库不是插件**：它导出的是 `registerDeepSeekProvider` /
    `DeepSeekAdapter`，没有 `name` / `apply`（headless 栈里那两条 `llm-deepseek*` 是**凭据与账号**
    插件）。**改用 `dsh-llm-pi-ai` 打配置补丁**才对（见上）。
-4. **会话日志是多帧 zstd**：`zlib.zstdDecompressSync` / `createZstdDecompress` 只解出**第一帧**
+4. **每次真机跑完先读 `did not activate` 那几行**。压缩插件两次「没触发」的真相都在那行警告里
+   （第一次是 `maxTokens` 为 0 ✗ 断言，第二次才发现阈值被 headroom 顶死），而我把注意力全放在
+   桩桥的请求上了——**插件的配置被断言拒绝时，它是静默不激活的**，症状与「条件没到」一模一样。
+5. **会话日志是多帧 zstd**：`zlib.zstdDecompressSync` / `createZstdDecompress` 只解出**第一帧**
    （220 字节的文件头，看起来像「日志是空的」），用 **`zstd -dc`** 才拿到完整的 185 KB / 70 行。
    下次读内核会话日志直接用 CLI。
 
