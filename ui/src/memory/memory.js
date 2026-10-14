@@ -46,6 +46,8 @@ export const memoryStore = reactive({
   preview: null,
   /// 最近一次导出的结果（`{ path, bytes, memories, candidates, generated_at }`）。
   lastExport: null,
+  /// 列表的范围筛选：`all` / `project` / `general`（§2 的「本项目」与「此实例的通用偏好」两个视图）。
+  listScope: 'all',
   /// 最近几次「模型实际看到了哪些记忆」（`memory_recent_injections`，新的在前）。
   /// 与 `preview` 的区别：那是**模拟**（拿你填的查询算一遍），这是**实况**。
   recentInjections: [],
@@ -104,6 +106,37 @@ export function loadRecentInjections() {
 }
 
 /**
+ * 列表的范围筛选。**在客户端做**：列表本来就整份读回来了（`memory_list` 一次给全），
+ * 再为切视图跑一趟 IPC 只会让状态与计数分叉。
+ *
+ * 默认 `all` 而不是「当前项目」：面板**不假定**「当前项目」是哪一个——手填路径为空时按
+ * 项目过滤会给出一个空列表，而用户看到的是「我的记忆没了」。项目与通用偏好各是一个视图，
+ * 想看哪个点哪个。
+ */
+export function visibleMemories(view, scope) {
+  const rows = (view && view.memories) || [];
+  if (scope === 'project') return rows.filter((row) => row.scope !== 'general');
+  if (scope === 'general') return rows.filter((row) => row.scope === 'general');
+  return rows;
+}
+
+/// 来源种类的中文标签（§2：列表要显示来源）。
+export function sourceText(kind) {
+  if (kind === 'user-manual') return '面板手动';
+  if (kind === 'session') return '会话提出';
+  if (kind === 'extract') return '自动提取';
+  return kind || '未知来源';
+}
+
+/// 验证范围的中文标签（§2：列表要显示验证状态）。**不是置信分数**，只三档。
+export function verificationText(value) {
+  if (value === 'verified') return '已验证';
+  if (value === 'unverified') return '未验证';
+  if (value === 'stale') return '已过期';
+  return value || '未标注';
+}
+
+/**
  * 「最近注入」一行里那句人话。三种状态必须分得开：开关关着 / 一条没命中 / 注入了哪几条。
  *
  * 放在这里而不是组件里：它是**判据能直接跑**的那种逻辑，写在 `.vue` 的 `<script setup>`
@@ -113,6 +146,10 @@ export function injectionText(note) {
   if (!note || !note.enabled) return '开关关着，这一回合没有注入';
   if (!note.hits || !note.hits.length) return '没有命中';
   return `注入了 ${note.hits.length} 条：${note.hits.join('、')}`;
+}
+
+export function setListScope(scope) {
+  memoryStore.listScope = scope;
 }
 
 export function rememberProjectPath(path) {
