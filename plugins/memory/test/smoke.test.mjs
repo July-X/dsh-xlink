@@ -20,6 +20,7 @@ import {
   EVENT_TRUNCATION_MARKER,
   noteSessionEvent,
   isCompactionDone,
+  scopeForWorkspace,
   shouldScheduleExtraction,
   TRUNCATION_MARKER,
   MAX_INJECTIONS_PER_SESSION,
@@ -369,6 +370,30 @@ test('提取输出：空集合算成功，坏 JSON 才算失败', () => {
     parseExtractionOutput('{"candidates":[{"title":"t","body":"b","evidence_seq":3}]}', { events: extractionEvents }).candidates.length,
     1
   );
+});
+
+test('正文按**编码后**的长度拒：中文发不出去的，别等到桥把连接掐了', () => {
+  // 3 万个『中』= 原文 9 万字节（超过 8 KiB，先被原文那条拦下）——用它验原文那条。
+  const huge = parseExtractionOutput(
+    JSON.stringify([{ title: 't', body: '中'.repeat(30000), evidence_seq: 3 }]),
+    { events: extractionEvents }
+  );
+  assert.match(huge.rejected[0].reason, /正文超过/);
+  // 6 千个『中』= 原文 1.8 万字节（原文那条过不了）……换成**原文合规、编码后超标**的：
+  // 2600 个『中』原文 7800 字节 < 8 KiB ✓，编码后约 2.3 万字符 > 通道上限 ✗。
+  const encodedTooLong = parseExtractionOutput(
+    JSON.stringify([{ title: 't', body: '中'.repeat(2600), evidence_seq: 3 }]),
+    { events: extractionEvents }
+  );
+  assert.equal(encodedTooLong.candidates.length, 0, '原文合规、编码后超标也要拒');
+  assert.match(encodedTooLong.rejected[0].reason, /编码后 \d+ 字节，超过通道上限/);
+  // 小而正常的中文正文照收。
+  const fine = parseExtractionOutput(
+    JSON.stringify([{ title: '提交前跑检查', body: '中'.repeat(500), evidence_seq: 3 }]),
+    { events: extractionEvents }
+  );
+  assert.equal(fine.candidates.length, 1);
+  assert.equal(fine.candidates[0].body.length, 500);
 });
 
 test('提取输出：缺字段 / 超限额 / 超条数各自被拒，且说清为什么', () => {
@@ -855,6 +880,15 @@ test('不许用已废弃的三个接口（设计 §8-1 写明了）', () => {
   for (const banned of ['eventAt', 'snapshotEvents', 'ownEvents']) {
     assert.ok(!sources.includes(banned), `注入脚本里不许出现已废弃的 ${banned}`);
   }
+});
+
+test('候选落成哪种记忆：跟着壳的规则走，没工作区就只能存通用偏好', () => {
+  // 壳的规则（真桥实测）：`scope=project` 需要绑定一个**已登记的工作区**，否则拒。
+  assert.equal(scopeForWorkspace('ws-1'), 'project');
+  assert.equal(scopeForWorkspace('  ws-1  '), 'project');
+  assert.equal(scopeForWorkspace(''), 'general', '没登记工作区时硬报 project 只会每次都被拒');
+  assert.equal(scopeForWorkspace('   '), 'general');
+  assert.equal(scopeForWorkspace(undefined), 'general');
 });
 
 test('只有**成功**的压缩才重置预算（失败的那次照样有 end，只是带 error）', () => {

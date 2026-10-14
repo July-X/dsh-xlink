@@ -431,6 +431,21 @@ export function isCompactionDone(event) {
 }
 
 /**
+ * 提取出来的候选该落成哪种记忆。
+ *
+ * **依据是壳自己的规则，不是我的偏好**：提交 `scope=project` 而没有绑定**已登记的工作区**时，
+ * 壳会拒掉并给出明确理由（「项目记忆需要绑定一个已登记的工作区；没有工作区时请改存『通用偏好』」，
+ * 2026-10-15 在真桥上实测）。所以一个没有工作区 id 的会话——比如在内核安装目录里跑起来的探针——
+ * 只能落成通用偏好；硬报 `project` 只会让每一次提取都被拒。
+ *
+ * @param {string} workspaceId - 这一会话解析出来的工作区 id（空串表示没登记）。
+ * @returns {'project' | 'general'}
+ */
+export function scopeForWorkspace(workspaceId) {
+  return typeof workspaceId === 'string' && workspaceId.trim().length > 0 ? 'project' : 'general';
+}
+
+/**
  * 压缩之后的会话状态：**把注入预算清零**。
  *
  * 为什么清零不违背「每会话 3 次」那条硬规则：那条规则防的是「同一批快照越堆越多」，而压缩会把旧的

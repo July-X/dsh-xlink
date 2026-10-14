@@ -925,7 +925,9 @@ mod tests {
             )
             .expect("写请求");
         let mut raw = String::new();
-        stream.read_to_string(&mut raw).expect("读响应");
+        // 读失败就是「这个请求被丢掉了」：请求行越过 8 KiB 头缓冲时桥直接重置连接、
+        // 一个字都不回（实测 ConnectionReset）。这不是测试的意外，正是那条边界的行为。
+        let _ = stream.read_to_string(&mut raw);
         raw.split_once("\r\n\r\n")
             .map(|(_, body)| body.to_string())
             .unwrap_or(raw)
@@ -1011,6 +1013,73 @@ mod tests {
         assert!(
             again.contains("\"submitted\":false"),
             "任务收尾之后同一个令牌不该再能提交：{again}"
+        );
+    }
+
+    /// 正文一长，**请求行本身**就装不下——壳这边的头缓冲是固定的 8 KiB。
+    ///
+    /// 这条测试量的是真行为，不是猜：中文经百分号编码会膨胀到约 3 倍，而插件那边的候选上限
+    /// 是按**原文** 8 KiB 定的（与壳的解析上限对齐）。所以「解析通过」不等于「发得出去」。
+    #[test]
+    fn an_over_long_submit_path_is_dropped_without_a_body() {
+        let root = temp_dir("long-submit");
+        let _home = crate::tests::scoped_xlink_home(&root);
+        let ns = crate::memory::store::Namespace::for_bridge("dsh", "probe");
+        crate::memory::store::set_use_approved(&ns, true).expect("打开记忆开关");
+        let key = crate::memory::jobs::JobKey {
+            session: "s-long".to_string(),
+            cursor: 8,
+            extractor: "xlink-memory-extract/1".to_string(),
+        };
+        let past = crate::memory::jobs::now_ms().saturating_sub(60_000);
+        crate::memory::jobs::mutate(&ns, |doc, _| {
+            crate::memory::jobs::enqueue(doc, key.clone(), past)
+        })
+        .expect("排任务");
+        let (url, token) = launch(&root, "dsh:probe").expect("起桥");
+        let addr = url.trim_start_matches("http://").to_string();
+        let claimed = bridge_get(&addr, &token, "jobs/claim");
+        let lease = claimed
+            .split("\"token\":\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("取令牌")
+            .to_string();
+
+        // 把正文按百分号编码手工张开：`中` 编成 9 个字符。**故意**让整条请求行越过 8 KiB。
+        let body: String = "中".repeat(1_200).chars().map(|_| "%E4%B8%AD").collect();
+        let path = format!(
+            "jobs/submit?token={lease}&session=s-long&start_seq=0&end_seq=8&scope=project&title=t&body={body}"
+        );
+        assert!(
+            path.len() > 8192,
+            "这条请求行要真的越过缓冲：{}",
+            path.len()
+        );
+        // 实测：连接被重置、没有任何响应体。**这比一个 4xx 更值得记住**——插件那边只会看到
+        // 一次传输错误，所以「解析通过 ≠ 发得出去」，插件必须提前按编码后的长度拒。
+        let answer = bridge_get(&addr, &token, &path);
+        assert!(
+            !answer.contains("\"submitted\":true"),
+            "越过头缓冲的请求不该被当成成功处理（拿到的是：{}）",
+            &answer[..answer.len().min(60)]
+        );
+        assert!(
+            answer.is_empty(),
+            "实测这条路径下桥不给任何响应体，拿到的是：{answer}"
+        );
+
+        // 同一条任务**没有**被这次失败提交掉：好好发一次仍然成功。
+        let ok = bridge_get(
+            &addr,
+            &token,
+            // 用 `general`：`project` 需要绑定**已登记的工作区**，否则壳会拒（这条规则
+            // 2026-10-15 在真桥上实测到，插件的 `scopeForWorkspace` 就是照它写的）。
+            &format!("jobs/submit?token={lease}&session=s-long&start_seq=0&end_seq=8&scope=general&title=t&body=short"),
+        );
+        assert!(
+            ok.contains("\"submitted\":true"),
+            "正常长度仍然要提交成功：{ok}"
         );
     }
 

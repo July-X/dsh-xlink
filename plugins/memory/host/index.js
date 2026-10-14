@@ -38,6 +38,7 @@ import {
   afterCompaction,
   applyStep,
   isCompactionDone,
+  scopeForWorkspace,
   beginStep,
   emptyExtractState,
   EXTRACTOR_VERSION,
@@ -264,7 +265,8 @@ function apply(ctx) {
                   session: sessionId,
                   start_seq: 0,
                   end_seq: endSeq,
-                  scope: 'project',
+                  // 依据是壳的规则：没登记工作区时 `project` 会被拒（见 `scopeForWorkspace`）。
+                  scope: scopeForWorkspace(services.workspaceId),
                   workspace_id: services.workspaceId ?? '',
                   workspace: String(workspace ?? ''),
                   title: candidate.title,
