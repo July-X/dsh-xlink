@@ -35,6 +35,7 @@ import {
   setListScope,
   jobsSummaryText,
   jobLine,
+  switchEffectText,
 } from './memory.js';
 
 const list = computed(() => visibleMemories(memoryStore.view, memoryStore.listScope));
@@ -80,6 +81,8 @@ onMounted(() => {
         active-text="使用已批准的记忆"
         @change="setMemoryEnabled"
       />
+      <!-- 生效语义写在这（E6）：**不许说「已生效」**——面板不知道本会话还剩几次注入。 -->
+      <p class="memory-row__meta">{{ switchEffectText() }}</p>
     </div>
 
     <el-alert
