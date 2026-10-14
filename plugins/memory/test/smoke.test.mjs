@@ -660,6 +660,38 @@ test('提取编排：模型失败 / 输出不合 schema / 提交失败各自回 
   assert.match(caught.reason, /适配器炸了/);
 });
 
+test('业务拒绝是**结果**、不是故障：不该让任务重试三次（评审第 16 条）', async () => {
+  // 壳的业务闸（去重、开关关了、来源对不上）答的是 `{submitted:false, reason}`——**确定性**的，
+  // 重试一次还会得到同样的答案。原先插件把它当 ok:false → 任务失败 → 重试 3 次，
+  // 白烧两次模型调用，而错误文案是「这条内容已经在记忆里了」。
+  const refused = await runExtraction({
+    deps: extractionDeps({
+      callModel: async () => ({ ok: true, text: JSON.stringify([{ title: 'a', body: 'b', evidence_seq: 3 }]) }),
+      submit: async () => ({ ok: true, submitted: 0, refused: 1, refusedReason: '这条内容已经在记忆里了' }),
+    }).deps,
+    key: extractionKey,
+    from: 3,
+  });
+  assert.equal(refused.ok, true, '业务拒绝不该把任务判成失败');
+  assert.equal(refused.stage, 'done');
+  assert.equal(refused.submitted, 0);
+  assert.equal(refused.refused, 1);
+  assert.match(refused.refusedReason, /已经在记忆里了/);
+
+  // 桥不通是**故障**：照样失败，交给任务的重试。
+  const broken = await runExtraction({
+    deps: extractionDeps({
+      callModel: async () => ({ ok: true, text: JSON.stringify([{ title: 'a', body: 'b', evidence_seq: 3 }]) }),
+      submit: async () => ({ ok: false, reason: '连不上桥' }),
+    }).deps,
+    key: extractionKey,
+    from: 3,
+  });
+  assert.equal(broken.ok, false, '桥不通要判失败');
+  assert.equal(broken.stage, 'submit');
+  assert.match(broken.reason, /连不上桥/);
+});
+
 test('提取编排：**部分被拒**的条数要跟着结果回去，不能只报落库那几条', async () => {
   // 独立评审第 5 条：原先只有「一条都没成」才 ok:false，`refusals` 直接丢——10 条里落 3 条、
   // 7 条被业务闸拒时，调用方看到的只有「落库 3 条」，另外 7 条的去向只活在提交那一步的局部变量里。
@@ -1323,6 +1355,18 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   assert.match(code, /clearInterval\(renewTimer\)/, '收工要停掉续租计时器');
   assert.match(code, /renewed === false/, '续不到（被接管）要提前收工，别白烧一次模型调用');
   assert.match(code, /route: 'jobs\/finish'/, '成功要收尾');
+  // **业务拒绝与故障要分开**（评审第 16 条）：壳的业务闸答 `{submitted:false}`，那是**结果**；
+  // 桥不通才是故障。判据在装配层（这一层没有内核，测不了行为），所以按形状钉住。
+  assert.match(
+    code,
+    /else if \(answer\.ok && answer\.value\?\.submitted === false\)/,
+    '壳的业务拒绝要单独一支，不能并进「失败」'
+  );
+  assert.match(
+    code,
+    /return \{ ok: false, reason: answer\.reason \?\? '提交时桥不可用' \}/,
+    '桥不通要判失败（那才是交给重试的故障）'
+  );
   assert.match(code, /route: 'jobs\/fail'/, '失败要退回（否则那条任务永远占着）');
   assert.match(code, /llm\.prepareCall\(/, '模型调用要用 prepareCall（模板见 sess-title-llm）');
   assert.ok(!code.includes('purpose:'), 'purpose 不许填：设计禁的正是冒充 session-title');

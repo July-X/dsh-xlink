@@ -9,17 +9,51 @@
 //! 需要模型比对，那是 P2 的事——见 `docs/features/memory/memory-progress.md` 的 C4/C5/C6。
 //! 宁可多收一条让人自己看，也不要拿近似当重复：误判成重复会让用户写下的东西**静默消失**。
 
-/// 同一正文是否已经在库里（权威记录或待确认候选），是就返回一句给用户的原因。
+/// 同一正文是否**在这个范围里**已经在库（权威记录或待确认候选），是就返回一句给用户的原因。
 ///
 /// **用指纹而不是语义**：判「意思一样但写法不同」需要模型比对，那是 P2 的事（清单里的 C5）。
 /// 首版把**精确重复**挡掉——它是模型跨会话反复提同一件事时最常见的形状，也是唯一能机械判的。
-pub(crate) fn duplicate_reason(doc: &super::store::MemoryDoc, body: &str) -> Option<String> {
+///
+/// **指纹要带范围**（独立评审第 16 条）：原先在全库比，于是 A 项目里已有的那句
+/// 「提交前跑 npm run check」会让 B 项目提同一句时被拒——两个项目各自定下同一条约定完全正常，
+/// 而 B 项目的用户看到的是「已经在记忆里了」却在自己的项目里找不到它。
+/// 判据复用 [`crate::memory::query::scope_matches_fields`]（**同一份规则**，不另写一遍）：
+/// **通用**候选只与通用记录比（通用记录处处可见，再存一份才是真重复）；**项目**候选与该项目的
+/// 可见记录比（含通用记录）。
+pub(crate) fn duplicate_reason_for(
+    doc: &super::store::MemoryDoc,
+    clean: &super::input::Clean,
+) -> Option<String> {
+    duplicate_reason(
+        doc,
+        &clean.scope,
+        &clean.workspace_id,
+        &clean.workspace_path,
+        &clean.body,
+    )
+}
+
+pub(crate) fn duplicate_reason(
+    doc: &super::store::MemoryDoc,
+    scope: &str,
+    workspace_id: &str,
+    workspace_path: &str,
+    body: &str,
+) -> Option<String> {
     let value = super::store::fingerprint(body);
-    if let Some(record) = doc
-        .memories
-        .iter()
-        .find(|record| super::store::fingerprint(&record.body) == value)
-    {
+    let general_candidate = scope == super::store::SCOPE_GENERAL;
+    // 这条记录**在候选的范围里看得见吗**——看不见就不算重复。
+    let in_scope = |record_scope: &str, id: &str, path: &str| -> bool {
+        if general_candidate {
+            // 通用候选只认通用记录：项目记录在别的项目里看不见，为它拒收一条通用偏好是错的。
+            return record_scope == super::store::SCOPE_GENERAL;
+        }
+        super::query::scope_matches_fields(record_scope, id, path, workspace_id, workspace_path)
+    };
+    if let Some(record) = doc.memories.iter().find(|record| {
+        super::store::fingerprint(&record.body) == value
+            && in_scope(&record.scope, &record.workspace_id, &record.workspace_path)
+    }) {
         return Some(format!(
             "这条内容已经在记忆里了（「{}」，状态 {}）。重复收它只会让同一件事出现两份。",
             record.title, record.state
@@ -30,6 +64,11 @@ pub(crate) fn duplicate_reason(doc: &super::store::MemoryDoc, body: &str) -> Opt
         .find(|candidate| {
             candidate.state == super::store::CANDIDATE_PENDING
                 && super::store::fingerprint(&candidate.body) == value
+                && in_scope(
+                    &candidate.scope,
+                    &candidate.workspace_id,
+                    &candidate.workspace_path,
+                )
         })
         .map(|candidate| {
             format!(

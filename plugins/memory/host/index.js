@@ -295,12 +295,20 @@ function apply(ctx) {
                 route: 'jobs/submit',
                 params,
               });
-              if (answer.ok && answer.value?.submitted === true) submitted += 1;
-              else refusals.push(answer.value?.reason ?? answer.reason ?? '提交被拒');
+              if (answer.ok && answer.value?.submitted === true) {
+                submitted += 1;
+              } else if (answer.ok && answer.value?.submitted === false) {
+                // **壳的业务闸拒的**（去重、开关关了、来源对不上、序号超范围）：这是**结果**，
+                // 不是故障（独立评审第 16 条）。原先一律按 ok:false 处理 → 任务失败 → 重试三次，
+                // 白烧两次模型调用，而用户看到的是「这条内容已经在记忆里了」这种不像故障的话。
+                refusals.push(answer.value.reason ?? '提交被拒');
+              } else {
+                // **桥这一层不通**（连不上、非 2xx、超时）：这才是故障，交给任务的重试。
+                return { ok: false, reason: answer.reason ?? '提交时桥不可用' };
+              }
             }
-            if (refusals.length > 0 && submitted === 0) {
-              return { ok: false, reason: refusals[0] };
-            }
+            // 全被业务闸拒也算**处理完了**：判据是确定性的，重试一次还会得到同样的答案。
+            // 理由经 `refused` / `refusedReason` 回到日志与结果里（第 5 条），不会静默消失。
             // **部分被拒也要报出来**（独立评审第 5 条）：原先只有「一条都没成」才 ok:false，
             // `refusals` 直接丢——10 条里落 3 条、7 条被「已经在待确认里了」拒时，日志会写
             // 「提交 3 条，被判据拒 0 条」（那个数是解析阶段的），7 条不知去向，而任务照常 finish、
