@@ -214,3 +214,15 @@ test('提取任务卡片真的接在模板上（helper 有测试、接线没有�
   // 「一条都没提取出来时先看这里」——这句提示是这张卡片存在的理由，钉住它。
   assert.match(template, /一条记忆都没提取出来时先看这里/);
 });
+
+test('开关的生效语义是**条件式**的，不许说「已生效」（E6）', async () => {
+  const { switchEffectText } = await import('../src/memory/memory.js');
+  const text = switchEffectText();
+  // 一半是「下一步就生效」、另一半是「预算用尽要等新会话」——两半都要有。
+  assert.match(text, /下一步/, '要写明通常下一步就生效');
+  assert.match(text, /用尽/, '也要写明预算用尽时的情况');
+  assert.match(text, /新会话/, '要指出出路是新会话');
+  assert.ok(!/已生效|立即生效|即时生效/.test(text), '不许给一句听起来干脆但可能不真的话');
+  const template = templateOf(read('../src/memory/MemoryPanel.vue'));
+  assert.match(template, /switchEffectText\(\)/, '这句话要接在开关旁边');
+});
