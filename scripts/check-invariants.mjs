@@ -2631,6 +2631,9 @@ if (ungatedOsImports.length > 0) {
       'memory_search', // 插件暴露给模型的工具名（在 plugins/memory/host 里，不是 Rust 侧符号）
       'memory_submit_candidate', // 已删除的命令：清单里作为历史提及
       'screencapture', // macOS 系统命令
+      // **计划中的字段名**：C5 的候选冲突标记，尚未落地（清单里那一条写明了落地形状与前置条件）。
+      // 登记在这里是为了让这条判据继续对**已落地**的引用保持严格——计划中的名字不该绕过它。
+      'conflicts_with',
       'jobs.json', // 运行期数据文件（与 memory.json 同目录），不在仓库里
       'memory.json', // 同上：权威记录本体
     ]);
