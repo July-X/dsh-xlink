@@ -2331,34 +2331,50 @@ if (ungatedOsImports.length > 0) {
 
 // --- 25. AGENTS.md 不超运行时指令预算 --------------------------------------
 //
-// 运行时（`local-runtime-v2`）只把项目指令的前 32768 字节装进上下文，超出的
-// 部分**被静默丢弃且不产生任何提示**。2026-10-11 实测：本文件 33683 字节，
-// 尾部两节（「## 文档」「## 窗口外观作用域」）从来没被读到过——「修改用户可见
-// 行为要同步更新 README 和 docs」这条纪律写了半年没人看到。
+// 运行时把项目指令渲染进上下文时有一个字节预算，**这个数由内核配置给出，不是猜
+// 的**：`kernels/<版本>/node_modules/@deepseek-ai/dsh-base/cordis.patch.yml` 里
+// `agent-instructions: { maxBytes: 65536 }`（0.2.1-alpha.2 实读；`dsh-web-app` 的
+// 三份 preset 同值）。超了会怎样：尾部被截断，运行时在渲染结果的最前面插一行
+// `Workspace instruction budget 65536 bytes: truncated AGENTS.md from 33683 to
+// …bytes`（内核 `dsh-agent-instructions` 的 `markerText`）。
 //
-// 为什么用机械判据钉：体积超限不会让任何编译或测试变红，唯一的症状是「文档
-// 里明明写了却没人遵守」，而读到文档的人根本无从知道自己漏读了哪一段。
+// **所以判据仍然必要**：截断从「静默」变成了「会自己出声」，但**没有人会去读那行
+// 标记**——症状仍然是「文档里明明写了却没人遵守」，而读到文档的人根本无从知道
+// 自己漏读了哪一段。2026-10-11 实测就是这个形状：文件 33683 字节，尾部两节
+// （「## 文档」「## 窗口外观作用域」）从来没被读到过，「修改用户可见行为要同步
+// 更新 README 和 docs」那条纪律写了半年没人看到。
 //
-// 上限取 32000，比运行时的 32768 低 768：留出的余量让「下次正常加一条规则」
-// 不会立刻红，而余量用尽时门禁会明确告诉你该把故事搬去
-// `docs/reviews/agent-lessons.md` 而不是删纪律。
+// 上限取 64000，比运行时的 65536 低 1536：余量让「下次正常加一条规则」不会立刻
+// 红，而余量用尽时门禁会明确告诉你该把故事搬去 `docs/reviews/agent-lessons.md`
+// 而不是删纪律。**内核升版后要重新读那份 `maxBytes`**，别照抄这里的数——
+// 32768 → 65536 就是这么变过一次（本条 2026-10-11 写下时按的是 32768）。
 
 {
-  const AGENTS_BYTE_BUDGET = 32000;
+  const RUNTIME_BYTE_BUDGET = 65536;
+  const AGENTS_BYTE_BUDGET = 64000;
   const agentsPath = join(root, 'AGENTS.md');
   const bytes = readFileSync(agentsPath).length;
   if (bytes > AGENTS_BYTE_BUDGET) {
+    // 两种超法要说两句话：超本仓预算是「该搬故事了」，超运行时上限才是「尾部已经
+    // 真的不会被读到」。混成一句就会在数字改小后开始说假话（反向验时见过）。
+    const overRuntime = bytes > RUNTIME_BYTE_BUDGET;
+    const headline = overRuntime
+      ? `已经越过运行时 ${RUNTIME_BYTE_BUDGET} 字节的指令上限，尾部会被截掉：` +
+        `运行时会插一行 "Workspace instruction budget ${RUNTIME_BYTE_BUDGET} bytes: truncated …"，` +
+        `但没人会去读它——写在这里却从没被读到过的规则比没写更坏。`
+      : `已超出本仓 ${AGENTS_BYTE_BUDGET} 字节的预算（运行时上限 ${RUNTIME_BYTE_BUDGET}，` +
+        `离被截断还剩 ${RUNTIME_BYTE_BUDGET - bytes} 字节）：预算刻意留了余量，` +
+        `好让「加一条规则」不会拖到某天把纪律半截丢掉。`;
     fail(
       'agents-md-byte-budget',
-      `AGENTS.md 已 ${bytes} 字节，超出 ${AGENTS_BYTE_BUDGET} 字节的预算：` +
-        `再写就会掉出运行时前 32768 字节的上下文，且不会有任何提示。` +
+      `AGENTS.md 已 ${bytes} 字节。${headline}` +
         `把事故经过搬到 docs/reviews/agent-lessons.md，纪律本身留在这里` +
-        `（当前已超 ${bytes - AGENTS_BYTE_BUDGET} 字节）`
+        `（超预算 ${bytes - AGENTS_BYTE_BUDGET} 字节）。`
     );
   } else {
     note(
       `AGENTS.md ${bytes} 字节，在 ${AGENTS_BYTE_BUDGET} 字节预算内` +
-        `（距运行时 32768 上限还有 ${32768 - bytes} 字节）`
+        `（距运行时 ${RUNTIME_BYTE_BUDGET} 字节上限还有 ${RUNTIME_BYTE_BUDGET - bytes} 字节）`
     );
   }
 }
