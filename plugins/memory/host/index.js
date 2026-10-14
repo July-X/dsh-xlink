@@ -118,7 +118,7 @@ function apply(ctx) {
     // 记人类消息那条路仍然看**每个**事件——它要的正是事件流本身。
     const attempt = () => {
       if (event?.type !== 'turn/end') return;
-      void runDueExtraction(credentials, extractionServices, box.state.workspace);
+      void runDueExtraction(credentials, liveExtractionServices(), box.state.workspace);
     };
     if (!decision.schedule) {
       attempt();
@@ -294,20 +294,22 @@ function apply(ctx) {
 
   // 提取要用的内核服务。**分开注入**：`workspaceRegistry` 那条路是注入用的，缺了只是没有记忆；
   // 这一组缺了只是没有自动提取——两件事的降级方向不同，别绑在一起。
-  const extractionServices = {};
-  ctx.inject(['sessions', 'sessionPersistence', 'sessionQuery', 'llm', 'agentDefaultModel'], () => {
-    // **从这里取服务，但要用根 ctx 取**：`inject` 回调拿到的那个子上下文只在回调期间活着，
-    // 事后通过它读服务会抛「cannot get required service … in inactive context」
-    // （2026-10-15 两侧端到端跑的时候逮到的：durable 读失败要退到 live 兜底，而兜底正需要
-    // `sessions`，于是两个错叠在一起）。`ctx.get` 是**急取**，拿到的就是服务对象本身。
-    Object.assign(extractionServices, {
-      sessions: ctx.get('sessions'),
-      sessionPersistence: ctx.get('sessionPersistence'),
-      sessionQuery: ctx.get('sessionQuery'),
-      llm: ctx.get('llm'),
-      agentDefaultModel: ctx.get('agentDefaultModel'),
-      workspaceRegistry: ctx.get('workspaceRegistry'),
-    });
+  // **用时现取，不做快照**。这里踩过两次：
+  // ① 第一版把 `inject` 回调拿到的**子上下文**存下来，事后读服务抛「inactive context」；
+  // ② 第二版改成回调里 `ctx.get(...)` 急取快照——**还是不行**：`ctx.get` 返回的是**绑定当时
+  //    那个 fiber 的追踪代理**，而服务 fiber 事后会重载（`_checkImpl` 把失效的从 store 里删掉），
+  //    于是快照下来的是一个已经失活的对象，用的时候照样抛同一句话。
+  //    两次都是「两侧端到端跑」才露头的：单测里根本没有内核，快照与现取看不出区别。
+  // 现取时 `ctx.get(name)` 默认会**跳过失活的服务**（拿不到就回 undefined），调用方因此能
+  // 如实说「内核没给这个服务」，而不是拿一个死对象去用。
+  ctx.inject(['sessions', 'sessionPersistence', 'sessionQuery', 'llm', 'agentDefaultModel'], () => {});
+  const liveExtractionServices = () => ({
+    sessions: ctx.get('sessions'),
+    sessionPersistence: ctx.get('sessionPersistence'),
+    sessionQuery: ctx.get('sessionQuery'),
+    llm: ctx.get('llm'),
+    agentDefaultModel: ctx.get('agentDefaultModel'),
+    workspaceRegistry: ctx.get('workspaceRegistry'),
   });
 
   ctx.inject(['workspaceRegistry'], (scoped) => {
