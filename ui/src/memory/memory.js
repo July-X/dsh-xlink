@@ -46,6 +46,9 @@ export const memoryStore = reactive({
   preview: null,
   /// 最近一次导出的结果（`{ path, bytes, memories, candidates, generated_at }`）。
   lastExport: null,
+  /// 最近几次「模型实际看到了哪些记忆」（`memory_recent_injections`，新的在前）。
+  /// 与 `preview` 的区别：那是**模拟**（拿你填的查询算一遍），这是**实况**。
+  recentInjections: [],
   /// 文档读不出来时的原文（后端给的 warning 已经带下一步，前端不再改写）。
   failure: '',
 });
@@ -86,6 +89,32 @@ export function loadWorkspaces() {
     .catch(() => undefined);
 }
 
+/**
+ * 读「最近注入」。
+ *
+ * **失败保留上一次成功值、不弹窗**（与工作区列表同一条理由）：它是一条辅助信号，
+ * 为它弹一个红字会让用户去修一个没坏的东西。
+ */
+export function loadRecentInjections() {
+  return invoke('memory_recent_injections')
+    .then((list) => {
+      memoryStore.recentInjections = Array.isArray(list) ? list : [];
+    })
+    .catch(() => undefined);
+}
+
+/**
+ * 「最近注入」一行里那句人话。三种状态必须分得开：开关关着 / 一条没命中 / 注入了哪几条。
+ *
+ * 放在这里而不是组件里：它是**判据能直接跑**的那种逻辑，写在 `.vue` 的 `<script setup>`
+ * 里就只能靠读源码文本断言（本仓栽过：helper 有测试、接线没有）。
+ */
+export function injectionText(note) {
+  if (!note || !note.enabled) return '开关关着，这一回合没有注入';
+  if (!note.hits || !note.hits.length) return '没有命中';
+  return `注入了 ${note.hits.length} 条：${note.hits.join('、')}`;
+}
+
 export function rememberProjectPath(path) {
   memoryStore.projectPath = path;
   try {
@@ -102,8 +131,9 @@ function applyView(view) {
 }
 
 export function refreshMemory({ silent = false } = {}) {
-  // 工作区列表跟着一起取：它只影响下拉与 id 解析，失败不打扰用户。
+  // 工作区列表与「最近注入」跟着一起取：都只影响辅助显示，失败不打扰用户。
   void loadWorkspaces();
+  void loadRecentInjections();
   return withLoading('memoryList', () =>
     invoke('memory_list', { filter: { include_candidates: true, include_disabled: true } })
       .then((view) => {

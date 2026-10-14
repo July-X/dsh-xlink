@@ -11,5 +11,6 @@ pub(crate) mod cmd;
 pub(crate) mod export;
 pub(crate) mod input;
 pub(crate) mod query;
+pub(crate) mod recent;
 pub(crate) mod store;
 pub(crate) mod workspaces;

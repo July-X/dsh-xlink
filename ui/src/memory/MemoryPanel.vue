@@ -24,11 +24,13 @@ import {
   rememberProjectPath,
   canSaveDraft,
   injectionDisabled,
+  injectionText,
 } from './memory.js';
 
 const list = computed(() => (memoryStore.view && memoryStore.view.memories) || []);
 const candidates = computed(() => (memoryStore.view && memoryStore.view.candidates) || []);
 const status = computed(() => memoryStore.status);
+const recentInjections = computed(() => memoryStore.recentInjections || []);
 const enabled = computed(() => !!(status.value && status.value.use_approved));
 const draft = computed(() => memoryStore.draft);
 const savable = computed(() => canSaveDraft());
@@ -288,6 +290,31 @@ onMounted(() => {
               <el-button v-if="draft.id" :disabled="globalBusy" @click="resetDraft">取消编辑</el-button>
             </div>
           </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>最近注入</h2>
+          </div>
+          <p class="memory-hint">
+            实况：插件报告它真的把哪几条放进了模型上下文。下面那个「检索预览」是模拟——拿你填的查询算一遍。
+            壳重启后这份记录会清空（它不是权威记录，权威记录是上面那份文件）。
+          </p>
+          <p v-if="!recentInjections.length" class="memory-hint">
+            还没有记录。在工作台聊一轮，这里会出现「哪一回合、哪个项目、注入了哪几条」。
+          </p>
+          <div
+            v-for="(note, index) in recentInjections.slice(0, 5)"
+            :key="`${note.at}-${index}`"
+            class="memory-row"
+          >
+            <p class="memory-row__meta">
+              {{ shortTime(note.at) }} · {{ note.workspace || '未知项目' }} · {{ injectionText(note) }}
+            </p>
+          </div>
+          <p v-if="recentInjections.length > 5" class="memory-row__meta">
+            只列最近 5 次（共 {{ recentInjections.length }} 条记录）。
+          </p>
         </div>
 
         <div class="card">

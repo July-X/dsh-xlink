@@ -47,6 +47,30 @@ test('状态还没读回来时不算「没启用」——那句提示会误报',
   );
 });
 
+test('「最近注入」那行话把三种状态分开（开关关着 / 没命中 / 注入了哪几条）', async () => {
+  const { injectionText } = await import('../src/memory/memory.js');
+  assert.equal(injectionText({ enabled: false, hits: [] }), '开关关着，这一回合没有注入');
+  assert.equal(injectionText({ enabled: true, hits: [] }), '没有命中');
+  assert.equal(
+    injectionText({ enabled: true, hits: ['提交前先跑检查', '构建用 pnpm'] }),
+    '注入了 2 条：提交前先跑检查、构建用 pnpm'
+  );
+  // 缺字段（老壳、或记录被截断）不许抛：这是一条辅助显示，不该把面板带崩。
+  assert.equal(injectionText(null), '开关关着，这一回合没有注入');
+  assert.equal(injectionText({ enabled: true }), '没有命中');
+});
+
+test('面板真的画了「最近注入」并读后端那条命令', () => {
+  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  assert.match(tpl, /<h2>最近注入<\/h2>/, '卡片标题');
+  assert.match(tpl, /injectionText\(note\)/, '每行要说清注入了什么');
+  assert.match(
+    read('../src/memory/memory.js'),
+    /invoke\('memory_recent_injections'\)/,
+    '读的是实况那条命令（不是 preview）'
+  );
+});
+
 test('面板的告警 v-if 用这个判据，而不是只判 !injectReady', () => {
   const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
   assert.match(

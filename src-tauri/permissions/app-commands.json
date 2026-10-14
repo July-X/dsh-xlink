@@ -101,6 +101,7 @@
           "memory_delete",
           "memory_set_enabled",
           "memory_decide_candidate",
+          "memory_recent_injections",
           "memory_preview_context",
           "memory_workspaces",
           "memory_export",

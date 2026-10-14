@@ -145,9 +145,18 @@
   **还差**：范围筛选（或两个 tab）
 - 🟡 **D5 列表显示最后修改时间、来源和验证状态**（§2）—— 时间 ✅、`已用 N 次` ✅、固定/已停用 ✅；
   **来源与验证状态只在候选卡片里显示**。**还差**：行里补来源 kind 与验证状态
-- ⬜ **D6 工作台显示「本次使用了 N 条记忆」，可展开看内容与来源**（§2）—— 未实现。现在只有面板的
-  「检索预览」。**还差**：内核侧没有壳能渲染的地方，要么做成插件在工具结果/上下文里的计数，要么
-  从壳侧读会话事件反推（先定方案再动手）
+- ✅ **D6a 「模型实际看到了哪几条」在面板里可见**（§2 的实况那一半）—— 桥新增 `note` 路由：
+  插件在**真的用了**这次检索之后回报（只报 id 与开关状态，标题由壳按 id 从库里取），壳记进一个
+  进程内、上限 20 条的环形（`memory/recent.rs`），面板「最近注入」卡片读 `memory_recent_injections` 显示
+  「时间 · 项目 · 注入了哪几条 / 没命中 / 开关关着」。**为什么由插件回报而不是桥自己记**：
+  预算用完之后插件每回合都探一次代次，探到的结果在库没变时是被丢掉的——桥自己记会把探测也
+  当成「注入」，真正的注入反而被挤出环形。判据：桥用例（`note` → 环形 → 标题解析、关着开关也记）、
+  面板用例（三种状态 + 卡片接线 + 读的是哪条命令）
+- ⬜ **D6b 工作台徽标「本次使用了 N 条记忆」**（§2 的字面承诺）—— **卡在会话身份**：工作台窗口
+  加载的是内核自己的 webui，URL 只有 `?token=`（`kernel_workbench_url`），注入脚本拿不到「当前
+  是哪个会话」，而桥那边的记录是按会话分的。**还差**：先实测内核 webui 有没有可读的会话标识
+  （DOM 钩子 / hash 路由），没有就退到「最近一次」并在文案里说清。另：新增注入脚本要同时挂两条
+  建窗链（`commands.rs::open_harness` 与 `harness_window::build`），能力文件也要加
 - ✅ **D7 停用后新回合不再新增贡献**（§2）—— 注入只取 `accepted`；用例
 - ✅ **D8 删除后阻止再次检索**（§2）—— 同 C9
 - ✅ **D9 导出 Markdown 一次性快照**（§2）—— `memory/export.rs`；用例 `export_writes_a_private_snapshot_with_everything_in_it`、`unreadable_document_is_reported_inside_the_snapshot`
@@ -168,7 +177,9 @@
 - ✅ **E2 物化到 `<DSH_HOME>/extensions/builtin/xlink-memory/.../compat-a/`**（§4）—— 真机验证
   （`builtin_set_enabled` 后 `loadState: prepared`、`wired: true`、`missingPeers: []`）
 - ✅ **E3 不向已安装内核 `node_modules/**` 写任何东西**（§4）—— 未触碰；物化与接线都在 DSH home 内
-- ✅ **E4 桥三条路由 `context` / `read` / `propose`**（§9）—— `plugins/builtin/bridge.rs`；路由用例
+- ✅ **E4 桥四条路由 `context` / `read` / `propose` / `note`**（§9）—— `plugins/builtin/bridge.rs`；
+  路由用例（含 `note`：只有拿到 Bearer 的插件能调，最坏是往进程内 20 条环形里塞一条标题列表，
+  不碰权威记录、不落盘）
 - ✅ **E5 命名空间在签发与校验两侧完整**（§9）—— 令牌绑 `(family, instance)`，profile 由壳设置补齐，
   两者合成 `Namespace`；真机验证面板与插件写同一份 `memory.json`
 - 🟡 **E6 「停用即时生效」靠运行中插件的失效确认，未确认时标为处理中**（§9）—— 失效靠 B10 的代次探测
@@ -226,7 +237,7 @@
   注入文本的检索/渲染用例
 - 🟡 **G22 超大输入、中文匹配、损坏文档、并发写入返回明确状态** —— 超大输入 ✅、中文 ✅、损坏 ✅、
   进程内并发 ✅（Mutex）；**磁盘满 ⬜、跨进程写入 ⬜**
-- ✅ **G23 真机端到端（面板与命令）** —— `e2e/specs/memory.spec.mjs` 3/3（侧栏入口、三条命令可解析、
+- ✅ **G23 真机端到端（面板与命令）** —— `e2e/specs/memory.spec.mjs` 3/3（侧栏入口、四条命令可解析（含 `memory_recent_injections`）、
   无控制台错误）；面板内容渲染无法在 occluded WKWebView 里断言（spec 里写明原因）
 
 ## H. P2：自动提取（§8、§10）—— 全部未开始
@@ -254,6 +265,7 @@
   模型那条路走桥的 `read`/`propose`。`memory_status` 保留（e2e 在用）
 - ✅ **I7 注入插件的「未启用」提示不误报** —— `injectionDisabled`：状态没读回来时不说
 - ✅ **I8 导出不覆盖已有文件、文档读不出来时在文件头照实说** —— `export.rs`；用例覆盖
+- ✅ **I9 「最近注入」记录（模型实际看到了什么）** —— 见 D6a；壳重启即清空，**只存标题与 id，不存正文**
 
 ## J. 模块地图（哪个文件负责什么）
 
@@ -267,19 +279,20 @@
 | `src-tauri/src/memory/input.rs` | 面板保存与候选提交共用的输入规范化；整库体积上限 | A9、A15、I1 |
 | `src-tauri/src/memory/workspaces.rs` | 只读内核工作区注册表（面板下拉、路径归一 realpath） | B5 |
 | `src-tauri/src/memory/export.rs` | Markdown 一次性快照导出 | D9、D10、I8 |
-| `src-tauri/src/memory/cmd.rs` | 面板命令层（11 条 Tauri 命令，`blocking`） | D1–D14 |
+| `src-tauri/src/memory/recent.rs` | 「最近注入」的进程内环形记录（上限 20 条，只存标题与 id） | D6a、I9 |
+| `src-tauri/src/memory/cmd.rs` | 面板命令层（12 条 Tauri 命令，`blocking`） | D1–D14、D6a |
 | `plugins/memory/host/index.js` | 装配层：`agent/created` 注册上下文、`pre-step`、三个工具 | B1–B10、B25–B27、I5 |
 | `plugins/memory/host/policy.js` | 纯策略：注入预算、代次探测、「结果怎么用」 | B6–B10 |
 | `plugins/memory/host/bridge.js` | 桥客户端：凭据读取、路径拼装、超时与通道上限 | B28、E4 |
 | `plugins/memory/test/smoke.test.mjs` | 策略层与桥客户端用例（19 条，含 2 条接线判据） | 各条的判据 |
-| `ui/src/memory/memory.js` | 面板状态与动作（含 `injectionDisabled`） | D1–D14、I7 |
-| `ui/src/memory/MemoryPanel.vue` | 面板视图（列表、候选、编辑器、预览、导出） | D1–D14 |
+| `ui/src/memory/memory.js` | 面板状态与动作（含 `injectionDisabled`、`injectionText`） | D1–D14、D6a、I7 |
+| `ui/src/memory/MemoryPanel.vue` | 面板视图（列表、候选、编辑器、最近注入、预览、导出） | D1–D14、D6a |
 
 ## 待办总表（按建议顺序）
 
 | # | 条目 | 为什么排这个位置 |
 | --- | --- | --- |
-| 1 | **D6 工作台显示「本次使用了 N 条记忆」**（§2）—— 需先定方案（内核侧没有壳能渲染的位置） | 设计稿对用户的核心承诺，也是「记忆到底有没有生效」唯一的即时反馈 |
+| 1 | **D6b 工作台徽标**（§2）—— D6a 已把「实况」放进面板；徽标卡在「注入脚本拿不到当前会话 id」 | 设计稿对用户的核心承诺；先实测内核 webui 有没有可读的会话标识 |
 | 2 | **G6 `pre-step` 拒绝时不提交缓存** | 一条用例就能钉住的正确性缺口，成本最低 |
 | 3 | **D12/D13/D14 三处文案**（重启生效、出网说明、与 AGENTS.md 的分工） | 用户看得见的承诺，纯文案 |
 | 4 | **C4 合并来源 + C5 冲突标记 + C6 旧候选过期 + A13/C7 stale 入口** | 一组「同一件事的多份记录怎么收敛」，要一起定语义 |

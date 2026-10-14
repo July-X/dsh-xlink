@@ -164,6 +164,28 @@ function apply(ctx) {
           if (!result.ok) {
             ctx.logger?.warn?.(`${name}: 本次检索失败，本回合不注入记忆：${result.reason}`);
           }
+          // 「这一次的结果**真的进了上下文**」要回来说一声，壳那边记一条（面板的
+          // 「最近注入」卡片靠它）。**只报 id 与开关状态，不报正文**——正文是用户私有
+          // 内容，标题由壳按 id 从库里取。探测那条路没被采用时 `applied` 为 false，
+          // 所以这里记下的正好是「模型实际看到了什么」，不含每回合的探测噪声。
+          // 失败只 warn：这是一条可见性信号，不能因为它把这一回合的记忆搞没。
+          if (applied.applied) {
+            const noted = await callMemory({
+              credentials,
+              route: 'note',
+              params: {
+                session: String((subject ?? agent)?.session?.id ?? ''),
+                workspace,
+                ids: (result.value?.hits ?? []).map((hit) => hit.id).filter(Boolean).join(','),
+                enabled: result.value?.enabled ? '1' : '0',
+              },
+            });
+            if (!noted.ok) {
+              ctx.logger?.warn?.(
+                `${name}: 注入记录没有落到壳里（面板的「最近注入」会缺这一条）：${noted.reason}`
+              );
+            }
+          }
         } catch (error) {
           ctx.logger?.warn?.(`${name}: 检索异常，本回合不注入记忆：${String(error?.message ?? error)}`);
         }

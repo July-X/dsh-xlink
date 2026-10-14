@@ -184,6 +184,31 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
                 }
             }
         }
+        (method, path) if method == "GET" && path.starts_with("/v1/memory/note") => {
+            // 插件在**真的用了**这次检索之后回来说一声（含「开关关着/一条没命中」——
+            // 那也是模型实际看到的状态）。谁能调：只有拿到 Bearer 的插件进程；最坏能造成
+            // 什么：往一个进程内、上限 20 条的环形里塞一条标题列表，不碰权威记录。
+            //
+            // `session` 只用于展示与排查（面板按会话分组），**不参与任何授权判断**：
+            // 命名空间仍由桥的绑定决定，调用方传什么都不影响。
+            let ids = query_decoded(path, "ids");
+            let enabled = query_decoded(path, "enabled") != "0";
+            crate::memory::recent::record(
+                &memory_namespace(scope_key),
+                &query_decoded(path, "session"),
+                &query_decoded(path, "workspace"),
+                enabled,
+                &ids,
+            );
+            let hits = ids.split(',').filter(|id| !id.is_empty()).count();
+            note_memory_call("note", &format!("enabled={enabled} hits={hits}"));
+            let _ = crate::openai::http::write_response(
+                stream,
+                200,
+                "application/json",
+                r#"{"ok":true}"#,
+            );
+        }
         (method, path) if method == "GET" && path.starts_with("/v1/memory/read") => {
             let namespace = memory_namespace(scope_key);
             let id = query_decoded(path, "id");
@@ -503,7 +528,7 @@ mod tests {
         let namespace = Namespace::for_bridge("dsh", "default-dev");
 
         // 种一条项目记忆并打开开关：桥那边应当命中它。
-        store::save(
+        let seeded = store::save(
             &namespace,
             SaveInput {
                 scope: SCOPE_PROJECT.to_string(),
@@ -513,7 +538,8 @@ mod tests {
                 ..SaveInput::default()
             },
         )
-        .expect("seed memory");
+        .expect("seed memory")
+        .id;
         store::set_use_approved(&namespace, true).expect("enable");
 
         let dsh_home = home.join("dsh-home");
@@ -540,6 +566,39 @@ mod tests {
             log_contains(&home, "memory-bridge", "context enabled=true"),
             "记忆路由没有留下调用记录"
         );
+
+        // 「最近注入」（面板那张卡片的数据源）：插件在**真的用了**这次检索之后回报，
+        // 只报 id——标题由壳按 id 从库里取，所以断言标题就是断言解析成功。
+        let note = http_get(
+            &addr,
+            &format!(
+                "/v1/memory/note?session=s-1&workspace=%2Ftmp%2Fdemo%20repo&enabled=1&ids={seeded}"
+            ),
+            Some(&token),
+        );
+        assert!(note.starts_with("HTTP/1.1 200"), "{note}");
+        let mine = crate::memory::recent::recent_injections()
+            .into_iter()
+            .find(|record| record.session == "s-1")
+            .expect("注入记录没落进环形");
+        assert_eq!(mine.hits, vec!["构建前先跑检查".to_string()], "{mine:?}");
+        assert!(mine.enabled);
+        assert!(mine.workspace.contains("demo repo"));
+
+        // 开关关着的那一次也要记（「这一回合没注入」是用户要能看见的事实），
+        // 而且**一条都没有**时 hits 为空——不能拿上一次的条目冒充。
+        let off = http_get(
+            &addr,
+            "/v1/memory/note?session=s-2&enabled=0&ids=",
+            Some(&token),
+        );
+        assert!(off.starts_with("HTTP/1.1 200"), "{off}");
+        let off_note = crate::memory::recent::recent_injections()
+            .into_iter()
+            .find(|record| record.session == "s-2")
+            .expect("关着开关的那一次也该有记录");
+        assert!(!off_note.enabled);
+        assert!(off_note.hits.is_empty(), "{off_note:?}");
 
         // 按内核工作区 id 匹配：项目改名 / 换盘之后路径对不上，仍要命中
         // （插件经工作区注册表解析出 id 随 `workspace_id` 参数送过来）。
