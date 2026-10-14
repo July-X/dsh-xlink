@@ -504,6 +504,65 @@ test('关句柄失败不能把读到的结果换成一条错误', async () => {
   assert.deepEqual(calls, ['close']);
 });
 
+test('主路不通就退到 live 读法，并说明真正的失败原因', async () => {
+  const events = [
+    { type: 'user/message', seq: 1, data: {} },
+    { type: 'turn/end', seq: 2, data: {} },
+    { type: 'user/message', seq: 3, data: {} },
+    { type: 'turn/end', seq: 4, data: {} },
+  ];
+  const sessionQuery = { readSession: async (id) => ({ session: { id }, events }) };
+
+  // 真机上出现过的那种：flush 直接抛（回合之间写句柄被内核关了）。
+  const fallback = await readSessionRange({
+    sessions: fakeLog({ flushThrows: true }).sessions,
+    sessionPersistence: fakeLog().sessionPersistence,
+    sessionQuery,
+    session: { id: 's-1' },
+    from: 3,
+    to: 4,
+  });
+  assert.equal(fallback.ok, true);
+  assert.equal(fallback.source, 'live', '要说明这次读的是 live 而不是盘上那份');
+  assert.deepEqual(fallback.events.map((event) => event.seq), [3, 4], '范围照样要裁');
+  assert.match(fallback.reason, /落盘屏障/, '要带上主路为什么失败');
+
+  // 没有持久化监听器参与时也一样走兜底。
+  const noFlush = await readSessionRange({
+    sessions: fakeLog({ flushed: false }).sessions,
+    sessionPersistence: fakeLog().sessionPersistence,
+    sessionQuery,
+    session: { id: 's-1' },
+  });
+  assert.equal(noFlush.ok, true);
+  assert.equal(noFlush.source, 'live');
+  assert.equal(noFlush.events.length, 4);
+
+  // 兜底也炸：两条原因都要在，别让兜底那条把真原因盖掉。
+  const both = await readSessionRange({
+    sessions: fakeLog({ flushThrows: true }).sessions,
+    sessionPersistence: fakeLog().sessionPersistence,
+    sessionQuery: {
+      readSession: async () => {
+        throw new Error('live 也读不到');
+      },
+    },
+    session: { id: 's-1' },
+  });
+  assert.equal(both.ok, false);
+  assert.match(both.reason, /落盘屏障/);
+  assert.match(both.reason, /live 兜底也失败/);
+
+  // 内核没给 live 读法时，如实说清楚（而不是假装没有兜底这回事）。
+  const noQuery = await readSessionRange({
+    sessions: fakeLog({ flushThrows: true }).sessions,
+    sessionPersistence: fakeLog().sessionPersistence,
+    session: { id: 's-1' },
+  });
+  assert.equal(noQuery.ok, false);
+  assert.match(noQuery.reason, /也没有 live 读法可用/);
+});
+
 test('不许用已废弃的三个接口（设计 §8-1 写明了）', () => {
   // **先剥注释再判**：`sessionlog.js` 的文档注释里就写着这三个名字（说明为什么不用它们），
   // 不剥的话判据命中的是解释而不是代码——本仓在这上面栽过好几次（见 agent-lessons §9/§11）。
