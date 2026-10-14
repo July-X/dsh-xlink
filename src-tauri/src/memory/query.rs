@@ -172,9 +172,14 @@ fn sorted_hits<'a>(
         .filter_map(|record| score(record, &normalized).map(|value| (value, record)))
         .collect();
     ranked.sort_by(|left, right| {
+        // **固定项先按「是不是固定」排，再比分数**（第二次评审第 6 条）：原先 pinned 只是 +1000 分，
+        // 于是一条命中 10 个以上关键词的记录（每词 +100，见 `score`）能拿 1080 分压过固定项，
+        // 把用户明确说了「每次都带上」的那条挤出前 6。用户的意思比算出来的分更硬。
         right
-            .0
-            .cmp(&left.0)
+            .1
+            .pinned
+            .cmp(&left.1.pinned)
+            .then_with(|| right.0.cmp(&left.0))
             .then_with(|| {
                 verification_rank(&right.1.verification)
                     .cmp(&verification_rank(&left.1.verification))
@@ -202,6 +207,9 @@ fn render_context(records: &[&MemoryRecord]) -> (String, Vec<MemoryHit>) {
     );
     let mut hits = Vec::new();
     let mut omitted = 0usize;
+    // **条数上限之外的那些也要说**（第二次评审第 6 条）：原先 `take(MAX_HITS)` 把第 7 条起
+    // 直接丢掉，行内注记只统计**体积**跳过的——用户 pin 了 7 条时会以为 7 条都进去了。
+    let over_hits = records.len().saturating_sub(MAX_HITS);
     for record in records.iter().take(MAX_HITS) {
         let scope_label = if record.scope == SCOPE_GENERAL {
             "通用偏好"
@@ -239,8 +247,15 @@ fn render_context(records: &[&MemoryRecord]) -> (String, Vec<MemoryHit>) {
             truncated,
         });
     }
-    if omitted > 0 {
-        let note = format!("\n\n（还有 {omitted} 条相关记忆因体积上限未展开。）");
+    if omitted > 0 || over_hits > 0 {
+        let mut parts = Vec::new();
+        if omitted > 0 {
+            parts.push(format!("{omitted} 条因体积上限未展开"));
+        }
+        if over_hits > 0 {
+            parts.push(format!("{over_hits} 条因条数上限（{MAX_HITS} 条）未列出"));
+        }
+        let note = format!("\n\n（还有{}。）", parts.join("、"));
         if text.len() + note.len() <= CONTEXT_TOTAL_BYTES {
             text.push_str(&note);
         }
@@ -281,6 +296,61 @@ mod tests {
     use crate::memory::store::{
         save, set_state, set_use_approved, ListFilter, SaveInput, STATE_DISABLED,
     };
+
+    /// **固定项是排序键，不是「+1000 分」**（第二次评审第 6 条）：一条命中 10 个以上关键词的记录
+    /// （每词 +100）能拿 1080 分压过 pinned 的 1000 分，把用户明确说了「每次都带上」的那条挤出前 6。
+    #[test]
+    fn pinned_outranks_a_many_keyword_hit() {
+        let _home = TempHome::new("pin-rank");
+        let ns = namespace();
+        // 11 个关键词全命中 → 1100 分（比 pinned 的 1000 高）。
+        let mut many = project_input("ws-a", "关键词很多的一条", "正文");
+        many.keywords = (0..11).map(|index| format!("kw{index}")).collect();
+        save(&ns, many).expect("many");
+        // 固定项：一个关键词都不命中。
+        let mut pinned = project_input("ws-a", "用户说每次都带上", "正文");
+        pinned.pinned = true;
+        save(&ns, pinned).expect("pinned");
+        set_use_approved(&ns, true).expect("enable");
+
+        let query = (0..11)
+            .map(|index| format!("kw{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let context = retrieve(&ns, &query, "ws-a", "/tmp/ws-a").expect("retrieve");
+        assert_eq!(
+            context.hits.first().map(|hit| hit.title.as_str()),
+            Some("用户说每次都带上"),
+            "固定项要排在前面：{:?}",
+            context
+                .hits
+                .iter()
+                .map(|hit| &hit.title)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// **条数上限之外的那些也要说**（第二次评审第 6 条）：原先 `take(MAX_HITS)` 直接丢掉，
+    /// 行内注记只统计体积跳过的——pin 了 7 条的用户会以为 7 条都进去了。
+    #[test]
+    fn hits_beyond_the_count_cap_are_reported_inline() {
+        let _home = TempHome::new("hit-cap");
+        let ns = namespace();
+        for index in 0..(MAX_HITS + 2) {
+            let mut input = project_input("ws-a", &format!("约定 {index}"), "正文");
+            input.pinned = true;
+            save(&ns, input).expect("save");
+        }
+        set_use_approved(&ns, true).expect("enable");
+
+        let context = retrieve(&ns, "", "ws-a", "/tmp/ws-a").expect("retrieve");
+        assert_eq!(context.hits.len(), MAX_HITS, "条数上限照旧");
+        assert!(
+            context.text.contains("2 条因条数上限"),
+            "溢出要写在正文里：{}",
+            context.text
+        );
+    }
 
     #[test]
     fn retrieve_keeps_projects_apart() {
