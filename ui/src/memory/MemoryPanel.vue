@@ -26,9 +26,13 @@ import {
   canSaveDraft,
   injectionDisabled,
   injectionText,
+  visibleMemories,
+  sourceText,
+  verificationText,
+  setListScope,
 } from './memory.js';
 
-const list = computed(() => (memoryStore.view && memoryStore.view.memories) || []);
+const list = computed(() => visibleMemories(memoryStore.view, memoryStore.listScope));
 const candidates = computed(() => (memoryStore.view && memoryStore.view.candidates) || []);
 const status = computed(() => memoryStore.status);
 const recentInjections = computed(() => memoryStore.recentInjections || []);
@@ -123,6 +127,16 @@ onMounted(() => {
           <div class="card-head">
             <h2>记忆（{{ list.length }}）</h2>
             <div class="memory-head__actions">
+              <el-radio-group
+                :model-value="memoryStore.listScope"
+                size="small"
+                :disabled="globalBusy"
+                @change="setListScope"
+              >
+                <el-radio value="all">全部</el-radio>
+                <el-radio value="project">本项目</el-radio>
+                <el-radio value="general">通用偏好</el-radio>
+              </el-radio-group>
               <el-button
                 text
                 :icon="Download"
@@ -175,7 +189,9 @@ onMounted(() => {
                 </div>
                 <p class="memory-row__body">{{ row.body }}</p>
                 <p class="memory-row__meta">
-                  {{ scopeText(row) }} · 更新于 {{ shortTime(row.updated_at) }} · 已用 {{ row.use_count }} 次
+                  {{ scopeText(row) }} · {{ sourceText(row.source.kind) }} ·
+                  {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
+                  已用 {{ row.use_count }} 次
                 </p>
               </div>
               <div class="memory-row__actions">

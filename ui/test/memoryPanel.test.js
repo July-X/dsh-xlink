@@ -60,6 +60,39 @@ test('「最近注入」那行话把三种状态分开（开关关着 / 没命�
   assert.equal(injectionText({ enabled: true }), '没有命中');
 });
 
+test('范围筛选与两个标签映射（§2 的两个视图 + 来源/验证状态显示）', async () => {
+  const { visibleMemories, sourceText, verificationText } = await import('../src/memory/memory.js');
+  const view = {
+    memories: [
+      { id: 'a', scope: 'project', title: 'A' },
+      { id: 'b', scope: 'general', title: 'B' },
+    ],
+  };
+  assert.equal(visibleMemories(view, 'all').length, 2, '默认看全部');
+  assert.deepEqual(visibleMemories(view, 'project').map((row) => row.id), ['a']);
+  assert.deepEqual(visibleMemories(view, 'general').map((row) => row.id), ['b']);
+  // 还没加载 / 读失败时不许抛：这是一层显示筛选，不是数据源。
+  assert.deepEqual(visibleMemories(null, 'project'), []);
+
+  assert.equal(sourceText('user-manual'), '面板手动');
+  assert.equal(sourceText('session'), '会话提出');
+  assert.equal(sourceText('extract'), '自动提取');
+  assert.equal(sourceText(''), '未知来源', '认不出的来源要如实说，不要静默空着');
+  assert.equal(verificationText('verified'), '已验证');
+  assert.equal(verificationText('unverified'), '未验证');
+  assert.equal(verificationText('stale'), '已过期');
+  assert.equal(verificationText(''), '未标注');
+});
+
+test('面板有范围筛选，行里显示来源与验证状态', () => {
+  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  for (const label of ['全部', '本项目', '通用偏好']) {
+    assert.match(tpl, new RegExp(`<el-radio value="[a-z]+">${label}</el-radio>`), label);
+  }
+  assert.match(tpl, /sourceText\(row\.source\.kind\)/, '行里要显示来源');
+  assert.match(tpl, /verificationText\(row\.verification\)/, '行里要显示验证状态');
+});
+
 test('「清空」按钮接在确认框与那条命令上，确认文案说清清不掉的东西', async () => {
   const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
   assert.match(tpl, />\s*清空\s*<\/el-button>/, '卡片头上要有清空入口');
