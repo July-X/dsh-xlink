@@ -334,6 +334,76 @@ export function saveSidebarWidth(storageKey, next) {
   }
 }
 
+/**
+ * 侧栏分组的折叠状态：`Set<分组 id>`（[`LOG_CATEGORIES`] 的 id 之一）。
+ *
+ * **放在共享层而不是 LogSidebar 内部**：弹层与独立窗口是两个宿主，而「收起
+ * 这一类」是用户对整个日志列表的意图——在一个宿主里收起、切到另一个又全展
+ * 开，读起来就是这个开关没记住。落点与侧栏宽度同一条纪律（见下方
+ * [`loadSidebarWidth`]），但键是**共用**的：宽度是每个宿主的排版偏好（弹层
+ * 窄、独立窗口宽），折叠不是。
+ *
+ * 只记**收起**的组，不记展开的：日后新增一类日志时它默认是展开的，这才是
+ * 稳妥的一侧。反过来记「展开的组」，新分类在用户那儿默认收着，而开关藏在
+ * 标题上——他未必知道要去点。
+ */
+export const collapsedLogGroups = reactive(new Set());
+
+const COLLAPSED_GROUPS_KEY = 'dsh.logs.collapsedGroups';
+
+/**
+ * 读 localStorage 里的折叠集合，**只保留 `LOG_CATEGORIES` 里还活着的 id**：
+ * 分类改名或删掉之后，留在集合里的那个 id 既没有渲染方，又会让「这个组是
+ * 收着的吗」永远为真。值不是 JSON / 不是字符串数组 / localStorage 不可用
+ * （隐私模式、磁盘满）一律当作「一组都没收起」——同 `loadSidebarWidth`。
+ */
+export function readCollapsedLogGroups() {
+  try {
+    const raw = globalThis.localStorage && globalThis.localStorage.getItem(COLLAPSED_GROUPS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    const known = new Set(LOG_CATEGORIES.map((c) => c.id));
+    return parsed.filter((id) => typeof id === 'string' && known.has(id));
+  } catch {
+    return [];
+  }
+}
+
+/// 写回折叠集合。写入失败只让这次折叠不留痕，不影响这一次点击的效果。
+export function saveCollapsedLogGroups() {
+  try {
+    const ls = globalThis.localStorage;
+    if (!ls) return;
+    ls.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify([...collapsedLogGroups]));
+  } catch {
+    // 吞掉：localStorage 不可用不该让侧栏点不动
+  }
+}
+
+/// 点分组标题的动作：收起 ⇄ 展开。
+export function toggleLogGroup(id) {
+  if (collapsedLogGroups.has(id)) collapsedLogGroups.delete(id);
+  else collapsedLogGroups.add(id);
+  saveCollapsedLogGroups();
+}
+
+/**
+ * 展开某一组（激活的文件换了、它落在收起的那一组里时调，见 LogSidebar）。
+ *
+ * 已经展开就**什么都不做**——包括不写 localStorage：每切一次文件都同步写一
+ * 次盘不值得，而且那个键只在折叠状态真变了的时候才需要更新。
+ */
+export function expandLogGroup(id) {
+  if (!collapsedLogGroups.has(id)) return;
+  collapsedLogGroups.delete(id);
+  saveCollapsedLogGroups();
+}
+
+// 启动时把持久化的折叠状态读进内存（两个宿主共用这一份模块状态；独立窗口
+// 与弹层各自是一个 webview，各自读一次同一个键，此后不再互相同步——与主题
+// 那条广播的取舍相同：折叠不是需要在两个窗口之间实时跟随的状态）。
+for (const id of readCollapsedLogGroups()) collapsedLogGroups.add(id);
+
 /// 给一个滚动容器挂「滚动期间才显滚动条」行为：scroll 事件加 `.is-scrolling`，
 /// 800ms 内无新滚动则移除（自然淡出）。返回解绑函数（unmount / 容器消失时调）。
 /// 与 theme.css 的 `.log-content.is-scrolling` / `.log-tabs.is-scrolling`
