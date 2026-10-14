@@ -1018,11 +1018,22 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   assert.match(code, /box\.extract = noteSessionEvent\(box\.extract, event\)/, '要记人类消息的序号');
   assert.match(code, /shouldScheduleExtraction\(box\.extract, event\)/, '要用调度判据');
   assert.match(code, /route: 'jobs\/enqueue'/, '要真的去排任务');
+  assert.match(code, /if \(!credentials\) return;/, '没有桥凭据就安静退下');
+  // **没调度决定的那个回合也要领一次到期任务**：表里那条是前面回合留下的，静默期可能刚过。
   assert.match(
     code,
-    /if \(!decision\.schedule \|\| !credentials\) return;/,
-    '没调度决定或没有桥凭据就安静退下'
+    /if \(!decision\.schedule\) \{\s*attempt\(\);\s*return;\s*\}/,
+    '没调度决定也要去领一次到期任务，不能直接退下'
   );
+  // **领取只在回合边界**：`session/event` 每个事件都会到这儿，一个回合几十条，
+  // 每条都问一次「有到期任务吗」是白打几十个请求（真机上量到 13 次）。
+  assert.match(code, /if \(event\?\.type !== 'turn\/end'\) return;/, '领取要拦在 turn/end 上');
+  assert.match(code, /runDueExtraction\(/, '领取与跑完那条路要真的接上');
+  assert.match(code, /route: 'jobs\/claim'/, '要真的去领任务');
+  assert.match(code, /route: 'jobs\/finish'/, '成功要收尾');
+  assert.match(code, /route: 'jobs\/fail'/, '失败要退回（否则那条任务永远占着）');
+  assert.match(code, /llm\.prepareCall\(/, '模型调用要用 prepareCall（模板见 sess-title-llm）');
+  assert.ok(!code.includes('purpose:'), 'purpose 不许填：设计禁的正是冒充 session-title');
   assert.ok(
     !code.includes('applyResult('),
     '装配层不该自己调 applyResult——「结果怎么用」全在 applyStep 里'

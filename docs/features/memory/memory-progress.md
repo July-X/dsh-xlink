@@ -386,46 +386,31 @@
   把整条链跑了一遍（含无 Bearer 一律 401、没东西可领时答 `token: null` 而不是 5xx、领过之后不再排、
   交过之后不能再交、`status` 与盘上状态一致）。**还差**：输入构建那一半（排除凭据/附件/无关正文、
   脱敏复用 `diagnostics::run::sanitize`）——它要等 H5 的有限事件范围读取
-- 🟡 **H5 有限输入 + 本地模型经 `ctx.llm.prepareCall()`/`stream()`**（§8-3、§8-4）—— **有限输入那一半已落地**：
-  `policy::buildInput` 只取**对话**（用户与助手的文本块），**工具结果整条排除**——设计要求排除凭据，而工具输出
-  是凭据最集中的地方，「模式匹配只能减少风险、不能保证发现所有秘密」，所以先做减法；每条按 4 KiB 削短、
-  整体按 64 KiB **从最新往回**填，截断时在最前面留一行说明（**不静默截断**：模型要能分清「没看到」与「没发生」）。
-  留下的话**再过一遍凭据掩码**（`mask.js`：`sk-…` / `Bearer <令牌>` / `token=…` 三类形状，
-  削短在掩码**之后**——先截断会把一个凭据切成两半，两半都不再匹配形状）。**脱敏放哪一侧这个缺口已经定了**
-  （见下）。**读取那一步已落地并真机验过**（`sessionlog.js`）：主路是
-  `sessions.flush(session)` 落盘屏障 → `sessionPersistence.open(id,'read')` + `handle.read(from,length)`
-  → 关句柄（关不上不盖住读到的结果）；**不许用**已废弃的 `eventAt`/`snapshotEvents`/`ownEvents`
-  （有一条判据扫这三个名字，剥注释后判，反向验过）。**兜底**是 `sessionQuery.readSession(id)`
-  （文档明写 live-preferred、返回克隆的完整原始日志），触发条件是**主路任何失败**——不只是设计原文写的
-  「`flush` 返回 `false`」：真机上还见过 `flush` 直接抛 `flush on a closed handle`（内核在回合之间把写句柄
-  关了，对照实验排除了「读句柄关多了」，而且**是间歇性的**）。返回里带 `source`（`persisted` / `live`），
-  调用方据此决定游标能不能往前推。
-  **真机证据**（长驻 sdk 会话 3 回合）：第 1、2 回合 `source=persisted` 读到 17 / 28 条事件，
-  第 3 回合屏障抛错 → **`source=live` 读到 39 条**，并带上主路的失败原因。判据 6 组假件用例（顺序、
-  不落盘时**不去开句柄**、三种失败、关句柄失败不换结果、兜底裁剪范围并带上主因、兜底也失败时两条原因都在、
-  没有 live 读法时如实说）。
-  **还差**：① 生产调用方（提取流程里真正去读——见下面 `run.js` 那一条）；② 模型调用那一步的内核接线
+- ✅ **H5 有限输入 + 本地模型经 `ctx.llm.prepareCall()`/`stream()`**（§8-3、§8-4）—— **真机会话里整条链跑通了**
+  （2026-10-15，长驻 sdk 会话 4 回合，桩模型 + 桩桥，**零模型额度**）。四块都在：
+  · **读冻结范围**（`sessionlog.js`）：屏障 → 读句柄 → 关，读不到就退到 `sessionQuery.readSession`
+    的 live 读法（判据 6 组假件用例，真机 3 回合验过 `persisted` 17/28 → `live` 39 条）；
+  · **拼切片**（`extract.js::buildSlice`）：只收人和助手的话、从后往前取、整条放不下就丢、**掩码在截断之前**；
+  · **模型调用**（`index.js` 的内核胶水）：路由从 `agentDefaultModel.currentSelection()` 拿，
+    调用照内核 `session-title-llm` 的模板（`prepareCall(route, signal)` → `call.stream({...call.config,
+    messages, system, signal})` → `BlockAssembler` 收文本）。两处刻意取舍：**`purpose` 不填**
+    （设计禁的正是冒充 `session-title`）、**`sessionId` 不传**（传了这次请求会被记进用户会话的日志，
+    而提取是插件自己的事）。有 120 秒总时限（H8 的最小一半）；
+  · **编排**（`run.js`）：五步每步从参数注入，失败回一个带 `stage` 的结果、**绝不抛**。
+  **真机证据**（4 回合，桩桥计数）：`/jobs/enqueue` 4、`/jobs/claim` 4、**`/jobs/submit` 4**、
+  **`/jobs/finish` 4**、`/jobs/fail` **0**；提交请求带着完整冻结范围
+  （`token=…&session=…&start_seq=0&end_seq=16&scope=project&workspace=…&title=…&body=…&keywords=…`）。
+  **这一轮排的任务是下一个回合领的**（壳那边有静默期），相邻回合因此合并成一次提取。
+  **还差 / 没验的**：① 壳的**真**任务表（探针里的桩桥自己实现了最小状态机，真状态机在 `jobs.rs`，
+  有自己的单测，但**没和插件对接过**）；② 真机本地模型（要用额度，且要定断网怎么验）；③ 提取的
+  `scope` 现在硬编码 `'project'`（用户在面板批准时可以改，但默认值的依据没写进设计）。
+
 - ✅ **脱敏放哪一侧（2026-10-15 定）**：设计 §8-3 写的「脱敏复用 `diagnostics::run::sanitize`」**两侧都走不通**
   ——① 输入是 64 KiB 的会话片段，而桥是 **GET + 查询串**（请求头缓冲固定 8 KB），它根本过不去，只有插件手里
   有这段文本；② 整个 `sanitize` 除了剥形状，还要把 home 折成 `~` 并把结果**截到 480 字符**（那是给日志行用的，
   设计原文也写在「失败日志」那一句里）——套到模型输入上等于只给模型看 480 个字符。所以复用的是**形状那一半**：
   Rust 侧拆出 `diagnostics/mask.rs`（`strip_token_shapes`），插件侧 `mask.js` 是同一套形状，两边的键名表与
   认证方案名由冒烟测试**读 Rust 源码逐项对比**钉住（各写一份必然漂，而漂的那一侧不报错，只是少抹一个）
-- 🟡 **H5 编排层已落地**（`run.js`，2026-10-15）：五步（读冻结范围 → 拼切片 → 调模型 → 校验 →
-  提交）**每一步都从参数注入**，所以夹具能把每条失败路径都跑一遍。三条纪律：(1) **失败不抛**——
-  整段 try/catch，出错回一个带 `stage` 的结果（抛出会顺着 `session/event` 的监听链回到内核，
-  那是把插件的问题变成用户的问题）；(2) **没东西可提就成功**（没有一句人话、或模型回空数组，
-  都算成功，不提交也不报错——设计 §8-5）；(3) **只提交校验过的候选**，被拒的账要跟着结果回去。
-  判据 6 组：五步按序、读失败立刻停（不调模型不提交）、两种「没东西可提」、模型/解析/提交三种失败
-  各自的 `stage`、取消发生在最前面一步都不跑、候选全被拒时算成功但账留着。
-  **切片构建**（`extract.js::buildSlice`）：只收 `user/message` 与 `assistant/message`
-  （**工具结果不进提取输入**——它不是人话），**从后往前取**（近的比远的更相关，额度固定），
-  整条放不下就丢掉它（**不切半条**：半条对话比没有更误导），**掩码在截断之前做**
-  （截断可能把 `sk-abc…` 切成 `sk-ab`，而残留的形状反而更像真 key）。
-  **还差**：内核接线（`agentDefaultModel.currentSelection()` 拿路由 → `ctx.llm.prepareCall`/`stream`
-  调模型；claim → 五步 → **逐条** `/jobs/submit` → finish/fail）。
-  **另外发现一个要查的风险**：`/jobs/submit` 是**一条候选一次调用**（正文经查询串过去），而正文上限
-  8 KiB——中文 URL 编码后约膨胀 3 倍，可能撞上桥的请求头预算 ✗，接线时要实测。
 - 🟡 **H6 有 schema 的候选输出 + 来源引用；空集合算成功**（§8-5）—— **机械那一半已落地**
   （`extract.js`）：提示词（四条纪律）、解析（允许 ``` 包裹与前后解释文字、按括号配平取 JSON、
   字符串里的括号不骗人）、校验（标题/正文缺失、超壳的限额 512 B / 8 KiB、条数上限、关键词去空去长）。
@@ -583,7 +568,7 @@ DSH_HOME=/tmp/p2probe DEEPSEEK_BASE_URL=http://127.0.0.1:8791 DEEPSEEK_API_KEY=s
 `min(thresholdRatio × 窗口, 窗口 − 预留输出 − headroomTokens)`，而 `headroomTokens` **默认 65536**，
 两万 token 的窗口下它数学上不可能触发。
 
-**七个坑（每个都花了时间）**：
+**十个坑（每个都花了时间）**：
 1. **`insert` 的 id 撞车会静默顶掉原来那份**。往 headless 栈里插 `llm-deepseek` 之后得到
    `NO_ADAPTER: no adapter registered for provider "deepseek"`——同 id 的第二次 insert 把模板里
    那一份顶掉了。要么换 id，要么别插。
@@ -600,7 +585,16 @@ DSH_HOME=/tmp/p2probe DEEPSEEK_BASE_URL=http://127.0.0.1:8791 DEEPSEEK_API_KEY=s
 6. **每次 `dsh headless` 都是独立进程**：插件的会话状态每回合从零开始。要验「会话级预算」相关
    的行为（G12/G13 那种），需要**一个长驻内核进程跑多回合**——`web` / `acp` / `sdk` profile 那条路，
    还没走过。
-7. **会话日志是多帧 zstd**：`zlib.zstdDecompressSync` / `createZstdDecompress` 只解出**第一帧**
+7. **桩要照抄真形状，别自己发明**：`/jobs/claim` 的真形状是
+   `{token, key:{session,cursor,extractor}, attempts, expires_at_ms}`（`jobs.rs` 的 `Claimed`）。
+   我第一版让桩回了个扁平形状 ✗，插件按错字段读 → **静默什么都不做**；
+   而插件的错误信息（`这个会话没有 id` / `模型没有返回可解析的 JSON`）一路把问题指了出来——
+   **把 `stage` 与原因写清楚是值得的**。
+8. **桩崩了之后所有请求静默消失**：桩桥里忘了定义 `params`，第一个 jobs 请求就让进程退出 ✗，
+   之后插件发什么都是「桥不通」，而桥日志停在最后一条——**排障先看 `bridge.out`**。
+9. **适配器是流式的**：桩必须按请求里的 `stream` 标志回 SSE（非流式 JSON 会被解成空文本，
+   插件只会说「模型没有返回可解析的 JSON」）。
+10. **会话日志是多帧 zstd**：`zlib.zstdDecompressSync` / `createZstdDecompress` 只解出**第一帧**
    （220 字节的文件头，看起来像「日志是空的」），用 **`zstd -dc`** 才拿到完整的 185 KB / 70 行。
    下次读内核会话日志直接用 CLI。
 
