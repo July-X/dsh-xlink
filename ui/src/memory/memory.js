@@ -57,6 +57,21 @@ export function workspaceIdFor(path) {
 }
 
 /**
+ * 注入插件**确定**没启用时才回 true。
+ *
+ * `view` 为 null 表示状态还没读回来（或这次读失败了）——那时**不能**说「没启用」：
+ * 面板会在打开的一瞬间给已启用的用户挂一条假警报（「保存的记忆不会进入任何会话」），
+ * 读失败时更会永久挂着，而用户跑到插件页看到的是「已启用」。不知道就不说。
+ *
+ * @param {object|null} view - `builtin_status` 里 id 为 `memory` 的那一项。
+ * @returns {boolean}
+ */
+export function injectionDisabled(view) {
+  if (!view) return false;
+  return !(view.requestedEnabled && !view.stateError);
+}
+
+/**
  * 读内核的工作区列表。
  *
  * **失败保留上一次成功值、不弹窗**：这个列表是给下拉用的辅助信息，读不出来

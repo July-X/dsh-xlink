@@ -11,7 +11,7 @@
 use crate::commands::blocking;
 use crate::memory::export;
 use crate::memory::query;
-use crate::memory::store::{self, CandidateInput, ListFilter, Namespace, SaveInput};
+use crate::memory::store::{self, ListFilter, Namespace, SaveInput};
 use crate::memory::workspaces;
 use crate::shell::paths;
 
@@ -33,12 +33,6 @@ pub async fn memory_list(filter: Option<ListFilter>) -> Result<store::MemoryList
 #[tauri::command]
 pub async fn memory_save(input: SaveInput) -> Result<store::MemoryRecord, String> {
     blocking(move || store::save(&Namespace::current(), input)).await
-}
-
-/// 读一条记忆，并记一次「显式使用」（只有面板点开才算）。
-#[tauri::command]
-pub async fn memory_read(id: String) -> Result<store::MemoryRecord, String> {
-    blocking(move || store::read_and_note_use(&Namespace::current(), &id)).await
 }
 
 /// 停用 / 重新启用一条记忆。
@@ -71,15 +65,6 @@ pub async fn memory_decide_candidate(
     accept: bool,
 ) -> Result<Option<store::MemoryRecord>, String> {
     blocking(move || store::decide_candidate(&Namespace::current(), &id, accept)).await
-}
-
-/// 提交一条候选（面板的「手动记一条」也走这里，转手由用户自己批准；
-/// 模型侧将来经回环桥调用同一函数）。
-#[tauri::command]
-pub async fn memory_submit_candidate(
-    input: CandidateInput,
-) -> Result<store::MemoryCandidate, String> {
-    blocking(move || store::submit_candidate(&Namespace::current(), input)).await
 }
 
 /// 预览「现在按这个查询会注入哪几条记忆」。

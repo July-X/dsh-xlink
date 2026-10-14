@@ -144,6 +144,43 @@ impl<'a> From<&'a super::store::CandidateInput> for Raw<'a> {
     }
 }
 
+/// 整库正文总量的上限。
+///
+/// 记录数上限（1000）× 单条正文上限（8 KiB）允许一份 8 MB 的文档，而**每回合检索
+/// 都要把整份 JSON 读出来解析一遍**（`query::retrieve`），模型每按 id 读一次也是
+/// 一遍。设计稿 §4.1 假设的规模是「几百 KB 量级」，1 MiB 给了它三倍余量，同时把
+/// 最坏情况压回可接受的量级。
+pub(crate) const MAX_DOC_BYTES: usize = 1024 * 1024;
+
+/// 一份文档里标题与正文的总字节数（候选也算：它们同样要被解析）。
+pub(crate) fn doc_bytes(doc: &super::store::MemoryDoc) -> usize {
+    let pair = |title: &str, body: &str| title.len() + body.len();
+    doc.memories
+        .iter()
+        .map(|row| pair(&row.title, &row.body))
+        .sum::<usize>()
+        + doc
+            .candidates
+            .iter()
+            .map(|row| pair(&row.title, &row.body))
+            .sum::<usize>()
+}
+
+/// 写入**让库变大**且越过上限时拒绝。
+///
+/// 缩小或不变的写入永远放行：库已经超标时（上限被调小、或老版本写下的），删一条
+/// 是唯一的出路——把删除一起挡掉等于让用户卡在一个只能读的状态里。
+pub(crate) fn ensure_doc_growth(before: usize, after: usize) -> Result<(), AppError> {
+    if after <= MAX_DOC_BYTES || after <= before {
+        return Ok(());
+    }
+    Err(AppError::Memory(format!(
+        "记忆总量会超过上限 {} KiB（约 {} KiB）：请先删掉一些不再需要的条目。",
+        MAX_DOC_BYTES / 1024,
+        after.div_ceil(1024)
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +207,32 @@ mod tests {
         assert_eq!(manual.verification, VERIFICATION_VERIFIED);
         let candidate = clean(raw("正文", &[]), VERIFICATION_UNVERIFIED, "候选").expect("clean");
         assert_eq!(candidate.verification, VERIFICATION_UNVERIFIED);
+    }
+
+    /// 整库体积：变大且越过上限才拒；缩小或不变的写入永远放行。
+    #[test]
+    fn growth_over_the_cap_is_refused_but_shrinking_never_is() {
+        assert!(
+            ensure_doc_growth(0, MAX_DOC_BYTES).is_ok(),
+            "刚好到顶不算超"
+        );
+        let over = ensure_doc_growth(MAX_DOC_BYTES, MAX_DOC_BYTES + 1).unwrap_err();
+        assert!(
+            over.to_string().contains("总量"),
+            "错误要说清是总量超了：{over}"
+        );
+        assert!(
+            ensure_doc_growth(MAX_DOC_BYTES + 1, MAX_DOC_BYTES + 2).is_err(),
+            "已经超标时继续长大要拒"
+        );
+        assert!(
+            ensure_doc_growth(MAX_DOC_BYTES + 1, MAX_DOC_BYTES).is_ok(),
+            "缩小永远放行——库已经超标时，删一条是唯一的出路"
+        );
+        assert!(
+            ensure_doc_growth(MAX_DOC_BYTES + 1, MAX_DOC_BYTES + 1).is_ok(),
+            "不变（例如改开关、记一次使用）也要放行"
+        );
     }
 
     #[test]

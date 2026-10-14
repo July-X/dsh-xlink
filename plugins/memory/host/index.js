@@ -31,12 +31,10 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import { callMemory, readCredentials } from './bridge.js';
 import {
-  MAX_INJECTIONS_PER_SESSION,
   applyFailure,
   applyResult,
+  beginStep,
   resolveWorkspaceId,
-  retarget,
-  shouldRefresh,
   userText,
 } from './policy.js';
 
@@ -123,11 +121,12 @@ function apply(ctx) {
         try {
           if (!credentials) return decision;
           const workspace = workingDirectory(ctx, subject ?? agent);
-          // **换目录就清空缓存并归零预算**（`retarget`）。会话中途换目录是内核支持
-          // 的，而注入预算是每会话封顶的：不归零的话，A 项目用满三次之后切到 B，
-          // A 的记忆正文会一路留在注入块里——那正是「A 的记忆不进入 B」要挡的。
-          const base = retarget(state, workspace);
-          if (!shouldRefresh(base, turn, MAX_INJECTIONS_PER_SESSION)) return decision;
+          // **换目录立刻生效，哪怕预算已经用完**（`beginStep` 里写回了状态）。
+          // 只在「能重新检索」的分支里写回时，「预算用满 + 换目录」会让上一个项目的
+          // 正文一路留在这个会话里——那正是这条要挡的事，而它只在接线处看得见。
+          const step = beginStep(state, workspace, turn);
+          state = step.state;
+          if (!step.refresh) return decision;
           const workspaceId = await resolveWorkspaceId(workspaceRegistry, workspace);
           const result = await callMemory({
             credentials,
@@ -141,8 +140,8 @@ function apply(ctx) {
             },
           });
           state = result.ok
-            ? applyResult(base, turn, result.value?.enabled ? String(result.value.text ?? '') : '')
-            : applyFailure(base, turn);
+            ? applyResult(state, turn, result.value?.enabled ? String(result.value.text ?? '') : '')
+            : applyFailure(state, turn);
           if (!result.ok) {
             ctx.logger?.warn?.(`${name}: 本次检索失败，本回合不注入记忆：${result.reason}`);
           }
@@ -327,7 +326,14 @@ function registerTools(ctx, credentials) {
         body: {
           type: 'string',
           required: true,
-          description: 'The content itself, including the conditions under which it applies. Do not include secrets.',
+          // 这里**没有 `maxLength` 可用**：内核的 `StringValueSchemaSpec` 只有
+          // `type` / `enum` / `const`（0.2.1-alpha.2 实读），长度只能写进描述。
+          // 真正的上限来自通道而不是 store：桥的请求行 7000 字节，中文经百分号编码
+          // 一个字约 9 字节，所以大约 700 字。写长了会拿到「这条记忆太长了」再重试
+          // 一次——一句描述就能省掉那一轮。
+          description:
+            'The content itself, including the conditions under which it applies. Do not include secrets. ' +
+            'Keep it under about 600 characters — one convention per memory, not a document.',
         },
         scope: {
           type: 'string',

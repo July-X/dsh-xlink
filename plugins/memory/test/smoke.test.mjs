@@ -7,6 +7,7 @@ import {
   MAX_QUERY_CHARS,
   applyFailure,
   applyResult,
+  beginStep,
   resolveWorkspaceId,
   retarget,
   shouldRefresh,
@@ -271,6 +272,37 @@ test('切换工作目录清空缓存，但不重置会话级的注入预算', ()
   assert.equal(early.injections, 2);
   assert.equal(shouldRefresh(early, 2), false, '同一回合不重复检索');
   assert.equal(early.text, 'y', '同一个目录不该清掉缓存');
+});
+
+test('预算用满之后换目录：缓存也要立刻清空（接线，不只是纯函数）', () => {
+  // 这条钉的是 `beginStep` 把 retarget 的结果**写回状态**这件事。写成
+  // `{ state, refresh: shouldRefresh(retarget(state, ws), …) }` 时，预算用满的
+  // 分支会把结果丢掉——上一版就是这么写的：`retarget` 自己的用例全绿，而真机上
+  // A 项目的记忆在切到 B 之后还继续注入。
+  let state = { turn: -1, text: '', injections: 0, workspace: '/repo-a' };
+  state = applyResult(state, 1, 'A 的记忆一');
+  state = applyResult(state, 2, 'A 的记忆二');
+  state = applyResult(state, 3, 'A 的记忆三');
+  assert.equal(state.injections, MAX_INJECTIONS_PER_SESSION);
+
+  const spent = beginStep(state, '/repo-b', 4);
+  assert.equal(spent.refresh, false, '预算已满，这一步不重新检索');
+  assert.equal(spent.state.workspace, '/repo-b', '目录要立刻生效');
+  assert.equal(spent.state.text, '', 'A 的记忆不许留在注入块里');
+  assert.equal(spent.state.injections, MAX_INJECTIONS_PER_SESSION, '换目录不重置预算');
+
+  // 还有额度时：换目录要能重新检索，且状态带着新目录。
+  const early = beginStep({ turn: -1, text: 'x', injections: 0, workspace: '/repo-a' }, '/repo-b', 5);
+  assert.equal(early.refresh, true);
+  assert.equal(early.state.workspace, '/repo-b');
+  assert.equal(early.state.text, '');
+
+  // 目录没变：原样返回同一个对象，不重置也不清缓存（回合标记也照旧）。
+  const applied = applyResult(early.state, 5, 'y');
+  const again = beginStep(applied, '/repo-b', 5);
+  assert.equal(again.state, applied, '同一个目录不该重建状态');
+  assert.equal(again.state.text, 'y', '同一个目录不该清掉缓存');
+  assert.equal(again.refresh, false, '同一回合不重复检索');
 });
 
 test('文本没变不算一次注入；失败清空缓存而不是沿用', () => {
