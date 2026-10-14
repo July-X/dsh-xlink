@@ -254,7 +254,7 @@ flowchart LR
 | `scripts/check-code-budget.mjs` | 新文件登记；`TOTAL_BUDGET` 47955 → 48950（记忆首块 919 行）；**并修正了计数器的假阴性**（注释里的 `/*` 会让整份文件被当成块注释吞掉，三份既有文件因此长期少算约 490 行，`ui/src/memory/memory.js` 更被算成 0 行） |
 | `ui/src/memory/` | 管理页：列表 / 编辑 / 停用 / 删除确认 / 待确认候选 / 检索预览 / 总开关；`SideBar.vue`、`App.vue` 的 `PANELS` 与面板数据刷新三处接线 |
 | `plugins/builtin/bridge.rs` | 回环桥上的三条记忆路由：`context`（有界检索）/ `read`（读一条并记一次显式使用）/ `propose`（只进待确认）+ 百分号解码（中文正文不编码就会以 `%E4%B8%AD…` 入库）+ 端到端测试（起真桥、真令牌、真 store） |
-| `plugins/memory/` | 内置插件 `xlink-memory`：`agent/created` 里按 agent 作用域注册 `xlink.memory` 上下文贡献、`pre-step` 每回合取一次检索（会话级上限 3 次）、`memory_search` 与 `memory_propose` 两个工具；失败一律清空缓存、绝不抛 |
+| `plugins/memory/` | 内置插件 `xlink-memory`：`agent/created` 里按 agent 作用域注册 `xlink.memory` 上下文贡献、`pre-step` 每回合取一次检索（会话级上限 3 次）、`memory_search` / `memory_read` / `memory_propose` 三个工具；失败一律清空缓存、绝不抛 |
 | `builtins.rs` / `prepare-builtin-plugins.mjs` | 第三个内置插件的登记（`entries` 只有 host 与 package.json、`peers` 只有 `dsh-tools`），两份清单由 `dev-builtin.test.mjs` 钉死 |
 | 单测 | Rust 17 条记忆单测 + 桥 7 条（含端到端）；插件 9 条纯函数测试 |
 | 真实内核挂载验证 | 临时 `DSH_HOME` + 软链 profile 依赖启动 `dsh web`：`--dump-config` 的合成树里能看到 `xlink-memory` 行（绝对路径被规范成 `file://…`），插件 `apply()` 确实执行（标记文件），`inject` 的三个服务全部解析——**“插件级 logger 不可见”这条也是这次实测出来的**。工作区对齐那一轮又验了一次：`ctx.inject(['workspaceRegistry'])` 的回调在 4 秒内拿到服务（标记里 `registryAtApply: ready`），插件照常加载 |

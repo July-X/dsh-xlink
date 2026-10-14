@@ -557,6 +557,38 @@ mod tests {
         assert_eq!(view.memories.len(), 2, "候选不能自己变成记录");
         assert!(view.memories.iter().all(|row| row.state == STATE_ACCEPTED));
 
+        // 按 id 读一条完整正文（模型的 memory_read 走这条）：读一次要记一次显式使用。
+        let target = view
+            .memories
+            .iter()
+            .find(|row| row.title == "构建前先跑检查")
+            .expect("seeded record");
+        let read = http_get(
+            &addr,
+            &format!("/v1/memory/read?id={}", target.id),
+            Some(&token),
+        );
+        assert!(read.starts_with("HTTP/1.1 200"), "{read}");
+        assert!(read.contains("提交前跑 npm run check"), "{read}");
+        let after = store::list(
+            &namespace,
+            &ListFilter {
+                scope: String::new(),
+                include_candidates: false,
+                include_disabled: true,
+            },
+        );
+        let used = after
+            .memories
+            .iter()
+            .find(|row| row.id == target.id)
+            .expect("still there");
+        assert_eq!(used.use_count, 1, "显式读取要计数（搜索不算）");
+        assert!(!used.last_used_at.is_empty());
+
+        let missing = http_get(&addr, "/v1/memory/read?id=nope", Some(&token));
+        assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
+
         let _ = fs::remove_dir_all(&home);
     }
 

@@ -7,8 +7,8 @@
  *    （`xlink.memory`）：文本是本会话的检索缓存，`interpolate: false`——记忆正文
  *    里的 `{{…}}` 不该被当成提示变量。
  * 2. 每个用户回合的第一步，向壳的回环桥要一次**有界检索**，更新缓存。
- * 3. 注册两个工具：`memory_search`（按查询看有哪些记忆）与 `memory_propose`
- *    （提交候选，**只能进待确认**，批准只存在于面板里）。
+ * 3. 注册三个工具：`memory_search`（按查询看有哪些记忆）、`memory_read`（按 id 读
+ *    完整正文）与 `memory_propose`（提交候选，**只能进待确认**，批准只存在于面板里）。
  *
  * ## 三条不许破的纪律
  *
@@ -232,6 +232,65 @@ function registerTools(ctx, credentials) {
             scope: String(hit.scope ?? ''),
             body: String(hit.body ?? ''),
           })),
+        };
+      },
+    })
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'memory_read',
+      description:
+        'Read one memory in full by its id (ids come from memory_search). ' +
+        'Use it when an excerpt looks relevant but is cut off, or when you need the exact wording of a convention. ' +
+        'Reading counts as explicit use, so prefer it over re-searching.',
+      parameters: {
+        id: {
+          type: 'string',
+          required: true,
+          description: 'The id shown as [id] in memory_search results.',
+        },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            id: { type: 'string', required: true },
+            title: { type: 'string', required: true },
+            scope: { type: 'string', required: true },
+            body: { type: 'string', required: true },
+            state: { type: 'string', required: true },
+            verification: { type: 'string', required: true },
+            updated_at: { type: 'string', required: true },
+            use_count: { type: 'integer', required: true },
+          },
+        },
+        render: (_args, value) => [
+          {
+            type: 'text',
+            text: `${value.title}（${value.scope} · ${value.verification}）\n\n${value.body}`,
+          },
+        ],
+      },
+      async execute(args, exec) {
+        if (!exec.agent) throw new Error('memory_read 需要一个会话：无 agent 的调用不能读项目记忆');
+        if (!credentials) throw new Error('记忆桥不可用：本机壳没有为这个内核起回环桥');
+        const result = await callMemory({
+          credentials,
+          route: 'read',
+          params: { id: String(args.id ?? '') },
+        });
+        if (!result.ok) throw new Error(`读取记忆失败：${result.reason}`);
+        return {
+          id: String(result.value?.id ?? ''),
+          title: String(result.value?.title ?? ''),
+          scope: String(result.value?.scope ?? ''),
+          body: String(result.value?.body ?? ''),
+          state: String(result.value?.state ?? ''),
+          verification: String(result.value?.verification ?? ''),
+          updated_at: String(result.value?.updated_at ?? ''),
+          use_count: Number(result.value?.use_count ?? 0),
         };
       },
     })
