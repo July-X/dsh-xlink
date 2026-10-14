@@ -295,6 +295,25 @@ mod tests {
         assert!(!plain_titles.contains(&"B 的约定"), "{plain_titles:?}");
     }
 
+    /// 「已过期」不是装饰：同分时它排在已验证的后面（§6.1 的三档不是置信分数，但要有用）。
+    #[test]
+    fn a_stale_record_ranks_below_a_verified_one_with_the_same_score() {
+        let _home = TempHome::new("stale-rank");
+        let ns = namespace();
+        let mut stale = project_input("ws-a", "构建命令", "提交前跑 npm run check");
+        stale.verification = "stale".to_string();
+        save(&ns, stale).expect("stale");
+        let mut verified = project_input("ws-a", "构建命令（复核过）", "提交前跑 npm run check");
+        verified.verification = "verified".to_string();
+        save(&ns, verified).expect("verified");
+        set_use_approved(&ns, true).expect("enable");
+
+        let hits = retrieve(&ns, "构建命令", "ws-a", "/tmp/ws-a").expect("retrieve");
+        assert_eq!(hits.hits.len(), 2, "{:?}", hits.hits);
+        assert_eq!(hits.hits[0].verification, "verified", "已验证的排前面");
+        assert_eq!(hits.hits[1].verification, "stale");
+    }
+
     /// 一条都没命中时**一个字节都不发**。
     ///
     /// 开场白会被运行侧当成一次注入缓存下来（每会话三次的预算里白占一次），会话里

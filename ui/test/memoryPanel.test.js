@@ -60,6 +60,33 @@ test('「最近注入」那行话把三种状态分开（开关关着 / 没命�
   assert.equal(injectionText({ enabled: true }), '没有命中');
 });
 
+test('「已过期」有入口：编辑器能改验证范围，且真的发给了后端', async () => {
+  const { memoryStore, editMemory, resetDraft } = await import('../src/memory/memory.js');
+  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  for (const label of ['已验证', '未验证', '已过期（事实可能过时）']) {
+    assert.match(tpl, new RegExp(`<el-radio value="[a-z]+">${label}`), label);
+  }
+  const src = read('../src/memory/memory.js');
+  assert.match(src, /verification: draft\.verification \|\| 'verified'/, '保存时要把它发出去');
+
+  // 编辑既有条目时要带出它当前的验证范围，不能一律重置成「已验证」。
+  memoryStore.draft = { id: '', verification: 'verified' };
+  editMemory({
+    id: 'x',
+    revision: 3,
+    scope: 'project',
+    title: 't',
+    body: 'b',
+    keywords: [],
+    pinned: false,
+    verification: 'stale',
+    workspace_path: '/tmp/ws-a',
+  });
+  assert.equal(memoryStore.draft.verification, 'stale');
+  resetDraft();
+  assert.equal(memoryStore.draft.verification, 'verified', '新条目默认已验证');
+});
+
 test('范围筛选与两个标签映射（§2 的两个视图 + 来源/验证状态显示）', async () => {
   const { visibleMemories, sourceText, verificationText } = await import('../src/memory/memory.js');
   const view = {
