@@ -5,7 +5,7 @@
 // 数据与动作全在 `memory.js` 里；这里只管画。字段名用后端下发的 snake_case
 // （见该文件顶部的说明）。
 import { computed, onMounted } from 'vue';
-import { Refresh } from '@element-plus/icons-vue';
+import { Download, Refresh } from '@element-plus/icons-vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { builtinById, loadBuiltinStatus, toggleBuiltin } from '../plugins/builtin.js';
 import {
@@ -17,6 +17,8 @@ import {
   setMemoryEnabled,
   decideCandidate,
   previewContext,
+  exportMemory,
+  openExports,
   editMemory,
   resetDraft,
   rememberProjectPath,
@@ -119,16 +121,34 @@ onMounted(() => {
         <div class="card">
           <div class="card-head">
             <h2>记忆（{{ list.length }}）</h2>
-            <el-button
-              text
-              :icon="Refresh"
-              :loading="isLoading('memoryList')"
-              :disabled="globalBusy"
-              @click="refreshMemory()"
-            >
-              刷新
-            </el-button>
+            <div class="memory-head__actions">
+              <el-button
+                text
+                :icon="Download"
+                :loading="isLoading('memoryExport')"
+                :disabled="globalBusy || !list.length"
+                @click="exportMemory"
+              >
+                导出 Markdown
+              </el-button>
+              <el-button
+                text
+                :icon="Refresh"
+                :loading="isLoading('memoryList')"
+                :disabled="globalBusy"
+                @click="refreshMemory()"
+              >
+                刷新
+              </el-button>
+            </div>
           </div>
+          <p v-if="memoryStore.lastExport" class="memory-hint">
+            最近导出：{{ memoryStore.lastExport.path }}（{{ memoryStore.lastExport.memories }} 条记忆、{{
+              memoryStore.lastExport.candidates
+            }}
+            条候选）
+            <el-button text type="primary" @click="openExports">打开导出目录</el-button>
+          </p>
           <p v-if="!list.length" class="memory-hint">
             还没有记忆。在右边写一条，或者在工作台里让模型提出候选，再到「待确认」里点保存。
           </p>
@@ -366,6 +386,12 @@ onMounted(() => {
    挤在一行会把标题挤没）。 */
 .memory-project {
   width: 100%;
+}
+
+/* 卡头两个动作按钮同排；`.card-head` 是 space-between，包一层才不会被标题挤开。 */
+.memory-head__actions {
+  display: flex;
+  gap: 4px;
 }
 
 .memory-project__title {

@@ -44,6 +44,8 @@ export const memoryStore = reactive({
   workspaces: [],
   /// 检索预览：`{ enabled, text, total_bytes, hits }`。
   preview: null,
+  /// 最近一次导出的结果（`{ path, bytes, memories, candidates, generated_at }`）。
+  lastExport: null,
   /// 文档读不出来时的原文（后端给的 warning 已经带下一步，前端不再改写）。
   failure: '',
 });
@@ -236,4 +238,24 @@ export function previewContext() {
       })
       .catch((error) => toastError('预览失败：' + error, 6000))
   );
+}
+
+/// 导出一次 Markdown 快照。
+///
+/// **一次性**：不参与运行时检索，手工改那份文件也不会反向入库——这句话同时写在
+/// 导出文件自己的头部（用户拿到文件、过一阵子再打开时也看得到）。
+export function exportMemory() {
+  return withLoading('memoryExport', () =>
+    invoke('memory_export')
+      .then((result) => {
+        memoryStore.lastExport = result;
+        toast(`已导出 ${result.memories} 条记忆（${result.candidates} 条候选）到 ${result.path}`, 9000, 'success');
+      })
+      .catch((error) => toastError('导出失败：' + error, 7000))
+  );
+}
+
+/// 在文件管理器里打开导出目录（导出文件在磁盘上，用户得找得到它）。
+export function openExports() {
+  return invoke('memory_open_exports').catch((error) => toastError('打开导出目录失败：' + error, 6000));
 }
