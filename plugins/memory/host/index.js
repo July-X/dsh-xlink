@@ -185,7 +185,13 @@ function apply(ctx) {
   async function runDueExtraction(creds, services, workspace) {
     // 桥的返回是 `{ok, value}`（见 bridge.js），而 `/claim` 的形状是
     // `{token, key:{session,cursor,extractor}, attempts, expires_at_ms}`（见 jobs.rs 的 `Claimed`）。
-    const claimed = await callMemory({ credentials: creds, route: 'jobs/claim', params: {} });
+    // **带上会话**：不带的话壳会从全表挑最早那条，而提交用的坐标取自**发起领取的会话**——
+    // 两个会话同跑时，A 的对话内容会带 B 的项目坐标落库（评审第 3 条）。领自己那条才对得上。
+    const claimed = await callMemory({
+      credentials: creds,
+      route: 'jobs/claim',
+      params: { session: String(sessionId ?? '') },
+    });
     const token = claimed.ok ? claimed.value?.token : null;
     if (typeof token !== 'string' || token.length === 0) return;
 
@@ -193,17 +199,24 @@ function apply(ctx) {
     const sessionId = String(claimedKey.session ?? '');
     const endSeq = Number(claimedKey.cursor ?? 0);
     const extractor = String(claimedKey.extractor ?? EXTRACT_VERSION);
-    // 键里两处要分清：`session` 给读日志的那条路**要的是会话对象**（它读 `session.id`），
-    // 而给桥的那条路要的是**字符串 id**。第一版把同一个字段既当对象又当字符串，
-    // 展开顺序还把对象覆盖掉了——于是读到的是「这个会话没有 id」。
-    const key = { session: { id: sessionId }, cursor: endSeq, extractor };
+    // **要拿到真的会话对象，不能自己拼一个 `{id}`**。内核的 `SessionStore.flush` 用
+    // `WeakMap` 按**对象身份**取 live entry（`dsh-session`），一个自拼的字面量永远不是它认识的那个
+    // ——主路（落盘屏障 → 读句柄）因此每次都抛 `session "…" is not live in this store`，
+    // 静默退到 live 兜底（独立评审第 2 条，Lead 复核过内核源码）。
+    // 按**任务键里的会话 id** 去 store 里取：领到的任务未必属于当前这个会话（见第 3 条），
+    // 所以不能拿手上这个 `session` 对象顶替。取不到就让它空着，读的那一步会如实说「没有会话对象」。
+    const liveSession = services.sessions?.get?.(sessionId) ?? null;
+    const key = { session: liveSession, cursor: endSeq, extractor };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), EXTRACT_TIMEOUT_MS);
     let result;
     try {
       const selection = services.agentDefaultModel?.currentSelection?.();
       result = await runExtraction({
-        key: { session: { id: key.session }, ...key },
+        // 键里两处要分清：读日志那条路要**会话对象**（用 `session.id`），给桥那条要**字符串 id**。
+        // 第一版这里写的是 `{ session: { id: key.session }, ...key }`——展开顺序让内层立即被覆盖，
+        // 是个死表达式（评审第 2 条的附带项）。
+        key,
         from: 0,
         to: endSeq,
         signal: controller.signal,

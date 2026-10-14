@@ -86,7 +86,17 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
             }
         }
         // 没东西可领时**不是错误**：插件按固定节奏来问，答 `token: null` 让它安静退下。
-        "/claim" => match jobs::mutate(&namespace, jobs::claim_any) {
+        // `session` 可选：带上就**只领这个会话的任务**（插件总是带）。不带=领全表最早的，
+        // 保留给测试与旧调用点。领自己那条是「A 的内容不许带 B 的项目坐标」的前提（评审第 3 条）。
+        "/claim" => match jobs::mutate(&namespace, |doc, now| {
+            let wanted = query_decoded(path, "session");
+            let wanted = if wanted.is_empty() {
+                None
+            } else {
+                Some(wanted.as_str())
+            };
+            jobs::claim_any_for(doc, now, wanted)
+        }) {
             Ok(Some(claimed)) => (
                 200,
                 serde_json::to_string(&claimed).unwrap_or_else(|_| r#"{"token":null}"#.to_string()),

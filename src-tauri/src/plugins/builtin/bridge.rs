@@ -1173,12 +1173,22 @@ mod tests {
         // `read`/`model`/`parse` 失败都算缺陷。
         // 反向验：把这条允许项去掉，本轮夹具立刻红（正是它先红了我才来加这条）——
         // 也就是说这条允许项**是必要的、不是顺手放宽**。
-        const ENV_ALLOWED: &str = "read：内核没有提供会话服务";
+        // 同一件环境事实的两种说法：服务整个不在（`sessions.flush` 拿不到）与
+        // 服务在、但这个会话已经不是 live 的那个（`sessions.get(id)` 没给）——
+        // 两者都是 sdk 探针的回合拆装造成的，插件都如实报了。
+        const ENV_ALLOWED: [&str; 2] = [
+            "read：内核没有提供会话服务",
+            "read：拿不到这个会话的 live 对象",
+        ];
         let broken: Vec<String> = doc
             .jobs
             .iter()
             .filter(|job| !job.error.is_empty())
-            .filter(|job| !job.error.contains(ENV_ALLOWED))
+            .filter(|job| {
+                !ENV_ALLOWED
+                    .iter()
+                    .any(|allowed| job.error.contains(allowed))
+            })
             .filter(|job| {
                 let stage = job.error.split('：').next().unwrap_or_default();
                 !matches!(stage, "submit")

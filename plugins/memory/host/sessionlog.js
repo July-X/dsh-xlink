@@ -57,7 +57,15 @@ export async function readSessionRange({
   to,
 }) {
   const id = String(session?.id ?? '');
-  if (!id) return unavailable('这个会话没有 id，读不了它的日志');
+  if (!id) {
+    // 两种情形分开说：**拿不到会话对象**（插件没能在 store 里取到 live 的那个）与
+    // 「对象有了但没 id」。前者是接线问题，后者是内核给的形状变了——排障方向不同。
+    return unavailable(
+      session == null
+        ? '拿不到这个会话的 live 对象（`sessions.get(id)` 没给），读不了它的日志'
+        : '这个会话没有 id，读不了它的日志'
+    );
+  }
   if (!sessions || typeof sessions.flush !== 'function') {
     return unavailable('内核没有提供会话服务（sessions.flush）');
   }
