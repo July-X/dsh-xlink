@@ -342,8 +342,12 @@ test('累计字节到顶之后不再刷新——次数封顶挡不住「每次�
 
 test('装配层真的接上了这些判据（helper 有测试、接线没有是本仓反复栽的形状）', () => {
   const src = readFileSync(new URL('../host/index.js', import.meta.url), 'utf8');
-  // 注释里也原样引用这些名字，先剥掉整行注释再判——否则判据会命中自己写的解释。
-  const code = src.replace(/^\s*\/\/.*$/gm, '');
+  // 注释里也原样引用这些名字，先剥掉注释再判——否则判据会命中自己写的解释。
+  //
+  // **块注释也要剥**：这里踩过一次真坑——`interpolate: false` 那条判据原本只剥行注释，
+  // 而文件头的 `/** … */` 里正好写着这句，于是把真代码改成 `interpolate: true` 之后
+  // 判据**照样绿**（反向验才发现的）。剥完注释，判据才真的在判代码。
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   for (const call of ['beginStep(', 'shouldProbeLibrary(', 'applyStep(']) {
     assert.ok(code.includes(call), `index.js 里少了 ${call} 的调用`);
   }
@@ -365,6 +369,9 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
     'next() 要在 try 之外 await：拒绝要往外抛，不能被 catch 吞掉'
   );
   assert.match(code, /return decision;/, 'pre-step 要原样返回别的插件的决定');
+  // 注入块**不做变量插值**：记忆正文里的 `${…}` / `{{…}}` 必须原样带出去。开了插值时
+  // 内核会拿它去查变量表，正文会被悄悄改写——而「我看到的就是它说的」是这条链路的底线。
+  assert.match(code, /interpolate: false/, '注入块要显式关掉插值');
   assert.match(code, /if \(applied\.applied\)/, '只在**真的用了**这次结果时才回报注入');
   assert.match(code, /route: 'note'/, '注入之后要回报给壳（面板的「最近注入」卡片靠它）');
 });
