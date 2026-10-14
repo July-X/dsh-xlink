@@ -815,7 +815,12 @@ const FILE_BUDGETS = {
   // 面板里答得了。320 < RATCHET_THRESHOLD（600），允许上调。
   // **下一次再要涨就该拆**：这个文件是路由分发器，jobs 那七条已经占了一半，拆成
   // `memory/routes/jobs.rs` 是它该有的形状（现在不拆只是因为这一轮已经很长了）。
-  'src-tauri/src/memory/routes.rs': 325,
+  // 325 → 340（2026-10-15，同一天第二次）：`/submit` 的**判定与写入放进同一个临界区**
+  // （独立评审第 10 条）——提前拿住跨进程锁那一段占 13 行。320 基线 < RATCHET_THRESHOLD（600），
+  // 允许上调。**拆分已经欠着了**：这个文件是路由分发器，jobs 那七条（含 `/submit`）已占一多半，
+  // 该拆成 `memory/routes/jobs.rs`。这一轮没拆是因为它已经很长，而拆分本身要动 150 行——
+  // 已登记进清单的「结构任务」，下一轮或再下一轮做。
+  'src-tauri/src/memory/routes.rs': 340,
   // 2026-10-14：内核工作区注册表的**只读**视图（`<DSH_HOME>/storages/workspace.json`）。
   // 独立成文件的理由：它读的是**别人的私有格式**，纪律与记忆自己的存储完全不同
   // （只读、读不出来回空列表、不猜字段），混进 store.rs 会让「哪些写、哪些只读」
@@ -2964,7 +2969,9 @@ const FILE_BUDGETS = {
 // 52700 → 52750（2026-10-15 凌晨）：H7 的提交闸（四道校验 + `running_job`）与
 // `bridge.rs` 的路由族拆分（新增 `memory/routes.rs`，桥那一份净减 343 行）。
 // 数字与代码同一个提交里改。
-const TOTAL_BUDGET = 52750;
+// 52750 → 52800（2026-10-15）：跨进程锁的**同线程可重入**（`/submit` 的判定与写入要在一个
+// 临界区里）+ 那一段拿锁的代码。这是软上限，规则明说它不做「只许下调」。
+const TOTAL_BUDGET = 52800;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

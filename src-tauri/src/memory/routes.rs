@@ -167,6 +167,23 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
         // 租约还在跑、开关还开着、会话对得上、引用的序号不超过任务冻结的那个游标。
         // 任何一道不过都答 `submitted: false` + 原因：这不是故障，是「这次结果不该落地」。
         "/submit" => {
+            // **判定与写入必须在同一个临界区里**（独立评审第 10 条）：原先「读任务表判令牌」与
+            // 「写候选」是两次各自加锁的操作，中间那段窗口里租约可以过期并被接管——迟到的结果
+            // 照样落库，§8-6 的迟到结果检查被绕过（窗口窄但非零）。这里把跨进程锁**提前拿到**
+            // 整个分支结束，中间那次 `store::submit_candidate` 靠锁的**同线程可重入**通过。
+            let _guard = match crate::memory::lock::WriteLock::new(&namespace.dir()) {
+                Ok(guard) => guard,
+                Err(error) => {
+                    let (status, body) = failed(error);
+                    let _ = crate::openai::http::write_response(
+                        stream,
+                        status,
+                        "application/json",
+                        &body,
+                    );
+                    return;
+                }
+            };
             let token = query_decoded(path, "token");
             let session = query_decoded(path, "session");
             let end_seq: u64 = query_decoded(path, "end_seq").parse().unwrap_or(0);
