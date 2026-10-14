@@ -142,11 +142,7 @@ function apply(ctx) {
     // 记人类消息那条路仍然看**每个**事件——它要的正是事件流本身。
     const attempt = () => {
       if (event?.type !== 'turn/end') return;
-      void runDueExtraction(
-        credentials,
-        { ...extractionServices, workspaceId: box.workspaceId },
-        box.state.workspace
-      );
+      void runDueExtraction(credentials, extractionServices, box.state.workspace);
     };
     if (!decision.schedule) {
       attempt();
@@ -255,6 +251,10 @@ function apply(ctx) {
           submit: async ({ candidates }) => {
             let submitted = 0;
             const refusals = [];
+            // **提交时现解析工作区 id**（一次，给这一批候选共用），不用缓存的那个：预算用满的
+            // 回合会在解析之前就早退（`shouldProbeLibrary` 那条），缓存下来的可能是**上一个**
+            // 工作区——那正是「候选记到旧项目」（G3）。工作目录本身在 `beginStep` 里已经刷新过。
+            const workspaceId = await resolveWorkspaceId(services.workspaceRegistry, workspace);
             for (const candidate of candidates) {
               // **一条候选一次调用**：壳那边的 `/jobs/submit` 就是这么收的（正文经查询串过去）。
               const answer = await callMemory({
@@ -265,9 +265,9 @@ function apply(ctx) {
                   session: sessionId,
                   start_seq: 0,
                   end_seq: endSeq,
+                  workspace_id: workspaceId,
                   // 依据是壳的规则：没登记工作区时 `project` 会被拒（见 `scopeForWorkspace`）。
-                  scope: scopeForWorkspace(services.workspaceId),
-                  workspace_id: services.workspaceId ?? '',
+                  scope: scopeForWorkspace(workspaceId),
                   workspace: String(workspace ?? ''),
                   title: candidate.title,
                   body: candidate.body,
@@ -330,6 +330,7 @@ function apply(ctx) {
       sessionQuery: ctx.get('sessionQuery'),
       llm: ctx.get('llm'),
       agentDefaultModel: ctx.get('agentDefaultModel'),
+      workspaceRegistry: ctx.get('workspaceRegistry'),
     });
   });
 
@@ -386,8 +387,6 @@ function apply(ctx) {
           const probe = !step.refresh;
           if (probe && !shouldProbeLibrary(box.state, turn)) return decision;
           const workspaceId = await resolveWorkspaceId(workspaceRegistry, workspace);
-          // 提取提交候选时要用同一个 workspace_id（会话与工作区的对应关系是会话级的事实）。
-          box.workspaceId = workspaceId;
           const result = await callMemory({
             credentials,
             route: 'context',
