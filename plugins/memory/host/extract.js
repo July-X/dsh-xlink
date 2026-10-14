@@ -22,6 +22,8 @@
  * @module xlink-memory/extract
  */
 
+import { maskSecrets } from './mask.js';
+
 /** 与壳对齐的限额（`src-tauri/src/memory/input.rs`）。 */
 export const MAX_TITLE_BYTES = 512;
 export const MAX_BODY_BYTES = 8 * 1024;
@@ -197,4 +199,62 @@ export function parseExtractionOutput(raw, { events = [], maxCandidates = MAX_CA
     candidates.push({ title, body, keywords, evidence_seq: evidence });
   }
   return { ok: true, candidates, rejected };
+}
+
+/** 送进模型的会话片段上限：比内核上下文小得多，一次只看一小段。 */
+export const MAX_SLICE_BYTES = 64 * 1024;
+/** 单条事件最多占多少：一条超长工具结果不该把整段挤掉。 */
+export const MAX_EVENT_BYTES = 8 * 1024;
+
+/** 事件里的人话。工具结果与系统注入**不进提取输入**——它们不是用户说过的话。 */
+function renderEvent(event) {
+  if (event?.type !== 'user/message' && event?.type !== 'assistant/message') return null;
+  const kind = event.type === 'user/message' ? '用户' : '助手';
+  let text = '';
+  const content = event?.data?.content;
+  if (typeof content === 'string') text = content;
+  else if (Array.isArray(content)) {
+    text = content
+      .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('\n');
+  }
+  if (!text.trim()) return null;
+  // 掩码要在**截断之前**做：截断可能把 `sk-abc…` 切成 `sk-ab`，而残留的形状反而更像真 key。
+  const masked = maskSecrets(text);
+  const bytes = Buffer.byteLength(masked, 'utf8');
+  const clipped = bytes > MAX_EVENT_BYTES ? `${masked.slice(0, MAX_EVENT_BYTES)}\n…（这一条被截断）` : masked;
+  return `[${Number(event.seq)}] ${kind}：${clipped}`;
+}
+
+/**
+ * 把一段事件渲染成给模型的切片。
+ *
+ * **从后往前取**：近的对话比远的更相关，而额度是固定的。每条都带 `[seq]`，模型的
+ * `evidence_seq` 要指向其中之一。
+ *
+ * @param {object[]} events - 冻结范围内的事件。
+ * @param {object} [options] - 限额。
+ * @param {number} [options.maxBytes] - 整段上限。
+ * @returns {{text: string, seqs: number[], dropped: number}}
+ */
+export function buildSlice(events, { maxBytes = MAX_SLICE_BYTES } = {}) {
+  const lines = [];
+  let used = 0;
+  let dropped = 0;
+  const list = Array.isArray(events) ? events : [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const line = renderEvent(list[index]);
+    if (line === null) continue;
+    const size = Buffer.byteLength(line, 'utf8') + 1;
+    if (used + size > maxBytes) {
+      // 整条放不下就丢掉它，继续往前找——**不切半条**（半条对话比没有更误导）。
+      dropped += 1;
+      continue;
+    }
+    used += size;
+    lines.push(line);
+  }
+  lines.reverse();
+  return { text: lines.join('\n'), seqs: lines.map((line) => Number(line.slice(1, line.indexOf(']')))), dropped };
 }
