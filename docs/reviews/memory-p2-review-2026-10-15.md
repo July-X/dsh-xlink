@@ -5,7 +5,7 @@
 `bridge.js` / `policy.js` / `mask.js`）与壳侧（`src-tauri/src/memory/` 的 `jobs.rs` / `routes.rs` /
 `lock.rs` / `store.rs::submit_candidate`，以及 `plugins/builtin/bridge.rs` 的两条手动夹具）。
 
-**为什么值得单独留一份**：到 2026-10-15 为止**已修 10 条**（含两条「高」）、**1 条修了一半**；**其余 8 条是待办**，
+**为什么值得单独留一份**：到 2026-10-15 为止**已修 11 条**（含两条「高」）、**2 条修了一半**；**其余 6 条是待办**，
 散在对话里会丢。清单（[memory-progress.md](../features/memory/memory-progress.md)）指向本文件。
 
 **评审快照**（行号对应这些版本；评审期间工作区被另一会话改过一次）：
@@ -65,10 +65,16 @@ id 只给桥用。附带：`index.js` 里 `{ session: { id: key.session }, ...ke
    **修法（已落）**：`submit` 回 `{ submitted, refused, refusedReason }`，编排层带进结果，
    日志改成三个数分开报（**落库 N 条 / 解析阶段拒 M 条 / 提交阶段拒 K 条：首因**）。
    判据：一条「10 条里落 3 条、7 条被业务闸拒」形状的编排用例，断言 `refused` 与首因都回来了。
-6. **逐字段限额与通道限额不合成** —— ⬜：`MAX_ENCODED_BODY_BYTES` 只给标题/关键词/路径留了
+6. **逐字段限额与通道限额不合成** —— ✅ 已修（2026-10-15）：`MAX_ENCODED_BODY_BYTES` 只给标题/关键词/路径留了
    1000 字节，而中文标题（≤512 B ≈ 1530 编码）+ 12 条关键词（≈2300）就能吃光。评审实测：
    逐项合法的候选合计 **10181 B > 7000** → 被桥拒 → 整批提交不上 → 重试 3 次 → FAILED，
    而文案是「这条记忆太长了…请拆成更短的几条」（模型给的结果拆不了）。**修法**：按整条 path 预算。
+   **修法（已落）**：`bridge.js` 新增 `encodedPathBytes(route, params)`——与 `buildPath` 同一个
+   `URLSearchParams` 算法，所以「算出来的」就是「发出去的」字节数。提交循环在**每条候选**上真算一次，
+   超了就把**这一条**记进 `refusals`（理由带真实数字：「编码后 N 字节，超过通道上限 7000 字节」），
+   其余候选照常提交——不再整批打回。判据：一组复现评审那组数的参数（255 字标题 + 12 条关键词 +
+   2000 字正文）必须被判超，且算出的字节数等于 `buildPath` 的长度；另钉住装配层真的在提交前算。
+
 7. **每次读整份会话日志，且 `evidence_seq` 判据覆盖整个会话** —— 🟡 **判据那一半已修**（2026-10-15）：`from: 0` + `humanSeqs`
    取自全集，而不是喂给模型的那 64 KiB 切片 → 模型幻觉一个历史人类 seq 就能过；工具输出里的
    注入只要碰上任意历史人类 seq 就可升级成「用户偏好」。**修法**：把上一游标或切片首 seq 冻进
@@ -106,7 +112,7 @@ id 只给桥用。附带：`index.js` 里 `{ session: { id: key.session }, ...ke
    为了凑静默期而改时间。判据 `a_fresh_job_is_not_claimable_until_the_debounce_has_passed`
    （静默期内领不到、差 1 毫秒也不行、到 `DEBOUNCE_MS` 领得到、`due_only=false` 保留旧语义），
    **反向验过**（去掉到期判据即红）。
-12. **任务表没有任何可见面** —— ⬜：`/jobs/status` 与 `jobs::summary` 只有测试在调，
+12. **任务表没有任何可见面** —— 🟡 **日志那一半已修**（2026-10-15）：`/jobs/status` 与 `jobs::summary` 只有测试在调，
     UI/命令层无入口；`routes::jobs` 刻意不写 `shell_events`，插件 logger 又不进 stdout，
     stage 以前也不上报 → 用户问「这个会话为什么一条记忆都没提取出来」时，唯一可查处是手动打开
     `jobs.json`。**修法**：面板加「提取任务」卡片，或至少把 enqueue/claim/fail 计数落 `shell_events`。
@@ -114,6 +120,13 @@ id 只给桥用。附带：`index.js` 里 `{ session: { id: key.session }, ...ke
     并证明该允许项是必要的：加它之前夹具是红的）。
 
 ---
+   **修法（已落一半）**：`routes::jobs` 现在用**另一个标签**（`memory-jobs`）留痕——
+   `enqueue`（结局 added/merged/…）、`claim`（领到没领到、游标与尝试次数）、
+   `finish`（ok / **stale-token**）、`fail`（**stage** 与 retryable）。
+   进「查看日志」面板，**不进「最近注入」**（那是原来刻意不记的理由，仍然成立）；
+   **只记路由与结局，不记正文、不记令牌**。`finish` 的 `stale-token` 与 `fail` 的 stage
+   正是「为什么这个会话一条记忆都没提取出来」要看的两行。
+   **还差**：面板上的「提取任务」卡片（把 `jobs::summary` 接到 UI）。
 
 ## 低
 

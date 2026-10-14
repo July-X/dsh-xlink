@@ -32,6 +32,11 @@ fn note_memory_call(route: &str, detail: &str) {
     crate::shell::shell_events::record("memory-bridge", &format!("{route} {detail}"));
 }
 
+/// 提取任务路由的留痕：**另一个标签**，与「最近注入」分开（见 [`jobs`] 的文档）。
+fn note_job_call(action: &str, detail: &str) {
+    crate::shell::shell_events::record("memory-jobs", &format!("{action} {detail}"));
+}
+
 /// 自动提取（P2）的任务与租约路由。**全是 GET + 查询串**，与记忆那几条同一条纪律。
 ///
 /// 谁能调：只有拿到 Bearer 的插件进程；最坏能造成什么：排一个后台提取任务、领一个租约、
@@ -41,6 +46,10 @@ fn note_memory_call(route: &str, detail: &str) {
 /// 令牌由 `/claim` 生成并返回，`renew` / `finish` / `fail` 带着它回来：只有**当前**令牌能提交
 /// （§8-6 的迟到结果检查）。这里不记 `note_memory_call`：这些不是「记忆调用」，混进那个环里
 /// 会让面板的「最近注入」多出一堆与注入无关的行。
+///
+/// **但要可见**（评审第 12 条）：原先一条痕迹都不留，而插件 logger 在这个内核里不进 stdout——
+/// 用户问「为什么一条记忆都没提取出来」时唯一可查处是 `jobs.json`。现在用**另一个标签**
+/// （`memory-jobs`）记一行：进「查看日志」不进「最近注入」，**只记路由与结局，不记正文与令牌**。
 pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
     use crate::memory::jobs;
     let namespace = memory_namespace(scope_key);
@@ -77,10 +86,13 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                     extractor: query_decoded(path, "extractor"),
                 };
                 match jobs::mutate(&namespace, |doc, now| jobs::enqueue(doc, key, now)) {
-                    Ok(outcome) => (
-                        200,
-                        serde_json::json!({ "outcome": outcome.as_str() }).to_string(),
-                    ),
+                    Ok(outcome) => {
+                        note_job_call("enqueue", outcome.as_str());
+                        (
+                            200,
+                            serde_json::json!({ "outcome": outcome.as_str() }).to_string(),
+                        )
+                    }
                     Err(error) => failed(error),
                 }
             }
@@ -98,11 +110,24 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
             // **到期才领**：去抖是调度策略，放在这一层（见 `jobs::claim_due_for` 的文档）。
             jobs::claim_any_due_for(doc, now, wanted, true)
         }) {
-            Ok(Some(claimed)) => (
-                200,
-                serde_json::to_string(&claimed).unwrap_or_else(|_| r#"{"token":null}"#.to_string()),
-            ),
-            Ok(None) => (200, r#"{"token":null}"#.to_string()),
+            Ok(Some(claimed)) => {
+                note_job_call(
+                    "claim",
+                    &format!(
+                        "cursor={} attempts={}",
+                        claimed.key.cursor, claimed.attempts
+                    ),
+                );
+                (
+                    200,
+                    serde_json::to_string(&claimed)
+                        .unwrap_or_else(|_| r#"{"token":null}"#.to_string()),
+                )
+            }
+            Ok(None) => {
+                note_job_call("claim", "none");
+                (200, r#"{"token":null}"#.to_string())
+            }
             Err(error) => failed(error),
         },
         "/renew" => {
@@ -115,16 +140,26 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
         "/finish" => {
             let token = query_decoded(path, "token");
             match jobs::mutate(&namespace, |doc, now| jobs::finish(doc, &token, now)) {
-                Ok(done) => (200, serde_json::json!({ "finished": done }).to_string()),
+                Ok(done) => {
+                    // 交不上通常是「租约被接管了」——这一行就是排障要看的那一行。
+                    note_job_call("finish", if done { "ok" } else { "stale-token" });
+                    (200, serde_json::json!({ "finished": done }).to_string())
+                }
                 Err(error) => failed(error),
             }
         }
         "/fail" => {
             let token = query_decoded(path, "token");
             let reason = query_decoded(path, "error");
+            // 失败只记 **stage**（`read` / `model` / `parse` / `submit`）：那是排障要看的那一列，
+            // 而 reason 里可能带记忆标题（业务拒绝的文案会引用它）——日志面板不记用户正文。
             match jobs::mutate(&namespace, |doc, now| jobs::fail(doc, &token, &reason, now)) {
                 // `retryable: null` = 令牌对不上（不是这个任务的主人），与「不能重试了」区分开。
-                Ok(outcome) => (200, serde_json::json!({ "retryable": outcome }).to_string()),
+                Ok(outcome) => {
+                    let stage = reason.split('：').next().unwrap_or("unknown");
+                    note_job_call("fail", &format!("stage={stage} retryable={outcome:?}"));
+                    (200, serde_json::json!({ "retryable": outcome }).to_string())
+                }
                 Err(error) => failed(error),
             }
         }
