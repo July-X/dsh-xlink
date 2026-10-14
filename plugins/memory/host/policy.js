@@ -414,6 +414,23 @@ export function buildInput(events, { budgetBytes = MAX_INPUT_BYTES } = {}) {
 }
 
 /**
+ * 这次 `session/event` 是不是一次**成功**的压缩收尾。
+ *
+ * 为什么要判「成功」而不是「有 `compaction/end` 就重置」：内核在**失败**时也会发 `end`，
+ * 只是带上 `error` 字段（2026-10-15 真机实测，见「怎么验」那一节）——而这与设计稿当初的假设
+ * （「失败或 end 追加失败时可能只有 `start`」）不一样。失败的压缩**没有丢掉任何快照**，
+ * 那批记忆块还在上下文里；此时重置预算只会让下一次 pre-step 白取一次检索，而且如果这期间
+ * 库里有别的记录命中了同样的查询，还会往同一段上下文里再塞一份。
+ *
+ * @param {object} event - 一条 `session/event`。
+ * @returns {boolean}
+ */
+export function isCompactionDone(event) {
+  if (!event || event.type !== 'compaction/end') return false;
+  return !event.data?.error;
+}
+
+/**
  * 压缩之后的会话状态：**把注入预算清零**。
  *
  * 为什么清零不违背「每会话 3 次」那条硬规则：那条规则防的是「同一批快照越堆越多」，而压缩会把旧的

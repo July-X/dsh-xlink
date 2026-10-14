@@ -4,12 +4,14 @@ import test from 'node:test';
 
 import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, readCredentials } from '../host/bridge.js';
 import { AUTH_SCHEMES, SENSITIVE_KEY_NEEDLES, maskSecrets } from '../host/mask.js';
+
 import {
   afterCompaction,
   buildInput,
   emptyExtractState,
   EVENT_TRUNCATION_MARKER,
   noteSessionEvent,
+  isCompactionDone,
   shouldScheduleExtraction,
   TRUNCATION_MARKER,
   MAX_INJECTIONS_PER_SESSION,
@@ -396,6 +398,18 @@ test('输入只取对话、按字节削、截断要留标记', () => {
   assert.ok(tight.bytes <= 200 + Buffer.byteLength(TRUNCATION_MARKER, 'utf8') + 4, `${tight.bytes}`);
 });
 
+test('只有**成功**的压缩才重置预算（失败的那次照样有 end，只是带 error）', () => {
+  assert.equal(isCompactionDone({ type: 'compaction/end', data: {} }), true, '成功');
+  assert.equal(
+    isCompactionDone({ type: 'compaction/end', data: { error: '500: stub refuses' } }),
+    false,
+    '失败：带 error 的 end 不该触发重置——它没有丢掉任何快照'
+  );
+  assert.equal(isCompactionDone({ type: 'compaction/start', data: {} }), false, '只有 start');
+  assert.equal(isCompactionDone({ type: 'turn/end', data: {} }), false);
+  assert.equal(isCompactionDone(undefined), false);
+});
+
 test('压缩之后预算清零——否则长会话压缩后再也拿不到记忆', () => {
   const spent = {
     turn: 9,
@@ -538,7 +552,8 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
     !code.includes("agent.ctx.on('session/event'"),
     '挂到 agent scope 上收不到（事件不向下流）'
   );
-  assert.match(code, /event\?\.type === 'compaction\/end'/, '只认「压缩完成」那一条');
+  assert.match(code, /if \(isCompactionDone\(event\)\)/, '重置只挂在「成功的压缩」上');
+  assert.ok(!code.includes("event?.type === 'compaction/end'"), '不要再按裸类型判');
   assert.match(code, /box\.state = afterCompaction\(box\.state\)/, '压缩后要真的把预算清零');
   // P2 的排任务那条路也要真的接上：判据在 policy 里，接线没有就是「有测试没人用」。
   assert.match(code, /box\.extract = noteSessionEvent\(box\.extract, event\)/, '要记人类消息的序号');
