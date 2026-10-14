@@ -1165,6 +1165,77 @@ mod tests {
         }
     }
 
+    /// **手动量测：满库时一次 `/context` 要多久**（B17）。
+    ///
+    /// 设计 §3.1 那句「150 ms 降级线是建议值不是已验证指标」——这条夹具就是去把指标量出来。
+    /// 量的是**整条路**：HTTP 往返 + 读整份文档 + 检索 + 渲染注入文本（1000 条，即库的上限）。
+    /// **整条夹具约 80 秒**，其中大部分是填库（逐条 `save` 要重写整份文档，那是公开入口的代价）。
+    ///
+    /// ```sh
+    /// cd src-tauri && cargo test --lib manual_context_latency -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "手动量测：填满 1000 条再量 /context 的延迟（B17）"]
+    fn manual_context_latency_with_a_full_store() {
+        use std::time::Instant;
+        let root = temp_dir("latency");
+        let _home = crate::tests::scoped_xlink_home(&root);
+        let ns = crate::memory::store::Namespace::for_bridge("dsh", "probe");
+        crate::memory::store::set_use_approved(&ns, true).expect("打开记忆开关");
+
+        // 逐条 `save`（那是公开入口；`mutate` 是模块私有的）。每条都要重写整份文档，
+        // 所以这一步本身就有几十秒——手动夹具，值得。
+        for index in 0..1000 {
+            crate::memory::store::save(
+                &ns,
+                crate::memory::store::SaveInput {
+                    scope: "general".to_string(),
+                    title: format!("第 {index} 条约定"),
+                    body: format!(
+                        "这是第 {index} 条约定：提交前跑 npm run check，改完 UI 跑 build:ui，\
+                         内核目录只读。带一点中文与 English 混排，接近真实正文的长度。"
+                    ),
+                    keywords: vec!["提交".to_string(), "检查".to_string()],
+                    verification: "verified".to_string(),
+                    ..Default::default()
+                },
+            )
+            .expect("填库");
+        }
+        let doc_bytes = std::fs::metadata(ns.file())
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        println!("[latency] 库：1000 条、{doc_bytes} 字节");
+
+        let (url, token) = launch(&root, "dsh:probe").expect("起桥");
+        let addr = url.trim_start_matches("http://").to_string();
+
+        let mut samples = Vec::new();
+        for round in 0..20 {
+            let query = format!("context?q=%E6%8F%90%E4%BA%A4%20check%20{round}&workspace_id=&workspace=%2Ftmp%2Fws");
+            let started = Instant::now();
+            let body = bridge_get(&addr, &token, &query);
+            let elapsed = started.elapsed().as_micros() as f64 / 1000.0;
+            assert!(
+                body.contains("\"enabled\""),
+                "这次没答对：{}",
+                &body[..body.len().min(80)]
+            );
+            samples.push(elapsed);
+        }
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p50 = samples[samples.len() / 2];
+        let p95 = samples[(samples.len() * 95) / 100];
+        let max = samples[samples.len() - 1];
+        println!("[latency] /context 整条路（HTTP + 读库 + 检索 + 渲染），20 次：");
+        println!("[latency] p50 {p50:.1} ms / p95 {p95:.1} ms / max {max:.1} ms");
+        // 松判据（这条是手动夹具，不要因为机器忙就红）：整条路远在插件那 1500 ms 超时之内。
+        assert!(
+            p95 < 500.0,
+            "p95 {p95:.1} ms 超出预期——先看看是不是库真的满了"
+        );
+    }
+
     #[test]
     fn dropping_the_bridge_removes_the_credential_file() {
         use super::super::bridge_credential::CREDENTIAL_FILE;
