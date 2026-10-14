@@ -5,7 +5,7 @@
 `bridge.js` / `policy.js` / `mask.js`）与壳侧（`src-tauri/src/memory/` 的 `jobs.rs` / `routes.rs` /
 `lock.rs` / `store.rs::submit_candidate`，以及 `plugins/builtin/bridge.rs` 的两条手动夹具）。
 
-**为什么值得单独留一份**：到 2026-10-15 为止**18 条里已修 16 条 + 2 条修了一半**——**「高」「中」全部清空，「低」也只剩那两条的后半**，
+**为什么值得单独留一份**：到 2026-10-15 为止**18 条里已修 17 条 + 1 条修了一半**——**「高」「中」「低」三档的正文全部清空**，
 散在对话里会丢。清单（[memory-progress.md](../features/memory/memory-progress.md)）指向本文件。
 
 **评审快照**（行号对应这些版本；评审期间工作区被另一会话改过一次）：
@@ -122,7 +122,7 @@ id 只给桥用。附带：`index.js` 里 `{ session: { id: key.session }, ...ke
    为了凑静默期而改时间。判据 `a_fresh_job_is_not_claimable_until_the_debounce_has_passed`
    （静默期内领不到、差 1 毫秒也不行、到 `DEBOUNCE_MS` 领得到、`due_only=false` 保留旧语义），
    **反向验过**（去掉到期判据即红）。
-12. **任务表没有任何可见面** —— 🟡 **日志那一半已修**（2026-10-15）：`/jobs/status` 与 `jobs::summary` 只有测试在调，
+12. **任务表没有任何可见面** —— ✅ 已修（2026-10-15，两半都做了）：`/jobs/status` 与 `jobs::summary` 只有测试在调，
     UI/命令层无入口；`routes::jobs` 刻意不写 `shell_events`，插件 logger 又不进 stdout，
     stage 以前也不上报 → 用户问「这个会话为什么一条记忆都没提取出来」时，唯一可查处是手动打开
     `jobs.json`。**修法**：面板加「提取任务」卡片，或至少把 enqueue/claim/fail 计数落 `shell_events`。
@@ -136,7 +136,15 @@ id 只给桥用。附带：`index.js` 里 `{ session: { id: key.session }, ...ke
    进「查看日志」面板，**不进「最近注入」**（那是原来刻意不记的理由，仍然成立）；
    **只记路由与结局，不记正文、不记令牌**。`finish` 的 `stale-token` 与 `fail` 的 stage
    正是「为什么这个会话一条记忆都没提取出来」要看的两行。
-   **还差**：面板上的「提取任务」卡片（把 `jobs::summary` 接到 UI）。
+   **另一半（面板卡片）也已落**：新增只读命令 `memory_jobs`（返回摘要 + 最近 5 条，**不动任务表**）
+   + `MemoryPanel.vue` 上一张「提取任务」卡片（计数那句、每条的状态与 `stage：reason`、刷新按钮），
+   文案里写明「**一条记忆都没提取出来时先看这里**」并指向「查看日志」的 `memory-jobs` 标签。
+   判据两条：纯函数（全零也要说话、失败那行要带 stage）与**模板接线**（卡片真的在面板上——
+   helper 有测试、接线没有是本仓反复栽的形状）。
+   **门禁自己抓到我一次**：命令注册进 `lib.rs` 了，但没进 `src-tauri/permissions/app-commands.json`
+   的 `allow-local-commands` 白名单——两条判据同时报「面板调用它会被 ACL 拒绝（release 构建下报
+   `Command memory_jobs not allowed by ACL`）」与「前端调用了未授权的命令」。这正是本仓那条
+   「命令声明与 capability 两处都漏就是真机上 ACL 静默拒」的机械兜底。
 
 ## 低
 

@@ -51,6 +51,11 @@ export const memoryStore = reactive({
   lastExport: null,
   /// 列表的范围筛选：`all` / `project` / `general`（§2 的「本项目」与「此实例的通用偏好」两个视图）。
   listScope: 'all',
+  /// 提取任务表：`{ summary: {pending,running,done,failed}, jobs: [...] }`（`memory_jobs`）。
+  ///
+  /// **这是「为什么这个会话一条记忆都没提取出来」的答案所在**（独立评审第 12 条）：
+  /// 每条任务带着状态与失败原因（`stage：reason`）。没有它，用户只能手动打开 `jobs.json`。
+  jobs: null,
   /// 最近几次「模型实际看到了哪些记忆」（`memory_recent_injections`，新的在前）。
   /// 与 `preview` 的区别：那是**模拟**（拿你填的查询算一遍），这是**实况**。
   recentInjections: [],
@@ -185,10 +190,44 @@ function applyView(view) {
   memoryStore.failure = view.status.warning || '';
 }
 
+/// 提取任务卡片上那句话。**纯函数**，判据直接测它（面板只负责把它放上去）。
+///
+/// 四种状态分开数：`pending` 是「排了还没轮到」（含静默期里的），`running` 是「正在提取」，
+/// `failed` 是「试到上限也没成」。**全零也要说话**——「一条任务都没有」本身就是答案：
+/// 说明这一轮压根没排（回合没正常结束、没有新的人类消息、或者开关没开）。
+export function jobsSummaryText(view) {
+  const summary = view?.summary;
+  if (!summary) return '还没读到提取任务的状态。';
+  const { pending = 0, running = 0, done = 0, failed = 0 } = summary;
+  if (!pending && !running && !done && !failed) {
+    return '还没有提取任务。聊一轮之后这里会出现「排了、领了、成了还是没成」。';
+  }
+  return `待跑 ${pending} · 在跑 ${running} · 完成 ${done} · 失败 ${failed}`;
+}
+
+/// 一条任务在卡片上的那行字：状态 + 冻结游标 + 失败原因。
+export function jobLine(job) {
+  const state = job?.state ?? '未知';
+  const cursor = job?.key?.cursor ?? 0;
+  const error = job?.error ? `：${job.error}` : '';
+  return `#${cursor} ${state}${error}`;
+}
+
+/// 读提取任务表。**失败不打扰用户**（与工作区列表、最近注入同一条纪律）：它是辅助显示。
+export function loadJobs() {
+  return invoke('memory_jobs')
+    .then((view) => {
+      memoryStore.jobs = view;
+      return view;
+    })
+    .catch(() => undefined);
+}
+
 export function refreshMemory({ silent = false } = {}) {
   // 工作区列表与「最近注入」跟着一起取：都只影响辅助显示，失败不打扰用户。
   void loadWorkspaces();
   void loadRecentInjections();
+  void loadJobs();
   return withLoading('memoryList', () =>
     invoke('memory_list', { filter: { include_candidates: true, include_disabled: true } })
       .then((view) => {

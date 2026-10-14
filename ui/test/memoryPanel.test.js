@@ -189,3 +189,28 @@ test('面板的告警 v-if 用这个判据，而不是只判 !injectReady', () =
     '只判 `!injectReady` 会在状态读回来之前挂一句假警报（读失败时永久挂着）'
   );
 });
+
+test('提取任务卡片：全零也要说话，失败那行要带原因（评审第 12 条）', async () => {
+  const { jobsSummaryText, jobLine } = await import('../src/memory/memory.js');
+  // 还没读到：如实说「还没读到」，不要假装「没有任务」。
+  assert.match(jobsSummaryText(null), /还没读到/);
+  // 全零：**「一条任务都没有」本身就是答案**（说明这一轮压根没排），不能只显示一个空串。
+  assert.match(jobsSummaryText({ summary: { pending: 0, running: 0, done: 0, failed: 0 } }), /还没有提取任务/);
+  assert.equal(
+    jobsSummaryText({ summary: { pending: 2, running: 1, done: 7, failed: 1 } }),
+    '待跑 2 · 在跑 1 · 完成 7 · 失败 1'
+  );
+  // 失败那行要带 stage：用户问「为什么一条都没提取出来」时，答案就是这一列。
+  assert.equal(jobLine({ state: 'failed', key: { cursor: 42 }, error: 'model：模型没有返回任何内容' }),
+    '#42 failed：model：模型没有返回任何内容');
+  assert.equal(jobLine({ state: 'pending', key: { cursor: 9 } }), '#9 pending');
+});
+
+test('提取任务卡片真的接在模板上（helper 有测试、接线没有是本仓反复栽的形状）', () => {
+  const template = templateOf(read('../src/memory/MemoryPanel.vue'));
+  assert.match(template, /<h2>提取任务<\/h2>/, '卡片要在面板上');
+  assert.match(template, /jobsSummaryText|jobsText/, '摘要那句要接上');
+  assert.match(template, /jobLine\(job\)/, '每条任务那行要接上');
+  // 「一条都没提取出来时先看这里」——这句提示是这张卡片存在的理由，钉住它。
+  assert.match(template, /一条记忆都没提取出来时先看这里/);
+});

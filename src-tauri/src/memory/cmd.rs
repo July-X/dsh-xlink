@@ -10,6 +10,7 @@
 
 use crate::commands::blocking;
 use crate::memory::export;
+use crate::memory::jobs;
 use crate::memory::query;
 use crate::memory::store::{self, ListFilter, Namespace, SaveInput};
 use crate::memory::workspaces;
@@ -20,6 +21,42 @@ use crate::shell::paths;
 pub async fn memory_status() -> Result<store::MemoryStatus, String> {
     blocking(|| Ok::<_, std::convert::Infallible>(store::status(&Namespace::current()))).await
 }
+
+/// 提取任务表：摘要 + 最近几条（面板的「提取任务」卡片用）。
+///
+/// **为什么要有它**（独立评审第 12 条）：`/jobs/status` 与 `jobs::summary` 原先只有测试在调，
+/// 面板没有任何入口——用户问「这个会话为什么一条记忆都没提取出来」时，唯一可查处是手动打开
+/// `jobs.json`。卡片要答的正是那句问话，所以带上**最近几条的状态与失败原因**（`stage：reason`），
+/// 而不只是一个计数。**只读，不动任务表**：看它一眼不该改变任何东西。
+#[tauri::command]
+pub async fn memory_jobs() -> Result<JobsView, String> {
+    blocking(|| {
+        let doc = jobs::load(&Namespace::current())?;
+        Ok::<_, crate::shell::error::AppError>(JobsView {
+            summary: jobs::summary(&doc),
+            // 最近几条排在前面：用户要看的几乎总是「刚刚那次」。
+            jobs: doc
+                .jobs
+                .iter()
+                .rev()
+                .take(MAX_JOBS_SHOWN)
+                .cloned()
+                .collect(),
+        })
+    })
+    .await
+}
+
+/// 面板要的提取任务视图：摘要 + 最近几条（最多 [`MAX_JOBS_SHOWN`] 条）。
+#[derive(serde::Serialize)]
+pub struct JobsView {
+    pub summary: jobs::JobsSummary,
+    pub jobs: Vec<jobs::Job>,
+}
+
+/// 卡片上最多列几条。**不做分页**：这是「刚刚发生了什么」的窗口，不是任务管理器；
+/// 真要翻全部就去「查看日志」（那里有 `memory-jobs` 标签的完整留痕）。
+const MAX_JOBS_SHOWN: usize = 5;
 
 /// 列出记忆与待确认候选。
 #[tauri::command]

@@ -94,6 +94,7 @@
           "minimize_shell",
           "disk_usage",
           "disk_usage_children",
+          "memory_jobs",
           "memory_status",
           "memory_list",
           "memory_save",
