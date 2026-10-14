@@ -888,6 +888,51 @@ test('不许用已废弃的三个接口（设计 §8-1 写明了）', () => {
   }
 });
 
+test('工作区解析：id 优先、路径原样交给内核、失败静默降级（G4）', async () => {
+  const seen = [];
+  const registry = {
+    resolveByPath: async (path) => {
+      seen.push(path);
+      return path.includes('known') ? { id: 'ws-7' } : { id: 42 };
+    },
+  };
+  assert.equal(await resolveWorkspaceId(registry, '/Users/X/Proj'), '', '没有字符串 id 就当没解析到');
+  assert.equal(await resolveWorkspaceId(registry, '/Users/X/known'), 'ws-7');
+  // **路径原样传过去**：大小写、结尾斜杠都归内核的注册表管，插件不自作主张地归一化——
+  // 那正是「大小写差异不扩大范围」要的形状（插件不发明规则，只把决定权交回去）。
+  await resolveWorkspaceId(registry, '/Users/X/KNOWN/');
+  assert.deepEqual(seen, ['/Users/X/Proj', '/Users/X/known', '/Users/X/KNOWN/']);
+  // 目录不存在（`resolveByPath` reject）与服务还没就绪（null）都静默回空串：路径匹配那条路照旧能用。
+  const throwing = {
+    resolveByPath: async () => {
+      throw new Error('no such directory');
+    },
+  };
+  assert.equal(await resolveWorkspaceId(throwing, '/gone'), '');
+  assert.equal(await resolveWorkspaceId(null, '/x'), '');
+  assert.equal(await resolveWorkspaceId(registry, ''), '', '没有工作目录就不问');
+  assert.deepEqual(seen.length, 3, '空路径不该打给注册表');
+});
+
+test('候选不记到旧项目（G3）：提交时**现解析**工作区，不用缓存的那个', () => {
+  const code = readFileSync(new URL('../host/index.js', import.meta.url), 'utf8');
+  // 预算用满的回合会在解析之前就早退（`shouldProbeLibrary`），所以缓存下来的 workspaceId
+  // 可能是**上一个**工作区——那条路必须现解析。
+  assert.ok(
+    !code.includes('workspaceId: box.workspaceId'),
+    '不许把缓存的工作区 id 交给提取提交'
+  );
+  assert.ok(!code.includes('box.workspaceId ='), '也不许再往盒子里存这个值');
+  const submit = code.slice(code.indexOf('submit: async ({ candidates })'), code.indexOf('jobs/finish'));
+  assert.match(
+    submit,
+    /const workspaceId = await resolveWorkspaceId\(services\.workspaceRegistry, workspace\)/,
+    '提交前现解析一次（给这一批候选共用）'
+  );
+  assert.match(submit, /workspace_id: workspaceId/, '解析出来的值要用上');
+  assert.match(submit, /scope: scopeForWorkspace\(workspaceId\)/, 'scope 跟着同一个值走');
+});
+
 test('候选落成哪种记忆：跟着壳的规则走，没工作区就只能存通用偏好', () => {
   // 壳的规则（真桥实测）：`scope=project` 需要绑定一个**已登记的工作区**，否则拒。
   assert.equal(scopeForWorkspace('ws-1'), 'project');
