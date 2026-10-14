@@ -57,6 +57,14 @@ function rustRegistry() {
   const source = read('../src-tauri/src/plugins/builtin/builtins.rs');
   const block = source.match(/pub\(crate\) const BUILTINS:[^=]*=\s*&\[([\s\S]*?)\n\];/);
   assert.ok(block, 'builtins.rs 里找不到 BUILTINS 常量（结构变了？请同步本测试）');
+  // id 在登记表里写成常量名（`id: OPENAI_OAUTH`）。**按声明解析，不在这里
+  // 逐个映射**：2026-10-14 加第三个内置插件时，硬编码的映射表把新插件的 id
+  // 读成了常量名（`MEMORY`），报的是「两侧 id 集合不一致」——而真正的原因只是
+  // 判据少一个分支。声明解析器不认识的名字会原样出现在比较里，照样红得清楚。
+  const constants = new Map();
+  for (const match of source.matchAll(/const\s+([A-Z_]+)\s*:\s*&str\s*=\s*"([^"]+)";/g)) {
+    constants.set(match[1], match[2]);
+  }
   const out = [];
   // 每个条目从 `id:` 到下一个 `},` 之间的那几行。
   for (const chunk of block[1].split(/\n\s{4}\},/)) {
@@ -64,8 +72,7 @@ function rustRegistry() {
     const entries = /\n\s{8}entries:\s*&\[([\s\S]*?)\],/.exec(chunk);
     if (!id || !entries) continue;
     out.push({
-      id: chunk.includes('OPENAI_OAUTH') && id[1] === 'OPENAI_OAUTH' ? 'openai-oauth'
-        : id[1] === 'PONYTAIL' ? 'ponytail' : id[1],
+      id: constants.get(id[1]) ?? id[1],
       entries: [...entries[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]),
     });
   }
