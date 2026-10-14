@@ -2558,6 +2558,49 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// --- 记忆进度表必须覆盖每个记忆模块 -------------------------------------------
+//
+// `docs/features/memory/memory-progress.md` 是记忆系统的开发清单：设计稿回答「为什么这么
+// 设计」，它回答「现在做到哪了、还差什么」。它会失效的方式只有一种——**加了模块却没人补
+// 那一行**，而这件事没有任何症状：文档还在、门禁全绿、下次读清单的人以为「就这些」。
+//
+// 判据只做覆盖（每个记忆模块都要在清单里出现），不判状态写得对不对——那要靠评审。覆盖能
+// 机械判，而且正是最容易漏的一步：新增一个 `memory/xxx.rs` 时，人会记得登记 FILE_BUDGETS
+// （那里有门禁），不会记得清单。
+{
+  const progressPath = join(root, 'docs/features/memory/memory-progress.md');
+  let progress = null;
+  try {
+    progress = readFileSync(progressPath, 'utf8');
+  } catch {
+    fail(
+      'memory-progress-coverage',
+      '找不到 docs/features/memory/memory-progress.md：它是记忆系统的开发清单，删掉或改名都要同步这条判据。',
+    );
+  }
+  if (progress) {
+    const modules = [
+      ...walk(join(root, 'src-tauri/src/memory'), ['.rs']),
+      ...walk(join(root, 'plugins/memory/host'), ['.js']),
+      ...walk(join(root, 'ui/src/memory'), ['.js', '.vue']),
+    ].map((file) => relative(root, file).split(sep).join('/'));
+    // 路径或文件名命中都算：清单里写 `memory/store.rs` 就够，不必抄全路径。
+    const missing = modules.filter((file) => {
+      const base = file.split('/').pop();
+      return !progress.includes(file) && !progress.includes(base);
+    });
+    if (missing.length > 0) {
+      fail(
+        'memory-progress-coverage',
+        `memory-progress.md 里没有这些记忆模块：${missing.join('、')}。` +
+          '在对应区段补一行（状态 + 判据 + 还差什么）；确实不该出现在清单里的，把这条判据一起改。',
+      );
+    } else {
+      note(`记忆进度表覆盖全部 ${modules.length} 个记忆模块`);
+    }
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);

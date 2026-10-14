@@ -31,6 +31,20 @@ export const MAX_INJECTIONS_PER_SESSION = 3;
 export const MAX_LIBRARY_REFRESHES_PER_SESSION = 2;
 
 /**
+ * 每会话**累计**注入字节的上限（设计稿 §3.1：累计不超过 36 KiB）。
+ *
+ * 次数封顶挡不住「每次都很长」：单次 12 KiB × (3 + 2) 次最坏是 60 KiB，而内核会为每一份
+ * 不同的快照留一条历史消息到压缩为止。次数与字节两个闸都要有——只封一个都不够，这正是
+ * 设计稿 §3.1 那句话的意思。
+ */
+export const MAX_TOTAL_BYTES_PER_SESSION = 36 * 1024;
+
+/** UTF-8 字节数（`String.length` 是 UTF-16 码元，中文按它算会少一半）。 */
+function byteLength(text) {
+  return Buffer.byteLength(text, 'utf8');
+}
+
+/**
  * 送进桥的查询文本上限（字符）。
  *
  * 桥的请求头缓冲是固定 **8 KB**，而 `GET` 的查询串连同请求头都算在里面。中文经
@@ -116,6 +130,7 @@ export function userText(messages) {
  */
 export function shouldRefresh(state, turn, maxInjections = MAX_INJECTIONS_PER_SESSION) {
   if (state.turn === turn) return false;
+  if (state.bytes >= MAX_TOTAL_BYTES_PER_SESSION) return false;
   return state.injections < maxInjections;
 }
 
@@ -133,6 +148,7 @@ export function shouldRefresh(state, turn, maxInjections = MAX_INJECTIONS_PER_SE
  */
 export function shouldProbeLibrary(state, turn, maxLibrary = MAX_LIBRARY_REFRESHES_PER_SESSION) {
   if (state.turn === turn) return false;
+  if (state.bytes >= MAX_TOTAL_BYTES_PER_SESSION) return false;
   if (state.injections < MAX_INJECTIONS_PER_SESSION) return false;
   return state.injections - MAX_INJECTIONS_PER_SESSION < maxLibrary;
 }
@@ -193,8 +209,9 @@ export function retarget(state, workspace) {
     turn: -1,
     text: '',
     injections: state.injections,
+    bytes: state.bytes ?? 0,
     workspace,
-    // 代次是**整份文档**的，与目录无关，换目录不必丢。
+    // 代次与累计字节都是**会话级**的，与目录无关，换目录不必丢。
     revision: state.revision,
   };
 }
@@ -228,10 +245,14 @@ export function beginStep(state, workspace, turn, maxInjections = MAX_INJECTIONS
  */
 export function applyResult(state, turn, text, generation) {
   const next = typeof text === 'string' ? text : '';
+  const changed = next !== state.text;
   return {
     turn,
     text: next,
-    injections: state.injections + (next === state.text ? 0 : 1),
+    injections: state.injections + (changed ? 1 : 0),
+    // 累计注入字节：内核为每一份**不同**的快照留一条历史消息，所以按「换过几次」算，
+    // 内容没变的那一次不占额度（否则重复渲染会把额度吃光而什么都没注入）。
+    bytes: (state.bytes ?? 0) + (changed ? byteLength(next) : 0),
     workspace: state.workspace,
     // 记下这次正文对应的数据代次：`shouldProbeLibrary` 那条路靠它判「库变了吗」。
     revision: typeof generation === 'number' ? generation : state.revision,
@@ -281,6 +302,7 @@ export function applyFailure(state, turn) {
     turn,
     text: '',
     injections: state.injections,
+    bytes: state.bytes ?? 0,
     workspace: state.workspace,
     revision: state.revision,
   };
