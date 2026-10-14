@@ -94,6 +94,7 @@ pub(crate) fn launch(dsh_home: &Path, scope_key: &str) -> Option<(String, String
         .ok()?
         .insert(scope_key.to_string(), bridge.clone());
     let dsh_home = dsh_home.to_path_buf();
+    let scope_key = scope_key.to_string();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             if bridge.shutdown.load(Ordering::SeqCst) {
@@ -102,15 +103,24 @@ pub(crate) fn launch(dsh_home: &Path, scope_key: &str) -> Option<(String, String
             let Ok(mut stream) = stream else { continue };
             let token = bridge.token.clone();
             let dsh_home = dsh_home.clone();
+            let scope_key = scope_key.clone();
             // 每个连接一个线程：端点只有一个且是一次性请求，串行化反而会让
             // 一个慢请求堵住后面的（模型那边是并发调用的）。
-            std::thread::spawn(move || serve(&mut stream, &token, &dsh_home));
+            std::thread::spawn(move || serve(&mut stream, &token, &dsh_home, &scope_key));
         }
     });
     Some((url, token))
 }
 
-fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path) {
+/// 记忆命名空间：内核族与实例取自这条桥的绑定（`family:instance`），profile 取自壳
+/// 设置——与面板（`Namespace::current`）同一份来源。**不信调用方传来的坐标**：
+/// 桥知道自己在替哪个实例服务，插件只需要说「查什么、写什么」。
+fn memory_namespace(scope_key: &str) -> crate::memory::store::Namespace {
+    let (family, instance) = scope_key.split_once(':').unwrap_or((scope_key, ""));
+    crate::memory::store::Namespace::for_bridge(family, instance)
+}
+
+fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) {
     let Ok(request) = crate::openai::http::read_request(stream) else {
         return;
     };
@@ -135,6 +145,95 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path) {
                 "application/json",
                 r#"{"ok":true}"#,
             );
+        }
+        (method, path) if method == "GET" && path.starts_with("/v1/memory/context") => {
+            // 与 sync 同一条纪律：**GET + 查询串，不读请求体**（见下面 sync 那条注释）。
+            // 中文与空格由插件百分号编码，这里解码后再进检索。
+            let namespace = memory_namespace(scope_key);
+            let query = query_decoded(path, "q");
+            let workspace = query_decoded(path, "workspace");
+            match crate::memory::query::retrieve(&namespace, &query, "", &workspace) {
+                Ok(context) => {
+                    let body = serde_json::to_string(&context)
+                        .unwrap_or_else(|_| r#"{"enabled":false}"#.to_string());
+                    let _ =
+                        crate::openai::http::write_response(stream, 200, "application/json", &body);
+                }
+                Err(error) => {
+                    let body = serde_json::json!({ "error": error.to_string() }).to_string();
+                    let _ =
+                        crate::openai::http::write_response(stream, 500, "application/json", &body);
+                }
+            }
+        }
+        (method, path) if method == "GET" && path.starts_with("/v1/memory/read") => {
+            let namespace = memory_namespace(scope_key);
+            let id = query_decoded(path, "id");
+            if id.is_empty() {
+                let _ = crate::openai::http::write_response(
+                    stream,
+                    400,
+                    "application/json",
+                    r#"{"error":"missing id"}"#,
+                );
+                return;
+            }
+            match crate::memory::store::read_and_note_use(&namespace, &id) {
+                Ok(record) => {
+                    let body = serde_json::to_string(&record).unwrap_or_else(|_| "{}".to_string());
+                    let _ =
+                        crate::openai::http::write_response(stream, 200, "application/json", &body);
+                }
+                Err(error) => {
+                    let body = serde_json::json!({ "error": error.to_string() }).to_string();
+                    let _ =
+                        crate::openai::http::write_response(stream, 404, "application/json", &body);
+                }
+            }
+        }
+        (method, path) if method == "GET" && path.starts_with("/v1/memory/propose") => {
+            // 候选**只能进待确认**：这条路由调的是 `submit_candidate`，它写不进权威
+            // 记录。模型想自己批准候选没有入口——批准只存在于面板的 Tauri 命令面。
+            let namespace = memory_namespace(scope_key);
+            let input = crate::memory::store::CandidateInput {
+                scope: {
+                    let scope = query_decoded(path, "scope");
+                    if scope.is_empty() {
+                        crate::memory::store::SCOPE_PROJECT.to_string()
+                    } else {
+                        scope
+                    }
+                },
+                workspace_id: String::new(),
+                workspace_path: query_decoded(path, "workspace"),
+                title: query_decoded(path, "title"),
+                body: query_decoded(path, "body"),
+                keywords: Vec::new(),
+                source: crate::memory::store::MemorySource {
+                    kind: crate::memory::store::SOURCE_SESSION.to_string(),
+                    session: query_decoded(path, "session"),
+                    at: crate::memory::store::now_iso(),
+                    ..Default::default()
+                },
+                verification: String::new(),
+            };
+            match crate::memory::store::submit_candidate(&namespace, input) {
+                Ok(candidate) => {
+                    let body = serde_json::json!({
+                        "id": candidate.id,
+                        "state": candidate.state,
+                        "title": candidate.title,
+                    })
+                    .to_string();
+                    let _ =
+                        crate::openai::http::write_response(stream, 200, "application/json", &body);
+                }
+                Err(error) => {
+                    let body = serde_json::json!({ "error": error.to_string() }).to_string();
+                    let _ =
+                        crate::openai::http::write_response(stream, 400, "application/json", &body);
+                }
+            }
         }
         (method, path) if method == "GET" && path.starts_with("/v1/builtin/sync") => {
             // **GET + 查询串，不读请求体**：`openai::http::read_request` 只保证读到
@@ -208,6 +307,50 @@ fn query_value(path: &str, key: &str) -> Option<String> {
     None
 }
 
+/// 取一个查询串参数并做百分号解码（记忆那几条路由用）。
+fn query_decoded(path: &str, key: &str) -> String {
+    query_value(path, key)
+        .map(|value| percent_decode(&value))
+        .unwrap_or_default()
+}
+
+/// `%XX` 与 `+` 的百分号解码。
+///
+/// 记忆的标题、正文与项目路径基本都是中文或含空格，插件按 URL 规范编码后送过来；
+/// 不解码就会把 `%E4%B8%AD%E6%96%87` 原样存进记忆库——用户看到的是一条乱码，
+/// 而链路上每一处都不报错。非法转义**按原样保留**（丢字符比留一个 `%` 更糟）。
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok();
+                match hex.and_then(|text| u8::from_str_radix(text, 16).ok()) {
+                    Some(byte) => {
+                        out.push(byte);
+                        index += 3;
+                    }
+                    None => {
+                        out.push(bytes[index]);
+                        index += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +387,136 @@ mod tests {
             query_value("/v1/builtin/sync?plugin=", "plugin").as_deref(),
             Some("")
         );
+    }
+
+    /// 中文经 URL 编码后必须还原：不解码会把 `%E4%B8%AD…` 原样存进记忆库，
+    /// 而链路上每一处都不报错——用户看到的是一条乱码记忆。
+    #[test]
+    fn percent_decode_restores_chinese_and_spaces() {
+        assert_eq!(percent_decode("%E4%B8%AD%E6%96%87"), "中文");
+        assert_eq!(percent_decode("a%20b+c"), "a b c");
+        assert_eq!(percent_decode("plain"), "plain");
+        // 非法转义按原样保留，不丢字符。
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%ZZ"), "%ZZ");
+    }
+
+    #[test]
+    fn query_decoded_reads_percent_encoded_values() {
+        let path = "/v1/memory/context?q=%E6%9E%84%E5%BB%BA&workspace=%2Ftmp%2Fmy%20repo";
+        assert_eq!(query_decoded(path, "q"), "构建");
+        assert_eq!(query_decoded(path, "workspace"), "/tmp/my repo");
+        assert_eq!(query_decoded(path, "missing"), "");
+    }
+
+    /// 桥知道的坐标（family:instance）决定记忆命名空间；调用方传什么都不影响。
+    #[test]
+    fn memory_namespace_comes_from_the_bridge_binding() {
+        let namespace = memory_namespace("dsh:default-dev");
+        assert_eq!(namespace.family, "dsh");
+        assert_eq!(namespace.instance_id, "default-dev");
+        assert!(!namespace.profile.is_empty());
+    }
+
+    /// 记忆路由的端到端：桥真的起来、Bearer 真的校验、中文查询真的解码、
+    /// 候选真的只进待确认。**不启动内核**——这一层是插件与壳之间的合同，
+    /// 内核那一侧（`agent/created` 注册、`pre-step` 取检索）在真机启动时验。
+    #[test]
+    fn memory_routes_work_over_the_bridge() {
+        use crate::memory::store::{
+            self, ListFilter, Namespace, SaveInput, SCOPE_PROJECT, STATE_ACCEPTED,
+        };
+
+        let home = std::env::temp_dir().join(format!(
+            "xlink-bridge-memory-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&home);
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let namespace = Namespace::for_bridge("dsh", "default-dev");
+
+        // 种一条项目记忆并打开开关：桥那边应当命中它。
+        store::save(
+            &namespace,
+            SaveInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_path: "/tmp/demo repo".to_string(),
+                title: "构建前先跑检查".to_string(),
+                body: "提交前跑 npm run check".to_string(),
+                ..SaveInput::default()
+            },
+        )
+        .expect("seed memory");
+        store::set_use_approved(&namespace, true).expect("enable");
+
+        let dsh_home = home.join("dsh-home");
+        fs::create_dir_all(&dsh_home).expect("dsh home");
+        let (url, token) = launch(&dsh_home, "dsh:default-dev").expect("桥起不来");
+        let addr = url.trim_start_matches("http://").to_string();
+
+        let unauthorized = http_get(&addr, "/v1/memory/context?q=x", None);
+        assert!(unauthorized.starts_with("HTTP/1.1 401"), "{unauthorized}");
+
+        // 中文查询 + 带空格的路径都要能过：不解码就会命中不到（而链路不报错）。
+        let context = http_get(
+            &addr,
+            "/v1/memory/context?q=%E6%8F%90%E4%BA%A4&workspace=%2Ftmp%2Fdemo%20repo",
+            Some(&token),
+        );
+        assert!(context.starts_with("HTTP/1.1 200"), "{context}");
+        assert!(context.contains("构建前先跑检查"), "{context}");
+        assert!(context.contains("\"enabled\":true"), "{context}");
+
+        // 关掉开关：如实回 enabled:false，而不是「没找到」。
+        store::set_use_approved(&namespace, false).expect("disable");
+        let disabled = http_get(
+            &addr,
+            "/v1/memory/context?q=%E6%8F%90%E4%BA%A4",
+            Some(&token),
+        );
+        assert!(disabled.contains("\"enabled\":false"), "{disabled}");
+
+        // 候选：只能进待确认，权威记录不变。
+        let proposed = http_get(
+            &addr,
+            "/v1/memory/propose?title=%E5%80%99%E9%80%89&body=%E4%B8%AD%E6%96%87%E6%AD%A3%E6%96%87&scope=project&workspace=%2Ftmp%2Fdemo%20repo&session=s-1",
+            Some(&token),
+        );
+        assert!(proposed.starts_with("HTTP/1.1 200"), "{proposed}");
+        let view = store::list(
+            &namespace,
+            &ListFilter {
+                include_candidates: true,
+                ..ListFilter::default()
+            },
+        );
+        assert_eq!(view.candidates.len(), 1);
+        assert_eq!(view.candidates[0].title, "候选");
+        assert_eq!(view.candidates[0].body, "中文正文");
+        assert_eq!(view.candidates[0].source.session, "s-1");
+        assert_eq!(view.memories.len(), 1, "候选不能自己变成记录");
+        assert_eq!(view.memories[0].state, STATE_ACCEPTED);
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// 一次极简的 HTTP GET：这条测试只关心「桥怎么回」，不引第二个客户端库。
+    fn http_get(addr: &str, path: &str, token: Option<&str>) -> String {
+        use std::io::{Read, Write};
+        let mut stream = TcpStream::connect(addr).expect("connect");
+        let auth = token
+            .map(|value| format!("Authorization: Bearer {value}\r\n"))
+            .unwrap_or_default();
+        let request =
+            format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\n{auth}Connection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).expect("write");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).expect("read");
+        response
     }
 
     #[test]

@@ -64,8 +64,7 @@ pub const VERIFICATION_STALE: &str = "stale";
 
 /// 来源种类。
 pub const SOURCE_MANUAL: &str = "user-manual";
-/// 会话来源：桥接层（P1 的 `memory_propose`）用它标注候选从哪个会话来。
-#[allow(dead_code, reason = "P1 桥接层写入的候选来源，先于桥接线落地")]
+/// 会话来源：桥接层（`memory_propose` 工具）用它标注候选从哪个会话来。
 pub const SOURCE_SESSION: &str = "session";
 /// 自动提取来源（P2）。首版没有任何写入方，留着是为了让 P2 不引入新的字面量。
 #[allow(dead_code, reason = "P2 自动提取的来源标记，首版不写")]
@@ -100,6 +99,18 @@ impl Namespace {
         Self {
             family,
             instance_id,
+            profile,
+        }
+    }
+
+    /// 内核侧插件用的命名空间：内核族与实例由**回环桥的绑定**给出（桥知道自己
+    /// 在替哪个实例服务），profile 仍取壳设置——与面板同一份来源。插件传来的
+    /// 任何坐标都不参与决定，所以模型无法把记忆写到别的实例或别的 profile。
+    pub fn for_bridge(family: &str, instance_id: &str) -> Self {
+        let profile = settings::load_for_shell(settings::current_mode()).profile;
+        Self {
+            family: family.to_string(),
+            instance_id: instance_id.to_string(),
             profile,
         }
     }

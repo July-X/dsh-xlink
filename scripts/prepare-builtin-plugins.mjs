@@ -56,6 +56,13 @@ const BUILTINS = [
     // 覆盖物化目录里那六个 SKILL.md，上游一改就对不上而回落英文。
     entries: ['host', 'adapter', 'i18n', 'package.json', 'LICENSE'],
   },
+  {
+    id: 'memory',
+    // 本地记忆：只有 Host 适配层。**没有上游内容**（记忆正文在用户的实例目录里，
+    // 不在安装包里），也没有工作台客户端模块（管理页是壳自己的面板）。
+    // `test/` 与 README 不进实例，与另外两个内置插件一致。
+    entries: ['host', 'package.json'],
+  },
 ];
 
 function fail(message) {

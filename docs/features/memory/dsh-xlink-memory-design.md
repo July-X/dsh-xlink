@@ -251,13 +251,16 @@ flowchart LR
 | `src-tauri/src/shell/error.rs` | `AppError::Memory` |
 | `scripts/check-code-budget.mjs` | 新文件登记；`TOTAL_BUDGET` 47955 → 48950（记忆首块 919 行）；**并修正了计数器的假阴性**（注释里的 `/*` 会让整份文件被当成块注释吞掉，三份既有文件因此长期少算约 490 行，`ui/src/memory/memory.js` 更被算成 0 行） |
 | `ui/src/memory/` | 管理页：列表 / 编辑 / 停用 / 删除确认 / 待确认候选 / 检索预览 / 总开关；`SideBar.vue`、`App.vue` 的 `PANELS` 与面板数据刷新三处接线 |
-| 单测 | 17 条：缺工作区被拒、CAS 冲突、删除留指纹、损坏不重置、schema 更高拒绝写、项目隔离、按路径兜底、开关如实上报、条数与字节上限、多字节截断、候选必须用户批准 |
+| `plugins/builtin/bridge.rs` | 回环桥上的三条记忆路由：`context`（有界检索）/ `read`（读一条并记一次显式使用）/ `propose`（只进待确认）+ 百分号解码（中文正文不编码就会以 `%E4%B8%AD…` 入库）+ 端到端测试（起真桥、真令牌、真 store） |
+| `plugins/memory/` | 内置插件 `xlink-memory`：`agent/created` 里按 agent 作用域注册 `xlink.memory` 上下文贡献、`pre-step` 每回合取一次检索（会话级上限 3 次）、`memory_search` 与 `memory_propose` 两个工具；失败一律清空缓存、绝不抛 |
+| `builtins.rs` / `prepare-builtin-plugins.mjs` | 第三个内置插件的登记（`entries` 只有 host 与 package.json、`peers` 只有 `dsh-tools`），两份清单由 `dev-builtin.test.mjs` 钉死 |
+| 单测 | Rust 17 条记忆单测 + 桥 7 条（含端到端）；插件 9 条纯函数测试 |
 
 IPC 与落盘都用 **snake_case**：`check-invariants` 的 `ipc-fields` 抓到过一版 camelCase 序列化——`total_bytes` 与既有前端读的同名字段相撞，会被判成「前端读到 undefined」。
 
 尚未落地（按顺序）：
 
-1. `xlink-memory` 内置插件（`plugins/memory/host/`）+ 回环桥路由：`query::retrieve` 已就绪，缺的是桥与注册面；接线后由 `agent/created` 注册上下文、`pre-step` 取检索——**这一步做完模型才真正用上记忆**。
+1. **真实内核端到端验收**：把 `xlink-memory` 在应用里启用（物化 + 接线 + 重启工作台），确认插件加载、上下文贡献出现在首个真实请求里、切目录后不再注入旧项目、关掉开关后不再注入。已验证到宿主层：桥的三条路由有端到端测试（真监听、真令牌、真 store），插件的装配路径用真 `defineTool` + 桩桥跑通（注册面 / 检索 / 上限 / 工具 / 失败清空）——**差的是内核真的把它挂起来那一步**。
 2. 面板与内核工作区的对齐：壳体目前拿不到内核的工作区 id，项目匹配先走路径（`workspace_path`）；注入链路接上后补上真实 `workspace_id`，并给「项目目录」加一个目录选择器（现在靠手填 + localStorage 记住）。
 3. 导出 Markdown（设计 §2 承诺过，命令还没写）。
-4. P1 验收：首请求注入、会话级注入预算、切目录失效、内核未运行时面板可用。
+4. 面板上的插件开关联动：现在要注入记忆需要两个动作——插件页启用 `xlink-memory`，记忆面板打开「使用已批准的记忆」。首版可以接受（插件页的 `note` 已说明），但要评估是否在记忆面板里直接给一个「启用注入」的入口。

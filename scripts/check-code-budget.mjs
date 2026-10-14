@@ -296,7 +296,7 @@ const FILE_BUDGETS = {
   // 这个文件只剩「有哪些插件、各带哪几个 peer」这张表。
   // 72 → 73：Ponytail 那条降级说明改成「补不到时才说」的措辞（补的路由
   // `peer_supply.rs` 负责），多一行。
-  'src-tauri/src/plugins/builtin/builtins.rs': 73,
+  'src-tauri/src/plugins/builtin/builtins.rs': 95,
   // 2026-10-12：**peer 的语义**（`PeerSpec` 的必需 / 可选、缺失探针、给用户那句
   // 话）。从 builtins.rs 拆出来：那边是登记表，回答「有哪些插件」；这里回答
   // 「缺了会怎样」——后者是全局规则（改一次影响所有插件），混在登记表里会与
@@ -327,7 +327,12 @@ const FILE_BUDGETS = {
   // 2026-10-12：内置插件的回环桥（内核里的技能请求壳立刻同步上游）。与
   // openai/bridge.rs 同形状但**独立**：那个桥的端点与鉴权属于 OpenAI 插件的
   // 协议面，混进来会让「哪些端点归谁」变得要看另一个文件才知道。
-  'src-tauri/src/plugins/builtin/bridge.rs': 150,
+  //
+  // 150 → 280（2026-10-14）：记忆的三条路由（context / read / propose）+ 百分号
+  // 解码 + 一个端到端测试。**桥仍然是「能力面越小越好」那条纪律下最小的**：
+  // 三条路由里没有一条能改权威记录——propose 只写待确认，批准只存在于面板的
+  // Tauri 命令面。解码是必须的：中文正文不编码就会以 `%E4%B8%AD…` 存进记忆库。
+  'src-tauri/src/plugins/builtin/bridge.rs': 280,
   // 2026-10-12：桥的**凭据落盘**（把地址与令牌另写一份 0600 的 .xlink-bridge.json
   // 到每个已物化插件根下）。从 bridge.rs 拆出来的理由：桥本身是「回环 HTTP 服务 +
   // 鉴权 + 单端点」，凭据落盘是「往磁盘上放一个别的进程要读的文件」——两者的
@@ -2749,7 +2754,13 @@ const FILE_BUDGETS = {
 //      +191、peer_supply.rs +135），合计约 1900 行是**一直存在、只是没被数到的**
 //      代码；本轮实测 50848 里有它们的份。修正后 `ui/src/memory/memory.js` 这类
 //      文件也不会再被算成 0 行。+102 是给折行抖动与下一步留的余量。
-const TOTAL_BUDGET = 50950;
+//
+// 50950 → 51100（2026-10-14 晚）：记忆的内核侧接线——回环桥上三条路由（context /
+// read / propose）+ 百分号解码 + 端到端测试（bridge.rs 150 → 280），以及第三个
+// 内置插件的登记条目（builtins.rs 73 → 95，**零余量那次**：加一个 BuiltinSpec 正好
+// 撑破）。两份都在各自 600 行软阈值之下，上调在规则内；总量 +150 里只有 48 行是
+// 这一轮的净增，其余是折行抖动。
+const TOTAL_BUDGET = 51100;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

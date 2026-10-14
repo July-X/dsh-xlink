@@ -41,7 +41,7 @@
     "check:ui-bindings": "node scripts/check-ui-bindings.mjs",
     "prep:builtin": "node scripts/prepare-builtin-plugins.mjs",
     "check:builtin": "node scripts/prepare-builtin-plugins.mjs --check",
-    "test:plugin": "node --test plugins/openai-oauth/test/*.test.mjs plugins/ponytail/test/*.test.mjs"
+    "test:plugin": "node --test plugins/openai-oauth/test/*.test.mjs plugins/ponytail/test/*.test.mjs plugins/memory/test/*.test.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

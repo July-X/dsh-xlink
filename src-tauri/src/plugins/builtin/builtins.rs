@@ -88,6 +88,8 @@ impl BuiltinSpec {
 pub(crate) const OPENAI_OAUTH: &str = "openai-oauth";
 /// 内置 ponytail 的 id 常量。
 pub(crate) const PONYTAIL: &str = "ponytail";
+/// 内置本地记忆的 id 常量。接线之后内核侧按它调回环桥取记忆。
+pub(crate) const MEMORY: &str = "memory";
 
 /// 全部内置插件。**新增内置插件只改这一处**，其余模块都从这里读。
 pub(crate) const BUILTINS: &[BuiltinSpec] = &[
@@ -172,6 +174,26 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
             npm_package: "@dietrichgebert/ponytail",
         }),
     },
+    BuiltinSpec {
+        id: MEMORY,
+        row_id: "xlink-memory",
+        // 只有 host 与 package.json：本地记忆**没有上游内容**（正文在用户的实例
+        // 目录里），也没有工作台卡片（管理页是壳自己的面板，不是内核客户端模块）。
+        entries: &["host", "package.json"],
+        // host 静态 import 的只有 `@deepseek-ai/dsh-tools`（`defineTool`）。其余能力
+        // 都经 `ctx` 拿：`systemPrompt` / `tools` / `workingDirectory` 都是内核自己
+        // 的服务，不是包——**多列一个 peer 就是多一条会断的链**。
+        peers: &[PeerSpec::required("dsh-tools")],
+        entry: "host/index.js",
+        display_name: "本地记忆",
+        summary: "把本机保存的长期偏好与项目约定接进会话：模型只能读取与提候选，批准在面板里",
+        note: "开着「使用已批准的记忆」时，工作台的相关会话会带上一份有界、带来源的\
+               记忆（每条注明是通用偏好还是本项目）。模型只能**读取**与**提出候选**：\
+               候选必须你到面板点保存才生效，它改不了开关、也删不掉东西。记忆存在本机\
+               实例目录里（面板底部有路径）；选远端模型时它会随请求一起出网。",
+        has_account_card: false,
+        upstream: None,
+    },
 ];
 
 /// 按 id 取 spec。`None` 表示「这个 id 不是本版本的内置插件」——命令层据此
@@ -236,13 +258,19 @@ mod tests {
         }
     }
 
-    /// 两个内置插件恰好是 OpenAI OAuth 与 Ponytail——新增第三个时这条要一起改，
-    /// 它逼着下一个加内置插件的人把话说清楚（而不是悄悄多一个）。
+    /// 三个内置插件恰好是 OpenAI OAuth、Ponytail 与本地记忆——新增第四个时这条要
+    /// 一起改，它逼着下一个加内置插件的人把话说清楚（而不是悄悄多一个）。
+    ///
+    /// 2026-10-14 加第三个（`memory`）：它与前两个不是一类——**没有上游内容**
+    /// （记忆正文在用户的实例目录里，不在安装包里），也没有工作台客户端模块
+    /// （管理页是壳自己的面板）。它唯一的对外通道是回环桥上的三条记忆路由，
+    /// 因此 `entries` 只有 `host` 与 `package.json`、`peers` 只有 `dsh-tools`。
     #[test]
-    fn the_registry_carries_both_shipped_builtins() {
-        assert_eq!(BUILTINS.len(), 2, "改了登记表就在这里说一句为什么");
+    fn the_registry_carries_the_shipped_builtins() {
+        assert_eq!(BUILTINS.len(), 3, "改了登记表就在这里说一句为什么");
         assert!(find(OPENAI_OAUTH).is_some());
         assert!(find(PONYTAIL).is_some());
+        assert!(find(MEMORY).is_some());
         assert!(find("not-a-builtin").is_none());
     }
 
