@@ -329,6 +329,41 @@ const extractionEvents = [
   { type: 'user/message', seq: 6, data: { source: { kind: 'working-directory' } } },
 ];
 
+test('切片要收**助手的话**：两种事件的正文不在同一个地方（内核源码为据）', () => {
+  // 依据：内核 `dsh-session-query` 的 `extractSessionEventText` —— `user/message` 取
+  // `data.content`，`assistant/message` 取 `data.message.content`（`dsh-agent-loop` append 的
+  // 是 `{turn, step, message, usage}`）。第一版只读 `data.content`，于是助手的话一条都进不了
+  // 切片，静默少一半内容——而夹具当时喂的是**自己想当然的形状**，所以一直是绿的。
+  const slice = buildSlice([
+    { type: 'user/message', seq: 1, data: { source: { kind: 'user' }, content: '用户说的话' } },
+    {
+      type: 'assistant/message',
+      seq: 2,
+      data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '助手说的话' }] } },
+    },
+  ]);
+  assert.match(slice.text, /\[1\] 用户：用户说的话/);
+  assert.match(slice.text, /\[2\] 助手：助手说的话/, '助手的话必须在切片里');
+  assert.deepEqual(slice.seqs, [1, 2]);
+  // 老形状（`data.content`）不该再被当成助手正文——那是猜的，不是内核的形状。
+  const guessed = buildSlice([
+    { type: 'assistant/message', seq: 5, data: { content: [{ type: 'text', text: '猜的形状' }] } },
+  ]);
+  assert.equal(guessed.text, '', '不认识的形状就当没有正文，别硬猜');
+});
+
+test('单条正文按**字节**削，不按字符（中文一字 3 字节）', () => {
+  const slice = buildSlice([
+    { type: 'user/message', seq: 1, data: { source: { kind: 'user' }, content: '中'.repeat(20000) } },
+  ]);
+  const line = slice.text;
+  assert.match(line, /这一条被截断/);
+  const body = line.slice(line.indexOf('：') + 1);
+  const bytes = Buffer.byteLength(body.replace('\n…（这一条被截断）', ''), 'utf8');
+  assert.ok(bytes <= 8 * 1024, `单条正文不该超过 8 KiB，实际 ${bytes}`);
+  assert.ok(bytes > 8 * 1024 - 8, `也不该削得过狠，实际 ${bytes}`);
+});
+
 test('提取输出：只收能指回「用户自己说的话」的候选', () => {
   const raw = JSON.stringify([
     { title: '提交前先跑检查', body: '用户要求提交前跑 npm run check', keywords: ['提交'], evidence_seq: 3 },
