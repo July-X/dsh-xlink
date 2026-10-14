@@ -247,7 +247,14 @@ function renderEvent(event) {
   if (event?.type !== 'user/message' && event?.type !== 'assistant/message') return null;
   const kind = event.type === 'user/message' ? '用户' : '助手';
   let text = '';
-  const content = event?.data?.content;
+  // **两种事件的正文不在同一个地方**（内核 `dsh-session-query` 的 `extractSessionEventText`
+  // 就是这么分支的）：`user/message` 是 `data.content`，`assistant/message` 是
+  // `data.message.content`（`dsh-agent-loop` append 的是 `{turn, step, message, usage}`）。
+  // 第一版只读 `data.content`，于是**助手的话一条都进不了切片**，静默少一半内容、不报错、
+  // 连 `dropped` 都不计——而提示词还写着「每行是 用户/助手」。夹具当时喂的是**自己想当然的形状**，
+  // 所以它一直是绿的（独立评审核对内核源码时逮到）。
+  const content =
+    event.type === 'assistant/message' ? event?.data?.message?.content : event?.data?.content;
   if (typeof content === 'string') text = content;
   else if (Array.isArray(content)) {
     text = content
@@ -259,7 +266,20 @@ function renderEvent(event) {
   // 掩码要在**截断之前**做：截断可能把 `sk-abc…` 切成 `sk-ab`，而残留的形状反而更像真 key。
   const masked = maskSecrets(text);
   const bytes = Buffer.byteLength(masked, 'utf8');
-  const clipped = bytes > MAX_EVENT_BYTES ? `${masked.slice(0, MAX_EVENT_BYTES)}\n…（这一条被截断）` : masked;
+  // **按字节削，不按字符**：`slice` 数的是 UTF-16 码元，中文一个字 3 字节，按字符削会让单条
+  // 最多占 3× 额度（`MAX_EVENT_BYTES` 名字里写的是字节）。与 `mask.js` 的按码点切同一套纪律。
+  let clipped = masked;
+  if (bytes > MAX_EVENT_BYTES) {
+    let cut = '';
+    let used = 0;
+    for (const char of masked) {
+      const size = Buffer.byteLength(char, 'utf8');
+      if (used + size > MAX_EVENT_BYTES) break;
+      used += size;
+      cut += char;
+    }
+    clipped = `${cut}\n…（这一条被截断）`;
+  }
   return `[${Number(event.seq)}] ${kind}：${clipped}`;
 }
 

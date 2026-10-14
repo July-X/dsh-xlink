@@ -268,7 +268,13 @@ function apply(ctx) {
       await callMemory({ credentials: creds, route: 'jobs/finish', params: { token } });
       ctx.logger?.info?.(`xlink-memory: 提取完成（提交 ${result.submitted} 条，被判据拒 ${result.rejected.length} 条）`);
     } else {
-      await callMemory({ credentials: creds, route: 'jobs/fail', params: { token, error: result.reason ?? '' } });
+      // **stage 与原因一起报**：壳那边把这条写进 `jobs.json` 的 error，而插件的 logger 在这个
+      // 内核里不进 stdout——排障的人只能看这一条，缺了 stage 就只剩半句话（§8 的「出事了查什么」）。
+      await callMemory({
+        credentials: creds,
+        route: 'jobs/fail',
+        params: { token, error: `${result.stage}：${result.reason ?? ''}` },
+      });
       ctx.logger?.warn?.(`xlink-memory: 提取失败于「${result.stage}」：${result.reason}`);
     }
   }

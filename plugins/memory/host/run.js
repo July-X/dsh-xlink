@@ -44,6 +44,7 @@ export async function runExtraction({ deps, key, from, to, signal }) {
     ...(fields.reason === undefined ? {} : { reason: fields.reason }),
   });
 
+  let step = 'read';
   try {
     if (signal?.aborted) return done({ ok: false, stage: 'cancelled', reason: '开始前就被取消了' });
 
@@ -53,12 +54,14 @@ export async function runExtraction({ deps, key, from, to, signal }) {
       return done({ ok: false, stage: 'read', reason: read?.reason ?? '读取失败' });
     }
 
+    step = 'slice';
     // ② 拼切片。没有一句人话就当成功：用户没说什么值得记的。
     const slice = deps.buildSlice(read.events);
     if (!slice.text) {
       return done({ ok: true, stage: 'slice', reason: '这一段里没有一句人话' });
     }
 
+    step = 'model';
     // ③ 调模型。超时/取消在这里体现为 signal 中止。
     if (signal?.aborted) return done({ ok: false, stage: 'cancelled', reason: '调用前被取消' });
     const call = await deps.callModel({ system: deps.system, text: slice.text, key, signal });
@@ -66,6 +69,7 @@ export async function runExtraction({ deps, key, from, to, signal }) {
       return done({ ok: false, stage: 'model', reason: call?.reason ?? '模型调用失败' });
     }
 
+    step = 'parse';
     // ④ 校验。解析失败是失败，**空数组是成功**（设计 §8-5）。
     const parsed = deps.parse(call.text, { events: read.events });
     if (parsed?.ok !== true) {
@@ -80,6 +84,7 @@ export async function runExtraction({ deps, key, from, to, signal }) {
       });
     }
 
+    step = 'submit';
     // ⑤ 提交。提交失败要说清「有几条没进去」——否则那几条就悄悄没了。
     if (signal?.aborted) return done({ ok: false, stage: 'cancelled', reason: '提交前被取消' });
     const submitted = await deps.submit({ key, candidates: parsed.candidates });
@@ -100,7 +105,8 @@ export async function runExtraction({ deps, key, from, to, signal }) {
       submitted: Number(submitted.submitted ?? parsed.candidates.length),
     });
   } catch (error) {
-    // 纪律 1：不抛。哪一步炸的都算「跑不成」，但原因要留住。
-    return done({ ok: false, stage: 'model', reason: `提取过程抛了异常：${String(error?.message ?? error)}` });
+    // 纪律 1：不抛。哪一步炸的都算「跑不成」，但**要说清是哪一步**——第一版一律记成 'model'，
+    // 于是「读日志时抛了」和「模型炸了」在壳那边长得一模一样（独立评审第 4 条）。
+    return done({ ok: false, stage: step, reason: `提取过程抛了异常：${String(error?.message ?? error)}` });
   }
 }

@@ -261,8 +261,14 @@ export function applyResult(state, turn, text, generation) {
 
 import { maskSecrets } from './mask.js';
 
-/** 提取器版本。**换版本就是换任务键**（旧结果不许覆盖新结果，§8-6）。 */
-export const EXTRACTOR_VERSION = 'xlink-memory-extract/1';
+/**
+ * 提取器版本。**换版本就是换任务键**（旧结果不许覆盖新结果，§8-6）。
+ *
+ * **只有一份，在 `extract.js`**（那里离提示词与输出 schema 最近，改它们时最自然的落点是那儿）。
+ * 这里曾经各写一份：改 `extract.js` 的提示词不会动到入队用的这份，壳按任务键写的
+ * `source.revision` 也不会变——「换提取器 = 换任务键」就静默失效了（独立评审第 8 条）。
+ */
+export { EXTRACTOR_VERSION } from './extract.js';
 
 /**
  * 「人类消息」的 source kind（§8-1「只安排有用户内容…的会话」）。
