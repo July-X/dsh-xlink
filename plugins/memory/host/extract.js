@@ -134,11 +134,18 @@ function extractJson(raw) {
  * @param {object[]} context.events - 冻结范围内的原始事件（用来验 `evidence_seq`）。
  * @param {number} [context.maxCandidates] - 本次最多收几条。
  * @param {number} [context.maxEncodedBodyBytes] - 正文**编码后**的上限（见 `MAX_ENCODED_BODY_BYTES`）。
+ * @param {Set<number>} [context.allowedSeqs] - **模型实际看到的那一段**的 seq 集合；给了它就只认
+ *   这一段里的来源引用（否则判据会覆盖整个会话，见上面那段注释）。
  * @returns {{ok: boolean, candidates: object[], rejected: object[], reason?: string}}
  */
 export function parseExtractionOutput(
   raw,
-  { events = [], maxCandidates = MAX_CANDIDATES, maxEncodedBodyBytes = MAX_ENCODED_BODY_BYTES } = {}
+  {
+    events = [],
+    maxCandidates = MAX_CANDIDATES,
+    maxEncodedBodyBytes = MAX_ENCODED_BODY_BYTES,
+    allowedSeqs,
+  } = {}
 ) {
   const parsed = extractJson(raw);
   if (parsed === null) {
@@ -168,6 +175,10 @@ export function parseExtractionOutput(
   for (const event of Array.isArray(events) ? events : []) {
     if (event?.type !== 'user/message') continue;
     if (event?.data?.source?.kind !== 'user') continue;
+    // **只认喂给模型的那一段**（`allowedSeqs` = 切片的 seq 集合）。独立评审第 7 条：
+    // 原先判据覆盖**整个会话**，于是模型只要幻觉（或猜中）一个历史人类消息的序号就能过，
+    // 而「工具输出里的指令不能升级成用户偏好」那条也形同虚设——一段历史里总能找到一个人类序号。
+    if (allowedSeqs && !allowedSeqs.has(Number(event.seq))) continue;
     humanSeqs.add(Number(event.seq));
   }
 

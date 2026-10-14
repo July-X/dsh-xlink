@@ -385,6 +385,27 @@ test('提取输出：只收能指回「用户自己说的话」的候选', () =>
   }
 });
 
+test('来源引用只认**模型看到的那一段**，不认整个会话（评审第 7 条）', () => {
+  // 会话里有一条很早的人类消息（seq 2），但它**不在**喂给模型的切片里（切片只含 seq 40 以后）。
+  const events = [
+    { type: 'user/message', seq: 2, data: { source: { kind: 'user' }, content: '很久以前说过的话' } },
+    { type: 'user/message', seq: 40, data: { source: { kind: 'user' }, content: '这一段里说的话' } },
+  ];
+  const raw = JSON.stringify([
+    { title: '编的', body: '引用了历史里的序号', evidence_seq: 2 },
+    { title: '真的', body: '引用这一段里的序号', evidence_seq: 40 },
+  ]);
+  // 不给 allowedSeqs 时是旧行为（覆盖整个会话）——历史里的 2 也能过。
+  const loose = parseExtractionOutput(raw, { events });
+  assert.equal(loose.candidates.length, 2, '旧行为：不限定范围');
+  // 给了 allowedSeqs（= 切片的 seq 集合）之后，只有这一段里的才算数。
+  const strict = parseExtractionOutput(raw, { events, allowedSeqs: new Set([40]) });
+  assert.equal(strict.candidates.length, 1, '只有切片里的那条算数');
+  assert.equal(strict.candidates[0].evidence_seq, 40);
+  assert.equal(strict.rejected.length, 1);
+  assert.match(strict.rejected[0].reason, /不是这一段里用户自己说的话/);
+});
+
 test('提取输出：空集合算成功，坏 JSON 才算失败', () => {
   assert.deepEqual(parseExtractionOutput('[]', { events: extractionEvents }), {
     ok: true,
@@ -1276,6 +1297,9 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
     /route: 'jobs\/claim',\s*params: \{ session: String\(sessionId \?\? ''\) \}/,
     '领取要带上自己的会话'
   );
+  assert.match(code, /route: 'jobs\/renew'/, '跑得久要续租（评审第 9 条：租约长度 == 自己的时限）');
+  assert.match(code, /clearInterval\(renewTimer\)/, '收工要停掉续租计时器');
+  assert.match(code, /renewed === false/, '续不到（被接管）要提前收工，别白烧一次模型调用');
   assert.match(code, /route: 'jobs\/finish'/, '成功要收尾');
   assert.match(code, /route: 'jobs\/fail'/, '失败要退回（否则那条任务永远占着）');
   assert.match(code, /llm\.prepareCall\(/, '模型调用要用 prepareCall（模板见 sess-title-llm）');
