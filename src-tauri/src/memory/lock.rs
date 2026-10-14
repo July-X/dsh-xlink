@@ -31,7 +31,9 @@
 //! 当前调用点都在「一次读-改-写」的最外层（`store::mutate` / `jobs::mutate`），没有嵌套；
 //! 新增写入路径时要留意这一点。
 
+use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
+use std::marker::PhantomData;
 use std::path::Path;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -45,12 +47,29 @@ pub(crate) const LOCK_FILE: &str = ".write.lock";
 const WAIT_TOTAL: Duration = Duration::from_millis(500);
 const WAIT_STEP: Duration = Duration::from_millis(25);
 
-/// 跨进程写锁：**构造即加锁**，`Drop` 即释放。
+thread_local! {
+    /// 本线程已经把这把锁拿了几层（`0` = 没拿）。
+    ///
+    /// 为什么需要它：`/submit` 要**跨两次写**（先按令牌判租约、再写候选）才关得上「判完到写之间
+    /// 被接管」的窗口，而它中间调用的 `store::submit_candidate` 会再拿一次锁——`flock` 按**文件
+    /// 描述**算，同进程再开一个描述符也拿不到，于是自己把自己拒了（独立评审第 10 条）。
+    /// 有这层计数之后，**同一线程**嵌套拿锁变成空操作；另一个线程照旧要排队（那是我们想要的：
+    /// 跨文件的写本来就该串行）。
+    static DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// 跨进程写锁：**构造即加锁**，`Drop` 即释放。**同线程可重入**（见 [`DEPTH`]）。
 ///
 /// `Debug` 是给测试用的：`WriteLock::new(...).unwrap_err()` 要求 `Ok` 那侧能打印。
+///
+/// `PhantomData<*const ()>` 让它**不是 `Send`**：可重入计数是**线程局部**的，guard 被搬到别的线程
+/// 去 drop 会让原来那个线程的计数永远停在 1，之后它在同一线程里的嵌套拿锁就再也不加锁了——
+/// 那是静默失去互斥，比编译错误难查得多。
 #[derive(Debug)]
 pub(crate) struct WriteLock {
-    file: File,
+    /// `None` = 重入的那一层：不重复加锁，`Drop` 时也不释放（释放是外层的事）。
+    file: Option<File>,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl WriteLock {
@@ -60,6 +79,13 @@ impl WriteLock {
         fs::create_dir_all(dir).map_err(|error| {
             AppError::Memory(format!("无法创建记忆目录 {}：{error}", dir.display()))
         })?;
+        if DEPTH.with(|depth| depth.get()) > 0 {
+            DEPTH.with(|depth| depth.set(depth.get() + 1));
+            return Ok(Self {
+                file: None,
+                _not_send: PhantomData,
+            });
+        }
         let path = dir.join(LOCK_FILE);
         let file = OpenOptions::new()
             .create(true)
@@ -73,7 +99,13 @@ impl WriteLock {
         let deadline = Instant::now() + WAIT_TOTAL;
         loop {
             match file.try_lock() {
-                Ok(()) => return Ok(Self { file }),
+                Ok(()) => {
+                    DEPTH.with(|depth| depth.set(1));
+                    return Ok(Self {
+                        file: Some(file),
+                        _not_send: PhantomData,
+                    });
+                }
                 Err(_) if Instant::now() < deadline => sleep(WAIT_STEP),
                 Err(error) => {
                     return Err(AppError::Memory(format!(
@@ -89,8 +121,12 @@ impl WriteLock {
 
 impl Drop for WriteLock {
     fn drop(&mut self) {
+        DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+        // 重入那一层没有自己的文件描述符，释放是外层的事。
         // 释放是幂等的；drop 里不能抛，失败就让它随进程结束一起消失。
-        let _ = self.file.unlock();
+        if let Some(file) = &self.file {
+            let _ = file.unlock();
+        }
     }
 }
 
@@ -147,6 +183,36 @@ mod tests {
             .write(true)
             .open(dir.join(LOCK_FILE))
             .unwrap()
+    }
+
+    /// **同一线程可以重入**（`/submit` 要跨两次写才关得上「判完到写之间被接管」的窗口，
+    /// 而中间那次 `store::submit_candidate` 会再拿一次锁），**别的线程仍然被挡住**。
+    #[test]
+    fn the_same_thread_may_reenter_but_another_thread_still_waits() {
+        let dir = temp_dir("reentrant");
+        let outer = WriteLock::new(&dir).unwrap();
+
+        // 同线程再拿一次：立刻成功（不阻塞、不报「另一个壳在写」），而且锁还在手上。
+        let started = Instant::now();
+        let inner = WriteLock::new(&dir).expect("同线程嵌套该直接成功");
+        assert!(
+            started.elapsed() < WAIT_TOTAL / 2,
+            "嵌套拿锁不该等（等了 {:?}，那说明它去抢文件锁了）",
+            started.elapsed()
+        );
+        assert!(lock_is_held(&dir), "重入的那一层不该把锁放掉");
+
+        // 另一线程：照样拿不到（这才是互斥真正的形状）。
+        let probe_dir = dir.clone();
+        let other = std::thread::spawn(move || {
+            assert!(WriteLock::new(&probe_dir).is_err(), "别的线程不该拿到");
+        });
+        other.join().unwrap();
+
+        drop(inner);
+        assert!(lock_is_held(&dir), "内层 drop 之后外层还拿着");
+        drop(outer);
+        assert!(!lock_is_held(&dir), "外层 drop 之后才真的放掉");
     }
 
     #[test]
