@@ -252,7 +252,9 @@ flowchart LR
 | --- | --- |
 | `src-tauri/src/memory/store.rs` | 权威记录：命名空间解析（`default_instance_key` + `settings.profile`）、损坏即报错、schema 降级拒绝、CAS 更新、删除即记正文指纹、候选提交与批准 |
 | `src-tauri/src/memory/query.rs` | 有界检索与注入文本：确定性打分（固定项 > 关键词 > 项目匹配 > 验证范围）、条数与字节预算、按 UTF-8 边界截断、关掉开关时返回 `enabled: false` |
-| `src-tauri/src/memory/cmd.rs` | 十条面板命令（状态 / 列表 / 保存 / 读取 / 停用 / 删除 / 开关 / 批准候选 / 提交候选 / 预览注入）；**没有进 `commands.rs`**（反棘轮文件） |
+| `src-tauri/src/memory/cmd.rs` | 十条面板命令（状态 / 列表 / 保存 / 读取 / 停用 / 删除 / 开关 / 批准候选 / 提交候选 / 预览注入 / 导出 / 打开导出目录）；**没有进 `commands.rs`**（反棘轮文件） |
+| `src-tauri/src/memory/workspaces.rs` | 只读内核的 `<DSH_HOME>/storages/workspace.json`（面板下拉用）；`normalize_path` 把手填路径归成内核那种 realpath |
+| `src-tauri/src/memory/input.rs` | 一条记忆/候选的**输入规范化**（去空白、限长、范围归一、关键词清理）：面板保存与模型提候选共用同一份判断 |
 | `src-tauri/src/shell/paths.rs` | `instance_memory_dir` / `instance_memory_file`：`<instance_dir>/memory/<profile>/`，过 `validate_id_component` |
 | `src-tauri/src/shell/error.rs` | `AppError::Memory` |
 | `scripts/check-code-budget.mjs` | 新文件登记；`TOTAL_BUDGET` 47955 → 48950（记忆首块 919 行）；**并修正了计数器的假阴性**（注释里的 `/*` 会让整份文件被当成块注释吞掉，三份既有文件因此长期少算约 490 行，`ui/src/memory/memory.js` 更被算成 0 行） |
@@ -260,7 +262,7 @@ flowchart LR
 | `plugins/builtin/bridge.rs` | 回环桥上的三条记忆路由：`context`（有界检索）/ `read`（读一条并记一次显式使用）/ `propose`（只进待确认）+ 百分号解码（中文正文不编码就会以 `%E4%B8%AD…` 入库）+ 端到端测试（起真桥、真令牌、真 store） |
 | `plugins/memory/` | 内置插件 `xlink-memory`：`agent/created` 里按 agent 作用域注册 `xlink.memory` 上下文贡献、`pre-step` 每回合取一次检索（会话级上限 3 次）、`memory_search` / `memory_read` / `memory_propose` 三个工具；失败一律清空缓存、绝不抛 |
 | `builtins.rs` / `prepare-builtin-plugins.mjs` | 第三个内置插件的登记（`entries` 只有 host 与 package.json、`peers` 只有 `dsh-tools`），两份清单由 `dev-builtin.test.mjs` 钉死 |
-| 单测 | Rust 17 条记忆单测 + 桥 7 条（含端到端）；插件 9 条纯函数测试 |
+| 单测 | Rust 30 条记忆单测 + 桥 7 条（含端到端）；插件 13 条纯函数测试（`test:plugin`，**已挂进 CI**） |
 | 真实内核挂载验证 | 临时 `DSH_HOME` + 软链 profile 依赖启动 `dsh web`：`--dump-config` 的合成树里能看到 `xlink-memory` 行（绝对路径被规范成 `file://…`），插件 `apply()` 确实执行（标记文件），`inject` 的三个服务全部解析——**“插件级 logger 不可见”这条也是这次实测出来的**。工作区对齐那一轮又验了一次：`ctx.inject(['workspaceRegistry'])` 的回调在 4 秒内拿到服务（标记里 `registryAtApply: ready`），插件照常加载 |
 | 工作区对齐（2026-10-14 晚） | `memory/workspaces.rs` **只读**内核的 `<DSH_HOME>/storages/workspace.json`；面板的「本项目」变成下拉（已知工作区 + 手填兜底），保存时带上真实的 `workspace_id`；插件经 `ctx.inject(['workspaceRegistry'])`（**按需注入，不进 `inject` 数组**）解析 id 随 `id` 参数送桥。`query::scope_matches` 因此是「先 id、再路径」：项目改名/换盘后仍能对上 |
 | 面板的注入插件告警 | 开关打开而 `xlink-memory` 未启用时，面板直说「保存的记忆不会进入任何会话」并给一个启用按钮——这是两个开关，少一个整条链路不生效 |
@@ -270,11 +272,13 @@ flowchart LR
 | 真壳冒烟（2026-10-14 夜） | `e2e/specs/memory.spec.mjs`（3 条，`npm run e2e` 会拉起真 app）：① 侧栏里有「记忆」项、点它会被标成当前项；② `memory_status` / `memory_list` / `memory_workspaces` 在真壳里都能解析（桥真的通，不是「面板画出来了」）；③ 打开记忆页没有往控制台扔错误。**边界如实写进用例**：面板内容的渲染在这条通道里验不了——WebDriver 拉起的窗口在后台，WKWebView 不跑 rAF，而 `App.vue` 的面板切换是 `<Transition mode="out-in">`，leave 永不结束、新面板不挂载；**每个面板都一样**（设置 / 插件实测同样停在 `leave-active`），禁用过渡、手动派发 `transitionend`、把窗口提到前台三种办法都试过，都不解决 |
 | 按 id 读的归属校验（2026-10-14 夜） | 桥的 `read` 路由补上项目这道门：**先查、再判、最后计数**。id 猜不到，但会话历史里留着旧 id——不校验就能在 B 项目里把 A 项目的记忆读出来，而设计承诺的是「A 项目保存的记忆不进入 B 项目」。顺序反过来时被拒的读还会把「已用 N 次」加上去，统计被越权尝试污染（这条是写完测试才发现的：断言 `use_count == 1` 时拿到 3）。调用方不给坐标时项目记录一律不通过——没有坐标就没有访问权 |
 | 启用路径与路径规范化（2026-10-14 夜） | ① 物化自动判据：只带一个 `host` 目录、没有上游内容的内置插件也能物化，且**必需的 peer 真的被挂上**（`materialize` 里新增一条，钉的是「启用之后内核能不能 import 它」）；② 手填项目路径在**写入口**规范化成内核那种 `realpath`（符号链接、结尾斜杠、Windows 的 `\\?\` 前缀剥离；纯函数全平台可测，因为 `#[cfg(windows)]` 分支本机编译不到），并有一条钉**调用点**的用例——helper 有测试而接线没有，是这个仓库反复栽过的形状 |
+| **跨模块边界复查（2026-10-14 复核）** | 一次评审把「设计承诺过但接线没跟上」的六条找出来并补上：① **停用挡不住按 id 读**——注入表头是 `[id] 标题`，id 一直留在会话历史里，而桥的 `read` 只过项目归属那一道门；`store::find_by_id(.., false)` 现在把状态一起挡（面板自己看已停用的那条走另一条命令，不受影响）。② **切换工作目录不清缓存**——`policy::retarget` 在目录变了时清空缓存**并归零注入预算**：只清文本会让预算耗尽后的会话永远检索不到，不清文本则 A 项目的记忆一路注入 B。③ **长消息静默失效**——桥的请求头缓冲是固定 8 KB，而 `q` 装的是用户消息全文，中文编码后 3 倍膨胀：实测 1000 字即越界，越界后桥**一个字节的响应都不写**就关连接，插件只看到 `socket hang up`。`userText` 按 500 字截尾，`callMemory` 另有一道 `MAX_PATH_BYTES` 硬闸，把「太长」说成「太长」而不是「桥不可用」。④ **候选无上限**——`memory_propose` 是模型可触达的写入路径，而裁剪只删已决候选；现在待确认到 `MAX_PENDING_CANDIDATES` 就拒收，并拒收正文命中删除指纹的提交（设计 §7.3）。⑤ **`list()` 把同一份文件读两遍**，面板刷新与 `memory_read` 每次多解析一遍整份 JSON，改为 `status_from(doc)`。⑥ **`title` 没有长度上限**——正文限了标题不限，标题一长注入表头就把正文预算饱和到 0、整条被跳过。 |
+| **输入规范化的共享层** | `memory/input.rs`：面板保存与模型提候选原先**各抄一份**「什么算一条合法的记忆」（去空白、限长、范围归一、关键词清理），改一边漏一边的症状是「面板存得进去、模型存不进去」。抽出来之后 `store.rs` 净减，665 行的反棘轮预算不动——**是靠删重复过的，不是抬数字**。顺带修掉一个真 bug：候选原先不要求工作区坐标，于是收下一条**谁都检索不到**的记录（`scope_matches` 两项都空一律不通过），白躺在「待确认」里。 |
+| **只在 Windows 上成立的测试** | `a_hand_typed_path_is_normalized_at_the_write_entry` 与 `workspaces::normalize_path_resolves_symlinks_and_trailing_separators` 两条都把 `fs::canonicalize` 的原始结果当期望值，而 Windows 上它带 `\\?\` 前缀、`normalize_path` 会剥掉——**在 Windows 上跑必然红**。它们一直绿着是因为 Windows CI 那个 job 只跑 `cargo check --all-targets`、从不执行测试（`desktop-ci.yml` 的注释写明「不跑测试」）。两处的期望值都改成走同一个规范化函数。 |
 
 IPC 与落盘都用 **snake_case**：`check-invariants` 的 `ipc-fields` 抓到过一版 camelCase 序列化——`total_bytes` 与既有前端读的同名字段相撞，会被判成「前端读到 undefined」。
 
 尚未落地（按顺序）：
-
 1. **真实模型下的行为验收**：链路已经端到端打通（见上表，桩模型），还没验的是「真模型拿到这些记忆之后会不会照着做」——那是一次真实会话的事（会用到模型额度），也是唯一需要它的部分。
 2. 会话里「本次用了哪几条记忆」的回执（P2）：现在只有壳侧 `memory-bridge` 调用留痕，用户在工作台看不到。
 3. 自动提取（P2）：本地模型验收通过前，面板显示「不可用及原因」，不用同一个「已开启」掩盖缺失能力。

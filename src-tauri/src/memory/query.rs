@@ -14,8 +14,8 @@
 use serde::Serialize;
 
 use crate::memory::store::{
-    self, load, ListFilter, MemoryDoc, MemoryRecord, Namespace, SCOPE_GENERAL, SCOPE_PROJECT,
-    SOURCE_MANUAL, STATE_ACCEPTED, VERIFICATION_STALE, VERIFICATION_VERIFIED,
+    load, MemoryDoc, MemoryRecord, Namespace, SCOPE_GENERAL, SCOPE_PROJECT, SOURCE_MANUAL,
+    STATE_ACCEPTED, VERIFICATION_STALE, VERIFICATION_VERIFIED,
 };
 use crate::shell::error::AppError;
 
@@ -60,25 +60,6 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &text[..end]
-}
-
-/// 按 id 取一条记录，但**不记使用**。
-///
-/// 回环桥的 `read` 路由先用它过项目这道门，通过了才调 `store::read_and_note_use`。
-/// 顺序不能反：先计数再判权限的话，**被拒的读也会把「已用 N 次」加上去**——统计被
-/// 越权尝试污染，而用户看到的是一份说不清的数字。
-pub(crate) fn find(ns: &Namespace, id: &str) -> Option<MemoryRecord> {
-    store::list(
-        ns,
-        &ListFilter {
-            scope: String::new(),
-            include_disabled: true,
-            include_candidates: false,
-        },
-    )
-    .memories
-    .into_iter()
-    .find(|row| row.id == id)
 }
 
 /// 这条记录是否属于调用方当前的项目（通用偏好对谁都算）。

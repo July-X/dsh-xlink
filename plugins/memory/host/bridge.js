@@ -30,6 +30,19 @@ export const TOKEN_ENV = 'DSH_XLINK_BUILTIN_BRIDGE_TOKEN';
 export const REQUEST_TIMEOUT_MS = 1500;
 
 /**
+ * 拼出来的路径（含查询串）字节上限。
+ *
+ * 壳那边 `openai::http::read_request` 的缓冲是**固定 8 KB**，而 `GET` 的查询串与
+ * 请求头共用这一个额度。越界之后它返回「请求头不完整」，**一个字节的响应都不写**
+ * 就关掉连接——插件侧只看到 `socket hang up`，被包成「无法连接记忆桥」，而模型会
+ * 把这句话原样讲给用户听：用户会去查壳的进程，而不是知道自己写得太长。
+ *
+ * 所以在发出去之前拦一道，把「太长」这件事说清楚。留 1 KB 余量给 `Host` 与
+ * `Authorization` 两行请求头。
+ */
+export const MAX_PATH_BYTES = 7000;
+
+/**
  * 读桥凭据。**两样缺一就当作没有桥**：只有地址没有令牌只会白跑一趟并拿回 401。
  *
  * @param {object} env - 进程环境（默认 `process.env`）。
@@ -115,6 +128,16 @@ export async function callMemory(
 ) {
   if (!credentials) return { ok: false, reason: '本机壳没有为这个内核起记忆桥' };
   const path = buildPath(route, params);
+  // 先按**字节**量一遍大小再发：中文编码后是 3 倍膨胀，按字符数判断会漏。
+  const bytes = Buffer.byteLength(path, 'utf8');
+  if (bytes > MAX_PATH_BYTES) {
+    return {
+      ok: false,
+      reason:
+        `这条记忆太长了（编码后约 ${bytes} 字节，通道上限 ${MAX_PATH_BYTES} 字节）。` +
+        '请拆成更短的几条分别提交——一次发不过去的内容，拆开就能过。',
+    };
+  }
   let response;
   try {
     response = await transport({ url: credentials.url, token: credentials.token, path, timeoutMs });

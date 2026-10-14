@@ -18,7 +18,21 @@
 export const MAX_INJECTIONS_PER_SESSION = 3;
 
 /**
- * 取这一步领取到的消息里**最后一条用户消息**的纯文本。
+ * 送进桥的查询文本上限（字符）。
+ *
+ * 桥的请求头缓冲是固定 **8 KB**，而 `GET` 的查询串连同请求头都算在里面。中文经
+ * `URLSearchParams` 编码后一个字符变 9 个字节（3 字节 UTF-8 × `%XX`），三倍膨胀——
+ * 实测一条 1000 字的中文消息会让请求行到 9216 字节，直接越界。那之后
+ * `read_request` 返回「请求头不完整」，**一个字节的响应都不写**就关连接，插件拿到
+ * `socket hang up`，于是这一回合静默地没有记忆，而插件日志在这个内核里一行都不出
+ * （设计稿 §9 的实测结论），用户与面板都看不见任何提示。
+ *
+ * **取尾部而不是头部**：最靠近当前要求的那几句才是检索要的。
+ */
+export const MAX_QUERY_CHARS = 500;
+
+/**
+ * 取这一步领取到的消息里**最后一条用户消息**的纯文本，按 [`MAX_QUERY_CHARS`] 截尾。
  *
  * 只认 `source.kind === 'user'`：运行上下文、工作区指令、技能目录都是 user 角色
  * 的注入消息，把它们当查询会得到「拿自己的注入去检索」的回声。
@@ -37,7 +51,7 @@ export function userText(messages) {
       .map((block) => block.text)
       .join('\n')
       .trim();
-    if (text) return text;
+    if (text) return text.slice(-MAX_QUERY_CHARS);
   }
   return '';
 }
@@ -46,7 +60,7 @@ export function userText(messages) {
  * 这一步要不要去检索。
  *
  * 同一个回合只检索一次（pre-step 每步都跑）；超过会话上限就不再刷新——缓存里那份
- * 继续生效，直到用户删除/停用/切目录把它清掉。
+ * 会一直生效，**直到这个会话的目录变了**（见 [`retarget`]）。
  *
  * @param {{turn: number, injections: number}} state
  * @param {number} turn
@@ -59,12 +73,32 @@ export function shouldRefresh(state, turn, maxInjections = MAX_INJECTIONS_PER_SE
 }
 
 /**
+ * 会话中途换了工作目录时的处理：**清空缓存并把注入预算归零**。
+ *
+ * 这是「A 项目保存的记忆不进入 B 项目」在运行侧的最后一道。少了它，上一个项目的
+ * 正文会一路留在注入块里：用户在内核里换目录是支持的（`working-directory/change`，
+ * 设计稿 §3.1 第 5 条），而三条清缓存的触发里只有这一条在代码里真的存在——
+ * 「用户删除/停用」同样依赖它，否则预算用完之后删掉的记忆照样每轮注入。
+ *
+ * **归零预算是必须的**，不只是清文本：`shouldRefresh` 到顶后永远返回 false，
+ * 只清文本会得到「本回合没有记忆、之后每一回合也没有」的死会话。
+ *
+ * @param {{turn: number, text: string, injections: number, workspace: string}} state
+ * @param {string} workspace - 这一步的**有效**工作目录。
+ * @returns {{turn: number, text: string, injections: number, workspace: string}}
+ */
+export function retarget(state, workspace) {
+  if (state.workspace === workspace) return state;
+  return { turn: -1, text: '', injections: 0, workspace };
+}
+
+/**
  * 检索成功后的缓存。文本没变就不算一次注入（内核也不会因此多一条快照）。
  *
- * @param {{turn: number, injections: number}} state
+ * @param {{turn: number, text: string, injections: number, workspace: string}} state
  * @param {number} turn
  * @param {string} text
- * @returns {{turn: number, text: string, injections: number}}
+ * @returns {{turn: number, text: string, injections: number, workspace: string}}
  */
 export function applyResult(state, turn, text) {
   const next = typeof text === 'string' ? text : '';
@@ -72,6 +106,7 @@ export function applyResult(state, turn, text) {
     turn,
     text: next,
     injections: state.injections + (next === state.text ? 0 : 1),
+    workspace: state.workspace,
   };
 }
 
@@ -81,12 +116,12 @@ export function applyResult(state, turn, text) {
  * 沿用会让「服务已经关掉/删掉了那条」的会话继续看到旧记忆——用户以为停用生效了，
  * 而模型还在照着它做事。空缓存 + 回合标记保证本回合不再重试，下一回合再试一次。
  *
- * @param {{turn: number, injections: number}} state
+ * @param {{turn: number, text: string, injections: number, workspace: string}} state
  * @param {number} turn
- * @returns {{turn: number, text: string, injections: number}}
+ * @returns {{turn: number, text: string, injections: number, workspace: string}}
  */
 export function applyFailure(state, turn) {
-  return { turn, text: '', injections: state.injections };
+  return { turn, text: '', injections: state.injections, workspace: state.workspace };
 }
 
 /**
