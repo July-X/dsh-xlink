@@ -120,6 +120,16 @@ fn memory_namespace(scope_key: &str) -> crate::memory::store::Namespace {
     crate::memory::store::Namespace::for_bridge(family, instance)
 }
 
+/// 记忆路由的调用留痕。
+///
+/// **为什么留痕在壳这一侧**：2026-10-14 实测，插件里的 `ctx.logger.info/warn` 在这个
+/// 内核里一行都不进 stdout（同一个进程里 `dsh:` 自己的告警照常打印），所以「记忆到底
+/// 有没有被调用过」在插件那边答不了。壳这边写一行 `shell_events` 就同时出现在
+/// 「查看日志」面板里——**只记路由与计数，不记记忆正文**（正文是用户私有内容）。
+fn note_memory_call(route: &str, detail: &str) {
+    crate::shell::shell_events::record("memory-bridge", &format!("{route} {detail}"));
+}
+
 fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) {
     let Ok(request) = crate::openai::http::read_request(stream) else {
         return;
@@ -154,6 +164,10 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
             let workspace = query_decoded(path, "workspace");
             match crate::memory::query::retrieve(&namespace, &query, "", &workspace) {
                 Ok(context) => {
+                    note_memory_call(
+                        "context",
+                        &format!("enabled={} hits={}", context.enabled, context.hits.len()),
+                    );
                     let body = serde_json::to_string(&context)
                         .unwrap_or_else(|_| r#"{"enabled":false}"#.to_string());
                     let _ =
@@ -180,6 +194,10 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
             }
             match crate::memory::store::read_and_note_use(&namespace, &id) {
                 Ok(record) => {
+                    note_memory_call(
+                        "read",
+                        &format!("id={} revision={}", record.id, record.revision),
+                    );
                     let body = serde_json::to_string(&record).unwrap_or_else(|_| "{}".to_string());
                     let _ =
                         crate::openai::http::write_response(stream, 200, "application/json", &body);
@@ -219,6 +237,7 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
             };
             match crate::memory::store::submit_candidate(&namespace, input) {
                 Ok(candidate) => {
+                    note_memory_call("propose", &format!("candidate={}", candidate.id));
                     let body = serde_json::json!({
                         "id": candidate.id,
                         "state": candidate.state,
@@ -471,6 +490,13 @@ mod tests {
         assert!(context.contains("构建前先跑检查"), "{context}");
         assert!(context.contains("\"enabled\":true"), "{context}");
 
+        // 调用要留痕（壳侧 shell_events）：插件里的 `ctx.logger` 在这个内核里不进
+        // stdout（2026-10-14 实测），没有这行就没法回答「记忆到底有没有被调用过」。
+        assert!(
+            log_contains(&home, "memory-bridge", "context enabled=true"),
+            "记忆路由没有留下调用记录"
+        );
+
         // 关掉开关：如实回 enabled:false，而不是「没找到」。
         store::set_use_approved(&namespace, false).expect("disable");
         let disabled = http_get(
@@ -517,6 +543,35 @@ mod tests {
         let mut response = String::new();
         stream.read_to_string(&mut response).expect("read");
         response
+    }
+
+    /// 临时目录里有没有一份含这两个片段的日志（壳侧留痕的判据）。
+    fn log_contains(dir: &Path, name: &str, needle: &str) -> bool {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if log_contains(&path, name, needle) {
+                    return true;
+                }
+                continue;
+            }
+            if !path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.contains(name))
+            {
+                continue;
+            }
+            if let Ok(text) = fs::read_to_string(&path) {
+                if text.contains(needle) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     #[test]

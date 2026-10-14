@@ -332,7 +332,11 @@ const FILE_BUDGETS = {
   // 解码 + 一个端到端测试。**桥仍然是「能力面越小越好」那条纪律下最小的**：
   // 三条路由里没有一条能改权威记录——propose 只写待确认，批准只存在于面板的
   // Tauri 命令面。解码是必须的：中文正文不编码就会以 `%E4%B8%AD…` 存进记忆库。
-  'src-tauri/src/plugins/builtin/bridge.rs': 280,
+  //
+  // 280 → 295（同日稍后）：调用留痕（`note_memory_call` → `shell_events`）。这条不是
+  // 装饰——实测插件里的 `ctx.logger` 在这个内核里一行都不进 stdout，没有壳侧留痕就
+  // 没法回答「记忆到底有没有被调用过」；测试同时钉住留痕真的写了。
+  'src-tauri/src/plugins/builtin/bridge.rs': 295,
   // 2026-10-12：桥的**凭据落盘**（把地址与令牌另写一份 0600 的 .xlink-bridge.json
   // 到每个已物化插件根下）。从 bridge.rs 拆出来的理由：桥本身是「回环 HTTP 服务 +
   // 鉴权 + 单端点」，凭据落盘是「往磁盘上放一个别的进程要读的文件」——两者的
