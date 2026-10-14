@@ -34,6 +34,10 @@ import {
   afterCompaction,
   applyStep,
   beginStep,
+  emptyExtractState,
+  EXTRACTOR_VERSION,
+  noteSessionEvent,
+  shouldScheduleExtraction,
   resolveWorkspaceId,
   shouldProbeLibrary,
   userText,
@@ -109,10 +113,46 @@ function apply(ctx) {
   // an enclosing scope receives every descendant scope's events`，反过来（挂在更靠里的 agent
   // scope 上）**一条都收不到**，而且没有任何症状：压缩之后只是再也不注入记忆。
   ctx.on('session/event', (session, event) => {
-    if (event?.type !== 'compaction/end') return;
     const box = agentStates.get(String(session?.id ?? ''));
-    if (box) box.state = afterCompaction(box.state);
+    if (!box) return;
+    if (event?.type === 'compaction/end') {
+      box.state = afterCompaction(box.state);
+      return;
+    }
+    // P2：这一段里有真的人类消息就记下它的序号（纯注入的回合不算，见 `HUMAN_SOURCE`），
+    // 回合正常结束时排一个提取任务。**排任务失败不抛也不阻断**——会话照常走，下一次
+    // 正常结束的回合游标更靠后，范围里还包含这些内容。只有成功才推进游标：
+    // 否则这一次的内容就再也没人看它了。
+    box.extract = noteSessionEvent(box.extract, event);
+    const decision = shouldScheduleExtraction(box.extract, event);
+    if (!decision.schedule || !credentials) return;
+    box.extract = { ...box.extract, lastCursor: decision.cursor };
+    void enqueueExtraction(credentials, session, decision.cursor);
   });
+
+  /**
+   * 排一个自动提取任务（P2）。**只有壳点了头才算数**：开关关着时桥那边答 `disabled`，
+   * 这里只记一行 warn——「获许可的会话」是设计 §8-1 的第三条判据，不放在插件里判，
+   * 免得两个地方各有一份「开关是什么状态」。
+   */
+  async function enqueueExtraction(creds, session, cursor) {
+    const result = await callMemory({
+      credentials: creds,
+      route: 'jobs/enqueue',
+      params: {
+        session: String(session?.id ?? ''),
+        cursor,
+        extractor: EXTRACTOR_VERSION,
+      },
+    });
+    if (!result.ok) {
+      ctx.logger?.warn?.(`xlink-memory: 排提取任务失败：${result.reason}`);
+      return;
+    }
+    if (result.value?.outcome === 'disabled') {
+      ctx.logger?.info?.('xlink-memory: 记忆开关关着，这次不排提取任务');
+    }
+  }
 
   ctx.inject(['workspaceRegistry'], (scoped) => {
     workspaceRegistry = scoped.workspaceRegistry;
@@ -127,6 +167,8 @@ function apply(ctx) {
       }
       const box = {
         state: { turn: -1, text: '', injections: 0, bytes: 0, workspace: '', revision: null },
+        // P2 自动提取的会话状态：最近一条**真的人类消息**的序号、以及最后一次排任务用掉的游标。
+        extract: emptyExtractState(),
       };
       const sessionId = String(agent.session?.id ?? '');
       if (sessionId) {

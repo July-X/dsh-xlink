@@ -259,6 +259,155 @@ export function applyResult(state, turn, text, generation) {
   };
 }
 
+/** 提取器版本。**换版本就是换任务键**（旧结果不许覆盖新结果，§8-6）。 */
+export const EXTRACTOR_VERSION = 'xlink-memory-extract/1';
+
+/**
+ * 「人类消息」的 source kind（§8-1「只安排有用户内容…的会话」）。
+ *
+ * 判据的依据是 `agent.inject()` 那条路：合成上下文带着**它们自己的** source kind
+ * （`working-directory` / 工作区指令 / 技能 / cron 通知…），而不是 `user`——所以
+ * 「一次纯注入的回合」不会被当成用户内容去排提取任务。
+ */
+export const HUMAN_SOURCE = 'user';
+
+/** 只有正常结束的回合才排任务，理由见 `shouldScheduleExtraction`。 */
+export const SCHEDULABLE_END = 'completed';
+
+/** 单次输入上限（§8 的建议初始预算）。 */
+export const MAX_INPUT_BYTES = 64 * 1024;
+/** 单条事件的上限：一条工具日志或长回答能顶掉整个预算，先按条削。 */
+export const MAX_EVENT_BYTES = 4 * 1024;
+/** 整体截断的标记。**必须让模型知道范围不完整**，否则它会把「没看到」当成「没发生」。 */
+export const TRUNCATION_MARKER = '[注意] 这段范围按字节上限截断了，后面还有没包含进来的内容。\n';
+/** 单条事件被削短的标记。 */
+export const EVENT_TRUNCATION_MARKER = '…（本行按单条上限截断）';
+
+/**
+ * 提取任务的会话状态。
+ *
+ * @typedef {{humanSeq: number, lastCursor: number}} ExtractState
+ */
+
+/** 初始状态（一个新会话一份）。 */
+export function emptyExtractState() {
+  return { humanSeq: 0, lastCursor: 0 };
+}
+
+/**
+ * 记一条会话事件。只关心**真的人类消息**：它的序号是「这一段里有用户内容」的证据，
+ * 也是后面判「有没有新内容」的基准。
+ *
+ * @param {object} state - 当前状态。
+ * @param {object} event - `session/event` 的那一条。
+ * @returns {object} 新状态（不改入参）。
+ */
+export function noteSessionEvent(state, event) {
+  const current = state && typeof state === 'object' ? state : emptyExtractState();
+  if (!event || typeof event !== 'object') return current;
+  if (event.type !== 'user/message') return current;
+  if (event.data?.source?.kind !== HUMAN_SOURCE) return current;
+  const seq = Number(event.seq ?? 0);
+  if (!seq) return current;
+  return { ...current, humanSeq: seq };
+}
+
+/**
+ * 这次 `turn/end` 要不要排一个提取任务。
+ *
+ * ① 回合**正常结束**（`completed`）——取消、出错、超长、被中断的回合都不排。**不会因此漏内容**：
+ *    后面任何一次正常结束的回合，游标都比它们靠后，冻结的范围里自然包含那些事件；
+ * ② 这段范围里**有真的人类消息**（见 `HUMAN_SOURCE`），并且是上一次排任务之后才出现的
+ *    （`humanSeq > lastCursor`）——纯注入的回合不排，同一段内容也不重复排；
+ * ③ `seq` 必须是个正整数：拿不到截止序号就没有「冻结输入」可言，宁可不排。
+ *
+ * 返回的 `cursor` 就是**要冻进任务键里的截止序号**（§8-1）。
+ *
+ * @param {object} state - `noteSessionEvent` 之后的状态。
+ * @param {object} event - 刚收到的 `session/event`。
+ * @returns {{schedule: boolean, cursor: number}}
+ */
+export function shouldScheduleExtraction(state, event) {
+  const none = { schedule: false, cursor: 0 };
+  if (!event || event.type !== 'turn/end') return none;
+  if (event.data?.reason?.kind !== SCHEDULABLE_END) return none;
+  const cursor = Number(event.seq ?? 0);
+  if (!Number.isInteger(cursor) || cursor <= 0) return none;
+  const current = state && typeof state === 'object' ? state : emptyExtractState();
+  if (current.humanSeq <= current.lastCursor) return none;
+  return { schedule: true, cursor };
+}
+
+/** 一条事件里能取给提取模型看的文本（工具结果**整条不要**：那是凭据最容易漏出去的地方）。 */
+function eventText(event) {
+  if (!event || typeof event !== 'object') return '';
+  if (event.type !== 'user/message' && event.type !== 'assistant/message') return '';
+  const blocks = event.data?.message?.content;
+  if (!Array.isArray(blocks)) return '';
+  return blocks
+    .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** 按**字节**削一条文本（中文一个字三字节，按字符数判会超）。 */
+function cutBytes(text, limit) {
+  if (Buffer.byteLength(text, 'utf8') <= limit) return text;
+  let kept = text;
+  while (kept && Buffer.byteLength(kept, 'utf8') > limit) {
+    kept = kept.slice(0, Math.max(0, Math.floor(kept.length * 0.9)));
+  }
+  return `${kept}${EVENT_TRUNCATION_MARKER}`;
+}
+
+/**
+ * 把一段会话事件压成给提取模型的输入。
+ *
+ * 三条规则：
+ * · **只取对话**（用户与助手的文本块）。工具结果整条排除——设计 §8-3 要求排除凭据，
+ *   而工具输出是凭据最集中的地方；「模式匹配只能减少风险、不能保证发现所有秘密」，
+ *   所以先做减法而不是做过滤；
+ * · 每条按 [`MAX_EVENT_BYTES`] 削短，整体按 [`MAX_INPUT_BYTES`] 从**最新往回**填
+ *   （最近的内容最可能是「用户刚定下的约定」）；
+ * · 被截断时在最前面放一行 [`TRUNCATION_MARKER`]：**不静默截断**——模型据此知道
+ *   这段范围不完整，而不是把「没看到」当成「没发生」。
+ *
+ * @param {object[]} events - 一段会话事件（按 seq 升序）。
+ * @param {{budgetBytes?: number}} [options] - 字节预算。
+ * @returns {{text: string, truncated: boolean, bytes: number, kept: number}}
+ */
+export function buildInput(events, { budgetBytes = MAX_INPUT_BYTES } = {}) {
+  const lines = [];
+  for (const event of Array.isArray(events) ? events : []) {
+    const text = eventText(event);
+    if (!text) continue;
+    const seq = Number(event.seq ?? 0);
+    lines.push(`[${seq}] ${event.type === 'user/message' ? '用户' : '助手'}：${cutBytes(text, MAX_EVENT_BYTES)}`);
+  }
+  const kept = [];
+  let used = 0;
+  let truncated = false;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const size = Buffer.byteLength(lines[index], 'utf8') + 1;
+    if (used + size > budgetBytes) {
+      truncated = index >= 0;
+      break;
+    }
+    kept.push(lines[index]);
+    used += size;
+  }
+  kept.reverse();
+  const body = kept.join('\n');
+  const text = truncated ? `${TRUNCATION_MARKER}${body}` : body;
+  return {
+    text,
+    truncated,
+    bytes: Buffer.byteLength(text, 'utf8'),
+    kept: kept.length,
+  };
+}
+
 /**
  * 压缩之后的会话状态：**把注入预算清零**。
  *
