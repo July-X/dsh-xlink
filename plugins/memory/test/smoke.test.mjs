@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, readCredentials } from '../host/bridge.js';
 import { AUTH_SCHEMES, SENSITIVE_KEY_NEEDLES, maskSecrets } from '../host/mask.js';
+import { readSessionRange } from '../host/sessionlog.js';
 
 import {
   afterCompaction,
@@ -396,6 +397,125 @@ test('输入只取对话、按字节削、截断要留标记', () => {
   assert.match(tight.text, /\[40\] 用户：/, '最近的留下');
   assert.ok(!tight.text.includes('[1] 用户：'), '最老的被丢掉');
   assert.ok(tight.bytes <= 200 + Buffer.byteLength(TRUNCATION_MARKER, 'utf8') + 4, `${tight.bytes}`);
+});
+
+/** 造一个假会话服务：记下调用次序，按脚本回话。 */
+function fakeLog({ flushed = true, openThrows = false, readResult, flushThrows = false } = {}) {
+  const calls = [];
+  return {
+    calls,
+    sessions: {
+      flush: async () => {
+        calls.push('flush');
+        if (flushThrows) throw new Error('屏障炸了');
+        return flushed;
+      },
+    },
+    sessionPersistence: {
+      open: async (id, access) => {
+        calls.push(`open:${id}:${access}`);
+        if (openThrows) throw new Error('打不开');
+        return {
+          read: async (from, length) => {
+            calls.push(`read:${from}:${length ?? '-'}`);
+            return readResult ?? { eventState: 'owned', events: [] };
+          },
+          close: async () => calls.push('close'),
+        };
+      },
+    },
+  };
+}
+
+test('读冻结范围：先落盘屏障、再开读句柄、读完关掉', async () => {
+  const log = fakeLog({
+    readResult: {
+      eventState: 'owned',
+      events: [
+        { type: 'user/message', seq: 1, data: {} },
+        { type: 'turn/end', seq: 4, data: {} },
+      ],
+    },
+  });
+  const result = await readSessionRange({
+    sessions: log.sessions,
+    sessionPersistence: log.sessionPersistence,
+    session: { id: 's-1' },
+    from: 1,
+    to: 4,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.events.length, 2);
+  assert.deepEqual(log.calls, ['flush', 'open:s-1:read', 'read:1:4', 'close'], '顺序与范围');
+});
+
+test('不落盘就如实说拿不到，而不是假装读到一段旧历史', async () => {
+  const log = fakeLog({ flushed: false });
+  const result = await readSessionRange({
+    sessions: log.sessions,
+    sessionPersistence: log.sessionPersistence,
+    session: { id: 's-1' },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /没有持久化监听器参与/);
+  // **不该**去开句柄：盘上那份可能不是最新的，读了会把游标往前推。
+  assert.deepEqual(log.calls, ['flush']);
+});
+
+test('屏障抛错 / 打不开 / 读失败都回不可用，且不影响别的调用', async () => {
+  const boom = await readSessionRange({
+    sessions: fakeLog({ flushThrows: true }).sessions,
+    sessionPersistence: fakeLog().sessionPersistence,
+    session: { id: 's-1' },
+  });
+  assert.equal(boom.ok, false);
+  assert.match(boom.reason, /落盘屏障/);
+
+  const noOpen = fakeLog({ openThrows: true });
+  const failed = await readSessionRange({
+    sessions: noOpen.sessions,
+    sessionPersistence: noOpen.sessionPersistence,
+    session: { id: 's-1' },
+  });
+  assert.equal(failed.ok, false);
+  assert.match(failed.reason, /打不开/);
+
+  const noSession = await readSessionRange({ sessions: {}, sessionPersistence: {}, session: {} });
+  assert.equal(noSession.ok, false);
+});
+
+test('关句柄失败不能把读到的结果换成一条错误', async () => {
+  const calls = [];
+  const result = await readSessionRange({
+    sessions: { flush: async () => true },
+    sessionPersistence: {
+      open: async () => ({
+        read: async () => ({ eventState: 'owned', events: [{ type: 'turn/end', seq: 9, data: {} }] }),
+        close: async () => {
+          calls.push('close');
+          throw new Error('关不上');
+        },
+      }),
+    },
+    session: { id: 's-1' },
+  });
+  assert.equal(result.ok, true, '读成功就是成功');
+  assert.equal(result.events.length, 1);
+  assert.deepEqual(calls, ['close']);
+});
+
+test('不许用已废弃的三个接口（设计 §8-1 写明了）', () => {
+  // **先剥注释再判**：`sessionlog.js` 的文档注释里就写着这三个名字（说明为什么不用它们），
+  // 不剥的话判据命中的是解释而不是代码——本仓在这上面栽过好几次（见 agent-lessons §9/§11）。
+  const sources = ['sessionlog.js', 'index.js', 'policy.js', 'bridge.js', 'mask.js']
+    .map((name) => readFileSync(new URL(`../host/${name}`, import.meta.url), 'utf8'))
+    .join('\n')
+    .replace(/^[ \t]*\/\*[\s\S]*?\*\//gm, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '')
+    .replace(/^[ \t]*\*.*$/gm, '');
+  for (const banned of ['eventAt', 'snapshotEvents', 'ownEvents']) {
+    assert.ok(!sources.includes(banned), `注入脚本里不许出现已废弃的 ${banned}`);
+  }
 });
 
 test('只有**成功**的压缩才重置预算（失败的那次照样有 end，只是带 error）', () => {
