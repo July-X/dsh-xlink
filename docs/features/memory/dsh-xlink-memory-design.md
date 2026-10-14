@@ -242,6 +242,10 @@ flowchart LR
 
 ## 12. 实施进度（2026-10-14）
 
+面板长这样（真壳截图，2026-10-14 夜；见 [memory-panel.png](memory-panel.png)）：
+
+![记忆面板](memory-panel.png)
+
 已落地：
 
 | 位置 | 内容 |
