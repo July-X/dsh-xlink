@@ -851,6 +851,46 @@ test('关句柄失败不能把读到的结果换成一条错误', async () => {
   assert.deepEqual(calls, ['close']);
 });
 
+test('落盘屏障拿到的是**真会话对象**（内核按对象身份取 live entry）', async () => {
+  // 内核的 `SessionStore.flush` 用 `WeakMap` 按**对象身份**取 live entry——自拼一个 `{id}` 永远
+  // 不是它认识的那个（独立评审第 2 条）。所以判据是**身份**：传给 `flush` 的必须就是
+  // `sessions.get(id)` 给出来的那一个对象。
+  const live = { id: 's-live', header: { cwd: '/tmp' } };
+  let seen = null;
+  const result = await readSessionRange({
+    sessions: {
+      flush: async (session) => {
+        seen = session;
+        // 内核的形状：不是 live 的那个就抛这句。
+        if (session !== live) throw new Error(`session "${session?.id}" is not live in this store`);
+        return true;
+      },
+      get: (id) => (id === 's-live' ? live : undefined),
+    },
+    sessionPersistence: {
+      open: async () => ({
+        read: async () => ({ eventState: 'owned', events: [{ type: 'turn/end', seq: 2, data: {} }] }),
+        close: async () => {},
+      }),
+    },
+    session: live,
+    from: 0,
+    to: 2,
+  });
+  assert.equal(seen, live, '必须把真对象交给 flush（身份相等）');
+  assert.equal(result.ok, true);
+  assert.equal(result.source, 'persisted', '身份对了就走主路，而不是退到 live 兜底');
+
+  // 拿不到会话对象时要说清是哪一种：没有对象 ≠ 对象没有 id。
+  const missing = await readSessionRange({
+    sessions: { flush: async () => true },
+    sessionPersistence: { open: async () => ({ read: async () => ({ events: [] }), close: async () => {} }) },
+    session: null,
+  });
+  assert.equal(missing.ok, false);
+  assert.match(missing.reason, /拿不到这个会话的 live 对象/);
+});
+
 test('主路不通就退到 live 读法，并说明真正的失败原因', async () => {
   const events = [
     { type: 'user/message', seq: 1, data: {} },
@@ -1209,6 +1249,13 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
     '不许再把服务快照进一个常量对象'
   );
   assert.match(code, /route: 'jobs\/claim'/, '要真的去领任务');
+  // **领自己会话那条**（评审第 3 条）：不带 session 时壳从全表挑最早那条，而提交用的坐标
+  // 取自发起领取的会话 → A 的内容会带 B 的项目坐标落库。
+  assert.match(
+    code,
+    /route: 'jobs\/claim',\s*params: \{ session: String\(sessionId \?\? ''\) \}/,
+    '领取要带上自己的会话'
+  );
   assert.match(code, /route: 'jobs\/finish'/, '成功要收尾');
   assert.match(code, /route: 'jobs\/fail'/, '失败要退回（否则那条任务永远占着）');
   assert.match(code, /llm\.prepareCall\(/, '模型调用要用 prepareCall（模板见 sess-title-llm）');
