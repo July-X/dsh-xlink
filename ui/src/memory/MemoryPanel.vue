@@ -33,12 +33,17 @@ import {
   scopeText,
   shortTime,
   setListScope,
+  jobsSummaryText,
+  jobLine,
 } from './memory.js';
 
 const list = computed(() => visibleMemories(memoryStore.view, memoryStore.listScope));
 const candidates = computed(() => (memoryStore.view && memoryStore.view.candidates) || []);
 const status = computed(() => memoryStore.status);
 const recentInjections = computed(() => memoryStore.recentInjections || []);
+/// 提取任务卡片：摘要那句 + 最近几条（后端已经截到 5 条，前端不再截）。
+const jobsText = computed(() => jobsSummaryText(memoryStore.jobs));
+const recentJobs = computed(() => (memoryStore.jobs && memoryStore.jobs.jobs) || []);
 const enabled = computed(() => !!(status.value && status.value.use_approved));
 const draft = computed(() => memoryStore.draft);
 const savable = computed(() => canSaveDraft());
@@ -321,6 +326,22 @@ onMounted(() => {
           <p v-if="recentInjections.length > 5" class="memory-row__meta">
             只列最近 5 次（共 {{ recentInjections.length }} 条记录）。
           </p>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>提取任务</h2>
+            <el-button text :loading="isLoading('memoryList')" @click="refreshMemory()">刷新</el-button>
+          </div>
+          <p class="memory-hint">
+            自动提取（P2）的任务表：聊完一轮后插件排一条、壳发一个租约、模型提完再交回来。
+            <strong>一条记忆都没提取出来时先看这里</strong>——失败那行会写明是哪一步
+            （`read` / `model` / `parse` / `submit`）。完整留痕在「查看日志」的 memory-jobs 标签下。
+          </p>
+          <p class="memory-row__meta">{{ jobsText }}</p>
+          <div v-for="(job, index) in recentJobs" :key="`${job.key?.session}-${job.key?.cursor}-${index}`" class="memory-row">
+            <p class="memory-row__meta">{{ jobLine(job) }}</p>
+          </div>
         </div>
 
         <div class="card">

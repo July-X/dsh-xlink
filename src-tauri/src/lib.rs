@@ -497,6 +497,7 @@ pub fn run() {
             diskusage::disk_usage_children,
             // 本地记忆（面板侧）。运行侧注入由内置插件经回环桥走同一个
             // store；这八条命令只服务管理面板。
+            memory::cmd::memory_jobs,
             memory::cmd::memory_status,
             memory::cmd::memory_list,
             memory::cmd::memory_save,
