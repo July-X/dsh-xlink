@@ -123,6 +123,21 @@ export function visibleMemories(view, scope) {
   return rows;
 }
 
+/// 时间戳的短格式（列表里用）。认不出的值原样返回——**不要显示「Invalid Date」**。
+export function shortTime(value) {
+  if (!value) return '未知时间';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
+}
+
+/// 范围的中文标签：通用偏好带一句「所有项目」，项目记忆带上路径（路径是它的身份）。
+export function scopeText(record) {
+  if (!record || record.scope === 'general') return '通用偏好（所有项目）';
+  return record.workspace_path ? `本项目 · ${record.workspace_path}` : '本项目';
+}
+
 /// 来源种类的中文标签（§2：列表要显示来源）。
 export function sourceText(kind) {
   if (kind === 'user-manual') return '面板手动';
