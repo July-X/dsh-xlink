@@ -365,6 +365,12 @@ test('提取输出：空集合算成功，坏 JSON 才算失败', () => {
   assert.equal(parseExtractionOutput('我记不住', { events: extractionEvents }).ok, false);
   assert.equal(parseExtractionOutput('{"foo":1}', { events: extractionEvents }).ok, false);
   assert.equal(parseExtractionOutput('', { events: extractionEvents }).ok, false);
+  // 空答复与废话分开说：前者多半是超时/被断（实测桩挂住时适配器先放弃、回来的是空文本）。
+  assert.match(
+    parseExtractionOutput('   ', { events: extractionEvents }).reason,
+    /没有返回任何内容/
+  );
+  assert.match(parseExtractionOutput('我记不住', { events: extractionEvents }).reason, /可解析的 JSON/);
   // 两种可接受的顶层形状。
   assert.equal(
     parseExtractionOutput('{"candidates":[{"title":"t","body":"b","evidence_seq":3}]}', { events: extractionEvents }).candidates.length,
@@ -1068,6 +1074,30 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   assert.match(code, /route: 'jobs\/fail'/, '失败要退回（否则那条任务永远占着）');
   assert.match(code, /llm\.prepareCall\(/, '模型调用要用 prepareCall（模板见 sess-title-llm）');
   assert.ok(!code.includes('purpose:'), 'purpose 不许填：设计禁的正是冒充 session-title');
+  // **无云端回退**（H8）：路由只能来自 `agentDefaultModel`，插件里不许出现任何写死的
+  // provider 或模型名——那正是「本地模型不在就偷偷切云端」的形状。
+  // 调用处带了可选链（`services.agentDefaultModel?.currentSelection?.()`），所以别写死成
+  // `agentDefaultModel.currentSelection()`——第一版就是这么把一条正确的接线判成红的。
+  assert.match(
+    code,
+    /agentDefaultModel\??\.currentSelection\??\.\(/,
+    '路由要来自当前选择'
+  );
+  // **剥掉注释再数**：文档注释里就写着模板的 `prepareCall(...)`（本仓在这上面栽过三次：
+  // §9 的块注释、§11 的行首注释、以及这里），不剥的话判据命中的是解释而不是代码。
+  const bare = code
+    .replace(/^[ \t]*\/\*[\s\S]*?\*\//gm, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '')
+    .replace(/^[ \t]*\*.*$/gm, '');
+  assert.equal(
+    (bare.match(/prepareCall\(/g) ?? []).length,
+    1,
+    '只许有一处模型调用：第二处就是「换个模型再试一次」'
+  );
+  assert.ok(
+    !/provider:\s*['"][a-z-]+['"]/.test(bare) && !/model:\s*['"][a-z0-9.-]+['"]/.test(bare),
+    '不许写死 provider / model 名'
+  );
   assert.ok(
     !code.includes('applyResult('),
     '装配层不该自己调 applyResult——「结果怎么用」全在 applyStep 里'

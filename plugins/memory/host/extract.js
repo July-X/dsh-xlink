@@ -142,7 +142,15 @@ export function parseExtractionOutput(
 ) {
   const parsed = extractJson(raw);
   if (parsed === null) {
-    return { ok: false, candidates: [], rejected: [], reason: '模型没有返回可解析的 JSON' };
+    // 空答复与「回了一堆废话」是两种毛病：前者多半是模型那条路超时/被断（实测：桩挂住时
+    // 适配器自己会先放弃，回来的是空文本），说清楚才好排障。
+    const empty = typeof raw !== 'string' || raw.trim().length === 0;
+    return {
+      ok: false,
+      candidates: [],
+      rejected: [],
+      reason: empty ? '模型没有返回任何内容（超时或连接被断）' : '模型没有返回可解析的 JSON',
+    };
   }
   const list = Array.isArray(parsed)
     ? parsed
