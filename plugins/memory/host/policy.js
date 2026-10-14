@@ -520,6 +520,33 @@ export function applyFailure(state, turn) {
 }
 
 /**
+ * 这条 agent 会话的有效工作目录。
+ *
+ * 用**有效**目录而不是冻结的 `session.header.cwd`：用户可以在会话中途换目录
+ * （`working-directory/change`），按冻结值检索会把 A 项目的记忆带进 B 项目——
+ * 而那正是这套东西要防的事。服务拿不到时退到冻结值，绝不让它抛。
+ *
+ * 放在这一层是为了**能单测**：它决定的是「子智能体拿哪个目录」——夹紧的关键一步。
+ *
+ * @param {object} ctx - 插件上下文（声明了 `workingDirectory`）。
+ * @param {object} agent - 会话所属 agent。
+ * @returns {string}
+ */
+export function workingDirectory(ctx, agent) {
+  try {
+    const value = ctx.workingDirectory?.get?.(agent.session);
+    if (typeof value === 'string' && value) return value;
+  } catch {
+    // 老内核没有这个服务（或会话还没登记目录）：退到冻结的项目目录。
+  }
+  try {
+    return agent.session?.header?.cwd || '';
+  } catch {
+    return '';
+  }
+}
+
+/**
  * 这个目录对应的内核工作区 id；拿不到就回空串（后端按路径兜底匹配）。
  *
  * **失败一律静默降级**：目录不存在时 `resolveByPath` 会 reject（它内部要做
