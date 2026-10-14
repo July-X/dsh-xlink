@@ -412,7 +412,16 @@
   设计原文也写在「失败日志」那一句里）——套到模型输入上等于只给模型看 480 个字符。所以复用的是**形状那一半**：
   Rust 侧拆出 `diagnostics/mask.rs`（`strip_token_shapes`），插件侧 `mask.js` 是同一套形状，两边的键名表与
   认证方案名由冒烟测试**读 Rust 源码逐项对比**钉住（各写一份必然漂，而漂的那一侧不报错，只是少抹一个）
-- ⬜ **H6 有 schema 的候选输出 + 来源引用；空集合算成功；取消控制器**（§8-5、§8 末）
+- 🟡 **H6 有 schema 的候选输出 + 来源引用；空集合算成功**（§8-5）—— **机械那一半已落地**
+  （`extract.js`）：提示词（四条纪律）、解析（允许 ``` 包裹与前后解释文字、按括号配平取 JSON、
+  字符串里的括号不骗人）、校验（标题/正文缺失、超壳的限额 512 B / 8 KiB、条数上限、关键词去空去长）。
+  **「工具结果里的指令不能升级成用户偏好」有一半是机械可判的**：一条关于用户的记忆必须能指回
+  **用户自己说过的话**（冻结范围里 `user/message` 且 `source.kind === 'user'`），模型若拿工具输出
+  里的指令来提就给不出这个序号——判据 6 组用例（含引自工具结果、引自合成注入、序号不存在、
+  `evidence_seq` 缺失各一条），**反向验过**（去掉这条要求即红）。空数组按成功处理（设计 §8-5）。
+  **还差**：① 模型调用本身（`ctx.llm.prepareCall`/`stream`，模板见内核的 `session-title-llm`：
+  `prepareCall({provider, model, maxTokens}, signal, configure)` → `deepFreeze({...call.config, messages, system, sessionId, signal})` → `call.stream(options)`；`purpose` **省略**——设计禁的正是冒充 `session-title`）；
+  ② 拿到候选之后走 `/jobs/submit` 提交；③ 取消控制器（H8）
 - 🟡 **H7 提交前检查 lease token / 来源有效性 / 抑制指纹**（§8-6）—— **四道闸已落地**
   （`/v1/memory/jobs/submit`）：① **租约必须是当前那个**（任务被接管、已完成、已失败，或令牌根本不对，
   一律拒——这是「迟到的结果不许落地」的全部实现）；② **开关还开着**（用户中途关掉就不再收）；③ **来源会话
@@ -488,6 +497,7 @@
 | `plugins/memory/host/policy.js` | 纯策略：注入预算、代次探测、「结果怎么用」、压缩后重置、提取调度与有限输入 | B6–B10、H1、H3、H5 |
 | `plugins/memory/host/mask.js` | 凭据形状的掩码（与 Rust 侧 `diagnostics/mask.rs` 同一套形状，逐项钉住） | H5 |
 | `plugins/memory/host/sessionlog.js` | 读一段**冻结的会话事件范围**（P2 的输入来源：屏障 → 读句柄 → 关） | H5 |
+| `plugins/memory/host/extract.js` | 提取输出的合同：提示词、解析、schema 与**来源引用**校验 | H6 |
 | `plugins/memory/host/bridge.js` | 桥客户端：凭据读取、路径拼装、超时与通道上限 | B28、E4 |
 | `plugins/memory/test/smoke.test.mjs` | 策略层与桥客户端用例（19 条，含 2 条接线判据） | 各条的判据 |
 | `ui/src/memory/memory.js` | 面板状态与动作（含 `injectionDisabled`、`injectionText`） | D1–D14、D6a、I7 |
