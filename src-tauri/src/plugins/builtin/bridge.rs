@@ -214,7 +214,9 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
                 Err(error) => {
                     // 文档读不出来时**如实说读不出来**，不退成「不属于当前项目」——
                     // 后者会让用户去查自己有没有记错项目 id，而真因在盘上那份文件。
-                    note_memory_call("read", "denied=unreadable");
+                    // 留痕**别记成 `denied=`**：那是授权事件，而这一条是盘上那份文件坏了。
+                    // 两类混在一个前缀下，排查的人打开「查看日志」会往错的方向查。
+                    note_memory_call("read", "failed=unreadable");
                     let body = serde_json::json!({ "error": error.to_string() }).to_string();
                     let _ =
                         crate::openai::http::write_response(stream, 500, "application/json", &body);

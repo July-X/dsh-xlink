@@ -133,9 +133,7 @@ test('查询文本只认用户消息：别的注入消息不当查询', () => {
  */
 test('超长的用户消息按尾部截断，拼出来的请求行仍在 8 KB 之内', () => {
   const long = '构建'.repeat(1000); // 2000 个中文字符
-  const text = userText([
-    { source: { kind: 'user' }, content: [{ type: 'text', text: long }] },
-  ]);
+  const text = userText([{ source: { kind: 'user' }, content: [{ type: 'text', text: long }] }]);
   assert.equal(text.length, MAX_QUERY_CHARS);
   assert.ok(text.endsWith('构建'), '要保留最靠近当前要求的尾部');
 
@@ -150,6 +148,42 @@ test('超长的用户消息按尾部截断，拼出来的请求行仍在 8 KB �
     Buffer.byteLength(request, 'utf8') <= 8192,
     `请求行 ${Buffer.byteLength(request, 'utf8')} 字节，超了桥的缓冲`
   );
+});
+
+/**
+ * 截尾不能切出半个代理对。
+ *
+ * `slice` 按 UTF-16 码元切，emoji 占 2 个码元。切点落在中间时 `URLSearchParams`
+ * **不会抛**（WHATWG 序列化器替换成 U+FFFD），症状是静默的：那一个字在检索时永远
+ * 匹配不上。这条用「emoji 恰好横跨切点」的那个长度钉住——实测扫 41 个相邻长度里
+ * 命中 1 个，也就是说常规测试很容易漏掉它。
+ */
+test('截尾落在代理对中间时砍掉落单的高代理', () => {
+  // 501 个码元：切点落在第 0 个与第 1 个码元之间，正好把 emoji 劈开。
+  const straddling = `😀${'b'.repeat(499)}`;
+  assert.equal(straddling.length, 501);
+  const text = userText([
+    { source: { kind: 'user' }, content: [{ type: 'text', text: straddling }] },
+  ]);
+  assert.ok(text.length <= MAX_QUERY_CHARS);
+  assert.ok(
+    !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text),
+    '不该留下落单的代理'
+  );
+  assert.ok(!text.includes('�'), '也不该把它换成替换字符');
+  // 不落在中间时一个码元都不许少：全 ASCII、以及切点正好落在代理对**起点**的两种。
+  assert.equal(
+    userText([{ source: { kind: 'user' }, content: [{ type: 'text', text: 'x'.repeat(1200) }] }]).length,
+    MAX_QUERY_CHARS
+  );
+  const emojiOnly = '😀'.repeat(400); // 800 个码元，切点落在第 300 个（某一对的起点）
+  const kept = userText([
+    { source: { kind: 'user' }, content: [{ type: 'text', text: emojiOnly }] },
+  ]);
+  assert.equal(kept.length, MAX_QUERY_CHARS, '切点在代理对起点时不该少任何码元');
+  assert.ok(!kept.includes('�'));
+  // 刚好一个代理对：两端都是**好的**那一半，一个码元都不许动。
+  assert.equal(userText([{ source: { kind: 'user' }, content: [{ type: 'text', text: '😀' }] }]), '😀');
 });
 
 /**
@@ -195,14 +229,17 @@ test('每会话最多注入三次，同回合不重复检索', () => {
 });
 
 /**
- * 换工作目录必须清空缓存**并归零预算**。
+ * 换工作目录必须清空缓存，而**注入预算是会话级的、换目录不重置**。
  *
  * 这是「A 项目保存的记忆不进入 B 项目」在运行侧的最后一道：用户在内核里中途换目录
- * 是支持的，而注入预算每会话封顶——只清文本不归零的话，`shouldRefresh` 永远为假，
- * 换到 B 之后每一回合都是「什么都没有」；不清文本的话，A 的记忆会一路注入到 B。
- * 两条都是用户看得见的错，所以两条都要钉。
+ * 是支持的。清缓存治好了泄漏，但若顺带把计数归零，就等于把「换目录」变成一个绕开
+ * 预算的开关——来回切五次就是十五份快照（内核每份不同快照留一条 user 消息到压缩），
+ * 而用户对这件事毫无感知。所以 `injections` 原样带过去。
+ *
+ * 代价要钉住：预算用完之后再换目录，这段会话**一段记忆都不注入**。宁可少注入，也
+ * 不要把 A 的记忆送进 B；新开会话即恢复。
  */
-test('切换工作目录清空缓存并把注入预算归零', () => {
+test('切换工作目录清空缓存，但不重置会话级的注入预算', () => {
   let state = { turn: -1, text: '', injections: 0, workspace: '/repo-a' };
   // 三段**不同**的文本：内容相同不算一次注入（下面那条用例钉着），所以要用不同的。
   state = applyResult(state, 1, 'A 的记忆一');
@@ -211,18 +248,29 @@ test('切换工作目录清空缓存并把注入预算归零', () => {
   assert.equal(state.injections, MAX_INJECTIONS_PER_SESSION);
   assert.equal(shouldRefresh(state, 4), false, 'A 的预算已用满');
 
+  // 换目录：A 的记忆不许跟着进 B。
   const moved = retarget(state, '/repo-b');
   assert.equal(moved.text, '', 'A 的记忆不许跟着进 B');
   assert.equal(moved.workspace, '/repo-b');
-  assert.equal(moved.injections, 0, '预算必须归零，否则 B 永远检索不到');
-  assert.equal(shouldRefresh(moved, 4), true, '新目录要能重新检索');
-  assert.equal(applyResult(moved, 4, 'B 的记忆').text, 'B 的记忆');
+  assert.equal(moved.injections, MAX_INJECTIONS_PER_SESSION, '预算不该被换目录重置');
+  assert.equal(shouldRefresh(moved, 4), false, '换目录之后这一段记忆是空的，不是 A 的');
+
+  // 来回切再多次也拿不回额度——换目录不是绕开预算的开关。
+  let flapped = moved;
+  for (let round = 0; round < 5; round += 1) {
+    flapped = retarget(flapped, round % 2 === 0 ? '/repo-a' : '/repo-b');
+    assert.equal(shouldRefresh(flapped, 100 + round), false, `第 ${round} 次来回切之后额度不该回来`);
+    assert.equal(flapped.text, '', '缓存必须一直是空的');
+  }
+
+  // 预算没用满时换目录仍然能重新检索（清缓存不等于什么都不给）。
+  const early = applyResult(applyResult(retarget({ turn: -1, text: '', injections: 0, workspace: '' }, '/repo-x'), 1, 'x'), 2, 'y');
+  assert.equal(shouldRefresh(early, 3), true, '还有额度时新目录要能检索到');
   // 目录没变就原样返回同一个对象：不重置、不凭空多消耗一次额度。
-  const sameDir = applyResult(moved, 4, 'B 的记忆');
-  assert.equal(retarget(sameDir, '/repo-b'), sameDir, '同一个目录不该重置');
-  assert.equal(sameDir.injections, 1, '同一个目录不该凭空多消耗额度');
-  assert.equal(shouldRefresh(sameDir, 4), false, '同一回合不重复检索');
-  assert.equal(sameDir.text, 'B 的记忆', '同一个目录不该清掉缓存');
+  assert.equal(retarget(early, '/repo-x'), early, '同一个目录不该重置');
+  assert.equal(early.injections, 2);
+  assert.equal(shouldRefresh(early, 2), false, '同一回合不重复检索');
+  assert.equal(early.text, 'y', '同一个目录不该清掉缓存');
 });
 
 test('文本没变不算一次注入；失败清空缓存而不是沿用', () => {

@@ -32,6 +32,40 @@ export const MAX_INJECTIONS_PER_SESSION = 3;
 export const MAX_QUERY_CHARS = 500;
 
 /**
+ * 砍掉两端落单的代理。
+ *
+ * `slice` 按 **UTF-16 码元**切，emoji 与部分生僻汉字占 2 个码元，切点落在高/低代理
+ * 之间就会留下半个。`URLSearchParams` 不会因此抛错（WHATWG 的序列化器把它替换成
+ * U+FFFD，不像老的 `encodeURIComponent` 会抛 `URIError`），所以症状是**静默**的：
+ * 那一个字符在检索时对不上，涉及它的关键词再也匹配不到。
+ *
+ * 这里取的是**尾部**，所以切出来只可能是「开头的落单低代理」（高代理被砍掉了）；
+ * 末尾那一位一并检查，是因为拼接多个文本块时输入本身就可能已经带着半个。
+ *
+ * 砍掉那一个码元即可：少一个字词匹配，总好过多一个永远匹配不上的字符。
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function trimStraySurrogates(text) {
+  if (!text) return text;
+  let out = text;
+  // 末尾落单只可能是**高**代理：低代理落在末尾时它的搭档高代理就在前一位，是好的。
+  if (isHighSurrogate(out.charCodeAt(out.length - 1))) out = out.slice(0, -1);
+  // 开头落单只可能是**低**代理，同理。
+  if (isLowSurrogate(out.charCodeAt(0))) out = out.slice(1);
+  return out;
+}
+
+function isHighSurrogate(code) {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code) {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
+/**
  * 取这一步领取到的消息里**最后一条用户消息**的纯文本，按 [`MAX_QUERY_CHARS`] 截尾。
  *
  * 只认 `source.kind === 'user'`：运行上下文、工作区指令、技能目录都是 user 角色
@@ -51,7 +85,7 @@ export function userText(messages) {
       .map((block) => block.text)
       .join('\n')
       .trim();
-    if (text) return text.slice(-MAX_QUERY_CHARS);
+    if (text) return trimStraySurrogates(text.slice(-MAX_QUERY_CHARS));
   }
   return '';
 }
@@ -73,15 +107,20 @@ export function shouldRefresh(state, turn, maxInjections = MAX_INJECTIONS_PER_SE
 }
 
 /**
- * 会话中途换了工作目录时的处理：**清空缓存并把注入预算归零**。
+ * 会话中途换了工作目录时的处理：**清空缓存**。
  *
  * 这是「A 项目保存的记忆不进入 B 项目」在运行侧的最后一道。少了它，上一个项目的
  * 正文会一路留在注入块里：用户在内核里换目录是支持的（`working-directory/change`，
  * 设计稿 §3.1 第 5 条），而三条清缓存的触发里只有这一条在代码里真的存在——
  * 「用户删除/停用」同样依赖它，否则预算用完之后删掉的记忆照样每轮注入。
  *
- * **归零预算是必须的**，不只是清文本：`shouldRefresh` 到顶后永远返回 false，
- * 只清文本会得到「本回合没有记忆、之后每一回合也没有」的死会话。
+ * **预算不归零**，这是想清楚了才这么写的：`injections` 是**会话级**的硬上限
+ * （[`MAX_INJECTIONS_PER_SESSION`]），存在的理由是内核会为每一份**不同**的快照留
+ * 一条 user 消息到压缩为止。归零等于把「换目录」变成一个绕开它的开关——来回切五次
+ * 就是十五份快照，而用户对这件事毫无感知。
+ *
+ * 代价要说清：预算用完之后再换目录，这个会话就**一段记忆都不注入**了。这是**对的方向**
+ * ——宁可少注入，也不要把 A 的记忆送进 B。新开会话即恢复。
  *
  * @param {{turn: number, text: string, injections: number, workspace: string}} state
  * @param {string} workspace - 这一步的**有效**工作目录。
@@ -89,7 +128,7 @@ export function shouldRefresh(state, turn, maxInjections = MAX_INJECTIONS_PER_SE
  */
 export function retarget(state, workspace) {
   if (state.workspace === workspace) return state;
-  return { turn: -1, text: '', injections: 0, workspace };
+  return { turn: -1, text: '', injections: state.injections, workspace };
 }
 
 /**
