@@ -1,15 +1,21 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, readCredentials } from '../host/bridge.js';
 import {
   MAX_INJECTIONS_PER_SESSION,
+  MAX_LIBRARY_REFRESHES_PER_SESSION,
   MAX_QUERY_CHARS,
   applyFailure,
   applyResult,
+  applyStep,
   beginStep,
+  libraryChanged,
+  noteProbe,
   resolveWorkspaceId,
   retarget,
+  shouldProbeLibrary,
   shouldRefresh,
   userText,
 } from '../host/policy.js';
@@ -303,6 +309,94 @@ test('预算用满之后换目录：缓存也要立刻清空（接线，不只�
   assert.equal(again.state, applied, '同一个目录不该重建状态');
   assert.equal(again.state.text, 'y', '同一个目录不该清掉缓存');
   assert.equal(again.refresh, false, '同一回合不重复检索');
+});
+
+test('装配层真的接上了这些判据（helper 有测试、接线没有是本仓反复栽的形状）', () => {
+  const src = readFileSync(new URL('../host/index.js', import.meta.url), 'utf8');
+  // 注释里也原样引用这些名字，先剥掉整行注释再判——否则判据会命中自己写的解释。
+  const code = src.replace(/^\s*\/\/.*$/gm, '');
+  for (const call of ['beginStep(', 'shouldProbeLibrary(', 'applyStep(']) {
+    assert.ok(code.includes(call), `index.js 里少了 ${call} 的调用`);
+  }
+  assert.match(
+    code,
+    /applyStep\(\s*state,\s*turn,\s*probe \? 'probe' : 'turn'/,
+    '两条路要真的分开：预算内取到什么用什么，探测那条路只认代次'
+  );
+  assert.ok(
+    !code.includes('applyResult('),
+    '装配层不该自己调 applyResult——「结果怎么用」全在 applyStep 里'
+  );
+});
+
+test('预算之外只按数据代次刷新，额度用完就不再探', () => {
+  let state = { turn: -1, text: '', injections: 0, workspace: '/w', revision: null };
+  state = applyResult(state, 1, '一', 10);
+  assert.equal(state.revision, 10, '正文要记下它对应的代次');
+  state = applyResult(state, 2, '二', 10);
+  state = applyResult(state, 3, '三', 10);
+  assert.equal(state.injections, MAX_INJECTIONS_PER_SESSION);
+  assert.equal(shouldProbeLibrary(state, 4), true, '预算用完之后要能探');
+  assert.equal(shouldProbeLibrary(state, 3), false, '同一回合不重复探');
+
+  const probed = noteProbe(state, 4, 10);
+  assert.equal(probed.text, '三', '库没变就不许换正文');
+  assert.equal(probed.injections, MAX_INJECTIONS_PER_SESSION, '探一次不算注入');
+  assert.equal(probed.turn, 4);
+  assert.equal(shouldProbeLibrary(probed, 4), false, '同一回合只探一次');
+
+  assert.equal(libraryChanged(probed, 11), true, '代次变了 = 用户在会话里改了库');
+  assert.equal(libraryChanged(probed, 10), false);
+  assert.equal(libraryChanged(probed, undefined), false, '拿不到代次就不动');
+
+  // 两次库变化额度用满之后不再探。
+  const once = applyStep(probed, 5, 'probe', { ok: true, enabled: true, text: '新一', generation: 11 }).state;
+  const twice = applyStep(once, 6, 'probe', { ok: true, enabled: true, text: '新二', generation: 12 }).state;
+  assert.equal(twice.injections, MAX_INJECTIONS_PER_SESSION + MAX_LIBRARY_REFRESHES_PER_SESSION);
+  assert.equal(shouldProbeLibrary(twice, 7), false, '额度用满之后不再探');
+
+  // 换目录不丢代次（代次是整份文档的，与目录无关）；响应缺代次时保留上一次的。
+  assert.equal(retarget(state, '/other').revision, 10);
+  assert.equal(applyResult(state, 4, 'x').revision, 10);
+});
+
+test('结果怎么用：探测那条路只在库变了时才换正文', () => {
+  const base = { turn: 3, text: 'A 的记忆', injections: 3, workspace: '/w', revision: 10 };
+
+  // 同一个代次 + 完全不同的正文（这就是「用户换了下一句话」的常态）：不许换。
+  const unchanged = applyStep(base, 4, 'probe', {
+    ok: true,
+    enabled: true,
+    text: '另一条消息检索出来的完全不同的正文',
+    generation: 10,
+  });
+  assert.equal(unchanged.applied, false);
+  assert.equal(unchanged.state.text, 'A 的记忆', '文本变了不算库变化');
+  assert.equal(unchanged.state.injections, 3);
+
+  // 代次变了：换，并记一次注入（额度从这里扣）。
+  const changed = applyStep(base, 4, 'probe', {
+    ok: true,
+    enabled: true,
+    text: 'A 的记忆 + 刚批准的那条',
+    generation: 11,
+  });
+  assert.equal(changed.applied, true);
+  assert.equal(changed.state.text, 'A 的记忆 + 刚批准的那条');
+  assert.equal(changed.state.injections, 4);
+
+  // 探测失败：正文留着——一次抖动不是「用户改了库」。
+  const failedProbe = applyStep(base, 4, 'probe', { ok: false });
+  assert.equal(failedProbe.applied, false);
+  assert.equal(failedProbe.state.text, 'A 的记忆');
+  assert.equal(failedProbe.state.turn, 4, '失败也要标记回合，别在同一步里反复探');
+
+  // 回合内失败：照旧清空（这一回合没有记忆要如实反映）。
+  assert.equal(applyStep(base, 4, 'turn', { ok: false }).state.text, '');
+
+  // 会话中途把开关关掉：代次变了、enabled=false → 正文清空。
+  const off = applyStep(base, 5, 'probe', { ok: true, enabled: false, generation: 12 });
+  assert.equal(off.state.text, '', '关掉开关之后模型不该再看到正文');
 });
 
 test('文本没变不算一次注入；失败清空缓存而不是沿用', () => {
