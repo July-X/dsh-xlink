@@ -1474,7 +1474,15 @@ const FILE_BUDGETS = {
   // `banner_activation` 及其单测，外加两处因此失效的 `#[allow(dead_code)]`
   // 与注释订正。文件仍远低于 RATCHET_THRESHOLD（600）与硬顶（800），未触发
   // 反棘轮，拆分方案（把 objc 细节挪进单独模块）留到它真的长到值得拆时。
-  'src-tauri/src/notify/activate.rs': 319,
+  // 319 → 365（2026-10-14）：三件事，同一份「点横幅回到工作台」的收尾。① b82cb2f7
+  // 漏挂 `#[cfg(target_os = "macos")]`，三个 macOS 专属符号在 Windows 上全是死
+  // 代码，而 clippy `-D warnings` 只在 macOS 上跑——只有本地 Windows 上的
+  // `npm run check` 会红。② `ReadFile` 之前加一段 `PeekNamedPipe` 轮询：具名
+  // 管道任何本机进程都能打开，一个连上不写的客户端会把监听线程永久挂死，此后
+  // 点横幅静默失效且一行日志都没有。③ 建管道 / 连管道各加一个「名字由调用方给」
+  // 的形参，好让这段 Windows 代码能被单测真跑一遍（测试代码不进本预算，
+  // +8 是给 rustfmt 折行抖动留的余量）。
+  'src-tauri/src/notify/activate.rs': 365,
   // 2026-09-30：工作台窗口的**手动**逃生口（`harness_force_reload`）。看门狗
   // 只在加载事件上判据，而 WebView2 渲染进程被打崩时页面早就 `Finished` 过，
   // 那条判据永远不会触发，`reload()` 又落在一块死掉的文档上（用户原话：
@@ -2798,7 +2806,12 @@ const FILE_BUDGETS = {
 // 51250 → 51600（2026-10-14 夜）：Markdown 导出（`memory/export.rs` 223 行 +
 // 面板的导出按钮与「最近导出」一行 + 两条命令）。这是设计 §2 承诺过、此前一直
 // 挂在「尚未落地」里的一项，属于新能力开新文件，不是往既有文件里塞的膨胀。
-const TOTAL_BUDGET = 51600;
+//
+// 51600 → 51646（2026-10-14）：「点通知横幅回到工作台」的收尾——macOS 那三个
+// 符号补上 cfg、Windows 管道读端加超时轮询、管道函数可被单测点名。+38 是
+// activate.rs 的净增（365 里含 +8 余量），其余是工作区里另一条并行改动带来的
+// 抵消；两个数字在同一个提交里改，改了不改都会让门禁与实际对不上。
+const TOTAL_BUDGET = 51646;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

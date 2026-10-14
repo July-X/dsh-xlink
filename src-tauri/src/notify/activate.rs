@@ -171,6 +171,12 @@ pub fn focus_workbench(app: &AppHandle) {
 
 // ---------------------------------------------------------------------------
 // macOS：激活观察者（「点横幅」在这条路上唯一的信号）
+//
+// **这一段每个符号都挂 `#[cfg(target_os = "macos")]`**：唯一调用它们的
+// [`observe_activation`] 是 macOS 专属的，不挂的话 Windows 上三个符号全是死
+// 代码，而 `check:rust` 的 clippy 带 `-D warnings`（`package.json`）——本机
+// 在 Windows 上跑 `npm run check` 会直接红。判据函数被单测引用并不能救它：测试
+// 目标只存在于 `--all-targets`，正式编译里那个引用不存在。
 // ---------------------------------------------------------------------------
 
 /// 「刚弹出的横幅」算新鲜的时间窗（毫秒）。
@@ -184,6 +190,7 @@ pub fn focus_workbench(app: &AppHandle) {
 /// 5 分钟：macOS 横幅本身只停几秒，但通知中心里的条目一直留着，按它算是用户
 /// 明确表达过「我要回工作台」；再久就没有意义了，那时的未读已经被别的动作
 /// （面板里的「全部已读」）收过一次。
+#[cfg(target_os = "macos")]
 const BANNER_FRESH_MS: u64 = 5 * 60 * 1000;
 
 /// 一次激活算不算「用户点了刚弹出的横幅」。
@@ -191,6 +198,7 @@ const BANNER_FRESH_MS: u64 = 5 * 60 * 1000;
 /// 拆成纯函数是为了能脱离 `AppHandle` 单测：它是这条修复里唯一有分支的判据，
 /// 而判据写错一次的症状是「点面板时莫名多出一个工作台窗口」——纯函数测试能
 /// 把这种形状错误挡住，编译测试不能。
+#[cfg(target_os = "macos")]
 fn banner_activation(unread: u32, newest_finished_at_ms: Option<u64>, now_ms: u64) -> bool {
     unread > 0
         && newest_finished_at_ms.is_some_and(|at| now_ms >= at && now_ms - at <= BANNER_FRESH_MS)
@@ -198,8 +206,11 @@ fn banner_activation(unread: u32, newest_finished_at_ms: Option<u64>, now_ms: u6
 
 /// macOS：一次激活。按「点横幅」处理的就走 [`focus_workbench`]，其余不动。
 ///
-/// `status()` 要读设置文件，所以判据留在这里算、算完立刻交后台线程，不在
-/// 通知回调里做 IO。
+/// 这个回调在**主线程**上跑（观察者注册时队列传的是 `None`），而
+/// [`crate::notify::task::status`] 要读设置文件——**IO 就在这里发生**，只是它
+/// 只有一次几毫秒的文件读，而「读完之后」的所有动作（起窗口、建工作台、等结果）
+/// 都交给了 [`focus_workbench`] 的后台线程，主线程上不碰任何窗口。
+#[cfg(target_os = "macos")]
 fn on_activated(app: &AppHandle) {
     let status = crate::notify::task::status(app);
     let banner = banner_activation(
@@ -359,7 +370,7 @@ mod ipc {
         FILE_GENERIC_WRITE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
     };
     use windows_sys::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PeekNamedPipe, PIPE_READMODE_BYTE,
         PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
     use windows_sys::Win32::System::Threading::CreateMutexW;
@@ -369,11 +380,15 @@ mod ipc {
     /// 载荷上限。交接消息只有一条固定长度的 ASCII 串，给 64 字节足够，
     /// 上限本身也是防御：读到一个超长的东西就当没读到。
     const PAYLOAD_LIMIT: usize = 64;
-    /// 客户端连不上时的重试节奏与总时长。第一实例是**先发布管道、再创建
+    /// 客户端先连不上时的重试节奏与总时长。第一实例是**先发布管道、再创建
     /// 互斥体**的，正常不会连不上；这段重试只兜住"管道句柄已建、监听线程
     /// 还没起来"这几十毫秒。
     const CONNECT_RETRY: Duration = Duration::from_millis(50);
     const CONNECT_ATTEMPTS: u32 = 40;
+    /// 客户端连上之后、等它把载荷写进来的上限（见 [`wait_for_payload`]）。
+    const READ_TIMEOUT: Duration = Duration::from_millis(3000);
+    /// 上面那段等待的轮询间隔。
+    const READ_POLL: Duration = Duration::from_millis(50);
 
     /// UTF-16 + NUL 结尾，供 Win32 的 `…W` 系列接口使用。
     fn wide(value: &str) -> Vec<u16> {
@@ -386,8 +401,8 @@ mod ipc {
         wide(&format!("Local\\{}", super::channel_name()))
     }
 
-    fn pipe_name() -> Vec<u16> {
-        wide(&format!(r"\\.\pipe\{}", super::channel_name()))
+    fn pipe_name() -> String {
+        format!(r"\\.\pipe\{}", super::channel_name())
     }
 
     pub(super) fn claim_or_handoff() -> Startup {
@@ -463,10 +478,15 @@ mod ipc {
                 let connected = unsafe { ConnectNamedPipe(pipe, std::ptr::null_mut()) } != 0
                     || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
                 if connected {
-                    match read_message(pipe) {
-                        Some(action) if action == ACT_WORKBENCH => super::focus_workbench(&app),
-                        Some(_) => {}
-                        None => eprintln!("dsh-xlink: 激活通道收到无法识别的载荷，已忽略。"),
+                    // 先等载荷真的到，再读：`ReadFile` 是阻塞的，而
+                    // `\\.\pipe\<name>` 任何本机进程都能打开，一个连上之后
+                    // 既不写也不断开的客户端会把整个通道挂死。
+                    if wait_for_payload(pipe, READ_TIMEOUT) {
+                        match read_message(pipe) {
+                            Some(action) if action == ACT_WORKBENCH => super::focus_workbench(&app),
+                            Some(_) => {}
+                            None => eprintln!("dsh-xlink: 激活通道收到无法识别的载荷，已忽略。"),
+                        }
                     }
                     unsafe {
                         DisconnectNamedPipe(pipe);
@@ -487,7 +507,14 @@ mod ipc {
     }
 
     fn create_pipe() -> Option<HANDLE> {
-        let name = pipe_name();
+        create_named_pipe(&pipe_name())
+    }
+
+    /// 建一条服务端管道实例。**名字由调用方给**：测试要用一条自己的通道，
+    /// 否则 `CreateFileW` 可能连到真壳正在监听的同名实例上去——那等于把用户的
+    /// 一次「回到工作台」吃掉，还让测试永远等不到自己的对端。
+    fn create_named_pipe(name: &str) -> Option<HANDLE> {
+        let name = wide(name);
         let handle = unsafe {
             CreateNamedPipeW(
                 name.as_ptr(),
@@ -512,7 +539,11 @@ mod ipc {
     }
 
     fn connect() -> Option<HANDLE> {
-        let name = pipe_name();
+        connect_named(&pipe_name())
+    }
+
+    fn connect_named(name: &str) -> Option<HANDLE> {
+        let name = wide(name);
         for _ in 0..CONNECT_ATTEMPTS {
             let handle = unsafe {
                 CreateFileW(
@@ -533,6 +564,47 @@ mod ipc {
         None
     }
 
+    /// 管道里是否真的已经有可读的字节。
+    ///
+    /// **`ReadFile` 之前必须有这一步**：它是阻塞读，而 `\\.\pipe\<名字>` 是任何
+    /// 本机进程都能 `CreateFileW` 打开的公共资源——一个连上之后既不写数据也
+    /// 不关闭的客户端（别的自启动项、体检脚本、手滑的 `dir \\.\pipe\`）会把监听
+    /// 线程永久挂住，此后点横幅、点任务栏启动项全部静默失效，而且日志里一行都
+    /// 没有，只能重启壳才恢复。`PeekNamedPipe` 立即返回，用轮询换掉那次阻塞：
+    /// 有数据、或超时、或对端断开，三种情况都让监听循环回到 `DisconnectNamedPipe`
+    /// 重建管道——超时按「这条连接没带请求」处理，与不认识的载荷同等对待。
+    fn wait_for_payload(pipe: HANDLE, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let mut available = 0u32;
+            // SAFETY: 句柄是 `create_named_pipe` 刚建出的服务端实例（有读权限）；
+            // 三个指针要么为 null（PeekNamedPipe 允许 lpbuffer 为 null，此时只问
+            // 可用字节数），要么指向本函数栈上的 u32。无可变共享状态。
+            let ok = unsafe {
+                PeekNamedPipe(
+                    pipe,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &mut available,
+                    std::ptr::null_mut(),
+                )
+            } != 0;
+            // 问不出来 = 对端已断开（ERROR_BROKEN_PIPE）或管道已坏，两种都按
+            // 「没有请求」处理，这里不区分（区分了也只有日志差别）。
+            if !ok {
+                return false;
+            }
+            if available > 0 {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(READ_POLL);
+        }
+    }
+
     fn read_message(pipe: HANDLE) -> Option<String> {
         let mut buffer = [0u8; PAYLOAD_LIMIT];
         let mut read = 0u32;
@@ -549,6 +621,81 @@ mod ipc {
             return None;
         }
         String::from_utf8(buffer[..read as usize].to_vec()).ok()
+    }
+
+    /// 管道往返的自动化覆盖。**这条链路此前只有「人工点一次横幅」验过**：
+    /// 通道名、字节模式、载荷上限、UTF-8 解码，任何一处改错的症状都是
+    /// 「点横幅完全没反应」，而编译器与文件里既有的两条单测（`channel_name`、
+    /// `guard_enabled`）都不会响。
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// 测试专用的通道名。**不能复用真壳那一条**：具名管道允许有多个实例，
+        /// `CreateFileW` 连到哪一个并不确定——连到真壳那一条就等于把用户的一次
+        /// 「回到工作台」吃掉，还让本测试永远等不到自己的对端。
+        fn test_channel(tag: &str) -> String {
+            format!(r"\\.\pipe\dsh-xlink-test-{}-{tag}", std::process::id())
+        }
+
+        /// 客户端写 `workbench`，监听端必须原样读回来——这是"第二个进程把
+        /// 意图交给在跑的那个"这一步的全部内容。
+        #[test]
+        fn payload_survives_the_round_trip() {
+            // 载荷上限同时就是管道缓冲。上限一旦小于载荷，客户端的 `WriteFile`
+            // 会**阻塞**而不是报错——本用例就会挂住而不是变红。先钉成一次快速
+            // 断言，让「上限被改小」这件事以断言的形式红掉。
+            assert!(
+                PAYLOAD_LIMIT >= ACT_WORKBENCH.len(),
+                "载荷上限（同时是管道缓冲）必须装得下载荷"
+            );
+            let channel = test_channel("roundtrip");
+            let server = create_named_pipe(&channel).expect("建不出测试管道");
+            let client = connect_named(&channel).expect("连不上测试管道");
+            let payload = ACT_WORKBENCH.as_bytes();
+            let mut written = 0u32;
+            // SAFETY: 两个句柄都是刚建/刚连上的本地管道实例，写入源是本地数组，
+            // 计数落回本地变量。载荷长度远小于管道缓冲，写入立即完成。
+            let ok = unsafe {
+                WriteFile(
+                    client,
+                    payload.as_ptr(),
+                    payload.len() as u32,
+                    &mut written,
+                    std::ptr::null_mut(),
+                )
+            } != 0;
+            assert!(ok, "客户端没能把载荷写进管道");
+            assert_eq!(written as usize, payload.len(), "载荷被截断了");
+            assert!(
+                wait_for_payload(server, READ_TIMEOUT),
+                "载荷已经写进去了却等不到它"
+            );
+            assert_eq!(read_message(server).as_deref(), Some(ACT_WORKBENCH));
+            close(Some(server));
+            close(Some(client));
+        }
+
+        /// 客户端连上却**不写数据**时，监听端必须自己超时走掉。少了这一步，
+        /// 一个只连不写的第三方进程就能把激活通道挂死到壳退出为止——点横幅从此
+        /// 静默失效，且没有任何日志。
+        #[test]
+        fn a_silent_client_cannot_block_the_channel() {
+            let channel = test_channel("silent");
+            let server = create_named_pipe(&channel).expect("建不出测试管道");
+            let client = connect_named(&channel).expect("连不上测试管道");
+            let started = std::time::Instant::now();
+            assert!(
+                !wait_for_payload(server, Duration::from_millis(200)),
+                "静默客户端不该被判成带了一条请求"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "wait_for_payload 必须自己超时退出，而不是把监听线程挂死"
+            );
+            close(Some(server));
+            close(Some(client));
+        }
     }
 }
 
@@ -599,6 +746,10 @@ mod tests {
     /// 这个判据的错误方向是不对称的，两头各有一种用户可见症状，所以四面都钉：
     /// 判据恒 `false` → 点横幅仍然完全没反应（本次要修的 bug）；恒 `true` →
     /// 用户点自己的面板 / Cmd-Tab 时凭空多开一个工作台窗口。
+    ///
+    /// **跟着判据一起挂 cfg**：判据本身是 macOS 专属的（见上面那段说明），
+    /// Windows 上连同它的测试一起不存在。
+    #[cfg(target_os = "macos")]
     #[test]
     fn only_a_fresh_banner_claims_the_activation() {
         const MIN: u64 = 60_000;

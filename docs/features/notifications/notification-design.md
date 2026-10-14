@@ -375,14 +375,27 @@ launch token 建窗"，还带着端口占用 / 端口上不是内核这类可操
 > 而激活**不会**替我们显示 `orderOut` 掉的窗口——用户看到的就是完全没反应。
 > 2026-10-13 改为观察激活（`activate::observe_activation`）。
 >
-> **Windows 仍然只有交接机制本身的实测，没有「点横幅真的拉起了 exe」这一环的
-> 实测**。交接是通的（第二个进程 234 ms 退出且不建任何窗口、在跑实例的窗口
-> 从最小化恢复并真正抢到前台，`GetForegroundWindow` 落在它身上）——但那是手动
-> 起第二个进程测出来的。toast 归属的 AUMID 上**没有注册 COM activator**
-> （`tauri-winrt-notification` 不提供这个能力），系统能否为它拉起 exe 取决于
-> 开始菜单快捷方式是否带 `System.AppUserModel.ID`，而这一条本仓从未设置也从未
-> 验证。**这是两端剩下唯一没有实测支撑的环节**；若用户在 Windows 上仍是
-> 完全没反应，第一个要查的就是它。
+> **Windows 的交接机制已实测，「点横幅真的拉起 exe」这一环的前置条件也已核对，
+> 只差真机点一次**（2026-10-14 在 Windows 上补的核对）。交接本身是通的：第二个进程
+> 234 ms 退出且不建任何窗口、在跑实例的窗口从最小化恢复并真正抢到前台
+> （`GetForegroundWindow` 落在它身上）——但那是手动起第二个进程测出来的。
+> toast 归属的 AUMID 上**没有注册 COM activator**
+> （`tauri-winrt-notification` 的 `show()` 只调 `CreateToastNotifierWithId`），
+> 因此系统能否为它拉起 exe 完全取决于开始菜单快捷方式带没带
+> `System.AppUserModel.ID`。**这一条本仓没有设置，但安装器给了**——在
+> Windows 11 上读装好的那份
+> `%APPDATA%\Microsoft\Windows\Start Menu\Programs\dsh-xlink.lnk`：
+>
+> ```text
+> System.AppUserModel.ID = com.zhongxingxing.dsh-xlink   ← 与 toast 的 AUMID（tauri.conf.json 的 identifier）一致
+> TargetPath            = %LOCALAPPDATA%\dsh-xlink\dsh-xlink.exe
+> ```
+>
+> 也就是说「快捷方式没带 AUMID」这个失败原因被排除了，运行中的实例也确实挂着
+> `\\.\pipe\dsh-xlink-shell-release`（互斥体 + 管道守卫是活的）。**剩下的唯一
+> 未验证动作是「人点一下横幅」**：那一下要人在真机前做。若用户在 Windows 上
+> 仍是完全没反应，第一个要查的就是这次点击有没有拉起第二个进程（看有没有第二个
+> `dsh-xlink.exe` 瞬间出现又消失）。
 >
 > **没有**用 `notify-rust` 的 `wait_for_action` 去拿点击回调仍然是刻意的：那条
 > 路径靠 `mac-notification-sys` 在**主线程上重入 NSRunLoop** 等 delegate 回调，
