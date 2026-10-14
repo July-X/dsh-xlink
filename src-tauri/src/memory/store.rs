@@ -722,10 +722,9 @@ pub fn submit_candidate(
                     .to_string(),
             ));
         }
-        // **同一正文不重复收**（§7.2「相同规范化正文可合并来源」的首版做法）：正文指纹
-        // 一样就是同一件事，再收一条只会让待确认清单与检索结果里出现两份。判据在
-        // `duplicates`（那个模块管「同一件事别长成两条」）。
-        if let Some(reason) = crate::memory::duplicates::duplicate_reason(doc, &clean.body) {
+        // **同一正文不重复收**（§7.2「相同规范化正文可合并来源」的首版做法）：正文指纹一样、
+        // 且**在候选的范围里看得见**就是同一件事（范围判据在 `duplicates` 里）。
+        if let Some(reason) = crate::memory::duplicates::duplicate_reason_for(doc, &clean) {
             return Err(AppError::Memory(reason));
         }
         // 待确认的候选到顶后**拒收新的**，而不是丢旧的（见 `MAX_PENDING_CANDIDATES`）。
@@ -1651,6 +1650,51 @@ mod tests {
             },
         )
         .expect("different body");
+    }
+
+    /// **重复判据带范围**（独立评审第 16 条）：指纹原先在全库比，于是 A 项目里已有的那句
+    /// 「提交前跑 npm run check」会让 B 项目提同一句时被拒——两个项目各自定下同一条约定完全正常，
+    /// 而 B 项目的用户看到的是「已经在记忆里了」却在自己的项目里找不到它。
+    #[test]
+    fn the_same_body_in_another_project_is_not_a_duplicate() {
+        let _home = TempHome::new("dedup-scope");
+        let ns = namespace();
+        save(
+            &ns,
+            project_input("ws-a", "A 项目的约定", "提交前跑 npm run check"),
+        )
+        .expect("save");
+
+        // 同一个正文、**另一个项目**：不算重复，收下。
+        submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_id: "ws-b".to_string(),
+                workspace_path: "/tmp/ws-b".to_string(),
+                title: "B 项目也这么定".to_string(),
+                body: "提交前跑 npm run check".to_string(),
+                ..CandidateInput::default()
+            },
+        )
+        .expect("另一个项目的同一条不算重复");
+
+        // 通用记录仍然挡住通用候选：通用记录处处可见，再存一份才是真的重复。
+        save(&ns, general_input("通用约定", "先看日志再看代码")).expect("save general");
+        let general_dup = submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: SCOPE_GENERAL.to_string(),
+                title: "又说一遍".to_string(),
+                body: "先看日志再看代码".to_string(),
+                ..CandidateInput::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            general_dup.to_string().contains("已经在记忆里"),
+            "{general_dup}"
+        );
     }
 
     /// 用户自己写下同一条之后，待确认里的重复候选被收掉（§7.2「用户纠正优先于旧候选」）。

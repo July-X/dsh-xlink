@@ -73,13 +73,32 @@ pub(crate) fn scope_matches(
     workspace_id: &str,
     workspace_path: &str,
 ) -> bool {
-    if record.scope == SCOPE_GENERAL {
+    scope_matches_fields(
+        &record.scope,
+        &record.workspace_id,
+        &record.workspace_path,
+        workspace_id,
+        workspace_path,
+    )
+}
+
+/// 同 [`scope_matches`]，但按**字段**判——给还没有 `MemoryRecord` 的东西用（待确认的候选、
+/// 待写入的输入）。**规则只有这一份**：两处各写一遍就会分叉，而分叉出来的那份会让
+/// 「谁能看见」与「算不算重复」给出不一致的答案。
+pub(crate) fn scope_matches_fields(
+    record_scope: &str,
+    record_workspace_id: &str,
+    record_workspace_path: &str,
+    workspace_id: &str,
+    workspace_path: &str,
+) -> bool {
+    if record_scope == SCOPE_GENERAL {
         return true;
     }
-    if !record.workspace_id.is_empty() && record.workspace_id == workspace_id {
+    if !record_workspace_id.is_empty() && record_workspace_id == workspace_id {
         return true;
     }
-    !record.workspace_path.is_empty() && record.workspace_path == workspace_path
+    !record_workspace_path.is_empty() && record_workspace_path == workspace_path
 }
 
 fn verification_rank(verification: &str) -> i64 {
