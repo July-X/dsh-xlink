@@ -292,7 +292,7 @@
   `dsh-scope` 的 `scopeTarget` 注释写死了「事件沿 scope 向上流、绝不向下」（`a listener owned by an
   enclosing scope receives every descendant scope's events`）——所以必须挂在**插件根 ctx** 上，挂在
   `agent.ctx` 上一条都收不到且没有任何症状。判据：`afterCompaction` 的用例（含「换目录不归零预算、
-  压缩才归零」的对照）、装配层的挂点判据（挂错 scope 即红，反向验过）。**还差**：真机压缩后再问一次
+  压缩才归零」的对照）、装配层的挂点判据（挂错 scope 即红，反向验过）。**还差**：真机压缩后再问一次——2026-10-15 把真机探针的通路打通了一半（插件能在真会话里加载并跑 `pre-step`），离验这条只差桩模型那一步
   ——本机没有可用的压缩事件（要真会话），与 F6 同属「要环境」的一类
 - ⬜ **G13 失败压缩的判据含「只有 start、没有 end」**（§8、§10）—— 未实现（属 P2 的提取触发）
 - ✅ **G14 `agent/created` 解析失败或桥不可用时会话仍能正常创建与对话** —— try/catch + 真机
@@ -332,7 +332,7 @@
   所以纯注入的回合不会被当成用户内容；③ `seq` 必须是正整数（拿不到截止序号就没有「冻结输入」可言）。
   接线：`session/event` 里记人类消息序号 → 回合正常结束时排任务，**成功才推进游标**（否则这一段内容
   再也没人看它）。**还差**：`sessions.flush` 屏障与「false 时改用 live 历史」那一半（它要读会话日志，
-  与 H5 的输入读取同一条路）；以及真机上确认 `turn/end` 真的收到（同 G12 的订阅，靠源码合同钉住）
+  与 H5 的输入读取同一条路）；以及真机上确认 `turn/end` 真的收到（同 G12 的订阅）。**2026-10-15 实测到的进度**：插件的 `pre-step` 已经在真会话里跑通（见「怎么验」里的真机探针），而 `turn/end` 要模型把一回合跑完——桩模型那条路卡在 provider 注册上（三个坑都记在那一节）
 - ✅ **H3 连续回合去抖 30 秒、合并任务、运行中任务保留冻结输入**（§8-2、§8 预算）—— 状态机那一半在
   `jobs::enqueue`（同一会话 30 秒内的新游标合并进还没开始的那个；已经在跑的**不被打断**，它的冻结输入
   因此天然保留），插件那一半在 `policy::shouldScheduleExtraction` + `session/event` 接线（只在新的人类消息
@@ -461,6 +461,54 @@
 | 4 | **P2 自动提取：模型调用那一段**（H5 的会话日志读取、模型调用、H6 输出 schema、H8 取消、H9 的断网生成） | 地基与验收已成：状态机、桥路由、调度判据、有限输入与脱敏、四道提交闸、**整条数据链的端到端验收**与**崩溃恢复**。剩下的每一步都要**真模型**。**C4 的「多来源」与 C5/C6 的语义那一半也并到这里** |
 
 ## 怎么验（判据在哪跑）
+
+### 真机探针：把一个内核会话拉起来（2026-10-15 实测的通路）
+
+零模型额度地验「插件在真内核里到底跑不跑」这件事，通路是通的，但路上有三个坑。**已经验到的**：
+记忆插件在真会话里加载成功，`pre-step` 真的发了 `GET /v1/memory/context?q=<用户消息原文>&workspace=…`
+与 `GET /v1/memory/note?session=…`（桩桥收到的原始行，本文档末尾那两条）。**还没通到的**：会话里的
+`turn/end`（它要模型把一回合跑完）——所以 G12/H1 的「订阅真的收到」仍未验。
+
+通路（全部在临时目录里，不碰用户的实例）：
+
+```sh
+K=~/.dsh-xlink/dsh/desktop/kernels/<版本>
+mkdir -p /tmp/p2probe && cp -R plugins/memory /tmp/p2probe/plugins/memory
+# 插件 import 的 @deepseek-ai/dsh-tools 要能解析：软链到内核安装树
+mkdir -p /tmp/p2probe/plugins/memory/node_modules/@deepseek-ai
+ln -sfn "$K/node_modules/@deepseek-ai/dsh-tools" /tmp/p2probe/plugins/memory/node_modules/@deepseek-ai/dsh-tools
+# 桩桥（记下插件发来的每条请求，这就是观察通道）+ 桩模型（回一条固定的回答）
+node /tmp/p2probe/stub-bridge.mjs & node /tmp/p2probe/stub-model.mjs &
+DSH_HOME=/tmp/p2probe DEEPSEEK_BASE_URL=http://127.0.0.1:8791 DEEPSEEK_API_KEY=stub-key \
+  DSH_XLINK_BUILTIN_BRIDGE_URL=http://127.0.0.1:8792 DSH_XLINK_BUILTIN_BRIDGE_TOKEN=probe-token \
+  node "$K/node_modules/@deepseek-ai/dsh/lib/bin.js" --profile headless \
+    --patch /tmp/p2probe/overlay.yml "记住：以后提交前都跑检查"
+```
+
+`overlay.yml` 的形状（`--patch` 叠加在 profile 之上，不用改 profile）：
+
+```yaml
+- id: agent-default-model          # 默认模型换成我们要桩的那条
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config: { provider: deepseek, model: deepseek-v4.1-flash }
+- insert:
+    - id: xlink-memory             # 插件的接线行，形状与壳体生成的一致
+      name: "/tmp/p2probe/plugins/memory/host/index.js"   # **绝对路径**
+```
+
+**三个坑（每个都花了时间）**：
+1. **`insert` 的 id 撞车会静默顶掉原来那份**。往 headless 栈里插 `llm-deepseek` 之后得到
+   `NO_ADAPTER: no adapter registered for provider "deepseek"`——同 id 的第二次 insert 把模板里
+   那一份顶掉了。要么换 id，要么别插。
+2. **profile 的 `node_modules` 是空的**，按**包名**插进去的东西解析不到（模板自带的那几个 bundle
+   走的是安装树）。插件用**绝对路径**就没事；相对路径会被解析成 `file:///plugins/memory/...`。
+3. **`@deepseek-ai/dsh-llm-deepseek` 是库不是插件**：它导出的是 `registerDeepSeekProvider` /
+   `DeepSeekAdapter`，没有 `name` / `apply`（headless 栈里那两条 `llm-deepseek*` 是**凭据与账号**
+   插件）。所以「桩模型」这条路要么写一个自己的 provider 插件（要对着 `DeepSeekAdapter` 的依赖
+   契约来），要么用内置的 `acp` / `sdk` profile 那条程序化接口——两条都还没试。
+
+**纪律**：探针只写 `/tmp`；`DSH_HOME` 指到临时目录之后，用户的实例、注册表、插件中央库都不在
+路径上。跑完记得收桩进程（`pkill -f p2probe`）。
 
 ```sh
 npm run check                                       # 全量门禁（含 946 条 Rust、517 条 UI、插件用例）
