@@ -8,6 +8,7 @@
 //! 两条路都落到本模块，因此写入天然只有一个进程、一把锁。
 
 pub(crate) mod cmd;
+pub(crate) mod export;
 pub(crate) mod query;
 pub(crate) mod store;
 pub(crate) mod workspaces;

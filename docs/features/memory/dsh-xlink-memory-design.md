@@ -260,11 +260,12 @@ flowchart LR
 | 真实内核挂载验证 | 临时 `DSH_HOME` + 软链 profile 依赖启动 `dsh web`：`--dump-config` 的合成树里能看到 `xlink-memory` 行（绝对路径被规范成 `file://…`），插件 `apply()` 确实执行（标记文件），`inject` 的三个服务全部解析——**“插件级 logger 不可见”这条也是这次实测出来的**。工作区对齐那一轮又验了一次：`ctx.inject(['workspaceRegistry'])` 的回调在 4 秒内拿到服务（标记里 `registryAtApply: ready`），插件照常加载 |
 | 工作区对齐（2026-10-14 晚） | `memory/workspaces.rs` **只读**内核的 `<DSH_HOME>/storages/workspace.json`；面板的「本项目」变成下拉（已知工作区 + 手填兜底），保存时带上真实的 `workspace_id`；插件经 `ctx.inject(['workspaceRegistry'])`（**按需注入，不进 `inject` 数组**）解析 id 随 `id` 参数送桥。`query::scope_matches` 因此是「先 id、再路径」：项目改名/换盘后仍能对上 |
 | 面板的注入插件告警 | 开关打开而 `xlink-memory` 未启用时，面板直说「保存的记忆不会进入任何会话」并给一个启用按钮——这是两个开关，少一个整条链路不生效 |
+| Markdown 导出（2026-10-14 夜） | `memory/export.rs` + 两条命令（`memory_export` / `memory_open_exports`）：一次性快照落到 `<memory>/exports/memory-<时间戳>.md`（0600、**不覆盖已有文件**、同秒加后缀）。导出的是权威记录那份列表视图（含停用项与候选），**文档读不出来时在文件头照实说**——一份看起来正常的空快照会让用户以为记忆丢了 |
 
 IPC 与落盘都用 **snake_case**：`check-invariants` 的 `ipc-fields` 抓到过一版 camelCase 序列化——`total_bytes` 与既有前端读的同名字段相撞，会被判成「前端读到 undefined」。
 
 尚未落地（按顺序）：
 
 1. **真实内核端到端验收**：把 `xlink-memory` 在应用里启用（物化 + 接线 + 重启工作台），确认上下文贡献出现在首个真实请求里、切目录后不再注入旧项目、关掉开关后不再注入。已验证到「内核真的挂起来」这一步（见上表），**差的是首个真实请求**——那需要一次真实会话（会用到模型额度）。
-2. 导出 Markdown（设计 §2 承诺过，命令还没写）。
-3. 会话里「本次用了哪几条记忆」的回执（P2）：现在只有壳侧 `memory-bridge` 调用留痕，用户在工作台看不到。
+2. 会话里「本次用了哪几条记忆」的回执（P2）：现在只有壳侧 `memory-bridge` 调用留痕，用户在工作台看不到。
+3. 自动提取（P2）：本地模型验收通过前，面板显示「不可用及原因」，不用同一个「已开启」掩盖缺失能力。

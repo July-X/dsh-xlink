@@ -508,6 +508,8 @@ pub fn run() {
             memory::cmd::memory_submit_candidate,
             memory::cmd::memory_preview_context,
             memory::cmd::memory_workspaces,
+            memory::cmd::memory_export,
+            memory::cmd::memory_open_exports,
             // 后台常驻与登录自启（2026-10-02）。三条命令都在 shell::autostart
             // 里，不进 commands.rs——那里只剩调度与端口 / 插件那几族。
             shell::autostart::autostart_status,

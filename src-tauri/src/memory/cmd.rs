@@ -9,6 +9,7 @@
 //! 命令的 async 上下文不允许阻塞。
 
 use crate::commands::blocking;
+use crate::memory::export;
 use crate::memory::query;
 use crate::memory::store::{self, CandidateInput, ListFilter, Namespace, SaveInput};
 use crate::memory::workspaces;
@@ -115,6 +116,41 @@ pub async fn memory_workspaces() -> Result<Vec<workspaces::WorkspaceView>, Strin
             &namespace.family,
             &namespace.instance_id,
         )))
+    })
+    .await
+}
+
+/// 导出一次 Markdown 快照（一次性，不参与运行时；见 `memory::export`）。
+#[tauri::command]
+pub async fn memory_export() -> Result<export::ExportResult, String> {
+    blocking(|| export::export(&Namespace::current())).await
+}
+
+/// 在文件管理器里打开导出目录。
+///
+/// 与 `open_data_dir` 同一条路（服务端调 opener，绕开插件只授了 `open_path`
+/// 之外几项的 IPC scope），也同样是**先建目录再打开**：`open_path` 对不存在的
+/// 路径只报一个含糊的错误，用户看不到「其实只是还没导出过」。
+#[tauri::command]
+pub async fn memory_open_exports(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let namespace = Namespace::current();
+    let dir = paths::instance_memory_dir(
+        &namespace.family,
+        &namespace.instance_id,
+        &namespace.profile,
+    )
+    .join("exports");
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        return Err(format!(
+            "无法访问导出目录 {}：{error}。请检查该目录的写入权限。",
+            dir.display()
+        ));
+    }
+    blocking(move || {
+        app.opener()
+            .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
+            .map_err(|error| format!("无法打开导出目录：{error}"))
     })
     .await
 }

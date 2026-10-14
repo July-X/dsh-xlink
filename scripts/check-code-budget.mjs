@@ -750,13 +750,19 @@ const FILE_BUDGETS = {
   // （只读、读不出来回空列表、不猜字段），混进 store.rs 会让「哪些写、哪些只读」
   // 在一个文件里分不清——而 store.rs 自己已经贴到 665 行。
   'src-tauri/src/memory/workspaces.rs': 80,
+  // 2026-10-14：Markdown 快照导出（设计 §2 承诺的那一条）。独立成文件的理由：
+  // 它只做「把一份列表视图渲染成文本」，与 store 的读写纪律（CAS / 指纹 / 原子
+  // 替换）无关；塞进 store.rs 会让那份文件多出一个与它无关的关注点，而 store.rs
+  // 已经贴着 665 行的预算。
+  'src-tauri/src/memory/export.rs': 230,
   // 2026-10-14：记忆的管理页（列表 / 编辑 / 待确认 / 检索预览 / 开关）。
   // 面板与它的 store 分成两个文件是**仓库既有约定**（`ui/AGENTS.md`：一条功能的
   // 状态、动作与面板放在同一个目录里），不是因为行数：动作要能被测试与别的面板
   // 复用（App.vue 的 activePanel watcher 直接调 refreshMemory），模板只负责画。
   // 310 → 375 / 190 → 210（同日）：项目下拉（内核工作区列表 + 手填兜底）与
   // 「注入插件未启用」那条告警——两个开关里少一个就整条链路不生效，必须说出来。
-  'ui/src/memory/MemoryPanel.vue': 375,
+  // 375 → 395（同日）：导出按钮与「最近导出」那一行（含打开导出目录）。
+  'ui/src/memory/MemoryPanel.vue': 395,
   'ui/src/memory/memory.js': 210,
   'ui/src/shell/autostart.js': 90,
   // 2026-10-07 uiv2 改版新增：明暗双主题的唯一实现（shell/theme.js）。
@@ -2777,7 +2783,11 @@ const FILE_BUDGETS = {
 // （MemoryPanel 310 → 361、memory.js 190 → 195）。前者把「本项目」从手填路径
 // 变成下拉，并让记录带上内核认的 `workspace_id`（路径改名/换盘后仍能对上）；
 // 后者修的是「开了开关却什么都没发生」那条静默失败。
-const TOTAL_BUDGET = 51250;
+//
+// 51250 → 51600（2026-10-14 夜）：Markdown 导出（`memory/export.rs` 223 行 +
+// 面板的导出按钮与「最近导出」一行 + 两条命令）。这是设计 §2 承诺过、此前一直
+// 挂在「尚未落地」里的一项，属于新能力开新文件，不是往既有文件里塞的膨胀。
+const TOTAL_BUDGET = 51600;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs
