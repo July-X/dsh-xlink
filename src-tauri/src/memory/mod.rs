@@ -14,5 +14,6 @@ pub(crate) mod input;
 pub(crate) mod jobs;
 pub(crate) mod query;
 pub(crate) mod recent;
+pub(crate) mod routes;
 pub(crate) mod store;
 pub(crate) mod workspaces;
