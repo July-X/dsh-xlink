@@ -33,6 +33,7 @@ import { callMemory, readCredentials } from './bridge.js';
 import {
   afterCompaction,
   applyStep,
+  isCompactionDone,
   beginStep,
   emptyExtractState,
   EXTRACTOR_VERSION,
@@ -115,7 +116,9 @@ function apply(ctx) {
   ctx.on('session/event', (session, event) => {
     const box = agentStates.get(String(session?.id ?? ''));
     if (!box) return;
-    if (event?.type === 'compaction/end') {
+    // **只有成功的压缩才重置**：失败的那次（`end` 带 `error`）没有丢掉任何快照，
+    // 重置只会白取一次检索，甚至把同一段内容再塞一遍（见 `isCompactionDone`）。
+    if (isCompactionDone(event)) {
       box.state = afterCompaction(box.state);
       return;
     }
