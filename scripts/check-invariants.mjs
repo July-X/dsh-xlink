@@ -2601,6 +2601,112 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// --- 记忆清单里引用的判据必须真的存在 ------------------------------------------
+//
+// 清单的价值全在「判据在哪跑」那一列：它写着 `the_same_body_is_not_collected_twice`，维护者据此
+// 相信那条功能有判据护着；写着 `memory/routes.rs`，据此知道去哪改。**而重命名一个测试、删掉一条
+// 路由、搬走一个文件都不会让清单报错**——它会安静地指向一个不存在的东西，比没有清单更坏：
+// 有人照着它以为自己验过了（2026-10-15 加这一项时，清单里 56 条测试名引用、48 条文件引用全部
+// 都对得上，但它此前的「对得上」纯属运气）。
+//
+// 三类引用各按能机械判的方式钉：
+// · **测试名**（形如 `the_same_body_...` 的长标识符）必须出现在产品与测试源码里；只出现在
+//   文档或脚本注释里的不算——那正是「判据被删了而清单还在」的形状。**不是本仓符号**的引用
+//   登记在下表里，并写清它是什么。
+// · **文件**：仓库相对路径、`src-tauri/` 下的路径、或任一已知根下的同名文件都算命中
+//   （清单里常只写 `bridge.rs` 这样的文件名）。运行期数据文件在下表里登记。
+// · **桥路由**：`/v1/memory/...` 要么整串出现在路由源码里，要么它的最后一段作为 match 臂的
+//   字面量出现（路由是「前缀 + 臂」的形状，整串并不在源码里）。
+{
+  const progressPath = join(root, 'docs/features/memory/memory-progress.md');
+  let progress = '';
+  try {
+    progress = readFileSync(progressPath, 'utf8');
+  } catch {
+    // 上一项已经报过「清单缺失」，这里不重复报。
+  }
+  if (progress) {
+    /** 引用的**不是本仓符号**：在这里登记并写清它是什么。 */
+    const external = new Set([
+      'memory_search', // 插件暴露给模型的工具名（在 plugins/memory/host 里，不是 Rust 侧符号）
+      'memory_submit_candidate', // 已删除的命令：清单里作为历史提及
+      'screencapture', // macOS 系统命令
+      'jobs.json', // 运行期数据文件（与 memory.json 同目录），不在仓库里
+      'memory.json', // 同上：权威记录本体
+    ]);
+
+    const sourceRoots = [
+      join(root, 'src-tauri', 'src'),
+      join(root, 'plugins'),
+      join(root, 'ui'),
+      join(root, 'e2e'),
+    ];
+    const sourceFiles = sourceRoots.flatMap((dir) => walk(dir, ['.rs', '.js', '.mjs', '.vue']));
+    // **必须剥注释再匹配**：这一条第一次写出来是假绿的——把 store.rs 里的判据改名之后它照样
+    // 通过，因为旧名字还留在上面那几行注释里（判据命中的是解释，不是代码）。同一类坑本仓已经
+    // 栽过三次（见 agent-lessons §9）。
+    //
+    // **只剥行首的注释**：第二版把「任意位置的 `/* … */`」都剥掉，结果误伤了真代码——
+    // 源码里有 `'**/*.js'` 这样的 glob 字符串，它的 `/*` 会与几千行之后的 `*/` 配成一对，
+    // 一次吞掉一大片，于是 37 条**明明存在**的判据全被判成找不到。要求注释符号出现在
+    // 行首（前面只允许空白），假配对就基本不可能发生，而 `///` 文档注释照样剥得到。
+    const stripComments = (text) =>
+      text
+        .replace(/^[ \t]*\/\*[\s\S]*?\*\//gm, '')
+        .replace(/^[ \t]*<!--[\s\S]*?-->/gm, '')
+        .replace(/^[ \t]*\/\/.*$/gm, '');
+    const sourceBlob = stripComments(
+      sourceFiles.map((file) => readFileSync(file, 'utf8')).join('\n'),
+    );
+
+    const allRoots = [...sourceRoots, join(root, 'scripts'), join(root, 'docs')];
+    const knownFiles = allRoots.flatMap((dir) =>
+      walk(dir, ['.rs', '.js', '.mjs', '.vue', '.json', '.md']),
+    );
+    const knownNames = new Set(knownFiles.map((file) => file.split(sep).pop()));
+
+    const cited = new Set([...progress.matchAll(/`([^`\n]+)`/g)].map((match) => match[1]));
+    const problems = [];
+    for (const citation of cited) {
+      if (external.has(citation) || citation.includes('<') || citation.includes('*')) continue;
+      if (/^\/[a-z]/i.test(citation)) continue; // 路由单独判
+      const isTestName = /^[a-z][a-z0-9_]{12,}$/.test(citation);
+      const isFile = /^[A-Za-z0-9_./-]+\.(rs|js|mjs|vue|json|md)$/.test(citation);
+      if (isFile && !isTestName) {
+        const candidates = [join(root, citation), join(root, 'src-tauri', citation)];
+        if (candidates.some((file) => existsSync(file))) continue;
+        if (knownNames.has(citation.split('/').pop())) continue;
+        problems.push(`文件 \`${citation}\` 找不到`);
+        continue;
+      }
+      if (isTestName && !sourceBlob.includes(citation)) {
+        problems.push(`判据名 \`${citation}\` 在产品与测试源码里找不到`);
+      }
+    }
+
+    // 桥路由：整串或它的最后一段必须出现在路由源码里。
+    const routesSource = readFileSync(join(root, 'src-tauri', 'src', 'memory', 'routes.rs'), 'utf8');
+    for (const citation of cited) {
+      if (!/^\/v1\/memory\//.test(citation) || citation.includes('*')) continue;
+      // 路由源码里是「前缀 + 臂」：`/v1/memory/jobs/submit` 对应臂 `"/submit"`。
+      const leaf = `"/${citation.split('/').pop()}"`;
+      if (!routesSource.includes(citation) && !routesSource.includes(leaf)) {
+        problems.push(`路由 \`${citation}\` 在 memory/routes.rs 里找不到`);
+      }
+    }
+
+    if (problems.length > 0) {
+      fail(
+        'memory-checklist-citations',
+        `memory-progress.md 里的引用对不上代码：${problems.join('；')}。` +
+          '改名的判据 / 挪走的文件要同步清单；确实不是本仓符号的，登记进这一项的 external 表并写清它是什么。',
+      );
+    } else {
+      note(`记忆清单里的 ${cited.size} 条反引号引用全部对得上代码`);
+    }
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);
