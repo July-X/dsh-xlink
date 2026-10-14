@@ -260,6 +260,31 @@ export function applyResult(state, turn, text, generation) {
 }
 
 /**
+ * 压缩之后的会话状态：**把注入预算清零**。
+ *
+ * 为什么清零不违背「每会话 3 次」那条硬规则：那条规则防的是「同一批快照越堆越多」，而压缩会把旧的
+ * 运行上下文快照整段丢掉（`dsh-compaction-basic` 的 `compaction/end`）——旧快照没了，注入块也就
+ * 没了，模型此刻看得到的东西里一条记忆都没有。不清零就等于「长会话压缩之后再也拿不到记忆」，而
+ * 用户看到的是一段与短会话完全不同的行为（设计 §10 明确要求「成功压缩后能重新取得记忆」）。
+ *
+ * 保留 `workspace`（压缩不换目录，留着免得被当成换目录多清一次）与 `revision`（文档代次与会话无关）；
+ * `turn` 置 -1，让本回合之后的下一步能重新检索。
+ *
+ * @param {{workspace: string, revision: number|null}} state
+ * @returns {object}
+ */
+export function afterCompaction(state) {
+  return {
+    turn: -1,
+    text: '',
+    injections: 0,
+    bytes: 0,
+    workspace: state.workspace,
+    revision: state.revision,
+  };
+}
+
+/**
  * 这一步取回来的结果**怎么用**——整条链路里唯一会被静默做坏的决定，所以它是纯函数。
  *
  * 两种模式：`turn`（回合预算内）取到什么用什么；`probe`（预算用完之后）只在**数据代次

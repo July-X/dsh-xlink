@@ -31,6 +31,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import { callMemory, readCredentials } from './bridge.js';
 import {
+  afterCompaction,
   applyStep,
   beginStep,
   resolveWorkspaceId,
@@ -95,6 +96,24 @@ function apply(ctx) {
   // 生存条件。写进 `inject` 的话，任何不带 workspace 服务的 profile 都会让整个
   // 插件停在「等待服务」上——**记忆一条都注入不了，而日志里什么也没有**。
   let workspaceRegistry = null;
+  // 每个会话一份注入状态。**为什么按会话存而不是留在 pre-step 的闭包里**：压缩事件是
+  // 插件级收到的，要按会话路由回对应那份状态（见下面的订阅）。
+  const agentStates = new Map();
+  const MAX_TRACKED_SESSIONS = 64;
+
+  // 压缩之后预算清零（见 `afterCompaction`）。
+  //
+  // **这条订阅必须挂在插件自己的 `ctx` 上，不能挂 `agent.ctx`**：`session/event` 是在**会话
+  // scope** 上派发的（`dsh-session` 的 `commit()` 用会话自己的 `emitCtx`），而 `dsh-scope` 的
+  // 约定是「事件沿 scope 向上流、绝不向下」——`scopeTarget` 的注释原话是 `a listener owned by
+  // an enclosing scope receives every descendant scope's events`，反过来（挂在更靠里的 agent
+  // scope 上）**一条都收不到**，而且没有任何症状：压缩之后只是再也不注入记忆。
+  ctx.on('session/event', (session, event) => {
+    if (event?.type !== 'compaction/end') return;
+    const box = agentStates.get(String(session?.id ?? ''));
+    if (box) box.state = afterCompaction(box.state);
+  });
+
   ctx.inject(['workspaceRegistry'], (scoped) => {
     workspaceRegistry = scoped.workspaceRegistry;
   });
@@ -106,13 +125,25 @@ function apply(ctx) {
         ctx.logger?.warn?.(`${name}: 这个内核没有 agent 作用域的上下文注册面，本次不注入记忆`);
         return;
       }
-      let state = { turn: -1, text: '', injections: 0, bytes: 0, workspace: '', revision: null };
+      const box = {
+        state: { turn: -1, text: '', injections: 0, bytes: 0, workspace: '', revision: null },
+      };
+      const sessionId = String(agent.session?.id ?? '');
+      if (sessionId) {
+        // 上限只是防长期不销毁的壳里堆小对象：根 scope 上拿不到可靠的「agent 已销毁」钩子
+        // （监听器自己会随 fiber 释放，但这张表不是监听器）。挤掉的会话退回「压缩后不重置」
+        // 的旧行为——宁可少一次重置，也不要无上限地留。
+        if (agentStates.size >= MAX_TRACKED_SESSIONS) {
+          agentStates.delete(agentStates.keys().next().value);
+        }
+        agentStates.set(sessionId, box);
+      }
 
       agent.ctx.systemPrompt.context({
         name: CONTEXT_NAME,
         order: CONTEXT_ORDER,
         interpolate: false,
-        text: () => state.text,
+        text: () => box.state.text,
       });
 
       agent.ctx.on('agent/pre-step', async ({ agent: subject, messages, turn }, next) => {
@@ -124,15 +155,15 @@ function apply(ctx) {
           // **换目录立刻生效，哪怕预算已经用完**（`beginStep` 里写回了状态）。
           // 只在「能重新检索」的分支里写回时，「预算用满 + 换目录」会让上一个项目的
           // 正文一路留在这个会话里——那正是这条要挡的事，而它只在接线处看得见。
-          const step = beginStep(state, workspace, turn);
-          state = step.state;
+          const step = beginStep(box.state, workspace, turn);
+          box.state = step.state;
           // 两条路都取一次检索，区别只在**结果怎么用**：
           // · 回合预算内（`step.refresh`）：按这一步的消息检索，取到什么就用什么；
           // · 预算用完之后（`shouldProbeLibrary`）：只看**数据代次**——用户在会话里批准
           //   一条候选、删掉一条、关掉开关，代次才动，注入块才跟着换。查询每回合都不同、
           //   正文必然不同，拿「文本变了」当判据会把回合预算整个绕过去。
           const probe = !step.refresh;
-          if (probe && !shouldProbeLibrary(state, turn)) return decision;
+          if (probe && !shouldProbeLibrary(box.state, turn)) return decision;
           const workspaceId = await resolveWorkspaceId(workspaceRegistry, workspace);
           const result = await callMemory({
             credentials,
@@ -148,7 +179,7 @@ function apply(ctx) {
           // 「取回来的结果怎么用」整条判断在 `applyStep` 里（纯函数、有测试）：
           // 回合内取到什么用什么；探测那条路只在数据代次变了时才换正文。
           const applied = applyStep(
-            state,
+            box.state,
             turn,
             probe ? 'probe' : 'turn',
             result.ok
@@ -160,7 +191,7 @@ function apply(ctx) {
                 }
               : { ok: false },
           );
-          state = applied.state;
+          box.state = applied.state;
           if (!result.ok) {
             ctx.logger?.warn?.(`${name}: 本次检索失败，本回合不注入记忆：${result.reason}`);
           }
