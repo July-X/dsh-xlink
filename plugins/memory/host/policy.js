@@ -282,15 +282,6 @@ export const HUMAN_SOURCE = 'user';
 /** 只有正常结束的回合才排任务，理由见 `shouldScheduleExtraction`。 */
 export const SCHEDULABLE_END = 'completed';
 
-/** 单次输入上限（§8 的建议初始预算）。 */
-export const MAX_INPUT_BYTES = 64 * 1024;
-/** 单条事件的上限：一条工具日志或长回答能顶掉整个预算，先按条削。 */
-export const MAX_EVENT_BYTES = 4 * 1024;
-/** 整体截断的标记。**必须让模型知道范围不完整**，否则它会把「没看到」当成「没发生」。 */
-export const TRUNCATION_MARKER = '[注意] 这段范围按字节上限截断了，后面还有没包含进来的内容。\n';
-/** 单条事件被削短的标记。 */
-export const EVENT_TRUNCATION_MARKER = '…（本行按单条上限截断）';
-
 /**
  * 提取任务的会话状态。
  *
@@ -344,79 +335,6 @@ export function shouldScheduleExtraction(state, event) {
   const current = state && typeof state === 'object' ? state : emptyExtractState();
   if (current.humanSeq <= current.lastCursor) return none;
   return { schedule: true, cursor };
-}
-
-/** 一条事件里能取给提取模型看的文本（工具结果**整条不要**：那是凭据最容易漏出去的地方）。 */
-function eventText(event) {
-  if (!event || typeof event !== 'object') return '';
-  if (event.type !== 'user/message' && event.type !== 'assistant/message') return '';
-  const blocks = event.data?.message?.content;
-  if (!Array.isArray(blocks)) return '';
-  return blocks
-    .filter((block) => block?.type === 'text' && typeof block.text === 'string')
-    .map((block) => block.text.trim())
-    .filter(Boolean)
-    .join('\n');
-}
-
-/** 按**字节**削一条文本（中文一个字三字节，按字符数判会超）。 */
-function cutBytes(text, limit) {
-  if (Buffer.byteLength(text, 'utf8') <= limit) return text;
-  let kept = text;
-  while (kept && Buffer.byteLength(kept, 'utf8') > limit) {
-    kept = kept.slice(0, Math.max(0, Math.floor(kept.length * 0.9)));
-  }
-  return `${kept}${EVENT_TRUNCATION_MARKER}`;
-}
-
-/**
- * 把一段会话事件压成给提取模型的输入。
- *
- * 四条规则：
- * · **只取对话**（用户与助手的文本块）。工具结果整条排除——设计 §8-3 要求排除凭据，
- *   而工具输出是凭据最集中的地方；「模式匹配只能减少风险、不能保证发现所有秘密」，
- *   所以先做减法而不是做过滤；
- * · 留下的对话**再过一遍形状掩码**（`maskSecrets`）：对话里照样会有人贴 key。掩码在
- *   削短**之前**做——先截断会把一个凭据切成两半，两半都不再匹配形状；
- * · 每条按 [`MAX_EVENT_BYTES`] 削短，整体按 [`MAX_INPUT_BYTES`] 从**最新往回**填
- *   （最近的内容最可能是「用户刚定下的约定」）；
- * · 被截断时在最前面放一行 [`TRUNCATION_MARKER`]：**不静默截断**——模型据此知道
- *   这段范围不完整，而不是把「没看到」当成「没发生」。
- *
- * @param {object[]} events - 一段会话事件（按 seq 升序）。
- * @param {{budgetBytes?: number}} [options] - 字节预算。
- * @returns {{text: string, truncated: boolean, bytes: number, kept: number}}
- */
-export function buildInput(events, { budgetBytes = MAX_INPUT_BYTES } = {}) {
-  const lines = [];
-  for (const event of Array.isArray(events) ? events : []) {
-    const text = eventText(event);
-    if (!text) continue;
-    const seq = Number(event.seq ?? 0);
-    const safe = maskSecrets(text);
-    lines.push(`[${seq}] ${event.type === 'user/message' ? '用户' : '助手'}：${cutBytes(safe, MAX_EVENT_BYTES)}`);
-  }
-  const kept = [];
-  let used = 0;
-  let truncated = false;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const size = Buffer.byteLength(lines[index], 'utf8') + 1;
-    if (used + size > budgetBytes) {
-      truncated = index >= 0;
-      break;
-    }
-    kept.push(lines[index]);
-    used += size;
-  }
-  kept.reverse();
-  const body = kept.join('\n');
-  const text = truncated ? `${TRUNCATION_MARKER}${body}` : body;
-  return {
-    text,
-    truncated,
-    bytes: Buffer.byteLength(text, 'utf8'),
-    kept: kept.length,
-  };
 }
 
 /**

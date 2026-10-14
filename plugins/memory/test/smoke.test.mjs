@@ -15,14 +15,11 @@ import { readSessionRange } from '../host/sessionlog.js';
 
 import {
   afterCompaction,
-  buildInput,
   emptyExtractState,
-  EVENT_TRUNCATION_MARKER,
   noteSessionEvent,
   isCompactionDone,
   scopeForWorkspace,
   shouldScheduleExtraction,
-  TRUNCATION_MARKER,
   MAX_INJECTIONS_PER_SESSION,
   MAX_LIBRARY_REFRESHES_PER_SESSION,
   MAX_QUERY_CHARS,
@@ -291,11 +288,12 @@ test('每会话最多注入三次，同回合不重复检索', () => {
  * 代价要钉住：预算用完之后再换目录，这段会话**一段记忆都不注入**。宁可少注入，也
  * 不要把 A 的记忆送进 B；新开会话即恢复。
  */
-/** 一条真的人类消息。 */
+/** 一条真的人类消息（**内核形状**：`user/message` 的正文在 `data.content`，
+ *  `data.message.content` 是**消息列表**那一路的形状——两者不是一回事，见评审第 1 条）。 */
 const human = (seq) => ({
   type: 'user/message',
   seq,
-  data: { message: { content: [{ type: 'text', text: '以后提交前都跑检查' }] }, source: { kind: 'user' } },
+  data: { content: [{ type: 'text', text: '以后提交前都跑检查' }], source: { kind: 'user' } },
 });
 /** 一条合成注入（别的插件 `agent.inject()` 进来的上下文）。 */
 const injected = (seq) => ({
@@ -773,42 +771,39 @@ test('输入只取对话、按字节削、截断要留标记', () => {
     data: { message: { content: [{ type: 'text', text: '好，我记下了' }] } },
   });
 
-  const built = buildInput([human(1), tool, assistant(3)]);
+  // **测活着的那条路**（`extract.js::buildSlice`）。原来这一组测的是 `policy.js::buildInput`——
+  // 那份没人调用，而它反而是唯一实现了「不静默截断」的（独立评审第 14 条）。现在死的那份删了，
+  // 性质搬进活着这份，判据也跟着搬过来。
+  const built = buildSlice([human(1), tool, assistant(3)]);
   assert.match(built.text, /\[1\] 用户：以后提交前都跑检查/);
-  // **对话里也要过一遍掩码**：用户与助手都会顺手贴 key，而工具那条只是最集中的地方。
+  assert.match(built.text, /\[3\] 助手：好，我记下了/);
+  assert.ok(!built.text.includes('AWS_SECRET'), '工具结果整条排除：那是凭据最集中的地方');
+  assert.deepEqual(built.seqs, [1, 3], '只有对话进切片');
+  assert.equal(built.dropped, 0);
+
+  // **对话里也要过一遍掩码**：用户与助手都会顺手贴 key，工具那条只是最集中的地方。
   const leaky = {
     type: 'user/message',
     seq: 9,
     data: {
-      message: { content: [{ type: 'text', text: '用这个 key：sk-abcdef1234567890' }] },
+      content: [{ type: 'text', text: '用这个 key：sk-abcdef1234567890' }],
       source: { kind: 'user' },
     },
   };
-  const masked = buildInput([human(1), leaky]);
+  const masked = buildSlice([human(1), leaky]);
   assert.ok(!masked.text.includes('sk-abcdef1234567890'), '对话里的 key 也要抹掉');
   assert.ok(masked.text.includes('sk-***'));
-  assert.match(built.text, /\[3\] 助手：好，我记下了/);
-  assert.ok(!built.text.includes('AWS_SECRET'), '工具结果整条排除：那是凭据最集中的地方');
-  assert.equal(built.truncated, false);
 
-  // 单条超限 → 削短并留标记（不是静默丢）。
-  const long = {
-    type: 'user/message',
-    seq: 4,
-    data: { message: { content: [{ type: 'text', text: '甲'.repeat(4000) }] }, source: { kind: 'user' } },
-  };
-  const cut = buildInput([long]);
-  assert.ok(cut.text.includes(EVENT_TRUNCATION_MARKER));
-  assert.ok(Buffer.byteLength(cut.text, 'utf8') < 4200, '按字节削，不是按字符');
-
-  // 整体超限 → 从**最新**往回填，丢掉的那些要在最前面留一行说明。
+  // 整体放不下 → 从**最新**往回填，丢掉的那些要在最前面留一行说明（**不静默截断**）。
   const many = Array.from({ length: 40 }, (_, index) => human(index + 1));
-  const tight = buildInput(many, { budgetBytes: 200 });
-  assert.equal(tight.truncated, true);
-  assert.ok(tight.text.startsWith(TRUNCATION_MARKER), '截断标记要在最前面');
+  const tight = buildSlice(many, { maxBytes: 200 });
+  assert.ok(tight.dropped > 0, '该有整条被丢掉');
+  assert.match(tight.text, /^\[注意\] 这段范围按字节上限截断了/, '截断标记要在最前面');
   assert.match(tight.text, /\[40\] 用户：/, '最近的留下');
   assert.ok(!tight.text.includes('[1] 用户：'), '最老的被丢掉');
-  assert.ok(tight.bytes <= 200 + Buffer.byteLength(TRUNCATION_MARKER, 'utf8') + 4, `${tight.bytes}`);
+  // 正文不该超过预算太多（标记那一行是额外的一行，允许它）。
+  const bodyBytes = Buffer.byteLength(tight.text.replace(/^\[注意\][^\n]*\n/, ''), 'utf8');
+  assert.ok(bodyBytes <= 200 + 4, `正文该在预算内，实际 ${bodyBytes}`);
 });
 
 /** 造一个假会话服务：记下调用次序，按脚本回话。 */

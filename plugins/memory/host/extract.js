@@ -323,5 +323,17 @@ export function buildSlice(events, { maxBytes = MAX_SLICE_BYTES } = {}) {
     lines.push(line);
   }
   lines.reverse();
-  return { text: lines.join('\n'), seqs: lines.map((line) => Number(line.slice(1, line.indexOf(']')))), dropped };
+  // **不静默截断**（设计 §8-3）：放不下的整条被丢掉了，就要在切片最前面说一句，让模型知道
+  // 「这段范围不完整」，而不是把「没看到」当成「没发生」。原先只有**没人调用**的那份实现
+  // （`policy.js::buildInput`）做了这件事，活着这条没有（独立评审第 14 条）——两份实现各对一半，
+  // 现在只剩一份，且对的那半在这里。
+  const head =
+    dropped > 0
+      ? `[注意] 这段范围按字节上限截断了，前面还有 ${dropped} 条对话没包含进来。\n`
+      : '';
+  return {
+    text: `${head}${lines.join('\n')}`,
+    seqs: lines.map((line) => Number(line.slice(1, line.indexOf(']')))),
+    dropped,
+  };
 }
