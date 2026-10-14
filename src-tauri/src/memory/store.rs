@@ -902,6 +902,57 @@ pub(crate) mod testkit {
         }
     }
 
+    /// **真的磁盘满**（A17）：往一个快满的小卷里一直写，直到 ENOSPC。
+    ///
+    /// 只读目录那条（`a_read_only_directory_fails_loudly_and_keeps_the_old_document`）验的是
+    /// **EACCES**，代码路径虽然一样，但「磁盘满」还多一层：写到一半空间没了。
+    /// 跑法（清单「怎么验」那一节记了完整命令）：
+    ///
+    /// ```sh
+    /// hdiutil create -size 1m -fs HFS+ -volname xlinktiny -ov /tmp/xlink-tiny.dmg
+    /// hdiutil attach /tmp/xlink-tiny.dmg -nobrowse -quiet
+    /// XLINK_TINY_VOLUME=/Volumes/xlinktiny \
+    ///   cargo test --lib manual_disk_full -- --ignored --nocapture
+    /// hdiutil detach /Volumes/xlinktiny -quiet
+    /// ```
+    #[test]
+    #[ignore = "手动夹具：要一个真的快满的卷（见清单「怎么验」）"]
+    fn manual_disk_full_reports_clearly_and_keeps_what_is_written() {
+        let volume = std::env::var("XLINK_TINY_VOLUME")
+            .expect("要 XLINK_TINY_VOLUME 指向一个小卷（见这条用例的文档注释）");
+        let home = PathBuf::from(&volume).join("xlink-home");
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let ns = namespace();
+
+        // 每条 6 KB 左右，够快地把它填满（每写一次都要重写整份文档，所以条数别太多）。
+        let body = "正文".repeat(1000);
+        let mut written = 0usize;
+        let error = loop {
+            let title = format!("第 {written} 条");
+            match save(&ns, general_input(&title, &body)) {
+                Ok(_) => {
+                    written += 1;
+                    assert!(written < 2000, "写了 2000 条还没满，这个卷不够小");
+                }
+                Err(error) => break error,
+            }
+        };
+        let message = error.to_string();
+        println!("[disk-full] 写进 {written} 条之后失败：{message}");
+        assert!(
+            message.contains("无法写入记忆库") || message.contains("无法创建记忆目录"),
+            "文案要说清是写不进去：{message}"
+        );
+        assert!(
+            message.contains(&ns.file().display().to_string()),
+            "要带上路径，用户才知道去哪查：{message}"
+        );
+        // **写失败的这一次没动到已有的东西**：文档还读得出来，条数正好是写成功那些。
+        let doc = load(&ns).expect("满了也要读得出来");
+        assert_eq!(doc.memories.len(), written, "写失败的这次不该留下半份文档");
+        println!("[disk-full] 已有的 {written} 条完好");
+    }
+
     pub(crate) fn namespace() -> Namespace {
         Namespace {
             family: "dsh".to_string(),
