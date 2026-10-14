@@ -269,7 +269,10 @@ function apply(ctx) {
               const params = {
                 token,
                 session: sessionId,
-                start_seq: 0,
+                // **来源引用的那一条**（独立评审第 17 条）：原先写死 0，于是库里每条候选的
+                // `source` 范围都长成 `0..cursor`，精确到句的引用全丢了。这里给的是解析阶段
+                // 校验过的 `evidence_seq`——它必须指向**切片里**一条真的人类消息（见 `extract.js`）。
+                start_seq: candidate.evidence_seq,
                 end_seq: endSeq,
                 workspace_id: workspaceId,
                 // 依据是壳的规则：没登记工作区时 `project` 会被拒（见 `scopeForWorkspace`）。

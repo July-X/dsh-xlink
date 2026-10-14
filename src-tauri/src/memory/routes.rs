@@ -217,6 +217,11 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                 Some(job) if end_seq == 0 || end_seq > job.key.cursor => {
                     refuse("引用的序号超过了任务冻结的截止序号")
                 }
+                // 来源引用是「这一条候选出自哪句话」，两头都该落在冻结范围里（评审第 17 条）：
+                // 只有 `end_seq` 有校验时，一个比它更大的 `start_seq` 会被原样写进库里。
+                Some(_) if start_seq > end_seq => {
+                    refuse("来源引用的起点比终点还靠后，这不是一段有效的范围")
+                }
                 Some(job) => {
                     let input = crate::memory::store::CandidateInput {
                         scope: query_decoded(path, "scope"),

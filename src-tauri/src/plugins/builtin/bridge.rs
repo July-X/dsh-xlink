@@ -442,6 +442,13 @@ mod tests {
         ));
         assert!(other_session.contains("来源会话"), "{other_session}");
 
+        // ③′ 来源引用两头倒过来（起点比终点靠后）：不是一段有效范围，拒。
+        // 独立评审第 17 条：只有 `end_seq` 有校验时，一个更大的 `start_seq` 会被原样写进库里。
+        let reversed = submit(&format!(
+            "token={lease}&session=s-1&start_seq=9&end_seq=3&scope=general&title=a&body=b"
+        ));
+        assert!(reversed.contains("起点比终点还靠后"), "{reversed}");
+
         // ④ 正常提交：候选落地，且**来源引用由这一侧按任务键写**。
         let ok = submit(&format!(
             "token={lease}&session=s-1&start_seq=1&end_seq=9&scope=general&title=run+check&body=before+commit"

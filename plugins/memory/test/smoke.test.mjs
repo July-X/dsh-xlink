@@ -1351,6 +1351,9 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   // 提交前按整条路径真算一次（评审第 6 条）：逐项合法的候选合起来能超通道，靠估法挡不住。
   assert.match(code, /encodedPathBytes\('jobs\/submit', params\)/, '提交前要按整条路径算长度');
   assert.match(code, /refusals\.push\(/, '超了要按条拒、按条记，不能整批打回');
+  // 来源引用要带上**那一条**（评审第 17 条）：写死 0 会让库里每条候选的范围都长成 0..cursor。
+  assert.match(code, /start_seq: candidate\.evidence_seq/, 'start_seq 要给证据那一条，不能写死');
+  assert.ok(!/start_seq: 0,/.test(code), '不许再把 start_seq 写死成 0');
   assert.match(code, /route: 'jobs\/renew'/, '跑得久要续租（评审第 9 条：租约长度 == 自己的时限）');
   assert.match(code, /clearInterval\(renewTimer\)/, '收工要停掉续租计时器');
   assert.match(code, /renewed === false/, '续不到（被接管）要提前收工，别白烧一次模型调用');

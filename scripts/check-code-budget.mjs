@@ -770,7 +770,10 @@ const FILE_BUDGETS = {
   // 改一边漏一边的症状是「面板存得进去、模型存不进去」，而那正是用户与模型对同一条
   // 约定给出两种结果的时候。抽出来之后 `store.rs` 净减，**665 行的反棘轮预算不动**
   // （它 ≥ RATCHET_THRESHOLD，只许下调；这次是靠删重复而不是抬数字过的）。
-  'src-tauri/src/memory/input.rs': 150,
+  // 150 → 175（2026-10-15）：关键词的**纵深闸**（独立评审第 18 条）——`MAX_KEYWORDS` /
+  // `MAX_KEYWORD_BYTES` 两个常量与两条如实拒的判据，以及把它们算进 `doc_bytes`。
+  // 150 < RATCHET_THRESHOLD（600），允许上调。
+  'src-tauri/src/memory/input.rs': 175,
   // 195 → 215（同日）：`find`（按 id 读一条但**不记使用**）——桥的 `read` 路由
   // 先用它过项目这道门，通过了才计数。它与 `retrieve` 共用同一份列表视图，
   // 所以放在检索这一侧而不是 store（store 贴着 665 行的预算）。
