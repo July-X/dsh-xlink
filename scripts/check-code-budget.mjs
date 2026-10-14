@@ -777,7 +777,10 @@ const FILE_BUDGETS = {
   // 195 → 215（同日）：`find`（按 id 读一条但**不记使用**）——桥的 `read` 路由
   // 先用它过项目这道门，通过了才计数。它与 `retrieve` 共用同一份列表视图，
   // 所以放在检索这一侧而不是 store（store 贴着 665 行的预算）。
-  'src-tauri/src/memory/query.rs': 215,
+  // 215 → 235（2026-10-15，第二次评审第 6 条）：`pinned` 从「+1000 分」改成**排序键**，
+  // 以及「条数上限之外的那些」也写进行内注记（原先 `take(MAX_HITS)` 之外一句都不提）。
+  // 215 < RATCHET_THRESHOLD（600），允许上调。
+  'src-tauri/src/memory/query.rs': 235,
   // 新文件（2026-10-14 深夜）：`recent.rs` 49 行——「模型实际看到了哪几条」的进程内
   // 环形记录。**为什么该独立**：它是记忆领域的状态（要按 id 从 store 取标题），却被
   // 三条路共用——桥的 `note` 路由写它、面板的 `memory_recent_injections` 读它、测试

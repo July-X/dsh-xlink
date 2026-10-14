@@ -182,17 +182,23 @@ pub(crate) const MAX_KEYWORD_BYTES: usize = 64;
 pub(crate) fn doc_bytes(doc: &super::store::MemoryDoc) -> usize {
     // **关键词也算进整库体积**（评审第 18 条）：它们会随记录一起落盘、一起被读出来，
     // 只数标题与正文等于给「多写关键词」留了一条不计量地撑大文档的路。
-    let pair = |title: &str, body: &str, keywords: &[String]| {
-        title.len() + body.len() + keywords.iter().map(String::len).sum::<usize>()
+    // **工作区路径也要算**（第二次评审第 7 条）：它是**手填**的（面板那个下拉 allow-create），
+    // 而 `normalize_path` 对不存在的路径只去空白与尾分隔符、**没有长度上限**——粘一大段文本就能
+    // 在 `doc_bytes` 报「已到 1 MiB」的同时把 `memory.json` 撑到几 MB，而每次检索都要解析整份文档。
+    let pair = |title: &str, body: &str, keywords: &[String], workspace_path: &str| {
+        title.len()
+            + body.len()
+            + workspace_path.len()
+            + keywords.iter().map(String::len).sum::<usize>()
     };
     doc.memories
         .iter()
-        .map(|row| pair(&row.title, &row.body, &row.keywords))
+        .map(|row| pair(&row.title, &row.body, &row.keywords, &row.workspace_path))
         .sum::<usize>()
         + doc
             .candidates
             .iter()
-            .map(|row| pair(&row.title, &row.body, &row.keywords))
+            .map(|row| pair(&row.title, &row.body, &row.keywords, &row.workspace_path))
             .sum::<usize>()
 }
 
@@ -307,6 +313,28 @@ mod tests {
             "构建".len() + "检查".len(),
             "关键词的字节数要进整库体积"
         );
+
+        // **工作区路径也要算**（第二次评审第 7 条）：它是手填的、没有长度上限，
+        // 不计量就能在 `doc_bytes` 报「已到 1 MiB」的同时把文档撑到几 MB。
+        // 基准要选**没有路径**的那条：通用偏好的路径会被清掉（`clean` 的规则），
+        // 而 `raw(...)` 造的是项目记忆、自带 `/tmp/ws-a`——拿它当基准会差出那 9 个字节。
+        let bare = clean(
+            Raw {
+                scope: "general",
+                ..raw("正文", &[])
+            },
+            VERIFICATION_VERIFIED,
+            "记忆",
+        )
+        .expect("clean");
+        let long_path = "/tmp/".to_string() + &"很长的目录名".repeat(200);
+        let mut with_path = clean(raw("正文", &[]), VERIFICATION_VERIFIED, "记忆").expect("clean");
+        with_path.workspace_path = long_path.clone();
+        assert_eq!(
+            doc_bytes(&doc_with(&with_path)) - doc_bytes(&doc_with(&bare)),
+            long_path.len(),
+            "工作区路径的字节数要进整库体积"
+        );
     }
 
     /// 造一份只含这一条候选的文档（`doc_bytes` 的判据用）。
@@ -314,6 +342,9 @@ mod tests {
         let mut doc = super::super::store::MemoryDoc::default();
         doc.candidates.push(super::super::store::MemoryCandidate {
             scope: clean.scope.clone(),
+            // **路径也要带上**：`doc_bytes` 现在把它算进体积（第二次评审第 7 条），
+            // 夹具漏了这个字段就会让那条判据自己红。
+            workspace_path: clean.workspace_path.clone(),
             title: clean.title.clone(),
             body: clean.body.clone(),
             keywords: clean.keywords.clone(),
