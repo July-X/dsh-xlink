@@ -2684,8 +2684,17 @@ if (ungatedOsImports.length > 0) {
       }
     }
 
-    // 桥路由：整串或它的最后一段必须出现在路由源码里。
-    const routesSource = readFileSync(join(root, 'src-tauri', 'src', 'memory', 'routes.rs'), 'utf8');
+    // 桥路由：整串或它的最后一段必须出现在**分发或路由源码**里。
+    //
+    // 两个文件都要读：2026-10-15 把路由**臂的主体**拆进 `memory/routes.rs` 时，`starts_with("/v1/memory/…")`
+    // 那些字面量**留在 `bridge.rs` 的分发里**——只读 routes.rs 的判据因此把清单里明明正确的路由引用
+    // 判成了找不到（判据自己第一次跑红就是这个原因）。
+    const routesSource = [
+      join(root, 'src-tauri', 'src', 'memory', 'routes.rs'),
+      join(root, 'src-tauri', 'src', 'plugins', 'builtin', 'bridge.rs'),
+    ]
+      .map((file) => readFileSync(file, 'utf8'))
+      .join('\n');
     for (const citation of cited) {
       if (!/^\/v1\/memory\//.test(citation) || citation.includes('*')) continue;
       // 路由源码里是「前缀 + 臂」：`/v1/memory/jobs/submit` 对应臂 `"/submit"`。
