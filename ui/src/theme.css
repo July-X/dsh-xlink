@@ -3338,6 +3338,9 @@ body.pane-dragging .log-tabs {
   border-top: 1px dashed var(--overlay-soft);
 }
 
+/* 分组标题是一个真正的按钮（点一下收起 / 展开这一组，见 LogSidebar.vue）：
+   裸 `<button>` 带着 UA 的灰底、居中与另一套字体，不逐条重置，10px 的 muted
+   小标题会变成一块灰底黑字。 */
 .log-group-title {
   font-size: 10px;
   font-weight: 700;
@@ -3351,6 +3354,68 @@ body.pane-dragging .log-tabs {
   display: flex;
   align-items: center;
   gap: 8px;
+  background: transparent;
+  border: 0;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+/* 悬停提一档而不是加底色：这一行高度只有标题那么点（10px 字 + 6px 下边距），
+   铺一层底色会连成一条谁也不知道属于哪一组的色块。 */
+.log-group-title:hover {
+  color: var(--text-secondary);
+}
+
+/* 焦点圈与 `.card-head-toggle` 同款（2px accent + 负 offset）：这一行贴到侧栏
+   边缘，默认那条 outline 会越过侧栏的裁切边界。 */
+.log-group-title:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+
+/* 收起的组只剩标题那一行：标题那 6px 下内边距是给文件列留的呼吸，此时它下面
+   什么都没有，留着只是一条空缝。 */
+.log-group.is-collapsed .log-group-title {
+  padding-bottom: 0;
+}
+
+/* 长分组名不许把箭头挤出侧栏（同 `.log-tab-name` 的处置）。 */
+.log-group-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 份数只在收起态显示：文件列摆在那儿时它是噪音，收起来之后它是唯一能说明
+   「这一组不是空的」的东西。 */
+.log-group-count {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 折叠箭头朝下表示「已展开」，收起时旋转 -90°（朝下 → 朝右）。旋转而不是换一枚
+   图标：换图标那一下没有过渡，看着像闪了一下。**基态必须是朝下那枚**：换成
+   `ArrowRight` 之后同一个 -90° 会把它转成朝上——那是「返回」的意思，而且没有任何
+   判据会因此变红。12px 比 10px 的标题大一点点——图标读起来要比文字稍大才不显矮
+   （同 `.nav-item > .el-icon` 的处置）。 */
+.log-group-caret {
+  margin-left: auto;
+  font-size: 12px;
+  transition: transform 0.15s ease;
+}
+
+.log-group.is-collapsed .log-group-caret {
+  transform: rotate(-90deg);
+}
+
+/* 文件列的容器：分组那 2px 间隙现在落在标题与这一层之间，文件签之间那 2px
+   由这里给（少了这一条，两张签之间就是 0，与收起 / 展开前后不一致）。 */
+.log-group-files {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 /* 分组标题前一根 accent 色细条 —— 比纯文字更显眼，与文件签的整块填色形成对比 */
