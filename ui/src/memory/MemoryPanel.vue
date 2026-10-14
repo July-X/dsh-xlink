@@ -6,6 +6,7 @@
 // （见该文件顶部的说明）。
 import { computed, onMounted } from 'vue';
 import { Download, Refresh } from '@element-plus/icons-vue';
+import MemoryRow from './MemoryRow.vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { builtinById, loadBuiltinStatus, toggleBuiltin } from '../plugins/builtin.js';
 import {
@@ -29,6 +30,8 @@ import {
   visibleMemories,
   sourceText,
   verificationText,
+  scopeText,
+  shortTime,
   setListScope,
 } from './memory.js';
 
@@ -48,19 +51,6 @@ const injectPlugin = computed(() => builtinById('memory'));
 /// 与插件页共享的列表保持一致——两处各显示一份状态就会分叉）。
 function enableInjection() {
   return toggleBuiltin('memory', true).then(() => loadBuiltinStatus());
-}
-
-function shortTime(value) {
-  if (!value) return '未知时间';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
-}
-
-function scopeText(record) {
-  if (record.scope === 'general') return '通用偏好（所有项目）';
-  return record.workspace_path ? `本项目 · ${record.workspace_path}` : '本项目';
 }
 
 onMounted(() => {
@@ -177,46 +167,14 @@ onMounted(() => {
             还没有记忆。在右边写一条，或者在工作台里让模型提出候选，再到「待确认」里点保存。
           </p>
           <div v-else class="page-list">
-            <div v-for="row in list" :key="row.id" class="page-row memory-row">
-              <div class="memory-row__main">
-                <div class="memory-row__title">
-                  <span class="memory-row__name">{{ row.title || '（无标题）' }}</span>
-                  <el-tag size="small" effect="plain" :type="row.scope === 'general' ? 'info' : 'primary'">
-                    {{ row.scope === 'general' ? '通用偏好' : '本项目' }}
-                  </el-tag>
-                  <el-tag v-if="row.pinned" size="small" effect="plain" type="warning">固定</el-tag>
-                  <el-tag v-if="row.state !== 'accepted'" size="small" effect="plain" type="info">已停用</el-tag>
-                </div>
-                <p class="memory-row__body">{{ row.body }}</p>
-                <p class="memory-row__meta">
-                  {{ scopeText(row) }} · {{ sourceText(row.source.kind) }} ·
-                  {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
-                  已用 {{ row.use_count }} 次
-                </p>
-              </div>
-              <div class="memory-row__actions">
-                <el-button size="small" text :disabled="globalBusy" @click="editMemory(row)">编辑</el-button>
-                <el-button
-                  size="small"
-                  text
-                  :loading="isLoading('memoryState:' + row.id)"
-                  :disabled="globalBusy"
-                  @click="setMemoryState(row, row.state === 'accepted' ? 'disabled' : 'accepted')"
-                >
-                  {{ row.state === 'accepted' ? '停用' : '启用' }}
-                </el-button>
-                <el-button
-                  size="small"
-                  text
-                  type="danger"
-                  :loading="isLoading('memoryDelete:' + row.id)"
-                  :disabled="globalBusy"
-                  @click="removeMemory(row)"
-                >
-                  删除
-                </el-button>
-              </div>
-            </div>
+            <MemoryRow
+              v-for="row in list"
+              :key="row.id"
+              :row="row"
+              @edit="editMemory"
+              @toggle="(state) => setMemoryState(row, state)"
+              @remove="removeMemory"
+            />
           </div>
         </div>
 
@@ -387,49 +345,6 @@ onMounted(() => {
 <style scoped>
 .memory-layout {
   align-items: start;
-}
-
-.memory-row {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.memory-row__main {
-  flex: 1;
-  min-width: 0;
-}
-
-.memory-row__title {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.memory-row__name {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.memory-row__body {
-  margin: 4px 0 0;
-  color: var(--text-secondary);
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
-.memory-row__meta {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-}
-
-.memory-row__actions {
-  display: flex;
-  gap: 4px;
-  flex: 0 0 auto;
 }
 
 .memory-form {

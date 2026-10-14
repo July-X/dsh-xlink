@@ -116,8 +116,19 @@ test('面板有范围筛选，行里显示来源与验证状态', () => {
   for (const label of ['全部', '本项目', '通用偏好']) {
     assert.match(tpl, new RegExp(`<el-radio value="[a-z]+">${label}</el-radio>`), label);
   }
-  assert.match(tpl, /sourceText\(row\.source\.kind\)/, '行里要显示来源');
-  assert.match(tpl, /verificationText\(row\.verification\)/, '行里要显示验证状态');
+  // 行渲染 2026-10-14 拆进了 `MemoryRow.vue`（面板连着五轮长大，每次都靠上调预算过关）。
+  const row = templateOf(read('../src/memory/MemoryRow.vue'));
+  assert.match(row, /sourceText\(row\.source\.kind\)/, '行里要显示来源');
+  assert.match(row, /verificationText\(row\.verification\)/, '行里要显示验证状态');
+  assert.match(row, /emit\('edit', row\)/);
+  assert.match(row, /emit\('toggle', accepted \? 'disabled' : 'accepted'\)/, '下一个状态由行自己算');
+  assert.match(row, /emit\('remove', row\)/);
+  // **面板要真的挂上它、并把三个事件接住**：少接一个就是「按钮点了没反应」，而上面那些
+  // 模板判据照样绿（本仓反复栽过的形状）。
+  assert.match(tpl, /<MemoryRow/, '面板要真的用它');
+  for (const handler of ['@edit="editMemory"', '@toggle=', '@remove="removeMemory"']) {
+    assert.ok(tpl.includes(handler), `面板没接住 ${handler}`);
+  }
 });
 
 test('「清空」按钮接在确认框与那条命令上，确认文案说清清不掉的东西', async () => {
