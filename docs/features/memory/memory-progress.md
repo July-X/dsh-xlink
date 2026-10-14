@@ -292,7 +292,15 @@
   `dsh-scope` 的 `scopeTarget` 注释写死了「事件沿 scope 向上流、绝不向下」（`a listener owned by an
   enclosing scope receives every descendant scope's events`）——所以必须挂在**插件根 ctx** 上，挂在
   `agent.ctx` 上一条都收不到且没有任何症状。判据：`afterCompaction` 的用例（含「换目录不归零预算、
-  压缩才归零」的对照）、装配层的挂点判据（挂错 scope 即红，反向验过）。**还差**：真机压缩后再问一次——2026-10-15 把真机探针的通路打通了一半（插件能在真会话里加载并跑 `pre-step`），离验这条只差桩模型那一步
+  压缩才归零」的对照）、装配层的挂点判据（挂错 scope 即红，反向验过）。**还差**：真机压缩后再问一次。**2026-10-15 试了三次都没造出压缩事件**，每次撞到一个真机关：
+  ① 阈值是 `min(thresholdRatio × 窗口, 窗口 − 预留输出 − headroomTokens)`，而 **`headroomTokens`
+  默认 65536**——两万 token 的窗口下它数学上不可能触发（`thresholdRatio: 0.01` 白设）；② 归零
+  headroom、桩模型回长答案之后仍不触发，于是怀疑压力取自桩上报的 `usage`（当时只报 10 个
+  prompt token）；③ 把 `usage.prompt_tokens` 报到 19000 仍不触发——还有第四个未知条件（下次从
+  `CompactionEngine` 的压力计算入口读起）。**注意**：同一会话 6 回合里 `/v1/memory/context` 出现过
+  6 次，看起来超过「3 次注入 + 2 次库刷新」的上限，但会话日志里**没有任何 `compaction/*` 事件**，
+  所以那第 6 次不能用压缩重置解释（也可能是探测/刷新那条路的计数比我以为的多一次）。
+  **没有压缩事件就不算验过**，这一条保持 🟡
   ——本机没有可用的压缩事件（要真会话），与 F6 同属「要环境」的一类
 - ⬜ **G13 失败压缩的判据含「只有 start、没有 end」**（§8、§10）—— 未实现（属 P2 的提取触发）
 - ✅ **G14 `agent/created` 解析失败或桥不可用时会话仍能正常创建与对话** —— try/catch + 真机
@@ -332,7 +340,11 @@
   所以纯注入的回合不会被当成用户内容；③ `seq` 必须是正整数（拿不到截止序号就没有「冻结输入」可言）。
   接线：`session/event` 里记人类消息序号 → 回合正常结束时排任务，**成功才推进游标**（否则这一段内容
   再也没人看它）。**还差**：`sessions.flush` 屏障与「false 时改用 live 历史」那一半（它要读会话日志，
-  与 H5 的输入读取同一条路）；以及真机上确认 `turn/end` 真的收到（同 G12 的订阅）。**2026-10-15 实测到的进度**：插件的 `pre-step` 已经在真会话里跑通（见「怎么验」里的真机探针），而 `turn/end` 要模型把一回合跑完——桩模型那条路卡在 provider 注册上（三个坑都记在那一节）
+  与 H5 的输入读取同一条路）；以及真机上确认 `turn/end` 真的收到（同 G12 的订阅）。**真机验收已过（2026-10-15）**：在真内核会话里（桩模型 + 桩桥，零模型额度）跑了**同一会话的 6 个回合**，
+  桩桥按顺序收到 6 次 `/v1/memory/context`、6 次 `/v1/memory/note`、以及 **6 次 `/v1/memory/jobs/enqueue`**
+  （`cursor` 随回合推进：17 → 28 → …）——`session/event` 的订阅**真的收到了 `turn/end`**。第 9 轮从
+  `dsh-scope` 源码推出的「事件沿 scope 向上流、必须挂插件根 ctx」那条合同，现在有实测了；会话日志
+  （`zstd -dc` 之后）里 `turn/end` 也是 6 条，与 enqueue 次数逐一对上
 - ✅ **H3 连续回合去抖 30 秒、合并任务、运行中任务保留冻结输入**（§8-2、§8 预算）—— 状态机那一半在
   `jobs::enqueue`（同一会话 30 秒内的新游标合并进还没开始的那个；已经在跑的**不被打断**，它的冻结输入
   因此天然保留），插件那一半在 `policy::shouldScheduleExtraction` + `session/event` 接线（只在新的人类消息
@@ -496,7 +508,12 @@ DSH_HOME=/tmp/p2probe DEEPSEEK_BASE_URL=http://127.0.0.1:8791 DEEPSEEK_API_KEY=s
       name: "/tmp/p2probe/plugins/memory/host/index.js"   # **绝对路径**
 ```
 
-**三个坑（每个都花了时间）**：
+**桩模型最终怎么接上的**：`dsh-llm-pi-ai` **本来就在 headless 栈里**（id 就是 `llm-pi-ai`），
+所以不是插一份新的，而是**给它打配置补丁**——覆盖层里写一条同 id 的 `- id: llm-pi-ai` + `config:`，
+加一个 provider（`api: openai-completions`、`baseURL: http://127.0.0.1:8791/v1`、`apiKeyEnv: PROBE_API_KEY`），
+再把 `agent-default-model` 指过去。桩要**同时支持 SSE 与非流式**（适配器是流式的）。
+
+**四个坑（每个都花了时间）**：
 1. **`insert` 的 id 撞车会静默顶掉原来那份**。往 headless 栈里插 `llm-deepseek` 之后得到
    `NO_ADAPTER: no adapter registered for provider "deepseek"`——同 id 的第二次 insert 把模板里
    那一份顶掉了。要么换 id，要么别插。
@@ -504,8 +521,10 @@ DSH_HOME=/tmp/p2probe DEEPSEEK_BASE_URL=http://127.0.0.1:8791 DEEPSEEK_API_KEY=s
    走的是安装树）。插件用**绝对路径**就没事；相对路径会被解析成 `file:///plugins/memory/...`。
 3. **`@deepseek-ai/dsh-llm-deepseek` 是库不是插件**：它导出的是 `registerDeepSeekProvider` /
    `DeepSeekAdapter`，没有 `name` / `apply`（headless 栈里那两条 `llm-deepseek*` 是**凭据与账号**
-   插件）。所以「桩模型」这条路要么写一个自己的 provider 插件（要对着 `DeepSeekAdapter` 的依赖
-   契约来），要么用内置的 `acp` / `sdk` profile 那条程序化接口——两条都还没试。
+   插件）。**改用 `dsh-llm-pi-ai` 打配置补丁**才对（见上）。
+4. **会话日志是多帧 zstd**：`zlib.zstdDecompressSync` / `createZstdDecompress` 只解出**第一帧**
+   （220 字节的文件头，看起来像「日志是空的」），用 **`zstd -dc`** 才拿到完整的 185 KB / 70 行。
+   下次读内核会话日志直接用 CLI。
 
 **纪律**：探针只写 `/tmp`；`DSH_HOME` 指到临时目录之后，用户的实例、注册表、插件中央库都不在
 路径上。跑完记得收桩进程（`pkill -f p2probe`）。
