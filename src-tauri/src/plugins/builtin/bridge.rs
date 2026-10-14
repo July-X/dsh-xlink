@@ -1157,6 +1157,34 @@ mod tests {
             !memory.candidates.is_empty(),
             "候选一条都没落下来——提取链没走通（看插件日志里的 stage 与原因）"
         );
+        // **不许有任务带着「基础设施」的错停在那儿**。这里刻意区分两类 error：
+        // · **业务拒绝**（去重闸「已经在待确认里了」、开关关了、来源对不上）是**正常结果**，
+        //   它就该出现在 error 里，任务照常收尾；
+        // · **基础设施失败**（服务失活、读不到会话、落盘屏障失败）才是链没走通。
+        // 第一版只断言「有候选落下来」，于是「第 1 条成了、第 2 条带着 inactive context 失败」
+        // 照样绿——**假绿就是这么来的**：夹具的断言强度决定了它能发现什么。
+        const INFRA_MARKERS: [&str; 5] = [
+            "inactive context",
+            "拿不到",
+            "落盘屏障",
+            "读不到",
+            "not live in this store",
+        ];
+        let broken: Vec<String> = doc
+            .jobs
+            .iter()
+            .filter(|job| {
+                INFRA_MARKERS
+                    .iter()
+                    .any(|marker| job.error.contains(marker))
+            })
+            .map(|job| format!("{}@{}：{}", job.key.session, job.key.cursor, job.error))
+            .collect();
+        assert!(
+            broken.is_empty(),
+            "有任务因基础设施失败停着（那不是业务拒绝）：{}",
+            broken.join("；")
+        );
         for candidate in &memory.candidates {
             println!(
                 "[probe] 候选：{} ← {}",

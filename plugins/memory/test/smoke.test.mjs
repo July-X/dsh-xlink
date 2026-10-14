@@ -1166,6 +1166,13 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   // 每条都问一次「有到期任务吗」是白打几十个请求（真机上量到 13 次）。
   assert.match(code, /if \(event\?\.type !== 'turn\/end'\) return;/, '领取要拦在 turn/end 上');
   assert.match(code, /runDueExtraction\(/, '领取与跑完那条路要真的接上');
+  // **服务要现取，不许快照**：快照下来的追踪代理在服务 fiber 重载之后会失活，
+  // 用的时候抛「inactive context」——两侧端到端跑过两次才逮到（见 index.js 里那段注释）。
+  assert.match(code, /const liveExtractionServices = \(\) => \(\{/, '服务要有一个现取的入口');
+  assert.ok(
+    !/const extractionServices = \{\}/.test(code),
+    '不许再把服务快照进一个常量对象'
+  );
   assert.match(code, /route: 'jobs\/claim'/, '要真的去领任务');
   assert.match(code, /route: 'jobs\/finish'/, '成功要收尾');
   assert.match(code, /route: 'jobs\/fail'/, '失败要退回（否则那条任务永远占着）');
