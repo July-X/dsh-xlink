@@ -145,6 +145,17 @@ pub fn mutate<T>(
     Ok(out)
 }
 
+/// 按令牌找**当前在跑**的那个任务。提交时用它判「这个令牌还算数吗」：
+/// 任务已经被接管、已完成、已失败，或者令牌根本不对，都返回 `None`（§8-6 的迟到结果检查）。
+pub fn running_job<'a>(doc: &'a JobsDoc, token: &str) -> Option<&'a Job> {
+    if token.is_empty() {
+        return None;
+    }
+    doc.jobs.iter().find(|job| {
+        job.state == JOB_RUNNING && job.lease.as_ref().is_some_and(|lease| lease.token == token)
+    })
+}
+
 /// 领取成功时的回执：令牌 + 这一轮要做什么。
 #[derive(Debug, Clone, Serialize)]
 pub struct Claimed {
@@ -471,6 +482,22 @@ mod tests {
         assert!(mutate(&ns, claim_any).expect("claim").is_some());
         let back = load(&ns).expect("load");
         assert_eq!(back.jobs[0].state, JOB_RUNNING);
+    }
+
+    /// 提交前的令牌检查：任务不在跑了就拿不到（迟到的结果不许落地，§8-6）。
+    #[test]
+    fn only_a_running_lease_can_be_looked_up_by_token() {
+        let mut doc = doc();
+        enqueue(&mut doc, key("s1", 10), 0);
+        assert!(running_job(&doc, "nope").is_none(), "没领过就没有");
+        assert!(running_job(&doc, "").is_none(), "空令牌不算");
+        let claimed = claim_any(&mut doc, 10).expect("claim");
+        assert!(running_job(&doc, &claimed.token).is_some());
+        assert!(finish(&mut doc, &claimed.token, 20));
+        assert!(
+            running_job(&doc, &claimed.token).is_none(),
+            "交过之后就不算数了"
+        );
     }
 
     /// 落盘往返：崩溃恢复靠它（重启后 `running` 的任务还在，租约会过期、被别人接手）。

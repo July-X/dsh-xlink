@@ -112,125 +112,8 @@ pub(crate) fn launch(dsh_home: &Path, scope_key: &str) -> Option<(String, String
     Some((url, token))
 }
 
-/// 记忆命名空间：内核族与实例取自这条桥的绑定（`family:instance`），profile 取自壳
-/// 设置——与面板（`Namespace::current`）同一份来源。**不信调用方传来的坐标**：
-/// 桥知道自己在替哪个实例服务，插件只需要说「查什么、写什么」。
-fn memory_namespace(scope_key: &str) -> crate::memory::store::Namespace {
-    let (family, instance) = scope_key.split_once(':').unwrap_or((scope_key, ""));
-    crate::memory::store::Namespace::for_bridge(family, instance)
-}
-
-/// 记忆路由的调用留痕。
-///
-/// **为什么留痕在壳这一侧**：2026-10-14 实测，插件里的 `ctx.logger.info/warn` 在这个
-/// 内核里一行都不进 stdout（同一个进程里 `dsh:` 自己的告警照常打印），所以「记忆到底
-/// 有没有被调用过」在插件那边答不了。壳这边写一行 `shell_events` 就同时出现在
-/// 「查看日志」面板里——**只记路由与计数，不记记忆正文**（正文是用户私有内容）。
-/// 自动提取（P2）的任务与租约路由。**全是 GET + 查询串**，与记忆那几条同一条纪律。
-///
-/// 谁能调：只有拿到 Bearer 的插件进程；最坏能造成什么：排一个后台提取任务、领一个租约、
-/// 或用错的令牌交结果（交不上）。**这些路由不写权威记录**——提取出来的东西走 `candidates`，
-/// 用户点了保存才成记忆。
-///
-/// 令牌由 `/claim` 生成并返回，`renew` / `finish` / `fail` 带着它回来：只有**当前**令牌能提交
-/// （§8-6 的迟到结果检查）。这里不记 `note_memory_call`：这些不是「记忆调用」，混进那个环里
-/// 会让面板的「最近注入」多出一堆与注入无关的行。
-fn memory_jobs_route(stream: &mut std::net::TcpStream, path: &str, scope_key: &str) {
-    use crate::memory::jobs;
-    let namespace = memory_namespace(scope_key);
-    // 先切掉查询串再匹配：`path` 带着 `?…`（与记忆那几条一样），拿它直接比会一条都匹配不上
-    // ——而那正好是最难看出来的一种错：所有带参数的调用都回 404，没参数的却能跑通。
-    let action = path
-        .trim_start_matches("/v1/memory/jobs")
-        .split('?')
-        .next()
-        .unwrap_or("");
-    let failed = |error: crate::shell::error::AppError| {
-        (
-            500,
-            serde_json::json!({ "error": error.to_string() }).to_string(),
-        )
-    };
-    let (status, body) = match action {
-        "/enqueue" => {
-            // §8-1 的第三条判据「**获许可的**会话」在这里判，不在插件里：开关现在是什么状态
-            // 只有一份来源（权威记录），插件手里那份是上一次检索时的快照。答 `disabled` 而不是
-            // 报错——这不是故障，是用户没开这个功能。
-            let allowed = crate::memory::store::load(&namespace)
-                .map(|doc| doc.meta.use_approved)
-                .unwrap_or(false);
-            if !allowed {
-                (
-                    200,
-                    serde_json::json!({ "outcome": "disabled" }).to_string(),
-                )
-            } else {
-                let key = jobs::JobKey {
-                    session: query_decoded(path, "session"),
-                    cursor: query_decoded(path, "cursor").parse().unwrap_or(0),
-                    extractor: query_decoded(path, "extractor"),
-                };
-                match jobs::mutate(&namespace, |doc, now| jobs::enqueue(doc, key, now)) {
-                    Ok(outcome) => (
-                        200,
-                        serde_json::json!({ "outcome": outcome.as_str() }).to_string(),
-                    ),
-                    Err(error) => failed(error),
-                }
-            }
-        }
-        // 没东西可领时**不是错误**：插件按固定节奏来问，答 `token: null` 让它安静退下。
-        "/claim" => match jobs::mutate(&namespace, jobs::claim_any) {
-            Ok(Some(claimed)) => (
-                200,
-                serde_json::to_string(&claimed).unwrap_or_else(|_| r#"{"token":null}"#.to_string()),
-            ),
-            Ok(None) => (200, r#"{"token":null}"#.to_string()),
-            Err(error) => failed(error),
-        },
-        "/renew" => {
-            let token = query_decoded(path, "token");
-            match jobs::mutate(&namespace, |doc, now| jobs::renew(doc, &token, now)) {
-                Ok(renewed) => (200, serde_json::json!({ "renewed": renewed }).to_string()),
-                Err(error) => failed(error),
-            }
-        }
-        "/finish" => {
-            let token = query_decoded(path, "token");
-            match jobs::mutate(&namespace, |doc, now| jobs::finish(doc, &token, now)) {
-                Ok(done) => (200, serde_json::json!({ "finished": done }).to_string()),
-                Err(error) => failed(error),
-            }
-        }
-        "/fail" => {
-            let token = query_decoded(path, "token");
-            let reason = query_decoded(path, "error");
-            match jobs::mutate(&namespace, |doc, now| jobs::fail(doc, &token, &reason, now)) {
-                // `retryable: null` = 令牌对不上（不是这个任务的主人），与「不能重试了」区分开。
-                Ok(outcome) => (200, serde_json::json!({ "retryable": outcome }).to_string()),
-                Err(error) => failed(error),
-            }
-        }
-        "/status" => match jobs::mutate(&namespace, |doc, _| jobs::summary(doc)) {
-            Ok(summary) => (
-                200,
-                serde_json::to_string(&summary).unwrap_or_else(|_| r#"{"pending":0}"#.to_string()),
-            ),
-            Err(error) => failed(error),
-        },
-        _ => (
-            404,
-            serde_json::json!({ "error": "未知的任务路由" }).to_string(),
-        ),
-    };
-    let _ = crate::openai::http::write_response(stream, status, "application/json", &body);
-}
-
-fn note_memory_call(route: &str, detail: &str) {
-    crate::shell::shell_events::record("memory-bridge", &format!("{route} {detail}"));
-}
-
 fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) {
+    use crate::memory::routes;
     let Ok(request) = crate::openai::http::read_request(stream) else {
         return;
     };
@@ -257,174 +140,19 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
             );
         }
         (method, path) if method == "GET" && path.starts_with("/v1/memory/context") => {
-            // 与 sync 同一条纪律：**GET + 查询串，不读请求体**（见下面 sync 那条注释）。
-            // 中文与空格由插件百分号编码，这里解码后再进检索。
-            let namespace = memory_namespace(scope_key);
-            let query = query_decoded(path, "q");
-            let workspace = query_decoded(path, "workspace");
-            // `workspace_id` 是插件经工作区注册表解析出来的内核 id；解析不到就只带路径，
-            // 后端按路径兜底匹配（见 `query::scope_matches`）。三条路由统一叫
-            // `workspace_id`——`read` 那条的 `id` 是**记忆 id**，两处同名必然记混。
-            let workspace_id = query_decoded(path, "workspace_id");
-            match crate::memory::query::retrieve(&namespace, &query, &workspace_id, &workspace) {
-                Ok(context) => {
-                    note_memory_call(
-                        "context",
-                        &format!("enabled={} hits={}", context.enabled, context.hits.len()),
-                    );
-                    let body = serde_json::to_string(&context)
-                        .unwrap_or_else(|_| r#"{"enabled":false}"#.to_string());
-                    let _ =
-                        crate::openai::http::write_response(stream, 200, "application/json", &body);
-                }
-                Err(error) => {
-                    let body = serde_json::json!({ "error": error.to_string() }).to_string();
-                    let _ =
-                        crate::openai::http::write_response(stream, 500, "application/json", &body);
-                }
-            }
+            routes::context(stream, path, scope_key);
         }
         (method, path) if method == "GET" && path.starts_with("/v1/memory/note") => {
-            // 插件在**真的用了**这次检索之后回来说一声（含「开关关着/一条没命中」——
-            // 那也是模型实际看到的状态）。谁能调：只有拿到 Bearer 的插件进程；最坏能造成
-            // 什么：往一个进程内、上限 20 条的环形里塞一条标题列表，不碰权威记录。
-            //
-            // `session` 只用于展示与排查（面板按会话分组），**不参与任何授权判断**：
-            // 命名空间仍由桥的绑定决定，调用方传什么都不影响。
-            let ids = query_decoded(path, "ids");
-            let enabled = query_decoded(path, "enabled") != "0";
-            crate::memory::recent::record(
-                &memory_namespace(scope_key),
-                &query_decoded(path, "session"),
-                &query_decoded(path, "workspace"),
-                enabled,
-                &ids,
-            );
-            let hits = ids.split(',').filter(|id| !id.is_empty()).count();
-            note_memory_call("note", &format!("enabled={enabled} hits={hits}"));
-            let _ = crate::openai::http::write_response(
-                stream,
-                200,
-                "application/json",
-                r#"{"ok":true}"#,
-            );
+            routes::note(stream, path, scope_key);
         }
         (method, path) if method == "GET" && path.starts_with("/v1/memory/jobs") => {
-            memory_jobs_route(stream, path, scope_key);
+            routes::jobs(stream, path, scope_key);
         }
         (method, path) if method == "GET" && path.starts_with("/v1/memory/read") => {
-            let namespace = memory_namespace(scope_key);
-            let id = query_decoded(path, "id");
-            if id.is_empty() {
-                let _ = crate::openai::http::write_response(
-                    stream,
-                    400,
-                    "application/json",
-                    r#"{"error":"missing id"}"#,
-                );
-                return;
-            }
-            // **按 id 读也要过两道门**：项目归属，与启用状态。
-            //
-            // · 项目：id 猜不到，但会话历史里留着旧 id，不校验就能在 B 项目里把 A
-            //   项目的记忆读出来（设计承诺的是不进入）。通用偏好对谁都算；项目记录
-            //   必须与调用方给的坐标对得上。
-            // · 状态：`find_by_id(.., false)` 把**已停用**的挡在外面。用户点了「停用」
-            //   就是不想再被模型用着，而注入块的表头里有 id（`[id] 标题`），会话历史里
-            //   因此一直留着它——只挡检索不挡按 id 读，停用这个按钮对模型就是无效的。
-            //
-            // 顺序是「先查、再判、最后计数」：反过来会让**被拒的读也记一次使用**，
-            // 统计被越权尝试污染。
-            let workspace = query_decoded(path, "workspace");
-            let workspace_id = query_decoded(path, "workspace_id");
-            let found = match crate::memory::store::find_by_id(&namespace, &id, false) {
-                Ok(found) => found,
-                Err(error) => {
-                    // 文档读不出来时**如实说读不出来**，不退成「不属于当前项目」——
-                    // 后者会让用户去查自己有没有记错项目 id，而真因在盘上那份文件。
-                    // 留痕**别记成 `denied=`**：那是授权事件，而这一条是盘上那份文件坏了。
-                    // 两类混在一个前缀下，排查的人打开「查看日志」会往错的方向查。
-                    note_memory_call("read", "failed=unreadable");
-                    let body = serde_json::json!({ "error": error.to_string() }).to_string();
-                    let _ =
-                        crate::openai::http::write_response(stream, 500, "application/json", &body);
-                    return;
-                }
-            };
-            let allowed = found.is_some_and(|record| {
-                crate::memory::query::scope_matches(&record, &workspace_id, &workspace)
-            });
-            if !allowed {
-                note_memory_call("read", "denied=out-of-scope-or-disabled");
-                let _ = crate::openai::http::write_response(
-                    stream,
-                    404,
-                    "application/json",
-                    r#"{"error":"这条记忆不属于当前项目，或已被停用"}"#,
-                );
-                return;
-            }
-            match crate::memory::store::read_and_note_use(&namespace, &id) {
-                Ok(record) => {
-                    note_memory_call(
-                        "read",
-                        &format!("id={} revision={}", record.id, record.revision),
-                    );
-                    let body = serde_json::to_string(&record).unwrap_or_else(|_| "{}".to_string());
-                    let _ =
-                        crate::openai::http::write_response(stream, 200, "application/json", &body);
-                }
-                Err(error) => {
-                    let body = serde_json::json!({ "error": error.to_string() }).to_string();
-                    let _ =
-                        crate::openai::http::write_response(stream, 404, "application/json", &body);
-                }
-            }
+            routes::read(stream, path, scope_key);
         }
         (method, path) if method == "GET" && path.starts_with("/v1/memory/propose") => {
-            // 候选**只能进待确认**：这条路由调的是 `submit_candidate`，它写不进权威
-            // 记录。模型想自己批准候选没有入口——批准只存在于面板的 Tauri 命令面。
-            let namespace = memory_namespace(scope_key);
-            let input = crate::memory::store::CandidateInput {
-                scope: {
-                    let scope = query_decoded(path, "scope");
-                    if scope.is_empty() {
-                        crate::memory::store::SCOPE_PROJECT.to_string()
-                    } else {
-                        scope
-                    }
-                },
-                workspace_id: query_decoded(path, "workspace_id"),
-                workspace_path: query_decoded(path, "workspace"),
-                title: query_decoded(path, "title"),
-                body: query_decoded(path, "body"),
-                keywords: Vec::new(),
-                source: crate::memory::store::MemorySource {
-                    kind: crate::memory::store::SOURCE_SESSION.to_string(),
-                    session: query_decoded(path, "session"),
-                    at: crate::memory::store::now_iso(),
-                    ..Default::default()
-                },
-                verification: String::new(),
-            };
-            match crate::memory::store::submit_candidate(&namespace, input) {
-                Ok(candidate) => {
-                    note_memory_call("propose", &format!("candidate={}", candidate.id));
-                    let body = serde_json::json!({
-                        "id": candidate.id,
-                        "state": candidate.state,
-                        "title": candidate.title,
-                    })
-                    .to_string();
-                    let _ =
-                        crate::openai::http::write_response(stream, 200, "application/json", &body);
-                }
-                Err(error) => {
-                    let body = serde_json::json!({ "error": error.to_string() }).to_string();
-                    let _ =
-                        crate::openai::http::write_response(stream, 400, "application/json", &body);
-                }
-            }
+            routes::propose(stream, path, scope_key);
         }
         (method, path) if method == "GET" && path.starts_with("/v1/builtin/sync") => {
             // **GET + 查询串，不读请求体**：`openai::http::read_request` 只保证读到
@@ -499,7 +227,7 @@ fn query_value(path: &str, key: &str) -> Option<String> {
 }
 
 /// 取一个查询串参数并做百分号解码（记忆那几条路由用）。
-fn query_decoded(path: &str, key: &str) -> String {
+pub(crate) fn query_decoded(path: &str, key: &str) -> String {
     query_value(path, key)
         .map(|value| percent_decode(&value))
         .unwrap_or_default()
@@ -662,6 +390,111 @@ mod tests {
         assert_eq!(on_disk.jobs[0].key.cursor, 9);
     }
 
+    /// 提取结果落地要过四道闸（§8-6）：租约还在跑、开关还开着、会话对得上、引用序号不超过
+    /// 冻结的截止序号。每道都单独验一次——**没有这一层，一个被接管的旧任务能把它那份
+    /// 过期结果悄悄塞进待确认**。
+    #[test]
+    fn extraction_submit_is_guarded_by_the_lease() {
+        use crate::memory::store::{self, ListFilter, Namespace};
+
+        let home = temp_dir("memory-submit");
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let dsh_home = home.join("instance");
+        let (url, token) = launch(&dsh_home, "dsh:default-dev").expect("bridge");
+        let addr = url.trim_start_matches("http://").to_string();
+        let namespace = Namespace::for_bridge("dsh", "default-dev");
+
+        store::set_use_approved(&namespace, true).expect("enable");
+        let queued = http_get(
+            &addr,
+            "/v1/memory/jobs/enqueue?session=s-1&cursor=9&extractor=v1",
+            Some(&token),
+        );
+        assert!(queued.contains(r#""outcome":"added""#), "{queued}");
+        let claimed = http_get(&addr, "/v1/memory/jobs/claim", Some(&token));
+        let start = claimed.find(r#""token":""#).expect("token") + 9;
+        let lease = claimed[start..start + 32].to_string();
+
+        let submit = |params: &str| {
+            http_get(
+                &addr,
+                &format!("/v1/memory/jobs/submit?{params}"),
+                Some(&token),
+            )
+        };
+
+        // ① 令牌不对：任务已经不在跑了。
+        let bad = submit("token=deadbeef&session=s-1&end_seq=9&scope=general&title=a&body=b");
+        assert!(bad.contains(r#""submitted":false"#), "{bad}");
+        assert!(bad.contains("租约"), "{bad}");
+
+        // ② 引用的序号超过了任务冻结的截止序号（9）。
+        let beyond = submit(&format!(
+            "token={lease}&session=s-1&end_seq=10&scope=general&title=a&body=b"
+        ));
+        assert!(beyond.contains("截止序号"), "{beyond}");
+
+        // ③ 来源会话对不上。
+        let other_session = submit(&format!(
+            "token={lease}&session=s-2&end_seq=9&scope=general&title=a&body=b"
+        ));
+        assert!(other_session.contains("来源会话"), "{other_session}");
+
+        // ④ 正常提交：候选落地，且**来源引用由这一侧按任务键写**。
+        let ok = submit(&format!(
+            "token={lease}&session=s-1&start_seq=1&end_seq=9&scope=general&title=run+check&body=before+commit"
+        ));
+        assert!(ok.contains(r#""submitted":true"#), "{ok}");
+        let view = store::list(
+            &namespace,
+            &ListFilter {
+                include_candidates: true,
+                ..ListFilter::default()
+            },
+        );
+        assert_eq!(view.candidates.len(), 1, "{:?}", view.candidates);
+        let candidate = &view.candidates[0];
+        assert_eq!(candidate.source.kind, "extract");
+        assert_eq!(candidate.source.session, "s-1");
+        assert_eq!(
+            (candidate.source.start_seq, candidate.source.end_seq),
+            (1, 9)
+        );
+        assert_eq!(candidate.source.revision, "v1", "来源引用里带着提取器版本");
+        assert_eq!(
+            candidate.state, "pending",
+            "候选只能进待确认，用户点保存才成记忆"
+        );
+
+        // ⑤ 开关中途关掉：这次提取不收。
+        store::set_use_approved(&namespace, false).expect("disable");
+        let off = submit(&format!(
+            "token={lease}&session=s-1&end_seq=9&scope=general&title=c&body=d"
+        ));
+        assert!(off.contains("开关"), "{off}");
+        store::set_use_approved(&namespace, true).expect("enable again");
+
+        // ⑥ 任务交掉之后，**同一个令牌不再算数**（迟到的结果不许落地）。
+        let finished = http_get(
+            &addr,
+            &format!("/v1/memory/jobs/finish?token={lease}"),
+            Some(&token),
+        );
+        assert!(finished.contains(r#""finished":true"#), "{finished}");
+        let late = submit(&format!(
+            "token={lease}&session=s-1&end_seq=9&scope=general&title=e&body=f"
+        ));
+        assert!(late.contains(r#""submitted":false"#), "{late}");
+        let view = store::list(
+            &namespace,
+            &ListFilter {
+                include_candidates: true,
+                ..ListFilter::default()
+            },
+        );
+        assert_eq!(view.candidates.len(), 1, "被拒的那些一条都没落地");
+    }
+
     /// 读不出来必须回 `None` 而不是猜一个：技能会把 `None` 报成「插件名缺失」，
     /// 而猜一个默认插件的后果是**替另一个插件拉了更新**。
     #[test]
@@ -700,7 +533,7 @@ mod tests {
     /// 桥知道的坐标（family:instance）决定记忆命名空间；调用方传什么都不影响。
     #[test]
     fn memory_namespace_comes_from_the_bridge_binding() {
-        let namespace = memory_namespace("dsh:default-dev");
+        let namespace = crate::memory::routes::memory_namespace("dsh:default-dev");
         assert_eq!(namespace.family, "dsh");
         assert_eq!(namespace.instance_id, "default-dev");
         assert!(!namespace.profile.is_empty());
