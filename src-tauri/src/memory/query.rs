@@ -14,8 +14,8 @@
 use serde::Serialize;
 
 use crate::memory::store::{
-    load, MemoryDoc, MemoryRecord, Namespace, SCOPE_GENERAL, SCOPE_PROJECT, SOURCE_MANUAL,
-    STATE_ACCEPTED, VERIFICATION_STALE, VERIFICATION_VERIFIED,
+    self, load, ListFilter, MemoryDoc, MemoryRecord, Namespace, SCOPE_GENERAL, SCOPE_PROJECT,
+    SOURCE_MANUAL, STATE_ACCEPTED, VERIFICATION_STALE, VERIFICATION_VERIFIED,
 };
 use crate::shell::error::AppError;
 
@@ -62,7 +62,36 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
     &text[..end]
 }
 
-fn scope_matches(record: &MemoryRecord, workspace_id: &str, workspace_path: &str) -> bool {
+/// 按 id 取一条记录，但**不记使用**。
+///
+/// 回环桥的 `read` 路由先用它过项目这道门，通过了才调 `store::read_and_note_use`。
+/// 顺序不能反：先计数再判权限的话，**被拒的读也会把「已用 N 次」加上去**——统计被
+/// 越权尝试污染，而用户看到的是一份说不清的数字。
+pub(crate) fn find(ns: &Namespace, id: &str) -> Option<MemoryRecord> {
+    store::list(
+        ns,
+        &ListFilter {
+            scope: String::new(),
+            include_disabled: true,
+            include_candidates: false,
+        },
+    )
+    .memories
+    .into_iter()
+    .find(|row| row.id == id)
+}
+
+/// 这条记录是否属于调用方当前的项目（通用偏好对谁都算）。
+///
+/// `pub(crate)` 是给回环桥的 `read` 路由用的：**按 id 读也要过这道门**。id 是随机
+/// 生成的、猜不到，但一个会话里出现过的 id 会留在会话历史里——不校验的话，在 B 项目
+/// 里拿着 A 项目的 id 就能把那条读出来，而设计承诺的是「A 项目保存的记忆不进入 B
+/// 项目」。调用方没给坐标（两者都空）时项目记录一律不通过：**没有坐标就没有访问权**。
+pub(crate) fn scope_matches(
+    record: &MemoryRecord,
+    workspace_id: &str,
+    workspace_path: &str,
+) -> bool {
     if record.scope == SCOPE_GENERAL {
         return true;
     }

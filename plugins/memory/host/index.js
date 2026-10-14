@@ -276,10 +276,17 @@ function registerTools(ctx, credentials) {
       async execute(args, exec) {
         if (!exec.agent) throw new Error('memory_read 需要一个会话：无 agent 的调用不能读项目记忆');
         if (!credentials) throw new Error('记忆桥不可用：本机壳没有为这个内核起回环桥');
+        const workspace = workingDirectory(ctx, exec.agent);
         const result = await callMemory({
           credentials,
           route: 'read',
-          params: { id: String(args.id ?? '') },
+          params: {
+            id: String(args.id ?? ''),
+            // 桥按这两个坐标校验归属：**按 id 读也要过项目这道门**，否则在 B 项目里
+            // 拿着 A 项目的 id 就能读出来。
+            id_workspace: await resolveWorkspaceId(workspaceRegistry, workspace),
+            workspace,
+          },
         });
         if (!result.ok) throw new Error(`读取记忆失败：${result.reason}`);
         return {
