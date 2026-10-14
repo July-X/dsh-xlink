@@ -29,7 +29,11 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
+import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm';
 import { callMemory, readCredentials } from './bridge.js';
+import { EXTRACTION_SYSTEM_PROMPT, EXTRACTOR_VERSION as EXTRACT_VERSION, buildSlice, parseExtractionOutput } from './extract.js';
+import { readSessionRange } from './sessionlog.js';
+import { runExtraction } from './run.js';
 import {
   afterCompaction,
   applyStep,
@@ -128,9 +132,27 @@ function apply(ctx) {
     // 否则这一次的内容就再也没人看它了。
     box.extract = noteSessionEvent(box.extract, event);
     const decision = shouldScheduleExtraction(box.extract, event);
-    if (!decision.schedule || !credentials) return;
+    if (!credentials) return;
+    // **先排、再领**：排任务只往表里放一行（壳那边有静默期，刚放进去的不会立刻到期），
+    // 而这次真正要跑的往往是**前面某个回合**留下的那条——相邻回合因此合并成一次提取。
+    // 领不到就什么也不做：没有到期任务是常态，不是失败。
+    // **只在回合边界上领**：`session/event` 每个事件都会到这里（一个回合几十条），
+    // 每来一条就去问一次「有到期任务吗」是白打几十个请求（第一版就是这样，13 次 claim）。
+    // 记人类消息那条路仍然看**每个**事件——它要的正是事件流本身。
+    const attempt = () => {
+      if (event?.type !== 'turn/end') return;
+      void runDueExtraction(
+        credentials,
+        { ...extractionServices, workspaceId: box.workspaceId },
+        box.state.workspace
+      );
+    };
+    if (!decision.schedule) {
+      attempt();
+      return;
+    }
     box.extract = { ...box.extract, lastCursor: decision.cursor };
-    void enqueueExtraction(credentials, session, decision.cursor);
+    void enqueueExtraction(credentials, session, decision.cursor).then(attempt, attempt);
   });
 
   /**
@@ -138,6 +160,141 @@ function apply(ctx) {
    * 这里只记一行 warn——「获许可的会话」是设计 §8-1 的第三条判据，不放在插件里判，
    * 免得两个地方各有一份「开关是什么状态」。
    */
+  /** 提取调用的输出上限：候选是小东西，给太多只会让它啰嗦。 */
+  const EXTRACT_MAX_TOKENS = 2048;
+  /** 一次提取的总时限（H8 的最小一半）：超时就取消，任务按失败退回去重试。 */
+  const EXTRACT_TIMEOUT_MS = 120_000;
+
+  /**
+   * 调一次提取模型——**一次性调用，不进用户会话**。
+   *
+   * 模板抄内核自己的 `session-title-llm`（它正是「不产生用户可见对话的一次性调用」）：
+   * `prepareCall(route, signal, configure)` → `call.stream({...call.config, messages, system, signal})`。
+   * 两处刻意的取舍：
+   * · **`purpose` 不填**：设计不许冒充 `session-title`，也不许自造一个内核没登记过的用途。
+   * · **`sessionId` 不传**：传了这次请求会被记进那个会话的日志；提取是插件自己的事，
+   *   不该在用户的会话里留下一条谁也看不懂的记录。
+   */
+  async function callExtractionModel({ llm, route, text, signal }) {
+    try {
+      const call = await llm.prepareCall(
+        { provider: route.provider, model: route.model, maxTokens: EXTRACT_MAX_TOKENS },
+        signal
+      );
+      const messages = [
+        createUserMessage({
+          content: [{ type: 'text', text }],
+          source: { kind: 'xlink-memory-extract' },
+        }),
+      ];
+      const assembler = new BlockAssembler();
+      for await (const chunk of call.stream({ ...call.config, messages, system: EXTRACTION_SYSTEM_PROMPT, signal })) {
+        assembler.push(chunk);
+      }
+      const answer = assembler
+        .blocks()
+        .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+        .map((block) => block.text)
+        .join('\n');
+      return { ok: true, text: answer };
+    } catch (error) {
+      return { ok: false, reason: String(error?.message ?? error) };
+    }
+  }
+
+  /**
+   * 领一个到期的任务并跑完它。
+   *
+   * 顺序是**先领旧的、再排新的**：任务进表之后要过一段静默期（壳那边的 `DEBOUNCE_MS`）才算到期，
+   * 所以这里领到的通常是**前面某个回合**留下的那条——把相邻的几个回合合并成一次提取。
+   * 领不到就什么也不做，这不算失败。整段不抛：提取跑在用户的会话里，它坏了不该影响对话。
+   */
+  async function runDueExtraction(creds, services, workspace) {
+    // 桥的返回是 `{ok, value}`（见 bridge.js），而 `/claim` 的形状是
+    // `{token, key:{session,cursor,extractor}, attempts, expires_at_ms}`（见 jobs.rs 的 `Claimed`）。
+    const claimed = await callMemory({ credentials: creds, route: 'jobs/claim', params: {} });
+    const token = claimed.ok ? claimed.value?.token : null;
+    if (typeof token !== 'string' || token.length === 0) return;
+
+    const claimedKey = claimed.value?.key ?? {};
+    const sessionId = String(claimedKey.session ?? '');
+    const endSeq = Number(claimedKey.cursor ?? 0);
+    const extractor = String(claimedKey.extractor ?? EXTRACT_VERSION);
+    // 键里两处要分清：`session` 给读日志的那条路**要的是会话对象**（它读 `session.id`），
+    // 而给桥的那条路要的是**字符串 id**。第一版把同一个字段既当对象又当字符串，
+    // 展开顺序还把对象覆盖掉了——于是读到的是「这个会话没有 id」。
+    const key = { session: { id: sessionId }, cursor: endSeq, extractor };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), EXTRACT_TIMEOUT_MS);
+    let result;
+    try {
+      const selection = services.agentDefaultModel?.currentSelection?.();
+      result = await runExtraction({
+        key: { session: { id: key.session }, ...key },
+        from: 0,
+        to: endSeq,
+        signal: controller.signal,
+        deps: {
+          system: EXTRACTION_SYSTEM_PROMPT,
+          readRange: ({ session, from, to }) =>
+            readSessionRange({
+              sessions: services.sessions,
+              sessionPersistence: services.sessionPersistence,
+              sessionQuery: services.sessionQuery,
+              session,
+              from,
+              to,
+            }),
+          buildSlice,
+          callModel: ({ text, signal }) =>
+            selection
+              ? callExtractionModel({ llm: services.llm, route: selection, text, signal })
+              : { ok: false, reason: '拿不到当前模型路由（agentDefaultModel）' },
+          parse: parseExtractionOutput,
+          submit: async ({ candidates }) => {
+            let submitted = 0;
+            const refusals = [];
+            for (const candidate of candidates) {
+              // **一条候选一次调用**：壳那边的 `/jobs/submit` 就是这么收的（正文经查询串过去）。
+              const answer = await callMemory({
+                credentials: creds,
+                route: 'jobs/submit',
+                params: {
+                  token,
+                  session: sessionId,
+                  start_seq: 0,
+                  end_seq: endSeq,
+                  scope: 'project',
+                  workspace_id: services.workspaceId ?? '',
+                  workspace: String(workspace ?? ''),
+                  title: candidate.title,
+                  body: candidate.body,
+                  keywords: candidate.keywords.join(','),
+                },
+              });
+              if (answer.ok && answer.value?.submitted === true) submitted += 1;
+              else refusals.push(answer.value?.reason ?? answer.reason ?? '提交被拒');
+            }
+            if (refusals.length > 0 && submitted === 0) {
+              return { ok: false, reason: refusals[0] };
+            }
+            return { ok: true, submitted };
+          },
+        },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (result.ok) {
+      await callMemory({ credentials: creds, route: 'jobs/finish', params: { token } });
+      ctx.logger?.info?.(`xlink-memory: 提取完成（提交 ${result.submitted} 条，被判据拒 ${result.rejected.length} 条）`);
+    } else {
+      await callMemory({ credentials: creds, route: 'jobs/fail', params: { token, error: result.reason ?? '' } });
+      ctx.logger?.warn?.(`xlink-memory: 提取失败于「${result.stage}」：${result.reason}`);
+    }
+  }
+
   async function enqueueExtraction(creds, session, cursor) {
     const result = await callMemory({
       credentials: creds,
@@ -156,6 +313,19 @@ function apply(ctx) {
       ctx.logger?.info?.('xlink-memory: 记忆开关关着，这次不排提取任务');
     }
   }
+
+  // 提取要用的内核服务。**分开注入**：`workspaceRegistry` 那条路是注入用的，缺了只是没有记忆；
+  // 这一组缺了只是没有自动提取——两件事的降级方向不同，别绑在一起。
+  const extractionServices = {};
+  ctx.inject(['sessions', 'sessionPersistence', 'sessionQuery', 'llm', 'agentDefaultModel'], (scoped) => {
+    Object.assign(extractionServices, {
+      sessions: scoped.sessions,
+      sessionPersistence: scoped.sessionPersistence,
+      sessionQuery: scoped.sessionQuery,
+      llm: scoped.llm,
+      agentDefaultModel: scoped.agentDefaultModel,
+    });
+  });
 
   ctx.inject(['workspaceRegistry'], (scoped) => {
     workspaceRegistry = scoped.workspaceRegistry;
@@ -210,6 +380,8 @@ function apply(ctx) {
           const probe = !step.refresh;
           if (probe && !shouldProbeLibrary(box.state, turn)) return decision;
           const workspaceId = await resolveWorkspaceId(workspaceRegistry, workspace);
+          // 提取提交候选时要用同一个 workspace_id（会话与工作区的对应关系是会话级的事实）。
+          box.workspaceId = workspaceId;
           const result = await callMemory({
             credentials,
             route: 'context',
