@@ -38,6 +38,7 @@ import {
   shouldProbeLibrary,
   shouldRefresh,
   userText,
+  workingDirectory,
 } from '../host/policy.js';
 
 /**
@@ -886,6 +887,57 @@ test('不许用已废弃的三个接口（设计 §8-1 写明了）', () => {
   for (const banned of ['eventAt', 'snapshotEvents', 'ownEvents']) {
     assert.ok(!sources.includes(banned), `注入脚本里不许出现已废弃的 ${banned}`);
   }
+});
+
+test('子智能体拿的是**自己**的目录（G15）：有效目录优先、服务坏掉退冻结值、永不抛', () => {
+  const agent = { session: { header: { cwd: '/frozen/proj' } } };
+  // ① 有效目录优先：用户会话中途换目录后，按冻结值检索会把 A 项目的记忆带进 B 项目。
+  assert.equal(
+    workingDirectory({ workingDirectory: { get: () => '/live/other' } }, agent),
+    '/live/other'
+  );
+  // ② 服务没有 / 返回空 → 退到冻结的项目目录。
+  assert.equal(workingDirectory({}, agent), '/frozen/proj');
+  assert.equal(workingDirectory({ workingDirectory: { get: () => '' } }, agent), '/frozen/proj');
+  assert.equal(workingDirectory({ workingDirectory: {} }, agent), '/frozen/proj');
+  // ③ 服务抛（会话还没登记目录）也不许把工具调用带崩。
+  assert.equal(
+    workingDirectory(
+      {
+        workingDirectory: {
+          get: () => {
+            throw new Error('no directory yet');
+          },
+        },
+      },
+      agent
+    ),
+    '/frozen/proj'
+  );
+  // ④ 什么都没有就回空串：调用方拿它去解析 id，解析不到就让壳按路径兜底。
+  assert.equal(workingDirectory({}, {}), '');
+  assert.equal(workingDirectory({ workingDirectory: { get: () => 42 } }, { session: {} }), '');
+  assert.equal(workingDirectory(undefined, undefined), '', '连 ctx 都没有也不许抛');
+});
+
+test('三个工具都从**调用方 agent** 取目录，没有 agent 就拒（G15 的夹紧）', () => {
+  const code = readFileSync(new URL('../host/index.js', import.meta.url), 'utf8');
+  // ① 无 agent → 拒。少了这条，一个没有会话的调用方就能读「本实例的全部项目记忆」。
+  assert.equal(
+    (code.match(/if \(!exec\.agent\) throw new Error\('memory_\w+ 需要一个会话/g) ?? []).length,
+    3,
+    '三个工具都要先要求 agent'
+  );
+  // ② 目录从**调用方**取：`exec.agent`（工具）与 `subject ?? agent`（pre-step 里那个可能是子智能体）。
+  assert.equal(
+    (code.match(/workingDirectory\(ctx, exec\.agent\)/g) ?? []).length,
+    3,
+    '三个工具都要用调用方的 agent 解析目录'
+  );
+  assert.match(code, /workingDirectory\(ctx, subject \?\? agent\)/, 'pre-step 也要用这一步的 agent');
+  // ③ 夹紧的最后一道在壳那侧：按 id 读也要带工作区坐标，让壳去校验归属（Rust 侧有用例）。
+  const read = code.slice(code.indexOf("route: 'read'"), code.indexOf("route: 'read'") + 400);
+  assert.match(read, /workspace_id:/, '按 id 读也要带工作区坐标');
 });
 
 test('工作区解析：id 优先、路径原样交给内核、失败静默降级（G4）', async () => {
