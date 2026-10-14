@@ -104,6 +104,7 @@
           "memory_decide_candidate",
           "memory_submit_candidate",
           "memory_preview_context",
+          "memory_workspaces",
           "autostart_status",
           "autostart_set",
           "autostart_set_kernel",

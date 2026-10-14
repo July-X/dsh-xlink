@@ -162,7 +162,10 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
             let namespace = memory_namespace(scope_key);
             let query = query_decoded(path, "q");
             let workspace = query_decoded(path, "workspace");
-            match crate::memory::query::retrieve(&namespace, &query, "", &workspace) {
+            // `id` 是插件经工作区注册表解析出来的内核 id；解析不到就只带路径，
+            // 后端按路径兜底匹配（见 `query::scope_matches`）。
+            let workspace_id = query_decoded(path, "id");
+            match crate::memory::query::retrieve(&namespace, &query, &workspace_id, &workspace) {
                 Ok(context) => {
                     note_memory_call(
                         "context",
@@ -222,7 +225,7 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
                         scope
                     }
                 },
-                workspace_id: String::new(),
+                workspace_id: query_decoded(path, "workspace_id"),
                 workspace_path: query_decoded(path, "workspace"),
                 title: query_decoded(path, "title"),
                 body: query_decoded(path, "body"),
@@ -497,6 +500,32 @@ mod tests {
             "记忆路由没有留下调用记录"
         );
 
+        // 按内核工作区 id 匹配：项目改名 / 换盘之后路径对不上，仍要命中
+        // （插件经工作区注册表解析出 id 随 `id` 参数送过来）。
+        store::save(
+            &namespace,
+            SaveInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_id: "ws-renamed".to_string(),
+                workspace_path: "/old/location".to_string(),
+                title: "改名后的项目".to_string(),
+                body: "提交前跑检查".to_string(),
+                ..SaveInput::default()
+            },
+        )
+        .expect("seed renamed project");
+        let by_id = http_get(
+            &addr,
+            "/v1/memory/context?q=%E6%8F%90%E4%BA%A4&id=ws-renamed&workspace=%2Fnew%2Flocation",
+            Some(&token),
+        );
+        assert!(by_id.starts_with("HTTP/1.1 200"), "{by_id}");
+        assert!(by_id.contains("改名后的项目"), "{by_id}");
+        assert!(
+            !by_id.contains("构建前先跑检查"),
+            "路径对不上的那条不该被 id 查询带出来：{by_id}"
+        );
+
         // 关掉开关：如实回 enabled:false，而不是「没找到」。
         store::set_use_approved(&namespace, false).expect("disable");
         let disabled = http_get(
@@ -524,8 +553,9 @@ mod tests {
         assert_eq!(view.candidates[0].title, "候选");
         assert_eq!(view.candidates[0].body, "中文正文");
         assert_eq!(view.candidates[0].source.session, "s-1");
-        assert_eq!(view.memories.len(), 1, "候选不能自己变成记录");
-        assert_eq!(view.memories[0].state, STATE_ACCEPTED);
+        // 两条 = 上面种的两条记录；候选没有变成第三条。
+        assert_eq!(view.memories.len(), 2, "候选不能自己变成记录");
+        assert!(view.memories.iter().all(|row| row.state == STATE_ACCEPTED));
 
         let _ = fs::remove_dir_all(&home);
     }

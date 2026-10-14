@@ -6,6 +6,7 @@ import {
   MAX_INJECTIONS_PER_SESSION,
   applyFailure,
   applyResult,
+  resolveWorkspaceId,
   shouldRefresh,
   userText,
 } from '../host/policy.js';
@@ -143,4 +144,18 @@ test('文本没变不算一次注入；失败清空缓存而不是沿用', () =>
   const failed = applyFailure({ turn: 2, text: '旧记忆', injections: 1 }, 3);
   assert.equal(failed.text, '');
   assert.equal(failed.turn, 3);
+});
+
+test('工作区 id 解析：拿到就带上，拿不到一律降级成空串', async () => {
+  const registry = { resolveByPath: async (path) => (path === '/tmp/known' ? { id: 'ws-1' } : undefined) };
+  assert.equal(await resolveWorkspaceId(registry, '/tmp/known'), 'ws-1');
+  // 目录不存在时 resolveByPath 会 reject（它内部做 realpath）——不能因此让检索失败。
+  assert.equal(
+    await resolveWorkspaceId({ resolveByPath: async () => { throw new Error('ENOENT'); } }, '/tmp/gone'),
+    ''
+  );
+  // 服务还没就绪（按需注入的回调还没跑）：退回路径匹配。
+  assert.equal(await resolveWorkspaceId(null, '/tmp/known'), '');
+  assert.equal(await resolveWorkspaceId({}, '/tmp/known'), '');
+  assert.equal(await resolveWorkspaceId(registry, ''), '');
 });

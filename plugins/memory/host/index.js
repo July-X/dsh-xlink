@@ -34,6 +34,7 @@ import {
   MAX_INJECTIONS_PER_SESSION,
   applyFailure,
   applyResult,
+  resolveWorkspaceId,
   shouldRefresh,
   userText,
 } from './policy.js';
@@ -90,6 +91,15 @@ function apply(ctx) {
     ctx.logger?.warn?.(`${name}: 壳没有为这个内核起回环桥（缺 ${'DSH_XLINK_BUILTIN_BRIDGE_URL'}），插件加载但不会注入任何记忆`);
   }
 
+  // 工作区注册表**按需注入**（`ctx.inject` 的回调只在服务就绪时跑），不进
+  // `inject` 数组：它是「顺带把路径换成内核认的 id」这一项增强，而不是本插件的
+  // 生存条件。写进 `inject` 的话，任何不带 workspace 服务的 profile 都会让整个
+  // 插件停在「等待服务」上——**记忆一条都注入不了，而日志里什么也没有**。
+  let workspaceRegistry = null;
+  ctx.inject(['workspaceRegistry'], (scoped) => {
+    workspaceRegistry = scoped.workspaceRegistry;
+  });
+
   ctx.on('agent/created', ({ agent }) => {
     // **整个注册过程不许抛**（见模块注释）：这里任何异常都只降级成「本会话没有记忆」。
     try {
@@ -112,12 +122,15 @@ function apply(ctx) {
         try {
           if (!credentials) return decision;
           if (!shouldRefresh(state, turn, MAX_INJECTIONS_PER_SESSION)) return decision;
+          const workspace = workingDirectory(ctx, subject ?? agent);
+          const workspaceId = await resolveWorkspaceId(workspaceRegistry, workspace);
           const result = await callMemory({
             credentials,
             route: 'context',
             params: {
               q: userText(messages),
-              workspace: workingDirectory(ctx, subject ?? agent),
+              id: workspaceId,
+              workspace,
             },
           });
           state = result.ok
@@ -198,10 +211,15 @@ function registerTools(ctx, credentials) {
       async execute(args, exec) {
         if (!exec.agent) throw new Error('memory_search 需要一个会话：无 agent 的调用不能读项目记忆');
         if (!credentials) throw new Error('记忆桥不可用：本机壳没有为这个内核起回环桥');
+        const workspace = workingDirectory(ctx, exec.agent);
         const result = await callMemory({
           credentials,
           route: 'context',
-          params: { q: String(args.query ?? ''), workspace: workingDirectory(ctx, exec.agent) },
+          params: {
+            q: String(args.query ?? ''),
+            id: await resolveWorkspaceId(workspaceRegistry, workspace),
+            workspace,
+          },
         });
         if (!result.ok) throw new Error(`检索记忆失败：${result.reason}`);
         const hits = Array.isArray(result.value?.hits) ? result.value.hits : [];
@@ -262,6 +280,7 @@ function registerTools(ctx, credentials) {
       async execute(args, exec) {
         if (!exec.agent) throw new Error('memory_propose 需要一个会话：无 agent 的调用不能写记忆');
         if (!credentials) throw new Error('记忆桥不可用：本机壳没有为这个内核起回环桥');
+        const workspace = workingDirectory(ctx, exec.agent);
         const result = await callMemory({
           credentials,
           route: 'propose',
@@ -269,7 +288,8 @@ function registerTools(ctx, credentials) {
             title: String(args.title ?? ''),
             body: String(args.body ?? ''),
             scope: String(args.scope ?? ''),
-            workspace: workingDirectory(ctx, exec.agent),
+            workspace,
+            workspace_id: await resolveWorkspaceId(workspaceRegistry, workspace),
             session: String(exec.agent.session?.id ?? ''),
           },
         });

@@ -7,6 +7,7 @@
 import { computed, onMounted } from 'vue';
 import { Refresh } from '@element-plus/icons-vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
+import { builtinById, loadBuiltinStatus, toggleBuiltin } from '../plugins/builtin.js';
 import {
   memoryStore,
   refreshMemory,
@@ -29,6 +30,20 @@ const enabled = computed(() => !!(status.value && status.value.use_approved));
 const draft = computed(() => memoryStore.draft);
 const savable = computed(() => canSaveDraft());
 
+/// 注入链路的内置插件（`xlink-memory`）。**按 id 取，不取第一项**：
+/// 取第一项会在登记表里多一个插件时静默指向别人。
+const injectPlugin = computed(() => builtinById('memory'));
+const injectReady = computed(() => {
+  const view = injectPlugin.value;
+  return !!(view && view.requestedEnabled && !view.stateError);
+});
+
+/// 打开注入插件。成功后回读一次状态（后端返回的那一项已经是真值，回读是为了
+/// 与插件页共享的列表保持一致——两处各显示一份状态就会分叉）。
+function enableInjection() {
+  return toggleBuiltin('memory', true).then(() => loadBuiltinStatus());
+}
+
 function shortTime(value) {
   if (!value) return '未知时间';
   const parsed = new Date(value);
@@ -44,6 +59,7 @@ function scopeText(record) {
 
 onMounted(() => {
   refreshMemory({ silent: true });
+  loadBuiltinStatus();
 });
 </script>
 
@@ -72,6 +88,31 @@ onMounted(() => {
       :closable="false"
       show-icon
     />
+
+    <!--
+      开关打开但注入插件没启用时，记忆**一条也不会进会话**——这是两个开关，
+      而第二个在插件页。不说的话，用户会以为「开了却没生效」是记忆坏了。
+      启用意图由后端判（内核跑着时它会拒绝并给出原因，前端不预判）。
+    -->
+    <el-alert
+      v-if="enabled && !injectReady"
+      type="warning"
+      :closable="false"
+      show-icon
+    >
+      <template #title>
+        记忆注入插件还没启用：现在保存的记忆不会进入任何会话。
+        <el-button
+          text
+          type="primary"
+          :loading="isLoading('builtinToggle:memory')"
+          :disabled="globalBusy"
+          @click="enableInjection"
+        >
+          启用「本地记忆」
+        </el-button>
+      </template>
+    </el-alert>
 
     <div class="page-layout">
       <div class="page-layout__col">
@@ -187,12 +228,26 @@ onMounted(() => {
               <el-radio value="project">本项目</el-radio>
               <el-radio value="general">通用偏好</el-radio>
             </el-radio-group>
-            <el-input
+            <el-select
               v-if="draft.scope === 'project'"
               :model-value="memoryStore.projectPath"
-              placeholder="项目根目录，例如 /Users/你/code/项目（与工作台的工作目录一致）"
+              class="memory-project"
+              filterable
+              allow-create
+              default-first-option
+              placeholder="选一个工作台里用过的项目，或直接输入目录"
               @update:model-value="rememberProjectPath"
-            />
+            >
+              <el-option
+                v-for="item in memoryStore.workspaces"
+                :key="item.id"
+                :label="`${item.title} · ${item.path}`"
+                :value="item.path"
+              >
+                <span class="memory-project__title">{{ item.title }}</span>
+                <span class="memory-project__path">{{ item.path }}</span>
+              </el-option>
+            </el-select>
             <el-input v-model="draft.title" maxlength="80" placeholder="一句话标题，例如「提交前先跑 npm run check」" />
             <el-input
               v-model="draft.body"
@@ -305,6 +360,21 @@ onMounted(() => {
 .memory-form__actions {
   display: flex;
   gap: 8px;
+}
+
+/* 项目下拉与表单里其它输入同宽；选项里标题与路径各占一行（路径可能很长，
+   挤在一行会把标题挤没）。 */
+.memory-project {
+  width: 100%;
+}
+
+.memory-project__title {
+  margin-right: 8px;
+}
+
+.memory-project__path {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .memory-hint {

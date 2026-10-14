@@ -88,3 +88,24 @@ export function applyResult(state, turn, text) {
 export function applyFailure(state, turn) {
   return { turn, text: '', injections: state.injections };
 }
+
+/**
+ * 这个目录对应的内核工作区 id；拿不到就回空串（后端按路径兜底匹配）。
+ *
+ * **失败一律静默降级**：目录不存在时 `resolveByPath` 会 reject（它内部要做
+ * `realpath`），服务还没就绪时注册表还是 null。两者都不该让一次检索失败——
+ * 路径匹配本来就是可用的那一条，id 只是把「项目改名/换盘后仍能对上」这一项补上。
+ *
+ * @param {object|null} registry - 按需注入拿到的工作区注册表。
+ * @param {string} path - 有效工作目录。
+ * @returns {Promise<string>}
+ */
+export async function resolveWorkspaceId(registry, path) {
+  if (!registry || typeof registry.resolveByPath !== 'function' || !path) return '';
+  try {
+    const workspace = await registry.resolveByPath(path);
+    return typeof workspace?.id === 'string' ? workspace.id : '';
+  } catch {
+    return '';
+  }
+}
