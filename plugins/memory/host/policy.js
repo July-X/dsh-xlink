@@ -132,6 +132,25 @@ export function retarget(state, workspace) {
 }
 
 /**
+ * 一步开始时的状态推进：**先换目录（立刻生效），再判要不要检索**。
+ *
+ * 这两件事的顺序、以及「换目录的结果必须写回」是整条链路里唯一会被静默做坏的地方：
+ * 只在「能重新检索」的那条分支里写回时，「预算用满 + 换目录」会让上一个项目的正文
+ * 一路留在这个会话里——正是 [`retarget`] 要挡的那件事，而纯函数测试照样全绿
+ * （它们测的是 `retarget` 本身，不是接线）。所以这一步单独成一个纯函数并被钉住。
+ *
+ * @param {{turn: number, text: string, injections: number, workspace: string}} state
+ * @param {string} workspace - 这一步的有效工作目录。
+ * @param {number} turn
+ * @param {number} [maxInjections]
+ * @returns {{state: object, refresh: boolean}}
+ */
+export function beginStep(state, workspace, turn, maxInjections = MAX_INJECTIONS_PER_SESSION) {
+  const moved = retarget(state, workspace);
+  return { state: moved, refresh: shouldRefresh(moved, turn, maxInjections) };
+}
+
+/**
  * 检索成功后的缓存。文本没变就不算一次注入（内核也不会因此多一条快照）。
  *
  * @param {{turn: number, text: string, injections: number, workspace: string}} state

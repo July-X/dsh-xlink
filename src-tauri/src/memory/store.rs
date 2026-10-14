@@ -425,7 +425,12 @@ fn mutate<T>(
     let _guard = lock();
     let mut doc = load(ns)?;
     check_writable(&doc, ns)?;
+    // 整库体积的上限在这里判，不在各个写入函数里：这是唯一的写入口，而「变大且越过
+    // 上限」这条判据需要改动前后的两个数（缩小永远放行——库已经超标时，删一条是
+    // 唯一的出路）。每回合检索都要解析整份文档，见 `input::MAX_DOC_BYTES`。
+    let before = crate::memory::input::doc_bytes(&doc);
     let outcome = apply(&mut doc)?;
+    crate::memory::input::ensure_doc_growth(before, crate::memory::input::doc_bytes(&doc))?;
     doc.meta.generation = doc.meta.generation.saturating_add(1);
     persist(ns, &doc)?;
     Ok(outcome)
@@ -650,18 +655,6 @@ pub fn set_use_approved(ns: &Namespace, enabled: bool) -> Result<(), AppError> {
     })
 }
 
-/// 开关：自动提取（P2 才真正接线，这里只落状态）。
-#[allow(
-    dead_code,
-    reason = "P2 的自动提取开关：首版界面只显示「不可用」，不提供写入入口"
-)]
-pub fn set_auto_extract(ns: &Namespace, enabled: bool) -> Result<(), AppError> {
-    mutate(ns, |doc| {
-        doc.meta.auto_extract = enabled;
-        Ok(())
-    })
-}
-
 /// 提交一条待确认候选。模型只能走到这里——候选必须由用户批准才进权威记录。
 pub fn submit_candidate(
     ns: &Namespace,
@@ -790,7 +783,11 @@ pub fn decide_candidate(
     })
 }
 
-/// 读一条记录并记一次「显式使用」（只有面板点开才算，检索展示不算）。
+/// 读一条记录并记一次「显式使用」。
+///
+/// **调用方只有回环桥的 `read` 路由**（模型调 `memory_read` 工具）。检索展示不算
+/// 使用；面板的列表也不计数——它在列表里就把正文画出来了，没有「点开」这个动作。
+/// 面板上那个「已用 N 次」因此是「模型读过几次」。
 pub fn read_and_note_use(ns: &Namespace, id: &str) -> Result<MemoryRecord, AppError> {
     mutate(ns, |doc| {
         let now = now_iso();
@@ -900,6 +897,49 @@ mod tests {
         assert!(!Path::new(&ns.dir()).exists(), "读路径不该创建目录");
     }
 
+    /// 整库体积上限接在**写入口**上，而且超标之后删除仍然走得通。
+    ///
+    /// 上限（1 MiB）是按「每回合解析整份文档」定的。判据必须走真的 `mutate`，不能只
+    /// 测那个纯函数——否则接线摘掉照样绿。库是**直接铺出来再 `persist`** 的（比循环
+    /// 存一百多条快得多），模拟的是「老版本写下的」或「上限被调小」这两种真实来路。
+    #[test]
+    fn the_document_size_cap_is_wired_and_deleting_still_works_after_it_trips() {
+        let _home = TempHome::new("doc-cap");
+        let ns = namespace();
+        let body = "关".repeat(2700); // 中文 3 字节/字：8100 字节，压在单条上限之内
+        let mut doc = MemoryDoc::default();
+        while crate::memory::input::doc_bytes(&doc) <= crate::memory::input::MAX_DOC_BYTES {
+            let index = doc.memories.len();
+            doc.memories.push(MemoryRecord {
+                id: new_id(),
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_id: "ws-a".to_string(),
+                workspace_path: "/tmp/ws-a".to_string(),
+                title: format!("第 {index} 条"),
+                body: body.clone(),
+                ..MemoryRecord::default()
+            });
+        }
+        let victim = doc.memories[0].id.clone();
+        persist(&ns, &doc).expect("persist oversized");
+
+        // 1) 继续长大：拒，而且说清是总量。
+        let refused = save(&ns, project_input("ws-a", "再来一条", &body)).unwrap_err();
+        assert!(refused.to_string().contains("总量"), "{refused}");
+
+        // 2) 缩小：放行——库已经超标时，删一条是用户唯一的出路。
+        delete(&ns, &victim).expect("超标之后要删得掉");
+
+        // 3) 删到上限之下之后，再存一条就该成——超标不是「只读」状态。
+        while crate::memory::input::doc_bytes(&load(&ns).expect("load"))
+            > crate::memory::input::MAX_DOC_BYTES
+        {
+            let next = load(&ns).expect("load").memories[0].id.clone();
+            delete(&ns, &next).expect("delete");
+        }
+        save(&ns, project_input("ws-a", "删够了就能存", "短正文")).expect("删到上限之下应该又能存");
+    }
+
     /// 手填的项目路径在**写入口**就被规范化成内核那种 realpath。
     ///
     /// 钉的是调用点而不是那个纯函数（`workspaces` 里另有它自己的用例）：规范化写好
@@ -956,11 +996,25 @@ mod tests {
                 via_link.workspace_path, canonical,
                 "符号链接也要归到 realpath"
             );
-            // 内核那侧按 realpath 查得到它。
+            // 内核那侧按 realpath 查得到它。**这里存了两条**（直写一条、走符号链接
+            // 一条），两条的 `workspace_path` 都是同一个 realpath，所以都该命中——
+            // 原先断言的是 1，而它从写下那天起就是红的（两条记录、一条的期望）。
             set_use_approved(&ns, true).expect("enable");
             let hits =
                 crate::memory::query::retrieve(&ns, "构建命令", "", &canonical).expect("retrieve");
-            assert_eq!(hits.hits.len(), 1, "规范化之后要能命中");
+            assert_eq!(
+                hits.hits.len(),
+                2,
+                "两条记录都落在同一个 realpath 下，都该命中：{:?}",
+                hits.hits.iter().map(|hit| &hit.id).collect::<Vec<_>>()
+            );
+            assert!(
+                hits.hits
+                    .iter()
+                    .all(|hit| hit.body.contains("npm run check")),
+                "{:?}",
+                hits.hits
+            );
             let _ = fs::remove_file(&link);
         }
         let _ = fs::remove_dir_all(&real);

@@ -23,6 +23,7 @@ import {
   resetDraft,
   rememberProjectPath,
   canSaveDraft,
+  injectionDisabled,
 } from './memory.js';
 
 const list = computed(() => (memoryStore.view && memoryStore.view.memories) || []);
@@ -35,10 +36,6 @@ const savable = computed(() => canSaveDraft());
 /// 注入链路的内置插件（`xlink-memory`）。**按 id 取，不取第一项**：
 /// 取第一项会在登记表里多一个插件时静默指向别人。
 const injectPlugin = computed(() => builtinById('memory'));
-const injectReady = computed(() => {
-  const view = injectPlugin.value;
-  return !!(view && view.requestedEnabled && !view.stateError);
-});
 
 /// 打开注入插件。成功后回读一次状态（后端返回的那一项已经是真值，回读是为了
 /// 与插件页共享的列表保持一致——两处各显示一份状态就会分叉）。
@@ -92,12 +89,13 @@ onMounted(() => {
     />
 
     <!--
-      开关打开但注入插件没启用时，记忆**一条也不会进会话**——这是两个开关，
+      开关打开但注入插件**确定**没启用时，记忆一条也不会进会话——这是两个开关，
       而第二个在插件页。不说的话，用户会以为「开了却没生效」是记忆坏了。
+      「确定」由 `injectionDisabled` 判：状态还没读回来时它回 false，不挂假警报。
       启用意图由后端判（内核跑着时它会拒绝并给出原因，前端不预判）。
     -->
     <el-alert
-      v-if="enabled && !injectReady"
+      v-if="enabled && injectionDisabled(injectPlugin)"
       type="warning"
       :closable="false"
       show-icon
