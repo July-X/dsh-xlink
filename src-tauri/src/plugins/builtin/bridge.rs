@@ -195,6 +195,27 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
                 );
                 return;
             }
+            // **按 id 读也要过项目这道门**：id 猜不到，但会话历史里留着旧 id，不校验
+            // 就能在 B 项目里把 A 项目的记忆读出来（设计承诺的是不进入）。通用偏好对
+            // 谁都算；项目记录必须与调用方给的坐标对得上。
+            //
+            // 顺序是「先查、再判、最后计数」：反过来会让**被拒的读也记一次使用**，
+            // 统计被越权尝试污染。
+            let workspace = query_decoded(path, "workspace");
+            let workspace_id = query_decoded(path, "id_workspace");
+            let allowed = crate::memory::query::find(&namespace, &id).is_some_and(|record| {
+                crate::memory::query::scope_matches(&record, &workspace_id, &workspace)
+            });
+            if !allowed {
+                note_memory_call("read", "denied=out-of-scope");
+                let _ = crate::openai::http::write_response(
+                    stream,
+                    404,
+                    "application/json",
+                    r#"{"error":"这条记忆不属于当前项目"}"#,
+                );
+                return;
+            }
             match crate::memory::store::read_and_note_use(&namespace, &id) {
                 Ok(record) => {
                     note_memory_call(
@@ -565,11 +586,28 @@ mod tests {
             .expect("seeded record");
         let read = http_get(
             &addr,
-            &format!("/v1/memory/read?id={}", target.id),
+            &format!(
+                "/v1/memory/read?id={}&workspace=%2Ftmp%2Fdemo%20repo",
+                target.id
+            ),
             Some(&token),
         );
         assert!(read.starts_with("HTTP/1.1 200"), "{read}");
         assert!(read.contains("提交前跑 npm run check"), "{read}");
+
+        // **按 id 读也要过项目这道门**：换个项目坐标（或干脆不给坐标）就读不到。
+        // 不校验的话，会话历史里留下的旧 id 能把 A 项目的记忆带进 B 项目。
+        for denied in [
+            format!("/v1/memory/read?id={}&workspace=%2Ftmp%2Fother", target.id),
+            format!("/v1/memory/read?id={}", target.id),
+        ] {
+            let response = http_get(&addr, &denied, Some(&token));
+            assert!(
+                response.starts_with("HTTP/1.1 404"),
+                "跨项目读必须被拒：{denied} → {response}"
+            );
+            assert!(response.contains("不属于当前项目"), "{response}");
+        }
         let after = store::list(
             &namespace,
             &ListFilter {
@@ -583,7 +621,10 @@ mod tests {
             .iter()
             .find(|row| row.id == target.id)
             .expect("still there");
-        assert_eq!(used.use_count, 1, "显式读取要计数（搜索不算）");
+        assert_eq!(
+            used.use_count, 1,
+            "显式读取要计数（搜索不算）；被拒的那两次不算"
+        );
         assert!(!used.last_used_at.is_empty());
 
         let missing = http_get(&addr, "/v1/memory/read?id=nope", Some(&token));
