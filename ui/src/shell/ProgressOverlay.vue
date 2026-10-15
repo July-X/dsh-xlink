@@ -35,8 +35,12 @@ watch(
   <div v-if="progress.visible" class="progress-overlay">
     <div class="progress-body">
       <p class="progress-text">{{ progress.text || '正在处理…' }}</p>
-      <div v-if="progress.logText" ref="logBox" class="install-log">
-        <pre>{{ progress.logText }}</pre>
+      <!-- 日志区**不随有无输出出现 / 消失**：浮层高度是固定的（见 theme.css
+           的 `.progress-body`），这里凭空少一块会让第一帧留出一段空白，等日志
+           到达再补上又是一次跳动。空的时候放一句占位。 -->
+      <div ref="logBox" class="install-log">
+        <pre v-if="progress.logText">{{ progress.logText }}</pre>
+        <p v-else class="muted install-log-empty">等待输出…</p>
       </div>
       <div class="progress-pulse" aria-hidden="true"></div>
       <div class="btn-row dialog-actions">

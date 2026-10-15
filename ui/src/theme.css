@@ -2954,7 +2954,13 @@ main::before {
 
 .progress-body {
   width: min(720px, 92vw);
-  max-height: 84vh;
+  /* 高度**直接取上限**，不靠内部内容撑。此前只有 `max-height: 84vh`，而日志区
+     自己还压着 `max-height: 46vh`：第一帧只有一行阶段文案，随后每条 pnpm 输出
+     都把盒子顶高一截，用户在眼前看着弹窗一格格长高（2026-10-15 用户报「弹窗
+     直接显示弹出窗口高度的最大高度，而不是由内部内容一点点的撑开高度」）。
+     固定高度之后多出来的空间由日志区自己消化（见 `.install-log` 的 `flex`），
+     第一帧就是最终尺寸，到达多少行都不再改变外框。 */
+  height: 84vh;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -2987,12 +2993,23 @@ main::before {
 }
 
 .install-log {
-  max-height: 46vh;
+  /* 吃满固定高度里剩下的那一份，内部滚动。`min-height: 0` 不能省：flex 子项的
+     收缩下限默认是 `auto`（=内容高度），不写它日志一多就把父级顶破。
+     高度不再由日志行数决定；还没有输出时这里放一句占位（见模板），
+     免得第一帧留出一块空白。 */
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--surface-sunken);
   padding: 10px 12px;
+}
+
+/* 还没有任何输出时的占位（日志区第一帧就是空的）。颜色复用全局 `.muted`，
+   这里只管把段落自带的外边距归零——浮层的间距由 `.progress-body` 的 gap 给。 */
+.install-log-empty {
+  margin: 0;
 }
 
 .install-log pre,
