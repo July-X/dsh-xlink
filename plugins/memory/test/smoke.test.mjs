@@ -1087,6 +1087,32 @@ test('子智能体拿的是**自己**的目录（G15）：有效目录优先、�
   assert.equal(workingDirectory(undefined, undefined), '', '连 ctx 都没有也不许抛');
 });
 
+/// **只读不写**：这条路径调的是内核 `WorkingDirectoryService.get(session)`（同步、只读已
+/// 提交目录），**不是** `ensure(agent, signal)`（异步、会去校验并**恢复**原目录，项目消失
+/// 时还会抛）。内核自己两处都在用：`dsh-api-terminal-controller` 走
+/// `workingDirectory.get(agent.session)`，`dsh-tool-skill` 走 `await …ensure(agent, signal)`。
+/// 检索这条路**必须是无副作用的那一个**——恢复目录是一次用户看得见的动作，而记忆检索不该
+/// 顺手改用户的会话；它还会抛，那会让一次检索失败。
+///
+/// **换成 `ensure(` 的症状是静默的**：`typeof value === 'string'` 对一个 Promise 为假，于是
+/// 悄悄退回冻结的 `header.cwd`——正是 G15 修的那个「A 项目的记忆被带进 B 项目」。所以这里
+/// 钉的是「**`ensure` 一次都不许被调到**」，不是「结果等于某个字符串」。
+test('工作目录这条只读不写：`ensure` 一次都不许被调（换了它就静默退回冻结值）', () => {
+  let ensureCalls = 0;
+  const ctx = {
+    workingDirectory: {
+      get: (session) => (session?.id === 's-1' ? '/live/proj' : ''),
+      ensure: () => {
+        ensureCalls += 1;
+        return Promise.reject(new Error('ensure 会去恢复目录，还会抛'));
+      },
+    },
+  };
+  const agent = { session: { id: 's-1', header: { cwd: '/frozen/proj' } } };
+  assert.equal(workingDirectory(ctx, agent), '/live/proj');
+  assert.equal(ensureCalls, 0, '检索这条路不许触发 ensure');
+});
+
 test('三个工具都从**调用方 agent** 取目录，没有 agent 就拒（G15 的夹紧）', () => {
   const code = readFileSync(new URL('../host/index.js', import.meta.url), 'utf8');
   // ① 无 agent → 拒。少了这条，一个没有会话的调用方就能读「本实例的全部项目记忆」。
