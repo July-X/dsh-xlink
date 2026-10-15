@@ -212,6 +212,12 @@ fn render_context(records: &[&MemoryRecord]) -> (String, Vec<MemoryHit>) {
     // **条数上限之外的那些也要说**（第二次评审第 6 条）：原先 `take(MAX_HITS)` 把第 7 条起
     // 直接丢掉，行内注记只统计**体积**跳过的——用户 pin 了 7 条时会以为 7 条都进去了。
     let over_hits = records.len().saturating_sub(MAX_HITS);
+    // **先给那句说明留出位置**（第二次评审第 6 条的延伸）：原先是「装不下就不写」，而 12 KiB
+    // 是个**按字节走**的边界——库里有几十条长短不一的记忆时，落到边界附近完全正常，于是那句
+    // 「还有 N 条……」会在无人察觉的情况下消失，模型与用户都以为这份清单是完整的。
+    // 留的是**上界**：条数上限那半已知，体积那半按「`records.len()` 条都可能因体积被跳过」算，
+    // 而位数更少、所以短的那一半说明句一定放得下（同一个 [`omission_note`]，没有第二份词表）。
+    let reserved = omission_note(records.len(), over_hits).len();
     for record in records.iter().take(MAX_HITS) {
         let scope_label = if record.scope == SCOPE_GENERAL {
             "通用偏好"
@@ -241,7 +247,7 @@ fn render_context(records: &[&MemoryRecord]) -> (String, Vec<MemoryHit>) {
             truncated = true;
         }
         let entry = format!("{header}{body}");
-        if text.len() + entry.len() > CONTEXT_TOTAL_BYTES {
+        if text.len() + entry.len() + reserved > CONTEXT_TOTAL_BYTES {
             omitted += 1;
             continue;
         }
@@ -256,20 +262,28 @@ fn render_context(records: &[&MemoryRecord]) -> (String, Vec<MemoryHit>) {
             truncated,
         });
     }
-    if omitted > 0 || over_hits > 0 {
-        let mut parts = Vec::new();
-        if omitted > 0 {
-            parts.push(format!("{omitted} 条因体积上限未展开"));
-        }
-        if over_hits > 0 {
-            parts.push(format!("{over_hits} 条因条数上限（{MAX_HITS} 条）未列出"));
-        }
-        let note = format!("\n\n（还有{}。）", parts.join("、"));
-        if text.len() + note.len() <= CONTEXT_TOTAL_BYTES {
-            text.push_str(&note);
-        }
-    }
+    // **不再判「装不下就不写」**：位置在循环开头就留好了（[`reserved`]），而这里那句一定
+    // 比留的短——真的变长了的唯一后果是下面那条 `total_bytes <= CONTEXT_TOTAL_BYTES` 的
+    // 判据变红，而不是那句话悄悄消失。
+    let note = omission_note(omitted, over_hits);
+    text.push_str(&note);
     (text, hits)
+}
+
+/// 清单没列全时那句说明。两半都在：**条数上限**（第 7 条起）与**体积上限**（装不下的那些）——
+/// 原先只统计体积那半，用户 pin 了 7 条时会以为 7 条都进去了（第二次评审第 6 条）。
+fn omission_note(omitted: usize, over_hits: usize) -> String {
+    if omitted == 0 && over_hits == 0 {
+        return String::new();
+    }
+    let mut parts = Vec::new();
+    if omitted > 0 {
+        parts.push(format!("{omitted} 条因体积上限未展开"));
+    }
+    if over_hits > 0 {
+        parts.push(format!("{over_hits} 条因条数上限（{MAX_HITS} 条）未列出"));
+    }
+    format!("\n\n（还有{}。）", parts.join("、"))
 }
 
 /// 有界检索：给运行时用的上下文。
@@ -587,6 +601,125 @@ mod tests {
         assert!(
             context.text.contains("[") && context.text.contains("长条目"),
             "表头必须完整"
+        );
+    }
+
+    /// 造一条渲染用记录（不走落盘：这个判据量的是**渲染**规则的字节，而 `retrieve` 那条链
+    /// 已经被上面那个截断用例钉住了——这里再用它反而会让「精确到字节」的构造变脆）。
+    fn padded_row(id: &str, body: &str) -> MemoryRecord {
+        MemoryRecord {
+            id: id.to_string(),
+            scope: crate::memory::store::SCOPE_PROJECT.to_string(),
+            title: format!("条目{id}"),
+            body: body.to_string(),
+            updated_at: "2026-10-15T00:00:00Z".to_string(),
+            state: crate::memory::store::STATE_ACCEPTED.to_string(),
+            ..MemoryRecord::default()
+        }
+    }
+
+    /// **条数上限之外的那些也要说**（第二次评审第 6 条）。这句说明原先**一条判据都没有**，
+    /// 于是「装不下就不写」那个分支一路绿着——它在上限边界上消失时，没有任何东西会响。
+    #[test]
+    fn the_note_says_when_the_hit_cap_drops_records() {
+        let rows: Vec<MemoryRecord> = (0..=MAX_HITS)
+            .map(|i| padded_row(&format!("m-{i}"), "正文"))
+            .collect();
+        let refs: Vec<&MemoryRecord> = rows.iter().collect();
+        let (text, hits) = render_context(&refs);
+        assert_eq!(hits.len(), MAX_HITS, "只带前六条");
+        // 七条里带六条：**说清是「1 条」** 而不是把上限那个数当条数（那是两个数，混起来
+        // 用户会以为漏掉的是六条）。
+        assert!(
+            text.contains(&format!("1 条因条数上限（{MAX_HITS} 条）未列出")),
+            "第 7 条起要如实说出来：{text}"
+        );
+    }
+
+    /// **体积上限跳过的那些也要说**，而且要说清是「体积」那一种（用户 pin 了七条时会以为七条
+    /// 都进去了，而真正的原因不在他眼前）。
+    #[test]
+    fn the_note_says_when_the_volume_cap_drops_records() {
+        // 每条 7 KB：单条在 8 KiB 详情预算内（不触发单条截断），两条就顶过了 12 KiB 总量。
+        let rows: Vec<MemoryRecord> = (0..2)
+            .map(|i| padded_row(&format!("m-{i}"), &"补".repeat(3_000)))
+            .collect();
+        let refs: Vec<&MemoryRecord> = rows.iter().collect();
+        let (text, hits) = render_context(&refs);
+        assert_eq!(hits.len(), 1, "总量只放得下一条");
+        assert!(text.contains("因体积上限未展开"), "{text}");
+        assert!(
+            !text.contains("未列出"),
+            "没到条数上限，那半句不该出现：{text}"
+        );
+    }
+
+    /// **那句说明不能因为顶到上限就消失**——本轮修掉的就是这个洞。原先的写法是「装不下就不
+    /// 写」，而上限是按字节走的：几十条长短不一的记忆里，落到边界附近完全正常，于是那句话会在
+    /// 无人察觉的情况下消失，模型与用户都以为这份清单是完整的。
+    ///
+    /// **这个构造要能分辨「预留够」与「预留不够」**，否则它只是一道恒真的判据。三个量都靠
+    /// **渲染一次量出来**（不去复刻表头格式，那样改一次格式就得跟着改判据）：
+    ///   · `entry` = 第六条那一条有多长；
+    ///   · `note` = 说明句有多长（同一个 [`omission_note`]，没有第二份词表）；
+    ///   · 补长第五条，让剩下的空档正好是 `entry + 3/4 note`。
+    /// 于是**预留够**时第六条进不来（要 `entry + note`，空档只有 `entry + 0.75 note`），
+    /// 说明句从预留里出，总长不越界；**预留只留一半**时它进得来（要 `entry + 0.5 note`），
+    /// 说明句跟在后面就顶破了上限——**越界那条判据因此真的会响**（反向验过：改成一半即红）。
+    #[test]
+    fn the_note_survives_the_total_budget_boundary() {
+        let rows_of = |bodies: &[&str]| -> Vec<MemoryRecord> {
+            bodies
+                .iter()
+                .enumerate()
+                .map(|(i, body)| padded_row(&format!("m-{i}"), body))
+                .collect()
+        };
+        let render = |bodies: &[&str]| {
+            let rows = rows_of(bodies);
+            let refs: Vec<&MemoryRecord> = rows.iter().collect();
+            render_context(&refs)
+        };
+        let filler = "x".repeat(600);
+        let before = render(&[filler.as_str(); MAX_HITS - 1]).0.len();
+        let entry = render(&[filler.as_str(); MAX_HITS]).0.len() - before;
+        let note = omission_note(1, 1).len();
+        let grow = CONTEXT_TOTAL_BYTES - before - entry - note * 3 / 4;
+        assert!(grow > 0, "构造要成立：空档得够补，grow={grow}");
+
+        // 要补的字节**摊到前五条**上——全加到一条会顶过单条 8 KiB 详情预算，那样正文会被截断，
+        // 补进去的字节数就不再是我算的那些，**量出来的东西和改的东西对不上**是判据最坏的失效。
+        let each = grow / (MAX_HITS - 1);
+        let extra = grow % (MAX_HITS - 1);
+        let padded: Vec<String> = (0..MAX_HITS - 1)
+            .map(|i| "x".repeat(filler.len() + each + usize::from(i < extra)))
+            .collect();
+        let mut bodies: Vec<&str> = padded.iter().map(|body| body.as_str()).collect();
+        // 第六条用**和上面量 `entry` 时一样的正文**——量的是它有多长，就得放一条那么长的，
+        // 否则空档算的是 600 字节那条的、实际要挤进来的是个 1 字节的，它当然进得来。
+        // 第七条留一个字节：它把「条数上限」那半句请出来。
+        bodies.push(filler.as_str());
+        bodies.push("x");
+        let (text, hits) = render(&bodies);
+
+        assert!(
+            text.contains("未列出"),
+            "顶到上限时那句说明仍然要写进注入文本：{text}"
+        );
+        assert!(
+            text.len() <= CONTEXT_TOTAL_BYTES,
+            "留位置是为了不越界，不是为了越界：{} > {CONTEXT_TOTAL_BYTES}",
+            text.len()
+        );
+        assert_eq!(
+            hits.len(),
+            MAX_HITS - 1,
+            "第六条在边界上被挤掉，那一句要说清"
+        );
+        // **前提钉住**：这批记录一条都不许触发单条截断，否则上面那套字节算术量的就不是同一样东西。
+        assert!(
+            hits.iter().all(|hit| !hit.truncated),
+            "构造前提变了：单条详情预算被顶到，这条判据量的就不再是总量边界"
         );
     }
 
