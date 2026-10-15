@@ -428,8 +428,11 @@ A16/A17/B17 都做完了。
   进程内并发 ✅（Mutex）；**磁盘满 ✅（A17，含真 ENOSPC 的手动夹具）、跨进程写入 ✅（A16 的
   `WriteLock`：`flock` + 有界等待 + 同线程可重入，两个 `mutate` 都在临界区里拿它，各有接线判据）**。
   （这条的文字在 2026-10-15 复核时更新过——「跨进程写入 ⬜」写于 A16 之前，早就过期了。）
-- ✅ **G23 真机端到端（面板与命令）** —— `e2e/specs/memory.spec.mjs` 3/3（侧栏入口、四条命令可解析（含 `memory_recent_injections`）、
-  无控制台错误）；面板内容渲染无法在 occluded WKWebView 里断言（spec 里写明原因）
+- ✅ **G23 真机端到端（面板与命令）** —— `e2e/specs/memory.spec.mjs` 3/3（侧栏入口、**六条命令**可解析
+  （含 `memory_recent_injections`、`memory_jobs`）、`status.effect_pending` 真的下发、无控制台错误）；
+  面板内容渲染无法在 occluded WKWebView 里断言（spec 里写明原因）。
+  **2026-10-15 重跑过一次**（3 个 spec、9 条全过）：那次跑的是**重编后的 debug 壳**——
+  顺手验证了「debug 二进制比源码旧时，e2e 测的是旧壳」这件事（第一次跑之前先 `cargo build`）。
 
 ## H. P2：自动提取（§8、§10）—— 状态机已落地，接线未开始
 

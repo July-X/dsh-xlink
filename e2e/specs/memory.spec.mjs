@@ -79,6 +79,18 @@ describe('记忆面板', function () {
     expect(recent?.__error).toBeUndefined();
     expect(Array.isArray(recent)).toBe(true);
 
+    // 「提取任务」那条命令（2026-10-15 新增）：同样是**只有真壳能验**的一条——
+    // 它要过 `allow-local-commands` 的 ACL，漏登记时前端只会 `.catch` 静默吞掉，
+    // 面板那张卡片永远停在「还没读到提取任务的状态」。
+    const jobs = await runAsync(`return await window.__TAURI__.core.invoke('memory_jobs');`);
+    expect(jobs?.__error).toBeUndefined();
+    expect(typeof jobs.summary.pending).toBe('number');
+    expect(Array.isArray(jobs.jobs)).toBe(true);
+
+    // 开关的「处理中」判据（E6）也要真的下发：`effect_pending` 由壳侧两个进程内时刻算出来，
+    // 字段名对不上时面板会一直显示「还没读到状态」，而那看起来像正常的初始态。
+    expect(typeof status.effect_pending).toBe('boolean');
+
     // 批准那条命令的**参数个数**也要在真壳里对一次：它加了 `scope`（§6.1 由用户当场选范围），
     // 而参数名对不上时前端只会 `.catch` 吞掉。用一个不存在的 id 调用——要的是「找不到候选」
     // 这类**业务**错误，不是「参数不对」或「命令未授权」，而且它不产生任何副作用。
