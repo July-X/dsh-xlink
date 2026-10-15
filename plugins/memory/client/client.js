@@ -123,6 +123,27 @@ window.__ModuleLoader__.load({
       (globalThis.console?.error ?? (() => {}))("[xlink-memory] 读最近注入失败：", text);
     }
 
+    /** 悬停文案。**取不到就退化成最短的那句**——这一段在渲染里，抛出去是整棵会话头
+     *  渲染失败（比「没有徽标」严重得多），而它只是装饰。
+     *
+     *  也不靠换行分段：`title` 提示在 WebView2（Chromium）与 WKWebView 上是否渲染成多行
+     *  并不一致，而两个平台都得支持。用 ` · ` 连接时两种渲染都读得通——押注其中一边的
+     *  换行行为就是给另一个平台埋一根刺。 */
+    function tooltipFor(note, hits) {
+      try {
+        return [
+          L.badgeTip,
+          `${L.injectedAt}${clockText(note.at)}`,
+          `${L.hits(hits.length)}${hits.length ? hits.join(L.hitsJoin) : L.noTitles}`,
+          // workspace 为空串 = 这一轮被按 G15 夹紧成「只读通用偏好」（子智能体的
+          // 工作区与父级不同）。分得清这两种，是因为它们回答的问题不一样。
+          note.workspace ? L.scopeWorkspace : L.scopeGeneral,
+        ].join(L.tipJoin);
+      } catch (error) {
+        return String(L.badgeTip ?? "");
+      }
+    }
+
     function MemoryBadge(props) {
       const sessionId = props.sessionId;
       const [note, setNote] = React.useState(null);
@@ -162,20 +183,9 @@ window.__ModuleLoader__.load({
       }, [sessionId]);
       if (note === null) return null;
       const hits = Array.isArray(note.hits) ? note.hits : [];
-      // 悬停文案**不靠换行分段**：`title` 提示在 WebView2（Chromium）与 WKWebView
-      // 上是否渲染成多行并不一致，而两个平台都得支持。用 ` · ` 连接时，两种渲染
-      // 都读得通——押注其中一边的换行行为就是给另一个平台埋一根刺。
-      const title = [
-        L.badgeTip,
-        `${L.injectedAt}${clockText(note.at)}`,
-        `${L.hits(hits.length)}${hits.length ? hits.join(L.hitsJoin) : L.noTitles}`,
-        // workspace 为空串 = 这一轮被按 G15 夹紧成「只读通用偏好」（子智能体的
-        // 工作区与父级不同）。分得清这两种，是因为它们回答的问题不一样。
-        note.workspace ? L.scopeWorkspace : L.scopeGeneral,
-      ].join(L.tipJoin);
       return e(
         "span",
-        { className: "xlink-memory-badge", title, "data-xlink-memory-badge": "recent-injections" },
+        { className: "xlink-memory-badge", title: tooltipFor(note, hits), "data-xlink-memory-badge": "recent-injections" },
         `${L.label} ${hits.length}`,
       );
     }

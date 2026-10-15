@@ -1867,6 +1867,31 @@ test('徽标只画这个会话最近的那一条：环形缓冲是跨会话的',
   assert.equal(title.includes('别的会话的偏好'), false, '别的会话的笔记一个字都不许出现在这个会话的页面上');
 });
 
+test('两份文案都得能用：字典漏一个键，页面上就是一句 undefined', async () => {
+  // 断言的是**该出现的那几段**而不是「没有 undefined」：tooltipFor 会在取文案失败时退回
+  // 最短那句，所以「只查 undefined」会被那个护栏糊过去——漏一个键照样得红。
+  const notes = [{ at: '2026-10-15T13:30:45Z', session: 'session-a', workspace: '/w/a', enabled: true, hits: ['偏好'] }];
+  const expect = {
+    zh: ['最近一次注入：', '读范围：本工作区'],
+    en: ['Last injection: ', 'Read scope: this workspace'],
+  };
+  const titles = {};
+  for (const language of ['zh', 'en']) {
+    const badge = mountClient({ notes, language });
+    badge.render(badge.component, { sessionId: 'session-a' });
+    await flush();
+    const node = badge.render(badge.component, { sessionId: 'session-a' });
+    assert.ok(node, `${language}：该画出徽标`);
+    titles[language] = node.props.title;
+    for (const fragment of expect[language]) {
+      assert.ok(titles[language].includes(fragment), `${language} 的悬停文案缺「${fragment}」（字典漂了）`);
+    }
+    assert.equal(titles[language].includes('undefined'), false, `${language}：文案里有 undefined`);
+    badge.unmount();
+  }
+  assert.notEqual(titles.zh, titles.en, '语言没跟着 navigator 走');
+});
+
 test('重复 apply 不会重复注入样式：内核 hmr 重新求值时会再跑一遍 apply', () => {
   // 真机量过：touch 一下束让内核 client-hmr 重新求值，页面里徽标仍是**一枚**（同一个注册
   // id 是替换而不是追加，那是框架行为、没有代码可改），样式标签也仍是一个。属于**本插件**
