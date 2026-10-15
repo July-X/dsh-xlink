@@ -153,11 +153,11 @@ test('次级入口在版本号右侧靠右：网格第二列 + justify-self: end
   const after = tpl.slice(metricsAt);
   assert.match(block, /class="btn-row btn-row-sub"/, '次级入口这一排应落在版本号块内');
   assert.doesNotMatch(after, /class="btn-row btn-row-sub"/, '次级入口不许退回三格指标下方');
-  // 三枚一枚都不能少。这三条各自用**整枚按钮**（从开标签到收标签）计数，而不是
+  // 每一枚一枚都不能少。这两条各自用**整枚按钮**（从开标签到收标签）计数，而不是
   // `assert.match(块, 文案)`——后者中招过一次：`官网网页版窗口` 包含
-  // `工作台窗口` 这个子串，删掉任何一枚，剩下的仍能让三条断言都命中，判据照样绿。
+  // `工作台窗口` 这个子串，删掉任何一枚，剩下的仍能让两条断言都命中，判据照样绿。
   // 计数取 `<el-button … >文案</el-button>` 的完整形状，删一枚就少一次。
-  for (const label of ['工作台窗口', '刷新工作台', '官网网页版窗口']) {
+  for (const label of ['工作台窗口', '官网网页版窗口']) {
     const re = new RegExp(`<el-button[\\s\\S]*?>\\s*${label}\\s*</el-button>`);
     const n = (block.match(new RegExp(re.source, 'g')) || []).length;
     assert.equal(n, 1, `「${label}」这一枚必须恰好存在一次（实测 ${n} 次）`);
@@ -173,6 +173,38 @@ test('次级入口在版本号右侧靠右：网格第二列 + justify-self: end
   // 归属的孤线，还白占 16px 卡内宽度。
   assert.equal(effectiveDeclaration(['btn-row-sub'], RULES, 'border-left'), null);
   assert.equal(effectiveDeclaration(['btn-row-sub'], RULES, 'padding-left'), null);
+});
+
+test('概览页不显示「刷新工作台」，一键重建那条能力不许跟着删', () => {
+  // 2026-10-15 用户要求隐藏那枚按钮：它是这一排里唯一的**动作**（换掉整个工作台
+  // 窗口 = 换掉渲染进程），而这一排其余两枚都只把窗口带到台前。判它「不在了」要
+  // 按**文案在模板里**，不是按「按钮少了几个」——上面那条已经数过枚数。
+  assert.doesNotMatch(templateOf(overview), /刷新工作台/, '概览页模板里不该再有这枚按钮');
+  assert.doesNotMatch(overview, /RefreshRight/, '图标 import 也要跟着删，留着就是没有作用方的声明');
+  // 但**能力不许跟着删**。按 ui/AGENTS.md 记下的那条先例（`instance.js` 的
+  // `setDefaultInstance`：界面删了、函数不许删），没有调用方的 API 不是「永远走不到
+  // 的代码」。手动出路只是变成两步——关掉工作台窗口，再点「工作台窗口」重新打开，
+  // 那条路走完整建窗路径，同样换掉渲染进程。Rust 侧的 `harness_force_reload` /
+  // `reset_budget` 一并留着，等的是把它挪进事故面板，还是由维护者另行决定删掉。
+  const storeJs = readFileSync('ui/src/store.js', 'utf8');
+  assert.match(storeJs, /export function forceReloadHarnessWindow/, '这个动作不许当死代码清掉');
+  assert.match(storeJs, /invoke\('harness_force_reload'\)/, '它仍要指向那条唯一能换掉渲染进程的命令');
+  // **判据扫的是剥掉注释的源码，不是全文**：这一条本轮就被自己的注释顶回来过一次
+  // ——上面那段「为什么留着」的说明里原样写了这个函数名，按 `includes` 扫全文的话，
+  // 判据把维护者写的解释当成了调用点（与 `templateOf` 那条注释里记的「同一个坑踩了
+  // 三次」同形状）。HTML 注释与 JS 注释都要剥：`.vue` 里两段都有，而 `</template>`
+  // 还有 `</template>` 槽位那种更早的收尾（`src.indexOf('</template>')` 会先撞上
+  // `<template #content>`），按位置切片根本切不准。
+  const stripAllComments = (src) =>
+    src
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^[ \t]*\/\/.*$/gm, '');
+  const callers = srcScriptFiles().filter((file) => {
+    if (!file.endsWith('.vue')) return false;
+    return stripAllComments(readFileSync(file, 'utf8')).includes('forceReloadHarnessWindow');
+  });
+  assert.deepEqual(callers, [], '概览页不该再调 forceReloadHarnessWindow');
 });
 
 test('弹窗底部的操作排统一靠右，面板内的 .btn-row 不跟着变', () => {
@@ -2502,8 +2534,8 @@ test('更新提示与它的动作同行，三枚次级按钮收小到放得下',
     '更新按钮不该再单独占一行',
   );
 
-  // ② 三枚次级按钮（工作台窗口 / 刷新工作台 / 官网网页版窗口）全出现时挤在一起。
-  // 三处都收：内边距、字号、以及**图标**——全局 `.btn-row .el-button .el-icon`
+  // ② 次级按钮（工作台窗口 / 官网网页版窗口，2026-10-15 起是三枚里的两枚）全出现时
+  // 挤在一起。三处都收：内边距、字号、以及**图标**——全局 `.btn-row .el-button .el-icon`
   // 那条 17px 是给卡头动作按钮定的，落在 11.5px 的字上就过大。
   const css = stripComments(themeCss);
   const sub = /\.btn-sub \{([^}]*)\}/.exec(css);

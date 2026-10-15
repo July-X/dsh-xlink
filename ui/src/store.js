@@ -482,6 +482,13 @@ export function openHarnessWindow() {
 // 早就加载完成过，看门狗的判据（Started 之后没等到 Finished）永远不会触发，而
 // `reload()` 落在同一块死掉的文档上仍然是黑的。换窗口会丢页面里的前端运行时状态
 // （滚动位置、侧栏、终端），会话在服务端不受影响，所以失败/成功提示要说清。
+//
+// 2026-10-15 用户要求隐藏概览页那枚按钮，于是**这个动作当前没有任何模板调用**
+// （Rust 侧的 `harness_force_reload` / `reset_budget` 也一并留着）。按
+// ui/AGENTS.md 记下的那条先例（`instance.js::setDefaultInstance`），**没有调用方
+// 不等于永远走不到的代码**，所以不许顺手清掉：手动出路还在，只是变成两步——关掉
+// 工作台窗口，再点「工作台窗口」重新打开，那条路走完整建窗路径，同样换掉渲染
+// 进程。要删要挪都是维护者的下一个决定，判据在 ui/test/designAlignment.test.js。
 export function forceReloadHarnessWindow() {
   return withLoading('forceReloadHarness', () =>
     invoke('harness_force_reload').catch((e) =>
