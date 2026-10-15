@@ -1957,6 +1957,33 @@ test('取不出文字的原因也不许抛：抛在 catch 里等于把故障换�
   }
 });
 
+test('徽标读的字段名要跟 Rust 那个结构体对得上：跨语言契约没有编译器管', () => {
+  // 这是本文件与 `memory/recent.rs` 之间**唯一**没有编译器管的耦合：徽标读 `note.at` /
+  // `note.session` / `note.workspace` / `note.hits`，对面是 serde 序列化的 `InjectionNote`。
+  // 那边改字段名，这边单测照样全绿（vm 用例喂的是**本文件造的对象**），真机上的症状是
+  // 徽标永远不出现——而徽标「不出现」本来就有三种合法的解释，极难定位。
+  const rust = readFileSync(new URL('../../../src-tauri/src/memory/recent.rs', import.meta.url), 'utf8');
+  // 连着 `pub struct` **前面那些属性**一起抓：serde 的改名属性写在结构体外面
+  // （`#[serde(rename_all = …)]` 在 derive 那一行），只抓花括号体是抓不到它的。
+  const decl = /((?:#\[[^\]]*\]\s*)*)pub struct InjectionNote \{([^}]*)\}/.exec(rust) ?? [];
+  const struct = decl[2] ?? '';
+  const attributes = decl[1] ?? '';
+  assert.notEqual(struct, '', 'recent.rs 里找不到 InjectionNote：结构体改名了，这条判据要跟着改');
+  // 属性与花括号体**整段**一起查：改名的写法有两种——结构体上面的 `rename_all`，与
+  // 单个字段上面那行 `#[serde(rename = "…")]`（它在体**内部**，只查外面会漏）。
+  assert.equal(
+    /rename/.test(attributes + struct),
+    false,
+    '给这个结构体或它的某个字段加了 serde rename：JSON 键名不再等于字段名，本判据要改成 serde 实际给出的名字',
+  );
+  const fields = [...struct.matchAll(/pub (\w+):/g)].map((match) => match[1]);
+  for (const name of ['at', 'session', 'workspace', 'hits']) {
+    assert.ok(fields.includes(name), `InjectionNote 里没有 \`${name}\` 这个字段：徽标读到 undefined 就静默不画`);
+  }
+  // 反过来也钉一下：这四个正是徽标此刻读的，别在对面悄悄多一个字段就以为两边还同步。
+  assert.deepEqual(fields, ['at', 'session', 'workspace', 'enabled', 'hits']);
+});
+
 test('卸载时要把轮询停掉：每换一个会话漏一个，就是每 5 秒白问一次壳', () => {
   const { render, component, unmount } = mountClient({ notes: [] });
   const before = liveTimers;
