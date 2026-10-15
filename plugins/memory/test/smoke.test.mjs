@@ -29,6 +29,7 @@ import {
   applyStep,
   beginStep,
   libraryChanged,
+  memoryScope,
   noteProbe,
   resolveWorkspaceId,
   retarget,
@@ -1087,6 +1088,108 @@ test('子智能体拿的是**自己**的目录（G15）：有效目录优先、�
   assert.equal(workingDirectory(undefined, undefined), '', '连 ctx 都没有也不许抛');
 });
 
+/// **只读不写**：这条路径调的是内核 `WorkingDirectoryService.get(session)`（同步、只读已
+/// 提交目录），**不是** `ensure(agent, signal)`（异步、会去校验并**恢复**原目录，项目消失
+/// 时还会抛）。内核自己两处都在用：`dsh-api-terminal-controller` 走
+/// `workingDirectory.get(agent.session)`，`dsh-tool-skill` 走 `await …ensure(agent, signal)`。
+/// 检索这条路**必须是无副作用的那一个**——恢复目录是一次用户看得见的动作，而记忆检索不该
+/// 顺手改用户的会话；它还会抛，那会让一次检索失败。
+///
+/// **换成 `ensure(` 的症状是静默的**：`typeof value === 'string'` 对一个 Promise 为假，于是
+/// 悄悄退回冻结的 `header.cwd`——正是 G15 修的那个「A 项目的记忆被带进 B 项目」。所以这里
+/// 钉的是「**`ensure` 一次都不许被调到**」，不是「结果等于某个字符串」。
+test('工作目录这条只读不写：`ensure` 一次都不许被调（换了它就静默退回冻结值）', () => {
+  let ensureCalls = 0;
+  const ctx = {
+    workingDirectory: {
+      get: (session) => (session?.id === 's-1' ? '/live/proj' : ''),
+      ensure: () => {
+        ensureCalls += 1;
+        return Promise.reject(new Error('ensure 会去恢复目录，还会抛'));
+      },
+    },
+  };
+  const agent = { session: { id: 's-1', header: { cwd: '/frozen/proj' } } };
+  assert.equal(workingDirectory(ctx, agent), '/live/proj');
+  assert.equal(ensureCalls, 0, '检索这条路不许触发 ensure');
+});
+
+/// **子智能体的读范围按工作区判等**（设计 §5 承诺「子智能体**最多继承父级的读取范围**」，
+/// 2026-10-15 维护者拍板）。洞在这：内核那个子智能体工具的 `cwd` 是**模型可填的字符串**
+/// （`dsh-tool-subagent/lib/index.js:325`，只有 description / prompt 标了 required），`:396`
+/// 原样透传，全程没有越界校验——所以子智能体拿到的「自己的有效目录」**不一定**在父级范围内。
+///
+/// 判据是**工作区身份**而不是路径前缀：模型把一段活拆到同一个仓库的 `packages/x` 去是常态，
+/// 那属于同一个工作区、照常跟手；「另一个工作区」才是另一个范围。
+test('子智能体在同一工作区里照常跟手：拆到子目录干活不该丢项目记忆', async () => {
+  const registry = {
+    resolveByPath: async (path) => ({ id: path.startsWith('/repo') ? 'ws-1' : 'ws-2' }),
+  };
+  const ctx = { workingDirectory: { get: () => '/repo/packages/x' } };
+  const agent = {
+    session: { id: 's-child', header: { cwd: '/repo', origin: 'subagent', parentSession: 's-p' } },
+  };
+  assert.deepEqual(await memoryScope(ctx, registry, agent), {
+    workspace: '/repo/packages/x',
+    workspaceId: 'ws-1',
+  });
+});
+
+test('子智能体被模型指到别的工作区：只给通用偏好，不送那个项目的记忆', async () => {
+  const registry = {
+    resolveByPath: async (path) => ({ id: path.startsWith('/repo') ? 'ws-1' : 'ws-2' }),
+  };
+  const ctx = { workingDirectory: { get: () => '/other/proj' } };
+  const agent = {
+    session: { id: 's-child', header: { cwd: '/repo', origin: 'subagent', parentSession: 's-p' } },
+  };
+  // **收窄成空坐标，不是替成父级目录**：替过去会把 A 项目的记忆送进 B 项目的活里——那正是
+  // G15 ② 要挡的反面。空坐标在壳那边只匹配通用记录。
+  assert.deepEqual(await memoryScope(ctx, registry, agent), { workspace: '', workspaceId: '' });
+});
+
+test('判不准就收窄：父级范围拿不到、任一侧解析不出工作区，都只给通用偏好', async () => {
+  const ctx = { workingDirectory: { get: () => '/other/proj' } };
+  const registry = { resolveByPath: async (path) => ({ id: path.startsWith('/repo') ? 'ws-1' : 'ws-2' }) };
+  const narrow = { workspace: '', workspaceId: '' };
+  // ① 老内核的子会话 header 里没有 `cwd`（`childSessionMeta` 是条件抄的）→ 拿不到父级范围。
+  assert.deepEqual(
+    await memoryScope(ctx, registry, {
+      session: { header: { origin: 'subagent', parentSession: 's-p' } },
+    }),
+    narrow,
+    '父级范围拿不到就不许猜'
+  );
+  // ② 子智能体自己的目录解析不出工作区（目录不存在 / 注册表没就绪）→ 比不了，收窄。
+  assert.deepEqual(
+    await memoryScope(ctx, registry, {
+      session: { header: { cwd: '/repo', origin: 'subagent', parentSession: 's-p' } },
+    }),
+    narrow,
+    '两边必须都解析出来才敢判等'
+  );
+  // ③ 注册表整个没有（服务没就绪）：`resolveWorkspaceId` 一律空串，同上。
+  assert.deepEqual(
+    await memoryScope(ctx, null, {
+      session: { header: { cwd: '/repo', origin: 'subagent', parentSession: 's-p' } },
+    }),
+    narrow
+  );
+  // ④ **只认子智能体**：主会话（没有 `origin`/`parentSession`）照常带项目坐标。
+  assert.deepEqual(
+    await memoryScope(ctx, registry, { session: { header: { cwd: '/repo' } } }),
+    { workspace: '/other/proj', workspaceId: 'ws-2' }
+  );
+  // ⑤ 老内核只给了 `parentSession` 没给 `origin`（两个标记任一成立即按子智能体算）。
+  assert.deepEqual(
+    await memoryScope(ctx, registry, {
+      session: { header: { cwd: '/repo', parentSession: 's-p' } },
+    }),
+    narrow,
+    '两个标记任一成立都算子智能体'
+  );
+});
+
 test('三个工具都从**调用方 agent** 取目录，没有 agent 就拒（G15 的夹紧）', () => {
   const code = readFileSync(new URL('../host/index.js', import.meta.url), 'utf8');
   // ① 无 agent → 拒。少了这条，一个没有会话的调用方就能读「本实例的全部项目记忆」。
@@ -1095,14 +1198,28 @@ test('三个工具都从**调用方 agent** 取目录，没有 agent 就拒（G1
     3,
     '三个工具都要先要求 agent'
   );
-  // ② 目录从**调用方**取：`exec.agent`（工具）与 `subject ?? agent`（pre-step 里那个可能是子智能体）。
+  // ② 项目坐标一律走 `memoryScope`：目录从**调用方**取（工具是 `exec.agent`；pre-step 里是
+  //    `subject ?? agent`，那可能是子智能体），同时按工作区判等夹紧（设计 §5）。
   assert.equal(
-    (code.match(/workingDirectory\(ctx, exec\.agent\)/g) ?? []).length,
+    (code.match(/memoryScope\(ctx, workspaceRegistry, exec\.agent\)/g) ?? []).length,
     3,
-    '三个工具都要用调用方的 agent 解析目录'
+    '三个工具都要用调用方的 agent 解析坐标'
   );
-  assert.match(code, /workingDirectory\(ctx, subject \?\? agent\)/, 'pre-step 也要用这一步的 agent');
-  // ③ 夹紧的最后一道在壳那侧：按 id 读也要带工作区坐标，让壳去校验归属（Rust 侧有用例）。
+  assert.match(
+    code,
+    /memoryScope\(ctx, workspaceRegistry, subject \?\? agent\)/,
+    'pre-step 也要用这一步的 agent'
+  );
+  // ③ **只有一个出口**：装配层自己不许再直接调 `workingDirectory`。直接调能绕开按工作区判等的
+  //    夹紧（子智能体被模型指到别的项目时照样拿到那个项目的记忆），而纯函数那几条测试看不见它
+  //    ——它们测的是 `workingDirectory` 本身，不是「谁在用它」。
+  assert.ok(
+    !code.includes('workingDirectory(ctx'),
+    '装配层不许自己解析目录：那会绕开 memoryScope 里的按工作区判等'
+  );
+  // ④ 「最近注入」那条也要用**夹紧后**的坐标：否则面板会把「这一步其实没带项目记忆」记成带了。
+  assert.match(code, /workspace: scope\.workspace/, 'note 路由也要用夹紧后的坐标');
+  // ⑤ 夹紧的最后一道在壳那侧：按 id 读也要带工作区坐标，让壳去校验归属（Rust 侧有用例）。
   const read = code.slice(code.indexOf("route: 'read'"), code.indexOf("route: 'read'") + 400);
   assert.match(read, /workspace_id:/, '按 id 读也要带工作区坐标');
 });
