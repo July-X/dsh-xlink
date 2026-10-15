@@ -1,6 +1,6 @@
 {
   "identifier": "harness-remote",
-  "description": "The workbench page is a remote origin (http://127.0.0.1:<kernel port>), so Tauri's ACL denies its invokes by default. Grant only what the injected workbench scripts actually call. The wildcard port covers the release/debug defaults (3090/3091) and any custom port in settings.json; the origin is still pinned to loopback and the harness window.",
+  "description": "The workbench page is a remote origin (http://127.0.0.1:<kernel port>), so Tauri's ACL denies its invokes by default. Grant only what the injected workbench scripts actually call — plus one caller nobody writes in this repo: tauri-plugin-opener injects its own click interceptor (init-iife.js, open_js_links_on_click defaults to true) into EVERY webview, and it calls plugin:opener|open_url on any `<a target=\"_blank\">` / Ctrl-click without a .catch (2026-10-15: the kernel renders conversation links exactly that way, so one click produced an unhandled rejection, harness-health.js reported it as a workbench fault, and guard.rs then mis-attributed it to the kernel). `opener:allow-default-urls` is required alongside `opener:allow-open-url` because that command validates the URL scope itself (tauri-plugin-opener src/commands.rs): granting the command alone turns the ACL refusal into a ForbiddenUrl error — the same denial in different words. `opener:default` is deliberately NOT used: it would also bring allow-reveal-item-in-dir, which the workbench page has no use for. It is not a no-op either: on_new_window only hands http(s) to the system browser and denies every other scheme, while the interceptor preventDefaults those same four protocols and calls the command itself, so before this grant a `target=\"_blank\"` link never reached on_new_window at all. Net effect: http(s) links now open (that was the bug), and mailto:/tel: reach the OS handler too — both click-gated, no worse than the user clicking the link themselves. The wildcard port covers the release/debug defaults (3090/3091) and any custom port in settings.json; the origin is still pinned to loopback and the harness window.",
   "windows": ["harness"],
   "remote": {
     "urls": ["http://127.0.0.1:*"]
@@ -12,6 +12,8 @@
     "allow-stash-harness-draft",
     "allow-take-harness-draft",
     "allow-clear-harness-draft",
-    "allow-openai-account"
+    "allow-openai-account",
+    "opener:allow-open-url",
+    "opener:allow-default-urls"
   ]
 }

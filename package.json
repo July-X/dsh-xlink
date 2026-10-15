@@ -1,6 +1,6 @@
 {
   "name": "dsh-xlink",
-  "version": "0.4.12",
+  "version": "0.4.13",
   "private": true,
   "packageManager": "pnpm@10.34.6",
   "description": "DeepSeek Harness 桌面外壳：内嵌管理面板 + 内核版本管理与更新",

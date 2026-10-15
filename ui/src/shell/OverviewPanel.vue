@@ -26,7 +26,6 @@ import {
   VideoPlay,
   VideoPause,
   Refresh,
-  RefreshRight,
   FolderOpened,
   Download,
   Box,
@@ -49,7 +48,6 @@ import {
   startWorkbench,
   stopWorkbench,
   openHarnessWindow,
-  forceReloadHarnessWindow,
   toggleOfficialChat,
   openOfficialChatWindow,
   openDataDir,
@@ -479,10 +477,20 @@ function goVersions() {
               </div>
               <!-- 次级入口：仅在对应服务开启后出现，作为窗口层的入口，视觉上压低
                    权重（ghost 风格），与卡头的主按钮做明显区分。
-                   「工作台窗口 / 官网网页版窗口」只把窗口带到台前，「刷新工作台」
-                   是唯一的**动作**——它换掉整个工作台窗口（见 harness_cmd）。
-                   三者都不改变内核状态，所以按 AGENTS.md 的 IA 规则同属次级入口
-                   这一排，不许往主按钮旁边堆会启停内核的动作。
+                   这一排现在只剩两枚，而且**都是「把窗口带到台前」**：都不改变内核
+                   状态，所以按 AGENTS.md 的 IA 规则同属次级入口这一排，不许往主按钮
+                   旁边堆会启停内核的动作。
+
+                   2026-10-15 用户要求隐藏「刷新工作台」，它此前是这一排里唯一的
+                   **动作**（换掉整个工作台窗口，见 harness_cmd）。**入口隐藏不等于
+                   能力删除**：`store.js` 的 `forceReloadHarnessWindow` 与 Rust 的
+                   `harness_force_reload` / `reset_budget` 全部原样留着，等的是把这条
+                   一键出路挪到事故面板 / 控制塔（那里本来就在讲黑屏与自愈），或者
+                   由维护者另行决定删掉。判据见 ui/test/designAlignment.test.js
+                   「概览页不显示「刷新工作台」，一键重建那条能力不许跟着删」——
+                   **别把它当死代码顺手清掉**：手动出路只能变成两步（关掉工作台窗口，
+                   再点「工作台窗口」重新打开，走完整建窗路径，同样换掉渲染进程），
+                   并不等于没有。
 
                    2026-10-08 从三格指标下方搬到版本号这一行的右侧（靠右对齐）。
                    「查看日志」不在这一排（早于本轮就已移除）：它与下面「系统健康 →
@@ -507,18 +515,6 @@ function goVersions() {
                     @click="openHarnessWindow"
                   >
                     工作台窗口
-                  </el-button>
-                  <el-button
-                    v-if="running"
-                    class="btn-sub"
-                    size="small"
-                    :icon="RefreshRight"
-                    :loading="isLoading('forceReloadHarness')"
-                    :disabled="globalBusy"
-                    title="黑屏 / 卡死时的手动出路：重建工作台窗口，渲染进程会换掉。窗口内的滚动位置、侧栏与终端回到初始状态，会话不受影响"
-                    @click="forceReloadHarnessWindow"
-                  >
-                    刷新工作台
                   </el-button>
                   <el-button
                     v-if="officialChatOpen"
