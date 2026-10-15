@@ -291,26 +291,28 @@ A16/A17/B17 都做完了。
   这个能力，而 catch 里取原因的文字取不到时也不许再抛一次）、同一条原因只说一次，以及
   **它 invoke 的命令在工作台窗口的授权里**——门禁里那条 harness-invoke 判据只扫两个注入脚本，
   覆盖不到插件的客户端半边，漏授在真机上只表现为徽标永远不出现，没有任何报错。
-  **真机验过的**（scratch 内核 `0.2.1-alpha.3` + 无头 Chrome，2026-10-15）：内核把这一份
-  认出来并供给（它出现在内核的客户端组合 URL 里，200），页面求值**零异常**，被内核 client-hmr
-  **重新求值一次也零异常**（这条是它最容易死的地方，见下一条）。
-  **徽标在真内核 + 真浏览器里确实画出来了**（2026-10-15 scratch 内核 `0.2.1-alpha.3` + 无头
-  Chrome + CDP）：页面里出现了我们注入的 `<style id="xlink-memory-badge-style">`（说明 `apply()`
-  真的跑了）、`memory_recent_injections` 被调了两次（挂载一次 + 5 秒轮询一次）、DOM 里长出
-  `span.xlink-memory-badge`「记忆 2」，悬停里有注入时间、两条命中标题与读范围，边框与颜色来自注入的
-  CSS，位置尺寸正常（53×24）。**这一眼是怎么拿到的**：那一页走的是 blank 分支，而 blank 分支
-  **根本不渲染 `…utilities` 槽**——把那一页所有 `[data-slot]` 抄下来，`conversation.header.leading`、
-  `conversation.session.header.corner`（右侧边栏按钮）都在，`…utilities` 不在，表头 class 是
-  `wSkVaW_headerBlank`；内核源码里 `headerUtilities` 与 `headerActions` 同属**非 blank 分支**
-  （`dsh-client-ui-conversation` 的会话头渲染处）。所以那次诊断把 /tmp 下物化出来的那一份临时改挂
-  到 blank 分支也会渲染的 `.corner` 槽上（**仓库里的文件没动**），徽标当场画出来——
-  ![徽标在会话头里画出来的样子（scratch 诊断实例，笔记内容是探针造的）](../../images/memory/d6b-badge-scratch.png)
-  **顺带量到两条**：① 碰一下束让内核 client-hmr 重新求值之后，页面上**仍是那一枚**徽标（同一个注册 id 是替换而不是追加——框架行为，没有代码可改）、样式标签也仍是一个；② note 的 `session` 对不上当前会话时**什么都不画**（探针把 session 写死成假值的那一次，真浏览器里就是这样：过滤在真内核上生效，且没有任何报错）。属于本插件的那一半（重复 `apply` 不重复插 `<style>`）已钉成判据。
-  **换句话说**：内核认得并供给这一份、`apply()` 跑得通、组件挂得上也画得出、样式与数据都对；
-  缺的只是「落在自己指定的那个位置上」这一眼的共现，而那由内核的分支决定（真机上那个有标题的
-  会话量到 `headerUtilities 1153→1232`），**发新版后第一次进任意会话时顺便看一眼即可，不是闸门**。
-  组件本身的渲染路径另有上面那批 vm 用例执行真文件覆盖（条数、悬停文案里含注入时间与标题、
-  通用偏好的读范围、没有就不画、卸载清定时器）
+  **真机验过的**（2026-10-15，scratch 内核 `0.2.1-alpha.3` + 无头 Chrome + CDP，笔记是探针造
+  的假数据）：
+  · **被内核认出来并供给**——它出现在内核的客户端组合 URL 里，200；
+  · **零异常**，且被内核 client-hmr **重新求值一次也零异常**（这一份最容易死的地方是顶层声明，
+    见下一条；重新求值后**也不会多出一枚**——同一个注册 id 是替换而不是追加，属框架行为）；
+  · **徽标真的画出来了**——页面里出现了我们注入的 `<style id="xlink-memory-badge-style">`
+    （说明 `apply()` 真跑了）、`memory_recent_injections` 被调了两次（挂载 + 5 秒轮询）、
+    DOM 里长出 `span.xlink-memory-badge`「记忆 2」，悬停里有注入时间/两条命中标题/读范围，
+    边框与颜色来自注入的 CSS，位置尺寸正常（53×24）：
+    ![徽标在会话头里画出来的样子（scratch 诊断实例，笔记内容是探针造的）](../../images/memory/d6b-badge-scratch.png)
+  · **注的 session 对不上就什么都不画**（真浏览器里实测，会话过滤在真内核上生效且零报错）。
+  · **这一眼是怎么拿到的**：那一页走会话头的 blank 分支，而 blank 分支**根本不渲染 `…utilities`
+    槽**——把那一页所有 `[data-slot]` 抄下来，`conversation.header.leading`、
+    `conversation.session.header.corner`（右侧边栏按钮）都在、`…utilities` 不在，表头 class 是
+    `wSkVaW_headerBlank`；内核源码里 `headerUtilities` 与 `headerActions` 同属**非 blank 分支**。
+    所以那次诊断把 /tmp 下物化出来的那一份临时改挂到 blank 分支也会渲染的 `.corner` 槽上
+    （**仓库里的文件没动**），徽标当场画出来。
+  · **换句话说**：内核认得并供给这一份、`apply()` 跑得通、组件挂得上也画得出、样式与数据都对；
+    缺的只是「落在自己指定的那个位置上」这一眼的共现，而那由内核的分支决定（真机上那个有标题的
+    会话量到 `headerUtilities 1153→1232`），**发新版后第一次进任意会话时顺便看一眼即可，不是闸门**。
+    组件本身的渲染路径另有上面那批 vm 用例执行真文件覆盖（条数、悬停文案、通用偏好的读范围、
+    没有就不画、卸载清定时器）
 - 🟡 **D6b 顺带挖出：已发布的 `xlink-openai-oauth` 账户卡有同一个形状的缺陷（已修）**——
   内核的 client-hmr 会在束文件变化时**重新求值**它，而求值落在页面的全局词法作用域里：
   顶层 `const STRINGS` 第二次求值就是 `SyntaxError: Identifier 'STRINGS' has already been
