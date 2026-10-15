@@ -238,8 +238,8 @@ export async function loadUsageSummary() {
   return usage.data;
 }
 
-// 独立窗口内拉取：打开与「刷新」都强制重扫（force 越过 45s 新鲜度窗口），
-// 保证看到的是刚扫完的账。
+// 独立窗口内拉取：打开与「刷新」都强制重扫（force 越过 90s 新鲜度窗口
+// 与 300s 落盘去抖），保证看到的是刚扫完的账。
 export async function refreshUsage() {
   usage.loading = true;
   try {
