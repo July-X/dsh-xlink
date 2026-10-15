@@ -1835,8 +1835,11 @@ test('徽标挂在会话头右侧的 utilities 槽：list + session 作用域才
   assert.equal(typeof component, 'function');
   // 返回的 inject 说的是**服务名**（slots），不是 package.json 里的包名——两处
   // 长得像但不是一回事，抄错就是 fiber 永远 pending（插件静默不生效）。
+  // **只许有 slots**：runner 对「声明了却拿不到」的服务是 parking 等它，所以顺手补一个
+  // `"timer"`（内核的提示里确实提到动态包要它）会让整枚徽标静默不加载。真机上
+  // `setInterval` 实测可用——本束走组合包路径，是普通脚本求值。
   // 逐项比而不是 deepEqual：这个数组造在 vm 的 realm 里，原型不是同一个。
-  assert.equal(loaded.inject.length, 1);
+  assert.equal(loaded.inject.length, 1, '只许声明 slots：多声明一个当前拿不到的服务会让 fiber parking，徽标静默消失');
   assert.equal(loaded.inject[0], 'slots');
 });
 

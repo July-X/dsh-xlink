@@ -31,6 +31,19 @@
  *  - `.utilities` 是「打开右侧边栏」那一排的紧邻，正是这类小徽标的落点。
  *    order 取 0：排在 `open-in-app`（-10）与 `schedule-catalog`（-5）之后。
  *
+ * ## 那两个 `inject` 不是一回事（照抄之前先读消费方：2026-10-15）
+ *
+ *  · package.json 里的 `dsh.client.inject` 装的是**包名**（`@deepseek-ai/dsh-client-ui-slots`）：
+ *    `dsh-client-modules` 逐个把它们注册在本客户端半边**之前**（`client.js` 里那圈
+ *    「Register each injected package … before its consumer」），是依赖/顺序声明。
+ *  · `return { apply, inject: ["slots"] }` 里的 `inject` 装的是**服务名**：runner 按它决定
+ *    `ctx.slots` 给不给，没声明就当场拒（`ctx.get` 守卫），所以它**必须**写。
+ *  · **别顺手把 `"timer"` 也加进去**：runner 的提示说「动态包里没有浏览器 timer 全局，
+ *    要 `inject: ['timer']`」，而它对**声明了却拿不到**的服务是 parking 等它
+ *    （`waitingFor: … ctx.get(name) === undefined`）——投机加一个当前拿不到的服务，会让整枚
+ *    徽标静默不加载。本束走的是组合包路径（普通脚本求值），`setInterval` 实测可用（真机上
+ *    轮询真的跑起来了），所以就只声明 `slots`。
+ *
  * 数据走桌面壳的 Tauri 命令 `memory_recent_injections`（授权见
  * `src-tauri/capabilities/harness-remote.json`）。**只拿标题与 id**，正文
  * 一个字节都不出壳；`__TAURI__` 没就绪或命令被 ACL 拒时本束静默退化成「没有
