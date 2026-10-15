@@ -73,8 +73,11 @@ test('变更通知：偏好文件一改就 replace 一次，停机后不再通�
  *  150ms 合并窗口」——实测 2159ms 就够（基线 stat 在注册时取，本用例的写入紧跟其后）。
  *  但满负载门禁（clippy / vite / cargo 同时跑）下本进程的事件循环会被饿住，轮询与定时器
  *  一起被推迟，6s 只剩三个节拍的余量——2026-10-15 实测红过一次（6094ms 到期；同文件单跑
- *  5 次与之后的全量门禁均绿）。放大上限只影响**失败路径**的长度：「env 名或路径接错」时
- *  再等多久都不会有通知，判据不会因此变松。 */
+ *  与之后的全量门禁均绿），放大到 30s 后**又一次**在满负载下耗光（2026-10-15 晚些时候，
+ *  该次全量门禁因它 exit 1，而同文件单跑 2.2s 就绿）。
+ *  所以现在**两件事一起做**：上限仍留 30s，而用例在被饿住期间持续写入（见下），
+ *  免得把成败押在事件循环什么时候醒。放大上限只影响**失败路径**的长度：「env 名或路径
+ *  接错」时再等多久、再写多少次都不会有通知，判据不会因此变松。 */
 const WIRING_TIMEOUT_MS = SELECTION_WATCH_INTERVAL_MS * 15;
 
 test('接线：apply 读壳传进来的 env 名并观察那只文件', async () => {
@@ -93,9 +96,20 @@ test('接线：apply 读壳传进来的 env 名并观察那只文件', async () 
   try {
     const { apply } = await import(pathToFileURL(join(pluginDir, 'host', 'index.js')));
     await apply(ctx, {});
-    writeFileSync(file, '{"selected":["gpt-a"]}');
+    // 满负载门禁下本进程的事件循环会被饿住（clippy / vite / cargo 同时跑）：2026-10-15
+    // 红过一次（6s 到期，放大到 30s 之后全绿），2026-10-15 晚些时候 30s 也被耗光过一次。
+    // 单纯继续放大上限是运气，不是修法——**在被饿住的这段时间里持续写入**才是：观察是按
+    // mtime/size 判的，事件循环一拿到时间片，下一次写入立刻被看见。判据仍然是
+    // 「到期前 replaces > 0」，接线真的接错时写多少次都不会有通知，它不会因此变松。
+    const body = '{"selected":["gpt-a"]}';
+    const deadline = Date.now() + WIRING_TIMEOUT_MS;
+    writeFileSync(file, body);
+    while (replaces === 0 && Date.now() < deadline) {
+      await delay(400);
+      if (replaces === 0) writeFileSync(file, body);
+    }
     assert.ok(
-      await until(() => replaces > 0, WIRING_TIMEOUT_MS),
+      replaces > 0,
       'apply 必须在 env 指出的路径上起观察（env 名或路径接错时这里会超时）',
     );
   } finally {
