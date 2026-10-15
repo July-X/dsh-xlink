@@ -2473,6 +2473,50 @@ test('遮罩只有一个来源，且浅色主题下不是 Element Plus 那层九
   assert.match(dark, /--el-mask-color:\s*[^;]+;/, 'html.dark 缺 --el-mask-color');
 });
 
+test('进度浮层第一帧就是最终高度，日志多起来不再顶着它长高', () => {
+  // 2026-10-15 用户报「弹窗直接显示弹出窗口高度的最大高度，而不是由内部内容
+  // 一点点的撑开高度」：`.progress-body` 当时只有 `max-height: 84vh`（那是**上限**
+  // 不是高度），日志区自己又压着 `max-height: 46vh`，于是第一帧是个只有一行阶段
+  // 文案的小盒子，随后每条 pnpm 输出把它顶高一截，用户在眼前看着弹窗长个儿。
+  //
+  // 三件事一起成立才修得掉，缺一件症状就回来，所以分三头钉：
+  //   ① 外框高度是**确定值**，并且不能再留一条 max-height 让人当"上限"改回去；
+  //   ② 日志区**吃满剩下的那一份**——`flex` 加 `min-height: 0`（flex 子项的收缩
+  //      下限默认是 auto 即内容高度，少这一条日志一多就把父级顶破）；
+  //   ③ 日志区在模板里**无条件存在**，空的时候给占位：固定高度配 `v-if` 会在
+  //      第一帧留出一块空白。
+  const body = subjectTokens('.progress-body');
+  const height = effectiveDeclaration(body, RULES, 'height');
+  assert.match(String(height), /^[\d.]+vh$/, `浮层高度必须是确定的一档，现在是 ${height}`);
+  assert.equal(
+    effectiveDeclaration(body, RULES, 'max-height'),
+    null,
+    '高度已是确定值，还留着 max-height 说明又把它当成"上限"了'
+  );
+
+  const log = subjectTokens('.install-log');
+  assert.equal(effectiveDeclaration(log, RULES, 'flex'), '1 1 auto', '日志区要占满剩余空间');
+  assert.equal(effectiveDeclaration(log, RULES, 'min-height'), '0', '没有这条，日志一多就顶破浮层');
+
+  const tpl = templateOf(readFileSync(resolve(SRC, 'shell/ProgressOverlay.vue'), 'utf8'));
+  const box = tpl.match(/<div[^>]*class="install-log"[^>]*>/);
+  assert.ok(box, '进度浮层里找不到日志区');
+  assert.doesNotMatch(box[0], /\bv-if\b/, '日志区要无条件渲染——它那块地方是第一帧就留好的');
+  // 占位走全局 `.muted`（全仓 23 处「次要文字」用的就是它），本地类只管归零
+  // 段落外边距（有 gap 的容器里块不带外边距），所以这里比的是「带着 muted 的
+  // 占位」而不是某个确切写法。
+  assert.match(
+    tpl,
+    /<p[^>]*class="muted install-log-empty"[^>]*>/,
+    '空日志区要有一句占位（且是次要文字色），不能留一块空白'
+  );
+  assert.equal(
+    effectiveDeclaration(subjectTokens('.install-log-empty'), RULES, 'margin'),
+    '0',
+    '占位段落要显式归零外边距，浮层的间距由容器的 gap 给'
+  );
+});
+
 test('生产 CSS / Vue 里不再引用已改名的旧 token', () => {
   // `var(--muted, 兜底值)` 是这一类里最阴的一种：token 已改名，兜底值是近白，
   // 浅色主题下**整条声明看着还在**（CSS 不会报错），元素只是退回浏览器默认色
