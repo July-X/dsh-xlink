@@ -58,10 +58,12 @@ const BUILTINS = [
   },
   {
     id: 'memory',
-    // 本地记忆：只有 Host 适配层。**没有上游内容**（记忆正文在用户的实例目录里，
-    // 不在安装包里），也没有工作台客户端模块（管理页是壳自己的面板）。
+    // 本地记忆：Host 适配层 + 会话头那枚「记忆 N」徽标（client）。**没有上游
+    // 内容**（记忆正文在用户的实例目录里，不在安装包里）。徽标能成为内核客户端
+    // 模块，靠的是 package.json 里的 `dsh.client` 声明与 `exports["./client"]`
+    // ——与 openai-oauth 的账户卡同一条通道，所以 `client` 也是合法的 entry 名。
     // `test/` 与 README 不进实例，与另外两个内置插件一致。
-    entries: ['host', 'package.json'],
+    entries: ['host', 'client', 'package.json'],
   },
 ];
 

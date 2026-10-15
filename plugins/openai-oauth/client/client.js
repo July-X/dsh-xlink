@@ -32,8 +32,16 @@
  * 系统凭据库都在桌面壳侧，浏览器只看脱敏状态（设计 §3.2/§8）。
  * `__TAURI__` 在本束执行时未必就绪（harness-draft.js 同款问题）——
  * 惰性取用 + 组件挂载后重试。
+ *
+ * 顶层那四个绑定**必须是 `var`，不能是 `const`**（2026-10-15 真机实测）：
+ * 内核的 client-hmr 会在束文件变化时重新求值它，求值落在页面的全局词法作用域里，
+ * 顶层 `const` 第二次求值就是 `SyntaxError: Identifier 'STRINGS' has already been
+ * declared`，账户卡随之静默消失（面板照常显示「已启用」）。`var` 可重复声明，
+ * 只是重新赋值；下面 `client.test.mjs` 有一条判据在同一 context 里连跑两遍守它。
+ * 新增插件客户端束时更好的做法是**一个顶层声明都不写**（像 `xlink-memory` 那样
+ * 全塞进 factory 闭包），至少别用 `const` / `let` / `class`。
  */
-const STRINGS = {
+var STRINGS = {
   zh: {
     cardTitle: "OpenAI · ChatGPT 套餐",
     providedBy:
@@ -103,11 +111,11 @@ const STRINGS = {
     capabilityUnknown: "unverified",
   },
 };
-const L = STRINGS[(globalThis.navigator?.language ?? "zh").toLowerCase().startsWith("zh") ? "zh" : "en"];
+var L = STRINGS[(globalThis.navigator?.language ?? "zh").toLowerCase().startsWith("zh") ? "zh" : "en"];
 
 /** 主题样式：令牌与内核 webui 同源（--dsw-alias-*），明暗主题自动跟随。 */
-const CARD_STYLE_ID = "xlink-openai-oauth-style";
-const CARD_CSS = `
+var CARD_STYLE_ID = "xlink-openai-oauth-style";
+var CARD_CSS = `
 .xlink-oauth-card{border:.5px solid var(--dsw-alias-settings-card-stroke);background:var(--dsw-alias-settings-card-fill);border-radius:var(--dsw-radius-lg);padding:12px 14px;display:grid;gap:8px}
 .xlink-oauth-title{font-weight:600;cursor:help}
 .xlink-oauth-status{font-size:12px;color:var(--dsw-alias-label-secondary)}
