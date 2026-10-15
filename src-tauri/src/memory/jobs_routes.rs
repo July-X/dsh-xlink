@@ -244,10 +244,17 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                         verification: String::new(),
                     };
                     match crate::memory::store::submit_candidate(&namespace, input) {
-                        Ok(candidate) => (
+                        // **并入来源也算提交成功**（C4）：同一个提取器在另一个会话又提了
+                        // 同一件事时，不生成候选而是给已有那条补一个来源——插件那边按
+                        // `submitted === true` 计数，把并入当成失败会让任务反复重排。
+                        Ok(crate::memory::store::SubmitOutcome::Merged(record)) => (
                             200,
-                            serde_json::json!({ "submitted": true, "id": candidate.id })
+                            serde_json::json!({ "submitted": true, "merged": true, "id": record.id })
                                 .to_string(),
+                        ),
+                        Ok(crate::memory::store::SubmitOutcome::Candidate(candidate)) => (
+                            200,
+                            serde_json::json!({ "submitted": true, "id": candidate.id }).to_string(),
                         ),
                         Err(error) => refuse(&error.to_string()),
                     }

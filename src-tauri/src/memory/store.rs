@@ -34,6 +34,7 @@ use sha2::{Digest, Sha256};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+use super::sources;
 use crate::plugins::center::default_instance_key;
 use crate::shell::atomic_write::atomic_write_private;
 use crate::shell::error::AppError;
@@ -42,7 +43,12 @@ use crate::shell::process::{read_state_file, StateRead};
 use crate::shell::settings;
 
 /// 文档 schema 版本。库里记的版本**高于**本值时拒绝写入（见 [`check_writable`]）。
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// **2 = 来源由单对象改成列表**（2026-10-15 的 schema 变更窗口，C4）：三条字段级变更攒在
+/// 一次抬版里付账。抬版不是形式——写侧会把 `meta.schema_version` 盖成本值，于是旧应用读到
+/// 新库会按「库比它新」拒写，而不是把没见过的 `sources` 数组当未知字段丢掉、再把自己那份
+/// 单对象来源写回去（那样每一次编辑都会悄悄抹掉全部来源，而界面上看不出任何异常）。
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// 记忆范围：绑定某个已登记工作区，或本实例通用的用户偏好。
 pub const SCOPE_PROJECT: &str = "project";
@@ -191,7 +197,10 @@ pub struct MemoryRecord {
     pub keywords: Vec<String>,
     /// 用户固定项：排序最优先，且不受关键词匹配影响。
     pub pinned: bool,
-    pub source: MemorySource,
+    /// 这条记忆从哪些地方来（面板手动 / 会话里提出 / 自动提取，可能好几处）。
+    /// 读回兼容旧的 `source` 单对象，见 [`crate::memory::sources`]。
+    #[serde(default, alias = "source", deserialize_with = "sources::one_or_many")]
+    pub sources: Vec<MemorySource>,
     /// `verified` / `unverified` / `stale`。
     pub verification: String,
     /// `accepted` / `disabled`。
@@ -217,12 +226,25 @@ pub struct MemoryCandidate {
     pub title: String,
     pub body: String,
     pub keywords: Vec<String>,
+    /// 候选只有**一个**来源：它是「某次提交里的一件事」，还没有被批准——并入记录之后
+    /// 才谈得上一条记忆从几个地方来。来源列表是批准那一刻才出现的（`decide_candidate`）。
     pub source: MemorySource,
     pub verification: String,
     /// `pending` / `accepted` / `rejected`。
     pub state: String,
     pub created_at: String,
     pub decided_at: String,
+}
+
+/// `submit_candidate` 的两种结局：收成一条待确认候选，或并进一条已有的记录。
+///
+/// 返回一个枚举而不是只回候选 id，是因为「模型又提了一次同一件事」有两种都算成功的结局，
+/// 调用方（回环桥 `/submit`、`memory_propose` 路由）必须能分别如实报出来——把它们都报成
+/// 「已提交」或都报成「已拒绝」都会让用户在面板上看到与库里对不上的清单。
+#[derive(Debug)]
+pub enum SubmitOutcome {
+    Candidate(MemoryCandidate),
+    Merged(MemoryRecord),
 }
 
 /// `meta` 段：schema 版本、数据代次、开关与同源抑制指纹。
@@ -454,8 +476,17 @@ fn mutate<T>(
     let outcome = apply(&mut doc)?;
     crate::memory::input::ensure_doc_growth(before, crate::memory::input::doc_bytes(&doc))?;
     doc.meta.generation = doc.meta.generation.saturating_add(1);
+    // 写入即抬版本：**读**时按库里记的版本判能不能写，这里才是把版本改成「本版写的」的那一步。
+    // 少了它，一次抬版之后库里永远记着旧版本，直到下一次抬版才会盖上——中间那段时间旧应用
+    // 读到新字段照样当未知字段丢掉，再把自己的单对象来源写回去。
+    doc.meta.schema_version = SCHEMA_VERSION;
     persist(ns, &doc)?;
     Ok(outcome)
+}
+
+/// 状态为 `state` 的记录条数（状态摘要要 accepted 与非 accepted 两档）。
+fn count_state(records: &[MemoryRecord], state: &str) -> usize {
+    records.iter().filter(|row| row.state == state).count()
 }
 
 /// 由**已经读出来**的文档算状态摘要。
@@ -474,16 +505,10 @@ fn status_from(ns: &Namespace, doc: &MemoryDoc, warning: Option<String>) -> Memo
         generation: doc.meta.generation,
         use_approved: doc.meta.use_approved,
         auto_extract: doc.meta.auto_extract,
-        accepted: doc
-            .memories
-            .iter()
-            .filter(|record| record.state == STATE_ACCEPTED)
-            .count(),
-        disabled: doc
-            .memories
-            .iter()
-            .filter(|record| record.state != STATE_ACCEPTED)
-            .count(),
+        accepted: count_state(&doc.memories, STATE_ACCEPTED),
+        // 「已停用」是同一份判据的另一面，写成减法而不是把 `!=` 再抄一遍：两档数字来自同一处，
+        // 日后改了一处也不会出现对不上的面板。
+        disabled: doc.memories.len() - count_state(&doc.memories, STATE_ACCEPTED),
         pending_candidates: doc
             .candidates
             .iter()
@@ -584,10 +609,7 @@ pub fn save(ns: &Namespace, input: SaveInput) -> Result<MemoryRecord, AppError> 
                 body: clean.body,
                 keywords: clean.keywords,
                 pinned: input.pinned,
-                source: input
-                    .source
-                    .clone()
-                    .unwrap_or_else(|| MemorySource::manual(&now)),
+                sources: sources::one(input.source.clone(), &now),
                 verification: clean.verification,
                 state: STATE_ACCEPTED.to_string(),
                 revision: 1,
@@ -627,6 +649,9 @@ pub fn save(ns: &Namespace, input: SaveInput) -> Result<MemoryRecord, AppError> 
         record.body = clean.body;
         record.keywords = clean.keywords;
         record.pinned = input.pinned;
+        // **编辑不动 `sources`**：来源是「这件事从哪儿来」的历史，改正文不追加一条来源。
+        // 正文改成与另一条记录相同时这里也不合并——那是「两件同样的事」，面板上看得见，
+        // 而自动提取那条路上的合并由 `duplicates::merge_source` 负责（见 C4）。
         record.verification = clean.verification;
         record.updated_at = now;
         record.revision = record.revision.saturating_add(1);
@@ -711,10 +736,11 @@ pub fn set_use_approved(ns: &Namespace, enabled: bool) -> Result<(), AppError> {
 }
 
 /// 提交一条待确认候选。模型只能走到这里——候选必须由用户批准才进权威记录。
-pub fn submit_candidate(
-    ns: &Namespace,
-    input: CandidateInput,
-) -> Result<MemoryCandidate, AppError> {
+///
+/// 命中一条**已接受**的同正文记录时不会生成候选，而是把这次来源并进那条记录（§7.2
+/// 「相同规范化正文可合并来源」）：跨会话再提一次同一件事是自动提取最常见的形状，原先的做法
+/// 只有「拒收」，而那会把「这件事在会话 B 也发生过」这条信息一起丢掉。
+pub fn submit_candidate(ns: &Namespace, input: CandidateInput) -> Result<SubmitOutcome, AppError> {
     let clean = crate::memory::input::clean(
         crate::memory::input::Raw::from(&input),
         VERIFICATION_UNVERIFIED,
@@ -733,9 +759,12 @@ pub fn submit_candidate(
                     .to_string(),
             ));
         }
-        // **同一正文不重复收**（§7.2「相同规范化正文可合并来源」的首版做法）：正文指纹一样、
-        // 且**在候选的范围里看得见**就是同一件事（范围判据在 `duplicates` 里）。
-        if let Some(reason) = crate::memory::duplicates::duplicate_reason_for(doc, &clean) {
+        // 同一正文**并入已有记录的来源**，并入不了才轮到拒收（`duplicate_reason`）。合并不成
+        // 候选，所以它排在待确认条数上限**之前**：待确认满了不该挡住「给已有的一条补个来源」。
+        if let Some(record) = crate::memory::duplicates::merge_source(doc, &clean, &source, &now) {
+            return Ok(SubmitOutcome::Merged(record));
+        }
+        if let Some(reason) = crate::memory::duplicates::duplicate_reason(doc, &clean) {
             return Err(AppError::Memory(reason));
         }
         // 待确认的候选到顶后**拒收新的**，而不是丢旧的（见 `MAX_PENDING_CANDIDATES`）。
@@ -768,12 +797,8 @@ pub fn submit_candidate(
         };
         doc.candidates.push(candidate.clone());
         // 只裁**已决**候选；待确认的一条都不丢（那是用户还没看见的东西）。
-        let mut decided: Vec<usize> = doc
-            .candidates
-            .iter()
-            .enumerate()
-            .filter(|(_, candidate)| candidate.state != CANDIDATE_PENDING)
-            .map(|(index, _)| index)
+        let mut decided: Vec<usize> = (0..doc.candidates.len())
+            .filter(|index| doc.candidates[*index].state != CANDIDATE_PENDING)
             .collect();
         while doc.candidates.len() > MAX_CANDIDATES && !decided.is_empty() {
             let index = decided.remove(0);
@@ -782,7 +807,7 @@ pub fn submit_candidate(
                 *remaining -= 1;
             }
         }
-        Ok(candidate)
+        Ok(SubmitOutcome::Candidate(candidate))
     })
 }
 
@@ -849,7 +874,8 @@ pub fn decide_candidate(
             title: candidate.title.clone(),
             body: candidate.body.clone(),
             keywords: candidate.keywords.clone(),
-            source: candidate.source.clone(),
+            // 候选自带的来源成为这条记录的第一个来源。
+            sources: vec![candidate.source.clone()],
             // 用户看过正文与来源后点的「保存」——这是一次显式确认，标为已验证。
             verification: VERIFICATION_VERIFIED.to_string(),
             state: STATE_ACCEPTED.to_string(),
@@ -1039,6 +1065,15 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    /// 提交候选并取那条候选。**并入来源那种结局在这里直接判红**——写这些用例时预期的就是
+    /// 「收成待确认」，而两种结局各有各的用例（并入那条见 `merging_the_same_body_from_another_session`）。
+    fn submit_ok(ns: &Namespace, input: CandidateInput) -> MemoryCandidate {
+        match submit_candidate(ns, input).expect("submit candidate") {
+            SubmitOutcome::Candidate(candidate) => candidate,
+            SubmitOutcome::Merged(record) => panic!("本该收成候选，却并进了 {}", record.title),
+        }
+    }
+
     #[test]
     fn store_lives_under_the_instance_directory() {
         let home = TempHome::new("path");
@@ -1182,7 +1217,8 @@ mod tests {
         let saved = save(&ns, project_input("ws-1", "构建命令", "用 npm run check")).expect("save");
         assert_eq!(saved.revision, 1);
         assert_eq!(saved.state, STATE_ACCEPTED);
-        assert_eq!(saved.source.kind, SOURCE_MANUAL);
+        assert_eq!(saved.sources.len(), 1);
+        assert_eq!(saved.sources[0].kind, SOURCE_MANUAL);
         assert_eq!(saved.verification, VERIFICATION_VERIFIED);
 
         let view = list(
@@ -1436,7 +1472,7 @@ mod tests {
     fn candidate_needs_an_explicit_decision() {
         let _home = TempHome::new("candidate");
         let ns = namespace();
-        let candidate = submit_candidate(
+        let candidate = submit_ok(
             &ns,
             CandidateInput {
                 scope: SCOPE_PROJECT.to_string(),
@@ -1454,8 +1490,7 @@ mod tests {
                 },
                 ..CandidateInput::default()
             },
-        )
-        .expect("submit");
+        );
 
         let view = list(
             &ns,
@@ -1472,8 +1507,9 @@ mod tests {
             .expect("decide")
             .expect("accepted record");
         assert_eq!(record.state, STATE_ACCEPTED);
-        assert_eq!(record.source.session, "s-1");
-        assert_eq!(record.source.start_seq, 3);
+        assert_eq!(record.sources.len(), 1);
+        assert_eq!(record.sources[0].session, "s-1");
+        assert_eq!(record.sources[0].start_seq, 3);
         assert!(
             decide_candidate(&ns, &candidate.id, true, None).is_err(),
             "不能重复批准"
@@ -1487,7 +1523,7 @@ mod tests {
     fn accepting_with_a_scope_override_moves_the_record_to_general() {
         let _home = TempHome::new("promote");
         let ns = namespace();
-        let candidate = submit_candidate(
+        let candidate = submit_ok(
             &ns,
             CandidateInput {
                 scope: SCOPE_PROJECT.to_string(),
@@ -1497,8 +1533,7 @@ mod tests {
                 body: "提交前跑检查".to_string(),
                 ..CandidateInput::default()
             },
-        )
-        .expect("candidate");
+        );
 
         let record = decide_candidate(&ns, &candidate.id, true, Some(SCOPE_GENERAL))
             .expect("accept")
@@ -1520,8 +1555,7 @@ mod tests {
     fn rejecting_a_candidate_creates_nothing() {
         let _home = TempHome::new("reject");
         let ns = namespace();
-        let candidate =
-            submit_candidate(&ns, candidate_input("看起来不对的结论", "正文")).expect("submit");
+        let candidate = submit_ok(&ns, candidate_input("看起来不对的结论", "正文"));
         assert!(decide_candidate(&ns, &candidate.id, false, None)
             .expect("decide")
             .is_none());
@@ -1663,6 +1697,167 @@ mod tests {
         .expect("different body");
     }
 
+    /// **同正文 + 新来源 = 并入来源，而不是新收一条**（C4，§7.2「相同规范化正文可合并来源」）。
+    ///
+    /// 这条判据的两半都要钉住：**记录数不变**（用户看到的清单里不能因为模型换了个说法就多一条），
+    /// **来源多了一条**（「这件事在会话 B 也说过」这条信息原先整个丢掉）。
+    #[test]
+    fn merging_the_same_body_from_another_session_adds_a_source() {
+        let _home = TempHome::new("merge-source");
+        let ns = namespace();
+        let saved = save(
+            &ns,
+            project_input("ws-a", "构建前先跑检查", "提交前跑 npm run check"),
+        )
+        .expect("save");
+
+        let extract = |session: &str| CandidateInput {
+            scope: SCOPE_PROJECT.to_string(),
+            workspace_id: "ws-a".to_string(),
+            workspace_path: "/tmp/ws-a".to_string(),
+            title: "换个标题也一样".to_string(),
+            body: "提交前跑 npm run check".to_string(),
+            source: MemorySource {
+                kind: SOURCE_EXTRACT.to_string(),
+                session: session.to_string(),
+                start_seq: 12,
+                end_seq: 12,
+                ..MemorySource::default()
+            },
+            ..CandidateInput::default()
+        };
+
+        let merged = match submit_candidate(&ns, extract("s-1")).expect("submit from s-1") {
+            SubmitOutcome::Merged(record) => record,
+            SubmitOutcome::Candidate(_) => panic!("同正文不该再收一条候选"),
+        };
+        assert_eq!(merged.id, saved.id, "并入的是原来那条");
+        assert_eq!(merged.sources.len(), 2, "手动保存 + 会话 B 的自动提取");
+        assert_eq!(merged.sources[1].session, "s-1");
+        assert_eq!(merged.revision, saved.revision + 1, "并入也是一次改动");
+
+        // **同一条来源不重复记**，而且这次仍算「重复」——并不进去就退回拒收，不静默截断。
+        let refused = submit_candidate(&ns, extract("s-1"))
+            .expect_err("同一条来源没有新东西可记")
+            .to_string();
+        assert!(refused.contains("已经在记忆里"), "{refused}");
+
+        // 换一个会话就是新来源：应当并进去，来源列表按序增长。
+        let third = match submit_candidate(&ns, extract("s-2")).expect("submit from s-2") {
+            SubmitOutcome::Merged(record) => record,
+            SubmitOutcome::Candidate(_) => panic!("同正文不该再收一条候选"),
+        };
+        assert_eq!(third.sources.len(), 3);
+
+        let doc = read_doc(&ns);
+        assert_eq!(doc.memories.len(), 1, "并入来源不新建记录");
+        assert!(
+            doc.candidates.is_empty(),
+            "并入来源不占用户的待确认清单：{:?}",
+            doc.candidates
+        );
+    }
+
+    /// **已停用的记录不给合并**：用户明确停用过的东西，模型不该顺手把它带回来。这条与
+    /// 「并入来源」只差一个状态，而那一个状态就是「用户自己的决定」，不能被模型绕过。
+    #[test]
+    fn a_disabled_record_is_never_revived_by_a_merge() {
+        let _home = TempHome::new("merge-disabled");
+        let ns = namespace();
+        let saved = save(
+            &ns,
+            project_input("ws-a", "构建前先跑检查", "提交前跑 npm run check"),
+        )
+        .expect("save");
+        set_state(&ns, &saved.id, STATE_DISABLED).expect("disable");
+
+        let refused = submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_id: "ws-a".to_string(),
+                workspace_path: "/tmp/ws-a".to_string(),
+                title: "换个标题也一样".to_string(),
+                body: "提交前跑 npm run check".to_string(),
+                source: MemorySource {
+                    kind: SOURCE_EXTRACT.to_string(),
+                    session: "s-1".to_string(),
+                    ..MemorySource::default()
+                },
+                ..CandidateInput::default()
+            },
+        )
+        .expect_err("停用过的记忆不许被并活")
+        .to_string();
+        assert!(refused.contains("已经在记忆里"), "{refused}");
+        assert!(
+            refused.contains(STATE_DISABLED),
+            "要说清它现在是停用：{refused}"
+        );
+        assert_eq!(read_doc(&ns).memories[0].state, STATE_DISABLED);
+    }
+
+    /// **写过的文件立刻盖上本版版本号**（schema 变更窗口）。少了这一句，一次抬版之后库里
+    /// 永远记着旧版本，直到下一次抬版才盖上——中间那段时间旧应用读到新字段照样当未知字段
+    /// 丢掉，再把它那份单对象来源写回去，用户下一次编辑就抹掉了全部来源。
+    #[test]
+    fn writing_stamps_the_current_schema_version() {
+        let _home = TempHome::new("schema-stamp");
+        let ns = namespace();
+        let doc = MemoryDoc {
+            meta: MemoryMeta {
+                schema_version: 1,
+                generation: 4,
+                ..MemoryMeta::default()
+            },
+            ..MemoryDoc::default()
+        };
+        fs::create_dir_all(ns.dir()).expect("mkdir");
+        fs::write(ns.file(), serde_json::to_string_pretty(&doc).expect("json"))
+            .expect("write v1 doc");
+
+        save(
+            &ns,
+            project_input("ws-a", "构建前先跑检查", "提交前跑 npm run check"),
+        )
+        .expect("save on a v1 library");
+
+        let after = read_doc(&ns);
+        assert_eq!(after.meta.schema_version, SCHEMA_VERSION);
+        assert_eq!(after.memories.len(), 1, "旧库读得出来、也写得回去");
+        assert_eq!(after.memories[0].sources[0].kind, SOURCE_MANUAL);
+    }
+
+    /// **抬版之后旧库照样读得出来**：旧文件里是单对象 `source`，读进来是列表（`sources`）。
+    /// 没有这一句，这次抬版就会把老用户的记忆库变成「下次打开就报错」。
+    #[test]
+    fn a_v1_document_with_a_single_source_object_still_loads() {
+        let _home = TempHome::new("v1-read");
+        let ns = namespace();
+        fs::create_dir_all(ns.dir()).expect("mkdir");
+        fs::write(
+            ns.file(),
+            r#"{"meta":{"schema_version":1,"generation":7,"use_approved":true,"auto_extract":false,"suppressed":[]},"memories":[{"id":"m-1","scope":"general","workspace_id":"","workspace_path":"","title":"回答用中文","body":"默认用中文回答。","keywords":[],"pinned":false,"source":{"kind":"user-manual","session":"","start_seq":0,"end_seq":0,"revision":"","at":"2026-10-01T00:00:00Z"},"verification":"verified","state":"accepted","revision":1,"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z","last_used_at":"","use_count":0,"recall_count":0}],"candidates":[]}"#,
+        )
+        .expect("write v1 doc");
+
+        let view = list(&ns, &ListFilter::default());
+        assert_eq!(view.memories.len(), 1);
+        assert_eq!(view.memories[0].sources.len(), 1, "旧的单对象读成一条来源");
+        assert_eq!(view.memories[0].sources[0].kind, SOURCE_MANUAL);
+        assert_eq!(view.status.schema_version, 1, "读不改版本，只在写的时候盖");
+
+        // 再写一次：文件里就换成数组形状了。
+        save(&ns, general_input("回答用中文", "默认用中文回答。")).expect("save on a v1 library");
+        let text = fs::read_to_string(ns.file()).expect("read back");
+        // 落盘走的是 `to_string_pretty`，数组与对象之间有换行——判形状不能拿紧凑写法去比。
+        assert!(text.contains("\"sources\": ["), "写出去是新形状：{text}");
+        assert!(
+            !text.contains("\"source\":"),
+            "旧的那个键不再写出去：{text}"
+        );
+    }
+
     /// **收掉重复候选也要带范围**（记忆内核那次评审第 1 条）：`duplicate_reason`（写入闸）按范围判了，
     /// 而 `supersede_pending_duplicates` 是同一件事的另一半，原先仍按**全库**指纹扫——A、B 两个仓库
     /// 各自提了同一条约定时，用户在 A 点保存会让 **B 的那条从待确认里静默消失**，而面板与导出都只列
@@ -1764,7 +1959,7 @@ mod tests {
     fn writing_the_same_body_yourself_retires_the_pending_duplicate() {
         let _home = TempHome::new("supersede");
         let ns = namespace();
-        let candidate = submit_candidate(
+        let candidate = submit_ok(
             &ns,
             CandidateInput {
                 scope: SCOPE_PROJECT.to_string(),
@@ -1773,8 +1968,7 @@ mod tests {
                 body: "提交前跑 npm run check".to_string(),
                 ..CandidateInput::default()
             },
-        )
-        .expect("candidate");
+        );
 
         save(
             &ns,

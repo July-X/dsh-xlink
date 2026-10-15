@@ -67,6 +67,16 @@ test('变更通知：偏好文件一改就 replace 一次，停机后不再通�
   }
 });
 
+/** 接线判据的等待上限：2s 轮询 × 15。
+ *
+ *  为什么不是 ×3（6s）：判据要等的是「**第一次轮询**（`watchFile` 安装后 2s）看到变化 +
+ *  150ms 合并窗口」——实测 2159ms 就够（基线 stat 在注册时取，本用例的写入紧跟其后）。
+ *  但满负载门禁（clippy / vite / cargo 同时跑）下本进程的事件循环会被饿住，轮询与定时器
+ *  一起被推迟，6s 只剩三个节拍的余量——2026-10-15 实测红过一次（6094ms 到期；同文件单跑
+ *  5 次与之后的全量门禁均绿）。放大上限只影响**失败路径**的长度：「env 名或路径接错」时
+ *  再等多久都不会有通知，判据不会因此变松。 */
+const WIRING_TIMEOUT_MS = SELECTION_WATCH_INTERVAL_MS * 15;
+
 test('接线：apply 读壳传进来的 env 名并观察那只文件', async () => {
   const scratch = mkdtempSync(join(tmpdir(), 'oauth-apply-'));
   const pluginDir = stagePlugin(scratch);
@@ -85,7 +95,7 @@ test('接线：apply 读壳传进来的 env 名并观察那只文件', async () 
     await apply(ctx, {});
     writeFileSync(file, '{"selected":["gpt-a"]}');
     assert.ok(
-      await until(() => replaces > 0, SELECTION_WATCH_INTERVAL_MS * 3),
+      await until(() => replaces > 0, WIRING_TIMEOUT_MS),
       'apply 必须在 env 指出的路径上起观察（env 名或路径接错时这里会超时）',
     );
   } finally {

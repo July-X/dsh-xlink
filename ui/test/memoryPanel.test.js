@@ -101,7 +101,7 @@ test('「已过期」有入口：编辑器能改验证范围，且真的发给�
 });
 
 test('范围筛选与两个标签映射（§2 的两个视图 + 来源/验证状态显示）', async () => {
-  const { visibleMemories, sourceText, verificationText } = await import('../src/memory/memory.js');
+  const { visibleMemories, sourceText, sourcesText, verificationText } = await import('../src/memory/memory.js');
   const view = {
     memories: [
       { id: 'a', scope: 'project', title: 'A' },
@@ -118,6 +118,15 @@ test('范围筛选与两个标签映射（§2 的两个视图 + 来源/验证状
   assert.equal(sourceText('session'), '会话提出');
   assert.equal(sourceText('extract'), '自动提取');
   assert.equal(sourceText(''), '未知来源', '认不出的来源要如实说，不要静默空着');
+  // 一条记录可以带**好几个**来源（C4）：全部都要出现在这一行里。
+  assert.equal(
+    sourcesText({ sources: [{ kind: 'user-manual' }, { kind: 'extract' }] }),
+    '面板手动 + 自动提取',
+    '多个来源要全列'
+  );
+  assert.equal(sourcesText({ source: { kind: 'session' } }), '会话提出', '旧的单来源形状也要认');
+  assert.equal(sourcesText({ sources: [] }), '未知来源');
+  assert.equal(sourcesText({}), '未知来源', '没有来源字段时如实说不知道');
   assert.equal(verificationText('verified'), '已验证');
   assert.equal(verificationText('unverified'), '未验证');
   assert.equal(verificationText('stale'), '已过期');
@@ -131,7 +140,7 @@ test('面板有范围筛选，行里显示来源与验证状态', () => {
   }
   // 行渲染 2026-10-14 拆进了 `MemoryRow.vue`（面板连着五轮长大，每次都靠上调预算过关）。
   const row = templateOf(read('../src/memory/MemoryRow.vue'));
-  assert.match(row, /sourceText\(row\.source\.kind\)/, '行里要显示来源');
+  assert.match(row, /sourcesText\(row\)/, '行里要显示**全部**来源');
   assert.match(row, /verificationText\(row\.verification\)/, '行里要显示验证状态');
   assert.match(row, /emit\('edit', row\)/);
   assert.match(row, /emit\('toggle', accepted \? 'disabled' : 'accepted'\)/, '下一个状态由行自己算');

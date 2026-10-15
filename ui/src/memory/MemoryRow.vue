@@ -10,7 +10,7 @@
 // 组件重新长成一个面板。
 import { computed } from 'vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
-import { scopeText, shortTime, sourceText, verificationText } from './memory.js';
+import { scopeText, shortTime, sourcesText, verificationText } from './memory.js';
 
 const props = defineProps({
   row: { type: Object, required: true },
@@ -34,7 +34,7 @@ const accepted = computed(() => props.row.state === 'accepted');
       </div>
       <p class="memory-row__body">{{ row.body }}</p>
       <p class="memory-row__meta">
-        {{ scopeText(row) }} · {{ sourceText(row.source.kind) }} ·
+        {{ scopeText(row) }} · {{ sourcesText(row) }} ·
         {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
         已用 {{ row.use_count }} 次
       </p>
