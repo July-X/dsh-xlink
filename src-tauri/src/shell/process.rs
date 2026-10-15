@@ -687,8 +687,20 @@ impl RotatingLog {
             self.open_for_today()?;
         }
         let writer = self.writer.as_mut().expect("rotating log writer missing");
-        writer.write_all(line.as_bytes())?;
-        writer.write_all(b"\n")?;
+        // 一行必须**一次** write_all 写完，不能拆成「内容 + 换行」两次写。
+        //
+        // 每个调用方各自 `RotatingLog::new` 拿自己的句柄（见
+        // `shell_events::record`），而文件是 `O_APPEND` 打开的：单次 write()
+        // 对同文件的其他追加是原子的，两次写就不是。2026-10-15 在 71,318 条
+        // perf 日志里实测到 2 条撕裂行——`... last_incident_us=16` 后面直接
+        // 接了另一条记录的 `20:01:38 perf=usage_scan ...`，因为两次系统调用
+        // 之间被对面的记录插进来了。数据本身没丢（被截断的怀疑是错的：
+        // `last_incident_us=16` 是完整值），但撕裂会让按行解析的聚合工具
+        // 把两条样本并成一条——正好毁掉做性能判断所依赖的那份遥测。
+        let mut record = String::with_capacity(line.len() + 1);
+        record.push_str(line);
+        record.push('\n');
+        writer.write_all(record.as_bytes())?;
         // 实时 flush：每一行在下一个文件系统调用时就已经落盘。
         // 加缓冲只会徒增成本，并可能在内核 panic / SIGKILL 时丢失
         // 最近几行——而这恰恰是用户报告需要在日志里立刻看到的情形。
@@ -2506,6 +2518,64 @@ mod tests {
         let text = std::fs::read_to_string(&path).expect("read after write");
         assert!(text.contains("durable"));
         let _ = fs::remove_dir_all(&logs_dir);
+    }
+
+    /// 一行必须一次 `write_all` 写完。两个各自打开的写入器并发往**同一个**
+    /// 文件追加时（`shell_events::record` 就是这个形状：每次调用都
+    /// `RotatingLog::new` 拿自己的句柄），把「内容」和「换行」拆成两次
+    /// 系统调用就会在对面的记录插进来时撕裂成两行。
+    ///
+    /// 判据直接核对真实数据：文件里每一行都必须**完整地**是
+    /// `<tag>:<序号>`。撕裂行的形状是 `A:16B:7`（缺换行）或 `B:7A:16`，
+    /// 两种都过不了这个断言。
+    #[test]
+    fn concurrent_writers_never_tear_a_line() {
+        const LINES: usize = 2_000;
+        let seq = PROCESS_TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("dsh-rot-atomic-test-{seq}"));
+        let _ = fs::remove_dir_all(&root);
+        let path = root.join(".dsh-atomic.log");
+        let a = path.clone();
+        let b = path.clone();
+        let t1 = std::thread::spawn(move || {
+            let mut log = RotatingLog::new_at_path(&a).expect("open a");
+            for i in 0..LINES {
+                log.write_line(&format!("A:{i}")).expect("write a");
+            }
+        });
+        let t2 = std::thread::spawn(move || {
+            let mut log = RotatingLog::new_at_path(&b).expect("open b");
+            for i in 0..LINES {
+                log.write_line(&format!("B:{i}")).expect("write b");
+            }
+        });
+        t1.join().expect("join a");
+        t2.join().expect("join b");
+        let text = fs::read_to_string(&path).expect("read");
+        let torn: Vec<&str> = text
+            .split('\n')
+            .filter(|line| !line.is_empty() && parse_tagged(line).is_none())
+            .collect();
+        assert!(
+            torn.is_empty(),
+            "并发写入撕裂了 {} 行，样例：{:?}（总行数 {LINES}×2）",
+            torn.len(),
+            &torn[..torn.len().min(5)]
+        );
+        // 同时钉住条数：撕裂会以「少了一行」的形式丢数据，那也是破坏。
+        let written = text.split('\n').filter(|line| !line.is_empty()).count();
+        assert_eq!(written, LINES * 2, "记录的条数必须与写入次数相等");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 解析 `A:123` 这类整行。**整行**匹配才算合法——`A:16B:7` 在这里
+    /// 返回 `None`，正是撕裂判据要抓的形状。
+    fn parse_tagged(line: &str) -> Option<(char, usize)> {
+        let (tag, seq) = line.split_once(':')?;
+        if tag.len() != 1 {
+            return None;
+        }
+        Some((tag.chars().next()?, seq.parse().ok()?))
     }
 
     /// macOS 工具链补丁：CommandLineTools 自带的 clang 找不到完整的

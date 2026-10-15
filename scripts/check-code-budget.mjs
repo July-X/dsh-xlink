@@ -67,6 +67,26 @@ const MEASUREMENT_CORRECTIONS = new Map([
 ]);
 
 /**
+ * 查一个文件有没有「量法修正」豁免，**按模块标识**查，不按路径。
+ *
+ * 为什么不能只按路径查：上一段反棘轮规则已经承认「文件会被搬进子目录」
+ * （基线 `before` 退化成按 `moduleId(path)` 查），而豁免表若仍按完整路径
+ * 查，两边的搬移耐受度就对不上了——`kernel/lifecycle.rs` 一旦搬进
+ * `kernel/diag/`，基线还认得它（按名字），豁免却已经失效（按路径查空），
+ * 于是反棘轮立刻红，且报错完全指不到真正的原因。当前唯一的豁免项就在
+ * `kernel/` 下，正是最可能再被搬的那一类。
+ */
+function correctionFor(path) {
+  const direct = MEASUREMENT_CORRECTIONS.get(path);
+  if (direct) return direct;
+  const wanted = moduleId(path);
+  for (const [key, value] of MEASUREMENT_CORRECTIONS) {
+    if (moduleId(key) === wanted) return value;
+  }
+  return undefined;
+}
+
+/**
  * 读出本文件**已提交版本**里的预算数字当基线。
  *
  * 这是反棘轮的支点。基线取自 HEAD 而不是另存一份 JSON，有两个好处：
@@ -1834,9 +1854,21 @@ const FILE_BUDGETS = {
   // 帧级解码 + offset checkpoint + 坏帧停驻）、按「天 × 模型」预聚合与 90 天
   // 保留剪枝、汇总视图派生与 get_model_usage / open_usage_window 命令，
   // 外加主窗拖动吸附跟随（dock_x / dock_y / docked_position / 事件监听）。
-  // 扫描是唯一数据通路，与账目结构同生共死，不宜再拆。生产代码约 665 行
-  // （测试另计）。
+  // 扫描是唯一数据通路，与账目结构同生共死，不宜再拆——**这一条在 2026-10-15
+  // 被局部推翻**：`variant_cache` 那一块拆出去了（见下一条），其余同生共死的
+  // 部分仍留在这里。生产代码约 665 行（测试另计）。
   'src-tauri/src/usage/local.rs': 700,
+  // 新文件（2026-10-15）：「一个会话目录里该读哪个 variant 文件」的解析，
+  // 外加**按目录 mtime 的进程内记忆**。
+  // **为什么该独立**：① local.rs 当时 751 行、预算 700，且它在 `RATCHET_THRESHOLD`
+  // 600 之上 ⇒ 预算只许下调，唯一合法出路是拆（这与 `skill_wiring.rs` 当初从
+  // `kernel_adapter.rs` 拆出来是同一条纪律）；② 更实质的理由是它带一份**与账目
+  // 结构无关的全局状态**，正确性判据也不同——它看的是「目录 mtime 变了没有」，
+  // 账目看的是「文件 offset 推进到哪了」，两条判据混在一个文件里，读的人得同时
+  // 装两件事。
+  // 来源：2026-10-15 的 perf 分析（308 个会话目录各开一次 `read_dir`，热缓存
+  // 30ms / 冷 255ms；同量的 `metadata` 只要 3.7ms）。实测收益见该模块的测试注释。
+  'src-tauri/src/usage/variant_cache.rs': 170,
   // 模型用量统计（usage.js）：窗口/卡片状态动作 + B/M/K 单位、热力图分级
   // 与周列对齐、趋势堆叠、饼图扇区等纯展示函数（node --test 直测）。
   // 160 → 180：实际落地比估的多（数字格式、模型配色 ring、热力 tooltip
@@ -3242,9 +3274,18 @@ for (const [path, budget] of Object.entries(FILE_BUDGETS)) {
     continue;
   }
   if (hit[1] > budget) {
+    // 这条提示必须按「该文件受不受反棘轮管」分岔。以前两半并列写着
+    // 「请拆分模块，**或在同一个提交里上调**」——对基线预算 ≥
+    // RATCHET_THRESHOLD 的文件，后半句是**死路**：上调会在下面那条
+    // `[反棘轮]` 里另开一条失败。2026-10-15 就是被这句误导，先以为
+    // 「拆 / 调」二选一，实际只有拆。
+    const before = baseline?.files[path] ?? baseline?.fileBudgets.get(moduleId(path));
+    const ratcheted = before !== undefined && before >= RATCHET_THRESHOLD;
     failures.push(
-      `[预算] ${path} 生产代码 ${hit[1]} 行，超过预算 ${budget} 行：请拆分模块，` +
-        `或在同一个提交里上调 FILE_BUDGETS 里的数字`
+      `[预算] ${path} 生产代码 ${hit[1]} 行，超过预算 ${budget} 行：${ratcheted
+        ? `该文件基线预算 ${before} ≥ ${RATCHET_THRESHOLD}，**受反棘轮管，预算只许下调**——` +
+          `只能拆分模块，不能上调数字（把新增能力开成新文件，并在 FILE_BUDGETS 里写清它为什么该独立）`
+        : `请拆分模块，或在同一个提交里上调 FILE_BUDGETS 里的数字`}`
     );
   }
 }
@@ -3276,7 +3317,7 @@ if (baseline) {
     // "下一个 plugins.rs" 还差着两个数量级。
     if (before < RATCHET_THRESHOLD) continue;
     if (budget > before) {
-      const correction = MEASUREMENT_CORRECTIONS.get(path);
+      const correction = correctionFor(path);
       if (correction && budget <= correction.to) {
         notes.push(
           `[反棘轮豁免] ${path}：${correction.reason}，预算 ${before} → ${budget}（上限 ${correction.to}）`

@@ -47,6 +47,7 @@ use tauri::Manager;
 use time::format_description::FormatItem;
 use time::macros::format_description;
 
+use super::variant_cache;
 use crate::shell::error::AppError;
 use crate::shell::instance;
 use crate::shell::paths;
@@ -58,7 +59,14 @@ pub const RETENTION_DAYS: u64 = 90;
 
 /// 非强制读取时，距上次成功扫描不足该间隔就直接用现有账目回答——概览卡片
 /// 随状态轮询反复拉取，不能每 2.5s 都真的扫一遍 sessions 目录。
-const FRESH_SCAN_INTERVAL_MS: u64 = 45_000;
+///
+/// **这个阈值必须大于最频繁调用方的间隔，否则它一次都挡不住。** 2026-10-15
+/// 实测：前端概览卡片按 `SUMMARY_TTL_MS = 60s` 轮询（`ui/src/usage/usage.js`），
+/// 而这里曾是 45s —— 45 < 60，于是**每一次轮询都必然穿透**这道闸去全量扫描，
+/// perf 日志里 `usage_scan` 每日累计从 7.14s 涨到 48.13s 就是这么来的。
+/// 取 90s 让隔次轮询被挡住（实际扫描间隔 120s），代价是账目最多滞后两分钟：
+/// 独立用量窗口与手动「刷新」走 `force = true`，不受这道闸影响。
+const FRESH_SCAN_INTERVAL_MS: u64 = 90_000;
 
 const STATE_SCHEMA: u32 = 1;
 
@@ -203,6 +211,46 @@ fn remember_scan_ms(family: &str, id: &str, at: u64) {
     }
 }
 
+/// 账目落盘的最小间隔。两次落盘之间即使账目变了也只在内存里推进 offset。
+///
+/// 2026-10-15 实测落盘成本：141,858 字节的 `state.json` 里，`write_all +
+/// sync_all` 20.35ms、目录 `sync_all` 19.43ms、`rename` 只有 0.50ms——**两次
+/// fsync 占了全部**。那两次 fsync 是 `atomic_write` 给凭据与 `settings.json`
+/// 共用的持久性保证，不该为了用量账目削弱它；能动的只有频率。
+///
+/// **跳过落盘不会丢账**：`usage_view` 每次都从磁盘重新读 `doc`，而扫描按
+/// offset 增量、**幂等**——下一轮从旧 offset 重扫出同一份账目，代价只是重新
+/// 解那一小段。磁盘上的账因此最多滞后 [`SAVE_DEBOUNCE_MS`]，对「按天聚合的
+/// token 用量」毫无可见影响。
+///
+/// `force = true`（用户打开用量窗口 / 手动刷新）**无条件落盘**：那一刻用户
+/// 明确在看数据，不该让磁盘状态由一个时间窗口决定。
+const SAVE_DEBOUNCE_MS: u64 = 300_000;
+
+/// 每实例最近一次**真正落盘**的时刻，与 [`LAST_SCAN_MS`] 同形同理由
+/// （按实例取，否则切换实例后会把上一个实例的时刻当成自己的）。
+static LAST_SAVE_MS: Mutex<Vec<(String, String, u64)>> = Mutex::new(Vec::new());
+
+fn last_save_ms_for(family: &str, id: &str) -> u64 {
+    LAST_SAVE_MS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .find(|(f, i, _)| f == family && i == id)
+        .map(|(_, _, at)| *at)
+        .unwrap_or(0)
+}
+
+fn remember_save_ms(family: &str, id: &str, at: u64) {
+    let mut saves = LAST_SAVE_MS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match saves.iter_mut().find(|(f, i, _)| f == family && i == id) {
+        Some(entry) => entry.2 = at,
+        None => saves.push((family.to_string(), id.to_string(), at)),
+    }
+}
+
 /// 面板入口：需要时增量扫描，再派生最近 90 天的汇总视图。
 ///
 /// `force = true`（详情弹窗打开 / 刷新）无视新鲜度窗口立即重扫；概览卡片用
@@ -277,9 +325,16 @@ fn refresh_doc(
     perf.count("items", planned as u64);
     doc.last_scanned_at_ms = process::epoch_millis();
     let changed = schema_stale || before != doc.files;
-    perf.count("saved", u64::from(changed));
-    if changed {
+    // `saved` 记的是**本轮有没有真落盘**，不是「账目有没有变」：变了但在
+    // 去抖窗口内也会跳过落盘（省掉 40ms 的两次 fsync），跳过时磁盘上的账目
+    // 滞后但绝不丢——扫描幂等，下一轮会从旧 offset 重扫出同一份账。
+    let persist = changed
+        && (force
+            || now_ms.saturating_sub(last_save_ms_for(instance.0, instance.1)) >= SAVE_DEBOUNCE_MS);
+    perf.count("saved", u64::from(persist));
+    if persist {
         perf.measure("save", || shell::state::save(state_path, doc, usage_ctx()))?;
+        remember_save_ms(instance.0, instance.1, doc.last_scanned_at_ms);
     }
     remember_scan_ms(instance.0, instance.1, doc.last_scanned_at_ms);
     Ok(())
@@ -293,17 +348,26 @@ fn refresh_doc(
 /// 十几秒压到一两秒；常规增量只有零星几个文件有新帧），最后串行把结果
 /// **合账**。账目文档只被串行段碰，工作线程只拿自己的任务副本。
 /// 返回规划出的待解文件数（供 perf 采样记 `items`）。
+///
+/// 「哪个文件该读」交给 [`variant_cache`]：2026-10-15 实测，那一步要为每个
+/// 会话目录各开一次 `read_dir`，308 个目录热缓存下就是 30ms（冷 255ms），
+/// 而同样数量的 `metadata` 只要 3.7ms——目录 mtime 闸省掉的就是前者。
 fn scan_in(doc: &mut UsageStateDoc, root: &Path, now_ms: u64) -> usize {
     let cutoff = cutoff_date_string(now_ms);
     let mut seen = BTreeSet::new();
     let mut items: Vec<ScanItem> = Vec::new();
+    let mut cache = variant_cache::variant_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (root_cache, gen) = variant_cache::begin_round(&mut cache, root);
     if let Ok(workspaces) = fs::read_dir(root) {
         for ws in workspaces.flatten() {
             let Ok(sessions) = fs::read_dir(ws.path()) else {
                 continue;
             };
             for session in sessions.flatten() {
-                let Some(file) = newest_variant(&session.path()) else {
+                let Some(file) = variant_cache::resolve_variant(&session.path(), root_cache, gen)
+                else {
                     continue;
                 };
                 let key = format!(
@@ -319,6 +383,9 @@ fn scan_in(doc: &mut UsageStateDoc, root: &Path, now_ms: u64) -> usize {
             }
         }
     }
+    // 会话目录被删掉后本轮不会再 visit 到它，它的条目必须跟着收（见
+    // variant_cache::end_round 的理由：键是绝对路径，不收就无界增长）。
+    variant_cache::end_round(root_cache, gen);
     let planned = items.len();
     for outcome in scan_parallel(items) {
         merge_outcome(doc, outcome);
@@ -476,42 +543,6 @@ fn merge_outcome(doc: &mut UsageStateDoc, outcome: ScanOutcome) {
         }
     }
     entry.offset = outcome.offset;
-}
-
-/// 会话目录里的当前格式：`session[.v<N>].jsonl.zstd` 中 N 最大者
-/// （无 `.vN` 视为 v0）。旧代文件是迁移遗留，绝不能与新版一起计入。
-fn newest_variant(dir: &Path) -> Option<PathBuf> {
-    let mut best: Option<(u32, PathBuf)> = None;
-    for entry in fs::read_dir(dir).ok()?.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let Some(rest) = name.strip_prefix("session") else {
-            continue;
-        };
-        let version = if rest == ".jsonl.zstd" {
-            0
-        } else {
-            // 不认识的文件名（session.lock、未来的其它产物）只跳过自身，
-            // 不影响目录里其余候选。
-            let Some(digits) = rest.strip_prefix(".v") else {
-                continue;
-            };
-            let Some((digits, tail)) = digits.split_once('.') else {
-                continue;
-            };
-            if tail != "jsonl.zstd"
-                || digits.is_empty()
-                || !digits.bytes().all(|b| b.is_ascii_digit())
-            {
-                continue;
-            }
-            digits.parse::<u32>().unwrap_or(0)
-        };
-        if best.as_ref().is_none_or(|(v, _)| version > *v) {
-            best = Some((version, entry.path()));
-        }
-    }
-    best.map(|(_, path)| path)
 }
 
 /// 窗口外的日账在每次保存前剪掉——这是存储体积的硬上界。
@@ -1013,33 +1044,6 @@ mod tests {
     }
 
     #[test]
-    fn newest_variant_prefers_highest_version_and_ignores_locks() {
-        let dir = tempfile_fresh("usage-variant-");
-        fs::write(dir.join("session.jsonl.zstd"), b"v0").unwrap();
-        fs::write(dir.join("session.v2.jsonl.zstd"), b"v2").unwrap();
-        fs::write(dir.join("session.v3.jsonl.zstd"), b"v3").unwrap();
-        fs::write(dir.join("session.lock"), b"lock").unwrap();
-        let chosen = newest_variant(&dir).expect("应找到 session 文件");
-        assert_eq!(
-            chosen.file_name().unwrap().to_string_lossy(),
-            "session.v3.jsonl.zstd"
-        );
-
-        let plain = tempfile_fresh("usage-variant-plain-");
-        fs::write(plain.join("session.jsonl.zstd"), b"v0").unwrap();
-        assert_eq!(
-            newest_variant(&plain)
-                .unwrap()
-                .file_name()
-                .unwrap()
-                .to_string_lossy(),
-            "session.jsonl.zstd"
-        );
-        fs::remove_dir_all(&dir).ok();
-        fs::remove_dir_all(&plain).ok();
-    }
-
-    #[test]
     fn truncate_resets_account_and_append_continues_from_offset() {
         let dir = tempfile_fresh("usage-update-");
         // scan_in 期望 `<root>/<工作区>/<会话目录>/` 两层结构。
@@ -1079,6 +1083,121 @@ mod tests {
         scan_in(&mut doc, &dir, now);
         assert!(!doc.files.contains_key(key), "文件消失后账目必须移除");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// mtime 闸唯一会漏账的形状：**同一个会话目录里出现新一代 variant 文件**。
+    /// 上一轮刚把这个目录缓存成 v1，这一轮目录 mtime 变了，必须失效并重新
+    /// 枚举到 v2——否则缓存把「版本号最高的那一代」永久钉死在旧值上。
+    /// 反向验：把 `resolve_variant` 的 mtime 比较去掉，这条必红。
+    #[test]
+    fn a_new_generation_in_the_same_session_dir_is_still_picked_up() {
+        let dir = tempfile_fresh("usage-variant-swap-");
+        let ws = dir.join("workdir");
+        let session = ws.join("session-x");
+        fs::create_dir_all(&session).unwrap();
+        let frame = raw_frame(b"{\"type\":\"assistant/message\"}\n", true);
+        fs::write(session.join("session.jsonl.zstd"), &frame).unwrap();
+
+        let mut doc = UsageStateDoc::default();
+        let now = process::epoch_millis();
+        scan_in(&mut doc, &dir, now);
+        assert!(
+            doc.files
+                .contains_key("workdir/session-x/session.jsonl.zstd"),
+            "首轮应记下 v1"
+        );
+        assert!(
+            !doc.files
+                .contains_key("workdir/session-x/session.v2.jsonl.zstd"),
+            "首轮还不该看见 v2"
+        );
+
+        // 内核升级：同一目录里多出 v2。目录条目变了 ⇒ 目录 mtime 必变。
+        fs::write(session.join("session.v2.jsonl.zstd"), &frame).unwrap();
+        scan_in(&mut doc, &dir, now);
+        assert!(
+            doc.files
+                .contains_key("workdir/session-x/session.v2.jsonl.zstd"),
+            "新一代 variant 出现后必须被扫到（目录 mtime 闸的失效路径）"
+        );
+        assert!(
+            !doc.files
+                .contains_key("workdir/session-x/session.jsonl.zstd"),
+            "只认版本号最高的一代：v1 的账目应随之移除"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 只追加内容**不改目录 mtime**，所以这条走的是缓存的命中路径：变体
+    /// 路径没变，offset 仍要靠 `plan_item` 对文件本身取 metadata 推进。
+    /// 少看了这一条，缓存就会把「新增的用量」整段漏掉。
+    #[test]
+    fn appending_to_an_existing_variant_still_advances_the_offset() {
+        let dir = tempfile_fresh("usage-append-cache-");
+        let ws = dir.join("workdir");
+        let session = ws.join("session-x");
+        fs::create_dir_all(&session).unwrap();
+        let file = session.join("session.jsonl.zstd");
+        let first = raw_frame(b"{\"type\":\"assistant/message\"}\n", true);
+        fs::write(&file, &first).unwrap();
+
+        let mut doc = UsageStateDoc::default();
+        let now = process::epoch_millis();
+        scan_in(&mut doc, &dir, now);
+        let key = "workdir/session-x/session.jsonl.zstd";
+        assert_eq!(doc.files.get(key).unwrap().offset, first.len() as u64);
+
+        // 第二轮之前先确认目录 mtime 确实没被这次追加改动——这是上面那条
+        // 测试能代表「命中路径」的前提，不成立的话它就名不副实。
+        let dir_mtime_before = fs::metadata(&session).unwrap().modified().unwrap();
+        let mut grown = first.clone();
+        grown.extend_from_slice(&raw_frame(b"{\"type\":\"assistant/message\"}\n", true));
+        fs::write(&file, &grown).unwrap();
+
+        scan_in(&mut doc, &dir, now);
+        assert_eq!(
+            doc.files.get(key).unwrap().offset,
+            grown.len() as u64,
+            "追加后 offset 必须推进到新末尾"
+        );
+        assert_eq!(
+            fs::metadata(&session).unwrap().modified().unwrap(),
+            dir_mtime_before,
+            "前提：向已存在的文件追加不改变所在目录的 mtime——\
+             缓存正是靠这条性质把「增删条目」与「追加内容」分开"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 临时基准（测量用，非门禁）：同进程内连跑 N 轮 `scan_in`，只测
+    /// 遍历 + 对账那一段，取中位数。首轮必然含全量解码的冷成本，所以从
+    /// 第二轮开始统计。
+    #[test]
+    #[ignore]
+    fn bench_scan_walk_only() {
+        let root = std::path::PathBuf::from(
+            std::env::var("XLINK_BENCH_SESSIONS").expect("XLINK_BENCH_SESSIONS"),
+        );
+        let now = process::epoch_millis();
+        let mut doc = UsageStateDoc::default();
+        let mut times: Vec<f64> = Vec::new();
+        for i in 0..12 {
+            let started = std::time::Instant::now();
+            scan_in(&mut doc, &root, now);
+            let ms = started.elapsed().as_secs_f64() * 1e3;
+            if i > 0 {
+                times.push(ms);
+            }
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "SCANWALK n={} p50={:.2}ms min={:.2}ms max={:.2}ms files={}",
+            times.len(),
+            times[times.len() / 2],
+            times[0],
+            times[times.len() - 1],
+            doc.files.len(),
+        );
     }
 
     #[test]
@@ -1301,6 +1420,76 @@ mod tests {
         )
         .unwrap();
         assert!(state.exists(), "账目变化（offset 推进）必须落盘");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 落盘去抖：`force = false` 时，第二轮**既过了新鲜度闸**（间隔
+    /// 120s > 90s）**又没到落盘窗口**（120s < 300s），账目变了也不写盘——
+    /// 省掉的是实测 40ms 的两次 fsync。
+    ///
+    /// 判据直接核对真实数据：**盘上 offset 停在第一帧，内存里已到第二帧**。
+    /// 这一对同时钉住了「该跳过的跳过」和「跳过不等于丢账」两件事。
+    /// 反向验：把 `persist` 里的去抖条件去掉，盘上 offset 会变成第二帧，本
+    /// 条必红。
+    #[test]
+    fn changed_within_the_save_debounce_window_skips_the_write() {
+        let dir = tempfile_fresh("usage-save-debounce-");
+        let root = dir.join("sessions");
+        let ws = root.join("workdir");
+        let file_dir = ws.join("session-x");
+        fs::create_dir_all(&file_dir).unwrap();
+        let file = file_dir.join("session.jsonl.zstd");
+        let state = dir.join("state.json");
+        let key = "workdir/session-x/session.jsonl.zstd";
+        let frame = raw_frame(b"{\"type\":\"assistant/message\"}\n", true);
+        fs::write(&file, &frame).unwrap();
+
+        let mut perf = crate::diagnostics::perf::PerfSample::disabled();
+        let t0 = process::epoch_millis();
+        let mut doc = UsageStateDoc::default();
+        refresh_doc(
+            &mut doc,
+            &state,
+            &root,
+            ("t", "debounce"),
+            false,
+            t0,
+            &mut perf,
+        )
+        .unwrap();
+        assert!(
+            state.exists(),
+            "首扫建账必须落盘（此时还没有落盘记录可去抖）"
+        );
+
+        // 追加一帧造出「账目有变」，时刻取新鲜度闸之外、落盘窗口之内。
+        let mut grown = frame.clone();
+        grown.extend_from_slice(&raw_frame(b"{\"type\":\"assistant/message\"}\n", true));
+        fs::write(&file, &grown).unwrap();
+        let t1 = t0 + FRESH_SCAN_INTERVAL_MS + 30_000;
+        let mut doc2 = UsageStateDoc::default();
+        refresh_doc(
+            &mut doc2,
+            &state,
+            &root,
+            ("t", "debounce"),
+            false,
+            t1,
+            &mut perf,
+        )
+        .unwrap();
+
+        let on_disk: UsageStateDoc = shell::state::load_checked(&state, usage_ctx()).unwrap();
+        assert_eq!(
+            on_disk.files.get(key).map(|e| e.offset),
+            Some(frame.len() as u64),
+            "去抖窗口内不该落盘：盘上 offset 必须仍停在第一帧之后"
+        );
+        assert_eq!(
+            doc2.files.get(key).map(|e| e.offset),
+            Some(grown.len() as u64),
+            "账目本身仍要推进到最新——跳过落盘不等于丢账"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -95,8 +95,10 @@ import { confirmDialog } from './notify.js';
 // key，否则任何别的长任务都会让这个按钮转圈（P2-42）。
 const onInstallNode = () => withLoading('installNode', () => installNode());
 
-// 模型用量（今日）：进入概览页就拉一次（60s 内复用，后端另有 45s 扫描
-// 新鲜度窗口）；原始值与 90 天保留策略进 tooltip。
+// 模型用量（今日）：进入概览页就拉一次（60s 内复用，后端另有 90s 扫描
+// 新鲜度窗口——必须大于这里的 60s，否则每次轮询都穿透它去全量扫描，
+// 见 usage/local.rs 的 FRESH_SCAN_INTERVAL_MS）；原始值与 90 天保留策略
+// 进 tooltip。
 onMounted(() => {
   loadUsageSummary();
   // 控制塔的「最近操作」读这条记录。它是纯本地读取（后端只读索引文件），

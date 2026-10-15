@@ -7,6 +7,9 @@
 pub(crate) mod credentials;
 pub(crate) mod local;
 pub(crate) mod subscription;
+// 「一个会话目录里该读哪个 variant 文件」的解析 + 按目录 mtime 的记忆。
+// 从 local.rs 拆出：那是一份与账目结构无关的进程内状态，独立判据见该文件头。
+pub(crate) mod variant_cache;
 // OpenAI（ChatGPT 套餐）用量：凭据来自壳自己的 OAuth vault 而非内核模型
 // 凭据链，且需代理路由，独立成模块以免撑大 subscription.rs（反棘轮）。
 pub(crate) mod subscription_codex;
