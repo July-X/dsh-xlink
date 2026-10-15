@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { allRulesIncludingVue, effectiveDeclaration } from './lib/css-cascade.mjs';
 
 const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
 
@@ -306,4 +307,235 @@ test('开关返回的状态真的被存下来——「处理中」靠的就是�
     assert.deepEqual(memoryStore.status[key], value, `字段 ${key} 没有传到面板`);
   }
   assert.match(switchEffectText(memoryStore.status), /处理中/, '存下来之后面板就该说「处理中」');
+});
+
+// —— 界面布局（2026-10-15 这一轮）————————————————————————————————————————
+//
+// 下面四条钉的是「记忆面板长什么样」的结构事实。四条都按本仓规矩反向验过：把源码
+// 改回旧形状，对应判据必须转红（绿在没生效的变异上说明不了任何事）。
+//
+// 样式一律读**层叠后的生效值**，而且**查规则的出处**：`memory-row*` 这一族类名同时被
+// 面板（「待确认」里的候选行）和 `MemoryRow.vue`（已保存的行）用，而规则原先只写在
+// `MemoryRow.vue` 的 `<style scoped>` 里。scoped 会给每条规则补一个自家组件的
+// `[data-v-*]`，**另一个组件写出来的元素一条都匹配不上**——不报错、build 全绿，
+// 只是候选行退回 14px 正文、`<p>` 的默认外边距回来、长正文不换行。
+
+const MEM_DIR = '../src/memory/';
+const VOID_TAGS = new Set(['img', 'br', 'hr', 'input', 'meta', 'link', 'source']);
+
+/** 字面量 `class="…"` 的类名。`:class="…"` 不算（那个是不定类名，判据读不到）。 */
+function classAttrOf(attrs) {
+  const m = /(?<![:\w-])class="([^"]*)"/.exec(attrs);
+  return m ? m[1].split(/\s+/).filter(Boolean) : [];
+}
+
+function literalClasses(block) {
+  return [...block.matchAll(/(?<![:\w-])class="([^"]*)"/g)].flatMap((m) => classAttrOf(m[0]));
+}
+
+/** 只留全局 `.css` 里的规则：scoped 块的规则在这里必须一条都不算数。 */
+function globalRules() {
+  return allRulesIncludingVue().filter((r) => r.file.endsWith('.css'));
+}
+
+/** 按标签配对切出一个元素块（注释先剥：本仓注释里会写出字面量的标签名）。 */
+function elementBlock(src, tag, cls) {
+  const text = src.replace(/<!--[\s\S]*?-->/g, '');
+  const opens = new RegExp(`<${tag}\\b[^>]*>`, 'g');
+  let at = -1;
+  let m;
+  while ((m = opens.exec(text))) {
+    if (cls === null || classAttrOf(m[0]).includes(cls)) {
+      at = m.index;
+      break;
+    }
+  }
+  assert.notEqual(at, -1, `模板里找不到 .${cls}（<${tag}>）`);
+  const tags = new RegExp(`<\\/?${tag}\\b[^>]*>`, 'g');
+  tags.lastIndex = at;
+  let depth = 0;
+  while ((m = tags.exec(text))) {
+    if (m[0].startsWith('</')) {
+      depth -= 1;
+      if (depth === 0) return text.slice(at, tags.lastIndex);
+    } else if (!m[0].endsWith('/>')) {
+      depth += 1;
+    }
+  }
+  return assert.fail(`.${cls} 的 <${tag}> 没有配对的结束标签`);
+}
+
+/**
+ * 某块的**直接**子元素。按标签栈的深度取，不比 `</div>` 个数——「说明被提到页头直接
+ * 子级」与「说明还在包裹层里」这两种错结构的 `</div>` 计数是一样的。
+ */
+function directChildren(block) {
+  const re = /<(\/?)([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g;
+  const stack = [];
+  const out = [];
+  let m;
+  while ((m = re.exec(block))) {
+    const tag = m[2].toLowerCase();
+    if (m[1]) {
+      stack.pop();
+      continue;
+    }
+    if (stack.length === 1) out.push({ tag, classes: classAttrOf(m[3] || '') });
+    if (!m[4] && !VOID_TAGS.has(tag)) stack.push(tag);
+  }
+  return out;
+}
+
+test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，两张卡片共用这一族类名', () => {
+  const panel = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
+  const row = templateOf(read(`${MEM_DIR}MemoryRow.vue`));
+
+  // 类名清单**从模板里读**，不写死在判据里：日后谁把 `memory-row__body` 改名而忘了搬
+  // 样式，下面的循环会当成「这一族已经不这么叫了」而静默空转。
+  const used = [...new Set([...literalClasses(panel), ...literalClasses(row)])]
+    .filter((c) => c.startsWith('memory-row'))
+    .sort();
+  assert.deepEqual(
+    used,
+    [
+      'memory-row',
+      'memory-row__actions',
+      'memory-row__body',
+      'memory-row__main',
+      'memory-row__meta',
+      'memory-row__name',
+      'memory-row__title',
+    ],
+    '这一族类名的清单变了：下面按类名查生效值的循环会静默空转',
+  );
+
+  // 根行还得同时挂 `page-row`：行盒、行间分隔线与「10px 12px」的内边距全来自它，
+  // 而它是全局原语——漏挂不会有任何报错，只是两张卡里的行长得不一样。
+  for (const [name, tpl] of [['MemoryPanel.vue', panel], ['MemoryRow.vue', row]]) {
+    assert.ok(literalClasses(tpl).includes('page-row'), `${name} 的根行漏了 page-row`);
+  }
+
+  const expected = {
+    'memory-row': { display: 'flex', 'align-items': 'flex-start', gap: '12px' },
+    'memory-row__main': { flex: '1', 'min-width': '0' },
+    'memory-row__title': { display: 'flex', 'flex-wrap': 'wrap', 'align-items': 'center' },
+    'memory-row__name': { 'font-size': '15px', 'font-weight': '600' },
+    'memory-row__body': {
+      'white-space': 'pre-wrap',
+      'overflow-wrap': 'anywhere',
+      margin: '4px 0 0',
+      color: 'var(--text-secondary)',
+    },
+    'memory-row__meta': { 'font-size': '12px', color: 'var(--text-muted)' },
+    'memory-row__actions': { display: 'flex', flex: '0 0 auto' },
+  };
+
+  // 只传**类名自己**当主语 token：多传一个 `page-row` 会让 `.page-row` 那条 (0,1,0)
+  // 的同特异度规则一起参与比较，读出来的就不是这一族自己的声明了。
+  const rules = globalRules();
+  for (const [cls, decls] of Object.entries(expected)) {
+    for (const [prop, value] of Object.entries(decls)) {
+      const got = effectiveDeclaration([cls], rules, prop);
+      assert.equal(
+        got,
+        value,
+        `.${cls} 的 ${prop} 生效值是 ${got === null ? '（全局 .css 里没有这条规则）' : got}，` +
+          `期望 ${value}：这一族类名两个组件都在用，规则必须写在 import 进 main.js 的 .css 里`,
+      );
+    }
+  }
+});
+
+test('memory.css 的 import 排在 theme.css 之后——.memory-row 与 .page-row 同特异度', () => {
+  // 这条不是抄一份 import 清单，而是那份清单里唯一承重的一格：`.page-row` 给的是
+  // `align-items: center`、`.memory-row` 要把它改成 `flex-start`（多行正文时行首对齐）。
+  // 两条选择器都是 (0,1,0)，**只能靠源码顺序决胜**——顺序一旦反过来，样式不报错，
+  // 只是头像那类多行行又回到垂直居中。
+  const src = read('../src/main.js');
+  const theme = src.indexOf("import './theme.css'");
+  const memory = src.indexOf("import './memory/memory.css'");
+  assert.ok(theme >= 0, 'main.js 里没有 theme.css 的 import');
+  assert.ok(memory >= 0, 'main.js 里没有 memory/memory.css 的 import');
+  assert.ok(theme < memory, 'memory.css 必须先于 theme.css 之后被 import，否则 .page-row 会赢');
+});
+
+test('记忆页头只有两个直接子级：标题块 + 整行独占的开关块', () => {
+  const tpl = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
+  const head = elementBlock(tpl, 'div', 'page-head');
+  assert.deepEqual(
+    directChildren(head).map((c) => c.classes[0]),
+    ['page-head__text', 'memory-switch'],
+    '页头形状变了：多一个直接子级就会被 space-between 当成「右侧动作」顶到页面右缘',
+  );
+
+  // 生效说明必须跟在开关**同一层**里（同一个 `.memory-switch` 块）。此前它是页头的
+  // 第三个直接子级，被挤成页面最右边一个字宽、竖着排三行。
+  const sw = elementBlock(head, 'div', 'memory-switch');
+  const status = elementBlock(sw, 'p', 'memory-switch__status');
+  assert.match(status, /switchEffectText\(status\)/, '开关块里那句生效说明不见了');
+
+  // 样式那半：`flex: 1 0 100%` 才是「落到第二行」的机制（页头是 wrap 的 flex 行）。
+  // 少了它，开关块会缩成内容宽去和标题抢第一行，说明又回到被挤扁的样子。
+  const rules = allRulesIncludingVue();
+  assert.equal(effectiveDeclaration(['memory-switch'], rules, 'flex'), '1 0 100%');
+  assert.equal(effectiveDeclaration(['memory-switch__status'], rules, 'flex'), '1 1 auto');
+  assert.equal(effectiveDeclaration(['memory-switch__status'], rules, 'min-width'), '0');
+});
+
+test('清单筛选自成一行，不再挤在卡头那一排里', () => {
+  const tpl = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
+  const card = elementBlock(tpl, 'div', 'card');
+  const head = elementBlock(card, 'div', 'card-head');
+
+  // 卡头只剩「标题 + 三枚动作」两栏。三档单选约 234px，先前与那三枚按钮（约 303px）
+  // 挤在同一条 340px 里，「通用偏好」折行、按钮再折一次，三样东西各自换行。
+  assert.ok(!head.includes('el-radio-group'), '筛选又回到卡头里了');
+  const actions = elementBlock(head, 'div', 'memory-head__actions');
+  assert.equal((actions.match(/<el-button\b/g) || []).length, 3, '卡头动作排不是三枚按钮了');
+  for (const label of ['导出 Markdown', '清空', '刷新']) {
+    assert.equal(
+      actions.split(label).length - 1,
+      1,
+      `动作排里的「${label}」不是恰好一枚（判「有一个」不等于判「每一枚都在」）`,
+    );
+  }
+
+  // 挪出来的那一层：筛选是**卡片自己的直接子级**（卡头与它之间不再夹着包裹层），
+  // 而卡内只有这一组单选——按标签判而不按内联文案判，文案是可以改的。
+  const kids = directChildren(card);
+  assert.equal(
+    kids.filter((c) => c.tag === 'el-radio-group').length,
+    1,
+    '筛选不是卡片的直接子级：夹在卡头或某个包裹层里就会跟着那一排的宽度走',
+  );
+  const group = elementBlock(card, 'el-radio-group', null);
+  assert.match(group, /:model-value="memoryStore\.listScope"/, '那一组单选不是清单筛选');
+  // `<el-radio\b` 会把包住它的 `<el-radio-group` 也算成一枚（`-` 是词边界），
+  // 所以要连后面的空白或 `>` 一起匹配。
+  assert.equal((group.match(/<el-radio[\s>]/g) || []).length, 3, '筛选不是三档了');
+  // 空态那三句各挂在 `v-if` / `v-else-if` / `v-else` 上，与筛选互不干扰。
+  assert.match(card, /<div v-else class="page-list">/, '空态与列表的分支没了');
+});
+
+test('正文超限的提示读 --danger-strong，且模板仍绑着这个条件类', () => {
+  // 12px 的 `--danger` 在白卡上只有 3.68:1（正文门槛 4.5:1），`--danger-strong`
+  // 是 5.14:1——写 token 而不是写死色值，暗色那档才跟着一起对。
+  const rules = allRulesIncludingVue();
+  assert.equal(effectiveDeclaration(['memory-note'], rules, 'color'), 'var(--text-muted)');
+  assert.equal(effectiveDeclaration(['memory-note'], rules, 'font-size'), '12px');
+  assert.equal(
+    effectiveDeclaration(['memory-note', 'memory-over-limit'], rules, 'color'),
+    'var(--danger-strong)',
+    '超限那档没盖住基线的 muted',
+  );
+
+  // 样式看得见、绑定看不见：`classesOf` / `subjectTokens` 只认字面量 `class="…"`，
+  // Vue 的 `:class` 一个都读不到，所以这里读原文并数次数。
+  const tpl = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
+  const counter = elementBlock(elementBlock(tpl, 'div', 'memory-body'), 'p', 'memory-note');
+  assert.match(
+    counter,
+    /:class="\{\s*'memory-over-limit':\s*bodyBytes\s*>\s*MAX_BODY_BYTES\s*\}"/,
+    '计数器不再绑超限那个条件类了：读到的色是常驻的 muted',
+  );
 });
