@@ -228,16 +228,22 @@ test('提取任务卡片真的接在模板上（helper 有测试、接线没有�
   assert.match(template, /一条记忆都没提取出来时先看这里/);
 });
 
-test('开关的生效语义是**条件式**的，不许说「已生效」（E6）', async () => {
+test('开关的生效语义：有确切判据就用确切的，没有就不许说「已生效」（E6）', async () => {
   const { switchEffectText } = await import('../src/memory/memory.js');
-  const text = switchEffectText();
-  // 一半是「下一步就生效」、另一半是「预算用尽要等新会话」——两半都要有。
-  assert.match(text, /下一步/, '要写明通常下一步就生效');
-  assert.match(text, /用尽/, '也要写明预算用尽时的情况');
-  assert.match(text, /新会话/, '要指出出路是新会话');
-  assert.ok(!/已生效|立即生效|即时生效/.test(text), '不许给一句听起来干脆但可能不真的话');
+  // 壳侧能算出「改过、而插件还没再来问」——那时说**处理中**，并把「为什么可能要等」讲清。
+  const pending = switchEffectText({ effect_pending: true });
+  assert.match(pending, /^处理中/, '还没被确认就说处理中');
+  assert.match(pending, /用尽/, '要写明预算用尽时为什么要等');
+  assert.match(pending, /新会话/, '要指出出路是新会话');
+  assert.ok(!/已生效/.test(pending), '处理中时不许说已生效');
+  // 插件已经来过一次：这时才敢说已生效。
+  assert.match(switchEffectText({ effect_pending: false }), /已生效/);
+  // 状态还没读到：不许给一句听起来干脆的话。
+  const unknown = switchEffectText(null);
+  assert.ok(!/已生效|立即生效|即时生效/.test(unknown), '不知道就不说已生效');
+  assert.match(unknown, /还没读到状态/);
   const template = templateOf(read('../src/memory/MemoryPanel.vue'));
-  assert.match(template, /switchEffectText\(\)/, '这句话要接在开关旁边');
+  assert.match(template, /switchEffectText\(status\)/, '这句话要接在开关旁边，并带上状态');
 });
 
 test('正文按**字节**判，与后端同一个数（评审第 4 条）', async () => {

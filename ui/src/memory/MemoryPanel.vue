@@ -90,7 +90,7 @@ onMounted(() => {
         @change="setMemoryEnabled"
       />
       <!-- 生效语义写在这（E6）：**不许说「已生效」**——面板不知道本会话还剩几次注入。 -->
-      <p class="memory-row__meta">{{ switchEffectText() }}</p>
+      <p class="memory-row__meta">{{ switchEffectText(status) }}</p>
     </div>
 
     <el-alert

@@ -32,6 +32,8 @@ pub(crate) fn memory_namespace(scope_key: &str) -> crate::memory::store::Namespa
 /// 有没有被调用过」在插件那边答不了。壳这边写一行 `shell_events` 就同时出现在
 /// 「查看日志」面板里——**只记路由与计数，不记记忆正文**（正文是用户私有内容）。
 fn note_memory_call(route: &str, detail: &str) {
+    // 顺带记「插件刚调用过壳」——面板靠它判「开关的改动认了没有」（E6）。
+    crate::memory::recent::mark_plugin_call();
     crate::shell::shell_events::record("memory-bridge", &format!("{route} {detail}"));
 }
 
