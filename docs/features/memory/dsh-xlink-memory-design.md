@@ -109,7 +109,7 @@ flowchart LR
 | 现有 `shell/paths.rs` | 派生实例与 profile 路径（新增 `instance_memory_dir`），不另拼数据根 |
 | 现有 `shell/atomic_write.rs` | 小文件与导出文件的私有原子写入（0600）；权威记录也走它，不另外造一套落盘 |
 
-插件与壳都不得向已安装内核 `kernels/<版本>/node_modules/**` 写代码。资源随应用交付，物化到内置插件的既有物化根 `<DSH_HOME>/extensions/builtin/xlink-memory/<pluginVersion>/<kernelFingerprint>/compat-a/`（**不是**社区插件的 `paths::instance_extensions_dir()`）。新增内置插件要同步登记 `plugins/builtin/builtins.rs` 的 `BUILTINS`、`scripts/prepare-builtin-plugins.mjs` 的 entries（两份清单由 `dev-builtin.test.mjs` 钉死）、`plugins/memory/package.json` 的 `name = xlink-memory` 和 `package.json` 的 `test:plugin`。
+插件与壳都不得向已安装内核 `kernels/<版本>/node_modules/**` 写代码。资源随应用交付，物化到内置插件的既有物化根 `<DSH_HOME>/extensions/builtin/memory/<pluginVersion>/<kernelFingerprint>/compat-a/`（路径段取 `BuiltinSpec::id`，即 `memory`——**不是**接线行 id `xlink-memory`，也不是社区插件那份 `<instance>/extensions/plugins/`：两者同从 `paths::instance_extensions_dir()` 派生，只差 `builtin/` 与 `plugins/` 一层）。新增内置插件要同步登记 `plugins/builtin/builtins.rs` 的 `BUILTINS`、`scripts/prepare-builtin-plugins.mjs` 的 entries（两份清单由 `dev-builtin.test.mjs` 钉死）、`plugins/memory/package.json` 的 `name = xlink-memory` 和 `package.json` 的 `test:plugin`。
 
 ### 4.1 存储选型：单文档 JSON，不引入 SQLite（2026-10-14 定案）
 

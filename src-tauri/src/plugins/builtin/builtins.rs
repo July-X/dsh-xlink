@@ -101,8 +101,11 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
         entries: &["host", "client", "locales", "package.json"],
         // host/index.js 实际 import 的两个包：`dsh-llm`（适配器基类）与
         // `schemastery`（Config schema 的构造器，设置页的命名空间视图由它派生）。
-        // 两个都是 `@deepseek-ai/dsh` 的**运行时依赖**，每个内核版本都带，
-        // 所以都是必需 peer——「OpenAI OAuth 在任何内核上都能启用」靠的就是它。
+        // 判据是「**内核树里必然在**」，两个内核版本实测都在——但**理由各不相同**：
+        // `schemastery` 确实是 `@deepseek-ai/dsh` 的 `dependencies`；`dsh-llm` 在
+        // `dsh` 的清单里是 `devDependencies`，靠 `dsh-base` / `dsh-sdk-minimal`
+        // 的运行时依赖才躺进树里。**照 `dsh` 一份清单判会得出反的结论**，详见
+        // `peers.rs` 的模块文档与下面 memory 那条。
         peers: &[
             PeerSpec::required("dsh-llm"),
             PeerSpec::required("schemastery"),
@@ -180,10 +183,27 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
         // 只有 host 与 package.json：本地记忆**没有上游内容**（正文在用户的实例
         // 目录里），也没有工作台卡片（管理页是壳自己的面板，不是内核客户端模块）。
         entries: &["host", "package.json"],
-        // host 静态 import 的只有 `@deepseek-ai/dsh-tools`（`defineTool`）。其余能力
-        // 都经 `ctx` 拿：`systemPrompt` / `tools` / `workingDirectory` 都是内核自己
-        // 的服务，不是包——**多列一个 peer 就是多一条会断的链**。
-        peers: &[PeerSpec::required("dsh-tools")],
+        // host 静态 import 的两个包：`dsh-tools`（`defineTool`）与 `dsh-llm`
+        // （提取调用要用的 `BlockAssembler` / `createUserMessage`）。其余能力都经
+        // `ctx` 拿：`systemPrompt` / `tools` / `workingDirectory` 都是内核自己的
+        // 服务，不是包——**多列一个 peer 就是多一条会断的链**。
+        //
+        // `dsh-llm` 是 2026-10-15 补的，之前漏登记，而物化只按 peers 建链接：
+        // 内核树不是物化目录的祖先，那一行 `import` 解析不到 → 整个插件
+        // `failed to import`。因为 `xlink-memory` 不在内核的必需启动项里，症状
+        // 只是内核日志多一行 `warning: 1 entry did not activate`，而工作台与
+        // 记忆面板照常显示「已启用」——**注入、三个工具、提取全静默死掉**。
+        // 现在由 `check-invariants` 的 `builtin-peer-imports` 逐包比对，别再漏。
+        //
+        // 判据是「**内核树里必然在**」，不是「`dsh` 的 `dependencies` 里有」：
+        // `dsh-tools` 与 `dsh-llm` 在 `dsh` 的清单里都是 `devDependencies`，但
+        // `dsh-base` 与 `dsh-sdk-minimal` 都把它们当运行时依赖（alpha.1 与
+        // alpha.2 两棵树实测都在）。真正会变的是 `dsh-hooks-claude-code` 那种
+        // 「上游自己不再装它」的包——那是 optional 的形态，见 `peers.rs`。
+        peers: &[
+            PeerSpec::required("dsh-tools"),
+            PeerSpec::required("dsh-llm"),
+        ],
         entry: "host/index.js",
         display_name: "本地记忆",
         summary: "把本机保存的长期偏好与项目约定接进会话：模型只能读取与提候选，批准在面板里",
@@ -266,7 +286,8 @@ mod tests {
     /// 2026-10-14 加第三个（`memory`）：它与前两个不是一类——**没有上游内容**
     /// （记忆正文在用户的实例目录里，不在安装包里），也没有工作台客户端模块
     /// （管理页是壳自己的面板）。它唯一的对外通道是回环桥上的三条记忆路由，
-    /// 因此 `entries` 只有 `host` 与 `package.json`、`peers` 只有 `dsh-tools`。
+    /// 因此 `entries` 只有 `host` 与 `package.json`、`peers` 只有 host 真正
+    /// `import` 的两个包（`dsh-tools` 与 `dsh-llm`）。
     #[test]
     fn the_registry_carries_the_shipped_builtins() {
         assert_eq!(BUILTINS.len(), 3, "改了登记表就在这里说一句为什么");
