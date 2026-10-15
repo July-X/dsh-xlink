@@ -2720,6 +2720,123 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// 内置插件的 `peers` 必须覆盖 host 静态 import 的每个 `@deepseek-ai` 包
+// （2026-10-15，评审第 1 条）。
+//
+// 起因：`plugins/memory/host/index.js` 静态 import 了 `@deepseek-ai/dsh-llm`，
+// 而 `builtins.rs` 的 spec 只登记了 `dsh-tools`。物化只按 `spec.peers` 在
+// `<物化目录>/node_modules/@deepseek-ai/` 下建链接，**内核树不是那个目录的
+// 祖先**——那一行 ESM 解析不到，整个插件 `failed to import`。因为
+// `xlink-memory` 不在内核的必需启动项里，症状只是内核日志多一行
+// `warning: 1 entry did not activate`，而工作台照常开、面板照常显示「已启用」：
+// **注入、三个工具、提取全静默死掉**，用户看到的是「功能像是开着，但模型
+// 从不提记忆」。
+//
+// 四道门当时全都没拦住，因为**没有任何一处 import 过 `host/index.js`**：
+// 冒烟判据只 import 纯逻辑模块，接线那两条把 `index.js` 当文本正则匹配，
+// `prepare-builtin-plugins --check` 只比源 hash。所以这里查的不是行为而是
+// **声明与用法的差**——它是跨语言的（Rust 的 `peers` vs JS 的 `import`），
+// 编译器与打包器都看不见。
+//
+// 两条规则，与 `src-tauri/AGENTS.md` 的「peer 分必需与可选」逐字对应：
+//   ① 静态 import 的每个包都必须在 `peers` 里；
+//   ② 静态 import 的必须是 `required`——静态 import 一个可选 peer，缺包时
+//      整个插件加载失败，降级无从谈起（可选 peer 只许动态 `import()`）。
+// 动态 `import()` 的包可以不出现在 `peers` 里（那是降级路径，缺了按 missing 报）。
+//
+// 锚点用**行首** `import`：注释里写一遍不算，也不做全量剥注释（字符串里的
+// `//` 会让剥注释反过来吃掉真代码）。本仓的插件 host 都是顶层 ESM import，
+// 这个锚点足够准；真出现行内 import 时这里要跟着改。
+//
+// **引号两种都要认**（2026-10-15 实测补）：第一版只写了单引号，而
+// `plugins/openai-oauth/` 全篇用双引号——于是它把 `dsh-llm` 从 peers 里漏掉
+// 之后，这条判据照旧打印「通过」。同一个洞还有第二半：相对 import 的遍历也只
+// 认单引号，`host/index.js` 里那句 `from "./adapter.js"` 因此没被跟上，
+// `adapter.js` 那份静态 import 从头到尾没进过集合。**判据的假绿比没有判据更坏**
+// ——它当时是唯一一条会看 `peers` 与 `import` 的差的门禁。
+{
+  const builtinsSource = read(join('src-tauri', 'src', 'plugins', 'builtin', 'builtins.rs'));
+  const problems = [];
+  const specs = builtinsSource.split(/BuiltinSpec\s*\{/).slice(1);
+  if (specs.length === 0) {
+    fail(
+      'builtin-peer-imports',
+      '在 builtins.rs 里一个 `BuiltinSpec {` 都没解析出来——判据的锚点过期了，' +
+        '它现在恒绿。先修锚点再谈通过。',
+    );
+  }
+  for (const spec of specs) {
+    const rowId = /row_id:\s*"([^"]+)"/.exec(spec)?.[1];
+    const entry = /entry:\s*"([^"]+)"/.exec(spec)?.[1];
+    if (!rowId || !entry) continue;
+    const dir = rowId.replace(/^xlink-/, '');
+    const peersBlock = /peers:\s*&\[([\s\S]*?)\]/.exec(spec)?.[1] ?? '';
+    const required = new Set();
+    const optional = new Set();
+    for (const match of peersBlock.matchAll(/PeerSpec::(required|optional)\(\s*"([^"]+)"\s*\)/g)) {
+      (match[1] === 'required' ? required : optional).add(match[2]);
+    }
+
+    // 顺着相对 import 走一遍 host 那一侧，收集所有 `@deepseek-ai` 引用。
+    const hostDir = join(root, 'plugins', dir, 'host');
+    const staticImports = new Set();
+    const dynamicImports = new Set();
+    const seen = new Set();
+    const queue = [join(hostDir, baseName(entry))];
+    while (queue.length > 0) {
+      const file = queue.pop();
+      if (seen.has(file) || !existsSync(file)) continue;
+      seen.add(file);
+      const text = readFileSync(file, 'utf8');
+      for (const match of text.matchAll(/^\s*import\s[^;]*?from\s+['"](@deepseek-ai\/[^'"]+)['"]/gm)) {
+        staticImports.add(match[1]);
+      }
+      for (const match of text.matchAll(/^\s*import\s+['"](@deepseek-ai\/[^'"]+)['"]/gm)) {
+        staticImports.add(match[1]);
+      }
+      for (const match of text.matchAll(/\bimport\(\s*['"](@deepseek-ai\/[^'"]+)['"]/g)) {
+        dynamicImports.add(match[1]);
+      }
+      // 相对引用三种形状都跟：`from './x.js'`（含 `export … from`）、
+      // 副作用 `import './x.js'`、以及省略扩展名的 `from './x'`。
+      const relatives = [];
+      for (const match of text.matchAll(/\bfrom\s+['"](\.[^'"]+)['"]/g)) relatives.push(match[1]);
+      for (const match of text.matchAll(/^\s*import\s+['"](\.[^'"]+)['"]/gm)) relatives.push(match[1]);
+      for (const spec of relatives) {
+        const target = resolve(dirname(file), spec);
+        const candidates = [target, `${target}.js`, `${target}.mjs`, join(target, 'index.js')];
+        const found = candidates.find((candidate) => existsSync(candidate));
+        if (found === undefined) {
+          problems.push(`${rowId} 的 ${baseName(file)} 引用了 \`${spec}\`，但那个文件不在磁盘上`);
+          continue;
+        }
+        queue.push(found);
+      }
+    }
+
+    for (const pkg of staticImports) {
+      const short = pkg.replace('@deepseek-ai/', '');
+      if (!required.has(short)) {
+        problems.push(
+          `${rowId} 的 host 静态 import 了 \`${pkg}\`，但 peers 里` +
+            (optional.has(short) ? '它是 **optional**' : '没有它') +
+            `——物化不会建这条链接，真壳里整个插件 import 失败`,
+        );
+      }
+    }
+  }
+
+  if (problems.length > 0) {
+    fail(
+      'builtin-peer-imports',
+      `${problems.join('；')}。静态 import 的包登记成 \`PeerSpec::required\`；` +
+        '确实该可选就改成动态 \`import()\` 再降级（见 src-tauri/AGENTS.md「peer 分必需与可选」）。',
+    );
+  } else {
+    note('内置插件的 peers 覆盖了 host 静态 import 的每个 @deepseek-ai 包');
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);
