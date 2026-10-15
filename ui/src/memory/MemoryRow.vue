@@ -8,6 +8,9 @@
 // 组件**只读 props、只 emit**：动作（保存、停用、删除）以及它们的 toast 与确认框都在
 // `memory.js` 和面板里。这里 emit 出去的只是「用户点了哪一个」——把动作也搬进来会让这个
 // 组件重新长成一个面板。
+//
+// 模板里那一族 `memory-row` 类名**没有**自己的样式块：面板也写着同一族类名，而 scoped
+// 只对本组件模板里的元素生效，所以它们统一放在 `ui/src/memory/memory.css`（理由见那份文件）。
 import { computed } from 'vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { scopeText, shortTime, sourcesText, verificationText } from './memory.js';
@@ -63,50 +66,3 @@ const accepted = computed(() => props.row.state === 'accepted');
     </div>
   </div>
 </template>
-
-<style scoped>
-/* 行自己的样式跟着行走：scoped 是**按组件**加的属性选择器，留在面板里的话这些类
-   在子组件的元素上一条都不生效（不会报错，只是行没有布局）。 */
-.memory-row {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.memory-row__main {
-  flex: 1;
-  min-width: 0;
-}
-
-.memory-row__title {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.memory-row__name {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.memory-row__body {
-  margin: 4px 0 0;
-  color: var(--text-secondary);
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
-.memory-row__meta {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-}
-
-.memory-row__actions {
-  display: flex;
-  gap: 4px;
-  flex: 0 0 auto;
-}
-</style>

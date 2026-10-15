@@ -1,0 +1,24 @@
+/* 记忆面板里跨组件共用的行样式：`MemoryPanel.vue` 写着这一族类名渲染「待确认」的候选
+ * 行，`MemoryRow.vue` 写着同一族渲染已保存的记忆行，两处结构一模一样。
+ *
+ * 为什么不留在 `MemoryRow.vue` 的 `<style scoped>` 里：scoped 只给**该组件模板里**的
+ * 元素加上属性选择器，面板自己也写着这一族类名时**一条规则都匹配不上**——不报错、
+ * build 全绿，只是那些文字整片退回默认值（14px 正文、段落自带的外边距），候选行也
+ * 失去 flex 布局。判据在 `ui/test/memoryPanel.test.js`（按规则所在的**文件**断言，
+ * 而不是按类名断言）。
+ *
+ * 一行一条规则、不是随手压行：门禁的 `codeLineCount` 只剥注释与空行，`}` 单独占一行
+ * 也照样记一行，八条规则分行写要多收二十多行。`diagnostics.css` 是同一个写法。
+ *
+ * 导入位置有要求：必须在 `theme.css` **之后**（`main.js` 里紧跟 `diagnostics.css`）。
+ * `.memory-row` 的 `align-items` 要压过 theme.css 的 `.page-row`，两者同为 (0,1,0)，
+ * 只能靠源码顺序决胜——`.page-row` 是 `center`，赢了的话标题与动作区的顶边就错开了。
+ */
+
+.memory-row { display: flex; gap: 12px; align-items: flex-start; }
+.memory-row__main { flex: 1; min-width: 0; }
+.memory-row__title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.memory-row__name { font-size: 15px; font-weight: 600; }
+.memory-row__body { margin: 4px 0 0; color: var(--text-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }
+.memory-row__meta { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.memory-row__actions { display: flex; gap: 4px; flex: 0 0 auto; }

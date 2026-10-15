@@ -82,15 +82,24 @@ onMounted(() => {
           保存长期有效的偏好与项目约定。打开右侧开关后，工作台的相关会话会带上这些内容；模型只能读取与提出候选，不能自己批准。
         </p>
       </div>
-      <el-switch
-        :model-value="enabled"
-        :loading="isLoading('memoryEnabled')"
-        :disabled="globalBusy"
-        active-text="使用已批准的记忆"
-        @change="setMemoryEnabled"
-      />
-      <!-- 生效语义写在这（E6）：**不许说「已生效」**——面板不知道本会话还剩几次注入。 -->
-      <p class="memory-row__meta">{{ switchEffectText(status) }}</p>
+      <!--
+        开关与生效说明包成一层。`.page-head` 是 `space-between` 的两端布局，另外六个
+        页面都只有一个 `.page-head__text` 子元素；此前这里是三个直接子级，说明那句
+        被当成「右侧动作」顶到页面右缘、只剩一个字宽竖着排三行，开关也被夹在中间。
+        包一层之后 `.page-head` 回到「一个子元素 + 一整行开关」的形状（这一层自己
+        `flex: 1 0 100%`，靠页头的 `flex-wrap` 落到第二行），说明跟在开关右边按整行宽排。
+      -->
+      <div class="memory-switch">
+        <el-switch
+          :model-value="enabled"
+          :loading="isLoading('memoryEnabled')"
+          :disabled="globalBusy"
+          active-text="使用已批准的记忆"
+          @change="setMemoryEnabled"
+        />
+        <!-- 生效语义写在这（E6）：**不许说「已生效」**——面板不知道本会话还剩几次注入。 -->
+        <p class="memory-note memory-switch__status">{{ switchEffectText(status) }}</p>
+      </div>
     </div>
 
     <el-alert
@@ -133,16 +142,6 @@ onMounted(() => {
           <div class="card-head">
             <h2>记忆（{{ list.length }}）</h2>
             <div class="memory-head__actions">
-              <el-radio-group
-                :model-value="memoryStore.listScope"
-                size="small"
-                :disabled="globalBusy"
-                @change="setListScope"
-              >
-                <el-radio value="all">全部</el-radio>
-                <el-radio value="project">本项目</el-radio>
-                <el-radio value="general">通用偏好</el-radio>
-              </el-radio-group>
               <el-button
                 text
                 :icon="Download"
@@ -172,6 +171,22 @@ onMounted(() => {
               </el-button>
             </div>
           </div>
+          <!--
+            筛选切的是下面这份清单的视图，此前它挤在卡头那一排：卡内可用宽 340px，
+            三档单选约 234px 加三枚文字按钮约 303px，于是「通用偏好」折到第二行、
+            按钮再折到第三行，三样东西各自换行。挪出来单独占一行后一行放得下（余量
+            约 100px）；卡头只剩标题与按钮两栏，放不下时按钮折到第二行、靠右对齐。
+          -->
+          <el-radio-group
+            :model-value="memoryStore.listScope"
+            size="small"
+            :disabled="globalBusy"
+            @change="setListScope"
+          >
+            <el-radio value="all">全部</el-radio>
+            <el-radio value="project">本项目</el-radio>
+            <el-radio value="general">通用偏好</el-radio>
+          </el-radio-group>
           <p v-if="memoryStore.lastExport" class="memory-hint">
             最近导出：{{ memoryStore.lastExport.path }}（{{ memoryStore.lastExport.memories }} 条记忆、{{
               memoryStore.lastExport.candidates
@@ -291,15 +306,17 @@ onMounted(() => {
               中文 4000 字约 12000 字节，用户按面板允许的长度写完会拿到「超过单条上限」，
               而面板一句提示都没有（记忆内核那次评审第 4 条）。改成按字节算的计数器 + 保存时拦住。
             -->
-            <el-input
-              v-model="draft.body"
-              type="textarea"
-              :rows="6"
-              placeholder="写清约定本身与适用条件；可能过期的事实请标出来"
-            />
-            <p class="memory-row__meta" :class="{ 'memory-over-limit': bodyBytes > MAX_BODY_BYTES }">
-              正文 {{ bodyBytes }} / {{ MAX_BODY_BYTES }} 字节（中文一个字 3 字节；超了就保存不了）
-            </p>
+            <div class="memory-body">
+              <el-input
+                v-model="draft.body"
+                type="textarea"
+                :rows="6"
+                placeholder="写清约定本身与适用条件；可能过期的事实请标出来"
+              />
+              <p class="memory-note" :class="{ 'memory-over-limit': bodyBytes > MAX_BODY_BYTES }">
+                正文 {{ bodyBytes }} / {{ MAX_BODY_BYTES }} 字节（中文一个字 3 字节；超了就保存不了）
+              </p>
+            </div>
             <el-input v-model="draft.keywordsText" placeholder="关键词，用逗号分隔（用于命中检索）" />
             <el-checkbox v-model="draft.pinned" :disabled="globalBusy">固定项（每次都带上）</el-checkbox>
             <!--
@@ -337,16 +354,14 @@ onMounted(() => {
           <p v-if="!recentInjections.length" class="memory-hint">
             还没有记录。在工作台聊一轮，这里会出现「哪一回合、哪个项目、注入了哪几条」。
           </p>
-          <div
+          <p
             v-for="(note, index) in recentInjections.slice(0, 5)"
             :key="`${note.at}-${index}`"
-            class="memory-row"
+            class="memory-note"
           >
-            <p class="memory-row__meta">
-              {{ shortTime(note.at) }} · {{ note.workspace || '未知项目' }} · {{ injectionText(note) }}
-            </p>
-          </div>
-          <p v-if="recentInjections.length > 5" class="memory-row__meta">
+            {{ shortTime(note.at) }} · {{ note.workspace || '未知项目' }} · {{ injectionText(note) }}
+          </p>
+          <p v-if="recentInjections.length > 5" class="memory-note">
             只列最近 5 次（共 {{ recentInjections.length }} 条记录）。
           </p>
         </div>
@@ -361,10 +376,14 @@ onMounted(() => {
             <strong>一条记忆都没提取出来时先看这里</strong>——失败那行会写明是哪一步
             （`read` / `model` / `parse` / `submit`）。完整留痕在「查看日志」的 memory-jobs 标签下。
           </p>
-          <p class="memory-row__meta">{{ jobsText }}</p>
-          <div v-for="(job, index) in recentJobs" :key="`${job.key?.session}-${job.key?.cursor}-${index}`" class="memory-row">
-            <p class="memory-row__meta">{{ jobLine(job) }}</p>
-          </div>
+          <p class="memory-note">{{ jobsText }}</p>
+          <p
+            v-for="(job, index) in recentJobs"
+            :key="`${job.key?.session}-${job.key?.cursor}-${index}`"
+            class="memory-note"
+          >
+            {{ jobLine(job) }}
+          </p>
         </div>
 
         <div class="card">
@@ -388,7 +407,7 @@ onMounted(() => {
             开关是关着的：本次不会注入任何记忆。
           </p>
           <p v-else class="memory-hint">还没有预览结果。</p>
-          <p class="memory-row__meta">
+          <p class="memory-note">
             记录文件：{{ status ? status.file : '读取中…' }}（{{ status ? status.accepted : 0 }} 条启用 /
             {{ status ? status.disabled : 0 }} 条停用）
           </p>
@@ -399,14 +418,34 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.memory-layout {
-  align-items: start;
+/* 页头第二行：开关与它的效果说明。`.page-head` 是 space-between 的 flex 行，把开关和
+   那段说明直接摆成它的第二、第三个子元素时，说明会被当成「右侧动作」，要么与开关并排
+   挤成一列窄字，要么整行与标题抢宽度。收进一个 `flex: 1 0 100%` 的块里让它独占一行。 */
+.memory-switch {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex: 1 0 100%;
+}
+
+.memory-switch__status {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .memory-form {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* 正文输入框与它的字节计数器是一件事：计数器贴着输入框（4px），与下一个字段之间走
+   表单的 10px。不留这一层时两条缝都是 10 + 4 = 14px，计数器读起来像「关键词」那一栏
+   的前置说明。 */
+.memory-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .memory-form__actions {
@@ -420,10 +459,12 @@ onMounted(() => {
   width: 100%;
 }
 
-/* 卡头两个动作按钮同排；`.card-head` 是 space-between，包一层才不会被标题挤开。 */
+/* 卡头放不下时标题与按钮折成两行，折下去的那一行靠右——`space-between` 只管同一行内
+   的两端，单独落一行时它会默认贴左。 */
 .memory-head__actions {
   display: flex;
   gap: 4px;
+  margin-left: auto;
 }
 
 .memory-project__title {
@@ -435,11 +476,30 @@ onMounted(() => {
   font-size: 12px;
 }
 
+/* 说明文字与卡里其它灰字同档；块之间的缝由 `.card` 的 gap 给，这里不再自带外边距。 */
 .memory-hint {
-  margin: 0 0 8px;
+  margin: 0;
   color: var(--text-secondary);
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+
+/* 卡内一整段灰字（字节计数器、最近注入、提取任务、记录文件）。此前这几处借的是
+   `memory-row__meta`——那是**行内次行**，自带 4px 上外边距，在 `.card` 的 10px gap
+   之上又叠一层，同一列里于是出现 10px 与 14px 两种缝。 */
+.memory-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* 正文超过字节上限时给一个字色信号：此时保存按钮已经禁用（`memory.js::canSaveDraft`），
+   而计数器原先只是一段 12px 的灰色小字，读起来像「一切正常」。选 `--danger-strong`
+   而不是 `--danger`：12px 正文的对比度门槛是 4.5:1，浅色下 `--danger` 压在白卡上只有
+   3.68:1，`--danger-strong` 是 5.14:1（暗色那两档是 5.53 与 7 上下）。 */
+.memory-note.memory-over-limit {
+  color: var(--danger-strong);
 }
 
 .memory-preview {

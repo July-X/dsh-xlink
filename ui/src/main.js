@@ -81,6 +81,10 @@ import 'element-plus/theme-chalk/dark/css-vars.css';
 import './theme.css';
 // 诊断层样式独立于 theme.css：后者是反棘轮文件（只许越来越小）。
 import './diagnostics/diagnostics.css';
+// 记忆页的列表行样式同理独立成文件：面板与 `MemoryRow.vue` 写着同一族类名，样式留在
+// 任一方的 scoped 块里都只对那一方生效（另一方静默退回默认值）。必须排在 theme.css
+// 之后——`.memory-row` 要靠源码顺序压过 theme.css 的 `.page-row`。
+import './memory/memory.css';
 // 插件层曾有一份 plugins.css，只收一条 tooltip 限宽规则——那条规则与
 // theme.css 的 `.el-popper[role='tooltip']` 逐条同值（且少了 overflow-wrap），
 // 特异度还更低，等于什么也没做。已删：tooltip 浮层的宽度与换行现在只有一处
