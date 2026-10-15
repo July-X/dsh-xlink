@@ -1837,6 +1837,10 @@ test('徽标只画这个会话最近的那一条：环形缓冲是跨会话的',
   assert.equal(badge.props['data-xlink-memory-badge'], 'recent-injections');
   assert.equal(badge.children[0], '记忆 2', '数的是最近那一条的条数，不是这个会话的历史累计');
   const title = badge.props.title;
+  // 悬停文案不靠换行分段：`title` 提示在 WebView2（Chromium）与 WKWebView 上是否
+  // 渲染成多行并不一致，而两个平台都得支持——押其中一边就是给另一个埋刺。
+  assert.equal(title.includes('\n'), false, '悬停文案里不许用换行分段');
+  assert.ok(title.includes(' · '), '用 · 连接，两种渲染都读得通');
   assert.ok(title.includes(new Date(notes[1].at).toLocaleTimeString()), '悬停要看得见注入时间');
   assert.ok(title.includes('用中文回复') && title.includes('npm run check 才是门禁'), '要列的是**标题**');
   assert.ok(title.includes('本工作区'), '工作区在时要说清读的是哪一层');
