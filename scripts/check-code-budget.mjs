@@ -661,7 +661,13 @@ const FILE_BUDGETS = {
   //   ③ 两种入口的差别**只有一条**（临时文件用什么权限创建），放在一处才看得见。
   //      需要私有权限的调用方走 `atomic_write_private`（凭据），要跟随 umask 的
   //      走 `atomic_write`（用户自己也偶尔手改的状态文件）。
-  'src-tauri/src/shell/atomic_write.rs': 93,
+  // 93 → 127（2026-10-15）：**分段计时**，为的是让这条共用原语在热路径上可观测。
+  // 它被凭据、`settings.json`、用量账目共用，而成本几乎全在两次 fsync 上——此前
+  // 「43ms 里 40ms 是 fsync」这个结论只能靠一次性的临时基准得出，下次再怀疑时
+  // 又得重写一遍。加的是 `WriteTimings`（四段）+ `atomic_write_timed` 这条缝 +
+  // `as_fields`（让调用点一行写完四段，`usage/local.rs` 的预算顶在反棘轮线上，
+  // 这种逐字段登记不该由它付账）。不计时的那两条入口签名与行为不变。
+  'src-tauri/src/shell/atomic_write.rs': 127,
   // 带超时的流式子进程输出捕获。**为什么不复用 `process::run_with_progress`**：
   // 那条是给「pnpm 装包 + 跑原生模块构建」设计的，它强制两件 git clone 都不想要的
   // 事——把输出轮转落进 `logs/`（而 clone 的输出紧接着就被 on_progress 收进诊断
@@ -3076,7 +3082,20 @@ const FILE_BUDGETS = {
 // 两处空态/按钮判据、以及三处死代码的删除。软上限，规则明说它不做「只许下调」。
 // 53000 → 53050（2026-10-15，E6）：精确的「处理中」——壳侧两个进程内时刻 + 纯函数判据 +
 // `MemoryStatus.effect_pending` + 面板文案。软上限，规则明说它不做「只许下调」。
-const TOTAL_BUDGET = 53250;
+// 53250 → 53350（2026-10-15，perf 埋点补全）：**没有一处新功能，全部是观测**。
+// 本轮从 71,318 条 perf 日志里定位到问题后发现「下次还会瞎」的三处，逐条补上分段：
+// · `usage_scan` 的 scan 段拆成 walk / reconcile / decode 三段 + 规模计数
+//   （`session_dirs` / `files`）——此前只有一个 `scan_us`，首扫那 427ms 花在解码
+//   还是遍历完全看不出来；
+// · `atomic_write` 暴露 `WriteTimings`（serialize / 数据 fsync / rename / 目录 fsync
+//   四段）——它是凭据、`settings.json`、用量账目共用的落盘原语，此前在热路径上
+//   零观测；43ms 里 40ms 是两次 fsync 这个结论此前只能靠临时基准得出；
+// · `variant_cache` 记命中 / 未命中 / 剪枝——刚建的缓存一个数字都不出，
+//   「命中率跌到 0」只能靠再挂一次真机基准才发现；
+// · perf 每行自带 `shell=<版本> build=<debug|release>`，否则新旧数据无法归因。
+// 净增 78 行，全是读一次计数器或加一次 `Instant::now()`，采样关闭时零开销
+// （沿用 `PerfSample` 既有的 `enabled` 短路）。软上限，规则明说它不做「只许下调」。
+const TOTAL_BUDGET = 53350;
 // 53050 → 53250（2026-10-15，schema 变更窗口的第一批：C4 来源由单对象改成列表）。
 // 净增 +53 行，落在记忆这一族里，全部有账：
 //   · **新文件** `memory/sources.rs` 46 行（已登记）：旧 `source` 与新 `sources` 在**读侧**

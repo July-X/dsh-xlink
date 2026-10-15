@@ -95,14 +95,63 @@ impl PerfSample {
         value
     }
 
+    /// 记一个**已经掐好**的耗时（单位微秒）。给那些掐表在别处、跨一整个循环
+    /// 没法包成 [`Self::measure`] 闭包的阶段用：分段计时、以及 `atomic_write`
+    /// 那三段自己量出来的 fsync。
+    pub(crate) fn record_micros(&mut self, field: &'static str, micros: u128) {
+        if self.enabled {
+            self.fields.push((field, FieldValue::Micros(micros)));
+        }
+    }
+
+    /// 一次记一整组掐好的耗时。由被观测方（[`crate::shell::atomic_write::WriteTimings`]）
+    /// 自己吐出 `(字段名, 微秒)` 对——调用点一行写完，不必把四段拆成四行 `if`。
+    pub(crate) fn record_all(&mut self, fields: [(&'static str, u128); 4]) {
+        if self.enabled {
+            for (field, micros) in fields {
+                self.fields.push((field, FieldValue::Micros(micros)));
+            }
+        }
+    }
+
+    /// 采样关闭时构造一个「强制开启」的采样器，供单测断言记了哪些字段。
+    /// 单测里 `new()` 会去读 `DSH_XLINK_PERF` 与版本默认值——那让「本轮记了
+    /// 哪些分段」这条断言没法在测试里成立，而**字段名悄悄少一个**正是这套
+    /// 埋点最可能的腐化方式（改了调用点，忘了同步日志解析的人）。
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        Self {
+            enabled: true,
+            name: "test",
+            source: "test",
+            started: Some(Instant::now()),
+            fields: Vec::new(),
+        }
+    }
+
+    /// 本轮记下的字段名（按记录顺序）。供上面那条单测断言覆盖面。
+    #[cfg(test)]
+    pub(crate) fn captured_fields(&self) -> Vec<&'static str> {
+        self.fields.iter().map(|(name, _)| *name).collect()
+    }
+
     pub(crate) fn finish(self) {
         let Some(started) = self.started else {
             return;
         };
         let mut line = format!(
-            "perf={} source={} total_us={}",
+            "perf={} source={} shell={} build={} total_us={}",
             self.name,
             self.source,
+            // 每条采样自带版本与构建类型，否则「这条 39ms 是修复前还是修复后」
+            // 只能靠文件名日期猜。`CARGO_PKG_VERSION` 是编译期常量、`cfg!` 同理，
+            // 两者的运行期成本都是零。
+            env!("CARGO_PKG_VERSION"),
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            },
             started.elapsed().as_micros()
         );
         for (field, value) in self.fields {

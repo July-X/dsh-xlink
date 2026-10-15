@@ -19,8 +19,50 @@ static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// 和替换动作之间不会暴露截断的 JSON；同目录临时文件也确保 rename 不会
 /// 跨文件系统。Unix 直接使用 rename 的原子替换语义，Windows 在目标已存
 /// 在时先移除旧文件再 rename，至少不会让读者看到半写入内容。
+///
+/// 需要分段耗时走 [`atomic_write_timed`]；这条入口只关心成败。
 pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
-    atomic_write_inner(path, contents, None)
+    atomic_write_timed(path, contents).map(|_| ())
+}
+
+/// [`atomic_write`] 的分段计时变体。
+///
+/// **为什么要这条缝**：这个原语被凭据、`settings.json`、用量账目共用，而它的
+/// 成本**几乎全在两次 fsync 上**——2026-10-15 实测 141,858 字节的用量账目落盘
+/// 43ms 里，`write_all + sync_all` 20.35ms、目录 `sync_all` 19.43ms，
+/// `rename` 只 0.50ms。不分段就只能得出「慢」这个没法行动的结论。
+#[derive(Default, Clone, Copy)]
+pub(crate) struct WriteTimings {
+    /// 序列化成本。**由调用方填**（[`crate::shell::state::save_timed`] 在
+    /// 进入本原语之前自己掐的那段），因为序列化不属于「写临时文件再替换」
+    /// 这件事——单列出来，免得和 fsync 的时间混在一处对不上账。
+    pub serialize_us: u128,
+    /// 写临时文件 + `sync_all`（数据 fsync）。
+    pub write_sync_us: u128,
+    /// `rename` 换正式路径。
+    pub rename_us: u128,
+    /// 父目录 `sync_all`（让 rename 本身落盘）。
+    pub dir_sync_us: u128,
+}
+
+impl WriteTimings {
+    /// 吐成 perf 采样要的 `(字段名, 微秒)` 四元组。**由被观测方自己组装**
+    /// 而不是让调用方写四行 `record_micros`——`usage/local.rs` 的预算顶在
+    /// 反棘轮线上，这种逐字段登记不该由它付账。
+    pub(crate) fn as_fields(&self) -> [(&'static str, u128); 4] {
+        [
+            ("save_serialize", self.serialize_us),
+            ("save_fsync", self.write_sync_us),
+            ("save_rename", self.rename_us),
+            ("save_dirsync", self.dir_sync_us),
+        ]
+    }
+}
+
+pub(crate) fn atomic_write_timed(path: &Path, contents: &[u8]) -> io::Result<WriteTimings> {
+    let mut timings = WriteTimings::default();
+    atomic_write_inner(path, contents, None, &mut timings)?;
+    Ok(timings)
 }
 
 /// 与 [`atomic_write`] 相同，但 Unix 上临时文件**一创建出来**就是 0600，
@@ -35,10 +77,15 @@ pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
 /// Windows 上是 no-op：用户 profile 下的默认 ACL 即用户私有，写入路径不提权
 /// （见 `openai/vault.rs` 里同一条设计说明）。
 pub(crate) fn atomic_write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
-    atomic_write_inner(path, contents, Some(0o600))
+    atomic_write_inner(path, contents, Some(0o600), &mut WriteTimings::default())
 }
 
-fn atomic_write_inner(path: &Path, contents: &[u8], private: Option<u32>) -> io::Result<()> {
+fn atomic_write_inner(
+    path: &Path,
+    contents: &[u8],
+    private: Option<u32>,
+    timings: &mut WriteTimings,
+) -> io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let file_name = path
@@ -69,11 +116,18 @@ fn atomic_write_inner(path: &Path, contents: &[u8], private: Option<u32>) -> io:
         restrict_temp_file(&file, private)?;
 
         let result = (|| -> io::Result<()> {
+            let started = std::time::Instant::now();
             file.write_all(contents)?;
             file.sync_all()?;
+            timings.write_sync_us = started.elapsed().as_micros();
             drop(file);
+            let started = std::time::Instant::now();
             replace_file(&temporary, path)?;
-            sync_parent_directory(parent)
+            timings.rename_us = started.elapsed().as_micros();
+            let started = std::time::Instant::now();
+            sync_parent_directory(parent)?;
+            timings.dir_sync_us = started.elapsed().as_micros();
+            Ok(())
         })();
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
