@@ -39,7 +39,7 @@ import {
   applyStep,
   isCompactionDone,
   scopeForWorkspace,
-  workingDirectory,
+  memoryScope,
   beginStep,
   emptyExtractState,
   EXTRACTOR_VERSION,
@@ -447,11 +447,15 @@ function apply(ctx) {
         const decision = await next();
         try {
           if (!credentials) return decision;
-          const workspace = workingDirectory(ctx, subject ?? agent);
+          // **子智能体的读范围按工作区判等**（设计 §5，2026-10-15 拍板）：算出来的是「目录 +
+          // 工作区 id」，两者一起进缓存与检索。**提取提交的坐标也取自这份缓存**
+          // （`box.state.workspace`，见 `runDueExtraction` 的调用点），所以
+          // 「候选的范围不会超出这一步注入的范围」是同一条规则的两个出口。
+          const scope = await memoryScope(ctx, workspaceRegistry, subject ?? agent);
           // **换目录立刻生效，哪怕预算已经用完**（`beginStep` 里写回了状态）。
           // 只在「能重新检索」的分支里写回时，「预算用满 + 换目录」会让上一个项目的
           // 正文一路留在这个会话里——那正是这条要挡的事，而它只在接线处看得见。
-          const step = beginStep(box.state, workspace, turn);
+          const step = beginStep(box.state, scope.workspace, turn);
           box.state = step.state;
           // 两条路都取一次检索，区别只在**结果怎么用**：
           // · 回合预算内（`step.refresh`）：按这一步的消息检索，取到什么就用什么；
@@ -460,7 +464,6 @@ function apply(ctx) {
           //   正文必然不同，拿「文本变了」当判据会把回合预算整个绕过去。
           const probe = !step.refresh;
           if (probe && !shouldProbeLibrary(box.state, turn)) return decision;
-          const workspaceId = await resolveWorkspaceId(workspaceRegistry, workspace);
           const result = await callMemory({
             credentials,
             route: 'context',
@@ -468,8 +471,8 @@ function apply(ctx) {
               // `userText` 已按 MAX_QUERY_CHARS 截尾：查询串超 8 KB 时桥会直接
               // 掐断连接且不回一个字，那一整个回合就会静默地没有记忆。
               q: userText(messages),
-              workspace_id: workspaceId,
-              workspace,
+              workspace_id: scope.workspaceId,
+              workspace: scope.workspace,
             },
           });
           // 「取回来的结果怎么用」整条判断在 `applyStep` 里（纯函数、有测试）：
@@ -502,7 +505,7 @@ function apply(ctx) {
               route: 'note',
               params: {
                 session: String((subject ?? agent)?.session?.id ?? ''),
-                workspace,
+                workspace: scope.workspace,
                 ids: (result.value?.hits ?? []).map((hit) => hit.id).filter(Boolean).join(','),
                 enabled: result.value?.enabled ? '1' : '0',
               },
@@ -594,13 +597,13 @@ function registerTools(ctx, credentials) {
       async execute(args, exec) {
         if (!exec.agent) throw new Error('memory_search 需要一个会话：无 agent 的调用不能读项目记忆');
         if (!credentials) throw new Error('记忆桥不可用：本机壳没有为这个内核起回环桥');
-        const workspace = workingDirectory(ctx, exec.agent);
+        const { workspace, workspaceId } = await memoryScope(ctx, workspaceRegistry, exec.agent);
         const result = await callMemory({
           credentials,
           route: 'context',
           params: {
             q: String(args.query ?? ''),
-            workspace_id: await resolveWorkspaceId(workspaceRegistry, workspace),
+            workspace_id: workspaceId,
             workspace,
           },
         });
@@ -664,7 +667,7 @@ function registerTools(ctx, credentials) {
       async execute(args, exec) {
         if (!exec.agent) throw new Error('memory_read 需要一个会话：无 agent 的调用不能读项目记忆');
         if (!credentials) throw new Error('记忆桥不可用：本机壳没有为这个内核起回环桥');
-        const workspace = workingDirectory(ctx, exec.agent);
+        const { workspace, workspaceId } = await memoryScope(ctx, workspaceRegistry, exec.agent);
         const result = await callMemory({
           credentials,
           route: 'read',
@@ -673,7 +676,7 @@ function registerTools(ctx, credentials) {
             // 桥按这两个坐标校验归属与状态：**按 id 读也要过项目与「是否停用」两道
             // 门**，否则在 B 项目里拿着 A 项目的 id 就能读出来，而用户在面板上按的
             // 「停用」也会被绕过（注入表头里有 id，会话历史里一直留着）。
-            workspace_id: await resolveWorkspaceId(workspaceRegistry, workspace),
+            workspace_id: workspaceId,
             workspace,
           },
         });
@@ -746,7 +749,7 @@ function registerTools(ctx, credentials) {
       async execute(args, exec) {
         if (!exec.agent) throw new Error('memory_propose 需要一个会话：无 agent 的调用不能写记忆');
         if (!credentials) throw new Error('记忆桥不可用：本机壳没有为这个内核起回环桥');
-        const workspace = workingDirectory(ctx, exec.agent);
+        const { workspace, workspaceId } = await memoryScope(ctx, workspaceRegistry, exec.agent);
         const result = await callMemory({
           credentials,
           route: 'propose',
@@ -755,7 +758,7 @@ function registerTools(ctx, credentials) {
             body: String(args.body ?? ''),
             scope: String(args.scope ?? ''),
             workspace,
-            workspace_id: await resolveWorkspaceId(workspaceRegistry, workspace),
+            workspace_id: workspaceId,
             session: String(exec.agent.session?.id ?? ''),
           },
         });
