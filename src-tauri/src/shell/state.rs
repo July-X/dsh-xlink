@@ -79,14 +79,31 @@ pub fn integrity_warning<T: DeserializeOwned>(path: &Path, ctx: StateCtx) -> Opt
 /// （同目录临时文件 + `sync_all` + rename）。进程中断时读者只会看到旧的完整
 /// 文件或新的完整文件，不会读到截断的 JSON。
 pub fn save<T: Serialize>(path: &Path, value: &T, ctx: StateCtx) -> Result<(), AppError> {
+    save_timed(path, value, ctx).map(|_| ())
+}
+
+/// [`save`] 的分段计时变体：返回「序列化」与「落盘」各花多久，落盘再拆成
+/// 数据 fsync / rename / 目录 fsync。给用量账目那条热路径用——它是被
+/// [`crate::usage::local::refresh_doc`] 反复调的那个 `save`，其余调用方
+/// 继续用 [`save`]。
+pub fn save_timed<T: Serialize>(
+    path: &Path,
+    value: &T,
+    ctx: StateCtx,
+) -> Result<crate::shell::atomic_write::WriteTimings, AppError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| (ctx.kind)(format!("无法创建目录 {}：{e}", parent.display())))?;
     }
+    let started = std::time::Instant::now();
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| (ctx.kind)(format!("序列化状态失败：{e}")))?;
-    atomic_write(path, format!("{text}\n").as_bytes())
-        .map_err(|e| (ctx.kind)(format!("无法写入 {}：{e}", path.display())))
+    let serialize_us = started.elapsed().as_micros();
+    let mut timings =
+        crate::shell::atomic_write::atomic_write_timed(path, format!("{text}\n").as_bytes())
+            .map_err(|e| (ctx.kind)(format!("无法写入 {}：{e}", path.display())))?;
+    timings.serialize_us = serialize_us;
+    Ok(timings)
 }
 
 /// 写侧的"尽力而为"变体：只记录失败，不打断调用方。

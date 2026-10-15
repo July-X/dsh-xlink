@@ -320,7 +320,9 @@ fn refresh_doc(
         return Ok(());
     }
     let before = doc.files.clone();
-    let planned = perf.measure("scan", || scan_in(doc, sessions_root, now_ms));
+    let started = perf.start();
+    let planned = scan_in(doc, sessions_root, now_ms, perf);
+    perf.end("scan", started);
     // planned = 规划段判定「有新帧要解」的文件数：0 说明这轮只是空转对账。
     perf.count("items", planned as u64);
     doc.last_scanned_at_ms = process::epoch_millis();
@@ -333,7 +335,13 @@ fn refresh_doc(
             || now_ms.saturating_sub(last_save_ms_for(instance.0, instance.1)) >= SAVE_DEBOUNCE_MS);
     perf.count("saved", u64::from(persist));
     if persist {
-        perf.measure("save", || shell::state::save(state_path, doc, usage_ctx()))?;
+        // save 段拆成四段记：这份账目被反复重写，而它的成本几乎全在两次
+        // fsync 上（见 `atomic_write::WriteTimings` 的说明）。只有一个
+        // `save_us` 的话，下次再看到 40ms 仍然不知道该不该动 fsync。
+        let started = perf.start();
+        let timings = shell::state::save_timed(state_path, doc, usage_ctx())?;
+        perf.end("save", started);
+        perf.record_all(timings.as_fields());
         remember_save_ms(instance.0, instance.1, doc.last_scanned_at_ms);
     }
     remember_scan_ms(instance.0, instance.1, doc.last_scanned_at_ms);
@@ -352,13 +360,23 @@ fn refresh_doc(
 /// 「哪个文件该读」交给 [`variant_cache`]：2026-10-15 实测，那一步要为每个
 /// 会话目录各开一次 `read_dir`，308 个目录热缓存下就是 30ms（冷 255ms），
 /// 而同样数量的 `metadata` 只要 3.7ms——目录 mtime 闸省掉的就是前者。
-fn scan_in(doc: &mut UsageStateDoc, root: &Path, now_ms: u64) -> usize {
+fn scan_in(
+    doc: &mut UsageStateDoc,
+    root: &Path,
+    now_ms: u64,
+    perf: &mut crate::diagnostics::perf::PerfSample,
+) -> usize {
     let cutoff = cutoff_date_string(now_ms);
     let mut seen = BTreeSet::new();
     let mut items: Vec<ScanItem> = Vec::new();
+    let mut found: Vec<(String, PathBuf)> = Vec::new();
     let mut cache = variant_cache::variant_cache()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // 三段各记各的耗时：2026-10-15 那次定位花的时间几乎都在这里——
+    // 一个 `scan_us` 总数只告诉你「慢」，不告诉你慢在枚举、对账还是解码。
+    // 三个阶段的规模也一并记下，否则「12ms」没法解释。
+    let started = std::time::Instant::now();
     let (root_cache, gen) = variant_cache::begin_round(&mut cache, root);
     if let Ok(workspaces) = fs::read_dir(root) {
         for ws in workspaces.flatten() {
@@ -379,17 +397,30 @@ fn scan_in(doc: &mut UsageStateDoc, root: &Path, now_ms: u64) -> usize {
                         .unwrap_or_default(),
                 );
                 seen.insert(key.clone());
-                plan_item(doc, &key, &file, now_ms, &cutoff, &mut items);
+                found.push((key, file));
             }
         }
     }
     // 会话目录被删掉后本轮不会再 visit 到它，它的条目必须跟着收（见
     // variant_cache::end_round 的理由：键是绝对路径，不收就无界增长）。
-    variant_cache::end_round(root_cache, gen);
+    let stats = variant_cache::end_round(root_cache, gen);
+    perf.record_micros("scan_walk", started.elapsed().as_micros());
+    perf.count("files", found.len() as u64);
+    perf.count("cache_hits", stats.hits);
+    perf.count("cache_misses", stats.misses);
+    perf.count("cache_pruned", stats.pruned);
+
+    let started = std::time::Instant::now();
+    for (key, file) in &found {
+        plan_item(doc, key, file, now_ms, &cutoff, &mut items);
+    }
+    perf.record_micros("scan_reconcile", started.elapsed().as_micros());
+    let started = std::time::Instant::now();
     let planned = items.len();
     for outcome in scan_parallel(items) {
         merge_outcome(doc, outcome);
     }
+    perf.record_micros("scan_decode", started.elapsed().as_micros());
     // 会话目录被删 / 整个实例清空 → 账目随之消失，汇总自动回落。
     doc.files.retain(|key, _| seen.contains(key));
     prune_window(doc, &cutoff);
@@ -920,6 +951,7 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostics::perf::PerfSample;
 
     /// 手工构造单帧 zstd 裸块流（Raw block 不压缩，规范固定可静态编码）：
     /// magic + FHD(0x00) + Window_Descriptor(0x00 → 1KiB 窗口，满足 ruzstd
@@ -1056,7 +1088,7 @@ mod tests {
 
         let mut doc = UsageStateDoc::default();
         let now = process::epoch_millis();
-        scan_in(&mut doc, &dir, now);
+        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
         let key = "workdir/session-x/session.jsonl.zstd";
         assert_eq!(doc.files.get(key).unwrap().offset, first.len() as u64);
 
@@ -1064,13 +1096,13 @@ mod tests {
         let mut grown = first.clone();
         grown.extend_from_slice(&raw_frame(b"{\"type\":\"assistant/message\"}\n", true));
         fs::write(&file, &grown).unwrap();
-        scan_in(&mut doc, &dir, now);
+        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
         assert_eq!(doc.files.get(key).unwrap().offset, grown.len() as u64);
 
         // 截断重写：账目作废，offset 归零后重扫到新长度。
         let shrunk = raw_frame(b"{\"type\":\"assistant/message\"}\n", true);
         fs::write(&file, &shrunk).unwrap();
-        scan_in(&mut doc, &dir, now);
+        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
         let entry = doc.files.get(key).unwrap();
         assert_eq!(
             entry.offset,
@@ -1080,7 +1112,7 @@ mod tests {
 
         // 会话目录整体消失：账目随之移除。
         fs::remove_file(&file).unwrap();
-        scan_in(&mut doc, &dir, now);
+        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
         assert!(!doc.files.contains_key(key), "文件消失后账目必须移除");
         fs::remove_dir_all(&dir).ok();
     }
@@ -1100,7 +1132,7 @@ mod tests {
 
         let mut doc = UsageStateDoc::default();
         let now = process::epoch_millis();
-        scan_in(&mut doc, &dir, now);
+        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
         assert!(
             doc.files
                 .contains_key("workdir/session-x/session.jsonl.zstd"),
@@ -1114,7 +1146,7 @@ mod tests {
 
         // 内核升级：同一目录里多出 v2。目录条目变了 ⇒ 目录 mtime 必变。
         fs::write(session.join("session.v2.jsonl.zstd"), &frame).unwrap();
-        scan_in(&mut doc, &dir, now);
+        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
         assert!(
             doc.files
                 .contains_key("workdir/session-x/session.v2.jsonl.zstd"),
@@ -1143,7 +1175,7 @@ mod tests {
 
         let mut doc = UsageStateDoc::default();
         let now = process::epoch_millis();
-        scan_in(&mut doc, &dir, now);
+        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
         let key = "workdir/session-x/session.jsonl.zstd";
         assert_eq!(doc.files.get(key).unwrap().offset, first.len() as u64);
 
@@ -1154,7 +1186,7 @@ mod tests {
         grown.extend_from_slice(&raw_frame(b"{\"type\":\"assistant/message\"}\n", true));
         fs::write(&file, &grown).unwrap();
 
-        scan_in(&mut doc, &dir, now);
+        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
         assert_eq!(
             doc.files.get(key).unwrap().offset,
             grown.len() as u64,
@@ -1183,7 +1215,7 @@ mod tests {
         let mut times: Vec<f64> = Vec::new();
         for i in 0..12 {
             let started = std::time::Instant::now();
-            scan_in(&mut doc, &root, now);
+            scan_in(&mut doc, &root, now, &mut PerfSample::disabled());
             let ms = started.elapsed().as_secs_f64() * 1e3;
             if i > 0 {
                 times.push(ms);
@@ -1214,7 +1246,7 @@ mod tests {
 
         let mut doc = UsageStateDoc::default();
         let now = process::epoch_millis();
-        scan_in(&mut doc, &dir, now);
+        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
         let key = "workdir/session-x/session.jsonl.zstd";
         let entry = doc.files.get(key).expect("文件应建立账目");
         let size = fs::metadata(&file).unwrap().len();
@@ -1489,6 +1521,124 @@ mod tests {
             doc2.files.get(key).map(|e| e.offset),
             Some(grown.len() as u64),
             "账目本身仍要推进到最新——跳过落盘不等于丢账"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 埋点覆盖面：这一轮扫描 + 落盘**必须**记下哪些分段与规模。
+    ///
+    /// 这不是「顺手加的测试」——它是这套埋点唯一的防线。字段名少一个，下一次
+    /// 排查就又得回到「只有总数、只能再挂一次真机基准」的状态，而那种退化在
+    /// 门禁里完全看不出来（perf 行是运行期数据，静态判据扫不到）。
+    /// 反向验：删掉下面列表里的任意一个字段名，本条必红。
+    #[test]
+    fn a_scan_records_every_phase_and_scale_it_should() {
+        let dir = tempfile_fresh("usage-perf-fields-");
+        let root = dir.join("sessions");
+        let ws = root.join("workdir");
+        let file_dir = ws.join("session-x");
+        fs::create_dir_all(&file_dir).unwrap();
+        let file = file_dir.join("session.jsonl.zstd");
+        let state = dir.join("state.json");
+        fs::write(
+            &file,
+            raw_frame(b"{\"type\":\"assistant/message\"}\n", true),
+        )
+        .unwrap();
+        let now = process::epoch_millis();
+
+        // 首扫：变的是磁盘上的账目 ⇒ 会落盘 ⇒ 四段 save 字段也该出现。
+        let mut perf = PerfSample::for_tests();
+        refresh_doc(
+            &mut UsageStateDoc::default(),
+            &state,
+            &root,
+            ("t", "perf-fields"),
+            true,
+            now,
+            &mut perf,
+        )
+        .unwrap();
+        let captured = perf.captured_fields();
+        for field in [
+            // 扫描三段 + 规模：缺任何一个，「慢在哪」就退回不可回答
+            "scan",
+            "scan_walk",
+            "scan_reconcile",
+            "scan_decode",
+            "files",
+            "cache_hits",
+            "cache_misses",
+            "cache_pruned",
+            // 落盘四段：这个原语被凭据与设置共用，此前零观测
+            "save",
+            "save_serialize",
+            "save_fsync",
+            "save_rename",
+            "save_dirsync",
+            "items",
+            "saved",
+        ] {
+            assert!(
+                captured.contains(&field),
+                "首扫的 perf 行缺字段 `{field}`；实际记到 {captured:?}"
+            );
+        }
+        // `load` / `derive` 是 `usage_view` 层记的（读账目文档、派生汇总视图），
+        // 不经 `refresh_doc`，所以不在上面那个列表里。要钉它们得整条
+        // `usage_view` 跑一遍，而那会解析真实实例路径——测试不该碰用户数据。
+        assert!(
+            !captured.contains(&"load") && !captured.contains(&"derive"),
+            "`load` / `derive` 属于 `usage_view`，不该由 `refresh_doc` 记：{captured:?}"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 空转轮次只记扫描三段与规模，**不记 save 四段**——落盘没发生，记下来
+    /// 的四段就全是 0，混进聚合会把 p50 拉偏。
+    #[test]
+    fn a_no_op_scan_records_no_save_phases() {
+        let dir = tempfile_fresh("usage-perf-noop-");
+        let root = dir.join("sessions");
+        let ws = root.join("workdir");
+        let file_dir = ws.join("session-x");
+        fs::create_dir_all(&file_dir).unwrap();
+        fs::write(
+            file_dir.join("session.jsonl.zstd"),
+            raw_frame(b"{\"type\":\"assistant/message\"}\n", true),
+        )
+        .unwrap();
+        let state = dir.join("state.json");
+        let now = process::epoch_millis();
+        let mut doc = UsageStateDoc::default();
+        refresh_doc(
+            &mut doc,
+            &state,
+            &root,
+            ("t", "perf-noop"),
+            true,
+            now,
+            &mut PerfSample::for_tests(),
+        )
+        .unwrap();
+
+        // 第二轮：账目没变 ⇒ 不落盘。
+        let mut perf = PerfSample::for_tests();
+        refresh_doc(
+            &mut doc,
+            &state,
+            &root,
+            ("t", "perf-noop"),
+            true,
+            now,
+            &mut perf,
+        )
+        .unwrap();
+        let captured = perf.captured_fields();
+        assert!(captured.contains(&"scan_walk"), "空转也要记扫描三段");
+        assert!(
+            !captured.contains(&"save_fsync"),
+            "没落盘就不该出现 save 分段，否则聚合里混着一堆 0：{captured:?}"
         );
         fs::remove_dir_all(&dir).ok();
     }

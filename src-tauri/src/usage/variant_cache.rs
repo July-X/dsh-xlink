@@ -73,6 +73,22 @@ pub(super) struct RootVariants {
     /// [`end_round`] 三条缝碰这张表，直接开 `pub(super)` 会让
     /// `CachedVariant`（只在本模块内有意义）的可见性被迫跟着放大。
     entries: HashMap<PathBuf, CachedVariant>,
+    /// 本轮计数器。**不记下来就没法判断缓存是不是废了**：2026-10-15 之前
+    /// 这个缓存连一个数字都不出，于是「命中率跌到 0」这件事只能靠再写
+    /// 一遍基准才能发现——而基准得挂一台真机、跑一轮全量。
+    hits: u64,
+    misses: u64,
+}
+
+/// 一轮扫描的缓存统计，供 perf 采样记进日志。
+#[derive(Default)]
+pub(super) struct RoundStats {
+    /// mtime 未变、复用上一轮答案的目录数。
+    pub hits: u64,
+    /// 首次见到或 mtime 变了、真的 `read_dir` 过的目录数。
+    pub misses: u64,
+    /// 本轮剪掉的条目数（会话目录已被删除）。
+    pub pruned: u64,
 }
 
 static VARIANT_CACHE: OnceLock<Mutex<VariantCache>> = OnceLock::new();
@@ -96,6 +112,8 @@ pub(super) fn begin_round<'a>(
 ) -> (&'a mut RootVariants, u64) {
     let entry = cache.roots.entry(root.to_path_buf()).or_default();
     entry.gen += 1;
+    entry.hits = 0;
+    entry.misses = 0;
     let gen = entry.gen;
     (entry, gen)
 }
@@ -122,6 +140,7 @@ pub(super) fn resolve_variant(dir: &Path, cache: &mut RootVariants, gen: u64) ->
     if let Some(entry) = cache.entries.get_mut(dir) {
         entry.gen = gen;
         if entry.mtime_ns == mtime_ns {
+            cache.hits += 1;
             return Some(entry.variant.clone());
         }
     }
@@ -129,6 +148,7 @@ pub(super) fn resolve_variant(dir: &Path, cache: &mut RootVariants, gen: u64) ->
     // —— `newest_variant` 返回 None 既可能是目录里没有会话文件，也可能是
     // `read_dir` 失败，把后者当成「确实没有」缓存住会让一个会话永久失踪。
     let variant = newest_variant(dir)?;
+    cache.misses += 1;
     cache.entries.insert(
         dir.to_path_buf(),
         CachedVariant {
@@ -142,9 +162,16 @@ pub(super) fn resolve_variant(dir: &Path, cache: &mut RootVariants, gen: u64) ->
 
 /// 本轮结束后剪掉没再被访问到的条目：对应的会话目录已经被删除，
 /// 不收的话长期运行的壳会为早就消失的目录一直留着条目（键是绝对路径，
-/// 无界增长）。
-pub(super) fn end_round(cache: &mut RootVariants, gen: u64) {
+/// 无界增长）。返回本轮统计供调用方记进 perf 采样。
+pub(super) fn end_round(cache: &mut RootVariants, gen: u64) -> RoundStats {
+    let before = cache.entries.len() as u64;
     cache.entries.retain(|_, entry| entry.gen == gen);
+    let after = cache.entries.len() as u64;
+    RoundStats {
+        hits: cache.hits,
+        misses: cache.misses,
+        pruned: before.saturating_sub(after),
+    }
 }
 
 #[cfg(test)]
