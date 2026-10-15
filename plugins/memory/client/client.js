@@ -102,6 +102,25 @@ window.__ModuleLoader__.load({
       return Number.isNaN(parsed.getTime()) ? String(at ?? "") : parsed.toLocaleTimeString();
     }
 
+    /** 把任意实参变成一行能贴进控制台的文字，取不到就说取不到（**不抛**）。 */
+    function safeText(value) {
+      try {
+        if (typeof value === "string") return value;
+        return value && typeof value.message === "string" ? value.message : String(value);
+      } catch {
+        return "（原因取不到）";
+      }
+    }
+
+    /** 同一条原因只说一次：一条 ACL 拒绝不该每 5 秒往控制台写一行。 */
+    let lastComplaint = null;
+    function complain(error) {
+      const text = safeText(error);
+      if (text === lastComplaint) return;
+      lastComplaint = text;
+      (globalThis.console?.error ?? (() => {}))("[xlink-memory] 读最近注入失败：", text);
+    }
+
     function MemoryBadge(props) {
       const sessionId = props.sessionId;
       const [note, setNote] = React.useState(null);
@@ -111,24 +130,26 @@ window.__ModuleLoader__.load({
         if (!sessionId) return undefined;
         let alive = true;
         const refresh = async () => {
-          const invoke = invokeOrNull();
-          // `__TAURI__` 可能晚于本束注入：不另做重试轮，interval 本身就是
-          // 重试（下一拍再问一次），代价是最多晚 5 秒出现。
-          if (invoke === null) return;
-          let notes = null;
+          // 轮询里的任何异常都**不许冒出去**：冒出去就是一条 unhandledrejection，
+          // 而 harness-health.js 把未处理异常当成工作台故障上报、壳会拿它去重建
+          // 工作台窗口（预算 3 次）——一枚装饰性徽标不该有能力让用户的窗口闪三次。
           try {
-            notes = await invoke("memory_recent_injections");
+            const invoke = invokeOrNull();
+            // `__TAURI__` 可能晚于本束注入：不另做重试轮，interval 本身就是
+            // 重试（下一拍再问一次），代价是最多晚 5 秒出现。
+            if (invoke === null) return;
+            const notes = await invoke("memory_recent_injections");
+            if (!alive) return;
+            const list = Array.isArray(notes) ? notes : [];
+            lastComplaint = null;
+            // 环形缓冲是**跨会话**的（最多 20 条，新→旧），所以必须按 session 过滤。
+            // `note.session` 由 host 侧填 `agent.session.id`，与这里的 sessionId 是
+            // 同一个内核会话 id（同一份注册表里的字符串），故按字符串比。
+            setNote(list.find((item) => item && String(item.session) === String(sessionId)) ?? null);
           } catch (error) {
-            // ACL 没授或命令不存在：本页面就当没有徽标。
-            (globalThis.console?.error ?? (() => {}))(`[xlink-memory] 读最近注入失败：${error}`);
-            return;
+            // ACL 没授、命令不存在、回来的东西没法用：都归这里，本页面就当没有徽标。
+            complain(error);
           }
-          if (!alive) return;
-          const list = Array.isArray(notes) ? notes : [];
-          // 环形缓冲是**跨会话**的（最多 20 条，新→旧），所以必须按 session 过滤。
-          // `note.session` 由 host 侧填 `agent.session.id`，与这里的 sessionId 是
-          // 同一个内核会话 id（同一份注册表里的字符串），故按字符串比。
-          setNote(list.find((item) => item && String(item.session) === String(sessionId)) ?? null);
         };
         refresh();
         const timer = setInterval(refresh, POLL_MS);
@@ -162,8 +183,9 @@ window.__ModuleLoader__.load({
         const documentRef = globalThis.window?.document;
         if (documentRef?.head) ensureBadgeStyle(documentRef);
       } catch (error) {
-        // 注入失败不阻断激活：徽标退化成无边框的一行字。
-        (globalThis.console?.error ?? (() => {}))(`[xlink-memory] 样式注入失败：${error}`);
+        // 注入失败不阻断激活：徽标退化成无边框的一行字。**取文字时也不能抛**——
+        // 这一步在 activation 里，抛出去整条 entry 就不激活了。
+        (globalThis.console?.error ?? (() => {}))("[xlink-memory] 样式注入失败：", safeText(error));
       }
       ctx.slots.inject(SLOT, () =>
         ctx.slots.register(

@@ -1662,11 +1662,19 @@ test('工作区 id 解析：拿到就带上，拿不到一律降级成空串', a
 /** 活着的定时器计数：徽标卸载时不清理，就是每换一个会话漏一个轮询。 */
 let liveTimers = 0;
 
-function loadClientBundle({ notes = [], language = 'zh' } = {}) {
+function loadClientBundle({ notes = [], language = 'zh', invoke = null, logged = null } = {}) {
   const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
   const invokes = [];
   const sandbox = {
-    console,
+    // 页面里的 console.error 只往数组里落（传了 logged 时），好断言「同一条原因只说一次」。
+    console: {
+      error: (...args) => {
+        if (Array.isArray(logged)) logged.push(args);
+        else console.error(...args);
+      },
+      warn() {},
+      log() {},
+    },
     navigator: { language },
     // 徽标起的是 5 秒轮询，测试并不想等它：交给 unref 的包装器，否则 node --test
     // 因为还活着的定时器不肯退出。`liveTimers` 顺手把「清理时清了没有」变成可断言的。
@@ -1684,10 +1692,10 @@ function loadClientBundle({ notes = [], language = 'zh' } = {}) {
       __ModuleLoader__: { load: (spec) => { sandbox.__loaded = spec; } },
       __TAURI__: {
         core: {
-          invoke: async (name) => {
+          invoke: invoke ?? (async (name) => {
             invokes.push(name);
             return notes;
-          },
+          }),
         },
       },
     },
@@ -1727,8 +1735,8 @@ function createRenderer() {
 }
 
 /** 走一遍真实的 factory + apply，只把 ctx 换成假的，把注册到的组件截下来。 */
-function mountClient({ notes = [], language = 'zh' } = {}) {
-  const { spec, invokes } = loadClientBundle({ notes, language });
+function mountClient({ notes = [], language = 'zh', invoke = null, logged = null } = {}) {
+  const { spec, invokes } = loadClientBundle({ notes, language, invoke, logged });
   assert.ok(spec, '模块加载器没收到 load()——内核会把这半当没声明处理');
   const renderer = createRenderer();
   const module_ = spec.factory((name) => {
@@ -1749,6 +1757,13 @@ function mountClient({ notes = [], language = 'zh' } = {}) {
 /** 把 invoke 的微任务链冲干净（refresh 是 async，笔记要等它落地）。 */
 async function flush() {
   for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+}
+
+/** 让 Node 走到下一个宏任务——`unhandledRejection` 是微任务队列排空之后才发的。 */
+async function settle() {
+  await flush();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
 }
 
 test('客户端半边是内核客户端模块的方言：单文件、无 ESM、由模块加载器包一层', () => {
@@ -1826,6 +1841,55 @@ test('徽标只画这个会话最近的那一条：环形缓冲是跨会话的',
   assert.ok(title.includes('用中文回复') && title.includes('npm run check 才是门禁'), '要列的是**标题**');
   assert.ok(title.includes('本工作区'), '工作区在时要说清读的是哪一层');
   assert.equal(title.includes('别的会话的偏好'), false, '别的会话的笔记一个字都不许出现在这个会话的页面上');
+});
+
+test('轮询里的异常不许冒成未处理拒绝：冒出去就是一条工作台故障上报', async () => {
+  // harness-health.js 把 `unhandledrejection` 当成工作台故障上报，壳拿它去重建工作台
+  // 窗口（预算 3 次）。一枚装饰性徽标失败时该做的是「没有徽标」，不是让用户的窗口闪。
+  const logged = [];
+  const rejections = [];
+  const onRejection = (reason) => rejections.push(reason);
+  process.on('unhandledRejection', onRejection);
+  try {
+    const badge = mountClient({
+      invoke: async () => { throw new Error('memory_recent_injections not allowed'); },
+      logged,
+    });
+    assert.equal(badge.render(badge.component, { sessionId: 'session-a' }), null);
+    await settle();
+    assert.equal(rejections.length, 0, '异常冒到 refresh 之外了');
+    assert.equal(badge.render(badge.component, { sessionId: 'session-a' }), null, '失败时就是没有徽标');
+    assert.equal(logged.length, 1, '留一条能定位的线索');
+    assert.ok(String(logged[0][0]).includes('读最近注入失败'));
+
+    // 同一条原因**只说一次**：重新挂载（重新起 effect）再失败一次，不该再刷一行。
+    badge.unmount();
+    badge.render(badge.component, { sessionId: 'session-a' });
+    await settle();
+    assert.equal(rejections.length, 0);
+    assert.equal(logged.length, 1, '一条 ACL 拒绝不该每 5 秒往控制台写一行');
+  } finally {
+    process.off('unhandledRejection', onRejection);
+  }
+});
+
+test('取不出文字的原因也不许抛：抛在 catch 里等于把故障换个姿势再犯一次', async () => {
+  // 无原型的对象连 String() 都会抛。catch 里再抛一次，外层看到的就是一条
+  // unhandledrejection——正是上面那条判据要挡的东西。
+  const logged = [];
+  const rejections = [];
+  const onRejection = (reason) => rejections.push(reason);
+  process.on('unhandledRejection', onRejection);
+  try {
+    const badge = mountClient({ invoke: async () => { throw Object.create(null); }, logged });
+    badge.render(badge.component, { sessionId: 'session-a' });
+    await settle();
+    assert.equal(rejections.length, 0);
+    assert.equal(logged.length, 1);
+    assert.ok(String(logged[0][1]).length > 0, '取不到也要写一句，别写空');
+  } finally {
+    process.off('unhandledRejection', onRejection);
+  }
 });
 
 test('卸载时要把轮询停掉：每换一个会话漏一个，就是每 5 秒白问一次壳', () => {
