@@ -490,3 +490,49 @@ export async function resolveWorkspaceId(registry, path) {
     return '';
   }
 }
+
+/**
+ * 这次调用该带的**项目坐标**：目录与工作区 id 一起算。
+ *
+ * **为什么两件事必须一起算**：设计 §5 承诺「子智能体**最多继承父级的读取范围**」，而内核那个
+ * 子智能体工具的 `cwd` 是**模型可填的字符串**（`dsh-tool-subagent/lib/index.js:325`，只有
+ * description / prompt 标了 required），`:396` 原样透传，全程没有越界校验——模型可以把子智能体
+ * 指到另一个项目去。于是子智能体拿到的「自己的有效目录」**不一定**在父级范围内。
+ *
+ * 判据取**工作区身份**，不是路径前缀：模型把一段活拆到同一个仓库的 `packages/x` 是常态，那属于
+ * 同一个工作区、照常跟手；「另一个工作区」才是另一个范围（2026-10-15 维护者拍板）。
+ *
+ * **判不准就收窄**：父级 spawn 时的 cwd 拿不到、或两边任一侧解析不出工作区 id，都按「不在父级
+ * 范围内」算，只给通用偏好。收窄成**空坐标**而不是替成父级目录——替过去会把 A 项目的记忆送进 B
+ * 项目的活里，那正是 G15 ② 要挡的反面；空坐标在壳那边只匹配通用记录。
+ *
+ * @param {object} ctx - 插件上下文（声明了 `workingDirectory`）。
+ * @param {object|null} registry - 按需注入拿到的工作区注册表。
+ * @param {object} agent - 发起这次调用的 agent（子智能体给子智能体自己）。
+ * @returns {Promise<{workspace: string, workspaceId: string}>}
+ */
+export async function memoryScope(ctx, registry, agent) {
+  const workspace = workingDirectory(ctx, agent);
+  const workspaceId = await resolveWorkspaceId(registry, workspace);
+  if (await withinParentScope(registry, agent, workspaceId)) return { workspace, workspaceId };
+  return { workspace: '', workspaceId: '' };
+}
+
+/**
+ * 这个 agent 的工作区是否落在父级范围内。**不是子智能体就直接放行**——这条只管子智能体。
+ *
+ * 父级的范围从**子会话 header 里带过来的 `cwd`** 取：内核 `childSessionMeta` 建子会话时从
+ * `parentHeader.cwd` 抄了一份（`dsh-subagent/lib/index.js:353`）。所以这一步既不需要
+ * `agents` 服务，也不需要父会话还活着——那是这条最初以为「要真机才能定」时挡在前面的东西。
+ *
+ * @param {object|null} registry - 工作区注册表。
+ * @param {object} agent - 发起这次调用的 agent。
+ * @param {string} workspaceId - 这个 agent 自己目录解析出的工作区 id。
+ * @returns {Promise<boolean>}
+ */
+async function withinParentScope(registry, agent, workspaceId) {
+  const header = agent?.session?.header;
+  if (header?.origin !== 'subagent' && typeof header?.parentSession !== 'string') return true;
+  const parentId = await resolveWorkspaceId(registry, header.cwd);
+  return Boolean(workspaceId) && workspaceId === parentId;
+}
