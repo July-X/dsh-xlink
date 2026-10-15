@@ -2501,7 +2501,8 @@ if (ungatedOsImports.length > 0) {
 // `npm run check` 会红。所以这里把两半一起钉成接线形状。
 //
 // 判据扫的是生产代码（`productionRust` 剥掉测试块与注释）。单测自己的 cfg 由
-// Windows CI 那条 `cargo check --all-targets` 兜住：漏挂时测试目标编不过。
+// Windows CI 那个 job 兜住：它编 Windows 的测试目标（2026-10-15 起还跑
+// `cargo test --locked`），漏挂时编不过。
 
 {
   const activateLines = productionRust(shellSource('activate.rs')).split('\n');
