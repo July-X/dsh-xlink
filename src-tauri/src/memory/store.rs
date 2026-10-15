@@ -321,6 +321,12 @@ pub struct MemoryStatus {
     pub total_bytes: u64,
     /// 文档读不出来时的说明。**不打折**：展示的是空列表，磁盘上的文件没被动过。
     pub warning: Option<String>,
+    /// **开关改过、而插件还没再调用过壳**（E6 的「处理中」）。
+    ///
+    /// 由壳侧进程内的两个时刻算出来（见 `recent::effect_pending`），**不在文档里**——
+    /// 它描述的是「运行中的工作台认没认」，重启之后这个问题就不存在了。
+    /// 面板据此把「已生效」与「处理中」分开说，而不是笼统写一句「下次生效」。
+    pub effect_pending: bool,
 }
 
 /// 列表视图。
@@ -485,6 +491,7 @@ fn status_from(ns: &Namespace, doc: &MemoryDoc, warning: Option<String>) -> Memo
             .count(),
         total_bytes,
         warning,
+        effect_pending: crate::memory::recent::effect_pending(),
     }
 }
 

@@ -20,6 +20,8 @@ use crate::plugins::builtin::bridge::query_decoded;
 
 /// 提取任务路由的留痕：**另一个标签**，与「最近注入」分开（见 [`jobs`] 的文档）。
 fn note_job_call(action: &str, detail: &str) {
+    // 提取任务那几条也是「插件调用过壳」——开关改动的确认不区分是哪条路由。
+    crate::memory::recent::mark_plugin_call();
     crate::shell::shell_events::record("memory-jobs", &format!("{action} {detail}"));
 }
 

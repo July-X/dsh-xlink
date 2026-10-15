@@ -786,7 +786,10 @@ const FILE_BUDGETS = {
   // 三条路共用——桥的 `note` 路由写它、面板的 `memory_recent_injections` 读它、测试
   // 直接断言它；塞进 `bridge.rs` 会让面板命令反过来 import 桥模块（传输层），塞进
   // `store.rs` 会撞上那边 665 行的反棘轮预算。上限 70 给标题解析与后续字段留一点余量。
-  'src-tauri/src/memory/recent.rs': 70,
+  // 70 → 95（2026-10-15，E6）：壳侧进程内的两个时刻（「插件刚调用过」「开关刚改过」）与
+  // 纯函数 `pending_effect`——它们描述的是「运行中的工作台认没认」，所以**不进 schema**。
+  // 70 < RATCHET_THRESHOLD（600），允许上调。
+  'src-tauri/src/memory/recent.rs': 95,
   // 跨进程写锁：两个壳指向同一实例时，进程内 Mutex 拦不住对方的「读-改-写」。
   // 独立成文件而不是塞进 store.rs（那个已经在 665/665 的反棘轮线上，加不了）。
   'src-tauri/src/memory/lock.rs': 210,
@@ -3005,7 +3008,9 @@ const FILE_BUDGETS = {
 // 52950 → 53000（2026-10-15）：第二次评审（记忆内核 + 面板）当场修的 7 条——范围判据提成一份
 // （净增几行，换来两个函数不再各判一次）、面板按字节限长、`inspectionDisabled` 判接线事实、
 // 两处空态/按钮判据、以及三处死代码的删除。软上限，规则明说它不做「只许下调」。
-const TOTAL_BUDGET = 53000;
+// 53000 → 53050（2026-10-15，E6）：精确的「处理中」——壳侧两个进程内时刻 + 纯函数判据 +
+// `MemoryStatus.effect_pending` + 面板文案。软上限，规则明说它不做「只许下调」。
+const TOTAL_BUDGET = 53050;
 // 42424 → 42807 → 42981 → 45281（2026-10-08/09）：内嵌 openai-oauth 插件交付层首块落地——
 // builtin/ 五文件（mod/materialize/wiring/cmd/state，P1 首块 +415、
 // set_enabled 与 state 落盘 +174）+ plugins/mod.rs

@@ -41,6 +41,52 @@ fn injection_notes() -> &'static std::sync::Mutex<std::collections::VecDeque<Inj
 }
 
 /// 面板读它。中毒的锁不放弃（与 `store::lock` 同一个理由：中毒只说明别人 panic 过）。
+/// 插件最后一次**真的调用**壳是什么时候（`context` / `read` / `note` / 提取任务那几条都算），
+/// 以及开关最后一次改动是什么时候——用来答 E6 那句「你刚拨的开关，运行中的工作台认了吗」。
+///
+/// **两个时刻都只在本次壳进程里有意义**（`AtomicU64` 的毫秒时间戳，0 = 没见过）：
+/// 壳重启之后工作台也重启了，「认没认」这个问题自然消失。所以它们**不需要进 schema**——
+/// 设计稿要的那个「处理中」状态，靠进程内这两个数就能算准，不必为它抬一次版本。
+static LAST_PLUGIN_CALL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SETTING_CHANGED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|delta| delta.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 记一次插件调用（每条路由都调它，见 `routes::note_memory_call` 与 `note_job_call`）。
+pub(crate) fn mark_plugin_call() {
+    LAST_PLUGIN_CALL_MS.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 记一次开关改动（`memory_set_enabled`）。
+pub(crate) fn mark_setting_changed() {
+    SETTING_CHANGED_MS.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **开关改过、而插件还没再调用过壳** = 运行中的工作台还没认这次改动。
+///
+/// 两个时刻任一没见过就回 `false`（「不知道」不当成「处理中」——那会给一句假警报）。
+/// 插件**每一步**都会问一次 `/context`，所以正常情况下这个状态只存在几秒。
+pub fn effect_pending() -> bool {
+    pending_effect(
+        SETTING_CHANGED_MS.load(std::sync::atomic::Ordering::Relaxed),
+        LAST_PLUGIN_CALL_MS.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// 判据本体（纯函数，两个时刻当参数）——进程级静态在并行测试里会互相干扰，
+/// 所以「算得对不对」与「数从哪来」分开。
+fn pending_effect(changed_ms: u64, called_ms: u64) -> bool {
+    if changed_ms == 0 {
+        return false;
+    }
+    changed_ms > called_ms
+}
+
 pub fn recent_injections() -> Vec<InjectionNote> {
     let guard = injection_notes()
         .lock()
@@ -142,6 +188,36 @@ mod tests {
             vec![a.id.as_str(), "通用偏好"],
             "A 项目的标题不该出现在 B 项目里；通用偏好照旧可见"
         );
+    }
+
+    /// **「处理中」的判据**（E6）：开关改过、而插件还没再调用过壳 → 运行中的工作台还没认。
+    /// 两个时刻任一没见过（0）都回 false——「不知道」不当成「处理中」，那会给一句假警报。
+    #[test]
+    fn effect_pending_needs_both_timestamps_and_a_later_change() {
+        assert!(!pending_effect(0, 0), "两个都没见过：不知道就不说");
+        assert!(!pending_effect(0, 100), "没改过开关：谈不上待确认");
+        // 改过、而插件**从没**调用过：也算没认——我们确实没法声称它生效了
+        // （插件可能压根没在跑，那种情况由「插件没启用」那条提示负责，这里不重复也不撒谎）。
+        assert!(pending_effect(100, 0), "从没确认过就不能说已生效");
+        assert!(pending_effect(200, 100), "改动在最后一次调用之后 → 还没认");
+        assert!(!pending_effect(100, 200), "调用在改动之后 → 认了");
+        assert!(
+            !pending_effect(100, 100),
+            "同一毫秒算认了（不放大成待确认）"
+        );
+    }
+
+    /// 开关改动的时刻真的会被记下来（接线判据：helper 有测试、接线没有是本仓反复栽的形状）。
+    #[test]
+    fn marking_a_setting_change_makes_it_pending_until_the_next_call() {
+        mark_plugin_call();
+        assert!(!effect_pending(), "刚调用过、还没改开关：不是待确认");
+        // 两个时刻都是毫秒级：睡 2ms 让「改动在后」这件事**确定**，否则同毫秒内是竞态。
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        mark_setting_changed();
+        assert!(effect_pending(), "改完开关、插件还没再来问：待确认");
+        mark_plugin_call();
+        assert!(!effect_pending(), "插件又来问过了：认了");
     }
 
     /// 标题取不到时退回 id：宁可给一个认不出的编号，也不要静默少一条——

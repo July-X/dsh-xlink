@@ -96,6 +96,8 @@ pub async fn memory_clear() -> Result<store::ClearOutcome, String> {
 /// 开关：本次使用已批准的记忆。
 #[tauri::command]
 pub async fn memory_set_enabled(use_approved: bool) -> Result<store::MemoryStatus, String> {
+    // 记下这次改动：面板据此说「运行中的工作台还没认」（E6）。**只影响这一个进程内的显示**。
+    crate::memory::recent::mark_setting_changed();
     blocking(move || {
         let namespace = Namespace::current();
         store::set_use_approved(&namespace, use_approved)?;
