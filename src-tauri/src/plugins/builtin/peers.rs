@@ -8,10 +8,22 @@
 //!
 //! ## 为什么必需 / 可选必须分开
 //!
-//! 内核的包集合由**上游自己的打包决定**，不是壳能定的：`@deepseek-ai/dsh` 的
-//! `dependencies` 才跟着内核一起装，被降级成 `devDependencies` 的包在内核树里
-//! 就没有了。实测过一次：`@deepseek-ai/dsh-hooks-claude-code` 在 `0.2.1-alpha.1`
-//! 里是运行时依赖，`0.2.1-alpha.2` 里是开发依赖。
+//! 内核的包集合由**上游自己的打包决定**，不是壳能定的。判据是「**内核树里是不是
+//! 必然有它**」——**不是**「`@deepseek-ai/dsh` 的 `dependencies` 里有没有」。
+//! 2026-10-15 实测（`0.2.1-alpha.1` 与 `alpha.2` 两棵树逐包核对）：
+//!
+//! - `dsh-llm` 与 `dsh-tools` 在 `dsh` 自己的清单里都是 **`devDependencies`**，
+//!   却在两棵树里都实实在在躺着——`dsh-base` 与 `dsh-sdk-minimal` 在**运行时**
+//!   依赖它们。照 `dsh` 一份清单判，会把这两个判成「装不上」。
+//! - `@deepseek-ai/schemastery` 反过来：它是 `dsh` 真正的 `dependencies`。
+//! - 真会消失的是**没有任何内核包在运行时依赖**的那些：
+//!   `@deepseek-ai/dsh-hooks-claude-code` 在 `0.2.1-alpha.1` 是 `dependencies`，
+//!   `0.2.1-alpha.2` 里被降级成 `devDependencies`，树里就没有了——那才是可选
+//!   peer 的形态。
+//!
+//! 所以「这个包会不会在」只能看**装出来的那棵树**（或看有没有别的内核包在运行时
+//! 依赖它），读 `dsh` 一份清单会得出反的结论。`builtins.rs` 里每个 peer 的注释
+//! 都记着它是哪一种。
 //!
 //! 于是「这个包在不在」与「这个插件能不能装」是两件事：
 //!

@@ -540,7 +540,7 @@ function registerTools(ctx, credentials) {
       description:
         'Search the memories the user has approved for this project and their general preferences. ' +
         'Use it when earlier decisions, conventions, or pitfalls from previous sessions may be relevant. ' +
-        'Results are excerpts; they may be outdated — the current repository and the user win on conflict.',
+        'Results are excerpts; they may be outdated — the project AGENTS.md rules and the user win on conflict.',
       parameters: {
         query: {
           type: 'string',
@@ -566,6 +566,9 @@ function registerTools(ctx, credentials) {
                   title: { type: 'string', required: true },
                   scope: { type: 'string', required: true },
                   body: { type: 'string', required: true },
+                  verification: { type: 'string', required: true },
+                  updated_at: { type: 'string', required: true },
+                  truncated: { type: 'boolean', required: true },
                 },
               },
             },
@@ -577,7 +580,13 @@ function registerTools(ctx, credentials) {
             text: value.enabled
               ? value.count === 0
                 ? '记忆里没有与这次查询相关的内容。'
-                : value.hits.map((hit) => `[${hit.id}] ${hit.title}（${hit.scope}）\n${hit.body}`).join('\n\n')
+                : value.hits
+                    .map(
+                      (hit) =>
+                        `[${hit.id}] ${hit.title}（${hit.scope}，更新于 ${hit.updated_at}）\n${hit.body}` +
+                        (hit.truncated ? '\n…（本条正文被截断，需要全文用 memory_read 读）' : ''),
+                    )
+                    .join('\n\n')
               : '这个实例的「使用已批准的记忆」开关是关着的：没有可检索的内容。',
           },
         ],
@@ -605,6 +614,11 @@ function registerTools(ctx, credentials) {
             title: String(hit.title ?? ''),
             scope: String(hit.scope ?? ''),
             body: String(hit.body ?? ''),
+            // 壳那侧一直带着这三项（`MemoryHit`），是这一层把它们丢了——检索结果因此
+            // 看不出「正文被截断」与「这条什么时候更新的」（第二次评审第 5 条）。
+            verification: String(hit.verification ?? ''),
+            updated_at: String(hit.updated_at ?? ''),
+            truncated: !!hit.truncated,
           })),
         };
       },
@@ -643,7 +657,7 @@ function registerTools(ctx, credentials) {
         render: (_args, value) => [
           {
             type: 'text',
-            text: `${value.title}（${value.scope} · ${value.verification}）\n\n${value.body}`,
+            text: `${value.title}（${value.scope} · ${value.verification} · 更新于 ${value.updated_at}）\n\n${value.body}`,
           },
         ],
       },

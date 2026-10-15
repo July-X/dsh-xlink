@@ -38,9 +38,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use rand::Rng;
 
 /// 一个运行中的桥接代次。
+///
+/// **令牌不存这里**：它只被 accept 线程用来校验请求，而那个线程**不能**持
+/// `Arc<Bridge>`（它一持，上一代的 `Drop` 就永远等不到最后一个引用，端口与线程
+/// 一起漏掉——2026-10-15 评审第 2 条就是这么来的）。字段留一份没人读的令牌只会
+/// 骗下一个人「这里还有用」。
 struct Bridge {
     addr: std::net::SocketAddr,
-    token: String,
     shutdown: Arc<AtomicBool>,
     /// 凭据文件路径。`Drop` 时删掉——留着会让下一代的脚本拿着死令牌去请求，
     /// 报一个比真实原因更难查的 401。
@@ -74,34 +78,50 @@ pub(crate) const TOKEN_ENV: &str = "DSH_XLINK_BUILTIN_BRIDGE_TOKEN";
 /// 地址的环境变量名。
 pub(crate) const URL_ENV: &str = "DSH_XLINK_BUILTIN_BRIDGE_URL";
 
-/// 起一代桥接并返回 `Some((地址, 令牌))`；没有需要桥接的内置插件时返回 `None`。
+/// 起一代桥接并返回 `Some((地址, 令牌))`；只有**绑定失败**才返回 `None`。
 ///
 /// 调用点只有启动内核那一处，且**起不来不阻断启动**：插件的「检查更新」按钮
 /// （面板里那条命令）不依赖它，少一个能力不该让工作台起不来。
+///
+/// **这里不判「有没有启用的插件」**（2026-10-15 评审第 7 条提过「没插件就别起桥」）：
+/// 记忆路由也挂在这个桥上，而「启用」是每个插件一份 `state.json` 的状态——判错一次
+/// 就是「插件装上了、面板显示启用、能力静默失效」，正是评审第 1 条那类故障的形状，
+/// 为省一个回环套接字不值当。代价只是：没有插件用它时也占一个随机端口。
 pub(crate) fn launch(dsh_home: &Path, scope_key: &str) -> Option<(String, String)> {
     let listener = TcpListener::bind("127.0.0.1:0").ok()?;
     let addr = listener.local_addr().ok()?;
     let token = new_token();
     let url = format!("http://{addr}");
+    let shutdown = Arc::new(AtomicBool::new(false));
     let bridge = Arc::new(Bridge {
         addr,
-        token: token.clone(),
-        shutdown: Arc::new(AtomicBool::new(false)),
+        shutdown: Arc::clone(&shutdown),
         credentials: super::bridge_credential::write_all(dsh_home, &url, &token),
     });
-    bridges()
+    // **换代必须把上一代放掉**（2026-10-15 评审）：`Drop` 才是「置旗标 + 自连一次
+    // 唤醒 accept + 删凭据文件」的执行者，而它只在最后一个 `Arc<Bridge>` 消失时跑。
+    // 此前这里丢掉 `insert` 的返回值、accept 线程又 move 捕获了整个 `Arc<Bridge>`，
+    // 于是上一代永远活着——端口继续接受连接、旧令牌继续有效，每启一次工作台泄漏
+    // 一个线程与一个监听套接字。线程现在只持 `shutdown` 旗标与令牌，注册表那一份
+    // 就是最后一个，`drop(old)` 因此真的会执行 `Drop`。
+    let old = bridges()
         .lock()
         .ok()?
-        .insert(scope_key.to_string(), bridge.clone());
+        .insert(scope_key.to_string(), Arc::clone(&bridge));
+    drop(bridge);
+    if let Some(old) = old {
+        drop(old);
+    }
     let dsh_home = dsh_home.to_path_buf();
     let scope_key = scope_key.to_string();
+    let accept_token = token.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            if bridge.shutdown.load(Ordering::SeqCst) {
+            if shutdown.load(Ordering::SeqCst) {
                 break;
             }
             let Ok(mut stream) = stream else { continue };
-            let token = bridge.token.clone();
+            let token = accept_token.clone();
             let dsh_home = dsh_home.clone();
             let scope_key = scope_key.clone();
             // 每个连接一个线程：端点只有一个且是一次性请求，串行化反而会让
@@ -114,6 +134,10 @@ pub(crate) fn launch(dsh_home: &Path, scope_key: &str) -> Option<(String, String
 
 fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) {
     use crate::memory::routes;
+    // 读超时，与 `openai::bridge` 同一口径（那边是 5s）：连上来却一个字都不发的
+    // 客户端会让这个线程永久阻塞在 read 上。每个连接一个线程，所以单次只泄漏一个
+    // 线程，但本机任何进程都能靠反复空连接把线程数堆起来。
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
     let Ok(request) = crate::openai::http::read_request(stream) else {
         return;
     };
@@ -1310,6 +1334,42 @@ mod tests {
         );
     }
 
+    /// 换代之后上一代必须真的死掉（2026-10-15 评审第 2 条）。
+    ///
+    /// 这条判据只能走 `launch`：`Drop` 自己早被下面那条测试覆盖了，而漏掉的恰恰是
+    /// 「注册表换代时会不会执行 `Drop`」——accept 线程 move 捕获整个 `Arc<Bridge>` 时
+    /// 它永远不会执行，旧端口继续接受连接、旧令牌继续有效。
+    #[test]
+    fn a_second_generation_kills_the_first_one() {
+        let home = temp_dir("generation");
+        let (url1, token1) = launch(&home, "dsh:gen").expect("第一代");
+        let addr1 = url1.trim_start_matches("http://").to_string();
+        let (url2, _token2) = launch(&home, "dsh:gen").expect("第二代");
+        let addr2 = url2.trim_start_matches("http://").to_string();
+        assert_ne!(url1, url2, "两代不该共用端口");
+
+        // 旧端口必须**不再接受连接**：`Drop` 关掉 listener 之后 connect 会被拒。
+        // accept 线程退出是异步的（`Drop` 里那次自连把它唤醒），给它一点时间。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut refused = false;
+        while std::time::Instant::now() < deadline {
+            if TcpStream::connect(&addr1).is_err() {
+                refused = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(refused, "上一代端口 {addr1} 还在接受连接——换代没执行 Drop");
+
+        // 活着的那一代是第二代：旧令牌在它上面必须被拒。
+        let body = bridge_get(&addr2, &token1, "context?workspace=/tmp");
+        assert!(
+            body.contains("unauthorized"),
+            "旧令牌在新一代上没被拒：{}",
+            &body[..body.len().min(80)]
+        );
+    }
+
     #[test]
     fn dropping_the_bridge_removes_the_credential_file() {
         use super::super::bridge_credential::CREDENTIAL_FILE;
@@ -1321,7 +1381,6 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
             let bridge = Bridge {
                 addr: listener.local_addr().expect("addr"),
-                token: "t".to_string(),
                 shutdown: Arc::new(AtomicBool::new(false)),
                 credentials: vec![path.clone()],
             };

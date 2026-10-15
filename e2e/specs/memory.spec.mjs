@@ -100,14 +100,34 @@ describe('记忆面板', function () {
     expect(String(decided?.__error || '')).toContain('找不到候选');
   });
 
-  it('打开记忆页没有往控制台扔错误', async () => {
-    // `dump()` 给的是 `{ items, dropped }`（不是数组）：外部改不动内部状态是它
-    // 刻意的形状。
+  it('记忆页在控制台里没扔错误（面板挂不上时如实跳过，不留恒真判据）', async function () {
+    // 通道本身必须先可用：`dump()` 给的是 `{ items, dropped }`（不是数组）——外部改
+    // 不动内部状态是它刻意的形状。拿不到它说明 `consoleLog.js` 没装上，这条要红。
     const dump = await runAsync(
-      `return window.__DSH_CONSOLE__ ? window.__DSH_CONSOLE__.dump().items : [];`
+      `return window.__DSH_CONSOLE__ ? window.__DSH_CONSOLE__.dump().items : null;`
     );
-    const errors = (dump || []).filter((entry) => entry?.level === 'error');
+    expect(Array.isArray(dump)).toBe(true);
+
+    // **判据先挂在「面板真的挂载了」上**。本通道里 `<Transition mode="out-in">` 的
+    // leave 永不结束（见第一条用例的实测说明），记忆面板根本没挂载——没有面板就没有
+    // 记忆相关的控制台错误，于是「打开记忆页没有错误」在这个条件下**恒真**。恒真的
+    // 判据比没有判据更坏（本仓在 `builtin-peer-imports` 上栽过同一个形状：绿着，而
+    // 插件已经整条死掉），所以这里探一次面板标题：挂不上就**响亮地跳过**，挂上了才
+    // 继续断言——将来过渡那条路修好、或有人在真前台的窗口里跑这条 spec，它就自动
+    // 变回一条真判据。
+    const mounted = await runAsync(
+      `return document.querySelector('h1.page-title')?.textContent.trim() === '记忆';`
+    );
+    if (!mounted) {
+      console.warn(
+        '[e2e] 记忆面板在本通道挂载不了（Transition leave 不结束）→ 跳过这条：' +
+          '控制台错误数此刻恒为零，验不了任何东西。'
+      );
+      this.skip();
+    }
+
     // 只看与记忆有关的那些：别的面板可能各有历史噪声，这条用例不该替它们背书。
+    const errors = (dump || []).filter((entry) => entry?.level === 'error');
     const mine = errors.filter((entry) => JSON.stringify(entry).includes('memory'));
     expect(mine).toEqual([]);
   });
