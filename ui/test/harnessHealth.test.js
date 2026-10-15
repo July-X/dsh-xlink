@@ -185,6 +185,29 @@ test('health probe reports a rejection cause chain and non-error reasons', async
   assert.equal(raw.calls[0].args.message, '内核响应异常');
 });
 
+test('an ACL refusal is not reported as a workbench fault, a DOM refusal still is', async () => {
+  // 2026-10-15 的实况：点一下会话里的外链 → opener 插件的点击拦截脚本调
+  // `plugin:opener|open_url` → ACL 拒绝 → 未处理的 Promise 异常。那不是页面故障，
+  // 却曾占掉那次**一次性**上报、被 guard.rs 误归因成「疑似内核问题」。黑屏另有
+  // `shouldReportBlankHarness` 那条判据在报，不靠这一条。
+  const refused = loadProbe();
+  refused.handlers.unhandledrejection({
+    reason:
+      'Command plugin:opener|open_url not allowed on origin [http://127.0.0.1:3090]. ' +
+      'Please create a capability that has this origin on the context field.',
+  });
+  await Promise.resolve();
+  assert.equal(refused.calls.length, 0, '壳侧授权没配对不许占掉那次上报');
+
+  // **只切那一种形状**：浏览器自己的 NotAllowedError 是货真价实的页面故障，放过去
+  // 等于把真实黑屏不上报。
+  const dom = loadProbe();
+  dom.handlers.unhandledrejection({ reason: new Error('NotAllowedError: Permission denied') });
+  await Promise.resolve();
+  assert.equal(dom.calls.length, 1, '页面自己的拒绝不许被一起放过');
+  assert.equal(dom.calls[0].args.kind, 'unhandled-rejection');
+});
+
 test('health probe reports a blank workbench after the second check', async () => {  const handlers = {};
   const timers = [];
   const calls = [];
