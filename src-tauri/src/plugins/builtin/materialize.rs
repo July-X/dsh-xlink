@@ -792,8 +792,8 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// 内置插件按 `entries` **逐项**物化（以本地记忆为标本），且**必需的 peer 真的
-    /// 被挂上**。
+    /// 内置插件按 `entries` **逐项**物化（以本地记忆为标本），**接线行指向的那个入口
+    /// 文件**真的被物化出来，且**必需的 peer** 真的被挂上。
     ///
     /// 这条钉的是「启用之后内核能不能 import 它」：`host/index.js` 静态 import
     /// `@deepseek-ai/dsh-tools`（`defineTool`），Node 按**真实路径**从插件自己的
@@ -804,7 +804,6 @@ mod tests {
     /// 条目（会话头那枚徽标的客户端半边），而原夹具手写「只有 host + package.json」，
     /// 于是 `materialize` 直接报「源码缺 client」——**先炸的是夹具不是断言**，而报错
     /// 说的是「请重新构建或安装应用」，会把源码侧的错误报成用户的安装包坏了。
-    /// 现在夹具只声明「每个 entry 都得真的物化出来」，产品形状变了它自己跟上。
     #[test]
     fn every_declared_entry_materializes_with_its_required_peer() {
         let root = temp_dir("memory-builtin");
@@ -819,6 +818,12 @@ mod tests {
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("stub.js"), format!("// {entry} stub\n")).unwrap();
         }
+        // 接线行里写的就是 `spec.entry`（`host/index.js`）——它在源里必须真的存在，
+        // 物化之后也必须真的在。**这条不能被上一段替代**：目录在而入口文件不在时，
+        // 内核那边是「entry did not activate」，症状同样是「开关拨不动、日志什么都没有」。
+        let entry_file = source.join(spec.entry);
+        fs::create_dir_all(entry_file.parent().unwrap()).unwrap();
+        fs::write(&entry_file, "export const name = 'xlink-memory';\n").unwrap();
         fs::write(
             source.join("package.json"),
             "{\"name\":\"xlink-memory\",\"version\":\"0.1.0\",\"type\":\"module\"}",
@@ -848,8 +853,8 @@ mod tests {
             );
         }
         assert!(
-            target.join("host/index.js").exists() || target.join("host/stub.js").is_file(),
-            "接线行指向的入口目录必须真的物化出来"
+            target.join(spec.entry).is_file(),
+            "接线行指向的入口文件必须真的物化出来（接线行里写的就是这个相对路径）"
         );
         assert!(
             target.join("node_modules/@deepseek-ai/dsh-tools").exists(),
