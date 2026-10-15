@@ -445,7 +445,9 @@ macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用�
   other_shell_workbench_notice`）原来写「在那个壳的概览页点『刷新工作台』即可」，入口
   没了就是假指引，改成「在那个壳里关掉工作台窗口再重新打开即可」，判据也从钉某个按钮的
   文案改成钉两个动作词（它要拦的是「出路没写」，不是「出路必须长某样」）。
-- 仍写着这枚按钮的文档：`README.md:116`、`docs/operations/troubleshooting.md:41-42`、
-  `docs/ui/dsh-xlink-ui-redesign-dev-guide.md:69`、`docs/architecture/architecture.md`、
-  `src-tauri/AGENTS.md`。**本轮按维护者选的最小范围没动它们**——它们描述的是机制与
-  出处，不是入口清单；真要收敛时按上面那条两步路径改写。
+- **评审后补（2026-10-15）**：上面那份「本轮没动」的清单里，**用户真会照着做的那几处已经
+  改掉**——`README.md:116` 与 `docs/operations/troubleshooting.md:41-42` 改成上面那条两步
+  路径（原话是「优先用它」，指着一枚界面上根本没有的按钮），`harness_cmd.rs` 的拒绝文案
+  与 `architecture.md:81` / `src-tauri/AGENTS.md:81` 里引用的跨壳提示原文跟着改。剩下的
+  `dsh-xlink-ui-redesign-dev-guide.md:69`（设计稿说明）与几处只描述**机制**的段落
+  （`reset_budget`、日志成因）仍写着那枚按钮——命令与机制都还在，它们说的是机制。

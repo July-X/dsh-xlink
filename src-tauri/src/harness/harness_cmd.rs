@@ -39,8 +39,8 @@ use crate::commands::AppState;
 fn refuse_reason(port: u16, port_open: bool, loaded_url: Option<&str>) -> Option<String> {
     if !port_open {
         return Some(format!(
-            "内核未在运行（端口 {port}），刷新只会重新加载同一个连接失败的页面。\
-             请先点击「工作台」启动内核，再点「刷新工作台」"
+            "内核未在运行（端口 {port}），重建窗口只会重新加载同一个连接失败的页面。\
+             请先点击「工作台」启动内核"
         ));
     }
     if loaded_url.is_none() {
@@ -51,10 +51,11 @@ fn refuse_reason(port: u16, port_open: bool, loaded_url: Option<&str>) -> Option
     None
 }
 
-/// 用户点「刷新工作台」：换掉整个工作台窗口（**新 webview = 新渲染进程**）。
+/// 一键重建工作台窗口：换掉整个窗口（**新 webview = 新渲染进程**）。界面上那枚
+/// 「刷新工作台」2026-10-15 起已隐藏，命令留着（理由见 ui/AGENTS.md）。
 ///
-/// 按钮文案是「刷新工作台」，机制是强制重载——两者说的是两件事：文案说用户得到
-/// 什么（一个重新加载好的工作台），这里说壳到底做了什么（换掉整个窗口）。
+/// 文案与机制说的不是一件事：文案说用户得到什么（一个重新加载好的工作台），这里说
+/// 壳到底做了什么（换掉整个窗口）。
 ///
 /// 为什么不是 `reload()`：2026-09-30 的黑屏实测里，渲染进程被打崩后 `reload()`
 /// 落在同一块死掉的文档上，用户看到的仍是一片黑（用户原话：「reload 后，还是会
@@ -145,8 +146,8 @@ pub fn take_harness_draft() -> Option<crate::harness::harness_draft::RestoredDra
 mod tests {
     use super::*;
 
-    /// 两条拒绝路径各自说清「为什么不做」与「接下来按哪里」：「刷新工作台」是用户
-    /// 在故障里唯一的手动出路，把它变成一句「操作失败」等于没有出路。
+    /// 两条拒绝路径各自说清「为什么不做」与「接下来按哪里」：重建工作台是用户在
+    /// 故障里的手动出路之一，把它变成一句「操作失败」等于没有出路。
     #[test]
     fn a_force_reload_is_refused_with_a_next_step() {
         let dead = refuse_reason(3090, false, Some("http://127.0.0.1:3090/?token=x")).unwrap();

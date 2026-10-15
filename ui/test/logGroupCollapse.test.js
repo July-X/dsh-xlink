@@ -189,7 +189,9 @@ test('折叠状态只有一份实现：logs.js 定义、LogSidebar 消费', asyn
   walk(SRC);
   const referencing = files
     .filter((path) => readFileSync(path, 'utf8').includes('collapsedLogGroups'))
-    .map((path) => path.slice(SRC.length + 1))
+    // 分隔符统一成 `/`：`resolve` 在 Windows 上交回的是反斜杠，拿它直接比下面
+    // 这份写死的清单，红的原因与要检查的东西毫无关系（2026-10-15 本机实测）。
+    .map((path) => path.slice(SRC.length + 1).split('\\').join('/'))
     .sort();
   assert.deepEqual(referencing, ['logs/LogSidebar.vue', 'logs/logs.js']);
 
