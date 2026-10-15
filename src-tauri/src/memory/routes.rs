@@ -179,14 +179,20 @@ pub(crate) fn propose(stream: &mut TcpStream, path: &str, scope_key: &str) {
         verification: String::new(),
     };
     match crate::memory::store::submit_candidate(&namespace, input) {
-        Ok(candidate) => {
-            note_memory_call("propose", &format!("candidate={}", candidate.id));
-            let body = serde_json::json!({
-                "id": candidate.id,
-                "state": candidate.state,
-                "title": candidate.title,
-            })
-            .to_string();
+        // **并入已有记录的来源**不是批准，但也不是拒收：`state` 会告诉模型这条已经在库里
+        // （`accepted`）而不是等着他点保存，否则它会换个说法再提一次——而那正是这次合并要
+        // 避免的循环。两个结局共用一份回包，省的是「报给模型的东西」只有一份实现。
+        Ok(outcome) => {
+            let (id, title, state) = match outcome {
+                crate::memory::store::SubmitOutcome::Merged(record) => {
+                    (record.id, record.title, record.state)
+                }
+                crate::memory::store::SubmitOutcome::Candidate(candidate) => {
+                    (candidate.id, candidate.title, candidate.state)
+                }
+            };
+            note_memory_call("propose", &format!("propose={state} {id}"));
+            let body = serde_json::json!({ "id": id, "state": state, "title": title }).to_string();
             let _ = crate::openai::http::write_response(stream, 200, "application/json", &body);
         }
         Err(error) => {

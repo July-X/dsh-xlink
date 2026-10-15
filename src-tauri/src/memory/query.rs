@@ -14,8 +14,8 @@
 use serde::Serialize;
 
 use crate::memory::store::{
-    load, MemoryDoc, MemoryRecord, Namespace, SCOPE_GENERAL, SCOPE_PROJECT, SOURCE_MANUAL,
-    STATE_ACCEPTED, VERIFICATION_STALE, VERIFICATION_VERIFIED,
+    load, MemoryDoc, MemoryRecord, Namespace, SCOPE_GENERAL, SCOPE_PROJECT, STATE_ACCEPTED,
+    VERIFICATION_STALE, VERIFICATION_VERIFIED,
 };
 use crate::shell::error::AppError;
 
@@ -151,7 +151,9 @@ fn score(record: &MemoryRecord, query: &str) -> Option<i64> {
     if record.scope == SCOPE_PROJECT {
         score += 30;
     }
-    if record.source.kind == SOURCE_MANUAL {
+    // 「用户自己手动写的」这 15 分：一条只要**有一条**手动来源就算（C4 之后一条记忆可以
+    // 既是面板写下的、又在别的会话被自动提取过；此时它仍然更可能是用户的原话）。
+    if crate::memory::sources::any_manual(&record.sources) {
         score += 15;
     }
     Some(score)

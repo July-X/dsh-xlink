@@ -1,40 +1,18 @@
-//! 「同一件事别长成两条」：按**正文指纹**判重复，以及用户写下之后收掉重复候选。
+//! 「同一件事别长成两条」：按**正文指纹**找库里已有的那条，并决定是并入来源还是拒收。
 //!
 //! 两条写入路径共用这份判据：模型提候选（`submit_candidate`）与用户手动保存 / 批准
 //! （`save` / `decide_candidate`）。判据写在 `store` 里会让那个文件继续长大——它已经贴着
 //! 665 行的反棘轮线（≥600 只许下调）；写在 `input.rs` 也不对：那一层管「单条记录怎么规范化」，
 //! 这一层管「与库里已有的比一比」，是两件事。
 //!
-//! **首版只有指纹判据**（精确重复，正文去空白后 SHA-256 相同）。判「意思一样但写法不同」
-//! 需要模型比对，那是 P2 的事——见 `docs/features/memory/memory-progress.md` 的 C4/C5/C6。
+//! **指纹判据只认精确重复**（正文去空白后 SHA-256 相同）：跨会话再提一次同一件事是自动提取
+//! 最常见的形状，而它现在**并入已有记录的来源列表**（C4），不再被整条丢掉。判「意思一样但
+//! 写法不同」需要模型比对，那是 P2 的事——见 `docs/features/memory/memory-progress.md` 的 C5/C6。
 //! 宁可多收一条让人自己看，也不要拿近似当重复：误判成重复会让用户写下的东西**静默消失**。
 
-/// 同一正文是否**在这个范围里**已经在库（权威记录或待确认候选），是就返回一句给用户的原因。
-///
-/// **用指纹而不是语义**：判「意思一样但写法不同」需要模型比对，那是 P2 的事（清单里的 C5）。
-/// 首版把**精确重复**挡掉——它是模型跨会话反复提同一件事时最常见的形状，也是唯一能机械判的。
-///
-/// **指纹要带范围**（独立评审第 16 条）：原先在全库比，于是 A 项目里已有的那句
-/// 「提交前跑 npm run check」会让 B 项目提同一句时被拒——两个项目各自定下同一条约定完全正常，
-/// 而 B 项目的用户看到的是「已经在记忆里了」却在自己的项目里找不到它。
-/// 判据复用 [`crate::memory::query::scope_matches_fields`]（**同一份规则**，不另写一遍）：
-/// **通用**候选只与通用记录比（通用记录处处可见，再存一份才是真重复）；**项目**候选与该项目的
-/// 可见记录比（含通用记录）。
-pub(crate) fn duplicate_reason_for(
-    doc: &super::store::MemoryDoc,
-    clean: &super::input::Clean,
-) -> Option<String> {
-    duplicate_reason(
-        doc,
-        &clean.scope,
-        &clean.workspace_id,
-        &clean.workspace_path,
-        &clean.body,
-    )
-}
-
-/// 这条记录**在候选的范围里看得见吗**——「算不算重复」（[`duplicate_reason`]）与
-/// 「要不要把待确认里的收掉」（[`supersede_pending_duplicates`]）**共用这一份规则**。
+/// 这条记录**在候选的范围里看得见吗**——「算不算重复」（[`find_hit`]）、
+/// 「要不要把待确认里的收掉」（[`supersede_pending_duplicates`]）与「并入来源」
+/// （[`merge_source`]）**共用这一份规则**。
 ///
 /// 独立评审第 1 条（记忆内核那次）正是这条规则只写了一半的后果：写入闸按范围判了，
 /// 而收掉重复候选那一半仍按**全库**指纹扫——A、B 两个仓库各自提了同一条约定时，
@@ -61,25 +39,43 @@ fn in_scope(
     )
 }
 
-pub(crate) fn duplicate_reason(
-    doc: &super::store::MemoryDoc,
-    scope: &str,
-    workspace_id: &str,
-    workspace_path: &str,
-    body: &str,
-) -> Option<String> {
-    let value = super::store::fingerprint(body);
-    let visible = |record_scope: &str, id: &str, path: &str| -> bool {
-        in_scope(record_scope, id, path, scope, workspace_id, workspace_path)
+/// 库里那件「同一件事」落在哪儿。**一次查找**给出全部结论：合并与拒收读的是同一份指纹与
+/// 同一份范围规则——先前是两次独立查找，于是「能并入来源」与「该拒收」可以各判各的，
+/// 而两者的分叉点只有「已接受 / 已停用」这一处必须由一处代码说了算。
+enum Hit {
+    /// 一条**已接受**记录的下标：来源可以并进去。
+    Accepted(usize),
+    /// 其余落点一律拒收，附一句给用户看的原因。
+    Other(String),
+}
+
+/// 同正文、且在这次提交的范围里看得见的那个落点。
+///
+/// **用指纹而不是语义**：判「意思一样但写法不同」需要模型比对，那是 P2 的事（清单里的 C5）。
+/// 首版把**精确重复**认出来——它是模型跨会话反复提同一件事时最常见的形状，也是唯一能机械判的。
+///
+/// **指纹要带范围**（独立评审第 16 条）：原先在全库比，于是 A 项目里已有的那句
+/// 「提交前跑 npm run check」会让 B 项目提同一句时被拒——两个项目各自定下同一条约定完全正常，
+/// 而 B 项目的用户看到的是「已经在记忆里了」却在自己的项目里找不到它。
+/// 判据复用 [`crate::memory::query::scope_matches_fields`]（**同一份规则**，不另写一遍）。
+fn find_hit(doc: &super::store::MemoryDoc, clean: &super::input::Clean) -> Option<Hit> {
+    let value = super::store::fingerprint(&clean.body);
+    // 提交侧的三个坐标取一次名字：下面两处判重读的是**同一组**坐标，抄两遍就会漂。
+    let (scope, id, path) = (&clean.scope, &clean.workspace_id, &clean.workspace_path);
+    let visible = |record_scope: &str, record_id: &str, record_path: &str| -> bool {
+        in_scope(record_scope, record_id, record_path, scope, id, path)
     };
-    if let Some(record) = doc.memories.iter().find(|record| {
+    if let Some(index) = doc.memories.iter().position(|record| {
         super::store::fingerprint(&record.body) == value
             && visible(&record.scope, &record.workspace_id, &record.workspace_path)
     }) {
-        return Some(format!(
-            "这条内容已经在记忆里了（「{}」，状态 {}）。重复收它只会让同一件事出现两份。",
-            record.title, record.state
-        ));
+        let record = &doc.memories[index];
+        // **已停用的记录不给合并**：用户明确停用过的东西，模型不该顺手把它带回来。
+        return Some(if record.state == super::store::STATE_ACCEPTED {
+            Hit::Accepted(index)
+        } else {
+            Hit::Other(already_stored(record))
+        });
     }
     doc.candidates
         .iter()
@@ -93,11 +89,60 @@ pub(crate) fn duplicate_reason(
                 )
         })
         .map(|candidate| {
-            format!(
+            Hit::Other(format!(
                 "这条内容已经在待确认里了（「{}」）。请先在管理面板里处理掉它。",
                 candidate.title
-            )
+            ))
         })
+}
+
+fn already_stored(record: &super::store::MemoryRecord) -> String {
+    format!(
+        "这条内容已经在记忆里了（「{}」，状态 {}）。重复收它只会让同一件事出现两份。",
+        record.title, record.state
+    )
+}
+
+/// 同一正文已在库里、而这次又没有东西可并进去时的拒收原因（给用户看的一句话）。
+///
+/// **已接受但并不进去的记录同样拒收**：那一刻 [`merge_source`] 已经判过这次提交没有新东西
+/// 可以记给它（来源没有来处、或来源列表已满、或这条来源本来就在列表里）。若此时放行，
+/// 收进来的就是**第二条同正文的记录**——而那正是这道闸要挡的东西。判据只认指纹与状态，
+/// 「这次来源算不算新」由 [`merge_source`] 那一半说了算，两半都过不了才拒收。
+pub(crate) fn duplicate_reason(
+    doc: &super::store::MemoryDoc,
+    clean: &super::input::Clean,
+) -> Option<String> {
+    match find_hit(doc, clean) {
+        Some(Hit::Other(reason)) => Some(reason),
+        Some(Hit::Accepted(index)) => Some(already_stored(&doc.memories[index])),
+        None => None,
+    }
+}
+
+/// 把这次提交的来源并进**同正文且已接受**的那条记录，返回并入之后的那条。
+///
+/// §7.2「相同规范化正文可合并来源」：原先这里只有拒收，于是「这件事在会话 B 也说过」这条信息
+/// 跟着第二次提交一起没了，而它正是用户想看到的东西——一条记忆带多个来源，面板与导出都列得出来。
+/// 合并**不新建记录、不进待确认**，因此也不占用户的确认工作量。
+pub(crate) fn merge_source(
+    doc: &mut super::store::MemoryDoc,
+    clean: &super::input::Clean,
+    source: &super::store::MemorySource,
+    now: &str,
+) -> Option<super::store::MemoryRecord> {
+    let Hit::Accepted(index) = find_hit(doc, clean)? else {
+        return None;
+    };
+    let record = doc.memories.get_mut(index)?;
+    // 并不进去（来源已满、或这条来源本来就在列表里）时返回 `None`，让提交方按「重复」拒收
+    // ——**不静默截断来源列表**：那份列表一旦与实际发生的事对不上，它就不再可信了。
+    if !crate::memory::sources::merge(&mut record.sources, source) {
+        return None;
+    }
+    record.revision = record.revision.saturating_add(1);
+    record.updated_at = now.to_string();
+    Some(record.clone())
 }
 
 /// 用户已经用同样的正文写下（或批准）了一条记忆之后，把还在待确认里的重复候选收掉。
