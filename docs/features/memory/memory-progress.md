@@ -291,11 +291,17 @@ A16/A17/B17 都做完了。
   **真机验过的**（scratch 内核 `0.2.1-alpha.3` + 无头 Chrome，2026-10-15）：内核把这一份
   认出来并供给（它出现在内核的客户端组合 URL 里，200），页面求值**零异常**，被内核 client-hmr
   **重新求值一次也零异常**（这条是它最容易死的地方，见下一条）。
-  **还差的那一眼**：徽标在**真会话表头上画出来**。scratch 那个实例没有凭据也没有工作区，
-  服务端 `session/create` 建得出会话，侧栏却永远停在「新会话」，表头那一支（`sessionId` 为空
-  时走 blank）不渲染，于是插槽没挂上。组件本身的渲染路径由上面那批 vm 用例执行真文件覆盖
-  （条数、悬停文案里含注入时间与标题、通用偏好的读范围、没有就不画、卸载清定时器），
-  但**页面上那一枚字形**还没被人眼看过一次——等本机 release 壳的工作台开着时补一眼即可
+  **还差的那一眼**：徽标在**真会话表头上画出来**。这一眼缺的不是代码而是**一个可渲染的会话头**，
+  而且原因量到了（2026-10-15 scratch 内核 + 无头 Chrome 实测）：**空会话那一支根本不渲染
+  `conversation.session.header.utilities` 槽**——把那一页所有 `[data-slot]` 抄下来，
+  `conversation.header.leading`、`conversation.session.header.corner`（右侧边栏按钮）都在，
+  `…utilities` 不在；表头 class 是 `wSkVaW_headerBlank`，而真机上那个有标题的会话量到的是
+  `headerUtilities 1153→1232`。scratch 实例没有凭据也没有工作区，会话永远停在空白态，
+  服务端 `session/create` 建出来的会话侧栏也不列——所以那一眼要等一个有标题的真会话。
+  同一轮里已经**确证**的是：`apply()` 在真内核里真的跑了（页面里出现了我们注入的
+  `<style id="xlink-memory-badge-style">`），全程零异常，徽标不出现**不是**注册失败。
+  组件本身的渲染路径由上面那批 vm 用例执行真文件覆盖（条数、悬停文案里含注入时间与标题、
+  通用偏好的读范围、没有就不画、卸载清定时器）
 - 🟡 **D6b 顺带挖出：已发布的 `xlink-openai-oauth` 账户卡有同一个形状的缺陷（已修）**——
   内核的 client-hmr 会在束文件变化时**重新求值**它，而求值落在页面的全局词法作用域里：
   顶层 `const STRINGS` 第二次求值就是 `SyntaxError: Identifier 'STRINGS' has already been
