@@ -371,6 +371,11 @@ A16/A17/B17 都做完了。
     （`replaces_the_file_without_leaving_staging_files`——写两次同一路径 + 断言没有残留临时文件）。
     它**不区分** `fs::rename` 与「`remove_file` + `rename`」走的是哪条（两条都满足这条断言），
     所以「fallback 分支是不是死代码」仍未定，但用户看得见的那半（覆盖成功、不留垃圾）实测过了。
+  · **这次验收已经变成机械判据**（2026-10-15）：`.github/workflows/desktop-ci.yml` 的 Windows job
+    从「只 `cargo check --all-targets`」改成「`cargo test --locked`」——`cargo test` 编译的目标
+    覆盖 `--all-targets` 那些（本 crate 没有 bench / example），所以是取代不是叠加，仍然不签名、
+    不打包；Windows 上的 clippy 是另一次全量编译，**没挂**（真需要时再说）。这样「Windows 专属
+    行为有没有被人跑过」不再取决于谁记得手动跑一遍。
   · **前置**：本机第一次跑停在 `check:builtin`——`src-tauri/resources/builtin-plugins/` 是构建期
     产物（`.gitignore` 挡着）、源码改了而没重新生成；`npm run prep:builtin` 之后复跑全绿。
     这是门禁 fail-closed 的正确形状，不是缺陷。

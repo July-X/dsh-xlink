@@ -115,11 +115,16 @@ jobs:
   # 代价已经付过：rc.19 当天连续两次 Windows 编译失败，每次都要重新打 tag 并白烧
   # 一轮双平台构建（P2-16）。
   #
-  # 这里只做 `cargo check --all-targets`（编译期正确性），不签名、不打包、不跑
-  # 测试：目标是"Windows 代码至少能编过"。前端产物只需要存在一个 dist 目录，
-  # tauri-build 会校验 `frontendDist` 路径，因此先造一个最小 index.html。
+  # **2026-10-15（F6 验收）起，这里除了编过还要跑**：此前只有 `cargo check
+  # --all-targets`，于是 `cfg(target_os = "windows")` 那一半的**行为**从来没被执行
+  # 过——本仓真的栽过：两条路径归一用例把 `fs::canonicalize` 的原始结果当期望值，
+  # 在 Windows 上必红，却因为「CI 只编不跑」一直绿着。验收当天在那台机器上跑了
+  # 全量 `npm run check`（全绿），并把这个 job 的 check 换成 `cargo test --locked`：
+  # `cargo test` 编译的目标覆盖 `--all-targets` 的那些（本 crate 没有 bench /
+  # example），所以是**取代不是叠加**。仍然不签名、不打包；前端产物只需要存在一个
+  # dist 目录，tauri-build 会校验 `frontendDist` 路径，因此先造一个最小 index.html。
   windows-compile:
-    name: Windows compile check
+    name: Windows compile + tests
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -140,10 +145,12 @@ jobs:
       - name: Prepare builtin plugin resources
         # 本 job 刻意不装 pnpm（只用 node 内置模块够跑），所以直调脚本本体。
         # build script 校验的是 tauri.conf.json 里登记的全部 bundle.resources，
-        # 不只是 frontendDist——少这一步 cargo check 会与 quality job 同样死于
-        # `resource path 'resources/builtin-plugins' doesn't exist`。
+        # 不只是 frontendDist——少这一步，下面那条 cargo 命令会与 quality job
+        # 同样死于 `resource path 'resources/builtin-plugins' doesn't exist`。
         shell: bash
         run: node scripts/prepare-builtin-plugins.mjs
 
-      - name: Check Windows-only code paths
-        run: cargo check --manifest-path src-tauri/Cargo.toml --locked --all-targets
+      - name: Run Rust tests on Windows
+        # 判据口径与本地 `npm run check` 的 check:rust 一致（`--locked`），只是不带
+        # clippy：Windows 上再跑一次 clippy 是另一次全量编译，真需要时再加。
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked

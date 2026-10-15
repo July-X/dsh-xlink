@@ -1147,8 +1147,10 @@ mod tests {
 
         // 期望值走**同一个**规范化函数，而不是 `fs::canonicalize` 的原始结果：
         // Windows 上后者带 `\\?\` 前缀而 `normalize_path` 会剥掉它，拿它当期望就
-        // 让这条用例只在 macOS 上成立（Windows CI 那个 job 只跑 `cargo check`、
-        // 从不执行测试，于是它一直绿着——直到有人真的在 Windows 上跑一遍）。
+        // 让这条用例只在 macOS 上成立——它当时能一直绿着，是因为 Windows CI 那个
+        // job 只跑 `cargo check --all-targets`、从不执行测试。2026-10-15 起那个 job
+        // 跑 `cargo test --locked`（当天先在真机上跑过一遍全量门禁，全绿），
+        // 同形状的期望值错误不会再溜过去。
         let canonical = crate::memory::workspaces::normalize_path(&real.display().to_string());
 
         // 两个平台都能验的那一半：已存在的目录 + 结尾斜杠 + 首尾空白 → 归到 realpath。
