@@ -592,7 +592,8 @@ mod tests {
             .expect("record");
         assert_eq!(record.body, "提交前先跑 npm run check");
         assert_eq!(record.scope, "general");
-        assert_eq!(record.source.kind, "extract", "来源跟着候选过来");
+        assert_eq!(record.sources.len(), 1, "候选的来源落在记录的第一个来源上");
+        assert_eq!(record.sources[0].kind, "extract", "来源跟着候选过来");
 
         // 检索命中：这条记忆真的会进模型上下文（§10 要的就是这条链通）。
         let context = crate::memory::query::retrieve(

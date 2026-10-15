@@ -159,6 +159,14 @@ export function sourceText(kind) {
   return kind || '未知来源';
 }
 
+/// 一条记录的全部来源（一条可以不止一个：面板手动、会话里提出、自动提取）。
+/// **两种形状都认**：新库是 `sources` 数组，读到旧形状的 `source` 时按单条算——
+/// 面板不该因为后端形状没换过来就显示「未知来源」。
+export function sourcesText(row) {
+  const list = row?.sources?.length ? row.sources : row?.source ? [row.source] : [];
+  return list.map((item) => sourceText(item.kind)).join(' + ') || '未知来源';
+}
+
 /// 验证范围的中文标签（§2：列表要显示验证状态）。**不是置信分数**，只三档。
 export function verificationText(value) {
   if (value === 'verified') return '已验证';
