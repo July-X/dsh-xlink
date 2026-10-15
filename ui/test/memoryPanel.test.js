@@ -1,8 +1,8 @@
-// 记忆面板的两条判据：注入插件的「未启用」提示不许误报，以及它确实接在模板上。
+// 记忆面板的判据：纯函数的行为，以及**它们真的接在模板/命令上**。
 //
-// 这两条是一件事的两半：`injectionDisabled` 是纯函数、测起来容易，而它**没被模板
-// 用上**的话一切照旧——本仓为此栽过（helper 有测试、接线没有，纯函数测试全绿而
-// 真机上功能没接）。所以下面第二条读模板原文，钉住那个 v-if。
+// 贯穿全篇的是一条本仓栽过的形状——**helper 有测试、接线没有**：纯函数测试全绿，
+// 真机上功能没接。所以每一条能测纯函数的，后面都跟着一条读模板原文、或真的走一遍
+// 命令→store 的判据。
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
@@ -274,4 +274,27 @@ test('导出、清空、空态都按**未筛选**的库判（评审第 2 条）'
   // 两种空态要分开说。
   assert.match(template, /还没有记忆/);
   assert.match(template, /当前筛选下没有记忆/, '「筛掉了」与「库是空的」是两回事');
+});
+
+test('开关返回的状态真的被存下来——「处理中」靠的就是它（E6 的面板那半）', async () => {
+  // 这条判据针对的形状是本仓反复栽的那个：**纯函数有测试、接线没有**。
+  // `switchEffectText` 的三条分支上面已经测了，可它读的是 `memoryStore.status`；
+  // 如果 `setMemoryEnabled` 把命令返回的那个对象丢掉（或另造一个字段子集），
+  // 面板会一直停在「还没读到状态」——而那看起来像正常的初始态，不会有人报错。
+  //
+  // 顺带把 `effect_pending` 钉在这里：它是**新加的字段**，走的正是这条路
+  // （命令返回 → store → 模板），少一环就等于没做。
+  const { setMemoryEnabled, memoryStore, switchEffectText } = await import(
+    '../src/memory/memory.js'
+  );
+  const returned = { effect_pending: true, file: '/tmp/probe/memory.json', generation: 7 };
+  globalThis.window.__TAURI__.core.invoke = () => Promise.resolve(returned);
+  await setMemoryEnabled(true);
+  // 判据按**字段**而不是对象引用：`memoryStore` 是 Vue 的 `reactive`，读出来是代理，
+  // 引用天然不同（先按引用写过一版，红得对、但红的是判据不是实现）。真正要钉的是
+  // 「命令返回什么，面板就能看到什么」——逐字段比，抄子集的写法照样会被抓住。
+  for (const [key, value] of Object.entries(returned)) {
+    assert.deepEqual(memoryStore.status[key], value, `字段 ${key} 没有传到面板`);
+  }
+  assert.match(switchEffectText(memoryStore.status), /处理中/, '存下来之后面板就该说「处理中」');
 });

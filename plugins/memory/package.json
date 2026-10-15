@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "dsh-xlink 内置本地记忆插件：经外壳的回环桥读取用户批准的记忆、注入运行上下文，并提供 memory_search / memory_propose 工具",
+  "description": "dsh-xlink 内置本地记忆插件：经外壳的回环桥读取用户批准的记忆、注入运行上下文，并提供 memory_search / memory_read / memory_propose 工具",
   "main": "host/index.js",
   "exports": {
     ".": "./host/index.js",

@@ -5,7 +5,7 @@
 `bridge.js` / `policy.js` / `mask.js`）与壳侧（`src-tauri/src/memory/` 的 `jobs.rs` / `routes.rs` /
 `lock.rs` / `store.rs::submit_candidate`，以及 `plugins/builtin/bridge.rs` 的两条手动夹具）。
 
-**为什么值得单独留一份**：到 2026-10-15 为止**18 条里已修 17 条 + 1 条修了一半**——**「高」「中」「低」三档的正文全部清空**，
+**为什么值得单独留一份**：到 2026-10-15 为止**18 条全部修完**（最后两条「高」档见下，当天补齐）——**「高」「中」「低」三档的正文全部清空**，
 散在对话里会丢。清单（[memory-progress.md](../features/memory/memory-progress.md)）指向本文件。
 
 **评审快照**（行号对应这些版本；评审期间工作区被另一会话改过一次）：
@@ -28,7 +28,7 @@ append 的是 `{turn, step, message, usage}`）。只有 `user/message` 是 `dat
 **修法**：按事件类型分支取正文；夹具改成**内核真实形状**，并加一条「不认识的形状就当没有正文，
 别硬猜」的判据。（**Lead 复核过内核源码**，评审结论成立。）
 
-### 2. 主路（落盘屏障 → 读句柄）永远走不到 —— ⬜ 待办
+### 2. 主路（落盘屏障 → 读句柄）永远走不到 —— ✅ 已修（2026-10-15）
 
 插件交给 `sessions.flush` 的是自拼的 `{ id }` 字面量，而内核 `SessionStore.flush` 用 `WeakMap`
 按**对象身份**取 live entry（`dsh-session/lib/index.js`），非 live 对象必抛
@@ -42,7 +42,11 @@ append 的是 `{turn, step, message, usage}`）。只有 `user/message` 是 `dat
 id 只给桥用。附带：`index.js` 里 `{ session: { id: key.session }, ...key }` 的内层被 `...key`
 立即覆盖，是死表达式。
 
-### 3. 跨会话领取把候选记到**别人的项目** —— ⬜ 待办
+**已修**：任务键改成 `{ session: liveSession, cursor: endSeq, extractor }`——`services.sessions.get(sessionId)`
+取**真会话对象**（`plugins/memory/host/index.js:232-233`，注释记着这条评审），拿不到才退 live 读法；
+那个死表达式一并删掉。判据：6 组假件用例 + 真机 3 回合验过（`persisted` 17/28 → `live` 39 条）。
+
+### 3. 跨会话领取把候选记到**别人的项目** —— ✅ 已修（2026-10-15）
 
 `/claim` 不带 session，`claim_any` 从全表挑最早 pending；提交时 `workspace_id` / `workspace` /
 `scope` 取自**发起领取的那个会话**的目录。两个会话同跑，或某会话留下 pending（上一任务还在跑 →
@@ -51,6 +55,11 @@ id 只给桥用。附带：`index.js` 里 `{ session: { id: key.session }, ...ke
 这正是 G3 要防的形状，而 G3 的用例只钉了「现解析」，钉不到「解析的是**谁**的目录」。
 
 **修法方向**：任务键里冻结 workspace，或 `/claim?session=` 只领自己的。
+
+**已修**：`/claim?session=` 只领**本会话**的任务（插件总是带；不带 = 领全表最早的，保留给测试与旧
+调用点），`jobs::claim_any_due_for(doc, now, wanted, true)` 按会话过滤；提交时「来源会话对不上」
+仍然拒（`bridge.rs` ③）。判据：`jobs.rs` 的
+`claiming_scoped_to_a_session_never_takes_another_sessions_job`。
 
 ---
 
