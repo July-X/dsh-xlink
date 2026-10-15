@@ -432,6 +432,16 @@ A16/A17/B17 都做完了。
   目录）后，八组用例覆盖「有效目录优先 / 服务缺失 / 返回空 / 抛异常 / 返回非字符串 / 全空」，
   加一条装配层判据钉住「三个工具都要求 agent、都用调用方解析目录」。**反向验过**
   （把 `memory_read` 改成用固定目录即红）。
+  · **2026-10-15 补：内核那个服务的真实形状查清楚了**（原先记成「不确定，要看内核」）。
+    读本机已装内核 `0.2.1-alpha.2` 的 `dsh-working-directory/lib/types/index.d.ts`：
+    `get(session: Session): string`（同步、只读**已提交**的目录，不做文件系统 I/O）、
+    `ensure(agent: Agent, signal?): Promise<string>`（**会去校验并恢复**原目录，项目消失时**抛**）、
+    `set(agent, path, signal?)`。**我们走的是 `get(agent.session)`，与内核自己
+    `dsh-api-terminal-controller` 的 `workingDirectory.get(agent.session)` 逐字同形**（另一处
+    `dsh-tool-skill` 用的是 `await …ensure(agent, signal)`）。**检索这条路必须是无副作用的那一个**：
+    恢复目录是一次用户看得见的动作，而记忆检索不该顺手改用户的会话；它还会抛，那会让一次检索失败。
+    **换成 `ensure` 的症状是静默的**（Promise 不是字符串 → 悄悄退回冻结的 `header.cwd`，正是这一条
+    要防的 A/B 串味）。因此加了一条判据钉「`ensure` 一次都不许被调到」，反向验过（改成 `ensure` 即红）。
 - ✅ **G16 无 agent 的工具调用被拒绝** —— 三个工具的 `if (!exec.agent) throw`（代码判据；无单独用例）
 - ✅ **G17 删除后搜索/详情/导出/缓存都不返回该条** —— 同 C9 的用例 + 导出快照用例
 - ✅ **G18 相同来源不能自动再生** —— 用例 `a_deleted_body_is_not_accepted_back_from_the_model`
