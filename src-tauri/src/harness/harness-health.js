@@ -97,6 +97,26 @@
   }
 
   /**
+   * 这一条拒绝是不是**壳侧授权没配对**，而不是页面自己的故障。
+   *
+   * 2026-10-15 的实况：内核把会话里的外链渲染成 `target="_blank"`，opener 插件的点击
+   * 拦截脚本去调 `plugin:opener|open_url`，而 `harness-remote.json` 当时没授那条命令——
+   * 拒绝变成一个未处理的 Promise 异常，被本探针当成「工作台故障」上报，再被 `guard.rs`
+   * 按当天日志里的别的告警误归因成「疑似内核问题」。用户点一下外链，面板里多出一桩查无
+   * 此事的内核事故。
+   *
+   * 认的是 Tauri 自己那几种措辞（`tauri/src/ipc/authority.rs`），一律以
+   * `Command <名字> not allowed` 开头。**别放宽成裸的 `not allowed`**：浏览器自己的
+   * `NotAllowedError`（权限被拒）是货真价实的页面故障，放过去等于把黑屏不上报——漏报
+   * 一条真实黑屏比多报一条假事故更糟，所以这一刀只切这一种形状。白屏另有
+   * `shouldReportBlankHarness` 那条判据在报，不靠这条。
+   */
+  function isPermissionRefusal(value) {
+    var text = describeError(value) || errorText(value) || "";
+    return /Command [\s\S]*?not allowed/.test(text);
+  }
+
+  /**
    * 客户端模块 bundle 的 `<script>` 加载失败所对应的地址，不是地址就返回空串。
    *
    * 资源失败事件不带 JS 栈，但事件目标带 `src`——而 `src` 是**唯一**带完整
@@ -254,6 +274,14 @@
 
   window.addEventListener("unhandledrejection", function (event) {
     var reason = event && event.reason;
+    // 壳侧授权没配对的那一类只落控制台：它占掉的是**一次性**上报额度（`reported`
+    // 一旦置位，后面的真事故全部不报），所以宁可放过假的那条。
+    if (isPermissionRefusal(reason)) {
+      if (window.console && window.console.warn) {
+        window.console.warn("[dsh-xlink] 壳侧 IPC 拒绝，不计入工作台故障：", describeError(reason));
+      }
+      return;
+    }
     var detail = describeError(reason) || errorText(reason) || "未处理的 Promise 异常";
     invokeReport("unhandled-rejection", detail, reason && reason.stack);
   });

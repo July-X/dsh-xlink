@@ -176,19 +176,6 @@ test('次级入口在版本号右侧靠右：网格第二列 + justify-self: end
 });
 
 test('概览页不显示「刷新工作台」，一键重建那条能力不许跟着删', () => {
-  // 2026-10-15 用户要求隐藏那枚按钮：它是这一排里唯一的**动作**（换掉整个工作台
-  // 窗口 = 换掉渲染进程），而这一排其余两枚都只把窗口带到台前。判它「不在了」要
-  // 按**文案在模板里**，不是按「按钮少了几个」——上面那条已经数过枚数。
-  assert.doesNotMatch(templateOf(overview), /刷新工作台/, '概览页模板里不该再有这枚按钮');
-  assert.doesNotMatch(overview, /RefreshRight/, '图标 import 也要跟着删，留着就是没有作用方的声明');
-  // 但**能力不许跟着删**。按 ui/AGENTS.md 记下的那条先例（`instance.js` 的
-  // `setDefaultInstance`：界面删了、函数不许删），没有调用方的 API 不是「永远走不到
-  // 的代码」。手动出路只是变成两步——关掉工作台窗口，再点「工作台窗口」重新打开，
-  // 那条路走完整建窗路径，同样换掉渲染进程。Rust 侧的 `harness_force_reload` /
-  // `reset_budget` 一并留着，等的是把它挪进事故面板，还是由维护者另行决定删掉。
-  const storeJs = readFileSync('ui/src/store.js', 'utf8');
-  assert.match(storeJs, /export function forceReloadHarnessWindow/, '这个动作不许当死代码清掉');
-  assert.match(storeJs, /invoke\('harness_force_reload'\)/, '它仍要指向那条唯一能换掉渲染进程的命令');
   // **判据扫的是剥掉注释的源码，不是全文**：这一条本轮就被自己的注释顶回来过一次
   // ——上面那段「为什么留着」的说明里原样写了这个函数名，按 `includes` 扫全文的话，
   // 判据把维护者写的解释当成了调用点（与 `templateOf` 那条注释里记的「同一个坑踩了
@@ -200,10 +187,31 @@ test('概览页不显示「刷新工作台」，一键重建那条能力不许�
       .replace(/<!--[\s\S]*?-->/g, '')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/^[ \t]*\/\/.*$/gm, '');
-  const callers = srcScriptFiles().filter((file) => {
-    if (!file.endsWith('.vue')) return false;
-    return stripAllComments(readFileSync(file, 'utf8')).includes('forceReloadHarnessWindow');
-  });
+  // 2026-10-15 用户要求隐藏那枚按钮：它是这一排里唯一的**动作**（换掉整个工作台
+  // 窗口 = 换掉渲染进程），而这一排其余两枚都只把窗口带到台前。判它「不在了」要
+  // 按**文案在模板里**，不是按「按钮少了几个」——上面那条已经数过枚数。
+  assert.doesNotMatch(templateOf(overview), /刷新工作台/, '概览页模板里不该再有这枚按钮');
+  assert.doesNotMatch(
+    stripAllComments(overview),
+    /RefreshRight/,
+    '图标 import 也要跟着删，留着就是没有作用方的声明',
+  );
+  // 但**能力不许跟着删**。按 ui/AGENTS.md 记下的那条先例（`instance.js` 的
+  // `setDefaultInstance`：界面删了、函数不许删），没有调用方的 API 不是「永远走不到
+  // 的代码」。手动出路只是变成两步——关掉工作台窗口，再点「工作台窗口」重新打开，
+  // 那条路走完整建窗路径，同样换掉渲染进程。Rust 侧的 `harness_force_reload` /
+  // `reset_budget` 一并留着，等的是把它挪进事故面板，还是由维护者另行决定删掉。
+  const storeJs = readFileSync('ui/src/store.js', 'utf8');
+  assert.match(storeJs, /export function forceReloadHarnessWindow/, '这个动作不许当死代码清掉');
+  assert.match(storeJs, /invoke\('harness_force_reload'\)/, '它仍要指向那条唯一能换掉渲染进程的命令');
+  const callers = srcScriptFiles()
+    .map((file) => [file, stripAllComments(readFileSync(file, 'utf8'))])
+    // store.js 里那处是**定义**不是调用：先把定义那一行从文本里拿掉，剩下的任何
+    // 一处出现都是真调用点。**`.js` 一并扫**——只扫 `.vue` 时实测在 `ui/src` 下放
+    // 一个 `.js` 调用点，100 条断言照样全绿，而动作与 store 本来就住在 `.js` 里。
+    .map(([file, src]) => [file, src.replace('export function forceReloadHarnessWindow', '')])
+    .filter(([, src]) => src.includes('forceReloadHarnessWindow'))
+    .map(([file]) => file);
   assert.deepEqual(callers, [], '概览页不该再调 forceReloadHarnessWindow');
 });
 
