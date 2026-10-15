@@ -17,5 +17,6 @@ pub(crate) mod lock;
 pub(crate) mod query;
 pub(crate) mod recent;
 pub(crate) mod routes;
+pub(crate) mod sources;
 pub(crate) mod store;
 pub(crate) mod workspaces;

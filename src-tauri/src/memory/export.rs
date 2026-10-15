@@ -157,7 +157,9 @@ fn write_records(out: &mut String, heading: &str, rows: &[&MemoryRecord]) {
         }
         out.push_str(&format!(
             "- 来源：{} · 创建 {} · 更新 {}\n",
-            source_text(&row.source.kind),
+            // 一条记忆可以带好几处来源（C4），这里全列出来——导出是用户拿去核对的东西，
+            // 只列其中一处就等于让这份文件说谎。
+            crate::memory::sources::labels(&row.sources),
             row.created_at,
             row.updated_at
         ));
@@ -192,7 +194,8 @@ fn write_candidates(out: &mut String, rows: &[MemoryCandidate]) {
             "- 范围：{}\n- 提出时间：{}\n- 来源：{}\n",
             scope_text(&row.scope, &row.workspace_path),
             row.created_at,
-            source_text(&row.source.kind)
+            // 候选还没有被批准，仍是「一次提交」而不是「一条记忆」，所以这里只有一个来源。
+            crate::memory::sources::label_of(&row.source)
         ));
         out.push_str(&format!("\n{}\n", row.body.trim()));
     }
@@ -247,15 +250,6 @@ fn verification_text(verification: &str) -> &str {
         store::VERIFICATION_VERIFIED => "verified（用户在会话里确认过）",
         store::VERIFICATION_STALE => "stale（可能已过期）",
         store::VERIFICATION_UNVERIFIED => "unverified（还没有被会话验证过）",
-        other => other,
-    }
-}
-
-fn source_text(kind: &str) -> &str {
-    match kind {
-        store::SOURCE_MANUAL => "user-manual（手动保存）",
-        store::SOURCE_SESSION => "session（会话里提出）",
-        store::SOURCE_EXTRACT => "extract（自动提取）",
         other => other,
     }
 }
@@ -357,6 +351,45 @@ mod tests {
         let again = export(&ns).expect("export twice");
         assert_ne!(again.path, result.path, "导出不许覆盖已有文件");
         assert!(std::path::Path::new(&result.path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 一条记忆带好几处来源时，导出要**全列**（C4）：只列其中一处，这份拿去核对的
+    /// 快照就在替用户说谎——而来源正是用户在导出这份文件时最想核对的东西之一。
+    #[test]
+    fn every_source_of_a_merged_memory_shows_up_in_the_export() {
+        let (dir, _guard) = home("sources");
+        let ns = Namespace::current();
+        seed(&ns);
+        let outcome = store::submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: SCOPE_PROJECT.to_string(),
+                workspace_path: "/tmp/demo".to_string(),
+                title: "构建前先跑检查".to_string(),
+                body: "提交前跑 npm run check".to_string(),
+                source: MemorySource {
+                    kind: store::SOURCE_EXTRACT.to_string(),
+                    session: "s-9".to_string(),
+                    ..MemorySource::default()
+                },
+                ..CandidateInput::default()
+            },
+        )
+        .expect("同一个正文换一个会话再提一次");
+        assert!(
+            matches!(outcome, store::SubmitOutcome::Merged(_)),
+            "同正文应当并入来源，而不是新收一条候选"
+        );
+
+        let result = export(&ns).expect("export");
+        assert_eq!(result.memories, 2, "并入来源不新建记录");
+        assert_eq!(result.candidates, 1, "并入来源不占用户的待确认清单");
+        let text = std::fs::read_to_string(&result.path).expect("read export");
+        assert!(
+            text.contains("user-manual（手动保存） + extract（自动提取）"),
+            "两个来源都要出现在导出里：{text}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
