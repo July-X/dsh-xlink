@@ -1662,7 +1662,7 @@ test('工作区 id 解析：拿到就带上，拿不到一律降级成空串', a
 /** 活着的定时器计数：徽标卸载时不清理，就是每换一个会话漏一个轮询。 */
 let liveTimers = 0;
 
-function loadClientBundle({ notes = [], language = 'zh', invoke = null, logged = null } = {}) {
+function loadClientBundle({ notes = [], language = 'zh', invoke = null, logged = null, documentRef = null } = {}) {
   const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
   const invokes = [];
   const sandbox = {
@@ -1700,9 +1700,29 @@ function loadClientBundle({ notes = [], language = 'zh', invoke = null, logged =
       },
     },
   };
+  if (documentRef) sandbox.window.document = documentRef;
   createContext(sandbox);
   runInContext(source, sandbox);
   return { spec: sandbox.__loaded, source, invokes };
+}
+
+/** 最小 document 桩：只为验样式注入的幂等。 */
+function fakeDocument() {
+  const appended = [];
+  const registry = new Map();
+  return {
+    appended,
+    ref: {
+      getElementById: (id) => (registry.has(id) ? { id } : null),
+      createElement: () => ({ id: '', textContent: '' }),
+      head: {
+        appendChild: (node) => {
+          registry.set(node.id, node);
+          appended.push(node.id);
+        },
+      },
+    },
+  };
 }
 
 /** 最小 hook 宿主：按下标存槽（重渲染能续上），能收 cleanup。 */
@@ -1845,6 +1865,19 @@ test('徽标只画这个会话最近的那一条：环形缓冲是跨会话的',
   assert.ok(title.includes('用中文回复') && title.includes('npm run check 才是门禁'), '要列的是**标题**');
   assert.ok(title.includes('本工作区'), '工作区在时要说清读的是哪一层');
   assert.equal(title.includes('别的会话的偏好'), false, '别的会话的笔记一个字都不许出现在这个会话的页面上');
+});
+
+test('重复 apply 不会重复注入样式：内核 hmr 重新求值时会再跑一遍 apply', () => {
+  // 真机量过：touch 一下束让内核 client-hmr 重新求值，页面里徽标仍是**一枚**（同一个注册
+  // id 是替换而不是追加，那是框架行为、没有代码可改），样式标签也仍是一个。属于**本插件**
+  // 的那一半就是「重复 apply 不重复插 <style>」，钉在这里。
+  const { ref, appended } = fakeDocument();
+  const { spec } = loadClientBundle({ documentRef: ref });
+  const loaded = spec.factory(() => ({})); // apply 这一步不碰 react
+  const ctx = { slots: { inject: (_name, factory) => { factory(); }, register: () => ({}) } };
+  loaded.apply(ctx);
+  loaded.apply(ctx);
+  assert.deepEqual(appended, ['xlink-memory-badge-style'], '第二次 apply 不该再插一个 <style>');
 });
 
 test('轮询里的异常不许冒成未处理拒绝：冒出去就是一条工作台故障上报', async () => {
