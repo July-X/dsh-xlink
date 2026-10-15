@@ -58,6 +58,13 @@
       }
     },
     {
+      "identifier": "allow-memory-injection-notes",
+      "description": "Allow the workbench page (kernel webui at http://127.0.0.1:<port>) to read the ring of recent memory-injection notes, which is what the embedded memory plugin's session-header badge renders: for each injection the shell recorded, the list carries only the timestamp, the kernel session id, the workspace scope, whether the memory switch was on, and the **titles** of the memories that entered the context (falling back to the bare id when no title resolves). No memory body ever crosses this boundary — the panel's memory editor keeps full text in the shell, and this command exists so a user can see, at a glance in the conversation header, which memories the model actually saw last turn. The ring is in-process (recent.rs, MAX_NOTES = 20, newest first) and therefore empty until the current shell process has performed an injection; a restart simply leaves the badge absent instead of showing stale data. Split out of allow-local-commands rather than reused because that set is granted to the management panel, whose window is a local window, while this one is granted to the remote-origin workbench page.",
+      "commands": {
+        "allow": ["memory_recent_injections"]
+      }
+    },
+    {
       "identifier": "allow-local-commands",
       "description": "Allow every app command from the shell's own local windows (the management panel). Defining ANY app-level permission flips Tauri from 'app commands are open to local windows' to 'app commands require an explicit grant', so this permission restores the pre-existing behavior for the local UI. Maintenance: every command added to `tauri::generate_handler!` in lib.rs must be listed here, or its invoke from the panel fails with 'not allowed. Command not found'. This invariant is enforced by scripts/check-invariants.mjs in CI.",
       "commands": {

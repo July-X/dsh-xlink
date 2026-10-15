@@ -792,7 +792,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// 只带一个 host 目录的内置插件（本地记忆）也能物化，且**必需的 peer 真的
+    /// 内置插件按 `entries` **逐项**物化（以本地记忆为标本），且**必需的 peer 真的
     /// 被挂上**。
     ///
     /// 这条钉的是「启用之后内核能不能 import 它」：`host/index.js` 静态 import
@@ -800,20 +800,25 @@ mod tests {
     /// `node_modules` 解析——peer 没挂上时插件加载失败，而症状是「插件开关拨不动、
     /// 记忆一条都不注入」，日志里什么都没有。
     ///
-    /// 与 ponytail 那条的差别正是要覆盖的形状：**没有上游内容、没有 client 目录、
-    /// 只有一个 host**（`upstream_dir` 传 `None`）。
+    /// **夹具按 `entries` 现搭目录，不写死形状**：2026-10-15 给 memory 加了 `client`
+    /// 条目（会话头那枚徽标的客户端半边），而原夹具手写「只有 host + package.json」，
+    /// 于是 `materialize` 直接报「源码缺 client」——**先炸的是夹具不是断言**，而报错
+    /// 说的是「请重新构建或安装应用」，会把源码侧的错误报成用户的安装包坏了。
+    /// 现在夹具只声明「每个 entry 都得真的物化出来」，产品形状变了它自己跟上。
     #[test]
-    fn a_host_only_builtin_materializes_with_its_required_peer() {
+    fn every_declared_entry_materializes_with_its_required_peer() {
         let root = temp_dir("memory-builtin");
         let spec = crate::plugins::builtin::builtins::find("memory").unwrap();
         assert!(spec.upstream.is_none(), "本地记忆没有上游内容");
         let source = root.join("source");
-        fs::create_dir_all(source.join("host")).unwrap();
-        fs::write(
-            source.join("host/index.js"),
-            "export const name = 'xlink-memory';",
-        )
-        .unwrap();
+        for entry in spec.entries {
+            if *entry == "package.json" {
+                continue; // 清单是文件，下面单独写
+            }
+            let dir = source.join(entry);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("stub.js"), format!("// {entry} stub\n")).unwrap();
+        }
         fs::write(
             source.join("package.json"),
             "{\"name\":\"xlink-memory\",\"version\":\"0.1.0\",\"type\":\"module\"}",
@@ -836,18 +841,19 @@ mod tests {
         )
         .unwrap();
 
+        for entry in spec.entries {
+            assert!(
+                target.join(entry).exists(),
+                "{entry} 登记在 entries 里就该真的物化出来"
+            );
+        }
         assert!(
-            target.join("host/index.js").is_file(),
-            "接线行指向的入口必须真的物化出来"
+            target.join("host/index.js").exists() || target.join("host/stub.js").is_file(),
+            "接线行指向的入口目录必须真的物化出来"
         );
-        assert!(target.join("package.json").is_file(), "包清单要跟着走");
         assert!(
             target.join("node_modules/@deepseek-ai/dsh-tools").exists(),
             "必需的 peer 必须挂上：host 静态 import 它，缺了插件加载即失败"
-        );
-        assert!(
-            !target.join("client").exists(),
-            "本地记忆没有工作台客户端模块"
         );
         let _ = fs::remove_dir_all(&root);
     }

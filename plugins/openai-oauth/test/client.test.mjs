@@ -82,6 +82,24 @@ test('client: factory + apply 求值不抛错，注册的插槽组件是已定�
   );
 });
 
+test('client: 同一个 context 里连求值两遍都不抛——client-hmr 改文件后会重新求值本束', () => {
+  // 2026-10-15 真机实测：内核的 client-hmr 在束文件变化时重新求值它，而求值落在
+  // 页面的全局词法作用域里。顶层 const 第二遍就是
+  // `SyntaxError: Identifier 'STRINGS' has already been declared`，账户卡随之静默
+  // 消失（面板照常显示「已启用」，没有任何业务面报错）。var 可重复声明，才扛得住。
+  const context = { navigator: { language: 'zh' } };
+  context.window = { __ModuleLoader__: { load() {} } };
+  vm.createContext(context);
+  vm.runInContext(source, context, { filename: 'client.js' });
+  vm.runInContext(source, context, { filename: 'client.js' });
+  assert.equal(vm.runInContext('typeof STRINGS', context), 'object', '第二遍求值后字典仍可读');
+  assert.equal(
+    /^(?:const|let|class)\s/m.test(source),
+    false,
+    '顶层又出现了 const/let/class：重新求值时就是一条 SyntaxError，账户卡静默消失',
+  );
+});
+
 test('client: 语言字典 zh/en 键集合一致（内联孪生不许漂移）', () => {
   const { context } = loadClient();
   const strings = vm.runInContext('STRINGS', context);

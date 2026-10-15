@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { createContext, runInContext } from 'node:vm';
 
 import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, encodedPathBytes, readCredentials } from '../host/bridge.js';
 import { AUTH_SCHEMES, SENSITIVE_KEY_NEEDLES, maskSecrets } from '../host/mask.js';
@@ -1644,4 +1645,237 @@ test('工作区 id 解析：拿到就带上，拿不到一律降级成空串', a
   assert.equal(await resolveWorkspaceId(null, '/tmp/known'), '');
   assert.equal(await resolveWorkspaceId({}, '/tmp/known'), '');
   assert.equal(await resolveWorkspaceId(registry, ''), '');
+});
+
+/* ── 客户端半边：会话头右侧那枚「记忆 N」徽标 ──────────────────────────────
+ *
+ * 它是**单文件普通脚本**：内核按 `/plugins/<id>/client.js` 直接供给，不过打包器，
+ * 所以既没有 `export` 也过不了 ESM 解析。测它只有一个办法——在一个假 `window`
+ * 里把它真跑起来：`__ModuleLoader__.load` 把 factory 收走，factory 只
+ * `require("react")`，给一个最小 react 就能取到组件与 `apply`。测的是同一份文件
+ * 里的真代码；假的是 react 与 ctx，而徽标这半只用 useState / useEffect /
+ * createElement 三件套，够用。
+ *
+ * 这里钉的三件事在真机上分别表现为：模块加载失败 = **整页白屏**、插槽名写错 =
+ * 徽标不出现、ACL 漏授 = 徽标不出现——都是**一声不吭**的那一类。
+ */
+/** 活着的定时器计数：徽标卸载时不清理，就是每换一个会话漏一个轮询。 */
+let liveTimers = 0;
+
+function loadClientBundle({ notes = [], language = 'zh' } = {}) {
+  const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
+  const invokes = [];
+  const sandbox = {
+    console,
+    navigator: { language },
+    // 徽标起的是 5 秒轮询，测试并不想等它：交给 unref 的包装器，否则 node --test
+    // 因为还活着的定时器不肯退出。`liveTimers` 顺手把「清理时清了没有」变成可断言的。
+    setInterval: (fn, ms) => {
+      liveTimers += 1;
+      const timer = setInterval(fn, ms);
+      timer.unref?.();
+      return timer;
+    },
+    clearInterval: (timer) => {
+      liveTimers -= 1;
+      return clearInterval(timer);
+    },
+    window: {
+      __ModuleLoader__: { load: (spec) => { sandbox.__loaded = spec; } },
+      __TAURI__: {
+        core: {
+          invoke: async (name) => {
+            invokes.push(name);
+            return notes;
+          },
+        },
+      },
+    },
+  };
+  createContext(sandbox);
+  runInContext(source, sandbox);
+  return { spec: sandbox.__loaded, source, invokes };
+}
+
+/** 最小 hook 宿主：按下标存槽（重渲染能续上），能收 cleanup。 */
+function createRenderer() {
+  const slots = [];
+  const cleanups = [];
+  let cursor = 0;
+  const React = {
+    createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat() }),
+    useState(initial) {
+      const index = cursor++;
+      if (slots.length <= index) slots[index] = { value: initial };
+      return [slots[index].value, (next) => {
+        slots[index].value = typeof next === 'function' ? next(slots[index].value) : next;
+      }];
+    },
+    useEffect(effect) {
+      const index = cursor++;
+      if (slots.length <= index) slots[index] = { ran: false };
+      if (slots[index].ran) return;
+      slots[index].ran = true;
+      cleanups.push(effect(() => { slots[index].ran = false; }));
+    },
+  };
+  return {
+    React,
+    render: (component, props) => { cursor = 0; return component(props); },
+    unmount: () => { for (const cleanup of cleanups) cleanup?.(); },
+  };
+}
+
+/** 走一遍真实的 factory + apply，只把 ctx 换成假的，把注册到的组件截下来。 */
+function mountClient({ notes = [], language = 'zh' } = {}) {
+  const { spec, invokes } = loadClientBundle({ notes, language });
+  assert.ok(spec, '模块加载器没收到 load()——内核会把这半当没声明处理');
+  const renderer = createRenderer();
+  const module_ = spec.factory((name) => {
+    assert.equal(name, 'react', '只该 require react；别的名字说明它开始依赖自己的兄弟文件了');
+    return renderer.React;
+  });
+  let captured = null;
+  module_.apply({
+    slots: {
+      inject(slot, factory) { captured = { slot, ...factory() }; },
+      register(options, component) { return { options, component }; },
+    },
+  });
+  assert.ok(captured, 'apply 没有往任何插槽注册——apply 的形状变了？');
+  return { ...renderer, module: module_, invokes, slot: captured.slot, options: captured.options, component: captured.component };
+}
+
+/** 把 invoke 的微任务链冲干净（refresh 是 async，笔记要等它落地）。 */
+async function flush() {
+  for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+}
+
+test('客户端半边是内核客户端模块的方言：单文件、无 ESM、由模块加载器包一层', () => {
+  const { spec, source } = loadClientBundle();
+  assert.equal(spec.id, 'xlink-memory', 'id 要与 package.json 的 name 对得上（xlink-memory）');
+  assert.equal(typeof spec.factory, 'function');
+  // 内核以普通脚本供给它：ESM 的 import/export 在这里是语法错，`require` 一个
+  // 兄弟文件则是 404——它只有 `/plugins/<id>/client.js` 这一个落点。
+  assert.equal(/^\s*import\s/m.test(source), false, '出现了顶层 ESM import');
+  assert.equal(/^\s*export\s/m.test(source), false, '出现了顶层 ESM export');
+  assert.equal(/require\(\s*['"]\./.test(source), false, 'require 了一个相对路径文件，而它只有一个落点');
+  // 内核的 client-hmr 会在束文件变化时**重新求值**它，而求值落在页面的全局词法
+  // 作用域里：顶层 const 第二次求值就是 `Identifier 'x' has already been declared`，
+  // 整条 entry 当场死掉，症状只是徽标静默消失。声明必须全在 factory 闭包里。
+  assert.equal(
+    /^(?:const|let|class)\s/m.test(source),
+    false,
+    '出现了顶层 const/let/class：内核重新求值本文件时就是一条 SyntaxError，整条 entry 静默死掉',
+  );
+  assert.equal(
+    /^(?:const|let|class|function)\s/m.test(source.replace(/^window\.__ModuleLoader__\.load\(/m, '')),
+    false,
+    'factory 之外还有声明',
+  );
+});
+
+test('内核认它是客户端模块的条件：platform=web 且 exports["./client"] 真的落在磁盘上', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(pkg.dsh?.client?.platform, 'web', 'platform 不是 web 时 dsh-client-modules 整行跳过');
+  const bundle = pkg.exports?.['./client'];
+  assert.equal(typeof bundle, 'string', '声明了 dsh.client 却缺 exports["./client"] 时内核抛 client-modules: … 而整页白屏');
+  assert.ok(readFileSync(new URL(`../${bundle}`, import.meta.url), 'utf8').length > 0);
+});
+
+test('client 半边要进物化才谈得上被供给：两份清单都得带 client', () => {
+  const rust = readFileSync(new URL('../../../src-tauri/src/plugins/builtin/builtins.rs', import.meta.url), 'utf8');
+  const js = readFileSync(new URL('../../../scripts/prepare-builtin-plugins.mjs', import.meta.url), 'utf8');
+  const rustEntries = /id: MEMORY,[\s\S]*?entries: &\[([^\]]*)\]/.exec(rust)?.[1] ?? '';
+  const jsEntries = /id: 'memory',[\s\S]*?entries: \[([^\]]*)\]/.exec(js)?.[1] ?? '';
+  assert.match(rustEntries, /"client"/, 'Rust 物化清单少了 client：徽标文件不会被复制进实例，症状是徽标永远不出现');
+  assert.match(jsEntries, /'client'/, '打包清单少了 client：安装包里没有这个文件（两份一致由 dev-builtin.test.mjs 钉）');
+});
+
+test('徽标挂在会话头右侧的 utilities 槽：list + session 作用域才拿得到 sessionId', () => {
+  const { module: loaded, slot, options, component } = mountClient();
+  assert.equal(slot, 'conversation.session.header.utilities');
+  assert.equal(options.id, 'xlink-memory');
+  assert.equal(options.order, 0, '排在 open-in-app（-10）与 schedule-catalog（-5）之后');
+  assert.equal(typeof component, 'function');
+  // 返回的 inject 说的是**服务名**（slots），不是 package.json 里的包名——两处
+  // 长得像但不是一回事，抄错就是 fiber 永远 pending（插件静默不生效）。
+  // 逐项比而不是 deepEqual：这个数组造在 vm 的 realm 里，原型不是同一个。
+  assert.equal(loaded.inject.length, 1);
+  assert.equal(loaded.inject[0], 'slots');
+});
+
+test('徽标只画这个会话最近的那一条：环形缓冲是跨会话的', async () => {
+  const notes = [
+    { at: '2026-10-15T12:00:00Z', session: 'session-other', workspace: '/w/other', enabled: true, hits: ['别的会话的偏好'] },
+    { at: '2026-10-15T13:30:45Z', session: 'session-a', workspace: '/w/a', enabled: true, hits: ['用中文回复', 'npm run check 才是门禁'] },
+    { at: '2026-10-15T13:00:00Z', session: 'session-a', workspace: '/w/a', enabled: true, hits: ['更早的一条'] },
+  ];
+  const { render, component, invokes } = mountClient({ notes });
+  assert.equal(render(component, { sessionId: 'session-a' }), null, '还没拿到笔记时不画（没有就不假装有）');
+  await flush();
+  assert.deepEqual(invokes, ['memory_recent_injections'], '只读那一条命令');
+  const badge = render(component, { sessionId: 'session-a' });
+  assert.ok(badge, '有笔记了却没画出来');
+  assert.equal(badge.type, 'span');
+  assert.equal(badge.props.className, 'xlink-memory-badge');
+  assert.equal(badge.props['data-xlink-memory-badge'], 'recent-injections');
+  assert.equal(badge.children[0], '记忆 2', '数的是最近那一条的条数，不是这个会话的历史累计');
+  const title = badge.props.title;
+  assert.ok(title.includes(new Date(notes[1].at).toLocaleTimeString()), '悬停要看得见注入时间');
+  assert.ok(title.includes('用中文回复') && title.includes('npm run check 才是门禁'), '要列的是**标题**');
+  assert.ok(title.includes('本工作区'), '工作区在时要说清读的是哪一层');
+  assert.equal(title.includes('别的会话的偏好'), false, '别的会话的笔记一个字都不许出现在这个会话的页面上');
+});
+
+test('卸载时要把轮询停掉：每换一个会话漏一个，就是每 5 秒白问一次壳', () => {
+  const { render, component, unmount } = mountClient({ notes: [] });
+  const before = liveTimers;
+  render(component, { sessionId: 'session-a' });
+  assert.equal(liveTimers, before + 1, '挂上徽标就该有一个轮询');
+  unmount();
+  assert.equal(liveTimers, before, '卸载必须清掉它');
+});
+
+test('这个会话没注过时就是没有徽标；被夹紧成通用偏好时读范围要说清', async () => {
+  const notes = [
+    { at: '2026-10-15T12:00:00Z', session: 'session-other', workspace: '', enabled: true, hits: ['别人的'] },
+  ];
+  const mine = mountClient({ notes });
+  assert.equal(mine.render(mine.component, { sessionId: 'session-a' }), null, '只有别的会话有笔记');
+  await flush();
+  assert.equal(mine.render(mine.component, { sessionId: 'session-a' }), null, '对不上 session 就还是不画，而不是画别人的');
+
+  // workspace 为空串 = 这一轮按 G15 夹成了「只读通用偏好」（子智能体的工作区与
+  // 父级不同）。两种读范围回答的是不同的问题，徽标必须分得清。
+  const clamped = mountClient({
+    notes: [{ at: '2026-10-15T13:00:00Z', session: 'session-a', workspace: '', enabled: true, hits: ['只带通用偏好'] }],
+  });
+  clamped.render(clamped.component, { sessionId: 'session-a' });
+  await flush();
+  const badge = clamped.render(clamped.component, { sessionId: 'session-a' });
+  assert.ok(badge, '夹紧的那次也是一次真注入，该有徽标');
+  assert.ok(badge.props.title.includes('通用偏好'), '夹紧的那次要标成通用偏好');
+  assert.equal(badge.props.title.includes('本工作区'), false);
+});
+
+test('徽标读的每条命令都在工作台窗口的授权里：漏了就是一声不吭地不出现', () => {
+  const code = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
+  const called = [...code.matchAll(/invoke\(\s*['"]([a-z_]+)['"]/g)].map((match) => match[1]);
+  assert.deepEqual(called, ['memory_recent_injections'], '新增 invoke 时同步改这条判据');
+  const granted = new Set(
+    JSON.parse(readFileSync(new URL('../../../src-tauri/capabilities/harness-remote.json', import.meta.url), 'utf8')).permissions,
+  );
+  const sets = JSON.parse(
+    readFileSync(new URL('../../../src-tauri/permissions/app-commands.json', import.meta.url), 'utf8'),
+  ).permission;
+  const allowed = new Set(
+    sets.filter((entry) => granted.has(entry.identifier)).flatMap((entry) => entry.commands.allow),
+  );
+  // 门禁里那条 harness-invoke 判据只扫 harness/harness-draft.js 与
+  // harness-health.js，覆盖不到插件的客户端半边——漏授在这里不会红，只在真机上
+  // 表现为徽标永远不出现。所以这条判据是本条路径唯一的机械保证。
+  for (const name of called) {
+    assert.ok(allowed.has(name), `${name} 没授权：工作台窗口是 remote origin，ACL 会静默拒`);
+  }
 });

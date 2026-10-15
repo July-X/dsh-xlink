@@ -180,9 +180,14 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
     BuiltinSpec {
         id: MEMORY,
         row_id: "xlink-memory",
-        // 只有 host 与 package.json：本地记忆**没有上游内容**（正文在用户的实例
-        // 目录里），也没有工作台卡片（管理页是壳自己的面板，不是内核客户端模块）。
-        entries: &["host", "package.json"],
+        // host + client + package.json：**没有上游内容**（记忆正文在用户的实例目录
+        // 里，不在安装包里）。client 是会话头右侧那枚「记忆 N」徽标（2026-10-15
+        // 落地的 D6b）——它要成为一个内核客户端模块，靠的是 package.json 里那份
+        // `dsh.client` 声明 + `exports["./client"]`，内核按 `dsh-client-modules`
+        // 扫 host Loader 的 entries 找它，**不需要改接线行**（Loader 行的名字
+        // 是路径形态，`locatePkgJson` 会沿它向上找到同目录的 package.json）。
+        // 管理页（面板）仍然是壳自己的 Vue 面板，与 client 是两回事。
+        entries: &["host", "client", "package.json"],
         // host 静态 import 的两个包：`dsh-tools`（`defineTool`）与 `dsh-llm`
         // （提取调用要用的 `BlockAssembler` / `createUserMessage`）。其余能力都经
         // `ctx` 拿：`systemPrompt` / `tools` / `workingDirectory` 都是内核自己的
