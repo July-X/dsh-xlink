@@ -61,6 +61,7 @@ window.__ModuleLoader__.load({
         hits: (count) => `命中 ${count} 条：`,
         hitsJoin: "、",
         noTitles: "（标题取不到，只留了 id）",
+        tipJoin: " · ",
         scopeWorkspace: "读范围：本工作区",
         scopeGeneral: "读范围：通用偏好（这一轮没有绑定工作区）",
       },
@@ -71,6 +72,7 @@ window.__ModuleLoader__.load({
         hits: (count) => `Matched ${count}: `,
         hitsJoin: ", ",
         noTitles: "(no title resolved, ids only)",
+        tipJoin: " · ",
         scopeWorkspace: "Read scope: this workspace",
         scopeGeneral: "Read scope: general preferences (no workspace bound)",
       },
@@ -160,6 +162,9 @@ window.__ModuleLoader__.load({
       }, [sessionId]);
       if (note === null) return null;
       const hits = Array.isArray(note.hits) ? note.hits : [];
+      // 悬停文案**不靠换行分段**：`title` 提示在 WebView2（Chromium）与 WKWebView
+      // 上是否渲染成多行并不一致，而两个平台都得支持。用 ` · ` 连接时，两种渲染
+      // 都读得通——押注其中一边的换行行为就是给另一个平台埋一根刺。
       const title = [
         L.badgeTip,
         `${L.injectedAt}${clockText(note.at)}`,
@@ -167,7 +172,7 @@ window.__ModuleLoader__.load({
         // workspace 为空串 = 这一轮被按 G15 夹紧成「只读通用偏好」（子智能体的
         // 工作区与父级不同）。分得清这两种，是因为它们回答的问题不一样。
         note.workspace ? L.scopeWorkspace : L.scopeGeneral,
-      ].join("\n");
+      ].join(L.tipJoin);
       return e(
         "span",
         { className: "xlink-memory-badge", title, "data-xlink-memory-badge": "recent-injections" },
