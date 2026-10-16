@@ -941,6 +941,10 @@
 | `ui/src/memory/MemoryPanel.vue` | 面板视图（列表、候选、编辑器、最近注入、预览、导出） | D1–D14、D6a |
 | `ui/src/memory/MemoryConflict.vue` | 一条候选的冲突并排展示（记录还在就给两个动作，不在就如实说） | C5 |
 | `ui/src/memory/MemorySuperseded.vue` | 一条候选的取代标记（列出被推翻的那几条 + 一个「丢弃这条」；**文案不许说「已经替你作废」**） | C6 |
+| `plugins/memory/test/probe/drive-real-model.mjs` | **真模型**验收驱动器（长驻内核 + 真模型 + 真桥）：备场、生成覆盖层、连跑多回合。凭据与端点全走环境变量 | C5、C6、P2 |
+| `plugins/memory/test/probe/drive-stub.mjs` | **桩**驱动器（同协议，桩模型 + 桩桥，零额度）：自己生成含压缩三条参数的覆盖层 | G12、G13 |
+| `plugins/memory/test/probe/stub-model.mjs` | 桩模型：流式与非流式回**同一份** content；`STUB_FAIL_SUMMARY=1` 制造失败压缩 | G12、G13 |
+| `plugins/memory/test/probe/stub-bridge.mjs` | 桩桥：最小任务表状态机 + `/context` 回真命中（空命中会让注入预算恒为 0） | G12、G13 |
 | `ui/src/memory/MemoryRow.vue` | 一条记忆的渲染与它的三个动作（只读 props、只 emit） | D5、D6a |
 
 ## 独立评审（2026-10-15）
@@ -1178,8 +1182,36 @@ done
 >
 > **可直接复跑的三条命令**（驱动器**在本仓**：`plugins/memory/test/probe/drive-real-model.mjs`
 > ——它自己备场、生成覆盖层、只往 `/tmp/p2probe` 写，凭据与端点一律走环境变量；
-> 上一轮那套**桩**探针（覆盖层、驱动器、桩模型、桩桥）**只在 `/tmp/p2probe` 目录里，还没进仓**——
-> G12/G13 那个压缩对照实验要重跑的话得先重新备它们，**这是个已知缺口**，不是忘了提）：
+> **桩**探针（驱动器、桩模型、桩桥）**也已进仓**（2026-10-16，清单里最后那个已知缺口）：
+> `plugins/memory/test/probe/{drive-stub,stub-bridge,stub-model}.mjs`，覆盖层由驱动器自己生成。
+> **进仓的当天就实跑过**（零额度 6 回合）：压缩成功与失败**两种形状都跑到了**，
+> `/context` 12 次、`jobs/*` 18 次。**怎么跑**：
+>
+> ```sh
+> node plugins/memory/test/probe/stub-model.mjs &     # 桩模型 :8791
+> node plugins/memory/test/probe/stub-bridge.mjs &   # 桩桥   :8792
+> node plugins/memory/test/probe/drive-stub.mjs 6 标签 # 长驻内核跑 6 回合
+> # 之后看 /tmp/p2probe/bridge.log：/context 的次数就是这个会话真实的取检索次数
+> pkill -f 'test/probe/stub-'                        # 收桩（纪律）
+> ```
+>
+> **进仓时顺手修掉的东西**（都不在旧版里）：
+> · **流式分支回的是另一份内容**——旧版流式里硬编码了那段撑上下文的填充文字，于是摘要请求
+>   走流式时拿到的是长文本，压缩当场拒绝（「summary is not smaller than the shadowed
+>   content」）。**症状完全不像传输问题**，而真实的修法在桩的回包里。所以流式与非流式现在
+>   回同一份 `content`。
+> · **桩桥里两段永不可达的分支**（`enqueue` / `claim` 已经在前面 return 过），留着会让人以为
+>   那两条路由有两种行为。
+> · **`did not activate` 与 `compaction/end` 的 error 现在进日志**——压缩插件**配置被断言拒绝时
+>   是静默不激活的**，症状与「条件没到」一模一样（G12 栽过两次）。
+> · **回包观测**（`REPLY extraction|summary|chat stream=… bytes=…`）：没有它，「分支命中了吗」
+>   与「回的内容对吗」在日志里长得一模一样——上面那个流式的坑就是这么定位的。
+> · **内核版本读 `active.txt` 而不是写死**（旧版写死 `0.2.1-alpha.2`，升级后那个目录还在，
+>   于是它会静默跑错内核而实验照跑、结论照出）。
+> · **加了 7 条接线形状判据**（`plugins/memory/test/probe.test.mjs`）：探针是门禁之外的手动
+>   夹具，「探针坏了」没有任何机制会发现。**真模型驱动器上一轮进仓时没配判据**，这条一并补上
+>   （文件在不在、内核版本不许写死、只往 /tmp 写、凭据走环境变量、覆盖层里 `headers` 嵌一层、
+>   压缩那三条参数、桩桥 `/context` 必须回真命中）。三条反向验都红在具名断言。
 >
 > ```sh
 > # ① 真桥（真的路由、真的任务表、真的记忆库），它把地址与令牌写进握手文件后等停止文件
