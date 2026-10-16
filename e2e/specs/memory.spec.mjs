@@ -44,13 +44,19 @@ describe('记忆面板', function () {
       { timeout: 20_000, timeoutMsg: '点了侧栏「记忆」之后它没有被标成当前项' }
     );
 
-    // **面板内容在这条通道里验不了，原因已实测**：WebDriver 拉起的窗口在后台，
-    // WKWebView 不跑 requestAnimationFrame，而 `App.vue` 的面板切换是
-    // `<Transition mode="out-in">`——leave 永不结束，新面板就不挂载。**每个面板
-    // 都一样**（设置 / 插件实测同样停在 `panel-leave-active`、标题仍是「概览」），
-    // 所以这不是记忆面板的问题；注入「禁用过渡」的样式、手动派发 transitionend、
-    // 用 osascript 把窗口提到前台，三种办法都试过，都不解决。
-    // 内容渲染因此由下面那条命令断言 + Rust 侧的检索用例覆盖，不在这里假装验过。
+    // **面板内容默认挂不上，原因已实测**：WebDriver 拉起的窗口在后台，不跑
+    // `requestAnimationFrame`，而 `App.vue` 的面板切换是 `<Transition mode="out-in">`
+    // ——leave 永不结束，新面板就不挂载。**每个面板都一样**（设置 / 插件实测同样停在
+    // `panel-leave-active`、标题仍是「概览」），所以这不是记忆面板的问题；注入「禁用过渡」
+    // 的样式、手动派发 transitionend、用 osascript 把窗口提到前台，三种办法都试过，不解决。
+    //
+    // **但缺的就是那一个全局函数，补上就能挂**（2026-10-16 实测）：在页面里
+    // `window.requestAnimationFrame ??= (cb) => setTimeout(() => cb(Date.now()), 16)`
+    // （`cancelAnimationFrame` 同办）之后点侧栏，`h1.page-title` 会变成「记忆」，面板
+    // 高度也就能真的量出来——那一轮用这个办法量到卡片高度与「有没有溢出」，比读 CSS 推
+    // 可靠得多。要在这条 spec 里验面板内容时照这个来；**别**再写「本通道永远验不了」。
+    //
+    // 内容渲染目前仍由下面那条命令断言 + Rust 侧的检索用例覆盖，不在这里假装验过。
   });
 
   it('记忆命令在真壳里都能解析（桥真的通，参数个数也对得上）', async () => {
