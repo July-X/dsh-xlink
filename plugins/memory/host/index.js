@@ -37,11 +37,13 @@ import { runExtraction } from './run.js';
 import {
   afterCompaction,
   applyStep,
+  createWakeScheduler,
   isCompactionDone,
   scopeForWorkspace,
   memoryScope,
   beginStep,
   emptyExtractState,
+  EXTRACT_DEBOUNCE_WAKE_MS,
   EXTRACTOR_VERSION,
   noteSessionEvent,
   shouldScheduleExtraction,
@@ -86,6 +88,16 @@ function apply(ctx) {
   // 插件级收到的，要按会话路由回对应那份状态（见下面的订阅）。
   const agentStates = new Map();
   const MAX_TRACKED_SESSIONS = 64;
+  /**
+   * 「静默期到点再叫醒一次提取」的定时器账本（按会话一份）。
+   *
+   * **为什么不能只在回合边界上领**：壳那边任务进表后要过 30 秒静默期才算到期
+   * （`memory/jobs.rs` 的 `DEBOUNCE_MS`），而排任务那一次紧跟着就去领必然领不到——
+   * 于是每个会话最后留下的那条任务要等用户**下一次说话**才被顺带领走。2026-10-16 的
+   * 真模型探针实测：聊完 5 回合再等 150 秒，任务表里那条 `pending: 1` 一动没动。
+   * 理由与三条纪律见 `policy.js::createWakeScheduler`。
+   */
+  const wakeups = createWakeScheduler();
 
   // 压缩之后预算清零（见 `afterCompaction`）。
   //
@@ -113,16 +125,12 @@ function apply(ctx) {
     // **先排、再领**：排任务只往表里放一行（壳那边有静默期，刚放进去的不会立刻到期），
     // 而这次真正要跑的往往是**前面某个回合**留下的那条——相邻回合因此合并成一次提取。
     // 领不到就什么也不做：没有到期任务是常态，不是失败。
-    // **只在回合边界上领**：`session/event` 每个事件都会到这里（一个回合几十条），
-    // 每来一条就去问一次「有到期任务吗」是白打几十个请求（第一版就是这样，13 次 claim）。
-    // 记人类消息那条路仍然看**每个**事件——它要的正是事件流本身。
-    const attempt = () => {
-      if (event?.type !== 'turn/end') return;
+    const runExtractionNow = () => {
       // **整段不抛**：提取跑在用户的会话里，它坏了不该影响对话，**更不该把插件本身弄崩**
       // ——2026-10-15 实测过一次：`runDueExtraction` 里一个 TDZ 异常让内核报
       // `fatal load failure`，整个插件当场失效，而 55 条插件测试与 993 条 Rust 测试全绿
       // （装配层没有内核，跑不到这条线）。所以这里**必须**兜住，不能只靠「函数内部不抛」的自觉。
-      void runDueExtraction(
+      return runDueExtraction(
         credentials,
         liveExtractionServices(),
         box.state.workspace,
@@ -133,12 +141,38 @@ function apply(ctx) {
         );
       });
     };
+    const attempt = () => {
+      // **只在回合边界上领**：`session/event` 每个事件都会到这里（一个回合几十条），
+      // 每来一条就去问一次「有到期任务吗」是白打几十个请求（第一版就是这样，13 次 claim）。
+      // 记人类消息那条路仍然看**每个**事件——它要的正是事件流本身。
+      if (event?.type !== 'turn/end') return;
+      void runExtractionNow();
+    };
     if (!decision.schedule) {
       attempt();
       return;
     }
     box.extract = { ...box.extract, lastCursor: decision.cursor };
-    void enqueueExtraction(credentials, session, decision.cursor).then(attempt, attempt);
+    void enqueueExtraction(credentials, session, decision.cursor).then(
+      () => {
+        attempt();
+        // **排完还要在静默期之后再叫醒一次**：这一次的 `attempt()` 必然领不到（任务刚进表，
+        // 壳那边要再过 30 秒），而下一次 `turn/end` 可能永远不来——用户说完最后一句就
+        // 去干别的、或者关掉工作台，那条任务就一直搁着（2026-10-16 真模型探针实测）。
+        // 排成功了才排这一次：排失败时下一次正常结束的回合会带着更靠后的游标重来。
+        wakeups.schedule(
+          String(session?.id ?? ''),
+          EXTRACT_DEBOUNCE_WAKE_MS,
+          runExtractionNow,
+          (error) => {
+            ctx.logger?.warn?.(
+              `xlink-memory: 静默期唤醒抛了异常（不影响对话）：${String(error?.message ?? error)}`
+            );
+          }
+        );
+      },
+      attempt
+    );
   });
 
   /**
@@ -430,7 +464,11 @@ function apply(ctx) {
         // （监听器自己会随 fiber 释放，但这张表不是监听器）。挤掉的会话退回「压缩后不重置」
         // 的旧行为——宁可少一次重置，也不要无上限地留。
         if (agentStates.size >= MAX_TRACKED_SESSIONS) {
-          agentStates.delete(agentStates.keys().next().value);
+          const evicted = agentStates.keys().next().value;
+          agentStates.delete(evicted);
+          // **它的静默期唤醒也一起清掉**：留着就是一个没有会话状态的定时器，到点了
+          // 拿着旧的工作区去领一次（`session/event` 那条路这时已经 `if (!box) return` 了）。
+          wakeups.clear(evicted);
         }
         agentStates.set(sessionId, box);
       }

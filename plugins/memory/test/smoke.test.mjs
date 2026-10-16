@@ -25,10 +25,12 @@ import {
   MAX_LIBRARY_REFRESHES_PER_SESSION,
   MAX_QUERY_CHARS,
   MAX_TOTAL_BYTES_PER_SESSION,
+  EXTRACT_DEBOUNCE_WAKE_MS,
   applyFailure,
   applyResult,
   applyStep,
   beginStep,
+  createWakeScheduler,
   libraryChanged,
   memoryScope,
   noteProbe,
@@ -2034,4 +2036,122 @@ test('徽标读的每条命令都在工作台窗口的授权里：漏了就是�
   for (const name of called) {
     assert.ok(allowed.has(name), `${name} 没授权：工作台窗口是 remote origin，ACL 会静默拒`);
   }
+});
+
+/**
+ * 静默期到点的唤醒（2026-10-16 真模型探针实测出来的接线缺口）。
+ *
+ * **缺陷是什么**：壳那边任务进表后要过 `DEBOUNCE_MS`（30 秒）才算到期，而领取只挂在
+ * `turn/end` 上——排任务那一次紧跟着去领必然领不到。于是**每个会话最后留下的那条任务
+ * 永远没人领**：用户说完最后一句就去干别的、或者关掉工作台，那条任务一直搁着。
+ * 实测：真内核会话（真模型）聊完 5 回合再等 150 秒，任务表里那条 `pending: 1`，
+ * `running/done/failed` 全 0，候选一条没落库。
+ *
+ * `jobs.rs` 的状态机与它的单测都是绿的——缺的是这一根线，正是本仓反复栽的形状。
+ */
+
+/** 假时钟：把排出去的回调攥在手里，什么时候跑由用例决定。 */
+function fakeClock() {
+  const pending = new Map();
+  const cancelled = [];
+  let seq = 0;
+  return {
+    handles: pending,
+    cancelled,
+    schedule: (fn, delayMs) => {
+      seq += 1;
+      const handle = { id: seq, delayMs, fn, unrefed: false, unref() { this.unrefed = true; return this; } };
+      pending.set(seq, handle);
+      return handle;
+    },
+    cancel: (handle) => {
+      if (!handle) return;
+      pending.delete(handle.id);
+      cancelled.push(handle.id);
+    },
+    /** 让排在最前面的那个到点。 */
+    fireNext: () => {
+      const [id, handle] = [...pending.entries()][0] ?? [];
+      if (!handle) return false;
+      pending.delete(id);
+      handle.fn();
+      return true;
+    },
+  };
+}
+
+test('静默期到点要有人叫醒：连排两次只留最后一次，回调只跑一次', () => {
+  const clock = fakeClock();
+  const scheduler = createWakeScheduler({ schedule: clock.schedule, cancel: clock.cancel });
+  const ran = [];
+  scheduler.schedule('s1', 32_000, () => ran.push('first'));
+  scheduler.schedule('s1', 32_000, () => ran.push('second'));
+  assert.equal(scheduler.pending(), 1, '同一会话连排只该有一个等待');
+  assert.equal(clock.cancelled.length, 1, '前一个必须被取消，否则一段十分钟的对话会排出一串定时器');
+  assert.equal(clock.fireNext(), true);
+  assert.deepEqual(ran, ['second'], '到点跑的是最后一次那回');
+  assert.equal(scheduler.pending(), 0, '跑完就从账本里摘掉');
+  assert.equal(clock.fireNext(), false, '不会跑第二次');
+});
+
+test('唤醒回调出错只交给 onError，不许冒成未处理拒绝', () => {
+  const clock = fakeClock();
+  const errors = [];
+  const scheduler = createWakeScheduler({
+    schedule: clock.schedule,
+    cancel: clock.cancel,
+    unref: (timer) => timer.unref(),
+  });
+  // 工作台把 unhandledrejection 当故障上报并重建窗口（预算 3 次）——装饰性的提取不该有这个能力。
+  scheduler.schedule('sync', 1, () => { throw new Error('炸了'); }, (error) => errors.push(error.message));
+  assert.equal(clock.handles.get(1)?.unrefed, true, '定时器必须 unref：否则 headless 每个回合多等 32 秒');
+  clock.fireNext();
+  assert.deepEqual(errors, ['炸了']);
+  // 异步那条同样要被兜住（提取那条路返回的是 promise）。
+  scheduler.schedule('async', 1, () => Promise.reject(new Error('异步炸了')), (error) => errors.push(error.message));
+  clock.fireNext();
+  return new Promise((resolve) => setImmediate(() => {
+    assert.deepEqual(errors, ['炸了', '异步炸了']);
+    resolve();
+  }));
+});
+
+test('会话被挤出上限时它的等待也一起清掉（clear / clearAll）', () => {
+  const clock = fakeClock();
+  const scheduler = createWakeScheduler({ schedule: clock.schedule, cancel: clock.cancel });
+  scheduler.schedule('s1', 32_000, () => {});
+  scheduler.schedule('s2', 32_000, () => {});
+  scheduler.clear('s1');
+  assert.equal(scheduler.pending(), 1);
+  assert.equal(clock.cancelled.length, 1);
+  scheduler.clearAll();
+  assert.equal(scheduler.pending(), 0);
+  // 没有会话 id 时不许排：那会让每一条都变成一个谁也领不到的定时器。
+  scheduler.schedule('', 32_000, () => {});
+  assert.equal(scheduler.pending(), 0);
+});
+
+test('静默期这个数字两边不许脱钩：壳的 DEBOUNCE_MS 一涨，插件的唤醒就永远早到', () => {
+  const rust = readFileSync(new URL('../../../src-tauri/src/memory/jobs.rs', import.meta.url), 'utf8');
+  const declared = rust.match(/DEBOUNCE_MS:\s*u64\s*=\s*([\d_]+)/);
+  assert.ok(declared, 'jobs.rs 里找不到 DEBOUNCE_MS 的声明——改名了就同步改这条判据');
+  const rustMs = Number(declared[1].replaceAll('_', ''));
+  assert.ok(
+    EXTRACT_DEBOUNCE_WAKE_MS > rustMs,
+    `壳的静默期已是 ${rustMs}ms，而插件只等 ${EXTRACT_DEBOUNCE_WAKE_MS}ms —— 唤醒会永远早到，` +
+      '症状是「会话最后那条任务没人领」，且没有任何报错'
+  );
+});
+
+test('装配层真的接上了唤醒：排成功后按静默期排一次，会话被挤掉时清掉', () => {
+  const src = readFileSync(new URL('../host/index.js', import.meta.url), 'utf8');
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  // **排在 enqueue 的成功那一支**：排失败时不该排唤醒（下一次正常结束的回合会带更靠后的游标重来）。
+  assert.match(
+    code,
+    /enqueueExtraction\([^)]*\)\.then\(\s*\(\)\s*=>\s*\{[\s\S]*?wakeups\.schedule\(/,
+    '唤醒要挂在 enqueue 成功的那一支上'
+  );
+  assert.match(code, /wakeups\.schedule\(\s*String\(session\?\.id \?\? ''\),\s*EXTRACT_DEBOUNCE_WAKE_MS,/, '等待时长要取那个对齐壳的常量，不能写死');
+  assert.match(code, /wakeups\.clear\(evicted\)/, '会话被挤出上限时它的定时器要一起清掉');
 });
