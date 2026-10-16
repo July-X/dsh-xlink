@@ -474,8 +474,15 @@ test('记忆页头只有两个直接子级：标题块 + 整行独占的开关�
   const status = elementBlock(sw, 'p', 'memory-switch__status');
   assert.match(status, /switchEffectText\(status\)/, '开关块里那句生效说明不见了');
 
-  // 样式那半：`flex: 1 0 100%` 才是「落到第二行」的机制（页头是 wrap 的 flex 行）。
-  // 少了它，开关块会缩成内容宽去和标题抢第一行，说明又回到被挤扁的样子。
+  // 样式那半：`flex: 1 0 100%` 才是「落到第二行」的机制。少了它，开关块会缩成内容宽
+  // 去和标题抢第一行，说明又回到被挤扁的样子。
+  //
+  // **另一半前提钉在 `designAlignment.test.js`**（`.page-head` 的 `flex-wrap`，与它的
+  // `justify-content: space-between` 挨着）：basis 100% 只在**能换行**的容器里等于
+  // 「独占一行」。上一版把「页头是 wrap 的 flex 行」当事实写在注释里、一条断言都没有，
+  // 而 theme.css 的 `.page-head` 当时只有 `space-between`——于是开关块不退到第二行，
+  // 反而把 shrink 1 的 `.page-head__text` 压到 min-content：标题与开关叠在一起、说明
+  // 一个字一行竖排（2026-10-16 用户截图）。判据绿着而页面坏着。
   const rules = allRulesIncludingVue();
   assert.equal(effectiveDeclaration(['memory-switch'], rules, 'flex'), '1 0 100%');
   assert.equal(effectiveDeclaration(['memory-switch__status'], rules, 'flex'), '1 1 auto');

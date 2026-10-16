@@ -1469,11 +1469,21 @@ main::before {
    **下方留白由 `.panel` 的 `row-gap` 提供，不在这里写 margin-bottom**：
    `.panel` 的直接子元素一律不许自带下外边距（panelSpacing 那条判据守着），
    否则这个 margin 会叠在 gap 上，同一列出现两种缝。留白本身是缎带的展示位
-   （设计稿里标题区与第一张卡片之间约 130px 裸露页头），缎带就画在那儿。 */
+   （设计稿里标题区与第一张卡片之间约 130px 裸露页头），缎带就画在那儿。
+   **`flex-wrap` 是这套两端布局的另一半，不能少**：`space-between` 只保证「放得下
+   时两端分开」，放不下时它把 deficit 全推给**可压缩的那一个**——而 `.page-head__text`
+   带 `min-width: 0`、里面 `.page-title` 是 `flex: none`，于是被压到 min-content 的
+   是副标题（一个字一行）。2026-10-16 记忆面板就是这么坏的：它的第二行
+   （`.memory-switch`，`flex: 1 0 100%`）在这条属性缺席时**不是退到第二行**，而是把
+   标题块挤成一条窄柱、开关药丸叠在标题上。同族的 `.card-head` 一直是
+   `space-between` + `flex-wrap: wrap`（本文件 1210 行附近），页头只是漏了同一句。
+   判据在 `ui/test/designAlignment.test.js`——它与 `justify-content` 那条挨着，
+   两者是同一个契约的两半。 */
 .page-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 16px;
 }
 

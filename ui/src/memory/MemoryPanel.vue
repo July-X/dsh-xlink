@@ -452,7 +452,13 @@ onMounted(() => {
 <style scoped>
 /* 页头第二行：开关与它的效果说明。`.page-head` 是 space-between 的 flex 行，把开关和
    那段说明直接摆成它的第二、第三个子元素时，说明会被当成「右侧动作」，要么与开关并排
-   挤成一列窄字，要么整行与标题抢宽度。收进一个 `flex: 1 0 100%` 的块里让它独占一行。 */
+   挤成一列窄字，要么整行与标题抢宽度。收进一个 `flex: 1 0 100%` 的块里让它独占一行。
+
+   **这条 basis 100% 只在「能换行」的页头里才是「占第二行」**：theme.css 的
+   `.page-head` 原本没有 `flex-wrap`，于是它反过来把 `.page-head__text` 压到
+   min-content——标题与开关叠在一起、说明一个字一行竖着排（2026-10-16 用户截图）。
+   现在 wrap 补在原语上（theme.css 那一节写了为什么该在原语层），判据在
+   `ui/test/designAlignment.test.js` 的 `justify-content` 旁边。 */
 .memory-switch {
   display: flex;
   align-items: baseline;

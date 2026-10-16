@@ -451,3 +451,24 @@ macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用�
   与 `architecture.md:81` / `src-tauri/AGENTS.md:81` 里引用的跨壳提示原文跟着改。剩下的
   `dsh-xlink-ui-redesign-dev-guide.md:69`（设计稿说明）与几处只描述**机制**的段落
   （`reset_budget`、日志成因）仍写着那枚按钮——命令与机制都还在，它们说的是机制。
+
+## 记忆面板页头被压扁：`flex-wrap` 补在原语上（2026-10-16）
+
+- **用户给的截图**：记忆页整块页头被压成一条窄柱——`.page-desc` 一个字一行竖排，
+  `el-switch` 的药丸叠在「记忆」上、「使用已批准的记忆」折成两行。
+- **根因**：`theme.css` 的 `.page-head` 只有 `space-between`、**没有 `flex-wrap`**。
+  `MemoryPanel.vue` 的 `.memory-switch { flex: 1 0 100% }` 在 nowrap 行里不退到第二行，
+  而是把 `min-width: 0` 的 `.page-head__text` 压到 min-content（`.page-title` 是
+  `flex: none`，被压的是副标题）。**与窗口宽度无关**——可用宽 776px 时照样塌。
+- **落点选原语而不是面板 scoped**（Lead 初版写的是 scoped，被独立审计推翻）：另外六个
+  页头只有一个直接子级，单个 flex item 无条件落在第一行 → 全局 wrap 在那六页**可证
+  no-op**（任意宽度）；同族 `.card-head` 一直是 `space-between` + `flex-wrap: wrap`；
+  成本上 theme.css 余 335 行，而 `MemoryPanel.vue` 只剩 2 行余量（scoped 版一落地
+  `check:code-budget` 就红两条）。
+- **判据补的是「同一个契约的两半」**：`designAlignment.test.js` 早就钉了
+  `justify-content: space-between`，却没人钉 wrap——面板与判据的注释把「页头是 wrap 的
+  flex 行」当事实写着，**注释不是判据**。反向验：摘掉 theme.css 那一行 → designAlignment
+  红、memoryPanel 仍绿（两半各钉一半）。
+- **同形扫描**（审计）：全 `ui/src` 只有这一处「basis 100% + nowrap 父」；另有 19 处
+  `space-between` 且无 wrap 的容器今天都不坏（有 ellipsis 兜底，或没有不可压缩的兄弟），
+  只登记、不改。
