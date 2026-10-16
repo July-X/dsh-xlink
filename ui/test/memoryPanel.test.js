@@ -354,10 +354,10 @@ test('编辑器关窗前先问一句；保存期间用真的保存信号当闸�
   assert.match(editor, /:before-close="beforeClose"/, '✕ 必须走 before-close 这道闸门');
   assert.match(
     editor,
-    /function beforeClose\(done\)[\s\S]*confirmDialog\('放弃这条记忆？'/,
-    '有内容就先确认再关（直接 done() 等于把刚写的正文拿走）',
+    /function beforeClose\(\)[\s\S]*confirmDialog\('放弃这条记忆？'/,
+    '有内容就先确认再关（直接关等于把刚写的正文拿走）',
   );
-  assert.match(editor, /if \(ok\) done\(\)/, '确认框说「放弃」才真的关');
+  assert.match(editor, /if \(ok\) closeMemoryEditor\(\)/, '确认框说「放弃」才真的关');
   assert.match(editor, /还没有保存|还没保存/, '确认文案要说清关掉会丢什么');
   assert.ok(!/@update:model-value="dismiss"/.test(editor), '别退回 update:model-value：EP 是先关再通知，拦不住');
   assert.doesNotMatch(editor, /el-button :disabled="globalBusy"/, '关窗那两条不许再拿 globalBusy 当闸门（保存期间它是 false）');
@@ -368,6 +368,39 @@ test('编辑器关窗前先问一句；保存期间用真的保存信号当闸�
   );
   assert.match(editor, /:disabled="saving" @click="closeMemoryEditor"/, '保存进行中「取消」不可点');
   assert.match(editor, /:show-close="!saving"/, '保存进行中不画 ✕');
+});
+
+/**
+ * 弹窗的可见性只有一个真值：`memoryStore.editorVisible`。
+ *
+ * 用户 2026-10-16 报的「切走功能菜单，它又自己弹出来」是**两个写者**：EP 的 `done()` 只把
+ * 它内部那份 `visible` 置 false，store 里的 `editorVisible` 留在 true，而 `App.vue` 用
+ * `<component :key="activePanel">` 换面板——切回记忆页重新挂载时 EP 见 `modelValue` 还是
+ * true，就在 `onMounted` 里自己 `open()` 一次。于是关掉的弹窗跟着菜单切换回来了。
+ *
+ * 两条判据各自堵一半，都是**形状**判据：`<script setup>` 跑不到，行为那半留在真机。
+ */
+test('关窗与卸载都要把 editorVisible 收回去（切走菜单再回来不许自己弹）', () => {
+  const editor = read(`${MEM_DIR}MemoryEditor.vue`);
+  const start = editor.indexOf('function beforeClose');
+  assert.ok(start > 0, '✕ 的闸门还在（`before-close` 那条接线在上一组判据里）');
+  const gate = editor.slice(start, editor.indexOf('\n}\n', start));
+  assert.equal(
+    (gate.match(/closeMemoryEditor\(\)/g) ?? []).length,
+    2,
+    '空表单与「放弃」两条出口都要经过 closeMemoryEditor，否则 store 标记留在 true',
+  );
+  assert.doesNotMatch(gate, /\bdone\b/, '不许再接 EP 递进来的 done：它只关 EP 自己那份 visible，两个写者就此分家');
+  assert.match(
+    editor,
+    /import \{[^}]*\bonUnmounted\b[^}]*\} from 'vue'/,
+    '卸载钩子要真的从 vue 引进来（漏了是 setup 期 ReferenceError，整页白）',
+  );
+  assert.match(
+    editor,
+    /onUnmounted\([\s\S]{0,40}?if \(memoryStore\.editorVisible\) closeMemoryEditor\(\)/,
+    '卸载那一刻只在开着的时候收回 editorVisible（面板被换掉时 store 不会自己回 false）',
+  );
 });
 
 test('导出、清空、空态都按**未筛选**的库判（评审第 2 条）', () => {
