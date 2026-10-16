@@ -52,6 +52,14 @@ export function tildePath(p) {
   return '~' + s.slice(home.length);
 }
 
+/** 路径的最后一段（`/a/b/proj` → `proj`）；认不出（空值、只有根）就原样返回。
+ * 给「哪个项目」这类窄列用：整条路径进 `title`，截的是这一行，不是这条信息。 */
+export function baseName(p) {
+  const text = String(p ?? '').trim();
+  const parts = text.replace(/[/\\]+$/, '').split(/[/\\]+/);
+  return parts[parts.length - 1] || text;
+}
+
 /** 「查询于 X 前」：毫秒时间戳 → 刚刚 / N 分钟前 / N 小时前 / N 天前。 */
 export function relativeTimeLabel(ms) {
   const value = Number(ms);

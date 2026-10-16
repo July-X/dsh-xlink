@@ -10,6 +10,7 @@ import MemoryRow from './MemoryRow.vue';
 import MemoryConflict from './MemoryConflict.vue';
 import MemorySuperseded from './MemorySuperseded.vue';
 import MemoryEditor from './MemoryEditor.vue';
+import { baseName } from '../shell/labels.js';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { builtinById, loadBuiltinStatus, toggleBuiltin } from '../plugins/builtin.js';
 import {
@@ -368,15 +369,16 @@ onMounted(() => {
           <p v-if="!recentInjections.length" class="memory-hint">
             还没有记录。在工作台聊一轮，这里会出现「哪一回合、哪个项目、注入了哪几条」。
           </p>
-          <!-- 列表加上限：这是**会长的那一半**（每聊一轮多一行），而页面级滚动条正是
-               它顶出来的。等高到上限之后在卡内滚，卡片的高度就定住了。 -->
+          <!-- 列表加上限：这是**会长的那一半**（每聊一轮多一行），而页面级滚动条正是它顶出来的；
+               等高到上限后在卡内滚。每行只留项目名最后一段（完整路径进 title，一个字没少）。 -->
           <div v-if="recentInjections.length" class="memory-scroll">
             <p
               v-for="(note, index) in recentInjections.slice(0, 5)"
               :key="`${note.at}-${index}`"
               class="memory-note"
+              :title="note.workspace"
             >
-              {{ shortTime(note.at) }} · {{ note.workspace || '未知项目' }} · {{ injectionText(note) }}
+              {{ shortTime(note.at) }} · {{ baseName(note.workspace) || '未知项目' }} · {{ injectionText(note) }}
             </p>
             <p v-if="recentInjections.length > 5" class="memory-note">
               只列最近 5 次（共 {{ recentInjections.length }} 条记录）。
