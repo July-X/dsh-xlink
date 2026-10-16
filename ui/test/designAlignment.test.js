@@ -1363,6 +1363,19 @@ test('页头标题与说明同属一个子项——否则说明会被 space-betw
   // 判据比的是**嵌套深度**而不是 `</div>` 的个数：两种错结构的 `</div>` 计数一样，
   // 数个数那一版判据在真实回归面前是绿的（踩过）。
   assert.equal(effectiveDeclaration(['page-head'], RULES, 'justify-content'), 'space-between');
+  // `space-between` 的**另一半是 `flex-wrap`**，两者是同一个契约，只钉前者就是假绿：
+  // 放不下时 `space-between` 把 deficit 全推给可压缩的那个子项——`.page-head__text` 带
+  // `min-width: 0`、里面 `.page-title` 是 `flex: none`，被压到 min-content 的因此是副标题
+  // （一个字一行）。2026-10-16 用户截图上的记忆面板就是这么坏的：它的第二行
+  // `.memory-switch`（`flex: 1 0 100%`）在没有 wrap 的页头里**不退到第二行**，反而把
+  // 标题块挤成一条窄柱、开关药丸叠在「记忆」上。判据当时只钉了 `space-between`，
+  // 而那句「页头是 wrap 的 flex 行」写在面板的注释里当事实——注释不是判据。
+  // 同族的 `.card-head` 一直是 `space-between` + `flex-wrap: wrap`。
+  assert.equal(
+    effectiveDeclaration(['page-head'], RULES, 'flex-wrap'),
+    'wrap',
+    '页头必须能换行：`space-between` 在放不下时压扁的是副标题（唯一可压缩项），而不是把放不下的那一项退到下一行',
+  );
   for (const rel of [
     'ui/src/shell/OverviewPanel.vue',
     'ui/src/shell/SettingsPanel.vue',
