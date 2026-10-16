@@ -1144,8 +1144,21 @@ mod tests {
             "首轮还不该看见 v2"
         );
 
-        // 内核升级：同一目录里多出 v2。目录条目变了 ⇒ 目录 mtime 必变。
+        // 内核升级：同一目录里多出 v2。目录条目变了 ⇒ 目录 mtime 必变——但
+        // 这条前提要**跨过一个时钟 tick** 才成立：文件时间戳取的是系统时间，
+        // 而系统时间只在时钟中断时推进（Windows 默认粒度 15.6ms），上面那几步
+        // （建目录 → 写 v1 → 扫描）与写 v2 若落在同一个 tick 里，两轮读到的
+        // 目录 mtime 一模一样，闸门据此判「目录没变」，红的是时钟而不是闸门
+        // ——2026-10-16 的 Windows CI（run 38923395574）就是这样红的，而这几步
+        // 实测只花几毫秒。40ms 与 `variant_cache::advance_dir_mtime` 同一处校准。
+        let mtime_before_v2 = fs::metadata(&session).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(40));
         fs::write(session.join("session.v2.jsonl.zstd"), &frame).unwrap();
+        assert!(
+            fs::metadata(&session).unwrap().modified().unwrap() > mtime_before_v2,
+            "前提：跨过时钟 tick 后新增目录条目必须刷新目录 mtime——\
+             不成立时这条用例验的是时间戳精度，不是 mtime 闸的失效路径"
+        );
         scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
         assert!(
             doc.files
