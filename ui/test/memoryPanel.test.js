@@ -192,7 +192,10 @@ test('「清空」按钮接在确认框与那条命令上，确认文案说清�
 
 test('面板真的画了「最近注入」并读后端那条命令', () => {
   const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
-  assert.match(tpl, /<h2>最近注入<\/h2>/, '卡片标题');
+  // 标题里自 2026-10-16 起还挂着那枚 ⓘ（常驻说明收进 tooltip），所以只钉**标题文字**
+  // 而不钉 `<h2>最近注入</h2>` 这个字面形状——判据该钉「这张卡片在不在」，
+  // 钉死标签形状会让每次往标题加东西都变成一次假红。
+  assert.match(tpl, /最近注入\s*<el-tooltip/, '卡片标题');
   assert.match(tpl, /injectionText\(note\)/, '每行要说清注入了什么');
   assert.match(
     read('../src/memory/memory.js'),
@@ -233,7 +236,8 @@ test('提取任务卡片：全零也要说话，失败那行要带原因（评�
 
 test('提取任务卡片真的接在模板上（helper 有测试、接线没有是本仓反复栽的形状）', () => {
   const template = templateOf(read('../src/memory/MemoryPanel.vue'));
-  assert.match(template, /<h2>提取任务<\/h2>/, '卡片要在面板上');
+  // 同上：标题文字 + 紧跟的那枚 ⓘ，不钉 `<h2>提取任务</h2>` 的字面形状。
+  assert.match(template, /提取任务\s*<el-tooltip/, '卡片要在面板上');
   assert.match(template, /jobsSummaryText|jobsText/, '摘要那句要接上');
   assert.match(template, /jobLine\(job\)/, '每条任务那行要接上');
   // 「一条都没提取出来时先看这里」——这句提示是这张卡片存在的理由，钉住它。

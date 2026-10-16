@@ -5,7 +5,7 @@
 // 数据与动作全在 `memory.js` 里；这里只管画。字段名用后端下发的 snake_case
 // （见该文件顶部的说明）。
 import { computed, onMounted } from 'vue';
-import { Download, Plus, Refresh } from '@element-plus/icons-vue';
+import { Download, InfoFilled, Plus, Refresh } from '@element-plus/icons-vue';
 import MemoryRow from './MemoryRow.vue';
 import MemoryConflict from './MemoryConflict.vue';
 import MemorySuperseded from './MemorySuperseded.vue';
@@ -60,6 +60,19 @@ function enableInjection() {
   return toggleBuiltin('memory', true).then(() => loadBuiltinStatus());
 }
 
+/// 生效语义里**「什么时候才生效」的那半**，收进 ⓘ。`switchEffectText` 那句一个字没改
+/// （判据钉着它），这里只是把同一事实的条件那半摆到 tooltip 上——行内那句跟在开关右侧、
+/// 占页头第二行，三行长文把页面往下推，而「预算用尽要等新会话」是想问时才问的。 */
+function switchEffectDetail(status) {
+  if (status && status.effect_pending) {
+    return '插件每一步都会问一次（通常几秒内）；本会话注入次数用尽时要等新会话。';
+  }
+  if (status && !status.effect_pending) {
+    return '插件已经按这个开关来过一次，不需要再做什么。';
+  }
+  return '改动通常下一步检索就生效；本会话注入次数用尽时要等新会话。';
+}
+
 onMounted(() => {
   refreshMemory({ silent: true });
   loadBuiltinStatus();
@@ -90,8 +103,19 @@ onMounted(() => {
           active-text="使用已批准的记忆"
           @change="setMemoryEnabled"
         />
-        <!-- 生效语义写在这（E6）：**不许说「已生效」**——面板不知道本会话还剩几次注入。 -->
-        <p class="memory-note memory-switch__status">{{ switchEffectText(status) }}</p>
+        <!-- 生效语义写在这（E6）：**不许说「已生效」**——面板不知道本会话还剩几次注入。
+             行内仍是 `switchEffectText(status)` 原文，ⓘ 里是同一事实的条件那半。 -->
+        <p class="memory-note memory-switch__status">
+          {{ switchEffectText(status) }}
+          <el-tooltip placement="bottom-start" :show-after="80">
+            <template #content>
+              <div class="card-info-tooltip">{{ switchEffectDetail(status) }}</div>
+            </template>
+            <el-icon class="card-info-icon" tabindex="0" aria-label="这个开关什么时候生效">
+              <InfoFilled />
+            </el-icon>
+          </el-tooltip>
+        </p>
       </div>
     </div>
 
@@ -224,13 +248,23 @@ onMounted(() => {
 
         <div v-if="candidates.length" class="card">
           <div class="card-head">
-            <h2>待确认（{{ candidates.length }}）</h2>
+            <h2>
+              待确认（{{ candidates.length }}）
+              <!-- 常驻说明收进 ⓘ（理由见「最近注入」那处）。判据要的那句仍不折行。 -->
+              <el-tooltip placement="bottom-start" :show-after="80">
+                <template #content>
+                  <!-- prettier-ignore -->
+                  <div class="card-info-tooltip">
+                    这些是模型或会话提出的候选：正文与来源都摆在这里，只有你点保存才会成为记忆。<br />
+                    要存成「所有项目都算」的通用偏好时用右边那个按钮——先确认正文里没有路径、客户名之类的私有信息，通用偏好会跟着你去别的项目。
+                  </div>
+                </template>
+                <el-icon class="card-info-icon" tabindex="0" aria-label="待确认候选怎么处理">
+                  <InfoFilled />
+                </el-icon>
+              </el-tooltip>
+            </h2>
           </div>
-          <p class="memory-hint">
-            这些是模型或会话提出的候选：正文与来源都摆在这里，只有你点保存才会成为记忆。
-            要存成「所有项目都算」的通用偏好时用右边那个按钮——先确认正文里没有路径、客户名
-            之类的私有信息，通用偏好会跟着你去别的项目。
-          </p>
           <div class="page-list">
             <div v-for="item in candidates" :key="item.id" class="page-row memory-row">
               <div class="memory-row__main">
@@ -311,45 +345,77 @@ onMounted(() => {
       <div class="page-layout__col">
         <div class="card">
           <div class="card-head">
-            <h2>最近注入</h2>
+            <h2>
+              最近注入
+              <!-- 常驻说明收进标题旁的 ⓘ（2026-10-16 用户要求「提示文字能做 tooltip 的都用
+                   tooltip 收纳起来」「尽量不出现纵向滚动条」）：它每屏都读、读完不改变操作，
+                   却常年占四行；触发图标 `tabindex="0"` + `aria-label`，键盘也够得到。 -->
+              <el-tooltip placement="bottom-start" :show-after="80">
+                <template #content>
+                  <!-- prettier-ignore -->
+                  <div class="card-info-tooltip">
+                    实况：插件报告它真的把哪几条放进了模型上下文。<br />
+                    下面那个「检索预览」是模拟——拿你填的查询算一遍。<br />
+                    壳重启后这份记录会清空（它不是权威记录，权威记录是上面那份文件）。
+                  </div>
+                </template>
+                <el-icon class="card-info-icon" tabindex="0" aria-label="最近注入是什么">
+                  <InfoFilled />
+                </el-icon>
+              </el-tooltip>
+            </h2>
           </div>
-          <p class="memory-hint">
-            实况：插件报告它真的把哪几条放进了模型上下文。下面那个「检索预览」是模拟——拿你填的查询算一遍。
-            壳重启后这份记录会清空（它不是权威记录，权威记录是上面那份文件）。
-          </p>
           <p v-if="!recentInjections.length" class="memory-hint">
             还没有记录。在工作台聊一轮，这里会出现「哪一回合、哪个项目、注入了哪几条」。
           </p>
-          <p
-            v-for="(note, index) in recentInjections.slice(0, 5)"
-            :key="`${note.at}-${index}`"
-            class="memory-note"
-          >
-            {{ shortTime(note.at) }} · {{ note.workspace || '未知项目' }} · {{ injectionText(note) }}
-          </p>
-          <p v-if="recentInjections.length > 5" class="memory-note">
-            只列最近 5 次（共 {{ recentInjections.length }} 条记录）。
-          </p>
+          <!-- 列表加上限：这是**会长的那一半**（每聊一轮多一行），而页面级滚动条正是
+               它顶出来的。等高到上限之后在卡内滚，卡片的高度就定住了。 -->
+          <div v-if="recentInjections.length" class="memory-scroll">
+            <p
+              v-for="(note, index) in recentInjections.slice(0, 5)"
+              :key="`${note.at}-${index}`"
+              class="memory-note"
+            >
+              {{ shortTime(note.at) }} · {{ note.workspace || '未知项目' }} · {{ injectionText(note) }}
+            </p>
+            <p v-if="recentInjections.length > 5" class="memory-note">
+              只列最近 5 次（共 {{ recentInjections.length }} 条记录）。
+            </p>
+          </div>
         </div>
 
         <div class="card">
           <div class="card-head">
-            <h2>提取任务</h2>
+            <h2>
+              提取任务
+              <!-- 常驻说明收进 ⓘ，同「最近注入」。判据要的那句「一条记忆都没提取出来时
+                   先看这里」在 tooltip 里，且**不折行**（判据是 assert.match）。 -->
+              <el-tooltip placement="bottom-start" :show-after="80">
+                <template #content>
+                  <!-- prettier-ignore -->
+                  <div class="card-info-tooltip">
+                    自动提取（P2）的任务表：聊完一轮后插件排一条、壳发一个租约、模型提完再交回来。<br />
+                    <strong>一条记忆都没提取出来时先看这里</strong>——失败那行会写明是哪一步（`read` / `model` / `parse` / `submit`）。<br />
+                    完整留痕在「查看日志」的 memory-jobs 标签下。
+                  </div>
+                </template>
+                <el-icon class="card-info-icon" tabindex="0" aria-label="提取任务是什么">
+                  <InfoFilled />
+                </el-icon>
+              </el-tooltip>
+            </h2>
             <el-button text :loading="isLoading('memoryList')" @click="refreshMemory()">刷新</el-button>
           </div>
-          <p class="memory-hint">
-            自动提取（P2）的任务表：聊完一轮后插件排一条、壳发一个租约、模型提完再交回来。
-            <strong>一条记忆都没提取出来时先看这里</strong>——失败那行会写明是哪一步
-            （`read` / `model` / `parse` / `submit`）。完整留痕在「查看日志」的 memory-jobs 标签下。
-          </p>
           <p class="memory-note">{{ jobsText }}</p>
-          <p
-            v-for="(job, index) in recentJobs"
-            :key="`${job.key?.session}-${job.key?.cursor}-${index}`"
-            class="memory-note"
-          >
-            {{ jobLine(job) }}
-          </p>
+          <div v-if="recentJobs.length" class="memory-scroll">
+            <p
+              v-for="(job, index) in recentJobs"
+              :key="`${job.key?.session}-${job.key?.cursor}-${index}`"
+              class="memory-note"
+            >
+              {{ jobLine(job) }}
+            </p>
+          </div>
         </div>
 
         <div class="card">
