@@ -4984,16 +4984,26 @@ mod tests {
         upsert_item(&data_dir, mk_item("healthy", "healthy-plugin")).expect("healthy");
         // 损坏：中央库里有登记，但目录已经不见了。
         upsert_item(&data_dir, mk_item("broken", "broken-plugin")).expect("broken");
-        // profile 已经为健康插件单独接好线，因此成功执行后 manifest
-        // 保持不变，也根本不会 shell out 到 pnpm。
+        // profile 已经为健康插件接好线，因此成功执行后 manifest 保持不变，
+        // 这条用例也**不该 shell out 到 pnpm**：它的判据是「一个坏插件不拖垮
+        // 其余插件」，pnpm 装不装得上是别人的事——pnpm 一失败，返回的就成了
+        // pnpm 那条错误，断言里的 broken-plugin 再也看不到（Windows runner 上
+        // 正是如此连红，而本机 pnpm 恰好成功）。
+        // 种子里的 spec 必须逐字等于生产将要写下的那份：这里曾硬编码 P4 之前的
+        // 布局（profile 在 `<data_dir>/../profiles/<p>`），布局一搬它就变成
+        // 「陈旧 spec」，`wire_manifest` 判 changed 为真 → 每次真的跑一次 pnpm。
+        // 所以按同一对纯函数算出来，别再手写路径。
         let profile = profile_dir(&data_dir, "web");
         fs::create_dir_all(profile.join("node_modules")).unwrap();
+        let target = paths::instance_extension_plugin_dir(&family, &instance_id, "healthy");
+        let spec = format!(
+            "{SPEC_FILE}{}",
+            spec_path_string(&relative_path(&profile, &target))
+        );
         let manifest = serde_json::json!({
             "name": "dsh-profile-web",
             "private": true,
-            "dependencies": {
-                "healthy-plugin": "file:../../desktop/kernels/9.9.9/plugins/healthy"
-            },
+            "dependencies": { "healthy-plugin": spec },
             "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"] } }
         });
         fs::write(
@@ -5002,7 +5012,10 @@ mod tests {
         )
         .unwrap();
 
-        let mut noop = |_: &str| {};
+        // 记下进度行，好钉住「这条用例没有 shell out 到 pnpm」——种子 spec 一旦
+        // 再次与生产脱钩，changed 就会翻真，pnpm 的成败会重新变成这条用例的判据。
+        let mut progress: Vec<String> = Vec::new();
+        let mut noop = |line: &str| progress.push(line.to_string());
         let err = ensure_wiring(
             &data_dir,
             &settings::Settings::default(),
@@ -5014,6 +5027,10 @@ mod tests {
         assert!(
             msg.contains("broken-plugin"),
             "error names the failed plugin: {msg}"
+        );
+        assert!(
+            !progress.iter().any(|line| line.contains("pnpm")),
+            "这条用例不该跑 pnpm：{progress:?}"
         );
         // 健康插件仍然被物化，manifest 也保留它的接线 —— 一个坏插件不再
         // 拖垮其他所有插件。
