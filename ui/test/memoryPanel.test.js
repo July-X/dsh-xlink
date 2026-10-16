@@ -512,18 +512,35 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
   }
 
   const expected = {
-    'memory-row': { display: 'flex', 'align-items': 'flex-start', gap: '12px' },
-    'memory-row__main': { flex: '1', 'min-width': '0' },
+    // 2026-10-16：`.memory-row` 从 `flex` 改成 `grid` + `subgrid`，让动作区只占标题那一行、
+    // 正文横跨整行（用户要求「新增的记忆显示UI横向展开完全」）。这组值跟着实现走——本条
+    // 判据真正钉的是「这一族的规则写在 import 进 main.js 的 .css 里」，不是这几个字面量。
+    'memory-row': {
+      display: 'grid',
+      'align-items': 'flex-start',
+      'grid-template-columns': 'minmax(0, 1fr) auto',
+    },
+    'memory-row__main': {
+      display: 'grid',
+      'grid-template-rows': 'subgrid',
+      'grid-column': '1 / -1',
+      'min-width': '0',
+    },
     'memory-row__title': { display: 'flex', 'flex-wrap': 'wrap', 'align-items': 'center' },
     'memory-row__name': { 'font-size': '15px', 'font-weight': '600' },
     'memory-row__body': {
       'white-space': 'pre-wrap',
       'overflow-wrap': 'anywhere',
+      'grid-column': '1 / -1',
       margin: '4px 0 0',
       color: 'var(--text-secondary)',
     },
-    'memory-row__meta': { 'font-size': '12px', color: 'var(--text-muted)' },
-    'memory-row__actions': { display: 'flex', flex: '0 0 auto' },
+    'memory-row__meta': {
+      'font-size': '12px',
+      color: 'var(--text-muted)',
+      'grid-column': '1 / -1',
+    },
+    'memory-row__actions': { display: 'flex', 'grid-column': '2', 'grid-row': '1' },
   };
 
   // 只传**类名自己**当主语 token：多传一个 `page-row` 会让 `.page-row` 那条 (0,1,0)
