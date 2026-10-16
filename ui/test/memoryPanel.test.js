@@ -74,6 +74,19 @@ test('「最近注入」那行话把三种状态分开（开关关着 / 没命�
   assert.equal(injectionText({ enabled: true }), '没有命中');
 });
 
+test('项目名只取最后一段，完整路径交给 title（一行放得下，信息一个字不丢）', async () => {
+  const { baseName } = await import('../src/shell/labels.js');
+  assert.equal(baseName('/Users/a/2026/github/dsh-xlink'), 'dsh-xlink');
+  assert.equal(baseName('/Users/a/proj/'), 'proj', '尾斜杠不算一段');
+  assert.equal(baseName('C:\\a\\b'), 'b', 'Windows 的反斜杠同样认');
+  assert.equal(baseName('proj'), 'proj', '本来就只有一段');
+  // 认不出就原样返回：只有根、空值、缺字段都不许抛（调用方用 `|| '未知项目'` 兜底）。
+  assert.equal(baseName('/'), '/');
+  assert.equal(baseName(''), '');
+  assert.equal(baseName(null), '');
+  assert.equal(baseName(undefined), '');
+});
+
 test('「已过期」有入口：编辑器能改验证范围，且真的发给了后端', async () => {
   const { memoryStore, editMemory, resetDraft } = await import('../src/memory/memory.js');
   // 表单自 2026-10-16 起在弹窗组件里（`MemoryEditor.vue`）——三档单选跟着它搬家，
@@ -197,6 +210,10 @@ test('面板真的画了「最近注入」并读后端那条命令', () => {
   // 钉死标签形状会让每次往标题加东西都变成一次假红。
   assert.match(tpl, /最近注入\s*<el-tooltip/, '卡片标题');
   assert.match(tpl, /injectionText\(note\)/, '每行要说清注入了什么');
+  // 2026-10-16 用户要求这一屏不出现纵向滚动条：项目名只留最后一段（实测 5 条 × 18px
+  // = 90px，多过整页溢出量），完整路径进 `title`——截的是显示，不是这条信息。
+  assert.match(tpl, /baseName\(note\.workspace\)/, '项目名要压成最后一段');
+  assert.match(tpl, /:title="note\.workspace"/, '完整路径进 title，一个字都不许丢');
   assert.match(
     read('../src/memory/memory.js'),
     /invoke\('memory_recent_injections'\)/,
