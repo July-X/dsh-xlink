@@ -1264,6 +1264,179 @@ mod tests {
         }
     }
 
+    /// **手动夹具：真模型验「意义冲突只标记不裁决」（C5）**。
+    ///
+    /// 上一条夹具答的是「提取链走不走得通」，这条答的是**冲突标记的语义质量**。两者不是
+    /// 一件事：插件侧的机械判据（「模型标的 id 必须来自本次检索集合」）在桩模型下就钉死了，
+    /// 但「模型看到一句与既有记忆**相反**的话，会不会真去标；看到一句只是**相关**的话，
+    /// 会不会瞎标」只有真模型答得了——而瞎标比不标更坏（面板会把两条毫不相干的记忆并排
+    /// 摆给用户，还配一句「由你决定留哪一条」）。
+    ///
+    /// ## 为什么必须**预置两条已确认记忆**
+    ///
+    /// 不能靠上一轮的候选：`query::sorted_hits` 只捞 `state == accepted`，**待确认候选不参与
+    /// 检索**。于是「库里那条」必须在夹具里就放成 `accepted`，否则探针那一轮的
+    /// `/context` 命中不了任何东西，插件按「没有校验集合」把所有冲突标记丢掉（这是有意的
+    /// 纪律，见 `memory/conflicts.rs`），夹具就会因为「候选没标冲突」而红——但那是环境，
+    /// 不是缺陷。这条坑第一次跑就会撞上，所以写在这里。
+    ///
+    /// 两条而不是一条，是为了让「该标的标 / 不该标的别标」各有一个靶子，而且三个靶子
+    /// 在**同一批切片**里出现，模型没法靠「上下文里只有一条可疑的」蒙对：
+    ///
+    /// | 探针说的 | 对库里哪条 | 期望 |
+    /// | --- | --- | --- |
+    /// | 提交前不用跑门禁了 | 门禁那条（相反） | **标** |
+    /// | 提交信息里带上文件名 | 门禁那条（相关但不冲突） | **不标** |
+    /// | 这个仓库用 npm install | 包管理器那条（相反） | **标** |
+    ///
+    /// 跑法（探针三句用 `PROBE_TURNS` 传，见清单「怎么验」）：
+    /// ```sh
+    /// cd src-tauri && cargo test --lib manual_conflict_probe -- --ignored --nocapture
+    /// # 另开一个终端：读握手 → 跑 drive-real-model.mjs → touch /tmp/p2probe/bridge-stop
+    /// ```
+    #[test]
+    #[ignore = "手动夹具：真模型验冲突标记的语义质量（C5）"]
+    fn manual_conflict_probe_with_a_real_model() {
+        let root = temp_dir("conflict-probe");
+        let _home = crate::tests::scoped_xlink_home(&root);
+        let ns = crate::memory::store::Namespace::for_bridge("dsh", "probe");
+        crate::memory::store::set_use_approved(&ns, true).expect("打开记忆开关");
+
+        // 两条靶子都用**公开写入入口** `save`（`mutate` 是模块私有的），再显式置成
+        // `accepted`——`save` 默认落 `verified` 状态，不是检索认的那个状态。
+        let gate = crate::memory::store::save(
+            &ns,
+            crate::memory::store::SaveInput {
+                scope: "general".to_string(),
+                title: "提交前必须跑 npm run check".to_string(),
+                body: "提交前一定先跑一遍 npm run check 这个门禁，不要跳。".to_string(),
+                keywords: vec![
+                    "提交".to_string(),
+                    "门禁".to_string(),
+                    "npm run check".to_string(),
+                ],
+                verification: "verified".to_string(),
+                ..Default::default()
+            },
+        )
+        .expect("预置门禁那条");
+        let package_manager = crate::memory::store::save(
+            &ns,
+            crate::memory::store::SaveInput {
+                scope: "general".to_string(),
+                title: "个人项目一律用 pnpm".to_string(),
+                body: "我所有的个人项目都用 pnpm，不要用 npm install。".to_string(),
+                keywords: vec![
+                    "pnpm".to_string(),
+                    "包管理器".to_string(),
+                    "npm install".to_string(),
+                ],
+                verification: "verified".to_string(),
+                ..Default::default()
+            },
+        )
+        .expect("预置包管理器那条");
+        for id in [&gate.id, &package_manager.id] {
+            crate::memory::store::set_state(&ns, id, crate::memory::store::STATE_ACCEPTED)
+                .expect("置成已确认（检索只认这个状态）");
+        }
+
+        let handshake = PathBuf::from("/tmp/p2probe/bridge-cred.json");
+        let stop = PathBuf::from("/tmp/p2probe/bridge-stop");
+        let _ = fs::remove_file(&stop);
+        let _ = fs::create_dir_all("/tmp/p2probe");
+        let (url, token) = launch(&root, "dsh:probe").expect("起桥");
+        fs::write(
+            &handshake,
+            format!("{{\"url\":\"{url}\",\"token\":\"{token}\"}}"),
+        )
+        .expect("写握手文件");
+        println!("[probe] 桥已就绪：{url}；等 {stop:?}");
+        println!(
+            "[probe] 靶子：门禁那条 {} · 包管理器那条 {}",
+            gate.id, package_manager.id
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
+        while !stop.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "等了 15 分钟也没看到停止文件 {stop:?}——探针那一步没跑起来？"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+
+        let memory = crate::memory::store::load(&ns).expect("读记忆库");
+        println!("[probe] 候选 {} 条", memory.candidates.len());
+        assert!(
+            !memory.candidates.is_empty(),
+            "候选一条都没落下来——提取链没走通（看插件日志里的 stage 与原因）"
+        );
+        for candidate in &memory.candidates {
+            println!(
+                "[probe] 候选：{} ← 标了冲突 {:?}",
+                candidate.title, candidate.conflicts_with
+            );
+        }
+
+        // 不变式：标出来的 id 必须都在库里。这条在桩模型下也有判据，但真模型会自由发挥，
+        // 而插件侧那道校验是本轮要连着一起验的（它一旦失效，面板上会出现一条「找不到的记忆」）。
+        let known: Vec<&str> = memory.memories.iter().map(|r| r.id.as_str()).collect();
+        for candidate in &memory.candidates {
+            for id in &candidate.conflicts_with {
+                assert!(
+                    known.contains(&id.as_str()),
+                    "候选「{}」标的冲突 {} 不在库里——插件侧那道「id ∈ 本次检索集合」失效了",
+                    candidate.title,
+                    id
+                );
+            }
+        }
+
+        // 核心判据：两个「相反」的靶子各要挨一次标。
+        // **红的含义要说清**：模型把「提交前不用跑门禁」当成一条普通新约定直接提了、
+        // 一点冲突都不标——那说明它没真在比对检索到的既有记忆。此时 C5 只兑现了
+        // 「插件会把模型标的收下来」，没兑现「标得出来」，机制要重新想（不是夹具坏了）。
+        let hits_gate = memory
+            .candidates
+            .iter()
+            .any(|c| c.conflicts_with.contains(&gate.id));
+        let hits_package = memory
+            .candidates
+            .iter()
+            .any(|c| c.conflicts_with.contains(&package_manager.id));
+        assert!(
+            hits_gate,
+            "没有候选把「提交前不用跑门禁」标成与门禁那条冲突（{}）——模型没在比对既有记忆",
+            gate.id
+        );
+        assert!(
+            hits_package,
+            "没有候选把「这个仓库用 npm install」标成与 pnpm 那条冲突（{}）",
+            package_manager.id
+        );
+
+        // 「不该标的别标」这一半**机械判不出来**：它要求模型压根不提第 2 句那条无关约定，
+        // 而提不提、怎么合并都是模型的自由。所以这里不写断言，只在它出现了的时候校验，
+        // **没出现就明确打印「这半本轮没验到」**——写成一条会空过的断言等于给自己一道假绿
+        // （判据空转时必须说破，这是本仓 `check-invariants` 反复强调的那件事）。
+        let unrelated = memory
+            .candidates
+            .iter()
+            .find(|c| c.title.contains("文件名") || c.body.contains("文件名"));
+        match unrelated {
+            Some(candidate) => assert!(
+                candidate.conflicts_with.is_empty(),
+                "「提交信息带上文件名」与库里任何一条都不冲突，模型却标了 {:?}",
+                candidate.conflicts_with
+            ),
+            None => println!(
+                "[probe] 注意：模型没单独立「提交信息带上文件名」这条，\
+                 所以「不瞎标」这半本轮**没有**验到（不是通过了）"
+            ),
+        }
+    }
+
     /// **手动量测：满库时一次 `/context` 要多久**（B17）。
     ///
     /// 设计 §3.1 那句「150 ms 降级线是建议值不是已验证指标」——这条夹具就是去把指标量出来。
