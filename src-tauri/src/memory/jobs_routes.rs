@@ -256,6 +256,9 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                             start_seq,
                             end_seq,
                             revision: job.key.extractor.clone(),
+                            // **内容指纹由插件给**（H7）：只有它读得到那一段原文——
+                            // 壳这一侧不读会话日志，所以这个字段**必然**来自提交参数。
+                            content_hash: query_decoded(path, "content_hash"),
                             at: String::new(),
                         },
                         verification: String::new(),

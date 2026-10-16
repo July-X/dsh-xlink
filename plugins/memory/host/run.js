@@ -52,6 +52,7 @@ export async function runExtraction({ deps, key, from, to, signal }) {
     refused: fields.refused ?? 0,
     compared: fields.compared ?? 0,
     againstPending: fields.againstPending ?? 0,
+    contentHash: fields.contentHash ?? '',
     ...(fields.refusedReason === undefined ? {} : { refusedReason: fields.refusedReason }),
     ...(fields.reason === undefined ? {} : { reason: fields.reason }),
   });
@@ -96,6 +97,10 @@ export async function runExtraction({ deps, key, from, to, signal }) {
     step = 'model';
     // ④ 调模型。超时/取消在这里体现为 signal 中止。
     if (signal?.aborted) return done({ ok: false, stage: 'cancelled', reason: '调用前被取消' });
+    // **那一段内容的指纹**（H7）：只有插件读得到那段原文，所以壳算不出来，只能这里给。
+    // 它进的是**来源**而不是候选正文——「来源变了」是关于「这条是从哪句话来的」，不是关于
+    // 「模型提了什么」。
+    const contentHash = deps.fingerprint(slice.text);
     const call = await deps.callModel({
       system: deps.system,
       text: slice.text,
@@ -141,7 +146,7 @@ export async function runExtraction({ deps, key, from, to, signal }) {
     step = 'submit';
     // ⑥ 提交。提交失败要说清「有几条没进去」——否则那几条就悄悄没了。
     if (signal?.aborted) return done({ ok: false, stage: 'cancelled', reason: '提交前被取消' });
-    const submitted = await deps.submit({ key, candidates: parsed.candidates });
+    const submitted = await deps.submit({ key, candidates: parsed.candidates, contentHash });
     if (submitted?.ok !== true) {
       return done({
         ok: false,
@@ -159,6 +164,10 @@ export async function runExtraction({ deps, key, from, to, signal }) {
       submitted: Number(submitted.submitted ?? parsed.candidates.length),
       compared: existing.length,
       againstPending: pending.length,
+      // **指纹要跟着结果回去**：它是这次提取的「来源身份」，而 `index.js` 那边的日志与
+      // 排查都要靠它对上「这一条是从哪一段来的」。少这一行的话指纹在结果里永远是空串，
+      // 而症状是「stale 偶尔不触发」——没有任何地方会报错。
+      contentHash,
       // **提交阶段被拒的条数要跟着回去**（独立评审第 5 条）：否则「落库 3 条」看起来就是全部，
       // 而另外 7 条的去向只存在于提交那一步的局部变量里。
       refused: Number(submitted.refused ?? 0),

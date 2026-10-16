@@ -231,6 +231,11 @@ onMounted(() => {
                 <div class="memory-row__title">
                   <span class="memory-row__name">{{ item.title || '（无标题）' }}</span>
                   <el-tag size="small" effect="plain">{{ item.source.kind }}</el-tag>
+                  <!-- H7：来源变了（会话被压缩/编辑之后重提同一段）。**只是提醒**——
+                       「保存」与「丢弃」两个按钮照常在下面，标过期不是替用户处理掉。 -->
+                  <el-tag v-if="item.verification === 'stale'" size="small" type="warning" effect="plain">
+                    可能已过期
+                  </el-tag>
                 </div>
                 <p class="memory-row__body">{{ item.body }}</p>
                 <p class="memory-row__meta">
@@ -252,6 +257,15 @@ onMounted(() => {
                   :busy="globalBusy"
                   @discard="(candidate) => decideCandidate(candidate, false)"
                 />
+                <!-- H7：与上面两个标记**同一个 `.memory-flag` 盒子**——三种关系都要用户按一次，
+                     看起来不一样重就会暗示哪一种更严重，而它们其实一样。措辞里不许出现
+                     「已自动作废」：那是「只标不执行」，说成「已经替你决定了」就反了。 -->
+                <div v-if="item.verification === 'stale'" class="memory-flag">
+                  <p class="memory-flag__lead">
+                    这条是从会话里<strong>同一段话</strong>提的，而那段内容在这次提取之前被改动过
+                    （压缩或编辑都会）。系统没有替你处理掉它——要不要留，按下面的「保存」决定。
+                  </p>
+                </div>
               </div>
               <div class="memory-row__actions">
                 <el-button

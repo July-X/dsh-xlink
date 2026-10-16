@@ -48,7 +48,7 @@ use crate::shell::settings;
 /// 一次抬版里付账。抬版不是形式——写侧会把 `meta.schema_version` 盖成本值，于是旧应用读到
 /// 新库会按「库比它新」拒写，而不是把没见过的 `sources` 数组当未知字段丢掉、再把自己那份
 /// 单对象来源写回去（那样每一次编辑都会悄悄抹掉全部来源，而界面上看不出任何异常）。
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// 记忆范围：绑定某个已登记工作区，或本实例通用的用户偏好。
 pub const SCOPE_PROJECT: &str = "project";
@@ -164,6 +164,23 @@ pub struct MemorySource {
     pub session: String,
     pub start_seq: u64,
     pub end_seq: u64,
+    /// **那一段来源内容的指纹**（会话来源才有，H7）：插件侧算出来的 64 位内容指纹，
+    /// 写成 16 位十六进制。
+    ///
+    /// **为什么 `revision` 不够用**：`revision` 存的是**提取器版本**，而同一版提取器读同一段
+    /// 会话永远得到同一个 `revision`——拿它判「来源变了」会得到「永远没变」这个假阴性。
+    /// 而「来源变了」在真实世界里的形状是**会话被压缩/编辑过之后重提同一段**：
+    /// 序号还在、内容不同，于是只有内容指纹认得出来。
+    ///
+    /// **它不是安全边界，判据也照这个前提写**：插件跑在内核沙箱里，而 `host/*.js` 到今天
+    /// **零个 node 内置模块**——为一个「变没变」的判据去引 `node:crypto`，等于给沙箱面加
+    /// 一条依赖换取一个没人需要的性质。伪造一个指纹的后果最多是「一条过期候选没被标」，
+    /// 而候选本来就要用户点保存才生效。64 位碰撞概率约 1e-19，够判「同一段内容」。
+    ///
+    /// **空 = 没算出来**（面板手工新建的来源、以及旧版本写的候选）：空的一律不参与判定，
+    /// 见 `sources::retire_stale_candidates`。
+    #[serde(default)]
+    pub content_hash: String,
     pub revision: String,
     /// 这条来源成立的时间（RFC3339，UTC）。
     pub at: String,
@@ -794,6 +811,11 @@ pub fn submit_candidate(ns: &Namespace, input: CandidateInput) -> Result<SubmitO
         }
         // **两个标记在同一个入口规范化**（`marks::from_input`），不是一个一个算。
         let marks = crate::memory::marks::from_input(&input.conflicts_with, &input.supersedes);
+        // **来源变了就把先前那条标过期**（H7，设计 §8-6「来源变化时保留旧版本候选并标过期」）：
+        // 旧候选**留着**（用户还要能看见并决定），只是 `verification` 变成 stale，于是面板上
+        // 有一句「可能已过期，看一眼再决定」。判定在 `sources` 那边——`store.rs` 只剩几行余量，
+        // 而它本来就贴着反棘轮线（基线预算 665，只许下调）。**要在 `source`/`now` 被 move 之前**。
+        crate::memory::sources::retire_stale_candidates(doc, &source);
         let candidate = MemoryCandidate {
             id: new_id(),
             scope: clean.scope,
@@ -1492,6 +1514,7 @@ mod tests {
                     session: "s-1".to_string(),
                     start_seq: 3,
                     end_seq: 9,
+                    content_hash: "h-1".to_string(),
                     revision: "r1".to_string(),
                     at: now_iso(),
                 },
@@ -1956,6 +1979,172 @@ mod tests {
         let capped = crate::memory::marks::normalize(&["a".to_string(), "b".to_string()], 1);
         assert_eq!(capped.kept, vec!["a".to_string()]);
         let _ = pending;
+    }
+
+    /// 带会话来源的候选输入——H7 的三个字段（会话 / 序号区间 / 指纹）都在参数里，
+    /// **不要在用例里手写 `MemorySource` 字面量**：写一遍就会漏一个字段，而漏掉的那次
+    /// 会以「判据红在一条不相干的地方」的形式冒出来（2026-10-16 真踩过 `candidate_needs_an
+    /// _explicit_decision` 少字段直接编译不过）。
+    fn session_candidate(
+        title: &str,
+        body: &str,
+        session: &str,
+        start_seq: u64,
+        end_seq: u64,
+        content_hash: &str,
+    ) -> CandidateInput {
+        CandidateInput {
+            source: MemorySource {
+                kind: SOURCE_EXTRACT.to_string(),
+                session: session.to_string(),
+                start_seq,
+                end_seq,
+                content_hash: content_hash.to_string(),
+                revision: "xlink-memory-extract/4".to_string(),
+                at: now_iso(),
+            },
+            ..candidate_input(title, body)
+        }
+    }
+
+    /// **H7 的落库主判据**：同会话 + 序号区间重叠 + 指纹不同 → 先前那条待确认候选标 stale。
+    ///
+    /// 走的是真的 `submit_candidate`，不是 `retire_stale_candidates` 那个纯函数——
+    /// 纯函数那三条在 `sources.rs` 里各自验过，这里要验的是**它真的被接在写路径上**，
+    /// 而「函数有判据、调用点漏了」正是 2026-10-11 那两条判据（`doc 承诺下次启动会接手`
+    /// 不等于接上了）要防的同一个形状。
+    ///
+    /// **不成立的那几半也走同一个入口**：只验「该标的标了」的话，把判据改成「凡是新候选都标
+    /// 过期」照样全绿，而那恰恰是这条纪律要防的方向（误标比漏标坏）。
+    #[test]
+    fn re_extracting_the_same_range_retires_only_the_earlier_candidate() {
+        let _home = TempHome::new("h7-retire");
+        let ns = namespace();
+        set_use_approved(&ns, true).expect("打开记忆开关");
+
+        let first = submit_ok(
+            &ns,
+            session_candidate("第一版", "第一版正文。", "s-1", 8, 84, "aaaa"),
+        );
+        // 同一段重提，指纹不同 → 先前那条标过期，**而且它仍然是待确认**（只标不删）。
+        let second = submit_ok(
+            &ns,
+            session_candidate("第二版", "第二版正文。", "s-1", 8, 84, "bbbb"),
+        );
+        let doc = read_doc(&ns);
+        let by_id = |id: &str| {
+            doc.candidates
+                .iter()
+                .find(|row| row.id == id)
+                .unwrap_or_else(|| panic!("候选 {id} 不在库里"))
+                .clone()
+        };
+        let older = by_id(&first.id);
+        assert_eq!(
+            older.verification, VERIFICATION_STALE,
+            "来源变了的那条被标过期"
+        );
+        assert_eq!(
+            older.state, CANDIDATE_PENDING,
+            "**标过期不许顺手把它处理掉**——用户还要能看见并自己决定（纪律：只标不删不拒收）"
+        );
+        assert_eq!(
+            by_id(&second.id).verification,
+            VERIFICATION_UNVERIFIED,
+            "刚提交的那条自己不该被标"
+        );
+
+        // 指纹相同 → 不标（内容没变，说它过期是假的）。
+        submit_ok(
+            &ns,
+            session_candidate("第三版", "第三版正文。", "s-1", 8, 84, "bbbb"),
+        );
+        // 序号不重叠 → 不标（那是接着往后说，不是重提）。
+        submit_ok(
+            &ns,
+            session_candidate("第四版", "第四版正文。", "s-1", 200, 300, "cccc"),
+        );
+        // 别的会话 → 不标（那是另一件事）。
+        submit_ok(
+            &ns,
+            session_candidate("第五版", "第五版正文。", "s-2", 8, 84, "dddd"),
+        );
+        // 没有会话的来源（面板手工保存那条 `save`）→ 不标。**这一条最要紧**：它带指纹也
+        // 不带会话，而判据要求两个都在——只查指纹的话，面板每存一条都会把用户所有待确认
+        // 候选标成过期。
+        submit_ok(
+            &ns,
+            session_candidate("第六版", "第六版正文。", "", 8, 84, "eeee"),
+        );
+        let doc = read_doc(&ns);
+        let still_fresh = ["第五版", "第六版"].map(|title| {
+            doc.candidates
+                .iter()
+                .find(|row| row.title == title)
+                .unwrap_or_else(|| panic!("{title} 不在库里"))
+                .verification
+                .clone()
+        });
+        assert_eq!(
+            still_fresh,
+            [
+                VERIFICATION_UNVERIFIED.to_string(),
+                VERIFICATION_UNVERIFIED.to_string()
+            ],
+            "别的会话与无会话的来源都不该被标"
+        );
+        assert_eq!(
+            doc.candidates
+                .iter()
+                .filter(|row| row.verification == VERIFICATION_STALE)
+                .count(),
+            1,
+            "**整份库里只该有那一条 stale**（指纹相同 / 不重叠 / 别的会话 / 无会话，四种不成立）"
+        );
+    }
+
+    /// 抬到 schema 5 这一批**不许要求用户手工改自己的数据文件**：v4 的来源既没有
+    /// `content_hash`，而读回要照样成功（`#[serde(default)]` 兜住）。
+    ///
+    /// **这条判据真正要杀的行为是「新机制把老数据全标成过期」**：磁盘上每一份 v4 库里的
+    /// 候选都没有指纹，而拿空值去比字符串「全都不同」——于是用户装上新版之后，第一次有
+    /// 指纹的候选一进来，他攒的所有待确认候选全部变成「可能已过期」。所以这里不只验
+    /// 「读得进来」，还要验**读进来之后不会被新机制动**。
+    #[test]
+    fn a_v4_document_without_the_content_hash_still_loads_and_is_never_retired() {
+        let _home = TempHome::new("v4-read");
+        let ns = namespace();
+        set_use_approved(&ns, true).expect("打开记忆开关");
+        fs::create_dir_all(ns.dir()).expect("mkdir");
+        fs::write(
+            ns.file(),
+            r#"{"meta":{"schema_version":4,"generation":3,"use_approved":true,"auto_extract":false,"suppressed":[]},"memories":[],"candidates":[{"id":"c-old","scope":"general","workspace_id":"","workspace_path":"","title":"提交前先跑检查","body":"提交前跑 npm run check。","keywords":["提交"],"source":{"kind":"extract","session":"s1","start_seq":8,"end_seq":84,"revision":"xlink-memory-extract/3","at":""},"verification":"unverified","state":"pending","created_at":"2026-10-16T00:00:00Z","decided_at":""}]}"#,
+        )
+        .expect("write v4 doc");
+
+        let doc = read_doc(&ns);
+        assert_eq!(doc.candidates.len(), 1);
+        assert!(
+            doc.candidates[0].source.content_hash.is_empty(),
+            "v4 的来源没有这个键，读出来必须是空的而不是报错"
+        );
+
+        // **真来一条带指纹的新候选**（同会话 + 序号区间完全重叠）——老那条仍然不许被标。
+        submit_ok(
+            &ns,
+            session_candidate("新来的", "新来的正文。", "s1", 8, 84, "ffff"),
+        );
+        let doc = read_doc(&ns);
+        let old = doc
+            .candidates
+            .iter()
+            .find(|row| row.id == "c-old")
+            .expect("老候选还在库里");
+        assert_eq!(
+            old.verification, VERIFICATION_UNVERIFIED,
+            "**没有指纹的老候选宁可漏标**：标成过期会让用户攒的东西全部变成「可能不准」"
+        );
+        assert_eq!(old.state, CANDIDATE_PENDING);
     }
 
     /// 抬到 schema 4 这一批**不许要求用户手工改自己的数据文件**：v2/v3 的候选既没有

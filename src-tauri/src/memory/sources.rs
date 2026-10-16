@@ -16,10 +16,69 @@
 
 use serde::{Deserialize, Deserializer};
 
-use super::store::{MemorySource, SOURCE_EXTRACT, SOURCE_MANUAL, SOURCE_SESSION};
+use super::store::{
+    MemoryDoc, MemorySource, SOURCE_EXTRACT, SOURCE_MANUAL, SOURCE_SESSION, VERIFICATION_STALE,
+};
 
 /// 一条记录最多记几个来源。超出的按「并不进去」处理——见 [`merge`]。
 pub(crate) const MAX_SOURCES: usize = 8;
+
+/// **来源变了就把先前那条待确认候选标过期**（H7，设计 §8-6「来源变化时保留旧版本候选并标过期，
+/// 或放弃排新任务，不能覆写更新结果」）。
+///
+/// ## 口径（2026-10-16 维护者拍板 (a)）
+///
+/// 三条同时成立才算「来源变了」：
+/// 1. **同一个会话**——别的会话说的话不是「改口」，那是另一件事；
+/// 2. **序号区间有重叠**——这是**重提**（压缩/编辑之后回头提取同一段），不是「接着往后说」；
+/// 3. **内容指纹不同**——序号没动而内容变了，才叫来源变了。
+///
+///    指纹由插件侧算（见 [`super::store::MemorySource::content_hash`] 为什么不用密码学哈希）。
+///
+/// **为什么不按「序号在它之后」判**（曾经的备选 (b)）：同一会话的提取区间天然重叠
+/// （`end_seq` 是任务冻结时的截止游标，通常在会话末尾），按那个口径**几乎每一条新候选都会
+/// 把上一条标过期**，于是 stale 这个标记变成常态，而它的意义是「看一眼再决定」。
+///
+/// ## 为什么标记落在 `verification` 而不是新字段
+///
+/// 候选本来就有三档验证范围（`verified` / `unverified` / `stale`，C7 那一批落的），而
+/// 「来源变了所以这条可能不准」正是 stale 的定义。复用它就**不需要第三个标记字段**，
+/// 面板也已经有现成的展示路径。
+///
+/// ## 两条不许破的纪律
+///
+/// 1. **只标过期，不删也不拒收**。用户还要能看见那条候选并自己决定；设计稿那句
+///    「不能覆写更新结果」指的是权威记录，而候选本来就不动它。
+/// 2. **空指纹一律不判**。面板手工新建的来源没有指纹，旧版本写的候选也没有——拿空值去
+///    比字符串会「全都不同」，于是**每来一条新候选就把所有旧候选标过期**。宁可漏标。
+pub(crate) fn retire_stale_candidates(doc: &mut MemoryDoc, incoming: &MemorySource) -> usize {
+    if incoming.content_hash.is_empty() || incoming.session.is_empty() {
+        return 0;
+    }
+    let mut retired = 0;
+    for candidate in doc.candidates.iter_mut() {
+        if candidate.state != super::store::CANDIDATE_PENDING {
+            continue;
+        }
+        if candidate.source.session != incoming.session || candidate.source.content_hash.is_empty()
+        {
+            continue;
+        }
+        if candidate.source.content_hash == incoming.content_hash {
+            continue;
+        }
+        // 区间相交：`a.start <= b.end && b.start <= a.end`。用 u64 直接比，不做减法——
+        // 那在「a.start > b.end」时会下溢，而下溢成一个巨大的正数会让这条判据恒真。
+        if candidate.source.start_seq > incoming.end_seq
+            || incoming.start_seq > candidate.source.end_seq
+        {
+            continue;
+        }
+        candidate.verification = VERIFICATION_STALE.to_string();
+        retired += 1;
+    }
+    retired
+}
 
 /// 读回兼容：旧库写的是 `"source": {…}`，新库写 `"sources": [ … ]`，两种都读成列表。
 pub(crate) fn one_or_many<'de, D>(deserializer: D) -> Result<Vec<MemorySource>, D::Error>
@@ -89,6 +148,137 @@ pub(crate) fn labels(list: &[MemorySource]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::store::{
+        MemoryCandidate, CANDIDATE_PENDING, CANDIDATE_REJECTED, VERIFICATION_UNVERIFIED,
+    };
+
+    fn candidate(session: &str, start: u64, end: u64, hash: &str, state: &str) -> MemoryCandidate {
+        MemoryCandidate {
+            id: format!("c-{session}-{start}-{hash}"),
+            state: state.to_string(),
+            verification: VERIFICATION_UNVERIFIED.to_string(),
+            source: MemorySource {
+                kind: SOURCE_EXTRACT.to_string(),
+                session: session.to_string(),
+                start_seq: start,
+                end_seq: end,
+                content_hash: hash.to_string(),
+                revision: "v1".to_string(),
+                at: String::new(),
+            },
+            ..Default::default()
+        }
+    }
+
+    fn incoming(session: &str, start: u64, end: u64, hash: &str) -> MemorySource {
+        MemorySource {
+            kind: SOURCE_EXTRACT.to_string(),
+            session: session.to_string(),
+            start_seq: start,
+            end_seq: end,
+            content_hash: hash.to_string(),
+            revision: "v1".to_string(),
+            at: String::new(),
+        }
+    }
+
+    /// **口径 (a) 的主判据**：同会话 + 序号区间重叠 + 指纹不同 → 旧候选标 stale。
+    ///
+    /// 三条缺一不可，**所以这一条把三个「不成立」都并进来验**——分开写三条判据的话，
+    /// 后改代码的人很容易只想着「让主判据保持绿」。
+    #[test]
+    fn same_session_overlapping_range_and_different_hash_retires_it() {
+        // 传入来源的身份只写这一个常量。**第一版把它散成字面量**（传入 `"zzzz"`、
+        // 「指纹相同」那条写成 `"dddd"`），于是夹具编码的东西与注释声称的不是一回事：
+        // 那条其实**指纹不同**，被标是对的，而这条判据红在「只有第一条该被标」。
+        // 判据骗过自己的又一例：注释不等于夹具，只有断言等式才说清「相同」指什么。
+        const INCOMING_HASH: &str = "zzzz";
+        let mut doc = MemoryDoc::default();
+        doc.candidates
+            .push(candidate("s1", 10, 84, "aaaa", CANDIDATE_PENDING));
+        // 别的会话 —— 那是「另一件事」，不是改口。
+        doc.candidates
+            .push(candidate("s2", 10, 84, "bbbb", CANDIDATE_PENDING));
+        // 序号不重叠 —— 那是「接着往后说」，不是重提。
+        doc.candidates
+            .push(candidate("s1", 200, 300, "cccc", CANDIDATE_PENDING));
+        // 指纹与传入的**同一个常量** —— 内容没变，标过期就是假的。
+        doc.candidates
+            .push(candidate("s1", 10, 84, INCOMING_HASH, CANDIDATE_PENDING));
+        // 空指纹 —— 旧版本写的候选，宁可漏标（判据见函数头那两条纪律）。
+        doc.candidates
+            .push(candidate("s1", 10, 84, "", CANDIDATE_PENDING));
+        // 已决的 —— 用户已经处理过，不该被动。
+        doc.candidates
+            .push(candidate("s1", 10, 84, "eeee", CANDIDATE_REJECTED));
+
+        let retired = retire_stale_candidates(&mut doc, &incoming("s1", 10, 84, INCOMING_HASH));
+        assert_eq!(retired, 1, "只有第一条该被标");
+        assert_eq!(doc.candidates[0].verification, VERIFICATION_STALE);
+        for untouched in &doc.candidates[1..] {
+            assert_eq!(
+                untouched.verification, VERIFICATION_UNVERIFIED,
+                "「{}」不该被标",
+                untouched.source.content_hash
+            );
+        }
+    }
+
+    /// **区间相交的两端都要算重叠**：`a.start <= b.end && b.start <= a.end`。
+    ///
+    /// 这条钉住一个具体的坑：用减法判重叠（`a.start - b.end <= 0`）在 `a.start > b.end`
+    /// 时会**下溢成一个巨大的正数**，于是那条判据变成恒假——表现为「相邻但不重叠的区间
+    /// 也被标过期」，而那正是这条纪律要防的方向（误标比漏标坏）。
+    ///
+    /// 样例都对着固定的 `[20, 30]`，**每一对都得真的相交**才写进来：第一版塞了个
+    /// `[10, 10]`，而它与 `[20, 30]` 压根不相交——夹具不成立，红的是夹具不是实现。
+    #[test]
+    fn the_touching_boundaries_still_count_as_overlapping() {
+        // 跨过头、跨到尾、整体被包住、以及退化成一个点（`[25, 25]` 落在 `[20, 30]` 内）。
+        for (start, end) in [(10u64, 84u64), (20, 84), (10, 30), (25, 25), (20, 30)] {
+            let mut doc = MemoryDoc::default();
+            doc.candidates
+                .push(candidate("s1", start, end, "aaaa", CANDIDATE_PENDING));
+            let retired = retire_stale_candidates(&mut doc, &incoming("s1", 20, 30, "zzzz"));
+            assert_eq!(retired, 1, "[{start}, {end}] 与 [20, 30] 相交，该标");
+        }
+        // **紧挨着但不重叠的两个方向都要验**：只差一个序号。左邻（19→20）、右邻（30→31）、
+        // 以及一路到头（0→19，覆盖 `start_seq` 为 0 的边界）。
+        //
+        // **这半边才是钉住下溢那条坑的方向**：一旦有人把判据改成减法（`a.start - b.end <= 0`），
+        // 「不相交」会变成「相交」，误标比漏标坏——所以判据必须两边都验，只验相交那半边
+        // 的话，减法版本照样全绿。
+        for (start, end) in [(10u64, 19u64), (31, 60), (0, 19)] {
+            let mut doc = MemoryDoc::default();
+            doc.candidates
+                .push(candidate("s1", start, end, "aaaa", CANDIDATE_PENDING));
+            assert_eq!(
+                retire_stale_candidates(&mut doc, &incoming("s1", 20, 30, "zzzz")),
+                0,
+                "[{start}, {end}] 与 [20,30] 不相交"
+            );
+        }
+    }
+
+    /// **没有指纹就不判**：拿空串去比字符串，「全都不同」，于是每来一条新候选就把所有旧候选
+    /// 标过期——而面板手工新建的来源、旧版本写的候选都没有指纹。
+    #[test]
+    fn an_empty_hash_retires_nothing() {
+        let mut doc = MemoryDoc::default();
+        doc.candidates
+            .push(candidate("s1", 10, 84, "aaaa", CANDIDATE_PENDING));
+        assert_eq!(
+            retire_stale_candidates(&mut doc, &incoming("s1", 10, 84, "")),
+            0
+        );
+        assert_eq!(doc.candidates[0].verification, VERIFICATION_UNVERIFIED);
+        // 面板手工保存的来源（`kind=user-manual`）压根没有会话，也一样不判。
+        assert_eq!(
+            retire_stale_candidates(&mut doc, &MemorySource::manual("2026-10-16T00:00:00Z")),
+            0
+        );
+    }
+
     use crate::memory::store::MemoryRecord;
 
     #[test]

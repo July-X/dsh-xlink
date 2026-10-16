@@ -55,7 +55,14 @@ export const MAX_KEYWORD_BYTES = 64;
  * 任务会被新插件按新 schema 提交，而那次提取的提示词是按旧形状写的，于是「模型压根没给
  * `conflicts_with`」与「模型给的 id 没被校验」在库里长得一模一样。
  */
-export const EXTRACTOR_VERSION = 'xlink-memory-extract/3';
+/**
+ * 2026-10-16：**`/4`** —— 提交时多带一个 `content_hash`（H7「来源变化时把旧候选标过期」）。
+ * 不换的后果是：盘上按 `/3` 排好的任务会被新插件结算，而那次结算出来的来源**少一个字段**——
+ * 于是「同一个任务键」在两个插件版本下得到不同形状的来源，而任务表说它们是同一件事。
+ * 提示词与输出 schema 都没变，但任务键记录的是「用哪一版提取」，而「提交时带不带指纹」
+ * 是提取的一部分。
+ */
+export const EXTRACTOR_VERSION = 'xlink-memory-extract/4';
 
 /**
  * 一次提取最多给模型看几条既有记忆，以及每条正文看多少字节（C5 的「提取前检索」）。
@@ -193,6 +200,30 @@ export function renderExisting(existing) {
     ...lines,
     '',
   ].join('\n');
+}
+
+/**
+ * 那一段会话内容的 64 位指纹（16 位十六进制）。
+ *
+ * **为什么不引 `node:crypto`**：插件跑在内核沙箱里，而 `host/*.js` 到今天**零个 node 内置
+ * 模块**——为一个「内容变没变」的判据去引 crypto，等于给沙箱面加一条依赖换取一个没人
+ * 需要的性质。**它不是安全边界**：伪造指纹的后果最多是「一条过期候选没被标」，而候选本来
+ * 就要用户在面板上点保存才生效。
+ *
+ * **为什么 64 位够**：这条判据要认的是「同一段内容」而不是「不同的内容」——FNV-1a 的
+ * 64 位碰撞概率约 1e-19，而同一会话里重提的段数是几条到几十条。32 位就另说了（几千条
+ * 之后碰撞概率到了 1e-6 量级，而那种碰撞的表现是「该标的没标」，属偶发红，比假绿更难查）。
+ *
+ * 用 BigInt 而不是 `Math.imul` 拼 32 位——后者更短，但省下的那点长度换不来可接受的重叠概率。
+ */
+export function contentFingerprint(text) {
+  const bytes = Buffer.from(String(text ?? ''), 'utf8');
+  // 14695981039346656037 = FNV-1a 64 位的 offset basis；0x100000001b3 = prime。
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of bytes) {
+    hash = ((hash ^ BigInt(byte)) * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return hash.toString(16).padStart(16, '0');
 }
 
 /** 按 UTF-8 码元削到字节上限，绝不切出半个字符（与 `mask.js`、`query.rs` 同一套纪律）。 */
