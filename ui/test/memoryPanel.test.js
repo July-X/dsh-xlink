@@ -604,6 +604,67 @@ test('两个标记块共用同一族类名：样式在 memory.css，两个组件
   }
 });
 
+/**
+ * H7「来源变了」的展示：候选被标 stale 时面板要说一句为什么，**而且不许动那两个按钮**。
+ *
+ * 盯两件各自会静默的事：一是提示块建了没插进候选卡片（helper 有测试、接线没有）；
+ * 二是有人顺手把 stale 当成「系统已经处理掉了」——加上 `v-if="… !== 'stale'"` 把动作
+ * 藏起来，或者 `:disabled="… === 'stale'"` 把它点灰。后者在真机上完全看不出来：
+ * 用户看到的是「这条过期了」，而他的两条按钮**变灰了**却没有任何地方解释为什么。
+ */
+test('stale 只多一句提示，保存与丢弃两个动作照常在', () => {
+  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  // **判据只能盯候选那张卡片**，不能盯整份模板：手工新建记录那组「已过期」单选
+  // （`el-radio value="stale"`）也是 `stale`，而它跟「只标不执行」毫无关系。
+  // 一开始写成盯整份模板，红在那个正当的用法上——判据越界也是一种判据骗自己。
+  //
+  // **从候选循环切到它所在那列的末尾**。第一版拿 `<div class="card-head">` 当右锚点，
+  // 而那张卡片自己就有一个 card-head（切出一段空的，红在「实际 0 处」——那条红看着像
+  // 「提示没接上」，真因是切错区间）。锚点选法本身也是判据的一部分。
+  const start = tpl.indexOf('<div v-for="item in candidates"');
+  const end = tpl.indexOf('</div>\n\n      <div class="page-layout__col">', start);
+  assert.ok(start >= 0 && end > start, '候选那张卡片没找全——两个锚点至少有一个对不上');
+  const card = tpl.slice(start, end);
+  // 唯一的合法写法：**用它决定「显不显示提示」**。
+  const guard = `v-if="item.verification === 'stale'"`;
+  const guards = card.split(guard).length - 1;
+  assert.equal(
+    guards,
+    2,
+    `标题上的标签与那句提示都该由这一个条件控制，实际 ${guards} 处`
+  );
+  // **除此之外那张卡片里不许再出现 stale**：只要它出现在 `:disabled` / `v-if` / `v-show` 里，
+  // 就是把「只标记不执行」读成了「已经替你处理掉了」。
+  const rest = card.split(guard).join('');
+  assert.ok(
+    !rest.includes('stale'),
+    'stale 只允许出现在「显示提示」的那一个条件上——它出现在动作的 disabled/隐藏里就是替你做决定了'
+  );
+  // 两个动作本来就在（上面那条判据是「不许动它们」，得先确认它们在）。
+  assert.match(card, /@click="decideCandidate\(item, true\)"/, '保存按钮还在');
+  assert.match(card, /@click="decideCandidate\(item, false\)"/, '丢弃按钮还在');
+  // 复用共用那一族类名（三种关系在界面上必须一样重）。
+  assert.match(
+    card,
+    /<div v-if="item\.verification === 'stale'" class="memory-flag">/,
+    '提示块要用 memory.css 那份共用样式'
+  );
+});
+
+test('stale 那句话只说发生了什么，不说系统已经处理掉', () => {
+  // `templateOf` 已经剥掉 HTML 注释，所以这里判的是模板里的**字面文案**，
+  // 不会命中我写在模板注释里的反例说明（判据命中解释 = 判据不判代码）。
+  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  const flag = tpl.slice(tpl.indexOf('class="memory-flag">', tpl.indexOf("item.verification === 'stale'")));
+  const lead = flag.slice(0, flag.indexOf('</p>'));
+  assert.match(lead, /同一段/, '要说清是「同一段来源被重提」，否则用户看不懂为什么这条忽然过期');
+  assert.ok(
+    !/已自动|已经替你|已为你处理|以新的为准|不再需要确认/.test(lead),
+    '出现「已经替你处理」这类话，就与「只标不执行」相反'
+  );
+  assert.match(lead, /系统没有替你处理掉/, '反过来要把「没替你处理」明说出来');
+});
+
 test('冲突块的文案只摆事实，不代做判断', () => {
   const src = read('../src/memory/MemoryConflict.vue');
   const tpl = templateOf(src);

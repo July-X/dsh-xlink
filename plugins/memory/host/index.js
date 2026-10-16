@@ -35,6 +35,7 @@ import {
   EXTRACTION_SYSTEM_PROMPT,
   EXTRACTOR_VERSION as EXTRACT_VERSION,
   buildSlice,
+  contentFingerprint,
   extractionUserText,
   parseExtractionOutput,
 } from './extract.js';
@@ -324,8 +325,9 @@ function apply(ctx) {
             selection
               ? callExtractionModel({ llm: services.llm, route: selection, text, existing, pending, signal })
               : { ok: false, reason: '拿不到当前模型路由（agentDefaultModel）' },
+          fingerprint: contentFingerprint,
           parse: parseExtractionOutput,
-          submit: async ({ candidates }) => {
+          submit: async ({ candidates, contentHash }) => {
             let submitted = 0;
             const refusals = [];
             // 工作区 id 在**这一次提取开始时**现解析一次，给检索与提交共用（G3）：预算用满的
@@ -355,6 +357,9 @@ function apply(ctx) {
                 // **取代标记（C6）**：同一种形状。壳**不会**据此拒收任何候选——它只存下这个
                 // 标记，让面板把两条摆给用户按一次（纪律见 `extract.js` 的规则 9）。
                 supersedes: (candidate.supersedes ?? []).join(','),
+                // **来源内容指纹（H7）**：不是每个候选带一份，而是**整批一份**——它们全都来自
+                // 同一段被冻结的切片。壳拿它判「先前那条待确认候选是不是同一段的重提」。
+                content_hash: contentHash ?? '',
               };
               // **提交前按整条路径真算一次**（评审第 6 条）：正文的上限按原文定、通道的上限按编码后
               // 定，中文一乘就是 9 倍——逐项都合法的候选合起来能远超通道，而那种失败是**整批**

@@ -8,6 +8,7 @@ import { AUTH_SCHEMES, SENSITIVE_KEY_NEEDLES, maskSecrets } from '../host/mask.j
 import {
   EXTRACTION_SYSTEM_PROMPT,
   buildSlice,
+  contentFingerprint,
   extractionUserText,
   parseExtractionOutput,
   renderPending,
@@ -575,6 +576,10 @@ function extractionDeps(overrides = {}) {
           ],
         };
       },
+      // **内容指纹（H7）**：这一步是 2026-10-16 加的，而夹具**一开始没有它**——
+      // 于是编排里 `deps.fingerprint(...)` 抛 TypeError，被「失败只降级」那个 catch 吃掉，
+      // 八个用例一起红在一个看着毫不相关的断言上（helper 有测试、接线没有的另一个变体）。
+      fingerprint: (text) => contentFingerprint(text),
       callModel: async ({ text, existing }) => {
         return {
           ok: true,
@@ -591,7 +596,8 @@ function extractionDeps(overrides = {}) {
       parse: (text, { events: range, allowedConflictIds }) => {
         return parseExtractionOutput(text, { events: range, allowedConflictIds });
       },
-      submit: async ({ candidates }) => {
+      submit: async ({ candidates, contentHash }) => {
+        submittedWith = { candidates, contentHash };
         return { ok: true, submitted: candidates.length };
       },
     };
@@ -618,19 +624,34 @@ function extractionDeps(overrides = {}) {
 
 const extractionKey = { session: { id: 's-1' }, cursor: 3, extractor: 'xlink-memory-extract/1' };
 
-test('提取编排：五步按序跑完，只提交校验过的候选', async () => {
-  const { deps, calls } = extractionDeps();
+/** `submit` 收到的那一份（用来断言指纹真的传到了，而不是只在结果里有个字段）。 */
+let submittedWith = null;
+
+test('提取编排：七步按序跑完，只提交校验过的候选', async () => {
+  const { deps, calls, events } = extractionDeps();
   const result = await runExtraction({ deps, key: extractionKey, from: 3, to: 4 });
   assert.equal(result.ok, true);
   assert.equal(result.stage, 'done');
   assert.equal(result.submitted, 1);
   assert.deepEqual(
     calls,
-    ['readRange', 'buildSlice', 'retrieveForExtract', 'callModel', 'parse', 'submit'],
-    '六步按序，一步不落——**检索既有记忆必须在调模型之前**，否则提示词里那段是空的'
+    ['readRange', 'buildSlice', 'retrieveForExtract', 'fingerprint', 'callModel', 'parse', 'submit'],
+    '七步按序，一步不落——**检索既有记忆必须在调模型之前**（否则提示词里那段是空的），\
+     **指纹必须在调模型之前算出来**（它算的是那一段原文，而那正是模型看到的东西）'
   );
   // 顺带钉住「模型看到的就是夹具给的那几条」：冲突标记的校验集合由它决定。
   assert.equal(result.compared, 2, '结果里要能看出这一次的候选对着几条既有记忆判过冲突');
+  // **指纹要一路走到 submit**（H7）：壳判「来源变了」全靠它，而它在半路丢掉的话症状是
+  // 「stale 永远不触发」——一个没有任何报错的地方。所以判据直接看 submit 收到的那份。
+  // **判不变式，不判快照**：写死一个指纹值等于把切片文本也写死了，而夹具里的那句人话
+  // 一改判据就红——那种红与「指纹没传对」毫无关系。
+  assert.match(result.contentHash, /^[0-9a-f]{16}$/, `指纹形状不对：${result.contentHash}`);
+  assert.equal(
+    result.contentHash,
+    contentFingerprint(deps.buildSlice(events).text),
+    '指纹要是**那一段切片原文**算出来的（现算，不写死值）'
+  );
+  assert.equal(submittedWith?.contentHash, result.contentHash, '同一个指纹要一路走到 submit');
 });
 
 test('提取编排：工具结果不进切片，读不到就绝不往下走', async () => {
@@ -1309,7 +1330,13 @@ test('候选不记到旧项目（G3）：提交时**现解析**工作区，不�
     /retrieveForExtract: \(\{ text \}\) =>\s*retrieveForExtract\(\{ creds, workspaceId,/,
     '**检索那一份必须用同一个值**：两套口径会让冲突标记指向别的项目'
   );
-  const submit = code.slice(code.indexOf('submit: async ({ candidates })'), code.indexOf('jobs/finish'));
+  // **锚点要先断言它存在**：这几条判据靠 `indexOf` 切区间，而锚点一旦对不上（比如函数签名
+  // 改了一处），`indexOf` 返回 -1，`slice(-1, …)` 照样切出一段——于是断言匹配到的是**别处的
+  // 代码**，红起来看着毫不相关。2026-10-16 真踩过：签名从 `({ candidates })` 变成
+  // `({ candidates, contentHash })` 之后这条判据就红了，而消息是「解析出来的值要用上」。
+  const submitAnchor = 'submit: async ({ candidates';
+  assert.ok(code.includes(submitAnchor), `装配层里找不到「${submitAnchor}」——锚点对不上`);
+  const submit = code.slice(code.indexOf(submitAnchor), code.indexOf('jobs/finish'));
   assert.match(submit, /workspace_id: workspaceId/, '解析出来的值要用上');
   assert.match(submit, /scope: scopeForWorkspace\(workspaceId\)/, 'scope 跟着同一个值走');
 });
@@ -2210,7 +2237,7 @@ test('提示词：模型标冲突，但不许自己选胜者（设计 §7-2 的�
   assert.match(prompt, /Never pick a winner/, '明写「不裁决」——否则模型会顺手删掉旧的那条');
   // 提取器版本换提示词就要换：它是任务键的一部分，不换的话盘上按 v1 排好的任务会被
   // 新插件按新 schema 结算，而那次提取的提示词还是旧形状。
-  assert.equal(EXTRACTOR_VERSION, 'xlink-memory-extract/3');
+  assert.equal(EXTRACTOR_VERSION, 'xlink-memory-extract/4');
 });
 
 test('既有记忆摆在模型面前：带 id、有限额、超出的那条要说清楚', () => {
@@ -2334,6 +2361,7 @@ test('提取前检索：失败只降级，不吃掉整次提取，而且失败�
     buildSlice: () => ({ text: '[5] 用户：以后提交前跑检查', seqs: [5] }),
     // 桥不通就是这一条抛错的样子。
     retrieveForExtract: async () => { throw new Error('无法连接记忆桥'); },
+    fingerprint: (text) => contentFingerprint(text),
     callModel: async () => ({ ok: true, text: '[]' }),
     parse: () => ({ ok: true, candidates: [], rejected: [] }),
     submit: async () => ({ ok: true, submitted: 0 }),
