@@ -417,8 +417,16 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
     for group in &mut groups {
         group.share_percent = percent(group.bytes, total);
     }
-    // 分类也按大小降序，和条目保持同一个读法。
-    groups.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.id.cmp(&b.id)));
+    // **分类的顺序是固定的，不按大小排**（2026-10-16 用户要求：「固定显示位置，
+    // 不要因为空间占用改动位置」）。位置跟着字节数走时，一次清理或一次内核升级就会
+    // 让整张表重新洗牌——用户下一次找「实例数据」得重扫一遍，肌肉记忆全废。
+    // 顺序就是上面 push 的先后：内核版本 → 实例数据 → 插件 / 技能 / 备份 → 壳日志，
+    // 与「①装了什么 ②你的数据 ③可重下的库 ④可随时清的日志」这套读法一致。
+    // 「内核版本」因此在第一位（2026-10-16 用户点名）。
+    //
+    // 条目**仍按字节降序**（`build_group` 里那一条不动）：用户问「哪个最占地方」时是
+    // 从上往下扫的，而那几行本来就是同一类里可比的项。分类位置与条目排序是两件事。
+    // 顺序由 `groups_keep_a_fixed_order_regardless_of_size` 钉住。
 
     DiskUsage {
         total,
@@ -798,6 +806,76 @@ mod tests {
         assert!(
             (sum - 100.0).abs() < 0.01,
             "占比之和应约等于 100，实得 {sum}"
+        );
+    }
+
+    /// 分类顺序**固定**：不随占用大小变，且「内核版本」在第一位。
+    ///
+    /// 2026-10-16 用户要求：「固定显示位置，不要因为空间占用改动位置。『内核版本』放到
+    /// 第一个位置」。改之前 `measure` 末尾有一条 `groups.sort_by(bytes 降序)`，于是清理
+    /// 一次、升一次内核，四张瓦片就重新洗牌一次，用户下次找「实例数据」得重扫全表。
+    ///
+    /// **两次测量的占用刻意不同**：位置不随占用变才是这条要钉的性质。只测一次的话，
+    /// 大小不变，按大小排也不变，判据会绿在一个它根本没验的形状上。
+    #[test]
+    fn groups_keep_a_fixed_order_regardless_of_size() {
+        let temp = TempTree::new("group-order");
+        let home = temp.path().join("home");
+        let data_dir = home.join("dsh/desktop");
+        tree(&data_dir.join("kernels/0.2.0"), &[("f", 1000)]);
+        tree(
+            &home.join("kernels/dsh/instances/default"),
+            &[("sessions/s1.json", 500)],
+        );
+        tree(&home.join("plugins/dsh/one"), &[("index.js", 100)]);
+        tree(&home.join("shell/release/logs"), &[("shell.log", 20)]);
+
+        let first = measure(&data_dir, &home);
+        let sizes_now: Vec<(String, u64)> = first
+            .groups
+            .iter()
+            .map(|g| (g.id.clone(), g.bytes))
+            .collect();
+        assert_eq!(
+            sizes_now
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["kernels", "instances", "stores", "logs"],
+            "分类顺序必须是「内核版本 → 实例数据 → 插件/技能/备份 → 壳日志」，\
+             首位的「内核版本」是用户点名的"
+        );
+
+        // 让 stores 长成最大的一类：按大小排的话它会跳到第一位。
+        tree(&home.join("plugins/dsh/one"), &[("grow.bin", 5000)]);
+        let second = measure(&data_dir, &home);
+        let sizes_after: Vec<(String, u64)> = second
+            .groups
+            .iter()
+            .map(|g| (g.id.clone(), g.bytes))
+            .collect();
+
+        // 先确认这棵树真的把大小顺序**换了个个儿**，否则下面那条断言可能什么都没验到。
+        let bytes_of = |id: &str| {
+            sizes_after
+                .iter()
+                .find(|(name, _)| name == id)
+                .map(|(_, bytes)| *bytes)
+                .unwrap_or(0)
+        };
+        assert!(
+            bytes_of("stores") > bytes_of("kernels"),
+            "前提不成立：stores 没有长成比 kernels 更大，这条用例就验不到\
+             「位置不随占用变」（实得 {sizes_after:?}）"
+        );
+
+        assert_eq!(
+            sizes_after
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["kernels", "instances", "stores", "logs"],
+            "占用变了之后顺序不许跟着变——位置是固定的（实得 {sizes_after:?}）"
         );
     }
 
