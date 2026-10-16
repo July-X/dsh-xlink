@@ -26,6 +26,26 @@ pub const CONTEXT_DETAIL_BYTES: usize = 8 * 1024;
 /// 一次注入的总上限（字节）。设计稿 §3.1 的会话级预算按 12 KiB 起算。
 pub const CONTEXT_TOTAL_BYTES: usize = 12 * 1024;
 
+/// 提取时给模型看的**待确认候选**条数上限（C6）。
+///
+/// 与 [`MAX_HITS`] 同一个数但**不是一个理由**，所以不是一个常量：命中是按关键词挑出来的，
+/// 而这里的候选是**按时间**挑的（壳没有语义检索，挑不出「与这句话相关的那几条」），所以取
+/// 小的那个更稳妥——挑不出来时给模型一批不相关的候选，模型只会更倾向于乱标取代关系。
+pub const MAX_PENDING_FOR_EXTRACT: usize = 6;
+
+/// 一条**待确认候选**的最小形状（只给提取用，C6）。
+///
+/// 为什么不复用 [`MemoryHit`]：待确认候选**不进运行时上下文**——面板只列 pending，未确认的
+/// 东西不该影响模型看到什么（§6「提升前须展示正文与来源、由用户明确选择」）。提取要看的
+/// 只是「用户这次说的话是不是在推翻那一条」，多带 scope/verification 只会在每一次提取里
+/// 白白多几个字节。
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingHit {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+}
+
 /// 一次检索命中的条目（已按预算裁剪后的形态）。
 #[derive(Debug, Clone, Serialize)]
 pub struct MemoryHit {
@@ -48,6 +68,12 @@ pub struct RetrievedContext {
     pub total_bytes: usize,
     pub generation: u64,
     pub hits: Vec<MemoryHit>,
+    /// **只给提取用**（`?pending=1` 才带）：本命名空间最近的待确认候选。
+    ///
+    /// 运行时上下文一个字都不变——它们不在 `text` 里，只有提取那一条路读这个字段。关着
+    /// 开关时它也是空的（记忆功能整个关着时，提取链压根不会跑）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<PendingHit>,
 }
 
 /// 按 UTF-8 字符边界截断，绝不切出半个字符。
@@ -286,6 +312,42 @@ fn omission_note(omitted: usize, over_hits: usize) -> String {
     format!("\n\n（还有{}。）", parts.join("、"))
 }
 
+/// 最近的待确认候选，给**提取**那一次模型调用判断「用户是不是改口了」（C6）。
+///
+/// **只取最近 N 条，不做关键词筛选**：壳这一侧没有语义检索，而 pending 的典型场景是
+/// 「上一轮刚提取出来的那条」——时间最近的正好是它。按关键词挑需要一套打分，而打分挑的是
+/// 已生效记忆的形状（[`sorted_hits`]），套到还没确认的东西上会引入第二套口径。
+///
+/// 开关关着时返回空：那不是「没有待确认的」，而是「记忆功能整个关着」，提取链这时也不该跑。
+pub fn recent_pending(ns: &Namespace, limit: usize) -> Result<Vec<PendingHit>, AppError> {
+    let doc = load(ns)?;
+    if !doc.meta.use_approved {
+        return Ok(Vec::new());
+    }
+    // **按创建时间倒序，不靠文档里的位置**：文档里候选是追加的，所以「取前 N 条」会拿到
+    // 最老的那批——而改口场景要的恰恰是刚提出来的那条。
+    let mut pending: Vec<&crate::memory::store::MemoryCandidate> = doc
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.state == crate::memory::store::CANDIDATE_PENDING)
+        .collect();
+    pending.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    Ok(pending
+        .into_iter()
+        .take(limit)
+        .map(|candidate| PendingHit {
+            id: candidate.id.clone(),
+            title: candidate.title.clone(),
+            body: candidate.body.clone(),
+        })
+        .collect())
+}
+
 /// 有界检索：给运行时用的上下文。
 pub fn retrieve(
     ns: &Namespace,
@@ -309,6 +371,8 @@ pub fn retrieve(
         text,
         generation: doc.meta.generation,
         hits,
+        // 运行时那条路**不带**待确认候选：只有提取那一次显式要 `?pending=1` 才填。
+        pending: Vec::new(),
     })
 }
 
@@ -319,6 +383,25 @@ mod tests {
     use crate::memory::store::{
         save, set_state, set_use_approved, ListFilter, SaveInput, STATE_DISABLED,
     };
+
+    /// 写一份「三条待确认」的文档。**直接写文档**而不是走提交路径：后者给三条候选打的
+    /// 是同一个 `created_at`，排序就退化成按 id 排，而 id 是随机的——判据那样写会偶发红。
+    fn seed_pending_document(ns: &Namespace, at: &str) {
+        use std::fs;
+        let candidate = |id: &str, title: &str, created: &str| {
+            format!(
+                r#"{{"id":"{id}","scope":"general","workspace_id":"","workspace_path":"","title":"{title}","body":"正文","keywords":[],"source":{{"kind":"extract","session":"s1","start_seq":1,"end_seq":2,"revision":"v1","at":""}},"verification":"unverified","state":"pending","conflicts_with":[],"supersedes":[],"created_at":"{created}","decided_at":""}}"#
+            )
+        };
+        let doc = format!(
+            r#"{{"meta":{{"schema_version":4,"generation":1,"use_approved":true,"auto_extract":false,"suppressed":[]}},"memories":[],"candidates":[{},{},{}]}}"#,
+            candidate("c-old", "最早的一条", at),
+            candidate("c-mid", "中间一条", "2026-10-02T00:00:00Z"),
+            candidate("c-new", "较新的一条", "2026-10-03T00:00:00Z"),
+        );
+        fs::create_dir_all(ns.dir()).expect("mkdir");
+        fs::write(ns.file(), doc).expect("write doc");
+    }
 
     /// **固定项是排序键，不是「+1000 分」**（第二次评审第 6 条）：一条命中 10 个以上关键词的记录
     /// （每词 +100）能拿 1080 分压过 pinned 的 1000 分，把用户明确说了「每次都带上」的那条挤出前 6。
@@ -372,6 +455,74 @@ mod tests {
             context.text.contains("2 条因条数上限"),
             "溢出要写在正文里：{}",
             context.text
+        );
+    }
+
+    /// C6：提取那一次要能拿到「最近几条待确认候选」。
+    ///
+    /// **为什么直接写文档而不是连提三条**：写入路径给三条候选打的 `created_at` 是同一个
+    /// 时刻，于是排序要靠 id 收尾，而 id 是随机十六进制——第一版判据断言「第一条是最后
+    /// 提交的」，实测它在同秒时就红了（**偶发红的判据比假绿更隐蔽**：有时绿有时红，
+    /// 还会被当成环境问题）。直接把三条的 `created_at` 写成不同时刻，排序才有确定输入。
+    #[test]
+    fn recent_pending_gives_the_newest_undecided_ones() {
+        let _home = TempHome::new("recent-pending");
+        let ns = namespace();
+        set_use_approved(&ns, true).expect("enable");
+        seed_pending_document(&ns, "2026-10-01T00:00:00Z");
+        let hits = recent_pending(&ns, 2).expect("pending");
+        assert_eq!(hits.len(), 2, "按上限取");
+        assert_eq!(hits[0].title, "较新的一条", "倒序：最后创建的那条排在最前");
+        assert_eq!(hits[1].title, "中间一条");
+        assert!(
+            hits.iter().all(|hit| !hit.id.is_empty()),
+            "id 要拿得到，模型才可能引用它"
+        );
+        assert!(
+            !hits.iter().any(|hit| hit.title == "最早的一条"),
+            "超出上限的那条不该给——给了模型就可能拿它当取代对象，而它没在这次对照里"
+        );
+    }
+
+    /// **同 `created_at` 时顺序仍然是确定的**（模块头第 3 条纪律：同样的输入永远给出同样
+    /// 的顺序，否则同一个会话里两次相同的提取给出的提示词不一样，白白让快照失效）。
+    ///
+    /// tie-break 用 id 而不用「文档里的位置」——位置会随裁剪（`prune.rs`）而变。
+    #[test]
+    fn recent_pending_is_deterministic_when_the_clock_does_not_move() {
+        let _home = TempHome::new("pending-tie");
+        let ns = namespace();
+        set_use_approved(&ns, true).expect("enable");
+        seed_pending_document(&ns, "2026-10-01T00:00:00Z");
+        seed_pending_document(&ns, "2026-10-01T00:00:00Z");
+        let first: Vec<String> = recent_pending(&ns, 6)
+            .expect("pending")
+            .into_iter()
+            .map(|hit| hit.id)
+            .collect();
+        let second: Vec<String> = recent_pending(&ns, 6)
+            .expect("pending")
+            .into_iter()
+            .map(|hit| hit.id)
+            .collect();
+        assert_eq!(first, second, "同样的库要给出同样的顺序");
+        assert_eq!(first.len(), 3, "三条待确认都在");
+    }
+
+    /// 开关关着时返回空——那不是「没有待确认的」，而是「记忆功能整个关着」，提取链这时
+    /// 也不该跑。**不许拿空清单当「用户没有待确认的东西」**去标取代。
+    #[test]
+    fn recent_pending_is_empty_when_the_switch_is_off() {
+        let _home = TempHome::new("pending-off");
+        let ns = namespace();
+        crate::memory::store::submit_candidate(
+            &ns,
+            crate::memory::store::testkit::candidate_input("候选", "正文"),
+        )
+        .expect("submit");
+        assert!(
+            recent_pending(&ns, 5).expect("pending").is_empty(),
+            "开关关着时一条都不该给"
         );
     }
 

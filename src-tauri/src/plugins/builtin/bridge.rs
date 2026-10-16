@@ -655,6 +655,72 @@ mod tests {
         assert!(!namespace.profile.is_empty());
     }
 
+    /// C6：待确认候选**只在提取那一次**随 `/context` 一起回来（`?pending=1`）。
+    ///
+    /// **这条判据盯的是「运行时上下文一个字都不变」**：带不带 `pending=1`，`text` 与 `hits`
+    /// 必须完全一样。面板只列 pending，未确认的东西不该影响模型平时看到什么——而这件事
+    /// 没有任何报错会说破，症状只是「模型好像知道了它不该知道的事」。
+    #[test]
+    fn pending_candidates_come_back_only_when_the_extraction_asks_for_them() {
+        use crate::memory::store::{self, Namespace, SubmitOutcome};
+        let home = std::env::temp_dir().join(format!(
+            "xlink-bridge-pending-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&home);
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let namespace = Namespace::for_bridge("dsh", "pending-probe");
+        store::set_use_approved(&namespace, true).expect("enable");
+        let SubmitOutcome::Candidate(seeded) = store::submit_candidate(
+            &namespace,
+            store::testkit::candidate_input("用 pnpm", "这个仓库用 pnpm。"),
+        )
+        .expect("seed candidate") else {
+            panic!("新正文应该收成候选");
+        };
+
+        let dsh_home = home.join("dsh-home");
+        fs::create_dir_all(&dsh_home).expect("dsh home");
+        let (url, token) = launch(&dsh_home, "dsh:pending-probe").expect("桥起不来");
+        let addr = url.trim_start_matches("http://").to_string();
+
+        let without = http_get(
+            &addr,
+            "/v1/memory/context?q=%E4%BB%93%E5%BA%93",
+            Some(&token),
+        );
+        let with = http_get(
+            &addr,
+            "/v1/memory/context?q=%E4%BB%93%E5%BA%93&pending=1",
+            Some(&token),
+        );
+        // 判的是**键**而不是「文本里含不含 pending 这个词」：用带引号的键名匹配，
+        // 才不会在将来某个无关字段（比如候选的 `state: "pending"`）出现时误判。
+        assert!(
+            !without.contains("\"pending\""),
+            "不带 pending=1 就不该有那个字段：{without}"
+        );
+        assert!(
+            with.contains(&seeded.id),
+            "提取那一次要拿得到那条候选：{with}"
+        );
+        // **库里有候选、pending 带回来了，而运行时那半的 text 仍然是空的**——这就是
+        // 「未确认的东西不进运行时上下文」的可测形状。
+        //
+        // 反向验：把 pending 的正文拼进 `render_context` 的产物之后，这条立刻红。
+        // （早先写过一版 `!with.contains("\"text\":\"用 pnpm\"")`，它依赖 text 恰好在
+        // 第一个字符就是那句标题——真把候选拼进去时前面还有别的内容，那条判据会**空过**，
+        // 于是「候选进了运行时上下文」这件事没有门禁。这种「精确子串」判据要盯形状，不要盯措辞。）
+        assert!(
+            with.contains("\"text\":\"\""),
+            "候选的正文不许进运行时上下文那一半的 text：{with}"
+        );
+    }
+
     /// 记忆路由的端到端：桥真的起来、Bearer 真的校验、中文查询真的解码、
     /// 候选真的只进待确认。**不启动内核**——这一层是插件与壳之间的合同，
     /// 内核那一侧（`agent/created` 注册、`pre-step` 取检索）在真机启动时验。

@@ -549,12 +549,59 @@ test('正文超限的提示读 --danger-strong，且模板仍绑着这个条件�
  */
 test('冲突标记在候选卡片里并排摆出来，动作落在 store 已有命令上', () => {
   const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
-  assert.match(tpl, /<MemoryConflict/, '候选卡片要真的用上这个组件');
+  assert.match(tpl, /<MemoryConflict[\s/>]/, '候选卡片要真的用上这个组件');
   assert.match(tpl, /:conflicts="item\.conflicts_with \|\| \[\]"/, '冲突 id 要从候选本身读（老数据没有这个键，所以给空数组兜底）');
   assert.match(tpl, /:records="allMemories"/, '要拿全库记录去解析 id → 标题与正文（用筛选后的列表会解析不到别的项目的）');
   // 两个动作复用面板已有的那两个命令，不新造一条路径。
   assert.match(tpl, /@disable="\(record\) => setMemoryState\(record, 'disabled'\)"/, '停用走已有的 memory_set_state');
   assert.match(tpl, /@remove="removeMemory"/, '删除走已有的 memory_delete（它自带影响范围确认框）');
+});
+
+/**
+ * C6「用户纠正优先于旧候选」的**并排展示**：模型说这句推翻了先前提出的哪几条，
+ * 面板把它们列出来给一个动作。
+ *
+ * 盯三件容易各自静默的事：组件建出来了但没插进候选卡片（helper 有测试、接线没有）；
+ * 插进去了但把 id 解析成「已保存的记忆」——而候选根本不在那份列表里，于是永远显示
+ * 「已不在」；以及文案里出现「已自动作废」，那会把「模型标了一下」说成「已经替你决定了」。
+ */
+test('取代标记在候选卡片里列出被推翻的那几条，动作是丢弃它', () => {
+  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  // **标签名后面必须是空白、斜杠或尖括号**：只写 `/<MemorySuperseded/` 的话，
+  // 把它改成 `<MemorySupersededX` 就照样匹配——反向验（2026-10-16）真的量到了这一条：
+  // 判据绿着，而「组件没被用上」这件事已经发生了。C5 那条同款断言一并收紧。
+  assert.match(tpl, /<MemorySuperseded[\s/>]/, '候选卡片要真的用上这个组件');
+  assert.match(tpl, /:supersedes="item\.supersedes \|\| \[\]"/, '取代 id 要从候选本身读（老数据没有这个键，给空数组兜底）');
+  assert.match(tpl, /:candidates="candidates"/, '要拿**待确认候选**那份列表去解析 id（记录列表里没有候选）');
+  // 动作复用面板已有的那一个命令，不新造一条路径；`false` 就是「拒绝」。
+  assert.match(tpl, /@discard="\(candidate\) => decideCandidate\(candidate, false\)"/, '丢弃走已有的 memory_decide_candidate');
+});
+
+test('取代块的文案只摆事实，不说「已经替你作废」', () => {
+  const src = read('../src/memory/MemorySuperseded.vue');
+  const tpl = templateOf(src);
+  assert.match(tpl, /由你决定丢弃哪几条/, '要说清这一步在用户手里');
+  assert.match(src, /已经不在「待确认」里了/, '引用的那条不在时要如实说，不能静默隐藏');
+  // **先剥注释再判**：组件的文档注释里原样写着「已自动作废」作为**反例**，
+  // 不剥的话这条判据会命中自己写的解释（判据命中解释 = 判据不判代码）。
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(
+    !/已自动作废|自动丢弃|已替你保留|以新的为准/.test(code),
+    '出现「已经替你作废」这类话就等于系统已经替用户决定了'
+  );
+  assert.match(tpl, /v-if="!row\.missing && !busy"/, '候选不在待确认里时不该给动作');
+});
+
+test('两个标记块共用同一族类名：样式在 memory.css，两个组件都不许自带', () => {
+  const css = read('../src/memory/memory.css');
+  assert.match(css, /\.memory-flag\b/, '共用样式要在 memory.css（scoped 的样式组件之间不共享）');
+  // **不许两个组件各带一份**：复制一份会被门禁的重复区间扫描算成重复代码，而两种关系
+  // 在界面上必须长得一样重——不一样会暗示哪一种更严重。
+  for (const file of ['../src/memory/MemoryConflict.vue', '../src/memory/MemorySuperseded.vue']) {
+    const src = read(file);
+    assert.ok(!/<style/.test(src), `${file} 不该自带样式块（共用 memory.css 那一份）`);
+    assert.match(src, /class="memory-flag"/, `${file} 要用共用那一族类名`);
+  }
 });
 
 test('冲突块的文案只摆事实，不代做判断', () => {

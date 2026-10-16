@@ -48,10 +48,32 @@ pub(crate) fn context(stream: &mut TcpStream, path: &str, scope_key: &str) {
     // `workspace_id`——`read` 那条的 `id` 是**记忆 id**，两处同名必然记混。
     let workspace_id = query_decoded(path, "workspace_id");
     match crate::memory::query::retrieve(&namespace, &query, &workspace_id, &workspace) {
-        Ok(context) => {
+        Ok(mut context) => {
+            // **只有提取那一条路要待确认候选**（C6）：插件带 `pending=1` 来要它，比的是
+            // 「用户这次说的是不是在推翻先前那条」。运行时注入不带这个参数，所以响应里的
+            // `text` 与 `hits` 一个字节都不变——未确认的东西不许影响模型看到什么。
+            if query_decoded(path, "pending") == "1" {
+                context.pending = crate::memory::query::recent_pending(
+                    &namespace,
+                    crate::memory::query::MAX_PENDING_FOR_EXTRACT,
+                )
+                .unwrap_or_else(|error| {
+                    // 读不出待确认清单**不许拖垮整次检索**：提取链会降级成「没有清单可比对」，
+                    // 而那正是插件侧「没有校验集合时标记一律丢弃」的口径（提取本身照跑）。
+                    // 但不许静默：失败原因要进 `shell_events`，否则症状是「模型最近从不标取代」
+                    // 而面板与日志一个字都没有。
+                    note_memory_call("context", &format!("pending 清单读取失败：{error}"));
+                    Vec::new()
+                });
+            }
             note_memory_call(
                 "context",
-                &format!("enabled={} hits={}", context.enabled, context.hits.len()),
+                &format!(
+                    "enabled={} hits={} pending={}",
+                    context.enabled,
+                    context.hits.len(),
+                    context.pending.len()
+                ),
             );
             let body = serde_json::to_string(&context)
                 .unwrap_or_else(|_| r#"{"enabled":false}"#.to_string());
@@ -161,6 +183,9 @@ pub(crate) fn propose(stream: &mut TcpStream, path: &str, scope_key: &str) {
         // 确实来自壳发给它的那次检索结果」，而这条路由是模型直接调工具——壳这边**没有**那次
         // 检索可对，于是收下的 id 就只能任它凭空指认，正是设计要防的那件事。空列表。
         conflicts_with: Vec::new(),
+        // 取代标记同理（C6）：模型直接调工具时壳没有那份「待确认候选清单」可对，
+        // 照收 id 就是任它凭空指认某条候选不存在或已被否掉。
+        supersedes: Vec::new(),
         scope: {
             let scope = query_decoded(path, "scope");
             if scope.is_empty() {

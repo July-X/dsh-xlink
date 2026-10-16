@@ -202,10 +202,20 @@ fn write_candidates(out: &mut String, rows: &[MemoryCandidate]) {
         if !row.conflicts_with.is_empty() {
             out.push_str(&format!(
                 "\n- {}\n",
-                crate::memory::conflicts::note_label(row.conflicts_with.len())
+                crate::memory::marks::note_label(row.conflicts_with.len())
             ));
             for id in &row.conflicts_with {
                 out.push_str(&format!("  - 与之冲突的既有记忆 id：`{id}`\n"));
+            }
+        }
+        // 取代标记同理（快照里漏了它，导出文件就看不出「这两条候选是同一件事的两个说法」）。
+        if !row.supersedes.is_empty() {
+            out.push_str(&format!(
+                "\n- {}\n",
+                crate::memory::marks::superseded_note(row.supersedes.len())
+            ));
+            for id in &row.supersedes {
+                out.push_str(&format!("  - 被本条取代的待确认候选 id：`{id}`\n"));
             }
         }
         out.push_str(&format!("\n{}\n", row.body.trim()));

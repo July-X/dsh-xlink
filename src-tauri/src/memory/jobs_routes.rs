@@ -221,9 +221,17 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                 Some(job) => {
                     let input = crate::memory::store::CandidateInput {
                         // 冲突标记是**模型标的**（提取那条路才有），壳只做形状与限额校验
-                        // （`memory/conflicts.rs`）：限条数、限长度、去重保序，超限的报回去。
+                        // （`memory/marks.rs`）：限条数、限长度、去重保序，超限的报回去。
                         // 「id 确实来自那次检索」那一半在插件侧校验——那才是拿到检索结果的那一侧。
                         conflicts_with: query_decoded(path, "conflicts")
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|item| !item.is_empty())
+                            .map(str::to_string)
+                            .collect(),
+                        // 取代标记（C6）：形状与限额同样在壳这一侧，「id 确实来自那次
+                        // 给模型看的待确认清单」在插件侧校验。
+                        supersedes: query_decoded(path, "supersedes")
                             .split(',')
                             .map(str::trim)
                             .filter(|item| !item.is_empty())

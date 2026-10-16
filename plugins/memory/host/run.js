@@ -51,6 +51,7 @@ export async function runExtraction({ deps, key, from, to, signal }) {
     submitted: fields.submitted ?? 0,
     refused: fields.refused ?? 0,
     compared: fields.compared ?? 0,
+    againstPending: fields.againstPending ?? 0,
     ...(fields.refusedReason === undefined ? {} : { refusedReason: fields.refusedReason }),
     ...(fields.reason === undefined ? {} : { reason: fields.reason }),
   });
@@ -80,17 +81,29 @@ export async function runExtraction({ deps, key, from, to, signal }) {
     // 桥抖一下就把这一段内容整个丢掉，比「少标几个冲突」坏得多。它也不改 `step`——
     // 失败与成功都不该让「卡在第几步」这句话指向别处。
     let existing = [];
+    let pending = [];
     try {
-      const recalled = await deps.retrieveExisting({ text: slice.text, key, signal });
-      if (recalled?.ok === true) existing = Array.isArray(recalled.items) ? recalled.items : [];
+      const recalled = await deps.retrieveForExtract?.({ text: slice.text, key, signal });
+      if (recalled?.ok === true) {
+        existing = Array.isArray(recalled.items) ? recalled.items : [];
+        pending = Array.isArray(recalled.pending) ? recalled.pending : [];
+      }
     } catch {
       existing = [];
+      pending = [];
     }
 
     step = 'model';
     // ④ 调模型。超时/取消在这里体现为 signal 中止。
     if (signal?.aborted) return done({ ok: false, stage: 'cancelled', reason: '调用前被取消' });
-    const call = await deps.callModel({ system: deps.system, text: slice.text, existing, key, signal });
+    const call = await deps.callModel({
+      system: deps.system,
+      text: slice.text,
+      existing,
+      pending,
+      key,
+      signal,
+    });
     if (call?.ok !== true) {
       return done({ ok: false, stage: 'model', reason: call?.reason ?? '模型调用失败' });
     }
@@ -106,6 +119,10 @@ export async function runExtraction({ deps, key, from, to, signal }) {
       // **冲突标记的校验集合 = 这一批真的给模型看过的 id**（不是全库）：模型没见过的 id
       // 标出来就是编的，而放它过去等于把 C5 的机械判据关掉。
       allowedConflictIds: new Set(existing.map((row) => String(row?.id ?? '')).filter(Boolean)),
+      // **取代标记的校验集合是另一份**（C6）：它只许引用这次真的给模型看过的**待确认候选**
+      // id。两份集合分开而不是合成一份——合成之后模型就能拿一条记忆的 id 去标「取代」，
+      // 而候选与记忆根本不是一回事，混了之后那道校验就等于没有。
+      allowedSupersedeIds: new Set(pending.map((row) => String(row?.id ?? '')).filter(Boolean)),
     });
     if (parsed?.ok !== true) {
       return done({ ok: false, stage: 'parse', reason: parsed?.reason ?? '输出不合 schema' });
@@ -116,6 +133,7 @@ export async function runExtraction({ deps, key, from, to, signal }) {
         stage: 'parse',
         rejected: parsed.rejected,
         compared: existing.length,
+        againstPending: pending.length,
         reason: parsed.rejected.length > 0 ? '模型提的候选都被判据拒了' : '这段没有值得记的',
       });
     }
@@ -140,6 +158,7 @@ export async function runExtraction({ deps, key, from, to, signal }) {
       rejected: parsed.rejected,
       submitted: Number(submitted.submitted ?? parsed.candidates.length),
       compared: existing.length,
+      againstPending: pending.length,
       // **提交阶段被拒的条数要跟着回去**（独立评审第 5 条）：否则「落库 3 条」看起来就是全部，
       // 而另外 7 条的去向只存在于提交那一步的局部变量里。
       refused: Number(submitted.refused ?? 0),

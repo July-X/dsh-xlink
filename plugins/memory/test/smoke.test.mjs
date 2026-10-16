@@ -10,6 +10,8 @@ import {
   buildSlice,
   extractionUserText,
   parseExtractionOutput,
+  renderPending,
+  MAX_PENDING_CANDIDATES,
 } from '../host/extract.js';
 import { runExtraction } from '../host/run.js';
 import { readSessionRange } from '../host/sessionlog.js';
@@ -564,7 +566,7 @@ function extractionDeps(overrides = {}) {
       // **这一步以前是缺席的**（C5 加的）：夹具没有它，编排层抛出来的 TypeError 被
       // 「失败只降级」那个 catch 吃掉，于是「五步按序」那条判据一直在跑一条**退化路径**
       // ——helper 有测试、接线没有的另一个变体。现在它明确返回两条既有记忆。
-      retrieveExisting: async () => {
+      retrieveForExtract: async () => {
         return {
           ok: true,
           items: [
@@ -624,7 +626,7 @@ test('提取编排：五步按序跑完，只提交校验过的候选', async ()
   assert.equal(result.submitted, 1);
   assert.deepEqual(
     calls,
-    ['readRange', 'buildSlice', 'retrieveExisting', 'callModel', 'parse', 'submit'],
+    ['readRange', 'buildSlice', 'retrieveForExtract', 'callModel', 'parse', 'submit'],
     '六步按序，一步不落——**检索既有记忆必须在调模型之前**，否则提示词里那段是空的'
   );
   // 顺带钉住「模型看到的就是夹具给的那几条」：冲突标记的校验集合由它决定。
@@ -1304,7 +1306,7 @@ test('候选不记到旧项目（G3）：提交时**现解析**工作区，不�
   );
   assert.match(
     code,
-    /retrieveExisting: \(\{ text \}\) =>\s*retrieveExisting\(\{ creds, workspaceId,/,
+    /retrieveForExtract: \(\{ text \}\) =>\s*retrieveForExtract\(\{ creds, workspaceId,/,
     '**检索那一份必须用同一个值**：两套口径会让冲突标记指向别的项目'
   );
   const submit = code.slice(code.indexOf('submit: async ({ candidates })'), code.indexOf('jobs/finish'));
@@ -2208,7 +2210,7 @@ test('提示词：模型标冲突，但不许自己选胜者（设计 §7-2 的�
   assert.match(prompt, /Never pick a winner/, '明写「不裁决」——否则模型会顺手删掉旧的那条');
   // 提取器版本换提示词就要换：它是任务键的一部分，不换的话盘上按 v1 排好的任务会被
   // 新插件按新 schema 结算，而那次提取的提示词还是旧形状。
-  assert.equal(EXTRACTOR_VERSION, 'xlink-memory-extract/2');
+  assert.equal(EXTRACTOR_VERSION, 'xlink-memory-extract/3');
 });
 
 test('既有记忆摆在模型面前：带 id、有限额、超出的那条要说清楚', () => {
@@ -2255,13 +2257,83 @@ test('没给校验集合时冲突标记一律丢掉——那道校验是 C5 的�
   assert.deepEqual(parsed.candidates[0].conflicts_with, []);
 });
 
+/**
+ * C6「用户纠正优先于旧候选」：**只标记、不执行**。模型标出来的取代关系由面板把两条摆给
+ * 用户按一次，壳不据此拒收任何候选——理由与 C5 那条纪律同源：面板只列 pending，被拒的
+ * 候选界面上就不存在，于是「照做」等于模型标错一条就有东西静默消失。
+ */
+test('取代标记只认这次真的给模型看过的待确认候选 id：编的丢掉，候选仍要收下', () => {
+  const raw = JSON.stringify([
+    { title: '改用 npm install', body: '这个仓库用 npm。', keywords: [], evidence_seq: 17, supersedes: ['cand-1', 'cand-编的'] },
+  ]);
+  const events = [{ type: 'user/message', seq: 17, data: { source: { kind: 'user' } } }];
+  const parsed = parseExtractionOutput(raw, {
+    events,
+    allowedSeqs: new Set([17]),
+    allowedSupersedeIds: new Set(['cand-1']),
+  });
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.candidates.length, 1, '标错一条取代不构成「这条不该收」的理由');
+  assert.deepEqual(parsed.candidates[0].supersedes, ['cand-1']);
+  assert.ok(
+    parsed.rejected.some((row) => row.reason.includes('cand-编的')),
+    `被丢的标记要记进账：${JSON.stringify(parsed.rejected)}`
+  );
+});
+
+test('取代与冲突的校验集合必须分开：拿记忆 id 去标取代要被拒', () => {
+  const raw = JSON.stringify([
+    { title: 't', body: 'b', keywords: [], evidence_seq: 17, supersedes: ['mem-1'] },
+  ]);
+  const events = [{ type: 'user/message', seq: 17, data: { source: { kind: 'user' } } }];
+  // **只给了冲突那一份集合**：记忆 id 到了取代这一半就该被拒掉。
+  const parsed = parseExtractionOutput(raw, {
+    events,
+    allowedSeqs: new Set([17]),
+    allowedConflictIds: new Set(['mem-1']),
+  });
+  assert.deepEqual(parsed.candidates[0].supersedes, [], '记忆 id 不能被当成候选 id');
+  assert.deepEqual(parsed.candidates[0].conflicts_with, [], '冲突那半没给就本该是空的');
+});
+
+test('没给校验集合时取代标记一律丢掉', () => {
+  const raw = JSON.stringify([
+    { title: 't', body: 'b', keywords: [], evidence_seq: 17, supersedes: ['cand-1'] },
+  ]);
+  const events = [{ type: 'user/message', seq: 17, data: { source: { kind: 'user' } } }];
+  const parsed = parseExtractionOutput(raw, { events, allowedSeqs: new Set([17]) });
+  assert.deepEqual(parsed.candidates[0].supersedes, []);
+});
+
+test('待确认候选那一段要带 id、不静默截断、并且说清它们还没生效', () => {
+  const rows = Array.from({ length: MAX_PENDING_CANDIDATES + 2 }, (_, index) => ({
+    id: `cand-${index}`,
+    title: `第 ${index} 条`,
+    body: '正文',
+  }));
+  const text = renderPending(rows);
+  assert.ok(text.includes('PENDING CANDIDATES'), text.slice(0, 120));
+  assert.ok(text.includes('[cand-0]'), 'id 必须给模型，否则它无从引用');
+  assert.ok(text.includes('生效'), '要说清它们还没生效，模型才敢标取代');
+  assert.ok(!text.includes(`[cand-${MAX_PENDING_CANDIDATES + 1}]`), '超出上限的不给');
+  assert.ok(text.includes('另有 2 条'), '截断了要写明还有多少条没给');
+  assert.equal(renderPending([]), '', '没有待确认候选时这一段不出现');
+});
+
+test('提示词要写清「取代只是标记，系统不替你作废」', () => {
+  // **不许出现**「the new one replaces it」这类会被模型读成「旧的已经作废」的措辞：
+  // 壳不执行，模型按已执行的假设去标，就会标出一堆用户根本不需要裁决的取代关系。
+  assert.match(EXTRACTION_SYSTEM_PROMPT, /`supersedes` is a MARK, not an execution/);
+  assert.match(EXTRACTION_SYSTEM_PROMPT, /near-duplicate is not a correction/);
+});
+
 test('提取前检索：失败只降级，不吃掉整次提取，而且失败原因要看得见', async () => {
   let compared = null;
   const deps = {
     readRange: async () => ({ ok: true, events: [{ type: 'user/message', seq: 5, data: { source: { kind: 'user' }, content: '以后提交前跑检查' } }] }),
     buildSlice: () => ({ text: '[5] 用户：以后提交前跑检查', seqs: [5] }),
     // 桥不通就是这一条抛错的样子。
-    retrieveExisting: async () => { throw new Error('无法连接记忆桥'); },
+    retrieveForExtract: async () => { throw new Error('无法连接记忆桥'); },
     callModel: async () => ({ ok: true, text: '[]' }),
     parse: () => ({ ok: true, candidates: [], rejected: [] }),
     submit: async () => ({ ok: true, submitted: 0 }),
@@ -2290,9 +2362,13 @@ test('装配层真的接上了 C5：检索用同一份坐标、冲突真的发�
   const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   // **走现成的 `/context`，不新加路由**（设计 §7-2 的原话）：另开一条只会得到两个口径。
   assert.match(code, /route: 'context'/, '冲突标记那半要复用 /context');
-  assert.match(code, /retrieveExisting: \(\{ text \}\) =>/, 'deps 里要真的接上');
+  assert.match(code, /retrieveForExtract: \(\{ text \}\) =>/, 'deps 里要真的接上');
   assert.match(code, /conflicts: \(candidate\.conflicts_with \?\? \[\]\)\.join\(','\)/, '冲突标记要发给壳');
   // 模型调用那条要把既有记忆一并带进去，否则提示词里那段是空的。
-  assert.match(code, /callModel: \(\{ text, existing, signal \}\) =>/, '模型调用要接住 existing');
-  assert.match(code, /extractionUserText\(text, existing\)/, '既有记忆要真的进那条消息');
+  assert.match(code, /callModel: \(\{ text, existing, pending, signal \}\) =>/, '模型调用要接住 existing 与 pending');
+  assert.match(code, /extractionUserText\(text, existing, pending\)/, '两类对照都要真的进那条消息');
+  // C6：取代标记同样要发给壳（只标记不执行——壳那边存下来给面板，不据此拒收）。
+  assert.match(code, /supersedes: \(candidate\.supersedes \?\? \[\]\)\.join\(','\)/, '取代标记要发给壳');
+  // **`pending=1` 只为提取这一次**：不带它运行时响应里就没有那个字段。
+  assert.match(code, /pending: '1'/, '提取这一次要显式要待确认候选');
 });

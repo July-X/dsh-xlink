@@ -48,7 +48,7 @@ use crate::shell::settings;
 /// 一次抬版里付账。抬版不是形式——写侧会把 `meta.schema_version` 盖成本值，于是旧应用读到
 /// 新库会按「库比它新」拒写，而不是把没见过的 `sources` 数组当未知字段丢掉、再把自己那份
 /// 单对象来源写回去（那样每一次编辑都会悄悄抹掉全部来源，而界面上看不出任何异常）。
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// 记忆范围：绑定某个已登记工作区，或本实例通用的用户偏好。
 pub const SCOPE_PROJECT: &str = "project";
@@ -90,8 +90,6 @@ pub const MAX_TITLE_BYTES: usize = 512;
 /// 被挤掉**，而删除与清空的确认文案都承诺「记下正文指纹防止模型把同一条重新提回来」。
 /// 1000 枚指纹约 64 KB，离 1 MiB 的文档上限还远，没有理由省这一半。
 pub const MAX_SUPPRESSED: usize = 1000;
-/// 候选的保留条数，超出丢最老的**已决**候选。
-pub const MAX_CANDIDATES: usize = 200;
 /// **待确认**候选的条数上限。到顶后拒收新的，而不是丢旧的——待确认的那些是用户
 /// 还没看见的东西，静默丢掉等于模型提过就当没提过。
 ///
@@ -233,8 +231,16 @@ pub struct MemoryCandidate {
     /// `pending` / `accepted` / `rejected`。
     pub state: String,
     /// 模型标的「与这些既有记忆意义冲突」——**只标记、不裁决**（设计 §7-2）。
-    /// 胜者由用户在面板里自己删一条；形状与限额见 `memory/conflicts.rs`。
+    /// 胜者由用户在面板里自己删一条；形状与限额见 `memory/marks.rs`。
     pub conflicts_with: Vec<String>,
+    /// 模型标的「本条取代了这些待确认候选」（C6「用户纠正优先于旧候选」）——**同样只标记、
+    /// 不执行**：壳不会自动拒收那条候选，用户在面板上看到提示后自己决定。
+    ///
+    /// **为什么不自动执行**（这一条容易被当成省事）：面板只列 pending，被拒的候选界面上就
+    /// 不出现——于是「照做」等于模型标错一条就有一条用户提过的东西静默消失，而他连它存在
+    /// 过都不知道。代价对照着看：C5 的纪律（丢标记不丢候选）在这一条上原样成立。
+    #[serde(default)]
+    pub supersedes: Vec<String>,
     pub created_at: String,
     pub decided_at: String,
 }
@@ -311,6 +317,7 @@ pub struct SaveInput {
 #[serde(default)]
 pub struct CandidateInput {
     pub conflicts_with: Vec<String>,
+    pub supersedes: Vec<String>,
     pub scope: String,
     pub workspace_id: String,
     pub workspace_path: String,
@@ -785,6 +792,8 @@ pub fn submit_candidate(ns: &Namespace, input: CandidateInput) -> Result<SubmitO
                  请先在管理面板的「待确认」里处理掉一些。"
             )));
         }
+        // **两个标记在同一个入口规范化**（`marks::from_input`），不是一个一个算。
+        let marks = crate::memory::marks::from_input(&input.conflicts_with, &input.supersedes);
         let candidate = MemoryCandidate {
             id: new_id(),
             scope: clean.scope,
@@ -796,22 +805,13 @@ pub fn submit_candidate(ns: &Namespace, input: CandidateInput) -> Result<SubmitO
             source,
             verification: clean.verification,
             state: CANDIDATE_PENDING.to_string(),
-            conflicts_with: crate::memory::conflicts::normalize(&input.conflicts_with).kept,
+            conflicts_with: marks.conflicts,
+            supersedes: marks.supersedes,
             created_at: now,
             decided_at: String::new(),
         };
         doc.candidates.push(candidate.clone());
-        // 只裁**已决**候选；待确认的一条都不丢（那是用户还没看见的东西）。
-        let mut decided: Vec<usize> = (0..doc.candidates.len())
-            .filter(|index| doc.candidates[*index].state != CANDIDATE_PENDING)
-            .collect();
-        while doc.candidates.len() > MAX_CANDIDATES && !decided.is_empty() {
-            let index = decided.remove(0);
-            doc.candidates.remove(index);
-            for remaining in decided.iter_mut() {
-                *remaining -= 1;
-            }
-        }
+        crate::memory::prune::trim_decided_candidates(doc);
         Ok(SubmitOutcome::Candidate(candidate))
     })
 }
@@ -1874,7 +1874,7 @@ mod tests {
         let ns = namespace();
         let existing =
             save(&ns, general_input("回答用中文", "默认用中文回答。")).expect("save one");
-        let over_long = "x".repeat(crate::memory::conflicts::MAX_CONFLICT_ID_BYTES + 1);
+        let over_long = "x".repeat(crate::memory::marks::MAX_MARK_ID_BYTES + 1);
         let outcome = submit_candidate(
             &ns,
             CandidateInput {
@@ -1905,8 +1905,63 @@ mod tests {
         );
     }
 
-    /// 抬到 schema 3 这一批**不许要求用户手工改自己的数据文件**：v2 的候选没有
-    /// `conflicts_with` 这个键，而读回要照样成功（结构级 `#[serde(default)]` 兜住）。
+    /// C6：取代标记与冲突标记**同一套形状、不同的限额**。落库那一半在这里——
+    /// 面板只列 pending，所以壳只存标记、不据此拒收任何候选（拒收与否是用户按一次的事）。
+    #[test]
+    fn supersedes_is_stored_but_nothing_is_rejected_by_it() {
+        let _home = TempHome::new("supersedes-store");
+        let ns = namespace();
+        set_use_approved(&ns, true).expect("打开记忆开关");
+        // **一条真的、还在待确认里的候选**：判据要盯的是「即使它真的存在，壳也不许动它」。
+        // 只用一个库里不存在的 id 去验，验到的只是「id 不存在时照样收」——
+        // 而「只标记、不执行」真正防的那件事是「照着标记把旧候选拒掉」，那条路根本没被走到。
+        let SubmitOutcome::Candidate(pending) = submit_candidate(
+            &ns,
+            crate::memory::store::testkit::candidate_input("个人项目一律用 pnpm", "都用 pnpm。"),
+        )
+        .expect("预置一条待确认候选") else {
+            panic!("新正文应该收成候选");
+        };
+
+        let outcome = submit_candidate(
+            &ns,
+            CandidateInput {
+                supersedes: vec![
+                    pending.id.clone(),
+                    pending.id.clone(),
+                    "  ".to_string(),
+                    "x".repeat(crate::memory::marks::MAX_MARK_ID_BYTES + 1),
+                ],
+                ..candidate_input("这个仓库用 npm install", "这个仓库用 npm install。")
+            },
+        )
+        .expect("submit");
+        let SubmitOutcome::Candidate(candidate) = outcome else {
+            panic!("新正文应该收成候选");
+        };
+        // 去重保序、超长被丢：留下的只有那一条。
+        assert_eq!(candidate.supersedes, vec![pending.id.clone()]);
+        let doc = read_doc(&ns);
+        assert_eq!(doc.candidates.len(), 2, "两条待确认候选都在");
+        let older = doc
+            .candidates
+            .iter()
+            .find(|row| row.id == pending.id)
+            .expect("被标的那条");
+        assert_eq!(
+            older.state, CANDIDATE_PENDING,
+            "**它真的存在、也真的被标了，而它仍然是待确认**——这就是「只标记、不执行」"
+        );
+        // 上限由调用方给：传 1 就只留 1 条（两个标记各是各的，理由写在 marks.rs 的常量上）。
+        let capped = crate::memory::marks::normalize(&["a".to_string(), "b".to_string()], 1);
+        assert_eq!(capped.kept, vec!["a".to_string()]);
+        let _ = pending;
+    }
+
+    /// 抬到 schema 4 这一批**不许要求用户手工改自己的数据文件**：v2/v3 的候选既没有
+    /// `conflicts_with` 也没有 `supersedes`，而读回要照样成功（结构级 `#[serde(default)]`
+    /// 兜住）。这条判据从 v2→v3 时就在，抬到 4 之后**同一个形状继续成立**——改数据文件
+    /// 版本号而不加新判据，就会以为「上次验过了」。
     #[test]
     fn a_v2_document_without_the_conflict_field_still_loads() {
         let _home = TempHome::new("v2-read");
@@ -1925,6 +1980,10 @@ mod tests {
         assert!(
             doc.candidates[0].conflicts_with.is_empty(),
             "v2 的候选没有这个键，读出来必须是空的而不是报错"
+        );
+        assert!(
+            doc.candidates[0].supersedes.is_empty(),
+            "v2/v3 的候选同样没有 `supersedes`，读出来也必须是空的"
         );
         // 写一次就把版本盖到当前（读不改版本，只在写的时候盖）。
         submit_candidate(&ns, candidate_input("另一件事", "另一件与上面不同的事。"))
@@ -2119,7 +2178,7 @@ mod tests {
         let _home = TempHome::new("trim");
         let ns = namespace();
         fs::create_dir_all(ns.dir()).expect("dir");
-        let total = MAX_CANDIDATES + 2;
+        let total = crate::memory::prune::MAX_CANDIDATES + 2;
         // 前 5 条是**已决**的：它们才是允许被裁掉的那些。留够 5 条是为了让一次提交
         // 之后要连删三条——那条「剩下的下标要整体前移」的路径只有连删时才走得到。
         let decided: usize = 5;
@@ -2146,7 +2205,7 @@ mod tests {
 
         let after = read_doc(&ns);
         assert!(
-            after.candidates.len() <= MAX_CANDIDATES,
+            after.candidates.len() <= crate::memory::prune::MAX_CANDIDATES,
             "总数要回到上限内：{}",
             after.candidates.len()
         );
