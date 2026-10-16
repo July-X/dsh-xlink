@@ -26,6 +26,8 @@ import {
   MAX_QUERY_CHARS,
   MAX_TOTAL_BYTES_PER_SESSION,
   EXTRACT_DEBOUNCE_WAKE_MS,
+  EXTRACTOR_VERSION,
+  conflictQuery,
   applyFailure,
   applyResult,
   applyStep,
@@ -559,11 +561,33 @@ function extractionDeps(overrides = {}) {
       buildSlice: (list) => {
         return buildSlice(list);
       },
-      callModel: async ({ text }) => {
-        return { ok: true, text: JSON.stringify([{ title: 't', body: 'b', evidence_seq: 3 }]) };
+      // **这一步以前是缺席的**（C5 加的）：夹具没有它，编排层抛出来的 TypeError 被
+      // 「失败只降级」那个 catch 吃掉，于是「五步按序」那条判据一直在跑一条**退化路径**
+      // ——helper 有测试、接线没有的另一个变体。现在它明确返回两条既有记忆。
+      retrieveExisting: async () => {
+        return {
+          ok: true,
+          items: [
+            { id: 'mem-1', title: '提交信息写法', body: '要逐条写清改动点。' },
+            { id: 'mem-2', title: '回答语言', body: '一律中文。' },
+          ],
+        };
       },
-      parse: (text, { events: range }) => {
-        return parseExtractionOutput(text, { events: range });
+      callModel: async ({ text, existing }) => {
+        return {
+          ok: true,
+          text: JSON.stringify([
+            {
+              title: 't',
+              body: 'b',
+              evidence_seq: 3,
+              conflicts_with: existing.map((row) => row.id),
+            },
+          ]),
+        };
+      },
+      parse: (text, { events: range, allowedConflictIds }) => {
+        return parseExtractionOutput(text, { events: range, allowedConflictIds });
       },
       submit: async ({ candidates }) => {
         return { ok: true, submitted: candidates.length };
@@ -598,7 +622,13 @@ test('提取编排：五步按序跑完，只提交校验过的候选', async ()
   assert.equal(result.ok, true);
   assert.equal(result.stage, 'done');
   assert.equal(result.submitted, 1);
-  assert.deepEqual(calls, ['readRange', 'buildSlice', 'callModel', 'parse', 'submit'], '五步按序，一步不落');
+  assert.deepEqual(
+    calls,
+    ['readRange', 'buildSlice', 'retrieveExisting', 'callModel', 'parse', 'submit'],
+    '六步按序，一步不落——**检索既有记忆必须在调模型之前**，否则提示词里那段是空的'
+  );
+  // 顺带钉住「模型看到的就是夹具给的那几条」：冲突标记的校验集合由它决定。
+  assert.equal(result.compared, 2, '结果里要能看出这一次的候选对着几条既有记忆判过冲突');
 });
 
 test('提取编排：工具结果不进切片，读不到就绝不往下走', async () => {
@@ -1262,12 +1292,22 @@ test('候选不记到旧项目（G3）：提交时**现解析**工作区，不�
     '不许把缓存的工作区 id 交给提取提交'
   );
   assert.ok(!code.includes('box.workspaceId ='), '也不许再往盒子里存这个值');
-  const submit = code.slice(code.indexOf('submit: async ({ candidates })'), code.indexOf('jobs/finish'));
+  // **2026-10-16：解析点从 `submit` 里上提了**（C5 要在调模型**之前**拿同一份坐标去检索既有
+  // 记忆），所以判据跟着改成钉更强的那条不变式——**一次解析，检索与提交共用同一个值**：
+  // 两者若不是同一个工作区，模型标出的冲突就指向「别的项目的记忆」，而面板并排摆出来时
+  // 用户看不出来（这是与原判据「不许用缓存值」同一条纪律的另一面，不是放松）。
+  const runDue = code.slice(code.indexOf('async function runDueExtraction'), code.indexOf('async function enqueueExtraction'));
   assert.match(
-    submit,
+    runDue,
     /const workspaceId = await resolveWorkspaceId\(services\.workspaceRegistry, workspace\)/,
-    '提交前现解析一次（给这一批候选共用）'
+    '这一次提取现解析一次工作区坐标（预算用满的回合拿不到缓存值——那正是 G3 的由来）'
   );
+  assert.match(
+    code,
+    /retrieveExisting: \(\{ text \}\) =>\s*retrieveExisting\(\{ creds, workspaceId,/,
+    '**检索那一份必须用同一个值**：两套口径会让冲突标记指向别的项目'
+  );
+  const submit = code.slice(code.indexOf('submit: async ({ candidates })'), code.indexOf('jobs/finish'));
   assert.match(submit, /workspace_id: workspaceId/, '解析出来的值要用上');
   assert.match(submit, /scope: scopeForWorkspace\(workspaceId\)/, 'scope 跟着同一个值走');
 });
@@ -2154,4 +2194,105 @@ test('装配层真的接上了唤醒：排成功后按静默期排一次，会�
   );
   assert.match(code, /wakeups\.schedule\(\s*String\(session\?\.id \?\? ''\),\s*EXTRACT_DEBOUNCE_WAKE_MS,/, '等待时长要取那个对齐壳的常量，不能写死');
   assert.match(code, /wakeups\.clear\(evicted\)/, '会话被挤出上限时它的定时器要一起清掉');
+});
+
+/**
+ * C5：意义冲突**只标记、不裁决**（设计 §7-2）。
+ *
+ * 机械判据只有一条，但它是全部价值所在：**模型标的 id 必须确实来自这一次真的发给它看的
+ * 既有记忆**——模型不能凭空指认（那会让面板并排摆出两条毫不相干的东西，而用户无从判断）。
+ */
+test('提示词：模型标冲突，但不许自己选胜者（设计 §7-2 的那两句）', () => {
+  const prompt = EXTRACTION_SYSTEM_PROMPT;
+  assert.match(prompt, /conflicts_with/, '输出 schema 要有这个字段');
+  assert.match(prompt, /Never pick a winner/, '明写「不裁决」——否则模型会顺手删掉旧的那条');
+  // 提取器版本换提示词就要换：它是任务键的一部分，不换的话盘上按 v1 排好的任务会被
+  // 新插件按新 schema 结算，而那次提取的提示词还是旧形状。
+  assert.equal(EXTRACTOR_VERSION, 'xlink-memory-extract/2');
+});
+
+test('既有记忆摆在模型面前：带 id、有限额、超出的那条要说清楚', () => {
+  const items = [
+    { id: 'mem-1', title: '提交信息要逐条写清', body: '不要写「修复若干问题」。' },
+    { id: 'mem-2', title: '一律中文回复', body: '解释与总结都用中文。' },
+  ];
+  const text = extractionUserText('[17] 用户：以后提交信息要写清改动点', items);
+  assert.ok(text.includes('[mem-1]') && text.includes('[mem-2]'), '既有记忆要带 id，模型标的才是那个 id');
+  assert.ok(text.includes('[17] 用户：'), '切片仍在同一条消息里');
+  // **不静默截断**：少给的那些要写明，否则「没有冲突」建立在一份不完整的对照上。
+  const many = Array.from({ length: 9 }, (_, index) => ({ id: `mem-${index}`, title: `t${index}`, body: 'b' }));
+  const trimmed = extractionUserText('[1] 用户：你好', many);
+  assert.ok(trimmed.includes('另有 3 条'), trimmed.slice(0, 200));
+  assert.ok(trimmed.includes('[mem-5]') && !trimmed.includes('[mem-6]'), '只给前 6 条');
+});
+
+test('冲突标记只认这次真的给模型看过的 id：编的丢掉，候选仍要收下', () => {
+  const raw = JSON.stringify([
+    { title: '提交前必跑检查', body: '跑 npm run check。', keywords: ['提交'], evidence_seq: 17, conflicts_with: ['mem-1', 'mem-编的'] },
+  ]);
+  const events = [{ type: 'user/message', seq: 17, data: { source: { kind: 'user' } } }];
+  const parsed = parseExtractionOutput(raw, {
+    events,
+    allowedSeqs: new Set([17]),
+    allowedConflictIds: new Set(['mem-1']),
+  });
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.candidates.length, 1, '标错一条冲突不构成「这条不该收」的理由');
+  assert.deepEqual(parsed.candidates[0].conflicts_with, ['mem-1']);
+  // **不静默**：编出来的 id 要留在账里，否则面板上「没有冲突」是假的。
+  assert.ok(
+    parsed.rejected.some((row) => row.reason.includes('mem-编的')),
+    `被丢的标记要记进账：${JSON.stringify(parsed.rejected)}`
+  );
+});
+
+test('没给校验集合时冲突标记一律丢掉——那道校验是 C5 的全部价值', () => {
+  const raw = JSON.stringify([
+    { title: 't', body: 'b', keywords: [], evidence_seq: 17, conflicts_with: ['mem-1'] },
+  ]);
+  const events = [{ type: 'user/message', seq: 17, data: { source: { kind: 'user' } } }];
+  const parsed = parseExtractionOutput(raw, { events, allowedSeqs: new Set([17]) });
+  assert.deepEqual(parsed.candidates[0].conflicts_with, []);
+});
+
+test('提取前检索：失败只降级，不吃掉整次提取，而且失败原因要看得见', async () => {
+  let compared = null;
+  const deps = {
+    readRange: async () => ({ ok: true, events: [{ type: 'user/message', seq: 5, data: { source: { kind: 'user' }, content: '以后提交前跑检查' } }] }),
+    buildSlice: () => ({ text: '[5] 用户：以后提交前跑检查', seqs: [5] }),
+    // 桥不通就是这一条抛错的样子。
+    retrieveExisting: async () => { throw new Error('无法连接记忆桥'); },
+    callModel: async () => ({ ok: true, text: '[]' }),
+    parse: () => ({ ok: true, candidates: [], rejected: [] }),
+    submit: async () => ({ ok: true, submitted: 0 }),
+  };
+  const result = await runExtraction({ deps, key: { session: 's1', cursor: 9, extractor: 'v' }, from: 0, to: 9 });
+  assert.equal(result.ok, true, '检索失败不许把这一段内容整个丢掉');
+  assert.equal(result.compared, 0, '「没有对照」要与「没有冲突」在结果里分得开');
+  compared = result.compared;
+  assert.equal(compared, 0);
+});
+
+test('冲突查询只取用户说过的话，且从最近几句开始拼（纯函数）', () => {
+  assert.equal(
+    conflictQuery('[1] 用户：早上好\n[2] 助手：你好\n[3] 用户：以后提交前都要跑检查'),
+    '早上好 以后提交前都要跑检查'
+  );
+  // 没有人话时退回整段，而不是发一个空查询让壳白回一趟空命中。
+  assert.equal(conflictQuery('[2] 助手：我看看'), '我看看');
+  // 超长的那一段按额度收（壳那边同一个上限会拒）。
+  const long = `[3] 用户：${'字'.repeat(600)}`;
+  assert.ok(conflictQuery(long).length <= 500, String(conflictQuery(long).length));
+});
+
+test('装配层真的接上了 C5：检索用同一份坐标、冲突真的发出去', () => {
+  const src = readFileSync(new URL('../host/index.js', import.meta.url), 'utf8');
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  // **走现成的 `/context`，不新加路由**（设计 §7-2 的原话）：另开一条只会得到两个口径。
+  assert.match(code, /route: 'context'/, '冲突标记那半要复用 /context');
+  assert.match(code, /retrieveExisting: \(\{ text \}\) =>/, 'deps 里要真的接上');
+  assert.match(code, /conflicts: \(candidate\.conflicts_with \?\? \[\]\)\.join\(','\)/, '冲突标记要发给壳');
+  // 模型调用那条要把既有记忆一并带进去，否则提示词里那段是空的。
+  assert.match(code, /callModel: \(\{ text, existing, signal \}\) =>/, '模型调用要接住 existing');
+  assert.match(code, /extractionUserText\(text, existing\)/, '既有记忆要真的进那条消息');
 });

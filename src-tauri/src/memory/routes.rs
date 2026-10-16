@@ -157,6 +157,10 @@ pub(crate) fn propose(stream: &mut TcpStream, path: &str, scope_key: &str) {
     // 记录。模型想自己批准候选没有入口——批准只存在于面板的 Tauri 命令面。
     let namespace = memory_namespace(scope_key);
     let input = crate::memory::store::CandidateInput {
+        // **冲突标记只走提取那条路**（`/jobs/submit`）：C5 的机械判据是「模型标的 id 必须
+        // 确实来自壳发给它的那次检索结果」，而这条路由是模型直接调工具——壳这边**没有**那次
+        // 检索可对，于是收下的 id 就只能任它凭空指认，正是设计要防的那件事。空列表。
+        conflicts_with: Vec::new(),
         scope: {
             let scope = query_decoded(path, "scope");
             if scope.is_empty() {

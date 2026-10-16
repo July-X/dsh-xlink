@@ -392,6 +392,46 @@ export const EXTRACT_DEBOUNCE_WAKE_MS = 32_000;
  * @param {object} [options] - 注入的定时器（判据用假时钟驱动）。
  * @returns {{pending: () => number, schedule: Function, clear: Function, clearAll: Function}}
  */
+/**
+ * 「提取前那次检索」的查询串（C5）：**只取切片里用户自己说过的话**。
+ *
+ * 为什么不是整段原文：整段含助手的话与工具痕迹，词更杂、命中的既有记忆更少，而我们要的
+ * 是「用户刚说的那句可能与库里哪条冲突」。为什么按 `MAX_QUERY_CHARS` 收：壳那条路由按同一个
+ * 上限拒（超了它会说「查询太长」），在这里就收掉比让请求白跑一趟好。
+ *
+ * 纯函数：这一段不许碰桥也不许碰内核，所以它能被冒烟测试真的跑一遍。
+ *
+ * @param {string} text - `buildSlice` 的产物（每行 `[seq] 用户/助手：…`）。
+ * @param {number} [maxChars]
+ * @returns {string} 没有一句人话时是空串（调用方据此跳过检索，而不是发一个空查询）。
+ */
+export function conflictQuery(text, maxChars = MAX_QUERY_CHARS) {
+  const lines = typeof text === 'string' ? text.split('\n') : [];
+  // **先把 `[seq] 用户/助手：` 那段前缀剥掉**再挑词：留着 `[7] ` 与「助手：」进查询串，
+  // 它们既不参与匹配又挤占额度（兜底那条路上尤其明显）。
+  const spoken = lines
+    .map((line) => line.replace(/^\[\d+\] (用户|助手)：/, '').trim())
+    .filter(Boolean);
+  const isHuman = (line) => /^\[\d+\] 用户：/.test(line);
+  const human = lines.filter(isHuman).map((line) => line.replace(/^\[\d+\] 用户：/, '').trim());
+  if (human.length === 0) {
+    // 一句人话都没有时退回**整段的话**（前缀已剥）：这一段至少还有助手的话可对照，
+    // 而空查询只会被壳那边回一个空命中，白跑一趟。
+    return spoken.join(' ').slice(0, maxChars);
+  }
+  // 从**最近的几句**开始拼：冲突通常就在刚说的那两句里，而从最早那句开始拼会被
+  // 一段长对话的前半截占满额度。
+  const picked = [];
+  let used = 0;
+  for (let index = human.length - 1; index >= 0; index -= 1) {
+    const piece = human[index];
+    if (used + piece.length + 1 > maxChars) continue;
+    picked.unshift(piece);
+    used += piece.length + 1;
+  }
+  return picked.join(' ').slice(0, maxChars);
+}
+
 export function createWakeScheduler({
   schedule = setTimeout,
   cancel = clearTimeout,

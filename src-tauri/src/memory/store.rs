@@ -48,7 +48,7 @@ use crate::shell::settings;
 /// 一次抬版里付账。抬版不是形式——写侧会把 `meta.schema_version` 盖成本值，于是旧应用读到
 /// 新库会按「库比它新」拒写，而不是把没见过的 `sources` 数组当未知字段丢掉、再把自己那份
 /// 单对象来源写回去（那样每一次编辑都会悄悄抹掉全部来源，而界面上看不出任何异常）。
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// 记忆范围：绑定某个已登记工作区，或本实例通用的用户偏好。
 pub const SCOPE_PROJECT: &str = "project";
@@ -232,6 +232,9 @@ pub struct MemoryCandidate {
     pub verification: String,
     /// `pending` / `accepted` / `rejected`。
     pub state: String,
+    /// 模型标的「与这些既有记忆意义冲突」——**只标记、不裁决**（设计 §7-2）。
+    /// 胜者由用户在面板里自己删一条；形状与限额见 `memory/conflicts.rs`。
+    pub conflicts_with: Vec<String>,
     pub created_at: String,
     pub decided_at: String,
 }
@@ -307,6 +310,7 @@ pub struct SaveInput {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct CandidateInput {
+    pub conflicts_with: Vec<String>,
     pub scope: String,
     pub workspace_id: String,
     pub workspace_path: String,
@@ -792,6 +796,7 @@ pub fn submit_candidate(ns: &Namespace, input: CandidateInput) -> Result<SubmitO
             source,
             verification: clean.verification,
             state: CANDIDATE_PENDING.to_string(),
+            conflicts_with: crate::memory::conflicts::normalize(&input.conflicts_with).kept,
             created_at: now,
             decided_at: String::new(),
         };
@@ -1857,6 +1862,77 @@ mod tests {
         assert!(
             !text.contains("\"source\":"),
             "旧的那个键不再写出去：{text}"
+        );
+    }
+
+    /// C5：冲突标记要**真的落进文件**。`conflicts.rs` 的用例只管形状（去重、限额），
+    /// 而「提交那一刻的规范化结果真的进了 `memory.json`」是另一件事——形状对了、没接上，
+    /// 面板上就永远是「没有冲突」。
+    #[test]
+    fn submitting_a_candidate_carries_its_conflict_markers_through_to_the_file() {
+        let _home = TempHome::new("conflict-markers");
+        let ns = namespace();
+        let existing =
+            save(&ns, general_input("回答用中文", "默认用中文回答。")).expect("save one");
+        let over_long = "x".repeat(crate::memory::conflicts::MAX_CONFLICT_ID_BYTES + 1);
+        let outcome = submit_candidate(
+            &ns,
+            CandidateInput {
+                conflicts_with: vec![
+                    existing.id.clone(),
+                    existing.id.clone(),
+                    "  ".to_string(),
+                    over_long.clone(),
+                    "mem-other".to_string(),
+                ],
+                ..candidate_input("提交前先跑检查", "提交前必须跑 npm run check。")
+            },
+        )
+        .expect("submit");
+        let SubmitOutcome::Candidate(candidate) = outcome else {
+            panic!("这条正文是新的，应该收成候选");
+        };
+        // 留下的两条：去重保序（模型先标的那条在前）、超长与空串被丢。
+        assert_eq!(
+            candidate.conflicts_with,
+            vec![existing.id.clone(), "mem-other".to_string()]
+        );
+        let doc = read_doc(&ns);
+        assert_eq!(
+            doc.candidates[0].conflicts_with,
+            vec![existing.id, "mem-other".to_string()],
+            "落盘之后要还是那两条——面板读的是文件，不是内存里那份"
+        );
+    }
+
+    /// 抬到 schema 3 这一批**不许要求用户手工改自己的数据文件**：v2 的候选没有
+    /// `conflicts_with` 这个键，而读回要照样成功（结构级 `#[serde(default)]` 兜住）。
+    #[test]
+    fn a_v2_document_without_the_conflict_field_still_loads() {
+        let _home = TempHome::new("v2-read");
+        let ns = namespace();
+        fs::create_dir_all(ns.dir()).expect("mkdir");
+        fs::write(
+            ns.file(),
+            r#"{"meta":{"schema_version":2,"generation":3,"use_approved":true,"auto_extract":false,"suppressed":[]},"memories":[],"candidates":[{"id":"c-1","scope":"general","workspace_id":"","workspace_path":"","title":"提交前先跑检查","body":"提交前跑 npm run check。","keywords":["提交"],"source":{"kind":"extract","session":"s1","start_seq":8,"end_seq":84,"revision":"xlink-memory-extract/1","at":""},"verification":"unverified","state":"pending","created_at":"2026-10-16T00:00:00Z","decided_at":""}]}"#,
+        )
+        .expect("write v2 doc");
+
+        // 直接读文档而不是走 `list`（它的默认筛选**不含**候选）：这一条要验的是
+        // 「反序列化一个没有该键的 v2 候选」这件事本身。
+        let doc = read_doc(&ns);
+        assert_eq!(doc.candidates.len(), 1);
+        assert!(
+            doc.candidates[0].conflicts_with.is_empty(),
+            "v2 的候选没有这个键，读出来必须是空的而不是报错"
+        );
+        // 写一次就把版本盖到当前（读不改版本，只在写的时候盖）。
+        submit_candidate(&ns, candidate_input("另一件事", "另一件与上面不同的事。"))
+            .expect("submit");
+        let text = fs::read_to_string(ns.file()).expect("read back");
+        assert!(
+            text.contains(&format!("\"schema_version\": {SCHEMA_VERSION}")),
+            "{text}"
         );
     }
 

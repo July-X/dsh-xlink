@@ -539,3 +539,37 @@ test('正文超限的提示读 --danger-strong，且模板仍绑着这个条件�
     '计数器不再绑超限那个条件类了：读到的色是常驻的 muted',
   );
 });
+
+/**
+ * C5：意义冲突的**并排展示**（设计 §7-2「面板把两条并排摆出来，让用户删一条」）。
+ *
+ * 这条判据盯三件容易各自静默的事：组件被建出来了但没插进候选卡片（helper 有测试、
+ * 接线没有——本仓反复栽的形状）；插进去了但没有 id→记录的解析（于是面板上永远是
+ * 「不在库里」）；文案里混进了「建议保留新的」这类**代做判断**的话（裁决权在用户）。
+ */
+test('冲突标记在候选卡片里并排摆出来，动作落在 store 已有命令上', () => {
+  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  assert.match(tpl, /<MemoryConflict/, '候选卡片要真的用上这个组件');
+  assert.match(tpl, /:conflicts="item\.conflicts_with \|\| \[\]"/, '冲突 id 要从候选本身读（老数据没有这个键，所以给空数组兜底）');
+  assert.match(tpl, /:records="allMemories"/, '要拿全库记录去解析 id → 标题与正文（用筛选后的列表会解析不到别的项目的）');
+  // 两个动作复用面板已有的那两个命令，不新造一条路径。
+  assert.match(tpl, /@disable="\(record\) => setMemoryState\(record, 'disabled'\)"/, '停用走已有的 memory_set_state');
+  assert.match(tpl, /@remove="removeMemory"/, '删除走已有的 memory_delete（它自带影响范围确认框）');
+});
+
+test('冲突块的文案只摆事实，不代做判断', () => {
+  const src = read('../src/memory/MemoryConflict.vue');
+  const tpl = templateOf(src);
+  assert.match(tpl, /由你决定留哪一条/, '要说清裁决权在用户');
+  // 那句话在 `<script setup>` 里（它在准备数据时就定好了），所以判整份文件而不是模板块。
+  assert.match(src, /已不在库里/, '引用的那条不在时要如实说，不能静默隐藏');
+  // **先剥注释再判**：组件的文档注释里原样写着「建议保留新的」作为**反例**，
+  // 不剥的话这条判据会命中自己写的解释（判据命中解释 = 判据不判代码，本仓栽过好几次）。
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(
+    !/建议保留|推荐保留|以新的为准|自动保留/.test(code),
+    '出现「建议保留哪一条」这类话就等于系统已经替用户选好了'
+  );
+  // 找不到记录时**不渲染动作**：对一条不存在的记忆点「停用」只会得到一句失败。
+  assert.match(tpl, /v-if="!row\.missing && !busy"/, '记录不在时不该给动作');
+});

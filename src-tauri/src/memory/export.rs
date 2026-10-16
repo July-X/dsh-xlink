@@ -197,6 +197,17 @@ fn write_candidates(out: &mut String, rows: &[MemoryCandidate]) {
             // 候选还没有被批准，仍是「一次提交」而不是「一条记忆」，所以这里只有一个来源。
             crate::memory::sources::label_of(&row.source)
         ));
+        // 冲突标记要进快照：它解释了「用户为什么在这条上要想一想」，而导出是**一次性快照**——
+        // 漏了它，这份文件就比库里的事实少一件事。
+        if !row.conflicts_with.is_empty() {
+            out.push_str(&format!(
+                "\n- {}\n",
+                crate::memory::conflicts::note_label(row.conflicts_with.len())
+            ));
+            for id in &row.conflicts_with {
+                out.push_str(&format!("  - 与之冲突的既有记忆 id：`{id}`\n"));
+            }
+        }
         out.push_str(&format!("\n{}\n", row.body.trim()));
     }
 }
