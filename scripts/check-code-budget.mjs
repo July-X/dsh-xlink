@@ -3213,7 +3213,17 @@ const FILE_BUDGETS = {
 //   · 其余是两侧接线与判据注释；`SCHEMA_VERSION` 4 → 5 没有花行数（改的是一个常量）。
 // 判据 11 条（Rust 5 + 插件 2 + UI 2 ——插件那两条是 C6 那批里随 `contentFingerprint`
 // 一起加的），四组反向验。
-const TOTAL_BUDGET = 53710;
+const TOTAL_BUDGET = 53780;
+// 53710 → 53780（2026-10-16 晚，两条用户要求）：
+//   · 磁盘用量「固定显示位置，不要因为空间占用改动位置。『内核版本』放到第一个位置」：
+//     删掉一条 `groups.sort_by(bytes)`、列数写死两列；净增在一条判据
+//     （`groups_keep_a_fixed_order_regardless_of_size`）与它的注释上——产品代码是**减**的。
+//   · 记忆面板「优化UI显示，尽量不出现纵向滚动条。提示文字能做 tooltip 的都用 tooltip
+//     收纳起来」：三处卡片的常驻说明搬进标题旁 ⓘ、开关那句的条件那半另挂 ⓘ、右栏两张
+//     会长大的列表加 `max-height`。**净增几乎全在 tooltip 的标记与注释上**（`el-tooltip`
+//     + `#content` + 触发器共 8 行/处，四处），产品行为是**减**纵向占用的。
+//     逐文件预算一条没破（`MemoryPanel.vue` 仍在 495 内）。
+// 抬的仍是**软上限**；反棘轮那几行（`theme.css` / `plugins.rs` / `commands.rs`）没动。
 // 53680 → 53710（2026-10-16，弹窗那版的评审修复三条）：
 //   · `ui/src/memory/memory.js` 352 → 359：`previewQuery` 一族（理由写在那个 FILE_BUDGETS
 //     条目里：查询挂草稿上就恒为空，预览会报出与输入无关的命中）。
