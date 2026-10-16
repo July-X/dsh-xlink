@@ -15,13 +15,19 @@
  * 只能靠源码顺序决胜——`.page-row` 是 `center`，赢了的话标题与动作区的顶边就错开了。
  */
 
-.memory-row { display: flex; gap: 12px; align-items: flex-start; }
-.memory-row__main { flex: 1; min-width: 0; }
-.memory-row__title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* 一条记忆的行布局（2026-10-16 用户要求「横向展开完全」）：**动作区只占标题那一行**，
+ * 正文与次行横跨整行。改之前这里是 `flex`，正文只拿到「行宽 − 动作区 146px − 间隙 12px」
+ * ≈ 167px，一半宽度空着——一份几十字的记忆要折成十几行，右边却是白的。
+ * `grid-template-rows: subgrid` 让标题 / 正文 / 次行三行仍由**同一个网格**给高度，
+ * 于是按钮与标题天然同一行、正文在下面独占整宽。`minmax(0, 1fr)` 的 0 下限不能省
+ * （`1fr` 下限默认 auto，长正文会把列撑开）。 */
+.memory-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: flex-start; gap: 0 12px; }
+.memory-row__main { display: grid; grid-column: 1 / -1; grid-row: 1 / span 3; grid-template-rows: subgrid; min-width: 0; }
+.memory-row__title { display: flex; grid-column: 1; grid-row: 1; gap: 8px; align-items: center; flex-wrap: wrap; }
 .memory-row__name { font-size: 15px; font-weight: 600; }
-.memory-row__body { margin: 4px 0 0; color: var(--text-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }
-.memory-row__meta { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
-.memory-row__actions { display: flex; gap: 4px; flex: 0 0 auto; }
+.memory-row__body { grid-column: 1 / -1; grid-row: 2; margin: 4px 0 0; color: var(--text-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }
+.memory-row__meta { grid-column: 1 / -1; grid-row: 3; margin: 4px 0 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.memory-row__actions { display: flex; grid-column: 2; grid-row: 1; gap: 4px; white-space: nowrap; }
 
 /* 候选卡片上「模型标了一种关系」的那一块：C5 的冲突（`MemoryConflict.vue`）与 C6 的取代
  * （`MemorySuperseded.vue`）**共用同一族类名**——它们是同一件事的两种形状（模型说了某个
