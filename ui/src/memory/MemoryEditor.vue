@@ -14,7 +14,7 @@
 // 状态都在 `memory.js`：可见性是 `memoryStore.editorVisible`，开关走
 // `openMemoryEditor` / `closeMemoryEditor`——与 `PrecheckDialog` 的
 // `precheckVisible`、`SnapshotRestoreDialog` 的 `restoreVisible` 同一个约定。
-import { computed } from 'vue';
+import { computed, onUnmounted } from 'vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { confirmDialog } from '../shell/notify.js';
 import {
@@ -40,15 +40,30 @@ const bodyBytes = computed(() => byteLength(draft.value.body));
 /// 说的是意图，不是「他愿意丢掉刚写的三段话」。有内容就问一句，空表单直接关。
 /// 用 `before-close` 而不是 `@update:model-value`：后者在 EP 里是「已经关了再通知你」
 /// （`handleClose` 先置 `visible = false` 再 emit），拿它做确认框只能假装拦一下。
-function beforeClose(done) {
+///
+/// **关的那一下只走 `closeMemoryEditor()`，不接 EP 递进来的 `done`**（用户 2026-10-16 报
+/// 「切走菜单回来弹窗自己又弹出来」）：`done` 就是 EP 的 `hide`，它只把 EP 内部那份
+/// `visible` 置 false（`use-dialog.mjs::handleClose`），store 里的 `editorVisible` 仍是
+/// true。而面板在 `App.vue` 里是 `<component :key="activePanel">`——切走再切回记忆页会
+/// 重新挂载本组件，EP 见 `modelValue` 还是 true，就在 `onMounted` 里自己 `open()` 一次，
+/// 弹窗凭空回来，正是「错误地绑定」的形态。反过来，store 置 false 时 EP 的
+/// `watch(() => props.modelValue)` 会走 `doClose()`，动的还是同一个 `visible`，
+/// 画面与 `done` 完全一致（`handleClose` 在调 beforeClose 之前不置任何状态；`dialog.vue`
+/// 全程没读 `closed`），于是 store 成了唯一的写者，两边不会再分家。
+function beforeClose() {
   if (!draft.value.title.trim() && !draft.value.body.trim()) {
-    done();
+    closeMemoryEditor();
     return;
   }
   confirmDialog('放弃这条记忆？', '弹窗里的内容还没保存，关掉就没了。', '放弃').then((ok) => {
-    if (ok) done();
+    if (ok) closeMemoryEditor();
   });
 }
+
+/// 可见性不许活过这个组件：切走菜单时 `MemoryPanel` 连同本组件一起卸载（`mode="out-in"`
+/// 的 `:key` 换的就是它），store 里的 `editorVisible` 却不会自己回 false——留着这个 true，
+/// 下次挂载 EP 就照着它再弹一次。收尾只有 `closeMemoryEditor()` 一份实现，这里不另写。
+onUnmounted(() => { if (memoryStore.editorVisible) closeMemoryEditor(); });
 </script>
 
 <template>
