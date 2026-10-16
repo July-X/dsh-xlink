@@ -355,6 +355,88 @@ export function isCompactionDone(event) {
 }
 
 /**
+ * 静默期到点后叫醒提取的等待时间。
+ *
+ * **对齐的是壳那边 `memory/jobs.rs` 的 `DEBOUNCE_MS = 30_000`**，加 2 秒余量：判「到期」用的是
+ * 壳自己的时钟，而两边时钟不一致、加上一次 HTTP 往返，都可能让整 30 秒那一刻差一点点——
+ * 而差一点的后果不是慢 2 秒，是**这条任务再也没人领**（见 `createWakeScheduler`）。
+ *
+ * 另一个理由：静默期本来就是**去抖**——用户在连着说话时相邻回合会被合并成一次提取，
+ * 所以「最后一次说完话之后 32 秒」才是设计 §8-2 说的那个时点。
+ */
+export const EXTRACT_DEBOUNCE_WAKE_MS = 32_000;
+
+/**
+ * 「静默期到点叫醒一次」的一次性定时器账本（按会话一份）。
+ *
+ * ## 为什么需要它（2026-10-16 真模型探针实测出来的接线缺口）
+ *
+ * 壳那边任务进表之后要过 30 秒静默期才算到期，而领取原本只挂在 `turn/end` 上：
+ * 排任务的那一次领取**紧跟着**就去领，于是必然领不到（还没到期）。结果是**每个会话最后
+ * 留下的那条任务永远没人领**——用户不再发消息（去干别的、关掉工作台）就一直搁着，
+ * 要等他下一次说话时才被顺带领走。实测证据：真内核会话（真模型）聊完 5 回合后再等
+ * 150 秒，任务表里那条任务是 `pending: 1`，`running/done/failed` 全是 0，候选一条没落库。
+ *
+ * 状态机（`jobs.rs`）与单测都是绿的，缺的是这一根线——正是本仓反复栽的形状：
+ * 「东西写好了但没接上」。
+ *
+ * ## 三条不许破的纪律
+ *
+ * 1. **同一会话连排两次只保留最后一次**：用户连着说话时每一次排任务都把等待往后推，
+ *    这正是静默期的语义；不去掉前一个的话，一段十分钟的对话会排出一串定时器依次唤醒。
+ * 2. **回调出错交给 `onError`，绝不许冒成未处理拒绝**：工作台把 `unhandledrejection`
+ *    当故障上报并重建窗口（预算 3 次），一个装饰性的提取不该有这个能力。
+ * 3. **定时器一律 unref**：工作台是长驻进程，unref 不影响它；而 `dsh headless`
+ *    一回合一个进程，一个 ref 着的定时器会让**每个回合多等 32 秒**才退出。
+ *
+ * @param {object} [options] - 注入的定时器（判据用假时钟驱动）。
+ * @returns {{pending: () => number, schedule: Function, clear: Function, clearAll: Function}}
+ */
+export function createWakeScheduler({
+  schedule = setTimeout,
+  cancel = clearTimeout,
+  unref = (timer) => timer?.unref?.(),
+} = {}) {
+  const timers = new Map();
+  const fire = (key, run, onError) => {
+    // 先摘掉再跑：回调里可能再排一次（下一段内容），那时候要排的是新的一次。
+    timers.delete(key);
+    try {
+      const result = run();
+      if (result && typeof result.then === 'function') {
+        result.then(undefined, (error) => onError?.(error));
+      }
+    } catch (error) {
+      onError?.(error);
+    }
+  };
+  return {
+    /** 还没到点的会话数。 */
+    pending: () => timers.size,
+    /** 排一次唤醒；同一会话连排只留最后一次。 */
+    schedule(key, delayMs, run, onError) {
+      if (!key) return;
+      const previous = timers.get(key);
+      if (previous !== undefined) cancel(previous);
+      const timer = schedule(() => fire(key, run, onError), delayMs);
+      unref(timer);
+      timers.set(key, timer);
+    },
+    /** 清掉一个会话的等待（会话被挤出上限时用）。 */
+    clear(key) {
+      const timer = timers.get(key);
+      if (timer !== undefined) cancel(timer);
+      timers.delete(key);
+    },
+    /** 全清（插件卸载时用）。 */
+    clearAll() {
+      for (const timer of timers.values()) cancel(timer);
+      timers.clear();
+    },
+  };
+}
+
+/**
  * 提取出来的候选该落成哪种记忆。
  *
  * **依据是壳自己的规则，不是我的偏好**：提交 `scope=project` 而没有绑定**已登记的工作区**时，
