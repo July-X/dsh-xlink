@@ -1,9 +1,9 @@
 /**
- * 一次自动提取的**完整流程**：读冻结范围 → 拼切片 → 调模型 → 校验输出 → 提交候选。
+ * 一次自动提取的**完整流程**：读冻结范围 → 拼切片 → 检索既有记忆 → 调模型 → 校验输出 → 提交候选。
  *
  * ## 为什么每一步都从参数进来
  *
- * 五步里有四步已经有各自的纯模块（`sessionlog.js` / `extract.js` / `bridge.js`），而真正
+ * 六步里有五步已经有各自的纯模块（`sessionlog.js` / `extract.js` / `bridge.js`），而真正
  * 碰内核的只有「调模型」那一步。把它们当依赖注入进来，这个编排层就能用夹具把**每条失败路径**
  * 都跑一遍——而失败路径才是它存在的理由：提取跑在**用户会话里**，任何一步出错都不许把会话
  * 带崩，也不许静默吞掉（要能说出「卡在第几步、为什么」）。
@@ -24,10 +24,18 @@
 export const STAGES = ['read', 'slice', 'model', 'parse', 'submit', 'cancelled', 'done'];
 
 /**
+ * 结果里多带的那一个数：**这一次的候选到底对着几条既有记忆判过冲突**（C5）。
+ *
+ * 为什么值得单独报出来：`conflicts_with` 为空有两种完全不同的原因——「真没有冲突」与
+ * 「一条都没对照上」（桥不通、检索失败）。只报空数组的话，排障的人会以为模型没发现冲突，
+ * 而真相是它压根没看到过库里的东西。
+ */
+
+/**
  * 跑一次提取。
  *
  * @param {object} options - 依赖与范围。
- * @param {object} options.deps - 五步的实现（全部注入）。
+ * @param {object} options.deps - 六步的实现（全部注入）。
  * @param {object} options.key - 这次提取的身份（会话 + 游标 + 提取器版本）。
  * @param {number} options.from - 起始 seq（含）。
  * @param {number} [options.to] - 结束 seq（含）。
@@ -42,6 +50,7 @@ export async function runExtraction({ deps, key, from, to, signal }) {
     rejected: fields.rejected ?? [],
     submitted: fields.submitted ?? 0,
     refused: fields.refused ?? 0,
+    compared: fields.compared ?? 0,
     ...(fields.refusedReason === undefined ? {} : { refusedReason: fields.refusedReason }),
     ...(fields.reason === undefined ? {} : { reason: fields.reason }),
   });
@@ -63,22 +72,40 @@ export async function runExtraction({ deps, key, from, to, signal }) {
       return done({ ok: true, stage: 'slice', reason: '这一段里没有一句人话' });
     }
 
+    // ③ **提取前先检索一次既有记忆**（C5，设计 §7-2「提取前用候选关键词走现成的 /context
+    // 拿命中」）：没有这份对照，模型就标不出 `conflicts_with`，而「没标冲突」会被用户
+    // 当成「与库里的都不冲突」。
+    //
+    // **这一步失败不算提取失败**，只是这次没有可对照的既有记忆（`compared: 0` 会一起回去）：
+    // 桥抖一下就把这一段内容整个丢掉，比「少标几个冲突」坏得多。它也不改 `step`——
+    // 失败与成功都不该让「卡在第几步」这句话指向别处。
+    let existing = [];
+    try {
+      const recalled = await deps.retrieveExisting({ text: slice.text, key, signal });
+      if (recalled?.ok === true) existing = Array.isArray(recalled.items) ? recalled.items : [];
+    } catch {
+      existing = [];
+    }
+
     step = 'model';
-    // ③ 调模型。超时/取消在这里体现为 signal 中止。
+    // ④ 调模型。超时/取消在这里体现为 signal 中止。
     if (signal?.aborted) return done({ ok: false, stage: 'cancelled', reason: '调用前被取消' });
-    const call = await deps.callModel({ system: deps.system, text: slice.text, key, signal });
+    const call = await deps.callModel({ system: deps.system, text: slice.text, existing, key, signal });
     if (call?.ok !== true) {
       return done({ ok: false, stage: 'model', reason: call?.reason ?? '模型调用失败' });
     }
 
     step = 'parse';
-    // ④ 校验。解析失败是失败，**空数组是成功**（设计 §8-5）。
+    // ⑤ 校验。解析失败是失败，**空数组是成功**（设计 §8-5）。
     // **把「模型看到的那一段」也交给校验**：`evidence_seq` 只许指向切片里的行（`slice.seqs`）。
     // 只给整份日志的话，判据会覆盖整个会话——历史里总能找到一个人类序号，
     // 「工具输出里的指令不能升级成用户偏好」就白写了（独立评审第 7 条）。
     const parsed = deps.parse(call.text, {
       events: read.events,
       allowedSeqs: new Set(slice.seqs),
+      // **冲突标记的校验集合 = 这一批真的给模型看过的 id**（不是全库）：模型没见过的 id
+      // 标出来就是编的，而放它过去等于把 C5 的机械判据关掉。
+      allowedConflictIds: new Set(existing.map((row) => String(row?.id ?? '')).filter(Boolean)),
     });
     if (parsed?.ok !== true) {
       return done({ ok: false, stage: 'parse', reason: parsed?.reason ?? '输出不合 schema' });
@@ -88,12 +115,13 @@ export async function runExtraction({ deps, key, from, to, signal }) {
         ok: true,
         stage: 'parse',
         rejected: parsed.rejected,
+        compared: existing.length,
         reason: parsed.rejected.length > 0 ? '模型提的候选都被判据拒了' : '这段没有值得记的',
       });
     }
 
     step = 'submit';
-    // ⑤ 提交。提交失败要说清「有几条没进去」——否则那几条就悄悄没了。
+    // ⑥ 提交。提交失败要说清「有几条没进去」——否则那几条就悄悄没了。
     if (signal?.aborted) return done({ ok: false, stage: 'cancelled', reason: '提交前被取消' });
     const submitted = await deps.submit({ key, candidates: parsed.candidates });
     if (submitted?.ok !== true) {
@@ -111,6 +139,7 @@ export async function runExtraction({ deps, key, from, to, signal }) {
       candidates: parsed.candidates,
       rejected: parsed.rejected,
       submitted: Number(submitted.submitted ?? parsed.candidates.length),
+      compared: existing.length,
       // **提交阶段被拒的条数要跟着回去**（独立评审第 5 条）：否则「落库 3 条」看起来就是全部，
       // 而另外 7 条的去向只存在于提交那一步的局部变量里。
       refused: Number(submitted.refused ?? 0),

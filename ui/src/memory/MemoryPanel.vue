@@ -7,6 +7,7 @@
 import { computed, onMounted } from 'vue';
 import { Download, Refresh } from '@element-plus/icons-vue';
 import MemoryRow from './MemoryRow.vue';
+import MemoryConflict from './MemoryConflict.vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { builtinById, loadBuiltinStatus, toggleBuiltin } from '../plugins/builtin.js';
 import {
@@ -234,6 +235,14 @@ onMounted(() => {
                 <p class="memory-row__meta">
                   来自 {{ item.source.session || '本机' }} · {{ shortTime(item.created_at) }}
                 </p>
+                <!-- C5：并排摆出冲突的那几条，**由用户自己留哪一条**（不由模型裁决）。 -->
+                <MemoryConflict
+                  :conflicts="item.conflicts_with || []"
+                  :records="allMemories"
+                  :busy="globalBusy"
+                  @disable="(record) => setMemoryState(record, 'disabled')"
+                  @remove="removeMemory"
+                />
               </div>
               <div class="memory-row__actions">
                 <el-button

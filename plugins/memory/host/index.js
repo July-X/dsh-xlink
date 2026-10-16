@@ -31,7 +31,13 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm';
 import { MAX_PATH_BYTES, callMemory, encodedPathBytes, readCredentials } from './bridge.js';
-import { EXTRACTION_SYSTEM_PROMPT, EXTRACTOR_VERSION as EXTRACT_VERSION, buildSlice, parseExtractionOutput } from './extract.js';
+import {
+  EXTRACTION_SYSTEM_PROMPT,
+  EXTRACTOR_VERSION as EXTRACT_VERSION,
+  buildSlice,
+  extractionUserText,
+  parseExtractionOutput,
+} from './extract.js';
 import { readSessionRange } from './sessionlog.js';
 import { runExtraction } from './run.js';
 import {
@@ -47,6 +53,7 @@ import {
   EXTRACTOR_VERSION,
   noteSessionEvent,
   shouldScheduleExtraction,
+  conflictQuery,
   resolveWorkspaceId,
   shouldProbeLibrary,
   userText,
@@ -203,7 +210,7 @@ function apply(ctx) {
    * · **`sessionId` 不传**：传了这次请求会被记进那个会话的日志；提取是插件自己的事，
    *   不该在用户的会话里留下一条谁也看不懂的记录。
    */
-  async function callExtractionModel({ llm, route, text, signal }) {
+  async function callExtractionModel({ llm, route, text, existing, signal }) {
     try {
       const call = await llm.prepareCall(
         { provider: route.provider, model: route.model, maxTokens: EXTRACT_MAX_TOKENS },
@@ -211,7 +218,9 @@ function apply(ctx) {
       );
       const messages = [
         createUserMessage({
-          content: [{ type: 'text', text }],
+          // **切片与既有记忆在同一条消息里**（C5）：模型要判断的是「新提的这条与库里那条
+          // 是不是同一件事」，两者分开就变成两次独立输入，而 `conflicts_with` 会一直为空。
+          content: [{ type: 'text', text: extractionUserText(text, existing) }],
           source: { kind: 'xlink-memory-extract' },
         }),
       ];
@@ -282,6 +291,9 @@ function apply(ctx) {
     let result;
     try {
       const selection = services.agentDefaultModel?.currentSelection?.();
+      // **工作区坐标这一次解析一次，检索与提交共用**：提交那份坐标若与检索那份不是同一个
+      // 工作区，模型标出的冲突就指向「别的项目的记忆」，而面板并排摆出来时用户看不出来。
+      const workspaceId = await resolveWorkspaceId(services.workspaceRegistry, workspace);
       result = await runExtraction({
         // 键里两处要分清：读日志那条路要**会话对象**（用 `session.id`），给桥那条要**字符串 id**。
         // 第一版这里写的是 `{ session: { id: key.session }, ...key }`——展开顺序让内层立即被覆盖，
@@ -305,18 +317,19 @@ function apply(ctx) {
               to,
             }),
           buildSlice,
-          callModel: ({ text, signal }) =>
+          retrieveExisting: ({ text }) =>
+            retrieveExisting({ creds, workspaceId, workspacePath: String(workspace ?? ''), text }),
+          callModel: ({ text, existing, signal }) =>
             selection
-              ? callExtractionModel({ llm: services.llm, route: selection, text, signal })
+              ? callExtractionModel({ llm: services.llm, route: selection, text, existing, signal })
               : { ok: false, reason: '拿不到当前模型路由（agentDefaultModel）' },
           parse: parseExtractionOutput,
           submit: async ({ candidates }) => {
             let submitted = 0;
             const refusals = [];
-            // **提交时现解析工作区 id**（一次，给这一批候选共用），不用缓存的那个：预算用满的
+            // 工作区 id 在**这一次提取开始时**现解析一次，给检索与提交共用（G3）：预算用满的
             // 回合会在解析之前就早退（`shouldProbeLibrary` 那条），缓存下来的可能是**上一个**
-            // 工作区——那正是「候选记到旧项目」（G3）。工作目录本身在 `beginStep` 里已经刷新过。
-            const workspaceId = await resolveWorkspaceId(services.workspaceRegistry, workspace);
+            // 工作区——那正是「候选记到旧项目」。工作目录本身在 `beginStep` 里已刷新。
             for (const candidate of candidates) {
               // **一条候选一次调用**：壳那边的 `/jobs/submit` 就是这么收的（正文经查询串过去）。
               const params = {
@@ -334,6 +347,10 @@ function apply(ctx) {
                 title: candidate.title,
                 body: candidate.body,
                 keywords: candidate.keywords.join(','),
+                // **冲突标记（C5）**：解析阶段已逐项校验过 id 确实来自这次给模型看的既有记忆，
+                // 壳这一侧再收一次形状与限额（`memory/conflicts.rs`）。走查询串是既有形状
+                // （正文那条 8 KiB 通道上限摆在那儿），而 id 是短串，几条也占不了多少。
+                conflicts: (candidate.conflicts_with ?? []).join(','),
               };
               // **提交前按整条路径真算一次**（评审第 6 条）：正文的上限按原文定、通道的上限按编码后
               // 定，中文一乘就是 9 倍——逐项都合法的候选合起来能远超通道，而那种失败是**整批**
@@ -389,7 +406,8 @@ function apply(ctx) {
       // 以及真的落库的条数。合起来报的话，「提交 3 条，被判据拒 0 条」会把 7 条的去向藏起来。
       ctx.logger?.info?.(
         `xlink-memory: 提取完成（落库 ${result.submitted} 条；解析阶段拒 ${result.rejected.length} 条；` +
-          `提交阶段拒 ${result.refused ?? 0} 条${result.refusedReason ? `：${result.refusedReason}` : ''}）`
+          `提交阶段拒 ${result.refused ?? 0} 条；对照既有记忆 ${result.compared ?? 0} 条` +
+          `${result.refusedReason ? `：${result.refusedReason}` : ''}）`
       );
     } else {
       // **stage 与原因一起报**：壳那边把这条写进 `jobs.json` 的 error，而插件的 logger 在这个
@@ -401,6 +419,37 @@ function apply(ctx) {
       });
       ctx.logger?.warn?.(`xlink-memory: 提取失败于「${result.stage}」：${result.reason}`);
     }
+  }
+
+  /**
+   * 提取**前**的既有记忆检索（C5，设计 §7-2「提取前用候选关键词走现成的 /context 拿命中」）。
+   *
+   * **为什么不新加路由**：`/context` 本来就是这条路——它按**同一个会话的工作区**检索，
+   * 也就是模型平时会拿到的那批记忆；另开一条只会得到两个口径，而「冲突」判在两套口径之间
+   * 只会更说不清。它的 `hits` 里带 `id`/`title`/`body`，所以 id 也拿得到。
+   *
+   * **查询取切片里用户说过的话**（而不是整段原文）：整段含助手的话与工具痕迹，词更杂、
+   * 命中更少；用户刚说的那句才是「可能与库里某条冲突」的入口。上限按壳那边的
+   * `MAX_QUERY_CHARS` 收，超了它在路由里会被拒。
+   *
+   * @returns {Promise<{ok: boolean, items: object[], reason?: string}>}
+   */
+  async function retrieveExisting({ creds, workspaceId, workspacePath, text }) {
+    const query = conflictQuery(text);
+    if (!query) return { ok: true, items: [] };
+    const answer = await callMemory({
+      credentials: creds,
+      route: 'context',
+      params: { q: query, workspace: workspacePath, workspace_id: workspaceId },
+    });
+    if (!answer.ok) return { ok: false, items: [], reason: answer.reason ?? '检索既有记忆失败' };
+    const hits = Array.isArray(answer.value?.hits) ? answer.value.hits : [];
+    return {
+      ok: true,
+      items: hits
+        .filter((hit) => hit && typeof hit.id === 'string' && hit.id)
+        .map((hit) => ({ id: hit.id, title: hit.title ?? '', body: hit.body ?? '' })),
+    };
   }
 
   async function enqueueExtraction(creds, session, cursor) {
