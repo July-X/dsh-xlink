@@ -496,3 +496,31 @@ macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用�
 - **判据**：`ui/test/memoryPanel.test.js` 新增「新建与编辑共用一个弹窗」（含「按钮不许塞进
   `.memory-head__actions`」这条量过的约束）与「弹窗开关与草稿：新建清空 / 编辑带出 / 关闭丢弃 /
   保存成功才关」（store 层真跑 `saveMemory` 两条路）。两条既有用例改指 `MemoryEditor.vue`。
+
+### 弹窗那一版的评审修复（2026-10-16 晚）
+
+三条都是弹窗引入的新问题，不是原有缺陷。
+
+- **「检索预览」的查询不能再挂在草稿上**（评审第 1 条）。三个事实互斥：弹窗是 modal
+  （遮罩挡着面板上那枚「试一次」）、关窗即丢草稿、面板上没有第二处能写草稿——于是**用户能点到
+  它的时候查询必然是空串**。而后端对空查询不是「查不到」：`query.rs` 的 `score` 给所有在范围内的
+  条目 **0 分**且不返回 `None`，预览会稳定报出一批与输入无关的命中，还长得很像真的。
+  修法是**加第二个字段** `memoryStore.previewQuery`（编辑时同步、关窗不清、新建时清空），
+  `closeMemoryEditor`「关窗即丢草稿」的语义一个字没动。面板那枚按钮改成 `:disabled="!previewQuery"`，
+  空查询那一路给一句「先在编辑器里填标题或关键词」。
+  **没选**「把按钮搬进弹窗 footer」：那样按钮点得到，但结果仍渲染在被遮罩盖住的面板上，
+  等于换一个地方骗人；要搬得连结果一起搬，那是把「预览」从一个入口变成两个。
+- **✕ 关窗先问一句**（评审第 2 条）。遮罩与 ESC 已拦，但 ✕ 是零确认路径。用 `:before-close`
+  而不是 `@update:model-value`：EP 的 `handleClose` 是**先置 `visible = false` 再 emit**，
+  拿后者做确认框只能假装拦一下（`MigrationPrompt` 早就用 `before-close`，照它写）。
+  空表单直接关，有内容才问「放弃这条记忆？」。
+- **保存期间的闸门要取真信号**（评审第 3 条）。原先「取消」写 `:disabled="globalBusy"`，而
+  `globalBusy` 只由 `withExclusive` 抬——保存走的是 `withLoading('memorySave')`，**保存期间它恒为
+  false**，那道闸门等于没有：点保存 → 请求在飞 → 用户以为卡住去关窗 → 草稿清空 → 随后保存失败，
+  而正文已经不在任何地方。改成 `saving = computed(() => isLoading('memorySave'))`，
+  「取消」`:disabled="saving"`、✕ `:show-close="!saving"`。
+- **判据**：新增两条（`检索预览的查询存在 store 里…` 真跑 `editMemory → closeMemoryEditor →
+  previewContext` 并断言发出去的 `queryText`；`编辑器关窗前先问一句…` 钉 `before-close` 接线与
+  `saving` 信号）。**行为那半没进单测**：`beforeClose` 在 `<script setup>` 里，node 跑不到——
+  留在真机 e2e。
+- **预算**：`memory.js` 352 → 359、`TOTAL_BUDGET` 53680 → 53710（同处写账）。

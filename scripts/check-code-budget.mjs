@@ -1009,8 +1009,13 @@ const FILE_BUDGETS = {
   // `precheckVisible`、`diagnostics` 的 `restoreVisible` 同一个约定），面板只画那枚按钮。
   // `saveMemory` 的成功路径顺手关弹窗并清草稿：**失败那条路一个字都不动**，不然用户刚写的
   // 正文会跟着弹窗一起消失。
+  // 352 → 359（2026-10-16，评审修复）：`previewQuery` + `queryTextFor` ——「检索预览」的查询
+  // **不能再挂在草稿上**：编辑器是 modal 弹窗（遮罩挡着面板上那枚「试一次」），而关窗又把
+  // 草稿清了，两条合起来让查询恒为空串；后端对空查询是「所有条目 0 分」（`query.rs` 的
+  // `score` 不返回 None），预览会稳定报出一批与输入无关的命中。存第二个字段是这个问题
+  // 最小的修法：`closeMemoryEditor` 的语义（关窗即丢草稿，判据已钉）一个字不用改。
   // 340 < RATCHET_THRESHOLD（600），允许上调。
-  'ui/src/memory/memory.js': 352,
+  'ui/src/memory/memory.js': 359,
   // 新文件（2026-10-14 深夜）：`MemoryRow.vue` 90 行——一条记忆的渲染与它的三个动作。
   // **为什么该独立**：面板（列表 + 候选 + 编辑器 + 最近注入 + 预览 + 导出）已经 448 行，
   // 而「一行记录长什么样」与「列表怎么组织」是两件事；拆完面板回到 400 上下，行自己的
@@ -3208,7 +3213,15 @@ const FILE_BUDGETS = {
 //   · 其余是两侧接线与判据注释；`SCHEMA_VERSION` 4 → 5 没有花行数（改的是一个常量）。
 // 判据 11 条（Rust 5 + 插件 2 + UI 2 ——插件那两条是 C6 那批里随 `contentFingerprint`
 // 一起加的），四组反向验。
-const TOTAL_BUDGET = 53680;
+const TOTAL_BUDGET = 53710;
+// 53680 → 53710（2026-10-16，弹窗那版的评审修复三条）：
+//   · `ui/src/memory/memory.js` 352 → 359：`previewQuery` 一族（理由写在那个 FILE_BUDGETS
+//     条目里：查询挂草稿上就恒为空，预览会报出与输入无关的命中）。
+//   · `ui/src/memory/MemoryEditor.vue` 128 → 161：关窗闸门（`beforeClose` + 确认框）与
+//     保存闸门（`saving` 取 `isLoading('memorySave')`——`globalBusy` 在保存期间恒为 false，
+//     拿它当闸门等于没闸门），以及那段说明「为什么不能用 `update:model-value`」的注释。
+//   · `ui/src/memory/MemoryPanel.vue` 493 → 449 那 44 行的净减已经在上一个提交里记过账。
+// 抬的仍是**软上限**；反棘轮那几行（`theme.css` / `plugins.rs` / `commands.rs`）没动。
 // 53630 → 53680（2026-10-16，用户在记忆面板截图上提的「新建记忆UI，调整为点击按钮后弹窗编辑」）：
 // 净增 50 行，全部有账：
 //   · **新文件** `ui/src/memory/MemoryEditor.vue` 128 行（已登记）：弹窗 + 表单 + 它自己的

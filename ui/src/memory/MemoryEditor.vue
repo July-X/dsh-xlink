@@ -16,6 +16,7 @@
 // `precheckVisible`、`SnapshotRestoreDialog` 的 `restoreVisible` 同一个约定。
 import { computed } from 'vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
+import { confirmDialog } from '../shell/notify.js';
 import {
   memoryStore,
   saveMemory,
@@ -28,15 +29,25 @@ import {
 
 const draft = computed(() => memoryStore.draft);
 const savable = computed(() => canSaveDraft());
+/// 保存**在飞**。这是关窗闸门该用的信号：`globalBusy` 只由 `withExclusive` 抬，
+/// 而保存走的是 `withLoading('memorySave')`——保存期间它恒为 false，
+/// 拿它当闸门等于没闸门（关掉装着刚写完正文的弹窗，等于把那段文字拿走）。
+const saving = computed(() => isLoading('memorySave'));
 /// 正文字节数：与后端 `MAX_BODY_BYTES` 同一个数，**按字节**算（中文一个字 3 字节）。
 const bodyBytes = computed(() => byteLength(draft.value.body));
 
-/// 弹窗自己发起的关闭（✕，以及遮罩/ESC——那两个已被上面两条 prop 拦住）收在这里；
-/// 「取消」按钮调的是 store 同一个动作（`closeMemoryEditor`）。
-/// **两条路都不许只写 `editorVisible = false`**：那样半截草稿会留下来，
-/// 而「检索预览」正是拿草稿当查询的。
-function dismiss(open) {
-  if (!open) closeMemoryEditor();
+/// ✕ 关窗前的闸门。遮罩与 ESC 已由 prop 拦住，剩下这一条是**明确的**点击——但「明确」
+/// 说的是意图，不是「他愿意丢掉刚写的三段话」。有内容就问一句，空表单直接关。
+/// 用 `before-close` 而不是 `@update:model-value`：后者在 EP 里是「已经关了再通知你」
+/// （`handleClose` 先置 `visible = false` 再 emit），拿它做确认框只能假装拦一下。
+function beforeClose(done) {
+  if (!draft.value.title.trim() && !draft.value.body.trim()) {
+    done();
+    return;
+  }
+  confirmDialog('放弃这条记忆？', '弹窗里的内容还没保存，关掉就没了。', '放弃').then((ok) => {
+    if (ok) done();
+  });
 }
 </script>
 
@@ -56,7 +67,8 @@ function dismiss(open) {
     append-to-body
     :close-on-click-modal="false"
     :close-on-press-escape="false"
-    @update:model-value="dismiss"
+    :show-close="!saving"
+    :before-close="beforeClose"
   >
     <div class="memory-form">
       <el-radio-group v-model="draft.scope" :disabled="globalBusy">
@@ -115,7 +127,7 @@ function dismiss(open) {
     </div>
     <!-- 动作排在 `#footer` 里：EP 的 footer 本来就右对齐，不必挂 `.dialog-actions`。 -->
     <template #footer>
-      <el-button :disabled="globalBusy" @click="closeMemoryEditor">取消</el-button>
+      <el-button :disabled="saving" @click="closeMemoryEditor">取消</el-button>
       <el-button
         type="primary"
         :loading="isLoading('memorySave')"

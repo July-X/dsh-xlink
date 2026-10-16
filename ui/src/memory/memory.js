@@ -47,6 +47,11 @@ export const memoryStore = reactive({
   workspaces: [],
   /// 检索预览：`{ enabled, text, total_bytes, hits }`。
   preview: null,
+  /// 「检索预览」拿什么当查询。**必须与草稿分开存**：编辑器是 modal 弹窗，弹窗开着时
+  /// 面板上那枚「试一次」被遮罩挡着点不到，而弹窗一关 `closeMemoryEditor` 就把草稿清了
+  /// ——挂在草稿上的话，用户能点到它的时候查询必然是空串，而后端对空查询是「所有条目
+  /// 0 分」（`query.rs` 的 `score`），预览会稳定报出一批与输入无关的命中。
+  previewQuery: '',
   /// 最近一次导出的结果（`{ path, bytes, memories, candidates, generated_at }`）。
   lastExport: null,
   /// 列表的范围筛选：`all` / `project` / `general`（§2 的「本项目」与「此实例的通用偏好」两个视图）。
@@ -281,7 +286,13 @@ export function refreshMemory({ silent = false } = {}) {
   ).catch(() => undefined);
 }
 
+/// 「检索预览」的查询文本：标题 + 关键词，与用户填的表单同源。
+function queryTextFor(record) {
+  return [record.title, (record.keywords || []).join('，')].filter(Boolean).join(' ').trim();
+}
+
 export function editMemory(record) {
+  memoryStore.previewQuery = queryTextFor(record);
   memoryStore.draft = {
     id: record.id,
     expectedRevision: record.revision,
@@ -308,11 +319,16 @@ export function resetDraft() {
  */
 export function openMemoryEditor(record = null) {
   if (record) editMemory(record);
-  else resetDraft();
+  else {
+    resetDraft();
+    memoryStore.previewQuery = '';
+  }
   memoryStore.editorVisible = true;
 }
 
-/// 关掉编辑器并**丢弃草稿**（取消的语义）。三条关法（✕ / ESC / 取消）都走这里。
+/// 关掉编辑器并**丢弃草稿**（取消的语义）。「取消」按钮与 `MemoryEditor` 的 `beforeClose`
+/// （✕，用户确认「放弃」之后）都走这里——**遮罩与 ESC 不关**，它们在弹窗的 prop 上就被拦住了。
+/// 保留了 `previewQuery`：它记的是「上一次编辑过的查询」，关窗不该把它一起抹掉。
 export function closeMemoryEditor() {
   memoryStore.editorVisible = false;
   resetDraft();
@@ -490,10 +506,12 @@ export function decideCandidate(candidate, accept, scope = null) {
   );
 }
 
-/// 按当前编辑器里的标题 + 关键词试一次检索，把「会注入什么」摊开给用户看。
+/// 按**上一次编辑过的**标题 + 关键词试一次检索，把「会注入什么」摊开给用户看。
+///
+/// 查询读 `memoryStore.previewQuery` 而不是草稿（原因见 store 里那段：弹窗的遮罩与
+/// 「关窗丢草稿」两条合起来让草稿在这里恒为空）。
 export function previewContext() {
-  const draft = memoryStore.draft;
-  const query = [draft.title, draft.keywordsText].filter(Boolean).join(' ').trim();
+  const query = memoryStore.previewQuery.trim();
   return withLoading('memoryPreview', () =>
     invoke('memory_preview_context', {
       queryText: query,
