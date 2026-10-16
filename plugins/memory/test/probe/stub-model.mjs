@@ -41,6 +41,9 @@ const TEXT =
   process.env.STUB_REPLY ??
   ('好的，我记住了：以后提交前都跑检查。' + '这是一段用来把上下文撑大的填充文字。'.repeat(60));
 
+/** 提取请求数（逐回合换候选标题用，见下面那段注释）。 */
+let extractionCount = 0;
+
 mkdirSync(PROBE_HOME, { recursive: true });
 const log = (line) => appendFileSync(join(PROBE_HOME, 'model.log'), `${line}\n`);
 
@@ -110,6 +113,39 @@ createServer((req, res) => {
       // **提取那条请求要回合法 JSON**：回别的（哪怕也是人话）会被判「没有可解析的 JSON」。
       // 这里只认一个标记词，不是为了聪明，而是为了让「这条请求是不是提取」在日志里一眼可见。
       const isExtraction = /durable, reusable memory/i.test(system);
+      // **evidence_seq 必须是切片里真的一条人类消息**（2026-10-16 实跑逮到的）。
+      //
+      // 这一版原先写死 `evidence_seq: 1`，而解析阶段会校验「它确实指向切片里的一条
+      // `user/message` 且 `source.kind === 'user'`」——切片的第一条人类消息在 **seq 8**
+      // （前面几条是内核自己注入的 runtime context 与 system-reminder），
+      // 于是**每一条候选都被判「引用的序号不在这段切片里」而拒收**，一条都提交不出去。
+      //
+      // **为什么这值这么久没被发现**：这套桩当初是为压缩实验造的（G12/G13），
+      // 那两组只关心压不压缩成，候选落不落库无关紧要——于是「提交不出去」这一整类
+      // 失败在那两组里**完全没有症状**。而它一旦被拿去驱动候选（C5/C6/H7），
+      // 症状是「提取请求发出去了、模型回了合法 JSON、然后库里什么都没有」，
+      // 与「模型没给候选」在日志里长得一模一样。
+      //
+      // **从请求里把序号读出来**，而不是猜一个：`[N] 用户：…` 那几行就是切片里的原文。
+      //
+      // **切片原文要在同一个闭包里算一次**（2026-10-16 实跑踩到）：第一版把它塞进
+      // `userSeq` 那个 IIFE 里，于是下面按内容挑标题时引用了一个作用域外的 `text`
+      // ——桩在 `req.on('end')` 里抛 ReferenceError，**一次回复都没有**，
+      // 而症状是「回合跑完了但一条提取请求都没进 model.log」，与「模型没被调到」一模一样。
+      const sliceText = messages
+        .filter((m) => m?.role !== 'system')
+        .map((m) => (typeof m?.content === 'string' ? m.content : ''))
+        .join('\n');
+      const hit = /\[(\d+)\]\s*用户[:：]/.exec(sliceText);
+      const userSeq = hit ? Number(hit[1]) : 1;
+      // **每回合给一条不同的正文**（2026-10-16 加）：写死一条的话，第二次提取会被
+      // `submit_candidate` 的同源指纹拒收，于是库里永远只有一条——而「第二次提取
+      // 落不落得下库」正是 C6（取代）与 H7（来源变了标过期）各自要验的那一件事。
+      // `STUB_CANDIDATE` 仍然是显式指定那条路。
+      const candidateTitle =
+        process.env.STUB_CANDIDATE ??
+        `约定 ${extractionCount + 1}：${sliceText.includes('npm') ? '这个仓库改用 npm install。' : '提交前要跑检查。'}`;
+      extractionCount += 1;
       // **摘要那条调用必须回一句短的**，否则压缩**永远失败**——内核会拿
       // 「摘要不比被遮蔽的内容更短」当场拒掉：
       //     compaction/end error=summary is not smaller than the shadowed content
@@ -121,10 +157,10 @@ createServer((req, res) => {
       const content = isExtraction
         ? JSON.stringify([
             {
-              title: '提交前先跑检查',
-              body: '提交前先跑一遍 npm run check 这个门禁。',
+              title: candidateTitle,
+              body: `${candidateTitle}（桩模型）`,
               keywords: ['提交', '检查'],
-              evidence_seq: 1,
+              evidence_seq: userSeq,
               conflicts_with: [],
               supersedes: [],
             },

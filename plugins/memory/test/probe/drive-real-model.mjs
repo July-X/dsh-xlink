@@ -49,6 +49,9 @@ const repoRoot = resolve(here, '..', '..', '..', '..');
 const LABEL = process.argv[2] ?? 'real';
 const PROBE_HOME = process.env.PROBE_HOME ?? '/tmp/p2probe';
 const LINGER_MS = Number(process.env.PROBE_LINGER_MS ?? 150_000);
+// 回合之间的等待（0 = 连着说，被合并成一次提取）。**收尾那次**另算，见 `LINGER_MS`。
+const BETWEEN_MS = process.env.PROBE_LINGER_BETWEEN === '1' ? LINGER_MS : 0;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const RPC_TIMEOUT = Number(process.env.PROBE_RPC_TIMEOUT_MS ?? 300_000);
 
 /**
@@ -188,7 +191,12 @@ const child = spawn(
 let nextId = 1;
 const pending = new Map();
 // 会话 id 由客户端给，而**它是落盘的**：同一个 id 第二次跑会撞 `already exists`。
-const sessionId = `sdk-${LABEL}-${Date.now()}`;
+//
+// **`PROBE_SESSION_ID` 让它可钉住**（2026-10-16 加）：**增量提取只能在同一会话跨两次跑里量**
+// ——`from_cursor` 按会话各算各的，而一次运行里的多回合会被去抖合并成一次提取（那是 C6 验收
+// 踩过的），所以「第二次从哪儿读」这件事，用默认的带时间戳 id 根本造不出来。
+const sessionId =
+  process.env.PROBE_SESSION_ID?.trim() || `sdk-${LABEL}-${Date.now()}`;
 let buffer = '';
 
 child.stdout.on('data', (chunk) => {
@@ -265,6 +273,18 @@ try {
     await call('session/prompt', { sessionId, contentBlocks: [{ type: 'text', text }] });
     await call('session/wait', { sessionId });
     log(`turn ${index + 1} 结束：${text.slice(0, 30)}`);
+    // **回合之间也要等**（`PROBE_LINGER_BETWEEN=1`，2026-10-16 加）：默认把回合连着说完，
+    // 而壳那边有 30 秒去抖，于是**同一会话的多个回合会被合并成一次提取**（C6 验收踩过——
+    // 「同会话连说会被合并成一次提取、没有取代可言」）。
+    //
+    // **增量提取只能在「同会话、两次独立提取」里量**：`from_cursor` 按会话各算各的，
+    // 而一次运行里只发生一次提取时，那个值恒是 0（那正是 H1 那条缺陷的症状）。
+    // 所以要么回合之间等，要么跨两次驱动器跑同一个 session id——而后者撞
+    // `session "…" already exists`（`session/prompt` 只创建不续接），所以只有这一条路。
+    if (index < TURNS.length - 1 && BETWEEN_MS > 0) {
+      log(`回合之间多等 ${BETWEEN_MS} 毫秒，让第一次提取先跑完`);
+      await sleep(BETWEEN_MS);
+    }
   }
   // 提取有 30 秒静默期（壳那边 `jobs::DEBOUNCE_MS`）加一次真模型调用；内核进程必须活着，
   // 否则定时器随进程一起没——**而插件正是靠那个定时器把任务领走的**（见 H3）。
