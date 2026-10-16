@@ -30,7 +30,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm';
-import { MAX_PATH_BYTES, callMemory, encodedPathBytes, readCredentials } from './bridge.js';
+import { MAX_PATH_BYTES, callMemory, claimKeyOf, encodedPathBytes, readCredentials } from './bridge.js';
 import {
   EXTRACTION_SYSTEM_PROMPT,
   EXTRACTOR_VERSION as EXTRACT_VERSION,
@@ -250,7 +250,9 @@ function apply(ctx) {
    */
   async function runDueExtraction(creds, services, workspace, currentSessionId) {
     // 桥的返回是 `{ok, value}`（见 bridge.js），而 `/claim` 的形状是
-    // `{token, key:{session,cursor,extractor}, attempts, expires_at_ms}`（见 jobs.rs 的 `Claimed`）。
+    // `{token, key:{session,cursor,extractor,from_cursor}, attempts, expires_at_ms}`
+    // （见 jobs.rs 的 `Claimed`）。**`from_cursor` 也在里面**：它是「这段会话上次提取到哪儿」，
+    // 而读取那一段的起点就是它——漏掉它症状是静默的（每次从 0 重读整份），理由见 `claimKeyOf`。
     // **带上会话**：不带的话壳会从全表挑最早那条，而提交用的坐标取自**发起领取的会话**——
     // 两个会话同跑时，A 的对话内容会带 B 的项目坐标落库（评审第 3 条）。领自己那条才对得上。
     const claimed = await callMemory({
@@ -267,7 +269,6 @@ function apply(ctx) {
     const claimedKey = claimed.value?.key ?? {};
     const sessionId = String(claimedKey.session ?? '');
     const endSeq = Number(claimedKey.cursor ?? 0);
-    const extractor = String(claimedKey.extractor ?? EXTRACT_VERSION);
     // **要拿到真的会话对象，不能自己拼一个 `{id}`**。内核的 `SessionStore.flush` 用
     // `WeakMap` 按**对象身份**取 live entry（`dsh-session`），一个自拼的字面量永远不是它认识的那个
     // ——主路（落盘屏障 → 读句柄）因此每次都抛 `session "…" is not live in this store`，
@@ -275,7 +276,11 @@ function apply(ctx) {
     // 按**任务键里的会话 id** 去 store 里取：领到的任务未必属于当前这个会话（见第 3 条），
     // 所以不能拿手上这个 `session` 对象顶替。取不到就让它空着，读的那一步会如实说「没有会话对象」。
     const liveSession = services.sessions?.get?.(sessionId) ?? null;
-    const key = { session: liveSession, cursor: endSeq, extractor };
+    // **任务键的重建交给 `claimKeyOf`**（它在 `bridge.js`，纯函数、可直接测）：这一处原先
+    // 是手挑 `session / cursor / extractor` 三个字段，`from_cursor` 落在外面，于是读取恒从 0
+    // 开始——那条注释声称要避开的「每次重读整份日志」正是这么来的，而更糟的是 `content_hash`
+    // 因此覆盖整段会话，H7 的指纹判据每次都成立。原因写在 `claimKeyOf` 的注释里。
+    const key = claimKeyOf(claimedKey, liveSession);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), EXTRACT_TIMEOUT_MS);
     // **续租**：不续的话，跑得久一点就会被别的会话接管，而这一轮的结果与失败原因都会作废
