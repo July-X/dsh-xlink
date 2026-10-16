@@ -185,6 +185,33 @@ mod tests {
         dir
     }
 
+    /// 把目录的 mtime 推过**当前 tick**，返回是否真的推动了。
+    ///
+    /// 为什么不能直接 `File::open(dir).set_modified(…)`：**Windows 上对目录打开文件句柄
+    /// 直接被拒**（`skills/store_busy.rs` 里那条注释记的是同一件事：「`File::open` 对目录
+    /// 直接失败」）。所以走「在目录里增删一个条目」——目录 mtime 本来就因条目增删而变。
+    ///
+    /// 第一轮通常就够了（NTFS 上目录 mtime 是**惰性**更新的：一次新增条目会把它带到当前
+    /// 时间，而不是 +tick）。不稳时 sleep 一个 tick 再来一轮，最多三轮；三轮都没推动就
+    /// 如实回 `false`，由调用方断言——**不要让判据红在一句与真因无关的缓存断言上**。
+    fn advance_dir_mtime(dir: &Path) -> bool {
+        let stamp = || fs::metadata(dir).and_then(|m| m.modified()).ok();
+        let before = stamp();
+        for attempt in 0..3 {
+            let touch = dir.join(format!(".mtime-touch-{attempt}"));
+            if fs::write(&touch, b"x").is_err() {
+                return false;
+            }
+            let _ = fs::remove_file(&touch);
+            let now = stamp();
+            if now.is_some() && now != before {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
+        false
+    }
+
     /// 版本号最高者胜出；`session.lock` 这类不认识的文件名只跳过自身，
     /// 不影响目录里其余候选。
     #[test]
@@ -229,6 +256,23 @@ mod tests {
 
         // 目录里多出一代：mtime 变了 → 缓存失效并重新枚举到 v2。
         fs::write(session.join("session.v2.jsonl.zstd"), b"v2").unwrap();
+        let advanced = advance_dir_mtime(&session);
+        // **先确认前提真的成立**，再判缓存行为：文件系统的时间戳粒度不是纳秒（NTFS 的
+        // 目录 mtime 按整 tick 刷新），上面那几次 `create_dir_all` / `fs::write` /
+        // `resolve_variant` 常常落在同一个 tick 里——那时「新增了条目」这件事在 mtime 上
+        // **看不见**，本用例就会随机红在一句与真因无关的话上（2026-10-16 带负载实测：
+        // 6 次全量 `cargo test` 里红 1 次）。
+        //
+        // 这是**测试与文件系统的耦合**，不是 `resolve_variant` 的缺陷：它整份逻辑就是
+        // 「mtime 变了才重新枚举」。把前提摆到确定状态，判据才钉的是接线而不是 tick 撞车。
+        //
+        // **代价（如实记）**：日常路径里「同一 tick 内新增了一代 variant」仍然看不见，
+        // 要等下一轮扫描；那一轮由调用方（`local.rs` 每次读用量）驱动，不是常驻轮询。
+        assert!(
+            advanced,
+            "推不动目录 mtime：这条判据的前提（mtime 会因条目增删而变）在这个文件系统上不成立，\
+             请修 advance_dir_mtime，而不是改断言"
+        );
         let (root_cache, gen) = begin_round(&mut cache, &dir);
         let third = resolve_variant(&session, root_cache, gen).expect("第三轮重新枚举");
         assert_eq!(
