@@ -358,14 +358,20 @@ onMounted(() => {
             <el-button
               text
               :loading="isLoading('memoryPreview')"
-              :disabled="globalBusy"
+              :disabled="globalBusy || !memoryStore.previewQuery"
               @click="previewContext"
             >
               试一次
             </el-button>
           </div>
+          <!-- 没编辑过任何一条时按钮是禁用的：查询取自**上一次编辑过的**标题与关键词，
+               空查询在后端是「所有条目 0 分」，点下去会报出一批与输入无关的命中。 -->
           <p class="memory-hint">
-            用编辑器里的标题与关键词当作查询（编辑器关着时查询是空的），看这次会注入哪几条。
+            {{
+              memoryStore.previewQuery
+                ? '用上一次编辑过的标题与关键词当查询，看这次会注入哪几条。'
+                : '先在编辑器里填标题或关键词，再回来点「试一次」。'
+            }}
             {{ memoryStore.preview ? `命中 ${memoryStore.preview.hits.length} 条，共 ${memoryStore.preview.total_bytes} 字节。` : '' }}
           </p>
           <pre v-if="memoryStore.preview && memoryStore.preview.text" class="memory-preview">{{ memoryStore.preview.text }}</pre>

@@ -34,7 +34,7 @@
     "test:titlebar-pulse": "node --test scripts/titlebar-pulse.test.mjs",
     "test:scripts": "node --test scripts/*.test.mjs",
     "test:smoke": "node scripts/smoke-pullstring.mjs",
-    "test:ui": "node --test ui/test/*.test.js",
+    "test:ui": "node --test --test-force-exit ui/test/*.test.js",
     "build:mac-intel": "npm run prep:builtin && tauri build --target x86_64-apple-darwin",
     "build:win": "npm run prep:builtin && tauri build --target x86_64-pc-windows-msvc",
     "check:signing-keys": "node scripts/check-signing-keys.mjs",

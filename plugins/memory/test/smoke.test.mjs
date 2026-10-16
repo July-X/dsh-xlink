@@ -204,6 +204,18 @@ test('领取回来的任务键要原样带过去：from_cursor 丢了就是每�
   assert.equal(key.cursor, 84);
   assert.equal(key.extractor, 'xlink-memory-extract/4');
 
+  // **缺 `extractor` 时回落到插件自己的版本号**（2026-10-16 补）。默认值原本在 `index.js` 里
+  // （`String(claimedKey.extractor ?? EXTRACT_VERSION)`），搬进 `bridge.js` 时降级成了空串——
+  // 而本函数只有 `node:http`，本来就不该知道那个常量，所以兜底由调用点当第三个参数传进来。
+  // 上面那条只喂了**显式带 `extractor`** 的形状，正好漏掉这个方向。
+  assert.equal(
+    claimKeyOf({ session: 's-1', cursor: 7 }, null, 'xlink-memory-extract/4').extractor,
+    'xlink-memory-extract/4',
+    '缺 extractor 要回落到插件版本号，不能是空串'
+  );
+  // 连默认值都没给时也要收得住（`String(undefined)` 会得到字符串 "undefined"）。
+  assert.equal(claimKeyOf({ session: 's-1', cursor: 7 }, null).extractor, '');
+
   // **不能就地改坏调用方传进来的对象**：它后面还要被拿去读 `key.session`。
   assert.equal(claimedKey.from_cursor, 41, '不许就地改调用方的对象');
   assert.equal(claimedKey.session, 's-1', 'live 对象只进返回值，不许写回入参');
@@ -1528,14 +1540,25 @@ test('累计字节到顶之后不再刷新——次数封顶挡不住「每次�
   assert.equal(applyFailure(state, 4).bytes, state.bytes);
 });
 
-test('装配层真的接上了这些判据（helper 有测试、接线没有是本仓反复栽的形状）', () => {
+/**
+ * `host/index.js` 的**剥掉注释的**源码。
+ *
+ * 注释里也原样引用这些接线名字，不剥的话判据会命中自己写的解释。
+ * **块注释也要剥**：这里踩过一次真坑——`interpolate: false` 那条判据原本只剥行注释，
+ * 而文件头那段块注释里正好写着这句，于是把真代码改成 `interpolate: true` 之后
+ * 判据**照样绿**（反向验才发现的）。
+ *
+ * 2026-10-16 收成一份：此前三个用例各抄一遍同样的两行 replace（本仓反复栽的「同一件事
+ * 抄三份，改一份另两份不动」）。调用方若需要「行注释剥得更干净」的版本（`bare`），
+ * 自己再叠一层——那是**另一件事**（数 `prepareCall` 的次数），别混进来。
+ */
+function indexCode() {
   const src = readFileSync(new URL('../host/index.js', import.meta.url), 'utf8');
-  // 注释里也原样引用这些名字，先剥掉注释再判——否则判据会命中自己写的解释。
-  //
-  // **块注释也要剥**：这里踩过一次真坑——`interpolate: false` 那条判据原本只剥行注释，
-  // 而文件头的 `/** … */` 里正好写着这句，于是把真代码改成 `interpolate: true` 之后
-  // 判据**照样绿**（反向验才发现的）。剥完注释，判据才真的在判代码。
-  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+}
+
+test('装配层真的接上了这些判据（helper 有测试、接线没有是本仓反复栽的形状）', () => {
+  const code = indexCode();
   for (const call of ['beginStep(', 'shouldProbeLibrary(', 'applyStep(']) {
     assert.ok(code.includes(call), `index.js 里少了 ${call} 的调用`);
   }
@@ -1609,7 +1632,11 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   assert.ok(!/from: 0,/.test(code), '不许再写死 from: 0');
   // **装配层不许再手挑任务键的字段**：`from_cursor` 就是从「手挑三个」这一步漏掉的，
   // 而手挑的那一步长得跟正常代码一模一样。这里钉住「重建交给 `claimKeyOf`」。
-  assert.match(code, /const key = claimKeyOf\(claimedKey, liveSession\)/, '任务键的重建要交给 claimKeyOf');
+  assert.match(
+    code,
+    /const key = claimKeyOf\(claimedKey, liveSession, EXTRACT_VERSION\)/,
+    '任务键的重建要交给 claimKeyOf，兜底的提取器版本号由调用点给'
+  );
   assert.ok(
     !/const key = \{[^}]*cursor[^}]*\}/.test(code),
     '不许再手挑字段拼任务键——from_cursor 就是这样丢的，而症状是静默的'
@@ -2271,8 +2298,7 @@ test('静默期这个数字两边不许脱钩：壳的 DEBOUNCE_MS 一涨，插�
 });
 
 test('装配层真的接上了唤醒：排成功后按静默期排一次，会话被挤掉时清掉', () => {
-  const src = readFileSync(new URL('../host/index.js', import.meta.url), 'utf8');
-  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const code = indexCode();
   // **排在 enqueue 的成功那一支**：排失败时不该排唤醒（下一次正常结束的回合会带更靠后的游标重来）。
   assert.match(
     code,
@@ -2444,8 +2470,7 @@ test('冲突查询只取用户说过的话，且从最近几句开始拼（纯�
 });
 
 test('装配层真的接上了 C5：检索用同一份坐标、冲突真的发出去', () => {
-  const src = readFileSync(new URL('../host/index.js', import.meta.url), 'utf8');
-  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const code = indexCode();
   // **走现成的 `/context`，不新加路由**（设计 §7-2 的原话）：另开一条只会得到两个口径。
   assert.match(code, /route: 'context'/, '冲突标记那半要复用 /context');
   assert.match(code, /retrieveForExtract: \(\{ text \}\) =>/, 'deps 里要真的接上');

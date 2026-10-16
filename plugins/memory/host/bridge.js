@@ -152,9 +152,13 @@ function defaultTransport({ url, token, path, timeoutMs }) {
  *
  * @param {object} claimedKey - 桥回来的 `key`（`{session, cursor, extractor, from_cursor, …}`）。
  * @param {object|null} liveSession - 按 id 取到的 live 会话对象；取不到就是 `null`。
+ * @param {string} [defaultExtractor] - 缺 `extractor` 时用的兜底：插件自己的提取器版本号。
+ *   **由调用点传，不在本文件写死**——那个常量住在 `index.js`（`extract.js` 的 `EXTRACTOR_VERSION`），
+ *   而本函数只 import `node:http`、本来就不该知道它。早先这里写死空串，等于把「缺了就用本版提取器」
+ *   静默降级成「空版本」（2026-10-16 从 `index.js` 搬过来时丢的）。
  * @returns {object} 内部用的任务键。
  */
-export function claimKeyOf(claimedKey, liveSession) {
+export function claimKeyOf(claimedKey, liveSession, defaultExtractor) {
   const carried = claimedKey && typeof claimedKey === 'object' ? { ...claimedKey } : {};
   return {
     ...carried,
@@ -163,7 +167,7 @@ export function claimKeyOf(claimedKey, liveSession) {
     // 并静默退到 live 兜底。取不到就留 `null`——读取那一步会如实说「没有会话对象」。
     session: liveSession ?? null,
     cursor: Number(carried.cursor ?? 0),
-    extractor: String(carried.extractor ?? ''),
+    extractor: String(carried.extractor ?? defaultExtractor ?? ''),
   };
 }
 

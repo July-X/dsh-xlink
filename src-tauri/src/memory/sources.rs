@@ -42,7 +42,9 @@ pub(crate) const MAX_SOURCES: usize = 8;
 /// `[上一条证据, 上一游标]` **一般不相交**。
 ///
 /// **而当时那个 `from_cursor` 在真机上根本没到得了读取那一行**——插件重建任务键时手挑了
-/// `session / cursor / extractor` 三个字段（`host/bridge.js` 的 `claimKeyOf`，2026-10-16 修），
+/// `session / cursor / extractor` 三个字段（`host/index.js` 里那句旧写法
+/// `const key = { session: liveSession, cursor: endSeq, extractor }`；**缺陷在手挑这一步，
+/// 不在 `host/bridge.js` 的 `claimKeyOf`——它是 2026-10-16 的修法本身**），
 /// 于是 `from` 恒为 0，每次都读 `0..endSeq`。后果正是上面刚否掉的 (b)：**指纹覆盖整段会话，
 /// 会话一长就变，于是三条同时成立、每次都标**。
 ///

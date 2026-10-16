@@ -58,3 +58,17 @@
 0.4.3 的 macOS 窗口主题调用会设置整个应用的外观。打开强制深色的工作台或副窗后，管理面板的系统配色查询也会被覆盖，即使偏好仍是「跟随系统」，系统转为亮色时页面也可能保持深色。
 
 修复将原生外观设置限制在当前窗口，并取消 macOS 建窗时的应用级主题覆盖。管理面板、日志与用量窗口独立继承系统；工作台仍保留自己的深色外观。验收时，在跟随系统模式下保持工作台打开，分别切换系统浅色与深色，再验证已打开的壳副窗同步变化。
+
+## `test:ui` 要带 `--test-force-exit`，别把它当多余的参数删掉
+
+2026-10-16 实测：那些「慢文件」**不是导入慢，也不是测试慢**——断言本身 1 秒内跑完，剩下 7～10 秒是进程空转，在等 Element Plus 的 toast 定时器到期。`ElMessage` 内部那个 `setTimeout` 到测试结束也不会 clear（9000ms 来自 `ui/src/plugins/plugins.js` 的来源漂移告警，6000/3200 是 `shell/notify.js` 的两个默认值），事件循环就活到最长的那个到期。证据：`applyPluginChange` 最后一条用例 988ms 结束，进程 10006ms 才退出。
+
+`--test-force-exit` 让 node 跳过这段排空，**不改变任何结果**：
+
+```
+node --test --test-force-exit ui/test/*.test.js     # 19.2s → 8.3s，549 pass / 0 fail（数字一模一样）
+```
+
+取证手法：用内联 `--import` 探针改写 `globalThis.setTimeout` 记录调用栈，就能看到空转期间还挂着哪些定时器（`message.vue_vue_type_script_setup_true_lang.mjs` 那条栈）。
+
+两个不要：**不要加到 `test:plugin` / `test:scripts`**（那两个套件没有 EP 的 toast 定时器，加了没收益）；**不要动 `--test-concurrency`**（实测 4/8/12/16/19/24/32 都不比默认快，默认已饱和）。

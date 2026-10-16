@@ -277,6 +277,95 @@ test('正文按**字节**判，与后端同一个数（评审第 4 条）', asyn
   assert.match(template, /bodyBytes/, '要有按字节的计数器');
 });
 
+/**
+ * 「检索预览」的查询**不能挂在草稿上**（2026-10-16 评审第 1 条）。
+ *
+ * 两个事实合起来让挂在草稿上的查询恒为空：编辑器是 modal 弹窗（遮罩挡着面板上那枚
+ * 「试一次」），而弹窗一关 `closeMemoryEditor` 就把草稿清了。于是用户能点到它的时候，
+ * 查询必然是空串，而后端对空查询是「所有在范围内的条目 0 分」（`query.rs` 的 `score`
+ * 不返回 None）——预览会报出一批与用户输入毫无关系的命中，还长得很像真的。
+ */
+test('检索预览的查询存在 store 里：关掉编辑器之后仍然发得出上一次的标题与关键词', async () => {
+  const { memoryStore, editMemory, closeMemoryEditor, openMemoryEditor, previewContext } =
+    await import('../src/memory/memory.js');
+  const core = globalThis.window.__TAURI__.core;
+  const original = core.invoke;
+  try {
+    memoryStore.workspaces = [];
+    // 编辑一条既有记忆：查询跟着它走。
+    editMemory({
+      id: 'rec-1',
+      revision: 1,
+      scope: 'general',
+      title: '提交前先跑检查',
+      body: 'b',
+      keywords: ['npm run check'],
+      pinned: false,
+      verification: 'verified',
+    });
+    // **关掉编辑器**（这就是用户点「试一次」之前必然发生的那一步）：草稿被丢，但查询要留下。
+    closeMemoryEditor();
+    assert.equal(memoryStore.draft.title, '', '前提：关窗确实丢草稿');
+    assert.equal(memoryStore.previewQuery, '提交前先跑检查 npm run check', '查询不许跟着草稿一起没');
+
+    const calls = [];
+    core.invoke = (cmd, args) => {
+      calls.push([cmd, args]);
+      return Promise.resolve({ enabled: true, text: '', total_bytes: 0, hits: [] });
+    };
+    await previewContext().catch(() => undefined);
+    assert.equal(calls.length, 1, '要真的发一次预览请求');
+    assert.equal(calls[0][0], 'memory_preview_context');
+    assert.equal(calls[0][1].queryText, '提交前先跑检查 npm run check', '发出去的查询不能是空串');
+
+    // 新建：查询跟着清空，免得把上一条的标题当成新条目的查询。
+    openMemoryEditor();
+    assert.equal(memoryStore.previewQuery, '', '新建要先清掉上一条的查询');
+
+    // 面板那枚按钮在没有查询时是禁用的——点了等于没点。
+    const panel = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
+    assert.match(
+      panel,
+      /:disabled="globalBusy \|\| !memoryStore\.previewQuery"/,
+      '没有查询时「试一次」必须禁用（否则按钮点下去会报出一批与输入无关的命中）',
+    );
+    assert.match(panel, /先在编辑器里填标题或关键词/, '空查询那一路要给一句可执行的下一步');
+  } finally {
+    core.invoke = original;
+  }
+});
+
+/**
+ * 编辑器关窗前的闸门，以及保存期间那条闸门用哪个信号（2026-10-16 评审第 2、3 条）。
+ *
+ * 遮罩与 ESC 已经由 prop 拦住，剩下 ✕ 是**明确**的点击——但「明确」说的是意图，不是
+ * 「他愿意丢掉刚写的三段话」。另一条：`globalBusy` 只由 `withExclusive` 抬，而保存走的是
+ * `withLoading('memorySave')`，保存期间它恒为 false，拿它当闸门等于没闸门。
+ *
+ * 这两条都在 `<script setup>` 里，node 跑不到——所以照本仓的规矩判**接线形状**，
+ * 行为那半留在真机 e2e（`e2e/specs/memory.spec.mjs`）。
+ */
+test('编辑器关窗前先问一句；保存期间用真的保存信号当闸门', () => {
+  const editor = read(`${MEM_DIR}MemoryEditor.vue`);
+  assert.match(editor, /:before-close="beforeClose"/, '✕ 必须走 before-close 这道闸门');
+  assert.match(
+    editor,
+    /function beforeClose\(done\)[\s\S]*confirmDialog\('放弃这条记忆？'/,
+    '有内容就先确认再关（直接 done() 等于把刚写的正文拿走）',
+  );
+  assert.match(editor, /if \(ok\) done\(\)/, '确认框说「放弃」才真的关');
+  assert.match(editor, /还没有保存|还没保存/, '确认文案要说清关掉会丢什么');
+  assert.ok(!/@update:model-value="dismiss"/.test(editor), '别退回 update:model-value：EP 是先关再通知，拦不住');
+  assert.doesNotMatch(editor, /el-button :disabled="globalBusy"/, '关窗那两条不许再拿 globalBusy 当闸门（保存期间它是 false）');
+  assert.match(
+    editor,
+    /const saving = computed\(\(\) => isLoading\('memorySave'\)\)/,
+    '闸门信号要取自 memorySave 这个 loading key',
+  );
+  assert.match(editor, /:disabled="saving" @click="closeMemoryEditor"/, '保存进行中「取消」不可点');
+  assert.match(editor, /:show-close="!saving"/, '保存进行中不画 ✕');
+});
+
 test('导出、清空、空态都按**未筛选**的库判（评审第 2 条）', () => {
   const template = templateOf(read('../src/memory/MemoryPanel.vue'));
   // 三处动作/空态都不许读筛选后的 `list`——它会让「库里只有通用偏好 + 视图选本项目」

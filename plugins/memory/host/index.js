@@ -280,7 +280,9 @@ function apply(ctx) {
     // 是手挑 `session / cursor / extractor` 三个字段，`from_cursor` 落在外面，于是读取恒从 0
     // 开始——那条注释声称要避开的「每次重读整份日志」正是这么来的，而更糟的是 `content_hash`
     // 因此覆盖整段会话，H7 的指纹判据每次都成立。原因写在 `claimKeyOf` 的注释里。
-    const key = claimKeyOf(claimedKey, liveSession);
+    // 第三个参数是 `extractor` 的兜底：那个常量只有本文件有（`extract.js` 的 `EXTRACTOR_VERSION`，
+    // 与下面 `jobs/submit` 用的是同一个），`bridge.js` 是纯函数、不该知道它——早先搬过去时被写成空串。
+    const key = claimKeyOf(claimedKey, liveSession, EXTRACT_VERSION);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), EXTRACT_TIMEOUT_MS);
     // **续租**：不续的话，跑得久一点就会被别的会话接管，而这一轮的结果与失败原因都会作废
