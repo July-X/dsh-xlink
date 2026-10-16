@@ -130,6 +130,44 @@ function defaultTransport({ url, token, path, timeoutMs }) {
 }
 
 /**
+ * 把领回来的任务键翻译成插件内部用的那份：**补上 live 会话对象，其余字段原样带过去**。
+ *
+ * **为什么必须是「原样带过去」而不是手挑几个字段**：手挑必然漏，而漏掉的那一个
+ * **症状是静默的**。2026-10-16 真机上逮到过：`index.js` 那时写的是
+ * `const key = { session: liveSession, cursor: endSeq, extractor }`——壳那边明明把
+ * `from_cursor` 冻进任务键并落盘了（`memory/jobs.rs` 的 `enqueue`），领回来的响应里也有，
+ * 而这里只挑了三个字段，`from_cursor` 落在外面，于是读取那行
+ * `from: Number(key.from_cursor ?? 0)` **恒取 0**。
+ *
+ * 后果有两层，第二层比第一层严重：
+ *   ① 每次提取都从会话开头重读整份日志——正是那句注释声称要避开的成本，长会话下白读；
+ *   ② `content_hash` 是对**整段切片**算的，于是它覆盖 `0..endSeq`：会话只要长了指纹就变，
+ *      H7「同会话 + 区间重叠 + 指纹不同」于是**每次都成立**，退化成清单里被否掉的
+ *      (b) 口径（「几乎必然触发」）。① 只是慢，② 让一条拍板过的判据失去意义。
+ *
+ * **判据为什么以前没逮住**：`smoke.test.mjs` 里那条
+ * `assert.match(code, /from: Number\(key\.from_cursor \?\? 0\)/)` **绿着**——它判的是源码
+ * 字面，而字面是对的；值到不到它一点没查。**判据必须在两端之间对数据，不能只判代码长得
+ * 像不像**（本仓栽过好几次，见记忆里「判据骗过自己的四种方式」）。
+ *
+ * @param {object} claimedKey - 桥回来的 `key`（`{session, cursor, extractor, from_cursor, …}`）。
+ * @param {object|null} liveSession - 按 id 取到的 live 会话对象；取不到就是 `null`。
+ * @returns {object} 内部用的任务键。
+ */
+export function claimKeyOf(claimedKey, liveSession) {
+  const carried = claimedKey && typeof claimedKey === 'object' ? { ...claimedKey } : {};
+  return {
+    ...carried,
+    // **会话要换成 live 对象**：`SessionStore.flush` 按**对象身份**（WeakMap）取 entry，
+    // 自拼的 `{id}` 字面量永远不是它认识的那个，主路于是每次抛「not live in this store」
+    // 并静默退到 live 兜底。取不到就留 `null`——读取那一步会如实说「没有会话对象」。
+    session: liveSession ?? null,
+    cursor: Number(carried.cursor ?? 0),
+    extractor: String(carried.extractor ?? ''),
+  };
+}
+
+/**
  * 调一条记忆路由并把结果收敛成 `{ ok }`。
  *
  * 非 2xx 也走 `{ ok: false }`：401（令牌过期）、404（条目已删除）、400（正文

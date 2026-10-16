@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 
-import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, encodedPathBytes, readCredentials } from '../host/bridge.js';
+import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, claimKeyOf, encodedPathBytes, readCredentials } from '../host/bridge.js';
 import { AUTH_SCHEMES, SENSITIVE_KEY_NEEDLES, maskSecrets } from '../host/mask.js';
 import {
   EXTRACTION_SYSTEM_PROMPT,
@@ -166,6 +166,54 @@ test('连不上桥与超时都收敛成 ok:false', async () => {
   );
   assert.equal(timeout.ok, false);
   assert.match(timeout.reason, /1500ms/);
+});
+
+/**
+ * **领回来的任务键要原样带过去**——2026-10-16 真机上逮到的一条静默缺陷。
+ *
+ * `index.js` 那时写的是 `const key = { session: liveSession, cursor: endSeq, extractor }`：
+ * 壳那边**明明**把 `from_cursor` 冻进任务键并落盘了（`memory/jobs.rs` 的 `enqueue`），领回来的
+ * 响应里也有，而这里只挑了三个字段——`from_cursor` 落在外面，于是读取那行
+ * `from: Number(key.from_cursor ?? 0)` **恒取 0**。
+ *
+ * **为什么以前那条源码判据没逮住**（这才是这条要记的东西）：
+ * `assert.match(code, /from: Number\(key\.from_cursor \?\? 0\)/)` 一直**绿着**——它判的是
+ * 源码字面，而字面是对的；值从领取到读取之间那段路上有没有断，它一点没查。
+ * **判据必须在两端之间对数据，不能只判代码长得像不像。** 所以这条测的是函数本身。
+ */
+test('领取回来的任务键要原样带过去：from_cursor 丢了就是每次从 0 重读整份日志', () => {
+  const claimedKey = {
+    session: 's-1',
+    cursor: 84,
+    extractor: 'xlink-memory-extract/4',
+    // **这一条是重点**：壳那边算出来的「这段会话上次提取到哪儿」。
+    from_cursor: 41,
+  };
+  const liveSession = { id: 's-1' };
+  const key = claimKeyOf(claimedKey, liveSession);
+
+  // 换成 live 会话对象（自拼的 `{id}` 不是内核 WeakMap 认识的那个）。
+  assert.equal(key.session, liveSession, '会话要换成 live 对象');
+  // **其余字段一个都不能少**。这一条就是本测试存在的理由。
+  assert.equal(
+    key.from_cursor,
+    41,
+    '**from_cursor 必须原样带过来**——丢了它读取恒从 0 开始，每次重读整份日志，' +
+      '而 content_hash 因此覆盖整段会话，H7 的指纹判据每次都成立（退化成被否掉的 (b) 口径）'
+  );
+  assert.equal(key.cursor, 84);
+  assert.equal(key.extractor, 'xlink-memory-extract/4');
+
+  // **不能就地改坏调用方传进来的对象**：它后面还要被拿去读 `key.session`。
+  assert.equal(claimedKey.from_cursor, 41, '不许就地改调用方的对象');
+  assert.equal(claimedKey.session, 's-1', 'live 对象只进返回值，不许写回入参');
+
+  // **取不到 live 会话**时留 `null`——读取那一步要能如实说「没有会话对象」，
+  // 退化成 `undefined` 的话 `sessions?.get?.()` 那一路就静默变成别的形状。
+  assert.equal(claimKeyOf(claimedKey, null).session, null);
+  // 空 / 非对象也要收得住：领回来的东西形状不对时不该整条抛。
+  assert.equal(claimKeyOf(undefined, null).cursor, 0);
+  assert.equal(claimKeyOf('nope', null).session, null);
 });
 
 test('查询文本只认用户消息：别的注入消息不当查询', () => {
@@ -1554,8 +1602,18 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   // 来源引用要带上**那一条**（评审第 17 条）：写死 0 会让库里每条候选的范围都长成 0..cursor。
   // 读会话日志要**从上一游标开始**（评审第 7 条）：壳把「这段会话上次提取到哪儿」冻在任务键里，
   // 写死 0 就等于每次都重读整份日志。
+  //
+  // **这条源码判据只钉住「起点怎么取」，不钉住「值到不到」**——2026-10-16 那次漏掉
+  // `from_cursor` 时它照样绿着。值的那一半由 `claimKeyOf` 的行为判据管，两条一起才完整。
   assert.match(code, /from: Number\(key\.from_cursor \?\? 0\)/, '要从 from_cursor 开始读');
   assert.ok(!/from: 0,/.test(code), '不许再写死 from: 0');
+  // **装配层不许再手挑任务键的字段**：`from_cursor` 就是从「手挑三个」这一步漏掉的，
+  // 而手挑的那一步长得跟正常代码一模一样。这里钉住「重建交给 `claimKeyOf`」。
+  assert.match(code, /const key = claimKeyOf\(claimedKey, liveSession\)/, '任务键的重建要交给 claimKeyOf');
+  assert.ok(
+    !/const key = \{[^}]*cursor[^}]*\}/.test(code),
+    '不许再手挑字段拼任务键——from_cursor 就是这样丢的，而症状是静默的'
+  );
   assert.match(code, /start_seq: candidate\.evidence_seq/, 'start_seq 要给证据那一条，不能写死');
   assert.ok(!/start_seq: 0,/.test(code), '不许再把 start_seq 写死成 0');
   assert.match(code, /route: 'jobs\/renew'/, '跑得久要续租（评审第 9 条：租约长度 == 自己的时限）');
