@@ -210,7 +210,7 @@ function apply(ctx) {
    * · **`sessionId` 不传**：传了这次请求会被记进那个会话的日志；提取是插件自己的事，
    *   不该在用户的会话里留下一条谁也看不懂的记录。
    */
-  async function callExtractionModel({ llm, route, text, existing, signal }) {
+  async function callExtractionModel({ llm, route, text, existing, pending, signal }) {
     try {
       const call = await llm.prepareCall(
         { provider: route.provider, model: route.model, maxTokens: EXTRACT_MAX_TOKENS },
@@ -218,9 +218,10 @@ function apply(ctx) {
       );
       const messages = [
         createUserMessage({
-          // **切片与既有记忆在同一条消息里**（C5）：模型要判断的是「新提的这条与库里那条
-          // 是不是同一件事」，两者分开就变成两次独立输入，而 `conflicts_with` 会一直为空。
-          content: [{ type: 'text', text: extractionUserText(text, existing) }],
+          // **切片、既有记忆与待确认候选在同一条消息里**（C5/C6）：模型要判断的是「新提的
+          // 这条与库里那条是不是同一件事」「用户是不是在改先前那条」，三者分开就变成三次独立
+          // 输入，而 `conflicts_with` / `supersedes` 会一直为空。
+          content: [{ type: 'text', text: extractionUserText(text, existing, pending) }],
           source: { kind: 'xlink-memory-extract' },
         }),
       ];
@@ -317,11 +318,11 @@ function apply(ctx) {
               to,
             }),
           buildSlice,
-          retrieveExisting: ({ text }) =>
-            retrieveExisting({ creds, workspaceId, workspacePath: String(workspace ?? ''), text }),
-          callModel: ({ text, existing, signal }) =>
+          retrieveForExtract: ({ text }) =>
+            retrieveForExtract({ creds, workspaceId, workspacePath: String(workspace ?? ''), text }),
+          callModel: ({ text, existing, pending, signal }) =>
             selection
-              ? callExtractionModel({ llm: services.llm, route: selection, text, existing, signal })
+              ? callExtractionModel({ llm: services.llm, route: selection, text, existing, pending, signal })
               : { ok: false, reason: '拿不到当前模型路由（agentDefaultModel）' },
           parse: parseExtractionOutput,
           submit: async ({ candidates }) => {
@@ -348,9 +349,12 @@ function apply(ctx) {
                 body: candidate.body,
                 keywords: candidate.keywords.join(','),
                 // **冲突标记（C5）**：解析阶段已逐项校验过 id 确实来自这次给模型看的既有记忆，
-                // 壳这一侧再收一次形状与限额（`memory/conflicts.rs`）。走查询串是既有形状
+                // 壳这一侧再收一次形状与限额（`memory/marks.rs`）。走查询串是既有形状
                 // （正文那条 8 KiB 通道上限摆在那儿），而 id 是短串，几条也占不了多少。
                 conflicts: (candidate.conflicts_with ?? []).join(','),
+                // **取代标记（C6）**：同一种形状。壳**不会**据此拒收任何候选——它只存下这个
+                // 标记，让面板把两条摆给用户按一次（纪律见 `extract.js` 的规则 9）。
+                supersedes: (candidate.supersedes ?? []).join(','),
               };
               // **提交前按整条路径真算一次**（评审第 6 条）：正文的上限按原文定、通道的上限按编码后
               // 定，中文一乘就是 9 倍——逐项都合法的候选合起来能远超通道，而那种失败是**整批**
@@ -407,6 +411,7 @@ function apply(ctx) {
       ctx.logger?.info?.(
         `xlink-memory: 提取完成（落库 ${result.submitted} 条；解析阶段拒 ${result.rejected.length} 条；` +
           `提交阶段拒 ${result.refused ?? 0} 条；对照既有记忆 ${result.compared ?? 0} 条` +
+          `、待确认候选 ${result.againstPending ?? 0} 条` +
           `${result.refusedReason ? `：${result.refusedReason}` : ''}）`
       );
     } else {
@@ -422,7 +427,11 @@ function apply(ctx) {
   }
 
   /**
-   * 提取**前**的既有记忆检索（C5，设计 §7-2「提取前用候选关键词走现成的 /context 拿命中」）。
+   * 提取**前**的对照检索：既有记忆（C5）+ 待确认候选（C6）。
+   *
+   * 一次调用、两个集合，原因在 `?pending=1`：那条路本来就是按**同一个会话的工作区**检索的，
+   * 也就是模型平时会拿到的那批记忆；另开一条只会得到两个口径，而「冲突/取代」判在两套口径
+   * 之间只会更说不清。待确认候选**不进 `text`**，所以运行时上下文一个字都不变。
    *
    * **为什么不新加路由**：`/context` 本来就是这条路——它按**同一个会话的工作区**检索，
    * 也就是模型平时会拿到的那批记忆；另开一条只会得到两个口径，而「冲突」判在两套口径之间
@@ -434,21 +443,28 @@ function apply(ctx) {
    *
    * @returns {Promise<{ok: boolean, items: object[], reason?: string}>}
    */
-  async function retrieveExisting({ creds, workspaceId, workspacePath, text }) {
+  async function retrieveForExtract({ creds, workspaceId, workspacePath, text }) {
     const query = conflictQuery(text);
-    if (!query) return { ok: true, items: [] };
+    if (!query) return { ok: true, items: [], pending: [] };
     const answer = await callMemory({
       credentials: creds,
       route: 'context',
-      params: { q: query, workspace: workspacePath, workspace_id: workspaceId },
+      // **`pending=1` 只为这一次要**：壳把待确认候选一并带回来，模型才认得出「用户是不是
+      // 在改口」。运行时注入不带这个参数，所以那一次的响应一个字都没变——未确认的东西
+      // 不许影响模型平时看到什么。
+      params: { q: query, workspace: workspacePath, workspace_id: workspaceId, pending: '1' },
     });
-    if (!answer.ok) return { ok: false, items: [], reason: answer.reason ?? '检索既有记忆失败' };
-    const hits = Array.isArray(answer.value?.hits) ? answer.value.hits : [];
+    if (!answer.ok) {
+      return { ok: false, items: [], pending: [], reason: answer.reason ?? '检索既有记忆失败' };
+    }
+    const rows = (list) =>
+      (Array.isArray(list) ? list : [])
+        .filter((row) => row && typeof row.id === 'string' && row.id)
+        .map((row) => ({ id: row.id, title: row.title ?? '', body: row.body ?? '' }));
     return {
       ok: true,
-      items: hits
-        .filter((hit) => hit && typeof hit.id === 'string' && hit.id)
-        .map((hit) => ({ id: hit.id, title: hit.title ?? '', body: hit.body ?? '' })),
+      items: rows(answer.value?.hits),
+      pending: rows(answer.value?.pending),
     };
   }
 

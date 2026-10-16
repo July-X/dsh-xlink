@@ -8,6 +8,7 @@ import { computed, onMounted } from 'vue';
 import { Download, Refresh } from '@element-plus/icons-vue';
 import MemoryRow from './MemoryRow.vue';
 import MemoryConflict from './MemoryConflict.vue';
+import MemorySuperseded from './MemorySuperseded.vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { builtinById, loadBuiltinStatus, toggleBuiltin } from '../plugins/builtin.js';
 import {
@@ -242,6 +243,14 @@ onMounted(() => {
                   :busy="globalBusy"
                   @disable="(record) => setMemoryState(record, 'disabled')"
                   @remove="removeMemory"
+                />
+                <!-- C6：模型说这句推翻了先前提出的哪几条。**壳没有替用户丢弃任何一条**，
+                     那些候选还在下面那张待确认清单里，由用户自己按一次。 -->
+                <MemorySuperseded
+                  :supersedes="item.supersedes || []"
+                  :candidates="candidates"
+                  :busy="globalBusy"
+                  @discard="(candidate) => decideCandidate(candidate, false)"
                 />
               </div>
               <div class="memory-row__actions">

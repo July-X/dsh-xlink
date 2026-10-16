@@ -15,6 +15,13 @@
  *    界面上任何暗示都会变成「系统已经替我选好了，只是让我确认一下」。
  * 2. **引用的那条不在了就如实说**：它可能刚被删了，或不在当前筛选范围内。**不许静默隐藏**
  *    ——「模型说冲突、面板上什么都没有」看起来就像模型判断错了。
+ *
+ * ## 样式为什么不在这个文件里
+ *
+ * 这一族类名放在 `ui/src/memory/memory.css`：C6 的取代块（`MemorySuperseded.vue`）是同一件
+ * 事的另一个形状，两者共用一份样式——scoped 的样式组件之间互不共享，复制一份会被门禁的
+ * 重复区间扫描算成重复代码，而两种关系在界面上必须长得一样（长得不一样会暗示哪一种更
+ * 严重，而它们其实一样重：都要用户按一次）。
  */
 import { computed } from 'vue';
 
@@ -43,60 +50,19 @@ const rows = computed(() =>
 </script>
 
 <template>
-  <div v-if="rows.length" class="memory-conflict">
-    <p class="memory-conflict__lead">
+  <div v-if="rows.length" class="memory-flag">
+    <p class="memory-flag__lead">
       与既有 {{ rows.length }} 条记忆意义冲突：它们说的不是同一件事，或者说的相反。由你决定留哪一条。
     </p>
-    <div v-for="row in rows" :key="row.id" class="memory-conflict__pair">
-      <p class="memory-conflict__body">
+    <div v-for="row in rows" :key="row.id" class="memory-flag__pair">
+      <p class="memory-flag__body">
         {{ row.missing ? row.reason : row.record.title || '（无标题）' }}
       </p>
-      <p class="memory-conflict__meta">{{ row.missing ? row.id : row.reason }}</p>
-      <div v-if="!row.missing && !busy" class="memory-conflict__actions">
+      <p class="memory-flag__meta">{{ row.missing ? row.id : row.reason }}</p>
+      <div v-if="!row.missing && !busy" class="memory-flag__actions">
         <el-button size="small" text @click="emit('disable', row.record)">停用这条</el-button>
         <el-button size="small" text @click="emit('remove', row.record)">删除这条</el-button>
       </div>
     </div>
   </div>
 </template>
-
-<style scoped>
-.memory-conflict {
-  margin-top: 8px;
-  padding: 8px 10px;
-  /* **每个 `--el-*` 都要带回退**：Element Plus 的变量是运行时注入的，本仓样式表里没有
-     `:root` 定义，而 `var(--x)` 没有回退时整条声明会被浏览器丢弃并继承父级——
-     样式静默失效、没有任何报错（`check-invariants` 的 `css-var` 那条就是钉这个）。 */
-  border: 1px solid var(--el-color-warning-light-5, #fde2b8);
-  border-radius: 6px;
-  background: var(--el-color-warning-lighter, #fdf6ec);
-}
-
-.memory-conflict__lead {
-  margin: 0 0 6px;
-  font-size: 12px;
-  color: var(--el-text-color-regular, #606266);
-}
-
-.memory-conflict__pair {
-  border-top: 1px solid var(--el-border-color-lighter, #ebeef5);
-  padding-top: 6px;
-  margin-top: 6px;
-}
-
-.memory-conflict__body {
-  margin: 0;
-  font-size: 13px;
-}
-
-.memory-conflict__meta {
-  margin: 2px 0 0;
-  font-size: 11px;
-  color: var(--el-text-color-secondary, #909399);
-  overflow-wrap: anywhere;
-}
-
-.memory-conflict__actions {
-  margin-top: 4px;
-}
-</style>
