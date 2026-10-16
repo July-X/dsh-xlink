@@ -1236,12 +1236,17 @@ mod tests {
         .expect("写握手文件");
         println!("[probe] 桥已就绪：{url} → 握手文件 {handshake:?}；等 {stop:?} 出现");
 
-        // 最多等 10 分钟：手动夹具，宁可慢也不要假的「通过」。
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        // 最多等 25 分钟：手动夹具，宁可慢也不要假的「通过」。
+        //
+        // **为什么从 10 分钟放宽**：C6 的验收要在**同一个夹具进程里连跑两次驱动器**（先说
+        // 一句、再说一句改口），而实测一轮 ≈ 8 分钟（真模型回合 + 180 秒静默期 + 一次真模型
+        // 提取调用）——10 分钟会在第二次跑完之前就红，而那条红是「超时」不是「没跑通」，
+        // 看起来却和真缺陷一模一样（2026-10-16 真机上撞到过：494 秒，两轮都还没跑完）。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25 * 60);
         while !stop.exists() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "等了 10 分钟也没看到停止文件 {stop:?}——探针那一步没跑起来？"
+                "等了 25 分钟也没看到停止文件 {stop:?}——探针那一步没跑起来？"
             );
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
@@ -1322,12 +1327,26 @@ mod tests {
             "有任务带着非业务（或没有 stage）的错停着：{}",
             broken.join("；")
         );
+        // **两个标记都要打出来**（2026-10-16 补）：只打标题的话，「模型标了取代」与
+        // 「模型什么都没标」在这个夹具的输出里长得一模一样——而那正是 C6 要看的东西。
         for candidate in &memory.candidates {
             println!(
-                "[probe] 候选：{} ← {}",
-                candidate.title, candidate.source.session
+                "[probe] 候选：{} ← {}｜状态 {}｜标了冲突 {:?}｜取代 {:?}",
+                candidate.title,
+                candidate.source.session,
+                candidate.state,
+                candidate.conflicts_with,
+                candidate.supersedes
             );
         }
+        println!(
+            "[probe] 有取代标记的候选 {} 条（这一行只作观察，不作断言：同一个夹具也跑             「没有取代」的场景，那种时候它本来就该是 0）",
+            memory
+                .candidates
+                .iter()
+                .filter(|candidate| !candidate.supersedes.is_empty())
+                .count()
+        );
     }
 
     /// **手动夹具：真模型验「意义冲突只标记不裁决」（C5）**。
