@@ -1011,7 +1011,8 @@
 | `plugins/memory/host/bridge.js` | 桥客户端：凭据读取、路径拼装、超时与通道上限 | B28、E4 |
 | `plugins/memory/test/smoke.test.mjs` | 策略层与桥客户端用例（19 条，含 2 条接线判据） | 各条的判据 |
 | `ui/src/memory/memory.js` | 面板状态与动作（含 `injectionDisabled`、`injectionText`） | D1–D14、D6a、I7 |
-| `ui/src/memory/MemoryPanel.vue` | 面板视图（列表、候选、编辑器、最近注入、预览、导出） | D1–D14、D6a |
+| `ui/src/memory/MemoryPanel.vue` | 面板视图（列表、候选、最近注入、预览、导出；「新建记忆」按钮打开弹窗） | D1–D14、D6a |
+| `ui/src/memory/MemoryEditor.vue` | 新建 / 编辑**同一条记忆**的弹窗（字段、字节计数、保存/取消；可见性与草稿在 `memory.js`）。2026-10-16 由面板右栏的常驻卡改成点按钮弹出的对话框 | D1–D14、D6a |
 | `ui/src/memory/MemoryConflict.vue` | 一条候选的冲突并排展示（记录还在就给两个动作，不在就如实说） | C5 |
 | `ui/src/memory/MemorySuperseded.vue` | 一条候选的取代标记（列出被推翻的那几条 + 一个「丢弃这条」；**文案不许说「已经替你作废」**） | C6 |
 | `plugins/memory/test/probe/drive-real-model.mjs` | **真模型**验收驱动器（长驻内核 + 真模型 + 真桥）：备场、生成覆盖层、连跑多回合。凭据与端点全走环境变量 | C5、C6、P2 |

@@ -76,7 +76,9 @@ test('「最近注入」那行话把三种状态分开（开关关着 / 没命�
 
 test('「已过期」有入口：编辑器能改验证范围，且真的发给了后端', async () => {
   const { memoryStore, editMemory, resetDraft } = await import('../src/memory/memory.js');
-  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  // 表单自 2026-10-16 起在弹窗组件里（`MemoryEditor.vue`）——三档单选跟着它搬家，
+  // 再对着面板找就会红在一句「没有这个入口」上，而入口其实还在。
+  const tpl = templateOf(read(`${MEM_DIR}MemoryEditor.vue`));
   for (const label of ['已验证', '未验证', '已过期（事实可能过时）']) {
     assert.match(tpl, new RegExp(`<el-radio value="[a-z]+">${label}`), label);
   }
@@ -149,7 +151,7 @@ test('面板有范围筛选，行里显示来源与验证状态', () => {
   // **面板要真的挂上它、并把三个事件接住**：少接一个就是「按钮点了没反应」，而上面那些
   // 模板判据照样绿（本仓反复栽过的形状）。
   assert.match(tpl, /<MemoryRow/, '面板要真的用它');
-  for (const handler of ['@edit="editMemory"', '@toggle=', '@remove="removeMemory"']) {
+  for (const handler of ['@edit="openMemoryEditor"', '@toggle=', '@remove="removeMemory"']) {
     assert.ok(tpl.includes(handler), `面板没接住 ${handler}`);
   }
 });
@@ -269,7 +271,8 @@ test('正文按**字节**判，与后端同一个数（评审第 4 条）', asyn
   memoryStore.draft.body = '中'.repeat(2000); // 6000 字节，放行
   assert.equal(canSaveDraft(), true);
   // 模板里不该再有按字符数的 maxlength（它会骗人）。
-  const template = templateOf(read('../src/memory/MemoryPanel.vue'));
+  // 计数器自 2026-10-16 起跟着表单搬进弹窗组件，判据要跟着指过去。
+  const template = templateOf(read(`${MEM_DIR}MemoryEditor.vue`));
   assert.ok(!/maxlength="4000"/.test(template), '正文那栏不许再按字符数限长');
   assert.match(template, /bodyBytes/, '要有按字节的计数器');
 });
@@ -524,6 +527,110 @@ test('清单筛选自成一行，不再挤在卡头那一排里', () => {
   assert.match(card, /<div v-else class="page-list">/, '空态与列表的分支没了');
 });
 
+/**
+ * 新建与编辑**共用同一个弹窗**（用户 2026-10-16 要求：表单不再常驻右栏）。
+ *
+ * 三件各自会静默的事：① 表单留在面板里（改回常驻卡，用户看到的就是没改）；
+ * ② 触发按钮的括号漏了——`@click` 直接写方法名会把 MouseEvent 当成 record 传进
+ * `openMemoryEditor(record = null)`，于是「新建」打开的是一个事件对象；
+ * ③ 行内「编辑」另走一条路（两个入口两套行为，迟早一边改了另一边没改）。
+ */
+test('新建与编辑共用一个弹窗：按钮与行内「编辑」都走 openMemoryEditor', () => {
+  const panel = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
+  const editor = read(`${MEM_DIR}MemoryEditor.vue`);
+
+  // ① 表单字段只在编辑器组件里。
+  for (const cls of ['memory-form', 'memory-body']) {
+    assert.ok(!panel.includes(cls), `.${cls} 又回到面板里了——它该在弹窗组件里`);
+    assert.ok(editor.includes(cls), `编辑器里没有 .${cls}`);
+  }
+  assert.match(panel, /<MemoryEditor\s*\/>/, '编辑器组件要真的挂上（建了不挂是本仓反复栽的形状）');
+
+  // ② 触发按钮：primary，且**显式空参调用**。
+  assert.match(
+    panel,
+    /<el-button type="primary" :icon="Plus"[^>]*@click="openMemoryEditor\(\)"/,
+    '「新建记忆」要接在 openMemoryEditor() 上（少一对括号就会把 MouseEvent 当 record）',
+  );
+  assert.match(panel, /@edit="openMemoryEditor"/, '行内「编辑」要走同一个入口');
+
+  // ③ 它必须在 `.memory-head__actions` **外面**：那一排的三枚文字按钮已约 287px，
+  //    而卡内可用宽只有 348px；四枚并排约 390px，那一排自己不换行 → 最右一枚被裁。
+  const head = elementBlock(panel, 'div', 'card-head');
+  const actions = elementBlock(head, 'div', 'memory-head__actions');
+  assert.ok(!actions.includes('新建记忆'), '「新建记忆」塞进动作排了：那一排放不下第四枚（348px）');
+  assert.match(head, /新建记忆/, '「新建记忆」要在卡头里');
+
+  // ④ 编辑器是**弹窗**，不是普通块；宽度显式给（EP 默认 50% = 520px）。
+  assert.match(editor, /<el-dialog\b/, '编辑器必须真的用 el-dialog');
+  assert.match(editor, /:model-value="memoryStore\.editorVisible"/, '可见性读 store，不在组件里另立一份');
+  assert.match(editor, /width="min\(560px, 92vw\)"/, '宽度必须显式给，且与其余弹窗一样夹 vw');
+  assert.match(editor, /append-to-body/, '与其余五个弹窗一致（面板祖先带 overflow）');
+  assert.match(editor, /:close-on-click-modal="false"/, '点遮罩不该丢草稿');
+  assert.match(editor, /:close-on-press-escape="false"/, 'ESC 与遮罩是同一条理由：都是手滑的路径');
+});
+
+/**
+ * 弹窗开关与草稿（store 那半）：新建清空、编辑带出、关掉丢弃、**保存成功才关**。
+ *
+ * 「保存失败不许关」不是洁癖：关掉一个装着用户刚写完正文的弹窗，等于把那段文字从他
+ * 手里拿走，而且没有第二次机会。`toast` 要真实 DOM，node 里会抛，所以两条路都把那个
+ * 异常吞掉——状态改动都在它之前，判据量的正是那些状态。
+ */
+test('弹窗开关与草稿：新建清空、编辑带出、关闭丢弃、保存成功才关', async () => {
+  const { memoryStore, openMemoryEditor, closeMemoryEditor, saveMemory } = await import(
+    '../src/memory/memory.js'
+  );
+  const core = globalThis.window.__TAURI__.core;
+  const original = core.invoke;
+  const swallow = (p) => p.catch(() => undefined);
+  try {
+    // 新建：先把草稿弄脏再打开——半截正文不许跟进来（检索预览正是拿草稿当查询的）。
+    memoryStore.draft = { ...memoryStore.draft, title: '上一次没写完的' };
+    openMemoryEditor();
+    assert.equal(memoryStore.editorVisible, true, '新建要打开弹窗');
+    assert.equal(memoryStore.draft.title, '', '新建要先清草稿');
+
+    // 编辑：带出那条记录的字段与 revision（少了 revision，后端会把编辑当成新条目）。
+    openMemoryEditor({
+      id: 'rec-1',
+      revision: 7,
+      scope: 'general',
+      title: 'T',
+      body: 'B',
+      keywords: ['k'],
+      pinned: true,
+      verification: 'stale',
+    });
+    assert.equal(memoryStore.editorVisible, true);
+    assert.equal(memoryStore.draft.id, 'rec-1');
+    assert.equal(memoryStore.draft.expectedRevision, 7);
+    assert.equal(memoryStore.draft.verification, 'stale', '编辑要带出它当前的验证范围');
+
+    // 关掉（✕ / ESC / 取消 都走这一个动作）：草稿丢弃。
+    closeMemoryEditor();
+    assert.equal(memoryStore.editorVisible, false);
+    assert.equal(memoryStore.draft.id, '');
+    assert.equal(memoryStore.draft.title, '');
+
+    // 保存失败：弹窗必须还开着、草稿一个字不动。
+    openMemoryEditor();
+    memoryStore.draft = { ...memoryStore.draft, scope: 'general', title: 't1', body: 'b1' };
+    core.invoke = (cmd) => (cmd === 'memory_save' ? Promise.reject(new Error('boom')) : Promise.resolve([]));
+    await swallow(saveMemory());
+    assert.equal(memoryStore.editorVisible, true, '保存失败还关弹窗 = 把用户刚写的正文拿走');
+    assert.equal(memoryStore.draft.title, 't1', '失败时草稿不许动');
+
+    // 保存成功：关弹窗 + 清草稿。
+    core.invoke = (cmd) => (cmd === 'memory_save' ? Promise.resolve({ id: 'new-1', scope: 'general' }) : Promise.resolve([]));
+    await swallow(saveMemory());
+    assert.equal(memoryStore.editorVisible, false, '保存成功后弹窗要关');
+    assert.equal(memoryStore.draft.title, '', '保存成功后草稿要清');
+  } finally {
+    core.invoke = original;
+  }
+});
+
 test('正文超限的提示读 --danger-strong，且模板仍绑着这个条件类', () => {
   // 12px 的 `--danger` 在白卡上只有 3.68:1（正文门槛 4.5:1），`--danger-strong`
   // 是 5.14:1——写 token 而不是写死色值，暗色那档才跟着一起对。
@@ -537,8 +644,10 @@ test('正文超限的提示读 --danger-strong，且模板仍绑着这个条件�
   );
 
   // 样式看得见、绑定看不见：`classesOf` / `subjectTokens` 只认字面量 `class="…"`，
-  // Vue 的 `:class` 一个都读不到，所以这里读原文并数次数。
-  const tpl = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
+  // Vue 的 `:class` 一个都读不到，所以这里读原文并数次数。表单（连同这个计数器）
+  // 2026-10-16 搬进 `MemoryEditor.vue`，模板锚点跟着搬；样式那半仍走全局扫描
+  // （`.memory-note` 已按跨组件共用的约定落进 `memory.css`）。
+  const tpl = templateOf(read(`${MEM_DIR}MemoryEditor.vue`));
   const counter = elementBlock(elementBlock(tpl, 'div', 'memory-body'), 'p', 'memory-note');
   assert.match(
     counter,

@@ -5,16 +5,16 @@
 // 数据与动作全在 `memory.js` 里；这里只管画。字段名用后端下发的 snake_case
 // （见该文件顶部的说明）。
 import { computed, onMounted } from 'vue';
-import { Download, Refresh } from '@element-plus/icons-vue';
+import { Download, Plus, Refresh } from '@element-plus/icons-vue';
 import MemoryRow from './MemoryRow.vue';
 import MemoryConflict from './MemoryConflict.vue';
 import MemorySuperseded from './MemorySuperseded.vue';
+import MemoryEditor from './MemoryEditor.vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { builtinById, loadBuiltinStatus, toggleBuiltin } from '../plugins/builtin.js';
 import {
   memoryStore,
   refreshMemory,
-  saveMemory,
   removeMemory,
   setMemoryState,
   setMemoryEnabled,
@@ -23,10 +23,7 @@ import {
   previewContext,
   exportMemory,
   openExports,
-  editMemory,
-  resetDraft,
-  rememberProjectPath,
-  canSaveDraft,
+  openMemoryEditor,
   injectionDisabled,
   injectionText,
   visibleMemories,
@@ -38,8 +35,6 @@ import {
   jobsSummaryText,
   jobLine,
   switchEffectText,
-  byteLength,
-  MAX_BODY_BYTES,
 } from './memory.js';
 
 const list = computed(() => visibleMemories(memoryStore.view, memoryStore.listScope));
@@ -52,12 +47,8 @@ const status = computed(() => memoryStore.status);
 const recentInjections = computed(() => memoryStore.recentInjections || []);
 /// 提取任务卡片：摘要那句 + 最近几条（后端已经截到 5 条，前端不再截）。
 const jobsText = computed(() => jobsSummaryText(memoryStore.jobs));
-/// 正文字节数：与后端 `MAX_BODY_BYTES` 同一个数，**按字节**算（中文一个字 3 字节）。
-const bodyBytes = computed(() => byteLength(draft.value.body));
 const recentJobs = computed(() => (memoryStore.jobs && memoryStore.jobs.jobs) || []);
 const enabled = computed(() => !!(status.value && status.value.use_approved));
-const draft = computed(() => memoryStore.draft);
-const savable = computed(() => canSaveDraft());
 
 /// 注入链路的内置插件（`xlink-memory`）。**按 id 取，不取第一项**：
 /// 取第一项会在登记表里多一个插件时静默指向别人。
@@ -143,6 +134,21 @@ onMounted(() => {
         <div class="card">
           <div class="card-head">
             <h2>记忆（{{ list.length }}）</h2>
+            <!--
+              「新建记忆」是这一屏的主操作，所以它是卡头里唯一带底色的那一枚。
+              **它必须是 `.card-head` 的直接子级、不能塞进 `.memory-head__actions`**：
+              那一排已有三枚文字按钮（导出 / 清空 / 刷新，合计约 287px），而卡内可用宽
+              只有 348px——四枚一起约 390px，`.memory-head__actions` 自己不换行、EP 的
+              按钮又是 `white-space: nowrap`，多出来的 50px 会被 `main` 的
+              `overflow-x: hidden` 裁掉，最右的「刷新」直接看不见（2026-10-16 审计量过）。
+              单独占卡头的一个子级（排在标题后面），靠 `.card-head` 自己的 wrap 与标题同行、贴右缘。
+              **括号不能省**：直接写方法名会把 MouseEvent 当成 record 传进去
+              （`openMemoryEditor(record = null)` 的第一个形参），「新建」就成了
+              「编辑一个事件对象」。
+            -->
+            <el-button type="primary" :icon="Plus" :disabled="globalBusy" @click="openMemoryEditor()">
+              新建记忆
+            </el-button>
             <div class="memory-head__actions">
               <el-button
                 text
@@ -197,7 +203,7 @@ onMounted(() => {
             <el-button text type="primary" @click="openExports">打开导出目录</el-button>
           </p>
           <p v-if="!allMemories.length" class="memory-hint">
-            还没有记忆。在右边写一条，或者在工作台里让模型提出候选，再到「待确认」里点保存。
+            还没有记忆。点上面的「新建记忆」写一条，或者在工作台里让模型提出候选，再到「待确认」里点保存。
           </p>
           <!-- 库里有、只是当前筛选没有——这是**两回事**（记忆内核那次评审第 2 条）：
                说成「还没有记忆」是假话，而右栏状态行还写着 accepted: N。 -->
@@ -209,7 +215,7 @@ onMounted(() => {
               v-for="row in list"
               :key="row.id"
               :row="row"
-              @edit="editMemory"
+              @edit="openMemoryEditor"
               @toggle="(state) => setMemoryState(row, state)"
               @remove="removeMemory"
             />
@@ -305,78 +311,6 @@ onMounted(() => {
       <div class="page-layout__col">
         <div class="card">
           <div class="card-head">
-            <h2>{{ draft.id ? '编辑记忆' : '新建记忆' }}</h2>
-          </div>
-          <div class="memory-form">
-            <el-radio-group v-model="draft.scope" :disabled="globalBusy">
-              <el-radio value="project">本项目</el-radio>
-              <el-radio value="general">通用偏好</el-radio>
-            </el-radio-group>
-            <el-select
-              v-if="draft.scope === 'project'"
-              :model-value="memoryStore.projectPath"
-              class="memory-project"
-              filterable
-              allow-create
-              default-first-option
-              placeholder="选一个工作台里用过的项目，或直接输入目录"
-              @update:model-value="rememberProjectPath"
-            >
-              <el-option
-                v-for="item in memoryStore.workspaces"
-                :key="item.id"
-                :label="`${item.title} · ${item.path}`"
-                :value="item.path"
-              >
-                <span class="memory-project__title">{{ item.title }}</span>
-                <span class="memory-project__path">{{ item.path }}</span>
-              </el-option>
-            </el-select>
-            <el-input v-model="draft.title" maxlength="80" placeholder="一句话标题，例如「提交前先跑 npm run check」" />
-            <!--
-              正文**不设 maxlength**：它数的是 UTF-16 码元，而后端闸的是 8192 **字节**——
-              中文 4000 字约 12000 字节，用户按面板允许的长度写完会拿到「超过单条上限」，
-              而面板一句提示都没有（记忆内核那次评审第 4 条）。改成按字节算的计数器 + 保存时拦住。
-            -->
-            <div class="memory-body">
-              <el-input
-                v-model="draft.body"
-                type="textarea"
-                :rows="6"
-                placeholder="写清约定本身与适用条件；可能过期的事实请标出来"
-              />
-              <p class="memory-note" :class="{ 'memory-over-limit': bodyBytes > MAX_BODY_BYTES }">
-                正文 {{ bodyBytes }} / {{ MAX_BODY_BYTES }} 字节（中文一个字 3 字节；超了就保存不了）
-              </p>
-            </div>
-            <el-input v-model="draft.keywordsText" placeholder="关键词，用逗号分隔（用于命中检索）" />
-            <el-checkbox v-model="draft.pinned" :disabled="globalBusy">固定项（每次都带上）</el-checkbox>
-            <!--
-              验证范围**不是**置信分数（§6.1）：只三档。给「已过期」一个入口，是因为
-              一条过时的技术事实既不该继续当权威，也不该被悄悄删掉——标出来，让它排在
-              检索结果的后面，用户自己决定什么时候重验或删掉。
-            -->
-            <el-radio-group v-model="draft.verification" :disabled="globalBusy">
-              <el-radio value="verified">已验证</el-radio>
-              <el-radio value="unverified">未验证</el-radio>
-              <el-radio value="stale">已过期（事实可能过时）</el-radio>
-            </el-radio-group>
-            <div class="memory-form__actions">
-              <el-button
-                type="primary"
-                :loading="isLoading('memorySave')"
-                :disabled="!savable || globalBusy"
-                @click="saveMemory"
-              >
-                保存
-              </el-button>
-              <el-button v-if="draft.id" :disabled="globalBusy" @click="resetDraft">取消编辑</el-button>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
             <h2>最近注入</h2>
           </div>
           <p class="memory-hint">
@@ -431,7 +365,7 @@ onMounted(() => {
             </el-button>
           </div>
           <p class="memory-hint">
-            用编辑器里的标题与关键词当作查询，看这次会注入哪几条。
+            用编辑器里的标题与关键词当作查询（编辑器关着时查询是空的），看这次会注入哪几条。
             {{ memoryStore.preview ? `命中 ${memoryStore.preview.hits.length} 条，共 ${memoryStore.preview.total_bytes} 字节。` : '' }}
           </p>
           <pre v-if="memoryStore.preview && memoryStore.preview.text" class="memory-preview">{{ memoryStore.preview.text }}</pre>
@@ -446,6 +380,14 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!--
+      编辑器在弹窗里（`MemoryEditor.vue`）：新建与编辑共用同一个，开关与草稿都在
+      `memory.js`（`editorVisible` / `openMemoryEditor` / `closeMemoryEditor`）。
+      挂在这里而不是挂在某个按钮上：`el-dialog` 是 `append-to-body` 的，
+      位置只影响它读 store 的时机，不影响渲染到哪里。
+    -->
+    <MemoryEditor />
   </section>
 </template>
 
@@ -471,47 +413,12 @@ onMounted(() => {
   min-width: 0;
 }
 
-.memory-form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-/* 正文输入框与它的字节计数器是一件事：计数器贴着输入框（4px），与下一个字段之间走
-   表单的 10px。不留这一层时两条缝都是 10 + 4 = 14px，计数器读起来像「关键词」那一栏
-   的前置说明。 */
-.memory-body {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.memory-form__actions {
-  display: flex;
-  gap: 8px;
-}
-
-/* 项目下拉与表单里其它输入同宽；选项里标题与路径各占一行（路径可能很长，
-   挤在一行会把标题挤没）。 */
-.memory-project {
-  width: 100%;
-}
-
 /* 卡头放不下时标题与按钮折成两行，折下去的那一行靠右——`space-between` 只管同一行内
    的两端，单独落一行时它会默认贴左。 */
 .memory-head__actions {
   display: flex;
   gap: 4px;
   margin-left: auto;
-}
-
-.memory-project__title {
-  margin-right: 8px;
-}
-
-.memory-project__path {
-  color: var(--text-muted);
-  font-size: 12px;
 }
 
 /* 说明文字与卡里其它灰字同档；块之间的缝由 `.card` 的 gap 给，这里不再自带外边距。 */
@@ -522,23 +429,9 @@ onMounted(() => {
   overflow-wrap: anywhere;
 }
 
-/* 卡内一整段灰字（字节计数器、最近注入、提取任务、记录文件）。此前这几处借的是
-   `memory-row__meta`——那是**行内次行**，自带 4px 上外边距，在 `.card` 的 10px gap
-   之上又叠一层，同一列里于是出现 10px 与 14px 两种缝。 */
-.memory-note {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-}
-
-/* 正文超过字节上限时给一个字色信号：此时保存按钮已经禁用（`memory.js::canSaveDraft`），
-   而计数器原先只是一段 12px 的灰色小字，读起来像「一切正常」。选 `--danger-strong`
-   而不是 `--danger`：12px 正文的对比度门槛是 4.5:1，浅色下 `--danger` 压在白卡上只有
-   3.68:1，`--danger-strong` 是 5.14:1（暗色那两档是 5.53 与 7 上下）。 */
-.memory-note.memory-over-limit {
-  color: var(--danger-strong);
-}
+/* `.memory-note` / `.memory-over-limit` 已搬进 `memory.css`（2026-10-16）：编辑器
+   独立成组件之后这两个类名被面板与 `MemoryEditor.vue` 同时使用，而 scoped 样式跨不过
+   组件——正是那个文件顶部写着的落点规则。 */
 
 .memory-preview {
   margin: 0;

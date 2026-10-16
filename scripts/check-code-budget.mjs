@@ -988,6 +988,15 @@ const FILE_BUDGETS = {
   // 的记忆，这边指向还没生效的候选，而候选不在面板的记忆列表里）——合成一个组件就要它接
   // 两份 prop 并在每处判断「这份 id 来自哪里」，那种组件比两个各管一件事的更难验。
   'ui/src/memory/MemorySuperseded.vue': 45,
+  // 新文件（2026-10-16）：`MemoryEditor.vue` 128 行——新建 / 编辑**同一条记忆**的那个弹窗
+  // （字段、项目下拉、字节计数、保存/取消）。**为什么该独立**：① 用户 2026-10-16 指着截图
+  // 要求「新建记忆改成点按钮弹窗」，仓库里五个弹窗（PrecheckDialog / SnapshotRestoreDialog /
+  // IncidentModal / LogModal / MigrationPrompt）本来就都是独立组件；② 编辑器是**写**路径
+  // （弹窗开关、关闭丢草稿），面板是**读**路径，生命周期不同；③ `MemoryPanel.vue` 的预算
+  // 只剩 2 行（495/493），表单连着它的 scoped 样式一起搬出去之后面板**净减 95 行**，
+  // 触发按钮与空态文案才有位置；④ 字段与动作的判据可以对着这一个文件写，不必再从面板
+  // 模板里切区间。上限 140：128 行实测 + 一点余量，128 < RATCHET_THRESHOLD（600）。
+  'ui/src/memory/MemoryEditor.vue': 140,
   // 290 → 310（同日深夜）：`shortTime` / `scopeText` 两个纯格式化函数从面板搬进来
   // ——它们要能被单测直接跑，而面板里的 `<script setup>` 函数只能靠读源码文本断言。
   // 310 → 340（2026-10-15）：**提取任务卡片**（独立评审第 12 条的 UI 那半）——状态、纯函数
@@ -995,8 +1004,13 @@ const FILE_BUDGETS = {
   // 340 → 345（2026-10-15，schema 窗口的 C4）：`sourcesText`——一条记录可以带**好几个**来源
   // （面板手动 + 会话里提出 + 自动提取），行里要全列。它同时认旧的单对象 `source` 与新的数组
   // `sources`，因为面板不该因为后端形状没换过来就显示「未知来源」。
+  // 345 → 352（2026-10-16）：`editorVisible` + `openMemoryEditor` / `closeMemoryEditor`
+  // ——「新建/编辑记忆」改成点按钮弹出的对话框，弹窗可见性放 store（与 `precheck.js` 的
+  // `precheckVisible`、`diagnostics` 的 `restoreVisible` 同一个约定），面板只画那枚按钮。
+  // `saveMemory` 的成功路径顺手关弹窗并清草稿：**失败那条路一个字都不动**，不然用户刚写的
+  // 正文会跟着弹窗一起消失。
   // 340 < RATCHET_THRESHOLD（600），允许上调。
-  'ui/src/memory/memory.js': 345,
+  'ui/src/memory/memory.js': 352,
   // 新文件（2026-10-14 深夜）：`MemoryRow.vue` 90 行——一条记忆的渲染与它的三个动作。
   // **为什么该独立**：面板（列表 + 候选 + 编辑器 + 最近注入 + 预览 + 导出）已经 448 行，
   // 而「一行记录长什么样」与「列表怎么组织」是两件事；拆完面板回到 400 上下，行自己的
@@ -3194,7 +3208,21 @@ const FILE_BUDGETS = {
 //   · 其余是两侧接线与判据注释；`SCHEMA_VERSION` 4 → 5 没有花行数（改的是一个常量）。
 // 判据 11 条（Rust 5 + 插件 2 + UI 2 ——插件那两条是 C6 那批里随 `contentFingerprint`
 // 一起加的），四组反向验。
-const TOTAL_BUDGET = 53630;
+const TOTAL_BUDGET = 53680;
+// 53630 → 53680（2026-10-16，用户在记忆面板截图上提的「新建记忆UI，调整为点击按钮后弹窗编辑」）：
+// 净增 50 行，全部有账：
+//   · **新文件** `ui/src/memory/MemoryEditor.vue` 128 行（已登记）：弹窗 + 表单 + 它自己的
+//     scoped 样式。搬出去的两个直接理由写在那个 `FILE_BUDGETS` 条目里（五个弹窗都是独立
+//     组件；面板预算只剩 2 行）。
+//   · `ui/src/memory/memory.js` 345 → 352：`editorVisible` 与 `openMemoryEditor` /
+//     `closeMemoryEditor` 三个状态/动作，外加「保存成功才关弹窗」那一处。
+//   · `ui/src/memory/memory.css` 13 → 15：`.memory-note` 一族搬进来——面板与编辑器**两个
+//     组件**都在用，而 scoped 样式跨不过组件（那个文件顶部写着的落点规则）。
+//   · `ui/src/memory/MemoryPanel.vue` **净减 95**（493 → 398）：常驻表单卡、随之失效的
+//     import / computed / scoped 样式一起走。**这一减不是省出来的**：它把位置让给了卡头那枚
+//     「新建记忆」与空态文案的改写。
+// 抬的是**软上限**（AGENTS.md 明说刻意不做只许下调）。反棘轮那几行一个字没动：
+// `theme.css` 2667/3001、`plugins.rs` / `commands.rs` 各自在预算内。
 // 53050 → 53250（2026-10-15，schema 变更窗口的第一批：C4 来源由单对象改成列表）。
 // 净增 +53 行，落在记忆这一族里，全部有账：
 //   · **新文件** `memory/sources.rs` 46 行（已登记）：旧 `source` 与新 `sources` 在**读侧**

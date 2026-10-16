@@ -40,3 +40,17 @@
 .memory-flag__body { margin: 0; font-size: 13px; }
 .memory-flag__meta { margin: 2px 0 0; font-size: 11px; color: var(--el-text-color-secondary, #909399); overflow-wrap: anywhere; }
 .memory-flag__actions { margin-top: 4px; }
+
+/* 卡内一整段灰字（面板的最近注入 / 提取任务 / 记录文件，编辑器的字节计数器）。
+ * **面板与编辑器两个组件都在用**——编辑器自 2026-10-16 起是独立组件（弹窗），
+ * scoped 样式的选择器带 `data-v-*`，跨不过去；复制一份又迟早一边改了另一边没改。
+ * 落点与本文件顶部那条约定一致：跨组件共用的类名放这里。此前它写在面板的 scoped 块里，
+ * 是从 `memory-row__meta`（行内次行，自带 4px 上外边距）借来的形状，`.card` 的 10px gap
+ * 之上再叠 4px，同一列出现两种缝。 */
+.memory-note { margin: 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+
+/* 正文超过字节上限时给一个字色信号：此时保存按钮已经禁用（`memory.js::canSaveDraft`），
+ * 而计数器原先只是一段 12px 的灰色小字，读起来像「一切正常」。选 `--danger-strong`
+ * 而不是 `--danger`：12px 正文的对比度门槛是 4.5:1，浅色下 `--danger` 压在白卡上只有
+ * 3.68:1，`--danger-strong` 是 5.14:1（暗色那两档是 5.53 与 7 上下）。 */
+.memory-note.memory-over-limit { color: var(--danger-strong); }

@@ -59,6 +59,10 @@ export const memoryStore = reactive({
   /// 最近几次「模型实际看到了哪些记忆」（`memory_recent_injections`，新的在前）。
   /// 与 `preview` 的区别：那是**模拟**（拿你填的查询算一遍），这是**实况**。
   recentInjections: [],
+  /// 编辑器弹窗开着没有。**弹窗可见性放 store，不放组件里的 `ref`**——与
+  /// `plugins/precheck.js` 的 `precheckVisible`、`diagnostics` 的 `restoreVisible`
+  /// 同一个约定：面板只画那枚触发按钮，动作与状态都在这里，判据不必挂载 Vue。
+  editorVisible: false,
 });
 
 /** 某个路径对应的内核工作区 id；不是已知工作区就回空串（后端按路径兜底）。 */
@@ -295,6 +299,25 @@ export function resetDraft() {
   memoryStore.draft = emptyDraft();
 }
 
+/**
+ * 打开记忆编辑器：给一条记录就是**编辑**它，不给就是**新建**一条。
+ *
+ * 两种模式共用同一个弹窗（同一份字段与校验）——分成两个界面迟早一边少字段、
+ * 一边少校验。新建时先清草稿：上一次取消留下的半截正文会跟着进来，而
+ * 「检索预览」正是拿草稿当查询的。
+ */
+export function openMemoryEditor(record = null) {
+  if (record) editMemory(record);
+  else resetDraft();
+  memoryStore.editorVisible = true;
+}
+
+/// 关掉编辑器并**丢弃草稿**（取消的语义）。三条关法（✕ / ESC / 取消）都走这里。
+export function closeMemoryEditor() {
+  memoryStore.editorVisible = false;
+  resetDraft();
+}
+
 /// 正文字节上限。**与后端的 `store::MAX_BODY_BYTES` 逐字对齐**——改一边要两边一起改。
 ///
 /// 面板原先写 `maxlength="4000"`，那数的是 UTF-16 码元，而后端闸的是字节：中文 4000 字
@@ -354,8 +377,12 @@ export function saveMemory() {
         if (record && record.scope === 'project' && record.workspace_path) {
           rememberProjectPath(record.workspace_path);
         }
-        toast(editing ? '记忆已更新' : '记忆已保存', 3000, 'success');
+        // **只有成功了才关弹窗，而且要在报喜之前收摊**。失败那条路（下面的 catch）
+        // 一个字都不动：关掉一个装着用户刚写完正文的弹窗，等于把那段文字从他手里拿走。
+        // 顺序也有讲究——`toast` 万一抛（或哪天通知换实现），关窗与清草稿不该跟着一起丢。
+        memoryStore.editorVisible = false;
         resetDraft();
+        toast(editing ? '记忆已更新' : '记忆已保存', 3000, 'success');
         return refreshMemory({ silent: true });
       })
       .catch((error) => {

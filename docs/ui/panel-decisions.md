@@ -472,3 +472,27 @@ macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用�
 - **同形扫描**（审计）：全 `ui/src` 只有这一处「basis 100% + nowrap 父」；另有 19 处
   `space-between` 且无 wrap 的容器今天都不坏（有 ellipsis 兜底，或没有不可压缩的兄弟），
   只登记、不改。
+## 记忆编辑器：常驻表单改成点按钮弹出的对话框（2026-10-16）
+
+- **用户在截图上指着右栏那张「新建记忆」卡提要求**：「新建记忆UI，调整为点击按钮后弹窗编辑」。
+  落地：新组件 `ui/src/memory/MemoryEditor.vue`（弹窗 + 表单），`MemoryPanel.vue` 只留一枚
+  primary「新建记忆」触发按钮；行内「编辑」走同一个弹窗（`openMemoryEditor(record)`）。
+- **可见性放 store**（`memoryStore.editorVisible` + `openMemoryEditor` / `closeMemoryEditor`），
+  与 `PrecheckDialog` 的 `precheckVisible`、`SnapshotRestoreDialog` 的 `restoreVisible` 同一个约定：
+  面板只画按钮，判据不必挂载 Vue。
+- **保存成功才关，失败一个字不动**：关掉一个装着用户刚写完正文的弹窗等于把那段文字拿走。
+  所以弹窗里 `:close-on-click-modal="false"` **并且** `:close-on-press-escape="false"`
+  ——遮罩与 ESC 都是「手滑」的路径，只拦一半等于同一条理由兑现一半（审计指出）。
+- **按钮不放卡头那一排动作里**：三枚文字按钮已约 287px，卡内可用宽 348px；四枚并排约 390px，
+  而 `.memory-head__actions` 自己不换行、EP 按钮又是 `nowrap` → 多出的 50px 会被
+  `main{overflow-x:hidden}` 裁掉，最右的「刷新」直接看不见。现在它是 `.card-head` 的直接子级，
+  与标题同行贴右缘。**页面头也不可行**：第二行要留给 `.memory-switch`（basis 100%），第一行
+  已被标题 + 说明占满（审计量过：756/768）。
+- **`.memory-note` 一族搬进 `memory.css`**：改完之后它被面板与编辑器两个组件用，而 scoped
+  样式跨不过组件——正是那个文件顶部写着的落点规则。
+- **预算**：新文件登记 140 行；`memory.js` 345 → 352；`TOTAL_BUDGET` 53630 → 53680（同处写账）；
+  面板**净减 95 行**（493 → 398）。`docs/features/memory/memory-progress.md` 模块表补一行
+  （`memory-progress[coverage]` 那条不变量会拦）。
+- **判据**：`ui/test/memoryPanel.test.js` 新增「新建与编辑共用一个弹窗」（含「按钮不许塞进
+  `.memory-head__actions`」这条量过的约束）与「弹窗开关与草稿：新建清空 / 编辑带出 / 关闭丢弃 /
+  保存成功才关」（store 层真跑 `saveMemory` 两条路）。两条既有用例改指 `MemoryEditor.vue`。
