@@ -14,6 +14,9 @@ pnpm-debug.log
 ui/dist/
 src-tauri/target/
 src-tauri/gen/schemas/
+# 本机构建体积调优（2026-10-16）：按本机磁盘与 swap 状况调的，
+# 不属于项目配置，别提交——别人的磁盘容量与编译需求不同。
+src-tauri/.cargo/
 .vite/
 vite.config.js.timestamp-*
 
