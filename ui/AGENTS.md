@@ -715,7 +715,9 @@ ui/src/
   （`main.js` 在 `app.mount` 之前调一次，一律取消），这一半归本文件；官方对话三个内容
   webview 加载的是**别人的**页面，走 Rust 注入的 `no-context-menu.js`（一律取消，含
   页面自绘菜单）；**工作台**加载的是内核 Web UI、它自己有右键功能，走 Rust 注入的
-  `context-menu-fallback.js`（冒泡兜底：只压引擎原生菜单、放行页面自绘菜单）。
+  `context-menu-fallback.js`：放行页面自绘菜单、压掉引擎原生菜单，页面没处理时若现场
+  可编辑或有选区，再 invoke `show_workbench_edit_menu` 弹壳的原生编辑菜单（撤销 /
+  重做 / 剪切 / 复制 / 粘贴 / 全选，只读选区只给复制）。
   `check-invariants` 第 16 项按「每条 `WebviewUrl::External` 建窗链」逐条查**接的是
   不是本族那一份**——**另一半见 [src-tauri/AGENTS.md §右键策略](../src-tauri/AGENTS.md)**。
 - **预检三态**：`precheck.rs` 的 `Verdict::as_str()` 与 `PrecheckDialog.vue` 的判定表靠

@@ -42,9 +42,10 @@ function makeWindow({ top = 'self' } = {}) {
   return win;
 }
 
-function makeEvent(type) {
+function makeEvent(type, target = null) {
   return {
     type,
+    target,
     defaultPrevented: false,
     immediatePropagationStopped: false,
     propagationStopped: false,
@@ -67,11 +68,58 @@ function makeEvent(type) {
  * 上那一层）先跑，然后才轮到 window 上的监听器。页面调过 `stopPropagation()` 时
  * window 这一站收不到事件——`ui-primitives` 的 JSON 树复制按钮就是这么写的。
  */
-function dispatchFromPage(win, pageHandler) {
-  const event = makeEvent('contextmenu');
+function dispatchFromPage(win, pageHandler, target = null) {
+  const event = makeEvent('contextmenu', target);
   pageHandler?.(event);
   if (!event.propagationStopped) win.dispatch(event);
   return event;
+}
+
+/** 一个够用的假元素：脚本只看 nodeType / tagName / 可编辑性 / 选区 / 祖先链。 */
+function field({
+  tagName = 'DIV',
+  isContentEditable = false,
+  disabled = false,
+  readOnly = false,
+  selectionStart,
+  selectionEnd,
+  parentElement = null,
+} = {}) {
+  return {
+    nodeType: 1,
+    tagName,
+    isContentEditable,
+    disabled,
+    readOnly,
+    selectionStart,
+    selectionEnd,
+    parentElement,
+  };
+}
+
+/** 给假 window 装上 Tauri 桥，返回记录下来的 invoke 调用。 */
+function withTauri(win) {
+  const calls = [];
+  win.__TAURI__ = {
+    core: {
+      invoke(name, payload) {
+        // 载荷是在 vm 的上下文里造出来的对象，原型与本测试不是同一个；剥一层再比，
+        // 否则 deepStrictEqual 会因为「长得一样但原型不同」判红。
+        calls.push({ name, payload: payload === undefined ? undefined : { ...payload } });
+        return Promise.resolve();
+      },
+    },
+  };
+  return calls;
+}
+
+/** 页面里有一段只读文字的选区（window.getSelection 的形状）。 */
+function withDocumentSelection(win, text = '选中的一段') {
+  win.getSelection = () => ({
+    rangeCount: 1,
+    isCollapsed: false,
+    toString: () => text,
+  });
 }
 
 /** 跑一份注入脚本并返回它装好监听器的假 window。 */
@@ -199,6 +247,97 @@ test(`${fallbackLabel}：左键选中与复制完全不受影响`, () => {
     const event = win.dispatch(makeEvent(type));
     assert.equal(event.defaultPrevented, false, `${type} 不该被拦`);
   }
+});
+
+// --- 工作台：页面没处理时，请壳弹一份原生编辑菜单 -----------------------------
+
+test(`${fallbackLabel}：可编辑区域右键请壳弹编辑菜单`, () => {
+  // 工作台把系统菜单压掉了，没有这一步用户在输入框里就没有鼠标路径复制 / 粘贴
+  // （内核官方 Electron 壳在同样位置给的就是这套编辑项）。
+  const win = makeWindow();
+  installFallback(win);
+  const calls = withTauri(win);
+  const event = dispatchFromPage(win, null, field({ tagName: 'INPUT' }));
+  assert.equal(event.defaultPrevented, true, '系统菜单仍然不弹');
+  assert.deepEqual(calls, [
+    { name: 'show_workbench_edit_menu', payload: { editable: true, hasSelection: false } },
+  ]);
+});
+
+test(`${fallbackLabel}：输入框里的选区一起报给壳`, () => {
+  const win = makeWindow();
+  installFallback(win);
+  const calls = withTauri(win);
+  dispatchFromPage(win, null, field({ tagName: 'TEXTAREA', selectionStart: 2, selectionEnd: 5 }));
+  assert.deepEqual(calls[0].payload, { editable: true, hasSelection: true });
+});
+
+test(`${fallbackLabel}：contenteditable 里的选区算可编辑`, () => {
+  const win = makeWindow();
+  installFallback(win);
+  const calls = withTauri(win);
+  withDocumentSelection(win);
+  // 内核的 composer 是 Lexical 的 contenteditable：目标常常是里面的子节点，
+  // 靠祖先链才认得出可编辑容器。
+  const inner = field({ parentElement: field({ isContentEditable: true }) });
+  dispatchFromPage(win, null, inner);
+  assert.deepEqual(calls[0].payload, { editable: true, hasSelection: true });
+});
+
+test(`${fallbackLabel}：只读选区只请「复制」`, () => {
+  const win = makeWindow();
+  installFallback(win);
+  const calls = withTauri(win);
+  withDocumentSelection(win);
+  dispatchFromPage(win, null, field());
+  assert.deepEqual(calls[0].payload, { editable: false, hasSelection: true });
+});
+
+test(`${fallbackLabel}：只读输入框里的选区也算选区`, () => {
+  const win = makeWindow();
+  installFallback(win);
+  const calls = withTauri(win);
+  const readOnly = field({ tagName: 'INPUT', readOnly: true, selectionStart: 0, selectionEnd: 3 });
+  dispatchFromPage(win, null, readOnly);
+  assert.deepEqual(calls[0].payload, { editable: false, hasSelection: true });
+});
+
+test(`${fallbackLabel}：既不可编辑也没选区时不打扰壳`, () => {
+  const win = makeWindow();
+  installFallback(win);
+  const calls = withTauri(win);
+  const event = dispatchFromPage(win, null, field());
+  assert.deepEqual(calls, [], '没有可做的事就不付 IPC 往返');
+  assert.equal(event.defaultPrevented, true, '系统菜单照样压掉');
+});
+
+test(`${fallbackLabel}：页面自己处理过的右键不弹壳的菜单`, () => {
+  const win = makeWindow();
+  installFallback(win);
+  const calls = withTauri(win);
+  const event = dispatchFromPage(win, (e) => e.preventDefault(), field({ tagName: 'INPUT' }));
+  assert.deepEqual(calls, [], '内核自绘菜单优先，壳不叠一层');
+  assert.equal(event.defaultPrevented, true);
+});
+
+test(`${fallbackLabel}：页面 stopPropagation 时脚本根本没跑`, () => {
+  const win = makeWindow();
+  installFallback(win);
+  const calls = withTauri(win);
+  dispatchFromPage(win, (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, field({ tagName: 'INPUT' }));
+  assert.deepEqual(calls, []);
+});
+
+test(`${fallbackLabel}：壳缺席时右键仍然是「压掉系统菜单」`, () => {
+  // 浏览器里直接打开内核 web UI 时没有 __TAURI__：不许抛错，事件链上游是内核页面。
+  const win = makeWindow();
+  installFallback(win);
+  const event = dispatchFromPage(win, null, field({ tagName: 'INPUT' }));
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(win.listeners[0].calls, 1);
 });
 
 // --- 两份注入脚本的公共形状 ---------------------------------------------------

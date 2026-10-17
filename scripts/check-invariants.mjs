@@ -1035,7 +1035,14 @@ function productionRust(text) {
   // （`settings_warning` 与 camelCase 的对不上，靠一个单测才抓到），这里是入参
   // 那一侧。命令名由第 3 项查（已注册 + 已授权），参数名要单独查。
   {
-    const harnessScripts = ['harness/harness-draft.js', 'harness/harness-health.js'].map((name) => ({
+    const harnessScripts = [
+      'harness/harness-draft.js',
+      'harness/harness-health.js',
+      // 2026-10-17 起工作台的右键兜底脚本也 invoke 壳（弹原生编辑菜单）。漏进这份
+      // 名单不会有任何症状：参数名漂了是 ACL 静默拒 + `.catch` 吞掉，「右键没有
+      // 菜单」看起来只像没做这个功能。
+      'harness/context-menu-fallback.js',
+    ].map((name) => ({
       name,
       source: readFileSync(join(srcDir, name), 'utf8'),
     }));

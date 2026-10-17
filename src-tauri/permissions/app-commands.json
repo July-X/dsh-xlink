@@ -43,6 +43,13 @@
       }
     },
     {
+      "identifier": "allow-show-workbench-edit-menu",
+      "description": "Allow the loopback harness webview to ask the shell for a native right-click edit menu (undo / redo / cut / copy / paste / select all, or copy alone when only a read-only selection exists). The workbench suppresses the engine's own context menu at the DOM layer, so without this command the kernel webui would have no mouse path to copy or paste; the kernel's own Electron desktop shell offers exactly this menu. The command only builds and pops a native menu on the harness window — it reads no state and writes none, and the menu actions are performed by the platform (standard selectors on macOS, synthesized Ctrl+<key> on Windows).",
+      "commands": {
+        "allow": ["show_workbench_edit_menu"]
+      }
+    },
+    {
       "identifier": "allow-openai-account",
       "description": "Allow the workbench page (kernel webui at http://127.0.0.1:<port>) to drive the embedded OpenAI account card: read masked account status, start or cancel the OAuth login, sign out, and pick which of the account's models are listed in the session model selector. The system browser is opened by the desktop shell (opener), never by the workbench page; tokens never reach the page — the browser-side card only ever sees masked status, while the vault and the system credential store stay in the desktop shell.",
       "commands": {
@@ -91,6 +98,7 @@
           "stash_harness_draft",
           "take_harness_draft",
           "clear_harness_draft",
+          "show_workbench_edit_menu",
           "report_harness_fault",
           "open_log_window",
           "open_official_chat",

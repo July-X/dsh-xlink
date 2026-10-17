@@ -22,6 +22,7 @@
 //! 判据与文案抽成纯函数 [`refuse_reason`]：三条拒绝路径的**说法**是用户唯一能
 //! 拿到的东西（窗口没了就是没了，不给下一步等于让用户猜），值得用测试钉住。
 
+use tauri::menu::{ContextMenu, IsMenuItem, Menu, PredefinedMenuItem};
 use tauri::{AppHandle, Manager};
 
 use crate::commands::AppState;
@@ -142,6 +143,94 @@ pub fn take_harness_draft() -> Option<crate::harness::harness_draft::RestoredDra
     crate::harness::harness_draft::take(family, id)
 }
 
+/// 壳给工作台补的那份编辑菜单里的一项。
+///
+/// **纯数据**：控菜单要 `Webview`，测不起；「摆哪几项」是这个功能唯一的判断，
+/// 抽成 [`edit_menu_plan`] 单独测。
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum EditMenuEntry {
+    Undo,
+    Redo,
+    Separator,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+/// 现场状态决定菜单形状，照内核官方桌面壳（Electron）那份右键菜单
+/// （`apps/desktop/src/main.ts` 的 `context-menu` 监听）：可编辑区域给满一套编辑项，
+/// 只读选区只给「复制」，两者都不是就**什么也不弹**。
+///
+/// 页面侧 `context-menu-fallback.js` 有一份同样的判断（决定要不要多付一次 IPC
+/// 往返），两边不一致时以本函数为准——它才是菜单真正的形状。
+fn edit_menu_plan(editable: bool, has_selection: bool) -> Vec<EditMenuEntry> {
+    if editable {
+        vec![
+            EditMenuEntry::Undo,
+            EditMenuEntry::Redo,
+            EditMenuEntry::Separator,
+            EditMenuEntry::Cut,
+            EditMenuEntry::Copy,
+            EditMenuEntry::Paste,
+            EditMenuEntry::Separator,
+            EditMenuEntry::SelectAll,
+        ]
+    } else if has_selection {
+        vec![EditMenuEntry::Copy]
+    } else {
+        Vec::new()
+    }
+}
+
+/// 在工作台上弹壳自己的编辑菜单（撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选）。
+///
+/// 调它的是注入脚本 `context-menu-fallback.js`，触发条件是「页面没处理这次右键、
+/// 且现场有可编辑区域或只读选区」。内核自绘的菜单（JSON 树的「选择复制方式」、
+/// 右侧栏标签页菜单）走页面处理器，脚本靠 `defaultPrevented` 把它们与本命令分开
+/// ——这里补的只是**系统菜单本该提供、而 DOM 层已经压掉**的那几项。
+///
+/// 动作由 `PredefinedMenuItem` 在原生侧执行：macOS 走标准 selector（WKWebView 是
+/// 第一响应者），Windows 由 muda 合成 Ctrl+<键>（`SendInput`）。Tauri 2.12 的
+/// `PredefinedMenuItem` 没有 `set_enabled`（`IsMenuItem` trait 只有 `kind` / `id`），
+/// 所以项一律可点：没有选区时点「复制」、没有历史时点「撤销」都是无操作——与
+/// Electron 的置灰有差别，不影响可用性，不值得为置灰把整条菜单改成自绘。
+#[tauri::command]
+pub fn show_workbench_edit_menu(
+    webview: tauri::Webview,
+    editable: bool,
+    has_selection: bool,
+) -> Result<(), String> {
+    if webview.label() != "harness" {
+        return Err(String::from("右键菜单只能由工作台窗口呼出"));
+    }
+    let plan = edit_menu_plan(editable, has_selection);
+    if plan.is_empty() {
+        return Ok(());
+    }
+    let mut items: Vec<PredefinedMenuItem<tauri::Wry>> = Vec::with_capacity(plan.len());
+    for entry in &plan {
+        let item = match entry {
+            EditMenuEntry::Undo => PredefinedMenuItem::undo(&webview, None),
+            EditMenuEntry::Redo => PredefinedMenuItem::redo(&webview, None),
+            EditMenuEntry::Separator => PredefinedMenuItem::separator(&webview),
+            EditMenuEntry::Cut => PredefinedMenuItem::cut(&webview, None),
+            EditMenuEntry::Copy => PredefinedMenuItem::copy(&webview, None),
+            EditMenuEntry::Paste => PredefinedMenuItem::paste(&webview, None),
+            EditMenuEntry::SelectAll => PredefinedMenuItem::select_all(&webview, None),
+        };
+        items.push(item.map_err(|error| format!("构建右键菜单失败：{error}"))?);
+    }
+    let items: Vec<&dyn IsMenuItem<tauri::Wry>> = items
+        .iter()
+        .map(|item| item as &dyn IsMenuItem<tauri::Wry>)
+        .collect();
+    let menu =
+        Menu::with_items(&webview, &items).map_err(|error| format!("构建右键菜单失败：{error}"))?;
+    menu.popup(webview.window())
+        .map_err(|error| format!("弹出右键菜单失败：{error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +256,24 @@ mod tests {
     fn a_dead_kernel_outranks_the_missing_window() {
         let reason = refuse_reason(3091, false, None).unwrap();
         assert!(reason.contains("内核未在运行"), "顺序不能反：{reason}");
+    }
+
+    /// 菜单形状照内核 Electron 壳：可编辑给满一套、只读选区只给复制、两者都不是
+    /// 什么都不弹。这三条是这条命令全部的对外语义，页面侧那份判断只是省 IPC。
+    #[test]
+    fn the_edit_menu_matches_the_desktop_shell() {
+        use EditMenuEntry::*;
+        assert_eq!(
+            edit_menu_plan(true, false),
+            vec![Undo, Redo, Separator, Cut, Copy, Paste, Separator, SelectAll]
+        );
+        // 可编辑区域里有没有选区都摆同一套：只有第一项（复制 / 剪切）的可用性受影响，
+        // 而 Tauri 2.12 的预定义项本来就改不了可用性。
+        assert_eq!(edit_menu_plan(true, true), edit_menu_plan(true, false));
+        assert_eq!(edit_menu_plan(false, true), vec![Copy]);
+        assert!(
+            edit_menu_plan(false, false).is_empty(),
+            "没东西可做就不弹菜单"
+        );
     }
 }

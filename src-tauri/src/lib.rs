@@ -482,6 +482,7 @@ pub fn run() {
             harness::harness_cmd::stash_harness_draft,
             harness::harness_cmd::take_harness_draft,
             harness::harness_cmd::clear_harness_draft,
+            harness::harness_cmd::show_workbench_edit_menu,
             commands::report_harness_fault,
             commands::open_log_window,
             commands::open_official_chat,
