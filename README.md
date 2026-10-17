@@ -177,9 +177,20 @@ npm run build
 npm run build:mac-intel   # x86_64-apple-darwin（Intel Mac）
 npm run build:win         # x86_64-pc-windows-msvc
 
-# 提交前的全量门禁：不变量 / 代码预算 / 四套测试 / fmt+clippy+release 编译 / 产物预算
+# 日常开发：按改动范围跑相关测试；静态检查不编译 Rust
+npm run check:static
+# 前端、插件或构建脚本的完整检查（包含静态检查、测试、UI 构建与产物预算）
+npm run check:js
+# Rust 格式、单测与 Clippy；与持续集成共用
+npm run check:rust:ci
+# 发布前完整跑一次，另含 Rust release 编译检查
 npm run check
 ```
+
+日常迭代只验证改动涉及的部分：界面改动跑相关 `ui/test/*.test.js` 与 `build:ui`；
+Rust 改动跑相关单测，按需做编译或 Clippy 检查；内置插件改动先跑 `prep:builtin`，
+再跑对应插件测试与 `check:builtin`。同一代码状态通过后不因准备提交而重跑。
+持续集成保留全套检查；发布平台构建负责验证 release 产物，Windows 单测独立保留。
 
 `build` 与 `dev` 会先跑 `npm run prep:builtin`，从 `plugins/openai-oauth/` 生成随包交付的资源目录。全新 checkout 上直接跑 cargo 会因为缺这个目录而停在 `resource path 'resources/builtin-plugins' doesn't exist`，所以那条生成步骤不能跳。
 

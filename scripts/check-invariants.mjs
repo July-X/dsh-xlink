@@ -239,6 +239,9 @@ note(`前端与注入脚本调用 ${invoked.size} 个命令，全部已注册且
 {
   const { checkProject } = await import('./check-ui-bindings.mjs');
   const { checked, skipped, failures: uiFailures } = await checkProject(join(root, 'ui/src'));
+  if (checked < 10) {
+    fail('ui-bindings', `仅检查到 ${checked} 个 setup 组件，组件扫描可能已失效`);
+  }
   if (uiFailures.length > 0) {
     for (const failure of uiFailures) {
       fail(
