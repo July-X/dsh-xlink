@@ -30,13 +30,20 @@
  * 截图）。正解是 `grid-template-columns: subgrid`：`__main` 拿到父网格那两条列之后，
  * `__title` 的 `1` 才是第 1 列（按钮那列归 `__actions`），`__body` / `__meta` 的
  * `1 / -1` 才真是整行。 */
-.memory-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: flex-start; gap: 0 12px; }
+.memory-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: flex-start; gap: 0 12px; padding: 5px 12px; }
 .memory-row__main { display: grid; grid-column: 1 / -1; grid-row: 1 / span 3; grid-template-columns: subgrid; grid-template-rows: subgrid; min-width: 0; }
 .memory-row__title { display: flex; grid-column: 1; grid-row: 1; gap: 8px; align-items: center; flex-wrap: wrap; }
 .memory-row__name { font-size: 15px; font-weight: 600; }
-.memory-row__body { grid-column: 1 / -1; grid-row: 2; margin: 4px 0 0; color: var(--text-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }
-.memory-row__meta { grid-column: 1 / -1; grid-row: 3; margin: 4px 0 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.memory-row__body { grid-column: 1 / -1; grid-row: 2; margin: 3px 0 0; color: var(--text-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }
+.memory-row__meta { grid-column: 1 / -1; grid-row: 3; margin: 2px 0 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
 .memory-row__actions { display: flex; grid-column: 2; grid-row: 1; gap: 4px; white-space: nowrap; align-self: start; }
+
+/* 候选行（2026-10-17）：动作排沉到行底、占满整行。动作挤在标题右侧时第 1 列只剩
+ * ~190px，「已安装 cargo-cache 0.8.3」这种标题会折成三行、来源标签再掉一行；候选的
+ * 正文与来源本来就是要人读的，四条都拿整行宽才排得开。`grid-template-columns` 改成
+ * 单列后 `__main` 的 subgrid 也只剩一列，`__body` / `__meta` 的 `1 / -1` 照旧成立。 */
+.memory-row--candidate { grid-template-columns: minmax(0, 1fr); }
+.memory-row--candidate .memory-row__actions { grid-column: 1; grid-row: 4; justify-content: flex-end; margin-top: 6px; }
 
 /* 候选卡片上「模型标了一种关系」的那一块：C5 的冲突（`MemoryConflict.vue`）与 C6 的取代
  * （`MemorySuperseded.vue`）**共用同一族类名**——它们是同一件事的两种形状（模型说了某个
@@ -81,13 +88,14 @@
  * `max-height` 而不是 `height`：只有三行时不该撑出空白。 */
 .memory-scroll { max-height: 224px; overflow-y: auto; padding: 2px 0; }
 
-/* 已保存记忆的列表自己滚（2026-10-17 用户要求「记忆列表做成内部滚动条」）：卡片压到标题 +
- * 两行正文之后仍会长过右栏，而这一屏自 2026-10-16 起刻意没有页面级纵向滚动条，长出来的
- * 这一截只能在这里自己滚。上限 320px 是量出来的——`.page-row` 一条约 92px，放得下三条
- * 多一点；再高就等于把页面滚动条换个名字挪进卡片。`memory-scroll` 那份 224px 是给「5 行
- * 单行文本 + 一句说明」量的，形状不同，不要抄过来。`max-height` 而不是 `height`：只有
- * 一条记忆时不该在下面留一块空白。 */
-.memory-list { max-height: 320px; overflow-y: auto; }
+/* 已保存记忆 / 待确认候选共用这一份列表容器，它自己滚（2026-10-17 用户要求「记忆列表
+ * 做成内部滚动条」）。**高度不再写死 320px**：这一屏自 2026-10-17 起整页钉在窗口高度内
+ * （`MemoryPanel.vue` 的 `.panel` / `.page-layout` / `.memory-library`），列表吃卡片的
+ * 剩余空间——写死上限反而会在窗口里留一块空白，且条目一多就与页面高度各算各的。
+ * `flex: 1 1 auto` + `min-height: 0` 是这条链路的下半段：没有 `min-height: 0`，flex 子项
+ * 的下限是 min-content，列表会撑回内容高度、整页又长出去（滚动的样子就回到页面上了）。
+ * `overflow-y: auto` 保持不变——内容装得下时不出滚动条。 */
+.memory-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 
 /* 行整块可点（列表只负责读，操作都在点开的那一层）。hover 底色用 `--overlay-soft`
  * 而不是 `--surface-subtle`：后者暗色下是一块比卡面更深的蓝（`#1b2b43` 压 `#2c2b30`），

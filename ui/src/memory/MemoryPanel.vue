@@ -7,8 +7,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { Download, InfoFilled, Plus, Refresh } from '@element-plus/icons-vue';
 import MemoryRow from './MemoryRow.vue';
-import MemoryConflict from './MemoryConflict.vue';
-import MemorySuperseded from './MemorySuperseded.vue';
+import MemoryCandidateRow from './MemoryCandidateRow.vue';
 import MemoryEditor from './MemoryEditor.vue';
 import MemoryDetail from './MemoryDetail.vue';
 import { baseName } from '../shell/labels.js';
@@ -21,7 +20,6 @@ import {
   setMemoryState,
   setMemoryEnabled,
   clearMemory,
-  decideCandidate,
   previewContext,
   exportMemory,
   openExports,
@@ -29,9 +27,6 @@ import {
   injectionDisabled,
   injectionText,
   visibleMemories,
-  sourceText,
-  verificationText,
-  scopeText,
   shortTime,
   setListScope,
   jobsSummaryText,
@@ -175,9 +170,36 @@ onMounted(() => {
 
     <div class="page-layout">
       <div class="page-layout__col">
-        <div class="card">
+        <div class="card memory-library">
           <div class="card-head">
-            <h2>记忆（{{ list.length }}）</h2>
+            <h2>
+              {{
+                memoryStore.listScope === 'candidates'
+                  ? `待确认（${candidates.length}）`
+                  : `记忆（${allMemories.length}）`
+              }}
+              <!--
+                候选那一档的常驻说明收进 ⓘ：它只在切到「待确认」时需要，常驻四行会把
+                卡头撑成两行。判据要的那句「先确认正文里没有路径、客户名」仍在这里，
+                且**不折行**（assert.match）。
+              -->
+              <el-tooltip
+                v-if="memoryStore.listScope === 'candidates'"
+                placement="bottom-start"
+                :show-after="80"
+              >
+                <template #content>
+                  <!-- prettier-ignore -->
+                  <div class="card-info-tooltip">
+                    这些是模型或会话提出的候选：正文与来源都摆在这里，只有你点保存才会成为记忆。<br />
+                    要存成「所有项目都算」的通用偏好时用右边那个按钮——先确认正文里没有路径、客户名之类的私有信息，通用偏好会跟着你去别的项目。
+                  </div>
+                </template>
+                <el-icon class="card-info-icon" tabindex="0" aria-label="待确认候选怎么处理">
+                  <InfoFilled />
+                </el-icon>
+              </el-tooltip>
+            </h2>
             <!--
               「新建记忆」是这一屏的主操作，所以它是卡头里唯一带底色的那一枚。
               **它必须是 `.card-head` 的直接子级、不能塞进 `.memory-head__actions`**：
@@ -238,6 +260,20 @@ onMounted(() => {
             <el-radio value="all">全部</el-radio>
             <el-radio value="project">本项目</el-radio>
             <el-radio value="general">通用偏好</el-radio>
+            <!--
+              「待确认」放在同一排而不是另起一张卡（2026-10-17）：两张列表卡在 748px
+              高的窗口里放不下，第二张卡会把整页顶出纵向滚动条——那正是用户这次截图
+              指着的地方。并成一档视图后，同一块列表区按档切换，页面不再滚动。
+              数量写进标签：队列不是隐形的，未确认的候选有几条一眼能看见。
+            -->
+            <!-- 没有候选时不画这一档（否则每屏都挂一个空的「待确认（0）」）；
+                 已经在那一档里时例外——否则判完最后一条就没地方切回来了。 -->
+            <el-radio
+              v-if="candidates.length || memoryStore.listScope === 'candidates'"
+              value="candidates"
+            >
+              待确认（{{ candidates.length }}）
+            </el-radio>
           </el-radio-group>
           <p v-if="memoryStore.lastExport" class="memory-hint">
             最近导出：{{ memoryStore.lastExport.path }}（{{ memoryStore.lastExport.memories }} 条记忆、{{
@@ -246,16 +282,36 @@ onMounted(() => {
             条候选）
             <el-button text type="primary" @click="openExports">打开导出目录</el-button>
           </p>
-          <p v-if="!allMemories.length" class="memory-hint">
-            还没有记忆。点上面的「新建记忆」写一条，或者在工作台里让模型提出候选，再到「待确认」里点保存。
+          <!--
+            候选那一档：行还是原来那张卡里的行（正文、来源、冲突 / 取代标记、三枚动作
+            全在），只是换了个容器。列表容器与已保存记忆共用 `memory-list`——这一屏
+            唯一会滚的就是它，滚动条不再出现在页面上。
+          -->
+          <p v-if="memoryStore.listScope === 'candidates' && !candidates.length" class="memory-hint">
+            没有待确认的候选。模型或会话提出候选后会出现在这里，只有点「保存」才成为记忆。
+          </p>
+          <div
+            v-else-if="memoryStore.listScope === 'candidates'"
+            class="page-list memory-list"
+          >
+            <MemoryCandidateRow
+              v-for="item in candidates"
+              :key="item.id"
+              :item="item"
+              :records="allMemories"
+              :candidates="candidates"
+            />
+          </div>
+          <p v-else-if="!allMemories.length" class="memory-hint">
+            还没有记忆。点上面的「新建记忆」写一条，或者在工作台里让模型提出候选，再切到「待确认」里点保存。
           </p>
           <!-- 库里有、只是当前筛选没有——这是**两回事**（记忆内核那次评审第 2 条）：
                说成「还没有记忆」是假话，而右栏状态行还写着 accepted: N。 -->
           <p v-else-if="!list.length" class="memory-hint">
             当前筛选下没有记忆（库里有 {{ allMemories.length }} 条，切到「全部」能看到）。
           </p>
-          <!-- `memory-list` 是这一屏唯一的内部滚动容器：卡片压到两行之后列表仍会长过
-               右栏，页面级滚动条在 2026-10-16 被去掉，长出来的这一截只能在这里自己滚。 -->
+          <!-- `memory-list` 是这一屏唯一的滚动容器，高度由卡片剩余空间给（2026-10-17 起
+               整页固定在窗口高度内，页面级滚动条不再出现）：条目多过可见区时在这里滚。 -->
           <div v-else class="page-list memory-list">
             <MemoryRow
               v-for="row in list"
@@ -263,101 +319,6 @@ onMounted(() => {
               :row="row"
               @open="openMemoryDetail"
             />
-          </div>
-        </div>
-
-        <div v-if="candidates.length" class="card">
-          <div class="card-head">
-            <h2>
-              待确认（{{ candidates.length }}）
-              <!-- 常驻说明收进 ⓘ（理由见「最近注入」那处）。判据要的那句仍不折行。 -->
-              <el-tooltip placement="bottom-start" :show-after="80">
-                <template #content>
-                  <!-- prettier-ignore -->
-                  <div class="card-info-tooltip">
-                    这些是模型或会话提出的候选：正文与来源都摆在这里，只有你点保存才会成为记忆。<br />
-                    要存成「所有项目都算」的通用偏好时用右边那个按钮——先确认正文里没有路径、客户名之类的私有信息，通用偏好会跟着你去别的项目。
-                  </div>
-                </template>
-                <el-icon class="card-info-icon" tabindex="0" aria-label="待确认候选怎么处理">
-                  <InfoFilled />
-                </el-icon>
-              </el-tooltip>
-            </h2>
-          </div>
-          <div class="page-list">
-            <div v-for="item in candidates" :key="item.id" class="page-row memory-row">
-              <div class="memory-row__main">
-                <div class="memory-row__title">
-                  <span class="memory-row__name">{{ item.title || '（无标题）' }}</span>
-                  <el-tag size="small" effect="plain">{{ item.source.kind }}</el-tag>
-                  <!-- H7：来源变了（会话被压缩/编辑之后重提同一段）。**只是提醒**——
-                       「保存」与「丢弃」两个按钮照常在下面，标过期不是替用户处理掉。 -->
-                  <el-tag v-if="item.verification === 'stale'" size="small" type="warning" effect="plain">
-                    可能已过期
-                  </el-tag>
-                </div>
-                <p class="memory-row__body">{{ item.body }}</p>
-                <p class="memory-row__meta">
-                  来自 {{ item.source.session || '本机' }} · {{ shortTime(item.created_at) }}
-                </p>
-                <!-- C5：并排摆出冲突的那几条，**由用户自己留哪一条**（不由模型裁决）。 -->
-                <MemoryConflict
-                  :conflicts="item.conflicts_with || []"
-                  :records="allMemories"
-                  :busy="globalBusy"
-                  @disable="(record) => setMemoryState(record, 'disabled')"
-                  @remove="removeMemory"
-                />
-                <!-- C6：模型说这句推翻了先前提出的哪几条。**壳没有替用户丢弃任何一条**，
-                     那些候选还在下面那张待确认清单里，由用户自己按一次。 -->
-                <MemorySuperseded
-                  :supersedes="item.supersedes || []"
-                  :candidates="candidates"
-                  :busy="globalBusy"
-                  @discard="(candidate) => decideCandidate(candidate, false)"
-                />
-                <!-- H7：与上面两个标记**同一个 `.memory-flag` 盒子**——三种关系都要用户按一次，
-                     看起来不一样重就会暗示哪一种更严重，而它们其实一样。措辞里不许出现
-                     「已自动作废」：那是「只标不执行」，说成「已经替你决定了」就反了。 -->
-                <div v-if="item.verification === 'stale'" class="memory-flag">
-                  <p class="memory-flag__lead">
-                    这条是从会话里<strong>同一段话</strong>提的，而那段内容在这次提取之前被改动过
-                    （压缩或编辑都会）。系统没有替你处理掉它——要不要留，按下面的「保存」决定。
-                  </p>
-                </div>
-              </div>
-              <div class="memory-row__actions">
-                <el-button
-                  size="small"
-                  type="primary"
-                  :loading="isLoading('memoryCandidate:' + item.id)"
-                  :disabled="globalBusy"
-                  @click="decideCandidate(item, true)"
-                >
-                  保存
-                </el-button>
-                <el-button
-                  v-if="item.scope !== 'general'"
-                  size="small"
-                  text
-                  :loading="isLoading('memoryCandidate:' + item.id)"
-                  :disabled="globalBusy"
-                  @click="decideCandidate(item, true, 'general')"
-                >
-                  存为通用偏好
-                </el-button>
-                <el-button
-                  size="small"
-                  text
-                  :loading="isLoading('memoryCandidate:' + item.id)"
-                  :disabled="globalBusy"
-                  @click="decideCandidate(item, false)"
-                >
-                  忽略
-                </el-button>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -466,8 +427,8 @@ onMounted(() => {
             开关是关着的：本次不会注入任何记忆。
           </p>
           <p v-else class="memory-hint">还没有预览结果。</p>
-          <p class="memory-note">
-            记录文件：{{ status ? status.file : '读取中…' }}（{{ status ? status.accepted : 0 }} 条启用 /
+          <p class="memory-note" :title="status ? status.file : ''">
+            记录文件：{{ status ? baseName(status.file) : '读取中…' }}（{{ status ? status.accepted : 0 }} 条启用 /
             {{ status ? status.disabled : 0 }} 条停用）
           </p>
         </div>
@@ -499,6 +460,49 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/*
+ * 整页固定在窗口高度内（2026-10-17 用户要求「尽量不要出现纵向滚动条」）：
+ * `.panel` 拿满 `main` 的内容高度，栅格吃掉页头以下的全部空间，左栏那张卡再
+ * 把剩余高度交给 `memory-list`。于是**页面级滚动条没有出现的余地**——列表长了
+ * 在卡内滚（`memory.css` 的 `.memory-list`），而不是把整页顶长。
+ *
+ * 高度链每一级都要有 `min-height: 0`：flex / grid 子项的默认下限是 min-content，
+ * 少一级就会撑回内容高度、页面照样滚（这是「设了 flex 却没用」最常见的原因）。
+ * 窗口固定 1040×748（`tauri.conf.json`），所以这里是确定值，不是 vh 估算。
+ */
+.panel {
+  height: 100%;
+  min-height: 0;
+}
+
+.page-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* 栅格默认 `align-items: start`：两列各自按内容高度收，左栏的卡就不会被拉到底。
+     改成 stretch 后两列同高，卡片才有「剩余空间」可分配。 */
+  align-items: stretch;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.page-layout__col {
+  min-height: 0;
+}
+
+/* 左栏第二列（右栏）在内容超长时自己滚：它是兜底，正常数据（≈563px）够放。 */
+.page-layout__col:last-child {
+  overflow-y: auto;
+}
+
+/* 记忆库那张卡：**高度跟着内容走**（`flex: 0 1 auto`，与右栏三张卡同一形状），
+   内容长了再被栅格的高度上限压住——`min-height: 0` 允许它压到内容高度以下，
+   压出来的那截交给 `.memory-list` 自己滚。写成 `flex: 1 1 auto` 会让内容只有
+   三四条时卡片也拉到底、下面空出一大块（2026-10-17 截图对比过）。 */
+.memory-library {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* 页头第二行：开关与它的效果说明。`.page-head` 是 space-between 的 flex 行，把开关和
    那段说明直接摆成它的第二、第三个子元素时，说明会被当成「右侧动作」，要么与开关并排
    挤成一列窄字，要么整行与标题抢宽度。收进一个 `flex: 1 0 100%` 的块里让它独占一行。

@@ -172,15 +172,19 @@ test('面板有范围筛选，行里显示来源与验证状态', () => {
 });
 
 test('批准候选时能当场选范围（§6.1：由用户明确选择通用范围）', async () => {
-  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  // 2026-10-17：候选行搬进 `MemoryCandidateRow.vue`（「待确认」并进记忆卡的同一条列表
+  // 视图，两张列表卡在窗口里放不下）。两个动作的接线跟着搬——**接线在哪个文件里就查哪个
+  // 文件**，还盯着面板的话，这条判据会绿在「组件已经接上、面板什么都没有」上。
+  const row = templateOf(read('../src/memory/MemoryCandidateRow.vue'));
   assert.match(
-    tpl,
+    row,
     /@click="decideCandidate\(item, true, 'general'\)"/,
-    '候选卡片要有「存为通用偏好」'
+    '候选行要有「存为通用偏好」'
   );
-  assert.match(tpl, /v-if="item\.scope !== 'general'"/, '已经是通用偏好的候选不必再给这个按钮');
+  assert.match(row, /v-if="item\.scope !== 'general'"/, '已经是通用偏好的候选不必再给这个按钮');
   // 私有信息那句话必须在：通用偏好会跟着用户去别的项目（§6.1 要求提升前去掉路径与客户名）。
-  assert.match(tpl, /先确认正文里没有路径、客户名/);
+  // 它挂在卡头的 ⓘ 上（切到「待确认」时才出现），所以仍然在面板模板里。
+  assert.match(templateOf(read('../src/memory/MemoryPanel.vue')), /先确认正文里没有路径、客户名/);
 
   const src = read('../src/memory/memory.js');
   assert.match(
@@ -537,19 +541,24 @@ function directChildren(block) {
 test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，两张卡片共用这一族类名', () => {
   const panel = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
   const row = templateOf(read(`${MEM_DIR}MemoryRow.vue`));
+  // 2026-10-17 起候选行也在这一族里（`MemoryCandidateRow.vue`）：三个模板都要数，
+  // 少扫一个就等于漏掉它那几条样式是被谁用的。
+  const candidate = templateOf(read(`${MEM_DIR}MemoryCandidateRow.vue`));
 
   // 类名清单**从模板里读**，不写死在判据里：日后谁把 `memory-row__body` 改名而忘了搬
   // 样式，下面的循环会当成「这一族已经不这么叫了」而静默空转。
-  const used = [...new Set([...literalClasses(panel), ...literalClasses(row)])]
+  const used = [...new Set([...literalClasses(panel), ...literalClasses(row), ...literalClasses(candidate)])]
     .filter((c) => c.startsWith('memory-row'))
     .sort();
   assert.deepEqual(
     used,
     [
       'memory-row',
-      // 2026-10-17 新增两条：`--clickable`（行的根，整块可点）与 `__body--clamp`（列表里
-      // 只留两行正文）。两条都写在 `memory.css` 里——它们分别被「面板 / 行」与「行 / 详情」
-      // 两侧的模板共用，scoped 块跨不过去。
+      // 2026-10-17 新增三条：`--clickable`（行的根，整块可点）、`--candidate`（候选行的
+      // 动作排沉到行底、占满整行）与 `__body--clamp`（列表里只留两行正文）。三条都写在
+      // `memory.css` 里——它们被多个组件的模板共用（面板 / 行 / 候选行 / 详情），scoped
+      // 块跨不过去。数组按排序顺序写（`-` 在 `_` 前面）。
+      'memory-row--candidate',
       'memory-row--clickable',
       'memory-row__actions',
       'memory-row__body',
@@ -562,9 +571,13 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
     '这一族类名的清单变了：下面按类名查生效值的循环会静默空转',
   );
 
-  // 根行还得同时挂 `page-row`：行盒、行间分隔线与「10px 12px」的内边距全来自它，
-  // 而它是全局原语——漏挂不会有任何报错，只是两张卡里的行长得不一样。
-  for (const [name, tpl] of [['MemoryPanel.vue', panel], ['MemoryRow.vue', row]]) {
+  // 根行还得同时挂 `page-row`：行盒、行间分隔线与内边距全来自它，而它是全局原语——
+  // 漏挂不会有任何报错，只是两张列表里的行长得不一样。**面板自己不再写行模板**
+  // （2026-10-17 起两个行族各在自己的组件里：`MemoryRow` / `MemoryCandidateRow`）。
+  for (const [name, tpl] of [
+    ['MemoryRow.vue', row],
+    ['MemoryCandidateRow.vue', candidate],
+  ]) {
     assert.ok(literalClasses(tpl).includes('page-row'), `${name} 的根行漏了 page-row`);
   }
 
@@ -576,7 +589,14 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
       display: 'grid',
       'align-items': 'flex-start',
       'grid-template-columns': 'minmax(0, 1fr) auto',
+      // 2026-10-17 收紧：`10px 12px` → `5px 12px`。条目本身三行文字（标题 / 两行正文 /
+      // 次行），行盒的上下留白是纯支出——一条记忆少 10px，三条就少一整行的位置。
+      padding: '5px 12px',
     },
+    // 候选行：动作排沉到行底，所以父网格只剩一列（否则标题列被动作挤到 ~190px，
+    // 「已安装 cargo-cache 0.8.3」这种标题折成三行）。动作那半是后代选择器，
+    // 层叠工具是祖先盲的，下面按规则原文单独查。
+    'memory-row--candidate': { 'grid-template-columns': 'minmax(0, 1fr)' },
     'memory-row__main': {
       display: 'grid',
       'grid-template-rows': 'subgrid',
@@ -599,7 +619,9 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
       'white-space': 'pre-wrap',
       'overflow-wrap': 'anywhere',
       'grid-column': '1 / -1',
-      margin: '4px 0 0',
+      // 2026-10-17：4px → 3px（同一轮把行盒整体压紧；正文与次行都是紧随上一行的
+      // 说明性文字，3px 已经够分开）。
+      margin: '3px 0 0',
       color: 'var(--text-secondary)',
     },
     // 2026-10-17：列表里那一行正文只留两行（用户要求「默认内容精简收缩」），全文进详情
@@ -621,8 +643,6 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
     },
     'memory-row__actions': {
       display: 'flex',
-      'grid-column': '2',
-      'grid-row': '1',
       'align-self': 'start',
     },
     // 这一族不在上面的类名清单里（它不属于 `memory-row*`），但同样只能写在全局 `.css`：
@@ -645,6 +665,24 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
           `期望 ${value}：这一族类名两个组件都在用，规则必须写在 import 进 main.js 的 .css 里`,
       );
     }
+  }
+
+  // 候选行动作排那条（后代选择器，层叠工具读不准）：grid-column / grid-row 与
+  // `justify-content` 三件事缺一不可——少 `grid-column: 1` 它会被自动放进第 2 列
+  // （父网格只有一列时又回到「挤在标题右侧」），少 `flex-end` 则三枚按钮贴左。
+  // **`grid-column` 这一条不能走 `effectiveDeclaration`**：候选行那条后代规则
+  // （`.memory-row--candidate .memory-row__actions`）与基线同主语，而层叠工具是祖先盲的，
+  // 于是它把候选那条的 `grid-column: 1` 当成基线生效值（实测红在「生效值是 1，期望 2」）。
+  // 这正是 `ui/AGENTS.md` 那句「主语类被多条后代规则复用时改读规则文本」——按规则原文查。
+  const baseActions = rules.find((r) => r.selector === '.memory-row__actions');
+  assert.ok(baseActions, '找不到 .memory-row__actions 的基线规则');
+  for (const decl of ['grid-column: 2', 'grid-row: 1']) {
+    assert.ok(baseActions.body.includes(decl), `记忆行的动作区少了基线「${decl}」`);
+  }
+  const candActions = rules.find((r) => r.selector === '.memory-row--candidate .memory-row__actions');
+  assert.ok(candActions, '候选行的动作排没有自己的规则');
+  for (const decl of ['grid-column: 1', 'grid-row: 4', 'justify-content: flex-end']) {
+    assert.ok(candActions.body.includes(decl), `候选行的动作排少了「${decl}」`);
   }
 
   // 两条状态值单独查：伪类不进上面那张表（表里走的是「不给 pseudo 就不匹配带伪类的
@@ -716,17 +754,43 @@ test('记忆行是精简卡片、点开才出操作：动作按钮是弹窗底�
     '空格没接，或接了但没拦住默认滚动',
   );
 
-  // ③ 「列表内部滚动」：这一屏 2026-10-16 起没有页面级滚动条，长出来的那截只能落在
-  //    `memory-list` 上。
-  const list = elementBlock(panel, 'div', 'memory-list');
-  assert.equal((list.match(/<MemoryRow\b/g) || []).length, 1, '列表格里的行不是 MemoryRow');
-  assert.equal((list.match(/@open="openMemoryDetail"/g) || []).length, 1, '行没把 @open 接出来');
-  assert.equal(effectiveDeclaration(['memory-list'], rules, 'overflow-y'), 'auto', '列表不自己滚');
-  assert.equal(
-    effectiveDeclaration(['memory-list'], rules, 'max-height'),
-    '320px',
-    '列表没有高度上限：没有上限的 overflow 永远不会滚',
+  // ③ 「列表内部滚动」：主体连 2026-10-17 起钉在窗口高度内（页面级滚动条不再出现），
+  //    长出来的那一截只能落在 `memory-list` 上。两个列表容器**共用**这个类名（已保存
+  //    记忆与待确认候选），所以这里按「装 MemoryRow 的那一个」判，而不是 `elementBlock`
+  //    抓到的第一个——第一个现在是候选列表。
+  assert.match(
+    panel,
+    /<div v-else class="page-list memory-list">\s*<MemoryRow/,
+    '装 MemoryRow 的容器丢了 memory-list（长出来的那段只能在这里自己滚）',
   );
+  assert.equal((panel.match(/@open="openMemoryDetail"/g) || []).length, 1, '行没把 @open 接出来');
+  assert.match(
+    panel,
+    /v-else-if="memoryStore\.listScope === 'candidates'"\s+class="page-list memory-list"\s*>\s*<MemoryCandidateRow/,
+    '候选那一档没有复用同一个列表容器：它也得能自己滚',
+  );
+  // 高度不再写死 320px：列表吃卡片的剩余高度（`flex: 1 1 auto` + `min-height: 0`），
+  // 上限由窗口给。写死上限会在卡片里留一块空白，条目一多还与卡面各算各的。
+  assert.equal(effectiveDeclaration(['memory-list'], rules, 'overflow-y'), 'auto', '列表不自己滚');
+  assert.equal(effectiveDeclaration(['memory-list'], rules, 'flex'), '1 1 auto', '列表没吃剩余高度');
+  assert.equal(
+    effectiveDeclaration(['memory-list'], rules, 'min-height'),
+    '0',
+    'flex 子项的下限不给 0，列表会撑回内容高度、整页又长出去',
+  );
+  assert.equal(effectiveDeclaration(['memory-list'], rules, 'max-height'), null, '还在写死高度上限');
+  // 页面级那一半（scoped 规则的祖先条件 layer 工具读不准，按本仓规矩读剥注释后的文本）：
+  // 高度链每一级都要在——`.panel` 拿满 main 的内容高度、栅格两列 stretch、卡片允许被压到
+  // 内容高度以下。少一级，页面级滚动条就回来了。
+  const scoped = panelSrc.slice(panelSrc.indexOf('<style scoped>')).replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const rule of [
+    [/\.panel\s*\{[^}]*height:\s*100%/, '.panel 没有拿满 main 的高度'],
+    [/\.page-layout\s*\{[^}]*flex:\s*1 1 auto/, '栅格不在高度链上'],
+    [/\.page-layout\s*\{[^}]*min-height:\s*0/, '栅格的下限没给 0'],
+    [/\.memory-library\s*\{[^}]*min-height:\s*0/, '卡片的下限没给 0，压不下去'],
+  ]) {
+    assert.match(scoped, rule[0], rule[1]);
+  }
 
   // ④ 弹窗里那一行的来源：按 id 从**未筛选**的 allMemories 里现取。改成挂 `list` 里那一份
   //    的话，读记忆时切一下范围（那组单选就在同屏）弹窗就跟着没了。
@@ -944,7 +1008,15 @@ test('清单筛选自成一行，不再挤在卡头那一排里', () => {
   assert.match(group, /:model-value="memoryStore\.listScope"/, '那一组单选不是清单筛选');
   // `<el-radio\b` 会把包住它的 `<el-radio-group` 也算成一枚（`-` 是词边界），
   // 所以要连后面的空白或 `>` 一起匹配。
-  assert.equal((group.match(/<el-radio[\s>]/g) || []).length, 3, '筛选不是三档了');
+  // 2026-10-17 起是**四档**：三档范围 + 「待确认（N）」那一档视图。候选从另一张卡并进
+  // 同一条列表视图，为的是消掉页面级纵向滚动条；数量写进标签，队列不是隐形的。
+  assert.equal((group.match(/<el-radio[\s>]/g) || []).length, 4, '筛选不是四档了');
+  assert.match(
+    group,
+    /<el-radio\s+v-if="candidates\.length \|\| memoryStore\.listScope === 'candidates'"\s+value="candidates"/,
+    '「待确认」那一档丢了，或没在「没有候选」时不画它（已在那一档时例外，否则切不回来）',
+  );
+  assert.match(group, /待确认（\{\{ candidates\.length \}\}）/, '候选数量要写在标签里');
   // 空态那三句各挂在 `v-if` / `v-else-if` / `v-else` 上，与筛选互不干扰。
   // `memory-list` 加在同一格上：`page-list` 给的是栅格与行列缝，内部滚动那半只有
   // `memory-list` 有（2026-10-17 起，这一屏唯一的滚动容器）。
@@ -1100,11 +1172,48 @@ test('正文超限的提示读 --danger-strong，且模板仍绑着这个条件�
  * 接线没有——本仓反复栽的形状）；插进去了但没有 id→记录的解析（于是面板上永远是
  * 「不在库里」）；文案里混进了「建议保留新的」这类**代做判断**的话（裁决权在用户）。
  */
+test('窄列里的路径只显示最后一段，完整路径进 title（压的是显示，不是信息）', () => {
+  // 2026-10-17：三条路径都在窄列里，整条路径会把行顶宽、把次行折成两行（每条记忆多 18px）。
+  // 这一组是**决策文档写了的**（panel-decisions「次行的项目名只留最后一段」），所以判据要跟上：
+  // 只改文档不改判据，下一次重构把 `baseName` 摘掉时没人会红。
+  // `place` 是 `<script setup>` 里的 computed，`templateOf()` 只给模板 —— 这一条读整份文件。
+  assert.match(
+    read('../src/memory/MemoryRow.vue'),
+    /baseName\(props\.row\.workspace_path\)/,
+    '行次行的项目名没折成最后一段',
+  );
+  assert.match(
+    templateOf(read('../src/memory/MemoryRow.vue')),
+    /:title="row\.workspace_path \|\| ''"/,
+    '完整路径要进 title，一个字不许丢',
+  );
+
+  const panel = templateOf(read('../src/memory/MemoryPanel.vue'));
+  assert.match(panel, /baseName\(status\.file\)/, '「记录文件」没折成最后一段');
+  assert.match(panel, /:title="status \? status\.file : ''"/, '记录文件的完整路径要进 title');
+
+  // 候选行的来源标签必须过 `sourceText()` 的中文映射：直接打印后端的 kind，
+  // 用户在候选卡上看到的就是一个英文单词 `extract`（用户截图里就是它）。
+  const candidate = templateOf(read('../src/memory/MemoryCandidateRow.vue'));
+  assert.match(
+    candidate,
+    /\{\{ sourceText\(item\.source\.kind\) \}\}/,
+    '候选行的来源标签没走 sourceText()，屏幕上会露出 extract',
+  );
+});
+
 test('冲突标记在候选卡片里并排摆出来，动作落在 store 已有命令上', () => {
-  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
-  assert.match(tpl, /<MemoryConflict[\s/>]/, '候选卡片要真的用上这个组件');
+  // 2026-10-17：候选行整体搬进 `MemoryCandidateRow.vue`，这块标记跟着走。
+  const tpl = templateOf(read('../src/memory/MemoryCandidateRow.vue'));
+  assert.match(tpl, /<MemoryConflict[\s/>]/, '候选行要真的用上这个组件');
   assert.match(tpl, /:conflicts="item\.conflicts_with \|\| \[\]"/, '冲突 id 要从候选本身读（老数据没有这个键，所以给空数组兜底）');
-  assert.match(tpl, /:records="allMemories"/, '要拿全库记录去解析 id → 标题与正文（用筛选后的列表会解析不到别的项目的）');
+  assert.match(tpl, /:records="records"/, '要从 prop 读那份「全库记录」');
+  // **全库那一份由面板传下去**：传筛选后的列表会解析不到别的项目的记录。
+  assert.match(
+    templateOf(read('../src/memory/MemoryPanel.vue')),
+    /:records="allMemories"/,
+    '面板没把手里的全库记录传给候选行',
+  );
   // 两个动作复用面板已有的那两个命令，不新造一条路径。
   assert.match(tpl, /@disable="\(record\) => setMemoryState\(record, 'disabled'\)"/, '停用走已有的 memory_set_state');
   assert.match(tpl, /@remove="removeMemory"/, '删除走已有的 memory_delete（它自带影响范围确认框）');
@@ -1119,13 +1228,18 @@ test('冲突标记在候选卡片里并排摆出来，动作落在 store 已有�
  * 「已不在」；以及文案里出现「已自动作废」，那会把「模型标了一下」说成「已经替你决定了」。
  */
 test('取代标记在候选卡片里列出被推翻的那几条，动作是丢弃它', () => {
-  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  const tpl = templateOf(read('../src/memory/MemoryCandidateRow.vue'));
   // **标签名后面必须是空白、斜杠或尖括号**：只写 `/<MemorySuperseded/` 的话，
   // 把它改成 `<MemorySupersededX` 就照样匹配——反向验（2026-10-16）真的量到了这一条：
   // 判据绿着，而「组件没被用上」这件事已经发生了。C5 那条同款断言一并收紧。
   assert.match(tpl, /<MemorySuperseded[\s/>]/, '候选卡片要真的用上这个组件');
   assert.match(tpl, /:supersedes="item\.supersedes \|\| \[\]"/, '取代 id 要从候选本身读（老数据没有这个键，给空数组兜底）');
   assert.match(tpl, /:candidates="candidates"/, '要拿**待确认候选**那份列表去解析 id（记录列表里没有候选）');
+  assert.match(
+    templateOf(read('../src/memory/MemoryPanel.vue')),
+    /:candidates="candidates"/,
+    '面板没把候选那份列表传给候选行',
+  );
   // 动作复用面板已有的那一个命令，不新造一条路径；`false` 就是「拒绝」。
   assert.match(tpl, /@discard="\(candidate\) => decideCandidate\(candidate, false\)"/, '丢弃走已有的 memory_decide_candidate');
 });
@@ -1166,17 +1280,16 @@ test('两个标记块共用同一族类名：样式在 memory.css，两个组件
  * 用户看到的是「这条过期了」，而他的两条按钮**变灰了**却没有任何地方解释为什么。
  */
 test('stale 只多一句提示，保存与丢弃两个动作照常在', () => {
-  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
-  // **判据只能盯候选那张卡片**，不能盯整份模板：手工新建记录那组「已过期」单选
+  // 2026-10-17：候选行搬进 `MemoryCandidateRow.vue` 之后，这一行本身就是「候选那张
+  // 卡片」——不再需要从面板里切区间（上一版那两个锚点已经因为搬卡片而失效一次）。
+  const src = read('../src/memory/MemoryCandidateRow.vue');
+  const tpl = templateOf(src);
+  // **判据只能盯候选这一行**，不能盯整份模板：手工新建记录那组「已过期」单选
   // （`el-radio value="stale"`）也是 `stale`，而它跟「只标不执行」毫无关系。
   // 一开始写成盯整份模板，红在那个正当的用法上——判据越界也是一种判据骗自己。
-  //
-  // **从候选循环切到它所在那列的末尾**。第一版拿 `<div class="card-head">` 当右锚点，
-  // 而那张卡片自己就有一个 card-head（切出一段空的，红在「实际 0 处」——那条红看着像
-  // 「提示没接上」，真因是切错区间）。锚点选法本身也是判据的一部分。
-  const start = tpl.indexOf('<div v-for="item in candidates"');
-  const end = tpl.indexOf('</div>\n\n      <div class="page-layout__col">', start);
-  assert.ok(start >= 0 && end > start, '候选那张卡片没找全——两个锚点至少有一个对不上');
+  const start = tpl.indexOf('<div class="page-row memory-row memory-row--candidate">');
+  const end = tpl.lastIndexOf('</div>');
+  assert.ok(start >= 0 && end > start, '候选行没切出来——锚点对不上');
   const card = tpl.slice(start, end);
   // 唯一的合法写法：**用它决定「显不显示提示」**。
   const guard = `v-if="item.verification === 'stale'"`;
@@ -1207,7 +1320,7 @@ test('stale 只多一句提示，保存与丢弃两个动作照常在', () => {
 test('stale 那句话只说发生了什么，不说系统已经处理掉', () => {
   // `templateOf` 已经剥掉 HTML 注释，所以这里判的是模板里的**字面文案**，
   // 不会命中我写在模板注释里的反例说明（判据命中解释 = 判据不判代码）。
-  const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  const tpl = templateOf(read('../src/memory/MemoryCandidateRow.vue'));
   const flag = tpl.slice(tpl.indexOf('class="memory-flag">', tpl.indexOf("item.verification === 'stale'")));
   const lead = flag.slice(0, flag.indexOf('</p>'));
   assert.match(lead, /同一段/, '要说清是「同一段来源被重提」，否则用户看不懂为什么这条忽然过期');
