@@ -1089,6 +1089,13 @@
 - **`note` 路由限条数并过可见性**（`take(MAX_HITS)` + `scope_matches`，坐标只有路径就走路径那条兜底）：
   看不到的记录**退回 id 而不是标题**，别的项目的标题不会再出现在「最近注入」里。
 
+**`injectionDisabled` 那条 2026-10-17 又改了一次**（同一个洞的另一面）：判据收成 `!view.wired`。
+`loadState === 'incompatible'` 说的是「接线行还指着上一个内核指纹」，而重接线由**下次启动工作台
+在拉起内核之前**自动做（`kernel_adapter::start` → `runtime::refresh_enabled`，见
+[builtin-plugins.md §启动前刷新](../extensions/builtin-plugins.md)）——所以这个窗口里内核要么没在跑，
+要么已经接线完成；按它报「记忆注入插件还没启用」是一条假警报。插件页那行文案同步改成
+「内核已切换，下次启动工作台自动接线」。
+
 **上面那条「条数溢出写进行内注记」2026-10-15 又修了一次**（同一个洞的另一面）：注记原本是
 `if text.len() + note.len() <= CONTEXT_TOTAL_BYTES { push }`——**装不下就不写**。而 12 KiB 是个
 **按字节走**的边界，几十条长短不一的记忆里落到边界附近完全正常，于是那句「还有 N 条……」会在

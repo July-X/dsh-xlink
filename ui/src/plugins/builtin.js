@@ -64,7 +64,7 @@ export function builtinStateText(view) {
   if (view.stateError) return '状态文件异常，悬停查看';
   if (view.noteStatus) return view.noteStatus;
   if (view.loadState === 'prepared') return '已接线，下次启动工作台生效';
-  if (view.loadState === 'incompatible') return '内核已切换，重新拨一次开关修复';
+  if (view.loadState === 'incompatible') return '内核已切换，下次启动工作台自动接线';
   return '未启用';
 }
 
