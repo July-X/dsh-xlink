@@ -151,7 +151,9 @@ test('范围筛选与两个标签映射（§2 的两个视图 + 来源/验证状
 
 test('面板有范围筛选，行里显示来源与验证状态', () => {
   const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
-  for (const label of ['全部', '本项目', '通用偏好']) {
+  // 「按项目」而不是「本项目」（用户 2026-10-17 第二问）：这一档列的是**所有**项目范围的
+  // 记忆，不是「当前这个项目」——旧名字会让人以为它按当前目录过滤。
+  for (const label of ['全部', '按项目', '通用偏好']) {
     assert.match(tpl, new RegExp(`<el-radio value="[a-z]+">${label}</el-radio>`), label);
   }
   // 行渲染 2026-10-14 拆进了 `MemoryRow.vue`（面板连着五轮长大，每次都靠上调预算过关）。
@@ -1176,16 +1178,23 @@ test('窄列里的路径只显示最后一段，完整路径进 title（压的�
   // 2026-10-17：三条路径都在窄列里，整条路径会把行顶宽、把次行折成两行（每条记忆多 18px）。
   // 这一组是**决策文档写了的**（panel-decisions「次行的项目名只留最后一段」），所以判据要跟上：
   // 只改文档不改判据，下一次重构把 `baseName` 摘掉时没人会红。
-  // `place` 是 `<script setup>` 里的 computed，`templateOf()` 只给模板 —— 这一条读整份文件。
-  assert.match(
-    read('../src/memory/MemoryRow.vue'),
-    /baseName\(props\.row\.workspace_path\)/,
-    '行次行的项目名没折成最后一段',
-  );
-  assert.match(
+  // `projectName` / `scopeTitle` 是 `<script setup>` 里的 computed，`templateOf()` 只给模板
+  // —— 这一条读整份文件。
+  for (const file of ['MemoryRow.vue', 'MemoryDetail.vue']) {
+    const src = read(`../src/memory/${file}`);
+    assert.match(src, /baseName\(props\.row\.workspace_path\)/, `${file} 的项目名没折成最后一段`);
+    assert.match(src, /:title="scopeTitle"/, `${file} 的完整路径没进 title，一个字不许丢`);
+    assert.match(
+      templateOf(src),
+      /\{\{ row\.scope === 'general' \? '通用偏好' : projectName \}\}/,
+      `${file} 的标签还在写「本项目」这类通用词——要写具体项目名`,
+    );
+  }
+  // 次行不再重复标签已经说过的范围，只留来源 / 验证 / 时间 / 次数。
+  assert.doesNotMatch(
     templateOf(read('../src/memory/MemoryRow.vue')),
-    /:title="row\.workspace_path \|\| ''"/,
-    '完整路径要进 title，一个字不许丢',
+    /\{\{ place \}\}/,
+    '次行又拿范围前缀占宽度了：项目名已经在标签上',
   );
 
   const panel = templateOf(read('../src/memory/MemoryPanel.vue'));

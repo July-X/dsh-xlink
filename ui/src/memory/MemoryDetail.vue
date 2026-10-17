@@ -19,12 +19,19 @@
 import { computed } from 'vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { scopeText, shortTime, sourcesText, verificationText } from './memory.js';
+import { baseName } from '../shell/labels.js';
 
 const props = defineProps({
   row: { type: Object, required: true },
 });
 const emit = defineEmits(['close', 'edit', 'toggle', 'remove']);
 const accepted = computed(() => props.row.state === 'accepted');
+/// 与列表行同一口径：项目记忆的标签写**具体项目名**（完整路径进 `title`），
+/// 次行仍给完整路径——弹窗宽，路径在这里是「这条属于哪个项目」的凭据。
+const projectName = computed(() => baseName(props.row.workspace_path) || '本项目');
+const scopeTitle = computed(() =>
+  props.row.scope === 'general' ? '所有项目都算' : props.row.workspace_path || '本项目'
+);
 </script>
 
 <template>
@@ -38,8 +45,13 @@ const accepted = computed(() => props.row.state === 'accepted');
   >
     <div class="memory-row__main">
       <div class="memory-row__title">
-        <el-tag size="small" effect="plain" :type="row.scope === 'general' ? 'info' : 'primary'">
-          {{ row.scope === 'general' ? '通用偏好' : '本项目' }}
+        <el-tag
+          size="small"
+          effect="plain"
+          :type="row.scope === 'general' ? 'info' : 'primary'"
+          :title="scopeTitle"
+        >
+          {{ row.scope === 'general' ? '通用偏好' : projectName }}
         </el-tag>
         <el-tag v-if="row.pinned" size="small" effect="plain" type="warning">固定</el-tag>
         <el-tag v-if="!accepted" size="small" effect="plain" type="info">已停用</el-tag>

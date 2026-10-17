@@ -18,7 +18,7 @@
 // 模板里那一族 `memory-row` 类名**没有**自己的样式块：面板也写着同一族类名，而 scoped
 // 只对本组件模板里的元素生效，所以它们统一放在 `ui/src/memory/memory.css`（理由见那份文件）。
 import { computed } from 'vue';
-import { scopeText, shortTime, sourcesText, verificationText } from './memory.js';
+import { shortTime, sourcesText, verificationText } from './memory.js';
 import { baseName } from '../shell/labels.js';
 
 const props = defineProps({
@@ -26,14 +26,14 @@ const props = defineProps({
 });
 const emit = defineEmits(['open']);
 
-/// 次行「哪个项目」只显示路径最后一段，完整路径进 `title`（2026-10-17 收官：整条路径
-/// 让这一行在 312px 里折成两行、每条记忆多 18px）。与「最近注入」同一先例：截的是显示，
-/// 不是信息。通用偏好没有路径，仍读 `scopeText` 那句「（所有项目）」。
-const place = computed(() => {
-  if (props.row.scope === 'general') return scopeText(props.row);
-  const name = baseName(props.row.workspace_path);
-  return name ? `本项目 · ${name}` : '本项目';
-});
+/// 标签上写**具体项目名**（用户 2026-10-17 第二问：项目记忆标「本项目」等于没说）。
+/// 名字只取路径最后一段（`baseName`）：整条路径在这一行会折成两行、每条记忆多 18px；
+/// 完整路径进 `title`，一个字不丢。通用偏好没有项目，仍是「通用偏好」。
+const projectName = computed(() => baseName(props.row.workspace_path) || '本项目');
+/// 标签的悬浮说明：项目记忆给完整路径，通用偏好说清它是「所有项目都算」。
+const scopeTitle = computed(() =>
+  props.row.scope === 'general' ? '所有项目都算' : props.row.workspace_path || '本项目'
+);
 </script>
 
 <template>
@@ -50,8 +50,13 @@ const place = computed(() => {
     <div class="memory-row__main">
       <div class="memory-row__title">
         <span class="memory-row__name">{{ row.title || '（无标题）' }}</span>
-        <el-tag size="small" effect="plain" :type="row.scope === 'general' ? 'info' : 'primary'">
-          {{ row.scope === 'general' ? '通用偏好' : '本项目' }}
+        <el-tag
+          size="small"
+          effect="plain"
+          :type="row.scope === 'general' ? 'info' : 'primary'"
+          :title="scopeTitle"
+        >
+          {{ row.scope === 'general' ? '通用偏好' : projectName }}
         </el-tag>
         <el-tag v-if="row.pinned" size="small" effect="plain" type="warning">固定</el-tag>
         <el-tag v-if="row.state !== 'accepted'" size="small" effect="plain" type="info">
@@ -59,8 +64,8 @@ const place = computed(() => {
         </el-tag>
       </div>
       <p class="memory-row__body memory-row__body--clamp">{{ row.body }}</p>
-      <p class="memory-row__meta" :title="row.workspace_path || ''">
-        {{ place }} · {{ sourcesText(row) }} ·
+      <p class="memory-row__meta">
+        {{ sourcesText(row) }} ·
         {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
         已用 {{ row.use_count }} 次
       </p>
