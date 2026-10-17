@@ -24,27 +24,34 @@
 /// `expected a single document in the stream, but found more`），也就是工作台直接起不来。
 /// 旧实现三处各抄一份、都不查这个；提到共享层之后一处修好三处。
 pub(crate) fn looks_like_patch_list(text: &str) -> bool {
-    // **文档标记只在行首算数**（YAML 就是这么规定的）：块标量里缩进着的一行 `...` 是普通
-    // 内容，把它当结束标记会让我们白白拒绝一个本来能安全追加的文件。
-    let mut starts = 0usize;
+    // 三条判据，都只对**顶格**的行生效（YAML 规定文档标记必须在行首）：块标量里缩进着的
+    // `---` / `...` 是普通内容，把它当标记会让我们白白拒绝一个本来能安全追加的文件。
+    //
+    // 标记后面允许跟注释（`--- # 说明`），所以判定前先剥掉行尾注释——不剥的话那种写法会被
+    // 当成普通内容，标记一个都数不到，双文档照样漏过去（2026-10-17 评审核对出的漏网形状）。
+    let mut seen_content = false;
     let mut first_meaningful: Option<&str> = None;
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        // 文档结束标记：它之后的一切都是另一个文档，往后追加必然造出双文档。
-        if line.starts_with("...") && line[3..].trim().is_empty() {
+        let head = line.split('#').next().unwrap_or("").trim_end();
+        // ① 文档结束标记：它之后的一切都是另一个文档，往后追加必然造出双文档。
+        if head == "..." {
             return false;
         }
-        // 文档开始标记：允许一个（文件开头的 `---`），两个以上就是两个文档。
-        if line.starts_with("---") && line[3..].trim().is_empty() {
-            starts += 1;
-            if starts > 1 {
+        // ② 文档开始标记：文件开头那一个合法；**已经见过内容之后**再来一个就是第二个文档。
+        //    `--- !!js …` 这种「标记后直接跟内容」也算标记，且这个文档已经算有内容。
+        if let Some(rest) = head.strip_prefix("---") {
+            if seen_content {
                 return false;
             }
+            seen_content = !rest.trim().is_empty();
             continue;
         }
+        // ③ 普通内容行。第一行决定「顶层是不是列表」（其余内容不参与这个判断）。
+        seen_content = true;
         if first_meaningful.is_none() {
             first_meaningful = Some(trimmed);
         }
@@ -106,8 +113,19 @@ mod tests {
     /// **多文档一律不碰**：往 `...` 或第二个 `---` 之后追加会让内核的 patch 加载抛错
     /// （复核实测 `expected a single document in the stream, but found more`），那是
     /// 「壳把用户文件改成内核启动失败」——比不做这件事坏得多。
+    ///
+    /// 前两条是 2026-10-17 评审实测出来的漏网形状：中段一个 `---`（`starts == 1` 不触发旧
+    /// 判据）、以及带行尾注释的 `--- # …`（旧判据把它当普通内容，一个标记都没数到）。
     #[test]
     fn patch_list_detection_rejects_multi_document_streams() {
+        assert!(
+            !looks_like_patch_list("- a\n---\n- b\n"),
+            "内容之后再出现文档标记：已是双文档"
+        );
+        assert!(
+            !looks_like_patch_list("--- # x\n- a\n--- # y\n- b\n"),
+            "标记带行尾注释也是标记"
+        );
         assert!(
             !looks_like_patch_list("- a\n...\n"),
             "文档结束标记之后不能再追加"
@@ -121,11 +139,17 @@ mod tests {
             "第二个文档开始标记：已是双文档"
         );
         assert!(
+            !looks_like_patch_list("--- !!js [1]\n- a\n---\n- b\n"),
+            "标记后直接跟内容也算文档开始"
+        );
+        assert!(
             looks_like_patch_list("---\n- a\n"),
             "单个文档开始标记是合法的"
         );
         assert!(looks_like_patch_list("# c\n---\n- a\n"));
-        // 缩进着的 `...` 是块标量里的普通内容，不是文档结束标记：不能因此拒绝追加。
+        assert!(looks_like_patch_list("--- !!js [1]\n"));
+        // 缩进着的 `...` / `---` 是块标量里的普通内容，不是文档标记：不能因此拒绝追加。
         assert!(looks_like_patch_list("- a\n  ...\n"));
+        assert!(looks_like_patch_list("- a\n  ---\n"));
     }
 }

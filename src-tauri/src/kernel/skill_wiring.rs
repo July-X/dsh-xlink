@@ -97,6 +97,23 @@ mod tests {
         assert!(ensure_skill_wiring(broken, Path::new("/x/skills/active")).is_err());
     }
 
+    /// **多文档文件也必须被拒**（2026-10-17 评审：判据本身有用例，调用点没有）。
+    /// 往 `...` 或第二个 `---` 之后追加会让内核的 patch 加载抛错，也就是壳把用户文件
+    /// 改成内核起不来；这条契约（拒绝并原样返回，而不是照写）得有回归网。
+    #[test]
+    fn ensure_skill_wiring_refuses_a_multi_document_file() {
+        for broken in [
+            "- x: 1\n...\n",
+            "- a\n---\n- b\n",
+            "--- # x\n- a\n--- # y\n- b\n",
+        ] {
+            assert!(
+                ensure_skill_wiring(broken, Path::new("/x/skills/active")).is_err(),
+                "多文档文件必须拒绝，实际放过了：{broken:?}"
+            );
+        }
+    }
+
     /// 接线文本逐字节钉死：这份 YAML 要被内核的 loader 解析，格式变了就是
     /// 内核启动失败（历史上一次坏模板就 fatal 过），而"YAML 仍然合法"这件事
     /// Rust 侧没有任何工具能验，只能把期望值写死。
