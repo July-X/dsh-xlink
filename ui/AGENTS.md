@@ -610,13 +610,9 @@ ui/src/
 一条功能的状态、动作与面板**放在同一个目录里**。新增功能先问它属于哪一格；确实跨格的
 共享件放 `shell/`。
 
-搬文件时会跟着失效的东西，**2026-10-01 已经全部改成按 basename 认了**：
-`scripts/lib/shell-source.mjs`、`check-invariants.mjs` 的 `baseName()` / `inFile()`、
-`check-code-budget.mjs` 的 `isKnownBlob()` / `moduleId()`；`ui/test/*.test.js` 读**本仓
-前端**文件的相对路径按 `import.meta.url` 解析，本来就不受影响。**新增判据时照这个来**：
-判据要问「哪个模块」而不是「文件在哪一层」——那一次重组的实测代价是 9 项不变量转红、
-5 个测试 ENOENT 挂掉、判据脚本自己在启动阶段就崩。`FILE_BUDGETS` 里登记的**路径**仍要
-跟着改（那是给人看的），反棘轮比对按模块标识走。
+搬文件时同步更新调用方、测试和文档。源码结构判据优先按模块名定位，避免把路径写死；
+前端测试的相对路径按 `import.meta.url` 解析。组件按职责拆分，状态与动作沿用现有 store，
+同一语义的样式与异步逻辑优先复用；不以模板行数决定是否拆组件。
 
 ## 待移除
 
@@ -742,7 +738,7 @@ ui/src/
   - 尺寸走**组件的 `size` 属性**，不要用 CSS 的 `font-size`：Lucide 渲染的是带
     `width`/`height` 属性的 `<svg>`，字体缩不动它。颜色靠 `stroke="currentColor"` 继承。
   - **同一语义不许两处各拼一个长得像的**：将来再要版本徽标，先建组件再复用，别把样式抄进
-    某一侧的 scoped 块或 theme.css（后者是反棘轮文件，只许越来越小）。
+    某一侧的 scoped 块或 theme.css。
 - **面板里的第三方标志（npm 等）**：必须是 `ui/public/` 下的本地矢量、不许写远端 URL，
   并保留来源与许可声明——`tauri.conf.json` 的 `csp` 是 `null`，远端 `<img>` 出不出网完全
   取决于用户那台机器，取不到时页面上只剩一块白砖且没有任何报错。由 `check-invariants`

@@ -98,7 +98,7 @@ Shell 日志目录 `~/.dsh-xlink/shell/<release|dev>/logs/`（`paths::shell_logs
   - **「可升级到哪一版」在 Rust 算**（`kernel::lifecycle::release_overview` → `pkg::releases::newest_upgrade`），前端因此不需要第二份 semver 实现。比较函数复用既有的 `shell::version::cmp_versions`——`releases.rs` 本来就 import 着它给三个 `fetch_*` 排序。这条判错代价是静默但持续的：`0.2.0` 与 `0.2.0-rc.1` 的先后一旦判反，每次启动都会误报「有新版本」。6 条单测钉住预发布段、空安装集、空列表。
   - **基线取「已装最新」而不是「活动版本」**：用户可能有意把活动内核停在某个旧版本上（某个插件只在那一版验证过）。只要那版已经装好，就不该每次启动都催他升到自己明确不选的那一版。
   - **`upgrade` 刻意不并进 `ReleaseList`**，而是新结构 `ReleaseOverview`：`list_releases` 的结果会进 60 秒进程缓存，而「可升级到哪一版」取决于本机装了些什么——放进会被缓存的结构，缓存就会把上一次的答案端给下一个调用者。拆成两个类型，缓存里只剩与本机无关的纯网络结果。
-  - 组装逻辑放 `lifecycle.rs` 而不是 `commands.rs`：已装版本本就归前者管（`kernel → pkg` 已有先例，`kernel_deps.rs` 就这么调 `pkg::registry` / `pkg::releases`），而命令层在本仓库的反棘轮预算里只许越来越小。
+  - 组装逻辑放 `lifecycle.rs` 而不是 `commands.rs`：已装版本本就归前者管（`kernel → pkg` 已有先例，`kernel_deps.rs` 就这么调 `pkg::registry` / `pkg::releases`），命令层只负责转发，避免混入版本组装职责。
   - **一条已知边界**：`--autostart` 启动时窗口是收起的，此时发出来的 toast 用户看不见、到点自消。数据本身不受影响——他打开应用进内核版本页就能看到那一版与「安装」按钮，提示只是顺手指个路，不是唯一入口。
   - 对照：桌面端自身的更新检查**本来就已经自动**，且不走前端——`lib.rs` 的 `setup()` 里起 `updater::spawn_background_check`，3 秒后查、命中就发 `shell-update-available` 事件。插件 / 技能的更新检查则由 `activePanel` watcher 按需触发，开局停在概览页时不发。
 
@@ -183,7 +183,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 ### theme.css 的死规则排查
 
-反棘轮大文件只许下调，所以新增规则前先看一眼能不能从旧账里扣。2026-10-03 用「把 theme.css 里的 class 抠出来去 `ui/src` 全文搜」的方法找出 4 条**只在 theme.css 里被自己引用**的规则并删除：`card-head-with-logo`、`list-head-with-tip`、`notify-section-hint`、`origin-chip-local`（14 行），本轮新增的 8 行正好抵掉，theme.css **3151 → 3145**。
+新增共享样式前先复用现有规则，并清理失去调用方的样式。2026-10-03 用「把 theme.css 里的 class 抠出来去 `ui/src` 全文搜」的方法找出 4 条**只在 theme.css 里被自己引用**的规则并删除：`card-head-with-logo`、`list-head-with-tip`、`notify-section-hint`、`origin-chip-local`（14 行），避免样式持续堆积。
 
 ⚠️ 这类扫描**有假阳性，不能照单全收**：`.panel-enter-*` / `.catalog-enter-*` / `.subrow-*` 共 9 条会被一并报出来，它们是 Vue `<Transition>` 按组件名自动生成、根本不出现在源码里的类名。判据是「类名由框架按约定生成」而不是「文本搜不到」。
 
@@ -198,7 +198,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 - **Windows**：`shell::tray`，通知区域托盘。十二档 `icons/tray-{dark,light}-{16,20,24,32,40,48}.png` 由 `include_image!` 编译期解码：按 `Personalize\SystemUsesLightTheme` 选浅色 / 深色两套，按 `GetSystemMetricsForDpi(SM_CXSMICON, …)` 选档，`watch_theme` 的后台线程等注册表变化换帧、`WindowEvent::ScaleFactorChanged` 重取（见 [icon-design.md](../ui/icon-design.md)）；收起时额外 `set_skip_taskbar(true)`（`ITaskbarList::DeleteTab`），恢复时补回。
 - **macOS**：`shell::menu_bar`，菜单栏状态项。图标是**模板图**（`icons/menubar-{22,44}.png`，纯黑 + alpha），系统按菜单栏明暗自动反色——macOS 既不广播主题变化，我们也无法预知当前值，模板图是唯一正确形态。收起时顺带 `set_activation_policy(Accessory)` 把面板移出 Dock，恢复时改回 `Regular`。
 
-菜单接线（「显示 / 退出」两项 + 左键叫回窗口）两端共用 `resident::build_background_menu`，只传各自的图标与文案。两端各写一份时曾有 14 行逐字重复（`check-code-budget` 抓到的），而真正危险的是「退出」只改一端：用户会点到一个不响应的菜单项，界面上没有任何症状。
+菜单接线（「显示 / 退出」两项 + 左键叫回窗口）两端共用 `resident::build_background_menu`，只传各自的图标与文案。两端各写一份时曾有 14 行逐字重复（重复代码检测发现），而真正危险的是「退出」只改一端：用户会点到一个不响应的菜单项，界面上没有任何症状。
 
 `CloseRequested` 一律经 `resident::intercept_close` 接管（`prevent_close()` 后隐藏），与平台无关。收起那一刻窗口已隐藏，页内提示谁也看不见，因此**收起时不广播任何事件**；改由 Rust 在**从后台恢复**时补发 `shell-restored-from-background`，但只在本进程**发生过一次用户收起**（关窗 / Windows 最小化，`HIDDEN_BY_USER` 置位）之后的第一次恢复才发（`RESTORE_HINT_SHOWN` + `HIDDEN_BY_USER` 双旗消费制，`consume_restore_hint`）——登录自启藏起壳后的第一次唤回是**静默**的：用户本进程里没收起过任何东西，「刚刚把窗口收进了后台」对不上他的动作（2026-10-05 用户反馈「提示经常触发」后收紧），前端弹 8 秒提示（可勾选「不再提示」）是唯一能讲清「程序还在后台、怎么找回来」的可见时刻；勾选写 localStorage（跨启动保留，dev 与 release 两个 webview 各存各的），此后该壳永远静默。恢复与收起各只有一份实现（`resident::show_main_shell` / `resident::hide_to_shell`），`lib::show_main_shell` 与工作台拉绳的 `focus_main_shell` 都调前者；**不要把动作抄回调用方**：Windows 上两边互调过一次，直接 `thread 'main' has overflowed its stack`。收起裸调 `window.hide()` 绕开 `hide_to_shell` 的代价是 2026-10-05 实测过的：macOS 激活等级没降到 Accessory，进程带着「在运行」小点的 Dock 图标、零可见窗口地挂在后台；且 macOS 的激活不会替我们显示 `hide()` 掉的窗口，所以 `RunEvent::Reopen` 抬不到工作台时必须兜底调 `show_main_shell`，否则那枚 Dock 图标点了没反应——接线由 `check:invariants` 第 17 项钉住。
 

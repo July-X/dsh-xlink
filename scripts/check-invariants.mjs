@@ -567,8 +567,7 @@ note(`前端与注入脚本调用 ${invoked.size} 个命令，全部已注册且
   //
   // 2026-10-06：这条判据写的时候全仓只有 theme.css 一份样式表，定义收在它
   // 上面是「唯一定义处」这个事实的**记述**，不是一条设计决定。而浮层层级
-  // 阶梯（--z-*）按审查意见 P1-01 必须写在一处，而 theme.css 恰在反棘轮上限
-  // （3001/3001）上一行都加不了——那份阶梯于是落进 diagnostics.css。
+  // 阶梯（--z-*）按审查意见 P1-01 必须写在一处，那份阶梯位于 diagnostics.css。
   //
   // 把它改成扫全部 CSS 是**修正**而不是放宽：门禁要保的不变量是「没有静默失效
   // 的 var() 引用」，而 `:root` 自定义属性本来就是全局的，定义在哪个样式表里
@@ -985,7 +984,7 @@ function productionRust(text) {
     // 判据必须落在那条动作**里面**：动作与判据被拆开时，命令层只该看到动作。
     const harnessSrc = productionRust(shellSource('harness_window.rs'));
     // 证据必须真的在 Incident 上：命令层是从 `incident.health` 取出来递给判据的
-    // （commands.rs 是反棘轮文件，不能为了留一份副本多写三行）。`diagnose_runtime`
+    // （命令层不应重复维护诊断证据）。`diagnose_runtime`
     // 把它设成 None 的话，`if let Some(health)` 那一步会静默跳过，**第三层整个不工作
     // 且没有任何线索**——与 ACL 事故同一类。它的提前返回路径由
     // `existing.health.as_ref() == Some(&report)` 这个条件保证带着 health，所以这里
@@ -2569,8 +2568,7 @@ if (ungatedOsImports.length > 0) {
 // 那一行**，而这件事没有任何症状：文档还在、门禁全绿、下次读清单的人以为「就这些」。
 //
 // 判据只做覆盖（每个记忆模块都要在清单里出现），不判状态写得对不对——那要靠评审。覆盖能
-// 机械判，而且正是最容易漏的一步：新增一个 `memory/xxx.rs` 时，人会记得登记 FILE_BUDGETS
-// （那里有门禁），不会记得清单。
+// 机械判，而且正是最容易漏的一步：新增一个 `memory/xxx.rs` 时，必须同步补充清单。
 {
   const progressPath = join(root, 'docs/features/memory/memory-progress.md');
   let progress = null;

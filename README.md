@@ -192,6 +192,10 @@ Rust 改动跑相关单测，按需做编译或 Clippy 检查；内置插件改�
 再跑对应插件测试与 `check:builtin`。同一代码状态通过后不因准备提交而重跑。
 持续集成保留全套检查；发布平台构建负责验证 release 产物，Windows 单测独立保留。
 
+代码按职责组织，新增逻辑先复用现有组件、store 与服务；出现独立职责或相同语义的重复时，
+在本次改动内提取共享实现。不设文件或全仓行数上限，不为凑行数压缩排版或强拆组件。
+`npm run check:duplicates` 保留重复代码检测，界面产物体积预算不变。
+
 本机需要控制 `target` 体积时，将个人 Cargo 配置放在仓库根目录的 `.cargo/config.toml`
 （已忽略，不提交）。Cargo 从启动目录向上找配置；只放在 `src-tauri/.cargo/` 时，
 根目录的 `cargo … --manifest-path src-tauri/Cargo.toml` 不会读取它，两种入口可能生成
@@ -300,7 +304,7 @@ Rust 改动跑相关单测，按需做编译或 Clippy 检查；内置插件改�
 | `dev.mjs` | 把 vite 端口与 tauri `devUrl` 收敛到一处，`npm run dev 5190` 改的就是它 |
 | `prepare-builtin-plugins.mjs` | 从 `plugins/openai-oauth/` 生成随包交付的资源目录（`--check` 供门禁用） |
 | `check-invariants.mjs` | 命令注册 / capability / 三处版本一致 / CSS 变量等不变量 |
-| `check-code-budget.mjs` | 生产代码行数与重复区间预算（反棘轮） |
+| `check-code-duplicates.mjs` | 检查生产代码重复块，不限制文件或全仓行数 |
 | `check-ui-bindings.mjs` | 校验 SFC 模板里的标识符能解析到真实绑定 |
 | `check-ui-bundle-budget.mjs` | JS / CSS 产物预算，本地与 CI 调同一份判据 |
 | `check-signing-keys.mjs` | 校验更新签名的私钥与 updater 公钥成对 |

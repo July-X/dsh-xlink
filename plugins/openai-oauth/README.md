@@ -86,7 +86,7 @@ settingsNs 取行 id、桥接握手、目录拉取、常用模型过滤（桩载
 
 ## 门禁与预算
 
-`scripts/check-code-budget.mjs` 目前只扫 `src-tauri/src` 与 `ui/src`；
+`scripts/check-code-duplicates.mjs` 的重复代码检测目前只扫 `src-tauri/src` 与 `ui/src`；
 本目录在其扫描范围外。资源管线（构建期预编译 + 摘要清单 + 体积预算）
 落地时把本目录一并纳入（开发计划 §11）。
 
