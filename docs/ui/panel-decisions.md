@@ -633,3 +633,58 @@ macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用�
   `@edit="openMemoryEditor"`」，现在钉「行只发 `open`」与「编辑从详情转手 `editFromDetail`（先关详情
   再开编辑器，两个弹窗都 `append-to-body`，叠着开就是两层遮罩）」。21 处变异逐个跑过，全部被抓。
 - **没动的**：候选行的三个文字按钮、`.memory-list` 之外的所有既有结构、`memory-scroll` 的 224px。
+
+## 记忆面板：候选并进同一条列表视图，整页钉进窗口高度（2026-10-17 晚）
+
+用户第五问（截图里用红框圈出「记忆」卡与「待确认」卡）：「这部分的 UI，需要继续优化，让布局再紧凑
+一些，尽量不要出现纵向滚动条。」
+
+- **先把页面到底有多长量出来**（无头 Chromium 驱动**真组件**：`npm run dev:ui` 起的 vite + 在
+  `preload` 之前注入 `window.__TAURI__` 的 mock，数据取本机 `memory.json` / `jobs.json`，
+  视口 1040×748 与窗口一致）：`main.clientHeight` 710、`scrollHeight` 1047——**页面真的溢出 337px**，
+  用户截图里标题被滚出去就是这个。两列分别 929 / 599：**整页高度全由左栏决定**，而左栏的两张卡
+  加起来就是 929（记忆 481 + 间距 12 + 待确认 436）。
+- **上一轮那条 `max-height: 320px` 只压住了记忆列表，没压住候选卡**：候选卡挂在它下面，仍按内容
+  长到 436px。两条列表各自设上限也解决不了——两张卡本身就有 169 + 83 = 252px 的固定开销，5 行内容
+  再把 592px 的可用高度吃光。**候选不是第二份内容，它是同一份清单的另一档视图**，所以这一轮的正解
+  是并成一张卡：筛选那一排从三档变四档（`全部 / 本项目 / 通用偏好 / 待确认（N）`），列表容器复用
+  同一个 `memory-list`，候选行的正文、来源、冲突 / 取代标记与三枚动作一个字没动（整行搬进
+  `MemoryCandidateRow.vue`）。
+- **整页钉进窗口高度**（`MemoryPanel.vue` 的 scoped 块）：`.panel { height: 100% }` 拿满 `main` 的
+  内容高度、`.page-layout { flex: 1 1 auto; align-items: stretch; grid-template-rows: minmax(0, 1fr) }`、
+  左栏卡片 `min-height: 0`、`.memory-list { flex: 1 1 auto; min-height: 0; overflow-y: auto }`。
+  **高度链每一级的 `min-height: 0` 都是承重的**：flex / grid 子项的默认下限是 min-content，少一级
+  就会撑回内容高度、页面照样滚（这条在 `.memory-list` 的实测里验过：12 条记忆时列表 431px 内部滚动、
+  `main` 的 `scrollHeight` 仍是 710）。
+- **卡片高度跟着内容走，不拉到底**（`flex: 0 1 auto` + `overflow: hidden`）：3 条记忆时卡片 512.5px、
+  列表 352px 全部可见；写 `flex: 1 1 auto` 会让卡片拉满 592px、下面空出一大块（截图对比过）。
+- **次行的项目名只留最后一段**（`baseName`，完整路径进 `title`）：`.memory-row__meta` 在 324px 里
+  需要 438px，整条路径让它折成两行——每条记忆多占 18px。这与「最近注入」那处是同一先例，
+  D5 要求的五项（范围 / 来源 / 验证 / 时间 / 已用次数）一个没少。
+- **行盒再压一档**：`.memory-row` 的 `padding: 10px 12px → 5px 12px`、正文与次行的 `margin`
+  `4px → 3px / 2px`。一条记忆 125.5 → 112.5px，三条就省出一行的高度。
+- **候选行的动作排沉底**（`.memory-row--candidate { grid-template-columns: minmax(0, 1fr) }` +
+  `__actions { grid-column: 1; grid-row: 4; justify-content: flex-end }`）：动作挤在标题右侧时第 1 列
+  只剩 ~190px，「已安装 cargo-cache 0.8.3」折成三行、来源标签再掉一行。来源标签同时从原样打印
+  `item.source.kind`（屏幕上写着 `extract`）改成 `sourceText()` 的中文映射。
+- **改法是「少掉一处入口」还是「多一个档」**：候选卡没了，但候选本身没有藏起来——数量写在第四档的
+  标签上（没有候选时不画这一档，已经在那一档里时例外，否则判完最后一条就没地方切回来了）。
+  与本仓 `f22ca5e` 那条「隐藏内容比出现滚动条更糟」一致：这里一屏能同时看到 3 条记忆、右栏三张卡，
+  页面级滚动条 **0**。
+- **实测（改后）**：`main.clientHeight 710 / scrollHeight 710`（溢出 0）；记忆视图 3 条全可见
+  （列表 352 / 352）；候选视图 2 条全可见（列表 273 / 273）；12 条记忆时列表 431 内部滚动、页面仍 0；
+  浅色与暗色各截一张，无配色回归。
+- **判据**：`ui/test/memoryPanel.test.js` 改了 8 条、新增「窄列里的路径只显示最后一段」1 条
+  （三处 `baseName` 与两处 `title`，四条变异逐个验过会转红）；`ui/AGENTS.md` 的层叠纪律用上两处——
+  ① 候选那一档的接线改查 `MemoryCandidateRow.vue`（动作搬了文件，判据还在盯面板就会绿在「组件已经
+  接上、面板什么都没有」上）；② `.memory-list` 的 `max-height: 320px` 换成「`flex: 1 1 auto` +
+  `min-height: 0` + 不再写死上限」，并补上 scoped 高度链的四条断言（scoped 规则的祖先条件层叠工具
+  读不准，按本仓规矩读剥注释后的规则文本）；③ `memory-row__actions` 的 `grid-column` 不能再走
+  `effectiveDeclaration`——候选行那条后代规则与基线同主语而工具是祖先盲的，会读到候选那条的 `1`，
+  改成按规则原文查（`ui/AGENTS.md` 记的就是这个坑）。反向验：把 `.memory-list` 的 `min-height: 0`
+  删掉，高度链那条判据转红；把候选行的动作排规则去掉 `justify-content`，对应断言转红。
+- **拆分与复用**：候选行按职责拆进新组件 `MemoryCandidateRow.vue`（正文、来源、冲突 / 取代标记、
+  三枚动作都在它身上），面板只留一行 `<MemoryCandidateRow>`；它与只读、点开才出操作的
+  `MemoryRow.vue` 是两种角色，合并会让「默认精简、点开再操作」失去唯一的形状。重复代码检测
+  （`npm run check:duplicates`）4 处 / 允许 8 处，本次没有新增重复区间；行数与新文件登记预算
+  自 2026-10-17 起已取消（改由「按职责拆分 + 评审说明」约束）。

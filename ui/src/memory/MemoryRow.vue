@@ -17,12 +17,23 @@
 //
 // 模板里那一族 `memory-row` 类名**没有**自己的样式块：面板也写着同一族类名，而 scoped
 // 只对本组件模板里的元素生效，所以它们统一放在 `ui/src/memory/memory.css`（理由见那份文件）。
+import { computed } from 'vue';
 import { scopeText, shortTime, sourcesText, verificationText } from './memory.js';
+import { baseName } from '../shell/labels.js';
 
-defineProps({
+const props = defineProps({
   row: { type: Object, required: true },
 });
 const emit = defineEmits(['open']);
+
+/// 次行「哪个项目」只显示路径最后一段，完整路径进 `title`（2026-10-17 收官：整条路径
+/// 让这一行在 312px 里折成两行、每条记忆多 18px）。与「最近注入」同一先例：截的是显示，
+/// 不是信息。通用偏好没有路径，仍读 `scopeText` 那句「（所有项目）」。
+const place = computed(() => {
+  if (props.row.scope === 'general') return scopeText(props.row);
+  const name = baseName(props.row.workspace_path);
+  return name ? `本项目 · ${name}` : '本项目';
+});
 </script>
 
 <template>
@@ -48,8 +59,8 @@ const emit = defineEmits(['open']);
         </el-tag>
       </div>
       <p class="memory-row__body memory-row__body--clamp">{{ row.body }}</p>
-      <p class="memory-row__meta">
-        {{ scopeText(row) }} · {{ sourcesText(row) }} ·
+      <p class="memory-row__meta" :title="row.workspace_path || ''">
+        {{ place }} · {{ sourcesText(row) }} ·
         {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
         已用 {{ row.use_count }} 次
       </p>
