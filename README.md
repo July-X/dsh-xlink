@@ -192,6 +192,13 @@ Rust 改动跑相关单测，按需做编译或 Clippy 检查；内置插件改�
 再跑对应插件测试与 `check:builtin`。同一代码状态通过后不因准备提交而重跑。
 持续集成保留全套检查；发布平台构建负责验证 release 产物，Windows 单测独立保留。
 
+本机需要控制 `target` 体积时，将个人 Cargo 配置放在仓库根目录的 `.cargo/config.toml`
+（已忽略，不提交）。Cargo 从启动目录向上找配置；只放在 `src-tauri/.cargo/` 时，
+根目录的 `cargo … --manifest-path src-tauri/Cargo.toml` 不会读取它，两种入口可能生成
+不同配置的产物。可为 dev/test 使用 `debug = "line-tables-only"`，并将第三方依赖的
+`debug` 设为 `false`，保留本项目回溯行号并减少调试信息；增量编译继续保留。
+改配置不会自动回收旧产物，不要为了日常提交反复清空 `target`。
+
 `build` 与 `dev` 会先跑 `npm run prep:builtin`，从 `plugins/openai-oauth/` 生成随包交付的资源目录。全新 checkout 上直接跑 cargo 会因为缺这个目录而停在 `resource path 'resources/builtin-plugins' doesn't exist`，所以那条生成步骤不能跳。
 
 根目录的 `pnpm-workspace.yaml` 让 pnpm 把本项目当独立根处理，直接跑 `pnpm install` 或 `npm install` 也行。产物位于 `src-tauri/target/release/bundle/`（macOS 为 `.dmg`，Windows 为 NSIS 安装包 `.exe`）。
