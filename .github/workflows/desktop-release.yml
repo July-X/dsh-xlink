@@ -215,43 +215,12 @@ jobs:
         # `resource path 'resources/builtin-plugins' doesn't exist`。
         run: pnpm run prep:builtin
 
-      - name: Check cross-file invariants
-        run: pnpm run check:invariants
+      # 本地与两条 workflow 共用同一份清单；release 编译由平台打包 job 负责。
+      - name: Check JavaScript, plugins and UI bundle
+        run: pnpm run check:js
 
-      - name: Check code budget
-        # 此前只在 desktop-ci.yml 的 quality job 里跑，发布这条通道缺席
-        # （review M12）。防膨胀的门禁漏在发布通道上，等于「发出去的那份
-        # 不受膨胀约束」。
-        run: pnpm run check:code-budget
-
-      - name: Run UI tests
-        run: pnpm run test:ui
-
-      - name: Run script test suites
-        # 一次覆盖 scripts/*.test.mjs 的全部用例（标题栏注入、发布清单、
-        # 资产归一化、依赖安装脚本的输出透传）；以后新增脚本测试不必再逐个
-        # 往 workflow 里补步骤。
-        run: pnpm run test:scripts
-
-      - name: Smoke-test the pull-string launcher
-        run: node scripts/smoke-pullstring.mjs
-
-      - name: Build UI
-        run: pnpm run build:ui
-
-      - name: Enforce UI bundle budgets
-        # 判据本体在 scripts/check-ui-bundle-budget.mjs：此前这段 heredoc 在
-        # 本文件与 desktop-ci.yml 各内联一份，已经漂移过一次（review M12）。
-        run: node scripts/check-ui-bundle-budget.mjs
-
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-
-      - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
-
-      - name: Run Rust Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Check Rust formatting, tests and Clippy
+        run: pnpm run check:rust:ci
 
   build:
     name: Build ${{ matrix.name }}

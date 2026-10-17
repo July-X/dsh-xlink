@@ -166,9 +166,11 @@ test('每个会编译 Rust 的 workflow job 都先生成内嵌插件资源', () 
     const jobs = jobBlocks(source);
     assert.ok(jobs.length > 0, `${workflow}: 没解析出任何 job——判据自己失效时必须红`);
 
-    const compiling = jobs.filter((job) =>
-      /\bcargo\s+(build|check|test|clippy|run)\b/i.test(job.lines.join('\n')),
-    );
+    const compilation = /\bcargo\s+(build|check|test|clippy|run)\b|\btauri\s+(build|dev)\b|\bpnpm run check:rust:ci\b/i;
+    const compiling = jobs.map((job) => ({
+      name: job.name,
+      source: job.lines.filter((line) => !line.trimStart().startsWith('#')).join('\n'),
+    })).filter((job) => compilation.test(job.source));
     // 同样是为了「判据在空转」时能响：解析不出编译型 job 就说明匹配式坏了，
     // 而不是「所有 job 都不编译所以通过」。
     assert.ok(
@@ -177,9 +179,9 @@ test('每个会编译 Rust 的 workflow job 都先生成内嵌插件资源', () 
     );
 
     for (const job of compiling) {
-      assert.match(
-        job.lines.join('\n'),
-        /prep:builtin|prepare-builtin-plugins\.mjs/,
+      const prepareAt = job.source.search(/^\s+run:\s+(?:pnpm run prep:builtin|node scripts\/prepare-builtin-plugins\.mjs)\s*$/m);
+      assert.ok(
+        prepareAt >= 0 && prepareAt < job.source.search(compilation),
         `${workflow} 的 job「${job.name}」会编译但没生成内嵌插件资源——` +
           'tauri 的 build script 会校验 bundle.resources，新 checkout 上必然死于 ' +
           "`resource path 'resources/builtin-plugins' doesn't exist`",

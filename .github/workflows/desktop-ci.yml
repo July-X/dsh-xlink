@@ -57,58 +57,12 @@ jobs:
         # cargo test 与两个平台的构建同时挂在这一行上。
         run: pnpm run prep:builtin
 
-      - name: Check cross-file invariants
-        # 命令注册/白名单/capability/内置补丁清单/三处版本号一致性。
-        run: pnpm run check:invariants
+      # 本地与两条 workflow 共用同一份清单；release 编译由平台打包 job 负责。
+      - name: Check JavaScript, plugins and UI bundle
+        run: pnpm run check:js
 
-      - name: Check code budget
-        # 生产代码行数预算 + 重复区间数：拦住「这个模块又胖了一圈」，
-        # 要涨必须在同一个提交里改 scripts/check-code-budget.mjs 的数字。
-        run: pnpm run check:code-budget
-
-      - name: Check embedded WebDriver gating
-        # 内嵌 WebDriver 插件（app 进程内的本机 HTTP 自动化端口）绝不能进
-        # release 产物。这一步只跑**源码层**判据（不需要编译，秒级）；
-        # 真正的产物层判据（读 cargo 指纹确认这次构建链接了谁）放在
-        # desktop-release.yml 的 build job 里——那里才刚跑完 release 编译。
-        run: pnpm run check:webdriver-gating
-
-      - name: Run UI tests
-        run: pnpm run test:ui
-
-      - name: Run script test suites
-        run: pnpm run test:scripts
-
-      # 内置插件的纯函数测试（含 xlink-memory 的注入预算状态机）。此前只挂在本地
-      # `npm run check` 上、两个 workflow 都没跑，于是记忆插件那一半在 CI 上完全
-      # 没有网：装配层与参数名契约改错了本地全绿、进 main，到真机才炸。它只用
-      # `node:test`，不装额外依赖。
-      - name: Run builtin plugin test suites
-        run: pnpm run test:plugin
-
-      - name: Smoke-test the pull-string launcher
-        run: node scripts/smoke-pullstring.mjs
-
-      - name: Build UI
-        run: pnpm run build:ui
-
-      - name: Enforce UI bundle budgets
-        # 判据本体在 scripts/check-ui-bundle-budget.mjs：此前这段 heredoc 在
-        # 本文件与 desktop-release.yml 各内联一份，已经漂移过一次（review M12）。
-        run: node scripts/check-ui-bundle-budget.mjs
-
-      # cargo fmt 不接受 --locked（它是纯格式化器，不解析依赖图），因此下面
-      # 只有 test / clippy / check 三处带 --locked。作用是让「实际编译与打包
-      # 用的依赖集」必须等于仓库里被 review 过的 Cargo.lock——此前全线裸跑，
-      # 依赖可以在无人察觉的情况下漂移。
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-
-      - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
-
-      - name: Run Rust Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Check Rust formatting, tests and Clippy
+        run: pnpm run check:rust:ci
 
   # Windows 专属代码（托盘、Job Object、PowerShell 进程查询、反斜杠路径处理、
   # `%ComSpec% /C` 分支）在 macOS 上一次也不会被编译。只靠发布流水线发现问题的

@@ -53,12 +53,4 @@ import { isLoading } from '../loading.js';
   }
 });
 
-test('真实组件树当前全部可解析', async () => {
-  const result = await checkProject('ui/src');
-  assert.deepEqual(
-    result.failures.map((f) => `${f.file}:${f.names.join(',')}`),
-    [],
-    'UI 模板里不得出现未定义标识符',
-  );
-  assert.ok(result.checked >= 10, `应当检查到全部组件，实际 ${result.checked}`);
-});
+// 真实组件树由 check:invariants 扫描；这里仅验证检查器能识别正确与错误绑定。
