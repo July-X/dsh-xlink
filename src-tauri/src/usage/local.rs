@@ -274,8 +274,19 @@ pub fn usage_view(force: bool) -> Result<UsageView, AppError> {
     let (family, id) = instance::resolve_default();
     let path = paths::instance_usage_state_file(family, id);
     let root = paths::instance_dsh_home(family, id).join("sessions");
-    let mut doc: UsageStateDoc =
-        perf.measure("load", || shell::state::load_checked(&path, usage_ctx()))?;
+    // **这里刻意不用 `load_checked`**（2026-10-17）：这份账目整份都能从 sessions
+    // 目录里的帧重算，损坏时唯一正确的处理是「从零重扫」——而不是像插件清单那样
+    // 拒绝读写。账目被重置、历史统计从头重扫是用户看得见的后果，所以把原因记进
+    // 壳日志（`shell_events`），别让它是静默的。配套的写入走 `save_timed_light`
+    // （不为派生数据付两次 fsync），两半必须同时成立：见 `state::load_rebuildable`。
+    let (mut doc, corrupted): (UsageStateDoc, _) =
+        perf.measure("load", || shell::state::load_rebuildable(&path));
+    if let Some(reason) = corrupted {
+        crate::shell::shell_events::record(
+            "usage-state",
+            &format!("用量账目损坏，已从零重扫（{reason}）：{}", path.display()),
+        );
+    }
     let now_ms = process::epoch_millis();
     refresh_doc(
         &mut doc,
@@ -325,7 +336,12 @@ fn refresh_doc(
     perf.end("scan", started);
     // planned = 规划段判定「有新帧要解」的文件数：0 说明这轮只是空转对账。
     perf.count("items", planned as u64);
-    doc.last_scanned_at_ms = process::epoch_millis();
+    // 用**调用方传进来的** now_ms 而不是再读一次墙钟：这一次扫描的「时刻」与
+    // 规划 / 新鲜度判据必须是同一个值。两次读墙钟在快机器上会落在同一毫秒里，
+    // `no_op_refresh_skips_save_but_advances_in_memory_timestamp` 那条判据
+    // 「第二次扫描的时刻严格变大」就会偶发转红（2026-10-17 去掉落盘 fsync 之后
+    // 才稳定复现：那次 fsync 恰好让两次读跨过了毫秒边界）。
+    doc.last_scanned_at_ms = now_ms;
     let changed = schema_stale || before != doc.files;
     // `saved` 记的是**本轮有没有真落盘**，不是「账目有没有变」：变了但在
     // 去抖窗口内也会跳过落盘（省掉 40ms 的两次 fsync），跳过时磁盘上的账目
@@ -339,7 +355,11 @@ fn refresh_doc(
         // fsync 上（见 `atomic_write::WriteTimings` 的说明）。只有一个
         // `save_us` 的话，下次再看到 40ms 仍然不知道该不该动 fsync。
         let started = perf.start();
-        let timings = shell::state::save_timed(state_path, doc, usage_ctx())?;
+        // 免 fsync 的落盘：这份账目是派生数据，掉电最多丢一笔 offset——下次全量
+        // 重扫会算回来，而 `load_rebuildable` 已经把「读到半截」接住了。省掉的是
+        // 每次保存的两次 fsync（2026-10-17 perf 日志：save_us p50 44ms 里
+        // save_fsync 21ms + save_dirsync 19ms，占这一段成本的九成）。
+        let timings = shell::state::save_timed_light(state_path, doc, usage_ctx())?;
         perf.end("save", started);
         perf.record_all(timings.as_fields());
         remember_save_ms(instance.0, instance.1, doc.last_scanned_at_ms);
@@ -1400,6 +1420,48 @@ mod tests {
             1,
             "账目条目本身保留（它是增量 checkpoint），只剪日账"
         );
+    }
+
+    /// 账目损坏时**不许**把用户挡在门外：它整份都能从 sessions 重算，正确的
+    /// 处理是从零重扫并覆盖回去（`load_rebuildable` + `save_timed_light` 那一对）。
+    ///
+    /// 这条判据盯的是「静默失败」的反面：以前 `usage_view` 走 `load_checked`，
+    /// 一个半截文件会让用量卡一直报错、要用户手删文件——而它本来没有任何不可再生的
+    /// 内容。半截文件的来源是免 fsync 落盘（掉电），所以两条改动必须一起成立。
+    #[test]
+    fn a_corrupt_ledger_is_rebuilt_instead_of_blocking_the_panel() {
+        let dir = tempfile_fresh("usage-corrupt-");
+        let root = dir.join("sessions");
+        let file_dir = root.join("workdir").join("session-x");
+        fs::create_dir_all(&file_dir).unwrap();
+        fs::write(
+            file_dir.join("session.jsonl.zstd"),
+            raw_frame(b"{\"type\":\"assistant/message\"}\n", true),
+        )
+        .unwrap();
+        let state = dir.join("state.json");
+        fs::write(&state, b"{\"schema\": 1, \"fil").unwrap();
+
+        let (mut doc, reason): (UsageStateDoc, _) = crate::shell::state::load_rebuildable(&state);
+        assert!(reason.is_some(), "损坏必须如实交回原因（上层拿它写壳日志）");
+        assert!(doc.files.is_empty(), "从零起步，不拿半截账目当底");
+
+        let mut perf = crate::diagnostics::perf::PerfSample::disabled();
+        refresh_doc(
+            &mut doc,
+            &state,
+            &root,
+            ("t", "corrupt"),
+            false,
+            process::epoch_millis(),
+            &mut perf,
+        )
+        .unwrap();
+        let rebuilt: UsageStateDoc =
+            crate::shell::state::load_checked(&state, usage_ctx()).unwrap();
+        assert_eq!(rebuilt.files.len(), 1, "重扫后账目必须重新落盘且可读");
+        assert!(rebuilt.last_scanned_at_ms > 0);
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

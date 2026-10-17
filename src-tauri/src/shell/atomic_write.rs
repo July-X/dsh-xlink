@@ -3,10 +3,22 @@
 //! 单独成文件而不是留在 `process.rs`：那边是 1157/1157 的反棘轮文件（只许
 //! 变小），而权限收紧这类与「进程/输出流」毫无关系的落盘语义加不进去。
 //!
-//! 两种入口的差别**只有一条**：临时文件用什么权限创建。
+//! 入口按两条轴分工：
+//!
+//! **权限**（临时文件用什么权限创建）
 //! - [`atomic_write`]：跟随 umask（一般 0644）。给 `settings.json` 这类
 //!   用户自己也偶尔要手改的状态文件。
 //! - [`atomic_write_private`]：临时文件一落地就是 0600。给含凭据的文件。
+//!
+//! **持久性**（要不要真的 fsync 到盘）
+//! - 默认：写完 `sync_all`、rename、再 `sync_all` 父目录。给「丢了就是丢用户
+//!   数据」的文件。
+//! - [`atomic_write_light`]：只写临时文件 + rename，**两次 fsync 都不做**。只给
+//!   **能从别处重算出来的派生账目**（当前是模型用量账目）：进程崩溃不丢
+//!   （rename 之后数据在页缓存里），断电可能丢掉最新一笔、极端情况还会读到半截
+//!   文件——所以调用方的读取必须容错（`state::load_rebuildable`），把「账目没了」
+//!   当成「从零重扫」。2026-10-17 实测这条路径省掉的正是 save 段 44ms 里的
+//!   21ms + 19ms 两次 fsync。
 
 use std::fs;
 use std::io::{self, Write};
@@ -61,7 +73,19 @@ impl WriteTimings {
 
 pub(crate) fn atomic_write_timed(path: &Path, contents: &[u8]) -> io::Result<WriteTimings> {
     let mut timings = WriteTimings::default();
-    atomic_write_inner(path, contents, None, &mut timings)?;
+    atomic_write_inner(path, contents, None, true, &mut timings)?;
+    Ok(timings)
+}
+
+/// 不 fsync 的原子写：只保证「读者看到的是完整的旧文件或完整的新文件」，
+/// **不保证掉电后新内容还在**。
+///
+/// 只给**可重建的派生账目**用（见文件头「持久性」那一段）。返回的分段耗时里
+/// `dir_sync_us` 恒为 0、`write_sync_us` 只是 `write_all` 的时间——不是 bug，
+/// 是这条入口没有那两步；用它的人要按这个口径读 perf 日志。
+pub(crate) fn atomic_write_light(path: &Path, contents: &[u8]) -> io::Result<WriteTimings> {
+    let mut timings = WriteTimings::default();
+    atomic_write_inner(path, contents, None, false, &mut timings)?;
     Ok(timings)
 }
 
@@ -77,13 +101,20 @@ pub(crate) fn atomic_write_timed(path: &Path, contents: &[u8]) -> io::Result<Wri
 /// Windows 上是 no-op：用户 profile 下的默认 ACL 即用户私有，写入路径不提权
 /// （见 `openai/vault.rs` 里同一条设计说明）。
 pub(crate) fn atomic_write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
-    atomic_write_inner(path, contents, Some(0o600), &mut WriteTimings::default())
+    atomic_write_inner(
+        path,
+        contents,
+        Some(0o600),
+        true,
+        &mut WriteTimings::default(),
+    )
 }
 
 fn atomic_write_inner(
     path: &Path,
     contents: &[u8],
     private: Option<u32>,
+    sync: bool,
     timings: &mut WriteTimings,
 ) -> io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -118,14 +149,18 @@ fn atomic_write_inner(
         let result = (|| -> io::Result<()> {
             let started = std::time::Instant::now();
             file.write_all(contents)?;
-            file.sync_all()?;
+            if sync {
+                file.sync_all()?;
+            }
             timings.write_sync_us = started.elapsed().as_micros();
             drop(file);
             let started = std::time::Instant::now();
             replace_file(&temporary, path)?;
             timings.rename_us = started.elapsed().as_micros();
             let started = std::time::Instant::now();
-            sync_parent_directory(parent)?;
+            if sync {
+                sync_parent_directory(parent)?;
+            }
             timings.dir_sync_us = started.elapsed().as_micros();
             Ok(())
         })();
@@ -213,6 +248,30 @@ mod tests {
                     .file_name()
                     .to_string_lossy()
                     .starts_with(".state.json.tmp-")
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "临时文件必须被 rename 掉");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 免 fsync 入口仍然是原子替换：内容完整换新、不留临时文件，且计时里
+    /// `dir_sync_us` 恒为 0（这条入口没有那一步——读 perf 日志的人按这个口径看）。
+    #[test]
+    fn light_entry_replaces_atomically_without_syncing_directories() {
+        let dir = scratch("light");
+        let path = dir.join("usage-state.json");
+        atomic_write(&path, b"old\n").expect("durable first write");
+        let timings = atomic_write_light(&path, b"new\n").expect("light write");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
+        assert_eq!(timings.dir_sync_us, 0, "免 fsync 入口不该有目录 fsync 段");
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".usage-state.json.tmp-")
             })
             .collect();
         assert!(leftovers.is_empty(), "临时文件必须被 rename 掉");

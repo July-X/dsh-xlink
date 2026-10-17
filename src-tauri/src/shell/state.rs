@@ -10,6 +10,11 @@
 //! 技能清单变空 → 已装技能的链接被逐个删除；补丁记录变空 → 打过补丁的内核变成
 //! 「没打过」，既撤不掉也重装不了。展示路径用 [`load_lossy`]（至少让面板还能
 //! 打开），所有"读-改-写"路径必须用 [`load_checked`]。
+//!
+//! **唯一的例外是 [`load_rebuildable`]**：整份文档都能从别处重算出来时（当前只有
+//! 模型用量账目——它由 sessions 目录里的帧重算），「损坏」只等于「从零重扫一次」，
+//! 拿空文档覆盖没有任何东西可丢。这类文档必须**同时**走 [`save_timed_light`]（不为
+//! 它付两次 fsync），否则省下的写入成本会在别处加倍还回去。
 
 use std::fs;
 use std::path::Path;
@@ -66,6 +71,22 @@ pub fn load_checked<T: DeserializeOwned + Default>(
     }
 }
 
+/// **可重建**派生文档的读取：与 [`load_lossy`] 一样容错，但把损坏原因交回调用方。
+///
+/// 两个用法的差别只在「原因要不要」：展示路径不关心，而 `usage_view` 要把它
+/// 记进壳日志——账目被静默重置、历史统计从头重扫，是用户看得见的后果，得留下
+/// 一行可查的记录（见 `shell_events`）。
+///
+/// 用它的前提**必须是**「整份文档都能重算」：能重算才敢拿空文档覆盖磁盘上那份。
+/// 不能重算的（插件 / 技能清单、补丁记录、隔离记录）继续走 [`load_checked`]。
+pub fn load_rebuildable<T: DeserializeOwned + Default>(path: &Path) -> (T, Option<String>) {
+    match read_state_file(path) {
+        StateRead::Loaded(value) => (value, None),
+        StateRead::Missing => (T::default(), None),
+        StateRead::Corrupt { reason } => (T::default(), Some(reason)),
+    }
+}
+
 /// 文档读不出来时的说明，供设置页/概览横幅展示；文件正常或不存在时返回
 /// `None`（不存在不是故障）。
 pub fn integrity_warning<T: DeserializeOwned>(path: &Path, ctx: StateCtx) -> Option<String> {
@@ -91,6 +112,44 @@ pub fn save_timed<T: Serialize>(
     value: &T,
     ctx: StateCtx,
 ) -> Result<crate::shell::atomic_write::WriteTimings, AppError> {
+    save_with(
+        path,
+        value,
+        ctx,
+        crate::shell::atomic_write::atomic_write_timed,
+    )
+}
+
+/// [`save_timed`] 的**不 fsync** 变体：给可重建的派生账目用（见 [`load_rebuildable`]）。
+///
+/// 与 [`save_timed`] 只差落盘那一步：写临时文件 + rename，不 `sync_all`、也不
+/// `sync_all` 父目录。**调用方必须配 [`load_rebuildable`]**——这条路径换来的是
+/// 每次落盘省掉两次 fsync（2026-10-17 实测 141KB 账目上 p50 21ms + 19ms），
+/// 代价是掉电时可能留下半截文件，得由读取侧当成「从零重扫」接住。
+pub fn save_timed_light<T: Serialize>(
+    path: &Path,
+    value: &T,
+    ctx: StateCtx,
+) -> Result<crate::shell::atomic_write::WriteTimings, AppError> {
+    save_with(
+        path,
+        value,
+        ctx,
+        crate::shell::atomic_write::atomic_write_light,
+    )
+}
+
+/// 两个 `save_timed*` 共用的那一半：建目录 → 序列化 → 交给给定的原子写入口。
+///
+/// 落盘入口作为函数指针传进来而不是复制两遍「序列化 + 建目录 + 错误文案」：
+/// 两条路的差别**只在 fsync**，其余一字不差；复制第二份时任何一处文案改动
+/// 都会漂成两套（本仓的门禁也会把它算成重复区间）。
+fn save_with<T: Serialize>(
+    path: &Path,
+    value: &T,
+    ctx: StateCtx,
+    write: fn(&Path, &[u8]) -> std::io::Result<crate::shell::atomic_write::WriteTimings>,
+) -> Result<crate::shell::atomic_write::WriteTimings, AppError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| (ctx.kind)(format!("无法创建目录 {}：{e}", parent.display())))?;
@@ -99,9 +158,8 @@ pub fn save_timed<T: Serialize>(
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| (ctx.kind)(format!("序列化状态失败：{e}")))?;
     let serialize_us = started.elapsed().as_micros();
-    let mut timings =
-        crate::shell::atomic_write::atomic_write_timed(path, format!("{text}\n").as_bytes())
-            .map_err(|e| (ctx.kind)(format!("无法写入 {}：{e}", path.display())))?;
+    let mut timings = write(path, format!("{text}\n").as_bytes())
+        .map_err(|e| (ctx.kind)(format!("无法写入 {}：{e}", path.display())))?;
     timings.serialize_us = serialize_us;
     Ok(timings)
 }
