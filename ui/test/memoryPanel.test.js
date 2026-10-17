@@ -573,7 +573,9 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
     'memory-row__main': {
       display: 'grid',
       'grid-template-rows': 'subgrid',
-      'grid-column': '1 / -1',
+      // 2026-10-17：原为 `1 / -1`，跨两列时 `__title` 与 `__actions` 落进同一格、
+      // 按钮压住标题并把它截断（用户截图三行全中）。只占第 1 列才排得开。
+      'grid-column': '1',
       'min-width': '0',
     },
     'memory-row__title': { display: 'flex', 'flex-wrap': 'wrap', 'align-items': 'center' },
@@ -590,7 +592,12 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
       color: 'var(--text-muted)',
       'grid-column': '1 / -1',
     },
-    'memory-row__actions': { display: 'flex', 'grid-column': '2', 'grid-row': '1' },
+    'memory-row__actions': {
+      display: 'flex',
+      'grid-column': '2',
+      'grid-row': '1',
+      'align-self': 'start',
+    },
   };
 
   // 只传**类名自己**当主语 token：多传一个 `page-row` 会让 `.page-row` 那条 (0,1,0)
