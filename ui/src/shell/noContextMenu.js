@@ -1,9 +1,12 @@
 // 壳自己的五个窗口（主面板、日志查看器、模型用量、套餐用量、官方对话页签栏）
 // 挂的是同一个 SPA，所以禁用右键菜单只需在这里装一次——`main.js` 在选完根
 // 组件之前调用它，与 `?log` / `?usage` / `?subscription` / `?chatstrip` 这些
-// 路由无关。工作台与三个官方对话内容 webview 加载的是**别人的**页面，走
-// `src-tauri/src/no-context-menu.js` 注入；那边是同一件事的第二处落点，
-// `scripts/check-invariants.mjs` 第 16 项把两侧都钉住。
+// 路由无关。另外两处落点在 Rust 注入脚本里：官方对话的内容 webview 加载的是
+// **别人的**页面，走 `src-tauri/src/harness/no-context-menu.js`（一律取消）；
+// 工作台加载的是内核 Web UI、它自己有右键功能，走
+// `src-tauri/src/harness/context-menu-fallback.js`（冒泡兜底，只压引擎原生
+// 菜单、放行页面自绘菜单）。三族窗口由 `scripts/check-invariants.mjs` 第 16 项
+// 按建窗链逐条钉住。
 //
 // **只禁右键，别的什么都不动**：不写 `user-select: none`，不拦 `select` /
 // `copy` / `mousedown`。左键拖选与 Ctrl/⌘+C 复制必须照旧可用——把「禁右键」

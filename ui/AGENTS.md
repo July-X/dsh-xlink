@@ -711,11 +711,13 @@ ui/src/
 
 这三条在两侧各有一半，改任一侧都要同时看另一份：
 
-- **禁右键菜单**：壳自己的五个窗口走 `ui/src/shell/noContextMenu.js`（`main.js` 在
-  `app.mount` 之前调一次），这一半归本文件；工作台与官方对话三个内容 webview 加载的是
-  **别人的**页面，走 Rust 注入的 `no-context-menu.js`，`check-invariants` 第 16 项按
-  「每条 `WebviewUrl::External` 建窗链」逐条查——**另一半见
-  [src-tauri/AGENTS.md §禁右键菜单](../src-tauri/AGENTS.md)**。
+- **右键策略按窗口族分两份**：壳自己的五个窗口走 `ui/src/shell/noContextMenu.js`
+  （`main.js` 在 `app.mount` 之前调一次，一律取消），这一半归本文件；官方对话三个内容
+  webview 加载的是**别人的**页面，走 Rust 注入的 `no-context-menu.js`（一律取消，含
+  页面自绘菜单）；**工作台**加载的是内核 Web UI、它自己有右键功能，走 Rust 注入的
+  `context-menu-fallback.js`（冒泡兜底：只压引擎原生菜单、放行页面自绘菜单）。
+  `check-invariants` 第 16 项按「每条 `WebviewUrl::External` 建窗链」逐条查**接的是
+  不是本族那一份**——**另一半见 [src-tauri/AGENTS.md §右键策略](../src-tauri/AGENTS.md)**。
 - **预检三态**：`precheck.rs` 的 `Verdict::as_str()` 与 `PrecheckDialog.vue` 的判定表靠
   字符串对齐，有测试钉死（`precheck::tests::verdict_strings_match_the_ui_contract`），
   改一边不改另一边会把「未通过」画成「通过」。判定为什么必须三态、基线为什么必须先跑，
