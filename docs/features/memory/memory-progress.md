@@ -131,6 +131,9 @@
 
 ## B. 检索与注入（§3.1、§6.2）
 
+> 注入对模型前缀缓存的影响已单独实测过一遍（结论：不拉低命中率，记忆块占两天 prompt 的
+> 0.014%；真正吃 miss 的是压缩）——数据、机制与复现方法见 [cache-impact.md](cache-impact.md)。
+
 - ✅ **B1 `agent/created` 里按 agent 作用域注册 `xlink.memory`**（§3.1-1）—— `plugins/memory/host/index.js`；
   真机 `dsh headless` 验证（挂载 + 注册 + 首请求带记忆）
 - ✅ **B2 注册监听器内一切失败都吞掉，降级为「本次无记忆」**（§3.1-1）—— try/catch + 面探测；
