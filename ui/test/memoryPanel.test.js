@@ -573,9 +573,13 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
     'memory-row__main': {
       display: 'grid',
       'grid-template-rows': 'subgrid',
-      // 2026-10-17：原为 `1 / -1`，跨两列时 `__title` 与 `__actions` 落进同一格、
-      // 按钮压住标题并把它截断（用户截图三行全中）。只占第 1 列才排得开。
-      'grid-column': '1',
+      // 2026-10-17：`__main` 跨两列**且**自己带 `subgrid` 列，两条缺一不可。只写
+      // `1 / -1` 而漏掉列定义时，它内部只剩一条隐式列——`__title` 的 `grid-column: 1`
+      // 落在那一列上、宽度等于整行，与 `__actions` 叠进同一格，按钮压住标题（用户第一次
+      // 截图）；改回 `grid-column: 1` 能治压字，却把 `__body` / `__meta` 一起关进第 1 列，
+      // 正文只占左半、右边全空（用户第二次截图）。实测两处症状都在，见下方 `memory-flag`。
+      'grid-column': '1 / -1',
+      'grid-template-columns': 'subgrid',
       'min-width': '0',
     },
     'memory-row__title': { display: 'flex', 'flex-wrap': 'wrap', 'align-items': 'center' },
@@ -598,6 +602,11 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
       'grid-row': '1',
       'align-self': 'start',
     },
+    // 这一族不在上面的类名清单里（它不属于 `memory-row*`），但同样只能写在全局 `.css`：
+    // 三个关系块的模板根都是 `.memory-flag`，其中两个还是各自组件的根元素。它是 `__main`
+    // 里的整行块，与 `__body` / `__meta` 同一条理由——不写这一条就只占第 1 列，被挤成
+    // 左边一条、右边空着（同一张截图里的黄框）。
+    'memory-flag': { 'grid-column': '1 / -1' },
   };
 
   // 只传**类名自己**当主语 token：多传一个 `page-row` 会让 `.page-row` 那条 (0,1,0)

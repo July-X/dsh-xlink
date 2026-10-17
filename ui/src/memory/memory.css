@@ -22,13 +22,16 @@
  * 于是按钮与标题天然同一行、正文在下面独占整宽。`minmax(0, 1fr)` 的 0 下限不能省
  * （`1fr` 下限默认 auto，长正文会把列撑开）。
  *
- * **`__main` 只占第 1 列，不能写成 `1 / -1`**（2026-10-17 修按钮压住标题）：
- * 跨两列时它把整个网格按行切开，`.memory-row__title`（第 1 列第 1 行）与
- * `.memory-row__actions`（第 2 列第 1 行）落进**同一格**——两列叠加渲染，标题被按钮
- * 盖住并截断（截图里三行候选全是这个症状）。`1 / -1` 只能留给 `__body` / `__meta`
- * 那种本来就该横跨整行的行。 */
+ * **`__main` 跨两列，但必须把列一起继承过来**（2026-10-17 收尾；此前两个症状同一个
+ * 根因）：`grid-column: 1 / -1` 让它铺满两列，而它自己没写 `grid-template-columns`，
+ * 内部就只有一条隐式列——`__title` 的 `grid-column: 1` 落在那一列上，宽度等于整行，
+ * 与 `__actions` 叠进同一格，标题被按钮盖住并截断。`379525b` 把它缩回第 1 列治住了
+ * 压字，却把 `__body` / `__meta` 一起关进那一列——正文只占左半、右边全空（用户第二次
+ * 截图）。正解是 `grid-template-columns: subgrid`：`__main` 拿到父网格那两条列之后，
+ * `__title` 的 `1` 才是第 1 列（按钮那列归 `__actions`），`__body` / `__meta` 的
+ * `1 / -1` 才真是整行。 */
 .memory-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: flex-start; gap: 0 12px; }
-.memory-row__main { display: grid; grid-column: 1; grid-row: 1 / span 3; grid-template-rows: subgrid; min-width: 0; }
+.memory-row__main { display: grid; grid-column: 1 / -1; grid-row: 1 / span 3; grid-template-columns: subgrid; grid-template-rows: subgrid; min-width: 0; }
 .memory-row__title { display: flex; grid-column: 1; grid-row: 1; gap: 8px; align-items: center; flex-wrap: wrap; }
 .memory-row__name { font-size: 15px; font-weight: 600; }
 .memory-row__body { grid-column: 1 / -1; grid-row: 2; margin: 4px 0 0; color: var(--text-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -45,8 +48,12 @@
  * 每个 `--el-*` 都带回退——Element Plus 的变量是运行时注入的，本仓样式表里没有 `:root`
  * 定义，而 `var(--x)` 没有回退时整条声明会被浏览器丢弃并继承父级，样式静默失效且无报错
  * （`check-invariants` 的 `css-var` 那条就是钉这个）。
+ *
+ * `grid-column: 1 / -1` 与 `__body` / `__meta` 同一条理由：这一族是 `__main` 里的整行
+ * 块，不写就只占第 1 列，被挤成左边一条、右边空着。三种关系块（冲突 / 取代 / 可能已
+ * 过期）的模板根都正好是 `.memory-flag`，所以一条声明就够。
  */
-.memory-flag { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--el-color-warning-light-5, #fde2b8); border-radius: 6px; background: var(--el-color-warning-lighter, #fdf6ec); }
+.memory-flag { grid-column: 1 / -1; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--el-color-warning-light-5, #fde2b8); border-radius: 6px; background: var(--el-color-warning-lighter, #fdf6ec); }
 .memory-flag__lead { margin: 0 0 6px; font-size: 12px; color: var(--el-text-color-regular, #606266); }
 .memory-flag__pair { border-top: 1px solid var(--el-border-color-lighter, #ebeef5); padding-top: 6px; margin-top: 6px; }
 .memory-flag__body { margin: 0; font-size: 13px; }
