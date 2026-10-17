@@ -1617,24 +1617,31 @@ if (brokenSvgs.length) {
   note(`ui/public 的 ${svgFiles.length} 个 SVG 均可被解析（${svgFiles.join('、')}）`);
 }
 
-// --- 16. 三个窗口族都禁用右键菜单，且不许连左键复制一起禁 --------------------
+// --- 16. 三个窗口族的右键策略都接在线上，且不许连左键复制一起禁 ----------------
 //
-// 需求只有一句话（「主界面、工作台、官方对话窗口都禁用鼠标右键菜单，保留左键
-// 复制」），落点却是三处：壳自己的五个窗口共用 SPA 入口（`ui/src/
-// noContextMenu.js`，由 `main.js` 装一次）、工作台、官方对话三个内容 webview
-// （Rust 侧注入 `no-context-menu.js`）。**行为测试钉不住接线**：测试直接对着
-// 脚本跑，把某一处接线删掉它照样全绿，而症状只是「从某个入口打开的窗口右键
-// 菜单还在」——不报任何错。因此这里钉三条：
+// 2026-10-17 起需求分成了两半（此前是一句话「哪扇窗都不许弹右键菜单，保留左键
+// 复制」，工作台的实现把内核自绘的菜单也一并拦死了）：
 //
-//   ① **每一条加载外部页面的建窗链**都必须注入 `no-context-menu.js`。按
-//      `WebviewUrl::External(` 所在的顶层函数去找，而不是按文件数出现次数：
-//      工作台有**两条**建窗链（`commands.rs::open_harness` 是用户点「启动工作台」
-//      走的那条，`harness_window::build` 是自愈链条 / 手动刷新走的那条），
-//      漏一条的症状正是「有时右键菜单还在」，而按次数计的判据恰好抓不住这种
-//      漏法。将来新增远程窗口同样会被这条拦住。
+//   - 工作台加载的是**内核的** Web UI，它自己有右键功能（`ui-primitives` 的
+//     JSON 树「选择复制方式」、`ui-dockkit` 的右侧栏标签页菜单）⇒ 只压引擎
+//     原生菜单，放行页面自绘的菜单（`context-menu-fallback.js`，冒泡兜底）；
+//   - 官方对话三个内容 webview 加载的是**别人的**站点 ⇒ 维持一律取消
+//     （`no-context-menu.js`，捕获阶段连页面自绘的一起拦）；
+//   - 壳自己的五个窗口共用 SPA 入口（`ui/src/shell/noContextMenu.js`，
+//     `main.js` 装一次）。**行为测试钉不住接线**：测试直接对着脚本跑，把某一处
+//     接线删掉它照样全绿，而症状只是「从某个入口打开的窗口右键行为不对」——
+//     不报任何错。因此这里钉三条：
+//
+//   ① **每一条加载外部页面的建窗链**都必须注入它那一族该用的脚本，且不许注入
+//      另一族的。按 `WebviewUrl::External(` 所在的顶层函数去找，而不是按文件数
+//      出现次数：工作台有**两条**建窗链（`commands.rs::open_harness` 是用户点
+//      「启动工作台」走的那条，`harness_window::build` 是自愈链条 / 手动刷新走的
+//      那条），漏一条的症状正是「有时右键菜单还在」，而按次数计的判据恰好抓不住
+//      这种漏法；两条链用反脚本的症状则相反——内核自己的菜单全没了，同样没有
+//      报错。认不出的新窗口族当场报错，不替它默认。
 //   ② `main.js` 必须 import 并调用 `disableContextMenu()`，且调用在
 //      `app.mount` 之前（晚一步会有一段窗口期菜单还在）。
-//   ③ 两份实现都不许出现 `user-select` 或对 `copy` / `select` / `mousedown`
+//   ③ 三份实现都不许出现 `user-select` 或对 `copy` / `select` / `mousedown`
 //      的监听——「禁右键」写成「禁选中」是这条需求最常见的写错方式，它不报
 //      任何错，坏掉的症状只是用户再也复制不出东西。
 {
@@ -1646,8 +1653,17 @@ if (brokenSvgs.length) {
     const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
     lines.forEach((line, index) => {
       if (!line.includes('WebviewUrl::External(')) return;
-      // 建窗链的边界取「所在顶层函数的收尾大括号」：链本身跨十几行，而函数
-      // 体内的缩进代码不会在第 0 列出现 `}`。
+      // 建窗链的边界取**整个所在顶层函数**：向前退到函数签名、向后收在第 0 列的
+      // 收尾大括号。起点不能取 `WebviewUrl::External(` 那一行——窗口身份（官方
+      // 对话的 label 是在上一行 `format!` 出来的）常常出现在它之前，按起点切片
+      // 会让窗口族判不出来（第一版就是这么错的）。
+      let start = index;
+      for (let i = index; i >= 0; i -= 1) {
+        if (/^(pub )?(async )?fn /.test(lines[i])) {
+          start = i;
+          break;
+        }
+      }
       let end = lines.length;
       for (let i = index + 1; i < lines.length; i += 1) {
         if (lines[i] === '}') {
@@ -1658,33 +1674,75 @@ if (brokenSvgs.length) {
       remoteChains.push({
         file,
         line: index + 1,
-        body: lines.slice(index, end).join('\n'),
+        body: lines.slice(start, end).join('\n'),
       });
     });
   }
   // `include_str!` 的相对路径是**相对所在文件**解析的：commands.rs 在 src/
-  // 根，写 `harness/no-context-menu.js`；harness_window.rs 与它同在 harness/，
-  // 写 `no-context-menu.js`。两条都指同一份文件，所以这里只认 basename——
-  // 写死任一侧的完整路径，另一侧就会以「这条建窗链没注入」变红，而注入好好的。
-  const unwired = remoteChains.filter((chain) => !chain.body.includes('no-context-menu.js'));
+  // 根，写 `harness/context-menu-fallback.js`；harness_window.rs 与它同在
+  // harness/，写 `context-menu-fallback.js`。两条都指同一份文件，所以这里只认
+  // basename——写死任一侧的完整路径，另一侧就会以「这条建窗链没注入」变红，
+  // 而注入好好的。
+  const FALLBACK = 'context-menu-fallback.js';
+  const STRICT = 'no-context-menu.js';
+  // 窗口族按建窗链里的窗口身份词判，不按脚本名反推：工作台链带 `"harness"`
+  // 标签，官方对话链带 `official-chat-tab`。两个都不是的新链一律报错——新加
+  // 一扇加载远程页面的窗口时，右键策略必须由人当场定，不能靠默认值蒙。
+  const kindOf = (chain) => {
+    if (chain.body.includes('"harness"')) return 'harness';
+    if (chain.body.includes('official-chat')) return 'official-chat';
+    return 'unknown';
+  };
+  const POLICY = {
+    harness: { want: FALLBACK, ban: STRICT, why: '工作台加载内核 Web UI，页面自绘的右键菜单必须留着' },
+    'official-chat': { want: STRICT, ban: FALLBACK, why: '官方对话加载别人的站点，页面自绘的菜单一并取消' },
+  };
+  const miswired = [];
+  const wiredKinds = new Map();
+  for (const chain of remoteChains) {
+    const kind = kindOf(chain);
+    const policy = POLICY[kind];
+    if (policy === undefined) {
+      miswired.push({ chain, reason: 'unknown' });
+      continue;
+    }
+    if (!chain.body.includes(policy.want) || chain.body.includes(policy.ban)) {
+      miswired.push({ chain, reason: 'script', kind, policy });
+      continue;
+    }
+    wiredKinds.set(kind, (wiredKinds.get(kind) ?? 0) + 1);
+  }
   if (remoteChains.length === 0) {
     fail(
       'no-context-menu',
       '生产代码里找不到任何 WebviewUrl::External 的建窗链——判据本身失效了，' +
         '先确认这条检查还能匹配到建窗代码，再谈它绿不绿。',
     );
-  } else if (unwired.length > 0) {
-    for (const chain of unwired) {
+  } else if (miswired.length > 0) {
+    for (const { chain, reason, kind, policy } of miswired) {
+      if (reason === 'unknown') {
+        fail(
+          'no-context-menu',
+          `${chain.file}:${chain.line} 这条加载外部页面的建窗链既不是 harness 也不是 ` +
+            `official-chat——右键策略按窗口族分两份（工作台用 ${FALLBACK}、官方对话用 ` +
+            `${STRICT}），新窗口属于哪一族要先定下来，再按那一族注入。`,
+        );
+        continue;
+      }
       fail(
         'no-context-menu',
-        `${chain.file}:${chain.line} 这条加载外部页面的建窗链没有注入 no-context-menu.js——` +
-          `右键菜单会从**这个入口打开的窗口**里照常弹出来（工作台有 open_harness 与 ` +
-          `harness_window::build 两条链，两条都要接；官方对话的每个内容 webview 走 ` +
-          `add_official_chat_tab）。本地 SPA 窗口不在此列：它们由 ui/src/noContextMenu.js 负责。`,
+        `${chain.file}:${chain.line} 这条 ${kind} 建窗链的右键脚本接错了：它必须注入 ` +
+          `${policy.want}、且不许出现 ${policy.ban}——${policy.why}。写反的症状是 ` +
+          `「内核自己的右键菜单全没了」或「别人的站点也能自绘菜单」，两种都不报错。` +
+          `（工作台有 open_harness 与 harness_window::build 两条链，两条都要接；官方对话的 ` +
+          `每个内容 webview 走 add_official_chat_tab。本地 SPA 窗口不在此列：它们由 ` +
+          `ui/src/shell/noContextMenu.js 负责。）`,
       );
     }
   } else {
-    note(`${remoteChains.length} 条远程建窗链都注入了禁右键脚本（${remoteChains.map((c) => `${c.file}:${c.line}`).join('、')}）`);
+    note(
+      `远程建窗链的右键脚本按族接好（${[...wiredKinds].map(([kind, n]) => `${kind} ${n} 条 / ${POLICY[kind].want}`).join('，')}）`,
+    );
   }
 
   // ② 壳自己的窗口：入口必须真的调用一次，且早于挂载。
@@ -1711,7 +1769,7 @@ if (brokenSvgs.length) {
   }
 
   // ③ 「禁右键」不许顺手变成「禁选中」。
-  // 判据前先剥注释，理由与上面 `productionRust` 相同：两份实现里都写着
+  // 判据前先剥注释，理由与上面 `productionRust` 相同：三份实现里都写着
   // 「刻意**不**写 user-select」，照字面查会把这句话本身当成违规——第一版
   // 就是这么误报的。`//` 前是 `:` 时不当作行注释（`https://…` 这类 URL）。
   const stripJsComments = (text) =>
@@ -1720,10 +1778,11 @@ if (brokenSvgs.length) {
       .split('\n')
       .map((line) => line.replace(/(^|[^:])\/\/.*$/, '$1'))
       .join('\n');
-  // 两份实现各自按自己的规则定位：壳侧注入脚本按文件名在 src-tauri/src 下找
-  // （它 2026-10-01 搬进了 harness/），面板侧在 ui/src 下且路径稳定。
+  // 三份实现各自按自己的规则定位：壳侧两份注入脚本按文件名在 src-tauri/src 下找
+  // （它们 2026-10-01 搬进了 harness/），面板侧在 ui/src 下且路径稳定。
   const implementations = [
-    { file: shellSourceLabel('no-context-menu.js'), source: shellSource('no-context-menu.js') },
+    { file: shellSourceLabel(FALLBACK), source: shellSource(FALLBACK) },
+    { file: shellSourceLabel(STRICT), source: shellSource(STRICT) },
     { file: 'ui/src/shell/noContextMenu.js', source: read('ui/src/shell/noContextMenu.js') },
   ];
   const killsSelection = [];
@@ -1747,7 +1806,7 @@ if (brokenSvgs.length) {
         `写 user-select 或拦下 copy 不会报任何错，症状只是用户再也复制不出东西。`,
     );
   } else {
-    note('两份实现都只取消 contextmenu，没碰选中与复制');
+    note('三份实现都只取消 contextmenu，没碰选中与复制');
   }
 }
 

@@ -456,8 +456,9 @@ pub fn open(app: &AppHandle, url: Url) -> Result<(), String> {
 ///   的 WebView2 标记已处理），点击因此静默失效。http(s) 外链交系统浏览器，其余
 ///   scheme 一律拒绝——不在壳内长出无主窗口。
 /// - 六条 `initialization_script`：标题栏品牌条带 / 拉绳小台灯 / 健康自愈探针 /
-///   未发送草稿 / 历史会话保护 / 禁右键菜单（`no-context-menu.js`——只取消
-///   `contextmenu` 的默认行为，左键选词与 Ctrl/⌘+C 复制照旧）。缺 source map 时由
+///   未发送草稿 / 历史会话保护 / 右键兜底（`context-menu-fallback.js`——挂在
+///   `window` 的**冒泡**阶段，只在页面没处理时取消默认行为：引擎原生菜单被压掉，
+///   内核自绘的菜单照常；左键选词与 Ctrl/⌘+C 复制照旧）。缺 source map 时由
 ///   `kernel::prepare_workbench_source_maps` 在服务端文件层补齐，不依赖覆盖不了的
 ///   DevTools 内部网络请求。
 /// - `on_page_load`：把加载事件喂给 [`observe`]。
@@ -505,7 +506,9 @@ fn build(app: &AppHandle, url: &Url) -> Result<(), String> {
         .initialization_script(include_str!("harness-health.js"))
         .initialization_script(include_str!("harness-draft.js"))
         .initialization_script(include_str!("workbench-history-guard.js"))
-        .initialization_script(include_str!("no-context-menu.js"))
+        // 工作台只压引擎原生菜单、放行内核自绘的菜单；同一条工作台建窗链的
+        // 另一半在 `commands.rs::open_harness`，别只改一处。
+        .initialization_script(include_str!("context-menu-fallback.js"))
         .on_page_load({
             let handle = app.clone();
             move |_webview, payload| {

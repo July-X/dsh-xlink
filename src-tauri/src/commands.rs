@@ -1388,7 +1388,9 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                         .initialization_script(include_str!("harness/harness-health.js"))
                         .initialization_script(include_str!("harness/harness-draft.js"))
                         .initialization_script(include_str!("harness/workbench-history-guard.js"))
-                        .initialization_script(include_str!("harness/no-context-menu.js"))
+                        // 工作台只压引擎原生菜单、放行内核自绘的菜单；同一条工作台
+                        // 建窗链的另一半在 `harness_window::build`，别只改一处。
+                        .initialization_script(include_str!("harness/context-menu-fallback.js"))
                         .on_page_load({
                             let handle = handle.clone();
                             move |_webview, payload| {

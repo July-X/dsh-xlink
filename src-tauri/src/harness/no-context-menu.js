@@ -1,9 +1,10 @@
 /**
- * 初始化脚本：注入到 `harness` 工作台 webview 与 `official-chat-tab-{i}` 每个
- * 官网网页版内容 webview。**壳自己的**窗口（主面板 / 日志 / 用量 / 套餐 /
- * 官网网页版页签栏）由 `ui/src/noContextMenu.js` 负责——两边是同一件事的两处
- * 落点，`scripts/check-invariants.mjs` 第 16 项把「三族窗口都禁了」钉成机械
- * 检查。
+ * 初始化脚本：**一律取消右键菜单**，注入到 `official-chat-tab-{i}` 每个官网
+ * 网页版内容 webview（2026-10-17 起只归这一族；工作台改用
+ * `context-menu-fallback.js`——那里要放过内核自绘的菜单，见该文件头）。
+ * **壳自己的**窗口（主面板 / 日志 / 用量 / 套餐 / 官网网页版页签栏）由
+ * `ui/src/shell/noContextMenu.js` 负责——三族窗口是同一件事的三处落点，
+ * `scripts/check-invariants.mjs` 第 16 项按建窗链逐条钉死「哪一族用哪一份」。
  *
  * **只禁右键，别的什么都不动。** 这是本脚本唯一被允许做的事：
  *

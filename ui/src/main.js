@@ -123,8 +123,10 @@ installConsoleCapture();
 
 // 右键菜单在壳自己的**所有**窗口里都关掉（主面板 / 日志 / 用量 / 套餐 / 官方
 // 对话页签栏——它们共用这个入口），因此只在这里调一次，且必须早于任何组件
-// 挂载：晚一步就会有一段窗口期里菜单还在。工作台与三个官方对话内容 webview
-// 加载的是别人的页面，由 `src-tauri/src/no-context-menu.js` 注入。
+// 挂载：晚一步就会有一段窗口期里菜单还在。官方对话三个内容 webview 加载的是
+// 别人的站点，由 `src-tauri/src/harness/no-context-menu.js` 注入（同样一律
+// 取消）；工作台加载的是内核 Web UI、它自己有右键功能，由
+// `src-tauri/src/harness/context-menu-fallback.js` 注入（只压引擎原生菜单）。
 disableContextMenu();
 
 // 主题必须同样早于任何组件挂载：晚一步首帧会先画一帧错误主题再跳色。
