@@ -40,7 +40,7 @@ npm run dev 5190                  # 同上但换端口；vite 的 server.port �
 npm run dev:ui                    # 只起管理面板 dev server（纯前端迭代，浏览器里无 Tauri 桥）
 npm run build                     # 本机构建（.dmg / NSIS；自动先 vite build → ui/dist）
 npm run build:ui                  # 只构建管理面板 → ui/dist
-npm run check                     # 提交前的全量门禁：invariants + 预算 + 前端测试 + fmt/clippy/release 编译 + Rust 单测 + UI 产物预算
+npm run check                     # 提交前的全量门禁：invariants + 重复代码检测 + 前端测试 + fmt/clippy/release 编译 + Rust 单测 + UI 产物预算
 cargo check                       # 在 src-tauri/ 内：快速编译检查
 cargo clippy --all-targets        # lint，零警告基线
 cargo fmt                         # rustfmt 格式化
@@ -50,7 +50,7 @@ cargo fmt                         # rustfmt 格式化
 
 `check:rust` 同样**包含 `cargo test`**（2026-10-11 补入）：此前不含 851 条 Rust 单测——总闸跑绿而 CI 才红，正是「门禁不许假绿」要挡的那件事。热缓存 44 秒 → 约 100 秒。
 
-**门禁判据不许在 workflow 里内联**。UI 产物预算此前是同一段 heredoc 在 `desktop-ci.yml` 与 `desktop-release.yml` 各写一份，已经漂移过一次，`check:code-budget` 还整条缺席在发布通道上。现在判据本体在 `scripts/check-ui-bundle-budget.mjs`，两个 workflow 只调它，`npm run check` 也带上了（此前只在 CI 跑，本地提交前管不到）。**产物不存在时脚本必须 exit 1 并说清前置命令**，静默跳过等于给出一道「通过」的假门禁。
+**门禁判据不许在 workflow 里内联**。UI 产物预算此前是同一段 heredoc 在 `desktop-ci.yml` 与 `desktop-release.yml` 各写一份，已经漂移过一次。现在判据本体在 `scripts/check-ui-bundle-budget.mjs`，两个 workflow 只调它，`npm run check` 也带上了（此前只在 CI 跑，本地提交前管不到）。**产物不存在时脚本必须 exit 1 并说清前置命令**，静默跳过等于给出一道「通过」的假门禁。
 
 UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui/dist/`，即 `src-tauri/tauri.conf.json` 的 `frontendDist`）。状态与动作集中在 `ui/src/store.js` 与各功能目录下的 store（`plugins/plugins.js`、`skills/skills.js`、`logs/logs.js`、`usage/usage.js`），异步样板（在途去重、静默刷新、更新检查策略）在 `shell/async.js`，组件只读状态、调动作；与 Rust 的通信只允许走 `shell/bridge.js` 的 invoke/Channel。按钮 loading 与长任务的细则、以及「改完跑 `build:ui`」都在 [ui/AGENTS.md](ui/AGENTS.md)，这里不重复。
 
@@ -95,8 +95,8 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 - **Codex 额度来源是显式许可，不是模型登录的一部分**：Rust 的 `usage/subscription_codex.rs` 只在用户开启后读取本机 Codex 登录文件，账号不一致、过期或身份无法确认时拒绝；不得刷新、修改或复制凭据。许可按壳模式隔离。前端共用 `CodexUsageConsent.vue`，事件 `codex-usage-consent-changed` 同步开关；来源切换必须清掉旧额度，界面标明「Codex 额度」，不能称作 SIWC 应用用量。这是一条跨前后端契约。
 
 - 长任务失败时进度面板保持开放，由用户手动关闭；完整原始输出始终落盘，报错信息引用日志路径。
-- **代码预算门禁已改成反棘轮，不要绕开它**。`npm run check-code-budget` 从 git 读本文件**已提交版本**的数字当基线（所以「同一个提交里改数字」不会让检查失守），强制三条：① 基线预算 ≥ `RATCHET_THRESHOLD` 的**大文件只许下调**（plugins.rs / theme.css / commands.rs 只能越来越小）；② **新文件**必须登记进 `FILE_BUDGETS` 并写清为什么该独立，受 `HARD_FILE_CEILING`（800 行）硬顶；③ `TOTAL_BUDGET` 是**软上限**（刻意不做"只许下调"——试过，实践中只会逼人绕过门禁而不是真写出更少的代码）。被 ① 拦下时的正确反应是**把新逻辑拆出去**，不是调数字。
-- **跨模块重复先提共享层**：包取源放 `pkg/`（插件与技能共用，只返回纯文本原因、错误分类由调用方决定），JSON 状态文档读写放 `shell/state.rs`（容错读 / 校验读分开，文案由 `StateCtx` 提供），前端异步样板放 `ui/src/shell/async.js`（`singleFlight` / `createStatusSource` / `createUpdateChecker`）。安装预检拆两层：`plugins/sandbox.rs` 只管"起一个临时内核、探它、收摊"（与装什么无关，技能预检直接复用），`plugins/precheck.rs` 管两段式事务（快照 → 装进沙盒 → 探测 → 提交/回滚），`plugins/center.rs` 只暴露 `store_file` 一条可见性缝——**预检的事务主体不要写进 `center.rs`**，它已 2816 行生产代码（以 `check:code-budget` 输出为准，不要手数）。要上调预算必须在同一提交里改 `scripts/check-code-budget.mjs` 的数字。
+- **按职责主动拆分，优先复用已有代码**：新增逻辑前先检查现有组件、store、服务与共享层。一个模块出现多个独立变化原因、可单独测试的职责，或跨模块相同语义的重复逻辑时，应在本次改动内做必要拆分或提取共享实现，并保持接口稳定。紧密协作、同一职责的代码可保留在一起；没有真实复用场景时不预建抽象。不设文件行数、全仓行数或新文件登记预算，历史注释里的旧行数账本也不再作为约束，不为凑行数压缩排版、强拆组件或扩大任务范围。评审需说明拆分与复用的理由，并验证受影响的调用方、测试和文档；重复代码检测保留，产物体积预算另行执行。
+- **跨模块重复先提共享层**：包取源放 `pkg/`（插件与技能共用，只返回纯文本原因、错误分类由调用方决定），JSON 状态文档读写放 `shell/state.rs`（容错读 / 校验读分开，文案由 `StateCtx` 提供），前端异步样板放 `ui/src/shell/async.js`（`singleFlight` / `createStatusSource` / `createUpdateChecker`）。安装预检拆两层：`plugins/sandbox.rs` 只管"起一个临时内核、探它、收摊"（与装什么无关，技能预检直接复用），`plugins/precheck.rs` 管两段式事务（快照 → 装进沙盒 → 探测 → 提交/回滚），`plugins/center.rs` 只暴露 `store_file` 一条可见性缝——**预检的事务主体不要写进 `center.rs`**，沙盒生命周期与安装事务有不同职责，应分别维护。
 - **反向验（故意弄坏 → 确认它会响）之前先确认「改动真的进了被测的那个产物」**：恢复文件后必须更新它的 mtime，否则 cargo / vite 判定无需重编译，第二次跑的还是改坏时的产物——结论会变成「恢复后仍然红」，而真相是**根本没重编**。恢复后补一句 `(Get-Item <file>).LastWriteTime = Get-Date` 再跑。同理，**反向验的红必须是「改坏的当次」的红**——中途任何一次重编失败都可能让红变成「编不过」而不是「断言不成立」，那不算验过。经过见 [agent-lessons §3](docs/reviews/agent-lessons.md)。
 - **扫源码文本的判据：锚点找在原文上，匹配再过 `productionRust()`**。直接匹配原文会把注释里那一份串也算进去（`skills-reconcile-wired` 2026-10-11 假绿）；反过来先剥全文再找锚点同样坏——Tauri 入口是 `.setup(|app| {…})` **闭包**，`fn setup(` 在 `lib.rs` 里根本不存在，`indexOf` 返回 -1 后区间只剩十几字节，判据**恒红**（`plugins-reconcile-wired` 2026-10-12）。恒红的判据最危险：反向验照样「通过」，而红的是坏判据不是变异生效。**已有 27 条是否都有这类问题尚未逐条复查**，改任何一条前先反向验。
 - **doc 承诺「下次启动会接手」不等于它接上了**。`skills::manage::reconcile` 与 `plugins::center::reconcile_store` 前后脚撞见同一形状——调用点全在 `#[cfg(test)]` 内，于是崩溃残留无限堆积、v0.2.x 平铺中央库的搬迁从未发生。两者现均已接进 `setup()`，由第 26 / 28 项判据钉住；判据之所以必要，是因为 crate 级 `allow(dead_code)` 静音了编译器本该指出的声音。

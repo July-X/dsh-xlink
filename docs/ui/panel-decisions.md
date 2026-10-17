@@ -31,7 +31,7 @@
 - **构建标识（dev 鲸眼红 / release Gitea 绿）收成窗顶 2px 细线**，由 `--build-color` 驱动，两种构建共用同一条 `.app-shell::before` 规则只换颜色变量。旧版那条「铺满全高的品牌色渐变带」已删除——它与卡片描边互相拍频。`ui/test/diskUsageAndChrome.test.js` 钉住了「只有这一处画法」。
 - **技能页是「已安装 / 社区资源」两张卡**（2026-10-07 对齐设计稿 2817-2820 行）。原先手动安装是「已安装」卡底部的一条虚线分隔加输入框，读起来像「装完了顺手在这里补一个」，而它其实是另一件事——包的来源在社区，与本地已装状态无关。**设计稿第一张那张「技能状态」卡不画**：它写着「启用状态 4 / 4」「活动视图 已同步」，后者没有任何后端字段支撑，硬写就是编数据（设计说明「不能从设计稿推断出的内容」点名了「未在后端返回的余额、百分比、更新时间、星标数量或插件数量」）。
   - **按钮按动作类型选 loading 通道**：`installSkill` 走 `withProgress`（长任务），**不经过 `withLoading`**，所以安装按钮上挂 `isLoading('installSkill')` 永远为 false——那是一个永远不转的假 loading。在途状态由进度浮层表达，按钮只做 `globalBusy || 输入为空` 的禁用。
-  - **单页专用样式留在 scoped**，`theme.css` 走反棘轮只许下调。输入行直接复用全局 `.install-row`（`.el-input` 自带 `flex:1`），卡内标题与说明各合成为一条基线规则（`.community-title` / `.community-meta`），不按设计稿那样一份一套。技能社区与手动安装之间只画一道 2px 刻蚀线，由 `.community-install::before` 承载，浏览区下边框和安装区上边框显式清零。
+  - **单页专用样式留在 scoped**，共享样式优先复用。输入行直接复用全局 `.install-row`（`.el-input` 自带 `flex:1`），卡内标题与说明各合成为一条基线规则（`.community-title` / `.community-meta`），不按设计稿那样一份一套。技能社区与手动安装之间只画一道 2px 刻蚀线，由 `.community-install::before` 承载，浏览区下边框和安装区上边框显式清零。
   - 判据只看**模板块内**（注释已剥）：源文件注释里正是在解释「为什么不画技能状态卡」，按整份文件搜会把判据自己写的话算成命中。
 - **无文字按钮（icon-only）：背景范围要小，且必须有 hover 说明文字**（2026-10-10 用户定规范）
   - **加 `icon-btn` 类**，尺寸 26×26（theme.css 的全局规则）。**根因是 EP 的默认值不能用**：`el-button` 基础规则带 `padding: 8px 15px` + `height: 32px`，而 `is-text` 只把背景换成透明、**padding 原样保留**——于是一个 14px 的图标被撑成约 44×32 的一块，视觉重量和旁边带文字的按钮相等，而它其实只有一个图标。用户 2026-10-10 指着内核版本页那两个按钮报的就是这个。
@@ -284,7 +284,7 @@ ui/src/
 
 一条功能的状态、动作与面板**放在同一个目录里**。新增功能先问它属于哪一格；确实跨格的共享件放 `shell/`。
 
-搬文件时会跟着失效的东西，**2026-10-01 已经全部改成按 basename 认了**：`scripts/lib/shell-source.mjs`（门禁脚本与 UI 测试共用的一份解析器，读壳侧 Rust / 注入脚本源码的那几条测试都走它）、`check-invariants.mjs` 的 `baseName()` / `inFile()`、`check-code-budget.mjs` 的 `isKnownBlob()` / `moduleId()`。`ui/test/*.test.js` 里读**本仓前端**文件的相对路径仍按 `import.meta.url` 解析，本来就不受 Rust 侧目录影响。**新增判据时照这个来**：判据要问「哪个模块」，不是「文件在哪一层」——那一次重组的实测代价是 9 项不变量转红、5 个测试 ENOENT 挂掉、`check-invariants` 自己在启动阶段就崩，红的原因与要检查的东西全都无关。`FILE_BUDGETS` 里登记的**路径**仍要跟着改（那是给人看的），但反棘轮比对按模块标识走。
+搬文件时会跟着失效的东西，**2026-10-01 已经全部改成按 basename 认了**：`scripts/lib/shell-source.mjs`（门禁脚本与 UI 测试共用的一份解析器，读壳侧 Rust / 注入脚本源码的那几条测试都走它）、`check-invariants.mjs` 的 `baseName()` / `inFile()`。`ui/test/*.test.js` 里读**本仓前端**文件的相对路径仍按 `import.meta.url` 解析，本来就不受 Rust 侧目录影响。**新增判据时照这个来**：判据要问「哪个模块」，不是「文件在哪一层」——那一次重组的实测代价是 9 项不变量转红、5 个测试 ENOENT 挂掉、`check-invariants` 自己在启动阶段就崩，红的原因与要检查的东西全都无关。移动文件时同步检查调用方、测试与文档。
 
 ## 待移除
 
@@ -385,7 +385,7 @@ ui/src/
 - **两套图标库并存，2026-10-03 起**：主体仍是 `@element-plus/icons-vue`（已接的图标不动，避免一次换掉几百处），**新补的图标走 `@lucide/vue`**（Lucide，ISC 授权）。选它的原因是 EP 的图标集里「标签 / 版本」这类语义只有实心造型的 `PriceTag`，缩到 11px 糊成一个黑点；Lucide 是 24 网格 2px 描边，缩到 11px 轮廓仍读得出。**按图标名 tree-shake**（`import { Tag as TagIcon } from '@lucide/vue'`），不要 `import * as`，否则 1857 枚全进包。
   - 一律**别名导入**（`Tag as TagIcon`）：面板里同时存在 `el-tag` 组件与一排 `*.tag` 类名，光看 `<Tag />` 认不出说的是哪一个。grep `TagIcon` 即为 Lucide 图标的全部用法。
   - 尺寸走**组件的 `size` 属性**，不要用 CSS 的 `font-size`：Lucide 渲染的是带 `width`/`height` 属性的 `<svg>`，字体缩不动它。颜色靠 `stroke="currentColor"` 自动继承，不用显式设。
-  - **`shell/VersionBadge.vue` 已删除（2026-10-08）**：它的两个消费方先后退场——概览「当前内核」卡按用户要求把版本号改成纯文字（判据钉住概览不再引 VersionBadge），侧栏底部那一行用的是裸 `<span class="version-badge">`（样式只有 theme.css 里省略号与收起态隐藏两条）。组件成了零导入的孤儿才删的。**「同一语义不许两处各拼一个长得像的」这条纪律仍在**：将来再要版本徽标，先建组件再复用，别把样式抄进某一侧的 scoped 块或 theme.css（后者是反棘轮文件，只许越来越小）。
+  - **`shell/VersionBadge.vue` 已删除（2026-10-08）**：它的两个消费方先后退场——概览「当前内核」卡按用户要求把版本号改成纯文字（判据钉住概览不再引 VersionBadge），侧栏底部那一行用的是裸 `<span class="version-badge">`（样式只有 theme.css 里省略号与收起态隐藏两条）。组件成了零导入的孤儿才删的。**「同一语义不许两处各拼一个长得像的」这条纪律仍在**：将来再要版本徽标，先建组件再复用，别把样式抄进某一侧的 scoped 块或 theme.css。
 - **面板里的第三方标志（npm 等）**：必须是 `ui/public/` 下的本地矢量、不许写远端 URL，并保留来源与许可声明——`tauri.conf.json` 的 `csp` 是 `null`，远端 `<img>` 出不出网完全取决于用户那台机器，取不到时页面上只剩一块白砖且没有任何报错（版本面板过去就挂着 `avatars.githubusercontent.com` 的 npm 头像）。由 `check-invariants` 第 15 项钉住。图标库里的图形组件不算「第三方标志」——它随包进产物，不发网络请求。
 - 应用自身图标只从 `assets/*.svg` 母版生成，规则见 [docs/ui/icon-design.md](../docs/ui/icon-design.md)。
 

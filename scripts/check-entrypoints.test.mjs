@@ -17,7 +17,7 @@ function commands(name, definitions = scripts, parents = []) {
 function assertJavaScriptGates(definitions = scripts) {
   const actual = commands('check:js', definitions);
   for (const name of [
-    'check:invariants', 'check:code-budget', 'check:webdriver-gating', 'check:builtin',
+    'check:invariants', 'check:duplicates', 'check:webdriver-gating', 'check:builtin',
     'test:scripts', 'test:ui', 'test:smoke', 'test:plugin', 'build:ui', 'check:ui-bundle',
   ]) {
     for (const command of commands(name, definitions)) {
@@ -32,6 +32,11 @@ test('共用 JavaScript 清单覆盖每项保护，漏掉插件测试时会拒�
   assert.throws(() => assertJavaScriptGates({
     ...scripts, 'check:js': scripts['check:js'].replace('npm run test:plugin && ', ''),
   }), /test:plugin/);
+});
+
+test('检查入口不再包含源码行数预算', () => {
+  assert.equal(scripts['check:code-budget'], undefined);
+  assert.ok(commands('check').every((command) => !command.includes('check-code-budget')));
 });
 
 test('静态检查不编译 Rust；发布总闸保留单测、零警告和 release 条件编译检查', () => {
