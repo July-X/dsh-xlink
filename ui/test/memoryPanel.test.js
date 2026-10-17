@@ -46,8 +46,8 @@ test('状态还没读回来时不算「没启用」——那句提示会误报',
   assert.equal(injectionDisabled({ wired: false, loadState: 'none' }), true, '没接线才说没启用');
   assert.equal(
     injectionDisabled({ wired: true, loadState: 'incompatible' }),
-    true,
-    '接线行还在但内核已切换：内核照样加载着它，而面板要说清「重新拨一次开关修复」'
+    false,
+    '接线行还指着旧指纹：内核照旧加载着它，重接线由启动工作台自动做，不许挂假警报'
   );
   assert.equal(
     injectionDisabled({ wired: false, requestedEnabled: true, loadState: 'none' }),

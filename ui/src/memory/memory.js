@@ -90,15 +90,15 @@ export function injectionDisabled(view) {
   if (!view) return false;
   // **判接线事实，不判启用意图**（记忆内核那次评审第 3 条）：内核读的是 `cordis.patch.yml`
   // 的接线行（`wired`），而 `requestedEnabled` 只是壳里那份 `state.json`。只看后者两个方向都会错：
-  // · 切内核版本后接线行还在、state.json 变了 → 面板报「没启用」，而内核照旧加载着插件；
-  // · 启用是「先写接线行、后写 state.json」，两步之间失败 → 同样是 `wired=true,
-  //   requestedEnabled=false`，面板给一个其实不需要点的启用按钮。
-  // 所以两个都要：**接线了、且状态是 prepared**，才敢说「没启用」。
+  // · 启用是「先写接线行、后写 state.json」，两步之间失败 → `wired=false`，内核确实没加载它；
+  // · 切内核版本后接线行还指着旧指纹（`loadState='incompatible'`）→ 内核照旧加载着它，而重接线
+  //   由下次启动工作台在拉起内核**之前**自动做（`kernel_adapter::start` → `runtime::refresh_enabled`），
+  //   此刻内核也没在跑——按它报「没启用」是一条假警报。
   if (view.stateError) return false; // 状态文件异常：不知道就不说
   // `wired` 缺失（旧壳/字段没下发）时**也不说**——「不知道」不能当成「没接线」，
   // 那正是这条判据第一版的老毛病（挂一句假警报，让用户去修一个没坏的东西）。
   if (typeof view.wired !== 'boolean') return false;
-  return !(view.wired && view.loadState === 'prepared');
+  return !view.wired;
 }
 
 /**
