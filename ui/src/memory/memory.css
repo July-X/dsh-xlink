@@ -20,14 +20,20 @@
  * ≈ 167px，一半宽度空着——一份几十字的记忆要折成十几行，右边却是白的。
  * `grid-template-rows: subgrid` 让标题 / 正文 / 次行三行仍由**同一个网格**给高度，
  * 于是按钮与标题天然同一行、正文在下面独占整宽。`minmax(0, 1fr)` 的 0 下限不能省
- * （`1fr` 下限默认 auto，长正文会把列撑开）。 */
+ * （`1fr` 下限默认 auto，长正文会把列撑开）。
+ *
+ * **`__main` 只占第 1 列，不能写成 `1 / -1`**（2026-10-17 修按钮压住标题）：
+ * 跨两列时它把整个网格按行切开，`.memory-row__title`（第 1 列第 1 行）与
+ * `.memory-row__actions`（第 2 列第 1 行）落进**同一格**——两列叠加渲染，标题被按钮
+ * 盖住并截断（截图里三行候选全是这个症状）。`1 / -1` 只能留给 `__body` / `__meta`
+ * 那种本来就该横跨整行的行。 */
 .memory-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: flex-start; gap: 0 12px; }
-.memory-row__main { display: grid; grid-column: 1 / -1; grid-row: 1 / span 3; grid-template-rows: subgrid; min-width: 0; }
+.memory-row__main { display: grid; grid-column: 1; grid-row: 1 / span 3; grid-template-rows: subgrid; min-width: 0; }
 .memory-row__title { display: flex; grid-column: 1; grid-row: 1; gap: 8px; align-items: center; flex-wrap: wrap; }
 .memory-row__name { font-size: 15px; font-weight: 600; }
 .memory-row__body { grid-column: 1 / -1; grid-row: 2; margin: 4px 0 0; color: var(--text-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }
 .memory-row__meta { grid-column: 1 / -1; grid-row: 3; margin: 4px 0 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
-.memory-row__actions { display: flex; grid-column: 2; grid-row: 1; gap: 4px; white-space: nowrap; }
+.memory-row__actions { display: flex; grid-column: 2; grid-row: 1; gap: 4px; white-space: nowrap; align-self: start; }
 
 /* 候选卡片上「模型标了一种关系」的那一块：C5 的冲突（`MemoryConflict.vue`）与 C6 的取代
  * （`MemorySuperseded.vue`）**共用同一族类名**——它们是同一件事的两种形状（模型说了某个
