@@ -985,6 +985,14 @@
 > 验的，探针给出的硬证据是 `tags: ["本项目","固定"]`、`meta: "… · 面板手动 · 已过期 · …"`、
 > `actions: ["编辑","停用","删除"]`；**只看截图会漏**——标签在缩略图里几乎看不见。
 > 种进真实实例的那条验证记录**当场删掉**（`memory_delete` 带返回的 id），验完 dev 记忆库回到 0 条。
+>
+> **第二次拆分（2026-10-17）**：用户要求「列表内部滚动、默认精简收缩的卡片、点击后弹出操作界面、
+> 按钮做成 badge」。行内那三枚常驻文字按钮与全文一起把卡片撑长，所以动作整体搬进新的
+> `MemoryDetail.vue`（弹窗底部三枚徽章），行只留 `@open`；列表自己滚（`.memory-list`
+> `max-height: 320px`），正文压两行。判据在 `ui/test/memoryPanel.test.js` 的「记忆行是精简卡片、
+> 点开才出操作：动作按钮是弹窗底部的徽章」那条；**动作接线换了地方，两条旧判据也跟着改了**
+> （行不再发 `edit` / `toggle` / `remove`，面板接的是 `@edit="editFromDetail"`）。选型与取舍见
+> [docs/ui/panel-decisions.md](../../ui/panel-decisions.md) 的 2026-10-17 那条。
 
 | 模块 | 职责 | 相关条目 |
 | --- | --- | --- |
@@ -1020,7 +1028,8 @@
 | `plugins/memory/test/probe/drive-stub.mjs` | **桩**驱动器（同协议，桩模型 + 桩桥，零额度）：自己生成含压缩三条参数的覆盖层 | G12、G13 |
 | `plugins/memory/test/probe/stub-model.mjs` | 桩模型：流式与非流式回**同一份** content；`STUB_FAIL_SUMMARY=1` 制造失败压缩 | G12、G13 |
 | `plugins/memory/test/probe/stub-bridge.mjs` | 桩桥：最小任务表状态机 + `/context` 回真命中（空命中会让注入预算恒为 0） | G12、G13 |
-| `ui/src/memory/MemoryRow.vue` | 一条记忆的渲染与它的三个动作（只读 props、只 emit） | D5、D6a |
+| `ui/src/memory/MemoryRow.vue` | 一条记忆的**精简卡片**（标题 + 两行正文 + 一行元信息；只读 props，只 emit `open`）。2026-10-17 起行内不再有动作按钮 | D5、D6a |
+| `ui/src/memory/MemoryDetail.vue` | 点开一条记忆后的详情弹窗：正文全文 + 底部三枚徽章动作（编辑 / 停用·启用 / 删除）。2026-10-17 从 `MemoryRow.vue` 接走三个动作 | D5、D6a |
 
 ## 独立评审（2026-10-15）
 

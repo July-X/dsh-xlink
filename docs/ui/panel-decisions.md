@@ -581,3 +581,55 @@ macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用�
   （当时总预算只剩 3 行）。
 - **没动的**：`memory.js:65` / `cmd.rs:122` / 设计文档里的「模拟 / 实况」是**内部术语**（区分
   查询来源），对用户不可见且含义精确，不跟着改；卡片结构、按钮与既有判据一条不动。
+
+## 记忆面板：列表内部滚动、卡片压两行、点开弹窗、按钮做成徽章（2026-10-17）
+
+用户原话：「记忆列表做成内部滚动条，默认内容精简收缩显示的卡片，点击后弹出操作界面。界面的操作按钮默认显示按钮 badge」。
+起因是这一屏的既有形状：每张卡片摊开全文，右侧还有一排常驻的文字动作链接，三条真实记忆就能把列表拉得很长。
+
+- **滚动落在列表自己身上**：`.memory-list { max-height: 320px; overflow-y: auto }`（`memory.css:90`）。
+  这条**推翻了 2026-10-16 那条「页面级纵向滚动仍是 `main` 的既有退路」**——那个说法在只有三条
+  短记忆时没暴露问题，全文摊开后就变成「整页滚动条只为一段列表出现」。320px 取自同屏两个既有值：
+  右栏「最近注入」用 `.memory-scroll` 224px，而整屏高度由右栏 ≈741px 决定——320px 能露出 2.5~3 张
+  压扁的卡片，也不至于把右栏顶下去。**内部滚动与页面滚动不是二选一而是先后关系**：列表不再长过右栏，
+  页面级那条就没有触发的机会。
+- **卡片默认精简，靠行数截断而不是截字符串**：`.memory-row__body--clamp` 用 `display: -webkit-box` +
+  `-webkit-box-orient: vertical` + `-webkit-line-clamp: 2` + `overflow: hidden`（`memory.css:110`），
+  两条 `line-clamp` 名字都写。**截的是显示不是信息**：全文一个字不删，进详情弹窗读（与本仓
+  `f22ca5e` 那条「隐藏内容比出现滚动条更糟」一致——这里没有隐藏，只是折叠）。
+  `-webkit-box` 作为 subgrid 子项会不会被块化，无浏览器可验，按标准走；这条已在代码注释里写明。
+  （当天的实测把它从「按标准走」变成了「验过」：见下面那条。）
+- **点整块开弹窗**：`MemoryRow.vue` 根元素 `role="button"` + `tabindex="0"` + `aria-haspopup="dialog"`，
+  Enter / Space 都绑。**不用原生 `<button>`**：`.memory-row` 的布局依赖 `grid` + `__main` 的 subgrid，
+  这一屏已经因为动结构回归过两次（正文被挤成左窄条 `e6e2753`、候选行按钮压住标题 `379525b`）。
+  行因此只发一个 `open` 事件，`edit`/`toggle`/`remove` 三个事件名从行里彻底消失。
+- **动作按钮进弹窗底部，且是徽章**：`.memory-actions .el-button.memory-badge`（`memory.css:131`）——
+  读法沿用控制塔的 `.diag-row__cta`（`diagnostics.css:445`），但**字号 12px 而不是 11px、`padding`
+  也更大**：那个是纯 `<span>`，这个是 `el-button`（自带 32px 高、`padding: 8px 15px`），照抄尺寸会
+  得到一个比行还高的胶囊。三档用 `--accent` / `--warning` / `--danger` 的 `-fill` / `-line` 令牌；
+  禁用态**保持配色、只降不透明度 0.5**（(0,3,0) 的基础规则本来就压过 EP `.is-disabled` 的 (0,2,0) 灰色），
+  `:not(.is-disabled)` 保住 hover 不跟着加深。`margin-left: 0` 与 `height: auto` 必须自己写：
+  EP 给每个 `.el-button` 加了 `margin-left: 12px`，而 `.panel .el-button { margin-left: 0 }` 伸不进
+  `append-to-body` 的弹窗。
+- **`MemoryDetail.vue` 独立成组件**：`MemoryPanel.vue` 只剩 1 行余量（494/495），弹窗的模板与三个动作
+  接线没有地方放。它复用 `memory-row__main` / `__title` / `__body` / `__meta`（同一族类名，样式在
+  `memory.css`），只是正文不带 `--clamp`。
+- **真浏览器实测**：headless Chromium 挂真实 `theme.css` + `memory.css` + Element Plus `index.css`，
+  378px 宽列、6 行假数据，详情弹窗的 footer 直接挂在 body 级（模拟 `append-to-body`）。量到四件事：
+  ① `.memory-list` 的 `clientHeight` 320 / `scrollHeight` 680，程序化 `scrollTop` 落到 360，而文档高度
+  等于视口高度——**内部滚动真的在滚，页面级滚动条没有被触发**；② `-webkit-line-clamp: 2` 那句所在
+  元素的计算 `display` 是 `flow-root`（Chromium 确实把 subgrid 子项的 `-webkit-box` 块化了），但截断
+  照旧生效：实测高 39px = 2 × 19.5px 行距，`scrollHeight - clientHeight` 溢出的 137px 被藏起来；
+  ③ `.memory-row__main` 的 `grid-template-columns: subgrid [] [] []` 生效（`grid-column: 1 / -1`），
+  正文宽 320 / 行内宽 344，**不是上一轮那种左窄条**；④ 徽章 25.19px 高（19.2 行高 + 4 上下 `padding`
+  + 2 边框）、圆角 999px、三枚的 `margin-left` **全是 0**（EP 那条 `.el-button + .el-button` 的 12px
+  被压住），配色解析到 accent / warning / danger 各自的 `-fill` / `-line`；同屏对照的裸 `.el-button`
+  是 32px 高 / 6px 圆角 / `padding: 8px 15px`。页脚最后一枚徽章右缘 713 = footer 右缘 713，
+  `.dialog-actions` 的 `flex-end` 生效。**没量的**：悬停与禁用态（由层叠判据钉）、真跑 Vue 组件与
+  teleport（静态标的结构）、378px 之外的其他宽度。
+- **判据**：`memoryPanel.test.js` 新增「记忆行是精简卡片、点开才出操作：动作按钮是弹窗底部的徽章」
+  一条（七段：行无按钮、可点语义、列表容器与内部滚动、`detailRow` 从 `allMemories` 取、弹窗挂载与
+  四个事件、footer 三个徽章、徽章层叠生效值），并改了两条旧判据——原文钉的是「行里发 `edit` / 面板接
+  `@edit="openMemoryEditor"`」，现在钉「行只发 `open`」与「编辑从详情转手 `editFromDetail`（先关详情
+  再开编辑器，两个弹窗都 `append-to-body`，叠着开就是两层遮罩）」。21 处变异逐个跑过，全部被抓。
+- **没动的**：候选行的三个文字按钮、`.memory-list` 之外的所有既有结构、`memory-scroll` 的 224px。

@@ -158,13 +158,15 @@ test('面板有范围筛选，行里显示来源与验证状态', () => {
   const row = templateOf(read('../src/memory/MemoryRow.vue'));
   assert.match(row, /sourcesText\(row\)/, '行里要显示**全部**来源');
   assert.match(row, /verificationText\(row\.verification\)/, '行里要显示验证状态');
-  assert.match(row, /emit\('edit', row\)/);
-  assert.match(row, /emit\('toggle', accepted \? 'disabled' : 'accepted'\)/, '下一个状态由行自己算');
-  assert.match(row, /emit\('remove', row\)/);
-  // **面板要真的挂上它、并把三个事件接住**：少接一个就是「按钮点了没反应」，而上面那些
-  // 模板判据照样绿（本仓反复栽过的形状）。
+  // 行在 2026-10-17 之后只发一个 `open`：动作按钮全部搬进详情弹窗（用户要求「默认内容
+  // 精简收缩，点击后弹出操作界面」）。三个事件名留在这一行的断言里，是因为「面板挂上了
+  // 组件却没接住事件」是本仓反复栽过的形状——现在要接住的是 `open`。
+  assert.match(row, /emit\('open', row\)/);
+  assert.doesNotMatch(row, /emit\('(edit|toggle|remove)'/, '行自己不许再有动作事件');
   assert.match(tpl, /<MemoryRow/, '面板要真的用它');
-  for (const handler of ['@edit="openMemoryEditor"', '@toggle=', '@remove="removeMemory"']) {
+  assert.ok(tpl.includes('@open="openMemoryDetail"'), '面板没接住 @open');
+  // 动作那半改挂在详情弹窗上：接不住就是「弹窗里的按钮点了没反应」。
+  for (const handler of ['@edit="editFromDetail"', '@toggle=', '@remove="removeMemory"']) {
     assert.ok(tpl.includes(handler), `面板没接住 ${handler}`);
   }
 });
@@ -545,8 +547,13 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
     used,
     [
       'memory-row',
+      // 2026-10-17 新增两条：`--clickable`（行的根，整块可点）与 `__body--clamp`（列表里
+      // 只留两行正文）。两条都写在 `memory.css` 里——它们分别被「面板 / 行」与「行 / 详情」
+      // 两侧的模板共用，scoped 块跨不过去。
+      'memory-row--clickable',
       'memory-row__actions',
       'memory-row__body',
+      'memory-row__body--clamp',
       'memory-row__main',
       'memory-row__meta',
       'memory-row__name',
@@ -582,6 +589,10 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
       'grid-template-columns': 'subgrid',
       'min-width': '0',
     },
+    // 2026-10-17：行整块可点（点开详情弹窗）。`cursor: pointer` 必须与 hover / 焦点反馈
+    // 成对出现——`diagnostics.css` 的 `.diag-row--static` 那条注释写过同一件事：只给指针
+    // 不给响应，用户会以为点了没反应。两个状态值在下面单独查（伪类不进这张表）。
+    'memory-row--clickable': { cursor: 'pointer' },
     'memory-row__title': { display: 'flex', 'flex-wrap': 'wrap', 'align-items': 'center' },
     'memory-row__name': { 'font-size': '15px', 'font-weight': '600' },
     'memory-row__body': {
@@ -590,6 +601,18 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
       'grid-column': '1 / -1',
       margin: '4px 0 0',
       color: 'var(--text-secondary)',
+    },
+    // 2026-10-17：列表里那一行正文只留两行（用户要求「默认内容精简收缩」），全文进详情
+    // 弹窗。行数截断靠 `display: -webkit-box` + `overflow: hidden` 这一对，缺哪个都只会
+    // 把文字裁在半个字上。`-webkit-line-clamp` 与标准的 `line-clamp` 都写：后者是新的
+    // 标准名，`css-cascade` 的属性正则有前置断言，两条各自查得到（见 `ui/AGENTS.md`
+    // 的层叠工具说明）。
+    'memory-row__body--clamp': {
+      display: '-webkit-box',
+      '-webkit-box-orient': 'vertical',
+      '-webkit-line-clamp': '2',
+      'line-clamp': '2',
+      overflow: 'hidden',
     },
     'memory-row__meta': {
       'font-size': '12px',
@@ -623,6 +646,22 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
       );
     }
   }
+
+  // 两条状态值单独查：伪类不进上面那张表（表里走的是「不给 pseudo 就不匹配带伪类的
+  // 规则」这条口径），而它们恰恰是「整块可点」的另一半——只有 `cursor: pointer` 的话，
+  // 鼠标压上去什么都不变，`.diag-row--static` 那条注释已经把这个坑写明白了。
+  const hoverBg = effectiveDeclaration(['memory-row--clickable'], rules, 'background', {
+    pseudo: 'hover',
+  });
+  assert.equal(hoverBg, 'var(--overlay-soft)', '可点的记忆行悬停时要有底色反馈');
+  const focusRing = effectiveDeclaration(['memory-row--clickable'], rules, 'outline', {
+    pseudo: 'focus-visible',
+  });
+  assert.equal(
+    focusRing,
+    '1px solid var(--accent)',
+    '可点的记忆行要能用键盘聚焦——行是 div，不给 outline 就完全没有焦点圈',
+  );
 });
 
 test('memory.css 的 import 排在 theme.css 之后——.memory-row 与 .page-row 同特异度', () => {
@@ -636,6 +675,213 @@ test('memory.css 的 import 排在 theme.css 之后——.memory-row 与 .page-r
   assert.ok(theme >= 0, 'main.js 里没有 theme.css 的 import');
   assert.ok(memory >= 0, 'main.js 里没有 memory/memory.css 的 import');
   assert.ok(theme < memory, 'memory.css 必须先于 theme.css 之后被 import，否则 .page-row 会赢');
+});
+
+test('记忆行是精简卡片、点开才出操作：动作按钮是弹窗底部的徽章', () => {
+  const panelSrc = read(`${MEM_DIR}MemoryPanel.vue`);
+  const panel = templateOf(panelSrc);
+  const row = templateOf(read(`${MEM_DIR}MemoryRow.vue`));
+  const detailSrc = read(`${MEM_DIR}MemoryDetail.vue`);
+  const detail = templateOf(detailSrc);
+  const rules = globalRules();
+
+  // ① 「默认精简」：行里只剩标题、两行正文与元信息，一枚动作按钮都没有——此前正文整段
+  //    摊开、右侧常驻三个文字动作，一条记忆能占六行高。
+  assert.equal((row.match(/<el-button[\s>]/g) || []).length, 0, '记忆行里又长出了按钮');
+  for (const handler of ['@edit', '@toggle', '@remove']) {
+    assert.ok(!row.includes(handler), `记忆行还在自己处理 ${handler}：动作已经搬进详情弹窗`);
+  }
+  assert.match(
+    row,
+    /class="memory-row__body memory-row__body--clamp"/,
+    '行的正文没有压缩：两行截断只有 __body--clamp 给',
+  );
+
+  // ② 整块可点。行是 div 不是原生 <button>：这一族的版式压在 `.memory-row` 的栅格与
+  //    `__main` 子栅格上（正文被挤成窄条、候选行按钮压住标题，两次都出在这里），换标签
+  //    就得连版式一起重做，于是用 `role="button"` + `tabindex` 补上读屏与键盘那半边。
+  for (const attr of ['role="button"', 'tabindex="0"', 'aria-haspopup="dialog"']) {
+    assert.equal(row.split(attr).length - 1, 1, `记忆行少了 ${attr}`);
+  }
+  assert.equal((row.match(/@click="emit\('open', row\)"/g) || []).length, 1, '点整行不开详情');
+  assert.equal(
+    (row.match(/@keydown\.enter="emit\('open', row\)"/g) || []).length,
+    1,
+    '回车打不开详情',
+  );
+  // 空格必须 `.prevent`：不拦的话按键会先把列表滚一屏（这一屏的滚动容器就是列表自己）。
+  assert.equal(
+    (row.match(/@keydown\.space\.prevent="emit\('open', row\)"/g) || []).length,
+    1,
+    '空格没接，或接了但没拦住默认滚动',
+  );
+
+  // ③ 「列表内部滚动」：这一屏 2026-10-16 起没有页面级滚动条，长出来的那截只能落在
+  //    `memory-list` 上。
+  const list = elementBlock(panel, 'div', 'memory-list');
+  assert.equal((list.match(/<MemoryRow\b/g) || []).length, 1, '列表格里的行不是 MemoryRow');
+  assert.equal((list.match(/@open="openMemoryDetail"/g) || []).length, 1, '行没把 @open 接出来');
+  assert.equal(effectiveDeclaration(['memory-list'], rules, 'overflow-y'), 'auto', '列表不自己滚');
+  assert.equal(
+    effectiveDeclaration(['memory-list'], rules, 'max-height'),
+    '320px',
+    '列表没有高度上限：没有上限的 overflow 永远不会滚',
+  );
+
+  // ④ 弹窗里那一行的来源：按 id 从**未筛选**的 allMemories 里现取。改成挂 `list` 里那一份
+  //    的话，读记忆时切一下范围（那组单选就在同屏）弹窗就跟着没了。
+  assert.equal(
+    panelSrc.split(
+      'const detailRow = computed(() => allMemories.value.find((row) => row.id === detailId.value) || null);',
+    ).length - 1,
+    1,
+    '详情弹窗的行没有按 id 从 allMemories（未筛选）里现取',
+  );
+
+  // ⑤ 挂载接线挂在 `v-if="detailRow"` 上，而不是自己记「开没开」——记忆被删掉时那个
+  //    computed 变 null，弹窗自己关掉，不必再同步一次开关状态。
+  const at = panelSrc.indexOf('<MemoryDetail');
+  assert.ok(at > 0, '面板里没有挂载记忆详情弹窗');
+  const mount = panelSrc.slice(at, panelSrc.indexOf('/>', at) + 2);
+  for (const binding of [
+    'v-if="detailRow"',
+    ':row="detailRow"',
+    '@close="detailId = null"',
+    '@edit="editFromDetail"',
+  ]) {
+    assert.equal(mount.split(binding).length - 1, 1, `详情弹窗没接 ${binding}`);
+  }
+  assert.match(
+    mount,
+    /@toggle="\(state\) => setMemoryState\(detailRow, state\)"/,
+    '详情里的启停没接回 setMemoryState',
+  );
+  assert.match(mount, /@remove="removeMemory"/, '详情里的删除没接回 removeMemory');
+
+  // ⑥ 弹窗页脚。`memory-actions` 不能省：`.dialog-actions` 只给 `justify-content`，
+  //    缝与换行都在 `.memory-actions` 上（同 `MigrationPrompt` 的 `.prompt-footer-ask`）。
+  assert.match(detail, /<p class="memory-row__body">/, '详情正文丢了 memory-row__body');
+  assert.ok(
+    !detail.includes('memory-row__body--clamp'),
+    '详情里还在截正文：这一层就是拿来看完整正文的',
+  );
+
+  const footAt = detail.indexOf('<template #footer>');
+  assert.ok(footAt > 0, '详情弹窗没有页脚');
+  const foot = detail.slice(footAt);
+  assert.equal(
+    (foot.match(/class="memory-actions dialog-actions"/g) || []).length,
+    1,
+    '动作排的包裹层不是 memory-actions + dialog-actions',
+  );
+  assert.equal((foot.match(/<el-button\b/g) || []).length, 3, '页脚不是三枚按钮');
+  for (const label of ['编辑', '删除']) {
+    assert.equal(foot.split(label).length - 1, 1, `页脚里的「${label}」不是恰好一枚`);
+  }
+  assert.match(foot, /\{\{ accepted \? '停用' : '启用' \}\}/, '启停那枚的文案丢了');
+  assert.equal(
+    (foot.match(/@click="emit\('toggle', accepted \? 'disabled' : 'accepted'\)"/g) || []).length,
+    1,
+    '启停点下去的落点不对：停用要写 disabled、启用要写 accepted',
+  );
+  assert.equal(
+    (foot.match(/:disabled="globalBusy"/g) || []).length,
+    3,
+    '长任务在跑时三枚按钮都要禁用',
+  );
+  for (const key of ["isLoading('memoryState:' + row.id)", "isLoading('memoryDelete:' + row.id)"]) {
+    assert.equal(foot.split(key).length - 1, 1, `页脚丢了在途状态 ${key}`);
+  }
+  assert.equal(
+    (detailSrc.match(/const accepted = computed\(\(\) => props\.row\.state === 'accepted'\);/g) || [])
+      .length,
+    1,
+    '启停按钮判不出该显示「停用」还是「启用」',
+  );
+
+  // ⑦ 徽章样式。`margin-left` 与 hover 两条**只读规则原文**，不走 effectiveDeclaration：
+  //    那个工具的选择器匹配是「祖先盲」的，`.installed-tabs-wrap .tabs-head-actions
+  //    .el-button + .el-button`（margin-left: 6px，(0,4,0)）与 `.panel .el-button` 都会被
+  //    算成这条徽章的竞争者，可它们都到不了挂在 body 上的弹窗——照它读，答案是 6px。
+  //    这条规则自己那个 `margin-left: 0` 抵消的正是 Element Plus 加在每颗按钮上的 12px。
+  const badge = rules.find((r) => r.selector === '.memory-actions .el-button.memory-badge');
+  assert.ok(badge, '找不到徽章按钮那条规则');
+  for (const decl of [
+    'margin-left: 0',
+    'height: auto',
+    'padding: 2px 10px',
+    'border-radius: 999px',
+    'border: 1px solid var(--accent-line)',
+    'background: var(--accent-fill)',
+    'color: var(--accent)',
+  ]) {
+    assert.ok(badge.body.includes(decl), `徽章少了「${decl}」`);
+  }
+  // 其余属性上扫不到能压过它的竞争者（`.kv .el-button` 那条是 (0,2,0)），所以这几条照
+  // 层叠读：真被别的规则改写时判据会红，而不是只证明「某处写过」。
+  assert.equal(
+    effectiveDeclaration(['el-button', 'memory-badge'], rules, 'border-radius'),
+    '999px',
+    '徽章不是胶囊形',
+  );
+  assert.equal(
+    effectiveDeclaration(['el-button', 'memory-badge'], rules, 'height'),
+    'auto',
+    '徽章被 Element Plus 的 32px 撑回了整颗按钮：高度不归零就不像徽章',
+  );
+  assert.equal(
+    effectiveDeclaration(['el-button', 'memory-badge'], rules, 'color'),
+    'var(--accent)',
+    '徽章的主色不是强调色',
+  );
+  // 状态色靠变体类，不是换 `el-button` 的 type/plain/round：那几档各带一整套背景与边框，
+  // 颜色改不动。（`.diag-row__cta` 正是因此用裸 span，这里要留下按钮的 loading 与焦点圈。）
+  assert.equal(
+    effectiveDeclaration(['el-button', 'memory-badge', 'memory-badge--warn'], rules, 'color'),
+    'var(--warning)',
+    '启停那枚不是警告色',
+  );
+  assert.equal(
+    effectiveDeclaration(['el-button', 'memory-badge', 'memory-badge--danger'], rules, 'color'),
+    'var(--danger)',
+    '删除那枚不是危险色',
+  );
+  // 禁用态：徽章自己的 (0,3,0) 主色规则压过 Element Plus 的 `.el-button.is-disabled`
+  // （(0,2,0)，样式表在 node_modules 里），颜色不会自己变灰——不另给信号就成了「看着能点、
+  // 点了没反应」，`.diag-row--static` 那条注释记的就是这个坑。
+  assert.equal(
+    effectiveDeclaration(['el-button', 'memory-badge', 'is-disabled'], rules, 'opacity'),
+    '0.5',
+    '禁用态没有任何视觉差别',
+  );
+  const badgeHover = rules.find(
+    (r) =>
+      r.selector.includes('memory-badge:not(.is-disabled):hover') &&
+      r.body.includes('border-color'),
+  );
+  assert.ok(badgeHover, '徽章没有 hover / focus 反馈：`.diag-row--static` 的注释写明了这个坑');
+  assert.ok(
+    badgeHover.selector.includes('memory-badge:not(.is-disabled):focus-visible'),
+    '键盘聚焦没和悬停共用一条规则：漏掉 focus-visible，键盘用户看不到焦点',
+  );
+  assert.ok(
+    badgeHover.body.includes('border-color: currentcolor'),
+    ':not(.is-disabled) 去掉的话，禁用中的徽章也会在悬停时加亮边框',
+  );
+
+  // 缝由容器给：三枚徽章自己不带 margin（上面那条 `margin-left: 0` 是这条的一半），
+  // 换行交给 flex-wrap——弹窗宽 `min(560px, 92vw)`，窄屏上三枚挤不进一行。
+  assert.equal(effectiveDeclaration(['memory-actions'], rules, 'gap'), '8px', '动作排没有缝');
+  assert.equal(
+    effectiveDeclaration(['memory-actions'], rules, 'display'),
+    'flex',
+    '`.dialog-actions` 只给 justify-content，display 与 wrap 得自己给',
+  );
+  assert.equal(
+    effectiveDeclaration(['memory-actions', 'dialog-actions'], rules, 'justify-content'),
+    'flex-end',
+    '动作排没靠右：`.dialog-actions` 是那一排位置唯一的来源',
+  );
 });
 
 test('记忆页头只有两个直接子级：标题块 + 整行独占的开关块', () => {
@@ -700,7 +946,13 @@ test('清单筛选自成一行，不再挤在卡头那一排里', () => {
   // 所以要连后面的空白或 `>` 一起匹配。
   assert.equal((group.match(/<el-radio[\s>]/g) || []).length, 3, '筛选不是三档了');
   // 空态那三句各挂在 `v-if` / `v-else-if` / `v-else` 上，与筛选互不干扰。
-  assert.match(card, /<div v-else class="page-list">/, '空态与列表的分支没了');
+  // `memory-list` 加在同一格上：`page-list` 给的是栅格与行列缝，内部滚动那半只有
+  // `memory-list` 有（2026-10-17 起，这一屏唯一的滚动容器）。
+  assert.match(
+    card,
+    /<div v-else class="page-list memory-list">/,
+    '空态与列表的分支没了，或列表格丢了 memory-list（这一屏没有页面级滚动条，长出来的那段只能在这里自己滚）',
+  );
 });
 
 /**
@@ -712,7 +964,8 @@ test('清单筛选自成一行，不再挤在卡头那一排里', () => {
  * ③ 行内「编辑」另走一条路（两个入口两套行为，迟早一边改了另一边没改）。
  */
 test('新建与编辑共用一个弹窗：按钮与行内「编辑」都走 openMemoryEditor', () => {
-  const panel = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
+  const panelSrc = read(`${MEM_DIR}MemoryPanel.vue`);
+  const panel = templateOf(panelSrc);
   const editor = read(`${MEM_DIR}MemoryEditor.vue`);
 
   // ① 表单字段只在编辑器组件里。
@@ -728,7 +981,15 @@ test('新建与编辑共用一个弹窗：按钮与行内「编辑」都走 open
     /<el-button type="primary" :icon="Plus"[^>]*@click="openMemoryEditor\(\)"/,
     '「新建记忆」要接在 openMemoryEditor() 上（少一对括号就会把 MouseEvent 当 record）',
   );
-  assert.match(panel, /@edit="openMemoryEditor"/, '行内「编辑」要走同一个入口');
+  // 行内「编辑」在 2026-10-17 之后从详情弹窗转一手（列表行不再带按钮），但入口仍是
+  // 同一枚 `openMemoryEditor`：转手那一步必须先把详情关掉，两个弹窗都 `append-to-body`，
+  // 叠着开就是两层遮罩（`@edit="openMemoryEditor"` 直接挂下去正是这么坏的）。
+  assert.match(panel, /@edit="editFromDetail"/, '详情里的「编辑」要接上转手那一步');
+  assert.match(
+    panelSrc,
+    /function editFromDetail\(row\) \{\s*detailId\.value = null;\s*openMemoryEditor\(row\);/,
+    '转手函数要关详情、再开编辑器，且用的是同一个入口',
+  );
 
   // ③ 它必须在 `.memory-head__actions` **外面**：那一排的三枚文字按钮已约 287px，
   //    而卡内可用宽只有 348px；四枚并排约 390px，那一排自己不换行 → 最右一枚被裁。
