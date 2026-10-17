@@ -172,6 +172,16 @@ mod tests {
         assert!(err.contains("不是 patch 列表"));
     }
 
+    /// 多文档文件同样必须拒绝（2026-10-17 评审补的调用点用例）：追加会让内核的 patch
+    /// 加载抛错，那是壳把用户文件改成内核起不来。既要拒绝，也不能返回改过的文本。
+    #[test]
+    fn ensure_refuses_multi_document_files() {
+        for broken in ["- x: 1\n...\n", "- a\n---\n- b\n"] {
+            let err = ensure_row(broken, ROW_ID, REL).unwrap_err();
+            assert!(err.contains("不是 patch 列表"), "实际：{err}");
+        }
+    }
+
     #[test]
     fn remove_drops_own_block_and_keeps_user_rows() {
         let wired = ensure_row(
