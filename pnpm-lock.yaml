@@ -40,8 +40,8 @@ importers:
         specifier: ^9.32.0
         version: 9.32.0
       '@wdio/spec-reporter':
-        specifier: ^9.32.0
-        version: 9.32.0
+        specifier: ^10.0.1
+        version: 10.0.1
       '@wdio/tauri-service':
         specifier: ^1.5.0
         version: 1.5.0(expect-webdriverio@6.1.0)(tsx@4.23.15)(webdriverio@9.32.0)
@@ -646,6 +646,9 @@ packages:
   '@types/node@20.19.43':
     resolution: {integrity: sha512-6oYBAi5ikg4Pl+kGsoYtawUMBT2zZMCvPNF7pVLnHZfd1zf38DRiWn/gT01RYCdUqkv7Fhr+C9ot4/tb+2sVvA==}
 
+  '@types/node@22.20.5':
+    resolution: {integrity: sha512-U2+DNr+wSjpsTS/wZGYHq7GcwfuSmKiKvoPvK22zwTlRhU91yOniN4qRR5KhIjvif7ysw/dz/hKmfDH0Ris4aA==}
+
   '@types/node@26.6.5':
     resolution: {integrity: sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==}
 
@@ -798,6 +801,10 @@ packages:
     resolution: {integrity: sha512-FLTF0VL6+o5BSTCO7yLSXocm3kUnu31zYwzdsz4n9s5YWt83sCtzGZlZpt7TaTzb3jVUfxuHNQDTb8UMkCu0lQ==}
     engines: {node: '>=18.20.0'}
 
+  '@wdio/reporter@10.0.1':
+    resolution: {integrity: sha512-A917SeniucyosspqazR9tGH6t9JaecU5SRP3VzRGyIo0JBEKV6walJU1VBauMH+7n043huzgiQvNJ414Vi8dmQ==}
+    engines: {node: '>=22.19.0'}
+
   '@wdio/reporter@9.31.2':
     resolution: {integrity: sha512-3cKE6vCOsro/Ep9dGTIbo3FBn3WNvJ++BIn32lFd9m19pFdjuwlVgLtPXHb9jWNCJs740h5AIUcVkcscqUYhAA==}
     engines: {node: '>=18.20.0'}
@@ -813,12 +820,12 @@ packages:
       expect-webdriverio: ^6.0.9
       webdriverio: ^9.28.0
 
+  '@wdio/spec-reporter@10.0.1':
+    resolution: {integrity: sha512-zu4PQ7T95KQ/b3/coHQ3RLK5ffQDrpdXkxsfcTXU9Zd+l9K1GzTyJEgXCE7zY1l+INbrBqhM17aUmQvaBZH+JA==}
+    engines: {node: '>=22.19.0'}
+
   '@wdio/spec-reporter@9.31.2':
     resolution: {integrity: sha512-lNLLPUk4y1Yp5pWwBFF+tjZIy7bOv0TPTk4HDWV4LnnHnkc24abI0nN+kb2y5/JV8ZgwLCCVKUFRdRUxfKsAaQ==}
-    engines: {node: '>=18.20.0'}
-
-  '@wdio/spec-reporter@9.32.0':
-    resolution: {integrity: sha512-WXL98WXqSGLffvDhLNsn4zD/sCGaWK1GF+i/gQsBxJN86vRiktL8XsB7q4SfBr7doyrR5+POwceX248M26bRgA==}
     engines: {node: '>=18.20.0'}
 
   '@wdio/tauri-service@1.5.0':
@@ -826,6 +833,10 @@ packages:
     engines: {node: '>=18.20.0'}
     peerDependencies:
       webdriverio: ^9.0.0
+
+  '@wdio/types@10.0.1':
+    resolution: {integrity: sha512-HGP9lAYXCsLAXzugfT4khCh7tYByWOMIxZHCG+tUvgmpwNzi6lfIsxyIlWownXK1wYJUpk6tkDBX/iXwN+q0lg==}
+    engines: {node: '>=22.19.0'}
 
   '@wdio/types@9.31.2':
     resolution: {integrity: sha512-lQKaiQDCJJ6VC1K/cKzaAxCpwB9pL1U0VbmX2uGksMxO4EDbNuLvIxWryuUDJ7OaSYTjxILTKYFErdbT/xEikg==}
@@ -1394,12 +1405,13 @@ packages:
 
   glob@10.4.5:
     resolution: {integrity: sha512-7Bv8RF0k6xjo7d4A/PxYLbUCfb6c+Vpd2/mB2yRDlew7Jb5hEXiCD9ibfO7wpk8i4sevK6DFny9h7EYbM3/sHg==}
+    deprecated: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
     hasBin: true
 
   glob@8.1.0:
     resolution: {integrity: sha512-r8hpEjiQEYlF2QU0df3dS+nxxSIreXQS1qRhMJM0Q5NDdR386C7jb7Hwwod8Fgiuex+k0GFjgft18yvxm5XoCQ==}
     engines: {node: '>=12'}
-    deprecated: Glob versions prior to v9 are no longer supported
+    deprecated: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
 
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
@@ -2664,7 +2676,7 @@ snapshots:
 
   '@jest/pattern@30.5.0':
     dependencies:
-      '@types/node': 20.19.43
+      '@types/node': 26.6.5
       jest-regex-util: 30.5.0
 
   '@jest/schemas@30.5.0':
@@ -2677,7 +2689,7 @@ snapshots:
       '@jest/schemas': 30.5.0
       '@types/istanbul-lib-coverage': 2.0.6
       '@types/istanbul-reports': 3.0.4
-      '@types/node': 20.19.43
+      '@types/node': 26.6.5
       '@types/yargs': 17.0.35
       chalk: 4.1.2
 
@@ -2837,10 +2849,13 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
+  '@types/node@22.20.5':
+    dependencies:
+      undici-types: 6.21.0
+
   '@types/node@26.6.5':
     dependencies:
       undici-types: 8.9.0
-    optional: true
 
   '@types/normalize-package-data@2.4.4': {}
 
@@ -2854,7 +2869,7 @@ snapshots:
 
   '@types/ws@8.18.2':
     dependencies:
-      '@types/node': 20.19.43
+      '@types/node': 26.6.5
 
   '@types/yargs-parser@21.0.3': {}
 
@@ -3106,6 +3121,13 @@ snapshots:
     dependencies:
       '@types/node': 20.19.43
 
+  '@wdio/reporter@10.0.1':
+    dependencies:
+      '@types/node': 22.20.5
+      '@wdio/types': 10.0.1
+      diff: 8.0.4
+      object-inspect: 1.13.4
+
   '@wdio/reporter@9.31.2':
     dependencies:
       '@types/node': 20.19.43
@@ -3143,18 +3165,18 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@wdio/spec-reporter@9.31.2':
+  '@wdio/spec-reporter@10.0.1':
     dependencies:
-      '@wdio/reporter': 9.31.2
-      '@wdio/types': 9.31.2
+      '@wdio/reporter': 10.0.1
+      '@wdio/types': 10.0.1
       chalk: 5.6.2
       easy-table: 1.2.0
       pretty-ms: 9.3.1
 
-  '@wdio/spec-reporter@9.32.0':
+  '@wdio/spec-reporter@9.31.2':
     dependencies:
-      '@wdio/reporter': 9.32.0
-      '@wdio/types': 9.32.0
+      '@wdio/reporter': 9.31.2
+      '@wdio/types': 9.31.2
       chalk: 5.6.2
       easy-table: 1.2.0
       pretty-ms: 9.3.1
@@ -3177,6 +3199,10 @@ snapshots:
       - expect-webdriverio
       - supports-color
       - tsx
+
+  '@wdio/types@10.0.1':
+    dependencies:
+      '@types/node': 22.20.5
 
   '@wdio/types@9.31.2':
     dependencies:
@@ -3965,7 +3991,7 @@ snapshots:
     dependencies:
       '@jest/expect-utils': 30.5.2
       '@jest/types': 30.5.1
-      '@types/node': 20.19.43
+      '@types/node': 26.6.5
       jest-util: 30.5.1
 
   jest-regex-util@30.5.0: {}
@@ -3973,7 +3999,7 @@ snapshots:
   jest-util@30.5.1:
     dependencies:
       '@jest/types': 30.5.1
-      '@types/node': 20.19.43
+      '@types/node': 26.6.5
       chalk: 4.1.2
       ci-info: 4.4.0
       graceful-fs: 4.2.11
@@ -4617,8 +4643,7 @@ snapshots:
 
   undici-types@6.21.0: {}
 
-  undici-types@8.9.0:
-    optional: true
+  undici-types@8.9.0: {}
 
   undici@6.29.0: {}
 
