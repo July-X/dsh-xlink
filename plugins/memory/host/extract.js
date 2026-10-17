@@ -444,8 +444,17 @@ export function parseExtractionOutput(
   return { ok: true, candidates, rejected };
 }
 
-/** 送进模型的会话片段上限：比内核上下文小得多，一次只看一小段。 */
-export const MAX_SLICE_BYTES = 64 * 1024;
+/**
+ * 送进模型的会话片段上限：比内核上下文小得多，一次只看一小段。
+ *
+ * **这个数直接就是「每次提取的未命中 token 成本」**：切片每次都不同，前缀缓存命不中，
+ * 一次提取调用基本全是 miss（64 KiB 的中文切片 ≈ 2 万 token，实测见
+ * `docs/features/memory/cache-impact.md`），所以它不是「上下文还剩多少」。
+ * **24 KiB 够覆盖最近若干回合的人话**（单条上限 `MAX_EVENT_BYTES` 不变），对「提取用户偏好 /
+ * 纠正」再长没有增益；而且**收小不丢信息**：`buildSlice` 从最新一条往回取、整条放不下就丢，
+ * 丢掉的条数写在切片开头，丢的只会是更老的对话。
+ */
+export const MAX_SLICE_BYTES = 24 * 1024;
 /** 单条事件最多占多少：一条超长工具结果不该把整段挤掉。 */
 export const MAX_EVENT_BYTES = 8 * 1024;
 

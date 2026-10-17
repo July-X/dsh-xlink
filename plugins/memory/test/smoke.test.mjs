@@ -955,6 +955,26 @@ test('输入只取对话、按字节削、截断要留标记', () => {
   assert.ok(bodyBytes <= 200 + 4, `正文该在预算内，实际 ${bodyBytes}`);
 });
 
+test('默认上限截断：留最新、丢最老，并在开头如实报出丢了几条', () => {
+  // **不传 `maxBytes`，测的就是 `MAX_SLICE_BYTES` 本身**：一次提取调用基本全是 miss（切片每次
+  // 不同，前缀缓存命不中），所以这个上限等于「每次提取的未命中 token 成本」，收小是划算的。
+  // 这里不写死字节数（脆），只钉住取舍方向——总量取在 24 KiB 与 64 KiB 之间，所以上限一旦被
+  // 改回 64 KiB，这段就整段放得下：`dropped` 归零、最老那条也在，这条用例当场变红。
+  const events = Array.from({ length: 48 }, (_, index) => ({
+    type: 'user/message',
+    seq: index + 1,
+    data: {
+      source: { kind: 'user' },
+      content: `第 ${index + 1} 条：${'这是一句用来凑字节的中文正文。'.repeat(20)}`,
+    },
+  }));
+  const slice = buildSlice(events);
+  assert.ok(slice.dropped > 0, '总量超过默认上限，该有整条被丢掉');
+  assert.match(slice.text, /^\[注意\] 这段范围按字节上限截断了/, '截断说明在最前面（不静默截断）');
+  assert.ok(slice.text.includes('[48] 用户：第 48 条：'), '最新的那条要留下');
+  assert.ok(!slice.text.includes('[1] 用户：'), '最老的那条要被丢掉');
+});
+
 /** 造一个假会话服务：记下调用次序，按脚本回话。 */
 function fakeLog({ flushed = true, openThrows = false, readResult, flushThrows = false } = {}) {
   const calls = [];

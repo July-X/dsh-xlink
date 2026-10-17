@@ -42,18 +42,6 @@ fn skill_wiring_block(active: &Path) -> String {
     )
 }
 
-/// 顶层是不是一个 patch 列表。只有列表（空、或以 `-` 起头的条目）才允许追加。
-pub(crate) fn looks_like_patch_list(text: &str) -> bool {
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        return trimmed.starts_with('-');
-    }
-    true
-}
-
 /// 返回补上技能接线行之后的 patch 文本；已经就位时原样返回。
 ///
 /// 三条纪律：
@@ -70,24 +58,13 @@ pub(crate) fn ensure_skill_wiring(existing: &str, active: &Path) -> Result<Strin
     if existing.contains(SKILL_WIRING_ROW_ID) && existing.contains(&token) {
         return Ok(existing.to_string());
     }
-    if !looks_like_patch_list(existing) {
+    if !crate::kernel::patch_file::looks_like_patch_list(existing) {
         return Err("cordis.patch.yml 顶层不是 patch 列表，不追加以免破坏内核启动".into());
     }
-    let has_entries = existing.lines().any(|line| {
-        let trimmed = line.trim();
-        !trimmed.is_empty() && !trimmed.starts_with('#')
-    });
-    let mut next = existing.to_string();
-    if has_entries {
-        if !next.ends_with('\n') {
-            next.push('\n');
-        }
-        next.push('\n');
-    } else if !next.is_empty() && !next.ends_with('\n') {
-        next.push('\n');
-    }
-    next.push_str(&skill_wiring_block(active));
-    Ok(next)
+    Ok(crate::kernel::patch_file::append_row(
+        existing,
+        &skill_wiring_block(active),
+    ))
 }
 
 #[cfg(test)]

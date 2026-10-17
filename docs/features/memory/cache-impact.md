@@ -88,34 +88,82 @@ prompt 总量约 2.0 亿，记忆块占 **0.014%**（放进 6 周总量 56.3 亿
 前三个会话占 57.8%。这两个重压缩会话同时也是「含记忆快照最多」的两个——**相关性来自它们又长、
 又反复压缩，不是记忆**：把它们的记忆段整段删掉，也只省下各自 miss 的 0.03% 不到。
 
-## 四、优化方案
+## 四、优化方案（逐项，含 2026-10-17 已落地的两项）
 
-### ① 压缩是唯一值得动手的大头（不是记忆）
+### ① 压缩：阈值被默认值压到窗口的 12%——**壳侧改不到，需要内核侧通路**
 
-916 次「间隔内有压缩」的请求（3.5%）吃掉 26.5% 的 miss；两条长会话里压缩平均每 2~3 次
-请求就来一次，每次都是一次摘要 LLM 调用 + 历史重写。方案：
+内核的自动压缩阈值是（`dsh-compaction-basic` 的 `resolveCompactSpec`）：
 
-1. **报上游内核**：这份数据（压缩次数、压缩前后 token、命中率）足以支撑一个 issue。
-2. **本地可调**：内核 `@deepseek-ai/dsh-compaction-basic` 暴露 `thresholdRatio`、`retention`、
-   `maxTokens`、`modelPolicies`，当前走默认值；换模型（1M 窗口 × `maxTokens` 384K）与
-   200K 窗口混用时阈值是否还合理，要单独做一次实验。壳侧的 `cordis.patch.yml` 目前只允许
-   追加技能 loader 行（见 `AGENTS.md`），要动压缩配置得先扩大那条接线约定。
-3. 使用侧：把 500 步的单回合拆成多回合/多会话，压缩风暴会显著减少。
+```text
+threshold = floor(min(window × thresholdRatio, window − 请求 maxTokens − headroomTokens))
+```
+
+`thresholdRatio` 默认 0.8、`headroomTokens` 默认 **65536**。那份压缩风暴会话的
+`request/context` 是 `window = 512000`、请求 `maxTokens = 384000`（adapter 默认）——
+消息预算只剩 128000，阈值被 headroom 压到 **62464**，而日志里压缩确实在 prompt
+≈ 62435 处触发。**每次压缩的代价与收益严重倒挂**（该会话实测）：
+
+| 项 | 实测 |
+| --- | --- |
+| 压缩次数 | 200 次（510 个请求的一条长回合） |
+| 摘要调用 | 163 次，合计 6.14M tokens（重跑整段历史的 prompt） |
+| 压缩后第一条请求的命中率 | 中位数 **19.9%**（前缀从摘要处整段失效） |
+| 每次压缩换来的上下文削减 | 中位数 **3198 tokens** |
+| 该会话压缩相关的额外成本 | ≈ 1500 万 tokens，占全部 token 约 42% |
+
+**尝试过、并已按实测回滚（2026-10-17）**：让壳往实例 `cordis.patch.yml` 写
+`compaction-basic` 的 `headroomTokens: 8192`（阈值本可 62464 → 119808）。核对与
+`dsh --dump-config` 实测都表明**这条路走不通**，两种 patch 形状都落不到会话真正用的那一行：
+
+- `- insert:` 形状：`applyEntryPatches`（`dsh-app-boot`）里**顶层无 id 的 `insert` 是
+  「往列表追加一条新条目」**，不是按 id 覆盖。实测 dump 里多出第 5 条顶层
+  `compaction-basic`，而根组按 id 去重是「后写赢」——于是我们这条把上游在
+  `dsh-web-app/cordis.patch.yml` 里**刻意 `disabled: true`** 的 host 面引擎重新启用了。
+- `- id: compaction-basic` + `config:` 形状：定向替换确实生效，但落在那条**同样
+  `disabled: true`** 的 host 行上，插件根本不 mount → 完全空转。
+- 会话真正使用的那条在 **preset** 里（`preset-standard` 的 `config.plugins` →
+  `compaction` 组 → `compaction-basic`，无 config），而 patch 的索引只递归
+  `entry.group && Array.isArray(entry.config)`，**看不见 `config.plugins` 里的行**。
+  反证实测：往同一份 patch 里写一条只存在于 preset 内的 id，内核直接警告
+  `patch: entry "…" not found`。
+
+另一个被这次复核逮到的真回归（如果将来内核允许调 headroom，**必须**注意）：
+`const maxTokens = config.maxTokens ?? headroomTokens` —— 只写 `headroomTokens` 会把
+**摘要调用的输出预算**一起从 65536 砍到 8192，而实测那 163 次摘要有 **35 次输出超过
+8192**（p90 9609、max 11852），那些摘要会被静默截断。
+
+**因此正确的做法是内核侧改**（按「不该由壳替内核定取舍」的既有边界）：
+
+1. 把 `headroomTokens` 从**绝对值**改成**按消息预算的比例**（今天 65536 在这条链路上
+   占掉 128000 的一半，而它是为 1M 窗口设计的默认值）；
+2. 或让 preset 里的行可被 profile / home 层 patch 覆盖（今天 `config.plugins` 里的行
+   对 patch 不可见）；
+3. 或按窗口比例钳制「保留输出量」——把 75% 的窗口当默认 `maxTokens` 本身就不合理。
+
+**明确不做**：把模型 `maxTokens` 从 384K 降下来（例如 64K）会让阈值升到 382K、每请求
+上下文翻 ~4 倍——按同一模型算，命中 token 的增量比省下的压缩成本更贵；`thresholdRatio` /
+`retainRatio` 决定「压缩后模型还能看见多少」，那是内核的取舍，壳不替它定。
+
+**口径修正**：本机当前默认模型已是 `window = 1000000`（`profiles/web/cordis.patch.yml`），
+对它 headroom 65536 → 8192 只把阈值从 550464 抬到 607808（**1.10×**），不是 1.9×——
+1.9× 只对 512000 窗口那个模型成立。
 
 ### ② 空闲间隔（miss 的 15.9%）
 
 上游缓存有 TTL，间隔 > 5 分钟的请求命中率掉到 71%，> 数小时的基本全 miss。这条没有可优化项，
 只能解释给用户听（「隔夜回来第一条必然贵」）。
 
-### ③ 记忆侧：注入不用改，要改就改自动提取
+### ③ 记忆侧
 
-- **注入块不建议再压**：收益不到 0.02%（两天口径），而块小到看不见会让「记忆是否生效」变得不可验证。
-- **不要把它挪进 system prompt**：那才会真的每次改记忆就废掉整段缓存。这条是给后来人的禁令。
-- **自动提取（`auto_extract`，当前关闭）是唯一「大头 miss」的记忆功能**：一次调用最多带
-  64 KiB 切片（`MAX_SLICE_BYTES`）+ 固定 system prompt，切片每次都不同 ⇒ 除系统提示那段前缀
-  外基本全 miss；而且用的是会话当前模型（`agentDefaultModel`）。开启时的建议：
-  切片上限收到 16~24 KiB、把「解析失败」的重试从 3 次降下来（37 个任务里 16 个失败于
-  「模型没有返回任何内容」，每次失败都是白烧一次调用）、或指到便宜模型。
+- **注入不改**：收益不到 0.02%（两天口径），而块小到看不见会让「记忆是否生效」变得不可验证。
+- **不要把它挪进 system prompt**：那才会每次改记忆就废掉整段缓存。这条是给后来人的禁令。
+- **自动提取的切片上限 64 KiB → 24 KiB（已落地）**：`plugins/memory/host/extract.js` 的
+  `MAX_SLICE_BYTES`。一次提取调用基本全是 miss（切片每次不同、前缀缓存命不中），所以这个
+  上限直接等于「每次提取的未命中 token 成本」；`buildSlice` 从最新往回取、整条丢、把丢的
+  条数写在开头，收小只丢更老的对话。`MAX_EVENT_BYTES`（单条 8 KiB）不动。
+- `auto_extract` 目前仍是**关闭**的（`memory.json` 的 `meta.auto_extract = false`）：它开着时
+  才是记忆系统里唯一「大头 miss」的功能。将来开启前还该处理：37 个任务里 16 个失败于
+  「模型没有返回任何内容（超时或连接被断）」——那是上游不稳，重试 3 次等于白烧三次调用。
 
 ## 五、复现方法
 
