@@ -258,7 +258,10 @@ onMounted(() => {
             @change="setListScope"
           >
             <el-radio value="all">全部</el-radio>
-            <el-radio value="project">本项目</el-radio>
+            <!-- 「按项目」而不是「本项目」：这一档列的是**所有**项目范围的记忆，
+                 不是「当前这个项目」——写「本项目」会让人以为它按当前目录过滤
+                 （用户 2026-10-17 第二问）。 -->
+            <el-radio value="project">按项目</el-radio>
             <el-radio value="general">通用偏好</el-radio>
             <!--
               「待确认」放在同一排而不是另起一张卡（2026-10-17）：两张列表卡在 748px
