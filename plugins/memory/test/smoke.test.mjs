@@ -332,18 +332,22 @@ test('超过通道上限的内容在发出前就被拒，并说清是长度问�
   assert.ok(Buffer.byteLength(okPath, 'utf8') <= MAX_PATH_BYTES);
 });
 
-test('每会话最多注入三次，同回合不重复检索', () => {
+test('每会话的注入次数封顶，同回合不重复检索', () => {
   let state = { turn: -1, text: '', injections: 0, workspace: '' };
   assert.equal(shouldRefresh(state, 1), true);
-  state = applyResult(state, 1, '第一条');
+  state = applyResult(state, 1, '第 1 条');
   assert.equal(state.injections, 1);
   assert.equal(shouldRefresh(state, 1), false, '同一回合只检索一次');
   assert.equal(shouldRefresh(state, 2), true);
 
-  state = applyResult(state, 2, '第二条');
-  state = applyResult(state, 3, '第三条');
+  // 一路用**不同的**正文把额度用满（内容没变不算一次，另有用例钉着）。
+  // 循环跟着常量走，改预算时这条用例不用动。
+  for (let turn = 2; turn <= MAX_INJECTIONS_PER_SESSION; turn += 1) {
+    assert.equal(shouldRefresh(state, turn), true, `第 ${turn} 次还有额度`);
+    state = applyResult(state, turn, `第 ${turn} 条`);
+  }
   assert.equal(state.injections, MAX_INJECTIONS_PER_SESSION);
-  assert.equal(shouldRefresh(state, 4), false, '到顶后不再刷新');
+  assert.equal(shouldRefresh(state, MAX_INJECTIONS_PER_SESSION + 1), false, '到顶后不再刷新');
 });
 
 /**
@@ -351,7 +355,7 @@ test('每会话最多注入三次，同回合不重复检索', () => {
  *
  * 这是「A 项目保存的记忆不进入 B 项目」在运行侧的最后一道：用户在内核里中途换目录
  * 是支持的。清缓存治好了泄漏，但若顺带把计数归零，就等于把「换目录」变成一个绕开
- * 预算的开关——来回切五次就是十五份快照（内核每份不同快照留一条 user 消息到压缩），
+ * 预算的开关——来回切五次就是四十份快照（内核每份不同快照留一条 user 消息到压缩），
  * 而用户对这件事毫无感知。所以 `injections` 原样带过去。
  *
  * 代价要钉住：预算用完之后再换目录，这段会话**一段记忆都不注入**。宁可少注入，也
@@ -1469,19 +1473,21 @@ test('压缩之后预算清零——否则长会话压缩后再也拿不到记�
 
 test('切换工作目录清空缓存，但不重置会话级的注入预算', () => {
   let state = { turn: -1, text: '', injections: 0, workspace: '/repo-a' };
-  // 三段**不同**的文本：内容相同不算一次注入（下面那条用例钉着），所以要用不同的。
-  state = applyResult(state, 1, 'A 的记忆一');
-  state = applyResult(state, 2, 'A 的记忆二');
-  state = applyResult(state, 3, 'A 的记忆三');
+  // 每次都换**不同**的文本：内容相同不算一次注入（下面那条用例钉着），所以要用不同的。
+  // 循环跟着常量走，改预算时这条用例不用动。
+  for (let turn = 1; turn <= MAX_INJECTIONS_PER_SESSION; turn += 1) {
+    state = applyResult(state, turn, `A 的记忆${turn}`);
+  }
   assert.equal(state.injections, MAX_INJECTIONS_PER_SESSION);
-  assert.equal(shouldRefresh(state, 4), false, 'A 的预算已用满');
+  const spentTurn = MAX_INJECTIONS_PER_SESSION + 1;
+  assert.equal(shouldRefresh(state, spentTurn), false, 'A 的预算已用满');
 
   // 换目录：A 的记忆不许跟着进 B。
   const moved = retarget(state, '/repo-b');
   assert.equal(moved.text, '', 'A 的记忆不许跟着进 B');
   assert.equal(moved.workspace, '/repo-b');
   assert.equal(moved.injections, MAX_INJECTIONS_PER_SESSION, '预算不该被换目录重置');
-  assert.equal(shouldRefresh(moved, 4), false, '换目录之后这一段记忆是空的，不是 A 的');
+  assert.equal(shouldRefresh(moved, spentTurn), false, '换目录之后这一段记忆是空的，不是 A 的');
 
   // 来回切再多次也拿不回额度——换目录不是绕开预算的开关。
   let flapped = moved;
@@ -1507,12 +1513,12 @@ test('预算用满之后换目录：缓存也要立刻清空（接线，不只�
   // 分支会把结果丢掉——上一版就是这么写的：`retarget` 自己的用例全绿，而真机上
   // A 项目的记忆在切到 B 之后还继续注入。
   let state = { turn: -1, text: '', injections: 0, workspace: '/repo-a' };
-  state = applyResult(state, 1, 'A 的记忆一');
-  state = applyResult(state, 2, 'A 的记忆二');
-  state = applyResult(state, 3, 'A 的记忆三');
+  for (let turn = 1; turn <= MAX_INJECTIONS_PER_SESSION; turn += 1) {
+    state = applyResult(state, turn, `A 的记忆${turn}`);
+  }
   assert.equal(state.injections, MAX_INJECTIONS_PER_SESSION);
 
-  const spent = beginStep(state, '/repo-b', 4);
+  const spent = beginStep(state, '/repo-b', MAX_INJECTIONS_PER_SESSION + 1);
   assert.equal(spent.refresh, false, '预算已满，这一步不重新检索');
   assert.equal(spent.state.workspace, '/repo-b', '目录要立刻生效');
   assert.equal(spent.state.text, '', 'A 的记忆不许留在注入块里');
@@ -1533,7 +1539,8 @@ test('预算用满之后换目录：缓存也要立刻清空（接线，不只�
 });
 
 test('累计字节到顶之后不再刷新——次数封顶挡不住「每次都写满」', () => {
-  // 单次 12 KiB × (3 + 2) 次最坏是 60 KiB，而设计稿写的是累计 ≤36 KiB。
+  // 单次 12 KiB × (8 + 2) 次最坏是 120 KiB，而设计稿写的是累计 ≤36 KiB——单次写得满时
+  // 先到顶的是字节闸（36 / 12 = 3 次），次数闸只在块小时才起作用。
   // 一条刚好过半的单条正文：两次就到顶（中文一字 3 字节，按字节算而不是码元）。
   const big = '关'.repeat(Math.ceil(MAX_TOTAL_BYTES_PER_SESSION / 2 / 3) + 1);
   assert.ok(Buffer.byteLength(big, 'utf8') <= MAX_TOTAL_BYTES_PER_SESSION);
@@ -1728,37 +1735,41 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
 
 test('预算之外只按数据代次刷新，额度用完就不再探', () => {
   let state = { turn: -1, text: '', injections: 0, workspace: '/w', revision: null };
-  state = applyResult(state, 1, '一', 10);
-  assert.equal(state.revision, 10, '正文要记下它对应的代次');
-  state = applyResult(state, 2, '二', 10);
-  state = applyResult(state, 3, '三', 10);
+  let last = '';
+  // 一路用**不同的**正文把回合额度用满；循环跟着常量走。
+  for (let turn = 1; turn <= MAX_INJECTIONS_PER_SESSION; turn += 1) {
+    last = `第 ${turn} 条`;
+    state = applyResult(state, turn, last, 10);
+  }
   assert.equal(state.injections, MAX_INJECTIONS_PER_SESSION);
-  assert.equal(shouldProbeLibrary(state, 4), true, '预算用完之后要能探');
-  assert.equal(shouldProbeLibrary(state, 3), false, '同一回合不重复探');
+  assert.equal(state.revision, 10, '正文要记下它对应的代次');
+  const spentTurn = MAX_INJECTIONS_PER_SESSION + 1;
+  assert.equal(shouldProbeLibrary(state, spentTurn), true, '预算用完之后要能探');
+  assert.equal(shouldProbeLibrary(state, MAX_INJECTIONS_PER_SESSION), false, '同一回合不重复探');
 
-  const probed = noteProbe(state, 4, 10);
-  assert.equal(probed.text, '三', '库没变就不许换正文');
+  const probed = noteProbe(state, spentTurn, 10);
+  assert.equal(probed.text, last, '库没变就不许换正文');
   assert.equal(probed.injections, MAX_INJECTIONS_PER_SESSION, '探一次不算注入');
-  assert.equal(probed.turn, 4);
-  assert.equal(shouldProbeLibrary(probed, 4), false, '同一回合只探一次');
+  assert.equal(probed.turn, spentTurn);
+  assert.equal(shouldProbeLibrary(probed, spentTurn), false, '同一回合只探一次');
 
   assert.equal(libraryChanged(probed, 11), true, '代次变了 = 用户在会话里改了库');
   assert.equal(libraryChanged(probed, 10), false);
   assert.equal(libraryChanged(probed, undefined), false, '拿不到代次就不动');
 
   // 两次库变化额度用满之后不再探。
-  const once = applyStep(probed, 5, 'probe', { ok: true, enabled: true, text: '新一', generation: 11 }).state;
-  const twice = applyStep(once, 6, 'probe', { ok: true, enabled: true, text: '新二', generation: 12 }).state;
+  const once = applyStep(probed, spentTurn + 1, 'probe', { ok: true, enabled: true, text: '新一', generation: 11 }).state;
+  const twice = applyStep(once, spentTurn + 2, 'probe', { ok: true, enabled: true, text: '新二', generation: 12 }).state;
   assert.equal(twice.injections, MAX_INJECTIONS_PER_SESSION + MAX_LIBRARY_REFRESHES_PER_SESSION);
-  assert.equal(shouldProbeLibrary(twice, 7), false, '额度用满之后不再探');
+  assert.equal(shouldProbeLibrary(twice, spentTurn + 3), false, '额度用满之后不再探');
 
   // 换目录不丢代次（代次是整份文档的，与目录无关）；响应缺代次时保留上一次的。
   assert.equal(retarget(state, '/other').revision, 10);
-  assert.equal(applyResult(state, 4, 'x').revision, 10);
+  assert.equal(applyResult(state, spentTurn, 'x').revision, 10);
 });
 
 test('结果怎么用：探测那条路只在库变了时才换正文', () => {
-  const base = { turn: 3, text: 'A 的记忆', injections: 3, workspace: '/w', revision: 10 };
+  const base = { turn: 3, text: 'A 的记忆', injections: MAX_INJECTIONS_PER_SESSION, workspace: '/w', revision: 10 };
 
   // 同一个代次 + 完全不同的正文（这就是「用户换了下一句话」的常态）：不许换。
   const unchanged = applyStep(base, 4, 'probe', {
@@ -1769,7 +1780,7 @@ test('结果怎么用：探测那条路只在库变了时才换正文', () => {
   });
   assert.equal(unchanged.applied, false);
   assert.equal(unchanged.state.text, 'A 的记忆', '文本变了不算库变化');
-  assert.equal(unchanged.state.injections, 3);
+  assert.equal(unchanged.state.injections, MAX_INJECTIONS_PER_SESSION);
 
   // 代次变了：换，并记一次注入（额度从这里扣）。
   const changed = applyStep(base, 4, 'probe', {
@@ -1780,7 +1791,7 @@ test('结果怎么用：探测那条路只在库变了时才换正文', () => {
   });
   assert.equal(changed.applied, true);
   assert.equal(changed.state.text, 'A 的记忆 + 刚批准的那条');
-  assert.equal(changed.state.injections, 4);
+  assert.equal(changed.state.injections, MAX_INJECTIONS_PER_SESSION + 1);
 
   // 探测失败：正文留着——一次抖动不是「用户改了库」。
   const failedProbe = applyStep(base, 4, 'probe', { ok: false });
