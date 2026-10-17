@@ -10,6 +10,7 @@ pub(crate) mod kernel_deps;
 pub(crate) mod kernel_evidence;
 pub(crate) mod lifecycle;
 pub(crate) mod package_activity;
+pub(crate) mod patch_file;
 pub(crate) mod profile_manifest;
 pub(crate) mod skill_wiring;
 // 仅 Windows：进程命令行与 TCP 监听表的原生快路径（状态轮询用）。

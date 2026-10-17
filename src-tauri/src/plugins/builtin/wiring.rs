@@ -20,7 +20,7 @@
 //! 形状识别（哪几行算我们写的）与 id 无关，只有「找哪一行」有关——所以形状
 //! 逻辑一个字没改，改的只是每行往里传哪个 id。
 
-use crate::kernel::skill_wiring::looks_like_patch_list;
+use crate::kernel::patch_file::{append_row, looks_like_patch_list};
 
 /// `name` 字段的写法：YAML 双引号标量的转义规则与 JSON 字符串完全一致
 /// （技能接线同一技巧），Windows 路径的反斜杠由 serde_json 统一处理。
@@ -57,22 +57,8 @@ pub(crate) fn ensure_row(
     if row_present(text, row_id, entry_rel) {
         return Ok(None);
     }
-    let has_entries = text
-        .lines()
-        .any(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'));
-    let mut next = text.to_string();
-    // 与技能接线同一套追加规则：有既有条目时先补行尾换行再空一行；
-    // 只有头注释 / 空文件时不制造前导空行（见 kernel_adapter 的实测注释）。
-    if has_entries {
-        if !next.ends_with('\n') {
-            next.push('\n');
-        }
-        next.push('\n');
-    } else if !next.is_empty() && !next.ends_with('\n') {
-        next.push('\n');
-    }
-    next.push_str(&row_block(row_id, entry_rel));
-    Ok(Some(next))
+    // 追加簿记走共享层（与技能接线、上下文压力预算同一套规则）。
+    Ok(Some(append_row(text, &row_block(row_id, entry_rel))))
 }
 
 /// 摘除自有接线行（只认自己生成的形状）；不在时 `Ok(None)`。
