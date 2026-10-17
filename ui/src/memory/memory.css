@@ -80,3 +80,70 @@
  * 截过，上限给小了等于我自己再造一次截断（隐藏内容比出现滚动条更糟）。
  * `max-height` 而不是 `height`：只有三行时不该撑出空白。 */
 .memory-scroll { max-height: 224px; overflow-y: auto; padding: 2px 0; }
+
+/* 已保存记忆的列表自己滚（2026-10-17 用户要求「记忆列表做成内部滚动条」）：卡片压到标题 +
+ * 两行正文之后仍会长过右栏，而这一屏自 2026-10-16 起刻意没有页面级纵向滚动条，长出来的
+ * 这一截只能在这里自己滚。上限 320px 是量出来的——`.page-row` 一条约 92px，放得下三条
+ * 多一点；再高就等于把页面滚动条换个名字挪进卡片。`memory-scroll` 那份 224px 是给「5 行
+ * 单行文本 + 一句说明」量的，形状不同，不要抄过来。`max-height` 而不是 `height`：只有
+ * 一条记忆时不该在下面留一块空白。 */
+.memory-list { max-height: 320px; overflow-y: auto; }
+
+/* 行整块可点（列表只负责读，操作都在点开的那一层）。hover 底色用 `--overlay-soft`
+ * 而不是 `--surface-subtle`：后者暗色下是一块比卡面更深的蓝（`#1b2b43` 压 `#2c2b30`），
+ * 读起来像「这行已选中」；`--overlay-soft` 明暗各一份（浅色叠黑 / 暗色叠白），与控制塔
+ * 列表行的 hover 同一个 token。不写圆角：命中区就是这一行的盒子，行与行之间靠
+ * `.page-row + .page-row` 那条 `border-top` 分界。 */
+.memory-row--clickable { cursor: pointer; }
+.memory-row--clickable:hover { background: var(--overlay-soft); }
+
+/* `:focus-visible` 而不是 `:focus`：指针点一下也会让行 `:focus`，凭空多一圈描边是噪音。
+ * 键盘用户必须有这圈线，而这一行是 `div`，别指望浏览器给 `div` 画默认聚焦圈。
+ * `outline-offset: -1px` 让它画在行内侧，否则会压到相邻行那条 `border-top`——描边不占位，
+ * 画在外面就是两行的线叠在一起。 */
+.memory-row--clickable:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+/* 列表里的卡片只留两行正文，完整正文在详情弹窗里。按**行数**截断只有 `-webkit-line-clamp`
+ * 这一条路，它要求 `display: -webkit-box` 与 `overflow: hidden` 同时在；`line-clamp` 是
+ * 标准属性名，两个都写（`plugins/PluginsPanel.vue` 已有一处同样的写法）。这条声明比
+ * `.memory-row__body` 晚、特异性相同，`display` 由源码顺序赢——两条都在本文件里。 */
+.memory-row__body--clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+
+/* 详情弹窗底部的动作排：`dialog-actions` 只给 `justify-content: flex-end`（theme.css），
+ * `display: flex` 得自己写；`wrap` 不能省，窗口 1040 固定但弹窗宽是 `min(560px, 92vw)`，
+ * 三枚徽章在窄宽下应当换行而不是溢出。**不许顺手加 `btn-row`**：那个类带着「与旁边说明
+ * 文字同属一段内容」的语义，`designAlignment.test.js` 钉着它的 `justify-content` 必须是
+ * null。`gap: 8px` 是本仓动作排的通用缝（MigrationPrompt 的 `.prompt-footer-ask` 同值）。 */
+.memory-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* 三枚动作是**徽章**（2026-10-17 用户要求「操作按钮默认显示按钮 badge」）：带边框、带底色、
+ * 胶囊形。画在 `el-button` 上而不是另做一个 `<span>`——这三个动作要 loading、要 `globalBusy`
+ * 的禁用态，重写一遍等于再造一套按钮状态。形状照控制塔那排行尾徽章
+ * （`diagnostics.css` 的 `.diag-row__cta`），但**字号大它一档**：那一排是 11px 的行尾读数，
+ * 这里是弹窗里唯一的动作排，取 12px 与 `.el-button--small` 同档。
+ *
+ * 三条声明都必须在：① `margin-left: 0` —— EP 给每个 `.el-button` 加了
+ * `margin-left: 12px`，而 `.panel .el-button { margin-left: 0 }` 管不到 `append-to-body`
+ * 的弹窗（它挂在 `body` 上，不在 `.panel` 里），留着那句就是 12 + gap 8 的缝；
+ * ② `height: auto` —— EP 基础规则给 32px（small 档也是 24px），比徽章自己的行盒高一倍，
+ * 会撑成一个空胶囊；③ 选择器带容器与 `.el-button` 两级 (0,3,0)，稳过 EP 的 `.el-button`
+ * (0,1,0) 与 `.el-button + .el-button` (0,2,0)，不靠样式表先后决胜。 */
+.memory-actions .el-button.memory-badge { flex: none; margin-left: 0; height: auto; padding: 2px 10px; border: 1px solid var(--accent-line); border-radius: 999px; background: var(--accent-fill); color: var(--accent); font-size: 12px; font-weight: 600; line-height: 1.6; white-space: nowrap; }
+
+/* hover 加深自身色，不换成强调蓝：accent 蓝在这套语言里表示「主操作」，一排三个都变蓝就
+ * 没有主次了（控制塔那排徽章同一条理由）。`:not(.is-disabled)` 不能省，禁用态跟着加深会
+ * 读成「可点」。`:focus-visible` 与 `:hover` 并成一条——键盘 Tab 过去时该与鼠标悬停长得
+ * 一样，`currentcolor` 跟着上面那条 `color` 走，警示 / 删除两档自动是同色系深一档。 */
+.memory-actions .el-button.memory-badge:not(.is-disabled):hover,
+.memory-actions .el-button.memory-badge:not(.is-disabled):focus-visible { border-color: currentcolor; }
+
+/* 语气跟着动作走：停用 / 启用是警示档，删除是危险档，与控制塔行尾徽章同一套 token。
+ * 这三对 token 明暗各有一份，且**没有 `--warning-soft` / `--danger-soft` 那一档**，
+ * 不要凭手感写一个看着像的名字——`var()` 拿到未定义变量会让整条声明被丢弃。 */
+.memory-actions .el-button.memory-badge--warn { border-color: var(--warning-line); background: var(--warning-fill); color: var(--warning); }
+.memory-actions .el-button.memory-badge--danger { border-color: var(--danger-line); background: var(--danger-fill); color: var(--danger); }
+
+/* 禁用态（`globalBusy`：另一个动作正在跑）只降不透明度。EP 的 `.el-button.is-disabled`
+ * 那套灰底被上面 (0,3,0) 的徽章规则盖住了，这里补一条 (0,4,0) 把「不可点」说清楚——
+ * 顺带别忘了 EP 已经给了 `cursor: not-allowed`。 */
+.memory-actions .el-button.memory-badge.is-disabled { opacity: 0.5; }

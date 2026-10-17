@@ -4,12 +4,13 @@
 //
 // 数据与动作全在 `memory.js` 里；这里只管画。字段名用后端下发的 snake_case
 // （见该文件顶部的说明）。
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { Download, InfoFilled, Plus, Refresh } from '@element-plus/icons-vue';
 import MemoryRow from './MemoryRow.vue';
 import MemoryConflict from './MemoryConflict.vue';
 import MemorySuperseded from './MemorySuperseded.vue';
 import MemoryEditor from './MemoryEditor.vue';
+import MemoryDetail from './MemoryDetail.vue';
 import { baseName } from '../shell/labels.js';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { builtinById, loadBuiltinStatus, toggleBuiltin } from '../plugins/builtin.js';
@@ -72,6 +73,24 @@ function switchEffectDetail(status) {
     return '插件已经按这个开关来过一次，不需要再做什么。';
   }
   return '改动通常下一步检索就生效；本会话注入次数用尽时要等新会话。';
+}
+
+/// 详情弹窗记的是**行的 id**，不是那个行对象。`setMemoryState` / `removeMemory` 之后都会
+/// 回读一次视图，攥着旧对象会把停用前的状态一直画在弹窗里；按住 id 重算，读到的就是刷新后
+/// 的那一份，而记忆被删掉时它自己变成 `null`、弹窗随之关掉。
+const detailId = ref(null);
+
+/// 从**未筛选**的 `allMemories` 里取，不从 `list` 取：读着一条记忆时切「本项目 / 通用偏好」
+/// 那个筛选，它会把当前这条从 `list` 里筛出去，弹窗跟着凭空消失。
+const detailRow = computed(() => allMemories.value.find((row) => row.id === detailId.value) || null);
+
+/// 列表行现在整块可点（卡片压到两行、正文截断），点开才是完整正文与操作。
+const openMemoryDetail = (row) => { detailId.value = row.id; };
+
+/// 从详情转去编辑器：两个弹窗都 `append-to-body`，叠着开就是两层遮罩，先关详情再开编辑器。
+function editFromDetail(row) {
+  detailId.value = null;
+  openMemoryEditor(row);
 }
 
 onMounted(() => {
@@ -235,14 +254,14 @@ onMounted(() => {
           <p v-else-if="!list.length" class="memory-hint">
             当前筛选下没有记忆（库里有 {{ allMemories.length }} 条，切到「全部」能看到）。
           </p>
-          <div v-else class="page-list">
+          <!-- `memory-list` 是这一屏唯一的内部滚动容器：卡片压到两行之后列表仍会长过
+               右栏，页面级滚动条在 2026-10-16 被去掉，长出来的这一截只能在这里自己滚。 -->
+          <div v-else class="page-list memory-list">
             <MemoryRow
               v-for="row in list"
               :key="row.id"
               :row="row"
-              @edit="openMemoryEditor"
-              @toggle="(state) => setMemoryState(row, state)"
-              @remove="removeMemory"
+              @open="openMemoryDetail"
             />
           </div>
         </div>
@@ -462,6 +481,20 @@ onMounted(() => {
       位置只影响它读 store 的时机，不影响渲染到哪里。
     -->
     <MemoryEditor />
+
+    <!--
+      记忆详情：列表行只留标题与两行正文，整块可点，点开在这里读完整正文、改状态、删除。
+      挂在 `detailRow` 上而不是自己记「开没开」——记忆被删掉时那个 computed 变 `null`，
+      弹窗自己关掉，不必再同步一次开关状态。
+    -->
+    <MemoryDetail
+      v-if="detailRow"
+      :row="detailRow"
+      @close="detailId = null"
+      @edit="editFromDetail"
+      @toggle="(state) => setMemoryState(detailRow, state)"
+      @remove="removeMemory"
+    />
   </section>
 </template>
 
