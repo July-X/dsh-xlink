@@ -40,13 +40,13 @@ npm run dev 5190                  # 同上但换端口；vite 的 server.port �
 npm run dev:ui                    # 只起管理面板 dev server（纯前端迭代，浏览器里无 Tauri 桥）
 npm run build                     # 本机构建（.dmg / NSIS；自动先 vite build → ui/dist）
 npm run build:ui                  # 只构建管理面板 → ui/dist
-npm run check                     # 提交前的全量门禁：invariants + 重复代码检测 + 前端测试 + fmt/clippy/release 编译 + Rust 单测 + UI 产物预算
+npm run check                     # 全量门禁：invariants + 重复代码检测 + 前端测试 + fmt/clippy/release 编译 + Rust 单测 + UI 产物预算——只在版本发布前整跑一次
 cargo check                       # 在 src-tauri/ 内：快速编译检查
 cargo clippy --all-targets        # lint，零警告基线
 cargo fmt                         # rustfmt 格式化
 ```
 
-`npm run check` 是**提交前唯一该跑的那条**，别再手工拼下面这些：2026-10-01 那个 release-only 的编译错误（`#[cfg]` 归属被 `use` 打断，debug 全绿、release 报常量重定义）就是「只跑 `cargo check` + 只跑 `test:ui`」漏过去的，而那正是两个发布通道都编不出来的性质。`check:rust` 里的 `cargo check --release` 不能省——debug 与 release 的 cfg 覆盖面不同，只有 release 会现形。
+`npm run check` 是全量门禁，**只在版本发布前整跑一次**（2026-10-17 用户拍板，取代「提交前必跑」：agent 在迭代与提交点反复整跑全量纯烧等待，实测一个 UI 任务 2 小时里 72% 的墙钟花在等待上）。日常开发与提交只跑命中的那一个面（改哪份跑哪份测试 / `check:duplicates` / `cargo check` / `build:ui`），提了什么就验那一块；提交后的兜底本来就在 CI——desktop-ci 的 quality job 一直整跑 invariants / 重复代码检测 / 前端测试 / fmt / clippy / cargo test / build:ui / UI 产物预算，发布通道再整编译 release，所以「只跑 `cargo check` + 只跑 `test:ui`」漏出去的 2026-10-01 那个 release-only 编译错误（`#[cfg]` 归属被 `use` 打断，debug 全绿、release 报常量重定义）到 CI 仍会被拦住。本地的门禁纪律附着于发布：发版那个 commit 上必须见到一次全绿，别手工重拼判据，那是上面判据内联禁令的事。`check:rust` 的组成不变（含 `cargo test` 与 `cargo check --release`）：debug 与 release 的 cfg 覆盖面不同，只有 release 会现形。
 
 `check:rust` 同样**包含 `cargo test`**（2026-10-11 补入）：此前不含 851 条 Rust 单测——总闸跑绿而 CI 才红，正是「门禁不许假绿」要挡的那件事。热缓存 44 秒 → 约 100 秒。
 
