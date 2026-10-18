@@ -1,0 +1,17 @@
+# 固定 Rust 工具链（2026-10-18 定）：
+#
+# clippy 的默认 lint 集合随版本漂移，而不 pin 时**本机与 CI、以及不同时间的 CI
+# 之间**会出现「同一份代码一边绿一边红」。2026-10-18 实测：Rust/Clippy 1.99 让
+# `-D warnings` 多了三处命中（两处 `missing_const_for_thread_local` 是上游误报，
+# 代码已是 `const { … }` 初始化；一处 `needless_return` 只在非 macOS 编译时出现），
+# 而当时 CI 的 runner 还是旧版 stable、全绿。两边对不上时排查成本极高，而且
+# 「本地红、CI 绿」正是门禁最容易被忽略的那一半。
+#
+# 升级步骤：改这里的 `channel` → `npm run check:rust:ci` → 顺手清理代码里为旧版
+# lint 误报加的 `#[allow(clippy::…)]`（搜索 `clippy::missing_const_for_thread_local`）。
+# CI 的 workflow 不需要另外声明 Rust 版本：它们直接用 rustup 的 cargo，会按本文件
+# 自动装/切到同一个版本。
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
