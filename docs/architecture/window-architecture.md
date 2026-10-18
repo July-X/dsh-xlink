@@ -48,22 +48,19 @@
 
 ### 结论
 
-所有窗口的标题栏都是**深色**，副窗标题统一是 `窗口名 — Dsh-Xlink`。这不是审美偏好，是
-两条被用户截图指出来的硬要求（2026-10-07）：主窗口标题栏恒深、副窗跟着系统变浅。
+窗口标题栏按窗口内容分域：壳自有窗口按应用主题纠正，工作台按内核 `ui-theme` 偏好镜像，官网页签窗保持第三方页面自己的深色外观。副窗标题统一是 `窗口名 — Dsh-Xlink`。这不是审美偏好，是窗口内容与原生 chrome 必须同色、且工作台「跟随系统」不能被壳冻住的硬要求。
 
-### 主题：壳内没有浅色分支，那就别让系统以为有
+### 主题：按窗口内容选择作用域
 
-`ui/` 下 `prefers-color-scheme` **零命中**——壳内 UI 只有深色一套。但原生装饰的窗口标题栏由
-操作系统绘制，它读的是**系统**主题，不是应用主题。后果是系统切浅色时出现
-「深色内容 + 浅色标题栏」的割裂。
+`ui/` 下 `prefers-color-scheme` **零命中**——壳内 UI 的明暗由 `html.dark` 控制。但原生装饰的窗口标题栏由操作系统绘制，它读的是窗口级 appearance。窗口主题因此分三类：
 
-因此每扇窗口建出时都钉 `Theme::Dark`：主窗口写在 `tauri.conf.json` 的 `theme` 字段，五扇
-副窗写在各自 builder 的 `.theme(...)`。Tauri 在 macOS 上落到 `NSWindow.appearance`，在
-Windows 上落到窗口级 dark mode。
+- 壳自有窗口（`main`、日志、用量、套餐）：建窗走 `shell::appearance::initial_theme(label)`，页加载与 `applyTheme()` 再按应用偏好纠正当前窗口。
+- 工作台 `harness`：建窗同样经过 `initial_theme(WORKBENCH_LABEL)`，但该函数返回 `None`；注入的 `workbench-appearance.js` 按内核发布的 `html[data-ds-theme-source]` 镜像 `ui-theme` 偏好。`system` 下发 `null` 解除覆盖，让内核的 `prefers-color-scheme` 保持可变，`light` / `dark` 才固定对应档位。
+- 官网页签窗与工作台弹窗：承载第三方 / 授权页面，不拿壳的窗口外观权限，也不由壳主题驱动。
 
-`CHROME_BACKDROP`（首帧前的暗底过渡色）曾经读主窗 theme 决定深浅，主题钉死后那条分支
-不可达，已降成常量。它此前在 `commands.rs` 与 `harness_window.rs` 各有一份**完全相同**的
-实现——「三处建窗路径必须共用同一份色值」这条注释本身就是重复的症状。
+这样既避免浅色系统下深色内核内容配浅色标题栏，也不会因壳在建窗时钉死一档而破坏内核「跟随系统」。
+
+`CHROME_BACKDROP`（首帧前的暗底过渡色）是统一的中性过渡色，不再按应用主题分支。两条工作台建窗链（`commands::open_harness` 与 `harness_window::build`）必须同步挂外观镜像脚本与主题作用域参数。
 
 ### 标题：一个名字，三处副本
 
@@ -77,7 +74,7 @@ Windows 上落到窗口级 dark mode。
 
 三处分处 Rust / 配置 / Vue，单测与 UI 测试都够不着，因此由
 `scripts/check-invariants.mjs` 第 18 项做机械比对；同一项还管「每扇副窗都走
-`window_title()`」与「建几扇窗就钉几次 `Theme::Dark`」。
+`window_title()`」与工作台两条建窗链的主题作用域、外观镜像脚本接线。
 
 副窗标题一律 `window::window_title(窗口名)`，分隔符是**两侧带空格的破折号**（不是 `-`）：
 `日志 · kernel` 这类窗口名里已经带了一次分隔，再用半角连字符会出现两个形状几乎一样的短横。
@@ -86,13 +83,14 @@ Windows 上落到窗口级 dark mode。
 
 - **工作台窗口有两份建窗实现**。`commands::open_harness` 内联了一次
   `WebviewWindowBuilder`，`harness_window::build` 又有一次，两者都用 `harness` 这个 label。
-  差异只有一条：重建那份多挂了 `on_navigation`（把页面导航记进 `shell_events`，正是
-  2026-09-30 那次黑屏的诊断手段）。合流会让首次打开也多记导航——那大概率是想要的，但这
-  属于行为变更，没有并进本次改动。标题、主题、暗底过渡色三样已经统一，改一处漏一处的
-  风险只剩在初始化脚本列表上。
-- `tauri.conf.json` 的 `theme` 与各 builder 的 `.theme()` 是**两处**声明同一个事实。少写
-  一处只会让那扇窗在系统浅色下变白，编译期与测试期都没有信号，靠不变量第 18 项的全局
-  计数兜。
+  两条链都必须传入 `initial_theme(WORKBENCH_LABEL)`（返回 `None`，不钉建窗主题），并挂
+  `workbench-appearance.js`，让内核 `ui-theme` 偏好负责标题栏外观。差异只有一条：重建那份
+  多挂了 `on_navigation`（把页面导航记进 `shell_events`，正是 2026-09-30 那次黑屏的诊断手段）。
+  合流会让首次打开也多记导航——那大概率是想要的，但这属于行为变更，没有并进本次改动。
+  两条链的主题作用域、暗底过渡色和外观镜像接线必须同步，改一处漏一处的风险只剩在其余
+  初始化脚本列表上。
+- `official-chat-*` 与 `workbench-popup-*` 承载第三方 / 授权页面，不拿壳的窗口外观权限；
+  工作台虽拿 `allow-window-appearance`，也只用于镜像内核偏好，不由壳主题或建窗兜底钉死。
 
 ## 核心模块接口
 

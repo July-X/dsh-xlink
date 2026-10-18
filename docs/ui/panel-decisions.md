@@ -98,8 +98,8 @@
       - **副窗不许只调 `setWindowTheme`**：那只换标题栏、留下旧内容。判据显式禁掉这个形状，它正是上面那条割裂的反向版本。
       - 订阅必须在 `createApp` 之前（与 `applyTheme()` 同处），晚一步副窗首帧会先画一帧旧主题再跳色；入口只调一次，四个副窗共用。副窗不调 `setTheme`（会互相触发）。
       - 收到的事件值必须过 `THEMES.includes`：事件可被同页脚本构造，非法值会让整窗落到既非 `dark` 也非浅色的主题上。
-    - **工作台与官网页签窗仍然钉死深色**（`harness_window.rs`、`official-chat-*` 不给 set-theme 授权）：那两扇窗的内容是内核 webui 与 `chat.deepseek.com` 这类别人的页面，让它们跟随本应用主题同样是割裂换方向。判据两头都查：给 `official-chat-strip.json` 补一条授权同样转红。
-    - 剩下的建窗深色是**兜底**不是最终外观——页面挂载到纠正之间有一小段窗口期（冷启动闪一下）。彻底消掉得让 Rust 也读得到主题真值，那是把主题搬进 `Settings` 的大改，本轮不做。
+    - **官网页签窗固定深色；工作台由内核偏好镜像**（`harness_window.rs`、`official-chat-*`）：官网页签承载 `chat.deepseek.com` 这类别人的页面，保持固定深色且不授外观权限；工作台承载内核 webui，不钉建窗主题，由 `ui-theme` 决定并通过 `workbench-appearance.js` 镜像原生标题栏。判据要求工作台 capability 有 `allow-window-appearance`，官网页签 capability 不得有外观授权。
+    - 壳自有窗口的建窗深色是**兜底**不是最终外观；工作台建窗主题返回 `None`，由内核偏好镜像；官网页签窗保持固定深色。——页面挂载到纠正之间有一小段窗口期（冷启动闪一下）。彻底消掉得让 Rust 也读得到主题真值，那是把主题搬进 `Settings` 的大改，本轮不做。
   - **自绘交通灯按 macOS 原生的实测尺寸，不按设计稿**。参照物是同一张截图里那扇走原生装饰的窗口，1:1 量得：原生**直径 12px、中心间距 23px、灯组左缘距窗缘 7px**；实现此前是外框 12px、间距 20px、左缘 12px。改 `gap 8 → 11px`、`padding 0 12px → 0 7px`。
     - **「偏大」的不是直径，是挤**——两边直径本来就都是 12px。间距少 3px 让三点连成一坨，加上每点一圈 1px 深色描边衬得更粗。
     - **描边从 `border` 换成 `box-shadow: inset`**：全局 `* { box-sizing: border-box }` 下 `border: 1px` 会从这 12px 里各吃掉一侧，着色区只剩 10px，比原生的 12px 色块小一圈。inset 把同样的深色环画在色块**之内**。
@@ -223,7 +223,7 @@
 - **同一状态的两个写法要挑「条件写进选择器」的那个**（2026-10-08）：`.btn-chat` / `.btn-danger` 原先各有一条 `:active { color: 静止色 }`，唯一作用是凭源码顺序赢过同特异度的 `:hover`。每多一个「按下时打回去」的状态就要再抄一条。改成 `:not(:active):hover` / `:not(:active):focus-visible` 之后一条就够，按下时读到的仍是静止色——行为完全一致，少 6 行声明。判据显式禁掉 `:active` 那两条。
 
 - **官网页签窗钉死深色，且必须连广播一起不订**（2026-10-08 用户报「切主题时官网网页版 Window 的 Tab 与 title 变色没处理好」）。根因是**授权缺失造成的一道单向割裂**：`capabilities/official-chat-strip.json` 只有 `core:default` + `allow-official-chat-tabs`，**没有 `core:window:allow-set-theme`**——`applyTheme()` 里那句 `setWindowTheme()` 在这扇窗上必然被 ACL 拒、`.catch` 吞掉，于是**原生标题栏永远停在 Rust 建窗时钉的深色**，而页面 `html.dark` 却照着 localStorage 走。浅色主题下就是「深色原生标题栏 + 白色页签条 + 下方黑内容」。
-  - 这扇窗的内容是 `chat.deepseek.com` 这些**别人的页面**，页面不是我们的、改不了；让它跟浅色主题走只是把割裂换个方向（黑页签栏压浅色内容）。所以按「工作台窗同样钉死深色」那条老规矩，`main.js` 在 `applyTheme()` 之前 `if (isChatStrip) setThemeValue('dark')`。
+  - 这扇窗的内容是 `chat.deepseek.com` 这些**别人的页面**，页面不是我们的、改不了；让它跟浅色主题走只是把割裂换个方向（黑页签栏压浅色内容）。所以官网页签栏继续固定深色，工作台由内核 `ui-theme` 决定并由 `workbench-appearance.js` 镜像到原生标题栏；`main.js` 在 `applyTheme()` 之前 `if (isChatStrip) setThemeValue('dark')`。
   - **只按初值不够**：主壳切主题时那条广播仍会把它拽走，白页签栏照样回来。所以 `followThemeBroadcast()` 也要一起排除——判据两条都钉，且显式禁掉无条件订阅那行。少一条，白切一次主题就复发。
   - **页签栏继续读 Element Plus token，不要写死颜色**：`html.dark` 恒在时 token 恒为暗色，写死后主题广播再也影响不到它，两条路会分叉。判据扫 `OfficialChatTabs.vue` 里的十六进制字面量。
   - 这与「副窗原生 chrome 跟随应用主题」不冲突：那条的前提是**壳自己的页面 + 有 set-theme 授权**，两个条件这扇窗都不满足。
@@ -395,7 +395,7 @@ ui/src/
 
 ## 系统外观继承（2026-10-09）
 
-macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用，不能用于窗口主题。建窗统一走 `shell::appearance::initial_theme()`，原生外观经 `set_window_appearance` 设置当前 `NSWindow`；应用始终继承系统。窗口页加载开始时设置默认深色，壳页面再按偏好纠正；工作台的固定深色不能影响管理窗口的媒体查询。Windows 继续使用 Tauri 的窗口主题实现。
+macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用，不能用于窗口主题。建窗统一走 `shell::appearance::initial_theme(label)`，原生外观经 `set_window_appearance` 设置当前 `NSWindow`；壳页面按应用偏好纠正自有窗口，工作台由 `workbench-appearance.js` 按内核 `ui-theme` 偏好镜像（`system` 传 `null`，不冻住 `prefers-color-scheme`），官网页签窗不授外观权限。Windows 继续使用 Tauri 的窗口主题实现。
 
 ## 窗口 R 角裁切（2026-10-09）
 
