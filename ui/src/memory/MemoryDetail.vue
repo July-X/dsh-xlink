@@ -28,11 +28,11 @@ const emit = defineEmits(['close', 'edit', 'toggle', 'remove']);
 const accepted = computed(() => props.row.state === 'accepted');
 /// 与列表行同一口径：项目记忆的标签写**具体项目名**（完整路径进 `title`），
 /// 次行仍给完整路径——弹窗宽，路径在这里是「这条属于哪个项目」的凭据。
-/// 路径缺失时兜底取**范围名**，理由与叫法见 `MemoryRow.vue` 同名 computed。
-const projectName = computed(() => baseName(props.row.workspace_path) || '项目记忆');
+/// 路径缺失时兜底取**范围名 + 缺了什么**，理由与叫法见 `MemoryRow.vue` 同名 computed。
+const projectName = computed(() => baseName(props.row.workspace_path) || '项目记忆（未记路径）');
 /// 悬浮说明与标签取同一个兜底，否则悬停说明与可见文字各说一个名字。
 const scopeTitle = computed(() =>
-  props.row.scope === 'general' ? '所有项目都算' : props.row.workspace_path || '项目记忆'
+  props.row.scope === 'general' ? '所有项目都算' : props.row.workspace_path || '项目记忆（未记路径）'
 );
 </script>
 

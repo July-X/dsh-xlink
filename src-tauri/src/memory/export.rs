@@ -95,16 +95,25 @@ fn render(view: &MemoryListView, generated_at: &str, namespace: &str) -> String 
     let mut out = String::new();
     out.push_str("# 本地记忆快照\n\n");
     out.push_str(&format!("- 导出时间：{generated_at}\n"));
-    out.push_str(&format!("- 命名空间：{namespace}\n"));
     out.push_str(&format!(
-        "- 数据代次：{}（每次成功写入 +1）\n",
+        "- 记忆库：{namespace}（依次是 内核族 / 实例 / profile，三段不同就是两份互不相干的记忆）\n"
+    ));
+    out.push_str(&format!(
+        "- 数据代次：{}（每成功写入一次 +1，用来对照「这份快照取的是哪一版」）\n",
         status.generation
     ));
     out.push_str(&format!(
-        "- 开关：使用已批准的记忆 = {}；自动提取 = {}（P2，尚未实现）\n",
-        if status.use_approved { "开" } else { "关" },
-        if status.auto_extract { "开" } else { "关" }
+        "- 开关：「使用已批准的记忆」= {}\n",
+        if status.use_approved { "开" } else { "关" }
     ));
+    // **刻意不展示 `status.auto_extract`**（2026-10-18 用户定的标准：给用户看的东西不许有过时
+    // 信息）。那个字段全仓没有任何读取方——自动提取真正的闸门是 `use_approved`
+    // （`jobs_routes.rs` 的 enqueue 在它关着时回 `disabled`，submit 也有一道「开关已关」的拒收），
+    // 而真机 `jobs.json` 里提取任务一直在跑。原先那行写「自动提取 = 关（P2，尚未实现）」：
+    // `P2` 是内部阶段名，「尚未实现」与事实相反，取值来自一个死字段。
+    out.push_str(
+        "- 这个开关管两件事：记忆注入与自动提取；关着时两件事都停（记忆不进入会话，也不再从会话里提取候选）。\n",
+    );
     out.push_str(&format!("- 落盘位置：{}\n", status.file));
     if let Some(warning) = &status.warning {
         out.push_str(&format!(
@@ -164,7 +173,10 @@ fn write_records(out: &mut String, heading: &str, rows: &[&MemoryRecord]) {
             row.updated_at
         ));
         out.push_str(&format!(
-            "- 已用：{} 次{}\n",
+            // 「模型读过」而不是「已用」：`use_count` 只由 `memory_read`（模型读全文）增加，
+            // 检索命中与注入**都不计数**——写「已用 N 次」会被读成「被注入过几次」。
+            // 面板上那处（`MemoryRow.vue` / `MemoryDetail.vue`）用的是同一句话。
+            "- 模型读过：{} 次{}\n",
             row.use_count,
             if row.last_used_at.is_empty() {
                 String::new()
@@ -357,6 +369,10 @@ mod tests {
         assert!(text.contains("## 项目记忆（1 条）"));
         assert!(text.contains("待确认候选（1 条，**尚未生效**）"));
         assert!(text.contains("手工修改不会反向入库"));
+        assert!(
+            text.contains("模型读过：0 次"),
+            "`use_count` 只由 memory_read 增加，导出要用与面板同一句话：{text}"
+        );
 
         #[cfg(unix)]
         {
@@ -372,6 +388,48 @@ mod tests {
         let again = export(&ns).expect("export twice");
         assert_ne!(again.path, result.path, "导出不许覆盖已有文件");
         assert!(std::path::Path::new(&result.path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 头部那行开关必须**如实**，且不许展示死字段（2026-10-18 用户定的标准：给用户看的
+    /// 东西必须语义精确、不展示过时信息）。
+    ///
+    /// 原先写的是「使用已批准的记忆 = 开/关；自动提取 = 关（P2，尚未实现）」：`P2` 是内部
+    /// 阶段名；「尚未实现」与事实相反（真机 `jobs.json` 里提取任务一直在跑）；而那个取值
+    /// 来自 `meta.auto_extract`——全仓没有读取方，真正的闸门是 `use_approved`。
+    #[test]
+    fn the_header_states_the_real_switch_and_never_a_dead_field() {
+        let (dir, _guard) = home("switch");
+        let ns = Namespace::current();
+        seed(&ns);
+
+        let off = export(&ns).expect("export");
+        let off_text = std::fs::read_to_string(&off.path).expect("read export");
+        assert!(
+            off_text.contains("- 开关：「使用已批准的记忆」= 关"),
+            "默认关着时要如实写「关」：{off_text}"
+        );
+        assert!(
+            !off_text.contains("自动提取 ="),
+            "`auto_extract` 没有任何读取方，它的取值不是开关状态：{off_text}"
+        );
+        assert!(
+            !off_text.contains("P2"),
+            "导出是给用户读的文件，不许出现内部阶段名：{off_text}"
+        );
+        assert!(
+            off_text.contains("这个开关管两件事：记忆注入与自动提取"),
+            "开关管什么必须写清楚（自动提取跟着它一起开关）：{off_text}"
+        );
+
+        store::set_use_approved(&ns, true).expect("enable");
+        let on = export(&ns).expect("export again");
+        let on_text = std::fs::read_to_string(&on.path).expect("read export");
+        assert!(
+            on_text.contains("- 开关：「使用已批准的记忆」= 开"),
+            "打开之后要如实写「开」：{on_text}"
+        );
+        assert!(!on_text.contains("自动提取 ="), "{on_text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

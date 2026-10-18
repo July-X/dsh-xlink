@@ -1,7 +1,8 @@
 /**
  * Client 入口：在会话头右侧的 `conversation.session.header.utilities` 插槽挂
- * 一枚「记忆 N」小徽标——回答「**这个会话最近一次，模型实际看到了哪几条记忆**」。
- * 面板里那张「最近注入」卡片是同一份数据的另一个视图（跨会话、可翻）；
+ * 一枚「本轮记忆 N 条」小徽标——回答「**这个会话最近一次，模型实际看到了哪几条记忆**」。
+ * 正文自带主语与单位（不是「记忆 N」）：旁边没有别的字可对照时，「N」必须自己说清是
+ * 哪一层的计数。面板里那张「最近注入」卡片是同一份数据的另一个视图（跨会话、可翻）；
  * 这里是会话头上一眼的诚实标签。
  *
  * 束格式是内核客户端模块系统的既定方言：`window.__ModuleLoader__.load({id,
@@ -49,12 +50,20 @@
  * 一个字节都不出壳；`__TAURI__` 没就绪或命令被 ACL 拒时本束静默退化成「没有
  * 徽标」，绝不在页面上留红字——它是装饰，不是报错面。
  *
- * 三条「不显示」的诚实语义，缺一不可：
- *  1. 没有笔记（这个会话还没被注入过）→ 不渲染；
- *  2. 开着记忆但这一轮**一条都没命中** → 同样不渲染，因为插件只在**真的注入
- *     了东西**时才上报（`host/index.js` 的 note 只在 `applied.applied` 时发）；
- *  3. 壳进程重启过 → 环形缓冲是进程内的，重启后没有「最近一次」可说了
- *     （面板那张卡片同此，不是徽标独有的缺陷）。
+ * 徽标画的是**这个会话最近一次上报**，所以「显示什么」有四种形状，逐条对着壳与插件核过
+ * （2026-10-18）：
+ *  1. 这个会话还没有过上报（壳刚重启 / 轮询还没轮到它）→ 不渲染；
+ *  2. 注入了 ≥1 条 → 徽标「本轮记忆 N 条」，tooltip「最近一次注入：<时刻> · 共 N 条：
+ *     <标题…> · 读范围：…」；
+ *  3. 检索跑了但**一条都没匹配到**（`hits` 为空、开关仍开着）→ 照常渲染「本轮记忆 0 条」，
+ *     tooltip 说「这次检索没有匹配到任何记忆」——**不是**「标题取不到」：插件在结果被采用
+ *     时就上报（`host/index.js` 的 note 挂在 `applied.applied` 上），一条都没匹配到也是一次
+ *     被采用的结果，所以这条是**可达**的（`applyStep` 在 `enabled=false` 或零命中时都回
+ *     `applied: true`）；
+ *  4. 会话中途把「使用已批准的记忆」关掉（`enabled === false`）→ 同样渲染，tooltip 说清
+ *     「记录时开关是关着的」，并且**不提读范围**（那一轮没有检索结果要解释）。
+ * 另一条边界：壳进程重启过 → 环形缓冲是进程内的，重启后没有「最近一次」可说了
+ * （面板那张卡片同此，不是徽标独有的缺陷）。
  */
 window.__ModuleLoader__.load({
   id: "xlink-memory",
@@ -68,23 +77,32 @@ window.__ModuleLoader__.load({
 
     const STRINGS = {
       zh: {
-        label: "记忆",
-        badgeTip: "最近一次注入到这个会话的记忆（只列标题，不列正文）",
+        // 徽标正文**自带主语与单位**：只写「记忆 2」读不出 2 是什么（库里有几条？这一轮
+        // 注入几条？），而它旁边没有别的字可对照。「本轮」= 最近一次上报的那一轮，与
+        // tooltip 的「最近一次注入 / 最近一次检索」说的是同一件事。
+        badgeText: (count) => `本轮记忆 ${count} 条`,
+        badgeTip: "模型在这个会话里实际看到了哪几条记忆（只列标题，不列正文）",
         injectedAt: "最近一次注入：",
-        hits: (count) => `命中 ${count} 条：`,
+        checkedAt: "最近一次检索：",
+        hits: (count) => `共 ${count} 条：`,
         hitsJoin: "、",
-        noTitles: "（标题取不到，只留了 id）",
+        none: "这次检索没有匹配到任何记忆：这一回合没有记忆进入会话",
+        switchOff: "记录时「使用已批准的记忆」是关着的：这一回合没有记忆进入会话",
         tipJoin: " · ",
         scopeWorkspace: "读范围：本工作区",
         scopeGeneral: "读范围：通用偏好（这一轮没有绑定工作区）",
       },
       en: {
-        label: "Memory",
-        badgeTip: "Memories injected into this session last time (titles only, no bodies)",
+        // 复数照英文语法走：`1 memory` / `2 memories`——徽标是常驻可见的一行字，
+        // 单复数错了和中文写错别字一样显眼。
+        badgeText: (count) => `${count} ${count === 1 ? "memory" : "memories"} this turn`,
+        badgeTip: "Which memories the model actually saw in this session (titles only, no bodies)",
         injectedAt: "Last injection: ",
-        hits: (count) => `Matched ${count}: `,
+        checkedAt: "Last retrieval: ",
+        hits: (count) => `${count} in total: `,
         hitsJoin: ", ",
-        noTitles: "(no title resolved, ids only)",
+        none: "That retrieval matched no memories: nothing was added to the session this turn",
+        switchOff: "\"Use approved memories\" was off when this was recorded: nothing was added to the session this turn",
         tipJoin: " · ",
         scopeWorkspace: "Read scope: this workspace",
         scopeGeneral: "Read scope: general preferences (no workspace bound)",
@@ -141,17 +159,35 @@ window.__ModuleLoader__.load({
      *
      *  也不靠换行分段：`title` 提示在 WebView2（Chromium）与 WKWebView 上是否渲染成多行
      *  并不一致，而两个平台都得支持。用 ` · ` 连接时两种渲染都读得通——押注其中一边的
-     *  换行行为就是给另一个平台埋一根刺。 */
+     *  换行行为就是给另一个平台埋一根刺。
+     *
+     *  壳给的三样东西各自都有话说，所以逐个分开：
+     *   · `hits` 是**标题数组**（取不到标题的条目退回 id，原样列出来——那是壳的取舍：
+     *     宁可给一个认不出的编号，也不要静默少一条）；
+     *   · `hits` 为空**不等于**故障：插件只要结果被采用就上报，一条都没匹配到也是一次
+     *     被采用的结果；
+     *   · `enabled` 是**上报那一刻**的开关：会话中途关掉开关后这一轮同样会有一条上报，
+     *     那时说「没有记忆进入会话」是真话，说「没有匹配到」是假话。 */
     function tooltipFor(note, hits) {
       try {
-        return [
-          L.badgeTip,
-          `${L.injectedAt}${clockText(note.at)}`,
-          `${L.hits(hits.length)}${hits.length ? hits.join(L.hitsJoin) : L.noTitles}`,
+        const parts = [L.badgeTip];
+        if (hits.length > 0) {
+          parts.push(`${L.injectedAt}${clockText(note.at)}`);
+          parts.push(`${L.hits(hits.length)}${hits.join(L.hitsJoin)}`);
           // workspace 为空串 = 这一轮被按 G15 夹紧成「只读通用偏好」（子智能体的
           // 工作区与父级不同）。分得清这两种，是因为它们回答的问题不一样。
-          note.workspace ? L.scopeWorkspace : L.scopeGeneral,
-        ].join(L.tipJoin);
+          parts.push(note.workspace ? L.scopeWorkspace : L.scopeGeneral);
+        } else {
+          parts.push(`${L.checkedAt}${clockText(note.at)}`);
+          // `enabled === false` 才说开关；字段缺失（老壳）时按「开着但没匹配到」说，
+          // 那是更保守的那一种——不替用户声称他关过一个开关。
+          parts.push(note.enabled === false ? L.switchOff : L.none);
+          // 开关关着那一轮压根没有检索结果，读范围无从谈起，所以只在没关时说。
+          if (note.enabled !== false) {
+            parts.push(note.workspace ? L.scopeWorkspace : L.scopeGeneral);
+          }
+        }
+        return parts.join(L.tipJoin);
       } catch (error) {
         return String(L.badgeTip ?? "");
       }
@@ -199,7 +235,7 @@ window.__ModuleLoader__.load({
       return e(
         "span",
         { className: "xlink-memory-badge", title: tooltipFor(note, hits), "data-xlink-memory-badge": "recent-injections" },
-        `${L.label} ${hits.length}`,
+        `${L.badgeText(hits.length)}`,
       );
     }
 

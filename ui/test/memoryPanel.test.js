@@ -336,6 +336,24 @@ test('面板的文案不许把内部术语、英文状态或会读错的计数�
     /固定项（优先带上）/,
     '编辑器里的固定项也要说「优先」'
   );
+  // **方位引用会随布局过期**：「权威记录是上面那份文件」在文件行挪到下面那张卡之后就错了。
+  // 这一格现在点名说清是哪份文件（磁盘上的 memory.json），不再指方位。
+  assert.ok(!panel.includes('上面那份文件'), '权威记录的指引不许指方位');
+  assert.match(panel, /磁盘上的 memory\.json/, '要说清权威记录到底是哪份文件');
+  // 卡头计数**含停用条目**（`memory_list` 带 `include_disabled`），不写出来会被读成
+  // 「启用了 N 条」——而右栏那行才是分开数的。
+  assert.match(panel, /含停用/, '总数里有停用条目时要说出来');
+  // 「未知项目」把「没记下来」说成「项目不存在」；那是两个不同的意思。
+  assert.match(panel, /未记录项目/, '没记下工作区时说「未记录」，不说「未知」');
+  assert.ok(!panel.includes('未知项目'), '「未知项目」这个词不许再出现');
+  // 路径缺失时那一格显示的是**项目名**，只写范围名会让同一位置出现两种语义层级。
+  for (const file of ['MemoryRow.vue', 'MemoryDetail.vue']) {
+    assert.match(
+      templateOf(read(`../src/memory/${file}`)) + read(`../src/memory/${file}`),
+      /项目记忆（未记路径）/,
+      `${file} 的兜底要说清缺的是路径`
+    );
+  }
 });
 
 test('范围文案统一成「项目记忆」——不再与筛选那一档的「按项目」撞名', async () => {
@@ -380,7 +398,16 @@ test('开关的生效语义：有确切判据就用确切的，没有就不许�
 
 test('正文按**字节**判，与后端同一个数（评审第 4 条）', async () => {
   const { MAX_BODY_BYTES, byteLength, canSaveDraft, memoryStore } = await import('../src/memory/memory.js');
-  assert.equal(MAX_BODY_BYTES, 8192, '与后端 store::MAX_BODY_BYTES 逐字对齐');
+  // **这个数从后端的源码里读出来比**，不再抄一个 8192：抄下来的数在后端改上限时会静默
+  // 说谎——面板照旧按旧值拦（用户以为能存下）或照旧放行（保存时才被拒），而判据全绿。
+  // 用户 2026-10-18 定的标准：「不能展示过时、老旧的信息」。
+  const rust = read('../../src-tauri/src/memory/store.rs');
+  const found = /pub const MAX_BODY_BYTES: usize = ([0-9_*\s]+);/.exec(rust);
+  assert.ok(found, '没在 store.rs 里找到 MAX_BODY_BYTES——常量改名或搬家时这条判据要跟着改');
+  const backend = found[1]
+    .split('*')
+    .reduce((acc, part) => acc * Number(part.trim().replaceAll('_', '')), 1);
+  assert.equal(MAX_BODY_BYTES, backend, '面板与后端的正文上限必须相等');
   assert.equal(byteLength('abc'), 3);
   assert.equal(byteLength('中'), 3, '中文一个字 3 字节');
   // 4000 个中文字 ≈ 12000 字节 > 8192：**面板自己就该拦住**，不能等后端拒。
