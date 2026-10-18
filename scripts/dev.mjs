@@ -76,13 +76,43 @@ const override = JSON.stringify({
   },
 });
 
+// Windows + windows-gnu 工具链下，`gcc` / `dlltool` / `windres` 来自 MinGW，
+// cargo 只从 PATH 里找它们。而 PATH 是**进程启动时的快照**：在 MinGW 写进 PATH
+// （用户/安装器改注册表）之前打开的终端、以及复用旧环境的 IDE/终端宿主新开的
+// 标签页，跑 `npm run dev` 会死在 `error calling dlltool` 或 tauri-winres 的
+// `NotAttempted("windres")` panic——即使 `where.exe windres` 在新窗口里能通过。
+// 这里在 spawn 前给**本次 dev 的子进程**兜底，不改用户环境：PATH 里已有 windres
+// 就不动；否则从 DSH_MINGW_BIN 或常见安装位置补一条。
+function ensureMingwOnPath(env) {
+  if (process.platform !== 'win32') {
+    return env;
+  }
+  const pathKey = Object.keys(env).find((name) => name.toUpperCase() === 'PATH') ?? 'Path';
+  const current = env[pathKey] ?? '';
+  if (current.split(';').some((dir) => dir && existsSync(join(dir, 'windres.exe')))) {
+    return env;
+  }
+  const candidates = [
+    env.DSH_MINGW_BIN,
+    join(env.USERPROFILE ?? '', 'tools', 'winlibs', 'mingw64', 'bin'),
+    'C:\\winlibs\\mingw64\\bin',
+    'C:\\msys64\\mingw64\\bin',
+  ].filter(Boolean);
+  const found = candidates.find((dir) => existsSync(join(dir, 'windres.exe')));
+  if (!found) {
+    return env;
+  }
+  console.error(`dev: PATH 里没有 windres（Windows-gnu 工具链需要），本次 dev 临时加入 ${found}`);
+  return { ...env, [pathKey]: `${found};${current}` };
+}
+
 // `--features wdio` 把内嵌 WebDriver 服务端编进 dev 壳。这是 release 与 dev
 // 唯一的构建差异，判据见 scripts/check-webdriver-gating.mjs：release 的
 // `default` 是空的，插件不参与编译。
 const child = spawn(process.execPath, [tauriCli, 'dev', '-c', override, '--features', 'wdio'], {
   stdio: 'inherit',
   cwd: repoRoot,
-  env: { ...process.env, DSH_DEV_PORT: String(port) },
+  env: ensureMingwOnPath({ ...process.env, DSH_DEV_PORT: String(port) }),
 });
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
