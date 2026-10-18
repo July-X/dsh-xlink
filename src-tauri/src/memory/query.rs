@@ -821,7 +821,7 @@ mod tests {
     /// 开场白也要指路。它每次注入都跟着走，是模型唯一稳定会读到的「清单不全」提示。
     #[test]
     fn the_preamble_points_at_the_search_tool() {
-        let rows = vec![padded_row("m-0", "正文")];
+        let rows = [padded_row("m-0", "正文")];
         let refs: Vec<&MemoryRecord> = rows.iter().collect();
         let (text, _) = render_context(&refs);
         assert!(text.contains("memory_search"), "开场白要指路：{text}");
@@ -839,7 +839,7 @@ mod tests {
         stale.verification = VERIFICATION_STALE.to_string();
         let mut unverified = padded_row("m-2", "正文");
         unverified.verification = VERIFICATION_UNVERIFIED.to_string();
-        let rows = vec![verified, stale, unverified];
+        let rows = [verified, stale, unverified];
         let refs: Vec<&MemoryRecord> = rows.iter().collect();
         let (text, _) = render_context(&refs);
         assert!(text.contains("已验证"), "{text}");
