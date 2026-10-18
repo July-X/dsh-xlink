@@ -2045,7 +2045,11 @@ test('徽标只画这个会话最近的那一条：环形缓冲是跨会话的',
   assert.equal(badge.type, 'span');
   assert.equal(badge.props.className, 'xlink-memory-badge');
   assert.equal(badge.props['data-xlink-memory-badge'], 'recent-injections');
-  assert.equal(badge.children[0], '记忆 2', '数的是最近那一条的条数，不是这个会话的历史累计');
+  assert.equal(
+    badge.children[0],
+    '本轮记忆 2 条',
+    '数的是最近那一条的条数，不是这个会话的历史累计；正文还要自带主语与单位——「记忆 2」读不出 2 是库里的总数还是这一轮注入的条数',
+  );
   const title = badge.props.title;
   // 悬停文案不靠换行分段：`title` 提示在 WebView2（Chromium）与 WKWebView 上是否
   // 渲染成多行并不一致，而两个平台都得支持——押其中一边就是给另一个埋刺。
@@ -2080,6 +2084,82 @@ test('两份文案都得能用：字典漏一个键，页面上就是一句 unde
     badge.unmount();
   }
   assert.notEqual(titles.zh, titles.en, '语言没跟着 navigator 走');
+});
+
+test('徽标三种形状都要说对话：有命中 / 零命中 / 开关关着（zh 与 en 各过一遍）', async () => {
+  // 原先只有「有命中」那一种形状有判据，另外两种没人守——而它们恰恰最容易说错：
+  //  · `hits` 为空**不等于**「标题取不到」：取不到标题时壳会把 id 填进数组（`recent.rs`
+  //    的 `record`），空数组只意味着「这一回合没有任何记忆进入会话」；
+  //  · 会话中途关掉开关之后**同样会有一条上报**（`policy.js` 的 `applyStep` 在
+  //    `enabled=false` 时也回 `applied: true`，`host/index.js` 据此照发 note），那时说
+  //    「没有匹配到」就是假话，而说读范围则是编出来的——那一轮压根没有检索结果。
+  // 三种形状 × 两种语言：字典漏一个键，页面上就是一句 undefined。
+  const at = '2026-10-15T13:30:45Z';
+  const shapes = [
+    {
+      name: '有命中',
+      note: { at, session: 'session-a', workspace: '/w/a', enabled: true, hits: ['用中文回复', '门禁是 npm run check'] },
+      badge: { zh: '本轮记忆 2 条', en: '2 memories this turn' },
+      must: {
+        zh: ['最近一次注入：', '共 2 条：', '用中文回复', '读范围：本工作区'],
+        en: ['Last injection: ', '2 in total: ', 'Read scope: this workspace'],
+      },
+    },
+    {
+      name: '只有一条（英文单数）',
+      note: { at, session: 'session-a', workspace: '/w/a', enabled: true, hits: ['用中文回复'] },
+      badge: { zh: '本轮记忆 1 条', en: '1 memory this turn' },
+      must: {
+        zh: ['共 1 条：', '用中文回复'],
+        en: ['1 in total: '],
+      },
+    },
+    {
+      name: '零命中、开关开着',
+      note: { at, session: 'session-a', workspace: '/w/a', enabled: true, hits: [] },
+      badge: { zh: '本轮记忆 0 条', en: '0 memories this turn' },
+      must: {
+        zh: ['最近一次检索：', '没有匹配到任何记忆', '这一回合没有记忆进入会话', '读范围：本工作区'],
+        en: ['Last retrieval: ', 'matched no memories', 'nothing was added to the session this turn', 'Read scope: this workspace'],
+      },
+      // 「标题取不到」是**旧代码**给这个形状的错话：空数组与标题无关。
+      absent: { zh: ['标题取不到'], en: ['no title'] },
+    },
+    {
+      name: '开关关着（会话中途关掉）',
+      note: { at, session: 'session-a', workspace: '/w/a', enabled: false, hits: [] },
+      badge: { zh: '本轮记忆 0 条', en: '0 memories this turn' },
+      must: {
+        zh: ['最近一次检索：', '「使用已批准的记忆」是关着的', '这一回合没有记忆进入会话'],
+        en: ['Last retrieval: ', 'was off when this was recorded', 'nothing was added to the session this turn'],
+      },
+      // 关着的那一轮没有检索结果可解释，读范围**必须不出现**：多一句就是编出来的。
+      absent: { zh: ['读范围'], en: ['Read scope'] },
+    },
+  ];
+  for (const shape of shapes) {
+    for (const language of ['zh', 'en']) {
+      const badge = mountClient({ notes: [shape.note], language });
+      badge.render(badge.component, { sessionId: 'session-a' });
+      await flush();
+      const node = badge.render(badge.component, { sessionId: 'session-a' });
+      assert.ok(node, `${shape.name} / ${language}：该画出徽标`);
+      assert.equal(node.children[0], shape.badge[language], `${shape.name} / ${language}：徽标正文要自解释`);
+      const title = node.props.title;
+      for (const fragment of shape.must[language]) {
+        assert.ok(title.includes(fragment), `${shape.name} / ${language} 的悬停文案缺「${fragment}」：${title}`);
+      }
+      for (const fragment of shape.absent?.[language] ?? []) {
+        assert.equal(
+          title.includes(fragment),
+          false,
+          `${shape.name} / ${language} 的悬停文案不该出现「${fragment}」：${title}`,
+        );
+      }
+      assert.equal(title.includes('undefined'), false, `${shape.name} / ${language}：文案里有 undefined`);
+      badge.unmount();
+    }
+  }
 });
 
 test('重复 apply 不会重复注入样式：内核 hmr 重新求值时会再跑一遍 apply', () => {

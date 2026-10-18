@@ -55,6 +55,11 @@ const injectLimitText = computed(() =>
   status.value && status.value.max_hits ? `最多 ${status.value.max_hits} 条` : '条数有上限'
 );
 
+/// 卡头标题里的计数：`memory_list` 是带 `include_disabled` 读回来的，所以总数**含停用条目**
+/// ——不写出来的话「记忆（12）」会被读成「启用了 12 条」，而右栏那行才是分开数的。
+/// 一条都没有停用时就不写这半句（常态下少四个字）。
+const disabledCount = computed(() => (status.value && status.value.disabled) || 0);
+
 /// 注入链路的内置插件（`xlink-memory`）。**按 id 取，不取第一项**：
 /// 取第一项会在登记表里多一个插件时静默指向别人。
 const injectPlugin = computed(() => builtinById('memory'));
@@ -190,7 +195,9 @@ onMounted(() => {
                 memoryStore.listScope === 'candidates'
                   ? `待确认（${candidates.length}）`
                   : memoryStore.listScope === 'all'
-                    ? `记忆（${allMemories.length}）`
+                    ? disabledCount
+                      ? `记忆（${allMemories.length}，含停用 ${disabledCount}）`
+                      : `记忆（${allMemories.length}）`
                     : `记忆（${list.length} / 共 ${allMemories.length}）`
               }}
               <!--
@@ -355,7 +362,7 @@ onMounted(() => {
                   <div class="card-info-tooltip">
                     实况：插件报告它真的把哪几条放进了模型上下文。<br />
                     下面那个「检索预览」只是查询词由你填，检索是真跑的（同一份记忆库、同一套打分）。<br />
-                    壳重启后这份记录会清空（它不是权威记录，权威记录是上面那份文件）。
+                    壳重启后这份记录会清空（它不是权威记录——权威记录是磁盘上的 memory.json，「检索预览」卡片底部写着它的位置）。
                   </div>
                 </template>
                 <el-icon class="card-info-icon" tabindex="0" aria-label="最近注入是什么">
@@ -376,7 +383,7 @@ onMounted(() => {
               class="memory-note"
               :title="note.workspace"
             >
-              {{ shortTime(note.at) }} · {{ baseName(note.workspace) || '未知项目' }} · {{ injectionText(note) }}
+              {{ shortTime(note.at) }} · {{ baseName(note.workspace) || '未记录项目' }} · {{ injectionText(note) }}
             </p>
             <p v-if="recentInjections.length > 5" class="memory-note">
               只列最近 5 次（共 {{ recentInjections.length }} 条记录）。
@@ -394,7 +401,7 @@ onMounted(() => {
                 <template #content>
                   <!-- prettier-ignore -->
                   <div class="card-info-tooltip">
-                    自动提取的任务表：聊完一轮后插件排一条、壳发一个租约、模型提完再交回来；提出来的先进「待确认」，你点了保存才成为记忆。它跟着上面那个开关一起开关。<br />
+                    自动提取的任务表：聊完一轮之后，模型会把这一段里值得长期保留的东西提成候选，每一行是聊过的一段；提出来的先进「待确认」，你点了保存才成为记忆。它跟着上面那个开关一起开关。<br />
                     <strong>一条记忆都没提取出来时先看这里</strong>——失败那行会写明卡在哪一步（读取会话 / 切分片段 / 模型调用 / 解析输出 / 提交候选 / 已取消）。<br />
                     完整留痕在「查看日志」的 memory-jobs 标签下。
                   </div>
