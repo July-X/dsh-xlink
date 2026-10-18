@@ -1356,7 +1356,15 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                         .title(window_title("工作台"))
                         .inner_size(1280.0, 840.0)
                         .background_color(CHROME_BACKDROP)
-                        .theme(crate::shell::appearance::initial_theme())
+                        // 工作台**不钉外观**：页面是内核 Web UI，明暗由内核的
+                        // `ui-theme` 设置决定（`system` 一档是内核在页内查
+                        // `prefers-color-scheme` 解析的）。钉住这扇窗 = 把内核
+                        // 设置里的「跟随系统」钉死（2026-10-18 用户实测）。
+                        // `initial_theme(WORKBENCH_LABEL)` 两个平台都返回 `None`。
+                        // 同一条建窗链的另一半在 `harness_window::build`，别只改一处。
+                        .theme(crate::shell::appearance::initial_theme(
+                            crate::shell::appearance::WORKBENCH_LABEL,
+                        ))
                         // 内核 Web 前端把会话内容里的网页地址渲染成
                         // `<a target="_blank" rel="noopener noreferrer">`，
                         // 交给「浏览器打开新标签页」的默认行为。但 Tauri
@@ -1388,6 +1396,10 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                         .initialization_script(include_str!("harness/harness-health.js"))
                         .initialization_script(include_str!("harness/harness-draft.js"))
                         .initialization_script(include_str!("harness/workbench-history-guard.js"))
+                        // 把内核声明的外观偏好镜像到本窗的原生外观（`system` 时不覆盖）。
+                        .initialization_script(include_str!(
+                            "harness/workbench-appearance.js"
+                        ))
                         // 工作台只压引擎原生菜单、放行内核自绘的菜单；同一条工作台
                         // 建窗链的另一半在 `harness_window::build`，别只改一处。
                         .initialization_script(include_str!("harness/context-menu-fallback.js"))
@@ -1495,7 +1507,7 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
                 crate::shell::window::LOG_VIEWER_SIZE.height,
             )
             .resizable(true)
-            .theme(crate::shell::appearance::initial_theme());
+            .theme(crate::shell::appearance::initial_theme("log-viewer"));
             // 与另外两扇壳自有副窗同一套装饰（无边框 + 透明 + 无系统阴影，
             // 交通灯由前端自绘），理由见 `decorate_transparent`。
             builder = crate::shell::window::decorate_transparent(builder);
@@ -1738,7 +1750,9 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                         .inner_size(OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT)
                         .resizable(true)
                         .background_color(CHROME_BACKDROP)
-                        .theme(crate::shell::appearance::initial_theme())
+                        .theme(crate::shell::appearance::initial_theme(
+                            OFFICIAL_CHAT_WINDOW_LABEL,
+                        ))
                         // 让 AppKit 在挂载子 WebView 之前先把父内容视图的 frame 确定下来；
                         // post-show 那一轮再根据注册结果重新设置每个子视
                         // 图的 frame。

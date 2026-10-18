@@ -167,6 +167,12 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 
 修改用户可见行为、数据目录、发布流程或安全策略时同步更新 `README.md` 与对应 `docs/`。文件保持 UTF-8、恰好一个末尾换行；不提交依赖目录与构建产物。
 
-## 窗口外观作用域（2026-10-09）
+## 窗口外观作用域（2026-10-09；2026-10-18 扩到工作台）
 
-macOS 建窗用 `shell::appearance::initial_theme()`，前端 `bridge.setWindowTheme` → `set_window_appearance`，仅设置当前 `NSWindow`。**不得用 Tauri 的应用级主题覆盖**来模拟单窗口外观，否则工作台的固定深色会阻断管理窗口跟随系统。前端细则见 `ui/AGENTS.md`，原生实现在 `shell/appearance.rs`。
+**原生外观只设当前窗口，而且只设壳自己的窗口**——策略收在 `shell/appearance.rs`：
+
+- **壳自有窗口**（面板与三扇副窗）：建窗走 `appearance::initial_theme(label)`（macOS 返回 `None`——tao 的 `set_theme` 是 `NSApplication` 级，用了它整个应用的媒体查询一起变；其他平台给 `Dark` 兜底），页加载时由 app 级 `.on_page_load` 钩子逐窗口补一次深色，页面挂载后 `bridge.setWindowTheme` → `set_window_appearance` 按持久化偏好纠正**本窗口**。**不得用 Tauri 的应用级主题覆盖**来模拟单窗口外观。
+- **工作台**（label `harness`）**一条建窗主题都不许钉**：它加载内核 Web UI，`ui-theme = system` 是内核在页内用 `prefers-color-scheme` 解析的，钉住这扇窗 = 把内核设置里的「跟随系统」永久钉死（2026-10-18 用户实测：系统浅色 + 偏好 system，工作台仍渲染深色）。`initial_theme` 对工作台两个平台都返回 `None`，`initialize` 也按 label 跳过它。
+- 工作台随后由注入脚本 `harness/workbench-appearance.js` 按内核发布的 `html[data-ds-theme-source]`（**偏好**）镜像原生外观：`system` ⇒ 下发 `null` 不覆盖（若镜像解析出来的那一档，页内的媒体查询会被自己冻住，系统切档时内核再也收不到变化，「跟随系统」第二次失效）；`dark` / `light` ⇒ 钉同一档（否则浅色系统 + 内核深色 = 「深色内容 + 浅色标题栏」，2026-10-07 截图）。该命令的授权在 `capabilities/harness-remote.json`，漏了就是 ACL 静默拒、`.catch` 吞掉。
+
+判据：不变量第 18 项按 `.title(` 对账建窗主题、禁 `Theme::Dark` 字面量绕过出口、要求工作台那两支恰好两处传 `WORKBENCH_LABEL`；第 ⑦ 项要求两条工作台建窗链都注入外观镜像脚本（漏一条的症状是自愈重建出来的工作台标题栏不跟内核走）。前端细则见 `ui/AGENTS.md`。
