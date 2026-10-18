@@ -38,6 +38,22 @@ export function incidentCause(value) {
   return 'unknown';
 }
 
+/// 事故关联的**启动运行记录 id**。没有就返回空串。
+///
+/// 只有**启动期事故**才有：guard 在启动记录收尾时把那次运行的 id 写回事故；
+/// 运行期事故（页面自检上报的那一类）没有对应的启动记录。两处的「查看启动
+/// 诊断」入口都必须用它门控——没有关联记录时打开的是「最近一条启动」，那可能
+/// 是另一次**成功**的启动，用户会把两件事读成一件（2026-10-18 实机截图：事故
+/// 面板旁边摆着一条 `success` 的时间线）。
+///
+/// **字段名是后端 `Incident` 的线上名 `runId`**（后端只给这一个字段加了
+/// camelCase 别名，其余字段仍是既有的 snake_case 落盘契约）。取值只认字符串：
+/// 缺失 / 类型不对时一律当没有，别让 `[object Object]` 变成一次查询。
+export function incidentRunId(value) {
+  const id = value && value.runId;
+  return typeof id === 'string' ? id : '';
+}
+
 export function incidentTitle(value) {
   if (!value) return '工作台异常';
   if (value.recovered) return '已在安全模式下启动工作台';

@@ -10,6 +10,7 @@ import {
   incidentHealthKindLabel,
   incidentHealthPlainText,
   incidentHealthSections,
+  incidentRunId,
   bundleRouteMembers,
   incidentTitle,
 } from '../src/incidents/incidents.js';
@@ -166,4 +167,42 @@ test('复制证据给出的是分段后的完整文本', () => {
   assert.match(text, /涉及的客户端模块（1 个）：dsh-a/);
   assert.match(text, /页面：http:\/\/127\.0\.0\.1:3090\//);
   assert.equal(incidentHealthPlainText(null), '');
+});
+
+test('事故关联的启动记录 id 只在真有记录时给出', () => {
+  // 运行期事故（页面自检上报）没有对应的启动记录：此时「查看启动诊断」
+  // 只能打开「最近一条启动」，那可能是另一次**成功**启动——2026-10-18
+  // 实机截图里事故面板旁边就摆着一条 success 的时间线。
+  assert.equal(incidentRunId(null), '');
+  assert.equal(incidentRunId({ cause: 'kernel-boot' }), '');
+  assert.equal(incidentRunId({ runId: 'run-20261018-183941-5a7d' }), 'run-20261018-183941-5a7d');
+  // 类型不对时一律当没有：id 会进查询串，`[object Object]` 是一次无意义请求。
+  assert.equal(incidentRunId({ runId: 42 }), '');
+  assert.equal(incidentRunId({ runId: { id: 'x' } }), '');
+});
+
+test('「查看启动诊断」只在这桩事故有启动记录时出现', () => {
+  const overview = readFileSync('ui/src/shell/OverviewPanel.vue', 'utf8');
+  // 横幅：按钮必须由关联记录 id 门控，并在动作里再判一次空值。
+  assert.match(
+    overview,
+    /<el-button\s+v-if="linkedRunId"[^>]*@click="openStartupRun"/,
+    '概览横幅的「查看启动诊断」没有被 linkedRunId 门控——运行期事故会打开另一次成功的启动',
+  );
+  assert.match(overview, /const linkedRunId = computed\(\(\) => incidentRunId\(/);
+
+  const modal = readFileSync('ui/src/incidents/IncidentModal.vue', 'utf8');
+  assert.match(
+    modal,
+    /<el-button\s+v-if="runId"[^>]*@click="openStartupRun"/,
+    '事故面板的「查看启动诊断」没有被 runId 门控',
+  );
+  assert.match(modal, /const runId = computed\(\(\) => incidentRunId\(/);
+
+  // 两个入口都用共享层的 `incidentRunId` 取 id，不许各自猜字段名——
+  // 这里曾按 camelCase 读后端实际发 snake_case 的字段，取到的永远是 undefined。
+  for (const file of ['ui/src/shell/OverviewPanel.vue', 'ui/src/incidents/IncidentModal.vue']) {
+    const source = readFileSync(file, 'utf8');
+    assert.match(source, /incidentRunId\(/, `${file} 必须从 incidents.js 取关联记录 id`);
+  }
 });

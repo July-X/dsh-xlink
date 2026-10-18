@@ -648,6 +648,51 @@ test('P2-03 阶段计数按阶段集合算，不按事件条数', () => {
   }
 });
 
+test('P2-03 启动阶段的分母按本次路径算：正常启动不再显示「7 / 8」', () => {
+  const one = (stage, status = 'success') => ({ stage, status });
+  // 全新启动的真实事件形态（2026-10-18 18:39 那条 success 记录）：只走 7 个
+  // 阶段，`health-check` 是「启动时内核已在运行」才有的幂等阶段。
+  const fresh = [
+    one('resolve-instance'),
+    one('detect-node'),
+    one('resolve-pnpm'),
+    one('prepare-wiring', 'running'),
+    one('prepare-wiring'),
+    one('spawn-kernel', 'running'),
+    one('spawn-kernel'),
+    one('wait-ready', 'running'),
+    one('wait-ready'),
+    one('record-startup-ok'),
+  ];
+  const p = labels.stageProgress('startup', fresh);
+  assert.equal(p.total, 7, '全新启动的分母是 7，不是 8');
+  assert.equal(p.done, 7, '成功启动必须能到 100%');
+  assert.equal(p.pending, 0);
+  assert.equal(p.failed, 0);
+
+  // 幂等启动（启动时内核已在运行）：不派生内核、不备接线，只走 5 个阶段。
+  const already = [
+    one('resolve-instance'),
+    one('detect-node'),
+    one('resolve-pnpm'),
+    one('health-check'),
+    one('record-startup-ok'),
+  ];
+  const q = labels.stageProgress('startup', already);
+  assert.equal(q.total, 5, '幂等启动的分母是 5');
+  assert.equal(q.done, 5);
+
+  // 派生之后撞上环境类失败：`health-check` 真的走到了，就该留在分母里。
+  const blocked = [...fresh.slice(0, 6), one('health-check', 'failure')];
+  const r = labels.stageProgress('startup', blocked);
+  assert.equal(r.total, 8, '走到过 health-check 的环境类失败仍按 8 个阶段算');
+  assert.equal(r.failed, 1, '失败单独计数，不冒充「完成」');
+
+  // 启动失败在派生之前：分母仍是 7（不能因为提前失败就把分母缩成 2）。
+  const early = [one('resolve-instance'), one('detect-node', 'failure')];
+  assert.equal(labels.stageProgress('startup', early).total, 7);
+});
+
 // —— P1-03：两阶段契约（2026-10-06 用户拍板）—————————————————————
 //
 // 「预检通过」与「已经装上」是两件事。UI 上任何一处把它们混为一谈，用户就会

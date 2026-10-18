@@ -382,11 +382,17 @@ pub fn recreate_when_quiet(app: &AppHandle, reason: &str) {
 ///
 /// 预算耗尽或冷却未过时静默返回 `Ok`：调用方（等待线程 / 状态轮询）把这次
 /// 当作「已处理」，用户仍有手动那条路（本函数本身就是它）。
+///
+/// **成败都必须落盘，且成功那条只能在 `open()` 返回之后写。** 2026-10-18 实机：
+/// 日志写下「已拆掉并重建」之后 20 分钟没有出现过任何一次页面加载，而建窗失败
+/// 只进了 `eprintln!`——GUI 应用在 Windows 上没有 stderr 去处，事后既查不到
+/// 「有没有重建」也查不到「为什么没建出来」。旧窗口此刻已经拆掉，这条失败是
+/// 用户面前没有工作台的直接原因，必须能在「查看日志」里看到。
 pub fn recreate(app: &AppHandle, reason: &str) -> Result<(), String> {
     let Some(url) = crate::lock(&app.state::<AppState>().harness_url).clone() else {
         return Ok(());
     };
-    {
+    let attempt = {
         let state = app.state::<AppState>();
         let mut page = crate::lock(&state.harness_page);
         if page.rebuilds >= MAX_REBUILDS || !cooldown_ready(page.last_rebuild) {
@@ -396,15 +402,47 @@ pub fn recreate(app: &AppHandle, reason: &str) -> Result<(), String> {
         page.last_rebuild = Some(Instant::now());
         page.reloads = 0;
         page.pending_since = None;
-    }
+        page.rebuilds
+    };
     if let Some(window) = app.get_webview_window("harness") {
         let _ = window.destroy();
     }
-    let message = format!("工作台窗口{reason}，已拆掉并重建");
-    eprintln!("dsh-xlink: {message}");
-    crate::shell::shell_events::record(HARNESS_WINDOW_LOG, &message);
-    let parsed = Url::parse(&url).map_err(|e| format!("工作台地址无法解析，未能重建窗口：{e}"))?;
-    open(app, parsed)
+    let parsed = match Url::parse(&url) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let message = recreate_failure_message(reason, &format!("工作台地址无法解析：{error}"));
+            crate::shell::shell_events::record(HARNESS_WINDOW_LOG, &message);
+            return Err(message);
+        }
+    };
+    match open(app, parsed) {
+        Ok(()) => {
+            crate::shell::shell_events::record(
+                HARNESS_WINDOW_LOG,
+                &recreate_success_message(reason, attempt),
+            );
+            Ok(())
+        }
+        Err(error) => {
+            let message = recreate_failure_message(reason, &error);
+            crate::shell::shell_events::record(HARNESS_WINDOW_LOG, &message);
+            Err(message)
+        }
+    }
+}
+
+/// 重建成功的日志行。只允许在 `open()` 返回 `Ok` 之后调用——写早了就是
+/// 「日志说重建了、用户面前却没有窗口」。
+fn recreate_success_message(reason: &str, attempt: u8) -> String {
+    format!("工作台窗口{reason}，已拆掉并重建（本进程第 {attempt} 次，上限 {MAX_REBUILDS} 次）")
+}
+
+/// 重建失败的日志行：结果、原因、用户的下一步都要在。
+fn recreate_failure_message(reason: &str, error: &str) -> String {
+    format!(
+        "工作台窗口{reason}，重建失败：{error}。请关闭工作台窗口后，到概览页点「工作台窗口」重新打开；\
+         仍失败请重启应用"
+    )
 }
 
 /// 清空看门狗的额度，让下一次 [`recreate`] 真的动手。
@@ -868,6 +906,33 @@ mod tests {
             "",
             true
         ));
+    }
+
+    /// 重建的**成败都要留痕**，而且成功那条只能在建窗成功之后写。
+    ///
+    /// 2026-10-18 实机：`harness-window.log` 写着「已拆掉并重建」，此后 20 分钟
+    /// 没有任何一次页面加载；建窗失败只进了 Windows 上没有去处的 stderr。用户
+    /// 手里没有工作台，日志里却查不到原因——这条失败必须在「查看日志」里看得见。
+    #[test]
+    fn recreate_success_and_failure_both_carry_the_facts() {
+        let success = recreate_success_message("刷新后页面仍报同一处槽位故障", 2);
+        assert!(success.contains("已拆掉并重建"), "成功要说结果：{success}");
+        assert!(success.contains("第 2 次"), "成功要带次数：{success}");
+        assert!(
+            success.contains(&format!("上限 {MAX_REBUILDS} 次")),
+            "成功要带预算，用户才知道还剩几次：{success}"
+        );
+
+        let failure = recreate_failure_message(
+            "刷新后页面仍报同一处槽位故障",
+            "无法创建工作台窗口：窗口已存在",
+        );
+        assert!(failure.contains("重建失败"), "失败必须明说结果：{failure}");
+        assert!(failure.contains("窗口已存在"), "失败必须带原因：{failure}");
+        assert!(
+            failure.contains("「工作台窗口」重新打开"),
+            "失败必须给下一步：{failure}"
+        );
     }
 
     /// 内核 `window.open` 的三条路（2026-10-18 恢复内核能力时定的策略）：
