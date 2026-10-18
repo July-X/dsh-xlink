@@ -10,7 +10,7 @@
 // 做法：临时目录 + 两个 peer 包的最小桩 + 一个真的回环 HTTP 桩桥，然后 `import()` 整个
 // 装配层并**调用三个工具**。不碰内核、不碰网络、不碰用户的数据目录。
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -18,6 +18,16 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import { TOKEN_ENV, URL_ENV } from '../host/bridge.js';
+
+// `ui/src/memory/memory.js` 顶层 import 了 `bridge.js`，后者在模块求值期就读
+// `window.__TAURI__`——下面「三处词表同一套」那条判据要 import 面板那份，所以桩必须
+// 在这里就位（与 `smoke.test.mjs` 同一套桩）。
+globalThis.window = {
+  __TAURI__: { core: { invoke: () => Promise.resolve([]), Channel: class { onmessage = null; } } },
+  addEventListener() {},
+  removeEventListener() {},
+};
+Object.defineProperty(globalThis, 'navigator', { value: { userAgent: 'node' }, configurable: true });
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -74,6 +84,7 @@ async function loadAssembly() {
   };
   return {
     apply: mod.apply,
+    mod,
     tools,
     ctx,
     lookups,
@@ -173,6 +184,15 @@ test('三个工具真的跑得起来，用的是**用时现取**的工作区注�
         .execute({ title: '标题', body: '正文', scope: 'general' }, exec);
       assert.equal(proposed.state, 'pending');
 
+      // **给模型看的那两段文字也要说中文**：工具输出原样拼 `scope` / `verification`，
+      // 于是模型读到「（project · verified）」，而面板与注入块写的是「项目记忆 · 已验证」——
+      // 模型可能把 `project` 原样讲给用户（2026-10-18 用户要求统一）。
+      const searchText = byName.get('memory_search').output.render({ query: '构建' }, search)[0].text;
+      assert.match(searchText, /通用偏好 · 已验证/, `搜索输出要用中文标签：${searchText}`);
+      const readText = byName.get('memory_read').output.render({ id: 'm-1' }, read)[0].text;
+      assert.match(readText, /通用偏好 · 已验证/, `读取输出要用中文标签：${readText}`);
+      assert.ok(!/（general/.test(searchText + readText), '不许再把英文枚举拼给模型');
+
       // **病根那条**：注册表必须是调用时从 `ctx` 现取的（`ctx.get`）。写成任何作用域里的
       // 变量时，三个工具各自抛 `ReferenceError: workspaceRegistry is not defined`——
       // 而「没抛这个错」本身证不了它用上了注册表，所以这里连 `resolveByPath` 的实参一起钉。
@@ -182,6 +202,44 @@ test('三个工具真的跑得起来，用的是**用时现取**的工作区注�
       cleanup();
     }
   });
+});
+
+test('三处标签同一套词：面板 / 注入块（Rust） / 工具输出（插件）', async () => {
+  const { mod, cleanup } = await loadAssembly();
+  try {
+    // ① 插件侧（工具输出）的词表。
+    assert.deepEqual(mod.SCOPE_LABELS, { general: '通用偏好', project: '项目记忆' });
+    assert.deepEqual(mod.VERIFICATION_LABELS, {
+      verified: '已验证',
+      unverified: '未验证',
+      stale: '已过期',
+    });
+
+    // ② 面板侧（Vue）：验证三档必须逐字相同；范围那边面板给通用偏好多一句限定，
+    //    所以比的是**词本身**。
+    const { scopeText, verificationText } = await import('../../../ui/src/memory/memory.js');
+    for (const [raw, label] of Object.entries(mod.VERIFICATION_LABELS)) {
+      assert.equal(verificationText(raw), label, `面板的 ${raw} 要与工具输出同词`);
+    }
+    assert.equal(scopeText({ scope: 'project' }), mod.SCOPE_LABELS.project);
+    assert.ok(
+      scopeText({ scope: 'general' }).startsWith(mod.SCOPE_LABELS.general),
+      '面板的通用偏好以同一个词开头'
+    );
+
+    // ③ 注入块（Rust）：那两组字面量在 `query.rs` 里，读源码比对。三处跨语言跨进程，
+    //    没有共享模块可放，这条判据就是「同一个词」的唯一保证。
+    const rust = readFileSync(new URL('../../../src-tauri/src/memory/query.rs', import.meta.url), 'utf8');
+    for (const label of Object.values(mod.SCOPE_LABELS)) {
+      assert.ok(rust.includes(`"${label}"`), `注入块里要有「${label}」`);
+    }
+    for (const label of Object.values(mod.VERIFICATION_LABELS)) {
+      assert.ok(rust.includes(`"${label}"`), `注入块里要有「${label}」`);
+    }
+    assert.ok(!rust.includes('"本项目"'), '注入块不许再写「本项目」——面板叫「项目记忆」');
+  } finally {
+    cleanup();
+  }
 });
 
 test('注入那条路也真的跑得起来：agent/created 注册贡献，pre-step 原样返回别人的决定', async () => {

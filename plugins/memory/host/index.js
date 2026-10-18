@@ -60,6 +60,22 @@ import {
   userText,
 } from './policy.js';
 
+/**
+ * 注入块 / 工具输出 / 面板**共用同一套中文标签**。
+ *
+ * 三处各写一份是不得已：面板在 `ui/src/memory/memory.js`（Vue 侧）、注入块在壳的
+ * `src-tauri/src/memory/query.rs`（Rust 侧）、工具输出在这里（插件侧）——跨语言跨进程，
+ * 没有共享模块可放。所以**词表钉在判据里**（`test/assembly.test.mjs` 读三处源码比对），
+ * 不靠自觉：三处说三个词时，用户拿面板上的话解释不了模型看到的东西。
+ *
+ * 键是壳下发的**原始枚举**（`scope` / `verification` 字段），认不出的原样显示——
+ * 后端将来加一档时至少看得见，不会被静默说成「未知」。
+ */
+export const SCOPE_LABELS = { general: '通用偏好', project: '项目记忆' };
+export const VERIFICATION_LABELS = { verified: '已验证', unverified: '未验证', stale: '已过期' };
+const scopeLabel = (scope) => SCOPE_LABELS[scope] ?? String(scope ?? '');
+const verificationLabel = (value) => VERIFICATION_LABELS[value] ?? String(value ?? '');
+
 /** 与 `plugins/memory/package.json` 的 `name`、接线行 id 三者同值。 */
 const PACKAGE_ID = 'xlink-memory';
 const name = PACKAGE_ID;
@@ -714,7 +730,7 @@ function registerTools(ctx, credentials) {
                 : value.hits
                     .map(
                       (hit) =>
-                        `[${hit.id}] ${hit.title}（${hit.scope}，更新于 ${hit.updated_at}）\n${hit.body}` +
+                        `[${hit.id}] ${hit.title}（${scopeLabel(hit.scope)} · ${verificationLabel(hit.verification)}，更新于 ${hit.updated_at}）\n${hit.body}` +
                         (hit.truncated ? '\n…（本条正文被截断，需要全文用 memory_read 读）' : ''),
                     )
                     .join('\n\n')
@@ -788,7 +804,7 @@ function registerTools(ctx, credentials) {
         render: (_args, value) => [
           {
             type: 'text',
-            text: `${value.title}（${value.scope} · ${value.verification} · 更新于 ${value.updated_at}）\n\n${value.body}`,
+            text: `${value.title}（${scopeLabel(value.scope)} · ${verificationLabel(value.verification)} · 更新于 ${value.updated_at}）\n\n${value.body}`,
           },
         ],
       },
