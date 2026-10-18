@@ -5,9 +5,14 @@
 // 偏好文件时没法直接通知内核——所以 Host 盯着那只文件，stat 一变就 `replace`
 // 一次适配器注册，把这枚事件广播出去。
 //
-// 两条用例各管一半：① 通知本身（含节流合并、停机后不再通知）；② **接线**
-// ——`apply()` 真的用了壳传进来的那个 env 名。只验 ① 的话，把 env 名改错
-// （症状是「勾完要手动刷新页面」）照样全绿。
+// 两条用例各管一半：① 通知本身（含停机后不再通知）；② **接线**——`apply()`
+// 真的用了壳传进来的 env 名。只验 ① 的话，把 env 名改错（症状是「勾完要手动
+// 刷新页面」）照样全绿。
+//
+// **两条用例共用同一个等待策略，这不是巧合**：观察走 `fs.watchFile` 的 stat 轮询，
+// 回调要等事件循环腾出时间片才可能跑；满负载门禁里本进程被饿住是实测过的。哪条
+// 用例只写一次就干等短上限，哪条就还在把成败押在「事件循环什么时候醒」上。详见
+// `WATCH_TIMEOUT_MS` 与 `waitForNotify`。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -15,7 +20,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
-import { SELECTION_FILE_ENV, SELECTION_WATCH_INTERVAL_MS } from '../host/constants.js';
+import {
+  SELECTION_FILE_ENV,
+  SELECTION_WATCH_DEBOUNCE_MS,
+  SELECTION_WATCH_INTERVAL_MS,
+} from '../host/constants.js';
 import { stagePlugin } from './fixtures.mjs';
 
 /** 桩 peer 的暂存副本：`host/index.js` 静态 import `@deepseek-ai/dsh-llm`，
@@ -25,14 +34,49 @@ async function stagedHost(scratch) {
   return import(pathToFileURL(join(dir, 'host', 'index.js')));
 }
 
-/** 等到条件成立或超时（避免用固定 sleep 赌时序）。 */
-async function until(check, timeoutMs = 3000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (check()) return true;
-    await delay(20);
+/** 等一次变更通知的上限：2s 轮询 × 15 = 30s。**两条用例共用。**
+ *
+ *  这是**等待上限**，与传给 `watchSelectionFile` 的 `interval` 不是一回事：
+ *  `interval` 是 stat 轮询的节拍（单测压到毫秒级），上限管的是「最多等多久」。
+ *
+ *  为什么放大到 30s：满负载门禁下本进程的事件循环会被饿住，stat 轮询与本文件
+ *  自己的 `delay` 一起被推迟。本文件为此返工过两轮——6s 打满过一次，放大到 30s
+ *  后**又一次**耗光。而第一条用例当时还留着 3s 的旧上限没跟着改，2026-10-18 在 CI
+ *  上**又一次**打满（3026ms；同一份代码本地单跑只要 887ms，而紧邻的接线用例在
+ *  CI 上仍是 2428ms 绿——只有第一个用例卡在上限里）。
+ *
+ *  上限只影响**失败路径**的长度：观察真的坏了时再等多久都不会有通知，判据不会
+ *  因此变松。真正的免疫手段是 `waitForNotify` 的持续写入。
+ */
+const WATCH_TIMEOUT_MS = SELECTION_WATCH_INTERVAL_MS * 15;
+
+/**
+ * 等到 `check()` 成立为止；等不到就**一边等一边继续写**。
+ *
+ *  持续写入是唯一有效的免疫手段：stat 轮询被推迟多久都不要紧，事件循环一拿到
+ *  时间片，下一次轮询看到的就是刚刚写进去的状态。观察真的没装上、env 名或路径
+ *  真的接错时，写多少次都不会有通知——判据仍然是 `check()` 那一刻的读数。
+ *
+ * @param check 判据：读通知次数那一类副作用（`replaces`）
+ * @param write  等待期间反复落盘的动作；保持同一份内容即可（mtime 每次都在动）
+ */
+async function waitForNotify(check, write) {
+  const deadline = Date.now() + WATCH_TIMEOUT_MS;
+  while (!check() && Date.now() < deadline) {
+    await delay(400);
+    if (!check()) write();
   }
   return check();
+}
+
+/** 让上一拍的合并窗口彻底落定，再读计数。
+ *
+ *  合并窗口（150ms）里排队的 `replace` 会在**这条等待返回之后**才落到计数上。
+ *  不等它落定就取基准，第二段断言就可能数到上一次变更留下的尾巴，从而在「第二次
+ *  变更根本没被看见」时也判过。
+ */
+async function settleDebounce() {
+  await delay(SELECTION_WATCH_DEBOUNCE_MS + 80);
 }
 
 test('变更通知：偏好文件一改就 replace 一次，停机后不再通知', async () => {
@@ -49,12 +93,22 @@ test('变更通知：偏好文件一改就 replace 一次，停机后不再通�
   );
   assert.equal(typeof stop, 'function');
   try {
-    writeFileSync(file, '{"selected":["gpt-a"]}');
-    assert.ok(await until(() => replaces > 0), '写入偏好文件后必须通知一次');
+    const first = '{"selected":["gpt-a"]}';
+    writeFileSync(file, first);
+    assert.ok(
+      await waitForNotify(() => replaces > 0, () => writeFileSync(file, first)),
+      '写入偏好文件后必须通知一次',
+    );
+    await settleDebounce();
     const settled = replaces;
     // 再写一次（原子写的 stat 可能连跳两拍）：节流窗口把同一拍合并成一次。
-    writeFileSync(file, '{"selected":["gpt-a","gpt-b"]}');
-    assert.ok(await until(() => replaces > settled), '第二次变更也必须通知');
+    const second = '{"selected":["gpt-a","gpt-b"]}';
+    writeFileSync(file, second);
+    assert.ok(
+      await waitForNotify(() => replaces > settled, () => writeFileSync(file, second)),
+      '第二次变更也必须通知',
+    );
+    await settleDebounce();
     stop();
     const afterStop = replaces;
     writeFileSync(file, '{"selected":["gpt-c"]}');
@@ -66,19 +120,6 @@ test('变更通知：偏好文件一改就 replace 一次，停机后不再通�
     rmSync(scratch, { recursive: true, force: true });
   }
 });
-
-/** 接线判据的等待上限：2s 轮询 × 15。
- *
- *  为什么不是 ×3（6s）：判据要等的是「**第一次轮询**（`watchFile` 安装后 2s）看到变化 +
- *  150ms 合并窗口」——实测 2159ms 就够（基线 stat 在注册时取，本用例的写入紧跟其后）。
- *  但满负载门禁（clippy / vite / cargo 同时跑）下本进程的事件循环会被饿住，轮询与定时器
- *  一起被推迟，6s 只剩三个节拍的余量——2026-10-15 实测红过一次（6094ms 到期；同文件单跑
- *  与之后的全量门禁均绿），放大到 30s 后**又一次**在满负载下耗光（2026-10-15 晚些时候，
- *  该次全量门禁因它 exit 1，而同文件单跑 2.2s 就绿）。
- *  所以现在**两件事一起做**：上限仍留 30s，而用例在被饿住期间持续写入（见下），
- *  免得把成败押在事件循环什么时候醒。放大上限只影响**失败路径**的长度：「env 名或路径
- *  接错」时再等多久、再写多少次都不会有通知，判据不会因此变松。 */
-const WIRING_TIMEOUT_MS = SELECTION_WATCH_INTERVAL_MS * 15;
 
 test('接线：apply 读壳传进来的 env 名并观察那只文件', async () => {
   const scratch = mkdtempSync(join(tmpdir(), 'oauth-apply-'));
@@ -96,20 +137,10 @@ test('接线：apply 读壳传进来的 env 名并观察那只文件', async () 
   try {
     const { apply } = await import(pathToFileURL(join(pluginDir, 'host', 'index.js')));
     await apply(ctx, {});
-    // 满负载门禁下本进程的事件循环会被饿住（clippy / vite / cargo 同时跑）：2026-10-15
-    // 红过一次（6s 到期，放大到 30s 之后全绿），2026-10-15 晚些时候 30s 也被耗光过一次。
-    // 单纯继续放大上限是运气，不是修法——**在被饿住的这段时间里持续写入**才是：观察是按
-    // mtime/size 判的，事件循环一拿到时间片，下一次写入立刻被看见。判据仍然是
-    // 「到期前 replaces > 0」，接线真的接错时写多少次都不会有通知，它不会因此变松。
     const body = '{"selected":["gpt-a"]}';
-    const deadline = Date.now() + WIRING_TIMEOUT_MS;
     writeFileSync(file, body);
-    while (replaces === 0 && Date.now() < deadline) {
-      await delay(400);
-      if (replaces === 0) writeFileSync(file, body);
-    }
     assert.ok(
-      replaces > 0,
+      await waitForNotify(() => replaces > 0, () => writeFileSync(file, body)),
       'apply 必须在 env 指出的路径上起观察（env 名或路径接错时这里会超时）',
     );
   } finally {
