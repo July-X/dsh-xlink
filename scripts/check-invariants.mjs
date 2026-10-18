@@ -70,8 +70,15 @@ const readJson = (rel) => JSON.parse(read(rel));
 // 门禁脚本与 UI 测试共用这一份实现——两套解析器迟早只修得上一套。
 const shellSource = (fileName) => readFileSync(shellSourcePath(fileName), 'utf8');
 
-/** 相对路径的 basename：`kernel/lifecycle.rs` → `lifecycle.rs`。 */
-const baseName = (relPath) => relPath.split(sep).pop();
+/** 相对路径的 basename：`kernel/lifecycle.rs` → `lifecycle.rs`。
+ *
+ * **两种分隔符都要认。** `RUST_SOURCES` 这类列表在构造时被归一化成**正斜杠**
+ * （见该常量的注释），而 `walk()` 产出的路径在 Windows 上是反斜杠；只按
+ * `node:path` 的 `sep` 切分时，Windows 上正斜杠路径切不开、basename 变成整条
+ * 路径——`window-chrome` 的「`Theme::Dark` 只许出现在 `appearance.rs`」白名单
+ * 因此把策略出口自己误报成违规（2026-10-18 实机；CI 的 Linux 检出不复现）。
+ */
+const baseName = (relPath) => relPath.split(/[\\/]/).pop();
 
 /** `where` 形如 `kernel/lifecycle.rs:549`——问「是不是落在 baseName 这个模块里」。
  *
