@@ -85,7 +85,18 @@ pub struct Incident {
     /// 事故面板的「查看启动诊断」靠它跳到那条运行记录；运行记录的裁剪
     /// 也靠它做引用保护——删掉一条正被事故面板展示的记录，会让用户在
     /// 处置故障的路上点进一个空页面。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// **线上名是 `runId`**：前端（`store.js` / 事故面板 / 概览横幅）按
+    /// camelCase 读它，而本结构体刻意**不走 `rename_all`**——`last-incident.json`
+    /// 跨版本存活，其余字段的 snake_case 名字（`log_path` / `log_tail`）是既有
+    /// 落盘契约。`run_id` 只作为旧版文件的读入别名（改名不能把升级用户手上
+    /// 那份事故记录变成读不出来的坏文件）。
+    #[serde(
+        rename = "runId",
+        alias = "run_id",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub run_id: Option<String>,
 }
 /// 由注入的 Shell 探针发送的前端健康信号。命令层会在该结构被写入故
@@ -118,7 +129,10 @@ pub struct StartReport {
     /// **前端靠它确认「我拿到的是不是事件里那条」**（设计 §4.3 最后一条）。
     /// 没有它，前端只能靠「最近一条」去猜——两次启动挨得近时就会读到
     /// 上一条的时间线，而那份记录描述的是上一次的事。
-    #[serde(skip_serializing_if = "Option::is_none")]
+    ///
+    /// **线上名是 `runId`**（前端按 camelCase 读；本结构体不走 `rename_all`
+    /// 是因为 `Incident` 里那些字段另有落盘兼容约束，见上）。
+    #[serde(rename = "runId", skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
 }
 /// 防护模块启动子进程、重新接线以及回滚所需的一切信息。
@@ -1261,6 +1275,63 @@ mod tests {
             "没有异常时不该出现 warning 字段：{json}"
         );
     }
+
+    /// `run_id` 的线上名必须是 `runId`。
+    ///
+    /// 前端（`store.js` 的 `setLastRunId`、事故面板与概览横幅的「查看启动诊断」）
+    /// 一直按 camelCase 读它，而这两个结构体不走 `rename_all`——于是前端取到的
+    /// 恒是 `undefined`：设计 §4.3 的「按 id 拉记录」退化成「最近一条」，事故
+    /// 面板的入口永远不显示，横幅则把**另一次成功启动**的时间线当成这次事故
+    /// （2026-10-18 实机截图）。
+    ///
+    /// 改名只动这一个字段，并给 `Incident` 留 `run_id` 读入别名：旧版落盘的
+    /// `last-incident.json` 必须仍能读出来（它是跨版本存活的文件）。
+    #[test]
+    fn run_id_is_camel_case_on_the_wire_and_legacy_files_still_load() {
+        let report = StartReport {
+            port: 3090,
+            running: true,
+            safe_mode: false,
+            incident: None,
+            run_id: Some(String::from("run-current")),
+            warning: None,
+        };
+        let json = serde_json::to_value(&report).expect("序列化 StartReport");
+        assert_eq!(
+            json.get("runId").and_then(|value| value.as_str()),
+            Some("run-current")
+        );
+        assert!(json.get("run_id").is_none(), "线上名只能是 runId：{json}");
+
+        let incident = Incident {
+            run_id: Some(String::from("run-linked")),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&incident).expect("序列化 Incident");
+        assert_eq!(
+            json.get("runId").and_then(|value| value.as_str()),
+            Some("run-linked")
+        );
+        assert!(json.get("run_id").is_none(), "线上名只能是 runId：{json}");
+
+        // 旧版文件（snake_case）照旧读得动，其余字段的名字刻意不变。
+        let legacy = r#"{
+            "recovered": false,
+            "safe_mode": false,
+            "message": "旧事故",
+            "suspects": [],
+            "attempts": [],
+            "log_tail": "",
+            "log_path": "/tmp/kernel.log",
+            "at": 1,
+            "cause": "kernel-boot",
+            "run_id": "run-legacy"
+        }"#;
+        let loaded: Incident = serde_json::from_str(legacy).expect("旧文件必须仍能反序列化");
+        assert_eq!(loaded.run_id.as_deref(), Some("run-legacy"));
+        assert_eq!(loaded.log_path, "/tmp/kernel.log");
+    }
+
     fn store_item(id: &str, name: &str) -> plugins::center::StoreItem {
         plugins::center::StoreItem {
             id: id.to_string(),

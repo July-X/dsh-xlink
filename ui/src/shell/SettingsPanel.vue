@@ -103,7 +103,9 @@ async function onTestNotification() {
  * **非手动**的，不经过 `withLoading`，挂上去就是一个永远不转的 loading。
  */
 function openStartupRun() {
-  openStartupDiagnosis(store.lastIncident?.runId || '', 'settings');
+  // 按上面那条决定，这里**不塞**任何 id（包括事故关联的 runId）：这一行是
+  // 「最近一次启动过程」的通用入口，与某一桩事故无关。
+  openStartupDiagnosis('', 'settings');
 }
 </script>
 

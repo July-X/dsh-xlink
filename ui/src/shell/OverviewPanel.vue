@@ -86,7 +86,12 @@ import {
   CODEX_USAGE_CONSENT_TIP,
   providerLogo,
 } from '../subscription/subscription.js';
-import { incidentBannerTitle, incidentDestination, incidentDestinationLabel } from '../incidents/incidents.js';
+import {
+  incidentBannerTitle,
+  incidentDestination,
+  incidentDestinationLabel,
+  incidentRunId,
+} from '../incidents/incidents.js';
 import { openaiBuiltin, loadBuiltinStatus } from '../plugins/builtin.js';
 import { tildePath } from './labels.js';
 import { confirmDialog } from './notify.js';
@@ -323,9 +328,18 @@ function openIncidentDetails() {
   showIncident(store.lastIncident, { force: true });
 }
 
-/** 从启动失败横幅进启动诊断（设计 §2.5.1 的三个入口之一）。 */
+/**
+ * 从启动失败横幅进启动诊断（设计 §2.5.1 的三个入口之一）。
+ *
+ * **只在这桩事故关联着某次启动记录时显示**：运行期事故（页面自检上报）没有
+ * 对应记录，此时打开的是「最近一条启动」，那可能是另一次成功启动——事故
+ * 面板旁边摆一条 `成功` 的时间线，用户只会更困惑（2026-10-18 实机截图）。
+ */
+const linkedRunId = computed(() => incidentRunId(store.lastIncident));
 function openStartupRun() {
-  openStartupDiagnosis(store.lastIncident?.runId || '', 'overview');
+  const runId = linkedRunId.value;
+  if (!runId) return;
+  openStartupDiagnosis(runId, 'overview');
 }
 function goGuardDestination() {
   store.activePanel = guardDestination.value;
@@ -655,7 +669,7 @@ function goVersions() {
             <!-- 事故面板给的是「处置」——被停用了哪些插件、下一步做什么；
                  启动诊断给的是「过程」——停在哪一步、每个阶段耗时多少。
                  两者职责不同，不能用一个顶掉另一个（设计 §2.5.1 入口表）。 -->
-            <el-button size="small" text :icon="Tickets" @click="openStartupRun">
+            <el-button v-if="linkedRunId" size="small" text :icon="Tickets" @click="openStartupRun">
               查看启动诊断
             </el-button>
             <el-button size="small" text :icon="Connection" @click="goGuardDestination">

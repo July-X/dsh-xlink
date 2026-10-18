@@ -16,6 +16,7 @@ import {
   incidentDestinationLabel,
   incidentHealthSections,
   incidentHealthPlainText,
+  incidentRunId,
 } from './incidents.js';
 
 const incident = computed(() => store.incident);
@@ -25,6 +26,10 @@ const cause = computed(() => incidentCause(incident.value));
 const title = computed(() => incidentTitle(incident.value));
 
 const causeLabel = computed(() => incidentCauseLabel(incident.value));
+
+// 关联的启动运行记录。运行期事故没有——此时不显示「查看启动诊断」：
+// 按钮只能打开「最近一条启动」，那可能是另一次成功启动（2026-10-18 实机）。
+const runId = computed(() => incidentRunId(incident.value));
 
 // 底部「下一步」按钮的落点：插件问题由每个嫌疑对象自己的按钮处置，环境问题去
 // 设置页（端口 / 数据目录），其余去内核版本页。
@@ -75,7 +80,8 @@ function toggleEvidence(id) {
 
 /** 跳到那次启动的完整诊断记录（runId 由后端在写事故时一并落下）。 */
 function openStartupRun() {
-  openStartupDiagnosis(incident.value?.runId || '', store.activePanel);
+  if (!runId.value) return;
+  openStartupDiagnosis(runId.value, store.activePanel);
   close();
 }
 
@@ -111,7 +117,7 @@ async function resolveSuspect(id, action) {
         <!-- 事故与运行记录是同一次启动的两面：这里给时间线与证据索引，
              弹窗继续负责处置嫌疑插件。少了这个入口，用户看到「工作台异常」
              之后只能自己去找那份阶段记录。 -->
-        <el-button v-if="incident && incident.runId" text :icon="Tickets" @click="openStartupRun">
+        <el-button v-if="runId" text :icon="Tickets" @click="openStartupRun">
           查看启动诊断
         </el-button>
         <!-- `showLogs()` 带括号：裸写 `showLogs` 是方法引用，Vue 会把 MouseEvent

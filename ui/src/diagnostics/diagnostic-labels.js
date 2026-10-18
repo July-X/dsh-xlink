@@ -162,17 +162,57 @@ export const STAGE_SEQUENCES = {
 };
 
 /**
+ * 「启动时内核已在运行」的幂等路径：不派生内核、不等待端口、不备接线，
+ * 只在最后补一条「本次未重复启动」。
+ *
+ * 它与**全新启动**是两条长度不同的路径。拿同一条 8 阶段序列当分母，
+ * 每一次正常启动都会显示「完成 7 / 8」——而那条记录其实是 `success`
+ * （2026-10-18 实机截图：用户把 7/8 读成了「有一阶段没起来」）。
+ */
+const STARTUP_STAGES_ALREADY_RUNNING = [
+  'resolve-instance',
+  'detect-node',
+  'resolve-pnpm',
+  'health-check',
+  'record-startup-ok',
+];
+
+/**
+ * 这次启动实际应当经过的阶段。
+ *
+ * `health-check` 在序列里是**条件阶段**：全新启动不会走它，它只出现在
+ * 「启动时内核已在运行」（`WatchPhase::AlreadyRunning`），以及派生之后
+ * 撞上环境类失败的那次重试里。所以：
+ *
+ * - 没派生内核却有 `health-check` ⇒ 幂等启动，按 5 个阶段算；
+ * - 其余情况按 7 个阶段算（`health-check` 真出现了才把它加回分母——那说明
+ *   这条时间线上确实走到了它，失败计数会单独标出来）。
+ */
+function startupStageSequence(seen) {
+  const hasHealthCheck = seen.has('health-check');
+  if (hasHealthCheck && !seen.has('spawn-kernel')) return STARTUP_STAGES_ALREADY_RUNNING;
+  return hasHealthCheck
+    ? STAGE_SEQUENCES.startup
+    : STAGE_SEQUENCES.startup.filter((stage) => stage !== 'health-check');
+}
+
+/**
  * 阶段进度。
  *
  * `done` 只数**真正走到过**的阶段（出现过任一事件即算），`failed` 单列出来
  * ——把失败也算进「完成」会让「完成 6 / 6」与一个失败结论同时出现。
  * 未知 kind 退回按事件里出现过的 distinct stage 统计，`total` 为实际发生
  * 过的数量：不知道序列时不编一个分母。
+ *
+ * **startup 的分母按本次实际路径算**（全新启动 7 个 / 幂等启动 5 个，见
+ * [`startupStageSequence`]），不再固定 8——否则每一次正常启动都显示「7 / 8」。
  */
 export function stageProgress(kind, events) {
   const list = Array.isArray(events) ? events : [];
   const seen = new Set(list.map((event) => String(event?.stage ?? '')));
-  const sequence = STAGE_SEQUENCES[kind];
+  // 启动的两条路径长度不同（见 `startupStageSequence`），分母必须按本次
+  // 实际走的那条算；其余 kind 的序列是固定的。
+  const sequence = kind === 'startup' ? startupStageSequence(seen) : STAGE_SEQUENCES[kind];
   if (!sequence) {
     return { total: seen.size, done: seen.size, failed: 0, running: 0, pending: 0 };
   }
