@@ -105,6 +105,20 @@ fn auth_path_from(
     Ok(root.join("auth.json"))
 }
 
+/// 官网网页版窗口要不要多挂一个 ChatGPT 页签。
+///
+/// 判据与额度查询**同源**（`enabled() && active_usage()` 成立），这是刻意的：
+/// 本模块唯一被允许读取本机 `auth.json` 的前提就是用户显式开启许可，而
+/// 「能不能拿到 Codex 的信息」只有一个诚实答案——那一次只读校验的结果。
+/// 另起一套判据（例如只看文件存在、或只看壳里的 OpenAI 登录态）会要么绕过
+/// 许可去读凭据、要么把「登录了但本机 Codex 不可用」也报成可用。
+///
+/// 与额度查询的区别只有一处：**不发网络请求**。这里只做本机只读校验，拿到
+/// 的是「有可用的 Codex 登录」这个事实本身，凭据不离开本函数。
+pub(crate) fn chatgpt_web_available() -> bool {
+    enabled().unwrap_or(false) && matches!(active_usage(), Ok(Some(_)))
+}
+
 pub(crate) fn active_usage() -> Result<Option<OpenAiUsage>, String> {
     let account = subscription_openai::active_account()?
         .ok_or_else(|| "请先在本壳登录 OpenAI，才能校验 Codex 登录是否为同一账号".to_string())?;
@@ -409,6 +423,43 @@ mod tests {
         assert!(!enabled().unwrap());
         std::fs::write(consent_path(), "invalid-consent").unwrap();
         assert!(enabled().is_err(), "损坏许可必须拒绝，而非默认为已同意");
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// 官网网页版的 ChatGPT 页签判据在**拿不到许可**时必须一律为假。
+    ///
+    /// 三条都走 fail-closed：许可默认关、许可开但本机 Codex 不可用、许可
+    /// 文件损坏。第三条尤其关键——`enabled()` 读坏了会返回 `Err`，若这里
+    /// 写成「`enabled()` 不为假就算许可」，损坏的许可就会变成「已同意」，
+    /// 于是 ChatGPT 页签在用户从未授权时出现。
+    ///
+    /// 真分支（许可已开 + 本机 Codex 校验通过）在这里造不出来：它要求一个
+    /// 与本壳 OpenAI 账号**同号**的 `auth.json`，而那半边是加密 vault +
+    /// 系统钥匙串——`openai::vault` 明令测试不许碰。这条判据的真分支由
+    /// `parse_auth` 的用例（证明 `active_usage` 能成立）与本用例（证明两个
+    /// 合取项各自为假时整体为假）共同覆盖。
+    #[test]
+    fn chatgpt_tab_gate_is_false_while_consent_is_missing_or_codex_unusable() {
+        let home = std::env::temp_dir().join(format!(
+            "codex-chatgpt-gate-{}-{}",
+            std::process::id(),
+            crate::shell::process::epoch_millis()
+        ));
+        let _guard = crate::tests::scoped_xlink_home(&home);
+
+        // 许可默认关：即使用户本机确实登录过 Codex，也不该出现 ChatGPT 页签。
+        assert!(!enabled().unwrap());
+        assert!(!chatgpt_web_available());
+
+        // 许可开、但本机 Codex 登录读不出来（临时 home 下没有任何账号）。
+        save_enabled(true).unwrap();
+        assert!(!chatgpt_web_available());
+
+        // 许可文件损坏：按「未授权」处理，绝不按「已同意」。
+        std::fs::write(consent_path(), "invalid-consent").unwrap();
+        assert!(enabled().is_err());
+        assert!(!chatgpt_web_available());
+
         std::fs::remove_dir_all(&home).unwrap();
     }
 }

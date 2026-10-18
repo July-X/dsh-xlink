@@ -6,9 +6,9 @@
 
 use crate::harness::official_chat::{
     current_official_chat_layout, logical_window_size, official_chat_initial_size,
-    official_chat_layout, official_chat_layout_plausible, should_relayout_official_chat,
-    OfficialChatLayout, OFFICIAL_CHAT_BROWSER_ARGS, OFFICIAL_CHAT_INITIAL_HEIGHT,
-    OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_STRIP_LABEL, OFFICIAL_CHAT_TABS,
+    official_chat_layout, official_chat_layout_plausible, resolved_tabs,
+    should_relayout_official_chat, OfficialChatLayout, OFFICIAL_CHAT_BROWSER_ARGS,
+    OFFICIAL_CHAT_INITIAL_HEIGHT, OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_STRIP_LABEL,
     OFFICIAL_CHAT_WINDOW_LABEL,
 };
 // 这个常量只在 macOS 上有定义（WKWebView 的 data store 标识符），而唯一
@@ -62,6 +62,16 @@ pub struct AppState {
     pub harness_url: Mutex<Option<String>>,
     /// 工作台 webview 的加载观测量，看门狗逻辑见 [`crate::harness::harness_window`]。
     pub harness_page: Mutex<harness_window::HarnessPage>,
+    /// 官网网页版窗口**这一次生命周期内**的页签表快照，取值见
+    /// [`official_chat::resolved_tabs`]。
+    ///
+    /// 为什么是快照而不是每次现算：页签下标就是内容 webview 的 label
+    /// （`official-chat-tab-<index>`），而条件页签的判据读的是会自己轮换的
+    /// Codex 令牌。若条带渲染、内容 webview 建址与 relayout 各自现算，三者
+    /// 可能落在不同的一份名单上——切到某个下标会加载出另一个站点。建窗时
+    /// 求值一次、整轮复用，名单在窗口生命周期内就不会漂。窗口销毁时清空，
+    /// 下次开窗按当时的登录态重新求值。
+    pub official_chat_tabs: Mutex<Vec<(&'static str, &'static str)>>,
 }
 
 /// 管理面板首次渲染所需的全部信息。
@@ -1607,14 +1617,46 @@ fn official_chat_mutation_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// 取官网网页版窗口这一轮的页签表快照，首次调用时求值。
+///
+/// **所有读页签表的点都必须走这里**，不许直接碰 `OFFICIAL_CHAT_TABS` 或
+/// `resolved_tabs`：条带渲染（`official_chat_tabs`）、内容 webview 建址
+/// （`add_official_chat_tab`）、切换（`switch_official_chat_tab_blocking`）
+/// 与 relayout 读到的必须是同一份名单，否则同一个下标会解析到不同的站点。
+fn current_official_chat_tabs(app: &AppHandle) -> Vec<(&'static str, &'static str)> {
+    // `State` 先绑到局部变量再取字段：直接写 `app.state::<AppState>().field`
+    // 会让锁借用挂在临时值上。
+    let state = app.state::<AppState>();
+    let mut guard = state
+        .official_chat_tabs
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.is_empty() {
+        *guard = resolved_tabs(crate::usage::subscription_codex::chatgpt_web_available());
+    }
+    guard.clone()
+}
+
+/// 重新求值页签表快照。开窗时调用一次；系统关闭按钮拆掉窗口时不需要
+/// 清空——下次开窗会覆盖它，而空表本来就等价于「下次重新求值」。
+fn refresh_official_chat_tabs(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let mut guard = state
+        .official_chat_tabs
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = resolved_tabs(crate::usage::subscription_codex::chatgpt_web_available());
+}
+
 fn add_official_chat_tab(
     window: &tauri::Window,
     index: usize,
     layout: OfficialChatLayout,
     profile_dir: &Path,
+    tabs: &[(&'static str, &'static str)],
 ) -> Result<(), String> {
     use crate::shell::window::CHROME_BACKDROP;
-    let (_, url_text) = OFFICIAL_CHAT_TABS
+    let (_, url_text) = tabs
         .get(index)
         .ok_or_else(|| format!("官网网页版页签不存在：{index}"))?;
     let label = format!("official-chat-tab-{index}");
@@ -1647,6 +1689,7 @@ fn ensure_official_chat_tab(
     index: usize,
     profile_dir: &Path,
     layout: OfficialChatLayout,
+    tabs: &[(&'static str, &'static str)],
 ) -> Result<(), String> {
     let window = app
         .get_window(OFFICIAL_CHAT_WINDOW_LABEL)
@@ -1658,6 +1701,9 @@ fn ensure_official_chat_tab(
         return Ok(());
     }
     let profile_dir = profile_dir.to_path_buf();
+    // 闭包要 move 进 `thread::spawn`，因此必须是 `'static`。页签表以引用
+    // 传入（调用方持锁期间借出的快照），这里转成拥有所有权的 Vec 再带走。
+    let tabs = tabs.to_vec();
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("dsh-create-official-chat-tab".into())
@@ -1665,7 +1711,7 @@ fn ensure_official_chat_tab(
             let result = (|| {
                 fs::create_dir_all(&profile_dir)
                     .map_err(|e| format!("无法创建官网网页版数据目录：{e}"))?;
-                add_official_chat_tab(&window, index, layout, &profile_dir)
+                add_official_chat_tab(&window, index, layout, &profile_dir, &tabs)
             })();
             let _ = tx.send(result);
         })
@@ -1733,6 +1779,19 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                 };
                 fs::create_dir_all(&profile_dir)
                     .map_err(|e| format!("无法创建官网网页版数据目录：{e}"))?;
+                // 页签表在**建窗这一刻**求值一次并快照：本机 Codex 登录可用时
+                // 追加 ChatGPT 页签。整轮复用同一份，条件页签的出现与消失
+                // 不会让已经挂载的内容 webview 与条带对不上号。
+                refresh_official_chat_tabs(&handle);
+                let tabs = current_official_chat_tabs(&handle);
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "dsh-xlink: official-chat tabs {}",
+                    tabs.iter()
+                        .map(|(title, _)| *title)
+                        .collect::<Vec<_>>()
+                        .join(" / ")
+                );
                 use crate::shell::window::{window_title, CHROME_BACKDROP};
                 let window = {
                     let builder = WindowBuilder::new(&handle, OFFICIAL_CHAT_WINDOW_LABEL)
@@ -1796,7 +1855,7 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                 // switch_official_chat_tab 按需挂载；一旦挂载，它们保
                 // 持同一份持久 profile，并在该窗口的生命周期内一直挂
                 // 着。
-                add_official_chat_tab(&window, 0, layout, &profile_dir)?;
+                add_official_chat_tab(&window, 0, layout, &profile_dir, &tabs)?;
 
                 // 页签栏：本地 SPA 路由渲染页签栏并保留 `window.__TAURI__`，使其能
                 // 调用页签命令。拉绳小台灯也由这个 38px 高的 WebView 渲
@@ -1896,7 +1955,10 @@ fn relayout_official_chat(app: &AppHandle) {
             size: LogicalSize::new(layout.width, layout.strip_height).into(),
         });
     }
-    for (i, _) in OFFICIAL_CHAT_TABS.iter().enumerate() {
+    // 与建址、切换读同一份快照：条件页签中途出现时，已经挂载的内容 webview
+    // 不会因为这一轮多读出一个下标而漏掉 relayout。
+    let tabs = current_official_chat_tabs(app);
+    for (i, _) in tabs.iter().enumerate() {
         if let Some(wv) = app.get_webview(&format!("official-chat-tab-{i}")) {
             let _ = wv.set_bounds(Rect {
                 position: LogicalPosition::new(0.0, layout.content_y).into(),
@@ -1913,18 +1975,20 @@ pub struct OfficialChatTab {
     pub title: String,
 }
 
-/// 返回 strip webview 渲染所用的固定页签列表。只读：strip 在挂载时调
-/// 用它，页签点击时再调 [`switch_official_chat_tab`]。这里被定义为
-/// 一条命令（而不是一份需要被 SPA 复制的编译期常量），使页签列表只
-/// 存在一处。
+/// 返回 strip webview 渲染所用的页签列表。只读：strip 在挂载时调用
+/// 它，页签点击时再调 [`switch_official_chat_tab`]。这里被定义为一条命
+/// 令（而不是一份需要被 SPA 复制的编译期常量），使页签列表只存在一处。
+///
+/// 列表里可能含一条按登录状态追加的条件页签（本机 Codex 登录可用时的
+/// ChatGPT），取值走窗口生命周期内的那份快照。
 #[tauri::command]
-pub fn official_chat_tabs() -> Vec<OfficialChatTab> {
-    OFFICIAL_CHAT_TABS
-        .iter()
+pub fn official_chat_tabs(app: AppHandle) -> Vec<OfficialChatTab> {
+    current_official_chat_tabs(&app)
+        .into_iter()
         .enumerate()
         .map(|(index, (title, _))| OfficialChatTab {
             index,
-            title: (*title).to_string(),
+            title: title.to_string(),
         })
         .collect()
 }
@@ -1940,7 +2004,8 @@ pub async fn switch_official_chat_tab(app: AppHandle, index: usize) -> Result<()
 }
 
 fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<(), String> {
-    if index >= OFFICIAL_CHAT_TABS.len() {
+    let tabs = current_official_chat_tabs(&app);
+    if index >= tabs.len() {
         return Err(format!("官网网页版页签不存在：{index}"));
     }
     let _mutation_guard = official_chat_mutation_lock()
@@ -1956,10 +2021,10 @@ fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<(),
             state.data_dir.join("webview-official-chat")
         };
         let layout = current_official_chat_layout(&window);
-        ensure_official_chat_tab(&app, index, &profile_dir, layout)?;
+        ensure_official_chat_tab(&app, index, &profile_dir, layout, &tabs)?;
     }
 
-    for (i, _) in OFFICIAL_CHAT_TABS.iter().enumerate() {
+    for (i, _) in tabs.iter().enumerate() {
         if let Some(wv) = app.get_webview(&format!("official-chat-tab-{i}")) {
             if i == index {
                 let _ = wv.show();

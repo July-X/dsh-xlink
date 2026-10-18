@@ -2389,14 +2389,32 @@ if (ungatedOsImports.length > 0) {
 //
 // 2026-10-07 用户要求移除千问页签时，这三份名单（Rust 页签表、前端兜底页签表、
 // 这份 host 名单）都必须同步——少改任何一份都留不一致。
+//
+// 2026-10-18 引入**条件页签**（本机 Codex 登录可用时追加的 ChatGPT）后，这份
+// 比对扩成四份事实：两张 Rust 页签表（`OFFICIAL_CHAT_TABS` 恒定 +
+// `OFFICIAL_CHAT_OPTIONAL_TABS` 按登录态追加）、`titlebar-pulse.js` 的 host
+// 名单、前端兜底表。分寸是刻意分开的：host 名单比对**两张表的并集**（条件页签
+// 出现时顶条也该是官网蓝），而前端兜底表**只要求固定页签**——兜底存在的场景
+// 正是问不到后端，此时无从判断登录态，硬画一个条件页签等于绕过判据。
 
 {
   const tabsSrc = read('src-tauri/src/harness/official_chat.rs');
+  // 两张表都要找：**条件页签表找不到时判据必须红**，而不是当成空名单放过
+  // ——那正是「判据空转」最典型的形态（锚点没匹配上却一路绿到底）。
   const tabBlock = tabsSrc.match(/OFFICIAL_CHAT_TABS: &\[\(&str, &str\)\] = &\[([\s\S]*?)\];/);
+  const optionalBlock = tabsSrc.match(
+    /OFFICIAL_CHAT_OPTIONAL_TABS: &\[\(&str, &str\)\] = &\[([\s\S]*?)\];/
+  );
   if (!tabBlock) {
     fail('official-chat-tabs', 'official_chat.rs 里找不到 OFFICIAL_CHAT_TABS，判据失效');
+  } else if (!optionalBlock) {
+    fail(
+      'official-chat-tabs',
+      'official_chat.rs 里找不到 OFFICIAL_CHAT_OPTIONAL_TABS（条件页签表），判据失效'
+    );
   } else {
     const tabBody = tabBlock[1];
+    const optionalBody = optionalBlock[1];
     // 名单里写的是常量名（OFFICIAL_CHAT_URL / OFFICIAL_CHAT_MINIMAX_URL），
     // 真正的地址定义在文件上方，按 `pub const X: &str = "url"` 展开。
     const urls = new Map(
@@ -2405,11 +2423,19 @@ if (ungatedOsImports.length > 0) {
         new URL(m[2]).hostname,
       ])
     );
-    const tabHosts = [...tabBody.matchAll(/OFFICIAL_CHAT_(\w+)/g)].map((m) => {
+    const tabHostsFixed = [...tabBody.matchAll(/OFFICIAL_CHAT_(\w+)/g)].map((m) => {
       const host = urls.get(`OFFICIAL_CHAT_${m[1]}`);
       if (!host) fail('official-chat-tabs', `OFFICIAL_CHAT_TABS 里的 ${m[1]} 在本文件找不到对应的地址常量`);
       return host;
     });
+    const optionalHosts = [...optionalBody.matchAll(/OFFICIAL_CHAT_(\w+)/g)].map((m) => {
+      const host = urls.get(`OFFICIAL_CHAT_${m[1]}`);
+      if (!host) fail('official-chat-tabs', `条件页签表里的 ${m[1]} 在本文件找不到对应的地址常量`);
+      return host;
+    });
+    // 品牌条带认的是**两张表的并集**：条件页签出现时同样是官网页签，顶条
+    // 变绿会看起来像串了页。反向也成立——名单里多出来的 host 是死条目。
+    const tabHosts = [...new Set([...tabHostsFixed, ...optionalHosts])];
     const js = read('src-tauri/src/harness/titlebar-pulse.js');
     const list = js.match(/OFFICIAL_HOSTNAMES = \[([^\]]*)\]/);
     const scriptHosts = list
@@ -2426,15 +2452,67 @@ if (ungatedOsImports.length > 0) {
           fail('official-chat-tabs', `titlebar-pulse.js 的 OFFICIAL_HOSTNAMES 里有 ${host}，但页签表里已经没有它了——名单是死的`);
         }
       }
-      // 前端那条紧急渲染路径（IPC 不可用时的兜底）也得跟着页签表走。
+      // 条件页签表还必须真的被接线读到：表非空、而 `resolved_tabs` 不引用
+      // 它的话，ChatGPT 页签永远不会被追加，这张表就成了摆设。
+      if (optionalHosts.filter(Boolean).length > 0) {
+        const resolver = tabsSrc.match(/pub\(crate\) fn resolved_tabs\([\s\S]*?\n\}/);
+        if (!resolver || !resolver[0].includes('OFFICIAL_CHAT_OPTIONAL_TABS')) {
+          fail(
+            'official-chat-tabs',
+            '条件页签表非空，但 resolved_tabs 没有引用 OFFICIAL_CHAT_OPTIONAL_TABS——条件页签永远不会被追加'
+          );
+        }
+      }
+      // **ACL 这一半最容易被漏掉**：内容 webview 的 origin 必须在
+      // `capabilities/official-chat-remote.json` 的 remote.urls 里显式授过。
+      // 漏了不会编译失败、build 也全绿，真机上是 Tauri 的 ACL 直接拒掉那个
+      // webview 的一切 invoke，而页面自己的 `.catch` 把错误吞掉——症状是
+      // 「页签点得开、里面一片空白」，没有任何线索。只查这一个方向：多出来的
+      // origin 只是无用的 ACL 面，漏掉的 origin 才是静默故障。
+      const remoteFile = join(root, 'src-tauri', 'capabilities', 'official-chat-remote.json');
+      if (existsSync(remoteFile)) {
+        const granted = new Set(
+          (JSON.parse(readFileSync(remoteFile, 'utf8')).remote?.urls ?? []).map((entry) => {
+            try {
+              return new URL(entry).hostname;
+            } catch {
+              return null;
+            }
+          })
+        );
+        for (const host of tabHosts) {
+          if (host && !granted.has(host)) {
+            fail(
+              'official-chat-tabs',
+              `页签 ${host} 不在 capabilities/official-chat-remote.json 的 remote.urls 里——` +
+                '该内容 webview 会被 Tauri 的 ACL 静默拒绝，表现为页签点开一片空白'
+            );
+          }
+        }
+      } else {
+        fail('official-chat-tabs', '找不到 capabilities/official-chat-remote.json，判据失效');
+      }
+      // 前端那条紧急渲染路径（IPC 不可用时的兜底）也得跟着**固定**页签表走。
+      // 条件页签刻意不要求出现在兜底表里：兜底存在的场景正是「问不到后端」，
+      // 此时无从判断 Codex 是否可用，硬画一个页签会绕过登录态判据。
       const fallback = read('ui/src/official-chat/officialChatTabs.js');
       const titles = [...tabBody.matchAll(/\("([^"]+)",\s*OFFICIAL_CHAT_/g)].map((m) => m[1]);
       const missing = titles.filter((t) => !fallback.includes(`title: '${t}'`));
       if (missing.length > 0) {
         fail('official-chat-tabs', `前端兜底页签表缺 ${missing.join(' / ')}——IPC 不可用时页签栏会与后端不一致`);
       }
+      const optionalTitles = [...optionalBody.matchAll(/\("([^"]+)",\s*OFFICIAL_CHAT_/g)].map((m) => m[1]);
+      const leaked = optionalTitles.filter((t) => fallback.includes(`title: '${t}'`));
+      if (leaked.length > 0) {
+        fail(
+          'official-chat-tabs',
+          `前端兜底页签表不该包含条件页签 ${leaked.join(' / ')}——兜底路径问不到后端，画出来等于绕过登录态判据`
+        );
+      }
       if (!missing.length && tabHosts.length > 0) {
-        note(`${titles.length} 个官网页签在 Rust / 品牌条带名单 / 前端兜底表三处一致`);
+        note(
+          `${titles.length} 个固定页签 + ${optionalTitles.length} 个条件页签在 Rust 页签表 / 品牌条带名单 / 前端兜底表三处一致`
+        );
       }
     }
   }

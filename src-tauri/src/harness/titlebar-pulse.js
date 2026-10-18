@@ -16,11 +16,14 @@
   }
 
   var STYLE_ID = "dsh-titlebar-pulse";
-  // 必须与 `official_chat::OFFICIAL_CHAT_TABS` 的 host 一一对应：这份名单决定
-  // 走官网蓝还是工作台绿。增删页签时漏改这里不会编译失败、也不会有测试报红
-  // （`titlebar-pulse.test.mjs` 只跑 127.0.0.1 那条非官网路），症状是新页签
-  // 顶条悄悄变成工作台的绿。由 `check-invariants` 第 20 项机械比对。
-  var OFFICIAL_HOSTNAMES = ["chat.deepseek.com", "agent.minimaxi.com"];
+  // 必须与 `official_chat::OFFICIAL_CHAT_TABS` **与**
+  // `official_chat::OFFICIAL_CHAT_OPTIONAL_TABS` 的 host 合并后一一对应：
+  // 这份名单决定走官网蓝还是工作台绿。条件页签（ChatGPT）同样要在这里——
+  // 它出现时也是官网页签，顶条变绿会看起来像串了页。增删页签时漏改这里不会
+  // 编译失败、也不会有测试报红（`titlebar-pulse.test.mjs` 只跑 127.0.0.1 那条
+  // 非官网路），症状是新页签顶条悄悄变成工作台的绿。由 `check-invariants`
+  // 第 20 项机械比对。
+  var OFFICIAL_HOSTNAMES = ["chat.deepseek.com", "agent.minimaxi.com", "chatgpt.com"];
   var isOfficial = OFFICIAL_HOSTNAMES.indexOf(window.location.hostname) !== -1;
   var PALETTE = isOfficial
     ? {
