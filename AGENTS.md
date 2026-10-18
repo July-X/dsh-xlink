@@ -92,7 +92,7 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 
 ### 通用约定
 
-- **Codex 额度来源是显式许可，不是模型登录的一部分**：Rust 的 `usage/subscription_codex.rs` 只在用户开启后读取本机 Codex 登录文件，账号不一致、过期或身份无法确认时拒绝；不得刷新、修改或复制凭据。许可按壳模式隔离。前端共用 `CodexUsageConsent.vue`，事件 `codex-usage-consent-changed` 同步开关；来源切换必须清掉旧额度，界面标明「Codex 额度」，不能称作 SIWC 应用用量。这是一条跨前后端契约。
+- **Codex 额度来源是显式许可，不是模型登录的一部分**：Rust 的 `usage/subscription_codex.rs` 只在用户开启后读取本机 Codex 登录文件，账号不一致、过期或身份无法确认时拒绝；不得刷新、修改或复制凭据。许可按壳模式隔离。前端共用 `CodexUsageConsent.vue`，事件 `codex-usage-consent-changed` 同步开关；来源切换必须清掉旧额度，界面标明「Codex 额度」，不能称作 SIWC 应用用量。这是一条跨前后端契约。**读本机 Codex 登录的每个新消费方都走同一个判据**：`subscription_codex::chatgpt_web_available()`（`enabled() && active_usage()` 同时成立），新增消费方引这个函数，不要自己拼一遍判据——那正是「绕开显式许可」的形状。官网网页版的 ChatGPT 条件页签（`harness/official_chat.rs` 的 `OFFICIAL_CHAT_OPTIONAL_TABS`）是它的第一个消费方，页签表在开窗那一刻求值一次并快照进 `AppState::official_chat_tabs`，因为下标就是内容 webview 的 label 后缀、而 Codex 令牌会自行轮换。
 
 - 长任务失败时进度面板保持开放，由用户手动关闭；完整原始输出始终落盘，报错信息引用日志路径。
 - **按职责主动拆分，优先复用已有代码**：新增逻辑前先检查现有组件、store、服务与共享层。一个模块出现多个独立变化原因、可单独测试的职责，或跨模块相同语义的重复逻辑时，应在本次改动内做必要拆分或提取共享实现，并保持接口稳定。紧密协作、同一职责的代码可保留在一起；没有真实复用场景时不预建抽象。不设文件行数、全仓行数或新文件登记预算，历史注释里的旧行数账本也不再作为约束，不为凑行数压缩排版、强拆组件或扩大任务范围。评审需说明拆分与复用的理由，并验证受影响的调用方、测试和文档；重复代码检测保留，产物体积预算另行执行。

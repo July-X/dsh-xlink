@@ -49,14 +49,45 @@ pub const OFFICIAL_CHAT_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdf
 /// 第二个官方对话页签：MiniMax agent。
 pub const OFFICIAL_CHAT_MINIMAX_URL: &str = "https://agent.minimaxi.com";
 
-/// 官网网页版窗口页签栏中按展示顺序排列的固定页签。第一个条目是打开时
-/// 默认激活的页签。增加一行即可增加一个页签——strip webview 在运行
-/// 时通过 `commands::official_chat_tabs` 发现这份列表，而内容 webview
-/// 是在被选中时才惰性创建的，所以初次打开时不会加载任何其它站点。
+/// 条件页签的地址：本机 Codex 登录可用时追加的 ChatGPT 网页版。
+///
+/// 放在末尾而不是插在中间，与 `subscription.rs` 的 `PROVIDER_ORDER` 同一
+/// 条纪律（新增项追加、不重排既有项）：页签下标就是内容 webview 的 label
+/// 数字后缀，插在中间会让已经挂载的 webview 与新名单错位。
+pub const OFFICIAL_CHAT_CHATGPT_URL: &str = "https://chatgpt.com";
+
+/// 官网网页版窗口页签栏中**恒定存在**的页签，按展示顺序排列。第一个条目
+/// 是打开时默认激活的页签。strip webview 在运行时通过
+/// `commands::official_chat_tabs` 发现这份列表，而内容 webview 是在被选中
+/// 时惰性创建的，所以初次打开时不会加载任何其它站点。
 pub const OFFICIAL_CHAT_TABS: &[(&str, &str)] = &[
     ("DeepSeek", OFFICIAL_CHAT_URL),
     ("MiniMax", OFFICIAL_CHAT_MINIMAX_URL),
 ];
+
+/// **按登录状态追加**在固定页签之后的条件页签。
+///
+/// 与 [`OFFICIAL_CHAT_TABS`] 分开而不是合进一张表，是因为判据在运行期才成立
+/// （见 [`crate::usage::subscription_codex::chatgpt_web_available`]）：Codex 的
+/// 访问令牌会自己轮换，`active_usage()` 认的是 `exp`，于是同一次运行里
+/// 「页签在不在」可能翻转。页签表因此在**窗口打开那一刻求值一次**并快照，
+/// 由 `AppState::official_chat_tabs` 持有——快照之外的每一次读取都拿同一份
+/// 名单，条带渲染、内容 webview 的 label、relayout 的循环才不会各读各的。
+///
+/// 判据为真的那些条目按本表顺序追加在末尾。
+pub const OFFICIAL_CHAT_OPTIONAL_TABS: &[(&str, &str)] = &[("ChatGPT", OFFICIAL_CHAT_CHATGPT_URL)];
+
+/// 求值出这一轮真正要挂的页签表：固定页签 + 命中的条件页签。
+///
+/// 纯函数（判据以参数传入），所以「条件页签只追加在末尾、既有下标不动」
+/// 这条性质能被单测钉住，而不必真去读一遍凭据。
+pub(crate) fn resolved_tabs(chatgpt_available: bool) -> Vec<(&'static str, &'static str)> {
+    let mut tabs: Vec<(&'static str, &'static str)> = OFFICIAL_CHAT_TABS.to_vec();
+    if chatgpt_available {
+        tabs.extend_from_slice(OFFICIAL_CHAT_OPTIONAL_TABS);
+    }
+    tabs
+}
 
 /// 裸窗口的 label。一个 `Window`（不是 `WebviewWindow`）承载 strip 加
 /// 每个页签对应的一个子 `Webview`；关窗时它们会一并被拆解。
@@ -225,7 +256,8 @@ mod tests {
     #[test]
     fn every_official_chat_tab_uses_the_same_content_region() {
         let layout = official_chat_layout(1366.0, 768.0);
-        let regions: Vec<_> = OFFICIAL_CHAT_TABS
+        // 条件页签一并纳入：它同样是内容 webview，同样要占满 strip 下方。
+        let regions: Vec<_> = resolved_tabs(true)
             .iter()
             .map(|_| (layout.width, layout.content_y, layout.content_height))
             .collect();
@@ -237,6 +269,51 @@ mod tests {
             "页签表不能为空，否则下面那条「所有页签内容区相同」会在空列表上白过"
         );
         assert!(regions.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    /// 条件页签只允许**追加在末尾**。页签下标就是内容 webview 的 label
+    /// （`official-chat-tab-<index>`），插在中间会让本次运行里已经挂载的
+    /// webview 与名单错位——切到新下标会加载出另一个站点。
+    #[test]
+    fn conditional_tabs_are_appended_without_moving_existing_indices() {
+        let base = resolved_tabs(false);
+        let with_chatgpt = resolved_tabs(true);
+
+        // 判据为假时必须恰好是固定页签，一条不多。
+        assert_eq!(base, OFFICIAL_CHAT_TABS.to_vec());
+        // 判据为真却没有追加任何条件页签 = 条件页签表与接线脱钩。
+        assert!(with_chatgpt.len() > base.len());
+        // 条件页签插到了中间或重排了既有页签：既有下标会指向别的站点。
+        assert_eq!(&with_chatgpt[..base.len()], &base[..]);
+        // 追加段必须原样是条件页签表。
+        assert_eq!(
+            with_chatgpt[base.len()..].to_vec(),
+            OFFICIAL_CHAT_OPTIONAL_TABS.to_vec()
+        );
+    }
+
+    /// 条件页签存在时，ChatGPT 必须在里面；且它排在固定页签之后。
+    #[test]
+    fn chatgpt_appears_only_when_available_and_after_the_fixed_tabs() {
+        let without = resolved_tabs(false);
+        assert!(!without.iter().any(|(title, _)| *title == "ChatGPT"));
+
+        let with_chatgpt = resolved_tabs(true);
+        let position = with_chatgpt
+            .iter()
+            .position(|(title, _)| *title == "ChatGPT")
+            .expect("判据为真时必须有 ChatGPT 页签");
+        assert_eq!(position, OFFICIAL_CHAT_TABS.len());
+        assert_eq!(with_chatgpt[position].1, OFFICIAL_CHAT_CHATGPT_URL);
+    }
+
+    /// 每次求值都从固定页签重新构造，返回值不共享上一轮的缓冲区。
+    /// 快照会被 `AppState` 长期持有，别处再拿它去 extend 就会互相踩。
+    #[test]
+    fn resolution_does_not_alias_the_constant_table() {
+        let mut first = resolved_tabs(false);
+        first.push(("mutated", "https://example.invalid"));
+        assert_eq!(resolved_tabs(false), OFFICIAL_CHAT_TABS.to_vec());
     }
 
     #[test]

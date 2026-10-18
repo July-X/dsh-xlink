@@ -315,6 +315,7 @@ pub fn run() {
                 node_cache: Mutex::new(None),
                 harness_url: Mutex::new(None),
                 harness_page: Mutex::new(harness::harness_window::HarnessPage::default()),
+                official_chat_tabs: Mutex::new(Vec::new()),
             });
             // 历史数据迁移（plugin 中央库搬迁 / skill store 整合）不再在
             // setup() 里自动跑——主窗口 mount 后由 [`migration_prompt`]
