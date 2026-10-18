@@ -4,14 +4,18 @@
 
 > 本文档描述桌面外壳的「云端套餐用量」功能：查询并展示 MiniMax Token Plan 的双窗口额度
 > 进度、DeepSeek 按量余额、智谱 GLM 编程套餐的双窗口额度、OpenAI（ChatGPT 套餐）
-> 的 5 小时 / 7 天窗口，以及 opencode（厂商）Go 套餐的滚动 5 小时 / 周 / 月三窗口。当前代码
-> 实际接入 **6 个 provider**
+> 的 5 小时 / 7 天窗口、opencode（厂商）Go 套餐的滚动 5 小时 / 周 / 月三窗口，以及
+> 2api.store（TokenShop 中转）自定义 provider 的密钥剩余额度。当前代码
+> 实际接入 **7 个 provider**
 > （`subscription.rs` 的 `PROVIDER_ORDER`：`deepseek` / `minimax_cn` / `minimax_en` /
-> `zai_coding_cn` / `openai_codex` / `opencode_go`），下面各章按「套餐类（plan）/ 余额类
-> （balance）」两种形态统一描述。OpenAI 一节（接口规格）单列了它与另外五家的三处差别：凭据来自壳
+> `zai_coding_cn` / `openai_codex` / `opencode_go` / `api2store`），下面各章按「套餐类（plan）/ 余额类
+> （balance）」两种形态统一描述。OpenAI 一节（接口规格）单列了它与另外六家的三处差别：凭据来自壳
 > 自己的 OAuth vault 而非内核凭据链、必须带账号上下文请求头、必须走代理路由。
-> opencode 一节单列它与其余五家的一处差别：`resetsAt` 是 ISO 8601 字符串而不是
+> opencode 一节单列它与其余六家的一处差别：`resetsAt` 是 ISO 8601 字符串而不是
 > epoch 毫秒，窗口按字段名认（没有自描述的时长的字段）。
+> 2api.store 一节单列它与其余六家的两处差别：它是**用户在内核模型设置里自定义的
+> provider**（没有官方 route 名，靠 route 名 / baseURL 主机识别），且**查询端点不是常量**
+> ——由那一行的 `baseURL` 推导；它按余额类展示一个剩余额度读数。
 > 参考实现是
 > [cc-switch](https://github.com/farion1231/cc-switch)（Rust + Tauri，MIT）的
 > `services/coding_plan.rs` 与 `services/balance.rs`，接口字段以其源码为核对基准。
@@ -67,6 +71,7 @@ HTTP 栈适配（ureq + spawn_blocking，非 reqwest）、原始凭据不跨壳�
 | 智谱 GLM | 5 小时 / 周窗口的**剩余百分比**与重置时间 | 绝对剩余 token 数；套餐档位名 |
 | OpenAI ChatGPT | 5 小时 / 7 天窗口的**剩余百分比**与重置时间 | 绝对剩余 token 数；套餐档位名（响应里带 `plan_type`，本版本不展示，见下）；`additional_rate_limits`（`gpt-reserve` 等额外额度桶，本版本不展示） |
 | opencode（Go 套餐） | 滚动 5 小时 / 周 / 月三窗口的**剩余百分比**与重置时间（与 opencode 自己的用量界面同源） | 绝对剩余 token 数；套餐档位名；窗口的 `status` 字段（真机只见 `ok`，语义未经核实，本版本不透出，见下） |
+| 2api.store（TokenShop 中转） | 密钥的**剩余额度**（USD；钱包模式给钱包余额，额度模式给总配额剩余）与凭据是否可用（`is_active` / `isValid`） | 绝对剩余 token 数；`rate_limits[]` 的 5h / 1d / 7d 周期窗口与消费明细（`usage` / `daily_usage` / `model_stats`）本版本不展示；套餐档位名（`planName` 本版本不透出） |
 
 注意 OpenAI 的窗口**可能缺席**：接口按账号返回，一次响应里可能只有 7 天窗口而没有
 5 小时窗口（也可能反过来）。缺席的窗口不画进度条——分区里少那一行（两个窗口都缺席
@@ -311,7 +316,7 @@ HTTP 200 并包含两个额度窗口。因此此前把问题归为「账号 id �
   一个词挤出那几行不划算——用户的账号页本来就写着自己是哪个套餐。
 - `rate_limit` 缺失 / 非对象按结构不认识处理：截断摘要写进 Shell 日志，分区给出
   带下一步的错误文案。HTTP 401/403 → `credential_status: expired`（文案指向
-  「重新登录 OpenAI 账户」，与另外五家的「更新 API Key」不同源）。
+  「重新登录 OpenAI 账户」，与另外六家的「更新 API Key」不同源）。
 
 ### 厂商 opencode 的 Go 套餐：`/zen/go/v1/usage`
 
@@ -389,6 +394,50 @@ HTTP 200 并包含两个额度窗口。因此此前把问题归为「账号 id �
   （`/workspace/<id>/go` 的会话 cookie），那与「不读另一个应用的凭据库」这条
   纪律冲突，**不做**；卡上改为并排给出「已用 X%」，让用户自己对照。
 
+### 2api.store（TokenShop 中转）：`<origin>/v1/usage`
+
+| 项 | 值 |
+| --- | --- |
+| 端点 | `GET <origin>/v1/usage`；**由内核模型设置里那一行自定义 provider 的 `baseURL` 推导**（`https://2api.store/v1` → `https://2api.store/v1/usage`；只填 origin 或直接填完整用量地址也认；只接受 HTTPS，推不出来就报可操作错误且**不发请求**） |
+| 认证 | `Authorization: Bearer <该自定义 provider 行自己写的 apiKeyEnv 解析出的 Key>`（本机实测 route 名 `z-2api`、引用名 `Z_2API_API_KEY`、`baseURL: https://2api.store/v1`） |
+| 出处 | 2api.store 官方文档「用量与计费」（2026-10-18 核对）与 cc-switch 自定义脚本提取器（用户提供）；2026-10-18 用钱包模式真机 HTTP 200 核实字段形状。国内优化线路只换域名、路径不变 |
+
+识别规则（`usage/credentials.rs::classify_route`）：route 名含 `2api` **或** `baseURL` 主机是
+`2api.store`（含子域）时归到本 provider。**不做通用的「任意自定义 provider 都试一下
+/v1/usage」**：哪个中转站跑着带这个端点的服务无从得知，认错等于拿用户的 Key 去打一个
+不相干的地址。凭据取那一行自己写的 `apiKeyEnv`（没有默认派生名可回落）。
+
+响应（官方文档 + 2026-10-18 真机字段形状；金额为示例 / 虚构值）：
+
+```json
+{"balance":149.74,"mode":"unrestricted","planName":"钱包余额","remaining":149.74,
+ "unit":"USD","isValid":true,
+ "usage":{"today":{"requests":0,"total_tokens":0,"cost":0},"total":{"requests":2,"total_tokens":19114,"cost":0.048}},
+ "daily_usage":[{"date":"2026-08-28","requests":2,"total_tokens":19114,"cost":0.048}]}
+```
+
+解析规则（与用户提供的 cc-switch 自定义脚本口径一致）：
+
+- 剩余额度：`remaining` → `quota.remaining` → `balance`；数字与数字字符串都接受。
+- 单位：`unit` → `quota.unit` → `"USD"`。
+- 凭据是否可用：`is_active` → `isValid` → 缺省 `true`。false 时视图 `is_available: false`，
+  前端显示「密钥已停用或已过期，无法发起调用」——**与 DeepSeek 的「余额不足」文案分开**
+  （这条接口的 false 来自密钥状态，不是欠费）。
+- 金额展示：`>= 1` 保留两位小数，`< 1` 保留至多 4 / 6 位并裁掉末尾零（余额只剩几美分时
+  不画成 0.00）；只做展示取整，不参与任何计算。
+- 额度模式（`mode: "quota_limited"`）额外返回 `quota`（limit / used / remaining）与
+  `rate_limits[]`；**本版本只展示一个剩余额度读数**：`rate_limits[]` 的 5h / 1d / 7d
+  窗口、`subscription`、`usage` / `daily_usage` / `model_stats` 都不透出。真机这把 Key 是
+  钱包模式，没有窗口样张可核；用户提供的那份提取器同样只取一个 `remaining`——没有真实
+  样张的窗口语义不在这里猜。将来要展示窗口时，把它按 `CacheTier` 换算并复用套餐类的
+  展示路径。
+- 端点推导失败 / 响应没有剩余额度字段 / 非 JSON 都按确定性失败处理：保留上次数据、把
+  截断摘要写进 Shell 日志，**绝不画成 0 余额**。
+- HTTP 401/403 → `credential_status: expired`，文案指向「到工作台的模型设置更新这个
+  自定义 provider（Base URL 指向 2api.store）的 API Key」。
+- **不执行自定义脚本**：cc-switch 的 `extractor: function(response) {...}` 是它自己的脚本
+  引擎能力；本壳只实现上面这份内置语义（原因见「不在 v1 范围」）。
+
 ## 凭据设计
 
 ### 复用当前内核模型凭据
@@ -419,7 +468,7 @@ DSH 的 `credentials.describe` 只返回 `configured`、来源和可写性，不
 自己那次 Sign-in-with-ChatGPT 授权的 access token（`crate::openai` 的加密 vault，
 文件密钥在系统凭据库）。因此该 provider 不走上面这条解析链，`subscription.rs` 也
 **不在自己这里解密**——读取入口是 `openai::refresh::ensure_fresh_access`（顺带保证
-令牌新鲜，过期时先走既有刷新链），由 `usage/subscription_openai.rs` 调它。其余五家
+令牌新鲜，过期时先走既有刷新链），由 `usage/subscription_openai.rs` 调它。其余六家
 的「复用当前内核模型凭据」前提一字未改。
 
 这条兼容性是本功能的硬前提：如果 MiniMax Token Plan 接口拒绝当前 dsh provider 的模型凭据，
@@ -457,7 +506,7 @@ opencode 的密钥取内核模型设置里这家那两行取源各自写的 `api
 
 | 关注点 | usage.rs（本地统计） | subscription.rs（本功能） |
 | --- | --- | --- |
-| 数据源 | 实例 sessions 目录（zstd 增量扫描） | 六家云端 HTTPS 接口（各第一方，未文档化 / 轻文档化） |
+| 数据源 | 实例 sessions 目录（zstd 增量扫描） | 七家云端 HTTPS 接口（六家第一方未文档化 / 轻文档化 + 用户自定义中转 2api.store） |
 | 持久化 | `<instance>/usage/state.json` | `<instance>/subscription-cache.json`（Key 跟随当前 DSH 实例 / profile，缓存必须按实例隔离） |
 | 状态文件 | `state.rs` 容错读 + 原子写，`STATE_SCHEMA = 1` | 同一套路，`CACHE_SCHEMA = 2`；缓存绑定实例、profile 与 credential fingerprint；「条目不存在」（未配置）与「条目存在但 `credential_status: expired`」（凭据失效）是两个互斥状态 |
 | 并发控制 | `SCAN_LOCK` | `FETCH_LOCK`：同 provider 在途请求去重（singleFlight 的 Rust 侧形态） |
@@ -742,9 +791,10 @@ DeepSeek 侧用当前模型设置中的实际 provider 配置验证余额接口�
   本机文件凭据查询，不支持拦截请求、刷新凭据或其它存储后端。
 - Kimi / 火山方舟 / StepFun / SiliconFlow / OpenRouter / Novita 等其它 provider
   ——模块已按「每家一个 query + parse 纯函数」预留扩展位，逐家接入各约 100–200 行
-  （智谱 GLM 编程套餐与 opencode 的 Go 套餐已按此模式接入，见「接口规格」一节；
-  `usage/subscription_opencode.rs` 即该模式的最新一例：`subscription.rs` 只留下
-  provider 常量、展示顺序、标签与一条 dispatch，其余全在新文件里）。
+  （智谱 GLM 编程套餐、opencode 的 Go 套餐与 2api.store 自定义中转已按此模式接入，见
+  「接口规格」一节；`usage/subscription_api2store.rs` 即该模式的最新一例：`subscription.rs`
+  只留下 provider 常量、展示顺序、标签与一条 dispatch，端点推导 / 响应解析 / 样张单测
+  全在新文件里。它是唯一端点不写死的 provider，因此多收一份 baseURL 上下文）。
 - 自定义 JS 查询脚本（cc-switch 的高级能力）——避免在桌面壳里引入 JS 沙箱。
 - 用量历史曲线、自动刷新间隔设置、绝对 token 数估算——见能力边界与缓存章节。
 - Key 加密存储——本功能不新增凭据存储；凭据安全策略由 dsh 内核的 credentials provider 负责，

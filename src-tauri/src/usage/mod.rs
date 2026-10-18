@@ -14,6 +14,9 @@ pub(crate) mod variant_cache;
 // 凭据链，且需代理路由，独立成模块以免撑大 subscription.rs（反棘轮）。
 pub(crate) mod subscription_codex;
 pub(crate) mod subscription_openai;
+// 2api.store（TokenShop）中转：内核模型设置里的用户自定义 provider，用量端点
+// 由该行的 baseURL 推导。与其余六家的「端点常量」形态不同，独立成模块。
+pub(crate) mod subscription_api2store;
 // opencode（厂商）Go 套餐的三窗口容量：端点与响应形状自成一类，同一半理由独立成模块
 // （订阅层仍是「每家一个 query + parse 纯函数」的扩展位）。
 pub(crate) mod subscription_opencode;

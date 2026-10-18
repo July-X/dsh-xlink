@@ -3,12 +3,14 @@ import CodexUsageConsent from './CodexUsageConsent.vue';
 // 独立套餐用量窗口：概览卡「套餐用量 → 查看详情」按钮经 open_subscription_window
 // 弹出（URL ?subscription=1 挂载本组件，capability `subscription-viewer.json`
 // 只授予 `get_subscription_usage` 与 `open_usage_window`）。
-// 两个 provider 分区：MiniMax Token Plan 双窗口进度（剩余口径，三档配色）+
-// DeepSeek 按量余额（多币种逐行，is_available=false 标红）。窗口打开即 force
-// 全量刷新（subscription.js 的 refreshSubscription）；查询失败保留上次数据，
-// 错误以横幅内联呈现。底部一行入口跳「模型用量」窗口（本地 token 统计）。
-// 能力边界（设计稿）：两家云端 API 都不提供绝对剩余 token 数——MiniMax 只给
-// 剩余百分比，DeepSeek 只有货币余额，不虚构任何 token 数字。
+// 各 provider 分区：套餐类画窗口进度（剩余口径，三档配色），余额类逐行金额；
+// 2api.store 这类**用户自定义 provider** 展示该密钥在 `/v1/usage` 的剩余额度
+// （is_available=false 的文案按 provider 区分，见 subscription.js 的
+// unavailableText）。窗口打开即 force 全量刷新（subscription.js 的
+// refreshSubscription）；查询失败保留上次数据，错误以横幅内联呈现。底部一行
+// 入口跳「模型用量」窗口（本地 token 统计）。
+// 能力边界（设计稿）：各云端 API 都不提供绝对剩余 token 数——套餐类只给
+// 剩余百分比、余额类只有货币金额，不虚构任何 token 数字。
 import ViewerShell from '../shell/ViewerShell.vue';
 import { computed, onMounted, watchEffect } from 'vue';
 import { Refresh, InfoFilled, TopRight, Setting, Timer } from '@element-plus/icons-vue';
@@ -22,6 +24,7 @@ import {
   providerShortState,
   planTierRows,
   balanceRow,
+  unavailableText,
   queriedAtLabel,
   queriedAgeCompact,
   tierFullName,
@@ -33,7 +36,8 @@ const CAPABILITY_TIP =
   'MiniMax 展示 Token Plan 的 5 小时 / 周窗口剩余百分比（云端 API 不提供绝对剩余 token 数）；' +
   'DeepSeek 展示按量计费账户的货币余额；智谱 GLM 展示编程套餐的 5 小时 / 周窗口剩余百分比' +
   '（组织 / 项目上下文未配置时按错误提示补配）；opencode（厂商）展示它的 Go 套餐：滚动 5 小时 /' +
-  ' 周 / 月三窗口的剩余百分比（密钥在 opencode.ai 生成）。OpenAI / Codex 额度分区与' +
+  ' 周 / 月三窗口的剩余百分比（密钥在 opencode.ai 生成）；2api.store 这类自定义 provider' +
+  '（Base URL 指向该中转的模型 provider）展示 `/v1/usage` 里的密钥剩余额度。OpenAI / Codex 额度分区与' +
   '「使用本机 Codex 登录查询额度」开关，仅在启用 OpenAI-OAuth-Plugin 后显示。数据约 5 分钟' +
   '更新一次，「刷新」立即重新查询。';
 
@@ -155,14 +159,15 @@ const lastFetched = computed(() => {
             <p v-if="!row.tiers.length && !row.shortState" class="muted sub-empty">暂无窗口数据。</p>
           </template>
 
-          <!-- DeepSeek：多币种余额逐行，主行总额 + 赠金 / 充值明细行；
-               is_available=false 时单独标红。 -->
+          <!-- 余额类（DeepSeek 多币种 / 2api.store 单行剩余额度）：主行总额 +
+               赠金 / 充值明细行（2api 不返回明细，detail 为空）；is_available=false
+               时单独标红，文案按 provider 语义区分（unavailableText）。 -->
           <template v-else-if="row.provider.kind === 'balance'">
             <div v-for="(item, index) in row.balances" :key="index" class="sub-balance" :title="item.tip">
               <span class="sub-balance-text">{{ item.main }}</span>
               <span v-if="item.detail" class="sub-balance-detail">{{ item.detail }}</span>
               <span v-if="row.provider.is_available === false" class="sub-balance-unavailable">
-                余额不足，无法发起调用
+                {{ unavailableText(row.provider) }}
               </span>
             </div>
             <p v-if="!row.balances.length && !row.shortState" class="muted sub-empty">未查询到余额数据。</p>

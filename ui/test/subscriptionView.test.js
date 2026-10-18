@@ -56,6 +56,7 @@ const {
   percentLevel,
   currencySymbol,
   balanceRow,
+  unavailableText,
   providerStateText,
   providerShortState,
   collectErrors,
@@ -214,6 +215,15 @@ test('balanceRow 金额只透传不运算：缺字段不补零，只有充值时
   // 零值也照常透传展示（0.00 是接口给的事实，不当作「没有」）。
   assert.equal(balanceRow({ currency: 'CNY', total: '0.00', granted: '0.00', topped_up: '0.00' }).detail, '赠金 ¥0.00 · 充值 ¥0.00');
   assert.equal(balanceRow(null), null);
+});
+
+test('余额不可用的提示按 provider 语义区分，不把「密钥停用」读成「余额不足」', () => {
+  // DeepSeek 的 balance 接口说的是账户余额不足。
+  assert.equal(unavailableText({ id: 'deepseek' }), '余额不足，无法发起调用');
+  // 2api.store /v1/usage 的 isAvailable=false 来自 is_active / isValid：
+  // 密钥被停用或过期，余额数字可能还在但调用已经不能发起。
+  assert.equal(unavailableText({ id: 'api2store' }), '密钥已停用或已过期，无法发起调用');
+  assert.equal(unavailableText(null), '余额不足，无法发起调用', '缺省走通用余额文案');
 });
 
 test('providerStateText 只承载完整错误文案（横幅用）', () => {

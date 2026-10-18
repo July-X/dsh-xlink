@@ -149,6 +149,21 @@ export function balanceRow(balance) {
 }
 
 /**
+ * 余额类 provider 处于 `is_available === false` 时的提示文案。
+ *
+ * `is_available` 的含义随 provider 不同：DeepSeek 的 `/user/balance` 说的是
+ * 「账户余额不足」，2api.store 的 `/v1/usage` 说的是 `is_active` / `isValid`
+ * 为 false（**密钥被停用 / 过期**，余额数字可能还在但已经不能发起调用）。
+ * 两处模板共用这一份，避免把「密钥停用」读成「欠费」。
+ */
+export function unavailableText(provider) {
+  if (provider && provider.id === 'api2store') {
+    return '密钥已停用或已过期，无法发起调用';
+  }
+  return '余额不足，无法发起调用';
+}
+
+/**
  * 单个 provider 的**完整**错误文案（错误横幅用，含可操作的下一步）；
  * 返回 null 表示无错误。
  */
