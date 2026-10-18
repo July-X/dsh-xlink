@@ -36,3 +36,5 @@ coverage/
 .mavis/
 # 内嵌插件打包产物：构建期由 scripts/prepare-builtin-plugins.mjs 生成，不提交（dev plan §11）
 src-tauri/resources/builtin-plugins/
+
+.research/
