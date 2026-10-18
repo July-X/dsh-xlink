@@ -86,8 +86,12 @@ onUnmounted(() => { if (memoryStore.editorVisible) closeMemoryEditor(); });
     :before-close="beforeClose"
   >
     <div class="memory-form">
+      <!-- 范围档叫「项目记忆」，不跟着「当前项目」命名：下面那个下拉让用户**任选**一个工作区
+           路径（也能手填目录），选中的未必是他此刻所在的项目；而列表筛选那一档「按项目」列的
+           是**所有**项目范围的记忆。同一屏里两个名字指同一件事是 ui/AGENTS.md 禁的形状
+           （用户 2026-10-18 要求消歧义）。详情弹窗的范围文案同属这套叫法。 -->
       <el-radio-group v-model="draft.scope" :disabled="globalBusy">
-        <el-radio value="project">本项目</el-radio>
+        <el-radio value="project">项目记忆</el-radio>
         <el-radio value="general">通用偏好</el-radio>
       </el-radio-group>
       <el-select
@@ -127,15 +131,33 @@ onUnmounted(() => { if (memoryStore.editorVisible) closeMemoryEditor(); });
           正文 {{ bodyBytes }} / {{ MAX_BODY_BYTES }} 字节（中文一个字 3 字节；超了就保存不了）
         </p>
       </div>
-      <el-input v-model="draft.keywordsText" placeholder="关键词，用逗号分隔（用于命中检索）" />
-      <el-checkbox v-model="draft.pinned" :disabled="globalBusy">固定项（每次都带上）</el-checkbox>
+      <!-- 判据是 `memory/query.rs::score`：查询串里**包含**这个词就 +100（不切词、不分大小写），
+           而检索用的查询就是用户这一步说过的话（`plugins/memory/host/index.js` 的
+           `userText(messages)`）。「用于命中检索」是内部说法，用户拿它对照不了自己的话；
+           换成一句他能自己验的（用户 2026-10-18 要求消歧义）。 -->
+      <el-input
+        v-model="draft.keywordsText"
+        placeholder="关键词，用逗号分隔（用户的话里出现这些词时，这条会被优先挑中）"
+      />
+      <!-- 「优先带上」不是「一定带上」：固定项只影响排序，而注入有**条数上限**
+           （`query.rs::MAX_HITS`），固定项与命中项一起占那几个名额——pin 超过上限时排在
+           最后的那条固定项进不去。另外项目范围的固定项只在它自己那个工作区里生效
+           （`query.rs::scope_matches_fields`）。写「每次都带上」是把有条件的事说成无条件。 -->
+      <el-checkbox v-model="draft.pinned" :disabled="globalBusy">固定项（优先带上）</el-checkbox>
       <!--
         验证范围**不是**置信分数（§6.1）：只三档。给「已过期」一个入口，是因为
         一条过时的技术事实既不该继续当权威，也不该被悄悄删掉——标出来，让它排在
         检索结果的后面，用户自己决定什么时候重验或删掉。
       -->
+      <!-- 三档的名字**必须与注入给模型的说法逐字相同**（`query.rs::verification_label` 与
+           `memory.js::verificationText` 是一套词）：模型眼里叫「已过期」、面板上叫别的，
+           用户就没法拿面板上的话解释「它为什么照做了一条我自己标过期的约定」。
+           括号只补在「已验证」上——它的默认值是用户自己写下或批准候选时给的
+           （`memory/input.rs` 的手动默认、批准候选那条路），不点明会被读成「系统验过」；
+           另外两档自身已经说清。三档一起加括号会把这一排顶成两行：弹窗 560px 减两侧 16px
+           内边距只放得下约 26 个汉字（用户 2026-10-18 要求消歧义）。 -->
       <el-radio-group v-model="draft.verification" :disabled="globalBusy">
-        <el-radio value="verified">已验证</el-radio>
+        <el-radio value="verified">已验证（你确认过）</el-radio>
         <el-radio value="unverified">未验证</el-radio>
         <el-radio value="stale">已过期（事实可能过时）</el-radio>
       </el-radio-group>

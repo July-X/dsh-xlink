@@ -26,13 +26,16 @@ const props = defineProps({
 });
 const emit = defineEmits(['open']);
 
-/// 标签上写**具体项目名**（用户 2026-10-17 第二问：项目记忆标「本项目」等于没说）。
+/// 标签上写**具体项目名**（用户 2026-10-17 第二问：笼统的项目叫法等于没说）。
 /// 名字只取路径最后一段（`baseName`）：整条路径在这一行会折成两行、每条记忆多 18px；
 /// 完整路径进 `title`，一个字不丢。通用偏好没有项目，仍是「通用偏好」。
-const projectName = computed(() => baseName(props.row.workspace_path) || '本项目');
+/// 路径缺失时兜底写**范围名**（「项目记忆」）而不是「当前项目」：后者既与列表筛选那一档
+/// 撞名，也是猜的——没有路径就不知道它是哪个项目（用户 2026-10-18 要求消歧义）。
+const projectName = computed(() => baseName(props.row.workspace_path) || '项目记忆');
 /// 标签的悬浮说明：项目记忆给完整路径，通用偏好说清它是「所有项目都算」。
+/// 路径缺失时与标签取同一个兜底，否则悬停说明与可见文字各说一个名字。
 const scopeTitle = computed(() =>
-  props.row.scope === 'general' ? '所有项目都算' : props.row.workspace_path || '本项目'
+  props.row.scope === 'general' ? '所有项目都算' : props.row.workspace_path || '项目记忆'
 );
 </script>
 
@@ -64,10 +67,14 @@ const scopeTitle = computed(() =>
         </el-tag>
       </div>
       <p class="memory-row__body memory-row__body--clamp">{{ row.body }}</p>
+      <!-- 末尾那个次数是 `use_count`，而它**只由 `memory_read` 增加**
+           （`memory/store.rs::read_and_note_use`）：检索命中不算、面板把正文画出来也不算。
+           所以写「模型读过」而不是「用过」——后者会被读成「被注入过几次」，而那条信息在
+           「最近注入」卡上，与本行这个数不是一回事（用户 2026-10-18 要求消歧义）。 -->
       <p class="memory-row__meta">
         {{ sourcesText(row) }} ·
         {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
-        已用 {{ row.use_count }} 次
+        模型读过 {{ row.use_count }} 次
       </p>
     </div>
   </div>

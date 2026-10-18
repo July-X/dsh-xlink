@@ -368,6 +368,8 @@ pub struct MemoryStatus {
     pub accepted: usize,
     pub disabled: usize,
     pub pending_candidates: usize,
+    /// 一次注入最多几条（`query::MAX_HITS` 的真值，面板直接显示，不自己抄一个数）。
+    pub max_hits: usize,
     pub total_bytes: u64,
     /// 文档读不出来时的说明。**不打折**：展示的是空列表，磁盘上的文件没被动过。
     pub warning: Option<String>,
@@ -542,6 +544,10 @@ fn status_from(ns: &Namespace, doc: &MemoryDoc, warning: Option<String>) -> Memo
             .iter()
             .filter(|candidate| candidate.state == CANDIDATE_PENDING)
             .count(),
+        // **一次注入最多几条要下发**，不能由面板写死：那个常量在 `query.rs`，面板照着抄一个
+        // 数就会在下次调它时静默说谎（同一个形状刚在插件的注入预算上发生过一次——3 改成 8，
+        // 而面板里没有任何判据会因此变红）。这里给真值，面板只负责显示。
+        max_hits: crate::memory::query::MAX_HITS,
         total_bytes,
         warning,
         effect_pending: crate::memory::recent::effect_pending(),
@@ -925,7 +931,7 @@ pub fn decide_candidate(
 ///
 /// **调用方只有回环桥的 `read` 路由**（模型调 `memory_read` 工具）。检索展示不算
 /// 使用；面板的列表也不计数——它在列表里就把正文画出来了，没有「点开」这个动作。
-/// 面板上那个「已用 N 次」因此是「模型读过几次」。
+/// 面板上那个「模型读过 N 次」因此是「模型读过几次」。
 pub fn read_and_note_use(ns: &Namespace, id: &str) -> Result<MemoryRecord, AppError> {
     mutate(ns, |doc| {
         let now = now_iso();
