@@ -1340,10 +1340,18 @@ test('三个工具都从**调用方 agent** 取目录，没有 agent 就拒（G1
   );
   // ② 项目坐标一律走 `memoryScope`：目录从**调用方**取（工具是 `exec.agent`；pre-step 里是
   //    `subject ?? agent`，那可能是子智能体），同时按工作区判等夹紧（设计 §5）。
+  //    **注册表必须用时现取**（`workspaceRegistryNow()`）：这里原先是 `apply` 的局部变量，
+  //    而本函数在模块作用域——读它就是读自由变量，三个工具一调用必抛
+  //    `ReferenceError: workspaceRegistry is not defined`（2026-10-18 真机故障：一个会话
+  //    累计 149 次，三个工具从来没成功过；执行判据见 `test/assembly.test.mjs`）。
   assert.equal(
-    (code.match(/memoryScope\(ctx, workspaceRegistry, exec\.agent\)/g) ?? []).length,
+    (code.match(/memoryScope\(ctx, workspaceRegistryNow\(\), exec\.agent\)/g) ?? []).length,
     3,
-    '三个工具都要用调用方的 agent 解析坐标'
+    '三个工具都要用调用方的 agent 解析坐标，且注册表现取'
+  );
+  assert.ok(
+    !/memoryScope\(ctx, workspaceRegistry, exec\.agent\)/.test(code),
+    '不许退回「读 apply 的局部变量」那个形状——它一调用就抛 ReferenceError'
   );
   assert.match(
     code,
