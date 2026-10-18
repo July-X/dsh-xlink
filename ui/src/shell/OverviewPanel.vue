@@ -1345,6 +1345,11 @@ html.dark .plan-provider-logo--openai_codex .plan-provider-mark {
 html.dark .plan-provider-logo--opencode_go .plan-provider-mark {
   content: url("/opencode-logo-dark.svg");
 }
+/* 2api.store（TokenShop）的标志自带青色渐变方底（官网原图即完整 app 图标），
+   圆底取同一档品牌青让它与图形边缘接得上；图形本体在明暗两套主题下都清晰。 */
+.plan-provider-logo--api2store {
+  --logo-rgb: 6, 182, 212;
+}
 .plan-provider-logo--deepseek {
   --logo-rgb: 77, 107, 254;
 }
