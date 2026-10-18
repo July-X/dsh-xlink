@@ -261,10 +261,16 @@ fn render_context(records: &[&MemoryRecord]) -> (String, Vec<MemoryHit>) {
     // 而位数更少、所以短的那一半说明句一定放得下（同一个 [`omission_note`]，没有第二份词表）。
     let reserved = omission_note(records.len(), over_hits).len();
     for record in records.iter().take(MAX_HITS) {
+        // **范围与验证这两组词，三处必须逐字相同**：注入块（这里）、面板
+        // （`ui/src/memory/memory.js` 的 `scopeText` / `verificationText`）、工具输出
+        // （`plugins/memory/host/index.js` 的 `SCOPE_LABELS` / `VERIFICATION_LABELS`）。
+        // 跨语言跨进程没有共享模块可放，所以词表由判据钉住（`test/assembly.test.mjs`）。
+        // 这里原先写「本项目」，而面板同一件事叫「项目记忆」——用户拿面板上的话解释不了
+        // 模型看到的东西（2026-10-18 统一）。
         let scope_label = if record.scope == SCOPE_GENERAL {
             "通用偏好"
         } else {
-            "本项目"
+            "项目记忆"
         };
         let header = format!(
             "\n\n[{}] {}（{} · {}，更新于 {}）\n",

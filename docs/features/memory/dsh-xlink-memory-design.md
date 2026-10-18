@@ -331,6 +331,8 @@ flowchart LR
 
 | **三个记忆工具从来没成功过：自由变量 ReferenceError（2026-10-18）** | 用户报「执行者两次用 `memory_propose` 都撞上 `workspaceRegistry is not defined`」。根因既不是环境也不是权限：`workspaceRegistry` 是 `apply()` 的**局部变量**，而三个工具注册在**模块作用域**的 `registerTools()` 里——读它就是读一个自由变量，一调用必抛 `ReferenceError`。真机会话日志里这个错误累计几百次（`session-fbb5df89` 149 次、`session-00a67abf` 17 次），**三个工具从来没成功过一次**。修法：工具里改成**用时现取**（`ctx.get('workspaceRegistry')`，与提取那条路 `liveExtractionServices` 同一纪律——`ctx.get` 会跳过失活的服务），并写明为什么不能是变量。**判据为什么没拦住**：装配层此前只有「读源码文本 + 扫锚点」的判据（`smoke.test.mjs`），它能证明接线的形状对，证明不了**跑起来不抛**。新增 `test/assembly.test.mjs`：临时目录 + 两个 peer 包的最小桩 + 回环桩桥，真的 `import()` 装配层、真的调用三个工具，以及 `agent/created` → `pre-step` 那条注入链；反向验过（把任一调用点改回变量，判据立刻红在 `ReferenceError` 上）。 |
 
+| **三处标签统一（2026-10-18）** | 实机验证时看到工具输出把**原始枚举**拼给了模型：`memory_search` 回「（project，更新于 …）」、`memory_read` 回「（project · verified · 更新于 …）」，而面板与注入块写的是「项目记忆 · 已验证」——模型可能把 `project` 原样讲给用户（用户拍板「统一起来」）。三处各写一份词表是不得已：面板在 `ui/src/memory/memory.js`、注入块在 `src-tauri/src/memory/query.rs`、工具输出在 `plugins/memory/host/index.js`，跨语言跨进程没有共享模块可放。所以**词表由判据钉住**：`test/assembly.test.mjs` 新增一条，import 面板那两个函数、读 `query.rs` 源码、比插件导出的 `SCOPE_LABELS` / `VERIFICATION_LABELS`，并断言注入块里不许再出现「本项目」。顺带把注入块的范围标签从「本项目」改成「项目记忆」与面板同词——「本项目」在注入块里本来也说得通（那一条确实属于当前项目），但同一个东西两个词，用户拿面板上的话解释不了模型看到的东西。 |
+
 IPC 与落盘都用 **snake_case**：`check-invariants` 的 `ipc-fields` 抓到过一版 camelCase 序列化——`total_bytes` 与既有前端读的同名字段相撞，会被判成「前端读到 undefined」。
 
 尚未落地（按顺序）：
