@@ -61,17 +61,18 @@ test('状态还没读回来时不算「没启用」——那句提示会误报',
   );
 });
 
-test('「最近注入」那行话把三种状态分开（开关关着 / 没命中 / 注入了哪几条）', async () => {
+test('「最近注入」那行话把三种状态分开（开关关着 / 没匹配到 / 注入了哪几条）', async () => {
   const { injectionText } = await import('../src/memory/memory.js');
   assert.equal(injectionText({ enabled: false, hits: [] }), '开关关着，这一回合没有注入');
-  assert.equal(injectionText({ enabled: true, hits: [] }), '没有命中');
+  // 「没有命中」是检索术语，用户读不出「命中」的主语是谁；写成「没有匹配到记忆」。
+  assert.equal(injectionText({ enabled: true, hits: [] }), '没有匹配到记忆');
   assert.equal(
     injectionText({ enabled: true, hits: ['提交前先跑检查', '构建用 pnpm'] }),
     '注入了 2 条：提交前先跑检查、构建用 pnpm'
   );
   // 缺字段（老壳、或记录被截断）不许抛：这是一条辅助显示，不该把面板带崩。
   assert.equal(injectionText(null), '开关关着，这一回合没有注入');
-  assert.equal(injectionText({ enabled: true }), '没有命中');
+  assert.equal(injectionText({ enabled: true }), '没有匹配到记忆');
 });
 
 test('项目名只取最后一段，完整路径交给 title（一行放得下，信息一个字不丢）', async () => {
@@ -244,7 +245,7 @@ test('面板的告警 v-if 用这个判据，而不是只判 !injectReady', () =
 });
 
 test('提取任务卡片：全零也要说话，失败那行要带原因（评审第 12 条）', async () => {
-  const { jobsSummaryText, jobLine } = await import('../src/memory/memory.js');
+  const { jobsSummaryText, jobLine, jobStateText, stageText } = await import('../src/memory/memory.js');
   // 还没读到：如实说「还没读到」，不要假装「没有任务」。
   assert.match(jobsSummaryText(null), /还没读到/);
   // 全零：**「一条任务都没有」本身就是答案**（说明这一轮压根没排），不能只显示一个空串。
@@ -254,9 +255,29 @@ test('提取任务卡片：全零也要说话，失败那行要带原因（评�
     '待跑 2 · 在跑 1 · 完成 7 · 失败 1'
   );
   // 失败那行要带 stage：用户问「为什么一条都没提取出来」时，答案就是这一列。
+  // **阶段名要中文化**：插件把 `${stage}：${reason}` 原样拼进错误串，中文句子里夹一个
+  // `model` 读起来像乱码；映射表与 `plugins/memory/host/run.js` 的 `STAGES` 同一套值。
   assert.equal(jobLine({ state: 'failed', key: { cursor: 42 }, error: 'model：模型没有返回任何内容' }),
-    '#42 failed：model：模型没有返回任何内容');
-  assert.equal(jobLine({ state: 'pending', key: { cursor: 9 } }), '#9 pending');
+    '第 42 条事件 · 失败：模型调用：模型没有返回任何内容');
+  assert.equal(jobLine({ state: 'failed', key: { cursor: 7 }, error: 'parse：解析不了' }),
+    '第 7 条事件 · 失败：解析输出：解析不了');
+  // 认不出的阶段名原样留着（插件将来加阶段时至少看得见），正文里的英文不许被顺手改掉。
+  assert.equal(stageText('weird'), 'weird');
+  assert.equal(stageText(''), '');
+  assert.equal(
+    jobLine({ state: 'failed', key: { cursor: 1 }, error: 'not a stage: keep me' }),
+    '第 1 条事件 · 失败：not a stage: keep me'
+  );
+  // **中文界面里不许冒英文状态**：`pending` / `running` 是 `jobs.rs` 里的常量，
+  // 而摘要那句写的是「待跑 / 在跑 / 完成 / 失败」——同一屏里同一件事只能有一个名字。
+  assert.equal(jobLine({ state: 'pending', key: { cursor: 9 } }), '第 9 条事件 · 待跑');
+  for (const [raw, label] of [['pending', '待跑'], ['running', '在跑'], ['done', '完成'], ['failed', '失败']]) {
+    assert.equal(jobStateText(raw), label, `${raw} 要有中文标签`);
+    assert.ok(!jobLine({ state: raw, key: { cursor: 1 } }).includes(raw), '行里不许出现英文状态');
+  }
+  // 认不出的状态原样显示而不是吞掉（老壳 / 新状态先出现时至少看得见）。
+  assert.equal(jobStateText('weird'), 'weird');
+  assert.equal(jobStateText(''), '未知');
 });
 
 test('提取任务卡片真的接在模板上（helper 有测试、接线没有是本仓反复栽的形状）', () => {
@@ -267,6 +288,76 @@ test('提取任务卡片真的接在模板上（helper 有测试、接线没有�
   assert.match(template, /jobLine\(job\)/, '每条任务那行要接上');
   // 「一条都没提取出来时先看这里」——这句提示是这张卡片存在的理由，钉住它。
   assert.match(template, /一条记忆都没提取出来时先看这里/);
+  // **「（P2）」是内部阶段名**：用户读不懂，而这一屏的所有字都是产品的一部分。
+  assert.ok(!template.includes('P2'), '面板里不许留内部阶段名');
+  // 自动提取归上面那个开关管（`jobs_routes.rs` 的 enqueue 在 `!use_approved` 时回 disabled）——
+  // 不说的话，想停掉自动提取的人找不到开关，想留着它的人也不知道关掉会一起停。
+  assert.match(template, /它跟着上面那个开关一起开关/);
+});
+
+test('面板的文案不许把内部术语、英文状态或会读错的计数摆给用户（2026-10-18 消歧义）', async () => {
+  const panel = templateOf(read('../src/memory/MemoryPanel.vue'));
+  const raw = read('../src/memory/MemoryPanel.vue');
+  // 页头必须说清「只带相关的几条」：写「相关会话会带上这些内容」时，用户以为库里
+  // 所有记忆都进了上下文——而实际是按这句话匹配、有**条数上限**。
+  // 但**上限那个数必须来自后端**（`MemoryStatus.max_hits` ← `query.rs::MAX_HITS`）：
+  // 前端抄一个数就会在它变的时候静默说谎，而没有任何判据会因此变红——同一个形状刚在
+  // 插件的注入预算上发生过一次（3 → 8）。
+  assert.match(panel, /injectLimitText/, '条数要读后端下发的值');
+  assert.ok(!/最多 6 条/.test(panel), '不许把上限写死在页头');
+  // 「固定项**优先**带上」而不是「每次都带」：pinned 只影响排序，它与命中项一起占那几个
+  // 名额（pin 超过上限时排最后的那条进不去），项目范围的固定项还只在它自己的工作区生效。
+  assert.match(panel, /固定项优先带上/, '固定项是有条件地优先，不是无条件地每次都带');
+  assert.match(raw, /injectLimitText = computed/, '那句要真的接上 computed');
+  // 开关自己的文字只写了「记忆」，而它同时管自动提取：那句作用域必须留在 tooltip 里。
+  assert.match(raw, /这个开关同时管两件事：记忆注入与自动提取/, '开关的作用域要说清');
+  // 卡头计数：筛选之后列表短了，而计数还是全库的数——两个数要分开写。
+  assert.match(
+    panel,
+    /\$\{list\.length\} \/ 共 \$\{allMemories\.length\}/,
+    '筛选档下计数要同时给「显示几条」与「共几条」'
+  );
+  // 「已用 N 次」是 `use_count`，只由 `memory_read` 增加（`store.rs::read_and_note_use`），
+  // 说「已用」会被读成「被注入过几次」。
+  for (const file of ['MemoryRow.vue', 'MemoryDetail.vue']) {
+    const tpl = templateOf(read(`../src/memory/${file}`));
+    assert.match(tpl, /模型读过/, `${file} 要说清这个次数是谁用的`);
+    assert.ok(!tpl.includes('已用'), `${file} 里不该再有「已用 N 次」`);
+  }
+  // 同一个 `stale` 在两处是**两件事**：候选行那个是「来源那段话被改过」（H7，会话压缩或
+  // 编辑之后重提同一段），记忆行那个是「这条事实可能过时」（verification，而候选被批准时
+  // 后端会把它重置成 verified）。用同一套词，用户会按错的那个去理解。
+  const candidate = templateOf(read('../src/memory/MemoryCandidateRow.vue'));
+  assert.match(candidate, /来源已变/, '候选行的标记要说「来源变了」');
+  assert.ok(!candidate.includes('可能已过期'), '候选行不许再用「已过期」那套词');
+  // 固定项是有条件地优先（见上面那条），编辑器里也一样。
+  assert.match(
+    templateOf(read('../src/memory/MemoryEditor.vue')),
+    /固定项（优先带上）/,
+    '编辑器里的固定项也要说「优先」'
+  );
+});
+
+test('范围文案统一成「项目记忆」——不再与筛选那一档的「按项目」撞名', async () => {
+  const { scopeText } = await import('../src/memory/memory.js');
+  assert.equal(scopeText({ scope: 'general' }), '通用偏好（所有项目）');
+  assert.equal(scopeText({ scope: 'project', workspace_path: '/a/b' }), '项目记忆 · /a/b');
+  assert.equal(scopeText({ scope: 'project' }), '项目记忆');
+  // 编辑器那个单选也必须是同一个名字：它旁边的下拉让用户任选工作区，
+  // 选中的未必是「当前项目」，而列表筛选那档叫「按项目」。
+  const editor = templateOf(read('../src/memory/MemoryEditor.vue'));
+  assert.match(editor, /<el-radio value="project">项目记忆<\/el-radio>/);
+  assert.ok(!editor.includes('>本项目<'), '编辑器里不许再叫「本项目」');
+});
+
+test('候选行的来源会话给短 id，完整 id 进 title（设计 §2 要追得回，行里也要读得下去）', async () => {
+  const { sessionText } = await import('../src/memory/memory.js');
+  assert.equal(sessionText('session-fbb5df89-a57a-4f93-a645-8bc184dfa4b4'), '会话 fbb5df89');
+  assert.equal(sessionText(''), '本机', '没有会话 id 的是本机提出来的');
+  assert.equal(sessionText(null), '本机');
+  const tpl = templateOf(read('../src/memory/MemoryCandidateRow.vue'));
+  assert.match(tpl, /sessionText\(item\.source\.session\)/, '行里要用短 id');
+  assert.match(tpl, /:title="item\.source\.session/, '完整 id 要留在 title 里');
 });
 
 test('开关的生效语义：有确切判据就用确切的，没有就不许说「已生效」（E6）', async () => {

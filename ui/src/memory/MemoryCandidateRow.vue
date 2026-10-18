@@ -16,6 +16,7 @@ import { globalBusy, isLoading } from '../shell/loading.js';
 import {
   decideCandidate,
   removeMemory,
+  sessionText,
   setMemoryState,
   shortTime,
   sourceText,
@@ -36,15 +37,21 @@ defineProps({
       <div class="memory-row__title">
         <span class="memory-row__name">{{ item.title || '（无标题）' }}</span>
         <el-tag size="small" effect="plain">{{ sourceText(item.source.kind) }}</el-tag>
-        <!-- H7：来源变了（会话被压缩/编辑之后重提同一段）。**只是提醒**——
-             「保存」与「丢弃」两个按钮照常在下面，标过期不是替用户处理掉。 -->
+        <!-- H7：**来源变了**（会话被压缩/编辑之后重提同一段）。**只是提醒**——
+             「保存」与「丢弃」两个按钮照常在下面，标记不是替用户处理掉。
+             **标签不能写「已过期」**：那是记忆行上 `verificationText('stale')` 的意思
+             （这条事实可能过时），而候选被批准时后端会把 verification 重置成 verified
+             （`store.rs::decide_candidate`），两个 `stale` 一个词两个意思——按「事实过期」
+             去理解会白担心一场。 -->
         <el-tag v-if="item.verification === 'stale'" size="small" type="warning" effect="plain">
-          可能已过期
+          来源已变
         </el-tag>
       </div>
       <p class="memory-row__body memory-row__body--clamp">{{ item.body }}</p>
-      <p class="memory-row__meta">
-        来自 {{ item.source.session || '本机' }} · {{ shortTime(item.created_at) }}
+      <!-- 「来自 session-fbb5df89-a57a-4f93-a645-8bc184dfa4b4」这种原文没人读得下去，
+           而设计 §2 又要求候选追得回是哪一次会话提的：短 id 在行里，完整 id 进 title。 -->
+      <p class="memory-row__meta" :title="item.source.session || ''">
+        来自{{ sessionText(item.source.session) }} · {{ shortTime(item.created_at) }}
       </p>
       <!-- C5：并排摆出冲突的那几条，**由用户自己留哪一条**（不由模型裁决）。 -->
       <MemoryConflict

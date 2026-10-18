@@ -28,9 +28,11 @@ const emit = defineEmits(['close', 'edit', 'toggle', 'remove']);
 const accepted = computed(() => props.row.state === 'accepted');
 /// 与列表行同一口径：项目记忆的标签写**具体项目名**（完整路径进 `title`），
 /// 次行仍给完整路径——弹窗宽，路径在这里是「这条属于哪个项目」的凭据。
-const projectName = computed(() => baseName(props.row.workspace_path) || '本项目');
+/// 路径缺失时兜底取**范围名**，理由与叫法见 `MemoryRow.vue` 同名 computed。
+const projectName = computed(() => baseName(props.row.workspace_path) || '项目记忆');
+/// 悬浮说明与标签取同一个兜底，否则悬停说明与可见文字各说一个名字。
 const scopeTitle = computed(() =>
-  props.row.scope === 'general' ? '所有项目都算' : props.row.workspace_path || '本项目'
+  props.row.scope === 'general' ? '所有项目都算' : props.row.workspace_path || '项目记忆'
 );
 </script>
 
@@ -57,10 +59,13 @@ const scopeTitle = computed(() =>
         <el-tag v-if="!accepted" size="small" effect="plain" type="info">已停用</el-tag>
       </div>
       <p class="memory-row__body">{{ row.body }}</p>
+      <!-- 与列表行同一个数、同一个说法：`use_count` 只由 `memory_read` 增加
+           （`memory/store.rs::read_and_note_use`），检索命中与「点开看看」都不计数。
+           写「模型读过」是为了不让它被读成「被注入过几次」。 -->
       <p class="memory-row__meta">
         {{ scopeText(row) }} · {{ sourcesText(row) }} ·
         {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
-        已用 {{ row.use_count }} 次
+        模型读过 {{ row.use_count }} 次
       </p>
     </div>
     <!-- 动作排在 `#footer` 里，容器挂 `.memory-actions`（flex + 8px 缝）与 `.dialog-actions`

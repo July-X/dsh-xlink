@@ -47,6 +47,14 @@ const jobsText = computed(() => jobsSummaryText(memoryStore.jobs));
 const recentJobs = computed(() => (memoryStore.jobs && memoryStore.jobs.jobs) || []);
 const enabled = computed(() => !!(status.value && status.value.use_approved));
 
+/// 「一次最多注入几条」的那半句。**数来自后端**（`MemoryStatus.max_hits` ←
+/// `query.rs::MAX_HITS`），前端不抄：抄一个数就会在它变的时候静默说谎，而没有任何判据
+/// 会因此变红——同一个形状刚在插件的注入预算上发生过一次（3 → 8）。状态还没读回来时
+/// 只说「条数有上限」，不猜一个数。
+const injectLimitText = computed(() =>
+  status.value && status.value.max_hits ? `最多 ${status.value.max_hits} 条` : '条数有上限'
+);
+
 /// 注入链路的内置插件（`xlink-memory`）。**按 id 取，不取第一项**：
 /// 取第一项会在登记表里多一个插件时静默指向别人。
 const injectPlugin = computed(() => builtinById('memory'));
@@ -59,15 +67,20 @@ function enableInjection() {
 
 /// 生效语义里**「什么时候才生效」的那半**，收进 ⓘ。`switchEffectText` 那句一个字没改
 /// （判据钉着它），这里只是把同一事实的条件那半摆到 tooltip 上——行内那句跟在开关右侧、
-/// 占页头第二行，三行长文把页面往下推，而「预算用尽要等新会话」是想问时才问的。 */
+/// 占页头第二行，三行长文把页面往下推，而「预算用尽要等新会话」是想问时才问的。
+///
+/// **第一句必须是「这个开关管什么」**：它同时管记忆注入与自动提取（`jobs_routes.rs` 的
+/// `enqueue` 在 `!use_approved` 时回 `disabled`），而开关自己的文字只写了「记忆」——
+/// 想停掉自动提取的人找不到它，想留着提取的人也不知道关掉会一起停。
 function switchEffectDetail(status) {
+  const scope = '这个开关同时管两件事：记忆注入与自动提取。';
   if (status && status.effect_pending) {
-    return '插件每一步都会问一次（通常几秒内）；本会话注入次数用尽时要等新会话。';
+    return `${scope}插件每一步都会问一次（通常几秒内）；本会话允许的注入次数用尽后要等压缩或新会话。`;
   }
   if (status && !status.effect_pending) {
-    return '插件已经按这个开关来过一次，不需要再做什么。';
+    return `${scope}插件已经按这个开关来过一次，不需要再做什么。`;
   }
-  return '改动通常下一步检索就生效；本会话注入次数用尽时要等新会话。';
+  return `${scope}改动通常下一步检索就生效；本会话允许的注入次数用尽后要等压缩或新会话。`;
 }
 
 /// 详情弹窗记的是**行的 id**，不是那个行对象。`setMemoryState` / `removeMemory` 之后都会
@@ -100,7 +113,7 @@ onMounted(() => {
       <div class="page-head__text">
         <h1 class="page-title">记忆</h1>
         <p class="page-desc">
-          保存长期有效的偏好与项目约定。打开右侧开关后，工作台的相关会话会带上这些内容；模型只能读取与提出候选，不能自己批准。
+          保存长期有效的偏好与项目约定。打开「使用已批准的记忆」开关后，工作台按当前这句话挑出相关的带进会话（{{ injectLimitText }}），固定项优先带上；没被挑中的，模型可以自己按关键词查。模型只能读取与提出候选，不能自己批准。
         </p>
       </div>
       <!--
@@ -176,7 +189,9 @@ onMounted(() => {
               {{
                 memoryStore.listScope === 'candidates'
                   ? `待确认（${candidates.length}）`
-                  : `记忆（${allMemories.length}）`
+                  : memoryStore.listScope === 'all'
+                    ? `记忆（${allMemories.length}）`
+                    : `记忆（${list.length} / 共 ${allMemories.length}）`
               }}
               <!--
                 候选那一档的常驻说明收进 ⓘ：它只在切到「待确认」时需要，常驻四行会把
@@ -282,7 +297,7 @@ onMounted(() => {
             最近导出：{{ memoryStore.lastExport.path }}（{{ memoryStore.lastExport.memories }} 条记忆、{{
               memoryStore.lastExport.candidates
             }}
-            条候选）
+            条候选；一次性快照，不参与检索）
             <el-button text type="primary" @click="openExports">打开导出目录</el-button>
           </p>
           <!--
@@ -379,8 +394,8 @@ onMounted(() => {
                 <template #content>
                   <!-- prettier-ignore -->
                   <div class="card-info-tooltip">
-                    自动提取（P2）的任务表：聊完一轮后插件排一条、壳发一个租约、模型提完再交回来。<br />
-                    <strong>一条记忆都没提取出来时先看这里</strong>——失败那行会写明是哪一步（`read` / `model` / `parse` / `submit`）。<br />
+                    自动提取的任务表：聊完一轮后插件排一条、壳发一个租约、模型提完再交回来；提出来的先进「待确认」，你点了保存才成为记忆。它跟着上面那个开关一起开关。<br />
+                    <strong>一条记忆都没提取出来时先看这里</strong>——失败那行会写明卡在哪一步（读取会话 / 切分片段 / 模型调用 / 解析输出 / 提交候选 / 已取消）。<br />
                     完整留痕在「查看日志」的 memory-jobs 标签下。
                   </div>
                 </template>
@@ -420,10 +435,10 @@ onMounted(() => {
           <p class="memory-hint">
             {{
               memoryStore.previewQuery
-                ? '用上一次编辑过的标题与关键词当查询，看这次会注入哪几条。'
+                ? '拿你上次在编辑器里填的标题与关键词当查询，看这次会注入哪几条（固定项排在最前）。'
                 : '先在编辑器里填标题或关键词，再回来点「试一次」。'
             }}
-            {{ memoryStore.preview ? `命中 ${memoryStore.preview.hits.length} 条，共 ${memoryStore.preview.total_bytes} 字节。` : '' }}
+            {{ memoryStore.preview ? `会注入 ${memoryStore.preview.hits.length} 条，共 ${memoryStore.preview.total_bytes} 字节。` : '' }}
           </p>
           <pre v-if="memoryStore.preview && memoryStore.preview.text" class="memory-preview">{{ memoryStore.preview.text }}</pre>
           <p v-else-if="memoryStore.preview && !memoryStore.preview.enabled" class="memory-hint">

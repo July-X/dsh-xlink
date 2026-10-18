@@ -155,12 +155,29 @@ export function shortTime(value) {
 }
 
 /// 范围的中文标签：通用偏好带一句「所有项目」，项目记忆带上路径（路径是它的身份）。
+///
+/// **写「项目记忆」不写「本项目」**：这条记录可能属于任意一个工作区，而编辑器里那个
+/// 下拉让用户自己选路径——选中的未必是「当前项目」。列表筛选那一档叫「按项目」，两个
+/// 名字指同一件事时用户没法判断它们是不是一个东西（ui/AGENTS.md：同一屏里同一个东西
+/// 只能有一个名字）。
 export function scopeText(record) {
   if (!record || record.scope === 'general') return '通用偏好（所有项目）';
-  return record.workspace_path ? `本项目 · ${record.workspace_path}` : '本项目';
+  return record.workspace_path ? `项目记忆 · ${record.workspace_path}` : '项目记忆';
+}
+
+/// 候选行的来源会话：只给短 id，完整 id 进 `title`（照项目路径那条先例——列表里看得懂，
+/// 要追查时一个字没少）。**不能只写「来自工作台」**：设计 §2 要求候选能追回是哪一次会话
+/// 提的，而 `session-fbb5df89-a57a-4f93-a645-8bc184dfa4b4` 直接铺在行里没人读得下去。
+export function sessionText(id) {
+  const raw = String(id || '').trim();
+  if (!raw) return '本机';
+  const bare = raw.startsWith('session-') ? raw.slice('session-'.length) : raw;
+  return `会话 ${bare.slice(0, 8)}`;
 }
 
 /// 来源种类的中文标签（§2：列表要显示来源）。
+/// 认不出的取值**原样显示**（与 `jobStateText` 同一个口径）：后端加一种来源时，
+/// 用户看到的是那个新词而不是一句「未知来源」——后者会把「面板不认识」说成「数据没有来源」。
 export function sourceText(kind) {
   if (kind === 'user-manual') return '面板手动';
   if (kind === 'session') return '会话提出';
@@ -177,6 +194,9 @@ export function sourcesText(row) {
 }
 
 /// 验证范围的中文标签（§2：列表要显示验证状态）。**不是置信分数**，只三档。
+/// 三档的名字与注入给模型的说法**逐字相同**（`src-tauri/src/memory/query.rs::verification_label`）：
+/// 模型眼里叫「已过期」、面板上叫别的，用户就没法拿面板上的话解释「它为什么照做了一条
+/// 我自己标过期的约定」。认不出的取值原样显示（同 `sourceText` 的口径）。
 export function verificationText(value) {
   if (value === 'verified') return '已验证';
   if (value === 'unverified') return '未验证';
@@ -192,7 +212,7 @@ export function verificationText(value) {
  */
 export function injectionText(note) {
   if (!note || !note.enabled) return '开关关着，这一回合没有注入';
-  if (!note.hits || !note.hits.length) return '没有命中';
+  if (!note.hits || !note.hits.length) return '没有匹配到记忆';
   return `注入了 ${note.hits.length} 条：${note.hits.join('、')}`;
 }
 
@@ -218,21 +238,24 @@ function applyView(view) {
 ///
 /// 事实是分层的，所以这句话是**条件式**的：
 /// · 插件在**每一步**都会问一次 `/context`（`pre-step`），所以开关的改动**通常下一轮就生效**；
-/// · 但注入次数有会话级预算（`MAX_INJECTIONS_PER_SESSION`），**预算用尽**之后它不再问了——
-///   那时改动要等**新会话**才被看见。
+/// · 但注入有会话级预算（`MAX_INJECTIONS_PER_SESSION`，只数**内容真的变了**的那几次），
+///   **用尽之后**它不再换正文——那时改动要等**压缩**（压缩会把预算清零）或**新会话**。
 /// 面板不知道这个会话还剩几次，所以**两个都写上**：与其给一句听起来干脆但可能不真的话，
 /// 不如给一句用户能自己对照的。精确的「处理中」需要记住「设置改动的时间」与「插件最后一次
 /// 调用的时间」，前者是 schema 字段（见清单 E6 与「schema 变更窗口」），在那之前保守措辞更诚实。
+///
+/// **不写死次数**（曾经写过「上限 8 次」）：那个常量在插件里（`policy.js`），壳侧没有把它
+/// 下发（`MemoryStatus` 里没有这个字段），前端写死一个数就会在下次调预算时静默过期。
 export function switchEffectText(status) {
   // **有了确切的判据就用确切的**（E6）：壳侧记着「插件最后一次调用」与「开关最后一次改动」
   // 两个时刻，`effect_pending` 就是「改过、而插件还没再来问」。
   if (status && status.effect_pending) {
-    return '处理中：改动还没被运行中的工作台确认。插件每一步都会问一次（通常几秒内），但本会话注入次数用尽时要等新会话。';
+    return '处理中：改动还没被运行中的工作台确认。插件每一步都会问一次（通常几秒内），但本会话允许的注入次数用尽后要等压缩或新会话。';
   }
   if (status && !status.effect_pending) {
     return '已生效：插件已经按这个开关来过一次。';
   }
-  return '还没读到状态：改动通常下一步检索就生效，本会话注入次数用尽时要等新会话。';
+  return '还没读到状态：改动通常下一步检索就生效；本会话允许的注入次数用尽后要等压缩或新会话。';
 }
 
 /// 提取任务卡片上那句话。**纯函数**，判据直接测它（面板只负责把它放上去）。
@@ -250,12 +273,48 @@ export function jobsSummaryText(view) {
   return `待跑 ${pending} · 在跑 ${running} · 完成 ${done} · 失败 ${failed}`;
 }
 
+/// 任务状态的中文标签。**与 `jobsSummaryText` 用同一套词**：那张摘要写「待跑 / 在跑 /
+/// 完成 / 失败」，而这一行原先把 `pending` / `running` 原样拼出来——同一屏里同一件事
+/// 两个名字，中文界面里还冒出一串英文。取值来自 `src-tauri/src/memory/jobs.rs` 的四个常量。
+export function jobStateText(state) {
+  if (state === 'pending') return '待跑';
+  if (state === 'running') return '在跑';
+  if (state === 'done') return '完成';
+  if (state === 'failed') return '失败';
+  return state || '未知';
+}
+
+/// 失败阶段的中文标签。**与 `plugins/memory/host/run.js` 的 `STAGES` 同一套值**：
+/// 插件把 `${stage}：${reason}` 原样拼进错误串（`host/index.js` 的失败路径），壳照抄进
+/// `jobs.json`，于是中文句子里会夹一个 `model` / `parse`。这里是**显示层**的映射，
+/// 认不出的阶段原样留着——将来插件加阶段时至少看得见，不会静默吞掉。
+export function stageText(stage) {
+  if (stage === 'read') return '读取会话';
+  if (stage === 'slice') return '切分片段';
+  if (stage === 'model') return '模型调用';
+  if (stage === 'parse') return '解析输出';
+  if (stage === 'submit') return '提交候选';
+  if (stage === 'cancelled') return '已取消';
+  return stage || '';
+}
+
+/// 错误串开头那截英文阶段名换成中文（`model：…` → `模型调用：…`）。
+/// 只在**整串以一个已知阶段名开头**时替换，其余原样拼上去——错误文本是插件写的，
+/// 这里不做正则大扫除，免得把正文里本来就有的英文也一起改掉。
+function errorText(error) {
+  if (!error) return '';
+  const match = /^([a-z]+)：([\s\S]*)$/.exec(String(error));
+  if (!match || stageText(match[1]) === match[1]) return `：${error}`;
+  return `：${stageText(match[1])}：${match[2]}`;
+}
+
 /// 一条任务在卡片上的那行字：状态 + 冻结游标 + 失败原因。
+///
+/// `cursor` 是**会话事件的序号**（`job.key.cursor`），不是「第几条任务」——写成 `#12`
+/// 没人猜得到它是什么，而任务失败时它正是「哪一段对话没被提出来」的唯一线索。
 export function jobLine(job) {
-  const state = job?.state ?? '未知';
   const cursor = job?.key?.cursor ?? 0;
-  const error = job?.error ? `：${job.error}` : '';
-  return `#${cursor} ${state}${error}`;
+  return `第 ${cursor} 条事件 · ${jobStateText(job?.state)}${errorText(job?.error)}`;
 }
 
 /// 读提取任务表。**失败不打扰用户**（与工作区列表、最近注入同一条纪律）：它是辅助显示。
@@ -481,7 +540,18 @@ export function setMemoryEnabled(enabled) {
       .then((status) => {
         if (memoryStore.view) memoryStore.view.status = status;
         memoryStore.status = status;
-        toast(enabled ? '已打开：新会话会带上相关记忆' : '已关闭：不再注入记忆', 3000, 'success');
+        // **开关管两件事，两句话都要说**（`jobs_routes.rs` 的 `enqueue` 在
+        // `!use_approved` 时回 `disabled`）：只说「会带上相关记忆」会让想停掉自动提取的
+        // 用户找不到那个开关，也会让想留提取的人以为关掉它只影响注入。
+        // 措辞与行内那句 `switchEffectText` 对齐——**不再说「新会话」**：改动通常下一步
+        // 检索就生效，只有预算用尽时才要等压缩或新会话（面板分不清，所以不把话说死）。
+        toast(
+          enabled
+            ? '已打开：工作台会按需带上相关记忆，自动提取也一起打开'
+            : '已关闭：不再注入记忆，也不再排自动提取任务',
+          3000,
+          'success'
+        );
       })
       .catch((error) => toastError('切换开关失败：' + error, 6000))
   );
