@@ -2165,8 +2165,12 @@ fn write_profile_json(profile_path: &Path, root: &serde_json::Value) -> Result<(
 /// 的契约，不只是接线需要的东西）。这里额外只做一件 `seed` 不做的事：在 profile
 /// 目录里放一份 `cordis.patch.yml` 占位——那是 profile 级 patch 层，与
 /// `prepare_instance` 写在 `$DSH_HOME/` 根下的那一份是两个文件。
-fn ensure_profile(profile_path: &Path, profile: &str) -> Result<(), AppError> {
-    crate::kernel::profile_manifest::seed(profile_path, profile).map_err(|e| {
+fn ensure_profile(
+    profile_path: &Path,
+    profile: &str,
+    template: Option<&[String]>,
+) -> Result<(), AppError> {
+    crate::kernel::profile_manifest::seed(profile_path, profile, template).map_err(|e| {
         AppError::Io(format!(
             "无法初始化 profile 目录 {}：{e}",
             profile_path.display()
@@ -2326,7 +2330,19 @@ pub fn ensure_wiring_filtered(
     // 必须指同一处。混用两处会得到「物化在沙盒、接线在默认实例」这种状态，
     // 而它表面上完全正常——只是被接线的实例拿不到插件。
     let profile_path = paths::instance_profile_dir(family, instance_id, &settings.profile);
-    ensure_profile(&profile_path, &settings.profile)?;
+    // profile 模板与内核启动用同一份来源：先取当前活动内核里的官方模板，
+    // 读不到再让 `profile_manifest` 用内置兜底（升级内核后上游新增的默认
+    // bundle 会随第一次接线写进新清单）。
+    let active_version = kernel::lifecycle::read_active(data_dir);
+    let profile_template = active_version.as_deref().and_then(|version| {
+        let root = kernel::lifecycle::kernel_dir(data_dir, version);
+        crate::kernel::profile_manifest::installed_template_bundles(&root, &settings.profile)
+    });
+    ensure_profile(
+        &profile_path,
+        &settings.profile,
+        profile_template.as_deref(),
+    )?;
 
     // 物化活动实例，再据插件清单决定 bundle 层；没有活动实例且仍有插件时
     // 等内核装好再接线（store 为空则继续，让下面的清退逻辑跑掉残留）。
@@ -2339,12 +2355,12 @@ pub fn ensure_wiring_filtered(
     // 越积越多。
     let mut specs: BTreeMap<String, WireSpec> = BTreeMap::new();
     let mut failures: Vec<String> = Vec::new();
-    match kernel::lifecycle::read_active(data_dir) {
+    match active_version.as_deref() {
         Some(active) => {
             for item in store.items.iter().filter(|item| allow(item)) {
                 let result = ensure_store_dependencies(data_dir, item, pnpm_exe, on_progress)
-                    .and_then(|_| refresh_store_peers(data_dir, item, &active))
-                    .and_then(|_| materialize_one_for_instance(family, instance_id, item, &active));
+                    .and_then(|_| refresh_store_peers(data_dir, item, active))
+                    .and_then(|_| materialize_one_for_instance(family, instance_id, item, active));
                 match result {
                     Ok(actual) => {
                         let prefix = if actual == "copy" {
@@ -2376,7 +2392,12 @@ pub fn ensure_wiring_filtered(
     let mut root = read_profile_json(&profile_path)?
         .ok_or_else(|| AppError::Plugin("profile 尚未初始化".into()))?;
     let previous = root.clone();
-    let outcome = wire_manifest(&mut root, &specs, &settings.profile)?;
+    let outcome = wire_manifest(
+        &mut root,
+        &specs,
+        &settings.profile,
+        profile_template.as_deref(),
+    )?;
     let changed = outcome.changed;
     failures.extend(outcome.conflicts);
 
@@ -2943,6 +2964,7 @@ fn wire_manifest(
     root: &mut serde_json::Value,
     specs: &BTreeMap<String, WireSpec>,
     profile: &str,
+    template: Option<&[String]>,
 ) -> Result<WireOutcome, AppError> {
     let mut changed = false;
     let mut conflicts: Vec<String> = Vec::new();
@@ -3003,7 +3025,9 @@ fn wire_manifest(
         .filter(|entry| entry.bundle)
         .map(|entry| entry.name.clone())
         .collect();
-    let template: Vec<String> = crate::kernel::profile_manifest::template_bundles(profile);
+    let template: Vec<String> = template
+        .map(<[String]>::to_vec)
+        .unwrap_or_else(|| crate::kernel::profile_manifest::template_bundles(profile));
     let mut next: Vec<String> = template.clone();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let bundles = root
@@ -5199,7 +5223,7 @@ mod tests {
             },
         );
 
-        let outcome = wire_manifest(&mut root, &specs, "web").expect("wire");
+        let outcome = wire_manifest(&mut root, &specs, "web", None).expect("wire");
         assert!(outcome.changed);
         assert_eq!(outcome.conflicts.len(), 1, "必须报告一次同名冲突");
         assert!(
@@ -5247,7 +5271,7 @@ mod tests {
             },
         );
 
-        let changed = wire_manifest(&mut root, &specs, "web")
+        let changed = wire_manifest(&mut root, &specs, "web", None)
             .expect("wire")
             .changed;
         assert!(changed);
@@ -5270,7 +5294,7 @@ mod tests {
         assert!(!bundles.contains(&"plain-plugin")); // 非 bundle 不进层
         assert!(!bundles.contains(&"old-plugin"));
 
-        let changed = wire_manifest(&mut root, &specs, "web")
+        let changed = wire_manifest(&mut root, &specs, "web", None)
             .expect("wire again")
             .changed;
         assert!(!changed);
@@ -5326,7 +5350,7 @@ mod tests {
             },
         });
         let specs = BTreeMap::new();
-        let changed = wire_manifest(&mut root, &specs, "web")
+        let changed = wire_manifest(&mut root, &specs, "web", None)
             .expect("wire")
             .changed;
         assert!(changed);
@@ -5370,7 +5394,7 @@ mod tests {
             },
         });
         let specs = BTreeMap::new();
-        let changed = wire_manifest(&mut root, &specs, "web")
+        let changed = wire_manifest(&mut root, &specs, "web", None)
             .expect("wire")
             .changed;
         assert!(changed); // gone-plugin 残留被清退
@@ -5391,7 +5415,7 @@ mod tests {
         );
         // 再次调和（下一次内核启动）必须是稳态：清单不再变动，否则官方插件
         // 开关会在每次重启时被反复改写。
-        let changed = wire_manifest(&mut root, &specs, "web")
+        let changed = wire_manifest(&mut root, &specs, "web", None)
             .expect("wire again")
             .changed;
         assert!(!changed);
@@ -5423,7 +5447,7 @@ mod tests {
                 bundle: true,
             },
         );
-        let changed = wire_manifest(&mut root, &specs, "web")
+        let changed = wire_manifest(&mut root, &specs, "web", None)
             .expect("wire")
             .changed;
         assert!(changed);

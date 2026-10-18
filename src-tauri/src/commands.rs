@@ -29,7 +29,6 @@ use std::sync::{mpsc, Mutex, OnceLock};
 
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, State, Webview};
 use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowBuilder};
 use url::Url;
@@ -1161,9 +1160,7 @@ fn bounded_health_text(
 /// Shell 的覆盖都能胜出。第二个
 /// 注入脚本（`pullstring-launcher.js`）渲染一个浮在工作台左上角的拉
 /// 绳小台灯；拉动它会调用 [`focus_main_shell`] 把管理窗口提到当前桌
-/// 面之上。缺失 source map 则由打开窗口前的
-/// `kernel::prepare_workbench_source_maps` 在服务端文件层补齐，避免依赖
-/// 无法覆盖 DevTools 内部网络请求的页面脚本。
+/// 面之上。
 /// 解析工作台 webview 应该加载的 URL，优先使用内核自带的 launch-token
 /// URL。
 ///
@@ -1309,7 +1306,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         // 侧栏面板、终端），用户观察到的就是「销毁旧的、重新拉起新的」。
         // 因此只有当内核重启签发了新的 launch token（日志里的入口 URL 与
         // 本次加载所用的 URL 不同）时才导航，否则只做 show + unminimize +
-        // focus，并跳过探针与 source map 准备这些慢路径。
+        // focus，并跳过探针这些慢路径。
         if let Some(existing) = app.get_webview_window("harness") {
             let loaded = crate::lock(&state.harness_url).clone();
             let (family, instance_id) = shell::instance::resolve_default();
@@ -1339,18 +1336,17 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
             return Ok(());
         }
 
-        kernel::lifecycle::prepare_workbench_source_maps(&data_dir);
         let resolved = kernel_workbench_url(&data_dir, settings.port)?;
         let url = Url::parse(&resolved).map_err(|e| e.to_string())?;
         *crate::lock(&state.harness_url) = Some(resolved);
 
         let handle = app.clone();
-        let link_opener = handle.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("dsh-open-harness".into())
             .spawn(move || {
                 use crate::shell::window::{window_title, CHROME_BACKDROP};
+                let popup_app = handle.clone();
                 let result =
                     WebviewWindowBuilder::new(&handle, "harness", WebviewUrl::External(url))
                         .title(window_title("工作台"))
@@ -1365,31 +1361,21 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                         .theme(crate::shell::appearance::initial_theme(
                             crate::shell::appearance::WORKBENCH_LABEL,
                         ))
-                        // 内核 Web 前端把会话内容里的网页地址渲染成
-                        // `<a target="_blank" rel="noopener noreferrer">`，
-                        // 交给「浏览器打开新标签页」的默认行为。但 Tauri
-                        // webview 默认拒绝一切 window.open 请求：wry 在没有
-                        // 注册 new-window handler 时，macOS 的 WKWebView
-                        // UIDelegate 返回 nil（取消导航），Windows 的
-                        // WebView2 把 NewWindowRequested 标记为已处理——
-                        // 点击因此静默失效。这里显式接住新窗口请求：http(s)
-                        // 外链交给系统默认浏览器；其余 scheme（about:blank
-                        // 等程序化调用）一律拒绝，不在壳内长出无主窗口。
-                        // 不返回 Allow：默认实现会在壳内开一个裸 NSWindow /
-                        // WebView2 窗口，绕开本壳的窗口管理与托盘策略。
-                        .on_new_window(move |link, _features| {
-                            if matches!(link.scheme(), "http" | "https") {
-                                use tauri_plugin_opener::OpenerExt;
-                                if let Err(error) = link_opener
-                                    .opener()
-                                    .open_url(link.to_string(), None::<&str>)
-                                {
-                                    eprintln!(
-                                        "dsh-xlink: 无法用系统浏览器打开链接 {link}：{error}"
-                                    );
-                                }
-                            }
-                            NewWindowResponse::Deny
+                        // 内核 `window.open`（登录预开授权页 / 终端链接 / 内核本机
+                        // 页面）由 `harness_window::new_window_response` 统一接管：
+                        // about:blank 与内核本机页面建一扇壳托管的临时窗口
+                        // （`NewWindowResponse::Create`），其它外链交系统浏览器，
+                        // 其余 scheme 拒绝。同一条建窗链的另一半在
+                        // `harness_window::build`，别只改一处。
+                        .on_new_window(move |link, features| {
+                            harness_window::new_window_response(&popup_app, link, features)
+                        })
+                        // 内核写 `document.title`（会话名 — 产品名）时同步原生标题栏。
+                        .on_document_title_changed(|window, title| {
+                            let _ = window.set_title(&harness_window::title_from_document(
+                                &title,
+                                "工作台",
+                            ));
                         })
                         .initialization_script(include_str!("harness/titlebar-pulse.js"))
                         .initialization_script(include_str!("harness/pullstring-launcher.js"))
@@ -1405,18 +1391,22 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                         .initialization_script(include_str!("harness/context-menu-fallback.js"))
                         .on_page_load({
                             let handle = handle.clone();
-                            move |_webview, payload| {
+                            move |webview, payload| {
                                 use tauri::webview::PageLoadEvent;
+                                let started = payload.event() == PageLoadEvent::Started;
                                 let state = handle.state::<AppState>();
-                                harness_window::observe(
-                                    &state,
-                                    payload.event() == PageLoadEvent::Started,
-                                );
+                                harness_window::observe(&state, started);
+                                if !started {
+                                    // 重载会清掉 `data-fullscreen`，加载完成后补一次。
+                                    harness_window::sync_fullscreen_on_load(&webview);
+                                }
                             }
                         })
                         .build()
-                        .map(|_| ())
                         .map_err(|e| format!("无法创建工作台窗口：{e}"));
+                let result = result.map(|window| {
+                    harness_window::attach_fullscreen_bridge(&window);
+                });
                 if let Err(ref e) = result {
                     eprintln!("dsh-xlink: failed to open harness window: {e}");
                 }

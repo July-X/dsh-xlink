@@ -37,8 +37,6 @@
     var gradient =
       "linear-gradient(90deg, transparent 0%, " + HALO + " 15%, " + PALETTE.hex + " 50%, " + HALO + " 85%, transparent 100%)";
     return [
-      /* 覆盖页面自带的顶部伪元素，只保留 Shell 的品牌条带。 */
-      "body::before { content: none !important; display: none !important; }",
       "body::after {",
       "  content: '' !important;",
       "  position: fixed !important;",
@@ -54,8 +52,6 @@
       "  box-shadow: none !important;",
       "  animation: none !important;",
       "}",
-      /* 工作台的第二条装饰线由页面自身提供，静态模式下隐藏以免重复绘制。 */
-      "body > [data-titlebar-pulse='2'] { display: none !important; }",
     ].join("\n");
   }
 

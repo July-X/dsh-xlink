@@ -236,6 +236,16 @@ pub trait KernelAdapter: Send + Sync {
 pub struct DshAdapter;
 
 impl DshAdapter {
+    /// 已安装内核自带的 profile 模板（读不到 ⇒ `None`，调用方用内置兜底）。
+    fn installed_profile_template(record: &InstanceRecord) -> Option<Vec<String>> {
+        let version = record.kernel_version.as_deref()?;
+        let root = crate::kernel::lifecycle::kernel_dir(
+            &crate::kernel::lifecycle::data_dir(&record.kernel_family),
+            version,
+        );
+        crate::kernel::profile_manifest::installed_template_bundles(&root, &record.profile)
+    }
+
     pub const KERNEL_BIN_REL: &'static str = "node_modules/@deepseek-ai/dsh/lib/bin.js";
 
     /// 给定实例返回 DSH 进程要使用的 `DSH_HOME`。
@@ -311,9 +321,28 @@ impl KernelAdapter for DshAdapter {
         // 退出，见该模块文档的实测矩阵）。这里此前落的是一个不带 bundle 的 stub，
         // 于是每一次新建实例——包括每一次预检沙盒——都起不来内核。
         let home = Self::dsh_home_for(record);
+        // 新实例的 profile 模板优先取**已安装内核**里的真实模板：上游随版本
+        // 增删默认 bundle 时壳不用跟着改；读不到时退回内置兜底。两者不同时留
+        // 一条日志，升级内核后「这层官方能力是谁加进来的」可查。
+        let template = Self::installed_profile_template(record);
+        if let Some(bundles) = &template {
+            let fallback = profile_manifest::template_bundles(&record.profile);
+            if bundles != &fallback {
+                crate::shell::shell_events::record(
+                    "profile-template",
+                    &format!(
+                        "profile {} 按内核模板落盘：{}（内置兜底：{}）",
+                        record.profile,
+                        bundles.join(", "),
+                        fallback.join(", ")
+                    ),
+                );
+            }
+        }
         profile_manifest::seed(
             &home.join("profiles").join(&record.profile),
             &record.profile,
+            template.as_deref(),
         )
         .map_err(|e| AdapterError::Io(format!("无法准备实例 profile 目录：{e}")))?;
         // dsh-app-boot 要求 `cordis.patch.yml`（可缺席）是**顶层 YAML 数组**

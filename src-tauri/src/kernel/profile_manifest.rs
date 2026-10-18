@@ -31,7 +31,16 @@ use serde_json::{json, Value};
 
 use crate::shell::process::atomic_write;
 
-/// 新建 profile 时的模板 bundle，对应内核的 profile 模板。
+/// 安装树里官方 profile 模板所在文件（`PROFILE_TEMPLATES` 就在这个 bundle
+/// 的入口里，随内核版本发布）。
+const APP_BOOT_ENTRY_REL: &str = "node_modules/@deepseek-ai/dsh-app-boot/lib/index.js";
+
+/// 内置**兜底**模板：读不到安装树时用，内容与内核 `dsh-app-boot` 的
+/// `PROFILE_TEMPLATES` 保持一致（当前内核版本核对过）。
+///
+/// 新实例优先用 [`installed_template_bundles`] 从**已安装内核**里读真实模板：
+/// 上游随版本增删默认 bundle 时，抄在这里的这份只能靠人跟，而漏掉的那一层
+/// 会让新实例静默少一批官方能力（2026-10-18 分析）。
 pub fn template_bundles(profile: &str) -> Vec<String> {
     match profile {
         "web" => vec![
@@ -46,13 +55,57 @@ pub fn template_bundles(profile: &str) -> Vec<String> {
     }
 }
 
+/// 从已安装内核里读官方 profile 模板的 bundle 列表（best-effort）。
+///
+/// 读不到文件、源码形状变了、或该 profile 没有模板时返回 `None`，调用方退回
+/// [`template_bundles`]——兜底路径永远可用。只读取文本，不执行内核代码。
+pub fn installed_template_bundles(kernel_root: &Path, profile: &str) -> Option<Vec<String>> {
+    let source = std::fs::read_to_string(kernel_root.join(APP_BOOT_ENTRY_REL)).ok()?;
+    parse_template_bundles(&source, profile)
+}
+
+/// 从 `dsh-app-boot` 的入口源码里取 `PROFILE_TEMPLATES` 中某个 profile 的
+/// `bundles` 数组。
+///
+/// 先定位 `PROFILE_TEMPLATES` 再在它之后找键，避免误命中别处的 `web:`；
+/// 键名兼容裸标识符（`web:`）与带引号（`"sdk-minimal":`）两种写法。
+/// 解析失败返回 `None`，由调用方兜底。
+fn parse_template_bundles(source: &str, profile: &str) -> Option<Vec<String>> {
+    let templates_at = source.find("PROFILE_TEMPLATES")?;
+    let area = &source[templates_at..];
+    let quoted = format!("\"{profile}\"");
+    let plain = format!("{profile}:");
+    let key_at = area
+        .find(&plain)
+        .map(|at| at + plain.len())
+        .or_else(|| area.find(&quoted).map(|at| at + quoted.len()))?;
+    let rest = &area[key_at..];
+    let bundles_at = rest.find("bundles:")? + "bundles:".len();
+    let rest = &rest[bundles_at..];
+    let open = rest.find('[')?;
+    let close = open + rest[open..].find(']')?;
+    let mut bundles = Vec::new();
+    for piece in rest[open + 1..close].split(',') {
+        let name = piece.trim().trim_matches(|c| c == '"' || c == '\'');
+        if !name.is_empty() {
+            bundles.push(name.to_string());
+        }
+    }
+    (!bundles.is_empty()).then_some(bundles)
+}
+
 /// profile 目录的初始清单形状。
-pub fn initial_manifest(profile: &str) -> Value {
+///
+/// `template` 给定时用它（已安装内核的真实模板），否则用内置兜底模板。
+pub fn initial_manifest(profile: &str, template: Option<&[String]>) -> Value {
+    let bundles = template
+        .map(<[String]>::to_vec)
+        .unwrap_or_else(|| template_bundles(profile));
     json!({
         "name": format!("dsh-profile-{profile}"),
         "private": true,
         "dependencies": {},
-        "dsh": { "profile": { "bundles": template_bundles(profile) } }
+        "dsh": { "profile": { "bundles": bundles } }
     })
 }
 
@@ -86,7 +139,7 @@ pub fn repair(root: &mut Value, profile: &str) -> bool {
         // 不是对象（`null`、数组、字符串）：清单已经读不出任何东西，
         // 内核与接线都无从下手，换成初始形状。这不是「丢用户数据」——
         // 原值本来就不可能被任何人使用。
-        *root = initial_manifest(profile);
+        *root = initial_manifest(profile, None);
         return true;
     };
     let mut changed = false;
@@ -127,7 +180,7 @@ pub fn repair(root: &mut Value, profile: &str) -> bool {
 ///
 /// 读不出 JSON（文件损坏 / 半写入）时整份换成初始形状——那种清单内核本来就
 /// 读不了，留着只会让每次启动都失败，而用户没有任何手段自己修。
-pub fn seed(dir: &Path, profile: &str) -> std::io::Result<()> {
+pub fn seed(dir: &Path, profile: &str, template: Option<&[String]>) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let manifest = dir.join("package.json");
     let next = match std::fs::read_to_string(&manifest) {
@@ -139,9 +192,11 @@ pub fn seed(dir: &Path, profile: &str) -> std::io::Result<()> {
                     return finish(dir);
                 }
             }
-            Err(_) => initial_manifest(profile),
+            Err(_) => initial_manifest(profile, template),
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => initial_manifest(profile),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            initial_manifest(profile, template)
+        }
         Err(error) => return Err(error),
     };
     let text = serde_json::to_string_pretty(&next).expect("清单是我们自己造的 Value");
@@ -245,14 +300,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("package.json"), BROKEN_STUB).unwrap();
 
-        seed(&dir, "web").unwrap();
+        seed(&dir, "web", None).unwrap();
         let after: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("package.json")).unwrap())
                 .unwrap();
         assert!(!needs_repair(&after));
         // 第二次调用不该再动它。
         let text = std::fs::read_to_string(dir.join("package.json")).unwrap();
-        seed(&dir, "web").unwrap();
+        seed(&dir, "web", None).unwrap();
         assert_eq!(
             text,
             std::fs::read_to_string(dir.join("package.json")).unwrap()
@@ -273,5 +328,91 @@ mod tests {
                 "{profile} 的模板层缺 base"
             );
         }
+    }
+
+    /// 上游模板的源码形状（`PROFILE_TEMPLATES` 对象字面量）是解析契约。
+    /// 这里用与 `dsh-app-boot/lib/index.js` 相同的写法钉住它，并覆盖
+    /// 裸标识符 / 带引号两种键名。
+    #[test]
+    fn parses_bundles_out_of_the_official_profile_templates() {
+        let source = "const PROFILE_TEMPLATES = {\n\tacp: { bundles: [\"@deepseek-ai/dsh-base\", \"@deepseek-ai/dsh-acp-app\"] },\n\tweb: { bundles: [\"@deepseek-ai/dsh-base\", \"@deepseek-ai/dsh-web-app\"] },\n\t\"sdk-minimal\": { bundles: [\"@deepseek-ai/dsh-sdk-minimal\"] }\n};";
+        assert_eq!(
+            parse_template_bundles(source, "web"),
+            Some(vec![
+                String::from("@deepseek-ai/dsh-base"),
+                String::from("@deepseek-ai/dsh-web-app"),
+            ])
+        );
+        assert_eq!(
+            parse_template_bundles(source, "sdk-minimal"),
+            Some(vec![String::from("@deepseek-ai/dsh-sdk-minimal")])
+        );
+        assert_eq!(parse_template_bundles(source, "desktop"), None);
+        // 没有 `PROFILE_TEMPLATES` 的文本不猜。
+        assert_eq!(
+            parse_template_bundles("web: { bundles: [\"x\"] }", "web"),
+            None
+        );
+    }
+
+    /// 安装树里读到模板时按它落盘；读不到时退回兜底模板，种子永远能写出来。
+    #[test]
+    fn seeds_from_the_installed_kernel_template_with_fallback() {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-profile-template-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let kernel_root = dir.join("kernel");
+        let entry = kernel_root.join(APP_BOOT_ENTRY_REL);
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(
+            &entry,
+            "const PROFILE_TEMPLATES = { web: { bundles: [\"@deepseek-ai/dsh-base\", \"@deepseek-ai/dsh-web-app\", \"@deepseek-ai/dsh-new-layer\"] } };",
+        )
+        .unwrap();
+        let derived = installed_template_bundles(&kernel_root, "web").expect("derive template");
+        assert_eq!(
+            derived,
+            vec![
+                String::from("@deepseek-ai/dsh-base"),
+                String::from("@deepseek-ai/dsh-web-app"),
+                String::from("@deepseek-ai/dsh-new-layer"),
+            ]
+        );
+
+        let profile = dir.join("profile");
+        seed(&profile, "web", Some(&derived)).unwrap();
+        let manifest: Value =
+            serde_json::from_str(&std::fs::read_to_string(profile.join("package.json")).unwrap())
+                .unwrap();
+        let bundles: Vec<&str> = manifest["dsh"]["profile"]["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b.as_str())
+            .collect();
+        assert!(bundles.contains(&"@deepseek-ai/dsh-new-layer"));
+
+        // 安装树不存在 ⇒ None ⇒ 调用方退回兜底模板，seed 仍可用。
+        assert_eq!(
+            installed_template_bundles(&dir.join("missing-kernel"), "web"),
+            None
+        );
+        let fallback_profile = dir.join("fallback");
+        seed(&fallback_profile, "web", None).unwrap();
+        let fallback: Value = serde_json::from_str(
+            &std::fs::read_to_string(fallback_profile.join("package.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(fallback["dsh"]["profile"]["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b == "@deepseek-ai/dsh-web-app"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
