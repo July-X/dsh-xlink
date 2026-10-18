@@ -1042,6 +1042,10 @@ function productionRust(text) {
       // 名单不会有任何症状：参数名漂了是 ACL 静默拒 + `.catch` 吞掉，「右键没有
       // 菜单」看起来只像没做这个功能。
       'harness/context-menu-fallback.js',
+      // 2026-10-18 起外观镜像脚本也 invoke 壳（`set_window_appearance`）。漏进这份
+      // 名单没有任何症状：ACL 没授就是静默拒 + `.catch` 吞掉，症状只是「浅色系统
+      // 下选深色 → 标题栏还是白的」。
+      'harness/workbench-appearance.js',
     ].map((name) => ({
       name,
       source: readFileSync(join(srcDir, name), 'utf8'),
@@ -1294,6 +1298,7 @@ function productionRust(text) {
     //    照抄了健康脚本、忘了草稿脚本」这种漏，而那正是 2026-09-30 commit message
     //    里写着「查不出来」的那一种。
     const draftMisses = [];
+    const appearanceMisses = [];
     for (const file of rustFilesWithScripts) {
       const lines = productionRust(readFileSync(join(srcDir, file), 'utf8')).split('\n');
       lines.forEach((line, index) => {
@@ -1302,7 +1307,21 @@ function productionRust(text) {
         if (!window.includes('harness/harness-draft.js')) {
           draftMisses.push(`${file}:${index + 1} 注入了 harness-health.js 却没注入 harness-draft.js`);
         }
+        // 外观镜像脚本同理成对：漏一条链的症状是「那条链建出来的工作台，标题栏
+        // 不跟内核主题」——而自愈重建走的正是 `harness_window::build` 那条链。
+        if (!window.includes('harness/workbench-appearance.js')) {
+          appearanceMisses.push(
+            `${file}:${index + 1} 注入了 harness-health.js 却没注入 harness/workbench-appearance.js`,
+          );
+        }
       });
+    }
+    for (const message of appearanceMisses) {
+      fail(
+        'harness-wiring',
+        `${message}——那条建窗路径建出来的工作台，原生标题栏不会跟内核的 ui-theme 走。` +
+          '两条脚本是成对的，加一条路径要一起加。',
+      );
     }
     if (draftMisses.length > 0) {
       for (const message of draftMisses) {
@@ -2015,7 +2034,7 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
-// --- 18. 窗口标题与标题栏主题：一份名字 + 全员钉深色 ----------------------
+// --- 18. 窗口标题与标题栏主题：一份名字 + 壳自有窗口钉深色、工作台不钉 --------
 //
 // 2026-10-07 用户截图：主窗口标题栏深色，副窗（套餐用量）标题栏**浅色**——
 // 系统切浅色时原生标题栏跟着变白，而壳内内容恒为深色。两处成因各自独立：
@@ -2023,6 +2042,12 @@ if (ungatedOsImports.length > 0) {
 //     所以每一扇走原生装饰的窗口都在跟随系统；
 //   · 窗口标题是六处各自写死的字面量，主窗口那份还硬编码在 Vue 组件里。
 // 两条都只有真机窗口标题栏看得出来，单测与 UI 测试都够不着，所以放这里。
+//
+// 2026-10-18 用户复报的是**反方向**：工作台（内核 Web UI）里选「跟随系统」，
+// 系统浅色却仍渲染深色。那次修复把每扇窗都钉了深色，工作台也在内——而内核的
+// `system` 一档是它在页内用 `prefers-color-scheme` 解析的，壳钉住窗口就等于把
+// 内核的「跟随系统」关掉。现在这条的分界是**页面的主人是谁**：壳自有页面
+// （面板 + 三扇副窗）建窗钉深色、页面挂载后自己纠正；工作台一律不钉。
 
 {
   const conf = JSON.parse(read('src-tauri/tauri.conf.json'));
@@ -2150,17 +2175,54 @@ if (ungatedOsImports.length > 0) {
     }
   }
 
-  // ③ 每扇副窗都要自己钉标题与主题。**钉 Dark 不等于最终是深色**：主题真值在
-  //    localStorage，Rust 读不到，所以建窗时统一从 Dark 起步，页面挂载前
-  //    `applyTheme()` 再按实际主题纠正本窗（见 ui/src/shell/bridge.js 的
-  //    setWindowTheme）。少钉的那一扇没人纠正，浅色内容就顶着深色原生标题栏
-  //    （2026-10-07 用户截图）。两件事分别计数而不是逐扇配对：配对要看
-  //    「`.title(` 往后 30 行里有没有 `.theme(`」，那是个靠行距的启发式，往
-  //    builder 中间插几行参数就会静默失配。改成全局对账。
+  // ② 外观策略只有 `shell/appearance.rs` 一个出口，而且必须**按窗口**分流。
+  //
+  // 2026-10-18 用户实测：系统浅色 + 内核「设置 → 通用设置 → 外观 = 跟随系统」，
+  // 工作台仍渲染深色。根因不在内核——内核的 `system` 一档是它在**页内**用
+  // `matchMedia('(prefers-color-scheme: dark)')` 解析的（`dsh-client-ui-theme` 的
+  // README 与 boot 脚本），而壳把这扇窗的原生外观钉成了 dark：macOS 走 app 级
+  // `on_page_load` 里的逐窗口 NSAppearance，Windows 走建窗 `.theme(Some(Dark))`
+  // → tauri-runtime-wry → wry 的 WebView2 `SetPreferredColorScheme`。那个查询
+  // 于是恒为 dark。**替别人的页面决定明暗，就是把它的「跟随系统」关掉。**
+  //
+  // 行为由 `appearance.rs` 的单测钉（工作台恒 `None`、壳自有窗口照旧深色起步）；
+  // 这里钉接线形状——纯函数测得再准，把调用摘掉照样全绿。
+  const appearanceSrc = productionRust(read('src-tauri/src/shell/appearance.rs'));
+  if (!/pub fn owns_appearance\(/.test(appearanceSrc)) {
+    fail('window-chrome', 'appearance.rs 里没有 owns_appearance——「这扇窗的外观谁说了算」无从判断');
+  }
+  if (!/owns_appearance\(window\.label\(\)\)/.test(appearanceSrc)) {
+    fail(
+      'window-chrome',
+      '外观初始化没有按窗口 label 门控：app 级 on_page_load 会把工作台也钉成深色，内核「跟随系统」失效',
+    );
+  }
+  if (!/pub fn initial_theme\(\s*label: &str\s*\)/.test(appearanceSrc)) {
+    fail('window-chrome', 'initial_theme 不再接收窗口 label——调用方无法表达「这扇窗属于谁」');
+  }
+
+  // ③ 每扇带标题的窗都要声明建窗主题；**工作台是唯一例外，而且必须是例外**。
+  //    壳自有窗口：主题真值在 localStorage，Rust 读不到，所以建窗统一从 Dark
+  //    起步，页面挂载前 `applyTheme()` 按实际主题纠正本窗（见 ui/src/shell/bridge.js
+  //    的 setWindowTheme）。少钉的那扇没人纠正，浅色内容就顶着深色原生标题栏
+  //    （2026-10-07 用户截图）。工作台反过来：钉住它，内核就跟随不了系统（②）。
+  //
+  //    例外表达在**调用参数**上：两条工作台建窗链传 `WORKBENCH_LABEL`，
+  //    `initial_theme` 对它两个平台都返回 `None`。工作台随后由注入脚本
+  //    `workbench-appearance.js` 按内核声明的偏好镜像（`system` 不覆盖）。所以
+  //    全局对账照旧（每扇窗一次 `.theme`），另外单点三件：工作台那一支恰好两处、
+  //    不许写成字符串字面量、`.theme(` 不许绕过策略出口。
+  //
+  //    两件事分别计数而不是逐扇配对：配对要看「`.title(` 往后 30 行里有没有
+  //    `.theme(`」，那是个靠行距的启发式，往 builder 中间插几行参数就会静默失配。
   const popupFiles = [];
   let titles = 0;
   let hardcoded = 0;
   let themes = 0;
+  let workbenchThemes = 0;
+  const bypassedThemes = [];
+  const rawThemeLiterals = [];
+  const literalWorkbenchLabels = [];
   for (const rel of RUST_SOURCES) {
     const lines = read(rel).split('\n');
     for (let i = 0; i < lines.length; i += 1) {
@@ -2170,7 +2232,47 @@ if (ungatedOsImports.length > 0) {
       popupFiles.push(`${rel}:${i + 1}`);
       if (!/window_title\(/.test(lines[i])) hardcoded += 1;
     }
-    themes += (lines.join('\n').match(/\.theme\(crate::shell::appearance::initial_theme\(\)\)/g) ?? []).length;
+    const source = productionRust(lines.join('\n'));
+    themes += (source.match(/\.theme\(\s*(?:crate::shell::appearance::)?initial_theme\(/g) ?? []).length;
+    workbenchThemes += (
+      source.match(/initial_theme\(\s*crate::shell::appearance::WORKBENCH_LABEL\s*,?\s*\)/g) ?? []
+    ).length;
+    const bypassed = source.match(/\.theme\((?!\s*(?:crate::shell::appearance::)?initial_theme\()/g) ?? [];
+    if (bypassed.length) bypassedThemes.push(`${rel}×${bypassed.length}`);
+    // `Theme::Dark` / `Theme::Light` 字面量只许出现在策略出口里：绕过它的写法
+    // （`.theme(Some(Theme::Dark))`）正是这次故障的形状。
+    if (baseName(rel) !== 'appearance.rs') {
+      const literals = source.match(/Theme::(?:Dark|Light)/g) ?? [];
+      if (literals.length) rawThemeLiterals.push(`${rel}×${literals.length}`);
+    }
+    // 工作台 label 只许经常量传：写成字面量时，改 label 或写错一处都不会报错，
+    // 而症状是「工作台又被钉住了」或「壳自有窗口不再钉」——两头都静默。
+    const labelLiterals = source.match(/initial_theme\(\s*"harness"\s*\)/g) ?? [];
+    if (labelLiterals.length) literalWorkbenchLabels.push(`${rel}×${labelLiterals.length}`);
+  }
+  if (bypassedThemes.length) {
+    fail(
+      'window-chrome',
+      `有建窗主题绕过了 appearance::initial_theme：${bypassedThemes.join('、')}——钉住别人的页面就是关掉它的「跟随系统」`,
+    );
+  }
+  if (rawThemeLiterals.length) {
+    fail(
+      'window-chrome',
+      `生产代码里出现 Theme::Dark / Theme::Light 字面量（${rawThemeLiterals.join('、')}）：主题只许从 appearance::initial_theme 出`,
+    );
+  }
+  if (literalWorkbenchLabels.length) {
+    fail(
+      'window-chrome',
+      `工作台 label 被写成了字面量（${literalWorkbenchLabels.join('、')}）：请用 appearance::WORKBENCH_LABEL`,
+    );
+  }
+  if (workbenchThemes !== 2) {
+    fail(
+      'window-chrome',
+      `工作台建窗链应有 2 处传 WORKBENCH_LABEL（harness_window::build 与 commands::open_harness），实得 ${workbenchThemes} 处——少的那条会把工作台钉住，内核「跟随系统」失效`,
+    );
   }
   if (titles === 0) {
     fail('window-chrome', '一个 `.title(` 都没扫到——建窗路径被整体挪走了？检查项本身该跟着更新');
@@ -2184,13 +2286,13 @@ if (ungatedOsImports.length > 0) {
     if (themes !== titles) {
       fail(
         'window-chrome',
-        `建了 ${titles} 扇带标题的窗，只钉了 ${themes} 次 Theme::Dark——少钉的那扇没人按应用主题纠正，浅色内容会顶着系统默认的原生标题栏（2026-10-07 用户截图）`,
+        `建了 ${titles} 扇带标题的窗，只声明了 ${themes} 次建窗主题——少声明的那扇没人按应用主题纠正，浅色内容会顶着系统默认的原生标题栏（2026-10-07 用户截图）`,
       );
     }
   }
   if (hardcoded === 0 && themes === titles) {
     note(
-      `窗口标题统一走 window_title()，${titles} 扇副窗都声明了建窗兜底主题（页面上线后由 applyTheme → window.setTheme 纠正）`,
+      `窗口标题统一走 window_title()，${titles} 扇带标题的窗都声明了建窗主题（壳自有窗口由 applyTheme → window.setTheme 纠正；工作台传 WORKBENCH_LABEL 恒为不钉，明暗由内核说了算）`,
     );
   }
 }

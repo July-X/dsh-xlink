@@ -346,8 +346,8 @@ caption）都在下文逐条登记了理由。
   `NSWindow.appearance` 画，主题真值在 localStorage，Rust 建窗时读不到，于是 6 扇副窗一律
   `.theme(Some(tauri::Theme::Dark))`，浅色用户打开「模型用量」就得到**浅色内容配深色
   标题栏**。修法是 `applyTheme()` 顺手把同一个 `theme.value` 推给
-  `bridge.setWindowTheme()`，纠正**本窗口**；4 个壳自有的 capability 加
-  `core:window:allow-set-theme`。
+  `bridge.setWindowTheme()`，纠正**本窗口**；4 个壳自有的 capability 补齐
+  `set_window_appearance` 授权。
   - `window.setTheme()` 收的必须是 `theme.value` 本身，写死字面量会让「切了主题只换
     页面、不换标题栏」。
   - **只改本窗口的原生装饰，不批量改**（判据显式禁掉 `getAll` / `webview_windows` /
@@ -359,12 +359,12 @@ caption）都在下文逐条登记了理由。
     跳色）；副窗不调 `setTheme`（会互相触发）；事件值必须过 `THEMES.includes`。
   - **副窗不许只调 `setWindowTheme`**：那只换标题栏、留下旧内容，是上面那条割裂的反向
     版本。
-  - **工作台、官网页签窗仍然钉死深色**（`harness_window.rs`、`official-chat-*` 不给
-    set-theme 授权）：那两扇窗装的是别人的页面，跟随本应用主题同样是割裂换方向。官网页
-    签窗还必须 `if (isChatStrip) setThemeValue('dark')` 且 `followThemeBroadcast()` 一起
-    排除——只按初值不够，主壳切主题时那条广播仍会把它拽走，白页签栏照样回来。页签栏
-    继续读 EP token 不写死颜色。判据两头都查：给 `official-chat-strip.json` 补一条授权
-    同样转红。
+  - **工作台、官网页签窗都不跟随本应用主题**（`official-chat-*` 无 set-theme）：
+    工作台由**内核**的 `ui-theme` 决定、壳不钉建窗主题（见根 `AGENTS.md`）；官网页签窗
+    装的是别人的站点，跟随本应用主题是割裂换方向，仍钉死深色。还须
+    `if (isChatStrip) setThemeValue('dark')` 且 `followThemeBroadcast()` 一起
+    排除——按初值不够，主壳切主题时那条广播会拽走它。页签栏
+    不写死颜色。判据：给 `official-chat-strip.json` 补授权即转红。
   - 建窗深色是**兜底**不是最终外观：页面挂载到纠正之间有一小段窗口期（冷启动闪一下），
     彻底消掉得让 Rust 也读得到主题真值，本轮不做。
 - 外观在设置页右栏三项（浅色 / 深色 / 跟随系统），与侧栏循环按钮共用 `theme.js`：
@@ -372,9 +372,8 @@ caption）都在下文逐条登记了理由。
   装饰、system 向原生接口传 null 解除覆盖；侧栏按钮按 `themeOptions` 循环，图标表示
   当前模式，悬停提示同时说明当前模式与下一次点击的目标。macOS 的 `setTheme` 与建窗
   `.theme(Some(...))` 会覆盖整个应用，不能用于窗口主题——建窗统一走
-  `shell::appearance::initial_theme()`，原生外观经 `set_window_appearance` 只设当前
-  `NSWindow`，工作台的固定深色不能影响管理窗口的媒体查询。Windows 继续用 Tauri 的
-  窗口主题实现。
+  `shell::appearance::initial_theme(label)`，原生外观经 `set_window_appearance` 只设当前
+  `NSWindow`（工作台那扇反过来：壳不许钉它）。Windows 继续用 Tauri 的窗口主题实现。
 
 ### 逐屏决定
 

@@ -129,6 +129,12 @@ macOS 的 WKWebView 没有可供外部附着的调试端点（无 CDP、无 insp
 - **控制台日志通道在页面侧，不在 WebDriver 侧**（2026-10-11 补齐）。`browser.getLogs` 已随 W3C 规范移除，embedded WKWebView provider 上实测 `TypeError`——而壳的诊断信息大量**只进 console**（`errors.js` 的渲染错误留档、`main.js` 的 Vue warnHandler、bridge 失败路径），没有这条通道时 agent 对「面板在 console 里喊了什么」全盲。做法：`ui/src/shell/consoleLog.js` 把 console 包一层定长环形缓冲（500 条、重复折叠、单条截断），挂在 `window.__DSH_CONSOLE__`，agent 用一次 `browser.execute(() => window.__DSH_CONSOLE__.dump())` 整段取回。三条纪律：**只旁观不吞**（包装后原样透传，摘掉透传单测即红）、**记录绝不抛错**（Error 实参必须单独走 `name+message`——`JSON.stringify(new Error())` 是 `'{}'`，e2e 的未处理拒绝用例真抓到过 canary 文本被吞）、**入口最早安装**（main.js 第一个有副作用的 import，早于组件挂载）。边界：模块求值期与刷新前的报错进不来；持久化到 shell_events 是另一件事，刻意没做。
 
 
-## 窗口外观作用域（2026-10-09）
+## 窗口外观作用域（2026-10-09；2026-10-18 扩到工作台）
 
-跨前后端的主题规则：macOS 建窗使用 `shell::appearance::initial_theme()`，前端 `bridge.setWindowTheme` 调用 `set_window_appearance`，仅设置当前 `NSWindow`。不得用 Tauri 的应用级主题覆盖模拟单窗口外观，否则工作台的固定深色会阻断管理窗口跟随系统。前端细则见 `ui/AGENTS.md`，原生实现统一在 `shell/appearance.rs`。
+跨前后端的主题规则，**原生外观只设当前窗口，而且只设壳自己的窗口**——策略收在 `shell/appearance.rs`：
+
+- **壳自有窗口**（面板与三扇副窗）：建窗走 `appearance::initial_theme(label)`（macOS 返回 `None`——tao 的 `set_theme` 是 `NSApplication` 级，用了它整个应用的媒体查询一起变；其他平台给 `Dark` 兜底），页加载时由 app 级 `.on_page_load` 钩子逐窗口补一次深色，页面挂载后 `bridge.setWindowTheme` 调用 `set_window_appearance` 按持久化偏好纠正**本窗口**。不得用 Tauri 的应用级主题覆盖模拟单窗口外观。
+- **工作台**（label `harness`）**一条建窗主题都不许钉**：它加载内核 Web UI，`ui-theme = system` 是内核在页内用 `prefers-color-scheme` 解析的，钉住这扇窗 = 把内核设置里的「跟随系统」永久钉死（2026-10-18 用户实测：系统浅色 + 偏好 system，工作台仍渲染深色）。`initial_theme` 对工作台两个平台都返回 `None`，`initialize` 也按 label 跳过它。
+- 工作台随后由注入脚本 `harness/workbench-appearance.js` 按内核发布的 `html[data-ds-theme-source]`（**偏好**）镜像原生外观：`system` ⇒ 下发 `null` 不覆盖（若镜像解析出来的那一档，页内的媒体查询会被自己冻住，系统切档时内核再也收不到变化，「跟随系统」第二次失效）；`dark` / `light` ⇒ 钉同一档（否则浅色系统 + 内核深色 = 「深色内容 + 浅色标题栏」，2026-10-07 截图）。该命令的授权在 `capabilities/harness-remote.json`，漏了就是 ACL 静默拒、`.catch` 吞掉。
+
+判据：不变量第 18 项按 `.title(` 对账建窗主题、禁 `Theme::Dark` 字面量绕过出口、要求工作台那两支恰好两处传 `WORKBENCH_LABEL`；第 ⑦ 项要求两条工作台建窗链都注入外观镜像脚本（漏一条的症状是自愈重建出来的工作台标题栏不跟内核走）。前端细则见 `ui/AGENTS.md`。

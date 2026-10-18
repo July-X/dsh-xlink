@@ -56,9 +56,13 @@
 
 ## 跟随系统未响应明暗变化
 
-0.4.3 的 macOS 窗口主题调用会设置整个应用的外观。打开强制深色的工作台或副窗后，管理面板的系统配色查询也会被覆盖，即使偏好仍是「跟随系统」，系统转为亮色时页面也可能保持深色。
+**0.4.3（2026-10-09）**：那版 macOS 窗口主题调用会设置整个应用的外观。打开强制深色的工作台或副窗后，管理面板的系统配色查询也会被覆盖，即使偏好仍是「跟随系统」，系统转为亮色时页面也可能保持深色。修复把原生外观限制在当前窗口，并取消 macOS 建窗时的应用级主题覆盖：管理面板、日志与用量窗口独立继承系统。
 
-修复将原生外观设置限制在当前窗口，并取消 macOS 建窗时的应用级主题覆盖。管理面板、日志与用量窗口独立继承系统；工作台仍保留自己的深色外观。验收时，在跟随系统模式下保持工作台打开，分别切换系统浅色与深色，再验证已打开的壳副窗同步变化。
+**工作台那半边在 2026-10-18（v0.5.5）才修**。用户实测：系统浅色 + 内核「设置 → 通用设置 → 外观 = 跟随系统」，工作台仍渲染深色。根因是同一族：0.4.3 之后 app 级 `on_page_load` 钩子对**每个** webview 都调 `appearance::initialize`，工作台（label `harness`）也被钉成 `NSAppearanceNameDarkAqua`；Windows 上则是建窗 `.theme(Some(Dark))` → `tauri-runtime-wry` → wry 的 WebView2 `SetPreferredColorScheme`。内核的 `system` 一档只在页内用 `matchMedia('(prefers-color-scheme: dark)')` 解析（`dsh-client-ui-theme` 的 README 与 boot 脚本），所以「跟随系统」恒等于深色。机制实测：一份最小 WKWebView 程序里把窗口设成 DarkAqua，页内 `matchMedia` 与 `@media(prefers-color-scheme:dark)` 都翻成 dark，且页加载**之后**再改会推送真实的 `change` 事件（内核 ThemeRuntime 订阅的正是它），因此不是只影响首帧。
+
+修法两条：① 壳不再给工作台钉任何建窗主题——`appearance::initial_theme(WORKBENCH_LABEL)` 两平台恒 `None`，`appearance::initialize` 按窗口 label 跳过它；② 新增注入脚本 `harness/workbench-appearance.js`，按内核发布的 `html[data-ds-theme-source]`（**偏好**）镜像原生外观：`system` 一律不覆盖（若镜像解析结果，页内的媒体查询会被自己冻住，系统切档时内核再也收不到变化，「跟随系统」第二次失效），`dark` / `light` 钉同档（这样 2026-10-07 那个「深色内容 + 浅色标题栏」也不会回来）。
+
+验收：系统浅色，内核设置选「跟随系统」→ 工作台应变浅；内核选「深色」→ 内容与原生标题栏都深；再切系统深色 → 「跟随系统」下的工作台跟着变，管理面板与副窗同步。**已知残留**：工作台窗口底色仍是 `CHROME_BACKDROP`（`#16171a`）——浅色档用户从打开窗口到内核 boot CSS 落地之间会看到一瞬深底，几百毫秒；按内核偏好选底色需要先知道偏好（`system` 一档本来没有确定答案），本轮不处理。
 
 ## `test:ui` 要带 `--test-force-exit`，别把它当多余的参数删掉
 

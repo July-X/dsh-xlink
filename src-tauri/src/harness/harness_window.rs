@@ -455,10 +455,12 @@ pub fn open(app: &AppHandle, url: Url) -> Result<(), String> {
 ///   注册 new-window handler 时，macOS 的 WKWebView UIDelegate 返回 nil、Windows
 ///   的 WebView2 标记已处理），点击因此静默失效。http(s) 外链交系统浏览器，其余
 ///   scheme 一律拒绝——不在壳内长出无主窗口。
-/// - 六条 `initialization_script`：标题栏品牌条带 / 拉绳小台灯 / 健康自愈探针 /
+/// - 七条 `initialization_script`：标题栏品牌条带 / 拉绳小台灯 / 健康自愈探针 /
 ///   未发送草稿 / 历史会话保护 / 右键兜底（`context-menu-fallback.js`——挂在
 ///   `window` 的**冒泡**阶段，只在页面没处理时取消默认行为：引擎原生菜单被压掉，
-///   内核自绘的菜单照常；左键选词与 Ctrl/⌘+C 复制照旧）。缺 source map 时由
+///   内核自绘的菜单照常；左键选词与 Ctrl/⌘+C 复制照旧）/ 外观镜像
+///   （`workbench-appearance.js`——按内核声明的 `ui-theme` 偏好设置本窗原生外观，
+///   `system` 一档**不覆盖**，见该脚本头）。缺 source map 时由
 ///   `kernel::prepare_workbench_source_maps` 在服务端文件层补齐，不依赖覆盖不了的
 ///   DevTools 内部网络请求。
 /// - `on_page_load`：把加载事件喂给 [`observe`]。
@@ -469,10 +471,16 @@ fn build(app: &AppHandle, url: &Url) -> Result<(), String> {
         .title(window_title("工作台"))
         .inner_size(1280.0, 840.0)
         .background_color(CHROME_BACKDROP)
-        // 钉死深色：主窗口的标题栏是自绘的、恒为深色，副窗走原生装饰。不钉
-        // 的话系统切浅色时这扇窗的标题栏变白，而内容仍是深色——2026-10-07
-        // 用户截图里就是这个割裂。
-        .theme(crate::shell::appearance::initial_theme())
+        // 这扇窗**不钉外观**：页面是内核 Web UI，明暗由内核的 `ui-theme` 设置
+        // 决定（`system` 一档是内核在页内查 `prefers-color-scheme` 解析的）。
+        // 2026-10-07 曾为统一「深色内容 + 浅色标题栏」把它钉成深色，代价是内核
+        // 设置里的「跟随系统」永远跟随不了（2026-10-18 用户实测）。
+        // `initial_theme(WORKBENCH_LABEL)` 两个平台都返回 `None`；写出来是为了
+        // 让这条链自己说清它属于谁。同一条链的另一半在 `commands::open_harness`，
+        // 别只改一处。
+        .theme(crate::shell::appearance::initial_theme(
+            crate::shell::appearance::WORKBENCH_LABEL,
+        ))
         .on_new_window(move |link, _features| {
             if matches!(link.scheme(), "http" | "https") {
                 use tauri_plugin_opener::OpenerExt;
@@ -506,6 +514,8 @@ fn build(app: &AppHandle, url: &Url) -> Result<(), String> {
         .initialization_script(include_str!("harness-health.js"))
         .initialization_script(include_str!("harness-draft.js"))
         .initialization_script(include_str!("workbench-history-guard.js"))
+        // 把内核声明的外观偏好镜像到本窗的原生外观（`system` 时不覆盖，见脚本头）。
+        .initialization_script(include_str!("workbench-appearance.js"))
         // 工作台只压引擎原生菜单、放行内核自绘的菜单；同一条工作台建窗链的
         // 另一半在 `commands.rs::open_harness`，别只改一处。
         .initialization_script(include_str!("context-menu-fallback.js"))
