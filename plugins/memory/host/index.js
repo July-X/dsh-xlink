@@ -652,6 +652,19 @@ function apply(ctx) {
  * @param {object|null} credentials - 桥凭据。
  */
 function registerTools(ctx, credentials) {
+  /**
+   * 工作区注册表**用时现取**——与提取那条路（`liveExtractionServices`）同一纪律：
+   * `ctx.get` 会跳过失活的服务，拿不到就回 `undefined`，`memoryScope` 会退化成
+   * 「只按工作目录算」，而不是拿一个死代理去用。
+   *
+   * **不许写成 `apply` 里的那个 `workspaceRegistry` 变量**（2026-10-18 修）：那是
+   * `apply` 的局部变量，而本函数在**模块作用域**——三个工具里读它就是读一个自由变量，
+   * 一调用必抛 `ReferenceError: workspaceRegistry is not defined`。真机会话里这个错误
+   * 累计几百次（一个会话 149 次），三个工具**从来没成功过一次**，而当时没有任何判据会红：
+   * 装配层只被源码文本判据扫锚点，从不执行。回归判据见 `test/assembly.test.mjs`。
+   */
+  const workspaceRegistryNow = () => ctx.get('workspaceRegistry');
+
   ctx.tools.register(
     defineTool({
       name: 'memory_search',
@@ -712,7 +725,7 @@ function registerTools(ctx, credentials) {
       async execute(args, exec) {
         if (!exec.agent) throw new Error('memory_search 需要一个会话：无 agent 的调用不能读项目记忆');
         if (!credentials) throw new Error('记忆桥不可用：本机壳没有为这个内核起回环桥');
-        const { workspace, workspaceId } = await memoryScope(ctx, workspaceRegistry, exec.agent);
+        const { workspace, workspaceId } = await memoryScope(ctx, workspaceRegistryNow(), exec.agent);
         const result = await callMemory({
           credentials,
           route: 'context',
@@ -782,7 +795,7 @@ function registerTools(ctx, credentials) {
       async execute(args, exec) {
         if (!exec.agent) throw new Error('memory_read 需要一个会话：无 agent 的调用不能读项目记忆');
         if (!credentials) throw new Error('记忆桥不可用：本机壳没有为这个内核起回环桥');
-        const { workspace, workspaceId } = await memoryScope(ctx, workspaceRegistry, exec.agent);
+        const { workspace, workspaceId } = await memoryScope(ctx, workspaceRegistryNow(), exec.agent);
         const result = await callMemory({
           credentials,
           route: 'read',
@@ -864,7 +877,7 @@ function registerTools(ctx, credentials) {
       async execute(args, exec) {
         if (!exec.agent) throw new Error('memory_propose 需要一个会话：无 agent 的调用不能写记忆');
         if (!credentials) throw new Error('记忆桥不可用：本机壳没有为这个内核起回环桥');
-        const { workspace, workspaceId } = await memoryScope(ctx, workspaceRegistry, exec.agent);
+        const { workspace, workspaceId } = await memoryScope(ctx, workspaceRegistryNow(), exec.agent);
         const result = await callMemory({
           credentials,
           route: 'propose',
