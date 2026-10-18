@@ -206,3 +206,12 @@ codegen-units = 16
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+
+# Clippy 1.99 的 `missing_const_for_thread_local` 对**已经用 `const { … }` 作初值**的
+# `thread_local!` 误报（2026-10-18 最小复现：全新 `cargo new` 里同样写法照样报）。
+# 本仓两个命中点（`memory/lock.rs`、`shell/process.rs`）一直是正确写法，代码侧没有
+# 可改的东西，因此在配置里关掉这一条；工具链固定见根目录 `rust-toolchain.toml`。
+# **升级 Rust 后重跑 `npm run check:rust:ci`**：若不再误报就删掉本节，把真 lint 放回来。
+[lints.clippy]
+missing_const_for_thread_local = "allow"
+
