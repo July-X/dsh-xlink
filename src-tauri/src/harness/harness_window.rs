@@ -36,11 +36,12 @@
 //! 上没有任何去处，而"页面闪了一下"这种只有后果没有原因的现象，没有这条
 //! 日志就只能靠时间戳对猜。
 
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-use tauri::webview::{NewWindowResponse, PageLoadEvent};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::webview::{NewWindowFeatures, NewWindowResponse, PageLoadEvent};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use url::Url;
 
 use crate::commands::AppState;
@@ -448,26 +449,173 @@ pub fn open(app: &AppHandle, url: Url) -> Result<(), String> {
         .map_err(|_| "工作台窗口创建线程已结束，未返回结果".to_string())?
 }
 
+/// 文档标题同步时的窗口标题：内核用 `document.title` 表达「会话名 — 产品名」，
+/// 官方 Electron 壳默认让窗口标题跟着走；壳用 Tauri 的
+/// `on_document_title_changed` 做同一件事（零注入），标题仍走
+/// [`crate::shell::window::window_title`] 的「名字 — 应用名」约定。
+pub(crate) fn title_from_document(document_title: &str, fallback: &str) -> String {
+    let trimmed = document_title.trim();
+    let name = if trimmed.is_empty() {
+        fallback
+    } else {
+        trimmed
+    };
+    crate::shell::window::window_title(name)
+}
+
+/// 内核 `window.open` 弹窗的递增序号（Tauri 的窗口 label 必须唯一）。
+static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 内核 `window.open` 请求的统一策略（**两条**工作台建窗链共用）。
+///
+/// 内核自己有 `window.open` 的流程：账号登录先 `window.open("about:blank")` 预开
+/// 一个标签页、拿到授权地址后再导航它（被拒就退化成「复制链接」）；终端里的链接
+/// 也是 `window.open()` 后写 `location`。此前一律 `Deny`，把这两条**内核能力**
+/// 削掉了（2026-10-18 分析）。
+///
+/// 现在：`about:blank` 与内核本机页面 ⇒ 建一扇**壳托管**的临时窗口并返回
+/// `NewWindowResponse::Create`，内核的 `popup.location = …` 照常工作；其它
+/// `http(s)` 外链维持「交系统浏览器」；其它 scheme 仍拒绝——不在壳里长出无主窗口。
+///
+/// 托管窗口不注入工作台那套脚本（草稿 / 自愈 / 台灯 / 外观镜像都是工作台专用），
+/// 只继承「别人的站点 ⇒ 右键一律取消」那一族策略与标题同步。
+pub(crate) fn new_window_response(
+    app: &AppHandle,
+    link: Url,
+    features: NewWindowFeatures,
+) -> NewWindowResponse<tauri::Wry> {
+    match popup_route(&link) {
+        PopupRoute::Managed => create_popup_window(app, &link, features),
+        PopupRoute::Browser => {
+            use tauri_plugin_opener::OpenerExt;
+            if let Err(error) = app.opener().open_url(link.to_string(), None::<&str>) {
+                eprintln!("dsh-xlink: 无法用系统浏览器打开链接 {link}：{error}");
+            }
+            NewWindowResponse::Deny
+        }
+        PopupRoute::Reject => NewWindowResponse::Deny,
+    }
+}
+
+/// 一条 `window.open` 请求走哪条路。建窗那一步要 `AppHandle`，这条路的选择
+/// 是纯函数，单测直接钉住（策略写反的症状是内核登录退化成复制链接 / 终端
+/// 链接点了没反应，或者壳里冒出无主窗口）。
+#[derive(Debug, PartialEq, Eq)]
+enum PopupRoute {
+    /// `about:blank` 或内核本机页面：建一扇壳托管的临时窗口。
+    Managed,
+    /// 外部 `http(s)`：交系统浏览器。
+    Browser,
+    /// 其它 scheme：拒绝。
+    Reject,
+}
+
+fn popup_route(link: &Url) -> PopupRoute {
+    if link.scheme() == "about" || is_loopback_http(link) {
+        PopupRoute::Managed
+    } else if matches!(link.scheme(), "http" | "https") {
+        PopupRoute::Browser
+    } else {
+        PopupRoute::Reject
+    }
+}
+
+fn is_loopback_http(link: &Url) -> bool {
+    matches!(link.scheme(), "http" | "https")
+        && matches!(link.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
+}
+
+fn create_popup_window(
+    app: &AppHandle,
+    link: &Url,
+    features: NewWindowFeatures,
+) -> NewWindowResponse<tauri::Wry> {
+    let label = format!(
+        "{}-{}",
+        crate::shell::appearance::POPUP_LABEL_PREFIX,
+        POPUP_SEQ.fetch_add(1, Ordering::Relaxed) + 1
+    );
+    let nested = app.clone();
+    let built = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(link.clone()))
+        .title(crate::shell::window::window_title("工作台弹窗"))
+        // 带上 opener 的窗口尺寸 / macOS 同一 webview 配置 / Windows 同一环境
+        // （`window_features` 三个平台各自补齐，漏掉 macOS 那一项窗口直接建不出来）。
+        .window_features(features)
+        // 页面是授权站点 / 内核回调页：外观由页面与系统决定，壳不钉
+        // （`initial_theme` 对 `workbench-popup-*` 恒返回 `None`）。
+        .theme(crate::shell::appearance::initial_theme(&label))
+        // 别人的站点：右键一律取消，与官方对话内容 webview 同族。
+        .initialization_script(include_str!("no-context-menu.js"))
+        .on_new_window(move |inner, inner_features| {
+            new_window_response(&nested, inner, inner_features)
+        })
+        .on_document_title_changed(|window, title| {
+            let _ = window.set_title(&title_from_document(&title, "工作台弹窗"));
+        })
+        .build();
+    match built {
+        Ok(window) => NewWindowResponse::Create { window },
+        Err(error) => {
+            let line = format!("无法创建内核弹窗（{link}）：{error}");
+            eprintln!("dsh-xlink: {line}");
+            crate::shell::shell_events::record(HARNESS_WINDOW_LOG, &line);
+            NewWindowResponse::Deny
+        }
+    }
+}
+
+/// 把原生窗口的全屏状态同步成 `<html data-fullscreen>`。
+///
+/// 内核的布局契约里，全屏时浮层起点 / 面板内缩按 `data-fullscreen` 调整（官方
+/// Electron 壳由 desktop preload 设置）。它属于「桌面壳负责的窗口状态」，所以由
+/// 壳补：监听窗口 `Resized` 事件（macOS 进出全屏会触发）+ 页面加载完成时补一次
+/// （重载会清掉文档上的属性），只走 Tauri 的 `eval`，不往页面里再塞脚本。
+pub(crate) fn attach_fullscreen_bridge(window: &WebviewWindow) {
+    let target = window.clone();
+    let last = Arc::new(AtomicBool::new(window.is_fullscreen().unwrap_or(false)));
+    window.on_window_event(move |event| {
+        if !matches!(event, WindowEvent::Resized(_)) {
+            return;
+        }
+        let fullscreen = target.is_fullscreen().unwrap_or(false);
+        if last.swap(fullscreen, Ordering::Relaxed) == fullscreen {
+            return;
+        }
+        let _ = target.eval(fullscreen_script(fullscreen));
+    });
+}
+
+fn fullscreen_script(fullscreen: bool) -> String {
+    format!("document.documentElement.toggleAttribute('data-fullscreen', {fullscreen});")
+}
+
+/// 页加载完成时调用：重载会清掉文档上的 `data-fullscreen`，按窗口当前状态补一次。
+pub(crate) fn sync_fullscreen_on_load(webview: &WebviewWindow) {
+    if let Ok(fullscreen) = webview.is_fullscreen() {
+        let _ = webview.eval(fullscreen_script(fullscreen));
+    }
+}
+
 /// 工作台窗口的 webview 配置。**壳拥有的纪律都在这里**：
 ///
-/// - `on_new_window`：内核前端把会话里的网页渲染成 `target="_blank"`，交给
-///   「浏览器打开新标签页」；Tauri webview 默认拒绝一切 window.open（wry 没有
-///   注册 new-window handler 时，macOS 的 WKWebView UIDelegate 返回 nil、Windows
-///   的 WebView2 标记已处理），点击因此静默失效。http(s) 外链交系统浏览器，其余
-///   scheme 一律拒绝——不在壳内长出无主窗口。
+/// - `on_new_window`：内核自己的 `window.open` 流程（账号登录预开授权标签页、
+///   终端链接）走 [`new_window_response`]：`about:blank` 与内核本机页面建壳托管
+///   的临时弹窗（`NewWindowResponse::Create`），其它 http(s) 外链交系统浏览器，
+///   其余 scheme 拒绝——既保住内核能力，也不在壳内长出无主窗口。
+/// - `on_document_title_changed`：内核写 `document.title`（会话名 — 产品名）时
+///   同步本窗原生标题栏（官方 Electron 壳的默认行为）。
 /// - 七条 `initialization_script`：标题栏品牌条带 / 拉绳小台灯 / 健康自愈探针 /
 ///   未发送草稿 / 历史会话保护 / 右键兜底（`context-menu-fallback.js`——挂在
 ///   `window` 的**冒泡**阶段，只在页面没处理时取消默认行为：引擎原生菜单被压掉，
 ///   内核自绘的菜单照常；左键选词与 Ctrl/⌘+C 复制照旧）/ 外观镜像
 ///   （`workbench-appearance.js`——按内核声明的 `ui-theme` 偏好设置本窗原生外观，
-///   `system` 一档**不覆盖**，见该脚本头）。缺 source map 时由
-///   `kernel::prepare_workbench_source_maps` 在服务端文件层补齐，不依赖覆盖不了的
-///   DevTools 内部网络请求。
-/// - `on_page_load`：把加载事件喂给 [`observe`]。
+///   `system` 一档**不覆盖**，见该脚本头）。
+/// - `on_page_load`：把加载事件喂给 [`observe`]；加载完成后补一次
+///   `data-fullscreen`（重载会清掉文档上的属性）。
 fn build(app: &AppHandle, url: &Url) -> Result<(), String> {
     use crate::shell::window::{window_title, CHROME_BACKDROP};
-    let link_opener = app.clone();
-    WebviewWindowBuilder::new(app, "harness", WebviewUrl::External(url.clone()))
+    let popup_app = app.clone();
+    let window = WebviewWindowBuilder::new(app, "harness", WebviewUrl::External(url.clone()))
         .title(window_title("工作台"))
         .inner_size(1280.0, 840.0)
         .background_color(CHROME_BACKDROP)
@@ -481,17 +629,9 @@ fn build(app: &AppHandle, url: &Url) -> Result<(), String> {
         .theme(crate::shell::appearance::initial_theme(
             crate::shell::appearance::WORKBENCH_LABEL,
         ))
-        .on_new_window(move |link, _features| {
-            if matches!(link.scheme(), "http" | "https") {
-                use tauri_plugin_opener::OpenerExt;
-                if let Err(error) = link_opener
-                    .opener()
-                    .open_url(link.to_string(), None::<&str>)
-                {
-                    eprintln!("dsh-xlink: 无法用系统浏览器打开链接 {link}：{error}");
-                }
-            }
-            NewWindowResponse::Deny
+        .on_new_window(move |link, features| new_window_response(&popup_app, link, features))
+        .on_document_title_changed(|window, title| {
+            let _ = window.set_title(&title_from_document(&title, "工作台"));
         })
         .on_navigation(move |url| {
             // 观测，不拦截（恒放行）。2026-09-30 的黑屏里页面「无声死掉又自己
@@ -521,14 +661,19 @@ fn build(app: &AppHandle, url: &Url) -> Result<(), String> {
         .initialization_script(include_str!("context-menu-fallback.js"))
         .on_page_load({
             let handle = app.clone();
-            move |_webview, payload| {
+            move |webview, payload| {
+                let started = payload.event() == PageLoadEvent::Started;
                 let state = handle.state::<AppState>();
-                observe(&state, payload.event() == PageLoadEvent::Started);
+                observe(&state, started);
+                if !started {
+                    sync_fullscreen_on_load(&webview);
+                }
             }
         })
         .build()
-        .map(|_| ())
-        .map_err(|e| format!("无法创建工作台窗口：{e}"))
+        .map_err(|e| format!("无法创建工作台窗口：{e}"))?;
+    attach_fullscreen_bridge(&window);
+    Ok(())
 }
 
 /// 本模块事件日志的逻辑名（落 `<kind>-harness-window-<date>.log`，出现在
@@ -723,5 +868,55 @@ mod tests {
             "",
             true
         ));
+    }
+
+    /// 内核 `window.open` 的三条路（2026-10-18 恢复内核能力时定的策略）：
+    /// 登录预开窗 / 终端链接必须走壳托管的窗口，外部链接交浏览器，
+    /// 其它 scheme 不许在壳里长出窗口。
+    #[test]
+    fn window_open_requests_are_routed_by_scheme_and_host() {
+        let parse = |raw: &str| Url::parse(raw).expect("测试 URL 必须合法");
+        assert_eq!(popup_route(&parse("about:blank")), PopupRoute::Managed);
+        assert_eq!(
+            popup_route(&parse("http://127.0.0.1:3091/?token=abc")),
+            PopupRoute::Managed
+        );
+        assert_eq!(
+            popup_route(&parse("http://localhost:3091/callback")),
+            PopupRoute::Managed
+        );
+        assert_eq!(
+            popup_route(&parse("https://chat.deepseek.com/")),
+            PopupRoute::Browser
+        );
+        assert_eq!(
+            popup_route(&parse("http://127.0.0.1.evil.example/")),
+            PopupRoute::Browser
+        );
+        assert_eq!(
+            popup_route(&parse("file:///etc/passwd")),
+            PopupRoute::Reject
+        );
+        assert_eq!(
+            popup_route(&parse("data:text/html,<b>x</b>")),
+            PopupRoute::Reject
+        );
+        assert_eq!(
+            popup_route(&parse("javascript:void(0)")),
+            PopupRoute::Reject
+        );
+    }
+
+    /// 内核文档标题同步：空标题退回壳的名字，非空按「名字 — 应用名」约定。
+    #[test]
+    fn document_titles_are_synced_with_the_shell_naming_convention() {
+        assert_eq!(
+            title_from_document("   ", "工作台"),
+            crate::shell::window::window_title("工作台")
+        );
+        assert_eq!(
+            title_from_document(" 会话 — DeepSeek Harness ", "工作台"),
+            crate::shell::window::window_title("会话 — DeepSeek Harness")
+        );
     }
 }

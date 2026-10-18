@@ -1643,7 +1643,7 @@ if (brokenSvgs.length) {
   note(`ui/public 的 ${svgFiles.length} 个 SVG 均可被解析（${svgFiles.join('、')}）`);
 }
 
-// --- 16. 三个窗口族的右键策略都接在线上，且不许连左键复制一起禁 ----------------
+// --- 16. 四个窗口族的右键策略都接在线上，且不许连左键复制一起禁 ----------------
 //
 // 2026-10-17 起需求分成了两半（此前是一句话「哪扇窗都不许弹右键菜单，保留左键
 // 复制」，工作台的实现把内核自绘的菜单也一并拦死了）：
@@ -1653,6 +1653,8 @@ if (brokenSvgs.length) {
 //     原生菜单，放行页面自绘的菜单（`context-menu-fallback.js`，冒泡兜底）；
 //   - 官方对话三个内容 webview 加载的是**别人的**站点 ⇒ 维持一律取消
 //     （`no-context-menu.js`，捕获阶段连页面自绘的一起拦）；
+//   - 内核 `window.open` 弹窗（账号登录授权页 / 终端链接等，label 前缀
+//     `workbench-popup-`）同样是**别人的**站点 ⇒ 走 strict 那份；
 //   - 壳自己的五个窗口共用 SPA 入口（`ui/src/shell/noContextMenu.js`，
 //     `main.js` 装一次）。**行为测试钉不住接线**：测试直接对着脚本跑，把某一处
 //     接线删掉它照样全绿，而症状只是「从某个入口打开的窗口右键行为不对」——
@@ -1715,6 +1717,11 @@ if (brokenSvgs.length) {
   // 标签，官方对话链带 `official-chat-tab`。两个都不是的新链一律报错——新加
   // 一扇加载远程页面的窗口时，右键策略必须由人当场定，不能靠默认值蒙。
   const kindOf = (chain) => {
+    // 内核 `window.open` 弹窗用 `NewWindowResponse::Create` 建窗（见
+    // `harness_window::create_popup_window`），这是它与前两族的结构区别：
+    // 它没有固定 label 字面量（label 带递增序号），所以按「建窗后交给 Create」
+    // 认族，不按 label 字符串认。
+    if (chain.body.includes('NewWindowResponse::Create')) return 'workbench-popup';
     if (chain.body.includes('"harness"')) return 'harness';
     if (chain.body.includes('official-chat')) return 'official-chat';
     return 'unknown';
@@ -1722,6 +1729,11 @@ if (brokenSvgs.length) {
   const POLICY = {
     harness: { want: FALLBACK, ban: STRICT, why: '工作台加载内核 Web UI，页面自绘的右键菜单必须留着' },
     'official-chat': { want: STRICT, ban: FALLBACK, why: '官方对话加载别人的站点，页面自绘的菜单一并取消' },
+    'workbench-popup': {
+      want: STRICT,
+      ban: FALLBACK,
+      why: '内核 window.open 弹窗加载授权站点 / 内核回调页（别人的页面），页面自绘的菜单一并取消',
+    },
   };
   const miswired = [];
   const wiredKinds = new Map();
@@ -1749,9 +1761,9 @@ if (brokenSvgs.length) {
       if (reason === 'unknown') {
         fail(
           'no-context-menu',
-          `${chain.file}:${chain.line} 这条加载外部页面的建窗链既不是 harness 也不是 ` +
-            `official-chat——右键策略按窗口族分两份（工作台用 ${FALLBACK}、官方对话用 ` +
-            `${STRICT}），新窗口属于哪一族要先定下来，再按那一族注入。`,
+          `${chain.file}:${chain.line} 这条加载外部页面的建窗链认不出属于哪一族——` +
+            `右键策略按窗口族分：工作台用 ${FALLBACK}、官方对话与内核弹窗用 ${STRICT}。` +
+            `新窗口属于哪一族要先定下来，再按那一族注入（认族依据见脚本里的 kindOf）。`,
         );
         continue;
       }
@@ -2200,6 +2212,14 @@ if (ungatedOsImports.length > 0) {
   if (!/pub fn initial_theme\(\s*label: &str\s*\)/.test(appearanceSrc)) {
     fail('window-chrome', 'initial_theme 不再接收窗口 label——调用方无法表达「这扇窗属于谁」');
   }
+  // 工作台与内核 `window.open` 弹窗都加载别人的页面：两者都必须被
+  // `owns_appearance` 豁免，否则窗口一建就钉住 `prefers-color-scheme`。
+  if (!/label != WORKBENCH_LABEL && !label\.starts_with\(POPUP_LABEL_PREFIX\)/.test(appearanceSrc)) {
+    fail(
+      'window-chrome',
+      'owns_appearance 没有同时豁免工作台与内核弹窗（POPUP_LABEL_PREFIX）——弹窗会被钉成深色，授权页的明暗不再跟随系统',
+    );
+  }
 
   // ③ 每扇带标题的窗都要声明建窗主题；**工作台是唯一例外，而且必须是例外**。
   //    壳自有窗口：主题真值在 localStorage，Rust 读不到，所以建窗统一从 Dark
@@ -2292,7 +2312,7 @@ if (ungatedOsImports.length > 0) {
   }
   if (hardcoded === 0 && themes === titles) {
     note(
-      `窗口标题统一走 window_title()，${titles} 扇带标题的窗都声明了建窗主题（壳自有窗口由 applyTheme → window.setTheme 纠正；工作台传 WORKBENCH_LABEL 恒为不钉，明暗由内核说了算）`,
+      `窗口标题统一走 window_title()，${titles} 扇带标题的窗都声明了建窗主题（壳自有窗口由 applyTheme → window.setTheme 纠正；工作台与内核弹窗都不钉，明暗由页面 / 系统说了算）`,
     );
   }
 }

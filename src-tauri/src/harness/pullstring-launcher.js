@@ -134,7 +134,6 @@
       "  background: none;",
       "  cursor: pointer;",
       "  transform-origin: 50% 0;",
-      "  animation: dsh-shell-launcher-sway 6.4s ease-in-out infinite;",
       "  -webkit-tap-highlight-color: transparent;",
       "}",
       "#" + ROOT_ID + " svg {",
@@ -289,10 +288,6 @@
       "  --dsh-launcher-filament-stroke: #92400e;",
       "  --dsh-launcher-lit-fill: #f59e0b;",
       "  --dsh-launcher-lit-stroke: #92400e;",
-      "}",
-      "@keyframes dsh-shell-launcher-sway {",
-      "  0%, 100% { transform: rotate(1.6deg); }",
-      "  50% { transform: rotate(-1.6deg); }",
       "}",
     );
 
