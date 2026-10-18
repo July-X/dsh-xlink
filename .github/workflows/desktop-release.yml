@@ -484,9 +484,8 @@ jobs:
             exit 1
           fi
           if [[ -z "$tag_sha" ]]; then
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/tags/$RELEASE_TAG" \
-              -f sha="$GITHUB_SHA" >/dev/null
+            echo "tag $RELEASE_TAG does not exist; publish only from an already-pushed matching tag" >&2
+            exit 1
           fi
 
           release_metadata="$(gh api "repos/${GITHUB_REPOSITORY}/releases" \

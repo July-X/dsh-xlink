@@ -591,8 +591,9 @@ test('emit 封装存在且不吞调用方的判断（纯浏览器调试下 resol
   assert.match(body, /Promise\.resolve\(\)/, '桥接缺失时 resolve 空而不是抛');
 });
 
-test('壳自有副窗拿到窗口外观权限，内核页面与官网页签窗不拿', () => {
-  // 壳自有：内容就是本应用的 SPA，主题由 localStorage 决定。
+test('壳自有副窗与工作台拿到窗口外观权限，官网页签窗不拿', () => {
+  // 壳自有：内容就是本应用的 SPA，主题由 localStorage 决定；工作台则由
+  // workbench-appearance.js 按内核的 ui-theme 偏好镜像到原生标题栏。
   for (const cap of ['default', 'log-viewer', 'usage-viewer', 'subscription-viewer']) {
     const perms = JSON.parse(read(`../../src-tauri/capabilities/${cap}.json`)).permissions;
     assert.ok(
@@ -600,9 +601,13 @@ test('壳自有副窗拿到窗口外观权限，内核页面与官网页签窗�
       `${cap}.json 缺窗口级外观授权`,
     );
   }
-  // 内容是别人的页面（内核 webui / chat.deepseek.com 等），恒深色：
-  // 让它们跟随本应用主题只会把割裂换个方向。
-  for (const cap of ['harness-remote', 'official-chat-remote', 'official-chat-strip']) {
+  const harnessPerms = JSON.parse(read('../../src-tauri/capabilities/harness-remote.json')).permissions;
+  assert.ok(
+    harnessPerms.includes('allow-window-appearance'),
+    'harness-remote.json 缺工作台外观镜像所需的窗口级授权',
+  );
+  // 官网页签内容是别人的页面，恒深色；让它跟随本应用主题只会把割裂换个方向。
+  for (const cap of ['official-chat-remote', 'official-chat-strip']) {
     const perms = JSON.parse(read(`../../src-tauri/capabilities/${cap}.json`)).permissions;
     assert.ok(
       !perms.includes('allow-window-appearance') && !perms.includes('core:window:allow-set-theme'),
@@ -611,11 +616,29 @@ test('壳自有副窗拿到窗口外观权限，内核页面与官网页签窗�
   }
 });
 
-test('工作台窗口仍钉死深色（内容是内核 webui，不跟本应用主题）', () => {
-  assert.match(
-    read('../../src-tauri/src/harness/harness_window.rs'),
-    /\.theme\(crate::shell::appearance::initial_theme\(\)\)/,
-    '工作台装的是内核自己的 webui，改成跟随主题会让内核深色内容配浅色标题栏',
+test('工作台不钉建窗主题，并在两条建窗链注入外观镜像', () => {
+  const harness = read('../../src-tauri/src/harness/harness_window.rs');
+  const commands = read('../../src-tauri/src/commands.rs');
+  const themeCall = /\.theme\(crate::shell::appearance::initial_theme\(\s*crate::shell::appearance::WORKBENCH_LABEL\s*,?\s*\)\)/g;
+  assert.equal(
+    (harness.match(themeCall) || []).length,
+    1,
+    '工作台自愈建窗链必须按 WORKBENCH_LABEL 传入不钉主题的建窗兜底',
+  );
+  assert.equal(
+    (commands.match(themeCall) || []).length,
+    1,
+    '工作台手动打开建窗链必须按 WORKBENCH_LABEL 传入不钉主题的建窗兜底',
+  );
+  assert.equal(
+    (harness.match(/include_str!\("workbench-appearance\.js"\)/g) || []).length,
+    1,
+    '工作台自愈建窗链缺外观镜像脚本',
+  );
+  assert.equal(
+    (commands.match(/include_str!\(\s*"harness\/workbench-appearance\.js"\s*\)/g) || []).length,
+    1,
+    '工作台手动打开建窗链缺外观镜像脚本',
   );
 });
 
