@@ -1,5 +1,6 @@
 //! 云端套餐 / Token Plan 用量：查询并展示 MiniMax Token Plan 的双窗口额度
-//! 进度与 DeepSeek 按量余额（设计见 `docs/features/subscription/subscription-usage-design.md`）。
+//! 进度、DeepSeek 按量余额与 2api.store 自定义 provider 的剩余额度（设计见
+//! `docs/features/subscription/subscription-usage-design.md`）。
 //!
 //! 与 [`crate::usage::local`]（本地 token 统计）的关系：usage.rs 回答「过去消耗了
 //! 多少」，本模块回答「云端账户还剩多少、何时重置」。两层数据互相独立。
@@ -49,7 +50,7 @@ use crate::shell::process;
 use crate::shell::state::{self, StateCtx};
 use crate::shell::window;
 use crate::usage::credentials::{self as credentials, ResolvedCredential};
-use crate::usage::{subscription_openai, subscription_opencode};
+use crate::usage::{subscription_api2store, subscription_openai, subscription_opencode};
 
 /// 缓存文档的 schema 版本。v2 起绑定实例 / profile / 凭据指纹。
 pub const CACHE_SCHEMA: u32 = 2;
@@ -81,17 +82,22 @@ pub const PROVIDER_OPENAI: &str = "openai_codex";
 /// 这个容量端点）。端点与响应形状与其余五家都不同源，实现见
 /// [`crate::usage::subscription_opencode`]。
 pub const PROVIDER_OPENCODE: &str = "opencode_go";
+/// 2api.store（TokenShop）中转：用户在内核模型设置里**自定义的 provider**
+/// （route 名由用户自己起，本机实测 `z-2api`），凭据取那一行的 `apiKeyEnv`，
+/// 用量端点从那一行的 `baseURL` 推导。实现见 [`subscription_api2store`]。
+pub const PROVIDER_API2STORE: &str = "api2store";
 
 /// 视图里的固定输出顺序：概览卡与独立窗口都按它排列。DeepSeek 是余额类
 /// 数据、更新最直观，放在最前（用户指定的展示顺序）；新接入的 provider
 /// **追加在末尾**，不重排既有分区——卡片位置在两次刷新之间跳行比排在后面更糟。
-const PROVIDER_ORDER: [&str; 6] = [
+const PROVIDER_ORDER: [&str; 7] = [
     PROVIDER_DEEPSEEK,
     PROVIDER_MINIMAX_CN,
     PROVIDER_MINIMAX_EN,
     PROVIDER_ZAI_CODING_CN,
     PROVIDER_OPENAI,
     PROVIDER_OPENCODE,
+    PROVIDER_API2STORE,
 ];
 
 /// 缓存条目的凭据状态：凭据可用（含「还没验证过」）。
@@ -125,13 +131,15 @@ fn provider_label(id: &str) -> &'static str {
         PROVIDER_ZAI_CODING_CN => "GLM-CN",
         PROVIDER_OPENAI => "OpenAI",
         PROVIDER_OPENCODE => "opencode",
+        PROVIDER_API2STORE => "2api",
         _ => "未知供应商",
     }
 }
 
-/// 缓存条目 / 视图的 `kind`：MiniMax 是套餐窗口进度，DeepSeek 是货币余额。
+/// 缓存条目 / 视图的 `kind`：MiniMax 是套餐窗口进度，DeepSeek 与 2api.store
+/// 是货币余额（2api 的 `/v1/usage` 给的是「还剩多少」这一行金额）。
 fn provider_kind(id: &str) -> &'static str {
-    if id == PROVIDER_DEEPSEEK {
+    if id == PROVIDER_DEEPSEEK || id == PROVIDER_API2STORE {
         "balance"
     } else {
         "plan"
@@ -347,7 +355,8 @@ pub fn subscription_view(provider: Option<&str>, force: bool) -> Result<Subscrip
     if let Some(id) = provider {
         if !PROVIDER_ORDER.contains(&id) {
             return Err(format!(
-                "未知的用量供应商「{id}」。支持的取值：minimax_cn / minimax_en / deepseek / zai_coding_cn / openai_codex / opencode_go"
+                "未知的用量供应商「{id}」。支持的取值：{}",
+                PROVIDER_ORDER.join(" / ")
             ));
         }
     }
@@ -392,6 +401,9 @@ pub fn subscription_view(provider: Option<&str>, force: bool) -> Result<Subscrip
         // 同一份解析快照既绑定缓存，也发请求，避免第二次读取造成换账号竞态。
         let openai =
             (id == PROVIDER_OPENAI).then(|| subscription_openai::resolve_usage(&codex_consent));
+        // 2api.store 的用量端点跟着自定义 provider 那一行的 baseURL 走；其余
+        // provider 的查询端点是模块常量，这个值恒为 None 且被忽略。
+        let base_url = credentials::binding_base_url(id, &bindings);
         let credential = match openai.as_ref() {
             Some(usage) => subscription_openai::resolved_credential(usage, codex_usage_enabled),
             None => credentials::resolve_provider(id, &bindings, &dsh_home),
@@ -405,7 +417,7 @@ pub fn subscription_view(provider: Option<&str>, force: bool) -> Result<Subscrip
             now_ms,
             |id, key| match openai.as_ref() {
                 Some(usage) => subscription_openai::fetch_resolved(usage, now_ms),
-                None => fetch_provider(id, key, &dsh_home),
+                None => fetch_provider(id, key, &dsh_home, base_url.as_deref()),
             },
         );
         // 本次调用真实发生的失败才记日志：TTL 命中时的陈旧错误不重复落盘。
@@ -651,11 +663,18 @@ fn entry_from_data(id: &str, data: ProviderData) -> ProviderCacheEntry {
     entry
 }
 
-fn fetch_provider(id: &str, key: &str, dsh_home: &std::path::Path) -> FetchOutcome {
+fn fetch_provider(
+    id: &str,
+    key: &str,
+    dsh_home: &std::path::Path,
+    base_url: Option<&str>,
+) -> FetchOutcome {
     match id {
         PROVIDER_DEEPSEEK => fetch_deepseek(id, key),
         PROVIDER_ZAI_CODING_CN => fetch_zhipu(id, key, dsh_home),
         PROVIDER_OPENCODE => subscription_opencode::fetch(key),
+        // 端点由用户填的 baseURL 推导（见 subscription_api2store 模块头）。
+        PROVIDER_API2STORE => subscription_api2store::fetch(key, base_url),
         _ => fetch_minimax(id, key),
     }
 }
@@ -692,6 +711,10 @@ fn credential_rejected_message(provider: &str, status: u16) -> String {
         // 下一步也因此指向模型设置而不是 opencode 自己的登录文件（文案见下一条
         // 常量）。
         PROVIDER_OPENCODE => ("opencode", OPENCODE_REAUTH_STEP),
+        PROVIDER_API2STORE => (
+            "2api",
+            "请到工作台的模型设置更新这个自定义 provider（Base URL 指向 2api.store）的 API Key",
+        ),
         PROVIDER_MINIMAX_EN => ("MiniMax-EN", MINIMAX_REAUTH_STEP),
         _ => ("MiniMax-CN", MINIMAX_REAUTH_STEP),
     };
@@ -1549,6 +1572,7 @@ mod tests {
             PROVIDER_ZAI_CODING_CN,
             PROVIDER_OPENAI,
             PROVIDER_OPENCODE,
+            PROVIDER_API2STORE,
         ];
         for id in all {
             assert!(PROVIDER_ORDER.contains(&id), "{id} 不在 PROVIDER_ORDER 里");

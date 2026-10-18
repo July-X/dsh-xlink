@@ -40,6 +40,11 @@ pub const PROVIDER_ZAI_CODING_CN: &str = "zai_coding_cn";
 /// 出现）——宁可少一个分区，也不拿猜出来的名字去查别人的账号。走模型设置页
 /// 配置的用户（profile 里会写下 `apiKeyEnv`）不受影响。
 pub const PROVIDER_OPENCODE: &str = "opencode_go";
+/// 2api.store（TokenShop）中转：内核模型设置里的**用户自定义 provider**，
+/// 没有官方 route 名。识别与端点推导见 [`classify_route`] 与
+/// [`binding_base_url`]；用量接口 `/v1/usage` 的响应形状见
+/// `subscription_api2store.rs` 的模块头。
+pub const PROVIDER_API2STORE: &str = "api2store";
 
 /// 智谱套餐查询的上下文引用名（组织 / 项目 / 套餐类型）。这三项不是秘密，
 /// 但与 Key 一样走「环境变量 → .credentials.yaml refs → .env」的解析链，
@@ -125,6 +130,10 @@ pub struct ProviderBinding {
     pub reference: String,
     /// 是否来自 profile 的显式 `apiKeyEnv`（`false` = 默认派生）。
     pub explicit: bool,
+    /// profile 里该行的 `baseURL`（未写为 `None`）。内置 provider 的查询端点
+    /// 是常量，用不到它；**自定义 provider（2api.store）的用量端点只能从
+    /// 这里推导**——它没有固定 route 名，端点跟着用户填的 Base URL 走。
+    pub base_url: Option<String>,
 }
 
 /// 解析某个订阅 provider 的凭据。
@@ -140,13 +149,14 @@ pub fn resolve_provider(
 ) -> Option<ResolvedCredential> {
     let binding = match bindings
         .iter()
-        .find(|b| classify_route(&b.route, None) == Some(provider))
+        .find(|b| classify_route(&b.route, b.base_url.as_deref()) == Some(provider))
     {
         Some(binding) => binding.clone(),
         None => ProviderBinding {
             route: default_route(provider)?.to_string(),
             reference: default_reference(provider)?,
             explicit: false,
+            base_url: None,
         },
     };
     let resolved = resolve(&binding.reference, dsh_home);
@@ -157,13 +167,45 @@ pub fn resolve_provider(
     }
 }
 
+/// 某个订阅 provider 在 profile 里对应行的 `baseURL`（没有绑定或该行没写
+/// `baseURL` 时为 `None`）。
+///
+/// 只有 2api.store 这类**自定义 provider** 需要它：端点不是常量，必须跟着
+/// 用户在内核模型设置里填的 Base URL 走。内置 provider 的端点写死在
+/// `subscription.rs` / 各 provider 模块的常量里，拿到 `baseURL` 也不用。
+pub fn binding_base_url(provider: &str, bindings: &[ProviderBinding]) -> Option<String> {
+    bindings
+        .iter()
+        .find(|b| classify_route(&b.route, b.base_url.as_deref()) == Some(provider))
+        .and_then(|b| b.base_url.clone())
+}
+
 /// 把内核 provider route 归类到订阅 provider；不认识的 route 返回 `None`。
 ///
-/// 判据用 route 名与 baseURL 双信号：route 名含 `minimax` 时按 `cn` / 其余
-/// （`en` / `io` / `intl`）分国内国际；`deepseek` 直接对应。baseURL 只在
-/// 调用方给出时参与兜底判断（profile 解析阶段没有独立的 baseURL 索引）。
+/// 判据用 route 名与 baseURL 双信号。**2api.store 中转最先判**（route 名含
+/// `2api` 或 baseURL 主机是 `2api.store`）——中转的 route 名常与厂商名组合
+/// （`deepseek-2api`），先按厂商名认会拿中转 Key 去打官方域名。其后 route 名
+/// 含 `minimax` 时按 `cn` / 其余（`en` / `io` / `intl`）分国内国际，`deepseek`
+/// 直接对应；baseURL 还参与其余厂商的兜底判断（如 route 被改名成 `bigmodel`
+/// 时按主机认智谱）。profile 解析会带上该行声明的 `baseURL`，所以这条兜底在
+/// 真实链路里可用（不再只是「调用方恰好给出时」的注释承诺）。
 pub fn classify_route(route: &str, base_url: Option<&str>) -> Option<&'static str> {
     let route_lower = route.to_ascii_lowercase();
+    // 2api.store / TokenShop 中转（**用户自定义 provider**）排在厂商 route 名
+    // 判据**之前**：用户拿 2api 中转跑某家的模型时，route 名很自然会写成
+    // `deepseek-2api` / `minimax-2api` / `opencode-2api`，同时含厂商关键字。
+    // 若先把 `deepseek` 认成官方 provider，就会拿这把中转 Key 去请求
+    // api.deepseek.com（401），还会把一把好凭据标成 expired——而实际用量在
+    // 2api 的 `/v1/usage` 上。官方内置 route 名（deepseek / minimax-cn /
+    // zai-coding-cn / opencode[-go]）都不含 `2api`，前置不会误伤它们。
+    //
+    // 识别信号：route 名含 `2api`（用户建行时几乎都会这样命名，本机实测
+    // `z-2api`），或 `baseURL` 主机是 `2api.store`（含子域，route 改过名也认）。
+    // **不把「任意自定义 provider」都当 2api**：哪个中转站跑着带 `/v1/usage`
+    // 的服务无从得知，认错等于拿用户的 Key 去打一个不相干的地址。
+    if route_lower.contains("2api") || base_url.is_some_and(host_is_2api_store) {
+        return Some(PROVIDER_API2STORE);
+    }
     if route_lower.contains("deepseek") {
         return Some(PROVIDER_DEEPSEEK);
     }
@@ -221,6 +263,30 @@ pub fn classify_route(route: &str, base_url: Option<&str>) -> Option<&'static st
     None
 }
 
+/// `baseURL` 的主机是不是 2api.store（默认线路；含子域）。
+///
+/// 只做字符串解析不引 URL 库：这里只需要「协议之后、首个路径 / 查询 / 片段
+/// 之前」的主机段，且必须容忍用户照抄文档时带端口或末尾斜杠。
+fn host_is_2api_store(url: &str) -> bool {
+    let Some((_scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    // 去掉 userinfo 与端口；2api.store 是普通域名，不需要处理 IPv6 字面量。
+    let host = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default();
+    host == "2api.store" || host.ends_with(".2api.store")
+}
+
 /// 内核模型页对内置 provider 的默认引用派生规则：route 大写 + `_API_KEY`。
 pub fn default_reference(provider: &str) -> Option<String> {
     let route = default_route(provider)?;
@@ -237,6 +303,9 @@ fn default_route(provider: &str) -> Option<&'static str> {
         PROVIDER_DEEPSEEK => Some("deepseek"),
         PROVIDER_ZAI_CODING_CN => Some("zai-coding-cn"),
         PROVIDER_OPENCODE => Some("opencode-go"),
+        // 2api.store 是用户自定义 provider：route 名由用户自己起，没有默认
+        // 派生名可回落（认不出来就是未配置，绝不拿猜出来的名字去查别人的账号）。
+        PROVIDER_API2STORE => None,
         _ => None,
     }
 }
@@ -297,7 +366,9 @@ pub fn profile_bindings(profile_dir: &Path) -> Vec<ProviderBinding> {
     bindings
 }
 
-/// 从 patch YAML 文本提取 `config.providers.<route>.apiKeyEnv` 绑定（纯函数）。
+/// 从 patch YAML 文本提取 `config.providers.<route>` 的绑定（纯函数）：凭据
+/// 引用名 `apiKeyEnv` 必须有（没有它就没有可查的凭据），`baseURL` 能读到就
+/// 一并带上——2api.store 这类自定义 provider 的用量端点要从它推导。
 pub fn patch_providers(yaml: &str) -> Vec<ProviderBinding> {
     let mut bindings = Vec::new();
     let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(yaml) else {
@@ -324,10 +395,17 @@ pub fn patch_providers(yaml: &str) -> Vec<ProviderBinding> {
             if api_key_env.is_empty() {
                 continue;
             }
+            let base_url = provider
+                .get("baseURL")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+                .map(str::to_string);
             bindings.push(ProviderBinding {
                 route: route.to_string(),
                 reference: api_key_env.to_string(),
                 explicit: true,
+                base_url,
             });
         }
     }
@@ -446,6 +524,12 @@ mod tests {
         apiKeyEnv: ZAI_CODING_CN_API_KEY
         models:
           - id: glm-5.3
+      z-2api:
+        apiKeyEnv: Z_2API_API_KEY
+        api: openai-responses
+        baseURL: https://2api.store/v1
+        models:
+          - id: gpt-6.1-sol
 "#;
 
     #[test]
@@ -453,7 +537,7 @@ mod tests {
         let bindings = patch_providers(PATCH_SAMPLE);
         assert_eq!(
             bindings.len(),
-            3,
+            4,
             "无关条目（agent-default-model / models 列表）不产出绑定"
         );
         let minimax = bindings
@@ -462,6 +546,16 @@ mod tests {
             .expect("应有 minimax-cn");
         assert_eq!(minimax.reference, "MINIMAX_CN_CUSTOM_KEY");
         assert!(minimax.explicit);
+        let api2store = bindings
+            .iter()
+            .find(|b| b.route == "z-2api")
+            .expect("应有自定义的 z-2api（2api.store）行");
+        assert_eq!(api2store.reference, "Z_2API_API_KEY");
+        assert_eq!(
+            api2store.base_url.as_deref(),
+            Some("https://2api.store/v1"),
+            "自定义 provider 的 baseURL 必须一起读出来：用量端点只能从它推导"
+        );
     }
 
     #[test]
@@ -517,6 +611,52 @@ mod tests {
             classify_route("opencode-zen", None),
             None,
             "只认 `opencode-go` 与 `opencode` 这两个官方 route 名，不按前缀猜"
+        );
+        // 2api.store 是用户自定义 provider：route 名与 baseURL 两个信号都要认。
+        assert_eq!(
+            classify_route("z-2api", None),
+            Some(PROVIDER_API2STORE),
+            "本机真实 profile 里的 route 名（z-2api）"
+        );
+        assert_eq!(
+            classify_route("tokenshop", Some("https://2api.store/v1")),
+            Some(PROVIDER_API2STORE),
+            "route 改了名也能按 baseURL 主机认出来"
+        );
+        assert_eq!(
+            classify_route("custom-cn", Some("https://cn.2api.store/v1")),
+            Some(PROVIDER_API2STORE),
+            "2api.store 的子域（国内优化线路）同样认"
+        );
+        assert_eq!(
+            classify_route("my-relay", Some("https://relay.example/v1")),
+            None,
+            "自定义 provider 不按「任意中转」兜底：认错等于拿用户的 Key 去打不相干的地址"
+        );
+        // 中转站 + 厂商关键字的 route 名：2api 信号优先于厂商 route 名。
+        assert_eq!(
+            classify_route("deepseek-2api", None),
+            Some(PROVIDER_API2STORE),
+            "拿 2api 中转跑 DeepSeek 时 route 名同时含两家，必须归到中转——             否则会拿中转 Key 去打 api.deepseek.com，并把好凭据标成 expired"
+        );
+        assert_eq!(
+            classify_route("minimax-2api", Some("https://2api.store/v1")),
+            Some(PROVIDER_API2STORE)
+        );
+        assert_eq!(
+            classify_route("opencode-2api", None),
+            Some(PROVIDER_API2STORE),
+            "opencode 判据只认两个精确 route 名，这条多出来的 2api 信号必须先命中"
+        );
+        assert_eq!(
+            classify_route("deepseek", Some("https://2api.store/v1")),
+            Some(PROVIDER_API2STORE),
+            "官方 route 名被指到 2api 主机时同样归中转（端点在哪家就查哪家）"
+        );
+        assert_eq!(
+            classify_route("deepseek", Some("https://api.deepseek.com")),
+            Some(PROVIDER_DEEPSEEK),
+            "官方主机的判定不受影响"
         );
     }
 
@@ -599,6 +739,7 @@ mod tests {
             route: "opencode".into(),
             reference: "OPENCODE_API_KEY".into(),
             explicit: true,
+            base_url: None,
         }];
         let resolved =
             resolve_provider(PROVIDER_OPENCODE, &bindings, &dir).expect("Zen 行也要解析出凭据");
@@ -614,11 +755,13 @@ mod tests {
                 route: "opencode".into(),
                 reference: "OPENCODE_API_KEY".into(),
                 explicit: true,
+                base_url: None,
             },
             ProviderBinding {
                 route: "opencode-go".into(),
                 reference: "OPENCODE_GO_API_KEY".into(),
                 explicit: true,
+                base_url: None,
             },
         ];
         let resolved =
@@ -670,6 +813,76 @@ mod tests {
         // 命中的是那一层，断言具体值会变成一条看运气的测试。
         assert!(resolved.value.is_some());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 2api.store 是内核模型设置里的**用户自定义 provider**：凭据与端点都跟着
+    /// 用户那一行走（本机真实 profile：route `z-2api`、`Z_2API_API_KEY`、
+    /// `baseURL: https://2api.store/v1`）。这条从 YAML 文本走完整条链，钉住
+    /// 「分区出现」的两个前提：认得出来（classify）+ 取得到那一行的 Key。
+    #[test]
+    fn api2store_custom_provider_resolves_end_to_end() {
+        let dir = tempfile_fresh("api2store-custom");
+        let profile = dir.join("profiles/web");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(
+            profile.join("cordis.patch.yml"),
+            "- id: llm-pi-ai\n  name: \"@deepseek-ai/dsh-llm-pi-ai\"\n  config:\n    \
+             providers:\n      z-2api:\n        api: openai-responses\n        \
+             baseURL: https://2api.store/v1\n        apiKeyEnv: Z_2API_API_KEY\n        \
+             models:\n          - id: gpt-6.1-sol\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".credentials.yaml"),
+            "version: 1\nrefs:\n  Z_2API_API_KEY: two-api-key\n",
+        )
+        .unwrap();
+        let bindings = profile_bindings(&profile);
+        let resolved = resolve_provider(PROVIDER_API2STORE, &bindings, &dir)
+            .expect("自定义的 z-2api 行必须解析出凭据");
+        assert_eq!(resolved.reference, "Z_2API_API_KEY");
+        assert_eq!(
+            binding_base_url(PROVIDER_API2STORE, &bindings).as_deref(),
+            Some("https://2api.store/v1"),
+            "用量端点只能从这个 baseURL 推导"
+        );
+        // route 改名、只剩 baseURL 主机这个信号时也要认（用户重命名 provider
+        // 不该让分区消失）。
+        let renamed = patch_providers(
+            "- id: llm-pi-ai\n  name: \"@deepseek-ai/dsh-llm-pi-ai\"\n  config:\n    \
+             providers:\n      tokenshop:\n        baseURL: https://2api.store/v1\n        \
+             apiKeyEnv: Z_2API_API_KEY\n",
+        );
+        assert_eq!(
+            resolve_provider(PROVIDER_API2STORE, &renamed, &dir)
+                .expect("按 baseURL 主机也要认出来")
+                .reference,
+            "Z_2API_API_KEY"
+        );
+        // 没有 2api 信号的自定义 provider 不是 2api：不拿它的 Key 去打
+        // 2api.store 的用量接口。
+        let other = patch_providers(
+            "- id: llm-pi-ai\n  name: \"@deepseek-ai/dsh-llm-pi-ai\"\n  config:\n    \
+             providers:\n      my-relay:\n        baseURL: https://relay.example/v1\n        \
+             apiKeyEnv: RELAY_API_KEY\n",
+        );
+        assert_eq!(
+            classify_route("my-relay", Some("https://relay.example/v1")),
+            None
+        );
+        assert!(resolve_provider(PROVIDER_API2STORE, &other, &dir).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn host_detection_only_accepts_2api_store_and_its_subdomains() {
+        assert!(host_is_2api_store("https://2api.store/v1"));
+        assert!(host_is_2api_store("https://2api.store"));
+        assert!(host_is_2api_store("https://cn.2api.store/v1"));
+        assert!(host_is_2api_store("https://2api.store:443/v1?x=1"));
+        assert!(!host_is_2api_store("https://2api.store.evil.com/v1"));
+        assert!(!host_is_2api_store("https://evil.example/2api.store/v1"));
+        assert!(!host_is_2api_store("2api.store/v1"));
     }
 
     #[test]

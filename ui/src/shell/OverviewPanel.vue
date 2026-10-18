@@ -81,6 +81,7 @@ import {
   markFailurePrompted,
   planTierRows,
   balanceRow,
+  unavailableText,
   queriedAtLabel,
   queriedAgeCompact,
   CODEX_USAGE_CONSENT_TIP,
@@ -721,9 +722,10 @@ function goVersions() {
         @go-panel="(name) => (store.activePanel = name)"
       />
 
-        <!-- 套餐用量：独立只读卡，内容直接展示（无折叠）。MiniMax 双窗口进度 +
-         DeepSeek 余额行；完整可操作错误文案只在顶部横幅出现，provider 分区
-         仅用短状态词标注。凭据复用工作台模型设置，这张卡不带任何写操作。 -->
+        <!-- 套餐用量：独立只读卡，内容直接展示（无折叠）。套餐类画窗口进度
+         （MiniMax / 智谱 / OpenAI / opencode），余额类画金额行
+         （DeepSeek / 2api.store）；完整可操作错误文案只在顶部横幅出现，
+         provider 分区仅用短状态词标注。凭据复用工作台模型设置，这张卡不带任何写操作。 -->
         <div class="card usage-card">
       <div class="card-head">
         <h2>
@@ -732,7 +734,8 @@ function goVersions() {
           <el-tooltip placement="bottom-start" :show-after="80">
             <template #content>
               <div class="card-info-tooltip">
-                MiniMax（国内站 / 国际站）与智谱的 5 小时 / 周窗口余额、DeepSeek 按量余额（多币种）。
+                MiniMax（国内站 / 国际站）与智谱的 5 小时 / 周窗口余额、DeepSeek 按量余额（多币种）、
+                opencode 的 Go 套餐三窗口余额，以及 2api.store 自定义 provider 的剩余额度（来自 /v1/usage）。
                 数据缓存 5 分钟，点「刷新」立即重新查询。凭据复用工作台模型设置；
                 未在内核配置对应厂商时，相应分区自动隐藏。
                 OpenAI / Codex 额度分区与「使用本机 Codex 登录查询额度」开关，仅在启用 OpenAI-OAuth-Plugin 后显示。
@@ -835,7 +838,7 @@ function goVersions() {
                   <span class="plan-balance-label">{{ item.label }}</span>
                   <strong class="plan-balance-total">{{ item.total }}</strong>
                   <span v-if="row.provider.is_available === false" class="plan-balance-unavailable">
-                    余额不足，无法发起调用
+                    {{ unavailableText(row.provider) }}
                   </span>
                 </div>
                 <div v-if="item.parts.length" class="plan-balance-detail">
