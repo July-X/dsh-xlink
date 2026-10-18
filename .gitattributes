@@ -1,0 +1,11 @@
+# 工作树统一 LF（2026-10-18）。
+#
+# 仓库里的源码判据有一批把 `\n` 写死在正则/分隔符里（`check-invariants.mjs` 的
+# 行级扫描、`ui/test` 里的源码断言、`scripts/check-entrypoints.test.mjs` 解析
+# workflow 等）。Windows 上 `core.autocrlf=true` 的检出会把文本转成 CRLF，于是
+# 本机同一份代码出现 9 项不变量 + 3 条 UI 测试 + 1 条脚本测试的**假红**，
+# 而 CI（Linux 检出）是绿的——2026-10-18 实测，排查成本高且极易误判成代码回归。
+#
+# `text=auto` 让 Git 自行判定文本/二进制（图片、字体、压缩包不会被改写），
+# `eol=lf` 强制文本在检出时也是 LF；CI 与本地从此同一套行尾。
+* text=auto eol=lf
