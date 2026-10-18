@@ -82,6 +82,15 @@ pub fn initialize(window: Window) {
             eprintln!("dsh-xlink: 无法调度窗口外观初始化：{error}");
         }
     }
+    // 非 macOS 在页加载后没有外观动作：标题栏主题在建窗期就定了（见
+    // [`initial_theme`]，走 Tauri 的窗口主题实现）。**这个显式分支不能删**——
+    // 砍掉它之后函数体在非 macOS 编译时只剩上面那条 `return`，clippy 的
+    // `needless_return` 会建议把它删掉，而照删会让 macOS 失去对工作台 / 内核
+    // 弹窗的豁免（那两扇窗的外观归页面自己决定）。
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+    }
 }
 
 #[tauri::command]
