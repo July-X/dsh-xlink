@@ -403,3 +403,15 @@ src.replace(anchor, new_test + anchor, 1)   # ✗ 旧测试的 #[test] 在锚点
 上面三个误导写法的实测数据）、`plugins/builtin/materialize.rs` 的错误文案、README 与
 `src-tauri/AGENTS.md` 的内置插件通道一节。
 
+**2026-10-19 当日复核推翻了本条的一个前提**（当天晚些时候，同一台机器）：原文把「未开开发者模式」
+当成事实写进了 `link.rs` 模块文档、README 与 `src-tauri/AGENTS.md`，据此推出「建链不需要开发者模式」，
+还要求错误文案别提开发者模式。复核结果：`whoami /priv` 里确实没有 `SeCreateSymbolicLinkPrivilege`，
+但 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock\AllowDevelopmentWithoutDevLicense = 1`，
+且该注册表键的最后写入时间是 **2026-07-15**——**早于事故三个月，开发者模式一直是开着的**。
+所以这台机器能建链恰恰因为开发者模式开着；没有它的机器上，`CreateSymbolicLinkW` 返回的是
+`ERROR_PRIVILEGE_NOT_HELD`（1314，确定性失败），与本次的 5（瞬时）不是一回事。
+教训与第 1 条同源但更进一步：**「我确认过它不是那个原因」也要有可复核的证据**——原文的确认过程
+只是「错误码看起来像权限问题，而文案早就是这么写的」，没有去查开发者模式的实际状态。
+现在 5 与 1314 分开处置（5 重试 + 查安全软件；1314 一次上抛 + 提示开开发者模式），
+「不需要开发者模式」这条结论已从三处撤回。
+

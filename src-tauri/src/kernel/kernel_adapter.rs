@@ -224,6 +224,17 @@ pub trait KernelAdapter: Send + Sync {
 
 // ─── DSH 适配器 ──────────────────────────────────────────────────────────
 
+/// 把一条启动失败落进 `kernel-start` 日志，并把同一个错误原样返回。
+///
+/// **`start()` 的每一条失败出口都要经过它**，不能只有进程派生那一支：用户看到的
+/// 是对话框里一句话，关掉就没了，日志是事后唯一查得到的东西（2026-10-19：
+/// 入口缺失、工作目录建不出来这些更常见的失败一条日志都没落，而文档叫用户
+/// 「同时查看启动诊断和 kernel-start 日志」）。
+fn start_failure(error: AdapterError) -> AdapterError {
+    crate::shell::shell_events::record("kernel-start", &error.to_string());
+    error
+}
+
 /// DeepSeek Harness 的具体实现。
 ///
 /// P3 阶段负责：
@@ -405,26 +416,36 @@ impl KernelAdapter for DshAdapter {
     ) -> Result<std::process::Child, AdapterError> {
         let bin = install_root.join(Self::KERNEL_BIN_REL);
         let metadata = std::fs::metadata(&bin).map_err(|error| {
-            AdapterError::Io(format!(
+            // 「文件不存在」是**版本没装**，不是 I/O 故障——两者的出路不同
+            // （去「内核版本」页装 / 重装 vs. 查磁盘与安全软件），
+            // `VersionNotInstalled` 正是这个语义的变体，别让它只剩 mock 在构造。
+            // 其它错误（拒绝访问、路径不是目录…）才是真 I/O 故障。
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return start_failure(AdapterError::VersionNotInstalled {
+                    family: record.kernel_family.clone(),
+                    version: record.kernel_version.clone().unwrap_or_default(),
+                });
+            }
+            start_failure(AdapterError::Io(format!(
                 "检查内核入口失败（{}）：{error}。{}。日志目录：{}",
                 bin.display(),
                 crate::shell::error::io_error_guidance(&error),
                 logs_dir.display()
-            ))
+            )))
         })?;
         if !metadata.is_file() {
-            return Err(AdapterError::Io(format!(
+            return Err(start_failure(AdapterError::Io(format!(
                 "内核入口不是文件（{}）。请在「内核版本」页重新安装对应版本。日志目录：{}",
                 bin.display(),
                 logs_dir.display()
-            )));
+            ))));
         }
         let dsh_home = Self::dsh_home_for(record);
         if !dsh_home.join("profiles").join(&record.profile).is_dir() {
-            return Err(AdapterError::InvalidProfile(format!(
+            return Err(start_failure(AdapterError::InvalidProfile(format!(
                 "实例 {} 的 profile {} 目录尚未准备好",
                 record.id, record.profile
-            )));
+            ))));
         }
         let node_dir = node.parent().unwrap_or_else(|| Path::new("."));
         let mut cmd = crate::shell::process::command_with_path_dirs(node, &[node_dir]);
@@ -435,12 +456,12 @@ impl KernelAdapter for DshAdapter {
         // 外部目录。
         let workspace = PathBuf::from(&record.workspace);
         std::fs::create_dir_all(&workspace).map_err(|error| {
-            AdapterError::Io(format!(
+            start_failure(AdapterError::Io(format!(
                 "创建内核工作目录失败（{}）：{error}。{}。日志目录：{}",
                 workspace.display(),
                 crate::shell::error::io_error_guidance(&error),
                 logs_dir.display()
-            ))
+            )))
         })?;
         cmd.arg(&bin)
             .arg("web")
@@ -470,7 +491,10 @@ impl KernelAdapter for DshAdapter {
         // 注入地址与令牌；桥接起不来不阻断内核启动（见 bridge::launch_env）。
         crate::plugins::builtin::runtime::refresh_enabled(&dsh_home, &record.profile, install_root)
             .map_err(|error| {
-                AdapterError::Io(format!("{error}。日志目录：{}", logs_dir.display()))
+                start_failure(AdapterError::Io(format!(
+                    "{error}。日志目录：{}",
+                    logs_dir.display()
+                )))
             })?;
         // 有上游的内置插件：启动工作台时顺手查一次更新（内部按 24 小时节流，
         // **失败不阻断启动**——用户手上的那一版继续可用）。这是「跟上上游」的
@@ -540,16 +564,14 @@ impl KernelAdapter for DshAdapter {
         let mut child = crate::shell::process::quiet(&mut cmd)
             .spawn()
             .map_err(|error| {
-                let detail = format!(
+                start_failure(AdapterError::Io(format!(
                     "无法启动内核（Node：{}；入口：{}；工作目录：{}）：{error}。{}。日志目录：{}",
                     node.display(),
                     bin.display(),
                     workspace.display(),
                     crate::shell::error::io_error_guidance(&error),
                     logs_dir.display()
-                );
-                crate::shell::shell_events::record("kernel-start", &detail);
-                AdapterError::Io(detail)
+                )))
             })?;
         crate::shell::process::adopt_kernel_process(&child);
         if let Err(error) = crate::shell::process::attach_log_drainers(
@@ -558,11 +580,11 @@ impl KernelAdapter for DshAdapter {
             &crate::kernel::lifecycle::kernel_log_spec(&record.kernel_family, &record.id),
         ) {
             crate::shell::process::terminate_process_tree(&mut child);
-            return Err(AdapterError::Io(format!(
+            return Err(start_failure(AdapterError::Io(format!(
                 "无法接管内核日志（{}）：{error}。{}",
                 logs_dir.display(),
                 crate::shell::error::io_error_guidance(&error)
-            )));
+            ))));
         }
         Ok(child)
     }
@@ -1029,9 +1051,10 @@ mod tests {
         std::fs::remove_dir_all(&empty).ok();
     }
 
-    /// start 必须先校验 bin 与 profile 目录，缺失时报相应错误而不是默默 spawn。
+    /// start 必须先校验 bin：**不存在的入口 = 版本没装**，要报结构化的
+    /// `VersionNotInstalled`（UI 据此引导去「内核版本」页），不是 I/O 故障。
     #[test]
-    fn start_rejects_missing_binary() {
+    fn start_reports_a_missing_binary_as_version_not_installed() {
         let home = temp_dir("start-missing");
         let _xlink = scoped_xlink_home(&home);
         let adapter = DshAdapter;
@@ -1042,12 +1065,35 @@ mod tests {
             .start(&record, &empty, Path::new("/nonexistent/node"), &empty)
             .expect_err("应拒绝");
         match err {
+            AdapterError::VersionNotInstalled { family, version } => {
+                assert_eq!(family, record.kernel_family);
+                assert_eq!(version, "0.1.5-rc.1");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&empty).ok();
+    }
+
+    /// 入口位置上是个**目录**（卸载残骸）时 metadata 成功但不 `is_file`——
+    /// 这一支才是 I/O 故障，文案要带路径与日志目录。
+    #[test]
+    fn start_reports_a_directory_entry_as_an_io_error() {
+        let home = temp_dir("start-dir-entry");
+        let _xlink = scoped_xlink_home(&home);
+        let adapter = DshAdapter;
+        let mut record = sample_record();
+        record.kernel_version = Some("0.1.5-rc.1".into());
+        let empty = temp_dir("start-dir-entry-root");
+        let bin = empty.join(DshAdapter::KERNEL_BIN_REL);
+        std::fs::create_dir_all(&bin).unwrap();
+        let err = adapter
+            .start(&record, &empty, Path::new("/nonexistent/node"), &empty)
+            .expect_err("应拒绝");
+        match err {
             AdapterError::Io(detail) => {
-                assert!(
-                    detail.contains(&empty.join(DshAdapter::KERNEL_BIN_REL).display().to_string())
-                );
-                assert!(detail.contains("os error"), "{detail}");
-                assert!(detail.contains("路径是否存在"));
+                assert!(detail.contains(&bin.display().to_string()), "{detail}");
+                assert!(detail.contains("内核入口不是文件"), "{detail}");
                 assert!(detail.contains(&format!("日志目录：{}", empty.display())));
             }
             other => panic!("unexpected: {other:?}"),
