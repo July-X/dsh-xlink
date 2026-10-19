@@ -10,6 +10,7 @@ import MemoryRow from './MemoryRow.vue';
 import MemoryCandidateRow from './MemoryCandidateRow.vue';
 import MemoryEditor from './MemoryEditor.vue';
 import MemoryDetail from './MemoryDetail.vue';
+import MemoryCandidateDetail from './MemoryCandidateDetail.vue';
 import { baseName } from '../shell/labels.js';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { builtinById, loadBuiltinStatus, toggleBuiltin } from '../plugins/builtin.js';
@@ -100,6 +101,18 @@ const detailRow = computed(() => allMemories.value.find((row) => row.id === deta
 /// 列表行现在整块可点（卡片压到两行、正文截断），点开才是完整正文与操作。
 const openMemoryDetail = (row) => { detailId.value = row.id; };
 
+/// 候选详情与记忆详情同一个形状：记 **id**，弹窗自己从 `candidates` 里现取。
+/// 那个列表是每次 `memory_list` 回读的新数组——候选在弹窗里被保存 / 忽略之后，后端
+/// 回读会把它从 `pending_candidates` 里摘掉，这个 computed 随之变 `null`、弹窗自动关，
+/// 不必再手动同步一次「关没关」。
+const candidateDetailId = ref(null);
+const candidateDetailItem = computed(
+  () => candidates.value.find((item) => item.id === candidateDetailId.value) || null
+);
+
+/// 候选行整块可点（正文截成两行），点开在这里读完整正文与来源，并直接裁决。
+const openCandidateDetail = (item) => { candidateDetailId.value = item.id; };
+
 /// 从详情转去编辑器：两个弹窗都 `append-to-body`，叠着开就是两层遮罩，先关详情再开编辑器。
 function editFromDetail(row) {
   detailId.value = null;
@@ -118,7 +131,7 @@ onMounted(() => {
       <div class="page-head__text">
         <h1 class="page-title">记忆</h1>
         <p class="page-desc">
-          保存长期有效的偏好与项目约定。打开「使用已批准的记忆」开关后，工作台按当前这句话挑出相关的带进会话（{{ injectLimitText }}），固定项优先带上；没被挑中的，模型可以自己按关键词查。模型只能读取与提出候选，不能自己批准。
+          保存长期有效的偏好与项目约定。打开「使用已批准的记忆」开关后，工作台按当前这句话挑出相关的带进会话（{{ injectLimitText }}），固定项优先带上；没被挑中的，模型可以自己按关键词查。模型只能读取与提出候选；自动提取的长期约定会直接存成记忆（未验证），只有与既有记忆冲突或推翻旧候选的才进「待确认」由你裁决。
         </p>
       </div>
       <!--
@@ -213,7 +226,7 @@ onMounted(() => {
                 <template #content>
                   <!-- prettier-ignore -->
                   <div class="card-info-tooltip">
-                    这些是模型或会话提出的候选：正文与来源都摆在这里，只有你点保存才会成为记忆。<br />
+                    待确认里是模型在会话里主动提出的候选，以及自动提取里与既有记忆冲突、或推翻旧候选、需要你裁决的条目：正文与来源都摆在这里，只有你点保存才会成为记忆。<br />
                     要存成「所有项目都算」的通用偏好时用右边那个按钮——先确认正文里没有路径、客户名之类的私有信息，通用偏好会跟着你去别的项目。
                   </div>
                 </template>
@@ -311,9 +324,11 @@ onMounted(() => {
             候选那一档：行还是原来那张卡里的行（正文、来源、冲突 / 取代标记、三枚动作
             全在），只是换了个容器。列表容器与已保存记忆共用 `memory-list`——这一屏
             唯一会滚的就是它，滚动条不再出现在页面上。
+            行整块可点（2026-10-19）：正文截成两行，点开是 `MemoryCandidateDetail`，
+            在那里读完整正文与来源并直接裁决。
           -->
           <p v-if="memoryStore.listScope === 'candidates' && !candidates.length" class="memory-hint">
-            没有待确认的候选。模型或会话提出候选后会出现在这里，只有点「保存」才成为记忆。
+            没有待确认的候选。模型在会话里主动提出候选、或自动提取的结果需要你裁决时会出现在这里，只有点「保存」才成为记忆。
           </p>
           <div
             v-else-if="memoryStore.listScope === 'candidates'"
@@ -325,6 +340,7 @@ onMounted(() => {
               :item="item"
               :records="allMemories"
               :candidates="candidates"
+              @open="openCandidateDetail"
             />
           </div>
           <p v-else-if="!allMemories.length" class="memory-hint">
@@ -401,7 +417,7 @@ onMounted(() => {
                 <template #content>
                   <!-- prettier-ignore -->
                   <div class="card-info-tooltip">
-                    自动提取的任务表：聊完一轮之后，模型会把这一段里值得长期保留的东西提成候选，每一行是聊过的一段；提出来的先进「待确认」，你点了保存才成为记忆。它跟着上面那个开关一起开关。<br />
+                    自动提取的任务表：聊完一轮之后，模型会把这一段里值得长期保留的东西提出来，每一行是聊过的一段；提取出来的长期约定会直接存成项目记忆；与既有记忆冲突或推翻旧候选的才进「待确认」由你裁决。它跟着上面那个开关一起开关。<br />
                     <strong>一条记忆都没提取出来时先看这里</strong>——失败那行会写明卡在哪一步（读取会话 / 切分片段 / 模型调用 / 解析输出 / 提交候选 / 已取消）。<br />
                     完整留痕在「查看日志」的 memory-jobs 标签下。
                   </div>
@@ -480,6 +496,20 @@ onMounted(() => {
       @edit="editFromDetail"
       @toggle="(state) => setMemoryState(detailRow, state)"
       @remove="removeMemory"
+    />
+
+    <!--
+      候选详情：待确认那一档的候选行正文截成两行，点开在这里读完整正文与来源凭据
+      （完整会话 id、创建时间、验证状态、冲突 / 取代 / 来源已变三种关系），页脚直接
+      保存 / 存为通用偏好 / 忽略。挂法同记忆详情：按 id 从 `candidates` 现取，
+      处理完回读把这条摘掉，computed 变 `null`，弹窗自己关。
+    -->
+    <MemoryCandidateDetail
+      v-if="candidateDetailItem"
+      :item="candidateDetailItem"
+      :records="allMemories"
+      :candidates="candidates"
+      @close="candidateDetailId = null"
     />
   </section>
 </template>

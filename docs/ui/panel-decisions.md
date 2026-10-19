@@ -836,3 +836,65 @@ macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用�
 读取方、提取跟着 `use_approved` 跑。这是**产品口径**（要么让那个字段真的管住排任务，要么删掉
 字段并改文档），不是文案能收口的。`MemoryStatus.auto_extract` 现在是没人读的死字段，留着但
 不该再被谁拿去展示。
+
+## 记忆面板：候选行点开详情、动作抽共用组件、自动落地后的文案（2026-10-19）
+
+用户三条反馈（截图指着「待确认」里那条「dsh-xlink 在 Windows 上遇到杀毒软件拦截」的候选）：
+① 「待确认的记忆信息不能点击查看完整信息」；② 一次性、特定项目才有的排障事件不该被提取；
+③ 既然是自动提取，为什么还要用户手动判断。①②③ 里 UI 这一半是 ① 与 ③ 的文案收口；
+② 与 ③ 的行为改动在插件提示词与 Rust 落地（见 `docs/features/memory/memory-progress.md`
+的 H10 / C15）。
+
+**候选行：可点的是正文那一块，不是整行**
+
+- 与 `MemoryRow.vue` 同一形状（列表只负责读，点开才是详情）：`.memory-row__main` 上挂
+  `role="button"` + `tabindex="0"` + `aria-haspopup="dialog"` + `aria-label`，`click` /
+  `keydown.enter` / `keydown.space` 都 `emit('open', item)`。
+- **不能挂在根上**：候选行的根还挂着动作排（保存 / 存为通用偏好 / 忽略），挂根会让「点忽略」
+  也去开弹窗。可点区域里还嵌着关系块的三枚按钮（停用这条 / 删除这条 / 丢弃这条），它们的事件
+  会冒泡上来——所以点击与回车共用 `event.target.closest('button, a')` 闸门；空格的
+  `preventDefault` **放在闸门之后**，先拦会让那三枚按钮的键盘激活失效。
+- `memory.css` 的 `.memory-row--clickable` 注释同步写明这一族类名现在挂两处（记忆行挂根、
+  候选行挂 `__main`），规则值一个字没动。
+
+**详情是新组件 `MemoryCandidateDetail.vue`，三枚动作抽成 `MemoryCandidateActions.vue`**
+
+- 详情写法照 `MemoryDetail.vue`（`append-to-body`、`width="min(560px, 92vw)"`、
+  `:close-on-click-modal="false"`），内容：完整正文（**不带** `memory-row__body--clamp`）、范围
+  标签（项目名取最后一段、完整路径进 `title`）、来源 tag、**完整会话 id**（行里那份是短的）、
+  创建时间、验证状态、H7 黄框与冲突 / 取代两块标记。
+- **动作抽出去而不是各写一份**：行与弹窗都要裁决同一条候选，两边各写一份的结局是迟早一边漏了
+  `'general'` 或 loading key，而这两种错都不报任何错。共用组件的根就是 `.memory-actions`，
+  调用方只补**位置类**（行 `memory-row__actions`、弹窗 `dialog-actions`）——两处要的落点不同，
+  组件里不写死 `justify-content`。
+- **行内三枚动作顺带从 small 文字按钮变成徽章**（`memory-badge`，与记忆详情底部同一套语言）：
+  2026-10-17 用户对记忆行提的「操作按钮默认显示 badge」在这里同样成立，而两处共用一份实现之后
+  也不可能一处徽章一处文字按钮。
+- **候选的 `stale` 在详情里说「来源已变」**（黄框 + 次行），不打印记忆那档的「已过期」：候选被
+  批准时后端会把 verification 重置成 verified，两个 `stale` 是两件事。
+- 详情挂在 `candidates` 的 pending 列表上按 id 现取：候选被处理后从 `memory_list` 里消失，
+  computed 变 `null`，弹窗自己关掉（不必同步一个开关状态）。
+
+**文案：把「先进入待确认、点保存才成为记忆」的旧说法清干净**
+
+- 页头副标题、待确认档 ⓘ 第一句、待确认空态、「提取任务」ⓘ 四处按新事实改写：自动提取的长期
+  约定**直接存成记忆**（未验证），只有与既有记忆冲突 / 推翻旧候选的才进「待确认」由用户裁决；
+  `memory_propose`（会话里主动提）那条路仍进待确认。
+- 「提取任务」ⓘ 里前置的「把…东西**提成候选**」一并改成「**提出来**」：不改的话，同一句后半
+  与它自相矛盾（原话仍暗示提取结果先成候选）。
+- 开关名「使用已批准的记忆」**不动**：它同时管注入与自动提取，开关语义没变；改的只是它管什么
+  的说明。
+
+**判据**：`ui/test/memoryPanel.test.js` 42/42（新增 4 条：正文那半可点 / 详情挂在 candidates 上 /
+详情摆出完整正文与来源凭据 / 新文案逐字在且旧说法一条不留；另 7 条既有判据跟着改）。**12 个
+变异反向验全部转红**（删回车入口、删 `role`、去掉冒泡闸门、空格改裸 handler、详情删共用动作排、
+详情加回 clamp、页头退回旧文案、`@open` 接错、详情改从 `allMemories` 取、`stale` 直接打印
+`verificationText`、删 `append-to-body`、详情挂载删 `v-if`）。`build:ui` 成功、
+`check:duplicates` 与基线同为 4 处。
+
+**未验**：弹窗在真浏览器里的排版（560px 内的换行、`__main` 在 dialog 里的单列降级、徽章行高）
+——e2e 通道断言不了面板渲染（见清单 G23 的边界），本轮只有 `build:ui` 与静态判据。
+
+**记在账上的**：`plugins/memory/test/probe/drive-real-model.mjs` 的 C6 夹具（连跑两次驱动器验
+「改口被标取代」）建立在「第一次提取留下一条 pending 候选」上，而自动落地之后它不再留下——
+复跑前要先给夹具一个「预置 pending 候选」的钩子（或改走 `memory_propose`）。不在门禁内。
