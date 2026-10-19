@@ -2,7 +2,7 @@
 //!
 //! 插件物化（`plugins/center.rs`）、内置插件 peer 链接
 //! （`plugins/builtin/materialize.rs`）与 `node_modules` 接线都经这里建目录链接。
-//! 另一半是删除：[`crate::pkg::fetch::remove_link`]（删链接不动目标）。
+//! 另一半是删除：[`remove_dir_link`]（同样对瞬时拒绝重试；删链接不动目标）。
 //!
 //! # 瞬时的 ERROR_ACCESS_DENIED 会挡住整个工作台
 //!
@@ -12,7 +12,7 @@
 //! 插件的一条链接。日志：
 //! `~/.dsh-xlink/shell/<mode>/logs/release-builtin-<id>-refresh-<日期>.log`。
 //!
-//! 实测（2026-10-19，这台 Windows 10 19045，非管理员、未开开发者模式）：同一个
+//! 实测（2026-10-19，这台机器）：同一个
 //! 账户、同一个目标目录（`kernels/<版本>/node_modules/@deepseek-ai/dsh-llm`），
 //! **时好时坏**——
 //!
@@ -26,6 +26,30 @@
 //! reparse point」拒掉，返回的就是 ERROR_ACCESS_DENIED**——权限本身没问题，
 //! `create_dir_all` 在同一个目录里刚成功过。所以这里对**瞬时**失败做有限重试：
 //! 一次抖动不该让用户的整个内核起不来。
+//!
+//! ## `os error 5` 与 `os error 1314` 不是一回事
+//!
+//! 原文档写过「本机非管理员、**未开开发者模式**」，据此推出「建链不需要开发者模式」，
+//! 还把这条结论写进了 README 与 `src-tauri/AGENTS.md`。**2026-10-19 复核证明那个
+//! 前提是错的**：
+//!
+//! - `whoami /priv` 里没有 `SeCreateSymbolicLinkPrivilege`，进程是 Medium 完整性；
+//! - 但 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock` 的
+//!   `AllowDevelopmentWithoutDevLicense = 1`，注册表键最后写入时间是 **2026-07-15**
+//!   ——早于事故三个月，**开发者模式一直是开着的**。
+//!
+//! 也就是说：这台机器能建链，恰恰是因为它开着开发者模式。换成没开的机器，
+//! `CreateSymbolicLinkW` 返回 `ERROR_PRIVILEGE_NOT_HELD`（**1314**，确定性失败），
+//! 重试一万次也不会变。两者必须分开：
+//!
+//! | 错误码 | 性质 | 处置 |
+//! | --- | --- | --- |
+//! | 5 `ERROR_ACCESS_DENIED` | 瞬时（过滤器驱动扫描） | 重试；仍失败查安全软件 |
+//! | 1314 `ERROR_PRIVILEGE_NOT_HELD` | 确定性（没开发者模式） | 一次就上抛；让用户开开发者模式或提权 |
+//!
+//! 所以 [`is_transient`] 只认 5 / 32 / 33，1314 立即上抛；文案由
+//! `shell::error::io_error_guidance` 分别给出。**「不需要开发者模式」这条结论已撤回**，
+//! 别再从它出发做设计。
 //!
 //! ## 不要绕开 std 去自己调 `CreateSymbolicLinkW`
 //!
@@ -46,6 +70,7 @@
 //! 分支（链接健康度、孤儿清扫、所有权），全都要跟着改；技能侧之所以能走 junction，
 //! 是因为它已经用内容指纹把所有权判定补齐了。要的是**链接仍然被认成链接**。
 
+use std::fs;
 use std::io;
 use std::path::Path;
 use std::time::Duration;
@@ -61,6 +86,27 @@ const RETRY_DELAY: Duration = Duration::from_millis(250);
 /// 文案，这里不包装，免得把「哪一步失败」的信息吃掉。
 pub(crate) fn make_dir_link(source: &Path, target: &Path) -> io::Result<()> {
     retry_transient(&mut || create_dir_link(source, target))
+}
+
+/// 删掉一条链接，**对同样的瞬时拒绝也重试**。
+///
+/// 删除与建链面对的是同一类拒绝：安全软件扫目录时连 `rmdir` / `unlink` 也一起拒。
+/// 只给建链加重试、把删除留给调用方裸调 `remove_dir`，症状是「上一次抖动留下的
+/// 旧链接删不掉」→ 下一次建链撞 `ERROR_ALREADY_EXISTS`（183，确定性失败、不重试）
+/// → 用户看到的仍是「工作台起不来」，而根因是删除那一步。
+///
+/// 与 [`crate::pkg::fetch::remove_link`] 的分工：那个是**尽力而为**的清理
+/// （目标不存在、权限不足都当没事，调用方不关心结果）；这个要**如实返回失败**，
+/// 因为它前面就是一次「必须先摘掉旧产物」的重建。两者删法一致：先 `remove_file`
+/// 再 `remove_dir`，覆盖文件与目录两种 reparse point。
+pub(crate) fn remove_dir_link(path: &Path) -> io::Result<()> {
+    retry_transient(&mut || match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        // 两条都试：Windows 上 reparse point 走 `remove_file` 就删掉了，Unix 上
+        // 目录链接是目录形态、只有 `remove_dir` 认。上抛目录那一条的错误——
+        // 目标按契约是目录链接，它的错误码才是语义正确的那一个。
+        Err(_) => fs::remove_dir(path),
+    })
 }
 
 /// 只对 [`is_transient`] 的失败重试，其余原样上抛。
@@ -93,21 +139,23 @@ fn create_dir_link(source: &Path, target: &Path) -> io::Result<()> {
 
 /// 这类失败值得再试一次吗。
 ///
-/// **只认瞬时**：过滤器驱动 / 索引服务扫目录时给的拒绝（`ERROR_ACCESS_DENIED`
-/// 5、`ERROR_SHARING_VIOLATION` 32、`ERROR_LOCK_VIOLATION` 33），以及被信号打断。
-/// `ERROR_ALREADY_EXISTS` 183 不在其中——那是调用方「先删旧链接」没删干净，
+/// **只认瞬时**：Windows 上是过滤器驱动 / 索引服务扫目录时给的拒绝
+/// （`ERROR_ACCESS_DENIED` 5、`ERROR_SHARING_VIOLATION` 32、`ERROR_LOCK_VIOLATION`
+/// 33）。`ERROR_ALREADY_EXISTS` 183 不在其中——那是调用方「先删旧链接」没删干净，
 /// 重试只会把同一个确定性失败拖慢（调用方自己负责清旧产物）。
 #[cfg(windows)]
 fn is_transient(error: &io::Error) -> bool {
     matches!(error.raw_os_error(), Some(5 | 32 | 33))
 }
 
+/// Unix 侧只认「被信号打断」。
+///
+/// **`EACCES` / `EPERM`（`PermissionDenied`）不重试**：那边没有过滤器驱动那类
+/// 瞬时拒绝，权限不足就是确定性的（父目录不可写、只读挂载），重试只会白等 1.5 秒
+/// 再报同一个错。两个平台的判据必须口径一致：都只认「重试真的可能改变结果」的失败。
 #[cfg(unix)]
 fn is_transient(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::Interrupted | io::ErrorKind::PermissionDenied
-    )
+    matches!(error.kind(), io::ErrorKind::Interrupted)
 }
 
 #[cfg(test)]
@@ -150,7 +198,13 @@ mod tests {
         );
 
         // 删链接不动目标：错删就是「把内核包删了」。
-        fs::remove_dir(&link).unwrap();
+        //
+        // **必须走本模块的 [`remove_dir_link`]，不能裸 `fs::remove_dir`**：Unix 上
+        // `remove_dir` 落到 `rmdir()`，而 POSIX 规定 `rmdir` 对符号链接返回
+        // `ENOTDIR`——本用例在 macOS 上会红在「删除失败」，与它要钉的语义无关
+        // （2026-10-19 CI 实测）。Windows 的 `RemoveDirectoryW` 对 reparse point
+        // 恰好成功，所以本机永远复现不出来。删法两条都试也是这个原因。
+        remove_dir_link(&link).expect("删掉链接");
         assert!(link.symlink_metadata().is_err());
         assert!(source.join("marker.txt").is_file());
         let _ = fs::remove_dir_all(&dir);
@@ -169,9 +223,39 @@ mod tests {
 
         assert!(link.symlink_metadata().is_ok(), "链接自身仍在");
         assert!(!link.exists(), "顺着链接看是悬空的");
-        fs::remove_dir(&link).expect("悬空链接也要删得掉");
+        remove_dir_link(&link).expect("悬空链接也要删得掉");
         assert!(link.symlink_metadata().is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 一个在本平台上**确实会被判成瞬时**的错误。
+    ///
+    /// 判据是分平台的，测试的素材也必须分平台：`from_raw_os_error(5)` 在 Windows 上
+    /// 是 `ERROR_ACCESS_DENIED`，在 Unix 上却是 `EIO`——照抄 Windows 的错误码会让
+    /// 这两条用例在 macOS 上必红，而红的原因与它们要钉的行为无关（2026-10-19 CI）。
+    fn transient_error() -> io::Error {
+        #[cfg(windows)]
+        {
+            io::Error::from_raw_os_error(5)
+        }
+        #[cfg(unix)]
+        {
+            io::Error::from(io::ErrorKind::Interrupted)
+        }
+    }
+
+    /// 一个在本平台上**确实会被判成确定性**的错误。
+    fn permanent_error() -> io::Error {
+        #[cfg(windows)]
+        {
+            // ERROR_ALREADY_EXISTS：调用方「先删旧链接」没删干净。
+            io::Error::from_raw_os_error(183)
+        }
+        #[cfg(unix)]
+        {
+            // EACCES：父目录不可写 / 只读挂载，重试不会改变结果。
+            io::Error::from(io::ErrorKind::PermissionDenied)
+        }
     }
 
     /// 分类判据本身：哪些错误会被重试，哪些必须立刻上抛。
@@ -180,8 +264,11 @@ mod tests {
     /// 本用例在 Windows 上红——它就是判据不是凑数的。
     #[test]
     fn transient_classification_covers_filter_driver_denial() {
-        let denied = io::Error::from_raw_os_error(5);
-        assert!(is_transient(&denied), "拒绝访问必须重试");
+        assert!(is_transient(&transient_error()), "这一档必须重试");
+        assert!(
+            !is_transient(&permanent_error()),
+            "确定性失败不该被重试：重试只会白等 1.5 秒再报同一个错"
+        );
         #[cfg(windows)]
         {
             assert!(is_transient(&io::Error::from_raw_os_error(32)));
@@ -193,6 +280,13 @@ mod tests {
             assert!(
                 !is_transient(&io::Error::from_raw_os_error(2)),
                 "路径不存在重试没有意义"
+            );
+        }
+        #[cfg(unix)]
+        {
+            assert!(
+                !is_transient(&io::Error::from(io::ErrorKind::PermissionDenied)),
+                "Unix 上没有过滤器驱动那类瞬时拒绝，EACCES 就是确定性失败"
             );
         }
     }
@@ -207,7 +301,7 @@ mod tests {
         let outcome = retry_transient(&mut || {
             attempts += 1;
             if attempts < 3 {
-                Err(io::Error::from_raw_os_error(5))
+                Err(transient_error())
             } else {
                 Ok(())
             }
@@ -223,9 +317,13 @@ mod tests {
         let mut attempts = 0;
         let outcome: io::Result<()> = retry_transient(&mut || {
             attempts += 1;
-            Err(io::Error::from_raw_os_error(183))
+            Err(permanent_error())
         });
-        assert_eq!(outcome.unwrap_err().raw_os_error(), Some(183));
+        assert_eq!(
+            outcome.unwrap_err().kind(),
+            permanent_error().kind(),
+            "上抛的必须是原来那个错误"
+        );
         assert_eq!(attempts, 1, "确定性失败不该重试");
     }
 }
