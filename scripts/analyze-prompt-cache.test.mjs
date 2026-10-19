@@ -5,8 +5,10 @@
 // ③ 没有带上游响应的日志要说清，而不是印一张空表。
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import * as zlib from 'node:zlib';
 
 import {
+  decompressZstdFrames,
   parseCacheFacts,
   parseCodexFacts,
   parseFacts,
@@ -187,4 +189,22 @@ test('parseFacts 两种日志形状自动分辨', () => {
   const dsh = parseFacts([assistantEvent(7, response())].join('\n'));
   assert.equal(dsh.length, 1);
   assert.equal(dsh[0].source, 'dsh');
+});
+
+test('多帧 zstd 日志整份解压，不只解第一帧', () => {
+  // 内核每批事件追加一个独立帧（还带 checksum）；只解第一帧会丢光后续调用。
+  const frame = (text, checksum) =>
+    zlib.zstdCompressSync(
+      Buffer.from(text),
+      checksum ? { params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 } } : undefined,
+    );
+  const multiFrame = Buffer.concat([frame('第一帧\n', true), frame('第二帧\n')]);
+  assert.equal(decompressZstdFrames(multiFrame).toString('utf8'), '第一帧\n第二帧\n');
+});
+
+test('末尾半帧只丢那一帧，已写完的部分照常解压', () => {
+  const complete = zlib.zstdCompressSync(Buffer.from('已写完的帧\n'));
+  const torn = complete.subarray(0, complete.length - 1);
+  const text = decompressZstdFrames(Buffer.concat([complete, torn]));
+  assert.equal(text.toString('utf8'), '已写完的帧\n');
 });
