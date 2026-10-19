@@ -11,6 +11,7 @@ pub(crate) mod child_priority;
 pub(crate) mod env;
 pub(crate) mod error;
 pub(crate) mod instance;
+pub(crate) mod link;
 pub(crate) mod localtime;
 #[cfg(target_os = "macos")]
 pub(crate) mod menu_bar;
