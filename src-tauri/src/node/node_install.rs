@@ -515,7 +515,7 @@ pub(crate) fn verify_or_install(
             // 改完没有任何效果。判断「某个路径还在不在用」只能看解析链，
             // 不能看函数名像不像。
             Err(format!(
-                "托管 Node.js v{MANAGED_NODE_VERSION} 无法运行，已回滚。实际输出：{detail}。\
+                "托管 Node.js v{MANAGED_NODE_VERSION} 无法运行，已回滚。诊断：{detail}。\
                  请手动安装 Node.js v{MANAGED_NODE_VERSION} 及以上版本后重试；\
                  也可以在 {} 里把 node_path 指到已有的 node 可执行文件（面板暂未提供该输入项）。\
                  日志：{}",

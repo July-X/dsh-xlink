@@ -3129,7 +3129,11 @@ if (ungatedOsImports.length > 0) {
 // `skills/manage.rs::make_entry_link`，那是另一条有意走 junction 的路，不归本项管。
 {
   const rustSrcDir = join(root, 'src-tauri', 'src');
-  const linkEntry = 'shell/link.rs';
+  // 按**模块名**认这个文件，不写死 `src-tauri/src/...` 路径：判据钉的是「建链
+  // 只有一个入口」，不是「入口恰好在这个目录层」。写死路径时，link.rs 一搬家
+  // 合法入口自己就会被判成违规，而判据在意的那件事（有没有第二个入口）反而
+  // 可能漏判——2026-10-01 重组时逐条改过一次的正是这个形状。
+  const linkEntry = baseName('shell/link.rs');
   const strays = [];
   const rawFfi = [];
   for (const full of walk(rustSrcDir, ['.rs'])) {
@@ -3137,7 +3141,7 @@ if (ungatedOsImports.length > 0) {
     const code = productionRust(readFileSync(full, 'utf8'));
     const lines = code.split('\n');
     lines.forEach((line, index) => {
-      if (file !== linkEntry && /\bsymlink_dir\s*\(/.test(line)) {
+      if (baseName(file) !== linkEntry && /\bsymlink_dir\s*\(/.test(line)) {
         strays.push(`${file}:${index + 1}`);
       }
       if (/\bCreateSymbolicLink[AW]?\b/.test(line)) {
