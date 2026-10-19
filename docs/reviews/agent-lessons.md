@@ -453,3 +453,30 @@ prompt-caching 指南，它的模型差异表写着「GPT-5.6 及以后：路由
 读它只读——它同时也是「用户到底经历了什么」的唯一现场。
 
 
+## 23. 判断「上游怎么用这个参数」要去读参考实现的源码：抄契约要抄全（2026-10-19）
+
+**事情**：`f0910696` 把会话身份映射成稳定的 `prompt_cache_key` 发给上游。修完我以为齐了——
+用户让「实际分析 Codex 源码再看看修改是否正确」，我去读 `F:/code/2026/codex`，发现
+**原生 Codex 两处都发**：请求体的 `prompt_cache_key`（`codex-rs/core/src/client.rs`）与
+`session-id` 头（`codex-rs/codex-api/src/requests/headers.rs`，无条件加），而且它自己的注释写着
+「ChatGPT derives cache affinity from the Responses session-id header」——**亲和性是从头推的**。
+
+根代理下两处取的是**同一个值**（`responses_session_id` → `prompt_cache_key` → `session_id`），
+所以那不是两种身份，是同一身份的两个投递位置。`f0910696` 只抄了请求体那一份。
+
+**三条纪律**：
+
+1. **参考实现的源码 > 官方文档**。文档说的是 API 的一般形态；同一个产品的客户端源码里写着
+   「我们实际发什么」。本次两者不一致——文档没提 `session-id` 头，源码里它无条件发着，还带着
+   为什么发它的注释。
+2. **抄契约要抄全**。只抄请求体字段、不抄头，得到的是「看起来对、实际可能不生效」的修法——
+   而它**看上去**是对的，最难发现的恰恰是这一类。缺口要在读参考实现时当场列出来，不是事后。
+3. **写进文档的「原生客户端基线」也要能复现**。先前写的「同账号原生 Codex 96–97%」从本机
+   落盘日志里**复现不出来**：实测 8 次调用全部命中、单次 67%–89%、合计 79.0%。数字进文档时
+   应当带着量它的命令，否则下一个复核的人只能照抄。
+
+**落点**：`src-tauri/src/openai/transport.rs`（发 `session-id` 头）、`src-tauri/src/openai/inference.rs`
+（从载荷取键 → 两处同源）、`src-tauri/src/openai/bridge.rs`（两条用例）；`scripts/analyze-prompt-cache.mjs`
+加读原生 Codex 落盘日志（`token_usage_record`），基线与现状同一把尺子。
+
+

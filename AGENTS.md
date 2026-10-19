@@ -50,6 +50,8 @@ cargo fmt                         # rustfmt 格式化
 
 `check:rust` 同样**包含 `cargo test`**（2026-10-11 补入）：此前不含 851 条 Rust 单测——总闸跑绿而 CI 才红，正是「门禁不许假绿」要挡的那件事。热缓存 44 秒 → 约 100 秒。
 
+**本机（Windows + GNU 工具链）跑 Rust 用例要加 `--release`**：debug profile 的测试二进制**加载即失败**（`0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND`），与改动无关——改动前的旧二进制同样起不来，而最小 Rust 工程在本机跑得好好的。`cargo test --release --locked <模块>` 正常（2026-10-19 实测 `openai::` 74 条全过）。**别因为 debug profile 起不来就断定「本机跑不了 Rust 用例」**：那是加载期失败，不是一条用例红；报「跑不了」之前先试一次 release。
+
 **门禁判据不许在 workflow 里内联**。UI 产物预算此前是同一段 heredoc 在 `desktop-ci.yml` 与 `desktop-release.yml` 各写一份，已经漂移过一次。现在判据本体在 `scripts/check-ui-bundle-budget.mjs`，两个 workflow 只调它，`npm run check` 也带上了（此前只在 CI 跑，本地提交前管不到）。**产物不存在时脚本必须 exit 1 并说清前置命令**，静默跳过等于给出一道「通过」的假门禁。
 
 UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui/dist/`，即 `src-tauri/tauri.conf.json` 的 `frontendDist`）。状态与动作集中在 `ui/src/store.js` 与各功能目录下的 store（`plugins/plugins.js`、`skills/skills.js`、`logs/logs.js`、`usage/usage.js`），异步样板（在途去重、静默刷新、更新检查策略）在 `shell/async.js`，组件只读状态、调动作；与 Rust 的通信只允许走 `shell/bridge.js` 的 invoke/Channel。按钮 loading 与长任务的细则、以及「改完跑 `build:ui`」都在 [ui/AGENTS.md](ui/AGENTS.md)，这里不重复。
@@ -94,7 +96,7 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 
 - **Codex 额度来源是显式许可，不是模型登录的一部分**：Rust 的 `usage/subscription_codex.rs` 只在用户开启后读取本机 Codex 登录文件，账号不一致、过期或身份无法确认时拒绝；不得刷新、修改或复制凭据。许可按壳模式隔离。前端共用 `CodexUsageConsent.vue`，事件 `codex-usage-consent-changed` 同步开关；来源切换必须清掉旧额度，界面标明「Codex 额度」，不能称作 SIWC 应用用量。这是一条跨前后端契约。**读本机 Codex 登录的每个新消费方都走同一个判据**：`subscription_codex::chatgpt_web_available()`（`enabled() && active_usage()` 同时成立），新增消费方引这个函数，不要自己拼一遍判据——那正是「绕开显式许可」的形状。官网网页版的 ChatGPT 条件页签（`harness/official_chat.rs` 的 `OFFICIAL_CHAT_OPTIONAL_TABS`）是它的第一个消费方，页签表在开窗那一刻求值一次并快照进 `AppState::official_chat_tabs`，因为下标就是内容 webview 的 label 后缀、而 Codex 令牌会自行轮换。
 
-- **上游行为不能靠接口名或官方文档推断，要去会话日志里量**：内核把上游响应**原样**存进 assistant 消息的 `replayState.response`（`usage`、回显的 `instructions` / `tools` / `prompt_cache_key` 都在里面），那是这条路线上唯一的事实来源，**只读**。套餐路线的前缀缓存诊断用 `npm run analyze:prompt-cache`（`scripts/analyze-prompt-cache.mjs`）：一次回答「命中率多少 / 键稳不稳 / 前缀变没变」。**这条路线没有 `prompt_cache_diagnostics`**，分字段缓存量取自 `usage.attribution.request_fields`（前缀整体命中时 `instructions` / `tools` 的 `cached_tokens` 等于各自 token 数）。2026-10-19 我按官方文档的模型差异表推断「5.6+ 上这个键不负责路由，所以修不好」，差点否掉一个**正确**的修复——实测把结论翻了过来，见 [agent-lessons §22](docs/reviews/agent-lessons.md)。
+- **上游行为不能靠接口名或官方文档推断，要去会话日志里量**：内核把上游响应**原样**存进 assistant 消息的 `replayState.response`（`usage`、回显的 `instructions` / `tools` / `prompt_cache_key` 都在里面），那是这条路线上唯一的事实来源，**只读**。套餐路线的前缀缓存诊断用 `npm run analyze:prompt-cache`（`scripts/analyze-prompt-cache.mjs`）：一次回答「命中率多少 / 键稳不稳 / 前缀变没变」。**这条路线没有 `prompt_cache_diagnostics`**，分字段缓存量取自 `usage.attribution.request_fields`（前缀整体命中时 `instructions` / `tools` 的 `cached_tokens` 等于各自 token 数）。2026-10-19 我按官方文档的模型差异表推断「5.6+ 上这个键不负责路由，所以修不好」，差点否掉一个**正确**的修复——实测把结论翻了过来，见 [agent-lessons §22](docs/reviews/agent-lessons.md)。**读源码优先于读文档**：同一产品的参考实现源码写着「我们实际发什么」——原生 Codex 的 `codex-rs/core/src/client.rs` 注释写着「ChatGPT derives cache affinity from the Responses session-id header」，而 `f0910696` 只抄了请求体的 `prompt_cache_key`、漏了同值的 `session-id` 头。**抄契约要抄全**，见 [agent-lessons §23](docs/reviews/agent-lessons.md)。
 
 - 长任务失败时进度面板保持开放，由用户手动关闭；完整原始输出始终落盘，报错信息引用日志路径。
 - **按职责主动拆分，优先复用已有代码**：新增逻辑前先检查现有组件、store、服务与共享层。一个模块出现多个独立变化原因、可单独测试的职责，或跨模块相同语义的重复逻辑时，应在本次改动内做必要拆分或提取共享实现，并保持接口稳定。紧密协作、同一职责的代码可保留在一起；没有真实复用场景时不预建抽象。不设文件行数、全仓行数或新文件登记预算，历史注释里的旧行数账本也不再作为约束，不为凑行数压缩排版、强拆组件或扩大任务范围。评审需说明拆分与复用的理由，并验证受影响的调用方、测试和文档；重复代码检测保留，产物体积预算另行执行。

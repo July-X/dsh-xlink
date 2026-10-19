@@ -17,6 +17,13 @@
 //   node scripts/analyze-prompt-cache.mjs <会话日志 .zstd | 目录>
 //   目录时取其中最新的会话日志。报告只印指纹与 token 数，**不印用户正文**。
 //
+// 也能读**原生 Codex 的落盘日志**（`~/.codex/sessions/**/rollout-*.jsonl`）：
+// 那边的事件是 `token_usage_record`，用量在 `payload.usage` 里（每次请求的
+// `input_tokens` / `cached_input_tokens`）。**要的是基线**——同一个账号下
+// 原生客户端命中多少，壳里就得做到多少；两侧用同一条命令量，才算同一把尺子。
+// 原生落盘日志不存请求体，所以「前缀变没变」那一问在那边量不了（只印得到
+// 命中率与键稳不稳）。
+//
 // 这条路线（SIWC 套餐）**没有** `prompt_cache_diagnostics` 字段，所以「这次
 // 为什么没命中」只能从 `attribution.request_fields` 推：它分字段给出
 // `instructions` / `tools` 各自的缓存量——前缀整体命中时这两个字段会等于
@@ -81,9 +88,73 @@ export function parseCacheFacts(text) {
       toolsCached: fields.tools?.cached_tokens ?? null,
       instructionsHash: digest(response.instructions ?? ''),
       toolsHash: digest(JSON.stringify(response.tools ?? null)),
+      source: 'dsh',
     });
   }
   return facts;
+}
+
+/**
+ * 原生 Codex 落盘日志 → 每次模型调用的缓存事实。
+ *
+ * Codex 的 `token_usage_record` 事件带 `payload.usage`（**这次请求**的用量，
+ * 不是累计——累计在 `turn_token_usage` / `thread_token_usage` 里，别拿错）：
+ * `input_tokens` 与 `cached_input_tokens`。键是 `payload.session_id`（会话 id，
+ * 原生实现拿它当缓存亲和身份）。
+ *
+ * 它**不存请求体**，所以前缀指纹量不了——这里不编，指纹留空。
+ *
+ * @param {string} text rollout JSONL 全文
+ * @returns {object[]} 每次调用一条
+ */
+export function parseCodexFacts(text) {
+  const facts = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue; // 坏行跳过
+    }
+    if (event?.type !== 'token_usage_record') continue;
+    const usage = event.payload?.usage;
+    if (!usage) continue;
+    facts.push({
+      seq: event.ordinal ?? null,
+      turn: null,
+      step: null,
+      model: null,
+      key: event.payload?.session_id ?? null,
+      retention: null,
+      inputTokens: usage.input_tokens ?? 0,
+      cachedTokens: usage.cached_input_tokens ?? 0,
+      cacheWriteTokens: usage.cache_write_input_tokens ?? 0,
+      instructionsTokens: null,
+      instructionsCached: null,
+      toolsTokens: null,
+      toolsCached: null,
+      instructionsHash: null,
+      toolsHash: null,
+      source: 'codex',
+    });
+  }
+  return facts;
+}
+
+/**
+ * 文本 → 缓存事实（两种日志形状自动分辨）。
+ *
+ * 原生 Codex 的事件类型（`token_usage_record`）不会出现在内核会话日志里，
+ * 反之亦然，所以「先认 Codex，认不出再认内核」就够，不用让调用方选格式。
+ *
+ * @param {string} text 日志全文
+ * @returns {object[]} 每次调用一条
+ */
+export function parseFacts(text) {
+  const codex = parseCodexFacts(text);
+  if (codex.length > 0) return codex;
+  return parseCacheFacts(text);
 }
 
 /**
@@ -97,8 +168,12 @@ export function summarizeCacheFacts(facts) {
   const keys = new Set(facts.map((fact) => fact.key).filter(Boolean));
   const instructions = new Set(facts.map((fact) => fact.instructionsHash));
   const tools = new Set(facts.map((fact) => fact.toolsHash));
+  const source = facts[0]?.source ?? 'dsh';
   return {
     calls: facts.length,
+    source,
+    // 前缀指纹只有内核会话日志有（原生 Codex 落盘日志不存请求体）。
+    prefixKnown: source === 'dsh',
     distinctKeys: keys.size,
     distinctInstructions: instructions.size,
     distinctTools: tools.size,
@@ -123,7 +198,13 @@ export function summarizeCacheFacts(facts) {
  * @returns {string[]} 判读行
  */
 export function verdictLines(summary) {
-  if (summary.calls === 0) return ['这份日志里没有带上游响应的模型调用（走的不是套餐路线？）'];
+  if (summary.calls === 0) {
+    return [
+      summary.source === 'codex'
+        ? '这份日志里没有 token_usage_record（不是原生 Codex 的落盘日志？）'
+        : '这份日志里没有带上游响应的模型调用（走的不是套餐路线？）',
+    ];
+  }
   const lines = [];
   if (summary.distinctKeys > 1) {
     lines.push(
@@ -131,9 +212,15 @@ export function verdictLines(summary) {
         '请求散落在不同缓存分片，同一段前缀只有落到还留着它的那台机器才命中。',
     );
   } else {
-    lines.push('键在整场会话里稳定 → 路由亲和性已建立。');
+    lines.push(
+      summary.source === 'codex'
+        ? '键（Codex 会话 id）在整场会话里稳定 → 亲和性有锚（原生实现就是这么发的）。'
+        : '键在整场会话里稳定 → 路由亲和性已建立。',
+    );
   }
-  if (summary.distinctInstructions > 1 || summary.distinctTools > 1) {
+  if (!summary.prefixKnown) {
+    lines.push('前缀变没变在这份日志里量不了（原生落盘日志不存请求体），只能看命中率。');
+  } else if (summary.distinctInstructions > 1 || summary.distinctTools > 1) {
     lines.push(
       `前缀在会话中途变过（instructions ${summary.distinctInstructions} 种、` +
         `tools ${summary.distinctTools} 种）→ 变化之后的前缀必然未命中。`,
@@ -167,8 +254,8 @@ export function renderReport(facts, summary) {
       String(fact.key ?? '-').slice(0, 8).padEnd(9),
       `${fact.instructionsTokens ?? '-'}/${fact.instructionsCached ?? '-'}`.padEnd(9),
       `${fact.toolsTokens ?? '-'}/${fact.toolsCached ?? '-'}`.padEnd(9),
-      fact.instructionsHash,
-      fact.toolsHash,
+      String(fact.instructionsHash ?? '-'),
+      String(fact.toolsHash ?? '-'),
     ].join(' ');
   });
   const header = [
@@ -176,6 +263,7 @@ export function renderReport(facts, summary) {
     'instr', 'tools', 'instr#', 'tools#',
   ].join(' ');
   return [
+    `来源：${summary.source === 'codex' ? '原生 Codex 落盘日志' : '内核会话日志'}`,
     header,
     '─'.repeat(header.length),
     ...rows,
@@ -184,7 +272,13 @@ export function renderReport(facts, summary) {
   ].join('\n');
 }
 
-/** 目录 → 其中最新的 `*.jsonl.zstd`；文件 → 原样返回。 */
+/**
+ * 目录 → 其中最新的会话日志；文件 → 原样返回。
+ *
+ * 两种形状都收：内核的 `*.jsonl.zstd`（zstd 压缩）与原生 Codex 的
+ * `*.jsonl`（明文 rollout）。收在一处是因为它们回答同一个问题
+ * （命中率多少），要的是同一把尺子。
+ */
 export function resolveSessionLog(inputPath) {
   const target = resolve(inputPath);
   if (!existsSync(target)) return undefined;
@@ -194,7 +288,7 @@ export function resolveSessionLog(inputPath) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) walk(full);
-      else if (entry.name.endsWith('.jsonl.zstd')) {
+      else if (entry.name.endsWith('.jsonl.zstd') || entry.name.endsWith('.jsonl')) {
         candidates.push({ path: full, mtime: statSync(full).mtimeMs });
       }
     }
@@ -212,17 +306,19 @@ if (invokedPath === import.meta.url) {
     console.error('用法：node scripts/analyze-prompt-cache.mjs <会话日志 .zstd | 目录>');
     process.exit(1);
   }
-  if (typeof zlib.zstdDecompressSync !== 'function') {
-    console.error('当前 Node 没有 zstd 支持（需要 22.15+）：换 Node 或手工解压后再跑。');
-    process.exit(1);
-  }
   const logPath = resolveSessionLog(input);
   if (logPath === undefined) {
     console.error(`找不到会话日志：${input}`);
     process.exit(1);
   }
-  const text = zlib.zstdDecompressSync(readFileSync(logPath)).toString('utf8');
-  const facts = parseCacheFacts(text);
+  if (typeof zlib.zstdDecompressSync !== 'function' && logPath.endsWith('.zstd')) {
+    console.error('当前 Node 没有 zstd 支持（需要 22.15+）：换 Node 或手工解压后再跑。');
+    process.exit(1);
+  }
+  const text = logPath.endsWith('.zstd')
+    ? zlib.zstdDecompressSync(readFileSync(logPath)).toString('utf8')
+    : readFileSync(logPath, 'utf8');
+  const facts = parseFacts(text);
   const summary = summarizeCacheFacts(facts);
   console.log(`会话日志：${logPath}`);
   console.log(renderReport(facts, summary));
