@@ -289,13 +289,28 @@ impl UpstreamLines {
 /// 发起上游调用并返回行读取器（未消费响应体；由调用方读到终止）。
 /// 流式读取是传输层的具体能力（`Box<dyn BufRead>`），不进 FlowTransport
 /// 抽象——测试的流解析用 `UpstreamLines { reader }` 直接注入。
+///
+/// **缓存亲和性发两处**：请求体的 `prompt_cache_key` 与 `session-id` 头，
+/// 同一个值。原生 Codex 两处都发（`codex-rs/core/src/client.rs` 的
+/// `prompt_cache_key` / `responses_session_id`，头的构造在
+/// `codex-rs/codex-api/src/requests/headers.rs`），而它自己的注释写着
+/// 「ChatGPT derives cache affinity from the Responses session-id header」——
+/// 只发请求体那一份，等于把亲和性交给上游自己合成随机键。
 pub(crate) fn open_upstream(
     url: &str,
     access_token: &str,
     payload: &serde_json::Value,
 ) -> Result<UpstreamLines, Failure> {
+    let session_id = payload
+        .get("prompt_cache_key")
+        .and_then(|value| value.as_str());
     Ok(UpstreamLines {
-        reader: crate::openai::transport::post_stream(url, access_token, &payload.to_string())?,
+        reader: crate::openai::transport::post_stream(
+            url,
+            access_token,
+            &payload.to_string(),
+            session_id,
+        )?,
     })
 }
 

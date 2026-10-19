@@ -130,8 +130,11 @@ export function buildEnvelope(options, catalog, imageParts = new Map()) {
   // 缓存路由：把会话身份作为稳定键发给上游（内核契约
   // `GenerateOptions.sessionId` 明确允许适配器映射成 model-hidden transport
   // metadata）。不带这个键时上游给每次请求各生成一个随机键，同一会话的
-  // 前缀缓存命中率会大幅波动（2026-10-19 实测 58 次请求平均 33%，而用稳定
-  // 会话标识的原生 Codex 是 96–97%）。
+  // 前缀缓存命中率会大幅波动（2026-10-19 实测 58 次请求平均 33%）。
+  //
+  // **这个键要发两处**：请求体的 `prompt_cache_key` 与 `session-id` 头。原生
+  // Codex 两处都发（同一个值），桥接负责把头那一份补上——见
+  // `src-tauri/src/openai/inference.rs` 的 `open_upstream` 注释。
   const cacheKey = promptCacheKeyFor(options);
   if (cacheKey !== undefined) payload.prompt_cache_key = cacheKey;
 
@@ -179,8 +182,9 @@ export function buildEnvelope(options, catalog, imageParts = new Map()) {
  * 丢的到底是「缓存内容」还是「落到哪台机器」，2026-10-19 在同一条会话上量过
  * （26 次调用，`gpt-6.1-sol`）：`instructions`（1707 token）与 `tools`
  * （7181 token）**逐字不变**，上游给的保留期是 **24h**——前缀既没被改写也没
- * 过期，20/26 次却是 0% 命中。同一账号下用稳定会话标识的原生 Codex 是
- * 96–97%。所以要修的是路由亲和性，不是缓存内容。
+ * 过期，20/26 次却是 0% 命中。同一账号下用稳定会话标识的原生 Codex（落盘
+ * 日志实测：8 次调用全部命中，单次 67%–89%、合计 79.0%）就是「有锚」的
+ * 样子。所以要修的是路由亲和性，不是缓存内容。
  *
  * 两条规则：
  * - **压缩调用带同一个键**（`purpose` = `compaction`）：内核的压缩调用**故意

@@ -8,6 +8,8 @@ import test from 'node:test';
 
 import {
   parseCacheFacts,
+  parseCodexFacts,
+  parseFacts,
   renderReport,
   resolveSessionLog,
   summarizeCacheFacts,
@@ -119,4 +121,70 @@ test('空日志说清「没有带上游响应的调用」，报告不印空表�
 
 test('resolveSessionLog 目录取最新日志，文件原样返回', () => {
   assert.equal(resolveSessionLog('/definitely/not/here'), undefined);
+});
+
+/** 造一条原生 Codex 的 token_usage_record 事件。 */
+function codexUsage(ordinal, input, cached, sessionId = 'sess-1') {
+  return JSON.stringify({
+    timestamp: '2026-10-18T10:53:15.773Z',
+    ordinal,
+    type: 'token_usage_record',
+    payload: {
+      thread_id: sessionId,
+      turn_id: `${sessionId}-turn`,
+      session_id: sessionId,
+      usage: {
+        input_tokens: input,
+        cached_input_tokens: cached,
+        cache_write_input_tokens: 0,
+        output_tokens: 76,
+        total_tokens: input + 76,
+      },
+      // 累计口径在别的字段里，认错就把命中率算飞
+      thread_token_usage: {
+        input_tokens: 999999,
+        cached_input_tokens: 888888,
+      },
+    },
+  });
+}
+
+test('parseCodexFacts 取这次请求的用量，不拿累计口径', () => {
+  const facts = parseCodexFacts(
+    [
+      JSON.stringify({ type: 'session_meta', payload: { id: 'sess-1' } }),
+      codexUsage(20, 29761, 22912),
+      codexUsage(26, 33780, 29568),
+    ].join('\n'),
+  );
+  assert.equal(facts.length, 2);
+  assert.equal(facts[0].seq, 20);
+  assert.equal(facts[0].key, 'sess-1');
+  assert.equal(facts[0].inputTokens, 29761);
+  assert.equal(facts[0].cachedTokens, 22912);
+  assert.equal(facts[0].source, 'codex');
+  // 前缀指纹量不了：原生落盘日志不存请求体
+  assert.equal(facts[0].instructionsHash, null);
+});
+
+test('原生日志的判读不谎称「前缀逐字不变」', () => {
+  const facts = parseCodexFacts([codexUsage(20, 29761, 22912)].join('\n'));
+  const summary = summarizeCacheFacts(facts);
+  assert.equal(summary.source, 'codex');
+  assert.equal(summary.prefixKnown, false);
+  assert.equal(summary.hitCalls, 1);
+  const lines = verdictLines(summary).join('\n');
+  assert.match(lines, /量不了/);
+  assert.doesNotMatch(lines, /前缀逐字不变/);
+  assert.match(lines, /命中 1 次/);
+  assert.match(renderReport(facts, summary), /原生 Codex 落盘日志/);
+});
+
+test('parseFacts 两种日志形状自动分辨', () => {
+  const codex = parseFacts([codexUsage(20, 100, 50)].join('\n'));
+  assert.equal(codex.length, 1);
+  assert.equal(codex[0].source, 'codex');
+  const dsh = parseFacts([assistantEvent(7, response())].join('\n'));
+  assert.equal(dsh.length, 1);
+  assert.equal(dsh[0].source, 'dsh');
 });

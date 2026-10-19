@@ -57,13 +57,17 @@ test/selection-watch.test.mjs 偏好文件变更通知（含 env 接线）
 
 ## 验证
 
+v0.1.20 把缓存亲和性**发两处**：请求体的 `prompt_cache_key` 之外，再发一个同值的 `session-id` 头。原生 Codex 就是这么发的——它的请求体字段与这个头取的是**同一个会话身份**（`codex-rs/core/src/client.rs` 的 `prompt_cache_key` 与 `responses_session_id`，根代理下两者相等），而它自己的注释写着「ChatGPT derives cache affinity from the Responses session-id header」：亲和性是**从头**推出来的。v0.1.18 只抄了请求体那一半。桥接从载荷里取这个键（单一事实源，两处不会漂），没有会话身份时**不发**空头（空值不是「没有身份」）。Rust 单测钉住「头与请求体同值」与「无键不发头」。
+
+顺带把基线换成实测值：先前写的「同账号原生 Codex 96–97%」从本机落盘日志里**复现不出来**——`~/.codex/sessions` 与 `archived_sessions` 共 8 次调用全部命中，单次 67%–89%、合计 79.0%（`npm run analyze:prompt-cache` 现在也能读原生 Codex 的落盘日志：同一把尺子量两侧）。修完后的命中率要等下一次真实账号会话复核。
+
 v0.1.19 把「命中率到底为什么低」变成可测量的，并修掉压缩调用那一处：内核的压缩调用**故意重放同一段对话前缀**（`dsh-compaction-basic` 明写「保留提供方的热前缀」），它必须和主对话落在同一个缓存分片才吃得到那次命中——它是整轮会话里最贵的一次调用。v0.1.18 把所有带 `purpose` 的辅助调用都排除在缓存键之外，那正好排除了压缩；现在**压缩带同一个键，会话标题这类一次性小请求不带**（前缀与主对话无关，共用分片没有收益；未知的 `purpose` 一律不带）。单测钉住「压缩与主对话同键、标题不带、未知 purpose 不带」。
 
 同时把复核口径换成**上游响应里真有的字段**。这条路线**没有** `prompt_cache_diagnostics`（2026-10-19 逐条响应确认），所以「这次为什么没命中」只能从 `usage.attribution.request_fields` 推：它分字段给出 `instructions` / `tools` 各自的缓存量——前缀整体命中时这两个字段等于各自的 token 数，整体未命中时都是 0。为此加了 `npm run analyze:prompt-cache`（[scripts/analyze-prompt-cache.mjs](../../scripts/analyze-prompt-cache.mjs)）：读内核会话日志（只读），逐次调用印出 `prompt_cache_key`、`cached_tokens` 占比、`instructions` / `tools` 指纹与分字段缓存量，并给出判读——**键每次都不同**是路由亲和性没建立，**前缀中途变过**是改写，两者都不是就查保留期与分片。
 
 v0.1.19 实测（2026-10-19 事故会话，`gpt-6.1-sol`，26 次调用）：`instructions`（1707 token）与 `tools`（7181 token）**逐字不变**，上游给的保留期是 **24h**，而 26 次调用回显了 26 个互不相同的随机 `prompt_cache_key`，命中 6 次 / 未命中 20 次（合计 16.9%）。前缀既没被改写也没过期，丢的**不是缓存内容，是「落到哪台机器」**——这与 v0.1.18 的修法（发一个稳定的会话键）指向同一处。
 
-v0.1.18 修掉前缀缓存命中率过低：请求从来没带过稳定的 `prompt_cache_key`，上游给每次请求各生成一个随机键，同一会话的缓存只能在分片间碰运气（2026-10-19 实测 58 次请求平均命中 33%，0% 与 98% 成段交替；同账号原生 Codex 用稳定会话标识是 96–97%）。现在 Host 把内核的 `GenerateOptions.sessionId` 清洗成 `[A-Za-z0-9._:-]{1,128}` 后写进载荷，桥接白名单放行并校验同一形状（[inference.rs](../../src-tauri/src/openai/inference.rs)）；压缩/会话标题这类前缀不同的辅助调用不带该键，避免挤占主对话的缓存分片。单测钉住「同一会话同键、跨会话不同键、无身份不发、辅助调用不发、非法字符/超长清洗」，反向验过（把键换成随机值或去掉校验时对应用例变红）。命中率是否真的升到 90%+ 需要下一次真实账号会话复核——**复核用 `npm run analyze:prompt-cache`**（v0.1.19 补的口径与工具）。
+v0.1.18 修掉前缀缓存命中率过低：请求从来没带过稳定的 `prompt_cache_key`，上游给每次请求各生成一个随机键，同一会话的缓存只能在分片间碰运气（2026-10-19 实测 58 次请求平均命中 33%，0% 与 98% 成段交替；同账号原生 Codex 的落盘日志实测 8 次调用全部命中、合计 79.0%）。现在 Host 把内核的 `GenerateOptions.sessionId` 清洗成 `[A-Za-z0-9._:-]{1,128}` 后写进载荷，桥接白名单放行并校验同一形状（[inference.rs](../../src-tauri/src/openai/inference.rs)）；压缩/会话标题这类前缀不同的辅助调用不带该键，避免挤占主对话的缓存分片。单测钉住「同一会话同键、跨会话不同键、无身份不发、辅助调用不发、非法字符/超长清洗」，反向验过（把键换成随机值或去掉校验时对应用例变红）。命中率是否真的升上去需要下一次真实账号会话复核——**复核用 `npm run analyze:prompt-cache`**（v0.1.19 补的口径与工具，v0.1.20 起也能读原生 Codex 的落盘日志做基线对照）。
 
 v0.1.17 修掉两条额度相关缺陷（2026-10-19 一条真实会话实测暴露：单轮 58 次调用、463 万输入 token、9 分钟打满一个 Plus 5 小时窗口）：① `pumpStream` 按内核的**互斥桶**口径上报用量——`inputTokens` 减掉 `input_tokens_details.cached_tokens`，缓存另报 `cacheReadTokens`，思考另报 `reasoningTokens`；此前该会话 152.6 万缓存命中被记成未缓存输入。② 上游「Subscription Sharing usage limit」这类额度终局失败在适配器层翻成内核 `LlmError(code=QUOTA)`；此前普通 `Error` 被内核 `normalizeLlmFailure` 记成 `UNKNOWN`，UI 拿不到额度提示与用量入口。单测钉住「三桶之和 == total - output」（内核 `normalizeUsage` 会**整条丢弃**不一致的用量）、缓存减法、reasoning 越界省略，以及额度与限流两类文本的区分（限流不能当额度，否则用户去等一个没被用掉的窗口）。
 

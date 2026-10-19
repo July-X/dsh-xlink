@@ -190,12 +190,22 @@ pub(crate) fn get_json_with_auth(url: &str, bearer: &str) -> Result<String, Fail
 /// 带鉴权的流式 POST（推理）：返回**未消费的响应体行读取器**——调用方
 /// 逐行读到终止事件；网关拦截页（403 + HTML）按路由依赖失败换路重试，
 /// 其余状态错误不换路。
+///
+/// `session_id` 非空时带 `session-id` 头：它与请求体里的 `prompt_cache_key`
+/// 是**同一个会话身份的两个投递位置**——原生 Codex 两处都发
+/// （`codex-rs/core/src/client.rs` 的 `prompt_cache_key` 与
+/// `responses_session_id`，根代理下两者相等；头的构造在
+/// `codex-rs/codex-api/src/requests/headers.rs`，`api.openai.com` 与
+/// `chatgpt.com/backend-api/codex` 两条基址都发），而它自己的注释写着
+/// 「ChatGPT derives cache affinity from the Responses session-id header」。
+/// **别只发一半**：只发请求体那一份，等于把亲和性交给上游自己合成随机键。
 pub(crate) fn post_stream(
     url: &str,
     bearer: &str,
     body: &str,
+    session_id: Option<&str>,
 ) -> Result<Box<dyn std::io::BufRead + Send>, Failure> {
-    post_stream_over(&net_proxy::routes(), url, bearer, body)
+    post_stream_over(&net_proxy::routes(), url, bearer, body, session_id)
 }
 
 fn post_stream_over(
@@ -203,6 +213,7 @@ fn post_stream_over(
     url: &str,
     bearer: &str,
     body: &str,
+    session_id: Option<&str>,
 ) -> Result<Box<dyn std::io::BufRead + Send>, Failure> {
     let routes = routes_for_url(routes, url);
     let mut tried: Vec<String> = Vec::new();
@@ -212,11 +223,16 @@ fn post_stream_over(
             Ok(agent) => agent,
             Err(error) => return Err(Failure::Transport(error)),
         };
-        let request = agent
+        let mut builder = agent
             .post(url)
             .header("authorization", &format!("Bearer {bearer}"))
-            .header("content-type", "application/json")
-            .send(body);
+            .header("content-type", "application/json");
+        // 缓存亲和性靠这个头（见 post_stream 的注释）。没有会话身份时**不发**，
+        // 发一个空头比不发更糟——空值不是「没有身份」，是一段空字符串。
+        if let Some(id) = session_id.filter(|id| !id.is_empty()) {
+            builder = builder.header("session-id", id);
+        }
+        let request = builder.send(body);
         match request {
             Ok(response) => {
                 let status = response.status().as_u16();

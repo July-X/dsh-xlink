@@ -396,21 +396,76 @@ mod tests {
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
             let request = crate::openai::http::read_request(&mut stream).unwrap();
+            // **先把请求体读干净再断言**：带着未读数据关连接会发 RST，客户端
+            // 只看到「连接被强制关闭」，服务端真正失败的那条断言反而丢了。
+            let length: usize = request.headers["content-length"].parse().unwrap();
+            let mut body = request.body_prefix;
+            let remaining = length - body.len();
+            body.resize(length, 0);
+            stream.read_exact(&mut body[length - remaining..]).unwrap();
             assert_eq!(request.path, "/v1/responses");
             assert_eq!(request.method, "POST");
             assert_eq!(
                 request.headers.get("authorization").map(String::as_str),
                 Some("Bearer test-access")
             );
+            // 缓存亲和性发两处：请求体 + `session-id` 头，同一个值。
+            assert_eq!(
+                request.headers.get("session-id").map(String::as_str),
+                Some("session-abc-123")
+            );
+            let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(payload["store"], false);
+            assert_eq!(payload["stream"], true);
+            assert_eq!(payload["model"], "gpt-x");
+            assert_eq!(payload["prompt_cache_key"], "session-abc-123");
+            let sse = "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n";
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}", sse.len()).unwrap();
+        });
+        let payload = serde_json::json!({
+            "model": "gpt-x",
+            "input": [],
+            "store": false,
+            "stream": true,
+            "prompt_cache_key": "session-abc-123",
+        });
+        let mut upstream = crate::openai::inference::open_upstream(
+            &inference_url(&paths),
+            "test-access",
+            &payload,
+        )
+        .unwrap();
+        let mut events = String::new();
+        upstream.reader.read_to_string(&mut events).unwrap();
+        assert!(events.contains("response.completed"));
+        server.join().unwrap();
+    }
+
+    /// 没有会话身份时**不发** `session-id` 头：空值不是「没有身份」。
+    #[test]
+    fn inference_omits_session_id_header_without_cache_key() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let paths = crate::openai::flow::FlowPaths {
+            mode_dir: Default::default(),
+            vault_file: Default::default(),
+            xlink_home: Default::default(),
+            issuer_base: "http://127.0.0.1:1/authorization-only".into(),
+            models_base: format!("http://{addr}/v1"),
+        };
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let request = crate::openai::http::read_request(&mut stream).unwrap();
+            // 请求体读干净再关连接（同上：未读数据会让关闭变成 RST）。
             let length: usize = request.headers["content-length"].parse().unwrap();
             let mut body = request.body_prefix;
             let remaining = length - body.len();
             body.resize(length, 0);
             stream.read_exact(&mut body[length - remaining..]).unwrap();
-            let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(payload["store"], false);
-            assert_eq!(payload["stream"], true);
-            assert_eq!(payload["model"], "gpt-x");
+            assert!(!request.headers.contains_key("session-id"));
             let sse = "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n";
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}", sse.len()).unwrap();
         });
