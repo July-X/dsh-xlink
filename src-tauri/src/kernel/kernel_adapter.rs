@@ -404,11 +404,20 @@ impl KernelAdapter for DshAdapter {
         logs_dir: &Path,
     ) -> Result<std::process::Child, AdapterError> {
         let bin = install_root.join(Self::KERNEL_BIN_REL);
-        if !bin.is_file() {
-            return Err(AdapterError::VersionNotInstalled {
-                family: record.kernel_family.clone(),
-                version: record.kernel_version.clone().unwrap_or_default(),
-            });
+        let metadata = std::fs::metadata(&bin).map_err(|error| {
+            AdapterError::Io(format!(
+                "检查内核入口失败（{}）：{error}。{}。日志目录：{}",
+                bin.display(),
+                crate::shell::error::io_error_guidance(&error),
+                logs_dir.display()
+            ))
+        })?;
+        if !metadata.is_file() {
+            return Err(AdapterError::Io(format!(
+                "内核入口不是文件（{}）。请在「内核版本」页重新安装对应版本。日志目录：{}",
+                bin.display(),
+                logs_dir.display()
+            )));
         }
         let dsh_home = Self::dsh_home_for(record);
         if !dsh_home.join("profiles").join(&record.profile).is_dir() {
@@ -425,7 +434,14 @@ impl KernelAdapter for DshAdapter {
         // `kernels/<family>/instances/<id>/workspace`，允许用户改成
         // 外部目录。
         let workspace = PathBuf::from(&record.workspace);
-        std::fs::create_dir_all(&workspace).map_err(|e| AdapterError::Io(e.to_string()))?;
+        std::fs::create_dir_all(&workspace).map_err(|error| {
+            AdapterError::Io(format!(
+                "创建内核工作目录失败（{}）：{error}。{}。日志目录：{}",
+                workspace.display(),
+                crate::shell::error::io_error_guidance(&error),
+                logs_dir.display()
+            ))
+        })?;
         cmd.arg(&bin)
             .arg("web")
             .arg("--no-open")
@@ -453,7 +469,9 @@ impl KernelAdapter for DshAdapter {
         // 内嵌 openai-oauth 插件的本地桥接（P2）：接线行在实例 patch 里时
         // 注入地址与令牌；桥接起不来不阻断内核启动（见 bridge::launch_env）。
         crate::plugins::builtin::runtime::refresh_enabled(&dsh_home, &record.profile, install_root)
-            .map_err(AdapterError::Io)?;
+            .map_err(|error| {
+                AdapterError::Io(format!("{error}。日志目录：{}", logs_dir.display()))
+            })?;
         // 有上游的内置插件：启动工作台时顺手查一次更新（内部按 24 小时节流，
         // **失败不阻断启动**——用户手上的那一版继续可用）。这是「跟上上游」的
         // 主路径：启用时拉一次，此后每天一次，用户不用做任何事。
@@ -521,7 +539,18 @@ impl KernelAdapter for DshAdapter {
 
         let mut child = crate::shell::process::quiet(&mut cmd)
             .spawn()
-            .map_err(|e| AdapterError::Io(format!("无法启动内核：{e}")))?;
+            .map_err(|error| {
+                let detail = format!(
+                    "无法启动内核（Node：{}；入口：{}；工作目录：{}）：{error}。{}。日志目录：{}",
+                    node.display(),
+                    bin.display(),
+                    workspace.display(),
+                    crate::shell::error::io_error_guidance(&error),
+                    logs_dir.display()
+                );
+                crate::shell::shell_events::record("kernel-start", &detail);
+                AdapterError::Io(detail)
+            })?;
         crate::shell::process::adopt_kernel_process(&child);
         if let Err(error) = crate::shell::process::attach_log_drainers(
             &mut child,
@@ -529,7 +558,11 @@ impl KernelAdapter for DshAdapter {
             &crate::kernel::lifecycle::kernel_log_spec(&record.kernel_family, &record.id),
         ) {
             crate::shell::process::terminate_process_tree(&mut child);
-            return Err(AdapterError::Io(format!("无法接管内核日志：{error}")));
+            return Err(AdapterError::Io(format!(
+                "无法接管内核日志（{}）：{error}。{}",
+                logs_dir.display(),
+                crate::shell::error::io_error_guidance(&error)
+            )));
         }
         Ok(child)
     }
@@ -1009,7 +1042,14 @@ mod tests {
             .start(&record, &empty, Path::new("/nonexistent/node"), &empty)
             .expect_err("应拒绝");
         match err {
-            AdapterError::VersionNotInstalled { .. } => {}
+            AdapterError::Io(detail) => {
+                assert!(
+                    detail.contains(&empty.join(DshAdapter::KERNEL_BIN_REL).display().to_string())
+                );
+                assert!(detail.contains("os error"), "{detail}");
+                assert!(detail.contains("路径是否存在"));
+                assert!(detail.contains(&format!("日志目录：{}", empty.display())));
+            }
             other => panic!("unexpected: {other:?}"),
         }
         std::fs::remove_dir_all(&home).ok();

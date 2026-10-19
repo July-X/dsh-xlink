@@ -16,7 +16,7 @@ export function releaseNotes(version) {
 使用方式：安装后在「内核版本」页安装并切换 DeepSeek Harness 内核版本即可使用。`;
 }
 
-function walkFiles(root) {
+export function walkFiles(root) {
   const files = [];
   const visit = (directory) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -45,7 +45,10 @@ function exactlyOne(files, predicate, label) {
 }
 
 export function collectReleaseAssets(artifactsDir, version) {
-  const files = walkFiles(resolve(artifactsDir));
+  return selectReleaseAssets(walkFiles(resolve(artifactsDir)), version);
+}
+
+export function selectReleaseAssets(files, version) {
   const assets = {
     darwinDmg: exactlyOne(files, (name) => name.endsWith('.dmg'), 'macOS DMG'),
     darwinUpdater: exactlyOne(

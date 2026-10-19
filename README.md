@@ -20,7 +20,7 @@
 
 ## 快速上手
 
-1. **下载安装包**：[Releases 页](https://github.com/July-X/dsh-xlink/releases/latest) 取 Windows 的 `.exe` 或 Intel Mac 的 `.dmg`。未做代码签名，Windows SmartScreen 与 macOS Gatekeeper 可能拦一下，在系统设置里放行即可。
+1. **下载安装包**：[Releases 页](https://github.com/July-X/dsh-xlink/releases/latest) 取 Windows 的 `.exe` 或 Intel Mac 的 `.dmg`。目前未做操作系统代码签名，Windows SmartScreen 与 macOS Gatekeeper 可能提示来源未受信任；先核对下载来源。若安全软件检出、隔离文件，或启动报「拒绝访问」，按[安全软件与文件访问排查](docs/operations/troubleshooting.md#安全软件告警与文件访问失败)记录检测名称、完整路径和原始错误后处理。
 2. **装内核**：应用启动后在「内核版本」页选一个版本点「安装」，进度面板会实时滚动安装日志。首次安装不会自动启动，装完回「概览」页点「启动工作台」。没装 Node.js 会在这一步弹窗问你要不要自动装。
 3. **配模型凭据**：工作台「设置 → 模型」填好 DeepSeek 的 `DEEPSEEK_API_KEY`，然后就能开始对话。
 
