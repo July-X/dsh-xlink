@@ -6,7 +6,7 @@
 // 测量的。把它变成一条命令，下一次真实会话复核就不用再靠回忆——
 // 「命中率到底有没有回升」从此是可判定的，不是可期待的。
 //
-// 读的是内核的会话日志（zstd 压缩的 JSONL），**只读**：不写、不删、不改用户
+// 读的是内核的会话日志（多帧 zstd 压缩的 JSONL），**只读**：不写、不删、不改用户
 // 任何数据。内核把上游 Responses 响应原样存进 assistant 消息的
 // `replayState.response`，里面有这次调用的 `usage`（含
 // `attribution.request_fields` 的分字段缓存量）与回显的 `instructions` /
@@ -272,6 +272,67 @@ export function renderReport(facts, summary) {
   ].join('\n');
 }
 
+// 会话日志是**多帧** zstd：内核每落一批事件就追加一个完整帧（见
+// dsh-session-persistence-jsonl 的 `compressZstdFrame`），而 `zstdDecompressSync`
+// 只解第一帧——整份文件直接解会被静默截成第一行，报告就成了「没有模型调用」。
+// 所以先按 zstd 帧格式走一遍结构（不解压块）切出完整帧，再逐帧解。
+const ZSTD_MAGIC = 0xfd2fb528;
+
+/**
+ * 一帧的结束偏移；文件尾不完整（日志可能正被内核追加）返回 undefined。
+ * 结构损坏（magic / 保留位 / 块类型不对）直接抛，不猜。
+ */
+function zstdFrameEnd(buffer, start) {
+  let offset = start + 4; // magic 由调用方校验
+  if (buffer.length - offset < 1) return undefined;
+  const descriptor = buffer.readUInt8(offset);
+  offset += 1;
+  if ((descriptor & 0x18) !== 0) throw new Error(`zstd 帧头保留位非法（字节 ${offset - 1}）`);
+  const contentSizeFlag = descriptor >>> 6;
+  const singleSegment = (descriptor & 0x20) !== 0;
+  const checksum = (descriptor & 0x04) !== 0;
+  const dictionaryFlag = descriptor & 0x03;
+  const dictionaryBytes = dictionaryFlag === 3 ? 4 : dictionaryFlag;
+  const contentSizeBytes = contentSizeFlag === 0 ? (singleSegment ? 1 : 0) : 1 << contentSizeFlag;
+  offset += (singleSegment ? 0 : 1) + dictionaryBytes + contentSizeBytes;
+  if (offset > buffer.length) return undefined;
+  for (;;) {
+    if (buffer.length - offset < 3) return undefined;
+    const blockHeader = buffer.readUIntLE(offset, 3);
+    offset += 3;
+    const blockType = (blockHeader >>> 1) & 0x03;
+    if (blockType === 3) throw new Error(`zstd 块类型非法（字节 ${offset - 3}）`);
+    offset += blockType === 1 ? 1 : blockHeader >>> 3;
+    if (offset > buffer.length) return undefined;
+    if (blockHeader & 1) break;
+  }
+  offset += checksum ? 4 : 0;
+  return offset <= buffer.length ? offset : undefined;
+}
+
+/**
+ * 多帧 zstd → 解压后的全文。末尾半帧（读的时候内核还在写）只丢那一帧，
+ * 前面已解出的照常返回——诊断脚本读的是活日志，不能因为最后一行没写完就整份失败。
+ *
+ * @param {Buffer} buffer `.jsonl.zstd` 文件内容
+ * @returns {Buffer}
+ */
+export function decompressZstdFrames(buffer) {
+  const chunks = [];
+  let offset = 0;
+  while (offset < buffer.length) {
+    if (buffer.length - offset < 4) break; // 尾部不足一个 magic
+    if (buffer.readUInt32LE(offset) !== ZSTD_MAGIC) {
+      throw new Error(`不是 zstd 会话日志：字节 ${offset} 处的帧 magic 不对`);
+    }
+    const end = zstdFrameEnd(buffer, offset);
+    if (end === undefined) break; // 末帧被截断
+    chunks.push(zlib.zstdDecompressSync(buffer.subarray(offset, end)));
+    offset = end;
+  }
+  return Buffer.concat(chunks);
+}
+
 /**
  * 目录 → 其中最新的会话日志；文件 → 原样返回。
  *
@@ -316,7 +377,7 @@ if (invokedPath === import.meta.url) {
     process.exit(1);
   }
   const text = logPath.endsWith('.zstd')
-    ? zlib.zstdDecompressSync(readFileSync(logPath)).toString('utf8')
+    ? decompressZstdFrames(readFileSync(logPath)).toString('utf8')
     : readFileSync(logPath, 'utf8');
   const facts = parseFacts(text);
   const summary = summarizeCacheFacts(facts);
