@@ -7,6 +7,7 @@ import {
   buildEnvelope,
   isQuotaFailureDetail,
   mapTokenUsage,
+  promptCacheKeyFor,
   pumpStream,
   toProviderToolName,
 } from '../host/request.js';
@@ -331,4 +332,39 @@ test('pump: 额度失败带路由级 QUOTA，普通失败仍是 UPSTREAM_FAILED'
     assert.equal(error.code, 'UPSTREAM_FAILED');
     return true;
   });
+});
+
+// —— 缓存路由：会话身份 → 稳定 prompt_cache_key（2026-10-19 命中率事故） ——
+
+test('cache: 同一会话的请求带同一个稳定键，不同会话/无身份不带', () => {
+  const sessionId = 'session-29678872-4471-4e26-9c93-02aed44c0e8c';
+  const options = { model: 'gpt-x', messages: [], sessionId };
+  const first = buildEnvelope(options, CATALOG);
+  const second = buildEnvelope(options, CATALOG);
+  assert.equal(first.payload.prompt_cache_key, sessionId);
+  assert.equal(first.payload.prompt_cache_key, second.payload.prompt_cache_key);
+  assert.equal(
+    buildEnvelope({ ...options, sessionId: 'session-other' }, CATALOG).payload.prompt_cache_key,
+    'session-other',
+  );
+  // 没有会话身份时不发（上游回落为随机键），不能凭空造一个固定值出来。
+  assert(!('prompt_cache_key' in buildEnvelope({ model: 'gpt-x', messages: [] }, CATALOG).payload));
+  assert(!('prompt_cache_key' in buildEnvelope({ model: 'gpt-x', messages: [], sessionId: '  ' }, CATALOG).payload));
+  assert.equal(promptCacheKeyFor(undefined), undefined);
+});
+
+test('cache: 辅助调用隔离；非法字符与超长按桥接白名单清洗', () => {
+  // 压缩/会话标题是不同前缀的辅助调用，不占主对话的缓存分片。
+  for (const purpose of ['compaction', 'session-title']) {
+    const envelope = buildEnvelope(
+      { model: 'gpt-x', messages: [], sessionId: 'session-1', purpose },
+      CATALOG,
+    );
+    assert(!('prompt_cache_key' in envelope.payload), purpose);
+  }
+  // 清洗规则与 Rust 白名单一致（1..=128 个 [A-Za-z0-9._:-]）：真实 session id
+  // 不会走到这里，但内核换 id 格式时不能发出桥接拒收的载荷。
+  assert.equal(promptCacheKeyFor({ sessionId: ' a b/c ' }), 'a-b-c');
+  assert.equal(promptCacheKeyFor({ sessionId: 'x'.repeat(200) }).length, 128);
+  assert.equal(promptCacheKeyFor({ sessionId: 42 }), undefined);
 });

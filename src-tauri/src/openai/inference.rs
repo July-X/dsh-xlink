@@ -17,6 +17,11 @@ use crate::openai::transport::Failure;
 
 /// 套餐路线载荷白名单（设计 §8.1：不照搬普通 API SDK 的默认字段）。
 /// 不在表里的键一律拒绝——静默丢掉等于让调用方以为限制生效了。
+///
+/// `prompt_cache_key` 在表内是因为它是 Responses 公开请求字段，且本路线靠它
+/// 做缓存路由：不发时上游会**为每次请求生成随机键**，同一会话的前缀缓存命中
+/// 率会掉到三成量级（2026-10-19 实测 33%；原生 Codex 用稳定会话标识 96–97%）。
+/// 值由 Host 按 `GenerateOptions.sessionId` 生成，桥接只做形状校验。
 const PAYLOAD_WHITELIST: &[&str] = &[
     "model",
     "input",
@@ -25,6 +30,7 @@ const PAYLOAD_WHITELIST: &[&str] = &[
     "tool_choice",
     "parallel_tool_calls",
     "reasoning",
+    "prompt_cache_key",
 ];
 
 /// 载荷校验错误：分类给 Host 翻译（§8.3 的错误分类表）。
@@ -124,6 +130,22 @@ pub(crate) fn validate_request(
     for key in object.keys() {
         if !PAYLOAD_WHITELIST.contains(&key.as_str()) {
             return Err(RequestError::FieldNotAllowed(key.clone()));
+        }
+    }
+    // 缓存路由键进上游请求体，不是展示字段：形状不对就拒绝，不静默裁剪
+    // （Host 已按同一规则清洗，能走到这里说明两侧实现漂了）。
+    if let Some(key) = object.get("prompt_cache_key") {
+        let valid = key.as_str().is_some_and(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+                })
+        });
+        if !valid {
+            return Err(RequestError::Message(
+                "prompt_cache_key 必须是 1..=128 个 [A-Za-z0-9._:-] 字符".into(),
+            ));
         }
     }
     if object.contains_key("store") || object.contains_key("stream") {
@@ -359,6 +381,48 @@ mod tests {
             .unwrap_err();
             assert!(matches!(error, RequestError::FieldNotAllowed(_)));
         }
+    }
+
+    #[test]
+    fn prompt_cache_key_is_kept_and_shape_checked() {
+        let payload = serde_json::json!({
+            "model": "gpt-x",
+            "input": [],
+            "prompt_cache_key": "session-29678872-4471-4e26-9c93-02aed44c0e8c",
+        });
+        let ok = validate_request(&envelope("gpt-x", None, payload), &catalog()).unwrap();
+        assert_eq!(
+            ok.payload["prompt_cache_key"],
+            serde_json::json!("session-29678872-4471-4e26-9c93-02aed44c0e8c")
+        );
+        // 形状不对的键拒绝：它进上游请求体，不能静默裁剪成另一个键。
+        for bad in [
+            serde_json::json!(1),
+            serde_json::json!(""),
+            serde_json::json!("a/b"),
+            serde_json::json!("a b"),
+            serde_json::json!("x".repeat(129)),
+        ] {
+            let mut payload = serde_json::Map::new();
+            payload.insert("model".into(), serde_json::json!("gpt-x"));
+            payload.insert("prompt_cache_key".into(), bad.clone());
+            let error = validate_request(
+                &envelope("gpt-x", None, serde_json::Value::Object(payload)),
+                &catalog(),
+            )
+            .unwrap_err();
+            assert!(matches!(error, RequestError::Message(_)), "{bad}");
+        }
+        // 不带该键的请求不受影响。
+        assert!(validate_request(
+            &envelope(
+                "gpt-x",
+                None,
+                serde_json::json!({"model": "gpt-x", "input": []})
+            ),
+            &catalog(),
+        )
+        .is_ok());
     }
 
     #[test]
