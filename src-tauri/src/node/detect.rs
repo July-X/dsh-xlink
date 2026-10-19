@@ -45,60 +45,63 @@ fn compatible((major, minor, _patch): (u32, u32, u32)) -> bool {
     (major == MIN_COMPATIBLE.0 && minor >= MIN_COMPATIBLE.1) || major >= MAJOR_ALT_FLOOR
 }
 
-/// 向某个 node 可执行文件询问其版本。
-pub fn version_of(path: &Path) -> Option<String> {
+/// 版本探测的同一条执行路径同时供候选检查和安装失败诊断使用。
+fn probe_version(path: &Path) -> Result<String, String> {
     let mut cmd = Command::new(path);
     cmd.arg("--version");
-    let (success, stdout, _) = run_command_capture(cmd, "node --version").ok()?;
+    let (success, stdout, stderr) =
+        run_command_capture(cmd, "node --version").map_err(|error| {
+            format!(
+                "无法运行 Node（{} --version）：{error}。{}",
+                path.display(),
+                crate::shell::error::io_error_guidance(&error)
+            )
+        })?;
     if !success {
-        return None;
+        let detail = if !stderr.trim().is_empty() {
+            stderr.trim()
+        } else if !stdout.trim().is_empty() {
+            stdout.trim()
+        } else {
+            "进程以非零状态退出且没有输出"
+        };
+        return Err(format!(
+            "Node（{} --version）运行失败：{detail}。请检查该 Node 是否能正常运行",
+            path.display()
+        ));
     }
-    let version = stdout.trim().to_string();
-    (parse_version(&stdout).is_some()).then_some(version)
+    let version = stdout.trim();
+    if parse_version(version).is_none() {
+        return Err(format!(
+            "Node（{} --version）未返回有效版本。请确认该路径指向 Node.js 可执行文件",
+            path.display()
+        ));
+    }
+    Ok(version.to_string())
 }
 
-/// 运行 `node --version` 失败时返回可读的诊断（stderr 优先，其次 stdout，
-/// 再退到退出状态）。
-///
-/// 回滚托管运行时的时候需要它：只写一句"当前系统可能低于其最低版本要求"
-/// 会把权限问题、架构不匹配、被杀毒软件拦下等真实原因全部掩盖（P2-18）。
+/// 向某个 node 可执行文件询问其版本。
+pub fn version_of(path: &Path) -> Option<String> {
+    probe_version(path).ok()
+}
+
+/// 保留进程启动错误，或运行失败时的 stderr / stdout，供安装回滚前诊断。
 pub fn probe_failure_detail(path: &Path) -> Option<String> {
-    let mut cmd = Command::new(path);
-    cmd.arg("--version");
-    let (success, stdout, stderr) = run_command_capture(cmd, "node --version").ok()?;
-    if success {
-        return None;
-    }
-    let stderr = stderr.trim();
-    if !stderr.is_empty() {
-        return Some(stderr.to_string());
-    }
-    let stdout = stdout.trim();
-    if !stdout.is_empty() {
-        return Some(stdout.to_string());
-    }
-    Some("进程以非零状态退出且没有输出".to_string())
+    probe_version(path).err()
 }
 
 /// 探测某个 node 候选可执行文件，并报告其可用性。
 pub fn probe(path: &Path) -> NodeInfo {
+    let result = probe_version(path);
     let path = path.to_string_lossy().into_owned();
-    if !fs::metadata(&path).map(|m| m.is_file()).unwrap_or(false) {
-        return NodeInfo {
+    match result {
+        Err(reason) => NodeInfo {
             path,
             version: None,
             ok: false,
-            reason: "路径不存在或不可读".into(),
-        };
-    }
-    match version_of(Path::new(&path)) {
-        None => NodeInfo {
-            path,
-            version: None,
-            ok: false,
-            reason: "无法读取版本输出（可能不是有效的 node 可执行文件）".into(),
+            reason,
         },
-        Some(version) => {
+        Ok(version) => {
             let parsed = parse_version(&version).unwrap_or_default();
             if compatible(parsed) {
                 NodeInfo {
@@ -772,6 +775,21 @@ mod tests {
     fn vb(major: u32, minor: u32, patch: u32) -> PathBuf {
         // 排序只读取元组，路径内容对顺序没有意义。
         PathBuf::from(format!("/fake/{major}.{minor}.{patch}"))
+    }
+
+    #[test]
+    fn missing_node_keeps_the_os_error_and_path() {
+        let missing = std::env::temp_dir()
+            .join(format!("dsh-xlink-missing-node-{}", std::process::id()))
+            .join("node");
+        assert!(!missing.exists());
+        let detail = probe_failure_detail(&missing).expect("启动失败必须有诊断");
+        assert!(detail.contains(&missing.display().to_string()));
+        assert!(detail.contains("os error"), "{detail}");
+        assert!(detail.contains("路径是否存在"));
+        let info = probe(&missing);
+        assert!(!info.ok);
+        assert_eq!(info.reason, detail);
     }
 
     #[test]
