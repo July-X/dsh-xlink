@@ -177,7 +177,7 @@ ui/src/plugins/                       # 内嵌开关与兼容状态
 
 ### 8.1 请求转换
 
-套餐授权采用公开 Responses 端点，强制 `store: false`、`stream: true`。保持历史顺序，按路线规则转换 system（系统）指令、developer（开发者）消息、用户内容及工具结果。每次 HTTP（超文本传输协议）调用携带所需历史，不依赖 `previous_response_id`。[套餐调用说明](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
+套餐授权采用公开 Responses 端点，强制 `store: false`、`stream: true`。保持历史顺序，按路线规则转换 system（系统）指令、developer（开发者）消息、用户内容及工具结果。每次 HTTP（超文本传输协议）调用携带所需历史，不依赖 `previous_response_id`。每次调用把内核的 `GenerateOptions.sessionId` 清洗成稳定的 `prompt_cache_key` 发送（压缩、会话标题这类辅助调用不带），让同一会话的前缀缓存稳定落在同一分片——不带该键时上游每次请求各生成一个随机键，同一会话的命中率只能碰运气（2026-10-19 实测 58 次请求平均 33%，同账号原生 Codex 用稳定会话标识是 96–97%）。[套餐调用说明](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
 
 为套餐路线维护专门的载荷白名单，不照搬普通 API SDK 的默认字段。其限制优先于普通 Responses 示例；例如当前路线不支持 `temperature`、`max_output_tokens` 等字段。适配器不声明可执行的输出限制；内核自行填入的默认输出预算不传上游。用户明确配置了无法执行的限制时拒绝并提示，不能声称已限制输出。[套餐预览限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
 

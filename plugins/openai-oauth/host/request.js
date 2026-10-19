@@ -14,7 +14,10 @@
  * - 终止分类由桥接包络承载（completed/failed/incomplete），EOF 不算成功；
  * - 用量按内核的**互斥桶**口径上报（缓存输入从 `inputTokens` 里减出来，
  *   见 `mapTokenUsage`）；额度类失败标出路由级 `QUOTA`（见
- *   `isQuotaFailureDetail`），由适配器层翻成内核 `LlmError`。
+ *   `isQuotaFailureDetail`），由适配器层翻成内核 `LlmError`；
+ * - 会话身份映射成稳定的 `prompt_cache_key`（见 `promptCacheKeyFor`）：
+ *   不发这个键时上游会为每次请求生成随机键，同一会话的前缀缓存无法稳定
+ *   命中。
  */
 
 /** 套餐路线无法执行、调用方却显式给出了的参数 → 拒绝（§8.1）。 */
@@ -123,6 +126,14 @@ export function buildEnvelope(options, catalog, imageParts = new Map()) {
   if (instructions !== undefined) payload.instructions = instructions;
   payload.input = input;
 
+  // 缓存路由：把会话身份作为稳定键发给上游（内核契约
+  // `GenerateOptions.sessionId` 明确允许适配器映射成 model-hidden transport
+  // metadata）。不带这个键时上游给每次请求各生成一个随机键，同一会话的
+  // 前缀缓存命中率会大幅波动（2026-10-19 实测 58 次请求平均 33%，而用稳定
+  // 会话标识的原生 Codex 是 96–97%）。
+  const cacheKey = promptCacheKeyFor(options);
+  if (cacheKey !== undefined) payload.prompt_cache_key = cacheKey;
+
   if (options.tools !== undefined && options.tools.length > 0) {
     // namespace 是工具容器的 type，不能作为 function 定义上的字段。
     payload.tools = [{
@@ -153,6 +164,33 @@ export function buildEnvelope(options, catalog, imageParts = new Map()) {
     payload.reasoning = { effort: options.reasoningEffort };
   }
   return envelope;
+}
+
+/**
+ * 会话身份 → 上游 `prompt_cache_key`（稳定、可重复、每次调用一致）。
+ *
+ * 内核把会话身份放在 `GenerateOptions.sessionId`（「Session identity stamped
+ * by the loop for request routing」，适配器可以映射成 model-hidden transport
+ * metadata）；**不发送它**时上游会为每次请求生成随机键，同一会话的前缀缓存
+ * 只能靠运气命中——2026-10-19 实测 58 次请求平均命中 33%，且 0% 与 98% 成段
+ * 交替；同一账号下用稳定会话标识的原生 Codex 是 96–97%。
+ *
+ * 两条规则：
+ * - **辅助调用不带**（`purpose` = `compaction` / `session-title`）：它们的前缀
+ *   与主对话不同，给它们独立的缓存分片比混用主分片安全。
+ * - **清洗到桥接白名单允许的形状**（1..=128 个 `[A-Za-z0-9._:-]`）：真实
+ *   session id 形如 `session-<uuid>`，不会走到替换分支；写在这里是为了内核
+ *   将来换 id 格式时，插件不会发出让桥接拒收的载荷。
+ *
+ * @param options dsh 的 GenerateOptions（只读 `sessionId` 与 `purpose`）
+ * @returns 稳定的缓存键，或 `undefined`（无会话身份 / 辅助调用 / 空值）
+ */
+export function promptCacheKeyFor(options) {
+  if (options?.purpose !== undefined) return undefined;
+  const raw = options?.sessionId;
+  if (typeof raw !== 'string') return undefined;
+  const sanitized = raw.trim().replace(/[^A-Za-z0-9._:-]/g, '-').slice(0, 128);
+  return sanitized.length > 0 ? sanitized : undefined;
 }
 
 function textOf(content) {
