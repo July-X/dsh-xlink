@@ -11,7 +11,10 @@
  *   stop）→ 抛错拒绝，不静默丢弃；
  * - 「模型默认」= 省略 reasoning 字段，绝不发送 auto/medium 之类的替身；
  * - 工具名转换可逆（模型回的 function_call 名要能映射回 dsh 工具名）；
- * - 终止分类由桥接包络承载（completed/failed/incomplete），EOF 不算成功。
+ * - 终止分类由桥接包络承载（completed/failed/incomplete），EOF 不算成功；
+ * - 用量按内核的**互斥桶**口径上报（缓存输入从 `inputTokens` 里减出来，
+ *   见 `mapTokenUsage`）；额度类失败标出路由级 `QUOTA`（见
+ *   `isQuotaFailureDetail`），由适配器层翻成内核 `LlmError`。
  */
 
 /** 套餐路线无法执行、调用方却显式给出了的参数 → 拒绝（§8.1）。 */
@@ -172,6 +175,89 @@ function inputParts(content, imageParts) {
 }
 
 /**
+ * 额度类失败的文本特征。**刻意不含 rate limit**：请求速率限制是瞬时的、
+ * 可重试的，把它归成额度会让用户去等一个根本没被用掉的窗口。
+ *
+ * 上游实测原文（session-29678872，2026-10-19）：
+ * `The ChatGPT user has reached their Subscription Sharing usage limit. Ask
+ *  the user to try again after their usage limit resets or use an API key
+ *  instead.` —— 内核自带的 `isQuotaExceededError` 要求 "usage limit" 在前、
+ * "reached" 在后，这串是反序的（"reached their … usage limit"），所以这里
+ * 单独列出反序形态；其余几条与内核口径保持一致。
+ */
+const QUOTA_FAILURE_PATTERNS = [
+  /\b(?:quota|usage[\s_-]+limit)[\s_-]+(?:exceeded|exhausted|reached)\b/i,
+  /\bexceed(?:ed|s)?[\s_-]+(?:(?:your|the)[\s_-]+)?(?:current[\s_-]+)?quota\b/i,
+  /\b(?:reached|hit|exceeded)\b[^.]{0,80}\busage[\s_-]+limit\b/i,
+  /\binsufficient[\s_-]+(?:quota|balance|credits?)\b/i,
+  /\b(?:balance|credits?)[\s_-]+(?:exhausted|depleted)\b/i,
+  /\bout[\s_-]+of[\s_-]+(?:credits?|budget)\b/i,
+];
+
+/**
+ * 上游失败文本 → 是否属于「额度已用尽」。
+ *
+ * 纯判定：调用方（`pumpStream`）据此给出路由级 `code`，再由适配器层翻成
+ * 内核的 `LlmError`——内核只信任 `HarnessError` 的 code，普通 Error 一律
+ * 记 UNKNOWN，那样 UI 拿不到额度提示、管理入口，重试策略也认不出来。
+ *
+ * @param detail 上游失败原文（可能为空）
+ * @returns 命中额度特征返回 true
+ */
+export function isQuotaFailureDetail(detail) {
+  const text = typeof detail === 'string' ? detail : '';
+  return QUOTA_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * 上游 `usage` → dsh `TokenUsage`。
+ *
+ * 内核契约（`dsh-llm` 的 `TokenUsage`）：**各桶互斥**——`inputTokens` 只算
+ * 未命中缓存的输入，缓存输入单独报 `cacheReadTokens`/`cacheWriteTokens`
+ * （计费输入 = 三者之和）。上游 Responses API 的语义相反：`input_tokens`
+ * 是**含缓存**的输入总量，`input_tokens_details.cached_tokens` 是其子集。
+ * 原样上报的后果不是差一点：2026-10-19 实测一条会话 4,629,002 输入里有
+ * 1,525,760 是缓存命中，全被记成未缓存输入，用量面板因此系统性高估。
+ *
+ * 三条刻意的取舍：
+ * - **不上报 `cacheWriteTokens`**：这条路线实测 `cache_write_tokens` 恒为 0，
+ *   而它是否含在 `input_tokens` 内没有实证；内核 `normalizeUsage` 在
+ *   `totalTokens` 与「三桶之和」不等时会把**整条用量丢掉**，发一个语义
+ *   不确定的桶等于拿用量记录去赌。等有非 0 样本再补。
+ * - **用总量自算 `totalTokens`**：上游缺 `total_tokens` 时可以自己算
+ *   （`input + output` 就是整次调用的总量）；不补的话内核要求缓存两个桶
+ *   同时在场才接受，缺失会导致用量不可用。
+ * - `reasoningTokens` 必须是 ≤ `outputTokens` 的安全整数，否则省略——
+ *   超界同样会被内核整条丢弃。
+ *
+ * @param usage 上游 `response.usage`（形状不保证，逐字段校验）
+ * @returns dsh 形状的用量，或 `undefined`（输入不是合法计数时不报账）
+ */
+export function mapTokenUsage(usage) {
+  const input = usage?.input_tokens;
+  if (!Number.isSafeInteger(input) || input < 0) return undefined;
+  const output =
+    Number.isSafeInteger(usage.output_tokens) && usage.output_tokens >= 0 ? usage.output_tokens : 0;
+  const cachedRaw = usage.input_tokens_details?.cached_tokens;
+  const cached = Number.isSafeInteger(cachedRaw) && cachedRaw > 0 ? Math.min(cachedRaw, input) : 0;
+  const reasoningRaw = usage.output_tokens_details?.reasoning_tokens;
+  const reasoning =
+    Number.isSafeInteger(reasoningRaw) && reasoningRaw >= 0 && reasoningRaw <= output
+      ? reasoningRaw
+      : undefined;
+  const totalRaw = usage.total_tokens;
+  const total =
+    Number.isSafeInteger(totalRaw) && totalRaw >= input + output ? totalRaw : input + output;
+  return {
+    inputTokens: input - cached,
+    outputTokens: output,
+    totalTokens: total,
+    ...(cached > 0 ? { cacheReadTokens: cached } : {}),
+    ...(reasoning === undefined ? {} : { reasoningTokens: reasoning }),
+  };
+}
+
+/**
  * 桥接 NDJSON 事件流 → dsh StreamChunk 序列。
  *
  * 状态机：按块类型懒发 block-start；text/reasoning 增量映射；function_call
@@ -204,8 +290,11 @@ export async function* pumpStream(lines, toolMapping = new Map()) {
     const type = event.type ?? '';
     if (type === 'bridge.terminal') {
       if (event.status === 'failed') {
-        const error = new Error(event.detail ?? '推理失败');
-        error.code = 'UPSTREAM_FAILED';
+        const detail = event.detail ?? '推理失败';
+        const error = new Error(detail);
+        // 路由级 code：额度类失败单独标出，由适配器层翻成内核的 LlmError；
+        // 其余保持通用上游失败（内核记 UNKNOWN，与修复前行为一致）。
+        error.code = isQuotaFailureDetail(detail) ? 'QUOTA' : 'UPSTREAM_FAILED';
         throw error;
       }
       if (event.status === 'incomplete') {
@@ -226,17 +315,8 @@ export async function* pumpStream(lines, toolMapping = new Map()) {
         }
       }
       openBlocks.clear();
-      const usage = event.replay?.response?.usage;
-      if (usage && typeof usage.input_tokens === 'number') {
-        yield {
-          type: 'usage',
-          usage: {
-            inputTokens: usage.input_tokens,
-            outputTokens: usage.output_tokens ?? 0,
-            ...(typeof usage.total_tokens === 'number' ? { totalTokens: usage.total_tokens } : {}),
-          },
-        };
-      }
+      const usage = mapTokenUsage(event.replay?.response?.usage);
+      if (usage !== undefined) yield { type: 'usage', usage };
       finish = {
         type: 'finish',
         reason: { kind: 'stop' },

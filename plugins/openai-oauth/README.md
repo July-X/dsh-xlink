@@ -57,6 +57,8 @@ test/selection-watch.test.mjs 偏好文件变更通知（含 env 接线）
 
 ## 验证
 
+v0.1.17 修掉两条额度相关缺陷（2026-10-19 一条真实会话实测暴露：单轮 58 次调用、463 万输入 token、9 分钟打满一个 Plus 5 小时窗口）：① `pumpStream` 按内核的**互斥桶**口径上报用量——`inputTokens` 减掉 `input_tokens_details.cached_tokens`，缓存另报 `cacheReadTokens`，思考另报 `reasoningTokens`；此前该会话 152.6 万缓存命中被记成未缓存输入。② 上游「Subscription Sharing usage limit」这类额度终局失败在适配器层翻成内核 `LlmError(code=QUOTA)`；此前普通 `Error` 被内核 `normalizeLlmFailure` 记成 `UNKNOWN`，UI 拿不到额度提示与用量入口。单测钉住「三桶之和 == total - output」（内核 `normalizeUsage` 会**整条丢弃**不一致的用量）、缓存减法、reasoning 越界省略，以及额度与限流两类文本的区分（限流不能当额度，否则用户去等一个没被用掉的窗口）。
+
 v0.1.16 把常用模型收起行的摘要改成只说「已选 N 项」（用户要求：不需要显示已经勾选的模型），完整清单移到该行的 `title`。判据钉中文字面量而不是 STRINGS 表——第一版拿 `strings.modelsSummary(...)` 比渲染结果，两次反向验都被它放过。
 
 v0.1.15 把常用模型整块默认收起成一行（用户反馈「占用过大」），展开才画列表。

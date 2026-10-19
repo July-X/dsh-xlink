@@ -18,6 +18,7 @@ export class LlmError extends Error {
     this.options = options;
   }
 }
+export const QUOTA_EXCEEDED_CODE = 'QUOTA';
 export const requestImageHandleText = (ref) => String(ref);
 export const offloadedImageText = (ref) => String(ref);
 export const resolveImageAttachmentAccess = async () => undefined;
