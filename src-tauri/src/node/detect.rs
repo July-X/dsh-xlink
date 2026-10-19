@@ -45,17 +45,39 @@ fn compatible((major, minor, _patch): (u32, u32, u32)) -> bool {
     (major == MIN_COMPATIBLE.0 && minor >= MIN_COMPATIBLE.1) || major >= MAJOR_ALT_FLOOR
 }
 
+/// 一次探测失败：短原因，外加「进程根本没启动起来」时的原始系统错误。
+///
+/// 分开带出来是为了让系统级指引**只拼一次**：`probe()` 的 `reason` 会被
+/// [`resolve`] 嵌进更长的句子里（「配置的路径不可用（…）」），指引再嵌进去
+/// 就是三层叠加，用户读不出该做哪一件。指引交给真正面向用户的那一层
+/// （[`probe_failure_detail`]）。
+struct ProbeFailure {
+    reason: String,
+    spawn_error: Option<std::io::Error>,
+}
+
+impl ProbeFailure {
+    /// 面向用户的完整诊断：短原因 + 一次系统级指引。
+    fn detailed(&self) -> String {
+        match &self.spawn_error {
+            Some(error) => format!(
+                "{}。{}",
+                self.reason,
+                crate::shell::error::io_error_guidance(error)
+            ),
+            None => self.reason.clone(),
+        }
+    }
+}
+
 /// 版本探测的同一条执行路径同时供候选检查和安装失败诊断使用。
-fn probe_version(path: &Path) -> Result<String, String> {
+fn probe_version(path: &Path) -> Result<String, ProbeFailure> {
     let mut cmd = Command::new(path);
     cmd.arg("--version");
     let (success, stdout, stderr) =
-        run_command_capture(cmd, "node --version").map_err(|error| {
-            format!(
-                "无法运行 Node（{} --version）：{error}。{}",
-                path.display(),
-                crate::shell::error::io_error_guidance(&error)
-            )
+        run_command_capture(cmd, "node --version").map_err(|error| ProbeFailure {
+            reason: format!("无法运行 Node（{} --version）：{error}", path.display()),
+            spawn_error: Some(error),
         })?;
     if !success {
         let detail = if !stderr.trim().is_empty() {
@@ -65,17 +87,23 @@ fn probe_version(path: &Path) -> Result<String, String> {
         } else {
             "进程以非零状态退出且没有输出"
         };
-        return Err(format!(
-            "Node（{} --version）运行失败：{detail}。请检查该 Node 是否能正常运行",
-            path.display()
-        ));
+        return Err(ProbeFailure {
+            reason: format!(
+                "Node（{} --version）运行失败：{detail}。请检查该 Node 是否能正常运行",
+                path.display()
+            ),
+            spawn_error: None,
+        });
     }
     let version = stdout.trim();
     if parse_version(version).is_none() {
-        return Err(format!(
-            "Node（{} --version）未返回有效版本。请确认该路径指向 Node.js 可执行文件",
-            path.display()
-        ));
+        return Err(ProbeFailure {
+            reason: format!(
+                "Node（{} --version）未返回有效版本。请确认该路径指向 Node.js 可执行文件",
+                path.display()
+            ),
+            spawn_error: None,
+        });
     }
     Ok(version.to_string())
 }
@@ -87,25 +115,34 @@ pub fn version_of(path: &Path) -> Option<String> {
 
 /// 保留进程启动错误，或运行失败时的 stderr / stdout，供安装回滚前诊断。
 pub fn probe_failure_detail(path: &Path) -> Option<String> {
-    probe_version(path).err()
+    probe_version(path).err().map(|failure| failure.detailed())
 }
 
 /// 探测某个 node 候选可执行文件，并报告其可用性。
 pub fn probe(path: &Path) -> NodeInfo {
-    let result = probe_version(path);
-    let path = path.to_string_lossy().into_owned();
-    match result {
-        Err(reason) => NodeInfo {
-            path,
+    let display = path.to_string_lossy().into_owned();
+    // 先做「是不是文件」这一道预检：路径配成目录、或路径根本不存在，是最常见的
+    // 两种误配，直接给一句短答案——不必派进程，也不会把系统级指引嵌进上层文案。
+    if !fs::metadata(path).map(|m| m.is_file()).unwrap_or(false) {
+        return NodeInfo {
+            path: display,
             version: None,
             ok: false,
-            reason,
+            reason: "路径不存在或不可读".into(),
+        };
+    }
+    match probe_version(path) {
+        Err(failure) => NodeInfo {
+            path: display,
+            version: None,
+            ok: false,
+            reason: failure.reason,
         },
         Ok(version) => {
             let parsed = parse_version(&version).unwrap_or_default();
             if compatible(parsed) {
                 NodeInfo {
-                    path,
+                    path: display,
                     version: Some(version),
                     ok: true,
                     reason: "可用".into(),
@@ -113,7 +150,7 @@ pub fn probe(path: &Path) -> NodeInfo {
             } else {
                 let (maj, min, pat) = parsed;
                 NodeInfo {
-                    path,
+                    path: display,
                     version: Some(version),
                     ok: false,
                     reason: format!("版本 {maj}.{min}.{pat} 不满足 dsh 要求（^22.19 || >=24）"),
@@ -783,13 +820,59 @@ mod tests {
             .join(format!("dsh-xlink-missing-node-{}", std::process::id()))
             .join("node");
         assert!(!missing.exists());
+        // 面向用户的诊断保留路径与系统错误，并带一次指引。
         let detail = probe_failure_detail(&missing).expect("启动失败必须有诊断");
         assert!(detail.contains(&missing.display().to_string()));
         assert!(detail.contains("os error"), "{detail}");
         assert!(detail.contains("路径是否存在"));
+        // 探测侧的 reason 保持短句：它会被 `resolve()` 嵌进更长的文案里，
+        // 指引再嵌进去就成了三层叠加。
         let info = probe(&missing);
         assert!(!info.ok);
-        assert_eq!(info.reason, detail);
+        assert_eq!(info.reason, "路径不存在或不可读");
+    }
+
+    /// 文件在、但跑不起来（安全软件拦截执行 / 不是可执行文件）：诊断保留系统
+    /// 错误，且指引只在**最外层**拼一次——探测侧的 reason 只是它的前缀。
+    #[test]
+    fn unrunnable_node_keeps_the_os_error_without_stacking_guidance() {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-xlink-unrunnable-{}-{}",
+            std::process::id(),
+            crate::shell::process::epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join(exe_name("node"));
+        fs::write(&fake, b"not an executable").unwrap();
+
+        let detail = probe_failure_detail(&fake).expect("跑不起来要有诊断");
+        let info = probe(&fake);
+        assert!(!info.ok);
+        assert!(detail.contains(&fake.display().to_string()), "{detail}");
+        assert!(detail.contains("os error"), "{detail}");
+        assert!(
+            detail.starts_with(&info.reason),
+            "诊断 = 探测原因 + 一次指引：{detail} / {}",
+            info.reason
+        );
+        assert!(
+            detail.len() > info.reason.len(),
+            "最外层必须补上指引：{detail}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 指引拼一次就是一次，别在嵌套的 `format!` 里重复。
+    #[test]
+    fn probe_failure_appends_the_system_guidance_exactly_once() {
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let guidance = crate::shell::error::io_error_guidance(&error);
+        let failure = ProbeFailure {
+            reason: "无法运行 Node（X --version）：拒绝访问 (os error 5)".into(),
+            spawn_error: Some(error),
+        };
+        let detail = failure.detailed();
+        assert_eq!(detail.matches(guidance).count(), 1, "{detail}");
     }
 
     #[test]

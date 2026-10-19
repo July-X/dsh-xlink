@@ -193,14 +193,20 @@ pub(crate) fn materialize(
             plugin_source.display()
         )
     })?;
-    let marker = serde_json::json!({ "pluginVersion": version, "fingerprint": fingerprint, "sourceHash": source_hash });
     if let Ok(existing) = fs::read_to_string(target.join(MARKER_FILE)) {
         let parsed: serde_json::Value = serde_json::from_str(&existing).unwrap_or_default();
         if parsed.get("pluginVersion").and_then(|v| v.as_str()) == Some(version)
             && parsed.get("fingerprint").and_then(|v| v.as_str()) == Some(fingerprint)
+            // 源摘要变了（随包资源或上游内容换版）就必须重建。
             && parsed.get("sourceHash").and_then(|v| v.as_str()) == Some(source_hash.as_str())
-            // 核验目标目录时两部分内容都在 `target` 里，所以同一个 `Some(target)`。
-            && runtime_digest(spec, target, Some(target)).ok().as_deref() == Some(source_hash.as_str())
+            // 而「落位后是否完好」比的是**落位后的摘要**，不是源摘要：物化会往里
+            // 补写 `hooks/package.json`（上游脚本是 CJS、插件根是 ESM，缺了它 hook
+            // 静默不生效），那个文件源里根本没有。拿源摘要去核目标目录时，带上游
+            // 的插件**永远对不上** → 每次启动内核都整树重拷、连带重建全部 peer
+            // 链接（2026-10-19 实测：ponytail 摘要差一位，而它正是那条会挡住启动
+            // 的链接的宿主）。旧标记没有 `outputHash`，升级后重建一次，此后仍幂等。
+            && parsed.get("outputHash").and_then(|v| v.as_str())
+                == runtime_digest(spec, target, Some(target)).ok().as_deref()
         {
             ensure_peer_link(
                 spec,
@@ -282,6 +288,16 @@ pub(crate) fn materialize(
         kernel_root,
         dsh_home,
     )?;
+    // **落位后的摘要**：物化补写的 `hooks/package.json` 只在 staging 里才有，
+    // 源里没有。拿源摘要去核目标目录时，带上游的插件永远对不上（见上面早退分支）。
+    let output_hash = runtime_digest(spec, &staging, Some(&staging))
+        .map_err(|e| format!("计算物化结果摘要失败（{}）：{e}", staging.display()))?;
+    let marker = serde_json::json!({
+        "pluginVersion": version,
+        "fingerprint": fingerprint,
+        "sourceHash": source_hash,
+        "outputHash": output_hash,
+    });
     fs::write(staging.join(MARKER_FILE), format!("{marker}\n")).map_err(|e| {
         format!(
             "写物化标记失败（{}）：{e}",
@@ -456,20 +472,41 @@ fn ensure_one_peer_link(
     let link = at_deepseek_dir.join(package);
     match fs::symlink_metadata(&link) {
         Ok(metadata) => {
-            // 旧链接存在 → 摘掉再重建（悬空或指向别处时靠这里纠正）。
+            // 已经指向正确来源的链接**原样留下**：物化每次启动内核都跑，无条件
+            // 摘掉再建等于把「重建」这件事的失败面乘上启动次数——三条 peer 链接
+            // 每条都可能撞上一次瞬时拒绝，而好的链接本不需要碰。这条短路也是
+            // 「抖动」不会累积成启动失败的主要理由（2026-10-19：16 分钟内建链
+            // 时好时坏）。
+            if metadata.file_type().is_symlink()
+                && fs::read_link(&link).ok().as_deref() == Some(source)
+            {
+                return Ok(());
+            }
+            // 旧链接存在但不指向这里（悬空或指向别处）→ 摘掉再重建。
             // 目录符号链接必须用 remove_dir：remove_file 对它报拒绝访问，
             // 以前这里吞掉删除错误，Windows 上旧链接删不掉，下面的
             // symlink_dir 就撞「os error 183 当文件已存在」——禁用再启用
             // 永远失败（2026-10-09 用户实测；与本机 materialize / wire_unwire
             // 两条单测同因）。删除失败必须如实上报，不许静默。
+            //
+            // **删除这一步也要走瞬时重试**：安全软件扫目录时连 rmdir 一起拒，
+            // 只给建链加重试的话，一次抖动留下的旧链接删不掉 → 下一次撞 183
+            // （确定性失败、不重试）→ 用户看到的还是「工作台起不来」。
             let removed = if metadata.file_type().is_symlink() {
-                fs::remove_dir(&link).or_else(|_| fs::remove_file(&link))
+                crate::shell::link::remove_dir_link(&link)
             } else if metadata.is_dir() {
                 fs::remove_dir_all(&link)
             } else {
                 fs::remove_file(&link)
             };
-            removed.map_err(|e| format!("移除旧 peer 链接失败（{}）：{e}", link.display()))?;
+            removed.map_err(|e| {
+                format!(
+                    "移除旧 peer 链接失败（{}）：{e}。{}。\
+                     处理后关闭工作台并重启应用再试",
+                    link.display(),
+                    crate::shell::error::io_error_guidance(&e)
+                )
+            })?;
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => {
@@ -682,6 +719,9 @@ mod tests {
         let marker: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(target.join(MARKER_FILE)).unwrap()).unwrap();
         assert!(marker["sourceHash"].as_str().is_some());
+        // 落位后摘要必须真的写进去：缺了它，带上游的插件（补写过
+        // `hooks/package.json`）每启动一次就整树重拷一次。
+        assert!(marker["outputHash"].as_str().is_some());
         // 版本变化 → 新指纹目录，旧目录不动。
         materialize(
             spec,
@@ -1190,6 +1230,88 @@ mod tests {
                 .file_type()
                 .is_symlink(),
             "桥自己的 peer 要按普通 peer 链到内核树（树里有就不用再补一份）"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 已经指向正确来源的 peer 链接**一个字节都不许动**。
+    ///
+    /// 物化每次启动内核都跑一遍。无条件「摘掉再重建」把失败面乘上启动次数：
+    /// 每条 peer 链接都可能撞上一次瞬时拒绝（2026-10-19：16 分钟内建链时好时坏），
+    /// 而好的链接本来不需要碰。判据用 mtime 对比——重建会更新链接自身的时间戳。
+    #[test]
+    fn a_correct_peer_link_is_left_alone() {
+        let (root, spec, source, upstream) = ponytail_fixture("peer-untouched", &["dsh-skill"]);
+        let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
+        let materialize_once = || {
+            materialize(
+                spec,
+                &source,
+                Some(&upstream),
+                &target,
+                &root.join("kernel"),
+                &root,
+                "0.1.0",
+                "fp-1",
+            )
+        };
+        materialize_once().expect("首次物化");
+        let link = target.join("node_modules/@deepseek-ai/dsh-skill");
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let before = fs::symlink_metadata(&link).unwrap().modified().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        materialize_once().expect("重复物化");
+        let after = fs::symlink_metadata(&link).unwrap().modified().unwrap();
+        assert_eq!(
+            before, after,
+            "指向正确的链接被重建了：每次启动都多一条可能失败的重建"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 指向**别处**的旧链接必须被纠正（这正是「摘掉再重建」存在的理由）。
+    #[test]
+    fn a_peer_link_pointing_elsewhere_is_repaired() {
+        let (root, spec, source, upstream) = ponytail_fixture("peer-repair", &["dsh-skill"]);
+        let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
+        materialize(
+            spec,
+            &source,
+            Some(&upstream),
+            &target,
+            &root.join("kernel"),
+            &root,
+            "0.1.0",
+            "fp-1",
+        )
+        .expect("首次物化");
+        let link = target.join("node_modules/@deepseek-ai/dsh-skill");
+        // 把链接改指向一个不存在的地方，模拟「悬空 / 指错」的旧链接。
+        crate::shell::link::remove_dir_link(&link).unwrap();
+        let wrong = root.join("nowhere");
+        fs::create_dir_all(&wrong).unwrap();
+        crate::shell::link::make_dir_link(&wrong, &link).unwrap();
+
+        materialize(
+            spec,
+            &source,
+            Some(&upstream),
+            &target,
+            &root.join("kernel"),
+            &root,
+            "0.1.0",
+            "fp-1",
+        )
+        .expect("重复物化");
+        let resolved = fs::read_link(&link).unwrap();
+        assert_eq!(
+            resolved,
+            root.join("kernel/node_modules/@deepseek-ai/dsh-skill"),
+            "指向别处的旧链接必须被纠正回内核树"
         );
         let _ = fs::remove_dir_all(&root);
     }
