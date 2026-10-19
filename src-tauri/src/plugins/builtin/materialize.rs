@@ -480,7 +480,9 @@ fn ensure_one_peer_link(
         .map_err(|e| format!("创建 peer 目录失败（{}）：{e}", at_deepseek_dir.display()))?;
     make_dir_link(source, &link).map_err(|e| {
         format!(
-            "建立 peer 链接失败（{} → {}）：{e}；Windows 上若失败请开启开发者模式后重试",
+            "建立 peer 链接失败（{} → {}）：{e}。插件的 @deepseek-ai 包只能经这条链解析，\
+             不能跳过；已自动重试过，仍失败请关闭工作台后重启应用再试一次，\
+             并检查安全软件是否在扫描时拦截了符号链接（上面那条日志有完整路径）",
             source.display(),
             link.display()
         )

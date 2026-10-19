@@ -1931,15 +1931,10 @@ fn sweep_instance_orphans(family: &str, instance_id: &str, store: &Store) {
     }
 }
 
-#[cfg(unix)]
-pub(crate) fn make_dir_link(source: &Path, target: &Path) -> io::Result<()> {
-    std::os::unix::fs::symlink(source, target)
-}
-
-#[cfg(windows)]
-pub(crate) fn make_dir_link(source: &Path, target: &Path) -> io::Result<()> {
-    std::os::windows::fs::symlink_dir(source, target)
-}
+/// 建目录链接的原语在 [`crate::shell::link`]（Windows 上不能用 std 的
+/// `symlink_dir`，见那里的实测表）。这里按原名再导出一次，物化与 peer 链接两处
+/// 调用点的路径不用改。
+pub(crate) use crate::shell::link::make_dir_link;
 
 /// 递归地把 source 复制到 target，替换任何已存在的内容。每个 IO 错误都
 /// 带上失败的路径 —— 一句裸的 "系统找不到指定的文件 (os error 2)" 出现在

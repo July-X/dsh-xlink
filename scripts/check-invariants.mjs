@@ -3112,6 +3112,61 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// ⑳ Windows 上的目录链接只有一个入口，且**不许自己声明 Win32 FFI**（2026-10-19）。
+//
+// 两条都是「编译不报错、单测也可能绿、坏在真机上」那一类：
+//
+//   ① `std::os::windows::fs::symlink_dir` 散落在业务模块里，等于绕开了
+//      `shell::link::make_dir_link` 的瞬时重试。症状不是「建不出来」，而是**偶发**
+//      建不出来——安全软件的过滤器驱动扫描目录时会拒掉 reparse point 建链
+//      （ERROR_ACCESS_DENIED），而内嵌插件的 peer 链接建不出来会挡住**整个工作台**
+//      （`ensure_wired` → `refresh_enabled` → `AdapterError::Io`）。
+//   ② 自己声明 `CreateSymbolicLinkW` 更糟：实测（2026-10-19）裸 extern 声明的那份
+//      **返回 TRUE 却什么也没建**——探针里 `rc != 0` 而 `symlink_metadata()` 查不到，
+//      是静默故障，比报错更难查。`windows-sys` 那份则返回 ERROR_PRIVILEGE_NOT_HELD。
+//
+// 因此：**建目录链接一律走 `shell::link::make_dir_link`**；文件链接（技能条目）走
+// `skills/manage.rs::make_entry_link`，那是另一条有意走 junction 的路，不归本项管。
+{
+  const rustSrcDir = join(root, 'src-tauri', 'src');
+  const linkEntry = 'shell/link.rs';
+  const strays = [];
+  const rawFfi = [];
+  for (const full of walk(rustSrcDir, ['.rs'])) {
+    const file = full.slice(rustSrcDir.length + 1).split('\\').join('/');
+    const code = productionRust(readFileSync(full, 'utf8'));
+    const lines = code.split('\n');
+    lines.forEach((line, index) => {
+      if (file !== linkEntry && /\bsymlink_dir\s*\(/.test(line)) {
+        strays.push(`${file}:${index + 1}`);
+      }
+      if (/\bCreateSymbolicLink[AW]?\b/.test(line)) {
+        rawFfi.push(`${file}:${index + 1}`);
+      }
+    });
+  }
+  if (strays.length > 0) {
+    fail(
+      'dir-link-entry',
+      `${strays.join('、')} 绕过了 ${linkEntry} 直接建目录链接。` +
+        '建链失败会经 ensure_wired → refresh_enabled 变成 AdapterError::Io 挡住整个工作台，' +
+        '而其中一类是安全软件扫描时的瞬时拒绝——重试就在那个原语里。' +
+        '改成 `crate::shell::link::make_dir_link`。',
+    );
+  } else {
+    note(`建目录链接只有 ${linkEntry} 一个入口`);
+  }
+  if (rawFfi.length > 0) {
+    fail(
+      'dir-link-entry',
+      `${rawFfi.join('、')} 自己声明或调用了 CreateSymbolicLinkW。` +
+        '实测裸 extern 声明的那份返回 TRUE 却什么也没建（静默故障），windows-sys 那份返回' +
+        ' ERROR_PRIVILEGE_NOT_HELD，std 的封装在同一台机器上 320 次全绿——用 std，' +
+        '经 `crate::shell::link::make_dir_link`。',
+    );
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);
