@@ -6,7 +6,8 @@
 //! （检索、按 id 读、候选提交、注入回报）。
 //!
 //! 三条纪律与另外那半边逐条对齐：GET + 查询串不读请求体；「谁能调、最坏能造成什么」写清；
-//! 这些路由**都不写权威记录**——提取出来的东西走 `candidates`，用户点了保存才成记忆。
+//! `/submit` **会写权威记录**——自动提取的结果直接成为记忆（2026-10-19 用户要求），只有模型
+//! 标了冲突 / 取代的才留在 `candidates` 里等用户裁决。
 //!
 //! **令牌由 `/claim` 生成并返回**，`renew` / `finish` / `fail` 带着它回来：只有**当前**令牌
 //! 能提交（§8-6 的迟到结果检查）。这里不记 `note_memory_call`（那会把与注入无关的行混进
@@ -28,8 +29,9 @@ fn note_job_call(action: &str, detail: &str) {
 /// 自动提取（P2）的任务与租约路由。**全是 GET + 查询串**，与记忆那几条同一条纪律。
 ///
 /// 谁能调：只有拿到 Bearer 的插件进程；最坏能造成什么：排一个后台提取任务、领一个租约、
-/// 或用错的令牌交结果（交不上）。**这些路由不写权威记录**——提取出来的东西走 `candidates`，
-/// 用户点了保存才成记忆。
+/// 或用错的令牌交结果（交不上）。`/submit` **会写权威记录**：自动提取的结果直接成为记忆
+/// （2026-10-19 用户要求），只有模型标了冲突 / 取代的才留在 `candidates` 里等用户裁决。
+/// 其余几条路由不写权威记录。
 ///
 /// 令牌由 `/claim` 生成并返回，`renew` / `finish` / `fail` 带着它回来：只有**当前**令牌能提交
 /// （§8-6 的迟到结果检查）。这里不记 `note_memory_call`：这些不是「记忆调用」，混进那个环里
@@ -157,6 +159,10 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
         // 提取结果落地：**只有持有当前租约令牌的任务能提交**（§8-6），而且提交前要过四道闸——
         // 租约还在跑、开关还开着、会话对得上、引用的序号不超过任务冻结的那个游标。
         // 任何一道不过都答 `submitted: false` + 原因：这不是故障，是「这次结果不该落地」。
+        //
+        // 落地之后**直接成为记忆**（2026-10-19 用户要求：自动提取不该再让人逐条点保存）；
+        // 模型标了冲突 / 取代的仍留在待确认——C5/C6 的裁决权只属于用户，自动接受会把它吞掉。
+        // 自动接受失败（例如记忆已达上限）不算这次提交失败：候选已经写进待确认，用户还能处理。
         "/submit" => {
             // **判定与写入必须在同一个临界区里**（独立评审第 10 条）：原先「读任务表判令牌」与
             // 「写候选」是两次各自加锁的操作，中间那段窗口里租约可以过期并被接管——迟到的结果
@@ -272,10 +278,54 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                             serde_json::json!({ "submitted": true, "merged": true, "id": record.id })
                                 .to_string(),
                         ),
-                        Ok(crate::memory::store::SubmitOutcome::Candidate(candidate)) => (
-                            200,
-                            serde_json::json!({ "submitted": true, "id": candidate.id }).to_string(),
-                        ),
+                        Ok(crate::memory::store::SubmitOutcome::Candidate(candidate)) => {
+                            // 自动提取直接落地成记忆。带冲突 / 取代标记的留下等用户裁决；
+                            // 自动接受失败也只退回待确认，绝不把「候选已写进去」的这次提交
+                            // 判成失败（那会让插件重排任务、同一条内容再提一次）。
+                            match crate::memory::store::auto_accept_candidate(
+                                &namespace,
+                                &candidate.id,
+                            ) {
+                                Ok(Some(record)) => {
+                                    note_job_call("submit", "accepted");
+                                    (
+                                        200,
+                                        serde_json::json!({
+                                            "submitted": true,
+                                            "accepted": true,
+                                            "id": record.id,
+                                        })
+                                        .to_string(),
+                                    )
+                                }
+                                Ok(None) => {
+                                    note_job_call("submit", "pending-for-user");
+                                    (
+                                        200,
+                                        serde_json::json!({
+                                            "submitted": true,
+                                            "accepted": false,
+                                            "id": candidate.id,
+                                        })
+                                        .to_string(),
+                                    )
+                                }
+                                Err(_) => {
+                                    // 原因可能引用用户正文（业务拒绝的文案会带标题），
+                                    // 日志只留结局；候选还在待确认里，面板上能看到。
+                                    note_job_call("submit", "auto-accept-failed");
+                                    (
+                                        200,
+                                        serde_json::json!({
+                                            "submitted": true,
+                                            "accepted": false,
+                                            "id": candidate.id,
+                                        })
+                                        .to_string(),
+                                    )
+                                }
+                            }
+                        }
                         Err(error) => refuse(&error.to_string()),
                     }
                 }

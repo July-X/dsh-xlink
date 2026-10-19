@@ -855,76 +855,127 @@ pub fn decide_candidate(
     accept: bool,
     scope_override: Option<&str>,
 ) -> Result<Option<MemoryRecord>, AppError> {
+    decide_candidate_with(ns, id, accept, scope_override, true)
+}
+
+/// 自动提取的结果**直接成为记忆**（2026-10-19 用户要求：自动提取不该再让人逐条点保存）。
+///
+/// 它与用户点保存走**同一条**决策路径，唯一的差别是验证范围：没有经过用户确认的条目保持
+/// **未验证**——不能顺手标成「已验证」，那一档在面板上的意思是「用户看过并确认过」。
+///
+/// 返回 `None` 时什么也不写：候选刚被处理过，或模型标了 `conflicts_with` / `supersedes`。
+/// 后两种**必须留给用户裁决**（C5「不由模型选择胜者」、C6「取代只是标记」）——自动落地
+/// 等于把那条裁决权悄悄吞掉，页面上一个字都不会说。
+pub fn auto_accept_candidate(ns: &Namespace, id: &str) -> Result<Option<MemoryRecord>, AppError> {
     mutate(ns, |doc| {
-        let now = now_iso();
-        let Some(index) = doc
-            .candidates
-            .iter()
-            .position(|candidate| candidate.id == id)
-        else {
-            return Err(AppError::Memory(format!(
-                "找不到候选 {id}——它可能已经处理过了。"
-            )));
+        let ready = match doc.candidates.iter().find(|candidate| candidate.id == id) {
+            Some(candidate) => {
+                candidate.state == CANDIDATE_PENDING
+                    && candidate.conflicts_with.is_empty()
+                    && candidate.supersedes.is_empty()
+            }
+            None => false,
         };
-        if doc.candidates[index].state != CANDIDATE_PENDING {
-            return Err(AppError::Memory(format!(
-                "候选 {id} 已经处理过了（{}）。",
-                doc.candidates[index].state
-            )));
-        }
-        let candidate = doc.candidates[index].clone();
-        let chosen = scope_override.unwrap_or(candidate.scope.as_str());
-        let (scope, workspace_id, workspace_path) = if chosen == SCOPE_GENERAL {
-            (SCOPE_GENERAL.to_string(), String::new(), String::new())
-        } else {
-            (
-                SCOPE_PROJECT.to_string(),
-                candidate.workspace_id.clone(),
-                candidate.workspace_path.clone(),
-            )
-        };
-        if scope == SCOPE_PROJECT && workspace_id.is_empty() && workspace_path.is_empty() {
-            return Err(AppError::Memory(
-                "这条候选没有项目坐标，只能存成「通用偏好」（或让它在原项目里重新提一次）。"
-                    .to_string(),
-            ));
-        }
-        if !accept {
-            doc.candidates[index].state = CANDIDATE_REJECTED.to_string();
-            doc.candidates[index].decided_at = now;
+        if !ready {
             return Ok(None);
         }
-        if doc.memories.len() >= MAX_MEMORIES {
-            return Err(AppError::Memory(format!(
-                "记忆已达上限 {MAX_MEMORIES} 条，无法批准更多候选。请先删除不再需要的条目。"
-            )));
-        }
-        let record = MemoryRecord {
-            id: new_id(),
-            scope,
-            workspace_id,
-            workspace_path,
-            title: candidate.title.clone(),
-            body: candidate.body.clone(),
-            keywords: candidate.keywords.clone(),
-            // 候选自带的来源成为这条记录的第一个来源。
-            sources: vec![candidate.source.clone()],
-            // 用户看过正文与来源后点的「保存」——这是一次显式确认，标为已验证。
-            verification: VERIFICATION_VERIFIED.to_string(),
-            state: STATE_ACCEPTED.to_string(),
-            revision: 1,
-            created_at: now.clone(),
-            updated_at: now.clone(),
-            ..MemoryRecord::default()
-        };
-        doc.memories.push(record.clone());
-        doc.candidates[index].state = CANDIDATE_ACCEPTED.to_string();
-        doc.candidates[index].decided_at = now;
-        // 批准之后，待确认里**同一正文**的那些重复候选一并收掉：用户刚刚说「这条要」，
-        // 再让他为同一个内容点一次保存是多余的（§7.2 用户优先）。
-        crate::memory::duplicates::supersede_pending_duplicates(doc, &record, &now_iso());
-        Ok(Some(record))
+        decide_in_doc(doc, id, true, None, false)
     })
+}
+
+/// 两条决策入口的公共实现。`confirmed` 只有「用户真的点过一次」才是 true。
+fn decide_candidate_with(
+    ns: &Namespace,
+    id: &str,
+    accept: bool,
+    scope_override: Option<&str>,
+    confirmed: bool,
+) -> Result<Option<MemoryRecord>, AppError> {
+    mutate(ns, |doc| {
+        decide_in_doc(doc, id, accept, scope_override, confirmed)
+    })
+}
+
+fn decide_in_doc(
+    doc: &mut MemoryDoc,
+    id: &str,
+    accept: bool,
+    scope_override: Option<&str>,
+    confirmed: bool,
+) -> Result<Option<MemoryRecord>, AppError> {
+    let now = now_iso();
+    let Some(index) = doc
+        .candidates
+        .iter()
+        .position(|candidate| candidate.id == id)
+    else {
+        return Err(AppError::Memory(format!(
+            "找不到候选 {id}——它可能已经处理过了。"
+        )));
+    };
+    if doc.candidates[index].state != CANDIDATE_PENDING {
+        return Err(AppError::Memory(format!(
+            "候选 {id} 已经处理过了（{}）。",
+            doc.candidates[index].state
+        )));
+    }
+    let candidate = doc.candidates[index].clone();
+    let chosen = scope_override.unwrap_or(candidate.scope.as_str());
+    let (scope, workspace_id, workspace_path) = if chosen == SCOPE_GENERAL {
+        (SCOPE_GENERAL.to_string(), String::new(), String::new())
+    } else {
+        (
+            SCOPE_PROJECT.to_string(),
+            candidate.workspace_id.clone(),
+            candidate.workspace_path.clone(),
+        )
+    };
+    if scope == SCOPE_PROJECT && workspace_id.is_empty() && workspace_path.is_empty() {
+        return Err(AppError::Memory(
+            "这条候选没有项目坐标，只能存成「通用偏好」（或让它在原项目里重新提一次）。"
+                .to_string(),
+        ));
+    }
+    if !accept {
+        doc.candidates[index].state = CANDIDATE_REJECTED.to_string();
+        doc.candidates[index].decided_at = now;
+        return Ok(None);
+    }
+    if doc.memories.len() >= MAX_MEMORIES {
+        return Err(AppError::Memory(format!(
+            "记忆已达上限 {MAX_MEMORIES} 条，无法批准更多候选。请先删除不再需要的条目。"
+        )));
+    }
+    let record = MemoryRecord {
+        id: new_id(),
+        scope,
+        workspace_id,
+        workspace_path,
+        title: candidate.title.clone(),
+        body: candidate.body.clone(),
+        keywords: candidate.keywords.clone(),
+        // 候选自带的来源成为这条记录的第一个来源。
+        sources: vec![candidate.source.clone()],
+        // 用户看过正文与来源后点的「保存」——这是一次显式确认，标为已验证；自动接受
+        // 没有这一层确认，沿用候选自己的验证范围（提取路径给的是「未验证」）。
+        verification: if confirmed {
+            VERIFICATION_VERIFIED.to_string()
+        } else {
+            candidate.verification.clone()
+        },
+        state: STATE_ACCEPTED.to_string(),
+        revision: 1,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        ..MemoryRecord::default()
+    };
+    doc.memories.push(record.clone());
+    doc.candidates[index].state = CANDIDATE_ACCEPTED.to_string();
+    doc.candidates[index].decided_at = now;
+    // 批准之后，待确认里**同一正文**的那些重复候选一并收掉：用户刚刚说「这条要」，
+    // 再让他为同一个内容点一次保存是多余的（§7.2 用户优先）。
+    crate::memory::duplicates::supersede_pending_duplicates(doc, &record, &now_iso());
+    Ok(Some(record))
 }
 
 /// 读一条记录并记一次「显式使用」。
@@ -1585,6 +1636,85 @@ mod tests {
         let hits =
             crate::memory::query::retrieve(&ns, "提交前跑检查", "", "/anywhere").expect("retrieve");
         assert_eq!(hits.hits.len(), 1, "{:?}", hits.hits);
+    }
+
+    /// 自动提取的结果**直接成为记忆**，不需要用户再点一次保存（2026-10-19 用户要求）。
+    /// 但它没有经过用户确认，所以验证范围必须保持「未验证」——标成「已验证」是在替用户作证。
+    #[test]
+    fn an_extracted_candidate_is_saved_directly_and_stays_unverified() {
+        let _home = TempHome::new("auto-accept");
+        let ns = namespace();
+        let candidate = submit_ok(
+            &ns,
+            candidate_input("提交前先跑检查", "提交前跑 npm run check"),
+        );
+        assert_eq!(candidate.verification, VERIFICATION_UNVERIFIED);
+
+        let record = auto_accept_candidate(&ns, &candidate.id)
+            .expect("auto accept")
+            .expect("record");
+        assert_eq!(record.state, STATE_ACCEPTED);
+        assert_eq!(
+            record.verification, VERIFICATION_UNVERIFIED,
+            "没经过用户确认就不能标成已验证"
+        );
+        assert_eq!(record.sources.len(), 1, "候选的来源落在记录的第一个来源上");
+
+        let doc = read_doc(&ns);
+        assert_eq!(doc.memories.len(), 1);
+        assert_eq!(
+            doc.candidates[0].state, CANDIDATE_ACCEPTED,
+            "候选本身要留下已接受的结局（用户问「我那条候选呢」时有据可查）"
+        );
+        let view = list(
+            &ns,
+            &ListFilter {
+                include_candidates: true,
+                ..ListFilter::default()
+            },
+        );
+        assert_eq!(view.memories.len(), 1);
+        assert_eq!(view.candidates.len(), 0, "已决候选不再出现在待确认里");
+        assert_eq!(view.status.accepted, 1);
+    }
+
+    /// 模型标了冲突或取代的候选**不能被自动接受**：C5/C6 的裁决权在用户手里，自动落地
+    /// 等于把「留哪一条」悄悄替用户决定了。两种标记都要挡住。
+    #[test]
+    fn a_marked_candidate_waits_for_the_user_instead_of_being_auto_accepted() {
+        let _home = TempHome::new("auto-accept-marked");
+        let ns = namespace();
+
+        let conflicted = submit_ok(
+            &ns,
+            CandidateInput {
+                conflicts_with: vec!["m-existing".to_string()],
+                ..candidate_input("新的说法", "提交前不要跑检查")
+            },
+        );
+        assert!(
+            auto_accept_candidate(&ns, &conflicted.id)
+                .expect("auto accept")
+                .is_none(),
+            "带冲突标记的不能自动落地"
+        );
+
+        let superseding = submit_ok(
+            &ns,
+            CandidateInput {
+                supersedes: vec!["c-old".to_string()],
+                ..candidate_input("改口之后", "提交前跑 npm run check")
+            },
+        );
+        assert!(
+            auto_accept_candidate(&ns, &superseding.id)
+                .expect("auto accept")
+                .is_none(),
+            "带取代标记的不能自动落地"
+        );
+
+        assert_eq!(status(&ns).accepted, 0, "两条都该留在待确认里");
+        assert_eq!(status(&ns).pending_candidates, 2);
     }
 
     #[test]
