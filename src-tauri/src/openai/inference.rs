@@ -19,9 +19,9 @@ use crate::openai::transport::Failure;
 /// 不在表里的键一律拒绝——静默丢掉等于让调用方以为限制生效了。
 ///
 /// `prompt_cache_key` 在表内是因为它是 Responses 公开请求字段，且本路线靠它
-/// 做缓存路由：不发时上游会**为每次请求生成随机键**，同一会话的前缀缓存命中
-/// 率会掉到三成量级（2026-10-19 实测 33%；原生 Codex 用稳定会话标识 96–97%）。
-/// 值由 Host 按 `GenerateOptions.sessionId` 生成，桥接只做形状校验。
+/// 做缓存路由：不发时上游会**为每次请求生成一个新的随机键**（2026-10-19 实测
+/// 26/26 次回显互不相同），请求散落在不同缓存分片上，同一段前缀只有落到还
+/// 留着它的那台机器才命中。值由 Host 按 `GenerateOptions.sessionId` 生成。
 const PAYLOAD_WHITELIST: &[&str] = &[
     "model",
     "input",
@@ -132,8 +132,10 @@ pub(crate) fn validate_request(
             return Err(RequestError::FieldNotAllowed(key.clone()));
         }
     }
-    // 缓存路由键进上游请求体，不是展示字段：形状不对就拒绝，不静默裁剪
-    // （Host 已按同一规则清洗，能走到这里说明两侧实现漂了）。
+    // 缓存路由键进上游请求体，不是展示字段：形状不对就拒绝，不静默裁剪。
+    // 这道门挡的是**第三方 Host 插件**——桥接是所有 Host 插件共用的面，载荷
+    // 形状不归本插件管（内置插件的键由 Host 侧清洗保证形状一致，见
+    // plugins/openai-oauth/host/request.js 的 promptCacheKeyFor）。
     if let Some(key) = object.get("prompt_cache_key") {
         let valid = key.as_str().is_some_and(|value| {
             !value.is_empty()

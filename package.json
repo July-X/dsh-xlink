@@ -42,6 +42,7 @@
     "build:win": "npm run prep:builtin && tauri build --target x86_64-pc-windows-msvc",
     "check:signing-keys": "node scripts/check-signing-keys.mjs",
     "check:ui-bindings": "node scripts/check-ui-bindings.mjs",
+    "analyze:prompt-cache": "node scripts/analyze-prompt-cache.mjs",
     "prep:builtin": "node scripts/prepare-builtin-plugins.mjs",
     "check:builtin": "node scripts/prepare-builtin-plugins.mjs --check",
     "test:plugin": "node --test plugins/openai-oauth/test/*.test.mjs plugins/ponytail/test/*.test.mjs plugins/memory/test/*.test.mjs"

@@ -16,8 +16,9 @@
  *   见 `mapTokenUsage`）；额度类失败标出路由级 `QUOTA`（见
  *   `isQuotaFailureDetail`），由适配器层翻成内核 `LlmError`；
  * - 会话身份映射成稳定的 `prompt_cache_key`（见 `promptCacheKeyFor`）：
- *   不发这个键时上游会为每次请求生成随机键，同一会话的前缀缓存无法稳定
- *   命中。
+ *   不发这个键时上游会为每次请求生成随机键，请求散落在不同缓存分片上，
+ *   同一段前缀只能靠运气命中。压缩调用带同一个键（它重放的就是同一段
+ *   对话前缀），会话标题这类一次性小请求不带。
  */
 
 /** 套餐路线无法执行、调用方却显式给出了的参数 → 拒绝（§8.1）。 */
@@ -171,22 +172,33 @@ export function buildEnvelope(options, catalog, imageParts = new Map()) {
  *
  * 内核把会话身份放在 `GenerateOptions.sessionId`（「Session identity stamped
  * by the loop for request routing」，适配器可以映射成 model-hidden transport
- * metadata）；**不发送它**时上游会为每次请求生成随机键，同一会话的前缀缓存
- * 只能靠运气命中——2026-10-19 实测 58 次请求平均命中 33%，且 0% 与 98% 成段
- * 交替；同一账号下用稳定会话标识的原生 Codex 是 96–97%。
+ * metadata）。**不发送它**时上游会为每次请求生成一个新的随机键（2026-10-19
+ * 实测 26/26 次回显的 `prompt_cache_key` 互不相同），请求因此散落在不同缓存
+ * 分片上：同一段前缀只有落到还留着它的那台机器才命中。
+ *
+ * 丢的到底是「缓存内容」还是「落到哪台机器」，2026-10-19 在同一条会话上量过
+ * （26 次调用，`gpt-6.1-sol`）：`instructions`（1707 token）与 `tools`
+ * （7181 token）**逐字不变**，上游给的保留期是 **24h**——前缀既没被改写也没
+ * 过期，20/26 次却是 0% 命中。同一账号下用稳定会话标识的原生 Codex 是
+ * 96–97%。所以要修的是路由亲和性，不是缓存内容。
  *
  * 两条规则：
- * - **辅助调用不带**（`purpose` = `compaction` / `session-title`）：它们的前缀
- *   与主对话不同，给它们独立的缓存分片比混用主分片安全。
+ * - **压缩调用带同一个键**（`purpose` = `compaction`）：内核的压缩调用**故意
+ *   重放同一段对话前缀**（`dsh-compaction-basic` 明写「保留提供方的热前缀」，
+ *   压缩指令追加在最后），落到同一分片才吃得到那次命中——它是整轮会话里最贵
+ *   的一次调用（整段前缀重算）。会话标题这类一次性小请求不带：前缀与主对话
+ *   无关，共用分片没有收益。**未知的 `purpose` 一律不带**（新出现的用途不
+ *   猜它要不要共用分片）。
  * - **清洗到桥接白名单允许的形状**（1..=128 个 `[A-Za-z0-9._:-]`）：真实
  *   session id 形如 `session-<uuid>`，不会走到替换分支；写在这里是为了内核
  *   将来换 id 格式时，插件不会发出让桥接拒收的载荷。
  *
  * @param options dsh 的 GenerateOptions（只读 `sessionId` 与 `purpose`）
- * @returns 稳定的缓存键，或 `undefined`（无会话身份 / 辅助调用 / 空值）
+ * @returns 稳定的缓存键，或 `undefined`（无会话身份 / 非压缩的辅助调用 / 空值）
  */
 export function promptCacheKeyFor(options) {
-  if (options?.purpose !== undefined) return undefined;
+  const purpose = options?.purpose;
+  if (purpose !== undefined && purpose !== 'compaction') return undefined;
   const raw = options?.sessionId;
   if (typeof raw !== 'string') return undefined;
   const sanitized = raw.trim().replace(/[^A-Za-z0-9._:-]/g, '-').slice(0, 128);
