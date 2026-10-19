@@ -396,6 +396,12 @@ export const CODEX_USAGE_CONSENT_TIP =
  * 头像）。素材取自 LobeHub Icons（MIT），来源与许可声明写在每个 SVG 的头部
  * 注释里，改之前先读 `docs/ui/icon-design.md` 的「面板里的第三方标志」。
  *
+ * **唯一例外是 2api.store**：它没有公开的矢量标志，官网只有 512×512 的 PNG
+ * （公开设置 `site_logo`），所以那份 `2api-logo.svg` 是按官网原图像素测量后
+ * 重绘的本地矢量副本（几何 / 配色 / TS 与 SHOP 字形轮廓），来源与商标声明写在
+ * 文件头注释里。**不要拿别的图形替代**：图标库里的通用「窗口 / 商店」图标不是
+ * 这家的标志。
+ *
  * **为什么只有 OpenAI 需要第二个文件**：另三家的品牌色在浅色与暗色两种 chip
  * 底上都够清晰，而 OpenAI 的原文件用 `fill="currentColor"`——经 `<img src>`
  * 引用时没有任何宿主元素可继承，会解析成黑色，在暗色主题的卡片上直接看不见。
@@ -405,6 +411,7 @@ export const CODEX_USAGE_CONSENT_TIP =
  * MiniMax 国内站与国际站共用一个标志，靠卡片标题区分。
  */
 export const PROVIDER_LOGOS = {
+  api2store: '/2api-logo.svg',
   deepseek: '/deepseek-logo.svg',
   minimax_cn: '/minimax-logo.svg',
   minimax_en: '/minimax-logo.svg',
