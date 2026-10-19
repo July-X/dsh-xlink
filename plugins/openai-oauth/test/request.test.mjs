@@ -3,7 +3,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildEnvelope, pumpStream, toProviderToolName } from '../host/request.js';
+import {
+  buildEnvelope,
+  isQuotaFailureDetail,
+  mapTokenUsage,
+  pumpStream,
+  toProviderToolName,
+} from '../host/request.js';
 
 const CATALOG = {
   revisionCombined: 'rev-1|cap0',
@@ -231,4 +237,98 @@ test('pump: 工具调用增量与名字回映射', async () => {
   const delta = chunks.find((c) => c.type === 'tool-call-delta');
   assert.equal(delta.index !== undefined, true);
   assert.equal(delta.argumentsDelta, '{"city"');
+});
+
+// —— 用量按内核的互斥桶口径映射（2026-10-19 会话实测口径） ——
+
+test('usage: 缓存输入从未缓存输入里减出，且满足内核的整条校验', () => {
+  const mapped = mapTokenUsage({
+    input_tokens: 111774,
+    output_tokens: 75,
+    total_tokens: 111849,
+    input_tokens_details: { cached_tokens: 93361, cache_write_tokens: 0 },
+    output_tokens_details: { reasoning_tokens: 30 },
+  });
+  assert.equal(mapped.inputTokens, 18413, 'inputTokens 只算未命中缓存的输入');
+  assert.equal(mapped.cacheReadTokens, 93361);
+  assert.equal(mapped.outputTokens, 75);
+  assert.equal(mapped.reasoningTokens, 30);
+  // 内核 normalizeUsage 的判据：total - output 必须等于三桶之和，否则整条用量被丢弃。
+  assert.equal(
+    mapped.inputTokens + (mapped.cacheReadTokens ?? 0) + (mapped.cacheWriteTokens ?? 0),
+    mapped.totalTokens - mapped.outputTokens,
+  );
+  // 这条路线实测 cache_write_tokens 为 0，且语义未证实 → 刻意不上报（见 mapTokenUsage 注释）。
+  assert(!('cacheWriteTokens' in mapped));
+});
+
+test('usage: 缺 total 自算；越界的 reasoning 省略而不是拖垮整条用量', () => {
+  const derived = mapTokenUsage({ input_tokens: 10, output_tokens: 2 });
+  assert.deepEqual(derived, { inputTokens: 10, outputTokens: 2, totalTokens: 12 });
+  // reasoning > output 会被内核判非法 → 省略 reasoning，用量本身仍然有效。
+  const clamped = mapTokenUsage({
+    input_tokens: 10,
+    output_tokens: 2,
+    total_tokens: 12,
+    output_tokens_details: { reasoning_tokens: 5 },
+  });
+  assert.equal(clamped.reasoningTokens, undefined);
+  // 非计数（负数/小数/缺失）不报账，避免把一条假用量写进账本。
+  assert.equal(mapTokenUsage({ input_tokens: -1 }), undefined);
+  assert.equal(mapTokenUsage({ input_tokens: 1.5 }), undefined);
+  assert.equal(mapTokenUsage(undefined), undefined);
+  // cached 超过 input（上游异常）按 input 截断，绝不产生负数未缓存输入。
+  assert.equal(
+    mapTokenUsage({ input_tokens: 10, output_tokens: 1, input_tokens_details: { cached_tokens: 99 } }).inputTokens,
+    0,
+  );
+});
+
+test('pump: usage 块带互斥桶，总数与上游一致', async () => {
+  const lines = [
+    '{"type":"bridge.terminal","status":"completed","replay":{"response":{"id":"r9","usage":{"input_tokens":100,"output_tokens":30,"total_tokens":130,"input_tokens_details":{"cached_tokens":80,"cache_write_tokens":0},"output_tokens_details":{"reasoning_tokens":12}}}}}',
+  ];
+  const chunks = [];
+  for await (const chunk of pumpStream(lines)) chunks.push(chunk);
+  const usage = chunks.find((chunk) => chunk.type === 'usage').usage;
+  assert.equal(usage.inputTokens, 20);
+  assert.equal(usage.cacheReadTokens, 80);
+  assert.equal(usage.reasoningTokens, 12);
+  assert.equal(usage.totalTokens, 130);
+});
+
+// —— 额度类失败的路由级分类（文本来自上游实测原文） ——
+
+test('failure: 订阅额度用尽判为 QUOTA，速率限制不判', () => {
+  const upstream = 'The ChatGPT user has reached their Subscription Sharing usage limit. Ask the user to try again after their usage limit resets or use an API key instead.';
+  assert.equal(isQuotaFailureDetail(upstream), true);
+  assert.equal(isQuotaFailureDetail('You have exceeded your current quota, please check your plan and billing details.'), true);
+  assert.equal(isQuotaFailureDetail('insufficient_quota'), true);
+  // 速率限制是瞬时的、可重试的：归成额度会让用户去等一个没被用掉的窗口。
+  assert.equal(isQuotaFailureDetail('Rate limit reached for gpt-6.1-sol in organization org-x. Please try again in 20ms.'), false);
+  assert.equal(isQuotaFailureDetail(''), false);
+  assert.equal(isQuotaFailureDetail(undefined), false);
+});
+
+test('pump: 额度失败带路由级 QUOTA，普通失败仍是 UPSTREAM_FAILED', async () => {
+  const quota = async () => {
+    const lines = [
+      '{"type":"bridge.terminal","status":"failed","detail":"The ChatGPT user has reached their Subscription Sharing usage limit. Ask the user to try again after their usage limit resets or use an API key instead."}',
+    ];
+    for await (const chunk of pumpStream(lines)) void chunk;
+  };
+  await assert.rejects(quota, (error) => {
+    assert.equal(error.code, 'QUOTA');
+    assert.match(error.message, /usage limit/);
+    return true;
+  });
+  const throttled = async () => {
+    for await (const chunk of pumpStream([
+      '{"type":"bridge.terminal","status":"failed","detail":"Rate limit reached. Try again later."}',
+    ])) void chunk;
+  };
+  await assert.rejects(throttled, (error) => {
+    assert.equal(error.code, 'UPSTREAM_FAILED');
+    return true;
+  });
 });
