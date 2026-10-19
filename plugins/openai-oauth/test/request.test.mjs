@@ -353,15 +353,22 @@ test('cache: 同一会话的请求带同一个稳定键，不同会话/无身份
   assert.equal(promptCacheKeyFor(undefined), undefined);
 });
 
-test('cache: 辅助调用隔离；非法字符与超长按桥接白名单清洗', () => {
-  // 压缩/会话标题是不同前缀的辅助调用，不占主对话的缓存分片。
-  for (const purpose of ['compaction', 'session-title']) {
-    const envelope = buildEnvelope(
-      { model: 'gpt-x', messages: [], sessionId: 'session-1', purpose },
-      CATALOG,
-    );
-    assert(!('prompt_cache_key' in envelope.payload), purpose);
-  }
+test('cache: 压缩调用带同一个键（它重放同一段前缀）；会话标题不带', () => {
+  const options = { model: 'gpt-x', messages: [], sessionId: 'session-1' };
+  // 压缩调用重放的就是主对话那段前缀（内核为「保留提供方的热前缀」而重放），
+  // 落到同一分片才吃得到那次命中——它是整轮会话里最贵的一次调用。
+  const main = buildEnvelope(options, CATALOG);
+  const compaction = buildEnvelope({ ...options, purpose: 'compaction' }, CATALOG);
+  assert.equal(compaction.payload.prompt_cache_key, main.payload.prompt_cache_key);
+  // 会话标题是一次性小请求，前缀与主对话无关，不带。
+  const title = buildEnvelope({ ...options, purpose: 'session-title' }, CATALOG);
+  assert(!('prompt_cache_key' in title.payload));
+  // 未知的 purpose 一律不带（新用途不猜它要不要共用分片）。
+  const unknown = buildEnvelope({ ...options, purpose: 'future-purpose' }, CATALOG);
+  assert(!('prompt_cache_key' in unknown.payload));
+});
+
+test('cache: 非法字符与超长按桥接白名单清洗', () => {
   // 清洗规则与 Rust 白名单一致（1..=128 个 [A-Za-z0-9._:-]）：真实 session id
   // 不会走到这里，但内核换 id 格式时不能发出桥接拒收的载荷。
   assert.equal(promptCacheKeyFor({ sessionId: ' a b/c ' }), 'a-b-c');
