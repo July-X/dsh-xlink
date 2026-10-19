@@ -8,11 +8,18 @@
 //    保存 / 存为通用偏好 / 忽略，还带两种关系标记。并成一个组件会让「默认精简、
 //    点开再操作」那条规则失去唯一的形状。
 //
-// 动作直接落在 `memory.js` 的 store 动作上（与 `MemoryEditor.vue` 同一写法），
-// 不往面板再转一层事件：这三枚按钮就是这一行自己的语义。
+// 2026-10-19 用户反馈「待确认的候选行正文被截成两行，点行没有任何反应」：这边补上
+// 与记忆行相同的形状——**正文那半整块可点**，点开是 `MemoryCandidateDetail.vue`，
+// 在那里读完整正文并直接裁决。可点的只有 `__main`：根还挂着动作排，把 `role="button"`
+// 挂到根上会让「点忽略」也去开弹窗。
+//
+// 三枚动作 2026-10-19 抽进 `MemoryCandidateActions.vue`：行与详情弹窗都要裁决同一条
+// 候选，各写一份迟早一边漏了 scope 或 loading key（静默）。行这边只保留动作排的
+// **位置**（`.memory-row__actions` 让它沉到行底、贴右）。
+import MemoryCandidateActions from './MemoryCandidateActions.vue';
 import MemoryConflict from './MemoryConflict.vue';
 import MemorySuperseded from './MemorySuperseded.vue';
-import { globalBusy, isLoading } from '../shell/loading.js';
+import { globalBusy } from '../shell/loading.js';
 import {
   decideCandidate,
   removeMemory,
@@ -29,16 +36,52 @@ defineProps({
   /// 取代的那几条是**候选**，不在记忆列表里。
   candidates: { type: Array, default: () => [] },
 });
+/// 只发「用户点了这一行」：动作（保存 / 忽略）由 `MemoryCandidateActions` 直接落在
+/// store 上，行与面板都不需要知道点了什么。
+const emit = defineEmits(['open']);
+
+// 可点区域里还嵌着三个关系块的按钮（`MemoryConflict` 的停用 / 删除、
+// `MemorySuperseded` 的丢弃这条），它们的事件会冒泡到这里——点它们时**不能顺手把
+// 详情弹窗也打开**（一次点击做两件事）。这个闸门点击与回车共用。
+//
+// 模板里必须写成 `openFromEvent($event)`（显式传事件）：裸引用 `@click="openFromEvent"`
+// 也会传 MouseEvent，但 `ui/test/clickHandlerArity.test.js` 把「裸引用 + 有形参」
+// 一律当 bug（本仓栽过 `@click="showLogs"` 把 Event 当业务参数的形状），显式传参才
+// 不被误判、也让读的人一眼看出这里要的是事件对象。
+function openFromEvent(event) {
+  if (event.target.closest('button, a')) return;
+  emit('open', item);
+}
+
+/// 空格要 `preventDefault`（这一屏的滚动容器就是列表自己，不拦会先滚一屏），但只在
+/// **自己身上**拦：关系块里按钮的空格激活同样冒泡到这里，一起拦掉的话键盘就点不动
+/// 那三枚按钮了。先过闸门，再 prevent。
+function openFromSpace(event) {
+  if (event.target.closest('button, a')) return;
+  event.preventDefault();
+  emit('open', item);
+}
 </script>
 
 <template>
   <div class="page-row memory-row memory-row--candidate">
-    <div class="memory-row__main">
+    <!-- 可点的只有正文这一块（`memory-row--clickable` 提供 cursor / hover / 键盘焦点，
+         与记忆行同一族规则），动作排是另一个语义，留在它外面。 -->
+    <div
+      class="memory-row__main memory-row--clickable"
+      role="button"
+      tabindex="0"
+      aria-haspopup="dialog"
+      :aria-label="`查看候选详情：${item.title || '（无标题）'}`"
+      @click="openFromEvent($event)"
+      @keydown.enter="openFromEvent($event)"
+      @keydown.space="openFromSpace($event)"
+    >
       <div class="memory-row__title">
         <span class="memory-row__name">{{ item.title || '（无标题）' }}</span>
         <el-tag size="small" effect="plain">{{ sourceText(item.source.kind) }}</el-tag>
         <!-- H7：**来源变了**（会话被压缩/编辑之后重提同一段）。**只是提醒**——
-             「保存」与「丢弃」两个按钮照常在下面，标记不是替用户处理掉。
+             「保存」与「忽略」两个按钮照常在下面，标记不是替用户处理掉。
              **标签不能写「已过期」**：那是记忆行上 `verificationText('stale')` 的意思
              （这条事实可能过时），而候选被批准时后端会把 verification 重置成 verified
              （`store.rs::decide_candidate`），两个 `stale` 一个词两个意思——按「事实过期」
@@ -49,7 +92,8 @@ defineProps({
       </div>
       <p class="memory-row__body memory-row__body--clamp">{{ item.body }}</p>
       <!-- 「来自 session-fbb5df89-a57a-4f93-a645-8bc184dfa4b4」这种原文没人读得下去，
-           而设计 §2 又要求候选追得回是哪一次会话提的：短 id 在行里，完整 id 进 title。 -->
+           而设计 §2 又要求候选追得回是哪一次会话提的：短 id 在行里，完整 id 进 title。
+           完整 id 在详情弹窗里也有一份（那一层就是拿来追查的）。 -->
       <p class="memory-row__meta" :title="item.source.session || ''">
         来自{{ sessionText(item.source.session) }} · {{ shortTime(item.created_at) }}
       </p>
@@ -79,35 +123,6 @@ defineProps({
         </p>
       </div>
     </div>
-    <div class="memory-row__actions">
-      <el-button
-        size="small"
-        type="primary"
-        :loading="isLoading('memoryCandidate:' + item.id)"
-        :disabled="globalBusy"
-        @click="decideCandidate(item, true)"
-      >
-        保存
-      </el-button>
-      <el-button
-        v-if="item.scope !== 'general'"
-        size="small"
-        text
-        :loading="isLoading('memoryCandidate:' + item.id)"
-        :disabled="globalBusy"
-        @click="decideCandidate(item, true, 'general')"
-      >
-        存为通用偏好
-      </el-button>
-      <el-button
-        size="small"
-        text
-        :loading="isLoading('memoryCandidate:' + item.id)"
-        :disabled="globalBusy"
-        @click="decideCandidate(item, false)"
-      >
-        忽略
-      </el-button>
-    </div>
+    <MemoryCandidateActions class="memory-row__actions" :item="item" />
   </div>
 </template>

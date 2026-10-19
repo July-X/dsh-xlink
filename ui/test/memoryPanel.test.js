@@ -175,16 +175,28 @@ test('面板有范围筛选，行里显示来源与验证状态', () => {
 });
 
 test('批准候选时能当场选范围（§6.1：由用户明确选择通用范围）', async () => {
-  // 2026-10-17：候选行搬进 `MemoryCandidateRow.vue`（「待确认」并进记忆卡的同一条列表
-  // 视图，两张列表卡在窗口里放不下）。两个动作的接线跟着搬——**接线在哪个文件里就查哪个
-  // 文件**，还盯着面板的话，这条判据会绿在「组件已经接上、面板什么都没有」上。
-  const row = templateOf(read('../src/memory/MemoryCandidateRow.vue'));
+  // 2026-10-19：三枚动作从候选行抽进 `MemoryCandidateActions.vue`——**行与详情弹窗
+  // 共用这一份**（同一条候选在两处都要能裁决，各写一份迟早一边漏了 scope 或 loading
+  // key，而两边都不报错）。接线跟着搬到那个文件，**接线在哪个文件里就查哪个文件**。
+  const actions = templateOf(read('../src/memory/MemoryCandidateActions.vue'));
   assert.match(
-    row,
+    actions,
     /@click="decideCandidate\(item, true, 'general'\)"/,
-    '候选行要有「存为通用偏好」'
+    '「存为通用偏好」要真的把 scope 传下去'
   );
-  assert.match(row, /v-if="item\.scope !== 'general'"/, '已经是通用偏好的候选不必再给这个按钮');
+  assert.match(actions, /v-if="item\.scope !== 'general'"/, '已经是通用偏好的候选不必再给这个按钮');
+  assert.match(actions, /@click="decideCandidate\(item, true\)"/, '「保存」还在');
+  assert.match(actions, /@click="decideCandidate\(item, false\)"/, '「忽略」还在');
+  // 共用那半：行与详情都必须用这一份，各写一排按钮就会有两个事实源。
+  for (const file of ['MemoryCandidateRow.vue', 'MemoryCandidateDetail.vue']) {
+    const tpl = templateOf(read(`../src/memory/${file}`));
+    assert.match(tpl, /<MemoryCandidateActions[\s/>]/, `${file} 没用共用的那排动作`);
+    assert.equal(
+      (tpl.match(/<el-button\b/g) || []).length,
+      0,
+      `${file} 里又自己写了一排按钮：裁决只有一份实现`,
+    );
+  }
   // 私有信息那句话必须在：通用偏好会跟着用户去别的项目（§6.1 要求提升前去掉路径与客户名）。
   // 它挂在卡头的 ⓘ 上（切到「待确认」时才出现），所以仍然在面板模板里。
   assert.match(templateOf(read('../src/memory/MemoryPanel.vue')), /先确认正文里没有路径、客户名/);
@@ -376,6 +388,15 @@ test('候选行的来源会话给短 id，完整 id 进 title（设计 §2 要�
   const tpl = templateOf(read('../src/memory/MemoryCandidateRow.vue'));
   assert.match(tpl, /sessionText\(item\.source\.session\)/, '行里要用短 id');
   assert.match(tpl, /:title="item\.source\.session/, '完整 id 要留在 title 里');
+  // 2026-10-19：详情弹窗反过来要给**完整** id——行里压短是为了读得下去，那一层是
+  // 追查用的（「这条到底是哪一次会话提的」），再压一次就永远查不着了。
+  const detail = templateOf(read('../src/memory/MemoryCandidateDetail.vue'));
+  assert.match(
+    detail,
+    /\{\{ item\.source\.session \|\| '（本机，这一条没有会话 id）' \}\}/,
+    '详情要把完整会话 id 摆出来（没有会话的如实说本机）'
+  );
+  assert.ok(!detail.includes('sessionText('), '详情不该再把 id 压成短的那个');
 });
 
 test('开关的生效语义：有确切判据就用确切的，没有就不许说「已生效」（E6）', async () => {
@@ -662,12 +683,21 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
   const panel = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
   const row = templateOf(read(`${MEM_DIR}MemoryRow.vue`));
   // 2026-10-17 起候选行也在这一族里（`MemoryCandidateRow.vue`）：三个模板都要数，
-  // 少扫一个就等于漏掉它那几条样式是被谁用的。
+  // 少扫一个就等于漏掉它那几条样式是被谁用的。2026-10-19 再加候选详情——它同样写这
+  // 一族类名（正文不截断），新长出一个类名时下面的清单会立刻对不上。
   const candidate = templateOf(read(`${MEM_DIR}MemoryCandidateRow.vue`));
+  const candidateDetail = templateOf(read(`${MEM_DIR}MemoryCandidateDetail.vue`));
 
   // 类名清单**从模板里读**，不写死在判据里：日后谁把 `memory-row__body` 改名而忘了搬
   // 样式，下面的循环会当成「这一族已经不这么叫了」而静默空转。
-  const used = [...new Set([...literalClasses(panel), ...literalClasses(row), ...literalClasses(candidate)])]
+  const used = [
+    ...new Set([
+      ...literalClasses(panel),
+      ...literalClasses(row),
+      ...literalClasses(candidate),
+      ...literalClasses(candidateDetail),
+    ]),
+  ]
     .filter((c) => c.startsWith('memory-row'))
     .sort();
   assert.deepEqual(
@@ -1308,6 +1338,20 @@ test('窄列里的路径只显示最后一段，完整路径进 title（压的�
       `${file} 的标签还在写「本项目」这类通用词——要写具体项目名`,
     );
   }
+  // 2026-10-19：候选详情是同一件事的第三处（候选也有范围标签，而它同样在弹窗里）。
+  // 它读的是 `props.item`，所以单独列——同一屏里同一个东西只能有一个名字。
+  const candidateDetailSrc = read('../src/memory/MemoryCandidateDetail.vue');
+  assert.match(
+    candidateDetailSrc,
+    /baseName\(props\.item\.workspace_path\)/,
+    '候选详情的项目名没折成最后一段',
+  );
+  assert.match(candidateDetailSrc, /:title="scopeTitle"/, '候选详情的完整路径没进 title');
+  assert.match(
+    templateOf(candidateDetailSrc),
+    /\{\{ item\.scope === 'general' \? '通用偏好' : projectName \}\}/,
+    '候选详情的范围标签没写具体项目名',
+  );
   // 次行不再重复标签已经说过的范围，只留来源 / 验证 / 时间 / 次数。
   assert.doesNotMatch(
     templateOf(read('../src/memory/MemoryRow.vue')),
@@ -1335,15 +1379,27 @@ test('冲突标记在候选卡片里并排摆出来，动作落在 store 已有�
   assert.match(tpl, /<MemoryConflict[\s/>]/, '候选行要真的用上这个组件');
   assert.match(tpl, /:conflicts="item\.conflicts_with \|\| \[\]"/, '冲突 id 要从候选本身读（老数据没有这个键，所以给空数组兜底）');
   assert.match(tpl, /:records="records"/, '要从 prop 读那份「全库记录」');
-  // **全库那一份由面板传下去**：传筛选后的列表会解析不到别的项目的记录。
-  assert.match(
-    templateOf(read('../src/memory/MemoryPanel.vue')),
-    /:records="allMemories"/,
-    '面板没把手里的全库记录传给候选行',
+  // **全库那一份由面板传下去**：传筛选后的列表会解析不到别的项目的记录。候选行与
+  // 候选详情各要一份（2026-10-19 起），两处都必须是**未筛选**的那份。
+  const panel = templateOf(read('../src/memory/MemoryPanel.vue'));
+  assert.equal(
+    (panel.match(/:records="allMemories"/g) || []).length,
+    2,
+    '面板没把手里的全库记录同时传给候选行与候选详情',
   );
   // 两个动作复用面板已有的那两个命令，不新造一条路径。
   assert.match(tpl, /@disable="\(record\) => setMemoryState\(record, 'disabled'\)"/, '停用走已有的 memory_set_state');
   assert.match(tpl, /@remove="removeMemory"/, '删除走已有的 memory_delete（它自带影响范围确认框）');
+  // 详情里也要摆出冲突块：行上被压缩的是**显示**，不是信息。
+  const detail = templateOf(read('../src/memory/MemoryCandidateDetail.vue'));
+  assert.match(detail, /<MemoryConflict[\s/>]/, '候选详情要摆出冲突的那几条');
+  assert.match(detail, /:records="records"/, '详情也要拿全库记录解析冲突 id');
+  assert.match(
+    detail,
+    /@disable="\(record\) => setMemoryState\(record, 'disabled'\)"/,
+    '详情里的「停用这条」要走同一个命令',
+  );
+  assert.match(detail, /@remove="removeMemory"/, '详情里的「删除这条」要走同一个命令');
 });
 
 /**
@@ -1362,13 +1418,23 @@ test('取代标记在候选卡片里列出被推翻的那几条，动作是丢�
   assert.match(tpl, /<MemorySuperseded[\s/>]/, '候选卡片要真的用上这个组件');
   assert.match(tpl, /:supersedes="item\.supersedes \|\| \[\]"/, '取代 id 要从候选本身读（老数据没有这个键，给空数组兜底）');
   assert.match(tpl, /:candidates="candidates"/, '要拿**待确认候选**那份列表去解析 id（记录列表里没有候选）');
-  assert.match(
-    templateOf(read('../src/memory/MemoryPanel.vue')),
-    /:candidates="candidates"/,
-    '面板没把候选那份列表传给候选行',
+  // 候选行与候选详情各要一份**候选**列表（2026-10-19 起），传错成记忆列表就永远「已不在」。
+  assert.equal(
+    (templateOf(read('../src/memory/MemoryPanel.vue')).match(/:candidates="candidates"/g) || []).length,
+    2,
+    '面板没把候选那份列表同时传给候选行与候选详情',
   );
   // 动作复用面板已有的那一个命令，不新造一条路径；`false` 就是「拒绝」。
   assert.match(tpl, /@discard="\(candidate\) => decideCandidate\(candidate, false\)"/, '丢弃走已有的 memory_decide_candidate');
+  // 详情里也要摆出取代块，动作落在同一个命令上。
+  const detail = templateOf(read('../src/memory/MemoryCandidateDetail.vue'));
+  assert.match(detail, /<MemorySuperseded[\s/>]/, '候选详情要摆出被推翻的那几条');
+  assert.match(detail, /:candidates="candidates"/, '详情也要拿候选列表解析取代 id');
+  assert.match(
+    detail,
+    /@discard="\(candidate\) => decideCandidate\(candidate, false\)"/,
+    '详情里的「丢弃这条」要走同一个命令',
+  );
 });
 
 test('取代块的文案只摆事实，不说「已经替你作废」', () => {
@@ -1433,9 +1499,26 @@ test('stale 只多一句提示，保存与丢弃两个动作照常在', () => {
     !rest.includes('stale'),
     'stale 只允许出现在「显示提示」的那一个条件上——它出现在动作的 disabled/隐藏里就是替你做决定了'
   );
-  // 两个动作本来就在（上面那条判据是「不许动它们」，得先确认它们在）。
-  assert.match(card, /@click="decideCandidate\(item, true\)"/, '保存按钮还在');
-  assert.match(card, /@click="decideCandidate\(item, false\)"/, '丢弃按钮还在');
+  // 两个动作本来就在（上面那条判据是「不许动它们」，得先确认它们在）。2026-10-19
+  // 起它们由共用的 `MemoryCandidateActions` 渲染：行里只留「把那一排放哪」的接线，
+  // 裁决本身在组件里（接线与动作不许各写一份）。
+  assert.match(card, /<MemoryCandidateActions[\s/>]/, '保存 / 忽略那一排还在行里');
+  assert.match(
+    templateOf(read('../src/memory/MemoryCandidateActions.vue')),
+    /@click="decideCandidate\(item, true\)"/,
+    '保存按钮还在（共用组件里）',
+  );
+  assert.match(
+    templateOf(read('../src/memory/MemoryCandidateActions.vue')),
+    /@click="decideCandidate\(item, false\)"/,
+    '忽略按钮还在（共用组件里）',
+  );
+  // 详情弹窗同样不许因为 stale 藏动作：那一层是点开候选后唯一能裁决的地方。
+  assert.match(
+    templateOf(read('../src/memory/MemoryCandidateDetail.vue')),
+    /<MemoryCandidateActions[\s/>]/,
+    '详情弹窗也要留着裁决那一排',
+  );
   // 复用共用那一族类名（三种关系在界面上必须一样重）。
   assert.match(
     card,
@@ -1473,4 +1556,227 @@ test('冲突块的文案只摆事实，不代做判断', () => {
   );
   // 找不到记录时**不渲染动作**：对一条不存在的记忆点「停用」只会得到一句失败。
   assert.match(tpl, /v-if="!row\.missing && !busy"/, '记录不在时不该给动作');
+});
+
+// —— 候选详情弹窗（2026-10-19 用户反馈）————————————————————————————————————
+//
+// 用户原话（截图圈着「待确认」的候选行）：「正文被截成两行，点行没有任何反应，读不到
+// 完整信息」。修法照记忆行那一套：正文那半整块可点，点开是 `MemoryCandidateDetail`
+// （完整正文 + 来源凭据 + 三种关系块），页脚能直接裁决。
+//
+// 下面三条盯的都是本仓反复栽的形状：属性写了事件没绑 / 可点语义挂错层 / 面板没接住
+// 事件 / 详情照抄了行里的截断。样式与结构层沿用上面的 `elementBlock` / 全局规则。
+
+test('候选行的正文那半可点：Enter / 空格都发 open，面板接得住', () => {
+  const row = templateOf(read(`${MEM_DIR}MemoryCandidateRow.vue`));
+  // **只判 `__main`**：根元素下面还挂着动作排，`role="button"` 挂错层的话，点「忽略」
+  // 会顺手把详情弹窗也打开（两个动作叠在一起）。
+  const main = elementBlock(row, 'div', 'memory-row__main');
+  for (const attr of ['role="button"', 'tabindex="0"', 'aria-haspopup="dialog"']) {
+    assert.equal(
+      (main.match(new RegExp(attr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length,
+      1,
+      `候选行正文那半少了 ${attr}`,
+    );
+  }
+  assert.match(
+    main,
+    /:aria-label="`查看候选详情：\$\{item\.title \|\| '（无标题）'\}`"/,
+    '可访问名要说明点开的是哪一条（无标题时有兜底）',
+  );
+  // 三个入口逐个数——少一个键盘用户就只能靠鼠标。**空格不用 `.prevent` 修饰符**：
+  // 那会在关系块里按钮的冒泡事件上也调一次 preventDefault，把键盘激活吞掉；拦默认
+  // 行为写在 `openFromSpace` 里，过完闸门才拦。事件显式写成 `$event`：裸引用带形参
+  // 会被 `ui/test/clickHandlerArity.test.js` 判成 bug（那一族检查的正确形状）。
+  for (const handler of [
+    '@click="openFromEvent($event)"',
+    '@keydown.enter="openFromEvent($event)"',
+    '@keydown.space="openFromSpace($event)"',
+  ]) {
+    assert.equal(main.split(handler).length - 1, 1, `候选行正文少了 ${handler}`);
+  }
+  assert.ok(
+    !main.includes('@keydown.space.prevent'),
+    '不该用 .prevent 修饰符：关系块里按钮的空格激活会连坐被拦掉',
+  );
+  const src = read(`${MEM_DIR}MemoryCandidateRow.vue`);
+  // 闸门本身：可点区域里嵌着「停用这条 / 删除这条 / 丢弃这条」三枚按钮，它们的点击会
+  // 冒泡到这里——不拦的话点一枚按钮会顺手打开详情弹窗（一次点击做两件事）。
+  for (const [fn, extra] of [
+    ['openFromEvent', ''],
+    ['openFromSpace', 'event\\.preventDefault\\(\\);'],
+  ]) {
+    assert.match(
+      src,
+      new RegExp(
+        `function ${fn}\\(event\\) \\{\\s*if \\(event\\.target\\.closest\\('button, a'\\)\\) return;[\\s\\S]{0,40}?${extra}[\\s\\S]{0,40}?emit\\('open', item\\);`,
+      ),
+      `${fn} 少了「冒泡按钮不触发详情」的闸门，或漏了 emit`,
+    );
+  }
+  // 空格的默认行为只能在自己身上拦：过了闸门再 preventDefault。
+  assert.match(
+    src,
+    /function openFromSpace\(event\) \{[\s\S]{0,120}?event\.preventDefault\(\);[\s\S]{0,60}?emit\('open', item\);/,
+    '空格要先过闸门再 preventDefault（顺序反了会拦掉按钮自己的空格激活）',
+  );
+  assert.match(src, /defineEmits\(\['open'\]\)/, '行要真的声明 open 事件');
+  assert.ok(!src.includes("emit('open', row)"), '候选行发错了对象：它是 item 不是 row');
+  // 动作排必须在 `__main` **外面**：套进可点区域里的话，点「忽略」会连详情弹窗一起打开，
+  // 一次点击做两件事。行里只留「把动作排放哪」的接线。
+  assert.ok(
+    !main.includes('<MemoryCandidateActions'),
+    '动作排被塞进可点区域里了：点「忽略」会顺手打开详情弹窗',
+  );
+  assert.match(
+    row,
+    /<MemoryCandidateActions class="memory-row__actions" :item="item" \/>/,
+    '动作排还在行里，但它该挂在可点区域外面、位置类仍是 memory-row__actions',
+  );
+  // 可点的视觉反馈复用记忆行那一族规则（cursor / hover / focus-visible 只有一份实现）。
+  assert.ok(
+    literalClasses(main).includes('memory-row--clickable'),
+    '可点的那块没挂上可点样式：cursor 与焦点圈都不会有',
+  );
+  const rules = globalRules();
+  assert.equal(effectiveDeclaration(['memory-row--clickable'], rules, 'cursor'), 'pointer');
+  assert.equal(
+    effectiveDeclaration(['memory-row--clickable'], rules, 'outline', { pseudo: 'focus-visible' }),
+    '1px solid var(--accent)',
+    '键盘用户必须有焦点圈（行是 div，浏览器不会自己给）',
+  );
+  // 行上仍然是两行截断——截的是显示不是信息，全文在详情里。
+  assert.match(
+    row,
+    /<p class="memory-row__body memory-row__body--clamp">\{\{ item\.body \}\}<\/p>/,
+    '行上不该把正文摊开：列表要精简，完整正文在详情弹窗',
+  );
+  assert.match(
+    templateOf(read(`${MEM_DIR}MemoryPanel.vue`)),
+    /@open="openCandidateDetail"/,
+    '面板没接住候选行的 @open',
+  );
+});
+
+test('候选详情挂在 candidates 上：候选被处理完就从待确认里消失、弹窗跟着关', () => {
+  const panelSrc = read(`${MEM_DIR}MemoryPanel.vue`);
+  // **按 id 从 `candidates` 现取**，不攥行对象：保存 / 忽略之后 `memory_list` 回读会把
+  // 这条从待确认里摘掉，按住 id 重算时 computed 变 `null`、弹窗自己关。攥对象的话，
+  // 刚处理完的候选会一直画在弹窗里，而列表里已经没有它了。
+  assert.match(panelSrc, /const candidateDetailId = ref\(null\)/, '详情弹窗要记 id 而不是行对象');
+  assert.match(
+    panelSrc,
+    /const candidateDetailItem = computed\([\s\S]{0,120}candidates\.value\.find\(\(item\) => item\.id === candidateDetailId\.value\)/,
+    '详情要按 id 从 candidates 现取（不能攥旧对象，也不能从记忆列表取）',
+  );
+  const at = panelSrc.indexOf('<MemoryCandidateDetail');
+  assert.ok(at > 0, '面板里没有挂载候选详情弹窗');
+  const mount = panelSrc.slice(at, panelSrc.indexOf('/>', at) + 2);
+  for (const binding of [
+    'v-if="candidateDetailItem"',
+    ':item="candidateDetailItem"',
+    // 两个标记块各自要的那份列表：冲突查全库、取代查待确认。
+    ':records="allMemories"',
+    ':candidates="candidates"',
+    '@close="candidateDetailId = null"',
+  ]) {
+    assert.equal(mount.split(binding).length - 1, 1, `候选详情没接 ${binding}`);
+  }
+});
+
+/**
+ * 候选详情弹窗（2026-10-19）：点开之后要能读到行上被截掉的那部分——完整正文、完整
+ * 会话 id、创建时间、验证状态，以及冲突 / 取代 / 来源已变三种关系。
+ *
+ * 盯三件各自会静默的事：① 弹窗照抄了行里的 `--clamp`（则详情里还是两行，等于没做）；
+ * ② 组件建了没挂（本仓反复栽的形状，这里靠上一条判挂载、这一条判内容）；
+ * ③ 弹窗参数与 `MemoryDetail.vue` 不一致（同屏两个详情弹窗一个点遮罩关、一个不关，
+ * 用户会以为哪个坏了）。
+ */
+test('候选详情摆出完整正文与来源凭据，弹窗写法与记忆详情同一条', () => {
+  const src = read(`${MEM_DIR}MemoryCandidateDetail.vue`);
+  const tpl = templateOf(src);
+  // 弹窗参数与 `MemoryDetail.vue` 逐项对齐。
+  for (const attr of [
+    ':model-value="true"',
+    'width="min(560px, 92vw)"',
+    'append-to-body',
+    ':close-on-click-modal="false"',
+  ]) {
+    assert.equal(tpl.split(attr).length - 1, 1, `候选详情缺 ${attr}`);
+  }
+  assert.match(
+    tpl,
+    /@update:model-value="\(open\) => !open && emit\('close'\)"/,
+    '关闭（✕ / ESC）要真的通知面板收回 id',
+  );
+  // 完整正文：不许带行里那个两行截断类。
+  assert.match(tpl, /<p class="memory-row__body">/, '详情正文丢了 memory-row__body');
+  assert.ok(
+    !tpl.includes('memory-row__body--clamp'),
+    '详情里还在截正文：这一层就是拿来看完整正文的',
+  );
+  // 标题用候选自己的（弹窗标题不是「候选详情」四个字），空标题有兜底。
+  assert.match(tpl, /:title="item\.title \|\| '（无标题）'"/, '弹窗标题要用候选自己的标题');
+  // 来源凭据：完整会话 id / 创建时间 / 验证状态。
+  assert.match(tpl, /item\.source\.session \|\| '（本机，这一条没有会话 id）'/, '完整会话 id 丢了');
+  assert.match(tpl, /shortTime\(item\.created_at\)/, '创建时间丢了');
+  assert.match(tpl, /\{\{ verificationLabel \}\}/, '验证状态丢了');
+  assert.match(
+    src,
+    /props\.item\.verification === 'stale' \? '来源已变'/,
+    '候选的 stale 是「来源变了」，直接打印 verificationText 会说成「已过期」',
+  );
+  // 三种关系块与行上同一批组件：行里被压短的是显示，不是信息。
+  assert.match(tpl, /<MemoryConflict[\s/>]/, '冲突块');
+  assert.match(tpl, /<MemorySuperseded[\s/>]/, '取代块');
+  assert.match(
+    tpl,
+    /<div v-if="item\.verification === 'stale'" class="memory-flag">/,
+    '来源已变提示块',
+  );
+  // 页脚动作排与行共用一份，位置类由详情这侧补（靠右）。
+  assert.match(
+    tpl,
+    /<MemoryCandidateActions class="dialog-actions" :item="item" \/>/,
+    '页脚没有用共用的动作排，或没把那一排靠右',
+  );
+});
+
+/**
+ * 自动提取的落点变了（2026-10-19 用户要求：提取出来的长期约定直接成为项目记忆，
+ * 只有模型标了冲突 / 取代的才留在待确认等用户裁决）。面板上凡是描述「提取结果去哪」
+ * 的文案都必须跟着改，而**旧说法一条都不许留**——新旧两句同时挂在界面上互相矛盾，
+ * 用户只能按其中一句信。
+ *
+ * `templateOf` 已剥 HTML 注释，所以这里命中的只可能是真文案；新句子逐字钉住
+ * （四句都是用户看得见的），旧句子按子串判不存在。
+ */
+test('提取结果直接存记忆之后的文案：新事实逐字在，旧说法一条不留', () => {
+  const panel = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
+  // 新事实：页头 / 待确认 ⓘ / 待确认空态 / 提取任务 ⓘ 四处逐字钉。
+  for (const line of [
+    '模型只能读取与提出候选；自动提取的长期约定会直接存成记忆（未验证），只有与既有记忆冲突或推翻旧候选的才进「待确认」由你裁决。',
+    '待确认里是模型在会话里主动提出的候选，以及自动提取里与既有记忆冲突、或推翻旧候选、需要你裁决的条目：正文与来源都摆在这里，只有你点保存才会成为记忆。',
+    '没有待确认的候选。模型在会话里主动提出候选、或自动提取的结果需要你裁决时会出现在这里，只有点「保存」才成为记忆。',
+    '提取出来的长期约定会直接存成项目记忆；与既有记忆冲突或推翻旧候选的才进「待确认」由你裁决',
+  ]) {
+    assert.ok(panel.includes(line), `面板上少了这句事实：${line}`);
+  }
+  // 旧说法：模型不能自己批准 / 自动提取先进入待确认 / 提取结果先「提成候选」。
+  for (const stale of [
+    '不能自己批准',
+    '提出来的先进「待确认」，你点了保存才成为记忆',
+    '提成候选',
+    '这些是模型或会话提出的候选：正文与来源都摆在这里',
+    '模型或会话提出候选后会出现在这里',
+  ]) {
+    assert.ok(!panel.includes(stale), `旧文案还留着：${stale}`);
+  }
+  // 同一段里那两句必须保留（它们与提取结果去哪无关，是「出问题时看哪里」）。
+  assert.match(panel, /一条记忆都没提取出来时先看这里/);
+  assert.match(panel, /memory-jobs/);
+  // 「模型提出候选 → 待确认 → 点保存」对**会话里主动提出的候选仍然成立**，所以空态
+  // 里那句留着——判据把它与「自动提取」那句分开，防止有人把整段删掉。
+  assert.match(panel, /在工作台里让模型提出候选，再切到「待确认」里点保存/);
 });
