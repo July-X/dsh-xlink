@@ -29,7 +29,7 @@
 ## 开发规则
 
 - 搜索文本或文件时优先使用 `rg`；仅在不可用时再使用 `grep` 等替代命令。
-- **测试永远不许碰用户的真实数据目录**。凡是按 `paths::*` 解析路径的测试，必须先持住 `crate::tests::scoped_xlink_home(&临时目录)`（或模块自带的 `TestHome` / `TempXlink`）把这个 guard 活到用例结束——裸 `std::env::set_var` 拦不住别的测试正持着同一把 env 锁。清理只清自己那块临时目录，永远不要 `remove_dir_all(<解析出来的家目录>)`：2026-09-29 实测过一版那样的初版测试，**一次 `cargo test` 就能把用户全部内核、实例与会话删干净**，而 `check:invariants` 当时一项都拦不住。
+- **测试永远不许碰用户的真实数据目录**。凡是按 `paths::*` 解析路径的测试，必须先持住 `crate::tests::scoped_xlink_home(&临时目录)`（或模块自带的 `TestHome` / `TempXlink`）把这个 guard 活到用例结束——裸 `std::env::set_var` 拦不住别的测试正持着同一把 env 锁。**读路径也持锁，不只是写**：`xlink_home()` 每次调用都现读 `DSH_XLINK_HOME`，不持锁地读两次可能读出**两个不同的根**，断言于是假红（2026-10-20 Windows CI 连红两次，run 39346453918 / 39363486523）。**改 `HOME` / `DSH_HOME` / `DSH_XLINK_HOME` 一律只走 `scoped_xlink_home` / `scoped_dsh_home`**，裸 `set_var` / `remove_var` 禁止（`check-invariants` 第 23 项钉住，守卫本体在 `lib.rs`）——裸改还会把一个**已删除**的临时目录泄漏给整个进程，让 `dirs_home()` 从此返回不存在的路径，本仓吃过一次：那条 `remove_var` 漏到了并发的 `shell::autostart` 用例，一次 `cargo test` 红了四条与本功能无关的测试。清理只清自己那块临时目录，永远不要 `remove_dir_all(<解析出来的家目录>)`：2026-09-29 实测过一版那样的初版测试，**一次 `cargo test` 就能把用户全部内核、实例与会话删干净**，而 `check:invariants` 当时一项都拦不住。
 
 ## 命令
 

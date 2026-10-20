@@ -1134,8 +1134,15 @@ mod tests {
     #[test]
     fn sanitize_folds_home_and_strips_token_shapes() {
         let home = temp_home("sanitize");
+        // 守卫已经把 `home` 放进 `home_roots()`（`DSH_XLINK_HOME` 是它的第二
+        // 个根），折叠效果与「home 来自 `dirs_home()`」时一致。
+        //
+        // **不要**再裸 `set_var("HOME", &home)`：那条没人还原，测试结束时
+        // `HOME` 指向一个已被删掉的临时目录，并一直泄漏给本进程后续所有用例
+        // ——`dirs_home()` 从此返回那个不存在的路径。仓库里已经吃过一次：
+        // 兄弟用例的注释记着「那条 remove 漏到了并发的 `shell::autostart`
+        // 用例，一次 cargo test 红了四条与本功能无关的测试」。
         let _guard = scoped_xlink_home(&home);
-        std::env::set_var("HOME", &home);
         let text = sanitize(&format!(
             "日志在 {}/logs/kernel.log，key 是 sk-abcdef1234567890，token=ghp_secretvalue",
             home.display()
@@ -1404,10 +1411,16 @@ mod tests {
     fn write_failure_does_not_change_the_run_outcome() {
         // 索引目录不可写时，push 仍然要正常返回——启动结果不能被记录失败改写。
         let home = temp_home("write-fail");
-        let _guard = scoped_xlink_home(&home);
         let blocker = home.join("blocker");
         std::fs::write(&blocker, "not a dir").unwrap();
-        std::env::set_var("DSH_XLINK_HOME", &blocker);
+        // 守卫**直接指到 blocker**（它是个文件，不是目录），索引因此写不进去。
+        //
+        // 不要写成「持住 home 的守卫 + 裸 `set_var`/`remove_var` 改
+        // `DSH_XLINK_HOME`」：那会在守卫之外留两段窗口——「env 指向一个
+        // 文件」和「env 整个没了」——期间任何**不持锁**的读者读到的根与
+        // 这里不是一个。2026-10-20 Windows CI 上 `shell::paths` 那条假红
+        // 就是这么来的（run 39346453918 / 39363486523）。
+        let _guard = scoped_xlink_home(&blocker);
         let mut rec = Recorder::begin(
             "dsh",
             "default",
@@ -1430,7 +1443,6 @@ mod tests {
             "事件仍在内存里，UI 实时时间线不受影响"
         );
         let _ = std::fs::remove_dir_all(&home);
-        std::env::remove_var("DSH_XLINK_HOME");
     }
 
     #[test]

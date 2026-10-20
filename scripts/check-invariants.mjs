@@ -3332,6 +3332,57 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// ㉓ 测试里改 home 类环境变量必须走共享守卫（2026-10-20）。
+//
+// 事故：Windows CI 上 `shell::paths::integration_paths_tests::release_and_dev_shells_do_not_overlap`
+// 连红两次（run 39346453918 / 39363486523），红的断言是
+// `release_settings.starts_with(&home)`。根因不是路径逻辑，是**并发**：
+// `xlink_home()` 每次调用都现读 `DSH_XLINK_HOME`，而
+// - 有用例**裸 `set_var`/`remove_var`** 改它（`diagnostics/run.rs` 改
+//   `HOME` 还不还原、`DSH_XLINK_HOME` 改了再删掉），那段窗口里 env 指向一个
+//   文件、或者整个消失；
+// - 有用例**不持锁**地读它，于是两次读到的根不是同一个。
+//
+// 判据扫**全仓** Rust（不是只有生产代码——问题正出在测试里）：除
+// `src-tauri/src/lib.rs` 的共享守卫（`crate::tests::EnvGuard`）之外，任何地方
+// 都不许裸 `env::set_var` / `env::remove_var` 改 `HOME` / `DSH_HOME` /
+// `DSH_XLINK_HOME`。要改就走 `scoped_xlink_home` / `scoped_dsh_home`，它们持
+// 进程级锁并在 drop 时还原。
+{
+  const srcDir = join(root, 'src-tauri', 'src');
+  const guardFile = 'lib.rs'; // 共享守卫自己住在这里
+  const offenders = [];
+  for (const full of walk(srcDir, ['.rs'])) {
+    const file = full.slice(srcDir.length + 1).split('\\').join('/');
+    if (file === guardFile) continue;
+    const code = readFileSync(full, 'utf8');
+    const lines = code.split('\n');
+    lines.forEach((line, index) => {
+      const call = line.match(/env::(?:set|remove)_var\s*\(\s*("[^"]*"|[^,)]*)/);
+      if (!call) return;
+      // 只看**第一个实参**（环境变量名）：`set_var("HOME", &x)` 的第一个是
+      // `"HOME"`，而 `set_var(self.var.name(), value)`（守卫自己）被排除在外。
+      if (!/HOME/.test(call[1])) return;
+      // 注释里提到这两个函数不算——散文里的 `std::env::set_var` 后面跟的是
+      // 中文说明，不会带 HOME。
+      offenders.push(`${file}:${index + 1} 裸改 home 类环境变量：${line.trim()}`);
+    });
+  }
+  if (offenders.length > 0) {
+    fail(
+      'env-home-guard',
+      `${offenders.join('、')}。` +
+        '改 home 类环境变量（HOME / DSH_HOME / DSH_XLINK_HOME）必须走 ' +
+        'crate::tests::scoped_xlink_home / scoped_dsh_home：它们持进程级锁并在 ' +
+        'drop 时还原。裸 set_var/remove_var 会在别的用例读路径时留下一段「env ' +
+        '指向别处」的窗口，那不是并发噪声——它让 `xlink_home()` 两次解析出不同的根，' +
+        '断言于是假红（2026-10-20 Windows CI 连红两次）。',
+    );
+  } else {
+    note('测试里改 home 类环境变量都走共享守卫：没有裸 set_var/remove_var');
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);

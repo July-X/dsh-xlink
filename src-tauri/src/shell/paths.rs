@@ -985,14 +985,23 @@ mod integration_paths_tests {
 
     /// release 与 dev 的 Shell 路径必须落在同一 `xlink_home()` 下，但
     /// 互不覆盖。
+    ///
+    /// **必须持住 env 锁**：`xlink_home()` 每次调用都现读 `DSH_XLINK_HOME`，
+    /// 而别的测试正持着 `scoped_xlink_home` 往临时目录写。这条用例原先裸读
+    /// 两次（一次拿路径、一次拿 `home`），两次若跨过别的测试的守卫边界，读到
+    /// 的就是**两个不同的根**，`starts_with` 于是假红——2026-10-20 的 Windows
+    /// CI 连红两次（run 39346453918 / 39363486523），红的不是路径逻辑而是
+    /// 并发时序。持住守卫后，路径解析与 `home` 必然来自同一个根。
     #[test]
     fn release_and_dev_shells_do_not_overlap() {
+        let home = temp_dir("shell-overlap");
+        let _guard = scoped_xlink_home(&home);
+
         let release_settings = shell_settings_file(ShellMode::Release);
         let dev_settings = shell_settings_file(ShellMode::Dev);
         let release_logs = shell_logs_dir(ShellMode::Release);
         let dev_logs = shell_logs_dir(ShellMode::Dev);
 
-        let home = xlink_home();
         assert!(release_settings.starts_with(&home));
         assert!(dev_settings.starts_with(&home));
         assert!(release_logs.starts_with(&home));
