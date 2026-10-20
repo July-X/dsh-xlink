@@ -636,6 +636,21 @@ test('底部控件行固定三个方形控件：收起 / 刷新 26×22，标签�
   assert.equal((sidebar.match(/class="sidebar__theme-btn sidebar__icon-btn"/g) || []).length, 1);
 });
 
+// 侧栏底部几条判据共用的小工具：按 class 找模板 AST 节点。
+// 模板注释已由 `templateOf` 剥掉，但这里直接吃 `parse()` 的 AST，注释本来就不会
+// 进 children，两者不冲突。
+const astHasClass = (node, value) =>
+  (node.props || []).some((p) => p.name === 'class' && p.value?.content === value);
+const astClassOf = (node) =>
+  (node.props || []).find((p) => p.name === 'class' && p.value?.content)?.value.content;
+function astFindAll(node, predicate, out = []) {
+  for (const child of node.children || []) {
+    if (predicate(child)) out.push(child);
+    astFindAll(child, predicate, out);
+  }
+  return out;
+}
+
 // 2026-10-20 用户截图：底部只有一行时，224px 里「桌面端 + 版本号 + 三个方钮」
 // 放不下，版本号被截成「0.5.8-r…」——dev 构建的「（dev）」后缀整段看不见，
 // 而那个后缀正是 dev / release 的唯一区分标记。修法是把底部拆成两行：
@@ -651,33 +666,62 @@ test('侧栏底部拆成两行：控件一行、版本号独占一行（2026-10-
   assert.equal(effectiveDeclaration(['sidebar__footer-actions'], RULES, 'display'), 'flex');
 
   const { descriptor } = parse(sidebar);
-  const hasClass = (node, value) => (node.props || []).some((p) => p.name === 'class' && p.value?.content === value);
-  const classOf = (node) => (node.props || []).find((p) => p.name === 'class' && p.value?.content)?.value.content;
-  const findAll = (node, predicate, out = []) => {
-    for (const child of node.children || []) {
-      if (predicate(child)) out.push(child);
-      findAll(child, predicate, out);
-    }
-    return out;
-  };
-  const footer = findAll(descriptor.template.ast, (node) => hasClass(node, 'sidebar__footer'))[0];
+  const footer = astFindAll(descriptor.template.ast, (node) => astHasClass(node, 'sidebar__footer'))[0];
   assert.ok(footer, '找不到 .sidebar__footer 节点');
   const footerKids = footer.children.filter((node) => node.type === 1);
   assert.deepEqual(
-    footerKids.map(classOf),
+    footerKids.map(astClassOf),
     ['sidebar__footer-tools', 'version-badge'],
     '版本号必须是 .sidebar__footer 的直接子级、排在控件行之后——回到「标签 + 版本 + 三个控件」同一行就是这次要修的那个 bug',
   );
 
   const toolsKids = footerKids[0].children.filter((node) => node.type === 1);
   assert.deepEqual(
-    toolsKids.map(classOf),
+    toolsKids.map(astClassOf),
     ['nav-item__label sidebar__footer-label', 'sidebar__footer-actions'],
     '控件行只有标签与控件组两件；版本号不许混进来',
   );
   const actionsKids = toolsKids[1].children.filter((node) => node.type === 1);
   assert.equal(actionsKids.length, 3, '收起 / 刷新 / 主题三个控件收在同一组里');
   assert.ok(actionsKids.every((node) => node.tag === 'button'));
+});
+
+// 2026-10-20 用户要求「版本号前面加个 tag 的 icon」。图标走 Lucide：EP 的
+// `PriceTag` 缩到 13px 糊成一颗黑点，认不出是「标签」（2026-10-08 概览版本号
+// 那处踩过同一个坑，注释留在 OverviewPanel.vue）。它是装饰图形——版本字符串
+// 本身才是信息，所以对读屏隐藏。
+test('侧栏版本号前的 tag 图标：Lucide Tag、排在文字之前、对读屏隐藏', () => {
+  // 别名导入：面板里同时有 `el-tag` 组件与一排 `*.tag` 类名（AGENTS.md §图标）。
+  assert.match(sidebar, /import \{[^}]*Tag as TagIcon[^}]*\} from '@lucide\/vue';/);
+
+  const { descriptor } = parse(sidebar);
+  const badge = astFindAll(descriptor.template.ast, (node) => astHasClass(node, 'version-badge'))[0];
+  assert.ok(badge, '找不到 .version-badge 节点');
+  const kids = badge.children.filter((node) => node.type === 1);
+  assert.equal(kids.length, 2, '版本号徽标里只有图标与文字两件');
+  assert.equal(kids[0].tag, 'TagIcon', 'tag 图标必须排在版本号文字之前');
+  assert.equal(kids[1].tag, 'span');
+  assert.ok(astHasClass(kids[1], 'version-badge__text'), '版本字符串要包在独立元素里——压缩的是文字，不是把图标挤出去');
+
+  const attr = (name) => (kids[0].props || []).find((p) => p.name === name)?.value?.content;
+  const bind = (name) => (kids[0].props || []).find((p) => p.name === 'bind' && p.arg?.content === name)?.exp?.content;
+  assert.equal(attr('aria-hidden'), 'true', '装饰性图标要对读屏隐藏');
+  assert.equal(bind('size'), '13', '图标 13px：比 12px 的版本字号大一档才不显矮（同侧栏 17 vs 15 的口径）');
+
+  // 祖先条件（`.sidebar.is-collapsed`）会让层叠工具对同名主语答错，所以直接读规则文本。
+  const css = stripComments(themeCss);
+  const badgeRule = css.match(/\.sidebar__footer \.version-badge \{([^}]*)\}/);
+  assert.ok(badgeRule, '找不到 `.sidebar__footer .version-badge` 规则');
+  assert.match(badgeRule[1], /display:\s*flex/);
+  assert.match(badgeRule[1], /gap:\s*5px/);
+  const iconRule = css.match(/\.sidebar__footer \.version-badge__icon \{([^}]*)\}/);
+  assert.ok(iconRule, '图标要显式不参与收缩，否则长版本号会把它压扁');
+  assert.match(iconRule[1], /flex:\s*0 0 auto/);
+  const textRule = css.match(/\.sidebar__footer \.version-badge__text \{([^}]*)\}/);
+  assert.ok(textRule, '版本字符串要带省略号兜底');
+  for (const decl of ['overflow: hidden', 'text-overflow: ellipsis', 'white-space: nowrap']) {
+    assert.ok(textRule[1].includes(decl), `版本字符串缺 ${decl}`);
+  }
 });
 
 test('收起开关在底部控件行，排在刷新之前；品牌行不再有按钮', () => {
