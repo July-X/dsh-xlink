@@ -537,7 +537,7 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
   - ⚠️ **devloper 回执里「Rust 侧 `group_key` ＋ 夹具未做」已过时** —— 实测 `protocol.rs` 的 `resolve_duplicates_case` **已在工作树里做完** ⇒ 状态比回执新。
 - **四处协议歧义裁定（已写进 P2 协议 v0.3）**：
   1. **分隔符** = **单个换行 U+000A、不含空格**（两端现状即此）⇒ **改协议措辞**消除「行内代码 `\n` 两侧空格」的误读，并列出「若要改须同次改四处」。
-  2. **`invalid_request` / `snapshot_store_unavailable` 不在 13 码闭集** ⇒ **按 P1 §3 `:166` 的既有规则**（内部冲突码归 `snapshot_invalid`、原码进 `detail`、不新增第 14 个码）⇒ **devloper 的实现正确、无需改代码**；**判据加严**：P2-6 须断 `detail` 带原码（否则「入参形态错」与「快照过期」不可区分 ⇒ 假绿）。
+  2. **`invalid_request` / `snapshot_store_unavailable` 不在 13 码闭集** ⇒ **按 P1 §3 `:167` 的既有规则**（行号 2026-10-21 00:4x 当场核正：原写 `:166` 指的是相邻的 `catalog_empty`/`catalog_failed` 那条；`:167` 才是「内部冲突码一律归入 `snapshot_invalid`、原始码保留在 `detail`」）（内部冲突码归 `snapshot_invalid`、原码进 `detail`、不新增第 14 个码）⇒ **devloper 的实现正确、无需改代码**；**判据加严**：P2-6 须断 `detail` 带原码（否则「入参形态错」与「快照过期」不可区分 ⇒ 假绿）。
   3. **`groups` 只返回成员数 ≥ 2 的组** ⇒ 采纳，协议写死。
   4. **预算预检**触发点落为「**每次新增引用时预演一次**」（内核无「提交前草稿投影」入口）；原生 `@session` 占用**不可观测 ⇒ 按 0 计** ⇒ `projectedBytes` 偏小 ⇒ 方向 **宁可少报不误报**；并写明「真超限时用户仍会收到 P1 的 `body_too_large` 可见错误」⇒ **预检是提前告知，不是最后一道闸**。
 - **两处协议同步**：① P1 §5 命令清单 **5 → 6**（加 `duplicates`，注明是 P2 第一批新增、P1 第一批不含）；② P1 §3 的 8 字段闭集**不改**，只加一行注说明两端现状与缺口编号。
@@ -625,6 +625,41 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
   ⚠️ **一处精度补正**：`:15905`（`shell.notify`）与 `:16932`（闭包传入的 `notify`）**未必是同一个 notices 槽**；确证同槽的是 `:15193` / `:15197` / `:15204` 三处 ⇒ **结论不变**（至少三处同槽即足以顶掉）。
 - **新基线**：`main` = `{new_main}`；成员若在重写前提交过、push 被拒 ⇒ 先 `git fetch && git rebase origin/main`，或把提交交 PM；**不要 force push**。
 
+### 2026-10-21 00:3x–00:4x · P2 第一批**收口**（PM 独立复核：判据 9/9 ＋ 自测 23/23 ＋ 全门禁绿）＋ 两条红根因定性 ＋ 一处协议行号核正
+
+**PM 一手复跑（不采信回执；命令即证据）**
+
+| 面 | 结果 |
+| --- | --- |
+| `node scripts/p2-protocol.run.mjs` | **9 条全通过 / 0 失败 / 0 未执行**（P2-1…P2-6 ＋ P2-C ＋ P2-D ＋ P2-F） |
+| `node scripts/p2-protocol.test.mjs` | **23 / 23**（含 8 条活体注入：每条都验「注入 ⇒ 判据红并点名 ⇒ 原实现逐字节还原」） |
+| `npm run test:scripts` | 178 tests / **175 pass / 0 fail** / 3 skipped |
+| `node scripts/p1-protocol.run.mjs` | 43 条 / 40 通过 / 0 失败 / 3 未执行 ⇒ **P1 未回退** |
+| `node scripts/p1-protocol.test.mjs` | 60 / 60 |
+| `npm run test:plugin` | 290 / 287 / 0 / 3 |
+| `npm run check:invariants` | 绿（48 文件） |
+| `npm run check:duplicates` | 4 处（允许 8） |
+| `cargo test --locked --lib`（**debug profile**） | **1128 passed / 0 failed** / 11 ignored |
+
+**两条红的根因定性（结论：既不是实现缺口，也不是判据放宽）**
+
+- **P2-6 那条**（红字「纳入闭集的情形不该红：失败码 `invalid_request` 不在 13 码闭集里」）：根因是**自测的合成正对照本身违约** —— 默认合成 adapter 的 `commandLayerCode` 用了闭集外的 `invalid_request`，判据按 P2 §2.3 正确报红（闭集断言在 `scripts/lib/p2-protocol.mjs:1194`，**仍在且严格**），而自测却按「合规正对照」期待 PASS ⇒ **正对照与判据口径对撞**。修法＝正对照改用闭集内码，并**补两条显式负对照**（`scripts/p2-protocol.test.mjs:708-713` 的 `leaked_internal_code`、`:715-722` 的 `invalid_request`，均期待 FAIL）⇒ **严格度不降反升**，判据本体未放宽一个字。
+- **P2-D 那条**（红字「三方一致不该红：没有『去重候选对』夹具」）：根因是**自测合成夹具的形状**与判据的过滤条件（`fixture.input.kind === 'duplicates'`）对不上 ⇒ 判据如实报 `skipped`（**不是假绿**）⇒ 属自测夹具形状问题，非实现问题。
+- ⚠️ **登记一条纪律**：PM 复跑时**共享工作树里 tester 正在改判据**（`scripts/p2-protocol.test.mjs` 的 mtime ＝ 00:34:12；两次复跑读到的文件内容不同）⇒ **「红」的成因必须先看文件是否在动**；本轮两条红是在同一批文件被改过之后才复现的，最终定性以**最后那次复跑所读到的文件内容**为准。
+
+**实现侧独立复核（PM 亲手追了一遍归一链路）**
+
+- `host/commands.js:692` / `:704` 用 `fail('invalid_request', { requestId })` ⇒ 出口经 `host/protocol.js` 的 `errorPayload` **未知码归一分支**产出 `code = 'snapshot_invalid'`、`detail = '未知错误码 invalid_request'` ⇒ **码在 P1 §3 的 13 码闭集内 ＋ 原码保留在 `detail`** ⇒ 符合 P2 §2.3 与 P1 §3 `:167` 的既有规则（不新增第 14 个码）⇒ **实现不违反协议，不需改**。
+- 判据侧对应断言与协议逐条对齐：`scripts/lib/p2-protocol.mjs:1194` 断码在闭集、`:1200-1201` 断 `detail` 带原码；8 字段闭集逐字段断（多一个少一个都红）；`groupKey` 钉具体值 `2bae1f90ff127002`（PM 独立用 `crypto` 算过，**期望值不取实现输出**）＋ 协议独立转写 ＝ JS ＝ Rust 三方一致；「单槽通知」类契约断的是**后发那条**（用户实际看到的那条）。
+- **一条可选加固（已私聊 devloper；非缺陷、不阻塞本批）**：`:692` / `:704` 靠 `errorPayload` 兜底归一（前提是该分支不被改）；同文件 `:599-600` 已有「调用点就地归一」的写法 ⇒ 要不要在调用点归一由 devloper 自决，**做与不做都不影响本批验收**。
+- **一处协议行号核正（PM 自查自纠）**：P2 协议 §2.3 与本文件此前把「内部冲突码归 `snapshot_invalid`」引作 **P1 §3 `:166`** ⇒ 当场核得该规则在 **`:167`**（`:166` 是相邻的 `catalog_empty`/`catalog_failed` 必须分开那条）⇒ **两处引用已改正**（`official-chat-p2-protocol.md` §2.3 ＋ 本文件）。同批核过：13 码表的 `:144-158` 引用**正确**、8 字段闭集的 `:161` 引用**正确**。
+
+**本批结论与唯一未决项**
+
+- **P2 第一批（重复识别 ＋ 可见提示 ＋ 预算预检）实现与判据双绿**，P1 判据未回退；P2 协议 v0.5 的六处裁定全部有对应判据在跑。
+- **唯一未决（风险点）**：tester 的判据文件**当时仍在工作树里未提交**（未跟踪 `scripts/lib/p2-protocol.mjs`、`scripts/lib/rust-fixture-runner.mjs`、`scripts/p2-protocol.run.mjs`、`scripts/p2-protocol.test.mjs`；已改未提 `scripts/lib/p1-adapter.mjs`、`scripts/p1-protocol.run.mjs`）⇒ **判据只活在共享工作树、别人拉不到** ⇒ PM 已私聊 tester，要求按**显式 6 个路径**提交（不用 `-A` / `.` / `commit -a`），并在提交信息里写明两条红的根因（自测合成正对照/夹具形状写错，**不是实现缺口、不是判据放宽**）与复核数字。
+- **下一件活**：**G-1**（`src-tauri/src/shell/paths.rs:731-736` 的 `test_helpers::temp_dir()` 产生 `dsh-xlink-paths-*`，**11 个用例缺 `remove_dir_all`** ⇒ 每跑一次 `cargo test` 漏 11 个目录，历史 4,394 个残留即由此而来）——**不影响功能与验收**，按「不插队」排在 **P2 第一批收口之后**修（PM 已在给 devloper 的回执里预告，等判据提交后正式派）。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
@@ -664,5 +699,7 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 | 2026-10-20 | P1/P2 | **历史作者重写完成并推送**（izzy 22:5x 拍板）：远端 `main` = **`c99156e23cf620eeabc6b5ad28a686095bb5cc1a`**、`main-dev2` = `4322e9800bdb8305c6cf818383116fc9ae53524e`、`uiv2-dev` = `8789943c73d9f32936709fb49ec4a410b3d9a446`（远端 `refs/heads` **仅这 3 个**）；**旧作者 `zhongxingxing` 残留 = 0**（main 0/1044、main-dev2 0/269、uiv2-dev 0/567）；**内容逐字节一致**（`git diff --stat 4f2a805 origin/main` **输出为空**）⇒ 只改元数据；**82 个 `desktop-v*` 发布 tag 一律未重推**（唯一 tag 名 83 个含 1 个恢复点 tag；**10-20 当天 tagger 数 = 0**，最新 tagger = `2026-10-16 19:12:45 desktop-v0.4.15`）⇒ **不触发 `desktop-release.yml`**；**恢复点是 tag `backup/pre-author-rewrite-20261020` → `4f2a805`**（不是分支）；共享工作目录已 `reset --mixed` ⇒ HEAD = `c99156e`、成员在途改动完好 | 本文件 23:1x 节 ＋ `git ls-remote` / `for-each-ref` 实测 |
 | 2026-10-20 | P2 | **P2 协议 v0.2 落盘（承载位写死 `info` 档）**：UX高手 取到内核事实、PM 第一手复核成立（现役内核 `0.2.1-rc.2` `dsh-client-ui-conversation/lib/client.js` SHA `8554738C…`）⇒ `:18982-18986` **只有 `level === "info"` 才渲染 inline 常驻条**、`:18808` `error` 档**只弹瞬态 toast**、`:15356`/`:15448` **notice 单槽**（最新覆盖旧条 ⇒ 文案自包含）⇒ **承载位 = 输入区 composer 常驻条、必须 `info` 档**（「引用处」P2 阶段不存在，缺口 G1-6）；**「正文照发」收敛为「不额外拦截发送」**（界面不承诺发送结果，由 P1 S-5/S-6 判定 ⇒ 文案不得写「已发送/发送失败/发送被阻止」）；判据 **P2-2 加 `level` 断言**、**P2-6 加「请求数与失败前相同」**；字节 **10080 B / 141 行**（五份文档 UTF-8 无 BOM / 纯 LF / 0 替换字符）。**未完成**：UX高手 方案正文未交付、其 3 个口径问题本轮由 PM 转达 devloper | 本文件 23:1x 节 ＋ `official-chat-p2-protocol.md` v0.2 |
 | 2026-10-20 | P1/P2 | **git 提交记录用户名统一（izzy 23:57 拍板四项 ＋ 全量重写）**：目标身份 = **`July-X <over618@163.com>`**（原状态署名文字已是 July-X，但 email 全为 `m4java@163.com`＝Z-starts 账号 ⇒ GitHub 上 1045 提交记在 **Z-starts** 名下，账号归属靠 email）；**82 个 `desktop-v*` 发布 tag 一并重写**（推 tag 期间用 GitHub API 把 `desktop-release.yml` 置 `disabled_manually`，推完 `enable` 回来 ⇒ **不改任何 workflow 文件、不触发发布、不触发 CI**；⚠️ GitHub 在 tag push 时评估的是**被推 commit 里**的 workflow 文件，故改默认分支无效）；**恢复点 tag `backup/pre-author-rewrite-20261020` 已删**（远端＋本地）⇒ 旧作者历史远端不再可达，**回滚能力由本地 bundle `C:\workdir\github\dsh-xlink-pre-rewrite-20261020.bundle`（17815662 B，不推远端）承担**；仓库级 `user.email` 改 `over618@163.com`；⚠️ 上一轮「残留=0」口径不完整（只数了 `zhongxingxing`，漏 `4Dim` 17 ＋ `xingxing.zhong` 2）⇒ 本轮改为去重后全 refs 作者分布；⚠️ **上一轮「残留=0」只对开发分支成立**：`zhongxingxing` 仍留在 82 个发布 tag 指向的历史里 ⇒ 本轮连 tag 一起重写；⚠️ 本地 `refs/heads/main-dev2` 上轮没跟上重写、本地无 `uiv2-dev` ⇒ 一并对齐。**结果**：远端 `main` = **`bec3b824bf991c91da75128a7d8a4e8f7fbcef8b`**、作者分布统一、**内容逐字节一致**（分支与 82 个 tag 的 diff --stat 全空）、tagger 同样统一、旧署名与旧 email **残留 = 0**、**未触发发布**。范围仅 dsh-xlink（`xgit` 172 处、`UnrealEngine` 63 处、全局 `~/.gitconfig` 均未动） | 本文件 23:5x–00:3x 节 ＋ `gh api contributors` / `git ls-remote` / `filter-branch` 核验 |
+
+| 2026-10-21 | P2 | **P2 第一批收口（PM 独立复核，不采信回执）**：**全门禁由 PM 一手复跑全绿**——P2 判据 runner **9/9 通过 / 0 失败 / 0 未执行**、P2 判据自测 **23/23**（含 8 条活体注入）、`test:scripts` **178/175/0/3**、P1 判据 **43/40/0/3** ＋ P1 自测 **60/60**（**P1 未回退**）、`test:plugin` **290/287/0/3**、invariants 绿（48 文件）、duplicates 4/8、`cargo test --locked --lib`（debug）**1128 passed / 0 failed**。**两条红的根因定性＝自测合成正对照/夹具形状写错，不是实现缺口、不是判据放宽**（P2-6：合成正对照用了闭集外的 `invalid_request` ⇒ 判据按 §2.3 正确报红；修法是改正对照 ＋ **补两条显式负对照** ⇒ 严格度不降反升；P2-D：合成夹具形状与判据过滤条件 `fixture.input.kind === 'duplicates'` 对不上 ⇒ 判据如实报 skipped 而非假绿）。**实现侧 PM 亲手追了归一链路**：`host/commands.js:692`/`:704` 的 `fail('invalid_request')` 经 `errorPayload` 未知码分支 ⇒ `code='snapshot_invalid'` ＋ `detail` 带原码 ⇒ **码在 13 码闭集内、原码留痕，符合 §2.3 与 P1 §3 `:167`，实现不需改**。**一处协议行号核正**：P2 协议 §2.3 与本文件原引 P1 §3 `:166` ⇒ 实际在 **`:167`**（`:166` 是相邻的 `catalog_empty`/`catalog_failed` 那条）⇒ **两处已改正**。**唯一未决**：tester 的 6 个判据文件**仍在工作树未提交** ⇒ 判据只活在共享工作树 ⇒ 已私聊要求按显式 6 路径提交。**下一件活**：**G-1**（Rust 测试自泄漏 `dsh-xlink-paths-*`，11 个用例缺 `remove_dir_all`）排在 P2 收口之后修 | 本文件 00:3x–00:4x 节 ＋ `official-chat-p2-protocol.md` v0.5 §2.3 |
 
 **关于上表里的 `%TEMP%` 证据路径**：2026-10-20 15:2x izzy 拍板「**可以清**」后，PM 已把 `%TEMP%\dsh-xlink-g1\` 与 `%TEMP%\dsh-probe\` 移入回收站（可恢复删除），**上表引用的原始 JSON / 截图 / 请求体日志已不在原位**。**仍可长期复核的，是本文件与 feasibility 里写下的数字、字段值与判据口径**——引用这些结论时不要再指望去原路径取原始产物。

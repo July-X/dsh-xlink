@@ -77,7 +77,7 @@ P2 第一批 = **识别「同一段正文被引用多次」→ 告诉用户 → 
 | 入参形态不对（`sessionId` 缺失、`snapshotIds` 非数组） | `snapshot_invalid` | **原始码 `invalid_request`** |
 
 - **不新增错误码**（13 码是闭集）。
-- **（PM 23:5x 裁定 · 两个码不在闭集里怎么办）**：`invalid_request` 与 `snapshot_store_unavailable` **都不在 P1 §3 的 13 码闭集内**（闭集见 P1 §3 `:144-158`），而 §6.5 又明写「不新增码」⇒ **按 P1 §3 `:166` 的既有规则处理**（**不是本稿新发明**）：**内部冲突码一律归入 `snapshot_invalid`，原始码保留在 `detail`**，**不新增第 14 个码**。
+- **（PM 23:5x 裁定 · 两个码不在闭集里怎么办）**：`invalid_request` 与 `snapshot_store_unavailable` **都不在 P1 §3 的 13 码闭集内**（闭集见 P1 §3 `:144-158`），而 §6.5 又明写「不新增码」⇒ **按 P1 §3 `:167` 的既有规则处理**（**不是本稿新发明**；行号于 2026-10-21 00:4x 当场核正——原写 `:166` 指的是相邻的 `catalog_empty`/`catalog_failed` 那条）：**内部冲突码一律归入 `snapshot_invalid`，原始码保留在 `detail`**，**不新增第 14 个码**。
   - **实现现状**：devloper 23:0x 已按此实现（归 `snapshot_invalid` ＋ 原码进 `detail`）⇒ **PM 认可，无需改代码**。
   - **判据必须加严**：P2-6 须**断 `detail` 里带原始码**（`invalid_request` / `snapshot_store_unavailable`）——否则「归一」会把「入参形态错」与「快照过期」压成**不可区分**的一坨 ⇒ **假绿**。
 
