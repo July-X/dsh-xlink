@@ -49,6 +49,7 @@ import {
   checkP2_J_noticeStaysTruthfulAfterSend,
   checkSelfContainedText,
   expectedGroupKey,
+  noticeTimeoutWhy,
   sameGroupByProtocol,
   summarize,
 } from './lib/p2-protocol.mjs';
@@ -118,9 +119,11 @@ function makeSyntheticAdapter(options = {}) {
      * **等待预算**：合成适配器是**确定性**的（提示要么被脚本投出、要么永远没有）
      * ⇒ 给**短预算** ⇒ 「故意不出提示」的负例不必各等 30s（门禁不被拖慢）。
      * 真机 adapter 不实现这个口 ⇒ 走判据库默认的 30s（抗重负载）。
+     * `options.waitBudgetMs` 可再调小（**只给「专门走超时路径」的用例**用
+     * ⇒ 那几条不必各等 500ms）。
      */
     waitBudgetMs() {
-      return 500;
+      return options.waitBudgetMs ?? 500;
     },
     configuredBodyBytes() {
       return bodyBytes;
@@ -514,7 +517,11 @@ test('P2-2：提示可见可复查 —— 没投递 / 档位 error / 文案缺�
 
   const noNotice = await checkP2_2_duplicateNoticeVisible(makeSyntheticAdapter({ refs, notices: [] }));
   assert.equal(noNotice.status, FAIL);
-  assert.match(noNotice.detail, /没有出现/);
+  // 超时红字＝**「没等到」**，不是「没发生」（PM 02:5x 扩派单③①）。
+  assert.match(noNotice.detail, /未等到/);
+  assert.match(noNotice.detail, /疑似负载过高，不是漏报/);
+  assert.match(noNotice.detail, /若在低负载下稳定复现，才按漏报论/);
+  assert.doesNotMatch(noNotice.detail, /没有出现/);
 
   // 违规⑤：**再动一次引用不再出提示**（提示不可复现）⇒ 协议 v0.5 §3.2 的硬要求。
   const notRepeatable = await checkP2_2_duplicateNoticeVisible(
@@ -624,7 +631,8 @@ test('P2-5：超预算 ⇒ 预算提示 + 正文不截断 —— 没提示 / 截
     makeSyntheticAdapter({ ...options, noticeScript: [null, null, [groupNotice, budgetNoticeWithGroups]] }),
   );
   assert.equal(noNotice.status, FAIL);
-  assert.match(noNotice.detail, /没有出现预算提示/);
+  assert.match(noNotice.detail, /未等到预算提示/);
+  assert.doesNotMatch(noNotice.detail, /没有出现/);
 
   // 违规②：正文**被截断**（请求体与落盘不一致）。
   const truncated = await checkP2_5_budgetNoticeNoTruncation(
@@ -656,7 +664,11 @@ test('P2-5：超预算 ⇒ 预算提示 + 正文不截断 —— 没提示 / 截
     makeSyntheticAdapter({ ...options, noticeScript: [null, budgetNotice, [groupNotice]] }),
   );
   assert.equal(onlyOne.status, FAIL);
-  assert.match(onlyOne.detail, /没有.*发预算提示|没有出现预算提示/);
+  assert.match(onlyOne.detail, /未等到预算提示/);
+  // 通用口径 ＋ **该处专属措辞**（两层叠加）：通用那句在共享函数里，专属那句在调用点。
+  assert.match(onlyOne.detail, /疑似负载过高，不是漏报/);
+  assert.match(onlyOne.detail, /不等于「只发了一条」/);
+  assert.doesNotMatch(onlyOne.detail, /没有出现/);
 
   // 违规⑤：两条都发，但**后发那条**没带出组事实（用户最终看到的那条缺组信息）。
   const lastMissingGroups = await checkP2_5_budgetNoticeNoTruncation(
@@ -1364,6 +1376,166 @@ test('P2-J：发送后用户眼前那条提示仍不失真（逐字相同 / info
   );
   assert.equal(errorLevel.status, FAIL);
   assert.match(errorLevel.detail, /info 档|档位/);
+});
+
+/**
+ * **超时口径的反向用例**（PM 2026-10-21 02:5x **扩派单③①**）。
+ *
+ * ## 为什么要有这条
+ *
+ * 7 处等待超时的红字**统一**成
+ * 「等预算内未等到 X 提示（疑似负载过高，不是漏报）；若在低负载下稳定复现，才按漏报论」，
+ * **不许**再写成「没有出现 X 提示」——后者会被读成**实现缺陷**（误读）。
+ * ⇒ 这条用例把 **7 处超时路径逐条走一遍**，逐条验：
+ * ① 红字里有「**未等到**」＋「疑似负载过高」＋「若在低负载下稳定复现，才按漏报论」；
+ * ② 红字里**没有**「没有出现」。
+ *
+ * **没有这条用例 ⇒ 口径没有回归保护**（哪天有人把红字改回「没有出现」，没人会发现）。
+ */
+test('超时口径（扩派单③①）：7 处等待超时 ⇒ 红字统一「未等到…疑似负载过高，不是漏报」，不许「没有出现」', async () => {
+  const bytes = Buffer.byteLength(`【判据正文】ds~aaaaaaaaaaaa~0001\n第二行固定正文。`, 'utf8');
+  const groupNotice = {
+    kind: 'duplicate-groups',
+    level: 'info',
+    text: `本条消息里有 2 条同组引用（1 组，重复正文共 ${bytes} 字节）`,
+    groups: [
+      {
+        groupKey: '0123456789abcdef',
+        members: [{ snapshotId: 'ds~aaaaaaaaaaaa~0001' }, { snapshotId: 'ds~aaaaaaaaaaaa~0002' }],
+        redundantBytes: bytes,
+      },
+    ],
+    budget: null,
+    trigger: 'ds~aaaaaaaaaaaa~0002',
+    delivered: true,
+  };
+  const projected = BIG_BODY_BYTES * 2;
+  const over = projected - PER_MESSAGE_BUDGET_BYTES;
+  const budgetNotice = {
+    kind: 'budget-exceeded',
+    level: 'info',
+    text: `本条消息正文合计 ${projected} 字节，超过单次消息总预算 ${PER_MESSAGE_BUDGET_BYTES} 字节（超 ${over} 字节）`,
+    groups: [],
+    budget: {
+      limitBytes: PER_MESSAGE_BUDGET_BYTES,
+      projectedBytes: projected,
+      wouldExceed: true,
+      exceedByBytes: over,
+    },
+    trigger: 'ds~aaaaaaaaaaaa~0002',
+    delivered: true,
+  };
+  const threeRefs = ['ds~aaaaaaaaaaaa~0001', 'ds~aaaaaaaaaaaa~0002', 'ds~aaaaaaaaaaaa~0003'];
+  const groupNotice3 = { ...groupNotice, trigger: threeRefs[2] };
+
+  /** 逐条断言「超时红字口径」。 */
+  const expectTimeoutWording = (result, where, verdict) => {
+    assert.equal(result.status, FAIL, `${where} 该红：${result.detail}`);
+    assert.match(result.detail, /等预算（[\d.]+s）内未等到/, `${where} 没写「未等到」：${result.detail}`);
+    assert.match(result.detail, /疑似负载过高/, `${where} 没写「疑似负载过高」：${result.detail}`);
+    assert.match(result.detail, verdict, `${where} 分辨语不对：${result.detail}`);
+    assert.match(
+      result.detail,
+      /若在低负载下稳定复现，才按漏报论/,
+      `${where} 缺「低负载下才按漏报论」：${result.detail}`,
+    );
+    assert.doesNotMatch(result.detail, /没有出现/, `${where} 仍写成「没有出现」（误读源）：${result.detail}`);
+  };
+  const VERDICT = /疑似负载过高，不是漏报/;
+  const VERDICT_ONLY_ONE = /不等于「只发了一条」/;
+
+  // ① P2-2：等「重复组」提示（第一处）。
+  expectTimeoutWording(
+    await checkP2_2_duplicateNoticeVisible(
+      makeSyntheticAdapter({ refs: threeRefs, notices: [], waitBudgetMs: 50 }),
+    ),
+    'P2-2 第一处',
+    VERDICT,
+  );
+  // ② P2-2：再动一次引用那一轮（等「重复组」提示）。
+  expectTimeoutWording(
+    await checkP2_2_duplicateNoticeVisible(
+      makeSyntheticAdapter({ refs: threeRefs, noticeScript: [null, groupNotice, null], waitBudgetMs: 50 }),
+    ),
+    'P2-2 再触发',
+    VERDICT,
+  );
+  // ③ P2-5：纯预算场景（等预算提示）。
+  expectTimeoutWording(
+    await checkP2_5_budgetNoticeNoTruncation(
+      makeSyntheticAdapter({
+        refs: threeRefs,
+        bodyBytes: BIG_BODY_BYTES,
+        noticeScript: [null, null, null],
+        waitBudgetMs: 50,
+      }),
+    ),
+    'P2-5 纯预算',
+    VERDICT,
+  );
+  // ④ P2-5：同组场景（等「重复组」提示）。
+  expectTimeoutWording(
+    await checkP2_5_budgetNoticeNoTruncation(
+      makeSyntheticAdapter({
+        refs: threeRefs,
+        bodyBytes: BIG_BODY_BYTES,
+        noticeScript: [null, budgetNotice, [{ ...budgetNotice, trigger: threeRefs[2] }]],
+        waitBudgetMs: 50,
+      }),
+    ),
+    'P2-5 同组场景·组提示',
+    VERDICT,
+  );
+  // ⑤ P2-5：同组场景（等预算提示）——**通用口径 ＋ 该处专属措辞**（两层）。
+  expectTimeoutWording(
+    await checkP2_5_budgetNoticeNoTruncation(
+      makeSyntheticAdapter({
+        refs: threeRefs,
+        bodyBytes: BIG_BODY_BYTES,
+        noticeScript: [null, budgetNotice, [groupNotice3]],
+        waitBudgetMs: 50,
+      }),
+    ),
+    'P2-5 同组场景·预算提示',
+    VERDICT_ONLY_ONE,
+  );
+  // ⑥ P2-6：等可见错误提示。
+  expectTimeoutWording(
+    await checkP2_6_failureDoesNotBlockSend(makeSyntheticAdapter({ failNotice: null, waitBudgetMs: 50 })),
+    'P2-6 失败提示',
+    VERDICT,
+  );
+  // ⑦ P2-J：等「重复组」提示。
+  expectTimeoutWording(
+    await checkP2_J_noticeStaysTruthfulAfterSend(
+      makeSyntheticAdapter({ refs: threeRefs, noticeScript: [null, null, null], waitBudgetMs: 50 }),
+    ),
+    'P2-J',
+    VERDICT,
+  );
+});
+
+/**
+ * **超时口径的直接用例**（PM 2026-10-21 02:7x 登记的待补②：「口径零回归保护」）。
+ *
+ * ## 为什么既有 7 处逐条用例、还要这一条
+ *
+ * 7 处那条验的是「**每个调用点**都走了共享口径」；这一条验的是「**共享口径本身**
+ * 不会被人改回误读形态」⇒ 两条**各管一层**，缺一不可。
+ *
+ * **不必靠长等待**：直接调共享函数 ⇒ 0ms。
+ */
+test('超时口径（共享函数）：noticeTimeoutWhy() ⇒ 「未等到…」＋「疑似负载过高，不是漏报」＋「低负载下才按漏报论」，不许「没有出现」', () => {
+  const text = noticeTimeoutWhy({ waitBudgetMs: () => 30_000 }, '「重复组」提示');
+  assert.match(text, /等预算（30s）内未等到「重复组」提示/);
+  assert.match(text, /疑似负载过高，不是漏报/);
+  assert.match(text, /若在低负载下稳定复现，才按漏报论/);
+  // **不许**写回「没有出现 X 提示」——那会被读成**实现缺陷**（误读源）。
+  assert.doesNotMatch(text, /没有出现/);
+  // **不许**把「漏报」写成**结论**（只能写成条件句）。
+  assert.doesNotMatch(text, /就是漏报|漏报了|判定为漏报/);
+  // **专属措辞不进共享函数**（P2-5 那处另加一句，留在调用点叠加 ⇒ 两层、不冲突）。
+  assert.doesNotMatch(text, /只发了一条/);
 });
 
 test('十一条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
