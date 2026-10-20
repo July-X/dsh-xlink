@@ -245,52 +245,64 @@ async function waitForNotice(adapter, kind, { from = 0, timeoutMs = 2500 } = {})
 }
 
 /**
- * 等「**组数稳定下来**」的那条提示（多组场景用）。
+ * 等「**最后一轮**」的那条提示（多组场景用）—— **事件式**，不用墙钟猜。
  *
- * ## 为什么不能按「组数 ≥ 2」等
+ * ## 为什么要换掉「等组数稳定 400ms」
  *
- * 客户端**每次新增引用**都会重跑一轮核对 ⇒ 提示**连着出好几条**
- * （1 组、1 组、…、最后才是 2 组）⇒ 按 kind 找会拿到**中间那条**。
- * 而按「组数 ≥ 2」等更糟：**漏报一组的实现永远等不到** ⇒ 判据只能报
- * 「没有出现提示」，点不出「漏报」这个真正的缺陷。
+ * 原实现用**墙钟**判定「轮次已跑完（组数不再增长）」⇒ 机器被压满时，两轮之间的
+ * 间隔可能超过 400ms ⇒ **提前认定跑完** ⇒ 拿到**中间那条**（只有 1 个组）⇒
+ * 红字写「只报了 1 个组（应有 2 个）」⇒ **把负载问题说成实现漏报**
+ * （PM 2026-10-21 02:0x 登记的缺口：重负载下会假红，且红字误导）。
  *
- * ⇒ 改成：**等轮次跑完**（组数不再增长、且稳定一小会儿）⇒ 取**组数最多**的那条
- * ⇒ 漏报时拿到的就是「实现只报了 1 组」⇒ 红字直接点名「只报了 N 个组」。
+ * ## 事件式的完成信号（任一命中即视为「最后一轮已跑完」）
+ *
+ * 1. **`trigger` ＝ 最后一次 pick 的 ref**（最可靠）：提示载荷里的 `trigger` 是
+ *    「**这条提示由哪次新增引用触发**」⇒ 它等于最后一次 pick ⇒ 那一轮确实跑完了。
+ *    （实现侧事实：`client/client.js` 的 `checkDuplicates(ctx, sessions, sessionId,
+ *    triggerRef)`，`triggerRef` ＝ 新选中的那条 ⇒ 提示里的 `trigger: triggerRef`。
+ *    **判据只用它定位「哪一轮」，不断言它的取值口径**。）
+ * 2. **`groups.length` ＝ 期望组数**（报满）：组数到顶 ⇒ 终态。
+ *
+ * 两条都命中不了 ⇒ **超预算** ⇒ 红字只说「疑似负载过高」，**不**断言漏报
+ * （PM 的交办方向②：别把超时说成「只报了 N 个组」）。
  *
  * @param {object} adapter
  * @param {string} kind - 提示的 kind。
  * @param {object} [options]
- * @param {number} [options.timeoutMs]
- * @param {number} [options.stableMs] - 组数连续多久没变算「跑完了」。
- * @returns {Promise<object|undefined>}
+ * @param {string} [options.lastRef] - 最后一次 pick 的 ref（完成信号①）。
+ * @param {number} [options.expectedGroups] - 期望组数（完成信号②）。
+ * @param {number} [options.timeoutMs] - 总预算（**兜底**，不是「稳定」的判据）。
+ * @returns {Promise<{notice: object|undefined, maxGroups: number, count: number, timedOut: boolean}>}
  */
-async function waitForStableNotice(adapter, kind, { timeoutMs = 10_000, stableMs = 400 } = {}) {
+async function waitForLastRoundNotice(
+  adapter,
+  kind,
+  { lastRef = '', expectedGroups = 0, timeoutMs = 30_000 } = {},
+) {
   const deadline = Date.now() + timeoutMs;
-  let best;
-  let lastSize = -1;
-  let lastChangeAt = Date.now();
+  let maxGroups = 0;
+  let count = 0;
   while (Date.now() < deadline) {
     const notices = (adapter.visibleNotices?.() ?? []).filter(
       (notice) => String(notice?.kind ?? '') === kind,
     );
-    let size = 0;
+    count = notices.length;
     for (const notice of notices) {
-      const count = Array.isArray(notice?.groups) ? notice.groups.length : 0;
-      if (count > size) size = count;
+      const size = Array.isArray(notice?.groups) ? notice.groups.length : 0;
+      if (size > maxGroups) maxGroups = size;
     }
-    if (size > 0) {
-      if (size !== lastSize) {
-        lastSize = size;
-        lastChangeAt = Date.now();
-      }
-      best = notices.find(
-        (notice) => Array.isArray(notice?.groups) && notice.groups.length === size,
-      );
-      if (Date.now() - lastChangeAt >= stableMs) return best;
+    const done =
+      (lastRef !== '' && notices.some((notice) => String(notice?.trigger ?? '') === lastRef)) ||
+      (expectedGroups > 0 &&
+        notices.some(
+          (notice) => Array.isArray(notice?.groups) && notice.groups.length === expectedGroups,
+        ));
+    if (done) {
+      return { notice: notices[notices.length - 1], maxGroups, count, timedOut: false };
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  return best;
+  return { notice: undefined, maxGroups, count, timedOut: true };
 }
 
 /**
@@ -1097,8 +1109,24 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
       };
     }
     const text = String(notice.text ?? '');
-    if (!text.includes(String(projected)) || !text.includes(String(over))) {
-      return { status: FAIL, detail: '提示文案里没有字节数（协议 §3.2：文案必须自包含）' };
+    // 协议 §3.2「数字来源」：**数字独立出现且紧跟单位词**（PM 02:5x 派单①加严）。
+    //
+    // **为什么不用 `text.includes`**（子串假绿口子）：`includes('37856')` 会被
+    // 「**137856**」满足 ⇒ 一条只写了别的字节数、根本没写「超了多少字节」的文案
+    // 也判成「文案自包含」⇒ 假绿。
+    if (!hasNumberWithUnit(text, projected, '字节')) {
+      return {
+        status: FAIL,
+        detail: `提示文案里没有「${projected} 字节」——协议 §3.2：文案必须自包含；**子串不算**`,
+      };
+    }
+    if (!hasNumberWithUnit(text, over, '字节')) {
+      return {
+        status: FAIL,
+        detail:
+          `提示文案里没有「${over} 字节」——协议 §3.2：文案必须自包含**超了多少字节**；` +
+          '**子串不算**（「137856」里的「37856」不算「写了 37856 字节」）',
+      };
     }
 
     // 正文**未被截断**（§3.3）：请求体与落盘正文逐字节相同，且落盘正文是完整原文。
@@ -1655,14 +1683,29 @@ export async function checkP2_H_multiGroupNotDropped(adapter) {
     }
 
     // 提示：**每次新增引用都会重跑一轮核对** ⇒ 连着出好几条 ⇒
-    // **等轮次跑完**（组数稳定下来）再取那条 ⇒ 漏报的实现也能被点名。
-    const notice = await waitForStableNotice(adapter, 'duplicate-groups');
-    if (notice === undefined) {
+    // ⇒ 必须取**最后一轮**那条（否则会拿中间那条「1 个组」当终态）。
+    //
+    // **等法是事件式的**（PM 02:0x 登记的缺口：墙钟「等稳定 400ms」在重负载下会
+    // 假红，且红字会把负载问题说成实现漏报）：
+    // ① `trigger` ＝ 最后一次 pick 的 ref ⇒ 那一轮确实跑完了；
+    // ② `groups.length` ＝ 期望组数（报满）⇒ 终态。
+    const waited = await waitForLastRoundNotice(adapter, 'duplicate-groups', {
+      lastRef: refs[refs.length - 1] ?? '',
+      expectedGroups: wantKeys.length,
+      timeoutMs: 30_000,
+    });
+    if (waited.notice === undefined) {
+      // **超预算 ≠ 漏报**：只报「没等到」，**不**断言「只报了 N 个组」。
       return {
         status: FAIL,
-        detail: `多组场景（${wantKeys.length} 个组同时成立）没有出现「重复组」提示——协议 v0.6 §3.2`,
+        detail:
+          `等预算（30s）内未等到「最后一轮」的重复组提示（期间见到最多 ${waited.maxGroups} 个组、` +
+          `${waited.count} 条提示）——**疑似负载过高，不是漏报**` +
+          '（PM 02:0x 登记的缺口：墙钟等待在重负载下会假红）；' +
+          '若在低负载下稳定复现，才按漏报论',
       };
     }
+    const notice = waited.notice;
     const carrier = checkNoticeCarrier(notice);
     if (!carrier.ok) {
       return { status: FAIL, detail: carrier.why };

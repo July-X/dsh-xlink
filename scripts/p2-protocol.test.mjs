@@ -663,6 +663,45 @@ test('P2-5：超预算 ⇒ 预算提示 + 正文不截断 —— 没提示 / 截
   );
   assert.equal(lastMissingGroups.status, FAIL);
   assert.match(lastMissingGroups.detail, /组事实/);
+
+  // 违规⑥：**超限字节数只以子串出现**（「137856」里有「37856」）⇒ 必须红
+  // （PM 02:5x 派单①的子串假绿口子：旧口径 `text.includes` 会被它满足）。
+  const overAsSubstring = await checkP2_5_budgetNoticeNoTruncation(
+    makeSyntheticAdapter({
+      ...options,
+      noticeScript: [
+        null,
+        {
+          ...budgetNotice,
+          text:
+            `本条消息正文合计 ${projected} 字节，超过单次消息总预算 ` +
+            `${PER_MESSAGE_BUDGET_BYTES} 字节（超 1${over} 字节）`,
+        },
+        [groupNotice, budgetNoticeWithGroups],
+      ],
+    }),
+  );
+  assert.equal(overAsSubstring.status, FAIL, '超限字节数只以子串出现必须红');
+  assert.match(overAsSubstring.detail, /子串|超了多少字节/);
+
+  // 违规⑦：**预估字节数只以子串出现**（「1300000」里有「300000」）⇒ 必须红。
+  const projectedAsSubstring = await checkP2_5_budgetNoticeNoTruncation(
+    makeSyntheticAdapter({
+      ...options,
+      noticeScript: [
+        null,
+        {
+          ...budgetNotice,
+          text:
+            `本条消息正文合计 1${projected} 字节，超过单次消息总预算 ` +
+            `${PER_MESSAGE_BUDGET_BYTES} 字节（超 ${over} 字节）`,
+        },
+        [groupNotice, budgetNoticeWithGroups],
+      ],
+    }),
+  );
+  assert.equal(projectedAsSubstring.status, FAIL, '预估字节数只以子串出现必须红');
+  assert.match(projectedAsSubstring.detail, /子串/);
 });
 
 test('P2-6：失败 ⇒ 可见错误 + 不拦截发送 —— 没提示 / 拦截了 都要报红', async () => {
