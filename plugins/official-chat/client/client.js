@@ -1041,24 +1041,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * **按 `groupKey` 升序排组**（协议 §3.2「多组形态」· PM 01:2x 裁定）。
-     *
-     * **为什么排**：顺序抖动会让「后发那条」的文案不稳定 ⇒ 用户两次看到的文案
-     * 可能不同 ⇒ 排成与**选中顺序无关**的定序。groupKey 是小写十六进制 ⇒ 按
-     * **字节序**比（与 host 侧、Rust 侧口径一致）。
-     *
-     * @param {object[]} groups - 协议 §2.2 的 `groups`。
-     * @returns {object[]} 排好序的新数组（**不改原数组**）。
-     */
-    function sortGroupsByKey(groups) {
-      return [...groups].sort((a, b) => {
-        const ka = String(a?.groupKey ?? '');
-        const kb = String(b?.groupKey ?? '');
-        return ka < kb ? -1 : ka > kb ? 1 : 0;
-      });
-    }
-
-    /**
      * P2 提示的**成品文案**（UX 定稿 2026-10-21 · 协议 v0.6 §3.2 收录原文）。
      *
      * **为什么只有一份文案**：协议 §3.1（v0.4 起）——内核 notice 是**单槽**、
@@ -1068,22 +1050,29 @@ window.__ModuleLoader__.load({
      *
      * **数字不加千分位**（协议 v0.6 §3.2）——判据断的是**原值**在不在。
      *
-     * **多组时逐组列**（协议 §3.2「多组形态」）：「同组 N 条内容完全相同」必须
-     * 按**组**读才为真（组内相同、组间不同）⇒ 每组一句、每句都为真 ⇒ **不产生
-     * 不实陈述**（像「2 组引用内容完全相同」那种写法会被读成「各组内容彼此相同」
-     * ⇒ 不采纳）。协议 §3.2「数字来源」里的 `members.length` 与 `redundantBytes`
-     * 都是**组内**的量 ⇒ 把不同组混成一句（「同组 4 条」）同样是假陈述。
+     * **多组时逐组列**（协议 §3.2「多组形态」· PM 01:3x）：「同组 N 条内容完全相同」
+     * 必须按**组**读才为真（组内相同、组间不同）⇒ 协议 §3.2「数字来源」里的
+     * `members.length` 与 `redundantBytes` 都是**组内**的量 ⇒ 混成一句（「同组 4 条」）
+     * 是假陈述 ⇒ **一组一句**。且多组时**先说组数、再逐组编号**（「N 组重复：第 i 组
+     * …」）——两个「同组 N 条」并排，读者会本能归到同一个组上 ⇒ 读成「同一组既是
+     * 3 条又是 2 条」⇒ 表面矛盾（不是假陈述，但是真实的可读性缺陷）。
      *
-     * @param {object[]} groups - 协议 §2.2 的 `groups`，**须已按 `groupKey` 升序**。
+     * @param {object[]} groups - 协议 §2.2 的 `groups`，**顺序由 host 定**
+     *   （host 按 `groupKey` 升序产出；client **照单渲染**，不自己再排）。
      * @param {object} budget - 协议 §2.2 的 `budget`。
      * @returns {string} 成品文案。
      */
     function duplicatesNoticeText(groups, budget) {
-      const groupParts = groups.map((group) => {
+      const multi = groups.length > 1;
+      const groupParts = groups.map((group, index) => {
         const members = Array.isArray(group?.members) ? group.members.length : 0;
         const redundant = Number(group?.redundantBytes ?? 0);
-        return `同组 ${members} 条内容完全相同，重复可省 ${redundant} 字节`;
+        const same = `${members} 条内容完全相同，重复可省 ${redundant} 字节`;
+        return multi ? `第 ${index + 1} 组 ${same}` : `同组 ${same}`;
       });
+      const groupPart = multi
+        ? `${groups.length} 组重复：${groupParts.join('；')}`
+        : groupParts.join('');
       const projected = Number(budget?.projectedBytes ?? 0);
       const limit = Number(budget?.limitBytes ?? 0);
       const budgetPart =
@@ -1091,7 +1080,7 @@ window.__ModuleLoader__.load({
           ? `引用正文 ${projected} 字节，超出单次消息预算 ${limit} 字节` +
             `（超 ${Number(budget?.exceedByBytes ?? 0)} 字节）`
           : `引用正文 ${projected} 字节，未超出单次消息预算 ${limit} 字节`;
-      return `本次核对：${[...groupParts, budgetPart].join('；')}。`;
+      return `本次核对：${[groupPart, budgetPart].filter((part) => part !== '').join('；')}。`;
     }
 
     /**
@@ -1187,7 +1176,9 @@ window.__ModuleLoader__.load({
         });
         return undefined;
       }
-      const groups = sortGroupsByKey(Array.isArray(result.groups) ? result.groups : []);
+      // **组的顺序由 host 定**（协议 §3.2「多组形态」· PM 01:3x：host 是产出处 ⇒
+      // 排序在产出处做 ⇒ 任何消费方都拿到稳定顺序；client **照单渲染**）。
+      const groups = Array.isArray(result.groups) ? result.groups : [];
       const budget = result.budget ?? {};
       // **成品文案只有一份**（UX 定稿 2026-10-21 · 协议 v0.6 §3.2「两条逐字相同」）：
       // §3.1 要求「后发那条自包含全部事实」⇒ 两条说的是同一件事 ⇒ 同一句文案

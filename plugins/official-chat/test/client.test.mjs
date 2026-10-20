@@ -240,29 +240,33 @@ function loadClient({
     }
     if (endpoint === 'duplicates') {
       if (multiGroup) {
-        // **多组场景**（协议 §3.2「多组形态」）：两组，且**故意按 groupKey 降序**
-        // 给出 ⇒ 客户端必须自己按升序排（文案与 `notice.groups` 都要是升序）。
+        // **多组场景**（协议 §3.2「多组形态」· PM 01:3x）：两组。
+        //
+        // **桩扮演 host ⇒ 也要按 `groupKey` 升序产出**（PM 01:3x：排序的落点在
+        // host 侧 ⇒ 任何消费方都拿到稳定顺序；client 照单渲染）。
+        const multiGroups = [
+          {
+            groupKey: 'ffffffffffffffff',
+            members: [
+              { snapshotId: 'ds~m~0001', capturedAt: '2026-10-21T00:00:00.000Z', contentDigest: 'd2' },
+              { snapshotId: 'ds~m~0002', capturedAt: '2026-10-21T00:00:00.000Z', contentDigest: 'd2' },
+              { snapshotId: 'ds~m~0003', capturedAt: '2026-10-21T00:00:00.000Z', contentDigest: 'd2' },
+            ],
+            redundantBytes: 200,
+          },
+          {
+            groupKey: '0000000000000001',
+            members: [
+              { snapshotId: 'ds~m~0004', capturedAt: '2026-10-20T00:00:00.000Z', contentDigest: 'd1' },
+              { snapshotId: 'ds~m~0005', capturedAt: '2026-10-20T00:00:00.000Z', contentDigest: 'd1' },
+            ],
+            redundantBytes: 100,
+          },
+        ];
+        multiGroups.sort((a, b) => (a.groupKey < b.groupKey ? -1 : a.groupKey > b.groupKey ? 1 : 0));
         return {
           ok: true,
-          groups: [
-            {
-              groupKey: 'ffffffffffffffff',
-              members: [
-                { snapshotId: 'ds~m~0001', capturedAt: '2026-10-21T00:00:00.000Z', contentDigest: 'd2' },
-                { snapshotId: 'ds~m~0002', capturedAt: '2026-10-21T00:00:00.000Z', contentDigest: 'd2' },
-                { snapshotId: 'ds~m~0003', capturedAt: '2026-10-21T00:00:00.000Z', contentDigest: 'd2' },
-              ],
-              redundantBytes: 200,
-            },
-            {
-              groupKey: '0000000000000001',
-              members: [
-                { snapshotId: 'ds~m~0004', capturedAt: '2026-10-20T00:00:00.000Z', contentDigest: 'd1' },
-                { snapshotId: 'ds~m~0005', capturedAt: '2026-10-20T00:00:00.000Z', contentDigest: 'd1' },
-              ],
-              redundantBytes: 100,
-            },
-          ],
+          groups: multiGroups,
           budget: { limitBytes: 262144, projectedBytes: 300, wouldExceed: false, exceedByBytes: 0 },
         };
       }
@@ -802,10 +806,12 @@ test('P2：核对重复失败 ⇒ info 档可见提示 + 不阻塞发送（协�
   assert.equal(text, BODY_ALPHA, '核对失败不得影响正文照发');
 });
 
-test('P2：多组 ⇒ 文案逐组各一句，且按 groupKey 升序（协议 §3.2 多组形态）', async () => {
-  // **多组形态**（协议 §3.2「多组形态」· PM 01:2x 裁定）：
-  // · 「同组 N 条内容完全相同」必须按**组**读才为真 ⇒ **逐组各一句**；
-  // · 组的顺序按 `groupKey` 升序（桩故意降序给出 ⇒ 客户端必须自己排）。
+test('P2：多组 ⇒ 文案「N 组重复：第 i 组 …」，逐组各一句（协议 §3.2 多组形态）', async () => {
+  // **多组形态**（协议 §3.2「多组形态」· PM 01:3x）：
+  // · 逐组各一句，每句带**自己那组**的条数与字节数（组内口径）；
+  // · **先说组数、再逐组编号** ⇒ 不用「同组 N 条」并排（会被读成「同一组既是
+  //   3 条又是 2 条」的表面矛盾）；
+  // · 顺序按 host 给的（host 按 `groupKey` 升序产出）⇒ client 照单渲染。
   const { api, ctx, registered, notices, sandbox } = loadClient({
     config: { readDelayMs: 20 },
     multiGroup: true,
@@ -817,27 +823,22 @@ test('P2：多组 ⇒ 文案逐组各一句，且按 groupKey 升序（协议 §
   const probe = sandbox.__DSH_XLINK_OFFICIAL_CHAT_PROBE__;
   const group = probe.events.filter((e) => e.kind === 'duplicate-groups').pop();
   assert.ok(group, '多组时必须出重复组提示');
-  // **逐组列**：每组一句，各自带**自己那组**的条数与字节数。
-  assert.match(group.text, /同组 2 条内容完全相同，重复可省 100 字节/, '第一组要自包含');
-  assert.match(group.text, /同组 3 条内容完全相同，重复可省 200 字节/, '第二组要自包含');
-  // **顺序按 groupKey 升序**（桩给的是降序 ⇒ 客户端排过了）。
-  const first = group.text.indexOf('重复可省 100 字节');
-  const second = group.text.indexOf('重复可省 200 字节');
-  assert.ok(first >= 0 && second > first, `组必须按 groupKey 升序：${group.text}`);
-  // **不得出现「各组内容彼此相同」那种写法**（不实陈述，PM 明写不采纳）。
-  assert.doesNotMatch(
+  // **逐字照抄定稿原文**（PM 01:3x 的多组形态原文）。
+  assert.equal(
     group.text,
-    /2 组|各组/,
-    `文案不得把多组说成「各组内容完全相同」：${group.text}`,
+    '本次核对：2 组重复：第 1 组 2 条内容完全相同，重复可省 100 字节；' +
+      '第 2 组 3 条内容完全相同，重复可省 200 字节；' +
+      '引用正文 300 字节，未超出单次消息预算 262144 字节。',
+    `多组文案必须逐字等于定稿原文：${group.text}`,
   );
-  // **notice.groups 与文案同序**。
+  // **notice.groups 与文案同序**（host 给的序就是渲染的序）。
   // （**用字符串比较而不是 deepEqual**：这些数组是在 vm 沙箱 realm 里造的 ⇒
   //  `deepStrictEqual` 会因**原型不同**判不等，值其实一样。）
   const keys = group.groups.map((g) => String(g.groupKey));
   assert.equal(
     keys.join(','),
     [...keys].sort().join(','),
-    `notice.groups 也必须按 groupKey 升序：${keys.join(' / ')}`,
+    `notice.groups 必须按 groupKey 升序：${keys.join(' / ')}`,
   );
   // **用户侧看到的那条**也是同一句（内核 notify 只带 level+text）。
   const shown = notices.filter((n) => /本次核对：/.test(String(n?.text ?? '')));
