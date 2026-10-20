@@ -8,6 +8,7 @@ pub(crate) mod appearance;
 pub(crate) mod atomic_write;
 pub(crate) mod autostart;
 pub(crate) mod child_priority;
+pub(crate) mod digest;
 pub(crate) mod env;
 pub(crate) mod error;
 pub(crate) mod instance;

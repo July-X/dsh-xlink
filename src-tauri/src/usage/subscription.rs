@@ -166,7 +166,7 @@ pub fn redact_key(key: &str) -> String {
 fn credential_fingerprint(value: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(value.trim().as_bytes());
-    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    let hex = crate::shell::digest::hex(&digest[..]);
     hex[..16].to_string()
 }
 

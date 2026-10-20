@@ -529,3 +529,67 @@ prompt-caching 指南，它的模型差异表写着「GPT-5.6 及以后：路由
 `src-tauri/src/usage/local.rs`（删文件前跨 tick 并断言前提）、
 `src-tauri/src/kernel/lifecycle.rs`（样本换成字面量路径，与兄弟用例一致）、
 `scripts/check-invariants.mjs` 第 23 项（除 `lib.rs` 的守卫外，裸改 home 类 env 一律禁止）。
+
+## 25. 依赖大版本升级的断点常在**格式化 trait 与 io trait**上，不在主 API 上（2026-10-20）
+
+**事情**：Dependabot PR #9 把 sha2 0.10.9 → 0.11.1，CI 两个 job 全红（run 39366295003）。
+
+**断点不在 sha2 的主 API**（`Sha256::new` / `update` / `digest` 两版一模一样），而在两处**trait
+消失了**：
+
+1. `format!("{:x}", hasher.finalize())`——0.11 的 `finalize()` 返回 `hybrid_array::Array`，
+   它**不再实现 `LowerHex`**（0.10 返回的 `GenericArray` 实现）。于是「摘要转十六进制」这
+   一步编不过，仓库里 6 处全炸。
+2. `io::copy(&mut file, &mut hasher)`——0.11 **不再给摘要器实现 `io::Write`**（0.10 有）。
+   这条更阴：它不在摘要那一行，而在「把文件读进 hasher」那行，报错时看着像 IO 问题。
+
+**三条纪律**：
+
+1. **摘要的十六进制自己写，并收编到一处。** 仓库里另有 8 处用
+   `digest.iter().map(|b| format!("{b:02x}")).collect()` 写的一样的逻辑——它们**两版都能编**，
+   属于"恰好没坏"，但下一次未必。统一到 `src-tauri/src/shell/digest.rs::hex`：**同一语义只留
+   一份**，下次再升 sha2 只改这一处。
+2. **调用点传 `&digest[..]` 切片**，不要直接传 `finalize()` 的返回值。两版返回类型不同
+   （`GenericArray` vs `hybrid_array::Array`），各自的 `AsRef` / `Index` 实现细节并不相同，
+   **切片 `&x[..]` 才是两版都成立的交点**。顺带：`hex` 的参数是 `impl AsRef<[u8]>`，传数组
+   与传切片都合法，但传 `&[u8; 4]` 会触发 clippy 的 `needless_borrow`（`[u8; 4]` 自己就实现
+   了 `AsRef<[u8]>`）。
+3. **摘要的十六进制是落盘数据，不是显示数据。** 技能的 `materialized_sha256`、插件 id 的短
+   哈希、凭据指纹、Node 产物校验都用它——改一位就与存量数据对不上，所有权判定**静默失效**，
+   用户的技能会被当成"不是我们的"而重新物化。所以 `digest::hex` 的测试钉的是**标准向量逐字节
+   相同**（`e3b0c442…7852b855` / `ba7816bf…f20015ad`），不是"能算出来"。
+
+**边界：只动 sha2 摘要那一类。** `pkg/releases.rs` 的 sha1 摘要（0.11 升级与 sha1 无关）、
+`memory/store.rs` 的随机 id、`openai/*` 的 key 字节——都不是 sha2 摘要，顺手收编只会把改动面
+扩大、把不同语义混成一处。
+
+**main 不抬依赖版本**：大版本升级留在 Dependabot PR 里由维护者决定合并，main 只获得
+**向前兼容**的代码。验证要**两版都跑**：`Cargo.toml` 临时抬到 `sha2 = "0.11"` 让 cargo 自己解析
+（lock 里会出现 0.11.1 与 wry 需要的 0.10.9 **并存**——`cargo update -p sha2 --precise` 会失败，
+它要全局升级，而 wry 钉着 `^0.10`），test + clippy 全绿后 `git checkout` 恢复。
+
+## 26. 「某分支不发生」要由**代码结构**保证；测试的 profile 也会改变被测语义（2026-10-20）
+
+**一、计时赋值写在条件之外，契约就是靠运气成立的。**
+
+`shell::atomic_write` 里 `timings.dir_sync_us = started.elapsed()` 原本写在 `if sync {}` **外面**。
+于是「免 fsync 入口 `dir_sync_us` 恒为 0」这条**文件头就写着的文档承诺**，实际测的是一段
+**空代码块**的耗时：正常 0µs，线程被抢占一下就是几微秒（2026-10-20 macOS runner 实测 **7µs**），
+用例于是随机红在一条与 fsync 毫无关系的断言上（run 39366411194，PR #30 的 Quality gates）。
+
+修法不是把断言改宽松，而是**把赋值移进 `if sync` 块内**——契约从此是**结构保证**。
+
+> 通用形态：**「某分支不发生」必须由代码结构保证，不能由"那段代码恰好很快 / 恰好为零"保证。**
+> 计时、计数器、哨兵值都属这一类。
+
+**二、profile 不只是"快慢"，它会改变被测代码走哪条分支。**
+
+本机一度记着"跑 Rust 用例要加 `--release`"（因为 debug profile 偶发加载即失败
+`0xc0000139`）。改用 release 后，7 条用例**必然假红**：`ShellMode::current()` 判定为 release
+（`cfg!(debug_assertions)`），那些断言"dev 壳的默认实例是 `default-dev`"的用例拿到的却是
+`default`——红的不是代码，是**验证姿势**。
+
+> 断言"dev 壳"的用例必须在 **dev profile** 下跑。门禁 `check:rust:ci` 用的是 debug 的
+> `cargo test --locked`，本地验证必须跟它一致；`--release` 只该出现在
+> `cargo check --release --all-targets`（查 release-only 的编译错误）那一步。
+> **profile 变了，先怀疑自己是不是在测另一件事**，别去改断言。

@@ -433,7 +433,7 @@ pub(crate) fn new_id() -> String {
 pub fn fingerprint(body: &str) -> String {
     let normalized: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
     let digest = Sha256::digest(normalized.as_bytes());
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    crate::shell::digest::hex(&digest[..])
 }
 
 pub(crate) fn load(ns: &Namespace) -> Result<MemoryDoc, AppError> {

@@ -133,7 +133,7 @@ pub(crate) fn verify_manifest(plugin_source: &Path) -> Result<(), String> {
         let expected = entry.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
         use sha2::{Digest, Sha256};
         let actual = Sha256::digest(&bytes);
-        let actual_hex: String = actual.iter().map(|b| format!("{b:02x}")).collect();
+        let actual_hex = crate::shell::digest::hex(&actual[..]);
         if actual_hex != expected {
             return Err(format!(
                 "资源 {} 与清单摘要不一致（{}，清单记 {expected}）；请重新安装 dsh-xlink",
@@ -360,7 +360,7 @@ fn runtime_digest(
             }
         }
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(crate::shell::digest::hex(&hash.finalize()[..]))
 }
 
 /// Host 运行时要 peer 到内核树的 `@deepseek-ai` 包，**按插件各列各的**

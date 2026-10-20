@@ -157,11 +157,17 @@ fn atomic_write_inner(
             let started = std::time::Instant::now();
             replace_file(&temporary, path)?;
             timings.rename_us = started.elapsed().as_micros();
-            let started = std::time::Instant::now();
+            // 计时**只在真的做了目录 fsync 时**才赋值。放在 `if sync` 外面的话，
+            // 免 fsync 入口测的是一段**空代码块**的耗时——正常是 0µs，但 CI 上
+            // 线程被抢占一下就是几微秒（2026-10-20 macOS runner 实测 7µs），
+            // 于是「免 fsync 入口 dir_sync_us 恒为 0」这条契约变成了靠运气成立，
+            // 用例随机红在一条与 fsync 毫无关系的断言上。放进 `if` 里，这条
+            // 契约就成了结构保证。
             if sync {
+                let started = std::time::Instant::now();
                 sync_parent_directory(parent)?;
+                timings.dir_sync_us = started.elapsed().as_micros();
             }
-            timings.dir_sync_us = started.elapsed().as_micros();
             Ok(())
         })();
         if result.is_err() {

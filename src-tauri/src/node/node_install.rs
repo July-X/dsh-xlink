@@ -13,7 +13,7 @@
 //! 暴露（官方产物里的 bin/npm 是符号链接，本解包器跳过符号链接）。
 
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
 use crate::pkg::releases::{http_get_file, http_get_string};
@@ -116,8 +116,19 @@ fn sha256_hex(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let mut file = fs::File::open(path).map_err(|e| format!("打开下载文件失败：{e}"))?;
     let mut hasher = Sha256::new();
-    io::copy(&mut file, &mut hasher).map_err(|e| format!("计算哈希失败：{e}"))?;
-    Ok(format!("{:x}", hasher.finalize()))
+    // 分块读进 hasher，**不要 `io::copy(&mut file, &mut hasher)`**：sha2 0.11
+    // 不再给摘要器实现 `io::Write`（0.10 有），那条写法在 0.11 下编不过。
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("计算哈希失败：{e}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(crate::shell::digest::hex(&hasher.finalize()[..]))
 }
 
 /// 单根目录校验：所有条目必须位于同一根目录下，拒绝绝对路径 / `..` /

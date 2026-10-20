@@ -633,7 +633,7 @@ fn short_name_hash(name: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(name.as_bytes());
-    format!("{:x}", hasher.finalize())[..6].to_string()
+    crate::shell::digest::hex(&hasher.finalize()[..])[..6].to_string()
 }
 
 /// 为一个待安装的插件分配 id。
