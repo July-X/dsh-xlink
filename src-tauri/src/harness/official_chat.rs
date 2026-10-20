@@ -10,7 +10,10 @@
 //! 的一个调用方是 `relayout_official_chat`，与本页的初始尺寸兜底同属一条
 //! 链。留在原处会让 `harness` 反过来依赖 `commands`。
 
+use std::path::{Path, PathBuf};
+
 use tauri::WindowEvent;
+use url::Url;
 
 /// `open_official_chat` 加载到专用 `official-chat` webview 中的
 /// DeepSeek 官方对话入口。
@@ -191,6 +194,83 @@ pub(crate) fn official_chat_layout_plausible(layout: OfficialChatLayout) -> bool
     layout.width >= OFFICIAL_CHAT_STRIP_HEIGHT && layout.height >= OFFICIAL_CHAT_STRIP_HEIGHT
 }
 
+/// 下载落点名字的兜底：两边都推不出名字时用它（例如 `blob:` 地址且页面没给
+/// `download` 名字）。
+pub(crate) const OFFICIAL_CHAT_DOWNLOAD_FALLBACK: &str = "official-chat-download";
+
+/// 官网网页版内容页签的下载文件名。
+///
+/// `suggested` 是 WebView2 在 `DownloadStarting` 时预先给的建议路径——`<a download>`
+/// 那个名字就落在这里，通常也是唯一可信的名字。它取不到时（`blob:` 下载常见）才
+/// 从 URL 末段推。名字来自**别人的站点**，所以一律过
+/// [`sanitize_download_file_name`]：不允许目录分隔符、控制字符与 Windows 保留字符
+/// 把落点带出下载目录。
+pub(crate) fn download_file_name(url: &Url, suggested: Option<&Path>) -> String {
+    let suggested = suggested
+        .and_then(Path::file_name)
+        .map(|name| sanitize_download_file_name(&name.to_string_lossy()))
+        .filter(|name| !name.is_empty());
+    if let Some(name) = suggested {
+        return name;
+    }
+    let from_url = url
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .map(sanitize_download_file_name)
+        .filter(|name| !name.is_empty());
+    from_url.unwrap_or_else(|| OFFICIAL_CHAT_DOWNLOAD_FALLBACK.to_string())
+}
+
+/// 把页面给的文件名收成「一个安全的文件名」。
+///
+/// 只做文件名这一段：`<>:"/\|?*` 与控制字符换成 `_`，首尾的空白 / 句点去掉
+/// （Windows 上以点结尾的名字建不出来），长度收到 180 个字符。`.` / `..` 这类名字
+/// 清理后为空，由调用方回落。
+pub(crate) fn sanitize_download_file_name(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len().min(360));
+    for ch in raw.chars() {
+        if out.chars().count() >= 180 {
+            break;
+        }
+        out.push(match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        });
+    }
+    out.trim_start().trim_end_matches([' ', '.']).to_owned()
+}
+
+/// 同一目录下不覆盖已有文件的落点：重名时按 `名字 (1).ext` 递增。
+///
+/// 只是**尽力**去重（检查与下载开始之间仍有窗口），但足以避免「第二次下载同一份
+/// 文档把第一次的覆盖掉」——WebView2 自己的重名策略与我们不同，显式落点之后这一层
+/// 得由壳来兜。
+pub(crate) fn unique_download_path(dir: &Path, name: &str) -> PathBuf {
+    let candidate = dir.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let (stem, extension) = split_download_name(name);
+    for round in 1..=999u32 {
+        let candidate = dir.join(format!("{stem} ({round}){extension}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join(format!("{stem} (1000){extension}"))
+}
+
+/// `name` → (`stem`, `.ext`)；没有扩展名时扩展名为空串。
+fn split_download_name(name: &str) -> (String, String) {
+    match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() && !extension.is_empty() => {
+            (stem.to_owned(), format!(".{extension}"))
+        }
+        _ => (name.to_owned(), String::new()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,5 +415,88 @@ mod tests {
             tauri::PhysicalSize::new(1366, 768),
         )));
         assert!(!should_relayout_official_chat(&WindowEvent::Focused(false)));
+    }
+
+    /// 页面给的名字优先：`<a download>` 的名字就在 WebView2 的建议路径里。
+    #[test]
+    fn download_file_name_prefers_the_name_the_page_suggests() {
+        let url = Url::parse("https://files.oaiusercontent.com/file-abc?se=2026").expect("url");
+        let suggested = Path::new("/Downloads/设计规范 v1.0.docx");
+        assert_eq!(
+            download_file_name(&url, Some(suggested)),
+            "设计规范 v1.0.docx"
+        );
+    }
+
+    /// 名字来自别人的站点：目录分隔符与 Windows 保留字符不许把落点带出下载目录。
+    #[test]
+    fn download_file_name_cannot_escape_the_download_directory() {
+        let url = Url::parse("https://chatgpt.com/backend-api/files/x/download").expect("url");
+        // 建议路径的目录段由 `Path::file_name` 摘掉（两个平台都成立），
+        // 剩下的这一段再过一遍清洗。
+        assert_eq!(
+            download_file_name(&url, Some(Path::new("boot.ini"))),
+            "boot.ini"
+        );
+        assert_eq!(
+            sanitize_download_file_name(r"..\..\boot.ini"),
+            ".._.._boot.ini"
+        );
+        assert_eq!(sanitize_download_file_name("a<bad>.txt"), "a_bad_.txt");
+        // 以点结尾的名字在 Windows 上建不出来，清理后为空再回落。
+        assert_eq!(sanitize_download_file_name("..."), "");
+        let no_tail = Url::parse("https://chatgpt.com/").expect("url");
+        assert_eq!(
+            download_file_name(&no_tail, Some(Path::new("..."))),
+            OFFICIAL_CHAT_DOWNLOAD_FALLBACK
+        );
+    }
+
+    /// 没有建议名时（`blob:` 下载常见）从 URL 末段推，推不出来才用兜底名。
+    #[test]
+    fn download_file_name_falls_back_to_the_url_tail() {
+        let url =
+            Url::parse("https://chatgpt.com/backend-api/files/abc/report.pdf?x=1").expect("url");
+        assert_eq!(download_file_name(&url, None), "report.pdf");
+        let no_tail = Url::parse("https://chatgpt.com/").expect("url");
+        assert_eq!(
+            download_file_name(&no_tail, None),
+            OFFICIAL_CHAT_DOWNLOAD_FALLBACK
+        );
+    }
+
+    /// 重名不覆盖：第二次下载同一份文档落到 `名字 (1).ext`，扩展名保留。
+    #[test]
+    fn unique_download_path_keeps_earlier_downloads() {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-official-chat-download-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("临时目录");
+        assert_eq!(
+            unique_download_path(&dir, "报告.docx"),
+            dir.join("报告.docx")
+        );
+        std::fs::write(dir.join("报告.docx"), b"first").expect("占位");
+        assert_eq!(
+            unique_download_path(&dir, "报告.docx"),
+            dir.join("报告 (1).docx")
+        );
+        std::fs::write(dir.join("报告 (1).docx"), b"second").expect("占位");
+        assert_eq!(
+            unique_download_path(&dir, "报告.docx"),
+            dir.join("报告 (2).docx")
+        );
+        // 没有扩展名时不凭空造一个点。
+        std::fs::write(dir.join("download"), b"third").expect("占位");
+        assert_eq!(
+            unique_download_path(&dir, "download"),
+            dir.join("download (1)")
+        );
+        std::fs::remove_dir_all(&dir).expect("只清自己那块临时目录");
     }
 }
