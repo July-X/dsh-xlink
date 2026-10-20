@@ -979,7 +979,7 @@ pub(crate) fn fingerprint_path(path: &Path) -> Option<String> {
         let bytes = fs::read(path).ok()?;
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
-        return Some(format!("{:x}", hasher.finalize()));
+        return Some(crate::shell::digest::hex(&hasher.finalize()[..]));
     }
     if !md.is_dir() {
         return None;
@@ -994,7 +994,7 @@ pub(crate) fn fingerprint_path(path: &Path) -> Option<String> {
         hasher.update(digest.as_bytes());
         hasher.update([0]);
     }
-    Some(format!("{:x}", hasher.finalize()))
+    Some(crate::shell::digest::hex(&hasher.finalize()[..]))
 }
 
 fn collect_fingerprint_parts(
@@ -1022,7 +1022,7 @@ fn collect_fingerprint_parts(
             let bytes = fs::read(&path)?;
             let mut hasher = Sha256::new();
             hasher.update(&bytes);
-            out.push((relative, format!("{:x}", hasher.finalize())));
+            out.push((relative, crate::shell::digest::hex(&hasher.finalize()[..])));
         }
     }
     Ok(())

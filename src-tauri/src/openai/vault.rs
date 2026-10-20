@@ -148,7 +148,7 @@ pub(crate) fn keyring_account(mode: &str, xlink_home: &Path) -> String {
         let mut hasher = Sha256::new();
         hasher.update(xlink_home.to_string_lossy().as_bytes());
         let full = hasher.finalize();
-        full.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        crate::shell::digest::hex(&full[..])
     };
     format!("{mode}-{}", &digest[..12])
 }

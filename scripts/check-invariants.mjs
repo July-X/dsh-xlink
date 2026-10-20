@@ -3383,6 +3383,58 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// ㉔ sha2 摘要的十六进制化必须走 `shell::digest::hex`（2026-10-20）。
+//
+// 事故：Dependabot PR #9 把 sha2 0.10.9 → 0.11.1，CI 两个 job 全红（run 39366295003）。
+// 断点**不在 sha2 的主 API**（`new` / `update` / `digest` 两版一样），而在两处 trait 消失：
+//
+//   - `format!("{:x}", hasher.finalize())`：0.11 的 `finalize()` 返回
+//     `hybrid_array::Array`，它**不再实现 `LowerHex`**（0.10 的 `GenericArray` 实现）；
+//   - `io::copy(&mut file, &mut hasher)`：0.11 **不再给摘要器实现 `io::Write`**。
+//     这条更阴——它不在摘要那一行，而在「把文件读进 hasher」那行。
+//
+// 判据扫**生产 Rust**（`productionRust` 剥掉测试块与注释），抓这两种写法。
+// 注意 `pkg/releases.rs` 的 **sha1** 摘要、`memory/store.rs` 的随机 id、
+// `openai/*` 的 key 字节都不在这两条里——它们不是 sha2 摘要，与 0.11 无关。
+{
+  const srcDir = join(root, 'src-tauri', 'src');
+  const offenders = [];
+  for (const full of walk(srcDir, ['.rs'])) {
+    const file = full.slice(srcDir.length + 1).split('\\').join('/');
+    const code = productionRust(readFileSync(full, 'utf8'));
+    code.split('\n').forEach((line, index) => {
+      // 摘要值用 `{:x}` 格式化 = 依赖 LowerHex（0.11 没了）。
+      if (
+        /format!\(\s*"\{:x\}"/.test(line) &&
+        /(finalize\(|::digest\()/.test(line)
+      ) {
+        offenders.push(
+          `${file}:${index + 1} 摘要值用了 format!("{:x}", …)（依赖 LowerHex）：${line.trim()}`,
+        );
+      }
+      // 把文件 io::copy 进摘要器 = 依赖摘要器的 io::Write（0.11 没了）。
+      if (/io::copy\s*\(/.test(line) && /hasher/.test(line)) {
+        offenders.push(
+          `${file}:${index + 1} 把文件 io::copy 进摘要器（依赖 io::Write）：${line.trim()}`,
+        );
+      }
+    });
+  }
+  if (offenders.length > 0) {
+    fail(
+      'sha2-digest-hex',
+      `${offenders.join('、')}。` +
+        'sha2 0.11 不再给摘要器实现 `LowerHex`（`format!("{:x}", …)` 编不过）' +
+        '也不再实现 `io::Write`（`io::copy(&mut file, &mut hasher)` 编不过）——' +
+        '十六进制化统一走 `crate::shell::digest::hex(&digest[..])`，' +
+        '读文件算哈希用分块 `read` + `hasher.update`（两版 sha2 都能编，' +
+        '输出逐字节相同）。',
+    );
+  } else {
+    note('sha2 摘要的十六进制化都走 shell::digest::hex：没有 LowerHex / io::Write 依赖');
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);

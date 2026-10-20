@@ -209,7 +209,7 @@ pub fn fingerprint(
         field(&id);
     }
     let digest = hasher.finalize();
-    digest.iter().take(12).map(|b| format!("{b:02x}")).collect()
+    crate::shell::digest::hex(&digest[..12])
 }
 /// 采集当前环境的快照内容（尚未编号、尚未入库）。
 pub fn capture(
@@ -521,12 +521,7 @@ mod tests {
                 hasher.update(part.as_bytes());
                 hasher.update([0x1f]);
             }
-            hasher
-                .finalize()
-                .iter()
-                .take(12)
-                .map(|b| format!("{b:02x}"))
-                .collect()
+            crate::shell::digest::hex(&hasher.finalize()[..12])
         }
         assert_ne!(digest(&["ab", "c"]), digest(&["a", "bc"]));
         assert_eq!(digest(&["a", "b"]), digest(&["a", "b"]));
