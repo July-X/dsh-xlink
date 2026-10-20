@@ -725,10 +725,60 @@ impl ShellState {
 
 #[cfg(test)]
 mod test_helpers {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    /// 用唯一前缀拿一个临时目录，便于并行测试不冲突。
-    pub(super) fn temp_dir(label: &str) -> PathBuf {
+    /// **临时目录守卫**：值即目录路径，**析构时自动清掉自己那一份**。
+    ///
+    /// **为什么要 Drop**（缺口 G-1）：旧实现返回裸 `PathBuf` ⇒ 清理只能靠每个
+    /// 用例自己记得写 `remove_dir_all` ⇒ **漏一个就漏一个目录**（实测：本文件
+    /// 15 处调用里有 **11 处没写清理** ⇒ 每跑一次 `cargo test` 就在 `%TEMP%`
+    /// 留下 11 个 `dsh-xlink-paths-*`，历史残留已 4,394 个）。
+    /// 改成「**值持有 ＋ 析构清理**」⇒ **以后新增用例自动受益**，不再靠记性。
+    ///
+    /// **只清自己那一份**（硬约束）：Drop 只删**本守卫创建的那一个**目录
+    /// （名字带 label ＋ pid ＋ 纳秒时间戳）⇒ 绝不碰别人的目录，也**绝不**
+    /// `remove_dir_all(<解析出来的家目录>)`。
+    pub(super) struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        /// 目录路径（借用）。
+        pub(super) fn path(&self) -> &Path {
+            self.path.as_path()
+        }
+    }
+
+    /// 当路径用（`join` / `display` / `starts_with` 等都按 `Path` 走）。
+    impl std::ops::Deref for TempDir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            self.path.as_path()
+        }
+    }
+
+    /// 让 `&TempDir` 能直接传给收 `&Path` / `AsRef<Path>` 的函数。
+    impl AsRef<Path> for TempDir {
+        fn as_ref(&self) -> &Path {
+            self.path.as_path()
+        }
+    }
+
+    impl std::fmt::Debug for TempDir {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "TempDir({})", self.path.display())
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            // **清理失败不许让测试失败**：目录可能已被用例自己删掉。
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// 用唯一前缀拿一个临时目录，便于并行测试不冲突（**析构时自动清理**）。
+    pub(super) fn temp_dir(label: &str) -> TempDir {
         let dir = std::env::temp_dir().join(format!(
             "dsh-xlink-paths-{}-{}-{}",
             label,
@@ -739,7 +789,7 @@ mod test_helpers {
                 .unwrap_or(0)
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        TempDir { path: dir }
     }
 }
 
@@ -748,6 +798,23 @@ mod tests {
     use super::*;
     use crate::tests::{scoped_dsh_home, scoped_xlink_home, scoped_xlink_home_unset};
     use test_helpers::temp_dir;
+
+    /// 临时目录必须**自动清理**（缺口 G-1）：旧实现返回裸 `PathBuf` ⇒ 清理
+    /// 只能靠用例自己记得写 `remove_dir_all` ⇒ **漏一个就漏一个目录**（实测
+    /// 11 处调用没写清理 ⇒ 每跑一次 `cargo test` 漏 11 个 `dsh-xlink-paths-*`）。
+    /// 这里钉住「**值一析构，目录就没了**」⇒ 以后新增用例自动受益。
+    #[test]
+    fn temp_dir_is_removed_when_the_value_is_dropped() {
+        let path = {
+            let dir = temp_dir("drop-cleanup");
+            dir.path().to_path_buf()
+        };
+        assert!(
+            !path.exists(),
+            "临时目录必须随值析构一起被清掉：{}",
+            path.display()
+        );
+    }
 
     /// release / dev 共用根目录，但路径不再重复。
     #[test]
@@ -787,7 +854,6 @@ mod tests {
         assert!(a_ext.ends_with(format!("extensions/plugins/{plugin}")));
         assert!(instance_extension_meta_file("dsh", "a", plugin).ends_with(".dsh-meta.json"));
         assert!(instance_wiring_file("dsh", "a").ends_with("extensions/wiring.json"));
-        std::fs::remove_dir_all(&home).ok();
     }
 
     /// P4 路径：实例 profile 目录必须严格走 `instance_dsh_home`，不能
@@ -801,7 +867,6 @@ mod tests {
         assert!(p.ends_with("profiles/web"));
         // 反过来：不应回退到旧 data_dir 拼接
         assert!(!p.starts_with(home.join(".dsh").join("desktop")));
-        std::fs::remove_dir_all(&home).ok();
     }
 
     /// `DSH_XLINK_HOME` 必须覆盖默认值。
@@ -809,7 +874,7 @@ mod tests {
     fn dsh_xlink_home_overrides_default() {
         let fake = temp_dir("override");
         let _home = scoped_xlink_home(&fake);
-        assert_eq!(xlink_home(), fake);
+        assert_eq!(xlink_home(), fake.path());
         // 子路径仍以 override 为根。
         assert!(shell_settings_file(ShellMode::Release).starts_with(&fake));
     }
@@ -833,8 +898,8 @@ mod tests {
         let dsh_dir = temp_dir("dsh-only");
         let _xlink = scoped_xlink_home(&xlink_dir);
         let _dsh = scoped_dsh_home(&dsh_dir);
-        assert_eq!(xlink_home(), xlink_dir);
-        assert_eq!(legacy_dsh_home(), dsh_dir);
+        assert_eq!(xlink_home(), xlink_dir.path());
+        assert_eq!(legacy_dsh_home(), dsh_dir.path());
         // 新路径完全在 xlink_dir 下，与 dsh_dir 无关。
         assert!(shell_settings_file(ShellMode::Release).starts_with(&xlink_dir));
         // legacy 路径完全在 dsh_dir 下，与 xlink_dir 无关。
@@ -940,7 +1005,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "kernel family must be valid for path use")]
     fn family_runtime_dir_rejects_invalid_family() {
-        let _home = scoped_xlink_home(&temp_dir("family-invalid"));
+        // **临时目录必须活到用例结束**（G-1 的 `TempDir` 析构即删目录）⇒
+        // 这里必须先绑定成局部变量，不能把 `temp_dir(..)` 写成临时值直接传参。
+        let invalid_home = temp_dir("family-invalid");
+        let _home = scoped_xlink_home(&invalid_home);
         let _ = family_runtime_dir("../escape", ShellMode::current());
     }
 
@@ -1155,8 +1223,5 @@ mod integration_paths_tests {
         std::fs::create_dir_all(project_dsh.join("xlink-shadow-only-in-active")).unwrap();
         let shadowed = shadowing_skill_entries(&active, &home);
         assert_eq!(shadowed.len(), 2, "目录形态也要报出：{shadowed:?}");
-
-        std::fs::remove_dir_all(&xlink_dir).ok();
-        std::fs::remove_dir_all(&home).ok();
     }
 }
