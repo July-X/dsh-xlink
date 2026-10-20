@@ -184,9 +184,25 @@ async function waitSettled(probe, ref, timeoutMs = 15000) {
  * @param {string} [options.hostDir] - **host 半边目录**（活体注入时指向**副本**）。
  *   目录里要有 `index.js` / `commands.js` / `rpc.js` / `seq-store.js` / `protocol.js`
  *   ——它们之间的相对 import 在副本里同样成立，所以「对真实实现副本注入」能跑通。
+ * @param {number} [options.now] - **冻结时钟**（毫秒）。不给就是**实时**
+ *   （P1 判据的口径一个字不变）。P2 §1.1 的键含 `capturedAt`（毫秒精度）⇒
+ *   两次独立捕获几乎必然不同 ⇒ 「同组」场景必须冻结时间才造得出来。
+ * @param {number} [options.bodyBytes] - **每条正文的字节数**（造大正文用；
+ *   不给就是默认正文）。P2 §4 的预算预检要 `projectedBytes > 262144`。
+ * @param {'transport'|'command'} [options.failDuplicates] - 让 `duplicates`
+ *   端点失败（P2 §2.3 的失败口径）。不给就不注入。
  * @returns {Promise<object>} adapter。
  */
-export async function createAdapter({ home, tag = 'adapter', host, clientSourcePath, hostDir } = {}) {
+export async function createAdapter({
+  home,
+  tag = 'adapter',
+  host,
+  clientSourcePath,
+  hostDir,
+  now,
+  bodyBytes,
+  failDuplicates,
+} = {}) {
   // **host 半边的模块来源**：默认仓库里那份；`hostDir` 给了就用那份目录
   // （活体注入用——注入打在**副本**上，原实现一个字节都不碰）。
   const hostRoot = hostDir === undefined ? HOST_DIR_URL : pathToFileURL(`${hostDir}/`);
@@ -200,6 +216,9 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
   const rpcModule = await import(new URL('rpc.js', hostRoot).href);
   // **序号分配器**（协议 v0.2 S-1：id 分配权归 host，client 不得自造 seq）。
   const seqModule = await import(new URL('seq-store.js', hostRoot).href);
+  // **协议层模块**（P2 §1.2 的 `groupKeyOf` 在这里）：与 host 半边同一份副本 ⇒
+  // 活体注入打在副本上时，被测的组标识函数也跟着变。
+  const protocolModule = await import(new URL('protocol.js', hostRoot).href);
 
   /** 当前这一轮实例的状态。 */
   let client = null;
@@ -212,6 +231,24 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
   let fetchCount = 0;
   let throwInternalError = false;
   let failCatalog = false;
+
+  /**
+   * **时钟**（P2 判据用）。
+   *
+   * 默认 `null` = **实时**（P1 判据的口径一个字都不变）；给了 `now` 就**冻结**
+   * （`setNow()` 可改）——P2 §1.1 的判定键含 `capturedAt`（毫秒精度）⇒
+   * 两次独立捕获几乎必然不同 ⇒ 「同组成立」这个场景**必须**冻结时间才造得出来。
+   */
+  let frozenNow = typeof now === 'number' ? Number(now) : null;
+  const clock = () => (frozenNow === null ? Date.now() : frozenNow);
+
+  /**
+   * **`duplicates` 的失败注入模式**（P2 §2.3）。
+   *
+   * `null` = 不注入；`'transport'` = 送不到（HTTP 500）；`'command'` = 命令
+   * 自己说失败（`{ok:false, code, …}` 的错误负载）。
+   */
+  let failMode = typeof failDuplicates === 'string' ? failDuplicates : null;
 
   /**
    * **清理器替身**（协议 §4.1 第 1 条的**触发点**判据要用）。
@@ -258,7 +295,13 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
 
   /** 客户端按会话取到的正文（host 半边取数，正文不经过客户端 → 没有第二份真相）。 */
   function bodyFor(sessionId) {
-    return `【判据正文】${String(sessionId ?? '')}\n第二行固定正文。`;
+    const base = `【判据正文】${String(sessionId ?? '')}\n第二行固定正文。`;
+    // **P2 §4 的预算预检要「正文大到超预算」**（`bodyBytes` 给了才造）。
+    // 补的是 ASCII ⇒ 字节数 = 字符数 ⇒ 目标字节数**精确**。
+    if (!Number.isInteger(bodyBytes) || bodyBytes <= 0) return base;
+    const need = bodyBytes - Buffer.byteLength(base, 'utf8');
+    if (need <= 0) return base;
+    return `${base}${'A'.repeat(need)}`;
   }
 
   /**
@@ -317,9 +360,54 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
     if (!route.methods.includes(method)) {
       return new Response('method not allowed', { status: 405 });
     }
+    // **P2 §2.3 的失败注入**（默认 `failMode === null` ⇒ **完全不影响**既有行为）。
+    const injected = injectDuplicatesFailure(init);
+    if (injected !== undefined) return injected;
     const request = new Request(url.toString(), { ...init, method });
     return await route.fetch(request);
   };
+
+  /**
+   * `duplicates` 端点的**失败注入**（P2 §2.3 的失败口径）。
+   *
+   * · `'transport'` —— **送不到**（HTTP 500）：客户端抛 `host_unreachable`。
+   * · `'command'` —— **命令自己说失败**：`{ok:false, code, …}` 的错误负载
+   *   （字段照 P1 §3 的闭集；客户端在 `value.ok === false` 分支抛，码进
+   *   `failure.code`）。
+   *
+   * **两种形态都按真实协议负载构造**：注入的是**对端真会收到的那种东西**，
+   * 不是「随便一个异常」——否则测的就不是「客户端怎么处理失败」了。
+   *
+   * @param {object} init - fetch init（`body` 是 RPC 信封的 JSON 串）。
+   * @returns {Response|undefined} 注入的响应；不注入时返回 `undefined`。
+   */
+  function injectDuplicatesFailure(init) {
+    if (failMode === null) return undefined;
+    let envelope = null;
+    try {
+      envelope = JSON.parse(String(init?.body ?? ''));
+    } catch {
+      return undefined;
+    }
+    if (envelope?.method !== 'duplicates') return undefined;
+    if (failMode === 'transport') {
+      return new Response('判据注入：duplicates 端点故障', { status: 500 });
+    }
+    const rpcId = String(envelope?.rpcId ?? '');
+    const value = {
+      ok: false,
+      code: 'snapshot_invalid',
+      retryable: false,
+      userNext: '移除该引用',
+      requestId: rpcId,
+      logPath: null,
+      detail: '判据注入：duplicates 命令失败',
+    };
+    return new Response(
+      JSON.stringify({ type: 'server-response', rpcId, result: { ok: true, value } }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  }
 
   /**
    * 经**注册好的那条 exact route**调一个命令。
@@ -432,7 +520,8 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
       // **为什么不用真的**：真 sweeper 会在别的判据跑的时候删盘上的文件 ⇒
       // 判据之间互相污染（A17 / A18 各自自建独立实例，不受这里影响）。
       sweeper: sweeperSpy,
-      now: () => Date.now(),
+      // **时钟**（P2 判据冻结时间用；默认实时 ⇒ P1 口径不变）。
+      now: clock,
     });
     // 命令层的 capture 计数（用于「失效后是否静默重读」）。
     const originalCapture = commands.capture;
@@ -963,6 +1052,228 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
       });
       const parsed = JSON.parse(String(stdout).trim());
       return { seq: Number(parsed?.seq ?? 0), snapshotId: String(parsed?.snapshotId ?? '') };
+    },
+
+    // ---------------------------------------------------------------------
+    // P2 协议（§1.1 / §1.2 / §2.2 / §2.3 / §4）的观测口
+    //
+    // **这一段全部是可选的**：不给选项时行为与 P1 判据完全一致。
+    // ---------------------------------------------------------------------
+
+    /**
+     * 客户端探针事件（客户端自己写进 globalThis 的事件表）。
+     *
+     * @returns {Array<object>}
+     */
+    probeEvents() {
+      return [...(client.probe?.events ?? [])];
+    },
+
+    /**
+     * 客户端的**可见提示**（P2 §3.2）。
+     *
+     * 每条 = `{kind, level, text, groups, budget, trigger, delivered}`：
+     *
+     * · `delivered === true` ⇒ 这条提示**经输入区通道投出去了**
+     *   （内核 `conversation.input.for(actx).notify(level, text)`）
+     *   ⇒ **承载位 = 输入区常驻条**（协议 §3.2；`error` 档只弹瞬态 toast）。
+     * · `groups` / `budget` = 提示里的**结构化数据**——判据判**数据**，
+     *   不判文案措辞（UX 文案未定稿）。
+     *
+     * **为什么用「同一条文案」把两处记录对上**：结构化提示与承载位投递是
+     * 客户端**两次记录**（一次 `record('notice', …)`、一次 `notify(…)`），
+     * 两处的 `text` 是同一个字符串 ⇒ 用它当连接键。
+     *
+     * @returns {Array<object>}
+     */
+    visibleNotices() {
+      const delivered = new Set(client.notices.map((n) => String(n?.text ?? '')));
+      const out = [];
+      for (const event of client.probe?.events ?? []) {
+        if (typeof event?.text !== 'string' || typeof event?.level !== 'string') continue;
+        // 「承载位投递」那条记录（`kind === 'notify'`）单独算，不重复列。
+        if (event.kind === 'notify') continue;
+        // **只认「提示」**：结构化提示带 `groups` / `budget` / `trigger` 之一。
+        if (event.groups === undefined && event.budget === undefined && event.trigger === undefined) {
+          continue;
+        }
+        out.push({
+          kind: String(event.kind === 'notice' ? (event.noticeKind ?? '') : (event.kind ?? '')),
+          level: String(event.level ?? ''),
+          text: String(event.text ?? ''),
+          groups: event.groups ?? null,
+          budget: event.budget ?? null,
+          trigger: event.trigger ?? null,
+          delivered: delivered.has(String(event.text ?? '')),
+        });
+      }
+      return out;
+    },
+
+    /**
+     * 冻结时钟（毫秒）。P2 §1.1 的键含 `capturedAt` ⇒ 造「同组」必须冻结。
+     *
+     * @param {number} ms
+     */
+    setNow(ms) {
+      frozenNow = Number(ms);
+    },
+
+    /**
+     * **本轮造的正文目标字节数**（`bodyBytes` 选项；没给就是 `null`）。
+     *
+     * P2 §3.3「不得截断正文来绕过超限」这条要断「落盘正文 == 完整原文」，
+     * 而「完整原文有多长」是**造输入时定的** ⇒ 判据从这儿取，不许自己猜。
+     *
+     * @returns {number|null}
+     */
+    configuredBodyBytes() {
+      return Number.isInteger(bodyBytes) && bodyBytes > 0 ? bodyBytes : null;
+    },
+
+    /** 恢复实时时钟。 */
+    releaseNow() {
+      frozenNow = null;
+    },
+
+    /**
+     * 在「`duplicates` 端点失败」的状态下跑一段逻辑（P2 §2.3）。
+     *
+     * @param {'transport'|'command'} mode - 失败形态。
+     * @param {() => Promise<unknown>} run
+     * @returns {Promise<unknown>}
+     */
+    async withFailingDuplicates(mode, run) {
+      const saved = failMode;
+      failMode = String(mode ?? '');
+      try {
+        return await run();
+      } finally {
+        failMode = saved;
+      }
+    },
+
+    /**
+     * 命令层的 `duplicates`（经**注册好的 exact route**，不走直连）。
+     *
+     * 返回值已归一：`{ok, groups, budget, code, error}`——
+     * · `ok === true` ⇒ `groups` / `budget` 是协议 §2.2 的出参；
+     * · `ok === false` ⇒ `code` 是**闭集内**的码（P1 §3；闭集外的码在实现侧
+     *   已归入 `snapshot_invalid`、原码进 `detail`），`error` 是 RPC 层翻译后的
+     *   错误负载（`{code, message, details}`，`details` 里带 `detail` / `retryable`
+     *   / `userNext` / `requestId` / `logPath`）。
+     *
+     * @param {{sessionId: string, snapshotIds: string[]}} request
+     * @returns {Promise<{ok: boolean, groups: Array<object>, budget: object|null,
+     *   code: string|null, error: object|null}>}
+     */
+    async duplicatesFor({ sessionId, snapshotIds } = {}) {
+      const result = await callThroughRoute('duplicates', {
+        sessionId: String(sessionId ?? ''),
+        snapshotIds: Array.isArray(snapshotIds) ? snapshotIds : [],
+        requestId: 'p2-check',
+      });
+      if (result?.ok === true) {
+        const value = result.value ?? {};
+        return {
+          ok: value?.ok === true,
+          groups: Array.isArray(value?.groups) ? value.groups : [],
+          budget: value?.budget ?? null,
+          code: null,
+          error: null,
+        };
+      }
+      return {
+        ok: false,
+        groups: [],
+        budget: null,
+        code: String(result?.error?.code ?? ''),
+        error: result?.error ?? null,
+      };
+    },
+
+    /**
+     * **命令层**直调 `duplicates`（**不经 RPC 翻译**）⇒ 拿到**协议 §2.2 的原始错误负载**。
+     *
+     * ## 为什么要直连命令层
+     *
+     * RPC 层（`host/rpc.js` 的 `toRpcError`）会把错误负载翻译成
+     * `{code, message, details}` ⇒ **`kind` 这一字段穿不过去** ⇒ 要断 P1 §3 `:161`
+     * 的 **8 字段闭集**（`kind`/`ok`/`code`/`retryable`/`userNext`/`requestId`/
+     * `logPath`/`detail`），只能在**命令层**断。
+     *
+     * **这不是「绕过 exact route」**：A0s 禁的是**客户端→host 的传输通道**直连
+     * （要证明内核那条路真的注册上了）；这里断的是**命令层自己的返回形态**，
+     * 与 `host-commands.test.mjs` 同款。
+     *
+     * @param {object} request - `duplicates` 的入参。
+     * @returns {Promise<object>} 命令层的原始返回。
+     */
+    async duplicatesCommandLayer(request = {}) {
+      return commands.duplicates(request);
+    },
+
+    /**
+     * 造一份**五字段可控**的快照（P2 §1.1 的键）。
+     *
+     * **这是造输入，不是造标准答案**：期望的「成组 / 不成组」由判据**自己**
+     * 按协议 §1.1 算（五字段全等 ⇒ 成组），不 import 实现的分组逻辑。
+     *
+     * `sourceFingerprint` 按 host 的口径（`sha256(accountScope)` 前 32 位）算——
+     * 那是**输入**（存储层的指纹比对），不是期望值。
+     *
+     * @param {object} [fields]
+     * @returns {object} 快照对象。
+     */
+    makeSnapshot({
+      seq = 1,
+      sessionId = 'p2-craft-session',
+      branch = 'main',
+      accountScope = scope.accountScope,
+      capturedAt = '2026-10-20T00:00:00.000Z',
+      text = 'P2 判据正文。',
+    } = {}) {
+      const scopeText = String(accountScope ?? '').trim();
+      const fingerprint =
+        scopeText === ''
+          ? ''
+          : createHash('sha256').update(scopeText, 'utf8').digest('hex').slice(0, 32);
+      return commands.buildSnapshot({
+        providerId: 'ds',
+        accountScope: String(accountScope ?? ''),
+        sessionId: String(sessionId ?? ''),
+        branch: String(branch ?? 'main'),
+        seq: Number(seq),
+        messages: [{ role: 'user', text: String(text ?? '') }],
+        captureResult: { status: 'ok', omitted: [], unsupported: [] },
+        capturedAt: String(capturedAt ?? ''),
+        sourceUpdatedAt: String(capturedAt ?? ''),
+        sourceFingerprint: fingerprint,
+      });
+    },
+
+    /**
+     * 把一份快照**落盘**（命令层场景用：造「盘上真有这条」）。
+     *
+     * @param {object} snapshot
+     * @returns {object} store 的返回值。
+     */
+    saveSnapshot(snapshot) {
+      return store.save(snapshot);
+    },
+
+    /**
+     * 实现侧的**组标识函数**（协议 §1.2）。
+     *
+     * **是被测对象，不是标准答案**：判据只用它断「同组成员的标识一致 /
+     * 不同键的标识不同 / 标识形状」，**以及**（协议 v0.3 把分隔符裁定为单个
+     * 换行 U+000A 之后）**与判据自己按 §1.2 独立算出的值是否相等**。
+     *
+     * @param {object} snapshot
+     * @returns {string}
+     */
+    groupKeyOf(snapshot) {
+      return String(protocolModule.groupKeyOf(snapshot));
     },
 
     /** 收尾：删掉一次性临时目录。 */

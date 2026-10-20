@@ -85,6 +85,7 @@ import {
   verdict,
 } from './lib/p1-protocol.mjs';
 import { createAdapter } from './lib/p1-adapter.mjs';
+import { runRustFixturePayload } from './lib/rust-fixture-runner.mjs';
 import {
   findDataDirectoryViolationsInFiles,
   findProfileViolationsInFiles,
@@ -1302,23 +1303,15 @@ function runRustFixtures() {
  * 协议 §6：「`schemaVersion` **两端常量必须一致**」——只跑夹具结果的话这条
  * 没人验，所以 example 一并输出常量与码表（`src-tauri/examples/p1_protocol_fixture.rs`）。
  *
+ * **实现走共享模块**（`scripts/lib/rust-fixture-runner.mjs`）：exe 路径与「产物
+ * 不存在 ⇒ `undefined`」这两件事**只能有一处定义**——P1 的 A1c 与 P2 的跨语言
+ * 判据（`P2-D`）都要读它，两份拷贝迟早漂移，而漂移的表现是
+ * 「某一端静默地没被判到」（最坏的一种假绿）。
+ *
  * @returns {{schemaVersion?: number, constants?: object, errorCodes?: object, cases?: Array}|undefined}
  */
 function runRustPayload() {
-  const exe = process.platform === 'win32' ? 'p1_protocol_fixture.exe' : 'p1_protocol_fixture';
-  const bin = join(REPO, 'src-tauri', 'target', 'debug', 'examples', exe);
-  if (!existsSync(bin)) return undefined;
-  try {
-    const stdout = execFileSync(bin, [], {
-      cwd: REPO,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    const parsed = JSON.parse(stdout.trim());
-    return parsed !== null && typeof parsed === 'object' ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
+  return runRustFixturePayload(REPO);
 }
 
 async function main() {

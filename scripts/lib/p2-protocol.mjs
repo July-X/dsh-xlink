@@ -1,0 +1,1374 @@
+// P2 协议判据库（协议稿 `docs/features/official-chat/official-chat-p2-protocol.md`
+// v0.5 §5 的**六条验收判据** ＋ 三条**表外条**）。
+//
+// ## 与 P1 判据库的关系
+//
+// **独立成一套**（本文件不动 P1 的任何判据）。但 P1 立下的纪律一条不松：
+//
+//  · **三态 verdict**：`pass` / `fail` / `skipped`（未执行）。
+//    「没触发到被测路径」必须显式报 `skipped`，不能省略、也不能记成 `fail`
+//    ——否则「这条没测到」和「这条测了没过」在结果里长得一样。
+//  · **期望值从协议稿逐条转写**，**不 import 任何实现模块**。
+//    实现侧的 `groupKeyOf` / `duplicates` 这些函数**只作为被测对象**经
+//    adapter 调用；「成组 / 不成组」的期望由本库**按 §1.1 的五字段规则
+//    自己算**（`sameGroupByProtocol`），不拿实现的输出当标准答案。
+//  · **判据自己红了改判据不改实现**：本文件抛错一律报「判据自身：…」
+//    （与「实现尚未到位」区分开，见交付回执里的逐条归因）。
+//
+// ## 判据与协议条款的对应
+//
+// | 判据 | 协议条款 | 判什么 |
+// | --- | --- | --- |
+// | `P2-1` | §5 第 1 行 / §1.1 / §1.2 / §1.3 | 同组 ⇒ 仍是两个不同 `snapshotId`、都落盘、都可发；组标识**钉具体值** |
+// | `P2-2` | §5 第 2 行 / §3.1-1 / §3.2 | 提示可见、可复查（输入区常驻条）、`level=info`、含条数与字节数；**再动一次引用可复现**（v0.5） |
+// | `P2-3` | §5 第 3 行 / §1.1 | `capturedAt` 不同 ⇒ 不成组（负例） |
+// | `P2-4` | §5 第 4 行 / §1.1 | `accountScope` / `branch` 不同 ⇒ 不成组（负例） |
+// | `P2-5` | §5 第 5 行 / §4 / §3.3 | 超预算 ⇒ 发送前出现预算提示、**正文未被截断** |
+// | `P2-6` | §5 第 6 行 / §2.3 | `duplicates` 失败 ⇒ 可见错误 ＋ **不额外拦截发送** ＋ **原码留痕** ＋ 码在闭集内 |
+//
+// **表外三条**（§5 的表只有六行，但协议正文另有硬条款 ⇒ 各落一条）：
+//
+// | 判据 | 协议条款 | 判什么 |
+// | --- | --- | --- |
+// | `P2-C` | §2.2 / P1 §3 `:161` | 错误结果对象 = **8 字段闭集**（命令层逐字段断） |
+// | `P2-D` | §1.2 / §5「夹具」条款 | 同一组夹具：**协议独立转写 ＝ JS ＝ Rust** 三方 `groupKey` 一致 |
+// | `P2-F` | §5「夹具」条款 | 夹具 `expected.groupKey` 与协议 §1.1 / §1.2 一致 |
+//
+// ## 三个「口径未定 ⇒ 判据不钉」的地方（避免假红）
+//
+// 1. **`groupKey` 的具体值**：~~分隔符口径待 PM 裁定 ⇒ 只断形状/稳定/区分~~
+//    ⇒ **已闭环**：协议 v0.3 把分隔符裁定为**单个换行 U+000A、不含空格**
+//    ⇒ 期望值可从协议稿独立转写 ⇒ 判据现在**钉具体值**（`expectedGroupKey`）。
+// 2. **提示文案**：UX 文案未定稿 ⇒ 判**结构化数据**（组 / 条数 / 字节数）为主；
+//    只有 §3.2 明确要求的「条数与字节数写在同一条文案里」才落到文案上。
+//    **协议 v0.5 又加一条硬要求**：文案**自包含**（不依赖另一条还在）＋
+//    **不得假设提示会一直在** ⇒ 判据断「**再动一次引用可复现**」
+//    （见 `checkP2_2_duplicateNoticeVisible`）。
+// 3. **原生 `@session` 占用**：§4 说 `projectedBytes` 要加上它，但 host 结构上
+//    拿不到草稿 ⇒ **协议 v0.3 已裁定按 0 计**（方向＝宁可少报不误报）
+//    ⇒ 判据只判「各引用各送一份的总字节」这一项。
+//
+// @module scripts/lib/p2-protocol
+
+import { createHash } from 'node:crypto';
+
+import { ERROR_CODES } from './p1-protocol.mjs';
+
+/** verdict 三态。 */
+export const PASS = 'pass';
+export const FAIL = 'fail';
+export const SKIPPED = 'skipped';
+
+/**
+ * 造一条 verdict。
+ *
+ * @param {string} name - 判据名（`P2-{n}-{条款}` 形式，便于回指协议）。
+ * @param {string} status - `pass` / `fail` / `skipped`。
+ * @param {string} detail - 人读的一句话（失败时必须写清**缺哪条协议**）。
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function verdict(name, status, detail) {
+  return { name, status, detail: String(detail) };
+}
+
+/**
+ * 汇总计数（与 P1 判据的产物同构）。
+ *
+ * @param {Array<{status: string}>} results
+ * @returns {{total: number, pass: number, fail: number, skipped: number}}
+ */
+export function summarize(results) {
+  const list = Array.isArray(results) ? results : [];
+  return {
+    total: list.length,
+    pass: list.filter((r) => r?.status === PASS).length,
+    fail: list.filter((r) => r?.status === FAIL).length,
+    skipped: list.filter((r) => r?.status === SKIPPED).length,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 协议期望表（**逐条转写自协议稿 v0.2**，不 import 实现）
+// ---------------------------------------------------------------------------
+
+/**
+ * §1.1 的**判定键**（五字段）。
+ *
+ * 「五字段任一不同 ⇒ 不是同一组」——本库据此**自己算**成组与否。
+ */
+export const GROUP_KEY_FIELDS = Object.freeze([
+  'accountScope',
+  'sessionId',
+  'branch',
+  'capturedAt',
+  'contentDigest',
+]);
+
+/**
+ * §1.2 的**组标识形状**（16 位小写十六进制）。
+ *
+ * 只判形状，**不判具体值**（分隔符口径待 PM 裁定）。
+ */
+export const GROUP_KEY_SHAPE = /^[0-9a-f]{16}$/;
+
+/**
+ * §1.2 的**字段连接符**（协议 v0.3 裁断：**单个换行 U+000A、不含空格**）。
+ *
+ * **为什么现在能钉死**：v0.1 时协议原文的行内代码里 `\n` 两侧有空格 ⇒ 分隔符
+ * 口径未定 ⇒ 判据只能断形状/稳定/区分。v0.3 已裁定 ⇒ 期望值**可以**从协议稿
+ * 独立转写出来 ⇒ 判据得以钉**具体值**（见 `expectedGroupKey`）。
+ */
+export const GROUP_KEY_SEPARATOR = '\n';
+
+/**
+ * 按协议 §1.2 **独立算出**组标识（**判据自算，不 import 实现当标准答案**）。
+ *
+ * `sha256(accountScope ␊ sessionId ␊ branch ␊ capturedAt ␊ contentDigest)`
+ * 的**前 16 位小写十六进制**（␊ = 单个换行 U+000A，不含空格）。
+ *
+ * @param {object} snapshot - 快照对象。
+ * @returns {string} 16 位小写十六进制组标识。
+ */
+export function expectedGroupKey(snapshot) {
+  const text = GROUP_KEY_FIELDS.map((field) => String(snapshot?.[field] ?? '')).join(GROUP_KEY_SEPARATOR);
+  return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 16);
+}
+
+/** §2.2 / §4 的单次消息总预算（P1 §4 的常量，字节）。 */
+export const PER_MESSAGE_BUDGET_BYTES = 262144;
+
+/**
+ * P1 §3 的 **13 码闭集**（P2 §2.2 明写「沿用」）。
+ *
+ * **为什么直接 import P1 判据库的表**：闭集**只能有一份**——两份拷贝迟早漂移，
+ * 而「闭集」这件事的全部价值就在于它是**同一个集合**。
+ * （import 的是**常量表**，不碰 P1 的任何判据。）
+ */
+export const CLOSED_ERROR_CODES = Object.freeze(Object.keys(ERROR_CODES));
+
+/**
+ * P1 §3 `:161` 的**错误结果对象字段闭集**（**8 个，全部必备、不省略**）。
+ *
+ * P2 §2.2 明写「失败出参沿用 P1 §3 的 13 码闭集与错误结果对象闭集（**字段集以
+ * P1 §3 `:161` 为准**，**本稿不复述字段个数**）」⇒ **这里就是那一份**。
+ *
+ * · 规则：**8 个字段一律出现**，不可得时填 **`null`**（**不省略字段、不填空串**）；
+ * · 错误路径 `ok` 恒 `false`；`code` 取 **13 码闭集**；
+ * · `detail` 承载脱敏后的原始码与原因线索。
+ *
+ * **为什么本库自己转写而不 import P1 的**：P1 判据库里没有这个常量（那边不判
+ * 字段闭集）⇒ 本库**转写**一份，**并在 P2-C 判据里逐字段核对**。
+ * （闭集与 13 码表一样，**只能有一份真相** ⇒ 13 码表是 import P1 的，
+ * 字段闭集因 P1 侧没有对应物而在此转写 —— 两者的理由都写在各自注释里。）
+ */
+export const ERROR_RESULT_FIELDS = Object.freeze([
+  'kind',
+  'ok',
+  'code',
+  'retryable',
+  'userNext',
+  'requestId',
+  'logPath',
+  'detail',
+]);
+
+/**
+ * 按协议 §1.1 判两条快照**是否同组**（**判据自算**）。
+ *
+ * 这是「标准答案」的来源：实现返回什么**不影响**这个函数的结论。
+ *
+ * @param {object} a - 快照对象。
+ * @param {object} b - 快照对象。
+ * @returns {boolean}
+ */
+export function sameGroupByProtocol(a, b) {
+  return GROUP_KEY_FIELDS.every((field) => String(a?.[field] ?? '') === String(b?.[field] ?? ''));
+}
+
+/**
+ * 取一次正文（**把「取不到」变成一个可判的事实**）。
+ *
+ * **为什么不让它抛**：内核在发送路径上 await `serialize`，读取失败 / 快照失效时
+ * 它会 **reject**——那正是「发不出去」的实现事实 ⇒ 判据必须把它断成**红**，
+ * 而不是自己抛错（那会被当成「判据自身的问题」，归因就错了）。
+ *
+ * @param {object} adapter
+ * @param {string} ref
+ * @returns {Promise<{ok: boolean, body: string, error: string}>}
+ */
+async function trySerialize(adapter, ref) {
+  try {
+    return { ok: true, body: String(await adapter.serialize(ref)), error: '' };
+  } catch (error) {
+    return { ok: false, body: '', error: String(error?.message ?? error) };
+  }
+}
+
+/**
+ * 判据自身的抛错兜底包装。
+ *
+ * **与「实现尚未到位」区分开**：本文件抛错一律带「判据自身：」前缀 ⇒
+ * 交付回执里能一眼分清「是判据的问题」还是「是实现的问题」。
+ *
+ * @param {string} name
+ * @param {() => Promise<{status: string, detail: string}>} run
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+async function guard(name, run) {
+  try {
+    const result = await run();
+    return verdict(name, result.status, result.detail);
+  } catch (error) {
+    return verdict(name, FAIL, `判据自身：抛错 ${String(error?.stack ?? error)}`);
+  }
+}
+
+/**
+ * 等某一条提示出现（客户端的核对是**异步**的：选中引用后才去问 host）。
+ *
+ * @param {object} adapter
+ * @param {string} kind - 提示的 kind（`duplicate-groups` / `budget-exceeded` / `duplicates-failed`）。
+ * @param {object} [options]
+ * @param {number} [options.from] - 只看第 `from` 条**之后**的提示（区分场景）。
+ * @param {number} [options.timeoutMs]
+ * @returns {Promise<object|undefined>}
+ */
+async function waitForNotice(adapter, kind, { from = 0, timeoutMs = 2500 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const notices = (adapter.visibleNotices?.() ?? []).slice(from);
+    const hit = notices.find((notice) => String(notice?.kind ?? '') === kind);
+    if (hit !== undefined) return hit;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return undefined;
+}
+
+/**
+ * 等「**带出预算事实**」的那条提示出现。
+ *
+ * **按数据找，不按 kind 找**：协议 §3.1-2 要求的是「出现预算提示」，
+ * **不是**某一种 kind 名；而且内核 notice 是**单槽**（最新一条覆盖旧条）⇒
+ * 实现可能把预算信息**并进**同组提示里。
+ *
+ * @param {object} adapter
+ * @param {object} [options]
+ * @param {number} [options.from]
+ * @param {number} [options.timeoutMs]
+ * @returns {Promise<object|undefined>}
+ */
+async function waitForBudgetNotice(adapter, { from = 0, timeoutMs = 2500 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const notices = (adapter.visibleNotices?.() ?? []).slice(from);
+    const hit = notices.find((notice) => notice?.budget?.wouldExceed === true);
+    if (hit !== undefined) return hit;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return undefined;
+}
+
+/**
+ * 提示的**承载位**检查（协议 §3.2）。
+ *
+ * · `delivered` ⇒ 这条提示经**输入区通道**投出去了
+ *   （内核 `conversation.input.for(actx).notify(level, text)`）
+ *   ⇒ 承载位 = 输入区常驻条（不是浏览器 toast）。
+ * · `level === 'info'` ⇒ 内核渲染 inline 常驻条（`error` 档只弹瞬态 toast，
+ *   见协议 §3.2 引的内核契约）⇒ **可复查**。
+ *
+ * @param {object} notice
+ * @returns {{ok: boolean, why: string}}
+ */
+function checkNoticeCarrier(notice) {
+  if (notice?.delivered !== true) {
+    return { ok: false, why: '提示没经输入区通道投递 ⇒ 用户看不见（协议 §3.2：承载位 = 输入区常驻条）' };
+  }
+  if (String(notice?.level ?? '') !== 'info') {
+    return {
+      ok: false,
+      why:
+        `提示档位是 ${String(notice?.level ?? '')}——协议 §3.2 要求本批所有提示用 info 档` +
+        '（error 档内核只弹瞬态 toast ⇒ 当场违反「不接受瞬态 toast」）',
+    };
+  }
+  return { ok: true, why: '' };
+}
+
+/**
+ * 断「**文案自包含**」（协议 §3.2）。
+ *
+ * 内核 notice 是**单槽**（最新一条覆盖旧条），而且内核随时可能发一条 error
+ * notice 把我们的 inline 条**整个顶掉**（协议 v0.5 §3.2 的第六处裁定）⇒
+ * **每一条提示都必须自包含全部事实**，不能依赖「另一条还在」或「内核没插一脚」。
+ *
+ * 只判**数字在不在**，不判措辞（成品文案由 UX 定稿，协议 §3.2 不锁措辞）。
+ *
+ * @param {string} text - 提示文案。
+ * @param {{members: number, redundant: number}} facts - 该条提示必须带的事实。
+ * @returns {{ok: boolean, why: string}}
+ */
+function checkSelfContainedText(text, { members, redundant }) {
+  if (!String(text ?? '').includes(String(members))) {
+    return { ok: false, why: '提示文案里没有同组条数（协议 §3.2：文案必须自包含）' };
+  }
+  if (!String(text ?? '').includes(String(redundant))) {
+    return { ok: false, why: '提示文案里没有字节数（协议 §3.2：文案必须自包含）' };
+  }
+  return { ok: true, why: '' };
+}
+
+// ---------------------------------------------------------------------------
+// P2-1｜同组 ⇒ 仍是两个不同 snapshotId、都落盘、都可发
+// ---------------------------------------------------------------------------
+
+/**
+ * P2-1｜§5 第 1 行 / §1.1 / §1.2 / §1.3。
+ *
+ * **同组（键全等）⇒ 仍是两个不同 `snapshotId`、都落盘、都可发**——
+ * 不得退化成「复用旧 id」（那会把两次捕获事实抹成一次）。
+ *
+ * ## 为什么**冻结时钟**
+ *
+ * §1.1 的键含 `capturedAt`（毫秒精度）⇒ 两次独立捕获几乎必然不同 ⇒
+ * 「同组成立」这个前提**必须**靠冻结时钟才造得出来。
+ * **这是造输入，不是造标准答案**：期望的「成组」仍由本库按五字段规则自算。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP2_1_sameGroupKeepsDistinctIds(adapter) {
+  return guard('P2-1-same-group-distinct-ids', async () => {
+    const sessionId = 'p2-check-same';
+    adapter.setNow?.(1_767_000_000_000);
+    const first = await adapter.pick({ sessionId });
+    const second = await adapter.pick({ sessionId });
+    if (!first?.ref || !second?.ref) {
+      return { status: SKIPPED, detail: 'pick 未返回 ref（实现侧尚不可测）' };
+    }
+    await adapter.settle(first.ref);
+    await adapter.settle(second.ref);
+
+    // ① 两个不同 `snapshotId`（§5 第 1 行的核心：**不得复用旧 id**）。
+    if (first.ref === second.ref) {
+      return {
+        status: FAIL,
+        detail: `两次 pick 得到同一个 ref（${first.ref}）——成组后退化成了「复用旧 id」`,
+      };
+    }
+
+    // ② 都落盘。
+    const fileA = adapter.snapshotFile(first.ref);
+    const fileB = adapter.snapshotFile(second.ref);
+    if (!fileA?.exists) {
+      return { status: FAIL, detail: `第一份快照没落盘（${first.ref}）` };
+    }
+    if (!fileB?.exists) {
+      return { status: FAIL, detail: `第二份快照没落盘（${second.ref}）——被第一份覆盖了` };
+    }
+
+    // ③ 都可发：正文取得到，且与盘上**逐字节**相同（P1 S-4 的同一把尺）。
+    const bodyA = await trySerialize(adapter, first.ref);
+    const bodyB = await trySerialize(adapter, second.ref);
+    if (!bodyA.ok) {
+      return { status: FAIL, detail: `第一份的正文取不到（发不出去）：${bodyA.error}` };
+    }
+    if (!bodyB.ok) {
+      return { status: FAIL, detail: `第二份的正文取不到（发不出去）：${bodyB.error}` };
+    }
+    if (bodyA.body !== String(fileA.body)) {
+      return { status: FAIL, detail: '第一份的正文与落盘内容不一致（发不出去）' };
+    }
+    if (bodyB.body !== String(fileB.body)) {
+      return { status: FAIL, detail: '第二份的正文与落盘内容不一致（发不出去）' };
+    }
+
+    // ④ 前提核对：**本库自己**按 §1.1 算同组（不拿实现的输出当标准答案）。
+    if (!sameGroupByProtocol(fileA.snapshot, fileB.snapshot)) {
+      const diff = GROUP_KEY_FIELDS.filter(
+        (field) => String(fileA.snapshot?.[field] ?? '') !== String(fileB.snapshot?.[field] ?? ''),
+      );
+      return {
+        status: FAIL,
+        detail: `判据自身：造出来的两条不满足「键全等」（差在 ${diff.join('/')}）⇒ 前提不成立`,
+      };
+    }
+
+    // ⑤ 实现侧也要把它们认成同一组（§1.1）。
+    const result = await adapter.duplicatesFor({ sessionId, snapshotIds: [first.ref, second.ref] });
+    if (!result.ok) {
+      return { status: FAIL, detail: `duplicates 核对失败（code=${result.code}）——同组的两条没被核对` };
+    }
+    if (result.groups.length !== 1) {
+      return {
+        status: FAIL,
+        detail: `键全等的两条没被认成同一组（groups=${result.groups.length}）——协议 §1.1`,
+      };
+    }
+    const members = Array.isArray(result.groups[0]?.members) ? result.groups[0].members : [];
+    if (members.length !== 2) {
+      return { status: FAIL, detail: `同组成员数不是 2（${members.length}）` };
+    }
+    const ids = members.map((member) => String(member?.snapshotId ?? ''));
+    if (!ids.includes(first.ref) || !ids.includes(second.ref)) {
+      return {
+        status: FAIL,
+        detail: `同组成员不是那两个 id（${ids.join(' / ')}）——成员被合并了（协议 §1.3：成员不合并）`,
+      };
+    }
+
+    // ⑥ §1.2 的组标识：**形状 + 稳定 + 与协议独立算出的值一致**。
+    //
+    //    · **形状**：16 位小写十六进制；
+    //    · **稳定**：同组两次一致；
+    //    · **值**：协议 v0.3 已把分隔符裁定为**单个换行 U+000A、不含空格**
+    //      ⇒ 期望值**可以**从协议稿独立转写 ⇒ 判据得以钉**具体值**
+    //      （不钉的话，「实现把分隔符写成 ` \n `」这类偏差判不出来）。
+    const keyA = adapter.groupKeyOf(fileA.snapshot);
+    const keyB = adapter.groupKeyOf(fileB.snapshot);
+    if (!GROUP_KEY_SHAPE.test(keyA)) {
+      return {
+        status: FAIL,
+        detail: `组标识形状不对（${keyA}）——协议 §1.2 要 16 位小写十六进制`,
+      };
+    }
+    if (keyA !== keyB) {
+      return { status: FAIL, detail: '同组两条的组标识不一致——协议 §1.2：组标识要稳定' };
+    }
+    const wantKey = expectedGroupKey(fileA.snapshot);
+    if (keyA !== wantKey) {
+      return {
+        status: FAIL,
+        detail:
+          `组标识与协议 §1.2 算出的不符（实现 ${keyA} / 按协议算 ${wantKey}）——` +
+          '§1.2 ＋ v0.3 裁断：五字段用**单个换行 U+000A、不含空格**连接后取 sha256 前 16 位',
+      };
+    }
+
+    return {
+      status: PASS,
+      detail:
+        `同组（键全等）⇒ 两个不同 id（${first.ref} / ${second.ref}）、都落盘、都可发；` +
+        `组标识 ${keyA}（16 位小写十六进制、同组一致、且与按协议 §1.2 独立算出的值相同）`,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// P2-2｜同组成立 ⇒ 提示可见且可复查
+// ---------------------------------------------------------------------------
+
+/**
+ * P2-2｜§5 第 2 行 / §3.1-1 / §3.2。
+ *
+ * 同组成立 ⇒ 提示**可见**（用户能看见）、**可复查**（不是瞬态 toast），
+ * 承载位 = **输入区常驻条**，且 `level` 必须是 `info`；提示里要有
+ * **同组条数**与**字节数**。
+ *
+ * ## 判据怎么看得见「承载位」
+ *
+ * · `delivered` ⇒ 这条提示经**输入区通道**投出去了
+ *   （内核 `conversation.input.for(actx).notify(level, text)`）；
+ * · `level === 'info'` ⇒ 内核渲染 inline 常驻条；`error` 档只弹瞬态 toast
+ *   （协议 §3.2 引的内核契约：`dsh-client-ui-conversation/lib/client.js`
+ *   SHA `8554738CBEEB5218AD1BFA4773EF094363B066D052A1893D7A96797C5BC33A63`
+ *   的 `:18982-18986` 只渲染 `level === 'info'`，`:18808` 对 `error` 档只 `showToast`）。
+ *
+ * ## 判「数据」也判「文案自包含」
+ *
+ * 条数与字节数判**结构化数据**（`groups`）；另外 §3.2 明确要求「内核 notice 是
+ * 单槽 ⇒ 每条提示的文案必须自包含（条数与字节数写在同一条里）」⇒ 文案里
+ * **必须出现这两个数**（不判措辞，只判数字在不在）。
+ *
+ * ## 判「可复现」（协议 v0.5 §3.2 的第六处裁定）
+ *
+ * 内核 `notices.set` 有两个入口、且内核多处用 `notify('error', …)` ⇒ **内核会
+ * 把我们的 inline 条整个顶掉**（单槽，最新覆盖旧条）⇒ 我们的提示**不保证常驻**
+ * ⇒ 协议明写「**不得假设提示会一直在**」，信息不永久丢失靠的是
+ * 「**再动一次引用 ⇒ 重新触发一轮核对、重新发出一条提示**」。
+ * ⇒ 本判据断的正是这条：**再动一次引用 ⇒ 又产生一条 info 档、自包含的提示**。
+ *
+ * **为什么这条能机检、而「常驻」不能**：再触发由实现自己驱动（客户端每次新增
+ * 引用都会重跑一轮核对）⇒ 观测得到；而「提示会不会被内核顶掉」取决于内核与
+ * 用户的时序 ⇒ **不可机检** ⇒ 协议本身就明写**不得假设**。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP2_2_duplicateNoticeVisible(adapter) {
+  return guard('P2-2-duplicate-notice-visible', async () => {
+    const sessionId = 'p2-check-notice';
+    adapter.setNow?.(1_767_000_000_000);
+    const first = await adapter.pick({ sessionId });
+    const second = await adapter.pick({ sessionId });
+    if (!first?.ref || !second?.ref) {
+      return { status: SKIPPED, detail: 'pick 未返回 ref（实现侧尚不可测）' };
+    }
+    await adapter.settle(first.ref);
+    await adapter.settle(second.ref);
+
+    const notice = await waitForNotice(adapter, 'duplicate-groups');
+    if (notice === undefined) {
+      return { status: FAIL, detail: '同组成立后没有出现「重复组」提示（协议 §3.1-1）' };
+    }
+
+    const carrier = checkNoticeCarrier(notice);
+    if (!carrier.ok) {
+      return { status: FAIL, detail: carrier.why };
+    }
+
+    // 数据：组 / 条数 / 字节数。
+    const groups = Array.isArray(notice.groups) ? notice.groups : [];
+    if (groups.length === 0) {
+      return { status: FAIL, detail: '提示里没有组数据（协议 §3.2：要说清同组有几条）' };
+    }
+    const group = groups[0];
+    const members = Array.isArray(group?.members) ? group.members : [];
+    if (members.length !== 2) {
+      return { status: FAIL, detail: `提示里的同组条数不对（${members.length}，应为 2）` };
+    }
+    const bodyBytes = Buffer.byteLength(String(adapter.snapshotFile(first.ref)?.body ?? ''), 'utf8');
+    const redundant = Number(group?.redundantBytes ?? -1);
+    if (redundant !== bodyBytes) {
+      return {
+        status: FAIL,
+        detail: `提示里的字节数不对（冗余 ${redundant}，应为单条正文 ${bodyBytes}）——协议 §3.2`,
+      };
+    }
+
+    // 文案自包含（§3.2：内核 notice 是单槽 ⇒ 同一条里必须带条数与字节数）。
+    const selfContained = checkSelfContainedText(notice.text, {
+      members: members.length,
+      redundant,
+    });
+    if (!selfContained.ok) {
+      return { status: FAIL, detail: selfContained.why };
+    }
+
+    // —— **可复现**（协议 v0.5 §3.2 硬要求③ ＋ 可用性推论）——
+    //
+    // 内核随时可能发一条 error notice 把我们的 inline 条**整个顶掉**（单槽）
+    // ⇒ 我们的提示**不保证常驻** ⇒ 协议明写「**不得假设提示会一直在**」，
+    // 信息不永久丢失靠的是「**用户再动一次引用** ⇒ 重新触发一轮核对、
+    // 重新发出一条提示」。
+    //
+    // ⇒ 本判据断的正是这条：**再动一次引用 ⇒ 又产生一条 info 档、自包含的提示**。
+    // ⇒ **刻意不断**「提示在两次触发之间一直存在」——那是协议明写**不得假设**的
+    //   （内核会顶掉它 ⇒ 断了就是假红）。同理，判据读的是**客户端自己的记录**
+    //   （`record('notice', …)`），**不去观测内核的 notice 槽** ⇒ 天然不依赖
+    //   内核 toast/notice 的出现时机与顺序（v0.5 硬要求②）。
+    const beforeRetrigger = (adapter.visibleNotices?.() ?? []).length;
+    const third = await adapter.pick({ sessionId });
+    if (!third?.ref) {
+      return { status: FAIL, detail: '再动一次引用时 pick 未返回 ref——判据自身的复现前提不成立' };
+    }
+    await adapter.settle(third.ref);
+    const again = await waitForNotice(adapter, 'duplicate-groups', { from: beforeRetrigger });
+    if (again === undefined) {
+      return {
+        status: FAIL,
+        detail:
+          '再动一次引用没有重新触发一条提示——协议 §3.2（v0.5）：内核会顶掉我们的提示，' +
+          '信息不丢靠的是「再动一次引用就重新触发」⇒ 提示必须可复现',
+      };
+    }
+    const againCarrier = checkNoticeCarrier(again);
+    if (!againCarrier.ok) {
+      return { status: FAIL, detail: `重新触发的那条：${againCarrier.why}` };
+    }
+    const againGroups = Array.isArray(again.groups) ? again.groups : [];
+    const againMembers = Array.isArray(againGroups[0]?.members) ? againGroups[0].members : [];
+    if (againMembers.length < 2) {
+      return {
+        status: FAIL,
+        detail: `重新触发的那条里同组条数不对（${againMembers.length}）——协议 §3.2：要说清同组有几条`,
+      };
+    }
+    const againRedundant = Number(againGroups[0]?.redundantBytes ?? -1);
+    const againSelfContained = checkSelfContainedText(again.text, {
+      members: againMembers.length,
+      redundant: againRedundant,
+    });
+    if (!againSelfContained.ok) {
+      return { status: FAIL, detail: `重新触发的那条：${againSelfContained.why}` };
+    }
+
+    return {
+      status: PASS,
+      detail:
+        `提示可见且可复查：输入区通道投递、level=info（常驻条，非瞬态 toast）；` +
+        `含同组条数 ${members.length} 与字节数 ${redundant}；` +
+        `再动一次引用可复现（重新出一条 info 档自包含提示，同组 ${againMembers.length} 条）`,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// P2-3｜capturedAt 不同 ⇒ 不成组（负例）
+// ---------------------------------------------------------------------------
+
+/**
+ * P2-3｜§5 第 3 行 / §1.1。
+ *
+ * `capturedAt` 不同 ⇒ **不成组**（哪怕正文逐字节相同——两次不同的捕获事实）。
+ *
+ * ## 为什么走**命令层**
+ *
+ * 真实链路里 `capturedAt` 来自捕获时刻 ⇒ 造「不同」容易、造「相同」要冻结时钟；
+ * 但**命令层能把五个字段全部控住** ⇒ 负例放在命令层，判得更准。
+ *
+ * ## 负例必须带**正对照**
+ *
+ * 只断「不成组」是不够的：实现若**一律不成组**（甚至一律失败），负例也会绿。
+ * ⇒ 本判据先跑一组**键全等 ⇒ 必须成组**的正对照；对照不成立 ⇒ 负例无意义
+ * ⇒ 直接报红（并写明是「对照组不成立」，不是「负例成立」）。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP2_3_capturedAtNotGrouped(adapter) {
+  return guard('P2-3-captured-at-not-grouped', async () => {
+    const sessionId = 'p2-craft-captured-at';
+    const text = 'P2 判据正文（capturedAt 场景）。';
+    const at1 = '2026-10-20T08:59:00.000Z';
+    const at2 = '2026-10-20T09:41:00.000Z';
+    const base = adapter.makeSnapshot({ seq: 1, sessionId, branch: 'main', capturedAt: at1, text });
+    const same = adapter.makeSnapshot({ seq: 2, sessionId, branch: 'main', capturedAt: at1, text });
+    const diff = adapter.makeSnapshot({ seq: 3, sessionId, branch: 'main', capturedAt: at2, text });
+    adapter.saveSnapshot(base);
+    adapter.saveSnapshot(same);
+    adapter.saveSnapshot(diff);
+
+    // 正对照：五字段全等（只有 `snapshotId` 不同）⇒ 必须成组。
+    if (!sameGroupByProtocol(base, same)) {
+      return { status: FAIL, detail: '判据自身：造出来的对照组不满足「键全等」⇒ 对照无效' };
+    }
+    const control = await adapter.duplicatesFor({ sessionId, snapshotIds: [base.snapshotId, same.snapshotId] });
+    if (!control.ok) {
+      return { status: FAIL, detail: `对照组不成立（duplicates 失败：code=${control.code}）⇒ 负例无意义` };
+    }
+    if (control.groups.length !== 1 || (control.groups[0]?.members ?? []).length !== 2) {
+      return { status: FAIL, detail: '对照组不成立（五字段全等的两条没被认成同一组）⇒ 负例无意义' };
+    }
+
+    // 键层：`capturedAt` 不同 ⇒ 键必须不同。
+    if (adapter.groupKeyOf(base) === adapter.groupKeyOf(diff)) {
+      return {
+        status: FAIL,
+        detail: 'capturedAt 不同但组标识相同 ⇒ 键里没算「捕获事实」（协议 §1.1）',
+      };
+    }
+
+    // 负例：命令层必须**只是不成组**（成功 + 空组），不是失败。
+    const negative = await adapter.duplicatesFor({ sessionId, snapshotIds: [base.snapshotId, diff.snapshotId] });
+    if (!negative.ok) {
+      return {
+        status: FAIL,
+        detail: `capturedAt 不同的两条核对失败（code=${negative.code}）——应当只是「不成组」`,
+      };
+    }
+    if (negative.groups.length > 0) {
+      return {
+        status: FAIL,
+        detail: 'capturedAt 不同的两条被认成了同一组——协议 §1.1：两次不同的捕获事实不成组',
+      };
+    }
+
+    return {
+      status: PASS,
+      detail: `capturedAt 不同（${at1} vs ${at2}）⇒ 不成组（键不同、命令层空组）；正对照（五字段全等）成组`,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// P2-4｜accountScope / branch 不同 ⇒ 不成组（负例）
+// ---------------------------------------------------------------------------
+
+/**
+ * P2-4｜§5 第 4 行 / §1.1。
+ *
+ * `accountScope` / `branch` 不同 ⇒ **不成组**（跨账号 / 跨分支不能成组）。
+ *
+ * ## 「不成组」的两种合法形态
+ *
+ * · **分开**（成功 + 空组）——最直接的形态；
+ * · **更严格地拒**（失败）——跨账号时 host 的指纹闸（P1 S-5）会先拒，
+ *   这是**比「不成组」更强**的约束，同样满足 §1.1「不成组」的要求。
+ *
+ * 两种都算过；但**必须有正对照**（键全等 ⇒ 必须成组）⇒ 否则「一律失败」
+ * 也会让负例变绿。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP2_4_scopeBranchNotGrouped(adapter) {
+  return guard('P2-4-scope-branch-not-grouped', async () => {
+    const sessionId = 'p2-craft-scope-branch';
+    const text = 'P2 判据正文（跨账号 / 跨分支场景）。';
+    const base = adapter.makeSnapshot({ seq: 1, sessionId, branch: 'main', text });
+    const same = adapter.makeSnapshot({ seq: 2, sessionId, branch: 'main', text });
+    const otherBranch = adapter.makeSnapshot({ seq: 3, sessionId, branch: 'feature-x', text });
+    const otherScope = adapter.makeSnapshot({
+      seq: 4,
+      sessionId,
+      branch: 'main',
+      accountScope: 'desktop-dev/default/site-B',
+      text,
+    });
+    for (const one of [base, same, otherBranch, otherScope]) adapter.saveSnapshot(one);
+
+    // 正对照：键全等 ⇒ 必须成组。
+    if (!sameGroupByProtocol(base, same)) {
+      return { status: FAIL, detail: '判据自身：造出来的对照组不满足「键全等」⇒ 对照无效' };
+    }
+    const control = await adapter.duplicatesFor({ sessionId, snapshotIds: [base.snapshotId, same.snapshotId] });
+    if (!control.ok) {
+      return { status: FAIL, detail: `对照组不成立（duplicates 失败：code=${control.code}）⇒ 负例无意义` };
+    }
+    if (control.groups.length !== 1 || (control.groups[0]?.members ?? []).length !== 2) {
+      return { status: FAIL, detail: '对照组不成立（五字段全等的两条没被认成同一组）⇒ 负例无意义' };
+    }
+
+    // 负例 ①：跨分支。
+    if (adapter.groupKeyOf(base) === adapter.groupKeyOf(otherBranch)) {
+      return { status: FAIL, detail: 'branch 不同但组标识相同 ⇒ 键里没算分支（协议 §1.1）' };
+    }
+    const branchResult = await adapter.duplicatesFor({
+      sessionId,
+      snapshotIds: [base.snapshotId, otherBranch.snapshotId],
+    });
+    if (branchResult.ok && branchResult.groups.length > 0) {
+      return { status: FAIL, detail: 'branch 不同的两条被认成了同一组——协议 §1.1：跨分支不成组' };
+    }
+    if (!branchResult.ok && branchResult.code !== 'account_changed') {
+      return {
+        status: FAIL,
+        detail: `跨分支的两条核对失败（code=${branchResult.code}）——应当只是「不成组」`,
+      };
+    }
+
+    // 负例 ②：跨账号。
+    if (adapter.groupKeyOf(base) === adapter.groupKeyOf(otherScope)) {
+      return { status: FAIL, detail: 'accountScope 不同但组标识相同 ⇒ 键里没算账户（协议 §1.1）' };
+    }
+    const scopeResult = await adapter.duplicatesFor({
+      sessionId,
+      snapshotIds: [base.snapshotId, otherScope.snapshotId],
+    });
+    if (scopeResult.ok && scopeResult.groups.length > 0) {
+      return { status: FAIL, detail: 'accountScope 不同的两条被认成了同一组——协议 §1.1：跨账号不成组' };
+    }
+
+    const branchHow = branchResult.ok ? '分开（空组）' : `更严格地拒（code=${branchResult.code}）`;
+    const scopeHow = scopeResult.ok ? '分开（空组）' : `更严格地拒（code=${scopeResult.code}）`;
+    return {
+      status: PASS,
+      detail: `跨分支 ⇒ 不成组（${branchHow}）；跨账号 ⇒ 不成组（${scopeHow}）；正对照（五字段全等）成组`,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// P2-5｜超预算 ⇒ 发送前出现预算提示，正文未被截断
+// ---------------------------------------------------------------------------
+
+/**
+ * P2-5｜§5 第 5 行 / §4 / §3.3。
+ *
+ * `projectedBytes > 262144` ⇒ **发送前**出现预算提示，**正文未被截断**；
+ * 请求体正文**逐字节**等于各引用原文。
+ *
+ * ## 两个场景都跑
+ *
+ * 1. **纯预算场景**：两条引用**不同组**（`capturedAt` 不同）⇒ 只该出预算提示。
+ * 2. **同组 + 超预算**：两条引用**同组**且超预算 ⇒ 按 **PM v0.4 裁断**
+ *    （协议 §3.1 的括注）：内核 notice 是**单槽**（最新一条覆盖旧条）⇒
+ *    「两个触发点各自独立」的准确含义是「**两条都要发**（任一条都不得被 early
+ *    return 吃掉）」，**不是**「用户同时看到两条」；而**用户最终看到的是最后
+ *    那一条** ⇒ **后发那条必须自包含全部事实**（组事实 ＋ 预算事实）。
+ *
+ * ## 「逐字节」怎么断（**不写「正文只出现一次」**）
+ *
+ * 照 P1 A5 的法：断「**请求体与落盘正文逐字节相同**」＋「落盘正文 == 完整原文
+ * 的字节数」。内核会把本轮输入在同一请求里重放多次（P1 A5 的注释已记）⇒
+ * **数出现次数**的判据会被内核行为打红 ⇒ 本库不数。
+ *
+ * ## 口径说明
+ *
+ * §4 的 `projectedBytes` 还含「原生 `@session` 占用」，但 host 结构上拿不到
+ * 草稿 ⇒ 实现按 0 计（本库只判**可观测的那部分**：各引用各送一份的总字节）。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
+  return guard('P2-5-budget-notice-no-truncation', async () => {
+    const sessionId = 'p2-check-budget';
+    const bodyBytes = adapter.configuredBodyBytes?.() ?? null;
+    if (bodyBytes === null) {
+      return { status: SKIPPED, detail: '本轮没造大正文（`bodyBytes` 未给）⇒ 预算场景触发不到' };
+    }
+
+    // 场景 ①：两条**不同组**（`capturedAt` 不同）⇒ 只该出预算那条提示。
+    const t0 = 1_767_000_000_000;
+    adapter.setNow?.(t0);
+    const first = await adapter.pick({ sessionId });
+    await adapter.settle(first.ref);
+    const mark = adapter.visibleNotices?.().length ?? 0;
+    adapter.setNow?.(t0 + 500);
+    const second = await adapter.pick({ sessionId });
+    await adapter.settle(second.ref);
+    if (!first?.ref || !second?.ref) {
+      return { status: SKIPPED, detail: 'pick 未返回 ref（实现侧尚不可测）' };
+    }
+
+    const fileA = adapter.snapshotFile(first.ref);
+    const fileB = adapter.snapshotFile(second.ref);
+    if (!fileA?.exists || !fileB?.exists) {
+      return { status: FAIL, detail: '大正文没落盘（预算场景触发不到）' };
+    }
+    const bytesA = Buffer.byteLength(String(fileA.body ?? ''), 'utf8');
+    const bytesB = Buffer.byteLength(String(fileB.body ?? ''), 'utf8');
+    const projected = bytesA + bytesB;
+
+    // 判据自身的口径检查：造出来的正文必须**够大**（否则测不到超限）。
+    if (bytesA !== bodyBytes || bytesB !== bodyBytes) {
+      return {
+        status: FAIL,
+        detail: `判据自身：落盘正文字节数不对（${bytesA} / ${bytesB}，应为 ${bodyBytes}）⇒ 场景不成立`,
+      };
+    }
+    if (projected <= PER_MESSAGE_BUDGET_BYTES) {
+      return {
+        status: FAIL,
+        detail: `判据自身：两条合计 ${projected} 字节 ≤ 预算 ${PER_MESSAGE_BUDGET_BYTES} ⇒ 超限场景不成立`,
+      };
+    }
+
+    // 预算提示必须出现（§3.1-2 / §4）——**按数据找**（带出 `wouldExceed` 事实）。
+    const notice = await waitForBudgetNotice(adapter, { from: mark });
+    if (notice === undefined) {
+      return {
+        status: FAIL,
+        detail: `预算超限（${projected} > ${PER_MESSAGE_BUDGET_BYTES}）但没有出现预算提示（协议 §3.1-2 / §4）`,
+      };
+    }
+    const carrier = checkNoticeCarrier(notice);
+    if (!carrier.ok) {
+      return { status: FAIL, detail: carrier.why };
+    }
+
+    // 提示里的数字必须对（§3.2：要说清超了多少字节）。
+    const budget = notice.budget ?? {};
+    if (Number(budget.limitBytes ?? -1) !== PER_MESSAGE_BUDGET_BYTES) {
+      return {
+        status: FAIL,
+        detail: `提示里的预算上限不对（${budget.limitBytes}，应为 ${PER_MESSAGE_BUDGET_BYTES}）`,
+      };
+    }
+    if (Number(budget.projectedBytes ?? -1) !== projected) {
+      return {
+        status: FAIL,
+        detail: `提示里的预估字节数不对（${budget.projectedBytes}，应为 ${projected}）`,
+      };
+    }
+    if (budget.wouldExceed !== true) {
+      return { status: FAIL, detail: `提示里没有标出「会超限」（wouldExceed=${budget.wouldExceed}）` };
+    }
+    const over = projected - PER_MESSAGE_BUDGET_BYTES;
+    if (Number(budget.exceedByBytes ?? -1) !== over) {
+      return {
+        status: FAIL,
+        detail: `提示里的超出字节数不对（${budget.exceedByBytes}，应为 ${over}）`,
+      };
+    }
+    const text = String(notice.text ?? '');
+    if (!text.includes(String(projected)) || !text.includes(String(over))) {
+      return { status: FAIL, detail: '提示文案里没有字节数（协议 §3.2：文案必须自包含）' };
+    }
+
+    // 正文**未被截断**（§3.3）：请求体与落盘正文逐字节相同，且落盘正文是完整原文。
+    const requestA = await trySerialize(adapter, first.ref);
+    const requestB = await trySerialize(adapter, second.ref);
+    if (!requestA.ok) {
+      return { status: FAIL, detail: `第一条的请求体取不到（发不出去）：${requestA.error}` };
+    }
+    if (!requestB.ok) {
+      return { status: FAIL, detail: `第二条的请求体取不到（发不出去）：${requestB.error}` };
+    }
+    if (requestA.body !== String(fileA.body)) {
+      return { status: FAIL, detail: '第一条的请求体与落盘正文不一致（正文被改了/被截断了）' };
+    }
+    if (requestB.body !== String(fileB.body)) {
+      return { status: FAIL, detail: '第二条的请求体与落盘正文不一致（正文被改了/被截断了）' };
+    }
+    if (bytesA !== bodyBytes || bytesB !== bodyBytes) {
+      return {
+        status: FAIL,
+        detail: `落盘正文被截断了（${bytesA} / ${bytesB}，完整原文应为 ${bodyBytes}）——协议 §3.3`,
+      };
+    }
+
+    // 场景 ②：第三条引用**回到第一条的捕获时刻** ⇒ 与第一条**同组**；
+    // 草稿里三条引用合计超预算 ⇒ 「重复」与「超预算」**同时成立**。
+    //
+    // ## **PM v0.4 裁断**（协议 §3.1 的括注）——本判据按它写
+    //
+    // 内核 notice 是**单槽**（最新一条覆盖旧条）⇒
+    // · 「两个触发点各自独立」的准确含义是「**两条都要发**（任一条都不得被
+    //   early return 吃掉）」，**不是**「用户同时看到两条」；
+    // · **用户最终看到的是最后那一条** ⇒ **后发那条必须自包含全部事实**
+    //   （组事实 ＋ 预算事实都在它身上）。
+    //
+    // ⇒ 本场景断三件事：① 组提示发了 ② 预算提示**也**发了
+    //   ③ **后发那条**既带出组事实、也带出预算事实（文案里有「超了多少字节」）。
+    const mark2 = adapter.visibleNotices?.().length ?? 0;
+    adapter.setNow?.(t0);
+    const third = await adapter.pick({ sessionId });
+    await adapter.settle(third.ref);
+    if (!third?.ref) {
+      return { status: SKIPPED, detail: '第三个 pick 未返回 ref（同组场景触发不到）' };
+    }
+    const fileC = adapter.snapshotFile(third.ref);
+    const bytesC = Buffer.byteLength(String(fileC?.body ?? ''), 'utf8');
+    const projected3 = bytesA + bytesB + bytesC;
+    if (projected3 <= PER_MESSAGE_BUDGET_BYTES) {
+      return { status: SKIPPED, detail: '同组场景的合计没超预算 ⇒ 该场景触发不到' };
+    }
+    const groupNotice = await waitForNotice(adapter, 'duplicate-groups', { from: mark2 });
+    if (groupNotice === undefined) {
+      return { status: FAIL, detail: '同组场景没有出现「重复组」提示（协议 §3.1-1）' };
+    }
+    // ① 两条都要发：预算提示**不得**被组提示的 early return 吃掉。
+    const budgetNotice = await waitForNotice(adapter, 'budget-exceeded', { from: mark2 });
+    if (budgetNotice === undefined) {
+      return {
+        status: FAIL,
+        detail:
+          '同组且超预算时只发了「重复组」提示、**没有**发预算提示——' +
+          '协议 §3.1（v0.4 裁断）：两个触发点各自独立 ＝ 两条都要发，任一条都不得被 early return 吃掉',
+      };
+    }
+    // ② **后发那条 ＝ 用户最终看到的那条**（单槽覆盖）⇒ 必须自包含全部事实。
+    const delivered = (adapter.visibleNotices?.() ?? []).slice(mark2);
+    const last = delivered[delivered.length - 1];
+    if (last === undefined) {
+      return { status: FAIL, detail: '判据自身：没读到这一轮的提示投递序列' };
+    }
+    const over3 = projected3 - PER_MESSAGE_BUDGET_BYTES;
+    const lastText = String(last.text ?? '');
+    if (!lastText.includes(String(over3))) {
+      return {
+        status: FAIL,
+        detail:
+          `后发那条提示（${last.kind}）里没有「超了多少字节」（应为 ${over3}）——` +
+          '协议 §3.1（v0.4 裁断）：内核 notice 单槽 ⇒ 用户最终看到的就是后发那条，它必须自包含全部事实',
+      };
+    }
+    const lastGroups = Array.isArray(last.groups) ? last.groups : [];
+    const lastMembers = lastGroups.reduce(
+      (sum, group) => sum + (Array.isArray(group?.members) ? group.members.length : 0),
+      0,
+    );
+    if (lastGroups.length === 0 || lastMembers < 2) {
+      return {
+        status: FAIL,
+        detail:
+          `后发那条提示（${last.kind}）里没有带出组事实（同组 ${lastMembers} 条 / ${lastGroups.length} 组）——` +
+          '协议 §3.1（v0.4 裁断）：后发那条必须自包含全部事实（组事实 ＋ 预算事实）',
+      };
+    }
+
+    return {
+      status: PASS,
+      detail:
+        `超预算（${projected} > ${PER_MESSAGE_BUDGET_BYTES}）⇒ 发送前出现预算提示（level=info、输入区常驻条）；` +
+        `正文未被截断（两条各 ${bodyBytes} 字节，请求体与落盘逐字节相同）；` +
+        `同组+超预算时两条都发、后发那条自包含（超 ${over3} 字节 ＋ 组事实）`,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// P2-F｜夹具的期望值必须与协议 §1.1 / §1.2 一致（§5「夹具」条款）
+// ---------------------------------------------------------------------------
+
+/**
+ * P2-F｜协议 §5 表下的「夹具」条款：**新增「去重候选对」夹具（两条快照 ＋ 期望
+ * 是否成组），登记进 `fixtures/protocol/index.json` ⇒ 两端都读**。
+ *
+ * ## 判的是「**夹具的期望值对不对**」
+ *
+ * 夹具的 `expected` 若是从**实现**抄回来的，它就只是实现的复印件 ⇒ 判据毫无意义。
+ * ⇒ 本判据**自己**按 §1.1（五字段全等）与 §1.2（分隔符 ＋ sha256 前 16 位）
+ * **独立转写**期望值，再与夹具写的比。
+ *
+ * @param {object} fixture - 夹具对象（`{input:{kind,snapshots}, expected:{…}}`）。
+ * @param {string} [label] - 夹具名（写进 detail，便于定位）。
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkP2_F_fixtureExpectation(fixture, label = 'fixture') {
+  const name = 'P2-F-fixture-expectation-match';
+  const snapshots = Array.isArray(fixture?.input?.snapshots) ? fixture.input.snapshots : [];
+  if (snapshots.length < 2) {
+    return verdict(name, SKIPPED, `${label}：夹具里不足两条快照`);
+  }
+  const expected = fixture?.expected?.sameGroup;
+  const actual = sameGroupByProtocol(snapshots[0], snapshots[1]);
+  if (expected !== actual) {
+    return verdict(
+      name,
+      FAIL,
+      `${label}：期望 sameGroup=${String(expected)}，按协议 §1.1（五字段全等）应为 ${String(actual)}`,
+    );
+  }
+  // **组标识**：协议 v0.3 已把分隔符裁定为**单个换行 U+000A、不含空格**
+  // ⇒ 期望值可从协议稿**独立转写** ⇒ 夹具里固化的 `expected.groupKey`
+  // 必须是「按 §1.2 算出来的那个」，而不是「实现算出来的那个」。
+  const expectedKey = fixture?.expected?.groupKey;
+  if (expectedKey !== undefined) {
+    const wantKey = expectedGroupKey(snapshots[0]);
+    if (expectedKey !== wantKey) {
+      return verdict(
+        name,
+        FAIL,
+        `${label}：夹具的 expected.groupKey=${String(expectedKey)}，按协议 §1.2 应为 ${wantKey}`,
+      );
+    }
+  }
+  return verdict(name, PASS, `${label}：期望值与协议 §1.1 / §1.2 一致`);
+}
+
+// ---------------------------------------------------------------------------
+// P2-C｜duplicates 失败 ⇒ 码在 13 码闭集内，原码留痕（§2.2 / §2.3 / §6.5）
+// ---------------------------------------------------------------------------
+
+/**
+ * P2-C｜协议 §2.2「出参（失败）：沿用 P1 §3 的 **13 码闭集**与 8 字段错误结果对象」
+ * ＋ §2.3「**不新增错误码**（13 码是闭集）」＋ §6.5。
+ *
+ * ## 为什么这条是「表外的一条」
+ *
+ * §5 的表只有六行，失败码不在其中；但 §2.2/§2.3/§6.5 都写了它 ⇒ 落一条判据。
+ *
+ * ## 协议内部的矛盾（**本判据不替 PM 选边**）
+ *
+ * §2.3 的表把「盘上快照不可读」写成 `snapshot_store_unavailable`、「入参形态不对」
+ * 写成 `invalid_request`——**这两个码不在 13 码闭集里**；而同一条的下一行又写
+ * 「**不新增错误码**（13 码是闭集）」，§6.5 也写「不新增错误码」。
+ *
+ * ⇒ 本判据判的是**闭集那一侧**（说了两次的那一侧）：失败码**必须**是 13 码
+ * 之一；闭集外的原始码**必须**保留在 `detail` 里（P1 §3 的规则，折叠不丢信息）。
+ * ⇒ 若 PM 裁定把那两个码**正式纳入**闭集，本判据的「原码留痕」那一条会自动
+ * 放行（码本身就是原码）——**两种裁定都绿**，不会因为协议改稿而假红。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+/**
+ * P2-C｜协议 §2.2「出参（失败）：沿用 P1 §3 的 **13 码闭集**与 **8 字段错误结果对象**」。
+ *
+ * ## 这条断的是「**8 字段闭集**」（PM v0.3 §六 的裁断）
+ *
+ * P1 §3 `:161`：**错误结果对象字段闭集 = 8 个，全部必备、不省略**——
+ * `kind` / `ok` / `code` / `retryable` / `userNext` / `requestId` / `logPath` / `detail`。
+ *
+ * ⇒ **8 个字段逐个断**，**不**断「必备字段在不在」这种弱口径（那会把「7 个」
+ * 固化成正确口径）。
+ *
+ * ## 必须在**命令层**断（`kind` 穿不过 RPC 层）
+ *
+ * RPC 层（`host/rpc.js` 的 `toRpcError`）把错误负载翻译成 `{code, message, details}`
+ * ⇒ **`kind` 在传输层根本不存在** ⇒ 要断 8 字段，只能看**命令层自己的返回**
+ * （adapter 的 `duplicatesCommandLayer` 观测口）。
+ *
+ * ## **G-2 的历史**（**已于 2026-10-21 00:1x 销号**）
+ *
+ * 这条判据当初会红，是因为 **G-2**：Rust 侧 `error_result` 产 8 个（含
+ * `kind: "error"`），JS 侧 `errorPayload` 只产 **7 个**（缺 `kind`）⇒ 两端不同构。
+ * **协议闭集始终未改**（是 **JS 漏字段**、不是协议写错）⇒ 由 JS 侧补 `kind`。
+ *
+ * **G-2 已闭环**（JS 两个分支都补了 `kind: 'error'`，PM 已复核）⇒ 本条现在应当
+ * **转绿**；**若再红 ⇒ 说明 G-2 回退**（JS 侧又把 `kind` 省了），
+ * **不是判据口径问题** ⇒ 判据一个字不改。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP2_C_errorCodeClosedSet(adapter) {
+  return guard('P2-C-duplicates-error-code-closed-set', async () => {
+    if (typeof adapter.duplicatesCommandLayer !== 'function') {
+      return { status: SKIPPED, detail: 'adapter 未提供「命令层直调」观测口——拿不到 8 字段的原始负载' };
+    }
+    // **入参形态不对**（§2.3 表的最后一行）⇒ 命令层**真的**失败 ⇒ 原始负载。
+    const raw = await adapter.duplicatesCommandLayer({ sessionId: '', snapshotIds: 'not-an-array' });
+    if (raw?.ok !== false) {
+      return { status: FAIL, detail: '入参形态不对却回了 ok=true——协议 §2.3' };
+    }
+    const missing = ERROR_RESULT_FIELDS.filter((field) => !Object.hasOwn(raw, field));
+    if (missing.length > 0) {
+      return {
+        status: FAIL,
+        detail:
+          `错误结果对象缺字段：${missing.join('、')}——P1 §3 :161 的 8 字段闭集全部必备、不省略` +
+          '（若缺的是 kind ⇒ 那是 **G-2**：JS 侧 `errorPayload` 未按 P1 §3 补 `kind`，已派 devloper；' +
+          '**不是判据错**）',
+      };
+    }
+    // **闭集就是闭集**：8 个，不多不少 ⇒ 多出来的字段同样违约
+    // （协议 §3 的「字段闭集」若允许多出，就不是闭集了）。
+    const extra = Object.keys(raw).filter((key) => !ERROR_RESULT_FIELDS.includes(key));
+    if (extra.length > 0) {
+      return {
+        status: FAIL,
+        detail:
+          `错误结果对象多出闭集外的字段：${extra.join('、')}——P1 §3 :161 的字段闭集是 8 个，` +
+          '**不多不少**（多出来的字段会让两端「同构」这件事失去意义）',
+      };
+    }
+    return {
+      status: PASS,
+      detail: `错误结果对象 8 个字段齐全（${ERROR_RESULT_FIELDS.join('、')}）`,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// P2-6｜duplicates 失败 ⇒ 可见错误 ＋ 不额外拦截发送
+// ---------------------------------------------------------------------------
+
+/**
+ * P2-6｜§5 第 6 行 / §2.3。
+ *
+ * `duplicates` 失败 ⇒ **可见错误** ＋ **不额外拦截发送**；模型请求数与失败前
+ * 相同（未被拦截）。
+ *
+ * ## 三块断言
+ *
+ * 1. **可见错误 ＋ 不额外拦截**（客户端侧）：两种失败形态（命令自己失败 /
+ *    送不到）都要出可见提示（输入区、`info` 档、文案不含「已发送/发送失败/
+ *    发送被阻止」），且正文照发。
+ * 2. **失败负载的原始码留痕**（PM v0.3 加严点 ①）：入参形态不对 ⇒ 真实命令层
+ *    失败 ⇒ 闭集外的原始码（`invalid_request`）**必须保留在 `detail`**。
+ *    **为什么必须断**：不断就断 —— 归一后的 `snapshot_invalid` 会把
+ *    「入参形态错」与「快照过期」压成**不可区分**的一坨 ⇒ **假绿**。
+ * 3. **失败码在 13 码闭集内**（P1 §3 / P2 §2.3 / §6.5）。
+ *
+ * ## 两种失败形态都跑
+ *
+ * · `'command'` —— **命令自己说失败**（`{ok:false, code, …}` 的错误负载）；
+ * · `'transport'` —— **送不到**（HTTP 500）。
+ *
+ * 客户端对两种失败的处理必须一致（都只影响提示，不影响正文）。
+ *
+ * ## 「不额外拦截」怎么断
+ *
+ * · 正文**照发**：`serialize(ref)` 仍取得到**逐字节相同**的正文；
+ * · 模型请求数：失败前后**恰好 +1**（对应那一次正文产出）⇒ 既没被拦（不是 0），
+ *   也没多发（不是 2）。
+ *
+ * ## 措辞纪律（§2.3）
+ *
+ * 界面文案**不得**写「已发送」「发送失败」「发送被阻止」——失败文案只说
+ * 「无法核对是否重复」。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP2_6_failureDoesNotBlockSend(adapter) {
+  return guard('P2-6-failure-does-not-block-send', async () => {
+    // —— 断言 2/3：**真实命令层失败**的负载（码闭集内 ＋ 原码留痕）——
+    //
+    // **为什么用真实失败而不是注入的失败**：注入的负载里 `detail` 是判据自己写的
+    // ⇒ 断它等于自证 ⇒ **没有意义**。这里让命令层**真的**因为「入参形态不对」
+    // 而失败（协议 §2.3 的最后一行），拿它的**原始负载**来断。
+    const raw = await adapter.duplicatesCommandLayer?.({ sessionId: '', snapshotIds: 'not-an-array' });
+    if (raw === undefined) {
+      return { status: SKIPPED, detail: 'adapter 未提供「命令层直调」观测口——拿不到原始错误负载' };
+    }
+    if (raw?.ok !== false) {
+      return { status: FAIL, detail: '入参形态不对却回了 ok=true——协议 §2.3' };
+    }
+    const rawCode = String(raw.code ?? '');
+    if (!CLOSED_ERROR_CODES.includes(rawCode)) {
+      return {
+        status: FAIL,
+        detail: `失败码 ${rawCode} 不在 13 码闭集里——协议 §2.3 / §6.5：不新增错误码`,
+      };
+    }
+    const rawDetail = String(raw.detail ?? '');
+    if (!rawDetail.includes('invalid_request')) {
+      return {
+        status: FAIL,
+        detail:
+          `失败码归成了 ${rawCode}，但 detail 里没有原始码 invalid_request（实测 detail=` +
+          `${rawDetail || '(空)'}）——P1 §3：原始码要保留在 detail；` +
+          '不断这条，「入参形态错」与「快照过期」会被压成不可区分的一坨（假绿）',
+      };
+    }
+
+    const sessionId = 'p2-check-failure';
+    const forbidden = ['已发送', '发送失败', '发送被阻止'];
+    const observed = [];
+
+    for (const mode of ['command', 'transport']) {
+      adapter.setNow?.(1_767_000_000_000);
+      const picked = await adapter.pick({ sessionId });
+      if (!picked?.ref) {
+        return { status: SKIPPED, detail: 'pick 未返回 ref（实现侧尚不可测）' };
+      }
+      await adapter.settle(picked.ref);
+
+      // 基线：失败前正文取得到、请求数 +1。
+      const before = adapter.modelRequestCount();
+      const baselineBody = await trySerialize(adapter, picked.ref);
+      const after = adapter.modelRequestCount();
+      if (!baselineBody.ok) {
+        return { status: FAIL, detail: `失败前的正文取不到（判据自身的基线不成立）：${baselineBody.error}` };
+      }
+      if (after !== before + 1) {
+        return {
+          status: FAIL,
+          detail: `失败前的模型请求数不是 +1（${before} → ${after}）——判据自身的基线不成立`,
+        };
+      }
+      const file = adapter.snapshotFile(picked.ref);
+      if (baselineBody.body !== String(file?.body ?? '')) {
+        return { status: FAIL, detail: '失败前的正文与落盘不一致（判据自身的基线不成立）' };
+      }
+
+      // 制造 `duplicates` 失败，并再选一条引用触发这次核对。
+      let notice = undefined;
+      await adapter.withFailingDuplicates(mode, async () => {
+        const second = await adapter.pick({ sessionId });
+        if (!second?.ref) return;
+        await adapter.settle(second.ref);
+        notice = await waitForNotice(adapter, 'duplicates-failed');
+      });
+      if (notice === undefined) {
+        return {
+          status: FAIL,
+          detail: `duplicates 失败（${mode}）后没有出现可见错误提示——协议 §2.3`,
+        };
+      }
+      const carrier = checkNoticeCarrier(notice);
+      if (!carrier.ok) {
+        return { status: FAIL, detail: `${mode}：${carrier.why}` };
+      }
+      const text = String(notice.text ?? '');
+      for (const phrase of forbidden) {
+        if (text.includes(phrase)) {
+          return {
+            status: FAIL,
+            detail: `失败文案里出现了「${phrase}」——协议 §2.3：失败文案只说「无法核对是否重复」`,
+          };
+        }
+      }
+
+      // 不额外拦截：正文照发、请求数不增不减地 +1。
+      const before2 = adapter.modelRequestCount();
+      const body = await trySerialize(adapter, picked.ref);
+      const after2 = adapter.modelRequestCount();
+      if (!body.ok) {
+        return {
+          status: FAIL,
+          detail: `失败后正文取不到（${body.error}）——协议 §2.3：失败不阻塞发送，正文照发`,
+        };
+      }
+      if (after2 !== before2 + 1) {
+        return {
+          status: FAIL,
+          detail: `失败后模型请求数不是 +1（${before2} → ${after2}）——协议 §5 第 6 行：未被拦截`,
+        };
+      }
+      if (body.body !== String(file?.body ?? '')) {
+        return {
+          status: FAIL,
+          detail: '失败后正文与落盘不一致——协议 §2.3：失败不阻塞发送，正文照发',
+        };
+      }
+      observed.push(`${mode}：可见错误 + 正文照发（请求数 +1）`);
+    }
+
+    return { status: PASS, detail: observed.join('；') };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// P2-D｜跨语言：两端算出的 groupKey 必须相等（§1.2 / §6「两端都读」）
+// ---------------------------------------------------------------------------
+
+/**
+ * P2-D｜协议 §1.2 ＋ §5「夹具」条款：**同一组夹具，两端都读** ⇒ 两端算出的
+ * `groupKey` 必须**逐字节相等**。
+ *
+ * ## 断的是「三个值一致」
+ *
+ * · **协议值**：判据**自己**按 §1.2 独立转写（五字段按顺序、单个换行 U+000A
+ *   连接、sha256 前 16 位小写十六进制）⇒ **标准答案不来自任何一端**；
+ * · **JS 值**：实现 `groupKeyOf` 的输出（经 adapter 观测口）；
+ * · **Rust 值**：`p1_protocol_fixture` example 的输出。
+ *
+ * 三个相等 ⇒ 任何一端漂移都立刻现形（只断 JS==Rust 会放过「两端一起错」）。
+ *
+ * ## Rust 端没构建 ⇒ **报「未执行」**，不判通过
+ *
+ * （与 P1 A1c 的既有口径一致：Rust 侧没有产物 ⇒ 本条未执行。）
+ *
+ * @param {object} input
+ * @param {Array<{id: string, fixture: object}>} input.fixtures - 夹具（含 `duplicates` kind）。
+ * @param {Array<{id: string, result: object}>|undefined} input.rustCases - Rust 端产物。
+ * @param {object} adapter - 观测口（`groupKeyOf`）。
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP2_D_crossLanguageGroupKey({ fixtures = [], rustCases, adapter } = {}) {
+  return guard('P2-D-cross-language-group-key', async () => {
+    const duplicates = (fixtures ?? []).filter((item) => String(item?.fixture?.input?.kind) === 'duplicates');
+    if (duplicates.length === 0) {
+      return { status: SKIPPED, detail: '没有「去重候选对」夹具' };
+    }
+    if (!Array.isArray(rustCases)) {
+      return {
+        status: SKIPPED,
+        detail:
+          'Rust 侧没有产物（未构建 p1_protocol_fixture example）——本条未执行，不判通过；' +
+          '构建：`cargo build --manifest-path src-tauri/Cargo.toml --example p1_protocol_fixture`',
+      };
+    }
+    const problems = [];
+    let checked = 0;
+    for (const item of duplicates) {
+      const snapshot = item.fixture?.input?.snapshots?.[0];
+      if (snapshot === undefined) {
+        problems.push(`${item.id}：夹具里没有快照`);
+        continue;
+      }
+      const protocolKey = expectedGroupKey(snapshot);
+      const jsKey = String(adapter.groupKeyOf(snapshot));
+      const rustCase = (rustCases ?? []).find((one) => String(one?.id) === String(item.id));
+      const rustKey = String(rustCase?.result?.groupKey ?? '');
+      if (jsKey !== protocolKey) {
+        problems.push(`${item.id}：JS 端算出 ${jsKey}，按协议 §1.2 应为 ${protocolKey}`);
+      }
+      if (rustKey === '') {
+        problems.push(`${item.id}：Rust 端没有这个夹具的结果`);
+        continue;
+      }
+      if (rustKey !== protocolKey) {
+        problems.push(`${item.id}：Rust 端算出 ${rustKey}，按协议 §1.2 应为 ${protocolKey}`);
+      }
+      if (jsKey !== rustKey) {
+        problems.push(`${item.id}：两端不相等（JS ${jsKey} / Rust ${rustKey}）`);
+      }
+      if (jsKey === protocolKey && rustKey === protocolKey) checked += 1;
+    }
+    if (problems.length > 0) {
+      return { status: FAIL, detail: problems.join('；') };
+    }
+    return {
+      status: PASS,
+      detail: `${checked} 条夹具的三方 groupKey 一致（协议独立转写 ＝ JS ＝ Rust）`,
+    };
+  });
+}
