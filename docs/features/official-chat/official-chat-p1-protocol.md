@@ -195,6 +195,7 @@ ready → serialized → expanded → persisted
 
 1. **触发点**：host 半边**惰性触发**，**只在 `catalog` 入口**检查一次，同实例**至多一天一次**；**`capture` 不触发**（用户主动路径更短更可控）。节流键：`<root>/sweeps/last-sweep-<YYYY-MM-DD>.json`（独立目录，不混进快照目录）。
 2. **扫哪些**（四家族，均在 `<root>` 下）：快照 `snapshots/<provider>/*.json`（按文件内 `capturedAt`，mtime 兜底）；认领 `seq-claims/*`（按 `claimedAt`，**且必须确认对应快照已不在**才可删）；目录缓存 `catalog-cache/*`（5 分钟 TTL）；错误日志 `logs/official-chat.log`（按行数/大小截断，**不按 7 天删**——日志是诊断证据）。
+   - **（PM 20:2x 澄清 · 判据按这两条边界写）** ① **「按文件内 `capturedAt`，mtime 兜底」= `capturedAt` 优先**：`capturedAt` 过期而 mtime 新 ⇒ **仍判过期并删**；`capturedAt` 新而 mtime 旧 ⇒ **不删**（mtime 旧不是删除理由）。mtime **仅在 `capturedAt` 缺失或不可解析时**才作兜底。② **日志「按行数/大小截断」= 两个上限都要满足**：先按行数留尾部，再按字节留尾部（按行退，不切字节数组——切半个多字节字符会毁掉诊断证据）。
 3. **怎么避免误删**：只删**超过 7 天**的（`snapshotRetentionMs`）；顺序**先快照后认领**（认领先删会指向仍存在但已过期的快照）；**两步法删除**（先 rename 再 unlink），避免删到一半留下半截文件被当成有效快照；**只动本实例根下这四家族**，根不可得就**不扫**（宁可不清理，不乱删）；清理失败**只记日志**，不阻塞业务。
 4. **「正在发送中的引用」不保护、不引入引用计数**（协议没写，不自造）：后果是「该引用失效并被拒」（`snapshot_invalid`），**不是错发**——S-5 / S-6 既有语义已覆盖这个后果。
 
@@ -215,7 +216,7 @@ ready → serialized → expanded → persisted
 - 客户端命令职责：`capabilities` / `catalog` / `capture` / `cancel` / `preview`；host 回环路由**只按固定 id 读快照**与必要的模型可见投影。名称在实施时统一登记。
 - 复用现有桥的**鉴权与轮换**，**不复制监听器**；新增 GET 查询路由用精确路径匹配 + 参数校验；若必须加请求体协议，先补**定长读取与大小上限**，不得复用只读到请求头的 `body_prefix`。
 - 路径：目录缓存与正文快照**分开**；所有路径**跟随后端路径解析**（按壳模式、内核族、实例、站点账户隔离），**不在代码中展开真实用户 home**（计划 §8）。
-  - 目录缓存：`<实例 official-chat 根>/catalog-cache/<provider>/`
+  - 目录缓存：`<实例 official-chat 根>/catalog-cache/`（**平铺文件名** `<provider>__<账号范围>__<查询词>.json`，见 `host/commands.js` 的 `fileOf`；**没有 provider 子目录**——PM 20:2x 按实现对齐，§4.1 第 2 条的 `catalog-cache/*` 已是这个口径）
   - 正文快照：`<实例 official-chat 根>/snapshots/<provider>/<snapshotId>.json`
 
 ---

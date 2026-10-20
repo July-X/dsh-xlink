@@ -717,7 +717,14 @@ export function normalizeMessages(messages) {
 }
 
 /**
- * 正文合计字节数（多条消息之间按一个换行计）。
+ * 正文合计字节数（**消息之间的 `MESSAGE_SEPARATOR` 也要计入**）。
+ *
+ * **为什么**：协议 §4 的「最大正文字节」指的是**正文**的字节数，而正文 =
+ * 各条文本按 `MESSAGE_SEPARATOR` 拼起来的那一串（`joinMessages`）。少了
+ * 分隔符 ⇒ 算出来的是「各条文本之和」，**不是正文** ⇒ 同一份正文在 JS 与
+ * Rust 两侧会差 `2 × (条数 - 1)` 字节 ⇒ 临界时两端判定相反（协议 §6 的
+ * 「同一夹具 → 同一结果」被破坏）。Rust 侧 `body_of(..).len()` 走的是
+ * **拼接后**的字节数，两端口径必须一致。
  *
  * @param {Array<{role: string, text: string}>} messages - 已规范化的消息。
  * @returns {number} UTF-8 字节数。

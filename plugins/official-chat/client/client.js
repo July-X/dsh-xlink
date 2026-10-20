@@ -155,12 +155,46 @@ window.__ModuleLoader__.load({
     const SOURCE_NAME = 'official-chat';
 
     /**
-     * 客户端命令的 RPC 通道前缀（协议 §5「命名空间与桥」）。
+     * **客户端命令的通道路径**（协议 §5「命名空间与桥」，v0.4 裁定）。
      *
-     * **不能用 `/api`**：那个通道归内核的 API Gateway 独占，再注册一次会抛
-     * `already has an interceptor`（`dsh-api-gateway/lib/index.js@0.2.1-rc.2:880`）。
+     * **必须与 host 半边注册的 exact route 全等**——内核是**全等匹配**
+     * （`fetchRoutes.get(url.pathname)`，
+     * `dsh-client-connection/lib/index.js@0.2.1-rc.2:828`），错一个字符就 404/405。
+     *
+     * **为什么在 `/api` 命名空间下**：内核 `assertFetchRoute`
+     * （同文件 `dsh-client-connection/lib/index.js@0.2.1-rc.2:973-977`）用
+     * `endpointFromPath("/api", route.path)` 校验——不在 `/api` 下直接抛。
+     *
+     * **为什么不再是原来的 `/xlink-official-chat` RPC 通道**：那条路走的是
+     * `connection.rpc.handle`，**插件侧走不通**（内核
+     * `dsh-client-connection/lib/index.js@0.2.1-rc.2:871` 用属性访问
+     * `owner.webServer.register(route)`，属性查找落在内核 connection 插件自己的
+     * fiber scope ⇒ 必抛 `cannot get property "webServer" without inject`）。
+     * 而浏览器侧内核自带的 `rpc.call` 打的 URL 是
+     * `` `${channel}/${endpoint}`.slice(1) ``（相对路径、**不带 `/api`**，
+     * `dsh-client-connection/lib/client.browser.js@0.2.1-rc.2:1221`）
+     * ⇒ 它**也打不到** `/api` 下的 exact route ⇒ 客户端改为**自己发
+     * same-origin fetch**（owner 准入仍由内核做）。
      */
-    const RPC_CHANNEL = '/xlink-official-chat';
+    const FETCH_ROUTE_PATH = '/api/xlink-official-chat';
+
+    /**
+     * 造一个关联 id（信封的 `rpcId`）。
+     *
+     * **形态照抄内核**：浏览器侧内核用 `randomUuid()`
+     * （`dsh-client-connection/lib/client.browser.js@0.2.1-rc.2:1214`）。
+     * 这里**优先**用 `crypto.randomUUID()`，没有就退到一个带随机段的字符串
+     * ——**只要同一轮里唯一**即可（它只用来把响应关联回请求）。
+     *
+     * @returns {string}
+     */
+    function newRpcId() {
+      const c = globalThis.crypto;
+      if (c !== undefined && c !== null && typeof c.randomUUID === 'function') {
+        return c.randomUUID();
+      }
+      return `r-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
 
     /**
      * 固定夹具：**不在客户端这一份**。
@@ -264,16 +298,11 @@ window.__ModuleLoader__.load({
     /**
      * 取**客户端命令**的调用面（协议 §5 的五个命令）。
      *
-     * **通道是内核既有的 `connection` 服务的 RPC**：
-     *
-     * · 浏览器侧：`ctx.get('connection').rpc.call(channel, endpoint, payload)`
-     *   （`dsh-client-connection/lib/client.browser.js@0.2.1-rc.2:1212-1231`；
-     *   页面在 `dsh-client-connection/lib/client.browser.js@0.2.1-rc.2:1497`
-     *   的 `ctx.provide("connection", handle)`）。
-     * · Host 侧：`ctx.connection.rpc.handle(channel, handler)`
-     *   （`dsh-client-connection/lib/index.js@0.2.1-rc.2:724-729`；服务本身
-     *   在 `dsh-client-connection/lib/index.js@0.2.1-rc.2:710` 的
-     *   `super(ctx, "connection")`）。
+     * **通道是内核 `connection` 服务的 exact fetch route**（协议 v0.4 §5）：
+     * 客户端**自己发 same-origin fetch** 到 `/api/xlink-official-chat`
+     * （浏览器侧 `dsh-client-connection/lib/client.browser.js@0.2.1-rc.2:1497`
+     * 提供的 `connection` 服务**只**有 `rpc.call`，它的 URL 不在 `/api` 下 ⇒
+     * 打不到 exact route，所以**不再用**它）。
      *
      * **为什么不是「host 挂个服务、client 去 get」**：client 半边是**浏览器页面里
      * 的脚本**，host 半边是**内核 Node 进程里的插件**——两棵不同的 cordis 树，
@@ -289,10 +318,25 @@ window.__ModuleLoader__.load({
      * @returns {object|undefined} 调用面；取不到即 undefined。
      */
     function hostClient(ctx) {
+      // **通道 = 内核 `connection` 服务的 exact fetch route**（协议 v0.4 §5）：
+      // 客户端**自己发 same-origin fetch**，打到 `/api/xlink-official-chat`
+      // （与 host 半边注册的 exact route **全等**）。
+      //
+      // **不再用浏览器侧的 `connection.rpc.call`**：它的 URL 是
+      // `` `${channel}/${endpoint}`.slice(1) ``（相对路径、**不带 `/api`**），
+      // 打不到 `/api` 命名空间下的 exact route。
+      //
+      // **鉴权没有搬到客户端**：owner 准入仍由内核的 shared fetch handler 做
+      // （`createSharedFetchHandler`，
+      // `dsh-client-connection/lib/index.js@0.2.1-rc.2:820-838`）；浏览器同源
+      // 自带 cookie，**客户端不碰鉴权**（协议 §5 显式否决自造安全面）。
+      const doFetch =
+        typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined;
+      if (doFetch === undefined) {
+        record('host-service-unavailable', { why: '页面里没有 fetch' });
+        return undefined;
+      }
       try {
-        const connection = ctx.get('connection');
-        if (connection === undefined || connection === null) return undefined;
-        if (typeof connection.rpc?.call !== 'function') return undefined;
         return {
           /**
            * 调一个客户端命令。
@@ -303,7 +347,53 @@ window.__ModuleLoader__.load({
            * @returns {Promise<object>} 命令的返回值。
            */
           async call(endpoint, payload, signal) {
-            const result = await connection.rpc.call(RPC_CHANNEL, endpoint, payload, signal);
+            const rpcId = newRpcId();
+            /** @type {Response} */
+            let response;
+            try {
+              response = await doFetch(FETCH_ROUTE_PATH, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  type: 'client-request',
+                  rpcId,
+                  method: endpoint,
+                  payload,
+                }),
+                ...signal === void 0 ? {} : { signal },
+              });
+            } catch (error) {
+              // **送不到**（网络/页面被卸载/内核没起）：如实报「不可达」。
+              const failure = new Error(
+                `host 命令 ${endpoint} 送不到：${String(error?.message ?? error)}`,
+              );
+              failure.code = 'host_unreachable';
+              throw failure;
+            }
+            if (!response.ok) {
+              // **404/405 就是「exact route 没注册上」**——那正是 G1-7 那条上游缺口
+              // 在浏览器侧的样子（内核自己的 API Gateway 路由不存在时也是 405）。
+              const failure = new Error(
+                `transport failure for ${FETCH_ROUTE_PATH}: HTTP ${response.status}`,
+              );
+              failure.code = 'host_unreachable';
+              throw failure;
+            }
+            /** @type {any} */
+            let full;
+            try {
+              full = await response.json();
+            } catch {
+              const failure = new Error(`host 命令 ${endpoint} 的响应不是 JSON`);
+              failure.code = 'host_error';
+              throw failure;
+            }
+            if (full?.type !== 'server-response' || full?.rpcId !== rpcId) {
+              const failure = new Error(`host 命令 ${endpoint} 的信封不对（rpcId 不匹配）`);
+              failure.code = 'host_error';
+              throw failure;
+            }
+            const result = full.result;
             if (result?.ok === true) {
               const value = result.value;
               // **命令自己说失败了 ≠ 成功值**（协议 §3 的错误负载）。
@@ -544,7 +634,7 @@ window.__ModuleLoader__.load({
           if (host === undefined) {
             // **不静默**：菜单里给一行说明（点它会报出原因），而不是空菜单。
             record('catalog-unavailable', { sessionId: session?.sessionId, why: 'host-service-unavailable' });
-            return [unavailableRow('内核没给 connection 服务，host 不可达')];
+            return [unavailableRow('host 不可达（页面里没有 fetch，通道没注册上）')];
           }
           let listed;
           try {
@@ -646,7 +736,7 @@ window.__ModuleLoader__.load({
           const settled = read.promise.then(async () => {
             const host = hostClient(ctx);
             if (host === undefined) {
-              throw new Error('P1：host 不可达（内核没给 connection 服务），这条引用无法落盘（发送时会拒绝）');
+              throw new Error('P1：host 不可达（页面里没有 fetch），这条引用无法落盘（发送时会拒绝）');
             }
             const captured = await host.call('capture', {
               sessionId: sourceSessionId,
@@ -1012,6 +1102,6 @@ window.__ModuleLoader__.load({
       }
     }
 
-    return { apply, inject: ['inputTriggers', 'sessions', 'connection'] };
+    return { apply, inject: ['inputTriggers', 'sessions'] };
   },
 });

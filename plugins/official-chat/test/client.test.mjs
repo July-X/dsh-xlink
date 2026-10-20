@@ -72,6 +72,10 @@ function loadClient({ withInputTriggers = true, withSessions = true, withHostRpc
     Number,
     Boolean,
     __DSH_G1_CONFIG__: config,
+    // **客户端自己发 same-origin fetch**（协议 v0.4 §5）。
+    // **惰性转发**：`fetchImpl` 在下面才声明，直接引用会撞 TDZ。
+    // **没有桩时就是「没有 fetch」**——客户端据此报「host 不可达」。
+    fetch: withHostRpc ? (...args) => fetchImpl(...args) : undefined,
   };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
@@ -96,36 +100,55 @@ function loadClient({ withInputTriggers = true, withSessions = true, withHostRpc
       ? { registerSource: (source) => registered.push(source) }
       : undefined,
     sessions: withSessions ? { scope: () => actx } : undefined,
-    // P1：客户端半边通过内核 `connection` 服务的 **RPC** 调 host 半边
-    // （协议 §5 的五个命令）。这里是**内存桩**：真实现是 `host/commands.js` +
-    // `host/rpc.js` + `host/index.js` 的落盘存储（那份另有自己的用例）。
-    //
-    // **桩扮演 host，id 按 `host/protocol.js` 的口径算**：v0.2 起 id 由 host
-    // 分配，客户端只取用——所以「算 id」这件事的权威口径在 host 半边，
-    // 桩从这里取，与真实现（`host/seq-store.js`）同源。
-    // 客户端自造 id 的那条路另有反向回归用例钉着（见下）。
-    connection: withHostRpc
-      ? {
-          rpc: {
-            call: async (channel, endpoint, payload) => {
-              rpcCalls.push({ channel, endpoint, payload });
-              try {
-                const value = await hostCommands(endpoint, payload);
-                return { ok: true, value };
-              } catch (error) {
-                return {
-                  ok: false,
-                  error: {
-                    code: String(error?.code ?? 'host_error'),
-                    message: String(error?.message ?? error),
-                  },
-                };
-              }
-            },
-          },
-        }
-      : undefined,
+    // **注意：不再提供 `connection` 服务**——协议 v0.4 起客户端**自己发
+    // same-origin fetch** 打 exact route，不再读 `ctx.get('connection')`。
   };
+
+  /**
+   * 客户端用的 **same-origin fetch** 桩（协议 v0.4 §5 的通道形态）。
+   *
+   * **为什么不是 `connection.rpc.call` 桩**：浏览器侧内核自带的 `rpc.call` 打的
+   * URL 是 `` `${channel}/${endpoint}`.slice(1) ``（相对路径、**不带 `/api``），
+   * 打不到 `/api` 命名空间下的 exact route ⇒ 客户端改为自己发 fetch。
+   *
+   * **桩扮演 host，id 按 `host/protocol.js` 的口径算**：v0.2 起 id 由 host
+   * 分配，客户端只取用——所以「算 id」这件事的权威口径在 host 半边，
+   * 桩从这里取，与真实现（`host/seq-store.js`）同源。
+   * 客户端自造 id 的那条路另有反向回归用例钉着（见下）。
+   *
+   * **信封照抄内核**：请求 `{type:'client-request', rpcId, method, payload}`，
+   * 响应 `{type:'server-response', rpcId, result}`。
+   *
+   * @param {string|Request} input - URL。
+   * @param {object} [init] - fetch init。
+   * @returns {Promise<Response>}
+   */
+  const fetchImpl = withHostRpc
+    ? async (input, init = {}) => {
+        const url = new URL(String(input), 'http://127.0.0.1');
+        const message = JSON.parse(String(init?.body ?? '{}'));
+        rpcCalls.push({
+          path: url.pathname,
+          method: String(init?.method ?? 'GET'),
+          endpoint: String(message.method ?? ''),
+          payload: message.payload,
+        });
+        let result;
+        try {
+          const value = await hostCommands(message.method, message.payload);
+          result = { ok: true, value };
+        } catch (error) {
+          result = {
+            ok: false,
+            error: {
+              code: String(error?.code ?? 'host_error'),
+              message: String(error?.message ?? error),
+            },
+          };
+        }
+        return Response.json({ type: 'server-response', rpcId: message.rpcId, result });
+      }
+    : undefined;
 
   /** host 半边的桩：五个命令（协议 §5）。 */
   const hostCommands = async (endpoint, payload) => {
@@ -278,7 +301,7 @@ test('apply 注册了 @ 来源，且 inject 声明的是服务名', () => {
   assert.equal(registered[0].name, 'official-chat');
   // 数组来自 vm 的另一个 realm：先摊成宿主数组再比，否则 deepStrictEqual
   // 会因为原型不同而判不相等（值一模一样）。
-  assert.deepEqual([...api.inject], ['inputTriggers', 'sessions', 'connection'], 'inject 装的是服务名，不是包名');
+  assert.deepEqual([...api.inject], ['inputTriggers', 'sessions'], 'inject 装的是服务名，不是包名（v0.4 起不再用 connection 服务）');
   assert.equal(effects.length, 1, '注册必须挂在 effect 上，卸载时才收得掉');
 });
 
@@ -517,7 +540,7 @@ test('S-1：句柄就是 host 分配的快照 id（客户端不自造 seq，协�
   assert.match(ref, /^[a-z0-9]{1,4}~[a-z0-9]{1,12}~\d{4}$/, 'id 形态与协议 S-1 一致');
 });
 
-test('通道：客户端走内核 connection 服务的 RPC，端点名是协议 §5 的五个之一', async () => {
+test('通道：客户端自己发 same-origin fetch 打 exact route，端点名是协议 §5 的五个之一', async () => {
   const { api, ctx, registered, rpcCalls } = loadClient({ config: { readDelayMs: 20 } });
   api.apply(ctx);
   const source = registered[0];
@@ -525,9 +548,11 @@ test('通道：客户端走内核 connection 服务的 RPC，端点名是协议 
   await new Promise((r) => setTimeout(r, 120));
   // 正文要走 `preview`（按固定 id 读盘）——所以这里真的发一次。
   await source.codec.serialize(ref, new AbortController().signal);
-  assert.ok(rpcCalls.length > 0, '必须真的走 RPC');
+  assert.ok(rpcCalls.length > 0, '必须真的发 fetch');
   for (const call of rpcCalls) {
-    assert.equal(call.channel, '/xlink-official-chat', '通道前缀必须是插件自己的（/api 归 API Gateway 独占）');
+    // **全等匹配**：内核是 `fetchRoutes.get(url.pathname)`，错一个字符就 404。
+    assert.equal(call.path, '/api/xlink-official-chat', '路径必须与 host 半边注册的 exact route 全等');
+    assert.equal(call.method, 'POST', 'exact route 只接 POST');
     assert.ok(
       ['capabilities', 'catalog', 'capture', 'cancel', 'preview'].includes(call.endpoint),
       `端点名不在协议 §5 里：${call.endpoint}`,

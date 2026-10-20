@@ -120,8 +120,9 @@ import {
   normalizeMessages,
 } from './protocol.js';
 import { createCatalogCache, createCommands, createFixtureSource } from './commands.js';
-import { RPC_CHANNEL, createRpcHandler } from './rpc.js';
+import { FETCH_ROUTE_PATH, createDispatcher, createFetchRouteHandler } from './rpc.js';
 import { createSeqAllocator } from './seq-store.js';
+import { createSweeper } from './sweep.js';
 
 /** 内核按这个名字认这个插件（也是 settingsNs 的来源，也是服务的名字）。 */
 const name = 'xlink-official-chat';
@@ -472,12 +473,17 @@ export function createSnapshotStore(env = process.env) {
  *   `dsh-client-connection/lib/index.js@0.2.1-rc.2:745` 与
  *   `dsh-client-connection/lib/index.js@0.2.1-rc.2:778`）⇒ 查不到 ⇒ 抛。
  *
- * ## 那为什么还留着 `webServer`
+ * ## 那现在为什么**只**声明 `connection`
  *
- * 因为**它在我们自己的 scope 里确实可用**（实测：声明它之后 fiber 照常激活、
- * apply 照常执行 ⇒ 该服务在我们这个 scope 里可解析）。而这正是**方案②**
- * （插件自己 `ctx.webServer.register(route)` + 自实现 client-request 信封）
- * 的前置条件。**它不是 `rpc.handle` 的修复**，别把它当成修复。
+ * **通道形态已改**（协议 v0.4 §5）：走 `ctx.connection.fetch.register(...)`
+ * （exact fetch route）。那条路**完全不碰 webServer**
+ * （`dsh-client-connection/lib/index.js@0.2.1-rc.2:840-854`）⇒ **我们不需要
+ * `webServer`**。
+ *
+ * **不声明它是刻意的**：多声明一个用不上的服务 = 多一条「这个服务不在就整条
+ * 插件哑火」的依赖（cordis 会等齐 `inject` 里的服务才激活 fiber），
+ * **零收益、纯风险**。它曾经被声明过，是因为当时以为「声明它就能修好
+ * `rpc.handle`」——**那个判断已被实测证伪**（见上）。
  *
  * **对照：内核自己的 API Gateway 为什么没事**——它用的是
  * `connection.rpc.intercept('/api', …)`
@@ -490,7 +496,7 @@ export function createSnapshotStore(env = process.env) {
  *
  * @type {string[]}
  */
-const inject = ['connection', 'webServer'];
+const inject = ['connection'];
 
 /**
  * 本实例的「账户/实例范围」（**服务端推导**，协议 §5：客户端传入的会话标识
@@ -538,6 +544,9 @@ function apply(ctx) {
     // 客户端不得自造——跨进程单调（dev 壳与 release 壳同开也不撞）。
     seqAllocator: createSeqAllocator({ root, providerId: PROVIDER_ID }),
     providerId: PROVIDER_ID,
+    // **保留期清理器**（协议 §4.1）：惰性触发，**只在 `catalog` 入口**，
+    // 同实例至多一天一次。**根不可得就不扫**（宁可不清理，不乱删）。
+    sweeper: createSweeper({ root, providerId: PROVIDER_ID, logger: ctx.logger }),
     // **账户范围（服务端推导）**：协议 §5「客户端传入的会话标识用于一致性校验，
     // 不构成授权」+ §8-6「指纹比对的校验点在 host 命令层；当前指纹不可得 →
     // 拒（`account_changed`），不得放行」。
@@ -548,31 +557,76 @@ function apply(ctx) {
     accountScope: instanceScope(),
   });
 
-  // **注册 RPC 端点**：内核 `connection` 服务的 `rpc.handle`。
+  // **传输层分两层**（见 `host/rpc.js` 的分层说明）：
+  // · `dispatch`——派发层：端点名 → 命令结果 + 协议错误 → 传输层错误形态；
+  // · `routeHandler`——信封层：exact fetch route 的 `fetch` 实现。
   //
-  // **为什么挂在 `ctx.effect` 上**：`ctx.connection` 是**反应式**的服务属性
-  // （内核自己也这么写：`ctx.effect(() => ctx.connection.fetch.register({...}))`，
-  // 见 `dsh-api-gateway/lib/index.js@0.2.1-rc.2:2482`）。挂在 effect 上意味着
-  //   · 服务**还没就绪**时不注册（`inject: ['connection']` 让 cordis 等它）；
-  //   · 插件被卸载 / 服务被换掉时，路由**跟着收掉**（`rpc.handle` 自己返回
-  //     一个 effect 清理函数，见 `dsh-client-connection/lib/index.js@0.2.1-rc.2:855-871`）。
-  //
-  // **不用 `ctx.set` 挂服务**：cordis 要求该属性先被 `provide` 过，否则直接抛
-  // `cannot set property "..." without provide`（`cordis/lib/index.js@0.2.1-rc.2:782-789`）；
-  // 而浏览器页面里的 client 半边与内核 Node 进程里的 host 半边**不在同一棵
-  // cordis 树**——`ctx.get('xlink-official-chat')` 在页面树里永远解析不到。
-  // ⇒ RPC 是**唯一可行**的通道（协议 v0.2 §5 已把这条写死）。
-  ctx.effect(() => {
+  // **注册这一步单独抽成 `registerExactRoute`**（见下）：判据适配器要跑**真实的
+  // 装配代码**，不能自己拼一条「反正能通」的假通道——那样「host 半边忘了注册 /
+  // 改回 `rpc.handle`」这个真洞就会被桩盖住（判据全绿、真机全红）。
+  registerExactRoute(ctx, { commands, logger: ctx.logger });
+}
+
+/**
+ * **注册那条 exact fetch route**（协议 v0.4 §5 裁定的通道形态）。
+ *
+ * ## 为什么挂在 `ctx.effect` 上
+ *
+ * `ctx.connection` 是**反应式**的服务属性。挂在 effect 上意味着
+ * · 服务**还没就绪**时不注册（`inject: ['connection']` 让 cordis 等它）；
+ * · 插件被卸载 / 服务被换掉时，路由**跟着收掉**（`fetch.register` 自己返回
+ *   一个 effect 清理函数，见 `dsh-client-connection/lib/index.js@0.2.1-rc.2:840-854`）。
+ *
+ * ## 为什么不是 `connection.rpc.handle`
+ *
+ * 那条路**插件侧走不通**——`register()` 最后一步
+ * `owner.effect(() => owner.webServer.register(route))`
+ * （`dsh-client-connection/lib/index.js@0.2.1-rc.2:871`）的属性访问落在**内核
+ * connection 插件自己的 fiber scope**，那个 scope 从不 inject `webServer` ⇒ 必抛
+ * `cannot get property "webServer" without inject`（实测两轮无效，插件侧无法自修）。
+ * **`fetch.register` 完全不碰 webServer**
+ * （`dsh-client-connection/lib/index.js@0.2.1-rc.2:840-854`）⇒ 不会触发那个抛错。
+ *
+ * ## 为什么不用 `ctx.set` 挂服务
+ *
+ * cordis 要求该属性先被 `provide` 过，否则直接抛
+ * `cannot set property "..." without provide`
+ * （`@deepseek-ai/cordis/lib/index.js@0.2.1-rc.2:782-789`）；而浏览器页面里的
+ * client 半边与内核 Node 进程里的 host 半边**不在同一棵 cordis 树**——
+ * `ctx.get('xlink-official-chat')` 在页面树里永远解析不到。
+ *
+ * @param {object} ctx - 插件上下文（要有 `connection` 与 `effect`）。
+ * @param {{commands: object, logger?: object}} options
+ *   - `commands`：`createCommands(...)` 的返回。
+ * @returns {Function|undefined} effect 的清理函数；注册不上时 undefined。
+ */
+export function registerExactRoute(ctx, { commands, logger } = {}) {
+  const log = logger ?? ctx?.logger;
+  // **传输层分两层**（见 `host/rpc.js` 的分层说明）：
+  // · `dispatch`——派发层：端点名 → 命令结果 + 协议错误 → 传输层错误形态；
+  // · `routeHandler`——信封层：exact fetch route 的 `fetch` 实现。
+  const dispatch = createDispatcher({ commands, logger: log });
+  const routeHandler = createFetchRouteHandler({ dispatch, logger: log });
+
+  return ctx.effect(() => {
     const connection = ctx.connection;
-    if (connection === undefined || connection === null || typeof connection.rpc?.handle !== 'function') {
-      ctx.logger?.warn?.(
-        `${name}: 内核没有提供 connection 服务，官网引用的 RPC 端点注册不上` +
+    if (connection === undefined || connection === null || typeof connection.fetch?.register !== 'function') {
+      log?.warn?.(
+        `${name}: 内核没有提供 connection 服务，官网引用的 exact fetch route 注册不上` +
           '（客户端半边会如实报「host 不可达」，引用不会落盘）',
       );
       return undefined;
     }
-    return connection.rpc.handle(RPC_CHANNEL, createRpcHandler({ commands, logger: ctx.logger }));
-  }, `${name}: ${RPC_CHANNEL} RPC 通道`);
+    return connection.fetch.register({
+      kind: 'exact',
+      path: FETCH_ROUTE_PATH,
+      methods: ['POST'],
+      // **body 要整个读出来**（内核 `bridge` 的 `bodyMode === "buffered"` 分支，
+      // `dsh-client-connection/lib/index.js@0.2.1-rc.2:49-54`）——信封是 JSON。
+      requestBody: 'buffered',
+      fetch: routeHandler,
+    });
+  }, `${name}: ${FETCH_ROUTE_PATH} exact fetch route`);
 }
 
 export { apply, inject, name };

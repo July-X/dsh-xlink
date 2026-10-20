@@ -308,10 +308,20 @@ try {
 
   // ── 断言 1：A0 真机级——client → host 经内核 connection 服务的真实路由 ──────
   //
-  // **证据是什么**：client 半边只有一条路能问 host（`ctx.get('connection').rpc.call`）。
-  // 它走的是浏览器 → 内核 web server → **内核注册的 RPC 路由** → host 半边的 handler。
+  // **证据是什么**：client 半边只有一条路能问 host（协议 §5，**v0.4 裁定**）：
+  // **自己发 same-origin fetch** 到 `/api/xlink-official-chat`，命中内核
+  // `connection` 服务注册的 **exact fetch route**（`registerFetchRoute`，
+  // `dsh-client-connection/lib/index.js@0.2.1-rc.2:840-854`——**完全不碰 webServer**）。
   // 所以「client 拿到了 host 的能力回包」= **那条路由真的注册上了并服务了一次**。
   // 反面信号：`capabilities-failed` / `catalog-unavailable` = 路由没注册上。
+  //
+  // **为什么不能用浏览器侧内核自带的 `connection.rpc.call`**：它的 URL 是
+  // `` `${channel}/${endpoint}`.slice(1) ``（相对路径、**不带 `/api`**，
+  // `dsh-client-connection/lib/client.browser.js@0.2.1-rc.2:1221`）
+  // ⇒ 打不到 `/api` 命名空间下的 exact route。
+  //
+  // **这一轮验的是「新通道绕开了 `rpc.handle` 那一行上游缺口」**——所以它必须跑在
+  // **未打补丁的现役内核**上（隔离副本与现役内核逐字节一致，SHA-256 已核）。
   await sleep(3000);
   const probe0 = await readProbe(cdp, wb);
   const events0 = probe0?.events ?? [];
@@ -325,9 +335,9 @@ try {
     hostServiceUnavailable: events0.some((e) => e.kind === 'host-service-unavailable'),
     probeKinds: events0.map((e) => e.kind),
   };
-  step('A0-capabilities-over-rpc', a0Detail);
+  step('A0-capabilities-over-exact-fetch', a0Detail);
   verdict(
-    '断言 1（A0 真机级）：client 经内核 connection 服务拿到 host 的 capabilities（路由真的注册上了）',
+    '断言 1（A0 真机级）：client 经内核 connection 服务的 exact fetch route 拿到 host 的 capabilities（路由真的注册上了）',
     a0Detail.capabilitiesOk && a0Detail.hostServiceUnavailable === false ? '通过' : '失败',
     JSON.stringify(a0Detail),
   );
