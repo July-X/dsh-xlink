@@ -127,6 +127,8 @@ export function findProfileViolationsInFiles(files) {
 //   · `if / else` **每个分支都**给了 → 每条路径都有目录 → 放行；
 //   · `if / else if / else` 每个分支都给了 → 放行；
 //   · `if` 没有**最终** `else` → 还有「条件全不成立」那条隐式路径没给 → 违规；
+//   · `match` **每臂都给** → 链天然闭合（Rust 穷尽性保证）→ 放行；
+//   · `match` **有一臂没给** → 有一条路径没给 → 违规；
 //   · 建窗点本身就在条件块里（那条路径压根不建窗）→ 不算漏 → 放行。
 //
 // **嵌套条件同样算「有才给」**（2026-10-20 修的真漏判）：分支块里「有
@@ -145,6 +147,12 @@ export function findProfileViolationsInFiles(files) {
 // 一个分支「被完整覆盖」= 它内部要么有**无条件位置**的命中（命中点不在任何
 // **更深的**条件里），要么它自己的更深分支链**全覆盖**（链穷尽 + 链上每个
 // 分支都被完整覆盖）。
+//
+// **已知边界（保守保留报红）**：某个 `match` 臂里若藏着**提前 `return` / `?`**
+// （那条路径压根不建窗），理想上应放行；但判据按**代码形状**判，分不清
+// 「臂里没给目录」与「臂里提前返回、压根不建窗」——**宁可保留报红**，
+// 不要为「看起来对」放过真洞。要支持它得另找证据（如臂内 `return` 之后
+// 无建窗点），不能靠猜。
 //
 // 为什么第 4 条要单独算：写法 `if let Some(p) = profile { b = b.data_directory(p) }`
 // 源码里**看着**给了 profile，实际是「有才给」——`None` 那条路径照样写用户的
@@ -219,6 +227,13 @@ function stripCodeShape(line) {
  *   · `if` 没有**最终** `else` → 存在「条件全不成立」那条隐式分支 → 违规
  *     （`else if` 不算最终 else：`if a {} else if b {}` 仍有第三条路径没给）。
  *
+ * `match` 的链**天然闭合**：Rust 的穷尽性检查保证**任何能编译的 `match` 都
+ * 覆盖所有可能取值**（整数/浮点必须写 `_`、枚举要列全 variant、`bool` 两个
+ * 都要、`Option` 要 `Some`/`None` 都写）——**没有**「条件全不成立」那条隐式
+ * 路径，所以它与 `if/else` **同构**：每臂都给 → 放行；有一臂没给 → 违规。
+ * `match` 的**臂**（`Some(x) => { … }`）也是条件块、入同一条链——每臂
+ * **单独**判覆盖（否则「一臂没给」会被放过 = 漏判）。
+ *
  * @param {string[]} codeLines 已剥掉注释与字符串的代码行
  * @returns {{depthBefore: number[], blocks: object[]}}
  */
@@ -239,6 +254,21 @@ function scanBlocks(codeLines) {
         const isElse = /^\s*else\b/.test(head);
         // 「最终 else」：else 后面直接就是 `{`（`else if` 不算）。
         const isFinalElse = /^\s*else\s*$/.test(head);
+        // 父块 = 栈顶（`}` 已经把上一分支弹掉了，栈顶仍是同一层的父块）。
+        const parentBlock = stack.length > 0 ? stack[stack.length - 1] : null;
+        // `match` 表达式：**Rust 的穷尽性检查保证任何能编译的 match 都覆盖
+        // 所有可能取值**（整数/浮点必须写 `_`、枚举要列全 variant、`bool`
+        // 两个都要、`Option` 要 `Some`/`None` 都写）——**没有**「条件全不成立」
+        // 那条隐式路径。所以 match 的链**天然闭合**，与 `if/else` 同构。
+        // head 可能是 `match x`，也可能是 `let b = match x`（前面带赋值），
+        // 所以**不能**锚定行首。
+        const isMatchHead = /\bmatch\b/.test(head);
+        // match 的臂：`Some(x) => { … }`。臂自己也是条件块——每条臂各自是
+        // 一条路径，要**单独**判覆盖；且它属于 match 那条链（不是新链）。
+        const isMatchArm =
+          /=>\s*$/.test(head) &&
+          !!parentBlock?.chain?.head &&
+          /\bmatch\b/.test(parentBlock.chain.head);
         const block = {
           id: blocks.length,
           start: index,
@@ -246,20 +276,33 @@ function scanBlocks(codeLines) {
           // 父块 = 栈顶。`} else {` 会先弹出上一分支，此时栈顶仍是**同一层**的
           // 父块——所以 else 分支与它的 if 分支是**兄弟**（两者的行范围可能
           // 重叠，父子关系只能靠 parent 链判，不能靠行范围）。
-          parent: stack.length > 0 ? stack[stack.length - 1].id : null,
-          // else 分支也是**条件**分支：它只在「条件不成立」时走。
-          conditional: CONDITIONAL_HEAD_RE.test(head) || isElse,
+          parent: parentBlock ? parentBlock.id : null,
+          // else 分支也是**条件**分支：它只在「条件不成立」时走；
+          // match 的臂也是——每条臂各自是一条路径。
+          conditional: CONDITIONAL_HEAD_RE.test(head) || isElse || isMatchArm,
           chain: null,
         };
         if (isElse && lastPopped) {
           // else / else if 属于上一条分支链。
           block.chain = lastPopped.chain;
           if (block.chain && isFinalElse) block.chain.closed = true;
+        } else if (isMatchArm && isMatchHead) {
+          // 罕见形状：臂体本身就是一个嵌套 match 表达式
+          // （`Some(x) => match y { … }`）。它**既是**父 match 的一个臂，
+          // **又是**内层 match 的头——两件事都要记。
+          block.chain = { members: [], closed: true, head };
+          parentBlock.chain?.members.push(block.id);
+        } else if (isMatchArm) {
+          // match 的臂属于 match 那条链（每臂单独判覆盖）。
+          block.chain = parentBlock.chain;
         } else if (block.conditional) {
-          // if / if let / match / while / loop / for：开一条新的分支链。
-          block.chain = { members: [], closed: false };
+          // if / if let / while / loop / for：开一条新的分支链；
+          // match：链**天然闭合**（Rust 穷尽性检查，没有隐式空分支）。
+          block.chain = { members: [], closed: isMatchHead, head };
         }
-        if (block.chain) block.chain.members.push(block.id);
+        // match 块**自己不入 members**：它一入，`covered(match)` 会自引用
+        // （链的成员含 match 块自己）→ 恒 false → 每臂都给也判红。
+        if (block.chain && !isMatchHead) block.chain.members.push(block.id);
         blocks.push(block);
         stack.push(block);
         depth += 1;
