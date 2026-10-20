@@ -30,17 +30,25 @@ import {
   PASS,
   FAIL,
   SKIPPED,
+  checkCaptureResultLanded,
+  checkCaptureResultShape,
   checkCatalogCodesSeparated,
   checkChipInvalidNode,
   checkConstants,
+  checkConstantsParity,
   checkCrossProcess,
+  checkErrorCodeClosedSet,
   checkErrorCodeTable,
+  checkErrorLogPath,
   checkErrorNoInternalLeak,
+  checkFingerprintGate,
   checkFixtureCoverage,
   checkFixtureExpectationMatch,
   checkFixtureExpectations,
   checkFixtureParity,
   checkGapRegistry,
+  checkHostInjection,
+  checkHostRejectsUnclaimedId,
   checkInvalidRejection,
   checkIsolationSurface,
   checkNoBodyDedup,
@@ -48,6 +56,7 @@ import {
   checkPickTwiceDistinct,
   checkRefLengthBoundary,
   checkRequestMatchesDisk,
+  checkSeqCrossProcess,
   checkSingleSourceOfTruth,
   summarize,
   verdict,
@@ -94,19 +103,21 @@ function readFixtures() {
 }
 
 /**
- * A0｜**通道可达性**（client 半边 ↔ host 半边）——当前**不可机检 → 未执行**。
+ * A0｜**通道可达性**（client 半边 ↔ host 半边，真机级）——当前**不可机检 → 未执行**。
  *
- * 为什么要有这条（别让它悄悄不存在）：
- *   判据适配器现在把 `connection.rpc.call` **直接接到** host 的 handler
- *   （`scripts/lib/p1-adapter.mjs:236-242`），**绕过了内核 `connection` 服务的
- *   真实路由注册**（`ctx.connection.rpc.handle(channel, handler)`）。而真机
- *   （devloper p1-r2）恰恰死在那一步：`cannot get property "webServer" without
- *   inject`（`host/index.js:486`）→ 路由没注册 → 菜单空、正文没进模型。
- *   ⇒ **判据现在看不到这个真洞**：真机全红、判据不报。
- *   这正是「桩把两条本该跨进程的调用接上了」那个坑——**桩会骗过自己**。
+ * 协议 v0.3 §8 第 13 条把这条拆成两条：
+ *  · **A0s（仓库级、静态）**：host 半边声明了 `inject` 且含 `webServer`，且不用
+ *    cordis `ctx.set` 挂服务 → **仓库级可机检**（见 `checkHostInjection`）。
+ *  · **A0（真机级）**：client → host 经内核 `connection` 服务的**真实路由注册**
+ *    跑通一次 → **仓库级 runner 跑不了**（需要真实内核进程与真实 cordis 树）。
  *
- * 通道形态（上游修一处 / 插件自注册 / 走壳的 Tauri 命令）定案后，本条要
- * 按**真实装配口径**接上，再判红绿。在那之前，**如实报「未执行」**，不装作通过。
+ * **为什么仓库级不能自己给自己打绿**：适配器里的 `connection` 是**模拟**内核
+ * `connection` 服务的路由注册语义（`rpc.handle` 注册 + `rpc.call` 调用），
+ * 但内核那边还有鉴权、`webServer` 路由与 fiber scope 那一套。真机 p1-r2 死的就是
+ * `cannot get property "webServer" without inject`（`host/index.js:486`）——
+ * **判据直连 handler 就会把这个洞盖住**（判据全绿、真机全红）。
+ *
+ * ⇒ 本条在仓库级**如实报「未执行」**并写明原因，**由真机复验轮执行**。
  *
  * @returns {{name: string, status: string, detail: string}}
  */
@@ -114,10 +125,10 @@ function checkChannelReachability() {
   return verdict(
     'A0-channel-reachability',
     SKIPPED,
-    '未执行：适配器当前把 `connection.rpc.call` 直连 host handler，绕过了内核 ' +
-      '`connection` 服务的真实路由注册（p1-adapter.mjs:236-242）→ 判据看不到真机 ' +
-      '「cannot get property \"webServer\" without inject」（host/index.js:486）那个真洞。' +
-      '通道形态定案后按真实装配口径接上再判。',
+    '未执行：**形态已定案**（内核 `connection` 服务 RPC + host 半边 inject 修复），' +
+      '但本条是**真机级**判据——需要真实内核进程与真实 cordis 树，仓库级 runner 不具备。' +
+      '仓库级已把能钉的部分拆成 A0s（静态：inject 含 webServer + 不用 ctx.set 挂服务）；' +
+      '「经真实路由注册跑通一次」由真机复验轮执行。',
   );
 }
 
@@ -193,6 +204,18 @@ async function runJsFixtures(fixtures) {
  * @returns {Array<{id: string, result: unknown}>|undefined}
  */
 function runRustFixtures() {
+  return runRustPayload()?.cases;
+}
+
+/**
+ * Rust 端 runner 的**完整产物**（夹具结果 + 两端常量 + 两端码表）。
+ *
+ * 协议 §6：「`schemaVersion` **两端常量必须一致**」——只跑夹具结果的话这条
+ * 没人验，所以 example 一并输出常量与码表（`src-tauri/examples/p1_protocol_fixture.rs`）。
+ *
+ * @returns {{schemaVersion?: number, constants?: object, errorCodes?: object, cases?: Array}|undefined}
+ */
+function runRustPayload() {
   const exe = process.platform === 'win32' ? 'p1_protocol_fixture.exe' : 'p1_protocol_fixture';
   const bin = join(REPO, 'src-tauri', 'target', 'debug', 'examples', exe);
   if (!existsSync(bin)) return undefined;
@@ -203,7 +226,7 @@ function runRustFixtures() {
       maxBuffer: 64 * 1024 * 1024,
     });
     const parsed = JSON.parse(stdout.trim());
-    return Array.isArray(parsed?.cases) ? parsed.cases : undefined;
+    return parsed !== null && typeof parsed === 'object' ? parsed : undefined;
   } catch {
     return undefined;
   }
@@ -218,14 +241,25 @@ async function main() {
 
   const results = [];
 
-  // —— 验收项 1：协议夹具 ——
+  // —— 验收项 13：通道可达性（A0s 静态 + A0 真机）——
   const fixtures = readFixtures();
-  // **先报「没测到的」**：通道可达性当前不可机检，放最前面，别让它藏在绿里。
+  // **先报「没测到的」**：真机级通道可达性当前不可机检，放最前面，别让它藏在绿里。
   results.push(checkChannelReachability());
+  // A0s（仓库级静态）：host 半边的 `inject` 声明 + 不用 cordis `ctx.set` 挂服务。
+  const hostFile = join(REPO, 'plugins', 'official-chat', 'host', 'index.js');
+  results.push(
+    checkHostInjection({
+      file: 'plugins/official-chat/host/index.js',
+      text: existsSync(hostFile) ? readFileSync(hostFile, 'utf8') : '',
+    }),
+  );
   results.push(checkFixtureCoverage(fixtures));
   results.push(checkFixtureExpectations(fixtures));
+  // §1.1（v0.2）：`captureResult` 的形态（夹具层）。
+  results.push(checkCaptureResultShape(fixtures));
   const jsFixtures = await runJsFixtures(fixtures);
-  const rustFixtures = runRustFixtures();
+  const rustPayload = runRustPayload();
+  const rustFixtures = rustPayload?.cases;
   results.push(checkFixtureParity({ js: jsFixtures, rust: rustFixtures }));
   // 夹具的 `expected` 就是契约：实现算出来的结果必须与它一致。
   // **两端各判一条、名字必须带端标识**——同名两条会让验收人分不清是哪端不一致。
@@ -269,6 +303,12 @@ async function main() {
   // 一崩就把静态判据的结果也一起盖住了，验收人就看不到别的了。
   const BEHAVIOUR_CHECKS = [
     ['A9c-error-no-internal-leak', checkErrorNoInternalLeak],
+    ['A9d-error-log-path', checkErrorLogPath],
+    ['A13a-seq-cross-process', checkSeqCrossProcess],
+    ['A13b-host-rejects-unclaimed-id', checkHostRejectsUnclaimedId],
+    ['A14-error-code-closed-set', checkErrorCodeClosedSet],
+    ['A15-fingerprint-gate-host-layer', checkFingerprintGate],
+    ['A16b-capture-result-shape-landed', checkCaptureResultLanded],
     ['A2-pick-twice-distinct', checkPickTwiceDistinct],
     ['A3-ref-length-boundary', checkRefLengthBoundary],
     ['A4-single-source-of-truth', checkSingleSourceOfTruth],
@@ -301,6 +341,22 @@ async function main() {
       results.push(checkCatalogCodesSeparated(capabilities));
       results.push(checkConstants(capabilities));
       results.push(checkGapRegistry(capabilities));
+      // §6：「`schemaVersion` **两端常量必须一致**」——夹具结果里没有常量，
+      // 这条单独比（JS 的 capabilities vs Rust runner 吐出来的常量/码表）。
+      results.push(
+        checkConstantsParity({
+          js: {
+            schemaVersion: capabilities?.schemaVersion,
+            constants: capabilities?.constants,
+            errorCodes: capabilities?.errorCodes,
+          },
+          rust: {
+            schemaVersion: rustPayload?.schemaVersion,
+            constants: rustPayload?.constants,
+            errorCodes: rustPayload?.errorCodes,
+          },
+        }),
+      );
 
       for (const [name, check] of BEHAVIOUR_CHECKS) {
         results.push(await check(adapter));
@@ -330,15 +386,6 @@ async function main() {
       `证据：${outPath}\n`,
   );
   process.exitCode = summary.fail > 0 ? 1 : 0;
-}
-
-/**
- * Rust 端跑同一组夹具的结果。
- *
- * @returns {unknown|undefined}
- */
-function readRustFixtureResult() {
-  return runRustFixtures();
 }
 
 await main();

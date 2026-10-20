@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    "normal.json",
+    "partial.json",
+    "oversized.json",
+    "capture-failed.json",
+    "timeout.json",
+    "cancelled.json",
+    "catalog-ok.json",
+    "catalog-empty.json",
+    "catalog-failed.json",
+    "snapshot-missing.json",
+    "schema-unsupported.json",
+    "digest-mismatch.json",
+    "account-changed.json"
+  ]
+}

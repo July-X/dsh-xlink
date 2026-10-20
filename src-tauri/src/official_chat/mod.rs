@@ -24,3 +24,12 @@ pub(crate) mod cdp_eval;
 
 #[allow(dead_code)]
 pub(crate) mod context;
+
+// P1 协议核心的 **Rust 侧**（协议冻结稿 §6：同一组 JSON 夹具，Rust 与
+// JavaScript 各跑一遍，断言「同一夹具 → 同一解析结果」）。
+//
+// 目前**没有生产调用方**——它先以「可执行的协议口径」存在：夹具一致性测试
+// 就是它的作用。站点侧接线属 P4，所以这里按 lib.rs 的「预留 API」纪律
+// allow(dead_code)，等第一个调用方接上时删掉。
+#[allow(dead_code)]
+pub(crate) mod protocol;

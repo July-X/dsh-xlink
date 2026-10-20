@@ -1,0 +1,33 @@
+{
+  "id": "timeout",
+  "title": "读取超时：可重试",
+  "input": {
+    "kind": "capture",
+    "outcome": "timeout",
+    "schemaVersion": 1,
+    "providerId": "official-chat",
+    "accountScope": "desktop-dev/default/site-A",
+    "sessionId": "sess-eps-005",
+    "branch": "main",
+    "seq": 5,
+    "messages": [],
+    "captureResult": {
+      "status": "ok",
+      "omitted": [],
+      "unsupported": []
+    },
+    "capturedAt": "2026-10-20T09:04:00.000Z",
+    "sourceUpdatedAt": "2026-10-20T09:03:30.000Z",
+    "sourceFingerprint": "fp-alpha-001"
+  },
+  "expected": {
+    "kind": "error",
+    "ok": false,
+    "code": "timeout",
+    "retryable": true,
+    "userNext": "重试",
+    "requestId": null,
+    "logPath": null,
+    "detail": null
+  }
+}

@@ -20,7 +20,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -38,15 +38,23 @@ import {
   PASS,
   FAIL,
   SKIPPED,
+  checkCaptureResultLanded,
+  checkCaptureResultShape,
   checkCatalogCodesSeparated,
   checkChipInvalidNode,
   checkConstants,
+  checkConstantsParity,
+  checkErrorCodeClosedSet,
   checkErrorCodeTable,
+  checkErrorLogPath,
   checkErrorNoInternalLeak,
+  checkFingerprintGate,
   checkFixtureCoverage,
   checkFixtureExpectations,
   checkFixtureParity,
   checkGapRegistry,
+  checkHostInjection,
+  checkHostRejectsUnclaimedId,
   checkInvalidRejection,
   checkIsolationSurface,
   checkNoBodyDedup,
@@ -54,11 +62,13 @@ import {
   checkRefLengthBoundary,
   checkRefShape,
   checkRequestMatchesDisk,
+  checkSeqCrossProcess,
   checkSingleSourceOfTruth,
   checkCrossProcess,
   checkNamespaceIsolation,
   contentDigest,
   normalizeText,
+  stripJsComments,
   summarize,
 } from './lib/p1-protocol.mjs';
 
@@ -154,8 +164,52 @@ function makeSyntheticAdapter(violate = []) {
   let captureCalls = 0;
   let memoryState = null; // 「内存里的第二份真相」
   let scopeTag = 'A';
+  // 「当前来源指纹」是否可得（协议 §S-5 v0.2：不可得 ⇒ 必须拒）。
+  let fingerprintAvailable = true;
+  // 当前指纹的值（快照里记的那个；变了就是「换账号」）。
+  const CURRENT_FINGERPRINT = 'fp-current-0000';
 
   const body = '合成正文第一行。\n合成正文第二行。';
+
+  /**
+   * 会话短码（合成实现只要**形状**合规即可）。
+   *
+   * @param {string} sessionId
+   * @returns {string}
+   */
+  function shortOf(sessionId) {
+    return String(sessionId)
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '')
+      .slice(0, 12)
+      .padEnd(12, '0');
+  }
+
+  /**
+   * 造一条**失败**负载（协议 §3 的形态：码 + 可重试性 + 用户下一步 + requestId
+   * + 脱敏日志路径 + detail）。
+   *
+   * @param {string} code
+   * @param {object} [extra]
+   * @returns {object}
+   */
+  function failurePayload(code, extra = {}) {
+    return {
+      ok: false,
+      error: {
+        code,
+        message: `${code}：${extra.userNext ?? '看看'}`,
+        details: {
+          retryable: extra.retryable ?? false,
+          userNext: extra.userNext ?? '看看',
+          requestId: extra.requestId ?? 'req-synthetic',
+          // 「脱敏日志路径」：不可得的违规模式把它置空。
+          logPath: bad.has('no-log-path') ? null : '<instance>/logs/official-chat.log',
+          detail: extra.detail ?? null,
+        },
+      },
+    };
+  }
 
   function bucket() {
     if (!scopes.has(scopeTag)) scopes.set(scopeTag, new Map());
@@ -167,10 +221,20 @@ function makeSyntheticAdapter(violate = []) {
     if (bad.has('long-ref')) {
       return `ds~${'s'.repeat(40)}~${String(seq).padStart(4, '0')}`;
     }
-    return `ds~${String(sessionId).slice(0, 12).padEnd(12, '0')}~${String(seq).padStart(4, '0')}`;
+    // **会话段必须符合 S-1 的形状**（小写字母数字、≤ 12 字符）：真实实现用的是
+    // base36 会话短码（`host/protocol.js` 的 `makeSessionShort`）。合成实现原来
+    // 直接切原始会话 id（带连字符）→ 形状不合规 → 「句柄长度/形状」判据把
+    // **合规实现**判红——那是判据自己的夹具不真，不是实现的缺口。
+    const short = String(sessionId)
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '')
+      .slice(0, 12)
+      .padEnd(12, '0');
+    return `ds~${short}~${String(seq).padStart(4, '0')}`;
   }
 
   const adapter = {
+    root: '/synthetic/instance-root',
     async pick({ sessionId }) {
       const ref = bad.has('same-ref')
         ? 'ds~fixed0000000000~0001'
@@ -182,9 +246,14 @@ function makeSyntheticAdapter(violate = []) {
       if (bad.has('overwrite')) {
         for (const key of bucket().keys()) bucket().delete(key);
       }
-      bucket().set(ref, { body, path: `/snapshots/${scopeTag}/${ref}.json` });
+      bucket().set(ref, {
+        body,
+        path: `/snapshots/${scopeTag}/${ref}.json`,
+        fingerprint: CURRENT_FINGERPRINT,
+        changed: false,
+      });
       memoryState = bad.has('memory-truth') ? 'ready' : 'pending';
-      return { ref, insert: { ref } };
+      return { ref, insert: { ref }, sessionId: String(sessionId) };
     },
     async settle() {
       memoryState = bad.has('memory-truth') ? 'ready' : 'unknown';
@@ -195,9 +264,16 @@ function makeSyntheticAdapter(violate = []) {
         serializeOk += 1;
         return body;
       }
-      if (!bucket().has(ref)) {
+      const entry = bucket().get(ref);
+      if (entry === undefined) {
         const error = new Error(`快照不存在：${ref}`);
         error.code = 'snapshot_invalid';
+        throw error;
+      }
+      // 指纹变了 ⇒ 命令层拒（协议 §S-5 v0.2）。
+      if (entry.changed && !bad.has('no-reject')) {
+        const error = new Error('account_changed');
+        error.code = 'account_changed';
         throw error;
       }
       if (bad.has('mismatch')) {
@@ -226,7 +302,18 @@ function makeSyntheticAdapter(violate = []) {
     snapshotFile(ref) {
       const found = bucket().get(ref);
       if (found === undefined) return { exists: false, path: '', body: '', raw: '' };
-      return { exists: true, path: found.path, body: found.body, raw: found.body };
+      return {
+        exists: true,
+        path: found.path,
+        body: found.body,
+        raw: found.body,
+        // 落盘快照的 `captureResult`（协议 §1.1 v0.2：必须是对象、三字段齐）。
+        snapshot: {
+          captureResult: bad.has('bad-capture-result')
+            ? 'partial'
+            : { status: 'ok', omitted: [], unsupported: [] },
+        },
+      };
     },
     removeSnapshot(ref) {
       bucket().delete(ref);
@@ -236,8 +323,11 @@ function makeSyntheticAdapter(violate = []) {
         bucket().delete(ref);
         return;
       }
-      if (scenario === 'fingerprint' && !bad.has('no-reject')) {
-        bucket().delete(ref);
+      if (scenario === 'fingerprint') {
+        // 指纹变了：**不删**快照（存储层不比对指纹，只校验 schemaVersion 与
+        // contentDigest）——命令层才拒。
+        const entry = bucket().get(ref);
+        if (entry !== undefined) entry.changed = true;
         return;
       }
       if (scenario === 'digest' && !bad.has('no-reject')) {
@@ -286,6 +376,130 @@ function makeSyntheticAdapter(violate = []) {
       } finally {
         scopeTag = previous;
       }
+    },
+
+    // —— v0.2/v0.3 新判据需要的观测口 ——
+
+    /**
+     * 按**真实 RPC 通道**调一个 host 命令，返回原始信封。
+     *
+     * @param {string} endpoint
+     * @param {object} payload
+     * @returns {Promise<object>}
+     */
+    async callHost(endpoint, payload = {}) {
+      const requestId = String(payload.requestId ?? 'req-synthetic');
+      if (endpoint === 'catalog') {
+        return failurePayload('catalog_failed', { requestId, retryable: true, userNext: '重试' });
+      }
+      if (endpoint === 'preview') {
+        // 当前指纹不可得 ⇒ 拒；指纹变了 ⇒ 拒（都在命令层）。
+        const ref = String(payload.snapshotId ?? '');
+        const entry = bucket().get(ref);
+        const changed = entry !== undefined && entry.changed;
+        if (!fingerprintAvailable || changed) {
+          if (bad.has('fingerprint-gate-missing')) {
+            return { ok: true, value: { ok: true, snapshot: {}, body: body } };
+          }
+          return failurePayload('account_changed', { requestId, userNext: '重新选择来源' });
+        }
+        return { ok: true, value: { ok: true, snapshot: {}, body } };
+      }
+      if (endpoint === 'capture') {
+        const id = String(payload.snapshotId ?? '');
+        if (!fingerprintAvailable) {
+          if (bad.has('fingerprint-gate-missing')) {
+            return { ok: true, value: { ok: true, snapshot: {} } };
+          }
+          return failurePayload('account_changed', { requestId, userNext: '重新选择来源' });
+        }
+        if (bad.has('allow-unclaimed') && id.endsWith('~9999')) {
+          return { ok: true, value: { ok: true, snapshot: {} } };
+        }
+        // **内部冲突码漏到协议外**（§3 闭集之外）。
+        if (bad.has('extra-code')) {
+          return failurePayload('snapshot_exists', { requestId });
+        }
+        if (id === '这不是快照id' || id.startsWith('zz~') || id.endsWith('~9999')) {
+          return failurePayload('snapshot_invalid', { requestId, detail: 'id 不合规' });
+        }
+        // 同 id 重复落盘：归 snapshot_invalid，原始码留在 detail。
+        if (bad.has('lose-original-code')) {
+          return failurePayload('snapshot_invalid', { requestId, detail: null });
+        }
+        return failurePayload('snapshot_invalid', { requestId, detail: 'snapshot_exists' });
+      }
+      return failurePayload('source_unsupported', { requestId });
+    },
+
+    /**
+     * 用一个 host 从未认领过的 id 调 `capture`。
+     *
+     * @param {string} sessionId
+     * @returns {Promise<{id: string, claimed: boolean, result: object}>}
+     */
+    async captureUnclaimedId(sessionId) {
+      const id = `ds~${shortOf(sessionId)}~9999`;
+      const result = await adapter.callHost('capture', {
+        sessionId: String(sessionId),
+        snapshotId: id,
+        requestId: 'req-unclaimed',
+      });
+      return { id, claimed: false, result };
+    },
+
+    /**
+     * 「另一个进程」认领到的序号。
+     *
+     * @param {string} sessionId
+     * @returns {Promise<{seq: number, snapshotId: string}>}
+     */
+    async reserveInChildProcess(sessionId) {
+      const seq = bad.has('seq-collision') ? 1 : 2;
+      return { seq, snapshotId: `ds~${shortOf(sessionId)}~${String(seq).padStart(4, '0')}` };
+    },
+
+    /**
+     * 在「当前来源指纹不可得」的状态下跑一段逻辑。
+     *
+     * @param {() => Promise<unknown>} run
+     * @returns {Promise<unknown>}
+     */
+    async withUnavailableFingerprint(run) {
+      const saved = fingerprintAvailable;
+      fingerprintAvailable = false;
+      try {
+        return await run();
+      } finally {
+        fingerprintAvailable = saved;
+      }
+    },
+
+    /**
+     * 在「目录读取失败」的状态下跑一段逻辑。
+     *
+     * @param {() => Promise<unknown>} run
+     * @returns {Promise<unknown>}
+     */
+    async withFailingCatalog(run) {
+      return run();
+    },
+
+    /**
+     * 存储层读一份快照（**不比对指纹**）。
+     *
+     * @param {string} ref
+     * @returns {{loaded: boolean, error: string, fingerprint: string}}
+     */
+    storeLoad(ref) {
+      const entry = bucket().get(String(ref));
+      if (entry === undefined) {
+        return { loaded: false, error: 'snapshot_invalid', fingerprint: '' };
+      }
+      if (entry.changed && bad.has('storage-compares-fingerprint')) {
+        return { loaded: false, error: 'account_changed', fingerprint: '' };
+      }
+      return { loaded: true, error: '', fingerprint: entry.fingerprint };
     },
   };
 
@@ -373,15 +587,19 @@ test('A4：首版常量 —— 改一个值就报红并点名', () => {
   assert.match(red.detail, /maxBodyBytes/);
 });
 
-test('A12：G1 缺口登记 —— 没有 degraded / 没有 G1 条目 / 少于五个都要报红', () => {
-  const five = {
+test('A12：G1 缺口登记 —— 没有 degraded / 没有 G1 条目 / 少于六个都要报红', () => {
+  // **协议 v0.2 §8-12：G1-1…G1-6 六个**（G1-6 = 内核无「chip 进入 `invalid` 态」
+  // 的写入口）。自测的合成夹具必须跟着口径走，否则「合规实现」会被判红——
+  // 那就成了判据自己制造的假红。
+  const six = {
     g1_1: 'onPick 仍是同步的',
     g1_2: '读取期间没有中间态',
     g1_3: '编辑区没有详情面板',
     g1_4: '没有多来源聚合',
     g1_5: '没有历史引用列表',
+    g1_6: '内核没有 chip invalid 写入口',
   };
-  assert.equal(checkGapRegistry({ degraded: five }).status, PASS);
+  assert.equal(checkGapRegistry({ degraded: six }).status, PASS);
 
   const noDegraded = checkGapRegistry({});
   assert.equal(noDegraded.status, FAIL);
@@ -392,8 +610,8 @@ test('A12：G1 缺口登记 —— 没有 degraded / 没有 G1 条目 / 少于�
   assert.match(noG1.detail, /G1/);
 
   const onlyOne = checkGapRegistry({ degraded: { g1_1: 'onPick 仍是同步的' } });
-  assert.equal(onlyOne.status, FAIL, '协议 §8-12 要求 G1-1…G1-5 五个都在，只登记一个不够');
-  assert.match(onlyOne.detail, /五个/);
+  assert.equal(onlyOne.status, FAIL, '协议 §8-12 要求 G1-1…G1-6 六个都在，只登记一个不够');
+  assert.match(onlyOne.detail, /六个/);
 });
 
 test('A3：句柄形状 —— 合规通过，超长与形状错都要报红', () => {
@@ -540,6 +758,160 @@ test('A10：命名空间不串范围 —— 目录共用 / 跨范围能读出都
   const red = await checkNamespaceIsolation(makeSyntheticAdapter(['cross-scope']));
   assert.equal(red.status, FAIL, '命名空间共用同一目录必须报红');
   assert.match(red.detail, /目录|范围/);
+});
+
+test('A0s：host 半边必须声明 inject（含 webServer）且不用 ctx.set 挂服务 —— 去掉 webServer / 用 ctx.set 都要报红', () => {
+  // **合规**：协议 §5 写的 `inject = ['connection','webServer']`。
+  const good = `const inject = ['connection', 'webServer'];\nexport { inject };\n`;
+  const ok = checkHostInjection({ file: 'host/index.js', text: good });
+  assert.equal(ok.status, PASS, `合规实现不该红：${ok.detail}`);
+
+  // **反向用例 1：把 `webServer` 从 inject 里去掉**（这正是真机 p1-r2 的根因）。
+  const noWebServer = `const inject = ['connection'];\n`;
+  const redInject = checkHostInjection({ file: 'host/index.js', text: noWebServer });
+  assert.equal(redInject.status, FAIL, 'inject 少了 webServer 必须报红');
+  assert.match(redInject.detail, /webServer/, '必须点名缺的是 webServer');
+
+  // **反向用例 2：改用 cordis `ctx.set` 挂服务**（协议 §5 已显式否决那条路）。
+  const withCtxSet = `const inject = ['connection', 'webServer'];\nctx.set('xlink-official-chat', service);\n`;
+  const redCtxSet = checkHostInjection({ file: 'host/index.js', text: withCtxSet });
+  assert.equal(redCtxSet.status, FAIL, '用 ctx.set 挂服务必须报红');
+  assert.match(redCtxSet.detail, /ctx\.set/, '必须点名是 ctx.set 那条路');
+  assert.match(redCtxSet.detail, /host\/index\.js:2/, '必须点名 file:line');
+
+  // **注释里提到 `ctx.set` 不算违规**（实现文件里大量注释正是在解释为什么不能用它）。
+  const onlyComment = `const inject = ['connection', 'webServer'];\n// 不用 ctx.set 挂服务：cordis 要求先 provide\n`;
+  assert.equal(
+    checkHostInjection({ file: 'host/index.js', text: onlyComment }).status,
+    PASS,
+    '注释里的 ctx.set 不能被当成调用（否则是假红）',
+  );
+});
+
+test('A1e：两端常量与码表必须一致 —— 不一致要报红，缺一端要报「未执行」', () => {
+  const js = {
+    schemaVersion: 1,
+    constants: { ...CONSTANTS },
+    errorCodes: JSON.parse(JSON.stringify(ERROR_CODES)),
+  };
+  const rust = {
+    schemaVersion: 1,
+    constants: { ...CONSTANTS },
+    errorCodes: JSON.parse(JSON.stringify(ERROR_CODES)),
+  };
+  const ok = checkConstantsParity({ js, rust });
+  assert.equal(ok.status, PASS, `两端一致不该红：${ok.detail}`);
+
+  // **常量不一致**。
+  const badConst = { ...rust, constants: { ...rust.constants, maxBodyBytes: 1024 } };
+  const redConst = checkConstantsParity({ js, rust: badConst });
+  assert.equal(redConst.status, FAIL);
+  assert.match(redConst.detail, /maxBodyBytes/);
+
+  // **码表缺一个**。
+  const badCodes = { ...rust, errorCodes: { ...rust.errorCodes } };
+  delete badCodes.errorCodes.timeout;
+  const redCodes = checkConstantsParity({ js, rust: badCodes });
+  assert.equal(redCodes.status, FAIL);
+  assert.match(redCodes.detail, /timeout/);
+
+  // **缺 Rust 端 ⇒ 「未执行」**（不能记成失败，也不能记成通过）。
+  const skipped = checkConstantsParity({ js, rust: undefined });
+  assert.equal(skipped.status, SKIPPED, '缺一端必须报「未执行」');
+  assert.match(skipped.detail, /Rust/);
+});
+
+test('A9d：错误负载必须带脱敏日志路径与 requestId —— 不带日志路径要报红', async () => {
+  const good = makeSyntheticAdapter();
+  const ok = await checkErrorLogPath(good);
+  assert.equal(ok.status, PASS, `合规实现不该红：${ok.detail}`);
+
+  const bad = makeSyntheticAdapter(['no-log-path']);
+  const red = await checkErrorLogPath(bad);
+  assert.equal(red.status, FAIL, '错误负载没带脱敏日志路径必须报红');
+  assert.match(red.detail, /日志路径/);
+});
+
+test('A13a：id 由 host 分配且跨进程单调 —— 跨进程撞号必须报红', async () => {
+  const good = makeSyntheticAdapter();
+  const ok = await checkSeqCrossProcess(good);
+  assert.equal(ok.status, PASS, `合规实现不该红：${ok.detail}`);
+
+  const bad = makeSyntheticAdapter(['seq-collision']);
+  const red = await checkSeqCrossProcess(bad);
+  assert.equal(red.status, FAIL, '跨进程撞到同一个 id 必须报红');
+  assert.match(red.detail, /同一个 id|单调/);
+});
+
+test('A13b：host 必须拒「client 自造」的 id —— 放行要报红', async () => {
+  const good = makeSyntheticAdapter();
+  const ok = await checkHostRejectsUnclaimedId(good);
+  assert.equal(ok.status, PASS, `合规实现不该红：${ok.detail}`);
+
+  const bad = makeSyntheticAdapter(['allow-unclaimed']);
+  const red = await checkHostRejectsUnclaimedId(bad);
+  assert.equal(red.status, FAIL, 'host 放行未认领的 id 必须报红');
+  assert.match(red.detail, /自造|没分配/);
+});
+
+test('A14：13 个码是闭集 —— 漏出协议外的码 / 丢掉原始码都要报红', async () => {
+  const good = makeSyntheticAdapter();
+  const ok = await checkErrorCodeClosedSet(good);
+  assert.equal(ok.status, PASS, `合规实现不该红：${ok.detail}`);
+
+  const extra = makeSyntheticAdapter(['extra-code']);
+  const redExtra = await checkErrorCodeClosedSet(extra);
+  assert.equal(redExtra.status, FAIL, '外发闭集之外的码必须报红');
+  assert.match(redExtra.detail, /snapshot_exists/, '必须点名漏出来的那个码');
+
+  const lost = makeSyntheticAdapter(['lose-original-code']);
+  const redLost = await checkErrorCodeClosedSet(lost);
+  assert.equal(redLost.status, FAIL, '内部码没留在 detail 必须报红');
+  assert.match(redLost.detail, /detail/);
+});
+
+test('A15：指纹闸在 host 命令层 —— 不可得不放行 / 存储层比对指纹都要报红', async () => {
+  const good = makeSyntheticAdapter();
+  const ok = await checkFingerprintGate(good);
+  assert.equal(ok.status, PASS, `合规实现不该红：${ok.detail}`);
+
+  const noGate = makeSyntheticAdapter(['fingerprint-gate-missing']);
+  const redGate = await checkFingerprintGate(noGate);
+  assert.equal(redGate.status, FAIL, '指纹不可得却放行必须报红');
+  assert.match(redGate.detail, /指纹/);
+
+  const storeGate = makeSyntheticAdapter(['storage-compares-fingerprint']);
+  const redStore = await checkFingerprintGate(storeGate);
+  assert.equal(redStore.status, FAIL, '存储层比对指纹必须报红（校验点在命令层）');
+  assert.match(redStore.detail, /存储层/);
+});
+
+test('A16a：captureResult 的形态 —— partial/failed 用字符串必须报红', () => {
+  const ok = checkCaptureResultShape(makeFixtures());
+  assert.equal(ok.status, PASS, `合规夹具不该红：${ok.detail}`);
+
+  const asString = makeFixtures();
+  asString[0].input.captureResult = 'partial';
+  const redString = checkCaptureResultShape(asString);
+  assert.equal(redString.status, FAIL, 'partial 用字符串必须报红');
+  assert.match(redString.detail, /partial/);
+
+  const missingField = makeFixtures();
+  delete missingField[0].input.captureResult.omitted;
+  const redMissing = checkCaptureResultShape(missingField);
+  assert.equal(redMissing.status, FAIL, '缺 omitted 字段必须报红');
+  assert.match(redMissing.detail, /omitted/);
+});
+
+test('A16b：落盘快照的 captureResult 必须是对象 —— 字符串形态必须报红', async () => {
+  const good = makeSyntheticAdapter();
+  const ok = await checkCaptureResultLanded(good);
+  assert.equal(ok.status, PASS, `合规实现不该红：${ok.detail}`);
+
+  const bad = makeSyntheticAdapter(['bad-capture-result']);
+  const red = await checkCaptureResultLanded(bad);
+  assert.equal(red.status, FAIL, '落盘快照的 captureResult 是字符串必须报红');
+  assert.match(red.detail, /对象/);
 });
 
 test('verdict 汇总：三态计数正确，未执行不算失败', () => {
@@ -724,4 +1096,187 @@ test('活体注入（行为型）：让实现「落盘后内存仍留真相」�
   // —— 复跑绿 ——
   const green = await checkSingleSourceOfTruth(restored);
   assert.equal(green.status, PASS, '撤掉注入后必须复跑绿');
+});
+
+// ---------------------------------------------------------------------------
+// v0.2 / v0.3 新判据的**活体注入**（对真实实现的副本，原实现一个字节都不碰）
+// ---------------------------------------------------------------------------
+
+/**
+ * 把 host 半边整个目录拷到一次性临时目录（活体注入用）。
+ *
+ * **为什么拷整个目录**：host 内部那几个模块是**相对 import** 的
+ * （`commands.js` import `./protocol.js`）——只拷一个文件会断 import。
+ *
+ * @param {string} tag
+ * @returns {string} 副本目录绝对路径。
+ */
+function copyHostDir(tag) {
+  const src = new URL('../plugins/official-chat/host/', import.meta.url);
+  const dir = makeTempRoot(tag);
+  for (const name of readdirSync(src)) {
+    writeFileSync(join(dir, name), readFileSync(new URL(name, src)));
+  }
+  return dir;
+}
+
+test('活体注入（静态 · A0s）：从真实 host 半边副本里去掉 inject 的 webServer → 门禁红并点名 → 还原 → 逐字节一致 → 复跑绿', () => {
+  const originalUrl = new URL('../plugins/official-chat/host/index.js', import.meta.url);
+  const originalBefore = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
+  const baselineText = readFileSync(originalUrl, 'utf8');
+
+  const copyDir = makeTempRoot('inject-a0s');
+  const copyPath = join(copyDir, 'index.js');
+  writeFileSync(copyPath, baselineText, 'utf8');
+  const baselineSha = createHash('sha256').update(baselineText).digest('hex');
+
+  // —— 基线绿：副本与原文件逐字节相同，门禁必须绿 ——
+  const green = checkHostInjection({ file: 'host/index.js', text: readFileSync(copyPath, 'utf8') });
+  assert.equal(green.status, PASS, `基线必须绿：${green.detail}`);
+
+  // —— 注入：把 inject 里的 webServer 去掉（真机 p1-r2 的根因）——
+  const anchor = "const inject = ['connection', 'webServer'];";
+  assert.ok(baselineText.includes(anchor), '注入锚点不见了——实现改了，注入用例要跟着改');
+  writeFileSync(copyPath, baselineText.replace(anchor, "const inject = ['connection'];"), 'utf8');
+
+  const red = checkHostInjection({ file: 'host/index.js', text: readFileSync(copyPath, 'utf8') });
+  assert.equal(red.status, FAIL, '去掉 webServer 后门禁必须红');
+  assert.match(red.detail, /webServer/, '红必须点名缺的是 webServer');
+
+  // —— 撤掉注入：逐字节还原 ——
+  writeFileSync(copyPath, baselineText, 'utf8');
+  const restoredSha = createHash('sha256').update(readFileSync(copyPath)).digest('hex');
+  assert.equal(restoredSha, baselineSha, '撤掉后必须与基线逐字节一致');
+
+  // —— 复跑绿 ——
+  const again = checkHostInjection({ file: 'host/index.js', text: readFileSync(copyPath, 'utf8') });
+  assert.equal(again.status, PASS, `撤掉注入后必须复跑绿：${again.detail}`);
+
+  // —— 原实现文件没被碰过 ——
+  const originalAfter = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
+  assert.equal(originalAfter, originalBefore, '原实现文件必须一个字节都没变');
+
+  removeTempRoot(copyDir);
+});
+
+test('活体注入（行为型 · A15 指纹闸）：从真实 host 半边副本里去掉 preview 的指纹比对 → 判据红 → 还原 → 逐字节一致 → 复跑绿', async () => {
+  const originalUrl = new URL('../plugins/official-chat/host/commands.js', import.meta.url);
+  const originalBefore = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
+  const baselineText = readFileSync(originalUrl, 'utf8');
+
+  // —— 基线绿：副本跑一遍，判据必须绿 ——
+  const baselineDir = copyHostDir('inject-a15-baseline');
+  const baselineAdapter = await createAdapter({ tag: 'inject-a15', hostDir: baselineDir });
+  let green;
+  try {
+    green = await checkFingerprintGate(baselineAdapter);
+  } finally {
+    baselineAdapter.cleanup();
+  }
+  assert.equal(green.status, PASS, `基线必须绿：${green.detail}`);
+
+  // —— 注入：把 preview 里「当前指纹 vs 快照指纹」的比对去掉 ——
+  const anchor = "if (String(loaded.snapshot?.sourceFingerprint ?? '') !== fingerprint) {";
+  assert.ok(baselineText.includes(anchor), '注入锚点不见了——实现改了，注入用例要跟着改');
+  const injectedDir = copyHostDir('inject-a15-red');
+  const injectedPath = join(injectedDir, 'commands.js');
+  writeFileSync(injectedPath, baselineText.replace(anchor, 'if (false) {'), 'utf8');
+
+  const injectedAdapter = await createAdapter({ tag: 'inject-a15', hostDir: injectedDir });
+  let red;
+  try {
+    red = await checkFingerprintGate(injectedAdapter);
+  } finally {
+    injectedAdapter.cleanup();
+  }
+  assert.equal(red.status, FAIL, '去掉指纹比对后判据必须红');
+  assert.match(red.detail, /指纹/, '红必须点名违规的性质');
+
+  // —— 撤掉注入：逐字节还原（副本）——
+  writeFileSync(injectedPath, baselineText, 'utf8');
+  const restoredSha = createHash('sha256').update(readFileSync(injectedPath)).digest('hex');
+  assert.equal(
+    restoredSha,
+    createHash('sha256').update(baselineText).digest('hex'),
+    '撤掉后必须与基线逐字节一致',
+  );
+
+  // —— 复跑绿（**另起一份副本**：同一路径的模块已被 Node 缓存，还原文件不等于还原模块）——
+  const restoredDir = copyHostDir('inject-a15-restored');
+  const restoredAdapter = await createAdapter({ tag: 'inject-a15', hostDir: restoredDir });
+  let again;
+  try {
+    again = await checkFingerprintGate(restoredAdapter);
+  } finally {
+    restoredAdapter.cleanup();
+  }
+  assert.equal(again.status, PASS, `撤掉注入后必须复跑绿：${again.detail}`);
+
+  // —— 原实现文件没被碰过 ——
+  const originalAfter = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
+  assert.equal(originalAfter, originalBefore, '原实现文件必须一个字节都没变');
+
+  removeTempRoot(baselineDir);
+  removeTempRoot(injectedDir);
+  removeTempRoot(restoredDir);
+});
+
+test('活体注入（行为型 · A9d 脱敏日志路径）：从真实 host 半边副本里去掉 logPath → 判据红 → 还原 → 逐字节一致 → 复跑绿', async () => {
+  const originalUrl = new URL('../plugins/official-chat/host/commands.js', import.meta.url);
+  const originalBefore = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
+  const baselineText = readFileSync(originalUrl, 'utf8');
+
+  // —— 基线绿：真实实现必须带脱敏日志路径（协议 §3）——
+  const baselineAdapter = await createAdapter({ tag: 'inject-a9d' });
+  let green;
+  try {
+    green = await checkErrorLogPath(baselineAdapter);
+  } finally {
+    baselineAdapter.cleanup();
+  }
+  assert.equal(green.status, PASS, `基线必须绿：${green.detail}`);
+
+  // —— 注入：把错误负载里的脱敏日志路径去掉 ——
+  const anchor = 'logPath: logFailure(code, requestId, detail),';
+  assert.ok(baselineText.includes(anchor), '注入锚点不见了——实现改了，注入用例要跟着改');
+  const injectedDir = copyHostDir('inject-a9d-red');
+  const injectedPath = join(injectedDir, 'commands.js');
+  writeFileSync(injectedPath, baselineText.replace(anchor, 'logPath: null,'), 'utf8');
+
+  const injectedAdapter = await createAdapter({ tag: 'inject-a9d', hostDir: injectedDir });
+  let red;
+  try {
+    red = await checkErrorLogPath(injectedAdapter);
+  } finally {
+    injectedAdapter.cleanup();
+  }
+  assert.equal(red.status, FAIL, '错误负载没带脱敏日志路径时判据必须红');
+  assert.match(red.detail, /日志路径/);
+
+  // —— 撤掉注入：逐字节还原 ——
+  writeFileSync(injectedPath, baselineText, 'utf8');
+  const restoredSha = createHash('sha256').update(readFileSync(injectedPath)).digest('hex');
+  assert.equal(
+    restoredSha,
+    createHash('sha256').update(baselineText).digest('hex'),
+    '撤掉后必须与基线逐字节一致',
+  );
+
+  // —— 复跑绿（另起一份副本：同一路径的模块已被 Node 缓存）——
+  const restoredDir = copyHostDir('inject-a9d-restored');
+  const restoredAdapter = await createAdapter({ tag: 'inject-a9d', hostDir: restoredDir });
+  let again;
+  try {
+    again = await checkErrorLogPath(restoredAdapter);
+  } finally {
+    restoredAdapter.cleanup();
+  }
+  assert.equal(again.status, PASS, `撤掉注入后必须复跑绿：${again.detail}`);
+
+  // —— 原实现文件没被碰过 ——
+  const originalAfter = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
+  assert.equal(originalAfter, originalBefore, '原实现文件必须一个字节都没变');
+
+  removeTempRoot(injectedDir);
+  removeTempRoot(restoredDir);
 });

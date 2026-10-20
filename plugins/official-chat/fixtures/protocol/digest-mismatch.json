@@ -1,0 +1,31 @@
+{
+  "id": "digest-mismatch",
+  "title": "摘要不匹配 = 快照损坏 → snapshot_invalid（不是重读）",
+  "input": {
+    "kind": "lookup",
+    "exists": true,
+    "currentFingerprint": "fp-alpha-001",
+    "snapshot": {
+      "schemaVersion": 1,
+      "snapshotId": "offi~deadbeef003~0001",
+      "contentDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "messages": [
+        {
+          "role": "user",
+          "text": "x"
+        }
+      ],
+      "sourceFingerprint": "fp-alpha-001"
+    }
+  },
+  "expected": {
+    "kind": "error",
+    "ok": false,
+    "code": "snapshot_invalid",
+    "retryable": false,
+    "userNext": "移除该引用",
+    "requestId": null,
+    "logPath": null,
+    "detail": null
+  }
+}

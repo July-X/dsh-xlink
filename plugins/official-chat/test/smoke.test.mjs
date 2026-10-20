@@ -38,16 +38,22 @@ test('package.json 的形状：内核靠它把客户端半边放进浏览器模�
 });
 
 test('dsh.client.inject 里的包名必须是内核里真实存在的包', () => {
-  // 这三个包在 release 0.2.1-rc.2 的
+  // 这几个包在 release 0.2.1-rc.2 的
   // `<kernel>/node_modules/@deepseek-ai/` 下都存在（逐个 ls 过）。
   // **写错包名的症状是静默的**：装配期报错，插件整体不加载。
   //
   // 注意：`@deepseek-ai/dsh-client-ui-slots` **不在** rc.2 的 @deepseek-ai 目录里
   // （只在浏览器模块图里），所以 inject 列表里不能写它。
+  //
+  // **P1 v0.2 起多了 `@deepseek-ai/dsh-client-connection`**：client → host 的
+  // 唯一通道是内核 `connection` 服务的 RPC（协议 v0.2 §5），浏览器侧的
+  // `connection` 服务由这个包提供（`dsh-client-connection/package.json` 的
+  // `dsh.client.platform === "web"` + `exports["./client"]`）。
   const known = new Set([
     '@deepseek-ai/dsh-api-session-controller',
     '@deepseek-ai/dsh-client-ui-conversation',
     '@deepseek-ai/dsh-client-ui-input-trigger',
+    '@deepseek-ai/dsh-client-connection',
   ]);
   for (const name of pkg.dsh?.client?.inject ?? []) {
     assert.ok(name.startsWith('@deepseek-ai/'), `inject 里应写内核包名：${name}`);
@@ -60,7 +66,26 @@ test('host 半边导出 apply / inject / name，且 name 与包名一致', async
   assert.equal(typeof mod.apply, 'function');
   assert.ok(Array.isArray(mod.inject), 'inject 是「注入的服务名数组」');
   assert.equal(mod.name, pkg.name, 'settingsNs 与包名必须一致');
-  assert.deepEqual(mod.inject, [], 'G1 的 host 半边不消费任何内核服务');
+  assert.deepEqual(
+    mod.inject,
+    ['connection', 'webServer'],
+    'host 半边消费 `connection`（RPC 通道的宿主）与 `webServer`（`rpc.handle` 注册路由时读它）',
+  );
+  // **`webServer` 声明在插件侧，**修不了** `connection.rpc.handle`**（实测 p1-r3）：
+  // `register()` 的 `owner.webServer`（`dsh-client-connection/lib/index.js@0.2.1-rc.2:871`）
+  // 的属性查找发生在**内核 connection 插件自己的 fiber scope**（cordis
+  // `@deepseek-ai/cordis/lib/index.js@0.2.1-rc.2:683` 的
+  // `(ctx[symbols.shadow] ?? ctx).fiber` + `createShadow` `:111-116`），
+  // 而那个 scope 从不 inject `webServer` ⇒ 声明了照样抛
+  // `cannot get property "webServer" without inject`。
+  //
+  // **留着的理由**：`webServer` 在**我们自己的 scope 里可用**（实测：声明后 fiber
+  // 照常激活、apply 照常执行）⇒ 它是「插件自注册路由」那条路的**前置条件**，
+  // 不是 `rpc.handle` 的修复。
+  assert.ok(
+    mod.inject.includes('webServer'),
+    'host 半边声明 `webServer`：它是「插件自注册路由」这条路的前置条件（实测：声明后该服务在本 scope 可解析）',
+  );
 });
 
 test('客户端束没有顶层声明（HMR 重求值会直接 SyntaxError）', () => {
@@ -98,10 +123,14 @@ test('证据里不出现凭据形状的东西（token / cookie / key）', () => 
 });
 
 test('夹具是固定的公开文本，不含真实官网内容与私密正文', () => {
-  const source = read('client/client.js');
+  // **夹具在 host 半边**（协议 v0.2：目录与正文都是服务端的东西——客户端只
+  // 拿 id 与正文），所以这里查的是 host 那一份。
+  const source = read('host/index.js');
   assert.match(source, /【G1 固定正文 Alpha】/);
   assert.match(source, /【G1 固定正文 Beta】/);
-  assert.ok(!/https?:\/\/(?!127\.0\.0\.1)/.test(code('client/client.js')), '客户端束里不该有真实官网地址');
+  for (const file of ['client/client.js', 'host/index.js']) {
+    assert.ok(!/https?:\/\/(?!127\.0\.0\.1)/.test(code(file)), `${file} 里不该有真实官网地址`);
+  }
 });
 
 // 2026-10-20 的教训：本机有**两棵**内核数据目录——现役的
@@ -113,12 +142,23 @@ test('引内核行号必须带版本号（防止又引到旧树）', () => {
   for (const file of ['client/client.js', 'host/index.js']) {
     for (const match of read(file).matchAll(/`([^`\n]*?):(\d+(?:-\d+)?)`/g)) {
       const path = match[1];
-      if (path.startsWith('plugins/')) continue; // 仓库内文件，不受此限
+      // 仓库内的文件只有一棵树，行号不会「引到旧树」，不需要版本号。
+      // 豁免**只限仓库内路径**（plugins/ 与 src-tauri/）：内核引用仍必须带版本。
+      if (path.startsWith('plugins/') || path.startsWith('src-tauri/')) continue;
       assert.ok(
         path.includes('@'),
         `${file} 里的引用 \`${path}\` 没带版本号：写成 \`<包>/<文件>@<版本>:<行号>\``,
       );
     }
+  }
+  // **反向回归**：豁免只对仓库内路径生效，内核引用少版本号仍必须被抓住。
+  // （放宽一条判据时必须钉住「该报的还报吗」——否则就成了什么都放行。）
+  for (const kernelStyle of [
+    'dsh-client-ui-reference/lib/client.js:362',
+    'ui-conversation/client.js:15511',
+  ]) {
+    const exempt = kernelStyle.startsWith('plugins/') || kernelStyle.startsWith('src-tauri/');
+    assert.equal(exempt, false, `内核引用 \`${kernelStyle}\` 不许被豁免`);
   }
 });
 

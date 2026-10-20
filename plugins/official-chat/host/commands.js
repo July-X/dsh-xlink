@@ -1,0 +1,650 @@
+/**
+ * 客户端命令的**业务逻辑**（协议 §5：`capabilities` / `catalog` / `capture` /
+ * `cancel` / `preview`）。
+ *
+ * ## 分层
+ *
+ * 本文件**不碰传输**（怎么从 client 到 host 是另一层的事），也不碰具体站点：
+ * 取数由注入的 `captureSource` 提供。这样同一份逻辑可以被
+ *  · 单元测试直接调（Node，无内核）；
+ *  · 壳内回环路由直接复用；
+ *  · 将来接真实站点时只换 `captureSource`。
+ *
+ * ## 目录页与快照是**两样东西**（协议 §1.2 / §5）
+ *
+ *   · 目录页（会话 id / 标题 / 深链 / 游标）→ `<实例 official-chat 根>/catalog-cache/<provider>/`
+ *   · 正文快照 → `<实例 official-chat 根>/snapshots/<provider>/`
+ *
+ * **目录页不含正文**（校验在 `protocol.js` 的 `validateCatalogPage`）。
+ *
+ * ## 本期不做什么（协议 §7 明确「不动的部分」）
+ *
+ * · 真实站点取数与登录态属 P4 → 本期 `captureSource` 是**固定夹具**；
+ * · 详情面板属 P5 → `preview` 只回快照内容，不做面板；
+ * · 正文去重属 P2 → 同一正文引用两次 = 两个快照 id、**正文各送一份**（S-7）。
+ *
+ * @module xlink-official-chat/commands
+ */
+
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, appendFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+
+import {
+  CONSTANTS,
+  ERROR_CODES,
+  ERROR_CODE_NAMES,
+  SCHEMA_VERSION,
+  STATES,
+  buildSnapshot,
+  captureFailureCode,
+  captureFailureDetail,
+  errorPayload,
+  makeProviderShort,
+  makeSessionShort,
+  parseSnapshotId,
+  redactLogPath,
+  resolveCase,
+  validateCatalogPage,
+} from './protocol.js';
+
+/**
+ * 目录缓存（§1.2 的独立缓存物）。
+ *
+ * **换账号即失效**：缓存键里带 `accountScope`，账号变了就是另一个键。
+ *
+ * @param {object} options
+ * @param {string} options.rootDir - `<实例 official-chat 根>/catalog-cache`。
+ * @param {number} [options.ttlMs] - 缓存期限（§4：5 分钟）。
+ * @param {() => number} [options.now] - 取当前时间（测试注入）。
+ * @returns {object} 缓存句柄。
+ */
+export function createCatalogCache({ rootDir, ttlMs = CONSTANTS.catalogCacheTtlMs, now = () => Date.now() }) {
+  /** 缓存文件名（provider + 账号范围 + 查询词，全部编码进文件名）。 */
+  function fileOf(provider, accountScope, query) {
+    const safe = (value) =>
+      String(value ?? '')
+        .replace(/[^0-9A-Za-z._-]/g, '_')
+        .slice(0, 64);
+    return join(rootDir, `${safe(provider)}__${safe(accountScope)}__${safe(query)}.json`);
+  }
+
+  /**
+   * 读缓存（过期即当作没有）。
+   *
+   * @returns {object|null}
+   */
+  function read(provider, accountScope, query) {
+    const path = fileOf(provider, accountScope, query);
+    if (!existsSync(path)) return null;
+    let raw;
+    try {
+      raw = JSON.parse(readFileSync(path, 'utf8'));
+    } catch {
+      return null;
+    }
+    const fetchedAt = Date.parse(String(raw?.fetchedAt ?? ''));
+    if (!Number.isFinite(fetchedAt) || now() - fetchedAt > ttlMs) return null;
+    return raw.page ?? null;
+  }
+
+  /**
+   * 写缓存。
+   *
+   * @param {object} page - 目录页。
+   */
+  function write(provider, accountScope, query, page) {
+    mkdirSync(rootDir, { recursive: true });
+    const path = fileOf(provider, accountScope, query);
+    writeFileSync(
+      path,
+      `${JSON.stringify({ fetchedAt: new Date(now()).toISOString(), page }, null, 2)}\n`,
+      'utf8',
+    );
+  }
+
+  /**
+   * 清缓存（换账号 / 显式失效）。
+   *
+   * @returns {number} 清掉几个文件。
+   */
+  function invalidate() {
+    if (!existsSync(rootDir)) return 0;
+    let count = 0;
+    for (const name of readdirSync(rootDir)) {
+      // 只删**缓存目录下的文件**（精确路径，不递归）。
+      try {
+        unlinkSync(join(rootDir, name));
+        count += 1;
+      } catch {
+        /* 删不掉就留着 */
+      }
+    }
+    return count;
+  }
+
+  return { read, write, invalidate, rootDir, ttlMs };
+}
+
+/**
+ * 固定夹具取数源（本期用；真实站点属 P4，**不预写**）。
+ *
+ * 形态与协议一致：目录项（会话 id / 标题 / 深链）与可捕获的正文分开。
+ *
+ * @param {Array<{sessionId: string, title: string, body: string}>} items
+ * @returns {object} `captureSource`。
+ */
+export function createFixtureSource(items) {
+  const list = Array.isArray(items) ? items : [];
+  return {
+    /**
+     * 列目录。
+     *
+     * **关键词在这里筛**（协议 §4 的搜索去抖 300 ms 是客户端的事；筛选本身是
+     * 服务端的）：客户端把 `query` 传下来，服务端只回匹配的项。
+     */
+    async list({ accountScope, query }) {
+      const keyword = String(query ?? '').trim();
+      const rows = keyword === ''
+        ? list
+        : list.filter((item) => String(item?.title ?? '').includes(keyword));
+      return {
+        ok: true,
+        items: rows.map((item) => ({
+          sessionId: item.sessionId,
+          title: item.title,
+          updatedAt: new Date(0).toISOString(),
+          deepLink: `https://example.invalid/chat/${item.sessionId}`,
+        })),
+        accountScope,
+      };
+    },
+    /** 捕获一份正文。 */
+    async fetch({ sessionId }) {
+      const found = list.find((item) => item.sessionId === sessionId);
+      if (found === undefined) {
+        return { ok: false, code: 'source_unsupported', detail: '目录里没有这个会话' };
+      }
+      return {
+        ok: true,
+        messages: [{ role: 'user', text: found.body }],
+        captureResult: { status: 'ok', omitted: [], unsupported: [] },
+      };
+    },
+  };
+}
+
+/**
+ * 建命令集。
+ *
+ * @param {object} options
+ * @param {object} options.store - 快照存储（`createSnapshotStore` 的返回）。
+ * @param {object} options.catalogCache - 目录缓存（`createCatalogCache` 的返回）。
+ * @param {object} options.captureSource - 取数源（本期是固定夹具）。
+ * @param {object} [options.seqAllocator] - 序号分配器（协议 v0.2 S-1「id 分配权
+ *   归 host」）。**没有它就分配不出 id** ⇒ `catalog` 只能失败。
+ * @param {string} options.providerId - provider 稳定 id。
+ * @param {string} options.accountScope - 账户范围（**后端推导**，见下）。
+ * @param {() => number} [options.now]
+ * @returns {object} 五个命令。
+ */
+export function createCommands({
+  store,
+  catalogCache,
+  captureSource,
+  seqAllocator = null,
+  providerId = 'official-chat',
+  accountScope = '',
+  now = () => Date.now(),
+}) {
+  /** provider 的稳定短码（id 的第一段；与分配器同源）。 */
+  const providerShort = makeProviderShort(providerId);
+
+  /**
+   * **脱敏的**错误日志路径（协议 §3：每个错误码都要带一条）。
+   *
+   * **它必须指向一个真存在的文件**——指向一个不存在的路径就是骗人。所以本插件
+   * **自己写这份日志**：`<实例根>/official-chat/logs/official-chat.log`。
+   *
+   * **脱敏**（协议 §5：不在代码里展开真实用户 home）：对外一律是
+   * `<instance>/…` 的占位形态，绝不把真实家目录拼进要外发的字符串。
+   */
+  const ERROR_LOG_RELATIVE = 'official-chat/logs/official-chat.log';
+  const ERROR_LOG_PATH = redactLogPath(ERROR_LOG_RELATIVE);
+
+  /**
+   * 记一行失败原因到日志文件，**并**返回脱敏路径。
+   *
+   * **只写分类后的稳定事实**（码 + requestId + detail）：不写正文、不写异常串
+   * ——协议 §3 说内部异常串不进给用户看的那一层；日志里也只留**可分类**的东西，
+   * 否则日志本身就会变成泄露源。
+   *
+   * **记日志失败不许盖掉真正的失败原因**：那才是用户要看的。写不进去就跳过
+   * （路径照样给出去，因为它指向的是「这类失败记在哪」的约定位置）。
+   *
+   * @param {string} code - 稳定码名。
+   * @param {string} requestId - 关联请求 id。
+   * @param {string|null} detail - 脱敏后的原因线索。
+   * @returns {string} 脱敏日志路径。
+   */
+  const logFailure = (code, requestId, detail) => {
+    try {
+      const root = typeof store?.root === 'string' ? store.root : '';
+      if (root !== '') {
+        const dir = join(root, 'logs');
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        const line = `${JSON.stringify({
+          at: new Date(now()).toISOString(),
+          code: String(code ?? ''),
+          requestId: String(requestId ?? ''),
+          detail: detail === null || detail === undefined ? null : String(detail),
+        })}\n`;
+        appendFileSync(join(dir, 'official-chat.log'), line, { mode: 0o600 });
+      }
+    } catch {
+      // **写不进去就算了**：真正要报的是失败原因，不是日志。
+    }
+    return ERROR_LOG_PATH;
+  };
+
+  /**
+   * 造一个错误负载（协议 §3 的形状 + **脱敏日志路径**）。
+   *
+   * **命令层所有失败都走这里**：命令层的失败是**真实发生**的失败，所以必须带
+   * §3 要求的四个字段——可重试性、用户下一步、关联 `requestId`、脱敏日志路径。
+   *
+   * @param {string} code - 稳定码名。
+   * @param {{requestId?: string, detail?: string|null}} [extra] - 关联信息。
+   * @returns {object} 错误负载。
+   */
+  const fail = (code, extra = {}) => {
+    const requestId = String(extra.requestId ?? '');
+    const detail = extra.detail ?? null;
+    return errorPayload(code, {
+      requestId,
+      detail,
+      logPath: logFailure(code, requestId, detail),
+    });
+  };
+
+  /**
+   * **来源指纹**（协议 §8-6：指纹比对的校验点在 **host 命令层**）。
+   *
+   * 指纹回答的是「这份快照还是不是**同一个来源**取出来的」——账号换了、实例
+   * 换了、来源变了，就该拒（`account_changed`），不得放行旧正文。
+   *
+   * **取值只来自服务端**：客户端传的会话标识与指纹**不构成授权**（协议 §5），
+   * 所以请求里的 `sourceFingerprint` 一律**不采信**。
+   *
+   * **不可得 ⇒ 拒**：空指纹不是「一样」，是「不知道」——协议要求此时按
+   * `account_changed` 拒，**不得放行**。
+   *
+   * **为什么取哈希**：`accountScope` 可能是实例 home 这类路径，而落盘物里
+   * **不许**出现用户目录（仓库有专门判据），所以只留摘要。
+   *
+   * @param {string} scope - 服务端推导的账户/实例范围。
+   * @returns {string} 指纹；空串表示**不可得**。
+   */
+  const fingerprintOf = (scope) => {
+    const text = String(scope ?? '').trim();
+    if (text === '') return '';
+    return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 32);
+  };
+
+  /** 在途请求：`requestId` → 取消函数（S-2：取消后的迟到结果不得创建快照）。 */
+  const inFlight = new Map();
+
+  /**
+   * 给一个目录项**预分配**一个快照 id（协议 v0.2 S-1：id 分配权归 host）。
+   *
+   * **为什么分配发生在目录这一步**：内核的 `onPick` 是**同步**的（协议 S-1 的
+   * id 必须在 pick 那一刻就成形），而 RPC 是 Promise——pick 那一刻问不到 host。
+   * 于是分配挪到**更早的异步一步**：`catalog` 回目录页时顺带把 id 分配好，
+   * 客户端把它放进候选行，pick 时直接取用。
+   *
+   * @param {string} sessionId - 官网会话 id。
+   * @returns {string} 快照 id（同时就是 `ref`）。
+   */
+  function allocateFor(sessionId) {
+    if (seqAllocator === null || typeof seqAllocator.reserve !== 'function') {
+      throw new Error('序号分配器没接上：id 分配权归 host，host 必须自己分配');
+    }
+    return seqAllocator.reserve(sessionId).snapshotId;
+  }
+
+  /**
+   * `capabilities`：把协议常量、错误码表、状态机、降级标记一次性交给客户端。
+   *
+   * **客户端据此不必再自带一份协议常量**——单一真相在 host 这边。
+   */
+  function capabilities() {
+    return {
+      ok: true,
+      schemaVersion: SCHEMA_VERSION,
+      providerId,
+      constants: { ...CONSTANTS },
+      errorCodes: Object.fromEntries(
+        Object.entries(ERROR_CODES).map(([code, spec]) => [code, { ...spec }]),
+      ),
+      states: { ...STATES },
+      /**
+       * 降级标记：实现**不得假设** G1-1…G1-6 已解决（协议 §8-12）。
+       *
+       * **协议 §8-12 要求的六个都要登记**（原文是「G1-1…G1-6 缺口登记仍在」）：
+       * G1-1 = `onPick` 异步化；G1-2 = 发送前的「引用未就绪」闸门；
+       * G1-3 = fresh span 开放给插件；G1-4 = per-plugin 注册回执与可见诊断；
+       * G1-5 = 插件重载后既有 chip 的 ref 恢复契约；
+       * G1-6 = 内核无「chip 进入 `invalid` 态」的写入口。
+       * 逐条说明见 `docs/features/official-chat/official-chat-feasibility.md` §3 缺口表。
+       *
+       * **G1-7 是本轮真机实测出的上游缺口，协议 §8-12 尚未收录（待 PM 改稿）**：
+       * 在这里登记它，是为了让 `capabilities` **如实反映「通道在本内核上不通」**——
+       * 否则客户端以为一切正常，直到真机调用才撞 HTTP 405。
+       */
+      degraded: {
+        g1_1: 'onPick 仍是同步的 → 句柄是 pending 态（selected），不是「就绪」；落盘与就绪在发送路径上判定',
+        g1_2: '发送前的「引用未就绪」闸门仍缺：无 chip 时内核把纯文本直接发出去（P1 靠 chip 在场保证不漏发）',
+        g1_3: 'fresh span（InputActions.captureInsertion）仍未开放给客户端插件',
+        g1_4: 'per-plugin 注册回执与「客户端半边注册失败时用户可见的诊断」仍缺',
+        g1_5: '插件重载后既有 chip 的 ref 恢复契约仍缺（失效 chip 需用户重选）',
+        g1_6: '内核无「chip 进入 invalid 态」的写入口（ReferenceInsert 无 invalid 字段、setInvalid 零调用方、DOM 无 data-invalid）→ 本阶段按「发送时拒 + 可见错误」验收，该缺口不因本阶段验收通过而关闭',
+        g1_7: '**上游内核缺口（0.2.1-rc.2 真机实测）**：`dsh-client-connection@0.2.1-rc.2` 的 `owner.webServer.register(route)`（lib/index.js:871）是**属性访问**——cordis 的服务查找落在 connection 插件自己的 fiber scope（`ctx[symbols.shadow]`），webServer 在那里不可解析 ⇒ 第三方插件调 `rpc.handle` 抛 `cannot get property "webServer" without inject` ⇒ **host 半边不激活、RPC 通道整体不通**（浏览器侧表现为 HTTP 405 而非 404）。**插件侧无法自修**；内核改一行 `owner.get("webServer")`（与内核自己在 :745/:778 的写法一致）即可——隔离副本注入已验证有效。协议 §8-12 尚未收录本条，待 PM 改稿',
+        // 以下三项不是 G1-* 缺口，同属「实现不得假设已解决」的降级项：
+        capture_source: '固定夹具；真实站点取数与登录态属 P4，本期不接',
+        detail_panel: 'preview 只回内容；详情面板属 P5，本期不做',
+        body_dedup: '同一正文引用两次各送一份（S-7）；正文去重属 P2',
+      },
+      paths: {
+        catalogCache: redactLogPath('catalog-cache'),
+        snapshots: redactLogPath('snapshots'),
+      },
+      /**
+       * 本实例已用掉的 pick 序号（会话键 → 最大序号）。
+       *
+       * **两份取大**：序号**认领**（分配器，`seq-claims/`）与快照**落盘**
+       * （`snapshots/`）是同一条「用掉」的两种记录，取大 = 不会因为其中一份
+       * 缺了而让序号倒退。
+       *
+       * **客户端已经不用它了**（协议 v0.2 S-1：id 分配权归 host，client 不得
+       * 自造 seq）——留在这里是为了**可观测**：对端能看到这个实例用到了第几号。
+       */
+      usedSeqs: (() => {
+        const claimed = seqAllocator?.usedSeqs?.() ?? {};
+        const stored = typeof store.listSessionSeqs === 'function' ? store.listSessionSeqs(providerId) : {};
+        const merged = { ...claimed };
+        for (const [key, seq] of Object.entries(stored)) {
+          if (Number(seq) > (merged[key] ?? 0)) merged[key] = Number(seq);
+        }
+        return merged;
+      })(),
+    };
+  }
+
+  /**
+   * `catalog`：列会话目录。**不含正文**（§1.2）。
+   *
+   * **顺带回预分配的快照 id**（协议 v0.2 S-1：id 分配权归 host）：客户端的
+   * `onPick` 是**同步**的（内核不等 Promise），那一刻问不到 host ⇒ 分配必须
+   * 发生在**更早的异步一步**，也就是这一次目录查询。
+   *
+   * **`allocations` 在 `page` 之外**：`page` 是 §1.2 的目录页（**可缓存**，
+   * 5 分钟），而 id **每次都要新分配**（同一份缓存目录页不能带同一个 id
+   * 反复用——那会让第二次 pick 撞上第一次的 id）。两者分开 = 缓存物与
+   * 一次性分配物各归各的。
+   *
+   * @param {{query?: string, cursor?: string, accountScope?: string}} request
+   */
+  async function catalog(request = {}) {
+    const scope = String(request.accountScope ?? accountScope);
+    const query = String(request.query ?? '');
+    const cached = catalogCache.read(providerId, scope, query);
+    let page;
+    if (cached !== null) {
+      page = cached;
+    } else {
+      let listed;
+      try {
+        listed = await captureSource.list({ accountScope: scope, query, cursor: request.cursor });
+      } catch {
+        // **不把内部异常串带出去**（§3）：只给稳定码 + 分类信息。
+        return { ok: false, ...fail('catalog_failed', { requestId: request.requestId }) };
+      }
+      if (listed?.ok === false) {
+        return { ok: false, ...fail(listed.code ?? 'catalog_failed', { requestId: request.requestId }) };
+      }
+      page = {
+        accountScope: scope,
+        providerId,
+        items: listed.items ?? [],
+        cursor: String(request.cursor ?? ''),
+        hasMore: Boolean(listed.hasMore),
+        fetchedAt: new Date(now()).toISOString(),
+      };
+      const check = validateCatalogPage(page);
+      if (!check.ok) {
+        return {
+          ok: false,
+          ...fail('catalog_failed', { requestId: request.requestId, detail: check.errors.join('、') }),
+        };
+      }
+      catalogCache.write(providerId, scope, query, page);
+    }
+    // **分配 id**：每个目录项一个。分配失败 ⇒ 整个 catalog 失败——不能给出
+    // 「点了必定失败」的候选行。
+    const allocations = {};
+    for (const item of page.items ?? []) {
+      const sessionId = String(item?.sessionId ?? '');
+      if (sessionId === '') continue;
+      try {
+        allocations[sessionId] = allocateFor(sessionId);
+      } catch (error) {
+        const raw = String(error?.code ?? '');
+        // **内部码不许漏给对端**（协议 §3：13 个码是闭集）。这里归
+        // **`catalog_failed`**（目录这一步没做完，**可重试**）——
+        // **不归 `source_unsupported`**：那个码只表示「这个来源根本不支持
+        // 该能力」，拿来兜「存储不可用」会让用户去「换一个来源」，
+        // 而真正该做的是**重试**。
+        const code = ERROR_CODE_NAMES.includes(raw) ? raw : 'catalog_failed';
+        return {
+          ok: false,
+          ...fail(code, {
+            requestId: request.requestId,
+            detail: raw === '' ? '序号分配失败' : raw,
+          }),
+        };
+      }
+    }
+    return { ok: true, page, cached: cached !== null, allocations };
+  }
+
+  /**
+   * `capture`：捕获一份正文并**落盘**。
+   *
+   * 落盘成功后**句柄状态由快照文件派生**（S-3）——本函数不另存内存状态。
+   *
+   * **入参是 host 自己分配的 id**（协议 v0.2 S-1：id 分配权归 host，client
+   * 不得自造 seq）：客户端把 `catalog` 拿到的 `snapshotId` 原样带回来，host
+   * **重新核对**——形态、provider 段、会话段（必须等于该官网会话 id 的短码）、
+   * 以及「这个序号是不是 host 认领过的」。**核对不过就拒**，绝不因为客户端
+   * 报了个 id 就照单全收。
+   *
+   * @param {{sessionId: string, snapshotId: string, requestId?: string, accountScope?: string}} request
+   */
+  async function capture(request = {}) {
+    const requestId = String(request.requestId ?? '');
+    const scope = String(request.accountScope ?? accountScope);
+    const sessionId = String(request.sessionId ?? '');
+    const requestedId = String(request.snapshotId ?? '');
+
+    // **先核对 id，再取正文**：id 不合法就不该去打扰来源。
+    const parsed = parseSnapshotId(requestedId);
+    if (parsed === null) {
+      return {
+        ok: false,
+        ...fail('snapshot_invalid', { requestId, detail: '快照 id 形态不合法' }),
+      };
+    }
+    if (parsed.providerShort !== providerShort) {
+      return {
+        ok: false,
+        ...fail('snapshot_invalid', { requestId, detail: 'provider 段与本来源不符' }),
+      };
+    }
+    const sessionShort = makeSessionShort(sessionId);
+    if (parsed.sessionShort !== sessionShort) {
+      return {
+        ok: false,
+        ...fail('snapshot_invalid', { requestId, detail: '会话段与官网会话 id 不一致' }),
+      };
+    }
+    if (seqAllocator === null || typeof seqAllocator.isClaimed !== 'function') {
+      return {
+        ok: false,
+        ...fail('snapshot_invalid', { requestId, detail: '序号分配器没接上' }),
+      };
+    }
+    if (!seqAllocator.isClaimed(sessionShort, parsed.seq)) {
+      return {
+        ok: false,
+        ...fail('snapshot_invalid', { requestId, detail: '序号不是 host 分配的' }),
+      };
+    }
+    // **当前指纹不可得 ⇒ 拒**（协议 §8-6）：不知道这份正文是不是同一个来源
+    // 取出来的时，不得落盘、更不得放行。
+    const fingerprint = fingerprintOf(accountScope);
+    if (fingerprint === '') {
+      return {
+        ok: false,
+        ...fail('account_changed', { requestId, detail: '当前来源指纹不可得' }),
+      };
+    }
+
+    let cancelled = false;
+    const cancel = () => {
+      cancelled = true;
+    };
+    inFlight.set(requestId, cancel);
+    try {
+      let fetched;
+      try {
+        fetched = await captureSource.fetch({
+          sessionId,
+          accountScope: scope,
+        });
+      } catch {
+        return { ok: false, ...fail('timeout', { requestId }) };
+      }
+      if (cancelled) {
+        // S-2：取消后的迟到结果**不得创建可引用快照**。
+        return { ok: false, ...fail('cancelled', { requestId }) };
+      }
+      if (fetched?.ok === false) {
+        // **捕获失败按原因分流**（协议 v0.3 §3「各码的使用边界」）：
+        // 捕获源报了什么原因就用什么码——超时 → `timeout`（可重试）、
+        // 官网页面结构变了 → `schema_changed`、用户取消 → `cancelled`、
+        // 来源明说不支持该能力 → `source_unsupported`。
+        // **原因不明 → `timeout` 兜**（可重试）。
+        //
+        // **不得用 `source_unsupported` 兜「捕获失败」**——那会让用户看到
+        // 「换一个来源」而其实该**重试**，属于**掩盖真实原因**。
+        const reason = String(fetched.reason ?? fetched.code ?? '').trim().toLowerCase();
+        return {
+          ok: false,
+          ...fail(captureFailureCode(reason), {
+            requestId,
+            detail: captureFailureDetail(reason),
+          }),
+        };
+      }
+      const resolved = resolveCase({
+        kind: 'capture',
+        schemaVersion: SCHEMA_VERSION,
+        providerId,
+        accountScope: scope,
+        sessionId,
+        branch: 'main',
+        seq: parsed.seq,
+        messages: fetched.messages ?? [],
+        captureResult: fetched.captureResult ?? { status: 'ok', omitted: [], unsupported: [] },
+        capturedAt: new Date(now()).toISOString(),
+        sourceUpdatedAt: new Date(now()).toISOString(),
+        sourceFingerprint: fingerprint,
+      });
+      if (resolved.kind === 'error') {
+        return { ok: false, ...fail(resolved.code, { requestId, detail: resolved.detail }) };
+      }
+      try {
+        // **落盘**（协议 §2 S-3：单一事实源 = 快照文件）。存储不可用 / 同 id
+        // 已存在 → 存储层抛带**稳定码**的错误，这里原样转成协议错误负载。
+        store.save(resolved.snapshot);
+      } catch (error) {
+        // 协议 §3 的 13 个码是**闭集**：存储层的内部码（例如「同 id 已存在」用的
+        // `snapshot_exists`）**不在表里** → 归到协议码，不许把协议外的码漏给对端。
+        // 原始码留在 `detail`（它是稳定语义，不是异常串，可以外发）。
+        const raw = String(error?.code ?? '');
+        const code = ERROR_CODE_NAMES.includes(raw) ? raw : 'snapshot_invalid';
+        return { ok: false, ...fail(code, { requestId, detail: raw === '' ? null : raw }) };
+      }
+      return { ok: true, snapshot: resolved.snapshot, notice: resolved.notice };
+    } finally {
+      inFlight.delete(requestId);
+    }
+  }
+
+  /**
+   * `cancel`：取消在途捕获。
+   *
+   * @param {{requestId: string}} request
+   */
+  function cancel(request = {}) {
+    const requestId = String(request.requestId ?? '');
+    const fn = inFlight.get(requestId);
+    if (fn !== undefined) {
+      fn();
+      return { ok: true, cancelled: true };
+    }
+    return { ok: true, cancelled: false };
+  }
+
+  /**
+   * `preview`：按**固定 id** 读快照（§5：host 回环路由只按固定 id 读快照）。
+   *
+   * **指纹比对在这一层**（协议 §8-6：校验点是 host 命令层，不是存储层）：
+   * 当前来源指纹与快照里记的不一致 ⇒ 拒（`account_changed`）；当前指纹
+   * **不可得** ⇒ 也拒（不知道是不是同一个来源，不得放行旧正文）。
+   *
+   * @param {{snapshotId: string, requestId?: string}} request
+   */
+  function preview(request = {}) {
+    const id = String(request.snapshotId ?? '');
+    const requestId = String(request.requestId ?? '');
+    const fingerprint = fingerprintOf(accountScope);
+    if (fingerprint === '') {
+      return {
+        ok: false,
+        ...fail('account_changed', { requestId, detail: '当前来源指纹不可得' }),
+      };
+    }
+    try {
+      // **只按固定 id 读快照**（协议 §5）：路径由 id 决定，调用方不能另指目录。
+      const loaded = store.load(id);
+      // **指纹变了 ⇒ 拒**（协议 §8-6 / S-5）：这份正文不是当前来源取出来的。
+      if (String(loaded.snapshot?.sourceFingerprint ?? '') !== fingerprint) {
+        return {
+          ok: false,
+          ...fail('account_changed', { requestId, detail: '来源指纹已变' }),
+        };
+      }
+      // **正文一起回**：模型输入的正文必须与盘上的内容逐字节相同（S-4），
+      // 所以这里回的是 host **从文件读回来的那份**，不是另算出来的一份。
+      return { ok: true, snapshot: loaded.snapshot, body: loaded.body, state: 'ready' };
+    } catch (error) {
+      return {
+        ok: false,
+        ...fail(String(error?.code ?? 'snapshot_invalid'), { requestId }),
+      };
+    }
+  }
+
+  return { capabilities, catalog, capture, cancel, preview, buildSnapshot };
+}

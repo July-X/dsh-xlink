@@ -1,0 +1,31 @@
+{
+  "id": "account-changed",
+  "title": "账号已变（指纹不符）→ account_changed",
+  "input": {
+    "kind": "lookup",
+    "exists": true,
+    "currentFingerprint": "fp-zeta-999",
+    "snapshot": {
+      "schemaVersion": 1,
+      "snapshotId": "offi~deadbeef004~0001",
+      "contentDigest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+      "messages": [
+        {
+          "role": "user",
+          "text": "x"
+        }
+      ],
+      "sourceFingerprint": "fp-alpha-001"
+    }
+  },
+  "expected": {
+    "kind": "error",
+    "ok": false,
+    "code": "account_changed",
+    "retryable": false,
+    "userNext": "重新选择来源",
+    "requestId": null,
+    "logPath": null,
+    "detail": null
+  }
+}

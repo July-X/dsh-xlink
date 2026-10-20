@@ -1,0 +1,31 @@
+{
+  "id": "schema-unsupported",
+  "title": "快照版本不支持 → schema_changed",
+  "input": {
+    "kind": "lookup",
+    "exists": true,
+    "currentFingerprint": "fp-alpha-001",
+    "snapshot": {
+      "schemaVersion": 2,
+      "snapshotId": "offi~deadbeef002~0001",
+      "contentDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "messages": [
+        {
+          "role": "user",
+          "text": "x"
+        }
+      ],
+      "sourceFingerprint": "fp-alpha-001"
+    }
+  },
+  "expected": {
+    "kind": "error",
+    "ok": false,
+    "code": "schema_changed",
+    "retryable": false,
+    "userNext": "升级插件",
+    "requestId": null,
+    "logPath": null,
+    "detail": null
+  }
+}

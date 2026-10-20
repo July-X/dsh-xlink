@@ -1,0 +1,32 @@
+{
+  "id": "capture-failed",
+  "title": "捕获失败：没有正文，也没有快照",
+  "input": {
+    "kind": "capture",
+    "schemaVersion": 1,
+    "providerId": "official-chat",
+    "accountScope": "desktop-dev/default/site-A",
+    "sessionId": "sess-delta-004",
+    "branch": "main",
+    "seq": 4,
+    "messages": [],
+    "captureResult": {
+      "status": "failed",
+      "omitted": [],
+      "unsupported": []
+    },
+    "capturedAt": "2026-10-20T09:03:00.000Z",
+    "sourceUpdatedAt": "2026-10-20T09:02:30.000Z",
+    "sourceFingerprint": "fp-alpha-001"
+  },
+  "expected": {
+    "kind": "error",
+    "ok": false,
+    "code": "timeout",
+    "retryable": true,
+    "userNext": "重试",
+    "requestId": null,
+    "logPath": null,
+    "detail": "捕获失败，原因未明"
+  }
+}

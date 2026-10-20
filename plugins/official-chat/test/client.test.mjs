@@ -29,20 +29,34 @@ import { createContext, runInContext } from 'node:vm';
 
 const CLIENT_SOURCE = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
 
+// **协议口径只有一份，在 `host/protocol.js`**：v0.2 起 id 由 host 分配
+// （客户端不自造 seq），所以**客户端束里已经没有**短码算法副本。
+// 下面这个桩扮演的是 **host**：它按 host 的口径算 id，回给客户端。
+import {
+  PROVIDER_SHORT,
+  makeSessionShort,
+  makeSnapshotId,
+} from '../host/protocol.js';
+
 /**
  * 载入客户端束并造一个假的内核 ctx。
  *
  * @param {object} [options]
  * @param {boolean} [options.withInputTriggers] - 是否提供 inputTriggers 服务。
  * @param {boolean} [options.withSessions] - 是否提供 sessions 服务。
+ * @param {boolean} [options.withHostRpc] - 是否提供内核 `connection` 服务
+ *   （RPC 通道的宿主，host 半边的命令从它上面过来）。**默认给**：P1 起落盘是
+ *   发送路径的前置条件。
  * @param {Function} [options.bail] - `actx.bail` 的实现（返回 true 表示编辑器接下了）。
  * @param {object} [options.config] - `window.__DSH_G1_CONFIG__`。
  */
-function loadClient({ withInputTriggers = true, withSessions = true, bail, config = {} } = {}) {
+function loadClient({ withInputTriggers = true, withSessions = true, withHostRpc = true, bail, config = {} } = {}) {
   const registered = [];
   const effects = [];
   const bailCalls = [];
   const notices = [];
+  const snapshots = new Map();
+  const rpcCalls = [];
   let module = null;
 
   const sandbox = {
@@ -82,6 +96,109 @@ function loadClient({ withInputTriggers = true, withSessions = true, bail, confi
       ? { registerSource: (source) => registered.push(source) }
       : undefined,
     sessions: withSessions ? { scope: () => actx } : undefined,
+    // P1：客户端半边通过内核 `connection` 服务的 **RPC** 调 host 半边
+    // （协议 §5 的五个命令）。这里是**内存桩**：真实现是 `host/commands.js` +
+    // `host/rpc.js` + `host/index.js` 的落盘存储（那份另有自己的用例）。
+    //
+    // **桩扮演 host，id 按 `host/protocol.js` 的口径算**：v0.2 起 id 由 host
+    // 分配，客户端只取用——所以「算 id」这件事的权威口径在 host 半边，
+    // 桩从这里取，与真实现（`host/seq-store.js`）同源。
+    // 客户端自造 id 的那条路另有反向回归用例钉着（见下）。
+    connection: withHostRpc
+      ? {
+          rpc: {
+            call: async (channel, endpoint, payload) => {
+              rpcCalls.push({ channel, endpoint, payload });
+              try {
+                const value = await hostCommands(endpoint, payload);
+                return { ok: true, value };
+              } catch (error) {
+                return {
+                  ok: false,
+                  error: {
+                    code: String(error?.code ?? 'host_error'),
+                    message: String(error?.message ?? error),
+                  },
+                };
+              }
+            },
+          },
+        }
+      : undefined,
+  };
+
+  /** host 半边的桩：五个命令（协议 §5）。 */
+  const hostCommands = async (endpoint, payload) => {
+    if (endpoint === 'capabilities') return { ok: true, usedSeqs: {} };
+    if (endpoint === 'catalog') {
+      // **目录与 id 分配都在 host**（协议 v0.2 S-1）：客户端这一侧没有目录。
+      const items = Object.entries(FIXTURE_BODIES).map(([sessionId, body]) => ({
+        sessionId,
+        title: sessionId === 'g1-alpha' ? ALPHA : BETA,
+        updatedAt: '1970-01-01T00:00:00.000Z',
+        deepLink: `https://example.invalid/chat/${sessionId}`,
+        body,
+      }));
+      const allocations = {};
+      for (const item of items) {
+        allocations[item.sessionId] = makeSnapshotId({
+          providerShort: PROVIDER_SHORT,
+          sessionShort: makeSessionShort(item.sessionId),
+          seq: 1,
+        });
+      }
+      return {
+        ok: true,
+        page: {
+          accountScope: '',
+          providerId: PROVIDER_SHORT,
+          items: items.map(({ body: _body, ...rest }) => rest),
+          cursor: '',
+          hasMore: false,
+          fetchedAt: '1970-01-01T00:00:00.000Z',
+        },
+        allocations,
+        cached: false,
+      };
+    }
+    if (endpoint === 'capture') {
+      const sessionId = String(payload?.sessionId ?? '');
+      const snapshotId = String(payload?.snapshotId ?? '');
+      if (snapshots.has(snapshotId)) {
+        const error = new Error(`快照已存在（同 id 不重写）：${snapshotId}`);
+        error.code = 'snapshot_exists';
+        throw error;
+      }
+      const body = FIXTURE_BODIES[sessionId] ?? '';
+      const snapshot = {
+        schemaVersion: 1,
+        snapshotId,
+        providerId: PROVIDER_SHORT,
+        accountScope: '',
+        sessionId,
+        branch: 'main',
+        messages: [{ role: 'user', text: body }],
+        contentDigest: 'stub-digest',
+        captureResult: { status: 'ok', omitted: [], unsupported: [] },
+        capturedAt: '',
+        sourceUpdatedAt: '',
+        sourceFingerprint: '',
+      };
+      snapshots.set(snapshotId, { snapshot, body });
+      return { ok: true, snapshot };
+    }
+    if (endpoint === 'preview') {
+      const found = snapshots.get(String(payload?.snapshotId ?? ''));
+      if (found === undefined) {
+        const error = new Error(`快照不存在：${String(payload?.snapshotId ?? '')}`);
+        error.code = 'snapshot_invalid';
+        throw error;
+      }
+      return { ok: true, snapshot: found.snapshot, body: found.body, state: 'ready' };
+    }
+    const error = new Error(`未知端点：${endpoint}`);
+    error.code = 'source_unsupported';
+    throw error;
   };
 
   const ctx = {
@@ -92,16 +209,54 @@ function loadClient({ withInputTriggers = true, withSessions = true, bail, confi
   };
 
   const api = module.factory();
-  return { api, ctx, registered, effects, bailCalls, notices, sandbox };
+  return { api, ctx, registered, effects, bailCalls, notices, sandbox, snapshots, rpcCalls };
 }
 
-/** 造一个候选行（与内核菜单里的行同构）。 */
+/**
+ * 造一个候选行（与内核菜单里的行同构）。
+ *
+ * **v0.2：候选行带 `snapshotId`**——id 由 host 在 `catalog` 那一步分配好，
+ * 客户端只取用（协议 v0.2 S-1：id 分配权归 host，client 不得自造 seq）。
+ */
+let candidateSeq = 0;
 function candidate(id, title) {
-  return { name: title, description: '固定夹具 · G1 验证用', icon: 'session', section: '官方对话', value: JSON.stringify({ kind: 'official-chat', id, title }) };
+  candidateSeq += 1;
+  const snapshotId = makeSnapshotId({
+    providerShort: PROVIDER_SHORT,
+    sessionShort: makeSessionShort(id),
+    seq: candidateSeq,
+  });
+  return {
+    name: title,
+    description: '固定夹具 · G1 验证用',
+    icon: 'session',
+    section: '官方对话',
+    value: JSON.stringify({ kind: 'official-chat', id, title, snapshotId }),
+  };
 }
 
 const ALPHA = 'G1 固定对话 Alpha';
 const BODY_ALPHA = '【G1 固定正文 Alpha】第一行固定正文。\n第二行固定正文。';
+const BETA = 'G1 固定对话 Beta';
+const BODY_BETA = '【G1 固定正文 Beta】只有一行。';
+
+/** 夹具正文表（host 侧的桩按官网会话 id 取正文）。 */
+const FIXTURE_BODIES = { 'g1-alpha': BODY_ALPHA, 'g1-beta': BODY_BETA };
+
+/**
+ * pick 一次，返回 `{outcome, ref}`。
+ *
+ * **P1 起 `ref` 不是对话 id**（协议 S-1：`ref === snapshotId`），所以断言必须
+ * 拿 onPick 真实返回的那一串，不能写死 'g1-alpha'。
+ */
+function pick(source, id = 'g1-alpha', title = ALPHA, sessionId = 's1', row = null) {
+  const outcome = source.onPick({
+    candidate: row ?? candidate(id, title),
+    session: { sessionId },
+    span: { start: 0, end: 1, draftRev: 7 },
+  });
+  return { outcome, ref: outcome?.insert?.ref };
+}
 
 test('束是自包含单文件：没有顶层 const/let/class（client-hmr 重求值会直接 SyntaxError）', () => {
   // 顶层声明在页面的全局词法作用域里，HMR 第二次求值就是
@@ -123,7 +278,7 @@ test('apply 注册了 @ 来源，且 inject 声明的是服务名', () => {
   assert.equal(registered[0].name, 'official-chat');
   // 数组来自 vm 的另一个 realm：先摊成宿主数组再比，否则 deepStrictEqual
   // 会因为原型不同而判不相等（值一模一样）。
-  assert.deepEqual([...api.inject], ['inputTriggers', 'sessions'], 'inject 装的是服务名，不是包名');
+  assert.deepEqual([...api.inject], ['inputTriggers', 'sessions', 'connection'], 'inject 装的是服务名，不是包名');
   assert.equal(effects.length, 1, '注册必须挂在 effect 上，卸载时才收得掉');
 });
 
@@ -143,12 +298,16 @@ test('onPick 同步返回引用句柄（pending 态）——内核的 execute �
   const { api, ctx, registered } = loadClient();
   api.apply(ctx);
   const source = registered[0];
-  const outcome = source.onPick({ candidate: candidate('g1-alpha', ALPHA), session: { sessionId: 's1' }, span: { start: 0, end: 1, draftRev: 7 } });
+  const { outcome } = pick(source);
   assert.ok(outcome && typeof outcome === 'object', 'onPick 必须同步返回对象，不能返回 Promise');
   assert.ok(!('then' in outcome), '返回 Promise 会让内核掉进 insert 分支插 undefined');
   assert.equal(outcome.insert.source, 'official-chat');
-  assert.equal(outcome.insert.ref, 'g1-alpha');
   assert.equal(outcome.insert.label, ALPHA);
+  // P1（S-1）：`ref` 是**快照 id**，不是对话 id。
+  assert.notEqual(outcome.insert.ref, 'g1-alpha', 'ref 不再是对话 id');
+  assert.match(outcome.insert.ref, /^[a-z0-9]{1,4}~[a-z0-9]{1,12}~\d{4}$/, 'ref 必须符合协议 S-1 的形状');
+  assert.ok(outcome.insert.ref.length <= 24, 'ref 整串 ≤ 24 可见字符（chip 宽度）');
+  assert.equal(outcome.insert.clipboardText, outcome.insert.ref, 'clipboardText 就是 ref 本身');
 });
 
 test('pending 句柄不得被渲染成就绪（PM 2026-10-20 拍板第 2 条）', () => {
@@ -171,29 +330,31 @@ test('pending 句柄不得被渲染成就绪（PM 2026-10-20 拍板第 2 条）'
 });
 
 test('openReference 区分 pending 与 ready（源侧必须能分辨状态）', async () => {
-  // 读还没回来时点 chip → 报「读取中」；读完再点 → 报「已取到」。
+  // 读还没回来时点 chip → 报「读取中」；读完并落盘再点 → 报「已取到并落盘」。
   // 两种措辞必须不同，且 pending 那一支**不许**出现「就绪」。
   const { api, ctx, registered, notices } = loadClient({ config: { readDelayMs: 80 } });
   api.apply(ctx);
   const source = registered[0];
-  source.onPick({ candidate: candidate('g1-alpha', ALPHA), session: { sessionId: 's1' }, span: { start: 0, end: 1, draftRev: 7 } });
+  const { ref } = pick(source);
 
-  assert.equal(source.openReference({ sessionId: 's1' }, { ref: 'g1-alpha', appearance: 'session' }), true);
+  assert.equal(source.openReference({ sessionId: 's1' }, { ref, appearance: 'session' }), true);
   assert.equal(notices.length, 1);
   assert.equal(notices[0].level, 'info');
   assert.match(notices[0].text, /读取中|尚未就绪/);
   assert.doesNotMatch(notices[0].text, /已就绪/, 'pending 不得说成已就绪');
 
-  await new Promise((r) => setTimeout(r, 140));
-  assert.equal(source.openReference({ sessionId: 's1' }, { ref: 'g1-alpha', appearance: 'session' }), true);
-  // 读取落定会先给一条「已取到」（拍板第 3 条：状态变化用户要看得见），
-  // 这次点击再给一条详情提示——两条都必须是「已取到」，不许出现「已就绪」。
-  const last = notices[notices.length - 1];
-  assert.match(last.text, /已取到/);
-  assert.doesNotMatch(last.text, /已就绪/);
+  await new Promise((r) => setTimeout(r, 160));
+  assert.equal(source.openReference({ sessionId: 's1' }, { ref, appearance: 'session' }), true);
+  await new Promise((r) => setTimeout(r, 20));
+  // 落盘那条 + 详情那条，两条都必须是「已取到」，不许出现「已就绪」。
+  const texts = notices.map((n) => n.text);
   assert.ok(
-    notices.filter((n) => /已取到/.test(n.text)).length >= 2,
+    texts.filter((t) => /已取到/.test(t)).length >= 2,
     `落定与详情两条提示都该是「已取到」：${JSON.stringify(notices)}`,
+  );
+  assert.ok(
+    texts.every((t) => !/已就绪/.test(t)),
+    `不许出现「已就绪」：${JSON.stringify(notices)}`,
   );
 });
 
@@ -226,9 +387,9 @@ test('读取失败 → openReference 报 error（不是假装还悬着）', asyn
   const { api, ctx, registered, notices } = loadClient({ config: { readDelayMs: 10, failRead: true } });
   api.apply(ctx);
   const source = registered[0];
-  source.onPick({ candidate: candidate('g1-alpha', ALPHA), session: { sessionId: 's1' }, span: { start: 0, end: 1, draftRev: 7 } });
+  const { ref } = pick(source);
   await new Promise((r) => setTimeout(r, 60));
-  source.openReference({ sessionId: 's1' }, { ref: 'g1-alpha', appearance: 'session' });
+  source.openReference({ sessionId: 's1' }, { ref, appearance: 'session' });
   // 落定那条 + 详情那条，两条都必须是 error 级且都说「读取失败」——
   // 失败被降级成 info 或含糊措辞，用户会以为还能发。
   assert.ok(notices.length >= 2, `落定与详情都该有提示：${JSON.stringify(notices)}`);
@@ -238,12 +399,12 @@ test('读取失败 → openReference 报 error（不是假装还悬着）', asyn
   );
 });
 
-test('serialize 等的是 onPick 那次读取（同一条 promise，不是重读）', async () => {
+test('serialize 等的是 onPick 那次读取（同一条链，不是重读）', async () => {
   const { api, ctx, registered } = loadClient({ config: { readDelayMs: 40 } });
   api.apply(ctx);
   const source = registered[0];
-  source.onPick({ candidate: candidate('g1-alpha', ALPHA), session: { sessionId: 's1' }, span: { start: 0, end: 1, draftRev: 7 } });
-  const text = await source.codec.serialize('g1-alpha', new AbortController().signal);
+  const { ref } = pick(source);
+  const text = await source.codec.serialize(ref, new AbortController().signal);
   assert.equal(text, BODY_ALPHA);
 });
 
@@ -251,9 +412,9 @@ test('读取未完成时 serialize 不 resolve（内核因此会「等」而不�
   const { api, ctx, registered } = loadClient({ config: { readDelayMs: 400 } });
   api.apply(ctx);
   const source = registered[0];
-  source.onPick({ candidate: candidate('g1-alpha', ALPHA), session: { sessionId: 's1' }, span: { start: 0, end: 1, draftRev: 7 } });
+  const { ref } = pick(source);
   let settled = false;
-  const pending = source.codec.serialize('g1-alpha', new AbortController().signal).then((v) => { settled = true; return v; });
+  const pending = source.codec.serialize(ref, new AbortController().signal).then((v) => { settled = true; return v; });
   await new Promise((r) => setTimeout(r, 80));
   assert.equal(settled, false, '读取没完成就不许 resolve');
   const text = await pending;
@@ -264,14 +425,18 @@ test('读取失败 → serialize reject（内核据此拒绝发送，不静默�
   const { api, ctx, registered } = loadClient({ config: { readDelayMs: 10, failRead: true } });
   api.apply(ctx);
   const source = registered[0];
-  source.onPick({ candidate: candidate('g1-alpha', ALPHA), session: { sessionId: 's1' }, span: { start: 0, end: 1, draftRev: 7 } });
-  await assert.rejects(() => source.codec.serialize('g1-alpha', new AbortController().signal), /固定读取失败/);
+  const { ref } = pick(source);
+  await assert.rejects(() => source.codec.serialize(ref, new AbortController().signal), /固定读取失败/);
 });
 
 test('serialize 遇到不认识的 ref 就报错（不返回空串糊弄过去）', async () => {
   const { api, ctx, registered } = loadClient();
   api.apply(ctx);
-  await assert.rejects(() => registered[0].codec.serialize('never-picked', new AbortController().signal), /找不到 ref/);
+  await assert.rejects(
+    () => registered[0].codec.serialize('never-picked', new AbortController().signal),
+    /快照不存在|snapshot_invalid/,
+    '不认识的 ref 必须被拒，不许返回空串',
+  );
 });
 
 test('插件不自己插 chip（不绕开内核的输入事件）', async () => {
@@ -311,4 +476,131 @@ test('candidates 只出固定夹具，且带分组标题', async () => {
   assert.equal(rows.length, 2);
   assert.equal(rows[0].section, '官方对话');
   assert.ok(rows.every((r) => JSON.parse(r.value).kind === 'official-chat'));
+});
+
+// ---------------------------------------------------------------------------
+// P1 协议：S-1 单一 id 制度 / S-3 单一事实源 / S-4 状态口径门控
+// ---------------------------------------------------------------------------
+
+test('S-1：同一条对话选两次 → 两个 ref → 第二个不覆盖第一个', async () => {
+  // G1 现状 `reads` 以对话 id 为主键，选两次会互相覆盖（第一个 chip 的正文被
+  // 换成第二次的）。P1 的唯一性粒度 = **一次 pick**。
+  const { api, ctx, registered, snapshots } = loadClient({ config: { readDelayMs: 20 } });
+  api.apply(ctx);
+  const source = registered[0];
+  const first = pick(source);
+  const second = pick(source);
+  assert.notEqual(first.ref, second.ref, '两次 pick 必须给出两个不同的 ref');
+  assert.match(first.ref, /~\d{4}$/);
+  assert.match(second.ref, /~\d{4}$/);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(snapshots.size, 2, '两份快照都在（第二个没覆盖第一个）');
+  assert.equal(snapshots.get(first.ref).body, BODY_ALPHA);
+  assert.equal(snapshots.get(second.ref).body, BODY_ALPHA);
+});
+
+test('S-1：ref 整串 ≤ 24 可见字符（ref 变长 = chip 变宽 = 用户直接看见）', () => {
+  const { api, ctx, registered } = loadClient();
+  api.apply(ctx);
+  const { ref } = pick(registered[0]);
+  assert.ok(ref.length <= 24, `ref 过长：${ref}`);
+});
+
+test('S-1：句柄就是 host 分配的快照 id（客户端不自造 seq，协议 v0.2 S-1）', () => {
+  const { api, ctx, registered } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+  const row = candidate('g1-alpha', ALPHA);
+  const { ref } = pick(source, 'g1-alpha', ALPHA, 's1', row);
+  const picked = JSON.parse(row.value);
+  assert.equal(ref, picked.snapshotId, 'ref 必须就是 host 分配的那个 id');
+  assert.match(ref, /^[a-z0-9]{1,4}~[a-z0-9]{1,12}~\d{4}$/, 'id 形态与协议 S-1 一致');
+});
+
+test('通道：客户端走内核 connection 服务的 RPC，端点名是协议 §5 的五个之一', async () => {
+  const { api, ctx, registered, rpcCalls } = loadClient({ config: { readDelayMs: 20 } });
+  api.apply(ctx);
+  const source = registered[0];
+  const { ref } = pick(source);
+  await new Promise((r) => setTimeout(r, 120));
+  // 正文要走 `preview`（按固定 id 读盘）——所以这里真的发一次。
+  await source.codec.serialize(ref, new AbortController().signal);
+  assert.ok(rpcCalls.length > 0, '必须真的走 RPC');
+  for (const call of rpcCalls) {
+    assert.equal(call.channel, '/xlink-official-chat', '通道前缀必须是插件自己的（/api 归 API Gateway 独占）');
+    assert.ok(
+      ['capabilities', 'catalog', 'capture', 'cancel', 'preview'].includes(call.endpoint),
+      `端点名不在协议 §5 里：${call.endpoint}`,
+    );
+  }
+  assert.ok(rpcCalls.some((c) => c.endpoint === 'capture'), '落盘必须经 capture');
+  assert.ok(rpcCalls.some((c) => c.endpoint === 'preview'), '正文必须经 preview（按固定 id 读盘）');
+  // `capture` 必须带上**官网会话 id**与**host 分配的 id**：句柄是 host 分配的，
+  // 客户端把它原样带回来（协议 v0.2 S-1：client 不得自造 seq）。
+  const capture = rpcCalls.find((c) => c.endpoint === 'capture');
+  assert.equal(capture.payload.sessionId, 'g1-alpha', 'capture 必须带官网会话 id');
+  assert.equal(capture.payload.snapshotId, ref, 'capture 必须带 host 分配的快照 id');
+  assert.equal(capture.payload.seq, undefined, '客户端不许自造 seq（v0.2 S-1）');
+});
+
+test('S-3：落盘成功后状态由快照文件派生（内存里不再留第二条真相）', async () => {
+  const { api, ctx, registered, sandbox } = loadClient({ config: { readDelayMs: 20 } });
+  api.apply(ctx);
+  const source = registered[0];
+  const { ref } = pick(source);
+  await new Promise((r) => setTimeout(r, 120));
+  const probe = sandbox.__DSH_XLINK_OFFICIAL_CHAT_PROBE__;
+  assert.ok(
+    probe.events.some((e) => e.kind === 'snapshot-saved' && e.ref === ref),
+    '落盘必须留下 snapshot-saved 事件',
+  );
+  // 落盘后再点 chip：状态**从文件**读（事件里 from=snapshot-file），不是从内存。
+  source.openReference({ sessionId: 's1' }, { ref, appearance: 'session' });
+  await new Promise((r) => setTimeout(r, 20));
+  const opened = probe.events.filter((e) => e.kind === 'open-reference').pop();
+  assert.equal(opened.from, 'snapshot-file', '已落盘的句柄必须从文件派生状态');
+});
+
+test('S-4：进入模型的正文取自落盘内容（逐字节相同）', async () => {
+  const { api, ctx, registered, snapshots, sandbox } = loadClient({ config: { readDelayMs: 20 } });
+  api.apply(ctx);
+  const source = registered[0];
+  const { ref } = pick(source);
+  await new Promise((r) => setTimeout(r, 120));
+  const text = await source.codec.serialize(ref, new AbortController().signal);
+  assert.equal(text, BODY_ALPHA, '模型输入的正文必须与落盘内容逐字节相同');
+  assert.equal(text, snapshots.get(ref).body, '模型输入 = 落盘内容');
+  const probe = sandbox.__DSH_XLINK_OFFICIAL_CHAT_PROBE__;
+  const ok = probe.events.filter((e) => e.kind === 'serialize-ok').pop();
+  assert.equal(ok.fromFile, true, 'serialize 必须是从文件取的正文');
+});
+
+test('S-4 反向回归：快照被清理后 → 拒（不静默重读、不回退到内存那份）', async () => {
+  const { api, ctx, registered, snapshots } = loadClient({ config: { readDelayMs: 20 } });
+  api.apply(ctx);
+  const source = registered[0];
+  const { ref } = pick(source);
+  await new Promise((r) => setTimeout(r, 120));
+  snapshots.delete(ref);
+  await assert.rejects(
+    () => source.codec.serialize(ref, new AbortController().signal),
+    /快照不存在|snapshot_invalid/,
+    '快照没了必须拒，不许悄悄重读',
+  );
+});
+
+test('没有 host 通道 → 落盘失败 → 发送时拒（不把内存那份发给模型）', async () => {
+  const { api, ctx, registered } = loadClient({
+    config: { readDelayMs: 20 },
+    withHostRpc: false,
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  const { ref } = pick(source);
+  await new Promise((r) => setTimeout(r, 120));
+  await assert.rejects(
+    () => source.codec.serialize(ref, new AbortController().signal),
+    /host 不可达/,
+    '没有 host 通道就不许把内存正文发出去',
+  );
 });

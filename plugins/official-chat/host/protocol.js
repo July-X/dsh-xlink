@@ -1,0 +1,900 @@
+/**
+ * official-chat 的**协议核心**（P1 冻结稿 v0.1 的 JS 实现）。
+ *
+ * ## 它是什么
+ *
+ * PM 定的协议是 `docs/features/official-chat/official-chat-p1-protocol.md` v0.1
+ * （**PM 归属文件，本文件不定义协议，只实现它**；协议与实现冲突时先回报 PM）。
+ * 本文件把协议里**不依赖具体站点、不依赖具体桥**的那一半落成可测的纯逻辑：
+ *
+ *   · §1.1 固定快照的数据模型（字段表逐字段落地）
+ *   · §1.2 目录页（**独立缓存物**，不含正文）
+ *   · §1.3 规范化与 `contentDigest` 口径
+ *   · §2   S-1…S-7 里**只依赖数据**的那几条（单一 id 制度、状态机派生、失效判定）
+ *   · §3   13 个稳定错误码（可重试性 / 用户下一步 / requestId / 脱敏日志路径）
+ *   · §4   首版常量
+ *
+ * ## 为什么这份逻辑住在 host 半边
+ *
+ * 插件的 client 半边**必须是单文件自包含**（`client/client.js` 文件头：
+ * 「多一个同级文件就是 404」——它是浏览器里的普通脚本，没有模块解析器）。
+ * 于是协议核心只有两个落点：host 半边（Node，可 import）与 client 半边内联。
+ * 为了不让「同一份规则写两遍、两遍漂掉」，本文件是**唯一可 import 的那一份**，
+ * client 半边内联的那份由 `test/protocol.test.mjs` **断言两者输出一致**
+ * （不靠人读代码，靠机检比对数据——本仓栽过「判据只判代码长得像不像」的坑）。
+ *
+ * ## 跨语言一致性
+ *
+ * §6 要求「同一组 JSON 夹具，Rust 与 JavaScript 各跑一遍」。Rust 那半在
+ * `src-tauri/src/official_chat/protocol.rs`，读的是**同一份**
+ * `plugins/official-chat/fixtures/protocol/` 夹具。**两边都不许私改口径**——
+ * 摘要算法、规范化规则、短码算法、schemaVersion 常量都必须逐字一致。
+ *
+ * @module xlink-official-chat/protocol
+ */
+
+import { createHash } from 'node:crypto';
+
+/** §1.1 快照格式版本。**变更即升版**；旧版快照按 P1-07 拒（`schema_changed`）。 */
+export const SCHEMA_VERSION = 1;
+
+/**
+ * §3 的 13 个稳定错误码。
+ *
+ * 每个码带：**可重试性**、**用户下一步**、以及（构造错误负载时的）**脱敏日志路径**。
+ *
+ * **错误里不得出现内部异常串**（协议 §3）：所以 `detail` 一律不接收原始
+ * `error.message`——调用方只能传**已经分类好的**信息，内部异常只能进日志文件
+ * （由 `logPath` 指过去），不能进给用户看的那一层。
+ */
+export const ERROR_CODES = {
+  not_logged_in: { retryable: false, userNext: '去官网窗口登录' },
+  account_changed: { retryable: false, userNext: '重新选择来源' },
+  source_unsupported: { retryable: false, userNext: '换一个来源' },
+  schema_changed: { retryable: false, userNext: '升级插件' },
+  partial_content: { retryable: false, userNext: '明示省略事实' },
+  body_too_large: { retryable: false, userNext: '换更小的会话' },
+  timeout: { retryable: true, userNext: '重试' },
+  cancelled: { retryable: false, userNext: '重新选择' },
+  snapshot_invalid: { retryable: false, userNext: '移除该引用' },
+  kernel_incompatible: { retryable: false, userNext: '升级内核' },
+  catalog_empty: { retryable: false, userNext: '换个关键词' },
+  catalog_failed: { retryable: true, userNext: '重试' },
+  stale_draft: { retryable: false, userNext: '重新选择' },
+};
+
+/** 全部错误码的稳定名字（顺序固定，供夹具与机检遍历）。 */
+export const ERROR_CODE_NAMES = Object.freeze([
+  'not_logged_in',
+  'account_changed',
+  'source_unsupported',
+  'schema_changed',
+  'partial_content',
+  'body_too_large',
+  'timeout',
+  'cancelled',
+  'snapshot_invalid',
+  'kernel_incompatible',
+  'catalog_empty',
+  'catalog_failed',
+  'stale_draft',
+]);
+
+/**
+ * 捕获失败的**原因 → 协议码**映射（协议 v0.3 §3「各码的使用边界」）。
+ *
+ * **捕获失败不是一个单一原因**，必须**按原因分流**：
+ * · 超时 → `timeout`（**可重试**）；
+ * · 官网页面结构变了 → `schema_changed`（升级插件）；
+ * · 用户取消 → `cancelled`（重新选择）。
+ *
+ * **`source_unsupported` 只用于「这个来源根本不支持该能力」**——
+ * 它**不得**兜「捕获失败」：那会让用户看到「换一个来源」而其实该**重试**，
+ * 属于**掩盖真实原因**（协议 v0.3 §3 明写）。
+ *
+ * **原因不明 → `timeout` 兜**（可重试），`detail` 写脱敏线索。
+ *
+ * **这张表是闭集**：不在表里的 reason 一律当「原因不明」处理，**不外发**
+ * ——免得把内部异常串当原因线索漏出去。
+ */
+export const CAPTURE_FAILURE_REASONS = Object.freeze({
+  // 超时（可重试）
+  timeout: 'timeout',
+  timed_out: 'timeout',
+  deadline_exceeded: 'timeout',
+  // 官网页面结构变了（认不出该认的元素）
+  schema_changed: 'schema_changed',
+  structure_changed: 'schema_changed',
+  unrecognized_selector: 'schema_changed',
+  // 用户取消
+  cancelled: 'cancelled',
+  canceled: 'cancelled',
+  user_cancelled: 'cancelled',
+  // **唯一**允许用 `source_unsupported` 的场景：来源明说它不支持这个能力。
+  source_unsupported: 'source_unsupported',
+  capability_unsupported: 'source_unsupported',
+});
+
+/**
+ * 把捕获源报的原因映射成协议码。
+ *
+ * @param {unknown} reason - 原因词（稳定 token，不是异常串）。
+ * @returns {string} §3 的稳定码名；**原因不明时是 `timeout`**（可重试）。
+ */
+export function captureFailureCode(reason) {
+  const raw = String(reason ?? '').trim().toLowerCase();
+  if (raw === '') return 'timeout';
+  // 已经是协议码 → 原样（闭集内，不会漏出第 14 个码）。
+  if (ERROR_CODE_NAMES.includes(raw)) return raw;
+  return CAPTURE_FAILURE_REASONS[raw] ?? 'timeout';
+}
+
+/**
+ * 捕获失败的**脱敏线索**（进 `detail`）。
+ *
+ * **只带闭集内的原因词**：不认识的 reason 一律给「原因未明」，
+ * **绝不把来源抛出来的异常串外发**（协议 §3：不得把内部异常串当成功值外发）。
+ *
+ * @param {unknown} reason - 原因词。
+ * @returns {string} 脱敏线索。
+ */
+export function captureFailureDetail(reason) {
+  const raw = String(reason ?? '').trim().toLowerCase();
+  const known =
+    raw !== '' &&
+    (ERROR_CODE_NAMES.includes(raw) || CAPTURE_FAILURE_REASONS[raw] !== undefined);
+  return known ? `捕获失败原因：${raw}` : '捕获失败，原因未明';
+}
+
+/**
+ * §4 首版常量。
+ *
+ * 协议明写「**工程参数**，不伪称来自站点限制」——所以这里每个值都注明它是
+ * 首版取值，不是站点上限。改动要升 `SCHEMA_VERSION` 吗？**不用**：常量不是
+ * 快照格式的一部分；但**夹具会引用它们**，改了常量要同步改夹具期望值。
+ */
+export const CONSTANTS = Object.freeze({
+  /** 目录页大小：50 条 / 页。 */
+  catalogPageSize: 50,
+  /** 目录缓存期限：5 分钟（换账号即失效）。 */
+  catalogCacheTtlMs: 5 * 60 * 1000,
+  /** 搜索去抖：300 ms。 */
+  searchDebounceMs: 300,
+  /** 读取超时：30 s（G1 桩模型门控实测到 ~8 s，留余量）。 */
+  readTimeoutMs: 30_000,
+  /** 最大正文字节：256 KB（超过 → `body_too_large`）。 */
+  maxBodyBytes: 256 * 1024,
+  /** 最大响应字节：1 MB。 */
+  maxResponseBytes: 1024 * 1024,
+  /** 快照保留期：7 天（超期按 `snapshot_invalid` 拒）。 */
+  snapshotRetentionMs: 7 * 24 * 60 * 60 * 1000,
+  /** 缓存总量上限：512 MB / 实例（含目录缓存与快照）。 */
+  cacheTotalBudgetBytes: 512 * 1024 * 1024,
+  /** 单消息引用数上限：8 条。 */
+  maxReferencesPerMessage: 8,
+  /** 单条正文预算：64 KB（进入模型输入的**单条**上限）。 */
+  perBodyBudgetBytes: 64 * 1024,
+  /** 单次消息总预算：256 KB（**含原生 `@session`**，自有来源不得绕过总预算）。 */
+  perMessageBudgetBytes: 256 * 1024,
+  /** 快照格式版本（与 §1.1 的 `schemaVersion` 同值）。 */
+  schemaVersion: SCHEMA_VERSION,
+});
+
+/**
+ * §2 S-2 状态机。
+ *
+ * ```text
+ * selected → reading → validating → snapshot_saved → ready
+ *      reading/validating → failed 或 cancelled
+ *      任意未完成状态 → stale
+ * ready → serialized → expanded → persisted
+ * ```
+ *
+ * **只有 `ready` 可形成就绪 chip**（HC-3）：pending 句柄在 label、详情、
+ * 任何文案里都**不得**被称为就绪。
+ */
+export const STATES = Object.freeze({
+  selected: 'selected',
+  reading: 'reading',
+  validating: 'validating',
+  snapshotSaved: 'snapshot_saved',
+  ready: 'ready',
+  failed: 'failed',
+  cancelled: 'cancelled',
+  stale: 'stale',
+  serialized: 'serialized',
+  expanded: 'expanded',
+  persisted: 'persisted',
+});
+
+/** 状态机里「未完成」的状态集合（S-2：这些状态下不得形成就绪 chip）。 */
+export const IN_FLIGHT_STATES = Object.freeze([
+  STATES.selected,
+  STATES.reading,
+  STATES.validating,
+  STATES.snapshotSaved,
+]);
+
+/** 终态集合。 */
+export const TERMINAL_STATES = Object.freeze([
+  STATES.ready,
+  STATES.failed,
+  STATES.cancelled,
+  STATES.stale,
+]);
+
+/** 合法状态转移表（S-2 的箭头图，逐条照抄）。 */
+export const TRANSITIONS = Object.freeze({
+  [STATES.selected]: [STATES.reading, STATES.cancelled, STATES.stale],
+  [STATES.reading]: [STATES.validating, STATES.failed, STATES.cancelled, STATES.stale],
+  [STATES.validating]: [STATES.snapshotSaved, STATES.failed, STATES.cancelled, STATES.stale],
+  [STATES.snapshotSaved]: [STATES.ready, STATES.failed, STATES.cancelled, STATES.stale],
+  [STATES.ready]: [STATES.serialized],
+  [STATES.serialized]: [STATES.expanded],
+  [STATES.expanded]: [STATES.persisted],
+  [STATES.failed]: [],
+  [STATES.cancelled]: [],
+  [STATES.stale]: [],
+});
+
+/**
+ * 转移是否合法。
+ *
+ * @param {string} from - 起始状态。
+ * @param {string} to - 目标状态。
+ * @returns {boolean}
+ */
+export function canTransition(from, to) {
+  const allowed = TRANSITIONS[from];
+  return Array.isArray(allowed) && allowed.includes(to);
+}
+
+/**
+ * §1.3 规范化。
+ *
+ * 规则（协议原文）：行尾统一 `\n`、去 BOM、去尾随空白、**保留正文内空行与
+ * 缩进**（不得改动语义）、角色名小写枚举。
+ *
+ * **「去尾随空白」只去整段末尾，不逐行去**——理由：逐行去会改掉 Markdown 的
+ * 硬换行（行尾两个空格 = 换行语义），而协议写的是「不得改动语义」。
+ * **这条口径必须与 `host/index.js` 的 `normalizeBody` 一致**（那里是实际落盘
+ * 的那一份），否则摘要会算在两份不同的正文上。
+ *
+ * @param {string} text - 原始正文。
+ * @returns {string} 规范化后的正文。
+ */
+export function normalizeText(text) {
+  return String(text ?? '')
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\s+$/, '');
+}
+
+/**
+ * §1.3 `contentDigest`：规范化后正文的 SHA-256（十六进制小写）。
+ *
+ * **摘要不匹配 = 快照损坏 → 按 `snapshot_invalid` 拒**（不是重读）。
+ *
+ * @param {string} text - 原始正文（内部先规范化）。
+ * @returns {string} 64 位十六进制小写摘要。
+ */
+export function contentDigest(text) {
+  const normalized = normalizeText(text);
+  return createHash('sha256').update(normalized, 'utf8').digest('hex');
+}
+
+/**
+ * 会话短码（协议 S-1：≤ 12 字符，同一会话恒定、不同会话不撞）。
+ *
+ * **算法只有这一份**（协议 v0.2 §2 S-1 起）：id 的分配权归 host，客户端
+ * 不再自带副本——用**两段 32 位 FNV-1a 变体**拼 base36，取**后 12 位**，不足
+ * 左补 `0`。Rust 那半必须逐位一致（协议 §6 的夹具就是为它准备的）。
+ *
+ * **为什么不用随机数**：进程重启后必须是**同一个**短码（同一会话恒定）。
+ * **为什么不用会话 id 本身**：它可能很长、可能带非法字符——`snapshotId` 会
+ * 直接进文件路径。
+ *
+ * **UTF-16 口径**：JS 的 `charCodeAt` 取的是 **UTF-16 code unit**，所以非 BMP
+ * 字符（emoji 等）是**两个** unit。Rust 那半必须按 `encode_utf16()` 迭代，
+ * 否则短码会与 JS 不同——**这是跨端一致性最容易踩的一处**（§6 的夹具就是
+ * 为它准备的）。
+ *
+ * **它不是安全哈希**：用途是「不同会话不同短码」的概率分布，不是抗碰撞。
+ * 协议 §S-1 说「不同会话不撞」——碰撞概率极低但**非零**，所以快照里存
+ * **完整** `sessionId`（协议原话：「映射靠落盘快照，不靠短码反解」），撞了也
+ * 只是短码相同，**不会丢数据、不会错指**。
+ *
+ * @param {string} sessionId - 官网会话 id。
+ * @returns {string} 12 字符短码。
+ */
+export function makeSessionShort(sessionId) {
+  const text = String(sessionId ?? '');
+  let a = 0x811c9dc5;
+  let b = 0x9e3779b9;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    a = Math.imul(a ^ code, 0x01000193) >>> 0;
+    b = Math.imul(b + code + (i + 1), 0x85ebca6b) >>> 0;
+  }
+  return `${a.toString(36)}${b.toString(36)}`.slice(-12).padStart(12, '0');
+}
+
+/**
+ * provider 稳定短码（协议 §S-1 举例：`ds` / `gpt` / `mm`）。
+ *
+ * **这份是唯一的 provider 短码来源**（协议 v0.2 §2 S-1：id 由 host 分配，
+ * 客户端不自造）：`host/seq-store.js` 分配序号时用它拼 id，`buildSnapshot`
+ * 落盘时用它对齐。客户端半边**不再持有**这份常量。
+ */
+export const PROVIDER_SHORT = 'ds';
+
+/**
+ * provider 短码（协议 S-1：≤ 4 字符，稳定 id，不用易变页签下标）。
+ *
+ * **只保留 ASCII 小写字母与数字**：与句柄形态一致——`snapshotId` 会直接进
+ * 文件路径，短码里不能再出现会被误解成分隔或路径的字符。
+ *
+ * @param {string} providerId - provider 稳定 id。
+ * @returns {string} 1–4 字符。
+ */
+export function makeProviderShort(providerId) {
+  const cleaned = String(providerId ?? '')
+    .toLowerCase()
+    .replace(/[^0-9a-z]/g, '')
+    .slice(0, 4);
+  return cleaned.length > 0 ? cleaned : 'prov';
+}
+
+/**
+ * §2 S-1：**单一 id 制度**——`ref === snapshotId`。
+ *
+ * 形态：`<providerShort>~<sessionShort>~<seq>`，
+ * **整串 ≤ 24 个可见字符**（HC-2：这是 chip 宽度）。
+ *
+ * @param {{providerShort: string, sessionShort: string, seq: number}} input
+ * @returns {string} 句柄字符串。
+ */
+export function makeSnapshotId({ providerShort, sessionShort, seq }) {
+  const provider = String(providerShort ?? '').slice(0, 4);
+  const session = String(sessionShort ?? '').slice(0, 12);
+  const n = Number(seq ?? 0);
+  const seqText = Number.isFinite(n) && n > 0 ? String(n).padStart(4, '0') : '0000';
+  return `${provider}~${session}~${seqText}`;
+}
+
+/**
+ * 拆句柄。**不用于反解会话**（协议 S-1：映射靠落盘快照，不靠短码反解），
+ * 只用于校验形态与取出 `seq`。
+ *
+ * @param {string} ref - 句柄。
+ * @returns {{providerShort: string, sessionShort: string, seq: number} | null}
+ */
+export function parseSnapshotId(ref) {
+  const text = String(ref ?? '');
+  const parts = text.split('~');
+  if (parts.length !== 3) return null;
+  const [providerShort, sessionShort, seqText] = parts;
+  if (providerShort.length === 0 || providerShort.length > 4) return null;
+  if (sessionShort.length === 0 || sessionShort.length > 12) return null;
+  if (!/^\d{4}$/.test(seqText)) return null;
+  return { providerShort, sessionShort, seq: Number(seqText) };
+}
+
+/**
+ * §1.1 快照字段表：字段名 → 期望类型（`string` / `number` / `array` / `object`）。
+ *
+ * **不含 `captureResult`**：协议 v0.2 裁定它的形态 = **对象**（三字段齐全），
+ * 字符串**只兼容 `'ok'`**——所以它**单独校验**（见 `validateSnapshot`），
+ * 不进这张类型表（进了就会把字符串形态提前判死）。
+ */
+export const SNAPSHOT_FIELDS = Object.freeze({
+  schemaVersion: 'number',
+  snapshotId: 'string',
+  providerId: 'string',
+  accountScope: 'string',
+  sessionId: 'string',
+  branch: 'string',
+  messages: 'array',
+  contentDigest: 'string',
+  capturedAt: 'string',
+  sourceUpdatedAt: 'string',
+  sourceFingerprint: 'string',
+});
+
+/** `captureResult` 里必须显式记的子字段（§1.1：未支持内容要显式记，不静默丢）。 */
+export const CAPTURE_RESULT_FIELDS = Object.freeze([
+  'status',
+  'omitted',
+  'unsupported',
+]);
+
+/** `captureResult.status` 的三个取值（§1.1：`ok` / `partial` / `failed`）。 */
+export const CAPTURE_STATUSES = Object.freeze(['ok', 'partial', 'failed']);
+
+/**
+ * §1.1 快照字段表逐字段校验。
+ *
+ * **只判形状与必填**，不判业务语义（正文是否超限是另一层）。
+ *
+ * @param {unknown} snapshot - 待校验对象。
+ * @returns {{ok: boolean, errors: string[]}}
+ */
+export function validateSnapshot(snapshot) {
+  const errors = [];
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    return { ok: false, errors: ['快照不是一个对象'] };
+  }
+  for (const [field, kind] of Object.entries(SNAPSHOT_FIELDS)) {
+    const value = snapshot[field];
+    if (value === undefined || value === null) {
+      errors.push(`缺字段 ${field}`);
+      continue;
+    }
+    if (kind === 'array' && !Array.isArray(value)) {
+      errors.push(`字段 ${field} 不是数组`);
+      continue;
+    }
+    if (kind === 'object' && (typeof value !== 'object' || Array.isArray(value))) {
+      errors.push(`字段 ${field} 不是对象`);
+      continue;
+    }
+    if ((kind === 'string' || kind === 'number') && typeof value !== kind) {
+      errors.push(`字段 ${field} 不是 ${kind}`);
+    }
+  }
+  if (typeof snapshot.schemaVersion === 'number' && snapshot.schemaVersion !== SCHEMA_VERSION) {
+    errors.push(`schemaVersion 不支持：${snapshot.schemaVersion}`);
+  }
+  if (typeof snapshot.snapshotId === 'string') {
+    if (parseSnapshotId(snapshot.snapshotId) === null) {
+      errors.push(`snapshotId 形态不合法：${snapshot.snapshotId}`);
+    }
+    if (snapshot.snapshotId.length > 24) {
+      errors.push(`snapshotId 超过 24 个可见字符：${snapshot.snapshotId.length}`);
+    }
+  }
+  if (typeof snapshot.contentDigest === 'string' && !/^[0-9a-f]{64}$/.test(snapshot.contentDigest)) {
+    errors.push('contentDigest 不是 64 位十六进制小写');
+  }
+  if (snapshot.captureResult !== null && typeof snapshot.captureResult === 'object') {
+    for (const field of CAPTURE_RESULT_FIELDS) {
+      if (!(field in snapshot.captureResult)) {
+        errors.push(`captureResult 缺字段 ${field}`);
+      }
+    }
+    const status = snapshot.captureResult.status;
+    if (typeof status !== 'string') {
+      errors.push('captureResult.status 不是字符串');
+    } else if (!CAPTURE_STATUSES.includes(status)) {
+      errors.push(`captureResult.status 非法：${status}`);
+    }
+    if (!Array.isArray(snapshot.captureResult.omitted)) {
+      errors.push('captureResult.omitted 不是数组');
+    }
+    if (!Array.isArray(snapshot.captureResult.unsupported)) {
+      errors.push('captureResult.unsupported 不是数组');
+    }
+  } else if (snapshot.captureResult === 'ok') {
+    // **协议 v0.2 裁定**：`captureResult` 的形态 = **对象**（三字段齐全）；
+    // 字符串**只兼容 `'ok'`**（等价 `{status:'ok',omitted:[],unsupported:[]}`）。
+    //
+    // **为什么 `'ok'` 还收**：它是**无损**的——`'ok'` 没有省略事实可丢，
+    // 与对象形态一一对应。而 `'partial'` / `'failed'` 用字符串会**丢掉「省略了
+    // 什么」**，违反「不静默裁掉」纪律 ⇒ 那两个**必须用对象**。
+  } else if (typeof snapshot.captureResult === 'string') {
+    errors.push(
+      `captureResult 必须是对象（协议 v0.2）；字符串只兼容 'ok'，收到：${snapshot.captureResult}`,
+    );
+  } else {
+    errors.push('captureResult 不是对象');
+  }
+  if (Array.isArray(snapshot.messages)) {
+    snapshot.messages.forEach((message, index) => {
+      if (message === null || typeof message !== 'object') {
+        errors.push(`messages[${index}] 不是对象`);
+        return;
+      }
+      if (typeof message.role !== 'string') {
+        errors.push(`messages[${index}] 缺 role`);
+      }
+      if (typeof message.text !== 'string') {
+        errors.push(`messages[${index}] 缺 text`);
+      }
+      if (message.role !== String(message.role).toLowerCase()) {
+        errors.push(`messages[${index}] 的 role 不是小写枚举`);
+      }
+    });
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+/**
+ * §1.2 目录页字段（**不含正文**）。
+ *
+ * 目录页是**独立缓存物**（与快照分开存），内容只有列表元数据。
+ */
+export const CATALOG_FIELDS = Object.freeze({
+  accountScope: 'string',
+  providerId: 'string',
+  items: 'array',
+  cursor: 'string',
+  hasMore: 'boolean',
+  fetchedAt: 'string',
+});
+
+/** 目录项字段。 */
+export const CATALOG_ITEM_FIELDS = Object.freeze({
+  sessionId: 'string',
+  title: 'string',
+  updatedAt: 'string',
+  deepLink: 'string',
+});
+
+/**
+ * §1.2 目录页校验。**正文不许出现**（协议：目录页不含正文）。
+ *
+ * @param {unknown} page - 待校验对象。
+ * @returns {{ok: boolean, errors: string[]}}
+ */
+export function validateCatalogPage(page) {
+  const errors = [];
+  if (page === null || typeof page !== 'object' || Array.isArray(page)) {
+    return { ok: false, errors: ['目录页不是一个对象'] };
+  }
+  for (const [field, kind] of Object.entries(CATALOG_FIELDS)) {
+    const value = page[field];
+    if (value === undefined || value === null) {
+      errors.push(`缺字段 ${field}`);
+      continue;
+    }
+    if (kind === 'array' && !Array.isArray(value)) {
+      errors.push(`字段 ${field} 不是数组`);
+    } else if (kind === 'object' && (typeof value !== 'object' || Array.isArray(value))) {
+      errors.push(`字段 ${field} 不是对象`);
+    } else if ((kind === 'string' || kind === 'number' || kind === 'boolean') && typeof value !== kind) {
+      errors.push(`字段 ${field} 不是 ${kind}`);
+    }
+  }
+  if (Array.isArray(page.items)) {
+    page.items.forEach((item, index) => {
+      if (item === null || typeof item !== 'object') {
+        errors.push(`items[${index}] 不是对象`);
+        return;
+      }
+      for (const field of Object.keys(CATALOG_ITEM_FIELDS)) {
+        if (typeof item[field] !== 'string') {
+          errors.push(`items[${index}] 缺字段 ${field}`);
+        }
+      }
+      if ('body' in item || 'text' in item || 'messages' in item) {
+        errors.push(`items[${index}] 带了正文（目录页不含正文）`);
+      }
+    });
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+/**
+ * §2 S-3：句柄状态**由快照文件派生**。
+ *
+ * 落盘后不再另存内存状态（内存与磁盘两处状态会漂）。所以这个函数是
+ * **唯一**的状态来源：
+ *
+ *   · 快照不存在 → `unknown`（不可用）
+ *   · 快照 `captureResult.status === 'failed'` → `failed`
+ *   · 快照 `status === 'partial'` → `ready`，但**带省略事实**（S-5 口径）
+ *   · 其余 → `ready`
+ *
+ * @param {unknown} snapshot - 快照对象（`null` 表示没找到）。
+ * @param {{digestOk?: boolean, fingerprintOk?: boolean}} [checks]
+ *   - `digestOk`：`contentDigest` 与正文是否一致（默认 `true`）
+ *   - `fingerprintOk`：账号指纹是否与当前一致（默认 `true`）
+ * @returns {{state: string, code: string|null, detail: string|null}}
+ */
+export function deriveState(snapshot, checks = {}) {
+  if (snapshot === null || snapshot === undefined) {
+    return { state: 'unknown', code: 'snapshot_invalid', detail: '快照不存在' };
+  }
+  if (checks.digestOk === false) {
+    return { state: 'invalid', code: 'snapshot_invalid', detail: '摘要不匹配（快照损坏）' };
+  }
+  if (checks.fingerprintOk === false) {
+    return { state: 'invalid', code: 'account_changed', detail: '账号指纹已变' };
+  }
+  const schemaOk = snapshot.schemaVersion === SCHEMA_VERSION;
+  if (!schemaOk) {
+    return { state: 'invalid', code: 'schema_changed', detail: '快照版本不支持' };
+  }
+  const status =
+    typeof snapshot.captureResult === 'string'
+      ? snapshot.captureResult
+      : snapshot.captureResult?.status;
+  if (status === 'failed') {
+    return { state: 'failed', code: 'partial_content', detail: '捕获结果是 failed' };
+  }
+  return { state: STATES.ready, code: null, detail: null };
+}
+
+/**
+ * 构造一个稳定的错误负载。
+ *
+ * **内部异常串一律不进这里**（协议 §3）：`detail` 只能传**已经分类好的**
+ * 事实（如「正文 300KB > 上限 256KB」），原始 `error.message` 只能写日志。
+ *
+ * @param {string} code - §3 的稳定码名。
+ * @param {{requestId?: string, logPath?: string, detail?: string}} [extra]
+ * @returns {{ok: false, code: string, retryable: boolean, userNext: string,
+ *   requestId: string|null, logPath: string|null, detail: string|null}}
+ */
+export function errorPayload(code, extra = {}) {
+  const spec = ERROR_CODES[code];
+  if (spec === undefined) {
+    // **协议 §3：内部冲突码一律归入 `snapshot_invalid`**，原始码保留在 `detail`。
+    //
+    // **不归 `source_unsupported`**：那个码只表示「这个来源根本不支持该能力」，
+    // 拿它兜内部冲突会让用户去「换一个来源」，而真正该做的是移除该引用。
+    return {
+      ok: false,
+      code: 'snapshot_invalid',
+      retryable: ERROR_CODES.snapshot_invalid.retryable,
+      userNext: ERROR_CODES.snapshot_invalid.userNext,
+      requestId: extra.requestId ?? null,
+      logPath: extra.logPath ?? null,
+      detail: `未知错误码 ${String(code)}`,
+    };
+  }
+  return {
+    ok: false,
+    code,
+    retryable: spec.retryable,
+    userNext: spec.userNext,
+    requestId: extra.requestId ?? null,
+    logPath: extra.logPath ?? null,
+    detail: extra.detail ?? null,
+  };
+}
+
+/**
+ * 脱敏日志路径。
+ *
+ * 协议 §5：「不在代码中展开真实用户 home」——所以日志路径一律用**占位符**
+ * 表示实例根，绝不把真实家目录拼进要落盘/要外发的字符串里。
+ *
+ * @param {string} relative - 相对实例根的路径。
+ * @returns {string} 形如 `<instance>/logs/official-chat.log` 的脱敏路径。
+ */
+export function redactLogPath(relative) {
+  const text = String(relative ?? '').replace(/\\/g, '/').replace(/^\/+/, '');
+  return `<instance>/${text}`;
+}
+
+/**
+ * 消息之间的分隔符（**协议 §1.3 没规定，是实现选定的口径**，交付时单列需 PM 确认）。
+ *
+ * 取**空行**（`\n\n`）而不是单换行：一条消息的正文若以空行结尾，单换行分隔会
+ * 让「消息边界」与「正文里的空行」混成一团；空行分隔在两边都能唯一还原。
+ *
+ * **两端必须一致**：JS 与 Rust 的 `contentDigest` 都按它拼，夹具固化其结果。
+ */
+export const MESSAGE_SEPARATOR = '\n\n';
+
+/**
+ * 把一组消息拼成「正文」。
+ *
+ * @param {Array<{role: string, text: string}>} messages - 已规范化的消息。
+ * @returns {string}
+ */
+export function joinMessages(messages) {
+  return (Array.isArray(messages) ? messages : []).map((message) => message.text).join(MESSAGE_SEPARATOR);
+}
+
+/**
+ * 规范化后的正文总字节数（预算判定用）。
+ *
+ * @param {string} text - 正文。
+ * @returns {number} UTF-8 字节数。
+ */
+export function byteLength(text) {
+  return Buffer.byteLength(normalizeText(text), 'utf8');
+}
+
+/**
+ * 规范化一组消息（§1.3：角色名小写枚举）。
+ *
+ * **正文逐条不动**：规范化只作用在**拼接后的整体**上（`contentDigest` 里那次），
+ * 与 `host/index.js` 的 `bodyOf` + `normalizeBody` 口径一致——
+ * 若这里逐条去尾随空白，中间消息的行尾空白会被悄悄改掉，两侧摘要就对不上。
+ *
+ * @param {Array<{role: string, text: string}>} messages
+ * @returns {Array<{role: string, text: string}>}
+ */
+export function normalizeMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  return messages.map((message) => ({
+    role: String(message?.role ?? '').toLowerCase(),
+    text: String(message?.text ?? ''),
+  }));
+}
+
+/**
+ * 正文合计字节数（多条消息之间按一个换行计）。
+ *
+ * @param {Array<{role: string, text: string}>} messages - 已规范化的消息。
+ * @returns {number} UTF-8 字节数。
+ */
+export function bodyBytes(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  if (list.length === 0) return 0;
+  let total = 0;
+  for (const message of list) {
+    total += Buffer.byteLength(String(message?.text ?? ''), 'utf8');
+  }
+  return total + (list.length - 1) * MESSAGE_SEPARATOR.length;
+}
+
+/**
+ * 构造快照（§1.1 字段表逐字段落地）。
+ *
+ * @param {object} input - 字段来源。
+ * @returns {object} 快照对象。
+ */
+export function buildSnapshot(input) {
+  const messages = normalizeMessages(input?.messages);
+  const providerShort = String(input?.providerShort ?? PROVIDER_SHORT);
+  const sessionShort = makeSessionShort(input?.sessionId);
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    snapshotId: makeSnapshotId({
+      providerShort,
+      sessionShort,
+      seq: Number(input?.seq ?? 1),
+    }),
+    providerId: String(input?.providerId ?? ''),
+    accountScope: String(input?.accountScope ?? ''),
+    sessionId: String(input?.sessionId ?? ''),
+    branch: String(input?.branch ?? 'main'),
+    messages,
+    contentDigest: contentDigest(joinMessages(messages)),
+    captureResult: {
+      status: String(input?.captureResult?.status ?? 'ok'),
+      omitted: Array.isArray(input?.captureResult?.omitted)
+        ? [...input.captureResult.omitted]
+        : [],
+      unsupported: Array.isArray(input?.captureResult?.unsupported)
+        ? [...input.captureResult.unsupported]
+        : [],
+    },
+    capturedAt: String(input?.capturedAt ?? ''),
+    sourceUpdatedAt: String(input?.sourceUpdatedAt ?? ''),
+    sourceFingerprint: String(input?.sourceFingerprint ?? ''),
+  };
+}
+
+/**
+ * §6 夹具的**统一判定入口**：同一份夹具，JS 与 Rust 各跑一遍，结果必须一致。
+ *
+ * 三种流程（按 `input.kind` 分派），**判定顺序写死在这里**——两端照抄，
+ * 顺序不同就会出现「同一夹具不同结果」，那正是 §6 要防的事。
+ *
+ *   · `capture`——捕获一份快照：版本 → 正文预算 → 捕获结果 → 落快照。
+ *   · `catalog`——取目录页：空结果与读取失败**必须分开**（§3）。
+ *   · `lookup`——用句柄取快照：缺失 / 版本 / 摘要 / 指纹，逐条判。
+ *
+ * @param {object} input - 夹具的 `input`。
+ * @returns {object} 结果（形状见各分支注释）。
+ */
+export function resolveCase(input) {
+  const kind = String(input?.kind ?? 'capture');
+  if (kind === 'catalog') return resolveCatalogCase(input);
+  if (kind === 'lookup') return resolveLookupCase(input);
+  return resolveCaptureCase(input);
+}
+
+/**
+ * 捕获流程。
+ *
+ * @param {object} input
+ * @returns {{kind: 'snapshot', snapshot: object, state: string, notice: string|null}
+ *   | {kind: 'error', code: string, retryable: boolean, userNext: string}}
+ */
+export function resolveCaptureCase(input) {
+  // 捕获流程的**两种非正文结局**先判：超时与取消（S-2 的 `failed` / `cancelled`）。
+  // 它们与「读到了但超限」不同——**没有正文，也就没有快照**。
+  const outcome = String(input?.outcome ?? 'ok');
+  if (outcome === 'timeout') {
+    return { kind: 'error', ...errorPayload('timeout') };
+  }
+  if (outcome === 'cancelled') {
+    return { kind: 'error', ...errorPayload('cancelled') };
+  }
+  const version = Number(input?.schemaVersion ?? SCHEMA_VERSION);
+  if (version !== SCHEMA_VERSION) {
+    return { kind: 'error', ...errorPayload('schema_changed') };
+  }
+  const messages = normalizeMessages(input?.messages);
+  const bytes = bodyBytes(messages);
+  if (bytes > CONSTANTS.maxBodyBytes) {
+    return { kind: 'error', ...errorPayload('body_too_large') };
+  }
+  const status = String(input?.captureResult?.status ?? 'ok');
+  if (status === 'failed') {
+    // **捕获失败按原因分流**（协议 v0.3 §3「各码的使用边界」）：
+    // 捕获失败**不是一个单一原因**，一律 `source_unsupported` 会让用户看到
+    // 「换一个来源」而其实该**重试**——那是**掩盖真实原因**。
+    // · 超时 → `timeout`（可重试）；页面结构变了 → `schema_changed`；用户取消 → `cancelled`。
+    // · **原因不明 → `timeout` 兜**（可重试）。
+    const reason = String(input?.captureFailure?.reason ?? '').trim().toLowerCase();
+    return {
+      kind: 'error',
+      ...errorPayload(captureFailureCode(reason), { detail: captureFailureDetail(reason) }),
+    };
+  }
+  const snapshot = buildSnapshot({ ...input, messages });
+  const notice = status === 'partial' ? 'partial_content' : null;
+  return { kind: 'snapshot', snapshot, state: STATES.ready, notice };
+}
+
+/**
+ * 目录流程（§1.2 目录页是独立缓存物；§3 空结果与失败分离）。
+ *
+ * @param {object} input
+ * @returns {{kind: 'catalog', page: object}
+ *   | {kind: 'error', code: string, retryable: boolean, userNext: string}}
+ */
+export function resolveCatalogCase(input) {
+  const outcome = String(input?.outcome ?? 'ok');
+  if (outcome === 'empty') {
+    return { kind: 'error', ...errorPayload('catalog_empty') };
+  }
+  if (outcome === 'failed') {
+    return { kind: 'error', ...errorPayload('catalog_failed') };
+  }
+  const items = Array.isArray(input?.items) ? input.items : [];
+  return {
+    kind: 'catalog',
+    page: {
+      accountScope: String(input?.accountScope ?? ''),
+      providerId: String(input?.providerId ?? ''),
+      items: items.map((item) => ({
+        sessionId: String(item?.sessionId ?? ''),
+        title: String(item?.title ?? ''),
+        updatedAt: String(item?.updatedAt ?? ''),
+        deepLink: String(item?.deepLink ?? ''),
+      })),
+      cursor: String(input?.cursor ?? ''),
+      hasMore: Boolean(input?.hasMore),
+      fetchedAt: String(input?.fetchedAt ?? ''),
+    },
+  };
+}
+
+/**
+ * 取快照流程（S-5：失效一律拒）。
+ *
+ * @param {object} input
+ * @returns {{kind: 'snapshot', snapshot: object, state: string}
+ *   | {kind: 'error', code: string, retryable: boolean, userNext: string}}
+ */
+export function resolveLookupCase(input) {
+  if (input?.exists === false) {
+    return { kind: 'error', ...errorPayload('snapshot_invalid') };
+  }
+  const snapshot = input?.snapshot;
+  if (snapshot === null || snapshot === undefined) {
+    return { kind: 'error', ...errorPayload('snapshot_invalid') };
+  }
+  if (Number(snapshot.schemaVersion) !== SCHEMA_VERSION) {
+    return { kind: 'error', ...errorPayload('schema_changed') };
+  }
+  const stored = String(snapshot.contentDigest ?? '');
+  const actual = contentDigest(joinMessages(normalizeMessages(snapshot.messages)));
+  if (stored !== actual) {
+    return { kind: 'error', ...errorPayload('snapshot_invalid') };
+  }
+  const current = String(input?.currentFingerprint ?? '');
+  if (current !== '' && current !== String(snapshot.sourceFingerprint ?? '')) {
+    return { kind: 'error', ...errorPayload('account_changed') };
+  }
+  return { kind: 'snapshot', snapshot, state: STATES.ready };
+}
+

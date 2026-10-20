@@ -1,7 +1,7 @@
 ---
 description: "P1 协议与状态机冻结稿：固定数据模型、句柄与快照的对应关系、错误码、门控口径与首版常量。PM 定，devloper 依此实现。"
 kind: "protocol"
-status: "P1 协议冻结稿 v0.1（2026-10-20 17:1x，PM 定；devloper 依此实现，tester 依此出判据）"
+status: "P1 协议冻结稿 v0.4（2026-10-20 20:1x，PM 定；v0.3 → v0.4 = **更正通道裁定**：inject webServer 已被实测证伪 → 改走 exact fetch route；错误结果对象 8 字段闭集；保留期主动清理口径；缺口登记 G1-7；A0s 判据同步更正）"
 date: 2026-10-20
 ---
 
@@ -49,7 +49,7 @@ date: 2026-10-20
 | `branch` | 有效分支 | 规范化后的分支标识 |
 | `messages` | 消息角色与文本 | 角色 + 文本；**未支持内容要显式记**（不静默丢） |
 | `contentDigest` | **规范化内容摘要** | 规范化规则固定（见 1.3）；用于校验完整性 |
-| `captureResult` | 捕获结果 | `ok` / `partial` / `failed` + 省略事实 + 未支持内容清单 |
+| `captureResult` | 捕获结果 | `ok` / `partial` / `failed` + 省略事实 + 未支持内容清单；**形态 = 对象**（v0.2 裁定：对象必带三字段；**`ok` 兼容字符串 `'ok'`**（等价 `{status:'ok',omitted:[],unsupported:[]}`），`partial` / `failed` **必须用对象**——用字符串会丢「省略了什么」，违反「不静默裁掉」纪律） |
 | `capturedAt` / `sourceUpdatedAt` | 捕获时刻 / 来源更新时间 | ISO 8601 UTC |
 | `sourceFingerprint` | 来源指纹 | 账号指纹；变化即该快照失效（见 S-5） |
 
@@ -78,6 +78,7 @@ date: 2026-10-20
 - **长度上限：整串 ≤ 24 个可见字符**（HC-2：这是 chip 宽度）。超限的会话短码按稳定规则截断（保留尾部），并把完整会话 id 存进快照（`sessionId`）——**映射靠落盘快照，不靠短码反解**。
 - **可读性的边界**：ref 会被内核原生 chip 原样渲染成文本，**我们改不了内核**（不动安装包）→ 接受「机器标识即 chip 文本」。**用户可读性由展示层承担**：chip 的 label 保持中性、详情面板显示真实来源与捕获时间（计划 §10 P5），**不靠改 ref**。
 - **唯一性粒度 = 一次 pick**：同一条对话选两次 → 两个 `snapshotId`（`seq` 不同）→ **第二次不再覆盖第一次**（G1 现状 `reads` 以对话 id 为主键，选两次会互相覆盖，这是 P1 必须修掉的）。
+- **id 分配权归 host**（v0.2 裁定，devloper 17:5x 提出「client 的 `seq` 是进程内计数，重启会从 1 重来 → 可能撞盘上已有 id」）：快照**落盘且跨进程可发**（S-6）→ 若 `seq` 由 client 的进程内计数生成，**dev 壳与 release 壳同开、或任一进程重启，都可能生成同一个 `snapshotId` → 撞盘**（host 按「同 id 不重写」拒 → 用户看到「这次选择没生效」）。⇒ **`seq` 由 host 侧统一分配**（host 持有并持久化已用序号，client 不得自造）；**「本实例内单调递增」必须跨进程成立**。
 
 ### S-2｜状态机（直接采用计划 §6，不自造）
 
@@ -107,13 +108,18 @@ ready → serialized → expanded → persisted
 - 判据从「数时序点」变成「**比对磁盘内容与请求体**」，稳得多，也覆盖「落盘后重读」这类时序测不出的形态。
 - G1 已有纪律「读取完成前 0 请求」**继续有效**（dev-r6 断言 D：t=279ms 时 reqs=0 / t=7957ms 时 reqs=1），但 P1 的新增判据以**状态口径**为准。
 
-### S-5｜失效与缺失：**一律拒 + chip 标 `invalid`**
+### S-5｜失效与缺失：**一律拒**（+ 可见错误；chip `invalid` 态在内核具备前**不可达**）
 
 - 快照缺失 / `sourceFingerprint` 变化（换账号）/ codec 失联 / `schemaVersion` 不支持 / 摘要不匹配 → **拒**（对应模型请求数 = **0**）+ **可见错误出口**。
-- **用内核现成的 `invalid` 位，不自造**（tester 建议）：
-  - `dsh-client-ui-conversation/lib/client/types/client/contract/input.d.ts:123` `readonly invalid?: boolean`（`ReferenceInsert` **插入时**就能带）
-  - `types/client/input/editor/chip-node.d.ts:19` `invalid: boolean`；`:35` 注释「Owner-resolution failure flag: chip renders invalid; serialization must fail」
-  - ⇒ 失效时 chip 进入 `invalid` 态 → **失效在界面上可见**；只静默拒，用户看到的是「引用凭空消失」。
+- **失效的可见形态只有一条**（v0.2 裁定，tester 17:1x 实测 + 内核现役 `0.2.1-rc.2` 复核）：**发送时拒 + 可见错误**。这是内核唯一通路——owner 侧 `codec.serialize` 抛错 → 拒发（请求数 0）→ 可见 error notice。**「chip 标 `invalid`」在内核具备该能力前不可达**：
+  - `ReferenceInsert`（插入期）**没有** `invalid` 字段——它在 `dsh-client-ui-conversation/lib/types/client/contract/draft-editor.d.ts`（SHA `3397E3224506A8F448901C4AE3EB1932DABE3FA257B9BA9C5186EFD2AD918375`）`:12-18`；`readonly invalid?: boolean` 在 `Occurrence` 上（同文件 `:105` / `:122-123`），**不是插入期字段**。
+  - `lib/types/client/input/editor/chip-node.d.ts`（SHA `816035EAA7730AD5C57334F3A261CCF9529F1A27F72069FD012C587AB03F737F`）`:21` / `:35` 有 `invalid` 语义，但 **`setInvalid` 在现役内核零调用方**；DOM 上**无 `data-invalid`**。
+  - ⇒ 登记为**新上游缺口 G1-6：内核无「chip 进入 invalid 态」的写入口**（见[第 8 节](#8-验收项p1-的硬性门禁)第 12 条）。**在 G1-6 落地前，本条的验收口径 = 「请求数 0 + 可见错误」**；**不得**把「chip 标 invalid」降级写成「节点级断言」假装能测。
+- **`sourceFingerprint` 的校验点 = host 命令层**（v0.2 裁定，tester 17:1x 提问）：
+  - **存储层只校验 `schemaVersion` 与 `contentDigest`**，**不比对指纹**——存储层拿不到「当前指纹」。
+  - **换账号的第一道防线是目录隔离**：`accountScope` 目录按站点账户隔离（[第 5 节](#5-命名空间与桥)路径规则）→ 换账号后旧快照**不在当前账号的目录里**，取不到。
+  - **第二道防线在 host 命令层**（打开/读取上下文那条链——只有它能拿到当前指纹）：比对「快照里的 `sourceFingerprint`」与「当前会话指纹」；**当前指纹不可得时 → 拒**（`account_changed`），**不得放行**。
+  - ⇒ **本条不删**（删掉等于放弃「换账号后旧快照不可发」这条纪律），**改的是校验位置**。
 - 换账号后**已选中的快照仍保持原来源归属**，不挂到新账号名下（计划 §9）；但它**不可再发送**（指纹不符 → 拒）。
 - **不得静默回退到重读**（重读 = 「最新正文」，会破坏固定版本；计划 §8 明写「codec 在重试时不得把官网 id 重新解析成最新正文」）。
 
@@ -151,7 +157,16 @@ ready → serialized → expanded → persisted
 | `stale_draft` | 草稿代次已变 | 否 | 重新选择 |
 
 - 每个错误码带：可重试性、用户下一步、关联 `requestId`、**脱敏**日志路径；**不得把内部异常串当成功值**（计划 §6）。
+- **v0.4 裁定｜错误结果对象字段闭集 = 8 个，全部必备、不省略**：`kind` / `ok` / `code` / `retryable` / `userNext` / `requestId` / `logPath` / `detail`。
+  - 依据：协议 §3 原文「每个错误码带：可重试性、用户下一步、**关联 requestId**、**脱敏日志路径**」+ Rust 侧 v0.2 注释「错误负载要带齐 §3 要求的字段，与 JS 侧 `errorPayload` 同构」。
+  - 规则：① **8 个字段一律出现**，不可得时填 **`null`**（**不省略字段、不填空串**）；② 错误路径 `ok` 恒 `false`；③ `code` 取**上表 13 码闭集**；④ `detail` 承载脱敏后的原始码与原因线索（内核 `details` 是自由 record，`dsh-client-connection/lib/index.js:614`）。
+  - **为什么必须写死**：JS 与 Rust 两端各写各的字段集 → 协议夹具的「双端一致」永远红，且**每端都自以为对**。**闭集是让两端能对上的前提。**（tester 17:4x A1c/A1d 报红即源于此；devloper 19:2x 曾按「Rust + 旧夹具都是 4 字段」判成 4 字段——**那是循环证据**，已撤回。）
 - `catalog_empty` 与 `catalog_failed` **必须分开**（计划 §6 明写「目录没有结果与目录读取失败是不同状态」）。
+- **本表是闭集，13 个码**（v0.2 裁定，devloper 17:5x 提问 `snapshot_exists`）：**内部冲突码一律归入 `snapshot_invalid`**，原始码保留在 `detail`（如「同 id 重复落盘」→ 归 `snapshot_invalid`，原始码 `snapshot_exists` 进 `detail`）。**不新增第 14 个码**——码表稳定可机检是本条纪律；用户侧看到的是「这次选择没生效」，下一步是移除该引用后重选。
+- **各码的使用边界**（v0.2 补，devloper 18:2x 提出「捕获失败没有专门码」）：
+  - **不新增「捕获失败」码**——捕获失败**不是一个单一原因**，必须**按原因分流**：超时 → `timeout`（可重试）；官网页面结构变了 → `schema_changed`（升级插件）；用户取消 → `cancelled`。
+  - **`source_unsupported` 只用于「这个来源根本不支持该能力」**，**不得**用来兜「捕获失败」——那会让用户看到「换一个来源」而其实该**重试**，属于**掩盖真实原因**。
+  - ⇒ 「捕获失败但原因不明」时用 `timeout` 兜（可重试），并在 `detail` 写明脱敏后的原因线索。
 
 ---
 
@@ -174,11 +189,28 @@ ready → serialized → expanded → persisted
 
 常量**集中配置**并有边界测试（计划 §6）。
 
+### 4.1 保留期主动清理（v0.4 裁定，devloper 20:0x 提出候选口径）
+
+**现状如实说**：`snapshotRetentionMs` 此前**只是常量、没有过期检查、没有清理任务**；认领文件已记 `claimedAt`。**本阶段补上主动清理**，口径如下（**不新增常驻定时器**——插件不常驻，定时不可靠）：
+
+1. **触发点**：host 半边**惰性触发**，**只在 `catalog` 入口**检查一次，同实例**至多一天一次**；**`capture` 不触发**（用户主动路径更短更可控）。节流键：`<root>/sweeps/last-sweep-<YYYY-MM-DD>.json`（独立目录，不混进快照目录）。
+2. **扫哪些**（四家族，均在 `<root>` 下）：快照 `snapshots/<provider>/*.json`（按文件内 `capturedAt`，mtime 兜底）；认领 `seq-claims/*`（按 `claimedAt`，**且必须确认对应快照已不在**才可删）；目录缓存 `catalog-cache/*`（5 分钟 TTL）；错误日志 `logs/official-chat.log`（按行数/大小截断，**不按 7 天删**——日志是诊断证据）。
+3. **怎么避免误删**：只删**超过 7 天**的（`snapshotRetentionMs`）；顺序**先快照后认领**（认领先删会指向仍存在但已过期的快照）；**两步法删除**（先 rename 再 unlink），避免删到一半留下半截文件被当成有效快照；**只动本实例根下这四家族**，根不可得就**不扫**（宁可不清理，不乱删）；清理失败**只记日志**，不阻塞业务。
+4. **「正在发送中的引用」不保护、不引入引用计数**（协议没写，不自造）：后果是「该引用失效并被拒」（`snapshot_invalid`），**不是错发**——S-5 / S-6 既有语义已覆盖这个后果。
+
 ---
 
 ## 5. 命名空间与桥
 
 - 服务端从**已绑定实例、壳模式、实际站点账户**推导命名空间；**客户端传入的会话标识用于一致性校验，不构成授权**（计划 §6）。
+- **client → host 的通道 = 内核 `connection` 服务**（**不是** cordis `ctx.set` 挂服务；**也不是**插件自建 webServer 路由）。**形态**：过渡期走 **exact fetch route**（见下条），上游修好后可收敛回内核 RPC。**为什么这条路**（devloper 17:5x 取证 + Chief 20:0x 源码核对，内核现役 `0.2.1-rc.2`）：
+  - **cordis `ctx.set(name, service)` 不可用**——cordis 要求该属性已 `provide` 过，否则 `cannot set property "..." without provide`（`cordis/lib/index.js:782-789`）。现役 `host/index.js:407-414` 把这个抛错吞成一行 warn，**服务根本没挂上**。
+  - **浏览器树 ≠ Node 进程树**——client 半边跑在浏览器页面里，host 半边跑在内核的 Node 进程里，**不在同一棵 cordis 树**；浏览器树里 `ctx.get('xlink-official-chat')` 永远解析不到。
+  - ⇒ 走**内核 `connection` 服务**是**唯一可行**的通道（RPC 或 exact fetch route 二选一）。**本条是对「cordis 服务注册」与「插件自建路由」两条路的显式否决**，下一个人不必再试。
+  - **v0.4 裁定｜通道形态 = 内核 `connection` 服务的 exact fetch route**（`ctx.connection.fetch.register({kind:'exact', path:'/api/xlink-official-chat', methods:[…], requestBody:'buffered', fetch})`）。**内核给三样**（现役 `0.2.1-rc.2` 源码核对）：① **路径必须在 `/api` 命名空间下**——`assertFetchRoute`（`:973-977`）用 `endpointFromPath("/api", route.path)` 校验，不过就抛；② **owner 准入由内核做**——`createSharedFetchHandler`（`:820-838`）命中 exact route 时先判 `peer.principal.kind !== "owner"` → 403；③ **与 API Gateway 的 shared interceptor 两级分发不冲突**——exact route 先查、miss 才落 interceptor。**且 `registerFetchRoute`（`:840-854`）完全不碰 webServer** ⇒ 不会触发上面那个抛错。**插件要自己做的**：RPC 信封（exact route 命中后**绕过**内核的 `rpcFetchHandler`，信封由插件实现）。**落地阻塞项**：exact path 是**全等匹配**（`fetchRoutes.get(url.pathname)`）⇒ **必须先实测浏览器侧 `rpc.call` 实际 POST 的 pathname 与 method**（`dsh-client-connection/lib/client.browser.js:1212-1231`、`:1497`），错一个字符就 404/405。**③（插件自注册 `ctx.webServer.register` + 自实现信封与鉴权）否决**——那要自造 owner 准入 = 自造安全面，且绕过内核的路径校验；**①（上游把 `owner.webServer.register(route)` 改成 `owner.get("webServer").register(route)`，与内核自己 `:745`/`:778` 写法一致）上报 izzy**，内核修好后可收敛回 RPC，**但不阻塞 P1**。
+  - **⚠️ v0.4 更正（devloper 20:0x 真机实测 p1-r3/r6）**：v0.2 那条「host 半边 `inject = ['connection','webServer']` 就能修好 `rpc.handle`」**已被证伪**——cordis 的属性查找落在**内核 connection 插件自己的 fiber scope**（`(ctx[symbols.shadow] ?? ctx).fiber`，`cordis/lib/index.js:683` + `createShadow` `:111-116`），而那个 scope **从不 inject `webServer`**（内核一律安全读 `this.owner.get("webServer")`，`:745`/`:778`）⇒ **插件侧 declare `webServer` 也照样抛** `cannot get property "webServer" without inject`（实测两轮无效）。**插件侧无法自修这条。**
+  - **对判据的约束**：判据的 stub 是**同步服务**、RPC 是 **Promise**——判据库期望值不变，**由 adapter 吸收这个差异**（adapter 只暴露协议规定的接口面，底层是同步桩还是 RPC 由它自己吸收）。
+  - **⚠️ 判据不得把 `connection.rpc.call` 直连 host handler**——那会**绕过内核 `connection` 服务的真实路由注册**，正是 A0 那个真洞藏身之处（真机全红、判据不报）。**「桩把两条本该跨进程的调用接上了」= 桩骗过自己。**
 - 桥**不接受**任意路径、任意脚本、任意 URL、调用方指定的账户目录。
 - 客户端命令职责：`capabilities` / `catalog` / `capture` / `cancel` / `preview`；host 回环路由**只按固定 id 读快照**与必要的模型可见投影。名称在实施时统一登记。
 - 复用现有桥的**鉴权与轮换**，**不复制监听器**；新增 GET 查询路由用精确路径匹配 + 参数校验；若必须加请求体协议，先补**定长读取与大小上限**，不得复用只读到请求头的 `body_prefix`。
@@ -193,6 +225,9 @@ ready → serialized → expanded → persisted
 - **同一组 JSON 夹具**，Rust 与 JavaScript **各跑一遍**，断言「同一夹具 → 同一解析结果」；`schemaVersion` 两端常量必须一致。
 - 夹具至少覆盖：正常快照、部分内容、超限、空目录、目录失败、超时、取消、账户已变、快照缺失、版本不支持、摘要不匹配。
 - 快照文件**不可变**：同一 `snapshotId` 不重写；重新选择同一对话 → **新** `snapshotId`（计划 §8）。
+- **`expected` 的定位**（v0.2 裁定，tester 17:1x 提出 A1d 是推断口径）：夹具的 `expected` 是**参考值**。**判据侧断言的是「双端一致」（A1c）**；「实现结果 == `expected`」属**实现自测**（协议夹具 runner 的职责）——**两者都要有，但后者不是前者的替代**。**不得**把 A1c 放宽成「只要双端一致就行」而取消 `expected` 校验。
+- **首版会话短码算法**（**工程参数**，不是站点限制；与[第 4 节](#4-首版常量工程参数不伪称来自站点限制)同一定性）：官网会话 id → `sessionShort` = **两段 FNV-1a 变体**（不同盐，避免不同会话撞）→ **base36 编码取后 12 位**；**口径 = UTF-16 码元**（不是 UTF-8 字节）。`providerShort` 取 provider 的稳定短码（如 `ds` / `gpt` / `mm`，≤ 4 字符）。
+- **首版消息分隔符**（**工程参数**）：单条消息之间用**空行 `\n\n`** 分隔；正文内部空行与缩进**保留**（规范化只去整段末尾空白，不改语义，见[第 1.3 节](#13-规范化与摘要)）。
 
 ---
 
@@ -210,18 +245,21 @@ ready → serialized → expanded → persisted
 
 ## 8. 验收项（P1 的硬性门禁）
 
-1. **协议夹具**：Rust / JS 双端对同一组夹具结果一致；`schemaVersion` 常量一致。
+1. **协议夹具**：Rust / JS 双端对同一组夹具结果一致；`schemaVersion` 常量一致。**实现侧另需对照夹具 `expected`**（见[第 6 节](#6-协议夹具与版本号)）——那是实现自测，与「双端一致」是两条断言，都要有。
 2. **S-1**：同一条对话选两次 → 两个 `snapshotId` → 两个 `ref` → **第二次不覆盖第一次**（读记录不再以对话 id 为主键）。
 3. **S-1 长度**：`ref` 长度 ≤ 24 可见字符（边界测试）。
 4. **S-3**：落盘后**句柄状态由快照文件派生**；不得存在第二份内存真相（**机检：内存态字段只剩在途态**）。
 5. **S-4（状态口径）**：**任何一次请求发生时**，该 occurrence 指向的快照已落盘，且**落盘正文与请求体逐字节相同**（比对磁盘与请求体，不是数时序点）。
-6. **S-5**：快照缺失 / 指纹变化 / 摘要不匹配 → **请求数 0** + **可见错误** + **chip 处于 `invalid` 态**（节点级断言，不是文本级）。
+6. **S-5**：快照缺失 / 指纹变化 / 摘要不匹配 → **请求数 0** + **可见错误**。**「chip 处于 `invalid` 态」在本阶段不可机检**（内核无该写入口，见 S-5）——**不计入本阶段验收**，登记为上游缺口 **G1-6**；**不得**把它降级写成「节点级断言」假装能测。**指纹比对的校验点在 host 命令层**（不是存储层），**当前指纹不可得 → 拒**（`account_changed`），不得放行。
 7. **S-6**：进程重启后句柄仍可发；快照被清理后 → **拒**（`snapshot_invalid`），**不静默重读**。
 8. **S-7**：同一正文引用两次 → 两个快照 id、**正文各送一份**（不隐式去重）。
 9. **错误码**：13 个码**全部有稳定码名**；`catalog_empty` 与 `catalog_failed` 分离；错误里**不出现内部异常串**。
 10. **命名空间**：A11——换账号 / 换实例 / dev-release 同开，目录、快照、请求、权限**不串范围**。
 11. **隔离**：判据 `probe-profile-isolation` / `probe-data-directory` 仍绿；**新增代码不得让判据扫描面外泄**（新增文件若含建窗点，必须无条件给 `data_directory`）。
-12. **G1-1…G1-5 缺口登记仍在**：实现**不得假设**这些缺口已解决；任何依赖「成功才插就绪 chip」的验收项按降级形态写。
+12. **G1-1…G1-7 缺口登记仍在**：实现**不得假设**这些缺口已解决；任何依赖「成功才插就绪 chip」的验收项按降级形态写。**G1-6 = 内核无「chip 进入 `invalid` 态」的写入口**（`ReferenceInsert` 无 `invalid` 字段、`setInvalid` 全树零调用方、DOM 无 `data-invalid`）——本阶段按「发送时拒 + 可见错误」验收，**该缺口不因本阶段验收通过而关闭**。**G1-7 = 通道被上游一行卡住**（`dsh-client-connection@0.2.1-rc.2` 的 `lib/index.js:871` 用**属性访问** `owner.webServer.register(route)`，而内核自己在 `:745`/`:778` 用的是 `this.owner.get("webServer")` ⇒ 第三方插件调 `rpc.handle` 必抛 `cannot get property "webServer" without inject` ⇒ **host 半边不激活、RPC 通道整体不通**，浏览器侧表现为 **HTTP 405**（不是 404）；**插件侧无法自修**，已实测证伪「declare `webServer` 就能修好」）。**实现侧须登记 `capabilities.degraded.g1_7`**，让通道不可用时**显式降级可见**、不静默。
+13. **通道可达性（A0 / A0s）**：
+    - **A0s（仓库级，静态）**：host 半边**不得**用 cordis `ctx.set` 挂服务（那条路在浏览器树里必然失败，见[第 5 节](#5-命名空间与桥)）；**不得**把 `rpc.handle` 当作已通的通道（v0.4 已证伪）；**必须**注册 **exact fetch route**（路径在 `/api` 命名空间下，owner 准入由内核做）。**这条是仓库级可机检的**——它直接钉住 A0 那个真洞的根因与修法，防止有人把通道改回 `rpc.handle`。
+    - **A0（真机级）**：client → host 经内核 `connection` 服务的**真实路由注册**跑通一次（**不得直连 handler 绕过注册**）。**仓库级 runner 跑不了这一条**（需要真实内核进程与真实 cordis 树）→ 仓库级如实报「**未执行**」并写明原因，**由真机复验轮执行**。**真机复验必须在**未打补丁的**现役内核上跑**——打过补丁的隔离副本只能证明「补丁有效」，不能证明「产品可用」。
 
 ---
 
@@ -229,4 +267,5 @@ ready → serialized → expanded → persisted
 
 - 站点登录态：**首次建立**（ChatGPT 优先）——P4 前置，不预写。
 - 安装版 release 壳：按分工由 izzy 验收。
+- **上游内核一行修复（v0.4 新增，不阻塞 P1）**：`dsh-client-connection@0.2.1-rc.2` 的 `lib/index.js:871` 把 `owner.webServer.register(route)` 改成 `owner.get("webServer").register(route)`（与内核自己 `:745`/`:778` 的写法一致）⇒ 第三方插件的 `rpc.handle` 就能用。**隔离副本注入一行已实测有效**（P1 六条硬口径在补丁副本上 11 通过 / 0 失败 / 0 未执行）。**要不要推动内核发版由 izzy 决定**；**不推也不阻塞 P1**（过渡期走 exact fetch route）。
 - 证据是否固化进仓库：已拍板「可以清」——**本文档与代码里的数字、字段值、判据口径**才是可长期复核的东西。
