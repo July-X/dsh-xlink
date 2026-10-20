@@ -473,7 +473,7 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 **历史作者重写（izzy 拍板「需要重写」）**
 
 - 范围：**只重写三个开发分支**（`main` / `main-dev2` / `uiv2-dev`）的**作者与提交者**（`zhongxingxing` → `July-X <m4java@163.com>`）；**dependabot 分支不动**、**82 个 tag 一律不重写也不重推** ⇒ 不触发 `desktop-release.yml`（该 workflow 只在 `desktop-v*` tag 推送时运行）。
-- **恢复点已建立**：已推 `origin/backup/pre-author-rewrite-20261020`（指向重写前的 `origin/main`），命名不匹配 `desktop-v*` ⇒ 发布 workflow 不会触发。
+- **恢复点已建立**：已推 `origin/backup/pre-author-rewrite-20261020`（指向重写前的 `origin/main`），命名不匹配 `desktop-v*` ⇒ 发布 workflow 不会触发。**（23:1x 更正措辞：它是 `tag`，不是分支——远端 `refs/heads` 只有 3 个开发分支。）**
 - 做法：在**独立克隆**里 `git filter-branch --env-filter` ⇒ **不动当前工作目录的 refs**（避免打断并行会话）；完成后再 force push 三个分支。
 - 踩坑留痕：① 第一版用 `git clone --no-checkout` ⇒ 克隆里 index 非空，filter-branch 拒跑（`Cannot rewrite branches: Your index contains uncommitted changes.`）；② `uiv2-dev` **只存在于远端**，本地克隆没有 ⇒ 需在克隆里 `git fetch origin` 后再 `git branch -f`；③ 脚本的「原工作树必须干净」检查会把 **PM 自己的在途文档改动**判成不干净 ⇒ 正确顺序 = **先提交在途改动 → 再重写 → 最后 `reset --hard`**。
 
@@ -488,6 +488,43 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 
 - **首次建立站点登录态**：**现在就可以做**（一次浏览器登录即可，不需要 agent 参与）——它是 P4 的硬前置；而 **P2 第一批不需要登录态**（用夹具目录即可）⇒ 不必等 P2 结束。
 - **安装版 release 壳验收**：需**安装版**（不是自编 release 二进制）⇒ 需等 izzy 自己出安装包/发布之后；建议在 main 稳定、发布包就绪时做。
+
+### 2026-10-20 23:0x · izzy 撤回上游 PR ＋ 新增硬纪律「禁止修改上游 dsh 内核」
+
+- **izzy 23:0x 原话**：「③ PR 为什么要去改 deepseek-harness 的东西，撤回这个 PR，**禁止修改上游的 dsh 内核**。」
+- **PR 的实际状态**：那个上游 PR **从未创建成功**（此前卡在「浏览器未登录 GitHub」，compare 页只显示 `Sign in / Sign up`）⇒ **没有需要关闭的 PR**。**核验限制**：`gh api repos/deepseek-ai/deepseek-harness/pulls` 返回 **404 = token 对 upstream 无读权限**（同一 token 对 fork 读权限正常、count=0）⇒ 这一点**无法用 API 独立证实**，按记录判定「未开成」。
+- **已执行的撤回动作**：**删除 fork 上准备开 PR 的分支** `July-X/deepseek-harness:fix/connection-owner-webserver-get`（commit `07aa67ac`）⇒ 删后 fork 只剩 `develop` / `master`。**该 fork 仓库本身保留**（删整个 fork 是更大的不可逆动作，等 izzy 一句话）。
+- **新硬纪律（已落 `AGENTS.md`「范围 · 运行时内核边界」）**：**禁止向上游内核仓库提修改或 PR**（不改 `deepseek-ai/deepseek-harness` 及其任何 fork 的代码、不开 PR、不推分支）⇒ 内核缺陷只做两件事：① **本项目侧规避**；② **登记缺口并上报 izzy**。⇒ 内核侧缺口**长期按「已知未解决」对待**，实现与验收**不得假设它会因上游发版而解决**。
+- **G1-7 的处置随之改写**（协议稿 §5 / §8 ＋ feasibility §3 缺口表 ＋ §9 先决条件）：**不再以「等上游发版」为收敛前提** ⇒ 通道**长期**走内核 `connection` 服务的 **exact fetch route**（已真机全绿），`rpc.handle` 路径**不使用、不修**；**G1-7 仍不关闭**。
+- **未受影响**：P1 协议其余条款 ＋ **P2 第一批口径（三条建议）全部不变**；P2 三线在跑（devloper 实现 ＋ 改 `development-plan` §7:155、UX高手 界面层方案、tester 判据）。
+
+### 2026-10-20 23:1x · 历史作者重写已完成 ＋ P2 协议 v0.2 落盘
+
+**一、历史作者重写（izzy 22:5x 拍板「需要重写」）——已完成**
+
+- **远端现状**（`git ls-remote` 实测）：`main` = **`c99156e23cf620eeabc6b5ad28a686095bb5cc1a`**、**`main-dev2` = `4322e9800bdb8305c6cf818383116fc9ae53524e`**、**`uiv2-dev` = `8789943c73d9f32936709fb49ec4a410b3d9a446`**；**远端 `refs/heads` 只有这 3 个分支**。
+- **旧作者残留 = 0**（逐分支数 `zhongxingxing`）：`main` **0 / 1044**、`main-dev2` **0 / 269**、`uiv2-dev` **0 / 567**。
+- **内容逐字节一致**：`git diff --stat 4f2a805 origin/main` **输出为空**（重写前 `origin/main` = `4f2a805`）⇒ **只改了作者/提交者元数据，没有改任何文件内容**。
+- **tag 一律未重推**：唯一 tag 名 **83** 个（**82 个 `desktop-v*` 发布 tag ＋ 1 个恢复点 tag**；`ls-remote --tags` raw 97 / peeled 14）。**没有任何 tag 的 tagger 时间落在 2026-10-20**（最新为 `2026-10-16 19:12:45 desktop-v0.4.15`；10-20 当天 tagger 数 = **0**）⇒ 重写期间**未推过任何 tag** ⇒ **不会触发 `desktop-release.yml`**。抽查 `desktop-v0.5.8-rc.2` → `63fb0bbd`，作者仍为 `zhongxingxing` ⇒ **发布 tag 未被重写**。
+- **恢复点是 tag，不是 branch**（更正 22:5x 节措辞）：`backup/pre-author-rewrite-20261020` → `4f2a805`（重写前的 `origin/main`）⇒ **回滚安全网在**；tag 名不匹配 `desktop-v*` ⇒ 发布 workflow 同样不触发。
+- **共享工作目录已 `git reset --mixed origin/main`**（不动工作树）⇒ HEAD = `c99156e`，**成员在途改动完好**。
+- **踩坑补充**：④ 首次 push 失败是**网络重置**（`Recv failure: Connection was reset`），**不是分支保护** ⇒ 用带 6 次重试的 `rewrite-push.ps1` 重推，attempt 1 成功。
+
+**二、P2 协议 v0.2（承载位写死 `info` 档）**
+
+- **触发**：UX高手 核到内核事实 ⇒ PM 第一手复核成立（现役内核 release 树 `0.2.1-rc.2`，`dsh-client-ui-conversation/lib/client.js` SHA `8554738CBEEB5218AD1BFA4773EF094363B066D052A1893D7A96797C5BC33A63`，774080 B / 20065 行）：
+  - `:18982-18986`：**只有 `notice.level === "info"` 才渲染 inline 常驻条**（`div` + `role="status"`，composer card 上方）；
+  - `:18808`：`if (notice?.level === "error") showToast(notice.text);` ⇒ **`error` 档只弹瞬态 toast，没有常驻条**；
+  - `:15356` / `:15448`：全树仅此两处 `notices.set` ⇒ **notice 单槽、最新一条覆盖旧条** ⇒ 提示文案**必须自包含**；
+  - ⇒ **「引用发生处」（chip 旁）在 P2 阶段技术上不存在**（内核无 chip 状态写入口，缺口 **G1-6**）⇒ **不得把它写成承载位**。
+- **v0.2 相对 v0.1 的四处实质改动**：
+  1. **承载位写死 = 输入区（composer）的常驻提示条，且必须 `info` 档**（§3.2）⇒ ⚠️ **P1 现有实现用的是 `error` 档** ⇒ **照抄 P1 写法会直接踩坑**。
+  2. **「正文照发」收敛为「不额外拦截发送」**（§2.3）⇒ 界面**不承诺发送结果**（真发不发由 **P1 S-5 / S-6** 判定）⇒ **文案不得写「已发送 / 发送失败 / 发送被阻止」**，失败文案只说「无法核对是否重复」。
+  3. **判据加断言**：P2-2 加「`level` 必须是 `info`」；P2-6 加「**模型请求数与失败前相同**（未被拦截）」。
+  4. §8 第 1 条「可见提示的最终界面形态」标记为**承载位已定稿**（剩余只是文案与可交互状态，待 UX 方案）。
+- **字节**：`official-chat-p2-protocol.md` = **10080 B / 141 行**；五份文档字节校验 **UTF-8 无 BOM / 纯 LF / 0 替换字符**。
+- **未完成（PM 侧）**：① **UX高手 的方案正文未交付**（只回一句「事实核完了，我把口径问题转给 devloper，然后给方案」，正文未输出给团队）⇒ PM 已追它正式输出；② **UX高手 转交 devloper 的 3 个口径问题尚未转达**（同组条数 `members.length` vs 可省字节 `(N-1)×单条` 的双数字口径；4 个失败码界面分几档；内核 `body_too_large` 的 error toast 与我们 inline 提示的叠放顺序）⇒ PM 本轮转达。
+- **对在途实现的即时约束**：devloper 正在写 P2 实现 ⇒ **提示必须 `level:'info'`**，承载位 = 输入区 inline 条；**不要照抄 P1 的 `'error'` 写法**。
 
 ## 交接记录
 
@@ -522,7 +559,10 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 | 2026-10-20 | P1 | **跨语言临界夹具 `oversized-multi`（只加一条）**——补 §6「同一组夹具 → 同一解析结果」那个**踩不到的窗口**：既有 `oversized` 只有 1 条消息 ⇒ 分隔符 0 字节 ⇒ A1c 是假绿。新夹具 **n=2**、正文总字节 **262146**（= 256KB+2，窗口上沿，含 2 字节 `MESSAGE_SEPARATOR`）⇒ 任一端**漏算分隔符**就会算成 262144（恰好不超限）而放行 ⇒ 两端判定相反。**活体注入验证**：注入「JS 侧漏算分隔符」⇒ A1c 报红并**点名 `oversized-multi`**（JS=`kind:snapshot` vs Rust=`code:body_too_large`）⇒ 还原后 SHA-256 逐字节一致、A1c 恢复 pass。**门禁**（含 PM 要求补列的 `prepare-builtin-plugins.mjs --check`）：100/100、277/0/3、131/0/3、6/6、invariants 绿、duplicates 4/8、builtin 43、判据 A1a/A1b/A1c/A1d 全绿（夹具 13→14） | 本文件 21:4x 节（证据文件按 izzy 拍板可清） |
 | 2026-10-20 | P2（**未立项**） | **「正文去重」只读调研已出并落盘**（devloper 22:1x 派、22:3x 回执；**全程只读**，未改实现/判据/协议稿）：动机 = 单条正文预算 64 KB × 引用数上限 8 条 = 512 KB > 单次消息总预算 256 KB ⇒ 必然落 `body_too_large`；**键** = (accountScope, sessionId, branch, capturedAt, contentDigest) 全等（**五字段都已在协议 §1.1 快照里 ⇒ 不必新建索引表**）；**落点三层分界**（client **逐 occurrence 只看得到单 ref** / host `agent/pre-step` **只有文本级判定** / 存储层不改）；**红线**：绝不复用旧 id、隐式去重撞 S-7 ⇒ **合并必须可见否则不做**、内核重放不管、**偏向宁可漏**。**PM 建议裁定（待 izzy 拍板，未立项不生效）**：① 目标 = **省预算**、**不动 chip 数**；② 第一步只做**重复识别 ＋ 可见提示 ＋ 预算预检**、**不做消息级自动合并**（P2 阶段无可见承载位）；③ 落点 = **host 命令层产出「重复组」、client 呈现**，**不改消息内容**。**跨文档张力已消歧**（协议 v0.7 以 S-7 为准 ＋ feasibility §7 第 12 条，提交 `cdd03fb`） | `docs/features/official-chat/official-chat-p2-research.md`（**新载体**，PM 归属）＋ 任务队列 `task_1738d44c8207`（原件） |
 | 2026-10-20 | P1/P2 | **fork 分支 commit 重建 ＋ main 推送 ＋ 提交身份收口**——分支 `fix/connection-owner-webserver-get` 指向 **`07aa67ac`**（**新旧 tree sha 相同 ⇒ 内容零变化**，只把 email 从 `over618@163.com` 统一为 `m4java@163.com`）；**API 独立核对**：parent = upstream `master@687f282e`、`ahead_by 1 / behind_by 0`、**+14 −4**、blob 与本地逐字节相同（16,313 B）；**main 已推 origin**（`cdd03fb` 协议 v0.7，本地与远端 0/0 同步）；**仓库级** `user.name = July-X`，**全局保持 izzy 的 `zhongxingxing` 不动**；**历史 224 个 `zhongxingxing` 提交未重写**（force push + tag 可能重触发发布 workflow ⇒ 不可逆，**待 izzy 拍板**）；**PR 待 izzy 登录 GitHub 后走网页流程**（API 无 `pull_requests: write` 权限） | 本文件 22:5x–23:0x 节 ＋ `gh api repos/July-X/deepseek-harness/compare/master...fix/connection-owner-webserver-get` |
+| 2026-10-20 | P1/P2 | **izzy 撤回上游 PR ＋ 新增硬纪律「禁止修改上游 dsh 内核」**：那个上游 PR **从未创建成功**（卡在浏览器未登录）⇒ 无 PR 需关闭（`gh api` 对 upstream 404 = token 无读权限，无法独立证实，按记录判定）；**已删** fork 分支 `July-X/deepseek-harness:fix/connection-owner-webserver-get`（**fork 仓库本身保留**）；**`AGENTS.md` 已加硬纪律**（不改上游代码、不向上游提 PR；内核缺陷只做「本项目侧规避 ＋ 登记上报」）⇒ **G1-7 不再以「等上游发版」为收敛前提**，通道**长期**走 exact fetch route（`rpc.handle` 不使用、不修），**G1-7 仍不关闭**；P1 其余条款与 **P2 第一批口径不变** | 本文件 23:0x 节 ＋ `AGENTS.md`「范围 · 运行时内核边界」 ＋ `gh api -X DELETE repos/July-X/deepseek-harness/git/refs/heads/fix/connection-owner-webserver-get` |
 | 2026-10-20 | P1 | **tester 判据侧与协议 v0.6 逐条对齐复跑（r27）**：协议 v0.6 §4.1「只记日志」的四个可观测条件与判据 A18i 四条件**同序同义**（① 不抛 → `noThrow`；② 不阻塞 → `othersStillRemoved`；③ **失败项内容仍在磁盘上**（原路径**或**墓碑任一）→ `failedItemStillPresent`；④ 留痕 → `failureLogged`）⇒ **判据无需任何改动**；实跑 **r27 = 43 条 / 40 通过 / 0 失败 / 3 未执行**（A0 真机级 / A6b / A18k）、自测 **60/60** ⇒ **判据与现役实现 ＋ v0.6 兼容**；**A0 继续永久报「未执行」**，**结论载体 = 本文件**（p1-r9 = 11 通过 / 0 失败 / 1 未执行）。**两条「可选的一行改进」经 tester 判断不动，PM 接受并撤销原派活**（属表述冗余而非判据缺陷；「结论载体」声明已由本文件承担，不因判据 detail 未点名而丢失） | tester 22:4x–22:5x 回执（原始产物未固化）＋ 本文件 22:4x–22:5x 节 |
 | 2026-10-20 | P2 | **izzy 拍板五项 ＋ P2 立项 ＋ P2 协议 v0.1**：① **P2 立项**——三条建议 = 第一批口径，已协议化为 `official-chat-p2-protocol.md` v0.1（**重复识别 ＋ 可见提示 ＋ 预算预检**；**不合并 / 不动 chip 数 / 不碰 id 分配 / 不改 `agent/pre-step`**；键五字段全等；host 新命令 `duplicates`；**13 码闭集不新增**；判据六条 P2-1…P2-6 ＋「**去重候选对**」夹具；**A8 本批不改**）② `development-plan` §7:155 **由 devloper 改**（PM 不改该文件）③ **PR 具体地址**已给 izzy（`deepseek-ai/deepseek-harness` compare `master...July-X:deepseek-harness:fix/connection-owner-webserver-get?expand=1`；API 核对 ahead 1 / behind 0、1 file **+14 −4**）④ **历史 224 个提交要重写**（只重写 `main`/`main-dev2`/`uiv2-dev` 的作者与提交者；**tag 一律不重推** ⇒ 不触发 `desktop-release.yml`；恢复点 `origin/backup/pre-author-rewrite-20261020`）⑤ **仍需 izzy 本人做**：首次建立站点登录态（**现在即可**，P4 硬前置）、安装版 release 壳验收（等发布包） | 本文件 22:5x 节 ＋ `official-chat-p2-protocol.md` v0.1 ＋ `gh api repos/July-X/deepseek-harness/compare/master...fix/connection-owner-webserver-get` |
+| 2026-10-20 | P1/P2 | **历史作者重写完成并推送**（izzy 22:5x 拍板）：远端 `main` = **`c99156e23cf620eeabc6b5ad28a686095bb5cc1a`**、`main-dev2` = `4322e9800bdb8305c6cf818383116fc9ae53524e`、`uiv2-dev` = `8789943c73d9f32936709fb49ec4a410b3d9a446`（远端 `refs/heads` **仅这 3 个**）；**旧作者 `zhongxingxing` 残留 = 0**（main 0/1044、main-dev2 0/269、uiv2-dev 0/567）；**内容逐字节一致**（`git diff --stat 4f2a805 origin/main` **输出为空**）⇒ 只改元数据；**82 个 `desktop-v*` 发布 tag 一律未重推**（唯一 tag 名 83 个含 1 个恢复点 tag；**10-20 当天 tagger 数 = 0**，最新 tagger = `2026-10-16 19:12:45 desktop-v0.4.15`）⇒ **不触发 `desktop-release.yml`**；**恢复点是 tag `backup/pre-author-rewrite-20261020` → `4f2a805`**（不是分支）；共享工作目录已 `reset --mixed` ⇒ HEAD = `c99156e`、成员在途改动完好 | 本文件 23:1x 节 ＋ `git ls-remote` / `for-each-ref` 实测 |
+| 2026-10-20 | P2 | **P2 协议 v0.2 落盘（承载位写死 `info` 档）**：UX高手 取到内核事实、PM 第一手复核成立（现役内核 `0.2.1-rc.2` `dsh-client-ui-conversation/lib/client.js` SHA `8554738C…`）⇒ `:18982-18986` **只有 `level === "info"` 才渲染 inline 常驻条**、`:18808` `error` 档**只弹瞬态 toast**、`:15356`/`:15448` **notice 单槽**（最新覆盖旧条 ⇒ 文案自包含）⇒ **承载位 = 输入区 composer 常驻条、必须 `info` 档**（「引用处」P2 阶段不存在，缺口 G1-6）；**「正文照发」收敛为「不额外拦截发送」**（界面不承诺发送结果，由 P1 S-5/S-6 判定 ⇒ 文案不得写「已发送/发送失败/发送被阻止」）；判据 **P2-2 加 `level` 断言**、**P2-6 加「请求数与失败前相同」**；字节 **10080 B / 141 行**（五份文档 UTF-8 无 BOM / 纯 LF / 0 替换字符）。**未完成**：UX高手 方案正文未交付、其 3 个口径问题本轮由 PM 转达 devloper | 本文件 23:1x 节 ＋ `official-chat-p2-protocol.md` v0.2 |
 
 **关于上表里的 `%TEMP%` 证据路径**：2026-10-20 15:2x izzy 拍板「**可以清**」后，PM 已把 `%TEMP%\dsh-xlink-g1\` 与 `%TEMP%\dsh-probe\` 移入回收站（可恢复删除），**上表引用的原始 JSON / 截图 / 请求体日志已不在原位**。**仍可长期复核的，是本文件与 feasibility 里写下的数字、字段值与判据口径**——引用这些结论时不要再指望去原路径取原始产物。
