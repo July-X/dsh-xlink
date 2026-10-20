@@ -421,11 +421,23 @@ async function waitForNotice(
  * 两条都命中不了 ⇒ **超预算** ⇒ 红字只说「疑似负载过高」，**不**断言漏报
  * （PM 的交办方向②：别把超时说成「只报了 N 个组」）。
  *
+ * ## `expectedGroups` 传 0 时**只剩信号①**（**有意为之，不是漏写**）
+ *
+ * 信号②要拿 `groups.length` **等于某个期望值**才算命中 ⇒ **单组 / 单条**场景里
+ * `groups.length` 恒为 1 ⇒ 期望值传 1 也会「碰巧命中」＝**没有判别力** ⇒
+ * 那种场景应当**传 0**（= 不参与信号②，只剩信号① `trigger`）。
+ * （PM 2026-10-21 02:7x 已核：P2-2 / P2-5 / P2-6 / P2-J 都是单组/单条场景 ⇒
+ * **那四条只实现信号①** ⇒ 走 `waitForNotice()` / `waitForBudgetNotice()` 的
+ * `lastRef` 归属，**不**照抄本函数的双信号结构留死代码。
+ * 本函数只服务 **P2-H**（**多组**场景）⇒ 那里 `expectedGroups` ＝ 期望组数
+ * （≥ 2）⇒ 信号②**有判别力**、是有效的第二道完成信号。）
+ *
  * @param {object} adapter
  * @param {string} kind - 提示的 kind。
  * @param {object} [options]
  * @param {string} [options.lastRef] - 最后一次 pick 的 ref（完成信号①）。
- * @param {number} [options.expectedGroups] - 期望组数（完成信号②）。
+ * @param {number} [options.expectedGroups] - 期望组数（完成信号②）；**0 ＝ 不参与**
+ *   （单组/单条场景 ⇒ 只剩信号①，**有意为之**）。
  * @param {number} [options.timeoutMs] - 总预算（**兜底**，不是「稳定」的判据）。
  * @returns {Promise<{notice: object|undefined, maxGroups: number, count: number, timedOut: boolean}>}
  */
@@ -1890,6 +1902,8 @@ export async function checkP2_H_multiGroupNotDropped(adapter) {
     // ② `groups.length` ＝ 期望组数（报满）⇒ 终态。
     const waited = await waitForLastRoundNotice(adapter, 'duplicate-groups', {
       lastRef: refs[refs.length - 1] ?? '',
+      // **信号②在本判据里有判别力**（**多组**场景，期望组数 ≥ 2）⇒ 传真实期望值；
+      // 单组/单条场景才应该传 0（那时信号②恒不命中 ⇒ 只剩信号①，见该函数注释）。
       expectedGroups: wantKeys.length,
       timeoutMs: 30_000,
     });
