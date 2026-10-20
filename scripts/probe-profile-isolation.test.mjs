@@ -561,3 +561,118 @@ test('两条判据各自独立：第 31 条的行尾标记放行那个建窗点�
   assert.equal(profile[0].line, 5);
 });
 
+// --- 判据 ③ 的 match 边界（2026-10-20 PM 裁定：match 链天然闭合） ------------
+//
+// 事实依据：Rust 的穷尽性检查保证**任何能编译的 `match` 都覆盖所有可能取值**
+// （整数/浮点必须写 `_`、枚举要列全 variant、`bool` 两个都要、`Option` 要
+// `Some`/`None` 都写）——**没有**「条件全不成立」那条隐式路径。所以 match 链
+// 与 `if/else` **同构**：每臂都给 → 放行；有一臂没给 → 违规。
+//
+// 之前把 match 当「非闭合链」= 把 `if` 的隐式路径规则**错套**到 match 上，
+// 于是「建窗点在 match 外面、每臂都给」被报红——那是**假红**。而第 31 条的
+// 逃生阀语义已被写死成「**我承认这次要写用户真实安装目录**」，假红会把
+// 开发者推向那个最重的承认，所以假红必须修。
+//
+// 实现要三件事同时做（少一件都会把错换到另一个方向）：
+//   1. match 链**天然闭合**（`closed: true`）——没有隐式空分支；
+//   2. match 的**臂**也算条件块、入同一条链——这样每臂**单独**判覆盖，
+//      「一臂没给」才会被报红；
+//   3. match 块**自己不入 members**——否则 `covered(match)` 自引用 → 恒 false。
+
+/** match 在外·**每臂都给** → 放行（链穷尽 + 每臂都给了目录）。 */
+const CASE_MATCH_ALL_ARMS_GIVE = [
+  'fn build(app, p, q) {',
+  '    let mut b = WebviewWindowBuilder::new(app, label, url);',
+  '    match profile {',
+  '        Some(x) => { b = b.data_directory(p); }',
+  '        None => { b = b.data_directory(q); }',
+  '    }',
+  '    b.build()',
+  '}',
+].join('\n');
+
+/**
+ * match 在外·**有一臂没给** → 仍报红。
+ *
+ * 这条是「放宽 match 判据」的**反向回归**：只把 match 链标成闭合、不让臂
+ * 单独判覆盖的话，这条会从报红变成放行（= 漏判），两个方向的错一起换位置。
+ */
+const CASE_MATCH_ONE_ARM_MISSING = [
+  'fn build(app, p) {',
+  '    let mut b = WebviewWindowBuilder::new(app, label, url);',
+  '    match profile {',
+  '        Some(x) => { b = b.data_directory(p); }',
+  '        None => {}',
+  '    }',
+  '    b.build()',
+  '}',
+].join('\n');
+
+/** match 在外·**三臂都给** → 放行（臂数不是 2 也要成立）。 */
+const CASE_MATCH_THREE_ARMS_GIVE = [
+  'fn build(app, p, q, r) {',
+  '    let mut b = WebviewWindowBuilder::new(app, label, url);',
+  '    match profile {',
+  '        Some(x) => { b = b.data_directory(p); }',
+  '        None => { b = b.data_directory(q); }',
+  '        Other => { b = b.data_directory(r); }',
+  '    }',
+  '    b.build()',
+  '}',
+].join('\n');
+
+/**
+ * match 头**带赋值前缀**（`b = match …`）·每臂都给 → 放行。
+ *
+ * 识别 match 头时**不能锚定行首**：`let b = match x {` 的块头是
+ * `let b = match x `，锚定 `^\s*match` 会漏判 → 假红原样留着。
+ */
+const CASE_MATCH_ASSIGN_PREFIX = [
+  'fn build(app, p, q) {',
+  '    let mut b = WebviewWindowBuilder::new(app, label, url);',
+  '    b = match profile {',
+  '        Some(x) => { b = b.data_directory(p); }',
+  '        None => { b = b.data_directory(q); }',
+  '    };',
+  '    b.build()',
+  '}',
+].join('\n');
+
+test('match 在外·每臂都给 → 放行（match 链天然闭合，不是假红）', () => {
+  assert.deepEqual(findDataDirectoryViolations(CASE_MATCH_ALL_ARMS_GIVE, 'probe.rs'), []);
+});
+
+test('match 在外·有一臂没给 → 仍报红（放宽判据的反向回归）', () => {
+  const hits = findDataDirectoryViolations(CASE_MATCH_ONE_ARM_MISSING, 'probe.rs');
+  assert.equal(hits.length, 1, '有一臂没给 → 有一条路径落回默认目录 → 必须报红');
+  assert.equal(hits[0].reason, 'conditional-data-directory');
+  assert.equal(hits[0].line, 2);
+});
+
+test('match 在外·三臂都给 → 放行', () => {
+  assert.deepEqual(findDataDirectoryViolations(CASE_MATCH_THREE_ARMS_GIVE, 'probe.rs'), []);
+});
+
+test('match 头带赋值前缀（b = match …）·每臂都给 → 放行（识别不能锚定行首）', () => {
+  assert.deepEqual(findDataDirectoryViolations(CASE_MATCH_ASSIGN_PREFIX, 'probe.rs'), []);
+});
+
+test('match 的臂自己带块时仍按「每臂单独判覆盖」：一臂没给 → 报红', () => {
+  // 臂体是**嵌套 match** 的罕见形状：那个块既是父 match 的一个臂，又是
+  // 内层 match 的头——两件事都要记，否则父链会漏掉这个臂。
+  const src = [
+    'fn build(app, p, q) {',
+    '    let mut b = WebviewWindowBuilder::new(app, label, url);',
+    '    match profile {',
+    '        Some(x) => match other {',
+    '            Y => { b = b.data_directory(p); }',
+    '        },',
+    '        None => { b = b.data_directory(q); }',
+    '    }',
+    '    b.build()',
+    '}',
+  ].join('\n');
+  assert.deepEqual(findDataDirectoryViolations(src, 'probe.rs'), []);
+});
+
+
