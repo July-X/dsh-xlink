@@ -202,6 +202,7 @@ export async function createAdapter({
   now,
   bodyBytes,
   failDuplicates,
+  waitBudgetMs = 30_000,
 } = {}) {
   // **host 半边的模块来源**：默认仓库里那份；`hostDir` 给了就用那份目录
   // （活体注入用——注入打在**副本**上，原实现一个字节都不碰）。
@@ -1109,6 +1110,20 @@ export async function createAdapter({
         });
       }
       return out;
+    },
+
+    /**
+     * **等待提示的兜底预算**（毫秒）—— 判据库 `waitForNotice` / `waitForBudgetNotice`
+     * 用它做超时上限。
+     *
+     * **为什么是 30s**：机器被压满时，一轮核对（含 host 往返）可能远超 2.5s ⇒
+     * 旧预算会**提前放弃** ⇒ 拿到一个**假红**（PM 2026-10-21 02:0x 登记的缺口）
+     * ⇒ **慢不是错，等不到才是错**。
+     *
+     * @returns {number}
+     */
+    waitBudgetMs() {
+      return waitBudgetMs;
     },
 
     /**

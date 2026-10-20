@@ -114,6 +114,14 @@ function makeSyntheticAdapter(options = {}) {
 
   return {
     setNow() {},
+    /**
+     * **等待预算**：合成适配器是**确定性**的（提示要么被脚本投出、要么永远没有）
+     * ⇒ 给**短预算** ⇒ 「故意不出提示」的负例不必各等 30s（门禁不被拖慢）。
+     * 真机 adapter 不实现这个口 ⇒ 走判据库默认的 30s（抗重负载）。
+     */
+    waitBudgetMs() {
+      return 500;
+    },
     configuredBodyBytes() {
       return bodyBytes;
     },
@@ -830,6 +838,9 @@ async function runInjection(spec) {
     tag: `p2-inject-${spec.tag}`,
     hostDir: dir ?? undefined,
     clientSourcePath: clientPath,
+    // **等待预算**：活体注入是**确定性的**（缺陷是唯一变量）⇒ 用 10s
+    // （旧口径 2.5s 的 4 倍 ⇒ 抗重负载；但比真机跑的 30s 短 ⇒ 负例不必各等 30s）。
+    waitBudgetMs: 10_000,
     ...(spec.adapterOptions ?? {}),
   });
   let injected;

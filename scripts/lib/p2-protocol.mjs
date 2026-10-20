@@ -233,8 +233,53 @@ async function guard(name, run) {
  * @param {number} [options.timeoutMs]
  * @returns {Promise<object|undefined>}
  */
-async function waitForNotice(adapter, kind, { from = 0, timeoutMs = 2500 } = {}) {
-  const deadline = Date.now() + timeoutMs;
+/**
+ * 等提示的**兜底预算**（毫秒）。
+ *
+ * **为什么放大到 30s**：机器被压满时，一轮核对（含 host 往返）可能远超 2.5s ⇒
+ * 旧预算会**提前放弃** ⇒ 拿到一个**假红**（PM 2026-10-21 02:0x 登记的缺口）。
+ * ⇒ **慢不是错，等不到才是错** ⇒ 预算放大；「等不到」与「没发生」在红字里**分开报**
+ * （见 `noticeTimeoutWhy`）。
+ *
+ * **预算由 adapter 给**（`adapter.waitBudgetMs?.()`）：真机 adapter 走本默认值；
+ * **合成适配器是确定性的**（提示要么被脚本投出、要么永远没有）⇒ 给短预算，
+ * 免得「故意不出提示」的负例各等 30s ⇒ **门禁不被拖慢**。
+ */
+const NOTICE_WAIT_BUDGET_MS = 30_000;
+
+/**
+ * 取本次等待的兜底预算（毫秒）。
+ *
+ * @param {object} adapter
+ * @param {number|null} [override] - 显式指定（优先）。
+ * @returns {number}
+ */
+function noticeWaitBudget(adapter, override = null) {
+  const given = Number(override ?? adapter?.waitBudgetMs?.() ?? NOTICE_WAIT_BUDGET_MS);
+  return Number.isFinite(given) && given > 0 ? given : NOTICE_WAIT_BUDGET_MS;
+}
+
+/**
+ * **等待类失败的超时口径**（PM 02:5x 派单②的同一口径，**全局收口**）。
+ *
+ * **「没等到」≠「没发生」**：等待有兜底预算，机器被压满时会在预算内等不到 ⇒
+ * 红字若直接写「没有出现 X 提示」，会被读成**实现缺陷** ⇒ 这里统一补上
+ * 「**疑似负载过高，不等于「没发生」**」的分辨。
+ *
+ * @param {object} adapter - 适配器（决定本次的兜底预算）。
+ * @param {string} what - 等的是哪条提示（人话，可直接嵌进句子）。
+ * @returns {string}
+ */
+function noticeTimeoutWhy(adapter, what) {
+  const budget = noticeWaitBudget(adapter);
+  return (
+    `等预算（${budget / 1000}s）内没有出现${what}` +
+    '（**疑似负载过高，不等于「没发生」**）'
+  );
+}
+
+async function waitForNotice(adapter, kind, { from = 0, timeoutMs = null } = {}) {
+  const deadline = Date.now() + noticeWaitBudget(adapter, timeoutMs);
   while (Date.now() < deadline) {
     const notices = (adapter.visibleNotices?.() ?? []).slice(from);
     const hit = notices.find((notice) => String(notice?.kind ?? '') === kind);
@@ -318,8 +363,8 @@ async function waitForLastRoundNotice(
  * @param {number} [options.timeoutMs]
  * @returns {Promise<object|undefined>}
  */
-async function waitForBudgetNotice(adapter, { from = 0, timeoutMs = 2500 } = {}) {
-  const deadline = Date.now() + timeoutMs;
+async function waitForBudgetNotice(adapter, { from = 0, timeoutMs = null } = {}) {
+  const deadline = Date.now() + noticeWaitBudget(adapter, timeoutMs);
   while (Date.now() < deadline) {
     const notices = (adapter.visibleNotices?.() ?? []).slice(from);
     const hit = notices.find((notice) => notice?.budget?.wouldExceed === true);
@@ -725,7 +770,7 @@ export async function checkP2_2_duplicateNoticeVisible(adapter) {
 
     const notice = await waitForNotice(adapter, 'duplicate-groups');
     if (notice === undefined) {
-      return { status: FAIL, detail: '同组成立后没有出现「重复组」提示（协议 §3.1-1）' };
+      return { status: FAIL, detail: `同组成立后，${noticeTimeoutWhy(adapter, '「重复组」提示')}——协议 §3.1-1` };
     }
 
     const carrier = checkNoticeCarrier(notice);
@@ -784,8 +829,8 @@ export async function checkP2_2_duplicateNoticeVisible(adapter) {
       return {
         status: FAIL,
         detail:
-          '再动一次引用没有重新触发一条提示——协议 §3.2（v0.5）：内核会顶掉我们的提示，' +
-          '信息不丢靠的是「再动一次引用就重新触发」⇒ 提示必须可复现',
+          `再动一次引用那一轮，${noticeTimeoutWhy(adapter, '「重复组」提示')}——协议 §3.2（v0.5）：` +
+          '内核会顶掉我们的提示，信息不丢靠的是「再动一次引用就重新触发」⇒ 提示必须可复现',
       };
     }
     const againCarrier = checkNoticeCarrier(again);
@@ -1076,7 +1121,9 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
     if (notice === undefined) {
       return {
         status: FAIL,
-        detail: `预算超限（${projected} > ${PER_MESSAGE_BUDGET_BYTES}）但没有出现预算提示（协议 §3.1-2 / §4）`,
+        detail:
+          `预算超限（${projected} > ${PER_MESSAGE_BUDGET_BYTES}）但${noticeTimeoutWhy(adapter, '预算提示')}` +
+          '（协议 §3.1-2 / §4）',
       };
     }
     const carrier = checkNoticeCarrier(notice);
@@ -1179,7 +1226,10 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
     }
     const groupNotice = await waitForNotice(adapter, 'duplicate-groups', { from: mark2 });
     if (groupNotice === undefined) {
-      return { status: FAIL, detail: '同组场景没有出现「重复组」提示（协议 §3.1-1）' };
+      return {
+        status: FAIL,
+        detail: `同组场景，${noticeTimeoutWhy(adapter, '「重复组」提示')}——协议 §3.1-1`,
+      };
     }
     // ① 两条都要发：预算提示**不得**被组提示的 early return 吃掉。
     const budgetNotice = await waitForNotice(adapter, 'budget-exceeded', { from: mark2 });
@@ -1187,7 +1237,8 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
       return {
         status: FAIL,
         detail:
-          '同组且超预算时只发了「重复组」提示、**没有**发预算提示——' +
+          `同组且超预算时，${noticeTimeoutWhy(adapter, '预算提示')}` +
+          '（**不等于「只发了一条」**——若低负载下稳定复现，才按 early return 论）——' +
           '协议 §3.1（v0.4 裁断）：两个触发点各自独立 ＝ 两条都要发，任一条都不得被 early return 吃掉',
       };
     }
@@ -1490,7 +1541,7 @@ export async function checkP2_6_failureDoesNotBlockSend(adapter) {
       if (notice === undefined) {
         return {
           status: FAIL,
-          detail: `duplicates 失败（${mode}）后没有出现可见错误提示——协议 §2.3`,
+          detail: `duplicates 失败（${mode}）后，${noticeTimeoutWhy(adapter, '可见错误提示')}——协议 §2.3`,
         };
       }
       const carrier = checkNoticeCarrier(notice);
@@ -1820,7 +1871,7 @@ export async function checkP2_J_noticeStaysTruthfulAfterSend(adapter) {
     // **发送前**用户看到的那条。
     const before = await waitForNotice(adapter, 'duplicate-groups');
     if (before === undefined) {
-      return { status: FAIL, detail: '同组成立后没有出现「重复组」提示——协议 §3.1-1' };
+      return { status: FAIL, detail: `同组成立后，${noticeTimeoutWhy(adapter, '「重复组」提示')}——协议 §3.1-1` };
     }
     const carrier = checkNoticeCarrier(before);
     if (!carrier.ok) {
