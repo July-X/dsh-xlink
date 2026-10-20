@@ -2044,3 +2044,416 @@ export async function checkCaptureResultLanded(adapter) {
     };
   });
 }
+
+// ---------------------------------------------------------------------------
+// A18｜协议 §4.1 保留期主动清理的**剩余**可机检口径
+//
+// 期望值**独立转写**协议稿 §4.1（不 import 实现当标准答案）。
+// 每条都**成对**：一条「该做的做了」+ 一条「**不该做的没做**」——
+// 只钉前者的话，「无条件全删 / 无条件全留」都能蒙过去。
+//
+// §4.1 第 4 条（「正在发送中的引用」不保护、不引入引用计数）**不可机检**：
+// 实现里没有「发送中」这个可观测状态 ⇒ 如实报「已知不覆盖」，
+// 后果由 S-5 / S-6 覆盖（见 `checkInflightReferenceNotCovered`）。
+// ---------------------------------------------------------------------------
+
+/**
+ * A18a｜§4.1 第 1 条（**静态**）：清理**只在 `catalog` 入口**触发，**`capture` 不触发**。
+ *
+ * **为什么必须剥注释**：实现文件里大量注释正是在解释「为什么这么设计」，
+ * 不剥就会把**说明文字**当成**调用** ⇒ 假红。剥的时候**保持行号**（等长空白替换），
+ * 判据要能点名 file:line。
+ *
+ * @param {object} observation
+ * @param {boolean} observation.parsed - 是否成功定位到两个命令入口。
+ * @param {number} observation.catalogCalls - `catalog` 入口里的 sweeper 调用数。
+ * @param {number} observation.captureCalls - `capture` 入口里的 sweeper 调用数。
+ * @param {number} observation.outsideCalls - 两个入口**之外**的 sweeper 调用数。
+ * @param {string} [observation.detail] - 诊断信息。
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkSweepTriggerStatic(observation) {
+  const name = 'A18a-sweep-trigger-static';
+  if (observation?.parsed !== true) {
+    return verdict(
+      name,
+      SKIPPED,
+      `没定位到命令入口的实现形状——本条未执行（${observation?.detail ?? '未提供诊断'}）`,
+    );
+  }
+  const problems = [];
+  if (!(Number(observation.catalogCalls) >= 1)) {
+    problems.push('`catalog` 入口里没有 sweeper 调用（协议 §4.1 第 1 条：只在 catalog 入口触发）');
+  }
+  if (Number(observation.captureCalls) !== 0) {
+    problems.push(
+      `\`capture\` 入口里有 ${observation.captureCalls} 处 sweeper 调用——` +
+        '协议 §4.1 第 1 条明写「capture 不触发」',
+    );
+  }
+  if (Number(observation.outsideCalls) !== 0) {
+    problems.push(
+      `两个入口之外还有 ${observation.outsideCalls} 处 sweeper 调用——` +
+        '触发点必须钉在 catalog 入口（否则 capture 等路径也会被拖进清理）',
+    );
+  }
+  if (problems.length > 0) {
+    return verdict(name, FAIL, problems.join('；'));
+  }
+  return verdict(
+    name,
+    PASS,
+    `清理只挂在 \`catalog\` 入口（catalog ${observation.catalogCalls} 处 / capture 0 处 / 入口外 0 处）`,
+  );
+}
+
+/**
+ * A18b｜§4.1 第 1 条（**行为**）：清理由 `catalog` 触发、`capture` **不**触发。
+ *
+ * 观测口是**替身 sweeper**（只记调用、不真扫）：它把「谁调了清理器」这件事
+ * 变成**可观测**，而判据要判的正是**触发点**。
+ *
+ * @param {object} observation
+ * @param {number} observation.catalogTriggers - 调 `catalog` 后的触发次数。
+ * @param {number} observation.captureTriggers - 调 `capture` 后的触发次数（增量）。
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkSweepTriggerBehaviour(observation) {
+  const name = 'A18b-sweep-trigger-behaviour';
+  if (observation === undefined || observation === null) {
+    return verdict(name, SKIPPED, '没有触发点观测口——本条未执行');
+  }
+  const problems = [];
+  if (!(Number(observation.catalogTriggers) >= 1)) {
+    problems.push('调 `catalog` 没有触发清理——协议 §4.1 第 1 条要求惰性触发点在 catalog 入口');
+  }
+  if (Number(observation.captureTriggers) !== 0) {
+    problems.push(
+      `调 \`capture\` 触发了 ${observation.captureTriggers} 次清理——` +
+        '协议 §4.1 第 1 条明写「capture 不触发」',
+    );
+  }
+  if (problems.length > 0) {
+    return verdict(name, FAIL, problems.join('；'));
+  }
+  return verdict(
+    name,
+    PASS,
+    `catalog 触发 ${observation.catalogTriggers} 次、capture 触发 0 次（惰性触发点正确）`,
+  );
+}
+
+/**
+ * A18c｜§4.1 第 1 条：**同实例至多一天一次** + 节流键落位。
+ *
+ * 反向回归：**当天第二次**必须 `ran:false`（不重扫）。
+ *
+ * @param {object} observation
+ * @param {boolean} observation.firstRan - 当天第一次 `maybeSweep()` 是否真跑了。
+ * @param {boolean} observation.secondRanFalse - 当天第二次是否 `ran:false`。
+ * @param {boolean} observation.stampExists - 节流键文件是否落盘。
+ * @param {boolean} observation.stampNameMatches - 节流键文件名是否 `<日期>.json`（独立目录）。
+ * @param {boolean} [observation.stampInOwnDir] - 节流键是否落在独立的 `sweeps/` 目录。
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkSweepThrottle(observation) {
+  const name = 'A18c-sweep-throttle';
+  if (observation === undefined || observation === null) {
+    return verdict(name, SKIPPED, '没有节流观测口——本条未执行');
+  }
+  const checks = [
+    ['firstRan', '当天第一次 maybeSweep() 真跑了'],
+    ['secondRanFalse', '当天第二次 maybeSweep() 不再跑（反向回归：ran:false）'],
+    ['stampExists', '节流键落盘了'],
+    ['stampNameMatches', '节流键文件名是 last-sweep-<YYYY-MM-DD>.json'],
+    ['stampInOwnDir', '节流键落在独立的 sweeps/ 目录（不混进快照目录）'],
+  ];
+  const failed = checks.filter(([key]) => observation?.[key] !== true);
+  if (failed.length > 0) {
+    return verdict(
+      name,
+      FAIL,
+      `节流口径不符：${failed.map(([, label]) => label).join('、')}` +
+        '（协议 §4.1 第 1 条：同实例至多一天一次，节流键 <root>/sweeps/last-sweep-<日期>.json）',
+    );
+  }
+  return verdict(name, PASS, '当天第一次真跑、第二次不重跑，节流键落位正确');
+}
+
+/**
+ * A18d｜§4.1 第 2 条：**目录缓存按 5 分钟 TTL 过期**。
+ *
+ * 反向回归：TTL 内的缓存文件**留着**。
+ *
+ * @param {object} observation
+ * @param {boolean} observation.expiredRemoved - 超 TTL 的缓存被清掉。
+ * @param {boolean} observation.freshKept - TTL 内的缓存留着（反向回归）。
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkCacheTtl(observation) {
+  const name = 'A18d-cache-ttl';
+  if (observation === undefined || observation === null) {
+    return verdict(name, SKIPPED, '没有目录缓存观测口——本条未执行');
+  }
+  const checks = [
+    ['expiredRemoved', '超过 TTL 的目录缓存被清掉'],
+    ['freshKept', 'TTL 内的目录缓存留着（反向回归）'],
+  ];
+  const failed = checks.filter(([key]) => observation?.[key] !== true);
+  if (failed.length > 0) {
+    return verdict(
+      name,
+      FAIL,
+      `目录缓存 TTL 口径不符：${failed.map(([, label]) => label).join('、')}` +
+        '（协议 §4.1 第 2 条：catalog-cache/* 按 5 分钟 TTL）',
+    );
+  }
+  return verdict(name, PASS, '目录缓存按 5 分钟 TTL 清（TTL 内留着）');
+}
+
+/**
+ * A18e｜§4.1 第 2 条：**错误日志按行数/大小截断**（两个上限都要满足）。
+ *
+ * 反向回归：**没超限的日志不许被截断**。
+ * 另钉一条 PM 20:2x 的澄清：**按字节砍时按行退**——不切半个多字节字符。
+ *
+ * @param {object} observation
+ * @param {boolean} observation.truncatedWhenOver - 超限的日志被截断。
+ * @param {boolean} observation.notTruncatedWhenSmall - 未超限的日志没被动（反向回归）。
+ * @param {boolean} observation.utf8Intact - 截断后仍是合法 UTF-8（没切半个字符）。
+ * @param {boolean} observation.keptTail - 截断后保留的是**尾部**。
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkLogTruncation(observation) {
+  const name = 'A18e-log-truncate';
+  if (observation === undefined || observation === null) {
+    return verdict(name, SKIPPED, '没有日志观测口——本条未执行');
+  }
+  const checks = [
+    ['truncatedWhenOver', '超行数/字节上限的日志被截断'],
+    ['notTruncatedWhenSmall', '未超限的日志没被截断（反向回归）'],
+    ['utf8Intact', '截断后仍是合法 UTF-8（按行退，没切半个多字节字符）'],
+    ['keptTail', '截断后保留的是尾部（诊断证据是最近的）'],
+  ];
+  const failed = checks.filter(([key]) => observation?.[key] !== true);
+  if (failed.length > 0) {
+    return verdict(
+      name,
+      FAIL,
+      `日志截断口径不符：${failed.map(([, label]) => label).join('、')}` +
+        '（协议 §4.1 第 2 条：按行数/大小截断，两个上限都要满足，按字节砍时按行退）',
+    );
+  }
+  return verdict(name, PASS, '日志按行数/大小截断（未超不截、截后合法 UTF-8、留尾部）');
+}
+
+/**
+ * A18f｜§4.1 第 2 条：**日志不按 7 天删**（日志是诊断证据）。
+ *
+ * @param {object} observation
+ * @param {boolean} observation.oldLogStillThere - 超过 7 天的日志文件仍在。
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkLogNotAgeDeleted(observation) {
+  const name = 'A18f-log-not-age-deleted';
+  if (observation === undefined || observation === null) {
+    return verdict(name, SKIPPED, '没有日志观测口——本条未执行');
+  }
+  if (observation.oldLogStillThere !== true) {
+    return verdict(
+      name,
+      FAIL,
+      '超过 7 天的日志被删了——协议 §4.1 第 2 条明写日志**不按 7 天删**（日志是诊断证据）',
+    );
+  }
+  return verdict(name, PASS, '超期日志仍在（只截断、不按天删）');
+}
+
+/**
+ * A18g｜§4.1 第 3 条：**两步法删除**（先 rename 再 unlink）。
+ *
+ * **形状钉得住、行为只能钉住结果**：
+ *  · 静态：删除 helper 必须是「先 rename 到临时名、再 unlink **那个临时名**」；
+ *  · 行为：扫完之后**不留半截文件**（既没有原文件，也没有 `.expired-*` 残骸）。
+ *
+ * @param {object} observation
+ * @param {boolean} observation.renameBeforeUnlink - 静态：先 rename 后 unlink。
+ * @param {boolean} observation.unlinkTargetsTombstone - 静态：unlink 的是**改名后的**那个。
+ * @param {boolean} observation.noLeftoverTombstone - 行为：没留下半截文件。
+ * @param {string} [observation.detail] - 诊断信息。
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkTwoStepDelete(observation) {
+  const name = 'A18g-two-step-delete';
+  if (observation === undefined || observation === null) {
+    return verdict(name, SKIPPED, '没有两步法删除观测口——本条未执行');
+  }
+  const checks = [
+    ['renameBeforeUnlink', '删除走的是「先 rename 再 unlink」'],
+    ['unlinkTargetsTombstone', 'unlink 的是改名后的那个（不是原路径）'],
+    ['noLeftoverTombstone', '扫完不留半截文件（既无原文件、也无 .expired-* 残骸）'],
+  ];
+  const failed = checks.filter(([key]) => observation?.[key] !== true);
+  if (failed.length > 0) {
+    return verdict(
+      name,
+      FAIL,
+      `两步法删除口径不符：${failed.map(([, label]) => label).join('、')}` +
+        '（协议 §4.1 第 3 条：两步法删除，避免删到一半留下「看起来有效」的半截文件）' +
+        (observation.detail ? `｜${observation.detail}` : ''),
+    );
+  }
+  return verdict(name, PASS, '两步法删除（先改名后删、不留半截文件）');
+}
+
+/**
+ * A18h｜§4.1 第 3 条：**根不可得就不扫**（宁可不清理，不乱删）。
+ *
+ * @param {object} observation
+ * @param {boolean} observation.skipped - `sweep()` 报 skipped。
+ * @param {boolean} observation.maybeSweepNotRan - `maybeSweep()` 报 `ran:false`。
+ * @param {boolean} observation.noThrow - 没抛异常。
+ * @param {boolean} observation.nothingElseTouched - 别的根下的文件**一个都没动**。
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkRootUnavailable(observation) {
+  const name = 'A18h-root-unavailable';
+  if (observation === undefined || observation === null) {
+    return verdict(name, SKIPPED, '没有「根不可得」观测口——本条未执行');
+  }
+  const checks = [
+    ['skipped', 'root 不可得时 sweep() 报 skipped'],
+    ['maybeSweepNotRan', 'root 不可得时 maybeSweep() 报 ran:false'],
+    ['noThrow', 'root 不可得时不抛异常'],
+    ['nothingElseTouched', '别的根下的文件一个都没动（不乱删）'],
+  ];
+  const failed = checks.filter(([key]) => observation?.[key] !== true);
+  if (failed.length > 0) {
+    return verdict(
+      name,
+      FAIL,
+      `「根不可得就不扫」口径不符：${failed.map(([, label]) => label).join('、')}` +
+        '（协议 §4.1 第 3 条：根不可得就不扫）',
+    );
+  }
+  return verdict(name, PASS, '根不可得 ⇒ 不扫、不删、不抛（宁可不清理，不乱删）');
+}
+
+/**
+ * A18i｜§4.1 第 3 条：**清理失败只记日志，不阻塞业务**。
+ *
+ * 反向回归：别的过期文件**照删**（失败的那一个不拖垮整轮）。
+ *
+ * ## 「只记日志」怎么读
+ *
+ * 协议原文：「清理失败**只记日志**，不阻塞业务」。这句话有**两个**可观测要求，
+ * 不是一个：
+ *  1. **不许越界**：不抛异常、不阻塞业务（失败的那一个不拖垮整轮）；
+ *  2. **必须留痕**：失败**进了日志**——否则「只记日志」就变成了「悄悄吞掉」。
+ *
+ * ⇒ 本条把两条都判成**硬条件**。
+ *
+ * ## 「失败项还在」怎么判
+ *
+ * 两步法删除（先 rename 再 unlink）下，「删不掉」有两种形态：
+ *  · rename 本身就失败（权限/占用）⇒ 文件**原地不动**；
+ *  · rename 成功但 unlink 失败 ⇒ 内容被**改了名**（墓碑），原路径没了。
+ *
+ * ⇒ 判「**内容还在磁盘上**」（原路径**或**墓碑任一），而不是死盯原路径——
+ * 否则会把「改名了但内容没被清掉」误判成「假装删掉了」。
+ *
+ * @param {object} observation
+ * @param {boolean} observation.noThrow - 清理失败没抛异常。
+ * @param {boolean} observation.othersStillRemoved - 别的过期文件照删（不阻塞）。
+ * @param {boolean} observation.failedItemStillPresent - 失败项的**内容**仍在磁盘上
+ *   （原路径或墓碑任一；没被假装删掉）。
+ * @param {boolean} observation.failureLogged - 失败进了日志。
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkSweepFailureLogged(observation) {
+  const name = 'A18i-sweep-failure-logged';
+  if (observation === undefined || observation === null) {
+    return verdict(name, SKIPPED, '没有「清理失败」观测口——本条未执行');
+  }
+  const checks = [
+    ['noThrow', '清理失败没抛异常'],
+    ['othersStillRemoved', '别的过期文件照删（不阻塞业务）'],
+    ['failedItemStillPresent', '删不掉的那个内容仍在磁盘上（没被假装删掉）'],
+    ['failureLogged', '清理失败进了日志（协议 §4.1 第 3 条：失败「只记日志」）'],
+  ];
+  const failed = checks.filter(([key]) => observation?.[key] !== true);
+  if (failed.length > 0) {
+    return verdict(
+      name,
+      FAIL,
+      `「清理失败只记日志不阻塞」口径不符：${failed.map(([, label]) => label).join('、')}` +
+        '（协议 §4.1 第 3 条：清理失败只记日志，不阻塞业务——「只记日志」含「必须留痕」）',
+    );
+  }
+  return verdict(
+    name,
+    PASS,
+    '清理失败没抛、没阻塞，别的过期文件照删，失败进了日志（失败项内容仍在磁盘上）',
+  );
+}
+
+/**
+ * A18j｜§4.1 第 2 条（PM 20:2x 澄清）：**`capturedAt` 优先，mtime 只兜底**。
+ *
+ * 四个方向（两正两反）：
+ *  1. `capturedAt` 旧 + mtime 新 ⇒ **仍删**（capturedAt 优先）；
+ *  2. `capturedAt` 新 + mtime 旧 ⇒ **不删**（mtime 旧不是删除理由）；
+ *  3. `capturedAt` 缺失 + mtime 旧 ⇒ **删**（mtime 兜底）；
+ *  4. `capturedAt` 缺失 + mtime 新 ⇒ **不删**。
+ *
+ * @param {object} observation
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkCapturedAtPriority(observation) {
+  const name = 'A18j-captured-at-priority';
+  if (observation === undefined || observation === null) {
+    return verdict(name, SKIPPED, '没有 capturedAt/mtime 观测口——本条未执行');
+  }
+  const checks = [
+    ['oldCapturedNewMtimeRemoved', 'capturedAt 旧 + mtime 新 ⇒ 仍删（capturedAt 优先）'],
+    ['newCapturedOldMtimeKept', 'capturedAt 新 + mtime 旧 ⇒ 不删（反向回归）'],
+    ['missingCapturedOldMtimeRemoved', 'capturedAt 缺失 + mtime 旧 ⇒ 删（mtime 兜底）'],
+    ['missingCapturedNewMtimeKept', 'capturedAt 缺失 + mtime 新 ⇒ 不删（反向回归）'],
+  ];
+  const failed = checks.filter(([key]) => observation?.[key] !== true);
+  if (failed.length > 0) {
+    return verdict(
+      name,
+      FAIL,
+      `capturedAt/mtime 优先级口径不符：${failed.map(([, label]) => label).join('、')}` +
+        '（协议 §4.1 第 2 条：按文件内 capturedAt，mtime 兜底——capturedAt 优先）',
+    );
+  }
+  return verdict(name, PASS, 'capturedAt 优先、mtime 仅兜底（四个方向全对）');
+}
+
+/**
+ * A18k｜§4.1 第 4 条：「正在发送中的引用」**不保护**、不引入引用计数。
+ *
+ * ## 这条**不可机检**（如实报「已知不覆盖」，不假装能测）
+ *
+ * 实现里**没有「发送中」这个可观测状态**——没有「正在发送」的标记、没有引用计数、
+ * 没有在途集合。协议本身也明写「协议没写，不自造」。
+ * ⇒ 判据**无法**观测「一个正在发送的引用被清掉时会怎样」。
+ *
+ * **后果由 S-5 / S-6 覆盖**：被清掉的引用在发送时会**失效并被拒**
+ * （`snapshot_invalid`），不是错发——A6a（请求数 0 + 可见错误）与
+ * A7（清理后拒且不静默重读）已经覆盖了这个后果。
+ *
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkInflightReferenceNotCovered() {
+  return verdict(
+    'A18k-inflight-reference',
+    SKIPPED,
+    '已知不覆盖：协议 §4.1 第 4 条（「正在发送中的引用」不保护、不引入引用计数）' +
+      '**不可机检**——实现里没有「发送中」这个可观测状态（无在途标记、无引用计数、无在途集合），' +
+      '协议本身也明写「不自造」。**后果由 S-5 / S-6 覆盖**：被清掉的引用在发送时失效即拒' +
+      '（A6a 请求数 0 + 可见错误、A7 清理后拒且不静默重读）——不是错发。',
+  );
+}

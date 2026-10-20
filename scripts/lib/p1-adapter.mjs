@@ -213,6 +213,43 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
   let throwInternalError = false;
   let failCatalog = false;
 
+  /**
+   * **清理器替身**（协议 §4.1 第 1 条的**触发点**判据要用）。
+   *
+   * 真实装配里 `host/index.js` 传的是**真** sweeper；这里传一个
+   * **只记调用、不真扫**的替身——它把「谁调了清理器」变成**可观测**，
+   * 而判据要判的正是**触发点**（§4.1：只在 `catalog` 入口，`capture` 不触发）。
+   *
+   * ## 为什么不用真的
+   *
+   * 真 sweeper 会在别的判据跑的时候删盘上的文件 ⇒ **判据之间互相污染**
+   * （A17 / A18 各自自建一次性夹具根，不受这里影响）。
+   *
+   * ## 为什么替身不能自己抛
+   *
+   * `commands.js` 的 `catalog` 把清理调用包在 try/catch 里（协议 §4.1：
+   * 清理失败不阻塞业务）——替身抛错会被那个 catch 吞掉，**判据就看不到
+   * 「触发过」**。所以替身只记录、不抛。
+   */
+  const sweeperCallsLog = [];
+  const sweeperSpy = {
+    /** 惰性入口（`catalog` 走的就是这个）。 */
+    maybeSweep() {
+      sweeperCallsLog.push({ method: 'maybeSweep' });
+      return { ran: false, skipped: true, reason: '判据替身：不真的扫' };
+    },
+    /** 全量扫。 */
+    sweep() {
+      sweeperCallsLog.push({ method: 'sweep' });
+      return { scanned: 0, removed: 0 };
+    },
+    /** 今天是否已扫过。 */
+    alreadySweptToday() {
+      sweeperCallsLog.push({ method: 'alreadySweptToday' });
+      return false;
+    },
+  };
+
   const env = { ...process.env, DSH_HOME: root };
 
   function buildStore() {
@@ -387,6 +424,14 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
       // `catalog` 分配不出 id，判据就什么也观察不到（表现为「skipped」而不是
       // 真的红绿）。
       seqAllocator,
+      // **清理器替身**（协议 §4.1 第 1 条的触发点判据要用）：
+      // 真实装配里 `host/index.js` 传的是**真** sweeper；判据这里传一个
+      // **只记调用、不真扫**的替身——它把「谁调了清理器」变成**可观测**，
+      // 而判据要判的正是**触发点**（§4.1：只在 `catalog` 入口，`capture` 不触发）。
+      //
+      // **为什么不用真的**：真 sweeper 会在别的判据跑的时候删盘上的文件 ⇒
+      // 判据之间互相污染（A17 / A18 各自自建独立实例，不受这里影响）。
+      sweeper: sweeperSpy,
       now: () => Date.now(),
     });
     // 命令层的 capture 计数（用于「失效后是否静默重读」）。
@@ -710,6 +755,18 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
     /** 取数次数（重新取数 = 静默重读）。 */
     readCalls() {
       return fetchCount;
+    },
+
+    /**
+     * **清理器替身的调用记录**（协议 §4.1 第 1 条的触发点观测口）。
+     *
+     * 判据要判的是「**谁**调了清理器」：`catalog` 入口调、`capture` 入口不调。
+     * 真实 sweeper 把这个信号吞掉了（它只管扫），所以这里用**替身**把它变成可观测。
+     *
+     * @returns {{count: number, calls: Array<{method: string}>}}
+     */
+    sweeperCalls() {
+      return { count: sweeperCallsLog.length, calls: [...sweeperCallsLog] };
     },
 
     /**

@@ -29,10 +29,22 @@ import {
   findProfileViolationsInFiles,
 } from './lib/probe-profile-isolation.mjs';
 import { createAdapter, makeTempRoot, removeTempRoot } from './lib/p1-adapter.mjs';
-// **A17 的实跑**（在 `run.mjs` 里，因为要跑真实 `host/sweep.js` 的 `sweep()`）：
+// **A17 / A18 的实跑**（在 `run.mjs` 里，因为要跑真实 `host/sweep.js` 的 `sweep()`）：
 // import 进来做**活体注入**——往真实实现的副本里注入破坏，证明这条判据对实现的
 // 破坏**敏感**（`run.mjs` 用 `import.meta.main` 守卫，import 时不跑整轮）。
-import { runRetentionSweep } from './p1-protocol.run.mjs';
+import {
+  runCacheTtl,
+  runCapturedAtPriority,
+  runLogNotAgeDeleted,
+  runLogTruncation,
+  runRetentionSweep,
+  runRootUnavailable,
+  runSweepFailureLogged,
+  runSweepThrottle,
+  runSweepTriggerBehaviour,
+  runSweepTriggerStatic,
+  runTwoStepDelete,
+} from './p1-protocol.run.mjs';
 
 import {
   CONSTANTS,
@@ -45,6 +57,8 @@ import {
   checkRetentionSweep,
   checkCaptureResultLanded,
   checkCaptureResultShape,
+  checkCacheTtl,
+  checkCapturedAtPriority,
   checkCatalogCodesSeparated,
   checkChipInvalidNode,
   checkConstants,
@@ -60,15 +74,24 @@ import {
   checkGapRegistry,
   checkHostInjection,
   checkHostRejectsUnclaimedId,
+  checkInflightReferenceNotCovered,
   checkInvalidRejection,
   checkIsolationSurface,
+  checkLogNotAgeDeleted,
+  checkLogTruncation,
   checkNoBodyDedup,
   checkPickTwiceDistinct,
   checkRefLengthBoundary,
   checkRefShape,
   checkRequestMatchesDisk,
+  checkRootUnavailable,
   checkSeqCrossProcess,
   checkSingleSourceOfTruth,
+  checkSweepFailureLogged,
+  checkSweepThrottle,
+  checkSweepTriggerBehaviour,
+  checkSweepTriggerStatic,
+  checkTwoStepDelete,
   checkCrossProcess,
   checkNamespaceIsolation,
   contentDigest,
@@ -1411,9 +1434,13 @@ test('活体注入（行为型 · A17 保留期清理）：把真实 sweep.js �
   // —— 注入：让清理器**不再删超期快照**（协议 §4.1 第一条就破）——
   //
   // 锚点取 `sweepSnapshots` 里那处删除（`removeInTwoSteps` 在快照与认领两处都出现，
-  // `String.replace` 只换**第一处** ⇒ 恰好只破坏「快照清理」，认领逻辑不动）。
-  const anchor = 'if (removeInTwoSteps(path)) result.removed += 1;';
-  assert.ok(baselineText.includes(anchor), '注入锚点不见了——实现改了，注入用例要跟着改');
+  // 正则只换**第一处** ⇒ 恰好只破坏「快照清理」，认领逻辑不动）。
+  //
+  // **锚点用正则而不是字面量**：helper 的调用形状会随实现演进（实现给
+  // `removeInTwoSteps` 加了 `{ logger, root }`）——字面量锚点会在实现演进时
+  // **假报**「锚点不见了」，把「实现变了」误报成「用例坏了」。
+  const anchor = /if \(removeInTwoSteps\([^)]*\)\) result\.removed \+= 1;/;
+  assert.match(baselineText, anchor, '注入锚点不见了——实现改了，注入用例要跟着改');
   const injectedDir = copyHostDir('inject-a17-red');
   const injectedPath = join(injectedDir, 'sweep.js');
   writeFileSync(injectedPath, baselineText.replace(anchor, 'if (false) { /* 注入：不删 */ }'), 'utf8');
@@ -1443,4 +1470,497 @@ test('活体注入（行为型 · A17 保留期清理）：把真实 sweep.js �
   removeTempRoot(baselineDir);
   removeTempRoot(injectedDir);
   removeTempRoot(restoredDir);
+});
+
+// ---------------------------------------------------------------------------
+// A18：协议 §4.1「保留期主动清理」的**剩余**口径
+//
+// ## 为什么要 A18（A17 之外）
+//
+// A17 判的是「**清没清干净**」（六个方向）；A18 判的是 §4.1 里**没被 A17 覆盖**的
+// 那些条款：**怎么触发**、**什么时候不触发**、**节流**、**TTL**、**截断**、
+// **两步法**、**根不可得**、**失败怎么办**、**时间戳谁优先**。
+//
+// ## 两层
+//
+//  1. **判据库级**：合规观测 ⇒ 通过；违规观测 ⇒ 报红**并点名缺哪一条**
+//     （证明判据能分对错）。
+//  2. **活体注入级**：往**真实实现的副本**里注入破坏 ⇒ 判据红 ⇒ 还原 ⇒
+//     逐字节一致 ⇒ 复跑绿（证明判据跑在真实实现上时也会红）。
+// ---------------------------------------------------------------------------
+
+test('A18a 触发点（静态）：只挂在 catalog ⇒ 通过；capture 也挂 / 入口外也挂 / 哪都没挂 ⇒ 报红并点名；定位不到形状 ⇒ 未执行', () => {
+  const ok = { parsed: true, catalogCalls: 1, captureCalls: 0, outsideCalls: 0 };
+  assert.equal(checkSweepTriggerStatic(ok).status, PASS);
+
+  const inCapture = checkSweepTriggerStatic({ ...ok, captureCalls: 1 });
+  assert.equal(inCapture.status, FAIL);
+  assert.match(inCapture.detail, /capture.*入口里有 1 处 sweeper 调用/, '红必须点名是 capture 入口');
+
+  const outside = checkSweepTriggerStatic({ ...ok, outsideCalls: 2 });
+  assert.equal(outside.status, FAIL);
+  assert.match(outside.detail, /入口之外还有 2 处/, '红必须点名是入口外');
+
+  const nowhere = checkSweepTriggerStatic({ ...ok, catalogCalls: 0 });
+  assert.equal(nowhere.status, FAIL);
+  assert.match(nowhere.detail, /catalog.*入口里没有 sweeper 调用/, '红必须点名 catalog 入口没挂');
+
+  // **定位不到实现形状 ⇒ 未执行**（不判通过、也不判红）。
+  assert.equal(checkSweepTriggerStatic({ parsed: false, detail: '没定位到' }).status, SKIPPED);
+});
+
+test('A18b 触发点（行为）：catalog 触发 ⇒ 通过；catalog 不触发 / capture 也触发 ⇒ 报红并点名', () => {
+  assert.equal(checkSweepTriggerBehaviour({ catalogTriggers: 1, captureTriggers: 0 }).status, PASS);
+
+  const notTriggered = checkSweepTriggerBehaviour({ catalogTriggers: 0, captureTriggers: 0 });
+  assert.equal(notTriggered.status, FAIL);
+  assert.match(notTriggered.detail, /调 `catalog` 没有触发清理/, '红必须点名 catalog 没触发');
+
+  const captureTriggered = checkSweepTriggerBehaviour({ catalogTriggers: 1, captureTriggers: 1 });
+  assert.equal(captureTriggered.status, FAIL);
+  assert.match(captureTriggered.detail, /capture.*触发了 1 次清理/, '红必须点名 capture 也触发了');
+});
+
+test('A18c 节流：当天第一次跑、第二次不跑、节流键落位 ⇒ 通过；第二次又跑 / 节流键混进快照目录 ⇒ 报红并点名', () => {
+  const ok = {
+    firstRan: true,
+    secondRanFalse: true,
+    stampExists: true,
+    stampNameMatches: true,
+    stampInOwnDir: true,
+  };
+  assert.equal(checkSweepThrottle(ok).status, PASS);
+
+  const twice = checkSweepThrottle({ ...ok, secondRanFalse: false });
+  assert.equal(twice.status, FAIL);
+  assert.match(twice.detail, /第二次 maybeSweep\(\) 不再跑/, '红必须点名当天第二次又跑了');
+
+  const mixed = checkSweepThrottle({ ...ok, stampInOwnDir: false });
+  assert.equal(mixed.status, FAIL);
+  assert.match(mixed.detail, /独立的 sweeps\/ 目录/, '红必须点名节流键混进了快照目录');
+});
+
+test('A18d 目录缓存 TTL：超期的清、TTL 内的留 ⇒ 通过；把没超期的也清了 ⇒ 报红并点名（反向回归）', () => {
+  assert.equal(checkCacheTtl({ expiredRemoved: true, freshKept: true }).status, PASS);
+
+  const overDelete = checkCacheTtl({ expiredRemoved: true, freshKept: false });
+  assert.equal(overDelete.status, FAIL);
+  assert.match(overDelete.detail, /TTL 内的目录缓存留着/, '红必须点名是反向回归那条');
+
+  const underDelete = checkCacheTtl({ expiredRemoved: false, freshKept: true });
+  assert.equal(underDelete.status, FAIL);
+  assert.match(underDelete.detail, /超过 TTL 的目录缓存被清掉/, '红必须点名超期的没清');
+});
+
+test('A18e 日志截断：超限要截 / 未超不截 / 截后合法 UTF-8 / 留尾部 ⇒ 通过；四条反向回归 ⇒ 报红并点名', () => {
+  const ok = {
+    truncatedWhenOver: true,
+    notTruncatedWhenSmall: true,
+    utf8Intact: true,
+    keptTail: true,
+  };
+  assert.equal(checkLogTruncation(ok).status, PASS);
+
+  for (const [key, pattern] of [
+    ['truncatedWhenOver', /超行数\/字节上限的日志被截断/],
+    ['notTruncatedWhenSmall', /未超限的日志没被截断/],
+    ['utf8Intact', /仍是合法 UTF-8/],
+    ['keptTail', /保留的是尾部/],
+  ]) {
+    const result = checkLogTruncation({ ...ok, [key]: false });
+    assert.equal(result.status, FAIL, `${key} 违规时必须红`);
+    assert.match(result.detail, pattern, `红必须点名缺的是哪一条（${key}）`);
+  }
+});
+
+test('A18f 日志不按 7 天删：超期日志仍在 ⇒ 通过；被删了 ⇒ 报红并点名', () => {
+  assert.equal(checkLogNotAgeDeleted({ oldLogStillThere: true }).status, PASS);
+  const deleted = checkLogNotAgeDeleted({ oldLogStillThere: false });
+  assert.equal(deleted.status, FAIL);
+  assert.match(deleted.detail, /不按 7 天删/, '红必须点名日志被按天删了');
+});
+
+test('A18g 两步法删除：先 rename 后 unlink / unlink 的是改名后的 / 不留半截 ⇒ 通过；三条反向回归 ⇒ 报红并点名', () => {
+  const ok = {
+    renameBeforeUnlink: true,
+    unlinkTargetsTombstone: true,
+    noLeftoverTombstone: true,
+  };
+  assert.equal(checkTwoStepDelete(ok).status, PASS);
+
+  for (const [key, pattern] of [
+    ['renameBeforeUnlink', /先 rename 再 unlink/],
+    ['unlinkTargetsTombstone', /unlink 的是改名后的那个/],
+    ['noLeftoverTombstone', /扫完不留半截文件/],
+  ]) {
+    const result = checkTwoStepDelete({ ...ok, [key]: false });
+    assert.equal(result.status, FAIL, `${key} 违规时必须红`);
+    assert.match(result.detail, pattern, `红必须点名缺的是哪一条（${key}）`);
+  }
+});
+
+test('A18h 根不可得就不扫：报 skipped / 不跑 / 不抛 / 不动别的根 ⇒ 通过；四条反向回归 ⇒ 报红并点名', () => {
+  const ok = { skipped: true, maybeSweepNotRan: true, noThrow: true, nothingElseTouched: true };
+  assert.equal(checkRootUnavailable(ok).status, PASS);
+
+  for (const [key, pattern] of [
+    ['skipped', /报 skipped/],
+    ['maybeSweepNotRan', /ran:false/],
+    ['noThrow', /不抛异常/],
+    ['nothingElseTouched', /一个都没动/],
+  ]) {
+    const result = checkRootUnavailable({ ...ok, [key]: false });
+    assert.equal(result.status, FAIL, `${key} 违规时必须红`);
+    assert.match(result.detail, pattern, `红必须点名缺的是哪一条（${key}）`);
+  }
+});
+
+test('A18i 清理失败只记日志：不抛 / 不阻塞 / 失败项内容仍在 / 失败进了日志 ⇒ 通过；四条反向回归 ⇒ 报红并点名', () => {
+  const ok = {
+    noThrow: true,
+    othersStillRemoved: true,
+    failedItemStillPresent: true,
+    failureLogged: true,
+  };
+  assert.equal(checkSweepFailureLogged(ok).status, PASS);
+
+  for (const [key, pattern] of [
+    ['noThrow', /没抛异常/],
+    ['othersStillRemoved', /照删/],
+    ['failedItemStillPresent', /仍在磁盘上/],
+    ['failureLogged', /进了日志/],
+  ]) {
+    const result = checkSweepFailureLogged({ ...ok, [key]: false });
+    assert.equal(result.status, FAIL, `${key} 违规时必须红`);
+    assert.match(result.detail, pattern, `红必须点名缺的是哪一条（${key}）`);
+  }
+});
+
+test('A18j capturedAt 优先、mtime 兜底：四个方向全对 ⇒ 通过；两条反向回归 ⇒ 报红并点名', () => {
+  const ok = {
+    oldCapturedNewMtimeRemoved: true,
+    newCapturedOldMtimeKept: true,
+    missingCapturedOldMtimeRemoved: true,
+    missingCapturedNewMtimeKept: true,
+  };
+  assert.equal(checkCapturedAtPriority(ok).status, PASS);
+
+  const mtimeWins = checkCapturedAtPriority({ ...ok, oldCapturedNewMtimeRemoved: false });
+  assert.equal(mtimeWins.status, FAIL);
+  assert.match(mtimeWins.detail, /capturedAt 旧 \+ mtime 新 ⇒ 仍删/, '红必须点名是 capturedAt 优先那条');
+
+  const mtimeOverDeletes = checkCapturedAtPriority({ ...ok, newCapturedOldMtimeKept: false });
+  assert.equal(mtimeOverDeletes.status, FAIL);
+  assert.match(mtimeOverDeletes.detail, /capturedAt 新 \+ mtime 旧 ⇒ 不删/, '红必须点名反向回归那条');
+});
+
+test('A18k 「正在发送中的引用」不保护 —— 不可机检 ⇒ 如实报「已知不覆盖」并说明后果由 S-5/S-6 覆盖', () => {
+  const result = checkInflightReferenceNotCovered();
+  assert.equal(result.status, SKIPPED);
+  assert.match(result.detail, /已知不覆盖/, '必须写明「已知不覆盖」，不许假装能测');
+  assert.match(result.detail, /S-5 \/ S-6/, '必须写明后果由 S-5/S-6 覆盖');
+});
+
+// ---------------------------------------------------------------------------
+// A18 的**活体注入**：证明这些判据对**真实实现**的破坏敏感
+// ---------------------------------------------------------------------------
+
+/**
+ * 活体注入的统一骨架。
+ *
+ * 顺序固定：**注入 ⇒ 红（点名）⇒ 还原 ⇒ 逐字节一致 ⇒ 另起一份副本复跑绿 ⇒
+ * 原实现没被碰过**。
+ *
+ * **为什么复跑要另起一份副本**：Node 的模块缓存按**解析后的路径**算——
+ * 同一路径的副本第二次 import 拿到的还是**第一次那份**（注入版）⇒ 复跑必然红。
+ *
+ * @param {object} options
+ * @param {string} options.tag - 临时目录标签。
+ * @param {string} options.file - 要改的文件名（相对 host 目录）。
+ * @param {string} options.originalFile - 原实现文件名（用来验「没被碰过」）。
+ * @param {(text: string) => string} options.mutate - 注入（改文本）。
+ * @param {(copyDir: string) => Promise<object>} options.run - 跑判据。
+ * @param {(verdict: object) => void} options.expectRed - 红的断言。
+ * @param {(verdict: object) => void} [options.expectGreen] - 绿的断言。
+ */
+async function liveInject({ tag, file, originalFile, mutate, run, expectRed, expectGreen }) {
+  const originalUrl = new URL(`../plugins/official-chat/host/${originalFile}`, import.meta.url);
+  const originalBefore = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
+
+  const copyDir = copyHostDir(tag);
+  const copyPath = join(copyDir, file);
+  const baselineText = readFileSync(copyPath, 'utf8');
+
+  // —— 注入 ——
+  const injectedText = mutate(baselineText);
+  assert.notEqual(injectedText, baselineText, '注入没生效——锚点不见了，实现改了，用例要跟着改');
+  writeFileSync(copyPath, injectedText, 'utf8');
+
+  const red = await run(copyDir);
+  assert.equal(red.status, FAIL, `注入后必须红（不能是「未执行」）：${red.detail}`);
+  expectRed(red);
+
+  // —— 还原：逐字节 ——
+  writeFileSync(copyPath, baselineText, 'utf8');
+  const restoredSha = createHash('sha256').update(readFileSync(copyPath)).digest('hex');
+  assert.equal(
+    restoredSha,
+    createHash('sha256').update(baselineText).digest('hex'),
+    '还原后必须与基线逐字节一致',
+  );
+
+  // —— 复跑绿（另起一份副本：同一路径的模块已被 Node 缓存）——
+  const restoredDir = copyHostDir(`${tag}-restored`);
+  try {
+    const again = await run(restoredDir);
+    assert.equal(again.status, PASS, `还原后必须复跑绿：${again.detail}`);
+    if (expectGreen !== undefined) expectGreen(again);
+  } finally {
+    removeTempRoot(restoredDir);
+  }
+
+  // —— 原实现文件没被碰过 ——
+  const originalAfter = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
+  assert.equal(originalAfter, originalBefore, '原实现文件必须一个字节都没变');
+
+  removeTempRoot(copyDir);
+}
+
+/** 往 `capture` 入口里塞一次清理调用（破坏「只在 catalog 触发」）。 */
+const injectSweepIntoCapture = (text) =>
+  text.replace(
+    '  async function capture(request = {}) {',
+    '  async function capture(request = {}) {\n    sweeper?.maybeSweep?.();',
+  );
+
+test('活体注入（静态 · A18a 触发点）：从真实 host 半边副本里往 capture 入口塞一次清理调用 → 判据红并点名 → 还原 → 逐字节一致 → 复跑绿', async () => {
+  await liveInject({
+    tag: 'inject-a18a',
+    file: 'commands.js',
+    originalFile: 'commands.js',
+    mutate: injectSweepIntoCapture,
+    run: async (dir) => runSweepTriggerStatic(dir),
+    expectRed: (r) => {
+      assert.match(r.detail, /capture.*入口里有 1 处 sweeper 调用/, '红必须点名是 capture 入口');
+    },
+    expectGreen: (r) => {
+      assert.match(r.detail, /只挂在 `catalog` 入口/, '绿要说清挂在哪');
+    },
+  });
+});
+
+test('活体注入（行为型 · A18b 触发点）：从真实 host 半边副本里往 capture 入口塞一次清理调用 → 行为判据红并点名 → 还原 → 逐字节一致 → 复跑绿', async () => {
+  await liveInject({
+    tag: 'inject-a18b',
+    file: 'commands.js',
+    originalFile: 'commands.js',
+    mutate: injectSweepIntoCapture,
+    run: async (dir) => {
+      const adapter = await createAdapter({ tag: 'inject-a18b-adapter', hostDir: dir });
+      try {
+        return await runSweepTriggerBehaviour(adapter);
+      } finally {
+        adapter.cleanup();
+      }
+    },
+    expectRed: (r) => {
+      assert.match(r.detail, /capture.*触发了 1 次清理/, '红必须点名 capture 也触发了清理');
+    },
+    expectGreen: (r) => {
+      assert.match(r.detail, /catalog 触发 1 次、capture 触发 0 次/, '绿要说清触发次数');
+    },
+  });
+});
+
+test('活体注入（行为型 · A18c 节流）：从真实 sweep.js 副本里去掉「记节流键」→ 当天第二次又扫 → 判据红并点名 → 还原 → 逐字节一致 → 复跑绿', async () => {
+  await liveInject({
+    tag: 'inject-a18c',
+    file: 'sweep.js',
+    originalFile: 'sweep.js',
+    mutate: (text) => text.replace('stampSweep();', '/* 注入：不记节流键 */;'),
+    run: async (dir) => runSweepThrottle(dir),
+    expectRed: (r) => {
+      assert.match(r.detail, /第二次 maybeSweep\(\) 不再跑/, '红必须点名当天第二次又跑了');
+    },
+    expectGreen: (r) => {
+      assert.match(r.detail, /第二次不重跑/, '绿要说清第二次没重跑');
+    },
+  });
+});
+
+test('活体注入（行为型 · A18d 目录缓存 TTL）：从真实 sweep.js 副本里把缓存 TTL 放大 1000 倍 → 超期缓存没清 → 判据红并点名 → 还原 → 逐字节一致 → 复跑绿', async () => {
+  await liveInject({
+    tag: 'inject-a18d',
+    file: 'sweep.js',
+    originalFile: 'sweep.js',
+    mutate: (text) =>
+      text.replace(
+        'const cutoff = now() - cacheTtlMs;',
+        'const cutoff = now() - cacheTtlMs * 1000; /* 注入：TTL 放大 1000 倍 */',
+      ),
+    run: async (dir) => runCacheTtl(dir),
+    expectRed: (r) => {
+      assert.match(r.detail, /超过 TTL 的目录缓存被清掉/, '红必须点名超期缓存没清');
+    },
+    expectGreen: (r) => {
+      assert.match(r.detail, /TTL 内留着/, '绿要说清 TTL 内的留着');
+    },
+  });
+});
+
+test('活体注入（行为型 · A18e 日志截断）：从真实 sweep.js 副本里去掉截断 → 超限日志没截 → 判据红并点名 → 还原 → 逐字节一致 → 复跑绿', async () => {
+  await liveInject({
+    tag: 'inject-a18e',
+    file: 'sweep.js',
+    originalFile: 'sweep.js',
+    mutate: (text) =>
+      text.replace(
+        'if (!tooManyLines && !tooManyBytes) return { truncated: false };',
+        'if (true) return { truncated: false }; /* 注入：不截断 */',
+      ),
+    run: async (dir) => runLogTruncation(dir),
+    expectRed: (r) => {
+      assert.match(r.detail, /超行数\/字节上限的日志被截断/, '红必须点名超限日志没被截断');
+    },
+    expectGreen: (r) => {
+      assert.match(r.detail, /未超不截/, '绿要说清没超不截');
+    },
+  });
+});
+
+test('活体注入（行为型 · A18f 日志不按 7 天删）：往真实 sweep.js 副本里加一条「超 7 天就删日志」→ 日志被按天删 → 判据红并点名 → 还原 → 逐字节一致 → 复跑绿', async () => {
+  await liveInject({
+    tag: 'inject-a18f',
+    file: 'sweep.js',
+    originalFile: 'sweep.js',
+    mutate: (text) =>
+      text.replace(
+        "  const path = join(root, 'logs', 'official-chat.log');",
+        "  const path = join(root, 'logs', 'official-chat.log');\n" +
+          '  try { if (existsSync(path) && now() - statSync(path).mtimeMs > retentionMs) unlinkSync(path); } catch { /* 注入 */ }',
+      ),
+    run: async (dir) => runLogNotAgeDeleted(dir),
+    expectRed: (r) => {
+      assert.match(r.detail, /不按 7 天删/, '红必须点名日志被按天删了');
+    },
+    expectGreen: (r) => {
+      assert.match(r.detail, /超期日志仍在/, '绿要说清超期日志还在');
+    },
+  });
+});
+
+test('活体注入（静态 + 行为型 · A18g 两步法删除）：把真实 sweep.js 副本里的「先改名再删」改成「直接删」→ 判据红并点名 → 还原 → 逐字节一致 → 复跑绿', async () => {
+  await liveInject({
+    tag: 'inject-a18g',
+    file: 'sweep.js',
+    originalFile: 'sweep.js',
+    mutate: (text) =>
+      text.replace(
+        '    renameSync(path, tombstone);',
+        '    unlinkSync(path); /* 注入：直接删，不改名 */',
+      ),
+    run: async (dir) => runTwoStepDelete(dir),
+    expectRed: (r) => {
+      assert.match(r.detail, /先 rename 再 unlink/, '红必须点名两步法没了');
+    },
+    expectGreen: (r) => {
+      assert.match(r.detail, /两步法删除/, '绿要说清是两步法');
+    },
+  });
+});
+
+test('活体注入（行为型 · A18h 根不可得就不扫）：从真实 sweep.js 副本里让「根不可得」也往下扫 → 判据红并点名 → 还原 → 逐字节一致 → 复跑绿', async () => {
+  await liveInject({
+    tag: 'inject-a18h',
+    file: 'sweep.js',
+    originalFile: 'sweep.js',
+    mutate: (text) =>
+      text.replace(
+        "return { skipped: true, reason: '落盘根不可得（内核没给实例 home）——不扫' };",
+        "return { skipped: false, reason: '注入：根不可得也扫' };",
+      ),
+    run: async (dir) => runRootUnavailable(dir),
+    expectRed: (r) => {
+      assert.match(r.detail, /root 不可得时 sweep\(\) 报 skipped/, '红必须点名根不可得没跳过');
+    },
+    expectGreen: (r) => {
+      assert.match(r.detail, /不扫、不删、不抛/, '绿要说清没扫没删没抛');
+    },
+  });
+});
+
+test('活体注入（行为型 · A18j capturedAt 优先）：从真实 sweep.js 副本里改成「先看 mtime」→ 判据红并点名 → 还原 → 逐字节一致 → 复跑绿', async () => {
+  await liveInject({
+    tag: 'inject-a18j',
+    file: 'sweep.js',
+    originalFile: 'sweep.js',
+    mutate: (text) =>
+      text.replace(
+        "if (stampOf(path, 'capturedAt', mtime) >= cutoff) continue;",
+        'if (mtime >= cutoff) continue; /* 注入：先看 mtime */',
+      ),
+    run: async (dir) => runCapturedAtPriority(dir),
+    expectRed: (r) => {
+      assert.match(r.detail, /capturedAt 旧 \+ mtime 新 ⇒ 仍删/, '红必须点名 capturedAt 没优先');
+    },
+    expectGreen: (r) => {
+      assert.match(r.detail, /capturedAt 优先、mtime 仅兜底/, '绿要说清谁优先');
+    },
+  });
+});
+
+/**
+ * 把「删除失败要留痕」**关掉**（做成不留痕的样子）。
+ *
+ * ## 注入方式
+ *
+ * 去掉调用点那个 `else logger?.warn?.(...)` 分支 ⇒ 删不掉被**悄悄吞掉**
+ * （这正是协议 §4.1 第 3 条不许出现的那种「静默失败」）。
+ *
+ * **锚点用正则**（不是字面量）：留痕写在「同一行」还是「独立成行」、helper 的
+ * 调用形状带不带参数，实现都会动——字面量锚点会在实现演进时**假报**
+ * 「锚点不见了」。
+ *
+ * @param {string} text - sweep.js 源码。
+ * @returns {string} 注入后的源码。
+ */
+const stripFailureLog = (text) =>
+  text.replace(
+    /(if \(removeInTwoSteps\([^)]*\)\) result\.removed \+= 1;)(\s*)else logger\?\.warn\?\.\([^;]*\);/,
+    '$1',
+  );
+
+test('活体注入（行为型 · A18i 清理失败只记日志）：把副本里的「删除失败要留痕」关掉 ⇒ 判据红并点名 ⇒ 还原成留痕 ⇒ 判据绿（两个方向都由副本控制，不依赖现役实现当前的状态）', async () => {
+  const originalUrl = new URL('../plugins/official-chat/host/sweep.js', import.meta.url);
+  const originalBefore = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
+
+  const copyDir = copyHostDir('inject-a18i');
+  const copyPath = join(copyDir, 'sweep.js');
+  const baselineText = readFileSync(copyPath, 'utf8');
+
+  // —— 方向①：不合规（删除失败**不留痕**）——
+  const nonCompliant = stripFailureLog(baselineText);
+  assert.notEqual(nonCompliant, baselineText, '注入没生效——调用点的形状变了，注入用例要跟着改');
+  writeFileSync(copyPath, nonCompliant, 'utf8');
+  const red = await runSweepFailureLogged(copyDir);
+  assert.equal(red.status, FAIL, '删除失败不留痕时判据必须红');
+  assert.match(red.detail, /进了日志/, '红必须点名「失败要进日志」这条');
+
+  // —— 方向②：合规（删除失败**留痕**）——
+  //
+  // **合规副本就是现役实现本身**——它现在按协议留痕（helper 内部
+  // `logger?.warn?.(...)`）。⇒ 「合规」这一侧钉的是**实现的现状**，
+  // 「不合规」那一侧钉的是**判据的分辨力**。
+  const compliantDir = copyHostDir('inject-a18i-compliant');
+  writeFileSync(join(compliantDir, 'sweep.js'), baselineText, 'utf8');
+  const green = await runSweepFailureLogged(compliantDir);
+  assert.equal(green.status, PASS, `删除失败留痕时判据必须绿：${green.detail}`);
+  assert.match(green.detail, /失败进了日志/, '绿要说清失败进了日志');
+
+  // —— 原实现文件没被碰过 ——
+  const originalAfter = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
+  assert.equal(originalAfter, originalBefore, '原实现文件必须一个字节都没变');
+
+  removeTempRoot(copyDir);
+  removeTempRoot(compliantDir);
 });
