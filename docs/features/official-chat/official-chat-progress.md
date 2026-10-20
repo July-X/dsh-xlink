@@ -17,7 +17,7 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 | --- | --- | --- |
 | P0 可行性验证 | G1 内核工作台选择与发送控制、G2 异步回程与首站可读性、G3 窗口未打开时仍可读取 | **G1/G2/G3 结论已出**（G1 4/5 问通过 + Q3 判定互斥；G2-A 5/5，Windows 零痕迹回程已实测成立；G2-B 探测完成但取数未成立；**G3 三站各 7/7 通过**；**壳真实 workbench 内复验已可复现**——dev 壳两轮 + **自编 release 二进制一轮**（15:42–15:55，实例 id `default`）全过，壳驱动已搬进仓库；**壳内判据已与内核 r14/r16 对齐**（`results[]` + `summary`，**未执行单列**；壳内 E 升为**节点级**），**两条前置条件机检已压出真分支**（dev-r6 汇总 **9 通过 / 0 失败 / 0 未执行**）。**未闭合的两项**：登录态从未建立（需用户首次登录）、零痕迹回程 macOS 侧无通路。**判据第 31 条的三处口径问题（嵌套 if 漏判 / 逃生阀不生效 / `match` 边界假红）已全部闭合**（`4333b80` + `165d9a1`，自测 26 → 43，PM 逐轮第一手复验含反向回归）。**安装版 release 壳不在开发 agent 范围**（izzy 发布后自己测） |
 | P1 协议与隔离 | 固定数据模型、错误、权限与状态机 | **协议 v0.5（PM 定）**：单一 id 制度（`ref === snapshotId`）、状态机映射、**门控口径从「时序」换成「状态」**、失效一律「拒 + 可见错误」（chip `invalid` 态内核不可达 → 缺口 **G1-6**）、13 码闭集 + **错误结果对象 8 字段闭集**、保留期主动清理口径（§4.1，v0.5 澄清「只记日志」必须留痕）、**缺口 G1-7（通道被上游一行卡住）**、A0s 判据同步更正。**代码侧已落地**（协议核心 JS+Rust、13 夹具 + 双端一致测试、5 命令走内核 `connection` 服务的 **exact fetch route**、host 侧 id 分配器 `seq-store.js`、保留期主动清理 `host/sweep.js`）：**§8 十二条逐条 pass**，判据 runner **43 条 = 40 pass / 0 fail / 3 skipped**（skip：A0 真机级、A6b chip invalid、A18k「发送中引用」已知不覆盖）。**真机 p1-r9（在未打补丁的现役内核上）P1 六条硬口径 11 通过 / 0 失败 / 1 未执行**——A0 真机级 ✔（capabilities 经 exact fetch route 拿到）、catalog＋host 预分配 id、pick＋落盘＋自算摘要对得上、**S-4 逐字节**（请求体命中 4 处，每处 76 字节 exact）、S-1 两个 id、缺口①（删快照 ⇒ 请求数 0 ＋ 可见错误 ＋ 客户端抛错）。**未实现**：真实站点账户与深链（P4） |
-| P2 内核插件闭环 | 固定数据的选择、引用、发送与模型输入核对 | **未开始** |
+| P2 内核插件闭环 | 固定数据的选择、引用、发送与模型输入核对 | **未立项**（新阶段需 izzy 点头）。其中「正文去重」子议题的**只读调研已出**，全文见 [official-chat-p2-research.md](official-chat-p2-research.md)：键 = (accountScope, sessionId, branch, capturedAt, contentDigest) 全等（**五字段都已在协议 §1.1 快照里 ⇒ 不必新建索引表**）；落点分三层（**client 逐 occurrence 只看得到单 ref** / **host `agent/pre-step` 只有文本级判定** / 存储层不改）；PM 建议**第一步只做「重复识别 ＋ 可见提示 ＋ 预算预检」，不做消息级自动合并**（P2 立项前不生效） |
 | P3 正文快照与桥接 | 原子保存、固定版本、回收、恢复 | **未开始** |
 | P4 首站接入 | 真实目录、认证、分支与正文 | **未开始**（前置条件未满足） |
 | P5 桌面体验与诊断 | 登录回程、错误、详情、能力检测 | **未开始** |
@@ -386,8 +386,11 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
   - **属性访问**（`:887-893` 的 Proxy get）走**本 scope 的注入链** ⇒ connection 插件自己的 scope 从不 inject `webServer` ⇒ **必抛** `cannot get property "webServer" without inject`。
   - ⇒ `owner.get('webServer')` 正是**内核自己**读 webServer 的写法（`admit` / `isTrusted` / `authorizeConnect` / `authorizeIndex` 全用它）。
 - **修复内容**（**仅此一处，+14/−4**）：`owner.webServer.register(route)` ⇒ `const webServer = owner.get('webServer')` + 不可得时**显式抛错** + `webServer.register(route)`；并注明「`connection.fetch.register(...)` 不受影响（`registerFetchRoute` 完全不碰 webServer）」。
-- **提交位置**：`July-X/deepseek-harness` 分支 **`fix/connection-owner-webserver-get`**，commit **`aa7404de`**（已在 GitHub 网页 compare 页核对：1 commit / 1 file changed / +14 −4，与本地 `git diff --no-index` 逐字节一致）。
-- **PR 待开**：跨 owner 的 fork→upstream，**API 无 `pull_requests: write` 权限**（`gh pr create` 报 `July-X does not have the correct permissions`）⇒ 须走 GitHub 网页 compare 流程。⇒ **G1-7 仍不关闭**；等上游合并并发版后，本项目再把通道收敛回 `rpc.handle`（RPC 信封不用改）。
+- **提交位置**：`July-X/deepseek-harness` 分支 **`fix/connection-owner-webserver-get`**，commit **`07aa67ac`**（GitHub API 独立核对：parent = upstream `master@687f282e`、compare `ahead_by 1 / behind_by 0`、1 file changed **+14 −4**；分支 blob `4fcd7243…` 与本地 `new.ts` **逐字节相同**（16,313 B / 423 行））。
+  - **sha 变更说明**：先前登记的 `aa7404de` 内容正确、但 email 是 `over618@163.com`；本轮按 izzy「提交作者名改成 July-X」的口径重建了 commit —— **新旧 tree sha 完全相同（`82c24f34…`）⇒ 文件内容零变化**，只把 email 统一为 `m4java@163.com`（与本仓库级 config 一致）。分支 ref 已 force 更新到 `07aa67ac`。
+- **PR 待开**：跨 owner 的 fork→upstream，**API 无 `pull_requests: write` 权限**（`gh pr create` 报 `July-X does not have the correct permissions`）⇒ 须走 GitHub 网页 compare 流程（`compare/master...July-X:fix/connection-owner-webserver-get`）。
+  - **当前阻塞点**：会话内置浏览器**未登录 GitHub**（compare 页只显示 `Sign in / Sign up`，无 PR 表单）⇒ **需 izzy 登录后由网页流程创建**。PR 正文已备好（英文、只含技术内容）。
+  - ⇒ **G1-7 仍不关闭**；等上游合并并发版后，本项目再把通道收敛回 `rpc.handle`（RPC 信封不用改）。
 
 **清理（izzy 22:1x 拍板「清理临时目录、隔离目录」）**
 
@@ -395,6 +398,47 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 - **未清**（**不属本项目范围**，别误删）：`%TEMP%\.tmp*`、`dsh-acl-skill-*`、`xlink-*` 等其它功能的测试残留。
 - **可恢复性**：全部走 `mavis-trash`（回收站），未做永久删除。
 - **结论载体不受影响**：真机轮 p1-r9 与临界夹具的结论**已固化在本文件与协议稿**里 ⇒ 证据文件可清（izzy 15:2x 拍板「证据可以清」），**且没有任何判据依赖这些外部产物**（A0 真机级永久如实报 skipped，结论载体是本文件）。
+
+### 2026-10-20 22:3x–22:4x · P2「正文去重」只读调研（devloper）＋ PM 建议裁定
+
+**派活与回执**
+
+- 22:1x 派 devloper 做**只读**调研（不写代码、不写判据、不改协议稿）：同一段官网正文被引用多次时，P2 要不要处理、怎么处理。
+- 22:3x 回执送达（群 post 被拒两次，先私聊直送）；原件在任务队列 `task_1738d44c8207`（`request_id: p2-dedup-research-pm-20261021-01`）⇒ **全文已落盘到新载体 `docs/features/official-chat/official-chat-p2-research.md`**（PM 归属，`kind: research`）。
+
+**调研结论要点**（全文见载体）
+
+- **动机 = 预算的算术硬失败**：单条正文预算 64 KB（协议 `:187`）× 单消息引用数上限 8 条（`:186`）= 512 KB > 单次消息总预算 256 KB（`:188`）⇒ 必然落 `body_too_large`（`:151`）。
+- **键** = (accountScope, sessionId, branch, capturedAt, contentDigest) 全等；五字段**都已在协议 §1.1 快照里**（`:47` / `:48` / `:49` / `:51` / `:53`）⇒ **不必新建索引表**；`capturedAt` 进键的依据 = development-plan §8（`:168`）「去重不能抹掉账户、分支或捕获事实」。
+- **落点三层分界**（现役内核 `0.2.1-rc.2`，文件 SHA-256 见载体 §2.3）：浏览器侧**逐 occurrence** 调 serializeReference ⇒ **插件 `codec.serialize` 只看得到单 ref**；**消息级入口 = host 监听 `agent/pre-step`**（可 replace messages）但 `UserMessage` **不含 ref 结构** ⇒ **只能文本级判定（digest 反查）**；存储层只供材料、不改。
+- **红线**：绝不复用旧 id（撞 S-1 / S-6）；隐式去重撞 S-7 ⇒ **合并必须对用户可见，否则不做**；**内核重放不管**（重放发生在展开之后，插件观测不到）；**偏向宁可漏**（错合并会让用户以为引 A 其实是 B）。
+- **digest 反查的边界**：可作「提示」判定依据（误报只多一条提示），**不可**作「合并」依据。
+
+**PM 建议裁定（待 izzy 拍板；P2 未立项，不生效）**
+
+1. **目标 = 省预算**，**不动 chip 数**（省操作不是硬约束）。
+2. **第一步只做「重复识别 ＋ 可见提示 ＋ 预算预检」，不做消息级自动合并**——P2 阶段**没有可见承载位**（详情面板属 P5）、toast 瞬态易假红；**没有可见方案就不做**（S-7 禁止静默裁掉）。
+3. **落点 = host 命令层产出「重复组」，client 呈现**；**不改消息内容**，**不在 `agent/pre-step` 里改消息**（那里只做引用展开，development-plan §7 `:149`）。
+
+**与既有判据的关系（条件性）**
+
+- `A8-no-body-dedup`（`scripts/lib/p1-protocol.mjs:1110`）数的是**判据自建**的 `${bodyA}\n\n${bodyB}`（`:1126-1127`）⇒ **不观测内核真实请求体** ⇒ **P2 第一步（不做合并）不需要改它**；**只有将来决定做消息级合并时**，A8 才必须**同次**改口径（否则与新协议互相打红）。这是条件性结论，不是现在的待办。
+- A2（两次 pick 两个 id）继续守 id 不复用；A6a / A7 继续守「请求数 0 ＋ 可见错误」。
+
+**跨文档张力已消歧**
+
+- `development-plan` §7:155「正文只出现一次」vs 协议 S-7「引用两次各送一份」⇒ **协议 v0.7 以 S-7 为准**（提交 `cdd03fb`）＋ feasibility §7 第 12 条；⇒ **P2 立项不必回头改 development-plan**（改写归属待 izzy 指定：该文件 front-matter 无 owner 字段，**同目录 ≠ 同归属**）。
+
+### 2026-10-20 22:5x–23:0x · fork 分支 commit 重建（内容零变化）＋ main 推送 ＋ 提交身份收口
+
+- **fork 分支 commit 重建**：先前登记的 `aa7404de` **内容正确、但 email 是 `over618@163.com`**；本轮按 izzy「提交作者名改成 July-X」的口径重建 commit ⇒ **新旧 tree sha 完全相同（`82c24f34…`）⇒ 文件内容零变化**，只把邮箱统一为 `m4java@163.com`（与本仓库级 config 一致）。分支 ref 已 force 更新到 **`07aa67ac`**。
+  - **API 独立核对**（不采信回执）：parent = upstream `master@687f282e`；`compare/master...fix/connection-owner-webserver-get` = `ahead_by 1 / behind_by 0`；1 file changed **+14 −4**；分支 blob `4fcd7243…` 与本地 `new.ts` **逐字节相同**（16,313 B / 423 行）；git author/committer 均为 `July-X <m4java@163.com>`。
+  - **踩坑留痕**：GitHub `git/blobs` 建 blob 必须用 `gh api -F "content=@<file>"`（**大写 `-F` 读文件**）；小写 `-f` 会把 `@path` 当字面量 ⇒ 生成垃圾 blob（本轮那个 `+2/−412` 的坏 commit 即由此产生）。
+- **main 已推 origin**：izzy 22:1x 授权推送后，PM 把并行会话的 `cdd03fb`（协议 v0.7 记 S-7 与 development-plan §7:155 的字面冲突）一并推上 `origin/main` ⇒ 本地与远端 **0/0 同步**。
+- **提交身份收口**：**仓库级** `user.name = July-X` / `user.email = m4java@163.com`；**全局保持 izzy 的 `zhongxingxing` 不动**（izzy 22:2x「只改这个仓库的，不要改全局」）。
+- **历史 224 个 `zhongxingxing` 提交未重写**：重写 = force push `main` / `main-dev2` / `uiv2-dev`；**已发布的 `desktop-v0.1.x-rc.x` tag 若一并重推，可能重复触发发布 workflow** ⇒ 属不可逆动作，**PM 不擅自做，待 izzy 一句话拍板**。
+- **PR 仍卡在「浏览器未登录」**：会话内置浏览器的 compare 页只显示 `Sign in / Sign up`（无 PR 表单）⇒ **需 izzy 登录后走网页流程**。PR 标题与正文已备好（英文、只含技术内容、无内部信息）。
+- **临时目录清理仍在跑**：`%TEMP%\dsh-xlink-*`（Rust 测试残留数千个）分批回收中（22:5x 实测剩 3,251 个）；`%TEMP%\dsh-p1-protocol*`（61 个，5.7 MB）**刻意保留**（判据可能仍在引用，PM 复核后再清）。
 
 ## 交接记录
 
@@ -427,6 +471,7 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 | 2026-10-20 | P1 | **通道落地 + 保留期清理落地（`686423a`，15 文件 / +1413 / −188）**：过渡通道 = 内核 `connection` 服务的 **exact fetch route**（`/api/xlink-official-chat`，POST，buffered；owner 准入仍由内核做）；**客户端必须自己发 same-origin fetch**（浏览器侧内核 `rpc.call` 的 URL 相对且不带 `/api`，打不到 exact route）；插件自实现 RPC 信封（信封层错误用传输层 `gateway/bad-request`，不进 13 码闭集）；host `inject` 收敛为 `['connection']`。**真机 p1-r8（未打补丁的现役内核）a/b/c/d 全绿**。新增 `host/sweep.js` 落地 §4.1 保留期主动清理。**PM 独立复核**：门禁全绿（判据 32 = 30/0/2、cargo 1127 passed、clippy 0、check:invariants 绿 47 文件）、**`prepare-builtin --check` 首跑红**（devloper 自报漏项，已重生成）、**PM 代修三处**（catalog-cache 层级注释 + 日志按大小截断 + 协议 §4.1 第 2 条澄清） | `%TEMP%\dsh-xlink-g1\evidence-p1-r8\results.p1-r8.json`（可清）＋ `%TEMP%\dsh-p1-protocol\results-chief-verify-2.json`（PM 独立复跑判据）＋ 本文件 21:0x 节 |
 | 2026-10-20 | P1 | **真机轮 p1-r9（未打补丁的现役内核 ＋ v0.4 exact fetch route）：11 通过 / 0 失败 / 1 未执行**——A0 真机级（capabilities 经 exact fetch route 拿到）、catalog＋host 预分配 id、pick＋落盘＋自算摘要对得上、**S-4 逐字节**（请求体命中 4 处，每处 76 字节 exact）、S-1 两个 id、缺口①（删快照 ⇒ 请求数 0 ＋ 可见错误 ＋ 客户端抛错）；**前提取证三条**：隔离内核与现役 SHA-256 逐字节一致、cmdline 不引用用户真实 home、每轮清物化＋重生成内嵌资源 | `%TEMP%\dsh-xlink-g1\evidence-p1-r9-exact-fetch\shell-verify-p1.p1-r9-exact-fetch.json`（可清）＋ 本文件 21:3x 节 |
 | 2026-10-20 | P1 | **跨语言临界夹具 `oversized-multi`（只加一条）**——补 §6「同一组夹具 → 同一解析结果」那个**踩不到的窗口**：既有 `oversized` 只有 1 条消息 ⇒ 分隔符 0 字节 ⇒ A1c 是假绿。新夹具 **n=2**、正文总字节 **262146**（= 256KB+2，窗口上沿，含 2 字节 `MESSAGE_SEPARATOR`）⇒ 任一端**漏算分隔符**就会算成 262144（恰好不超限）而放行 ⇒ 两端判定相反。**活体注入验证**：注入「JS 侧漏算分隔符」⇒ A1c 报红并**点名 `oversized-multi`**（JS=`kind:snapshot` vs Rust=`code:body_too_large`）⇒ 还原后 SHA-256 逐字节一致、A1c 恢复 pass。**门禁**（含 PM 要求补列的 `prepare-builtin-plugins.mjs --check`）：100/100、277/0/3、131/0/3、6/6、invariants 绿、duplicates 4/8、builtin 43、判据 A1a/A1b/A1c/A1d 全绿（夹具 13→14） | 本文件 21:4x 节（证据文件按 izzy 拍板可清） |
+| 2026-10-20 | P2（**未立项**） | **「正文去重」只读调研已出并落盘**（devloper 22:1x 派、22:3x 回执；**全程只读**，未改实现/判据/协议稿）：动机 = 单条正文预算 64 KB × 引用数上限 8 条 = 512 KB > 单次消息总预算 256 KB ⇒ 必然落 `body_too_large`；**键** = (accountScope, sessionId, branch, capturedAt, contentDigest) 全等（**五字段都已在协议 §1.1 快照里 ⇒ 不必新建索引表**）；**落点三层分界**（client **逐 occurrence 只看得到单 ref** / host `agent/pre-step` **只有文本级判定** / 存储层不改）；**红线**：绝不复用旧 id、隐式去重撞 S-7 ⇒ **合并必须可见否则不做**、内核重放不管、**偏向宁可漏**。**PM 建议裁定（待 izzy 拍板，未立项不生效）**：① 目标 = **省预算**、**不动 chip 数**；② 第一步只做**重复识别 ＋ 可见提示 ＋ 预算预检**、**不做消息级自动合并**（P2 阶段无可见承载位）；③ 落点 = **host 命令层产出「重复组」、client 呈现**，**不改消息内容**。**跨文档张力已消歧**（协议 v0.7 以 S-7 为准 ＋ feasibility §7 第 12 条，提交 `cdd03fb`） | `docs/features/official-chat/official-chat-p2-research.md`（**新载体**，PM 归属）＋ 任务队列 `task_1738d44c8207`（原件） |
 
 
 **关于上表里的 `%TEMP%` 证据路径**：2026-10-20 15:2x izzy 拍板「**可以清**」后，PM 已把 `%TEMP%\dsh-xlink-g1\` 与 `%TEMP%\dsh-probe\` 移入回收站（可恢复删除），**上表引用的原始 JSON / 截图 / 请求体日志已不在原位**。**仍可长期复核的，是本文件与 feasibility 里写下的数字、字段值与判据口径**——引用这些结论时不要再指望去原路径取原始产物。
