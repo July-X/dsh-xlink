@@ -1035,6 +1035,8 @@ PM 一手核过 `9c32e0d` 的现状（**该两笔只背书「已到位的部分�
 
 **④ PM 一手复跑（**已提交态**、HEAD `79962cf`、**工作树干净**、串行）**
 
+（tester 回执里「不变量全绿」属**成员自报** ⇒ PM 在**已提交态**补跑 `npm run check:static` 四项，**实测全绿**、与自报一致 —— 见下表最后一行。）
+
 | 面 | 结果 | 耗时 |
 | --- | --- | --- |
 | `node scripts/p2-protocol.test.mjs` | **29 / 29**（0 fail / 0 skipped） | **7.7s** |
@@ -1043,6 +1045,7 @@ PM 一手核过 `9c32e0d` 的现状（**该两笔只背书「已到位的部分�
 | `npm run test:plugin` | **289 / 0 / 3** | **5.3s** |
 | `node scripts/p1-protocol.run.mjs` | 43 / 40 / 0 / 3 | **2.9s** |
 | `node scripts/p1-protocol.test.mjs` | **60 / 60** | **1.3s** |
+| `npm run check:static`（invariants ＋ duplicates ＋ webdriver-gating ＋ builtin） | **四项全绿**：不变量**全部通过**（已扫 48 个文件）· 重复代码 **4 处（允许 8）** · WebDriver 门控 ✔ · builtin 资源 **4 插件 / 43 文件** | ~2s |
 
 **⑤ 重负载复验（并行 `npm run prep:builtin` ＋ 被测面）⇒ 仍不假红**
 
