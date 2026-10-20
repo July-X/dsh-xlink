@@ -745,6 +745,11 @@ export function createCommands({
         redundantBytes: (members.length - 1) * members[0].bytes,
       });
     }
+    // **组的顺序按 `groupKey` 升序**（协议 §3.2「多组形态」· PM 01:2x 裁定）：
+    // 顺序抖动会让「后发那条」的文案不稳定 ⇒ 用户两次看到的文案可能不同 ⇒
+    // 排成与**选中顺序无关**的定序。groupKey 是小写十六进制 ⇒ 按**字节序**比
+    // （与 Rust 侧的 `sort_by` 口径一致）。
+    groups.sort((a, b) => (a.groupKey < b.groupKey ? -1 : a.groupKey > b.groupKey ? 1 : 0));
     // **预算预检**（协议 §4）：`projectedBytes` = 各引用**各送一份**的总字节
     // （P1 S-7 口径）。**原生 `@session` 的占用本层不可观测**（host 没有草稿、
     // client 也拿不到草稿文本）⇒ 该项按 0 计 ⇒ 口径**偏保守**（可能少报一点）。

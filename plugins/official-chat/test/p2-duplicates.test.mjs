@@ -181,6 +181,37 @@ test('P2 §4：预算按各送一份累计；超限只标记，不截断正文',
   assert.equal(Buffer.byteLength(store.load(a.snapshotId).body, 'utf8'), 200000);
 });
 
+test('P2 §3.2 多组形态：两组 ⇒ 逐组各一组，且顺序按 groupKey 升序（与选中顺序无关）', async () => {
+  const { commands, store } = makeHarness();
+  // **两组**：各自 `capturedAt` 不同 ⇒ 五字段不全等 ⇒ 两个不同的组（§1.1）。
+  const a1 = makeSnapshot({ seq: 1, capturedAt: '2026-10-20T00:00:00.000Z', text: '正文甲。' });
+  const a2 = makeSnapshot({ seq: 2, capturedAt: '2026-10-20T00:00:00.000Z', text: '正文甲。' });
+  const b1 = makeSnapshot({ seq: 3, capturedAt: '2026-10-21T00:00:00.000Z', text: '正文乙。' });
+  const b2 = makeSnapshot({ seq: 4, capturedAt: '2026-10-21T00:00:00.000Z', text: '正文乙。' });
+  for (const one of [a1, a2, b1, b2]) store.save(one);
+  // **故意把「后出现的那组」放在前面** ⇒ 若实现按插入序排，出参就不是升序。
+  const result = await commands.duplicates({
+    sessionId: 'sess-alpha-001',
+    snapshotIds: [b1.snapshotId, b2.snapshotId, a1.snapshotId, a2.snapshotId],
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.groups.length, 2, '应有两个重复组');
+  // **顺序按 groupKey 升序**（协议 §3.2「多组形态」· PM 01:2x 裁定）。
+  const keys = result.groups.map((g) => String(g.groupKey));
+  assert.deepEqual(keys, [...keys].sort(), `组必须按 groupKey 升序：${keys.join(' / ')}`);
+  // **两组都在**（逐组列的前提：一组一条，不能合并成一个汇总）。
+  assert.equal(result.groups[0].members.length, 2);
+  assert.equal(result.groups[1].members.length, 2);
+  // **每组的字节数是组内口径**（不是各组之和）。
+  for (const group of result.groups) {
+    assert.equal(
+      group.redundantBytes,
+      Buffer.byteLength('正文甲。', 'utf8'),
+      '每组的 redundantBytes 必须是该组自己的口径',
+    );
+  }
+});
+
 test('P2 §2.3：入参形态不对 ⇒ 失败；码留在闭集内，原码进 detail', async () => {
   const { commands } = makeHarness();
   const noSession = await commands.duplicates({ sessionId: '', snapshotIds: [] });

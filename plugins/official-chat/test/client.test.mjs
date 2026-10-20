@@ -52,6 +52,9 @@ import {
  * @param {object} [options.config] - `window.__DSH_G1_CONFIG__`。
  * @param {boolean} [options.failDuplicates] - 让桩的 `duplicates` 端点失败（造
  *   「核对重复失败」的场景，协议 §2.3）。
+ * @param {boolean} [options.multiGroup] - 让桩的 `duplicates` 端点回**两组**
+ *   （协议 §3.2「多组形态」），且**故意按 groupKey 降序**给出 ⇒ 客户端必须
+ *   自己按升序排。
  * @param {number} [options.bodyBytes] - 让桩给出**大正文**（造超预算场景，
  *   协议 §4）；不给就用固定夹具正文。
  */
@@ -62,6 +65,7 @@ function loadClient({
   bail,
   config = {},
   failDuplicates = false,
+  multiGroup = false,
   bodyBytes = 0,
 } = {}) {
   const registered = [];
@@ -235,6 +239,33 @@ function loadClient({
       return { ok: true, snapshot: found.snapshot, body: found.body, state: 'ready' };
     }
     if (endpoint === 'duplicates') {
+      if (multiGroup) {
+        // **多组场景**（协议 §3.2「多组形态」）：两组，且**故意按 groupKey 降序**
+        // 给出 ⇒ 客户端必须自己按升序排（文案与 `notice.groups` 都要是升序）。
+        return {
+          ok: true,
+          groups: [
+            {
+              groupKey: 'ffffffffffffffff',
+              members: [
+                { snapshotId: 'ds~m~0001', capturedAt: '2026-10-21T00:00:00.000Z', contentDigest: 'd2' },
+                { snapshotId: 'ds~m~0002', capturedAt: '2026-10-21T00:00:00.000Z', contentDigest: 'd2' },
+                { snapshotId: 'ds~m~0003', capturedAt: '2026-10-21T00:00:00.000Z', contentDigest: 'd2' },
+              ],
+              redundantBytes: 200,
+            },
+            {
+              groupKey: '0000000000000001',
+              members: [
+                { snapshotId: 'ds~m~0004', capturedAt: '2026-10-20T00:00:00.000Z', contentDigest: 'd1' },
+                { snapshotId: 'ds~m~0005', capturedAt: '2026-10-20T00:00:00.000Z', contentDigest: 'd1' },
+              ],
+              redundantBytes: 100,
+            },
+          ],
+          budget: { limitBytes: 262144, projectedBytes: 300, wouldExceed: false, exceedByBytes: 0 },
+        };
+      }
       if (failDuplicates) {
         // **造「核对重复失败」**（协议 §2.3 的失败路径）。
         const error = new Error('快照不存在：桩注入的失败');
@@ -769,6 +800,49 @@ test('P2：核对重复失败 ⇒ info 档可见提示 + 不阻塞发送（协�
   await new Promise((r) => setTimeout(r, 60));
   const text = await source.codec.serialize(ref, new AbortController().signal);
   assert.equal(text, BODY_ALPHA, '核对失败不得影响正文照发');
+});
+
+test('P2：多组 ⇒ 文案逐组各一句，且按 groupKey 升序（协议 §3.2 多组形态）', async () => {
+  // **多组形态**（协议 §3.2「多组形态」· PM 01:2x 裁定）：
+  // · 「同组 N 条内容完全相同」必须按**组**读才为真 ⇒ **逐组各一句**；
+  // · 组的顺序按 `groupKey` 升序（桩故意降序给出 ⇒ 客户端必须自己排）。
+  const { api, ctx, registered, notices, sandbox } = loadClient({
+    config: { readDelayMs: 20 },
+    multiGroup: true,
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  pick(source);
+  await new Promise((r) => setTimeout(r, 140));
+  const probe = sandbox.__DSH_XLINK_OFFICIAL_CHAT_PROBE__;
+  const group = probe.events.filter((e) => e.kind === 'duplicate-groups').pop();
+  assert.ok(group, '多组时必须出重复组提示');
+  // **逐组列**：每组一句，各自带**自己那组**的条数与字节数。
+  assert.match(group.text, /同组 2 条内容完全相同，重复可省 100 字节/, '第一组要自包含');
+  assert.match(group.text, /同组 3 条内容完全相同，重复可省 200 字节/, '第二组要自包含');
+  // **顺序按 groupKey 升序**（桩给的是降序 ⇒ 客户端排过了）。
+  const first = group.text.indexOf('重复可省 100 字节');
+  const second = group.text.indexOf('重复可省 200 字节');
+  assert.ok(first >= 0 && second > first, `组必须按 groupKey 升序：${group.text}`);
+  // **不得出现「各组内容彼此相同」那种写法**（不实陈述，PM 明写不采纳）。
+  assert.doesNotMatch(
+    group.text,
+    /2 组|各组/,
+    `文案不得把多组说成「各组内容完全相同」：${group.text}`,
+  );
+  // **notice.groups 与文案同序**。
+  // （**用字符串比较而不是 deepEqual**：这些数组是在 vm 沙箱 realm 里造的 ⇒
+  //  `deepStrictEqual` 会因**原型不同**判不等，值其实一样。）
+  const keys = group.groups.map((g) => String(g.groupKey));
+  assert.equal(
+    keys.join(','),
+    [...keys].sort().join(','),
+    `notice.groups 也必须按 groupKey 升序：${keys.join(' / ')}`,
+  );
+  // **用户侧看到的那条**也是同一句（内核 notify 只带 level+text）。
+  const shown = notices.filter((n) => /本次核对：/.test(String(n?.text ?? '')));
+  assert.equal(shown.length, 1, `用户侧应看到一条提示：${JSON.stringify(notices)}`);
+  assert.equal(shown[0].text, group.text, '界面那条与结构化那条必须是同一句');
 });
 
 test('P2：同组 + 超预算 ⇒ 两个触发点的提示都出（协议 §3.1 各自独立）', async () => {

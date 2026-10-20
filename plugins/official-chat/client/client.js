@@ -1041,6 +1041,24 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * **按 `groupKey` 升序排组**（协议 §3.2「多组形态」· PM 01:2x 裁定）。
+     *
+     * **为什么排**：顺序抖动会让「后发那条」的文案不稳定 ⇒ 用户两次看到的文案
+     * 可能不同 ⇒ 排成与**选中顺序无关**的定序。groupKey 是小写十六进制 ⇒ 按
+     * **字节序**比（与 host 侧、Rust 侧口径一致）。
+     *
+     * @param {object[]} groups - 协议 §2.2 的 `groups`。
+     * @returns {object[]} 排好序的新数组（**不改原数组**）。
+     */
+    function sortGroupsByKey(groups) {
+      return [...groups].sort((a, b) => {
+        const ka = String(a?.groupKey ?? '');
+        const kb = String(b?.groupKey ?? '');
+        return ka < kb ? -1 : ka > kb ? 1 : 0;
+      });
+    }
+
+    /**
      * P2 提示的**成品文案**（UX 定稿 2026-10-21 · 协议 v0.6 §3.2 收录原文）。
      *
      * **为什么只有一份文案**：协议 §3.1（v0.4 起）——内核 notice 是**单槽**、
@@ -1050,11 +1068,13 @@ window.__ModuleLoader__.load({
      *
      * **数字不加千分位**（协议 v0.6 §3.2）——判据断的是**原值**在不在。
      *
-     * **多组时逐组列**：协议 §3.2「数字来源」里的 `members.length` 与
-     * `redundantBytes` 都是**组内**的量 ⇒ 把不同组混成一句（「同组 4 条」）是
-     * **假陈述** ⇒ 一组一句。
+     * **多组时逐组列**（协议 §3.2「多组形态」）：「同组 N 条内容完全相同」必须
+     * 按**组**读才为真（组内相同、组间不同）⇒ 每组一句、每句都为真 ⇒ **不产生
+     * 不实陈述**（像「2 组引用内容完全相同」那种写法会被读成「各组内容彼此相同」
+     * ⇒ 不采纳）。协议 §3.2「数字来源」里的 `members.length` 与 `redundantBytes`
+     * 都是**组内**的量 ⇒ 把不同组混成一句（「同组 4 条」）同样是假陈述。
      *
-     * @param {object[]} groups - 协议 §2.2 的 `groups`（host 只返回成员数 ≥ 2 的组）。
+     * @param {object[]} groups - 协议 §2.2 的 `groups`，**须已按 `groupKey` 升序**。
      * @param {object} budget - 协议 §2.2 的 `budget`。
      * @returns {string} 成品文案。
      */
@@ -1167,7 +1187,7 @@ window.__ModuleLoader__.load({
         });
         return undefined;
       }
-      const groups = Array.isArray(result.groups) ? result.groups : [];
+      const groups = sortGroupsByKey(Array.isArray(result.groups) ? result.groups : []);
       const budget = result.budget ?? {};
       // **成品文案只有一份**（UX 定稿 2026-10-21 · 协议 v0.6 §3.2「两条逐字相同」）：
       // §3.1 要求「后发那条自包含全部事实」⇒ 两条说的是同一件事 ⇒ 同一句文案
