@@ -480,3 +480,52 @@ prompt-caching 指南，它的模型差异表写着「GPT-5.6 及以后：路由
 加读原生 Codex 落盘日志（`token_usage_record`），基线与现状同一把尺子。
 
 
+
+## 24. 「读路径」和「写路径」一样要持 env 锁，而泄漏的 env 会掩盖别的缺陷（2026-10-20）
+
+**事情**：Windows CI 上 Dependabot 的 cargo 补丁版分支连红两次（run 39346453918 / 39363486523），
+红在「Windows compile + tests」里的两条 Rust 用例：
+
+- `shell::paths::integration_paths_tests::release_and_dev_shells_do_not_overlap`——
+  断言 `release_settings.starts_with(&home)` 失败；
+- `usage::local::tests::truncate_resets_account_and_append_continues_from_offset`——
+  「文件消失后账目必须移除」失败。
+
+看着像"升级了依赖把用例搞坏了"，其实不是：那条分支与 main 的**代码逐字节相同**，只差
+`Cargo.lock` 里 13 个依赖的补丁版，而 main 上同一个 Windows job 是绿的。红的是**时序**。
+
+**根因一：env 竞态，而且两边都有份。**
+
+`xlink_home()` 每次调用都现读 `DSH_XLINK_HOME`。而那条 paths 用例**不持守卫**地读了两次
+（一次拿路径、一次拿 `home`）——两次若跨过别的测试的守卫边界，读到的就是**两个不同的根**，
+`starts_with` 于是假红。写的那一端同样有问题：`diagnostics/run.rs` 里有两处**裸改**
+`set_var` / `remove_var`——一处把 `DSH_XLINK_HOME` 指到一个**文件**再删掉，一处把 `HOME`
+指到临时目录**而且从不还原**。仓库自己的纪律写着「裸 `std::env::set_var` 拦不住别的测试
+正持着同一把 env 锁」，这次它自己撞上了。
+
+**根因二：时钟 tick。** `usage::local` 那条用例删掉文件后立刻重扫，而「这一轮该读哪个文件」
+是靠 `variant_cache::resolve_variant` 的**目录 mtime 闸**判缓存失效的。删文件与上一轮扫描
+若落在同一个 tick（Windows 默认粒度 15.6ms），两轮读到一模一样的目录 mtime，缓存继续命中
+并返回**那个已经删掉的文件**的路径——这一轮照样把它算作"还在"，账目就不会被移除。
+同一文件里 `a_new_generation_in_the_same_session_dir_is_still_picked_up` 早在 2026-10-16 就为
+同一形状修过一次（Windows CI run 38923395574），**这条漏了**。
+
+**三条纪律**：
+
+1. **"读路径"和"写路径"一样要持守卫。** 原先那条纪律只说"测试不许碰用户的真实数据目录"，
+   读的人以为不写就没事——可 `xlink_home()` 每次都现读 env，**读**同样会被别人改掉。判据
+   能钉住"不许裸 `set_var`"，钉不住"必须持锁读"，后者靠纪律。
+2. **泄漏的 env 会掩盖别的缺陷。** 那条从不还原的 `HOME` 让
+   `display_xlink_home_falls_back_to_full_path_outside_home` **一直是对的**——因为泄漏的
+   `HOME` 是个临时目录，而用例的样本取自 `%TEMP%`。把泄漏修掉，真实 `HOME` 是
+   `C:\Users\<我>`，而 `%TEMP%` 正好在它**底下**：样本压根不在 home 之外，用例立刻红给你看。
+   **清掉一个假绿，往往会露出一个真红**——所以修泄漏时要把"原先被它遮住的用例"一起重看。
+3. **断言的前提要自己验，别让时钟替你验。** 目录 mtime 变了才失效缓存，这条前提要**跨过一个
+   tick** 才成立；范式就在同文件里：睡 40ms，做变更，**先断言前提成立**再判行为。
+
+**落点**：`src-tauri/src/shell/paths.rs`（paths 用例持 `scoped_xlink_home`）、
+`src-tauri/src/diagnostics/run.rs`（两处裸改 env 改成只走守卫；`HOME` 那处直接删掉——
+守卫的 `DSH_XLINK_HOME` 已经进了 `home_roots()`，折叠效果一样）、
+`src-tauri/src/usage/local.rs`（删文件前跨 tick 并断言前提）、
+`src-tauri/src/kernel/lifecycle.rs`（样本换成字面量路径，与兄弟用例一致）、
+`scripts/check-invariants.mjs` 第 23 项（除 `lib.rs` 的守卫外，裸改 home 类 env 一律禁止）。

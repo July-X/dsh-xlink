@@ -2819,17 +2819,16 @@ mod tests {
         // 样本必须是**真的**在 home 之外：`dirs_home().join("..")` 这种写法
         // 词法上仍是 home 的前缀，`strip_prefix` 会成功，于是测到的还是 `~/..`
         // 那一支（第一版就是这么写的，红的是样本而不是代码）。
-        let outside = std::env::temp_dir().join(format!(
-            "dsh-xlink-outside-home-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
+        //
+        // **用字面量路径，不用 `std::env::temp_dir()`**：Windows 上 `%TEMP%`
+        // 通常就落在 `%USERPROFILE%` 底下（`C:\Users\<我>\AppData\Local\Temp`），
+        // 那不是「home 之外」。`display_xlink_home()` 只读路径、不碰文件系统，
+        // 样本不需要真实存在——兄弟用例 `display_short_falls_back_to_full_path_outside_home`
+        // 同样用字面量。
+        let outside = PathBuf::from("/custom/redirect/.dsh-xlink");
         assert!(
             !outside.starts_with(dirs_home()),
-            "样本必须在 home 之外，否则这��测试测的是 ~/.. 那一支"
+            "样本必须在 home 之外，否则这条测试测的是 ~/.. 那一支"
         );
         let _guard = crate::tests::scoped_xlink_home(&outside);
         assert_eq!(display_xlink_home(), outside.display().to_string());

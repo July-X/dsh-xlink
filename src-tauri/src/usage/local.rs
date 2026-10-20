@@ -1131,7 +1131,25 @@ mod tests {
         );
 
         // 会话目录整体消失：账目随之移除。
+        //
+        // **前提要跨过一个时钟 tick**：目录条目增删才会刷新目录 mtime，而
+        // 「这一轮该读哪个文件」正是靠 `variant_cache::resolve_variant` 的
+        // 目录 mtime 闸判缓存失效。删文件与上一轮扫描若落在同一个 tick
+        // （Windows 默认粒度 15.6ms），两轮读到一模一样的目录 mtime，缓存
+        // 继续命中并返回**那个已经删掉的文件**的路径——这一轮照样把它算作
+        // 「还在」，账目就不会被移除。2026-10-20 的 Windows CI（run
+        // 39363486523）红的就是这一句：红的是时钟精度，不是账目逻辑。
+        //
+        // 与兄弟用例 `a_new_generation_in_the_same_session_dir_is_still_picked_up`
+        // 同一形状、同一处校准（40ms）。
+        let mtime_before = fs::metadata(&file_dir).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(40));
         fs::remove_file(&file).unwrap();
+        assert!(
+            fs::metadata(&file_dir).unwrap().modified().unwrap() > mtime_before,
+            "前提：跨过时钟 tick 后删除目录条目必须刷新目录 mtime——\
+             不成立时这条用例验的是时间戳精度，不是缓存失效路径"
+        );
         scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
         assert!(!doc.files.contains_key(key), "文件消失后账目必须移除");
         fs::remove_dir_all(&dir).ok();
