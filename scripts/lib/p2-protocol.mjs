@@ -357,12 +357,21 @@ function noticeRoundEvidence(adapter, { from = 0, lastRef = '' } = {}) {
  * ## 两层**互斥**，不并排（PM 2026-10-21 02:8x ⑤ 的口径）
  *
  * 1. **有事件证据**（这一轮**确实出过别的提示**）⇒ 说明**这一轮跑了** ⇒
- *    「疑似负载过高」这个解释**被证据排除** ⇒ 结论直接落在**实现漏报**上
- *    ⇒ 红字＝**现象 ＋ 结论**一条直线：
+ *    「疑似负载过高」这个解释**被证据排除** ⇒ 结论落在**实现漏报**上
+ *    ⇒ 红字＝**现象 ＋ 事实段（＋ 结论段）**：
  *    「等预算内未等到 X 提示（该轮确实出过提示：kind ⇒ 指向实现漏报，不是负载）」
  *    ⇒ **不出**通用后半句（「才按漏报论」）——它与更强的结论**叠读打架**。
  * 2. **没有事件证据**（这一轮压根没出提示）⇒ 只能停在**候选解释**上 ⇒
  *    走共享口径 `noticeTimeoutWhy()`：「（疑似负载过高）；若在低负载下稳定复现，才按漏报论」。
+ *
+ * ## 证据层 ＝ **事实段 ＋ 结论段**（结论段**可省**）
+ *
+ * - **事实段** ＝ `该轮确实出过提示：${evidence}`——**只陈述事实**，不含结论。
+ * - **结论段** ＝ ` ⇒ 指向实现漏报，不是负载`。
+ * - **该处自带结论**（`tailAlways`＝真，如 P2-5 那处）⇒ **只拼事实段**、
+ *   **不拼结论段**：否则红字会**先下结论、再说要分辨**（＝逻辑倒置，
+ *   与共享口径那套「候选解释 → 条件结论」不同款 ⇒ 同一机制里出现两套逻辑）。
+ * - **通用形态**（`tailAlways`＝假）⇒ **两段都拼**，逐字不变。
  *
  * @param {object} adapter
  * @param {string} what - 等的是哪条提示。
@@ -373,6 +382,8 @@ function noticeRoundEvidence(adapter, { from = 0, lastRef = '' } = {}) {
  * @param {string} [options.tail] - 「条件 ＋ 结论」（可按判据**覆盖**）。
  * @param {boolean} [options.tailAlways] - **该处专属**的排查指引 ⇒ **始终写**
  *   （即使有事件证据也写）——它说的是「**这一处**要分辨什么」，不是通用兜底结论。
+ *   ⇒ 同时表示「**该处自带结论**」⇒ 有事件证据时**只拼事实段**、不拼结论段
+ *   （否则红字「先下结论、再说要分辨」＝ 逻辑倒置）。
  * @param {number|null} [options.budgetMs]
  * @returns {string}
  */
@@ -390,12 +401,18 @@ function noticeTimeoutDetail(
 ) {
   const evidence = noticeRoundEvidence(adapter, { from, lastRef });
   if (evidence !== '') {
-    // **证据层单独成立** ⇒ 现象 ＋ 结论一条直线（**不**出通用后半句）。
+    // **证据层单独成立** ⇒ 现象 ＋ 事实段（**不**出通用后半句）。
     const budget = noticeWaitBudget(adapter, budgetMs);
+    // **事实段**：只陈述「这一轮确实出过什么提示」——**不含结论**。
+    const fact = `该轮确实出过提示：${evidence}`;
+    // **结论段**：只在**通用形态**（该处不带自己的 tail）时拼。
+    // （该处自带结论 ⇒ 证据层**只陈述事实**；否则红字会「先下结论、
+    //   再说要分辨」＝ 逻辑倒置，与共享口径那套「候选解释 → 条件结论」不同款。）
+    const conclusion = tailAlways ? '' : ' ⇒ 指向实现漏报，不是负载';
     const guide = tailAlways ? `；${tail}` : '';
     return (
       `等预算（${budget / 1000}s）内未等到${what}` +
-      `（该轮确实出过提示：${evidence} ⇒ 指向实现漏报，不是负载）${guide}`
+      `（${fact}${conclusion}）${guide}`
     );
   }
   return noticeTimeoutWhy(adapter, what, { verdict, tail, budgetMs });

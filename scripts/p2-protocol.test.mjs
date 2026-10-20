@@ -1450,12 +1450,24 @@ test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红�
    *
    * · **无事件证据**（这一轮压根没出提示）⇒ 现象 ＋ **候选解释**（「疑似负载过高」）
    *   ＋ 条件 ＋ 结论（通用后半句）⇒ **一条直线**。
-   * · **有事件证据**（这一轮出过别的提示）⇒ 现象 ＋ **证据结论**（指向实现漏报）
-   *   ⇒ **不出**通用后半句（**多层互斥**：否则两套结论叠读打架）。
-   * · **P2-5 那处**：无论有没有证据，都带**该处专属**的排查指引
-   *   「再分辨是漏报，还是只发了一条（被 early return 吃掉）」⇒ **不含**「才按漏报论」。
+   * · **有事件证据**（这一轮出过别的提示）⇒ 现象 ＋ **事实段**（「该轮确实出过提示：kind」）
+   *   ＋ **结论段**（「⇒ 指向实现漏报，不是负载」）⇒ **一条直线**。
+   * · **P2-5 那处**（`tailAlways`＝真 ⇒ **自带结论**）⇒ 证据层**只陈述事实**
+   *   （**不拼结论段**）＋ 该处专属的排查指引「再分辨是漏报，还是只发了一条
+   *   （被 early return 吃掉）」⇒ **不含**「才按漏报论」、**不含**「指向实现漏报」。
+   *   （否则红字会「先下结论、再说要分辨」＝ 逻辑倒置。）
+   *
+   * @param {RegExp|null} [options.evidenceConclusion] - 证据层**结论段**的形态：
+   *   默认 `/指向实现漏报，不是负载/`（通用形态）；该处自带结论时传 `null`
+   *   （既不要求，同时由 `forbid` 断**不含**它）。
+   * @param {RegExp|RegExp[]|null} [options.forbid] - 红字里**不许**出现的措辞
+   *   （可给多个）。
    */
-  const expectTimeoutWording = (result, where, { evidence = null, tail = null, forbid = null } = {}) => {
+  const expectTimeoutWording = (
+    result,
+    where,
+    { evidence = null, tail = null, forbid = null, evidenceConclusion = /指向实现漏报，不是负载/ } = {},
+  ) => {
     assert.equal(result.status, FAIL, `${where} 该红：${result.detail}`);
     assert.match(result.detail, /等预算（[\d.]+s）内未等到/, `${where} 没写「未等到」：${result.detail}`);
     if (evidence === null) {
@@ -1471,7 +1483,11 @@ test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红�
         new RegExp(`该轮确实出过提示：${evidence}`),
         `${where} 缺事件证据：${result.detail}`,
       );
-      assert.match(result.detail, /指向实现漏报，不是负载/, `${where} 证据结论不对：${result.detail}`);
+      // **结论段**：通用形态才带「⇒ 指向实现漏报，不是负载」；
+      // 该处自带结论（`tailAlways`＝真）⇒ 证据层**只陈述事实** ⇒ 传 `null` 不要求。
+      if (evidenceConclusion !== null) {
+        assert.match(result.detail, evidenceConclusion, `${where} 证据结论不对：${result.detail}`);
+      }
       assert.doesNotMatch(
         result.detail,
         /疑似负载过高/,
@@ -1493,8 +1509,9 @@ test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红�
         `${where} 有证据却还出通用后半句（叠读打架）：${result.detail}`,
       );
     }
-    if (forbid !== null) {
-      assert.doesNotMatch(result.detail, forbid, `${where} 出现了不该有的措辞：${result.detail}`);
+    const forbidList = forbid === null ? [] : Array.isArray(forbid) ? forbid : [forbid];
+    for (const one of forbidList) {
+      assert.doesNotMatch(result.detail, one, `${where} 出现了不该有的措辞（${one}）：${result.detail}`);
     }
     assert.doesNotMatch(result.detail, /没有出现/, `${where} 仍写成「没有出现」（误读源）：${result.detail}`);
     // **元话语不进红字**（「这一处另注」是给实现者看的说明，对排查者是噪声）。
@@ -1529,6 +1546,8 @@ test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红�
     'P2-5 纯预算',
   );
   // ④ P2-5：同组场景（等「重复组」提示）——**这一轮出的是预算提示** ⇒ 有事件证据。
+  //    这是**通用形态**（该处 `tailAlways` 为假）⇒ 证据层**事实段 ＋ 结论段**齐全，
+  //    且**不含** P2-5 那处的专属指引「再分辨…」（专属措辞不进通用形态）。
   expectTimeoutWording(
     await checkP2_5_budgetNoticeNoTruncation(
       makeSyntheticAdapter({
@@ -1539,9 +1558,13 @@ test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红�
       }),
     ),
     'P2-5 同组场景·组提示',
-    { evidence: 'budget-exceeded' },
+    { evidence: 'budget-exceeded', forbid: /再分辨是漏报/ },
   );
   // ⑤ P2-5：同组场景（等预算提示）——**有事件证据** ＋ 该处专属排查指引。
+  //    该处 `tailAlways`＝真 ⇒ **自带结论** ⇒ 证据层**只陈述事实**：
+  //    含「该轮确实出过提示：duplicate-groups」＋含专属指引
+  //    「再分辨是漏报，还是只发了一条（被 early return 吃掉）」，
+  //    **不含**「指向实现漏报，不是负载」（否则「先下结论、再说要分辨」＝ 逻辑倒置）。
   expectTimeoutWording(
     await checkP2_5_budgetNoticeNoTruncation(
       makeSyntheticAdapter({
@@ -1552,7 +1575,13 @@ test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红�
       }),
     ),
     'P2-5 同组场景·预算提示',
-    { evidence: 'duplicate-groups', tail: P2_5_GUIDE, forbid: /才按漏报论/ },
+    {
+      evidence: 'duplicate-groups',
+      tail: P2_5_GUIDE,
+      // 该处自带结论 ⇒ 证据层**不拼**结论段 ⇒ 既不要求、也断**不含**。
+      evidenceConclusion: null,
+      forbid: [/才按漏报论/, /指向实现漏报/],
+    },
   );
   // ⑤' P2-5：同组场景（等预算提示）——**无事件证据**（组提示没带 trigger ⇒ 无法归属）
   //      ⇒ 走「疑似负载过高 ＋ 该处专属排查指引」这一形状。
@@ -1674,6 +1703,9 @@ test('事件式等待（信号① `trigger`）：① 这一轮出过别的提示
   // **证据层单独成立**（PM 02:8x ⑤ 的多层互斥）⇒ 现象 ＋ 结论一条直线。
   assert.match(otherKind.detail, /该轮确实出过提示：budget-exceeded/);
   assert.match(otherKind.detail, /指向实现漏报，不是负载/);
+  // **通用形态逐字不变**：证据层＝事实段 ＋ 结论段；**不含**别处专属的
+  // 「再分辨…」（那一句只属于 P2-5 那处 ⇒ 专属措辞不进通用形态）。
+  assert.doesNotMatch(otherKind.detail, /再分辨是漏报/);
   // 有证据 ⇒ 「疑似负载过高」被证据排除、通用后半句**不出**（否则叠读打架）。
   assert.doesNotMatch(otherKind.detail, /疑似负载过高/);
   assert.doesNotMatch(otherKind.detail, /才按漏报论/);
