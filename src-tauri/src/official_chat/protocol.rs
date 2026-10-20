@@ -993,7 +993,8 @@ mod tests {
                         .expect("缺 groupKey");
                     assert_eq!(gk.len(), 16, "{name}：groupKey 必须是 16 位");
                     assert!(
-                        gk.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                        gk.chars()
+                            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
                         "{name}：groupKey 必须是 16 位小写十六进制"
                     );
                 }
