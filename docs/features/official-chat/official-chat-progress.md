@@ -375,6 +375,27 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 **一处判据用例之间的形态冲突（待 tester 统一，PM 未擅自改他的在途文件）**：A18i 的注入用例按「把**调用点**的 `logger` 置空」制造「不留痕」，而 A17 / A18g 的锚点锁死「调用点不带参数」⇒ **两条期望互斥**。PM 建议：**留痕统一在调用处**，A18i 的注入改成「去掉 `else logger?.warn?.(...)` 那一行」（他 v0.2 版用例里本来就有这条正则），则 A17 / A18g / A18i **三条锚点可同时成立**。**已提交版判据集不受影响**（PM 实测 39/39 绿）。
 
 
+### 2026-10-20 22:2x · 上游内核一行修复已提交（G1-7 根治）＋ 临时/隔离目录清理
+
+**上游修复（izzy 22:1x 拍板「修复」）**
+
+- **上游仓库定位**：`@deepseek-ai/dsh-client-connection` 的 `package.json` 写着 `repository = deepseek-ai/deepseek-harness`，目录 `packages/client/connection` ⇒ 源码在 **`deepseek-ai/deepseek-harness`**（July-X 有 fork）。**upstream `master@687f282e`＝`release dsh@0.2.1-rc.2`**＝**本机现役内核同源**（fork 此前落后 2373 提交，已用 `merge-upstream` 快进）。
+- **那一行仍在**（未修）：`packages/client/connection/src/rpc-host.ts` 的 `HostConnectionService.register()` 里 `return owner.effect(() => owner.webServer.register(route), …)`（blob SHA `88e7b48b…`）。
+- **根因在 cordis 源码层面坐实**（现役 `0.2.1-rc.2` 的 `@deepseek-ai/cordis/lib/index.js`）：
+  - `ctx.get(name)`（`:763-765`）→ `_getImpl`（`:766-772`）读 `this.ctx[symbols.isolate][name]` + `this.store` ⇒ **服务注册表**，**跨 scope 可达**；
+  - **属性访问**（`:887-893` 的 Proxy get）走**本 scope 的注入链** ⇒ connection 插件自己的 scope 从不 inject `webServer` ⇒ **必抛** `cannot get property "webServer" without inject`。
+  - ⇒ `owner.get('webServer')` 正是**内核自己**读 webServer 的写法（`admit` / `isTrusted` / `authorizeConnect` / `authorizeIndex` 全用它）。
+- **修复内容**（**仅此一处，+14/−4**）：`owner.webServer.register(route)` ⇒ `const webServer = owner.get('webServer')` + 不可得时**显式抛错** + `webServer.register(route)`；并注明「`connection.fetch.register(...)` 不受影响（`registerFetchRoute` 完全不碰 webServer）」。
+- **提交位置**：`July-X/deepseek-harness` 分支 **`fix/connection-owner-webserver-get`**，commit **`aa7404de`**（已在 GitHub 网页 compare 页核对：1 commit / 1 file changed / +14 −4，与本地 `git diff --no-index` 逐字节一致）。
+- **PR 待开**：跨 owner 的 fork→upstream，**API 无 `pull_requests: write` 权限**（`gh pr create` 报 `July-X does not have the correct permissions`）⇒ 须走 GitHub 网页 compare 流程。⇒ **G1-7 仍不关闭**；等上游合并并发版后，本项目再把通道收敛回 `rpc.handle`（RPC 信封不用改）。
+
+**清理（izzy 22:1x 拍板「清理临时目录、隔离目录」）**
+
+- **已清**（运行时可恢复删除启动器，**移入回收站、未永久删除**）：`%TEMP%\dsh-xlink-g1\`（**隔离 home ＋ 真机证据 ＋ 内核副本**，693 MB）、`%TEMP%\g1-probe*`（5 个，264 MB）、`%TEMP%\dsh-xlink-*`（Rust 测试残留数千个，693 MB）⇒ 合计约 **1.6 GB**。
+- **未清**（**不属本项目范围**，别误删）：`%TEMP%\.tmp*`、`dsh-acl-skill-*`、`xlink-*` 等其它功能的测试残留。
+- **可恢复性**：全部走 `mavis-trash`（回收站），未做永久删除。
+- **结论载体不受影响**：真机轮 p1-r9 与临界夹具的结论**已固化在本文件与协议稿**里 ⇒ 证据文件可清（izzy 15:2x 拍板「证据可以清」），**且没有任何判据依赖这些外部产物**（A0 真机级永久如实报 skipped，结论载体是本文件）。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
