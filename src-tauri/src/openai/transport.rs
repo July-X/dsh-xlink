@@ -146,9 +146,6 @@ where
                     .read_to_string()
                     .map_err(|error| Failure::Transport(format!("读取响应体失败：{error}")))?;
                 if (200..300).contains(&status) {
-                    if let net_proxy::Route::Proxy { url: proxy, .. } = route {
-                        net_proxy::remember_proxy(proxy);
-                    }
                     return Ok(text);
                 }
                 if looks_like_gateway_challenge(status, &text) {
@@ -237,9 +234,6 @@ fn post_stream_over(
             Ok(response) => {
                 let status = response.status().as_u16();
                 if (200..300).contains(&status) {
-                    if let net_proxy::Route::Proxy { url: proxy, .. } = route {
-                        net_proxy::remember_proxy(proxy);
-                    }
                     let (_, body) = response.into_parts();
                     return Ok(Box::new(std::io::BufReader::new(body.into_reader())));
                 }

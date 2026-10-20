@@ -13,11 +13,28 @@
 //! 运行时（软件没开 / 端口被占 / PAC 指向拿不到的内网）是常事，直连仍能救回
 //! 一次检查。直连是**兜底**，不是与代理并列的第二个选项。
 //!
-//! 不回退的是别的东西：签名校验失败、清单解析失败、URL 无效——换一条路只会
-//! 同样地失败，见 `updater::should_try_next`。
+//! **代理地址只有一个来源：当下读到的系统配置**（环境变量 → Windows 注册表
+//! Internet Settings / macOS `scutil`）。**不落盘、不记忆、不复用上一次成功过
+//! 的地址**——2026-10-20 实测把这条纪律补上：记忆代理（`last-proxy.txt`）是
+//! 一份**快照**，它带来的问题比它解决的问题多：
 //!
-//! 代价可控：代理没在运行时，多半是连本机端口被拒（毫秒级），因此多出来的那
-//! 一次尝试通常比一次失败的直连还短。
+//!   ① **快照会过期**：本地代理客户端（Clash / Verge / v2rayN / Abysswalker）
+//!      换端口、随机端口、重启后端口都变。过期地址要么让每次请求先白付一次
+//!      必然失败的连接（本机实测：更新检查连着 3 次先去撞一个已经不存在的端口
+//!      才回退直连），要么——更糟——**那个端口已经被别的进程占用了**，于是请求
+//!      被送进一个用户根本没打算让它走的服务。
+//!   ② **它盖过用户自己的开关**：`NO_PROXY=*`（"什么都别走代理"）与系统代理
+//!      开关被关掉（"用户刚把代理关了"）在旧实现里都只是"探测不到"，于是记忆
+//!      地址被插回路由表——**用户明确说不要走代理，请求还是走了代理**。
+//!   ③ **它和这次请求无关**：记住地址的是 OpenAI / Codex 那条路（它证明的是
+//!      "这个代理通 chatgpt.com"），复用的却是 GitHub 更新检查那条路。
+//!
+//! 原设计要解决的是"探测间歇失灵"（2026-10-09 记录：注册表开关抖动）。实测
+//! **抖动期间代理客户端本身就在重启，端口根本不在线**——那正是记忆地址**帮不上
+//! 忙**的时刻：它只多给一次注定失败的尝试。（2026-10-20 在本机连续 40 次采样
+//! 间隔 250ms，`ProxyEnable` 40/40 稳定为 1，读失败是罕见事件。）真正要救
+//! "直连被网关按出口拦（Cloudflare 403 挑战页）"的，是 `transport.rs` 里
+//! "403 + HTML 挑战页视为路由依赖失败、换下一条路"那条规则，与记忆地址无关。
 //!
 //! 这一层只管「走哪条路」。壳里另外两条出网路径不归它管，也不要往这里凑：
 //! WebView2 / WKWebView 本身就跟随系统代理，pnpm / npm 读的是 npm 自己的
@@ -46,66 +63,20 @@ impl Route {
 
 /// 按「先代理、失败再直连」给出本次要试的顺序。
 ///
-/// 恒非空，末位恒为直连——回退的终点是「一定试过一次直连」。代理探测
-/// 间歇失灵（注册表开关抖动，2026-10-09 实测）时，上次**成功过**的代理
-/// 地址作为兜底路由插在直连之前（[`remember_proxy`] 记忆）。
+/// 恒非空，末位恒为直连——回退的终点是「一定试过一次直连」。
+///
+/// **只认当下探测到的地址**：不落盘、不记忆（理由见文件头）。探测不到就是
+/// 「此刻没有可用的代理」，直连——不是「翻出上次成功过的地址接着试」。
 pub fn routes() -> Vec<Route> {
-    let remembered = remembered_proxy();
-    routes_from(detect(), remembered.as_ref())
+    routes_from(detect())
 }
 
 /// 纯函数部分：把「探测结果」变成「要试的顺序」。与探测分开是为了能直接测
-/// 顺序本身，而不必在一台真的开着代理的机器上验证。记忆代理只在它不等于
-/// 当前探测结果时插入（同一个地址插两遍是浪费一次必然同样结果的请求）。
-fn routes_from(detected: Option<(Url, &'static str)>, remembered: Option<&Url>) -> Vec<Route> {
-    let mut routes = match detected {
+/// 顺序本身，而不必在一台真的开着代理的机器上验证。
+fn routes_from(detected: Option<(Url, &'static str)>) -> Vec<Route> {
+    match detected {
         Some((url, source)) => vec![Route::Proxy { url, source }, Route::Direct],
         None => vec![Route::Direct],
-    };
-    if let Some(url) = remembered {
-        let already = routes
-            .iter()
-            .any(|route| matches!(route, Route::Proxy { url: seen, .. } if seen == url));
-        if !already {
-            routes.insert(
-                routes.len().saturating_sub(1),
-                Route::Proxy {
-                    url: url.clone(),
-                    source: LAST_PROXY_SOURCE,
-                },
-            );
-        }
-    }
-    routes
-}
-
-/// 「上次成功过的代理」的展示名与落盘文件名（xlink home 下，一行 URL）。
-const LAST_PROXY_SOURCE: &str = "上次成功的代理（记忆）";
-
-fn remembered_proxy_path() -> std::path::PathBuf {
-    crate::shell::paths::xlink_home().join("last-proxy.txt")
-}
-
-/// 读记忆的代理地址；文件缺失/内容解析不出一律 `None`（与探测同纪律：
-/// 读不到只是"没有可用的兜底"，不是错误）。
-fn remembered_proxy() -> Option<Url> {
-    let text = std::fs::read_to_string(remembered_proxy_path()).ok()?;
-    normalize(text.trim())
-}
-
-/// 记住一个**成功过**的代理地址（供下次探测失灵时兜底）。写入尽力而为：
-/// 失败只留 stderr——记忆是弹性优化，不是关键路径。
-pub(crate) fn remember_proxy(url: &Url) {
-    let path = remembered_proxy_path();
-    let line = format!("{url}\n");
-    if std::fs::read_to_string(&path).is_ok_and(|existing| existing == line) {
-        return;
-    }
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Err(error) = crate::shell::process::atomic_write(&path, line.as_bytes()) {
-        eprintln!("dsh-xlink: 记忆代理地址失败（{}）：{error}", path.display());
     }
 }
 
@@ -117,6 +88,34 @@ fn detect() -> Option<(Url, &'static str)> {
         return None;
     }
     from_env().or_else(from_system)
+}
+
+/// 已退休的「记忆代理」文件（xlink home 下，一行 URL）。
+///
+/// 旧机制把上次成功过的代理地址落在这里；现在代理地址只从**当下**读到的系统
+/// 配置来，这份快照没人读了。留着它有两个坏处：① 用户翻数据目录时会以为壳
+/// "写死"了代理地址；② 里面存的还是那个改过端口的旧地址，看着像配置。
+const RETIRED_PROXY_MEMORY_FILE: &str = "last-proxy.txt";
+
+/// 清掉已退休的「记忆代理」文件。幂等：文件不在就算成功。
+///
+/// 失败只留 stderr 并记进事件日志——它是**残留**，不是错误，绝不能因此挡住
+/// 启动。
+pub(crate) fn retire_remembered_proxy_file() {
+    let path = crate::shell::paths::xlink_home().join(RETIRED_PROXY_MEMORY_FILE);
+    if !path.is_file() {
+        return;
+    }
+    match std::fs::remove_file(&path) {
+        Ok(()) => crate::shell::shell_events::record(
+            "net-proxy",
+            "已清理已退休的「记忆代理」文件：代理地址现在只从当下读到的系统配置来",
+        ),
+        Err(error) => eprintln!(
+            "dsh-xlink: 清理已退休的记忆代理文件失败（{}）：{error}",
+            path.display()
+        ),
+    }
 }
 
 /// 环境变量优先于系统设置：用户为绕开某个站点专门设的变量，比"系统里开着
@@ -374,45 +373,72 @@ mod tests {
         Url::parse(value).expect("测试里的地址应当是合法的 URL")
     }
 
-    /// 只有直连时**不能**凭空造一条代理路由：那是把"用户没配代理"改成
-    /// "用户配了个不存在的代理"。记忆代理作为探测失灵时的兜底插在直连
-    /// 之前；与探测结果相同则不重复插入。
+    /// 路由表里**只可能有当下探测到的那个地址**。
+    ///
+    /// 旧实现还有一份"上次成功过的代理"记忆，会在探测不到时插回路由表——
+    /// 那是把一份**快照**当成配置用，会盖过用户自己的开关（`NO_PROXY=*`、
+    /// 把系统代理关掉），还会在客户端换端口后先白撞一次死端口。
     #[test]
-    fn routes_end_with_direct_and_start_with_the_detected_proxy() {
-        let remembered = url_of("http://127.0.0.1:7891");
-        let with_proxy = routes_from(
-            Some((url_of("http://127.0.0.1:7890"), "测试来源")),
-            Some(&remembered),
-        );
-        assert_eq!(with_proxy.len(), 3, "探测代理 + 记忆代理 + 直连");
+    fn routes_only_ever_contain_the_freshly_detected_proxy() {
+        let with_proxy = routes_from(Some((url_of("http://127.0.0.1:7890"), "测试来源")));
+        assert_eq!(with_proxy.len(), 2, "探测代理 + 直连");
         assert_eq!(
             with_proxy[0].describe(),
             // `Url` 会给空路径补一个尾斜杠，展示的就是这个形态。
             "代理 http://127.0.0.1:7890/（测试来源）"
         );
-        assert!(matches!(
-            &with_proxy[1],
-            Route::Proxy { url, .. } if url == &url_of("http://127.0.0.1:7891")
-        ));
-        assert_eq!(with_proxy[2], Route::Direct);
+        assert_eq!(with_proxy[1], Route::Direct);
 
-        // 记忆代理与探测结果相同：不重复插入。
-        let same = routes_from(
-            Some((url_of("http://127.0.0.1:7890"), "测试来源")),
-            Some(&url_of("http://127.0.0.1:7890")),
+        // 探测不到就是"此刻没有可用的代理"：直连，不翻旧账。
+        assert_eq!(routes_from(None), vec![Route::Direct]);
+    }
+
+    /// 退休清理必须真的把那份快照删掉，而且**不许**碰用户数据目录里的别的文件。
+    ///
+    /// 用 `scoped_xlink_home` 把 `DSH_XLINK_HOME` 指到临时目录——测试永远不许碰
+    /// 用户真实的数据目录（那里面是用户的内核、实例与会话）。
+    #[test]
+    fn the_retired_proxy_memory_file_is_removed_and_other_files_are_untouched() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-net-proxy-retire-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("建临时 home");
+        let _guard = crate::tests::scoped_xlink_home(&home);
+
+        let stale = crate::shell::paths::xlink_home().join(RETIRED_PROXY_MEMORY_FILE);
+        std::fs::write(&stale, b"http://127.0.0.1:33210/\n").expect("写残留文件");
+        let keep = crate::shell::paths::xlink_home().join("keep.txt");
+        std::fs::write(&keep, b"keep").expect("写对照文件");
+
+        retire_remembered_proxy_file();
+        assert!(!stale.exists(), "残留的「记忆代理」文件必须被清掉");
+        assert!(keep.exists(), "别的文件不许动");
+
+        // 幂等：文件已经不在时再调一次不报错。
+        retire_remembered_proxy_file();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 代理地址**不许落盘**：记忆文件一旦存在，路由表就可能用上一个跟当前
+    /// 配置无关的地址。判据直接盯生产代码里那个函数名与写文件的调用。
+    #[test]
+    fn no_proxy_address_is_persisted_anywhere() {
+        let source = include_str!("net_proxy.rs");
+        // 拼起来查：这个判据的源码本身就在被检查的文件里，字面量写全了会
+        // 匹配到自己（"含自身"的那种假红）。
+        let forbidden = ["remember", "_proxy("].concat();
+        assert!(
+            !source.contains(&forbidden),
+            "记忆代理机制已退休：代理地址只从当下读到的系统配置来"
         );
-        assert_eq!(same.len(), 2);
-
-        let without_proxy = routes_from(None, None);
-        assert_eq!(without_proxy, vec![Route::Direct]);
-
-        // 探测不到但记忆还在：兜底路由仍然可用（系统代理开关抖动的兜底）。
-        let remembered_only = routes_from(None, Some(&url_of("http://127.0.0.1:7891")));
-        assert_eq!(remembered_only.len(), 2);
-        assert!(matches!(
-            &remembered_only[0],
-            Route::Proxy { url, .. } if url == &url_of("http://127.0.0.1:7891")
-        ));
+        let write = ["atomic_write", "(&path"].concat();
+        assert!(!source.contains(&write), "代理地址不许落盘");
     }
 
     /// `ProxyServer` 的两种写法都要认：`host:port` 与分协议的

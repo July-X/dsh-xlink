@@ -241,6 +241,11 @@ pub fn run() {
             if let Err(error) = crate::shell::instance::ensure_default_registered(&data_dir) {
                 eprintln!("dsh-xlink: 默认实例注册失败（{error}）");
             }
+            // 代理地址现在只从**当下**读到的系统配置来（`pkg::net_proxy`）。
+            // 旧机制落下的那份「上次成功过的代理」快照没人读了，清掉——留在
+            // 数据目录里会让人以为壳"写死"了代理地址，里面存的还是那个改过
+            // 端口的旧地址。
+            crate::pkg::net_proxy::retire_remembered_proxy_file();
             // 回收上一次预检崩溃留下的沙盒实例目录。这些目录对用户没有任何
             // 价值，却会让实例目录越攒越多，也会让人以为系统里真有一个叫
             // 「沙盒预检」的实例。放在实例注册之后，保证随后 `load_registry`
