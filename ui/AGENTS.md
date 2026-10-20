@@ -141,10 +141,12 @@ caption）都在下文逐条登记了理由。
   - **`<img>` 的 `width` / `height` 属性必须与 CSS 相等**（`SideBar.vue` 与
     theme.css 都是 42）：CSS 只覆盖绘制，那两个属性是给读屏与布局的第一手尺寸，两处
     各写一遍迟早漂。同理 `flex: 0 0 42px` 少一条，图标会被文字挤扁且不报错。
-- 侧栏底部那一行是工具区，收起开关也在里面：「标签 + 版本 + 收起 + 刷新 + 主题」，
-  收起开关排在刷新之前。**收起态必须竖排**（`flex-direction: column` 写死，不靠
-  `flex-wrap`——那会让换不换行取决于实际渲染宽度）：横排要 100px 而内容盒只有 48px，
-  否则溢出到主区。`.brand` 的 `position: relative` 已随开关搬家删除。
+- 侧栏底部工具区**是两行**（2026-10-20）：上一行「标签 + 收起 + 刷新 + 主题」
+  （控件靠右），下一行版本号独占整条 220px。**版本号不许回到控件同一行**——标签 +
+  三枚 26px 方钮 + 4 道缝占掉 ~142px，只给它留 ~78px，dev 后缀必被截掉。
+  **收起态必须竖排**（写死 `flex-direction: column`，不靠 `flex-wrap`——那取决于
+  渲染宽度）：三枚控件横排要 92px 而内容盒只有 48px；版本号与标签在收起态隐藏。
+  `.brand` 的 `position: relative` 已随开关搬家删除。判据在 `designAlignment.test.js`。
 - 构建标识（dev 鲸眼红 / release Gitea 绿）收成**窗顶 2px 细线**，由 `--build-color`
   驱动，两种构建共用同一条 `.app-shell::before` 规则只换颜色变量。旧版那条「铺满全高
   的品牌色渐变带」已删除，它与卡片描边互相拍频。判据 `ui/test/diskUsageAndChrome.test.js`

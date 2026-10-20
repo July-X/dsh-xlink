@@ -627,7 +627,7 @@ test('侧栏主题单按钮循环切换三种模式，保留当前图标与切�
   assert.match(sidebar, /\+ 1\) % themeOptions.length/);
 });
 
-test('底部一行固定三个方形控件：收起 / 刷新 26×22，标签与版本徽标可压缩', () => {
+test('底部控件行固定三个方形控件：收起 / 刷新 26×22，标签不换行', () => {
   assert.equal(effectiveDeclaration(['sidebar__icon-btn'], RULES, 'width'), '26px');
   assert.equal(effectiveDeclaration(['sidebar__icon-btn'], RULES, 'height'), '22px');
   assert.equal(effectiveDeclaration(['sidebar__footer-label'], RULES, 'white-space'), 'nowrap');
@@ -636,7 +636,51 @@ test('底部一行固定三个方形控件：收起 / 刷新 26×22，标签与�
   assert.equal((sidebar.match(/class="sidebar__theme-btn sidebar__icon-btn"/g) || []).length, 1);
 });
 
-test('收起开关在底部一行，排在刷新之前；品牌行不再有按钮', () => {
+// 2026-10-20 用户截图：底部只有一行时，224px 里「桌面端 + 版本号 + 三个方钮」
+// 放不下，版本号被截成「0.5.8-r…」——dev 构建的「（dev）」后缀整段看不见，
+// 而那个后缀正是 dev / release 的唯一区分标记。修法是把底部拆成两行：
+// 控件留在第一行，版本号独占第二行（可用整条 220px），省略号只作极端兜底。
+//
+// 判据**结构 + 样式一起钉**：只钉 `flex-direction: column` 是假绿——把版本号
+// 塞回控件行、或让 footer 换回 row 时，CSS 一个字不动也查不出来。所以模板侧
+// 用 @vue/compiler-sfc 的 AST 判父子关系（版本号必须是 `.sidebar__footer` 的
+// 直接子级，且排在控件行之后），CSS 侧判生效的 flex 方向。
+test('侧栏底部拆成两行：控件一行、版本号独占一行（2026-10-20 版本号被截断的修复）', () => {
+  assert.equal(effectiveDeclaration(['sidebar__footer'], RULES, 'flex-direction'), 'column');
+  assert.equal(effectiveDeclaration(['sidebar__footer-tools'], RULES, 'justify-content'), 'space-between');
+  assert.equal(effectiveDeclaration(['sidebar__footer-actions'], RULES, 'display'), 'flex');
+
+  const { descriptor } = parse(sidebar);
+  const hasClass = (node, value) => (node.props || []).some((p) => p.name === 'class' && p.value?.content === value);
+  const classOf = (node) => (node.props || []).find((p) => p.name === 'class' && p.value?.content)?.value.content;
+  const findAll = (node, predicate, out = []) => {
+    for (const child of node.children || []) {
+      if (predicate(child)) out.push(child);
+      findAll(child, predicate, out);
+    }
+    return out;
+  };
+  const footer = findAll(descriptor.template.ast, (node) => hasClass(node, 'sidebar__footer'))[0];
+  assert.ok(footer, '找不到 .sidebar__footer 节点');
+  const footerKids = footer.children.filter((node) => node.type === 1);
+  assert.deepEqual(
+    footerKids.map(classOf),
+    ['sidebar__footer-tools', 'version-badge'],
+    '版本号必须是 .sidebar__footer 的直接子级、排在控件行之后——回到「标签 + 版本 + 三个控件」同一行就是这次要修的那个 bug',
+  );
+
+  const toolsKids = footerKids[0].children.filter((node) => node.type === 1);
+  assert.deepEqual(
+    toolsKids.map(classOf),
+    ['nav-item__label sidebar__footer-label', 'sidebar__footer-actions'],
+    '控件行只有标签与控件组两件；版本号不许混进来',
+  );
+  const actionsKids = toolsKids[1].children.filter((node) => node.type === 1);
+  assert.equal(actionsKids.length, 3, '收起 / 刷新 / 主题三个控件收在同一组里');
+  assert.ok(actionsKids.every((node) => node.tag === 'button'));
+});
+
+test('收起开关在底部控件行，排在刷新之前；品牌行不再有按钮', () => {
   // 2026-10-07 用户要求：收起开关从品牌行右端移到底部（覆盖设计稿——稿子的
   // `.sidebar-footer` 只有标签/版本/刷新/主题四个元素，`.sidebar-toggle` 画在
   // `.brand` 右端）。判据钉的是**位置与顺序**这两件事实。
@@ -660,10 +704,12 @@ test('收起开关在底部一行，排在刷新之前；品牌行不再有按�
 
 test('收起态底部竖排三个控件（64px 侧栏横排必然溢出到主区）', () => {
   // 后代 + 类组合选择器，层叠工具按主语匹配时只看到 `.sidebar__footer`，
-  // 问不出 `is-collapsed` 那一半，所以这条直接看选择器文本。
+  // 问不出 `is-collapsed` 那一半，所以这条直接看选择器文本。竖排落在控件组
+  // 上（`.sidebar__footer-actions`）：footer 本身已经是 column，收起态与展开
+  // 态的差别在「控件组是横排还是竖排」。
   assert.match(
     themeCss,
-    /\.sidebar\.is-collapsed \.sidebar__footer\s*\{[^}]*flex-direction:\s*column/,
+    /\.sidebar\.is-collapsed \.sidebar__footer-actions\s*\{[^}]*flex-direction:\s*column/,
   );
   assert.match(themeCss, /\.sidebar\.is-collapsed \.version-badge\s*\{\s*display:\s*none/);
 });
