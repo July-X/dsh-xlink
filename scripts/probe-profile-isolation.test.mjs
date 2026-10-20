@@ -4,6 +4,8 @@ import test from 'node:test';
 
 import {
   ALLOW_MARKER,
+  findDataDirectoryViolations,
+  findDataDirectoryViolationsInFiles,
   findProfileViolations,
   findProfileViolationsInFiles,
 } from './lib/probe-profile-isolation.mjs';
@@ -107,4 +109,253 @@ test('scripts/ 刻意不进扫描范围：规则本体与自测必然含有被�
     lib.includes('规则会开始抓自己'),
     'lib 里必须写明为什么排除 scripts/，否则下一个人会「顺手」把它加回去',
   );
+});
+
+// --- 判据 ③：建 webview 必须**无条件**给 data_directory --------------------
+//
+// 2026-10-20 13:48 那次写入用户真实目录的真正原因：探针把 profile 传成
+// `Option<&Path>`，`None` 时**不设** `data_directory`，WebView2 就用**默认**
+// 数据目录。源码里没有路径字面量 → 判据 ① ②（扫写死路径）抓不到。
+
+/** 压根没给 data_directory（浏览器会落回默认目录）。 */
+const NO_DATA_DIRECTORY = [
+  'fn build_window(handle: &tauri::AppHandle, label: &str, url: &str) -> Result<(), String> {',
+  '    let parsed = url.parse().map_err(|e| format!("URL 非法：{e}"))?;',
+  '    tauri::WebviewWindowBuilder::new(handle, label, tauri::WebviewUrl::External(parsed))',
+  '        .title("探针")',
+  '        .build()',
+  '        .map_err(|e| format!("无法创建探针窗口：{e}"))?;',
+  '    Ok(())',
+  '}',
+].join('\n');
+
+/** 13:48 那次的写法：profile 是 Option，条件成立才给 data_directory。 */
+const CONDITIONAL_DATA_DIRECTORY = [
+  'fn build_window_with(',
+  '    handle: &tauri::AppHandle,',
+  '    profile: Option<&std::path::Path>,',
+  ') -> Result<(), String> {',
+  '    let mut builder = tauri::WebviewWindowBuilder::new(handle, "x", url)',
+  '        .title("探针");',
+  '    if let Some(profile) = profile {',
+  '        builder = builder.data_directory(profile.to_path_buf());',
+  '    }',
+  '    builder.build()?;',
+  '    Ok(())',
+  '}',
+].join('\n');
+
+/** 修好之后：data_directory 在建窗链上，无条件。 */
+const UNCONDITIONAL_DATA_DIRECTORY = [
+  'fn build_window_with(',
+  '    handle: &tauri::AppHandle,',
+  '    profile: &std::path::Path,',
+  ') -> Result<(), String> {',
+  '    tauri::WebviewWindowBuilder::new(handle, "x", url)',
+  '        .title("探针")',
+  '        .data_directory(profile.to_path_buf())',
+  '        .build()?;',
+  '    Ok(())',
+  '}',
+].join('\n');
+
+test('建 webview 压根没给 data_directory → 报红，并指到建窗那一行', () => {
+  const hits = findDataDirectoryViolations(NO_DATA_DIRECTORY, 'probe.rs');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].file, 'probe.rs');
+  assert.equal(hits[0].reason, 'no-data-directory');
+  assert.equal(hits[0].line, 3);
+  assert.ok(hits[0].text.includes('WebviewWindowBuilder'));
+});
+
+test('data_directory 只在条件分支里给 → 报红（「有才给」= 没给）', () => {
+  const hits = findDataDirectoryViolations(CONDITIONAL_DATA_DIRECTORY, 'probe.rs');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].reason, 'conditional-data-directory');
+  // 行号指到**建窗**那一行（不是 data_directory 那一行）：那是这条判据的锚点。
+  assert.equal(hits[0].line, 5);
+  assert.ok(hits[0].detail.includes('条件分支'));
+});
+
+test('data_directory 在建窗链上无条件给 → 放行', () => {
+  assert.deepEqual(findDataDirectoryViolations(UNCONDITIONAL_DATA_DIRECTORY, 'probe.rs'), []);
+});
+
+test('data_directory 在无条件语句里给（不在任何条件块内）→ 放行', () => {
+  const src = [
+    'fn build_window_with(handle: &tauri::AppHandle, profile: &std::path::Path) {',
+    '    let mut builder = tauri::WebviewWindowBuilder::new(handle, "x", url);',
+    '    builder = builder.data_directory(profile.to_path_buf());',
+    '    builder.build()?;',
+    '}',
+  ].join('\n');
+  assert.deepEqual(findDataDirectoryViolations(src, 'probe.rs'), []);
+});
+
+test('作用域不串味：后一个函数无条件给了 data_directory，前一个函数的违规仍要报', () => {
+  const src = [
+    'fn first(handle: &tauri::AppHandle, url: &str) {',
+    '    tauri::WebviewWindowBuilder::new(handle, "a", url).build()?;',
+    '}',
+    '',
+    'fn second(handle: &tauri::AppHandle, url: &str, profile: &std::path::Path) {',
+    '    let mut b = tauri::WebviewWindowBuilder::new(handle, "b", url);',
+    '    b = b.data_directory(profile.to_path_buf());',
+    '    b.build()?;',
+    '}',
+  ].join('\n');
+  const hits = findDataDirectoryViolations(src, 'probe.rs');
+  assert.equal(hits.length, 1, '只应报 first 里的那一个');
+  assert.equal(hits[0].line, 2);
+});
+
+test('match 分支里给 data_directory 也算「有才给」→ 报红', () => {
+  const src = [
+    'fn build_window_with(handle: &tauri::AppHandle, profile: Option<&std::path::Path>) {',
+    '    let mut builder = tauri::WebviewWindowBuilder::new(handle, "x", url);',
+    '    match profile {',
+    '        Some(p) => { builder = builder.data_directory(p.to_path_buf()); }',
+    '        None => {}',
+    '    }',
+    '    builder.build()?;',
+    '}',
+  ].join('\n');
+  const hits = findDataDirectoryViolations(src, 'probe.rs');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].reason, 'conditional-data-directory');
+});
+
+test('if/else 两个分支都给了 data_directory → 每条路径都有目录 → 放行', () => {
+  const src = [
+    'fn build_window_with(handle: &tauri::AppHandle, pick: bool) {',
+    '    let mut builder = tauri::WebviewWindowBuilder::new(handle, "x", url);',
+    '    if pick {',
+    '        builder = builder.data_directory(dir_a.to_path_buf());',
+    '    } else {',
+    '        builder = builder.data_directory(dir_b.to_path_buf());',
+    '    }',
+    '    builder.build()?;',
+    '}',
+  ].join('\n');
+  assert.deepEqual(findDataDirectoryViolations(src, 'probe.rs'), []);
+});
+
+test('建窗点本身就在条件块里（那条路径压根不建窗）→ 不算漏 → 放行', () => {
+  const src = [
+    'fn maybe_build(handle: &tauri::AppHandle, yes: bool, profile: &std::path::Path) {',
+    '    if yes {',
+    '        tauri::WebviewWindowBuilder::new(handle, "x", url)',
+    '            .data_directory(profile.to_path_buf())',
+    '            .build()?;',
+    '    }',
+    '}',
+  ].join('\n');
+  assert.deepEqual(findDataDirectoryViolations(src, 'probe.rs'), []);
+});
+
+test('if / else 里 else 分支没给 → 有一条路径漏 → 报红', () => {
+  const src = [
+    'fn build_window_with(handle: &tauri::AppHandle, pick: bool) {',
+    '    let mut builder = tauri::WebviewWindowBuilder::new(handle, "x", url);',
+    '    if pick {',
+    '        builder = builder.data_directory(dir_a.to_path_buf());',
+    '    } else {',
+    '        builder = builder.title("探针");',
+    '    }',
+    '    builder.build()?;',
+    '}',
+  ].join('\n');
+  const hits = findDataDirectoryViolations(src, 'probe.rs');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].reason, 'conditional-data-directory');
+});
+
+test('if / else if / else 三个分支都给了 → 每条路径都有目录 → 放行', () => {
+  const src = [
+    'fn build_window_with(handle: &tauri::AppHandle, pick: u8) {',
+    '    let mut builder = tauri::WebviewWindowBuilder::new(handle, "x", url);',
+    '    if pick == 0 {',
+    '        builder = builder.data_directory(dir_a.to_path_buf());',
+    '    } else if pick == 1 {',
+    '        builder = builder.data_directory(dir_b.to_path_buf());',
+    '    } else {',
+    '        builder = builder.data_directory(dir_c.to_path_buf());',
+    '    }',
+    '    builder.build()?;',
+    '}',
+  ].join('\n');
+  assert.deepEqual(findDataDirectoryViolations(src, 'probe.rs'), []);
+});
+
+test('if / else if 都给了但没有最终 else → 还有隐式空路径 → 报红', () => {
+  const src = [
+    'fn build_window_with(handle: &tauri::AppHandle, pick: u8) {',
+    '    let mut builder = tauri::WebviewWindowBuilder::new(handle, "x", url);',
+    '    if pick == 0 {',
+    '        builder = builder.data_directory(dir_a.to_path_buf());',
+    '    } else if pick == 1 {',
+    '        builder = builder.data_directory(dir_b.to_path_buf());',
+    '    }',
+    '    builder.build()?;',
+    '}',
+  ].join('\n');
+  const hits = findDataDirectoryViolations(src, 'probe.rs');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].reason, 'conditional-data-directory');
+});
+
+test('建窗无条件、profile 条件给（13:48 那种）→ 报红', () => {
+  const src = [
+    'fn build_window_with(handle: &tauri::AppHandle, profile: Option<&std::path::Path>) {',
+    '    let mut builder = tauri::WebviewWindowBuilder::new(handle, "x", url);',
+    '    if let Some(p) = profile {',
+    '        builder = builder.data_directory(p.to_path_buf());',
+    '    }',
+    '    builder.build()?;',
+    '}',
+  ].join('\n');
+  const hits = findDataDirectoryViolations(src, 'probe.rs');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].reason, 'conditional-data-directory');
+});
+
+test('注释与字符串里提到 data_directory 不算数（没建 webview 就不报）', () => {
+  const src = [
+    '// 判据提醒：建 webview 时必须给 data_directory',
+    'const NOTE = "data_directory 是必填的";',
+    'fn nothing() {}',
+  ].join('\n');
+  assert.deepEqual(findDataDirectoryViolations(src, 'probe.rs'), []);
+});
+
+test('批量扫描带上文件名', () => {
+  const hits = findDataDirectoryViolationsInFiles([
+    { file: 'a.rs', text: NO_DATA_DIRECTORY },
+    { file: 'b.rs', text: UNCONDITIONAL_DATA_DIRECTORY },
+  ]);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].file, 'a.rs');
+});
+
+test('check-invariants 接了这条判据，并且报的是 file:line', () => {
+  const source = read('./check-invariants.mjs');
+  assert.ok(
+    source.includes('findDataDirectoryViolationsInFiles'),
+    'check-invariants.mjs 必须调用新判据',
+  );
+  assert.ok(
+    source.includes("'probe-data-directory'"),
+    '新判据要有自己的失败分区，别混进判据 30 里',
+  );
+  assert.ok(
+    source.includes('${o.file}:${o.line}'),
+    '失败信息必须带 file:line',
+  );
+});
+
+test('两个判据共用同一份扫描范围（collectProbeScopeFiles）', () => {
+  const source = read('./check-invariants.mjs');
+  const calls = source.match(/collectProbeScopeFiles\(\)/g) ?? [];
+  // 一次定义 + 两条判据各调一次 = 3 次。
+  assert.equal(calls.length, 3, '扫描范围必须只有一处定义，两条判据共用');
 });

@@ -343,12 +343,47 @@ fn guard_enabled() -> bool {
 
 /// 通道名按模式分开：dev 壳与安装版本来就允许同时跑（不同 data dir、不同
 /// 端口、不同实例），共用一个名字会让其中一个根本起不来。
+///
+/// **隔离实例可以另开一条通道**（`DSH_XLINK_CHANNEL_SUFFIX` 非空时追加后缀）。
+/// 守卫判的是「同名通道上已经有实例」，而**同名不等于同一套环境**：自动化与
+/// 复验要用自己的 data dir、内核端口、浏览器档案起一个壳，同一台机器上却
+/// 可能正跑着用户的安装版。两者共用通道时，第二个实例会被静默「交接后退出」
+/// ——用户看不到任何提示，只看到第二个壳没起来（它连自己那套 data dir 都没
+/// 碰到）。让隔离实例自带后缀，两个实例各走各的通道，互不接管。
+///
+/// 不设这个变量时通道名与历史逐字一致，**默认行为零变化**。
 #[allow(dead_code, reason = "Windows 专属：调用点在 cfg(windows) 分支")]
 fn channel_name() -> String {
-    format!(
-        "dsh-xlink-shell-{}",
-        crate::shell::settings::current_mode().as_str()
+    channel_name_with(
+        crate::shell::settings::current_mode().as_str(),
+        channel_suffix().as_deref(),
     )
+}
+
+/// 通道名后缀（隔离实例用）。只保留 Windows 对象名允许的字符，长度封顶。
+///
+/// 过滤是必须的：后缀直接进互斥体与命名管道的名字，而 `\\.\pipe\` 里的
+/// 反斜杠是分隔符——不滤掉就会把一个名字拆成两段。
+fn channel_suffix() -> Option<String> {
+    let raw = std::env::var("DSH_XLINK_CHANNEL_SUFFIX").ok()?;
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(32)
+        .collect();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// 纯函数：模式 + 后缀 → 通道名。后缀为空时与历史逐字一致。
+fn channel_name_with(mode: &str, suffix: Option<&str>) -> String {
+    match suffix {
+        Some(suffix) if !suffix.is_empty() => format!("dsh-xlink-shell-{mode}-{suffix}"),
+        _ => format!("dsh-xlink-shell-{mode}"),
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -713,6 +748,34 @@ mod tests {
                 "dsh-xlink-shell-{}",
                 crate::shell::settings::current_mode().as_str()
             )
+        );
+    }
+
+    #[test]
+    fn channel_name_without_suffix_is_unchanged() {
+        // 不设后缀时通道名必须与历史逐字一致：默认行为零变化。
+        assert_eq!(
+            channel_name_with("release", None),
+            "dsh-xlink-shell-release"
+        );
+        assert_eq!(channel_name_with("dev", None), "dsh-xlink-shell-dev");
+        assert_eq!(
+            channel_name_with("release", Some("")),
+            "dsh-xlink-shell-release"
+        );
+    }
+
+    #[test]
+    fn channel_name_with_suffix_is_a_separate_channel() {
+        // 隔离实例自带后缀 → 与用户正在跑的安装版各走各的通道：
+        // 第二个实例不会被「交接后退出」静默吃掉。
+        assert_eq!(
+            channel_name_with("release", Some("g1release")),
+            "dsh-xlink-shell-release-g1release"
+        );
+        assert_ne!(
+            channel_name_with("release", Some("g1release")),
+            channel_name_with("release", None)
         );
     }
 

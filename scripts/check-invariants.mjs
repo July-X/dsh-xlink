@@ -58,7 +58,10 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { shellSourcePath, shellSourceLabel } from './lib/shell-source.mjs';
-import { findProfileViolationsInFiles } from './lib/probe-profile-isolation.mjs';
+import {
+  findDataDirectoryViolationsInFiles,
+  findProfileViolationsInFiles,
+} from './lib/probe-profile-isolation.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const failures = [];
@@ -3461,7 +3464,13 @@ if (ungatedOsImports.length > 0) {
 //
 // 逃生阀：确有必要在测试里引用真实路径（例如断言「我们没有碰它」）时，
 // 在该行写 `invariant-allow: real-data-dir` 显式放行——放行要留痕，不许匿名。
-{
+/**
+ * 判据 30 / 31 的扫描范围：**测试 / 探针**代码
+ * （examples / tests / e2e / plugins 下各插件的 test 目录）。
+ *
+ * 范围只有这一处定义——两个判据共用，免得各扫各的、范围悄悄漂开。
+ */
+function collectProbeScopeFiles() {
   const probeRoots = [
     join(root, 'src-tauri', 'examples'),
     join(root, 'src-tauri', 'tests'),
@@ -3483,6 +3492,11 @@ if (ungatedOsImports.length > 0) {
       files.push({ file: show(full), text: readFileSync(full, 'utf8') });
     }
   }
+  return files;
+}
+
+{
+  const files = collectProbeScopeFiles();
 
   const offenders = findProfileViolationsInFiles(files);
   if (offenders.length > 0) {
@@ -3498,6 +3512,42 @@ if (ungatedOsImports.length > 0) {
   } else {
     note(
       `测试/探针代码没有指向用户真实数据目录下的浏览器 profile（已扫 ${files.length} 个文件）`,
+    );
+  }
+}
+
+// --- 31. 建 webview 必须**无条件**给 data_directory --------------------------
+//
+// 判据 30 抓的是「写死的真实路径」。但 2026-10-20 13:48 那次写入**没有任何
+// 写死的路径**：探针把 profile 传成 `Option<&Path>`，`None` 时**不设**
+// `data_directory`，WebView2 于是用**默认**数据目录——
+// `%LOCALAPPDATA%\com.zhongxingxing.dsh-xlink\EBWebView`（实测 Cookies-journal
+// 与 Local State 被写过）。源码里没有路径字面量，判据 30 抓不到，
+// 于是「用默认路径」这个写法一直是个洞。
+//
+// 这条按**代码形状**判：建 webview 的那一行所在的块里，`data_directory` 必须
+// **无条件**生效——一次都没给是违规；「只在 `if let Some(...)` 里给」同样是违规
+// （条件不成立时照样落回默认目录）。
+// 口径细节（分支链视角）：`if / else` 每个分支都给了 → 每条路径都有目录 → 放行；
+// `if / else if` 没有最终 `else` → 还有「条件全不成立」那条隐式路径没给 → 违规。
+{
+  const files = collectProbeScopeFiles();
+
+  const missing = findDataDirectoryViolationsInFiles(files);
+  if (missing.length > 0) {
+    fail(
+      'probe-data-directory',
+      `${missing.map((o) => `${o.file}:${o.line} ${o.detail}`).join('、')}。` +
+        '探针建 webview 时必须**无条件**给 `data_directory`（用户数据目录）：' +
+        '不给的话 WebView2 会用默认数据目录——那是用户真实安装目录' +
+        '（`%LOCALAPPDATA%\\com.zhongxingxing.dsh-xlink\\EBWebView`），' +
+        '浏览器一启动就往那里写 Cookies / Preferences / Local Storage / History / IndexedDB，' +
+        '而 Cookies 是活文件、写坏了回滚不了。' +
+        '要复用登录态就**只读拷贝**一份到 `%TEMP%` 下的一次性目录再指过去。',
+    );
+  } else {
+    note(
+      `探针建 webview 时都无条件给了 data_directory，不会落回默认数据目录（已扫 ${files.length} 个文件）`,
     );
   }
 }
