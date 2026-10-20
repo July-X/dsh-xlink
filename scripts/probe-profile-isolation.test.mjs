@@ -359,3 +359,205 @@ test('两个判据共用同一份扫描范围（collectProbeScopeFiles）', () =
   // 一次定义 + 两条判据各调一次 = 3 次。
   assert.equal(calls.length, 3, '扫描范围必须只有一处定义，两条判据共用');
 });
+
+// --- 判据 ③ 的合成用例集（2026-10-20 tester 实测的真值） --------------------
+//
+// 下面这组用例是当时用**临时探针逐条实跑**出来的真值（不是照着实现写的期望）。
+// 当时判据有**两处**不符——PM 16:22 指派修的就是这两处：
+//   · D（嵌套 if）判**放行** = 真漏判：`a` 成立、`b2` 不成立时**没给目录**；
+//   · G（逃生阀）判**违规** = 第 31 条**根本没有出口**（`ALLOW_MARKER` 零引用）。
+// 判据修完后：D 必须判违规，G 必须放行——下面就是钉住这两条的回归。
+//
+// **合成用例必须含建窗触发点**（`WebviewWindowBuilder::new`）：没有触发点，
+// 判据整段跳过、返回「无违规」，看起来像「判据没抓到」，其实是用例写错了
+// （2026-10-20 踩过：第一版 4 个用例全「放行」就是这个原因）。
+
+/** A. `if / else` 两个分支都给 → 每条路径都有目录 → 放行。 */
+const CASE_A_IF_ELSE = [
+  'fn build(app, p, q) {',
+  '    let mut b = WebviewWindowBuilder::new(app, "x", url);',
+  '    if cond {',
+  '        b = b.data_directory(p);',
+  '    } else {',
+  '        b = b.data_directory(q);',
+  '    }',
+  '    b.build()',
+  '}',
+].join('\n');
+
+/**
+ * B. `match` 穷尽、两个臂都给 → 放行。
+ *
+ * 注意它放行的**真正原因**：建窗点在 **match 的臂里**——每个臂各自建一次
+ * webview、各自带目录（「建窗点本身就在条件块里 → 那条路径压根不建窗」→
+ * 不算漏）。**不是**因为「match 穷尽」。建窗点在 match **外面**、两臂都给
+ * 的形状仍按「有才给」判红（见上面那条「match 分支里给 → 报红」）。
+ */
+const CASE_B_MATCH_EXPR = [
+  'fn build(app, p, q) {',
+  '    let b = match profile {',
+  '        Some(x) => WebviewWindowBuilder::new(app, "x", url).data_directory(x),',
+  '        None => WebviewWindowBuilder::new(app, "x", url).data_directory(q),',
+  '    };',
+  '    b.build()',
+  '}',
+].join('\n');
+
+/** C. 同 B，但 match 的臂用花括号块 → 放行（理由同 B）。 */
+const CASE_C_MATCH_BLOCK = [
+  'fn build(app, p, q) {',
+  '    let b = match profile {',
+  '        Some(x) => { WebviewWindowBuilder::new(app, "x", url).data_directory(x) }',
+  '        None => { WebviewWindowBuilder::new(app, "x", url).data_directory(q) }',
+  '    };',
+  '    b.build()',
+  '}',
+].join('\n');
+
+/**
+ * D. **嵌套 if** → 违规（真漏判的回归钉子）。
+ *
+ * `a` 成立、`b2` 不成立时**没给目录** → 浏览器照样用默认数据目录。
+ * 命中点在**更深的条件**里，不算这条分支「给了」。
+ */
+const CASE_D_NESTED_IF = [
+  'fn build(app, p, q) {',
+  '    let mut b = WebviewWindowBuilder::new(app, "x", url);',
+  '    if a {',
+  '        if b2 { b = b.data_directory(p); }',
+  '    } else {',
+  '        b = b.data_directory(q);',
+  '    }',
+  '    b.build()',
+  '}',
+].join('\n');
+
+/** E. 无条件给 → 放行。 */
+const CASE_E_UNCONDITIONAL = [
+  'fn build(app, p) {',
+  '    let b = WebviewWindowBuilder::new(app, "x", url).data_directory(p);',
+  '    b.build()',
+  '}',
+].join('\n');
+
+/** F. 压根没给 → 违规。 */
+const CASE_F_NO_DIRECTORY = [
+  'fn build(app) {',
+  '    let b = WebviewWindowBuilder::new(app, "x", url);',
+  '    b.build()',
+  '}',
+].join('\n');
+
+/** G. 不需要 user-data 的 webview + **文件级**逃生阀标记 → 放行。 */
+const CASE_G_FILE_MARKER = [
+  `// ${ALLOW_MARKER}`,
+  'fn build_about_blank(app) {',
+  '    let b = WebviewWindowBuilder::new(app, "x", url);',
+  '    b.build()',
+  '}',
+].join('\n');
+
+/** H. 单行 `if / else`（C# switch 风格）两个分支都给 → 放行。 */
+const CASE_H_INLINE_IF_ELSE = [
+  'fn build(app, p, q) {',
+  '    let mut b = WebviewWindowBuilder::new(app, "x", url);',
+  '    if cond { b = b.data_directory(p); } else { b = b.data_directory(q); }',
+  '    b.build()',
+  '}',
+].join('\n');
+
+/** G2. **行尾**逃生阀标记 → 放行那个建窗点（PM 裁定：两种形态都认）。 */
+const CASE_G2_LINE_MARKER = [
+  'fn build_about_blank(app) {',
+  `    let b = WebviewWindowBuilder::new(app, "x", url); // ${ALLOW_MARKER}`,
+  '    b.build()',
+  '}',
+].join('\n');
+
+test('合成用例 A：if / else 两个分支都给 → 放行', () => {
+  assert.deepEqual(findDataDirectoryViolations(CASE_A_IF_ELSE, 'probe.rs'), []);
+});
+
+test('合成用例 B：match 穷尽、两个臂都给（建窗点在臂里）→ 放行', () => {
+  assert.deepEqual(findDataDirectoryViolations(CASE_B_MATCH_EXPR, 'probe.rs'), []);
+});
+
+test('合成用例 C：match 的臂用花括号块、两个臂都给 → 放行', () => {
+  assert.deepEqual(findDataDirectoryViolations(CASE_C_MATCH_BLOCK, 'probe.rs'), []);
+});
+
+test('合成用例 D：嵌套 if（命中在更深的条件里）→ 判违规（真漏判的回归钉子）', () => {
+  const hits = findDataDirectoryViolations(CASE_D_NESTED_IF, 'probe.rs');
+  assert.equal(hits.length, 1, 'a 成立、b2 不成立时没给目录 → 必须报红');
+  assert.equal(hits[0].reason, 'conditional-data-directory');
+  // 行号指到**建窗**那一行（不是 data_directory 那一行）：那是这条判据的锚点。
+  assert.equal(hits[0].line, 2, '建窗行是第 2 行（本用例常量没有前导空行）');
+});
+
+test('合成用例 E：无条件给 → 放行', () => {
+  assert.deepEqual(findDataDirectoryViolations(CASE_E_UNCONDITIONAL, 'probe.rs'), []);
+});
+
+test('合成用例 F：压根没给 → 判违规 no-data-directory', () => {
+  const hits = findDataDirectoryViolations(CASE_F_NO_DIRECTORY, 'probe.rs');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].reason, 'no-data-directory');
+});
+
+test('合成用例 G：文件级逃生阀标记 → 放行整个文件（第 31 条认同一个标记）', () => {
+  assert.deepEqual(findDataDirectoryViolations(CASE_G_FILE_MARKER, 'probe.rs'), []);
+});
+
+test('合成用例 H：单行 if / else 两个分支都给 → 放行', () => {
+  assert.deepEqual(findDataDirectoryViolations(CASE_H_INLINE_IF_ELSE, 'probe.rs'), []);
+});
+
+test('合成用例 G2：行尾逃生阀标记 → 放行那个建窗点', () => {
+  assert.deepEqual(findDataDirectoryViolations(CASE_G2_LINE_MARKER, 'probe.rs'), []);
+});
+
+test('第 31 条的行尾标记只放行那个建窗点，同文件另一个建窗点仍报红', () => {
+  const src = [
+    'fn build(app) {',
+    `    let a = WebviewWindowBuilder::new(app, "a", url); // ${ALLOW_MARKER}`,
+    '    a.build()',
+    '}',
+    'fn build2(app) {',
+    '    let b = WebviewWindowBuilder::new(app, "b", url);',
+    '    b.build()',
+    '}',
+  ].join('\n');
+  const hits = findDataDirectoryViolations(src, 'probe.rs');
+  assert.equal(hits.length, 1, '放行粒度是「建窗点」，不是「整个文件」');
+  assert.equal(hits[0].line, 6);
+});
+
+test('两条判据各自独立：第 30 条的行尾标记放行那一行，第 31 条仍报红', () => {
+  const src = [
+    `const p = "C:\\Users\\zxx\\.dsh-xlink\\webview-official-chat"; // ${ALLOW_MARKER}`,
+    'fn build(app) {',
+    '    let b = WebviewWindowBuilder::new(app, "x", url);',
+    '    b.build()',
+    '}',
+  ].join('\n');
+  assert.deepEqual(findProfileViolations(src, 'probe.rs'), [], '第 30 条放行那一行');
+  const hits = findDataDirectoryViolations(src, 'probe.rs');
+  assert.equal(hits.length, 1, '第 30 条放行 ≠ 第 31 条放行：第 31 条仍要报红');
+  assert.equal(hits[0].reason, 'no-data-directory');
+});
+
+test('两条判据各自独立：第 31 条的行尾标记放行那个建窗点，第 30 条仍报红', () => {
+  const src = [
+    'fn build(app) {',
+    `    let b = WebviewWindowBuilder::new(app, "x", url); // ${ALLOW_MARKER}`,
+    '    b.build()',
+    '}',
+    'const p = "C:\\Users\\zxx\\.dsh-xlink\\webview-official-chat";',
+  ].join('\n');
+  const hits = findDataDirectoryViolations(src, 'probe.rs');
+  assert.deepEqual(hits, [], '第 31 条放行那个建窗点');
+  const profile = findProfileViolations(src, 'probe.rs');
+  assert.equal(profile.length, 1, '第 31 条放行 ≠ 第 30 条放行：第 30 条仍要报红');
+  assert.equal(profile[0].line, 5);
+});
+
