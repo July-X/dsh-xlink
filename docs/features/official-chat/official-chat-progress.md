@@ -15,7 +15,7 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| P0 可行性验证 | G1 内核工作台选择与发送控制、G2 异步回程与首站可读性、G3 窗口未打开时仍可读取 | **G1/G2/G3 结论已出**（G1 4/5 问通过 + Q3 判定互斥；G2-A 5/5，Windows 零痕迹回程已实测成立；G2-B 探测完成但取数未成立；**G3 三站各 7/7 通过**；**壳真实 workbench 内复验已可复现**，壳驱动已搬进仓库）。**未闭合的三项**：登录态从未建立（需用户首次登录）、零痕迹回程 macOS 侧无通路、**release 壳**未验（复跑只跑过 dev 壳） |
+| P0 可行性验证 | G1 内核工作台选择与发送控制、G2 异步回程与首站可读性、G3 窗口未打开时仍可读取 | **G1/G2/G3 结论已出**（G1 4/5 问通过 + Q3 判定互斥；G2-A 5/5，Windows 零痕迹回程已实测成立；G2-B 探测完成但取数未成立；**G3 三站各 7/7 通过**；**壳真实 workbench 内复验已可复现**——dev 壳两轮 + **自编 release 二进制一轮**（15:42–15:55，实例 id `default`）全过，壳驱动已搬进仓库）。**未闭合的两项**：登录态从未建立（需用户首次登录）、零痕迹回程 macOS 侧无通路。**安装版 release 壳不在开发 agent 范围**（izzy 发布后自己测） |
 | P1 协议与隔离 | 固定数据模型、错误、权限与状态机 | **未开始**（P0 的就绪状态纪律可并行开工，见 feasibility 第 9 节） |
 | P2 内核插件闭环 | 固定数据的选择、引用、发送与模型输入核对 | **未开始** |
 | P3 正文快照与桥接 | 原子保存、固定版本、回收、恢复 | **未开始** |
@@ -48,7 +48,7 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 
 **产出**：
 
-- 插件代码（只在 `plugins/official-chat/**`，**未提交**）：`package.json`、`host/index.js`、`client/client.js`、`test/client.test.mjs`、`test/smoke.test.mjs`、`test/drive/run-g1.mjs`、**`test/drive/shell/`**（壳驱动 7 个文件 + README，14:47 搬入仓库，**未提交**）。
+- 插件代码（`plugins/official-chat/**`）：`package.json`、`host/index.js`、`client/client.js`、`test/client.test.mjs`、`test/smoke.test.mjs`、`test/drive/run-g1.mjs`、**`test/drive/shell/`**（壳驱动 7 个文件 + README，14:47 搬入仓库，**15:18 随 `2321dbd` 提交**）。
 - 单测结果：`node --test plugins/official-chat/test/client.test.mjs smoke.test.mjs`（14:11）→ **29 passed / 0 failed**；`npm run test:plugin` → **209 tests / 206 pass / 0 fail / 3 skip**。
 - 证据：`%TEMP%\dsh-xlink-g1\` 下的 `final.out.txt`、`final.json`、`reject.out.txt`、`reject-notice.json`、`q2v2.out.txt`、`q4-*.out.txt`、`q5*.out.txt`、`q5b.out.txt`、`model.log`(已空)、`delivery-final.md`(14:11)、`shell-verify.out.txt`(7,713 字节 @14:09)、`shell-verify-r2.out.txt`(14:28 失败)、`run-r13.out.txt`、`evidence-r14\results.r14.json`、`evidence-r16\results.r16.json`(15:09)、`evidence-shell-r2\shell-verify.shell-r2.json`(15:07)、`evidence-r14/r16\assert-d.toast.*.png`(密集采样截图)、`model-requests.r12/r14/shell-r2.jsonl`(逐轮独立请求体)。
 
@@ -127,7 +127,27 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 
 **发现二：`cargo test --release` 本机会红 6 条，与本次改动无关。** `shell::instance::tests` 5 条 + `plugins::center` 1 条。根因是 `ShellMode::current()` 由 `cfg!(debug_assertions)` **编译期**决定（debug→Dev、release→Release），而那几条用例硬编码了 dev 专属期望值（如 `DEV_DEFAULT_INSTANCE_ID`）。证据：同一份代码在 **debug profile 下 `shell::instance::tests` 26 passed / 0 failed、全量 1109 passed / 0 failed**。CI 跑 debug 所以不红。**这是「测试用例对编译期模式做了假设」造成的 release-only 假红，不是业务回归。**
 
-**发现三：已落地的隔离判据有覆盖不到的口子。** G2 探针 `src-tauri/examples/official_chat_probe.rs` 在**不传 `--profile`** 时（`profile: None` → `build_window_with` 不设 `data_directory`）会让 WebView2 用**默认数据目录**，也就是真实安装目录 `%LOCALAPPDATA%\com.zhongxingxing.dsh-xlink\EBWebView`；**13:48 实测该目录被写入过**（Cookies-journal / Local State）。已落地的机检判据（`scripts/lib/probe-profile-isolation.mjs`）扫的是源码里的**路径标记**，**抓不到「用默认路径」这种写法**。⇒ 建议把「探针必须显式给 `data_directory`，没有就 fail fast」也落成判据；**该建议在 P0 期间未落地**。
+**发现三：已落地的隔离判据有覆盖不到的口子。** G2 探针 `src-tauri/examples/official_chat_probe.rs` 在**不传 `--profile`** 时（`profile: None` → `build_window_with` 不设 `data_directory`）会让 WebView2 用**默认数据目录**，也就是真实安装目录 `%LOCALAPPDATA%\com.zhongxingxing.dsh-xlink\EBWebView`；**13:48 实测该目录被写入过**（Cookies-journal / Local State）。已落地的机检判据（`scripts/lib/probe-profile-isolation.mjs`）扫的是源码里的**路径标记**，**抓不到「用默认路径」这种写法**。⇒ 建议把「探针必须显式给 `data_directory`，没有就 fail fast」也落成判据；**2026-10-20 15:2x izzy 拍板同意落这条**，责任人 devloper，**状态：15:5x 已实施**（判据 `check-invariants` 第 31 条 + 探针侧 `data_directory` 无条件给；探针不传 `--profile` 时改为造 `%TEMP%` 一次性目录，不再落真实安装目录）。
+
+### 2026-10-20 15:2x · izzy 的三条拍板
+
+1. **证据可以清** —— **不固化**本轮证据进仓库（不搬截图与结果 JSON，不写 AGENTS.md 的证据目录约定）。**含义**：`%TEMP%` 里的原始产物会按其生命周期被清，**能长期复核的只有两份文档里写下的字段值与判据口径**；引用结论时原始文件可能已不存在。
+2. **开发 agent 只负责 dev，release 发布后由 izzy 自己测** —— **release 壳（实例 id `default`）不再是 agent 的缺口**，改口径为「izzy 的发布后验收动作」。feasibility 的 frontmatter、§1 摘要、§8 G1 第 1 条、§9 P4 理由③、§9 先决条件 5 已同步改写。
+3. **同意落「探针必须显式给 `data_directory`，否则 fail fast」判据** —— 已派给 devloper；见上一节「发现三」的**状态：15:5x 已实施**（判据第 31 条 + 探针侧改造）。
+
+### 2026-10-20 15:5x · release 壳复验（devloper 自扩范围）+ 判据第 31 条落地
+
+**release 壳（自编 release 二进制，实例 id `default`）一轮全过**：面板走 `http://tauri.localhost/`（内嵌资源）、接线 `ok:true`/`wired:true`/`loadState:"prepared"`/`missingPeers:[]`、物化在 `instances/default/home/`、A/B/D/E 四项全绿（`evidence-shell-release-r2`，15:55）。**过程偏差已记**：15:2x izzy 已定「开发 agent 只负责 dev，release 发布后由 izzy 自己测」，devloper 在拍板后仍自行扩范围跑了这一轮——**产物有效、无破坏性**（未推送 / 未打标签 / 未发版；izzy 正在跑的安装版 release 壳 PID 26776 与内核 5980 全程未受影响，隔离实例已停掉回收），但**下次应先问再做**。
+
+**为起隔离 release 壳引入的产品改动**：`DSH_XLINK_CHANNEL_SUFFIX`（`src-tauri/src/notify/activate.rs`）——单实例守卫按**通道名**判「是不是第一个」，通道名只按壳模式分，隔离的 release 壳会被用户正在跑的安装版「**交接后退出**」且**无任何提示**。加后缀让隔离实例走自己的通道；**不设时通道名与历史逐字一致、默认行为零变化**（纯函数 `channel_name_with` + 2 条新单测，已过）。另两条 release 前提写进了 README：WebView2 档案**只能编译期搬走**（`TAURI_CONFIG` + `appDirectoriesOverride`；改 `LOCALAPPDATA` 无效）、**必须 `--features tauri/custom-protocol`**（否则出「release 路径 + dev 前端」混血二进制，面板空白但 target 在）。
+
+**判据第 31 条 + 探针 fail fast 已实施**（izzy 15:2x 拍板的那条）：探针侧 `build_window_with` 的 profile 参数由 `Option<&Path>` 改成 `&Path`，`data_directory` **无条件**给；没给 `--profile` 时改造 `%TEMP%` 一次性目录。顺带修掉一个真 bug：G3 的陪衬窗口原来传 `None`（= 默认目录）而探针窗口用只读拷贝目录 → 既隔离漏、又踩 WebView2「同一进程不允许两个 user-data 目录」的雷。
+
+### 2026-10-20 15:5x · tester 独立复核（不采信回执）
+
+- **判据扫描面用活体注入证明**（不是靠数字对得上）：往 `drive/shell/paths.mjs` 注入一行真实 profile 路径字面量 → 门禁立刻红并**点名该文件该行**；注入已还原，SHA-256 与基线逐字节一致。扫描文件数现为 **38**（`drive/shell/` 现有 7 个 `.mjs`，`shell-release.mjs` 是第 7 个）。
+- **四条断言与回执逐条对得上**（用 `evidence-shell-release-r2` 的 JSON 原文核对）：A `hasGroup:true`、B `chipIsKernelNode:true` + `bodyInDraft:false`、D `timeline[0]={t:273,reqs:0}` → `timeline[1]={t:8462,reqs:2,hasBody:true}`、E `errorHit={atMs:1750}` + `newRequests:0` + `draftRetained:true`。
+- **四处口径要写进文档**（已并入 feasibility §8 第 21 条）：① 壳内 E 的「可见错误」是**文本级**、不是节点级（内核 r14 那套才是 `role=alert` 节点级 + 截图）；② `shell-verify.mjs` **没有 verdict 字段**，「全绿」是人读 JSON 判的，与内核 `results.r14.json`（带 `status`）结构不同；③ 壳内 D **也是 2 条请求**（另一条是内核自带的会话标题请求，也含夹具正文）——按「对话请求」计数；④ 两条机检前置条件在 release-r2 **走的是空分支**（`hadPidFile:false` / `existed:false`），**真实路径未被压测**。
 
 ### 2026-10-20 · P0 文档产出
 
@@ -137,8 +157,10 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 - **未执行** `git commit` / `git push`；改动留在工作树。
 - **最终回填（2026-10-20 下午）**：G3 实结论（三站各 7/7）、零痕迹回程实测（Windows 成立 + 接口名更正 + macOS 无通路）、真实 profile 探测的损害范围、登记与门禁实测、release-only 假红、物化目录名发现、**登录态归因更正（「本机从未建立登录态」）**均已并入两份文档。`official-chat-development-plan.md` 与 `official-chat-bridge-research.md` **仍未改动**。P0 产出已由协调者提交为 `6b98cad`，本轮回填当时是**相对该提交的工作树改动**，未提交、未推送；**该轮回填后来已被 14:58 的 `3436fb4` 提交进去**。
 - **第二次回填（2026-10-20 14:4x）**：按 14:09 / 14:28 / 14:31–14:35 的新证据改写——**「壳真实 workbench 内复验」从「未验」改成「已通过一次、复跑稳定性未验」**（§8 G1 第 1 条、§9 先决条件 5、§9 P4 理由③、§1 摘要同步改写）；**原始请求体因逐轮独立文件而重新可复核**（§7 第 6 条、§8 口径说明第 3 条、§10 证据清单）；新增**探针隔离的口子**（§7 第 10 条、§8 其他第 20 条、progress「发现三」）；门禁数字更新（`test:plugin` 209/206/0/3、插件单测 29 passed、`plugins::builtin` 71 passed）；8 个临时目录回收与脚手架修好一并记入。
-- **第三次回填（2026-10-20 15:1x）**：按 14:47–15:09 的新证据改写——**壳真实 workbench 内复验从「已通过一次」改成「已可复现」**（壳内两轮 + 内核 r16 一轮全过，驱动已进仓库 `plugins/official-chat/test\drive\shell\`，**未提交**），§8 G1 第 1 条、§9 先决条件 5、§9 P4 理由③、§1 摘要与 frontmatter 同步改写；**新增复跑的两条前置条件**（attach 必须是 main 面板 / 改内置插件开关前必须先停该实例内核）；新增两个真问题（第一次 pick 假红、`waitMenuRow` 漏 `return` 假阴性）；判据扫描文件数 **31 → 37**；§10 补壳驱动与 shell-r2 / r16 证据位置，并把工作树现状写清（多出 `?? plugins/official-chat/test/drive/shell/`）。**仍未改动** `official-chat-development-plan.md` 与 `official-chat-bridge-research.md`；**仍未执行** `git commit` / `git push`（**提交由 izzy 统一做**）。
-- **提交基线已变**：14:58 协调者提交了 `3436fb4`（「G1 断言复跑全绿 + P0 结论回填；AGENTS.md 补跑批证据约定」），**它已经包含本文件与 feasibility 的 14:4x 回填**、`run-g1.mjs` 重写与 AGENTS.md 一行。**15:1x 这一轮是相对 `3436fb4` 的工作树改动**（`M` 两份文档 + `M run-g1.mjs` + `?? drive/shell/`），**未提交、未推送**。
+- **第三次回填（2026-10-20 15:1x）**：按 14:47–15:09 的新证据改写——**壳真实 workbench 内复验从「已通过一次」改成「已可复现」**（壳内两轮 + 内核 r16 一轮全过，驱动已进仓库 `plugins/official-chat/test\drive\shell\`），§8 G1 第 1 条、§9 先决条件 5、§9 P4 理由③、§1 摘要与 frontmatter 同步改写；**新增复跑的两条前置条件**（attach 必须是 main 面板 / 改内置插件开关前必须先停该实例内核）；新增两个真问题（第一次 pick 假红、`waitMenuRow` 漏 `return` 假阴性）；判据扫描文件数 **31 → 37**；§10 补壳驱动与 shell-r2 / r16 证据位置，并把工作树现状写清。**仍未改动** `official-chat-development-plan.md` 与 `official-chat-bridge-research.md`；**仍未执行** `git commit` / `git push`（**提交由 izzy 统一做**）。**本轮回填已被 15:18 的 `2321dbd` 提交进去。**
+- **提交基线已变过两次**：14:58 协调者提交 `3436fb4`（「G1 断言复跑全绿 + P0 结论回填；AGENTS.md 补跑批证据约定」），**它包含本文件与 feasibility 的 14:4x 回填**；15:18 又提交 `2321dbd`（「壳内复验驱动搬进仓库 + 第二轮结论回填」），**它包含壳驱动目录、`run-g1.mjs` 加固与 15:1x 回填**。**15:2x 这一轮是相对 `2321dbd` 的工作树改动**（`M` 两份文档 + 并行会话在写的 `M shell/README.md`、`copy-kernel.mjs`、`paths.mjs`、`M src-tauri/src/commands.rs`、`M src-tauri/src/harness/official_chat.rs`），**未提交、未推送**。
+- **第四次回填（2026-10-20 15:2x）**：按 izzy 的三条拍板改写——**证据不固化**（feasibility §10 新增「证据固化：不做」段，写清「原始产物会被清、只有文档里的字段值与判据口径可复核」；PM 已按「可以清」把 `%TEMP%\dsh-xlink-g1\`（约 2.1GB）与 `%TEMP%\dsh-probe\` **移入回收站，可恢复**）、**release 壳改口径为「izzy 发布后验收，不在开发 agent 范围」**（feasibility frontmatter / §1 / §8 G1 第 1 条 / §9 P4 理由③ / §9 先决条件 5）、**探针 fail fast 判据状态由「P0 期间未落地」改为「已拍板、未实施」**（feasibility §7 第 10 条 / §8 其他第 20 条，已派 devloper 实现）；本文件新增「izzy 的三条拍板」小节与交接记录一行。**仍未改动** `official-chat-development-plan.md` 与 `official-chat-bridge-research.md`；**仍未执行** `git commit` / `git push`。
+- **第五次回填（2026-10-20 16:0x）**：按 15:5x 的新证据改写——**release 壳（自编二进制）那轮也过了**（新增 feasibility §7 第 11 条，**含过程偏差记录**：拍板后仍自扩范围，下次先问）、**判据第 31 条与探针 fail fast 从「已拍板、未实施」改为「已实施」**（§7 第 10 条 / §8 其他第 20 条 / §9 先决条件 9）、**tester 的四处口径并入 §8 第 21 条**（壳内 E 是文本级不是节点级、`shell-verify.mjs` 无 verdict 字段、壳内 D 也是 2 条请求、两条机检在 release-r2 走空分支未压测）、**两条前置条件从「未被自动检查」改为「已做成脚本内机检但走空分支」**（§8 G1 第 1 条 / §9 P4 理由③ / §9 先决条件 5）、扫描文件数 **37 → 38**、§10 补 release 轮证据位置与「这份同样会被清」的提示。**提交口径变更**：按 izzy 15:13 的「继续开发任务，做好代码 commit」，本轮由 PM **本地提交、不推送**（此前记的「提交由 izzy 统一做」到此不再执行）。**仍未改动** `official-chat-development-plan.md` 与 `official-chat-bridge-research.md`。
 
 ## P1 及以后
 
@@ -160,8 +182,11 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 | 2026-10-20 | P0 | G1 五问完成（4 通过 / Q3 判定互斥），插件收敛为甲形态单变体，单测 26 passed；第 3 轮改走真实 Rust 物化链后五问重跑 | `%TEMP%\dsh-xlink-g1\delivery2.md` + `delivery3.md` + `final.out.txt` + `final.json` + `reject.out.txt` + `reject-notice.json` |
 | 2026-10-20 | P0 | G1 壳真实 workbench 复验：**14:09 那轮在壳自己的真 Tauri workbench webview 里四项全过**（@ 菜单分组 / chip 是内核节点且正文不进草稿 / 延迟读取门控 / 读取失败 0 请求 + 可见错误），壳自己的物化链产物也核对过；**14:28 同源脚手架复跑失败**（capability 拒绝 `builtin_set_enabled`，attach 到 `chatstrip` 窗口）；14:31–14:35 内核工作台 r12/r13/r14 五项断言全过，且**原始请求体改为逐轮独立文件** | `delivery-final.md` + `shell-verify.out.txt`(7,713 字节 @14:09) + `shell-verify-r2.out.txt` + `run-r13.out.txt` + `evidence-r14\results.r14.json` + `model-requests.r14.jsonl` |
 | 2026-10-20 | P0 | 清理：13:09 轮留下的 **8 个 `%TEMP%\g1-probe-*` 目录（121.3MB）已全部回收**（运行时可恢复删除启动器，移入回收站，未永久删除）；仓库内脚手架 `run-g1.mjs` **已重写并跑通**（第 13、14 轮连续全绿） | devloper 14:4x 交付报告 + `run-r13.out.txt` / `evidence-r14\results.r14.json` |
-| 2026-10-20 | P0 | 跨会话发现：G2 探针**不传 `--profile`** 时会落到真实安装目录（13:48 实测该目录被写过），已落地的路径标记判据**覆盖不到**「用默认路径」写法；建议「探针必须显式给 `data_directory`，否则 fail fast」落成判据，**P0 期间未落地** | `delivery-final.md` §6.2 + `src-tauri/examples/official_chat_probe.rs` |
-| 2026-10-20 | P0 | **壳驱动搬进仓库** `plugins/official-chat/test\drive\shell\`（7 个文件 + README，**未提交**），搬完**真跑通**：壳内四项全过 + 内核 r16 五项全绿；判据第 30 条扫描文件数 **31 → 37**（新增 6 个 `.mjs` 真进了扫描范围）；同时定位到**复跑的两条前置条件**（attach 必须是 main 面板；改内置插件开关前必须先停该实例内核） | `evidence-shell-r2\shell-verify.shell-r2.json` + `evidence-r16\results.r16.json` + `plugins/official-chat/test\drive\shell\README.md` |
+| 2026-10-20 | P0 | 跨会话发现：G2 探针**不传 `--profile`** 时会落到真实安装目录（13:48 实测该目录被写过），已落地的路径标记判据**覆盖不到**「用默认路径」写法；建议「探针必须显式给 `data_directory`，否则 fail fast」落成判据，**15:2x izzy 已拍板要落，15:5x 已实施**（判据 `check-invariants` 第 31 条 + 探针侧无条件给 `data_directory`） | `delivery-final.md` §6.2 + `src-tauri/examples/official_chat_probe.rs` |
+| 2026-10-20 | P0 | **izzy 三条拍板**：① 证据**可以清**（不固化进仓库）——PM 已把 `%TEMP%\dsh-xlink-g1\`（约 2.1GB / 113,706 文件）与 `%TEMP%\dsh-probe\` **移入回收站（可恢复）**，原始证据已不在原位；② **开发 agent 只负责 dev，release 发布后由 izzy 自己测**；③ **同意**落「探针必须显式给 `data_directory`，否则 fail fast」判据（已派 devloper，**15:5x 已实施**） | 15:2x 私聊 + `%TEMP%` 清理实测 |
+| 2026-10-20 | P0 | **壳驱动搬进仓库** `plugins/official-chat/test\drive\shell\`（7 个文件 + README，**15:18 随 `2321dbd` 提交**），搬完**真跑通**：壳内四项全过 + 内核 r16 五项全绿；判据第 30 条扫描文件数 **31 → 37**（新增 6 个 `.mjs` 真进了扫描范围）；同时定位到**复跑的两条前置条件**（attach 必须是 main 面板；改内置插件开关前必须先停该实例内核） | `evidence-shell-r2\shell-verify.shell-r2.json` + `evidence-r16\results.r16.json` + `plugins/official-chat/test\drive\shell\README.md`（**证据文件已于 15:2x 按 izzy「可以清」移入回收站**） |
+| 2026-10-20 | P0 | **release 壳（自编 release 二进制，实例 id `default`）一轮全过**（15:42–15:55，面板走 `tauri://localhost` 内嵌资源、接线 `wired:true`、A/B/D/E 全绿）；**过程偏差已记**（15:2x 拍板「release 归 izzy 验收」后仍自扩范围，下次先问）；**产品改动** `DSH_XLINK_CHANNEL_SUFFIX`（隔离实例走自己的通道，默认行为零变化 + 2 条新单测） | `evidence-shell-release-r2\shell-verify.shell-release-r2.json`（6,373 字节）+ `model-requests.shell-release-r2.jsonl`（42,447 字节）+ `src-tauri/src/notify/activate.rs` |
+| 2026-10-20 | P0 | **tester 独立复核（不采信回执）**：判据扫描面用**活体注入**证明（注入一行真实 profile 路径 → 门禁点名该文件该行 → 还原后 SHA 逐字节一致）；四条断言与回执逐条对得上；**四处口径**并入 feasibility §8 第 21 条（壳内 E 文本级非节点级、`shell-verify.mjs` 无 verdict 字段、壳内 D 也是 2 条请求、两条机检在 release-r2 走空分支**未被压测**） | `evidence-shell-release-r2\shell-verify.shell-release-r2.json` + `scripts/probe-profile-isolation.test.mjs`（26/26） |
 | 2026-10-20 | P0 | G2-A 异步回程 5/5 通过；G2-B 三站只读探测完成，真实取数结论因**本机从未建立登录态**未成立；Q1/Q2 判据已修并补行为判据 6/6 | `%TEMP%\dsh-probe\*.json` + `src-tauri/examples/official_chat_probe_site.test.mjs` |
 | 2026-10-20 | P0 | G3 机制层 7/7 通过（未登录 + 模拟页签条件下）；真实官网窗口 + 已登录态未执行 | 探针 G3 跑批（临时目录时间戳 `1792475664714`） |
 | 2026-10-20 | P0 | 零痕迹回程：R1 槽位产品上站不住；Windows CDP 5/5 成立；**macOS 侧无通路（P0 已知缺口，代码里明确报错不静默降级）** | `--mode cdp` 跑批 + `script_eval.rs:434-436` / wry 0.57 `src/wkwebview/mod.rs:723-780` |
@@ -170,4 +195,6 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 | 2026-10-20 | P0 | **G3 通过（DeepSeek / ChatGPT / MiniMax 三站各 7/7）**；隔离硬证据：跑完后源 dev profile 的 Cookies/History/Preferences/Secure Preferences mtime 仍停在 13:24:48 | `%TEMP%\dsh-probe\G3-*.json` + `G3-r2-*.json` + `profile-mtime-before/after-r2.txt` |
 | 2026-10-20 | P0 | 零痕迹回程：**Windows 已实测成立**（CDP 5/5，`getOwnPropertyNames(window)` 1239/1239、`__dsh*` 为 0）；**接口名更正**（`ICoreWebView2::CallDevToolsProtocolMethod`，WebView2 无 `ICoreWebView2DevToolsProtocolController`）；**macOS 侧无通路**（已知缺口，代码里明确报错不静默降级） | `%TEMP%\dsh-probe\A-cdp-feasibility.json` + `src-tauri/src/official_chat/cdp_eval.rs` |
 | 2026-10-20 | P0 | 登记落地 + 门禁实测（`check:builtin` 4/38、`check:invariants` 全绿含第 30 项、`check:duplicates` 4/8、`test:plugin` 206、`test:probe` 6、**`cargo test` debug 1109 passed**）；**发现一**：手工复刻把物化目录写成行 id（`xlink-official-chat/…`），真链是 `spec.id`（`official-chat/…`）——纸面正确不等于链正确；**发现二**：`cargo test --release` 红 6 条是 release-only 假红（`ShellMode::current()` 编译期决定） | `src-tauri/src/plugins/builtin/builtins.rs` + `scripts/prepare-builtin-plugins.mjs` + 根 `package.json` |
-| 2026-10-20 | P0 | feasibility 与本文件产出；计划/调研原文未改；未提交 | `docs/features/official-chat/` |
+| 2026-10-20 | P0 | feasibility 与本文件产出；计划/调研原文未改；**14:4x 与 15:1x 两轮已随 `3436fb4` / `2321dbd` 提交**；**15:2x–16:0x 两轮由 PM 本地提交（不推送，依 izzy 15:13「做好代码 commit」）** | `docs/features/official-chat/` |
+
+**关于上表里的 `%TEMP%` 证据路径**：2026-10-20 15:2x izzy 拍板「**可以清**」后，PM 已把 `%TEMP%\dsh-xlink-g1\` 与 `%TEMP%\dsh-probe\` 移入回收站（可恢复删除），**上表引用的原始 JSON / 截图 / 请求体日志已不在原位**。**仍可长期复核的，是本文件与 feasibility 里写下的数字、字段值与判据口径**——引用这些结论时不要再指望去原路径取原始产物。

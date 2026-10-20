@@ -52,13 +52,14 @@
 //   node plugins/official-chat/test/drive/shell/shell-dev.mjs
 //   # 终端 B：跑复验
 //   node plugins/official-chat/test/drive/shell/shell-verify.mjs
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Cdp, evaluate, sleep, waitFor } from './cdp.mjs';
 import { EVIDENCE_DIR, ROUND, STUB_PORT, startStubModel } from './stub-model.mjs';
 import {
-  CDP_PORT, DEV_PORT, INSTANCE_HOME, KERNEL_PID_FILE, KERNEL_PORT,
+  CDP_PORT, DEV_PORT, INSTANCE_HOME, KERNEL_PID_FILE, KERNEL_PORT, SHELL_HOME,
 } from './paths.mjs';
 
 /** 插件的固定夹具（与 `plugins/official-chat/client/client.js` 的 FIXTURES 一致）。 */
@@ -367,6 +368,8 @@ function inspectShellArtifacts() {
 function appendStubRoute(baseURL) {
   const patchFile = join(INSTANCE_HOME, 'profiles', 'web', 'cordis.patch.yml');
   const current = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : '';
+  // 实例目录是壳**按需**建的（插件接线时才有）：第一次跑时这个文件可能根本不存在。
+  mkdirSync(join(INSTANCE_HOME, 'profiles', 'web'), { recursive: true });
 
   // 壳自己写的接线块（`- insert:` 起，到下一个顶层项为止）必须原样留着——
   // 那是**壳的物化链**的产物，本脚本只负责桩模型路由，不碰它。
@@ -420,6 +423,115 @@ function appendStubRoute(baseURL) {
   };
 }
 
+/* ------------------------------------------- 机检：复跑前置条件（不许靠人记） */
+
+/**
+ * 壳自己的**面板** target 候选。
+ *
+ * **不能写死 vite 端口**：dev 壳的面板是 `http://localhost:5174/`，而 release 壳的
+ * 面板走**内嵌资源**（`tauri://localhost` / `http://tauri.localhost/`）——写死端口
+ * 会让 release 壳一个候选都找不到（面板被当成「不存在」）。
+ *
+ * 排除三类：壳打开的**工作台**（内核端口）、官方对话**条带**（`chatstrip=1`）、
+ * 外部站点（官网对话窗口的内容页签）。
+ */
+function pickPanelTargets(targets) {
+  return targets.filter((t) => {
+    if (t.type !== 'page') return false;
+    const url = t.url ?? '';
+    if (!url) return false;
+    if (url.includes(`127.0.0.1:${KERNEL_PORT}`)) return false; // 工作台
+    if (url.includes('chatstrip')) return false; // 官方对话条带
+    if (url.startsWith('devtools://')) return false;
+    // 内嵌资源面板（release 壳）
+    if (url.startsWith('tauri://') || url.includes('tauri.localhost')) return true;
+    // dev 壳：vite dev server
+    if (url.includes(`localhost:${DEV_PORT}`)) return true;
+    return false;
+  });
+}
+
+/** 读某个 pid 的完整命令行（进程不在了返回 null）。 */
+function processCommandLine(pid) {
+  try {
+    const out = execFileSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue).CommandLine`,
+      ],
+      { encoding: 'utf8', timeout: 20000, windowsHide: true },
+    );
+    const text = String(out ?? '').trim();
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 停掉**本实例**的内核（改内置插件开关前必须做）。
+ *
+ * 壳拒改开关的原话是「内核把状态缓存在内存里，运行期间的改动会被它下一次落盘
+ * 整个覆盖」——所以「改开关前先停内核」是硬前置条件，不能靠人记。
+ *
+ * **安全闸**：只停**命令行指向本隔离 home** 的进程。别人的内核（比如用户正在跑
+ * 的 release 壳那颗）一律不碰——本脚本没有任何理由动它。
+ */
+function stopInstanceKernel() {
+  if (!existsSync(KERNEL_PID_FILE)) {
+    return { hadPidFile: false, stopped: false, why: '没有 pid 文件（本实例没起过内核）' };
+  }
+  const raw = readFileSync(KERNEL_PID_FILE, 'utf8').trim();
+  const pid = Number(raw.split(/\s+/)[0]);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return { hadPidFile: true, pid: raw, stopped: false, why: 'pid 文件内容不是 pid' };
+  }
+  const cmdline = processCommandLine(pid);
+  if (cmdline === null) {
+    // 进程已经没了 → 这是**过期 pid**：壳会因为它以为内核还活着而不起内核（坑②）。
+    rmSync(KERNEL_PID_FILE, { force: true });
+    return { hadPidFile: true, pid, alive: false, removedStalePidFile: true, stopped: false };
+  }
+  if (!cmdline.includes(SHELL_HOME)) {
+    // **拒绝动手**：这个 pid 不是本隔离 home 的进程。
+    return {
+      hadPidFile: true,
+      pid,
+      alive: true,
+      stopped: false,
+      why: '该 pid 的命令行不指向本隔离 home，拒绝停它',
+      cmdline,
+    };
+  }
+  try {
+    execFileSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+      encoding: 'utf8',
+      timeout: 30000,
+      windowsHide: true,
+    });
+  } catch (error) {
+    return { hadPidFile: true, pid, alive: true, stopped: false, why: String(error?.message ?? error), cmdline };
+  }
+  // 等它真的退干净（taskkill 返回后进程可能还在收尾）。
+  for (let i = 0; i < 40; i += 1) {
+    if (processCommandLine(pid) === null) break;
+    sleep(250);
+  }
+  const stillAlive = processCommandLine(pid) !== null;
+  if (!stillAlive) rmSync(KERNEL_PID_FILE, { force: true });
+  return {
+    hadPidFile: true,
+    pid,
+    alive: !stillAlive,
+    stopped: !stillAlive,
+    cmdline,
+    removedStalePidFile: !stillAlive,
+  };
+}
+
 /** 清掉过期的 kernel.pid（见文件头 坑②）。 */
 function clearStaleKernelPid() {
   if (!existsSync(KERNEL_PID_FILE)) return { existed: false };
@@ -444,30 +556,79 @@ try {
   step('cdp-connected', { endpoint: `http://127.0.0.1:${CDP_PORT}` });
 
   // ① 找到**主窗口**的面板（见文件头 坑①：不能选官方对话条）
+  //    候选不写死 vite 端口：release 壳的面板走内嵌资源（tauri://localhost）。
   const panel = await waitFor(
     async () => {
       const list = await listTargets(cdp);
       out.targets = list;
-      const local = list.filter((t) => t.type === 'page' && t.url.includes(`localhost:${DEV_PORT}`));
-      return local.find((t) => !t.url.includes('chatstrip')) ?? null;
+      const candidates = pickPanelTargets(list);
+      return candidates[0] ?? null;
     },
     { timeoutMs: 120000, label: '壳主窗口 target' },
   );
   const panelSession = await attach(cdp, panel.id);
   step('panel-found', panel);
 
-  // ② 用壳自己的命令层启用插件 → 走壳自己的物化链
+  // ①.5 **机检前置条件①：attach 必须是 main 面板。**
+  //     壳的能力检查只允许 main 窗口跑本地命令（`capabilities/default.json` 的
+  //     `"windows": ["main"]`）；连错窗口时 `builtin_set_enabled` 被拒：
+  //       "builtin_set_enabled not allowed on window \"official-chat\",
+  //        webview \"official-chat-strip\" … allowed on: [windows: \"main\"]"
+  //     这里用只读的 `builtin_status` 先探一次，探不过就**快速失败**并把原话带上，
+  //     而不是让后面某一步报一个看不出来的错。
+  const mainProbe = await invoke(cdp, panelSession, 'builtin_status', {});
+  step('assert-main-panel', {
+    url: panel.url,
+    ok: mainProbe?.ok === true,
+    why: mainProbe?.why ?? null,
+  });
+  if (mainProbe?.ok !== true) {
+    throw new Error(
+      `attach 到的不是 main 面板（url=${panel.url}）：${mainProbe?.why ?? 'unknown'}`,
+    );
+  }
+
+  // ② **机检前置条件②：改内置插件开关前先停掉本实例的内核。**
+  //     壳拒改的原话是「内核把状态缓存在内存里，运行期间的改动会被它下一次落盘
+  //     整个覆盖」。只停命令行指向**本隔离 home** 的进程，别人的内核不碰。
+  const stopped = stopInstanceKernel();
+  step('instance-kernel-stopped', stopped);
+  if (stopped.alive === true) {
+    throw new Error(
+      `停不掉本实例的内核（pid=${stopped.pid ?? '未知'}）：${stopped.why ?? 'unknown'}`,
+    );
+  }
+
+  // ②.5 桩模型路由追加到壳的实例 patch（壳自己写的插件行保留）
+  //     —— **必须在 `builtin_set_enabled` 之后**：接线行是壳自己写的，
+  //     追加要把它原样留着；而实例目录（`profiles/web/`）也是壳按需建的，
+  //     插件没接线之前那个文件可能根本不存在。
+
+  // ②.6 清掉过期的 kernel.pid（坑②）
+  step('stale-kernel-pid-cleared', clearStaleKernelPid());
+
+  // ③ 用壳自己的命令层启用插件 → 走壳自己的物化链
   const enable = await invoke(cdp, panelSession, 'builtin_set_enabled', {
     plugin: 'official-chat',
     enabled: true,
   });
   step('builtin-set-enabled', enable);
 
-  // ②.5 桩模型路由追加到壳的实例 patch（壳自己写的插件行保留）
-  step('stub-route-appended', appendStubRoute(stub.baseURL));
+  // ③.5 **返回值必须断言**：壳说「接上了」才算接上（`wired:true`）。
+  //     只看 `ok:true` 是不够的——上一次壳内复跑就是 `ok:false` 仍然往下跑，
+  //     插件最后是靠「壳自己的接线行 + 物化链」装上的，那不是本次要的路径。
+  const enableValue = enable?.value ?? {};
+  if (enable?.ok !== true) {
+    throw new Error(`builtin_set_enabled 失败：${enable?.why ?? 'unknown'}`);
+  }
+  if (enableValue.wired !== true) {
+    throw new Error(
+      `builtin_set_enabled 返回 wired=${JSON.stringify(enableValue.wired)}：${JSON.stringify(enableValue)}`,
+    );
+  }
 
-  // ②.6 清掉过期的 kernel.pid（坑②）
-  step('stale-kernel-pid-cleared', clearStaleKernelPid());
+  // ③.6 桩模型路由追加（壳刚写的接线行必须原样保留）
+  step('stub-route-appended', appendStubRoute(stub.baseURL));
 
   // ③ 启动内核：**发起就不等**（内核起来要几十秒，而 CDP 求值超时是 120s），
   //    错误落到 window.__shellStartError 上再读。

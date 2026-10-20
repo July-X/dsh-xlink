@@ -205,15 +205,31 @@ fn main() {
                 .spawn(move || {
                     let report = match (mode.as_str(), site) {
                         ("site", Some(site)) => {
-                            run_site_probe(&handle, &url, site, profile.as_deref())
+                            // `--profile` 优先（首站模式要的是**只读拷贝**出来的
+                            // 临时目录），没给就用一次性临时目录。
+                            match resolve_webview_profile(profile.as_deref()) {
+                                Ok(dir) => run_site_probe(&handle, &url, site, &dir),
+                                Err(e) => json!({ "fatal": e }).to_string(),
+                            }
                         }
-                        ("cdp", _) => tauri::async_runtime::block_on(run_cdp_probe(&handle, &url)),
+                        ("cdp", _) => {
+                            // 本地可控页不需要登录态：**永远**用一次性临时目录。
+                            match resolve_webview_profile(None) {
+                                Ok(dir) => tauri::async_runtime::block_on(run_cdp_probe(
+                                    &handle, &url, &dir,
+                                )),
+                                Err(e) => json!({ "fatal": e }).to_string(),
+                            }
+                        }
                         ("g3", Some(site)) => tauri::async_runtime::block_on(run_g3_probe(
                             &handle,
                             site,
                             profile.as_deref(),
                         )),
-                        _ => run_controlled_probe(&handle, &url),
+                        _ => match resolve_webview_profile(None) {
+                            Ok(dir) => run_controlled_probe(&handle, &url, &dir),
+                            Err(e) => json!({ "fatal": e }).to_string(),
+                        },
                     };
                     println!("PROBE_REPORT_BEGIN");
                     println!("{report}");
@@ -245,19 +261,19 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
 // --- 模式一：回程机制 -------------------------------------------------------
 
 /// 跑完五种情形，出一份 JSON 报告。
-fn run_controlled_probe(handle: &tauri::AppHandle, url: &str) -> String {
+fn run_controlled_probe(handle: &tauri::AppHandle, url: &str, profile: &std::path::Path) -> String {
     // 留一个不关的窗口：Tauri 在最后一个窗口关闭时会结束进程，而「页面
     // 销毁」那一情形要关掉探针窗口——没有这个陪衬，报告就打印不出来。
     //
     // 陪衬窗口必须和探针窗口用**同一套**浏览器参数与 user-data 目录，
     // 否则 WebView2 拒绝在同一个 user-data 目录上建第二个环境
     // （ERROR_INVALID_STATE / 0x8007139F）。
-    let keepalive = build_window_with(handle, "official-chat-probe-keepalive", url, None, false);
+    let keepalive = build_window_with(handle, "official-chat-probe-keepalive", url, profile, false);
     if let Err(e) = keepalive {
         return json!({ "fatal": format!("无法创建陪衬窗口：{e}") }).to_string();
     }
 
-    let window = match build_window(handle, "official-chat-probe", url, None) {
+    let window = match build_window(handle, "official-chat-probe", url, profile) {
         Ok(window) => window,
         Err(e) => return json!({ "fatal": format!("无法创建探针窗口：{e}") }).to_string(),
     };
@@ -519,23 +535,11 @@ async fn run_g3_probe(
         "site": site.key,
     });
 
-    // 陪衬窗口：Tauri 在**最后一个窗口**关闭时会结束进程。场景 2 要关掉
-    // 模拟的官网页签，没有这个陪衬就会中途退出——报告打印不出来，临时拷贝
-    // 也来不及删。
-    let _ = PROBE_HANDLE.set(handle.clone());
-    let keepalive = build_window_with(
-        handle,
-        "official-chat-probe-keepalive",
-        site.url,
-        None,
-        false,
-    );
-    if let Err(e) = keepalive {
-        report["fatal"] = json!(format!("无法创建陪衬窗口：{e}"));
-        return report.to_string();
-    }
-
-    // --- 隔离：只读拷贝 ---
+    // --- 隔离：只读拷贝（**先做**：陪衬窗口也要用同一份 user-data 目录）---
+    //
+    // 顺序有讲究：WebView2 要求同一个 user-data 目录下的所有环境配置一致，
+    // 而陪衬窗口与探针窗口必须用**同一个**目录（见 `build_window_with` 的
+    // 注释）。所以拷贝先做，陪衬窗口才拿得到 `copied_profile`。
     let copy_root = profile_copy::temp_copy_root();
     let copied_profile = copy_root.join("profile");
     let mut copy_report = json!({});
@@ -564,18 +568,35 @@ async fn run_g3_probe(
     }
     report["profile_isolation"] = copy_report.clone();
 
+    // 陪衬窗口：Tauri 在**最后一个窗口**关闭时会结束进程。场景 2 要关掉
+    // 模拟的官网页签，没有这个陪衬就会中途退出——报告打印不出来，临时拷贝
+    // 也来不及删。
+    //
+    // 它与探针窗口**必须用同一份 user-data 目录**（`copied_profile`）：WebView2
+    // 不允许同一个进程里并存两个不同 user-data 目录的浏览器环境
+    // （ERROR_INVALID_STATE / 0x8007139F）。原来这里传 `None`（= 默认目录，
+    // 也就是用户真实安装目录），跟探针窗口用的拷贝目录不是同一个——既是隔离
+    // 漏洞，也是 WebView2 的雷。
+    let _ = PROBE_HANDLE.set(handle.clone());
+    let keepalive = build_window_with(
+        handle,
+        "official-chat-probe-keepalive",
+        site.url,
+        &copied_profile,
+        false,
+    );
+    if let Err(e) = keepalive {
+        report["fatal"] = json!(format!("无法创建陪衬窗口：{e}"));
+        cleanup_copy(&copy_root, source_profile, &mut report);
+        return report.to_string();
+    }
+
     let mounted_label = "official-chat-tab-0";
     let browser_args = official_chat::OFFICIAL_CHAT_BROWSER_ARGS;
     let mut scenarios: Vec<Value> = Vec::new();
 
     // --- 场景 1：页签已挂载 → 复用 ---
-    let mounted = build_window_with(
-        handle,
-        mounted_label,
-        site.url,
-        Some(&copied_profile),
-        false,
-    );
+    let mounted = build_window_with(handle, mounted_label, site.url, &copied_profile, false);
     if let Err(e) = mounted {
         report["fatal"] = json!(format!("无法模拟官网对话页签：{e}"));
         cleanup_copy(&copy_root, source_profile, &mut report);
@@ -774,13 +795,7 @@ async fn run_g3_probe(
     }
 
     // --- 场景 6 的前半：用户**打开**官网窗口 → 已挂载页签重新出现 ---
-    let reopened = build_window_with(
-        handle,
-        mounted_label,
-        site.url,
-        Some(&copied_profile),
-        false,
-    );
+    let reopened = build_window_with(handle, mounted_label, site.url, &copied_profile, false);
     let ctx3 = context::ReadingContext::resolve(
         handle,
         site.key,
@@ -891,13 +906,13 @@ fn report_handle() -> Option<&'static tauri::AppHandle> {
 ///    这正是生产环境的状态）。
 /// 2. `awaitPromise: true` 能不能拿到 **Promise 结算后的值**。
 /// 3. 求值前后**页面 JS 空间**的全局量有没有变化（槽位方案的核心缺陷）。
-async fn run_cdp_probe(handle: &tauri::AppHandle, url: &str) -> String {
+async fn run_cdp_probe(handle: &tauri::AppHandle, url: &str, profile: &std::path::Path) -> String {
     // 陪衬窗口：Tauri 在最后一个窗口关闭时会结束进程。
-    let keepalive = build_window_with(handle, "official-chat-probe-keepalive", url, None, false);
+    let keepalive = build_window_with(handle, "official-chat-probe-keepalive", url, profile, false);
     if let Err(e) = keepalive {
         return json!({ "fatal": format!("无法创建陪衬窗口：{e}") }).to_string();
     }
-    let window = match build_window(handle, "official-chat-probe", url, None) {
+    let window = match build_window(handle, "official-chat-probe", url, profile) {
         Ok(window) => window,
         Err(e) => return json!({ "fatal": format!("无法创建探针窗口：{e}") }).to_string(),
     };
@@ -1045,7 +1060,7 @@ fn run_site_probe(
     handle: &tauri::AppHandle,
     url: &str,
     site: SiteSpec,
-    profile: Option<&std::path::Path>,
+    profile: &std::path::Path,
 ) -> String {
     let window = match build_window(handle, "official-chat-site-probe", url, profile) {
         Ok(window) => window,
@@ -1059,7 +1074,7 @@ fn run_site_probe(
             "probe": "official-chat first-site read-only probe (G2)",
             "site": site.key,
             "requested_url": site.url,
-            "profile": profile.map(|p| p.display().to_string()),
+            "profile": profile.display().to_string(),
             "page_ready": match &ready {
                 Ok(ms) => json!({ "ok": true, "elapsed_ms": ms }),
                 Err(e) => json!({ "ok": false, "error": e }),
@@ -1387,11 +1402,36 @@ async fn wait_for_site(window: &tauri::WebviewWindow, hosts: &[&str]) -> Result<
 /// `profile` 给定时，复用官网对话的**专用 user-data 目录**与**同一套浏览器
 /// 参数**（WebView2 要求同一个 user-data 目录下的所有环境配置一致），并注入
 /// 与生产一致的指纹脚本——探针要量的就是**壳真实环境**下的站点行为。
+/// 解析 webview 要用的 user-data 目录（**必须显式**）。
+///
+/// 给了 `source` 就用它（首站模式那是**只读拷贝**出来的临时目录）；没给就造
+/// 一个一次性临时目录。
+///
+/// **没有**「用默认目录」这个分支：不设 `data_directory` 的话，WebView2 会用
+/// **默认**数据目录——本项目安装目录（`%LOCALAPPDATA%` 下那个
+/// `com.zhongxingxing.dsh-xlink` 目录）里的
+/// `EBWebView` 子目录，
+/// 那是**用户真实安装目录**。浏览器一启动就往那里写 Cookies / Preferences /
+/// Local Storage / History / IndexedDB，而 Cookies 是活文件、写坏了回滚不了。
+/// 2026-10-20 13:48 实测那次就是这么写进用户目录的。
+///
+/// 建不出目录就**在这里**失败（Err）：宁可这个模式跑不成，也不让浏览器落到
+/// 默认目录上。
+fn resolve_webview_profile(source: Option<&std::path::Path>) -> Result<PathBuf, String> {
+    if let Some(dir) = source {
+        return Ok(dir.to_path_buf());
+    }
+    let dir = std::env::temp_dir().join(format!("dsh-probe-profile-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("无法创建临时 profile 目录（{}）：{e}", dir.display()))?;
+    Ok(dir)
+}
+
 fn build_window(
     handle: &tauri::AppHandle,
     label: &str,
     url: &str,
-    profile: Option<&std::path::Path>,
+    profile: &std::path::Path,
 ) -> Result<tauri::WebviewWindow, String> {
     build_window_with(handle, label, url, profile, true)
 }
@@ -1402,26 +1442,34 @@ fn build_window(
 /// 完全一致，否则 WebView2 会以 `ERROR_INVALID_STATE (0x8007139F)` 拒绝
 /// 创建第二个 webview。所以陪衬窗口不能自己另起一套参数——它必须和探针
 /// 窗口用同一套（`additional_browser_args` + `data_directory`）。
+///
+/// **`data_directory` 必须无条件给**——这里**不能**写成
+/// `if let Some(profile) = profile { builder = builder.data_directory(..) }`：
+/// 那样 `None` 那条路径就**不设** user-data 目录，WebView2 会用**默认**目录，
+/// 也就是本项目安装目录（`%LOCALAPPDATA%` 下那个 `com.zhongxingxing.dsh-xlink`
+/// 目录）里的 `EBWebView` 子目录——**用户真实安装目录**。浏览器一启动就往那里
+/// 写 Cookies / Preferences / Local Storage /
+/// History / IndexedDB，而 Cookies 是活文件、写坏了回滚不了。
+/// 2026-10-20 13:48 实测那次就是这么写进用户目录的（当时是 `Option<&Path>`
+/// 传 `None`）。判据 `scripts/lib/probe-profile-isolation.mjs` 的第 ③ 类
+/// （`findDataDirectoryViolations`）盯的就是这一条：**条件分支里给 = 没给**。
 fn build_window_with(
     handle: &tauri::AppHandle,
     label: &str,
     url: &str,
-    profile: Option<&std::path::Path>,
+    profile: &std::path::Path,
     visible: bool,
 ) -> Result<tauri::WebviewWindow, String> {
     let parsed = url.parse().map_err(|e| format!("URL 非法：{e}"))?;
-    let mut builder =
-        tauri::WebviewWindowBuilder::new(handle, label, tauri::WebviewUrl::External(parsed))
-            .title("dsh 官方对话探针")
-            .inner_size(1000.0, 760.0)
-            .visible(visible)
-            .additional_browser_args(official_chat::OFFICIAL_CHAT_BROWSER_ARGS)
-            .initialization_script(include_str!("../src/harness/chat-fingerprint.js"));
-    if let Some(profile) = profile {
-        std::fs::create_dir_all(profile).map_err(|e| format!("无法创建 profile 目录：{e}"))?;
-        builder = builder.data_directory(profile.to_path_buf());
-    }
-    builder
+    // 建目录失败就**在这里**失败：绝不能「建不了就算了，让浏览器用默认目录」。
+    std::fs::create_dir_all(profile).map_err(|e| format!("无法创建 profile 目录：{e}"))?;
+    tauri::WebviewWindowBuilder::new(handle, label, tauri::WebviewUrl::External(parsed))
+        .title("dsh 官方对话探针")
+        .inner_size(1000.0, 760.0)
+        .visible(visible)
+        .additional_browser_args(official_chat::OFFICIAL_CHAT_BROWSER_ARGS)
+        .initialization_script(include_str!("../src/harness/chat-fingerprint.js"))
+        .data_directory(profile.to_path_buf())
         .build()
         .map_err(|e| format!("无法创建探针窗口：{e}"))
 }
