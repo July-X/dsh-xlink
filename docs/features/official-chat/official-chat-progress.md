@@ -579,6 +579,52 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 - **边界**：devloper **未 commit / 未 push**；`scripts/**` 是 tester 的在途改动，他一行没碰。**G-1**（Rust 测试自泄漏临时目录）按 §9 **不插队**，等 P2 收口后再修。
 - **归属更正（他转述错了）**：他说「PM 在等你两句话（fork 仓库删否 ＋ 三问问卷作废）」—— 这两件**该由 izzy 答**，不是 PM 的；PM 只负责把问题原样呈给 izzy。**上游 G1-7 PR 已按 izzy 23:0x 拍板撤回**，分支已删、禁止改上游内核 ⇒ **不存在「仍需 izzy 登录 GitHub 开 PR」**，该阻塞点已作废。
 
+### 2026-10-20 23:5x–2026-10-21 00:3x · git 提交记录用户名统一（izzy 拍板四项 ＋ 全量重写）
+
+**izzy 23:57 拍板（四问）**
+
+1. **目标身份** = **`July-X <over618@163.com>`**（署名与 GitHub **账号**都归 July-X）。**动因**：原状态是**署名文字**已是 July-X，但 email 全为 `m4java@163.com`（该 email 属 **Z-starts** 账号）⇒ `gh api repos/July-X/dsh-xlink/contributors` 显示 **Z-starts 1045 / July-X 1** ⇒ 提交实际记在 **Z-starts** 名下。**账号归属靠 email，不靠署名文字** ⇒ 统一身份必须连 email 一起换。
+2. **82 个 `desktop-v*` 发布 tag 里的旧作者**：**先临时收窄 release workflow 的 tag 触发条件，推完 tag 再改回**。
+3. **恢复点 tag** `backup/pre-author-rewrite-20261020`：**删掉**。
+4. **范围**：**只处理 dsh-xlink**（`xgit` 另有 172 处旧名、`UnrealEngine` 63 处、**全局 `~/.gitconfig` 的 `user.name=zhongxingxing`** 均不动）。
+
+**实施前的一手事实（全部实测）**
+
+- **去重口径**（三个开发分支 ＋ 当时未推的 2 个提交 ＝ **1053 个可达提交**）的署名分布：`July-X <m4java@163.com>` **1033**、`4Dim <m4java@163.com>` **17**、`xingxing.zhong <m4java@163.com>` **2**、`July-X <over618@163.com>` **1**；**email 只有 `m4java@163.com` 一种** ⇒ 统一即全量替换。
+- ⚠️ **`zhongxingxing` 在三个开发分支上已是 0**（22:5x 那次重写清掉的）⇒ 但**它仍留在 82 个发布 tag 指向的历史里**（实测 `desktop-v0.5.8-rc.2` 的作者仍是 `zhongxingxing`）⇒ **上一轮「残留 = 0」的口径只对开发分支成立、对 tag 不成立** ⇒ 这正是本轮必须**连 tag 一起重写**的原因。
+- ⚠️ **两套数字口径不同，别混**：`filter-branch` 实际处理 **2095** 个提交（`-- --branches --tags` 口径，**含各 tag 指向历史的重复计数**）；去重后是 **1053**（`main` 1051 ＋ `main-dev2` 269 ＋ `uiv2-dev` 567 的并集）。
+- ⚠️ **上一轮「旧作者残留 = 0」的结论口径不完整**：那次只数了 `zhongxingxing`，**漏了 `4Dim`(17) 与 `xingxing.zhong`(2)**；本轮改为「去重后全 refs 可达提交的作者分布」。
+- ⚠️ **本地 refs 没跟上上一次重写**：`refs/heads/main-dev2` 仍指向重写前的 `ba72c0a3`（residue 15），本地也**没有** `refs/heads/uiv2-dev` ⇒ 本轮一并对齐。
+- **恢复点 tag 是 tag 不是 branch**（上一轮措辞已更正）；远端 `refs/heads` 只有 3 个开发分支。
+
+**执行顺序与做法**
+
+1. **先建本地回滚网**（删远端 backup tag 前必须有本地安全网）：`git bundle create {bundle} --all`（**{bundle_bytes} B**，路径 `{bundle}`，**不推远端**、不进仓库）⇒ 旧作者历史仍可达于本机该文件。
+2. **独立克隆里重写**（`git clone --no-hardlinks` 本地仓库 → `--index-filter true` 免逐提交 checkout → `filter-branch --env-filter` 把 author/committer 统一为 `July-X <over618@163.com>` → `--tag-name-filter cat` 连带重写 82 个发布 tag）⇒ **共享工作目录全程不被触碰**（成员在途改动零风险）。
+3. **annotated tag 的 tagger 一并重写**（保留 tagger 日期与 message，只换 name/email）—— `filter-branch` 只改 tag 指向的提交，不改 tagger ⇒ 另用 `git hash-object -t tag` 重建 tag 对象。
+4. **推分支**用 `--force-with-lease`（锁定重写基线 `{old_main}`）⇒ **若远端被别的会话推进过，push 直接被拒**，不会静默覆盖。
+   ⚠️ **实际触发了这个兜底**：重写耗时 20+ 分钟，期间**并行 PM 会话**又推进了远端（`a13b63b` G-2 销号），本地还多一条**未推送**的 `{old_local}`（P2 第一批 13 个文件，1030+/11−）⇒ 若直接推，**远端会丢掉 P2 第一批**。⇒ 改用 **`git commit-tree` 增量重建**（保留原 message ＋ author/committer 日期，只替换身份），**tree 逐字节校验与原提交相同**后才推（两次重建：tree `54bf74364225` / `88190701021b` 均一致）⇒ 两笔提交**内容零变化**地进了新历史。
+5. **推 tag 前用 GitHub API 把 `desktop-release.yml` 置为 `disabled_manually`**，推完再 `enable` 回来 ⇒ **不改任何 workflow 文件、不留痕迹、不触发发布、也不额外触发 CI**。
+   ⚠️ **为什么不用「改 workflow 文件」的办法**：GitHub 在 tag push 时评估的是**被推 commit 里的 workflow 文件**，不是默认分支的 ⇒ 改默认分支无效，必须改 tag 所指 commit 里的文件（那会改内容）⇒ 改用 disable/enable。
+6. **共享工作目录对齐**：`git fetch origin --tags --force` → `git reset --mixed origin/main`（**不动工作树**，成员在途改动完好）→ `git branch -f main-dev2/uiv2-dev` → 删本地 backup tag → **仓库级 `user.email` 改 `over618@163.com`**（否则**新提交**仍记到 Z-starts）。
+7. **删远端 backup tag**（`git push origin :refs/tags/backup/...`）—— 不匹配 `desktop-v*` ⇒ 不触发任何 workflow。
+
+**结果**
+
+- 远端 `main` = **`{new_main}`**（重写前的远端 tip 是 `{old_main}`；本地那条未推送的 `{old_local}`＝P2 第一批，**已一并重写并推上，没有丢**）。
+- **作者分布**（3 分支 ＋ {ntags} 个 tag，**去重 1053 个可达提交**）：**统一为 `July-X <over618@163.com>`** ⇒ 旧署名 `zhongxingxing` / `4Dim` / `xingxing.zhong` 与旧 email `m4java@163.com` **残留 = 0**（`git log --all` 实测）。
+- **内容逐字节一致**：`main-dev2` / `uiv2-dev` 的 `git diff --stat`（重写前 vs 重写后）**为空**；{ntags} 个发布 tag **逐一 diff，differing = 0**；`main` 上多出的 16 个文件差异**全部来自那 2 个新增提交**（G-2 销号 + P2 第一批），其 tree 与原提交**逐字节相同** ⇒ **只改了元数据，没改任何文件内容**。
+- **tagger** 也已统一为 `July-X <over618@163.com>`（annotated tag 另用 `git hash-object -t tag` 重建，保留 tagger 日期与 message）。
+- **未触发发布**：推 tag 期间 `desktop-release.yml` 为 `disabled_manually` ⇒ 推完恢复 `active`；`desktop-ci.yml` 的触发条件是 `push: branches: [main]` ⇒ **tag push 根本不触发它**。
+- **恢复点 tag 已删**（远端与本地）⇒ 旧作者历史在**远端不再可达**；回滚能力由本地 bundle 承担。
+
+**并行会话提示**
+
+- 本轮期间**另一个 PM 会话**在同一工作目录推进并推送了 `1a7ad87`（协议 v0.3）、`eff6274`（v0.4）、`276d698a`（v0.5）、`a13b63b`（G-2 销号）⇒ 本轮重写基线取的是 **`276d698a`（v0.5 那笔）**，其后它推的 `a13b63b` **也被纳入重写**（增量重建，tree 一致）⇒ 它的提交**内容全部保留**（只换元数据）。
+- **v0.5 的内核事实已由 PM 一手复核成立**：内核确有 5 处 `notify("error", …)`（`:15193` `:15197` `:15204` `:15905` `:16932`）；`:18807-18809` 确为**独立 useEffect**（依赖 `[notice, showToast]`）⇒ `error` 档只弹瞬态 toast、`info` 档只渲染 inline 常驻条 ⇒ **必须用 `info` 档**这条成立；单槽 ⇒ 内核那条 error notice 一到，**我们的 inline 条被整个顶掉** ⇒ 「提示不保证常驻」成立。
+  ⚠️ **一处精度补正**：`:15905`（`shell.notify`）与 `:16932`（闭包传入的 `notify`）**未必是同一个 notices 槽**；确证同槽的是 `:15193` / `:15197` / `:15204` 三处 ⇒ **结论不变**（至少三处同槽即足以顶掉）。
+- **新基线**：`main` = `{new_main}`；成员若在重写前提交过、push 被拒 ⇒ 先 `git fetch && git rebase origin/main`，或把提交交 PM；**不要 force push**。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
@@ -617,5 +663,6 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 | 2026-10-20 | P2 | **izzy 拍板五项 ＋ P2 立项 ＋ P2 协议 v0.1**：① **P2 立项**——三条建议 = 第一批口径，已协议化为 `official-chat-p2-protocol.md` v0.1（**重复识别 ＋ 可见提示 ＋ 预算预检**；**不合并 / 不动 chip 数 / 不碰 id 分配 / 不改 `agent/pre-step`**；键五字段全等；host 新命令 `duplicates`；**13 码闭集不新增**；判据六条 P2-1…P2-6 ＋「**去重候选对**」夹具；**A8 本批不改**）② `development-plan` §7:155 **由 devloper 改**（PM 不改该文件）③ **PR 具体地址**已给 izzy（`deepseek-ai/deepseek-harness` compare `master...July-X:deepseek-harness:fix/connection-owner-webserver-get?expand=1`；API 核对 ahead 1 / behind 0、1 file **+14 −4**）④ **历史 224 个提交要重写**（只重写 `main`/`main-dev2`/`uiv2-dev` 的作者与提交者；**tag 一律不重推** ⇒ 不触发 `desktop-release.yml`；恢复点 `origin/backup/pre-author-rewrite-20261020`）⑤ **仍需 izzy 本人做**：首次建立站点登录态（**现在即可**，P4 硬前置）、安装版 release 壳验收（等发布包） | 本文件 22:5x 节 ＋ `official-chat-p2-protocol.md` v0.1 ＋ `gh api repos/July-X/deepseek-harness/compare/master...fix/connection-owner-webserver-get` |
 | 2026-10-20 | P1/P2 | **历史作者重写完成并推送**（izzy 22:5x 拍板）：远端 `main` = **`c99156e23cf620eeabc6b5ad28a686095bb5cc1a`**、`main-dev2` = `4322e9800bdb8305c6cf818383116fc9ae53524e`、`uiv2-dev` = `8789943c73d9f32936709fb49ec4a410b3d9a446`（远端 `refs/heads` **仅这 3 个**）；**旧作者 `zhongxingxing` 残留 = 0**（main 0/1044、main-dev2 0/269、uiv2-dev 0/567）；**内容逐字节一致**（`git diff --stat 4f2a805 origin/main` **输出为空**）⇒ 只改元数据；**82 个 `desktop-v*` 发布 tag 一律未重推**（唯一 tag 名 83 个含 1 个恢复点 tag；**10-20 当天 tagger 数 = 0**，最新 tagger = `2026-10-16 19:12:45 desktop-v0.4.15`）⇒ **不触发 `desktop-release.yml`**；**恢复点是 tag `backup/pre-author-rewrite-20261020` → `4f2a805`**（不是分支）；共享工作目录已 `reset --mixed` ⇒ HEAD = `c99156e`、成员在途改动完好 | 本文件 23:1x 节 ＋ `git ls-remote` / `for-each-ref` 实测 |
 | 2026-10-20 | P2 | **P2 协议 v0.2 落盘（承载位写死 `info` 档）**：UX高手 取到内核事实、PM 第一手复核成立（现役内核 `0.2.1-rc.2` `dsh-client-ui-conversation/lib/client.js` SHA `8554738C…`）⇒ `:18982-18986` **只有 `level === "info"` 才渲染 inline 常驻条**、`:18808` `error` 档**只弹瞬态 toast**、`:15356`/`:15448` **notice 单槽**（最新覆盖旧条 ⇒ 文案自包含）⇒ **承载位 = 输入区 composer 常驻条、必须 `info` 档**（「引用处」P2 阶段不存在，缺口 G1-6）；**「正文照发」收敛为「不额外拦截发送」**（界面不承诺发送结果，由 P1 S-5/S-6 判定 ⇒ 文案不得写「已发送/发送失败/发送被阻止」）；判据 **P2-2 加 `level` 断言**、**P2-6 加「请求数与失败前相同」**；字节 **10080 B / 141 行**（五份文档 UTF-8 无 BOM / 纯 LF / 0 替换字符）。**未完成**：UX高手 方案正文未交付、其 3 个口径问题本轮由 PM 转达 devloper | 本文件 23:1x 节 ＋ `official-chat-p2-protocol.md` v0.2 |
+| 2026-10-20 | P1/P2 | **git 提交记录用户名统一（izzy 23:57 拍板四项 ＋ 全量重写）**：目标身份 = **`July-X <over618@163.com>`**（原状态署名文字已是 July-X，但 email 全为 `m4java@163.com`＝Z-starts 账号 ⇒ GitHub 上 1045 提交记在 **Z-starts** 名下，账号归属靠 email）；**82 个 `desktop-v*` 发布 tag 一并重写**（推 tag 期间用 GitHub API 把 `desktop-release.yml` 置 `disabled_manually`，推完 `enable` 回来 ⇒ **不改任何 workflow 文件、不触发发布、不触发 CI**；⚠️ GitHub 在 tag push 时评估的是**被推 commit 里**的 workflow 文件，故改默认分支无效）；**恢复点 tag `backup/pre-author-rewrite-20261020` 已删**（远端＋本地）⇒ 旧作者历史远端不再可达，**回滚能力由本地 bundle `C:\workdir\github\dsh-xlink-pre-rewrite-20261020.bundle`（17815662 B，不推远端）承担**；仓库级 `user.email` 改 `over618@163.com`；⚠️ 上一轮「残留=0」口径不完整（只数了 `zhongxingxing`，漏 `4Dim` 17 ＋ `xingxing.zhong` 2）⇒ 本轮改为去重后全 refs 作者分布；⚠️ **上一轮「残留=0」只对开发分支成立**：`zhongxingxing` 仍留在 82 个发布 tag 指向的历史里 ⇒ 本轮连 tag 一起重写；⚠️ 本地 `refs/heads/main-dev2` 上轮没跟上重写、本地无 `uiv2-dev` ⇒ 一并对齐。**结果**：远端 `main` = **`bec3b824bf991c91da75128a7d8a4e8f7fbcef8b`**、作者分布统一、**内容逐字节一致**（分支与 82 个 tag 的 diff --stat 全空）、tagger 同样统一、旧署名与旧 email **残留 = 0**、**未触发发布**。范围仅 dsh-xlink（`xgit` 172 处、`UnrealEngine` 63 处、全局 `~/.gitconfig` 均未动） | 本文件 23:5x–00:3x 节 ＋ `gh api contributors` / `git ls-remote` / `filter-branch` 核验 |
 
 **关于上表里的 `%TEMP%` 证据路径**：2026-10-20 15:2x izzy 拍板「**可以清**」后，PM 已把 `%TEMP%\dsh-xlink-g1\` 与 `%TEMP%\dsh-probe\` 移入回收站（可恢复删除），**上表引用的原始 JSON / 截图 / 请求体日志已不在原位**。**仍可长期复核的，是本文件与 feasibility 里写下的数字、字段值与判据口径**——引用这些结论时不要再指望去原路径取原始产物。
