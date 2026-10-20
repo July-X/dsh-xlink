@@ -30,6 +30,7 @@
 
 - 搜索文本或文件时优先使用 `rg`；仅在不可用时再使用 `grep` 等替代命令。
 - **测试永远不许碰用户的真实数据目录**。凡是按 `paths::*` 解析路径的测试，必须先持住 `crate::tests::scoped_xlink_home(&临时目录)`（或模块自带的 `TestHome` / `TempXlink`）把这个 guard 活到用例结束——裸 `std::env::set_var` 拦不住别的测试正持着同一把 env 锁。**读路径也持锁，不只是写**：`xlink_home()` 每次调用都现读 `DSH_XLINK_HOME`，不持锁地读两次可能读出**两个不同的根**，断言于是假红（2026-10-20 Windows CI 连红两次，run 39346453918 / 39363486523）。**改 `HOME` / `DSH_HOME` / `DSH_XLINK_HOME` 一律只走 `scoped_xlink_home` / `scoped_dsh_home`**，裸 `set_var` / `remove_var` 禁止（`check-invariants` 第 23 项钉住，守卫本体在 `lib.rs`）——裸改还会把一个**已删除**的临时目录泄漏给整个进程，让 `dirs_home()` 从此返回不存在的路径，本仓吃过一次：那条 `remove_var` 漏到了并发的 `shell::autostart` 用例，一次 `cargo test` 红了四条与本功能无关的测试。清理只清自己那块临时目录，永远不要 `remove_dir_all(<解析出来的家目录>)`：2026-09-29 实测过一版那样的初版测试，**一次 `cargo test` 就能把用户全部内核、实例与会话删干净**，而 `check:invariants` 当时一项都拦不住。
+- **实跑证据按轮次独立命名，不许复用同名文件**。同一套脚本连续跑多轮时，证据文件名必须带轮次或时间戳（`results.r14.json`、`model-requests.r14.jsonl`）——否则后一轮会把前一轮的原始证据覆盖掉：2026-10-20 official-chat 的 `model.log` 就这样从「含完整请求体」变成 0 字节，那条结论一度只剩一个布尔字段支撑，原始请求体不可复核。**证据写在会被删的临时 home 之外**：探针的临时 home 跑完整个被删，截图与请求体日志落在里面就一起没了（2026-10-20 断言 d 的 Toast 截图就是这么丢的）。
 
 ## 命令
 
