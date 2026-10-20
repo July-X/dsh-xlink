@@ -1001,9 +1001,19 @@ code {
   color: var(--text-secondary);
   white-space: nowrap;
 }
-/* 版本号独占一行。`text-overflow` 只做极端长度的兜底：正常版本号（含 dev 后缀）
-   在 220px 里放得下，不需要省略号。 */
+/* 版本号独占一行，前面一枚 tag 图标（2026-10-20 用户要求）。图标与文字同一
+   基线；**压缩的一方是文字**：图标固定 13px 不收缩，`text-overflow` 只做极端
+   长度的兜底（正常版本号含 dev 后缀在 220px 里放得下，见上面 footer 的注释）。 */
 .sidebar__footer .version-badge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.sidebar__footer .version-badge__icon {
+  flex: 0 0 auto;
+}
+.sidebar__footer .version-badge__text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

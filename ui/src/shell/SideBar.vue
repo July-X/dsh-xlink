@@ -27,7 +27,12 @@ import { globalBusy } from './loading.js';
 import { pluginStore } from '../plugins/plugins.js';
 import { skillStore } from '../skills/skills.js';
 import { theme, themeOptions, setTheme } from './theme.js';
-import { Sun as SunIcon, Moon as MoonIcon, Monitor as MonitorIcon } from '@lucide/vue';
+// 图标一律别名导入：面板里同时有 `el-tag` 组件与一排 `*.tag` 类名，光看
+// `<Tag />` 认不出说的是哪一个（见 AGENTS.md §图标）。
+import { Sun as SunIcon, Moon as MoonIcon, Monitor as MonitorIcon, Tag as TagIcon } from '@lucide/vue';
+// 版本号前的 tag 图标走 Lucide：EP 的 `PriceTag` 缩到 13px 糊成一颗黑点，
+// 认不出是「标签」（2026-10-08 概览版本号那处已踩过一次，注释留在
+// OverviewPanel.vue）。它是纯装饰——版本字符串本身才是信息，所以图片对读屏隐藏。
 const themeIcons = { light: SunIcon, dark: MoonIcon, system: MonitorIcon };
 const themeLabel = computed(() => themeOptions.find((option) => option.value === theme.value)?.label);
 
@@ -224,7 +229,13 @@ watch(collapsed, (value) => {
           </button>
         </div>
       </div>
-      <span v-if="shellVersionText" class="version-badge">{{ shellVersionText }}</span>
+      <!-- 版本号 + 前置 tag 图标（2026-10-20 用户要求「版本号前面加个 tag 的
+           icon」）。图标是装饰性图形，语义由版本字符串承载，所以对读屏隐藏；
+           文字包一层独立元素：图标不参与压缩，极端长度时被省略号收掉的是文字。 -->
+      <span v-if="shellVersionText" class="version-badge">
+        <TagIcon class="version-badge__icon" :size="13" aria-hidden="true" />
+        <span class="version-badge__text">{{ shellVersionText }}</span>
+      </span>
     </div>
   </aside>
 </template>
