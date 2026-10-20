@@ -29,6 +29,10 @@ import {
   findProfileViolationsInFiles,
 } from './lib/probe-profile-isolation.mjs';
 import { createAdapter, makeTempRoot, removeTempRoot } from './lib/p1-adapter.mjs';
+// **A17 的实跑**（在 `run.mjs` 里，因为要跑真实 `host/sweep.js` 的 `sweep()`）：
+// import 进来做**活体注入**——往真实实现的副本里注入破坏，证明这条判据对实现的
+// 破坏**敏感**（`run.mjs` 用 `import.meta.main` 守卫，import 时不跑整轮）。
+import { runRetentionSweep } from './p1-protocol.run.mjs';
 
 import {
   CONSTANTS,
@@ -38,6 +42,7 @@ import {
   PASS,
   FAIL,
   SKIPPED,
+  checkRetentionSweep,
   checkCaptureResultLanded,
   checkCaptureResultShape,
   checkCatalogCodesSeparated,
@@ -587,19 +592,20 @@ test('A4：首版常量 —— 改一个值就报红并点名', () => {
   assert.match(red.detail, /maxBodyBytes/);
 });
 
-test('A12：G1 缺口登记 —— 没有 degraded / 没有 G1 条目 / 少于六个都要报红', () => {
-  // **协议 v0.2 §8-12：G1-1…G1-6 六个**（G1-6 = 内核无「chip 进入 `invalid` 态」
-  // 的写入口）。自测的合成夹具必须跟着口径走，否则「合规实现」会被判红——
-  // 那就成了判据自己制造的假红。
-  const six = {
+test('A12：G1 缺口登记 —— 没有 degraded / 没有 G1 条目 / 缺编号都要报红', () => {
+  // **协议 v0.4 §8-12：G1-1…G1-7 七个**（G1-6 = 内核无「chip 进入 `invalid` 态」
+  // 的写入口；G1-7 = 通道被上游一行卡住）。自测的合成夹具必须跟着口径走，否则
+  // 「合规实现」会被判红——那就成了判据自己制造的假红。
+  const seven = {
     g1_1: 'onPick 仍是同步的',
     g1_2: '读取期间没有中间态',
     g1_3: '编辑区没有详情面板',
     g1_4: '没有多来源聚合',
     g1_5: '没有历史引用列表',
     g1_6: '内核没有 chip invalid 写入口',
+    g1_7: '通道被上游一行卡住',
   };
-  assert.equal(checkGapRegistry({ degraded: six }).status, PASS);
+  assert.equal(checkGapRegistry({ degraded: seven }).status, PASS);
 
   const noDegraded = checkGapRegistry({});
   assert.equal(noDegraded.status, FAIL);
@@ -610,8 +616,24 @@ test('A12：G1 缺口登记 —— 没有 degraded / 没有 G1 条目 / 少于�
   assert.match(noG1.detail, /G1/);
 
   const onlyOne = checkGapRegistry({ degraded: { g1_1: 'onPick 仍是同步的' } });
-  assert.equal(onlyOne.status, FAIL, '协议 §8-12 要求 G1-1…G1-6 六个都在，只登记一个不够');
-  assert.match(onlyOne.detail, /六个/);
+  assert.equal(onlyOne.status, FAIL, '协议 §8-12 要求 G1-1…G1-7 七个都在，只登记一个不够');
+  assert.match(onlyOne.detail, /七个/);
+  assert.match(onlyOne.detail, /G1-2/, '必须点名缺哪些编号，不能只说「不够」');
+
+  // **反向回归（v0.4 新增）**：v0.2 的六个（G1-1…G1-6）**不够**了——
+  // 协议 v0.4 已把「通道被上游一行卡住」收进缺口清单（G1-7），实现侧须登记
+  // `capabilities.degraded.g1_7` 让通道不可用时**显式降级可见**、不静默。
+  // ⇒ 只登记六个必须报红，且**点名 G1-7**（点名才能定位到是「少登了通道那条」）。
+  const sixOnly = { ...seven };
+  delete sixOnly.g1_7;
+  const red = checkGapRegistry({ degraded: sixOnly });
+  assert.equal(red.status, FAIL, '只登记 G1-1…G1-6 六个不够——协议 v0.4 要求七个');
+  assert.match(red.detail, /G1-7/);
+
+  // **反向回归**：空说明也要报红（登记了编号但没写清楚 = 没登记）。
+  const emptyNote = checkGapRegistry({ degraded: { ...seven, g1_7: '   ' } });
+  assert.equal(emptyNote.status, FAIL);
+  assert.match(emptyNote.detail, /g1_7/);
 });
 
 test('A3：句柄形状 —— 合规通过，超长与形状错都要报红', () => {
@@ -760,27 +782,66 @@ test('A10：命名空间不串范围 —— 目录共用 / 跨范围能读出都
   assert.match(red.detail, /目录|范围/);
 });
 
-test('A0s：host 半边必须声明 inject（含 webServer）且不用 ctx.set 挂服务 —— 去掉 webServer / 用 ctx.set 都要报红', () => {
-  // **合规**：协议 §5 写的 `inject = ['connection','webServer']`。
-  const good = `const inject = ['connection', 'webServer'];\nexport { inject };\n`;
+test('A0s：host 半边必须注册 exact fetch route、不得用 rpc.handle、不得用 ctx.set 挂服务 —— 三条违规都要报红', () => {
+  // **合规**（协议 v0.4 §5 的通道形态）：注册 `/api` 命名空间下的 exact route。
+  const good = [
+    "const inject = ['connection'];",
+    "const FETCH_ROUTE_PATH = '/api/xlink-official-chat';",
+    'ctx.connection.fetch.register({',
+    "  kind: 'exact',",
+    '  path: FETCH_ROUTE_PATH,',
+    "  methods: ['POST'],",
+    '});',
+  ].join('\n');
   const ok = checkHostInjection({ file: 'host/index.js', text: good });
   assert.equal(ok.status, PASS, `合规实现不该红：${ok.detail}`);
 
-  // **反向用例 1：把 `webServer` 从 inject 里去掉**（这正是真机 p1-r2 的根因）。
-  const noWebServer = `const inject = ['connection'];\n`;
-  const redInject = checkHostInjection({ file: 'host/index.js', text: noWebServer });
-  assert.equal(redInject.status, FAIL, 'inject 少了 webServer 必须报红');
-  assert.match(redInject.detail, /webServer/, '必须点名缺的是 webServer');
+  // **反向用例 1：改用 `rpc.handle`**（v0.4 已证伪的那条路——插件侧必抛）。
+  const withRpcHandle = [
+    "const inject = ['connection'];",
+    "const FETCH_ROUTE_PATH = '/api/xlink-official-chat';",
+    "ctx.connection.rpc.handle('/xlink-official-chat', handler);",
+  ].join('\n');
+  const redRpcHandle = checkHostInjection({ file: 'host/index.js', text: withRpcHandle });
+  assert.equal(redRpcHandle.status, FAIL, '用 rpc.handle 必须报红');
+  assert.match(redRpcHandle.detail, /rpc\.handle/, '必须点名用的是 rpc.handle');
+  assert.match(redRpcHandle.detail, /exact fetch route/, '必须点名该注册的是 exact fetch route');
 
-  // **反向用例 2：改用 cordis `ctx.set` 挂服务**（协议 §5 已显式否决那条路）。
-  const withCtxSet = `const inject = ['connection', 'webServer'];\nctx.set('xlink-official-chat', service);\n`;
+  // **反向用例 2：根本没注册 exact route**。
+  const noRoute = "const inject = ['connection'];\n";
+  const redNoRoute = checkHostInjection({ file: 'host/index.js', text: noRoute });
+  assert.equal(redNoRoute.status, FAIL, '没注册 exact fetch route 必须报红');
+  assert.match(redNoRoute.detail, /exact fetch route/, '必须点名缺的是 exact fetch route');
+
+  // **反向用例 3：路径不在 `/api` 命名空间下**（内核 `assertFetchRoute` 会抛）。
+  const badPath = [
+    "const inject = ['connection'];",
+    "const FETCH_ROUTE_PATH = '/xlink-official-chat';",
+    'ctx.connection.fetch.register({ kind: \'exact\', path: FETCH_ROUTE_PATH });',
+  ].join('\n');
+  const redPath = checkHostInjection({ file: 'host/index.js', text: badPath });
+  assert.equal(redPath.status, FAIL, '路径不在 /api 下必须报红');
+  assert.match(redPath.detail, /\/api/, '必须点名是 /api 命名空间这一条');
+
+  // **反向用例 4：改用 cordis `ctx.set` 挂服务**（协议 §5 已显式否决那条路）。
+  const withCtxSet = [
+    "const inject = ['connection'];",
+    "const FETCH_ROUTE_PATH = '/api/xlink-official-chat';",
+    'ctx.connection.fetch.register({ kind: \'exact\', path: FETCH_ROUTE_PATH });',
+    "ctx.set('xlink-official-chat', service);",
+  ].join('\n');
   const redCtxSet = checkHostInjection({ file: 'host/index.js', text: withCtxSet });
   assert.equal(redCtxSet.status, FAIL, '用 ctx.set 挂服务必须报红');
   assert.match(redCtxSet.detail, /ctx\.set/, '必须点名是 ctx.set 那条路');
-  assert.match(redCtxSet.detail, /host\/index\.js:2/, '必须点名 file:line');
+  assert.match(redCtxSet.detail, /host\/index\.js:\d+/, '必须点名 file:line');
 
   // **注释里提到 `ctx.set` 不算违规**（实现文件里大量注释正是在解释为什么不能用它）。
-  const onlyComment = `const inject = ['connection', 'webServer'];\n// 不用 ctx.set 挂服务：cordis 要求先 provide\n`;
+  const onlyComment = [
+    "const inject = ['connection'];",
+    "const FETCH_ROUTE_PATH = '/api/xlink-official-chat';",
+    'ctx.connection.fetch.register({ kind: \'exact\', path: FETCH_ROUTE_PATH });',
+    '// 不用 ctx.set 挂服务：cordis 要求先 provide',
+  ].join('\n');
   assert.equal(
     checkHostInjection({ file: 'host/index.js', text: onlyComment }).status,
     PASS,
@@ -1120,28 +1181,43 @@ function copyHostDir(tag) {
   return dir;
 }
 
-test('活体注入（静态 · A0s）：从真实 host 半边副本里去掉 inject 的 webServer → 门禁红并点名 → 还原 → 逐字节一致 → 复跑绿', () => {
+test('活体注入（静态 · A0s）：从真实 host 半边副本里把 exact fetch route 改回 rpc.handle → 门禁红并点名 → 还原 → 逐字节一致 → 复跑绿', () => {
   const originalUrl = new URL('../plugins/official-chat/host/index.js', import.meta.url);
   const originalBefore = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
   const baselineText = readFileSync(originalUrl, 'utf8');
 
-  const copyDir = makeTempRoot('inject-a0s');
+  // **拷整个 host 目录**：`rpc.js`（路径常量与信封层）也要参与扫描——
+  // `/api/xlink-official-chat` 住在 `rpc.js` 里。
+  const copyDir = copyHostDir('inject-a0s');
   const copyPath = join(copyDir, 'index.js');
-  writeFileSync(copyPath, baselineText, 'utf8');
-  const baselineSha = createHash('sha256').update(baselineText).digest('hex');
+  const baselineSha = createHash('sha256').update(readFileSync(copyPath)).digest('hex');
+  const scope = () => ({
+    files: ['index.js', 'rpc.js'].map((name) => ({
+      file: `host/${name}`,
+      text: readFileSync(join(copyDir, name), 'utf8'),
+    })),
+  });
 
   // —— 基线绿：副本与原文件逐字节相同，门禁必须绿 ——
-  const green = checkHostInjection({ file: 'host/index.js', text: readFileSync(copyPath, 'utf8') });
+  const green = checkHostInjection(scope());
   assert.equal(green.status, PASS, `基线必须绿：${green.detail}`);
 
-  // —— 注入：把 inject 里的 webServer 去掉（真机 p1-r2 的根因）——
-  const anchor = "const inject = ['connection', 'webServer'];";
+  // —— 注入：把 exact fetch route 改回 `rpc.handle`（v0.4 已证伪的那条路）——
+  //
+  // **注入点选在「注册调用」上**：那正是真机 p1-r2/p1-r6 崩掉的地方（host 半边
+  // 注册不上 ⇒ 客户端 404/405 ⇒ 整条通道哑火）。
+  const anchor = 'connection.fetch.register({';
   assert.ok(baselineText.includes(anchor), '注入锚点不见了——实现改了，注入用例要跟着改');
-  writeFileSync(copyPath, baselineText.replace(anchor, "const inject = ['connection'];"), 'utf8');
+  writeFileSync(
+    copyPath,
+    baselineText.replace(anchor, "connection.rpc.handle('/xlink-official-chat', {"),
+    'utf8',
+  );
 
-  const red = checkHostInjection({ file: 'host/index.js', text: readFileSync(copyPath, 'utf8') });
-  assert.equal(red.status, FAIL, '去掉 webServer 后门禁必须红');
-  assert.match(red.detail, /webServer/, '红必须点名缺的是 webServer');
+  const red = checkHostInjection(scope());
+  assert.equal(red.status, FAIL, '改回 rpc.handle 后门禁必须红');
+  assert.match(red.detail, /rpc\.handle/, '红必须点名用的是 rpc.handle');
+  assert.match(red.detail, /exact fetch route/, '红必须点名该注册的是 exact fetch route');
 
   // —— 撤掉注入：逐字节还原 ——
   writeFileSync(copyPath, baselineText, 'utf8');
@@ -1149,7 +1225,7 @@ test('活体注入（静态 · A0s）：从真实 host 半边副本里去掉 inj
   assert.equal(restoredSha, baselineSha, '撤掉后必须与基线逐字节一致');
 
   // —— 复跑绿 ——
-  const again = checkHostInjection({ file: 'host/index.js', text: readFileSync(copyPath, 'utf8') });
+  const again = checkHostInjection(scope());
   assert.equal(again.status, PASS, `撤掉注入后必须复跑绿：${again.detail}`);
 
   // —— 原实现文件没被碰过 ——
@@ -1277,6 +1353,94 @@ test('活体注入（行为型 · A9d 脱敏日志路径）：从真实 host 半
   const originalAfter = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
   assert.equal(originalAfter, originalBefore, '原实现文件必须一个字节都没变');
 
+  removeTempRoot(injectedDir);
+  removeTempRoot(restoredDir);
+});
+
+// --- A17 保留期清理判据：反向回归必须钉住 ------------------------------------
+//
+// 「该清的清了」与「**不该清的留住了**」是**成对**的：只钉前者的话，
+// 「无条件全删」也能蒙过去（那是多删，比漏判更难发现）。
+test('A17 保留期清理：六条口径全对 → 通过', () => {
+  const ok = {
+    expiredSnapshotRemoved: true,
+    freshSnapshotKept: true,
+    expiredClaimRemoved: true,
+    claimOfLiveSnapshotKept: true,
+    sameRoundBothRemoved: true,
+    afterSweepRejected: true,
+  };
+  assert.equal(checkRetentionSweep(ok).status, PASS);
+});
+
+test('A17 保留期清理：不该清的没留住 → 报红并点名（反向回归）', () => {
+  const wrong = {
+    expiredSnapshotRemoved: true,
+    freshSnapshotKept: false, // ← 未超期快照被误删
+    expiredClaimRemoved: true,
+    claimOfLiveSnapshotKept: false, // ← 快照还在的认领被误删（序号会被二次分配）
+    sameRoundBothRemoved: true,
+    afterSweepRejected: true,
+  };
+  const result = checkRetentionSweep(wrong);
+  assert.equal(result.status, FAIL);
+  assert.ok(result.detail.includes('未超期快照留着'), 'detail 要点名缺的是哪一条');
+  assert.ok(result.detail.includes('认领留着'), 'detail 要点名缺的是哪一条');
+});
+
+// ---------------------------------------------------------------------------
+// A17 的**活体注入**：证明这条判据对**真实实现**的破坏敏感
+// ---------------------------------------------------------------------------
+//
+// **为什么判据库级的反向回归不够**：那两条只证明「判据能分对错」，
+// 证不了「判据跑在真实实现上时也会红」——实跑路径涉及**真实的 `host/sweep.js`**
+// 与**真实落盘布局**（`<存储根>/snapshots/<provider>/`、`<存储根>/seq-claims/<provider>/`），
+// 判据若把目录层级搞错，就会**永远扫不到东西** ⇒ 恒「未执行」（既不绿也不红）。
+// ⇒ 必须真的往**实现副本**里注入一次破坏，看它红。
+test('活体注入（行为型 · A17 保留期清理）：把真实 sweep.js 副本里的「删超期快照」破坏掉 → 判据红并点名 → 还原 → 逐字节一致 → 复跑绿', async () => {
+  const originalUrl = new URL('../plugins/official-chat/host/sweep.js', import.meta.url);
+  const originalBefore = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
+  const baselineText = readFileSync(originalUrl, 'utf8');
+
+  // —— 基线绿：真实实现的副本必须过 ——
+  const baselineDir = copyHostDir('inject-a17-baseline');
+  const green = await runRetentionSweep(null, { hostDir: baselineDir });
+  assert.equal(green.status, PASS, `基线必须绿：${green.detail}`);
+  assert.match(green.detail, /超期清/, '绿要说清清了什么');
+
+  // —— 注入：让清理器**不再删超期快照**（协议 §4.1 第一条就破）——
+  //
+  // 锚点取 `sweepSnapshots` 里那处删除（`removeInTwoSteps` 在快照与认领两处都出现，
+  // `String.replace` 只换**第一处** ⇒ 恰好只破坏「快照清理」，认领逻辑不动）。
+  const anchor = 'if (removeInTwoSteps(path)) result.removed += 1;';
+  assert.ok(baselineText.includes(anchor), '注入锚点不见了——实现改了，注入用例要跟着改');
+  const injectedDir = copyHostDir('inject-a17-red');
+  const injectedPath = join(injectedDir, 'sweep.js');
+  writeFileSync(injectedPath, baselineText.replace(anchor, 'if (false) { /* 注入：不删 */ }'), 'utf8');
+
+  const red = await runRetentionSweep(null, { hostDir: injectedDir });
+  assert.equal(red.status, FAIL, '不删超期快照时判据必须红（不能是「未执行」）');
+  assert.match(red.detail, /超期快照被清掉/, '红必须点名缺的是哪条口径');
+
+  // —— 撤掉注入：逐字节还原 ——
+  writeFileSync(injectedPath, baselineText, 'utf8');
+  const restoredSha = createHash('sha256').update(readFileSync(injectedPath)).digest('hex');
+  assert.equal(
+    restoredSha,
+    createHash('sha256').update(baselineText).digest('hex'),
+    '撤掉后必须与基线逐字节一致',
+  );
+
+  // —— 复跑绿（另起一份副本：同一路径的模块已被 Node 缓存）——
+  const restoredDir = copyHostDir('inject-a17-restored');
+  const again = await runRetentionSweep(null, { hostDir: restoredDir });
+  assert.equal(again.status, PASS, `撤掉注入后必须复跑绿：${again.detail}`);
+
+  // —— 原实现文件没被碰过 ——
+  const originalAfter = createHash('sha256').update(readFileSync(originalUrl)).digest('hex');
+  assert.equal(originalAfter, originalBefore, '原实现文件必须一个字节都没变');
+
+  removeTempRoot(baselineDir);
   removeTempRoot(injectedDir);
   removeTempRoot(restoredDir);
 });

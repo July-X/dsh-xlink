@@ -619,7 +619,8 @@ export function checkGapRegistry(capabilities) {
   if (empty.length > 0) {
     return verdict('A12-gap-registry', FAIL, `缺口登记项没有说明：${empty.join('、')}`);
   }
-  // 协议 §8-12 写的是「**G1-1…G1-6** 缺口登记仍在」——是六个，不是一个。
+  // 协议 §8-12（v0.4）写的是「**G1-1…G1-7** 缺口登记仍在」——**七个**（v0.4 把
+  // 通道缺口 G1-7 收进去了），不是一个，也不是 v0.2 的六个。
   // 判「编号齐不齐」而不是只数个数：只数个数的话，`g1_1`×6 也能蒙过去。
   const suffixes = new Set(
     g1
@@ -627,26 +628,71 @@ export function checkGapRegistry(capabilities) {
       .filter((value) => value !== undefined)
       .map((value) => Number(value)),
   );
-  const required = [1, 2, 3, 4, 5, 6];
+  const required = [1, 2, 3, 4, 5, 6, 7];
   const missing = required.filter((index) => !suffixes.has(index));
   if (missing.length > 0) {
     return verdict(
       'A12-gap-registry',
       FAIL,
       `G1 缺口登记缺编号：${missing.map((index) => `G1-${index}`).join('、')}` +
-        `（已登记 ${g1.join('、')}）——协议 §8 第 12 条要求 G1-1…G1-6 六个都在` +
-        '（G1-6 = 内核无「chip 进入 invalid 态」的写入口）',
+        `（已登记 ${g1.join('、')}）——协议 §8 第 12 条要求 G1-1…G1-7 七个都在` +
+        '（G1-6 = 内核无「chip 进入 invalid 态」的写入口；G1-7 = 通道被上游一行卡住）',
     );
   }
   // **多登记不算违规**（多一个缺口更保守），但要**点名**——协议 §8 第 12 条只
-  // 要求 G1-1…G1-6 都在；多出来的编号属于协议变更，得回 PM 改稿而不是默默留着。
+  // 要求 G1-1…G1-7 都在；多出来的编号属于协议变更，得回 PM 改稿而不是默默留着。
   const extra = [...suffixes].filter((index) => !required.includes(index)).sort((a, b) => a - b);
   return verdict(
     'A12-gap-registry',
     PASS,
-    `登记了 ${g1.length} 个 G1 缺口（${g1.join('、')}），G1-1…G1-6 编号齐备` +
-      '（G1-6 仍在登记 ⇒ 未被标成已解决，符合 §8 第 12 条「G1-6 不因本阶段验收通过而关闭」）' +
+    `登记了 ${g1.length} 个 G1 缺口（${g1.join('、')}），G1-1…G1-7 编号齐备` +
+      '（G1-6 仍在登记 ⇒ 未被标成已解决，符合 §8 第 12 条「G1-6 不因本阶段验收通过而关闭」；' +
+      'G1-7 仍在登记 ⇒ 通道降级可见，符合 §8 第 12 条「实现侧须登记 capabilities.degraded.g1_7」）' +
       (extra.length > 0 ? `；另外多登记了 G1-${extra.join('、G1-')}（协议外的编号，建议回 PM 改稿）` : ''),
+  );
+}
+
+/**
+ * A13｜协议 §4.1：保留期主动清理（7 天）。
+ *
+ * 期望值**独立转写**协议，不 import 实现当标准答案。六个方向**成对**：
+ * 每一对里一条是「该清的清了」、一条是「**不该清的留住了**」——只钉前者的话，
+ * 「无条件全删」也能蒙过去。
+ *
+ *  1. 超期快照 → **清掉**；
+ *  2. 未超期快照 → **留着**（反向回归）；
+ *  3. 已超期 **且** 对应快照已不在的认领 → **清掉**；
+ *  4. 对应快照**还在**（未超期）的认领 → **留着**（反向回归：删了会让序号被
+ *     二次分配 → 撞上仍然存在的快照 id）；
+ *  5. 同轮里「过期快照 + 过期认领」→ **一起清干净**（协议 §4.1 第 3 条
+ *     「先快照后认领」的**同轮效果**）；
+ *  6. 被清掉的快照，其引用再发时 → **拒**（失效即拒，不静默重读；S-5/S-6）。
+ *
+ * @param {object} observation 实跑观测（每个字段必须是布尔）。
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkRetentionSweep(observation) {
+  const checks = [
+    ['expiredSnapshotRemoved', '超期快照被清掉'],
+    ['freshSnapshotKept', '未超期快照留着（反向回归）'],
+    ['expiredClaimRemoved', '「已超期 + 对应快照已不在」的认领被清掉'],
+    ['claimOfLiveSnapshotKept', '「快照还在（未超期）」的认领留着（反向回归）'],
+    ['sameRoundBothRemoved', '同轮「过期快照 + 过期认领」一起清干净（先快照后认领）'],
+    ['afterSweepRejected', '被清掉的快照，其引用再发时被拒（不静默重读）'],
+  ];
+  const failed = checks.filter(([key]) => observation?.[key] !== true);
+  if (failed.length > 0) {
+    return verdict(
+      'A17-retention-sweep',
+      FAIL,
+      `保留期清理口径不符：${failed.map(([, label]) => label).join('、')}` +
+        '（协议 §4.1：只清超期的；认领要先快照后认领；清掉后引用失效即拒）',
+    );
+  }
+  return verdict(
+    'A17-retention-sweep',
+    PASS,
+    '保留期清理六条口径全对（超期清 / 未超期留 / 认领两向相反 / 同轮一起清 / 清后拒）',
   );
 }
 
@@ -1307,36 +1353,46 @@ export function stripJsComments(source) {
 }
 
 /**
- * A0s｜协议 v0.3 §8 第 13 条（**仓库级、静态**）：host 半边
- *  · **声明了 `inject` 且含 `webServer`**；
+ * A0s｜协议 v0.4 §8 第 13 条（**仓库级、静态**）：host 半边
+ *  · **注册了 exact fetch route**（路径在 `/api` 命名空间下）；
+ *  · **不得**把 `rpc.handle` 当作已通的通道（v0.4 已证伪）；
  *  · **不使用** cordis `ctx.set` 挂服务（协议 §5 已显式否决那条路）。
  *
- * **为什么这条钉得住**：真机 p1-r2 报的是
- * `cannot get property "webServer" without inject`（`host/index.js:486`）——
- * 根因是 host 半边**没 declare `webServer`**；协议 §5 给的修法是
- * `inject = ['connection','webServer']`。把它钉成静态判据 ⇒ 以后有人把
- * `inject` 去掉，门禁立刻红并点名。
+ * **v0.4 更正（PM 裁定）**：此前这条钉的是「`inject` 必须含 `webServer`」——
+ * 那个依据**已被真机实测证伪**（p1-r3 / p1-r6 两轮）：`rpc.handle` 的
+ * `owner.webServer`（`dsh-client-connection/lib/index.js@0.2.1-rc.2:871`）的属性
+ * 查找落在**内核 connection 插件自己的 fiber scope**
+ * （`@deepseek-ai/cordis/lib/index.js@0.2.1-rc.2:683` 的
+ * `(ctx[symbols.shadow] ?? ctx).fiber` + `createShadow` `:111-116`），
+ * 插件侧声明只影响自己 scope ⇒ **声明了照样抛**。
+ * ⇒ 这条改成钉**通道形态本身**（exact fetch route + 不用 `rpc.handle`），
+ * 那才是真洞的根因与修法。
  *
- * @param {{file: string, text: string}} scope
+ * @param {{file?: string, text?: string, files?: Array<{file: string, text: string}>}} scope
+ *   - `files`：host 半边**几个文件**的源码（`index.js` 是注册处，`rpc.js` 是路径
+ *     常量与信封层）。**只给 `index.js` 不够**——`/api` 那条路径住在 `rpc.js`。
+ *   - 兼容旧写法 `{file, text}`（等价于只有一个文件的 `files`）。
  * @returns {{name: string, status: string, detail: string}}
  */
 export function checkHostInjection(scope) {
-  const file = String(scope?.file ?? '');
-  const text = String(scope?.text ?? '');
-  if (text === '') {
-    return verdict('A0s-host-injection', SKIPPED, `没读到 ${file || 'host 半边'} 的源码`);
+  const files = Array.isArray(scope?.files)
+    ? scope.files.map((item) => ({ file: String(item?.file ?? ''), text: String(item?.text ?? '') }))
+    : [{ file: String(scope?.file ?? ''), text: String(scope?.text ?? '') }];
+  const all = files.map((item) => item.text).join('\n');
+  if (all.trim() === '') {
+    return verdict('A0s-host-injection', SKIPPED, `没读到 ${files[0]?.file || 'host 半边'} 的源码`);
   }
-  const code = stripJsComments(text);
+  const code = stripJsComments(all);
   const lines = code.split('\n');
   const problems = [];
 
-  // ① `inject` 声明：必须是数组字面量，且含 'connection' 与 'webServer'
+  // ① `inject` 声明：必须是数组字面量，且含 'connection'（exact fetch route 的宿主）
   const injectMatch = /\binject\s*=\s*\[([^\]]*)\]/.exec(code);
   let injectItems = [];
   if (injectMatch === null) {
     problems.push(
-      '没有找到 `inject` 声明——协议 §5：host 半边必须 `inject = [\'connection\',\'webServer\']`' +
-        '（否则 `rpc.handle` 会抛 cannot get property "webServer" without inject）',
+      "没有找到 `inject` 声明——协议 §5：host 半边必须 `inject = ['connection']`" +
+        '（否则拿不到 `ctx.connection`，exact fetch route 注册不上）',
     );
   } else {
     injectItems = injectMatch[1]
@@ -1344,22 +1400,48 @@ export function checkHostInjection(scope) {
       .map((item) => item.trim().replace(/^['"`]|['"`]$/g, ''))
       .filter((item) => item !== '');
     if (!injectItems.includes('connection')) {
-      problems.push(`inject 里没有 'connection'（实为 ${injectItems.join('、') || '(空)'}）`);
+      problems.push(`inject 里没有 'connection'（实为 ${injectItems.join('、') || '(空)'}）——exact fetch route 要靠它`);
     }
-    if (!injectItems.includes('webServer')) {
+  }
+
+  // ② **必须注册 exact fetch route**（协议 §8-13：v0.4 裁定的通道形态）
+  const registersExactRoute = /\.fetch\s*\.\s*register\s*\(/.test(code);
+  if (!registersExactRoute) {
+    problems.push(
+      '没有注册 exact fetch route（`ctx.connection.fetch.register({kind:\'exact\', ' +
+        "path:'/api/…', methods:[…], requestBody:'buffered', fetch})`）——" +
+        '协议 §8-13：v0.4 裁定的通道形态是 exact fetch route',
+    );
+  }
+  // **路径必须在 `/api` 命名空间下**——内核 `assertFetchRoute`
+  // （`dsh-client-connection/lib/index.js@0.2.1-rc.2:973-977`）用
+  // `endpointFromPath("/api", route.path)` 校验，不过就抛。
+  if (registersExactRoute && !/\/api\/[A-Za-z0-9._~-]+/.test(code)) {
+    problems.push(
+      "exact fetch route 的路径不在 `/api` 命名空间下——内核 `assertFetchRoute`" +
+        '（`dsh-client-connection/lib/index.js@0.2.1-rc.2:973-977`）用 ' +
+        '`endpointFromPath("/api", route.path)` 校验，不过就抛',
+    );
+  }
+
+  // ③ **不得把 `rpc.handle` 当作已通的通道**（v0.4 已证伪：插件侧必抛）
+  for (let i = 0; i < lines.length; i += 1) {
+    if (/\brpc\s*\.\s*handle\s*\(/.test(lines[i])) {
       problems.push(
-        `inject 里没有 'webServer'（实为 ${injectItems.join('、') || '(空)'}）——` +
-          '这正是真机 p1-r2 的根因：没 declare webServer ⇒ rpc.handle 抛 ' +
-          'cannot get property "webServer" without inject',
+        `${files[0]?.file || 'host'}:${i + 1} 用了 \`connection.rpc.handle\`——协议 §8-13：那条路插件侧走不通` +
+          '（内核 `dsh-client-connection/lib/index.js@0.2.1-rc.2:871` 用**属性访问** ' +
+          '`owner.webServer.register(route)`，属性查找落在内核 connection 插件自己的 ' +
+          'fiber scope ⇒ 必抛 `cannot get property "webServer" without inject`；' +
+          '实测两轮无效，插件侧无法自修）——v0.4 裁定改走 exact fetch route',
       );
     }
   }
 
-  // ② 不得用 cordis `ctx.set` 挂服务（协议 §5 已显式否决）
+  // ④ 不得用 cordis `ctx.set` 挂服务（协议 §5 已显式否决）
   for (let i = 0; i < lines.length; i += 1) {
     if (/\bctx\s*\.\s*set\s*\(/.test(lines[i])) {
       problems.push(
-        `${file}:${i + 1} 用了 cordis \`ctx.set\` 挂服务——协议 §5 已显式否决那条路` +
+        `${files[0]?.file || 'host'}:${i + 1} 用了 cordis \`ctx.set\` 挂服务——协议 §5 已显式否决那条路` +
           '（cordis 要求该属性先被 provide 过，否则 cannot set property "..." without provide；' +
           '且浏览器树 ≠ Node 进程树，host 的服务在浏览器树里永远解析不到）',
       );
@@ -1372,7 +1454,8 @@ export function checkHostInjection(scope) {
   return verdict(
     'A0s-host-injection',
     PASS,
-    `host 半边声明了 inject = [${injectItems.join(', ')}]（含 webServer），且未使用 cordis ctx.set 挂服务`,
+    `host 半边声明了 inject = [${injectItems.join(', ')}]、注册了 /api 下的 exact fetch route、` +
+      '且未把 rpc.handle 当作已通的通道、未使用 cordis ctx.set 挂服务',
   );
 }
 
