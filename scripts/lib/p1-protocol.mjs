@@ -863,6 +863,14 @@ export async function checkSingleSourceOfTruth(adapter) {
  *
  * 判据不数时序点（协议明写那是充分非必要条件），而是**比对磁盘内容与请求体**。
  *
+ * ## 这条**不要求正文唯一**（协议 §8 第 5 条 · PM 21:5x 澄清）
+ *
+ * 内核会把**本轮用户输入在同一请求里重放多次**（实测 p1-r9：盘上正文在
+ * `messages[1]/[6]/[8]/[10]` 命中 4 处、每处逐字节相同）——那是**内核的上下文
+ * 组织**，不是插件重复外发。
+ * ⇒ 本条只断「**每一处**都逐字节相同」，**不写「正文只出现一次」**这类会被内核
+ * 打红、且会把内核行为误当成插件缺陷的判据。
+ *
  * @param {object} adapter
  * @returns {Promise<{name: string, status: string, detail: string}>}
  */
@@ -1083,6 +1091,18 @@ export async function checkCrossProcess(adapter) {
 /**
  * A8｜S-7：同一正文引用两次 → 两个快照 id、**正文各送一份**（不隐式去重）。
  *
+ * ## 这条数的是「两份快照各自的序列化结果」，**不是真机请求体里的出现次数**
+ *
+ * 协议 §8 第 5 条（S-4 · PM 21:5x 澄清）：内核会把**本轮用户输入在同一请求里
+ * 重放多次**（实测 p1-r9：盘上正文在 `messages[1]/[6]/[8]/[10]` 命中 4 处，
+ * 每处逐字节相同）——那是**内核的上下文组织**，不是插件重复外发。
+ * ⇒ **不得写「正文只出现一次」这类判据**（会被内核打红，且会把内核行为误当成
+ * 插件缺陷）。
+ *
+ * ⇒ 本条判的是：**两次引用 → 两个不同快照 id → 两份快照正文内容一致 → 两份各送
+ * 各自的一份**。计数的对象是判据**自己拼**的两段序列化结果，
+ * **不观测内核真实请求体** ⇒ 内核重放几次都打不红它。
+ *
  * @param {object} adapter
  * @returns {Promise<{name: string, status: string, detail: string}>}
  */
@@ -1108,12 +1128,15 @@ export async function checkNoBodyDedup(adapter) {
     if (occurrences !== 2) {
       return {
         status: FAIL,
-        detail: `模型输入里同一正文出现 ${occurrences} 次，S-7 要求各送一份（共 2 次）`,
+        detail:
+          `两份快照各送一份（合成输入里同一正文出现 ${occurrences} 次，S-7 要求共 2 次）` +
+          '——**这里数的是两份快照各自序列化的结果**，不是内核真实请求体里的出现次数' +
+          '（内核会把本轮用户输入在同一请求里重放多次，见协议 §8 第 5 条 S-4 澄清）',
       };
     }
     return {
       status: PASS,
-      detail: `两个快照 id（${first.ref} / ${second.ref}），正文各送一份`,
+      detail: `两个快照 id（${first.ref} / ${second.ref}），正文各送一份（各一份、不隐式去重）`,
     };
   });
 }
