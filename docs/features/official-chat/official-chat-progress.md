@@ -17,7 +17,7 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 | --- | --- | --- |
 | P0 可行性验证 | G1 内核工作台选择与发送控制、G2 异步回程与首站可读性、G3 窗口未打开时仍可读取 | **G1/G2/G3 结论已出**（G1 4/5 问通过 + Q3 判定互斥；G2-A 5/5，Windows 零痕迹回程已实测成立；G2-B 探测完成但取数未成立；**G3 三站各 7/7 通过**；**壳真实 workbench 内复验已可复现**——dev 壳两轮 + **自编 release 二进制一轮**（15:42–15:55，实例 id `default`）全过，壳驱动已搬进仓库；**壳内判据已与内核 r14/r16 对齐**（`results[]` + `summary`，**未执行单列**；壳内 E 升为**节点级**），**两条前置条件机检已压出真分支**（dev-r6 汇总 **9 通过 / 0 失败 / 0 未执行**）。**未闭合的两项**：登录态从未建立（需用户首次登录）、零痕迹回程 macOS 侧无通路。**判据第 31 条的三处口径问题（嵌套 if 漏判 / 逃生阀不生效 / `match` 边界假红）已全部闭合**（`4333b80` + `165d9a1`，自测 26 → 43，PM 逐轮第一手复验含反向回归）。**安装版 release 壳不在开发 agent 范围**（izzy 发布后自己测） |
 | P1 协议与隔离 | 固定数据模型、错误、权限与状态机 | **协议 v0.5（PM 定）**：单一 id 制度（`ref === snapshotId`）、状态机映射、**门控口径从「时序」换成「状态」**、失效一律「拒 + 可见错误」（chip `invalid` 态内核不可达 → 缺口 **G1-6**）、13 码闭集 + **错误结果对象 8 字段闭集**、保留期主动清理口径（§4.1，v0.5 澄清「只记日志」必须留痕）、**缺口 G1-7（通道被上游一行卡住）**、A0s 判据同步更正。**代码侧已落地**（协议核心 JS+Rust、13 夹具 + 双端一致测试、5 命令走内核 `connection` 服务的 **exact fetch route**、host 侧 id 分配器 `seq-store.js`、保留期主动清理 `host/sweep.js`）：**§8 十二条逐条 pass**，判据 runner **43 条 = 40 pass / 0 fail / 3 skipped**（skip：A0 真机级、A6b chip invalid、A18k「发送中引用」已知不覆盖）。**真机 p1-r9（在未打补丁的现役内核上）P1 六条硬口径 11 通过 / 0 失败 / 1 未执行**——A0 真机级 ✔（capabilities 经 exact fetch route 拿到）、catalog＋host 预分配 id、pick＋落盘＋自算摘要对得上、**S-4 逐字节**（请求体命中 4 处，每处 76 字节 exact）、S-1 两个 id、缺口①（删快照 ⇒ 请求数 0 ＋ 可见错误 ＋ 客户端抛错）。**未实现**：真实站点账户与深链（P4） |
-| P2 内核插件闭环 | 固定数据的选择、引用、发送与模型输入核对 | **未立项**（新阶段需 izzy 点头）。其中「正文去重」子议题的**只读调研已出**，全文见 [official-chat-p2-research.md](official-chat-p2-research.md)：键 = (accountScope, sessionId, branch, capturedAt, contentDigest) 全等（**五字段都已在协议 §1.1 快照里 ⇒ 不必新建索引表**）；落点分三层（**client 逐 occurrence 只看得到单 ref** / **host `agent/pre-step` 只有文本级判定** / 存储层不改）；PM 建议**第一步只做「重复识别 ＋ 可见提示 ＋ 预算预检」，不做消息级自动合并**（P2 立项前不生效） |
+| P2 内核插件闭环 | 固定数据的选择、引用、发送与模型输入核对 | **已立项**（izzy 22:5x 点头）。「正文去重」子议题的**只读调研已出**（全文见 [official-chat-p2-research.md](official-chat-p2-research.md)），PM 建议三条 = **P2 第一批口径**，已协议化为 [official-chat-p2-protocol.md](official-chat-p2-protocol.md) **v0.1**（PM 定）：**重复识别 ＋ 可见提示 ＋ 预算预检**，**不做消息级自动合并**、**不动 chip 数**、**不碰 id 分配**、**不改 `agent/pre-step` 消息**。键 = (accountScope, sessionId, branch, capturedAt, contentDigest) 全等；落点 = **host 命令层 `duplicates` 命令产出重复组，client 呈现**。**实现/判据/夹具尚未开工** |
 | P3 正文快照与桥接 | 原子保存、固定版本、回收、恢复 | **未开始** |
 | P4 首站接入 | 真实目录、认证、分支与正文 | **未开始**（前置条件未满足） |
 | P5 桌面体验与诊断 | 登录回程、错误、详情、能力检测 | **未开始** |
@@ -457,6 +457,38 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 - **认可的两条自查**：① 真机前置三步（删物化目录 → `prep:builtin` → 重启壳重新 build）与 AGENTS.md 机检**一致**，不改；② 证据落在隔离根 `%TEMP%\dsh-xlink-g1\evidence-*`，**不在**会被删的探针临时 home（`shell-home`）里 ⇒ 合规。隔离 dev 壳已停。
 - **结论**：**P1 判据集收口**（协议 v0.7 ＋ 43 条判据 ＋ 当前 HEAD 全门禁全绿）⇒ 成员无新活；等 izzy 对 P2「正文去重」是否立项拍板。
 
+### 2026-10-20 22:5x · izzy 拍板五项 ＋ P2 立项 ＋ P2 协议 v0.1
+
+**izzy 的五项答复（22:5x）**：① **P2 立项**；② `development-plan` §7:155 **由 devloper 改**；③ **要具体 PR 地址**；④ **历史 224 个提交要重写**；⑤ **问「他什么时候做」**（登录态 / 安装版 release 壳验收）。
+
+**P2 立项落地**
+
+- 阶段总表 P2 行改为「**已立项**」；调研载体的 status ＋ §0 / §1 / §4 / §6 同步为「已拍板、已生效」。
+- **新增 P2 协议稿 `official-chat-p2-protocol.md` v0.1**（PM 定，`kind: protocol`）：第一批只做**重复识别 ＋ 可见提示 ＋ 预算预检**；重复组键 = (accountScope, sessionId, branch, capturedAt, contentDigest) 全等；`groupKey` = 五字段摘要前 16 hex；host 新命令 **`duplicates`**（入参 `{sessionId, snapshotIds}`，出参 `{ok, groups[], budget{}}`，失败沿用 P1 **13 码闭集** ＋ 8 字段错误对象，**不新增错误码**）；可见提示**必须可见且可复查**（**不接受瞬态 toast**），**不得**自动删 chip / 合并 / 截断正文；预算预检按 P1 S-7 口径算 `projectedBytes`（各引用各送一份）> 262144 ⇒ 提示但**不截断**；判据六条（P2-1…P2-6，含两条负例）＋「**去重候选对**」夹具（登记 `fixtures/protocol/index.json`，**键形状已定稿 ⇒ 可写**）；**A8 本批不需要改**（它数的是判据自建串）。
+
+**development-plan §7:155 的归属**
+
+- izzy 指定**由 devloper 执行**（只改 §7:155 一句，用 feasibility §7 第 12 条已记的建议措辞，并同步该条指向）⇒ **PM 不改该文件**；已回填 feasibility §7-12。
+
+**历史作者重写（izzy 拍板「需要重写」）**
+
+- 范围：**只重写三个开发分支**（`main` / `main-dev2` / `uiv2-dev`）的**作者与提交者**（`zhongxingxing` → `July-X <m4java@163.com>`）；**dependabot 分支不动**、**82 个 tag 一律不重写也不重推** ⇒ 不触发 `desktop-release.yml`（该 workflow 只在 `desktop-v*` tag 推送时运行）。
+- **恢复点已建立**：已推 `origin/backup/pre-author-rewrite-20261020`（指向重写前的 `origin/main`），命名不匹配 `desktop-v*` ⇒ 发布 workflow 不会触发。
+- 做法：在**独立克隆**里 `git filter-branch --env-filter` ⇒ **不动当前工作目录的 refs**（避免打断并行会话）；完成后再 force push 三个分支。
+- 踩坑留痕：① 第一版用 `git clone --no-checkout` ⇒ 克隆里 index 非空，filter-branch 拒跑（`Cannot rewrite branches: Your index contains uncommitted changes.`）；② `uiv2-dev` **只存在于远端**，本地克隆没有 ⇒ 需在克隆里 `git fetch origin` 后再 `git branch -f`；③ 脚本的「原工作树必须干净」检查会把 **PM 自己的在途文档改动**判成不干净 ⇒ 正确顺序 = **先提交在途改动 → 再重写 → 最后 `reset --hard`**。
+
+**上游 PR 的具体地址（izzy 要的）**
+
+- **直接可点**：`https://github.com/deepseek-ai/deepseek-harness/compare/master...July-X:deepseek-harness:fix/connection-owner-webserver-get?expand=1`（`?expand=1` 直接展开 PR 表单）。
+- base = **`deepseek-ai/deepseek-harness`** 的 `master`；head = fork **`July-X/deepseek-harness`** 的分支 **`fix/connection-owner-webserver-get`**（commit `07aa67ac`）。
+- **API 核对**：`gh api repos/July-X/deepseek-harness/compare/master...fix/connection-owner-webserver-get` ⇒ `status: ahead`、**ahead 1 / behind 0**、1 file changed（`packages/client/connection/src/rpc-host.ts`）**+14 −4**。
+- 阻塞点仍是**浏览器未登录 GitHub**（compare 页只显示 `Sign in / Sign up`）⇒ 需 izzy 登录后走网页流程；PR 标题与正文由 PM 提供。
+
+**仍需 izzy 本人做的两件（时间建议）**
+
+- **首次建立站点登录态**：**现在就可以做**（一次浏览器登录即可，不需要 agent 参与）——它是 P4 的硬前置；而 **P2 第一批不需要登录态**（用夹具目录即可）⇒ 不必等 P2 结束。
+- **安装版 release 壳验收**：需**安装版**（不是自编 release 二进制）⇒ 需等 izzy 自己出安装包/发布之后；建议在 main 稳定、发布包就绪时做。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
@@ -491,5 +523,6 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 | 2026-10-20 | P2（**未立项**） | **「正文去重」只读调研已出并落盘**（devloper 22:1x 派、22:3x 回执；**全程只读**，未改实现/判据/协议稿）：动机 = 单条正文预算 64 KB × 引用数上限 8 条 = 512 KB > 单次消息总预算 256 KB ⇒ 必然落 `body_too_large`；**键** = (accountScope, sessionId, branch, capturedAt, contentDigest) 全等（**五字段都已在协议 §1.1 快照里 ⇒ 不必新建索引表**）；**落点三层分界**（client **逐 occurrence 只看得到单 ref** / host `agent/pre-step` **只有文本级判定** / 存储层不改）；**红线**：绝不复用旧 id、隐式去重撞 S-7 ⇒ **合并必须可见否则不做**、内核重放不管、**偏向宁可漏**。**PM 建议裁定（待 izzy 拍板，未立项不生效）**：① 目标 = **省预算**、**不动 chip 数**；② 第一步只做**重复识别 ＋ 可见提示 ＋ 预算预检**、**不做消息级自动合并**（P2 阶段无可见承载位）；③ 落点 = **host 命令层产出「重复组」、client 呈现**，**不改消息内容**。**跨文档张力已消歧**（协议 v0.7 以 S-7 为准 ＋ feasibility §7 第 12 条，提交 `cdd03fb`） | `docs/features/official-chat/official-chat-p2-research.md`（**新载体**，PM 归属）＋ 任务队列 `task_1738d44c8207`（原件） |
 | 2026-10-20 | P1/P2 | **fork 分支 commit 重建 ＋ main 推送 ＋ 提交身份收口**——分支 `fix/connection-owner-webserver-get` 指向 **`07aa67ac`**（**新旧 tree sha 相同 ⇒ 内容零变化**，只把 email 从 `over618@163.com` 统一为 `m4java@163.com`）；**API 独立核对**：parent = upstream `master@687f282e`、`ahead_by 1 / behind_by 0`、**+14 −4**、blob 与本地逐字节相同（16,313 B）；**main 已推 origin**（`cdd03fb` 协议 v0.7，本地与远端 0/0 同步）；**仓库级** `user.name = July-X`，**全局保持 izzy 的 `zhongxingxing` 不动**；**历史 224 个 `zhongxingxing` 提交未重写**（force push + tag 可能重触发发布 workflow ⇒ 不可逆，**待 izzy 拍板**）；**PR 待 izzy 登录 GitHub 后走网页流程**（API 无 `pull_requests: write` 权限） | 本文件 22:5x–23:0x 节 ＋ `gh api repos/July-X/deepseek-harness/compare/master...fix/connection-owner-webserver-get` |
 | 2026-10-20 | P1 | **tester 判据侧与协议 v0.6 逐条对齐复跑（r27）**：协议 v0.6 §4.1「只记日志」的四个可观测条件与判据 A18i 四条件**同序同义**（① 不抛 → `noThrow`；② 不阻塞 → `othersStillRemoved`；③ **失败项内容仍在磁盘上**（原路径**或**墓碑任一）→ `failedItemStillPresent`；④ 留痕 → `failureLogged`）⇒ **判据无需任何改动**；实跑 **r27 = 43 条 / 40 通过 / 0 失败 / 3 未执行**（A0 真机级 / A6b / A18k）、自测 **60/60** ⇒ **判据与现役实现 ＋ v0.6 兼容**；**A0 继续永久报「未执行」**，**结论载体 = 本文件**（p1-r9 = 11 通过 / 0 失败 / 1 未执行）。**两条「可选的一行改进」经 tester 判断不动，PM 接受并撤销原派活**（属表述冗余而非判据缺陷；「结论载体」声明已由本文件承担，不因判据 detail 未点名而丢失） | tester 22:4x–22:5x 回执（原始产物未固化）＋ 本文件 22:4x–22:5x 节 |
+| 2026-10-20 | P2 | **izzy 拍板五项 ＋ P2 立项 ＋ P2 协议 v0.1**：① **P2 立项**——三条建议 = 第一批口径，已协议化为 `official-chat-p2-protocol.md` v0.1（**重复识别 ＋ 可见提示 ＋ 预算预检**；**不合并 / 不动 chip 数 / 不碰 id 分配 / 不改 `agent/pre-step`**；键五字段全等；host 新命令 `duplicates`；**13 码闭集不新增**；判据六条 P2-1…P2-6 ＋「**去重候选对**」夹具；**A8 本批不改**）② `development-plan` §7:155 **由 devloper 改**（PM 不改该文件）③ **PR 具体地址**已给 izzy（`deepseek-ai/deepseek-harness` compare `master...July-X:deepseek-harness:fix/connection-owner-webserver-get?expand=1`；API 核对 ahead 1 / behind 0、1 file **+14 −4**）④ **历史 224 个提交要重写**（只重写 `main`/`main-dev2`/`uiv2-dev` 的作者与提交者；**tag 一律不重推** ⇒ 不触发 `desktop-release.yml`；恢复点 `origin/backup/pre-author-rewrite-20261020`）⑤ **仍需 izzy 本人做**：首次建立站点登录态（**现在即可**，P4 硬前置）、安装版 release 壳验收（等发布包） | 本文件 22:5x 节 ＋ `official-chat-p2-protocol.md` v0.1 ＋ `gh api repos/July-X/deepseek-harness/compare/master...fix/connection-owner-webserver-get` |
 
 **关于上表里的 `%TEMP%` 证据路径**：2026-10-20 15:2x izzy 拍板「**可以清**」后，PM 已把 `%TEMP%\dsh-xlink-g1\` 与 `%TEMP%\dsh-probe\` 移入回收站（可恢复删除），**上表引用的原始 JSON / 截图 / 请求体日志已不在原位**。**仍可长期复核的，是本文件与 feasibility 里写下的数字、字段值与判据口径**——引用这些结论时不要再指望去原路径取原始产物。
