@@ -16,7 +16,7 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
 | P0 可行性验证 | G1 内核工作台选择与发送控制、G2 异步回程与首站可读性、G3 窗口未打开时仍可读取 | **G1/G2/G3 结论已出**（G1 4/5 问通过 + Q3 判定互斥；G2-A 5/5，Windows 零痕迹回程已实测成立；G2-B 探测完成但取数未成立；**G3 三站各 7/7 通过**；**壳真实 workbench 内复验已可复现**——dev 壳两轮 + **自编 release 二进制一轮**（15:42–15:55，实例 id `default`）全过，壳驱动已搬进仓库；**壳内判据已与内核 r14/r16 对齐**（`results[]` + `summary`，**未执行单列**；壳内 E 升为**节点级**），**两条前置条件机检已压出真分支**（dev-r6 汇总 **9 通过 / 0 失败 / 0 未执行**）。**未闭合的两项**：登录态从未建立（需用户首次登录）、零痕迹回程 macOS 侧无通路。**判据第 31 条的三处口径问题（嵌套 if 漏判 / 逃生阀不生效 / `match` 边界假红）已全部闭合**（`4333b80` + `165d9a1`，自测 26 → 43，PM 逐轮第一手复验含反向回归）。**安装版 release 壳不在开发 agent 范围**（izzy 发布后自己测） |
-| P1 协议与隔离 | 固定数据模型、错误、权限与状态机 | **未开始**（P0 的就绪状态纪律可并行开工，见 feasibility 第 9 节） |
+| P1 协议与隔离 | 固定数据模型、错误、权限与状态机 | **协议已冻结**（`official-chat-p1-protocol.md` v0.1，2026-10-20 17:1x，**PM 定**）：单一 id 制度（`ref === snapshotId`）、状态机映射、**门控口径从「时序」换成「状态」**、失效一律「拒 + chip 标 `invalid`」、13 个稳定错误码、首版常量、12 条验收项。**实现待开工**（devloper 依此实现，tester 依此出判据） |
 | P2 内核插件闭环 | 固定数据的选择、引用、发送与模型输入核对 | **未开始** |
 | P3 正文快照与桥接 | 原子保存、固定版本、回收、恢复 | **未开始** |
 | P4 首站接入 | 真实目录、认证、分支与正文 | **未开始**（前置条件未满足） |
@@ -193,6 +193,19 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 
 **另**：devloper 核对 AGENTS.md 第 34 行**与他的实测逐条对得上、无事实漂移**；他自行回收内核副本（**PM 未授权**，PM 原建议是先留，已在上一轮更正归属——回收本身无害、可恢复、43 秒可重建）。
 
+### 2026-10-20 17:1x · P1 协议冻结稿 v0.1（PM 定）
+
+**P1 前提三条已满足**（就绪状态纪律已定、**G1-1…G1-5 已登记**、零痕迹回程 Windows 已成立 / macOS 缺口已记为已知项）→ PM 出了 `docs/features/official-chat/official-chat-p1-protocol.md`（v0.1）。**成员先交输入、协议后定**：devloper 提了**一条硬约束**（句柄→快照的指向只能靠 `ref` 字符串承载——内核只认 `claim`/`text`/`insert` 三个键、值只透传 `ref`，`insert` 里加新字段到不了发送路径）与 5 条协议要点；tester 补了 4 条第一手输入并核了全部行号。
+
+**PM 定的关键形状（供后续引用）**：
+
+- **S-1 单一 id 制度**——`ref === snapshotId`（不设第二串 id、不设映射表，避免第二份状态会漂）。格式 `<providerShort>~<sessionShort>~<seq>`，**≤ 24 可见字符**（HC-2：ref 的形态与长度 = chip 文本与宽度，用户直接看见）；**唯一性粒度 = 一次 pick**（同一条对话选两次 → 两个 id → 不再互相覆盖，这修掉了 G1 现状 `reads` 以对话 id 为主键的覆盖问题）。可读性由**展示层**承担（label 中性 + 详情面板），**不靠改 ref**（内核原生渲染，改不了也不许改）。
+- **S-4 门控口径从「时序」换成「状态」**（采纳 tester）：> 任何一次请求发生时，该 occurrence 指向的快照必须已落盘，且落盘内容与模型输入里的正文逐字节相同。「落盘前 0 请求」是它的**充分非必要**条件；判据从数时序点变成**比对磁盘与请求体**。
+- **S-5 失效一律「拒 + chip 标 `invalid`」**（采纳 tester，用内核现成位，不自造）：`ReferenceInsert.invalid`（`input.d.ts:123`）+ chip-node `invalid`（`chip-node.d.ts:19`，注释「serialization must fail」）→ 失效**界面可见**，不是「引用凭空消失」。
+- **S-7 快照 id 唯一 ≠ 正文去重**（采纳 tester 补漏）：唯一性已冻结；正文去重**不在 P1**——同一正文引用两次 → 两个快照 id、正文**各送一份**（不隐式去重，避免「用户看到的引用数」与「模型收到的内容数」不一致）；去重列 P2 议题。
+- **单一事实源 = 快照文件**（S-3）：落盘后句柄状态**由文件派生**，内存只允许留**在途态**——否则「就绪」会有两个真相。
+- **错误码 13 个**（`catalog_empty` 与 `catalog_failed` 分离）、**首版常量 12 项**（标明是工程参数、非站点限制）、**验收项 12 条**。
+
 ### 2026-10-20 · P0 文档产出
 
 - 新建 [official-chat-feasibility.md](official-chat-feasibility.md)：P0 唯一对外结论，含环境与版本、G1/G2/G3 逐项结论与证据、裁定与理由、文档与实测的出入、本轮没有验证的、是否可以继续。
@@ -240,6 +253,7 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 | 2026-10-20 | P0 | **判据 ③ 的视野盲点**（devloper 提出，PM 认定成立）：判据只扫测试与探针代码，**生产代码里壳自己建的窗它看不见**（生产侧 `.data_directory(` 仅 2 处，其余 6 处落回产品默认目录——产品里正常，扩到生产代码就是 6 条假红）⇒ **壳内复验不写用户真实目录靠的是隔离，不是判据**。**PM 已写进 AGENTS.md**：驱动壳必须 `DSH_XLINK_HOME` 指临时目录 + **编译期** `app.appDirectoriesOverride`（Windows 改 `LOCALAPPDATA` 无效，只能 `TAURI_CONFIG` 注入 `cargo build`）+ 隔离实例带 `DSH_XLINK_CHANNEL_SUFFIX` | `AGENTS.md`「开发规则」段 + `src-tauri/src/commands.rs` / `harness/official_chat.rs` / `official_chat/context.rs` |
 | 2026-10-20 | P0 | **PM 裁定：`match` 边界是假红、要修**——Rust 穷尽性检查保证任何能编译的 `match` 覆盖所有取值（整数必须写 `_`、枚举列全 variant、`bool` 两个都要、`Option` 要 `Some`/`None`），**无隐式「条件不成立」路径** → 与 `if/else` 同构。**假红不能当「保守即可」**：逃生阀语义已写死成「承认写用户真实目录」，假红会把开发者推向它。**边界**：臂里有提前 `return`/`?` 若无法可靠区分则宁可保留报红。由 tester 单独一条提交做 | `scripts/lib/probe-profile-isolation.mjs` 的 `scanBlocks` / `chainFullyCovered` |
 | 2026-10-20 | P0 | **`match` 边界假红已修**（`165d9a1`，2 文件 / +164 / −6）：`match` 链**天然闭合**（Rust 穷尽性检查保证任何能编译的 `match` 覆盖所有取值）、**臂入同一条链**（每臂单独判覆盖）、**match 块自己不入 members**（否则 `covered(match)` 自引用 → 恒 false）。**配方互审揪出两个坑**：devloper 警告「只标闭合 → 一臂没给变放行 = 漏判」；tester 指出配方用 `/^\s*match\b/` **锚行首** → `let b = match x {` 匹配不到 → **只消一半假红**，改 `/\bmatch\b/` 才盖住；另补「臂体是嵌套 match」形状。**PM 误指示纠正**：原说「要改现有自测期望」，实测**不需要**（那条形状就是「一臂没给」，仍报红）→ 原 38 条一条不改、新增 5 条 → **43/43 绿**。**PM 17:0x 第一手复验**含反向回归 | `scripts/lib/probe-profile-isolation.mjs` + `scripts/probe-profile-isolation.test.mjs`（43 条） |
+| 2026-10-20 | P0/P1 | **P1 协议冻结稿 v0.1（PM 定）**——`official-chat-p1-protocol.md`：单一 id 制度（`ref === snapshotId`，≤ 24 可见字符，唯一性粒度=一次 pick）、状态机映射、**门控口径从「时序」换成「状态」**、失效一律「拒 + chip 标 `invalid`」、快照 id 唯一 ≠ 正文去重、单一事实源=快照文件、13 个稳定错误码、首版常量 12 项、验收项 12 条。成员先交输入（devloper 的 HC「指向只能靠 ref 承载」+ 5 条要点；tester 核行号 + 4 条补充），**协议由 PM 定后才动代码** | `docs/features/official-chat/official-chat-p1-protocol.md` |
 | 2026-10-20 | P0 | G2-A 异步回程 5/5 通过；G2-B 三站只读探测完成，真实取数结论因**本机从未建立登录态**未成立；Q1/Q2 判据已修并补行为判据 6/6 | `%TEMP%\dsh-probe\*.json` + `src-tauri/examples/official_chat_probe_site.test.mjs` |
 | 2026-10-20 | P0 | G3 机制层 7/7 通过（未登录 + 模拟页签条件下）；真实官网窗口 + 已登录态未执行 | 探针 G3 跑批（临时目录时间戳 `1792475664714`） |
 | 2026-10-20 | P0 | 零痕迹回程：R1 槽位产品上站不住；Windows CDP 5/5 成立；**macOS 侧无通路（P0 已知缺口，代码里明确报错不静默降级）** | `--mode cdp` 跑批 + `script_eval.rs:434-436` / wry 0.57 `src/wkwebview/mod.rs:723-780` |
