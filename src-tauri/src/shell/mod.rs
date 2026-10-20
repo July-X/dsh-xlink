@@ -15,6 +15,7 @@ pub(crate) mod link;
 pub(crate) mod localtime;
 #[cfg(target_os = "macos")]
 pub(crate) mod menu_bar;
+pub(crate) mod node_options;
 pub(crate) mod paths;
 pub(crate) mod process;
 pub(crate) mod registry_split;
