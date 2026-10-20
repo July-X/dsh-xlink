@@ -355,14 +355,75 @@ function checkNoticeCarrier(notice) {
  * notice 把我们的 inline 条**整个顶掉**（协议 v0.5 §3.2 的第六处裁定）⇒
  * **每一条提示都必须自包含全部事实**，不能依赖「另一条还在」或「内核没插一脚」。
  *
- * 只判**数字在不在**，不判措辞（成品文案由 UX 定稿，协议 §3.2 不锁措辞）。
+ * 只判**数字在不在**，不判动词措辞（成品文案由 UX 定稿，协议 §3.2 不锁措辞）；
+ * 且数字**必须落在该组的语境片段内**（PM 2026-10-21 01:4x 授权再收紧）。
  *
  * @param {string} text - 提示文案。
  * @param {{members: number, redundant: number}} facts - 该条提示必须带的事实。
  * @returns {{ok: boolean, why: string}}
  */
 /**
- * 文案里有没有**独立出现**的这个数字（不是别的数字的一部分）。
+ * 定位**某个组的语境片段**（协议 §3.2「数字来源」＋「多组形态」）。
+ *
+ * ## 为什么需要片段（PM 2026-10-21 01:4x 授权再收紧）
+ *
+ * 只做**全文**匹配 ⇒「**组数恰好等于条数**」时会误命中：2 组各 2 条 ⇒ 文案里
+ * 「2 组重复」那个 `2` 会被当成「含条数」⇒ 一条**漏写「第 1 组 2 条」**的文案
+ * 也被判成自包含 ⇒ **又一处假绿口子**。
+ * ⇒ 判据须**在该组的语境片段内**匹配该组条数与该组 R。
+ *
+ * ## 片段怎么切
+ *
+ * 成品文案是**分句**的：多组形态里**每组一句**（`第 1 组 …；第 2 组 …`），
+ * 组数与预算各占一句 ⇒ 以 **`；`** 切分即得「每组一句」。
+ *
+ * ## 组锚点（协议 §3.2 定稿形态）
+ *
+ * · **多组形态**：`第 i 组`（先说组数、再逐组编号）。
+ * · **单组形态**：`同组`（`同组 N 条内容完全相同`）。
+ *
+ * 两种形态都取**「含锚点的那一句」**（**不是**从锚点往后截）⇒ 锚点写在
+ * 「2 条同组引用」这种语序时也不假红——判据只关心**数字属于哪一句**。
+ *
+ * ## 找不到锚点 ⇒ 判红（fail closed）
+ *
+ * 连组锚点都没有 ⇒ 看不出哪一句在说这一组 ⇒ **无法确认条数落在哪一组**
+ * ⇒ 判红（不是放过）。
+ *
+ * @param {string} text - 提示文案。
+ * @param {number} ordinal - 组号（1 起）。
+ * @returns {{ok: boolean, clause: string, why: string}}
+ */
+function groupContextClause(text, ordinal = 1) {
+  const clauses = String(text ?? '')
+    .split('；')
+    .map((clause) => clause.trim())
+    .filter((clause) => clause !== '');
+  const numbered = clauses.filter((clause) => /第\s*\d+\s*组/.test(clause));
+  if (numbered.length > 0) {
+    const hit = numbered.find((clause) => new RegExp(`第\\s*${ordinal}\\s*组`).test(clause));
+    if (hit === undefined) {
+      return {
+        ok: false,
+        clause: '',
+        why: `文案里没有「第 ${ordinal} 组」这一句（多组时必须逐组列，协议 §3.2）`,
+      };
+    }
+    return { ok: true, clause: hit, why: '' };
+  }
+  const single = clauses.find((clause) => clause.includes('同组'));
+  if (single === undefined) {
+    return {
+      ok: false,
+      clause: '',
+      why: '文案里既没有「第 i 组」也没有「同组」⇒ 看不出哪一句在说这一组',
+    };
+  }
+  return { ok: true, clause: single, why: '' };
+}
+
+/**
+ * 文案里有没有「**独立出现 + 带单位词**」的这个数字（不是别的数字的一部分）。
  *
  * ## 为什么不能用 `String(x).includes(...)`（**子串包含有假绿口子**）
  *
@@ -371,48 +432,68 @@ function checkNoticeCarrier(notice) {
  * 根本没写条数的文案，也会被判成「文案自包含」⇒ **假绿**。
  * （PM 2026-10-21 01:3x 登记为「已知、不算缺陷」，是否收紧由 tester 决定 ⇒ **收紧**。）
  *
+ * ## 为什么**还要带单位词**（PM 2026-10-21 01:4x）
+ *
+ * 只要求「独立出现」仍不够：**组数**那个数字也是独立出现的（`2 组重复`）⇒
+ * 它会顶替条数 ⇒ **又一处假绿口子**。⇒ 数字必须**紧跟自己的单位词**：
+ * 条数跟「条」、字节数跟「字节」⇒「2 组」永远顶不了「2 条」。
+ *
  * ## 边界怎么定
  *
- * 数字的前后都**不能**是数字或千分位逗号：
+ * 数字的**前面**不能是数字或千分位逗号：
  * · `'4216'` 里的 `'2'` 前面是 `'4'`（数字）⇒ 排除 ✔
  * · `'4,216'` 里的 `'2'` 前面是 `','`（千分位）⇒ 排除 ✔
- * · 独立出现的 `'3'`（前后是空格/中文）⇒ 命中 ✔
+ * · 独立出现的 `'3'`（前面是空格/中文）⇒ 命中 ✔
+ *
+ * 数字的**后面**由单位词定死（`条` / `字节`）⇒ 不会出现 `'421'` 顶替 `'42'`。
  *
  * ## 千分位形态
  *
  * 协议 v0.6 明写「**数字一律不加千分位**」⇒ 文案里是裸数字；这里**同时**接受
  * 千分位形态（`'4,216'`）⇒ 万一实现将来加了千分位，判据不会假红。
  *
- * @param {string} text - 提示文案。
+ * @param {string} text - 待查文案（**已限定在该组语境片段内**）。
  * @param {number} value - 要找的数字。
+ * @param {string} unit - 单位词（`条` / `字节`）。
  * @returns {boolean}
  */
-function hasStandaloneNumber(text, value) {
+function hasNumberWithUnit(text, value, unit) {
   const number = Number(value);
   if (!Number.isFinite(number)) return false;
   const plain = String(Math.abs(number));
   const grouped = plain.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   for (const form of new Set([plain, grouped])) {
     const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    if (new RegExp(`(?<![\\d,])${escaped}(?![\\d,])`).test(String(text ?? ''))) return true;
+    if (new RegExp(`(?<![\\d,])${escaped}\\s*${unit}`).test(String(text ?? ''))) return true;
   }
   return false;
 }
 
-function checkSelfContainedText(text, { members, redundant }) {
-  if (!hasStandaloneNumber(text, members)) {
+export function checkSelfContainedText(text, { members, redundant }) {
+  const segment = groupContextClause(text, 1);
+  if (!segment.ok) {
     return {
       ok: false,
       why:
-        `提示文案里没有独立出现的同组条数（${members}）——协议 §3.2：文案必须自包含；` +
-        '**子串不算**（「只写了字节数、条数恰好出现在字节数里」不算数）',
+        `${segment.why}——协议 §3.2：条数（${members}）与字节数（${redundant}）必须落在` +
+        '**该组的语境片段**内（单组＝「同组 N 条」、多组＝「第 i 组 N 条」）',
     };
   }
-  if (!hasStandaloneNumber(text, redundant)) {
+  const clause = segment.clause;
+  if (!hasNumberWithUnit(clause, members, '条')) {
     return {
       ok: false,
       why:
-        `提示文案里没有独立出现的字节数（${redundant}）——协议 §3.2：文案必须自包含；` +
+        `该组那一句里没有「${members} 条」——协议 §3.2：文案必须自包含该组条数；` +
+        '**子串不算**（「只写了字节数、条数恰好出现在字节数里」不算数）、' +
+        '**别的组的条数不算**（条数必须落在该组那一句里）',
+    };
+  }
+  if (!hasNumberWithUnit(clause, redundant, '字节')) {
+    return {
+      ok: false,
+      why:
+        `该组那一句里没有「${redundant} 字节」——协议 §3.2：文案必须自包含该组的字节数；` +
         '**子串不算**',
     };
   }

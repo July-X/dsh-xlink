@@ -46,6 +46,7 @@ import {
   checkP2_D_crossLanguageGroupKey,
   checkP2_F_fixtureExpectation,
   checkP2_H_multiGroupNotDropped,
+  checkSelfContainedText,
   expectedGroupKey,
   sameGroupByProtocol,
   summarize,
@@ -1141,6 +1142,7 @@ test('P2-H：多组场景 —— 不漏报 / 顺序稳定 / 文案含第一组�
 
   // 违规③：**文案里没有第一组的条数** —— 只写了字节数。
   // ⚠️ 旧口径（`String(members).includes`）在这里会**假绿**：`'1024'` 里就有 `'2'`。
+  // （组锚点保留 ⇒ 这一条断的是「数字必须**带单位词**」，不是「找不到组锚点」。）
   const noMembers = await checkP2_H_multiGroupNotDropped(
     makeAdapter({
       noticeScript: [
@@ -1148,12 +1150,75 @@ test('P2-H：多组场景 —— 不漏报 / 顺序稳定 / 文案含第一组�
         null,
         null,
         null,
-        notice({ text: `本次核对：重复可省 ${r0} 字节。` }),
+        notice({ text: `本次核对：同组重复可省 ${r0} 字节。` }),
       ],
     }),
   );
   assert.equal(noMembers.status, FAIL);
   assert.match(noMembers.detail, /条数/);
+});
+
+test('文案自包含：数字必须落在「该组的语境片段」内（PM 01:4x 授权再收紧）', async () => {
+  // **PM 的假绿例子**：2 组各 2 条 ⇒ **组数（2）恰好等于第一组条数（2）**
+  // ⇒ 全文匹配时「2 组重复」那个 `2` 会顶替「2 条」⇒ 漏写「第 1 组 2 条」
+  //    的文案也判成自包含 ⇒ 判据须在**该组的语境片段**内找该组条数与该组 R。
+  const facts = { members: 2, redundant: 1024 };
+
+  // 合规（多组）：两组各写各的条数与 R。
+  const okMulti = checkSelfContainedText(
+    '本次核对：2 组重复：第 1 组 2 条内容完全相同，重复可省 1024 字节；' +
+      '第 2 组 2 条内容完全相同，重复可省 1024 字节；引用正文 4096 字节。',
+    facts,
+  );
+  assert.equal(okMulti.ok, true, `合规多组文案不该红：${okMulti.why}`);
+
+  // 合规（单组）：协议 v0.6 定稿形态。
+  const okSingle = checkSelfContainedText(
+    '本次核对：同组 2 条内容完全相同，重复可省 1024 字节；' +
+      '引用正文 2048 字节，未超出单次消息预算 262144 字节。',
+    facts,
+  );
+  assert.equal(okSingle.ok, true, `合规单组文案不该红：${okSingle.why}`);
+
+  // 合规（**锚点语序不同**）：「2 条同组引用」——组锚点写在数字后面也不该假红
+  // ⇒ 判据只关心「数字属于哪一句」，不锁锚点语序。
+  const okOtherOrder = checkSelfContainedText(
+    '本条消息里有 2 条同组引用（1 组，重复正文共 1024 字节）',
+    facts,
+  );
+  assert.equal(okOtherOrder.ok, true, `锚点语序不同不该红：${okOtherOrder.why}`);
+
+  // 违规①（PM 的假绿口子）：**漏写「第 1 组 2 条」** ⇒ 全文里的「2 组重复」
+  // 那个 2 不许顶替条数 ⇒ 必须红。
+  const missedFirstCount = checkSelfContainedText(
+    '本次核对：2 组重复：第 1 组内容完全相同，重复可省 1024 字节；' +
+      '第 2 组 2 条内容完全相同，重复可省 1024 字节；引用正文 4096 字节。',
+    facts,
+  );
+  assert.equal(
+    missedFirstCount.ok,
+    false,
+    '漏写「第 1 组 2 条」必须红（组数顶替条数＝又一处假绿口子）',
+  );
+  assert.match(missedFirstCount.why, /条/);
+
+  // 违规②：**整组漏写**（只列第 2 组）⇒ 第一组那一句压根没有 ⇒ 必须红。
+  const onlySecond = checkSelfContainedText(
+    '本次核对：2 组重复：第 2 组 2 条内容完全相同，重复可省 1024 字节；引用正文 4096 字节。',
+    facts,
+  );
+  assert.equal(onlySecond.ok, false, '只列第 2 组必须红（第一组的语境片段缺失）');
+  assert.match(onlySecond.why, /第 1 组/);
+
+  // 违规③（旧的子串假绿口子）：**只写字节数** ⇒ `1024` 里就有 `2` ⇒ 必须红。
+  const onlyBytes = checkSelfContainedText('本次核对：同组重复可省 1024 字节。', facts);
+  assert.equal(onlyBytes.ok, false, '只写字节数必须红（子串假绿口子）');
+  assert.match(onlyBytes.why, /条/);
+
+  // 违规④：**没有组锚点** ⇒ 看不出哪一句在说这一组 ⇒ fail closed（判红，不放过）。
+  const noAnchor = checkSelfContainedText('本次核对：重复可省 1024 字节。', facts);
+  assert.equal(noAnchor.ok, false, '没有组锚点必须红（看不出条数落在哪一组）');
+  assert.match(noAnchor.why, /同组|第 i 组/);
 });
 
 test('十条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
