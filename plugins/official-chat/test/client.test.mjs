@@ -36,6 +36,7 @@ import {
   PROVIDER_SHORT,
   makeSessionShort,
   makeSnapshotId,
+  groupKeyOf,
 } from '../host/protocol.js';
 
 /**
@@ -49,8 +50,20 @@ import {
  *   发送路径的前置条件。
  * @param {Function} [options.bail] - `actx.bail` 的实现（返回 true 表示编辑器接下了）。
  * @param {object} [options.config] - `window.__DSH_G1_CONFIG__`。
+ * @param {boolean} [options.failDuplicates] - 让桩的 `duplicates` 端点失败（造
+ *   「核对重复失败」的场景，协议 §2.3）。
+ * @param {number} [options.bodyBytes] - 让桩给出**大正文**（造超预算场景，
+ *   协议 §4）；不给就用固定夹具正文。
  */
-function loadClient({ withInputTriggers = true, withSessions = true, withHostRpc = true, bail, config = {} } = {}) {
+function loadClient({
+  withInputTriggers = true,
+  withSessions = true,
+  withHostRpc = true,
+  bail,
+  config = {},
+  failDuplicates = false,
+  bodyBytes = 0,
+} = {}) {
   const registered = [];
   const effects = [];
   const bailCalls = [];
@@ -192,7 +205,9 @@ function loadClient({ withInputTriggers = true, withSessions = true, withHostRpc
         error.code = 'snapshot_exists';
         throw error;
       }
-      const body = FIXTURE_BODIES[sessionId] ?? '';
+      // **大正文场景**（P2 §4 预算预检）：给了 `bodyBytes` 就用它 ⇒ 两份大正文
+      // 合计超过单次消息预算（262144）⇒ 触发「预算超限」那条提示。
+      const body = bodyBytes > 0 ? 'A'.repeat(bodyBytes) : (FIXTURE_BODIES[sessionId] ?? '');
       const snapshot = {
         schemaVersion: 1,
         snapshotId,
@@ -218,6 +233,62 @@ function loadClient({ withInputTriggers = true, withSessions = true, withHostRpc
         throw error;
       }
       return { ok: true, snapshot: found.snapshot, body: found.body, state: 'ready' };
+    }
+    if (endpoint === 'duplicates') {
+      if (failDuplicates) {
+        // **造「核对重复失败」**（协议 §2.3 的失败路径）。
+        const error = new Error('快照不存在：桩注入的失败');
+        error.code = 'snapshot_invalid';
+        throw error;
+      }
+      // **P2 §2.2 的出参**：按固定 id 读盘、按「五字段全等」分组（协议 §1.1）。
+      const ids = Array.isArray(payload?.snapshotIds) ? payload.snapshotIds : [];
+      const rows = [];
+      for (const raw of ids) {
+        const found = snapshots.get(String(raw ?? ''));
+        if (found === undefined) {
+          const error = new Error(`快照不存在：${String(raw ?? '')}`);
+          error.code = 'snapshot_invalid';
+          throw error;
+        }
+        rows.push({
+          id: String(raw),
+          snapshot: found.snapshot,
+          bytes: Buffer.byteLength(String(found.body ?? ''), 'utf8'),
+        });
+      }
+      const byKey = new Map();
+      for (const row of rows) {
+        const key = groupKeyOf(row.snapshot);
+        if (!byKey.has(key)) byKey.set(key, []);
+        byKey.get(key).push(row);
+      }
+      const groups = [];
+      for (const [groupKey, members] of byKey) {
+        // **只报成员数 ≥ 2 的组**（单成员组不是重复，报它没有意义）。
+        if (members.length < 2) continue;
+        groups.push({
+          groupKey,
+          members: members.map((one) => ({
+            snapshotId: one.id,
+            capturedAt: String(one.snapshot?.capturedAt ?? ''),
+            contentDigest: String(one.snapshot?.contentDigest ?? ''),
+          })),
+          redundantBytes: (members.length - 1) * members[0].bytes,
+        });
+      }
+      const projectedBytes = rows.reduce((sum, one) => sum + one.bytes, 0);
+      const limitBytes = 262144;
+      return {
+        ok: true,
+        groups,
+        budget: {
+          limitBytes,
+          projectedBytes,
+          wouldExceed: projectedBytes > limitBytes,
+          exceedByBytes: Math.max(0, projectedBytes - limitBytes),
+        },
+      };
     }
     const error = new Error(`未知端点：${endpoint}`);
     error.code = 'source_unsupported';
@@ -391,7 +462,14 @@ test('读取落定时用户能看到状态变化（PM 2026-10-20 拍板第 3 条
   registered[0].onPick({ candidate: candidate('g1-alpha', ALPHA), session: { sessionId: 's1' }, span: { start: 0, end: 1, draftRev: 7 } });
   assert.equal(notices.length, 0, '读取还没落定时不该有提示');
   await new Promise((r) => setTimeout(r, 90));
-  assert.equal(notices.length, 1, '读取完成必须让用户看到状态变化');
+  // **只断「状态提示恰好一条」**：P2 协议 §3 要求「重复发生时」另有一条可见
+  // 提示（承载位同为内核输入区 notice）⇒ 提示条数不再恒为 1。
+  // **这里断的是状态变化本身**（「已取到」那条），不是「总共几条通知」。
+  assert.equal(
+    notices.filter((n) => /已取到/.test(String(n?.text ?? ''))).length,
+    1,
+    '读取完成必须让用户看到状态变化',
+  );
   assert.equal(notices[0].level, 'info');
   assert.match(notices[0].text, /已取到/);
 });
@@ -553,8 +631,10 @@ test('通道：客户端自己发 same-origin fetch 打 exact route，端点名�
     // **全等匹配**：内核是 `fetchRoutes.get(url.pathname)`，错一个字符就 404。
     assert.equal(call.path, '/api/xlink-official-chat', '路径必须与 host 半边注册的 exact route 全等');
     assert.equal(call.method, 'POST', 'exact route 只接 POST');
+    // **P1 §5 的 5 个 ＋ P2 §2.2 的 `duplicates`**（重复识别 ＋ 预算预检）
+    // ⇒ 端点集合是 6 个（P1 §5 的清单仍写 5 个，协议侧待 PM 同步）。
     assert.ok(
-      ['capabilities', 'catalog', 'capture', 'cancel', 'preview'].includes(call.endpoint),
+      ['capabilities', 'catalog', 'capture', 'cancel', 'preview', 'duplicates'].includes(call.endpoint),
       `端点名不在协议 §5 里：${call.endpoint}`,
     );
   }
@@ -628,4 +708,87 @@ test('没有 host 通道 → 落盘失败 → 发送时拒（不把内存那份�
     /host 不可达/,
     '没有 host 通道就不许把内存正文发出去',
   );
+});
+
+test('P2：选中第二条同组引用 ⇒ 出现 info 档的重复提示（承载位 = 输入区 notice）', async () => {
+  const { api, ctx, registered, notices } = loadClient({ config: { readDelayMs: 20 } });
+  api.apply(ctx);
+  const source = registered[0];
+  // **同一行 pick 两次** ⇒ 两个**不同**的 `snapshotId`（协议 S-1：id 不复用），
+  // 但正文逐字节相同 ⇒ 五字段全等 ⇒ **同组**（协议 §1.1）。
+  const first = pick(source);
+  const second = pick(source);
+  assert.notEqual(first.ref, second.ref, '两次 pick 必须拿到两个不同的快照 id');
+  await new Promise((r) => setTimeout(r, 140));
+  const dup = notices.filter((n) => /同组引用/.test(String(n?.text ?? '')));
+  assert.equal(dup.length, 1, `同组提示应恰好一条：${JSON.stringify(notices)}`);
+  // **协议 v0.2 §3.2**：必须是 `info` 档——内核只渲染 `info` 档的**输入区常驻条**，
+  // `error` 档只弹瞬态 toast（内核 `:18808`）⇒ 用 `error` 档当场违反「可复查」。
+  assert.equal(dup[0].level, 'info', '重复提示必须是 info 档（常驻条，不是瞬态 toast）');
+  // **文案必须自包含**（内核 notice 是**单槽**，最新一条覆盖旧条）⇒ 条数与字节数
+  // 写在同一条里，不能指望另一条还在。
+  assert.match(dup[0].text, /2 条同组引用/, '提示要自包含同组条数');
+  assert.match(dup[0].text, /字节/, '提示要自包含字节数');
+});
+
+test('P2：核对重复失败 ⇒ info 档可见提示 + 不阻塞发送（协议 §2.3）', async () => {
+  const { api, ctx, registered, notices } = loadClient({
+    config: { readDelayMs: 20 },
+    failDuplicates: true,
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  pick(source);
+  await new Promise((r) => setTimeout(r, 140));
+  const failed = notices.filter((n) => /无法核对是否重复/.test(String(n?.text ?? '')));
+  assert.equal(failed.length, 1, `失败提示应恰好一条：${JSON.stringify(notices)}`);
+  // **协议 v0.2 §3.2**：失败提示也要 `info` 档（`error` 档只弹瞬态 toast）。
+  assert.equal(failed[0].level, 'info', '失败提示必须是 info 档（常驻条，不是瞬态 toast）');
+  // **措辞纪律（协议 §2.3）**：界面文案**不得断言发送结果**——正文能不能真发出
+  // 由 P1 S-5 / S-6 判定，不是 P2 能承诺的。
+  assert.doesNotMatch(
+    failed[0].text,
+    /已发送|发送失败|发送被阻止|发送被拦/,
+    `失败文案不得断言发送结果：${failed[0].text}`,
+  );
+  // **失败不阻塞发送**（协议 §2.3「不额外拦截发送」）⇒ 正文仍取得到。
+  const { ref } = pick(source);
+  await new Promise((r) => setTimeout(r, 60));
+  const text = await source.codec.serialize(ref, new AbortController().signal);
+  assert.equal(text, BODY_ALPHA, '核对失败不得影响正文照发');
+});
+
+test('P2：同组 + 超预算 ⇒ 两个触发点的提示都出（协议 §3.1 各自独立）', async () => {
+  // **早退会把预算提示吃掉**：协议 §3.1 的两个触发点（「重复发生时」「超预算
+  // 时」）**各自独立**，两者同时成立时**两条提示都要出**。
+  const { api, ctx, registered, notices } = loadClient({
+    config: { readDelayMs: 20 },
+    bodyBytes: 150_000,
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  pick(source);
+  pick(source);
+  await new Promise((r) => setTimeout(r, 180));
+  // **按文案开头区分两条**（桩的通知只带 level+text、没有 kind；而两条文案
+  // **互相带着对方的数字** ⇒ 不能用「含『同组引用』」筛）。
+  const group = notices.filter((n) => /本条消息里有 \d+ 条同组引用/.test(String(n?.text ?? '')));
+  const budget = notices.filter((n) => /本条消息正文合计/.test(String(n?.text ?? '')));
+  assert.equal(group.length, 1, `同组提示应恰好一条：${JSON.stringify(notices)}`);
+  assert.equal(budget.length, 1, `预算提示应恰好一条：${JSON.stringify(notices)}`);
+  // **两条都必须是 `info` 档**（协议 v0.2 §3.2：error 档只弹瞬态 toast）。
+  assert.ok(
+    [...group, ...budget].every((n) => n.level === 'info'),
+    `两条提示都必须是 info 档：${JSON.stringify(notices)}`,
+  );
+  // **两条各自自包含**（内核 notice 是单槽、最新一条覆盖旧条 ⇒ 每条都得自带数字）。
+  assert.match(group[0].text, /2 条同组引用/, '同组提示要自包含条数');
+  assert.match(group[0].text, /字节/, '同组提示要自包含字节数');
+  assert.match(budget[0].text, /300000/, '预算提示要自包含预估字节数');
+  assert.match(budget[0].text, /37856/, '预算提示要自包含超出字节数');
+  // **两条都要带对方的数字**（§3.2：承载位是**单槽** ⇒ 覆盖后剩下哪条，用户
+  // 都得同时看到「同组几条」和「超了多少字节」）⇒ 这两条断言钉住它。
+  assert.match(group[0].text, /300000/, '同组提示也要带预估字节数');
+  assert.match(group[0].text, /37856/, '同组提示也要带超出字节数');
+  assert.match(budget[0].text, /2 条同组引用/, '预算提示也要带同组条数');
 });

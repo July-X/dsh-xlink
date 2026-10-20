@@ -69,7 +69,16 @@ test('通道路径在 `/api` 命名空间下（内核 assertFetchRoute 的硬要
     FETCH_ROUTE_PATH.startsWith('/api/'),
     'exact route 不在 /api 下，内核 assertFetchRoute 会直接抛',
   );
-  assert.deepEqual([...ENDPOINTS], ['capabilities', 'catalog', 'capture', 'cancel', 'preview']);
+  // **P2 协议 §2.2 新增了 `duplicates`** ⇒ 端点集合从 5 个变成 6 个
+  // （P1 §5 的清单仍写 5 个，协议侧待 PM 同步）。
+  assert.deepEqual([...ENDPOINTS], [
+    'capabilities',
+    'catalog',
+    'capture',
+    'cancel',
+    'preview',
+    'duplicates',
+  ]);
 });
 
 test('成功的命令 → server-response 信封（result.ok=true，value 就是命令返回值）', async () => {

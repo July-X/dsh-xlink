@@ -507,6 +507,43 @@ window.__ModuleLoader__.load({
     const reads = new Map();
 
     /**
+     * **本 client 实例已插入的引用 id 列表**（P2 协议 §2.2：client 负责提供
+     * 「当前草稿里已选中的引用 id 列表」，**host 不猜草稿**）。
+     *
+     * **口径说明（待 PM 确认）**：内核**没有**给插件「提交前草稿投影」的入口
+     * （`agent/pre-step` 在 Node 进程侧且带的是已展开的 `UserMessage[]`，
+     * 浏览器侧的 `codec.serialize` 是**逐 occurrence** 调用、看不到同行其它
+     * 引用）⇒ client 只能用「**本实例插入过、且仍认为在草稿里的**」引用 id。
+     * 用户在编辑器里删掉某个 chip 之后，这个 id 仍留在本列表里 ⇒
+     * **预检偏保守**（多算一点），**不会少报**。
+     *
+     * **为什么放在内存而不是落盘**：这是**在途态**（草稿的临时视图），
+     * 落盘态的事实源是快照文件（协议 S-3）。
+     */
+    const selectedRefs = new Set();
+
+    /**
+     * **可见提示的记录**（P2 协议 §3.2：提示必须「可复查」）。
+     *
+     * 这里存的是**结构化数据**（不含文案）：kind / 组 / 预算 / 触发时引用的
+     * id。UX 方案定稿后，呈现层从这条记录取数据渲染；文案措辞不在本文件定。
+     */
+    const notices = [];
+
+    /**
+     * **核对轮次的串行链**（P2 协议 §3.1：每次新增引用都要核对一次）。
+     *
+     * **为什么必须串行**：内核 notice 是**单槽**（最新一条覆盖旧条），而提示的
+     * 历史是**可复查**的 ⇒ 多轮核对若**并发**，提示的先后就会与「轮次」错位
+     * （实测：第二轮的预算提示可能落到第三轮之后）⇒ 用户看到的可能是旧状态，
+     * 判据也会读到错轮次的数字。⇒ 这里让每一轮**依次跑完**再跑下一轮。
+     *
+     * **不合并轮次**：协议 §3.1-1 要求「选中第二个及以后的同组引用时**立即**
+     * 出现提示」⇒ 每一轮都得真的核一次（合并会让中间那轮的预算事实丢失）。
+     */
+    let duplicatesChain = Promise.resolve();
+
+    /**
      * 起一次读取。返回 {promise, cancel}。
      *
      * **状态机**：读取成功**不等于**就绪——P1 协议 S-3 的 `ready` 是「**已落盘**」。
@@ -748,6 +785,13 @@ window.__ModuleLoader__.load({
               contentDigest: captured?.snapshot?.contentDigest,
             });
             reads.delete(snapshotId);
+            // **P2 协议 §3.1-1**：选中一个引用后立刻核对「草稿里已选的引用」
+            // 有没有同组（§1.1 五字段全等）⇒ 有则**立即出现可见提示**。
+            //
+            // **失败不阻塞**（协议 §2.3）：`duplicates` 失败只影响提示，
+            // 正文照发（这里的 catch 已在 `checkDuplicates` 内部消化）。
+            selectedRefs.add(snapshotId);
+            void checkDuplicates(ctx, sessions, sourceSessionId, snapshotId);
             showState(ctx, sessions, sessionId, snapshotId, 'ready');
             return captured;
           });
@@ -962,6 +1006,187 @@ window.__ModuleLoader__.load({
      * @param ref - 来源内的 id。
      * @param state - `stateOf` 的结果。
      */
+    /**
+     * **P2 提示的承载位接口**（协议 §3.2：可见 + 可复查 + 落在输入区/引用处）。
+     *
+     * **承载位 = 内核输入区的 notice**（`conversation.input.for(actx).notify`；
+     * 内核 `dsh-client-ui-conversation/lib/types/client/input/facade.d.ts@0.2.1-rc.2:268`
+     * 「Surface a notice from outside the machine」⇒ 落在该会话的 composer 上，
+     * **不是浏览器 toast**；同包
+     * `dsh-client-ui-conversation/lib/types/client/contract/input.d.ts@0.2.1-rc.2:188-190`
+     * 明写它按会话路由）。
+     *
+     * **数据与文案分离**：`notice` 是**结构化数据**（kind / 组 / 预算 / 触发 id），
+     * 本函数把它**记进 `notices`**（内存里可复查）并**原样记进埋点**（探针与
+     * 判据能读到全量数据），措辞只做**中性事实陈述**——**成品文案与视觉等 UX
+     * 方案定稿后替换**（PM 22:5x：不要自己定文案）。
+     *
+     * **承载机制的事实**（协议 v0.5 §3.2）：内核 notice 是**单槽**，而且内核
+     * **随时可能发一条自己的 error notice 把我们这条顶掉** ⇒ ① 每条提示的文案
+     * 必须**自包含全部事实**（组条数 ＋ 重复字节 ＋ 预算字节 ＋ 超限字节）；
+     * ② 本层**不依赖**内核 toast / notice 的出现时机与顺序来表达我们的状态
+     * （状态另有下面这份 `notices` 记录，可复查）；③ **不假设提示会一直在**
+     * ——用户**再动一次引用**就会重新触发一轮核对、重新发出一条提示 ⇒ 提示
+     * 是**可复现**的。
+     *
+     * @param {object} ctx - 客户端根上下文。
+     * @param {object} sessions - sessions 服务。
+     * @param {string} sessionId - 提示落在哪个会话的输入区。
+     * @param {object} notice - 结构化提示数据（含 `text` 占位措辞）。
+     */
+    function presentNotice(ctx, sessions, sessionId, notice) {
+      notices.push(notice);
+      record('notice', { ...notice });
+      notifyUser(ctx, sessions, sessionId, notice.level ?? 'info', notice.text ?? '', notice.kind);
+    }
+
+    /**
+     * 调 host 的 `duplicates` 命令，产出 P2 提示（协议 §2.2 / §3.1 / §4）。
+     *
+     * **触发时机**（协议 §3.1）：
+     * · §3.1-1「重复发生时」：**每选中一条引用就核对一次**——选到第二个及
+     *   以后的同组引用时，同组成员数 ≥ 2 ⇒ 立即出现提示（host 侧只返回成员数
+     *   ≥ 2 的组，所以选第一条时不会误报）。
+     * · §3.1-2 / §4「发送前的预算预检」：**同一趟**顺带算出（协议 §2.2 的
+     *   `budget` 与 `groups` 同一次往返出）⇒ 每次新增引用都会重算一次预算。
+     *   **口径说明**：内核**没有**「提交前草稿投影」的入口 ⇒ 预算按 client
+     *   自己掌握的引用 id 列表算，**原生 `@session` 的占用不可观测**（按 0
+     *   计）⇒ 口径**偏保守**（可能少报一点），且删掉 chip 后不会自动回收。
+     *
+     * **失败不阻塞发送**（协议 §2.3）：失败 ⇒ 提示「无法核对是否重复」＋ 可见
+     * 提示，**不额外拦截发送**（本函数不抛错、也不挂到发送路径上）。
+     *
+     * **提示档位一律 `info`**（协议 v0.2 §3.2）：内核只渲染 `info` 档的**输入区
+     * 常驻条**（`dsh-client-ui-conversation/lib/client.js@0.2.1-rc.2:18982-18986`）；
+     * `error` 档**只弹瞬态 toast**、没有常驻条
+     * （`dsh-client-ui-conversation/lib/client.js@0.2.1-rc.2:18808`）
+     * ⇒ 本批**任何**提示（含失败与超预算两条）都必须用 `info` 档。
+     *
+     * @param {object} ctx - 客户端根上下文。
+     * @param {object} sessions - sessions 服务。
+     * @param {string} sourceSessionId - 官网会话 id（协议 §2.2 的入参）。
+     * @param {string} [triggerRef] - 触发这次核对的引用 id（新选中的那条）。
+     * @returns {Promise<object|undefined>} 核对结果（探针与测试用）。
+     */
+    function checkDuplicates(ctx, sessions, sourceSessionId, triggerRef) {
+      const run = () => runDuplicatesCheck(ctx, sessions, sourceSessionId, triggerRef);
+      // **无论上一轮成功还是失败，都继续跑下一轮**（一轮失败不该卡住队列）。
+      const chained = duplicatesChain.then(run, run);
+      duplicatesChain = chained.then(
+        () => undefined,
+        () => undefined,
+      );
+      return chained;
+    }
+
+    /**
+     * 真正跑**一轮**核对（由 `checkDuplicates` 串行调用，见上面那条串行链）。
+     *
+     * @param {object} ctx - 客户端根上下文。
+     * @param {object} sessions - sessions 服务。
+     * @param {string} sourceSessionId - 官网会话 id（协议 §2.2 的入参）。
+     * @param {string} [triggerRef] - 触发这轮核对的引用 id。
+     * @returns {Promise<object|undefined>} 本轮核对结果。
+     */
+    async function runDuplicatesCheck(ctx, sessions, sourceSessionId, triggerRef) {
+      const host = hostClient(ctx);
+      if (host === undefined) {
+        // **通道不可达也是一种「失败」**（协议 §2.3：失败 ⇒ 提示「无法核对是否
+        // 重复」）⇒ 同样给一条 **info 档**可见提示（§3.2：`error` 档只弹瞬态
+        // toast，没有常驻条）。**不额外拦截发送**（本函数不抛错）。
+        record('duplicates-unavailable', { why: 'host 不可达' });
+        presentNotice(ctx, sessions, sourceSessionId, {
+          kind: 'duplicates-failed',
+          level: 'info',
+          trigger: triggerRef ?? null,
+          text: 'P2（占位措辞）：无法核对是否重复',
+        });
+        return undefined;
+      }
+      const snapshotIds = [...selectedRefs];
+      if (snapshotIds.length === 0) return undefined;
+      let result;
+      try {
+        result = await host.call('duplicates', {
+          sessionId: sourceSessionId,
+          snapshotIds,
+          requestId: triggerRef ?? snapshotIds[snapshotIds.length - 1],
+        });
+      } catch (error) {
+        record('duplicates-failed', { message: String(error?.message ?? error) });
+        presentNotice(ctx, sessions, sourceSessionId, {
+          kind: 'duplicates-failed',
+          level: 'info',
+          trigger: triggerRef ?? null,
+          text: 'P2（占位措辞）：无法核对是否重复',
+        });
+        return undefined;
+      }
+      if (result?.ok !== true) {
+        record('duplicates-rejected', { code: result?.code ?? null });
+        presentNotice(ctx, sessions, sourceSessionId, {
+          kind: 'duplicates-failed',
+          level: 'info',
+          trigger: triggerRef ?? null,
+          code: result?.code ?? null,
+          text: 'P2（占位措辞）：无法核对是否重复',
+        });
+        return undefined;
+      }
+      const groups = Array.isArray(result.groups) ? result.groups : [];
+      const budget = result.budget ?? {};
+      // **两条提示都要自包含**（§3.2：内核 notice 是单槽，最新一条覆盖旧条）⇒
+      // 组数与字节数在两条提示里都要能读到 ⇒ 先把这两个数算出来共用。
+      const members = groups.reduce(
+        (sum, group) => sum + (Array.isArray(group?.members) ? group.members.length : 0),
+        0,
+      );
+      const redundant = groups.reduce((sum, group) => sum + (Number(group?.redundantBytes) || 0), 0);
+      if (groups.length > 0) {
+        presentNotice(ctx, sessions, sourceSessionId, {
+          kind: 'duplicate-groups',
+          level: 'info',
+          trigger: triggerRef ?? null,
+          groups,
+          budget,
+          // **文案必须自包含**（协议 §3.2：内核 notice 是**单槽**，最新一条覆盖
+          // 旧条 ⇒ 用户最终看到的可能只有这一条）⇒ 这条里**同时**带上预算事实
+          // （超限时），这样无论覆盖后剩下哪条，用户都知道「超了多少字节」。
+          text:
+            `P2（占位措辞）：本条消息里有 ${members} 条同组引用` +
+            `（${groups.length} 组，重复正文共 ${redundant} 字节）` +
+            (budget?.wouldExceed === true
+              ? `；正文合计 ${budget.projectedBytes} 字节，超出单次消息总预算 ` +
+                `${budget.limitBytes} 字节（超 ${budget.exceedByBytes} 字节）`
+              : ''),
+        });
+        // **不 return**：协议 §3.1 的**两个触发点各自独立**——「重复发生时」与
+        // 「超预算时」可以同时成立 ⇒ **两条提示都要出**（早退会把预算提示吃掉）。
+      }
+      if (budget.wouldExceed === true) {
+        presentNotice(ctx, sessions, sourceSessionId, {
+          kind: 'budget-exceeded',
+          level: 'info',
+          trigger: triggerRef ?? null,
+          groups,
+          budget,
+          text:
+            `P2（占位措辞）：本条消息正文合计 ${budget.projectedBytes} 字节，` +
+            `超过单次消息总预算 ${budget.limitBytes} 字节（超 ${budget.exceedByBytes} 字节）` +
+            (members > 0
+              ? `；其中 ${members} 条同组引用（${groups.length} 组，重复正文共 ${redundant} 字节）`
+              : ''),
+        });
+      }
+      if (groups.length === 0 && budget.wouldExceed !== true) {
+        record('duplicates-checked', {
+          groups: 0,
+          projectedBytes: budget.projectedBytes ?? null,
+        });
+      }
+      return result;
+    }
+
     function showState(ctx, sessions, sessionId, ref, state) {
       const text =
         state === 'ready'

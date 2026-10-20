@@ -1,0 +1,30 @@
+{
+  "id": "duplicates-same",
+  "title": "重复组候选对：五字段全等 ⇒ 成组",
+  "input": {
+    "kind": "duplicates",
+    "snapshots": [
+      {
+        "snapshotId": "ds~sessalpha~0001",
+        "accountScope": "desktop-dev/default/site-A",
+        "sessionId": "sess-alpha-001",
+        "branch": "main",
+        "capturedAt": "2026-10-20T08:59:00.000Z",
+        "contentDigest": "3a1f0c9d2b7e64a58d1c0f5b9e2a7d43618c0b5e9f2a1d7c4b8e6f0a3d5c7b19"
+      },
+      {
+        "snapshotId": "ds~sessalpha~0002",
+        "accountScope": "desktop-dev/default/site-A",
+        "sessionId": "sess-alpha-001",
+        "branch": "main",
+        "capturedAt": "2026-10-20T08:59:00.000Z",
+        "contentDigest": "3a1f0c9d2b7e64a58d1c0f5b9e2a7d43618c0b5e9f2a1d7c4b8e6f0a3d5c7b19"
+      }
+    ]
+  },
+  "expected": {
+    "kind": "duplicates",
+    "sameGroup": true,
+    "groupKey": "2bae1f90ff127002"
+  }
+}

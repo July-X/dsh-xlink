@@ -40,6 +40,7 @@ import {
   captureFailureCode,
   captureFailureDetail,
   errorPayload,
+  groupKeyOf,
   makeProviderShort,
   makeSessionShort,
   parseSnapshotId,
@@ -659,5 +660,104 @@ export function createCommands({
     }
   }
 
-  return { capabilities, catalog, capture, cancel, preview, buildSnapshot };
+  /**
+   * P2 协议 §2.2：`duplicates` —— **重复识别 ＋ 预算预检**（一次往返出两样）。
+   *
+   * **入参**：`{ sessionId, snapshotIds }`——`snapshotIds` 是 client 传来的
+   * 「当前草稿里已选中的引用 id 列表」（协议 §2.2 明写：**host 不猜草稿**）。
+   *
+   * **出参**：协议 §2.2 的字段闭集（`ok` / `groups[]` / `budget{}`）。
+   *
+   * **失败口径**（协议 §2.3）四种情形 → 码。其中：
+   * · `snapshot_store_unavailable`（盘上不可读）是**实现既有的内部码**
+   *   （`host/index.js` 抛出），**不在** P1 §3 的 13 码闭集里 ⇒ 按 P1 §3 的
+   *   规则**归入 `snapshot_invalid`**，原始码保留在 `detail`（`errorPayload`
+   *   的未知码分支即此行为）。
+   * · `invalid_request`（入参形态不对）**同样不在闭集里** ⇒ 同样归入
+   *   `snapshot_invalid`、原码进 `detail`。**不新增码**（P2 §6.5）。
+   * ⇒ 两处都**不引入闭集外的码**，代价是用户看到的 `userNext` 是闭集内最贴近的
+   * 那一条；**是否要把这两个码正式纳入闭集，请 PM 裁定**（协议 §2.3 与 §6.5
+   * 目前自相矛盾）。
+   *
+   * **失败不阻塞发送**（协议 §2.3）：本命令失败只影响「提示」，正文照发。
+   *
+   * @param {{sessionId: string, snapshotIds: string[], requestId?: string}} request
+   * @returns {Promise<object>} 协议 §2.2 的出参。
+   */
+  async function duplicates(request = {}) {
+    const requestId = String(request.requestId ?? '');
+    const sessionId = String(request.sessionId ?? '');
+    const ids = request.snapshotIds;
+    if (sessionId === '' || !Array.isArray(ids)) {
+      return { ok: false, ...fail('invalid_request', { requestId }) };
+    }
+    // **指纹不可得 ⇒ 拒**（照 `preview` 的口径：不知道是不是同一个来源，
+    // 不得拿旧正文当当前来源的内容）。
+    const fingerprint = fingerprintOf(accountScope);
+    if (fingerprint === '') {
+      return { ok: false, ...fail('account_changed', { requestId, detail: '当前来源指纹不可得' }) };
+    }
+    const loaded = [];
+    for (const raw of ids) {
+      const id = String(raw ?? '');
+      if (id === '') {
+        return { ok: false, ...fail('invalid_request', { requestId }) };
+      }
+      try {
+        // **只按固定 id 读快照**（协议 §5）：路径由 id 决定，调用方不能另指目录。
+        const one = store.load(id);
+        // **指纹变了 ⇒ 拒**（协议 §8-6 / S-5）。
+        if (String(one?.snapshot?.sourceFingerprint ?? '') !== fingerprint) {
+          return { ok: false, ...fail('account_changed', { requestId, detail: '来源指纹已变' }) };
+        }
+        loaded.push({
+          id,
+          snapshot: one.snapshot,
+          bytes: Buffer.byteLength(String(one.body ?? ''), 'utf8'),
+        });
+      } catch (error) {
+        return { ok: false, ...fail(String(error?.code ?? 'snapshot_invalid'), { requestId }) };
+      }
+    }
+    // **分组**（协议 §1.1：五字段全等；§1.3：组只是事实分组，**成员不合并**）。
+    const byKey = new Map();
+    for (const one of loaded) {
+      const key = groupKeyOf(one.snapshot);
+      const bucket = byKey.get(key);
+      if (bucket === undefined) byKey.set(key, [one]);
+      else bucket.push(one);
+    }
+    const groups = [];
+    for (const [groupKey, members] of byKey) {
+      // **只报「重复组」（成员数 ≥ 2）**：单成员的组不是重复，报告它没有意义
+      // （协议 §2.2 的 `redundantBytes` 对单成员恒为 0）。**口径待 PM 确认**。
+      if (members.length < 2) continue;
+      groups.push({
+        groupKey,
+        members: members.map((one) => ({
+          snapshotId: one.id,
+          capturedAt: String(one.snapshot?.capturedAt ?? ''),
+          contentDigest: String(one.snapshot?.contentDigest ?? ''),
+        })),
+        redundantBytes: (members.length - 1) * members[0].bytes,
+      });
+    }
+    // **预算预检**（协议 §4）：`projectedBytes` = 各引用**各送一份**的总字节
+    // （P1 S-7 口径）。**原生 `@session` 的占用本层不可观测**（host 没有草稿、
+    // client 也拿不到草稿文本）⇒ 该项按 0 计 ⇒ 口径**偏保守**（可能少报一点）。
+    const projectedBytes = loaded.reduce((sum, one) => sum + one.bytes, 0);
+    const limitBytes = CONSTANTS.perMessageBudgetBytes;
+    return {
+      ok: true,
+      groups,
+      budget: {
+        limitBytes,
+        projectedBytes,
+        wouldExceed: projectedBytes > limitBytes,
+        exceedByBytes: Math.max(0, projectedBytes - limitBytes),
+      },
+    };
+  }
+
+  return { capabilities, catalog, capture, cancel, preview, duplicates, buildSnapshot };
 }

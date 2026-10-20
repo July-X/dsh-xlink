@@ -79,8 +79,17 @@ function makeHarness() {
   return { root, store, commands, handler: createDispatcher({ commands }) };
 }
 
-test('协议 §5：5 个客户端命令齐活，且通道路径是内核 exact fetch route 的那条', () => {
-  assert.deepEqual([...ENDPOINTS], ['capabilities', 'catalog', 'capture', 'cancel', 'preview']);
+test('协议 §5：客户端命令齐活（P1 的 5 个 ＋ P2 §2.2 的 duplicates），且通道路径是内核 exact fetch route 的那条', () => {
+  // **P2 协议 §2.2 新增了 `duplicates`**（重复识别 ＋ 预算预检）⇒ 端点集合
+  // 从 5 个变成 6 个。**P1 §5 的命令清单仍写 5 个** ⇒ 协议侧待 PM 同步。
+  assert.deepEqual([...ENDPOINTS], [
+    'capabilities',
+    'catalog',
+    'capture',
+    'cancel',
+    'preview',
+    'duplicates',
+  ]);
   // **路径必须与 host 半边注册的 exact route 全等**——内核是
   // `fetchRoutes.get(url.pathname)`（全等匹配），错一个字符就 404/405。
   assert.equal(FETCH_ROUTE_PATH, '/api/xlink-official-chat');

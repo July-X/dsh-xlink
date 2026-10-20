@@ -451,8 +451,75 @@ pub fn resolve_case(input: &Value) -> Value {
     match kind {
         "catalog" => resolve_catalog_case(input),
         "lookup" => resolve_lookup_case(input),
+        "duplicates" => resolve_duplicates_case(input),
         _ => resolve_capture_case(input),
     }
+}
+
+/// P2 协议 §1.1：重复组的判定键 = **五字段全等**。
+///
+/// **为什么不能只比正文摘要一个**：`development-plan` §8:168「去重不能抹掉账户、
+/// 分支或捕获事实」——只比 `contentDigest` 会把不同账户 / 分支 / 捕获时刻的同正文
+/// 判成同一组。
+pub const GROUP_KEY_FIELDS: [&str; 5] = [
+    "accountScope",
+    "sessionId",
+    "branch",
+    "capturedAt",
+    "contentDigest",
+];
+
+/// P2 协议 §1.2：`groupKey` = 五字段用 `\n` 连接后取 sha256 的**前 16 位小写十六进制**。
+///
+/// **与 JS 侧同口径**（`host/protocol.js` 的 `groupKeyOf`）：分隔符是**单个换行、
+/// 不含空格**（协议原文的行内代码里 `\n` 两侧有空格 ⇒ 该口径**待 PM 裁定**；
+/// 若裁定为 ` \n `，**两端各改一行**即可）。
+///
+/// @param snapshot - 带五字段的对象（字段值都是字符串）。
+/// @returns 16 位小写十六进制组标识。
+pub fn group_key(snapshot: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let text = GROUP_KEY_FIELDS
+        .iter()
+        .map(|field| {
+            snapshot
+                .get(*field)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+    let digest = Sha256::digest(text.as_bytes());
+    let hex_string = crate::shell::digest::hex(&digest[..]);
+    hex_string[..16].to_string()
+}
+
+/// 重复组判定流程（P2 协议 §1.1 / §1.2）。
+///
+/// **与 JS 侧 `resolveDuplicatesCase` 同构**：判「键五字段全等」，输出 `groupKey`
+/// 与 `sameGroup`。**夹具的 `expected` 固化 `groupKey` 的值**（协议 v0.2 §5：
+/// 键的形状**已定稿、可写**；§1.2：groupKey 用于判据比对）⇒ 分隔符口径若改成
+/// 含空格（` \n `），要同步改**四处**：本函数、`group_key`、JS 的 `groupKeyOf`、
+/// 两个夹具的 `expected.groupKey`（各 1 个值）。
+///
+/// @param input - 夹具输入（`snapshots` 两条，各带五字段）。
+/// @returns 结果对象。
+fn resolve_duplicates_case(input: &Value) -> Value {
+    let snapshots = input
+        .get("snapshots")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let first = snapshots.first().cloned().unwrap_or(Value::Null);
+    let second = snapshots.get(1).cloned().unwrap_or(Value::Null);
+    let first_key = group_key(&first);
+    let same_group = snapshots.len() >= 2 && group_key(&second) == first_key;
+    serde_json::json!({
+        "kind": "duplicates",
+        "sameGroup": same_group,
+        "groupKey": first_key,
+    })
 }
 
 /// 捕获流程。
@@ -902,6 +969,34 @@ mod tests {
                         "{name}：状态必须一致"
                     );
                 }
+                Some("duplicates") => {
+                    // **成组判定必须一致**（P2 §1.1：键五字段全等）。
+                    assert_eq!(
+                        actual.get("sameGroup").and_then(Value::as_bool),
+                        expected.get("sameGroup").and_then(Value::as_bool),
+                        "{name}：成组判定必须一致"
+                    );
+                    // **groupKey 的具体值不固化**：协议 §1.2 的分隔符口径（`\n` 还是 ` \n `）
+                    // 仍待 PM 裁定 ⇒ 写死会把**未定的口径**锚进夹具。跨语言的 `groupKey`
+                    // 一致性由「两端跑同一组夹具、结果逐字段相等」兜（两端一起改仍绿）。
+                    // **groupKey 必须与夹具一致**（协议 v0.2 §5：键的形状已定稿、
+                    // 可写；§1.2：groupKey 用于判据比对）⇒ 两端都断这一条 ⇒
+                    // 跨语言算得不一样会当场报红。
+                    assert_eq!(
+                        actual.get("groupKey").and_then(Value::as_str),
+                        expected.get("groupKey").and_then(Value::as_str),
+                        "{name}：groupKey 必须一致"
+                    );
+                    let gk = actual
+                        .get("groupKey")
+                        .and_then(Value::as_str)
+                        .expect("缺 groupKey");
+                    assert_eq!(gk.len(), 16, "{name}：groupKey 必须是 16 位");
+                    assert!(
+                        gk.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                        "{name}：groupKey 必须是 16 位小写十六进制"
+                    );
+                }
                 other => panic!("{name}：未知的 expected.kind：{other:?}"),
             }
         }
@@ -959,6 +1054,33 @@ mod tests {
             user_next("catalog_failed"),
             "空结果与读取失败必须是两种说法"
         );
+    }
+
+    #[test]
+    fn error_result_carries_the_eight_field_closed_set() {
+        // **协议 §3 v0.4 裁定：错误结果对象字段闭集 = 8 个，全部必备、不省略**。
+        // 此前 **JS 侧只产 7 个**（缺 `kind`）——那是 **JS 漏字段、不是协议写错**
+        // （已修）⇒ 这里把**本端**的字段集钉住，别让下一个人又把某个字段省掉。
+        let payload = error_result("timeout");
+        let obj = payload.as_object().expect("错误结果必须是对象");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "code",
+                "detail",
+                "kind",
+                "logPath",
+                "ok",
+                "requestId",
+                "retryable",
+                "userNext",
+            ],
+            "协议 §3 v0.4：错误结果对象 = 8 字段闭集，全部必备"
+        );
+        assert_eq!(obj.get("kind").and_then(Value::as_str), Some("error"));
+        assert_eq!(obj.get("ok").and_then(Value::as_bool), Some(false));
     }
 
     #[test]

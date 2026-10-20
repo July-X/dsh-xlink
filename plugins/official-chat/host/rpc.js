@@ -77,13 +77,21 @@
  */
 export const FETCH_ROUTE_PATH = '/api/xlink-official-chat';
 
-/** 5 个客户端命令的端点名（协议 §5「客户端命令职责」）。 */
+/**
+ * 客户端命令的端点名（协议 §5「客户端命令职责」＋ **P2 协议 §2.2 的
+ * `duplicates`**——重复识别 ＋ 预算预检）。
+ *
+ * **P1 §5 的清单仍写 5 个命令**（`capabilities` / `catalog` / `capture` /
+ * `cancel` / `preview`）⇒ **P2 协议未同步 P1 §5**，此处按 P2 协议加了第 6 个
+ * ⇒ **P1 §5 需 PM 同步**（协议侧归属，不在本层改）。
+ */
 export const ENDPOINTS = Object.freeze([
   'capabilities',
   'catalog',
   'capture',
   'cancel',
   'preview',
+  'duplicates',
 ]);
 
 /** 信封里 `method` 字段的形状（照抄内核 `ENDPOINT_SEGMENT_PATTERN`）。 */
@@ -171,6 +179,9 @@ export function createDispatcher({ commands, logger } = {}) {
           return wrap(commands.cancel(payload ?? {}));
         case 'preview':
           return wrap(commands.preview(payload ?? {}));
+        case 'duplicates':
+          // **P2 协议 §2.2**：重复识别 ＋ 预算预检（与 `groups` 同一次往返出）。
+          return wrap(await commands.duplicates(payload ?? {}));
         default:
           // 未知端点不是「成功值」——它必须是个明确的失败。
           return {

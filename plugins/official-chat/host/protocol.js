@@ -623,7 +623,7 @@ export function deriveState(snapshot, checks = {}) {
  *
  * @param {string} code - §3 的稳定码名。
  * @param {{requestId?: string, logPath?: string, detail?: string}} [extra]
- * @returns {{ok: false, code: string, retryable: boolean, userNext: string,
+ * @returns {{kind: 'error', ok: false, code: string, retryable: boolean, userNext: string,
  *   requestId: string|null, logPath: string|null, detail: string|null}}
  */
 export function errorPayload(code, extra = {}) {
@@ -634,6 +634,7 @@ export function errorPayload(code, extra = {}) {
     // **不归 `source_unsupported`**：那个码只表示「这个来源根本不支持该能力」，
     // 拿它兜内部冲突会让用户去「换一个来源」，而真正该做的是移除该引用。
     return {
+      kind: 'error',
       ok: false,
       code: 'snapshot_invalid',
       retryable: ERROR_CODES.snapshot_invalid.retryable,
@@ -644,6 +645,12 @@ export function errorPayload(code, extra = {}) {
     };
   }
   return {
+    // **协议 §3 v0.4 裁定：错误结果对象字段闭集 = 8 个，全部必备**（`kind` / `ok` /
+    // `code` / `retryable` / `userNext` / `requestId` / `logPath` / `detail`）⇒
+    // `kind` 此前**只产 7 个**（缺这一个），是 **JS 漏字段**、不是协议写错 ⇒
+    // 这里补齐，**与 Rust 侧 `error_result` 同构**（两端字段集一致，协议夹具的
+    // 「双端一致」才可能成立）。
+    kind: 'error',
     ok: false,
     code,
     retryable: spec.retryable,
@@ -740,6 +747,42 @@ export function bodyBytes(messages) {
 }
 
 /**
+ * P2 协议 §1.1：重复组的判定键 = **五字段全等**。
+ *
+ * **为什么不能只比正文摘要一个**：`development-plan` §8:168「去重不能抹掉
+ * 账户、分支或捕获事实」——只比 `contentDigest` 会把**不同账户 / 不同分支 /
+ * 不同捕获时刻**的同正文判成同一组。
+ */
+export const GROUP_KEY_FIELDS = Object.freeze([
+  'accountScope',
+  'sessionId',
+  'branch',
+  'capturedAt',
+  'contentDigest',
+]);
+
+/**
+ * P2 协议 §1.2：`groupKey` = 五字段连接后取 sha256 的**前 16 位小写十六进制**。
+ *
+ * **分隔符口径（待 PM 确认 · 一行可回退）**：协议原文写
+ * `sha256(accountScope \n sessionId \n branch \n capturedAt \n contentDigest)`，
+ * 行内代码里 `\n` 两侧有空格。本实现按「**单个换行、不含空格**」理解
+ * （`GROUP_KEY_FIELDS.join('\n')`）。若 PM 裁定为含空格（` \n `），
+ * **只改这一行**（JS 侧）＋ Rust 侧对应一行，其余不动。
+ *
+ * **为什么在 host 侧算**：client 半边是浏览器页面里的**单文件自包含**脚本，
+ * 不能 `require('node:crypto')` ⇒ groupKey 只能由 host 算好后随出参下发
+ * （协议 §1.2：groupKey 的用途就是「client 侧把同组引用聚在一起」）。
+ *
+ * @param {object} snapshot - 快照对象（§1.1 字段表）。
+ * @returns {string} 16 位小写十六进制组标识。
+ */
+export function groupKeyOf(snapshot) {
+  const text = GROUP_KEY_FIELDS.map((field) => String(snapshot?.[field] ?? '')).join('\n');
+  return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 16);
+}
+
+/**
  * 构造快照（§1.1 字段表逐字段落地）。
  *
  * @param {object} input - 字段来源。
@@ -794,7 +837,37 @@ export function resolveCase(input) {
   const kind = String(input?.kind ?? 'capture');
   if (kind === 'catalog') return resolveCatalogCase(input);
   if (kind === 'lookup') return resolveLookupCase(input);
+  if (kind === 'duplicates') return resolveDuplicatesCase(input);
   return resolveCaptureCase(input);
+}
+
+/**
+ * 重复组判定流程（P2 协议 §1.1 / §1.2）。
+ *
+ * **判的是「键五字段全等」**（accountScope / sessionId / branch / capturedAt /
+ * contentDigest）——只比正文摘要会把**不同账户 / 不同分支 / 不同捕获时刻**的
+ * 同正文判成同一组（`development-plan` §8:168「去重不能抹掉账户、分支或捕获
+ * 事实」）。
+ *
+ * **输出带 `groupKey`，夹具的 `expected` 也固化它的值**：协议 v0.2 §5 明写
+ * 「键的形状以本稿 §1.1 为准（**已定稿，可写**）」，§1.2 又说 groupKey
+ * 「用于提示文案与**判据比对**」⇒ 夹具就该带上它（判据侧的期望匹配是
+ * **整体深比较**，不写就判红）。
+ *
+ * **分隔符口径若被改，要同步改四处**：协议 §1.2 的行内代码里 `\n` 两侧有
+ * 空格，本实现按「**单个换行、不含空格**」实现 ⇒ 若裁定为含空格
+ * （` \n `），须同步改：JS 的 `groupKeyOf` 1 行、Rust 的 `group_key` 1 行、
+ * 两个夹具的 `expected.groupKey`（各 1 个值）⇒ 漏改任何一处，夹具断言
+ * 与「两端逐字段相等」判据都会报红。
+ *
+ * @param {object} input - 夹具的 `input`（`snapshots` 两条，各带五字段）。
+ * @returns {{kind: 'duplicates', sameGroup: boolean, groupKey: string}}
+ */
+export function resolveDuplicatesCase(input) {
+  const snapshots = Array.isArray(input?.snapshots) ? input.snapshots : [];
+  const groupKey = groupKeyOf(snapshots[0] ?? {});
+  const sameGroup = snapshots.length >= 2 && groupKeyOf(snapshots[1] ?? {}) === groupKey;
+  return { kind: 'duplicates', sameGroup, groupKey };
 }
 
 /**

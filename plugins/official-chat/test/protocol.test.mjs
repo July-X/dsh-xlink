@@ -104,6 +104,17 @@ test('每一条夹具：同一输入 → 同一解析结果（§6 的核心断�
       continue;
     }
 
+    if (expected.kind === 'duplicates') {
+      // **成组判定必须一致**（P2 §1.1：键五字段全等）。
+      assert.equal(actual.sameGroup, expected.sameGroup, `${fixture.id}：成组判定必须一致`);
+      // **groupKey 必须与夹具一致**（协议 v0.2 §5：键的形状已定稿、可写；§1.2：
+      // groupKey 用于判据比对）⇒ 夹具把它的值钉住，两端都断这一条 ⇒ 跨语言
+      // 算得不一样会当场报红（不必等「两端逐字段相等」那条判据）。
+      assert.equal(actual.groupKey, expected.groupKey, `${fixture.id}：groupKey 必须一致`);
+      assert.match(actual.groupKey, /^[0-9a-f]{16}$/, `${fixture.id}：groupKey 必须是 16 位小写十六进制`);
+      continue;
+    }
+
     for (const field of Object.keys(expected.snapshot)) {
       assert.deepEqual(
         actual.snapshot[field],
@@ -388,4 +399,26 @@ test('§1.3：规范化只去整段末尾空白，保留正文内空行与缩进
   const withInnerBlank = '第一行\r\n\r\n  缩进行  \r\n';
   const withoutInnerBlank = '第一行\r\n缩进行  \r\n';
   assert.notEqual(contentDigest(withInnerBlank), contentDigest(withoutInnerBlank));
+});
+
+test('§3 v0.4：错误结果对象 = 8 字段闭集，全部必备（G-2：JS 不得再缺 kind）', () => {
+  // **此前 JS 侧只产 7 个**（缺 `kind`）——那是 **JS 漏字段、不是协议写错**
+  // （协议闭集不动，实现补齐）⇒ 这里把闭集钉死：谁再省一个字段，当场红。
+  const payload = errorPayload('timeout', {
+    requestId: 'r-1',
+    detail: '线索',
+    logPath: '/tmp/x.log',
+  });
+  assert.deepEqual(
+    Object.keys(payload).sort(),
+    ['code', 'detail', 'kind', 'logPath', 'ok', 'requestId', 'retryable', 'userNext'],
+    '错误负载必须恰好是 8 个字段（§3 v0.4 闭集，不省略）',
+  );
+  assert.equal(payload.kind, 'error', '错误负载的 kind 恒为 error');
+  assert.equal(payload.ok, false, '错误路径的 ok 恒为 false');
+  // **未知码的归一分支走同一条闭集** ⇒ 同样不得省字段。
+  const unknown = errorPayload('not_a_real_code');
+  assert.equal(Object.keys(unknown).length, 8, '未知码分支也必须 8 个字段');
+  assert.equal(unknown.code, 'snapshot_invalid', '未知码归一为 snapshot_invalid（不新增第 14 个码）');
+  assert.match(String(unknown.detail), /not_a_real_code/, '原始码要留在 detail');
 });
