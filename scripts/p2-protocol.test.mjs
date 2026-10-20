@@ -46,6 +46,7 @@ import {
   checkP2_D_crossLanguageGroupKey,
   checkP2_F_fixtureExpectation,
   checkP2_H_multiGroupNotDropped,
+  checkP2_J_noticeStaysTruthfulAfterSend,
   checkSelfContainedText,
   expectedGroupKey,
   sameGroupByProtocol,
@@ -1221,7 +1222,101 @@ test('文案自包含：数字必须落在「该组的语境片段」内（PM 01
   assert.match(noAnchor.why, /同组|第 i 组/);
 });
 
-test('十条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
+test('P2-J：发送后用户眼前那条提示仍不失真（逐字相同 / info 档 / 无发送结果字样 / 不写成当前状态）', async () => {
+  const refs = ['ds~aaaaaaaaaaaa~0001', 'ds~aaaaaaaaaaaa~0002'];
+  const bodyText = `【判据正文】${refs[0]}\n第二行固定正文。`;
+  const redundant = Buffer.byteLength(bodyText, 'utf8');
+  // **一条组的形态**（两条同组 ⇒ 组内 2 条）——「组事实」＝ 条数 ＋ 该组 R。
+  const groups = [
+    {
+      groupKey: '0123456789abcdef',
+      members: refs.map((id) => ({
+        snapshotId: id,
+        capturedAt: '2026-10-20T00:00:00.000Z',
+        contentDigest: 'd'.repeat(64),
+      })),
+      redundantBytes: redundant,
+    },
+  ];
+  // **协议 v0.6 §3.2 的定稿文案**（单组形态）。
+  const goodText =
+    `本次核对：同组 2 条内容完全相同，重复可省 ${redundant} 字节；` +
+    `引用正文 ${redundant * 2} 字节，未超出单次消息总预算 ${PER_MESSAGE_BUDGET_BYTES} 字节。`;
+  const notice = (overrides = {}) => ({
+    kind: 'duplicate-groups',
+    level: 'info',
+    text: goodText,
+    groups,
+    budget: {
+      limitBytes: PER_MESSAGE_BUDGET_BYTES,
+      projectedBytes: redundant * 2,
+      wouldExceed: false,
+      exceedByBytes: 0,
+    },
+    trigger: refs[1],
+    delivered: true,
+    ...overrides,
+  });
+  const makeAdapter = (extra = {}) =>
+    makeSyntheticAdapter({ refs, bodyText, noticeScript: [null, notice()], ...extra });
+
+  // 合规：发送后用户眼前那条**仍是**那条自包含、不误导的重复核对。
+  const ok = await checkP2_J_noticeStaysTruthfulAfterSend(makeAdapter());
+  assert.equal(ok.status, PASS, `合规实现不该红：${ok.detail}`);
+
+  // 违规①：**文案带发送结果字样**（「已发送」）⇒ 红（协议 §3.2 错误态）。
+  const sentWord = await checkP2_J_noticeStaysTruthfulAfterSend(
+    makeAdapter({ noticeScript: [null, notice({ text: `已发送：${goodText}` })] }),
+  );
+  assert.equal(sentWord.status, FAIL);
+  assert.match(sentWord.detail, /已发送/);
+
+  // 违规②：**把「本次核对」写成「当前状态」** ⇒ 红（协议 §3.2 抗 stale 的锚）。
+  const stale = await checkP2_J_noticeStaysTruthfulAfterSend(
+    makeAdapter({
+      noticeScript: [null, notice({ text: goodText.replace('本次核对：', '当前同组：') })],
+    }),
+  );
+  assert.equal(stale.status, FAIL);
+  assert.match(stale.detail, /当前/);
+
+  // 违规③：**发送后用户眼前那条被换成了别的** ⇒ 红（协议 §3.1：后发那条必须把
+  // 先发那条的事实也带上 ⇒ 发送不得把用户眼前那条换成别的）。
+  const swapped = await checkP2_J_noticeStaysTruthfulAfterSend(
+    makeAdapter({
+      noticeScript: [
+        null,
+        [
+          notice(),
+          notice({
+            kind: 'budget-exceeded',
+            text: `引用正文 ${redundant * 2} 字节，未超出单次消息总预算 ${PER_MESSAGE_BUDGET_BYTES} 字节。`,
+          }),
+        ],
+      ],
+    }),
+  );
+  assert.equal(swapped.status, FAIL);
+  assert.match(swapped.detail, /发送前那条/);
+
+  // 违规④：**发送后那条丢了组事实**（只写字节数）⇒ 红（§3.1 后发自包含 ＋ §3.2 数字口径）。
+  const lostFacts = await checkP2_J_noticeStaysTruthfulAfterSend(
+    makeAdapter({
+      noticeScript: [null, notice({ text: `本次核对：同组重复可省 ${redundant} 字节。` })],
+    }),
+  );
+  assert.equal(lostFacts.status, FAIL);
+  assert.match(lostFacts.detail, /条/);
+
+  // 违规⑤：**档位被换成 error** ⇒ 红（§3.2：常驻条必须是 info 档）。
+  const errorLevel = await checkP2_J_noticeStaysTruthfulAfterSend(
+    makeAdapter({ noticeScript: [null, notice({ level: 'error' })] }),
+  );
+  assert.equal(errorLevel.status, FAIL);
+  assert.match(errorLevel.detail, /info 档|档位/);
+});
+
+test('十一条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
   const cases = [
     { name: 'P2-1', run: checkP2_1_sameGroupKeepsDistinctIds, options: {} },
     { name: 'P2-2', run: checkP2_2_duplicateNoticeVisible, options: {} },
@@ -1237,6 +1332,7 @@ test('十条判据在真实实现上都跑得起来（不是「未执行」、�
       context: crossLanguageContext(),
     },
     { name: 'P2-H', run: checkP2_H_multiGroupNotDropped, options: {} },
+    { name: 'P2-J', run: checkP2_J_noticeStaysTruthfulAfterSend, options: {} },
   ];
   for (const spec of cases) {
     const adapter = await createAdapter({ tag: `p2-selftest-${spec.name}`, ...spec.options });

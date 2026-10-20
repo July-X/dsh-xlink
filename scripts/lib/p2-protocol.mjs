@@ -349,6 +349,25 @@ function checkNoticeCarrier(notice) {
 }
 
 /**
+ * 协议 §3.2 错误态：文案**不含**这三个词（发送结果字样）。
+ *
+ * 提在模块级 ⇒ P2-6（失败文案）与 P2-J（发送后仍留在用户眼前的那条）**共用同一份**，
+ * 免得两处各抄一份、日后改一处忘一处。
+ */
+const FORBIDDEN_SEND_RESULT_WORDS = ['已发送', '发送失败', '发送被阻止'];
+
+/**
+ * 协议 §3.2「抗 stale 的锚」：**条会被内核顶掉、且撤不掉** ⇒ 文案**不得**写成
+ * 「当前状态」的断言（协议点名用「本次核对」不用「现在」）。
+ *
+ * 「当前」一并禁：它同样把**历史核对**说成**当前状态**（协议禁止的是「当前状态
+ * 的断言」这个**形状**，不只是「现在」这个词）。
+ * ⚠️ 这是**词面近似**：协议只点名了「现在」⇒ 若将来协议放宽口径，**判据要同步放宽**
+ * （放宽必须配反向用例）。
+ */
+const STALE_ASSERTION_WORDS = ['现在', '当前'];
+
+/**
  * 断「**文案自包含**」（协议 §3.2）。
  *
  * 内核 notice 是**单槽**（最新一条覆盖旧条），而且内核随时可能发一条 error
@@ -1403,7 +1422,7 @@ export async function checkP2_6_failureDoesNotBlockSend(adapter) {
     }
 
     const sessionId = 'p2-check-failure';
-    const forbidden = ['已发送', '发送失败', '发送被阻止'];
+    const forbidden = FORBIDDEN_SEND_RESULT_WORDS;
     const observed = [];
 
     for (const mode of ['command', 'transport']) {
@@ -1701,6 +1720,168 @@ export async function checkP2_H_multiGroupNotDropped(adapter) {
         `多组场景（${wantKeys.length} 个组同时成立）⇒ 不漏报（各组 ` +
         `${wantKeys.map((key) => `${expected.get(key).length} 条`).join(' / ')}）、` +
         `组按 groupKey 升序、文案含第一组事实（${firstMembers} 条 / ${firstRedundant} 字节）`,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// P2-J｜发送后：用户眼前那条提示仍不失真
+// ---------------------------------------------------------------------------
+
+/**
+ * P2-J｜协议 §3.1（后发那条必须把先发那条的事实也带上）＋ §3.2（抗 stale 的锚 ／
+ * 错误态 forbidden ／ 必须 `info` 档）。
+ *
+ * ## 这条回答的问题（UX 提出、PM 02:0x 交回给 tester）
+ *
+ * **消息发出后，前一轮那条 inline 常驻条还挂着吗**（用户编下一条消息时会不会
+ * 看到过期提示）。
+ *
+ * ## 实测事实与**可测边界**（先划清，再断言）
+ *
+ * · **客户端侧那条仍在**（发送后客户端的可见提示记录里，那条还在）。
+ * · **内核 notice 槽的存续不可机检**（adapter 是假 ctx、没有内核单槽）
+ *   ⇒ **不用客户端记录冒充内核槽**：本条断的是「客户端投递的**最后一条**是什么」。
+ *
+ * ## 为什么断「最后一条」而不是「还在不在」
+ *
+ * 内核 notice 是**单槽**（最新一条覆盖旧条）⇒ 用户眼前只可能是**最后投递的那条**
+ * ⇒ 「那条还在不在」等价于「最后一条是不是它」。
+ * 而 §3.1 要求「**后发那条必须把先发那条的事实也带上**」＋ 两条**逐字相同**
+ * ⇒ 发送动作**不得**把用户眼前那条换成别的（尤其不得换成发送结果字样）。
+ *
+ * ## 「不失真」的四条（**全部是协议明文**）
+ *
+ * 1. **逐字相同**：发送后用户看到的最后一条＝发送前那条（§3.1）。
+ * 2. **`level` 仍是 `info`**（§3.2：常驻条必须是 `info` 档，`error` 档只弹瞬态 toast）。
+ * 3. **不含发送结果字样**（§3.2 错误态 forbidden 三词）。
+ * 4. **不把「本次核对」写成「当前状态」**（§3.2 抗 stale 的锚：条会被内核顶掉、
+ *    且**撤不掉** ⇒ 不得写成当前状态的断言）⇒ 禁「现在」「当前」。
+ *    另：**仍自包含该组事实**（条数 ＋ 该组 R）⇒ 用户眼前那条仍带完整事实。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP2_J_noticeStaysTruthfulAfterSend(adapter) {
+  return guard('P2-J-notice-truthful-after-send', async () => {
+    const sessionId = 'p2-check-send-then-strip';
+    adapter.setNow?.(1_767_000_000_000);
+    const first = await adapter.pick({ sessionId });
+    const second = await adapter.pick({ sessionId });
+    if (!first?.ref || !second?.ref) {
+      return { status: SKIPPED, detail: 'pick 未返回 ref（实现侧尚不可测）' };
+    }
+    await adapter.settle(first.ref);
+    await adapter.settle(second.ref);
+
+    // **发送前**用户看到的那条。
+    const before = await waitForNotice(adapter, 'duplicate-groups');
+    if (before === undefined) {
+      return { status: FAIL, detail: '同组成立后没有出现「重复组」提示——协议 §3.1-1' };
+    }
+    const carrier = checkNoticeCarrier(before);
+    if (!carrier.ok) {
+      return { status: FAIL, detail: carrier.why };
+    }
+
+    // —— **发送** ——
+    //
+    // 判据环境里「发送」的可观测动作＝**产出正文并进模型请求**
+    // （P1 A5 / A8、P2-6 同款口径）⇒ 这一步证明「发送」这条路径真的走过了
+    // （否则本条的前提不成立 ⇒ 报红并写明是**前提**不成立，不是缺陷）。
+    const requestsBefore = adapter.modelRequestCount();
+    const sent = await trySerialize(adapter, first.ref);
+    const requestsAfter = adapter.modelRequestCount();
+    if (!sent.ok) {
+      return {
+        status: FAIL,
+        detail: `发送时正文取不到（${sent.error}）——判据自身的发送前提不成立`,
+      };
+    }
+    if (requestsAfter !== requestsBefore + 1) {
+      return {
+        status: FAIL,
+        detail: `发送后模型请求数不是 +1（${requestsBefore} → ${requestsAfter}）——判据自身的发送前提不成立`,
+      };
+    }
+
+    // —— **发送之后**，用户眼前的那条（= 客户端投递的**最后一条**）——
+    const visible = adapter.visibleNotices?.() ?? [];
+    if (visible.length === 0) {
+      return {
+        status: FAIL,
+        detail:
+          '发送后客户端的可见提示记录空了——协议 §3.2「可复查」：' +
+          '提示的历史不得因发送而消失（否则用户眼前那条无从判断）',
+      };
+    }
+    const after = visible[visible.length - 1];
+    const afterText = String(after.text ?? '');
+
+    // ① 逐字相同（§3.1：后发那条必须把先发那条的事实也带上 ＋ 两条逐字相同）
+    if (afterText !== String(before.text ?? '')) {
+      return {
+        status: FAIL,
+        detail:
+          `发送后用户看到的最后一条**不是**发送前那条（发送前=「${before.text}」／` +
+          `发送后=「${afterText}」）——协议 §3.1：后发那条必须把先发那条的事实也带上；` +
+          '发送不得把用户眼前那条换成别的',
+      };
+    }
+
+    // ② 仍是 `info` 档（§3.2：常驻条必须是 `info` 档）
+    if (String(after.level ?? '') !== 'info') {
+      return {
+        status: FAIL,
+        detail:
+          `发送后用户看到的那条档位是 ${String(after.level ?? '')}——协议 §3.2：` +
+          '常驻条必须是 info 档（error 档只弹瞬态 toast、不渲染常驻条）',
+      };
+    }
+
+    // ③ 不含发送结果字样（§3.2 错误态）
+    for (const phrase of FORBIDDEN_SEND_RESULT_WORDS) {
+      if (afterText.includes(phrase)) {
+        return {
+          status: FAIL,
+          detail: `发送后用户看到的那条里出现了「${phrase}」——协议 §3.2：提示文案不含发送结果字样`,
+        };
+      }
+    }
+
+    // ④ 不把「本次核对」写成「当前状态」（§3.2 抗 stale 的锚：条撤不掉）
+    for (const phrase of STALE_ASSERTION_WORDS) {
+      if (afterText.includes(phrase)) {
+        return {
+          status: FAIL,
+          detail:
+            `发送后用户看到的那条里出现了「${phrase}」——协议 §3.2：条会被内核顶掉且撤不掉 ` +
+            '⇒ 文案不得把「本次核对」写成当前状态的断言',
+        };
+      }
+    }
+
+    // ⑤ 仍自包含该组事实（§3.1 后发自包含 ＋ §3.2 数字口径）
+    const afterGroups = Array.isArray(after.groups) ? after.groups : [];
+    const afterGroup = afterGroups[0] ?? {};
+    const afterMembers = Array.isArray(afterGroup.members) ? afterGroup.members.length : 0;
+    const afterRedundant = Number(afterGroup.redundantBytes ?? -1);
+    const selfContained = checkSelfContainedText(afterText, {
+      members: afterMembers,
+      redundant: afterRedundant,
+    });
+    if (!selfContained.ok) {
+      return { status: FAIL, detail: `发送后用户看到的那条：${selfContained.why}` };
+    }
+
+    return {
+      status: PASS,
+      detail:
+        `发送后用户看到的最后一条仍是那条重复核对（与发送前**逐字相同**、level=info、` +
+        `不含发送结果字样、不把「本次核对」写成当前状态、仍带该组事实 ` +
+        `${afterMembers} 条 / ${afterRedundant} 字节）；` +
+        '实测事实：客户端侧那条**仍在**；内核 notice 槽的存续**不可机检**' +
+        '（adapter 是假 ctx、无内核单槽）⇒ 本条断的是客户端投递侧可观测的部分',
     };
   });
 }

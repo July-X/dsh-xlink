@@ -39,6 +39,7 @@ import {
   checkP2_D_crossLanguageGroupKey,
   checkP2_F_fixtureExpectation,
   checkP2_H_multiGroupNotDropped,
+  checkP2_J_noticeStaysTruthfulAfterSend,
   summarize,
   verdict,
 } from './lib/p2-protocol.mjs';
@@ -79,6 +80,11 @@ const CRITERIA = [
   // **多组场景**（协议 v0.6 §3.2「多组形态」）：两个不同的组同时成立 ⇒
   // 不漏报 ＋ 组按 groupKey 升序 ＋ 文案含 `groups[0]` 的事实。
   { id: 'P2-H', run: checkP2_H_multiGroupNotDropped, options: {} },
+  // **发送后那条提示是否仍在 / 是否不失真**（协议 §3.1 ＋ §3.2；UX 提出、PM 交回给
+  // tester）：发送后**用户眼前那条**（= 客户端投递的最后一条）必须仍是那条自包含、
+  // 不误导的重复核对（逐字相同 ＋ info 档 ＋ 无发送结果字样 ＋ 不把「本次核对」写成
+  // 当前状态）。
+  { id: 'P2-J', run: checkP2_J_noticeStaysTruthfulAfterSend, options: {} },
 ];
 
 /**
