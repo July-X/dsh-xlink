@@ -26,7 +26,7 @@
  * @module xlink-official-chat/commands
  */
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, appendFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, appendFileSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -48,6 +48,25 @@ import {
   resolveCase,
   validateCatalogPage,
 } from './protocol.js';
+
+/**
+ * 把权限收成指定值（**失败就算了**）。
+ *
+ * **为什么要多这一步**：Node 的 `mode` **只在创建时生效** ⇒ 已存在的目录/文件
+ * 不会被改 ⇒ **存量**落盘物收不进同一口径（协议 P3 §S-14 的目录缓存一条）。
+ *
+ * **失败不抛**：缓存写不进去不该把业务带崩 ⇒ 收不动就留着原样。
+ *
+ * @param {string} path - 目标路径。
+ * @param {number} mode - 权限位（目录 `0o700`、文件 `0o600`）。
+ */
+function chmodQuiet(path, mode) {
+  try {
+    chmodSync(path, mode);
+  } catch {
+    /* 收不动就算了 */
+  }
+}
 
 /**
  * 目录缓存（§1.2 的独立缓存物）。
@@ -95,13 +114,23 @@ export function createCatalogCache({ rootDir, ttlMs = CONSTANTS.catalogCacheTtlM
    * @param {object} page - 目录页。
    */
   function write(provider, accountScope, query, page) {
-    mkdirSync(rootDir, { recursive: true });
+    // **目录缓存也要私有权限**（协议 P3 §S-14）：目录 `0o700`、文件 `0o600`
+    // —— 与快照目录/文件（`host/index.js`）、认领目录/文件（`host/seq-store.js`）
+    // 的既有口径一致。
+    //
+    // **Windows 上 `mode` 是 no-op**（Node 语义）⇒ 那边的实际保护来自**用户
+    // profile 的默认 ACL**，**不声称跨平台加密**（§S-14 裁定 2）。
+    mkdirSync(rootDir, { recursive: true, mode: 0o700 });
+    // **`mode` 只在「创建时」生效** ⇒ 存量目录不会被改 ⇒ 显式收一次，让新旧
+    // 落在同一口径（收不动就算了，见 `chmodQuiet`）。
+    chmodQuiet(rootDir, 0o700);
     const path = fileOf(provider, accountScope, query);
     writeFileSync(
       path,
       `${JSON.stringify({ fetchedAt: new Date(now()).toISOString(), page }, null, 2)}\n`,
-      'utf8',
+      { encoding: 'utf8', mode: 0o600 },
     );
+    chmodQuiet(path, 0o600);
   }
 
   /**
@@ -173,6 +202,25 @@ export function createFixtureSource(items) {
       };
     },
   };
+}
+
+/**
+ * **账户维度的一致性校验**（协议 P3 §S-15）。
+ *
+ * 客户端传的 `accountScope` **只做校验、不构成授权**（P1 §5）：与服务端推导值
+ * 不符 ⇒ 调用方按 `account_changed` 拒；**没传就放行**（客户端本来就不传这个
+ * 字段——见 `client/client.js`：它不构造 `accountScope`）。
+ *
+ * **为什么不静默改写**：改写会让用户以为切了账户其实没切（§S-15 裁定 4）。
+ *
+ * @param {unknown} provided - 请求里的 `accountScope`（`undefined`/`null` ＝ 没传）。
+ * @param {string} derived - **服务端推导**的账户范围。
+ * @returns {string|null} 不符时的原因（可外发）；相符或没传 ⇒ `null`。
+ */
+function accountScopeMismatch(provided, derived) {
+  if (provided === undefined || provided === null) return null;
+  if (String(provided) === String(derived)) return null;
+  return '账户范围与服务端推导值不一致';
 }
 
 /**
@@ -399,6 +447,17 @@ export function createCommands({
    * @param {{query?: string, cursor?: string, accountScope?: string}} request
    */
   async function catalog(request = {}) {
+    // **账户维度由服务端推导**（协议 P3 §S-15）：请求里的 `accountScope`
+    // **只做一致性校验**、**不构成授权** ⇒ 不符即拒（`account_changed`）、
+    // **不静默改写**（§S-15 裁定 4）。**没传就放行**。
+    const scope = String(accountScope);
+    const scopeMismatch = accountScopeMismatch(request.accountScope, scope);
+    if (scopeMismatch !== null) {
+      return {
+        ok: false,
+        ...fail('account_changed', { requestId: request.requestId, detail: scopeMismatch }),
+      };
+    }
     // **保留期主动清理**（协议 §4.1）：**惰性触发**，**只在 `catalog` 入口**，
     // 同实例至多一天一次（节流键 `<root>/sweeps/last-sweep-<日期>.json`）。
     //
@@ -409,7 +468,6 @@ export function createCommands({
     } catch (error) {
       // 吞掉：清理失败与「目录查不到」是两件事，不该混在一起报错。
     }
-    const scope = String(request.accountScope ?? accountScope);
     const query = String(request.query ?? '');
     const cached = catalogCache.read(providerId, scope, query);
     let page;
@@ -486,7 +544,17 @@ export function createCommands({
    */
   async function capture(request = {}) {
     const requestId = String(request.requestId ?? '');
-    const scope = String(request.accountScope ?? accountScope);
+    // **账户维度由服务端推导**（协议 P3 §S-15）：同 `catalog` —— 客户端传的
+    // `accountScope` **只做一致性校验**，不符即拒（`account_changed`）、
+    // **不静默改写**；**没传就放行**。
+    const scope = String(accountScope);
+    const scopeMismatch = accountScopeMismatch(request.accountScope, scope);
+    if (scopeMismatch !== null) {
+      return {
+        ok: false,
+        ...fail('account_changed', { requestId, detail: scopeMismatch }),
+      };
+    }
     const sessionId = String(request.sessionId ?? '');
     const requestedId = String(request.snapshotId ?? '');
 
