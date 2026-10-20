@@ -58,6 +58,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { shellSourcePath, shellSourceLabel } from './lib/shell-source.mjs';
+import { findProfileViolationsInFiles } from './lib/probe-profile-isolation.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const failures = [];
@@ -3432,6 +3433,72 @@ if (ungatedOsImports.length > 0) {
     );
   } else {
     note('sha2 摘要的十六进制化都走 shell::digest::hex：没有 LowerHex / io::Write 依赖');
+  }
+}
+
+// --- 30. 测试/探针不得以用户真实数据目录下的浏览器 profile 起 WebView2 --------
+
+// 事故（2026-10-20 official-chat 首站探测）：探针用
+//   --profile "C:\Users\<user>\.dsh-xlink\dsh\desktop-dev\webview-official-chat"
+// 起 WebView2，浏览器在**用户真实数据目录**里连续写了两分钟——实测
+// `EBWebView\Default\Network\Cookies` 与 `Preferences` 的 mtime 都是 12:46:53，
+// 另有 Local Storage / History / IndexedDB / Secure Preferences / Favicons。
+// Cookies 是活文件，**写坏了回滚不了**；而「测试永远不许碰用户的真实数据目录」
+// 是 AGENTS.md「开发规则」里的红线——口头的「我会注意」管不住。
+//
+// 判据扫**测试 / 探针**代码（examples / tests / e2e / plugins/*/test），抓两类：
+//   ① 出现产品 profile 目录名 `webview-official-chat`——那是官网对话窗口真实的
+//      user-data 目录，测试一旦指向它，就是在写用户的浏览器档案；
+//   ② 同一行里同时出现「真实家目录标记」与「浏览器 profile 标记」
+//      （`.dsh-xlink` + `webview-` / `EBWebView` / `--user-data-dir` /
+//      `data_directory`）——路径是拼出来的也算。
+//
+// **只读路径解析放行**：`join(HOME, '.dsh-xlink', mode, 'desktop', 'active.txt')`
+// 是读内核安装树的位置，不是浏览器 profile（memory 插件的探针早就这么干，
+// 见 `plugins/memory/test/probe.test.mjs` 里同名的那条纪律）。
+// **生产代码不在扫描范围**：壳自己的官网对话窗口本来就用那个 profile
+// （`src-tauri/src/commands.rs` 里的 `state.data_dir.join("webview-official-chat")`）。
+//
+// 逃生阀：确有必要在测试里引用真实路径（例如断言「我们没有碰它」）时，
+// 在该行写 `invariant-allow: real-data-dir` 显式放行——放行要留痕，不许匿名。
+{
+  const probeRoots = [
+    join(root, 'src-tauri', 'examples'),
+    join(root, 'src-tauri', 'tests'),
+    join(root, 'e2e'),
+  ];
+  const pluginRoot = join(root, 'plugins');
+  if (existsSync(pluginRoot)) {
+    for (const entry of readdirSync(pluginRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const testDir = join(pluginRoot, entry.name, 'test');
+      if (existsSync(testDir)) probeRoots.push(testDir);
+    }
+  }
+
+  const files = [];
+  for (const dir of probeRoots) {
+    if (!existsSync(dir)) continue;
+    for (const full of walk(dir, ['.rs', '.mjs', '.js', '.cjs', '.ts'])) {
+      files.push({ file: show(full), text: readFileSync(full, 'utf8') });
+    }
+  }
+
+  const offenders = findProfileViolationsInFiles(files);
+  if (offenders.length > 0) {
+    fail(
+      'probe-profile-isolation',
+      `${offenders.map((o) => `${o.file}:${o.line} ${o.text}`).join('、')}。` +
+        '测试/探针绝不能用用户真实数据目录下的 WebView2/Chromium profile 起浏览器：' +
+        '浏览器一启动就写 Cookies/Preferences/Local Storage/History/IndexedDB，' +
+        '而 Cookies 是活文件、写坏了回滚不了。要复用登录态就**只读拷贝**一份到临时目录' +
+        '（Windows 上 Cookies 由 DPAPI 绑机器+用户、不绑路径，拷贝可移植）；' +
+        '确有必要引用真实路径时，在该行写 `invariant-allow: real-data-dir` 显式放行。',
+    );
+  } else {
+    note(
+      `测试/探针代码没有指向用户真实数据目录下的浏览器 profile（已扫 ${files.length} 个文件）`,
+    );
   }
 }
 
