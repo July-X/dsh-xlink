@@ -519,7 +519,10 @@ test('P2-2：提示可见可复查 —— 没投递 / 档位 error / 文案缺�
   assert.equal(noNotice.status, FAIL);
   // 超时红字＝**「没等到」**，不是「没发生」（PM 02:5x 扩派单③①）。
   assert.match(noNotice.detail, /未等到/);
-  assert.match(noNotice.detail, /疑似负载过高，不是漏报/);
+  // **括号里只写候选解释**（「疑似负载过高」）——**不写「不是漏报」**：
+  // 那会与后半句「才按漏报论」字面矛盾（UX 定稿：现象 → 条件 → 结论一条直线）。
+  assert.match(noNotice.detail, /疑似负载过高(?!，)/);
+  assert.doesNotMatch(noNotice.detail, /疑似负载过高，不是漏报/);
   assert.match(noNotice.detail, /若在低负载下稳定复现，才按漏报论/);
   assert.doesNotMatch(noNotice.detail, /没有出现/);
 
@@ -670,9 +673,13 @@ test('P2-5：超预算 ⇒ 预算提示 + 正文不截断 —— 没提示 / 截
   );
   assert.equal(onlyOne.status, FAIL);
   assert.match(onlyOne.detail, /未等到预算提示/);
-  // 通用口径 ＋ **该处专属措辞**（两层叠加）：通用那句在共享函数里，专属那句在调用点。
-  assert.match(onlyOne.detail, /疑似负载过高，不是漏报/);
-  assert.match(onlyOne.detail, /不等于「只发了一条」/);
+  // P2-5 那处的**定稿口径**（UX 逐字定稿，PM 02:8x ⑤②）：
+  // 「再分辨是漏报，还是只发了一条（被 early return 吃掉）」＝**该处专属**的排查指引。
+  assert.match(onlyOne.detail, /再分辨是漏报，还是只发了一条（被 early return 吃掉）/);
+  // **不许**出现通用后半句「才按漏报论」（那一处已被覆盖）。
+  assert.doesNotMatch(onlyOne.detail, /才按漏报论/);
+  // **元话语不进红字**（「这一处另注」是给实现者看的，对排查者是噪声）。
+  assert.doesNotMatch(onlyOne.detail, /这一处另注/);
   assert.doesNotMatch(onlyOne.detail, /没有出现/);
 
   // 违规⑤：两条都发，但**后发那条**没带出组事实（用户最终看到的那条缺组信息）。
@@ -1392,15 +1399,17 @@ test('P2-J：发送后用户眼前那条提示仍不失真（逐字相同 / info
  * ## 为什么要有这条
  *
  * 7 处等待超时的红字**统一**成
- * 「等预算内未等到 X 提示（疑似负载过高，不是漏报）；若在低负载下稳定复现，才按漏报论」，
+ * 「等预算内未等到 X 提示（疑似负载过高）；若在低负载下稳定复现，才按漏报论」，
  * **不许**再写成「没有出现 X 提示」——后者会被读成**实现缺陷**（误读）。
- * ⇒ 这条用例把 **7 处超时路径逐条走一遍**，逐条验：
- * ① 红字里有「**未等到**」＋「疑似负载过高」＋「若在低负载下稳定复现，才按漏报论」；
- * ② 红字里**没有**「没有出现」。
+ * ⇒ 这条用例把 **7 处超时路径逐条走一遍**（＋P2-5 那处的两种形状），逐条验：
+ * ① 红字里有「**未等到**」；② 括号里**只有**候选解释「疑似负载过高」
+ *   （**不写「不是漏报」**——那与后半句字面矛盾）；
+ * ③ 有事件证据时**不出**通用后半句（多层互斥），P2-5 那处**始终**带自己的排查指引；
+ * ④ 红字里**没有**「没有出现」，也**没有**「这一处另注」（元话语不进红字）。
  *
  * **没有这条用例 ⇒ 口径没有回归保护**（哪天有人把红字改回「没有出现」，没人会发现）。
  */
-test('超时口径（扩派单③①）：7 处等待超时 ⇒ 红字统一「未等到…疑似负载过高，不是漏报」，不许「没有出现」', async () => {
+test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红字统一「未等到…疑似负载过高」一条直线，不许「没有出现」', async () => {
   const bytes = Buffer.byteLength(`【判据正文】ds~aaaaaaaaaaaa~0001\n第二行固定正文。`, 'utf8');
   const groupNotice = {
     kind: 'duplicate-groups',
@@ -1436,21 +1445,62 @@ test('超时口径（扩派单③①）：7 处等待超时 ⇒ 红字统一「�
   const threeRefs = ['ds~aaaaaaaaaaaa~0001', 'ds~aaaaaaaaaaaa~0002', 'ds~aaaaaaaaaaaa~0003'];
   const groupNotice3 = { ...groupNotice, trigger: threeRefs[2] };
 
-  /** 逐条断言「超时红字口径」。 */
-  const expectTimeoutWording = (result, where, verdict) => {
+  /**
+   * 逐条断言「超时红字口径」——**三种形状**（PM 2026-10-21 02:8x ⑤）。
+   *
+   * · **无事件证据**（这一轮压根没出提示）⇒ 现象 ＋ **候选解释**（「疑似负载过高」）
+   *   ＋ 条件 ＋ 结论（通用后半句）⇒ **一条直线**。
+   * · **有事件证据**（这一轮出过别的提示）⇒ 现象 ＋ **证据结论**（指向实现漏报）
+   *   ⇒ **不出**通用后半句（**多层互斥**：否则两套结论叠读打架）。
+   * · **P2-5 那处**：无论有没有证据，都带**该处专属**的排查指引
+   *   「再分辨是漏报，还是只发了一条（被 early return 吃掉）」⇒ **不含**「才按漏报论」。
+   */
+  const expectTimeoutWording = (result, where, { evidence = null, tail = null, forbid = null } = {}) => {
     assert.equal(result.status, FAIL, `${where} 该红：${result.detail}`);
     assert.match(result.detail, /等预算（[\d.]+s）内未等到/, `${where} 没写「未等到」：${result.detail}`);
-    assert.match(result.detail, /疑似负载过高/, `${where} 没写「疑似负载过高」：${result.detail}`);
-    assert.match(result.detail, verdict, `${where} 分辨语不对：${result.detail}`);
-    assert.match(
-      result.detail,
-      /若在低负载下稳定复现，才按漏报论/,
-      `${where} 缺「低负载下才按漏报论」：${result.detail}`,
-    );
+    if (evidence === null) {
+      assert.match(result.detail, /疑似负载过高(?!，)/, `${where} 没写「疑似负载过高」：${result.detail}`);
+      assert.doesNotMatch(
+        result.detail,
+        /疑似负载过高，不是漏报/,
+        `${where} 括号里多了「不是漏报」（与后半句字面矛盾）：${result.detail}`,
+      );
+    } else {
+      assert.match(
+        result.detail,
+        new RegExp(`该轮确实出过提示：${evidence}`),
+        `${where} 缺事件证据：${result.detail}`,
+      );
+      assert.match(result.detail, /指向实现漏报，不是负载/, `${where} 证据结论不对：${result.detail}`);
+      assert.doesNotMatch(
+        result.detail,
+        /疑似负载过高/,
+        `${where} 有证据却还写「疑似负载过高」（被证据排除）：${result.detail}`,
+      );
+    }
+    if (tail !== null) {
+      assert.match(result.detail, tail, `${where} 缺该处排查指引：${result.detail}`);
+    } else if (evidence === null) {
+      assert.match(
+        result.detail,
+        /若在低负载下稳定复现，才按漏报论/,
+        `${where} 缺「低负载下才按漏报论」：${result.detail}`,
+      );
+    } else {
+      assert.doesNotMatch(
+        result.detail,
+        /才按漏报论/,
+        `${where} 有证据却还出通用后半句（叠读打架）：${result.detail}`,
+      );
+    }
+    if (forbid !== null) {
+      assert.doesNotMatch(result.detail, forbid, `${where} 出现了不该有的措辞：${result.detail}`);
+    }
     assert.doesNotMatch(result.detail, /没有出现/, `${where} 仍写成「没有出现」（误读源）：${result.detail}`);
+    // **元话语不进红字**（「这一处另注」是给实现者看的说明，对排查者是噪声）。
+    assert.doesNotMatch(result.detail, /这一处另注/, `${where} 元话语进了红字：${result.detail}`);
   };
-  const VERDICT = /疑似负载过高，不是漏报/;
-  const VERDICT_ONLY_ONE = /不等于「只发了一条」/;
+  const P2_5_GUIDE = /再分辨是漏报，还是只发了一条（被 early return 吃掉）/;
 
   // ① P2-2：等「重复组」提示（第一处）。
   expectTimeoutWording(
@@ -1458,7 +1508,6 @@ test('超时口径（扩派单③①）：7 处等待超时 ⇒ 红字统一「�
       makeSyntheticAdapter({ refs: threeRefs, notices: [], waitBudgetMs: 50 }),
     ),
     'P2-2 第一处',
-    VERDICT,
   );
   // ② P2-2：再动一次引用那一轮（等「重复组」提示）。
   expectTimeoutWording(
@@ -1466,7 +1515,6 @@ test('超时口径（扩派单③①）：7 处等待超时 ⇒ 红字统一「�
       makeSyntheticAdapter({ refs: threeRefs, noticeScript: [null, groupNotice, null], waitBudgetMs: 50 }),
     ),
     'P2-2 再触发',
-    VERDICT,
   );
   // ③ P2-5：纯预算场景（等预算提示）。
   expectTimeoutWording(
@@ -1479,9 +1527,8 @@ test('超时口径（扩派单③①）：7 处等待超时 ⇒ 红字统一「�
       }),
     ),
     'P2-5 纯预算',
-    VERDICT,
   );
-  // ④ P2-5：同组场景（等「重复组」提示）。
+  // ④ P2-5：同组场景（等「重复组」提示）——**这一轮出的是预算提示** ⇒ 有事件证据。
   expectTimeoutWording(
     await checkP2_5_budgetNoticeNoTruncation(
       makeSyntheticAdapter({
@@ -1492,9 +1539,9 @@ test('超时口径（扩派单③①）：7 处等待超时 ⇒ 红字统一「�
       }),
     ),
     'P2-5 同组场景·组提示',
-    VERDICT,
+    { evidence: 'budget-exceeded' },
   );
-  // ⑤ P2-5：同组场景（等预算提示）——**通用口径 ＋ 该处专属措辞**（两层）。
+  // ⑤ P2-5：同组场景（等预算提示）——**有事件证据** ＋ 该处专属排查指引。
   expectTimeoutWording(
     await checkP2_5_budgetNoticeNoTruncation(
       makeSyntheticAdapter({
@@ -1505,13 +1552,26 @@ test('超时口径（扩派单③①）：7 处等待超时 ⇒ 红字统一「�
       }),
     ),
     'P2-5 同组场景·预算提示',
-    VERDICT_ONLY_ONE,
+    { evidence: 'duplicate-groups', tail: P2_5_GUIDE, forbid: /才按漏报论/ },
+  );
+  // ⑤' P2-5：同组场景（等预算提示）——**无事件证据**（组提示没带 trigger ⇒ 无法归属）
+  //      ⇒ 走「疑似负载过高 ＋ 该处专属排查指引」这一形状。
+  expectTimeoutWording(
+    await checkP2_5_budgetNoticeNoTruncation(
+      makeSyntheticAdapter({
+        refs: threeRefs,
+        bodyBytes: BIG_BODY_BYTES,
+        noticeScript: [null, budgetNotice, [{ ...groupNotice3, trigger: null }]],
+        waitBudgetMs: 50,
+      }),
+    ),
+    'P2-5 同组场景·预算提示（无证据）',
+    { tail: P2_5_GUIDE, forbid: /才按漏报论/ },
   );
   // ⑥ P2-6：等可见错误提示。
   expectTimeoutWording(
     await checkP2_6_failureDoesNotBlockSend(makeSyntheticAdapter({ failNotice: null, waitBudgetMs: 50 })),
     'P2-6 失败提示',
-    VERDICT,
   );
   // ⑦ P2-J：等「重复组」提示。
   expectTimeoutWording(
@@ -1519,7 +1579,6 @@ test('超时口径（扩派单③①）：7 处等待超时 ⇒ 红字统一「�
       makeSyntheticAdapter({ refs: threeRefs, noticeScript: [null, null, null], waitBudgetMs: 50 }),
     ),
     'P2-J',
-    VERDICT,
   );
 });
 
@@ -1533,10 +1592,12 @@ test('超时口径（扩派单③①）：7 处等待超时 ⇒ 红字统一「�
  *
  * **不必靠长等待**：直接调共享函数 ⇒ 0ms。
  */
-test('超时口径（共享函数）：noticeTimeoutWhy() ⇒ 「未等到…」＋「疑似负载过高，不是漏报」＋「低负载下才按漏报论」，不许「没有出现」', () => {
+test('超时口径（共享函数）：noticeTimeoutWhy() ⇒ 「未等到…」＋「疑似负载过高」＋「低负载下才按漏报论」，不许「没有出现」', () => {
   const text = noticeTimeoutWhy({ waitBudgetMs: () => 30_000 }, '「重复组」提示');
   assert.match(text, /等预算（30s）内未等到「重复组」提示/);
-  assert.match(text, /疑似负载过高，不是漏报/);
+  // 括号里**只有**候选解释（UX 定稿：现象 → 条件 → 结论，一条直线）。
+  assert.match(text, /疑似负载过高(?!，)/);
+  assert.doesNotMatch(text, /疑似负载过高，不是漏报/);
   assert.match(text, /若在低负载下稳定复现，才按漏报论/);
   // **不许**写回「没有出现 X 提示」——那会被读成**实现缺陷**（误读源）。
   assert.doesNotMatch(text, /没有出现/);
@@ -1559,14 +1620,14 @@ test('超时口径（共享函数）：noticeTimeoutWhy() ⇒ 「未等到…」
  *
  * ## 这条用例断三件事
  *
- * ① **事件证据**：这一轮出过**别的 kind** 提示 ⇒ 超时红字要带
- *    「事件证据：该轮确实出过提示（…）」⇒ 指向**实现漏报**，不是负载
- *    （没有证据时红字**不写**这一层 ⇒ 纯负载口径）。
+ * ① **事件证据**：这一轮出过**别的 kind** 提示 ⇒ 超时红字**结论直接落在实现漏报上**
+ *    （「该轮确实出过提示：… ⇒ 指向实现漏报，不是负载」）⇒ 且**不出**通用后半句
+ *    （多层互斥：没有证据时才用「疑似负载过高 ＋ 低负载下才按漏报论」那套）。
  * ② **轮次归属真的在起作用**：**别的轮次**的同 kind 提示**不算**这一轮的。
  * ③ **不制造假红**：**没带 `trigger`** 的提示（实现侧 `trigger: triggerRef ?? null`）
  *    **照样认** ⇒ 协议稿里没有 `trigger` 这个字段 ⇒ 它只用来「归属」，不用来「断值」。
  */
-test('事件式等待（信号① `trigger`）：① 这一轮出过别的提示 ⇒ 红字带「事件证据」；② 别的轮次的同 kind 提示不算这一轮；③ 没带 trigger 的照样算（不假红）', async () => {
+test('事件式等待（信号① `trigger`）：① 这一轮出过别的提示 ⇒ 红字指向实现漏报（不是负载）；② 别的轮次的同 kind 提示不算这一轮；③ 没带 trigger 的照样算（不假红）', async () => {
   const bytes = Buffer.byteLength(`【判据正文】ds~aaaaaaaaaaaa~0001\n第二行固定正文。`, 'utf8');
   const refs = ['ds~aaaaaaaaaaaa~0001', 'ds~aaaaaaaaaaaa~0002', 'ds~aaaaaaaaaaaa~0003'];
   const groupNotice = {
@@ -1610,9 +1671,12 @@ test('事件式等待（信号① `trigger`）：① 这一轮出过别的提示
   );
   assert.equal(otherKind.status, FAIL);
   assert.match(otherKind.detail, /未等到/);
-  assert.match(otherKind.detail, /事件证据/);
-  assert.match(otherKind.detail, /该轮确实出过提示（budget-exceeded）/);
-  assert.match(otherKind.detail, /指向实现漏报/);
+  // **证据层单独成立**（PM 02:8x ⑤ 的多层互斥）⇒ 现象 ＋ 结论一条直线。
+  assert.match(otherKind.detail, /该轮确实出过提示：budget-exceeded/);
+  assert.match(otherKind.detail, /指向实现漏报，不是负载/);
+  // 有证据 ⇒ 「疑似负载过高」被证据排除、通用后半句**不出**（否则叠读打架）。
+  assert.doesNotMatch(otherKind.detail, /疑似负载过高/);
+  assert.doesNotMatch(otherKind.detail, /才按漏报论/);
   assert.doesNotMatch(otherKind.detail, /没有出现/);
 
   // ② **别的轮次**的同 kind 提示（trigger 是上一轮）⇒ **不算**这一轮 ⇒ 不认。
@@ -1625,8 +1689,10 @@ test('事件式等待（信号① `trigger`）：① 这一轮出过别的提示
   );
   assert.equal(otherRound.status, FAIL);
   assert.match(otherRound.detail, /未等到「重复组」提示/);
-  // 别的轮次的提示**不算证据**（证据只认「这一轮」的）。
-  assert.doesNotMatch(otherRound.detail, /事件证据/);
+  // 别的轮次的提示**不算证据**（证据只认「这一轮」的）⇒ 回到「候选解释 ＋ 条件 ＋ 结论」。
+  assert.doesNotMatch(otherRound.detail, /该轮确实出过提示/);
+  assert.match(otherRound.detail, /疑似负载过高(?!，)/);
+  assert.match(otherRound.detail, /若在低负载下稳定复现，才按漏报论/);
 
   // ③ **没带 trigger** 的 ⇒ **照样认**（不制造假红）⇒ 合规实现仍然绿。
   const noTrigger = await checkP2_2_duplicateNoticeVisible(

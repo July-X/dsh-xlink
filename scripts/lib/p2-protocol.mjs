@@ -260,26 +260,40 @@ function noticeWaitBudget(adapter, override = null) {
 }
 
 /**
- * **等待类失败的超时口径**（PM 2026-10-21 02:5x **扩派单③①**：7 处**统一**）。
+ * **等待类失败的超时口径**（PM 2026-10-21 02:5x **扩派单③①**；02:8x ⑤ **UX 定稿**收口）。
  *
- * **「没等到」≠「没发生」**：等待有兜底预算，机器被压满时会在预算内等不到 ⇒
- * 红字若写成「**没有出现** X 提示」，会被读成**实现缺陷** ⇒ 统一改成
- * 「**等预算内未等到 X 提示（疑似负载过高，不是漏报）；若在低负载下稳定复现，
- * 才按漏报论**」（与 P2-H 的超时红字同一句式）。
+ * ## 句式：现象 → 条件 → 结论，**一条直线**（UX 定稿）
+ *
+ * > 等预算内未等到 X 提示（**疑似负载过高**）；**若在低负载下稳定复现，才按漏报论**
+ *
+ * - 括号里是**现象的候选解释**（「疑似负载过高」）⇒ **不写「不是漏报」**：
+ *   那样会与后半句「才按漏报论」**字面矛盾**（前半句断言不是、后半句说是）⇒
+ *   读者不知道该信哪一句。
+ * - 分号后是**条件 ＋ 结论**（低负载下能稳定复现 ⇒ 才按漏报论）⇒ 排查指引不丢。
  *
  * **不许**再把超时写成「没有出现 X 提示」——那是**误读**的来源，不是事实：
  * 超时只说明「预算内没等到」，**没说明**「实现没发」。
  *
  * @param {object} adapter - 适配器（决定本次的兜底预算）。
  * @param {string} what - 等的是哪条提示（人话，可直接嵌进句子）。
+ * @param {object} [options]
+ * @param {string} [options.verdict] - 括号里的分辨语（默认「疑似负载过高」）。
+ * @param {string} [options.tail] - 分号后的「条件 ＋ 结论」
+ *   （默认「若在低负载下稳定复现，才按漏报论」；个别判据可**覆盖**成自己的排查指引）。
+ * @param {number|null} [options.budgetMs] - 显式预算（默认取 adapter 的）。
  * @returns {string}
  */
-export function noticeTimeoutWhy(adapter, what) {
-  const budget = noticeWaitBudget(adapter);
-  return (
-    `等预算（${budget / 1000}s）内未等到${what}（疑似负载过高，不是漏报）` +
-    '；若在低负载下稳定复现，才按漏报论'
-  );
+export function noticeTimeoutWhy(
+  adapter,
+  what,
+  {
+    verdict = '疑似负载过高',
+    tail = '若在低负载下稳定复现，才按漏报论',
+    budgetMs = null,
+  } = {},
+) {
+  const budget = noticeWaitBudget(adapter, budgetMs);
+  return `等预算（${budget / 1000}s）内未等到${what}（${verdict}）；${tail}`;
 }
 
 /**
@@ -338,33 +352,53 @@ function noticeRoundEvidence(adapter, { from = 0, lastRef = '' } = {}) {
 }
 
 /**
- * **等待类失败的超时红字**（共享口径 ＋ 事件证据 ＋ 该处专属追加）。
+ * **等待类失败的超时红字**（共享口径 **或** 事件证据，**互斥**）。
  *
- * 三层叠加（**各层各司其职**）：
+ * ## 两层**互斥**，不并排（PM 2026-10-21 02:8x ⑤ 的口径）
  *
- * 1. **共享口径**（`noticeTimeoutWhy()`）：7 处**逐字统一**的那句
- *    （「等预算内未等到 X 提示（疑似负载过高，不是漏报）；若在低负载下稳定复现，
- *    才按漏报论」）⇒ 单一来源。
- * 2. **事件证据**（有才写）：这一轮**确实出过别的提示** ⇒ 说明**这一轮跑了**
- *    ⇒ 「整轮没跑」那类负载解释不成立 ⇒ 指向**实现漏报**。
- *    （没有证据时**不写**这一层 ⇒ 红字回到第 1 层的纯负载口径。）
- * 3. **该处专属追加**（可选）：如 P2-5 的「不等于「只发了一条」」⇒ 留在调用点。
+ * 1. **有事件证据**（这一轮**确实出过别的提示**）⇒ 说明**这一轮跑了** ⇒
+ *    「疑似负载过高」这个解释**被证据排除** ⇒ 结论直接落在**实现漏报**上
+ *    ⇒ 红字＝**现象 ＋ 结论**一条直线：
+ *    「等预算内未等到 X 提示（该轮确实出过提示：kind ⇒ 指向实现漏报，不是负载）」
+ *    ⇒ **不出**通用后半句（「才按漏报论」）——它与更强的结论**叠读打架**。
+ * 2. **没有事件证据**（这一轮压根没出提示）⇒ 只能停在**候选解释**上 ⇒
+ *    走共享口径 `noticeTimeoutWhy()`：「（疑似负载过高）；若在低负载下稳定复现，才按漏报论」。
  *
  * @param {object} adapter
  * @param {string} what - 等的是哪条提示。
  * @param {object} [options]
  * @param {number} [options.from]
  * @param {string} [options.lastRef]
- * @param {string} [options.extra] - 该处专属追加（可选）。
+ * @param {string} [options.verdict] - 无证据时的分辨语（默认「疑似负载过高」）。
+ * @param {string} [options.tail] - 「条件 ＋ 结论」（可按判据**覆盖**）。
+ * @param {boolean} [options.tailAlways] - **该处专属**的排查指引 ⇒ **始终写**
+ *   （即使有事件证据也写）——它说的是「**这一处**要分辨什么」，不是通用兜底结论。
+ * @param {number|null} [options.budgetMs]
  * @returns {string}
  */
-function noticeTimeoutDetail(adapter, what, { from = 0, lastRef = '', extra = '' } = {}) {
+function noticeTimeoutDetail(
+  adapter,
+  what,
+  {
+    from = 0,
+    lastRef = '',
+    verdict = '疑似负载过高',
+    tail = '若在低负载下稳定复现，才按漏报论',
+    tailAlways = false,
+    budgetMs = null,
+  } = {},
+) {
   const evidence = noticeRoundEvidence(adapter, { from, lastRef });
-  const clause =
-    evidence === ''
-      ? ''
-      : `【事件证据：该轮确实出过提示（${evidence}）⇒ 这一轮**跑了**，不是「整轮没跑」那类负载问题 ⇒ 指向实现漏报】`;
-  return `${noticeTimeoutWhy(adapter, what)}${clause}${extra}`;
+  if (evidence !== '') {
+    // **证据层单独成立** ⇒ 现象 ＋ 结论一条直线（**不**出通用后半句）。
+    const budget = noticeWaitBudget(adapter, budgetMs);
+    const guide = tailAlways ? `；${tail}` : '';
+    return (
+      `等预算（${budget / 1000}s）内未等到${what}` +
+      `（该轮确实出过提示：${evidence} ⇒ 指向实现漏报，不是负载）${guide}`
+    );
+  }
+  return noticeTimeoutWhy(adapter, what, { verdict, tail, budgetMs });
 }
 
 /**
@@ -1393,7 +1427,13 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
           noticeTimeoutDetail(adapter, '预算提示', {
             from: mark2,
             lastRef: third.ref,
-            extra: '（**这一处另注**：不等于「只发了一条」——若低负载下稳定复现，才按 early return 论）',
+            // **UX 逐字定稿**（PM 2026-10-21 02:8x ⑤②）：这一处的排查指引
+            // **覆盖**通用后半句 ⇒ 「再分辨是漏报，还是只发了一条（被 early return 吃掉）」。
+            // （**元话语不进红字**：原句里那句「这一处另注」是给实现者看的说明，
+            //   对排查者是噪声 ⇒ 整段删掉，改为上面这条**注释**。）
+            tail: '若在低负载下稳定复现，再分辨是漏报，还是只发了一条（被 early return 吃掉）',
+            // 这一句是**该处专属**的排查指引（「这一处要分辨什么」）⇒ 始终写。
+            tailAlways: true,
           }),
       };
     }
@@ -1909,13 +1949,24 @@ export async function checkP2_H_multiGroupNotDropped(adapter) {
     });
     if (waited.notice === undefined) {
       // **超预算 ≠ 漏报**：只报「没等到」，**不**断言「只报了 N 个组」。
+      //
+      // **为什么不能提前判成漏报**（PM 02:0x 登记的缺口）：这一条等待原来是**墙钟**
+      // （「等稳定 400ms」）⇒ 机器被压满时两轮间隔可能超过 400ms ⇒ **提前认定跑完**
+      // ⇒ 拿到中间那条（只有 1 个组）⇒ 红字把**负载问题**说成**实现漏报**。
+      // ⇒ 现在是**事件式**等待（`trigger` ＝ 最后一次 pick 的 ref ＋ 组数达期望值），
+      // 30s 只作**兜底** ⇒ 兜底耗尽时**只**说「没等到」＋「疑似负载过高」。
+      //
+      // **来源引用不进红字**（PM 02:8x ⑤③）：上面这段来历写在这里（给维护者看），
+      // 红字只留**现象 → 条件 → 结论**一条直线。
       return {
         status: FAIL,
-        detail:
-          `等预算（30s）内未等到「最后一轮」的重复组提示（期间见到最多 ${waited.maxGroups} 个组、` +
-          `${waited.count} 条提示）——**疑似负载过高，不是漏报**` +
-          '（PM 02:0x 登记的缺口：墙钟等待在重负载下会假红）；' +
-          '若在低负载下稳定复现，才按漏报论',
+        detail: noticeTimeoutWhy(adapter, '「最后一轮」的重复组提示', {
+          budgetMs: 30_000,
+          // **UX 定稿句式**（PM 02:8x ⑤③）：条件 ＋ 结论之后接「期间见到…」的观测。
+          tail:
+            `若在低负载下稳定复现，才按漏报论——期间见到最多 ${waited.maxGroups} 个组、` +
+            `${waited.count} 条提示`,
+        }),
       };
     }
     const notice = waited.notice;
