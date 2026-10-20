@@ -720,15 +720,26 @@ test('P2：选中第二条同组引用 ⇒ 出现 info 档的重复提示（承�
   const second = pick(source);
   assert.notEqual(first.ref, second.ref, '两次 pick 必须拿到两个不同的快照 id');
   await new Promise((r) => setTimeout(r, 140));
-  const dup = notices.filter((n) => /同组引用/.test(String(n?.text ?? '')));
+  const dup = notices.filter((n) => /同组 \d+ 条内容完全相同/.test(String(n?.text ?? '')));
   assert.equal(dup.length, 1, `同组提示应恰好一条：${JSON.stringify(notices)}`);
   // **协议 v0.2 §3.2**：必须是 `info` 档——内核只渲染 `info` 档的**输入区常驻条**，
   // `error` 档只弹瞬态 toast（内核 `:18808`）⇒ 用 `error` 档当场违反「可复查」。
   assert.equal(dup[0].level, 'info', '重复提示必须是 info 档（常驻条，不是瞬态 toast）');
   // **文案必须自包含**（内核 notice 是**单槽**，最新一条覆盖旧条）⇒ 条数与字节数
   // 写在同一条里，不能指望另一条还在。
-  assert.match(dup[0].text, /2 条同组引用/, '提示要自包含同组条数');
-  assert.match(dup[0].text, /字节/, '提示要自包含字节数');
+  assert.match(dup[0].text, /同组 2 条内容完全相同/, '提示要自包含同组条数');
+  assert.match(dup[0].text, /重复可省 \d+ 字节/, '提示要自包含重复字节数');
+  // **成品文案（UX 定稿 2026-10-21 · 协议 v0.6 §3.2 收录原文）**⇒ 实现侧照抄
+  // 原文：「本次核对：」抗 stale（条会被内核顶掉）、用「引用正文」不用「消息正文」。
+  assert.ok(
+    dup[0].text.startsWith('本次核对：'),
+    `提示要用「本次核对：」开头：${dup[0].text}`,
+  );
+  assert.match(
+    dup[0].text,
+    /引用正文 \d+ 字节，未超出单次消息预算 262144 字节。$/,
+    `未超限时的预算口径照抄定稿原文：${dup[0].text}`,
+  );
 });
 
 test('P2：核对重复失败 ⇒ info 档可见提示 + 不阻塞发送（协议 §2.3）', async () => {
@@ -751,6 +762,8 @@ test('P2：核对重复失败 ⇒ info 档可见提示 + 不阻塞发送（协�
     /已发送|发送失败|发送被阻止|发送被拦/,
     `失败文案不得断言发送结果：${failed[0].text}`,
   );
+  // **成品文案（UX 定稿 · 协议 v0.6 §3.2 收录原文）**⇒ 实现侧照抄原文。
+  assert.equal(failed[0].text, '无法核对是否重复。', `失败文案照抄定稿原文：${failed[0].text}`);
   // **失败不阻塞发送**（协议 §2.3「不额外拦截发送」）⇒ 正文仍取得到。
   const { ref } = pick(source);
   await new Promise((r) => setTimeout(r, 60));
@@ -761,7 +774,7 @@ test('P2：核对重复失败 ⇒ info 档可见提示 + 不阻塞发送（协�
 test('P2：同组 + 超预算 ⇒ 两个触发点的提示都出（协议 §3.1 各自独立）', async () => {
   // **早退会把预算提示吃掉**：协议 §3.1 的两个触发点（「重复发生时」「超预算
   // 时」）**各自独立**，两者同时成立时**两条提示都要出**。
-  const { api, ctx, registered, notices } = loadClient({
+  const { api, ctx, registered, notices, sandbox } = loadClient({
     config: { readDelayMs: 20 },
     bodyBytes: 150_000,
   });
@@ -770,25 +783,37 @@ test('P2：同组 + 超预算 ⇒ 两个触发点的提示都出（协议 §3.1 
   pick(source);
   pick(source);
   await new Promise((r) => setTimeout(r, 180));
-  // **按文案开头区分两条**（桩的通知只带 level+text、没有 kind；而两条文案
-  // **互相带着对方的数字** ⇒ 不能用「含『同组引用』」筛）。
-  const group = notices.filter((n) => /本条消息里有 \d+ 条同组引用/.test(String(n?.text ?? '')));
-  const budget = notices.filter((n) => /本条消息正文合计/.test(String(n?.text ?? '')));
-  assert.equal(group.length, 1, `同组提示应恰好一条：${JSON.stringify(notices)}`);
-  assert.equal(budget.length, 1, `预算提示应恰好一条：${JSON.stringify(notices)}`);
+  // **按 kind 区分两条**（内核 notify 只带 level+text ⇒ 靠文案分不出来：协议
+  // v0.6 §3.2 要求**两条逐字相同**）⇒ 从探针事件里取 kind。
+  const probe = sandbox.__DSH_XLINK_OFFICIAL_CHAT_PROBE__;
+  const group = probe.events.filter((e) => e.kind === 'duplicate-groups').pop();
+  const budget = probe.events.filter((e) => e.kind === 'budget-exceeded').pop();
+  assert.ok(group, '重复组提示必须发（协议 §3.1-1）');
+  assert.ok(budget, '预算提示必须发（协议 §3.1-2：早退会把它吃掉）');
+  // **两条逐字相同**（协议 v0.6 §3.2）——后发那条自包含全部事实 ⇒ 两句是同一句。
+  assert.equal(
+    group.text,
+    budget.text,
+    `两条文案必须逐字相同：${group.text} / ${budget.text}`,
+  );
+  // **成品文案照抄 UX 定稿原文**（协议 v0.6 §3.2 收录原文）⇒ 逐字比对。
+  assert.equal(
+    group.text,
+    '本次核对：同组 2 条内容完全相同，重复可省 150000 字节；' +
+      '引用正文 300000 字节，超出单次消息预算 262144 字节（超 37856 字节）。',
+    `成品文案必须逐字等于定稿原文：${group.text}`,
+  );
   // **两条都必须是 `info` 档**（协议 v0.2 §3.2：error 档只弹瞬态 toast）。
+  const shown = notices.filter((n) => /本次核对：/.test(String(n?.text ?? '')));
+  assert.equal(shown.length, 2, `用户侧应看到两条提示：${JSON.stringify(notices)}`);
   assert.ok(
-    [...group, ...budget].every((n) => n.level === 'info'),
+    shown.every((n) => n.level === 'info'),
     `两条提示都必须是 info 档：${JSON.stringify(notices)}`,
   );
-  // **两条各自自包含**（内核 notice 是单槽、最新一条覆盖旧条 ⇒ 每条都得自带数字）。
-  assert.match(group[0].text, /2 条同组引用/, '同组提示要自包含条数');
-  assert.match(group[0].text, /字节/, '同组提示要自包含字节数');
-  assert.match(budget[0].text, /300000/, '预算提示要自包含预估字节数');
-  assert.match(budget[0].text, /37856/, '预算提示要自包含超出字节数');
-  // **两条都要带对方的数字**（§3.2：承载位是**单槽** ⇒ 覆盖后剩下哪条，用户
-  // 都得同时看到「同组几条」和「超了多少字节」）⇒ 这两条断言钉住它。
-  assert.match(group[0].text, /300000/, '同组提示也要带预估字节数');
-  assert.match(group[0].text, /37856/, '同组提示也要带超出字节数');
-  assert.match(budget[0].text, /2 条同组引用/, '预算提示也要带同组条数');
+  // **数字全在文案里**（自包含：内核 notice 是单槽 ⇒ 覆盖后剩下哪条，用户都得
+  // 同时看到「同组几条」与「超了多少字节」）⇒ 这几条断言钉住它。
+  assert.match(group.text, /同组 2 条内容完全相同/, '要自包含同组条数');
+  assert.match(group.text, /重复可省 150000 字节/, '要自包含重复字节数');
+  assert.match(group.text, /引用正文 300000 字节/, '要自包含预估字节数');
+  assert.match(group.text, /超 37856 字节/, '要自包含超出字节数');
 });

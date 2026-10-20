@@ -1018,8 +1018,8 @@ window.__ModuleLoader__.load({
      *
      * **数据与文案分离**：`notice` 是**结构化数据**（kind / 组 / 预算 / 触发 id），
      * 本函数把它**记进 `notices`**（内存里可复查）并**原样记进埋点**（探针与
-     * 判据能读到全量数据），措辞只做**中性事实陈述**——**成品文案与视觉等 UX
-     * 方案定稿后替换**（PM 22:5x：不要自己定文案）。
+     * 判据能读到全量数据），措辞是**UX 定稿的成品文案**（协议 v0.6 §3.2 收录
+     * 原文，实现侧照抄）。
      *
      * **承载机制的事实**（协议 v0.5 §3.2）：内核 notice 是**单槽**，而且内核
      * **随时可能发一条自己的 error notice 把我们这条顶掉** ⇒ ① 每条提示的文案
@@ -1032,12 +1032,46 @@ window.__ModuleLoader__.load({
      * @param {object} ctx - 客户端根上下文。
      * @param {object} sessions - sessions 服务。
      * @param {string} sessionId - 提示落在哪个会话的输入区。
-     * @param {object} notice - 结构化提示数据（含 `text` 占位措辞）。
+     * @param {object} notice - 结构化提示数据（含 `text` 成品文案）。
      */
     function presentNotice(ctx, sessions, sessionId, notice) {
       notices.push(notice);
       record('notice', { ...notice });
       notifyUser(ctx, sessions, sessionId, notice.level ?? 'info', notice.text ?? '', notice.kind);
+    }
+
+    /**
+     * P2 提示的**成品文案**（UX 定稿 2026-10-21 · 协议 v0.6 §3.2 收录原文）。
+     *
+     * **为什么只有一份文案**：协议 §3.1（v0.4 起）——内核 notice 是**单槽**、
+     * 最新一条覆盖旧条 ⇒「两个触发点各自独立」＝**两条都要发**，且**后发那条
+     * 必须自包含全部事实** ⇒ 两条说的是同一件事 ⇒ **逐字相同**（协议 v0.6 §3.2
+     * 「两条逐字相同」）。
+     *
+     * **数字不加千分位**（协议 v0.6 §3.2）——判据断的是**原值**在不在。
+     *
+     * **多组时逐组列**：协议 §3.2「数字来源」里的 `members.length` 与
+     * `redundantBytes` 都是**组内**的量 ⇒ 把不同组混成一句（「同组 4 条」）是
+     * **假陈述** ⇒ 一组一句。
+     *
+     * @param {object[]} groups - 协议 §2.2 的 `groups`（host 只返回成员数 ≥ 2 的组）。
+     * @param {object} budget - 协议 §2.2 的 `budget`。
+     * @returns {string} 成品文案。
+     */
+    function duplicatesNoticeText(groups, budget) {
+      const groupParts = groups.map((group) => {
+        const members = Array.isArray(group?.members) ? group.members.length : 0;
+        const redundant = Number(group?.redundantBytes ?? 0);
+        return `同组 ${members} 条内容完全相同，重复可省 ${redundant} 字节`;
+      });
+      const projected = Number(budget?.projectedBytes ?? 0);
+      const limit = Number(budget?.limitBytes ?? 0);
+      const budgetPart =
+        budget?.wouldExceed === true
+          ? `引用正文 ${projected} 字节，超出单次消息预算 ${limit} 字节` +
+            `（超 ${Number(budget?.exceedByBytes ?? 0)} 字节）`
+          : `引用正文 ${projected} 字节，未超出单次消息预算 ${limit} 字节`;
+      return `本次核对：${[...groupParts, budgetPart].join('；')}。`;
     }
 
     /**
@@ -1099,7 +1133,7 @@ window.__ModuleLoader__.load({
           kind: 'duplicates-failed',
           level: 'info',
           trigger: triggerRef ?? null,
-          text: 'P2（占位措辞）：无法核对是否重复',
+          text: '无法核对是否重复。',
         });
         return undefined;
       }
@@ -1118,7 +1152,7 @@ window.__ModuleLoader__.load({
           kind: 'duplicates-failed',
           level: 'info',
           trigger: triggerRef ?? null,
-          text: 'P2（占位措辞）：无法核对是否重复',
+          text: '无法核对是否重复。',
         });
         return undefined;
       }
@@ -1129,19 +1163,16 @@ window.__ModuleLoader__.load({
           level: 'info',
           trigger: triggerRef ?? null,
           code: result?.code ?? null,
-          text: 'P2（占位措辞）：无法核对是否重复',
+          text: '无法核对是否重复。',
         });
         return undefined;
       }
       const groups = Array.isArray(result.groups) ? result.groups : [];
       const budget = result.budget ?? {};
-      // **两条提示都要自包含**（§3.2：内核 notice 是单槽，最新一条覆盖旧条）⇒
-      // 组数与字节数在两条提示里都要能读到 ⇒ 先把这两个数算出来共用。
-      const members = groups.reduce(
-        (sum, group) => sum + (Array.isArray(group?.members) ? group.members.length : 0),
-        0,
-      );
-      const redundant = groups.reduce((sum, group) => sum + (Number(group?.redundantBytes) || 0), 0);
+      // **成品文案只有一份**（UX 定稿 2026-10-21 · 协议 v0.6 §3.2「两条逐字相同」）：
+      // §3.1 要求「后发那条自包含全部事实」⇒ 两条说的是同一件事 ⇒ 同一句文案
+      // （内核 notice 是**单槽**，用户最终看到的就是后发那条 ⇒ 它必须全）。
+      const text = duplicatesNoticeText(groups, budget);
       if (groups.length > 0) {
         presentNotice(ctx, sessions, sourceSessionId, {
           kind: 'duplicate-groups',
@@ -1149,16 +1180,7 @@ window.__ModuleLoader__.load({
           trigger: triggerRef ?? null,
           groups,
           budget,
-          // **文案必须自包含**（协议 §3.2：内核 notice 是**单槽**，最新一条覆盖
-          // 旧条 ⇒ 用户最终看到的可能只有这一条）⇒ 这条里**同时**带上预算事实
-          // （超限时），这样无论覆盖后剩下哪条，用户都知道「超了多少字节」。
-          text:
-            `P2（占位措辞）：本条消息里有 ${members} 条同组引用` +
-            `（${groups.length} 组，重复正文共 ${redundant} 字节）` +
-            (budget?.wouldExceed === true
-              ? `；正文合计 ${budget.projectedBytes} 字节，超出单次消息总预算 ` +
-                `${budget.limitBytes} 字节（超 ${budget.exceedByBytes} 字节）`
-              : ''),
+          text,
         });
         // **不 return**：协议 §3.1 的**两个触发点各自独立**——「重复发生时」与
         // 「超预算时」可以同时成立 ⇒ **两条提示都要出**（早退会把预算提示吃掉）。
@@ -1170,12 +1192,7 @@ window.__ModuleLoader__.load({
           trigger: triggerRef ?? null,
           groups,
           budget,
-          text:
-            `P2（占位措辞）：本条消息正文合计 ${budget.projectedBytes} 字节，` +
-            `超过单次消息总预算 ${budget.limitBytes} 字节（超 ${budget.exceedByBytes} 字节）` +
-            (members > 0
-              ? `；其中 ${members} 条同组引用（${groups.length} 组，重复正文共 ${redundant} 字节）`
-              : ''),
+          text,
         });
       }
       if (groups.length === 0 && budget.wouldExceed !== true) {
