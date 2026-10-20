@@ -45,6 +45,7 @@ import {
   checkP2_C_errorCodeClosedSet,
   checkP2_D_crossLanguageGroupKey,
   checkP2_F_fixtureExpectation,
+  checkP2_H_multiGroupNotDropped,
   expectedGroupKey,
   sameGroupByProtocol,
   summarize,
@@ -1052,7 +1053,110 @@ test('活体注入（P2-D）：把 JS 端的分隔符写成含空格 ⇒ 跨语�
 // 真机实现上的「判据自身没问题」检查
 // ---------------------------------------------------------------------------
 
-test('九条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
+test('P2-H：多组场景 —— 不漏报 / 顺序稳定 / 文案含第一组事实，三者都要断得住', async () => {
+  // **合成夹具**：**两个不同的组**（键差在 `sessionId` 与 `contentDigest`）。
+  const refs = [
+    'ds~aaaaaaaaaaaa~0001',
+    'ds~aaaaaaaaaaaa~0002',
+    'ds~aaaaaaaaaaaa~0003',
+    'ds~bbbbbbbbbbbb~0001',
+    'ds~bbbbbbbbbbbb~0002',
+  ];
+  const digestA = 'a'.repeat(64);
+  const digestB = 'b'.repeat(64);
+  const snapshotOverrides = {};
+  for (const ref of refs.slice(0, 3)) {
+    snapshotOverrides[ref] = { sessionId: 'synth-A', contentDigest: digestA };
+  }
+  for (const ref of refs.slice(3)) {
+    snapshotOverrides[ref] = { sessionId: 'synth-B', contentDigest: digestB };
+  }
+  // **单条正文 1024 字节** ⇒ 第一组的 R ＝ 1024 ⇒ **数字串里含 '2'** ⇒
+  // 用来验「只写字节数、没写条数」的文案**不能**被当成「文案自包含」（子串假绿口子）。
+  const bodyBytes = 1024;
+  const keyA = expectedGroupKey(makeSnap({ sessionId: 'synth-A', contentDigest: digestA }));
+  const keyB = expectedGroupKey(makeSnap({ sessionId: 'synth-B', contentDigest: digestB }));
+  const wantKeys = [keyA, keyB].sort();
+  const membersByKey = new Map([
+    [keyA, refs.slice(0, 3)],
+    [keyB, refs.slice(3)],
+  ]);
+  const groups = wantKeys.map((key) => {
+    const members = membersByKey.get(key);
+    return {
+      groupKey: key,
+      members: members.map((id) => ({
+        snapshotId: id,
+        capturedAt: '2026-10-20T00:00:00.000Z',
+        contentDigest: 'x'.repeat(64),
+      })),
+      redundantBytes: (members.length - 1) * bodyBytes,
+    };
+  });
+  const m0 = groups[0].members.length;
+  const r0 = groups[0].redundantBytes;
+  const m1 = groups[1].members.length;
+  const r1 = groups[1].redundantBytes;
+  // **协议 v0.6 的多组成品文案形态**：先说组数、再逐组编号。
+  const goodText =
+    `本次核对：2 组重复：第 1 组 ${m0} 条内容完全相同，重复可省 ${r0} 字节；` +
+    `第 2 组 ${m1} 条内容完全相同，重复可省 ${r1} 字节；引用正文 ${bodyBytes * 5} 字节。`;
+  const notice = (overrides = {}) => ({
+    kind: 'duplicate-groups',
+    level: 'info',
+    text: goodText,
+    groups,
+    budget: null,
+    trigger: refs[4],
+    delivered: true,
+    ...overrides,
+  });
+  // 第 5 次 pick 才投这条（前 4 次是「组数还不够」的那几轮）。
+  const makeAdapter = (extra = {}) =>
+    makeSyntheticAdapter({
+      refs,
+      bodyBytes,
+      snapshotOverrides,
+      noticeScript: [null, null, null, null, notice()],
+      ...extra,
+    });
+
+  // 合规：两个组都在、顺序按 groupKey 升序、文案含第一组事实。
+  const ok = await checkP2_H_multiGroupNotDropped(makeAdapter());
+  assert.equal(ok.status, PASS, `合规实现不该红：${ok.detail}`);
+
+  // 违规①：**只报第一组**（第二组被漏掉）⇒ 必须红。
+  const dropped = await checkP2_H_multiGroupNotDropped(
+    makeAdapter({ noticeScript: [null, null, null, null, notice({ groups: [groups[0]] })] }),
+  );
+  assert.equal(dropped.status, FAIL);
+  assert.match(dropped.detail, /只报了 1 个组|漏报/);
+
+  // 违规②：**组序颠倒**（不是 groupKey 升序）⇒ 必须红（协议 v0.6：排序在 host 侧）。
+  const swapped = await checkP2_H_multiGroupNotDropped(
+    makeAdapter({ noticeScript: [null, null, null, null, notice({ groups: [groups[1], groups[0]] })] }),
+  );
+  assert.equal(swapped.status, FAIL);
+  assert.match(swapped.detail, /升序|组标识/);
+
+  // 违规③：**文案里没有第一组的条数** —— 只写了字节数。
+  // ⚠️ 旧口径（`String(members).includes`）在这里会**假绿**：`'1024'` 里就有 `'2'`。
+  const noMembers = await checkP2_H_multiGroupNotDropped(
+    makeAdapter({
+      noticeScript: [
+        null,
+        null,
+        null,
+        null,
+        notice({ text: `本次核对：重复可省 ${r0} 字节。` }),
+      ],
+    }),
+  );
+  assert.equal(noMembers.status, FAIL);
+  assert.match(noMembers.detail, /条数/);
+});
+
+test('十条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
   const cases = [
     { name: 'P2-1', run: checkP2_1_sameGroupKeepsDistinctIds, options: {} },
     { name: 'P2-2', run: checkP2_2_duplicateNoticeVisible, options: {} },
@@ -1067,6 +1171,7 @@ test('九条判据在真实实现上都跑得起来（不是「未执行」、�
       options: {},
       context: crossLanguageContext(),
     },
+    { name: 'P2-H', run: checkP2_H_multiGroupNotDropped, options: {} },
   ];
   for (const spec of cases) {
     const adapter = await createAdapter({ tag: `p2-selftest-${spec.name}`, ...spec.options });

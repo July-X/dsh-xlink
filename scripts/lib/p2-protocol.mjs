@@ -245,6 +245,55 @@ async function waitForNotice(adapter, kind, { from = 0, timeoutMs = 2500 } = {})
 }
 
 /**
+ * 等「**组数稳定下来**」的那条提示（多组场景用）。
+ *
+ * ## 为什么不能按「组数 ≥ 2」等
+ *
+ * 客户端**每次新增引用**都会重跑一轮核对 ⇒ 提示**连着出好几条**
+ * （1 组、1 组、…、最后才是 2 组）⇒ 按 kind 找会拿到**中间那条**。
+ * 而按「组数 ≥ 2」等更糟：**漏报一组的实现永远等不到** ⇒ 判据只能报
+ * 「没有出现提示」，点不出「漏报」这个真正的缺陷。
+ *
+ * ⇒ 改成：**等轮次跑完**（组数不再增长、且稳定一小会儿）⇒ 取**组数最多**的那条
+ * ⇒ 漏报时拿到的就是「实现只报了 1 组」⇒ 红字直接点名「只报了 N 个组」。
+ *
+ * @param {object} adapter
+ * @param {string} kind - 提示的 kind。
+ * @param {object} [options]
+ * @param {number} [options.timeoutMs]
+ * @param {number} [options.stableMs] - 组数连续多久没变算「跑完了」。
+ * @returns {Promise<object|undefined>}
+ */
+async function waitForStableNotice(adapter, kind, { timeoutMs = 10_000, stableMs = 400 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let best;
+  let lastSize = -1;
+  let lastChangeAt = Date.now();
+  while (Date.now() < deadline) {
+    const notices = (adapter.visibleNotices?.() ?? []).filter(
+      (notice) => String(notice?.kind ?? '') === kind,
+    );
+    let size = 0;
+    for (const notice of notices) {
+      const count = Array.isArray(notice?.groups) ? notice.groups.length : 0;
+      if (count > size) size = count;
+    }
+    if (size > 0) {
+      if (size !== lastSize) {
+        lastSize = size;
+        lastChangeAt = Date.now();
+      }
+      best = notices.find(
+        (notice) => Array.isArray(notice?.groups) && notice.groups.length === size,
+      );
+      if (Date.now() - lastChangeAt >= stableMs) return best;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return best;
+}
+
+/**
  * 等「**带出预算事实**」的那条提示出现。
  *
  * **按数据找，不按 kind 找**：协议 §3.1-2 要求的是「出现预算提示」，
@@ -312,12 +361,60 @@ function checkNoticeCarrier(notice) {
  * @param {{members: number, redundant: number}} facts - 该条提示必须带的事实。
  * @returns {{ok: boolean, why: string}}
  */
-function checkSelfContainedText(text, { members, redundant }) {
-  if (!String(text ?? '').includes(String(members))) {
-    return { ok: false, why: '提示文案里没有同组条数（协议 §3.2：文案必须自包含）' };
+/**
+ * 文案里有没有**独立出现**的这个数字（不是别的数字的一部分）。
+ *
+ * ## 为什么不能用 `String(x).includes(...)`（**子串包含有假绿口子**）
+ *
+ * 协议 v0.6 的成品文案形如「同组 2 条内容完全相同，重复可省 4216 字节」——
+ * `text.includes('2')` 会被「**4216**」里的 `2` 满足 ⇒ 一条**只写了字节数**、
+ * 根本没写条数的文案，也会被判成「文案自包含」⇒ **假绿**。
+ * （PM 2026-10-21 01:3x 登记为「已知、不算缺陷」，是否收紧由 tester 决定 ⇒ **收紧**。）
+ *
+ * ## 边界怎么定
+ *
+ * 数字的前后都**不能**是数字或千分位逗号：
+ * · `'4216'` 里的 `'2'` 前面是 `'4'`（数字）⇒ 排除 ✔
+ * · `'4,216'` 里的 `'2'` 前面是 `','`（千分位）⇒ 排除 ✔
+ * · 独立出现的 `'3'`（前后是空格/中文）⇒ 命中 ✔
+ *
+ * ## 千分位形态
+ *
+ * 协议 v0.6 明写「**数字一律不加千分位**」⇒ 文案里是裸数字；这里**同时**接受
+ * 千分位形态（`'4,216'`）⇒ 万一实现将来加了千分位，判据不会假红。
+ *
+ * @param {string} text - 提示文案。
+ * @param {number} value - 要找的数字。
+ * @returns {boolean}
+ */
+function hasStandaloneNumber(text, value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return false;
+  const plain = String(Math.abs(number));
+  const grouped = plain.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  for (const form of new Set([plain, grouped])) {
+    const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`(?<![\\d,])${escaped}(?![\\d,])`).test(String(text ?? ''))) return true;
   }
-  if (!String(text ?? '').includes(String(redundant))) {
-    return { ok: false, why: '提示文案里没有字节数（协议 §3.2：文案必须自包含）' };
+  return false;
+}
+
+function checkSelfContainedText(text, { members, redundant }) {
+  if (!hasStandaloneNumber(text, members)) {
+    return {
+      ok: false,
+      why:
+        `提示文案里没有独立出现的同组条数（${members}）——协议 §3.2：文案必须自包含；` +
+        '**子串不算**（「只写了字节数、条数恰好出现在字节数里」不算数）',
+    };
+  }
+  if (!hasStandaloneNumber(text, redundant)) {
+    return {
+      ok: false,
+      why:
+        `提示文案里没有独立出现的字节数（${redundant}）——协议 §3.2：文案必须自包含；` +
+        '**子串不算**',
+    };
   }
   return { ok: true, why: '' };
 }
@@ -1385,6 +1482,144 @@ export async function checkP2_D_crossLanguageGroupKey({ fixtures = [], rustCases
     return {
       status: PASS,
       detail: `${checked} 条夹具的三方 groupKey 一致（协议独立转写 ＝ JS ＝ Rust）`,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// P2-H｜多组场景：groups ≥ 2 ⇒ 不漏报 ＋ 顺序稳定 ＋ 文案含第一组的事实
+// ---------------------------------------------------------------------------
+
+/**
+ * P2-H｜协议 **v0.6 §3.2「多组形态」**（§5 表外的一条）。
+ *
+ * `groups` ≥ 2（两个不同的组同时成立）⇒ 三条断言：
+ *
+ * 1. **不漏报**：提示的 `groups` 数组**逐组齐全** —— 组数、各组成员数、成员 id
+ *    集合，都要与判据**自己**按 §1.1 算出来的一致 ⇒ 少报一组、少一个成员都要红。
+ * 2. **顺序稳定**：组按 **`groupKey` 升序**（协议 v0.6：排序落点在 **host 侧**
+ *    ⇒ 任何消费方都拿到稳定顺序；顺序抖动会让「后发那条」的内容不稳定）。
+ *    **口径**：小写十六进制 ⇒ 按**字节序**比（与 host 的比较、及 Rust 侧
+ *    `sort_by` 一致）。
+ * 3. **文案含 `groups[0]` 的条数与该组 R**（协议 v0.6「数字来源」：判据取
+ *    `groups[0]`）—— 多组文案**逐组列** ⇒ 第一组那两个数必然在文案里。
+ *
+ * ## 造景（**实机可造**，不是只在合成适配器里成立）
+ *
+ * · **两个不同 `sessionId`** ⇒ 正文不同（adapter 的正文按 sessionId 生成）
+ *   ⇒ §1.1 键里的 `sessionId` 与 `contentDigest` 都不同 ⇒ **两个不同的组**；
+ * · **冻结时钟** ⇒ 同组内多次捕获的 `capturedAt` 相同（否则同组不成立）；
+ * · 组 A 取 3 次、组 B 取 2 次 ⇒ `groups.length === 2`。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP2_H_multiGroupNotDropped(adapter) {
+  return guard('P2-H-multi-group-not-dropped', async () => {
+    adapter.setNow?.(1_767_000_000_000);
+    const sessions = [
+      { sessionId: 'p2-check-multi-a', count: 3 },
+      { sessionId: 'p2-check-multi-b', count: 2 },
+    ];
+    const refs = [];
+    for (const one of sessions) {
+      for (let i = 0; i < one.count; i += 1) {
+        const picked = await adapter.pick({ sessionId: one.sessionId });
+        if (!picked?.ref) {
+          return { status: SKIPPED, detail: 'pick 未返回 ref（实现侧尚不可测）' };
+        }
+        await adapter.settle(picked.ref);
+        refs.push(picked.ref);
+      }
+    }
+
+    // **期望由判据自己算**（§1.1 五字段 ＋ §1.2 的 groupKey）——
+    // **不拿实现的输出当标准答案**（这与 P2-1 / P2-3 / P2-4 同一把尺）。
+    const expected = new Map();
+    for (const ref of refs) {
+      const snapshot = adapter.snapshotFile(ref)?.snapshot;
+      if (snapshot === undefined) {
+        return { status: SKIPPED, detail: `拿不到 ${ref} 的快照（落盘不可观测）` };
+      }
+      const key = expectedGroupKey(snapshot);
+      if (!expected.has(key)) expected.set(key, []);
+      expected.get(key).push(ref);
+    }
+    // **升序 = 字节序**（小写十六进制 ⇒ 码位序与字节序一致）。
+    const wantKeys = [...expected.keys()].sort();
+    if (wantKeys.length < 2) {
+      return {
+        status: FAIL,
+        detail: `判据自身：造出来只有 ${wantKeys.length} 个组（键没分开）——多组场景的前提不成立`,
+      };
+    }
+
+    // 提示：**每次新增引用都会重跑一轮核对** ⇒ 连着出好几条 ⇒
+    // **等轮次跑完**（组数稳定下来）再取那条 ⇒ 漏报的实现也能被点名。
+    const notice = await waitForStableNotice(adapter, 'duplicate-groups');
+    if (notice === undefined) {
+      return {
+        status: FAIL,
+        detail: `多组场景（${wantKeys.length} 个组同时成立）没有出现「重复组」提示——协议 v0.6 §3.2`,
+      };
+    }
+    const carrier = checkNoticeCarrier(notice);
+    if (!carrier.ok) {
+      return { status: FAIL, detail: carrier.why };
+    }
+
+    const groups = Array.isArray(notice.groups) ? notice.groups : [];
+    if (groups.length !== wantKeys.length) {
+      return {
+        status: FAIL,
+        detail:
+          `提示里只报了 ${groups.length} 个组（应有 ${wantKeys.length} 个）——` +
+          '多组时不得漏报（协议 v0.6 §3.2）',
+      };
+    }
+    for (let i = 0; i < wantKeys.length; i += 1) {
+      const wantKey = wantKeys[i];
+      const wantMembers = [...expected.get(wantKey)].sort();
+      const group = groups[i] ?? {};
+      if (String(group.groupKey ?? '') !== wantKey) {
+        return {
+          status: FAIL,
+          detail:
+            `第 ${i + 1} 组的组标识是 ${String(group.groupKey ?? '')}，按协议 §1.2 应为 ${wantKey}` +
+            '（协议 v0.6：组按 `groupKey` 升序 ⇒ 顺序也要对）',
+        };
+      }
+      const gotMembers = Array.isArray(group.members)
+        ? group.members.map((member) => String(member?.snapshotId ?? '')).sort()
+        : [];
+      if (gotMembers.join('|') !== wantMembers.join('|')) {
+        return {
+          status: FAIL,
+          detail:
+            `第 ${i + 1} 组成员是 [${gotMembers.join('、')}]，应有 [${wantMembers.join('、')}]——` +
+            '多组时不得漏成员（协议 v0.6 §3.2）',
+        };
+      }
+    }
+
+    // 文案：含 **`groups[0]`** 的条数与该组 R（协议 v0.6「数字来源」）。
+    const first = groups[0] ?? {};
+    const firstMembers = Array.isArray(first.members) ? first.members.length : 0;
+    const firstRedundant = Number(first.redundantBytes ?? -1);
+    const selfContained = checkSelfContainedText(notice.text, {
+      members: firstMembers,
+      redundant: firstRedundant,
+    });
+    if (!selfContained.ok) {
+      return { status: FAIL, detail: `多组文案：${selfContained.why}` };
+    }
+
+    return {
+      status: PASS,
+      detail:
+        `多组场景（${wantKeys.length} 个组同时成立）⇒ 不漏报（各组 ` +
+        `${wantKeys.map((key) => `${expected.get(key).length} 条`).join(' / ')}）、` +
+        `组按 groupKey 升序、文案含第一组事实（${firstMembers} 条 / ${firstRedundant} 字节）`,
     };
   });
 }

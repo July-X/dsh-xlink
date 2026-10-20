@@ -38,6 +38,7 @@ import {
   checkP2_C_errorCodeClosedSet,
   checkP2_D_crossLanguageGroupKey,
   checkP2_F_fixtureExpectation,
+  checkP2_H_multiGroupNotDropped,
   summarize,
   verdict,
 } from './lib/p2-protocol.mjs';
@@ -75,6 +76,9 @@ const CRITERIA = [
     run: (adapter, context) => checkP2_D_crossLanguageGroupKey({ ...context, adapter }),
     options: {},
   },
+  // **多组场景**（协议 v0.6 §3.2「多组形态」）：两个不同的组同时成立 ⇒
+  // 不漏报 ＋ 组按 groupKey 升序 ＋ 文案含 `groups[0]` 的事实。
+  { id: 'P2-H', run: checkP2_H_multiGroupNotDropped, options: {} },
 ];
 
 /**
