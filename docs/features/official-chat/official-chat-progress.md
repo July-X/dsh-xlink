@@ -526,6 +526,25 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 - **未完成（PM 侧）**：① **UX高手 的方案正文未交付**（只回一句「事实核完了，我把口径问题转给 devloper，然后给方案」，正文未输出给团队）⇒ PM 已追它正式输出；② **UX高手 转交 devloper 的 3 个口径问题尚未转达**（同组条数 `members.length` vs 可省字节 `(N-1)×单条` 的双数字口径；4 个失败码界面分几档；内核 `body_too_large` 的 error toast 与我们 inline 提示的叠放顺序）⇒ PM 本轮转达。
 - **对在途实现的即时约束**：devloper 正在写 P2 实现 ⇒ **提示必须 `level:'info'`**，承载位 = 输入区 inline 条；**不要照抄 P1 的 `'error'` 写法**。
 
+### 2026-10-20 23:5x · P2 第一批 PM 独立验收 ＋ 四处协议歧义裁定（P2 协议 v0.3）＋ 清理收尾
+
+- **PM 独立复核门禁（不采信回执）**：`check:invariants` 全绿（扫 48 文件）、`check:duplicates` **4 处**（允许 8）、`check:builtin` **4 插件 / 43 文件**、`test:scripts` **0 fail / 3 skipped**、`test:plugin` **0 fail / 3 skipped**、判据 runner **43 = 40 pass / 0 fail / 3 skipped** ⇒ 与 devloper 报告**逐项吻合**。
+- **实现逐点核对（PM 第一手读代码）**：
+  - ✅ **client 侧全部用 `level: 'info'`**（`plugins/official-chat/client/client.js` 的五处 `presentNotice` 调用）⇒ **没有照抄 P1 的 `error` 档**（协议 v0.2 §3.2 的硬要求：内核 `error` 档只弹瞬态 toast）。
+  - ✅ **文案自包含**（条数与字节数写在同一条）⇒ 符合「内核 notice 单槽、最新覆盖旧条」。
+  - ✅ **两个触发点独立**（「不 return」）⇒ 重复提示与预算提示都出。
+  - ✅ **`groupKeyOf`**（`host/protocol.js`）= 五字段 `join('\n')` ＋ sha256 hex 前 16；**Rust `group_key`**（`src-tauri/src/official_chat/protocol.rs`）= `join("\n")` ⇒ **两端口径一致**。
+  - ⚠️ **devloper 回执里「Rust 侧 `group_key` ＋ 夹具未做」已过时** —— 实测 `protocol.rs` 的 `resolve_duplicates_case` **已在工作树里做完** ⇒ 状态比回执新。
+- **四处协议歧义裁定（已写进 P2 协议 v0.3）**：
+  1. **分隔符** = **单个换行 U+000A、不含空格**（两端现状即此）⇒ **改协议措辞**消除「行内代码 `\n` 两侧空格」的误读，并列出「若要改须同次改四处」。
+  2. **`invalid_request` / `snapshot_store_unavailable` 不在 13 码闭集** ⇒ **按 P1 §3 `:166` 的既有规则**（内部冲突码归 `snapshot_invalid`、原码进 `detail`、不新增第 14 个码）⇒ **devloper 的实现正确、无需改代码**；**判据加严**：P2-6 须断 `detail` 带原码（否则「入参形态错」与「快照过期」不可区分 ⇒ 假绿）。
+  3. **`groups` 只返回成员数 ≥ 2 的组** ⇒ 采纳，协议写死。
+  4. **预算预检**触发点落为「**每次新增引用时预演一次**」（内核无「提交前草稿投影」入口）；原生 `@session` 占用**不可观测 ⇒ 按 0 计** ⇒ `projectedBytes` 偏小 ⇒ 方向 **宁可少报不误报**；并写明「真超限时用户仍会收到 P1 的 `body_too_large` 可见错误」⇒ **预检是提前告知，不是最后一道闸**。
+- **两处协议同步**：① P1 §5 命令清单 **5 → 6**（加 `duplicates`，注明是 P2 第一批新增、P1 第一批不含）；② P1 §3 的 8 字段闭集**不改**，只加一行注说明两端现状与缺口编号。
+- **缺口登记**：**G-2**（错误结果对象闭集两端不同构：Rust 8 个含 `kind`、JS 7 个缺 `kind` ⇒ 是 **JS 漏字段** ⇒ JS 侧补 `kind: 'error'`，**不在 P2 批内改 P1 冻结条款**）；**G-1**（Rust 测试自泄漏 `dsh-xlink-paths-*`：`src-tauri/src/shell/paths.rs` 的 `test_helpers::temp_dir()` ＋ **11 个用例缺 `remove_dir_all`** ⇒ 每跑一次 `cargo test` 漏 11 个目录，历史 4,394 个残留即由此而来 ⇒ 不影响功能与验收，**P2 三线收口后再修**）。
+- **清理收尾（PM 实测）**：后台批量任务移入回收站 **4,217** 个；PM 复核后补清判据产物 `dsh-p1-protocol*` **61 个**（5.72 MB）与 Rust 测试泄漏的 `dsh-xlink-paths-*` **11 个** ⇒ 实测 `dsh-xlink-*` = **0**、`dsh-xlink-g1` = 0、`g1-probe*` = 0、`dsh-p1-protocol*` 只剩 **1**（判据 runner 输出目录，正在被并行会话使用 ⇒ 先留）。**全部走回收站可恢复，未永久删除**；已作废的 `%TEMP%\dsh-fix`（上游 PR 工作目录，120 KB）一并入回收站。**不属本项目、别误删**（实测仍在）：`.tmp*` 3,176、`dsh-acl-skill-*` 198、`xlink-*` 1,138。
+- **一条方法论留痕**：清理任务**自报「剩余 0」**与实测（18 个）不符 —— 那 18 个是**清理任务结束后 6 秒**由另一次 `cargo test` 新产生的，**不是漏删** ⇒ **「后台任务自报的数字」不能当实测**。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |

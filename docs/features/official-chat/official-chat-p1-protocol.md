@@ -159,6 +159,7 @@ ready → serialized → expanded → persisted
 
 - 每个错误码带：可重试性、用户下一步、关联 `requestId`、**脱敏**日志路径；**不得把内部异常串当成功值**（计划 §6）。
 - **v0.4 裁定｜错误结果对象字段闭集 = 8 个，全部必备、不省略**：`kind` / `ok` / `code` / `retryable` / `userNext` / `requestId` / `logPath` / `detail`。
+  - **（PM 23:5x 核出的既有缺口 G-2）**：**Rust 侧已产 8 个**（`src-tauri/src/official_chat/protocol.rs` 的 `error_result` 含 `kind: "error"`）、**JS 侧 `errorPayload`（`plugins/official-chat/host/protocol.js`）只产 7 个（缺 `kind`）** ⇒ **本闭集条款不改**（是 **JS 漏字段**，不是协议写错）⇒ **由 JS 侧补 `kind: 'error'`**。**P2 第一批不受影响**（走同一套 `errorPayload`，且 P2 协议稿不复述字段个数）。
   - 依据：协议 §3 原文「每个错误码带：可重试性、用户下一步、**关联 requestId**、**脱敏日志路径**」+ Rust 侧 v0.2 注释「错误负载要带齐 §3 要求的字段，与 JS 侧 `errorPayload` 同构」。
   - 规则：① **8 个字段一律出现**，不可得时填 **`null`**（**不省略字段、不填空串**）；② 错误路径 `ok` 恒 `false`；③ `code` 取**上表 13 码闭集**；④ `detail` 承载脱敏后的原始码与原因线索（内核 `details` 是自由 record，`dsh-client-connection/lib/index.js:614`）。
   - **为什么必须写死**：JS 与 Rust 两端各写各的字段集 → 协议夹具的「双端一致」永远红，且**每端都自以为对**。**闭集是让两端能对上的前提。**（tester 17:4x A1c/A1d 报红即源于此；devloper 19:2x 曾按「Rust + 旧夹具都是 4 字段」判成 4 字段——**那是循环证据**，已撤回。）
@@ -217,7 +218,7 @@ ready → serialized → expanded → persisted
   - **对判据的约束**：判据的 stub 是**同步服务**、RPC 是 **Promise**——判据库期望值不变，**由 adapter 吸收这个差异**（adapter 只暴露协议规定的接口面，底层是同步桩还是 RPC 由它自己吸收）。
   - **⚠️ 判据不得把 `connection.rpc.call` 直连 host handler**——那会**绕过内核 `connection` 服务的真实路由注册**，正是 A0 那个真洞藏身之处（真机全红、判据不报）。**「桩把两条本该跨进程的调用接上了」= 桩骗过自己。**
 - 桥**不接受**任意路径、任意脚本、任意 URL、调用方指定的账户目录。
-- 客户端命令职责：`capabilities` / `catalog` / `capture` / `cancel` / `preview`；host 回环路由**只按固定 id 读快照**与必要的模型可见投影。名称在实施时统一登记。
+- 客户端命令职责：`capabilities` / `catalog` / `capture` / `cancel` / `preview` / **`duplicates`**（**`duplicates` = P2 第一批新增**，口径见 `official-chat-p2-protocol.md` §2.2；**P1 第一批不含它**）；host 回环路由**只按固定 id 读快照**与必要的模型可见投影。名称在实施时统一登记。
 - 复用现有桥的**鉴权与轮换**，**不复制监听器**；新增 GET 查询路由用精确路径匹配 + 参数校验；若必须加请求体协议，先补**定长读取与大小上限**，不得复用只读到请求头的 `body_prefix`。
 - 路径：目录缓存与正文快照**分开**；所有路径**跟随后端路径解析**（按壳模式、内核族、实例、站点账户隔离），**不在代码中展开真实用户 home**（计划 §8）。
   - 目录缓存：`<实例 official-chat 根>/catalog-cache/`（**平铺文件名** `<provider>__<账号范围>__<查询词>.json`，见 `host/commands.js` 的 `fileOf`；**没有 provider 子目录**——PM 20:2x 按实现对齐，§4.1 第 2 条的 `catalog-cache/*` 已是这个口径）
