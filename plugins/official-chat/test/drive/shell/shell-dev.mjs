@@ -25,11 +25,12 @@
 //   # 然后另开一个终端：
 //   node plugins/official-chat/test/drive/shell/shell-verify.mjs
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { APP_DIRS, CDP_PORT, DEV_PORT, SHELL_HOME } from './paths.mjs';
+import { activeReleaseKernel } from './paths.mjs';
+import { APP_DIRS, CDP_PORT, DATA_DIR, DEV_PORT, KERNEL_PORT, SHELL_HOME } from './paths.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /** 仓库根：从本文件位置往上数（plugins/official-chat/test/drive/shell → 根）。 */
@@ -53,6 +54,34 @@ console.log('[shell-dev] 仓库 =', REPO);
 console.log('[shell-dev] appDirectoriesOverride =', APP_DIRS);
 console.log('[shell-dev] DSH_XLINK_HOME =', SHELL_HOME);
 console.log('[shell-dev] WebView2 CDP 端口 =', CDP_PORT);
+
+// 隔离 home 的两样准备（**release 启动器 `shell-release.mjs` 里也有同样两步**，
+// 少哪一步壳都会在别处报一个看不懂的错）：
+//
+//   1. 壳设置 `shell/dev/settings.json`：内核端口。默认端口（debug 是 3091）
+//      可能与用户正在跑的那套撞车。
+//   2. `dsh/desktop-dev/active.txt`：壳据此知道「这个实例用哪个内核版本」。
+//      **缺它时 `builtin_set_enabled` 会报「实例尚未指定内核版本；请在「内核
+//      版本」页安装并选择内核后再启用」**——而这棵内核树明明已经拷好了。
+const settingsDir = join(SHELL_HOME, 'shell', 'dev');
+mkdirSync(settingsDir, { recursive: true });
+const settingsFile = join(settingsDir, 'settings.json');
+if (!existsSync(settingsFile)) {
+  writeFileSync(
+    settingsFile,
+    `${JSON.stringify({ port: KERNEL_PORT, profile: 'web' }, null, 2)}\n`,
+    'utf8',
+  );
+  console.log('[shell-dev] 已写壳设置：', settingsFile);
+}
+
+const { version } = activeReleaseKernel();
+mkdirSync(DATA_DIR, { recursive: true });
+const activeFile = join(DATA_DIR, 'active.txt');
+if (!existsSync(activeFile)) {
+  writeFileSync(activeFile, `${version}\n`, 'utf8');
+  console.log('[shell-dev] 已写 active.txt：', activeFile, '=', version);
+}
 
 const child = spawn(
   process.execPath,
