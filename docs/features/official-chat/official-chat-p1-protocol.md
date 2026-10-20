@@ -159,7 +159,7 @@ ready → serialized → expanded → persisted
 
 - 每个错误码带：可重试性、用户下一步、关联 `requestId`、**脱敏**日志路径；**不得把内部异常串当成功值**（计划 §6）。
 - **v0.4 裁定｜错误结果对象字段闭集 = 8 个，全部必备、不省略**：`kind` / `ok` / `code` / `retryable` / `userNext` / `requestId` / `logPath` / `detail`。
-  - **（PM 23:5x 核出的既有缺口 G-2）**：**Rust 侧已产 8 个**（`src-tauri/src/official_chat/protocol.rs` 的 `error_result` 含 `kind: "error"`）、**JS 侧 `errorPayload`（`plugins/official-chat/host/protocol.js`）只产 7 个（缺 `kind`）** ⇒ **本闭集条款不改**（是 **JS 漏字段**，不是协议写错）⇒ **由 JS 侧补 `kind: 'error'`**。**P2 第一批不受影响**（走同一套 `errorPayload`，且 P2 协议稿不复述字段个数）。
+  - **（PM 23:5x 核出、2026-10-21 00:1x 已闭环 · 缺口 G-2）**：此前 **JS 侧 `errorPayload` 只产 7 个（缺 `kind`）**，而 **Rust 侧 `error_result` 已产 8 个** ⇒ **本闭集条款始终不改**（是 **JS 漏字段**、不是协议写错）⇒ **JS 侧已补齐 `kind: 'error'`**（未知码归一分支与正常分支**都补**）⇒ **两端同构**。**两端各有一条自测钉住这 8 个字段**（JS `plugins/official-chat/test/protocol.test.mjs`、Rust `src-tauri/src/official_chat/protocol.rs` 的 `error_result_carries_the_eight_field_closed_set`）⇒ 谁再省一个字段当场红。
   - 依据：协议 §3 原文「每个错误码带：可重试性、用户下一步、**关联 requestId**、**脱敏日志路径**」+ Rust 侧 v0.2 注释「错误负载要带齐 §3 要求的字段，与 JS 侧 `errorPayload` 同构」。
   - 规则：① **8 个字段一律出现**，不可得时填 **`null`**（**不省略字段、不填空串**）；② 错误路径 `ok` 恒 `false`；③ `code` 取**上表 13 码闭集**；④ `detail` 承载脱敏后的原始码与原因线索（内核 `details` 是自由 record，`dsh-client-connection/lib/index.js:614`）。
   - **为什么必须写死**：JS 与 Rust 两端各写各的字段集 → 协议夹具的「双端一致」永远红，且**每端都自以为对**。**闭集是让两端能对上的前提。**（tester 17:4x A1c/A1d 报红即源于此；devloper 19:2x 曾按「Rust + 旧夹具都是 4 字段」判成 4 字段——**那是循环证据**，已撤回。）

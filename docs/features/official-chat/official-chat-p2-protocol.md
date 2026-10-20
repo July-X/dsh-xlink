@@ -165,5 +165,5 @@ P2 第一批 = **识别「同一段正文被引用多次」→ 告诉用户 → 
 
 | # | 缺口 | 事实 | 处置 |
 | --- | --- | --- | --- |
-| **G-2** | **P1 §3 的错误结果对象闭集两端不同构** | P1 §3 `:161` 写「8 个字段，全部必备」含 `kind`；**Rust 侧 `error_result`（`src-tauri/src/official_chat/protocol.rs:838-847`）产 8 个**（含 `kind: "error"`）、**JS 侧 `errorPayload`（`plugins/official-chat/host/protocol.js:629-643`）只产 7 个（缺 `kind`）** | **协议闭集不改**（Rust 与协议一致 ⇒ 是 JS 漏字段）⇒ **由 JS 侧补 `kind: 'error'`**；**不在 P2 批内改 P1 冻结条款** ⇒ 本批只把 §2.2 措辞改成「字段集以 P1 §3 `:161` 为准」，**避免本稿复述一个当前做不到的数字**。JS 侧补齐后须**复跑已提交版的 P1 判据**（别把在途用例当回归） |
+| ~~**G-2**~~ | ~~P1 §3 的错误结果对象闭集两端不同构~~ | **已销号（2026-10-21 00:1x · devloper 已修，PM 已复核）**：P1 §3 `:161` 的「8 个字段，全部必备」含 `kind`；**Rust 侧 `error_result` 产 8 个**、**JS 侧 `errorPayload` 已补齐为 8 个**（**未知码归一分支与正常分支都补**，`plugins/official-chat/host/protocol.js:637` / `:653`）⇒ **两端同构**。**协议闭集始终未改**（是 JS 漏字段、不是协议写错） | **✅ 已闭环**：JS `plugins/official-chat/test/protocol.test.mjs:404` ＋ Rust `src-tauri/src/official_chat/protocol.rs:1060` 的 `error_result_carries_the_eight_field_closed_set` **各有一条自测钉住 8 字段闭集** ⇒ 谁再省一个字段当场红。PM 已复跑：**已提交版 P1 判据 43/40/0/3**、**P2 判据 8 条全通过** ⇒ **G-2 销号** |
 | **G-1** | **Rust 测试自泄漏临时目录** | `src-tauri/src/shell/paths.rs:731-736` 的 `test_helpers::temp_dir()` 产生 `dsh-xlink-paths-*`；**11 个用例没有 `remove_dir_all`** ⇒ **每跑一次 `cargo test` 漏 11 个目录**（历史 4,394 个残留即由此而来） | **不影响功能与验收**（只漏测试临时目录、不碰业务数据）⇒ 记为待办，**P2 三线收口后**再修（不插队） |
