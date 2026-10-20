@@ -1,8 +1,8 @@
 ---
 description: "官网对话直接引用的分阶段事实进度记录。P0 部分只写已发生的事实，不预写结论。"
 kind: "progress"
-status: "P0 机制层结论已出（G1/G2/G3）；P1 协议已冻结（v0.5）且代码侧落地、真机 p1-r9 在未打补丁的现役内核上 11/0/1；真实站点取数（P4）与安装版 release 验收未做"
-date: 2026-10-20
+status: "P0 机制层结论已出（G1/G2/G3）；P1 协议已冻结（v0.5）且代码侧落地、真机 p1-r9 在未打补丁的现役内核上 11/0/1；P2 第一批（重复识别 ＋ 可见提示 ＋ 预算预检）协议 v0.5、实现与判据均已合并推送（远端 main = af9789d），PM 一手复跑：判据 9 通过 / 0 失败 / 0 未执行、自测 23/23、test:scripts 175 pass / 0 fail / 3 skipped；真实站点取数（P4）与安装版 release 验收未做"
+date: 2026-10-21
 ---
 
 # 官网对话直接引用 · 阶段进度记录
@@ -17,7 +17,7 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 | --- | --- | --- |
 | P0 可行性验证 | G1 内核工作台选择与发送控制、G2 异步回程与首站可读性、G3 窗口未打开时仍可读取 | **G1/G2/G3 结论已出**（G1 4/5 问通过 + Q3 判定互斥；G2-A 5/5，Windows 零痕迹回程已实测成立；G2-B 探测完成但取数未成立；**G3 三站各 7/7 通过**；**壳真实 workbench 内复验已可复现**——dev 壳两轮 + **自编 release 二进制一轮**（15:42–15:55，实例 id `default`）全过，壳驱动已搬进仓库；**壳内判据已与内核 r14/r16 对齐**（`results[]` + `summary`，**未执行单列**；壳内 E 升为**节点级**），**两条前置条件机检已压出真分支**（dev-r6 汇总 **9 通过 / 0 失败 / 0 未执行**）。**未闭合的两项**：登录态从未建立（需用户首次登录）、零痕迹回程 macOS 侧无通路。**判据第 31 条的三处口径问题（嵌套 if 漏判 / 逃生阀不生效 / `match` 边界假红）已全部闭合**（`4333b80` + `165d9a1`，自测 26 → 43，PM 逐轮第一手复验含反向回归）。**安装版 release 壳不在开发 agent 范围**（izzy 发布后自己测） |
 | P1 协议与隔离 | 固定数据模型、错误、权限与状态机 | **协议 v0.5（PM 定）**：单一 id 制度（`ref === snapshotId`）、状态机映射、**门控口径从「时序」换成「状态」**、失效一律「拒 + 可见错误」（chip `invalid` 态内核不可达 → 缺口 **G1-6**）、13 码闭集 + **错误结果对象 8 字段闭集**、保留期主动清理口径（§4.1，v0.5 澄清「只记日志」必须留痕）、**缺口 G1-7（通道被上游一行卡住）**、A0s 判据同步更正。**代码侧已落地**（协议核心 JS+Rust、13 夹具 + 双端一致测试、5 命令走内核 `connection` 服务的 **exact fetch route**、host 侧 id 分配器 `seq-store.js`、保留期主动清理 `host/sweep.js`）：**§8 十二条逐条 pass**，判据 runner **43 条 = 40 pass / 0 fail / 3 skipped**（skip：A0 真机级、A6b chip invalid、A18k「发送中引用」已知不覆盖）。**真机 p1-r9（在未打补丁的现役内核上）P1 六条硬口径 11 通过 / 0 失败 / 1 未执行**——A0 真机级 ✔（capabilities 经 exact fetch route 拿到）、catalog＋host 预分配 id、pick＋落盘＋自算摘要对得上、**S-4 逐字节**（请求体命中 4 处，每处 76 字节 exact）、S-1 两个 id、缺口①（删快照 ⇒ 请求数 0 ＋ 可见错误 ＋ 客户端抛错）。**未实现**：真实站点账户与深链（P4） |
-| P2 内核插件闭环 | 固定数据的选择、引用、发送与模型输入核对 | **已立项**（izzy 22:5x 点头）。「正文去重」子议题的**只读调研已出**（全文见 [official-chat-p2-research.md](official-chat-p2-research.md)），PM 建议三条 = **P2 第一批口径**，已协议化为 [official-chat-p2-protocol.md](official-chat-p2-protocol.md) **v0.1**（PM 定）：**重复识别 ＋ 可见提示 ＋ 预算预检**，**不做消息级自动合并**、**不动 chip 数**、**不碰 id 分配**、**不改 `agent/pre-step` 消息**。键 = (accountScope, sessionId, branch, capturedAt, contentDigest) 全等；落点 = **host 命令层 `duplicates` 命令产出重复组，client 呈现**。**实现/判据/夹具尚未开工** |
+| P2 内核插件闭环 | 固定数据的选择、引用、发送与模型输入核对 | **已立项**（izzy 22:5x 点头）。「正文去重」子议题的**只读调研已出**（全文见 [official-chat-p2-research.md](official-chat-p2-research.md)），PM 建议三条 = **P2 第一批口径**，已协议化为 [official-chat-p2-protocol.md](official-chat-p2-protocol.md) **v0.5**（PM 定，六处裁定）：**重复识别 ＋ 可见提示 ＋ 预算预检**，**不做消息级自动合并**、**不动 chip 数**、**不碰 id 分配**、**不改 `agent/pre-step` 消息**。键 = (accountScope, sessionId, branch, capturedAt, contentDigest) 全等；落点 = **host 命令层 `duplicates` 命令产出重复组，client 呈现**。**实现已合并推送**（`bec3b82`，13 文件）＋ **判据第一批已合并推送**（`af9789d`，6 文件 / +3060 / −17）⇒ 远端 `main` = **`af9789d`**。**PM 一手复跑（2026-10-21 00:4x，不采信回执）**：判据 runner **9 通过 / 0 失败 / 0 未执行**、判据自测 **23 / 23**、`npm run test:scripts` **178 tests / 175 pass / 0 fail / 3 skipped**、P1 判据 runner **43 条 / 40 通过 / 0 失败 / 3 未执行** ⇒ **P1 未回退**。**未做**：P2 第二批及以后、真实站点取数（P4）、界面层文案方案正文（UX高手 仍未交） |
 | P3 正文快照与桥接 | 原子保存、固定版本、回收、恢复 | **未开始** |
 | P4 首站接入 | 真实目录、认证、分支与正文 | **未开始**（前置条件未满足） |
 | P5 桌面体验与诊断 | 登录回程、错误、详情、能力检测 | **未开始** |
@@ -660,6 +660,30 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 - **唯一未决（风险点）**：tester 的判据文件**当时仍在工作树里未提交**（未跟踪 `scripts/lib/p2-protocol.mjs`、`scripts/lib/rust-fixture-runner.mjs`、`scripts/p2-protocol.run.mjs`、`scripts/p2-protocol.test.mjs`；已改未提 `scripts/lib/p1-adapter.mjs`、`scripts/p1-protocol.run.mjs`）⇒ **判据只活在共享工作树、别人拉不到** ⇒ PM 已私聊 tester，要求按**显式 6 个路径**提交（不用 `-A` / `.` / `commit -a`），并在提交信息里写明两条红的根因（自测合成正对照/夹具形状写错，**不是实现缺口、不是判据放宽**）与复核数字。
 - **下一件活**：**G-1**（`src-tauri/src/shell/paths.rs:731-736` 的 `test_helpers::temp_dir()` 产生 `dsh-xlink-paths-*`，**11 个用例缺 `remove_dir_all`** ⇒ 每跑一次 `cargo test` 漏 11 个目录，历史 4,394 个残留即由此而来）——**不影响功能与验收**，按「不插队」排在 **P2 第一批收口之后**修（PM 已在给 devloper 的回执里预告，等判据提交后正式派）。
 
+### 2026-10-21 00:4x–00:5x · 判据第一批已合并推送（tester 交付 → PM 推送）＋ 阶段总表与协议标题口径同步
+
+**判据第一批已进远端**：`af9789d`（`test(official-chat)`，**6 文件 / +3060 / −17** ＝ `scripts/lib/p1-adapter.mjs`、`scripts/lib/p2-protocol.mjs`、`scripts/lib/rust-fixture-runner.mjs`、`scripts/p1-protocol.run.mjs`、`scripts/p2-protocol.run.mjs`、`scripts/p2-protocol.test.mjs`）⇒ **上一节那条「唯一未决（判据只活在共享工作树、别人拉不到）」已闭环**。该提交由 **tester 自行提交**（作者已统一为 `July-X <over618@163.com>`，与 izzy 23:57 拍板口径一致），**PM 只做推送**（`ef8be8a..af9789d`，推后本地与远端 **0/0** 同步）⇒ **远端 `main` = `af9789d`**。远端 tag 唯一名仍为 **82**（`git ls-remote --tags` 96 行 ＝ 82 个 tag ＋ 14 个 annotated tag 的 `^{}` 解引用行）⇒ 无残留恢复点 tag。
+
+**PM 一手复跑（00:4x，命令即证据）**
+
+| 命令 | 结果 |
+| --- | --- |
+| `node scripts/p2-protocol.test.mjs` | **23 / 23**（pass 23 / fail 0 / skipped 0） |
+| `node scripts/p2-protocol.run.mjs` | **9 条：通过 9 · 失败 0 · 未执行 0**（P2-1…P2-6 ＋ P2-C ＋ P2-D ＋ P2-F） |
+| `node scripts/p1-protocol.run.mjs` | 43 条 / 40 通过 / 0 失败 / 3 未执行 ⇒ **P1 未回退** |
+| `npm run test:scripts` | 178 tests / **175 pass / 0 fail** / 3 skipped |
+
+⇒ **上一节登记的两条红已不复现**：tester 自报的「20/20、175/172/0/3」与 devloper 自报的「4 条红」**在当前工作树都不成立**；**当前实测 ＝ 175 pass / 0 fail / 3 skipped**（3 个 skip 的具体原因本轮未逐条核；P1 判据 runner 侧的 skip 名单见本文件 P1 行）。**纪律照旧**：同事自报「全绿」不作为依据，本轮结论只认 PM 自己复跑的这一遍。
+
+**两处口径同步（PM 自查自纠）**
+
+1. **阶段总表 P2 行原写「v0.1」且「实现/判据/夹具尚未开工」** ⇒ 与事实矛盾（协议已 v0.5、实现 `bec3b82` 与判据 `af9789d` 均已推送）⇒ **已按实际改正**。
+2. **P2 协议正文标题原写「（v0.3）」而 frontmatter 已是 v0.5** ⇒ **已改正为（v0.5）**；全文只此两处版本号，无其他陈旧标记。
+
+**G-1 的派单条件已满足**（判据已入库，不再与 P2 收口争用共享工作树）⇒ 随本轮回执派给 devloper；该项**不影响功能与验收**。
+
+**仍未决（不在本轮收口范围）**：UX高手 的**界面层方案正文仍未交**（三次追交只回「事实核完了，我把口径问题转给 devloper，然后给方案」）⇒ P2 的**文案**仍是实现里的占位措辞；izzy 侧待拍板项（`July-X/deepseek-harness` fork 删否、P1 失败分支 `error` 档是否改、首次建立站点登录态、安装版 release 壳验收）仍挂着。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
@@ -701,5 +725,7 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 | 2026-10-20 | P1/P2 | **git 提交记录用户名统一（izzy 23:57 拍板四项 ＋ 全量重写）**：目标身份 = **`July-X <over618@163.com>`**（原状态署名文字已是 July-X，但 email 全为 `m4java@163.com`＝Z-starts 账号 ⇒ GitHub 上 1045 提交记在 **Z-starts** 名下，账号归属靠 email）；**82 个 `desktop-v*` 发布 tag 一并重写**（推 tag 期间用 GitHub API 把 `desktop-release.yml` 置 `disabled_manually`，推完 `enable` 回来 ⇒ **不改任何 workflow 文件、不触发发布、不触发 CI**；⚠️ GitHub 在 tag push 时评估的是**被推 commit 里**的 workflow 文件，故改默认分支无效）；**恢复点 tag `backup/pre-author-rewrite-20261020` 已删**（远端＋本地）⇒ 旧作者历史远端不再可达，**回滚能力由本地 bundle `C:\workdir\github\dsh-xlink-pre-rewrite-20261020.bundle`（17815662 B，不推远端）承担**；仓库级 `user.email` 改 `over618@163.com`；⚠️ 上一轮「残留=0」口径不完整（只数了 `zhongxingxing`，漏 `4Dim` 17 ＋ `xingxing.zhong` 2）⇒ 本轮改为去重后全 refs 作者分布；⚠️ **上一轮「残留=0」只对开发分支成立**：`zhongxingxing` 仍留在 82 个发布 tag 指向的历史里 ⇒ 本轮连 tag 一起重写；⚠️ 本地 `refs/heads/main-dev2` 上轮没跟上重写、本地无 `uiv2-dev` ⇒ 一并对齐。**结果**：远端 `main` = **`bec3b824bf991c91da75128a7d8a4e8f7fbcef8b`**、作者分布统一、**内容逐字节一致**（分支与 82 个 tag 的 diff --stat 全空）、tagger 同样统一、旧署名与旧 email **残留 = 0**、**未触发发布**。范围仅 dsh-xlink（`xgit` 172 处、`UnrealEngine` 63 处、全局 `~/.gitconfig` 均未动） | 本文件 23:5x–00:3x 节 ＋ `gh api contributors` / `git ls-remote` / `filter-branch` 核验 |
 
 | 2026-10-21 | P2 | **P2 第一批收口（PM 独立复核，不采信回执）**：**全门禁由 PM 一手复跑全绿**——P2 判据 runner **9/9 通过 / 0 失败 / 0 未执行**、P2 判据自测 **23/23**（含 8 条活体注入）、`test:scripts` **178/175/0/3**、P1 判据 **43/40/0/3** ＋ P1 自测 **60/60**（**P1 未回退**）、`test:plugin` **290/287/0/3**、invariants 绿（48 文件）、duplicates 4/8、`cargo test --locked --lib`（debug）**1128 passed / 0 failed**。**两条红的根因定性＝自测合成正对照/夹具形状写错，不是实现缺口、不是判据放宽**（P2-6：合成正对照用了闭集外的 `invalid_request` ⇒ 判据按 §2.3 正确报红；修法是改正对照 ＋ **补两条显式负对照** ⇒ 严格度不降反升；P2-D：合成夹具形状与判据过滤条件 `fixture.input.kind === 'duplicates'` 对不上 ⇒ 判据如实报 skipped 而非假绿）。**实现侧 PM 亲手追了归一链路**：`host/commands.js:692`/`:704` 的 `fail('invalid_request')` 经 `errorPayload` 未知码分支 ⇒ `code='snapshot_invalid'` ＋ `detail` 带原码 ⇒ **码在 13 码闭集内、原码留痕，符合 §2.3 与 P1 §3 `:167`，实现不需改**。**一处协议行号核正**：P2 协议 §2.3 与本文件原引 P1 §3 `:166` ⇒ 实际在 **`:167`**（`:166` 是相邻的 `catalog_empty`/`catalog_failed` 那条）⇒ **两处已改正**。**唯一未决**：tester 的 6 个判据文件**仍在工作树未提交** ⇒ 判据只活在共享工作树 ⇒ 已私聊要求按显式 6 路径提交。**下一件活**：**G-1**（Rust 测试自泄漏 `dsh-xlink-paths-*`，11 个用例缺 `remove_dir_all`）排在 P2 收口之后修 | 本文件 00:3x–00:4x 节 ＋ `official-chat-p2-protocol.md` v0.5 §2.3 |
+
+| 2026-10-21 | P2 | **判据第一批已合并推送**（`af9789d`，6 文件 / +3060 / −17，tester 自行提交、PM 推送）⇒ 上一条的「判据只在共享工作树」未决项闭环，**远端 `main` = `af9789d`**；**PM 一手复跑**（00:4x）：判据 runner 9/0/0、自测 23/23、`test:scripts` 175 pass/0 fail/3 skipped、P1 判据 43/40/0/3 ⇒ **上一条登记的两条红已不复现**；**口径同步两处**：阶段总表 P2 行由「v0.1 / 尚未开工」改为 v0.5 与已推送事实，P2 协议正文标题由「（v0.3）」改为（v0.5） | `scripts/p2-protocol.run.mjs` ＋ `scripts/p2-protocol.test.mjs` ＋ `npm run test:scripts` 实测输出 ＋ `git log` |
 
 **关于上表里的 `%TEMP%` 证据路径**：2026-10-20 15:2x izzy 拍板「**可以清**」后，PM 已把 `%TEMP%\dsh-xlink-g1\` 与 `%TEMP%\dsh-probe\` 移入回收站（可恢复删除），**上表引用的原始 JSON / 截图 / 请求体日志已不在原位**。**仍可长期复核的，是本文件与 feasibility 里写下的数字、字段值与判据口径**——引用这些结论时不要再指望去原路径取原始产物。

@@ -5,7 +5,7 @@ status: "P2 协议冻结稿 v0.5（2026-10-21 00:1x，PM 定；v0.4 → v0.5 = *
 date: 2026-10-20
 ---
 
-# P2 协议：重复识别 ＋ 可见提示 ＋ 预算预检（v0.3）
+# P2 协议：重复识别 ＋ 可见提示 ＋ 预算预检（v0.5）
 
 上游依据：[调研载体](official-chat-p2-research.md)（结论与依据）＋ [P1 协议](official-chat-p1-protocol.md)（数据模型、13 码闭集、首版常量、命名空间）＋ [development-plan](official-chat-development-plan.md) §7（引用展开）§8（快照与回收）。
 
