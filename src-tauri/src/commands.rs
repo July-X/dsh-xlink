@@ -1661,13 +1661,29 @@ fn add_official_chat_tab(
         .ok_or_else(|| format!("官网网页版页签不存在：{index}"))?;
     let label = format!("official-chat-tab-{index}");
     let url = Url::parse(url_text).map_err(|e| format!("非法页签地址：{e}"))?;
+    let popup_app = window.app_handle().clone();
     let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
         .background_color(CHROME_BACKDROP)
         .data_directory(profile_dir.to_path_buf())
         .additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)
         .initialization_script(include_str!("harness/titlebar-pulse.js"))
         .initialization_script(include_str!("harness/chat-fingerprint.js"))
-        .initialization_script(include_str!("harness/no-context-menu.js"));
+        .initialization_script(include_str!("harness/no-context-menu.js"))
+        // 内容页是**别人的站点**，`window.open` 必须能工作。此前这里没装处理器，
+        // wry 在 WebView2 上把每条 `NewWindowRequested` 直接 `SetHandled(true)`
+        // 吞掉：`window.open()` 返回 null，页面侧看到的只是「点了没反应」。三家
+        // 官网都用它做文件下载（ChatGPT 的文件下载就是
+        // `window.open(download_url, '_blank')`，站点 bundle 实证），所以「下载
+        // 设计规范文档」这类按钮永远不落盘；查看器等靠新窗口的流程同理。路由沿用
+        // 工作台弹窗那一套：`about:blank` / 本机页面建壳托管的临时窗口，外部
+        // http(s) 交系统浏览器，其它 scheme 拒绝。
+        .on_new_window(move |link, features| {
+            crate::shell::shell_events::record(OFFICIAL_CHAT_LOG, &format!("window.open {link}"));
+            harness_window::new_window_response(&popup_app, link, features)
+        })
+        // 下载落点由壳显式指定并落日志：此前 WebView2 用自己的默认路径，下载
+        // 有没有发生、落到哪里都无从查起。
+        .on_download(official_chat_download);
     // data_store_identifier 只在 macOS 存在；用 cfg 下的绑定遮蔽代替
     // `let mut`，其他平台不会留下 unused_mut 告警。
     #[cfg(target_os = "macos")]
@@ -1680,6 +1696,67 @@ fn add_official_chat_tab(
         )
         .map_err(|e| format!("无法创建官网网页版页签：{e}"))?;
     Ok(())
+}
+
+/// 官网网页版的壳侧事件日志名（按日轮转，自动出现在「查看日志」面板）。
+const OFFICIAL_CHAT_LOG: &str = "official-chat";
+
+/// 官网网页版内容页签的下载事件。
+///
+/// 落点显式给成系统「下载」目录（解析不到时用壳数据目录下的 `downloads`），重名
+/// 不覆盖（`名字 (1).ext`）。起止各落一行 `shell_events`——下载是**用户看得见后果**
+/// 的动作，此前 WebView2 用自己的默认路径，下载有没有发生、落到哪里都无从查起。
+fn official_chat_download(webview: Webview, event: tauri::webview::DownloadEvent<'_>) -> bool {
+    match event {
+        tauri::webview::DownloadEvent::Requested { url, destination } => {
+            let dir = official_chat_download_dir(&webview);
+            if let Err(error) = fs::create_dir_all(&dir) {
+                crate::shell::shell_events::record(
+                    OFFICIAL_CHAT_LOG,
+                    &format!(
+                        "下载目录不可用 {}：{error}（沿用 WebView2 默认落点）",
+                        dir.display()
+                    ),
+                );
+                return true;
+            }
+            let name = crate::harness::official_chat::download_file_name(
+                &url,
+                Some(destination.as_path()),
+            );
+            let target = crate::harness::official_chat::unique_download_path(&dir, &name);
+            *destination = target.clone();
+            crate::shell::shell_events::record(
+                OFFICIAL_CHAT_LOG,
+                &format!("开始下载 {url} → {}", target.display()),
+            );
+            true
+        }
+        tauri::webview::DownloadEvent::Finished { url, path, success } => {
+            let shown = path
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "（未给出路径）".to_string());
+            let outcome = if success { "完成" } else { "失败" };
+            crate::shell::shell_events::record(
+                OFFICIAL_CHAT_LOG,
+                &format!("下载{outcome} {url} → {shown}"),
+            );
+            true
+        }
+        // `DownloadEvent` 是 `#[non_exhaustive]`：将来新增的阶段默认放行，
+        // 下载本身不该被壳拦下。
+        _ => true,
+    }
+}
+
+/// 官网网页版的下载目录：系统「下载」目录，解析不到就退回壳数据目录。
+fn official_chat_download_dir(webview: &Webview) -> PathBuf {
+    let app = webview.app_handle();
+    if let Ok(dir) = app.path().download_dir() {
+        return dir;
+    }
+    app.state::<AppState>().data_dir.join("downloads")
 }
 
 /// 在 worker 线程上惰性创建所请求的内容页签。`Window::add_child` 会同

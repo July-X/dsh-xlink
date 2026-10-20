@@ -592,4 +592,35 @@ prompt-caching 指南，它的模型差异表写着「GPT-5.6 及以后：路由
 > 断言"dev 壳"的用例必须在 **dev profile** 下跑。门禁 `check:rust:ci` 用的是 debug 的
 > `cargo test --locked`，本地验证必须跟它一致；`--release` 只该出现在
 > `cargo check --release --all-targets`（查 release-only 的编译错误）那一步。
+
+## 27. 嵌入式 webview 里「页面自己开窗口」的流程会静默死掉：wry 默认吞掉 `window.open`（2026-10-20）
+
+**症状**：官网网页版（官方对话窗口）里 ChatGPT 的「下载设计规范文档」点了没反应，右侧文件预览
+面板报「无法加载此文件 · 重试」。页面本身完全正常，壳侧一行日志都没有。
+
+**根因**：那三扇内容 webview 是 `WebviewBuilder` 直接建的，**没有装 `on_new_window`**。wry 在
+WebView2 上只在装了处理器时接管 `NewWindowRequested`，否则走默认实现 —— `SetHandled(true)` 把请求
+吞掉：没有窗口、没有下载、`window.open()` 返回 `null`。而站点自己的前端 bundle 写得很清楚：文件
+下载走 `window.open(download_url, '_blank')`（下载地址由后端 `download_url` 决定，`<a download>`
+是另一条分支），查看器也有靠新窗口的流程。所以**这不是「WebView2 缺能力」，是壳没接上那条已经存在
+的桥**：浏览器里 `window.open` 是新标签页，嵌入式壳里没人接就什么都不会发生。
+
+**修法**：内容页签的 `on_new_window` 复用工作台弹窗的同一套路由
+（`harness_window::new_window_response`：`about:blank` / 本机页面建壳托管弹窗，外部 `http(s)` 交系统
+浏览器，其余拒绝），每条请求落一行 `official-chat` 日志；同一处 `on_download` 把落点显式钉到系统
+「下载」目录（解析不到时壳数据目录下的 `downloads`）并记录起止 —— WebView2 的默认下载路径能用，但
+「有没有发生过、落到哪里」在壳侧不可见。**下载这条已被 bundle 与代码两头证实；右侧预览面板的报错
+与它同属「需要新窗口 / 文件流程」这一族，是否同一根因要等真机复验**，不要把它写进结论。
+
+**可复用的判据**：
+- **页面某条流程失败、又看不到控制台时，先问「它有没有走 `window.open`」**。嵌入式 webview 与
+  浏览器差的能力往往不是渲染引擎，而是这些必须由 host 自己接的钩子（新窗口、下载、文件选择）。
+  缺 `on_new_window` 的症状恰好是「静默」：不抛错、不写日志、页面只表现为点了没反应。
+- **wry 的默认值是「允许下载、拒绝新窗口」**（`download_started_handler` 默认返回 `true`；
+  `NewWindowRequested` 无 handler 时 `SetHandled(true)`）。判断某条链有没有接，去读依赖源码，
+  别凭「Tauri 应该处理了」推断。
+- **用页面自己的 bundle 证伪「是不是站点的问题」**：WebView2 的 `Cache_Data` 里 `f_*` 是
+  brotli / gzip 压缩的响应体，解压后按站点字符串分类，能直接读到
+  `window.open(r.download_url, '_blank')` 这种原话 —— 比猜测快，也比端到端复现便宜。
+  官方对话窗口的档案在 `<data_dir>/webview-official-chat/EBWebView/Default/Cache/Cache_Data`。
 > **profile 变了，先怀疑自己是不是在测另一件事**，别去改断言。
