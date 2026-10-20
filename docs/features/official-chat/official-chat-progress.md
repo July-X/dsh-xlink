@@ -440,6 +440,14 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 - **PR 仍卡在「浏览器未登录」**：会话内置浏览器的 compare 页只显示 `Sign in / Sign up`（无 PR 表单）⇒ **需 izzy 登录后走网页流程**。PR 标题与正文已备好（英文、只含技术内容、无内部信息）。
 - **临时目录清理仍在跑**：`%TEMP%\dsh-xlink-*`（Rust 测试残留数千个）分批回收中（22:5x 实测剩 3,251 个）；`%TEMP%\dsh-p1-protocol*`（61 个，5.7 MB）**刻意保留**（判据可能仍在引用，PM 复核后再清）。
 
+### 2026-10-20 22:4x · 当前 HEAD 门禁收口复核（PM 自跑，不采信旧 HEAD 结果）
+
+- **为什么要重跑**：devloper 的最终门禁跑在 HEAD `7fc2fcf`；此后有 7 个提交（`896a898` / `2f7fe7a` / `ca73363` / `ed9e446` / `cdd03fb` / `09d7e32` / `bbf69c5`），其中 **`896a898` 改的是判据库 `scripts/lib/p1-protocol.mjs`** ⇒ 那轮门禁**不覆盖**它。⇒ PM 在**当前 HEAD `bbf69c5`** 上补跑全套。
+- **结果（PM 实跑，全部 exit=0）**：`check:invariants` 全绿（扫 47 文件）、`check:duplicates` **4 处**（允许 8）、`check:builtin` **4 插件 / 43 文件**、`test:scripts` **152 pass / 0 fail / 3 skipped**、`test:plugin` **277 pass / 0 fail / 3 skipped**、`test:probe` **6/6**；另 PM 先前已在同一 HEAD 复跑判据 runner **43 = 40 pass / 0 fail / 3 skipped** 与判据自测 **60/60**。⇒ **与 devloper 报告的数字逐项吻合**，差异只在覆盖的 HEAD 不同。
+- **归属更正（第二次，写进文档免得再口头漂移）**：`58488a9` 是**混合提交**，7 个文件里——**PM 代修/代写**：`plugins/official-chat/host/sweep.js`（A18i 报红后 PM 判定为**真实实现缺口**并代修：留痕放调用处）、`AGENTS.md`（真机复验先清物化条款）、`docs/features/official-chat/official-chat-p1-protocol.md`（S-4 不要求唯一）；**devloper 的**：`fixtures/protocol/oversized-multi.json`、`fixtures/protocol/index.json`、`test/drive/shell/shell-lib.mjs`、`docs/features/official-chat/official-chat-progress.md`（两节）。⇒ 「我这轮的东西都在 `58488a9`」**只对其中 4 个文件成立**。
+- **认可的两条自查**：① 真机前置三步（删物化目录 → `prep:builtin` → 重启壳重新 build）与 AGENTS.md 机检**一致**，不改；② 证据落在隔离根 `%TEMP%\dsh-xlink-g1\evidence-*`，**不在**会被删的探针临时 home（`shell-home`）里 ⇒ 合规。隔离 dev 壳已停。
+- **结论**：**P1 判据集收口**（协议 v0.7 ＋ 43 条判据 ＋ 当前 HEAD 全门禁全绿）⇒ 成员无新活；等 izzy 对 P2「正文去重」是否立项拍板。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
