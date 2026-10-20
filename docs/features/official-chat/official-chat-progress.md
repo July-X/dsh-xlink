@@ -15,7 +15,7 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| P0 可行性验证 | G1 内核工作台选择与发送控制、G2 异步回程与首站可读性、G3 窗口未打开时仍可读取 | **G1/G2/G3 结论已出**（G1 4/5 问通过 + Q3 判定互斥；G2-A 5/5，Windows 零痕迹回程已实测成立；G2-B 探测完成但取数未成立；**G3 三站各 7/7 通过**；**壳真实 workbench 内复验已可复现**——dev 壳两轮 + **自编 release 二进制一轮**（15:42–15:55，实例 id `default`）全过，壳驱动已搬进仓库）。**未闭合的两项**：登录态从未建立（需用户首次登录）、零痕迹回程 macOS 侧无通路。**安装版 release 壳不在开发 agent 范围**（izzy 发布后自己测） |
+| P0 可行性验证 | G1 内核工作台选择与发送控制、G2 异步回程与首站可读性、G3 窗口未打开时仍可读取 | **G1/G2/G3 结论已出**（G1 4/5 问通过 + Q3 判定互斥；G2-A 5/5，Windows 零痕迹回程已实测成立；G2-B 探测完成但取数未成立；**G3 三站各 7/7 通过**；**壳真实 workbench 内复验已可复现**——dev 壳两轮 + **自编 release 二进制一轮**（15:42–15:55，实例 id `default`）全过，壳驱动已搬进仓库；**壳内判据已与内核 r14/r16 对齐**（`results[]` + `summary`，**未执行单列**；壳内 E 升为**节点级**），**两条前置条件机检已压出真分支**（dev-r6 汇总 **9 通过 / 0 失败 / 0 未执行**）。**未闭合的三项**：登录态从未建立（需用户首次登录）、零痕迹回程 macOS 侧无通路、**判据第 31 条自身两处口径缺陷**（嵌套 if 漏判、逃生阀不生效）。**安装版 release 壳不在开发 agent 范围**（izzy 发布后自己测） |
 | P1 协议与隔离 | 固定数据模型、错误、权限与状态机 | **未开始**（P0 的就绪状态纪律可并行开工，见 feasibility 第 9 节） |
 | P2 内核插件闭环 | 固定数据的选择、引用、发送与模型输入核对 | **未开始** |
 | P3 正文快照与桥接 | 原子保存、固定版本、回收、恢复 | **未开始** |
@@ -149,6 +149,23 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 - **四条断言与回执逐条对得上**（用 `evidence-shell-release-r2` 的 JSON 原文核对）：A `hasGroup:true`、B `chipIsKernelNode:true` + `bodyInDraft:false`、D `timeline[0]={t:273,reqs:0}` → `timeline[1]={t:8462,reqs:2,hasBody:true}`、E `errorHit={atMs:1750}` + `newRequests:0` + `draftRetained:true`。
 - **四处口径要写进文档**（已并入 feasibility §8 第 21 条）：① 壳内 E 的「可见错误」是**文本级**、不是节点级（内核 r14 那套才是 `role=alert` 节点级 + 截图）；② `shell-verify.mjs` **没有 verdict 字段**，「全绿」是人读 JSON 判的，与内核 `results.r14.json`（带 `status`）结构不同；③ 壳内 D **也是 2 条请求**（另一条是内核自带的会话标题请求，也含夹具正文）——按「对话请求」计数；④ 两条机检前置条件在 release-r2 **走的是空分支**（`hadPidFile:false` / `existed:false`），**真实路径未被压测**。
 
+### 2026-10-20 16:0x–16:2x · dev-r6 机检压测（devloper）＋ 判据第 31 条两处口径缺陷（tester 提出，PM 第一手复现确认）
+
+**dev-r6 汇总 9 通过 / 0 失败 / 0 未执行**（本轮压测刻意全在 **dev** 壳做，遵守 izzy 的分工）：
+
+- **verdict 字段已补**——`results[]`（`{name, status, detail}`）+ `summary` 计数，**「未执行」单列**：那是「这条机检这条路径没被压过」的唯一信号，混进「通过」里就看不见。
+- **壳内 E 升为节点级**（与内核 r14/r16 同口径）——密集采样同时扫 `role="alert"|role="status"|aria-live` 节点 + 含错误文案的深层节点（tag + class 路径），命中即截图；`nodeLevelVisible` **只有节点级命中才算通过**（文本级不再算数）。dev-r6 实测命中 `role:'alert'` 的 toast 节点（`_toast_l6cvn_6` / `_text_l6cvn_51`）。
+- **两条机检压出真分支**——dev-r3 / dev-r6 以「内核正在跑」开局 → 前置②**真停掉一颗**（pid 4396，**命令行指向本隔离 home 才动手**）→ 前置③**随即认出并清掉随之过期的 pid 文件**（`existed:true, alive:false, removed:true`）。
+- **devloper 自陈修掉自己引入的两个 verdict 映射缺陷**：已死的过期 pid 被记成「失败」（应为「未执行」）、`alive` 同时表达「动手前/后」导致「真停掉一颗」反被记成「未执行」→ 已拆成 `wasAlive` / `stillAlive`。
+- **启动器补齐**——`shell-dev.mjs` 原缺 release 启动器已有的两步（`active.txt` + `shell/dev/settings.json`）→ 干净的隔离 home 会在 `builtin_set_enabled` 报「实例尚未指定内核版本」，**而内核树明明已拷好**；两个启动器现已对称。
+- **回收**——31 个一次性 profile 目录共 1179MB + dev 壳 WebView2 profile 140.4MB，用运行时可恢复删除移入回收站；**用户真实 profile 一个字节未碰**。
+
+**判据第 31 条的两处口径缺陷（tester 提出，PM 16:2x 用合成用例第一手复现，非采信回执）**：
+
+- **嵌套 if 漏判**——`if a { if b2 { …data_directory… } } else { …data_directory… }` 实测**放行**，但 `a` 成立、`b2` 不成立时**没给目录** → 落回默认目录（= 用户真实安装目录）。根因：`hasHitIn(block)` 只看「块范围内有没有命中」，**不区分命中点自己是不是在更深的条件里**。
+- **逃生阀在第 31 条不生效**——`ALLOW_MARKER`（`invariant-allow: real-data-dir`）在 lib 里只有 2 处引用（`:75` / `:78`），**两处都在第 30 条**；第 31 条 **0 处引用**。实测带放行标记的「压根没给」→ **仍判违规**。
+- **PM 已裁定**：两处都要修，**修复由 tester 执行**（判据源码属他），修法与口径见群回复；修完必须用**活体注入**复验，并把 8 个合成用例全部进自测。
+
 ### 2026-10-20 · P0 文档产出
 
 - 新建 [official-chat-feasibility.md](official-chat-feasibility.md)：P0 唯一对外结论，含环境与版本、G1/G2/G3 逐项结论与证据、裁定与理由、文档与实测的出入、本轮没有验证的、是否可以继续。
@@ -161,6 +178,7 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 - **提交基线已变过两次**：14:58 协调者提交 `3436fb4`（「G1 断言复跑全绿 + P0 结论回填；AGENTS.md 补跑批证据约定」），**它包含本文件与 feasibility 的 14:4x 回填**；15:18 又提交 `2321dbd`（「壳内复验驱动搬进仓库 + 第二轮结论回填」），**它包含壳驱动目录、`run-g1.mjs` 加固与 15:1x 回填**。**15:2x 这一轮是相对 `2321dbd` 的工作树改动**（`M` 两份文档 + 并行会话在写的 `M shell/README.md`、`copy-kernel.mjs`、`paths.mjs`、`M src-tauri/src/commands.rs`、`M src-tauri/src/harness/official_chat.rs`），**未提交、未推送**。
 - **第四次回填（2026-10-20 15:2x）**：按 izzy 的三条拍板改写——**证据不固化**（feasibility §10 新增「证据固化：不做」段，写清「原始产物会被清、只有文档里的字段值与判据口径可复核」；PM 已按「可以清」把 `%TEMP%\dsh-xlink-g1\`（约 2.1GB）与 `%TEMP%\dsh-probe\` **移入回收站，可恢复**）、**release 壳改口径为「izzy 发布后验收，不在开发 agent 范围」**（feasibility frontmatter / §1 / §8 G1 第 1 条 / §9 P4 理由③ / §9 先决条件 5）、**探针 fail fast 判据状态由「P0 期间未落地」改为「已拍板、未实施」**（feasibility §7 第 10 条 / §8 其他第 20 条，已派 devloper 实现）；本文件新增「izzy 的三条拍板」小节与交接记录一行。**仍未改动** `official-chat-development-plan.md` 与 `official-chat-bridge-research.md`；**仍未执行** `git commit` / `git push`。
 - **第五次回填（2026-10-20 16:0x）**：按 15:5x 的新证据改写——**release 壳（自编二进制）那轮也过了**（新增 feasibility §7 第 11 条，**含过程偏差记录**：拍板后仍自扩范围，下次先问）、**判据第 31 条与探针 fail fast 从「已拍板、未实施」改为「已实施」**（§7 第 10 条 / §8 其他第 20 条 / §9 先决条件 9）、**tester 的四处口径并入 §8 第 21 条**（壳内 E 是文本级不是节点级、`shell-verify.mjs` 无 verdict 字段、壳内 D 也是 2 条请求、两条机检在 release-r2 走空分支未压测）、**两条前置条件从「未被自动检查」改为「已做成脚本内机检但走空分支」**（§8 G1 第 1 条 / §9 P4 理由③ / §9 先决条件 5）、扫描文件数 **37 → 38**、§10 补 release 轮证据位置与「这份同样会被清」的提示。**提交口径变更**：按 izzy 15:13 的「继续开发任务，做好代码 commit」，本轮由 PM **本地提交、不推送**（此前记的「提交由 izzy 统一做」到此不再执行）。**仍未改动** `official-chat-development-plan.md` 与 `official-chat-bridge-research.md`。
+- **第六次回填（2026-10-20 16:2x）**：按 dev-r6 与 tester 复核改写——**壳内判据已与内核 r14/r16 对齐**（§8 第 21 条第 1/2 点由「弱一档 / 人读 JSON 判」改为已补 `results[]`+`summary`（**未执行单列**）与**节点级** E 断言）、**两条前置条件机检从「走空分支」改为「已压出真分支」**（§8 G1 第 1 条②、§8 第 21 条第 4 点、§9 P4 理由③、§9 先决条件 5，dev-r6 汇总 9/0/0）、**新增第 21 条第 6 点：判据第 31 条自身两处口径缺陷**（嵌套 if 漏判、逃生阀不生效；PM 合成用例第一手复现，**待修**）、§10 补 dev-r6 证据位置。**本轮提交由 PM 做**（基线 `a96d7e7`）。
 
 ## P1 及以后
 
@@ -187,6 +205,8 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 | 2026-10-20 | P0 | **壳驱动搬进仓库** `plugins/official-chat/test\drive\shell\`（7 个文件 + README，**15:18 随 `2321dbd` 提交**），搬完**真跑通**：壳内四项全过 + 内核 r16 五项全绿；判据第 30 条扫描文件数 **31 → 37**（新增 6 个 `.mjs` 真进了扫描范围）；同时定位到**复跑的两条前置条件**（attach 必须是 main 面板；改内置插件开关前必须先停该实例内核） | `evidence-shell-r2\shell-verify.shell-r2.json` + `evidence-r16\results.r16.json` + `plugins/official-chat/test\drive\shell\README.md`（**证据文件已于 15:2x 按 izzy「可以清」移入回收站**） |
 | 2026-10-20 | P0 | **release 壳（自编 release 二进制，实例 id `default`）一轮全过**（15:42–15:55，面板走 `tauri://localhost` 内嵌资源、接线 `wired:true`、A/B/D/E 全绿）；**过程偏差已记**（15:2x 拍板「release 归 izzy 验收」后仍自扩范围，下次先问）；**产品改动** `DSH_XLINK_CHANNEL_SUFFIX`（隔离实例走自己的通道，默认行为零变化 + 2 条新单测） | `evidence-shell-release-r2\shell-verify.shell-release-r2.json`（6,373 字节）+ `model-requests.shell-release-r2.jsonl`（42,447 字节）+ `src-tauri/src/notify/activate.rs` |
 | 2026-10-20 | P0 | **tester 独立复核（不采信回执）**：判据扫描面用**活体注入**证明（注入一行真实 profile 路径 → 门禁点名该文件该行 → 还原后 SHA 逐字节一致）；四条断言与回执逐条对得上；**四处口径**并入 feasibility §8 第 21 条（壳内 E 文本级非节点级、`shell-verify.mjs` 无 verdict 字段、壳内 D 也是 2 条请求、两条机检在 release-r2 走空分支**未被压测**） | `evidence-shell-release-r2\shell-verify.shell-release-r2.json` + `scripts/probe-profile-isolation.test.mjs`（26/26） |
+| 2026-10-20 | P0 | **dev-r6 机检压测：9 通过 / 0 失败 / 0 未执行**（全在 dev 壳）——verdict 字段（`results[]`+`summary`，**未执行单列**）、壳内 E 升为**节点级**（`role="alert"` + 深层节点路径 + 截图）、两条前置条件机检**压出真分支**（真停一颗内核 → 认出并清掉随之过期的 pid 文件）；devloper 自陈修掉自己引入的两个 verdict 映射缺陷（`wasAlive`/`stillAlive` 拆分）；`shell-dev.mjs` 补齐 `active.txt` + `shell/dev/settings.json`，两个启动器对称；回收一次性 profile 1179MB + 壳 WebView2 profile 140.4MB，**用户真实 profile 未碰** | `evidence-dev-r6\shell-verify.dev-r6.json`（13,759 字节）+ 两张 Toast 截图 |
+| 2026-10-20 | P0 | **判据第 31 条两处口径缺陷**（tester 提出，PM 16:2x 用合成用例第一手复现）：① **嵌套 if 漏判**——`if a { if b2 {…} } else {…}` 被放行，但 `a` 成立、`b2` 不成立时没给目录 → 落回用户真实安装目录（根因：`hasHitIn` 不区分命中点是否在更深条件里）；② **逃生阀在第 31 条不生效**——`ALLOW_MARKER` 只有 2 处引用且都在第 30 条，第 31 条 0 处。**PM 裁定：两处都修，由 tester 执行**，修完用活体注入复验 | `scripts/lib/probe-profile-isolation.mjs`（`:75` / `:78` / `:271-369`） |
 | 2026-10-20 | P0 | G2-A 异步回程 5/5 通过；G2-B 三站只读探测完成，真实取数结论因**本机从未建立登录态**未成立；Q1/Q2 判据已修并补行为判据 6/6 | `%TEMP%\dsh-probe\*.json` + `src-tauri/examples/official_chat_probe_site.test.mjs` |
 | 2026-10-20 | P0 | G3 机制层 7/7 通过（未登录 + 模拟页签条件下）；真实官网窗口 + 已登录态未执行 | 探针 G3 跑批（临时目录时间戳 `1792475664714`） |
 | 2026-10-20 | P0 | 零痕迹回程：R1 槽位产品上站不住；Windows CDP 5/5 成立；**macOS 侧无通路（P0 已知缺口，代码里明确报错不静默降级）** | `--mode cdp` 跑批 + `script_eval.rs:434-436` / wry 0.57 `src/wkwebview/mod.rs:723-780` |

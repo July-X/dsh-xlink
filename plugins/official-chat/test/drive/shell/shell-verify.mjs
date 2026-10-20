@@ -68,11 +68,23 @@ const FIXTURE_BETA = 'G1 固定对话 Beta';
 const BODY_ALPHA = '【G1 固定正文 Alpha】第一行固定正文。';
 const BODY_BETA = '【G1 固定正文 Beta】只有一行。';
 
-const out = { round: ROUND, steps: [], targets: [] };
+const out = { round: ROUND, steps: [], results: [] };
 const step = (name, data) => {
   out.steps.push({ name, ...data });
   console.log(`\n=== ${name} ===\n` + JSON.stringify(data, null, 2).slice(0, 4000));
 };
+
+/**
+ * 记一条**判定**：通过 / 失败 / 未执行。
+ *
+ * 形状与内核路径的 `results.<轮次>.json` 对齐（`{name, status, detail}`）——
+ * 之前这里只把原始数据推进 `steps`，「全绿」只能靠人读 JSON 判；那与内核那套
+ * **不是同一种绿**，引用时要能一眼看出差别。
+ */
+function verdict(name, status, detail) {
+  out.results.push({ name, status, detail });
+  console.log(`[${status}] ${name} — ${detail}`);
+}
 
 /** 连上 WebView2 的 CDP 端点。 */
 async function connect() {
@@ -482,25 +494,29 @@ function processCommandLine(pid) {
  */
 function stopInstanceKernel() {
   if (!existsSync(KERNEL_PID_FILE)) {
-    return { hadPidFile: false, stopped: false, why: '没有 pid 文件（本实例没起过内核）' };
+    return { hadPidFile: false, wasAlive: false, stillAlive: false, stopped: false, why: '没有 pid 文件（本实例没起过内核）' };
   }
   const raw = readFileSync(KERNEL_PID_FILE, 'utf8').trim();
   const pid = Number(raw.split(/\s+/)[0]);
   if (!Number.isFinite(pid) || pid <= 0) {
-    return { hadPidFile: true, pid: raw, stopped: false, why: 'pid 文件内容不是 pid' };
+    return { hadPidFile: true, pid: raw, wasAlive: false, stillAlive: false, stopped: false, why: 'pid 文件内容不是 pid' };
   }
   const cmdline = processCommandLine(pid);
   if (cmdline === null) {
     // 进程已经没了 → 这是**过期 pid**：壳会因为它以为内核还活着而不起内核（坑②）。
-    rmSync(KERNEL_PID_FILE, { force: true });
-    return { hadPidFile: true, pid, alive: false, removedStalePidFile: true, stopped: false };
+    // 文件留给 `clearStaleKernelPid` 去清（那条机检该认的就是这个场景）。
+    return {
+      hadPidFile: true, pid, wasAlive: false, stillAlive: false, stopped: false,
+      why: 'pid 已过期（进程不在）',
+    };
   }
   if (!cmdline.includes(SHELL_HOME)) {
     // **拒绝动手**：这个 pid 不是本隔离 home 的进程。
     return {
       hadPidFile: true,
       pid,
-      alive: true,
+      wasAlive: true,
+      stillAlive: true,
       stopped: false,
       why: '该 pid 的命令行不指向本隔离 home，拒绝停它',
       cmdline,
@@ -513,35 +529,49 @@ function stopInstanceKernel() {
       windowsHide: true,
     });
   } catch (error) {
-    return { hadPidFile: true, pid, alive: true, stopped: false, why: String(error?.message ?? error), cmdline };
-  }
-  // 等它真的退干净（taskkill 返回后进程可能还在收尾）。
-  for (let i = 0; i < 40; i += 1) {
-    if (processCommandLine(pid) === null) break;
-    sleep(250);
+    return {
+      hadPidFile: true, pid, wasAlive: true, stillAlive: true, stopped: false,
+      why: String(error?.message ?? error), cmdline,
+    };
   }
   const stillAlive = processCommandLine(pid) !== null;
-  if (!stillAlive) rmSync(KERNEL_PID_FILE, { force: true });
+  // **不删 pid 文件**：那是壳自己的文件，删它的职责属于下面的
+  // `clearStaleKernelPid`（「过期 pid 先清」那条机检）—— 进程刚死、文件还在，
+  // 正是那条机检该认出来的场景。
+  //
+  // 字段名要分清：`wasAlive` = **动手前**进程在不在（决定这条机检算不算被执行过），
+  // `stillAlive` = **动手后**还在不在（决定停成功没有）。早先两处都叫 `alive`，
+  // 映射按「动手前」判、返回值给的是「动手后」→ 真的停掉一颗反而记成「未执行」。
   return {
     hadPidFile: true,
     pid,
-    alive: !stillAlive,
+    wasAlive: true,
+    stillAlive,
+    alive: stillAlive,
     stopped: !stillAlive,
     cmdline,
-    removedStalePidFile: !stillAlive,
+    pidFileLeftForCleanup: !stillAlive,
   };
 }
 
-/** 清掉过期的 kernel.pid（见文件头 坑②）。 */
+/**
+ * 清掉过期的 kernel.pid（见文件头 坑②）。
+ *
+ * 判「活没活」用**同一个**命令行探针（`processCommandLine`），不用
+ * `process.kill(pid, 0)`：两处判据不一致时，「停内核」与「清过期 pid」会对
+ * 同一个 pid 给出相反的结论，而这种分歧在 Windows 上不容易一眼看出来。
+ */
 function clearStaleKernelPid() {
   if (!existsSync(KERNEL_PID_FILE)) return { existed: false };
   const raw = readFileSync(KERNEL_PID_FILE, 'utf8').trim();
   const pid = Number(raw.split(/\s+/)[0]);
-  let alive = false;
-  try { process.kill(pid, 0); alive = true; } catch { alive = false; }
-  if (alive) return { existed: true, pid, alive: true, removed: false };
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return { existed: true, pid: raw, alive: false, removed: false, why: 'pid 文件内容不是 pid' };
+  }
+  const cmdline = processCommandLine(pid);
+  if (cmdline !== null) return { existed: true, pid, alive: true, removed: false, cmdline };
   rmSync(KERNEL_PID_FILE, { force: true });
-  return { existed: true, pid, alive: false, removed: true };
+  return { existed: true, pid, alive: false, removed: true, why: '进程已不在，pid 文件是过期的' };
 }
 
 /* ------------------------------------------------------------------ 主流程 */
@@ -582,6 +612,11 @@ try {
     ok: mainProbe?.ok === true,
     why: mainProbe?.why ?? null,
   });
+  verdict(
+    '前置①：attach 到的必须是 main 面板（只读探针 builtin_status）',
+    mainProbe?.ok === true ? '通过' : '失败',
+    JSON.stringify({ url: panel.url, why: mainProbe?.why ?? null }),
+  );
   if (mainProbe?.ok !== true) {
     throw new Error(
       `attach 到的不是 main 面板（url=${panel.url}）：${mainProbe?.why ?? 'unknown'}`,
@@ -593,6 +628,27 @@ try {
   //     整个覆盖」。只停命令行指向**本隔离 home** 的进程，别人的内核不碰。
   const stopped = stopInstanceKernel();
   step('instance-kernel-stopped', stopped);
+  // 「没内核在跑」与「真的停掉了一颗」是**两件事**：前者是空分支，标「未执行」，
+  // 让「这条机检到底被压过没有」在结果里一眼可见。
+  // 三种情形分开判：pid 文件都没有 / 进程早已不在（过期 pid，交给前置③清）/
+  // 真的停掉了一颗 / 活着却停不掉（唯一算失败的那种）。
+  // 判据用 `wasAlive`（**动手前**在不在），不是 `alive`（动手后还在不在）。
+  const stopStatus = stopped.hadPidFile === false ? '未执行'
+    : (stopped.wasAlive === false ? '未执行'
+      : (stopped.stopped === true ? '通过' : '失败'));
+  verdict(
+    '前置②：改内置插件开关前停掉本实例的内核',
+    stopStatus,
+    JSON.stringify({
+      hadPidFile: stopped.hadPidFile,
+      pid: stopped.pid ?? null,
+      wasAlive: stopped.wasAlive ?? null,
+      stillAlive: stopped.stillAlive ?? null,
+      stopped: stopped.stopped === true,
+      why: stopped.why ?? null,
+      cmdline: stopped.cmdline ?? null,
+    }),
+  );
   if (stopped.alive === true) {
     throw new Error(
       `停不掉本实例的内核（pid=${stopped.pid ?? '未知'}）：${stopped.why ?? 'unknown'}`,
@@ -605,7 +661,13 @@ try {
   //     插件没接线之前那个文件可能根本不存在。
 
   // ②.6 清掉过期的 kernel.pid（坑②）
-  step('stale-kernel-pid-cleared', clearStaleKernelPid());
+  const stale = clearStaleKernelPid();
+  step('stale-kernel-pid-cleared', stale);
+  verdict(
+    '前置③：清掉过期的 kernel.pid',
+    stale.existed === false ? '未执行' : (stale.removed === true ? '通过' : '未执行'),
+    JSON.stringify(stale),
+  );
 
   // ③ 用壳自己的命令层启用插件 → 走壳自己的物化链
   const enable = await invoke(cdp, panelSession, 'builtin_set_enabled', {
@@ -619,13 +681,26 @@ try {
   //     插件最后是靠「壳自己的接线行 + 物化链」装上的，那不是本次要的路径。
   const enableValue = enable?.value ?? {};
   if (enable?.ok !== true) {
+    verdict('接线：builtin_set_enabled', '失败', JSON.stringify(enable));
     throw new Error(`builtin_set_enabled 失败：${enable?.why ?? 'unknown'}`);
   }
   if (enableValue.wired !== true) {
+    verdict('接线：builtin_set_enabled（wired:true）', '失败', JSON.stringify(enableValue));
     throw new Error(
       `builtin_set_enabled 返回 wired=${JSON.stringify(enableValue.wired)}：${JSON.stringify(enableValue)}`,
     );
   }
+  verdict(
+    '接线：builtin_set_enabled（wired:true）',
+    '通过',
+    JSON.stringify({
+      id: enableValue.id ?? null,
+      wired: enableValue.wired,
+      loadState: enableValue.loadState ?? null,
+      missingPeers: enableValue.missingPeers ?? null,
+      kernelFingerprint: enableValue.kernelFingerprint ?? null,
+    }),
+  );
 
   // ③.6 桩模型路由追加（壳刚写的接线行必须原样保留）
   step('stub-route-appended', appendStubRoute(stub.baseURL));
@@ -741,24 +816,32 @@ try {
   await evaluate(cdp, wb, `(() => { document.execCommand('insertText', false, '@'); return true; })()`);
   await sleep(2500);
   const menuBody = await readBody(cdp, wb);
-  step('A-menu-in-shell', {
+  const aDetail = {
     hasGroup: menuBody.includes('官方对话') && menuBody.includes(FIXTURE_ALPHA),
     snippet: menuBody.split('\n').filter((l) => l.includes('官方对话') || l.includes(FIXTURE_ALPHA)).slice(0, 5),
-  });
+  };
+  step('A-menu-in-shell', aDetail);
+  verdict('断言 A：@ 菜单里出现「官方对话」分组', aDetail.hasGroup ? '通过' : '失败', JSON.stringify(aDetail));
   await clearDraft(cdp, wb);
 
   // ⑦ ②：chip 落地且是内核节点（正文不在草稿里）
   await setConfig(cdp, wb, { readDelayMs: 8000, failRead: false });
   const pick = await pickFixture(cdp, wb, FIXTURE_ALPHA);
   const draftNow = await readDraft(cdp, wb);
-  step('B-chip-in-shell', {
+  const bDetail = {
     picked: pick.clicked === true,
     menuHasRow: pick.menuHasRow === true,
     menuRows: pick.menuRows ?? [],
     chipIsKernelNode: (draftNow.html ?? '').includes('data-composer-chip="official-chat"'),
     bodyInDraft: (draftNow.html ?? '').includes(BODY_ALPHA),
     draftHtml: (draftNow.html ?? '').slice(0, 220),
-  });
+  };
+  step('B-chip-in-shell', bDetail);
+  verdict(
+    '断言 B：chip 落地且是内核节点（正文不在草稿里）',
+    bDetail.picked && bDetail.chipIsKernelNode && bDetail.bodyInDraft === false ? '通过' : '失败',
+    JSON.stringify(bDetail),
+  );
 
   // ⑧ ③：发送门控 —— 等待
   await clearDraft(cdp, wb);
@@ -786,7 +869,16 @@ try {
   const reqsD = stub.requests().slice(beforeD);
   const draftAfter = await readDraft(cdp, wb);
   const bodyAfter = await readBody(cdp, wb);
-  step('D-send-gate-in-shell', {
+  // **口径**：正文「只出现一次」指的是**这一次发送**在**对话请求**里出现一次。
+  // 会话是跨轮复用的时，历史里本来就躺着上一轮那条 → 同一个请求里会出现两次。
+  // 所以这里把「本次那条」与「历史那条」分开数，别让人拿总数当重复外发。
+  const chatRequest = reqsD.find((r) => JSON.stringify(r.body ?? {}).includes('You are an AI agent')) ?? null;
+  const chatMessages = chatRequest?.body?.messages ?? [];
+  const alphaIdx = chatMessages
+    .map((m, i) => ({ i, m, c: typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '') }))
+    .filter((x) => x.c.includes(BODY_ALPHA))
+    .map((x) => x.i);
+  const dDetail = {
     picked: pickD.clicked === true,
     waitedMs: arrived,
     newRequests: reqsD.length,
@@ -794,10 +886,34 @@ try {
     serializeOk: (await readProbe(cdp, wb))?.events?.some((e) => e.kind === 'serialize-ok') ?? false,
     draftCleared: (draftAfter.draft ?? '').trim() === '',
     sentText: bodyAfter.includes('请看这个'),
+    // ↓ 口径字段：对话请求里正文出现在哪几条消息、历史里有没有上一轮的 assistant 回包
+    chatRequestCount: reqsD.filter((r) => JSON.stringify(r.body ?? {}).includes('You are an AI agent')).length,
+    bodyOccurrenceIndexes: alphaIdx,
+    bodyOccurrencesInChatRequest: alphaIdx.length,
+    thisTurnIndex: alphaIdx.length > 0 ? alphaIdx[alphaIdx.length - 1] : null,
+    historyAssistantReplies: chatMessages.filter((m) => m.role === 'assistant').length,
+    otherRequestPurposes: reqsD
+      .filter((r) => !JSON.stringify(r.body ?? {}).includes('You are an AI agent'))
+      .map((r) => (JSON.stringify(r.body ?? {}).includes('Create a concise title') ? 'session-title' : 'other')),
     timeline: timeline.filter((x, i) => i === 0 || i === timeline.length - 1 || x.reqs > 0),
-  });
+  };
+  step('D-send-gate-in-shell', dDetail);
+  verdict(
+    '断言 D：读取门控（读取完成前 0 请求，完成后请求体含夹具正文）',
+    dDetail.picked && dDetail.waitedMs !== null && dDetail.requestHasBody
+      && dDetail.serializeOk && dDetail.draftCleared ? '通过' : '失败',
+    JSON.stringify(dDetail),
+  );
 
   // ⑨ ③：发送门控 —— 拒绝（错误提示是**瞬态 Toast**，必须密集采样）
+  //
+  //    **节点级断言**（与内核 r14/r16 同一口径）：光有文本命中不算数——文本级
+  //    命中证明不了「有一个可访问的、用户看得见的错误出口」。所以这里同时扫
+  //    `role="alert"|role="status"|aria-live` 的节点、含错误文案的深层节点
+  //    （带 tag/class 路径），并在命中时**截图**留证。
+  //    内核把 `error` 级 notice 渲染成 Toast（`ui-conversation/client.js@0.2.1-rc.2:18808`
+  //    `if (notice?.level === "error") showToast(notice.text)`，带 `onDone` → 自动消失），
+  //    `info` 级才是内联 `role="status"`（`:18982-18986`）→ 必须密集采样。
   await clearDraft(cdp, wb);
   await setConfig(cdp, wb, { readDelayMs: 2500, failRead: true });
   const pickE = await pickFixture(cdp, wb, FIXTURE_BETA);
@@ -805,31 +921,106 @@ try {
   const beforeE = stub.requests().length;
   await pressEnterSubmit(cdp, wb);
   let errorHit = null;
+  let noticeEvidence = null;
+  const eSamples = [];
   for (let i = 0; i < 24; i += 1) {
-    const body = await readBody(cdp, wb);
-    const m = body.match(/[^\n]*(固定读取失败|正文读取失败|发送时会拒绝)[^\n]*/g);
-    if (m) { errorHit = { atMs: i * 250, text: m[0] }; break; }
+    const scan = await evaluate(
+      cdp,
+      wb,
+      `(() => {
+         const body = document.body;
+         const inner = body ? (body.innerText || '') : '';
+         const content = body ? (body.textContent || '') : '';
+         const live = [...document.querySelectorAll('[role="alert"],[role="status"],[aria-live]')]
+           .map((el) => ({
+             role: el.getAttribute('role'),
+             live: el.getAttribute('aria-live'),
+             text: (el.textContent || '').trim().slice(0, 160),
+           }))
+           .filter((x) => x.text.length > 0)
+           .slice(0, 6);
+         const deep = [];
+         for (const el of document.querySelectorAll('*')) {
+           const t = el.textContent || '';
+           if (t && t.length < 400 && (t.includes('读取失败') || t.includes('发送时会拒绝'))) {
+             deep.push({
+               tag: el.tagName,
+               cls: String(el.getAttribute('class') || '').slice(0, 100),
+               role: el.getAttribute('role'),
+               text: t.trim().slice(0, 160),
+             });
+           }
+         }
+         return { innerHas: inner.includes('读取失败'), contentHas: content.includes('读取失败'), live, deep: deep.slice(0, 6) };
+       })()`,
+    );
+    const hit = scan?.innerHas === true || scan?.contentHas === true || (scan?.deep?.length ?? 0) > 0;
+    eSamples.push({ atMs: i * 250, hit, liveCount: scan?.live?.length ?? 0, deepCount: scan?.deep?.length ?? 0 });
+    if (hit && !errorHit) {
+      errorHit = { atMs: i * 250, text: scan?.deep?.[0]?.text ?? scan?.live?.[0]?.text ?? '读取失败' };
+      noticeEvidence = scan;
+    }
+    // 截图留证：命中那一张必拍，其余每 8 拍一张。
+    if ((hit && noticeEvidence?.shot === undefined) || i % 8 === 0) {
+      try {
+        const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }, wb);
+        const file = join(EVIDENCE_DIR, `assert-e.toast.${String(i * 250).padStart(5, '0')}ms.png`);
+        writeFileSync(file, Buffer.from(shot.data, 'base64'));
+        if (noticeEvidence && noticeEvidence.shot === undefined) noticeEvidence.shot = file;
+      } catch { /* 截图失败不影响判据 */ }
+    }
+    if (errorHit) break;
     await sleep(250);
   }
   const draftE = await readDraft(cdp, wb);
   const probeE = await readProbe(cdp, wb);
-  step('E-reject-in-shell', {
+  const liveNodes = noticeEvidence?.live ?? [];
+  const deepNodes = noticeEvidence?.deep ?? [];
+  const nodeLevelVisible = liveNodes.some((x) => /读取失败|发送时会拒绝/.test(x.text ?? ''))
+    || deepNodes.some((x) => /读取失败|发送时会拒绝/.test(x.text ?? ''));
+  const eDetail = {
     picked: pickE.clicked === true,
     newRequests: stub.requests().length - beforeE,
     errorVisible: errorHit !== null,
     errorHit,
+    nodeLevelVisible,
+    liveNodes,
+    deepNodes,
+    screenshot: noticeEvidence?.shot ?? null,
     draftRetained: (draftE.draft ?? '').includes('请看这个'),
     serializeFailed: (probeE?.events ?? []).some((e) => e.kind === 'serialize-failed'),
-  });
+    samples: eSamples.filter((s, i) => s.hit || i === 0 || i === eSamples.length - 1),
+  };
+  step('E-reject-in-shell', eDetail);
+  verdict(
+    '断言 E：读取失败则 0 请求、草稿保留、可见错误出口（节点级）',
+    eDetail.picked && eDetail.newRequests === 0 && eDetail.errorVisible && eDetail.nodeLevelVisible
+      && eDetail.draftRetained && eDetail.serializeFailed ? '通过' : '失败',
+    JSON.stringify(eDetail),
+  );
 
   // ⑩ 壳自己的物化链产物
-  step('shell-artifacts', inspectShellArtifacts());
+  const artifacts = inspectShellArtifacts();
+  step('shell-artifacts', artifacts);
+  verdict(
+    '物化链产物核对（物化目录 / 三份文件 / 标记 / 接线行）',
+    artifacts.materializedExists && artifacts.entries.every((e) => e.exists)
+      && artifacts.markerExists && artifacts.patchHasRow ? '通过' : '失败',
+    JSON.stringify(artifacts),
+  );
 } catch (error) {
   step('failed', { error: String(error?.message ?? error), stack: String(error?.stack ?? '') });
+  verdict('实跑', '失败', String(error?.message ?? error));
 } finally {
   try { cdp?.close(); } catch { /* ignore */ }
   try { stub?.stop(); } catch { /* ignore */ }
+  // 汇总：通过 / 失败 / 未执行各多少条（**未执行要单列**——那是「这条机检这条
+  // 路径没被压过」的唯一信号，混进「通过」里就看不见了）。
+  const summary = { 通过: 0, 失败: 0, 未执行: 0 };
+  for (const r of out.results) summary[r.status] = (summary[r.status] ?? 0) + 1;
+  out.summary = summary;
   const file = join(EVIDENCE_DIR, `shell-verify.${ROUND}.json`);
   writeFileSync(file, JSON.stringify(out, null, 2), 'utf8');
-  console.log(`\n结果 ${file}`);
+  console.log(`\n汇总 ${JSON.stringify(summary)}`);
+  console.log(`结果 ${file}`);
 }
