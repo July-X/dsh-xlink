@@ -1076,7 +1076,8 @@ export async function createAdapter({
      *
      * · `delivered === true` ⇒ 这条提示**经输入区通道投出去了**
      *   （内核 `conversation.input.for(actx).notify(level, text)`）
-     *   ⇒ **承载位 = 输入区常驻条**（协议 §3.2；`error` 档只弹瞬态 toast）。
+     *   ⇒ **承载位 = 输入区常驻条**（协议 §3.2；按 **v0.5 的渲染侧更正**：`error` 档
+     *   **额外**弹一个瞬态 toast、**不**渲染 inline 常驻条 ⇒ 只有 `info` 档才有常驻条）。
      * · `groups` / `budget` = 提示里的**结构化数据**——判据判**数据**，
      *   不判文案措辞（UX 文案未定稿）。
      *

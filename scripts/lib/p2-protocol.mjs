@@ -274,8 +274,11 @@ async function waitForBudgetNotice(adapter, { from = 0, timeoutMs = 2500 } = {})
  * · `delivered` ⇒ 这条提示经**输入区通道**投出去了
  *   （内核 `conversation.input.for(actx).notify(level, text)`）
  *   ⇒ 承载位 = 输入区常驻条（不是浏览器 toast）。
- * · `level === 'info'` ⇒ 内核渲染 inline 常驻条（`error` 档只弹瞬态 toast，
- *   见协议 §3.2 引的内核契约）⇒ **可复查**。
+ * · `level === 'info'` ⇒ 内核渲染 inline 常驻条 ⇒ **可复查**。
+ *   （**按协议 v0.5 的渲染侧更正**：`client.js:18807-18809` 是**独立 `useEffect`**
+ *   ⇒ 准确说法是「`error` 档**额外**弹一个瞬态 toast、**不**渲染 inline 常驻条；
+ *   `info` 档**只**渲染 inline 常驻条」⇒ 本批必须用 `info` 档的**理由不变**：
+ *   要常驻条、不要瞬态 toast。）
  *
  * @param {object} notice
  * @returns {{ok: boolean, why: string}}
@@ -289,7 +292,8 @@ function checkNoticeCarrier(notice) {
       ok: false,
       why:
         `提示档位是 ${String(notice?.level ?? '')}——协议 §3.2 要求本批所有提示用 info 档` +
-        '（error 档内核只弹瞬态 toast ⇒ 当场违反「不接受瞬态 toast」）',
+        '（按 v0.5 的渲染侧更正：error 档**额外**弹一个瞬态 toast、**不**渲染 inline 常驻条' +
+        '⇒ 没有常驻条可复查 ⇒ 当场违反「不接受瞬态 toast」）',
     };
   }
   return { ok: true, why: '' };
@@ -469,10 +473,13 @@ export async function checkP2_1_sameGroupKeepsDistinctIds(adapter) {
  *
  * · `delivered` ⇒ 这条提示经**输入区通道**投出去了
  *   （内核 `conversation.input.for(actx).notify(level, text)`）；
- * · `level === 'info'` ⇒ 内核渲染 inline 常驻条；`error` 档只弹瞬态 toast
- *   （协议 §3.2 引的内核契约：`dsh-client-ui-conversation/lib/client.js`
+ * · `level === 'info'` ⇒ 内核渲染 inline 常驻条；`error` 档**不**渲染 inline 常驻条、
+ *   只**额外**弹一个瞬态 toast（协议 §3.2 引的内核契约 ＋ **v0.5 的渲染侧更正**：
+ *   `dsh-client-ui-conversation/lib/client.js`
  *   SHA `8554738CBEEB5218AD1BFA4773EF094363B066D052A1893D7A96797C5BC33A63`
- *   的 `:18982-18986` 只渲染 `level === 'info'`，`:18808` 对 `error` 档只 `showToast`）。
+ *   的 `:18982-18986` 只渲染 `level === 'info'`；`:18807-18809` 是**独立 `useEffect`**，
+ *   对 `error` 档 `showToast` ⇒ 准确说法是「error 档**额外**弹瞬态 toast，
+ *   info 档**只**渲染 inline 常驻条」）。
  *
  * ## 判「数据」也判「文案自包含」
  *

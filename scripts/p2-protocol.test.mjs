@@ -680,7 +680,8 @@ test('P2-6：失败 ⇒ 可见错误 + 不拦截发送 —— 没提示 / 拦截
   assert.equal(silent.status, FAIL);
   assert.match(silent.detail, /可见错误/);
 
-  // 违规③：失败提示的档位是 `error`（内核只弹瞬态 toast ⇒ 违反「可复查」）。
+  // 违规③：失败提示的档位是 `error`（按 v0.5 的渲染侧更正：error 档**不**渲染 inline
+  // 常驻条、只额外弹一个瞬态 toast ⇒ 没有常驻条可复查 ⇒ 违反「可复查」）。
   const errorLevel = await checkP2_6_failureDoesNotBlockSend(
     makeSyntheticAdapter({
       failNotice: {
