@@ -183,6 +183,8 @@ export function createFixtureSource(items) {
  * @param {object} options.captureSource - 取数源（本期是固定夹具）。
  * @param {object} [options.seqAllocator] - 序号分配器（协议 v0.2 S-1「id 分配权
  *   归 host」）。**没有它就分配不出 id** ⇒ `catalog` 只能失败。
+ * @param {object} [options.sweeper] - 保留期清理器（协议 §4.1）。**只在
+ *   `catalog` 入口惰性触发**，至多一天一次。
  * @param {string} options.providerId - provider 稳定 id。
  * @param {string} options.accountScope - 账户范围（**后端推导**，见下）。
  * @param {() => number} [options.now]
@@ -193,6 +195,7 @@ export function createCommands({
   catalogCache,
   captureSource,
   seqAllocator = null,
+  sweeper = null,
   providerId = 'official-chat',
   accountScope = '',
   now = () => Date.now(),
@@ -395,6 +398,16 @@ export function createCommands({
    * @param {{query?: string, cursor?: string, accountScope?: string}} request
    */
   async function catalog(request = {}) {
+    // **保留期主动清理**（协议 §4.1）：**惰性触发**，**只在 `catalog` 入口**，
+    // 同实例至多一天一次（节流键 `<root>/sweeps/last-sweep-<日期>.json`）。
+    //
+    // **不阻塞业务**：清理失败只记日志（清理器自己兜），这里也再兜一层——
+    // 清理是「 housekeeping」，**绝不能因为它把用户的目录查询搞挂**。
+    try {
+      sweeper?.maybeSweep?.();
+    } catch (error) {
+      // 吞掉：清理失败与「目录查不到」是两件事，不该混在一起报错。
+    }
     const scope = String(request.accountScope ?? accountScope);
     const query = String(request.query ?? '');
     const cached = catalogCache.read(providerId, scope, query);

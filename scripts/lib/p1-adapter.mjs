@@ -78,9 +78,11 @@ export function removeTempRoot(dir) {
  * @param {object} options
  * @param {object} options.store - host 侧真落盘 store（`saveSnapshot` / `loadSnapshot`）。
  * @param {object} [options.config] - 客户端配置。
+ * @param {Function} options.fetchImpl - 客户端用的 **same-origin fetch** 桩
+ *   （v0.4：客户端自己发 fetch 打 exact route）。
  * @returns {object}
  */
-function loadClient({ config = {}, sourcePath, connection }) {
+function loadClient({ config = {}, sourcePath, fetchImpl }) {
   const source = readFileSync(sourcePath ?? CLIENT_SOURCE_URL, 'utf8');
   const registered = [];
   const notices = [];
@@ -100,6 +102,9 @@ function loadClient({ config = {}, sourcePath, connection }) {
     Number,
     Boolean,
     [CONFIG_KEY]: config,
+    // **客户端自己发 same-origin fetch**（协议 v0.4 §5）：桩要复刻内核的
+    // **全等 pathname 匹配 + method 校验**，不是「怎么调都能通」。
+    fetch: fetchImpl,
   };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
@@ -119,11 +124,8 @@ function loadClient({ config = {}, sourcePath, connection }) {
   const services = {
     inputTriggers: { registerSource: (s) => registered.push(s) },
     sessions: { scope: () => actx },
-    // **内核 `connection` 服务的 RPC 通道**（P1 协议 §5 定的唯一通路）：
-    // 客户端半边在浏览器页面、host 半边在内核 Node 进程，两棵不同的 cordis 树，
-    // 所以 `ctx.get('xlink-official-chat')` 永远解析不到——唯一可行的是内核
-    // `connection` 服务的 `rpc.call(channel, endpoint, payload)`。
-    connection,
+    // **注意：`connection` 服务不再给客户端**——v0.4 起客户端**自己发 fetch**
+    // 打 exact route，不再读 `ctx.get('connection')`。
   };
 
   const ctx = {
@@ -203,7 +205,6 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
   let client = null;
   let store = null;
   let commands = null;
-  let handler = null;
   let seqAllocator = null;
   let scope = { accountScope: 'desktop-dev/default/site-A', instance: 'default-dev', mode: 'dev' };
   let serializeOkCount = 0;
@@ -224,44 +225,93 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
   }
 
   /**
-   * 客户端侧的 RPC 通道：**内核 `connection` 服务的 `rpc.call`**。
+   * **假 `connection` 服务**：只实现 exact fetch route 的**注册**
+   * （协议 v0.4 §5 的通道形态）。
    *
    * ## 这里模拟的是内核 `connection` 服务的**路由注册**语义（不是直连 handler）
    *
-   * 协议 v0.3 §8 第 13 条（A0）：「client → host 经内核 `connection` 服务的
+   * 协议 v0.4 §8 第 13 条（A0 / A0s）：「client → host 经内核 `connection` 服务的
    * **真实路由注册**跑通一次（**不得直连 handler 绕过注册**）」。
    *
-   * 真机 p1-r2 的根因就是**绕过注册**：host 半边没 declare `webServer` ⇒
-   * `rpc.handle` 在内核里抛 `cannot get property "webServer" without inject`
-   * ⇒ 路由压根没注册上 ⇒ 菜单空、正文没进模型。**若本文件直连 handler，
-   * 那个洞就会被判据自己盖住**（判据全绿、真机全红）——所以这里**必须**走
-   * `rpc.handle` 注册 + `rpc.call` 调用：host 半边不注册，客户端就调不通。
+   * 真机 p1-r2 / p1-r6 的根因就是**没注册上**：host 半边调 `rpc.handle` 时内核抛
+   * `cannot get property "webServer" without inject` ⇒ 路由压根没注册 ⇒ 菜单空、
+   * 正文没进模型。**若本文件直连 handler，那个洞就会被判据自己盖住**（判据全绿、
+   * 真机全红）——所以这里**必须**走「注册 exact route + 客户端自己 fetch」：
+   * **host 半边不注册，客户端就调不通**（拿到 404）。
    *
-   * **仍然不等于真机**：内核 `connection` 服务的 `register()` 里还有鉴权、
-   * `webServer` 路由与 fiber scope 的那套（协议 §5 的取证）。**真机级那条
-   * （A0）仓库级跑不了**，如实报「未执行」。
+   * **故意不实现 `rpc.handle`**：v0.4 已证伪那条路（插件侧必抛）。若有人把 host
+   * 半边改回 `rpc.handle`，这里就**注册不上** ⇒ 客户端 404 ⇒ **判据红**。
+   *
+   * **仍然不等于真机**：内核那边还有 owner 准入、webServer 路由与 fiber scope
+   * 的那套（协议 §5 的取证）。**真机级那条（A0）仓库级跑不了**，如实报「未执行」。
    */
   const routes = new Map();
   const connection = {
-    rpc: {
-      /** host 半边注册路由（与内核 `connection.rpc.handle` 同名同形）。 */
-      handle: (channel, handler) => {
-        routes.set(String(channel), handler);
-      },
-      /** client 半边调路由（与内核 `connection.rpc.call` 同名同形）。 */
-      call: async (channel, endpoint, payload, signal) => {
-        const handler = routes.get(String(channel));
-        if (handler === undefined) {
-          // **没注册就调不通**——这正是真机那个洞的形状（路由没注册上）。
-          throw new Error(`通道 ${String(channel)} 没有注册路由（host 半边没调 rpc.handle）`);
-        }
-        return handler(endpoint, payload, signal);
+    fetch: {
+      /** host 半边注册 exact route（与内核 `connection.fetch.register` 同名同形）。 */
+      register: (route) => {
+        const path = String(route?.path ?? '');
+        if (path === '') throw new Error('exact route 缺 path');
+        if (routes.has(path)) throw new Error(`exact route 重复注册：${path}`);
+        routes.set(path, route);
+        return () => routes.delete(path);
       },
     },
   };
 
+  /**
+   * 客户端用的 **same-origin fetch** 桩：复刻内核 shared fetch handler 的
+   * **全等 pathname 匹配**与 **method 校验**（内核 `createSharedFetchHandler`，
+   * `dsh-client-connection/lib/index.js@0.2.1-rc.2:820-838`：先查 exact route，
+   * path 不在表里 ⇒ 404；method 不在集合里 ⇒ 405）。
+   *
+   * @param {string|Request} input - URL。
+   * @param {object} [init] - fetch init。
+   * @returns {Promise<Response>}
+   */
+  const fetchImpl = async (input, init = {}) => {
+    const url = new URL(String(input), 'http://127.0.0.1');
+    const route = routes.get(url.pathname);
+    if (route === undefined) {
+      // **没注册就调不通**——这正是真机那个洞的形状（路由没注册上）。
+      return new Response('not found', { status: 404 });
+    }
+    const method = String(init?.method ?? 'GET').toUpperCase();
+    if (!route.methods.includes(method)) {
+      return new Response('method not allowed', { status: 405 });
+    }
+    const request = new Request(url.toString(), { ...init, method });
+    return await route.fetch(request);
+  };
+
+  /**
+   * 经**注册好的那条 exact route**调一个命令。
+   *
+   * **为什么走 fetch 而不是直连 handler**：判据要看的必须是「对端真正拿到的东西」
+   * ——包括**信封翻译后**的形态（`{ok:false, error:{code, message, details}}`），
+   * 不是命令层的内部返回。走 fetch = 走**客户端那条路**（全等 pathname 匹配 +
+   * method 校验 + 信封），所以「host 半边没注册 ⇒ 404」这条也会如实暴露。
+   *
+   * @param {string} endpoint - 端点名（协议 §5 的五个）。
+   * @param {object} payload - 请求负载。
+   * @returns {Promise<object>} `{ok:true,value}` 或 `{ok:false,error}`。
+   */
+  async function callThroughRoute(endpoint, payload) {
+    const rpcId = `p1-${endpoint}-${Math.random().toString(36).slice(2, 10)}`;
+    const response = await fetchImpl(rpcModule.FETCH_ROUTE_PATH, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload }),
+    });
+    if (!response.ok) {
+      throw new Error(`exact route 调用失败：HTTP ${response.status}`);
+    }
+    const full = await response.json();
+    return full.result;
+  }
+
   function buildClient() {
-    const loaded = loadClient({ config: { readDelayMs: 0 }, sourcePath: clientSourcePath, connection });
+    const loaded = loadClient({ config: { readDelayMs: 0 }, sourcePath: clientSourcePath, fetchImpl });
     // **必须调 `apply(ctx)`**：来源是在 apply 里经 `ctx.effect` 注册的，
     // 不调就一个 source 都拿不到（`registered` 是空的）。
     loaded.api.apply(loaded.ctx);
@@ -345,13 +395,37 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
       captureCount += 1;
       return originalCapture(request);
     };
-    handler = rpcModule.createRpcHandler({ commands });
-    // **注册路由**（协议 v0.3 §8-13：不得直连 handler 绕过注册）。
-    // 真实实现是在 `host/index.js` 的 `apply(ctx)` 里用
-    // `ctx.connection.rpc.handle(RPC_CHANNEL, handler)` 注册的；这里用同一份
-    // handler 工厂 + 同一套注册/调用语义，让「host 半边没注册 ⇒ 客户端调不通」
-    // 这条**在仓库级也成立**。
-    connection.rpc.handle(rpcModule.RPC_CHANNEL, handler);
+    // **注册 exact route**（协议 v0.4 §8-13：不得直连 handler 绕过注册）。
+    //
+    // **走 host 半边自己的注册代码**（`host/index.js` 的 `registerExactRoute`）——
+    // 这样「host 半边改回 `rpc.handle`」这件事在**仓库级就会红**：假的
+    // `connection` 服务**没有** `rpc.handle` ⇒ 注册不上 ⇒ 客户端拿到 404。
+    //
+    // **为什么不能自己拼一条「反正能通」的通道**：那正是「桩骗过自己」——
+    // 真机全红、判据不报。
+    routes.clear();
+    if (typeof hostModule.registerExactRoute === 'function') {
+      hostModule.registerExactRoute(
+        {
+          connection,
+          effect: (fn) => fn(),
+          logger: { warn() {}, info() {}, error() {} },
+        },
+        { commands, logger: { warn() {}, info() {}, error() {} } },
+      );
+    } else {
+      // 注入的替身 host 模块没有这段代码 ⇒ 退回「同一条 exact route」的手工注册
+      // （**仍然是注册语义**：没注册就调不通）。
+      const dispatch = rpcModule.createDispatcher({ commands });
+      const routeHandler = rpcModule.createFetchRouteHandler({ dispatch });
+      connection.fetch.register({
+        kind: 'exact',
+        path: rpcModule.FETCH_ROUTE_PATH,
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: routeHandler,
+      });
+    }
     client = buildClient();
   }
 
@@ -726,7 +800,7 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
      * @returns {Promise<object>}
      */
     async callHost(endpoint, payload) {
-      return connection.rpc.call('/xlink-official-chat', endpoint, payload);
+      return callThroughRoute(endpoint, payload);
     },
 
     /**
@@ -794,7 +868,7 @@ export async function createAdapter({ home, tag = 'adapter', host, clientSourceP
       const parts = allocated.split('~');
       const unclaimed = `${parts[0]}~${parts[1]}~9999`;
       const claimed = seqAllocator.isClaimed(parts[1], 9999);
-      const result = await connection.rpc.call('/xlink-official-chat', 'capture', {
+      const result = await callThroughRoute('capture', {
         sessionId: String(sessionId),
         snapshotId: unclaimed,
         requestId: 'p1-unclaimed',

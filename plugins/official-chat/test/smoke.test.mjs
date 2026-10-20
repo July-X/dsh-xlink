@@ -68,23 +68,26 @@ test('host 半边导出 apply / inject / name，且 name 与包名一致', async
   assert.equal(mod.name, pkg.name, 'settingsNs 与包名必须一致');
   assert.deepEqual(
     mod.inject,
-    ['connection', 'webServer'],
-    'host 半边消费 `connection`（RPC 通道的宿主）与 `webServer`（`rpc.handle` 注册路由时读它）',
+    ['connection'],
+    'host 半边只消费 `connection`（exact fetch route 的宿主）',
   );
-  // **`webServer` 声明在插件侧，**修不了** `connection.rpc.handle`**（实测 p1-r3）：
-  // `register()` 的 `owner.webServer`（`dsh-client-connection/lib/index.js@0.2.1-rc.2:871`）
-  // 的属性查找发生在**内核 connection 插件自己的 fiber scope**（cordis
+  // **不声明 `webServer`**（协议 v0.4 §5）：exact fetch route 那条路**完全不碰
+  // webServer**（`dsh-client-connection/lib/index.js@0.2.1-rc.2:840-854`）⇒
+  // 多声明一个用不上的服务 = 多一条「这个服务不在就整条插件哑火」的依赖
+  // （cordis 会等齐 `inject` 里的服务才激活 fiber），**零收益、纯风险**。
+  //
+  // **为什么曾经声明它**：以为「声明它就能修好 `rpc.handle`」——**已实测证伪**
+  // （p1-r3 / p1-r6 两轮）：`rpc.handle` 的 `owner.webServer`
+  // （`dsh-client-connection/lib/index.js@0.2.1-rc.2:871`）的属性查找发生在**内核
+  // connection 插件自己的 fiber scope**（cordis
   // `@deepseek-ai/cordis/lib/index.js@0.2.1-rc.2:683` 的
   // `(ctx[symbols.shadow] ?? ctx).fiber` + `createShadow` `:111-116`），
-  // 而那个 scope 从不 inject `webServer` ⇒ 声明了照样抛
+  // 插件侧声明只影响自己 scope ⇒ 声明了照样抛
   // `cannot get property "webServer" without inject`。
-  //
-  // **留着的理由**：`webServer` 在**我们自己的 scope 里可用**（实测：声明后 fiber
-  // 照常激活、apply 照常执行）⇒ 它是「插件自注册路由」那条路的**前置条件**，
-  // 不是 `rpc.handle` 的修复。
-  assert.ok(
+  assert.equal(
     mod.inject.includes('webServer'),
-    'host 半边声明 `webServer`：它是「插件自注册路由」这条路的前置条件（实测：声明后该服务在本 scope 可解析）',
+    false,
+    '不再声明 `webServer`：exact fetch route 不碰它（v0.4 已证伪「声明它能修好 rpc.handle」）',
   );
 });
 

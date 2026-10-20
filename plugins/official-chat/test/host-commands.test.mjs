@@ -30,7 +30,7 @@ import {
   createFixtureSource,
 } from '../host/commands.js';
 import { createSeqAllocator } from '../host/seq-store.js';
-import { ENDPOINTS, RPC_CHANNEL, createRpcHandler, toRpcError } from '../host/rpc.js';
+import { ENDPOINTS, FETCH_ROUTE_PATH, createDispatcher, toRpcError } from '../host/rpc.js';
 
 /** 造一套内存桩：存储 + 目录缓存 + 固定夹具取数源。 */
 function makeHarness() {
@@ -76,14 +76,18 @@ function makeHarness() {
     providerId,
     accountScope: 'desktop-dev/default/site-A',
   });
-  return { root, store, commands, handler: createRpcHandler({ commands }) };
+  return { root, store, commands, handler: createDispatcher({ commands }) };
 }
 
-test('协议 §5：5 个客户端命令齐活，且 RPC 通道是插件自用的前缀', () => {
+test('协议 §5：5 个客户端命令齐活，且通道路径是内核 exact fetch route 的那条', () => {
   assert.deepEqual([...ENDPOINTS], ['capabilities', 'catalog', 'capture', 'cancel', 'preview']);
-  assert.equal(RPC_CHANNEL, '/xlink-official-chat');
-  // `/api` 归 API Gateway 独占，插件不能抢那个通道。
-  assert.notEqual(RPC_CHANNEL, '/api');
+  // **路径必须与 host 半边注册的 exact route 全等**——内核是
+  // `fetchRoutes.get(url.pathname)`（全等匹配），错一个字符就 404/405。
+  assert.equal(FETCH_ROUTE_PATH, '/api/xlink-official-chat');
+  // **必须在 `/api` 命名空间下**：内核 `assertFetchRoute`
+  // （`dsh-client-connection/lib/index.js@0.2.1-rc.2:973-977`）用
+  // `endpointFromPath("/api", route.path)` 校验，不在 `/api` 下直接抛。
+  assert.ok(FETCH_ROUTE_PATH.startsWith('/api/'), 'exact route 必须在 /api 命名空间下');
 });
 
 test('capabilities：把协议常量、错误码表、状态机与降级标记一次性交出去', async () => {
