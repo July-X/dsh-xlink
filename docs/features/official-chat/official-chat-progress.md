@@ -321,6 +321,60 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 
 **§4.1 条款→判据映射（Chief 复核，发现两个缺口）**：§4.1 第 1 条（触发点/节流/节流键）**无判据**；第 2 条的**目录缓存 TTL 与日志截断两个家族**无判据（A17 只覆盖快照与认领两族）⇒ 派 **A18**（见下）。第 4 条（「正在发送中的引用」不保护）**不可机检**（实现里没有「发送中」这个可观测状态）⇒ 如实写「已知不覆盖，后果由 S-5/S-6 覆盖」，**不假装能测**。
 
+### 2026-10-20 21:3x–21:5x · 真机轮 p1-r9（未打补丁的现役内核 ＋ 协议 v0.4 的 exact fetch route）
+
+**轮次**：`p1-r9-exact-fetch`｜**断言清单**：1–6（**与 21:0x 节的 a/b/c/d 是不同的断言编号**，两轮各自成立、互不替代）
+
+**三条前提取证**（缺一条就可能报错结论）：
+① 隔离内核副本与现役 `dsh-client-connection/lib/index.js` **SHA-256 逐字节一致**（`0EBCCA75…`）⇒ 本轮跑的是**未打补丁的现役内核**（上一轮为验证而注入的那行补丁**已还原**）；
+② 内核进程 cmdline 指向 `%TEMP%\dsh-xlink-g1\shell-home\dsh\desktop-dev\…` ⇒ **不引用用户真实 home**；
+③ 真机前置**每轮清物化**（新增机检「前置②.7」）＋ `prep:builtin` 重生成内嵌资源 ＋ 重启壳让 `tauri dev` 重新 build。
+
+**结果：11 通过 / 0 失败 / 1 未执行**（未执行项 = 前置②「停本实例内核」——本轮没有内核在跑，属空分支，不是失败）
+1. **A0 真机级 ✔** client 经 **exact fetch route** 拿到 capabilities（schemaVersion 1、providerId `ds`；探针 `capabilities` 在场、无 `capabilities-failed`）
+2. A0 catalog ✔ 候选 2、**host 预分配 id 2**
+3. A0 pick ＋ 落盘 ✔ id `ds~8qm981idmwz2~0012`，**自算摘要 = 盘上 contentDigest = `a6b96ec9…`**（正文 76 字节），chip 在草稿、正文不在草稿
+4. **S-4 逐字节 ✔** 请求 1 个、serialize-ok、草稿清空；盘上正文在请求体里命中 **4 处**（`messages[1]/[6]/[8]/[10]`），每处 `exact=true`、**76 字节 = 盘上 76 字节**
+5. S-1 ✔ `…0012` / `…0013` 两个 id，两份文件都在，第一个摘要未变
+6. 缺口① ✔ 删 `…0014` 后发送 ⇒ **请求数 0** ＋ **可见错误**（`role="alert"`：`snapshot_invalid：移除该引用`）＋ `serializeFailed` ＋ 草稿保留
+
+**证据**：`%TEMP%\dsh-xlink-g1\evidence-p1-r9-exact-fetch\shell-verify-p1.p1-r9-exact-fetch.json`（**按 izzy 15:2x「证据可以清」，该文件可清；结论以本节为准**）
+
+**本轮附带修掉的两处「会让人报错结论」的问题（devloper）**
+① **判据自身**：S-4 原判据在 `JSON.stringify(request.body)` 的**转义后**字符串里找**含真换行**的盘上正文 ⇒ 永远匹配不上 ⇒ 把「正文明明在请求体里」报成了失败。已改为在**未转义的字符串叶子**里找，并加**判据自检**（正例 1 / 篡改 0 / 缺失 0 / 空 0；自检不过就**不开真机**）。
+② **驱动层**：壳的物化按「插件版本 ＋ 内核指纹」去重 ⇒ **代码改了、版本号没变 ⇒ 不重新拷贝** ⇒ 真机会跑**旧插件**（本轮之前的 p1-r7 / p1-r8-exact-fetch 两轮，拿到的 405 是**旧插件**的 405，不是新通道的）。已加前置机检「每轮清物化」。另修「过期 pid 文件（pid 号被别的进程复用）」被误判成「停不掉内核＝失败」。
+
+### 2026-10-20 21:4x–21:5x · 跨语言临界夹具 `oversized-multi`（补 §6「同一组夹具 → 同一解析结果」那个窗口）
+
+**背景**：现有 `oversized` 只有 **1 条**消息 ⇒ 消息分隔符 **0 字节** ⇒ 跨语言一致性判据 A1c **踩不到「正文总字节落在 256KB±2」那个窗口** ⇒ 那条判据此前是**假绿**（测了但没测到窗口）。
+
+**新增一条（只加一条）**：`plugins/official-chat/fixtures/protocol/oversized-multi.json`（并登记进同目录 `index.json` 的 `cases`）
+- **n = 2** 条消息：text1 = 131072 × `A`、text2 = 131072 × `B`（ASCII，1 字符 1 字节，各 131072 字节）
+- **正文总字节 = 131072 + 2（`MESSAGE_SEPARATOR` = `\n\n`）+ 131072 = 262146 字节** ＝ **256KB + 2**，即 ±2 窗口的**上沿**
+- 期望结果 = `body_too_large`（与 `oversized` 同款错误负载）
+- 体积 263,330 字节（与 `oversized` 的 262,984 同量级，照仓库先例）
+- **字节数独立算**：不 import 实现的 `joinMessages`（那样就是「自己判自己」）
+
+**为什么取上沿 262146**：两端都算对（含分隔符）⇒ 262146 > 262144 ⇒ 都拒 ⇒ 一致；任一端**漏算那 2 字节分隔符** ⇒ 262144 ⇒ **不** > 262144 ⇒ 放行 ⇒ **两端判定相反** ⇒ A1c 立刻报红。取窗口下沿（如 262142）时两端都放行 ⇒ 测了等于没测。
+
+**活体注入反向验证（证明它不是又一条假绿）**：把 JS 侧 `bodyBytes` 的 `return total + (list.length - 1) * MESSAGE_SEPARATOR.length;` 改成 `return total;`（**漏算分隔符**）⇒
+- **注入后**：`A1c-fixture-parity` **报红并点名 `oversized-multi`**（detail：两端对同一组夹具的结果不一致（1 条不同）：`oversized-multi`：JS=`kind:"snapshot"` vs Rust=`code:"body_too_large"`），`A1d-fixture-expectation-match-js` 同时报红；
+- **还原后**：`protocol.js` **SHA-256 逐字节一致**（`a85fa37a…`），A1c 恢复通过（14 条夹具深比较一致）。
+
+**门禁**（含 PM 要求补列的 `prepare-builtin-plugins.mjs --check`）：`node --test plugins/official-chat/test` **100/100**｜`test:plugin` 277/0/3｜`test:scripts` 131/0/3｜`test:probe` 6/6｜`check:invariants` 全绿｜`check:duplicates` 4 处（允许 8）｜**`prep:builtin` + `check:builtin` 绿（4 插件 / 43 文件）**｜判据 runner 43 条，**A1a / A1b / A1c / A1d 全绿（夹具 13 → 14 条）**。
+**注**：夹具**不随插件分发**（`prep:builtin` 的资源文件数没变，仍 43）⇒ 不会引起内嵌资源清单失配；两端判据都从**仓库里同一个目录**读它。
+
+### 2026-10-20 22:0x–22:1x · A18 判据落地（tester）＋ PM 代修一处**真实实现缺口**（删不掉不留痕）
+
+**A18 判据（tester，未由 PM 提交）**：§4.1 剩余口径全部落地 —— A18a 触发点（静态）、A18b 触发点（行为）、A18c 节流（当天一次 + 节流键落位）、A18d 目录缓存 TTL、A18e 日志截断、A18f 日志不按 7 天删、A18g 两步法删除、A18h 根不可得不扫、**A18i 清理失败只记日志**、A18j `capturedAt` 优先、A18k「正在发送中的引用」**不可机检 ⇒ 如实 skipped**（写明「已知不覆盖，后果由 S-5/S-6 覆盖」）。**PM 实跑：43 条 = 40 pass / 0 fail / 3 skipped**（skip：A0 真机级、A6b chip invalid、A18k）。
+
+**PM 复核发现的真实缺口（A18i 报红，**不是判据错**）**：协议 §4.1 第 3 条「清理失败**只记日志**，不阻塞业务」——「只记日志」含「**必须留痕**」；而 `host/sweep.js` 的删除失败路径（`removeInTwoSteps` 返回 false）**只计数、不记日志** ⇒ 删不掉的文件被**静默吞掉**（没人知道有文件没清掉，磁盘会一直涨）。⇒ **PM 代修**（`host/sweep.js`）：留痕放在**调用处**（`else logger?.warn?.(...)`，日志写**相对本实例根**的路径，不写绝对路径），`removeInTwoSteps` 内部与调用行**逐字不动**。
+
+**为什么留痕放调用处而不是 helper 内部**：调用点才知道「删的是什么」（哪个家族、哪个文件）；helper 的 `catch` 只知道「这一步失败了」。且**已提交版**的 A17 活体注入锚点锁死了「helper 内部不动 + 调用行逐字不变」⇒ 留痕放调用处时，**已提交版判据自测 39/39 仍全绿**（PM 用 HEAD 版测试文件实测）；反过来若把日志塞进 helper 的 `catch`，A17 与 A18g 的注入锚点会同时失效。
+
+**一处判据用例之间的形态冲突（待 tester 统一，PM 未擅自改他的在途文件）**：A18i 的注入用例按「把**调用点**的 `logger` 置空」制造「不留痕」，而 A17 / A18g 的锚点锁死「调用点不带参数」⇒ **两条期望互斥**。PM 建议：**留痕统一在调用处**，A18i 的注入改成「去掉 `else logger?.warn?.(...)` 那一行」（他 v0.2 版用例里本来就有这条正则），则 A17 / A18g / A18i **三条锚点可同时成立**。**已提交版判据集不受影响**（PM 实测 39/39 绿）。
+
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
@@ -350,6 +404,8 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 | 2026-10-20 | P0 | 登记落地 + 门禁实测（`check:builtin` 4/38、`check:invariants` 全绿含第 30 项、`check:duplicates` 4/8、`test:plugin` 206、`test:probe` 6、**`cargo test` debug 1109 passed**）；**发现一**：手工复刻把物化目录写成行 id（`xlink-official-chat/…`），真链是 `spec.id`（`official-chat/…`）——纸面正确不等于链正确；**发现二**：`cargo test --release` 红 6 条是 release-only 假红（`ShellMode::current()` 编译期决定） | `src-tauri/src/plugins/builtin/builtins.rs` + `scripts/prepare-builtin-plugins.mjs` + 根 `package.json` |
 | 2026-10-20 | P0 | feasibility 与本文件产出；计划/调研原文未改；**14:4x 与 15:1x 两轮已随 `3436fb4` / `2321dbd` 提交**；**15:2x–16:0x 两轮由 PM 本地提交（不推送，依 izzy 15:13「做好代码 commit」）** | `docs/features/official-chat/` |
 | 2026-10-20 | P1 | **通道落地 + 保留期清理落地（`686423a`，15 文件 / +1413 / −188）**：过渡通道 = 内核 `connection` 服务的 **exact fetch route**（`/api/xlink-official-chat`，POST，buffered；owner 准入仍由内核做）；**客户端必须自己发 same-origin fetch**（浏览器侧内核 `rpc.call` 的 URL 相对且不带 `/api`，打不到 exact route）；插件自实现 RPC 信封（信封层错误用传输层 `gateway/bad-request`，不进 13 码闭集）；host `inject` 收敛为 `['connection']`。**真机 p1-r8（未打补丁的现役内核）a/b/c/d 全绿**。新增 `host/sweep.js` 落地 §4.1 保留期主动清理。**PM 独立复核**：门禁全绿（判据 32 = 30/0/2、cargo 1127 passed、clippy 0、check:invariants 绿 47 文件）、**`prepare-builtin --check` 首跑红**（devloper 自报漏项，已重生成）、**PM 代修三处**（catalog-cache 层级注释 + 日志按大小截断 + 协议 §4.1 第 2 条澄清） | `%TEMP%\dsh-xlink-g1\evidence-p1-r8\results.p1-r8.json`（可清）＋ `%TEMP%\dsh-p1-protocol\results-chief-verify-2.json`（PM 独立复跑判据）＋ 本文件 21:0x 节 |
+| 2026-10-20 | P1 | **真机轮 p1-r9（未打补丁的现役内核 ＋ v0.4 exact fetch route）：11 通过 / 0 失败 / 1 未执行**——A0 真机级（capabilities 经 exact fetch route 拿到）、catalog＋host 预分配 id、pick＋落盘＋自算摘要对得上、**S-4 逐字节**（请求体命中 4 处，每处 76 字节 exact）、S-1 两个 id、缺口①（删快照 ⇒ 请求数 0 ＋ 可见错误 ＋ 客户端抛错）；**前提取证三条**：隔离内核与现役 SHA-256 逐字节一致、cmdline 不引用用户真实 home、每轮清物化＋重生成内嵌资源 | `%TEMP%\dsh-xlink-g1\evidence-p1-r9-exact-fetch\shell-verify-p1.p1-r9-exact-fetch.json`（可清）＋ 本文件 21:3x 节 |
+| 2026-10-20 | P1 | **跨语言临界夹具 `oversized-multi`（只加一条）**——补 §6「同一组夹具 → 同一解析结果」那个**踩不到的窗口**：既有 `oversized` 只有 1 条消息 ⇒ 分隔符 0 字节 ⇒ A1c 是假绿。新夹具 **n=2**、正文总字节 **262146**（= 256KB+2，窗口上沿，含 2 字节 `MESSAGE_SEPARATOR`）⇒ 任一端**漏算分隔符**就会算成 262144（恰好不超限）而放行 ⇒ 两端判定相反。**活体注入验证**：注入「JS 侧漏算分隔符」⇒ A1c 报红并**点名 `oversized-multi`**（JS=`kind:snapshot` vs Rust=`code:body_too_large`）⇒ 还原后 SHA-256 逐字节一致、A1c 恢复 pass。**门禁**（含 PM 要求补列的 `prepare-builtin-plugins.mjs --check`）：100/100、277/0/3、131/0/3、6/6、invariants 绿、duplicates 4/8、builtin 43、判据 A1a/A1b/A1c/A1d 全绿（夹具 13→14） | 本文件 21:4x 节（证据文件按 izzy 拍板可清） |
 
 
 **关于上表里的 `%TEMP%` 证据路径**：2026-10-20 15:2x izzy 拍板「**可以清**」后，PM 已把 `%TEMP%\dsh-xlink-g1\` 与 `%TEMP%\dsh-probe\` 移入回收站（可恢复删除），**上表引用的原始 JSON / 截图 / 请求体日志已不在原位**。**仍可长期复核的，是本文件与 feasibility 里写下的数字、字段值与判据口径**——引用这些结论时不要再指望去原路径取原始产物。

@@ -69,6 +69,11 @@ export const LOG_MAX_BYTES = 512 * 1024;
  * 文件（快照被读时靠摘要校验兜底，但缓存/认领没有这层校验）。先改名 ⇒
  * 「原地还有一个有效文件」的窗口最短。
  *
+ * **注意**：这里**不记日志**——留痕在**调用处**（`else logger?.warn?.(...)`）。
+ * 理由：**删不掉这件事，调用点才知道「删的是什么」**（哪个家族、哪个文件）；
+ * 而这里的 `catch` 只知道「改名/删除这一步失败了」。留痕统一放在调用处，
+ * 口径才一致（§4.1 第 3 条「失败只记日志」⇒ **必须留痕**）。
+ *
  * @param {string} path - 要删的文件。
  * @returns {boolean} 删掉了即 true。
  */
@@ -191,6 +196,19 @@ export function createSweeper({
   };
 
   /**
+   * 文件的**相对路径标签**（相对本实例根）——给日志用。
+   *
+   * **为什么不写绝对路径**：绝对路径带用户目录，而日志是要长期留存的诊断证据。
+   *
+   * @param {string} target - 绝对路径。
+   * @returns {string}
+   */
+  const labelOf = (target) => {
+    if (typeof root !== 'string' || root === '') return target;
+    return target.startsWith(root) ? target.slice(root.length).replace(/^[\\/]/, '') : target;
+  };
+
+  /**
    * 清**正文快照**（过期 = 超过保留期）。
    *
    * @returns {{scanned: number, removed: number}}
@@ -216,7 +234,9 @@ export function createSweeper({
         continue;
       }
       if (stampOf(path, 'capturedAt', mtime) >= cutoff) continue;
+      const rel = labelOf(path);
       if (removeInTwoSteps(path)) result.removed += 1;
+      else logger?.warn?.(`official-chat: 保留期清理失败：${rel} 删不掉（已保留，未假装删掉）`);
     }
     return result;
   };
@@ -279,7 +299,9 @@ export function createSweeper({
           join(root, 'snapshots', providerShort, `${snapshotId}.json`),
         ].some((candidate) => existsSync(candidate));
         if (snapshotStillThere) continue;
+        const rel = labelOf(path);
         if (removeInTwoSteps(path)) result.removed += 1;
+        else logger?.warn?.(`official-chat: 保留期清理失败：${rel} 删不掉（已保留，未假装删掉）`);
       }
     }
     return result;
@@ -311,7 +333,9 @@ export function createSweeper({
       if (!st.isFile()) continue;
       result.scanned += 1;
       if (st.mtimeMs >= cutoff) continue;
+      const rel = labelOf(path);
       if (removeInTwoSteps(path)) result.removed += 1;
+      else logger?.warn?.(`official-chat: 保留期清理失败：${rel} 删不掉（已保留，未假装删掉）`);
     }
     return result;
   };
@@ -359,7 +383,12 @@ export function createSweeper({
     }
     try {
       writeFileSync(path, kept, { flag: 'w', mode: 0o600 });
-    } catch {
+    } catch (error) {
+      // **截断失败也要留痕**（§4.1 第 3 条「失败只记日志」含「必须留痕」）：
+      // 截断失败意味着日志会一直涨 ⇒ 静默吞掉 = 磁盘问题被藏起来。
+      logger?.warn?.(
+        `official-chat: 保留期清理：日志截断写回失败：${String(error?.message ?? error)}`,
+      );
       return { truncated: false };
     }
     return { truncated: true };

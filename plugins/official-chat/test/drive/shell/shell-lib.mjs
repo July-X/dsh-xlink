@@ -474,14 +474,27 @@ export function stopInstanceKernel() {
     };
   }
   if (!cmdline.includes(SHELL_HOME)) {
-    // **拒绝动手**：这个 pid 不是本隔离 home 的进程。
+    // **这个 pid 不是本隔离 home 的进程** ⇒ 本实例的内核**早退了**，pid 号被
+    // 别的进程复用（Windows 上很常见——比如被 WebView2 的子进程顶上了）。
+    // ⇒ **pid 文件本身已过期**（坑②的另一种形态）。
+    //
+    // **为什么这里不判「停不掉内核=失败」**：本实例根本没有内核在跑；那个还在
+    // 活着的是**别人的进程**，而我们本来就不该动它（安全闸，见文件头）。
+    // 真正要处置的是**那份过期的 pid 文件**——留着它，壳会以为内核还活着而不真起
+    // 内核（端口不通，驱动脚本会一直等）。「过期 pid 先清」那条机检认的就是这个
+    // 场景（见 `clearStaleKernelPid`）。
+    //
+    // **踩过的坑**（2026-10-20 p1-r7）：这里原本判「失败」，于是一个**过期 pid**
+    // 把整轮汇总染成 1 失败 + 1 未执行，真机结论反而被噪声淹没。
     return {
       hadPidFile: true,
       pid,
+      // **进程确实还在**（但不是我们的）——`wasAlive` 说的是「动手前在不在」，不能撒谎。
       wasAlive: true,
       stillAlive: true,
       stopped: false,
-      why: '该 pid 的命令行不指向本隔离 home，拒绝停它',
+      stalePid: true,
+      why: '该 pid 不是本隔离 home 的进程（内核早退、pid 被别的进程复用）⇒ pid 文件已过期',
       cmdline,
     };
   }
@@ -532,9 +545,48 @@ export function clearStaleKernelPid() {
     return { existed: true, pid: raw, alive: false, removed: false, why: 'pid 文件内容不是 pid' };
   }
   const cmdline = processCommandLine(pid);
-  if (cmdline !== null) return { existed: true, pid, alive: true, removed: false, cmdline };
+  // **本实例的内核还在跑** ⇒ 不能清（清了壳会以为没内核在跑）。
+  if (cmdline !== null && cmdline.includes(SHELL_HOME)) {
+    return { existed: true, pid, alive: true, removed: false, cmdline, why: '本实例的内核还在跑，不该清' };
+  }
+  // **两种「过期」形态都要清**：
+  // ① 进程已经没了（`processCommandLine` 拿不到）；
+  // ② 进程还在，但**不是本隔离 home 的**——内核早退了，pid 号被别的进程复用。
+  //    留着文件，壳会以为内核还活着而不真起内核（坑②）。
   rmSync(KERNEL_PID_FILE, { force: true });
-  return { existed: true, pid, alive: false, removed: true, why: '进程已不在，pid 文件是过期的' };
+  return {
+    existed: true,
+    pid,
+    alive: cmdline !== null,
+    removed: true,
+    cmdline: cmdline ?? undefined,
+    why: cmdline === null
+      ? '进程已不在，pid 文件是过期的'
+      : '该 pid 不是本隔离 home 的进程（内核早退、pid 被复用）⇒ pid 文件已过期',
+  };
+}
+
+/**
+ * 清掉本实例里 **official-chat 的物化产物**（插件代码）。
+ *
+ * ## 为什么每轮真机前都要清
+ *
+ * 壳的物化按「**插件版本 + 内核指纹**」去重：代码改了、版本号没变 ⇒ 壳判定
+ * 「这一版已经物化过了」⇒ **不会重新拷贝**。于是真机复验会**跑旧插件**——
+ * 拿旧代码的失败当新代码的结论。
+ *
+ * **实测踩过**（2026-10-20 p1-r7）：仓库里 client 半边已改成 v0.4 的
+ * exact fetch route，实例里物化的却还是 18:53 的旧版（仍走
+ * `connection.rpc.call`）⇒ 浏览器侧打 `/xlink-official-chat/capabilities`
+ * ⇒ **405**。那个 405 是**旧插件**的 405，不是新通道的 405。
+ *
+ * @returns {{root: string, existed: boolean, removed: boolean}} 清的结果。
+ */
+export function clearMaterializedPlugin() {
+  const root = join(INSTANCE_HOME, 'extensions', 'builtin', 'official-chat');
+  if (!existsSync(root)) return { root, existed: false, removed: false };
+  rmSync(root, { recursive: true, force: true });
+  return { root, existed: true, removed: !existsSync(root) };
 }
 
 
@@ -607,9 +659,13 @@ export async function prepareShell() {
     // 三种情形分开判：pid 文件都没有 / 进程早已不在（过期 pid，交给前置③清）/
     // 真的停掉了一颗 / 活着却停不掉（唯一算失败的那种）。
     // 判据用 `wasAlive`（**动手前**在不在），不是 `alive`（动手后还在不在）。
+    // **过期 pid 文件（stalePid）不算失败**：本实例**没有内核可停**（内核早退、
+    // pid 号被别的进程复用），真正要处置的是那份过期 pid 文件——由前置③清。
+    // 只有「内核确实在跑、却停不掉」才是失败。
     const stopStatus = stopped.hadPidFile === false ? '未执行'
       : (stopped.wasAlive === false ? '未执行'
-        : (stopped.stopped === true ? '通过' : '失败'));
+        : (stopped.stalePid === true ? '未执行'
+          : (stopped.stopped === true ? '通过' : '失败')));
     verdict(
       '前置②：改内置插件开关前停掉本实例的内核',
       stopStatus,
@@ -641,6 +697,20 @@ export async function prepareShell() {
       '前置③：清掉过期的 kernel.pid',
       stale.existed === false ? '未执行' : (stale.removed === true ? '通过' : '未执行'),
       JSON.stringify(stale),
+    );
+
+    // ②.7 **清掉本插件的物化产物**：壳的物化按「插件版本 + 内核指纹」去重——
+    //     **代码改了、版本号没变 ⇒ 壳判定「已物化」⇒ 不会重新拷贝** ⇒ 真机
+    //     会**跑旧插件**，拿旧代码的结论当新代码的结论
+    //     （2026-10-20 p1-r7 实踩：跑的是 18:53 的旧 client 半边，
+    //      那个 405 是**旧插件**的 405，不是新通道的 405）。
+    //     每轮先清 ⇒ **跑的一定是当前仓库代码**。
+    const materialized = clearMaterializedPlugin();
+    step('materialized-plugin-cleared', materialized);
+    verdict(
+      '前置②.7：清掉旧物化产物（保证真机跑的是当前仓库代码）',
+      materialized.existed === false || materialized.removed === true ? '通过' : '失败',
+      JSON.stringify(materialized),
     );
 
     // ③ 用壳自己的命令层启用插件 → 走壳自己的物化链

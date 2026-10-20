@@ -4,6 +4,7 @@
     "normal.json",
     "partial.json",
     "oversized.json",
+    "oversized-multi.json",
     "capture-failed.json",
     "timeout.json",
     "cancelled.json",
