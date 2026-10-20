@@ -149,6 +149,26 @@ objc2-foundation = "0.3"
 block2 = "0.6"
 
 [target.'cfg(windows)'.dependencies]
+# 官方对话取数的**页内求值回程**（`official_chat/script_eval.rs`）。
+#
+# 为什么必须自己引 `webview2-com`：Tauri 2.12 的 `eval_with_callback` 在
+# Windows 上**拿不到值**——wry 0.57 的 `evaluate_script_with_callback` 走的是
+# `ICoreWebView2::ExecuteScript`，完成回调只带 HRESULT
+# （`wry-0.57.0/src/webview2/mod.rs:1386-1404`）。要拿到求值结果必须自己接
+# `ICoreWebView2_6::ExecuteScriptWithResult`，那个类型与回调助手只在
+# `webview2-com` 里。
+#
+# 版本钉在 **0.39.1**：wry 0.57 依赖的是 `webview2-com = "0.39"`，锁文件里
+# 已经是 0.39.1；这里显式声明同一个版本，Cargo 才会与 wry 共用**同一份**
+# crate 实例（否则 `ICoreWebView2Controller` 是两个互不兼容的类型）。
+# macOS / Linux 不需要它：那边走 `WKWebView.evaluateJavaScript`，Tauri 已经
+# 转出，不需要额外依赖。
+webview2-com = "0.39.1"
+# `webview2-com` 0.39 用的是 `windows` 0.62 / `windows-core` 0.62。本 crate
+# 自己另有 `windows = "0.61"`（给 WinRT 通知用），两者版本线不同、互不通用，
+# 因此这里单独引 `windows-core` 0.62——只取 `HSTRING` / `PWSTR` / `BOOL` /
+# `Interface` 这几个类型，不把整个 `windows` crate 拉进第二份。
+windows-core = "0.62"
 # System_Storage_FileSystem / System_IO 两个特性只服务「点通知横幅回到工作台」
 # 的进程间交接（activate.rs）：未打包应用的通知被点中时 Windows 启动的是本
 # exe 而不是"叫醒"已运行的窗口，因此需要一个具名互斥体判"是不是第一个"、
@@ -206,6 +226,12 @@ codegen-units = 16
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+# 官方对话回程探针（`examples/official_chat_probe.rs`）要起一个**真的**
+# Tauri 应用（真 webview），但不能带出管理面板那个窗口——`tauri::test`
+# 里的 `mock_context` 给的是「不声明任何窗口」的上下文，配合真实 Wry 运行时
+# 仍然会创建真的 WebView2。`test` 特性本身是空的（`test = []`），只多暴露
+# 一个 `tauri::test` 模块，不改变任何运行时行为；它只在 dev 构建里生效。
+tauri = { version = "2", features = ["test"] }
 
 # Clippy 1.99 的 `missing_const_for_thread_local` 对**已经用 `const { … }` 作初值**的
 # `thread_local!` 误报（2026-10-18 最小复现：全新 `cargo new` 里同样写法照样报）。

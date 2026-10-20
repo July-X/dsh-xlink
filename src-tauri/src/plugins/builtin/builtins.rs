@@ -90,6 +90,12 @@ pub(crate) const OPENAI_OAUTH: &str = "openai-oauth";
 pub(crate) const PONYTAIL: &str = "ponytail";
 /// 内置本地记忆的 id 常量。接线之后内核侧按它调回环桥取记忆。
 pub(crate) const MEMORY: &str = "memory";
+/// 内置官网对话引用的 id 常量。
+///
+/// P0 可行性验证阶段：它带一个**内核客户端模块**（工作台 `@` 菜单里的
+/// 「官方对话」来源），用来证明「选择 → 异步读取 → 发送门控」这条链路在内核
+/// 工作台里成立。当前候选与正文都是**固定夹具**，不连接任何官网账号。
+pub(crate) const OFFICIAL_CHAT: &str = "official-chat";
 
 /// 全部内置插件。**新增内置插件只改这一处**，其余模块都从这里读。
 pub(crate) const BUILTINS: &[BuiltinSpec] = &[
@@ -221,6 +227,35 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
         has_account_card: false,
         upstream: None,
     },
+    BuiltinSpec {
+        id: OFFICIAL_CHAT,
+        row_id: "xlink-official-chat",
+        // host + client + package.json：**没有上游内容**（官网正文不在安装包里，
+        // 它属于用户自己的账号数据）。client 是**内核客户端模块**——工作台 `@`
+        // 菜单里的「官方对话」来源，靠 package.json 里那份 `dsh.client` 声明 +
+        // `exports["./client"]` 进浏览器模块图（与 memory 的徽标同一条通道）。
+        //
+        // **host 半边必须真的存在**：内核的 `dsh-client-modules` 是扫 host Loader
+        // 的 entries 找带 `dsh.client` 声明的包——没有 host 半边，client/client.js
+        // 一行都不会执行，而面板上照样显示「已启用」。
+        entries: &["host", "client", "package.json"],
+        // **空**：host/index.js 不静态 import 任何 `@deepseek-ai` 包（它只是
+        // 客户端半边的锚点，刻意什么都不消费）。
+        //
+        // client 半边 inject 的那三个包（`dsh-client-ui-input-trigger` 等）是
+        // **浏览器模块图**里的东西，由内核自己的 client 模块系统提供，不走
+        // 这里建链接——与 memory 的先例一致（它 inject `dsh-client-ui-slots`，
+        // peers 里也只有 host 侧那两个包）。多列一个 peer 就是多一条会断的链。
+        peers: &[],
+        entry: "host/index.js",
+        display_name: "官网对话引用",
+        summary: "把官网对话按需读进当前会话：工作台里 @ 选中，正文随引用一起送进模型",
+        note: "**当前处于可行性验证阶段**：可选的对话与正文都是固定夹具，\
+               不连接任何官网账号，也读不到你的真实历史。验证通过前它不会\
+               真正取数。",
+        has_account_card: false,
+        upstream: None,
+    },
 ];
 
 /// 按 id 取 spec。`None` 表示「这个 id 不是本版本的内置插件」——命令层据此
@@ -285,20 +320,27 @@ mod tests {
         }
     }
 
-    /// 三个内置插件恰好是 OpenAI OAuth、Ponytail 与本地记忆——新增第四个时这条要
-    /// 一起改，它逼着下一个加内置插件的人把话说清楚（而不是悄悄多一个）。
+    /// 四个内置插件是 OpenAI OAuth、Ponytail、本地记忆与官网对话引用——新增第五个时
+    /// 这条要一起改，它逼着下一个加内置插件的人把话说清楚（而不是悄悄多一个）。
     ///
     /// 2026-10-14 加第三个（`memory`）：它与前两个不是一类——**没有上游内容**
     /// （记忆正文在用户的实例目录里，不在安装包里），也没有工作台客户端模块
     /// （管理页是壳自己的面板）。它唯一的对外通道是回环桥上的三条记忆路由，
     /// 因此 `entries` 只有 `host` 与 `package.json`、`peers` 只有 host 真正
     /// `import` 的两个包（`dsh-tools` 与 `dsh-llm`）。
+    ///
+    /// 2026-10-20 加第四个（`official-chat`）：P0 可行性验证用。它与 memory
+    /// 一样**没有上游内容**，但多了一枚**内核客户端模块**（工作台 `@` 菜单里的
+    /// 「官方对话」来源）——所以 `entries` 里有 `client`，而 `peers` 是**空的**：
+    /// 它的 host 半边不静态 import 任何内核包，client 半边 inject 的包由内核的
+    /// 浏览器模块图提供，不走物化建链接那条路。
     #[test]
     fn the_registry_carries_the_shipped_builtins() {
-        assert_eq!(BUILTINS.len(), 3, "改了登记表就在这里说一句为什么");
+        assert_eq!(BUILTINS.len(), 4, "改了登记表就在这里说一句为什么");
         assert!(find(OPENAI_OAUTH).is_some());
         assert!(find(PONYTAIL).is_some());
         assert!(find(MEMORY).is_some());
+        assert!(find(OFFICIAL_CHAT).is_some());
         assert!(find("not-a-builtin").is_none());
     }
 
@@ -313,5 +355,170 @@ mod tests {
             find(PONYTAIL).unwrap().instance_base_segment(),
             "extensions/builtin/ponytail"
         );
+    }
+
+    /// 新登记的 `official-chat` 必须能被**真实物化链**物化出来。
+    ///
+    /// 它是第四个内置插件，登记表的任何一处写错，症状都不是「报错」而是
+    /// **静默半死**：物化目录少一份文件 → 面板显示「已启用」而 client 半边
+    /// 一行都不执行；接线行 id 与包名对不上 → 内核按 settingsNs 认不出这个
+    /// 插件；peers 多列一个包 → 换台机器就装不上。
+    ///
+    /// 这条走的是**生产同一条路**（`ensure_wired` → 物化 → 追加接线行），
+    /// 不是照着形状断言字符串。夹具的内核树用假版本号（指纹只影响目录名），
+    /// 插件源按 `spec.entries` **现生成**——写死文件集的话，登记表改了文件集
+    /// 而夹具不变，验的就不是登记的那一份。
+    #[test]
+    fn the_official_chat_spec_materializes_through_the_real_chain() {
+        let spec = find(OFFICIAL_CHAT).expect("official-chat 必须在登记表里");
+        // 行 id = 包名：内核按 settingsNs 认插件，对不上就拿不到命名空间。
+        assert_eq!(spec.row_id, "xlink-official-chat");
+        // host 半边不静态 import 任何内核包 → peers 为空。**多列一个 peer 就
+        // 多一条会断的链**（旧内核装不上那个包时，插件根本装不进去）。
+        assert!(
+            spec.peers.is_empty(),
+            "official-chat 的 host 不 import 任何内核包，peers 应当为空"
+        );
+
+        let root = std::env::temp_dir().join(format!("oop-builtin-oc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join("profiles/web")).unwrap();
+
+        // 夹具插件源：按 spec.entries 现生成。
+        let source = root.join("source");
+        for entry in spec.entries {
+            if *entry == "package.json" {
+                std::fs::write(
+                    source.join("package.json"),
+                    format!("{{\"name\":\"{}\",\"version\":\"0.1.0\"}}", spec.row_id),
+                )
+                .unwrap();
+            } else {
+                std::fs::create_dir_all(source.join(entry)).unwrap();
+                std::fs::write(source.join(entry).join("index.js"), "// fixture").unwrap();
+            }
+        }
+        // 夹具内核树：dsh + cordis 两个包的版本决定指纹。
+        let kernel = root.join("kernel");
+        for (pkg, version) in [("dsh", "0.2.1-alpha.1"), ("cordis", "4.0.5-alpha.1")] {
+            let dir = kernel.join("node_modules/@deepseek-ai").join(pkg);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("package.json"),
+                format!("{{\"version\":\"{version}\"}}"),
+            )
+            .unwrap();
+        }
+
+        let wired =
+            crate::plugins::builtin::ensure_wired(spec, &source, &home, "web", &kernel).unwrap();
+        assert!(wired.row_added, "首次接线必须真的写进 patch");
+        assert_eq!(wired.plugin_version, "0.1.0");
+        // 物化目录：<home>/extensions/builtin/<id>/<版本>/<指纹>/compat-a。
+        // **目录名用 id（official-chat），不是行 id（xlink-official-chat）**——
+        // 两者混了不会报错，只是物化到了另一个地方。
+        assert_eq!(
+            wired.dir,
+            home.join(
+                "extensions/builtin/official-chat/0.1.0/dsh-0.2.1-alpha.1-cordis-4.0.5-alpha.1/compat-a"
+            )
+        );
+        for entry in spec.entries {
+            assert!(
+                wired.dir.join(entry).exists(),
+                "物化缺 {entry}：面板会显示「已启用」而 client 半边一行都不执行"
+            );
+        }
+        // 完成标记：物化的幂等判定靠它（源摘要 / 指纹 / 落位后摘要三项）。
+        assert!(wired.dir.join(".xlink-materialized.json").is_file());
+        // peers 为空 → 不建 peer 链接目录。
+        assert!(
+            !wired.dir.join("node_modules").exists(),
+            "peers 为空时不该出现 node_modules"
+        );
+
+        // 接线行：id 是包名，name 相对 profile 目录、直指 host/index.js。
+        let patch = std::fs::read_to_string(home.join("profiles/web/cordis.patch.yml")).unwrap();
+        let entry_rel = crate::plugins::builtin::materialize::relative_entry(
+            &home.join("profiles/web"),
+            &wired.dir.join(spec.entry),
+        );
+        assert!(patch.contains("- id: xlink-official-chat"), "{patch}");
+        assert!(patch.contains(&entry_rel), "{patch}");
+        assert!(entry_rel.ends_with("host/index.js"), "{entry_rel}");
+
+        // 幂等：再来一次不重复追加（面板上反复点开关是常态）。
+        let again =
+            crate::plugins::builtin::ensure_wired(spec, &source, &home, "web", &kernel).unwrap();
+        assert!(!again.row_added, "重复接线不得再追加一行");
+        let after = std::fs::read_to_string(home.join("profiles/web/cordis.patch.yml")).unwrap();
+        assert_eq!(after, patch, "重复接线不得改动 patch");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 手动驱动：把 `official-chat` 经**真实物化链**物化进一个指定实例，
+    /// 供内核工作台冒烟用——内核读到的那条接线行与那份物化产物都出自这条链，
+    /// 不再是照着源码手写的复刻件。
+    ///
+    /// `#[ignore]`：它要写盘、且路径是本机的，CI 不该跑。
+    ///
+    /// 用法（PowerShell）：
+    /// ```powershell
+    /// $env:DSH_XLINK_G1_DSH_HOME     = "$env:TEMP\dsh-xlink-g1\dsh-home"
+    /// $env:DSH_XLINK_G1_KERNEL_ROOT  = "$env:TEMP\dsh-xlink-g1\dsh\desktop\kernels\0.2.1-rc.2"
+    /// cargo test --manifest-path src-tauri/Cargo.toml --lib \
+    ///   the_official_chat_spec_materializes_into_a_real_instance -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "手动驱动：写盘到指定实例并依赖本机路径，CI 不跑"]
+    fn the_official_chat_spec_materializes_into_a_real_instance() {
+        let dsh_home = std::path::PathBuf::from(
+            std::env::var("DSH_XLINK_G1_DSH_HOME")
+                .expect("必须给 DSH_XLINK_G1_DSH_HOME（实例根；内核读的 profile 目录在它下面）"),
+        );
+        let kernel_root = std::path::PathBuf::from(
+            std::env::var("DSH_XLINK_G1_KERNEL_ROOT")
+                .expect("必须给 DSH_XLINK_G1_KERNEL_ROOT（内核树，只读；指纹从它算）"),
+        );
+        let spec = find(OFFICIAL_CHAT).expect("official-chat 必须在登记表里");
+
+        // 插件源优先取**打包资源**（生产真正喂给物化链的那份，带 manifest，
+        // 于是 verify_manifest 也会被跑到），没有就退回仓库源码（dev 回退口）。
+        let packaged = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("builtin-plugins")
+            .join(spec.id);
+        let source = if packaged.join("package.json").is_file() {
+            packaged
+        } else {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("plugins")
+                .join(spec.id)
+        };
+        assert!(
+            source.join("package.json").is_file(),
+            "插件源不存在：{}",
+            source.display()
+        );
+
+        let wired =
+            crate::plugins::builtin::ensure_wired(spec, &source, &dsh_home, "web", &kernel_root)
+                .expect("真实物化链应当成功");
+        let patch_path = dsh_home.join("profiles/web/cordis.patch.yml");
+        let patch = std::fs::read_to_string(&patch_path).unwrap_or_default();
+        println!("G1-MATERIALIZE source={}", source.display());
+        println!("G1-MATERIALIZE dir={}", wired.dir.display());
+        println!("G1-MATERIALIZE fingerprint={}", wired.fingerprint);
+        println!("G1-MATERIALIZE plugin_version={}", wired.plugin_version);
+        println!("G1-MATERIALIZE row_added={}", wired.row_added);
+        println!("G1-MATERIALIZE patch={}", patch_path.display());
+        println!("G1-MATERIALIZE patch_body=\n{patch}");
+        assert!(patch.contains("- id: xlink-official-chat"), "{patch}");
+        assert!(wired.dir.join("host/index.js").is_file());
+        assert!(wired.dir.join("client/client.js").is_file());
+        assert!(wired.dir.join("package.json").is_file());
     }
 }

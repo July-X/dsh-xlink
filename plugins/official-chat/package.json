@@ -1,0 +1,23 @@
+{
+  "name": "xlink-official-chat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "dsh-xlink 官网对话引用插件（Host 侧锚点 + 客户端 @ 来源）：G1 可行性验证用，证明「选择 → 异步读取 → 发送门控」在内核工作台里成立",
+  "main": "host/index.js",
+  "exports": {
+    ".": "./host/index.js",
+    "./client": "./client/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-input-trigger"
+      ]
+    }
+  }
+}

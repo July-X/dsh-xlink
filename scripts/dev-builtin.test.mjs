@@ -127,6 +127,37 @@ test('每个内置插件都有源码目录，且 package.json 的 name 与 id �
   }
 });
 
+test('内置插件恰好四个（新增第五个时这条要一起改）', () => {
+  // 与 Rust 侧 `builtins.rs` 的
+  // `assert_eq!(BUILTINS.len(), 4, "改了登记表就在这里说一句为什么")` **对称**：
+  // 两侧各钉一次。只改一侧会留下一份「打包了但没物化」或「物化了但没打包」的
+  // 插件，而症状要到真机装一次才看得见——所以计数这件事两边都要有人拦。
+  //
+  // 第四条是 `official-chat`（2026-10-20 加）：它与前三个不是一类——没有上游
+  // 内容（官网正文属于用户自己的账号数据），但多了一枚**内核客户端模块**
+  // （工作台 `@` 菜单里的「官方对话」来源）。
+  const rust = rustRegistry();
+  const js = jsRegistry();
+  assert.equal(
+    rust.length,
+    4,
+    'Rust 登记表里应当恰好四个内置插件——新增第五个时这条要一起改',
+  );
+  assert.equal(
+    js.length,
+    4,
+    'prep 脚本的登记表里应当恰好四个内置插件——新增第五个时这条要一起改',
+  );
+  assert.ok(
+    js.some((entry) => entry.id === 'official-chat'),
+    'official-chat 必须登记进内置插件表——它是工作台 @ 菜单里「官方对话」那一组的来源',
+  );
+  assert.ok(
+    rust.some((entry) => entry.id === 'official-chat'),
+    'official-chat 必须登记进 Rust 登记表（物化侧）',
+  );
+});
+
 // --- workflow -----------------------------------------------------------------
 //
 // 上面两条只钉了本地入口。2026-10-09 发 v0.4.4 时 CI 与发布流水线同时红：

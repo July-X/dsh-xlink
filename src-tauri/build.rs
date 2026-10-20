@@ -46,5 +46,23 @@ fn main() {
     // 监听该目录；没有下面这一行的话，修改应用权限就不会重新运行
     // 构建脚本，相关改动会被静默忽略。
     println!("cargo:rerun-if-changed=permissions");
-    tauri_build::build()
+    tauri_build::build();
+
+    // examples 也需要 Windows manifest（comctl32 v6）。
+    //
+    // tauri-build 把图标/版本信息/manifest 编成一个 resource.lib，但它只
+    // 通过 `cargo:rustc-link-arg-bins` 交给 bin 链接。example 拿不到这个
+    // .lib，而 comctl32 的 TaskDialogIndirect（muda 与 tauri-runtime-wry
+    // 的原生对话框要用）只有 v6 版本才导出——缺 manifest 时加载器会去找
+    // system32 里的 v5 comctl32，解析不到该导出，进程在进入 main 之前
+    // 就以 STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139) 退出。
+    //
+    // 这里把同一个 .lib 直接交给 example 的链接步骤，行为与 bin 对齐。
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let resource_lib = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap_or_default())
+            .join("resource.lib");
+        if resource_lib.exists() {
+            println!("cargo:rustc-link-arg-examples={}", resource_lib.display());
+        }
+    }
 }

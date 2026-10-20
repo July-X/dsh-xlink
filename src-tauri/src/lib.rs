@@ -45,6 +45,7 @@ mod memory;
 mod migration;
 mod node;
 mod notify;
+mod official_chat;
 mod openai;
 mod pkg;
 mod plugins;

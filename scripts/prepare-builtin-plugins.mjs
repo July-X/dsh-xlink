@@ -65,6 +65,18 @@ const BUILTINS = [
     // `test/` 与 README 不进实例，与另外两个内置插件一致。
     entries: ['host', 'client', 'package.json'],
   },
+  {
+    id: 'official-chat',
+    // 官网对话引用（P0 可行性验证用）：host 半边是**客户端半边的锚点**，client
+    // 半边是工作台 `@` 菜单里的「官方对话」来源。**没有上游内容**（官网正文属于
+    // 用户自己的账号数据，不在安装包里）。
+    //
+    // `host` 与 `client` 都必须物化：内核的 `dsh-client-modules` 是扫 host Loader
+    // 的 entries 找带 `dsh.client` 声明的包——没有 host 半边，client/client.js
+    // 一行都不会执行，而面板上照样显示「已启用」。
+    // `test/` 与 README 不进实例，与另外三个内置插件一致。
+    entries: ['host', 'client', 'package.json'],
+  },
 ];
 
 function fail(message) {
