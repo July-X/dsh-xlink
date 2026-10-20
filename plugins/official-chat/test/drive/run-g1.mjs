@@ -470,6 +470,30 @@ async function clearDraft(cdp) {
   await sleep(400);
 }
 
+/**
+ * 等 @ 菜单里出现目标行。
+ *
+ * 菜单**先渲染、候选项后到**：插件的 `candidates()` 是异步的，刚打完 `@` 时
+ * 菜单里可能还没有「官方对话」那几行——实测（2026-10-20 壳内复验）第一次 pick
+ * 就因此点不中、假红，而同一轮里第二次就正常。所以点之前先等这行出现，
+ * 等不到就把菜单行原样带进结果，便于直接判读。
+ */
+async function waitMenuRow(cdp, title, timeoutMs = 8000) {
+  const t0 = Date.now();
+  let rows = [];
+  while (Date.now() - t0 < timeoutMs) {
+    const snapshot = await cdp.evaluate(`
+      return [...document.querySelectorAll('[role="option"],[role="menuitem"],button,li')]
+        .map((el) => (el.innerText || '').trim().replace(/\\s+/g, ' '))
+        .filter((t) => t && t.length > 0 && t.length < 80).slice(0, 40);
+    `);
+    rows = Array.isArray(snapshot) ? snapshot : [];
+    if (rows.some((t) => t.includes(title))) return { ok: true, waitedMs: Date.now() - t0, rows };
+    await sleep(300);
+  }
+  return { ok: false, waitedMs: Date.now() - t0, rows };
+}
+
 /** 读草稿：整张卡片的 HTML（chip 在卡片里）+ 编辑器文本。 */
 async function readDraft(cdp) {
   return cdp.evaluate(`
@@ -703,13 +727,7 @@ try {
   await clearDraft(cdp);
   await typeText(cdp, '前置文字 ');
   await typeText(cdp, '@');
-  await sleep(1500);
-  const menuB = await cdp.evaluate(`
-    const rows = [...document.querySelectorAll('[role="option"],[role="menuitem"],button,li')]
-      .map((el) => (el.innerText || '').trim().replace(/\\s+/g, ' '))
-      .filter((t) => t && t.length > 0 && t.length < 80).slice(0, 40);
-    return { rows, hasAlpha: (document.body?.innerText ?? '').includes(${JSON.stringify(FIXTURE_ALPHA)}) };
-  `);
+  const menuB = await waitMenuRow(cdp, FIXTURE_ALPHA);
   const pickB = await realClickByText(cdp, FIXTURE_ALPHA, { prefix: true });
   await sleep(800);
   const draftB1 = await readDraft(cdp);
@@ -721,7 +739,8 @@ try {
   const iChip = html.indexOf('data-composer-chip="official-chat"');
   const iPost = html.indexOf('后置文字');
   const bDetail = {
-    menuOpened: menuB?.hasAlpha === true,
+    menuOpened: menuB?.ok === true,
+    menuWaitedMs: menuB?.waitedMs ?? null,
     menuRows: menuB?.rows ?? [],
     picked: pickB?.clicked === true,
     chipLanded: chipIn,
@@ -738,7 +757,7 @@ try {
   await clearDraft(cdp);
   await setConfig(cdp, { readDelayMs: 8000, failRead: false });
   await typeText(cdp, '@');
-  await sleep(1500);
+  const menuC = await waitMenuRow(cdp, FIXTURE_ALPHA);
   const pickC = await realClickByText(cdp, FIXTURE_ALPHA, { prefix: true });
   await sleep(500);
   await typeText(cdp, '请看这个');
@@ -772,6 +791,7 @@ try {
   const occurrences = hitChat.map((r) => String(r.body).split(BODY_ALPHA).length - 1);
   const userHits = hitChat.flatMap((r) => findUserMessageWith(r, BODY_ALPHA) ?? []);
   const cDetail = {
+    menuOpened: menuC?.ok === true,
     picked: pickC?.clicked === true,
     newRequests: reqsC.length,
     chatRequests: chatReqs.length,
@@ -800,7 +820,7 @@ try {
   await clearDraft(cdp);
   await setConfig(cdp, { readDelayMs: 2500, failRead: true });
   await typeText(cdp, '@');
-  await sleep(1500);
+  const menuD = await waitMenuRow(cdp, FIXTURE_BETA);
   const pickD = await realClickByText(cdp, FIXTURE_BETA, { prefix: true });
   await sleep(500);
   await typeText(cdp, '这条会失败');
@@ -875,6 +895,7 @@ try {
   const bodyD = await readBody(cdp);
   const draftD = await readDraft(cdp);
   const dDetail = {
+    menuOpened: menuD?.ok === true,
     picked: pickD?.clicked === true,
     newRequests: reqsD.length,
     requestsWithBody: reqsD.filter((r) => String(r.body ?? '').includes(BODY_BETA)).length,

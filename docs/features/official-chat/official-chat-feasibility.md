@@ -1,7 +1,7 @@
 ---
 description: "P0 可行性结论：G1/G2/G3 的实际执行结果、接口缺口、协调者裁定与是否可以继续。只填实际执行结果。"
 kind: "feasibility"
-status: "G1/G2/G3 的机制层结论已出；壳真实 workbench 内复验已通过一次（复跑稳定性未验）；真实链路（已登录态、正文读取、release 壳）未闭合"
+status: "G1/G2/G3 的机制层结论已出；壳真实 workbench 内复验已可复现（仅 dev 壳，release 壳未验）；真实链路（已登录态、正文读取、release 壳）未闭合"
 date: 2026-10-20
 ---
 
@@ -15,7 +15,7 @@ date: 2026-10-20
 
 | 验证项 | 状态 | 一句话结论 |
 | --- | --- | --- |
-| G1 内核工作台的选择与发送控制 | **通过（4/5 问通过，第 5 问判定为互斥并已选型）** | 现有扩展接口足以支撑「@ 选择 → chip 落地 → 发送时读取正文 → 等待或拒绝」；「成功才插就绪 chip」在现接口下不可达。**证据有版本**：结论取自 12:21–13:31 的三轮运行，差异见[第 7 节](#7-文档与实测的出入)第 6 条；**14:09 起，壳自己的真 Tauri workbench webview 内复验也已全过**（同见第 7 节第 6 条） |
+| G1 内核工作台的选择与发送控制 | **通过（4/5 问通过，第 5 问判定为互斥并已选型）** | 现有扩展接口足以支撑「@ 选择 → chip 落地 → 发送时读取正文 → 等待或拒绝」；「成功才插就绪 chip」在现接口下不可达。**证据有版本**：结论取自 12:21–13:31 的三轮运行，差异见[第 7 节](#7-文档与实测的出入)第 6 条；**壳真实 workbench 内复验已可复现**（壳内两轮 + 内核 r16 一轮全过，驱动已进仓库；**release 壳未验**） |
 | G2 异步 JavaScript 回程 | **通过（5/5）** | 延迟成功 / 拒绝 / 超时 / 导航 / 页面销毁都能拿到分类正确的结果 |
 | G2 首站只读探测 | **部分通过（探测执行完毕，取数结论未成立）** | 目录接口与有效 origin 已测出，但**认证上下文不自动满足**，且**本机从未建立过登录态**（实测 profile 内无任何站点登录凭据），真实目录字段与正文读取仍未验证 |
 | G3 官网窗口未打开时仍可读取 | **通过（DeepSeek / ChatGPT / MiniMax 三站各 7/7）** | 六场景三站全绿；隔离已落地（只读拷贝 → 跑 → 删拷贝，源 profile mtime 未动）。**「真实已登录态并读到目录」仍不成立**——本机从未建立登录态（属 P4 前置，不属 G3 范围） |
@@ -223,14 +223,19 @@ G3 自己要验的六场景（页签已挂载 / 官网窗口关闭 / 尚未登�
 3. **开发计划 §3 阶段表的 P0 行仍是「待实施」。** 实际 G1/G2/G3 机制层已出结果，真实链路未闭合。该表在本轮结束后应统一更新，本文件不代改。
 4. **调研 §7 待验证清单的状态列仍是 ⬜。** 本轮实测覆盖情况：#10（@ 第二个 source）、#16（拿不到 `inputTriggers` 时的表现）、#17（卸载后既有 chip 怎么办）、#20（`onPick` 异步读取与发送门控）**已由 G1 覆盖**；#3（B3 页内 fetch 拿结构化 JSON）**部分覆盖**（DeepSeek/ChatGPT 的目录接口存在性与结构已测，真实字段形态未验）；#5（R1 回程）**部分覆盖**（回程机制本身由 G2-A 的可控页验证；**零痕迹方案在 Windows 上已由 CDP 5/5 覆盖，macOS 无通路**）；#4（CSP）**未验**；#9（MiniMax 目录）**未验**；#22（按需建立读取上下文）= **G3 机制层已覆盖，真实链路未覆盖**。
 5. **一致的项（已核对，无出入）**：调研 §2.5 的取数边界与裁定 1 一致；调研 §4.4「展开失败必须中止该轮模型调用，不能静默按没有引用继续」与 Q2 实测的拒绝行为一致（**在有 chip 时**）；开发计划 §11 A06「不出现就绪空标签」在甲形态下成立（chip 是 pending 句柄，不是空标签）——但同一条的「不自动降级发送」**只在有 chip 时成立**，无 chip 时内核仍会静默降级（缺口 G1-2）。
-6. **G1 的证据有版本，本文件第 3 节的数字取自哪一轮必须写清。** 本轮实际发生**四次** G1 运行：
+6. **G1 的证据有版本，本文件第 3 节的数字取自哪一轮必须写清。** 本轮实际发生**七次** G1 运行：
    - **12:21–13:06（`delivery.md` / `delivery2.md`）**：按源码手工复刻物化，产出 `final.out.txt`（13:01:41）、`reject.out.txt`（13:03:58）、`q2v2.out.txt`、`q4-*.out.txt`、`q5*.out.txt`；本文件第 3 节引用的 `final.out.txt` / `reject.out.txt` 即这一轮。
    - **13:09–13:15（仓库内新脚手架 `plugins/official-chat/test/drive/run-g1.mjs`）**：**未跑出 composer**（工作台首页没有会话 → 没有编辑器），该轮四条断言**未验证**。**这不推翻上一轮**（上一轮的证据仍在），但它说明**仓库里留着的这版脚手架不如旧脚手架**；该轮留下 **8 个 `%TEMP%\g1-probe-*` 临时目录（合计约 127MB）**。**后续状态**：该脚手架**已重写并跑通**（第 13、14 轮连续两轮全绿，见下），那 8 个临时目录**已用运行时的可恢复删除启动器全部回收**（121.3MB，移入回收站，未做永久删除）。
    - **13:26–13:31（`delivery3.md`）**：改走**壳的真实 Rust 物化链**（`ensure_wired` + 打包资源 + `verify_manifest`），**五问全部重跑**，数字与上一轮一致或更接近（等待 7439ms vs 7624ms；拒绝可见 1325ms→4994ms vs 1340ms→5031ms），产出 `final.json`（13:26:00）与 `reject-notice.json`（13:28:39）。
    - **13:49–13:56（`shell-dev.mjs` / `shell-verify.mjs`）**：起**壳本身**（`cargo run --features wdio` → `dsh-xlink.exe` dev 壳，`data_dir` 在 `%TEMP%\dsh-xlink-g1\shell-home\dsh\desktop-dev`，Vite 5174，WebView2 CDP 9335）做**壳真实 workbench webview 内复验** —— **首跑 `shell-verify.out.txt` 与 `model.log` 均为 0 字节（13:56:03），没有产出结果**。
    - **14:04 重跑有产出**：`shell-verify.out.txt` **3,209 字节（当时的快照，同名文件后被覆盖）** —— 走通到「起壳 → CDP 连上壳的管理面板 → 插件在壳里 `enabled`/`wired`/`loadState:prepared` → **真实物化链**物化到 `.../instances/default-dev/home/extensions/builtin/official-chat/0.1.0/dsh-0.2.1-rc.2-cordis-4.0.5/compat-a` → 桩模型路由写进 `cordis.patch.yml` → `start-kernel: ok:true`」。**但输出到 `start-kernel` 就结束**，`model.log` 仍 0 字节，**没走到工作台里的 @ 菜单与发送门控**。
    - **14:09 轮（`shell-verify.out.txt` 现为 7,713 字节 / 14:09:02；交付 `delivery-final.md` 14:11:08）：壳自己的真 Tauri workbench webview 内四项实测全过** —— ① `@` 菜单出现「官方对话」分组；② 选中后 chip 落地且是内核节点（`data-composer-chip` + `data-lexical-decorator="true"`，`bodyInDraft:false`）；③ 延迟读取：按发送后读取完成前**桩模型 0 请求**，完成后请求到达且请求体含夹具正文（`waitedMs:7466`、`newRequests:2`、`requestHasBody:true`、`serializeOk:true`、`draftCleared:true`）；④ 读取失败：**0 请求 + 可见错误 + 草稿保留**（`errorVisible:true`、`errorHit.atMs:1000`、`draftRetained:true`、`serializeFailed:true`）。**壳自己的物化链产物核对也过**（物化目录 `.../extensions/builtin/official-chat/0.1.0/dsh-0.2.1-rc.2-cordis-4.0.5/compat-a`，三份文件齐、`.xlink-materialized.json` 在、接线行指向 `host/index.js`）。**这一轮把「壳内工作台断言」从「未验」变成「已过一次」**（[第 9 节](#9-是否可以继续)先决条件 5 相应改写）。
-   - **14:28 轮失败（`shell-verify-r2.out.txt`）**：CDP attach 到了 `chatstrip` 窗口（`http://localhost:5174/index.html?chatstrip=1`）而不是 main 面板 → 调 `builtin_set_enabled` 被 capability 拒绝：`builtin_set_enabled not allowed on window "official-chat", webview "official-chat-strip" … allowed on: [windows: "main"]`。**这一轮没有产出断言结果**（输出只到 `start-kernel: ok:true`）。**该失败与 14:09 那轮是否同因，未定论**——14:09 的证据文件已被同名覆盖，无法比对 attach 到了哪个窗口。
+   - **14:28 轮失败（`shell-verify-r2.out.txt`）**：CDP attach 到了 `chatstrip` 窗口（`http://localhost:5174/index.html?chatstrip=1`）而不是 main 面板 → 调 `builtin_set_enabled` 被 capability 拒绝：`builtin_set_enabled not allowed on window "official-chat", webview "official-chat-strip" … allowed on: [windows: "main"]`。**这一轮没有产出断言结果**（输出只到 `start-kernel: ok:true`）。
+   - **14:47–15:07 轮（壳驱动搬进仓库后重跑）：壳内与内核两条路各再过一次，全过**。驱动已落到仓库 `plugins/official-chat/test\drive\shell\`（`paths` / `cdp` / `stub-model` / `shell-dev` / `copy-kernel` / `shell-verify` / `README.md`，**未提交**），复跑按 README 的三条命令（copy-kernel → shell-dev → shell-verify）执行：
+     - **壳内（`evidence-shell-r2\shell-verify.shell-r2.json`）**：A `@` 菜单有「官方对话」+「G1 固定对话 Alpha」；B `picked:true` / `menuHasRow:true` / `chipIsKernelNode:true` / **`bodyInDraft:false`**（pending 句柄，正文不在草稿里）；D 门控 t=291ms 时 **0 请求**、t=7980ms 才发出且请求体含夹具正文、`serialize-ok`；E 失败 **0 请求** + 可见错误（+1750ms）+ 草稿保留 + `serialize-failed`；**壳自己的物化链产物核对全 true**（`materializedExists` / 三份 entries / `markerExists` / `patchHasRow`）。CDP target 列表同时含壳面板 `http://localhost:5174/` 与工作台 `http://127.0.0.1:3210/`。
+     - **内核路径（`evidence-r16\results.r16.json`）**：五项断言全绿（`waitedMs:7400`、`bodyOccurrences:[1]`、`userMessageRoles:["user"]`、错误 `role="alert"` @1000ms + 4 张截图）。
+     - **这一轮同时暴露了第二条前置条件**：壳内 `builtin_set_enabled` 返回 `ok:false`，原因是**该实例的内核当时还在运行**（进程 42976 / 端口 3210）——壳的原话是「内核把状态缓存在内存里，运行期间的改动会被它下一次落盘整个覆盖」。该轮插件最终是**靠壳自己的接线行 + 物化链装上的**（`stub-route-appended.added:true`、物化产物核对全 true），**但这不是 `builtin_set_enabled` 成功**。**⇒ 壳内复跑要成立，前置条件是两条：① attach 必须是 main 面板、不能是 chatstrip 窗口；② 改内置插件开关前必须先停掉该实例的内核。**
+     - 顺带修掉两个真问题（都写进了注释与 README）：**第一次 pick 会假红**——菜单**先渲染、候选项后到**（插件 `candidates()` 异步），修法是点之前轮询等这行出现；**`waitMenuRow` 在内核路径漏了 `return`** → `menuOpened` 是**假阴性**（菜单行明明在，等了 8.1s 却说没开），修后 r16 `menuOpened:true`（`menuWaitedMs:1`）。
    - **14:31–14:35 轮（r12 / r13 / r14，**内核自带工作台**，每轮独立隔离 home）**：五项断言全过 —— 插件半边被内核加载（探针在页面里）、编辑器可编辑且有尺寸（`phase:"plain"`、`editable:"true"`、有尺寸）、a `@` 菜单「官方对话」分组、**b 选中后继续编辑不丢字且输入位置保持**（`keptPreText`/`keptPostText`/`orderOk` 均 true）、c 发送被读取门控挂起（`waitedMs:7407–7443`、`gated:true`、`chatRequestsWithBody:1`、`bodyOccurrences:[1]`、`userMessageRoles:["user"]`）、d 读取失败则 0 请求 + 草稿保留 + **节点级可见错误**（`role="alert"`、`firstHitAtMs:1000`）+ 4 张密集采样截图（`assert-d.toast.00000/01000/02000/04000ms.png`）。
    - **证据生命周期问题（已修一半）**：`model.log` 仍是 0 字节（14:34 又被 r14 的空跑覆盖一次），一度只剩 `final.out.txt` 的布尔字段 `requestHasBody:true` 支撑、**原始请求体不可复核**；**14:31 与 14:35 两轮已改为逐轮独立文件** `probe-r12\model-requests.r12.jsonl` 与 `evidence-r14\model-requests.r14.jsonl`（各 44,871 字节）→ **原始请求体重新可复核**。**本轮复核结论**：聊天请求体里夹具正文**恰好出现 1 次**且落在**角色为 user** 的消息里（同一文件另有一条 session-title 请求也含同一正文，所以**全文计数是 2**——引用时按「聊天请求」计数，别按全文计数）。**教训仍然成立：每轮跑批的证据必须写进独立文件，不得复用同名文件。**
 7. **G3 场景 4/6 的「账号切换」与「官网窗口开/关」是探针自建的模拟**，不是真实账号切换、也不是壳的真实官网窗口。**这三条必须写进结论，否则下一个人会把它们当成真实链路证据。**（详见[第 5 节](#5-g3官网窗口未打开时仍可读取)的判定口径）
@@ -242,7 +247,7 @@ G3 自己要验的六场景（页签已挂载 / 官网窗口关闭 / 尚未登�
 
 ### G1（10 项）
 
-1. **壳真实 workbench webview 内复验——已通过一次，复跑稳定性未验**。**14:09 那轮在壳自己的真 Tauri workbench webview 里四项全过**（`@` 菜单分组 / chip 是内核节点 / 延迟读取门控 / 读取失败 0 请求 + 可见错误），交付 `delivery-final.md`（见[第 7 节](#7-文档与实测的出入)第 6 条）。**但同源脚手架 14:28 轮复跑失败**——attach 到 `chatstrip` 窗口、被 capability 拒绝 `builtin_set_enabled not allowed … allowed on: [windows: "main"]`，**「这条链路能稳定复跑」这件事本身未验证**；14:31–14:35 的 r12/r13/r14 全过是在**内核自带工作台**上跑的，不等于壳内复跑稳定。仍未验的还有：**release 壳**（本轮只有 dev 壳，实例 id `default-dev`）、**壳内真实官网登录态下的 `@` 来源**（只做了固定夹具）、**跨平台**（只在本机 Windows 跑过）。
+1. **壳真实 workbench webview 内复验——已可复现（两轮跑通），但有前置条件、且只有 dev 壳**。**壳内**在 14:09 与 15:0x（`shell-r2`）两轮各过一遍（A/B/D/E 全过，壳自己的物化链产物核对也过），**内核路径** r16 五项断言全绿；驱动已搬进仓库 `plugins/official-chat/test\drive\shell\` 并带 README（三条命令）。**仍未验证**：① **release 壳**（本轮只有 dev 壳，实例 id `default-dev`；release 才是 `default`）；② **复跑的前置条件没被自动检查**——必须 attach main 面板（不能是 chatstrip 窗口）、改内置插件开关前必须先停掉该实例的内核（14:28 与 shell-r2 两轮失败分别踩中这两条）；③ **壳内真实官网登录态下的 `@` 来源**（只做了固定夹具）；④ **跨平台**（只在本机 Windows 跑过）。
 2. ~~物化与接线是按源码手工复刻~~ —— **已过时**：13:26–13:31 那轮（`delivery3.md`）改走**壳的真实 Rust 物化链**（`ensure_wired` + 打包资源 + `verify_manifest`），五问在真链产物上重跑。**「壳的真实 workbench webview 内」这条也已不是缺口**——14:09 那轮在该窗口里四项全过（见[第 7 节](#7-文档与实测的出入)第 6 条）；现在剩下的是**复跑稳定性**（本节第 1 条）。
 3. ~~插件没有登记进壳的内置插件表~~ —— **已完成**：`src-tauri/src/plugins/builtin/builtins.rs` 新增 `OFFICIAL_CHAT` 常量与 `BuiltinSpec`（`id: OFFICIAL_CHAT`、`row_id: "xlink-official-chat"`、`entries: &["host","client","package.json"]`、**`peers: &[]` 并写明理由**——host 半边不静态 import 任何内核包，client 半边 inject 的包由内核的浏览器模块图提供、不走物化建链接）；「三个内置插件恰好是……」那条注释与断言已改为**四个**（`BUILTINS.len() == 4`）并补了它与 memory 的异同说明；`scripts/prepare-builtin-plugins.mjs` 已加该条目并说明「host 半边必须真的存在」的理由（没有 host 半边，`client/client.js` 一行都不会执行，而面板上照样显示「已启用」）；另有 `the_official_chat_spec_materializes_through_the_real_chain` 用例走**生产同一条物化链**验证这份登记；`--check` exit=0（4 插件 / 38 文件）。
 4. ~~根 `package.json` 的 `test:plugin` 没加本插件的测试~~ —— **已完成**：`test:plugin` 已纳入本插件测试（最新一轮 **209 tests / 206 pass / 0 fail / 3 skip**），另加 `test:probe`（6/6）。
@@ -294,7 +299,7 @@ G3 自己要验的六场景（页签已挂载 / 官网窗口关闭 / 尚未登�
 
 理由：G1 的五问里四问通过、第五问（Q3）已判定为互斥并由协调者选型落地，机制层面不存在未知项；**G3 已成立（DeepSeek / ChatGPT / MiniMax 三站各 7/7）**；P1 的前置条件「G1 通过」已满足，取数侧（P1 的协议与状态机建模）不依赖 G2/G3 的站点侧结论，可以并行推进。**P1 可以开工。** **G3 的结论不必等真实链路**：P1 建模的是协议与状态机，不依赖「已登录态能否读到目录」这个取数结论。
 
-**不可以进入 P4（首站接入）。** 三条理由：① **本机从未建立登录态**（实测 profile 内无任何站点登录凭据），真实目录字段与分页形态无从验证；② **零痕迹回程 macOS 侧无通路**（wry 0.57 未暴露 `callAsyncJavaScript`，代码里明确报错、不静默降级），两平台形态不统一；③ **壳真实 workbench 内只复验过一次**——14:09 那轮在壳自己的真 Tauri workbench webview 里四项全过，但**同源脚手架 14:28 轮复跑失败**（capability 拒绝），**复跑稳定性未验**，且本轮只有 dev 壳（实例 id `default-dev`）。P2/P3 可以在 P1 完成后按已冻结协议推进，但它们的**验收**（G4）依赖真实链路，不依赖真实站点。
+**不可以进入 P4（首站接入）。** 三条理由：① **本机从未建立登录态**（实测 profile 内无任何站点登录凭据），真实目录字段与分页形态无从验证；② **零痕迹回程 macOS 侧无通路**（wry 0.57 未暴露 `callAsyncJavaScript`，代码里明确报错、不静默降级），两平台形态不统一；③ **壳真实 workbench 内只验过 dev 壳**——壳内复跑已可复现（14:09 与 15:0x 两轮各过一遍，驱动已进仓库），但 **release 壳未验**，且复跑有两条前置条件（attach 必须是 main 面板；改开关前必须先停该实例内核）**未被自动检查**。P2/P3 可以在 P1 完成后按已冻结协议推进，但它们的**验收**（G4）依赖真实链路，不依赖真实站点。
 
 ### 继续的先决条件
 
@@ -308,14 +313,14 @@ G3 自己要验的六场景（页签已挂载 / 官网窗口关闭 / 尚未登�
 
 3. ~~**插件登记进内置插件表**~~ —— **已完成**（见[第 7 节](#7-文档与实测的出入)第 8 条）。
 4. ~~**根 `package.json` 的 `test:plugin` 登记本插件测试**~~ —— **已完成**（`test:plugin` 已纳入本插件测试，另加 `test:probe`）。
-5. **壳真实 workbench webview 内复验 G1 链路——已通过一次，复跑稳定性待验**：**14:09 那轮在壳自己的真 Tauri workbench webview 里四项全过**（`@` 菜单分组 / chip 是内核节点 / 延迟读取门控 / 读取失败 0 请求 + 可见错误；`shell-verify.out.txt` 现为 7,713 字节 / 14:09:02，交付 `delivery-final.md` 14:11:08），壳自己的物化链产物也核对过。**但同源脚手架 14:28 轮复跑失败**（`builtin_set_enabled` 被 capability 拒绝，attach 到了 `chatstrip` 窗口），**「这条链路能稳定复跑」尚未验证**；本轮也只有 **dev 壳**（实例 id `default-dev`），release 壳未验。**P2/P3 的验收若依赖壳内复验，需先把复跑稳定性做出来。**
+5. **壳真实 workbench webview 内复验 G1 链路——已可复现，release 壳仍待验**：**壳内**在 14:09 与 15:0x（`shell-r2`）两轮各过一遍（A/@ 菜单、B/chip 是内核节点且正文不进草稿、D/读取门控、E/失败 0 请求 + 可见错误 + 草稿保留），壳自己的物化链产物核对也过；**内核路径** r16 五项断言全绿。驱动已搬进仓库 `plugins/official-chat/test\drive\shell\`（含 README 的三条命令：copy-kernel → shell-dev → shell-verify），**该目录尚未提交**。**复跑的前置条件必须照做**（两轮失败各踩中一条）：① **attach 必须是 main 面板**，不能是 `chatstrip` 窗口（否则 `builtin_set_enabled` 被 capability 拒绝）；② **改内置插件开关前必须先停掉该实例的内核**（否则壳拒改：内核把状态缓存在内存里，运行期间的改动会被它下次落盘整个覆盖）。**release 壳（实例 id `default`）未验。**
 
 **进入 P4 前需补：**
 
 6. **用户在本机首次建立登录态**（**ChatGPT 优先**：目录结构 `{items,total,limit,offset}` 已坐实、分页形态已知、凭据在 HttpOnly cookie 故页内 fetch 天然带上；DeepSeek 需额外 Bearer 路径，且现有 localStorage 里的 `userToken` 服务端不认——`40003 INVALID_TOKEN`）。**归因更正**：本机**从未建立过**登录态（实测 profile 内 13 条 cookie 全是匿名/埋点类，无任何站点登录凭据），**不是**「登录态被这轮测试弄丢了」——本来就没有可丢的东西。不建立登录态，真实目录字段与分页形态无法验证。
 7. **G3 的剩余两件事**（G3 自身已通过，三站各 7/7）：在**壳的真实官网窗口**下重跑场景 1/2/6 的真实页签复用，以及在**已登录态**下复跑场景 3/4。两者都依赖先决条件 6（先有登录态）。
 8. **页内求值走零痕迹回程**（**Windows 已实测成立**）：`ICoreWebView2::CallDevToolsProtocolMethod("Runtime.evaluate", {awaitPromise:true, returnByValue:true})`（**注意不是** `ICoreWebView2DevToolsProtocolController`——WebView2 没有那个接口）；`--mode cdp` 实测 5/5 且页面 JS 空间零痕迹（`getOwnPropertyNames(window)` 前后 1239 / 1239，`__dsh*` 为 0）。**R1 页面槽位不得直接带进真实站点**（裁定 3）。**macOS 侧无通路**（wry 0.57 无 `callAsyncJavaScript`，`InnerWebView` 为 `pub(crate)`；代码里明确报错、不静默降级）→ 按 P0 **已知缺口**处理，不是待验方案。
-9. **探测一律使用 `%TEMP%` 一次性 profile**，不再使用用户真实数据目录下的 webview profile（[第 7 节](#7-文档与实测的出入)第 2 条）。**已落机检判据**：`scripts/probe-profile-isolation.test.mjs` + `scripts/lib/probe-profile-isolation.mjs`（自测 10/10），并接入 `check-invariants` 第 30 条；本机实测输出「✓ 测试/探针代码没有指向用户真实数据目录下的浏览器 profile（已扫 31 个文件）」，全部不变量检查通过 exit 0。
+9. **探测一律使用 `%TEMP%` 一次性 profile**，不再使用用户真实数据目录下的 webview profile（[第 7 节](#7-文档与实测的出入)第 2 条）。**已落机检判据**：`scripts/probe-profile-isolation.test.mjs` + `scripts/lib/probe-profile-isolation.mjs`（自测 10/10），并接入 `check-invariants` 第 30 条；本机实测输出「✓ 测试/探针代码没有指向用户真实数据目录下的浏览器 profile（已扫 **37** 个文件——壳驱动搬进仓库后由 31 增到 37，新增的 6 个 `.mjs` 确实进了扫描范围，不是靠躲目录）」，全部不变量检查通过 exit 0。**该判据仍覆盖不到「探针不传 `--profile` → 用默认路径」这种写法**（见[第 8 节](#8-本轮没有验证的)第 20 条）。
 
 ## 10. 证据与脱敏
 
@@ -329,11 +334,13 @@ G3 自己要验的六场景（页签已挂载 / 官网窗口关闭 / 尚未登�
 | G1 各场景 | `%TEMP%\dsh-xlink-g1\q2v2.out.txt`、`q4-codec-missing.out.txt`、`q4-service-missing.out.txt`、`q4-uninstalled.out.txt`、`q4-host-import-failure.out.txt`、`q4-svcprobe.out.txt`、`q4-notice.out.txt`、`q5.out.txt`、`q5b.out.txt` |
 | G1 桩模型收到的请求体 | `%TEMP%\dsh-xlink-g1\model.log` —— ⚠️ **0 字节**（13:56 空跑覆盖，14:34 又被 r14 空跑覆盖一次）；**可复核的替代件**：`probe-r12\model-requests.r12.jsonl`、`evidence-r14\model-requests.r14.jsonl`（各 44,871 字节，**逐轮独立命名**）——对话请求体里夹具正文出现 1 次且落在角色为 user 的消息里（全文计数 2，另一条是会话标题生成请求） |
 | G1 壳真实窗口复验（已通过一次） | `%TEMP%\dsh-xlink-g1\shell-dev.mjs`、`shell-verify.mjs`、`shell-dev.log`、`shell-verify.out.txt`（**现为 7,713 字节 / 14:09:02**：壳自己的真 Tauri workbench webview 四项全过）、`shell-verify-r2.out.txt`（**14:28 轮失败**：capability 拒绝 `builtin_set_enabled`） |
-| G1 复跑轮（r12 / r13 / r14，内核自带工作台） | `%TEMP%\dsh-xlink-g1\run-r12.out.txt`（14:31）、`run-r13.out.txt`（14:33）、`evidence-r14\results.r14.json`（14:35，五项断言全过）、`evidence-r14\assert-d.toast.00000/01000/02000/04000ms.png`（4 张密集采样截图） |
+| G1 复跑轮（r12 / r13 / r14 / r16，内核自带工作台） | `%TEMP%\dsh-xlink-g1\run-r12.out.txt`（14:31）、`run-r13.out.txt`（14:33）、`evidence-r16\results.r16.json`（15:09，五项断言全绿）、`evidence-r14\assert-d.toast.00000/01000/02000/04000ms.png` 与 `evidence-r16\assert-d.toast.*.png`（密集采样截图） |
+| G1 壳驱动（**已搬进仓库，未提交**） | `plugins/official-chat/test\drive\shell\`：`README.md`（复跑三条命令：copy-kernel → shell-dev → shell-verify）、`paths.mjs`、`cdp.mjs`、`stub-model.mjs`、`shell-dev.mjs`、`copy-kernel.mjs`、`shell-verify.mjs` |
+| G1 壳内复跑（15:0x 轮） | `%TEMP%\dsh-xlink-g1\evidence-shell-r2\shell-verify.shell-r2.json`（A/B/D/E 全过 + 物化产物核对）、`model-requests.shell-r2.jsonl`（逐轮独立请求体）、`group-report.md` |
 | G2 A / B | `%TEMP%\dsh-probe\A-controlled.json`、`B-deepseek.json`、`B-chatgpt.json`、`B-minimax.json` |
 | G3 | `%TEMP%\dsh-probe\G3-deepseek.json`、`G3-chatgpt.json`、`G3-minimax.json`（13:53 首轮）与 `G3-r2-deepseek.json`、`G3-r2-chatgpt.json`、`G3-r2-minimax.json`（14:28 重跑）；源 profile mtime 前后对照 `profile-mtime-before-r2.txt` / `profile-mtime-after-r2.txt`（Cookies / History / Preferences / Secure Preferences 均为 13:24:48，跑完未变） |
 | 零痕迹回程（CDP） | `%TEMP%\dsh-probe\A-cdp-feasibility.json`（5/5：`devtools_window_opened:false`、`awaitPromise` 直接拿到结算值、`getOwnPropertyNames(window)` 1239/1239、`__dsh*` 为 0） |
 
 **脱敏说明**：本文件不含任何 token、cookie 值、账号标识、私密正文或真实对话标题。出现的站名与接口路径属公开信息；出现的对话标题是本轮夹具（`G1 固定对话 Alpha` / `G1 固定对话 Beta`）；凭据只记录了**键名**（`userToken`、`settingsJwt`、`__appKit_userInfo`）与 cookie **名称**，值一律未读取、未记录。正文读取全程未执行。
 
-**提交状态**：本轮所有改动**留在工作树**，未 `git commit`、未 `git push`。
+**提交状态**：本轮所有改动**留在工作树**，未 `git commit`、未 `git push`（**提交由 izzy 统一做，PM 不执行 commit/push**）。**HEAD 是 `3436fb4`**（14:58，zhongxingxing，提交信息「G1 断言复跑全绿 + P0 结论回填；AGENTS.md 补跑批证据约定」）——**它已经包含本文件与进度表的 14:4x 回填**，以及 `run-g1.mjs` 的重写与 AGENTS.md 的一行。**15:1x 的这一轮回填仍是工作树改动**，工作树现状：`M docs/features/official-chat/official-chat-feasibility.md`、`M docs/features/official-chat/official-chat-progress.md`（本文件与进度表）、`M plugins/official-chat/test/drive/run-g1.mjs`（devloper 的菜单等待加固）、`?? plugins/official-chat/test/drive/shell/`（壳驱动 7 个文件，**未提交**）。**本文件与进度表的这一轮改动是相对 `3436fb4` 的工作树改动。**
