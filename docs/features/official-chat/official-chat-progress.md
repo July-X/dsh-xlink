@@ -296,6 +296,31 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 3. 页内求值走零痕迹回程（Windows 走 CDP `Runtime.evaluate` + `awaitPromise`，**已实测成立**；**R1 槽位不得带进真实站点**；**macOS 侧无通路**，按已知缺口处理——代码里明确报错、不静默降级）。
 4. **把「固定快照」与「pending 句柄」的关系定死——这是两件东西**：快照是 P1/P3 的**落盘物**（`schemaVersion` / 不可变 `snapshotId` / 规范化内容摘要 / 捕获结果，与官网会话 id 分开）；pending 句柄是 G1 已验证过的 **chip 形态**（有 ref、有读取记录，发送时由 `codec.serialize` 取正文，等待或拒绝）。P1 必须写清：句柄指向哪个 snapshot、句柄在 snapshot 落盘前后各处于什么状态、「就绪」由 snapshot 的哪个字段承担。**不能把「chip 存在」当成「快照已就绪」。**
 
+### 2026-10-20 21:0x–21:2x · P1 通道落地（exact fetch route）+ 保留期清理落地 + 判据收尾
+
+**通道落地（devloper 实施，Chief 复核内核源码）**
+- 形态：`ctx.connection.fetch.register({kind:'exact', path:'/api/xlink-official-chat', methods:['POST'], requestBody:'buffered', fetch})`（协议 v0.4 §5 裁定的过渡通道）。
+- **实测出的前置事实（不是推断）**：浏览器侧内核自带的 `connection.rpc.call` 的 URL 是 `` `${channel}/${endpoint}`.slice(1) `` ⇒ **相对路径、不带 `/api`**（`dsh-client-connection/lib/client.browser.js@0.2.1-rc.2:1221`）⇒ 内置 RPC **永远打不到** `/api` 下的 exact route（内核 `assertFetchRoute` 强制路径在 `/api` 下）⇒ **客户端必须自己发 same-origin fetch**。
+- 插件自实现 `client-request`/`server-response` 信封（exact route 命中后**绕过**内核 `rpcFetchHandler`），形态照抄内核 ⇒ 上游修好后收敛回 `rpc.handle` 时**信封不用改**；信封层错误用**传输层** `gateway/bad-request`，**不进 §3 的 13 码闭集**。
+- host `inject` 收敛为 `['connection']`（去掉用不上的 `webServer`：多声明一个用不上的服务 = 多一条「那个服务不在就整条插件哑火」的依赖，零收益纯风险）。
+- **Chief 逐条复核内核源码**（现役树 `0.2.1-rc.2`，`dsh-client-connection/lib/index.js` SHA-256 `0EBCCA7583E082716F79B0B55BC1749D48269CC8DB2989B043B321B57ABD3684`）：对外服务面 `get fetch()` → `register: (route) => this.registerFetchRoute(owner, route)`（`:734`，**单参数**）；注册键 = `route.path` **原样**（`:849`）；查找 = `fetchRoutes.get(url.pathname)`（`:828`，**全等匹配**）；owner 准入 `peer.principal.kind !== "owner"` → 403（`:830`）；路径校验 `endpointFromPath("/api", route.path)`（`:973-977`）；`methods` 存成 `Set` ⇒ `POST` 命中。**与插件实现逐条对齐。**
+
+**真机 p1-r8（未打补丁的现役内核）**：断言 **a/b/c/d 全绿** —— ① catalog 真通（@ 菜单出现「官方对话」分组与 G1 Alpha/Beta）；② chip 落草稿且前后文字与顺序不丢；③ 发送门控挂起 7439ms 且正文**只出现 1 次**且 `role=user`；④ 读取失败 **0 请求** + `role="alert"` 可见错误 + 草稿保留。证据 `%TEMP%\dsh-xlink-g1\evidence-p1-r8\results.p1-r8.json`（**按 izzy 15:2x「证据可以清」，该文件可清；结论以本节为准**）。
+
+**保留期清理落地（协议 §4.1）**：新文件 `plugins/official-chat/host/sweep.js` —— 四家族（快照按 `capturedAt` + mtime 兜底／认领按 `claimedAt` 且**对应快照已不在**／目录缓存按 5 分钟 TTL／日志按行数·大小截断**不按 7 天删**）、两步法删除（先 rename 再 unlink）、根不可得**不扫**、失败**只记日志**、节流键 `<root>/sweeps/last-sweep-<YYYY-MM-DD>.json`、**只挂 `catalog` 入口**（`capture` 不触发）、**不引入引用计数**。devloper 自陈修掉一处真 bug（`sweepClaims` 调了未定义的 `readClaim`）与一处**测试期望写错**（同轮「过期快照 + 过期认领一起清」是协议要的）。
+
+**PM 独立复核（不采信回执）**
+- 门禁全绿：`check:invariants` 绿（47 文件）｜`test:plugin` 277/0/3｜`test:scripts` 131/0/3｜`test:probe` 6/6｜`cargo fmt --check` 0｜`cargo clippy --locked --all-targets -- -D warnings` 0｜`cargo test --locked`（debug）**1127 passed / 0 failed / 11 ignored**｜**判据 runner 独立复跑 32 条 = 30 pass / 0 fail / 2 skipped**（skip：A0 真机级 + A6b chip invalid）。
+- **devloper 自报漏了一项门禁**：`prepare-builtin-plugins.mjs --check` **首跑红**（official-chat 源码已变更、资源清单未重新生成）⇒ 跑 `npm run prep:builtin` 后绿（4 插件 / 43 文件；该目录按设计 `.gitignore`，**不入库**）。
+- **PM 代修三处**：① `sweep.js` 里 catalog-cache 的层级注释——实现是**平铺** `<provider>__<账号范围>__<查询词>.json`（`host/commands.js` 的 `fileOf`），**没有 provider 子目录** ⇒ 注释与协议 §5 的路径写法**双双按实现对齐**（原写法来自协议 §5，与实现不一致）；② 日志截断补上「**按大小**」上限（§4.1 第 2 条写的是**行数/大小两个上限**，实现只落了行数）⇒ 按行退，**不切字节数组**（切半个多字节字符会毁掉诊断证据）；③ 协议 §4.1 第 2 条补 **PM 澄清**：`capturedAt` **优先**、mtime **仅在 `capturedAt` 读不到时**兜底。
+
+**A0 真机结论的回填机制（Chief 裁定，回答 tester）**
+- **不采用「读真机证据文件」的机检判据**：证据文件按 izzy 拍板**可清** ⇒ 清掉后那条判据会从绿变 skipped ⇒ **一条会自己褪色的判据等于没有判据**。
+- **改为「结论登记进本文件」**：A0 真机级**永久如实报 skipped**（仓库级跑不了真实内核进程），其**载体是本节**——轮次名（p1-r8）、断言清单（a/b/c/d）、每条结论、证据路径。**每次真机轮都必须在本文件追加一节**（轮次、断言、通过/失败、证据路径），否则 A0 = 未执行。
+- 机检侧只保留 **A0s**（仓库级静态：钉「注册 exact fetch route + 不得把 `rpc.handle` 当已通 + 不用 cordis `ctx.set`」）——**形状钉得住、行为证不了**，两者的分工不得混。
+
+**§4.1 条款→判据映射（Chief 复核，发现两个缺口）**：§4.1 第 1 条（触发点/节流/节流键）**无判据**；第 2 条的**目录缓存 TTL 与日志截断两个家族**无判据（A17 只覆盖快照与认领两族）⇒ 派 **A18**（见下）。第 4 条（「正在发送中的引用」不保护）**不可机检**（实现里没有「发送中」这个可观测状态）⇒ 如实写「已知不覆盖，后果由 S-5/S-6 覆盖」，**不假装能测**。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
@@ -324,5 +349,7 @@ P1 开工时需要先落地的输入（来自 feasibility 第 9 节，先决条�
 | 2026-10-20 | P0 | 零痕迹回程：**Windows 已实测成立**（CDP 5/5，`getOwnPropertyNames(window)` 1239/1239、`__dsh*` 为 0）；**接口名更正**（`ICoreWebView2::CallDevToolsProtocolMethod`，WebView2 无 `ICoreWebView2DevToolsProtocolController`）；**macOS 侧无通路**（已知缺口，代码里明确报错不静默降级） | `%TEMP%\dsh-probe\A-cdp-feasibility.json` + `src-tauri/src/official_chat/cdp_eval.rs` |
 | 2026-10-20 | P0 | 登记落地 + 门禁实测（`check:builtin` 4/38、`check:invariants` 全绿含第 30 项、`check:duplicates` 4/8、`test:plugin` 206、`test:probe` 6、**`cargo test` debug 1109 passed**）；**发现一**：手工复刻把物化目录写成行 id（`xlink-official-chat/…`），真链是 `spec.id`（`official-chat/…`）——纸面正确不等于链正确；**发现二**：`cargo test --release` 红 6 条是 release-only 假红（`ShellMode::current()` 编译期决定） | `src-tauri/src/plugins/builtin/builtins.rs` + `scripts/prepare-builtin-plugins.mjs` + 根 `package.json` |
 | 2026-10-20 | P0 | feasibility 与本文件产出；计划/调研原文未改；**14:4x 与 15:1x 两轮已随 `3436fb4` / `2321dbd` 提交**；**15:2x–16:0x 两轮由 PM 本地提交（不推送，依 izzy 15:13「做好代码 commit」）** | `docs/features/official-chat/` |
+| 2026-10-20 | P1 | **通道落地 + 保留期清理落地（`686423a`，15 文件 / +1413 / −188）**：过渡通道 = 内核 `connection` 服务的 **exact fetch route**（`/api/xlink-official-chat`，POST，buffered；owner 准入仍由内核做）；**客户端必须自己发 same-origin fetch**（浏览器侧内核 `rpc.call` 的 URL 相对且不带 `/api`，打不到 exact route）；插件自实现 RPC 信封（信封层错误用传输层 `gateway/bad-request`，不进 13 码闭集）；host `inject` 收敛为 `['connection']`。**真机 p1-r8（未打补丁的现役内核）a/b/c/d 全绿**。新增 `host/sweep.js` 落地 §4.1 保留期主动清理。**PM 独立复核**：门禁全绿（判据 32 = 30/0/2、cargo 1127 passed、clippy 0、check:invariants 绿 47 文件）、**`prepare-builtin --check` 首跑红**（devloper 自报漏项，已重生成）、**PM 代修三处**（catalog-cache 层级注释 + 日志按大小截断 + 协议 §4.1 第 2 条澄清） | `%TEMP%\dsh-xlink-g1\evidence-p1-r8\results.p1-r8.json`（可清）＋ `%TEMP%\dsh-p1-protocol\results-chief-verify-2.json`（PM 独立复跑判据）＋ 本文件 21:0x 节 |
+
 
 **关于上表里的 `%TEMP%` 证据路径**：2026-10-20 15:2x izzy 拍板「**可以清**」后，PM 已把 `%TEMP%\dsh-xlink-g1\` 与 `%TEMP%\dsh-probe\` 移入回收站（可恢复删除），**上表引用的原始 JSON / 截图 / 请求体日志已不在原位**。**仍可长期复核的，是本文件与 feasibility 里写下的数字、字段值与判据口径**——引用这些结论时不要再指望去原路径取原始产物。
