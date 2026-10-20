@@ -1,0 +1,51 @@
+{
+  "id": "catalog-ok",
+  "title": "目录页：独立缓存物，不含正文",
+  "input": {
+    "kind": "catalog",
+    "outcome": "ok",
+    "providerId": "official-chat",
+    "accountScope": "desktop-dev/default/site-A",
+    "cursor": "c-2",
+    "hasMore": true,
+    "fetchedAt": "2026-10-20T09:06:00.000Z",
+    "items": [
+      {
+        "sessionId": "sess-alpha-001",
+        "title": "G1 固定对话 Alpha",
+        "updatedAt": "2026-10-20T08:59:00.000Z",
+        "deepLink": "https://example.invalid/chat/sess-alpha-001"
+      },
+      {
+        "sessionId": "sess-beta-002",
+        "title": "G1 固定对话 Beta",
+        "updatedAt": "2026-10-20T08:58:00.000Z",
+        "deepLink": "https://example.invalid/chat/sess-beta-002"
+      }
+    ]
+  },
+  "expected": {
+    "kind": "catalog",
+    "page": {
+      "accountScope": "desktop-dev/default/site-A",
+      "providerId": "official-chat",
+      "items": [
+        {
+          "sessionId": "sess-alpha-001",
+          "title": "G1 固定对话 Alpha",
+          "updatedAt": "2026-10-20T08:59:00.000Z",
+          "deepLink": "https://example.invalid/chat/sess-alpha-001"
+        },
+        {
+          "sessionId": "sess-beta-002",
+          "title": "G1 固定对话 Beta",
+          "updatedAt": "2026-10-20T08:58:00.000Z",
+          "deepLink": "https://example.invalid/chat/sess-beta-002"
+        }
+      ],
+      "cursor": "c-2",
+      "hasMore": true,
+      "fetchedAt": "2026-10-20T09:06:00.000Z"
+    }
+  }
+}

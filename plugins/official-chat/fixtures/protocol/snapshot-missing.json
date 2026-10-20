@@ -1,0 +1,19 @@
+{
+  "id": "snapshot-missing",
+  "title": "快照缺失 → 拒（不静默重读）",
+  "input": {
+    "kind": "lookup",
+    "exists": false,
+    "ref": "offi~deadbeef001~0001"
+  },
+  "expected": {
+    "kind": "error",
+    "ok": false,
+    "code": "snapshot_invalid",
+    "retryable": false,
+    "userNext": "移除该引用",
+    "requestId": null,
+    "logPath": null,
+    "detail": null
+  }
+}

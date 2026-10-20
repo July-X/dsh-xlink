@@ -1,0 +1,33 @@
+{
+  "id": "cancelled",
+  "title": "取消：不可重试，且不得留下可引用快照",
+  "input": {
+    "kind": "capture",
+    "outcome": "cancelled",
+    "schemaVersion": 1,
+    "providerId": "official-chat",
+    "accountScope": "desktop-dev/default/site-A",
+    "sessionId": "sess-zeta-006",
+    "branch": "main",
+    "seq": 6,
+    "messages": [],
+    "captureResult": {
+      "status": "ok",
+      "omitted": [],
+      "unsupported": []
+    },
+    "capturedAt": "2026-10-20T09:05:00.000Z",
+    "sourceUpdatedAt": "2026-10-20T09:04:30.000Z",
+    "sourceFingerprint": "fp-alpha-001"
+  },
+  "expected": {
+    "kind": "error",
+    "ok": false,
+    "code": "cancelled",
+    "retryable": false,
+    "userNext": "重新选择",
+    "requestId": null,
+    "logPath": null,
+    "detail": null
+  }
+}

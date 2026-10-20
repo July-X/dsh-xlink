@@ -114,6 +114,8 @@ date: 2026-10-20
 | **G1-3** | 把 fresh span（`InputActions.captureInsertion`）开放给客户端插件（现在只是渲染层 slot prop，第三方插件读不到） | 解 Q1 的 CAS |
 | **G1-4** | per-plugin 注册回执 + 客户端半边注册失败时**用户可见**的诊断 | 解 Q4 的回执缺口 |
 | **G1-5** | 插件重载后既有 chip 的 ref 恢复契约（或 UI 明确把失效 chip 标成需重选） | 解 Q5 残留 |
+| **G1-6** | 内核提供「chip 进入 `invalid` 态」的写入口（插入期可带 `invalid`，或 source 侧能驱动 chip 标失效） | 解「引用失效在界面上可见」。**2026-10-20 18:0x 新登记**：P1 协议 S-5 原写「失效一律拒 + chip 标 `invalid`」，但实测**现役内核不可达**——`ReferenceInsert`（插入期）**无 `invalid` 字段**（在 `Occurrence` 上，`draft-editor.d.ts` SHA `3397E322…` `:12-18` / `:105` / `:122-123`）、`setInvalid` **全树零调用方**、DOM **无 `data-invalid`**；内核的「引用失效可见」**只有一条通路** = owner 侧 `codec.serialize` 抛错 → 拒发（请求数 0）+ 可见 error notice。⇒ 本阶段按「**发送时拒 + 可见错误**」验收，**该缺口不因 P1 验收通过而关闭** |
+| **G1-7** | 内核 `connection` 服务的 `rpc.handle` 对第三方插件**不可用**（`dsh-client-connection@0.2.1-rc.2` 的 `lib/index.js:871` 用**属性访问** `owner.webServer.register(route)`，而内核自己在 `:745`/`:778` 用的是 `this.owner.get("webServer")` ⇒ 插件调 `rpc.handle` 必抛 `cannot get property "webServer" without inject`） | 解「client → host 通道」。**2026-10-20 20:0x 新登记**：真机实测（p1-r2/r3/r6）——**插件侧 declare `webServer` 也修不好**（cordis 的属性查找落在内核 connection 插件自己的 fiber scope），**插件侧无法自修**；浏览器侧表现为 **HTTP 405**（host 半边不激活）。**过渡方案**（协议 v0.4 裁定）：改走内核 `connection` 服务的 **exact fetch route**（路径必须在 `/api` 下，**owner 准入仍由内核做**）；**根治**：上游把那行改成 `owner.get("webServer")`（隔离副本注入已实测有效） |
 
 ## 4. G2：异步 JavaScript 结果与首站可读性
 
@@ -320,7 +322,7 @@ G3 自己要验的六场景（页签已挂载 / 官网窗口关闭 / 尚未登�
 **进入 P1 即可开工，但要满足：**
 
 1. **就绪状态纪律先行落地**（裁定 4）：pending 句柄不得冒充就绪；label 保持中性；`openReference` 按 ref 如实报 pending/ready/failed；「就绪」由 chip 状态与详情承担，不以「chip 是否存在」承担。P1/P2 需把这条列为**硬性验收项**。
-2. **G1-1…G1-5 登记为已知上游缺口**，实现中不得假设它们已解决；任何依赖「成功才插就绪 chip」的验收项，在 G1-1 落地前一律按降级形态写。
+2. **G1-1…G1-7 登记为已知上游缺口**，实现中不得假设它们已解决；任何依赖「成功才插就绪 chip」的验收项，在 G1-1 落地前一律按降级形态写。**G1-6（内核无 chip `invalid` 写入口）于 2026-10-20 18:0x 新登记**，**G1-7（内核 `rpc.handle` 对第三方插件不可用、通道被上游一行卡住）于 20:0x 新登记**，见[第 3 节](#3-g1真实工作台内的选择和发送控制)缺口表。
 3. **把「固定快照」与「pending 句柄」的关系定死**——**这是两件东西**：**快照**是 P1/P3 的**落盘物**（`schemaVersion` / 不可变 `snapshotId` / 规范化内容摘要 / 捕获结果，与官网会话 id 分开）；**pending 句柄**是 G1 已验证过的 **chip 形态**（有 ref、有读取记录，发送时由 `codec.serialize` 取正文，等待或拒绝）。P1 必须写清二者的**对应关系**：句柄指向哪个 snapshot、句柄在 snapshot 落盘前后各处于什么状态、以及「就绪」由 snapshot 的哪个字段承担。**不能把「chip 存在」当成「快照已就绪」。**
 
 **进入 P2/P3 前需补：**

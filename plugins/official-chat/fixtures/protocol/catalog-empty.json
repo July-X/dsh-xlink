@@ -1,0 +1,21 @@
+{
+  "id": "catalog-empty",
+  "title": "目录没有结果：与「读取失败」必须分开",
+  "input": {
+    "kind": "catalog",
+    "outcome": "empty",
+    "providerId": "official-chat",
+    "accountScope": "desktop-dev/default/site-A",
+    "items": []
+  },
+  "expected": {
+    "kind": "error",
+    "ok": false,
+    "code": "catalog_empty",
+    "retryable": false,
+    "userNext": "换个关键词",
+    "requestId": null,
+    "logPath": null,
+    "detail": null
+  }
+}

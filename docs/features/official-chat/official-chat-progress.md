@@ -16,7 +16,7 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
 | P0 可行性验证 | G1 内核工作台选择与发送控制、G2 异步回程与首站可读性、G3 窗口未打开时仍可读取 | **G1/G2/G3 结论已出**（G1 4/5 问通过 + Q3 判定互斥；G2-A 5/5，Windows 零痕迹回程已实测成立；G2-B 探测完成但取数未成立；**G3 三站各 7/7 通过**；**壳真实 workbench 内复验已可复现**——dev 壳两轮 + **自编 release 二进制一轮**（15:42–15:55，实例 id `default`）全过，壳驱动已搬进仓库；**壳内判据已与内核 r14/r16 对齐**（`results[]` + `summary`，**未执行单列**；壳内 E 升为**节点级**），**两条前置条件机检已压出真分支**（dev-r6 汇总 **9 通过 / 0 失败 / 0 未执行**）。**未闭合的两项**：登录态从未建立（需用户首次登录）、零痕迹回程 macOS 侧无通路。**判据第 31 条的三处口径问题（嵌套 if 漏判 / 逃生阀不生效 / `match` 边界假红）已全部闭合**（`4333b80` + `165d9a1`，自测 26 → 43，PM 逐轮第一手复验含反向回归）。**安装版 release 壳不在开发 agent 范围**（izzy 发布后自己测） |
-| P1 协议与隔离 | 固定数据模型、错误、权限与状态机 | **协议已冻结**（`official-chat-p1-protocol.md` v0.1，2026-10-20 17:1x，**PM 定**）：单一 id 制度（`ref === snapshotId`）、状态机映射、**门控口径从「时序」换成「状态」**、失效一律「拒 + chip 标 `invalid`」、13 个稳定错误码、首版常量、12 条验收项。**实现待开工**（devloper 依此实现，tester 依此出判据） |
+| P1 协议与隔离 | 固定数据模型、错误、权限与状态机 | **协议 v0.4（Chief 20:1x 裁定）**：单一 id 制度（`ref === snapshotId`）、状态机映射、**门控口径从「时序」换成「状态」**、失效一律「拒 + 可见错误」（chip `invalid` 态内核不可达 → 缺口 **G1-6**）、13 码闭集 + **错误结果对象 8 字段闭集**、保留期主动清理口径、**缺口 G1-7（通道被上游一行卡住）**、A0s 判据同步更正。**代码侧已落地**（协议核心 JS+Rust、13 夹具 + 双端一致测试、5 命令、host 侧 id 分配器 `seq-store.js`）：**§8 十二条逐条 pass**，判据 runner **31 条 = 29 pass / 0 fail / 2 skipped**（skip：A0 真机级 + A6b chip invalid）。**真机 r6**：**在打过补丁的隔离内核副本上** P1 六条硬口径 **11 通过 / 0 失败 / 0 未执行**（含 S-4 逐字节由红转绿——红因是**判据自己的 bug**：在转义后的 JSON 字符串里找含真换行的正文）；**在未打补丁的现役内核上仍 405 不通**（根因 = 内核 `connection/lib/index.js:871` 属性访问 `owner.webServer`）。**未实现**：真实站点账户与深链（P4） |
 | P2 内核插件闭环 | 固定数据的选择、引用、发送与模型输入核对 | **未开始** |
 | P3 正文快照与桥接 | 原子保存、固定版本、回收、恢复 | **未开始** |
 | P4 首站接入 | 真实目录、认证、分支与正文 | **未开始**（前置条件未满足） |
@@ -222,9 +222,70 @@ P0 的可行性结论单独见 [official-chat-feasibility.md](official-chat-feas
 - **第七次回填（2026-10-20 16:5x）**：按 tester 的判据修复与 devloper 的盲点分析改写——**判据第 31 条的两处口径缺陷由「待修」改为「已修」**（§8 第 21 条第 6 点：递归判定 + parent 链、逃生阀复用同一 `ALLOW_MARKER`、自测 26 → 38、活体注入复验）、**新增第 21 条第 7 点：`match` 边界是假红，PM 裁定要修**（Rust 能编译的 `match` 必穷尽 → 与 `if/else` 同构；假红会把开发者推向「承认写用户真实目录」的逃生阀）、**AGENTS.md 补「驱动壳做实跑必须用隔离 home + 编译期 `appDirectoriesOverride`」条款**（判据只扫测试与探针代码，生产代码里壳自己建的窗它看不见）。**本轮由 PM 提交**（基线 `4333b80`）。
 - **第六次回填（2026-10-20 16:2x）**：按 dev-r6 与 tester 复核改写——**壳内判据已与内核 r14/r16 对齐**（§8 第 21 条第 1/2 点由「弱一档 / 人读 JSON 判」改为已补 `results[]`+`summary`（**未执行单列**）与**节点级** E 断言）、**两条前置条件机检从「走空分支」改为「已压出真分支」**（§8 G1 第 1 条②、§8 第 21 条第 4 点、§9 P4 理由③、§9 先决条件 5，dev-r6 汇总 9/0/0）、**新增第 21 条第 6 点：判据第 31 条自身两处口径缺陷**（嵌套 if 漏判、逃生阀不生效；PM 合成用例第一手复现，**待修**）、§10 补 dev-r6 证据位置。**本轮提交由 PM 做**（基线 `a96d7e7`）。
 
+### 2026-10-20 20:0x–20:2x · 真机复验 r6 + 协议 v0.4（Chief 裁定）
+
+**真机 r6（devloper，隔离 dev 壳，未碰用户数据）**：**打过补丁的隔离内核副本上** P1 六条硬口径 **11 通过 / 0 失败 / 0 未执行**——A0 真机级（capabilities 经**真实路由注册**拿到）、A0 catalog（host 预分配 id）、A0 pick+落盘（id `ds~8qm981idmwz2~0008`，自算摘要 = 盘上 `contentDigest`）、**S-4 逐字节**（盘上 76 字节 = 请求体里 76 字节，每处 `exact=true`）、S-1（两个 id 两份文件，第一个摘要未变）、缺口①（删快照 → **请求数 0** + `role="alert"` 可见错误 + 草稿保留）。**未打补丁的现役内核上仍 405 不通**（根因见下）。
+
+**两处「自己引入的问题自己认」值得记**：
+- **S-4 由红转绿的红因是判据自己的 bug**，不是实现——r5 判据在 `JSON.stringify(request.body)` 的**转义后**字符串里找**含真换行**的盘上正文 ⇒ 永远匹配不上。已改为在**未转义的字符串叶子**里找，并加判据自检（goodHits 1 / 篡改 0 / 缺失 0 / 空 0）。**判据自己红了要改判据，不是改实现。**
+- **devloper 撤回一次误判**：曾把「判定结果」判成 4 字段，依据是「Rust + 旧夹具都是 4 字段」——**那是循环证据**（旧夹具本就是照 Rust 写的）。决定性依据是协议 §3 原文 + Rust 侧 v0.2 注释 ⇒ **8 字段**才是口径，Rust 才是偏离方。
+
+**G1-7：通道被上游一行卡住（Chief 已核内核源码）**
+- 根因（现役 `0.2.1-rc.2`）：`dsh-client-connection/lib/index.js:871` `owner.effect(() => owner.webServer.register(route))` 用**属性访问**；而内核自己在 `:745`/`:778` 用的是 `this.owner.get("webServer")` ⇒ 第三方插件调 `rpc.handle` **必抛** `cannot get property "webServer" without inject` ⇒ host 半边不激活、通道整体不通（浏览器侧 **HTTP 405**，不是 404）。
+- **插件侧无法自修**（实测两轮证伪「declare `webServer` 就能修」）：cordis 的属性查找落在**内核 connection 插件自己的 fiber scope**（`ctx[symbols.shadow]`），插件侧声明只影响自己 scope。
+- **Chief 裁定（协议 v0.4）**：**过渡走 exact fetch route**（`ctx.connection.fetch.register`）——内核给三样：路径必须在 `/api` 下（`assertFetchRoute:973-977`）、**owner 准入由内核做**（`createSharedFetchHandler:830` 的 `peer.principal.kind !== "owner" → 403`）、与 API Gateway 的 interceptor **两级分发不冲突**；且 `registerFetchRoute`（`:840-854`）**完全不碰 webServer**。插件要自己做的只有 **RPC 信封**（exact route 会绕过内核的 `rpcFetchHandler`）。**③（插件自建 webServer 路由 + 自造鉴权）否决**——那是自造安全面。**①（上游把 `:871` 改成 `owner.get("webServer")`）上报 izzy**，不阻塞 P1。
+- **落地阻塞项**：exact path 是**全等匹配** ⇒ 必须先实测浏览器侧 `rpc.call` 实际 POST 的 **pathname 与 method**，错一个字符就 404/405。
+
+**v0.4 另外三处裁定**：① **错误结果对象字段闭集 = 8 个**（`kind`/`ok`/`code`/`retryable`/`userNext`/`requestId`/`logPath`/`detail`，全部必备、不可得填 `null`、错误路径 `ok` 恒 false、`code` 取 13 码闭集）——**闭集是让 JS/Rust 两端能对上的前提**；② **保留期主动清理口径**（惰性触发、只 `catalog` 入口、同实例至多一天一次、四家族、**先快照后认领**、两步法删除、根不可得不扫、**不引入引用计数**）；③ **缺口登记 G1-7** + **A0s 判据更正**（不再钉「inject 含 webServer」，改钉「必须注册 exact fetch route、不得把 `rpc.handle` 当已通」）+ **真机复验必须在未打补丁的现役内核上跑**（补丁副本只证明「补丁有效」）。
+
+**门禁（Chief 复跑）**：`cargo fmt --check` 0｜`cargo clippy --locked --all-targets -- -D warnings` **0**（本轮曾红一处 `needless_as_bytes`，**PM 代修** `protocol.rs:482`，语义等价）｜`cargo test --locked`（debug）**1127 passed / 0 failed / 11 ignored**｜`check:invariants` 全绿（**45 文件**）｜`test:scripts` 131/128/0/3｜`test:plugin` 263/260/0/3｜`test:probe` 6/6｜**判据 runner 独立复跑 31 条 = 29 pass / 0 fail / 2 skipped**。
+
 ## P1 及以后
 
-尚无事实记录。
+### 2026-10-20 · P1 协议冻结（PM）→ v0.2（三处裁定）
+
+**v0.1（17:1x）**：新建 `docs/features/official-chat/official-chat-p1-protocol.md`（PM 定）：硬约束 HC-1…HC-3、数据模型、句柄与快照 S-1…S-7、13 个稳定错误码、11 个首版常量、命名空间与桥、协议夹具、12 条验收项。
+
+**v0.2（18:0x）**：devloper 与 tester 各自带回三处要 PM 拍板的问题，**全部裁定并写进协议**（协议稿是 PM 归属文件，判定为「协议与实现冲突先改稿」）：
+
+| 争议 | 裁定 | 落点 |
+| --- | --- | --- |
+| **client ↔ host 现行链路在真机上不通**（cordis `ctx.set` 未 provide 会抛错 → 服务没挂上；client 在浏览器树、host 在 Node 进程树 → `ctx.get` 永远解析不到） | **唯一通道 = 内核 `connection` 服务的 RPC**；协议**显式否决** cordis 服务注册那条路 | 协议 §5 |
+| `captureResult` 是对象还是字符串 | **对象**（三字段齐全）；**`ok` 兼容字符串 `'ok'`**，`partial`/`failed` 必须用对象（字符串会丢「省略了什么」） | 协议 §1.1 |
+| 协议外错误码 `snapshot_exists` | **不加第 14 码**：13 码是**闭集**，内部冲突码一律归 `snapshot_invalid`、原始码进 `detail` | 协议 §3 |
+| tester：S-5「chip 标 `invalid`（节点级）」内核**不可达** | 接受「**不可机检**」：验收口径改为「**发送时拒 + 可见错误**」（内核唯一通路 = owner 侧 `codec.serialize` 抛错）；**登记新上游缺口 G1-6**（内核无 chip `invalid` 写入口），**不许降级写成「节点级断言」假装能测** | 协议 S-5 / §8 第 6、12 条 + feasibility §3 缺口表 |
+| tester：S-5「`sourceFingerprint` 变化 → 拒」无处校验 | **不删条款、改校验位置**：存储层只校验 `schemaVersion` + `contentDigest`；**指纹比对在 host 命令层**；当前指纹不可得 → 拒（`account_changed`），不得放行；第一道防线是 `accountScope` 目录隔离 | 协议 S-5 |
+| tester：A1d（实现 == 夹具 `expected`）是推断口径 | **A1c 与 A1d 都留但归位**：判据侧断「双端一致」，「实现 == `expected`」属**实现自测**（夹具 runner），**后者不是前者的替代** | 协议 §6 / §8 第 1 条 |
+
+**v0.2 另外补进去的两条**（devloper 实现过程中暴露的同类问题）：
+- **id 分配权归 host**（协议 §2 S-1）：client 的 `seq` 是**进程内计数**、重启从 1 重来 → 与盘上已有 id 相撞（快照落盘且跨进程可发 ⇒ dev/release 同开或任一进程重启都可能撞）→ `seq` 由 host 统一分配并持久化，「本实例内单调递增」必须**跨进程**成立。
+- **会话短码算法与消息分隔符补进 §6**（首版值，两段 FNV-1a 变体 → base36 取后 12 位、UTF-16 码元口径；分隔符空行 `\n\n`），定性为**工程参数**，不是站点限制。
+
+### 2026-10-20 · P1 实现首轮（devloper）与判据首轮（tester）
+
+**实现（devloper，未提交）**：协议核心（JS `host/protocol.js` + Rust `official_chat/protocol.rs`）、13 个协议夹具 + **双端一致测试**、5 个客户端命令、RPC 接线层 `host/rpc.js`、目录页独立缓存。门禁：`protocol.test.mjs` 13/13、`host-commands.test.mjs` 9/9、`npm run test:plugin` 249 tests / 246 pass / 0 fail / 3 skipped、`cargo test --lib` 1123 passed / 0 failed / 11 ignored、`cargo test official_chat::protocol` 8/8、`check:invariants` 全绿（37 文件）、`check:builtin` 4 插件 / 41 文件。**自报未实现/降级/存疑**：S-5 的 chip `invalid` 位、保留期 7 天主动清理、「换账号即失效」触发点、**客户端命令未挂到 host 服务上**（= 那条通道问题）；降级形态：取数源仍是固定夹具、详情面板不做、正文去重不做、pending 句柄仍是 `selected` 态。
+
+**判据（tester，未提交）**：5 个新文件（判据库 `scripts/lib/p1-protocol.mjs` 20 条 + 协议期望表、adapter、判据自测 24 例、实跑入口、Rust 侧夹具 runner）。**期望值从协议稿独立转写**（不 import 实现当标准答案），判据只经协议 §5 的命令面驱动实现，**观测不到就报「未执行」而不是失败**。r7 轮计数：total 20 / pass 15 / fail 4 / skipped 1。**过程证据**：判据自身先红（3 条判据自身缺陷：依赖协议没规定的 `input.kind`、把「重启后发不出」当判据抛错、拿含 `snapshotId` 的完整路径比 → 恒绿漏判）→ **改判据不是改实现**；活体注入两条（对 `client.js` 副本注入写真实 profile 的一行 → 门禁点名 `client.js:840`；注释掉 `reads.delete(snapshotId)` → A4 判据点名「内存」+「S-3」）→ 撤掉后 SHA-256 与基线逐字节一致。
+
+**PM 的下一步（已派）**：devloper 按 v0.2 改 RPC 接线 + id 分配权归 host + `captureResult` 改对象 + A1c 双端收敛；tester 按 v0.2 改 adapter（吸收同步桩 / Promise 差异）、A6a 改 host 层驱动、A6b 归位「不可机检」、A12 改校验编号语义（G1-1…G1-6）。
+
+### 2026-10-20 18:2x–19:2x · P1 v0.2 落地（devloper）→ 协议 v0.3（PM）
+
+**v0.2 代码侧全部落地**（devloper，未提交；门禁全绿）：`test:plugin` 262 项 / 259 pass / 0 fail / 3 skipped；`test:scripts` 119/116/0/3；`cargo test --lib` 1126 passed / 0 failed / 11 ignored；`cargo fmt --check` 0；**判据 runner 22 条 = 20 pass / 0 fail / 2 skipped**（A0、A6b skipped）。**协议 §8 十二条逐条 pass**（A6b 按协议排除、A0 待真机复验）。
+
+**三个真洞及其修法（本轮最要紧的事实）**：
+1. **RPC 层把失败吞成成功 → 空正文照发**（tester r15 定稿时 6 红里的 3 条：A6a/A7/A10 同源）。`host/rpc.js` 的 handler 对每个端点无条件 `return {ok:true, value: await commands.X(...)}`，而命令层失败时返回的是 `{ok:false, code:'snapshot_invalid'}` ⇒ **外层 ok 恒为 true** → 客户端看不到失败 → `codec.serialize` 拿不到 body 时**不报错**（`String(loaded?.body ?? '')`）→ **空正文照发**。**同时破 S-4 与 S-5**：快照缺失 / 摘要不匹配 / 快照被清理 / 跨命名空间读取**都不拒**。**正常路径全绿，只有「读不到」这一支坏掉**。**修法**：`host/rpc.js` 把内层 `ok:false` **翻成外层 `ok:false`**；客户端命令自身 `ok:false` 一律**抛错**（抛错 = 内核拒发 = 请求数 0）。
+2. **id 由 client 自造 → 会撞盘**：client 的 `seq` 是**进程内计数**、重启从 1 重来，而快照落盘且**跨进程可发** ⇒ dev/release 同开或任一进程重启都可能生成同一 `snapshotId` → host 按「同 id 不重写」拒 → 用户看到「这次选择没生效」。**修法**：新增 `host/seq-store.js`（排他创建 + 扫目录跳过已认领 ⇒ 跨进程单调、重启续号、`MAX_SEQ=9999`），**id 由 host 在 `catalog` 预分配、随候选行下发**；client 自造 id → 拒 `snapshot_invalid`（反向用例已钉）。
+3. **通道真因（A0）**：真机 `p1-r2` 报 `cannot get property "webServer" without inject`（`host/index.js:486`）。取证（现役 `0.2.1-rc.2`）：`dsh-client-connection/lib/index.js:855-871` 的 `register(owner,…)` 最后一步是 `owner.effect(() => owner.webServer.register(route))`；`:724-730` 的 `get rpc()` → `handle` 把 **`owner` 传成读取方的 ctx**——cordis 的 tracker 把 `this.ctx` 换成读取方（`@deepseek-ai/cordis/lib/index.js:128` + `createShadow` `:111-116`）⇒ **`owner.webServer` 是「我们插件自己的 ctx」上的属性访问**。对照：内核自己的 API Gateway 走 `rpc.intercept('/api',…)`（`dsh-api-gateway/lib/index.js:773`），`registerInterceptor`（`dsh-client-connection/lib/index.js:873-885`）**根本不碰 webServer** ⇒ **只有 `handle` 会碰**。**修法（一行）**：`inject = ['connection','webServer']`，并**钉进 smoke 判据**（删掉 `webServer` 即红）。**协议 §5 不需要改**——但这条约束已补进协议 v0.3 §5（含取证依据）。
+
+**PM 的三处新裁定（协议 v0.3）**：
+- **捕获失败不新增码**（devloper 存疑①）：捕获失败**不是单一原因**，按原因分流（超时 → `timeout`；结构变了 → `schema_changed`；取消 → `cancelled`）；**`source_unsupported` 只用于「来源根本不支持」**，不得兜「捕获失败」（那会让用户看到「换一个来源」而其实该重试 = **掩盖真实原因**）；原因不明 → `timeout` 兜（可重试）+ `detail` 写脱敏线索。**要求实现改成分流**。
+- **A0 拆成两条**（§8 新增第 13 条）：**A0s（仓库级静态）** = 断言 host 声明 `inject` 且含 `webServer`、**不用** `ctx.set` 挂服务（钉住真洞的根因与修法，带反向用例）；**A0（真机级）** = client → host 经**真实路由注册**跑通一次，**不得直连 handler**（直连 = 绕过注册 = 真洞藏身处）；**仓库级 runner 跑不了真机级**（需真实内核进程与真实 cordis 树）→ 如实报「未执行」并写明原因，**由真机复验轮执行**。
+- **A6a / A6b / A1d / A12** 按 v0.2 裁定落地（A6b 保持 skipped 且写明「G1-6 未关闭」；A1c 与 A1d 都留但归位；A12 改校验编号语义 G1-1…G1-6）。
+
+**已派（19:2x）**：tester 做 A0s + A0 detail 改写 + v0.2 三处裁定的落地 + 复跑确认两个已修的洞；devloper 做**隔离 dev 壳真机复验**（走真实 connection 路由、确认「删快照 → 0 请求 + 可见错误」而非空正文照发、确认 S-1 两个 id）+ 给**保留期 7 天主动清理**的候选口径（协议没写，他不自造——对，但口径要进协议）。
+
+**仍未实现 / 降级**：保留期 7 天**主动清理**未接（`snapshotRetentionMs` 只是常量，无过期检查与清理任务；被清理后 → 拒 `snapshot_invalid` 这条已实现）；真实站点账户与真实深链（P4）；A6b（协议已排除）、A0（待真机）。
 
 **P1 可以开工**：P1 的前置条件「G1 通过」已满足；G3 已成立（三站各 7/7）；P1 建模的是协议与状态机，**不依赖 G2/G3 的站点侧取数结论**。
 

@@ -108,8 +108,16 @@ export const REF_RULES = Object.freeze({
   maxSessionChars: 12,
   /** pick 序号位数。 */
   seqDigits: 4,
-  /** 形状：`<providerShort>~<sessionShort>~<seq>`。 */
-  pattern: /^([A-Za-z0-9]{1,4})~([^~]{1,12})~(\d{4})$/,
+  /**
+   * 形状：`<providerShort>~<sessionShort>~<seq>`。
+   *
+   * **会话段只认 base36 小写**（§6 v0.2：「`sessionShort` = 两段 FNV-1a 变体
+   * → base36 编码取后 12 位」）。base36 的规范写法就是 `0-9a-z`——
+   * 大写形式不是 base36 的规范输出，放进来会让「会话段必须是 base36」这条
+   * 判不出来。provider 段**保持宽松**（协议只写「稳定短码，如 ds/gpt/mm，
+   * ≤ 4 字符」，没规定大小写——不替协议加要求）。
+   */
+  pattern: /^([A-Za-z0-9]{1,4})~([0-9a-z]{1,12})~(\d{4})$/,
 });
 
 /** §3 的 13 个稳定错误码 + 可重试性 + 用户下一步。 */
@@ -584,7 +592,11 @@ export function checkConstants(capabilities) {
 }
 
 /**
- * A12｜§8-12：G1-1…G1-5 缺口登记仍在，实现**不得假设**它们已解决。
+ * A12｜§8-12：G1-1…G1-6 缺口登记仍在，实现**不得假设**它们已解决。
+ *
+ * **v0.2 裁定**：缺口清单从 G1-1…G1-5 变成 **G1-1…G1-6**
+ * —— 新增的 **G1-6 = 内核无「chip 进入 `invalid` 态」的写入口**
+ * （§8-6：chip `invalid` 态在本阶段**不可机检**、**不计入本阶段验收**）。
  *
  * @param {object} capabilities
  * @returns {{name: string, status: string, detail: string}}
@@ -595,7 +607,7 @@ export function checkGapRegistry(capabilities) {
     return verdict(
       'A12-gap-registry',
       FAIL,
-      'capabilities 未提供 degraded 缺口登记——实现不得假设 G1-1…G1-5 已解决',
+      'capabilities 未提供 degraded 缺口登记——实现不得假设 G1-1…G1-6 已解决',
     );
   }
   const keys = Object.keys(degraded);
@@ -607,18 +619,34 @@ export function checkGapRegistry(capabilities) {
   if (empty.length > 0) {
     return verdict('A12-gap-registry', FAIL, `缺口登记项没有说明：${empty.join('、')}`);
   }
-  // 协议 §8-12 写的是「**G1-1…G1-5** 缺口登记仍在」——是五个，不是一个。
-  if (g1.length < 5) {
+  // 协议 §8-12 写的是「**G1-1…G1-6** 缺口登记仍在」——是六个，不是一个。
+  // 判「编号齐不齐」而不是只数个数：只数个数的话，`g1_1`×6 也能蒙过去。
+  const suffixes = new Set(
+    g1
+      .map((key) => /^g1[_-]?(\d)/i.exec(key)?.[1])
+      .filter((value) => value !== undefined)
+      .map((value) => Number(value)),
+  );
+  const required = [1, 2, 3, 4, 5, 6];
+  const missing = required.filter((index) => !suffixes.has(index));
+  if (missing.length > 0) {
     return verdict(
       'A12-gap-registry',
       FAIL,
-      `只登记了 ${g1.length} 个 G1 缺口（${g1.join('、')}），协议 §8-12 要求 G1-1…G1-5 五个都在`,
+      `G1 缺口登记缺编号：${missing.map((index) => `G1-${index}`).join('、')}` +
+        `（已登记 ${g1.join('、')}）——协议 §8 第 12 条要求 G1-1…G1-6 六个都在` +
+        '（G1-6 = 内核无「chip 进入 invalid 态」的写入口）',
     );
   }
+  // **多登记不算违规**（多一个缺口更保守），但要**点名**——协议 §8 第 12 条只
+  // 要求 G1-1…G1-6 都在；多出来的编号属于协议变更，得回 PM 改稿而不是默默留着。
+  const extra = [...suffixes].filter((index) => !required.includes(index)).sort((a, b) => a - b);
   return verdict(
     'A12-gap-registry',
     PASS,
-    `登记了 ${g1.length} 个 G1 缺口（${g1.join('、')}）`,
+    `登记了 ${g1.length} 个 G1 缺口（${g1.join('、')}），G1-1…G1-6 编号齐备` +
+      '（G1-6 仍在登记 ⇒ 未被标成已解决，符合 §8 第 12 条「G1-6 不因本阶段验收通过而关闭」）' +
+      (extra.length > 0 ? `；另外多登记了 G1-${extra.join('、G1-')}（协议外的编号，建议回 PM 改稿）` : ''),
   );
 }
 
@@ -880,9 +908,19 @@ export async function checkInvalidRejection(adapter) {
 }
 
 /**
- * A6b｜S-5：**chip 处于 `invalid` 态**（节点级断言）。
+ * A6b｜S-5：**chip 处于 `invalid` 态**。
  *
- * ## 这条在现役 release 内核上**不可达**（属协议稿与内核契约的冲突，已回报 PM）
+ * ## 这条**本阶段不可机检**（协议 v0.2/v0.3 裁定 ①：登记为上游缺口 G1-6）
+ *
+ * 协议 §S-5 与 §8 第 6 条已经改了口径：
+ *   · 「chip 标 `invalid`」**不计入本阶段验收**；
+ *   · 它登记为**上游缺口 G1-6**（内核无「chip 进入 `invalid` 态」的写入口），
+ *     **G1-6 不因本阶段验收通过而关闭**（协议 §8 第 12 条）；
+ *   · 本阶段的验收口径 = 「**请求数 0 + 可见错误**」（A6a 那条在判）。
+ *
+ * **所以本条不写成「节点级断言」，也不假装能测**：内核侧观测不到 chip 的
+ * `invalid` 态（下面三条硬事实），判据**如实报「未执行」**并写明缺口编号与
+ * 「G1-6 未关闭」。
  *
  * 独立核验（现役树 `C:\Users\zxx\.dsh-xlink\dsh\desktop\kernels\0.2.1-rc.2`）：
  *  · 协议稿引用的 `ReferenceInsert` 里**没有** `invalid` 字段——它在
@@ -919,19 +957,20 @@ export async function checkChipInvalidNode(adapter) {
       return {
         status: SKIPPED,
         detail:
-          '观测不到 chip 节点的 invalid 态——内核侧不可达：' +
-          'ReferenceInsert 无 invalid 字段（invalid 在 Occurrence 上），' +
+          '本阶段不可机检；缺口 **G1-6 未关闭**（协议 v0.2/v0.3 §S-5 与 §8 第 6 条：' +
+          '「chip 标 invalid」已移出本阶段验收口径，登记为上游缺口 G1-6）。' +
+          '内核侧观测不到该状态：ReferenceInsert 无 invalid 字段（invalid 在 Occurrence 上），' +
           'setInvalid 在现役 release 内核零调用方，DOM 无 data-invalid。' +
-          '属协议稿 §S-5 与内核契约的冲突，已回报 PM 改稿；本条在改稿前**不可机检**。',
+          '本阶段的验收口径 = A6a 的「请求数 0 + 可见错误」。',
       };
     }
     if (chip.invalid !== true) {
       return {
         status: FAIL,
-        detail: `chip 节点的 invalid 不是 true（实测 ${JSON.stringify(chip.invalid)}）`,
+        detail: `chip 的 invalid 态观测为 ${JSON.stringify(chip.invalid)}——内核侧已能观测时，这条必须为 true`,
       };
     }
-    return { status: PASS, detail: 'chip 节点进入 invalid 态' };
+    return { status: PASS, detail: 'chip 进入 invalid 态（G1-6 已由上游关闭）' };
   });
 }
 
@@ -1195,4 +1234,730 @@ export function checkIsolationSurface(scope) {
     PASS,
     `新增的 ${files.length} 个文件没有指向真实 profile，建窗点都无条件给了 data_directory`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// 协议 v0.2 / v0.3 新增判据
+// ---------------------------------------------------------------------------
+
+/**
+ * §1.1（v0.2）`captureResult.status` 的三个取值。
+ *
+ * 协议原文：「`ok` / `partial` / `failed`」。
+ */
+export const CAPTURE_STATUSES = Object.freeze(['ok', 'partial', 'failed']);
+
+/**
+ * 去掉 JS 源码里的注释（行注释 + 块注释），**行号保持不变**。
+ *
+ * **为什么需要它**：A0s 要判「host 半边**不使用** cordis `ctx.set` 挂服务」——
+ * 而实现文件里**大量注释**正是在解释「为什么不能用 `ctx.set`」（协议 §5 的
+ * 取证记录）。不剥注释就扫，会把**说明文字**当成**调用** ⇒ 假红。
+ *
+ * 剥法：逐字符走，跟踪字符串（`'` `"` `` ` ``）状态；`//` 与 `/*` 只在字符串外
+ * 才算注释起点。注释被换成**等长空白**（行号与列位置都不变）。
+ *
+ * @param {string} source
+ * @returns {string}
+ */
+export function stripJsComments(source) {
+  const text = String(source ?? '');
+  const out = text.split('');
+  let i = 0;
+  let quote = '';
+  while (i < text.length) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (quote !== '') {
+      if (ch === '\\') {
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = '';
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      while (i < text.length && text[i] !== '\n') {
+        out[i] = ' ';
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) {
+        if (text[i] !== '\n') out[i] = ' ';
+        i += 1;
+      }
+      if (i < text.length) {
+        out[i] = ' ';
+        out[i + 1] = ' ';
+        i += 2;
+      }
+      continue;
+    }
+    i += 1;
+  }
+  return out.join('');
+}
+
+/**
+ * A0s｜协议 v0.3 §8 第 13 条（**仓库级、静态**）：host 半边
+ *  · **声明了 `inject` 且含 `webServer`**；
+ *  · **不使用** cordis `ctx.set` 挂服务（协议 §5 已显式否决那条路）。
+ *
+ * **为什么这条钉得住**：真机 p1-r2 报的是
+ * `cannot get property "webServer" without inject`（`host/index.js:486`）——
+ * 根因是 host 半边**没 declare `webServer`**；协议 §5 给的修法是
+ * `inject = ['connection','webServer']`。把它钉成静态判据 ⇒ 以后有人把
+ * `inject` 去掉，门禁立刻红并点名。
+ *
+ * @param {{file: string, text: string}} scope
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkHostInjection(scope) {
+  const file = String(scope?.file ?? '');
+  const text = String(scope?.text ?? '');
+  if (text === '') {
+    return verdict('A0s-host-injection', SKIPPED, `没读到 ${file || 'host 半边'} 的源码`);
+  }
+  const code = stripJsComments(text);
+  const lines = code.split('\n');
+  const problems = [];
+
+  // ① `inject` 声明：必须是数组字面量，且含 'connection' 与 'webServer'
+  const injectMatch = /\binject\s*=\s*\[([^\]]*)\]/.exec(code);
+  let injectItems = [];
+  if (injectMatch === null) {
+    problems.push(
+      '没有找到 `inject` 声明——协议 §5：host 半边必须 `inject = [\'connection\',\'webServer\']`' +
+        '（否则 `rpc.handle` 会抛 cannot get property "webServer" without inject）',
+    );
+  } else {
+    injectItems = injectMatch[1]
+      .split(',')
+      .map((item) => item.trim().replace(/^['"`]|['"`]$/g, ''))
+      .filter((item) => item !== '');
+    if (!injectItems.includes('connection')) {
+      problems.push(`inject 里没有 'connection'（实为 ${injectItems.join('、') || '(空)'}）`);
+    }
+    if (!injectItems.includes('webServer')) {
+      problems.push(
+        `inject 里没有 'webServer'（实为 ${injectItems.join('、') || '(空)'}）——` +
+          '这正是真机 p1-r2 的根因：没 declare webServer ⇒ rpc.handle 抛 ' +
+          'cannot get property "webServer" without inject',
+      );
+    }
+  }
+
+  // ② 不得用 cordis `ctx.set` 挂服务（协议 §5 已显式否决）
+  for (let i = 0; i < lines.length; i += 1) {
+    if (/\bctx\s*\.\s*set\s*\(/.test(lines[i])) {
+      problems.push(
+        `${file}:${i + 1} 用了 cordis \`ctx.set\` 挂服务——协议 §5 已显式否决那条路` +
+          '（cordis 要求该属性先被 provide 过，否则 cannot set property "..." without provide；' +
+          '且浏览器树 ≠ Node 进程树，host 的服务在浏览器树里永远解析不到）',
+      );
+    }
+  }
+
+  if (problems.length > 0) {
+    return verdict('A0s-host-injection', FAIL, problems.join('；'));
+  }
+  return verdict(
+    'A0s-host-injection',
+    PASS,
+    `host 半边声明了 inject = [${injectItems.join(', ')}]（含 webServer），且未使用 cordis ctx.set 挂服务`,
+  );
+}
+
+/**
+ * A1e｜协议 §6：「`schemaVersion` **两端常量必须一致**」+ §3 码表 + §4 常量表。
+ *
+ * **为什么单列**：A1c 只比「同一组夹具的解析结果」；**常量与码表**不在夹具结果
+ * 里——只跑夹具的话，「两端常量一致」「13 个码齐备且一致」**没人验**。
+ *
+ * @param {{js: object|undefined, rust: object|undefined}} pair
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkConstantsParity(pair) {
+  const js = pair?.js;
+  const rust = pair?.rust;
+  if (js === undefined || js === null) {
+    return verdict('A1e-constants-parity', SKIPPED, 'JS 侧没有报出常量（capabilities 不可用）');
+  }
+  if (rust === undefined || rust === null) {
+    return verdict(
+      'A1e-constants-parity',
+      SKIPPED,
+      'Rust 侧没有产物（未构建 p1_protocol_fixture example）——本条未执行，不判通过',
+    );
+  }
+  const problems = [];
+  if (Number(js.schemaVersion) !== SCHEMA_VERSION) {
+    problems.push(`JS schemaVersion=${js.schemaVersion}，协议首版=${SCHEMA_VERSION}`);
+  }
+  if (Number(rust.schemaVersion) !== SCHEMA_VERSION) {
+    problems.push(`Rust schemaVersion=${rust.schemaVersion}，协议首版=${SCHEMA_VERSION}`);
+  }
+  if (Number(js.schemaVersion) !== Number(rust.schemaVersion)) {
+    problems.push(
+      `两端 schemaVersion 不一致：JS=${js.schemaVersion} / Rust=${rust.schemaVersion}——协议 §6 要求两端常量一致`,
+    );
+  }
+  for (const [key, expected] of Object.entries(CONSTANTS)) {
+    const jsValue = js.constants?.[key];
+    const rustValue = rust.constants?.[key];
+    if (jsValue === undefined) {
+      problems.push(`JS 侧缺常量 ${key}`);
+      continue;
+    }
+    if (rustValue === undefined) {
+      problems.push(`Rust 侧缺常量 ${key}`);
+      continue;
+    }
+    if (Number(jsValue) !== Number(expected)) problems.push(`JS ${key}=${jsValue}，协议=${expected}`);
+    if (Number(rustValue) !== Number(expected)) problems.push(`Rust ${key}=${rustValue}，协议=${expected}`);
+  }
+  const jsCodes = js.errorCodes ?? {};
+  const rustCodes = rust.errorCodes ?? {};
+  for (const [code, spec] of Object.entries(ERROR_CODES)) {
+    const a = jsCodes[code];
+    const b = rustCodes[code];
+    if (a === undefined) {
+      problems.push(`JS 侧缺错误码 ${code}`);
+      continue;
+    }
+    if (b === undefined) {
+      problems.push(`Rust 侧缺错误码 ${code}`);
+      continue;
+    }
+    if (Boolean(a.retryable) !== spec.retryable) problems.push(`JS ${code} 的可重试性与 §3 不符`);
+    if (Boolean(b.retryable) !== spec.retryable) problems.push(`Rust ${code} 的可重试性与 §3 不符`);
+    if (String(a.userNext ?? '') !== spec.userNext) problems.push(`JS ${code} 的用户下一步与 §3 不符`);
+    if (String(b.userNext ?? '') !== spec.userNext) problems.push(`Rust ${code} 的用户下一步与 §3 不符`);
+  }
+  const extraJs = Object.keys(jsCodes).filter((code) => !Object.hasOwn(ERROR_CODES, code));
+  const extraRust = Object.keys(rustCodes).filter((code) => !Object.hasOwn(ERROR_CODES, code));
+  if (extraJs.length > 0) problems.push(`JS 侧多出协议外的码：${extraJs.join('、')}`);
+  if (extraRust.length > 0) problems.push(`Rust 侧多出协议外的码：${extraRust.join('、')}`);
+  if (problems.length > 0) {
+    return verdict('A1e-constants-parity', FAIL, problems.join('；'));
+  }
+  return verdict(
+    'A1e-constants-parity',
+    PASS,
+    `两端 ${Object.keys(CONSTANTS).length} 个常量与 ${Object.keys(ERROR_CODES).length} 个错误码逐项一致（schemaVersion=${SCHEMA_VERSION}）`,
+  );
+}
+
+/**
+ * 驱动真实实现走一遍各条**失败路径**，收集**对端真正看到的错误负载**。
+ *
+ * 走的是**真实 RPC 通道**（`connection.rpc.call`）——判据要验的是对端拿到的
+ * 形态（`{ok:false, error:{code, message, details}}`），不是命令层的内部返回。
+ *
+ * @param {object} adapter
+ * @returns {Promise<Array<{label: string, code: string, payload: object}>>}
+ */
+async function collectErrorPayloads(adapter) {
+  const out = [];
+  const push = (label, payload) => {
+    const code = String(payload?.error?.code ?? payload?.code ?? '');
+    out.push({ label, code, payload });
+    return code;
+  };
+  const picked = await adapter.pick({ sessionId: 'p1-errors' });
+  const ref = String(picked?.ref ?? '');
+  const sessionId = String(picked?.sessionId ?? '');
+  if (ref === '') return out;
+  // 等这次 pick 的落盘落定——否则「同 id 重复落盘」那条会撞上**在途**的落盘，
+  // 测出来的不是「已存在」这一支。
+  await adapter.settle(ref);
+
+  // ① id 形态不合法
+  push(
+    'id 形态不合法',
+    await adapter.callHost('capture', { sessionId, snapshotId: '这不是快照id', requestId: 'p1-err-1' }),
+  );
+  // ② provider 段与本来源不符
+  const parts = ref.split('~');
+  push(
+    'provider 段不符',
+    await adapter.callHost('capture', {
+      sessionId,
+      snapshotId: `zz~${parts[1]}~0001`,
+      requestId: 'p1-err-2',
+    }),
+  );
+  // ③ 序号不是 host 认领过的
+  const unclaimed = await adapter.captureUnclaimedId(sessionId);
+  push('序号未认领', unclaimed?.result);
+  // ④ 同 id 重复落盘（内部冲突码 → 归 snapshot_invalid，原码留在 detail）
+  push(
+    '同 id 重复落盘',
+    await adapter.callHost('capture', { sessionId, snapshotId: ref, requestId: 'p1-err-4' }),
+  );
+  // ⑤ 目录读取失败（≠ 目录没有结果）
+  await adapter.withFailingCatalog(async () => {
+    push(
+      '目录读取失败',
+      await adapter.callHost('catalog', { query: 'p1-err-5', requestId: 'p1-err-5' }),
+    );
+  });
+  // ⑥ 当前来源指纹不可得（协议 §S-5 v0.2：不得放行）
+  await adapter.withUnavailableFingerprint(async () => {
+    push(
+      '指纹不可得（capture）',
+      await adapter.callHost('capture', { sessionId, snapshotId: ref, requestId: 'p1-err-6' }),
+    );
+    push(
+      '指纹不可得（preview）',
+      await adapter.callHost('preview', { snapshotId: ref, requestId: 'p1-err-6b' }),
+    );
+  });
+  return out;
+}
+
+/**
+ * A9d｜协议 §3：「每个错误码带：可重试性、用户下一步、关联 `requestId`、
+ * **脱敏**日志路径」。
+ *
+ * 这条**不看码表**（码表那半边在 A9a），看的是**真实失败时外发的负载**：
+ * 每个错误负载都必须带 `requestId` 与**脱敏**的日志路径。
+ *
+ * 「脱敏」怎么判：日志路径**不得是绝对路径**（不得把实例真实路径/用户 home
+ * 拼进去——协议 §5），实现用的是 `<实例>/…` 这种占位形态。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkErrorLogPath(adapter) {
+  return guard('A9d-error-log-path', async () => {
+    if (typeof adapter.callHost !== 'function') {
+      return {
+        status: SKIPPED,
+        detail: 'adapter 未提供「按真实 RPC 通道调 host 命令」的观测口——缺「拿到对端真实错误负载」这条接口',
+      };
+    }
+    const payloads = await collectErrorPayloads(adapter);
+    if (payloads.length === 0) {
+      return { status: SKIPPED, detail: '没采到任何错误负载（pick 未产出 ref？）——本条未执行' };
+    }
+    const root = String(adapter.root ?? '');
+    const problems = [];
+    for (const item of payloads) {
+      const details = item.payload?.error?.details ?? item.payload ?? {};
+      const logPath = String(details.logPath ?? '');
+      const requestId = String(details.requestId ?? '');
+      if (requestId.trim() === '') {
+        problems.push(`${item.label}: 没带 requestId（§3 要求每个错误码关联 requestId）`);
+      }
+      if (logPath.trim() === '') {
+        problems.push(`${item.label}: 没带脱敏日志路径（§3 要求每个错误码带脱敏日志路径）`);
+        continue;
+      }
+      if (/^[A-Za-z]:[\\/]/.test(logPath) || logPath.startsWith('/')) {
+        problems.push(`${item.label}: 日志路径是绝对路径（${logPath}）——§5 要求路径不展开真实目录`);
+      }
+      if (root !== '' && logPath.includes(root)) {
+        problems.push(`${item.label}: 日志路径里带出了实例真实路径`);
+      }
+    }
+    if (problems.length > 0) {
+      return { status: FAIL, detail: problems.join('；') };
+    }
+    return {
+      status: PASS,
+      detail: `${payloads.length} 条失败负载都带了 requestId 与脱敏日志路径`,
+    };
+  });
+}
+
+/**
+ * A14｜协议 §3（v0.2）：13 个码是**闭集**，**不新增第 14 个**；内部冲突码一律
+ * 归入 `snapshot_invalid`，**原始码保留在 `detail`**。
+ *
+ * **行为判据**（不是只看码表）：把真实实现逼进各条失败路径，收集外发的码，
+ * 逐个查它**在不在闭集里**；并单独验「同 id 重复落盘」这一支——协议原文：
+ * 「如『同 id 重复落盘』→ 归 `snapshot_invalid`，原始码 `snapshot_exists` 进 `detail`」。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkErrorCodeClosedSet(adapter) {
+  return guard('A14-error-code-closed-set', async () => {
+    if (typeof adapter.callHost !== 'function') {
+      return {
+        status: SKIPPED,
+        detail: 'adapter 未提供「按真实 RPC 通道调 host 命令」的观测口——缺「拿到对端真实错误负载」这条接口',
+      };
+    }
+    const payloads = await collectErrorPayloads(adapter);
+    if (payloads.length === 0) {
+      return { status: SKIPPED, detail: '没采到任何错误负载（pick 未产出 ref？）——本条未执行' };
+    }
+    const problems = [];
+    const outside = [];
+    for (const item of payloads) {
+      if (item.code === '') {
+        problems.push(`${item.label}: 没给出错误码`);
+        continue;
+      }
+      if (!Object.hasOwn(ERROR_CODES, item.code)) {
+        outside.push(`${item.label}=${item.code}`);
+      }
+      if (item.payload?.ok === true) {
+        problems.push(`${item.label}: 失败场景却回了 ok=true（失败被吞成成功值，违反 §3）`);
+      }
+    }
+    if (outside.length > 0) {
+      problems.push(
+        `外发了 §3 闭集之外的码：${outside.join('、')}——13 个码是闭集，不新增第 14 个`,
+      );
+    }
+    const dup = payloads.find((item) => item.label === '同 id 重复落盘');
+    if (dup !== undefined) {
+      if (dup.code !== 'snapshot_invalid') {
+        problems.push(
+          `同 id 重复落盘给的码是 ${dup.code || '(空)'}——协议 §3 要求内部冲突码归入 snapshot_invalid`,
+        );
+      }
+      const detail = String(dup.payload?.error?.details?.detail ?? dup.payload?.detail ?? '');
+      if (!detail.includes('snapshot_exists')) {
+        problems.push(
+          `同 id 重复落盘的原始码没保留在 detail（实测 detail=${detail || '(空)'}）——` +
+            '协议 §3 要求原始码留在 detail',
+        );
+      }
+    }
+    if (problems.length > 0) {
+      return { status: FAIL, detail: problems.join('；') };
+    }
+    return {
+      status: PASS,
+      detail:
+        `${payloads.length} 条失败路径的码都在 13 个闭集内（${payloads.map((item) => item.code).join('、')}）；` +
+        '同 id 重复落盘归 snapshot_invalid 且原码留在 detail',
+    };
+  });
+}
+
+/**
+ * A13a｜协议 §2 S-1（v0.2）：**id 分配权归 host**；「本实例内单调递增」必须
+ * **跨进程**成立。
+ *
+ * **怎么验跨进程**：起一个**真的 `node` 子进程**，在**同一个落盘根**上用**同一份
+ * 分配器实现**认领一个序号。两个进程拿到的序号必须**不撞**且**单调**。
+ *
+ * **为什么不用「同进程两个实例」**：分配器没有内存状态（每次都从认领目录读），
+ * 但「两个实例」终究不是「两个进程」——真子进程才是协议说的那个场景。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkSeqCrossProcess(adapter) {
+  return guard('A13a-seq-cross-process', async () => {
+    if (typeof adapter.reserveInChildProcess !== 'function') {
+      return {
+        status: SKIPPED,
+        detail:
+          'adapter 未提供「另一个进程认领序号」的观测口——缺「host 持久化认领、跨进程递增」这条接口',
+      };
+    }
+    const picked = await adapter.pick({ sessionId: 'p1-a13' });
+    if (!picked?.ref) {
+      return { status: SKIPPED, detail: 'pick 未返回 ref（实现侧尚不可测）' };
+    }
+    const parentRef = String(picked.ref);
+    const parentSeq = Number(parentRef.split('~')[2]);
+    let child;
+    try {
+      child = await adapter.reserveInChildProcess(String(picked.sessionId ?? 'p1-a13'));
+    } catch (error) {
+      return {
+        status: FAIL,
+        detail: `另一个进程认领序号失败：${String(error?.message ?? error)}`,
+      };
+    }
+    if (child === undefined || child.snapshotId === '') {
+      return { status: SKIPPED, detail: '另一个进程没有认领到序号（观测口没给出结果）——本条未执行' };
+    }
+    if (child.snapshotId === parentRef) {
+      return {
+        status: FAIL,
+        detail: `另一个进程认领到了同一个 id（${child.snapshotId}）——跨进程会撞盘（S-6：落盘且跨进程可发）`,
+      };
+    }
+    if (!(Number(child.seq) > parentSeq)) {
+      return {
+        status: FAIL,
+        detail:
+          `跨进程序号没有单调递增（本进程 ${parentSeq} → 另一进程 ${child.seq}）——` +
+          '协议 §2 S-1 要求「本实例内单调递增」跨进程成立',
+      };
+    }
+    const shape = checkRefShape(child.snapshotId);
+    if (shape.status === FAIL) {
+      return { status: FAIL, detail: `另一个进程认领的 id 不合规：${shape.detail}` };
+    }
+    return {
+      status: PASS,
+      detail:
+        `本进程 ${parentRef}（seq ${parentSeq}）→ 另一进程 ${child.snapshotId}（seq ${child.seq}）：` +
+        '不撞且单调递增（id 由 host 分配）',
+    };
+  });
+}
+
+/**
+ * A13b｜协议 §2 S-1（v0.2）：「`seq` 由 host 侧统一分配（host 持有并持久化已用
+ * 序号，**client 不得自造**）」。
+ *
+ * **怎么验**：拿一个 **host 从未认领过**的 id 去调 `capture`——必须被拒
+ * （`snapshot_invalid`），且**不得落盘**。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkHostRejectsUnclaimedId(adapter) {
+  return guard('A13b-host-rejects-unclaimed-id', async () => {
+    if (typeof adapter.captureUnclaimedId !== 'function') {
+      return {
+        status: SKIPPED,
+        detail: 'adapter 未提供「用未认领 id 调 capture」的观测口——缺「client 不得自造 seq」这条接口',
+      };
+    }
+    const picked = await adapter.pick({ sessionId: 'p1-a13b' });
+    if (!picked?.ref) {
+      return { status: SKIPPED, detail: 'pick 未返回 ref（实现侧尚不可测）' };
+    }
+    const unclaimed = await adapter.captureUnclaimedId(String(picked.sessionId ?? 'p1-a13b'));
+    if (!unclaimed?.id) {
+      return { status: SKIPPED, detail: '没拿到未认领的 id（观测口没给出结果）——本条未执行' };
+    }
+    if (unclaimed.claimed) {
+      return {
+        status: SKIPPED,
+        detail: `序号 9999 恰好被认领过（${unclaimed.id}）——本条改用别的序号再验`,
+      };
+    }
+    const code = String(unclaimed.result?.error?.code ?? unclaimed.result?.code ?? '');
+    if (unclaimed.result?.ok === true) {
+      return {
+        status: FAIL,
+        detail: `host 接受了一个它没分配过的 id（${unclaimed.id}）——协议 §2 S-1 要求 client 不得自造 seq`,
+      };
+    }
+    if (code !== 'snapshot_invalid') {
+      return {
+        status: FAIL,
+        detail: `host 拒未认领 id 用的码是 ${code || '(空)'}——协议 §3 归 snapshot_invalid`,
+      };
+    }
+    const file = adapter.snapshotFile(unclaimed.id);
+    if (file?.exists) {
+      return { status: FAIL, detail: `未认领的 id 竟然落盘了（${unclaimed.id}）` };
+    }
+    return {
+      status: PASS,
+      detail: `未认领的 id（${unclaimed.id}）被拒：snapshot_invalid，且未落盘`,
+    };
+  });
+}
+
+/**
+ * A15｜协议 §S-5（v0.2）：**指纹比对的校验点在 host 命令层**（不是存储层）；
+ * **当前指纹不可得 → 拒**（`account_changed`），**不得放行**。
+ *
+ * **三段一起验**（缺一段就证明不了「校验点在命令层」）：
+ *  1. 当前指纹不可得 → `capture` 与 `preview` **都拒**（`account_changed`）；
+ *  2. 指纹变了 → `preview` **拒**（`account_changed`）——这是命令层的比对；
+ *  3. 指纹变了之后**存储层仍能读出来**——证明指纹**不是**在存储层比的
+ *     （协议 §S-5：存储层只校验 `schemaVersion` 与 `contentDigest`）。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkFingerprintGate(adapter) {
+  return guard('A15-fingerprint-gate-host-layer', async () => {
+    if (typeof adapter.withUnavailableFingerprint !== 'function') {
+      return {
+        status: SKIPPED,
+        detail:
+          'adapter 未提供「当前指纹不可得」的观测口——缺「拿当前指纹 + 比对 + 拒」这条协议接口（§S-5 v0.2）',
+      };
+    }
+    const picked = await adapter.pick({ sessionId: 'p1-a15' });
+    if (!picked?.ref) {
+      return { status: SKIPPED, detail: 'pick 未返回 ref（实现侧尚不可测）' };
+    }
+    const ref = String(picked.ref);
+    const sessionId = String(picked.sessionId ?? 'p1-a15');
+    await adapter.settle(ref);
+    const problems = [];
+
+    // ① 当前指纹不可得 → capture 与 preview 都必须拒
+    const unavailable = await adapter.withUnavailableFingerprint(async () => ({
+      capture: await adapter.callHost('capture', {
+        sessionId,
+        snapshotId: ref,
+        requestId: 'p1-a15-1',
+      }),
+      preview: await adapter.callHost('preview', { snapshotId: ref, requestId: 'p1-a15-2' }),
+    }));
+    for (const [label, result] of Object.entries(unavailable ?? {})) {
+      const code = String(result?.error?.code ?? result?.code ?? '');
+      if (result?.ok === true) {
+        problems.push(`${label}: 当前指纹不可得却放行了——协议 §S-5 要求此时按 account_changed 拒`);
+      } else if (code !== 'account_changed') {
+        problems.push(
+          `${label}: 当前指纹不可得时给的码是 ${code || '(空)'}——协议 §S-5 要求 account_changed`,
+        );
+      }
+    }
+
+    // ② + ③ 指纹变了 → 命令层拒；存储层**不**比对指纹
+    await adapter.invalidate(ref, 'fingerprint');
+    const stored = adapter.storeLoad(ref);
+    if (stored?.loaded !== true) {
+      problems.push(
+        `指纹变了之后存储层读不出来（${stored?.error || '(未知)'}）——` +
+          '§S-5 说存储层只校验 schemaVersion 与 contentDigest，不比对指纹',
+      );
+    }
+    const preview = await adapter.callHost('preview', { snapshotId: ref, requestId: 'p1-a15-3' });
+    const code = String(preview?.error?.code ?? preview?.code ?? '');
+    if (preview?.ok === true) {
+      problems.push('指纹变了却放行了——host 命令层没有比对当前指纹');
+    } else if (code !== 'account_changed') {
+      problems.push(`指纹变了给的码是 ${code || '(空)'}——协议 §S-5 要求 account_changed`);
+    }
+
+    if (problems.length > 0) {
+      return { status: FAIL, detail: problems.join('；') };
+    }
+    return {
+      status: PASS,
+      detail:
+        '指纹不可得 → capture/preview 均拒（account_changed）；指纹变了 → 命令层拒、存储层不比对' +
+        '（校验点确认在 host 命令层）',
+    };
+  });
+}
+
+/**
+ * A16a｜协议 §1.1（v0.2）：`captureResult` 的**形态**。
+ *
+ * 协议原文：「形态 = 对象（对象必带三字段；**`ok` 兼容字符串 `'ok'`**，
+ * `partial` / `failed` **必须用对象**——用字符串会丢『省略了什么』，违反
+ * 『不静默裁掉』纪律）」。
+ *
+ * @param {Array<object>} fixtures
+ * @returns {{name: string, status: string, detail: string}}
+ */
+export function checkCaptureResultShape(fixtures) {
+  const list = Array.isArray(fixtures) ? fixtures : [];
+  if (list.length === 0) {
+    return verdict('A16a-capture-result-shape-fixtures', SKIPPED, '没读到任何协议夹具');
+  }
+  const problems = [];
+  let checked = 0;
+  const checkOne = (label, value) => {
+    if (value === undefined || value === null) return;
+    checked += 1;
+    if (typeof value === 'string') {
+      if (value !== 'ok') {
+        problems.push(`${label}: 字符串形态只兼容 'ok'，收到 '${value}'（partial/failed 必须用对象）`);
+      }
+      return;
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      problems.push(`${label}: captureResult 既不是对象也不是字符串`);
+      return;
+    }
+    for (const field of ['status', 'omitted', 'unsupported']) {
+      if (!Object.hasOwn(value, field)) problems.push(`${label}: captureResult 缺字段 ${field}`);
+    }
+    if (!CAPTURE_STATUSES.includes(String(value.status ?? ''))) {
+      problems.push(`${label}: captureResult.status 非法：${String(value.status)}`);
+    }
+    if (!Array.isArray(value.omitted)) problems.push(`${label}: captureResult.omitted 不是数组`);
+    if (!Array.isArray(value.unsupported)) problems.push(`${label}: captureResult.unsupported 不是数组`);
+  };
+  for (const fixture of list) {
+    const id = String(fixture?.id ?? '(未命名)');
+    checkOne(`${id} input.captureResult`, fixture?.input?.captureResult);
+    checkOne(`${id} expected.snapshot.captureResult`, fixture?.expected?.snapshot?.captureResult);
+  }
+  if (checked === 0) {
+    return verdict(
+      'A16a-capture-result-shape-fixtures',
+      SKIPPED,
+      '夹具里没有 captureResult 字段，本条无对象可判',
+    );
+  }
+  if (problems.length > 0) {
+    return verdict('A16a-capture-result-shape-fixtures', FAIL, problems.join('；'));
+  }
+  return verdict(
+    'A16a-capture-result-shape-fixtures',
+    PASS,
+    `${checked} 处 captureResult 形态合规（对象三字段齐；字符串只兼容 'ok'）`,
+  );
+}
+
+/**
+ * A16b｜协议 §1.1（v0.2）：**落盘快照**里的 `captureResult` 必须是**对象**形态
+ * （三字段齐全）。
+ *
+ * A16a 判的是夹具；这条判的是**真实落盘物**——协议 §1.1 的字段表是快照的表。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkCaptureResultLanded(adapter) {
+  return guard('A16b-capture-result-shape-landed', async () => {
+    const picked = await adapter.pick({ sessionId: 'p1-a16' });
+    if (!picked?.ref) {
+      return { status: SKIPPED, detail: 'pick 未返回 ref（实现侧尚不可测）' };
+    }
+    const ref = String(picked.ref);
+    await adapter.settle(ref);
+    const file = adapter.snapshotFile(ref);
+    if (!file?.exists) {
+      return { status: FAIL, detail: `快照没落盘（${ref}）` };
+    }
+    const captureResult = file?.snapshot?.captureResult;
+    if (captureResult === undefined || captureResult === null) {
+      return { status: FAIL, detail: '落盘快照里没有 captureResult' };
+    }
+    if (typeof captureResult !== 'object' || Array.isArray(captureResult)) {
+      return {
+        status: FAIL,
+        detail: `落盘快照的 captureResult 是 ${JSON.stringify(captureResult)}——协议 §1.1 v0.2 要求对象形态`,
+      };
+    }
+    const problems = [];
+    for (const field of ['status', 'omitted', 'unsupported']) {
+      if (!Object.hasOwn(captureResult, field)) problems.push(`缺字段 ${field}`);
+    }
+    if (!CAPTURE_STATUSES.includes(String(captureResult.status ?? ''))) {
+      problems.push(`status 非法：${String(captureResult.status)}`);
+    }
+    if (!Array.isArray(captureResult.omitted)) problems.push('omitted 不是数组');
+    if (!Array.isArray(captureResult.unsupported)) problems.push('unsupported 不是数组');
+    if (problems.length > 0) {
+      return { status: FAIL, detail: problems.join('；') };
+    }
+    return {
+      status: PASS,
+      detail: `落盘快照的 captureResult 是对象且三字段齐（status=${captureResult.status}）`,
+    };
+  });
 }

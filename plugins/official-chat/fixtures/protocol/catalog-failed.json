@@ -1,0 +1,21 @@
+{
+  "id": "catalog-failed",
+  "title": "目录读取失败：可重试",
+  "input": {
+    "kind": "catalog",
+    "outcome": "failed",
+    "providerId": "official-chat",
+    "accountScope": "desktop-dev/default/site-A",
+    "items": []
+  },
+  "expected": {
+    "kind": "error",
+    "ok": false,
+    "code": "catalog_failed",
+    "retryable": true,
+    "userNext": "重试",
+    "requestId": null,
+    "logPath": null,
+    "detail": null
+  }
+}

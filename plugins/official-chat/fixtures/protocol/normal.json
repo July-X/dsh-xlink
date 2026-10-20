@@ -1,0 +1,63 @@
+{
+  "id": "normal",
+  "title": "正常快照：两个角色，正文含 CRLF 与行尾空白",
+  "input": {
+    "kind": "capture",
+    "schemaVersion": 1,
+    "providerId": "official-chat",
+    "accountScope": "desktop-dev/default/site-A",
+    "sessionId": "sess-alpha-001",
+    "branch": "main",
+    "seq": 1,
+    "messages": [
+      {
+        "role": "User",
+        "text": "  第一行固定正文。\r\n第二行固定正文。  \r\n"
+      },
+      {
+        "role": "ASSISTANT",
+        "text": "收到。"
+      }
+    ],
+    "captureResult": {
+      "status": "ok",
+      "omitted": [],
+      "unsupported": []
+    },
+    "capturedAt": "2026-10-20T09:00:00.000Z",
+    "sourceUpdatedAt": "2026-10-20T08:59:00.000Z",
+    "sourceFingerprint": "fp-alpha-001"
+  },
+  "expected": {
+    "kind": "snapshot",
+    "state": "ready",
+    "notice": null,
+    "snapshot": {
+      "schemaVersion": 1,
+      "snapshotId": "ds~rnaq4171cqan~0001",
+      "providerId": "official-chat",
+      "accountScope": "desktop-dev/default/site-A",
+      "sessionId": "sess-alpha-001",
+      "branch": "main",
+      "messages": [
+        {
+          "role": "user",
+          "text": "  第一行固定正文。\r\n第二行固定正文。  \r\n"
+        },
+        {
+          "role": "assistant",
+          "text": "收到。"
+        }
+      ],
+      "contentDigest": "fe8b33f18020a331656fb7c5840cf66f9c88f1f944287318b40008063f040d3b",
+      "captureResult": {
+        "status": "ok",
+        "omitted": [],
+        "unsupported": []
+      },
+      "capturedAt": "2026-10-20T09:00:00.000Z",
+      "sourceUpdatedAt": "2026-10-20T08:59:00.000Z",
+      "sourceFingerprint": "fp-alpha-001"
+    }
+  }
+}

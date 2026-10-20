@@ -1,0 +1,71 @@
+{
+  "id": "partial",
+  "title": "部分内容：未支持内容被省略，必须显式记（不静默丢）",
+  "input": {
+    "kind": "capture",
+    "schemaVersion": 1,
+    "providerId": "official-chat",
+    "accountScope": "desktop-dev/default/site-A",
+    "sessionId": "sess-beta-002",
+    "branch": "main",
+    "seq": 2,
+    "messages": [
+      {
+        "role": "user",
+        "text": "可见正文"
+      }
+    ],
+    "captureResult": {
+      "status": "partial",
+      "omitted": [
+        {
+          "kind": "attachment",
+          "count": 2
+        }
+      ],
+      "unsupported": [
+        "image",
+        "voice"
+      ]
+    },
+    "capturedAt": "2026-10-20T09:01:00.000Z",
+    "sourceUpdatedAt": "2026-10-20T09:00:30.000Z",
+    "sourceFingerprint": "fp-alpha-001"
+  },
+  "expected": {
+    "kind": "snapshot",
+    "state": "ready",
+    "notice": "partial_content",
+    "snapshot": {
+      "schemaVersion": 1,
+      "snapshotId": "ds~lp4v7zxs688c~0002",
+      "providerId": "official-chat",
+      "accountScope": "desktop-dev/default/site-A",
+      "sessionId": "sess-beta-002",
+      "branch": "main",
+      "messages": [
+        {
+          "role": "user",
+          "text": "可见正文"
+        }
+      ],
+      "contentDigest": "506dbaacbc6b06f3b387e0189a4624b00b21ac41a7f37e66a94a47f9f1567212",
+      "captureResult": {
+        "status": "partial",
+        "omitted": [
+          {
+            "kind": "attachment",
+            "count": 2
+          }
+        ],
+        "unsupported": [
+          "image",
+          "voice"
+        ]
+      },
+      "capturedAt": "2026-10-20T09:01:00.000Z",
+      "sourceUpdatedAt": "2026-10-20T09:00:30.000Z",
+      "sourceFingerprint": "fp-alpha-001"
+    }
+  }
+}
