@@ -704,11 +704,13 @@ mod tests {
                 bin.display(),
                 std::env::var("PATH").unwrap_or_default()
             );
-            let out = std::process::Command::new(&npm)
-                .arg("--version")
-                .env("PATH", path)
-                .output()
-                .expect("npm shim 必须能启动");
+            let mut cmd = std::process::Command::new(&npm);
+            cmd.arg("--version").env("PATH", path);
+            // 用户环境里一个指向已删除文件的 `NODE_OPTIONS` 预加载会让这个
+            // npm shim 在启动阶段就崩掉——那是**环境**问题，不是 shim 坏了。
+            // 断言要测的是 shim 本身，不能被环境变量染红。
+            crate::shell::node_options::apply_to(&mut cmd);
+            let out = cmd.output().expect("npm shim 必须能启动");
             assert!(
                 out.status.success(),
                 "npm --version 失败：{}",

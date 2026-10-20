@@ -47,6 +47,10 @@
  *      Regular 等级、零可见窗口地挂在 Dock 上；② `RunEvent::Reopen` 抬不到
  *      工作台时必须兜底 `show_main_shell`——macOS 的激活不会替我们显示
  *      `hide()` 掉的窗口，缺了它那枚 Dock 图标点了没反应。
+ *  21. 壳派生的每个子进程都不得继承一个「指向已删除文件」的 Node 预加载：
+ *      用户级 `NODE_OPTIONS=--require=<已删除的文件>` 会让内核 / pnpm / npm
+ *      在 Node 的预加载阶段就退出，内核代码一行都没加载——工作台起不来而事故
+ *      面板归不出任何插件或内核组件（2026-10-20 实测）。
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -757,6 +761,53 @@ function productionRust(text) {
     kept.push(trimmed.startsWith('//') ? '' : lines[i].replace(/\/\/.*$/, ''));
   }
   return kept.join('\n');
+}
+
+/** 取 Rust 函数的函数体（按大括号配平），找不到时返回 null。
+ *
+ * 两处细节：
+ *  - **泛型参数在函数名与左括号之间**（`fn f<T: AsRef<OsStr>>(…)`），所以
+ *    定位到函数名后要先跳过尖括号配平，再找参数列表的左括号。
+ *  - 用 `fn <name>[(<]` 定位，避免前缀相同的函数互相误命中——`fn spawn(` 与
+ *    `fn spawn_log_drain(` 只差一个下划线，按 `fn spawn` 找会拿到后者。
+ */
+function rustFunctionBody(source, name) {
+  const start = source.search(new RegExp(`fn ${name}[(<]`));
+  if (start < 0) return null;
+  // 跳过泛型参数，找到参数列表的左括号（泛型约束里也可能出现括号）。
+  let i = start;
+  let angle = 0;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === '<') angle += 1;
+    else if (ch === '>') angle -= 1;
+    else if (ch === '(' && angle === 0) break;
+    i += 1;
+  }
+  if (i >= source.length) return null;
+  // 配平参数列表的圆括号。
+  let parens = 0;
+  for (; i < source.length; i += 1) {
+    if (source[i] === '(') parens += 1;
+    else if (source[i] === ')') {
+      parens -= 1;
+      if (parens === 0) {
+        i += 1;
+        break;
+      }
+    }
+  }
+  const open = source.indexOf('{', i);
+  if (open < 0) return null;
+  let braces = 0;
+  for (let j = open; j < source.length; j += 1) {
+    if (source[j] === '{') braces += 1;
+    else if (source[j] === '}') {
+      braces -= 1;
+      if (braces === 0) return source.slice(open, j + 1);
+    }
+  }
+  return null;
 }
 
 {
@@ -3167,6 +3218,72 @@ if (ungatedOsImports.length > 0) {
         '实测裸 extern 声明的那份返回 TRUE 却什么也没建（静默故障），windows-sys 那份返回' +
         ' ERROR_PRIVILEGE_NOT_HELD，std 的封装在同一台机器上 320 次全绿——用 std，' +
         '经 `crate::shell::link::make_dir_link`。',
+    );
+  }
+}
+
+// ㉑ 壳派生的每个子进程都不得继承一个「指向已删除文件」的 Node 预加载（2026-10-20）。
+//
+// 事故：用户级 `NODE_OPTIONS=--require="C:/Users/me/AppData/Local/node-system-proxy/bootstrap.cjs"`
+// 指向的文件已被删除（工具卸载 / 清理脚本），变量没跟着清。Node 在**预加载阶段**
+// 就抛 `MODULE_NOT_FOUND` 退出——内核一行代码都没加载，事故面板于是归不出任何
+// 插件或内核组件，只能给出「删除当前版本后重新安装」这种**错的**建议（预加载
+// 失败发生在内核代码加载之前，内核装得好好的，重装毫无帮助）。
+//
+// 之所以要有这条判据而不是只靠单测：单测测的是 `sanitize` 这个纯函数，而
+// 「每个子进程入口都调用了它」是**接线**——摘掉接线后单测照样全绿，正是判据
+// 要挡的那类假绿。
+//
+// 判据：① `shell/process.rs` 里每个构造子进程 `Command` 的入口都必须调用
+// `node_options::apply_to`；② 内核那条路必须继续走 process.rs 的构造器。
+//
+// ② 之所以也要判：`Command::new` 一样能编译，绕开构造器编译器完全看不出来。
+// （模块有没有在 `shell/mod.rs` 里注册、`node_options.rs` 在不在——那两件是
+// **编译器**管的事，判据不重复钉：Rust 不允许用没声明的模块。）
+{
+  const processCode = productionRust(shellSource('process.rs'));
+  const entryPoints = [
+    'command_with_path',
+    'command_with_path_dirs',
+    'script_capture',
+    'spawn',
+  ];
+  const missing = [];
+  for (const name of entryPoints) {
+    const body = rustFunctionBody(processCode, name);
+    if (body === null) {
+      missing.push(`${name}（找不到函数体——判据要跟着函数改名一起更新）`);
+      continue;
+    }
+    if (!body.includes('node_options::apply_to')) {
+      missing.push(name);
+    }
+  }
+  if (missing.length > 0) {
+    fail(
+      'node-options-preload',
+      `${missing.join('、')} 没有调用 node_options::apply_to。` +
+        '用户环境里一个指向已删除文件的 NODE_OPTIONS 预加载会让每个 Node 子进程' +
+        '（内核、pnpm、npm）在预加载阶段就退出，内核代码一行都没加载——工作台' +
+        '起不来而事故面板归不出任何插件或内核组件。',
+    );
+  } else {
+    note('每个子进程入口都清洗了 NODE_OPTIONS 的坏预加载');
+  }
+
+  const kernelCode = productionRust(shellSource('kernel_adapter.rs'));
+  if (!kernelCode.includes('command_with_path_dirs')) {
+    fail(
+      'node-options-preload',
+      'kernel_adapter.rs 不再走 process::command_with_path_dirs。内核是 node 进程，' +
+        '绕开那个构造器就等于绕开了 NODE_OPTIONS 的清洗。',
+    );
+  }
+  if (/Command::new\s*\(/.test(kernelCode)) {
+    fail(
+      'node-options-preload',
+      'kernel_adapter.rs 自己构造了 Command。内核的启动必须经 process.rs 的构造器，' +
+        '那里才有 PATH 合并与 NODE_OPTIONS 清洗。',
     );
   }
 }

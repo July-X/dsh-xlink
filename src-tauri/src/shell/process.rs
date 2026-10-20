@@ -87,6 +87,9 @@ pub fn read_state_file<T: serde::de::DeserializeOwned>(path: &Path) -> StateRead
 pub fn command_with_path<S: AsRef<OsStr>>(program: S) -> Command {
     let mut cmd = Command::new(program);
     cmd.env("PATH", crate::shell::env::merged_path());
+    // 用户环境里一个指向已删除文件的 `--require` 会让**每个** Node 子进程
+    // 在预加载阶段崩掉（内核、pnpm、npm 全在其中）。见 `shell::node_options`。
+    crate::shell::node_options::apply_to(&mut cmd);
     cmd
 }
 
@@ -122,6 +125,10 @@ pub fn command_with_path_dirs<S: AsRef<OsStr>>(program: S, extra_path_dirs: &[&P
         "PATH",
         merge_extra_path(crate::shell::env::merged_path(), extra_path_dirs),
     );
+    // 这条路径上跑的是**内核**（一个 node 进程）。用户环境里一个指向已删除
+    // 文件的 `--require` 会让它在预加载阶段就退出，内核代码一行都没加载——
+    // 事故面板因此查不到任何插件或内核组件。见 `shell::node_options`。
+    crate::shell::node_options::apply_to(&mut cmd);
     cmd
 }
 
@@ -190,6 +197,7 @@ pub fn script_capture(
         let mut cmd = command_through_shell_if_needed(exe, args);
         cmd.current_dir(cwd);
         cmd.env("PATH", path);
+        crate::shell::node_options::apply_to(&mut cmd);
         run_command_capture(cmd, &label)
     }
     #[cfg(not(windows))]
@@ -199,6 +207,7 @@ pub fn script_capture(
         cmd.args(args);
         cmd.current_dir(cwd);
         cmd.env("PATH", path);
+        crate::shell::node_options::apply_to(&mut cmd);
         run_command_capture(cmd, &label)
     }
 }
@@ -1369,6 +1378,9 @@ fn spawn(exe: &Path, args: &[&str], cwd: &Path, extra_path_dirs: &[&Path]) -> io
         cmd.current_dir(cwd);
         cmd.env("PATH", path);
         cmd.env("npm_config_registry", registry);
+        // pnpm / npm 都是 node 进程：坏掉的 `NODE_OPTIONS` 预加载会让它们
+        // 在启动阶段就退出（"pnpm 根本起不来"）。见 `shell::node_options`。
+        crate::shell::node_options::apply_to(&mut cmd);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         isolate_process(&mut cmd);
         quiet(&mut cmd).spawn()
@@ -1382,6 +1394,9 @@ fn spawn(exe: &Path, args: &[&str], cwd: &Path, extra_path_dirs: &[&Path]) -> io
         cmd.current_dir(cwd);
         cmd.env("PATH", path);
         cmd.env("npm_config_registry", registry);
+        // pnpm / npm 都是 node 进程：坏掉的 `NODE_OPTIONS` 预加载会让它们
+        // 在启动阶段就退出（"pnpm 根本起不来"）。见 `shell::node_options`。
+        crate::shell::node_options::apply_to(&mut cmd);
         // macOS 上 Apple 命令行工具的 clang 默认只能找到 v1 下的零散 libc++
         // 头文件，缺失 `memory` / `string` 等关键头——fs-ext / node-pty 等
         // 依赖 node-gyp 的原生模块在「pnpm 真正跑构建脚本」路径上会以

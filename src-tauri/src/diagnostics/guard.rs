@@ -526,12 +526,82 @@ const ENV_FAILURE_MARKERS: [&str; 10] = [
     "cannot find module './build/release",
 ];
 /// 日志里是否出现了环境类失败特征；命中时返回命中的那一条（用于文案）。
-fn environment_failure(log_tail: &str) -> Option<String> {
+fn environment_failure(log_tail: &str) -> Option<EnvFailure> {
+    // 预加载类失败要先判：它的文案与下一步跟其它环境类失败**完全不同**
+    // （重装内核对它毫无帮助），不能落进下面那张通用特征表。
+    if let Some(failure) = preload_failure(log_tail) {
+        return Some(failure);
+    }
     let lower = log_tail.to_ascii_lowercase();
     ENV_FAILURE_MARKERS
         .iter()
         .find(|marker| lower.contains(*marker))
-        .map(|marker| (*marker).to_string())
+        .map(|marker| EnvFailure {
+            marker: (*marker).to_string(),
+            hint: None,
+        })
+}
+
+/// 一条环境类失败特征。
+///
+/// `marker` 是特征本身（进事故文案与 trail），`hint` 是**这一类**失败的真实
+/// 下一步。`hint` 为空时用通用文案（换端口 / 查权限 / 看日志）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EnvFailure {
+    marker: String,
+    hint: Option<String>,
+}
+
+/// Node 预加载失败：内核进程在**加载任何内核代码之前**就退出了。
+///
+/// 形态是 Node 自己的预加载报错：
+///
+/// ```text
+/// Error: Cannot find module 'C:/Users/me/AppData/Local/x/bootstrap.cjs'
+/// Require stack:
+/// - internal/preload
+/// ```
+///
+/// 典型来源是用户级 `NODE_OPTIONS=--require=<某个已被删除的文件>`——那个工具
+/// 卸载了而变量没跟着清，于是**每个** Node 进程都在启动阶段崩掉。
+///
+/// 这一类必须归成"环境"：它与插件无关，与内核版本也无关，**重装内核不会解决**
+/// （预加载失败发生在内核代码加载之前）。当成"未知"的话，事故面板会说出
+/// "删除当前版本后重新安装"这种把人引向更远地方的建议（2026-10-20 实测）。
+fn preload_failure(log_tail: &str) -> Option<EnvFailure> {
+    let lower = log_tail.to_ascii_lowercase();
+    if !lower.contains("internal/preload") {
+        return None;
+    }
+    if !lower.contains("cannot find module") && !lower.contains("module_not_found") {
+        return None;
+    }
+    let path = log_tail
+        .lines()
+        .find_map(extract_missing_module)
+        .unwrap_or_default();
+    let marker = if path.is_empty() {
+        String::from("Node 预加载失败：NODE_OPTIONS 指向的文件不存在")
+    } else {
+        format!("Node 预加载失败：NODE_OPTIONS 指向的文件不存在（{path}）")
+    };
+    Some(EnvFailure {
+        marker,
+        hint: Some(String::from(
+            "这与插件和内核版本都无关：内核在加载任何代码之前就因为 Node 预加载失败退出了。\n\
+             请检查系统环境变量 NODE_OPTIONS（Windows：系统属性 → 环境变量；macOS：shell 配置文件），\
+             把它里面 --require / --import 指向的、已经不存在的文件删掉，或把那个文件装回去；\
+             改完后重启本应用（它读的是自己启动时继承的环境变量），再重新启动工作台。",
+        )),
+    })
+}
+
+/// 从 `Error: Cannot find module 'xxx'` 这一行里取出那个路径。
+fn extract_missing_module(line: &str) -> Option<String> {
+    const PREFIX: &str = "Cannot find module '";
+    let start = line.find(PREFIX)? + PREFIX.len();
+    let end = line[start..].find('\'')? + start;
+    Some(line[start..end].to_string())
 }
 fn suspect_records(suspects: &[Suspect], reason: String) -> Vec<QuarantineItem> {
     suspects
@@ -650,9 +720,10 @@ pub fn guarded_start(
     // 会把环境故障记成插件故障，并让用户去处置无辜插件（P2-4）。
     let env_marker = environment_failure(&tail);
     let plugin_ladder = kernel_started && env_marker.is_none();
-    if let Some(marker) = &env_marker {
+    if let Some(failure) = &env_marker {
         trail.push(format!(
-            "检测到环境类失败特征（{marker}），跳过插件归因与安全模式"
+            "检测到环境类失败特征（{}），跳过插件归因与安全模式",
+            failure.marker
         ));
         // 环境类失败必须显式标成 environment：启动诊断的「下一步」完全
         // 按 cause 生成，漏掉这一条就会让用户去处置无辜插件。
@@ -832,17 +903,24 @@ pub fn guarded_start(
     };
     let env_reason = if kernel_started {
         env_marker
-            .as_deref()
-            .map(|marker| format!("内核启动过程中报告了环境类错误（{marker}）"))
+            .as_ref()
+            .map(|failure| format!("内核启动过程中报告了环境类错误（{}）", failure.marker))
     } else {
         Some(format!("内核进程没有被拉起来：{}", verdict.reason()))
     };
     if let Some(reason) = env_reason {
         message = format!("工作台无法启动：{reason}。本次未改动任何插件配置。");
-        hint = String::from(
-            "请按上面的原因处理后重试：端口被占用就换一个端口（设置页）或结束占用该端口的进程；\n\
-             权限 / 磁盘问题请检查数据目录是否可写、磁盘是否已满；仍不确定时用「查看日志」看完整内核日志。",
-        );
+        // 这一类失败有**专属**出路时用它（预加载失败要改环境变量，重装内核
+        // 毫无帮助）；没有就用通用文案。
+        hint = env_marker
+            .as_ref()
+            .and_then(|failure| failure.hint.clone())
+            .unwrap_or_else(|| {
+                String::from(
+                    "请按上面的原因处理后重试：端口被占用就换一个端口（设置页）或结束占用该端口的进程；\n\
+                     权限 / 磁盘问题请检查数据目录是否可写、磁盘是否已满；仍不确定时用「查看日志」看完整内核日志。",
+                )
+            });
         cause = String::from("env");
     }
     let incident = Incident {
@@ -2096,6 +2174,66 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
             "普通前端/插件错误不得被当成环境类失败"
         );
         assert!(environment_failure("").is_none());
+    }
+    /// 2026-10-20 实测：用户级 `NODE_OPTIONS` 指向一个已被删除的预加载文件，
+    /// 内核在**加载任何代码之前**就退出（exit code 1）。这一类必须归成"环境"，
+    /// 并给出**改环境变量**这条真实出路——归成"未知"会让事故面板说出"删除当前
+    /// 版本后重新安装"，而重装内核对它毫无帮助（预加载失败发生在内核代码加载
+    /// 之前，内核装得好好的）。
+    #[test]
+    fn a_node_preload_failure_is_attributed_to_the_environment_with_a_real_next_step() {
+        let tail = "node:internal/modules/cjs/loader:1573\n\
+                    \x20 throw err;\n\
+                    \x20 ^\n\
+                    \n\
+                    Error: Cannot find module 'C:/Users/zxx/AppData/Local/node-system-proxy/bootstrap.cjs'\n\
+                    Require stack:\n\
+                    - internal/preload\n\
+                    \x20   at Module._resolveFilename (node:internal/modules/cjs/loader:1569:15)\n\
+                    \x20   at loadPreloadModules (node:internal/process/pre_execution:774:5)\n\
+                     } {\n\
+                    \x20 code: 'MODULE_NOT_FOUND',\n\
+                    \x20 requireStack: [ 'internal/preload' ]\n\
+                    }\n\
+                    \n\
+                    Node.js v26.5.0\n";
+        let failure = environment_failure(tail).expect("预加载失败必须被认成环境类失败");
+        assert!(
+            failure.marker.contains("node-system-proxy/bootstrap.cjs"),
+            "原因里必须点名那个不存在的文件：{}",
+            failure.marker
+        );
+        assert!(
+            failure.marker.contains("NODE_OPTIONS"),
+            "原因里必须点名真正的出处：{}",
+            failure.marker
+        );
+        let hint = failure.hint.expect("这一类必须有专属的下一步");
+        assert!(
+            hint.contains("NODE_OPTIONS"),
+            "下一步必须指向那条环境变量：{hint}"
+        );
+        // 下一步不能是"重装内核 / 切版本"——那对预加载失败毫无帮助（预加载失败
+        // 发生在内核代码加载之前，内核装得好好的）。
+        for wrong_advice in ["重新安装", "删除当前版本", "切换到其他", "内核版本页"]
+        {
+            assert!(
+                !hint.contains(wrong_advice),
+                "下一步不该说「{wrong_advice}」：{hint}"
+            );
+        }
+    }
+    /// 预加载特征必须**同时**要求 `internal/preload`：普通的
+    /// `Cannot find module` 出现在插件日志里时不是环境问题（那是插件缺依赖）。
+    #[test]
+    fn a_missing_module_outside_the_preload_stage_is_not_an_environment_failure() {
+        let tail = "Error: Cannot find module '@scope/dsh-foo'\n\
+                    Require stack:\n\
+                    - /x/node_modules/@scope/dsh-foo/lib/index.js\n";
+        assert!(
+            environment_failure(tail).is_none(),
+            "插件缺依赖不是环境类失败：那正是插件归因要处理的"
+        );
     }
     /// P2-3 / P2-4：内核"起来又因环境原因退出"时，看护不得进入插件阶梯，也不该
     /// 用一次完整的 pnpm install 去"恢复"从未改过的接线，事故文案要给出真实原因。
