@@ -3288,6 +3288,50 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
+// ㉒ 代理地址只从当下读到的系统配置来：不落盘、不记忆（2026-10-20）。
+//
+// 旧实现把「上次成功过的代理」存进 `~/.dsh-xlink/last-proxy.txt`，探测不到时
+// 把它当兜底路由插回路由表。那是一份**快照**，坏在三处：本地代理客户端换端口
+// 后每次请求先白撞一次死端口；那个端口若已被别的进程占用，请求就被送进用户
+// 没打算让它走的服务；它还**盖过用户自己的开关**——`NO_PROXY=*` 与「刚把系统
+// 代理关掉」在旧实现里都只是"探测不到"，于是记忆地址被插回去。
+//
+// 撤掉它的理由与当初引入它的理由正好相反：原设计要救"探测间歇失灵"，但抖动
+// 期间客户端本身就在重启、端口根本不在线——那正是快照帮不上忙的时刻。
+//
+// 判据扫**全仓**生产 Rust：记忆机制那两个函数名、以及它落过的那个文件名，
+// 都不许再出现（退休清理那一处除外）。单测只盯着 `pkg/net_proxy.rs` 一个文件，
+// 新模块再写一份一样的东西它抓不到。
+{
+  const srcDir = join(root, 'src-tauri', 'src');
+  const offenders = [];
+  for (const full of walk(srcDir, ['.rs'])) {
+    const file = full.slice(srcDir.length + 1).split('\\').join('/');
+    const code = productionRust(readFileSync(full, 'utf8'));
+    code.split('\n').forEach((line, index) => {
+      // 退休清理函数名带 `remembered_proxy_file`，`\b` 不会把它算进去
+      // （`y` 与 `_` 之间没有词边界），这里判的是**独立标识符**。
+      if (/\bremember(?:ed)?_proxy\b/.test(line)) {
+        offenders.push(`${file}:${index + 1} 记忆代理机制已退休（代理地址只从系统配置读）`);
+      }
+      if (/last-proxy\.txt/.test(line) && !/RETIRED_PROXY_MEMORY_FILE/.test(line)) {
+        offenders.push(`${file}:${index + 1} 代理地址不许落盘`);
+      }
+    });
+  }
+  if (offenders.length > 0) {
+    fail(
+      'proxy-address-not-persisted',
+      `${offenders.join('、')}。` +
+        '代理地址只能来自当下读到的系统配置：本地代理客户端换端口后，快照会让每次请求' +
+        '先白撞一次死端口（或被别的进程占了那个端口而被送错地方），而且它会盖过用户的' +
+        'NO_PROXY=* 与「刚把系统代理关掉」。用 pkg::net_proxy::routes()，别自己存地址。',
+    );
+  } else {
+    note('代理地址没有落盘、没有记忆：只从当下读到的系统配置来');
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);
