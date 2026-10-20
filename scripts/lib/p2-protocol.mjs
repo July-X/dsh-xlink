@@ -282,11 +282,117 @@ export function noticeTimeoutWhy(adapter, what) {
   );
 }
 
-async function waitForNotice(adapter, kind, { from = 0, timeoutMs = null } = {}) {
+/**
+ * 这条提示是不是「**这一轮**」的那条（**事件式信号①**：`trigger` ＝ 对应 pick 的 ref）。
+ *
+ * ## 为什么用 `trigger` 定位「哪一轮」
+ *
+ * 等待要区分「**这一轮**的提示」与「**别的轮次**的提示」⇒ 靠序号猜不可靠
+ * （机器被压满时轮次间隔会变长）⇒ 改用提示**自带的**事实：`trigger` 就是
+ * 「这条提示由哪次新增引用触发」。
+ * （实现侧事实：`client/client.js:794` 的 `checkDuplicates(ctx, sessions,
+ * sourceSessionId, snapshotId)`，`snapshotId` ＝ **新选中的那条** ⇒ 提示里的
+ * `trigger: triggerRef` ＝ **判据那次 pick 返回的 ref**
+ * ⇒ 真机 adapter 的 `pick()` 返回 `insert.ref` ＝ 同一条 ⇒ 两边对得上。）
+ *
+ * **判据只用它定位「哪一轮」，不断言它的取值口径**（协议稿里没有 `trigger` 这个
+ * 字段 ⇒ 它是**实现事实**，不是协议事实 ⇒ 不用来「断值」，只用来「归属」）。
+ *
+ * **没带 `trigger` 的**（`null` / 空 / 缺字段）⇒ **无法归属** ⇒ **照样接受**
+ * ⇒ 不制造假红（实现侧 `client.js:1144` 就是 `trigger: triggerRef ?? null`）。
+ *
+ * @param {object} notice
+ * @param {string} lastRef - 这一轮的触发引用（对应 pick 的 ref）；空串＝不按轮次过滤。
+ * @returns {boolean}
+ */
+function isRoundNotice(notice, lastRef) {
+  if (lastRef === '') return true;
+  const trigger = String(notice?.trigger ?? '');
+  if (trigger === '') return true;
+  return trigger === lastRef;
+}
+
+/**
+ * **这一轮到底有没有出过提示**（事件证据）。
+ *
+ * 超时红字若只有一句「疑似负载过高」，就分不出两种完全不同的情况：
+ * ① 这一轮**压根没跑起来**（真·负载问题）② 这一轮**跑了、也出了提示**，只是没出
+ * 预期的那条（⇒ 指向**实现漏报**，不是负载）⇒ 用提示自带的 `trigger` 把两者分开。
+ *
+ * @param {object} adapter
+ * @param {object} [options]
+ * @param {number} [options.from] - 只看第 `from` 条之后的提示。
+ * @param {string} [options.lastRef] - 这一轮的触发引用。
+ * @returns {string} 证据短语（空串＝没有证据）。
+ */
+function noticeRoundEvidence(adapter, { from = 0, lastRef = '' } = {}) {
+  if (lastRef === '') return '';
+  const notices = (adapter.visibleNotices?.() ?? []).slice(from);
+  const kinds = [];
+  for (const notice of notices) {
+    if (String(notice?.trigger ?? '') !== lastRef) continue;
+    const kind = String(notice?.kind ?? '');
+    if (kind !== '' && !kinds.includes(kind)) kinds.push(kind);
+  }
+  return kinds.join('、');
+}
+
+/**
+ * **等待类失败的超时红字**（共享口径 ＋ 事件证据 ＋ 该处专属追加）。
+ *
+ * 三层叠加（**各层各司其职**）：
+ *
+ * 1. **共享口径**（`noticeTimeoutWhy()`）：7 处**逐字统一**的那句
+ *    （「等预算内未等到 X 提示（疑似负载过高，不是漏报）；若在低负载下稳定复现，
+ *    才按漏报论」）⇒ 单一来源。
+ * 2. **事件证据**（有才写）：这一轮**确实出过别的提示** ⇒ 说明**这一轮跑了**
+ *    ⇒ 「整轮没跑」那类负载解释不成立 ⇒ 指向**实现漏报**。
+ *    （没有证据时**不写**这一层 ⇒ 红字回到第 1 层的纯负载口径。）
+ * 3. **该处专属追加**（可选）：如 P2-5 的「不等于「只发了一条」」⇒ 留在调用点。
+ *
+ * @param {object} adapter
+ * @param {string} what - 等的是哪条提示。
+ * @param {object} [options]
+ * @param {number} [options.from]
+ * @param {string} [options.lastRef]
+ * @param {string} [options.extra] - 该处专属追加（可选）。
+ * @returns {string}
+ */
+function noticeTimeoutDetail(adapter, what, { from = 0, lastRef = '', extra = '' } = {}) {
+  const evidence = noticeRoundEvidence(adapter, { from, lastRef });
+  const clause =
+    evidence === ''
+      ? ''
+      : `【事件证据：该轮确实出过提示（${evidence}）⇒ 这一轮**跑了**，不是「整轮没跑」那类负载问题 ⇒ 指向实现漏报】`;
+  return `${noticeTimeoutWhy(adapter, what)}${clause}${extra}`;
+}
+
+/**
+ * 等某一条提示出现（客户端的核对是**异步**的：选中引用后才去问 host）。
+ *
+ * **事件式**：只认「**这一轮**」的那条（`trigger` ＝ 对应 pick 的 ref，见
+ * `isRoundNotice()`）⇒ 不会把**别的轮次**的提示当成这一轮的。
+ * 兜底预算见 `noticeWaitBudget()`（真机 30s / 合成 500ms / 活体注入 1s）。
+ *
+ * @param {object} adapter
+ * @param {string} kind - 提示的 kind（`duplicate-groups` / `budget-exceeded` / `duplicates-failed`）。
+ * @param {object} [options]
+ * @param {number} [options.from] - 只看第 `from` 条**之后**的提示（区分场景）。
+ * @param {number} [options.timeoutMs]
+ * @param {string} [options.lastRef] - 这一轮的触发引用（事件式信号①）。
+ * @returns {Promise<object|undefined>}
+ */
+async function waitForNotice(
+  adapter,
+  kind,
+  { from = 0, timeoutMs = null, lastRef = '' } = {},
+) {
   const deadline = Date.now() + noticeWaitBudget(adapter, timeoutMs);
   while (Date.now() < deadline) {
     const notices = (adapter.visibleNotices?.() ?? []).slice(from);
-    const hit = notices.find((notice) => String(notice?.kind ?? '') === kind);
+    const hit = notices.find(
+      (notice) => String(notice?.kind ?? '') === kind && isRoundNotice(notice, lastRef),
+    );
     if (hit !== undefined) return hit;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -365,13 +471,19 @@ async function waitForLastRoundNotice(
  * @param {object} [options]
  * @param {number} [options.from]
  * @param {number} [options.timeoutMs]
+ * @param {string} [options.lastRef] - 这一轮的触发引用（事件式信号①）。
  * @returns {Promise<object|undefined>}
  */
-async function waitForBudgetNotice(adapter, { from = 0, timeoutMs = null } = {}) {
+async function waitForBudgetNotice(
+  adapter,
+  { from = 0, timeoutMs = null, lastRef = '' } = {},
+) {
   const deadline = Date.now() + noticeWaitBudget(adapter, timeoutMs);
   while (Date.now() < deadline) {
     const notices = (adapter.visibleNotices?.() ?? []).slice(from);
-    const hit = notices.find((notice) => notice?.budget?.wouldExceed === true);
+    const hit = notices.find(
+      (notice) => notice?.budget?.wouldExceed === true && isRoundNotice(notice, lastRef),
+    );
     if (hit !== undefined) return hit;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -772,13 +884,13 @@ export async function checkP2_2_duplicateNoticeVisible(adapter) {
     await adapter.settle(first.ref);
     await adapter.settle(second.ref);
 
-    const notice = await waitForNotice(adapter, 'duplicate-groups');
+    const notice = await waitForNotice(adapter, 'duplicate-groups', { lastRef: second.ref });
     if (notice === undefined) {
       return {
         status: FAIL,
         detail:
           '同组成立后——协议 §3.1-1 要求出现「重复组」提示；' +
-          noticeTimeoutWhy(adapter, '「重复组」提示'),
+          noticeTimeoutDetail(adapter, '「重复组」提示', { lastRef: second.ref }),
       };
     }
 
@@ -833,14 +945,20 @@ export async function checkP2_2_duplicateNoticeVisible(adapter) {
       return { status: FAIL, detail: '再动一次引用时 pick 未返回 ref——判据自身的复现前提不成立' };
     }
     await adapter.settle(third.ref);
-    const again = await waitForNotice(adapter, 'duplicate-groups', { from: beforeRetrigger });
+    const again = await waitForNotice(adapter, 'duplicate-groups', {
+      from: beforeRetrigger,
+      lastRef: third.ref,
+    });
     if (again === undefined) {
       return {
         status: FAIL,
         detail:
           '再动一次引用那一轮——协议 §3.2（v0.5）：内核会顶掉我们的提示，' +
           '信息不丢靠的是「再动一次引用就重新触发」⇒ 提示必须可复现；' +
-          noticeTimeoutWhy(adapter, '「重复组」提示'),
+          noticeTimeoutDetail(adapter, '「重复组」提示', {
+            from: beforeRetrigger,
+            lastRef: third.ref,
+          }),
       };
     }
     const againCarrier = checkNoticeCarrier(again);
@@ -1127,13 +1245,16 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
     }
 
     // 预算提示必须出现（§3.1-2 / §4）——**按数据找**（带出 `wouldExceed` 事实）。
-    const notice = await waitForBudgetNotice(adapter, { from: mark });
+    const notice = await waitForBudgetNotice(adapter, { from: mark, lastRef: second.ref });
     if (notice === undefined) {
       return {
         status: FAIL,
         detail:
           `预算超限（${projected} > ${PER_MESSAGE_BUDGET_BYTES}）——协议 §3.1-2 / §4 ` +
-          `要求出现预算提示；${noticeTimeoutWhy(adapter, '预算提示')}`,
+          `要求出现预算提示；${noticeTimeoutDetail(adapter, '预算提示', {
+            from: mark,
+            lastRef: second.ref,
+          })}`,
       };
     }
     const carrier = checkNoticeCarrier(notice);
@@ -1234,25 +1355,34 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
     if (projected3 <= PER_MESSAGE_BUDGET_BYTES) {
       return { status: SKIPPED, detail: '同组场景的合计没超预算 ⇒ 该场景触发不到' };
     }
-    const groupNotice = await waitForNotice(adapter, 'duplicate-groups', { from: mark2 });
+    const groupNotice = await waitForNotice(adapter, 'duplicate-groups', {
+      from: mark2,
+      lastRef: third.ref,
+    });
     if (groupNotice === undefined) {
       return {
         status: FAIL,
         detail:
           '同组场景——协议 §3.1-1 要求出现「重复组」提示；' +
-          noticeTimeoutWhy(adapter, '「重复组」提示'),
+          noticeTimeoutDetail(adapter, '「重复组」提示', { from: mark2, lastRef: third.ref }),
       };
     }
     // ① 两条都要发：预算提示**不得**被组提示的 early return 吃掉。
-    const budgetNotice = await waitForNotice(adapter, 'budget-exceeded', { from: mark2 });
+    const budgetNotice = await waitForNotice(adapter, 'budget-exceeded', {
+      from: mark2,
+      lastRef: third.ref,
+    });
     if (budgetNotice === undefined) {
       return {
         status: FAIL,
         detail:
           '同组且超预算时——协议 §3.1（v0.4 裁断）：两个触发点各自独立 ＝ 两条都要发，' +
           '任一条都不得被 early return 吃掉；' +
-          noticeTimeoutWhy(adapter, '预算提示') +
-          '（**这一处另注**：不等于「只发了一条」——若低负载下稳定复现，才按 early return 论）',
+          noticeTimeoutDetail(adapter, '预算提示', {
+            from: mark2,
+            lastRef: third.ref,
+            extra: '（**这一处另注**：不等于「只发了一条」——若低负载下稳定复现，才按 early return 论）',
+          }),
       };
     }
     // ② **后发那条 ＝ 用户最终看到的那条**（单槽覆盖）⇒ 必须自包含全部事实。
@@ -1545,18 +1675,21 @@ export async function checkP2_6_failureDoesNotBlockSend(adapter) {
 
       // 制造 `duplicates` 失败，并再选一条引用触发这次核对。
       let notice = undefined;
+      // **这一轮的触发引用**（事件式信号①要用的）⇒ 提到闭包外（红字要用）。
+      let failedRef = '';
       await adapter.withFailingDuplicates(mode, async () => {
         const second = await adapter.pick({ sessionId });
         if (!second?.ref) return;
         await adapter.settle(second.ref);
-        notice = await waitForNotice(adapter, 'duplicates-failed');
+        failedRef = second.ref;
+        notice = await waitForNotice(adapter, 'duplicates-failed', { lastRef: second.ref });
       });
       if (notice === undefined) {
         return {
           status: FAIL,
           detail:
             `duplicates 失败（${mode}）后——协议 §2.3 要求出现可见错误提示；` +
-            noticeTimeoutWhy(adapter, '可见错误提示'),
+            noticeTimeoutDetail(adapter, '可见错误提示', { lastRef: failedRef }),
         };
       }
       const carrier = checkNoticeCarrier(notice);
@@ -1884,13 +2017,13 @@ export async function checkP2_J_noticeStaysTruthfulAfterSend(adapter) {
     await adapter.settle(second.ref);
 
     // **发送前**用户看到的那条。
-    const before = await waitForNotice(adapter, 'duplicate-groups');
+    const before = await waitForNotice(adapter, 'duplicate-groups', { lastRef: second.ref });
     if (before === undefined) {
       return {
         status: FAIL,
         detail:
           '同组成立后——协议 §3.1-1 要求出现「重复组」提示；' +
-          noticeTimeoutWhy(adapter, '「重复组」提示'),
+          noticeTimeoutDetail(adapter, '「重复组」提示', { lastRef: second.ref }),
       };
     }
     const carrier = checkNoticeCarrier(before);

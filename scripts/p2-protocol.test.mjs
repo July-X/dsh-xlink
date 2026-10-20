@@ -615,6 +615,11 @@ test('P2-5：超预算 ⇒ 预算提示 + 正文不截断 —— 没提示 / 截
     ...budgetNotice,
     // **组事实也要在**（结构化数据层 ＋ 文案层）——用户最终看到的是这条。
     groups: groupNotice.groups,
+    // **`trigger` 必须跟同轮那条一样**（＝**第三次 pick**的 ref）：实现侧同一轮
+    // 的两条提示**共用同一个** `triggerRef`（`client.js:1191` / `:1203`）⇒
+    // 合成夹具若从 `budgetNotice` 继承（那是**第二次 pick** 的 ref）就与真实形状
+    // 不符 ⇒ 事件式归属（信号①）会把它判成「别的轮次」。
+    trigger: 'ds~aaaaaaaaaaaa~0003',
     text: `本条消息正文合计 ${projected3} 字节，超过单次消息总预算 ${PER_MESSAGE_BUDGET_BYTES} 字节（超 ${over3} 字节）；其中 2 条同组引用（1 组，重复正文共 ${BIG_BODY_BYTES} 字节）`,
   };
   const options = {
@@ -850,9 +855,12 @@ async function runInjection(spec) {
     tag: `p2-inject-${spec.tag}`,
     hostDir: dir ?? undefined,
     clientSourcePath: clientPath,
-    // **等待预算**：活体注入是**确定性的**（缺陷是唯一变量）⇒ 用 10s
-    // （旧口径 2.5s 的 4 倍 ⇒ 抗重负载；但比真机跑的 30s 短 ⇒ 负例不必各等 30s）。
-    waitBudgetMs: 10_000,
+    // **等待预算**：活体注入是**确定性的**（PM 2026-10-21 03:0x 一手核过注入实现：
+    // `inject()` 打在**同步执行路径**上 ⇒ 注入后仍走真实实现的同步路径 ⇒ 不存在
+    // 「提示其实会出、只是慢于预算」的情形）⇒ **写死 1s**（不是 1~2s 区间：区间
+    // 会让实现方取上界、收益口径当场失真——UX 指出、PM 采纳）。
+    // 真机跑的兜底仍是 30s、合成适配器 500ms ⇒ 均不受影响。
+    waitBudgetMs: 1_000,
     ...(spec.adapterOptions ?? {}),
   });
   let injected;
@@ -1536,6 +1544,103 @@ test('超时口径（共享函数）：noticeTimeoutWhy() ⇒ 「未等到…」
   assert.doesNotMatch(text, /就是漏报|漏报了|判定为漏报/);
   // **专属措辞不进共享函数**（P2-5 那处另加一句，留在调用点叠加 ⇒ 两层、不冲突）。
   assert.doesNotMatch(text, /只发了一条/);
+});
+
+/**
+ * **事件式等待的反向用例**（PM 2026-10-21 02:7x 登记的派单③**第二步**）。
+ *
+ * ## 事件式信号①是什么
+ *
+ * `trigger` ＝ **这一轮**的触发引用（对应 pick 的 ref）⇒ 用它定位「哪一轮」，
+ * 不用序号猜（机器被压满时轮次间隔会变长）。
+ * **只实现信号①**：这四条都是**单组/单条**场景、`groups.length` 恒为 1 ⇒
+ * 「组数到期望值」那个信号**永不命中** ⇒ 照抄 P2-H 的双信号结构只会留死代码
+ * （PM 02:7x 已核）。
+ *
+ * ## 这条用例断三件事
+ *
+ * ① **事件证据**：这一轮出过**别的 kind** 提示 ⇒ 超时红字要带
+ *    「事件证据：该轮确实出过提示（…）」⇒ 指向**实现漏报**，不是负载
+ *    （没有证据时红字**不写**这一层 ⇒ 纯负载口径）。
+ * ② **轮次归属真的在起作用**：**别的轮次**的同 kind 提示**不算**这一轮的。
+ * ③ **不制造假红**：**没带 `trigger`** 的提示（实现侧 `trigger: triggerRef ?? null`）
+ *    **照样认** ⇒ 协议稿里没有 `trigger` 这个字段 ⇒ 它只用来「归属」，不用来「断值」。
+ */
+test('事件式等待（信号① `trigger`）：① 这一轮出过别的提示 ⇒ 红字带「事件证据」；② 别的轮次的同 kind 提示不算这一轮；③ 没带 trigger 的照样算（不假红）', async () => {
+  const bytes = Buffer.byteLength(`【判据正文】ds~aaaaaaaaaaaa~0001\n第二行固定正文。`, 'utf8');
+  const refs = ['ds~aaaaaaaaaaaa~0001', 'ds~aaaaaaaaaaaa~0002', 'ds~aaaaaaaaaaaa~0003'];
+  const groupNotice = {
+    kind: 'duplicate-groups',
+    level: 'info',
+    text: `本条消息里有 2 条同组引用（1 组，重复正文共 ${bytes} 字节）`,
+    groups: [
+      {
+        groupKey: '0123456789abcdef',
+        members: [{ snapshotId: refs[0] }, { snapshotId: refs[1] }],
+        redundantBytes: bytes,
+      },
+    ],
+    budget: null,
+    trigger: refs[1],
+    delivered: true,
+  };
+  const groupNoticeAgain = {
+    kind: 'duplicate-groups',
+    level: 'info',
+    text: `本条消息里有 3 条同组引用（1 组，重复正文共 ${bytes * 2} 字节）`,
+    groups: [
+      {
+        groupKey: '0123456789abcdef',
+        members: [{ snapshotId: refs[0] }, { snapshotId: refs[1] }, { snapshotId: refs[2] }],
+        redundantBytes: bytes * 2,
+      },
+    ],
+    budget: null,
+    trigger: refs[2],
+    delivered: true,
+  };
+
+  // ① 这一轮出的是**别的 kind** ⇒ 超时红字带事件证据（指向实现漏报，不是负载）。
+  const otherKind = await checkP2_2_duplicateNoticeVisible(
+    makeSyntheticAdapter({
+      refs,
+      noticeScript: [null, { ...groupNotice, kind: 'budget-exceeded' }, null],
+      waitBudgetMs: 50,
+    }),
+  );
+  assert.equal(otherKind.status, FAIL);
+  assert.match(otherKind.detail, /未等到/);
+  assert.match(otherKind.detail, /事件证据/);
+  assert.match(otherKind.detail, /该轮确实出过提示（budget-exceeded）/);
+  assert.match(otherKind.detail, /指向实现漏报/);
+  assert.doesNotMatch(otherKind.detail, /没有出现/);
+
+  // ② **别的轮次**的同 kind 提示（trigger 是上一轮）⇒ **不算**这一轮 ⇒ 不认。
+  const otherRound = await checkP2_2_duplicateNoticeVisible(
+    makeSyntheticAdapter({
+      refs,
+      noticeScript: [null, { ...groupNotice, trigger: refs[0] }, null],
+      waitBudgetMs: 50,
+    }),
+  );
+  assert.equal(otherRound.status, FAIL);
+  assert.match(otherRound.detail, /未等到「重复组」提示/);
+  // 别的轮次的提示**不算证据**（证据只认「这一轮」的）。
+  assert.doesNotMatch(otherRound.detail, /事件证据/);
+
+  // ③ **没带 trigger** 的 ⇒ **照样认**（不制造假红）⇒ 合规实现仍然绿。
+  const noTrigger = await checkP2_2_duplicateNoticeVisible(
+    makeSyntheticAdapter({
+      refs,
+      noticeScript: [
+        null,
+        { ...groupNotice, trigger: null },
+        { ...groupNoticeAgain, trigger: null },
+      ],
+      waitBudgetMs: 50,
+    }),
+  );
+  assert.equal(noTrigger.status, PASS, `没带 trigger 的实现不该红：${noTrigger.detail}`);
 });
 
 test('十一条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
