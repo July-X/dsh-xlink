@@ -43,6 +43,7 @@ import {
   makeSessionShort,
   makeSnapshotId,
   parseSnapshotId,
+  resolveCaptureCase,
   resolveCase,
   validateCatalogPage,
   validateSnapshot,
@@ -419,6 +420,49 @@ test('§3 v0.4：错误结果对象 = 8 字段闭集，全部必备（G-2：JS �
   // **未知码的归一分支走同一条闭集** ⇒ 同样不得省字段。
   const unknown = errorPayload('not_a_real_code');
   assert.equal(Object.keys(unknown).length, 8, '未知码分支也必须 8 个字段');
-  assert.equal(unknown.code, 'snapshot_invalid', '未知码归一为 snapshot_invalid（不新增第 14 个码）');
+  assert.equal(unknown.code, 'snapshot_invalid', '未知码归一为 snapshot_invalid（闭集外的一律归它）');
   assert.match(String(unknown.detail), /not_a_real_code/, '原始码要留在 detail');
+});
+
+test('G3-2b：单条正文超「单条正文预算」（64 KB）⇒ 落 body_budget_exceeded；恰好等于预算不拒', () => {
+  // **G3-2b 的判定点**（协议 P1 §3 第 14 码）：单条正文（进模型输入的**那一条**）
+  // 超 64 KB ⇒ 报此码并**拒收该条**（别的引用不受影响）⇒ 错误负载仍是 8 字段闭集。
+  const budget = CONSTANTS.perBodyBudgetBytes;
+  // ① 恰好等于预算 ⇒ **不拒**（判据是 `>`，不是 `>=`）。
+  const exact = resolveCaptureCase({ messages: [{ role: 'user', text: 'a'.repeat(budget) }] });
+  assert.notEqual(
+    exact.code,
+    'body_budget_exceeded',
+    '恰好等于单条正文预算不得拒收',
+  );
+  // ② 超一个字节 ⇒ 拒收。
+  const over = resolveCaptureCase({ messages: [{ role: 'user', text: 'a'.repeat(budget + 1) }] });
+  assert.equal(over.kind, 'error', '超限必须落错误结果');
+  assert.equal(over.code, 'body_budget_exceeded', '超单条正文预算必须落第 14 码');
+  assert.equal(over.retryable, false, '重试同一条正文没有意义 ⇒ 不可重试');
+  assert.equal(over.userNext, '选一段更短的正文', '用户下一步必须与 P1 §3 原文一致');
+  // ③ 8 字段闭集不变（不得因为多一个码就少字段）。
+  assert.deepEqual(
+    Object.keys(over).sort(),
+    ['code', 'detail', 'kind', 'logPath', 'ok', 'requestId', 'retryable', 'userNext'],
+    '第 14 码的错误负载也必须恰好是 8 个字段',
+  );
+  // ④ **`detail` 必须带三个数**（正文字节 / 预算字节 / 超出量）——客户端**拿不到**
+  //    host 的内部变量（预算常量在 host 半边）⇒ 界面文案要用的三个数**只能由
+  //    `detail` 带出去**（PM 2026-10-21 裁）⇒ 形态定死在这儿（客户端按它解析；
+  //    取不到就退化成无数字文案）⇒ 与 Rust 侧**逐字同构**。
+  assert.equal(
+    over.detail,
+    `单条正文超单条正文预算：正文 ${budget + 1} 字节，超出单条正文预算 ${budget} 字节（超 1 字节）`,
+    'detail 必须带「正文字节 / 预算字节 / 超出量」三个数，且措辞与 Rust 侧逐字同构',
+  );
+  // ⑤ **判序**（P1 §3 的判序裁定）：两个码判**同一对象、同一时机、都拒那一条**，
+  //    只差阈值 ⇒ **必须按阈值大小顺序判** ⇒ 「64 KB～256 KB」落第 14 码、
+  //    「>256 KB」落**老码**（第 14 码不得兼表那一档）。
+  const middle = resolveCaptureCase({ messages: [{ role: 'user', text: 'a'.repeat(100_000) }] });
+  assert.equal(middle.code, 'body_budget_exceeded', '64 KB～256 KB 那一档必须落第 14 码');
+  const tooBig = resolveCaptureCase({
+    messages: [{ role: 'user', text: 'a'.repeat(CONSTANTS.maxBodyBytes + 1) }],
+  });
+  assert.equal(tooBig.code, 'body_too_large', '超过 256 KB 必须落老码（第 14 码不得兼表）');
 });

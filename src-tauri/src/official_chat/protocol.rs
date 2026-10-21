@@ -553,8 +553,37 @@ fn resolve_capture_case(input: &Value) -> Value {
         .cloned()
         .unwrap_or(Value::Array(vec![]));
     let body = body_of(&messages);
+    // **单条引用正文超 256 KB ⇒ `body_too_large`**（协议 P1 §3）：
+    //  · **判定对象**：**单条引用正文**（**不是「整条消息」**）——`body.len()`
+    //    就是**这一条引用**要进模型输入的正文量；
+    //  · **判定时机**：**捕获这条引用时**（**不是「发送时」**）；
+    //  · **处置**：**拒那一条**（别的引用不受影响）。
     if body.len() > MAX_BODY_BYTES {
         return error_result("body_too_large");
+    }
+    // **G3-2b：单条正文超「单条正文预算」64 KB ⇒ 落第 14 码 `body_budget_exceeded`
+    // ＋ 拒收这一条引用**（别的引用不受影响）。
+    //
+    // ⚠️ **判序裁定（P1 §3）**：与 JS 侧同构 ⇒ **先 256 KB（老码）、后 64 KB
+    // （新码）**——两个码判同一对象、同一时机、都拒那一条，只差阈值 ⇒ 反了就
+    // 出死码（＞256 KB 必然也 ＞64 KB ⇒ 先判 64 KB ⇒ 老码永不触发）。
+    //
+    // ⚠️ 字节口径：与 JS 侧 `bodyBytes` **同口径**（`body_of` 拼接后的 UTF-8
+    // 字节数、分隔符计入）⇒ 同一份输入在两端判定一致（协议 §6）。
+    //
+    // ⚠️ **`detail` 必须带三个数**（正文字节 / 预算字节 / 超出量）——客户端**拿不到
+    // host 的内部变量** ⇒ 界面文案要用的三个数只能由这里带出去（PM 2026-10-21 裁）
+    // ⇒ 形态与 JS 侧**逐字同构**。
+    if body.len() > PER_BODY_BUDGET_BYTES {
+        return error_result_with_detail(
+            "body_budget_exceeded",
+            Some(format!(
+                "单条正文超单条正文预算：正文 {} 字节，超出单条正文预算 {} 字节（超 {} 字节）",
+                body.len(),
+                PER_BODY_BUDGET_BYTES,
+                body.len() - PER_BODY_BUDGET_BYTES,
+            )),
+        );
     }
     let status = input
         .get("captureResult")
@@ -1089,6 +1118,98 @@ mod tests {
         );
         assert_eq!(obj.get("kind").and_then(Value::as_str), Some("error"));
         assert_eq!(obj.get("ok").and_then(Value::as_bool), Some(false));
+    }
+
+    #[test]
+    fn single_body_over_budget_is_rejected_with_the_fourteenth_code() {
+        // **G3-2b**（协议 P1 §3 第 14 码）：单条正文（进模型输入的**那一条**）超
+        // 「单条正文预算」64 KB ⇒ 落 `body_budget_exceeded` ＋ **拒收该条**
+        // （别的引用不受影响）⇒ 且错误负载仍是 §3 的 8 字段闭集。
+        let budget = PER_BODY_BUDGET_BYTES;
+        let exact = json!({ "messages": [{ "role": "user", "text": "a".repeat(budget) }] });
+        let over = json!({ "messages": [{ "role": "user", "text": "a".repeat(budget + 1) }] });
+
+        // ① 恰好等于预算 ⇒ **不拒**（判据是 `>`，不是 `>=`）。
+        let ok = resolve_capture_case(&exact);
+        assert_ne!(
+            ok.get("code").and_then(Value::as_str),
+            Some("body_budget_exceeded"),
+            "恰好等于单条正文预算不得拒收"
+        );
+
+        // ② 超一个字节 ⇒ 拒收。
+        let result = resolve_capture_case(&over);
+        assert_eq!(result.get("kind").and_then(Value::as_str), Some("error"));
+        assert_eq!(
+            result.get("code").and_then(Value::as_str),
+            Some("body_budget_exceeded"),
+            "超单条正文预算必须落第 14 码"
+        );
+        assert_eq!(
+            result.get("retryable").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            result.get("userNext").and_then(Value::as_str),
+            Some("选一段更短的正文"),
+            "用户下一步必须与 P1 §3 原文一致"
+        );
+
+        // ③ **`detail` 必须带三个数**（正文字节 / 预算字节 / 超出量）——客户端**拿不到**
+        //    host 的内部变量 ⇒ 界面文案要用的三个数**只能由 `detail` 带出去**
+        //    （PM 2026-10-21 裁）⇒ 形态定死在这儿，客户端按它解析。
+        let detail = result
+            .get("detail")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert_eq!(
+            detail,
+            format!(
+                "单条正文超单条正文预算：正文 {} 字节，超出单条正文预算 {} 字节（超 {} 字节）",
+                budget + 1,
+                budget,
+                1
+            ),
+            "detail 的三个数与措辞必须与 JS 侧逐字同构"
+        );
+    }
+
+    #[test]
+    fn the_two_body_codes_are_judged_in_threshold_order() {
+        // **判序裁定（P1 §3）**：第 6 码（256 KB）与第 14 码（64 KB）**判同一对象、
+        // 同一时机、都拒那一条**，只差阈值 ⇒ ⇒ **必须按阈值大小顺序判** ⇒
+        // **「64 KB～256 KB」落第 14 码、「>256 KB」落老码**（反了就出死码）。
+        let budget = PER_BODY_BUDGET_BYTES;
+
+        // ① 64 KB～256 KB 这一档 ⇒ 第 14 码（**不是**老码）。
+        for size in [budget + 1, 100_000, MAX_BODY_BYTES] {
+            let input = json!({ "messages": [{ "role": "user", "text": "a".repeat(size) }] });
+            let result = resolve_capture_case(&input);
+            assert_eq!(
+                result.get("code").and_then(Value::as_str),
+                Some("body_budget_exceeded"),
+                "{size} 字节（64 KB～256 KB 那一档）必须落第 14 码"
+            );
+        }
+
+        // ② >256 KB ⇒ **老码**（`body_too_large`）——第 14 码不得兼表这一档。
+        let too_big =
+            json!({ "messages": [{ "role": "user", "text": "a".repeat(MAX_BODY_BYTES + 1) }] });
+        let result = resolve_capture_case(&too_big);
+        assert_eq!(
+            result.get("code").and_then(Value::as_str),
+            Some("body_too_large"),
+            "超过 256 KB 必须落老码"
+        );
+
+        // ③ 恰好 256 KB ⇒ **不落老码**（判据是 `>`，不是 `>=`）⇒ 落第 14 码。
+        let exact = json!({ "messages": [{ "role": "user", "text": "a".repeat(MAX_BODY_BYTES) }] });
+        let result = resolve_capture_case(&exact);
+        assert_eq!(
+            result.get("code").and_then(Value::as_str),
+            Some("body_budget_exceeded"),
+            "恰好 256 KB 不得落老码"
+        );
     }
 
     #[test]

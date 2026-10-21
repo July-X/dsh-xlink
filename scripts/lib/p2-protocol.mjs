@@ -52,7 +52,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { ERROR_CODES } from './p1-protocol.mjs';
+import { CONSTANTS as P1_CONSTANTS, ERROR_CODES } from './p1-protocol.mjs';
 
 /** verdict 三态。 */
 export const PASS = 'pass';
@@ -136,6 +136,18 @@ export function expectedGroupKey(snapshot) {
 
 /** §2.2 / §4 的单次消息总预算（P1 §4 的常量，字节）。 */
 export const PER_MESSAGE_BUDGET_BYTES = 262144;
+
+/**
+ * §4 的**单条正文预算**（字节；64 KB）——**从 P1 期望侧取**（不 import 实现）。
+ *
+ * **为什么判据侧要这个数**：P2-5 的造数前提是「**每条正文 < 单条正文预算**」
+ * ——超了就该被第 14 码 `body_budget_exceeded` **在捕获/落盘阶段拒收**、引用
+ * **根本落不了盘** ⇒ 预算场景**触发不到**（PM 2026-10-21 裁）。
+ *
+ * **不 import 实现**：判据只认**协议写的那个值**（P1 期望侧），不认实现里
+ * 碰巧写成多少。
+ */
+export const PER_BODY_BUDGET_BYTES = P1_CONSTANTS.perBodyBudgetBytes;
 
 /**
  * P1 §3 的 **13 码闭集**（P2 §2.2 明写「沿用」）。
@@ -1271,44 +1283,74 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
       return { status: SKIPPED, detail: '本轮没造大正文（`bodyBytes` 未给）⇒ 预算场景触发不到' };
     }
 
-    // 场景 ①：两条**不同组**（`capturedAt` 不同）⇒ 只该出预算那条提示。
+    // **判据自身的口径检查（造数前提）**：每条正文必须 **< 单条正文预算 64 KB**。
+    //
+    // **为什么**：协议 P1 §3 第 14 码 `body_budget_exceeded` ＝ **单条正文超
+    // 64 KB ⇒ 拒收那一条引用**（捕获/落盘阶段就拒）⇒ ⇒ 每条 ≥ 64 KB 的正文
+    // **根本落不了盘** ⇒ 预算场景**触发不到**（只会看到「大正文没落盘」）。
+    //
+    // ⇒ 每条 < 65536 ⇒ 4 条最多 4×65535 = 262140 **< 262144** ⇒ ⇒ **至少 5 条**
+    // 才够把合计顶过单次消息总预算（PM 2026-10-21 裁：**每条 ≤ 64 KB、多条
+    // 合计 > 262144**）。
+    if (bodyBytes >= PER_BODY_BUDGET_BYTES) {
+      return {
+        status: FAIL,
+        detail:
+          `判据自身：每条正文 ${bodyBytes} 字节 ≥ 单条正文预算 ${PER_BODY_BUDGET_BYTES} 字节` +
+          ' ⇒ 会被第 14 码拒收、引用落不了盘 ⇒ 场景不成立',
+      };
+    }
+
+    // 场景 ①：**五条不同组**（`capturedAt` 各差 500ms）⇒ 合计超预算 ⇒ 只该出
+    // 预算那条提示。
+    //
+    // **为什么是五条**：每条 < 64 KB ⇒ 4 条最多 262140 < 262144 ⇒ **5 条**才够
+    // 触发超预算（见上面的口径检查）。
     const t0 = 1_767_000_000_000;
     adapter.setNow?.(t0);
     const first = await adapter.pick({ sessionId });
     await adapter.settle(first.ref);
     const mark = adapter.visibleNotices?.().length ?? 0;
-    adapter.setNow?.(t0 + 500);
-    const second = await adapter.pick({ sessionId });
-    await adapter.settle(second.ref);
-    if (!first?.ref || !second?.ref) {
+    /** 场景 ① 的五条引用（第 1 条 ＋ 后面四条**各自不同组**）。 */
+    const refs = [first];
+    for (let index = 1; index < 5; index += 1) {
+      adapter.setNow?.(t0 + index * 500);
+      const picked = await adapter.pick({ sessionId });
+      await adapter.settle(picked.ref);
+      refs.push(picked);
+    }
+    if (refs.some((one) => !one?.ref)) {
       return { status: SKIPPED, detail: 'pick 未返回 ref（实现侧尚不可测）' };
     }
 
-    const fileA = adapter.snapshotFile(first.ref);
-    const fileB = adapter.snapshotFile(second.ref);
-    if (!fileA?.exists || !fileB?.exists) {
+    const files = refs.map((one) => adapter.snapshotFile(one.ref));
+    if (files.some((file) => !file?.exists)) {
       return { status: FAIL, detail: '大正文没落盘（预算场景触发不到）' };
     }
-    const bytesA = Buffer.byteLength(String(fileA.body ?? ''), 'utf8');
-    const bytesB = Buffer.byteLength(String(fileB.body ?? ''), 'utf8');
-    const projected = bytesA + bytesB;
+    const sizes = files.map((file) => Buffer.byteLength(String(file.body ?? ''), 'utf8'));
+    const bytesA = sizes[0];
+    const bytesB = sizes[1];
+    const projected = sizes.reduce((sum, size) => sum + size, 0);
 
     // 判据自身的口径检查：造出来的正文必须**够大**（否则测不到超限）。
-    if (bytesA !== bodyBytes || bytesB !== bodyBytes) {
+    if (sizes.some((size) => size !== bodyBytes)) {
       return {
         status: FAIL,
-        detail: `判据自身：落盘正文字节数不对（${bytesA} / ${bytesB}，应为 ${bodyBytes}）⇒ 场景不成立`,
+        detail: `判据自身：落盘正文字节数不对（${sizes.join(' / ')}，应为 ${bodyBytes}）⇒ 场景不成立`,
       };
     }
     if (projected <= PER_MESSAGE_BUDGET_BYTES) {
       return {
         status: FAIL,
-        detail: `判据自身：两条合计 ${projected} 字节 ≤ 预算 ${PER_MESSAGE_BUDGET_BYTES} ⇒ 超限场景不成立`,
+        detail: `判据自身：五条合计 ${projected} 字节 ≤ 预算 ${PER_MESSAGE_BUDGET_BYTES} ⇒ 超限场景不成立`,
       };
     }
 
     // 预算提示必须出现（§3.1-2 / §4）——**按数据找**（带出 `wouldExceed` 事实）。
-    const notice = await waitForBudgetNotice(adapter, { from: mark, lastRef: second.ref });
+    //
+    // **归属轮次＝第 5 条那条**（超预算是在合计顶过 262144 时才成立的 ⇒ 那是
+    // 第 5 条触发的那一轮）。
+    const notice = await waitForBudgetNotice(adapter, { from: mark, lastRef: refs[refs.length - 1].ref });
     if (notice === undefined) {
       return {
         status: FAIL,
@@ -1316,7 +1358,7 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
           `预算超限（${projected} > ${PER_MESSAGE_BUDGET_BYTES}）——协议 §3.1-2 / §4 ` +
           `要求出现预算提示；${noticeTimeoutDetail(adapter, '预算提示', {
             from: mark,
-            lastRef: second.ref,
+            lastRef: refs[refs.length - 1].ref,
           })}`,
       };
     }
@@ -1372,17 +1414,17 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
 
     // 正文**未被截断**（§3.3）：请求体与落盘正文逐字节相同，且落盘正文是完整原文。
     const requestA = await trySerialize(adapter, first.ref);
-    const requestB = await trySerialize(adapter, second.ref);
+    const requestB = await trySerialize(adapter, refs[1].ref);
     if (!requestA.ok) {
       return { status: FAIL, detail: `第一条的请求体取不到（发不出去）：${requestA.error}` };
     }
     if (!requestB.ok) {
       return { status: FAIL, detail: `第二条的请求体取不到（发不出去）：${requestB.error}` };
     }
-    if (requestA.body !== String(fileA.body)) {
+    if (requestA.body !== String(files[0].body)) {
       return { status: FAIL, detail: '第一条的请求体与落盘正文不一致（正文被改了/被截断了）' };
     }
-    if (requestB.body !== String(fileB.body)) {
+    if (requestB.body !== String(files[1].body)) {
       return { status: FAIL, detail: '第二条的请求体与落盘正文不一致（正文被改了/被截断了）' };
     }
     if (bytesA !== bodyBytes || bytesB !== bodyBytes) {
@@ -1392,8 +1434,8 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
       };
     }
 
-    // 场景 ②：第三条引用**回到第一条的捕获时刻** ⇒ 与第一条**同组**；
-    // 草稿里三条引用合计超预算 ⇒ 「重复」与「超预算」**同时成立**。
+    // 场景 ②：**第六条**引用**回到第一条的捕获时刻** ⇒ 与第一条**同组**；
+    // 草稿里六条引用合计超预算 ⇒ 「重复」与「超预算」**同时成立**。
     //
     // ## **PM v0.4 裁断**（协议 §3.1 的括注）——本判据按它写
     //
@@ -1407,33 +1449,33 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
     //   ③ **后发那条**既带出组事实、也带出预算事实（文案里有「超了多少字节」）。
     const mark2 = adapter.visibleNotices?.().length ?? 0;
     adapter.setNow?.(t0);
-    const third = await adapter.pick({ sessionId });
-    await adapter.settle(third.ref);
-    if (!third?.ref) {
-      return { status: SKIPPED, detail: '第三个 pick 未返回 ref（同组场景触发不到）' };
+    const sixth = await adapter.pick({ sessionId });
+    await adapter.settle(sixth.ref);
+    if (!sixth?.ref) {
+      return { status: SKIPPED, detail: '第六个 pick 未返回 ref（同组场景触发不到）' };
     }
-    const fileC = adapter.snapshotFile(third.ref);
-    const bytesC = Buffer.byteLength(String(fileC?.body ?? ''), 'utf8');
-    const projected3 = bytesA + bytesB + bytesC;
-    if (projected3 <= PER_MESSAGE_BUDGET_BYTES) {
+    const fileF = adapter.snapshotFile(sixth.ref);
+    const bytesF = Buffer.byteLength(String(fileF?.body ?? ''), 'utf8');
+    const projected6 = projected + bytesF;
+    if (projected6 <= PER_MESSAGE_BUDGET_BYTES) {
       return { status: SKIPPED, detail: '同组场景的合计没超预算 ⇒ 该场景触发不到' };
     }
     const groupNotice = await waitForNotice(adapter, 'duplicate-groups', {
       from: mark2,
-      lastRef: third.ref,
+      lastRef: sixth.ref,
     });
     if (groupNotice === undefined) {
       return {
         status: FAIL,
         detail:
           '同组场景——协议 §3.1-1 要求出现「重复组」提示；' +
-          noticeTimeoutDetail(adapter, '「重复组」提示', { from: mark2, lastRef: third.ref }),
+          noticeTimeoutDetail(adapter, '「重复组」提示', { from: mark2, lastRef: sixth.ref }),
       };
     }
     // ① 两条都要发：预算提示**不得**被组提示的 early return 吃掉。
     const budgetNotice = await waitForNotice(adapter, 'budget-exceeded', {
       from: mark2,
-      lastRef: third.ref,
+      lastRef: sixth.ref,
     });
     if (budgetNotice === undefined) {
       return {
@@ -1443,7 +1485,7 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
           '任一条都不得被 early return 吃掉；' +
           noticeTimeoutDetail(adapter, '预算提示', {
             from: mark2,
-            lastRef: third.ref,
+            lastRef: sixth.ref,
             // **UX 逐字定稿**（PM 2026-10-21 02:8x ⑤②）：这一处的排查指引
             // **覆盖**通用后半句 ⇒ 「再分辨是漏报，还是只发了一条（被 early return 吃掉）」。
             // （**元话语不进红字**：原句里那句「这一处另注」是给实现者看的说明，
@@ -1460,13 +1502,13 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
     if (last === undefined) {
       return { status: FAIL, detail: '判据自身：没读到这一轮的提示投递序列' };
     }
-    const over3 = projected3 - PER_MESSAGE_BUDGET_BYTES;
+    const over6 = projected6 - PER_MESSAGE_BUDGET_BYTES;
     const lastText = String(last.text ?? '');
-    if (!lastText.includes(String(over3))) {
+    if (!lastText.includes(String(over6))) {
       return {
         status: FAIL,
         detail:
-          `后发那条提示（${last.kind}）里没有「超了多少字节」（应为 ${over3}）——` +
+          `后发那条提示（${last.kind}）里没有「超了多少字节」（应为 ${over6}）——` +
           '协议 §3.1（v0.4 裁断）：内核 notice 单槽 ⇒ 用户最终看到的就是后发那条，它必须自包含全部事实',
       };
     }
@@ -1488,8 +1530,8 @@ export async function checkP2_5_budgetNoticeNoTruncation(adapter) {
       status: PASS,
       detail:
         `超预算（${projected} > ${PER_MESSAGE_BUDGET_BYTES}）⇒ 发送前出现预算提示（level=info、输入区常驻条）；` +
-        `正文未被截断（两条各 ${bodyBytes} 字节，请求体与落盘逐字节相同）；` +
-        `同组+超预算时两条都发、后发那条自包含（超 ${over3} 字节 ＋ 组事实）`,
+        `正文未被截断（五条各 ${bodyBytes} 字节，请求体与落盘逐字节相同）；` +
+        `同组+超预算时两条都发、后发那条自包含（超 ${over6} 字节 ＋ 组事实）`,
     };
   });
 }

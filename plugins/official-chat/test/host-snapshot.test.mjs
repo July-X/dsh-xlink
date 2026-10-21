@@ -215,3 +215,77 @@ test('listSessionSeqs：报出每个会话短码已用掉的最大序号', () =>
     cleanup();
   }
 });
+
+test('G3-2b：单条正文超「单条正文预算」⇒ 拒收**这一条**（不落盘），别的引用不受影响', () => {
+  // 协议 P1 §3 第 14 码：单条正文（进模型输入的**那一条**）超 64 KB ⇒ 报
+  // `body_budget_exceeded` ＋ **拒收该条** ⇒ ⇒ **别的引用不受影响**（各引用各自落盘）。
+  const { env, cleanup } = tempHome();
+  try {
+    const store = createSnapshotStore(env);
+    // ① 先落一条**正常**引用（它必须照常在盘上）。
+    store.save(snapshot({ snapshotId: 'ds~aaaaaaaaaaaa~0001' }));
+    // ② 再落一条超单条正文预算的引用 ⇒ 必须被拒。
+    const budget = 64 * 1024;
+    assert.throws(
+      () =>
+        store.save(
+          snapshot({
+            snapshotId: 'ds~bbbbbbbbbbbb~0001',
+            messages: [{ role: 'user', text: 'a'.repeat(budget + 1) }],
+          }),
+        ),
+      (error) => {
+        assert.equal(error.code, 'body_budget_exceeded', '单条正文超预算必须落第 14 码');
+        // **`detail` 必须带三个数**（正文字节 / 预算字节 / 超出量）——客户端拿不到
+        // host 的内部变量 ⇒ 界面文案要用的三个数只能由这里带出去（PM 2026-10-21 裁）
+        // ⇒ 形态与协议层 `resolveCaptureCase`、Rust 侧**逐字同构**。
+        assert.equal(
+          error.message,
+          `单条正文超单条正文预算：正文 ${budget + 1} 字节，超出单条正文预算 ${budget} 字节（超 1 字节）`,
+          'detail 必须带「正文字节 / 预算字节 / 超出量」三个数',
+        );
+        return true;
+      },
+      '单条正文超预算必须落第 14 码（不得拿 body_too_large 兼表）',
+    );
+    // ②' **判序**（P1 §3）：超过 256 KB ⇒ 落**老码** `body_too_large`（第 14 码不得
+    //     兼表那一档）；64 KB～256 KB 那一档 ⇒ 落第 14 码。
+    assert.throws(
+      () =>
+        store.save(
+          snapshot({
+            snapshotId: 'ds~cccccccccccc~0001',
+            messages: [{ role: 'user', text: 'a'.repeat(256 * 1024 + 1) }],
+          }),
+        ),
+      (error) => error.code === 'body_too_large',
+      '超过 256 KB 必须落老码',
+    );
+    assert.throws(
+      () =>
+        store.save(
+          snapshot({
+            snapshotId: 'ds~dddddddddddd~0001',
+            messages: [{ role: 'user', text: 'a'.repeat(100_000) }],
+          }),
+        ),
+      (error) => error.code === 'body_budget_exceeded',
+      '64 KB～256 KB 那一档必须落第 14 码',
+    );
+    // ③ 被拒的那条**没有落盘**（拒收 ＝ 根本没进来）。
+    const rejected = join(
+      env.DSH_HOME,
+      'official-chat',
+      'snapshots',
+      'ds',
+      'ds~bbbbbbbbbbbb~0001.json',
+    );
+    assert.equal(existsSync(rejected), false, '被拒的引用不得落盘');
+    // ④ **别的引用不受影响**（这条是本单的核心语义，必须钉住）。
+    const kept = join(env.DSH_HOME, 'official-chat', 'snapshots', 'ds', 'ds~aaaaaaaaaaaa~0001.json');
+    assert.ok(existsSync(kept), '别的引用必须照常落盘（拒收只影响那一条）');
+    assert.equal(store.load('ds~aaaaaaaaaaaa~0001').snapshot.snapshotId, 'ds~aaaaaaaaaaaa~0001');
+  } finally {
+    cleanup();
+  }
+});

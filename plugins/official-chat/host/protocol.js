@@ -1004,8 +1004,37 @@ export function resolveCaptureCase(input) {
   }
   const messages = normalizeMessages(input?.messages);
   const bytes = bodyBytes(messages);
+  // **单条引用正文超 256 KB ⇒ `body_too_large`**（协议 P1 §3）：
+  //  · **判定对象**：**单条引用正文**（**不是「整条消息」**）——这里的 `bytes`
+  //    就是**这一条引用**要进模型输入的正文量；
+  //  · **判定时机**：**捕获这条引用时**（**不是「发送时」**）——正文在进模型
+  //    输入之前就要判，判不过就**不落盘**；
+  //  · **处置**：**拒那一条**（别的引用不受影响）。
+  //
+  // ⚠️ **判序裁定（P1 §3）**：第 6 码与第 14 码**判同一对象、同一时机、
+  // 都是拒那一条**，**只差阈值**（256 KB vs 64 KB）⇒ ⇒ **必须按阈值大小顺序判**：
+  // **先 256 KB（老码）、后 64 KB（新码）** ⇒ 反了就出死码（＞256 KB 必然也
+  // ＞64 KB ⇒ 先判 64 KB ⇒ 老码永不触发 ⇒ 整条超限那档就没了）。
   if (bytes > CONSTANTS.maxBodyBytes) {
     return { kind: 'error', ...errorPayload('body_too_large') };
+  }
+  // **G3-2b：单条正文超「单条正文预算」64 KB ⇒ 落第 14 码 `body_budget_exceeded`
+  // ＋ 拒收这一条引用**（别的引用不受影响）。
+  //
+  // ⚠️ **`detail` 必须带三个数**（正文字节 / 预算字节 / 超出量）——**客户端拿不到
+  // host 的内部变量**（预算常量在 host 半边）⇒ ⇒ 界面文案要用的三个数**只能由
+  // 这里带出去**（PM 2026-10-21 裁）⇒ 客户端按这个契约解析 ⇒ 取不到就退化成
+  // 无数字文案（「这条引用太长，请移除它，换一段更短的正文。」）。
+  if (bytes > CONSTANTS.perBodyBudgetBytes) {
+    return {
+      kind: 'error',
+      ...errorPayload('body_budget_exceeded', {
+        detail:
+          `单条正文超单条正文预算：正文 ${bytes} 字节，` +
+          `超出单条正文预算 ${CONSTANTS.perBodyBudgetBytes} 字节` +
+          `（超 ${bytes - CONSTANTS.perBodyBudgetBytes} 字节）`,
+      }),
+    };
   }
   const status = String(input?.captureResult?.status ?? 'ok');
   if (status === 'failed') {

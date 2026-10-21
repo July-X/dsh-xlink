@@ -60,8 +60,17 @@ const REPO = fileURLToPath(new URL('../', import.meta.url));
 const HOST_DIR = join(REPO, 'plugins', 'official-chat', 'host');
 const CLIENT_FILE = join(REPO, 'plugins', 'official-chat', 'client', 'client.js');
 
-/** 造大正文时的每条字节数（两条合计必须超过 262144，单条必须小于它）。 */
-const BIG_BODY_BYTES = 150_000;
+/**
+ * 造大正文时的**每条**字节数（60 KB）。
+ *
+ * ⚠️ **每条必须 < 64 KB（单条正文预算）** —— 超了就该被**第 14 码**
+ * `body_budget_exceeded` **在捕获/落盘阶段拒收**（协议 P1 §3）⇒ **引用根本
+ * 落不了盘** ⇒ 预算场景**触发不到**。
+ *
+ * ⇒ 4 条最多 4×61440 = 245760 **< 262144** ⇒ ⇒ **必须 5 条**才够把合计顶过
+ * 单次消息总预算（PM 2026-10-21 裁：**每条 ≤ 64 KB、多条合计 > 262144**）。
+ */
+const BIG_BODY_BYTES = 61_440;
 
 // ---------------------------------------------------------------------------
 // 合成适配器（**合规实现的替身** + 可控的违规点）
@@ -575,7 +584,19 @@ test('P2-4：跨分支 / 跨账号 ⇒ 不成组 —— 键里漏算分支 / 仍
 });
 
 test('P2-5：超预算 ⇒ 预算提示 + 正文不截断 —— 没提示 / 截断了 都要报红', async () => {
-  const projected = BIG_BODY_BYTES * 2;
+  // **造数前提**（PM 2026-10-21 裁）：**每条 < 64 KB**（否则被第 14 码拒收、引用
+  // 落不了盘）⇒ ⇒ **每条 60 KB × 5 条**才够把合计顶过 262144（4×60 KB =
+  // 245760 < 262144 ⇒ 不够）⇒ 场景①＝**五条不同组**、场景②＝**第六条回到
+  // 第一条的捕获时刻**（⇒ 与第一条同组 ⇒ 预算提示与组提示同轮触发）。
+  const budgetRefs = [
+    'ds~aaaaaaaaaaaa~0001',
+    'ds~aaaaaaaaaaaa~0002',
+    'ds~aaaaaaaaaaaa~0003',
+    'ds~aaaaaaaaaaaa~0004',
+    'ds~aaaaaaaaaaaa~0005',
+    'ds~aaaaaaaaaaaa~0006',
+  ];
+  const projected = BIG_BODY_BYTES * 5;
   const over = projected - PER_MESSAGE_BUDGET_BYTES;
   const budgetNotice = {
     kind: 'budget-exceeded',
@@ -588,29 +609,30 @@ test('P2-5：超预算 ⇒ 预算提示 + 正文不截断 —— 没提示 / 截
       wouldExceed: true,
       exceedByBytes: over,
     },
-    trigger: 'ds~aaaaaaaaaaaa~0002',
+    trigger: budgetRefs[4],
     delivered: true,
   };
-  const projected3 = BIG_BODY_BYTES * 3;
-  const over3 = projected3 - PER_MESSAGE_BUDGET_BYTES;
+  const projected6 = BIG_BODY_BYTES * 6;
+  const over6 = projected6 - PER_MESSAGE_BUDGET_BYTES;
   const groupNotice = {
     kind: 'duplicate-groups',
     level: 'info',
-    text: `本条消息里有 2 条同组引用（1 组，重复正文共 ${BIG_BODY_BYTES} 字节）；正文合计 ${projected3} 字节，超出单次消息总预算 ${PER_MESSAGE_BUDGET_BYTES} 字节（超 ${over3} 字节）`,
+    text: `本条消息里有 2 条同组引用（1 组，重复正文共 ${BIG_BODY_BYTES} 字节）；正文合计 ${projected6} 字节，超出单次消息总预算 ${PER_MESSAGE_BUDGET_BYTES} 字节（超 ${over6} 字节）`,
     groups: [
       {
         groupKey: '0123456789abcdef',
-        members: [{ snapshotId: 'ds~aaaaaaaaaaaa~0001' }, { snapshotId: 'ds~aaaaaaaaaaaa~0003' }],
+        // **同组的是第 1 条与第 6 条**（第 6 条回到第 1 条的捕获时刻）。
+        members: [{ snapshotId: budgetRefs[0] }, { snapshotId: budgetRefs[5] }],
         redundantBytes: BIG_BODY_BYTES,
       },
     ],
     budget: {
       limitBytes: PER_MESSAGE_BUDGET_BYTES,
-      projectedBytes: projected3,
+      projectedBytes: projected6,
       wouldExceed: true,
-      exceedByBytes: over3,
+      exceedByBytes: over6,
     },
-    trigger: 'ds~aaaaaaaaaaaa~0003',
+    trigger: budgetRefs[5],
     delivered: true,
   };
   // **后发那条**（= 用户最终看到的那条，协议 §3.1 v0.4 裁断）：自包含全部事实。
@@ -618,25 +640,29 @@ test('P2-5：超预算 ⇒ 预算提示 + 正文不截断 —— 没提示 / 截
     ...budgetNotice,
     // **组事实也要在**（结构化数据层 ＋ 文案层）——用户最终看到的是这条。
     groups: groupNotice.groups,
-    // **`trigger` 必须跟同轮那条一样**（＝**第三次 pick**的 ref）：实现侧同一轮
+    // **`trigger` 必须跟同轮那条一样**（＝**第六次 pick**的 ref）：实现侧同一轮
     // 的两条提示**共用同一个** `triggerRef`（`client.js:1191` / `:1203`）⇒
-    // 合成夹具若从 `budgetNotice` 继承（那是**第二次 pick** 的 ref）就与真实形状
+    // 合成夹具若从 `budgetNotice` 继承（那是**第五次 pick** 的 ref）就与真实形状
     // 不符 ⇒ 事件式归属（信号①）会把它判成「别的轮次」。
-    trigger: 'ds~aaaaaaaaaaaa~0003',
-    text: `本条消息正文合计 ${projected3} 字节，超过单次消息总预算 ${PER_MESSAGE_BUDGET_BYTES} 字节（超 ${over3} 字节）；其中 2 条同组引用（1 组，重复正文共 ${BIG_BODY_BYTES} 字节）`,
+    trigger: budgetRefs[5],
+    text: `本条消息正文合计 ${projected6} 字节，超过单次消息总预算 ${PER_MESSAGE_BUDGET_BYTES} 字节（超 ${over6} 字节）；其中 2 条同组引用（1 组，重复正文共 ${BIG_BODY_BYTES} 字节）`,
   };
   const options = {
-    refs: ['ds~aaaaaaaaaaaa~0001', 'ds~aaaaaaaaaaaa~0002', 'ds~aaaaaaaaaaaa~0003'],
+    refs: budgetRefs,
     bodyBytes: BIG_BODY_BYTES,
-    // 第三次 pick 投**两条**（组提示 + 预算提示），后者在后。
-    noticeScript: [null, budgetNotice, [groupNotice, budgetNoticeWithGroups]],
+    // 第五次 pick 投**预算提示**（合计顶过预算的那一轮）；第六次 pick 投**两条**
+    // （组提示 + 预算提示），后者在后。
+    noticeScript: [null, null, null, null, budgetNotice, [groupNotice, budgetNoticeWithGroups]],
   };
   const ok = await checkP2_5_budgetNoticeNoTruncation(makeSyntheticAdapter(options));
   assert.equal(ok.status, PASS, `合规实现不该红：${ok.detail}`);
 
   // 违规①：超预算**不出提示**。
   const noNotice = await checkP2_5_budgetNoticeNoTruncation(
-    makeSyntheticAdapter({ ...options, noticeScript: [null, null, [groupNotice, budgetNoticeWithGroups]] }),
+    makeSyntheticAdapter({
+      ...options,
+      noticeScript: [null, null, null, null, null, [groupNotice, budgetNoticeWithGroups]],
+    }),
   );
   assert.equal(noNotice.status, FAIL);
   assert.match(noNotice.detail, /未等到预算提示/);
@@ -656,6 +682,9 @@ test('P2-5：超预算 ⇒ 预算提示 + 正文不截断 —— 没提示 / 截
       ...options,
       noticeScript: [
         null,
+        null,
+        null,
+        null,
         budgetNotice,
         [
           budgetNoticeWithGroups,
@@ -669,7 +698,10 @@ test('P2-5：超预算 ⇒ 预算提示 + 正文不截断 —— 没提示 / 截
 
   // 违规④：**只发一条**（组提示把预算提示 early return 吃掉了）——协议 §3.1 v0.4 裁断明令禁止。
   const onlyOne = await checkP2_5_budgetNoticeNoTruncation(
-    makeSyntheticAdapter({ ...options, noticeScript: [null, budgetNotice, [groupNotice]] }),
+    makeSyntheticAdapter({
+      ...options,
+      noticeScript: [null, null, null, null, budgetNotice, [groupNotice]],
+    }),
   );
   assert.equal(onlyOne.status, FAIL);
   assert.match(onlyOne.detail, /未等到预算提示/);
@@ -688,6 +720,9 @@ test('P2-5：超预算 ⇒ 预算提示 + 正文不截断 —— 没提示 / 截
       ...options,
       noticeScript: [
         null,
+        null,
+        null,
+        null,
         budgetNotice,
         [groupNotice, { ...budgetNoticeWithGroups, groups: [], text: budgetNoticeWithGroups.text }],
       ],
@@ -702,6 +737,9 @@ test('P2-5：超预算 ⇒ 预算提示 + 正文不截断 —— 没提示 / 截
     makeSyntheticAdapter({
       ...options,
       noticeScript: [
+        null,
+        null,
+        null,
         null,
         {
           ...budgetNotice,
@@ -721,6 +759,9 @@ test('P2-5：超预算 ⇒ 预算提示 + 正文不截断 —— 没提示 / 截
     makeSyntheticAdapter({
       ...options,
       noticeScript: [
+        null,
+        null,
+        null,
         null,
         {
           ...budgetNotice,
@@ -1426,7 +1467,9 @@ test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红�
     trigger: 'ds~aaaaaaaaaaaa~0002',
     delivered: true,
   };
-  const projected = BIG_BODY_BYTES * 2;
+  // **P2-5 的预算事实按「五条」算**（每条 < 64 KB ⇒ 5 条才够触发超预算 ⇒
+  // 场景①的合计＝5 条、预算提示落在**第五次 pick**那一轮）。
+  const projected = BIG_BODY_BYTES * 5;
   const over = projected - PER_MESSAGE_BUDGET_BYTES;
   const budgetNotice = {
     kind: 'budget-exceeded',
@@ -1442,8 +1485,20 @@ test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红�
     trigger: 'ds~aaaaaaaaaaaa~0002',
     delivered: true,
   };
-  const threeRefs = ['ds~aaaaaaaaaaaa~0001', 'ds~aaaaaaaaaaaa~0002', 'ds~aaaaaaaaaaaa~0003'];
-  const groupNotice3 = { ...groupNotice, trigger: threeRefs[2] };
+  // **六条各自独立的 ref** —— P2-5 那几条要按轮次归属（每条 < 64 KB ⇒ **5 条**
+  // 才够触发超预算、**第六条**回组）⇒ 每轮得能用 `trigger` 认出自己的那条。
+  const sixRefs = [
+    'ds~aaaaaaaaaaaa~0001',
+    'ds~aaaaaaaaaaaa~0002',
+    'ds~aaaaaaaaaaaa~0003',
+    'ds~aaaaaaaaaaaa~0004',
+    'ds~aaaaaaaaaaaa~0005',
+    'ds~aaaaaaaaaaaa~0006',
+  ];
+  /** P2-5 的预算提示：**第五次 pick**那一轮（合计顶过 262144 才成立）。 */
+  const budgetNotice5 = { ...budgetNotice, trigger: sixRefs[4] };
+  /** P2-5 的组提示：**第六次 pick**那一轮（回到第一条的捕获时刻 ⇒ 同组）。 */
+  const groupNotice6 = { ...groupNotice, trigger: sixRefs[5] };
 
   /**
    * 逐条断言「超时红字口径」——**三种形状**（PM 2026-10-21 02:8x ⑤）。
@@ -1522,24 +1577,24 @@ test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红�
   // ① P2-2：等「重复组」提示（第一处）。
   expectTimeoutWording(
     await checkP2_2_duplicateNoticeVisible(
-      makeSyntheticAdapter({ refs: threeRefs, notices: [], waitBudgetMs: 50 }),
+      makeSyntheticAdapter({ refs: sixRefs, notices: [], waitBudgetMs: 50 }),
     ),
     'P2-2 第一处',
   );
   // ② P2-2：再动一次引用那一轮（等「重复组」提示）。
   expectTimeoutWording(
     await checkP2_2_duplicateNoticeVisible(
-      makeSyntheticAdapter({ refs: threeRefs, noticeScript: [null, groupNotice, null], waitBudgetMs: 50 }),
+      makeSyntheticAdapter({ refs: sixRefs, noticeScript: [null, groupNotice, null], waitBudgetMs: 50 }),
     ),
     'P2-2 再触发',
   );
-  // ③ P2-5：纯预算场景（等预算提示）。
+  // ③ P2-5：纯预算场景（等预算提示）——**一条提示都没出** ⇒ 无事件证据。
   expectTimeoutWording(
     await checkP2_5_budgetNoticeNoTruncation(
       makeSyntheticAdapter({
-        refs: threeRefs,
+        refs: sixRefs,
         bodyBytes: BIG_BODY_BYTES,
-        noticeScript: [null, null, null],
+        noticeScript: [null, null, null, null, null, null],
         waitBudgetMs: 50,
       }),
     ),
@@ -1551,9 +1606,11 @@ test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红�
   expectTimeoutWording(
     await checkP2_5_budgetNoticeNoTruncation(
       makeSyntheticAdapter({
-        refs: threeRefs,
+        refs: sixRefs,
         bodyBytes: BIG_BODY_BYTES,
-        noticeScript: [null, budgetNotice, [{ ...budgetNotice, trigger: threeRefs[2] }]],
+        // 第五次 pick：预算提示（场景①靠它过）；第六次 pick：只有预算提示、**没有**
+        // 组提示 ⇒ 等「重复组」提示超时，且**那一轮确实出过预算提示**。
+        noticeScript: [null, null, null, null, budgetNotice5, [{ ...budgetNotice5, trigger: sixRefs[5] }]],
         waitBudgetMs: 50,
       }),
     ),
@@ -1568,9 +1625,11 @@ test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红�
   expectTimeoutWording(
     await checkP2_5_budgetNoticeNoTruncation(
       makeSyntheticAdapter({
-        refs: threeRefs,
+        refs: sixRefs,
         bodyBytes: BIG_BODY_BYTES,
-        noticeScript: [null, budgetNotice, [groupNotice3]],
+        // 第六次 pick：只出组提示、**没有**预算提示 ⇒ 等预算提示超时（那一轮出过
+        // 组提示 ⇒ 有事件证据）。
+        noticeScript: [null, null, null, null, budgetNotice5, [groupNotice6]],
         waitBudgetMs: 50,
       }),
     ),
@@ -1588,9 +1647,9 @@ test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红�
   expectTimeoutWording(
     await checkP2_5_budgetNoticeNoTruncation(
       makeSyntheticAdapter({
-        refs: threeRefs,
+        refs: sixRefs,
         bodyBytes: BIG_BODY_BYTES,
-        noticeScript: [null, budgetNotice, [{ ...groupNotice3, trigger: null }]],
+        noticeScript: [null, null, null, null, budgetNotice5, [{ ...groupNotice6, trigger: null }]],
         waitBudgetMs: 50,
       }),
     ),
@@ -1605,7 +1664,7 @@ test('超时口径（扩派单③①＋02:8x ⑤）：7 处等待超时 ⇒ 红�
   // ⑦ P2-J：等「重复组」提示。
   expectTimeoutWording(
     await checkP2_J_noticeStaysTruthfulAfterSend(
-      makeSyntheticAdapter({ refs: threeRefs, noticeScript: [null, null, null], waitBudgetMs: 50 }),
+      makeSyntheticAdapter({ refs: sixRefs, noticeScript: [null, null, null], waitBudgetMs: 50 }),
     ),
     'P2-J',
   );

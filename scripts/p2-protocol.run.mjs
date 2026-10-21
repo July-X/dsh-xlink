@@ -63,9 +63,14 @@ const CRITERIA = [
   { id: 'P2-2', run: checkP2_2_duplicateNoticeVisible, options: {} },
   { id: 'P2-3', run: checkP2_3_capturedAtNotGrouped, options: {} },
   { id: 'P2-4', run: checkP2_4_scopeBranchNotGrouped, options: {} },
-  // **大正文**：两条各 150000 字节 ⇒ 合计 300000 > 262144（预算上限）⇒ 触发超限。
-  // 单条必须**小于** 262144（否则 capture 自己就 `body_too_large` 了 ⇒ 场景不成立）。
-  { id: 'P2-5', run: checkP2_5_budgetNoticeNoTruncation, options: { bodyBytes: 150_000 } },
+  // **大正文**：**每条 60 KB**（61440 字节）⇒ **5 条合计 307200 > 262144**
+  // （预算上限）⇒ 触发超限。
+  // ⚠️ **每条必须 < 单条正文预算 64 KB**（65536 字节）——超了就该被**第 14 码**
+  // `body_budget_exceeded` **在捕获/落盘阶段拒收**（协议 P1 §3）⇒ **引用根本落不了盘**
+  // ⇒ 预算场景**触发不到**。
+  // ⇒ 4 条最多 4×61440 = 245760 < 262144 ⇒ ⇒ **必须 5 条**才够（PM 2026-10-21 裁：
+  // **每条 ≤ 64 KB、多条合计 > 262144**）。
+  { id: 'P2-5', run: checkP2_5_budgetNoticeNoTruncation, options: { bodyBytes: 61_440 } },
   { id: 'P2-6', run: checkP2_6_failureDoesNotBlockSend, options: {} },
   // **表外的一条**（§2.2 / §2.3 / §6.5 的失败码闭集）：§5 的表只有六行，
   // 但协议正文写了失败码必须在 13 码闭集内 ⇒ 落一条判据。

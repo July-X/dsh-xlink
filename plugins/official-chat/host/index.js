@@ -113,6 +113,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
 import {
+  CONSTANTS,
   SCHEMA_VERSION,
   bodyBytes,
   contentDigest,
@@ -169,8 +170,23 @@ const SNAPSHOT_ID_RE = /^[a-z0-9]{1,4}~[a-z0-9]{1,12}~\d{4}$/;
 /** provider 目录名（`<root>/snapshots/<provider>/`）。同样只认安全字符。 */
 const PROVIDER_RE = /^[a-z0-9][a-z0-9-]{0,15}$/;
 
-/** 单条正文上限（协议 §4：最大正文字节 256 KB，超过 → `body_too_large`）。 */
+/**
+ * **单条引用正文上限**（协议 §4：最大正文字节 256 KB，超过 → `body_too_large`）。
+ *
+ * **判定对象 / 时机 / 处置**（协议 P1 §3，PM 2026-10-21 裁）：
+ *  · **判定对象**：**单条引用正文**（**不是「整条消息」**）；
+ *  · **判定时机**：**捕获这条引用时**（**不是「发送时」**）；
+ *  · **处置**：**拒那一条**（别的引用不受影响）。
+ */
 export const MAX_BODY_BYTES = 256 * 1024;
+
+/**
+ * **单条正文预算**（协议 §4：单条正文预算 64 KB，超过 → `body_budget_exceeded`）。
+ *
+ * ⚠️ **从 `CONSTANTS` 取，不另写死一个 65536** —— 协议写死的值只有**一处**来源
+ * （`host/protocol.js` 的 `CONSTANTS.perBodyBudgetBytes`）⇒ 写第二份就会漂移。
+ */
+export const PER_BODY_BUDGET_BYTES = CONSTANTS.perBodyBudgetBytes;
 
 /**
  * provider 稳定 id。
@@ -363,8 +379,32 @@ export function createSnapshotStore(env = process.env) {
     const messages = normalizeMessages(snapshot?.messages);
     const body = joinMessages(messages);
     const bytes = bodyBytes(messages);
+    // **单条引用正文超 256 KB ⇒ `body_too_large`**（协议 P1 §3）：
+    //  · **判定对象**：**单条引用正文**（**不是「整条消息」**）——这里的 `bytes`
+    //    就是**这一条引用**要进模型输入的正文量；
+    //  · **判定时机**：**捕获这条引用时**（**不是「发送时」**）——判不过就
+    //    **不落盘**；
+    //  · **处置**：**拒那一条**（别的引用不受影响）。
+    //
+    // ⚠️ **判序裁定（P1 §3）**：与协议层 `resolveCaptureCase` 同构 ⇒ **先 256 KB
+    // （老码）、后 64 KB（新码）**（两个码判同一对象、同一时机、都拒那一条，
+    // 只差阈值 ⇒ 反了就出死码）。
     if (bytes > MAX_BODY_BYTES) {
       throw snapshotError('body_too_large', `正文超限：${bytes} 字节`);
+    }
+    if (bytes > PER_BODY_BUDGET_BYTES) {
+      // **G3-2b：拒收这一条引用** —— 抛出即**不落盘** ⇒ **别的引用不受影响**
+      // （各引用各自落盘、互不牵连）⇒ ⇒ 用户看到的是「这一条没进来」。
+      //
+      // ⚠️ **`detail` 必须带三个数**（正文字节 / 预算字节 / 超出量）——客户端**拿不到
+      // host 的内部变量** ⇒ 界面文案要用的三个数**只能由这里带出去**
+      // （PM 2026-10-21 裁）⇒ 形态与协议层 `resolveCaptureCase` **逐字同构**。
+      throw snapshotError(
+        'body_budget_exceeded',
+        `单条正文超单条正文预算：正文 ${bytes} 字节，` +
+          `超出单条正文预算 ${PER_BODY_BUDGET_BYTES} 字节` +
+          `（超 ${bytes - PER_BODY_BUDGET_BYTES} 字节）`,
+      );
     }
     const digest = contentDigest(body);
     const claimed = String(snapshot?.contentDigest ?? '');
