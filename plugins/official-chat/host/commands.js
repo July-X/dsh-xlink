@@ -801,7 +801,10 @@ export function createCommands({
     const groups = [];
     for (const [groupKey, members] of byKey) {
       // **只报「重复组」（成员数 ≥ 2）**：单成员的组不是重复，报告它没有意义
-      // （协议 §2.2 的 `redundantBytes` 对单成员恒为 0）。**口径待 PM 确认**。
+      // （协议 §2.2 的 `redundantBytes` 对单成员恒为 0）。
+      // **口径已定**（P2 协议 §2.2，PM 2026-10-20 23:5x 裁定）：`groups`
+      // **只返回成员数 ≥ 2 的组** ⇒ 单成员组**不是重复组、不出现**
+      // （否则 client 要自己过滤，「有没有重复」这个事实会被稀释）。
       if (members.length < 2) continue;
       groups.push({
         groupKey,

@@ -34,6 +34,23 @@ const ACCOUNT_SCOPE = 'desktop-dev/default/site-A';
 const HOST_SOURCE = fileURLToPath(new URL('../host/commands.js', import.meta.url));
 
 /**
+ * 取 `createCatalogCache` 里 `write()` 的源码正文。
+ *
+ * **为什么要圈出这一段**：Windows 上 `mode` 是 no-op（Node 语义）⇒ 盘上权限
+ * **断不了** ⇒ 只能断**源码形态**；而断**全文件**会把别处的同名字符串也算
+ * 进去 ⇒ 圈出 `write()` 的正文 ⇒ 断言的是「**这一处**确实带了收口」。
+ *
+ * @returns {string} `write()` 的源码正文。
+ */
+function writeFunctionSource() {
+  const source = readFileSync(HOST_SOURCE, 'utf8');
+  const start = source.indexOf('function write(provider, accountScope, query, page) {');
+  assert.notEqual(start, -1, '实现里应当有 createCatalogCache 的 write()');
+  const end = source.indexOf('\n  }', start);
+  return source.slice(start, end === -1 ? start + 1200 : end);
+}
+
+/**
  * 造一套内存桩：存储 ＋ 目录缓存 ＋ 固定夹具取数源。
  *
  * 与 `host-commands.test.mjs` 同款，但**多留两个观测口**：
@@ -93,10 +110,11 @@ test('S-14：目录缓存的目录 0700、文件 0600（Unix 侧断盘上真实�
   if (process.platform === 'win32') {
     // **Windows 上 `mode` 是 no-op**（Node 语义）⇒ 盘上权限位**不可断言**
     // ⇒ 这里只断「参数在位」（协议 §S-14 裁定 2：本批只做 Unix 侧的可机检
-    // 断言，Windows 侧只做如实记录）。
-    const source = readFileSync(HOST_SOURCE, 'utf8');
-    assert.match(source, /mkdirSync\(rootDir, \{ recursive: true, mode: 0o700 \}\)/, '缓存目录必须带 mode 0o700');
-    assert.match(source, /\{ encoding: 'utf8', mode: 0o600 \}/, '缓存文件必须带 mode 0o600');
+    // 断言，Windows 侧只做如实记录）。**断在 `write()` 的正文里** ⇒ 断言的是
+    // 「**这一处**确实带了 mode」，不是全文件里有同名字符串就算。
+    const body = writeFunctionSource();
+    assert.match(body, /mkdirSync\(rootDir, \{ recursive: true, mode: 0o700 \}\)/, '缓存目录必须带 mode 0o700');
+    assert.match(body, /\{ encoding: 'utf8', mode: 0o600 \}/, '缓存文件必须带 mode 0o600');
   } else {
     assert.equal(statSync(rootDir).mode & 0o777, 0o700, '缓存目录必须是 0700');
     assert.equal(statSync(file).mode & 0o777, 0o600, '缓存文件必须是 0600');
@@ -113,7 +131,17 @@ test('S-14：存量缓存文件也被收进同一口径（mode 只在创建时�
   // **造一个「宽权限」的存量**（模拟本条落地前写下的文件）⇒ 再写一次。
   chmodSync(file, 0o666);
   cache.write('official-chat', ACCOUNT_SCOPE, '关键词', page);
-  if (process.platform !== 'win32') {
+  if (process.platform === 'win32') {
+    // **Windows 上 `mode`/`chmod` 的权限位是 no-op**（Node 语义）⇒ 盘上权限
+    // **断不了** ⇒ 断**源码形态**：**这一处**在写完之后确实显式收了一次
+    // （`mode` 只在创建时生效 ⇒ 存量收口那两行必须在位）。
+    //
+    // **不许留空断言**：Windows 上断言体为空 ＝ **空跑通过** ＝ 假绿 ⇒ 这里
+    // 必须有一件真能失败的事。
+    const body = writeFunctionSource();
+    assert.match(body, /chmodQuiet\(rootDir, 0o700\)/, '存量目录的收口必须在位');
+    assert.match(body, /chmodQuiet\(path, 0o600\)/, '存量文件的收口必须在位');
+  } else {
     assert.equal(statSync(file).mode & 0o777, 0o600, '存量文件也要被收成 0600');
     assert.equal(statSync(rootDir).mode & 0o777, 0o700, '存量目录也要被收成 0700');
   }
@@ -161,6 +189,31 @@ test('S-15：快照的 accountScope 字段写服务端推导值（请求参数�
   assert.equal(other.code, 'account_changed');
   assert.equal(saves.length, 1, '只有被接受的那次落了盘');
   assert.equal(saves[0].accountScope, ACCOUNT_SCOPE);
+});
+
+test('S-15（协议 v0.2 可机检形态②）：显式传服务端同值 ⇒ 落盘字段与「省略」时相同', async () => {
+  const { commands, saves } = makeHarness();
+  // **第一次：省略 `accountScope`** ⇒ 放行（客户端本来就不传这个字段）。
+  const first = await commands.catalog({ query: '' });
+  const omitted = await commands.capture({
+    sessionId: 'sess-alpha-001',
+    snapshotId: first.allocations['sess-alpha-001'],
+  });
+  assert.equal(omitted.ok, true);
+  // **第二次：显式传服务端同值** ⇒ 同样放行（一致性校验不是拒绝一切）。
+  // （再调一次 `catalog` 拿**新** id：每次 catalog 都新分配，撞不上第一次。）
+  const second = await commands.catalog({ query: '' });
+  const same = await commands.capture({
+    sessionId: 'sess-alpha-001',
+    snapshotId: second.allocations['sess-alpha-001'],
+    accountScope: ACCOUNT_SCOPE,
+  });
+  assert.equal(same.ok, true);
+  // **两次落盘字段相同** ⇒ 落盘字段与请求参数的**形态**无关
+  // （省略 vs 显式同值）—— 这就是 v0.2 的可机检形态②。
+  assert.equal(omitted.snapshot.accountScope, same.snapshot.accountScope);
+  assert.equal(same.snapshot.accountScope, ACCOUNT_SCOPE);
+  assert.equal(saves.length, 2);
 });
 
 test('S-15：目录缓存键不受请求参数影响（不同请求参数 ⇒ 不落到不同缓存文件）', async () => {
