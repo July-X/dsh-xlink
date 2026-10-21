@@ -2948,6 +2948,17 @@ biz_data 非上述两键之外的键 = 0 个 []
 
 **③ 未动**：协议（`docs/**`）｜`scripts/check-official-chat-p4-*.mjs`（含 tester 那份）｜UX 的客户端两个文件（**不是我的** ⇒ 不碰、不带进提交）。
 
+### 2026-10-21 20:2x（补）· **✅ Rust 侧断言已实测通过（按 PM 给的配方，本机跑通）** ｜ ⚠️ 如实登记：「本机 `cargo test --lib` 启动即失败」＝ **环境缺口、非代码缺陷**；仓库级修法本轮未做、待 izzy 拍板
+
+**① ✅ 根因与配方（PM 一手定位，我已复现并跑通）** —— lib 的 **test harness 没带 embedded manifest** ⇒ **comctl32 v6 没被激活** ⇒ 加载期就 `0xC0000139 STATUS_ENTRYPOINT_NOT_FOUND`（**进程启动阶段、任何测试代码之前**）⇒ ⇒ **不是代码缺陷、也不是断言问题**。
+· **配方（仓库零改动）**：① `cargo test --locked --lib --no-run` **先重建**（⚠️ 旧二进制早于本单改动 ⇒ **必须先重建**，否则测的不是现在的代码）② 把二进制复制出来 ③ `mt.exe -nologo -manifest <dsh-test-manifest.xml> "-outputresource:<exe>;1"` ④ 直接跑那个补过 manifest 的副本。
+· **路径**：`mt.exe`＝`C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\mt.exe`（另有 `10.0.22621.0` 同名同用法）｜manifest＝`%TEMP%\dsh-test-manifest.xml`｜现成脚本＝`C:\Users\zxx\.minimax\tmp\rust-manifest-fix.py`（**已改成自动取最新构建的那个 exe** —— ⚠️ cargo 的 metadata hash **不含源码内容** ⇒ 文件名会一样，**要按 mtime 挑**，不能只看文件名）。
+
+**② ✅ 本轮实测读数（补 manifest 之后跑的）** —— 重建 **27.64s**（`dsh_xlink-122ce4debb5e60a6.exe`，mtime 20:16:32，**含本单最新 Rust 改动**）｜`mt.exe` 补 manifest **exit=0**｜`--list` **exit=0、1157 个用例**｜**`official_chat::protocol` 15 passed / 0 failed / exit=0**（含本单那两条逐字 `ok`）｜**逐字点名**：`single_body_over_budget_is_rejected_with_the_fourteenth_code` **1 passed / 0 failed**、`the_two_body_codes_are_judged_in_threshold_order` **1 passed / 0 failed**（⚠️ 点名要用**完整路径** ＋ `--exact`；短名会打出「0 passed」—— 那是**过滤没命中**，不是失败）｜**全量 lib 1146 passed / 0 failed / 11 ignored / exit=0**（62.95s）⇒ ⇒ **本单那两条 Rust 断言已实测通过**。
+· ⇒ `3ce36c8` 的 commit message 里「⚠️ **Rust 的 lib 目标用例本轮没跑起来**…**断言未被实测**」那句话是**当时的真实状态**（本单收尾时确实跑不起来）⇒ ⇒ **不是写错、也不回改**（回改会让台账引用的 hash 对不上）⇒ ⇒ **以本节为准**。
+
+**③ 📌 缺口登记（PM 口径）** —— ①「本机 `cargo test --lib` 启动即失败（test harness 缺 comctl32 v6 manifest ⇒ `0xC0000139`）」＝ **环境缺口，非代码缺陷**；② 已给**可复现配方**（mt.exe 补 manifest，见 ①）；③ **仓库级修法本轮未做**（`build.rs` / `Cargo.toml` 属 **release 构建面、release 验收归 izzy**）⇒ **待 izzy 拍板**；④ **本轮不许改仓库构建配置** ⇒ 「mt.exe 补 manifest」就是本轮 Windows 本地的**既定跑法** ⇒ ⇒ **「编译通过」≠「断言通过」**，两者在协议口径里分开记。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
