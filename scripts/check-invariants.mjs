@@ -246,6 +246,125 @@ note(`前端与注入脚本调用 ${invoked.size} 个命令，全部已注册且
   }
 }
 
+// --- 协议版本声明一致 ---------------------------------------------------------
+//
+// 官方对话四份协议各自把「当前是第几版」写在**几个地方**：文首标题、文首状态行
+// （P1／P2 走 frontmatter 的 `status`）、以及变更记录表。升版时漏改其中任何一处，
+// 就出现「**正文已经是新版本、声明还停在旧版本**」—— 读者对不上这份稿子到底是哪一版。
+//
+// **本项目已发生四次同型**：① v0.8 文首标题漏改（正文 v0.8、标题还写 v0.7）
+// ② v0.9 文首标题漏改 ③ v0.11 那一轮 P4 ＋ P3 v0.12 的状态行未跟上版本表
+// ④ v0.13 那一轮状态行仍写 v0.11（表里已有 v0.12／v0.13）⇒ ⇒ 四次都是**人漏了**
+// ⇒ ⇒ 这里把它变成**机器可拦**的：各处声明的版本号必须相等。
+//
+// 比对口径（三处各按各的形态取）：
+//   · **文首标题** ＝ 标题行里的版本号（标题**不带**版本号时不参与比对；一行出现
+//     多个版本号 ⇒ 形态不明、也不参与，避免误报）；
+//   · **文首状态行** ＝ 状态行里**紧跟在「＝」「（」之前**的那个版本号（P3／P4 是
+//     文首 `> **状态**：…`；P1／P2 是 frontmatter 的 `status:` 行 —— 注意它后面
+//     跟着版本线枚举，枚举里的旧版本号**不是**当前版本，所以只认紧跟分隔符的那个）；
+//   · **变更记录表** ＝ 表里**最高**的版本号（那一行才是最新的一版；没有这张表的
+//     稿子不参与该项比对）。
+
+/** 取状态行里「紧跟分隔符」的版本号（`v0.14` 那种）；取不到返回 null。 */
+const declaredProtocolVersion = (text) => {
+  const m = String(text ?? '').match(/\bv(\d+\.\d+)\s*(?:＝|=|\(|（)/);
+  return m ? `v${m[1]}` : null;
+};
+
+/** 取标题行里的版本号；没有、或一行里有多个（形态不明）时返回 null。 */
+const titleProtocolVersion = (line) => {
+  const all = [...String(line ?? '').matchAll(/\bv(\d+\.\d+)\b/g)].map((m) => `v${m[1]}`);
+  return all.length === 1 ? all[0] : null;
+};
+
+/** 取变更记录表里**最高**的版本号；表里没有版本行时返回 null。 */
+const tableProtocolVersion = (lines) => {
+  const all = lines
+    .filter((l) => /^\|\s*v\d+\.\d+\s*\|/.test(l))
+    .flatMap((l) => [...l.matchAll(/\bv(\d+\.\d+)\b/g)].map((m) => `v${m[1]}`));
+  if (!all.length) return null;
+  return all.reduce((a, b) => {
+    const [am, an] = a.slice(1).split('.').map(Number);
+    const [bm, bn] = b.slice(1).split('.').map(Number);
+    return am > bm || (am === bm && an >= bn) ? a : b;
+  });
+};
+
+{
+  const PROTOCOL_DOCS = [
+    ['P1', 'official-chat-p1-protocol.md'],
+    ['P2', 'official-chat-p2-protocol.md'],
+    ['P3', 'official-chat-p3-protocol.md'],
+    ['P4', 'official-chat-p4-protocol.md'],
+  ];
+  for (const [label, file] of PROTOCOL_DOCS) {
+    const rel = `docs/features/official-chat/${file}`;
+    if (!existsSync(join(root, rel))) {
+      fail('protocol-versions', `找不到协议文件：${rel}`);
+      continue;
+    }
+    const lines = read(rel).split(/\r?\n/);
+    // ⚠️ **标题不一定是第 0 行** —— P1／P2 的 frontmatter 在标题**前面** ⇒ ⇒ 按
+    // 「第一行 `# ` 开头」找标题，别写死 `lines[0]`（否则 P1／P2 的标题永远取不到、
+    // 那两份稿子的标题就永远不参与比对）。
+    const titleLine = lines.find((l) => l.startsWith('# ')) ?? '';
+    const statusLine =
+      lines.find((l) => l.startsWith('> **状态**')) ??
+      lines.find((l) => l.startsWith('status:')) ??
+      '';
+    const declared = [
+      ['文首标题', titleProtocolVersion(titleLine)],
+      ['文首状态行', declaredProtocolVersion(statusLine)],
+      ['变更记录表', tableProtocolVersion(lines)],
+    ].filter(([, v]) => v !== null);
+
+    if (declared.length < 2) {
+      note(`${label} 协议只找到 ${declared.length} 处版本声明 ⇒ 无从比对（跳过）`);
+      continue;
+    }
+    const distinct = new Set(declared.map(([, v]) => v));
+    if (distinct.size === 1) {
+      note(
+        `${label} 协议版本声明一致：${declared.map(([w]) => w).join(' ／ ')} ＝ ${[...distinct][0]}`,
+      );
+    } else {
+      fail(
+        'protocol-versions',
+        `${label} 协议版本声明不一致：${declared
+          .map(([w, v]) => `${w}=${v}`)
+          .join('，')}（升版时这几处必须同时改 —— 本项目已发生过四次同型）`,
+      );
+    }
+  }
+}
+
+// **提取口径的自证**（合成夹具）：只认「紧跟分隔符」的那个版本号 ⇒ 后面那串版本线
+// 枚举里的旧版本号**不许**被当成当前版本（认错了等于没检查）。
+{
+  const cases = [
+    {
+      text: '> **状态**：**v0.14 ＝ PM 订正稿**（PM 2026-10-21 19:1x）—— v0.1 把已实测的事实写死成条款；v0.13 ＝ PM 订正笔',
+      want: 'v0.14',
+    },
+    {
+      text: '> **状态**：冻结稿 v0.12（PM 定；v0.1 → v0.2 = 第一批实现已落地；v0.11 → v0.12 = 码闭集 13 → 14 同步）',
+      want: 'v0.12',
+    },
+    {
+      text: 'status: "P2 协议冻结稿 v0.7（2026-10-21 17:5x，PM 定；v0.6 → v0.7 = 码闭集 13 → 14 同步）"',
+      want: 'v0.7',
+    },
+  ];
+  for (const { text, want } of cases) {
+    const got = declaredProtocolVersion(text);
+    if (got !== want) {
+      fail('protocol-versions', `状态行版本提取口径失灵：期望 ${want}、实得 ${got}`);
+    }
+  }
+  note(`协议版本声明提取口径自证：${cases.length} 个合成样本全部取对`);
+}
+
 // --- 5. UI 模板绑定 ----------------------------------------------------------
 //
 // 模板里引用了既不在 `<script setup>` 绑定、也没有全局注册的标识符时，生产构建
