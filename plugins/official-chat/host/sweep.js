@@ -116,6 +116,46 @@ function removeInTwoSteps(path) {
 }
 
 /**
+ * 一个目录里所有文件的**字节数**（**递归**；符号链接不跟）。
+ *
+ * **为什么递归**：快照按 **provider 目录层**组织（`snapshots/<providerId>/`），
+ * 而协议 §S-16 裁定 1 的核算范围写的是 `snapshots/<providerId>/**`
+ * ⇒ 一层平铺够用，但**递归**更不容易在目录形状变化时算漏
+ * （而"算漏"会让总量读数偏小 ⇒ 该淘汰时不淘汰 ⇒ 强制点失效）。
+ *
+ * **为什么跳过符号链接**：符号链接可能指向目录环或实例根之外 ⇒ 跟进去会
+ * 死循环、或把**别的**东西算进本实例的总量。`Dirent` 的 `isDirectory()`
+ * 对符号链接恒为 false（它按 lstat 判定）⇒ 天然不跟。
+ *
+ * @param {string} dir - 目录。
+ * @returns {number} 字节数；读不到就是 0。
+ */
+function dirBytes(dir) {
+  let total = 0;
+  let entries = [];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    // **目录还没有** ⇒ 那一片是 0（不是错误）。
+    return 0;
+  }
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      total += dirBytes(path);
+      continue;
+    }
+    try {
+      const st = statSync(path);
+      if (st.isFile()) total += st.size;
+    } catch {
+      // **取不到就当它不存在**（可能刚被别的流程删了）。
+    }
+  }
+  return total;
+}
+
+/**
  * 取文件的时间戳（**优先用文件内的业务时间**，mtime 只作兜底）。
  *
  * @param {string} path - 文件路径。
@@ -447,6 +487,166 @@ export function createSweeper({
   };
 
   /**
+   * **核算「缓存总量」**（协议 §S-16 裁定 1）。
+   *
+   * - **计入**：`snapshots/<providerId>/**`（**逐个 provider 目录**求和 ——
+   *   provider 是**目录层**）＋ `catalog-cache/**`（**平铺**：文件名 =
+   *   `<provider>__<账号范围>__<查询词>.json`，**没有 provider 子目录**）。
+   * - **不计入**：`seq-claims/`、`refs/`、`logs/`、`sweeps/`。
+   *
+   * **为什么按「实例根下所有 provider 目录」求和**：上限是
+   * **512 MB / 实例**（P1 §4）⇒ 算的是**这个实例**的总量，不是某个 provider 的。
+   * 少算别的 provider ⇒ 该淘汰时没淘汰 ⇒ 强制点失效。
+   *
+   * @returns {{totalBytes: number, snapshotsBytes: number, cacheBytes: number}}
+   */
+  const measureCacheTotalBytes = () => {
+    const result = { totalBytes: 0, snapshotsBytes: 0, cacheBytes: 0 };
+    // **快照：逐个 provider 目录**求和。
+    const snapshotsRoot = join(root, 'snapshots');
+    let providers = [];
+    try {
+      providers = readdirSync(snapshotsRoot, { withFileTypes: true });
+    } catch {
+      providers = [];
+    }
+    for (const entry of providers) {
+      if (!entry.isDirectory()) continue;
+      result.snapshotsBytes += dirBytes(join(snapshotsRoot, entry.name));
+    }
+    // **目录缓存：平铺**（一个目录，没有 provider 子目录）。
+    result.cacheBytes = dirBytes(join(root, 'catalog-cache'));
+    result.totalBytes = result.snapshotsBytes + result.cacheBytes;
+    return result;
+  };
+
+  /**
+   * **额外淘汰**（协议 §S-16 裁定 3①）：删掉 **TTL 内**的目录缓存。
+   *
+   * **这是本单唯一新增的删除动作**（常规清理只删 TTL 已过的缓存）。
+   *
+   * **为什么删它无损**：目录缓存**可重建**（5 分钟后自动重新生成）且
+   * **不含正文**（P1 §5「目录页不含正文」）⇒ 删了只是多一次查询。
+   *
+   * **为什么再判一次 TTL**：常规清理已经删过 TTL 已过的 ⇒ 这里剩下的
+   * 正常都是 TTL 内的；但**删不掉的**（权限/占用）会留在原地 ⇒ 再判一次
+   * TTL ⇒ **只删「TTL 内」的那些**，不去动「本该由常规清理负责」的残留。
+   *
+   * **删除步法**：沿用**本文件既有的两步法**（先 `rename` 墓碑、再 `unlink`）——
+   * 与常规清理删缓存用的是同一套（`sweepCache` 走 `removeInTwoSteps`）
+   * ⇒ 一致，且不会出现「删到一半留下一个看起来有效的缓存」。
+   *
+   * @returns {{scanned: number, removed: number}}
+   */
+  const evictFreshCatalogCache = () => {
+    const result = { scanned: 0, removed: 0 };
+    const dir = join(root, 'catalog-cache');
+    let names = [];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return result;
+    }
+    const cutoff = now() - cacheTtlMs;
+    for (const name of names) {
+      const path = join(dir, name);
+      let st;
+      try {
+        st = statSync(path);
+      } catch {
+        continue;
+      }
+      if (!st.isFile()) continue;
+      result.scanned += 1;
+      // **TTL 已过的不是本步该删的**（那是常规清理的事）。
+      if (st.mtimeMs < cutoff) continue;
+      const rel = labelOf(path);
+      if (removeInTwoSteps(path)) result.removed += 1;
+      else logger?.warn?.(`official-chat: 缓存总量淘汰失败：${rel} 删不掉（已保留，未假装删掉）`);
+    }
+    return result;
+  };
+
+  /**
+   * **核算 ＋ 额外淘汰**（协议 §S-16）。
+   *
+   * ## 时机（裁定 2）
+   *
+   * 排在「**占用关系全量扫描 ＋ 常规清理**」**之后** ⇒ 核算读到的是
+   * 「**本轮该回收的都回收了之后**」的总量 ⇒ 判定才准。
+   *
+   * ## 淘汰顺序（裁定 3）
+   *
+   * ① **TTL 内的目录缓存也删**（唯一新增的删除动作）；
+   * ② **被占用的快照不删**（硬约束）；
+   * ③ **未到保留期（7 天）的快照不删**。
+   *
+   * ⇒ **本步不删任何快照**：被占用的不许删（②）、未到期的不许删（③）；
+   * 而**已到期且未被占用**的快照**在常规清理里已经删掉了** ⇒ 额外淘汰
+   * 能动的只有**目录缓存**。⇒ 协议裁定 7（「最旧」按 `capturedAt` 判）
+   * 在本单**没有落点**（它是为「日后改成硬上限」预留的判定口径）。
+   *
+   * ## 上限的诚实读法（裁定 5）
+   *
+   * 512 MB 是「**尽力而为**的上限」：删到底仍超 ⇒ **只记日志**
+   * （不抛异常、不新增用户可见路径、不扩 13 码闭集）⇒ 该情形登记为 G3-5。
+   *
+   * ## 留痕的要素（裁定 5 明列的五项）
+   *
+   * **超预算就留痕**（不是「删到底仍超才留痕」）—— 否则「超预算但已回落」
+   * 这一路**没有任何留痕** ⇒ 事后查不到「曾经超过」。一条留痕里含齐：
+   * **核算总量**／**预算值**／**是否超预算**／**淘汰了什么**（数量＋类别）／
+   * **淘汰后总量**。⇒ `totalBytes`（核算总量）与 `totalBytesAfterEviction`
+   * （淘汰后总量）是**两个要素**，不合并成一个字段。
+   *
+   * @returns {object} 核算结果。
+   */
+  const applyCacheBudget = () => {
+    const budgetBytes = CONSTANTS.cacheTotalBudgetBytes;
+    const before = measureCacheTotalBytes();
+    const state = {
+      // **核算总量**（裁定 2：清理后、淘汰前）＋ 它的两部分分解。
+      totalBytes: before.totalBytes,
+      snapshotsBytes: before.snapshotsBytes,
+      cacheBytes: before.cacheBytes,
+      // **预算值** ＋ **是否超预算**（＝ 触发额外淘汰的判据）。
+      budgetBytes,
+      over: before.totalBytes > budgetBytes,
+      // **淘汰了什么**（数量；类别恒为「目录缓存」——本单唯一的删除动作）。
+      evictedCacheFiles: 0,
+      // **淘汰后总量** ＋ 淘汰后是否仍超（**不得**据此声称已被强制在上限内）。
+      totalBytesAfterEviction: before.totalBytes,
+      stillOver: false,
+    };
+    if (!state.over) return state;
+    let evicted = 0;
+    try {
+      evicted = evictFreshCatalogCache().removed;
+    } catch (error) {
+      // **淘汰失败只记日志，不抛异常**（§S-16 裁定 5 ＋ P1 §4.1 第 3 条）。
+      logger?.warn?.(`official-chat: 缓存总量淘汰失败：${String(error?.message ?? error)}`);
+      // **失败也要留痕**（五要素齐全）——「没删成」本身就是排查信息。
+      logger?.warn?.(
+        `official-chat: 缓存总量超预算（核算总量 ${before.totalBytes} 字节 > 预算 ${budgetBytes} 字节）——已淘汰目录缓存 0 个（失败：${String(error?.message ?? error)}）；淘汰后总量 ${before.totalBytes} 字节（尽力而为，见 §S-16 裁定 5）`,
+      );
+      return state;
+    }
+    state.evictedCacheFiles = evicted;
+    const after = measureCacheTotalBytes();
+    state.totalBytesAfterEviction = after.totalBytes;
+    state.stillOver = after.totalBytes > budgetBytes;
+    // **留痕**（五要素齐全）⇒ 供判据断「有留痕」、供事后排查。
+    logger?.warn?.(
+      `official-chat: 缓存总量超预算（核算总量 ${before.totalBytes} 字节 > 预算 ${budgetBytes} 字节）——已淘汰目录缓存 ${evicted} 个；淘汰后总量 ${after.totalBytes} 字节${
+        state.stillOver
+          ? '（仍超预算：已按协议保留未到期快照与被占用的快照——尽力而为，见 §S-16 裁定 5）'
+          : '（已回到预算内）'
+      }`,
+    );
+    return state;
+  };
+
+  /**
    * **截断**错误日志（按行数/大小，**不按 7 天删**——日志是诊断证据）。
    *
    * ## 为什么两个上限都要
@@ -516,9 +716,13 @@ export function createSweeper({
    * （含已过期的）都算数**；过期记录被释放之后，**从下一轮起**它那份快照才可
    * 回收（详见 `host/refs-store.js` 的 `releaseExpired` 注释）。
    *
+   * **⑤ 核算 ＋ 额外淘汰**（协议 §S-16）：排在**常规清理之后** ⇒ 核算读到的是
+   * 清理后的总量；超预算时的额外淘汰**只删 TTL 内的目录缓存**（快照一律不删：
+   * 被占用的不删、未到期的不删）。
+   *
    * **只动本实例根下那六家族**；根不可得 ⇒ **不扫**（宁可不清理，不乱删）。
    *
-   * @returns {{skipped: boolean, reason?: string, refs?: object, snapshots?: object, tmp?: object, claims?: object, cache?: object, log?: object}}
+   * @returns {{skipped: boolean, reason?: string, refs?: object, snapshots?: object, tmp?: object, claims?: object, cache?: object, log?: object, budget?: object}}
    */
   function sweep() {
     if (root === null || root === undefined) {
@@ -544,7 +748,10 @@ export function createSweeper({
     const claims = sweepClaims();
     const cache = sweepCache();
     const log = sweepLog();
-    return { skipped: false, refs, snapshots, tmp, claims, cache, log };
+    // ⑤ **核算 ＋ 额外淘汰**（协议 §S-16）：排在「占用关系全量扫描 ＋ 常规清理」
+    //    **之后** ⇒ 核算读到的是「本轮该回收的都回收了之后」的总量。
+    const budget = applyCacheBudget();
+    return { skipped: false, refs, snapshots, tmp, claims, cache, log, budget };
   }
 
   /**
