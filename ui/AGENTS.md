@@ -141,11 +141,14 @@ caption）都在下文逐条登记了理由。
   - **`<img>` 的 `width` / `height` 属性必须与 CSS 相等**（`SideBar.vue` 与
     theme.css 都是 42）：CSS 只覆盖绘制，那两个属性是给读屏与布局的第一手尺寸，两处
     各写一遍迟早漂。同理 `flex: 0 0 42px` 少一条，图标会被文字挤扁且不报错。
-- 侧栏底部工具区**是两行**（2026-10-20）：上一行「标签 + 收起 + 刷新 + 主题」
-  （控件靠右），下一行版本号独占整条 220px。**版本号不许回到控件同一行**——标签 +
-  三枚 26px 方钮 + 4 道缝占掉 ~142px，只给它留 ~78px，dev 后缀必被截掉。
+- 侧栏底部工具区**是两行**（2026-10-21 改排布）：第一行三枚方钮（收起 + 刷新 +
+  主题）**左对齐贴左缘**（`.sidebar__footer-actions` 的 `justify-content: flex-start`），
+  第二行「桌面端」标签 + 版本号同行（`.sidebar__footer-meta`）。**版本号不许回到控件
+  同一行**——标签 + 三枚 26px 方钮 + 4 道缝占掉 ~142px，同行时只给它留 ~78px，
+  dev 后缀必被截掉；拆行后第二行可用 220px 减去标签 36px 仍放得下（≈166px）。
   **收起态必须竖排**（写死 `flex-direction: column`，不靠 `flex-wrap`——那取决于
-  渲染宽度）：三枚控件横排要 92px 而内容盒只有 48px；版本号与标签在收起态隐藏。
+  渲染宽度）：三枚控件横排要 92px 而内容盒只有 48px；**收起态第二行整行隐藏**
+  （`.sidebar__footer-meta { display: none }`，不留空高）。
   `.brand` 的 `position: relative` 已随开关搬家删除。判据在 `designAlignment.test.js`。
 - 构建标识（dev 鲸眼红 / release Gitea 绿）收成**窗顶 2px 细线**，由 `--build-color`
   驱动，两种构建共用同一条 `.app-shell::before` 规则只换颜色变量。旧版那条「铺满全高

@@ -965,15 +965,21 @@ code {
   font-size: 0;
 }
 
-/* 侧栏底部工具区：上一行「桌面端」标签 + 收起 / 刷新 / 主题三个方钮，
-   下一行版本号。2026-10-07 从竖排两个整宽按钮改成一行（原先那两行把 224px
-   侧栏的底部占满，且主题开关写成「深色主题」，读起来像点它会变成深色），
-   顺带删掉了原先这里的 `.rail-toggle` 容器与整组 `.theme-switch`（侧栏不再
-   有那两个按钮；`.rail-toggle` 本身仍在给日志侧栏的折叠按钮用）。
+/* 侧栏底部工具区：两行。
+   第一行：三枚方钮（收起 / 刷新 / 主题），**左对齐贴左缘**；
+   第二行：「桌面端」标签 + 版本号（tag 图标 + 版本串）。
+
+   2026-10-07 从竖排两个整宽按钮改成一行（原先那两行把 224px 侧栏的底部占满，
+   且主题开关写成「深色主题」，读起来像点它会变成深色），顺带删掉了原先这里的
+   `.rail-toggle` 容器与整组 `.theme-switch`（侧栏不再有那两个按钮；`.rail-toggle`
+   本身仍在给日志侧栏的折叠按钮用）。
    2026-10-20 又从一行拆成两行：224px 里「标签 + 三个 26px 方钮 + 4 道 7px 缝」
    占掉 ~142px，版本号只剩 ~78px，dev 构建的「0.5.8-rc.2（dev）」被截成
    「0.5.8-r…」——dev 后缀整段看不见，而它正是 dev / release 的唯一区分标记。
-   拆行后版本号独占第二行（可用整条 220px），控件行仍贴着右缘。 */
+   2026-10-21 用户再改排布：**「桌面端」文字移到下方、与版本号同一行**；三枚控件
+   **左对齐贴到左边**（原先标签在第一行左缘、控件被 space-between 推到右缘）。
+   版本号仍不与控件同行，220px 里减去标签那 36px 也够放（≈166px，见 SideBar.vue
+   的宽度账），所以「版本号必被截断」那个老问题没有回来。 */
 .sidebar__footer {
   display: flex;
   flex-direction: column;
@@ -985,24 +991,28 @@ code {
   color: var(--text-muted);
   font-size: 12px;
 }
-/* 标签与控件同一行：标签留在左缘，控件贴在右缘。 */
-.sidebar__footer-tools {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 7px;
-}
+/* 第一行：三枚方钮，左对齐贴左缘（2026-10-21 用户要求「按钮左对齐贴到左边」）。
+   这一行不再有标签，控件组不再被 space-between 推到右缘。 */
 .sidebar__footer-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 7px;
+}
+/* 第二行：「桌面端」标签 + 版本号同一行（2026-10-21 用户要求「桌面端移到下方、
+   和版本号放一行」）。标签不收缩，压缩的一方是版本号（见下面 version-badge）。 */
+.sidebar__footer-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
 }
 .sidebar__footer-label {
   color: var(--text-secondary);
   white-space: nowrap;
 }
-/* 版本号独占一行，前面一枚 tag 图标（2026-10-20 用户要求）。图标与文字同一
-   基线；**压缩的一方是文字**：图标固定 13px 不收缩，`text-overflow` 只做极端
+/* 版本号独占第二行里的右半段，前面一枚 tag 图标（2026-10-20 用户要求）。图标与文字
+   同一基线；**压缩的一方是文字**：图标固定 13px 不收缩，`text-overflow` 只做极端
    长度的兜底（正常版本号含 dev 后缀在 220px 里放得下，见上面 footer 的注释）。 */
 .sidebar__footer .version-badge {
   display: flex;
@@ -1019,8 +1029,8 @@ code {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 收起后只留三个方钮：标签与版本号都隐掉（`.nav-item__label` 已由
-   `.sidebar.is-collapsed` 统一隐藏，版本号在这里补一条）。
+/* 收起后只留三个方钮：第二行整行（标签 + 版本号）都隐掉（`.nav-item__label` 已由
+   `.sidebar.is-collapsed` 统一隐藏，整行隐藏顺带把版本号也带走，还不留下一行空高）。
    **必须竖排**：收起态内容盒只有 64 − 16 = 48px，而三个控件横排要
    26 + 7 + 26 + 7 + 26 = 92px，横排必然溢出到主区上。不靠 `flex-wrap`——
    那会让「能不能换行」取决于实际渲染宽度，换个缩放比例就变成两行换三行，
@@ -1029,12 +1039,11 @@ code {
   align-items: center;
   padding: 12px 0 0;
 }
-.sidebar.is-collapsed .sidebar__footer-tools,
 .sidebar.is-collapsed .sidebar__footer-actions {
   flex-direction: column;
   gap: 6px;
 }
-.sidebar.is-collapsed .version-badge {
+.sidebar.is-collapsed .sidebar__footer-meta {
   display: none;
 }
 

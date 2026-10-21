@@ -653,17 +653,29 @@ function astFindAll(node, predicate, out = []) {
 
 // 2026-10-20 用户截图：底部只有一行时，224px 里「桌面端 + 版本号 + 三个方钮」
 // 放不下，版本号被截成「0.5.8-r…」——dev 构建的「（dev）」后缀整段看不见，
-// 而那个后缀正是 dev / release 的唯一区分标记。修法是把底部拆成两行：
-// 控件留在第一行，版本号独占第二行（可用整条 220px），省略号只作极端兜底。
+// 而那个后缀正是 dev / release 的唯一区分标记。先把底部拆成两行。
+//
+// 2026-10-21 用户再改排布：**第一行放三枚方钮（收起 / 刷新 / 主题）并左对齐贴到
+// 左边**，「桌面端」这个文字**移到下方、与版本号同一行**。版本号因此仍不与控件
+// 同行（那个老问题没有回来），第二行可用宽度 220px 减去标签那 36px 仍够放。
 //
 // 判据**结构 + 样式一起钉**：只钉 `flex-direction: column` 是假绿——把版本号
 // 塞回控件行、或让 footer 换回 row 时，CSS 一个字不动也查不出来。所以模板侧
-// 用 @vue/compiler-sfc 的 AST 判父子关系（版本号必须是 `.sidebar__footer` 的
-// 直接子级，且排在控件行之后），CSS 侧判生效的 flex 方向。
-test('侧栏底部拆成两行：控件一行、版本号独占一行（2026-10-20 版本号被截断的修复）', () => {
+// 用 @vue/compiler-sfc 的 AST 判父子关系（第一行必须是控件组、第二行必须是
+// 「标签 + 版本号」，且控件组里不许再混进标签），CSS 侧判生效的 flex 方向与
+// 控件组的左对齐。
+test('侧栏底部两行：第一行三枚方钮左对齐，第二行「桌面端」标签 + 版本号（2026-10-21 用户改排布）', () => {
   assert.equal(effectiveDeclaration(['sidebar__footer'], RULES, 'flex-direction'), 'column');
-  assert.equal(effectiveDeclaration(['sidebar__footer-tools'], RULES, 'justify-content'), 'space-between');
+  // 控件组**左对齐贴左缘**：原先它与标签同处一行、被 space-between 推到右缘。
+  assert.equal(effectiveDeclaration(['sidebar__footer-actions'], RULES, 'justify-content'), 'flex-start');
   assert.equal(effectiveDeclaration(['sidebar__footer-actions'], RULES, 'display'), 'flex');
+  // 第二行的 `display` 走**规则文本**而不是层叠工具：收起态那条
+  // `.sidebar.is-collapsed .sidebar__footer-meta { display: none }` 的主语同样是
+  // `.sidebar__footer-meta`，特异度更高，会把展开态的值盖成 none——工具答的是
+  // 「收起态那一下」，不是这里的展开态基线（同一条判据里收起态另有断言）。
+  const metaRule = stripComments(themeCss).match(/\.sidebar__footer-meta \{([^}]*)\}/);
+  assert.ok(metaRule, '找不到 `.sidebar__footer-meta` 规则');
+  assert.match(metaRule[1], /display:\s*flex/);
 
   const { descriptor } = parse(sidebar);
   const footer = astFindAll(descriptor.template.ast, (node) => astHasClass(node, 'sidebar__footer'))[0];
@@ -671,19 +683,25 @@ test('侧栏底部拆成两行：控件一行、版本号独占一行（2026-10-
   const footerKids = footer.children.filter((node) => node.type === 1);
   assert.deepEqual(
     footerKids.map(astClassOf),
-    ['sidebar__footer-tools', 'version-badge'],
-    '版本号必须是 .sidebar__footer 的直接子级、排在控件行之后——回到「标签 + 版本 + 三个控件」同一行就是这次要修的那个 bug',
+    ['sidebar__footer-actions', 'sidebar__footer-meta'],
+    '底部两行：第一行控件组、第二行「标签 + 版本号」——顺序反了就是排布又变了',
   );
 
-  const toolsKids = footerKids[0].children.filter((node) => node.type === 1);
-  assert.deepEqual(
-    toolsKids.map(astClassOf),
-    ['nav-item__label sidebar__footer-label', 'sidebar__footer-actions'],
-    '控件行只有标签与控件组两件；版本号不许混进来',
-  );
-  const actionsKids = toolsKids[1].children.filter((node) => node.type === 1);
+  const actionsKids = footerKids[0].children.filter((node) => node.type === 1);
   assert.equal(actionsKids.length, 3, '收起 / 刷新 / 主题三个控件收在同一组里');
   assert.ok(actionsKids.every((node) => node.tag === 'button'));
+  assert.deepEqual(
+    actionsKids.map(astClassOf),
+    ['sidebar__icon-btn', 'sidebar__icon-btn', 'sidebar__theme-btn sidebar__icon-btn'],
+    '控件组里不许再混进「桌面端」标签——它已经移到下方与版本号同行',
+  );
+
+  const metaKids = footerKids[1].children.filter((node) => node.type === 1);
+  assert.deepEqual(
+    metaKids.map(astClassOf),
+    ['nav-item__label sidebar__footer-label', 'version-badge'],
+    '第二行是「桌面端」标签 + 版本号同一行',
+  );
 });
 
 // 2026-10-20 用户要求「版本号前面加个 tag 的 icon」。图标走 Lucide：EP 的
@@ -755,7 +773,10 @@ test('收起态底部竖排三个控件（64px 侧栏横排必然溢出到主区
     themeCss,
     /\.sidebar\.is-collapsed \.sidebar__footer-actions\s*\{[^}]*flex-direction:\s*column/,
   );
-  assert.match(themeCss, /\.sidebar\.is-collapsed \.version-badge\s*\{\s*display:\s*none/);
+  // 第二行整行隐掉（「桌面端」标签 + 版本号）。原先只隐版本号、标签靠
+  // `.nav-item__label` 的通用规则隐——现在两件在同一个行容器里，隐整行才不留
+  // 下一行空高（footer 的 gap 7px 仍会算它）。
+  assert.match(themeCss, /\.sidebar\.is-collapsed \.sidebar__footer-meta\s*\{\s*display:\s*none/);
 });
 
 test('品牌主名 + 副名独占品牌行（收起开关搬走后不再需要给谁让位）', () => {
