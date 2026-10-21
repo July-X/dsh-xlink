@@ -436,6 +436,28 @@ test('来源标识的取值：`site` ＋ 站点短码；`fixture` 固定；认�
   });
 });
 
+test('来源标识 `source`：**恰 3 键**（第 4 个键也是错 —— 协议 v0.19 §10 第 8 条 8b）', () => {
+  const base = {
+    accountScope: 'scope',
+    providerId: 'official-chat',
+    items: [],
+    cursor: '',
+    hasMore: false,
+    fetchedAt: '2026-10-21T00:00:00.000Z',
+  };
+  const good = { ...base, source: { kind: 'site', id: 'deepseek', label: 'DeepSeek' } };
+  assert.deepEqual(validateCatalogPage(good), { ok: true, errors: [] });
+  const extra = validateCatalogPage({
+    ...base,
+    source: { kind: 'site', id: 'deepseek', label: 'DeepSeek', extra: 'x' },
+  });
+  assert.equal(extra.ok, false, '第 4 个键也是错（白名单是穷举列举）');
+  assert.ok(
+    extra.errors.some((e) => e.includes('第 4 个键')),
+    `红必须点名「第 4 个键」：${extra.errors.join('、')}`,
+  );
+});
+
 test('§1.3：规范化只去整段末尾空白，保留正文内空行与缩进', () => {
   const raw = '第一行\r\n\r\n  缩进行  \r\n';
   const digest = contentDigest(raw);

@@ -27,6 +27,8 @@ import {
   PASS,
   SKIPPED,
   assertReturnItemsShape,
+  assertCatalogSourceShape,
+  assertEnvelopeSiteShape,
   assertShape,
   buildItemScenarios,
   buildScenarios,
@@ -34,7 +36,9 @@ import {
   main,
   measuredShapeFixture,
   protocolReconcile,
+  readEnvelopeSiteShape,
   readReturnItemsReading,
+  readSourceShape,
   runScenarios,
   summarize,
 } from './check-official-chat-p4-shape.mjs';
@@ -259,8 +263,8 @@ test('真实仓库 · 协议正文键名与 EXPECT 一致（§4.3 对账）', ()
   assert.equal(verdict.scanned.length, 1);
 });
 
-test('主入口 · 8a/8b 全绿；8c **场景表**全绿，8c 真实轨在实现侧到位前红（红有出处）', async () => {
-  // ⚠️ `main()` 会按结论设 `process.exitCode`（8c 真实轨在实现侧到位前红 ⇒ 1）
+test('主入口 · 8a／8b／8c 全绿（场景表 ＋ 真实读数轨都绿）', async () => {
+  // ⚠️ `main()` 会按结论设 `process.exitCode`（有红就 1）
   // ⇒ ⇒ **自测里必须把它还原**，否则 `node --test` 会把**整个测试文件**判成失败
   //    （本体直接跑仍按结论 exit 1 —— 那才是「如实」）。
   const savedExitCode = process.exitCode;
@@ -271,38 +275,138 @@ test('主入口 · 8a/8b 全绿；8c **场景表**全绿，8c 真实轨在实现
   } finally {
     process.exitCode = savedExitCode;
   }
-  const evidence = pick(results, '8a');
-  assert.equal(evidence.status, PASS);
-  assert.equal(pick(results, '8b').status, PASS);
   assert.ok(results.every((r) => [PASS, FAIL, SKIPPED].includes(r.status)));
 
-  // 8c 的**场景表**（合成读数）必须全绿 —— 那是判据自身工作正常的证据。
-  const itemScenarios = results.filter((r) => r.name.startsWith('P4-8c 场景'));
-  assert.ok(itemScenarios.length >= 5, '8c 要有场景表');
+  // **8a**（本条本体：响应形态场景表 ＋ 协议对账 ＋ 目录项面）
+  assert.equal(pick(results, 'P4-8a 协议正文键名与判据一致').status, PASS);
+  const itemScenarios = results.filter((r) => r.name.startsWith('P4-8a 目录项面 场景'));
+  assert.ok(itemScenarios.length >= 3, '8a 要有目录项面的场景表');
   const badScenarios = itemScenarios.filter((r) => r.status !== PASS);
-  assert.equal(badScenarios.length, 0, `8c 场景表必须全绿：${badScenarios.map((r) => r.name).join('；')}`);
+  assert.equal(badScenarios.length, 0, `8a 场景表必须全绿：${badScenarios.map((r) => r.name).join('；')}`);
 
-  // 8c 的**真实读数轨**：实现侧还没加 `items` ⇒ 红 ⇒ 但红必须点名「目录项面未到位」。
-  const realChecks = results.filter((r) => r.name.startsWith('P4-8c 真实读数'));
-  const realBad = realChecks.filter((r) => r.status === FAIL);
-  if (realBad.length > 0) {
-    assert.equal(
-      realBad.length,
-      realChecks.length,
-      '8c 真实轨要么全绿、要么全红（不许半红半绿）',
-    );
-    for (const r of realBad) {
-      assert.match(
-        r.detail,
-        /没读到|未到位|没加/,
-        `8c 真实轨的红必须点名「没读到 items 形态／实现侧还没加」：${r.name}：${r.detail}`,
-      );
-    }
-  }
-  // 主入口的失败**只允许**来自 8c 真实轨（实现侧未到位）⇒ 其余必须全绿。
-  const otherBad = results.filter(
-    (r) => r.status === FAIL && !r.name.startsWith('P4-8c 真实读数'),
-  );
-  assert.equal(otherBad.length, 0, `除 8c 真实轨外不许有失败：${otherBad.map((r) => r.name).join('；')}`);
+  // **8b**（目录页 `page.source` 形态）＝ 协议 v0.19 §10 第 8 条的新子项
+  const eightB = results.filter((r) => r.name.startsWith('P4-8b '));
+  assert.ok(eightB.length >= 8, `8b 要有那几条断点（实际 ${eightB.length}）`);
+  const badB = eightB.filter((r) => r.status === FAIL);
+  assert.equal(badB.length, 0, `8b 必须全绿：${badB.map((r) => `${r.name}：${r.detail}`).join('；')}`);
+
+  // **8c**（桥回包信封上的 `site` 短码）＝ 协议 v0.19 §10 第 8 条的新子项
+  const eightC = results.filter((r) => r.name.startsWith('P4-8c '));
+  assert.ok(eightC.length >= 8, `8c 要有那几条断点（实际 ${eightC.length}）`);
+  const badC = eightC.filter((r) => r.status === FAIL);
+  assert.equal(badC.length, 0, `8c 必须全绿：${badC.map((r) => `${r.name}：${r.detail}`).join('；')}`);
+
   assert.ok(summary.total >= 9);
+});
+
+test('8b · 逐项「改坏一处」⇒ **对应那条**必须红（来源标识漂了照不出来就是假绿）', () => {
+  const base = {
+    contractKinds: ['site', 'fixture'],
+    builderKeySets: [['kind', 'id', 'label']],
+    samples: [],
+  };
+  const cases = [
+    {
+      what: '契约里的 kind 闭集被改了',
+      expect: '闭集',
+      mutate: (r) => ({ ...r, contractKinds: ['site', 'fixture', 'other'] }),
+    },
+    {
+      what: 'buildCatalogSource 的返回对象多了一个键',
+      expect: '恰 3 键',
+      mutate: (r) => ({ ...r, builderKeySets: [['kind', 'id', 'label', 'extra']] }),
+    },
+    {
+      what: '行为样本：多一个键没被拒',
+      expect: '样本',
+      mutate: (r) => ({
+        ...r,
+        samples: [{ name: '样本：source 多一个键', ok: false, detail: '实际通过' }],
+      }),
+    },
+    {
+      what: '一条行为样本都没跑（读不到被测对象）',
+      expect: '样本',
+      mutate: (r) => ({ ...r, samples: [] }),
+    },
+  ];
+  for (const c of cases) {
+    const { ok, checks } = assertCatalogSourceShape(c.mutate(base));
+    assert.equal(ok, false, `改坏「${c.what}」后整条必须判红`);
+    const hit = checks.find((x) => !x.ok && x.name.includes(c.expect));
+    assert.ok(
+      hit,
+      `改坏「${c.what}」后必须由含「${c.expect}」的断言报红（实际：${checks
+        .map((x) => `${x.name}=${x.ok ? '过' : '红'}`)
+        .join('；')}）`,
+    );
+  }
+});
+
+test('8c · 逐项「改坏一处」⇒ **对应那条**必须红（信封短码漂了照不出来就是假绿）', () => {
+  const base = {
+    rustSite: 'deepseek',
+    envelopeHasSite: true,
+    payloadHasSite: false,
+    samples: [],
+  };
+  const cases = [
+    {
+      what: '内核的短码常量形态不对（大写）',
+      expect: '常量',
+      mutate: (r) => ({ ...r, rustSite: 'DeepSeek' }),
+    },
+    {
+      what: '信封上没带 site',
+      expect: '信封',
+      mutate: (r) => ({ ...r, envelopeHasSite: false }),
+    },
+    {
+      what: 'site 混进了回程载荷',
+      expect: '载荷',
+      mutate: (r) => ({ ...r, payloadHasSite: true }),
+    },
+    {
+      what: '行为样本：认不出却没给空串',
+      expect: '样本',
+      mutate: (r) => ({
+        ...r,
+        samples: [{ name: '样本：解析 DeepSeek', ok: false, detail: '实际没给空串' }],
+      }),
+    },
+  ];
+  for (const c of cases) {
+    const { ok, checks } = assertEnvelopeSiteShape(c.mutate(base));
+    assert.equal(ok, false, `改坏「${c.what}」后整条必须判红`);
+    const hit = checks.find((x) => !x.ok && x.name.includes(c.expect));
+    assert.ok(
+      hit,
+      `改坏「${c.what}」后必须由含「${c.expect}」的断言报红（实际：${checks
+        .map((x) => `${x.name}=${x.ok ? '过' : '红'}`)
+        .join('；')}）`,
+    );
+  }
+});
+
+test('8b／8c · 真实读数（插件侧契约 ＋ 内核侧信封）', async () => {
+  const sourceReading = await readSourceShape(REPO);
+  const source = assertCatalogSourceShape(sourceReading);
+  assert.equal(
+    source.ok,
+    true,
+    `8b 真实读数必须全绿：${source.checks
+      .filter((c) => !c.ok)
+      .map((c) => `${c.name}：${c.detail}`)
+      .join('；')}`,
+  );
+  const envelopeReading = await readEnvelopeSiteShape(REPO);
+  const envelope = assertEnvelopeSiteShape(envelopeReading);
+  assert.equal(
+    envelope.ok,
+    true,
+    `8c 真实读数必须全绿：${envelope.checks
+      .filter((c) => !c.ok)
+      .map((c) => `${c.name}：${c.detail}`)
+      .join('；')}`,
+  );
 });

@@ -681,6 +681,13 @@ export const CATALOG_ITEM_FIELDS = Object.freeze({
 export const CATALOG_SOURCE_KINDS = Object.freeze(['site', 'fixture']);
 
 /**
+ * 目录页 `source` 的**键面**（**恰 3 个**，协议 v0.19 §10 第 8 条 8b）。
+ *
+ * **穷举列举** ⇒ ⇒ 第 4 个键**也是错**（不是「至少有这几个」）。
+ */
+export const CATALOG_SOURCE_KEYS = Object.freeze(['kind', 'id', 'label']);
+
+/**
  * 站点短码 → **展示名**（**品牌名只在这里写一次**；界面直接用 `label`）。
  *
  * ⚠️ **短码不在表里 ⇒ 展示名就用短码本身**（**不编一个像模像样的名字**）。
@@ -768,6 +775,14 @@ export function validateCatalogPage(page) {
         if (typeof source[field] !== 'string' || source[field] === '') {
           errors.push(`source.${field} 不是非空字符串`);
         }
+      }
+      // **恰 3 个键**（协议 v0.19 §10 第 8 条 8b：`{kind, id, label}` —— **第 4 个
+      // 键也是错**）⇒ ⇒ 白名单是**穷举列举**，不是「至少有这几个」。
+      const extraSourceKeys = Object.keys(source).filter(
+        (field) => !CATALOG_SOURCE_KEYS.includes(field),
+      );
+      if (extraSourceKeys.length > 0) {
+        errors.push(`source 出现第 4 个键：${extraSourceKeys.join('、')}`);
       }
     }
   }

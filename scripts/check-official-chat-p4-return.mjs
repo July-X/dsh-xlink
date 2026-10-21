@@ -68,6 +68,7 @@ import {
   P4_SCAN_FILES,
   SKIPPED,
   argValue,
+  arrayLiteralStrings,
   emit,
   judgeChecks,
   jsItemsElementFields,
@@ -186,61 +187,6 @@ export const JS_REL = 'plugins/official-chat/host/site-source.js';
  * ⇒ ⇒ 契约的**键 ＋ 类型**从现在起也是**被断的**。
  */
 export const CONTRACT_REL = 'plugins/official-chat/host/protocol.js';
-
-/**
- * 抽一个**数组字面量**里的字符串元素（引号或裸标识符都认）。
- *
- * ## 为什么要有它
- *
- * 插件侧的「回包校验字段清单」是**数组字面量**（`const keys = [...]`）⇒ ⇒
- * `objectLiteralKeysContaining` 那套（专挑 `{…}`）抽不到 ⇒ ⇒ 这里补一个。
- *
- * @param {string} src - 源码文本。
- * @param {string} anchor - 定位用的锚点（数组就在它后面）。
- * @returns {string[]} 数组里的元素（抽不到 ⇒ 空数组）。
- */
-export function arrayLiteralStrings(src, anchor) {
-  const text = String(src ?? '');
-  const at = text.indexOf(anchor);
-  if (at < 0) return [];
-  const start = text.indexOf('[', at + anchor.length - 1);
-  if (start < 0) return [];
-  let depth = 0;
-  let quote = null;
-  for (let i = start; i < text.length; i += 1) {
-    const ch = text[i];
-    if (quote) {
-      if (ch === '\\') {
-        i += 1;
-        continue;
-      }
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === '`') {
-      quote = ch;
-      continue;
-    }
-    if (ch === '[') {
-      depth += 1;
-      continue;
-    }
-    if (ch === ']') {
-      depth -= 1;
-      if (depth === 0) {
-        const body = text.slice(start + 1, i);
-        const out = [];
-        for (const seg of body.split(',')) {
-          const trimmed = seg.trim();
-          const m = /^["'`]([A-Za-z_$][A-Za-z0-9_$]*)["'`]/.exec(trimmed);
-          if (m) out.push(m[1]);
-        }
-        return out;
-      }
-    }
-  }
-  return [];
-}
 
 /**
  * 判定内核。

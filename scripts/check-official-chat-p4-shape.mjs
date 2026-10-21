@@ -39,11 +39,14 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+  arrayLiteralStrings,
+  jsFnBody,
   jsItemsElementFields,
   jsLiteralTypeFields,
+  objectLiteralKeySets,
   objectLiteralKeysContaining,
   readSources,
   rustItemsElementFields,
@@ -92,6 +95,40 @@ export const EXPECT = Object.freeze({
 
 /** 协议正文相对路径（**只读**，脚本不改协议一个字）。 */
 export const PROTOCOL_REL = 'docs/features/official-chat/official-chat-p4-protocol.md';
+
+/** 插件侧**契约文件**（目录项面 ＋ 来源标识的唯一事实源；G4-21／G4-22 都要它进扫描面）。 */
+export const CONTRACT_REL = 'plugins/official-chat/host/protocol.js';
+
+/** 插件侧**真实源**（信封 `site` 短码的校验处）。 */
+export const SITE_SOURCE_REL = 'plugins/official-chat/host/site-source.js';
+
+/** 内核侧取数模块（站点短码常量 `SITE` 的事实源）。 */
+export const RUST_REL = 'src-tauri/src/official_chat/session_structure.rs';
+
+/** 内核侧**桥**（回包**信封**层 —— `site` 短码带在哪儿）。 */
+export const BRIDGE_REL = 'src-tauri/src/plugins/builtin/bridge.rs';
+
+/**
+ * **8b**：目录页 `page.source`（来源标识）的期望形态（P1 §1.2 v0.13 · 协议 v0.19 §10 第 8 条）。
+ *
+ * · 键面 ＝ `{kind, id, label}` —— **恰 3 键**（**第 4 个键也是错**）。
+ * · `kind` ∈ {`site`, `fixture`}（**闭集**）。
+ * · `id`／`label` ＝ **非空 string**。
+ * · **可选字段** —— 缺失**不算红**（旧缓存页没有它）。
+ * · **不许进 `items`**（面二那 6 键不变）。
+ */
+export const SOURCE_KEYS = Object.freeze(['kind', 'id', 'label']);
+export const SOURCE_KINDS = Object.freeze(['site', 'fixture']);
+
+/**
+ * **8c**：桥回包**信封**上 `site` 短码的形态。
+ *
+ * 小写字母／数字／连字符、1–32 字符；**认不出 ⇒ 空串**（不猜、不截断、不改写）。
+ *
+ * ⚠️ **只断信封层** —— 回程**载荷**里**不许**出现 `site`（协议 §2.4 的载荷白名单
+ * 一个字不动）。
+ */
+export const SITE_CODE_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 /**
  * **结构断言内核**：按 §4.3／§4.2 断一个响应的字段面。
@@ -470,7 +507,7 @@ export function runItemScenarios(scenarios = buildItemScenarios()) {
     const behavedAsExpected = sc.expect === PASS ? ok : !ok;
     const failed = checks.filter((c) => !c.ok).map((c) => c.name);
     return {
-      name: `P4-8c ${sc.name}`,
+      name: `P4-8a 目录项面 ${sc.name}`,
       status: behavedAsExpected ? PASS : FAIL,
       detail:
         `实际判定＝${ok ? '通过' : '失败'}（期望＝${sc.expect === PASS ? '通过' : '失败'}）` +
@@ -506,6 +543,305 @@ export function readReturnItemsReading(root) {
 }
 
 /**
+ * **动态**载入一个插件侧模块（**只读**，不写任何东西）。
+ *
+ * ## 为什么要动态 import
+ *
+ * 8b／8c 要断的是**行为**（「多一个键就红」「认不出就空串」），不是抄本 ⇒ ⇒
+ * 直接调**实现侧那两个纯函数**最真 ⇒ ⇒ 判据与实现**不会各说各话**。
+ *
+ * ⚠️ **读不到 ⇒ 返回 `null`**（由调用方如实报红，**不假绿**）—— 读不到
+ * 被测对象时「全绿」是**最坏**的结论。
+ *
+ * @param {string} root - 仓库根。
+ * @param {string} rel - 相对仓库根的文件路径。
+ * @returns {Promise<object|null>} 模块命名空间；载入失败 ⇒ `null`。
+ */
+async function importPluginModule(root, rel) {
+  try {
+    const href = pathToFileURL(join(root, rel)).href;
+    return await import(href);
+  } catch {
+    return null;
+  }
+}
+
+/** 一份**最小可用的目录页**（给 8b 的行为样本当底稿）。 */
+function sampleCatalogPage(extra = {}) {
+  return {
+    accountScope: 'scope',
+    providerId: 'official-chat',
+    items: [],
+    cursor: '',
+    hasMore: false,
+    fetchedAt: '2026-10-21T00:00:00.000Z',
+    ...extra,
+  };
+}
+
+/** 一份**最小可用的目录项**（6 键，类型照 §4.3 ②）。 */
+function sampleCatalogItem(extra = {}) {
+  return {
+    id: 'ds~0qajycvnzbae~0009',
+    title: '一条会话',
+    title_type: 'USER',
+    model_type: 'deepseek-chat',
+    pinned: false,
+    updated_at: 1783051054.518,
+    ...extra,
+  };
+}
+
+/**
+ * **8b 的读数**：目录页 `page.source` 的**契约面**（源码形态）＋ **行为样本**。
+ *
+ * ## 读什么
+ *
+ * · 契约面（`protocol.js`）：`CATALOG_SOURCE_KINDS` 的闭集 ＋ `buildCatalogSource`
+ *   返回的对象字面量的**键集**。
+ * · 行为面：**直接调**实现侧的 `validateCatalogPage` ＋ `buildCatalogSource`
+ *   （**纯函数**）⇒ ⇒ 断的是**行为**，不是抄本。
+ *
+ * @param {string} root - 仓库根。
+ * @returns {Promise<{contractKinds: string[], builderKeySets: string[][], samples: Array<object>}>}
+ */
+export async function readSourceShape(root) {
+  const sources = readSources(root, [CONTRACT_REL]);
+  const contract = sources.find((s) => s.path === CONTRACT_REL)?.code ?? '';
+  const contractKinds = arrayLiteralStrings(contract, 'CATALOG_SOURCE_KINDS');
+  const builderBody = jsFnBody(contract, 'buildCatalogSource');
+  // **只取含 `kind` 的那几份**对象字面量（函数体里别的对象不是 source）。
+  const builderKeySets = objectLiteralKeySets(builderBody).filter((keys) =>
+    keys.includes('kind'),
+  );
+
+  const samples = [];
+  const mod = await importPluginModule(root, CONTRACT_REL);
+  if (mod === null || typeof mod.validateCatalogPage !== 'function') {
+    samples.push({
+      name: '读得到插件侧契约模块（`validateCatalogPage`）',
+      ok: false,
+      detail: `载入 ${CONTRACT_REL} 失败 ⇒ **8b 的行为样本没跑到**（不许假绿）`,
+    });
+    return { contractKinds, builderKeySets, samples };
+  }
+
+  const { validateCatalogPage } = mod;
+  /** 跑一个样本：**期望**通过还是**期望**判红。 */
+  const sample = (name, page, expectOk) => {
+    let check;
+    try {
+      check = validateCatalogPage(page);
+    } catch (error) {
+      samples.push({ name, ok: false, detail: `校验函数抛了异常：${String(error?.message ?? error)}` });
+      return;
+    }
+    const got = check.ok === true;
+    samples.push({
+      name,
+      ok: got === expectOk,
+      detail: `期望${expectOk ? '通过' : '判红'}，实际${got ? '通过' : '判红'}${
+        check.errors?.length ? `（${check.errors.join('、')}）` : ''
+      }`,
+    });
+  };
+
+  sample('目录页带合法的 `source` ⇒ 通过', sampleCatalogPage({
+    source: { kind: 'site', id: 'deepseek', label: 'DeepSeek' },
+  }), true);
+  sample('**缺** `source`（旧缓存页）⇒ 通过（**可选字段**）', sampleCatalogPage(), true);
+  sample('`source` 多一个键（第 4 个键）⇒ 判红', sampleCatalogPage({
+    source: { kind: 'site', id: 'deepseek', label: 'DeepSeek', extra: 'x' },
+  }), false);
+  sample('`source.kind` 不在闭集里 ⇒ 判红', sampleCatalogPage({
+    source: { kind: 'unknown-site', id: 'deepseek', label: 'DeepSeek' },
+  }), false);
+  sample('`source.id` 是空串 ⇒ 判红', sampleCatalogPage({
+    source: { kind: 'site', id: '', label: 'DeepSeek' },
+  }), false);
+  sample('`source.id` 不是字符串 ⇒ 判红', sampleCatalogPage({
+    source: { kind: 'site', id: 7, label: 'DeepSeek' },
+  }), false);
+  sample('`source.label` 是空串 ⇒ 判红', sampleCatalogPage({
+    source: { kind: 'site', id: 'deepseek', label: '' },
+  }), false);
+  sample('`source.label` 不是字符串 ⇒ 判红', sampleCatalogPage({
+    source: { kind: 'site', id: 'deepseek', label: 7 },
+  }), false);
+  sample('`items` 元素里出现 `source` ⇒ 判红（**不许进 items**）', sampleCatalogPage({
+    items: [sampleCatalogItem({ source: { kind: 'site', id: 'x', label: 'y' } })],
+  }), false);
+
+  if (typeof mod.buildCatalogSource === 'function') {
+    for (const [kind, id] of [['site', 'deepseek'], ['fixture', 'fixture']]) {
+      const built = mod.buildCatalogSource(kind, id);
+      const keys = Object.keys(built ?? {}).sort();
+      const want = [...SOURCE_KEYS].sort();
+      samples.push({
+        name: `\`buildCatalogSource('${kind}', …)\` 产出的对象**恰 3 键**（kind／id／label）`,
+        ok: JSON.stringify(keys) === JSON.stringify(want),
+        detail: `产出键集：${JSON.stringify(keys)}`,
+      });
+    }
+  } else {
+    samples.push({
+      name: '读得到插件侧的 `buildCatalogSource`',
+      ok: false,
+      detail: `模块里没有这个导出 ⇒ **8b 的键面没跑到**（不许假绿）`,
+    });
+  }
+
+  return { contractKinds, builderKeySets, samples };
+}
+
+/**
+ * **8b 的判定内核**。
+ *
+ * @param {object} reading - 读数（`contractKinds` / `builderKeySets` / `samples`）。
+ * @returns {{ok: boolean, checks: Array<{name: string, ok: boolean, detail: string}>}}
+ */
+export function assertCatalogSourceShape(reading) {
+  const checks = [];
+  const t = (name, ok, detail) => {
+    checks.push({ name, ok: !!ok, detail });
+    return !!ok;
+  };
+  const contractKinds = Array.isArray(reading?.contractKinds) ? reading.contractKinds : [];
+  const builderKeySets = Array.isArray(reading?.builderKeySets) ? reading.builderKeySets : [];
+  const samples = Array.isArray(reading?.samples) ? reading.samples : [];
+
+  t(
+    '契约里的 `kind` 闭集 ＝ site／fixture',
+    contractKinds.length === SOURCE_KINDS.length &&
+      SOURCE_KINDS.every((k) => contractKinds.includes(k)),
+    contractKinds.length === 0
+      ? '没读到 `CATALOG_SOURCE_KINDS` ⇒ 闭集没守住'
+      : `契约读到：${JSON.stringify(contractKinds)}`,
+  );
+  t(
+    '`buildCatalogSource` 的**每一份**返回对象都**恰 3 键**（kind／id／label）',
+    builderKeySets.length > 0 &&
+      builderKeySets.every(
+        (keys) => keys.length === SOURCE_KEYS.length && SOURCE_KEYS.every((k) => keys.includes(k)),
+      ),
+    builderKeySets.length === 0
+      ? '没读到 `buildCatalogSource` 的返回对象 ⇒ 键面没守住'
+      : `读到 ${builderKeySets.length} 份返回对象，键集：${JSON.stringify(builderKeySets)}`,
+  );
+  if (samples.length === 0) {
+    t('8b 的行为样本跑到了', false, '一条样本都没跑 ⇒ 判据未执行（不许假绿）');
+  }
+  for (const s of samples) t(s.name, s.ok, s.detail);
+  return { ok: checks.every((c) => c.ok), checks };
+}
+
+/**
+ * **8c 的读数**：桥回包**信封**上的 `site` 短码。
+ *
+ * ## 读什么
+ *
+ * · **内核侧**：`SITE` 常量的值（事实源）＋ **信封**（`bridge.rs`）上带 `site`
+ *   ＋ **回程载荷**（`session_structure.rs` 的 `topKeys`）里**没有** `site`。
+ * · **插件侧**：直接调 `parseSite` 跑样本（**认不出 ⇒ 空串**）。
+ *
+ * @param {string} root - 仓库根。
+ * @returns {Promise<{rustSite: string, envelopeHasSite: boolean, payloadHasSite: boolean, samples: Array<object>}>}
+ */
+export async function readEnvelopeSiteShape(root) {
+  const sources = readSources(root, [SITE_SOURCE_REL, RUST_REL, BRIDGE_REL]);
+  const js = sources.find((s) => s.path === SITE_SOURCE_REL)?.code ?? '';
+  const rust = sources.find((s) => s.path === RUST_REL)?.code ?? '';
+  const bridge = sources.find((s) => s.path === BRIDGE_REL)?.code ?? '';
+  const rustSite = /pub\(crate\) const SITE: &str = "([^"]*)";/.exec(rust)?.[1] ?? '';
+  const envelopeHasSite = /"site"\s*:/.test(bridge);
+  const payloadKeys = objectLiteralKeysContaining(rust, 'topKeys');
+  const payloadHasSite = payloadKeys.includes('site');
+
+  const samples = [];
+  const mod = await importPluginModule(root, SITE_SOURCE_REL);
+  if (mod === null || typeof mod.parseSite !== 'function') {
+    samples.push({
+      name: '读得到插件侧真实源模块（`parseSite`）',
+      ok: false,
+      detail: `载入 ${SITE_SOURCE_REL} 失败 ⇒ **8c 的行为样本没跑到**（不许假绿）`,
+    });
+    return { rustSite, envelopeHasSite, payloadHasSite, samples };
+  }
+  const { parseSite } = mod;
+  const cases = [
+    ['deepseek', 'deepseek'],
+    ['a', 'a'],
+    ['site-1', 'site-1'],
+    ['site1', 'site1'],
+    ['site_1', ''],
+    ['DeepSeek', ''],
+    ['a/b', ''],
+    ['', ''],
+    ['a'.repeat(33), ''],
+    ['a'.repeat(32), 'a'.repeat(32)],
+  ];
+  for (const [input, expected] of cases) {
+    let got;
+    try {
+      got = parseSite(input);
+    } catch (error) {
+      samples.push({
+        name: `信封短码解析：${JSON.stringify(input)}`,
+        ok: false,
+        detail: `解析函数抛了异常：${String(error?.message ?? error)}`,
+      });
+      continue;
+    }
+    const shown = input.length > 20 ? `${input.slice(0, 12)}…（${input.length} 字符）` : input;
+    samples.push({
+      name: `信封短码解析：${JSON.stringify(shown)}`,
+      ok: got === expected,
+      detail: `期望 ${JSON.stringify(expected)}，实际 ${JSON.stringify(got)}`,
+    });
+  }
+  return { rustSite, envelopeHasSite, payloadHasSite, samples };
+}
+
+/**
+ * **8c 的判定内核**。
+ *
+ * @param {object} reading - 读数（`rustSite` / `envelopeHasSite` / `payloadHasSite` / `samples`）。
+ * @returns {{ok: boolean, checks: Array<{name: string, ok: boolean, detail: string}>}}
+ */
+export function assertEnvelopeSiteShape(reading) {
+  const checks = [];
+  const t = (name, ok, detail) => {
+    checks.push({ name, ok: !!ok, detail });
+    return !!ok;
+  };
+  const rustSite = String(reading?.rustSite ?? '');
+  const samples = Array.isArray(reading?.samples) ? reading.samples : [];
+
+  t(
+    '内核的站点短码常量符合形态（小写字母／数字／连字符、1–32 字符）',
+    SITE_CODE_PATTERN.test(rustSite),
+    `读到 ${JSON.stringify(rustSite)}`,
+  );
+  t(
+    '桥回包的**信封**上带 `site` 短码',
+    reading?.envelopeHasSite === true,
+    reading?.envelopeHasSite === true ? '信封上有 `site`' : '信封上没读到 `site`',
+  );
+  t(
+    '**回程载荷**里没有 `site`（信封层 ≠ 载荷层；§2.4 载荷白名单一个字不动）',
+    reading?.payloadHasSite === false,
+    reading?.payloadHasSite === false
+      ? '载荷里没有 `site`'
+      : '载荷里出现了 `site` ⇒ 那是往载荷里加字段（白名单是穷举列举）',
+  );
+  if (samples.length === 0) {
+    t('8c 的行为样本跑到了', false, '一条样本都没跑 ⇒ 判据未执行（不许假绿）');
+  }
+  for (const s of samples) t(s.name, s.ok, s.detail);
+  return { ok: checks.every((c) => c.ok), checks };
+}
+
+/**
  * **协议正文对账轨**：§4.3 的键名与本判据的 `EXPECT` 是否还一致。
  *
  * **只读**协议正文（脚本不改协议一个字）⇒ 协议改了键名而本判据没跟上时立刻暴露。
@@ -521,7 +857,7 @@ export function protocolReconcile(root) {
   } catch {
     text = null;
   }
-  const name = 'P4-8b 协议正文键名与判据一致（§4.3 对账）';
+  const name = 'P4-8a 协议正文键名与判据一致（§4.3 对账）';
   if (text === null) {
     return {
       name,
@@ -554,13 +890,19 @@ export function protocolReconcile(root) {
 export function collectSources(root) {
   const files = [
     PROTOCOL_REL,
-    'src-tauri/src/official_chat/session_structure.rs',
-    'plugins/official-chat/host/site-source.js',
+    RUST_REL,
+    SITE_SOURCE_REL,
     // **插件侧契约面**（缺口 G4-21）：`CATALOG_ITEM_FIELDS` ＋ `validateCatalogPage`
     // 就在这个文件里 ⇒ ⇒ 它不在扫描面内的那段时间里，契约漂移了判据**一条都
     // 不报**（PM 一手实测过：契约还是旧 4 键、且要求「每个字段都是 string」，
     // 而第 3／8 条全绿 ⇒ 那一刻是假绿）。
-    'plugins/official-chat/host/protocol.js',
+    //
+    // **v0.19 追加**：**8b**（`page.source` 形态）的契约面也在这里 ⇒ ⇒ 同一个
+    // 道理：**契约面不在扫描面 ⇒ 契约漂移照不出来**（缺口 G4-22 的同一条教训）。
+    CONTRACT_REL,
+    // **信封层**（缺口 G4-22 · **8c**）：桥回包的**信封**上带 `site` 短码 ⇒ ⇒
+    // 信封那几行代码**必须**在扫描面内，否则「信封带没带 site」照不出来。
+    BRIDGE_REL,
   ];
   const out = [];
   for (const rel of files) {
@@ -620,23 +962,59 @@ export async function main(argv = process.argv.slice(2)) {
   const reconcile = protocolReconcile(root);
   results.push(reconcile);
 
-  // --- 8c：回程载荷的目录项面（场景表 ＋ 真实读数轨） ---
+  // --- 8a：回程载荷的目录项面（场景表 ＋ 真实读数轨） ---
   for (const r of runItemScenarios()) results.push(r);
   const itemReading = readReturnItemsReading(root);
   const { ok: itemsOk, checks: itemChecks } = assertReturnItemsShape(itemReading);
   for (const c of itemChecks) {
     results.push({
-      name: `P4-8c 真实读数 · ${c.name}`,
+      name: `P4-8a 真实读数 · ${c.name}`,
+      status: c.ok ? PASS : FAIL,
+      detail: c.detail,
+    });
+  }
+  results.push({
+    name: 'P4-8a 真实读数的判定',
+    status: itemsOk ? PASS : FAIL,
+    detail: itemsOk
+      ? '真实读数全过（回程载荷的目录项面：6 键齐 ＋ 类型对）'
+      : '真实读数未全过 —— **红在实现侧还没加目录项面**（协议 §2.4 v0.17 的 `items` 还没落）',
+  });
+
+  // --- 8b：目录页 `page.source`（来源标识）的形态（协议 v0.19 · P1 §1.2 v0.13） ---
+  const sourceReading = await readSourceShape(root);
+  const { ok: sourceOk, checks: sourceChecks } = assertCatalogSourceShape(sourceReading);
+  for (const c of sourceChecks) {
+    results.push({
+      name: `P4-8b ${c.name}`,
+      status: c.ok ? PASS : FAIL,
+      detail: c.detail,
+    });
+  }
+  results.push({
+    name: 'P4-8b 真实读数的判定',
+    status: sourceOk ? PASS : FAIL,
+    detail: sourceOk
+      ? '目录页 `page.source` 的形态全过（恰 3 键／kind 闭集／id 与 label 非空 string／可选／不进 items）'
+      : '目录页 `page.source` 的形态有红 ⇒ **来源标识漂了**（协议 v0.19 §10 第 8 条 8b）',
+  });
+
+  // --- 8c：桥回包**信封**上的 `site` 短码（协议 v0.19 · §5.1 追认） ---
+  const envelopeReading = await readEnvelopeSiteShape(root);
+  const { ok: envelopeOk, checks: envelopeChecks } = assertEnvelopeSiteShape(envelopeReading);
+  for (const c of envelopeChecks) {
+    results.push({
+      name: `P4-8c ${c.name}`,
       status: c.ok ? PASS : FAIL,
       detail: c.detail,
     });
   }
   results.push({
     name: 'P4-8c 真实读数的判定',
-    status: itemsOk ? PASS : FAIL,
-    detail: itemsOk
-      ? '真实读数全过（回程载荷的目录项面：6 键齐 ＋ 类型对）'
-      : '真实读数未全过 —— **红在实现侧还没加目录项面**（协议 §2.4 v0.17 的 `items` 还没落）',
+    status: envelopeOk ? PASS : FAIL,
+    detail: envelopeOk
+      ? '信封 `site` 短码全过（形态受限／认不出为空串／只在信封层、不在回程载荷里）'
+      : '信封 `site` 短码有红 ⇒ **短码形态或落点漂了**（协议 v0.19 §10 第 8 条 8c）',
   });
 
   const scanned = collectSources(root).map((s) => s.path);

@@ -460,6 +460,115 @@ export function literalTypeName(value) {
 }
 
 /**
+ * 抽一个**数组字面量**里的字符串元素（引号或裸标识符都认）。
+ *
+ * ## 为什么要有它
+ *
+ * 插件侧的「回包校验字段清单」是**数组字面量**（`const keys = [...]`）⇒ ⇒
+ * `objectLiteralKeysContaining` 那套（专挑 `{…}`）抽不到 ⇒ ⇒ 这里补一个。
+ *
+ * @param {string} src - 源码文本。
+ * @param {string} anchor - 定位用的锚点（数组就在它后面）。
+ * @returns {string[]} 数组里的元素（抽不到 ⇒ 空数组）。
+ */
+export function arrayLiteralStrings(src, anchor) {
+  const text = String(src ?? '');
+  const at = text.indexOf(anchor);
+  if (at < 0) return [];
+  const start = text.indexOf('[', at + anchor.length - 1);
+  if (start < 0) return [];
+  let depth = 0;
+  let quote = null;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === '\\') {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '[') {
+      depth += 1;
+      continue;
+    }
+    if (ch === ']') {
+      depth -= 1;
+      if (depth === 0) {
+        const body = text.slice(start + 1, i);
+        const out = [];
+        for (const seg of body.split(',')) {
+          const trimmed = seg.trim();
+          const m = /^["'`]([A-Za-z_$][A-Za-z0-9_$]*)["'`]/.exec(trimmed);
+          if (m) out.push(m[1]);
+        }
+        return out;
+      }
+    }
+  }
+  return [];
+}
+
+/**
+ * 抽源码里**所有**对象字面量的**键集**。
+ *
+ * ## 为什么要有它
+ *
+ * 「这个对象**恰 3 个键**」这类断言，用 `objectLiteralKeysContaining`（只挑
+ * **一个**最内层的）不够用 —— 实现里**同一个概念**可能有**好几份**对象字面量
+ * （例：`buildCatalogSource` 有两个 `return`，两个返回对象都必须是恰 3 键）
+ * ⇒ ⇒ 这里给**全部**的键集，由调用方**逐份**断。
+ *
+ * ⚠️ **嵌套的对象字面量也会被算进去**（每个 `{` 都算一份）⇒ ⇒ 调用方要按
+ * 需要**自己挑**（例：只看含某个键的那几份）。
+ *
+ * @param {string} src - 源码文本。
+ * @returns {string[][]} 每个对象字面量的键名数组（按出现顺序）。
+ */
+export function objectLiteralKeySets(src) {
+  const text = String(src ?? '');
+  const out = [];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== '{') continue;
+    const end = matchBrace(text, i);
+    if (end < 0) continue;
+    out.push(topLevelKeysOf(text.slice(i + 1, end)));
+  }
+  return out;
+}
+
+/**
+ * 抽 **JS 侧**某个函数的**函数体**（`{…}` 那段）。
+ *
+ * ## 为什么要有它
+ *
+ * `fnBody` 只认 Rust 的 `fn 名字(` ⇒ ⇒ JS 这边要自己一个（判据要断
+ * 「这个函数返回的对象**恰 3 键**」时，得先框出**它自己的**函数体，
+ * 否则会把同文件里别的对象字面量算进来）。
+ *
+ * ⚠️ **按函数名精确匹配**（后面跟 `(`）—— 否则 `buildCatalogSource` 会命中
+ * `buildCatalogSourceXxx`。
+ *
+ * @param {string} src - 源码文本。
+ * @param {string} fnName - 函数名。
+ * @returns {string} 函数体（抽不到 ⇒ 空串）。
+ */
+export function jsFnBody(src, fnName) {
+  const text = String(src ?? '');
+  const found = new RegExp(`function\\s+${fnName}\\s*\\(`).exec(text);
+  if (!found) return '';
+  const start = text.indexOf('{', found.index);
+  if (start < 0) return '';
+  const end = matchBrace(text, start);
+  return end < 0 ? '' : text.slice(start, end + 1);
+}
+
+/**
  * 一个片段**第一次出现**的行号（1 起；找不到 ⇒ -1）。
  *
  * @param {string} src - 源码文本。
