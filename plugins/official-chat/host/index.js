@@ -108,7 +108,7 @@
  * @module xlink-official-chat
  */
 
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -116,8 +116,10 @@ import {
   SCHEMA_VERSION,
   bodyBytes,
   contentDigest,
+  isTempSnapshotName,
   joinMessages,
   normalizeMessages,
+  tempSnapshotName,
 } from './protocol.js';
 import { createCatalogCache, createCommands, createFixtureSource } from './commands.js';
 import { FETCH_ROUTE_PATH, createDispatcher, createFetchRouteHandler } from './rpc.js';
@@ -273,6 +275,34 @@ function snapshotError(code, message) {
 }
 
 /**
+ * **回读校验**的判定（协议 §S-8②）。
+ *
+ * **纯函数**：给它「读回来的文件正文」与「落盘前算出的摘要」，它回答「盘上
+ * 这份内容与那份摘要一致吗」。
+ *
+ * **为什么单独抽成一个纯函数**：这是「写完必须回读」这一步的**唯一口径**
+ * ⇒ 抽出来才能被单测**直接**断（不必往实现里塞钩子）。
+ *
+ * @param {string} raw - 读回来的文件正文。
+ * @param {string} expectedDigest - 落盘前算出的 `contentDigest`。
+ * @returns {boolean} 一致即 true（不一致 ⇒ **不许 rename**）。
+ */
+export function snapshotReadBackMatches(raw, expectedDigest) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(raw ?? ''));
+  } catch {
+    // **读出来不是 JSON** ⇒ 与摘要对不上 ⇒ 不许发布。
+    return false;
+  }
+  const onDisk = String(parsed?.contentDigest ?? '');
+  if (onDisk === '' || onDisk !== String(expectedDigest ?? '')) return false;
+  // **重算**：用**盘上的消息**重算一遍摘要（口径 = `bodyOf`，P1 §1.3）
+  // ⇒ 这一步是「**读回**得到」的值，不是内存里那份。
+  return contentDigest(bodyOf(parsed)) === onDisk;
+}
+
+/**
  * 快照存储。
  *
  * @param {Record<string, string | undefined>} [env] - 环境变量表（默认 `process.env`）。
@@ -280,6 +310,14 @@ function snapshotError(code, message) {
  */
 export function createSnapshotStore(env = process.env) {
   const root = resolveSnapshotRoot(env);
+
+  /**
+   * 临时文件的**尝试号**（进程内自增）。
+   *
+   * **为什么要它**：临时名里带 `<attempt>`（§2.3）⇒ 同一进程里两次撞名时
+   * 换一个号就能错开；`pid` 相同但**进程重启**的极端情形也靠它错开。
+   */
+  let tempAttempt = 0;
 
   const requireRoot = () => {
     if (root === null) {
@@ -292,7 +330,21 @@ export function createSnapshotStore(env = process.env) {
   };
 
   /**
-   * 落盘一份快照。**同一 id 不重写**（协议 §6：快照文件不可变）。
+   * 落盘一份快照：**临时文件 → 回读校验 → `rename`**（协议 §S-8 的原子发布）。
+   *
+   * ## 为什么不是「直写最终路径」
+   *
+   * 直写最终名 ⇒ 进程在写一半时死掉，目录里就留下一份**文件名已在、正文不完整**
+   * 的 `<id>.json`：它**已经出现在目录清单里**（=「已发布」），而正文是半截。
+   * ⇒ 现在改成三步：**写临时名**（§2.3）→ **回读校验** → `rename` 成最终名。
+   * ⇒ **发布点 = `rename` 成功那一刻**（§S-9）：rename 之前它只是临时文件，
+   * **不进清单、不算已保存、不可被 preview 读到**。
+   *
+   * ## 失败时那个临时文件怎么办
+   *
+   * **留着**（不删）——按 §S-8②「临时文件按 S-10 清理」：它就是崩溃残留的形态，
+   * 由清理流程按阈值（§4 的 `tmpResidualMs`）统一收。**当场删**会把「本轮刚写、
+   * 正在发布」与「崩溃残留」两种东西混成一类。
    *
    * @param {object} snapshot - 快照。
    * @returns {{snapshotId: string, contentDigest: string, path: string}} 落盘结果。
@@ -343,14 +395,52 @@ export function createSnapshotStore(env = process.env) {
     const dir = join(base, 'snapshots', providerId);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const path = join(dir, `${snapshotId}.json`);
-    try {
-      // `wx` = 文件已存在就报错。**不覆盖**是协议 §6 的硬要求。
-      writeFileSync(path, `${JSON.stringify(stored, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-    } catch (error) {
-      if (error?.code === 'EEXIST') {
-        throw snapshotError('snapshot_exists', `快照已存在（同 id 不重写）：${snapshotId}`);
+    const payload = `${JSON.stringify(stored, null, 2)}\n`;
+    // **① 写临时文件**（协议 §2.3 的形态）：
+    // `.<snapshotId>.json.tmp-<pid>-<seq>-<attempt>`——**点开头**，与最终名
+    // 一眼能区分「已发布」与「未发布」。
+    const seq = String(snapshotId.split('~')[2] ?? '0000');
+    let tempPath = '';
+    for (let tries = 0; tries < 3 && tempPath === ''; tries += 1) {
+      tempAttempt += 1;
+      const candidate = join(
+        dir,
+        tempSnapshotName(snapshotId, { pid: process.pid, seq, attempt: tempAttempt }),
+      );
+      try {
+        // `wx` = 已存在就报错 ⇒ 撞名就换一个 attempt 重试（pid 复用等极端情形）。
+        writeFileSync(candidate, payload, { flag: 'wx', mode: 0o600 });
+        tempPath = candidate;
+      } catch (error) {
+        if (error?.code === 'EEXIST') continue;
+        throw snapshotError('snapshot_invalid', `快照落盘失败：${String(error?.message ?? error)}`);
       }
-      throw snapshotError('snapshot_invalid', `快照落盘失败：${String(error?.message ?? error)}`);
+    }
+    if (tempPath === '') {
+      throw snapshotError('snapshot_invalid', '快照落盘失败：临时文件名反复撞车');
+    }
+    // **② 回读校验**（协议 §S-8②）：把临时文件**读回来**，重算 `contentDigest`
+    // 并与盘上记录的摘要比对；**不一致 ⇒ 不 rename**（半条记录不得发布）。
+    let readBack = '';
+    try {
+      readBack = readFileSync(tempPath, 'utf8');
+    } catch (error) {
+      throw snapshotError('snapshot_invalid', `快照写后回读失败：${String(error?.message ?? error)}`);
+    }
+    if (!snapshotReadBackMatches(readBack, digest)) {
+      throw snapshotError('snapshot_invalid', '快照写后回读校验不通过（未发布）');
+    }
+    // **③ 发布**（协议 §S-9）：**`rename` 成功 ＝ 发布点**。
+    //
+    // **不覆盖**（P1 §6「同 id 不重写」）：原实现是 `writeFileSync(..., {flag:'wx'})`
+    // 天然排他；**`rename` 会覆盖** ⇒ 这道检查必须显式补上。
+    if (existsSync(path)) {
+      throw snapshotError('snapshot_exists', `快照已存在（同 id 不重写）：${snapshotId}`);
+    }
+    try {
+      renameSync(tempPath, path);
+    } catch (error) {
+      throw snapshotError('snapshot_invalid', `快照发布失败：${String(error?.message ?? error)}`);
     }
     return { snapshotId, contentDigest: digest, path };
   };
@@ -364,6 +454,9 @@ export function createSnapshotStore(env = process.env) {
   const load = (snapshotId) => {
     const base = requireRoot();
     const id = String(snapshotId ?? '');
+    // **只按固定 id 读**（协议 §5）：路径由 id 决定，调用方不能另指目录。
+    // ⇒ **临时文件不可能被命中**：id 的闸（`isValidSnapshotId`）不认 `.`，
+    //   而临时名一定带 `.`（§2.3）⇒ 「按 id 读」永远读不到临时文件。
     if (!isValidSnapshotId(id)) {
       throw snapshotError('snapshot_invalid', `快照 id 不合法：${id}`);
     }
@@ -415,6 +508,10 @@ export function createSnapshotStore(env = process.env) {
       return out;
     }
     for (const fileName of names) {
+      // **临时文件不是快照**（协议 §2.3）：发布前它**不进清单、不占序号**。
+      // 这是**性质**（协议要的不是命名）⇒ 显式排除，不靠「文件名恰好不以
+      // `.json` 结尾」顺带成立。
+      if (isTempSnapshotName(fileName)) continue;
       if (!fileName.endsWith('.json')) continue;
       const id = fileName.slice(0, -'.json'.length);
       const parts = id.split('~');

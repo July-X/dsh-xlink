@@ -168,6 +168,14 @@ export const CONSTANTS = Object.freeze({
   maxResponseBytes: 1024 * 1024,
   /** 快照保留期：7 天（超期按 `snapshot_invalid` 拒）。 */
   snapshotRetentionMs: 7 * 24 * 60 * 60 * 1000,
+  /**
+   * **临时文件残留清理阈值**：24 小时（协议 §4 的 `tmpResidualMs`）。
+   *
+   * **不与 7 天保留期混用**：临时文件**不是快照**（§2.3）⇒ 它的阈值回答的是
+   * 「崩溃残留多久算残留」，不是「快照留多久」⇒ 24 小时足够（临时文件的
+   * 生命周期只有一次发布，发布成功即消失）。
+   */
+  tmpResidualMs: 24 * 60 * 60 * 1000,
   /** 缓存总量上限：512 MB / 实例（含目录缓存与快照）。 */
   cacheTotalBudgetBytes: 512 * 1024 * 1024,
   /** 单消息引用数上限：8 条。 */
@@ -360,6 +368,41 @@ export function makeSnapshotId({ providerShort, sessionShort, seq }) {
   const n = Number(seq ?? 0);
   const seqText = Number.isFinite(n) && n > 0 ? String(n).padStart(4, '0') : '0000';
   return `${provider}~${session}~${seqText}`;
+}
+
+/**
+ * **临时文件名形态**（协议 §2.3）。
+ *
+ * 形态：`.<snapshotId>.json.tmp-<pid>-<seq>-<attempt>`
+ * —— **点开头**（与最终名一眼能区分「已发布」与「未发布」）。
+ *
+ * **为什么口径写在协议这一层**：`host/index.js`（写）与 `host/sweep.js`（清）
+ * 都要认这个形态 ⇒ 两边各写一份正则，就会出现「写的那份和清的那份不一样」
+ * 的形状（两份口径同时活着，谁也不知道哪份是活的）⇒ **单一真相在这里**。
+ */
+const TEMP_NAME_RE = /^\..+\.json\.tmp-[\w.-]+$/;
+
+/**
+ * 造一个临时文件名（协议 §2.3）。
+ *
+ * @param {string} snapshotId - 目标快照 id（最终名是 `<snapshotId>.json`）。
+ * @param {{pid: number, seq: number|string, attempt: number}} parts - 进程号、序号、尝试号。
+ * @returns {string} 临时文件名（**只是文件名**，不含目录）。
+ */
+export function tempSnapshotName(snapshotId, { pid, seq, attempt }) {
+  const id = String(snapshotId ?? '');
+  const seqText = String(seq ?? '0000').padStart(4, '0');
+  return `.${id}.json.tmp-${String(pid ?? 0)}-${seqText}-${String(attempt ?? 0)}`;
+}
+
+/**
+ * 这个文件名是不是**临时文件**（协议 §2.3 的第五家族）。
+ *
+ * @param {string} name - 文件名。
+ * @returns {boolean} 是临时文件即 true。
+ */
+export function isTempSnapshotName(name) {
+  return TEMP_NAME_RE.test(String(name ?? ''));
 }
 
 /**

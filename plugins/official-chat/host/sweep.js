@@ -17,10 +17,15 @@
  * 协议 §4.1 第 1 条：**只在 `catalog` 入口**检查一次（`capture` **不触发**——
  * 用户主动路径更短更可控）。`catalog` 是目录查询，天然是「用户在看列表」的时机。
  *
- * ## 扫哪些（四家族，都在 `<root>` 下）
+ * ## 扫哪些（**五**家族，都在 `<root>` 下）
  *
  * · `snapshots/<provider>/*.json`——**正文快照**。按**文件内的 `capturedAt`** 判断
  *   是否过期（mtime 只作兜底：文件被复制/改写时 mtime 会骗人）。
+ * · `snapshots/<provider>/.<id>.json.tmp-<pid>-<seq>-<attempt>`——**临时残留**
+ *   （协议 §S-10 的**第五家族**，§2.3 的形态）：快照改成「临时文件 → 回读校验 →
+ *   rename」发布之后，崩在发布途中就会留下这种文件。**它不是快照**（发布前
+ *   不进清单）⇒ 按**自己的阈值**（§4 的 `tmpResidualMs`，24 小时）清，
+ *   **不与 7 天保留期混用**。
  * · `seq-claims/<provider>/<sessionShort>/*.json`——**序号认领**。按 `claimedAt`
  *   判断，**且必须确认对应的快照已经不在**才可删（认领是「这个序号用掉了」的
  *   记录；快照还在时删认领，会让序号被二次分配 ⇒ **同 id 落盘 ⇒ 撞车**）。
@@ -39,7 +44,7 @@
  *   留下的也不是一个「看起来有效」的半截文件——**快照文件被读时还要过摘要校验**
  *   （`host/index.js` 的 `store.load`），半截文件本来就该被拒，但**先改名**
  *   让「还在原地」的窗口更短。
- * · **只动本实例根下这四家族**；**根不可得就不扫**（宁可不清理，不乱删）。
+ * · **只动本实例根下这五家族**；**根不可得就不扫**（宁可不清理，不乱删）。
  * · **清理失败只记日志，不阻塞业务**（协议 §4.1 第 3 条）。
  *
  * ## 不保护「正在发送中的引用」
@@ -54,7 +59,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { CONSTANTS, makeSnapshotId } from './protocol.js';
+import { CONSTANTS, isTempSnapshotName, makeSnapshotId } from './protocol.js';
 
 /** 清理日志的**行数上限**（超了从头截，只留尾部）。 */
 export const LOG_MAX_LINES = 2000;
@@ -150,6 +155,7 @@ export function createSweeper({
   root,
   retentionMs = CONSTANTS.snapshotRetentionMs,
   cacheTtlMs = CONSTANTS.catalogCacheTtlMs,
+  tmpResidualMs = CONSTANTS.tmpResidualMs,
   providerId = 'ds',
   now = () => Date.now(),
   logger,
@@ -237,6 +243,62 @@ export function createSweeper({
       const rel = labelOf(path);
       if (removeInTwoSteps(path)) result.removed += 1;
       else logger?.warn?.(`official-chat: 保留期清理失败：${rel} 删不掉（已保留，未假装删掉）`);
+    }
+    return result;
+  };
+
+  /**
+   * 清**临时残留**（协议 §S-10 的**第五家族**）。
+   *
+   * ## 清理条件（四条，缺一不可）
+   *
+   * 1. **文件名匹配临时名形态**（§2.3：`.` 开头、带 `.json.tmp-` 标记）
+   *    ⇒ **不是临时名形态的文件一律不碰**（普通快照、认领、缓存都不归它管）。
+   * 2. **在本实例根下**：删除路径由 `root` join 得出 ⇒ **不越出缓存根**。
+   * 3. **超过阈值**（§4 的 `tmpResidualMs`，24 小时）⇒ **阈值内不动**。
+   * 4. **不在「本轮刚写、正在发布」的窗口内**——这一条由第 3 条**顺带覆盖**：
+   *    正在发布的临时文件 mtime 是最新的 ⇒ 必然落在阈值内 ⇒ 不会被删。
+   *
+   * ## 删除方式
+   *
+   * **两步法**（先 `rename` 成墓碑，再 `unlink`）——沿用本文件既有的做法
+   * （见 `removeInTwoSteps`）：删到一半挂掉时，原地留下的不是一个「看起来
+   * 有效」的文件。
+   *
+   * ## 失败怎么办
+   *
+   * **只记日志，不抛异常、不阻塞整轮**（协议 §4.1 第 3 条的四可观测条件）。
+   *
+   * @returns {{scanned: number, removed: number}}
+   */
+  const sweepTempResiduals = () => {
+    const result = { scanned: 0, removed: 0 };
+    const dir = join(root, 'snapshots', providerId);
+    let names;
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return result;
+    }
+    const cutoff = now() - tmpResidualMs;
+    for (const name of names) {
+      // **只清临时名形态**（条件 1）。
+      if (!isTempSnapshotName(name)) continue;
+      // **路径由 root join 得出**（条件 2）⇒ 不会越出缓存根。
+      const path = join(dir, name);
+      let st;
+      try {
+        st = statSync(path);
+      } catch {
+        continue;
+      }
+      if (!st.isFile()) continue;
+      result.scanned += 1;
+      // **阈值内不动**（条件 3 ＋ 4：正在发布的临时文件 mtime 是最新的）。
+      if (st.mtimeMs >= cutoff) continue;
+      const rel = labelOf(path);
+      if (removeInTwoSteps(path)) result.removed += 1;
+      else logger?.warn?.(`official-chat: 临时残留清理失败：${rel} 删不掉（已保留，未假装删掉）`);
     }
     return result;
   };
@@ -399,13 +461,16 @@ export function createSweeper({
    *
    * **只动本实例根下那四家族**；根不可得 ⇒ **不扫**（宁可不清理，不乱删）。
    *
-   * @returns {{skipped: boolean, reason?: string, snapshots?: object, claims?: object, cache?: object, log?: object}}
+   * @returns {{skipped: boolean, reason?: string, snapshots?: object, tmp?: object, claims?: object, cache?: object, log?: object}}
    */
   function sweep() {
     if (root === null || root === undefined) {
       return { skipped: true, reason: '落盘根不可得（内核没给实例 home）——不扫' };
     }
     const snapshots = sweepSnapshots();
+    // **临时残留**（协议 §S-10 的第五家族）：与快照**同一个目录**，但**另一类**
+    // （未发布的临时文件**不是快照**）⇒ 单独清，不混进快照家族。
+    const tmp = sweepTempResiduals();
     // **顺序：先快照，后认领**（协议 §4.1 第 3 条）。
     //
     // **同轮效果**（别误读成「快照还在就永远删不掉认领」）：过期的快照在本轮
@@ -415,7 +480,7 @@ export function createSweeper({
     const claims = sweepClaims();
     const cache = sweepCache();
     const log = sweepLog();
-    return { skipped: false, snapshots, claims, cache, log };
+    return { skipped: false, snapshots, tmp, claims, cache, log };
   }
 
   /**
