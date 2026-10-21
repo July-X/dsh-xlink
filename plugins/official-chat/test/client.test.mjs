@@ -798,6 +798,81 @@ test('读取失败 → serialize reject（内核据此拒绝发送，不静默�
   await assert.rejects(() => source.codec.serialize(ref, new AbortController().signal), /固定读取失败/);
 });
 
+test('读取失败（host 侧 source_unsupported ＋ 正文未接通标记）→ reject 的文案是成品文案，不是裸码', async () => {
+  // **裸码的产出链**：host 侧 `toRpcError` 把协议码放进 `message`
+  // （`host/rpc.js:114-117`）⇒ ⇒ 客户端原样抛出时，内核顶部横幅显示的就是
+  // `source_unsupported：换一个来源` 这种裸码 ⇒ ⇒ 客户端这一层要换成成品文案。
+  const { api, ctx, registered } = loadClient({
+    config: { readDelayMs: 10 },
+    captureFailure: {
+      code: 'source_unsupported',
+      message: 'source_unsupported：换一个来源',
+      detail: BODY_SOURCE_PENDING_DETAIL,
+    },
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  const { ref } = pick(source);
+  await assert.rejects(
+    () => source.codec.serialize(ref, new AbortController().signal),
+    (error) => {
+      assert.equal(
+        error.message,
+        '这条引用带不出正文：目录页能列出会话，但正文读取还没接通。',
+        '命中「正文未接通」那个标记 ⇒ 用那句成品文案',
+      );
+      assert.ok(
+        !error.message.includes('source_unsupported'),
+        `不许把裸码上屏：${error.message}`,
+      );
+      assert.ok(
+        !error.message.includes('body-source-pending'),
+        `机器标记是内部串，不许上屏：${error.message}`,
+      );
+      return true;
+    },
+  );
+});
+
+test('读取失败但标记对不上 → reject 的文案是通用失败文案（不露裸码、不挂专属文案）', async () => {
+  // **失配方向必须安全**：认不出的失败**不许**落到「正文还没接通」那句专属
+  // 文案上（那会说错原因，比说错更坏）⇒ ⇒ 落通用失败文案。
+  const { api, ctx, registered } = loadClient({
+    config: { readDelayMs: 10 },
+    captureFailure: {
+      code: 'source_unsupported',
+      message: 'source_unsupported：换一个来源',
+      detail: '别的 detail（没有正文未接通那个机器标记）',
+    },
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  const { ref } = pick(source);
+  await assert.rejects(
+    () => source.codec.serialize(ref, new AbortController().signal),
+    (error) => {
+      assert.ok(
+        !error.message.includes('source_unsupported'),
+        `不许把裸码上屏：${error.message}`,
+      );
+      assert.ok(
+        !error.message.includes('正文读取还没接通'),
+        `失配不许落到那句专属文案上：${error.message}`,
+      );
+      assert.ok(
+        !error.message.includes('body-source-pending'),
+        `机器标记是内部串，不许上屏：${error.message}`,
+      );
+      assert.equal(
+        error.message,
+        '这条引用没读出正文：快照不存在，或读取过程失败。',
+        '失配 ⇒ 通用失败文案',
+      );
+      return true;
+    },
+  );
+});
+
 test('serialize 遇到不认识的 ref 就报错（不返回空串糊弄过去）', async () => {
   const { api, ctx, registered } = loadClient();
   api.apply(ctx);

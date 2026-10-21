@@ -1055,8 +1055,20 @@ window.__ModuleLoader__.load({
               try {
                 await entry.settled;
               } catch (error) {
-                record('serialize-failed', { ref: id, message: String(error?.message ?? error) });
-                throw error;
+                record('serialize-failed', {
+                  ref: id,
+                  message: String(error?.message ?? error),
+                  code: String(error?.code ?? ''),
+                });
+                // **裸码不许上屏**：host 侧 `toRpcError` 把**协议码**放进 `message`
+                // （`plugins/official-chat/host/rpc.js:114-117` 造的
+                // `code：userNext`）⇒ ⇒ 原样抛出的话，内核顶部横幅显示的就是
+                // `source_unsupported：换一个来源` 这种裸码 ⇒ ⇒ 这里换成
+                // **成品文案**（`serializeFailure`）。
+                //
+                // **原始 message 不丢**：它在上面的 `record` 里留着（排查看用），
+                // 只是不再拿它上屏。
+                throw serializeFailure(error);
               }
             }
             // S-4：正文**只从落盘文件**取。快照缺失 / 摘要不匹配 / 版本不支持
@@ -1073,8 +1085,13 @@ window.__ModuleLoader__.load({
               // 回来的就是那份文件的内容——请求发生时的快照状态由此判定。
               loaded = await host.call('preview', { snapshotId: id });
             } catch (error) {
-              record('serialize-failed', { ref: id, message: String(error?.message ?? error) });
-              throw error;
+              record('serialize-failed', {
+                ref: id,
+                message: String(error?.message ?? error),
+                code: String(error?.code ?? ''),
+              });
+              // **同上**：host 的裸码不许进内核的横幅 ⇒ ⇒ 换成**成品文案**。
+              throw serializeFailure(error);
             }
             record('serialize-ok', {
               ref: id,
@@ -1294,6 +1311,82 @@ window.__ModuleLoader__.load({
      */
     function bodySourcePendingText() {
       return '这条引用带不出正文：目录页能列出会话，但正文读取还没接通。';
+    }
+
+    /**
+     * **serialize 失败时抛给内核的错误**（**裸码绝不上屏**）。
+     *
+     * ## 为什么要有这一步
+     *
+     * host 侧的错误信封把**协议码**直接放进 `message`
+     * （`plugins/official-chat/host/rpc.js:114-117`：
+     * `userNext === '' ? code : \`${code}：${userNext}\``）
+     * ⇒ ⇒ 原样抛出时，**内核顶部横幅显示的就是裸码**（内核取 `error.message`，
+     * 见 `ui-conversation/client.js@0.2.1-rc.2:15525`）⇒ ⇒ 用户读到的是
+     * `source_unsupported：换一个来源` 这种**没法行动**的串。
+     *
+     * ## 为什么按**双条件**分流（跟 notice 那条**同一口径**，
+     * 见 `plugins/official-chat/client/client.js:885-909`）
+     *
+     * **只看码会误挂**：`source_unsupported` 在 host 侧有**七个**产出点
+     * （目录里没这个会话／真实源取数源没接上／pick 序号用尽／取数桥没起／
+     * 捕获源明说不支持该能力／未知端点与异常兜底…）⇒ ⇒ 只看码 ⇒ 「正文这一格
+     * 还没接通」会挂到别的场景 ⇒ ⇒ 那是**假陈述**（说错比说错更坏）
+     * ⇒ ⇒ 按 `detail` 的**机器标记**（`body-source-pending:`）再断一道。
+     *
+     * **失配是安全的**：标记对不上 ⇒ 落**通用失败文案**（只说事实、不给动作）
+     * ⇒ ⇒ **不会说错**，也不会落到那句专属文案上。
+     *
+     * ## 「没有协议码」那一档为什么原样
+     *
+     * host 造的 `message` **一定带协议码**（码就是 `message` 的前缀）⇒ ⇒ **带码**
+     * 的才是 host 的裸码（那一律换成品文案）；**不带码**的是**客户端自己的话**
+     * （读取消、测试钩子那些）⇒ ⇒ 原样保留（既有断言
+     * `plugins/official-chat/test/client.test.mjs:798` 钉的就是这一档，
+     * 按「不许动既有断言」不改它）。
+     *
+     * @param {any} error - 失败的那个错误（带 `code` / `detail`）。
+     * @returns {Error} 抛给内核的错误（`message` 是成品文案，不是裸码）。
+     */
+    function serializeFailure(error) {
+      const code = String(error?.code ?? '');
+      const detail = String(error?.detail ?? '');
+      // **命中**：正文这一格还没接通 ⇒ 专属文案（与 notice 那条同一句）。
+      if (code === 'source_unsupported' && detail.startsWith(BODY_SOURCE_PENDING_MARK)) {
+        return new Error(bodySourcePendingText());
+      }
+      // **没有协议码** ⇒ 客户端自己的话 ⇒ 原样（不是裸码那一档）。
+      if (code === '') {
+        return error instanceof Error ? error : new Error(String(error?.message ?? error));
+      }
+      // **失配** ⇒ 通用失败文案（不含错误码、不含内部词、只说事实）。
+      return new Error(serializeGenericFailureText());
+    }
+
+    /**
+     * **serialize 失败的通用文案**（失配那一档）。
+     *
+     * ## 口径
+     *
+     * · **不含错误码**：`snapshot_invalid` 这种码用户看不懂、也没法照着做。
+     * · **不含内部词**：不写 host／协议节号／前置编号／ref 串。
+     * · **不给固定尾巴**：「重新打开 @ 菜单再试」在这一档**不保证有用**
+     *   （协议 P1 §3 第 ⑦ 条「假动作禁令」）⇒ ⇒ 判据是「用户做完那个动作，
+     *   真能改变这一档的结果吗」——这一档的成因不定 ⇒ ⇒ 答不出「能」
+     *   ⇒ ⇒ 只陈述现状。
+     * · **不装成成功**：失败就是失败。
+     *
+     * ## 为什么带着「快照不存在」这半句
+     *
+     * 既有断言钉住了这个说法（`plugins/official-chat/test/client.test.mjs:881`、
+     * `plugins/official-chat/test/client.test.mjs:1042`：快照没了时
+     * reject 的文案要认得出「快照不存在」或 `snapshot_invalid`）⇒ ⇒ 通用文案
+     * 带着这半句 ⇒ ⇒ 用户也读得出「引用的那份正文已经不在了」。
+     *
+     * @returns {string} 成品文案。
+     */
+    function serializeGenericFailureText() {
+      return '这条引用没读出正文：快照不存在，或读取过程失败。';
     }
 
     /**
