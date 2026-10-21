@@ -110,6 +110,36 @@ test('P4-3：每个新断点单独「改坏一处」⇒ **对应的那条断言*
       expect: '目录项面',
       mutate: (r) => ({ ...r, jsItemFields: [] }),
     },
+    // --- 插件侧**契约面**（缺口 G4-21：契约漂移也得有人守）---
+    {
+      what: '插件侧契约少一个键（回到旧形态）',
+      expect: '键面',
+      mutate: (r) => ({
+        ...r,
+        jsContractItemFields: r.jsContractItemFields.filter((f) => f.name !== 'pinned'),
+      }),
+    },
+    {
+      what: '插件侧契约把 deepLink 加回来（本轮不解禁）',
+      expect: '禁项',
+      mutate: (r) => ({
+        ...r,
+        jsContractItemFields: [
+          ...r.jsContractItemFields.map((f) => ({ ...f })),
+          { name: 'deepLink', type: 'string' },
+        ],
+      }),
+    },
+    {
+      what: '插件侧契约的类型错（pinned 给成 string）',
+      expect: '类型',
+      mutate: (r) => ({
+        ...r,
+        jsContractItemFields: r.jsContractItemFields.map((f) =>
+          f.name === 'pinned' ? { name: f.name, type: 'string' } : { ...f },
+        ),
+      }),
+    },
   ];
   for (const c of cases) {
     const { checks } = judgeReturn(c.mutate(clean));
@@ -152,6 +182,23 @@ test('P4-3：白名单是**穷举列举**（`deepLink` / `cursor` 不在里面 �
     [...ITEM_KEYS].sort(),
     '§4.3 ② 的 6 个键 ＝ 类型表要一一对应',
   );
+});
+
+test('P4-3：真实读数里**插件侧契约面**三条断言全绿（缺口 G4-21 已闭合：契约漂移当场红）', () => {
+  const { checks } = judgeReturn(readReading(repoRoot(import.meta.url)));
+  const contract = checks.filter((c) => c.name.replace(/\*/g, '').includes('插件侧契约'));
+  assert.equal(
+    contract.length,
+    3,
+    `契约面应该正好三条断言（键面／类型／禁项）：实际 ${contract.map((c) => c.name).join('；')}`,
+  );
+  for (const c of contract) {
+    assert.equal(
+      c.status,
+      PASS,
+      '契约面断言必须全绿（真实 protocol.js 就是契约事实源）：' + c.name + '：' + c.detail,
+    );
+  }
 });
 
 test('P4-3：真实仓库读数 —— 结构面全绿；目录项面在实现侧到位前红（红有出处）', () => {

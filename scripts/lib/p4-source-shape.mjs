@@ -45,6 +45,7 @@ export const P4_SCAN_FILES = Object.freeze([
   'src-tauri/src/plugins/builtin/bridge.rs',
   'src-tauri/src/openai/http.rs',
   'plugins/official-chat/host/site-source.js',
+  'plugins/official-chat/host/protocol.js',
   'plugins/official-chat/host/commands.js',
   'plugins/official-chat/host/rpc.js',
   'plugins/official-chat/host/index.js',
@@ -388,6 +389,74 @@ export function jsItemsElementFields(src, itemKeys = []) {
   }
   if (candidates.length === 0) return [];
   return candidates.sort((a, b) => b.length - a.length)[0];
+}
+
+/**
+ * 抽「**含某个标记的那个**对象字面量」的**键 ＋ 值表达式**（取**最内层**的那个）。
+ *
+ * ## 为什么要有它
+ *
+ * `objectLiteralKeysContaining` 只给**键名**；但插件侧的**契约表**
+ * （`protocol.js` 的 `CATALOG_ITEM_FIELDS`）是**键 → 类型名**的映射
+ * （`'string'` / `'boolean'` / `'number'`）⇒ ⇒ 判据要断的是**键 ＋ 类型**，
+ * 光有键名不够 ⇒ ⇒ 这里给**键 ＋ 值**。
+ *
+ * @param {string} src - 源码文本。
+ * @param {string} marker - 标记（字面量正文里含它）。
+ * @returns {Array<{name: string, value: string}>}
+ */
+export function objectLiteralEntriesContaining(src, marker) {
+  const text = String(src ?? '');
+  let best = null;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== '{') continue;
+    const end = matchBrace(text, i);
+    if (end < 0) continue;
+    const body = text.slice(i + 1, end);
+    if (!body.includes(marker)) continue;
+    if (best === null || end - i < best.end - best.start) {
+      best = { start: i, end, body };
+    }
+  }
+  return best === null ? [] : topLevelEntriesOf(best.body);
+}
+
+/**
+ * 抽一个对象字面量的**键 ＋ 类型**（**类型取自值里的字面量字符串**）。
+ *
+ * ## 它读的是什么
+ *
+ * 形如 `Object.freeze({ id: 'string', pinned: 'boolean' })` 的**契约表** ——
+ * 值是**类型名字符串**（`'string'` / `'boolean'` / `'number'`）⇒ ⇒ 这里把值
+ * 剥引号后当类型名读。
+ *
+ * ⚠️ **认不出 ⇒ `unknown`，不猜**（与 {@link guessJsValueType} 同一纪律）。
+ * ⚠️ **值不是字面量字符串**（例如写成 `Boolean` 之类的标识符）⇒ 也是 `unknown`
+ * ⇒ ⇒ 判据据此报红并点名，**绝不把「读不出类型」当成「类型正确」**。
+ *
+ * @param {string} src - 源码文本。
+ * @param {string} marker - 标记（定位那个对象字面量）。
+ * @returns {Array<{name: string, type: string}>}
+ */
+export function jsLiteralTypeFields(src, marker) {
+  return objectLiteralEntriesContaining(src, marker).map((entry) => ({
+    name: entry.name,
+    type: literalTypeName(entry.value),
+  }));
+}
+
+/**
+ * 把一个字面量字符串当**类型名**读（`'string'` ⇒ `string`）。
+ *
+ * @param {string} value - 值表达式文本。
+ * @returns {'string'|'boolean'|'number'|'unknown'}
+ */
+export function literalTypeName(value) {
+  const text = String(value ?? '').trim();
+  const m = /^["'`]([A-Za-z_][A-Za-z0-9_]*)["'`]$/.exec(text);
+  if (!m) return 'unknown';
+  if (m[1] === 'string' || m[1] === 'boolean' || m[1] === 'number') return m[1];
+  return 'unknown';
 }
 
 /**

@@ -72,6 +72,7 @@ import {
   judgeChecks,
   jsItemsElementFields,
   jsLiteralFields,
+  jsLiteralTypeFields,
   objectLiteralKeysContaining,
   readSources,
   repoRoot,
@@ -170,6 +171,21 @@ export const FORBIDDEN_ITEM = Object.freeze([
 export const RUST_REL = 'src-tauri/src/official_chat/session_structure.rs';
 /** 插件侧真实取数源（相对仓库根）。 */
 export const JS_REL = 'plugins/official-chat/host/site-source.js';
+/**
+ * **插件侧契约文件**（相对仓库根）—— `CATALOG_ITEM_FIELDS` ＋ `validateCatalogPage`
+ * 就在这里。
+ *
+ * ## 为什么它必须进扫描面（缺口 G4-21，PM 一手实测）
+ *
+ * 判据第 3／8 条原先只读**壳侧两个源**（`session_structure.rs` ＋
+ * `site-source.js`）⇒ ⇒ **插件侧契约不在面内** ⇒ ⇒ 契约漂移了（键面回到旧
+ * 4 键、或类型改回 string）**判据一条都不报** —— PM 在干净 HEAD 上实测过：
+ * 契约还是旧 4 键、且 `validateCatalogPage` 要求「每个字段都是 string」，
+ * 而判据第 3 条 32/32、第 8 条 24/24 **全绿** ⇒ ⇒ 那一刻是**假绿**。
+ *
+ * ⇒ ⇒ 契约的**键 ＋ 类型**从现在起也是**被断的**。
+ */
+export const CONTRACT_REL = 'plugins/official-chat/host/protocol.js';
 
 /**
  * 抽一个**数组字面量**里的字符串元素（引号或裸标识符都认）。
@@ -434,6 +450,62 @@ export function judgeReturn(reading) {
       : `白名单里混进了：${notThisRound.join('、')}`,
   );
 
+  // --- 插件侧**契约面**（缺口 G4-21：契约本身也要有人守）---
+  //
+  // 契约的键面 ＝ §4.3 ② 那 6 个键 ＋ 类型写死 ⇒ ⇒ 并且**不许**出现禁项
+  // （`sessionId` / `deepLink` / `cursor` / 正文 / 凭据 …）⇒ ⇒ 旧那套
+  // 「4 键 ＋ 全 string」的契约会被这三条当场抓住（PM 实测过：那时候判据
+  // 全绿，而契约与真实载荷正面冲突）。
+  const contract = Array.isArray(reading?.jsContractItemFields) ? reading.jsContractItemFields : [];
+  if (contract.length === 0) {
+    add(
+      'P4-3 插件侧契约的目录项键面 ＝ §4.3 ② 那 6 个键',
+      FAIL,
+      `没读到插件侧契约（${CONTRACT_REL} 的 CATALOG_ITEM_FIELDS）⇒ **契约面没人守**`,
+    );
+    add('P4-3 插件侧契约的目录项类型 ＝ §4.3 ②', FAIL, '没读到插件侧契约');
+    add(
+      'P4-3 插件侧契约里没有禁项（`sessionId` / `deepLink` / `cursor` / 正文 / 凭据）',
+      FAIL,
+      '没读到插件侧契约',
+    );
+  } else {
+    const contractNames = contract.map((f) => f.name);
+    const missing = itemKeys.filter((k) => !contractNames.includes(k));
+    const extra = contractNames.filter((k) => !itemKeys.includes(k));
+    add(
+      'P4-3 插件侧契约的目录项键面 ＝ §4.3 ② 那 6 个键',
+      missing.length === 0 && extra.length === 0 ? PASS : FAIL,
+      missing.length === 0 && extra.length === 0
+        ? `契约的键面与 §4.3 ② 一致（${contractNames.length} 键）`
+        : `缺 ${missing.join('、') || '无'}／多 ${extra.join('、') || '无'}`,
+    );
+    const badTypes = [];
+    for (const [key, expected] of Object.entries(ITEM_TYPES)) {
+      const hit = contract.find((f) => f.name === key);
+      if (!hit) {
+        badTypes.push(`${key}（缺）`);
+        continue;
+      }
+      if (hit.type !== expected) badTypes.push(`${key}＝${hit.type}（期望 ${expected}）`);
+    }
+    add(
+      'P4-3 插件侧契约的目录项类型 ＝ §4.3 ②',
+      badTypes.length === 0 ? PASS : FAIL,
+      badTypes.length === 0
+        ? '6 个键的类型都与 §4.3 ② 一致'
+        : `类型不符：${badTypes.join('、')}`,
+    );
+    const forbiddenInContract = contractNames.filter((n) => FORBIDDEN_ITEM.includes(n));
+    add(
+      'P4-3 插件侧契约里没有禁项（`sessionId` / `deepLink` / `cursor` / 正文 / 凭据）',
+      forbiddenInContract.length === 0 ? PASS : FAIL,
+      forbiddenInContract.length === 0
+        ? '契约里没有禁项'
+        : `契约里混进了：${forbiddenInContract.join('、')}`,
+    );
+  }
+
   return judgeChecks(checks);
 }
 
@@ -444,11 +516,14 @@ export function judgeReturn(reading) {
  */
 export function buildScenarios() {
   const itemFields = Object.entries(ITEM_TYPES).map(([name, type]) => ({ name, type }));
+  const contractFields = itemFields.map((f) => ({ ...f }));
   const clean = {
     rustKeys: [...TOP_WHITELIST],
     jsKeys: [...TOP_WHITELIST],
     rustItemFields: itemFields.map((f) => ({ ...f })),
     jsItemFields: itemFields.map((f) => ({ ...f })),
+    // **插件侧契约面**（G4-21）：真身契约 ＝ §4.3 ② 那 6 个键 ＋ 类型。
+    jsContractItemFields: contractFields.map((f) => ({ ...f })),
     whitelist: [...TOP_WHITELIST],
     itemKeys: [...ITEM_KEYS],
   };
@@ -564,6 +639,37 @@ export function buildScenarios() {
         jsItemFields: [],
       },
     },
+    {
+      id: 'O',
+      name: '场景O 插件侧**契约**少一个键（回到旧形态）⇒ 应失败',
+      expect: FAIL,
+      reading: {
+        ...clean,
+        jsContractItemFields: contractFields
+          .filter((f) => f.name !== 'title_type')
+          .map((f) => ({ ...f })),
+      },
+    },
+    {
+      id: 'P',
+      name: '场景P 插件侧**契约**把 `deepLink` 加回来（本轮不解禁）⇒ 应失败',
+      expect: FAIL,
+      reading: {
+        ...clean,
+        jsContractItemFields: [...contractFields.map((f) => ({ ...f })), { name: 'deepLink', type: 'string' }],
+      },
+    },
+    {
+      id: 'Q',
+      name: '场景Q 插件侧**契约**的类型错（`pinned` 给成 string）⇒ 应失败',
+      expect: FAIL,
+      reading: {
+        ...clean,
+        jsContractItemFields: contractFields.map((f) =>
+          f.name === 'pinned' ? { name: f.name, type: 'string' } : { ...f },
+        ),
+      },
+    },
   ];
 }
 
@@ -577,11 +683,14 @@ export function readReading(root) {
   const sources = readSources(root, P4_SCAN_FILES);
   const rust = sources.find((s) => s.path === RUST_REL)?.code ?? '';
   const js = sources.find((s) => s.path === JS_REL)?.code ?? '';
+  const contract = sources.find((s) => s.path === CONTRACT_REL)?.code ?? '';
   return {
     rustKeys: objectLiteralKeysContaining(rust, 'topKeys'),
     jsKeys: arrayLiteralStrings(js, 'const keys = ['),
     rustItemFields: rustItemsElementFields(rust),
     jsItemFields: jsItemsElementFields(js, ITEM_KEYS),
+    // **插件侧契约面**（G4-21）：`CATALOG_ITEM_FIELDS` 的键 ＋ 类型。
+    jsContractItemFields: jsLiteralTypeFields(contract, 'title_type'),
   };
 }
 

@@ -26,12 +26,15 @@ import {
   FAIL,
   PASS,
   SKIPPED,
+  assertReturnItemsShape,
   assertShape,
+  buildItemScenarios,
   buildScenarios,
   collectSources,
   main,
   measuredShapeFixture,
   protocolReconcile,
+  readReturnItemsReading,
   runScenarios,
   summarize,
 } from './check-official-chat-p4-shape.mjs';
@@ -178,6 +181,67 @@ test('防假绿 · expectSuccess=false ⇒ 直接判失败且不产出断言', (
   const { ok, checks } = assertShape(measuredShapeFixture({ count: 1 }), { expectSuccess: false });
   assert.equal(ok, false);
   assert.equal(checks.length, 0);
+});
+
+test('插件侧契约面 · 逐项「改坏一处」⇒ **契约**那几条断言必须红（G4-21 自证）', () => {
+  const good = buildItemScenarios()[0].reading;
+  const cases = [
+    {
+      what: '契约少一个键（回到旧形态）',
+      expect: '键面',
+      mutate: (r) => ({
+        ...r,
+        contractItemFields: r.contractItemFields.filter((f) => f.name !== 'pinned'),
+      }),
+    },
+    {
+      what: '契约把 deepLink 加回来（本轮不解禁）',
+      expect: '禁项',
+      mutate: (r) => ({
+        ...r,
+        contractItemFields: [
+          ...r.contractItemFields.map((f) => ({ ...f })),
+          { name: 'deepLink', type: 'string' },
+        ],
+      }),
+    },
+    {
+      what: '契约的类型错（pinned 给成 string）',
+      expect: '类型',
+      mutate: (r) => ({
+        ...r,
+        contractItemFields: r.contractItemFields.map((f) =>
+          f.name === 'pinned' ? { name: f.name, type: 'string' } : { ...f },
+        ),
+      }),
+    },
+    {
+      what: '契约整个读不到（文件不在扫描面／表被改名）',
+      expect: '契约',
+      mutate: (r) => ({ ...r, contractItemFields: [] }),
+    },
+  ];
+  for (const c of cases) {
+    const { ok, checks } = assertReturnItemsShape(c.mutate(good));
+    assert.equal(ok, false, '改坏「' + c.what + '」后整条必须判红');
+    const hit = checks.find((x) => !x.ok && x.name.includes('契约') && x.name.includes(c.expect));
+    assert.ok(
+      hit,
+      '改坏「' + c.what + '」后，必须由含「契约」且含「' + c.expect + '」的断言报红（实际：' +
+        checks.map((x) => x.name + '=' + (x.ok ? '过' : '红')).join('；') +
+        '）',
+    );
+  }
+});
+
+test('真实读数 · 插件侧契约面全绿（契约面有人守：G4-21 已闭合）', () => {
+  const { ok, checks } = assertReturnItemsShape(readReturnItemsReading(REPO));
+  const contract = checks.filter((c) => c.name.includes('插件侧契约'));
+  assert.ok(contract.length > 0, '契约面必须产出断言');
+  for (const c of contract) {
+    assert.equal(c.ok, true, '契约面断言必须全绿：' + c.name + '：' + c.detail);
+  }
+  assert.equal(ok, true, '真实读数整条必须过');
 });
 
 test('真实仓库 · 扫描面文件数达标（防「扫了 0 个文件却报绿」）', () => {

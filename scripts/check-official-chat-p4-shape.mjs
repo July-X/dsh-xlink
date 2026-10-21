@@ -43,6 +43,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   jsItemsElementFields,
+  jsLiteralTypeFields,
   objectLiteralKeysContaining,
   readSources,
   rustItemsElementFields,
@@ -309,6 +310,7 @@ export function assertReturnItemsShape(reading) {
   };
   const topKeys = Array.isArray(reading?.topKeys) ? reading.topKeys : [];
   const itemFields = Array.isArray(reading?.itemFields) ? reading.itemFields : [];
+  const contractFields = Array.isArray(reading?.contractItemFields) ? reading.contractItemFields : [];
 
   t(
     '回程载荷有 `items` 字段（目录项面入口）',
@@ -324,24 +326,63 @@ export function assertReturnItemsShape(reading) {
       '没读到 `items` 元素形态 ⇒ 目录项面未到位（实现侧还没加，或形态与判据不匹配）',
     );
     t('回程载荷 `items` 元素 6 键的类型符合 §4.3 ②', false, '没读到 `items` 元素形态');
-    return { ok: false, checks };
-  }
-  const names = itemFields.map((f) => f.name).sort();
-  const want = [...EXPECT.itemKeys].sort();
-  t(
-    '回程载荷 `items` 元素恰好 6 个键（§4.3 ②）',
-    JSON.stringify(names) === JSON.stringify(want),
-    `got=${JSON.stringify(names)}`,
-  );
-  for (const [key, expectedType] of Object.entries(EXPECT.itemTypes)) {
-    const hit = itemFields.find((f) => f.name === key);
-    const actualType = hit ? hit.type : '（缺）';
+  } else {
+    const names = itemFields.map((f) => f.name).sort();
+    const want = [...EXPECT.itemKeys].sort();
     t(
-      `回程载荷目录项字段类型 ${key}＝${expectedType}`,
-      hit && hit.type === expectedType,
-      hit && hit.type === expectedType
-        ? `实际类型＝${hit.type}`
-        : `实际类型＝${actualType}（期望 ${expectedType}）`,
+      '回程载荷 `items` 元素恰好 6 个键（§4.3 ②）',
+      JSON.stringify(names) === JSON.stringify(want),
+      `got=${JSON.stringify(names)}`,
+    );
+    for (const [key, expectedType] of Object.entries(EXPECT.itemTypes)) {
+      const hit = itemFields.find((f) => f.name === key);
+      const actualType = hit ? hit.type : '（缺）';
+      t(
+        `回程载荷目录项字段类型 ${key}＝${expectedType}`,
+        hit && hit.type === expectedType,
+        hit && hit.type === expectedType
+          ? `实际类型＝${hit.type}`
+          : `实际类型＝${actualType}（期望 ${expectedType}）`,
+      );
+    }
+  }
+
+  // --- 插件侧**契约面**（缺口 G4-21）---
+  //
+  // 契约的键 ＋ 类型是**唯一事实源**（`protocol.js` 的 `CATALOG_ITEM_FIELDS`）⇒
+  // ⇒ 它也必须被断：契约漂了（键面回到旧 4 键、类型改回 string、或者把
+  // `deepLink` 加回来）⇒ ⇒ 这一轨当场红。
+  if (contractFields.length === 0) {
+    t('插件侧契约的目录项键面 ＝ §4.3 ② 那 6 个键', false, '没读到插件侧契约 ⇒ 契约面没人守');
+    t('插件侧契约的目录项类型 ＝ §4.3 ②', false, '没读到插件侧契约');
+    t('插件侧契约里没有禁项（`sessionId` / `deepLink` / `cursor`）', false, '没读到插件侧契约');
+  } else {
+    const contractNames = contractFields.map((f) => f.name);
+    const wantKeys = [...EXPECT.itemKeys].sort();
+    const gotKeys = [...contractNames].sort();
+    t(
+      '插件侧契约的目录项键面 ＝ §4.3 ② 那 6 个键',
+      JSON.stringify(gotKeys) === JSON.stringify(wantKeys),
+      `got=${JSON.stringify(gotKeys)}`,
+    );
+    for (const [key, expectedType] of Object.entries(EXPECT.itemTypes)) {
+      const hit = contractFields.find((f) => f.name === key);
+      const actualType = hit ? hit.type : '（缺）';
+      t(
+        `插件侧契约目录项字段类型 ${key}＝${expectedType}`,
+        hit && hit.type === expectedType,
+        hit && hit.type === expectedType
+          ? `实际类型＝${hit.type}`
+          : `实际类型＝${actualType}（期望 ${expectedType}）`,
+      );
+    }
+    const forbidden = contractNames.filter((n) =>
+      ['sessionId', 'deepLink', 'cursor', 'body', 'content', 'text', 'messages', 'token'].includes(n),
+    );
+    t(
+      '插件侧契约里没有禁项（`sessionId` / `deepLink` / `cursor`）',
+      forbidden.length === 0,
+      forbidden.length === 0 ? '契约里没有禁项' : `契约里混进了：${forbidden.join('、')}`,
     );
   }
   return { ok: checks.every((c) => c.ok), checks };
@@ -353,9 +394,12 @@ export function assertReturnItemsShape(reading) {
  * @returns {Array<object>}
  */
 export function buildItemScenarios() {
+  const itemFields = Object.entries(EXPECT.itemTypes).map(([name, type]) => ({ name, type }));
   const good = {
     topKeys: ['topKeys', 'code', 'msg', 'dataKeys', 'sessionsLength', 'firstItemKeys', 'itemTypes', 'hasMore', 'items'],
-    itemFields: Object.entries(EXPECT.itemTypes).map(([name, type]) => ({ name, type })),
+    itemFields: itemFields.map((f) => ({ ...f })),
+    // **插件侧契约面**（缺口 G4-21）：契约 ＝ §4.3 ② 那 6 个键 ＋ 类型。
+    contractItemFields: itemFields.map((f) => ({ ...f })),
   };
   const fewer = {
     ...good,
@@ -368,13 +412,49 @@ export function buildItemScenarios() {
       f.name === 'pinned' ? { name: f.name, type: 'string' } : { ...f },
     ),
   };
-  const noItems = { topKeys: good.topKeys.filter((k) => k !== 'items'), itemFields: [] };
+  const noItems = {
+    topKeys: good.topKeys.filter((k) => k !== 'items'),
+    itemFields: [],
+    contractItemFields: good.contractItemFields.map((f) => ({ ...f })),
+  };
+  const contractFewer = {
+    ...good,
+    contractItemFields: good.contractItemFields.filter((f) => f.name !== 'title_type'),
+  };
+  const contractMore = {
+    ...good,
+    contractItemFields: [...good.contractItemFields, { name: 'deepLink', type: 'string' }],
+  };
+  const contractWrongType = {
+    ...good,
+    contractItemFields: good.contractItemFields.map((f) =>
+      f.name === 'pinned' ? { name: f.name, type: 'string' } : { ...f },
+    ),
+  };
   return [
     { id: 'A', name: '场景A 目录项 6 键齐 ＋ 类型对 ⇒ 应通过', expect: PASS, reading: good },
     { id: 'B', name: '场景B 目录项少一个键 ⇒ 应失败', expect: FAIL, reading: fewer },
     { id: 'C', name: '场景C 目录项多一个键 ⇒ 应失败', expect: FAIL, reading: more },
     { id: 'D', name: '场景D 目录项类型错（pinned＝字符串）⇒ 应失败', expect: FAIL, reading: wrongType },
     { id: 'E', name: '场景E 载荷没有 `items`（实现侧还没加）⇒ 应失败', expect: FAIL, reading: noItems },
+    {
+      id: 'F',
+      name: '场景F 插件侧**契约**少一个键 ⇒ 应失败（G4-21）',
+      expect: FAIL,
+      reading: contractFewer,
+    },
+    {
+      id: 'G',
+      name: '场景G 插件侧**契约**把 `deepLink` 加回来 ⇒ 应失败（G4-21）',
+      expect: FAIL,
+      reading: contractMore,
+    },
+    {
+      id: 'H',
+      name: '场景H 插件侧**契约**的类型错（pinned＝字符串）⇒ 应失败（G4-21）',
+      expect: FAIL,
+      reading: contractWrongType,
+    },
   ];
 }
 
@@ -409,16 +489,20 @@ export function runItemScenarios(scenarios = buildItemScenarios()) {
 export function readReturnItemsReading(root) {
   const rustRel = 'src-tauri/src/official_chat/session_structure.rs';
   const jsRel = 'plugins/official-chat/host/site-source.js';
-  const sources = readSources(root, [rustRel, jsRel]);
+  const contractRel = 'plugins/official-chat/host/protocol.js';
+  const sources = readSources(root, [rustRel, jsRel, contractRel]);
   const rust = sources.find((s) => s.path === rustRel)?.code ?? '';
   const js = sources.find((s) => s.path === jsRel)?.code ?? '';
+  const contract = sources.find((s) => s.path === contractRel)?.code ?? '';
   const topKeys = objectLiteralKeysContaining(rust, 'topKeys');
   const rustItem = rustItemsElementFields(rust);
   const jsItem = jsItemsElementFields(js, EXPECT.itemKeys);
   // 两端都抽到就**逐项相等**才算（不然用抽到的那一端；抽不到 ⇒ 空 ⇒ 如实红）
   const itemFields =
     rustItem.length > 0 && jsItem.length > 0 ? rustItem : rustItem.length > 0 ? rustItem : jsItem;
-  return { topKeys, itemFields };
+  // **插件侧契约面**（缺口 G4-21）：`CATALOG_ITEM_FIELDS` 的键 ＋ 类型。
+  const contractItemFields = jsLiteralTypeFields(contract, 'title_type');
+  return { topKeys, itemFields, contractItemFields };
 }
 
 /**
@@ -472,6 +556,11 @@ export function collectSources(root) {
     PROTOCOL_REL,
     'src-tauri/src/official_chat/session_structure.rs',
     'plugins/official-chat/host/site-source.js',
+    // **插件侧契约面**（缺口 G4-21）：`CATALOG_ITEM_FIELDS` ＋ `validateCatalogPage`
+    // 就在这个文件里 ⇒ ⇒ 它不在扫描面内的那段时间里，契约漂移了判据**一条都
+    // 不报**（PM 一手实测过：契约还是旧 4 键、且要求「每个字段都是 string」，
+    // 而第 3／8 条全绿 ⇒ 那一刻是假绿）。
+    'plugins/official-chat/host/protocol.js',
   ];
   const out = [];
   for (const rel of files) {
