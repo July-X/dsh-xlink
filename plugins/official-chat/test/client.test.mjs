@@ -57,6 +57,10 @@ import {
  *   自己按升序排。
  * @param {number} [options.bodyBytes] - 让桩给出**大正文**（造超预算场景，
  *   协议 §4）；不给就用固定夹具正文。
+ * @param {object|null} [options.captureFailure] - 让桩的 `capture` 端点**失败**
+ *   （造「第 14 码 `body_budget_exceeded`」这类协议错误）：`{code, detail}`。
+ *   `detail` 照 host 的契约给（`host/rpc.js` 的 `toRpcError` 把它放在
+ *   `details.detail`）；`detail` 省略就是**没有 detail**。
  */
 function loadClient({
   withInputTriggers = true,
@@ -67,6 +71,7 @@ function loadClient({
   failDuplicates = false,
   multiGroup = false,
   bodyBytes = 0,
+  captureFailure = null,
 } = {}) {
   const registered = [];
   const effects = [];
@@ -160,6 +165,10 @@ function loadClient({
             error: {
               code: String(error?.code ?? 'host_error'),
               message: String(error?.message ?? error),
+              // **与真 host 的 `toRpcError` 同构**：`detail` 走在 `details` 里
+              // （`host/rpc.js:121-135`）⇒ 客户端要从这儿取（第 14 码的三个数
+              // 只能从这儿来）。
+              details: { detail: error?.detail ?? null },
             },
           };
         }
@@ -204,6 +213,17 @@ function loadClient({
     if (endpoint === 'capture') {
       const sessionId = String(payload?.sessionId ?? '');
       const snapshotId = String(payload?.snapshotId ?? '');
+      // **造协议错误**（第 14 码这类）：`captureFailure` 给了就照它失败。
+      if (captureFailure !== null) {
+        const error = new Error(
+          String(captureFailure.message ?? `桩注入的失败：${String(captureFailure.code)}`),
+        );
+        error.code = String(captureFailure.code);
+        if (captureFailure.detail !== undefined) {
+          error.detail = captureFailure.detail;
+        }
+        throw error;
+      }
       if (snapshots.has(snapshotId)) {
         const error = new Error(`快照已存在（同 id 不重写）：${snapshotId}`);
         error.code = 'snapshot_exists';
@@ -891,4 +911,113 @@ test('P2：同组 + 超预算 ⇒ 两个触发点的提示都出（协议 §3.1 
   assert.match(group.text, /重复可省 150000 字节/, '要自包含重复字节数');
   assert.match(group.text, /引用正文 300000 字节/, '要自包含预估字节数');
   assert.match(group.text, /超 37856 字节/, '要自包含超出字节数');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P1 §3 **第 14 码** `body_budget_exceeded` 的界面文案。
+//
+// **为什么要专门一条**：其它码落的那条固定串（「G1：引用「…」的正文读取失败，
+// 发送时会拒绝这次提交」）与 `body_too_large` **完全同文** ⇒ 用户分不出
+// 「这一条太长」与「整条超 256 KB」，而这两件事的**下一步不同**。
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('P1 第 14 码 body_budget_exceeded ⇒ 专属文案（带三个数字，info 档常驻条）', async () => {
+  // **`detail` 照 host 的契约逐字给**（PM 2026-10-21 裁；host 侧
+  // `resolveCaptureCase` 与 `writeSnapshot` 两处同构产出这一个形态）。
+  const detail =
+    '单条正文超单条正文预算：正文 70000 字节，超出单条正文预算 65536 字节（超 4464 字节）';
+  const { api, ctx, registered, notices, sandbox } = loadClient({
+    config: { readDelayMs: 10 },
+    captureFailure: { code: 'body_budget_exceeded', detail },
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  pick(source);
+  await new Promise((r) => setTimeout(r, 80));
+  const shown = notices.filter((n) => /这条引用太长/.test(String(n?.text ?? '')));
+  assert.equal(shown.length, 1, `第 14 码应恰好一条专属文案：${JSON.stringify(notices)}`);
+  // **成品文案逐字照抄定稿原文**（PM 2026-10-21 给定，不许改字）。
+  assert.equal(
+    shown[0].text,
+    '这条引用太长：正文 70000 字节，超出单条正文预算 65536 字节（超 4464 字节）。' +
+      '请移除这条引用，换一段更短的正文。',
+    `第 14 码文案必须逐字等于定稿原文：${shown[0].text}`,
+  );
+  // **必须是 `info` 档**：内核只渲染 `info` 档的**输入区常驻条**，`error` 档
+  // 只弹瞬态 toast（内核 `:18808` / `:18982-18986`）⇒ 用 `error` 档就没有常驻条。
+  assert.equal(shown[0].level, 'info', '第 14 码必须是 info 档（常驻条，不是瞬态 toast）');
+  // **只出这一条**：一句「太长」＋一句「读取失败」＝ 互相矛盾的两句。
+  assert.equal(notices.length, 1, `第 14 码不得同时落别的提示：${JSON.stringify(notices)}`);
+  assert.equal(
+    notices.filter((n) => /正文读取失败/.test(String(n?.text ?? ''))).length,
+    0,
+    `第 14 码不得同时落那条固定串：${JSON.stringify(notices)}`,
+  );
+  // **探针里的 kind 要分得开**（内核 notify 只带 level+text ⇒ 判据/探针靠 kind
+  // 区分这一条）。
+  const probe = sandbox.__DSH_XLINK_OFFICIAL_CHAT_PROBE__;
+  const event = probe.events.filter((e) => e.kind === 'body-budget-exceeded').pop();
+  assert.ok(event, '第 14 码必须出一条带 kind 的提示记录');
+  assert.equal(event.text, shown[0].text, '界面那条与结构化那条必须是同一句');
+  // **措辞纪律**：不写「别的引用不受影响」（语义未裁定）、不写「重试／再试
+  // 一次」（这个码**不可重试**）、不把错误码显示给用户（码只进 `detail`）。
+  assert.doesNotMatch(
+    shown[0].text,
+    /不受影响|重试|再试一次|body_budget_exceeded/,
+    `第 14 码文案不得出现这些表述：${shown[0].text}`,
+  );
+});
+
+test('其它码（如 body_too_large）⇒ 现有固定串一字不变（不因第 14 码改口径）', async () => {
+  const { api, ctx, registered, notices } = loadClient({
+    config: { readDelayMs: 10 },
+    captureFailure: { code: 'body_too_large', detail: '正文超限：300000 字节' },
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  const { ref } = pick(source);
+  await new Promise((r) => setTimeout(r, 80));
+  const shown = notices.filter((n) => /正文读取失败/.test(String(n?.text ?? '')));
+  assert.equal(shown.length, 1, `失败应恰好一条固定串：${JSON.stringify(notices)}`);
+  // **固定串逐字不变**（其它码的既有口径一个字都不许动）。
+  assert.equal(
+    shown[0].text,
+    `G1：引用「${ref}」的正文读取失败，发送时会拒绝这次提交`,
+    `其它码的固定串必须一字不变：${shown[0].text}`,
+  );
+  // **档位也不变**：其它码仍是 `error` 档 ⇒ 第 14 码的改法不许顺带改到它们。
+  assert.equal(shown[0].level, 'error', '其它码的档位必须不变');
+  // **不许落第 14 码的专属文案**。
+  assert.equal(
+    notices.filter((n) => /这条引用太长/.test(String(n?.text ?? ''))).length,
+    0,
+    `其它码不得落第 14 码的文案：${JSON.stringify(notices)}`,
+  );
+});
+
+test('第 14 码的 detail 取不到三个数 ⇒ 降级文案（不编数字）', async () => {
+  // **三种取不到的样子**：根本没有 detail｜只有原始码（存储层失败那条路就
+  // 是这样，`host/commands.js` 把 `detail` 设成原始码）｜形态不合约。
+  for (const detail of [null, 'body_budget_exceeded', '单条正文超单条正文预算：正文 abc 字节']) {
+    const { api, ctx, registered, notices } = loadClient({
+      config: { readDelayMs: 10 },
+      captureFailure: { code: 'body_budget_exceeded', detail },
+    });
+    api.apply(ctx);
+    const source = registered[0];
+    pick(source);
+    await new Promise((r) => setTimeout(r, 80));
+    const shown = notices.filter((n) => /这条引用太长/.test(String(n?.text ?? '')));
+    assert.equal(shown.length, 1, `降级文案应恰好一条：${JSON.stringify(notices)}`);
+    // **降级文案逐字照抄定稿原文**。
+    assert.equal(
+      shown[0].text,
+      '这条引用太长，请移除它，换一段更短的正文。',
+      `降级文案必须逐字等于定稿原文：${shown[0].text}`,
+    );
+    // **不许编数字**。
+    assert.doesNotMatch(shown[0].text, /\d/, `降级文案不得出现数字：${shown[0].text}`);
+    // **降级也必须是 `info` 档**（常驻条，不是瞬态 toast）。
+    assert.equal(shown[0].level, 'info', '降级文案也必须是 info 档');
+  }
 });

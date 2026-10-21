@@ -414,6 +414,11 @@ window.__ModuleLoader__.load({
             }
             const error = new Error(String(result?.error?.message ?? `host 命令 ${endpoint} 失败`));
             error.code = String(result?.error?.code ?? 'host_error');
+            // **`detail` 要穿过 RPC 边界**：host 侧 `toRpcError` 把它放在
+            // `details.detail`（`plugins/official-chat/host/rpc.js:121-135`）——
+            // **界面文案要用的事实只能从这儿拿**（客户端拿不到 host 的内部变量）
+            // ⇒ 这里丢掉的话，第 14 码只能出无数字的降级文案。
+            error.detail = result?.error?.details?.detail ?? null;
             throw error;
           },
         };
@@ -798,6 +803,28 @@ window.__ModuleLoader__.load({
           read.settled = settled;
           settled.catch((error) => {
             record('snapshot-failed', { ref: snapshotId, message: String(error?.message ?? error) });
+            // **第 14 码 `body_budget_exceeded`：出专属文案**（P1 §3 第 14 码）。
+            //
+            // **为什么单独分流**：其它码落的是那条固定串（「正文读取失败」），
+            // 它与 `body_too_large` **完全同文** ⇒ 用户分不出「这一条太长」与
+            // 「整条超 256 KB」⇒ 第 14 码有自己的下一步（换更短的正文）。
+            //
+            // **两条不许同时出**：一句说「太长」、一句说「读取失败」，用户会读到
+            // 互相矛盾的两句 ⇒ 这里**二选一**（专属文案优先）。
+            //
+            // **载体：`info` 档的输入区常驻条**（内核只渲染 `info` 档的常驻条，
+            // `error` 档只弹瞬态 toast）⇒ 与 P2 提示同一承载位。
+            if (String(error?.code ?? '') === 'body_budget_exceeded') {
+              presentNotice(ctx, sessions, sessionId, {
+                kind: 'body-budget-exceeded',
+                level: 'info',
+                trigger: snapshotId,
+                code: 'body_budget_exceeded',
+                detail: error?.detail ?? null,
+                text: bodyBudgetNoticeText(error?.detail ?? null),
+              });
+              return;
+            }
             showState(ctx, sessions, sessionId, snapshotId, 'failed');
           });
 
@@ -1081,6 +1108,66 @@ window.__ModuleLoader__.load({
             `（超 ${Number(budget?.exceedByBytes ?? 0)} 字节）`
           : `引用正文 ${projected} 字节，未超出单次消息预算 ${limit} 字节`;
       return `本次核对：${[groupPart, budgetPart].filter((part) => part !== '').join('；')}。`;
+    }
+
+    /**
+     * 从 host 的 `detail` 里解析第 14 码的三个数。
+     *
+     * **契约形态**（PM 2026-10-21 裁，host 侧逐字产出：`host/protocol.js` 的
+     * `resolveCaptureCase` 与 `host/index.js` 的 `writeSnapshot` 两处同构）：
+     *
+     *     单条正文超单条正文预算：正文 {bytes} 字节，超出单条正文预算 {budget} 字节（超 {over} 字节）
+     *
+     * **自洽性也断**：`over` 必须等于 `bytes - budget`（host 就是这么算的）⇒
+     * 对不上说明这串 `detail` 不是按契约来的 ⇒ **宁可退化成无数字文案**，
+     * 也不给用户看互相矛盾的数字。
+     *
+     * @param {string|null} detail - host 回的 `detail`。
+     * @returns {{bytes: number, budget: number, over: number}|null} 三个数；
+     *   取不到就是 null（调用方出降级文案）。
+     */
+    function parseBodyBudgetDetail(detail) {
+      const matched = /正文 (\d+) 字节，超出单条正文预算 (\d+) 字节（超 (\d+) 字节）/.exec(
+        String(detail ?? ''),
+      );
+      if (matched === null) return null;
+      const bytes = Number(matched[1]);
+      const budget = Number(matched[2]);
+      const over = Number(matched[3]);
+      if (!Number.isSafeInteger(bytes) || !Number.isSafeInteger(budget) || !Number.isSafeInteger(over)) {
+        return null;
+      }
+      if (over !== bytes - budget) return null;
+      return { bytes, budget, over };
+    }
+
+    /**
+     * 第 14 码 `body_budget_exceeded` 的**成品文案**（UX 定稿 2026-10-21）。
+     *
+     * **为什么必须有专属文案**：其它码落的那条固定串（「G1：引用「…」的正文
+     * 读取失败，发送时会拒绝这次提交」）与 `body_too_large` **完全同文** ⇒ 用户
+     * 分不出「这一条太长」与「整条超 256 KB」，而这两件事的**下一步不同**
+     * （前者换更短的正文，后者换更小的会话）。
+     *
+     * **数字从 `detail` 解析**（三个数：正文字节 / 预算字节 / 超出量）——**取
+     * 不到就退化成无数字文案**，**不编数字**。
+     *
+     * **措辞纪律**：不写「别的引用不受影响」（那条语义尚未裁定）、不写
+     * 「重试／再试一次」（这个码**不可重试**）、不显示错误码（码只进 `detail`）。
+     *
+     * @param {string|null} detail - host 回的 `detail`。
+     * @returns {string} 成品文案。
+     */
+    function bodyBudgetNoticeText(detail) {
+      const parsed = parseBodyBudgetDetail(detail);
+      if (parsed === null) {
+        return '这条引用太长，请移除它，换一段更短的正文。';
+      }
+      return (
+        `这条引用太长：正文 ${parsed.bytes} 字节，` +
+        `超出单条正文预算 ${parsed.budget} 字节（超 ${parsed.over} 字节）。` +
+        '请移除这条引用，换一段更短的正文。'
+      );
     }
 
     /**
